@@ -1,0 +1,8 @@
+create_table("invites") {
+	t.Column("id", "uuid", {"primary": true})
+	t.Column("expires_at", "datetime", {})
+	t.Column("invite_code", "uuid",  {})
+	t.Column("user_id", "uuid", {})
+	t.Column("used", "bool", {"default": false})
+	t.ForeignKey("user_id", {"users": ["id"]}, {"on_delete": "cascade"})
+}

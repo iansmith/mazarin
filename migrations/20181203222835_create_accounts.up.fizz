@@ -1,0 +1,8 @@
+create_table("accounts") {
+	t.Column("id", "uuid", {"primary": true})
+	t.Column("organization", "string", {})
+	t.Column("creating_channel_name", "string", {})
+	t.Column("creating_team", "string", {"size": 16})
+	t.Column("creating_channel", "string", {"size": 16})
+	t.Column("credits", "decimal", {"precision":10, "scale":2})
+}

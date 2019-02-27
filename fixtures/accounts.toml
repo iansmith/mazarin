@@ -1,0 +1,90 @@
+[[scenario]]
+name = "two simple accounts"
+
+<%
+  let a1 = uuid()
+  let a2 = uuid()
+  let u1 = uuid()
+  let u2 = uuid()
+  let u3 = uuid()
+  let b1 = uuid()
+  let b2 = uuid()
+%>
+  [[scenario.table]]
+    name = "accounts"
+
+    [[scenario.table.row]]
+      id = "<%= a1 %>"
+      organization = "org1"
+      creating_team = "SLACKTEAM1"
+      creating_channel = "SLACKCHAN1"
+      creating_channel_name = "SLACKCHANNAME1"
+      created_at = "<%= now() %>"
+      updated_at = "<%= now() %>"
+      credits = "0.0"
+
+    [[scenario.table.row]]
+    id = "<%= a2  %>"
+    organization = "org_two"
+    creating_team = "SLACKTEAM02"
+    creating_channel = "SLACKCHAN02"
+    creating_channel_name = "SLACKCHANNAME02"
+    created_at = "<%= now() %>"
+    updated_at = "<%= now() %>"
+    credits = "27.2"
+
+  [[scenario.table]]
+    name = "users"
+
+    [[scenario.table.row]]
+      id = "<%= u1 %>"
+      created_at = "<%= now() %>"
+      updated_at = "<%= now() %>"
+      slack_user_id = "SLACKUSER1"
+      slack_user_name="User One"
+      timezone_name="Americas/New_York"
+      timezone_offset_minutes = "-300"
+      location = "Atlanta"
+      enabled = true
+      account_id = "<%= a1 %>"
+
+    [[scenario.table.row]]
+      id = "<%= u2 %>"
+      created_at = "<%= now() %>"
+      updated_at = "<%= now() %>"
+      slack_user_id = "SLACKUSER2"
+      slack_user_name="User Two"
+      timezone_name="Europe/Warsaw"
+      timezone_offset_minutes = "60"
+      location = "Wroclaw"
+      enabled = true
+      account_id = "<%= a1 %>"
+
+    [[scenario.table.row]]
+      id = "<%= u3 %>"
+      created_at = "<%= now() %>"
+      updated_at = "<%= now() %>"
+      slack_user_id = "SLACKUSER3"
+      slack_user_name="User Three"
+      timezone_name="Europe/Minsk"
+      timezone_offset_minutes = "180"
+      location = "Minsk"
+      enabled = true
+      account_id = "<%= a2 %>"
+
+  [[scenario.table]]
+    name = "bosses"
+
+    [[scenario.table.row]]
+      id = "<%= b1 %>"
+      created_at = "<%= now() %>"
+      updated_at = "<%= now() %>"
+      account_id = "<%= a1 %>"
+      user_id="<%= u1 %>"
+
+    [[scenario.table.row]]
+      id = "<%= b2 %>"
+      created_at = "<%= now() %>"
+      updated_at = "<%= now() %>"
+      account_id = "<%= a2 %>"
+      user_id="<%= u3 %>"
