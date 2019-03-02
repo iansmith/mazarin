@@ -17,8 +17,8 @@ func Test_ModelSuite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	as := &ModelSuite{
+	ms := &ModelSuite{
 		Model: model,
 	}
-	suite.Run(t, as)
+	suite.Run(t, ms)
 }

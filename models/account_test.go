@@ -1,10 +1,7 @@
-package models_test
+package models
 
 import (
-	"fmt"
-
 	"github.com/gobuffalo/uuid"
-	"github.com/iansmith/mazarin/models"
 )
 
 func (ms *ModelSuite) Test_AccountCreate() {
@@ -13,7 +10,7 @@ func (ms *ModelSuite) Test_AccountCreate() {
 	ms.NoError(err)
 	ms.Equal(0, count)
 
-	acct := &models.Account{
+	acct := &Account{
 		Organization:        "my org",
 		CreatingTeam:        "my team",
 		CreatingChannel:     "mychan",
@@ -23,12 +20,11 @@ func (ms *ModelSuite) Test_AccountCreate() {
 
 	verrs, err := ms.DB.ValidateAndCreate(acct)
 	ms.NoError(err)
-	fmt.Printf("XXXXXX %+v\n", verrs)
 	ms.False(verrs.HasAny())
 	ms.False(acct.CreatedAt.IsZero())
 	ms.False(acct.UpdatedAt.IsZero())
 
-	acct = &models.Account{
+	acct = &Account{
 		ID:                  uuid.Must(uuid.NewV4()),
 		Organization:        "",
 		CreatingTeam:        "my team",
