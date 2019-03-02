@@ -32,12 +32,14 @@ func init() {
 		participle.Elide("Whitespace"),
 	)
 }
+
 var lexerDef lexer.Definition
 var commandParser *participle.Parser
 
 type Command struct {
 	Word []string `( @Ident | @Quoted)* `
 }
+
 /*
 type Word struct {
 	Word string `@Ident | @Quoted`

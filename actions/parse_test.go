@@ -6,7 +6,6 @@ import (
 	"github.com/alecthomas/participle/lexer"
 )
 
-
 func (as *ActionSuite) Test_Lexer() {
 	as.LoadFixture("two simple accounts")
 
@@ -43,26 +42,26 @@ func (as *ActionSuite) Test_Lexer() {
 }
 
 func (as *ActionSuite) Test_Parser() {
-	cmd:=&Command{}
-	goodInput:=[]string{
+	cmd := &Command{}
+	goodInput := []string{
 		"foo bar baz",
 		"",
 		"   ",
 		"foo \"bar baz\" fleazil",
 		"\"all the words\"",
 	}
-	badInput:=[]string{
+	badInput := []string{
 		"foo bar 'baz'",
 		";",
 		"foo bar \" baz",
 		"foo \"bar baz\" fleazil\"",
 	}
-	for _, i:=range goodInput{
-		err :=commandParser.ParseString(i, cmd)
+	for _, i := range goodInput {
+		err := commandParser.ParseString(i, cmd)
 		as.Nil(err)
 	}
-	for _, i:=range badInput{
-		err :=commandParser.ParseString(i, cmd)
+	for _, i := range badInput {
+		err := commandParser.ParseString(i, cmd)
 		as.NotNil(err)
 	}
 }
