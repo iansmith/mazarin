@@ -1,0 +1,68 @@
+# Build artifacts
+*.o
+*.elf
+*.a
+*.so
+*.dylib
+
+# Go build artifacts
+kernel_go
+kernel_go.h
+kernel_go.pkg
+__.SYMDEF
+__.PKGDEF
+*.exe
+*.test
+*.out
+
+# Toolchain directories (downloaded/extracted)
+bin/
+aarch64-none-elf/
+arm-gnu-toolchain-*.tar
+arm-gnu-toolchain-*.tar.xz
+arm-gnu-toolchain-*.zip
+
+# Docker build outputs
+docker/builtin/*.elf
+docker/builtin/foo
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Go specific
+go.work
+go.work.sum
+
+# Temporary files
+*.tmp
+*.log
+*.bak
+*.cache
+qemu_log.txt
+
+# Debug files
+*.dSYM/
+core
+core.*
+
+# Keep docker/builtin directory but ignore contents
+!docker/builtin/.gitkeep
+
+enable-mazzy

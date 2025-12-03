@@ -1,0 +1,20 @@
+#!/bin/bash
+
+# Script to run the alpine-qemu container with docker/builtin mounted as /mnt/builtin (readonly)
+# This script can be run from anywhere, including via symlinks
+
+# Use absolute path to builtin directory to handle symlinks correctly
+BUILTIN_DIR="/Users/iansmith/mazzy/docker/builtin"
+
+# Verify builtin directory exists
+if [ ! -d "$BUILTIN_DIR" ]; then
+    echo "Error: builtin directory does not exist at $BUILTIN_DIR" >&2
+    exit 1
+fi
+
+# Run the container with builtin directory mounted as readonly
+docker run --rm -it \
+    -v "$BUILTIN_DIR:/mnt/builtin:ro" \
+    alpine-qemu:3.22 \
+    "$@"
+

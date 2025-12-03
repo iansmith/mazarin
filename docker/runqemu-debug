@@ -1,0 +1,34 @@
+#!/bin/bash
+
+# Script to run the alpine-qemu container with GDB debugging enabled
+# This script can be run from anywhere, including via symlinks
+
+# Use absolute path to builtin directory to handle symlinks correctly
+BUILTIN_DIR="/Users/iansmith/mazzy/docker/builtin"
+
+# Verify builtin directory exists
+if [ ! -d "$BUILTIN_DIR" ]; then
+    echo "Error: builtin directory does not exist at $BUILTIN_DIR" >&2
+    exit 1
+fi
+
+# GDB port (default 1234)
+GDB_PORT="${GDB_PORT:-1234}"
+
+echo "Starting QEMU with GDB server on port $GDB_PORT"
+echo "Connect with: target-gdb kernel.elf"
+echo "Then run: (gdb) target remote localhost:$GDB_PORT"
+echo ""
+
+# Run the container with GDB debugging enabled
+# -gdb tcp::1234: Enable GDB server on port 1234
+# -S: Pause execution at startup (wait for GDB to connect)
+# -d exec,in_asm: Show instruction execution and disassembly (optional, for tracing)
+docker run --rm -it \
+    -p "$GDB_PORT:$GDB_PORT" \
+    -v "$BUILTIN_DIR:/mnt/builtin:ro" \
+    alpine-qemu:3.22 \
+    -gdb "tcp::$GDB_PORT" \
+    -S \
+    "$@"
+
