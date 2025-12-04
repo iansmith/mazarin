@@ -36,13 +36,16 @@ RUN echo "qemu-container" > /etc/hostname
 # Set working directory
 WORKDIR /workspace
 
-# Set default entrypoint to run QEMU emulating Raspberry Pi 4
-# -M raspi4b: Raspberry Pi 4B machine type
+# Set default entrypoint to run QEMU with virt machine type
+# -M virt: QEMU virt machine type (better UART compatibility for bare-metal)
+# -cpu cortex-a72: Use Cortex-A72 CPU (same as Raspberry Pi 4)
+# -m 512M: Allocate 512MB RAM
 # -kernel: Load kernel from /mnt/builtin/kernel.elf
-# -append: Kernel command line arguments
 # -serial stdio: Redirect serial output to stdout/stderr
+# -semihosting: Enable semihosting for clean program exit
 # -display none: Run headless (no graphics)
 # -no-reboot: Exit on shutdown instead of rebooting
+# Note: No -append flag for bare-metal kernels (that's for Linux kernels)
 # Note: To enable GDB debugging, override with: -gdb tcp::1234 -S
-ENTRYPOINT ["qemu-system-aarch64", "-M", "raspi4b", "-kernel", "/mnt/builtin/kernel.elf", "-append", "console=ttyAMA0,115200 earlyprintk", "-serial", "stdio", "-display", "none", "-no-reboot"]
+ENTRYPOINT ["qemu-system-aarch64", "-M", "virt", "-cpu", "cortex-a72", "-m", "512M", "-kernel", "/mnt/builtin/kernel.elf", "-serial", "stdio", "-semihosting", "-display", "none", "-no-reboot"]
 

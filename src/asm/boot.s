@@ -5,20 +5,34 @@
 _start:
     // Get CPU ID - only run on CPU 0
     mrs x1, mpidr_el1
-    and x1, x1, #0xFF
+    ubfx x1, x1, #0, #8          // Extract Aff0 (bits 0-7)
     cmp x1, #0
     bne cpu_halt_loop
 
     // CPU 0 continues here
-    // Set stack pointer to a higher address (above kernel at 0x200000)
-    // Go runtime needs significant stack space
-    // Stack at 0x400000 (4MB) - well above kernel and provides 1MB+ stack
-    movz x0, #0x40, lsl #16    // Load 0x400000 (0x40 << 16)
+    // Write 'S' immediately to verify kernel is starting
+    movz x10, #0x900, lsl #16    // UART base 0x09000000
+    movk x10, #0x0000, lsl #0
+    add x11, x10, #0x18          // FR register
+s_wait:
+    ldr w12, [x11]
+    tst w12, #(1 << 5)
+    bne s_wait
+    movz w13, #'S'
+    str w13, [x10]
+    
+    // QEMU virt machine memory layout:
+    // - 0x00000000-0x08000000: Flash/ROM (kernel loaded at 0x200000)
+    // - 0x09000000-0x09010000: UART (PL011)
+    // - 0x40000000-end:        RAM (actual writable memory)
+    //
+    // Set stack pointer to RAM region: 0x40400000 (4MB into RAM)
+    movz x0, #0x4040, lsl #16    // 0x40400000
     mov sp, x0
 
-    // Clear BSS section
-    ldr x4, =__bss_start
-    ldr x9, =__bss_end
+    // Clear BSS section (now in RAM region at 0x40000000)
+    ldr x4, =__bss_start         // 0x40000000
+    ldr x9, =__bss_end           // ~0x4003c000
     mov x5, #0
     mov x6, #0
     mov x7, #0
@@ -35,6 +49,33 @@ _start:
 2:
     cmp x4, x9
     blo 1b
+
+    // Enable write barrier flag AFTER clearing BSS
+    // runtime.writeBarrier is in BSS at 0x40026b40 (RAM region)
+    // The Go compiler checks this flag before pointer assignments
+    // Note: Address is determined by `target-nm kernel.elf | grep runtime.writeBarrier`
+    movz x10, #0x4002, lsl #16     // 0x40020000
+    movk x10, #0x6b40, lsl #0      // 0x40026b40
+    mov w11, #1                    // Enable write barrier
+    strb w11, [x10]                // Store byte (bool field)
+    dsb sy                         // Memory barrier
+    
+    // Write 'B' before jumping to kernel_main
+    movz x10, #0x900, lsl #16    // UART base
+    movk x10, #0x0000, lsl #0
+    add x11, x10, #0x18          // FR register
+b_wait:
+    ldr w12, [x11]
+    tst w12, #(1 << 5)
+    bne b_wait
+    movz w13, #'B'
+    str w13, [x10]
+b_wait2:
+    ldr w12, [x11]
+    tst w12, #(1 << 5)
+    bne b_wait2
+    movz w13, #'\n'
+    str w13, [x10]
 
     // Jump to kernel_main
     ldr x0, =kernel_main
@@ -54,4 +95,5 @@ halt:
     wfe
     b halt
 
-    
+
+

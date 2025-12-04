@@ -7,6 +7,16 @@ GO = /Users/iansmith/mazzy/bin/go
 GOARCH = arm64
 GOOS = linux
 
+# Runtime patching tool
+PATCH_RUNTIME = ../tools/runtime/patch_runtime.py
+
+# Runtime function replacements: <old_func> <new_func> pairs
+# These functions will have their symbols weakened and calls patched to use our implementations
+RUNTIME_REPLACEMENTS = runtime.gcWriteBarrier2 runtime.gcWriteBarrier2 \
+                       runtime.gcWriteBarrier3 runtime.gcWriteBarrier3 \
+                       runtime.gcWriteBarrier4 runtime.gcWriteBarrier4 \
+                       gcWriteBarrier gcWriteBarrier
+
 # Compiler flags
 CFLAGS = -mcpu=cortex-a72 -march=armv8-a -fpic -ffreestanding -std=gnu99 -O2 -Wall -Wextra -g
 ASFLAGS = -mcpu=cortex-a72 -march=armv8-a -ffreestanding -g
@@ -19,13 +29,26 @@ GO_BUILD_FLAGS = -buildmode=c-archive
 # Source files - Assembly in asm/ directory
 BOOT_SRC = asm/boot.s
 LIB_SRC = asm/lib.s
+WRITEBARRIER_SRC = asm/writebarrier.s
 LINKER_SCRIPT = linker.ld
 
 # Go package location
 GO_PACKAGE_DIR = go/mazarin
 
-# Go source files
-GO_SRC = $(GO_PACKAGE_DIR)/kernel.go $(GO_PACKAGE_DIR)/page.go $(GO_PACKAGE_DIR)/heap.go
+# Go source files (all files - build tags determine which are included)
+# Note: Build tags (qemu/!qemu) determine which files are actually compiled,
+# but we list all files here so make knows to rebuild when any file changes
+GO_SRC = $(GO_PACKAGE_DIR)/kernel.go \
+         $(GO_PACKAGE_DIR)/page.go \
+         $(GO_PACKAGE_DIR)/heap.go \
+         $(GO_PACKAGE_DIR)/gpu.go \
+         $(GO_PACKAGE_DIR)/mailbox.go \
+         $(GO_PACKAGE_DIR)/framebuffer_common.go \
+         $(GO_PACKAGE_DIR)/framebuffer_rpi.go \
+         $(GO_PACKAGE_DIR)/framebuffer_qemu.go \
+         $(GO_PACKAGE_DIR)/pci_qemu.go \
+         $(GO_PACKAGE_DIR)/uart_rpi.go \
+         $(GO_PACKAGE_DIR)/uart_qemu.go
 
 # Bitfield code generation
 BITFIELD_GEN = bitfield/page_flags_gen.go
@@ -35,6 +58,7 @@ BITFIELD_FLAGS_SRC = bitfield/page_flags.go
 # Object files
 BOOT_OBJ = boot.o
 LIB_OBJ = lib.o
+WRITEBARRIER_OBJ = writebarrier.o
 KERNEL_GO_OBJ = kernel_go.o
 
 # Output file
@@ -46,8 +70,8 @@ KERNEL_OBJ = $(KERNEL_GO_OBJ)
 # Default target: build the kernel
 # This automatically triggers all dependencies including bitfield code generation
 # Dependency chain: kernel.elf -> (boot.o, lib.o, kernel_go.o) -> (asm sources, Go sources, bitfield gen)
-$(KERNEL_ELF): $(BOOT_OBJ) $(LIB_OBJ) $(KERNEL_OBJ) $(LINKER_SCRIPT)
-	$(CC) $(LDFLAGS) -o $@ $(BOOT_OBJ) $(LIB_OBJ) $(KERNEL_OBJ)
+$(KERNEL_ELF): $(BOOT_OBJ) $(LIB_OBJ) $(WRITEBARRIER_OBJ) $(KERNEL_OBJ) $(LINKER_SCRIPT)
+	$(CC) $(LDFLAGS) -o $@ $(BOOT_OBJ) $(LIB_OBJ) $(WRITEBARRIER_OBJ) $(KERNEL_OBJ)
 
 # Generate bitfield unpacking code
 # This is automatically triggered as a dependency of kernel_go.o
@@ -63,21 +87,36 @@ $(BOOT_OBJ): $(BOOT_SRC)
 $(LIB_OBJ): $(LIB_SRC)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
+# Compile writebarrier.s from asm/ directory
+$(WRITEBARRIER_OBJ): $(WRITEBARRIER_SRC)
+	$(CC) $(ASFLAGS) -c $< -o $@
+
 # Compile kernel Go sources from go/mazarin package using go build with c-archive mode
 # Then use objcopy to promote local symbols to global
 KERNEL_GO_ARCHIVE = kernel_go
 KERNEL_GO_TEMP = kernel_go_temp.o
 OBJCOPY = /Users/iansmith/mazzy/bin/target-objcopy
+
+# Build tags: use 'qemu' tag for QEMU builds, no tag for real hardware
+# Default is real hardware (!qemu)
+BUILD_TAGS ?= 
+
 $(KERNEL_GO_OBJ): $(BITFIELD_GEN) go.mod $(GO_SRC)
 	@# Clean up any leftover files from previous builds
 	@rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) go.o kernel_go.h __.SYMDEF
-	@# Build Go package from go/mazarin directory
-	GOTOOLCHAIN=auto GOARCH=$(GOARCH) GOOS=$(GOOS) $(GO) build $(GO_BUILD_FLAGS) -o $(KERNEL_GO_ARCHIVE) ./$(GO_PACKAGE_DIR)
+	@# Build Go package from go/mazarin directory with build tags
+	@if [ -n "$(BUILD_TAGS)" ]; then \
+		echo "Building with tags: $(BUILD_TAGS)"; \
+		GOTOOLCHAIN=auto GOARCH=$(GOARCH) GOOS=$(GOOS) $(GO) build -tags "$(BUILD_TAGS)" $(GO_BUILD_FLAGS) -o $(KERNEL_GO_ARCHIVE) ./$(GO_PACKAGE_DIR); \
+	else \
+		echo "Building for real hardware (no tags)"; \
+		GOTOOLCHAIN=auto GOARCH=$(GOARCH) GOOS=$(GOOS) $(GO) build $(GO_BUILD_FLAGS) -o $(KERNEL_GO_ARCHIVE) ./$(GO_PACKAGE_DIR); \
+	fi
 	@# Extract the actual object file (go.o) from the C archive
 	ar x $(KERNEL_GO_ARCHIVE) go.o
 	mv go.o $(KERNEL_GO_TEMP)
 	@# Use objcopy to promote main.KernelMain from local to global symbol
-	@# This allows the linker to resolve it from assembly
+	@# This allows the linker to resolve it from assembly (lib.s calls main.KernelMain)
 	$(OBJCOPY) --globalize-symbol=main.KernelMain $(KERNEL_GO_TEMP) $@ || \
 	 (cp $(KERNEL_GO_TEMP) $@ && echo "Warning: Could not promote symbol")
 	@rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) kernel_go.h __.SYMDEF
@@ -85,16 +124,56 @@ $(KERNEL_GO_OBJ): $(BITFIELD_GEN) go.mod $(GO_SRC)
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -f $(BOOT_OBJ) $(LIB_OBJ) $(KERNEL_GO_OBJ) $(KERNEL_ELF)
+	rm -f $(BOOT_OBJ) $(LIB_OBJ) $(WRITEBARRIER_OBJ) $(KERNEL_GO_OBJ) $(KERNEL_GO_OBJ_QEMU) $(KERNEL_ELF) kernel-qemu.elf
 	rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) go.o
 	rm -f kernel_go.pkg __.PKGDEF kernel_go.h __.SYMDEF
 	rm -f kernel.o  # Clean up any leftover object files from old builds
 	rm -f $(BITFIELD_GEN)
 
+# QEMU build target - rebuilds Go object with qemu tag
+KERNEL_GO_OBJ_QEMU = kernel_go_qemu.o
+$(KERNEL_GO_OBJ_QEMU): $(BITFIELD_GEN) go.mod $(GO_SRC)
+	@# Clean up any leftover files from previous builds
+	@rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) go.o kernel_go.h __.SYMDEF
+	@# Build Go package from go/mazarin directory with qemu tag
+	@echo "Building for QEMU (with qemu tag)"
+	@GOTOOLCHAIN=auto GOARCH=$(GOARCH) GOOS=$(GOOS) $(GO) build -tags "qemu" $(GO_BUILD_FLAGS) -o $(KERNEL_GO_ARCHIVE) ./$(GO_PACKAGE_DIR)
+	@# Extract the actual object file (go.o) from the C archive
+	@ar x $(KERNEL_GO_ARCHIVE) go.o
+	@mv go.o $(KERNEL_GO_TEMP)
+	@# Use objcopy to promote main.KernelMain from local to global symbol
+	@# This allows the linker to resolve it from assembly (lib.s calls main.KernelMain)
+	@$(OBJCOPY) --globalize-symbol=main.KernelMain $(KERNEL_GO_TEMP) $@ || \
+	 (cp $(KERNEL_GO_TEMP) $@ && echo "Warning: Could not promote symbol")
+	@# Weaken Go runtime's write barrier symbols so our strong global versions override them
+	@# This allows our writebarrier.s implementations to be used instead
+	@echo "Weakening Go runtime write barrier symbols..."
+	@$(OBJCOPY) --weaken-symbol=runtime.gcWriteBarrier2 \
+	             --weaken-symbol=runtime.gcWriteBarrier3 \
+	             --weaken-symbol=runtime.gcWriteBarrier4 \
+	             --weaken-symbol=gcWriteBarrier \
+	             $@ $@.tmp && mv $@.tmp $@ || \
+	 (echo "Warning: Could not weaken write barrier symbols")
+	@rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) kernel_go.h __.SYMDEF
+
+kernel-qemu.elf: $(BOOT_OBJ) $(LIB_OBJ) $(WRITEBARRIER_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT)
+	@# Link writebarrier.o AFTER kernel_go_qemu.o so our global symbols override Go runtime's
+	@# Our writebarrier.s provides global (T) symbols that should take precedence
+	$(CC) $(LDFLAGS) -o $@.tmp $(BOOT_OBJ) $(LIB_OBJ) $(KERNEL_GO_OBJ_QEMU) $(WRITEBARRIER_OBJ)
+	@# Patch the binary to redirect calls from Go runtime functions to our implementations
+	@echo "Patching runtime function calls..."
+	@python3 $(PATCH_RUNTIME) $@.tmp $(RUNTIME_REPLACEMENTS) && mv $@.tmp $@ || \
+	 (echo "Warning: Could not patch binary, using unpatched version" && mv $@.tmp $@)
+
 # Push kernel.elf to docker/builtin directory
 push: $(KERNEL_ELF)
 	@mkdir -p ../docker/builtin
 	cp $(KERNEL_ELF) ../docker/builtin/
+
+# Push QEMU kernel to docker/builtin directory
+push-qemu: kernel-qemu.elf
+	@mkdir -p ../docker/builtin
+	cp kernel-qemu.elf ../docker/builtin/kernel.elf
 
 # Test target - run Go tests
 test: $(BITFIELD_GEN)

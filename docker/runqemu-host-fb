@@ -35,6 +35,7 @@ echo ""
 
 # Run QEMU directly on host with SDL display
 # -display sdl: Use SDL for display (works on macOS, Linux, Windows)
+# -semihosting: Enable semihosting for clean program exit
 # This will open a window on your desktop showing the framebuffer
 qemu-system-aarch64 \
     -M raspi4b \
@@ -43,7 +44,9 @@ qemu-system-aarch64 \
     -kernel "$KERNEL_ELF" \
     -append "console=ttyAMA0,115200 earlyprintk" \
     -serial stdio \
+    -semihosting \
     -display sdl \
     -no-reboot \
     "$@"
+
 

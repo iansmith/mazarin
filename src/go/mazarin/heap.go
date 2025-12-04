@@ -6,15 +6,13 @@ import (
 
 // Memory management constants
 const (
-	PAGE_SIZE        = 4096                           // 4KB page size
-	KERNEL_HEAP_SIZE = 1024 * 1024                    // 1 MB heap size
-	HEAP_ALIGNMENT   = 16                              // 16-byte alignment for allocations
+	PAGE_SIZE        = 4096        // 4KB page size
+	KERNEL_HEAP_SIZE = 1024 * 1024 // 1 MB heap size
+	HEAP_ALIGNMENT   = 16          // 16-byte alignment for allocations
 )
 
 // Linker symbol: end of kernel (from linker.ld)
-//
-//go:linkname __end __end
-var __end uintptr
+// Moved to memory.go to centralize linker symbol access
 
 // heapSegment represents a segment in the heap's doubly-linked list
 // This structure is placed at the start of each allocated/free segment
@@ -33,17 +31,41 @@ var heapSegmentListHead *heapSegment
 //
 //go:nosplit
 func heapInit(heapStart uintptr) {
+	// Debug: Write 'I' to mark heapInit entry - use direct writes to avoid any issues
+	// Use inline assembly-like direct writes
+	uartBaseLocal := uintptr(0x09000000)
+	uartFRLocal := uartBaseLocal + 0x18
+	uartDRLocal := uartBaseLocal + 0x00
+	for mmio_read(uartFRLocal)&(1<<5) != 0 {
+	}
+	mmio_write(uartDRLocal, uint32('I'))
+
 	// Cast the start address to a heap segment pointer
-	heapSegmentListHead = (*heapSegment)(unsafe.Pointer(heapStart))
+	heapSegmentListHead = castToPointer[heapSegment](heapStart)
+
+	// Debug: Write 'J' after setting head
+	for mmio_read(uartFRLocal)&(1<<5) != 0 {
+	}
+	mmio_write(uartDRLocal, uint32('J'))
 
 	// Zero out the initial segment header
 	bzero(unsafe.Pointer(heapSegmentListHead), uint32(unsafe.Sizeof(heapSegment{})))
+
+	// Debug: Write 'K' after bzero
+	for mmio_read(uartFRLocal)&(1<<5) != 0 {
+	}
+	mmio_write(uartDRLocal, uint32('K'))
 
 	// Initialize the first segment to represent the entire heap as free
 	heapSegmentListHead.next = nil
 	heapSegmentListHead.prev = nil
 	heapSegmentListHead.isAllocated = 0
 	heapSegmentListHead.segmentSize = KERNEL_HEAP_SIZE
+
+	// Debug: Write 'L' after initialization
+	for mmio_read(uartFRLocal)&(1<<5) != 0 {
+	}
+	mmio_write(uartDRLocal, uint32('L'))
 }
 
 // kmalloc allocates size bytes from the heap and returns a pointer to the memory
@@ -52,9 +74,22 @@ func heapInit(heapStart uintptr) {
 //
 //go:nosplit
 func kmalloc(size uint32) unsafe.Pointer {
+	// Debug: Write 'K' to mark kmalloc entry
+	const uartBase uintptr = 0x09000000
+	const uartFR = uartBase + 0x18
+	const uartDR = uartBase + 0x00
+	for mmio_read(uartFR)&(1<<5) != 0 {
+	}
+	mmio_write(uartDR, uint32('K'))
+
 	var curr *heapSegment
 	var best *heapSegment
 	bestDiff := int32(0x7FFFFFFF) // Max signed int32
+
+	// Debug: Write '1' after variable initialization
+	for mmio_read(uartFR)&(1<<5) != 0 {
+	}
+	mmio_write(uartDR, uint32('1'))
 
 	// Add the header size to the requested size
 	totalSize := size + uint32(unsafe.Sizeof(heapSegment{}))
@@ -66,9 +101,41 @@ func kmalloc(size uint32) unsafe.Pointer {
 		totalSize = uint32(uintptr(totalSize) + align - remainder)
 	}
 
+	// Debug: Write '2' before heap check
+	for mmio_read(uartFR)&(1<<5) != 0 {
+	}
+	mmio_write(uartDR, uint32('2'))
+
 	// Find the best-fit free segment
+	// Safety check: if heap isn't initialized, return nil
+	if heapSegmentListHead == nil {
+		// Debug: Write 'N' for nil head
+		for mmio_read(uartFR)&(1<<5) != 0 {
+		}
+		mmio_write(uartDR, uint32('N'))
+		return nil
+	}
+
+	// Debug: Write '3' after nil check
+	for mmio_read(uartFR)&(1<<5) != 0 {
+	}
+	mmio_write(uartDR, uint32('3'))
+
 	curr = heapSegmentListHead
-	for curr != nil {
+
+	// Debug: Write '4' after setting curr
+	for mmio_read(uartFR)&(1<<5) != 0 {
+	}
+	mmio_write(uartDR, uint32('4'))
+
+	loopCount := uint32(0)
+	maxLoops := uint32(1000) // Safety limit to prevent infinite loops
+	for curr != nil && loopCount < maxLoops {
+		// Debug: Write 'L' each loop iteration
+		for mmio_read(uartFR)&(1<<5) != 0 {
+		}
+		mmio_write(uartDR, uint32('L'))
+
 		if curr.isAllocated == 0 {
 			// This segment is free
 			diff := int32(curr.segmentSize) - int32(totalSize)
@@ -77,7 +144,18 @@ func kmalloc(size uint32) unsafe.Pointer {
 				bestDiff = diff
 			}
 		}
-		curr = curr.next
+		curr = curr.next // This might be causing the hang if curr.next is invalid
+		loopCount++
+	}
+
+	// Debug: Write '5' after loop
+	for mmio_read(uartFR)&(1<<5) != 0 {
+	}
+	mmio_write(uartDR, uint32('5'))
+
+	// If we hit the loop limit, something is wrong with the heap structure
+	if loopCount >= maxLoops {
+		return nil
 	}
 
 	// No suitable free segment found
@@ -89,8 +167,8 @@ func kmalloc(size uint32) unsafe.Pointer {
 	minSplitSize := uint32(2 * unsafe.Sizeof(heapSegment{}))
 	if bestDiff > int32(minSplitSize) {
 		// Calculate the address of the new segment
-		newSegAddr := uintptr(unsafe.Pointer(best)) + uintptr(totalSize)
-		newSeg := (*heapSegment)(unsafe.Pointer(newSegAddr))
+		newSegAddr := pointerToUintptr(unsafe.Pointer(best)) + uintptr(totalSize)
+		newSeg := castToPointer[heapSegment](newSegAddr)
 
 		// Zero out the new segment
 		bzero(unsafe.Pointer(newSeg), uint32(unsafe.Sizeof(heapSegment{})))
@@ -118,7 +196,7 @@ func kmalloc(size uint32) unsafe.Pointer {
 	// In C: return best + 1
 	// In Go: advance pointer by sizeof(heapSegment)
 	// IMPORTANT: The data area must be 16-byte aligned for mailbox operations
-	dataPtrAddr := uintptr(unsafe.Pointer(best)) + unsafe.Sizeof(heapSegment{})
+	dataPtrAddr := pointerToUintptr(unsafe.Pointer(best)) + unsafe.Sizeof(heapSegment{})
 	// Align data pointer to 16 bytes (reuse align variable from above)
 	dataRemainder := dataPtrAddr % align
 	if dataRemainder != 0 {
@@ -139,7 +217,7 @@ func kfree(ptr unsafe.Pointer) {
 
 	// Get the segment header by subtracting the header size from the pointer
 	// In C: seg = ptr - sizeof(heap_segment_t)
-	seg := (*heapSegment)(unsafe.Pointer(uintptr(ptr) - unsafe.Sizeof(heapSegment{})))
+	seg := castToPointer[heapSegment](pointerToUintptr(ptr) - unsafe.Sizeof(heapSegment{}))
 
 	// Mark as free
 	seg.isAllocated = 0
@@ -186,14 +264,13 @@ func memInit(atagsPtr uintptr) {
 	if numPages > 0 {
 		pageArraySize = uintptr(numPages) * unsafe.Sizeof(Page{})
 	}
-	
+
 	// Heap starts after page metadata array
 	// Align to 16-byte boundary for better performance
-	heapStartBase := uintptr(unsafe.Pointer(&__end)) + pageArraySize
+	heapStartBase := getLinkerSymbol("__end") + pageArraySize
 	heapStart := (heapStartBase + HEAP_ALIGNMENT - 1) &^ (HEAP_ALIGNMENT - 1)
-	
+
 	// Step 3: Initialize heap allocator (Part 05)
 	// Heap pages are already reserved by pageInit()
 	heapInit(heapStart)
 }
-

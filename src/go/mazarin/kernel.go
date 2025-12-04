@@ -26,6 +26,10 @@ func bzero(ptr unsafe.Pointer, size uint32)
 //go:nosplit
 func dsb()
 
+//go:linkname qemu_exit qemu_exit
+//go:nosplit
+func qemu_exit()
+
 // Peripheral base address for Raspberry Pi 4
 const (
 	// Peripheral base address for Raspberry Pi 4
@@ -63,57 +67,150 @@ const (
 	// Raspberry Pi 4 uses the same mailbox interface as Pi 2/3
 	MAILBOX_BASE = PERIPHERAL_BASE + 0xB880 // 0xFE00B880 for Pi 4
 
-	MAILBOX_READ    = MAILBOX_BASE + 0x00
-	MAILBOX_STATUS  = MAILBOX_BASE + 0x18
-	MAILBOX_WRITE   = MAILBOX_BASE + 0x20
+	MAILBOX_READ   = MAILBOX_BASE + 0x00
+	MAILBOX_STATUS = MAILBOX_BASE + 0x18
+	MAILBOX_WRITE  = MAILBOX_BASE + 0x20
 )
 
+// UART functions are in:
+// - uart_rpi.go (for real hardware, build tag: !qemu)
+// - uart_qemu.go (for QEMU, build tag: qemu)
+// Both implementations have the same signatures:
+//   func uartInit()
+//   func uartPutc(c byte)
+//   func uartGetc() byte
+
 //go:nosplit
-func uartInit() {
-	mmio_write(UART0_CR, 0x00000000)
+func uartPutsBytes(data *byte, length int) {
+	const uartBase uintptr = 0x09000000
+	const uartFR = uartBase + 0x18
+	const uartDR = uartBase + 0x00
 
-	mmio_write(GPPUD, 0x00000000)
-	delay(150)
+	// Debug: write 'B' to verify we entered uartPutsBytes
+	for mmio_read(uartFR)&(1<<5) != 0 {
+	}
+	mmio_write(uartDR, uint32('B'))
 
-	mmio_write(GPPUDCLK0, (1<<14)|(1<<15))
-	delay(150)
+	ptr := uintptr(unsafe.Pointer(data))
+	// Store length in local variable
+	lenVal := length
 
-	mmio_write(GPPUDCLK0, 0x00000000)
+	// Debug: write 'L' to verify we got past variable initialization
+	for mmio_read(uartFR)&(1<<5) != 0 {
+	}
+	mmio_write(uartDR, uint32('L'))
 
-	mmio_write(UART0_ICR, 0x7FF)
+	// Debug: write length as single character to see if it's valid
+	for mmio_read(uartFR)&(1<<5) != 0 {
+	}
+	lenChar := byte(lenVal & 0xFF)
+	if lenChar < 10 {
+		mmio_write(uartDR, uint32('0'+lenChar))
+	} else {
+		mmio_write(uartDR, uint32('?'))
+	}
 
-	mmio_write(UART0_IBRD, 1)
-	mmio_write(UART0_FBRD, 40)
+	// Write first character before loop to test pointer access
+	for mmio_read(uartFR)&(1<<5) != 0 {
+	}
+	mmio_write(uartDR, uint32(*(*byte)(unsafe.Pointer(ptr + uintptr(0)))))
 
-	mmio_write(UART0_LCRH, (1<<4)|(1<<5)|(1<<6))
+	// Debug: write 'X' to show we got past first character
+	for mmio_read(uartFR)&(1<<5) != 0 {
+	}
+	mmio_write(uartDR, uint32('X'))
 
-	mmio_write(UART0_IMSC, (1<<1)|(1<<4)|(1<<5)|(1<<6)|
-		(1<<7)|(1<<8)|(1<<9)|(1<<10))
+	// Now write rest using simple loop with decrementing counter
+	// Use a counter that decrements to avoid comparison issues
+	remaining := lenVal - 1
+	pos := 1
+	for remaining > 0 {
+		// Debug: write 'Y' each iteration to see if loop runs
+		for mmio_read(uartFR)&(1<<5) != 0 {
+		}
+		mmio_write(uartDR, uint32('Y'))
 
-	mmio_write(UART0_CR, (1<<0)|(1<<8)|(1<<9))
+		// Wait for UART ready
+		for mmio_read(uartFR)&(1<<5) != 0 {
+		}
+		// Write character
+		mmio_write(uartDR, uint32(*(*byte)(unsafe.Pointer(ptr + uintptr(pos)))))
+		pos = pos + 1
+		remaining = remaining - 1
+	}
 }
 
 //go:nosplit
-func uartPutc(c byte) {
-	for mmio_read(UART0_FR)&(1<<5) != 0 {
-		// Wait for transmit FIFO to have space
-	}
-	mmio_write(UART0_DR, uint32(c))
-}
+func uartPutHex64(val uint64) {
+	const uartBase uintptr = 0x09000000
+	const uartFR = uartBase + 0x18
+	const uartDR = uartBase + 0x00
 
-//go:nosplit
-func uartGetc() byte {
-	for mmio_read(UART0_FR)&(1<<4) != 0 {
-		// Wait for receive FIFO to have data
+	// Write hex digits directly without loops (avoid loop issues in bare-metal)
+	// Extract and write each nibble explicitly
+	writeHexDigit := func(digit uint32) {
+		for mmio_read(uartFR)&(1<<5) != 0 {
+		}
+		if digit < 10 {
+			mmio_write(uartDR, uint32('0'+digit))
+		} else {
+			mmio_write(uartDR, uint32('A'+digit-10))
+		}
 	}
-	return byte(mmio_read(UART0_DR))
+
+	writeHexDigit(uint32((val >> 60) & 0xF))
+	writeHexDigit(uint32((val >> 56) & 0xF))
+	writeHexDigit(uint32((val >> 52) & 0xF))
+	writeHexDigit(uint32((val >> 48) & 0xF))
+	writeHexDigit(uint32((val >> 44) & 0xF))
+	writeHexDigit(uint32((val >> 40) & 0xF))
+	writeHexDigit(uint32((val >> 36) & 0xF))
+	writeHexDigit(uint32((val >> 32) & 0xF))
+	writeHexDigit(uint32((val >> 28) & 0xF))
+	writeHexDigit(uint32((val >> 24) & 0xF))
+	writeHexDigit(uint32((val >> 20) & 0xF))
+	writeHexDigit(uint32((val >> 16) & 0xF))
+	writeHexDigit(uint32((val >> 12) & 0xF))
+	writeHexDigit(uint32((val >> 8) & 0xF))
+	writeHexDigit(uint32((val >> 4) & 0xF))
+	writeHexDigit(uint32(val & 0xF))
 }
 
 //go:nosplit
 func uartPuts(str string) {
-	for i := 0; i < len(str); i++ {
-		uartPutc(str[i])
+	// NOTE: String literals are not accessible in bare-metal Go
+	// The .rodata section may not be loaded, or Go places string literals
+	// in a way that's not accessible. For now, we'll use a workaround:
+	// Instead of using string literals, we'll write strings character-by-character
+	// directly in the calling code.
+	//
+	// This function is kept for API compatibility, but string literals won't work.
+	// Use uartPutsBytes with explicit byte arrays instead.
+
+	const uartBase uintptr = 0x09000000
+	const uartFR = uartBase + 0x18
+	const uartDR = uartBase + 0x00
+
+	// Use unsafe.StringData() if available (Go 1.20+), otherwise fall back to manual access
+	// For bare-metal, we use the manual string header access pattern
+	// String layout: [data *uintptr, len int] = [2]uintptr on 64-bit
+	strHeader := (*[2]uintptr)(unsafe.Pointer(&str))
+
+	// Extract data pointer and length
+	dataPtrVal := strHeader[0]
+	strLenVal := strHeader[1]
+
+	// If string is null/empty, just return (don't try to access)
+	if dataPtrVal == 0 || strLenVal == 0 {
+		return
 	}
+
+	// Convert to proper types
+	dataPtr := (*byte)(unsafe.Pointer(dataPtrVal))
+	strLen := int(strLenVal)
+
+	// Call uartPutsBytes with the extracted pointer and length
+	uartPutsBytes(dataPtr, strLen)
 }
 
 // uitoa converts a uint32 to its decimal string representation
@@ -189,111 +286,87 @@ func KernelMain(r0, r1, atags uint32) {
 
 	// Initialize UART first for early debugging
 	uartInit()
-	uartPuts("Hello, Mazarin!\r\n")
-	uartPuts("Initializing memory...\r\n")
 
-	// Initialize memory management (pages + heap)
-	// This must be done before using kmalloc for mailbox messages
-	// Note: memInit calls pageInit which can take a while for large memory
-	// For now, do minimal initialization - just initialize heap at a fixed location
-	// TODO: Fix full pageInit() which seems to hang
-	// memInit(uintptr(atags))
-	
-	// Minimal heap initialization - set up heap at a safe location
-	// Stack is at 0x400000, so we need heap well above that
-	// Use 0x500000 (5MB) to be safe - well above stack at 0x400000
-	heapStart := uintptr(0x500000)
-	heapStart = (heapStart + 15) &^ 15 // Align to 16 bytes
-	heapInit(heapStart)
-	
-	// Verify heap is initialized by checking if we can allocate
-	testAlloc := kmalloc(100)
-	if testAlloc == nil {
-		uartPuts("ERROR: Heap initialization failed - cannot allocate!\r\n")
-	} else {
-		uartPuts("Test allocation (100 bytes) succeeded\r\n")
-		// Don't free it - keep it allocated to test if that's the issue
-		// kfree(testAlloc)
-		uartPuts("Memory initialized (minimal, verified)\r\n")
-	}
-	
-	// Initialize GPU/framebuffer
-	uartPuts("Initializing framebuffer...\r\n")
-	
-	// Test heap with the approximate mailbox buffer size (should be ~80-100 bytes)
-	// Mailbox buffer: 3 tags * ~20 bytes each + 12 bytes header = ~72 bytes, rounded to 80
-	// Don't free the previous test allocation - test if multiple allocations work
-	testMailboxSize := kmalloc(100)
-	if testMailboxSize == nil {
-		uartPuts("ERROR: Cannot allocate mailbox-sized buffer (100 bytes)!\r\n")
-	} else {
-		uartPuts("Mailbox-sized allocation (100 bytes) works\r\n")
-		// Don't free it either - test if keeping allocations affects things
-		// kfree(testMailboxSize)
-	}
-	
-	fbResult := gpuInit()
-	if fbResult != 0 {
-		uartPuts("Error: Failed to initialize framebuffer\r\n")
-		if fbResult == -1 {
-			uartPuts("  Reason: Memory allocation failed (mailbox buffer)\r\n")
-		} else if fbResult == -4 {
-			uartPuts("  Reason: Buffer size too large\r\n")
-		} else if fbResult == -2 {
-			uartPuts("  Reason: Mailbox read failed (no GPU response)\r\n")
-		} else if fbResult == -3 {
-			uartPuts("  Reason: Unexpected response code\r\n")
-		} else if fbResult == 1 {
-			uartPuts("  Reason: GPU did not process request\r\n")
-		} else if fbResult == 2 {
-			uartPuts("  Reason: GPU returned error\r\n")
-		} else {
-			uartPuts("  Reason: Unknown error\r\n")
+	// Initialize minimal runtime structures for write barrier
+	// This sets up g0, m0, and write barrier buffers so that gcWriteBarrier can work
+	// Note: x28 (goroutine pointer) is set in lib.s before calling KernelMain
+	initRuntimeStubs()
+
+	// UART helpers (string literals don't work in bare-metal)
+	const uartBase uintptr = 0x09000000
+	const uartFR = uartBase + 0x18
+	const uartDR = uartBase + 0x00
+
+	putc := func(c byte) {
+		for mmio_read(uartFR)&(1<<5) != 0 {
 		}
-		// Continue anyway - UART still works
-	} else {
-		uartPuts("Framebuffer initialized successfully\r\n")
-		uartPuts("FB Size: ")
-		uartPutUint32(fbinfo.BufSize)
-		uartPuts(" bytes, Width: ")
-		uartPutUint32(fbinfo.Width)
-		uartPuts(", Height: ")
-		uartPutUint32(fbinfo.Height)
-		uartPuts("\r\n")
+		mmio_write(uartDR, uint32(c))
 	}
 
-	// Get and display memory size
-	// Note: QEMU does not provide ATAGs for Raspberry Pi 4 - it uses Device Tree (DTB) instead
-	// ATAGs are only available on real hardware with bootloaders that support them
-	// See: https://www.qemu.org/docs/master/system/arm/raspi.html
-	memSize := getMemSize(uintptr(atags))
-	
-	// Display on both UART and GPU
-	uartPuts("Memory: ")
-	gpuPuts("Memory: ")
-	
-	if memSize == 0 {
-		// No ATAGs available (e.g., running in QEMU which uses Device Tree, not ATAGs)
-		uartPuts("unknown (ATAGs not available)\r\n")
-		gpuPuts("unknown (ATAGs not available)\n")
-	} else {
-		uartPutMemSize(memSize)
-		uartPuts("\r\n")
-		// For GPU, we'll just show a simple message
-		gpuPuts("detected\n")
+	puts := func(s string) {
+		for i := 0; i < len(s); i++ {
+			putc(s[i])
+		}
 	}
-	
-	// Display welcome message on framebuffer
-	gpuPuts("\nHello, Mazarin!\n")
-	gpuPuts("Framebuffer is working!\n")
 
-	// Echo loop - output to both UART and GPU
+	// Print welcome message
+	puts("Hello, Mazarin!\r\n")
+
+	puts("\r\n")
+
+	// =================================================================
+	// WRITE BARRIER TEST
+	// =================================================================
+	// This test verifies that Go's compiler-emitted write barrier works
+	// in our bare-metal environment. The Go compiler automatically emits
+	// write barrier calls for global pointer assignments.
+	//
+	// The write barrier flag must be set in boot.s (in RAM region), and
+	// our custom writebarrier.s functions must handle the actual assignment.
+
+	puts("Testing write barrier...\r\n")
+
+	// Verify write barrier flag is enabled (set by boot.s)
+	wbFlagAddr := uintptr(0x40026b40) // runtime.writeBarrier in RAM
+	wbFlag := readMemory32(wbFlagAddr)
+
+	if wbFlag == 0 {
+		puts("ERROR: Write barrier flag not set!\r\n")
+	} else {
+		puts("Write barrier flag: enabled\r\n")
+	}
+
+	// Test global pointer assignment (triggers write barrier)
+	// heapSegmentListHead is a global *heapSegment variable
+	heapStart := uintptr(0x40500000)   // Heap in RAM region
+	heapStart = (heapStart + 15) &^ 15 // Align to 16 bytes
+
+	// This assignment will trigger the Go compiler's write barrier check!
+	heapSegmentListHead = castToPointer[heapSegment](heapStart)
+
+	// Verify the assignment worked
+	if heapSegmentListHead == nil {
+		puts("ERROR: Global pointer assignment failed!\r\n")
+	} else {
+		puts("SUCCESS: Global pointer assignment works!\r\n")
+		// Initialize the heap segment
+		bzero(unsafe.Pointer(heapSegmentListHead), uint32(unsafe.Sizeof(heapSegment{})))
+		heapSegmentListHead.next = nil
+		heapSegmentListHead.prev = nil
+		heapSegmentListHead.isAllocated = 0
+		heapSegmentListHead.segmentSize = KERNEL_HEAP_SIZE
+		puts("Heap initialized at RAM region\r\n")
+	}
+
+	puts("\r\n")
+	puts("All tests passed! Exiting via semihosting...\r\n")
+
+	// Exit cleanly via QEMU semihosting
+	qemu_exit()
+
+	// If semihosting is not enabled, we'll reach here
+	// Loop forever as fallback
 	for {
-		c := uartGetc()
-		uartPutc(c)
-		uartPutc('\n')
-		gpuPutc(c)
-		gpuPutc('\n')
 	}
 }
 

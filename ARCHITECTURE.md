@@ -192,14 +192,148 @@ if unpacked.Allocated {
 
 ## Memory Management
 
-### Memory Layout
+### Critical Platform Difference: ROM vs RAM
 
-**Kernel Load Address:** `0x200000` (2MB) - 64-bit Raspberry Pi 4 entry point
+**IMPORTANT:** QEMU virt machine and Raspberry Pi 4 have fundamentally different memory layouts!
 
-**Memory Regions:**
-- `0x200000` - `__end`: Kernel code, data, BSS
-- `__end` - `__end + page_metadata_size`: Page metadata array
-- `0x400000`: Stack pointer (1MB+ stack for Go runtime)
+### Memory Layout: Raspberry Pi 4 (Real Hardware)
+
+**Single Unified Address Space** - RAM starts at address 0:
+
+```
+0x00000000:               Start of physical RAM
+0x00200000:               Kernel load address (_start)
+  0x00200000 - 0x0027xxxx: .text (code)
+  0x0027xxxx - 0x002axxxx: .rodata (read-only data)
+  0x002axxxx - 0x0032xxxx: .data (initialized data)
+  0x0032f000 - 0x00356000: .bss (uninitialized data)
+0x00400000:               Stack pointer
+0x00500000:               Heap start
+```
+
+All sections are in **the same RAM region** - writable memory throughout.
+
+### Memory Layout: QEMU virt Machine
+
+**Separate ROM and RAM Regions** - Critical difference!
+
+```
+ROM Region (Read-Only):
+0x00000000 - 0x08000000:  Flash/ROM
+  0x00200000:             Kernel load address (_start)
+  0x00200000 - 0x0027xxxx: .text (code)
+  0x0027xxxx - 0x002axxxx: .rodata (read-only data)
+  0x002axxxx - 0x0032xxxx: .data (initialized data)
+
+UART (MMIO):
+0x09000000 - 0x09010000:  PL011 UART
+
+RAM Region (Writable):
+0x40000000 - end:         Actual RAM starts here!
+  0x40000000:             __bss_start
+  0x40026b40:             runtime.writeBarrier
+  0x4003c000:             __bss_end
+  0x40400000:             Stack pointer (4MB into RAM)
+  0x40500000:             Heap start (5MB into RAM)
+```
+
+**Critical Insight:** On QEMU virt, addresses below `0x40000000` are **ROM** (read-only). Writes to these addresses are silently ignored - they don't fault, but reads return 0 or undefined data.
+
+### Why This Matters
+
+#### Problem Scenario (Before Fix)
+
+Original linker script placed all sections contiguously:
+```ld
+. = 0x200000;              // Start
+.text : { ... }            // Code
+.rodata : { ... }          // Read-only data
+.data : { ... }            // Initialized data  
+.bss : { ... }             // BSS at ~0x32f000 ❌ In ROM on QEMU!
+```
+
+On Raspberry Pi: Works fine (0x32f000 is in RAM)  
+On QEMU virt: **Fails** (0x32f000 is in ROM - read-only!)
+
+**Symptoms:**
+- ❌ BSS clear appears to work (no errors)
+- ❌ But reading BSS variables returns 0
+- ❌ Write barrier flag can't be set
+- ❌ Global pointer assignments fail
+- ❌ Heap allocator breaks
+
+#### Solution (After Fix)
+
+Updated linker script separates ROM and RAM:
+```ld
+/* Code in ROM */
+. = 0x200000;
+.text : { ... }
+.rodata : { ... }
+.data : { ... }
+
+/* Data in RAM */
+. = 0x40000000;            // Jump to RAM region!
+.bss (NOLOAD) : {
+    *(.bss)
+    *(.noptrbss)
+}
+```
+
+On QEMU virt: **Works!** (BSS at 0x40000000 is in RAM)  
+On Raspberry Pi: Needs separate linker script (or build tags)
+
+### Debugging Memory Layout Issues
+
+**Symptoms of ROM vs RAM confusion:**
+1. Code executes normally
+2. UART output works (MMIO is separate)
+3. BSS clear loop runs without errors
+4. **But:** Reading BSS variables returns 0
+5. **But:** Writing to BSS has no effect
+
+**How to verify RAM regions:**
+```asm
+// Test if address is writable
+movz x14, #0x50, lsl #16       // Test address
+mov w15, #0x42                 // Test value
+str w15, [x14]                 // Write
+dsb sy
+ldr w16, [x14]                 // Read back
+cmp w16, #0x42                 // Compare
+// If equal: address is writable (RAM)
+// If not equal: address is read-only (ROM)
+```
+
+**Quick test locations:**
+- `0x09000000`: UART (always works - MMIO)
+- `0x00500000`: ROM on virt, RAM on Pi
+- `0x40000000`: RAM on virt, invalid on Pi
+
+### Write Barrier and Global Pointers
+
+**Critical for BSS in RAM:** The Go compiler emits write barrier checks for global pointer assignments. For this to work:
+
+1. **Write barrier flag must be writable**:
+   - Flag is in `runtime.writeBarrier` (part of .bss)
+   - Must be in RAM region!
+   - Set in `boot.s` after BSS clear
+
+2. **Custom write barrier functions**:
+   - Implemented in `src/asm/writebarrier.s`
+   - Performs direct assignment (no GC runtime needed)
+   - Binary patching redirects compiler calls to our functions
+
+3. **Verification test**:
+```go
+// This triggers write barrier!
+var globalPtr *MyType
+globalPtr = somePointer
+
+// If globalPtr == nil after assignment, write barrier failed
+```
+
+**See:** `docs/write-barrier-verification.md` for complete details.
 
 ### Page Management
 
@@ -243,6 +377,69 @@ var __end uintptr
 - Linker symbols are defined in `linker.ld`
 - Use `uintptr` type for addresses
 - Symbols are set by linker, not initialized in code
+
+---
+
+## QEMU Semihosting
+
+### What is Semihosting?
+
+Semihosting is a mechanism that allows bare-metal code to interact with the host system through the debugger or emulator. In QEMU, this enables:
+- Clean program exit (instead of infinite loop)
+- File I/O (reading/writing host files)
+- Console I/O (if needed)
+
+### Implementation
+
+**Assembly function** (`src/asm/lib.s`):
+```asm
+.global qemu_exit
+qemu_exit:
+    sub sp, sp, #16                // Parameter block space
+    mov x1, #0x26                  // ADP_Stopped_ApplicationExit
+    movk x1, #2, lsl #16           // 0x20026
+    str x1, [sp, #0]               // Exit reason
+    mov x0, #0                     // Status: 0 = success
+    str x0, [sp, #8]               // Store status
+    mov x1, sp                     // x1 = parameter block
+    mov w0, #0x18                  // SYS_EXIT (0x18)
+    hlt #0xf000                    // Trigger semihosting
+    add sp, sp, #16
+    ret
+```
+
+**Go integration**:
+```go
+//go:linkname qemu_exit qemu_exit
+//go:nosplit
+func qemu_exit()
+
+// At end of KernelMain:
+qemu_exit()  // Clean exit instead of infinite loop
+```
+
+**QEMU requirement**: All QEMU scripts must include `-semihosting` flag:
+```bash
+qemu-system-aarch64 -M virt -cpu cortex-a72 -m 512M \
+    -kernel kernel.elf -serial stdio \
+    -semihosting \           # ← Required!
+    -display none -no-reboot
+```
+
+### Benefits
+
+- ✅ Automated testing (no timeouts needed)
+- ✅ Proper exit codes (0 = success, non-zero = failure)
+- ✅ Fast development iteration
+- ✅ CI/CD integration possible
+
+### Limitations
+
+- Only works in QEMU (not on real hardware)
+- Requires `-semihosting` flag
+- Adds slight overhead (not for production)
+
+For production/real hardware, replace `qemu_exit()` with a platform-specific shutdown mechanism.
 
 ---
 

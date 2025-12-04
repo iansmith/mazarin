@@ -24,10 +24,10 @@ type atagMem struct {
 
 // ATAG structure
 type atag struct {
-	tagSize uint32           // Size of tag in words (includes this header)
-	tag     atagTag          // Tag type
-	mem     atagMem          // Memory tag data (union in C, struct field here)
-	_       [6]uint32        // Padding for other tag types (we only care about MEM)
+	tagSize uint32    // Size of tag in words (includes this header)
+	tag     atagTag   // Tag type
+	mem     atagMem   // Memory tag data (union in C, struct field here)
+	_       [6]uint32 // Padding for other tag types (we only care about MEM)
 }
 
 // Page structure - metadata for each 4KB page
@@ -81,28 +81,28 @@ func getMemSize(atagsPtr uintptr) uint32 {
 		if tag.tag == ATAG_NONE {
 			break
 		}
-		
+
 		if tag.tag == ATAG_MEM {
 			return tag.mem.size
 		}
-		
+
 		// Validate tagSize to prevent invalid memory access
 		// Tag size must be at least 2 (header + tag field) and reasonable (max 32 words = 128 bytes)
 		if tag.tagSize < 2 || tag.tagSize > 32 {
 			// Invalid tag size, stop parsing
 			break
 		}
-		
+
 		// Move to next tag: tag = ((uint32_t *)tag) + tag->tag_size;
 		// tagSize is in words (4 bytes each)
 		nextAddr := uintptr(unsafe.Pointer(tag)) + uintptr(tag.tagSize*4)
-		
+
 		// Validate next address is reasonable
 		if nextAddr > 0x40000000 || nextAddr < atagsPtr {
 			// Address out of bounds or going backwards - corrupted ATAGs
 			break
 		}
-		
+
 		tag = (*atag)(unsafe.Pointer(nextAddr))
 		iterations++
 	}
@@ -133,12 +133,12 @@ func pageInit(atagsPtr uintptr) {
 
 	// Allocate space for page metadata array starting at __end
 	pageArrayLen = uint32(unsafe.Sizeof(Page{})) * numPages
-	
+
 	// Cast __end to Page array base pointer
 	// In C: all_pages_array = (page_t *)&__end;
-	allPagesArrayBase = uintptr(unsafe.Pointer(&__end))
+	allPagesArrayBase = getLinkerSymbol("__end")
 	allPagesArrayPtr := unsafe.Pointer(allPagesArrayBase)
-	
+
 	// Zero out the page array
 	// Note: This can take a while if pageArrayLen is large
 	// For 128MB with 4KB pages: ~32K pages * 24 bytes = ~768KB to zero
@@ -146,15 +146,15 @@ func pageInit(atagsPtr uintptr) {
 	bzero(allPagesArrayPtr, pageArrayLen)
 
 	// Calculate kernel pages (pages up to __end)
-	kernelPages = uint32(uintptr(unsafe.Pointer(&__end))) / PAGE_SIZE
+	kernelPages = uint32(getLinkerSymbol("__end")) / PAGE_SIZE
 
 	// Initialize kernel pages (mark as allocated and kernel pages)
 	for i = 0; i < kernelPages; i++ {
 		pagePtr := (*Page)(unsafe.Pointer(allPagesArrayBase + uintptr(i)*unsafe.Sizeof(Page{})))
-		
+
 		// Identity map kernel pages
 		pagePtr.vaddrMapped = uintptr(i * PAGE_SIZE)
-		
+
 		// Mark as allocated and kernel page
 		flags := bitfield.PageFlags{
 			Allocated:  true,
@@ -169,14 +169,14 @@ func pageInit(atagsPtr uintptr) {
 	// Based on tutorial Part 05, heap pages are reserved but marked as kernel pages
 	heapPages := uint32((KERNEL_HEAP_SIZE + PAGE_SIZE - 1) / PAGE_SIZE) // Round up
 	heapPageEnd := kernelPages + heapPages
-	
+
 	// Reserve heap pages (mark as allocated and kernel pages, but don't add to free list)
 	for ; i < heapPageEnd && i < numPages; i++ {
 		pagePtr := (*Page)(unsafe.Pointer(allPagesArrayBase + uintptr(i)*unsafe.Sizeof(Page{})))
-		
+
 		// Identity map heap pages
 		pagePtr.vaddrMapped = uintptr(i * PAGE_SIZE)
-		
+
 		// Mark as allocated and kernel page (heap is kernel memory)
 		flags := bitfield.PageFlags{
 			Allocated:  true,
@@ -193,7 +193,7 @@ func pageInit(atagsPtr uintptr) {
 	// Mark remaining pages as unallocated and add to free list
 	for ; i < numPages; i++ {
 		pagePtr := (*Page)(unsafe.Pointer(allPagesArrayBase + uintptr(i)*unsafe.Sizeof(Page{})))
-		
+
 		// Mark as unallocated
 		flags := bitfield.PageFlags{
 			Allocated:  false,
@@ -202,7 +202,7 @@ func pageInit(atagsPtr uintptr) {
 		}
 		packed, _ := bitfield.PackPageFlags(flags)
 		pagePtr.flags = packed
-		
+
 		// Add to free list (simple append to head)
 		pagePtr.next = freePages
 		pagePtr.prev = nil
@@ -231,10 +231,10 @@ func allocPage() unsafe.Pointer {
 	}
 
 	// Calculate page index in the array
-	pageAddr := uintptr(unsafe.Pointer(page))
+	pageAddr := pointerToUintptr(unsafe.Pointer(page))
 	if allPagesArrayBase == 0 {
 		// Fallback if not initialized
-		allPagesArrayBase = uintptr(unsafe.Pointer(&__end))
+		allPagesArrayBase = getLinkerSymbol("__end")
 	}
 	pageIndex := (pageAddr - allPagesArrayBase) / unsafe.Sizeof(Page{})
 
@@ -272,10 +272,10 @@ func freePage(ptr unsafe.Pointer) {
 	// Get page metadata from the array
 	if allPagesArrayBase == 0 {
 		// Fallback if not initialized
-		allPagesArrayBase = uintptr(unsafe.Pointer(&__end))
+		allPagesArrayBase = getLinkerSymbol("__end")
 	}
 	pageAddr := allPagesArrayBase + pageIndex*unsafe.Sizeof(Page{})
-	page := (*Page)(unsafe.Pointer(pageAddr))
+	page := castToPointer[Page](pageAddr)
 
 	// Mark as free
 	flags := bitfield.UnpackPageFlags(page.flags)
@@ -291,4 +291,3 @@ func freePage(ptr unsafe.Pointer) {
 	}
 	freePages = page
 }
-

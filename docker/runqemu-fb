@@ -26,31 +26,21 @@ fi
 VNC_PORT="${VNC_PORT:-5900}"
 VNC_DISPLAY=$((VNC_PORT - 5900))
 
-echo "Starting QEMU with framebuffer display via VNC"
-echo "VNC server will listen on port $VNC_PORT (display :$VNC_DISPLAY)"
-echo "Port $VNC_PORT will be mapped from container to host"
-echo ""
-echo "IMPORTANT: macOS Screen Sharing has known compatibility issues with QEMU VNC"
-echo "           and will likely hang or fail to connect."
-echo ""
-echo "RECOMMENDED: Use TigerVNC Viewer (if installed via Homebrew):"
-echo "  vncviewer 127.0.0.1:$VNC_PORT"
-echo ""
-echo "Or if installed as an app:"
-echo "  open -a 'TigerVNC Viewer 1.15.0' vnc://127.0.0.1:$VNC_PORT"
-echo ""
-echo "Alternative: RealVNC Viewer"
-echo "  brew install --cask realvnc-viewer"
-echo "  open -a 'VNC Viewer' vnc://127.0.0.1:$VNC_PORT"
-echo ""
-echo "If you want to try macOS Screen Sharing anyway:"
-echo "  open vnc://127.0.0.1:$VNC_PORT"
-echo "  (Note: It will likely hang or ask for password - this is a known issue)"
-echo ""
-echo "Press Ctrl+C to stop QEMU"
-echo ""
+# Clean up any existing mazarin-* containers (leftover from previous runs)
+# timeout doesn't kill containers, so we need to clean them up manually
+EXISTING_CONTAINERS=$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^mazarin-' || true)
+if [ -n "$EXISTING_CONTAINERS" ]; then
+    echo "$EXISTING_CONTAINERS" | xargs docker kill 2>/dev/null || true
+    echo "$EXISTING_CONTAINERS" | xargs docker rm 2>/dev/null || true
+fi
+
+# Generate unique container name: mazarin-<timestamp>-<random>
+CONTAINER_NAME="mazarin-$(date +%s)-$$"
 
 # Run the container with VNC display enabled
+# -M virt: Use QEMU virt machine type (better UART compatibility than raspi4b)
+# -cpu cortex-a72: Use Cortex-A72 CPU (same as Raspberry Pi 4)
+# -m 512M: Allocate 512MB RAM
 # -serial stdio: Redirect UART output to console (so you see "Hello, Mazarin!" in terminal)
 # -vnc 0.0.0.0:0,password=off: VNC server on all interfaces, display :0, NO password
 #   Format: -vnc bind_address:display_number,password=off
@@ -59,16 +49,21 @@ echo ""
 #   Use an alternative VNC client like RealVNC Viewer or TigerVNC
 # -p $VNC_PORT:$VNC_PORT: Expose VNC port to host (maps container port to host port)
 #   This makes the VNC server accessible on localhost:$VNC_PORT from the host machine
+# -semihosting: Enable semihosting for clean program exit
 # Note: We bind to 0.0.0.0 inside container, Docker maps it to host's localhost
-docker run --rm -it \
+# Note: No -append flag needed for bare-metal kernels (that's for Linux kernels)
+docker run --rm -i \
+    --name "$CONTAINER_NAME" \
     -p "$VNC_PORT:$VNC_PORT" \
     -v "$BUILTIN_DIR:/mnt/builtin:ro" \
     --entrypoint qemu-system-aarch64 \
     alpine-qemu:3.22 \
-    -M raspi4b \
+    -M virt \
+    -cpu cortex-a72 \
+    -m 512M \
     -kernel /mnt/builtin/kernel.elf \
-    -append "console=ttyAMA0,115200 earlyprintk" \
     -serial stdio \
+    -semihosting \
     -vnc "0.0.0.0:$VNC_DISPLAY,password=off" \
     -no-reboot \
     "$@"

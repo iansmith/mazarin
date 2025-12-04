@@ -25,10 +25,25 @@ This file contains architectural rules and patterns that must be followed for al
 
 ## Memory Management
 
-- Kernel entry point: `0x200000` (64-bit Raspberry Pi 4)
+### Raspberry Pi 4 (Real Hardware)
+- RAM starts at: `0x00000000`
+- Kernel entry point: `0x200000`
 - Stack pointer: `0x400000` (above kernel)
+- BSS section: After kernel code (e.g., `0x32f000`)
+- Heap: After BSS (e.g., `0x500000`)
+
+### QEMU virt Machine
+- **ROM region**: `0x00000000 - 0x08000000` (kernel loaded at `0x200000`)
+- **UART**: `0x09000000` (PL011)
+- **RAM region**: `0x40000000 - end` (writable memory!)
+- Stack pointer: `0x40400000` (4MB into RAM)
+- BSS section: `0x40000000` (start of RAM)
+- Heap: `0x40500000` (5MB into RAM)
+
+**Critical**: QEMU virt machine has separate ROM and RAM regions! The kernel code loads in ROM at 0x200000, but all writable data (BSS, stack, heap) must be in RAM starting at 0x40000000.
+
+### General
 - Page size: 4KB (4096 bytes)
-- Reserve pages from `0x200000` to `__end` as kernel pages
 - Use `//go:linkname` to access linker symbols like `__end`
 
 ## Build Process
@@ -37,6 +52,31 @@ This file contains architectural rules and patterns that must be followed for al
 - Use `GOTOOLCHAIN=local` for code generation
 - Use `GOTOOLCHAIN=auto GOARCH=arm64 GOOS=linux` for kernel compilation
 - Always run `make test` before committing
+
+## Cross-Compiler Tooling
+
+- Cross-compiler tools use the `target-` prefix instead of the full `aarch64-none-elf-` prefix
+- Tools are located in `bin/` directory (relative to project root)
+- To access tools, source the environment script: `source enable-mazzy` (or `source /Users/iansmith/mazzy/enable-mazzy`)
+- Examples: `target-gcc`, `target-objdump`, `target-readelf`, `target-gdb`, etc.
+- The `target-` prefix is a symlink to the full `aarch64-none-elf-` prefixed binaries
+
+## Environment Setup
+
+**Always source the environment script before using tools or scripts:**
+
+```bash
+source /Users/iansmith/mazzy/enable-mazzy
+# or from project root:
+source enable-mazzy
+```
+
+This adds the `bin/` directory to PATH, making available:
+- Cross-compiler tools (`target-gcc`, `target-objdump`, etc.)
+- QEMU scripts (`runqemu-fb`, `runqemu-debug`, `runqemu-trace`, etc.)
+- Utility tools (`timeout`, etc.)
+
+**Important:** The QEMU scripts (`runqemu-fb`, etc.) require the environment to be sourced to work correctly.
 
 ## Assembly Conventions
 
@@ -98,38 +138,72 @@ The `docker/` directory contains scripts and configuration for testing the kerne
 
 ```
 docker/
-├── Dockerfile         # Alpine Linux container with QEMU for Raspberry Pi 4 emulation
+├── Dockerfile         # Alpine Linux container with QEMU for AArch64 emulation
 ├── runqemu            # Run kernel normally in QEMU (for testing)
+├── runqemu-fb         # Run QEMU with framebuffer display via VNC
 ├── runqemu-debug      # Run QEMU with GDB server enabled (for debugging)
 ├── runqemu-trace      # Run QEMU with instruction tracing (for analysis)
 └── builtin/           # Kernel artifacts (kernel.elf copied here via `make push`)
 ```
 
-**Purpose:**
-- **Dockerfile**: Creates a reproducible QEMU environment for testing the bare-metal kernel
-  - Based on Alpine Linux 3.22
-  - Includes QEMU system emulator for AArch64 (Raspberry Pi 4)
-  - Mounts `docker/builtin/` as readonly to load kernel.elf
-  
-- **runqemu**: Standard testing script
-  - Runs the kernel in QEMU emulating Raspberry Pi 4B
-  - Redirects UART output to stdout (headless mode)
-  - Useful for normal testing and development
+**Environment Setup (Required):**
+Before using any QEMU scripts, source the environment script:
+```bash
+source /Users/iansmith/mazzy/enable-mazzy
+```
+
+This makes the scripts available in PATH and sets up cross-compiler tools.
+
+**QEMU Configuration:**
+- Uses `virt` machine type (better UART compatibility than `raspi4b`)
+- CPU: Cortex-A72 (same as Raspberry Pi 4)
+- Memory: 512MB
+- UART: PL011 at `0x09000000` (matches `uart_qemu.go`)
+- Serial output: Redirected to stdio via `-serial stdio`
+
+**Scripts:**
+
+- **runqemu-fb**: Run kernel with framebuffer display via VNC
+  - Default VNC port: 5900 (configurable via `VNC_PORT` environment variable)
+  - Automatically cleans up orphaned containers from previous runs
+  - Uses unique container names (`mazarin-<timestamp>-<pid>`) to avoid conflicts
+  - Example: `VNC_PORT=5901 runqemu-fb`
+  - For automated testing: `timeout 40 runqemu-fb < /dev/null`
+  - Kernel output appears at the end (no informational messages)
   
 - **runqemu-debug**: GDB debugging script
   - Enables GDB server on port 1234 (configurable via `GDB_PORT`)
   - Pauses execution at startup, waiting for GDB to connect
-  - Connect with: `target-gdb kernel.elf`, then `(gdb) target remote localhost:1234`
+  - Connect with: `target-gdb kernel.elf` (after sourcing `enable-mazzy`), then `(gdb) target remote localhost:1234`
   
 - **runqemu-trace**: Instruction tracing script
   - Shows instruction addresses as they execute
   - Useful for understanding execution flow
   - Filters to show only CPU 0 traces (other CPUs halt)
+  - Trace mode configurable via `TRACE_MODE` (default: `exec`)
 
 **Workflow:**
-1. Build kernel: `cd src && make` → creates `kernel.elf`
-2. Copy to docker: `cd src && make push` → copies `kernel.elf` to `docker/builtin/`
-3. Run in QEMU: `docker/runqemu` (or debug/trace variants)
+1. Source environment: `source /Users/iansmith/mazzy/enable-mazzy`
+2. Build kernel: `cd src && make kernel-qemu.elf` → creates `kernel-qemu.elf`
+3. Copy to docker: `cd src && make push-qemu` → copies `kernel-qemu.elf` to `docker/builtin/kernel.elf`
+4. Run in QEMU: `runqemu-fb` (or debug/trace variants)
+
+**Automated Testing:**
+For automated testing with timeout:
+```bash
+source /Users/iansmith/mazzy/enable-mazzy
+timeout 40 runqemu-fb < /dev/null 2>&1 | tail -30
+```
+
+The script automatically:
+- Cleans up any existing `mazarin-*` containers (leftover from previous runs)
+- Uses unique container names to avoid port conflicts
+- Shows kernel output at the end (look for test results like "T2 N" or "T2 P")
+
+**Container Management:**
+- Containers are named `mazarin-<timestamp>-<pid>` for uniqueness
+- The script automatically kills and removes existing `mazarin-*` containers before running
+- If timeout is used, containers may be left running - the cleanup handles this
 
 ## When Making Changes
 
