@@ -1,0 +1,83 @@
+# Cursor AI Project Rules for Mazarin Kernel
+
+This file contains architectural rules and patterns that must be followed for all code changes in this project.
+
+## Core Principles
+
+1. **No CGO** - This is a bare-metal kernel. Use `//go:linkname` to connect Go and assembly.
+2. **Always use `//go:nosplit`** - Required for all functions that call assembly or do MMIO.
+3. **32-bit flags** - Use `uint32` for packed bitfields (works on both 32-bit and 64-bit processors).
+4. **Code generation** - Bitfield code must be regenerated before building (run `make generate`).
+
+## Go + Assembly Integration
+
+- Use `//go:linkname` to link Go functions to assembly symbols
+- Assembly functions must be `//go:nosplit`
+- Go functions called from assembly need `//go:noinline` and symbol promotion via `objcopy`
+- Use `uintptr` for memory addresses (correct size on 64-bit)
+
+## Bitfield Management
+
+- Define structs with `bitfield` tags: `bitfield:",bits"`
+- Always use 32 bits for flags (`uint32`, not `uint64`)
+- Generated code is in `bitfield/*_gen.go` - never edit directly
+- Run `make generate` to regenerate after changing bitfield structs
+
+## Memory Management
+
+- Kernel entry point: `0x200000` (64-bit Raspberry Pi 4)
+- Stack pointer: `0x400000` (above kernel)
+- Page size: 4KB (4096 bytes)
+- Reserve pages from `0x200000` to `__end` as kernel pages
+- Use `//go:linkname` to access linker symbols like `__end`
+
+## Build Process
+
+- Code generation runs automatically before compilation
+- Use `GOTOOLCHAIN=local` for code generation
+- Use `GOTOOLCHAIN=auto GOARCH=arm64 GOOS=linux` for kernel compilation
+- Always run `make test` before committing
+
+## Assembly Conventions
+
+- AArch64 calling convention: parameters in `x0, x1, x2...` (64-bit) or `w0, w1, w2...` (32-bit)
+- Return values in `x0`/`w0`
+- Use `.global` for exported assembly functions
+- Use `.extern` for Go functions called from assembly
+
+## MMIO Access
+
+- All MMIO through assembly functions (`mmio_write`, `mmio_read`)
+- Raspberry Pi 4 base: `PERIPHERAL_BASE = 0xFE000000`
+- Use `uintptr` for addresses, `uint32` for data
+
+## CPU Initialization
+
+- Only CPU 0 runs kernel code
+- Other CPUs (1-3) halt in tight loop with `wfe`
+- Check CPU ID in boot code before initialization
+
+## Testing
+
+- Run `make test` to verify bitfield functionality
+- All tests must pass before committing
+- Tests run on host (not in QEMU)
+
+## File Organization
+
+- `boot.s`: CPU init, BSS clearing, entry point
+- `lib.s`: Assembly utilities (MMIO, delays)
+- `kernel.go`: Main kernel logic
+- `bitfield/`: Bitfield code generation
+- `linker.ld`: Memory layout
+
+## When Making Changes
+
+1. If changing bitfield structs: run `make generate` first
+2. If adding assembly functions: ensure `.global` and proper calling convention
+3. If adding Go functions called from assembly: add `//go:nosplit` and `//go:noinline`
+4. If accessing linker symbols: use `//go:linkname`
+5. Always run `make test` before committing
+
+See `ARCHITECTURE.md` for detailed explanations of these patterns.
+
