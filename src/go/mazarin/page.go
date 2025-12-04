@@ -129,6 +129,7 @@ func pageInit(atagsPtr uintptr) {
 
 	// Calculate number of pages
 	numPages = memSize / PAGE_SIZE
+	// Debug output (we'll add uart functions here if needed, but for now just continue)
 
 	// Allocate space for page metadata array starting at __end
 	pageArrayLen = uint32(unsafe.Sizeof(Page{})) * numPages
@@ -139,6 +140,9 @@ func pageInit(atagsPtr uintptr) {
 	allPagesArrayPtr := unsafe.Pointer(allPagesArrayBase)
 	
 	// Zero out the page array
+	// Note: This can take a while if pageArrayLen is large
+	// For 128MB with 4KB pages: ~32K pages * 24 bytes = ~768KB to zero
+	// This might be where it's hanging - bzero of large area
 	bzero(allPagesArrayPtr, pageArrayLen)
 
 	// Calculate kernel pages (pages up to __end)

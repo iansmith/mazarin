@@ -22,6 +22,10 @@ func delay(count int32)
 //go:nosplit
 func bzero(ptr unsafe.Pointer, size uint32)
 
+//go:linkname dsb dsb
+//go:nosplit
+func dsb()
+
 // Peripheral base address for Raspberry Pi 4
 const (
 	// Peripheral base address for Raspberry Pi 4
@@ -54,6 +58,14 @@ const (
 	UART0_ITIP   = UART0_BASE + 0x84
 	UART0_ITOP   = UART0_BASE + 0x88
 	UART0_TDR    = UART0_BASE + 0x8C
+
+	// Mailbox base address (BCM2835 Mailbox)
+	// Raspberry Pi 4 uses the same mailbox interface as Pi 2/3
+	MAILBOX_BASE = PERIPHERAL_BASE + 0xB880 // 0xFE00B880 for Pi 4
+
+	MAILBOX_READ    = MAILBOX_BASE + 0x00
+	MAILBOX_STATUS  = MAILBOX_BASE + 0x18
+	MAILBOX_WRITE   = MAILBOX_BASE + 0x20
 )
 
 //go:nosplit
@@ -175,8 +187,80 @@ func KernelMain(r0, r1, atags uint32) {
 	_ = r0
 	_ = r1
 
+	// Initialize UART first for early debugging
 	uartInit()
 	uartPuts("Hello, Mazarin!\r\n")
+	uartPuts("Initializing memory...\r\n")
+
+	// Initialize memory management (pages + heap)
+	// This must be done before using kmalloc for mailbox messages
+	// Note: memInit calls pageInit which can take a while for large memory
+	// For now, do minimal initialization - just initialize heap at a fixed location
+	// TODO: Fix full pageInit() which seems to hang
+	// memInit(uintptr(atags))
+	
+	// Minimal heap initialization - set up heap at a safe location
+	// Stack is at 0x400000, so we need heap well above that
+	// Use 0x500000 (5MB) to be safe - well above stack at 0x400000
+	heapStart := uintptr(0x500000)
+	heapStart = (heapStart + 15) &^ 15 // Align to 16 bytes
+	heapInit(heapStart)
+	
+	// Verify heap is initialized by checking if we can allocate
+	testAlloc := kmalloc(100)
+	if testAlloc == nil {
+		uartPuts("ERROR: Heap initialization failed - cannot allocate!\r\n")
+	} else {
+		uartPuts("Test allocation (100 bytes) succeeded\r\n")
+		// Don't free it - keep it allocated to test if that's the issue
+		// kfree(testAlloc)
+		uartPuts("Memory initialized (minimal, verified)\r\n")
+	}
+	
+	// Initialize GPU/framebuffer
+	uartPuts("Initializing framebuffer...\r\n")
+	
+	// Test heap with the approximate mailbox buffer size (should be ~80-100 bytes)
+	// Mailbox buffer: 3 tags * ~20 bytes each + 12 bytes header = ~72 bytes, rounded to 80
+	// Don't free the previous test allocation - test if multiple allocations work
+	testMailboxSize := kmalloc(100)
+	if testMailboxSize == nil {
+		uartPuts("ERROR: Cannot allocate mailbox-sized buffer (100 bytes)!\r\n")
+	} else {
+		uartPuts("Mailbox-sized allocation (100 bytes) works\r\n")
+		// Don't free it either - test if keeping allocations affects things
+		// kfree(testMailboxSize)
+	}
+	
+	fbResult := gpuInit()
+	if fbResult != 0 {
+		uartPuts("Error: Failed to initialize framebuffer\r\n")
+		if fbResult == -1 {
+			uartPuts("  Reason: Memory allocation failed (mailbox buffer)\r\n")
+		} else if fbResult == -4 {
+			uartPuts("  Reason: Buffer size too large\r\n")
+		} else if fbResult == -2 {
+			uartPuts("  Reason: Mailbox read failed (no GPU response)\r\n")
+		} else if fbResult == -3 {
+			uartPuts("  Reason: Unexpected response code\r\n")
+		} else if fbResult == 1 {
+			uartPuts("  Reason: GPU did not process request\r\n")
+		} else if fbResult == 2 {
+			uartPuts("  Reason: GPU returned error\r\n")
+		} else {
+			uartPuts("  Reason: Unknown error\r\n")
+		}
+		// Continue anyway - UART still works
+	} else {
+		uartPuts("Framebuffer initialized successfully\r\n")
+		uartPuts("FB Size: ")
+		uartPutUint32(fbinfo.BufSize)
+		uartPuts(" bytes, Width: ")
+		uartPutUint32(fbinfo.Width)
+		uartPuts(", Height: ")
+		uartPutUint32(fbinfo.Height)
+		uartPuts("\r\n")
+	}
 
 	// Get and display memory size
 	// Note: QEMU does not provide ATAGs for Raspberry Pi 4 - it uses Device Tree (DTB) instead
@@ -184,19 +268,32 @@ func KernelMain(r0, r1, atags uint32) {
 	// See: https://www.qemu.org/docs/master/system/arm/raspi.html
 	memSize := getMemSize(uintptr(atags))
 	
+	// Display on both UART and GPU
 	uartPuts("Memory: ")
+	gpuPuts("Memory: ")
 	
 	if memSize == 0 {
 		// No ATAGs available (e.g., running in QEMU which uses Device Tree, not ATAGs)
 		uartPuts("unknown (ATAGs not available)\r\n")
+		gpuPuts("unknown (ATAGs not available)\n")
 	} else {
 		uartPutMemSize(memSize)
 		uartPuts("\r\n")
+		// For GPU, we'll just show a simple message
+		gpuPuts("detected\n")
 	}
+	
+	// Display welcome message on framebuffer
+	gpuPuts("\nHello, Mazarin!\n")
+	gpuPuts("Framebuffer is working!\n")
 
+	// Echo loop - output to both UART and GPU
 	for {
-		uartPutc(uartGetc())
+		c := uartGetc()
+		uartPutc(c)
 		uartPutc('\n')
+		gpuPutc(c)
+		gpuPutc('\n')
 	}
 }
 

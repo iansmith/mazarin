@@ -39,6 +39,13 @@ bzero_loop:
 bzero_done:
     ret                 // Return
 
+// dsb() - Data Synchronization Barrier
+// Ensures all memory accesses before this instruction complete before continuing
+.global dsb
+dsb:
+    dsb sy              // Data Synchronization Barrier - system-wide
+    ret                  // Return
+
 // Bridge function: kernel_main -> main.KernelMain (Go function)
 // This allows boot.s to call kernel_main, which then calls the Go KernelMain function
 // Go exports it as main.KernelMain (package.function)

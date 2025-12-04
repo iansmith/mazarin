@@ -117,7 +117,14 @@ func kmalloc(size uint32) unsafe.Pointer {
 	// Return pointer to the data area (after the header)
 	// In C: return best + 1
 	// In Go: advance pointer by sizeof(heapSegment)
-	dataPtr := unsafe.Pointer(uintptr(unsafe.Pointer(best)) + unsafe.Sizeof(heapSegment{}))
+	// IMPORTANT: The data area must be 16-byte aligned for mailbox operations
+	dataPtrAddr := uintptr(unsafe.Pointer(best)) + unsafe.Sizeof(heapSegment{})
+	// Align data pointer to 16 bytes (reuse align variable from above)
+	dataRemainder := dataPtrAddr % align
+	if dataRemainder != 0 {
+		dataPtrAddr += align - dataRemainder
+	}
+	dataPtr := unsafe.Pointer(dataPtrAddr)
 	return dataPtr
 }
 
