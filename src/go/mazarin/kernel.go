@@ -1,7 +1,7 @@
 package main
 
 import (
-	_ "unsafe"
+	"unsafe"
 )
 
 // Link to external assembly functions from lib.s
@@ -17,6 +17,10 @@ func mmio_read(reg uintptr) uint32
 //go:linkname delay delay
 //go:nosplit
 func delay(count int32)
+
+//go:linkname bzero bzero
+//go:nosplit
+func bzero(ptr unsafe.Pointer, size uint32)
 
 // Peripheral base address for Raspberry Pi 4
 const (
@@ -100,6 +104,68 @@ func uartPuts(str string) {
 	}
 }
 
+// uitoa converts a uint32 to its decimal string representation
+// Returns the number of digits written
+// This is a bare-metal implementation (no fmt package)
+//
+//go:nosplit
+func uitoa(n uint32, buf []byte) int {
+	if n == 0 {
+		buf[0] = '0'
+		return 1
+	}
+
+	// Count digits
+	digits := 0
+	temp := n
+	for temp > 0 {
+		digits++
+		temp /= 10
+	}
+
+	// Write digits from right to left
+	idx := digits - 1
+	for n > 0 {
+		buf[idx] = byte('0' + (n % 10))
+		n /= 10
+		idx--
+	}
+
+	return digits
+}
+
+// uartPutUint32 outputs a uint32 as a decimal string via UART
+//
+//go:nosplit
+func uartPutUint32(n uint32) {
+	// Buffer for up to 10 digits (uint32 max is 4,294,967,295)
+	var buf [10]byte
+	count := uitoa(n, buf[:])
+	for i := 0; i < count; i++ {
+		uartPutc(buf[i])
+	}
+}
+
+// uartPutMemSize formats and displays memory size in a human-readable format
+// Displays as MB or GB depending on size
+//
+//go:nosplit
+func uartPutMemSize(sizeBytes uint32) {
+	// Convert to MB (dividing by 1024*1024)
+	sizeMB := sizeBytes / (1024 * 1024)
+
+	if sizeMB >= 1024 {
+		// Display as GB
+		sizeGB := sizeMB / 1024
+		uartPutUint32(sizeGB)
+		uartPuts(" GB")
+	} else {
+		// Display as MB
+		uartPutUint32(sizeMB)
+		uartPuts(" MB")
+	}
+}
+
 // KernelMain is the entry point called from boot.s
 // For bare metal, we ensure it's not optimized away
 //
@@ -108,10 +174,20 @@ func uartPuts(str string) {
 func KernelMain(r0, r1, atags uint32) {
 	_ = r0
 	_ = r1
-	_ = atags
 
 	uartInit()
 	uartPuts("Hello, Mazarin!\r\n")
+
+	// Get and display memory size
+	memSize := getMemSize(uintptr(atags))
+	if memSize == 0 {
+		// Fallback: use 128 MB default
+		memSize = 1024 * 1024 * 128
+	}
+
+	uartPuts("Memory: ")
+	uartPutMemSize(memSize)
+	uartPuts("\r\n")
 
 	for {
 		uartPutc(uartGetc())

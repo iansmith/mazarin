@@ -25,6 +25,20 @@ delay_loop:
 delay_done:
     ret                 // Return
 
+// bzero(void *ptr, uint32_t size)
+// x0 = pointer to memory (64-bit), w1 = size in bytes (32-bit unsigned)
+// Zeroes size bytes starting at ptr
+.global bzero
+bzero:
+    cbz w1, bzero_done  // If size is zero, skip loop
+    mov w2, #0          // Zero value to write
+bzero_loop:
+    strb w2, [x0], #1   // Store byte (zero) and post-increment pointer
+    subs w1, w1, #1     // Decrement size counter
+    bne bzero_loop      // Branch if not zero
+bzero_done:
+    ret                 // Return
+
 // Bridge function: kernel_main -> main.KernelMain (Go function)
 // This allows boot.s to call kernel_main, which then calls the Go KernelMain function
 // Go exports it as main.KernelMain (package.function)

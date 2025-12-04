@@ -65,11 +65,71 @@ This file contains architectural rules and patterns that must be followed for al
 
 ## File Organization
 
-- `boot.s`: CPU init, BSS clearing, entry point
-- `lib.s`: Assembly utilities (MMIO, delays)
-- `kernel.go`: Main kernel logic
-- `bitfield/`: Bitfield code generation
-- `linker.ld`: Memory layout
+The project uses a clean separation between Go code, assembly code, and build artifacts:
+
+```
+src/
+├── asm/              # Assembly source files
+│   ├── boot.s        # CPU init, BSS clearing, entry point
+│   └── lib.s         # Assembly utilities (MMIO, delays, bzero)
+├── go/
+│   └── mazarin/      # Go kernel package
+│       ├── kernel.go # Main kernel logic, UART functions
+│       ├── page.go   # Page management (4KB pages)
+│       └── heap.go   # Dynamic memory allocator (kmalloc/kfree)
+├── bitfield/         # Bitfield code generation
+│   ├── page_flags.go # PageFlags struct definition
+│   ├── gen.go        # Code generator
+│   └── *_gen.go      # Generated files (never edit directly)
+├── go.mod            # Go module definition
+├── linker.ld         # Memory layout and linker script
+└── Makefile          # Build configuration
+```
+
+**Key points:**
+- Go code is in `go/mazarin/` package (clean separation from assembly)
+- Assembly files are in `asm/` directory
+- Build artifacts (`.o`, `.elf`) are created in `src/` root
+- The Makefile builds Go package from `go/mazarin/` and assembly from `asm/`
+
+## Docker and QEMU Testing
+
+The `docker/` directory contains scripts and configuration for testing the kernel in QEMU:
+
+```
+docker/
+├── Dockerfile         # Alpine Linux container with QEMU for Raspberry Pi 4 emulation
+├── runqemu            # Run kernel normally in QEMU (for testing)
+├── runqemu-debug      # Run QEMU with GDB server enabled (for debugging)
+├── runqemu-trace      # Run QEMU with instruction tracing (for analysis)
+└── builtin/           # Kernel artifacts (kernel.elf copied here via `make push`)
+```
+
+**Purpose:**
+- **Dockerfile**: Creates a reproducible QEMU environment for testing the bare-metal kernel
+  - Based on Alpine Linux 3.22
+  - Includes QEMU system emulator for AArch64 (Raspberry Pi 4)
+  - Mounts `docker/builtin/` as readonly to load kernel.elf
+  
+- **runqemu**: Standard testing script
+  - Runs the kernel in QEMU emulating Raspberry Pi 4B
+  - Redirects UART output to stdout (headless mode)
+  - Useful for normal testing and development
+  
+- **runqemu-debug**: GDB debugging script
+  - Enables GDB server on port 1234 (configurable via `GDB_PORT`)
+  - Pauses execution at startup, waiting for GDB to connect
+  - Connect with: `target-gdb kernel.elf`, then `(gdb) target remote localhost:1234`
+  
+- **runqemu-trace**: Instruction tracing script
+  - Shows instruction addresses as they execute
+  - Useful for understanding execution flow
+  - Filters to show only CPU 0 traces (other CPUs halt)
+
+**Workflow:**
+1. Build kernel: `cd src && make` → creates `kernel.elf`
+2. Copy to docker: `cd src && make push` → copies `kernel.elf` to `docker/builtin/`
+3. Run in QEMU: `docker/runqemu` (or debug/trace variants)
 
 ## When Making Changes
 

@@ -160,11 +160,16 @@ if unpacked.Allocated {
 
 ### Build Flow
 
-1. **Code Generation:** Generate bitfield unpacking code
-2. **Assembly Compilation:** Compile `.s` files with `target-gcc`
-3. **Go Compilation:** Compile Go with `go build -buildmode=c-archive`
-4. **Symbol Promotion:** Use `objcopy` to promote Go symbols
+1. **Code Generation:** Generate bitfield unpacking code from `bitfield/gen.go`
+2. **Assembly Compilation:** Compile `asm/*.s` files with `target-gcc` (e.g., `asm/boot.s` → `boot.o`)
+3. **Go Compilation:** Build Go package from `go/mazarin/` with `go build -buildmode=c-archive`
+4. **Symbol Promotion:** Use `objcopy` to promote Go symbols (e.g., `main.KernelMain`)
 5. **Linking:** Link all objects with `target-gcc` using linker script
+
+**Key Points:**
+- Go package is built from `go/mazarin/` directory, not individual files
+- Assembly files are compiled separately from `asm/` directory
+- Clean separation prevents Go build system from trying to compile assembly files
 
 ### Key Makefile Targets
 
@@ -353,11 +358,196 @@ make test
 
 ### File Organization
 
-- `boot.s`: CPU initialization, BSS clearing, entry point
-- `lib.s`: Assembly utility functions (MMIO, delays)
-- `kernel.go`: Main kernel logic in Go
-- `bitfield/`: Bitfield code generation and types
-- `linker.ld`: Memory layout and section definitions
+The project uses a clean separation between Go code, assembly code, and build artifacts:
+
+**Directory Structure:**
+```
+src/
+├── asm/              # Assembly source files
+│   ├── boot.s        # CPU initialization, BSS clearing, entry point
+│   └── lib.s         # Assembly utilities (MMIO, delays, bzero)
+├── go/
+│   └── mazarin/      # Go kernel package (main package)
+│       ├── kernel.go # Main kernel logic, UART functions, memory display
+│       ├── page.go   # Page management system (4KB pages, allocPage/freePage)
+│       └── heap.go   # Dynamic memory allocator (kmalloc/kfree)
+├── bitfield/         # Bitfield code generation package
+│   ├── page_flags.go # PageFlags struct definition with bitfield tags
+│   ├── gen.go        # Code generator (reads struct tags, generates pack/unpack)
+│   ├── bitfield.go   # Bitfield utility functions
+│   └── *_gen.go      # Generated files (never edit directly)
+├── go.mod            # Go module definition (module: mazarin)
+├── linker.ld         # Memory layout and linker script
+└── Makefile          # Build configuration and rules
+```
+
+**Key Design Decisions:**
+
+1. **Separation of Concerns:**
+   - Assembly files (`asm/`) are separate from Go code to avoid Go build system conflicts
+   - Go package is in `go/mazarin/` which allows clean module imports
+   - Build artifacts (`.o`, `.elf`) are created in `src/` root
+
+2. **Module Structure:**
+   - `go.mod` is at `src/` level, defining module `mazarin`
+   - Go package in `go/mazarin/` imports `mazarin/bitfield` for bitfield types
+   - Assembly files don't need module awareness (compiled separately)
+
+3. **Build Process:**
+   - Makefile compiles assembly from `asm/` directory with `target-gcc`
+   - Makefile builds Go package from `go/mazarin/` using `go build`
+   - No file renaming or hiding needed - clean separation prevents conflicts
+
+4. **File Locations:**
+   - `asm/boot.s`: Boot entry point, CPU initialization, calls `KernelMain`
+   - `asm/lib.s`: Low-level assembly utilities (MMIO, delays, memory operations)
+   - `go/mazarin/kernel.go`: Kernel main function, UART, memory initialization
+   - `go/mazarin/page.go`: Page management (4KB pages, free list)
+   - `go/mazarin/heap.go`: Dynamic memory allocator (heap segments, kmalloc/kfree)
+
+---
+
+## Docker and QEMU Testing Environment
+
+The `docker/` directory provides a reproducible testing environment for running and debugging the kernel using QEMU.
+
+### Directory Structure
+
+```
+docker/
+├── Dockerfile         # Alpine Linux container with QEMU for Raspberry Pi 4 emulation
+├── runqemu            # Script to run kernel normally in QEMU (for testing)
+├── runqemu-debug      # Script to run QEMU with GDB server enabled (for debugging)
+├── runqemu-trace      # Script to run QEMU with instruction tracing (for analysis)
+└── builtin/           # Directory for kernel artifacts (kernel.elf copied here via `make push`)
+```
+
+### Dockerfile
+
+**Purpose:** Creates a Docker container with QEMU system emulator for testing the bare-metal kernel.
+
+**Details:**
+- Base image: Alpine Linux 3.22
+- Installs: `qemu-system-aarch64` and related QEMU packages
+- Default entrypoint: Runs QEMU emulating Raspberry Pi 4B with kernel loaded from `/mnt/builtin/kernel.elf`
+- Configuration:
+  - Machine type: `raspi4b` (Raspberry Pi 4B)
+  - Serial output: Redirected to stdout/stderr (headless mode)
+  - No graphics: `-display none`
+  - No reboot: `-no-reboot` (exits on shutdown)
+
+**Building the container:**
+```bash
+cd docker
+docker build -t alpine-qemu:3.22 .
+```
+
+### Testing Scripts
+
+#### `runqemu`
+
+**Purpose:** Run the kernel normally in QEMU for standard testing.
+
+**Usage:**
+```bash
+cd src && make push  # Copy kernel.elf to docker/builtin/
+docker/runqemu       # Run kernel in QEMU
+```
+
+**Features:**
+- Mounts `docker/builtin/` as readonly at `/mnt/builtin`
+- Runs kernel in headless mode (no graphics)
+- UART output appears in terminal
+- Useful for normal development and testing
+
+#### `runqemu-debug`
+
+**Purpose:** Run QEMU with GDB server enabled for kernel debugging.
+
+**Usage:**
+```bash
+cd src && make push
+docker/runqemu-debug
+
+# In another terminal:
+target-gdb kernel.elf
+(gdb) target remote localhost:1234
+(gdb) break KernelMain
+(gdb) continue
+```
+
+**Features:**
+- Enables GDB server on port 1234 (configurable via `GDB_PORT` environment variable)
+- Pauses execution at startup (`-S` flag), waiting for GDB to connect
+- Exposes GDB port via Docker port mapping
+- Essential for debugging kernel crashes, memory issues, and execution flow
+
+**Custom port:**
+```bash
+GDB_PORT=5678 docker/runqemu-debug
+```
+
+#### `runqemu-trace`
+
+**Purpose:** Run QEMU with instruction tracing enabled for execution analysis.
+
+**Usage:**
+```bash
+cd src && make push
+docker/runqemu-trace
+```
+
+**Features:**
+- Shows instruction addresses as they execute
+- Filters output to show only CPU 0 traces (other CPUs halt quickly)
+- Useful for understanding execution flow and identifying instruction-level issues
+- Can be verbose; use for targeted analysis
+
+**Custom trace mode:**
+```bash
+TRACE_MODE=exec,in_asm docker/runqemu-trace  # Full disassembly (very verbose)
+```
+
+### Testing Workflow
+
+**Standard Development Cycle:**
+
+1. **Build the kernel:**
+   ```bash
+   cd src
+   make
+   ```
+
+2. **Copy kernel to Docker directory:**
+   ```bash
+   make push  # Copies kernel.elf to docker/builtin/
+   ```
+
+3. **Run in QEMU:**
+   ```bash
+   docker/runqemu           # Normal testing
+   docker/runqemu-debug     # Debugging
+   docker/runqemu-trace     # Instruction tracing
+   ```
+
+**Alternative:** The Makefile `push` target automatically copies `kernel.elf` to `docker/builtin/`:
+```makefile
+push: $(KERNEL_ELF)
+	@mkdir -p ../docker/builtin
+	cp $(KERNEL_ELF) ../docker/builtin/
+```
+
+### Why Docker?
+
+**Benefits:**
+- **Reproducibility:** Same QEMU version and environment for all developers
+- **Isolation:** Doesn't require installing QEMU system-wide
+- **Portability:** Works on macOS, Linux, and Windows (with Docker)
+- **Consistency:** Ensures all developers test with identical setup
+
+**Requirements:**
+- Docker must be installed and running
+- Container image must be built: `docker build -t alpine-qemu:3.22 docker/`
 
 ---
 

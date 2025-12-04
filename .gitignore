@@ -26,6 +26,9 @@ arm-gnu-toolchain-*.zip
 docker/builtin/*.elf
 docker/builtin/foo
 
+# Docker configuration directory
+.docker/
+
 # IDE and editor files
 .vscode/
 .idea/
