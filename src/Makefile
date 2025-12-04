@@ -24,6 +24,9 @@ LINKER_SCRIPT = linker.ld
 # Go package location
 GO_PACKAGE_DIR = go/mazarin
 
+# Go source files
+GO_SRC = $(GO_PACKAGE_DIR)/kernel.go $(GO_PACKAGE_DIR)/page.go $(GO_PACKAGE_DIR)/heap.go
+
 # Bitfield code generation
 BITFIELD_GEN = bitfield/page_flags_gen.go
 BITFIELD_GEN_SRC = bitfield/gen.go
@@ -42,7 +45,7 @@ KERNEL_OBJ = $(KERNEL_GO_OBJ)
 
 # Default target: build the kernel
 # This automatically triggers all dependencies including bitfield code generation
-# Dependency chain: kernel.elf -> kernel_go.o -> bitfield/page_flags_gen.go
+# Dependency chain: kernel.elf -> (boot.o, lib.o, kernel_go.o) -> (asm sources, Go sources, bitfield gen)
 $(KERNEL_ELF): $(BOOT_OBJ) $(LIB_OBJ) $(KERNEL_OBJ) $(LINKER_SCRIPT)
 	$(CC) $(LDFLAGS) -o $@ $(BOOT_OBJ) $(LIB_OBJ) $(KERNEL_OBJ)
 
@@ -65,7 +68,9 @@ $(LIB_OBJ): $(LIB_SRC)
 KERNEL_GO_ARCHIVE = kernel_go
 KERNEL_GO_TEMP = kernel_go_temp.o
 OBJCOPY = /Users/iansmith/mazzy/bin/target-objcopy
-$(KERNEL_GO_OBJ): $(BITFIELD_GEN) go.mod
+$(KERNEL_GO_OBJ): $(BITFIELD_GEN) go.mod $(GO_SRC)
+	@# Clean up any leftover files from previous builds
+	@rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) go.o kernel_go.h __.SYMDEF
 	@# Build Go package from go/mazarin directory
 	GOTOOLCHAIN=auto GOARCH=$(GOARCH) GOOS=$(GOOS) $(GO) build $(GO_BUILD_FLAGS) -o $(KERNEL_GO_ARCHIVE) ./$(GO_PACKAGE_DIR)
 	@# Extract the actual object file (go.o) from the C archive
@@ -79,8 +84,11 @@ $(KERNEL_GO_OBJ): $(BITFIELD_GEN) go.mod
 
 # Clean build artifacts
 clean:
-	rm -f $(BOOT_OBJ) $(LIB_OBJ) $(KERNEL_GO_OBJ) $(KERNEL_ELF) kernel_go.pkg __.PKGDEF kernel_go kernel_go.h __.SYMDEF
-	rm -f kernel.o go.o  # Clean up any leftover object files (kernel.o from old builds, go.o from archive extraction)
+	@echo "Cleaning build artifacts..."
+	rm -f $(BOOT_OBJ) $(LIB_OBJ) $(KERNEL_GO_OBJ) $(KERNEL_ELF)
+	rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) go.o
+	rm -f kernel_go.pkg __.PKGDEF kernel_go.h __.SYMDEF
+	rm -f kernel.o  # Clean up any leftover object files from old builds
 	rm -f $(BITFIELD_GEN)
 
 # Push kernel.elf to docker/builtin directory

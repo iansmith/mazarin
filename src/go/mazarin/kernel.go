@@ -179,15 +179,20 @@ func KernelMain(r0, r1, atags uint32) {
 	uartPuts("Hello, Mazarin!\r\n")
 
 	// Get and display memory size
+	// Note: QEMU does not provide ATAGs for Raspberry Pi 4 - it uses Device Tree (DTB) instead
+	// ATAGs are only available on real hardware with bootloaders that support them
+	// See: https://www.qemu.org/docs/master/system/arm/raspi.html
 	memSize := getMemSize(uintptr(atags))
-	if memSize == 0 {
-		// Fallback: use 128 MB default
-		memSize = 1024 * 1024 * 128
-	}
-
+	
 	uartPuts("Memory: ")
-	uartPutMemSize(memSize)
-	uartPuts("\r\n")
+	
+	if memSize == 0 {
+		// No ATAGs available (e.g., running in QEMU which uses Device Tree, not ATAGs)
+		uartPuts("unknown (ATAGs not available)\r\n")
+	} else {
+		uartPutMemSize(memSize)
+		uartPuts("\r\n")
+	}
 
 	for {
 		uartPutc(uartGetc())

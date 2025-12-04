@@ -49,34 +49,65 @@ var allPagesArrayBase uintptr
 var numPages uint32
 
 // getMemSize parses ATAGs to find total memory size
-// Returns 0 if no MEM tag found
-// For QEMU/VM: returns hardcoded 128 MB as tutorial suggests
+// Returns 0 if no MEM tag found or ATAGs not available
+// Note: QEMU does not provide ATAGs for Raspberry Pi 4 - it uses Device Tree (DTB) instead
+// ATAGs are only available on real hardware with bootloaders that support them
 //
 //go:nosplit
 func getMemSize(atagsPtr uintptr) uint32 {
-	// If atagsPtr is 0 (e.g., in QEMU), return hardcoded 128 MB
-	// Tutorial says: "Since you determine the exact size of memory through QEMU options,
-	// you should just have this function return that amount of memory.
-	// My Makefile sets the memory to be 128 MB"
+	// If atagsPtr is 0, ATAGs are not available (e.g., in QEMU which uses Device Tree)
+	// Return 0 to indicate memory size cannot be determined from ATAGs
 	if atagsPtr == 0 {
-		return 1024 * 1024 * 128 // 128 MB for QEMU/VM
+		return 0
+	}
+
+	// Validate pointer is in reasonable memory range
+	// ATAGs should be in low memory (below 1GB typically)
+	if atagsPtr > 0x40000000 { // Above 1GB is suspicious
+		return 0 // Invalid pointer, return 0 to use fallback
 	}
 
 	// Cast pointer to atag structure
 	tag := (*atag)(unsafe.Pointer(atagsPtr))
 
+	// Safety: Limit iterations to prevent infinite loops from corrupted ATAGs
+	// ATAG lists typically have at most 10-20 tags
+	maxIterations := 32
+	iterations := 0
+
 	// Iterate through ATAG list until we find NONE tag
-	for tag.tag != ATAG_NONE {
+	for iterations < maxIterations {
+		// Check if tag is NONE first
+		if tag.tag == ATAG_NONE {
+			break
+		}
+		
 		if tag.tag == ATAG_MEM {
 			return tag.mem.size
 		}
+		
+		// Validate tagSize to prevent invalid memory access
+		// Tag size must be at least 2 (header + tag field) and reasonable (max 32 words = 128 bytes)
+		if tag.tagSize < 2 || tag.tagSize > 32 {
+			// Invalid tag size, stop parsing
+			break
+		}
+		
 		// Move to next tag: tag = ((uint32_t *)tag) + tag->tag_size;
 		// tagSize is in words (4 bytes each)
 		nextAddr := uintptr(unsafe.Pointer(tag)) + uintptr(tag.tagSize*4)
+		
+		// Validate next address is reasonable
+		if nextAddr > 0x40000000 || nextAddr < atagsPtr {
+			// Address out of bounds or going backwards - corrupted ATAGs
+			break
+		}
+		
 		tag = (*atag)(unsafe.Pointer(nextAddr))
+		iterations++
 	}
 
-	// No MEM tag found, return 0
+	// No MEM tag found or parsing failed, return 0
 	return 0
 }
 
@@ -90,7 +121,9 @@ func pageInit(atagsPtr uintptr) {
 	// Get total memory size
 	memSize = getMemSize(atagsPtr)
 	if memSize == 0 {
-		// Fallback: use 128 MB default
+		// Fallback: use 128 MB default for page management
+		// Note: This fallback is for internal use only - the display shows "unknown"
+		// In QEMU, ATAGs aren't available, but we need a memory size for page management
 		memSize = 1024 * 1024 * 128
 	}
 

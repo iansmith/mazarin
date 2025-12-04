@@ -12,3 +12,4 @@ type PageFlags struct {
 	// Reserved bits for future use (30 bits)
 	Reserved uint32 `bitfield:",30"`
 }
+
