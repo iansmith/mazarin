@@ -67,6 +67,13 @@ dsb:
     dsb sy              // Data Synchronization Barrier - system-wide
     ret                  // Return
 
+// get_stack_pointer() - Returns current stack pointer value
+// Returns uintptr_t (64-bit) in x0
+.global get_stack_pointer
+get_stack_pointer:
+    mov x0, sp           // Move stack pointer to x0 (return value)
+    ret                  // Return
+
 // qemu_exit() - Exit QEMU using semihosting
 // This function uses the QEMU semihosting interface to cleanly exit
 // Requires QEMU to be run with -semihosting flag

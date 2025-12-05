@@ -91,12 +91,12 @@ func framebufferInit() int32 {
 				uartPutc(byte('A' + digit - 10))
 			}
 		}
-		uartPuts(" Width=")
-		uartPutUint32(fbinfo.Width)
-		uartPuts(" Height=")
-		uartPutUint32(fbinfo.Height)
-		uartPuts(" Pitch=")
-		uartPutUint32(fbinfo.Pitch)
+		uartPuts(" Width=0x")
+		printHex32(fbinfo.Width)
+		uartPuts(" Height=0x")
+		printHex32(fbinfo.Height)
+		uartPuts(" Pitch=0x")
+		printHex32(fbinfo.Pitch)
 		uartPuts("\r\n")
 
 		// Write test pattern
@@ -127,13 +127,13 @@ func framebufferInit() int32 {
 				pixelsWritten++
 			}
 			if y%10 == 0 {
-				uartPuts("FB: Row ")
-				uartPutUint32(uint32(y))
+				uartPuts("FB: Row 0x")
+				printHex32(uint32(y))
 				uartPuts(" written\r\n")
 			}
 		}
-		uartPuts("FB: Test pattern written (")
-		uartPutUint32(uint32(pixelsWritten))
+		uartPuts("FB: Test pattern written (0x")
+		printHex32(uint32(pixelsWritten))
 		uartPuts(" pixels)\r\n")
 
 		// Verify a few pixels
@@ -144,9 +144,9 @@ func framebufferInit() int32 {
 				verifyCount++
 			}
 		}
-		uartPuts("FB: Verified ")
-		uartPutUint32(uint32(verifyCount))
-		uartPuts("/10 pixels\r\n")
+		uartPuts("FB: Verified 0x")
+		printHex32(uint32(verifyCount))
+		uartPuts("/0xA pixels\r\n")
 
 		uartPuts("FB INIT DONE (ramfb)\r\n")
 		return 0

@@ -42,6 +42,10 @@ func dsb()
 //go:nosplit
 func qemu_exit()
 
+//go:linkname get_stack_pointer get_stack_pointer
+//go:nosplit
+func get_stack_pointer() uintptr
+
 // Peripheral base address for Raspberry Pi 4
 const (
 	// Peripheral base address for Raspberry Pi 4
@@ -346,8 +350,11 @@ func KernelMain(r0, r1, atags uint32) {
 
 	uartPuts("E\r\n")
 	uartPuts("FB result: ")
-	uartPutUint32(uint32(fbResult))
-	uartPuts("\r\n")
+	if fbResult == 0 {
+		uartPuts("SUCCESS (0)\r\n")
+	} else {
+		uartPuts("FAILED (non-zero)\r\n")
+	}
 
 	if fbResult == 0 {
 		// Draw a simple test - just fill first few pixels
@@ -378,8 +385,8 @@ func KernelMain(r0, r1, atags uint32) {
 			if fbinfo.Buf != nil && loopCount%1000000 == 0 {
 				// Refresh every million iterations (very infrequent)
 				refreshFramebuffer()
-				uartPuts("FB: Periodic refresh (loop ")
-				uartPutUint32(uint32(loopCount))
+				uartPuts("FB: Periodic refresh (loop 0x")
+				printHex32(uint32(loopCount))
 				uartPuts(")\r\n")
 			}
 			loopCount++

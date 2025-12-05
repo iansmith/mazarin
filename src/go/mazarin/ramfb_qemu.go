@@ -332,6 +332,46 @@ func ramfbInit() bool {
 	uartPuts("\r\n")
 	uartPuts("RAMFB: About to store framebuffer info...\r\n")
 
+	// Check stack usage before storing framebuffer info
+	// Initial stack pointer is at 0x40400000 (3MB into RAM)
+	// Stack grows downward, so lower values mean more stack used
+	const initialStackPtr uintptr = 0x40400000
+	currentStackPtr := get_stack_pointer()
+	stackUsed := initialStackPtr - currentStackPtr
+	uartPuts("RAMFB: Stack check - initial=0x")
+	for shift := 60; shift >= 0; shift -= 4 {
+		digit := (uint64(initialStackPtr) >> shift) & 0xF
+		if digit < 10 {
+			uartPutc(byte('0' + digit))
+		} else {
+			uartPutc(byte('A' + digit - 10))
+		}
+	}
+	uartPuts(" current=0x")
+	for shift := 60; shift >= 0; shift -= 4 {
+		digit := (uint64(currentStackPtr) >> shift) & 0xF
+		if digit < 10 {
+			uartPutc(byte('0' + digit))
+		} else {
+			uartPutc(byte('A' + digit - 10))
+		}
+	}
+	uartPuts(" used=0x")
+	for shift := 60; shift >= 0; shift -= 4 {
+		digit := (uint64(stackUsed) >> shift) & 0xF
+		if digit < 10 {
+			uartPutc(byte('0' + digit))
+		} else {
+			uartPutc(byte('A' + digit - 10))
+		}
+	}
+	uartPuts("\r\n")
+
+	// Warn if stack usage is high (more than 512KB used)
+	if stackUsed > 512*1024 {
+		uartPuts("RAMFB: WARNING - High stack usage detected!\r\n")
+	}
+
 	// Store framebuffer info
 	uartPuts("RAMFB: Storing width...\r\n")
 	fbinfo.Width = fbWidth
@@ -340,10 +380,81 @@ func ramfbInit() bool {
 	uartPuts("RAMFB: Storing pitch...\r\n")
 	fbinfo.Pitch = fbStride
 	uartPuts("RAMFB: Calculating chars...\r\n")
-	fbinfo.CharsWidth = fbWidth / CHAR_WIDTH
-	fbinfo.CharsHeight = fbHeight / CHAR_HEIGHT
+
+	// Debug: Print values before division
+	uartPuts("RAMFB: Before division - fbWidth=0x")
+	printHex32(fbWidth)
+	uartPuts(" CHAR_WIDTH=0x")
+	printHex32(CHAR_WIDTH)
+	uartPuts(" fbHeight=0x")
+	printHex32(fbHeight)
+	uartPuts(" CHAR_HEIGHT=0x")
+	printHex32(CHAR_HEIGHT)
+	uartPuts("\r\n")
+
+	// Check for zero values (shouldn't happen, but safety check)
+	if CHAR_WIDTH == 0 {
+		uartPuts("RAMFB: ERROR - CHAR_WIDTH is zero!\r\n")
+		return false
+	}
+	if CHAR_HEIGHT == 0 {
+		uartPuts("RAMFB: ERROR - CHAR_HEIGHT is zero!\r\n")
+		return false
+	}
+
+	// Use temporary variables to isolate the division operations
+	uartPuts("RAMFB: Performing division operations...\r\n")
+	tempCharsWidth := fbWidth / CHAR_WIDTH
+	uartPuts("RAMFB: Division 1 complete - tempCharsWidth=0x")
+	printHex32(tempCharsWidth)
+	uartPuts("\r\n")
+
+	tempCharsHeight := fbHeight / CHAR_HEIGHT
+	uartPuts("RAMFB: Division 2 complete - tempCharsHeight=0x")
+	printHex32(tempCharsHeight)
+	uartPuts("\r\n")
+
+	// Now assign to fbinfo struct
+	uartPuts("RAMFB: Assigning to fbinfo.CharsWidth...\r\n")
+	fbinfo.CharsWidth = tempCharsWidth
+	uartPuts("RAMFB: fbinfo.CharsWidth assigned OK\r\n")
+
+	uartPuts("RAMFB: Assigning to fbinfo.CharsHeight...\r\n")
+	fbinfo.CharsHeight = tempCharsHeight
+	uartPuts("RAMFB: fbinfo.CharsHeight assigned OK\r\n")
+
+	uartPuts("RAMFB: Setting CharsX and CharsY...\r\n")
+	uartPuts("RAMFB: About to set fbinfo.CharsX to 0...\r\n")
 	fbinfo.CharsX = 0
+	uartPuts("RAMFB: fbinfo.CharsX set OK\r\n")
+	uartPuts("RAMFB: About to set fbinfo.CharsY to 0...\r\n")
 	fbinfo.CharsY = 0
+	uartPuts("RAMFB: fbinfo.CharsY set OK\r\n")
+	uartPuts("RAMFB: CharsX and CharsY set OK\r\n")
+
+	// Check stack again after division operations
+	currentStackPtr2 := get_stack_pointer()
+	stackUsed2 := initialStackPtr - currentStackPtr2
+	uartPuts("RAMFB: Stack check after division - current=0x")
+	for shift := 60; shift >= 0; shift -= 4 {
+		digit := (uint64(currentStackPtr2) >> shift) & 0xF
+		if digit < 10 {
+			uartPutc(byte('0' + digit))
+		} else {
+			uartPutc(byte('A' + digit - 10))
+		}
+	}
+	uartPuts(" used=0x")
+	for shift := 60; shift >= 0; shift -= 4 {
+		digit := (uint64(stackUsed2) >> shift) & 0xF
+		if digit < 10 {
+			uartPutc(byte('0' + digit))
+		} else {
+			uartPutc(byte('A' + digit - 10))
+		}
+	}
+	uartPuts("\r\n")
+
 	uartPuts("RAMFB: Calculating buf size...\r\n")
 	fbinfo.BufSize = uint32(fbStride) * fbHeight
 	uartPuts("RAMFB: Storing buf pointer...\r\n")
@@ -578,7 +689,3 @@ func writeRamfbConfig(cfg *RAMFBCfg) bool {
 	uartPuts("RAMFB: Continuing despite timeout\r\n")
 	return true
 }
-
-
-
-
