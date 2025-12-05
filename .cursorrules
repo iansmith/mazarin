@@ -205,6 +205,35 @@ The script automatically:
 - The script automatically kills and removes existing `mazarin-*` containers before running
 - If timeout is used, containers may be left running - the cleanup handles this
 
+## VNC and Framebuffer Display
+
+For graphical display output from QEMU, use VNC:
+
+**Quick Start:**
+```bash
+source enable-mazzy
+cd src && make kernel-qemu.elf && make push-qemu
+runqemu-virt-vga  # or runqemu-fb (both support VNC now)
+# Connect with VNC client to localhost:5900
+```
+
+**Important: Apple Screen Sharing Does NOT Work**
+- Apple's built-in VNC viewer has known compatibility issues with QEMU VNC
+- Protocol/authentication mismatch causes connection failures or blank screens
+- Use RealVNC Viewer (`brew install --cask vnc-viewer`) or TigerVNC (`brew install tiger-vnc`)
+- See `docs/qemu-vnc-framebuffer-setup.md` for detailed explanation with sources
+
+**Framebuffer Location:**
+- QEMU virt machine uses `bochs-display` device (PCI vendor 0x1234, device 0x1111)
+- Kernel finds framebuffer via PCI enumeration (scans config space at 0x30000000)
+- Framebuffer address read from PCI BAR0 (typically 0x40000000+)
+- Resolution: 640x480, 24-bit RGB (3 bytes per pixel)
+- Check UART output for: "findBochsDisplay: Found bochs-display device"
+
+**Documentation:**
+- Quick reference: `VNC-QUICKSTART.md`
+- Full guide: `docs/qemu-vnc-framebuffer-setup.md`
+
 ## When Making Changes
 
 1. If changing bitfield structs: run `make generate` first

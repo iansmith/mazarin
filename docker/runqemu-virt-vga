@@ -1,0 +1,94 @@
+#!/bin/bash
+
+# Script to run QEMU with 'virt' machine type and VGA device
+# This uses a generic AArch64 virtual machine that supports standard VGA devices
+# The 'virt' machine type is more flexible than 'raspi4b' for adding display devices
+#
+# Usage:
+#   docker/runqemu-virt-vga              # Use default VNC port 5900
+#   VNC_PORT=5901 docker/runqemu-virt-vga  # Use custom VNC port
+
+# Use absolute path to builtin directory to handle symlinks correctly
+BUILTIN_DIR="/Users/iansmith/mazzy/docker/builtin"
+
+# Verify builtin directory exists
+if [ ! -d "$BUILTIN_DIR" ]; then
+    echo "Error: builtin directory does not exist at $BUILTIN_DIR" >&2
+    exit 1
+fi
+
+# Verify kernel.elf exists
+if [ ! -f "$BUILTIN_DIR/kernel.elf" ]; then
+    echo "Error: kernel.elf not found in $BUILTIN_DIR" >&2
+    echo "Please build the QEMU kernel first: cd src && make push-qemu" >&2
+    exit 1
+fi
+
+# VNC port (default 5900, which is VNC display :0)
+VNC_PORT="${VNC_PORT:-5900}"
+VNC_DISPLAY=$((VNC_PORT - 5900))
+
+echo "Starting QEMU with 'virt' machine type and VGA device"
+echo "VNC server will listen on port $VNC_PORT (display :$VNC_DISPLAY)"
+echo "Port $VNC_PORT will be mapped from container to host"
+echo ""
+echo "NOTE: Using 'virt' machine type instead of 'raspi4b' for better"
+echo "      display device support. This is a generic AArch64 virtual machine."
+echo ""
+echo "      The kernel writes to framebuffer at 0x10000000. If the display"
+echo "      doesn't work, the device framebuffer may be at a different address."
+echo ""
+echo "      The kernel is built for Raspberry Pi, so some hardware-specific"
+echo "      features (like UART) may not work correctly with 'virt' machine."
+echo ""
+echo "VNC display will be available at localhost:$VNC_PORT"
+echo "Connect with: vncviewer localhost:$VNC_PORT"
+echo ""
+echo "UART output will appear in this terminal"
+echo "Press Ctrl+A then X to stop QEMU (or Ctrl+C)"
+echo ""
+
+# Run the container with VNC display and display device
+# -M virt: Generic AArch64 virtual machine
+# -cpu cortex-a72: Use Cortex-A72 CPU (same as Raspberry Pi 4)
+# -m 512M: Allocate 512MB RAM
+# -kernel: Load bare-metal kernel ELF file
+# -serial mon:stdio: Redirect UART output to console (mon:stdio for bare-metal)
+# -semihosting: Enable semihosting for clean program exit
+# -device ramfb: Add RAM framebuffer device (recommended for AArch64)
+#   This device provides a simple framebuffer that QEMU can display via VNC.
+#   The framebuffer address is configured via fw_cfg (firmware configuration).
+#   ramfb is the recommended approach for AArch64 bare-metal kernels.
+# -vnc: VNC server on all interfaces, display :0, NO password
+# -p: Expose VNC port to host
+# -no-reboot: Exit on shutdown instead of rebooting
+#
+# Note: For bare-metal kernels, we don't use -append (that's for Linux kernels)
+# Note: The kernel uses PCI enumeration to find the VGA framebuffer address.
+# Create log directory if it doesn't exist
+LOG_DIR="/tmp/qemu-logs"
+mkdir -p "$LOG_DIR"
+
+docker run --rm \
+    -p "$VNC_PORT:$VNC_PORT" \
+    -v "$BUILTIN_DIR:/mnt/builtin:ro" \
+    -v "$LOG_DIR:/mnt/logs:rw" \
+    --entrypoint qemu-system-aarch64 \
+    alpine-qemu:3.22 \
+    -M virt \
+    -cpu cortex-a72 \
+    -m 512M \
+    -device loader,file=/mnt/builtin/kernel.elf,cpu-num=0 \
+    -device ramfb \
+    -vnc ":$VNC_DISPLAY" \
+    -serial mon:stdio \
+    -semihosting \
+    -no-reboot \
+    -d guest_errors,unimp,int \
+    -trace "fw_cfg*" \
+    -D /mnt/logs/qemu-$$.log \
+    < /dev/null
+
+echo ""
+echo "QEMU log saved to: $LOG_DIR/qemu-$$.log"
+

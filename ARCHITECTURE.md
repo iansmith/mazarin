@@ -449,16 +449,25 @@ For production/real hardware, replace `qemu_exit()` with a platform-specific shu
 
 **Pattern:** Set stack pointer early in boot code.
 
+**Raspberry Pi 4:**
 ```assembly
-// Set stack pointer to 0x400000 (above kernel)
+// Set stack pointer to 0x400000 (above kernel in RAM)
 movz x0, #0x40, lsl #16    // Load 0x400000
 mov sp, x0
 ```
 
+**QEMU virt machine:**
+```assembly
+// Set stack pointer to 0x40400000 (in RAM region)
+movz x0, #0x4040, lsl #16  // Load 0x40400000
+mov sp, x0
+```
+
 **Rules:**
-- Stack must be above kernel and page metadata
+- Stack must be in writable RAM
 - Go runtime needs significant stack space (1MB+)
 - Stack grows downward (decrementing addresses)
+- On QEMU virt: Stack must be in RAM region (≥ 0x40000000)
 
 ### CPU Initialization
 

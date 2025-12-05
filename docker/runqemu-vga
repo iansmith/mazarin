@@ -1,0 +1,77 @@
+#!/bin/bash
+
+# Script to run the alpine-qemu container with VGA display for QEMU build
+# This script uses the QEMU build of the kernel (built with 'make kernel-qemu.elf')
+# The QEMU build uses a memory-mapped framebuffer instead of Raspberry Pi mailbox
+#
+# Usage:
+#   docker/runqemu-vga              # Use default VNC port 5900
+#   VNC_PORT=5901 docker/runqemu-vga  # Use custom VNC port
+
+# Use absolute path to builtin directory to handle symlinks correctly
+BUILTIN_DIR="/Users/iansmith/mazzy/docker/builtin"
+
+# Verify builtin directory exists
+if [ ! -d "$BUILTIN_DIR" ]; then
+    echo "Error: builtin directory does not exist at $BUILTIN_DIR" >&2
+    exit 1
+fi
+
+# Verify kernel.elf exists
+if [ ! -f "$BUILTIN_DIR/kernel.elf" ]; then
+    echo "Error: kernel.elf not found in $BUILTIN_DIR" >&2
+    echo "Please build the QEMU kernel first: cd src && make push-qemu" >&2
+    exit 1
+fi
+
+# VNC port (default 5900, which is VNC display :0)
+VNC_PORT="${VNC_PORT:-5900}"
+VNC_DISPLAY=$((VNC_PORT - 5900))
+
+echo "Starting QEMU with VGA display (QEMU build)"
+echo "VNC server will listen on port $VNC_PORT (display :$VNC_DISPLAY)"
+echo "Port $VNC_PORT will be mapped from container to host"
+echo ""
+echo "NOTE: This uses the QEMU build which writes to framebuffer memory at"
+echo "      0x10000000 (side channel, avoids kernel memory conflicts)."
+echo ""
+echo "IMPORTANT: The raspi4b machine type doesn't support standard VGA/PCI"
+echo "           devices or ramfb. The kernel writes to the framebuffer, but"
+echo "           QEMU won't automatically display it via VNC with raspi4b."
+echo ""
+echo "           For actual display output:"
+echo "           1. Use UART output (which always works) - see terminal"
+echo "           2. Use docker/runqemu-virt-vga instead, which uses the 'virt'"
+echo "              machine type with proper VGA device support"
+echo ""
+echo "VNC server is running but may show a blank screen."
+echo "Connect to: vnc://localhost:$VNC_PORT (if you want to check)"
+echo "Press Ctrl+C to stop QEMU"
+echo ""
+
+# Run the container with VNC display enabled
+# -serial stdio: Redirect UART output to console
+# -semihosting: Enable semihosting for clean program exit
+# -vnc: VNC server on all interfaces, display :0, NO password
+# -p: Expose VNC port to host
+#
+# Note: The raspi4b machine type doesn't support standard VGA/PCI devices
+# or ramfb. The kernel writes to framebuffer memory at 0x10000000, but
+# QEMU won't automatically display it via VNC with raspi4b.
+#
+# For actual display output, use docker/runqemu-virt-vga instead, which
+# uses the 'virt' machine type with proper VGA device support.
+docker run --rm -it \
+    -p "$VNC_PORT:$VNC_PORT" \
+    -v "$BUILTIN_DIR:/mnt/builtin:ro" \
+    --entrypoint qemu-system-aarch64 \
+    alpine-qemu:3.22 \
+    -M raspi4b \
+    -kernel /mnt/builtin/kernel.elf \
+    -append "console=ttyAMA0,115200 earlyprintk" \
+    -serial stdio \
+    -semihosting \
+    -vnc "0.0.0.0:$VNC_DISPLAY,password=off" \
+    -no-reboot \
+    "$@"
+

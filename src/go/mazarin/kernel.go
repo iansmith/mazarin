@@ -14,6 +14,18 @@ func mmio_write(reg uintptr, data uint32)
 //go:nosplit
 func mmio_read(reg uintptr) uint32
 
+//go:linkname mmio_write16 mmio_write16
+//go:nosplit
+func mmio_write16(reg uintptr, data uint16)
+
+//go:linkname mmio_read16 mmio_read16
+//go:nosplit
+func mmio_read16(reg uintptr) uint16
+
+//go:linkname mmio_write64 mmio_write64
+//go:nosplit
+func mmio_write64(reg uintptr, data uint64)
+
 //go:linkname delay delay
 //go:nosplit
 func delay(count int32)
@@ -86,57 +98,16 @@ func uartPutsBytes(data *byte, length int) {
 	const uartFR = uartBase + 0x18
 	const uartDR = uartBase + 0x00
 
-	// Debug: write 'B' to verify we entered uartPutsBytes
-	for mmio_read(uartFR)&(1<<5) != 0 {
-	}
-	mmio_write(uartDR, uint32('B'))
-
 	ptr := uintptr(unsafe.Pointer(data))
-	// Store length in local variable
 	lenVal := length
 
-	// Debug: write 'L' to verify we got past variable initialization
-	for mmio_read(uartFR)&(1<<5) != 0 {
-	}
-	mmio_write(uartDR, uint32('L'))
-
-	// Debug: write length as single character to see if it's valid
-	for mmio_read(uartFR)&(1<<5) != 0 {
-	}
-	lenChar := byte(lenVal & 0xFF)
-	if lenChar < 10 {
-		mmio_write(uartDR, uint32('0'+lenChar))
-	} else {
-		mmio_write(uartDR, uint32('?'))
-	}
-
-	// Write first character before loop to test pointer access
-	for mmio_read(uartFR)&(1<<5) != 0 {
-	}
-	mmio_write(uartDR, uint32(*(*byte)(unsafe.Pointer(ptr + uintptr(0)))))
-
-	// Debug: write 'X' to show we got past first character
-	for mmio_read(uartFR)&(1<<5) != 0 {
-	}
-	mmio_write(uartDR, uint32('X'))
-
-	// Now write rest using simple loop with decrementing counter
-	// Use a counter that decrements to avoid comparison issues
-	remaining := lenVal - 1
-	pos := 1
-	for remaining > 0 {
-		// Debug: write 'Y' each iteration to see if loop runs
-		for mmio_read(uartFR)&(1<<5) != 0 {
-		}
-		mmio_write(uartDR, uint32('Y'))
-
-		// Wait for UART ready
+	// Write all characters in the string
+	for i := 0; i < lenVal; i++ {
+		// Wait for transmit FIFO to have space
 		for mmio_read(uartFR)&(1<<5) != 0 {
 		}
 		// Write character
-		mmio_write(uartDR, uint32(*(*byte)(unsafe.Pointer(ptr + uintptr(pos)))))
-		pos = pos + 1
-		remaining = remaining - 1
+		mmio_write(uartDR, uint32(*(*byte)(unsafe.Pointer(ptr + uintptr(i)))))
 	}
 }
 
@@ -338,6 +309,10 @@ func KernelMain(r0, r1, atags uint32) {
 
 	// Test global pointer assignment (triggers write barrier)
 	// heapSegmentListHead is a global *heapSegment variable
+	// QEMU virt memory: 0x40000000-0x40100000 = DTB (1MB)
+	//                   0x40100000+ = BSS
+	//                   0x40400000 = Stack
+	//                   0x40500000+ = Heap (1MB after stack)
 	heapStart := uintptr(0x40500000)   // Heap in RAM region
 	heapStart = (heapStart + 15) &^ 15 // Align to 16 bytes
 
@@ -358,6 +333,64 @@ func KernelMain(r0, r1, atags uint32) {
 		puts("Heap initialized at RAM region\r\n")
 	}
 
+	// Test: Can we still print after heap init?
+	uartPuts("A\r\n")
+	uartPuts("B\r\n")
+	uartPuts("C\r\n")
+
+	// Initialize framebuffer for VNC display
+	uartPuts("D\r\n")
+
+	// Try to call framebufferInit - if it crashes, we won't see the next message
+	fbResult := framebufferInit()
+
+	uartPuts("E\r\n")
+	uartPuts("FB result: ")
+	uartPutUint32(uint32(fbResult))
+	uartPuts("\r\n")
+
+	if fbResult == 0 {
+		// Draw a simple test - just fill first few pixels
+		// This tests if framebuffer writes work at all
+		pixels := (*[1 << 30]byte)(fbinfo.Buf)
+
+		// Draw a small red square in top-left corner (BGR format)
+		for y := uint32(0); y < 100; y++ {
+			for x := uint32(0); x < 100; x++ {
+				offset := (y * fbinfo.Pitch) + (x * BYTES_PER_PIXEL)
+				pixels[offset+0] = 0x00 // Blue
+				pixels[offset+1] = 0x00 // Green
+				pixels[offset+2] = 0xFF // Red (BGR format)
+			}
+		}
+
+		// Draw test pattern to framebuffer
+		drawTestPattern()
+
+		// Infinite loop to keep program alive
+		// Note: ramfb should hold the framebuffer content without constant refresh
+		// If it's clearing, there may be a configuration issue
+		uartPuts("Entering main loop - framebuffer should stay visible\r\n")
+		loopCount := 0
+		for {
+			// Just keep the program alive - framebuffer should persist
+			// Only refresh occasionally to verify it's still working
+			if fbinfo.Buf != nil && loopCount%1000000 == 0 {
+				// Refresh every million iterations (very infrequent)
+				refreshFramebuffer()
+				uartPuts("FB: Periodic refresh (loop ")
+				uartPutUint32(uint32(loopCount))
+				uartPuts(")\r\n")
+			}
+			loopCount++
+
+			// Wait a bit between iterations
+			for i := 0; i < 1000000; i++ {
+				// Busy wait
+			}
+		}
+	}
+
 	puts("\r\n")
 	puts("All tests passed! Exiting via semihosting...\r\n")
 
@@ -368,6 +401,93 @@ func KernelMain(r0, r1, atags uint32) {
 	// Loop forever as fallback
 	for {
 	}
+}
+
+// drawTestPattern draws a simple test pattern to the framebuffer
+// This helps verify that VNC display is working correctly
+//
+//go:nosplit
+func drawTestPattern() {
+	uartPuts("Drawing test pattern...\r\n")
+	if fbinfo.Buf == nil {
+		uartPuts("ERROR: Framebuffer not initialized\r\n")
+		return
+	}
+	uartPuts("FB buf OK\r\n")
+
+	// Get framebuffer as byte array
+	pixels := (*[1 << 30]byte)(fbinfo.Buf)
+
+	// Draw colored rectangles across the screen
+	// Each rectangle is 160 pixels wide (640/4 = 160)
+
+	// NOTE: bochs-display uses BGR byte order (Blue, Green, Red), not RGB!
+	// So pixels[offset+0] = Blue, pixels[offset+1] = Green, pixels[offset+2] = Red
+
+	// Red rectangle (left quarter) - BGR: [Blue=0x00, Green=0x00, Red=0xFF]
+	for y := uint32(0); y < fbinfo.Height; y++ {
+		for x := uint32(0); x < 160; x++ {
+			offset := (y * fbinfo.Pitch) + (x * BYTES_PER_PIXEL)
+			pixels[offset+0] = 0x00 // Blue
+			pixels[offset+1] = 0x00 // Green
+			pixels[offset+2] = 0xFF // Red
+		}
+	}
+
+	// Green rectangle (second quarter) - BGR: [Blue=0x00, Green=0xFF, Red=0x00]
+	for y := uint32(0); y < fbinfo.Height; y++ {
+		for x := uint32(160); x < 320; x++ {
+			offset := (y * fbinfo.Pitch) + (x * BYTES_PER_PIXEL)
+			pixels[offset+0] = 0x00 // Blue
+			pixels[offset+1] = 0xFF // Green
+			pixels[offset+2] = 0x00 // Red
+		}
+	}
+
+	// Blue rectangle (third quarter) - BGR: [Blue=0xFF, Green=0x00, Red=0x00]
+	for y := uint32(0); y < fbinfo.Height; y++ {
+		for x := uint32(320); x < 480; x++ {
+			offset := (y * fbinfo.Pitch) + (x * BYTES_PER_PIXEL)
+			pixels[offset+0] = 0xFF // Blue
+			pixels[offset+1] = 0x00 // Green
+			pixels[offset+2] = 0x00 // Red
+		}
+	}
+
+	// White rectangle (right quarter) - BGR: 0xFF, 0xFF, 0xFF
+	for y := uint32(0); y < fbinfo.Height; y++ {
+		for x := uint32(480); x < 640; x++ {
+			offset := (y * fbinfo.Pitch) + (x * BYTES_PER_PIXEL)
+			pixels[offset+0] = 0xFF // Blue
+			pixels[offset+1] = 0xFF // Green
+			pixels[offset+2] = 0xFF // Red
+		}
+	}
+
+	// Draw a yellow cross in the center - BGR: 0x00, 0xFF, 0xFF (Yellow = Red + Green)
+	centerX := fbinfo.Width / 2
+	centerY := fbinfo.Height / 2
+
+	// Horizontal line (20 pixels thick)
+	for y := centerY - 10; y < centerY+10; y++ {
+		for x := uint32(0); x < fbinfo.Width; x++ {
+			offset := (y * fbinfo.Pitch) + (x * BYTES_PER_PIXEL)
+			pixels[offset+0] = 0x00 // Blue
+			pixels[offset+1] = 0xFF // Green
+			pixels[offset+2] = 0xFF // Red (BGR: Yellow = 0xFF in both green and red)
+		}
+	}
+
+	// Vertical line (20 pixels thick)
+	for y := uint32(0); y < fbinfo.Height; y++ {
+		for x := centerX - 10; x < centerX+10; x++ {
+			offset := (y * fbinfo.Pitch) + (x * BYTES_PER_PIXEL)
+			pixels[offset+0] = 0x00 // Blue
+			pixels[offset+1] = 0xFF // Green
+			pixels[offset+2] = 0xFF // Red (BGR: Yellow = 0xFF in both green and red)
+		}
+	}
+	uartPuts("Test pattern drawn\r\n")
 }
 
 // Dummy main() function required by Go's c-archive build mode

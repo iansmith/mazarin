@@ -43,10 +43,13 @@ GO_SRC = $(GO_PACKAGE_DIR)/kernel.go \
          $(GO_PACKAGE_DIR)/heap.go \
          $(GO_PACKAGE_DIR)/gpu.go \
          $(GO_PACKAGE_DIR)/mailbox.go \
+         $(GO_PACKAGE_DIR)/memory.go \
          $(GO_PACKAGE_DIR)/framebuffer_common.go \
          $(GO_PACKAGE_DIR)/framebuffer_rpi.go \
          $(GO_PACKAGE_DIR)/framebuffer_qemu.go \
          $(GO_PACKAGE_DIR)/pci_qemu.go \
+         $(GO_PACKAGE_DIR)/ramfb_qemu.go \
+         $(GO_PACKAGE_DIR)/runtime_stub.go \
          $(GO_PACKAGE_DIR)/uart_rpi.go \
          $(GO_PACKAGE_DIR)/uart_qemu.go
 
@@ -156,7 +159,7 @@ $(KERNEL_GO_OBJ_QEMU): $(BITFIELD_GEN) go.mod $(GO_SRC)
 	 (echo "Warning: Could not weaken write barrier symbols")
 	@rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) kernel_go.h __.SYMDEF
 
-kernel-qemu.elf: $(BOOT_OBJ) $(LIB_OBJ) $(WRITEBARRIER_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT)
+kernel-qemu.elf: $(BOOT_OBJ) $(LIB_OBJ) $(WRITEBARRIER_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
 	@# Link writebarrier.o AFTER kernel_go_qemu.o so our global symbols override Go runtime's
 	@# Our writebarrier.s provides global (T) symbols that should take precedence
 	$(CC) $(LDFLAGS) -o $@.tmp $(BOOT_OBJ) $(LIB_OBJ) $(KERNEL_GO_OBJ_QEMU) $(WRITEBARRIER_OBJ)
@@ -181,7 +184,7 @@ test: $(BITFIELD_GEN)
 	@GOTOOLCHAIN=local $(GO) test -v ./bitfield
 
 # Phony targets
-.PHONY: all clean push generate test
+.PHONY: all clean push push-qemu generate test
 
 # Alias for backward compatibility (all just builds kernel.elf)
 all: $(KERNEL_ELF)

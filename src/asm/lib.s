@@ -14,6 +14,20 @@ mmio_read:
     ldr w0, [x0]        // Load 32-bit value from address in x0 to w0
     ret                 // Return (value already in w0)
 
+// mmio_write16(uintptr_t reg, uint16_t data)
+// x0 = register address, w1 = data (16-bit, zero-extended to 32-bit)
+.global mmio_write16
+mmio_write16:
+    strh w1, [x0]       // Store 16-bit value from w1 to address in x0
+    ret                 // Return
+
+// mmio_read16(uintptr_t reg)
+// x0 = register address, returns uint16_t in w0 (zero-extended to 32-bit)
+.global mmio_read16
+mmio_read16:
+    ldrh w0, [x0]       // Load 16-bit value from address in x0 to w0
+    ret                 // Return (value already in w0)
+
 // delay(int32_t count)
 // w0 = count (32-bit signed integer)
 .global delay
@@ -23,6 +37,13 @@ delay_loop:
     subs w0, w0, #1     // Decrement count
     bne delay_loop      // Branch if not zero
 delay_done:
+    ret                 // Return
+
+// mmio_write64(uintptr_t reg, uint64_t data)
+// x0 = register address, x1 = data (64-bit)
+.global mmio_write64
+mmio_write64:
+    str x1, [x0]        // Store 64-bit value from x1 to address in x0
     ret                 // Return
 
 // bzero(void *ptr, uint32_t size)

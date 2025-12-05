@@ -8,9 +8,14 @@
 #   VNC_PORT=5901 docker/runqemu-fb  # Use custom VNC port
 #
 # To view the display:
-#   - macOS: Open Finder, press Cmd+K, enter: vnc://localhost:5900
-#   - Or use a VNC client like "Screen Sharing" (built-in) or RealVNC Viewer
-#   - Or use command: open vnc://localhost:5900
+#   - RECOMMENDED: Use RealVNC Viewer or TigerVNC (see docs/qemu-vnc-framebuffer-setup.md)
+#     brew install --cask vnc-viewer   # RealVNC Viewer
+#     brew install tiger-vnc           # TigerVNC
+#   - Then connect to: localhost:5900
+#
+# IMPORTANT: Apple's Screen Sharing has known compatibility issues with QEMU VNC
+# and may not work correctly. Use RealVNC Viewer or TigerVNC instead.
+# See: docs/qemu-vnc-framebuffer-setup.md for detailed explanation
 
 # Use absolute path to builtin directory to handle symlinks correctly
 BUILTIN_DIR="/Users/iansmith/mazzy/docker/builtin"
@@ -41,12 +46,16 @@ CONTAINER_NAME="mazarin-$(date +%s)-$$"
 # -M virt: Use QEMU virt machine type (better UART compatibility than raspi4b)
 # -cpu cortex-a72: Use Cortex-A72 CPU (same as Raspberry Pi 4)
 # -m 512M: Allocate 512MB RAM
+# -device bochs-display: Add bochs-display device for framebuffer
+#   This is a simple PCI display device (vendor 0x1234, device 0x1111)
+#   Kernel finds it via PCI enumeration and writes to BAR0
+#   Simpler than full VGA emulation, works well with VNC
 # -serial stdio: Redirect UART output to console (so you see "Hello, Mazarin!" in terminal)
-# -vnc 0.0.0.0:0,password=off: VNC server on all interfaces, display :0, NO password
+# -vnc 0.0.0.0:$VNC_DISPLAY,password=off: VNC server on all interfaces
 #   Format: -vnc bind_address:display_number,password=off
 #   Display :0 maps to port 5900, :1 to 5901, etc.
-#   Note: macOS Screen Sharing has known compatibility issues with QEMU VNC
-#   Use an alternative VNC client like RealVNC Viewer or TigerVNC
+#   IMPORTANT: macOS Screen Sharing has known compatibility issues with QEMU VNC
+#   Use RealVNC Viewer or TigerVNC instead (see docs/qemu-vnc-framebuffer-setup.md)
 # -p $VNC_PORT:$VNC_PORT: Expose VNC port to host (maps container port to host port)
 #   This makes the VNC server accessible on localhost:$VNC_PORT from the host machine
 # -semihosting: Enable semihosting for clean program exit
@@ -62,6 +71,7 @@ docker run --rm -i \
     -cpu cortex-a72 \
     -m 512M \
     -kernel /mnt/builtin/kernel.elf \
+    -device bochs-display \
     -serial stdio \
     -semihosting \
     -vnc "0.0.0.0:$VNC_DISPLAY,password=off" \

@@ -24,14 +24,15 @@ s_wait:
     // QEMU virt machine memory layout:
     // - 0x00000000-0x08000000: Flash/ROM (kernel loaded at 0x200000)
     // - 0x09000000-0x09010000: UART (PL011)
-    // - 0x40000000-end:        RAM (actual writable memory)
+    // - 0x40000000-0x40100000: DTB (QEMU device tree blob, 1MB)
+    // - 0x40100000-end:        RAM (actual writable memory)
     //
-    // Set stack pointer to RAM region: 0x40400000 (4MB into RAM)
+    // Set stack pointer to RAM region: 0x40400000 (3MB after BSS start)
     movz x0, #0x4040, lsl #16    // 0x40400000
     mov sp, x0
 
-    // Clear BSS section (now in RAM region at 0x40000000)
-    ldr x4, =__bss_start         // 0x40000000
+    // Clear BSS section (now in RAM region at 0x40100000, after DTB)
+    ldr x4, =__bss_start         // 0x40100000
     ldr x9, =__bss_end           // ~0x4003c000
     mov x5, #0
     mov x6, #0
