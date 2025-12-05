@@ -232,37 +232,49 @@ var dmaAccessGlobal FWCfgDmaAccess
 func ramfbInit() bool {
 	uartPuts("RAMFB: Initializing...\r\n")
 
-	// Allocate framebuffer memory in RAM region
-	// QEMU virt machine: RAM starts at 0x40000000
-	// Use address 0x50000000 (256MB into RAM, well above kernel/stack/heap)
-	// This is within the RAM region (0x40000000 - end of RAM)
-	fbAddr := uintptr(0x50000000)
-	fbWidth := uint32(640)
-	fbHeight := uint32(480)
+	// Allocate framebuffer memory using heap
+	// QEMU virt machine: Kernel RAM is 0x40100000 - 0x60000000 (512MB)
+	// Heap is allocated from memInit() and is within this region
+	// Use kmalloc to allocate framebuffer (will be in heap region)
+	// Try to allocate at a lower address first (closer to heap start)
+	fbWidth := uint32(1280)
+	fbHeight := uint32(720)
+	fbSize := fbWidth * fbHeight * 4 // 4 bytes per pixel
+
+	uartPuts("RAMFB: Attempting to allocate framebuffer from heap...\r\n")
+	uartPuts("RAMFB: Calling kmalloc...\r\n")
+
+	fbMem := kmalloc(fbSize)
+	uartPuts("RAMFB: kmalloc returned\r\n")
+
+	if fbMem == nil {
+		uartPuts("RAMFB: ERROR - Failed to allocate framebuffer from heap\r\n")
+		return false
+	}
+	fbAddr := pointerToUintptr(fbMem)
+	uartPuts("RAMFB: Got framebuffer address (kmalloc succeeded)\r\n")
 	// Use 32-bit format (XRGB8888) like working example
 	// Working code: stride = fb_width * sizeof(uint32_t) = width * 4
-	fbStride := fbWidth * 4 // 640 * 4 = 2560 (matching working code)
-
-	uartPuts("RAMFB: Allocating framebuffer at 0x")
-	for shift := 60; shift >= 0; shift -= 4 {
-		digit := (uint64(fbAddr) >> shift) & 0xF
-		if digit < 10 {
-			uartPutc(byte('0' + digit))
-		} else {
-			uartPutc(byte('A' + digit - 10))
-		}
-	}
-	uartPuts("\r\n")
-	uartPuts("RAMFB: Creating config struct...\r\n")
+	fbStride := fbWidth * 4 // 1280 * 4 = 5120
 
 	// Create RAMFB configuration structure in global variable
 	// IMPORTANT: The RAMFBCfg structure fields must be in big-endian format
 	// when written via fw_cfg DMA, so we convert them to big-endian
 	uartPuts("RAMFB: Creating config struct...\r\n")
 
+	// Verify framebuffer address is within QEMU's RAM region
+	const QEMU_RAM_START = 0x40000000
+	const QEMU_RAM_END = 0x80000000
+	if fbAddr < QEMU_RAM_START || fbAddr >= QEMU_RAM_END {
+		uartPuts("RAMFB: ERROR - Address outside QEMU RAM\r\n")
+		return false
+	}
+
 	// Store native-endian values, then convert to big-endian
-	// Matching working code: qemu_ramfb_make_cfg sets fields in big-endian
-	ramfbCfg.SetAddr(swap64(uint64(fbAddr)))
+	fbAddrBE := swap64(uint64(fbAddr))
+	uartPuts("RAMFB: Address converted to big-endian\r\n")
+
+	ramfbCfg.SetAddr(fbAddrBE)
 	// Use 'XR24' (XRGB8888) format - 32-bit, matches working example code
 	// FourCC code: 0x34325258 = 'XR24' = XRGB8888 (32-bit, 4 bytes per pixel)
 	// Working code uses: FORMAT_XRGB8888 = 875713112 = 0x34325258
@@ -333,9 +345,9 @@ func ramfbInit() bool {
 	uartPuts("RAMFB: About to store framebuffer info...\r\n")
 
 	// Check stack usage before storing framebuffer info
-	// Initial stack pointer is at 0x40400000 (3MB into RAM)
+	// Initial stack pointer is at 0x60000000 (top of 512MB kernel region, set in boot.s)
 	// Stack grows downward, so lower values mean more stack used
-	const initialStackPtr uintptr = 0x40400000
+	const initialStackPtr uintptr = 0x60000000
 	currentStackPtr := get_stack_pointer()
 	stackUsed := initialStackPtr - currentStackPtr
 	uartPuts("RAMFB: Stack check - initial=0x")
@@ -458,7 +470,7 @@ func ramfbInit() bool {
 	uartPuts("RAMFB: Calculating buf size...\r\n")
 	fbinfo.BufSize = uint32(fbStride) * fbHeight
 	uartPuts("RAMFB: Storing buf pointer...\r\n")
-	fbinfo.Buf = unsafe.Pointer(fbAddr)
+	fbinfo.Buf = fbMem // Use the allocated memory pointer
 	uartPuts("RAMFB: Framebuffer info stored\r\n")
 
 	uartPuts("RAMFB: Initialized successfully\r\n")

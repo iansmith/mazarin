@@ -1,0 +1,85 @@
+#!/bin/bash
+
+# Script to run QEMU locally (not in container) with Cocoa display (native macOS)
+# This uses the same command line as runqemu-virt-vga but runs QEMU directly on the host
+#
+# Usage:
+#   docker/mazboot
+
+# Use absolute path to builtin directory
+BUILTIN_DIR="/Users/iansmith/mazzy/docker/builtin"
+KERNEL_PATH="$BUILTIN_DIR/kernel.elf"
+
+# Verify builtin directory exists
+if [ ! -d "$BUILTIN_DIR" ]; then
+    echo "Error: builtin directory does not exist at $BUILTIN_DIR" >&2
+    exit 1
+fi
+
+# Verify kernel.elf exists
+if [ ! -f "$KERNEL_PATH" ]; then
+    echo "Error: kernel.elf not found at $KERNEL_PATH" >&2
+    echo "Please build the QEMU kernel first: cd src && make push-qemu" >&2
+    exit 1
+fi
+
+# Check if qemu-system-aarch64 is available
+if ! command -v qemu-system-aarch64 &> /dev/null; then
+    echo "Error: qemu-system-aarch64 not found in PATH" >&2
+    echo "Please install QEMU or add it to your PATH" >&2
+    exit 1
+fi
+
+echo "Starting QEMU locally with 'virt' machine type and Cocoa display"
+echo ""
+echo "NOTE: Using 'virt' machine type instead of 'raspi4b' for better"
+echo "      display device support. This is a generic AArch64 virtual machine."
+echo ""
+echo "      This script uses ramfb device, which works better with AArch64."
+echo "      Note: bochs-display has known PCI memory bar caching issues on ARM."
+echo ""
+echo "      The kernel is built for Raspberry Pi, so some hardware-specific"
+echo "      features (like UART) may not work correctly with 'virt' machine."
+echo ""
+echo "Cocoa display window will open automatically"
+echo "UART output will appear in this terminal"
+echo "Press Ctrl+C to stop QEMU"
+echo ""
+
+# Create log directory if it doesn't exist
+LOG_DIR="/tmp/qemu-logs"
+mkdir -p "$LOG_DIR"
+
+# Run QEMU locally with Cocoa display
+# -M virt: Generic AArch64 virtual machine
+# -cpu cortex-a72: Use Cortex-A72 CPU (same as Raspberry Pi 4)
+# -m 1G: Allocate 1GB RAM (for kernel development)
+# -device loader,file=...: Load bare-metal kernel ELF file
+# -device ramfb: Add ramfb device for framebuffer (recommended for AArch64)
+#   Kernel initializes it via fw_cfg interface
+# -display cocoa: Use Cocoa display (native macOS, opens window directly on host)
+# -serial mon:stdio: Redirect UART output to console (mon:stdio for bare-metal)
+# -semihosting: Enable semihosting for clean program exit
+# -no-reboot: Exit on shutdown instead of rebooting
+# -d guest_errors,unimp,int: Enable debug output for guest errors
+# -trace "fw_cfg*": Trace firmware configuration operations
+# -D: Log file path
+qemu-system-aarch64 \
+    -M virt \
+    -cpu cortex-a72 \
+    -m 1G \
+    -device loader,file="$KERNEL_PATH",cpu-num=0 \
+    -device ramfb \
+    -vga none \
+    -display cocoa \
+    -serial mon:stdio \
+    -semihosting \
+    -no-reboot \
+    -d guest_errors,unimp,int \
+    -trace "fw_cfg*" \
+    -D "$LOG_DIR/qemu-$$.log"
+
+echo ""
+echo "QEMU log saved to: $LOG_DIR/qemu-$$.log"
+
+

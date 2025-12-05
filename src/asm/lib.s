@@ -74,6 +74,14 @@ get_stack_pointer:
     mov x0, sp           // Move stack pointer to x0 (return value)
     ret                  // Return
 
+// set_stack_pointer(sp uintptr) - Sets stack pointer register
+// x0 = new stack pointer value
+.global set_stack_pointer
+set_stack_pointer:
+    mov sp, x0           // Set stack pointer from x0
+    dsb sy               // Memory barrier to ensure SP update is visible
+    ret                  // Return
+
 // qemu_exit() - Exit QEMU using semihosting
 // This function uses the QEMU semihosting interface to cleanly exit
 // Requires QEMU to be run with -semihosting flag
@@ -118,6 +126,7 @@ qemu_exit:
 // Go exports it as main.KernelMain (package.function)
 .global kernel_main
 .extern main.KernelMain
+.extern main.GrowStackForCurrent
 kernel_main:
     // Write 'K' to show we're in kernel_main
     movz x10, #0x900, lsl #16    // UART base
@@ -165,4 +174,64 @@ stack_ok:
     // If we get here, KernelMain returned (shouldn't happen)
     // Just loop forever
     b .
+
+// =================================================================
+// Stack Growth Functions (Bare-Metal Implementation)
+// =================================================================
+// These functions are called by the Go compiler when a function
+// needs more stack space. For our large pre-allocated stack (508MB),
+// these should never be called. If they are, it indicates a stack overflow.
+
+// runtime.morestack is called by Go compiler when stack check fails
+// This implements simplified stack growth for bare-metal
+// Saves registers, calls growStack(), restores registers, continues
+.global runtime.morestack
+runtime.morestack:
+    // Save all callee-saved registers to current stack
+    // AArch64 calling convention: x19-x28, x29 (FP), x30 (LR) are callee-saved
+    // We also need to save x0-x7 (arguments) and x8 (indirect result)
+    // But morestack is called from function prologue, so we need to be careful
+    
+    // Save link register and frame pointer
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp  // Set frame pointer
+    
+    // Save callee-saved registers (x19-x28)
+    sub sp, sp, #80  // 10 registers * 8 bytes
+    stp x19, x20, [sp, #0]
+    stp x21, x22, [sp, #16]
+    stp x23, x24, [sp, #32]
+    stp x25, x26, [sp, #48]
+    stp x27, x28, [sp, #64]
+    
+    // TODO: Implement stack growth
+    // For now, just halt if morestack is called (shouldn't happen with large pre-allocated stack)
+    // bl main.GrowStackForCurrent
+    // Infinite loop - stack overflow
+halt_morestack:
+    b halt_morestack
+    
+    // Restore callee-saved registers
+    ldp x27, x28, [sp, #64]
+    ldp x25, x26, [sp, #48]
+    ldp x23, x24, [sp, #32]
+    ldp x21, x22, [sp, #16]
+    ldp x19, x20, [sp, #0]
+    add sp, sp, #80
+    
+    // Restore frame pointer and link register
+    ldp x29, x30, [sp], #16
+    
+    // Return to continue execution on new stack
+    ret
+
+// runtime.morestack_noctxt is called for functions without context
+.global runtime.morestack_noctxt
+runtime.morestack_noctxt:
+    b runtime.morestack  // Same as morestack
+
+// runtime.morestackc is called for C functions
+.global runtime.morestackc
+runtime.morestackc:
+    b runtime.morestack  // Same as morestack
 

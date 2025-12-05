@@ -21,14 +21,18 @@ s_wait:
     movz w13, #'S'
     str w13, [x10]
     
-    // QEMU virt machine memory layout:
+    // QEMU virt machine memory layout (1GB RAM):
     // - 0x00000000-0x08000000: Flash/ROM (kernel loaded at 0x200000)
     // - 0x09000000-0x09010000: UART (PL011)
     // - 0x40000000-0x40100000: DTB (QEMU device tree blob, 1MB)
-    // - 0x40100000-end:        RAM (actual writable memory)
+    // - 0x40100000-0x60000000: Kernel RAM (512MB allocated for kernel)
+    //   - 0x40100000-0x401xxxxx: BSS section
+    //   - 0x40400000-0x60000000: Stack (grows downward from 0x60000000)
+    //   - 0x40500000-0x60000000: Heap (after stack region)
     //
-    // Set stack pointer to RAM region: 0x40400000 (3MB after BSS start)
-    movz x0, #0x4040, lsl #16    // 0x40400000
+    // Set stack pointer to top of kernel RAM: 0x60000000 (512MB boundary)
+    // Stack grows downward, giving us ~508MB of stack space
+    movz x0, #0x6000, lsl #16    // 0x60000000 (top of 512MB kernel region)
     mov sp, x0
 
     // Clear BSS section (now in RAM region at 0x40100000, after DTB)

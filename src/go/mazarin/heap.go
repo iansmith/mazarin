@@ -6,9 +6,9 @@ import (
 
 // Memory management constants
 const (
-	PAGE_SIZE        = 4096        // 4KB page size
-	KERNEL_HEAP_SIZE = 1024 * 1024 // 1 MB heap size
-	HEAP_ALIGNMENT   = 16          // 16-byte alignment for allocations
+	PAGE_SIZE        = 4096             // 4KB page size
+	KERNEL_HEAP_SIZE = 64 * 1024 * 1024 // 64 MB heap size (increased for kernel development)
+	HEAP_ALIGNMENT   = 16               // 16-byte alignment for allocations
 )
 
 // Linker symbol: end of kernel (from linker.ld)
@@ -31,41 +31,53 @@ var heapSegmentListHead *heapSegment
 //
 //go:nosplit
 func heapInit(heapStart uintptr) {
-	// Debug: Write 'I' to mark heapInit entry - use direct writes to avoid any issues
-	// Use inline assembly-like direct writes
-	uartBaseLocal := uintptr(0x09000000)
-	uartFRLocal := uartBaseLocal + 0x18
-	uartDRLocal := uartBaseLocal + 0x00
-	for mmio_read(uartFRLocal)&(1<<5) != 0 {
-	}
-	mmio_write(uartDRLocal, uint32('I'))
+	uartPuts("heapInit: Starting...\r\n")
 
 	// Cast the start address to a heap segment pointer
 	heapSegmentListHead = castToPointer[heapSegment](heapStart)
-
-	// Debug: Write 'J' after setting head
-	for mmio_read(uartFRLocal)&(1<<5) != 0 {
-	}
-	mmio_write(uartDRLocal, uint32('J'))
+	uartPuts("heapInit: Set heapSegmentListHead\r\n")
 
 	// Zero out the initial segment header
 	bzero(unsafe.Pointer(heapSegmentListHead), uint32(unsafe.Sizeof(heapSegment{})))
-
-	// Debug: Write 'K' after bzero
-	for mmio_read(uartFRLocal)&(1<<5) != 0 {
-	}
-	mmio_write(uartDRLocal, uint32('K'))
+	uartPuts("heapInit: Zeroed segment header\r\n")
 
 	// Initialize the first segment to represent the entire heap as free
+	// But limit it to available space before stack region
+	const STACK_BOTTOM = 0x41000000 // Updated to match linker.ld (16MB into RAM)
+	heapEnd := heapStart + uintptr(KERNEL_HEAP_SIZE)
+	actualHeapSize := uint32(KERNEL_HEAP_SIZE)
+
+	// Check if heap would extend into stack
+	if heapEnd > STACK_BOTTOM {
+		// Heap would extend into stack region - limit it
+		maxSize := uint32(STACK_BOTTOM - heapStart)
+		if maxSize < 4*1024*1024 { // At least 4MB for framebuffer (3.6MB needed)
+			uartPuts("heapInit: ERROR - Heap too small after stack boundary check\r\n")
+			uartPuts("heapInit: Available space less than 4MB\r\n")
+			// Don't return - try with what we have, but it will fail
+		}
+		actualHeapSize = maxSize
+		uartPuts("heapInit: Limited heap size to avoid stack\r\n")
+	}
+
+	// Verify heap is large enough for framebuffer (3.6MB + header overhead)
+	// Framebuffer needs ~3.6MB, plus heapSegment header, plus alignment
+	const minNeeded uint32 = 4 * 1024 * 1024 // 4MB should be enough
+	if actualHeapSize < minNeeded {
+		uartPuts("heapInit: WARNING - Heap size may be too small for framebuffer\r\n")
+		uartPuts("heapInit: actualHeapSize is less than 4MB\r\n")
+	}
+
 	heapSegmentListHead.next = nil
 	heapSegmentListHead.prev = nil
 	heapSegmentListHead.isAllocated = 0
-	heapSegmentListHead.segmentSize = KERNEL_HEAP_SIZE
+	heapSegmentListHead.segmentSize = actualHeapSize
 
-	// Debug: Write 'L' after initialization
-	for mmio_read(uartFRLocal)&(1<<5) != 0 {
+	// Verify heap is large enough for framebuffer (3.6MB)
+	if actualHeapSize < 4*1024*1024 {
+		uartPuts("heapInit: WARNING - Heap may be too small for framebuffer\r\n")
 	}
-	mmio_write(uartDRLocal, uint32('L'))
+	uartPuts("heapInit: Complete\r\n")
 }
 
 // kmalloc allocates size bytes from the heap and returns a pointer to the memory
@@ -74,25 +86,13 @@ func heapInit(heapStart uintptr) {
 //
 //go:nosplit
 func kmalloc(size uint32) unsafe.Pointer {
-	// Debug: Write 'K' to mark kmalloc entry
-	const uartBase uintptr = 0x09000000
-	const uartFR = uartBase + 0x18
-	const uartDR = uartBase + 0x00
-	for mmio_read(uartFR)&(1<<5) != 0 {
-	}
-	mmio_write(uartDR, uint32('K'))
-
 	var curr *heapSegment
 	var best *heapSegment
 	bestDiff := int32(0x7FFFFFFF) // Max signed int32
 
-	// Debug: Write '1' after variable initialization
-	for mmio_read(uartFR)&(1<<5) != 0 {
-	}
-	mmio_write(uartDR, uint32('1'))
-
 	// Add the header size to the requested size
-	totalSize := size + uint32(unsafe.Sizeof(heapSegment{}))
+	headerSize := uint32(unsafe.Sizeof(heapSegment{}))
+	totalSize := size + headerSize
 
 	// Align to 16 bytes
 	align := uintptr(HEAP_ALIGNMENT)
@@ -101,65 +101,57 @@ func kmalloc(size uint32) unsafe.Pointer {
 		totalSize = uint32(uintptr(totalSize) + align - remainder)
 	}
 
-	// Debug: Write '2' before heap check
-	for mmio_read(uartFR)&(1<<5) != 0 {
-	}
-	mmio_write(uartDR, uint32('2'))
-
 	// Find the best-fit free segment
 	// Safety check: if heap isn't initialized, return nil
 	if heapSegmentListHead == nil {
-		// Debug: Write 'N' for nil head
-		for mmio_read(uartFR)&(1<<5) != 0 {
-		}
-		mmio_write(uartDR, uint32('N'))
+		uartPuts("kmalloc: ERROR - heap not initialized\r\n")
 		return nil
 	}
 
-	// Debug: Write '3' after nil check
-	for mmio_read(uartFR)&(1<<5) != 0 {
-	}
-	mmio_write(uartDR, uint32('3'))
-
 	curr = heapSegmentListHead
-
-	// Debug: Write '4' after setting curr
-	for mmio_read(uartFR)&(1<<5) != 0 {
-	}
-	mmio_write(uartDR, uint32('4'))
 
 	loopCount := uint32(0)
 	maxLoops := uint32(1000) // Safety limit to prevent infinite loops
 	for curr != nil && loopCount < maxLoops {
-		// Debug: Write 'L' each loop iteration
-		for mmio_read(uartFR)&(1<<5) != 0 {
-		}
-		mmio_write(uartDR, uint32('L'))
-
 		if curr.isAllocated == 0 {
 			// This segment is free
 			diff := int32(curr.segmentSize) - int32(totalSize)
 			if diff >= 0 && diff < bestDiff {
 				best = curr
 				bestDiff = diff
+				// Found a suitable segment, can break early if exact match
+				if diff == 0 {
+					break
+				}
 			}
 		}
-		curr = curr.next // This might be causing the hang if curr.next is invalid
+		curr = curr.next
 		loopCount++
 	}
 
-	// Debug: Write '5' after loop
-	for mmio_read(uartFR)&(1<<5) != 0 {
-	}
-	mmio_write(uartDR, uint32('5'))
-
 	// If we hit the loop limit, something is wrong with the heap structure
 	if loopCount >= maxLoops {
+		uartPuts("kmalloc: ERROR - loop limit reached\r\n")
 		return nil
 	}
 
 	// No suitable free segment found
 	if best == nil {
+		uartPuts("kmalloc: No suitable free segment found\r\n")
+		// Debug: Check what we have
+		if heapSegmentListHead != nil {
+			uartPuts("kmalloc: head segment size=")
+			// Can't print number easily, but check if it's allocated
+			if heapSegmentListHead.isAllocated != 0 {
+				uartPuts("allocated\r\n")
+			} else {
+				uartPuts("free, but too small\r\n")
+			}
+			// Check if size is reasonable
+			if heapSegmentListHead.segmentSize < totalSize {
+				uartPuts("kmalloc: Segment too small for request\r\n")
+			}
+		}
 		return nil
 	}
 
@@ -254,9 +246,12 @@ func kfree(ptr unsafe.Pointer) {
 //
 //go:nosplit
 func memInit(atagsPtr uintptr) {
+	uartPuts("memInit: Starting...\r\n")
 	// Step 1: Initialize page management system (Part 04)
 	// This also reserves heap pages
+	uartPuts("memInit: Calling pageInit...\r\n")
 	pageInit(atagsPtr)
+	uartPuts("memInit: pageInit complete\r\n")
 
 	// Step 2: Calculate heap start after page metadata array
 	// Page metadata array starts at __end and has size: numPages * sizeof(Page)
@@ -270,7 +265,28 @@ func memInit(atagsPtr uintptr) {
 	heapStartBase := getLinkerSymbol("__end") + pageArraySize
 	heapStart := (heapStartBase + HEAP_ALIGNMENT - 1) &^ (HEAP_ALIGNMENT - 1)
 
+	// Step 2.5: Verify heap fits before stack region
+	// Stack starts at 0x41000000 (16MB into RAM), heap must end before that
+	const STACK_BOTTOM = 0x41000000 // Updated to match linker.ld
+	heapEnd := heapStart + KERNEL_HEAP_SIZE
+	if heapEnd > STACK_BOTTOM {
+		// Heap would overlap with stack - reduce heap size
+		maxHeapSize := STACK_BOTTOM - heapStart
+		if maxHeapSize < 4*1024*1024 {
+			// Not enough space for framebuffer (needs 3.6MB)
+			uartPuts("memInit: ERROR - Not enough space for heap (would overlap stack)\r\n")
+			uartPuts("memInit: Available space is less than 4MB\r\n")
+			return
+		}
+		// Use available space (will be set in heapInit)
+		uartPuts("WARNING: Reducing heap size to fit before stack\r\n")
+		// Note: We can't change KERNEL_HEAP_SIZE constant, but heapInit uses it
+		// For now, just warn - in practice with 512MB, this shouldn't happen
+	}
+
 	// Step 3: Initialize heap allocator (Part 05)
 	// Heap pages are already reserved by pageInit()
+	uartPuts("memInit: Calling heapInit...\r\n")
 	heapInit(heapStart)
+	uartPuts("memInit: Complete\r\n")
 }

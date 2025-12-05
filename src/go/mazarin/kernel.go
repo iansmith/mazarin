@@ -267,6 +267,18 @@ func KernelMain(r0, r1, atags uint32) {
 	// Note: x28 (goroutine pointer) is set in lib.s before calling KernelMain
 	initRuntimeStubs()
 
+	// Initialize kernel stack info for Go runtime stack checks
+	// The actual stack pointer is set in boot.s, but we need to tell
+	// the Go runtime where the stack bounds are
+	initKernelStack()
+	uartPuts("Stack init complete\r\n")
+
+	// Reference GrowStackForCurrent to prevent optimization
+	// This function is called from assembly (morestack) and must not be optimized away
+	// Temporarily disabled until stack growth is fully implemented
+	// var fnPtr func() = GrowStackForCurrent
+	// _ = fnPtr
+
 	// UART helpers (string literals don't work in bare-metal)
 	const uartBase uintptr = 0x09000000
 	const uartFR = uartBase + 0x18
@@ -311,30 +323,22 @@ func KernelMain(r0, r1, atags uint32) {
 		puts("Write barrier flag: enabled\r\n")
 	}
 
+	// Initialize memory management (page allocator and heap)
+	// This properly calculates heap start from __end + page metadata
+	// QEMU virt memory layout (512MB kernel region):
+	//   0x40100000 - 0x401xxxxx: BSS section (ends at __end)
+	//   __end + pageArraySize: Heap start (calculated by memInit)
+	//   0x40400000 - 0x60000000: Stack (grows downward from 0x60000000)
+	puts("Initializing memory management...\r\n")
+	memInit(0) // No ATAGs in QEMU, pass 0
+	puts("Memory management initialized\r\n")
+
 	// Test global pointer assignment (triggers write barrier)
-	// heapSegmentListHead is a global *heapSegment variable
-	// QEMU virt memory: 0x40000000-0x40100000 = DTB (1MB)
-	//                   0x40100000+ = BSS
-	//                   0x40400000 = Stack
-	//                   0x40500000+ = Heap (1MB after stack)
-	heapStart := uintptr(0x40500000)   // Heap in RAM region
-	heapStart = (heapStart + 15) &^ 15 // Align to 16 bytes
-
-	// This assignment will trigger the Go compiler's write barrier check!
-	heapSegmentListHead = castToPointer[heapSegment](heapStart)
-
-	// Verify the assignment worked
+	// This verifies write barrier works with heapSegmentListHead
 	if heapSegmentListHead == nil {
-		puts("ERROR: Global pointer assignment failed!\r\n")
+		puts("ERROR: Heap not initialized!\r\n")
 	} else {
-		puts("SUCCESS: Global pointer assignment works!\r\n")
-		// Initialize the heap segment
-		bzero(unsafe.Pointer(heapSegmentListHead), uint32(unsafe.Sizeof(heapSegment{})))
-		heapSegmentListHead.next = nil
-		heapSegmentListHead.prev = nil
-		heapSegmentListHead.isAllocated = 0
-		heapSegmentListHead.segmentSize = KERNEL_HEAP_SIZE
-		puts("Heap initialized at RAM region\r\n")
+		puts("SUCCESS: Heap initialized and write barrier works!\r\n")
 	}
 
 	// Test: Can we still print after heap init?
@@ -426,14 +430,14 @@ func drawTestPattern() {
 	pixels := (*[1 << 30]byte)(fbinfo.Buf)
 
 	// Draw colored rectangles across the screen
-	// Each rectangle is 160 pixels wide (640/4 = 160)
+	// Each rectangle is 320 pixels wide (1280/4 = 320)
 
 	// NOTE: bochs-display uses BGR byte order (Blue, Green, Red), not RGB!
 	// So pixels[offset+0] = Blue, pixels[offset+1] = Green, pixels[offset+2] = Red
 
 	// Red rectangle (left quarter) - BGR: [Blue=0x00, Green=0x00, Red=0xFF]
 	for y := uint32(0); y < fbinfo.Height; y++ {
-		for x := uint32(0); x < 160; x++ {
+		for x := uint32(0); x < 320; x++ {
 			offset := (y * fbinfo.Pitch) + (x * BYTES_PER_PIXEL)
 			pixels[offset+0] = 0x00 // Blue
 			pixels[offset+1] = 0x00 // Green
@@ -443,7 +447,7 @@ func drawTestPattern() {
 
 	// Green rectangle (second quarter) - BGR: [Blue=0x00, Green=0xFF, Red=0x00]
 	for y := uint32(0); y < fbinfo.Height; y++ {
-		for x := uint32(160); x < 320; x++ {
+		for x := uint32(320); x < 640; x++ {
 			offset := (y * fbinfo.Pitch) + (x * BYTES_PER_PIXEL)
 			pixels[offset+0] = 0x00 // Blue
 			pixels[offset+1] = 0xFF // Green
@@ -453,7 +457,7 @@ func drawTestPattern() {
 
 	// Blue rectangle (third quarter) - BGR: [Blue=0xFF, Green=0x00, Red=0x00]
 	for y := uint32(0); y < fbinfo.Height; y++ {
-		for x := uint32(320); x < 480; x++ {
+		for x := uint32(640); x < 960; x++ {
 			offset := (y * fbinfo.Pitch) + (x * BYTES_PER_PIXEL)
 			pixels[offset+0] = 0xFF // Blue
 			pixels[offset+1] = 0x00 // Green
@@ -463,7 +467,7 @@ func drawTestPattern() {
 
 	// White rectangle (right quarter) - BGR: 0xFF, 0xFF, 0xFF
 	for y := uint32(0); y < fbinfo.Height; y++ {
-		for x := uint32(480); x < 640; x++ {
+		for x := uint32(960); x < 1280; x++ {
 			offset := (y * fbinfo.Pitch) + (x * BYTES_PER_PIXEL)
 			pixels[offset+0] = 0xFF // Blue
 			pixels[offset+1] = 0xFF // Green

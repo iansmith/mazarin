@@ -144,10 +144,10 @@ $(KERNEL_GO_OBJ_QEMU): $(BITFIELD_GEN) go.mod $(GO_SRC)
 	@# Extract the actual object file (go.o) from the C archive
 	@ar x $(KERNEL_GO_ARCHIVE) go.o
 	@mv go.o $(KERNEL_GO_TEMP)
-	@# Use objcopy to promote main.KernelMain from local to global symbol
-	@# This allows the linker to resolve it from assembly (lib.s calls main.KernelMain)
-	@$(OBJCOPY) --globalize-symbol=main.KernelMain $(KERNEL_GO_TEMP) $@ || \
-	 (cp $(KERNEL_GO_TEMP) $@ && echo "Warning: Could not promote symbol")
+	@# Use objcopy to promote main.KernelMain and main.GrowStackForCurrent from local to global symbols
+	@# This allows the linker to resolve them from assembly
+	@$(OBJCOPY) --globalize-symbol=main.KernelMain --globalize-symbol=main.GrowStackForCurrent $(KERNEL_GO_TEMP) $@ || \
+	 (cp $(KERNEL_GO_TEMP) $@ && echo "Warning: Could not promote symbols")
 	@# Weaken Go runtime's write barrier symbols so our strong global versions override them
 	@# This allows our writebarrier.s implementations to be used instead
 	@echo "Weakening Go runtime write barrier symbols..."
@@ -174,7 +174,7 @@ push: $(KERNEL_ELF)
 	cp $(KERNEL_ELF) ../docker/builtin/
 
 # Push QEMU kernel to docker/builtin directory
-push-qemu: kernel-qemu.elf
+qemu: kernel-qemu.elf
 	@mkdir -p ../docker/builtin
 	cp kernel-qemu.elf ../docker/builtin/kernel.elf
 
@@ -184,7 +184,7 @@ test: $(BITFIELD_GEN)
 	@GOTOOLCHAIN=local $(GO) test -v ./bitfield
 
 # Phony targets
-.PHONY: all clean push push-qemu generate test
+.PHONY: all clean push qemu generate test
 
 # Alias for backward compatibility (all just builds kernel.elf)
 all: $(KERNEL_ELF)
