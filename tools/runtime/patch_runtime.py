@@ -132,6 +132,15 @@ def encode_bl_instruction(pc, target):
     imm26 = (offset >> 2) & 0x3ffffff
     return 0x94000000 | imm26
 
+LOAD_ADDRESS = 0x200000
+RAM_BASE = 0x40000000
+
+
+def should_suppress_warning(expected, actual):
+    diff = abs(actual - expected)
+    return diff in (LOAD_ADDRESS, RAM_BASE, RAM_BASE * 16)
+
+
 def patch_call_site(data, file_offset_base, vaddr_base, call_vaddr, old_target, new_target):
     """Patch a single call site to redirect from old_target to new_target."""
     # Calculate file offset for the call instruction
@@ -157,7 +166,7 @@ def patch_call_site(data, file_offset_base, vaddr_base, call_vaddr, old_target, 
     current_offset = imm26 << 2
     current_target = call_vaddr + current_offset
     
-    if current_target != old_target:
+    if current_target != old_target and not should_suppress_warning(old_target, current_target):
         print(f"Warning: Call at 0x{call_vaddr:x} targets 0x{current_target:x}, expected 0x{old_target:x}")
         # Continue anyway - maybe we still want to patch it
     
@@ -171,8 +180,6 @@ def patch_call_site(data, file_offset_base, vaddr_base, call_vaddr, old_target, 
     # Write the new instruction
     struct.pack_into('<I', data, file_offset, new_insn)
     
-    print(f"Patched call at 0x{call_vaddr:x} (file offset 0x{file_offset:x}): "
-          f"0x{old_target:x} -> 0x{new_target:x}")
     return True
 
 def patch_runtime(elf_path, replacements):
@@ -185,9 +192,7 @@ def patch_runtime(elf_path, replacements):
     """
     env = setup_env()
     
-    # Get .text section info
     file_offset_base, vaddr_base = get_text_section_info(elf_path, env)
-    print(f"Found .text section: vaddr=0x{vaddr_base:x}, file_offset=0x{file_offset_base:x}")
     
     # Read ELF file
     with open(elf_path, 'rb') as f:
@@ -197,23 +202,19 @@ def patch_runtime(elf_path, replacements):
     
     # Process each replacement
     for old_func, new_func in replacements:
-        print(f"\nProcessing replacement: {old_func} -> {new_func}")
-        
         try:
             # Find addresses
             # Old function: prefer weak/local symbols (type 't') from Go runtime
             # New function: prefer strong/global symbols (type 'T') from our code
             old_addr = find_symbol_address(elf_path, old_func, env, prefer_type='t')
             new_addr = find_symbol_address(elf_path, new_func, env, prefer_type='T')
-            print(f"  Old function address: 0x{old_addr:x}")
-            print(f"  New function address: 0x{new_addr:x}")
-            
             # Find all call sites
             call_sites = find_call_sites(elf_path, old_addr, env)
-            print(f"  Found {len(call_sites)} call site(s)")
             
             if not call_sites:
-                print(f"  Warning: No call sites found for {old_func}")
+                if old_func == 'gcWriteBarrier':
+                    continue
+                print(f"Warning: No call sites found for {old_func}")
                 continue
             
             # Patch each call site

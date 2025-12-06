@@ -254,6 +254,7 @@ func SimpleTestKernel() {
 	uartPuts("UART Test: Hello from simplified kernel!\r\n")
 
 	// Exit via semihosting
+	uartPuts("Exiting via semihosting\r\n")
 	qemu_exit()
 }
 
@@ -282,7 +283,6 @@ func KernelMain(r0, r1, atags uint32) {
 	// The actual stack pointer is set in boot.s, but we need to tell
 	// the Go runtime where the stack bounds are
 	initKernelStack()
-	uartPuts("Stack init complete\r\n")
 
 	// Reference GrowStackForCurrent to prevent optimization
 	// This function is called from assembly (morestack) and must not be optimized away
@@ -346,28 +346,9 @@ func KernelMain(r0, r1, atags uint32) {
 	// This verifies write barrier works with heapSegmentListHead
 	if heapSegmentListHead == nil {
 		puts("ERROR: Heap not initialized!\r\n")
-	} else {
-		puts("SUCCESS: Heap initialized and write barrier works!\r\n")
 	}
 
-	// Test: Can we still print after heap init?
-	uartPuts("A\r\n")
-	uartPuts("B\r\n")
-	uartPuts("C\r\n")
-
-	// Initialize framebuffer for VNC display
-	uartPuts("D\r\n")
-
-	// Try to call framebufferInit - if it crashes, we won't see the next message
 	fbResult := framebufferInit()
-
-	uartPuts("E\r\n")
-	uartPuts("FB result: ")
-	if fbResult == 0 {
-		uartPuts("SUCCESS (0)\r\n")
-	} else {
-		uartPuts("FAILED (non-zero)\r\n")
-	}
 
 	if fbResult == 0 {
 		// Draw a simple test - just fill first few pixels
@@ -384,14 +365,9 @@ func KernelMain(r0, r1, atags uint32) {
 			}
 		}
 
-		// Draw test pattern to framebuffer
 		drawTestPattern()
 
-		// Draw test pattern and exit (for faster iteration)
-		// Note: ramfb should hold the framebuffer content without constant refresh
-		uartPuts("Framebuffer initialized successfully\r\n")
 		drawTestPattern()
-		uartPuts("Test pattern drawn - exiting via semihosting\r\n")
 	}
 
 	puts("\r\n")

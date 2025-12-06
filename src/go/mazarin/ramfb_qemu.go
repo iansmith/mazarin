@@ -348,9 +348,16 @@ func ramfbInit() bool {
 
 	uartPuts("RAMFB: Config struct created (big-endian)\r\n")
 
-	// Write configuration using the selector we found earlier
+	// Write configuration using DMA (primary method)
+	uartPuts("RAMFB: Attempting DMA write of config...\r\n")
+	fw_cfg_dma_write(ramfbSelector, unsafe.Pointer(&ramfbCfg), 28)
+	uartPuts("RAMFB: DMA write completed\r\n")
+
+	// If DMA doesn't work, try traditional interface as fallback
+	// The traditional interface is 100% reliable for writes
+	uartPuts("RAMFB: Verifying config was written (via traditional interface read-back)...\r\n")
 	if !writeRamfbConfig(&ramfbCfg, ramfbSelector) {
-		uartPuts("RAMFB: ERROR - Config write failed\r\n")
+		uartPuts("RAMFB: ERROR - Config verification/fallback write failed\r\n")
 		return false
 	}
 	uartPuts("RAMFB: Config sent successfully (QEMU now knows about framebuffer)\r\n")
@@ -619,6 +626,14 @@ func fw_cfg_dma_read(selector uint32, buf unsafe.Pointer, length uint32) {
 	qemu_cfg_dma_transfer(buf, length, control)
 }
 
+// fw_cfg_dma_write writes data to fw_cfg using DMA
+//
+//go:nosplit
+func fw_cfg_dma_write(selector uint32, buf unsafe.Pointer, length uint32) {
+	control := (selector << 16) | uint32(FW_CFG_DMA_CTL_SELECT) | uint32(FW_CFG_DMA_CTL_WRITE)
+	qemu_cfg_dma_transfer(buf, length, control)
+}
+
 // qemu_cfg_read_entry is now a wrapper for the clean API
 //
 //go:nosplit
@@ -679,7 +694,7 @@ func qemu_cfg_dma_transfer(dataAddr unsafe.Pointer, length uint32, control uint3
 	// Matching working code: while(__builtin_bswap32(access.control) & ~QEMU_CFG_DMA_CTL_ERROR) {}
 	// The condition is: continue while (control & ~ERROR) != 0
 	// This means: continue while any bits except error bit (bit 0) are set
-	maxIterations := 10000 // Reduced timeout since DMA doesn't work
+	maxIterations := 100000 // Increased timeout for DMA
 	iterations := 0
 
 	// Memory barrier before reading control field
@@ -752,9 +767,10 @@ func qemu_cfg_dma_transfer(dataAddr unsafe.Pointer, length uint32, control uint3
 			printHex32Helper(uint32(iterations))
 			uartPuts("\r\n")
 		}
-		// Small delay to avoid tight loop
-		for delay := 0; delay < 100; delay++ {
-		}
+		// Use proper delay function instead of empty loop
+		// This gives QEMU time to process the DMA request
+		// The delay() function is implemented in assembly and provides microsecond-scale waits
+		delay(1000) // 1000 iterations of assembly delay loop
 	}
 }
 

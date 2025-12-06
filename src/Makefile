@@ -66,6 +66,7 @@ KERNEL_GO_OBJ = kernel_go.o
 
 # Output file
 KERNEL_ELF = kernel.elf
+QEMU_KERNEL_OUT = ../docker/builtin/kernel.elf
 
 # Default: use Go version
 KERNEL_OBJ = $(KERNEL_GO_OBJ)
@@ -173,10 +174,12 @@ push: $(KERNEL_ELF)
 	@mkdir -p ../docker/builtin
 	cp $(KERNEL_ELF) ../docker/builtin/
 
-# Push QEMU kernel to docker/builtin directory
-qemu: kernel-qemu.elf
+# Push QEMU kernel to docker/builtin directory (used by mazboot)
+qemu: $(QEMU_KERNEL_OUT)
+
+$(QEMU_KERNEL_OUT): kernel-qemu.elf
 	@mkdir -p ../docker/builtin
-	cp kernel-qemu.elf ../docker/builtin/kernel.elf
+	cp $< $@
 
 # Test target - run Go tests
 test: $(BITFIELD_GEN)
