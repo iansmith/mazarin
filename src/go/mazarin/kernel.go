@@ -10,6 +10,14 @@ import (
 //go:nosplit
 func mmio_write(reg uintptr, data uint32)
 
+//go:linkname uart_init_pl011 uart_init_pl011
+//go:nosplit
+func uart_init_pl011()
+
+//go:linkname uart_putc_pl011 uart_putc_pl011
+//go:nosplit
+func uart_putc_pl011(c byte)
+
 //go:linkname mmio_read mmio_read
 //go:nosplit
 func mmio_read(reg uintptr) uint32
@@ -98,38 +106,23 @@ const (
 
 //go:nosplit
 func uartPutsBytes(data *byte, length int) {
-	const uartBase uintptr = 0x09000000
-	const uartFR = uartBase + 0x18
-	const uartDR = uartBase + 0x00
-
 	ptr := uintptr(unsafe.Pointer(data))
 	lenVal := length
 
-	// Write all characters in the string
+	// Write all characters in the string using uartPutc (which checks if UART is enabled)
 	for i := 0; i < lenVal; i++ {
-		// Wait for transmit FIFO to have space
-		for mmio_read(uartFR)&(1<<5) != 0 {
-		}
-		// Write character
-		mmio_write(uartDR, uint32(*(*byte)(unsafe.Pointer(ptr + uintptr(i)))))
+		uartPutc(*(*byte)(unsafe.Pointer(ptr + uintptr(i))))
 	}
 }
 
 //go:nosplit
 func uartPutHex64(val uint64) {
-	const uartBase uintptr = 0x09000000
-	const uartFR = uartBase + 0x18
-	const uartDR = uartBase + 0x00
-
-	// Write hex digits directly without loops (avoid loop issues in bare-metal)
-	// Extract and write each nibble explicitly
+	// Write hex digits using uartPutc (which checks if UART is enabled)
 	writeHexDigit := func(digit uint32) {
-		for mmio_read(uartFR)&(1<<5) != 0 {
-		}
 		if digit < 10 {
-			mmio_write(uartDR, uint32('0'+digit))
+			uartPutc(byte('0' + digit))
 		} else {
-			mmio_write(uartDR, uint32('A'+digit-10))
+			uartPutc(byte('A' + digit - 10))
 		}
 	}
 
@@ -161,10 +154,8 @@ func uartPuts(str string) {
 	//
 	// This function is kept for API compatibility, but string literals won't work.
 	// Use uartPutsBytes with explicit byte arrays instead.
-
-	const uartBase uintptr = 0x09000000
-	const uartFR = uartBase + 0x18
-	const uartDR = uartBase + 0x00
+	//
+	// Use uartPutc instead of direct MMIO to ensure UART is enabled
 
 	// Use unsafe.StringData() if available (Go 1.20+), otherwise fall back to manual access
 	// For bare-metal, we use the manual string header access pattern
@@ -250,12 +241,32 @@ func uartPutMemSize(sizeBytes uint32) {
 	}
 }
 
+// SimpleTestKernel is a minimal test kernel for fast UART debugging
+// Just initializes UART, writes a string, and exits via semihosting
+//
+//go:nosplit
+//go:noinline
+func SimpleTestKernel() {
+	// Initialize UART
+	uartInit()
+
+	// Write test string
+	uartPuts("UART Test: Hello from simplified kernel!\r\n")
+
+	// Exit via semihosting
+	qemu_exit()
+}
+
 // KernelMain is the entry point called from boot.s
 // For bare metal, we ensure it's not optimized away
 //
 //go:nosplit
 //go:noinline
 func KernelMain(r0, r1, atags uint32) {
+	// Uncomment the line below to use simplified test kernel
+	// SimpleTestKernel()
+	// return
+
 	_ = r0
 	_ = r1
 
@@ -285,9 +296,7 @@ func KernelMain(r0, r1, atags uint32) {
 	const uartDR = uartBase + 0x00
 
 	putc := func(c byte) {
-		for mmio_read(uartFR)&(1<<5) != 0 {
-		}
-		mmio_write(uartDR, uint32(c))
+		uartPutc(c) // Use uartPutc which checks if UART is enabled
 	}
 
 	puts := func(s string) {
@@ -378,39 +387,24 @@ func KernelMain(r0, r1, atags uint32) {
 		// Draw test pattern to framebuffer
 		drawTestPattern()
 
-		// Infinite loop to keep program alive
+		// Draw test pattern and exit (for faster iteration)
 		// Note: ramfb should hold the framebuffer content without constant refresh
-		// If it's clearing, there may be a configuration issue
-		uartPuts("Entering main loop - framebuffer should stay visible\r\n")
-		loopCount := 0
-		for {
-			// Just keep the program alive - framebuffer should persist
-			// Only refresh occasionally to verify it's still working
-			if fbinfo.Buf != nil && loopCount%1000000 == 0 {
-				// Refresh every million iterations (very infrequent)
-				refreshFramebuffer()
-				uartPuts("FB: Periodic refresh (loop 0x")
-				printHex32(uint32(loopCount))
-				uartPuts(")\r\n")
-			}
-			loopCount++
-
-			// Wait a bit between iterations
-			for i := 0; i < 1000000; i++ {
-				// Busy wait
-			}
-		}
+		uartPuts("Framebuffer initialized successfully\r\n")
+		drawTestPattern()
+		uartPuts("Test pattern drawn - exiting via semihosting\r\n")
 	}
 
 	puts("\r\n")
-	puts("All tests passed! Exiting via semihosting...\r\n")
+	puts("All tests passed! Busy waiting to keep display visible...\r\n")
+	puts("Press Ctrl+C in QEMU to exit\r\n")
 
-	// Exit cleanly via QEMU semihosting
-	qemu_exit()
-
-	// If semihosting is not enabled, we'll reach here
-	// Loop forever as fallback
+	// Busy wait forever to keep the display window open
+	// This allows the user to check if the framebuffer is displaying correctly
 	for {
+		// Busy wait - keep the program alive so display stays visible
+		for i := 0; i < 1000000; i++ {
+			// Empty loop
+		}
 	}
 }
 

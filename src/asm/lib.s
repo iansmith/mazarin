@@ -128,22 +128,8 @@ qemu_exit:
 .extern main.KernelMain
 .extern main.GrowStackForCurrent
 kernel_main:
-    // Write 'K' to show we're in kernel_main
-    movz x10, #0x900, lsl #16    // UART base
-    movk x10, #0x0000, lsl #0
-    add x11, x10, #0x18          // FR register
-k_wait:
-    ldr w12, [x11]
-    tst w12, #(1 << 5)
-    bne k_wait
-    movz w13, #'K'
-    str w13, [x10]
-k_wait2:
-    ldr w12, [x11]
-    tst w12, #(1 << 5)
-    bne k_wait2
-    movz w13, #'\n'
-    str w13, [x10]
+    // UART will be initialized by uartInit() called from kernel_main
+    // No early debug writes
     
     // Function signature: KernelMain(r0, r1, atags uint32)
     // AArch64 calling convention: first 8 parameters in x0-x7
@@ -234,4 +220,142 @@ runtime.morestack_noctxt:
 .global runtime.morestackc
 runtime.morestackc:
     b runtime.morestack  // Same as morestack
+
+// =================================================================
+// PL011 UART Functions for QEMU virt machine
+// =================================================================
+
+// PL011 UART base address and register offsets
+.equ QEMU_UART_BASE, 0x09000000
+.equ UART_DR_OFFSET, 0x00   // Data Register
+.equ UART_FR_OFFSET, 0x18   // Flag Register
+.equ UART_IBRD_OFFSET, 0x24 // Integer Baud Rate Divisor Register
+.equ UART_FBRD_OFFSET, 0x28 // Fractional Baud Rate Divisor Register
+.equ UART_LCRH_OFFSET, 0x2C // Line Control Register High
+.equ UART_CR_OFFSET, 0x30   // Control Register
+.equ UART_IMSC_OFFSET, 0x38 // Interrupt Mask Set/Clear Register
+.equ UART_DMACR_OFFSET, 0x48 // DMA Control Register
+
+// Bit definitions
+.equ CR_UARTEN, (1 << 0)    // UART Enable bit
+.equ CR_TXEN, (1 << 8)      // Transmit Enable bit
+.equ CR_RXEN, (1 << 9)      // Receive Enable bit
+.equ FR_BUSY, (1 << 3)      // BUSY bit in Flag Register
+.equ FR_TXFF, (1 << 5)      // Transmit FIFO Full bit
+.equ LCR_FEN, (1 << 4)      // FIFO Enable bit
+
+// uart_init_pl011 initializes the PL011 UART for QEMU virt machine
+// Follows proper PL011 initialization sequence from specification
+// No parameters needed
+.global uart_init_pl011
+uart_init_pl011:
+    ldr x1, =QEMU_UART_BASE
+
+    // Step 1: Disable UART (clear UARTEN bit)
+    ldr w2, [x1, #UART_CR_OFFSET]
+    bic w2, w2, #CR_UARTEN      // Clear UARTEN bit
+    str w2, [x1, #UART_CR_OFFSET]
+    dsb sy                       // Memory barrier
+
+    // Step 2: Wait for any ongoing transmission to complete
+    // Check BUSY bit (bit 3) in UARTFR
+wait_tx_complete:
+    ldr w2, [x1, #UART_FR_OFFSET]
+    tst w2, #FR_BUSY             // Test BUSY bit
+    bne wait_tx_complete         // If busy, keep waiting
+
+    // Step 3: Flush FIFOs (clear FEN bit in UARTLCR_H)
+    ldr w2, [x1, #UART_LCRH_OFFSET]
+    bic w2, w2, #LCR_FEN         // Clear FEN bit to flush FIFOs
+    str w2, [x1, #UART_LCRH_OFFSET]
+    dsb sy
+
+    // Step 4: Configure Baud Rate divisors
+    // For QEMU, use simple divisors (115200 baud with 24MHz clock)
+    // IBRD = 1, FBRD = 0 (or calculate properly if needed)
+    mov w2, #1                   // IBRD = 1
+    str w2, [x1, #UART_IBRD_OFFSET]
+    mov w2, #0                   // FBRD = 0
+    str w2, [x1, #UART_FBRD_OFFSET]
+    dsb sy
+
+    // Step 5: Configure Line Control (UARTLCR_H)
+    // 8 data bits: WLEN = 3 (bits 5-6 = 0b11)
+    // FIFO enabled: FEN = 1 (bit 4)
+    // 1 stop bit: STP2 = 0 (bit 3)
+    // No parity: PEN = 0 (bit 1)
+    // Value: 0x70 (0b01110000)
+    mov w2, #0x70
+    str w2, [x1, #UART_LCRH_OFFSET]
+    dsb sy
+
+    // Step 6: Mask all interrupts (UARTIMSC)
+    // Set all bits to 1 to mask all interrupts
+    mov w2, #0x7FF               // Mask all 11 interrupt sources
+    str w2, [x1, #UART_IMSC_OFFSET]
+    dsb sy
+
+    // Step 7: Disable DMA (UARTDMACR)
+    // Set all bits to 0 to disable DMA
+    mov w2, #0x0
+    str w2, [x1, #UART_DMACR_OFFSET]
+    dsb sy
+
+    // Step 8: Enable Transmitter (TXE bit)
+    mov w2, #CR_TXEN             // Enable TXE only
+    str w2, [x1, #UART_CR_OFFSET]
+    dsb sy
+
+    // Step 9: Enable UART (UARTEN bit) - must be last step
+    mov w2, #(CR_TXEN | CR_UARTEN) // Enable both TXE and UARTEN
+    str w2, [x1, #UART_CR_OFFSET]
+    dsb sy                       // Memory barrier to ensure enable is visible
+    
+    // Wait for UART to be ready by checking that it's not busy
+    // This uses proper status register checking instead of arbitrary delays
+wait_uart_ready:
+    ldr w2, [x1, #UART_FR_OFFSET]
+    tst w2, #FR_BUSY             // Check BUSY bit
+    bne wait_uart_ready          // If busy, keep waiting
+    
+    // Verify UART is enabled by reading control register
+    ldr w2, [x1, #UART_CR_OFFSET]
+    tst w2, #CR_UARTEN           // Check UARTEN bit
+    beq uart_init_failed         // If not enabled, something went wrong
+
+    ret
+
+uart_init_failed:
+    // UART initialization failed - loop forever
+    wfe
+    b uart_init_failed
+
+// uart_putc_pl011 sends a single character via PL011 UART
+// Parameters: w0 = character to send (byte)
+.global uart_putc_pl011
+uart_putc_pl011:
+    ldr x1, =QEMU_UART_BASE
+
+    // Verify UART is enabled before writing
+    // Check UARTEN bit (bit 0) and TXE bit (bit 8) in UART_CR
+    ldr w2, [x1, #UART_CR_OFFSET]
+    // Test UARTEN (bit 0) - use movz/movk for large immediate
+    movz w3, #0x1              // Bit 0 (UARTEN)
+    tst w2, w3
+    beq uart_not_enabled       // If UARTEN not set, skip write
+    movz w3, #0x100            // Bit 8 (TXE)
+    tst w2, w3
+    beq uart_not_enabled       // If TXE not set, skip write
+    
+check_tx_full:
+    ldr w2, [x1, #UART_FR_OFFSET]
+    ands w2, w2, #0x20         // Test if the TXFF bit (bit 5) is set
+    bne check_tx_full          // If set, branch back and wait
+
+    strb w0, [x1, #UART_DR_OFFSET] // Store the character
+    ret
+
+uart_not_enabled:
+    // UART not enabled - just return (don't write)
+    ret
 

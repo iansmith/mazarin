@@ -562,3 +562,4 @@ func virtioGPUTransferToHost(x, y, width, height uint32) {
 		return
 	}
 }
+

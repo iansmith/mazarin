@@ -10,16 +10,8 @@ _start:
     bne cpu_halt_loop
 
     // CPU 0 continues here
-    // Write 'S' immediately to verify kernel is starting
-    movz x10, #0x900, lsl #16    // UART base 0x09000000
-    movk x10, #0x0000, lsl #0
-    add x11, x10, #0x18          // FR register
-s_wait:
-    ldr w12, [x11]
-    tst w12, #(1 << 5)
-    bne s_wait
-    movz w13, #'S'
-    str w13, [x10]
+    // UART initialization will happen in uartInit() called from kernel_main
+    // No early debug writes - wait for proper initialization
     
     // QEMU virt machine memory layout (1GB RAM):
     // - 0x00000000-0x08000000: Flash/ROM (kernel loaded at 0x200000)
@@ -65,22 +57,7 @@ s_wait:
     strb w11, [x10]                // Store byte (bool field)
     dsb sy                         // Memory barrier
     
-    // Write 'B' before jumping to kernel_main
-    movz x10, #0x900, lsl #16    // UART base
-    movk x10, #0x0000, lsl #0
-    add x11, x10, #0x18          // FR register
-b_wait:
-    ldr w12, [x11]
-    tst w12, #(1 << 5)
-    bne b_wait
-    movz w13, #'B'
-    str w13, [x10]
-b_wait2:
-    ldr w12, [x11]
-    tst w12, #(1 << 5)
-    bne b_wait2
-    movz w13, #'\n'
-    str w13, [x10]
+    // No early debug writes - UART will be initialized in kernel_main
 
     // Jump to kernel_main
     ldr x0, =kernel_main
@@ -88,6 +65,11 @@ b_wait2:
 
     // If kernel_main returns, halt CPU 0
     b halt
+
+// UART initialization failed - loop forever
+uart_init_failed:
+    wfe
+    b uart_init_failed
 
 // Halt loop for CPUs 1-3
 // These CPUs will loop here indefinitely

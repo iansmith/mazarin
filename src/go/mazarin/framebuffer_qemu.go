@@ -2,119 +2,48 @@
 
 package main
 
-import (
-	"unsafe"
-)
-
-// QEMU framebuffer constants
-// For QEMU, we write directly to QEMU's framebuffer memory at a fixed address
-// This address is chosen to be well above kernel memory to avoid conflicts:
-//   - Kernel: 0x200000 (2MB)
-//   - Stack:  0x400000 (4MB)
-//   - Heap:   0x500000 (5MB+)
-//   - FB:     0x10000000 (256MB) - safe high address
-//
-// This is a "side channel" - we write directly to QEMU's framebuffer memory
-// instead of allocating our own. The same gpuPutc/gpuPuts interface works.
-//
-// NOTE: The actual display device framebuffer address may differ. For PCI devices
-// (VGA, bochs-display), the framebuffer is typically in PCI MMIO space (0x40000000+).
-// If display doesn't work, you may need to:
-//  1. Query PCI config space to find the actual framebuffer address
-//  2. Or adjust QEMU_FB_BASE to match the device's framebuffer location
-//  3. Or use a device that maps to a known address
+// QEMU framebuffer constants for ramfb device
+// ramfb allocates framebuffer memory via kmalloc and configures QEMU via fw_cfg
 const (
-	// QEMU_FB_BASE: Framebuffer base address
-	// For PCI devices (bochs-display, VGA) on 'virt' machine, the framebuffer
-	// is typically in PCI MMIO space starting at 0x40000000.
-	// Try 0x40000000 first (PCI MMIO base), fallback to 0x10000000 if needed
-	QEMU_FB_BASE = 0x40000000 // PCI MMIO space (1GB) - typical location for display devices
-	// Alternative: 0x10000000 (256MB) - safe but may not match device framebuffer
-	QEMU_FB_WIDTH  = 1280
-	QEMU_FB_HEIGHT = 720
+	QEMU_FB_WIDTH  = 640
+	QEMU_FB_HEIGHT = 480
 )
 
-// framebufferInit initializes the framebuffer for QEMU by mapping to QEMU's framebuffer memory
+// framebufferInit initializes the framebuffer for QEMU using ramfb device
 // Returns 0 on success, non-zero on error
 //
-// This function does NOT allocate memory - it uses a fixed address that QEMU's
-// VGA/virtio-gpu device should map its framebuffer to. This avoids conflicts
-// with kernel memory (heap, stack, etc.).
+// ramfb allocates framebuffer memory via kmalloc and configures QEMU via fw_cfg
 //
 //go:nosplit
 func framebufferInit() int32 {
-	uartPuts("FB1\r\n")
-
+	uartPuts("FB: framebufferInit() called\r\n")
+	uartPuts("FB: About to access fbinfo...\r\n")
 	// Set fixed dimensions for QEMU
-	uartPuts("FB1a\r\n")
+	uartPuts("FB: Setting dimensions...\r\n")
 	fbinfo.Width = QEMU_FB_WIDTH
-	uartPuts("FB1b\r\n")
+	uartPuts("FB: Width set\r\n")
 	fbinfo.Height = QEMU_FB_HEIGHT
-	uartPuts("FB1c\r\n")
+	uartPuts("FB: Height set\r\n")
 	fbinfo.Pitch = fbinfo.Width * BYTES_PER_PIXEL
-	uartPuts("FB1d\r\n")
+	uartPuts("FB: Pitch set\r\n")
 	fbinfo.CharsWidth = fbinfo.Width / CHAR_WIDTH
-	uartPuts("FB1e\r\n")
+	uartPuts("FB: CharsWidth set\r\n")
 	fbinfo.CharsHeight = fbinfo.Height / CHAR_HEIGHT
-	uartPuts("FB1f\r\n")
+	uartPuts("FB: CharsHeight set\r\n")
 	fbinfo.CharsX = 0
-	uartPuts("FB1g\r\n")
+	uartPuts("FB: CharsX set\r\n")
 	fbinfo.CharsY = 0
-	uartPuts("FB1h\r\n")
+	uartPuts("FB: CharsY set\r\n")
 
 	// Calculate framebuffer size
 	fbinfo.BufSize = fbinfo.Pitch * fbinfo.Height
-	uartPuts("FB1i\r\n")
+	uartPuts("FB: BufSize calculated\r\n")
 
-	uartPuts("FB2\r\n")
-	// Try VirtIO GPU first (best support on ARM/AArch64)
-	uartPuts("FB: Attempting VirtIO GPU initialization...\r\n")
-	if findVirtIOGPU() {
-		uartPuts("FB: VirtIO GPU device found\r\n")
-		if virtioGPUInit() {
-			uartPuts("FB: VirtIO GPU initialized\r\n")
-			// Setup framebuffer (allocation happens inside setup to reduce stack usage)
-			if virtioGPUSetupFramebuffer(QEMU_FB_WIDTH, QEMU_FB_HEIGHT) {
-				uartPuts("FB: VirtIO GPU framebuffer setup complete\r\n")
-				// Set framebuffer info
-				fbinfo.Buf = virtioGPUDevice.Framebuffer
-				fbinfo.BufSize = virtioGPUDevice.FramebufferSize
-
-				uartPuts("FB: Framebuffer at 0x")
-				for shift := 60; shift >= 0; shift -= 4 {
-					digit := (uint64(pointerToUintptr(fbinfo.Buf)) >> shift) & 0xF
-					if digit < 10 {
-						uartPutc(byte('0' + digit))
-					} else {
-						uartPutc(byte('A' + digit - 10))
-					}
-				}
-				uartPuts("\r\n")
-
-				// Write test pattern
-				testPixels32 := (*[1 << 28]uint32)(fbinfo.Buf)
-				uartPuts("FB: Writing test pattern to VirtIO GPU framebuffer...\r\n")
-				for y := 0; y < 100; y++ {
-					for x := 0; x < int(fbinfo.Width); x++ {
-						offset := y*int(fbinfo.Width) + x
-						testPixels32[offset] = 0x00FFFFFF // White in BGRA8888
-					}
-				}
-				dsb() // Ensure writes are visible
-
-				// Transfer to host to update display
-				virtioGPUTransferToHost(0, 0, fbinfo.Width, fbinfo.Height)
-
-				uartPuts("FB INIT DONE (VirtIO GPU)\r\n")
-				return 0
-			}
-		}
-		uartPuts("FB: VirtIO GPU initialization failed, trying ramfb...\r\n")
-	}
-
-	// Fallback to ramfb (recommended for AArch64, works with all display backends)
+	// Initialize ramfb (allocates framebuffer memory)
 	uartPuts("FB: Attempting ramfb initialization...\r\n")
+	uartPuts("FB: About to call ramfbInit()...\r\n")
 	ramfbSuccess := ramfbInit()
+	uartPuts("FB: ramfbInit() returned\r\n")
 	if ramfbSuccess {
 		uartPuts("FB: ramfb reported success\r\n")
 		uartPuts("FB: ramfb initialized\r\n")
@@ -149,9 +78,13 @@ func framebufferInit() int32 {
 		testPixels32 := (*[1 << 28]uint32)(fbinfo.Buf) // 32-bit pixels
 		uartPuts("FB: Writing test pattern to ramfb (XRGB8888 format)...\r\n")
 
-		// Test: Write a single pixel first (white = 0x00FFFFFF)
+		// Test: Write a single pixel first
+		// XRGB8888 format: [X:8][R:8][G:8][B:8] = 0x00RRGGBB
+		// On little-endian AArch64, 0x00FFFFFF is stored as bytes: FF FF FF 00
+		// Which QEMU reads as: Blue=FF, Green=FF, Red=FF, X=00 (white)
+		// So we use 0x00FFFFFF directly (no byte-swapping needed)
 		uartPuts("FB: Writing first pixel...\r\n")
-		testPixels32[0] = 0x00FFFFFF // White in XRGB8888
+		testPixels32[0] = 0x00FFFFFF // White in XRGB8888 (0x00RRGGBB format)
 		uartPuts("FB: First pixel written\r\n")
 
 		// Verify the write
@@ -167,7 +100,7 @@ func framebufferInit() int32 {
 		for y := 0; y < 100; y++ {
 			for x := 0; x < int(fbinfo.Width); x++ {
 				offset := y*int(fbinfo.Width) + x
-				testPixels32[offset] = 0x00FFFFFF // White in XRGB8888
+				testPixels32[offset] = 0x00FFFFFF // White in XRGB8888 (0x00RRGGBB)
 				pixelsWritten++
 			}
 			if y%10 == 0 {
@@ -195,6 +128,7 @@ func framebufferInit() int32 {
 		// Force memory barrier and ensure writes are visible
 		dsb()
 		uartPuts("FB: Memory barrier executed after pixel writes\r\n")
+		uartPuts("FB: Pixels written - ramfb was already configured, display should update\r\n")
 
 		// Give QEMU additional time to process the framebuffer update
 		uartPuts("FB: Waiting for QEMU to process framebuffer...\r\n")
@@ -207,49 +141,8 @@ func framebufferInit() int32 {
 		return 0
 	}
 
-	// Fallback to bochs-display if ramfb not available
-	// Note: bochs-display has known PCI memory bar caching issues on ARM
-	uartPuts("FB: ramfb failed, trying bochs-display...\r\n")
-	uartPuts("FB: WARNING - bochs-display has known issues on AArch64\r\n")
-	uartPuts("FB: Checking for bochs-display device...\r\n")
-	if findBochsDisplayFull() {
-		uartPuts("FB: bochs-display found, using it\r\n")
-		// Initialize bochs-display
-		uartPuts("FB: Initializing bochs-display...\r\n")
-		vbeSuccess := initBochsDisplay(QEMU_FB_WIDTH, QEMU_FB_HEIGHT, 24)
-		if !vbeSuccess {
-			uartPuts("FB: VBE init failed, continuing anyway...\r\n")
-		} else {
-			uartPuts("FB: VBE init OK\r\n")
-		}
-
-		// Set framebuffer info from bochs-display
-		fbAddr := bochsDisplayInfo.Framebuffer
-		if fbAddr == 0 {
-			uartPuts("FB: ERROR - Framebuffer address is 0\r\n")
-			uartPuts("FB: Falling back to ramfb...\r\n")
-		} else {
-			fbinfo.Buf = unsafe.Pointer(fbAddr)
-			fbinfo.BufSize = fbinfo.Pitch * fbinfo.Height
-
-			uartPuts("FB: bochs-display initialized\r\n")
-			uartPuts("FB: Framebuffer at 0x")
-			for shift := 60; shift >= 0; shift -= 4 {
-				digit := (uint64(fbAddr) >> shift) & 0xF
-				if digit < 10 {
-					uartPutc(byte('0' + digit))
-				} else {
-					uartPutc(byte('A' + digit - 10))
-				}
-			}
-			uartPuts("\r\n")
-			uartPuts("FB INIT DONE (bochs-display)\r\n")
-			return 0
-		}
-	}
-
-	// Both ramfb and bochs-display failed
-	uartPuts("FB: ERROR - Both bochs-display and ramfb failed\r\n")
+	// ramfb failed
+	uartPuts("FB: ERROR - ramfb initialization failed\r\n")
 	uartPuts("FB: No display device available\r\n")
 	return 1
 }
@@ -273,11 +166,13 @@ func refreshFramebuffer() {
 	// Next 100 rows: green (0x0000FF00)
 	// Next 100 rows: blue (0x000000FF)
 
+	// XRGB8888 format: [X:8][R:8][G:8][B:8] = 0x00RRGGBB
+	// On little-endian AArch64, values are stored correctly in memory
 	// Top 100 rows: white
 	for y := 0; y < 100; y++ {
 		for x := 0; x < int(fbinfo.Width); x++ {
 			offset := y*int(fbinfo.Width) + x
-			testPixels32[offset] = 0x00FFFFFF // White
+			testPixels32[offset] = 0x00FFFFFF // White (R=FF, G=FF, B=FF)
 		}
 	}
 
@@ -285,7 +180,7 @@ func refreshFramebuffer() {
 	for y := 100; y < 200 && y < int(fbinfo.Height); y++ {
 		for x := 0; x < int(fbinfo.Width); x++ {
 			offset := y*int(fbinfo.Width) + x
-			testPixels32[offset] = 0x00FF0000 // Red
+			testPixels32[offset] = 0x00FF0000 // Red (R=FF, G=00, B=00)
 		}
 	}
 
@@ -293,7 +188,7 @@ func refreshFramebuffer() {
 	for y := 200; y < 300 && y < int(fbinfo.Height); y++ {
 		for x := 0; x < int(fbinfo.Width); x++ {
 			offset := y*int(fbinfo.Width) + x
-			testPixels32[offset] = 0x0000FF00 // Green
+			testPixels32[offset] = 0x0000FF00 // Green (R=00, G=FF, B=00)
 		}
 	}
 
@@ -301,7 +196,7 @@ func refreshFramebuffer() {
 	for y := 300; y < 400 && y < int(fbinfo.Height); y++ {
 		for x := 0; x < int(fbinfo.Width); x++ {
 			offset := y*int(fbinfo.Width) + x
-			testPixels32[offset] = 0x000000FF // Blue
+			testPixels32[offset] = 0x000000FF // Blue (R=00, G=00, B=FF)
 		}
 	}
 

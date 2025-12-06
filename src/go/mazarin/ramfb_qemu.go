@@ -126,7 +126,9 @@ func (r *RAMFBCfg) SetStride(val uint32) {
 }
 
 // fw_cfg DMA interface constants
-// For AArch64 virt machine, fw_cfg DMA register is at 0x9020010
+// For AArch64 virt machine, fw_cfg base is at 0x09020000
+// DMA register is at base + 0x10 = 0x09020010
+// Note: 0x9020010 and 0x09020010 are the same value (151126032 decimal)
 // Control register bits (in big-endian format):
 //
 //	Bit 0: Error
@@ -136,14 +138,40 @@ func (r *RAMFBCfg) SetStride(val uint32) {
 //	Bit 4: Write
 //	Bits 16-31: Selector index (when Select bit is set)
 const (
-	FW_CFG_DMA_ADDR       = 0x9020010
+	// fw_cfg base address for AArch64 virt machine
+	FW_CFG_BASE          = 0x09020000
+	FW_CFG_DATA_ADDR     = FW_CFG_BASE + 0x00 // Data register (8 bytes)
+	FW_CFG_SELECTOR_ADDR = FW_CFG_BASE + 0x08 // Selector register (2 bytes)
+	FW_CFG_DMA_ADDR      = FW_CFG_BASE + 0x10 // DMA address register (8 bytes)
+
+	// Feature bitmap keys
+	FW_CFG_SIGNATURE = 0x0000 // Signature key
+	FW_CFG_ID        = 0x0001 // Feature bitmap key
+
+	// DMA control bits
 	FW_CFG_DMA_CTL_ERROR  = 0x01
 	FW_CFG_DMA_CTL_READ   = 0x02
 	FW_CFG_DMA_CTL_SKIP   = 0x04
 	FW_CFG_DMA_CTL_SELECT = 0x08
 	FW_CFG_DMA_CTL_WRITE  = 0x10
-	FW_CFG_RAMFB_SELECT   = 0x19 // etc/ramfb entry selector
+
+	// Feature bitmap bits
+	FW_CFG_FEATURE_TRADITIONAL = 0x01 // Bit 0: traditional interface (always set)
+	FW_CFG_FEATURE_DMA         = 0x02 // Bit 1: DMA interface
+
+	// Selector keys
+	FW_CFG_RAMFB_SELECT = 0x19 // etc/ramfb entry selector (fallback)
+	FW_CFG_FILE_DIR     = 0x19 // File directory selector
 )
+
+// QemuCfgFile represents a file entry in the fw_cfg file directory
+// Matching working code: struct QemuCfgFile
+type QemuCfgFile struct {
+	Size     uint32   // File size (big-endian)
+	Select   uint16   // Selector value (big-endian)
+	Reserved uint16   // Reserved field
+	Name     [56]byte // File name (null-terminated string)
+}
 
 // FWCfgDmaAccess is the DMA access structure for fw_cfg
 // Matching working code: struct QemuCfgDmaAccess with __attribute__((packed))
@@ -221,24 +249,54 @@ func (d *FWCfgDmaAccess) SetAddress(val uint64) {
 // Global config struct to avoid stack issues
 var ramfbCfg RAMFBCfg
 
-// Global DMA access structure (to avoid stack allocation issues)
-// QEMU's DMA engine needs to access this structure, so it must be in accessible memory
-var dmaAccessGlobal FWCfgDmaAccess
+// Note: We no longer use a global DMA structure
+// Local stack-allocated structures work better and match the working RISC-V example
+
+// qemu_cfg_check_dma_support checks if DMA interface is available using traditional interface
+// Reads feature bitmap (Key 0x0001) and checks if bit 1 (DMA) is set
+// Returns true if DMA is supported, false otherwise
+//
+//go:nosplit
+func qemu_cfg_check_dma_support() bool {
+	// Read feature bitmap (selector 0x0001)
+	mmio_write16(uintptr(FW_CFG_SELECTOR_ADDR), swap16(uint16(FW_CFG_ID)))
+	dsb()
+	features := mmio_read(uintptr(FW_CFG_DATA_ADDR))
+	
+	// Check if DMA bit (bit 1) is set
+	if (features & FW_CFG_FEATURE_DMA) == 0 {
+		return false
+	}
+
+	// Verify DMA by reading DMA register (should return "QEMU CFG")
+	dmaReg1 := swap32(mmio_read(uintptr(FW_CFG_DMA_ADDR)))
+	dmaReg2 := swap32(mmio_read(uintptr(FW_CFG_DMA_ADDR + 4)))
+	dmaValue := (uint64(dmaReg1) << 32) | uint64(dmaReg2)
+
+	return dmaValue == 0x51454D5520434647
+}
 
 // ramfbInit initializes the ramfb device via fw_cfg
 // Allocates framebuffer memory and configures ramfb to use it
 //
 //go:nosplit
 func ramfbInit() bool {
+	uartPuts("RAMFB: ramfbInit() entry\r\n")
 	uartPuts("RAMFB: Initializing...\r\n")
+
+	// First, check if DMA is available
+	if !qemu_cfg_check_dma_support() {
+		uartPuts("RAMFB: ERROR - Cannot proceed without DMA support\r\n")
+		return false
+	}
 
 	// Allocate framebuffer memory using heap
 	// QEMU virt machine: Kernel RAM is 0x40100000 - 0x60000000 (512MB)
 	// Heap is allocated from memInit() and is within this region
 	// Use kmalloc to allocate framebuffer (will be in heap region)
 	// Try to allocate at a lower address first (closer to heap start)
-	fbWidth := uint32(1280)
-	fbHeight := uint32(720)
+	fbWidth := uint32(640)
+	fbHeight := uint32(480)
 	fbSize := fbWidth * fbHeight * 4 // 4 bytes per pixel
 
 	uartPuts("RAMFB: Attempting to allocate framebuffer from heap...\r\n")
@@ -270,14 +328,16 @@ func ramfbInit() bool {
 		return false
 	}
 
-	// Store native-endian values, then convert to big-endian
-	fbAddrBE := swap64(uint64(fbAddr))
-	uartPuts("RAMFB: Address converted to big-endian\r\n")
+	// Create config structure with fields in big-endian format (matching working RISC-V example)
+	// The working example does: .addr = __builtin_bswap64(fb->fb_addr)
+	// Our SetAddr() method stores bytes in big-endian order, so we pass native value
+	ramfbCfg.SetAddr(uint64(fbAddr))
+	uartPuts("RAMFB: Address set in config (SetAddr handles BE conversion)\r\n")
 
-	ramfbCfg.SetAddr(fbAddrBE)
-	// Use 'XR24' (XRGB8888) format - 32-bit, matches working example code
-	// FourCC code: 0x34325258 = 'XR24' = XRGB8888 (32-bit, 4 bytes per pixel)
-	// Working code uses: FORMAT_XRGB8888 = 875713112 = 0x34325258
+	// Use 'XR24' (XRGB8888) format - matching working example exactly
+	// Working example: .fourcc = __builtin_bswap32(DRM_FORMAT_XRGB8888)
+	// DRM_FORMAT_XRGB8888 = fourcc_code('X','R','2','4') = 0x34325258
+	// Our SetFourCC() expects big-endian bytes, so we swap the native value
 	ramfbCfg.SetFourCC(swap32(0x34325258)) // 'XR24' = XRGB8888 format (32-bit)
 	ramfbCfg.SetFlags(swap32(0))
 	ramfbCfg.SetWidth(swap32(fbWidth))
@@ -287,44 +347,24 @@ func ramfbInit() bool {
 
 	uartPuts("RAMFB: Config struct created (big-endian)\r\n")
 
-	// Write configuration to fw_cfg
-	uartPuts("RAMFB: Writing config to fw_cfg at 0x")
-	for shift := 60; shift >= 0; shift -= 4 {
-		digit := (uint64(FW_CFG_DMA_ADDR) >> shift) & 0xF
-		if digit < 10 {
-			uartPutc(byte('0' + digit))
-		} else {
-			uartPutc(byte('A' + digit - 10))
-		}
-	}
-	uartPuts("...\r\n")
-
-	uartPuts("RAMFB: Getting config struct address...\r\n")
-	cfgAddr := uintptr(unsafe.Pointer(&ramfbCfg))
-	uartPuts("RAMFB: Config struct at 0x")
-	for shift := 60; shift >= 0; shift -= 4 {
-		digit := (uint64(cfgAddr) >> shift) & 0xF
-		if digit < 10 {
-			uartPutc(byte('0' + digit))
-		} else {
-			uartPutc(byte('A' + digit - 10))
-		}
-	}
-	uartPuts("\r\n")
-	uartPuts("RAMFB: Calling writeRamfbConfig...\r\n")
-
+	// CRITICAL: Send config BEFORE writing pixels
+	// QEMU ramfb needs to be configured first, then we write pixels
+	// The recommended order is: allocate -> configure -> write pixels
+	// Using DMA (matching working RISC-V example)
+	uartPuts("RAMFB: Sending config to QEMU via DMA...\r\n")
 	if !writeRamfbConfig(&ramfbCfg) {
 		uartPuts("RAMFB: Config write failed\r\n")
 		return false
 	}
-
-	uartPuts("RAMFB: Config written OK\r\n")
+	uartPuts("RAMFB: Config sent successfully (QEMU now knows about framebuffer)\r\n")
 
 	// Debug: Print the actual config values that were sent (in big-endian)
-	// Debug: Print the actual config values that were sent (convert from big-endian for display)
-	// Use hex display to avoid uartPutUint32 issues
+	// Debug: Print the actual config values that were sent
+	// Note: Addr() reads back the value as stored (big-endian bytes interpreted as uint64)
+	// The bytes are stored correctly, but when read back as uint64, they represent the address
 	uartPuts("RAMFB: Config sent - Addr=0x")
 	addrVal := ramfbCfg.Addr()
+	// addrVal is the address as stored in BE bytes, which should match fbAddr
 	for shift := 60; shift >= 0; shift -= 4 {
 		digit := (addrVal >> shift) & 0xF
 		if digit < 10 {
@@ -494,6 +534,11 @@ func ramfbReinit() {
 // swap32 swaps bytes in a 32-bit value (little-endian to big-endian)
 //
 //go:nosplit
+func swap16(x uint16) uint16 {
+	return ((x & 0xFF00) >> 8) | ((x & 0x00FF) << 8)
+}
+
+//go:nosplit
 func swap32(x uint32) uint32 {
 	return ((x & 0xFF000000) >> 24) |
 		((x & 0x00FF0000) >> 8) |
@@ -515,189 +560,431 @@ func swap64(x uint64) uint64 {
 		((x & 0x00000000000000FF) << 56)
 }
 
-// writeRamfbConfig writes the RAMFB configuration to fw_cfg
+// dumpDmaStructureBytes dumps the raw bytes of the DMA structure (simplified)
+//
+//go:nosplit
+func dumpDmaStructureBytes(dma *FWCfgDmaAccess) {
+	dmaPtr := unsafe.Pointer(dma)
+	uartPuts("RAMFB: DMA bytes: ")
+	// Dump first 4 bytes (control), then length, then address
+	for i := 0; i < 16; i++ {
+		b := (*byte)(unsafe.Pointer(uintptr(dmaPtr) + uintptr(i)))
+		// Print hex digit
+		hi := (*b >> 4) & 0xF
+		lo := *b & 0xF
+		if hi < 10 {
+			uartPutc(byte('0' + hi))
+		} else {
+			uartPutc(byte('A' + hi - 10))
+		}
+		if lo < 10 {
+			uartPutc(byte('0' + lo))
+		} else {
+			uartPutc(byte('A' + lo - 10))
+		}
+		if i < 15 {
+			uartPuts(" ")
+		}
+	}
+	uartPuts("\r\n")
+}
+
+// qemu_cfg_read_entry_traditional reads using traditional interface (no DMA)
+//
+//go:nosplit
+func qemu_cfg_read_entry_traditional(buf unsafe.Pointer, selector uint32, length uint32) {
+	// Write selector (big-endian)
+	mmio_write16(uintptr(FW_CFG_SELECTOR_ADDR), swap16(uint16(selector)))
+	dsb()
+
+	// Read data in 32-bit chunks (data register advances by read width)
+	for i := uint32(0); i < length; i += 4 {
+		val := mmio_read(uintptr(FW_CFG_DATA_ADDR))
+		// Store 4 bytes from this read
+		remaining := length - i
+		if remaining > 4 {
+			remaining = 4
+		}
+		for j := uint32(0); j < remaining; j++ {
+			b := (*byte)(unsafe.Pointer(uintptr(buf) + uintptr(i+j)))
+			*b = byte((val >> (j * 8)) & 0xFF)
+		}
+	}
+}
+
+// fw_cfg_dma_read reads data from a fw_cfg entry using DMA
+// This is the clean API that hides QEMU's DEVICE_BIG_ENDIAN byte-swapping complexity
+//
+//go:nosplit
+func fw_cfg_dma_read(selector uint32, buf unsafe.Pointer, length uint32) {
+	control := (selector << 16) | uint32(FW_CFG_DMA_CTL_SELECT) | uint32(FW_CFG_DMA_CTL_READ)
+	qemu_cfg_dma_transfer(buf, length, control)
+}
+
+// qemu_cfg_read_entry is now a wrapper for the clean API
+//
+//go:nosplit
+func qemu_cfg_read_entry(buf unsafe.Pointer, selector uint32, length uint32) {
+	fw_cfg_dma_read(selector, buf, length)
+}
+
+// qemu_cfg_read reads data from current fw_cfg entry (continues from previous read)
+// Uses traditional interface for sequential reads after initial DMA select
+//
+//go:nosplit
+func qemu_cfg_read(buf unsafe.Pointer, length uint32) {
+	// Read in 32-bit chunks (data register advances by read width)
+	for i := uint32(0); i < length; i += 4 {
+		val := mmio_read(uintptr(FW_CFG_DATA_ADDR))
+		remaining := length - i
+		if remaining > 4 {
+			remaining = 4
+		}
+		for j := uint32(0); j < remaining; j++ {
+			b := (*byte)(unsafe.Pointer(uintptr(buf) + uintptr(i+j)))
+			*b = byte((val >> (j * 8)) & 0xFF)
+		}
+	}
+}
+
+// qemu_cfg_dma_transfer performs a DMA transfer to/from fw_cfg
+// Direct translation of working RISC-V example
+// CRITICAL: QEMU's fw_cfg DMA region is DEVICE_BIG_ENDIAN
+//
+//	It byte-swaps values from little-endian guests
+//	So we must write byte-swapped values that become correct after QEMU's swap
+//
+//go:nosplit
+func qemu_cfg_dma_transfer(dataAddr unsafe.Pointer, length uint32, control uint32) {
+	if length == 0 {
+		return
+	}
+
+	// Create LOCAL DMA structure on stack (matching working example)
+	// Initialize with byte-swapped values (QEMU expects big-endian)
+	var access FWCfgDmaAccess
+	access.SetControl(swap32(control))
+	access.SetLength(swap32(length))
+	access.SetAddress(swap64(uint64(uintptr(dataAddr))))
+	dsb()
+
+	// Write DMA structure address to DMA register
+	// CRITICAL: Due to DEVICE_BIG_ENDIAN, we write swap64(struct_addr)
+	//           QEMU byte-swaps it back to get correct address
+	accessAddr := uintptr(unsafe.Pointer(&access))
+	accessAddrSwapped := swap64(uint64(accessAddr))
+
+	mmio_write64(uintptr(FW_CFG_DMA_ADDR), accessAddrSwapped)
+	dsb()
+
+	// Wait for DMA transfer to complete
+	// Matching working code: while(__builtin_bswap32(access.control) & ~QEMU_CFG_DMA_CTL_ERROR) {}
+	// The condition is: continue while (control & ~ERROR) != 0
+	// This means: continue while any bits except error bit (bit 0) are set
+	maxIterations := 10000 // Reduced timeout since DMA doesn't work
+	iterations := 0
+
+	// Memory barrier before reading control field
+	// QEMU may have updated the control field, so we need to ensure we read fresh data
+	dsb()
+
+	// Check control after register write
+	dsb()
+	initialControlBE := access.Control()
+	initialControl := swap32(initialControlBE)
+	if initialControl == 0 {
+		uartPuts("RAMFB: WARNING - Control is 0! QEMU may not have processed DMA\r\n")
+	} else {
+		uartPuts("RAMFB: Control is non-zero (0x")
+		printHex32Helper(initialControl)
+		uartPuts("), QEMU is processing DMA\r\n")
+	}
+
+	for {
+		// Memory barrier before reading control field
+		// QEMU updates this field, so we need to ensure we read fresh data from memory
+		dsb()
+
+		controlBE := access.Control()
+		control := swap32(controlBE)
+		// Continue while any bits except error bit are set
+		// Stop when control is 0 (all bits clear) OR error bit is set
+		if (control & 0xFFFFFFFE) == 0 {
+			// Check for error bit
+			if (control & 0x01) != 0 {
+				uartPuts("RAMFB: *** DMA transfer ERROR bit set! ***\r\n")
+				uartPuts("RAMFB: Final control=0x")
+				printHex32Helper(control)
+				uartPuts(" (error bit 0 set)\r\n")
+			} else {
+				uartPuts("RAMFB: *** DMA transfer completed successfully ***\r\n")
+				uartPuts("RAMFB: Final control=0x")
+				printHex32Helper(control)
+				uartPuts(" (all bits clear, no error)\r\n")
+			}
+			uartPuts("RAMFB: Iterations waited: ")
+			// Print iterations (simple decimal)
+			if iterations < 1000 {
+				uartPuts("0x")
+				printHex32Helper(uint32(iterations))
+			} else {
+				uartPuts(">1000")
+			}
+			uartPuts("\r\n")
+			break
+		}
+		iterations++
+		if iterations >= maxIterations {
+			uartPuts("RAMFB: *** DMA transfer TIMEOUT! ***\r\n")
+			uartPuts("RAMFB: Final control=0x")
+			printHex32Helper(control)
+			uartPuts(" (initial was 0x")
+			printHex32Helper(initialControl)
+			uartPuts(")\r\n")
+			uartPuts("RAMFB: Control never cleared - DMA may not be working\r\n")
+			break
+		}
+
+		// Print progress every 10000 iterations
+		if iterations%10000 == 0 {
+			uartPuts("RAMFB: Still waiting... control=0x")
+			printHex32Helper(control)
+			uartPuts(" iterations=")
+			uartPuts("0x")
+			printHex32Helper(uint32(iterations))
+			uartPuts("\r\n")
+		}
+		// Small delay to avoid tight loop
+		for delay := 0; delay < 100; delay++ {
+		}
+	}
+}
+
+// printHex32Helper prints a uint32 in hex format (helper to reduce stack usage)
+//
+//go:nosplit
+func printHex32Helper(val uint32) {
+	for shift := 28; shift >= 0; shift -= 4 {
+		digit := (val >> shift) & 0xF
+		if digit < 10 {
+			uartPutc(byte('0' + digit))
+		} else {
+			uartPutc(byte('A' + digit - 10))
+		}
+	}
+}
+
+// checkRamfbName checks if the file name matches "etc/ramfb" or "/etc/ramfb"
+//
+//go:nosplit
+func checkRamfbName(name *[56]byte) bool {
+	// Try "etc/ramfb" (10 chars)
+	ramfbName1 := "etc/ramfb"
+	match1 := true
+	for i := 0; i < 10 && i < len(ramfbName1); i++ {
+		if name[i] != ramfbName1[i] {
+			match1 = false
+			break
+		}
+	}
+	if match1 && name[9] == 0 {
+		return true
+	}
+
+	// Try "/etc/ramfb" (11 chars)
+	ramfbName2 := "/etc/ramfb"
+	match2 := true
+	for i := 0; i < 11 && i < len(ramfbName2); i++ {
+		if name[i] != ramfbName2[i] {
+			match2 = false
+			break
+		}
+	}
+	if match2 && (name[10] == 0 || name[10] == ' ') {
+		return true
+	}
+	return false
+}
+
+// printFileInfo prints information about a file entry (helper to reduce stack usage)
+//
+//go:nosplit
+func printFileInfo(entryNum uint32, qfile *QemuCfgFile) {
+	uartPuts("RAMFB: File[")
+	printHex32Helper(entryNum)
+	uartPuts("]: name=\"")
+	// Print file name up to null terminator or 56 chars
+	for i := 0; i < 56; i++ {
+		if qfile.Name[i] == 0 {
+			break
+		}
+		uartPutc(qfile.Name[i])
+	}
+	uartPuts("\" size=0x")
+	printHex32Helper(swap32(qfile.Size))
+	uartPuts(" selector=0x")
+	printHex32Helper(uint32(swap16(qfile.Select)))
+	uartPuts("\r\n")
+}
+
+// qemu_cfg_find_file searches the fw_cfg file directory for "etc/ramfb" and returns its selector
+// Matching working code: qemu_cfg_find_file()
+//
+//go:nosplit
+func qemu_cfg_find_file() uint32 {
+	// Read file directory count (first 4 bytes of file_dir)
+	var count uint32
+	fw_cfg_dma_read(FW_CFG_FILE_DIR, unsafe.Pointer(&count), 4)
+
+	countVal := swap32(count) // Convert from big-endian
+	if countVal == 0 {
+		return 0
+	}
+
+	// Iterate through all files in the directory
+	var selectVal uint32
+	for e := uint32(0); e < countVal; e++ {
+		var qfile QemuCfgFile
+
+		// Read 64-byte file entry using traditional interface
+		qemu_cfg_read(unsafe.Pointer(&qfile), 64)
+
+		// Check if this is "etc/ramfb"
+		if checkRamfbName(&qfile.Name) {
+			selectVal = uint32(swap16(qfile.Select))
+			uartPuts("RAMFB: Found etc/ramfb at index ")
+			printHex32Helper(e)
+			uartPuts(" selector=0x")
+			printHex32Helper(selectVal)
+			uartPuts("\r\n")
+			return selectVal
+		}
+	}
+
+	uartPuts("RAMFB: etc/ramfb not found\r\n")
+	return 0
+}
+
+// writeRamfbConfig writes the ramfb configuration using traditional interface
 //
 //go:nosplit
 func writeRamfbConfig(cfg *RAMFBCfg) bool {
-	uartPuts("RAMFB: Setting up DMA access...\r\n")
-
-	// Set up DMA access structure
-	// Control format (matching working code exactly):
-	//   - Bits 16-31: Selector index (0x19 for etc/ramfb)
-	//   - Bit 3 (SELECT): Set to select an fw_cfg entry (0x08)
-	//   - Bit 4 (WRITE): Set to perform write operation (0x10)
-	// Working code: control = (selector << 16) | 0x08 | 0x10
-	// For selector 0x19: (0x19 << 16) | 0x08 | 0x10 = 0x00190018
-	control := (uint32(FW_CFG_RAMFB_SELECT) << 16) | uint32(FW_CFG_DMA_CTL_SELECT) | uint32(FW_CFG_DMA_CTL_WRITE)
-
-	// The cfg structure must be in accessible memory
-	// We're using the global ramfbCfg, which should be fine
-	// Working code uses: sizeof(struct QemuRamFBCfg) = 28 bytes
-	length := uint32(28) // Exactly 28 bytes (packed structure)
-	address := uint64(uintptr(unsafe.Pointer(cfg)))
-
-	uartPuts("RAMFB: DMA setup - selector=0x")
-	printHex32(FW_CFG_RAMFB_SELECT)
-	uartPuts(" control=0x")
-	printHex32(control)
-	uartPuts(" length=0x")
-	printHex32(length)
-	uartPuts(" address=0x")
-	for shift := 60; shift >= 0; shift -= 4 {
-		digit := (address >> shift) & 0xF
-		if digit < 10 {
-			uartPutc(byte('0' + digit))
-		} else {
-			uartPutc(byte('A' + digit - 10))
-		}
+	// Find the selector dynamically
+	selector := qemu_cfg_find_file()
+	if selector == 0 {
+		uartPuts("RAMFB: ERROR - Could not find etc/ramfb!\r\n")
+		return false
 	}
-	uartPuts("\r\n")
-	uartPuts("RAMFB: About to set DMA structure fields...\r\n")
 
-	uartPuts("RAMFB: Control (native)=0x")
-	printHex32(control)
+	uartPuts("RAMFB: Writing 28-byte config to selector 0x")
+	printHex32Helper(selector)
 	uartPuts("\r\n")
 
-	// Use global variable for DMA access structure
-	// QEMU's DMA engine needs to access this, so it must be in accessible memory
-	// Set fields using accessor methods (fields stored in big-endian format)
-	uartPuts("RAMFB: Setting DMA structure fields (big-endian)...\r\n")
-	dmaAccessGlobal.SetControl(swap32(control)) // Convert to big-endian
-	uartPuts("RAMFB: Control set\r\n")
-	dmaAccessGlobal.SetLength(swap32(length)) // Convert to big-endian
-	uartPuts("RAMFB: Length set\r\n")
-	dmaAccessGlobal.SetAddress(swap64(address)) // Convert to big-endian
-	uartPuts("RAMFB: Address set\r\n")
-
-	uartPuts("RAMFB: Verifying DMA structure - control=0x")
-	printHex32(dmaAccessGlobal.Control())
-	uartPuts(" length=0x")
-	printHex32(dmaAccessGlobal.Length())
-	uartPuts(" address=0x")
-	for shift := 60; shift >= 0; shift -= 4 {
-		digit := (dmaAccessGlobal.Address() >> shift) & 0xF
-		if digit < 10 {
-			uartPutc(byte('0' + digit))
-		} else {
-			uartPutc(byte('A' + digit - 10))
-		}
-	}
-	uartPuts("\r\n")
-
-	// Write DMA descriptor to fw_cfg DMA register
-	// According to fw_cfg spec, we write the PHYSICAL ADDRESS of the
-	// FWCfgDmaAccess structure to the DMA register, not the fields directly
-	uartPuts("RAMFB: Preparing DMA descriptor structure...\r\n")
-
-	// The dmaAccessGlobal structure is in global memory with big-endian fields
-	// Now we need to write its physical address to the DMA register
-	dmaStructAddr := uintptr(unsafe.Pointer(&dmaAccessGlobal))
-	uartPuts("RAMFB: DMA struct at physical address 0x")
-	for shift := 60; shift >= 0; shift -= 4 {
-		digit := (uint64(dmaStructAddr) >> shift) & 0xF
-		if digit < 10 {
-			uartPutc(byte('0' + digit))
-		} else {
-			uartPutc(byte('A' + digit - 10))
-		}
-	}
-	uartPuts("\r\n")
-
-	// Write the physical address to the DMA register
-	// The DMA register is at FW_CFG_DMA_ADDR (0x9020010)
-	// According to spec: write address in big-endian format
-	// Can use single 64-bit write or two 32-bit writes (lower half triggers)
-	uartPuts("RAMFB: Writing DMA struct address to fw_cfg DMA register...\r\n")
-
-	// Convert address to big-endian
-	addrBE := swap64(uint64(dmaStructAddr))
-
-	// Try single 64-bit write (simpler and atomic)
-	// Use mmio_write64 if available, otherwise use two 32-bit writes
-	uartPuts("RAMFB: Writing 64-bit address (BE) to DMA register...\r\n")
-	uartPuts("RAMFB: Address value (BE)=0x")
-	for shift := 60; shift >= 0; shift -= 4 {
-		digit := (addrBE >> shift) & 0xF
-		if digit < 10 {
-			uartPutc(byte('0' + digit))
-		} else {
-			uartPutc(byte('A' + digit - 10))
-		}
-	}
-	uartPuts("\r\n")
-	mmio_write64(uintptr(FW_CFG_DMA_ADDR), addrBE)
-	uartPuts("RAMFB: 64-bit address written (operation triggered)\r\n")
-	// Add memory barrier to ensure write is visible
+	// Select the etc/ramfb entry (big-endian)
+	mmio_write16(uintptr(FW_CFG_SELECTOR_ADDR), swap16(uint16(selector)))
 	dsb()
-	uartPuts("RAMFB: Memory barrier executed\r\n")
 
-	// Now we need to check the control field in the dmaAccessGlobal structure
-	// (not the DMA register itself) - QEMU will modify it when transfer completes
-	uartPuts("RAMFB: DMA operation triggered, waiting for completion...\r\n")
+	// Write 28 bytes to data register (7 x 4-byte writes)
+	cfgPtr := unsafe.Pointer(cfg)
+	for i := uint32(0); i < 28; i += 4 {
+		// Extract 4 bytes from config
+		b0 := *(*byte)(unsafe.Pointer(uintptr(cfgPtr) + uintptr(i)))
+		b1 := *(*byte)(unsafe.Pointer(uintptr(cfgPtr) + uintptr(i+1)))
+		b2 := *(*byte)(unsafe.Pointer(uintptr(cfgPtr) + uintptr(i+2)))
+		b3 := *(*byte)(unsafe.Pointer(uintptr(cfgPtr) + uintptr(i+3)))
 
-	// Give QEMU a moment to process the DMA request
-	// We'll skip the completion check for now and just continue
-	// The DMA transfer should happen asynchronously
-	uartPuts("RAMFB: Giving QEMU time to process...\r\n")
-	for delay := 0; delay < 50000; delay++ {
+		// Assemble into 32-bit value (little-endian)
+		val := uint32(b0) | (uint32(b1) << 8) | (uint32(b2) << 16) | (uint32(b3) << 24)
+
+		// Write to data register
+		mmio_write(uintptr(FW_CFG_DATA_ADDR), val)
 	}
-	// Wait for DMA transfer to complete
-	// Matching working code exactly: while (BE32(dma.control) & ~0x01);
-	// This waits while any bits are set except the error bit (bit 0)
-	// Stops when control is 0 (success) OR error bit is set (failure)
-	maxWait := 1000000
-	for i := 0; i < maxWait; i++ {
-		// Read control field from the structure (it's in big-endian format)
-		controlBE := dmaAccessGlobal.Control()
+	dsb()
 
-		// Convert to native endian to check (matching working code: BE32(dma.control))
-		control := swap32(controlBE)
+	uartPuts("RAMFB: Config written\r\n")
+	return true
+}
 
-		// Wait condition from working code: while (control & ~0x01)
-		// This means: continue if any bits except error bit (bit 0) are set
-		// Stop when control is 0 (all bits clear) OR error bit is set
-		if (control & 0xFFFFFFFE) == 0 {
-			// All bits clear except possibly error bit - check error bit
-			if (control & 0x01) != 0 {
-				uartPuts("RAMFB: DMA transfer error (error bit set)\r\n")
-				uartPuts("RAMFB: Control (BE)=0x")
-				printHex32(controlBE)
-				uartPuts(" (LE=0x")
-				printHex32(control)
-				uartPuts(")\r\n")
-				return false
-			}
-			// Control is 0 - transfer complete!
-			uartPuts("RAMFB: DMA transfer completed successfully (control=0)\r\n")
-			// Give QEMU a moment to process the config
-			for delay := 0; delay < 500000; delay++ {
-			}
-			return true
+// writeRamfbConfigDirect writes the RAMFB configuration directly to fw_cfg
+// without using DMA - just pokes the 28 bytes into memory
+// This is for debugging - to eliminate DMA as a potential issue
+// NOTE: According to QEMU docs, direct writes may be ignored in QEMU 2.4+,
+// but this function helps verify the config structure is correct
+//
+//go:nosplit
+func writeRamfbConfigDirect(cfg *RAMFBCfg) bool {
+	uartPuts("RAMFB: Direct write mode - poking 28 bytes directly to fw_cfg...\r\n")
+
+	// fw_cfg base address for AArch64 virt machine
+	// According to QEMU docs: base is 0x9020000, selector at +8, data at +0
+	// Note: 0x9020000 = 0x09020000 (same value, different notation)
+	const FW_CFG_BASE = 0x09020000
+	const FW_CFG_SELECTOR = FW_CFG_BASE + 0x08 // Selector register (2 bytes, big-endian) = 0x09020008
+	const FW_CFG_DATA = FW_CFG_BASE + 0x00     // Data register (8 bytes) = 0x09020000
+
+	// Select the etc/ramfb entry (selector 0x19)
+	// Selector is 2 bytes, big-endian
+	selectorBE := uint16(FW_CFG_RAMFB_SELECT)
+	selectorHigh := byte(selectorBE >> 8)
+	selectorLow := byte(selectorBE & 0xFF)
+
+	uartPuts("RAMFB: Writing selector 0x19 to selector register...\r\n")
+
+	// Write selector (2 bytes, big-endian)
+	// Selector register is at offset 8, 2 bytes wide
+	selectorValue := uint32(selectorHigh)<<24 | uint32(selectorLow)<<16
+	uartPuts("RAMFB: About to write selector to 0x09020008...\r\n")
+
+	// Try writing selector - if this hangs, the address might be wrong or access might be restricted
+	// Selector register is 2 bytes, but we're writing 32 bits (upper 16 bits should be ignored)
+	mmio_write(uintptr(FW_CFG_SELECTOR), selectorValue)
+
+	// If we get here, the write didn't crash
+	uartPuts("RAMFB: Selector write complete\r\n")
+	dsb()
+	uartPuts("RAMFB: Memory barrier complete\r\n")
+
+	// Now write the 28-byte config structure directly to data register
+	// Data register is 8 bytes, so we need 4 writes (28 bytes = 3 full writes + 1 partial)
+	uartPuts("RAMFB: Writing 28-byte config structure to data register...\r\n")
+
+	cfgPtr := (*[28]byte)(unsafe.Pointer(cfg))
+
+	// Write in 8-byte chunks (4 writes total, last one is partial)
+	for i := 0; i < 4; i++ {
+		offset := i * 8
+		if offset >= 28 {
+			break
 		}
 
-		// Small delay
-		for j := 0; j < 100; j++ {
+		// Read 8 bytes (or remaining bytes)
+		bytesToWrite := 8
+		if offset+8 > 28 {
+			bytesToWrite = 28 - offset
 		}
 
-		if i%100000 == 0 && i > 0 {
-			uartPuts("RAMFB: Waiting... iteration=")
-			uartPutUint32(uint32(i))
-			uartPuts(" control (BE)=0x")
-			printHex32(controlBE)
-			uartPuts(" (LE=0x")
-			printHex32(control)
-			uartPuts(")\r\n")
+		// Build 64-bit value from bytes (big-endian)
+		var value uint64
+		for j := 0; j < bytesToWrite && j < 8; j++ {
+			value |= uint64(cfgPtr[offset+j]) << (56 - j*8)
 		}
+
+		uartPuts("RAMFB: Writing chunk ")
+		uartPutUint32(uint32(i))
+		uartPuts(" (offset ")
+		uartPutUint32(uint32(offset))
+		uartPuts(") = 0x")
+		uartPutHex64(value)
+		uartPuts("\r\n")
+
+		// Write to data register (big-endian)
+		mmio_write64(uintptr(FW_CFG_DATA), swap64(value))
+		dsb()
 	}
 
-	uartPuts("RAMFB: DMA transfer timeout\r\n")
-	uartPuts("RAMFB: Final control (BE)=0x")
-	printHex32(dmaAccessGlobal.Control())
-	uartPuts(" (LE=0x")
-	printHex32(swap32(dmaAccessGlobal.Control()))
-	uartPuts(")\r\n")
+	uartPuts("RAMFB: Direct write complete (28 bytes written)\r\n")
+	uartPuts("RAMFB: NOTE - Direct writes may be ignored by QEMU 2.4+\r\n")
+	uartPuts("RAMFB: This function is for debugging/config verification only\r\n")
 
-	// Even if timeout, try to continue - maybe it worked anyway
-	uartPuts("RAMFB: Continuing despite timeout\r\n")
 	return true
 }

@@ -20,32 +20,20 @@ const (
 
 // uartInit initializes the UART for QEMU virt machine
 // Uses PL011 UART at 0x09000000
-// QEMU pre-initializes it, so we can use empty function
+// Follows proper PL011 initialization sequence
 //
 //go:nosplit
 func uartInit() {
-	// Empty - QEMU handles UART initialization
-	// We can write directly to UART without initialization
+	// Initialize UART using proper PL011 sequence
+	uart_init_pl011()
 }
 
 // uartPutc outputs a character via UART (QEMU virt machine)
-// PL011 FR register: bit 5 = TXFF (transmit FIFO full), bit 7 = TXFE (transmit FIFO empty)
-// We wait for TXFF to be clear (FIFO has space)
+// Uses proper PL011 UART assembly function
 //
 //go:nosplit
 func uartPutc(c byte) {
-	// Use the exact same pattern as kernel.go direct writes that work
-	// Define constants locally to match exactly
-	const uartBase uintptr = 0x09000000
-	const uartFR = uartBase + 0x18
-	const uartDR = uartBase + 0x00
-
-	// Wait for transmit FIFO to have space (same pattern as kernel.go)
-	for mmio_read(uartFR)&(1<<5) != 0 {
-		// Wait
-	}
-	// Write character
-	mmio_write(uartDR, uint32(c))
+	uart_putc_pl011(c)
 }
 
 // uartGetc reads a character from UART (QEMU virt machine)

@@ -91,3 +91,4 @@ For 1GB RAM:
 - Stack: ~508MB pre-allocated (can grow via heap if needed)
 
 Total kernel usage: ~70-80MB + stack, well within 512MB allocation.
+

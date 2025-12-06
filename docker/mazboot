@@ -50,6 +50,12 @@ echo ""
 LOG_DIR="/tmp/qemu-logs"
 mkdir -p "$LOG_DIR"
 
+# Get QEMU version for debugging
+echo "QEMU version:"
+qemu-system-aarch64 --version
+echo ""
+mkdir -p "$LOG_DIR"
+
 # Run QEMU locally with Cocoa display
 # -M virt: Generic AArch64 virtual machine
 # -cpu cortex-a72: Use Cortex-A72 CPU (same as Raspberry Pi 4)
@@ -59,25 +65,49 @@ mkdir -p "$LOG_DIR"
 #   Kernel initializes it via fw_cfg interface
 # -display cocoa: Use Cocoa display (native macOS, opens window directly on host)
 # -serial mon:stdio: Redirect UART output to console (mon:stdio for bare-metal)
-# -semihosting: Enable semihosting for clean program exit
 # -no-reboot: Exit on shutdown instead of rebooting
+# Note: semihosting removed - may interfere with ramfb
 # -d guest_errors,unimp,int: Enable debug output for guest errors
 # -trace "fw_cfg*": Trace firmware configuration operations
 # -D: Log file path
-qemu-system-aarch64 \
-    -M virt \
-    -cpu cortex-a72 \
-    -m 1G \
-    -device loader,file="$KERNEL_PATH",cpu-num=0 \
-    -device ramfb \
-    -vga none \
-    -display cocoa \
-    -serial mon:stdio \
-    -semihosting \
-    -no-reboot \
-    -d guest_errors,unimp,int \
-    -trace "fw_cfg*" \
+
+# Build the QEMU command
+# Option explanations:
+#   -M virt: Use QEMU's generic AArch64 virtual machine (better device support than raspi4b)
+#   -cpu cortex-a72: Use Cortex-A72 CPU (matches Raspberry Pi 4)
+#   -m 1G: Allocate 1GB RAM (for kernel development)
+#   -device loader,file=...: Load bare-metal kernel ELF file at specified path
+#   -device ramfb: Add ramfb device (RAM framebuffer, configured via fw_cfg)
+#   -display cocoa: Use Cocoa display backend (native macOS window)
+#   -serial mon:stdio: Redirect UART output to console
+#   -no-reboot: Exit on shutdown instead of rebooting
+#   -d guest_errors,unimp,int: Enable debug output (guest errors, unimplemented features, interrupts)
+#   -trace "fw_cfg*": Trace firmware configuration operations (for debugging ramfb)
+#   -D: Log file path for QEMU debug output
+QEMU_CMD=(
+    qemu-system-aarch64
+    -M virt
+    -cpu cortex-a72
+    -m 1G
+    -device loader,file="$KERNEL_PATH",cpu-num=0
+    -device ramfb,x-migrate=off
+    -display cocoa
+    -serial stdio
+    -semihosting
+    -semihosting-config target=native
+    -no-reboot
+    -d guest_errors,unimp,int,fw_cfg,mmio
+    -trace "fw_cfg*"
     -D "$LOG_DIR/qemu-$$.log"
+)
+
+# Display the full command line
+echo "QEMU command:"
+echo "${QEMU_CMD[@]}"
+echo ""
+
+# Execute QEMU
+"${QEMU_CMD[@]}"
 
 echo ""
 echo "QEMU log saved to: $LOG_DIR/qemu-$$.log"

@@ -418,3 +418,4 @@ func virtqueueReset(vq *VirtQueue) {
 	vq.Used.Idx = 0
 	vq.LastUsedIdx = 0
 }
+

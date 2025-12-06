@@ -72,3 +72,4 @@
 3. Increase `KERNEL_HEAP_SIZE` to 64MB or more
 4. Fix framebuffer addresses to use heap or be within kernel region
 5. Update comments to reflect new layout
+
