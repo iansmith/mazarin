@@ -206,3 +206,4 @@ for i := 0; i < 28; i += 4 {
 
 - `DMA-INVESTIGATION-COMPLETE.md`: Detailed investigation of DMA issues
 - `ramfb_qemu.go`: Implementation of both interfaces
+
