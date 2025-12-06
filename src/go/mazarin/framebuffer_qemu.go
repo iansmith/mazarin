@@ -9,6 +9,10 @@ const (
 	QEMU_FB_HEIGHT = 480
 )
 
+// Override BYTES_PER_PIXEL for QEMU - ramfb uses XRGB8888 (32-bit, 4 bytes per pixel)
+// This overrides the 3-byte value from framebuffer_common.go
+const QEMU_BYTES_PER_PIXEL = 4
+
 // framebufferInit initializes the framebuffer for QEMU using ramfb device
 // Returns 0 on success, non-zero on error
 //
@@ -24,7 +28,8 @@ func framebufferInit() int32 {
 	uartPuts("FB: Width set\r\n")
 	fbinfo.Height = QEMU_FB_HEIGHT
 	uartPuts("FB: Height set\r\n")
-	fbinfo.Pitch = fbinfo.Width * BYTES_PER_PIXEL
+	// XRGB8888 format uses 4 bytes per pixel
+	fbinfo.Pitch = fbinfo.Width * QEMU_BYTES_PER_PIXEL
 	uartPuts("FB: Pitch set\r\n")
 	fbinfo.CharsWidth = fbinfo.Width / CHAR_WIDTH
 	uartPuts("FB: CharsWidth set\r\n")

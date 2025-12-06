@@ -372,15 +372,15 @@ func KernelMain(r0, r1, atags uint32) {
 	if fbResult == 0 {
 		// Draw a simple test - just fill first few pixels
 		// This tests if framebuffer writes work at all
-		pixels := (*[1 << 30]byte)(fbinfo.Buf)
+		// Use 32-bit pixels for XRGB8888 format
+		testPixels32 := (*[1 << 28]uint32)(fbinfo.Buf)
 
-		// Draw a small red square in top-left corner (BGR format)
+		// Draw a small red square in top-left corner (XRGB8888 format: 0x00RRGGBB)
+		// Red = 0x00FF0000 in XRGB8888
 		for y := uint32(0); y < 100; y++ {
 			for x := uint32(0); x < 100; x++ {
-				offset := (y * fbinfo.Pitch) + (x * BYTES_PER_PIXEL)
-				pixels[offset+0] = 0x00 // Blue
-				pixels[offset+1] = 0x00 // Green
-				pixels[offset+2] = 0xFF // Red (BGR format)
+				offset := y*fbinfo.Width + x
+				testPixels32[offset] = 0x00FF0000 // Red in XRGB8888 (0x00RRGGBB)
 			}
 		}
 
@@ -410,6 +410,7 @@ func KernelMain(r0, r1, atags uint32) {
 
 // drawTestPattern draws a simple test pattern to the framebuffer
 // This helps verify that VNC display is working correctly
+// Uses XRGB8888 format (32-bit pixels: 0x00RRGGBB)
 //
 //go:nosplit
 func drawTestPattern() {
@@ -420,76 +421,62 @@ func drawTestPattern() {
 	}
 	uartPuts("FB buf OK\r\n")
 
-	// Get framebuffer as byte array
-	pixels := (*[1 << 30]byte)(fbinfo.Buf)
+	// Get framebuffer as 32-bit pixel array (XRGB8888 format)
+	// XRGB8888 format: [X:8][R:8][G:8][B:8] = 0x00RRGGBB
+	testPixels32 := (*[1 << 28]uint32)(fbinfo.Buf)
 
 	// Draw colored rectangles across the screen
-	// Each rectangle is 320 pixels wide (1280/4 = 320)
+	// Each rectangle is 160 pixels wide (640/4 = 160)
 
-	// NOTE: bochs-display uses BGR byte order (Blue, Green, Red), not RGB!
-	// So pixels[offset+0] = Blue, pixels[offset+1] = Green, pixels[offset+2] = Red
-
-	// Red rectangle (left quarter) - BGR: [Blue=0x00, Green=0x00, Red=0xFF]
+	// Red rectangle (left quarter) - XRGB8888: 0x00FF0000
 	for y := uint32(0); y < fbinfo.Height; y++ {
-		for x := uint32(0); x < 320; x++ {
-			offset := (y * fbinfo.Pitch) + (x * BYTES_PER_PIXEL)
-			pixels[offset+0] = 0x00 // Blue
-			pixels[offset+1] = 0x00 // Green
-			pixels[offset+2] = 0xFF // Red
+		for x := uint32(0); x < fbinfo.Width/4; x++ {
+			offset := y*fbinfo.Width + x
+			testPixels32[offset] = 0x00FF0000 // Red (R=FF, G=00, B=00)
 		}
 	}
 
-	// Green rectangle (second quarter) - BGR: [Blue=0x00, Green=0xFF, Red=0x00]
+	// Green rectangle (second quarter) - XRGB8888: 0x0000FF00
 	for y := uint32(0); y < fbinfo.Height; y++ {
-		for x := uint32(320); x < 640; x++ {
-			offset := (y * fbinfo.Pitch) + (x * BYTES_PER_PIXEL)
-			pixels[offset+0] = 0x00 // Blue
-			pixels[offset+1] = 0xFF // Green
-			pixels[offset+2] = 0x00 // Red
+		for x := uint32(fbinfo.Width / 4); x < fbinfo.Width/2; x++ {
+			offset := y*fbinfo.Width + x
+			testPixels32[offset] = 0x0000FF00 // Green (R=00, G=FF, B=00)
 		}
 	}
 
-	// Blue rectangle (third quarter) - BGR: [Blue=0xFF, Green=0x00, Red=0x00]
+	// Blue rectangle (third quarter) - XRGB8888: 0x000000FF
 	for y := uint32(0); y < fbinfo.Height; y++ {
-		for x := uint32(640); x < 960; x++ {
-			offset := (y * fbinfo.Pitch) + (x * BYTES_PER_PIXEL)
-			pixels[offset+0] = 0xFF // Blue
-			pixels[offset+1] = 0x00 // Green
-			pixels[offset+2] = 0x00 // Red
+		for x := uint32(fbinfo.Width / 2); x < (fbinfo.Width*3)/4; x++ {
+			offset := y*fbinfo.Width + x
+			testPixels32[offset] = 0x000000FF // Blue (R=00, G=00, B=FF)
 		}
 	}
 
-	// White rectangle (right quarter) - BGR: 0xFF, 0xFF, 0xFF
+	// White rectangle (right quarter) - XRGB8888: 0x00FFFFFF
 	for y := uint32(0); y < fbinfo.Height; y++ {
-		for x := uint32(960); x < 1280; x++ {
-			offset := (y * fbinfo.Pitch) + (x * BYTES_PER_PIXEL)
-			pixels[offset+0] = 0xFF // Blue
-			pixels[offset+1] = 0xFF // Green
-			pixels[offset+2] = 0xFF // Red
+		for x := uint32((fbinfo.Width * 3) / 4); x < fbinfo.Width; x++ {
+			offset := y*fbinfo.Width + x
+			testPixels32[offset] = 0x00FFFFFF // White (R=FF, G=FF, B=FF)
 		}
 	}
 
-	// Draw a yellow cross in the center - BGR: 0x00, 0xFF, 0xFF (Yellow = Red + Green)
+	// Draw a yellow cross in the center - XRGB8888: 0x00FFFF00 (Yellow = Red + Green)
 	centerX := fbinfo.Width / 2
 	centerY := fbinfo.Height / 2
 
 	// Horizontal line (20 pixels thick)
-	for y := centerY - 10; y < centerY+10; y++ {
+	for y := centerY - 10; y < centerY+10 && y < fbinfo.Height; y++ {
 		for x := uint32(0); x < fbinfo.Width; x++ {
-			offset := (y * fbinfo.Pitch) + (x * BYTES_PER_PIXEL)
-			pixels[offset+0] = 0x00 // Blue
-			pixels[offset+1] = 0xFF // Green
-			pixels[offset+2] = 0xFF // Red (BGR: Yellow = 0xFF in both green and red)
+			offset := y*fbinfo.Width + x
+			testPixels32[offset] = 0x00FFFF00 // Yellow (R=FF, G=FF, B=00)
 		}
 	}
 
 	// Vertical line (20 pixels thick)
 	for y := uint32(0); y < fbinfo.Height; y++ {
-		for x := centerX - 10; x < centerX+10; x++ {
-			offset := (y * fbinfo.Pitch) + (x * BYTES_PER_PIXEL)
-			pixels[offset+0] = 0x00 // Blue
-			pixels[offset+1] = 0xFF // Green
-			pixels[offset+2] = 0xFF // Red (BGR: Yellow = 0xFF in both green and red)
+		for x := centerX - 10; x < centerX+10 && x < fbinfo.Width; x++ {
+			offset := y*fbinfo.Width + x
+			testPixels32[offset] = 0x00FFFF00 // Yellow (R=FF, G=FF, B=00)
 		}
 	}
 	uartPuts("Test pattern drawn\r\n")

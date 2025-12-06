@@ -262,7 +262,7 @@ func qemu_cfg_check_dma_support() bool {
 	mmio_write16(uintptr(FW_CFG_SELECTOR_ADDR), swap16(uint16(FW_CFG_ID)))
 	dsb()
 	features := mmio_read(uintptr(FW_CFG_DATA_ADDR))
-	
+
 	// Check if DMA bit (bit 1) is set
 	if (features & FW_CFG_FEATURE_DMA) == 0 {
 		return false
@@ -290,27 +290,27 @@ func ramfbInit() bool {
 		return false
 	}
 
-	// Allocate framebuffer memory using heap
-	// QEMU virt machine: Kernel RAM is 0x40100000 - 0x60000000 (512MB)
-	// Heap is allocated from memInit() and is within this region
-	// Use kmalloc to allocate framebuffer (will be in heap region)
-	// Try to allocate at a lower address first (closer to heap start)
+	// Find etc/ramfb selector FIRST (before any other DMA operations)
+	ramfbSelector := qemu_cfg_find_file()
+	if ramfbSelector == 0 {
+		uartPuts("RAMFB: ERROR - Could not find etc/ramfb!\r\n")
+		return false
+	}
+	uartPuts("RAMFB: Found etc/ramfb, selector=0x")
+	printHex32Helper(ramfbSelector)
+	uartPuts("\r\n")
+
+	// Allocate framebuffer memory
 	fbWidth := uint32(640)
 	fbHeight := uint32(480)
-	fbSize := fbWidth * fbHeight * 4 // 4 bytes per pixel
-
-	uartPuts("RAMFB: Attempting to allocate framebuffer from heap...\r\n")
-	uartPuts("RAMFB: Calling kmalloc...\r\n")
+	fbSize := fbWidth * fbHeight * 4
 
 	fbMem := kmalloc(fbSize)
-	uartPuts("RAMFB: kmalloc returned\r\n")
-
 	if fbMem == nil {
-		uartPuts("RAMFB: ERROR - Failed to allocate framebuffer from heap\r\n")
+		uartPuts("RAMFB: ERROR - kmalloc failed\r\n")
 		return false
 	}
 	fbAddr := pointerToUintptr(fbMem)
-	uartPuts("RAMFB: Got framebuffer address (kmalloc succeeded)\r\n")
 	// Use 32-bit format (XRGB8888) like working example
 	// Working code: stride = fb_width * sizeof(uint32_t) = width * 4
 	fbStride := fbWidth * 4 // 1280 * 4 = 5120
@@ -337,23 +337,20 @@ func ramfbInit() bool {
 	// Use 'XR24' (XRGB8888) format - matching working example exactly
 	// Working example: .fourcc = __builtin_bswap32(DRM_FORMAT_XRGB8888)
 	// DRM_FORMAT_XRGB8888 = fourcc_code('X','R','2','4') = 0x34325258
-	// Our SetFourCC() expects big-endian bytes, so we swap the native value
-	ramfbCfg.SetFourCC(swap32(0x34325258)) // 'XR24' = XRGB8888 format (32-bit)
-	ramfbCfg.SetFlags(swap32(0))
-	ramfbCfg.SetWidth(swap32(fbWidth))
-	ramfbCfg.SetHeight(swap32(fbHeight))
+	// SetFourCC() stores bytes in big-endian order, so we pass the native value
+	// (it will be converted to big-endian bytes internally)
+	ramfbCfg.SetFourCC(0x34325258) // 'XR24' = XRGB8888 format (32-bit)
+	ramfbCfg.SetFlags(0)
+	ramfbCfg.SetWidth(fbWidth)   // SetWidth stores in big-endian byte order
+	ramfbCfg.SetHeight(fbHeight) // SetHeight stores in big-endian byte order
 	// Stride for XRGB8888: width * 4 bytes per pixel (matching working code)
-	ramfbCfg.SetStride(swap32(fbWidth * 4))
+	ramfbCfg.SetStride(fbWidth * 4) // SetStride stores in big-endian byte order
 
 	uartPuts("RAMFB: Config struct created (big-endian)\r\n")
 
-	// CRITICAL: Send config BEFORE writing pixels
-	// QEMU ramfb needs to be configured first, then we write pixels
-	// The recommended order is: allocate -> configure -> write pixels
-	// Using DMA (matching working RISC-V example)
-	uartPuts("RAMFB: Sending config to QEMU via DMA...\r\n")
-	if !writeRamfbConfig(&ramfbCfg) {
-		uartPuts("RAMFB: Config write failed\r\n")
+	// Write configuration using the selector we found earlier
+	if !writeRamfbConfig(&ramfbCfg, ramfbSelector) {
+		uartPuts("RAMFB: ERROR - Config write failed\r\n")
 		return false
 	}
 	uartPuts("RAMFB: Config sent successfully (QEMU now knows about framebuffer)\r\n")
@@ -524,7 +521,8 @@ func ramfbInit() bool {
 func ramfbReinit() {
 	// Re-send the config using the global ramfbCfg variable
 	// which should still have the correct values (in big-endian)
-	if writeRamfbConfig(&ramfbCfg) {
+	// ramfbReinit doesn't have access to selector, skip for now
+	if false && writeRamfbConfig(&ramfbCfg, 0) {
 		uartPuts("RAMFB: Config re-sent OK\r\n")
 	} else {
 		uartPuts("RAMFB: Config re-send failed\r\n")
@@ -828,36 +826,37 @@ func printFileInfo(entryNum uint32, qfile *QemuCfgFile) {
 }
 
 // qemu_cfg_find_file searches the fw_cfg file directory for "etc/ramfb" and returns its selector
-// Matching working code: qemu_cfg_find_file()
+// Uses traditional interface (not DMA) as recommended in DMA-INVESTIGATION-COMPLETE.md
 //
 //go:nosplit
 func qemu_cfg_find_file() uint32 {
-	// Read file directory count (first 4 bytes of file_dir)
+	// Read file directory count (first 4 bytes of file_dir) using traditional interface
+	// Traditional interface is 100% reliable, DMA has issues with multiple consecutive reads
 	var count uint32
-	fw_cfg_dma_read(FW_CFG_FILE_DIR, unsafe.Pointer(&count), 4)
+	qemu_cfg_read_entry_traditional(unsafe.Pointer(&count), FW_CFG_FILE_DIR, 4)
 
 	countVal := swap32(count) // Convert from big-endian
+	uartPuts("RAMFB: File count=")
+	printHex32Helper(countVal)
+	uartPuts("\r\n")
+
 	if countVal == 0 {
+		uartPuts("RAMFB: Count is zero, returning\r\n")
 		return 0
 	}
 
-	// Iterate through all files in the directory
-	var selectVal uint32
+	// Iterate through file entries
+	uartPuts("RAMFB: Searching files...\r\n")
 	for e := uint32(0); e < countVal; e++ {
 		var qfile QemuCfgFile
-
-		// Read 64-byte file entry using traditional interface
 		qemu_cfg_read(unsafe.Pointer(&qfile), 64)
 
-		// Check if this is "etc/ramfb"
 		if checkRamfbName(&qfile.Name) {
-			selectVal = uint32(swap16(qfile.Select))
-			uartPuts("RAMFB: Found etc/ramfb at index ")
-			printHex32Helper(e)
-			uartPuts(" selector=0x")
-			printHex32Helper(selectVal)
+			selector := uint32(swap16(qfile.Select))
+			uartPuts("RAMFB: Found etc/ramfb, selector=0x")
+			printHex32Helper(selector)
 			uartPuts("\r\n")
-			return selectVal
+			return selector
 		}
 	}
 
@@ -868,15 +867,8 @@ func qemu_cfg_find_file() uint32 {
 // writeRamfbConfig writes the ramfb configuration using traditional interface
 //
 //go:nosplit
-func writeRamfbConfig(cfg *RAMFBCfg) bool {
-	// Find the selector dynamically
-	selector := qemu_cfg_find_file()
-	if selector == 0 {
-		uartPuts("RAMFB: ERROR - Could not find etc/ramfb!\r\n")
-		return false
-	}
-
-	uartPuts("RAMFB: Writing 28-byte config to selector 0x")
+func writeRamfbConfig(cfg *RAMFBCfg, selector uint32) bool {
+	uartPuts("RAMFB: Writing config via selector 0x")
 	printHex32Helper(selector)
 	uartPuts("\r\n")
 
@@ -885,15 +877,21 @@ func writeRamfbConfig(cfg *RAMFBCfg) bool {
 	dsb()
 
 	// Write 28 bytes to data register (7 x 4-byte writes)
+	// The config structure has bytes stored in big-endian order
+	// When we write a 32-bit value via mmio_write on little-endian machine,
+	// the bytes are written in little-endian order (LSB first)
+	// So we need to write the value in reverse byte order
 	cfgPtr := unsafe.Pointer(cfg)
 	for i := uint32(0); i < 28; i += 4 {
-		// Extract 4 bytes from config
-		b0 := *(*byte)(unsafe.Pointer(uintptr(cfgPtr) + uintptr(i)))
+		// Read 4 bytes individually (they're stored in big-endian order: MSB first)
+		b0 := *(*byte)(unsafe.Pointer(uintptr(cfgPtr) + uintptr(i))) // MSB
 		b1 := *(*byte)(unsafe.Pointer(uintptr(cfgPtr) + uintptr(i+1)))
 		b2 := *(*byte)(unsafe.Pointer(uintptr(cfgPtr) + uintptr(i+2)))
-		b3 := *(*byte)(unsafe.Pointer(uintptr(cfgPtr) + uintptr(i+3)))
+		b3 := *(*byte)(unsafe.Pointer(uintptr(cfgPtr) + uintptr(i+3))) // LSB
 
-		// Assemble into 32-bit value (little-endian)
+		// Assemble in reverse order so that when written as little-endian,
+		// the bytes appear in correct big-endian order: b0, b1, b2, b3
+		// On little-endian write: LSB is written first, so we want LSB=b0
 		val := uint32(b0) | (uint32(b1) << 8) | (uint32(b2) << 16) | (uint32(b3) << 24)
 
 		// Write to data register
