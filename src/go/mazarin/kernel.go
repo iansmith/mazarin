@@ -289,12 +289,6 @@ func KernelMain(r0, r1, atags uint32) {
 	// Initialize UART first for early debugging
 	uartInit()
 
-	// TODO: Exception handling initialization - currently disabled because exceptions.o
-	// interferes with RAMFB DMA transfers. Need to investigate root cause.
-	// if err := InitializeExceptions(); err != nil {
-	// 	uartPuts("ERROR: Failed to initialize exception handling\r\n")
-	// }
-
 	// Initialize minimal runtime structures for write barrier
 	// This sets up g0, m0, and write barrier buffers so that gcWriteBarrier can work
 	// Note: x28 (goroutine pointer) is set in lib.s before calling KernelMain
@@ -392,6 +386,12 @@ func KernelMain(r0, r1, atags uint32) {
 	FramebufferPuts("Mazarin Kernel - Framebuffer Text Test\n")
 	FramebufferPuts("Bright Green on Midnight Blue\n")
 	FramebufferPuts("System ready\n")
+
+	// Initialize exception handling AFTER framebuffer is set up
+	// This was causing RAMFB DMA to fail when done earlier
+	if err := InitializeExceptions(); err != nil {
+		uartPuts("ERROR: Failed to initialize exception handling\r\n")
+	}
 
 	puts("\r\n")
 	puts("Framebuffer initialized - check display\r\n")
