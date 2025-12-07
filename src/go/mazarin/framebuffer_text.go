@@ -259,31 +259,54 @@ func FramebufferPutHex64(val uint64) {
 // InitFramebufferText initializes the text rendering system on an already-initialized framebuffer
 // This should be called after framebufferInit() has set up the hardware framebuffer
 // Parameters: buffer address, width, height, pitch (all from the hardware framebuffer setup)
+//
+//go:nosplit
 func InitFramebufferText(buffer unsafe.Pointer, width, height, pitch uint32) error {
 	uartPuts("InitFramebufferText: ENTRY\r\n")
 
 	// Store framebuffer information in shared fbinfo
 	fbinfo.Buf = buffer
-	fbinfo.Width = width
-	fbinfo.Height = height
-	fbinfo.Pitch = pitch
-	fbinfo.CharsWidth = width / 8   // 8 pixels per character
-	fbinfo.CharsHeight = height / 8 // 8 pixels per character
-	fbinfo.CharsX = 0
-	fbinfo.CharsY = 0
+	uartPuts("InitFramebufferText: Buf stored\r\n")
 
-	uartPuts("InitFramebufferText: Stored fbinfo\r\n")
+	fbinfo.Width = width
+	uartPuts("InitFramebufferText: Width stored\r\n")
+
+	fbinfo.Height = height
+	uartPuts("InitFramebufferText: Height stored\r\n")
+
+	fbinfo.Pitch = pitch
+	uartPuts("InitFramebufferText: Pitch stored\r\n")
+
+	uartPuts("InitFramebufferText: About to divide width\r\n")
+	fbinfo.CharsWidth = width / 8 // 8 pixels per character
+	uartPuts("InitFramebufferText: Width divided\r\n")
+
+	uartPuts("InitFramebufferText: About to divide height\r\n")
+	fbinfo.CharsHeight = height / 8 // 8 pixels per character
+	uartPuts("InitFramebufferText: Height divided\r\n")
+
+	uartPuts("InitFramebufferText: About to set cursor X\r\n")
+	fbinfo.CharsX = 0
+	uartPuts("InitFramebufferText: Cursor X set\r\n")
+
+	uartPuts("InitFramebufferText: About to set cursor Y\r\n")
+	fbinfo.CharsY = 0
+	uartPuts("InitFramebufferText: Cursor Y set\r\n")
+
+	uartPuts("InitFramebufferText: Grid values stored\r\n")
 
 	// Set colors from constants
 	fbForegroundColor = FramebufferTextColor       // AnsiBrightGreen
 	fbBackgroundColor = FramebufferBackgroundColor // MidnightBlue
+	uartPuts("InitFramebufferText: Colors set\r\n")
 
 	fbTextInitialized = true
-
-	uartPuts("InitFramebufferText: Set fbTextInitialized=true\r\n")
+	uartPuts("InitFramebufferText: fbTextInitialized=true\r\n")
 
 	// Clear the screen to midnight blue background
+	uartPuts("InitFramebufferText: About to call ClearScreen\r\n")
 	ClearScreen()
+	uartPuts("InitFramebufferText: ClearScreen returned\r\n")
 
 	uartPuts("InitFramebufferText: EXIT (success)\r\n")
 

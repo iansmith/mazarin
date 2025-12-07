@@ -390,14 +390,13 @@ func KernelMain(r0, r1, atags uint32) {
 	uartPutHex64(uint64(fbinfo.Pitch))
 	uartPuts("\r\n")
 
-	// TEMPORARILY DISABLED to debug
-	// if err := InitFramebufferText(fbinfo.Buf, fbinfo.Width, fbinfo.Height, fbinfo.Pitch); err != nil {
-	// 	uartPuts("ERROR: Framebuffer text initialization failed\r\n")
-	// 	qemu_exit()
-	// 	return // Should not reach here
-	// }
+	if err := InitFramebufferText(fbinfo.Buf, fbinfo.Width, fbinfo.Height, fbinfo.Pitch); err != nil {
+		uartPuts("ERROR: Framebuffer text initialization failed\r\n")
+		qemu_exit()
+		return // Should not reach here
+	}
 
-	uartPuts("SKIPPED InitFramebufferText for debugging\r\n")
+	uartPuts("InitFramebufferText returned successfully\r\n")
 
 	// Initialize exception handling AFTER framebuffer is set up
 	// This was causing RAMFB DMA to fail when done earlier
