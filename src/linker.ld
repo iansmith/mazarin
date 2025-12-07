@@ -36,7 +36,7 @@ SECTIONS
     }
     . = ALIGN(0x800);
     PROVIDE(exception_vectors_end = .);
- 
+
     __rodata_start = .;
     .rodata :
     {

@@ -289,11 +289,11 @@ func KernelMain(r0, r1, atags uint32) {
 	// Initialize UART first for early debugging
 	uartInit()
 
-	// Initialize exception handling (exception vector table)
-	// This must be done early to catch any exceptions in subsequent initialization
-	if err := InitializeExceptions(); err != nil {
-		uartPuts("ERROR: Failed to initialize exception handling\r\n")
-	}
+	// TODO: Exception handling initialization - currently disabled because exceptions.o
+	// interferes with RAMFB DMA transfers. Need to investigate root cause.
+	// if err := InitializeExceptions(); err != nil {
+	// 	uartPuts("ERROR: Failed to initialize exception handling\r\n")
+	// }
 
 	// Initialize minimal runtime structures for write barrier
 	// This sets up g0, m0, and write barrier buffers so that gcWriteBarrier can work
@@ -371,20 +371,27 @@ func KernelMain(r0, r1, atags uint32) {
 
 	fbResult := framebufferInit()
 
-	if fbResult == 0 {
-		// Framebuffer hardware initialized successfully
-		// Now initialize the text rendering system on top of it
-		// fbinfo.Buf, Width, Height, Pitch are set by framebufferInit/ramfbInit
-		if err := InitFramebufferText(fbinfo.Buf, fbinfo.Width, fbinfo.Height, fbinfo.Pitch); err != nil {
-			uartPuts("ERROR: Framebuffer text initialization failed\r\n")
-		} else {
-			// Framebuffer text rendering ready
-			// Display boot messages on the screen
-			FramebufferPuts("Mazarin Kernel - Framebuffer Text Test\n")
-			FramebufferPuts("Bright Green on Midnight Blue\n")
-			FramebufferPuts("System ready\n")
-		}
+	if fbResult != 0 {
+		// Framebuffer initialization failed - exit via semihosting
+		uartPuts("ERROR: Framebuffer initialization failed!\r\n")
+		qemu_exit()
+		return // Should not reach here
 	}
+
+	// Framebuffer hardware initialized successfully
+	// Now initialize the text rendering system on top of it
+	// fbinfo.Buf, Width, Height, Pitch are set by framebufferInit/ramfbInit
+	if err := InitFramebufferText(fbinfo.Buf, fbinfo.Width, fbinfo.Height, fbinfo.Pitch); err != nil {
+		uartPuts("ERROR: Framebuffer text initialization failed\r\n")
+		qemu_exit()
+		return // Should not reach here
+	}
+
+	// Framebuffer text rendering ready
+	// Display boot messages on the screen
+	FramebufferPuts("Mazarin Kernel - Framebuffer Text Test\n")
+	FramebufferPuts("Bright Green on Midnight Blue\n")
+	FramebufferPuts("System ready\n")
 
 	puts("\r\n")
 	puts("Framebuffer initialized - check display\r\n")

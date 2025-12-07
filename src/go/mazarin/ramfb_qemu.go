@@ -666,13 +666,12 @@ func qemu_cfg_dma_transfer(dataAddr unsafe.Pointer, length uint32, control uint3
 	}
 
 	// Create LOCAL DMA structure on stack
-	// Store values in big-endian byte format (matching working RISC-V example)
-	// The SetControl/SetLength/SetAddress methods store bytes in big-endian order
-	// But we must pre-swap the values so they become correct after QEMU's DEVICE_BIG_ENDIAN processing
+	// Store values in big-endian byte format (how QEMU expects to read them)
+	// QEMU will then convert with be32_to_cpu/be64_to_cpu
 	var access FWCfgDmaAccess
-	access.SetControl(swap32(control))
-	access.SetLength(swap32(length))
-	access.SetAddress(swap64(uint64(uintptr(dataAddr))))
+	access.SetControl(control)
+	access.SetLength(length)
+	access.SetAddress(uint64(uintptr(dataAddr)))
 	dsb()
 
 	// Write DMA structure address to DMA register
@@ -681,7 +680,7 @@ func qemu_cfg_dma_transfer(dataAddr unsafe.Pointer, length uint32, control uint3
 	accessAddr := uintptr(unsafe.Pointer(&access))
 	addr64 := uint64(accessAddr)
 	addr64Swapped := swap64(addr64)
-	
+
 	uartPuts("RAMFB: DMA addr unswapped=0x")
 	for shift := 60; shift >= 0; shift -= 4 {
 		digit := (addr64 >> shift) & 0xF
@@ -701,7 +700,7 @@ func qemu_cfg_dma_transfer(dataAddr unsafe.Pointer, length uint32, control uint3
 		}
 	}
 	uartPuts("\r\n")
-	
+
 	// Write the pre-swapped address as a single 64-bit value
 	mmio_write64(uintptr(FW_CFG_DMA_ADDR), addr64Swapped)
 	dsb()
