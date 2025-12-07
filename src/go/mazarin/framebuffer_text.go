@@ -260,6 +260,8 @@ func FramebufferPutHex64(val uint64) {
 // This should be called after framebufferInit() has set up the hardware framebuffer
 // Parameters: buffer address, width, height, pitch (all from the hardware framebuffer setup)
 func InitFramebufferText(buffer unsafe.Pointer, width, height, pitch uint32) error {
+	uartPuts("InitFramebufferText: ENTRY\r\n")
+
 	// Store framebuffer information in shared fbinfo
 	fbinfo.Buf = buffer
 	fbinfo.Width = width
@@ -270,14 +272,20 @@ func InitFramebufferText(buffer unsafe.Pointer, width, height, pitch uint32) err
 	fbinfo.CharsX = 0
 	fbinfo.CharsY = 0
 
+	uartPuts("InitFramebufferText: Stored fbinfo\r\n")
+
 	// Set colors from constants
 	fbForegroundColor = FramebufferTextColor       // AnsiBrightGreen
 	fbBackgroundColor = FramebufferBackgroundColor // MidnightBlue
 
 	fbTextInitialized = true
 
+	uartPuts("InitFramebufferText: Set fbTextInitialized=true\r\n")
+
 	// Clear the screen to midnight blue background
 	ClearScreen()
+
+	uartPuts("InitFramebufferText: EXIT (success)\r\n")
 
 	return nil
 }
@@ -288,8 +296,17 @@ func ClearScreen() {
 		return
 	}
 
+	uartPuts("ClearScreen: Starting clear\r\n")
+	uartPuts("ClearScreen: Width=0x")
+	uartPutHex64(uint64(fbinfo.Width))
+	uartPuts(" Height=0x")
+	uartPutHex64(uint64(fbinfo.Height))
+	uartPuts("\r\n")
+
 	// Fill entire framebuffer with background color
 	ClearPixelRect(0, 0, fbinfo.Width, fbinfo.Height)
+
+	uartPuts("ClearScreen: Clear complete\r\n")
 
 	// Reset cursor
 	fbinfo.CharsX = 0
