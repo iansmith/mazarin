@@ -1,32 +1,32 @@
 package main
 
 // ANSI Terminal Color Palette
-// Color values in XRGB8888 format (0xAARRGGBB with AA=FF for full opacity)
+// Color values in XRGB8888 format (0x00RRGGBB with 00=fully opaque)
 // Based on Dracula theme for consistent visual styling
 
 const (
 	// Basic ANSI Colors
-	AnsiBlack   uint32 = 0xFF111111 // Dark gray/black
-	AnsiRed     uint32 = 0xFFFF9DA4 // Soft red
-	AnsiGreen   uint32 = 0xFFD1F1A9 // Soft green
-	AnsiYellow  uint32 = 0xFFFFEEAD // Soft yellow
-	AnsiBlue    uint32 = 0xFFBBDAFF // Soft blue
-	AnsiMagenta uint32 = 0xFFEBBBFF // Soft magenta
-	AnsiCyan    uint32 = 0xFF99FFFF // Soft cyan
-	AnsiWhite   uint32 = 0xFFCCCCCC // Light gray
+	AnsiBlack   uint32 = 0x00111111 // Dark gray/black
+	AnsiRed     uint32 = 0x00FF9DA4 // Soft red
+	AnsiGreen   uint32 = 0x00D1F1A9 // Soft green
+	AnsiYellow  uint32 = 0x00FFEEAC // Soft yellow
+	AnsiBlue    uint32 = 0x00BBDAFF // Soft blue
+	AnsiMagenta uint32 = 0x00EBBBFF // Soft magenta
+	AnsiCyan    uint32 = 0x0099FFFF // Soft cyan
+	AnsiWhite   uint32 = 0x00CCCCCC // Light gray
 
 	// Bright ANSI Colors (High intensity)
-	AnsiBrightBlack   uint32 = 0xFF333333 // Medium gray
-	AnsiBrightRed     uint32 = 0xFFFF7882 // Bright red
-	AnsiBrightGreen   uint32 = 0xFFB8F171 // Bright green
-	AnsiBrightYellow  uint32 = 0xFFFFE580 // Bright yellow
-	AnsiBrightBlue    uint32 = 0xFF80BAFF // Bright blue
-	AnsiBrightMagenta uint32 = 0xFFD778FF // Bright magenta
-	AnsiBrightCyan    uint32 = 0xFF78FFFF // Bright cyan
-	AnsiBrightWhite   uint32 = 0xFFFFFFFF // Pure white
+	AnsiBrightBlack   uint32 = 0x00333333 // Medium gray
+	AnsiBrightRed     uint32 = 0x00FF7882 // Bright red
+	AnsiBrightGreen   uint32 = 0x00B8F171 // Bright green
+	AnsiBrightYellow  uint32 = 0x00FFE580 // Bright yellow
+	AnsiBrightBlue    uint32 = 0x0080BAFF // Bright blue
+	AnsiBrightMagenta uint32 = 0x00D778FF // Bright magenta
+	AnsiBrightCyan    uint32 = 0x0078FFFF // Bright cyan
+	AnsiBrightWhite   uint32 = 0x00FFFFFF // Pure white
 
 	// Background Colors
-	MidnightBlue uint32 = 0xFF191B70 // RGB(25, 25, 112) - midnight blue background
+	MidnightBlue uint32 = 0x00191B70 // RGB(25, 27, 112) - midnight blue background
 
 	// Default Framebuffer Colors
 	FramebufferBackgroundColor uint32 = MidnightBlue     // Midnight blue background

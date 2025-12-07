@@ -196,12 +196,16 @@ push: $(KERNEL_ELF)
 	@mkdir -p ../docker/builtin
 	cp $(KERNEL_ELF) ../docker/builtin/
 
-# Push QEMU kernel to docker/builtin directory (used by mazboot)
+# Build QEMU kernel and push to docker/builtin directory (used by mazboot)
+# This target builds kernel-qemu.elf and copies it to ../docker/builtin/kernel.elf
 qemu: $(QEMU_KERNEL_OUT)
+	@echo "QEMU kernel ready at $(QEMU_KERNEL_OUT)"
 
+# Rule to build and copy QEMU kernel to docker/builtin
 $(QEMU_KERNEL_OUT): kernel-qemu.elf
 	@mkdir -p ../docker/builtin
 	cp $< $@
+	@echo "Copied kernel-qemu.elf to docker/builtin/kernel.elf"
 
 # Test target - run Go tests
 test: $(BITFIELD_GEN)

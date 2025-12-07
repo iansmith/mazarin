@@ -254,3 +254,4 @@ This allows:
 - **Remote debugging** via UART without display
 - **Visual debugging** via display without serial
 - **Comprehensive logging** to both channels when available
+

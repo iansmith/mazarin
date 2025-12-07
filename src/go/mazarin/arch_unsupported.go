@@ -18,3 +18,4 @@ func compileError_ARCH_NOT_SPECIFIED() {
 	// Error will be: undefined: compileError_ARCH_NOT_SPECIFIED
 	// Which clearly indicates the problem
 }
+

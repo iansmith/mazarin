@@ -389,16 +389,13 @@ func KernelMain(r0, r1, atags uint32) {
 	uartPuts("DEBUG: After InitializeExceptions (skipped)\r\n")
 
 	// Display boot messages on framebuffer
-	uartPuts("DEBUG: About to render text\r\n")
+	uartPuts("Rendering text to framebuffer...\r\n")
 	FramebufferPuts("Mazarin Kernel\n")
-	uartPuts("DEBUG: Line 1 rendered\r\n")
 	FramebufferPuts("AArch64 Bare Metal\n")
-	uartPuts("DEBUG: Line 2 rendered\r\n")
 	FramebufferPuts("\n")
 	FramebufferPuts("System Initialized\n")
-	uartPuts("DEBUG: Line 3 rendered\r\n")
 	FramebufferPuts("Running...\n")
-	uartPuts("DEBUG: All text rendered\r\n")
+	uartPuts("Text rendering complete\r\n")
 
 	// Also output to UART for debugging
 	puts("\r\n")

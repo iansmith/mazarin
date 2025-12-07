@@ -48,6 +48,8 @@ func WritePixel(x, y uint32, color uint32) {
 // RenderChar renders an 8x8 character bitmap at pixel position (pixelX, pixelY)
 // char: ASCII character to render
 // pixelX, pixelY: top-left pixel position for the character
+//
+//go:nosplit
 func RenderChar(char byte, pixelX, pixelY uint32, color uint32) {
 	const charPixelWidth = 8
 	const charPixelHeight = 8
@@ -63,9 +65,10 @@ func RenderChar(char byte, pixelX, pixelY uint32, color uint32) {
 		rowByte := bitmap[row]
 
 		// Render each bit in the row
+		// Font bitmap format: MSB (bit 7) = leftmost pixel, LSB (bit 0) = rightmost pixel
 		for col := 0; col < charPixelWidth; col++ {
-			// Extract bit (from LSB = left to MSB = right)
-			bitSet := (rowByte & (1 << uint(col))) != 0
+			// Extract bit (from MSB = left to LSB = right)
+			bitSet := (rowByte & (1 << uint(7-col))) != 0
 
 			// Determine pixel color
 			var pixelColor uint32
@@ -83,20 +86,62 @@ func RenderChar(char byte, pixelX, pixelY uint32, color uint32) {
 	}
 }
 
-// RenderCharAtCursor renders a character at the current cursor position
-func RenderCharAtCursor(char byte) {
-	uartPuts("RCAC: CharsX=")
-	uartPutHex8(uint8(fbinfo.CharsX))
-	uartPuts(" CharsY=")
-	uartPutHex8(uint8(fbinfo.CharsY))
+// DebugRenderChar same as RenderChar but with verbose debug output
+func DebugRenderChar(char byte, pixelX, pixelY uint32, color uint32) {
+	const charPixelWidth = 8
+	const charPixelHeight = 8
+
+	if char >= 128 {
+		return
+	}
+
+	uartPuts("DRC: char=0x")
+	uartPutc(byte('0' + (char>>4)%16))
+	uartPutc(byte('0' + (char & 0xF)))
+	uartPuts(" at (")
+	uartPutc('P')
+	uartPuts(",")
+	uartPutc('Y')
+	uartPuts(") color=0x")
+	printHex32(color)
 	uartPuts("\r\n")
+
+	bitmap := fontBitmaps[char]
+
+	// Just render first row for debug
+	rowByte := bitmap[0]
+	uartPuts("DRC: Row 0 byte=0x")
+	uartPutc(byte('0' + (rowByte>>4)%16))
+	uartPutc(byte('0' + (rowByte & 0xF)))
+	uartPuts(" bits: ")
+
+	for col := 0; col < charPixelWidth; col++ {
+		bitSet := (rowByte & (1 << uint(col))) != 0
+		if bitSet {
+			uartPutc('1')
+		} else {
+			uartPutc('0')
+		}
+
+		var pixelColor uint32
+		if bitSet {
+			pixelColor = color
+		} else {
+			pixelColor = fbBackgroundColor
+		}
+		pixelAddrX := pixelX + uint32(col)
+		pixelAddrY := pixelY
+		WritePixel(pixelAddrX, pixelAddrY, pixelColor)
+	}
+	uartPuts("\r\n")
+}
+
+// RenderCharAtCursor renders a character at the current cursor position
+//
+//go:nosplit
+func RenderCharAtCursor(char byte) {
 	pixelX := fbinfo.CharsX * 8 // Each char is 8 pixels wide
 	pixelY := fbinfo.CharsY * 8 // Each char is 8 pixels tall
-	uartPuts("RCAC: pixelX=")
-	uartPutHex64(uint64(pixelX))
-	uartPuts(" pixelY=")
-	uartPutHex64(uint64(pixelY))
-	uartPuts("\r\n")
 	RenderChar(char, pixelX, pixelY, fbForegroundColor)
 }
 
@@ -156,6 +201,8 @@ func MemmoveBytes(dest, src uintptr, size uint32)
 // ============================================================================
 
 // AdvanceCursor moves cursor to next position, scrolling if necessary
+//
+//go:nosplit
 func AdvanceCursor() {
 	fbinfo.CharsX++
 
@@ -189,6 +236,8 @@ func HandleNewline() {
 
 // FramebufferPutc outputs a single character to the framebuffer
 // Handles scrolling, wrapping, and special characters
+//
+//go:nosplit
 func FramebufferPutc(c byte) {
 	if !fbTextInitialized {
 		return // Silently skip if not initialized
@@ -196,7 +245,6 @@ func FramebufferPutc(c byte) {
 
 	// For now, only handle printable ASCII characters
 	if c >= 32 && c < 127 {
-		uartPutc('X')
 		RenderCharAtCursor(c)
 		AdvanceCursor()
 	} else if c == '\n' {
@@ -270,7 +318,7 @@ func InitFramebufferText(buffer unsafe.Pointer, width, height, pitch uint32) err
 	uartPuts("Init: 2\r\n")
 
 	// Set text rendering colors
-	fbForegroundColor = FramebufferTextColor       // AnsiBrightGreen
+	fbForegroundColor = FramebufferTextColor // AnsiBrightGreen
 	uartPuts("Init: 3\r\n")
 	fbBackgroundColor = FramebufferBackgroundColor // MidnightBlue
 	uartPuts("Init: 4\r\n")

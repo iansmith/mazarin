@@ -253,3 +253,4 @@ func extractISS(esr uint64) uint32 {
 // Linker-provided symbol for exception vector table location
 // This should be defined in the linker script or assembly
 var exception_vectors_start [0]byte
+
