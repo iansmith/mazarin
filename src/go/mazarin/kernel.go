@@ -378,15 +378,31 @@ func KernelMain(r0, r1, atags uint32) {
 		qemu_exit()
 		return // Should not reach here
 	}
+	uartPuts("DEBUG: InitFramebufferText completed\r\n")
 
 	// Initialize exception handling AFTER framebuffer is set up
 	// This was causing RAMFB DMA to fail when done earlier
-	if err := InitializeExceptions(); err != nil {
-		uartPuts("ERROR: Failed to initialize exception handling\r\n")
-	}
+	uartPuts("DEBUG: Before InitializeExceptions\r\n")
+	//if err := InitializeExceptions(); err != nil {
+	//	uartPuts("ERROR: Failed to initialize exception handling\r\n")
+	//}
+	uartPuts("DEBUG: After InitializeExceptions (skipped)\r\n")
 
+	// Display boot messages on framebuffer
+	uartPuts("DEBUG: About to render text\r\n")
+	FramebufferPuts("Mazarin Kernel\n")
+	uartPuts("DEBUG: Line 1 rendered\r\n")
+	FramebufferPuts("AArch64 Bare Metal\n")
+	uartPuts("DEBUG: Line 2 rendered\r\n")
+	FramebufferPuts("\n")
+	FramebufferPuts("System Initialized\n")
+	uartPuts("DEBUG: Line 3 rendered\r\n")
+	FramebufferPuts("Running...\n")
+	uartPuts("DEBUG: All text rendered\r\n")
+
+	// Also output to UART for debugging
 	puts("\r\n")
-	puts("Framebuffer initialized - check display\r\n")
+	puts("Framebuffer text rendering active\r\n")
 	puts("Kernel still running...\r\n")
 
 	// Busy wait forever to keep the display window open

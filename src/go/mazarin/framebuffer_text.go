@@ -85,8 +85,18 @@ func RenderChar(char byte, pixelX, pixelY uint32, color uint32) {
 
 // RenderCharAtCursor renders a character at the current cursor position
 func RenderCharAtCursor(char byte) {
+	uartPuts("RCAC: CharsX=")
+	uartPutHex8(uint8(fbinfo.CharsX))
+	uartPuts(" CharsY=")
+	uartPutHex8(uint8(fbinfo.CharsY))
+	uartPuts("\r\n")
 	pixelX := fbinfo.CharsX * 8 // Each char is 8 pixels wide
 	pixelY := fbinfo.CharsY * 8 // Each char is 8 pixels tall
+	uartPuts("RCAC: pixelX=")
+	uartPutHex64(uint64(pixelX))
+	uartPuts(" pixelY=")
+	uartPutHex64(uint64(pixelY))
+	uartPuts("\r\n")
 	RenderChar(char, pixelX, pixelY, fbForegroundColor)
 }
 
@@ -184,29 +194,13 @@ func FramebufferPutc(c byte) {
 		return // Silently skip if not initialized
 	}
 
-	switch c {
-	case '\n':
+	// For now, only handle printable ASCII characters
+	if c >= 32 && c < 127 {
+		uartPutc('X')
+		RenderCharAtCursor(c)
+		AdvanceCursor()
+	} else if c == '\n' {
 		HandleNewline()
-	case '\r':
-		fbinfo.CharsX = 0
-	case '\t':
-		// Advance to next tab stop (4-char aligned)
-		for i := 0; i < 4; i++ {
-			FramebufferPutc(' ')
-		}
-	case '\b':
-		// Backspace
-		if fbinfo.CharsX > 0 {
-			fbinfo.CharsX--
-			// Render space to erase character
-			RenderCharAtCursor(' ')
-		}
-	default:
-		// Regular character - only render printable ASCII
-		if c >= 32 && c < 127 {
-			RenderCharAtCursor(c)
-			AdvanceCursor()
-		}
 	}
 }
 
@@ -264,6 +258,7 @@ func FramebufferPutHex64(val uint64) {
 //
 //go:nosplit
 func InitFramebufferText(buffer unsafe.Pointer, width, height, pitch uint32) error {
+	uartPuts("Init: 1\r\n")
 	// Note: framebufferInit() has already set:
 	// - fbinfo.Width, Height, Pitch
 	// - fbinfo.CharsWidth, CharsHeight
@@ -272,16 +267,22 @@ func InitFramebufferText(buffer unsafe.Pointer, width, height, pitch uint32) err
 
 	// Store the framebuffer buffer pointer
 	fbinfo.Buf = buffer
+	uartPuts("Init: 2\r\n")
 
 	// Set text rendering colors
 	fbForegroundColor = FramebufferTextColor       // AnsiBrightGreen
+	uartPuts("Init: 3\r\n")
 	fbBackgroundColor = FramebufferBackgroundColor // MidnightBlue
+	uartPuts("Init: 4\r\n")
 
 	// Mark text system as initialized
 	fbTextInitialized = true
+	uartPuts("Init: 5\r\n")
 
 	// Clear the screen to midnight blue background
+	uartPuts("Init: About to ClearScreen\r\n")
 	ClearScreen()
+	uartPuts("Init: ClearScreen returned\r\n")
 
 	return nil
 }
@@ -290,14 +291,20 @@ func InitFramebufferText(buffer unsafe.Pointer, width, height, pitch uint32) err
 //
 //go:nosplit
 func ClearScreen() {
+	uartPuts("ClearScreen: ENTRY\r\n")
 	if !fbTextInitialized {
+		uartPuts("ClearScreen: Not initialized\r\n")
 		return
 	}
 
 	// Fill entire framebuffer with background color
+	uartPuts("ClearScreen: Before ClearPixelRect\r\n")
 	ClearPixelRect(0, 0, fbinfo.Width, fbinfo.Height)
+	uartPuts("ClearScreen: After ClearPixelRect\r\n")
 
-	// Reset cursor
-	fbinfo.CharsX = 0
-	fbinfo.CharsY = 0
+	// Reset cursor (cursor should already be at 0,0 from framebufferInit, but reset anyway)
+	// Note: Skip cursor reset for now to avoid potential memory corruption
+	// fbinfo.CharsX = 0
+	// fbinfo.CharsY = 0
+	uartPuts("ClearScreen: EXIT\r\n")
 }
