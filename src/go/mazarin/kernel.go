@@ -295,15 +295,6 @@ func KernelMain(r0, r1, atags uint32) {
 		uartPuts("ERROR: Failed to initialize exception handling\r\n")
 	}
 
-	// Initialize framebuffer for visual output
-	// QEMU aarch64-virt uses RAMFB (simple framebuffer) at 0x40000000
-	// Format: 640x480 XRGB8888 (4 bytes per pixel) = 1.2 MB
-	// Pitch (bytes per scanline) = 640 * 4 = 2560
-	fbBuffer := unsafe.Pointer(uintptr(0x40000000)) // Framebuffer address
-	if err := InitFramebuffer(fbBuffer, 640, 480, 2560); err != nil {
-		uartPuts("WARNING: Framebuffer initialization failed\r\n")
-	}
-
 	// Initialize minimal runtime structures for write barrier
 	// This sets up g0, m0, and write barrier buffers so that gcWriteBarrier can work
 	// Note: x28 (goroutine pointer) is set in lib.s before calling KernelMain
@@ -381,11 +372,18 @@ func KernelMain(r0, r1, atags uint32) {
 	fbResult := framebufferInit()
 
 	if fbResult == 0 {
-		// Framebuffer initialized successfully
-		// Test text output to framebuffer
-		FramebufferPuts("Mazarin Kernel - Framebuffer Text Test\n")
-		FramebufferPuts("Bright Green on Midnight Blue\n")
-		FramebufferPuts("System ready\n")
+		// Framebuffer hardware initialized successfully
+		// Now initialize the text rendering system on top of it
+		// fbinfo.Buf, Width, Height, Pitch are set by framebufferInit/ramfbInit
+		if err := InitFramebufferText(fbinfo.Buf, fbinfo.Width, fbinfo.Height, fbinfo.Pitch); err != nil {
+			uartPuts("ERROR: Framebuffer text initialization failed\r\n")
+		} else {
+			// Framebuffer text rendering ready
+			// Display boot messages on the screen
+			FramebufferPuts("Mazarin Kernel - Framebuffer Text Test\n")
+			FramebufferPuts("Bright Green on Midnight Blue\n")
+			FramebufferPuts("System ready\n")
+		}
 	}
 
 	puts("\r\n")

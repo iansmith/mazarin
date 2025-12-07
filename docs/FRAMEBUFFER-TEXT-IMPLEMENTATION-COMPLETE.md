@@ -66,8 +66,8 @@ Text:       Bright Green  (#B8F171)  RGB(184, 241, 113)
 ### Public Functions
 
 ```go
-// Initialize framebuffer (called during boot)
-func InitFramebuffer(buffer unsafe.Pointer, width, height, pitch uint32) error
+// Initialize text rendering system (call after hardware framebuffer is set up)
+func InitFramebufferText(buffer unsafe.Pointer, width, height, pitch uint32) error
 
 // Character output
 func FramebufferPutc(c byte)           // Single character
@@ -123,17 +123,21 @@ When cursor reaches bottom-right corner (79, 59):
 ```
 KernelMain()
     ↓
-uartInit()                    ← Serial output available
+uartInit()                         ← Serial output available
     ↓
-InitializeExceptions()        ← Exception handlers ready
+InitializeExceptions()             ← Exception handlers ready
     ↓
 initRuntimeStubs()
 initKernelStack()
     ↓
-InitFramebuffer()            ← NEW: Visual output available
-ClearScreen()                ← NEW: Clear to midnight blue
+memInit()                          ← Memory management initialized
     ↓
-FramebufferPuts("...")       ← NEW: Display boot messages
+framebufferInit()                  ← Hardware framebuffer setup (QEMU RAMFB)
+    ↓
+InitFramebufferText()              ← NEW: Text rendering initialized
+ClearScreen()                      ← NEW: Clear to midnight blue
+    ↓
+FramebufferPuts("...")            ← NEW: Display boot messages
     ↓
 ... rest of kernel init ...
 ```

@@ -256,9 +256,10 @@ func FramebufferPutHex64(val uint64) {
 // Initialization
 // ============================================================================
 
-// InitFramebuffer initializes the framebuffer for text output
-// Called during kernel initialization
-func InitFramebuffer(buffer unsafe.Pointer, width, height, pitch uint32) error {
+// InitFramebufferText initializes the text rendering system on an already-initialized framebuffer
+// This should be called after framebufferInit() has set up the hardware framebuffer
+// Parameters: buffer address, width, height, pitch (all from the hardware framebuffer setup)
+func InitFramebufferText(buffer unsafe.Pointer, width, height, pitch uint32) error {
 	// Store framebuffer information in shared fbinfo
 	fbinfo.Buf = buffer
 	fbinfo.Width = width
@@ -275,7 +276,7 @@ func InitFramebuffer(buffer unsafe.Pointer, width, height, pitch uint32) error {
 
 	fbTextInitialized = true
 
-	// Clear the screen
+	// Clear the screen to midnight blue background
 	ClearScreen()
 
 	return nil

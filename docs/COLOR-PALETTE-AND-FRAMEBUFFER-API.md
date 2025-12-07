@@ -47,12 +47,14 @@ FramebufferInfoColor       = AnsiBrightBlue     // #80BAFF
 ### Initialization
 
 ```go
-// Initialize framebuffer with address and dimensions
-// buffer: pointer to framebuffer memory
+// Initialize text rendering system on an already-initialized framebuffer
+// Call after framebufferInit() hardware setup completes
+// Parameters come from hardware framebuffer initialization
+// buffer: pointer to framebuffer memory (from RAMFB device)
 // width: framebuffer width in pixels (e.g., 640)
 // height: framebuffer height in pixels (e.g., 480)
-// pitch: bytes per scanline
-func InitFramebuffer(buffer unsafe.Pointer, width, height, pitch uint32) error
+// pitch: bytes per scanline (from RAMFB configuration)
+func InitFramebufferText(buffer unsafe.Pointer, width, height, pitch uint32) error
 ```
 
 ### Character Output
