@@ -92,3 +92,4 @@ For 1GB RAM:
 
 Total kernel usage: ~70-80MB + stack, well within 512MB allocation.
 
+

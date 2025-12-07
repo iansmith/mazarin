@@ -145,6 +145,21 @@ func uartPutHex64(val uint64) {
 }
 
 //go:nosplit
+func uartPutHex8(val uint8) {
+	// Write 2 hex digits for a byte
+	writeHexDigit := func(digit uint32) {
+		if digit < 10 {
+			uartPutc(byte('0' + digit))
+		} else {
+			uartPutc(byte('A' + digit - 10))
+		}
+	}
+
+	writeHexDigit(uint32((val >> 4) & 0xF))
+	writeHexDigit(uint32(val & 0xF))
+}
+
+//go:nosplit
 func uartPuts(str string) {
 	// NOTE: String literals are not accessible in bare-metal Go
 	// The .rodata section may not be loaded, or Go places string literals
@@ -274,6 +289,21 @@ func KernelMain(r0, r1, atags uint32) {
 	// Initialize UART first for early debugging
 	uartInit()
 
+	// Initialize exception handling (exception vector table)
+	// This must be done early to catch any exceptions in subsequent initialization
+	if err := InitializeExceptions(); err != nil {
+		uartPuts("ERROR: Failed to initialize exception handling\r\n")
+	}
+
+	// Initialize framebuffer for visual output
+	// QEMU aarch64-virt uses RAMFB (simple framebuffer) at 0x40000000
+	// Format: 640x480 XRGB8888 (4 bytes per pixel) = 1.2 MB
+	// Pitch (bytes per scanline) = 640 * 4 = 2560
+	fbBuffer := unsafe.Pointer(uintptr(0x40000000)) // Framebuffer address
+	if err := InitFramebuffer(fbBuffer, 640, 480, 2560); err != nil {
+		uartPuts("WARNING: Framebuffer initialization failed\r\n")
+	}
+
 	// Initialize minimal runtime structures for write barrier
 	// This sets up g0, m0, and write barrier buffers so that gcWriteBarrier can work
 	// Note: x28 (goroutine pointer) is set in lib.s before calling KernelMain
@@ -351,28 +381,16 @@ func KernelMain(r0, r1, atags uint32) {
 	fbResult := framebufferInit()
 
 	if fbResult == 0 {
-		// Draw a simple test - just fill first few pixels
-		// This tests if framebuffer writes work at all
-		// Use 32-bit pixels for XRGB8888 format
-		testPixels32 := (*[1 << 28]uint32)(fbinfo.Buf)
-
-		// Draw a small red square in top-left corner (XRGB8888 format: 0x00RRGGBB)
-		// Red = 0x00FF0000 in XRGB8888
-		for y := uint32(0); y < 100; y++ {
-			for x := uint32(0); x < 100; x++ {
-				offset := y*fbinfo.Width + x
-				testPixels32[offset] = 0x00FF0000 // Red in XRGB8888 (0x00RRGGBB)
-			}
-		}
-
-		drawTestPattern()
-
-		drawTestPattern()
+		// Framebuffer initialized successfully
+		// Test text output to framebuffer
+		FramebufferPuts("Mazarin Kernel - Framebuffer Text Test\n")
+		FramebufferPuts("Bright Green on Midnight Blue\n")
+		FramebufferPuts("System ready\n")
 	}
 
 	puts("\r\n")
-	puts("All tests passed! Busy waiting to keep display visible...\r\n")
-	puts("Press Ctrl+C in QEMU to exit\r\n")
+	puts("Framebuffer initialized - check display\r\n")
+	puts("Kernel still running...\r\n")
 
 	// Busy wait forever to keep the display window open
 	// This allows the user to check if the framebuffer is displaying correctly

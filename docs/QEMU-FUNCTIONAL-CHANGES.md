@@ -81,3 +81,4 @@ All `fprintf(stderr, "*** FW_CFG_DEBUG: ...")` statements were added for trouble
 ## Conclusion
 
 The framebuffer works on our custom QEMU because we restored the traditional fw_cfg write interface that upstream QEMU removed in v2.4+. This is the single functional change that enables ramfb configuration via writes.
+

@@ -1,4 +1,4 @@
-//go:build qemu
+//go:build qemuvirt && aarch64
 
 package main
 
@@ -418,4 +418,5 @@ func virtqueueReset(vq *VirtQueue) {
 	vq.Used.Idx = 0
 	vq.LastUsedIdx = 0
 }
+
 

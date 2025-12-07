@@ -1,4 +1,4 @@
-//go:build qemu
+//go:build qemuvirt && aarch64
 
 package main
 
@@ -562,4 +562,5 @@ func virtioGPUTransferToHost(x, y, width, height uint32) {
 		return
 	}
 }
+
 

@@ -82,3 +82,4 @@ if (control & 0xFFFFFFFE) == 0 { ... }
 2. Use the found selector instead of hardcoded 0x19
 3. Verify the DMA transfer completes with the correct selector
 
+

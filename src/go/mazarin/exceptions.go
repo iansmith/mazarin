@@ -15,33 +15,33 @@ const (
 // ESR_EL1 (Exception Syndrome Register) field extraction
 // EC = Exception Class (bits 31:26)
 const (
-	EC_UNKNOWN              = 0b000000
-	EC_TRAP_WFx             = 0b000001
-	EC_TRAP_MCR_MRC_CP14    = 0b000011
-	EC_TRAP_MCRR_MRRC_CP14  = 0b000100
-	EC_TRAP_MCR_MRC_CP15    = 0b000101
-	EC_TRAP_MCRR_MRRC_CP15  = 0b000110
-	EC_TRAP_MSR_MRS_SYSTEM  = 0b010001
-	EC_TRAP_SVE             = 0b010100
-	EC_PREFETCH_ABORT_EL0   = 0b100000
-	EC_PREFETCH_ABORT_ELx   = 0b100001
-	EC_DATA_ABORT_EL0       = 0b100100
-	EC_DATA_ABORT_ELx       = 0b100101
-	EC_BREAKPOINT_EL0       = 0b110000
-	EC_BREAKPOINT_ELx       = 0b110001
-	EC_STEP_EL0             = 0b110010
-	EC_STEP_ELx             = 0b110011
-	EC_WATCHPOINT_EL0       = 0b110100
-	EC_WATCHPOINT_ELx       = 0b110101
-	EC_SVC_EL0              = 0b010101  // Supervisor call from EL0 (AArch32)
-	EC_SVC_EL1              = 0b010110  // Supervisor call from EL1 (AArch32)
-	EC_HVC                  = 0b011000
-	EC_SMC                  = 0b011001
-	EC_SVC_EL0_A64          = 0b010100  // SVC from AArch64 EL0
-	EC_SVC_EL1_A64          = 0b010101  // SVC from AArch64 EL1
-	EC_ERET                 = 0b011100
-	EC_ILLEGAL_EXECUTION    = 0b011110
-	EC_SERROR               = 0b101111
+	EC_UNKNOWN             = 0b000000
+	EC_TRAP_WFx            = 0b000001
+	EC_TRAP_MCR_MRC_CP14   = 0b000011
+	EC_TRAP_MCRR_MRRC_CP14 = 0b000100
+	EC_TRAP_MCR_MRC_CP15   = 0b000101
+	EC_TRAP_MCRR_MRRC_CP15 = 0b000110
+	EC_TRAP_MSR_MRS_SYSTEM = 0b010001
+	EC_TRAP_SVE            = 0b010100
+	EC_PREFETCH_ABORT_EL0  = 0b100000
+	EC_PREFETCH_ABORT_ELx  = 0b100001
+	EC_DATA_ABORT_EL0      = 0b100100
+	EC_DATA_ABORT_ELx      = 0b100101
+	EC_BREAKPOINT_EL0      = 0b110000
+	EC_BREAKPOINT_ELx      = 0b110001
+	EC_STEP_EL0            = 0b110010
+	EC_STEP_ELx            = 0b110011
+	EC_WATCHPOINT_EL0      = 0b110100
+	EC_WATCHPOINT_ELx      = 0b110101
+	EC_SVC_EL0             = 0b010101 // Supervisor call from EL0 (AArch32)
+	EC_SVC_EL1             = 0b010110 // Supervisor call from EL1 (AArch32)
+	EC_HVC                 = 0b011000
+	EC_SMC                 = 0b011001
+	EC_SVC_EL0_A64         = 0b010100 // SVC from AArch64 EL0
+	EC_SVC_EL1_A64         = 0b010101 // SVC from AArch64 EL1
+	EC_ERET                = 0b011100
+	EC_ILLEGAL_EXECUTION   = 0b011110
+	EC_SERROR              = 0b101111
 )
 
 // ExceptionInfo contains details about an exception for logging/handling
@@ -54,6 +54,7 @@ type ExceptionInfo struct {
 }
 
 // Link to assembly functions
+//
 //go:linkname set_vbar_el1 set_vbar_el1
 //go:nosplit
 func set_vbar_el1(addr uintptr)
@@ -111,6 +112,7 @@ func InitializeExceptions() error {
 
 // ExceptionHandler is called from assembly when a synchronous exception occurs
 // It handles the exception and logs details for debugging
+//
 //go:nosplit
 func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType uint32) {
 	excInfo := ExceptionInfo{
@@ -213,6 +215,7 @@ func handleException(excInfo ExceptionInfo) {
 // IRQHandler is called from assembly when an interrupt (IRQ) occurs
 // For now, it just logs and returns
 // Later, this will dispatch to GIC to handle the actual interrupt
+//
 //go:nosplit
 func IRQHandler() {
 	uartPuts("IRQ fired (GIC dispatch not yet implemented)\r\n")
@@ -220,6 +223,7 @@ func IRQHandler() {
 
 // FIQHandler is called from assembly when a fast interrupt (FIQ) occurs
 // FIQ is rarely used in modern systems
+//
 //go:nosplit
 func FIQHandler() {
 	uartPuts("FIQ fired (not implemented)\r\n")
@@ -227,6 +231,7 @@ func FIQHandler() {
 
 // SErrorHandler is called from assembly when a system error occurs
 // This is a critical error that usually requires system shutdown
+//
 //go:nosplit
 func SErrorHandler() {
 	uartPuts("SError occurred - system error (not recoverable)\r\n")
@@ -248,4 +253,3 @@ func extractISS(esr uint64) uint32 {
 // Linker-provided symbol for exception vector table location
 // This should be defined in the linker script or assembly
 var exception_vectors_start [0]byte
-

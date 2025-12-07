@@ -359,3 +359,31 @@ uart_not_enabled:
     // UART not enabled - just return (don't write)
     ret
 
+
+// ============================================================================
+// Memory Functions
+// ============================================================================
+
+// memmove(void *dest, void *src, size_t n)
+// Copy n bytes from src to dest
+// x0 = dest, x1 = src, x2 = size
+.global memmove
+memmove:
+    cmp x2, #0              // Compare size with 0
+    beq memmove_done        // If size == 0, done
+
+memmove_loop:
+    ldrb w3, [x1]           // Load byte from src
+    strb w3, [x0]           // Store byte to dest
+    add x0, x0, #1          // dest++
+    add x1, x1, #1          // src++
+    subs x2, x2, #1         // size--
+    bne memmove_loop        // If size != 0, loop
+
+memmove_done:
+    ret
+
+// MemmoveBytes is the Go-callable alias for memmove
+.global MemmoveBytes
+MemmoveBytes:
+    b memmove

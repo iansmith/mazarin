@@ -213,3 +213,4 @@ mov sp, #0x410000  // 4MB + 64KB stack
 
 This should give enough stack space for the write barrier call chain.
 
+

@@ -1,4 +1,4 @@
-//go:build qemu
+//go:build qemuvirt && aarch64
 
 package main
 
@@ -250,4 +250,5 @@ func GrowStackForCurrent() {
 		}
 	}
 }
+
 

@@ -1,4 +1,5 @@
-//go:build !qemu
+//go:build raspi
+// +build raspi
 
 package main
 
@@ -45,6 +46,7 @@ func uartGetc() byte {
 	}
 	return byte(mmio_read(UART0_DR))
 }
+
 
 
 

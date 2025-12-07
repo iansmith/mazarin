@@ -1,4 +1,5 @@
-//go:build !qemu
+//go:build raspi
+// +build raspi
 
 package main
 
@@ -411,6 +412,7 @@ func framebufferInit() int32 {
 
 	return 0
 }
+
 
 
 
