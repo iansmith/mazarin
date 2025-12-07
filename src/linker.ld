@@ -24,6 +24,18 @@ SECTIONS
     }
     . = ALIGN(4096);
     __text_end = .;
+    
+    /* Exception vector table - must be 2KB (0x800) aligned */
+    /* Place exception vectors after kernel text */
+    . = ALIGN(0x800);  /* 2KB align */
+    PROVIDE(exception_vectors_start = .);
+    .vectors :
+    {
+        *(.vectors)
+        *(.text.exceptions)
+    }
+    . = ALIGN(0x800);
+    PROVIDE(exception_vectors_end = .);
  
     __rodata_start = .;
     .rodata :
