@@ -363,12 +363,7 @@ func KernelMain(r0, r1, atags uint32) {
 		puts("ERROR: Heap not initialized!\r\n")
 	}
 
-	uartPuts("About to call framebufferInit()...\r\n")
 	fbResult := framebufferInit()
-	uartPuts("framebufferInit() returned: 0x")
-	uartPutHex64(uint64(fbResult))
-	uartPuts("\r\n")
-
 	if fbResult != 0 {
 		// Framebuffer initialization failed - exit via semihosting
 		uartPuts("ERROR: Framebuffer initialization failed!\r\n")
@@ -378,25 +373,11 @@ func KernelMain(r0, r1, atags uint32) {
 
 	// Framebuffer hardware initialized successfully
 	// Now initialize the text rendering system on top of it
-	// fbinfo.Buf, Width, Height, Pitch are set by framebufferInit/ramfbInit
-	uartPuts("About to call InitFramebufferText()...\r\n")
-	uartPuts("fbinfo.Buf=0x")
-	uartPutHex64(uint64(uintptr(fbinfo.Buf)))
-	uartPuts(" Width=0x")
-	uartPutHex64(uint64(fbinfo.Width))
-	uartPuts(" Height=0x")
-	uartPutHex64(uint64(fbinfo.Height))
-	uartPuts(" Pitch=0x")
-	uartPutHex64(uint64(fbinfo.Pitch))
-	uartPuts("\r\n")
-
 	if err := InitFramebufferText(fbinfo.Buf, fbinfo.Width, fbinfo.Height, fbinfo.Pitch); err != nil {
 		uartPuts("ERROR: Framebuffer text initialization failed\r\n")
 		qemu_exit()
 		return // Should not reach here
 	}
-
-	uartPuts("InitFramebufferText returned successfully\r\n")
 
 	// Initialize exception handling AFTER framebuffer is set up
 	// This was causing RAMFB DMA to fail when done earlier

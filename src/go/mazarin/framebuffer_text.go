@@ -125,6 +125,8 @@ func ScrollScreenUp() {
 }
 
 // ClearPixelRect clears a rectangular region with background color
+//
+//go:nosplit
 func ClearPixelRect(x, y, width, height uint32) {
 	for pixelY := y; pixelY < y+height; pixelY++ {
 		for pixelX := x; pixelX < x+width; pixelX++ {
@@ -262,74 +264,38 @@ func FramebufferPutHex64(val uint64) {
 //
 //go:nosplit
 func InitFramebufferText(buffer unsafe.Pointer, width, height, pitch uint32) error {
-	uartPuts("InitFramebufferText: ENTRY\r\n")
+	// Note: framebufferInit() has already set:
+	// - fbinfo.Width, Height, Pitch
+	// - fbinfo.CharsWidth, CharsHeight
+	// - fbinfo.CharsX = 0, CharsY = 0
+	// We only need to set the framebuffer pointer and the text rendering parameters
 
-	// Store framebuffer information in shared fbinfo
+	// Store the framebuffer buffer pointer
 	fbinfo.Buf = buffer
-	uartPuts("InitFramebufferText: Buf stored\r\n")
 
-	fbinfo.Width = width
-	uartPuts("InitFramebufferText: Width stored\r\n")
-
-	fbinfo.Height = height
-	uartPuts("InitFramebufferText: Height stored\r\n")
-
-	fbinfo.Pitch = pitch
-	uartPuts("InitFramebufferText: Pitch stored\r\n")
-
-	uartPuts("InitFramebufferText: About to divide width\r\n")
-	fbinfo.CharsWidth = width / 8 // 8 pixels per character
-	uartPuts("InitFramebufferText: Width divided\r\n")
-
-	uartPuts("InitFramebufferText: About to divide height\r\n")
-	fbinfo.CharsHeight = height / 8 // 8 pixels per character
-	uartPuts("InitFramebufferText: Height divided\r\n")
-
-	uartPuts("InitFramebufferText: About to set cursor X\r\n")
-	fbinfo.CharsX = 0
-	uartPuts("InitFramebufferText: Cursor X set\r\n")
-
-	uartPuts("InitFramebufferText: About to set cursor Y\r\n")
-	fbinfo.CharsY = 0
-	uartPuts("InitFramebufferText: Cursor Y set\r\n")
-
-	uartPuts("InitFramebufferText: Grid values stored\r\n")
-
-	// Set colors from constants
+	// Set text rendering colors
 	fbForegroundColor = FramebufferTextColor       // AnsiBrightGreen
 	fbBackgroundColor = FramebufferBackgroundColor // MidnightBlue
-	uartPuts("InitFramebufferText: Colors set\r\n")
 
+	// Mark text system as initialized
 	fbTextInitialized = true
-	uartPuts("InitFramebufferText: fbTextInitialized=true\r\n")
 
 	// Clear the screen to midnight blue background
-	uartPuts("InitFramebufferText: About to call ClearScreen\r\n")
 	ClearScreen()
-	uartPuts("InitFramebufferText: ClearScreen returned\r\n")
-
-	uartPuts("InitFramebufferText: EXIT (success)\r\n")
 
 	return nil
 }
 
 // ClearScreen clears the entire framebuffer and resets the cursor
+//
+//go:nosplit
 func ClearScreen() {
 	if !fbTextInitialized {
 		return
 	}
 
-	uartPuts("ClearScreen: Starting clear\r\n")
-	uartPuts("ClearScreen: Width=0x")
-	uartPutHex64(uint64(fbinfo.Width))
-	uartPuts(" Height=0x")
-	uartPutHex64(uint64(fbinfo.Height))
-	uartPuts("\r\n")
-
 	// Fill entire framebuffer with background color
 	ClearPixelRect(0, 0, fbinfo.Width, fbinfo.Height)
-
-	uartPuts("ClearScreen: Clear complete\r\n")
 
 	// Reset cursor
 	fbinfo.CharsX = 0
