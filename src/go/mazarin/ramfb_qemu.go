@@ -348,19 +348,11 @@ func ramfbInit() bool {
 
 	uartPuts("RAMFB: Config struct created (big-endian)\r\n")
 
-	// Write configuration using DMA (primary method)
+	// Write configuration using DMA - we need to get this working!
 	uartPuts("RAMFB: Attempting DMA write of config...\r\n")
 	fw_cfg_dma_write(ramfbSelector, unsafe.Pointer(&ramfbCfg), 28)
-	uartPuts("RAMFB: DMA write completed\r\n")
-
-	// If DMA doesn't work, try traditional interface as fallback
-	// The traditional interface is 100% reliable for writes
-	uartPuts("RAMFB: Verifying config was written (via traditional interface read-back)...\r\n")
-	if !writeRamfbConfig(&ramfbCfg, ramfbSelector) {
-		uartPuts("RAMFB: ERROR - Config verification/fallback write failed\r\n")
-		return false
-	}
-	uartPuts("RAMFB: Config sent successfully (QEMU now knows about framebuffer)\r\n")
+	uartPuts("RAMFB: DMA write returned\r\n")
+	uartPuts("RAMFB: Config sent (DMA should have processed it)\r\n")
 
 	// Debug: Print the actual config values that were sent (in big-endian)
 	// Debug: Print the actual config values that were sent
@@ -673,28 +665,51 @@ func qemu_cfg_dma_transfer(dataAddr unsafe.Pointer, length uint32, control uint3
 		return
 	}
 
-	// Create LOCAL DMA structure on stack (matching working example)
-	// Initialize with byte-swapped values (QEMU expects big-endian)
+	// Create LOCAL DMA structure on stack
+	// Store values in big-endian byte format (how QEMU expects to read them)
+	// QEMU will then convert with be32_to_cpu/be64_to_cpu
 	var access FWCfgDmaAccess
-	access.SetControl(swap32(control))
-	access.SetLength(swap32(length))
-	access.SetAddress(swap64(uint64(uintptr(dataAddr))))
+	access.SetControl(control)
+	access.SetLength(length)
+	access.SetAddress(uint64(uintptr(dataAddr)))
 	dsb()
 
 	// Write DMA structure address to DMA register
-	// CRITICAL: Due to DEVICE_BIG_ENDIAN, we write swap64(struct_addr)
-	//           QEMU byte-swaps it back to get correct address
+	// CRITICAL: Pre-swap the entire 64-bit address so QEMU's DEVICE_BIG_ENDIAN
+	// byte-swap produces the correct address in the DMA handler
 	accessAddr := uintptr(unsafe.Pointer(&access))
-	accessAddrSwapped := swap64(uint64(accessAddr))
-
-	mmio_write64(uintptr(FW_CFG_DMA_ADDR), accessAddrSwapped)
+	addr64 := uint64(accessAddr)
+	addr64Swapped := swap64(addr64)
+	
+	uartPuts("RAMFB: DMA addr unswapped=0x")
+	for shift := 60; shift >= 0; shift -= 4 {
+		digit := (addr64 >> shift) & 0xF
+		if digit < 10 {
+			uartPutc(byte('0' + digit))
+		} else {
+			uartPutc(byte('A' + digit - 10))
+		}
+	}
+	uartPuts(" swapped=0x")
+	for shift := 60; shift >= 0; shift -= 4 {
+		digit := (addr64Swapped >> shift) & 0xF
+		if digit < 10 {
+			uartPutc(byte('0' + digit))
+		} else {
+			uartPutc(byte('A' + digit - 10))
+		}
+	}
+	uartPuts("\r\n")
+	
+	// Write the pre-swapped address as a single 64-bit value
+	mmio_write64(uintptr(FW_CFG_DMA_ADDR), addr64Swapped)
 	dsb()
 
 	// Wait for DMA transfer to complete
 	// Matching working code: while(__builtin_bswap32(access.control) & ~QEMU_CFG_DMA_CTL_ERROR) {}
 	// The condition is: continue while (control & ~ERROR) != 0
 	// This means: continue while any bits except error bit (bit 0) are set
-	maxIterations := 100000 // Increased timeout for DMA
+	maxIterations := 50000 // Timeout for DMA - will help us see if it's timing out
 	iterations := 0
 
 	// Memory barrier before reading control field

@@ -34,16 +34,16 @@ if [ ! -f "$KERNEL_PATH" ]; then
     exit 1
 fi
 
-# Check for custom debug QEMU first, then homebrew QEMU, fall back to system QEMU
-CUSTOM_QEMU="/tmp/qemu-source/build/qemu-system-aarch64"
+# Check for homebrew QEMU first, then custom debug QEMU, fall back to system QEMU
 HOMEBREW_QEMU="$HOME/mazzy/bin/qemu-system-aarch64"
+CUSTOM_QEMU="/tmp/qemu-source/build/qemu-system-aarch64"
 
-if [ -f "$CUSTOM_QEMU" ]; then
-    QEMU_BIN="$CUSTOM_QEMU"
-    echo "Using custom debug QEMU: $QEMU_BIN"
-elif [ -f "$HOMEBREW_QEMU" ]; then
+if [ -f "$HOMEBREW_QEMU" ]; then
     QEMU_BIN="$HOMEBREW_QEMU"
     echo "Using homebrew QEMU: $QEMU_BIN"
+elif [ -f "$CUSTOM_QEMU" ]; then
+    QEMU_BIN="$CUSTOM_QEMU"
+    echo "Using custom debug QEMU: $QEMU_BIN"
 else
     QEMU_BIN="qemu-system-aarch64"
     if ! command -v qemu-system-aarch64 &> /dev/null; then
