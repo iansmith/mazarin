@@ -666,12 +666,13 @@ func qemu_cfg_dma_transfer(dataAddr unsafe.Pointer, length uint32, control uint3
 	}
 
 	// Create LOCAL DMA structure on stack
-	// Store values in big-endian byte format (how QEMU expects to read them)
-	// QEMU will then convert with be32_to_cpu/be64_to_cpu
+	// Store values in big-endian byte format (matching working RISC-V example)
+	// The SetControl/SetLength/SetAddress methods store bytes in big-endian order
+	// But we must pre-swap the values so they become correct after QEMU's DEVICE_BIG_ENDIAN processing
 	var access FWCfgDmaAccess
-	access.SetControl(control)
-	access.SetLength(length)
-	access.SetAddress(uint64(uintptr(dataAddr)))
+	access.SetControl(swap32(control))
+	access.SetLength(swap32(length))
+	access.SetAddress(swap64(uint64(uintptr(dataAddr))))
 	dsb()
 
 	// Write DMA structure address to DMA register
