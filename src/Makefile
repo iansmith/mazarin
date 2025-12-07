@@ -48,6 +48,9 @@ GO_SRC = $(GO_PACKAGE_DIR)/kernel.go \
          $(GO_PACKAGE_DIR)/framebuffer_common.go \
          $(GO_PACKAGE_DIR)/framebuffer_rpi.go \
          $(GO_PACKAGE_DIR)/framebuffer_qemu.go \
+         $(GO_PACKAGE_DIR)/framebuffer_text.go \
+         $(GO_PACKAGE_DIR)/colors.go \
+         $(GO_PACKAGE_DIR)/framebuffer_font.go \
          $(GO_PACKAGE_DIR)/pci_qemu.go \
          $(GO_PACKAGE_DIR)/ramfb_qemu.go \
          $(GO_PACKAGE_DIR)/runtime_stub.go \
