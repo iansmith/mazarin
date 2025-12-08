@@ -301,8 +301,9 @@ func ramfbInit() bool {
 	uartPuts("\r\n")
 
 	// Allocate framebuffer memory
-	fbWidth := uint32(640)
-	fbHeight := uint32(480)
+	// Must match QEMU_FB_WIDTH and QEMU_FB_HEIGHT from framebuffer_qemu.go
+	fbWidth := uint32(1920)
+	fbHeight := uint32(1080)
 	fbSize := fbWidth * fbHeight * 4
 
 	fbMem := kmalloc(fbSize)

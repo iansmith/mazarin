@@ -388,14 +388,53 @@ func KernelMain(r0, r1, atags uint32) {
 	//}
 	uartPuts("DEBUG: After InitializeExceptions (skipped)\r\n")
 
-	// Display boot messages on framebuffer
+	// Display boot messages on framebuffer (before image so image appears on top)
 	uartPuts("Rendering text to framebuffer...\r\n")
 	FramebufferPuts("Mazarin Kernel\n")
 	FramebufferPuts("AArch64 Bare Metal\n")
 	FramebufferPuts("\n")
 	FramebufferPuts("System Initialized\n")
-	FramebufferPuts("Running...\n")
+	FramebufferPuts("\n")
+
+	// Fill screen with lines to cause scrolling
+	// Start with just 10 lines to test
+	for i := 0; i < 10; i++ {
+		FramebufferPuts(".\n")
+	}
+
 	uartPuts("Text rendering complete\r\n")
+
+	// Display boot image last so it appears on top of scrolled text
+	uartPuts("Rendering boot image on top...\r\n")
+	imageData := GetBootMazarinImageData()
+
+	// Read image dimensions for centering
+	imageHeader := (*[2]uint32)(imageData)
+	imageWidth := imageHeader[0]
+
+	// Calculate center X position based on image dimensions
+	var xOffset int32
+	if imageWidth < fbinfo.Width {
+		xOffset = int32((fbinfo.Width - imageWidth) / 2)
+	} else {
+		xOffset = 0
+	}
+
+	// Get scroll offset - image should move up (negative Y) as text scrolls
+	scrollOffset := GetScrollOffset()
+	uartPuts("Scroll offset: ")
+	printHex32(scrollOffset)
+	uartPuts(" pixels\r\n")
+
+	yOffset := int32(0) - int32(scrollOffset)
+	uartPuts("Image Y offset: ")
+	printHex32(uint32(yOffset))
+	uartPuts("\r\n")
+
+	// Render image at center of screen with alpha blending at pixel level
+	// Image will move up as text scrolls
+	RenderImageData(imageData, xOffset, yOffset, true)
+	uartPuts("Boot image rendered\r\n")
 
 	// Also output to UART for debugging
 	puts("\r\n")

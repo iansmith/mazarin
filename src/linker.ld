@@ -44,6 +44,15 @@ SECTIONS
     }
     . = ALIGN(4096);
     __rodata_end = .;
+
+    /* Embedded image data */
+    __image_data_start = .;
+    .imagedata :
+    {
+        KEEP(*(.imagedata))
+    }
+    . = ALIGN(4096);
+    __image_data_end = .;
  
     __data_start = .;
     .data :

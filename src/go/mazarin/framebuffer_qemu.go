@@ -2,11 +2,15 @@
 
 package main
 
+import (
+	"unsafe"
+)
+
 // QEMU framebuffer constants for ramfb device
 // ramfb allocates framebuffer memory via kmalloc and configures QEMU via fw_cfg
 const (
-	QEMU_FB_WIDTH  = 640
-	QEMU_FB_HEIGHT = 480
+	QEMU_FB_WIDTH  = 1920
+	QEMU_FB_HEIGHT = 1080
 )
 
 // Override BYTES_PER_PIXEL for QEMU - ramfb uses XRGB8888 (32-bit, 4 bytes per pixel)
@@ -37,118 +41,48 @@ func framebufferInit() int32 {
 	uartPuts("FB: CharsHeight set\r\n")
 	fbinfo.CharsX = 0
 	uartPuts("FB: CharsX set\r\n")
-	fbinfo.CharsY = 0
-	uartPuts("FB: CharsY set\r\n")
+	fbinfo.CharsY = fbinfo.CharsHeight - 1
+	uartPuts("FB: CharsY set to bottom\r\n")
 
 	// Calculate framebuffer size
 	fbinfo.BufSize = fbinfo.Pitch * fbinfo.Height
 	uartPuts("FB: BufSize calculated\r\n")
 
-	// Initialize ramfb (allocates framebuffer memory)
-	uartPuts("FB: Attempting ramfb initialization...\r\n")
-	uartPuts("FB: About to call ramfbInit()...\r\n")
+	// Try bochs-display via PCI enumeration first
+	uartPuts("FB: Attempting bochs-display initialization via PCI...\r\n")
+	if findBochsDisplayFull() {
+		uartPuts("FB: bochs-display found!\r\n")
+		// Initialize the bochs display with our resolution
+		// Using 32 bits per pixel (XRGB8888)
+		if initBochsDisplay(640, 480, 32) {
+			uartPuts("FB: bochs-display initialized successfully\r\n")
+			// Set the framebuffer address from the PCI device
+			fbinfo.Buf = unsafe.Pointer(bochsDisplayInfo.Framebuffer)
+			fbinfo.Width = 640
+			fbinfo.Height = 480
+			fbinfo.Pitch = 640 * 4 // 32-bit pixels
+			fbinfo.CharsWidth = fbinfo.Width / CHAR_WIDTH
+			fbinfo.CharsHeight = fbinfo.Height / CHAR_HEIGHT
+
+			// Memory barrier to ensure all writes complete
+			dsb()
+			uartPuts("FB INIT DONE (bochs-display)\r\n")
+			return 0
+		}
+	}
+
+	// Fallback: Try ramfb
+	uartPuts("FB: bochs-display not available, trying ramfb...\r\n")
 	ramfbSuccess := ramfbInit()
 	uartPuts("FB: ramfbInit() returned\r\n")
 	if ramfbSuccess {
 		uartPuts("FB: ramfb reported success\r\n")
-		uartPuts("FB: ramfb initialized\r\n")
-
-		// Wait a moment for ramfb to fully initialize
-		uartPuts("FB: Waiting for ramfb to initialize...\r\n")
-		for delay := 0; delay < 2000000; delay++ {
-		}
-		uartPuts("FB: Initialization delay complete\r\n")
-
-		// Debug: Verify framebuffer info
-		uartPuts("FB: Buf=0x")
-		for shift := 60; shift >= 0; shift -= 4 {
-			digit := (uint64(uintptr(fbinfo.Buf)) >> shift) & 0xF
-			if digit < 10 {
-				uartPutc(byte('0' + digit))
-			} else {
-				uartPutc(byte('A' + digit - 10))
-			}
-		}
-		uartPuts(" Width=0x")
-		printHex32(fbinfo.Width)
-		uartPuts(" Height=0x")
-		printHex32(fbinfo.Height)
-		uartPuts(" Pitch=0x")
-		printHex32(fbinfo.Pitch)
-		uartPuts("\r\n")
-
-		// Write test pattern
-		// Note: XRGB8888 format is 32-bit (4 bytes per pixel)
-		// Format: [X/Unused:8][Red:8][Green:8][Blue:8] = 0x00RRGGBB
-		testPixels32 := (*[1 << 28]uint32)(fbinfo.Buf) // 32-bit pixels
-		uartPuts("FB: Writing test pattern to ramfb (XRGB8888 format)...\r\n")
-
-		// Test: Write a single pixel first
-		// XRGB8888 format: [X:8][R:8][G:8][B:8] = 0x00RRGGBB
-		// On little-endian AArch64, 0x00FFFFFF is stored as bytes: FF FF FF 00
-		// Which QEMU reads as: Blue=FF, Green=FF, Red=FF, X=00 (white)
-		// So we use 0x00FFFFFF directly (no byte-swapping needed)
-		uartPuts("FB: Writing first pixel...\r\n")
-		testPixels32[0] = 0x00FFFFFF // White in XRGB8888 (0x00RRGGBB format)
-		uartPuts("FB: First pixel written\r\n")
-
-		// Verify the write
-		if testPixels32[0] == 0x00FFFFFF {
-			uartPuts("FB: First pixel verified OK\r\n")
-		} else {
-			uartPuts("FB: First pixel verification FAILED\r\n")
-		}
-
-		// Fill top 100 rows with white
-		uartPuts("FB: Filling top 100 rows...\r\n")
-		pixelsWritten := 0
-		for y := 0; y < 100; y++ {
-			for x := 0; x < int(fbinfo.Width); x++ {
-				offset := y*int(fbinfo.Width) + x
-				testPixels32[offset] = 0x00FFFFFF // White in XRGB8888 (0x00RRGGBB)
-				pixelsWritten++
-			}
-			if y%10 == 0 {
-				uartPuts("FB: Row 0x")
-				printHex32(uint32(y))
-				uartPuts(" written\r\n")
-			}
-		}
-		uartPuts("FB: Test pattern written (0x")
-		printHex32(uint32(pixelsWritten))
-		uartPuts(" pixels)\r\n")
-
-		// Verify a few pixels
-		uartPuts("FB: Verifying pixels...\r\n")
-		verifyCount := 0
-		for i := 0; i < 10; i++ {
-			if testPixels32[i] == 0x00FFFFFF {
-				verifyCount++
-			}
-		}
-		uartPuts("FB: Verified 0x")
-		printHex32(uint32(verifyCount))
-		uartPuts("/0xA pixels\r\n")
-
-		// Force memory barrier and ensure writes are visible
-		dsb()
-		uartPuts("FB: Memory barrier executed after pixel writes\r\n")
-		uartPuts("FB: Pixels written - ramfb was already configured, display should update\r\n")
-
-		// Give QEMU additional time to process the framebuffer update
-		uartPuts("FB: Waiting for QEMU to process framebuffer...\r\n")
-		for delay := 0; delay < 5000000; delay++ {
-			// Additional delay to ensure QEMU has time to read framebuffer
-		}
-		uartPuts("FB: Delay complete\r\n")
-
 		uartPuts("FB INIT DONE (ramfb)\r\n")
 		return 0
 	}
 
-	// ramfb failed
-	uartPuts("FB: ERROR - ramfb initialization failed\r\n")
-	uartPuts("FB: No display device available\r\n")
+	// Both failed
+	uartPuts("FB: ERROR - No display device available (bochs-display and ramfb both failed)\r\n")
 	return 1
 }
 

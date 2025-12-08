@@ -13,15 +13,16 @@ var (
 	fbTextInitialized bool
 	fbForegroundColor uint32 // Text color
 	fbBackgroundColor uint32 // Background color
+	fbScrollOffset    uint32 // Total number of pixels scrolled (for positioning overlays)
 )
 
 // ============================================================================
 // Pixel Rendering Functions
 // ============================================================================
 
-// WritePixel sets a single pixel at (x, y) to the given color
+// WritePixel sets a single pixel at (x, y) to the given color (opaque)
 // x, y: pixel coordinates
-// color: 32-bit XRGB8888 color value
+// color: 32-bit ARGB8888 color value (alpha will be ignored, treated as opaque)
 //
 //go:nosplit
 func WritePixel(x, y uint32, color uint32) {
@@ -35,10 +36,67 @@ func WritePixel(x, y uint32, color uint32) {
 	// Each pixel is 4 bytes (assuming 32-bit color depth)
 	byteOffset := y*fbinfo.Pitch + x*4
 
-	// Write pixel
+	// Write pixel (opaque)
 	pixelPtr := (*uint32)(unsafe.Pointer(
 		uintptr(fbinfo.Buf) + uintptr(byteOffset)))
 	*pixelPtr = color
+}
+
+// WritePixelAlpha sets a single pixel with alpha blending
+// x, y: pixel coordinates
+// color: 32-bit ARGB8888 color value (0xAARRGGBB)
+// Blends with existing pixel using alpha channel
+//
+//go:nosplit
+func WritePixelAlpha(x, y uint32, color uint32) {
+	// Bounds check
+	if x >= fbinfo.Width || y >= fbinfo.Height {
+		return
+	}
+
+	// Extract alpha from source color
+	alpha := uint32((color >> 24) & 0xFF)
+
+	// If fully transparent, don't write
+	if alpha == 0 {
+		return
+	}
+
+	// If fully opaque, just write directly
+	if alpha == 255 {
+		WritePixel(x, y, color)
+		return
+	}
+
+	// Calculate byte offset
+	byteOffset := y*fbinfo.Pitch + x*4
+
+	// Read existing pixel
+	pixelPtr := (*uint32)(unsafe.Pointer(
+		uintptr(fbinfo.Buf) + uintptr(byteOffset)))
+	dest := *pixelPtr
+
+	// Extract color components from source (ARGB)
+	srcR := uint32((color >> 16) & 0xFF)
+	srcG := uint32((color >> 8) & 0xFF)
+	srcB := uint32(color & 0xFF)
+
+	// Extract color components from destination (ARGB)
+	destR := uint32((dest >> 16) & 0xFF)
+	destG := uint32((dest >> 8) & 0xFF)
+	destB := uint32(dest & 0xFF)
+
+	// Blend using alpha: out = src * alpha + dst * (1 - alpha)
+	// Divide by 256 instead of 255 for speed (close enough)
+	invAlpha := 256 - alpha
+
+	blendR := ((srcR * alpha) + (destR * invAlpha)) / 256
+	blendG := ((srcG * alpha) + (destG * invAlpha)) / 256
+	blendB := ((srcB * alpha) + (destB * invAlpha)) / 256
+
+	// Write blended pixel (keep alpha as opaque for result)
+	blended := (blendR << 16) | (blendG << 8) | blendB
+	*pixelPtr = blended
 }
 
 // ============================================================================
@@ -177,6 +235,9 @@ func ScrollScreenUp() {
 	// Clear the bottom row (fill with background color)
 	lastRowPixelY := (fbinfo.CharsHeight - 1) * charPixelHeight
 	ClearPixelRect(0, lastRowPixelY, fbinfo.Width, charPixelHeight)
+
+	// Track total scroll offset
+	fbScrollOffset += charPixelHeight
 }
 
 // ClearPixelRect clears a rectangular region with background color
@@ -188,6 +249,13 @@ func ClearPixelRect(x, y, width, height uint32) {
 			WritePixel(pixelX, pixelY, fbBackgroundColor)
 		}
 	}
+}
+
+// GetScrollOffset returns the total number of pixels the screen has scrolled
+//
+//go:nosplit
+func GetScrollOffset() uint32 {
+	return fbScrollOffset
 }
 
 // MemmoveBytes copies memory from src to dst
@@ -331,6 +399,12 @@ func InitFramebufferText(buffer unsafe.Pointer, width, height, pitch uint32) err
 	uartPuts("Init: About to ClearScreen\r\n")
 	ClearScreen()
 	uartPuts("Init: ClearScreen returned\r\n")
+
+	// Position cursor at bottom-left of screen for text to scroll upward
+	// This way, when we print only a few lines, they appear near the bottom
+	fbinfo.CharsX = 0
+	fbinfo.CharsY = fbinfo.CharsHeight - 1
+	uartPuts("Init: Cursor positioned at bottom\r\n")
 
 	return nil
 }
