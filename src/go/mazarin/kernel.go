@@ -38,6 +38,10 @@ func mmio_write64(reg uintptr, data uint64)
 //go:nosplit
 func delay(count int32)
 
+//go:linkname busy_wait busy_wait
+//go:nosplit
+func busy_wait(count uint32)
+
 //go:linkname bzero bzero
 //go:nosplit
 func bzero(ptr unsafe.Pointer, size uint32)
@@ -388,6 +392,35 @@ func KernelMain(r0, r1, atags uint32) {
 	//}
 	uartPuts("DEBUG: After InitializeExceptions (skipped)\r\n")
 
+	// Display boot image first so it can be scrolled up by text
+	uartPuts("Rendering boot image...\r\n")
+	imageData := GetBootMazarinImageData()
+	imageHeader := (*[2]uint32)(imageData)
+	imageWidth := imageHeader[0]
+	imageHeight := imageHeader[1]
+
+	// Align image to right edge and bottom
+	var xOffset int32 = int32(fbinfo.Width - imageWidth)
+	var yOffset int32 = int32(fbinfo.Height - imageHeight)
+
+	uartPuts("Image coords calculated\r\n")
+
+	// Render image at bottom-right of screen
+	// Note: Alpha blending (true) requires reading from framebuffer which is slow on uncached memory
+	// Using false for now to speed up rendering and verify visibility
+	RenderImageData(imageData, xOffset, yOffset, false)
+	uartPuts("Boot image rendered\r\n")
+
+	// DEBUG: Draw a red box where the image should be to verify positioning
+	// uartPuts("Drawing debug box at image location...\r\n")
+	// redColor := uint32(0x00FF0000)
+	// for y := int32(0); y < 100; y++ {
+	// 	for x := int32(0); x < 100; x++ {
+	// 		WritePixel(uint32(xOffset+x), uint32(yOffset+y), redColor)
+	// 	}
+	// }
+	// uartPuts("Debug box drawn\r\n")
+
 	// Display boot messages on framebuffer
 	uartPuts("Rendering text to framebuffer...\r\n")
 	FramebufferPuts("Mazarin Kernel\n")
@@ -401,39 +434,47 @@ func KernelMain(r0, r1, atags uint32) {
 		FramebufferPuts(".\n")
 	}
 
-	uartPuts("Text rendering complete\r\n")
+	uartPuts("DEBUG: About to print copyright lines\r\n")
 
-	// Display boot image last so it appears on top of scrolled text
-	uartPuts("Rendering boot image...\r\n")
-	imageData := GetBootMazarinImageData()
-
-	// Read image dimensions for right-edge alignment
-	imageHeader := (*[2]uint32)(imageData)
-	imageWidth := imageHeader[0]
-
-	// Align image to right edge: X offset = screen width - image width
-	var xOffset int32
-	if imageWidth < fbinfo.Width {
-		xOffset = int32(fbinfo.Width - imageWidth)
-	} else {
-		xOffset = 0
+	// Busy wait helper function for scrolling delay
+	// Uses assembly function to avoid stack issues and compiler optimization
+	busyWait := func() {
+		busy_wait(100000000) // 100 million iterations for visible delay
 	}
 
-	// Get scroll offset - image should move up (negative Y) as text scrolls
-	scrollOffset := GetScrollOffset()
-	uartPuts("Scroll offset: ")
-	printHex32(scrollOffset)
-	uartPuts(" pixels\r\n")
+	// Initial delay so screen is visible before printing starts
+	uartPuts("DEBUG: Initial delay before printing\r\n")
+	busyWait()
 
-	yOffset := int32(0) - int32(scrollOffset)
-	uartPuts("Image Y offset: ")
-	printHex32(uint32(yOffset))
-	uartPuts("\r\n")
+	// Print copyright and ownership lines
+	// Call dsb() after each line to ensure framebuffer writes are visible
+	uartPuts("DEBUG: Printing copyright line 1\r\n")
+	FramebufferPuts("Mazarin's source code is copyrighted 2025\n")
+	dsb()
+	busyWait()
+	uartPuts("DEBUG: Printing copyright line 2\r\n")
+	FramebufferPuts("and owned by Ian Smith.\n")
+	dsb()
+	busyWait()
+	uartPuts("DEBUG: Printing blank line\r\n")
+	FramebufferPuts("\n")
+	dsb()
+	busyWait()
+	uartPuts("DEBUG: Printing 'we are young'\r\n")
+	FramebufferPuts("we are young despite the years //\n")
+	dsb()
+	busyWait()
+	uartPuts("DEBUG: Printing 'we are concerned'\r\n")
+	FramebufferPuts("we are concerned //\n")
+	dsb()
+	busyWait()
+	uartPuts("DEBUG: Printing 'we are hope'\r\n")
+	FramebufferPuts("we are hope despite the times.\n")
+	dsb()
+	busyWait()
+	uartPuts("DEBUG: Finished printing copyright lines\r\n")
 
-	// Render image at center of screen with alpha blending at pixel level
-	// Image will move up as text scrolls
-	RenderImageData(imageData, xOffset, yOffset, true)
-	uartPuts("Boot image rendered\r\n")
+	uartPuts("Text rendering complete\r\n")
 
 	// Also output to UART for debugging
 	puts("\r\n")

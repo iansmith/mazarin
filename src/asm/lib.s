@@ -39,6 +39,18 @@ delay_loop:
 delay_done:
     ret                 // Return
 
+// busy_wait(uint32_t count)
+// w0 = count (32-bit unsigned integer)
+// Simple busy wait loop - cannot be optimized away
+.global busy_wait
+busy_wait:
+    cbz w0, busy_wait_done  // If count is zero, skip loop
+busy_wait_loop:
+    subs w0, w0, #1         // Decrement count
+    bne busy_wait_loop      // Branch if not zero
+busy_wait_done:
+    ret                     // Return
+
 // mmio_write64(uintptr_t reg, uint64_t data)
 // x0 = register address, x1 = data (64-bit)
 .global mmio_write64
@@ -366,19 +378,30 @@ uart_not_enabled:
 
 // memmove(void *dest, void *src, size_t n)
 // Copy n bytes from src to dest
+// Optimized for speed using 16-byte (128-bit) chunks
 // x0 = dest, x1 = src, x2 = size
 .global memmove
 memmove:
     cmp x2, #0              // Compare size with 0
     beq memmove_done        // If size == 0, done
 
-memmove_loop:
-    ldrb w3, [x1]           // Load byte from src
-    strb w3, [x0]           // Store byte to dest
-    add x0, x0, #1          // dest++
-    add x1, x1, #1          // src++
-    subs x2, x2, #1         // size--
-    bne memmove_loop        // If size != 0, loop
+    // Check if we can do 16-byte copies
+    cmp x2, #16
+    blt memmove_bytes_loop  // If < 16 bytes, use byte copy
+
+memmove_16_loop:
+    ldp x3, x4, [x1], #16   // Load 16 bytes (two 64-bit regs)
+    stp x3, x4, [x0], #16   // Store 16 bytes
+    sub x2, x2, #16         // Decrement size by 16
+    cmp x2, #16             // Check if we have 16+ bytes left
+    bge memmove_16_loop     // Loop if yes
+
+memmove_bytes_loop:
+    cbz x2, memmove_done    // If size == 0, done
+    ldrb w3, [x1], #1       // Load byte
+    strb w3, [x0], #1       // Store byte
+    sub x2, x2, #1          // Decrement size
+    bne memmove_bytes_loop  // Loop if not zero
 
 memmove_done:
     ret
