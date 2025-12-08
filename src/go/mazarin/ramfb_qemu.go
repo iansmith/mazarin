@@ -472,14 +472,10 @@ func ramfbInit() bool {
 	fbinfo.CharsHeight = tempCharsHeight
 	uartPuts("RAMFB: fbinfo.CharsHeight assigned OK\r\n")
 
-	uartPuts("RAMFB: Setting CharsX and CharsY...\r\n")
-	uartPuts("RAMFB: About to set fbinfo.CharsX to 0...\r\n")
-	fbinfo.CharsX = 0
-	uartPuts("RAMFB: fbinfo.CharsX set OK\r\n")
-	uartPuts("RAMFB: About to set fbinfo.CharsY to 0...\r\n")
-	fbinfo.CharsY = 0
-	uartPuts("RAMFB: fbinfo.CharsY set OK\r\n")
-	uartPuts("RAMFB: CharsX and CharsY set OK\r\n")
+	// Note: CharsX and CharsY cursor positioning is done in framebufferInit()
+	// after calling ramfbInit(), to position cursor at bottom of screen
+	// Don't reset them here as it would override that positioning
+	uartPuts("RAMFB: Cursor positioning handled in framebufferInit()\r\n")
 
 	// Check stack again after division operations
 	currentStackPtr2 := get_stack_pointer()

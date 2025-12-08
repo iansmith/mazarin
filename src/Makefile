@@ -107,7 +107,8 @@ $(WRITEBARRIER_OBJ): $(WRITEBARRIER_SRC)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
 # Compile image.s from asm/ directory
-$(IMAGE_OBJ): $(IMAGE_SRC)
+# Add the image binary as dependency so changes trigger rebuild
+$(IMAGE_OBJ): $(IMAGE_SRC) ../assets/boot-mazarin.bin
 	$(CC) $(ASFLAGS) -c $< -o $@
 
 # Compile kernel Go sources from go/mazarin package using go build with c-archive mode

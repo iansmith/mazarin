@@ -241,12 +241,39 @@ func ScrollScreenUp() {
 }
 
 // ClearPixelRect clears a rectangular region with background color
+// Uses memmove to fill each row efficiently
 //
 //go:nosplit
 func ClearPixelRect(x, y, width, height uint32) {
-	for pixelY := y; pixelY < y+height; pixelY++ {
-		for pixelX := x; pixelX < x+width; pixelX++ {
-			WritePixel(pixelX, pixelY, fbBackgroundColor)
+	const bytesPerPixel = 4 // XRGB8888 format
+
+	// For full-width clears, we can optimize by copying first row to rest
+	if x == 0 && width == fbinfo.Width {
+		// Build one row of pixels in a temporary buffer
+		rowByteSize := width * bytesPerPixel
+		firstRowAddr := uintptr(fbinfo.Buf) + uintptr(y*fbinfo.Pitch)
+
+		// Fill first row pixel by pixel (fast enough for one row)
+		for px := uint32(0); px < width; px++ {
+			pixelPtr := (*uint32)(unsafe.Pointer(firstRowAddr + uintptr(px*bytesPerPixel)))
+			*pixelPtr = fbBackgroundColor
+		}
+
+		// Copy first row to remaining rows using memmove
+		for pixelY := y + 1; pixelY < y+height; pixelY++ {
+			destAddr := uintptr(fbinfo.Buf) + uintptr(pixelY*fbinfo.Pitch)
+			MemmoveBytes(destAddr, firstRowAddr, rowByteSize)
+		}
+	} else {
+		// Partial-row clear - slower pixel-by-pixel
+		for pixelY := y; pixelY < y+height; pixelY++ {
+			byteOffset := pixelY*fbinfo.Pitch + x*bytesPerPixel
+			for pixelX := x; pixelX < x+width; pixelX++ {
+				pixelPtr := (*uint32)(unsafe.Pointer(
+					uintptr(fbinfo.Buf) + uintptr(byteOffset)))
+				*pixelPtr = fbBackgroundColor
+				byteOffset += bytesPerPixel
+			}
 		}
 	}
 }
@@ -400,11 +427,8 @@ func InitFramebufferText(buffer unsafe.Pointer, width, height, pitch uint32) err
 	ClearScreen()
 	uartPuts("Init: ClearScreen returned\r\n")
 
-	// Position cursor at bottom-left of screen for text to scroll upward
-	// This way, when we print only a few lines, they appear near the bottom
-	fbinfo.CharsX = 0
-	fbinfo.CharsY = fbinfo.CharsHeight - 1
-	uartPuts("Init: Cursor positioned at bottom\r\n")
+	// Mark text system as initialized even though we're not drawing yet
+	uartPuts("Init: Text system ready\r\n")
 
 	return nil
 }

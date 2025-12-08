@@ -388,7 +388,7 @@ func KernelMain(r0, r1, atags uint32) {
 	//}
 	uartPuts("DEBUG: After InitializeExceptions (skipped)\r\n")
 
-	// Display boot messages on framebuffer (before image so image appears on top)
+	// Display boot messages on framebuffer
 	uartPuts("Rendering text to framebuffer...\r\n")
 	FramebufferPuts("Mazarin Kernel\n")
 	FramebufferPuts("AArch64 Bare Metal\n")
@@ -397,25 +397,24 @@ func KernelMain(r0, r1, atags uint32) {
 	FramebufferPuts("\n")
 
 	// Fill screen with lines to cause scrolling
-	// Start with just 10 lines to test
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 5; i++ {
 		FramebufferPuts(".\n")
 	}
 
 	uartPuts("Text rendering complete\r\n")
 
 	// Display boot image last so it appears on top of scrolled text
-	uartPuts("Rendering boot image on top...\r\n")
+	uartPuts("Rendering boot image...\r\n")
 	imageData := GetBootMazarinImageData()
 
-	// Read image dimensions for centering
+	// Read image dimensions for right-edge alignment
 	imageHeader := (*[2]uint32)(imageData)
 	imageWidth := imageHeader[0]
 
-	// Calculate center X position based on image dimensions
+	// Align image to right edge: X offset = screen width - image width
 	var xOffset int32
 	if imageWidth < fbinfo.Width {
-		xOffset = int32((fbinfo.Width - imageWidth) / 2)
+		xOffset = int32(fbinfo.Width - imageWidth)
 	} else {
 		xOffset = 0
 	}
