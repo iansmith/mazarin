@@ -26,9 +26,20 @@ var (
 //
 //go:nosplit
 func WritePixel(x, y uint32, color uint32) {
+	// Check if framebuffer is initialized
+	if fbinfo.Buf == nil {
+		uartPutc('E')  // Error: no framebuffer
+		return
+	}
+
 	// Bounds check
 	if x >= fbinfo.Width || y >= fbinfo.Height {
 		return
+	}
+
+	// Debug: first pixel write
+	if x == 0 && y == 800 {
+		uartPutc('^')  // Mark first text pixel
 	}
 
 	// Calculate byte offset
@@ -111,6 +122,11 @@ func WritePixelAlpha(x, y uint32, color uint32) {
 func RenderChar(char byte, pixelX, pixelY uint32, color uint32) {
 	const charPixelWidth = 8
 	const charPixelHeight = 8
+
+	// Debug: mark that render was called
+	if char == 'M' {
+		uartPutc('!')  // Mark M character
+	}
 
 	// Get bitmap for this character
 	if char >= 128 {
@@ -426,9 +442,15 @@ func InitFramebufferText(buffer unsafe.Pointer, width, height, pitch uint32) err
 	uartPuts("Init: About to ClearScreen\r\n")
 	ClearScreen()
 	uartPuts("Init: ClearScreen returned\r\n")
+	uartPutc('P')  // Mark after ClearScreen
 
-	// Mark text system as initialized even though we're not drawing yet
-	uartPuts("Init: Text system ready\r\n")
+	// Position cursor at row 100 for good text visibility
+	uartPutc('Q')  // Mark before CharsX set
+	fbinfo.CharsX = 0
+	uartPutc('R')  // Mark after CharsX set
+	fbinfo.CharsY = 100
+	uartPutc('S')  // Mark after CharsY set
+	uartPuts("Init: Cursor positioned at row 100\r\n")
 
 	return nil
 }
