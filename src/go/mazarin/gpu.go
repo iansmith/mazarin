@@ -20,18 +20,18 @@ func font(c byte) *[8]uint8 {
 	// Static array inside function (workaround for global array issues in bare metal)
 	// This is a simple 8x8 font bitmap
 	var fontData [128][8]uint8
-	
+
 	// Initialize all characters to zero
 	for i := 0; i < 128; i++ {
 		for j := 0; j < 8; j++ {
 			fontData[i][j] = 0
 		}
 	}
-	
+
 	// Define some basic characters
 	// Space (0x20)
 	fontData[0x20] = [8]uint8{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-	
+
 	// Numbers 0-9
 	fontData['0'] = [8]uint8{0x3C, 0x66, 0x6E, 0x76, 0x66, 0x66, 0x3C, 0x00}
 	fontData['1'] = [8]uint8{0x18, 0x18, 0x38, 0x18, 0x18, 0x18, 0x7E, 0x00}
@@ -43,7 +43,7 @@ func font(c byte) *[8]uint8 {
 	fontData['7'] = [8]uint8{0x7E, 0x06, 0x0C, 0x18, 0x18, 0x18, 0x18, 0x00}
 	fontData['8'] = [8]uint8{0x3C, 0x66, 0x66, 0x3C, 0x66, 0x66, 0x3C, 0x00}
 	fontData['9'] = [8]uint8{0x3C, 0x66, 0x66, 0x3E, 0x06, 0x66, 0x3C, 0x00}
-	
+
 	// Letters A-Z (uppercase)
 	fontData['A'] = [8]uint8{0x18, 0x3C, 0x66, 0x66, 0x7E, 0x66, 0x66, 0x00}
 	fontData['B'] = [8]uint8{0x7C, 0x66, 0x66, 0x7C, 0x66, 0x66, 0x7C, 0x00}
@@ -71,7 +71,7 @@ func font(c byte) *[8]uint8 {
 	fontData['X'] = [8]uint8{0x66, 0x66, 0x3C, 0x18, 0x3C, 0x66, 0x66, 0x00}
 	fontData['Y'] = [8]uint8{0x66, 0x66, 0x66, 0x3C, 0x18, 0x18, 0x18, 0x00}
 	fontData['Z'] = [8]uint8{0x7E, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x7E, 0x00}
-	
+
 	// Lowercase a-z
 	fontData['a'] = [8]uint8{0x00, 0x00, 0x3C, 0x06, 0x3E, 0x66, 0x3E, 0x00}
 	fontData['b'] = [8]uint8{0x60, 0x60, 0x7C, 0x66, 0x66, 0x66, 0x7C, 0x00}
@@ -99,7 +99,7 @@ func font(c byte) *[8]uint8 {
 	fontData['x'] = [8]uint8{0x00, 0x00, 0x66, 0x3C, 0x18, 0x3C, 0x66, 0x00}
 	fontData['y'] = [8]uint8{0x00, 0x00, 0x66, 0x66, 0x66, 0x3E, 0x06, 0x3C}
 	fontData['z'] = [8]uint8{0x00, 0x00, 0x7E, 0x0C, 0x18, 0x30, 0x7E, 0x00}
-	
+
 	// Special characters
 	fontData['!'] = [8]uint8{0x18, 0x3C, 0x3C, 0x18, 0x18, 0x00, 0x18, 0x00}
 	fontData['"'] = [8]uint8{0x66, 0x66, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00}
@@ -133,7 +133,7 @@ func font(c byte) *[8]uint8 {
 	fontData['|'] = [8]uint8{0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00}
 	fontData['}'] = [8]uint8{0x70, 0x18, 0x18, 0x0E, 0x18, 0x18, 0x70, 0x00}
 	fontData['~'] = [8]uint8{0x00, 0x00, 0x3B, 0x6E, 0x00, 0x00, 0x00, 0x00}
-	
+
 	return &fontData[c]
 }
 
@@ -147,10 +147,10 @@ func writePixel(x, y uint32, pix *Pixel) {
 	if x >= fbinfo.Width || y >= fbinfo.Height {
 		return
 	}
-	
+
 	// Calculate pixel location: y * pitch + x * bytes_per_pixel
 	location := uintptr(fbinfo.Buf) + uintptr(y)*uintptr(fbinfo.Pitch) + uintptr(x)*BYTES_PER_PIXEL
-	
+
 	// Write RGB bytes
 	pixelPtr := (*[3]uint8)(unsafe.Pointer(location))
 	pixelPtr[0] = pix.Red
@@ -165,12 +165,12 @@ func gpuPutc(c byte) {
 	if fbinfo.Buf == nil {
 		return
 	}
-	
+
 	white := Pixel{0xFF, 0xFF, 0xFF}
 	black := Pixel{0x00, 0x00, 0x00}
-	
+
 	numRows := fbinfo.CharsHeight
-	
+
 	// Handle scrolling: if we're past the last row, scroll up
 	if fbinfo.CharsY >= numRows {
 		// Copy each row up by one character row
@@ -192,32 +192,65 @@ func gpuPutc(c byte) {
 		bzero(unsafe.Pointer(lastRowStart), fbinfo.Pitch*CHAR_HEIGHT)
 		fbinfo.CharsY--
 	}
-	
+
 	// Handle newline
 	if c == '\n' {
 		fbinfo.CharsX = 0
 		fbinfo.CharsY++
 		return
 	}
-	
-	// Get character bitmap
+
+	// Get character bitmap (8x8)
 	bmp := font(c)
-	
-	// Render character
-	for w := uint32(0); w < CHAR_WIDTH; w++ {
-		for h := uint32(0); h < CHAR_HEIGHT; h++ {
-			mask := uint8(1 << (7 - w)) // Bit 7 is leftmost
-			x := fbinfo.CharsX*CHAR_WIDTH + w
-			y := fbinfo.CharsY*CHAR_HEIGHT + h
-			
-			if (bmp[h] & mask) != 0 {
-				writePixel(x, y, &white)
-			} else {
-				writePixel(x, y, &black)
+
+	// Render character based on CHAR_WIDTH/CHAR_HEIGHT
+	// If CHAR_WIDTH/CHAR_HEIGHT is 16, render as 2x2 blocks (16x16 output)
+	// If CHAR_WIDTH/CHAR_HEIGHT is 8, render as 1x1 (8x8 output)
+	const bitmapWidth = 8  // Original bitmap width
+	const bitmapHeight = 8 // Original bitmap height
+
+	if CHAR_WIDTH == 16 && CHAR_HEIGHT == 16 {
+		// Render as 16x16 (each bitmap pixel becomes a 2x2 block)
+		for w := uint32(0); w < bitmapWidth; w++ {
+			for h := uint32(0); h < bitmapHeight; h++ {
+				mask := uint8(1 << (7 - w)) // Bit 7 is leftmost
+				var pix *Pixel
+				if (bmp[h] & mask) != 0 {
+					pix = &white
+				} else {
+					pix = &black
+				}
+
+				// Render this bitmap pixel as a 2x2 block
+				baseX := fbinfo.CharsX*CHAR_WIDTH + w*2
+				baseY := fbinfo.CharsY*CHAR_HEIGHT + h*2
+
+				writePixel(baseX, baseY, pix)
+				writePixel(baseX+1, baseY, pix)
+				writePixel(baseX, baseY+1, pix)
+				writePixel(baseX+1, baseY+1, pix)
+			}
+		}
+	} else {
+		// Render as 8x8 (1:1 mapping)
+		for w := uint32(0); w < bitmapWidth; w++ {
+			for h := uint32(0); h < bitmapHeight; h++ {
+				mask := uint8(1 << (7 - w)) // Bit 7 is leftmost
+				var pix *Pixel
+				if (bmp[h] & mask) != 0 {
+					pix = &white
+				} else {
+					pix = &black
+				}
+
+				// Render single pixel
+				x := fbinfo.CharsX*CHAR_WIDTH + w
+				y := fbinfo.CharsY*CHAR_HEIGHT + h
+				writePixel(x, y, pix)
 			}
 		}
 	}
-	
+
 	// Advance cursor
 	fbinfo.CharsX++
 	if fbinfo.CharsX >= fbinfo.CharsWidth {
@@ -243,12 +276,11 @@ func gpuInit() int32 {
 	if framebufferInit() != 0 {
 		return -1
 	}
-	
+
 	// Clear screen (black)
 	if fbinfo.Buf != nil && fbinfo.BufSize > 0 {
 		bzero(fbinfo.Buf, fbinfo.BufSize)
 	}
-	
+
 	return 0
 }
-

@@ -8,8 +8,8 @@ import (
 const (
 	COLORDEPTH      = 24 // 24 bits per pixel (RGB)
 	BYTES_PER_PIXEL = 3  // 3 bytes per pixel (RGB)
-	CHAR_WIDTH      = 8  // Character width in pixels
-	CHAR_HEIGHT     = 8  // Character height in pixels
+	CHAR_WIDTH      = 16 // Character width in pixels (doubled from 8x8)
+	CHAR_HEIGHT     = 16 // Character height in pixels (doubled from 8x8)
 )
 
 // FramebufferInfo holds information about the framebuffer

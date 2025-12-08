@@ -429,11 +429,6 @@ func KernelMain(r0, r1, atags uint32) {
 	FramebufferPuts("System Initialized\n")
 	FramebufferPuts("\n")
 
-	// Fill screen with lines to cause scrolling
-	for i := 0; i < 5; i++ {
-		FramebufferPuts(".\n")
-	}
-
 	uartPuts("DEBUG: About to print copyright lines\r\n")
 
 	// Busy wait helper function for scrolling delay

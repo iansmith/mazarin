@@ -26,20 +26,9 @@ var (
 //
 //go:nosplit
 func WritePixel(x, y uint32, color uint32) {
-	// Check if framebuffer is initialized
-	if fbinfo.Buf == nil {
-		uartPutc('E')  // Error: no framebuffer
-		return
-	}
-
 	// Bounds check
 	if x >= fbinfo.Width || y >= fbinfo.Height {
 		return
-	}
-
-	// Debug: first pixel write
-	if x == 0 && y == 800 {
-		uartPutc('^')  // Mark first text pixel
 	}
 
 	// Calculate byte offset
@@ -114,19 +103,14 @@ func WritePixelAlpha(x, y uint32, color uint32) {
 // Character Rendering Functions
 // ============================================================================
 
-// RenderChar renders an 8x8 character bitmap at pixel position (pixelX, pixelY)
+// RenderChar8x8 renders an 8x8 character bitmap at pixel position (pixelX, pixelY)
 // char: ASCII character to render
 // pixelX, pixelY: top-left pixel position for the character
 //
 //go:nosplit
-func RenderChar(char byte, pixelX, pixelY uint32, color uint32) {
-	const charPixelWidth = 8
-	const charPixelHeight = 8
-
-	// Debug: mark that render was called
-	if char == 'M' {
-		uartPutc('!')  // Mark M character
-	}
+func RenderChar8x8(char byte, pixelX, pixelY uint32, color uint32) {
+	const bitmapWidth = 8
+	const bitmapHeight = 8
 
 	// Get bitmap for this character
 	if char >= 128 {
@@ -134,13 +118,13 @@ func RenderChar(char byte, pixelX, pixelY uint32, color uint32) {
 	}
 	bitmap := fontBitmaps[char]
 
-	// Render each row
-	for row := 0; row < charPixelHeight; row++ {
+	// Render each row of the bitmap
+	for row := 0; row < bitmapHeight; row++ {
 		rowByte := bitmap[row]
 
 		// Render each bit in the row
 		// Font bitmap format: MSB (bit 7) = leftmost pixel, LSB (bit 0) = rightmost pixel
-		for col := 0; col < charPixelWidth; col++ {
+		for col := 0; col < bitmapWidth; col++ {
 			// Extract bit (from MSB = left to LSB = right)
 			bitSet := (rowByte & (1 << uint(7-col))) != 0
 
@@ -152,18 +136,70 @@ func RenderChar(char byte, pixelX, pixelY uint32, color uint32) {
 				pixelColor = fbBackgroundColor // Background color
 			}
 
-			// Write pixel
-			pixelAddrX := pixelX + uint32(col)
-			pixelAddrY := pixelY + uint32(row)
-			WritePixel(pixelAddrX, pixelAddrY, pixelColor)
+			// Write single pixel (8x8 output)
+			WritePixel(pixelX+uint32(col), pixelY+uint32(row), pixelColor)
 		}
 	}
 }
 
-// DebugRenderChar same as RenderChar but with verbose debug output
+// RenderChar16x16 renders an 8x8 character bitmap at pixel position (pixelX, pixelY)
+// Each pixel from the bitmap is rendered as a 2x2 block, making the output 16x16 pixels
+// char: ASCII character to render
+// pixelX, pixelY: top-left pixel position for the character
+//
+//go:nosplit
+func RenderChar16x16(char byte, pixelX, pixelY uint32, color uint32) {
+	const bitmapWidth = 8  // Original bitmap width
+	const bitmapHeight = 8 // Original bitmap height
+
+	// Get bitmap for this character
+	if char >= 128 {
+		return // Out of range
+	}
+	bitmap := fontBitmaps[char]
+
+	// Render each row of the bitmap
+	for row := 0; row < bitmapHeight; row++ {
+		rowByte := bitmap[row]
+
+		// Render each bit in the row
+		// Font bitmap format: MSB (bit 7) = leftmost pixel, LSB (bit 0) = rightmost pixel
+		for col := 0; col < bitmapWidth; col++ {
+			// Extract bit (from MSB = left to LSB = right)
+			bitSet := (rowByte & (1 << uint(7-col))) != 0
+
+			// Determine pixel color
+			var pixelColor uint32
+			if bitSet {
+				pixelColor = color // Foreground color (text)
+			} else {
+				pixelColor = fbBackgroundColor // Background color
+			}
+
+			// Render this bitmap pixel as a 2x2 block
+			baseX := pixelX + uint32(col*2)
+			baseY := pixelY + uint32(row*2)
+
+			// Write 2x2 block
+			WritePixel(baseX, baseY, pixelColor)
+			WritePixel(baseX+1, baseY, pixelColor)
+			WritePixel(baseX, baseY+1, pixelColor)
+			WritePixel(baseX+1, baseY+1, pixelColor)
+		}
+	}
+}
+
+// RenderChar is an alias that defaults to RenderChar16x16 for backward compatibility
+//
+//go:nosplit
+func RenderChar(char byte, pixelX, pixelY uint32, color uint32) {
+	RenderChar16x16(char, pixelX, pixelY, color)
+}
+
+// DebugRenderChar same as RenderChar16x16 but with verbose debug output
 func DebugRenderChar(char byte, pixelX, pixelY uint32, color uint32) {
-	const charPixelWidth = 8
-	const charPixelHeight = 8
+	const bitmapWidth = 8
+	const bitmapHeight = 8
 
 	if char >= 128 {
 		return
@@ -189,8 +225,8 @@ func DebugRenderChar(char byte, pixelX, pixelY uint32, color uint32) {
 	uartPutc(byte('0' + (rowByte & 0xF)))
 	uartPuts(" bits: ")
 
-	for col := 0; col < charPixelWidth; col++ {
-		bitSet := (rowByte & (1 << uint(col))) != 0
+	for col := 0; col < bitmapWidth; col++ {
+		bitSet := (rowByte & (1 << uint(7-col))) != 0
 		if bitSet {
 			uartPutc('1')
 		} else {
@@ -203,20 +239,40 @@ func DebugRenderChar(char byte, pixelX, pixelY uint32, color uint32) {
 		} else {
 			pixelColor = fbBackgroundColor
 		}
-		pixelAddrX := pixelX + uint32(col)
-		pixelAddrY := pixelY
-		WritePixel(pixelAddrX, pixelAddrY, pixelColor)
+		// Render as 2x2 block (16x16 mode)
+		baseX := pixelX + uint32(col*2)
+		baseY := pixelY
+		WritePixel(baseX, baseY, pixelColor)
+		WritePixel(baseX+1, baseY, pixelColor)
+		WritePixel(baseX, baseY+1, pixelColor)
+		WritePixel(baseX+1, baseY+1, pixelColor)
 	}
 	uartPuts("\r\n")
 }
 
-// RenderCharAtCursor renders a character at the current cursor position
+// RenderCharAtCursor8x8 renders a character at the current cursor position using 8x8 rendering
+//
+//go:nosplit
+func RenderCharAtCursor8x8(char byte) {
+	pixelX := fbinfo.CharsX * 8 // Each char is 8 pixels wide
+	pixelY := fbinfo.CharsY * 8 // Each char is 8 pixels tall
+	RenderChar8x8(char, pixelX, pixelY, fbForegroundColor)
+}
+
+// RenderCharAtCursor16x16 renders a character at the current cursor position using 16x16 rendering
+//
+//go:nosplit
+func RenderCharAtCursor16x16(char byte) {
+	pixelX := fbinfo.CharsX * 16 // Each char is 16 pixels wide
+	pixelY := fbinfo.CharsY * 16 // Each char is 16 pixels tall
+	RenderChar16x16(char, pixelX, pixelY, fbForegroundColor)
+}
+
+// RenderCharAtCursor is an alias that defaults to RenderCharAtCursor16x16 for backward compatibility
 //
 //go:nosplit
 func RenderCharAtCursor(char byte) {
-	pixelX := fbinfo.CharsX * 8 // Each char is 8 pixels wide
-	pixelY := fbinfo.CharsY * 8 // Each char is 8 pixels tall
-	RenderChar(char, pixelX, pixelY, fbForegroundColor)
+	RenderCharAtCursor16x16(char)
 }
 
 // ============================================================================
@@ -224,28 +280,25 @@ func RenderCharAtCursor(char byte) {
 // ============================================================================
 
 // ScrollScreenUp scrolls the entire screen up by one character row
-// Copies all rows up, clears the bottom row
+// Uses CHAR_HEIGHT to determine the character row height
+// Optimized: Copy entire character rows at once instead of scanline-by-scanline
+//
+//go:nosplit
 func ScrollScreenUp() {
-	const charPixelHeight = 8
+	charPixelHeight := uint32(CHAR_HEIGHT)
+	charRowByteSize := charPixelHeight * fbinfo.Pitch // Size of one character row in bytes
 
-	// Copy each row up by one character height
+	// Copy each character row up by one character height
+	// Copy entire character rows at once (much faster than scanline-by-scanline)
 	for row := uint32(0); row < fbinfo.CharsHeight-1; row++ {
 		sourcePixelY := (row + 1) * charPixelHeight
 		destPixelY := row * charPixelHeight
 
-		// Copy entire row of pixels
-		// We copy pixel row by pixel row (scanline by scanline)
-		for scanline := uint32(0); scanline < charPixelHeight; scanline++ {
-			srcOffset := (sourcePixelY + scanline) * fbinfo.Pitch
-			dstOffset := (destPixelY + scanline) * fbinfo.Pitch
+		// Copy entire character row in one MemmoveBytes call
+		srcAddr := uintptr(fbinfo.Buf) + uintptr(sourcePixelY*fbinfo.Pitch)
+		dstAddr := uintptr(fbinfo.Buf) + uintptr(destPixelY*fbinfo.Pitch)
 
-			// Use memmove to copy one scanline
-			// Each scanline is fbinfo.Pitch bytes
-			MemmoveBytes(
-				uintptr(fbinfo.Buf)+uintptr(dstOffset),
-				uintptr(fbinfo.Buf)+uintptr(srcOffset),
-				fbinfo.Pitch)
-		}
+		MemmoveBytes(dstAddr, srcAddr, uintptr(charRowByteSize))
 	}
 
 	// Clear the bottom row (fill with background color)
@@ -278,7 +331,7 @@ func ClearPixelRect(x, y, width, height uint32) {
 		// Copy first row to remaining rows using memmove
 		for pixelY := y + 1; pixelY < y+height; pixelY++ {
 			destAddr := uintptr(fbinfo.Buf) + uintptr(pixelY*fbinfo.Pitch)
-			MemmoveBytes(destAddr, firstRowAddr, rowByteSize)
+			MemmoveBytes(destAddr, firstRowAddr, uintptr(rowByteSize))
 		}
 	} else {
 		// Partial-row clear - slower pixel-by-pixel
@@ -305,7 +358,7 @@ func GetScrollOffset() uint32 {
 //
 //go:linkname MemmoveBytes MemmoveBytes
 //go:nosplit
-func MemmoveBytes(dest, src uintptr, size uint32)
+func MemmoveBytes(dest, src, size uintptr)
 
 // ============================================================================
 // Cursor Management
@@ -331,6 +384,8 @@ func AdvanceCursor() {
 }
 
 // HandleNewline moves cursor to start of next line, scrolling if necessary
+//
+//go:nosplit
 func HandleNewline() {
 	fbinfo.CharsX = 0
 	fbinfo.CharsY++
@@ -345,22 +400,49 @@ func HandleNewline() {
 // Public API - Character Output
 // ============================================================================
 
-// FramebufferPutc outputs a single character to the framebuffer
+// FramebufferPutc8x8 outputs a single character to the framebuffer using 8x8 rendering
 // Handles scrolling, wrapping, and special characters
 //
 //go:nosplit
-func FramebufferPutc(c byte) {
+func FramebufferPutc8x8(c byte) {
 	if !fbTextInitialized {
 		return // Silently skip if not initialized
 	}
 
 	// For now, only handle printable ASCII characters
 	if c >= 32 && c < 127 {
-		RenderCharAtCursor(c)
+		RenderCharAtCursor8x8(c)
 		AdvanceCursor()
 	} else if c == '\n' {
 		HandleNewline()
 	}
+}
+
+// FramebufferPutc16x16 outputs a single character to the framebuffer using 16x16 rendering
+// Handles scrolling, wrapping, and special characters
+//
+//go:nosplit
+func FramebufferPutc16x16(c byte) {
+	if !fbTextInitialized {
+		return // Silently skip if not initialized
+	}
+
+	// For now, only handle printable ASCII characters
+	if c >= 32 && c < 127 {
+		RenderCharAtCursor16x16(c)
+		AdvanceCursor()
+	} else if c == '\n' {
+		HandleNewline()
+	}
+}
+
+// FramebufferPutc outputs a single character to the framebuffer
+// Defaults to 16x16 rendering for backward compatibility
+// Handles scrolling, wrapping, and special characters
+//
+//go:nosplit
+func FramebufferPutc(c byte) {
+	FramebufferPutc16x16(c)
 }
 
 // FramebufferPuts outputs a string to the framebuffer
@@ -374,6 +456,8 @@ func FramebufferPuts(str string) {
 	for i := 0; i < len(str); i++ {
 		FramebufferPutc(str[i])
 	}
+	// Force display refresh after text rendering
+	dsb()
 }
 
 // FramebufferPutHex8 outputs an 8-bit value as two hex digits
@@ -438,19 +522,9 @@ func InitFramebufferText(buffer unsafe.Pointer, width, height, pitch uint32) err
 	fbTextInitialized = true
 	uartPuts("Init: 5\r\n")
 
-	// Clear the screen to midnight blue background
-	uartPuts("Init: About to ClearScreen\r\n")
-	ClearScreen()
-	uartPuts("Init: ClearScreen returned\r\n")
-	uartPutc('P')  // Mark after ClearScreen
-
-	// Position cursor at row 100 for good text visibility
-	uartPutc('Q')  // Mark before CharsX set
-	fbinfo.CharsX = 0
-	uartPutc('R')  // Mark after CharsX set
-	fbinfo.CharsY = 100
-	uartPutc('S')  // Mark after CharsY set
-	uartPuts("Init: Cursor positioned at row 100\r\n")
+	// Note: Do NOT clear the screen here - framebufferInit() already set the background color
+	// Clearing here would destroy any image or content already drawn
+	// (e.g., test pattern in framebuffer_qemu.go fills top 100 rows with white)
 
 	return nil
 }
