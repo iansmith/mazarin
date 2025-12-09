@@ -133,14 +133,13 @@ mkdir -p "$LOG_DIR"
 # Build QEMU command
 QEMU_CMD=(
     "$QEMU_BIN"
-    -M virt
+    -M virt,virtualization=on
     -cpu cortex-a72
     -m 1G
     -kernel "$KERNEL_PATH"
     -device ramfb
     $DISPLAY_MODE
     -serial stdio
-    -semihosting
     -no-reboot
 )
 

@@ -140,6 +140,11 @@ qemu_exit:
 .extern main.KernelMain
 .extern main.GrowStackForCurrent
 kernel_main:
+    // Set up proper ARM64 stack frame for Go compatibility
+    // Save frame pointer and link register
+    stp x29, x30, [sp, #-16]!      // Push FP and LR, adjust SP
+    mov x29, sp                    // Set FP to current SP
+    
     // UART will be initialized by uartInit() called from kernel_main
     // No early debug writes
     
@@ -150,13 +155,6 @@ kernel_main:
     mov x1, #0                    // r1 = 0  
     mov x2, #0                    // atags = 0
     
-    // Ensure stack is 16-byte aligned (required by Go)
-    mov x3, sp
-    and x3, x3, #0xF              // Check alignment
-    cbz x3, stack_ok              // If aligned, continue
-    sub sp, sp, #8                // Adjust if not aligned
-stack_ok:
-    
     // Set x28 (goroutine pointer) to point to runtime.g0
     // This is required for write barrier to work
     // runtime.g0 is at address 0x331a00
@@ -166,12 +164,23 @@ stack_ok:
     // Note: Write barrier flag is set in boot.s AFTER BSS clear
     // (Setting it here would be overwritten by BSS clear)
     
-    // Call Go function
+    // Call Go function - this will initialize everything
     bl main.KernelMain
+
+    // KernelMain returns after initialization is complete
+    // DEBUG: Print 'G' after Go KernelMain returns
+    movz x10, #0x0900, lsl #16   // UART base = 0x09000000
+    movz w11, #0x47              // 'G' = Go KernelMain returned
+    str w11, [x10]               // Write to UART
     
-    // If we get here, KernelMain returned (shouldn't happen)
-    // Just loop forever
-    b .
+    // DEBUG: Print 'Z' before returning to boot.s
+    movz x10, #0x0900, lsl #16   // UART base = 0x09000000
+    movz w11, #0x5A              // 'Z' = aboZt to return to boot.s
+    str w11, [x10]               // Write to UART
+    
+    // Restore frame pointer and link register
+    ldp x29, x30, [sp], #16       // Pop FP and LR, adjust SP
+    ret                            // Return to boot.s
 
 // =================================================================
 // Stack Growth Functions (Bare-Metal Implementation)
@@ -371,6 +380,71 @@ uart_not_enabled:
     // UART not enabled - just return (don't write)
     ret
 
+
+// ============================================================================
+// ARM Generic Timer System Register Access
+// IMPORTANT: Using VIRTUAL timer (CNTV_*) at EL1 - matches reference repo!
+// Virtual timer is the standard choice for EL1 OS/kernel code
+// ============================================================================
+
+// read_cntv_ctl_el0() - Read CNTV_CTL_EL0 (Virtual Timer Control Register)
+// Returns uint32 in w0
+.global read_cntv_ctl_el0
+read_cntv_ctl_el0:
+    mrs x0, CNTV_CTL_EL0    // Read CNTV_CTL_EL0 into x0
+    ret                      // Return (value in w0)
+
+// write_cntv_ctl_el0(value uint32) - Write CNTV_CTL_EL0
+// w0 = value to write
+.global write_cntv_ctl_el0
+write_cntv_ctl_el0:
+    msr CNTV_CTL_EL0, x0    // Write x0 to CNTV_CTL_EL0
+    isb                      // Instruction synchronization barrier
+    ret
+
+// read_cntv_tval_el0() - Read CNTV_TVAL_EL0 (Virtual Timer Value Register)
+// Returns uint32 in w0
+.global read_cntv_tval_el0
+read_cntv_tval_el0:
+    mrs x0, CNTV_TVAL_EL0   // Read CNTV_TVAL_EL0 into x0
+    ret                      // Return (value in w0)
+
+// write_cntv_tval_el0(value uint32) - Write CNTV_TVAL_EL0
+// w0 = value to write
+.global write_cntv_tval_el0
+write_cntv_tval_el0:
+    msr CNTV_TVAL_EL0, x0   // Write x0 to CNTV_TVAL_EL0
+    isb                      // Instruction synchronization barrier
+    ret
+
+// read_cntv_cval_el0() - Read CNTV_CVAL_EL0 (Virtual Timer Compare Value Register)
+// Returns uint64 in x0
+.global read_cntv_cval_el0
+read_cntv_cval_el0:
+    mrs x0, CNTV_CVAL_EL0   // Read CNTV_CVAL_EL0 into x0
+    ret                      // Return (value in x0)
+
+// write_cntv_cval_el0(value uint64) - Write CNTV_CVAL_EL0
+// x0 = value to write
+.global write_cntv_cval_el0
+write_cntv_cval_el0:
+    msr CNTV_CVAL_EL0, x0   // Write x0 to CNTV_CVAL_EL0
+    isb                      // Instruction synchronization barrier
+    ret
+
+// read_cntvct_el0() - Read CNTVCT_EL0 (Virtual Counter Register)
+// Returns uint64 in x0
+.global read_cntvct_el0
+read_cntvct_el0:
+    mrs x0, CNTVCT_EL0      // Read CNTVCT_EL0 into x0
+    ret                      // Return (value in x0)
+
+// read_cntfrq_el0() - Read CNTFRQ_EL0 (Counter Frequency Register)
+// Returns uint32 in w0
+.global read_cntfrq_el0
+read_cntfrq_el0:
+    mrs x0, CNTFRQ_EL0      // Read CNTFRQ_EL0 into x0
+    ret                      // Return (value in w0)
 
 // ============================================================================
 // Memory Functions

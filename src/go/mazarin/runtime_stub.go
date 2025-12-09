@@ -13,8 +13,15 @@ package main
 //
 //go:nosplit
 func initRuntimeStubs() {
-	g0Addr := uintptr(0x331a00) // runtime.g0
-	m0Addr := uintptr(0x332100) // runtime.m0
+	g0Addr := uintptr(0x40100aa0) // runtime.g0 (from target-readelf -s)
+	m0Addr := uintptr(0x401011a0) // runtime.m0 (from target-readelf -s)
+
+	// Initialize g0 stack bounds so compiler stack checks pass
+	// g.stack.lo (offset 0), g.stack.hi (offset 8), g.stackguard0 (offset 16), g.stackguard1 (offset 24)
+	writeMemory64(g0Addr+0, uint64(KERNEL_STACK_BOTTOM))
+	writeMemory64(g0Addr+8, uint64(KERNEL_STACK_TOP))
+	writeMemory64(g0Addr+16, uint64(KERNEL_STACK_BOTTOM+_StackGuard))
+	writeMemory64(g0Addr+24, uint64(KERNEL_STACK_BOTTOM+_StackGuard))
 
 	// Step 1: Set g0.m = m0 (offset 48 = 0x30)
 	// This is what gcWriteBarrier reads: ldr x0, [x28, #48]

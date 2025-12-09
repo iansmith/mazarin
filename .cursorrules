@@ -53,6 +53,11 @@ This file contains architectural rules and patterns that must be followed for al
 - Use `GOTOOLCHAIN=auto GOARCH=arm64 GOOS=linux` for kernel compilation
 - Always run `make test` before committing
 
+## Quick Build/Run (local QEMU)
+
+- Build: `make clean && make qemu` (run from `src/`)
+- Run: `timeout 10 /Users/iansmith/mazzy/docker/mazboot` (needs Cocoa/VNC window)
+
 ## Cross-Compiler Tooling
 
 - Cross-compiler tools use the `target-` prefix instead of the full `aarch64-none-elf-` prefix

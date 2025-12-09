@@ -277,3 +277,5 @@ The framebuffer text output system is now complete and tested. The kernel can re
 
 The text display system is stable and can be used to show diagnostic information during all subsequent kernel development phases.
 
+
+

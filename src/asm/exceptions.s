@@ -15,6 +15,7 @@
 // without affecting text section alignment
 .section ".vectors"
 .global exception_vectors
+.global exception_vectors_start_addr
 
 // 2KB align the exception vector table
 .align 11  // 2^11 = 2048 bytes = 2KB
@@ -48,87 +49,133 @@ exception_vectors:
     // 0x200 - 0x280: Synchronous exception (SP_EL1) - 128 bytes
     .align 7
 sync_exception_el1:
-    // Save context
-    // We need to save registers that we use in the handler
-    stp x0, x1, [sp, #-16]!
-    stp x2, x3, [sp, #-16]!
-    stp x4, x5, [sp, #-16]!
+    // Sync exception occurred - try to print debug message via UART
+    // Load UART base address (PL011 at 0x09000000)
+    movz x14, #0x0900, lsl #16     // 0x09000000
+    movk x14, #0x0000, lsl #0
     
-    // Save exception info for debugging
-    mrs x0, ESR_EL1      // Exception Syndrome Register
-    mrs x1, ELR_EL1      // Exception Link Register (return address)
-    mrs x2, SPSR_EL1     // Saved Program Status Register
-    mrs x3, FAR_EL1      // Fault Address Register
+    // Print 'S' (0x53) to indicate sync exception
+    movz w15, #0x53                // 'S'
+    str w15, [x14]                 // Write to UART data register
     
-    // Call Go exception handler with exception info
-    // Parameters: x0=ESR, x1=ELR, x2=SPSR, x3=FAR, x4=exception_type
-    mov x4, #0           // SYNC_EXCEPTION type
-    bl main.ExceptionHandler
+    // Print 'Y' (0x59)
+    movz w15, #0x59                // 'Y'
+    str w15, [x14]
     
-    // Restore context
-    ldp x4, x5, [sp], #16
-    ldp x2, x3, [sp], #16
-    ldp x0, x1, [sp], #16
+    // Print 'N' (0x4E)
+    movz w15, #0x4E                // 'N'
+    str w15, [x14]
     
-    // Return from exception
-    eret
+    // Print 'C' (0x43)
+    movz w15, #0x43                // 'C'
+    str w15, [x14]
+    
+    // Hang forever - sync exception occurred
+    b .
     
     
     // 0x280 - 0x300: IRQ (SP_EL1) - 128 bytes
     .align 7
 irq_exception_el1:
-    // Save context - minimal for IRQ
-    stp x0, x1, [sp, #-16]!
-    stp x2, x3, [sp, #-16]!
-    stp x4, x5, [sp, #-16]!
-    stp x30, xzr, [sp, #-16]!  // Save LR
+    // ULTRA-SIMPLE DEBUG: Print 'X' IMMEDIATELY to prove we entered handler
+    // Don't touch any registers yet - just write directly to UART
+    movz x10, #0x0900, lsl #16     // 0x09000000 (UART base)
+    movk x10, #0x0000, lsl #0
+    movz w11, #0x58                // 'X' 
+    str w11, [x10]                 // Write to UART
     
-    // Call Go IRQ handler
-    // The handler will:
-    // 1. Read GIC to acknowledge interrupt
-    // 2. Dispatch to specific IRQ handler
-    // 3. Signal end of interrupt to GIC
-    bl main.IRQHandler
+    // CRITICAL: Switch to dedicated exception stack immediately!
+    // This prevents corruption of the normal execution stack (SP_EL1 at 0x60000000)
+    // Exception stack: 32KB region just below main stack (0x5FFF8000)
+    //   Main stack: 0x60000000 (grows down)
+    //   Exception stack: 0x5FFF8000 (32KB = 0x8000 bytes, safe buffer)
     
-    // Restore context
-    ldp x30, xzr, [sp], #16
-    ldp x4, x5, [sp], #16
-    ldp x2, x3, [sp], #16
-    ldp x0, x1, [sp], #16
+    // Save current SP (SP_EL1) to x0 temporarily
+    mov x0, sp
     
+    // Load exception stack address (0x5FFF8000 = 32KB below main stack)
+    movz x1, #0x5FFF, lsl #16     // 0x5FFF0000
+    movk x1, #0x8000, lsl #0      // 0x5FFF8000
+    mov sp, x1                     // Switch to exception stack
+    
+    // Save original SP_EL1 and registers on exception stack
+    sub sp, sp, #64               // Make space for 8 registers (original SP + x0-x3 + working regs)
+    str x0, [sp, #0]              // Save original SP_EL1
+    stp x1, x2, [sp, #8]          // Save x1, x2
+    stp x3, x4, [sp, #24]         // Save x3, x4
+    
+    // Now we can use x0-x4 freely
+    
+    // Load UART base address (PL011 at 0x09000000)
+    movz x0, #0x0900, lsl #16
+    movk x0, #0x0000, lsl #0
+    
+    // Print 'I' to show we entered handler
+    movz w1, #0x49                // 'I'
+    str w1, [x0]
+    
+    // Acknowledge interrupt from GIC
+    // GICC_IAR at 0x0801000C
+    movz x1, #0x0801, lsl #16
+    movk x1, #0x000C, lsl #0
+    ldr w2, [x1]                  // Read IAR (this acknowledges)
+    and w2, w2, #0x3FF            // Mask to get interrupt ID
+    
+    // Check if this is virtual timer interrupt (ID 27 = 0x1B)
+    cmp w2, #27
+    bne irq_not_timer
+    
+    // Virtual timer interrupt - reset it for next tick using CVAL (absolute)
+    // CRITICAL: Use CVAL approach like reference repo!
+    // 1. Read current counter value (CNTVCT_EL0)
+    mrs x3, CNTVCT_EL0
+    // 2. Add 62500000 (1 second at 62.5MHz) to get target
+    movz x4, #0x03B9, lsl #16     // 0x03B90000
+    movk x4, #0xACA0, lsl #0      // Complete to 62500000
+    add x3, x3, x4                 // target = current + interval
+    // 3. Write to CNTV_CVAL_EL0 (compare value)
+    msr CNTV_CVAL_EL0, x3
+    
+    // Print 'T' to show we reset timer
+    movz w1, #0x54                // 'T'
+    str w1, [x0]
+    
+irq_not_timer:
+    // Signal end of interrupt to GIC
+    // GICC_EOIR at 0x08010010
+    movz x1, #0x0801, lsl #16
+    movk x1, #0x0010, lsl #0
+    str w2, [x1]                  // Write interrupt ID to EOIR
+    
+    // Print '>' to show we're returning
+    movz w1, #0x3E                // '>'
+    str w1, [x0]
+    
+    // Restore registers and return to normal stack
+    ldr x0, [sp, #0]              // Load original SP_EL1
+    ldp x1, x2, [sp, #8]          // Restore x1, x2
+    ldp x3, x4, [sp, #24]         // Restore x3, x4
+    add sp, sp, #64               // Clean up exception stack
+    
+    // Restore original SP (SP_EL1)
+    mov sp, x0
+    
+    // Return from exception
     eret
     
     
     // 0x300 - 0x380: FIQ (SP_EL1) - 128 bytes
     .align 7
 fiq_exception_el1:
-    // Save minimal context
-    stp x0, x1, [sp, #-16]!
-    stp x2, x3, [sp, #-16]!
-    
-    // FIQ handler (not commonly used, just log for now)
-    bl main.FIQHandler
-    
-    ldp x2, x3, [sp], #16
-    ldp x0, x1, [sp], #16
-    
-    eret
+    // FIQ not used - just hang
+    b .
     
     
     // 0x380 - 0x400: SError (SP_EL1) - 128 bytes
     .align 7
 serror_exception_el1:
-    // Save minimal context
-    stp x0, x1, [sp, #-16]!
-    stp x2, x3, [sp, #-16]!
-    
-    // SError handler
-    bl main.SErrorHandler
-    
-    ldp x2, x3, [sp], #16
-    ldp x0, x1, [sp], #16
-    
-    eret
+    // SError not used - just hang
+    b .
 
 
     // ========================================
@@ -181,38 +228,56 @@ exception_vectors_end:
 
 
 // ============================================================================
-// Exception Handler Stubs
+// Exception Handler Functions
 // ============================================================================
-// These are minimal stubs that ensure the symbols exist and can be linked.
-// They are never called - the assembly exception handlers above call the
-// functions directly through Go's calling convention.
-
-.global main.ExceptionHandler
-main.ExceptionHandler:
-    b .  // Never reached - for linking purposes only
-
-.global main.IRQHandler
-main.IRQHandler:
-    b .  // Never reached - for linking purposes only
-
-.global main.FIQHandler
-main.FIQHandler:
-    b .  // Never reached - for linking purposes only
-
-.global main.SErrorHandler
-main.SErrorHandler:
-    b .  // Never reached - for linking purposes only
+// The Go functions (IRQHandler, FIQHandler, SErrorHandler) are defined in
+// exceptions.go and exported via //go:linkname. The assembly code above
+// calls these Go functions directly using 'bl main.IRQHandler', etc.
+// No stubs needed - Go compiler will handle the linkage.
 
 
 // ============================================================================
 // Set VBAR_EL1 (Vector Base Address Register)
 // ============================================================================
 // This function is called from Go to set up the exception vector table
+// VBAR_EL1 must point to a 2KB-aligned address
 .global set_vbar_el1
 set_vbar_el1:
-    // x0 = address of exception vector table
+    // x0 = address of exception vector table (must be 2KB aligned)
+    // Minimal implementation - just set VBAR_EL1 without touching DAIF
+    // (accessing DAIF might cause exceptions if VBAR_EL1 isn't set yet)
+    
+    // Data synchronization barrier to ensure all previous memory accesses complete
+    dsb sy
+    
+    // Set VBAR_EL1 directly from x0
+    // The msr instruction transfers the 64-bit value from x0 to VBAR_EL1
     msr VBAR_EL1, x0
-    isb  // Ensure instruction synchronization
+    
+    // Instruction synchronization barrier to ensure VBAR_EL1 is set
+    // before any subsequent instructions execute
+    isb
+    
+    ret
+
+// read_vbar_el1() - Read VBAR_EL1 to verify it was set correctly
+// Returns uintptr in x0
+.global read_vbar_el1
+read_vbar_el1:
+    mrs x0, VBAR_EL1
+    ret
+
+// get_exception_vectors_addr() - Returns the address of exception_vectors
+// Returns uintptr in x0
+// Use adrp + add for addresses that might be far away (>1MB)
+// adrp loads the page-aligned address (4KB aligned), add adds the page offset
+// Syntax matches image.s which uses :lo12: without #
+.global get_exception_vectors_addr
+get_exception_vectors_addr:
+    // Ensure function is properly aligned
+    .align 2
+    adrp x0, exception_vectors
+    add  x0, x0, :lo12:exception_vectors
     ret
 
 
@@ -221,18 +286,48 @@ set_vbar_el1:
 // ============================================================================
 
 // void enable_irqs(void)
-// Clears the I bit in PSTATE (bit 7) to enable IRQ interrupts
+// Clears the I bit in PSTATE to enable IRQ interrupts
+// DAIF bits encoding in immediate value:
+//   Bit 0 = F (FIQ)
+//   Bit 1 = I (IRQ)  <-- This is what we want to clear
+//   Bit 2 = A (SError)
+//   Bit 3 = D (Debug)
+// So #2 = 0b0010 clears bit 1 (I bit) to enable IRQs
+// This function must be called from Go with proper nosplit/noinline markers
 .global enable_irqs
 enable_irqs:
-    msr DAIFCLR, #2  // Clear I bit (bit 1 in DAIF set) = enable IRQs
+    // Minimal implementation - just enable IRQs
+    // Data barrier to ensure all previous operations complete
+    dsb sy
+    // Clear I bit (bit 1) to enable IRQ interrupts
+    msr DAIFCLR, #2
+    // Instruction barrier to ensure interrupt enable is visible
+    isb
     ret
+
+// enable_irqs_asm() - Minimal version to enable interrupts
+// This version tries to be as minimal as possible to avoid exceptions
+.global enable_irqs_asm
+enable_irqs_asm:
+    // Try absolute minimal approach - just the msr instruction
+    // No barriers, no other operations
+    // DAIF bits: Bit 1 = I (IRQ), so #2 clears IRQ mask
+    msr DAIFCLR, #2  // Clear I bit (bit 1) = enable IRQs
+    ret              // Return immediately
 
 
 // void disable_irqs(void)
-// Sets the I bit in PSTATE (bit 7) to disable IRQ interrupts
+// Sets the I bit in PSTATE to disable IRQ interrupts
+// DAIF bits encoding in immediate value:
+//   Bit 0 = F (FIQ)
+//   Bit 1 = I (IRQ)  <-- This is what we want to set
+//   Bit 2 = A (SError)
+//   Bit 3 = D (Debug)
+// So #2 = 0b0010 sets bit 1 (I bit) to disable IRQs
 .global disable_irqs
 disable_irqs:
-    msr DAIFSET, #2  // Set I bit = disable IRQs
+    msr DAIFSET, #2  // Set I bit (bit 1) = disable IRQs
+    isb               // Instruction synchronization barrier
     ret
 
 
@@ -281,5 +376,13 @@ read_esr_el1:
 .global read_far_el1
 read_far_el1:
     mrs x0, FAR_EL1
+    ret
+
+
+// uint64_t read_daif(void)
+// Read the DAIF register (interrupt mask bits)
+.global read_daif
+read_daif:
+    mrs x0, DAIF
     ret
 

@@ -40,3 +40,5 @@ exec "$GDB" "$KERNEL_ELF" -ex "target remote localhost:$GDB_PORT" \
 
 
 
+
+

@@ -37,10 +37,10 @@ func framebufferInit() int32 {
 	uartPuts("FB: CharsHeight set\r\n")
 	fbinfo.CharsX = 0
 	uartPuts("FB: CharsX set\r\n")
-	// Start cursor well above the bottom edge (not at the extreme edge)
-	// CharsHeight = 135, so starting at row 100 gives good visible space
-	fbinfo.CharsY = 100
-	uartPuts("FB: CharsY set to row 100\r\n")
+	// Start cursor at the bottom of the screen
+	// When text is printed, it will scroll upward from the bottom
+	fbinfo.CharsY = fbinfo.CharsHeight - 1
+	uartPuts("FB: CharsY set to bottom\r\n")
 
 	// Calculate framebuffer size
 	fbinfo.BufSize = fbinfo.Pitch * fbinfo.Height
@@ -79,52 +79,41 @@ func framebufferInit() int32 {
 		printHex32(fbinfo.Pitch)
 		uartPuts("\r\n")
 
-		// Write test pattern
+		// Fill entire framebuffer with midnight blue background
 		// Note: XRGB8888 format is 32-bit (4 bytes per pixel)
 		// Format: [X/Unused:8][Red:8][Green:8][Blue:8] = 0x00RRGGBB
 		testPixels32 := (*[1 << 28]uint32)(fbinfo.Buf) // 32-bit pixels
-		uartPuts("FB: Writing test pattern to ramfb (XRGB8888 format)...\r\n")
+		uartPuts("FB: Filling entire screen with midnight blue background...\r\n")
 
-		// Test: Write a single pixel first
-		// XRGB8888 format: [X:8][R:8][G:8][B:8] = 0x00RRGGBB
-		// On little-endian AArch64, 0x00FFFFFF is stored as bytes: FF FF FF 00
-		// Which QEMU reads as: Blue=FF, Green=FF, Red=FF, X=00 (white)
-		// So we use 0x00FFFFFF directly (no byte-swapping needed)
-		uartPuts("FB: Writing first pixel...\r\n")
-		testPixels32[0] = 0x00FFFFFF // White in XRGB8888 (0x00RRGGBB format)
-		uartPuts("FB: First pixel written\r\n")
+		// MidnightBlue = 0x00191B70 (RGB: 25, 27, 112)
+		midnightBlue := uint32(0x00191B70)
 
-		// Verify the write
-		if testPixels32[0] == 0x00FFFFFF {
-			uartPuts("FB: First pixel verified OK\r\n")
-		} else {
-			uartPuts("FB: First pixel verification FAILED\r\n")
+		// Optimize: Fill first row pixel-by-pixel, then copy to remaining rows
+		rowByteSize := fbinfo.Width * 4 // 4 bytes per pixel
+		uartPuts("FB: Filling first row...\r\n")
+		for x := uint32(0); x < fbinfo.Width; x++ {
+			testPixels32[x] = midnightBlue
 		}
+		uartPuts("FB: Copying row to remaining rows...\r\n")
 
-		// Fill top 100 rows with white
-		uartPuts("FB: Filling top 100 rows...\r\n")
-		pixelsWritten := 0
-		for y := 0; y < 100; y++ {
-			for x := 0; x < int(fbinfo.Width); x++ {
-				offset := y*int(fbinfo.Width) + x
-				testPixels32[offset] = 0x00FFFFFF // White in XRGB8888 (0x00RRGGBB)
-				pixelsWritten++
-			}
-			if y%10 == 0 {
+		// Copy first row to all remaining rows using MemmoveBytes
+		firstRowAddr := uintptr(fbinfo.Buf)
+		for y := uint32(1); y < fbinfo.Height; y++ {
+			destAddr := uintptr(fbinfo.Buf) + uintptr(y*fbinfo.Pitch)
+			MemmoveBytes(destAddr, firstRowAddr, uintptr(rowByteSize))
+			if y%100 == 0 {
 				uartPuts("FB: Row 0x")
-				printHex32(uint32(y))
-				uartPuts(" written\r\n")
+				printHex32(y)
+				uartPuts(" copied\r\n")
 			}
 		}
-		uartPuts("FB: Test pattern written (0x")
-		printHex32(uint32(pixelsWritten))
-		uartPuts(" pixels)\r\n")
+		uartPuts("FB: Screen filled\r\n")
 
 		// Verify a few pixels
 		uartPuts("FB: Verifying pixels...\r\n")
 		verifyCount := 0
 		for i := 0; i < 10; i++ {
-			if testPixels32[i] == 0x00FFFFFF {
+			if testPixels32[i] == midnightBlue {
 				verifyCount++
 			}
 		}

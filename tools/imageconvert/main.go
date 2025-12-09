@@ -92,3 +92,5 @@ func main() {
 	fileInfo, _ := os.Stat(outputPath)
 	fmt.Printf("Output file size: %d bytes\n", fileInfo.Size())
 }
+
+

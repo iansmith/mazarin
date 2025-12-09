@@ -42,6 +42,10 @@ func delay(count int32)
 //go:nosplit
 func busy_wait(count uint32)
 
+//go:linkname systemstack runtime.systemstack
+//go:nosplit
+func systemstack(fn func())
+
 //go:linkname bzero bzero
 //go:nosplit
 func bzero(ptr unsafe.Pointer, size uint32)
@@ -290,13 +294,18 @@ func KernelMain(r0, r1, atags uint32) {
 	_ = r0
 	_ = r1
 
+	// Raw UART poke before init to prove we reached KernelMain
+	mmio_write(0x09000000, uint32('K'))
+
 	// Initialize UART first for early debugging
 	uartInit()
+	uartPuts("DEBUG: KernelMain after uartInit\r\n")
 
 	// Initialize minimal runtime structures for write barrier
 	// This sets up g0, m0, and write barrier buffers so that gcWriteBarrier can work
 	// Note: x28 (goroutine pointer) is set in lib.s before calling KernelMain
 	initRuntimeStubs()
+	uartPuts("DEBUG: KernelMain after initRuntimeStubs\r\n")
 
 	// Initialize kernel stack info for Go runtime stack checks
 	// The actual stack pointer is set in boot.s, but we need to tell
@@ -309,181 +318,123 @@ func KernelMain(r0, r1, atags uint32) {
 	// var fnPtr func() = GrowStackForCurrent
 	// _ = fnPtr
 
-	// UART helpers (string literals don't work in bare-metal)
-	const uartBase uintptr = 0x09000000
-	const uartFR = uartBase + 0x18
-	const uartDR = uartBase + 0x00
+	// Snapshot stack state before switching stacks (DAIF read can fault here)
+	sp := get_stack_pointer()
+	uartPuts("DEBUG: Pre-systemstack state\r\n")
+	uartPuts("  SP=0x")
+	uartPutHex64(uint64(sp))
+	uh := func(label string, v uintptr) {
+		uartPuts(label)
+		uartPutHex64(uint64(v))
+	}
+	uh(" LO=0x", kernelStack.lo)
+	uh(" HI=0x", kernelStack.hi)
+	uh(" GUARD=0x", kernelStack.guard0)
+	uartPuts("\r\n")
+
+	// TEMP: bypass systemstack to see if body itself is safe
+	uartPuts("DEBUG: KernelMain calling kernelMainBodyWrapper directly (bypass systemstack)\r\n")
+	kernelMainBodyWrapper()
+	// systemstack(kernelMainBodyWrapper)
+	
+	uartPuts("DEBUG: KernelMain about to return\r\n")
+}
+
+//go:nosplit
+//go:noinline
+func kernelMainBodyWrapper() {
+	uartPuts("DEBUG: Entered kernelMainBodyWrapper\r\n")
+	uartPuts("DEBUG: wrapper about to call kernelMainBody\r\n")
+	kernelMainBody()
+	uartPuts("DEBUG: wrapper returned from kernelMainBody (unexpected)\r\n")
+}
+
+// kernelMainBody performs the full initialization sequence on a regular stack.
+//
+//go:noinline
+//go:nosplit
+func kernelMainBody() {
+	// Minimal staged bring-up with early return after stage2
+
+	// Stage 1: simple UART prints
+	mmio_write(0x09000000, uint32('B'))
+	uartPuts("DEBUG: Entered kernelMainBody (stage1)\r\n")
 
 	putc := func(c byte) {
-		uartPutc(c) // Use uartPutc which checks if UART is enabled
+		uartPutc(c)
 	}
-
 	puts := func(s string) {
 		for i := 0; i < len(s); i++ {
 			putc(s[i])
 		}
 	}
-
-	// Print welcome message
 	puts("Hello, Mazarin!\r\n")
-
 	puts("\r\n")
+	uartPuts("DEBUG: stage1 complete, proceeding to write barrier check\r\n")
 
-	// =================================================================
-	// WRITE BARRIER TEST
-	// =================================================================
-	// This test verifies that Go's compiler-emitted write barrier works
-	// in our bare-metal environment. The Go compiler automatically emits
-	// write barrier calls for global pointer assignments.
-	//
-	// The write barrier flag must be set in boot.s (in RAM region), and
-	// our custom writebarrier.s functions must handle the actual assignment.
-
-	puts("Testing write barrier...\r\n")
-
-	// Verify write barrier flag is enabled (set by boot.s)
+	// Stage 2: write barrier flag check
+	uartPuts("DEBUG: stage2 write barrier check start\r\n")
 	wbFlagAddr := uintptr(0x40026b40) // runtime.writeBarrier in RAM
 	wbFlag := readMemory32(wbFlagAddr)
-
 	if wbFlag == 0 {
 		puts("ERROR: Write barrier flag not set!\r\n")
 	} else {
 		puts("Write barrier flag: enabled\r\n")
 	}
+	uartPuts("DEBUG: stage2 complete, proceeding to stage3 (memInit)\r\n")
 
-	// Initialize memory management (page allocator and heap)
-	// This properly calculates heap start from __end + page metadata
-	// QEMU virt memory layout (512MB kernel region):
-	//   0x40100000 - 0x401xxxxx: BSS section (ends at __end)
-	//   __end + pageArraySize: Heap start (calculated by memInit)
-	//   0x40400000 - 0x60000000: Stack (grows downward from 0x60000000)
+	// Stage 3: memory init
+	uartPuts("DEBUG: stage3 memInit start\r\n")
 	puts("Initializing memory management...\r\n")
 	memInit(0) // No ATAGs in QEMU, pass 0
 	puts("Memory management initialized\r\n")
+	uartPuts("DEBUG: stage3 complete, proceeding to stage4 (framebuffer)\r\n")
 
-	// Test global pointer assignment (triggers write barrier)
-	// This verifies write barrier works with heapSegmentListHead
-	if heapSegmentListHead == nil {
-		puts("ERROR: Heap not initialized!\r\n")
-	}
-
+	// Stage 4: framebuffer init + framebuffer text init
+	uartPuts("DEBUG: stage4 framebuffer init start\r\n")
 	fbResult := framebufferInit()
 	if fbResult != 0 {
-		// Framebuffer initialization failed - exit via semihosting
 		uartPuts("ERROR: Framebuffer initialization failed!\r\n")
 		qemu_exit()
-		return // Should not reach here
+		return
 	}
+	uartPuts("DEBUG: framebufferInit succeeded\r\n")
 
-	// Framebuffer hardware initialized successfully
-	// Now initialize the text rendering system on top of it
 	if err := InitFramebufferText(fbinfo.Buf, fbinfo.Width, fbinfo.Height, fbinfo.Pitch); err != nil {
 		uartPuts("ERROR: Framebuffer text initialization failed\r\n")
 		qemu_exit()
-		return // Should not reach here
+		return
 	}
 	uartPuts("DEBUG: InitFramebufferText completed\r\n")
 
-	// Initialize exception handling AFTER framebuffer is set up
-	// This was causing RAMFB DMA to fail when done earlier
-	uartPuts("DEBUG: Before InitializeExceptions\r\n")
-	//if err := InitializeExceptions(); err != nil {
-	//	uartPuts("ERROR: Failed to initialize exception handling\r\n")
-	//}
-	uartPuts("DEBUG: After InitializeExceptions (skipped)\r\n")
+	uartPuts("DEBUG: stage4 complete, proceeding to stage5 (exceptions)\r\n")
 
-	// Display boot image first so it can be scrolled up by text
-	uartPuts("Rendering boot image...\r\n")
-	imageData := GetBootMazarinImageData()
-	imageHeader := (*[2]uint32)(imageData)
-	imageWidth := imageHeader[0]
-	imageHeight := imageHeader[1]
-
-	// Align image to right edge and bottom
-	var xOffset int32 = int32(fbinfo.Width - imageWidth)
-	var yOffset int32 = int32(fbinfo.Height - imageHeight)
-
-	uartPuts("Image coords calculated\r\n")
-
-	// Render image at bottom-right of screen
-	// Note: Alpha blending (true) requires reading from framebuffer which is slow on uncached memory
-	// Using false for now to speed up rendering and verify visibility
-	RenderImageData(imageData, xOffset, yOffset, false)
-	uartPuts("Boot image rendered\r\n")
-
-	// DEBUG: Draw a red box where the image should be to verify positioning
-	// uartPuts("Drawing debug box at image location...\r\n")
-	// redColor := uint32(0x00FF0000)
-	// for y := int32(0); y < 100; y++ {
-	// 	for x := int32(0); x < 100; x++ {
-	// 		WritePixel(uint32(xOffset+x), uint32(yOffset+y), redColor)
-	// 	}
-	// }
-	// uartPuts("Debug box drawn\r\n")
-
-	// Display boot messages on framebuffer
-	uartPuts("Rendering text to framebuffer...\r\n")
-	FramebufferPuts("Mazarin Kernel\n")
-	FramebufferPuts("AArch64 Bare Metal\n")
-	FramebufferPuts("\n")
-	FramebufferPuts("System Initialized\n")
-	FramebufferPuts("\n")
-
-	uartPuts("DEBUG: About to print copyright lines\r\n")
-
-	// Busy wait helper function for scrolling delay
-	// Uses assembly function to avoid stack issues and compiler optimization
-	busyWait := func() {
-		busy_wait(100000000) // 100 million iterations for visible delay
+	// Stage 5: exception handler init
+	uartPuts("DEBUG: stage5 InitializeExceptions start\r\n")
+	if err := InitializeExceptions(); err != nil {
+		uartPuts("ERROR: Failed to initialize exception handling\r\n")
+		qemu_exit()
+		return
 	}
+	uartPuts("DEBUG: InitializeExceptions completed\r\n")
 
-	// Initial delay so screen is visible before printing starts
-	uartPuts("DEBUG: Initial delay before printing\r\n")
-	busyWait()
+	uartPuts("DEBUG: stage5 complete, proceeding to stage6 (GIC)\r\n")
 
-	// Print copyright and ownership lines
-	// Call dsb() after each line to ensure framebuffer writes are visible
-	uartPuts("DEBUG: Printing copyright line 1\r\n")
-	FramebufferPuts("Mazarin's source code is copyrighted 2025\n")
-	dsb()
-	busyWait()
-	uartPuts("DEBUG: Printing copyright line 2\r\n")
-	FramebufferPuts("and owned by Ian Smith.\n")
-	dsb()
-	busyWait()
-	uartPuts("DEBUG: Printing blank line\r\n")
-	FramebufferPuts("\n")
-	dsb()
-	busyWait()
-	uartPuts("DEBUG: Printing 'we are young'\r\n")
-	FramebufferPuts("we are young despite the years //\n")
-	dsb()
-	busyWait()
-	uartPuts("DEBUG: Printing 'we are concerned'\r\n")
-	FramebufferPuts("we are concerned //\n")
-	dsb()
-	busyWait()
-	uartPuts("DEBUG: Printing 'we are hope'\r\n")
-	FramebufferPuts("we are hope despite the times.\n")
-	dsb()
-	busyWait()
-	uartPuts("DEBUG: Finished printing copyright lines\r\n")
+	// Stage 6: GIC init
+	uartPuts("DEBUG: stage6 gicInit start\r\n")
+	gicInit()
+	uartPuts("DEBUG: gicInit completed\r\n")
 
-	uartPuts("Text rendering complete\r\n")
+	uartPuts("DEBUG: stage6 complete, proceeding to stage7 (timer)\r\n")
 
-	// Also output to UART for debugging
-	puts("\r\n")
-	puts("Framebuffer text rendering active\r\n")
-	puts("Kernel still running...\r\n")
+	// Stage 7: timer init
+	uartPuts("DEBUG: stage7 timerInit start\r\n")
+	timerInit()
+	uartPuts("DEBUG: timerInit completed\r\n")
 
-	// Busy wait forever to keep the display window open
-	// This allows the user to check if the framebuffer is displaying correctly
-	for {
-		// Busy wait - keep the program alive so display stays visible
-		for i := 0; i < 1000000; i++ {
-			// Empty loop
-		}
-	}
+	uartPuts("DEBUG: stage7 complete, returning early\r\n")
+	uartPuts("DEBUG: kernelMainBody about to return\r\n")
+	return
 }
 
 // drawTestPattern draws a simple test pattern to the framebuffer

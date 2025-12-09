@@ -53,6 +53,8 @@ GO_SRC = $(GO_PACKAGE_DIR)/kernel.go \
          $(GO_PACKAGE_DIR)/colors.go \
          $(GO_PACKAGE_DIR)/framebuffer_font.go \
          $(GO_PACKAGE_DIR)/pci_qemu.go \
+         $(GO_PACKAGE_DIR)/gic_qemu.go \
+         $(GO_PACKAGE_DIR)/timer_qemu.go \
          $(GO_PACKAGE_DIR)/ramfb_qemu.go \
          $(GO_PACKAGE_DIR)/runtime_stub.go \
          $(GO_PACKAGE_DIR)/uart_rpi.go \
@@ -142,10 +144,14 @@ $(KERNEL_GO_OBJ): $(BITFIELD_GEN) go.mod $(GO_SRC)
 	@# Extract the actual object file (go.o) from the C archive
 	ar x $(KERNEL_GO_ARCHIVE) go.o
 	mv go.o $(KERNEL_GO_TEMP)
-	@# Use objcopy to promote main.KernelMain from local to global symbol
-	@# This allows the linker to resolve it from assembly (lib.s calls main.KernelMain)
-	$(OBJCOPY) --globalize-symbol=main.KernelMain $(KERNEL_GO_TEMP) $@ || \
-	 (cp $(KERNEL_GO_TEMP) $@ && echo "Warning: Could not promote symbol")
+	@# Use objcopy to promote Go functions to global symbols
+	@# This allows the linker to resolve them from assembly
+	$(OBJCOPY) --globalize-symbol=main.KernelMain \
+	           --globalize-symbol=main.IRQHandler \
+	           --globalize-symbol=main.FIQHandler \
+	           --globalize-symbol=main.SErrorHandler \
+	           $(KERNEL_GO_TEMP) $@ || \
+	 (cp $(KERNEL_GO_TEMP) $@ && echo "Warning: Could not promote symbols")
 	@rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) kernel_go.h __.SYMDEF
 
 # Clean build artifacts
@@ -168,14 +174,11 @@ $(KERNEL_GO_OBJ_QEMU): $(BITFIELD_GEN) go.mod $(GO_SRC)
 	@# Extract the actual object file (go.o) from the C archive
 	@ar x $(KERNEL_GO_ARCHIVE) go.o
 	@mv go.o $(KERNEL_GO_TEMP)
-	@# Use objcopy to promote main functions from local to global symbols
+	@# Use objcopy to promote main functions and variables from local to global symbols
 	@# This allows the linker to resolve them from assembly
 	@$(OBJCOPY) --globalize-symbol=main.KernelMain \
 	             --globalize-symbol=main.GrowStackForCurrent \
-	             --globalize-symbol=main.ExceptionHandler \
-	             --globalize-symbol=main.IRQHandler \
-	             --globalize-symbol=main.FIQHandler \
-	             --globalize-symbol=main.SErrorHandler \
+	             --globalize-symbol=main.interruptHandlers \
 	             $(KERNEL_GO_TEMP) $@ || \
 	 (cp $(KERNEL_GO_TEMP) $@ && echo "Warning: Could not promote symbols")
 	@# Weaken Go runtime's write barrier symbols so our strong global versions override them
@@ -187,7 +190,8 @@ $(KERNEL_GO_OBJ_QEMU): $(BITFIELD_GEN) go.mod $(GO_SRC)
 	             --weaken-symbol=gcWriteBarrier \
 	             $@ $@.tmp && mv $@.tmp $@ || \
 	 (echo "Warning: Could not weaken write barrier symbols")
-	@rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) kernel_go.h __.SYMDEF
+	@rm -f $(KERNEL_GO_ARCHIVE) kernel_go.h __.SYMDEF
+	@# TEMP: Keep kernel_go_temp.o for inspection
 
 kernel-qemu.elf: $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
 	@# Link exceptions.o, then writebarrier.o so our global symbols override Go runtime's

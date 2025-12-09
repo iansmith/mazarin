@@ -255,3 +255,5 @@ This allows:
 - **Visual debugging** via display without serial
 - **Comprehensive logging** to both channels when available
 
+
+

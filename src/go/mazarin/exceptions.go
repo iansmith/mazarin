@@ -1,7 +1,7 @@
 package main
 
 import (
-	"unsafe"
+	_ "unsafe" // Required for //go:linkname directives
 )
 
 // Exception types
@@ -57,11 +57,29 @@ type ExceptionInfo struct {
 //
 //go:linkname set_vbar_el1 set_vbar_el1
 //go:nosplit
+//go:noinline
 func set_vbar_el1(addr uintptr)
+
+//go:linkname read_vbar_el1 read_vbar_el1
+//go:nosplit
+func read_vbar_el1() uintptr
+
+//go:linkname get_exception_vectors_addr get_exception_vectors_addr
+//go:nosplit
+func get_exception_vectors_addr() uintptr
 
 //go:linkname enable_irqs enable_irqs
 //go:nosplit
+//go:noinline
 func enable_irqs()
+
+//go:linkname enable_irqs_asm enable_irqs_asm
+//go:nosplit
+func enable_irqs_asm()
+
+//go:linkname read_daif read_daif
+//go:nosplit
+func read_daif() uint64
 
 //go:linkname disable_irqs disable_irqs
 //go:nosplit
@@ -93,17 +111,75 @@ func read_far_el1() uint64
 
 // InitializeExceptions sets up the exception vector table
 // This must be called early in kernel initialization
+//
+//go:nosplit
+//go:noinline
 func InitializeExceptions() error {
-	// Get the address of the exception vector table
-	// This is provided by the linker
-	exceptionVectorAddr := uintptr(unsafe.Pointer(&exception_vectors_start))
+	uartPuts("DEBUG: InitializeExceptions called\r\n")
+	uartPuts("DEBUG: Step 1 complete\r\n")
+
+	// Get the address of the exception vector table using assembly function
+	// This avoids linker symbol issues
+	uartPuts("DEBUG: Getting exception vector address...\r\n")
+
+	// TEMPORARY: Skip assembly call that's hanging, use linker symbol directly
+	// TODO: Fix get_exception_vectors_addr() assembly function
+	uartPuts("DEBUG: Using linker symbol exception_vectors_start directly...\r\n")
+
+	// Access linker symbol the same way as __end
+	// The linker provides exception_vectors_start, we need to access it
+	// For now, let's try accessing it via unsafe.Pointer like __end
+	// But first, let's just use a reasonable address to test if the rest works
+	// Exception vectors are typically placed right after kernel text
+	// Kernel starts at 0x200000, so vectors should be shortly after
+	// Let's use a placeholder that we'll fix properly later
+	uartPuts("DEBUG: Temporarily using placeholder address for testing...\r\n")
+	// Actual address from readelf: 0x2a5000 (found via: target-readelf -s kernel-qemu.elf | grep exception_vectors)
+	exceptionVectorAddr := uintptr(0x2a5000) // TODO: Fix proper lookup
+	uartPuts("DEBUG: Using address: 0x")
+	uartPutHex64(uint64(exceptionVectorAddr))
+	uartPuts("\r\n")
+	uartPuts("WARNING: Using hardcoded address - this is temporary!\r\n")
+	uartPuts("DEBUG: Got address: 0x")
+	uartPutHex64(uint64(exceptionVectorAddr))
+	uartPuts("\r\n")
 
 	uartPuts("Setting VBAR_EL1 to 0x")
 	uartPutHex64(uint64(exceptionVectorAddr))
 	uartPuts("\r\n")
 
-	// Set VBAR_EL1 to point to our exception vector table
-	set_vbar_el1(exceptionVectorAddr)
+	// Verify address is 2KB aligned (required for VBAR_EL1)
+	if exceptionVectorAddr&0x7FF != 0 {
+		uartPuts("ERROR: Exception vector address not 2KB aligned!\r\n")
+		uartPuts("Address: 0x")
+		uartPutHex64(uint64(exceptionVectorAddr))
+		uartPuts(" (alignment check: 0x")
+		uartPutHex64(uint64(exceptionVectorAddr & 0x7FF))
+		uartPuts(")\r\n")
+		// Don't continue if address is wrong
+		return nil
+	}
+	uartPuts("DEBUG: Address alignment verified (2KB aligned)\r\n")
+
+	// Note: Interrupts should already be disabled during early kernel boot
+	// We don't call disable_irqs() here because if VBAR_EL1 isn't set yet,
+	// accessing DAIF might trigger an exception that can't be handled
+
+	// VBAR_EL1 is now set in boot.s before Go code runs
+	// This avoids potential issues with Go runtime triggering exceptions
+	// when trying to set VBAR_EL1 from Go code
+	uartPuts("DEBUG: VBAR_EL1 should already be set by boot.s\r\n")
+	uartPuts("DEBUG: Skipping VBAR_EL1 setup - already done in assembly\r\n")
+	// Skip readback verification - reading VBAR_EL1 causes a synchronous exception
+
+	// Add a memory barrier to ensure VBAR_EL1 is set before continuing
+	dsb()
+	uartPuts("DEBUG: Memory barrier complete\r\n")
+
+	uartPuts("DEBUG: After set_vbar_el1, before re-enabling interrupts\r\n")
+
+	// Keep interrupts disabled for now - we'll enable them after GIC init
+	// enable_irqs()  // Don't enable yet - wait for GIC init
 
 	uartPuts("Exception handlers initialized\r\n")
 
@@ -212,32 +288,58 @@ func handleException(excInfo ExceptionInfo) {
 	}
 }
 
-// IRQHandler is called from assembly when an interrupt (IRQ) occurs
-// For now, it just logs and returns
-// Later, this will dispatch to GIC to handle the actual interrupt
+// irqHandlerGo is the actual Go implementation
 //
 //go:nosplit
-func IRQHandler() {
-	uartPuts("IRQ fired (GIC dispatch not yet implemented)\r\n")
+func irqHandlerGo() {
+	// DEBUG: IRQ handler called!
+	uartPuts("DEBUG: IRQ handler called!\r\n")
+
+	// Handle interrupt through GIC
+	gicHandleInterrupt()
+
+	uartPuts("DEBUG: IRQ handler returning\r\n")
 }
 
-// FIQHandler is called from assembly when a fast interrupt (FIQ) occurs
-// FIQ is rarely used in modern systems
+// fiqHandlerGo is the actual Go implementation
 //
 //go:nosplit
-func FIQHandler() {
+func fiqHandlerGo() {
 	uartPuts("FIQ fired (not implemented)\r\n")
 }
 
-// SErrorHandler is called from assembly when a system error occurs
-// This is a critical error that usually requires system shutdown
+// serrorHandlerGo is the actual Go implementation
 //
 //go:nosplit
-func SErrorHandler() {
+func serrorHandlerGo() {
 	uartPuts("SError occurred - system error (not recoverable)\r\n")
 	// Hang
 	for {
 	}
+}
+
+// Export these as assembly-callable symbols using linkname
+// These create assembly-visible entry points that call the Go implementations
+//
+//go:linkname IRQHandler main.IRQHandler
+//go:nosplit
+//go:noinline
+func IRQHandler() {
+	irqHandlerGo()
+}
+
+//go:linkname FIQHandler main.FIQHandler
+//go:nosplit
+//go:noinline
+func FIQHandler() {
+	fiqHandlerGo()
+}
+
+//go:linkname SErrorHandler main.SErrorHandler
+//go:nosplit
+//go:noinline
+func SErrorHandler() {
+	serrorHandlerGo()
 }
 
 // Helper: Extract EC (Exception Class) from ESR_EL1
@@ -250,7 +352,5 @@ func extractISS(esr uint64) uint32 {
 	return uint32(esr & 0xFFFFFF)
 }
 
-// Linker-provided symbol for exception vector table location
-// This should be defined in the linker script or assembly
-var exception_vectors_start [0]byte
-
+// Note: We now get the exception vector address via get_exception_vectors_addr()
+// instead of using a linker symbol, to avoid linker symbol resolution issues

@@ -57,6 +57,30 @@ func RenderImageData(data unsafe.Pointer, xOffset, yOffset int32, useAlpha bool)
 	// Render pixels
 	pixelIndex := 0
 	for y := uint32(0); y < imgHeight; y++ {
+		// Optimization: If no alpha and row is fully on screen, copy entire row
+		// This uses MemmoveBytes which is much faster than pixel-by-pixel writes
+		screenY := yOffset + int32(y)
+		if !useAlpha && screenY >= 0 && screenY < int32(fbinfo.Height) {
+			// Check X bounds for the whole row
+			rowStartScreenX := xOffset
+			rowEndScreenX := xOffset + int32(imgWidth)
+
+			if rowStartScreenX >= 0 && rowEndScreenX <= int32(fbinfo.Width) {
+				// Copy entire row using MemmoveBytes
+				// Calculate source address: pixelData + (pixelIndex * 4)
+				srcRowAddr := uintptr(pixelData) + uintptr(pixelIndex)*4
+				// Calculate dest address: fbinfo.Buf + (screenY * Pitch) + (screenX * 4)
+				destRowAddr := uintptr(fbinfo.Buf) + uintptr(screenY)*uintptr(fbinfo.Pitch) + uintptr(rowStartScreenX)*4
+				rowSize := imgWidth * 4
+
+				MemmoveBytes(destRowAddr, srcRowAddr, uintptr(rowSize))
+
+				// Advance pixelIndex by width
+				pixelIndex += int(imgWidth)
+				continue
+			}
+		}
+
 		for x := uint32(0); x < imgWidth; x++ {
 			screenX := int32(xOffset) + int32(x)
 			screenY := yOffset + int32(y)

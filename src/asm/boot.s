@@ -57,14 +57,81 @@ _start:
     strb w11, [x10]                // Store byte (bool field)
     dsb sy                         // Memory barrier
     
+    // Set exception vector base to our table (required before enabling IRQs)
+    ldr x0, =exception_vectors
+    dsb sy
+    msr VBAR_EL1, x0
+    isb
+    
     // No early debug writes - UART will be initialized in kernel_main
 
     // Jump to kernel_main
     ldr x0, =kernel_main
     blr x0
 
-    // If kernel_main returns, halt CPU 0
-    b halt
+    // After kernel_main returns:
+    // 1. Enable interrupts (IRQs) - kernel has set up handlers
+    // 2. Enter idle loop that prints dots and waits for interrupts
+    
+    // DEBUG: Reached after kernel_main returned - print 'X'
+    movz x10, #0x0900, lsl #16   // UART base = 0x09000000
+    movz w11, #0x58              // 'X' = eXecution reached idle setup
+    str w11, [x10]               // Write to UART
+    
+    // Enable IRQs by clearing I bit (bit 1) in DAIF
+    msr DAIFCLR, #2              // Clear I bit - enable IRQs
+    
+    // DEBUG: IRQs enabled - print 'Q'
+    movz x10, #0x0900, lsl #16   // UART base = 0x09000000
+    movz w11, #0x51              // 'Q' = iRQs enabled
+    str w11, [x10]               // Write to UART
+    
+    // Print 'Y' to confirm IRQs are now enabled
+    movz x10, #0x0900, lsl #16   // UART base = 0x09000000
+    movz w11, #0x59              // 'Y' = IRQs enabled
+    str w11, [x10]               // Write to UART
+    
+    // Print 'E' to confirm entering event loop
+    movz w11, #0x45              // 'E' = Entering event loop
+    str w11, [x10]               // Write to UART
+    
+    // Initialize dot counter (print dot every ~10000000 iterations)
+    mov x12, #0                  // x12 = dot counter
+    
+idle_loop:
+    // Increment counter
+    add x12, x12, #1
+    
+    // Check if counter reached ~10000000
+    // Approximate 10M: load 152 << 16 = 9961472 (99.6% of 10M)
+    movz x13, #152, lsl #16      // x13 = 152 << 16 = 9961472
+    cmp x12, x13
+    bne skip_dot                 // If not reached, skip printing dot
+    
+    // Print '.' to show we're still running (every 10000 iterations)
+    movz x10, #0x0900, lsl #16   // UART base = 0x09000000
+    movz w11, #0x2E              // '.' character
+    str w11, [x10]               // Write to UART
+    
+    // Reset counter
+    mov x12, #0
+    
+skip_dot:
+    // Print 'W' before waiting for interrupt
+    movz x10, #0x0900, lsl #16   // UART base = 0x09000000
+    movz w11, #0x57              // 'W' = Waiting for interrupt
+    str w11, [x10]               // Write to UART
+    
+    // Wait for interrupt (low power mode)
+    wfi                          // Wait for timer interrupt
+    
+    // Print 'R' after interrupt fires (R = Resumed after interrupt)
+    movz x10, #0x0900, lsl #16   // UART base = 0x09000000
+    movz w11, #0x52              // 'R' = Resumed after interrupt
+    str w11, [x10]               // Write to UART
+    
+    // After interrupt fires and handler returns, loop again
+    b idle_loop
 
 // UART initialization failed - loop forever
 uart_init_failed:
