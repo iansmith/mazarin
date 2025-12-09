@@ -336,7 +336,7 @@ func KernelMain(r0, r1, atags uint32) {
 	uartPuts("DEBUG: KernelMain calling kernelMainBodyWrapper directly (bypass systemstack)\r\n")
 	kernelMainBodyWrapper()
 	// systemstack(kernelMainBodyWrapper)
-	
+
 	uartPuts("DEBUG: KernelMain about to return\r\n")
 }
 
@@ -392,19 +392,25 @@ func kernelMainBody() {
 
 	// Stage 4: framebuffer init + framebuffer text init
 	uartPuts("DEBUG: stage4 framebuffer init start\r\n")
+	uartPutc('4') // Breadcrumb: entering stage 4
 	fbResult := framebufferInit()
 	if fbResult != 0 {
 		uartPuts("ERROR: Framebuffer initialization failed!\r\n")
+		uartPutc('F') // Breadcrumb: framebuffer failed
 		qemu_exit()
 		return
 	}
+	uartPutc('f') // Breadcrumb: framebuffer succeeded
 	uartPuts("DEBUG: framebufferInit succeeded\r\n")
 
+	uartPutc('t') // Breadcrumb: about to init framebuffer text
 	if err := InitFramebufferText(fbinfo.Buf, fbinfo.Width, fbinfo.Height, fbinfo.Pitch); err != nil {
 		uartPuts("ERROR: Framebuffer text initialization failed\r\n")
+		uartPutc('T') // Breadcrumb: text init failed
 		qemu_exit()
 		return
 	}
+	uartPutc('T') // Breadcrumb: text init succeeded (capital T for success)
 	uartPuts("DEBUG: InitFramebufferText completed\r\n")
 
 	uartPuts("DEBUG: stage4 complete, proceeding to stage5 (exceptions)\r\n")

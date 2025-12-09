@@ -84,7 +84,7 @@ func timerInit() {
 	// Use TVAL (timer value - counts down) - simpler and more direct!
 	// TVAL is a 32-bit countdown timer, fires when reaches 0
 	// Set to 6250000 ticks = 100ms at 62.5MHz
-	timerValue := freq / 10  // 6250000
+	timerValue := freq / 10 // 6250000
 	write_cntv_tval_el0(uint32(timerValue))
 	uartPuts("DEBUG: Virtual timer TVAL set to 0x")
 	uartPutUint32(uint32(timerValue))
@@ -130,8 +130,8 @@ func timerInterruptHandler() {
 
 	// Reset timer to fire again in 100ms
 	// Use TVAL (timer value - counts down)
-	freq := uint64(62500000)              // Default QEMU virt timer frequency = 62.5MHz
-	write_cntv_tval_el0(uint32(freq/10)) // Set countdown timer for 100ms
+	freq := uint64(62500000)               // Default QEMU virt timer frequency = 62.5MHz
+	write_cntv_tval_el0(uint32(freq / 10)) // Set countdown timer for 100ms
 }
 
 // timerSet sets the timer to fire after a specified number of microseconds

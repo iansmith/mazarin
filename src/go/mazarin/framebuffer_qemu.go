@@ -48,10 +48,12 @@ func framebufferInit() int32 {
 
 	// Initialize ramfb (allocates framebuffer memory)
 	uartPuts("FB: Attempting ramfb initialization...\r\n")
+	uartPutc('R') // Breadcrumb: about to call ramfbInit
 	uartPuts("FB: About to call ramfbInit()...\r\n")
 	ramfbSuccess := ramfbInit()
 	uartPuts("FB: ramfbInit() returned\r\n")
 	if ramfbSuccess {
+		uartPutc('r') // Breadcrumb: ramfb succeeded
 		uartPuts("FB: ramfb reported success\r\n")
 		uartPuts("FB: ramfb initialized\r\n")
 
@@ -138,6 +140,7 @@ func framebufferInit() int32 {
 	}
 
 	// ramfb failed
+	uartPutc('!') // Breadcrumb: ramfb failed
 	uartPuts("FB: ERROR - ramfb initialization failed\r\n")
 	uartPuts("FB: No display device available\r\n")
 	return 1
