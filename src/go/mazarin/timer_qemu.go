@@ -84,9 +84,21 @@ func timerInit() {
 	// Use CVAL (absolute compare value) - like reference repo!
 	// 1. Read current counter value
 	currentCount := read_cntvct_el0()
-	// 2. Set CVAL to fire 1 second from now
-	targetCount := currentCount + uint64(freq)
+	uartPuts("DEBUG: Current counter = 0x")
+	uartPutHex64(currentCount)
+	uartPuts("\r\n")
+	// 2. Set CVAL to fire 100ms from now (1/10 of 1 second)
+	targetCount := currentCount + uint64(freq)/10
+	uartPuts("DEBUG: Setting CVAL to 0x")
+	uartPutHex64(targetCount)
+	uartPuts("\r\n")
 	write_cntv_cval_el0(targetCount)
+	
+	// Verify the write worked
+	verifyVal := read_cntv_cval_el0()
+	uartPuts("DEBUG: Verified CVAL = 0x")
+	uartPutHex64(verifyVal)
+	uartPuts("\r\n")
 	uartPuts("DEBUG: Virtual timer CVAL set (fires when counter reaches target)\r\n")
 
 	uartPuts("DEBUG: About to enable virtual timer...\r\n")
@@ -124,23 +136,15 @@ func timerInterruptHandler() {
 	// Increment tick counter
 	timerTicks++
 
-	// Print detailed tick information
-	uartPuts("[T]Timer interrupt!")
-	uartPuts(" ticks=")
-	uartPutUint32(uint32(timerTicks))
-	
-	// Read current counter to show timing
-	currentCount := read_cntvct_el0()
-	uartPuts(" cntv=0x")
-	uartPutHex64(currentCount)
-	uartPuts("\r\n")
+	// Print 'T' to show timer interrupt fired
+	uartPutc('T')
 
-	// Reset timer to fire again in 1 second
+	// Reset timer to fire again in 100ms
 	// Use CVAL (absolute compare value) - like reference repo!
-	freq := uint64(62500000) // Default QEMU virt timer frequency
-	targetCount := currentCount + freq
+	currentCount := read_cntvct_el0()
+	freq := uint64(62500000) // Default QEMU virt timer frequency = 62.5MHz
+	targetCount := currentCount + freq/10 // Fire every 100ms
 	write_cntv_cval_el0(targetCount)
-	uartPuts("[T]Timer rearmed\r\n")
 }
 
 // timerSet sets the timer to fire after a specified number of microseconds

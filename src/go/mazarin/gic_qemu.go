@@ -216,17 +216,21 @@ var interruptsEnabled bool
 //go:nosplit
 //go:noinline
 func gicHandleInterrupt() {
+	// Print 'H' to show we entered gicHandleInterrupt
+	uartPutc('H')
+	
 	// On first interrupt, enable interrupts from assembly
 	// This avoids issues with Go runtime triggering exceptions
 	if !interruptsEnabled {
 		// Enable interrupts from pure assembly - this is safe in interrupt context
 		enable_irqs_asm()
 		interruptsEnabled = true
-		uartPuts("DEBUG: Interrupts enabled on first IRQ\r\n")
+		uartPutc('!')
 	}
 
 	// Acknowledge interrupt and get ID
 	irqID := gicAcknowledgeInterrupt()
+	uartPutc('A')
 
 	// Check for spurious interrupt (ID 1023)
 	if irqID >= 1020 {

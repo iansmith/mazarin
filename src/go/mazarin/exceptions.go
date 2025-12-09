@@ -292,13 +292,14 @@ func handleException(excInfo ExceptionInfo) {
 //
 //go:nosplit
 func irqHandlerGo() {
-	// DEBUG: IRQ handler called!
-	uartPuts("DEBUG: IRQ handler called!\r\n")
+	// Print 'I' to show IRQ handler was called
+	uartPutc('I')
 
 	// Handle interrupt through GIC
 	gicHandleInterrupt()
 
-	uartPuts("DEBUG: IRQ handler returning\r\n")
+	// Print 'i' to show IRQ handler returning
+	uartPutc('i')
 }
 
 // fiqHandlerGo is the actual Go implementation

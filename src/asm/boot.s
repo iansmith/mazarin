@@ -117,18 +117,13 @@ idle_loop:
     mov x12, #0
     
 skip_dot:
-    // Print 'W' before waiting for interrupt
+    // Print 'V' to show loop iteration before wfi
     movz x10, #0x0900, lsl #16   // UART base = 0x09000000
-    movz w11, #0x57              // 'W' = Waiting for interrupt
+    movz w11, #0x56              // 'V' = loop iteration
     str w11, [x10]               // Write to UART
     
     // Wait for interrupt (low power mode)
     wfi                          // Wait for timer interrupt
-    
-    // Print 'R' after interrupt fires (R = Resumed after interrupt)
-    movz x10, #0x0900, lsl #16   // UART base = 0x09000000
-    movz w11, #0x52              // 'R' = Resumed after interrupt
-    str w11, [x10]               // Write to UART
     
     // After interrupt fires and handler returns, loop again
     b idle_loop
