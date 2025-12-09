@@ -24,7 +24,8 @@ LDFLAGS = -T linker.ld -ffreestanding -O2 -nostdlib -g
 
 # Go build flags for c-archive mode with external linker
 # Use go build -buildmode=c-archive to create a C-compatible archive
-GO_BUILD_FLAGS = -buildmode=c-archive
+GO_GCFLAGS ?= "all=-N -l"
+GO_BUILD_FLAGS = -buildmode=c-archive -gcflags $(GO_GCFLAGS)
 
 # Source files - Assembly in asm/ directory
 BOOT_SRC = asm/boot.s
@@ -58,7 +59,8 @@ GO_SRC = $(GO_PACKAGE_DIR)/kernel.go \
          $(GO_PACKAGE_DIR)/ramfb_qemu.go \
          $(GO_PACKAGE_DIR)/runtime_stub.go \
          $(GO_PACKAGE_DIR)/uart_rpi.go \
-         $(GO_PACKAGE_DIR)/uart_qemu.go
+         $(GO_PACKAGE_DIR)/uart_qemu.go \
+         go/dummy/dummy.go
 
 # Bitfield code generation
 BITFIELD_GEN = bitfield/page_flags_gen.go
@@ -150,6 +152,7 @@ $(KERNEL_GO_OBJ): $(BITFIELD_GEN) go.mod $(GO_SRC)
 	           --globalize-symbol=main.IRQHandler \
 	           --globalize-symbol=main.FIQHandler \
 	           --globalize-symbol=main.SErrorHandler \
+	           --globalize-symbol=main.GoEventLoopEntry \
 	           $(KERNEL_GO_TEMP) $@ || \
 	 (cp $(KERNEL_GO_TEMP) $@ && echo "Warning: Could not promote symbols")
 	@rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) kernel_go.h __.SYMDEF
@@ -179,6 +182,7 @@ $(KERNEL_GO_OBJ_QEMU): $(BITFIELD_GEN) go.mod $(GO_SRC)
 	@$(OBJCOPY) --globalize-symbol=main.KernelMain \
 	             --globalize-symbol=main.GrowStackForCurrent \
 	             --globalize-symbol=main.interruptHandlers \
+	             --globalize-symbol=main.GoEventLoopEntry \
 	             $(KERNEL_GO_TEMP) $@ || \
 	 (cp $(KERNEL_GO_TEMP) $@ && echo "Warning: Could not promote symbols")
 	@# Weaken Go runtime's write barrier symbols so our strong global versions override them

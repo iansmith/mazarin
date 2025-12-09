@@ -17,8 +17,6 @@ const QEMU_BYTES_PER_PIXEL = 4
 // Returns 0 on success, non-zero on error
 //
 // ramfb allocates framebuffer memory via kmalloc and configures QEMU via fw_cfg
-//
-//go:nosplit
 func framebufferInit() int32 {
 	uartPuts("FB: framebufferInit() called\r\n")
 	uartPuts("FB: About to access fbinfo...\r\n")

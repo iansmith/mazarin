@@ -1,6 +1,8 @@
 .section ".text.boot"
 
 .global _start
+.extern uart_init_pl011
+.extern go_event_loop
 
 _start:
     // Get CPU ID - only run on CPU 0
@@ -65,9 +67,19 @@ _start:
     
     // No early debug writes - UART will be initialized in kernel_main
 
-    // Jump to kernel_main
+    // Early UART init so breadcrumbs can be printed even before Go runs
+    bl uart_init_pl011
+    movz x10, #0x0900, lsl #16   // UART base = 0x09000000
+    movz w11, #0x55              // 'U' = UART initialized
+    str w11, [x10]
+    
+    // Jump to kernel_main (Go bridge)
+    movz w11, #0x42              // 'B' = Before kernel_main
+    str w11, [x10]
     ldr x0, =kernel_main
     blr x0
+    movz w11, #0x62              // 'b' = kernel_main returned
+    str w11, [x10]
 
     // After kernel_main returns:
     // 1. Enable interrupts (IRQs) - kernel has set up handlers
@@ -95,6 +107,15 @@ _start:
     movz w11, #0x45              // 'E' = Entering event loop
     str w11, [x10]               // Write to UART
     
+    // Hand control to Go event loop (breadcrumb 'L' for Loop)
+    movz w11, #0x4C              // 'L'
+    str w11, [x10]
+    bl  go_event_loop
+
+    // If Go event loop returns, emit 'R' and fall back to assembly loop
+    movz w11, #0x52              // 'R' = Returned unexpectedly
+    str w11, [x10]
+
     // Initialize counters
     mov x12, #0                  // x12 = iteration counter (for dot printing)
     mov x14, #0                  // x14 = iteration counter (for exit check)
