@@ -86,9 +86,7 @@ func timerInit() {
 	// Set to 6250000 ticks = 100ms at 62.5MHz
 	timerValue := freq / 10 // 6250000
 	write_cntv_tval_el0(uint32(timerValue))
-	uartPuts("DEBUG: Virtual timer TVAL set to 0x")
-	uartPutUint32(uint32(timerValue))
-	uartPuts(" (counts down to 0)\r\n")
+	uartPuts("DEBUG: Virtual timer TVAL set (100ms countdown)\r\n")
 
 	uartPuts("DEBUG: About to enable virtual timer...\r\n")
 	// Enable timer with interrupts unmasked

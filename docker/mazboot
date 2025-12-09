@@ -140,6 +140,8 @@ QEMU_CMD=(
     -device ramfb
     $DISPLAY_MODE
     -serial stdio
+    -semihosting
+    -semihosting-config enable=on,target=native
     -no-reboot
 )
 

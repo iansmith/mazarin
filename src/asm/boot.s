@@ -95,11 +95,24 @@ _start:
     movz w11, #0x45              // 'E' = Entering event loop
     str w11, [x10]               // Write to UART
     
-    // Initialize dot counter (print dot every ~10000000 iterations)
-    mov x12, #0                  // x12 = dot counter
+    // Initialize counters
+    mov x12, #0                  // x12 = iteration counter (for dot printing)
+    mov x14, #0                  // x14 = iteration counter (for exit check)
     
 idle_loop:
-    // Increment counter
+    // Increment iteration counter
+    add x14, x14, #1
+    
+    // Check if we should exit (after many iterations)
+    // Exit after approximately 1 billion iterations (plenty of time for testing)
+    // 1 billion = 0x3B9ACA00, but we'll use a smaller number for faster exit
+    // 100 million = 0x5F5E100
+    movz x15, #0x5F5, lsl #16    // Load upper part
+    movk x15, #0xE100            // Load lower part (approximates 100M)
+    cmp x14, x15
+    bge exit_via_semihosting     // If >= 100M iterations, exit
+    
+    // Increment dot counter
     add x12, x12, #1
     
     // Check if counter reached ~10000000
@@ -108,7 +121,7 @@ idle_loop:
     cmp x12, x13
     bne skip_dot                 // If not reached, skip printing dot
     
-    // Print '.' to show we're still running (every 10000 iterations)
+    // Print '.' to show we're still running
     movz x10, #0x0900, lsl #16   // UART base = 0x09000000
     movz w11, #0x2E              // '.' character
     str w11, [x10]               // Write to UART
@@ -120,13 +133,23 @@ skip_dot:
     // Wait for interrupt (low power mode)
     wfi                          // Wait for timer interrupt
     
-    // After interrupt fires and handler returns, print '.'
-    movz x10, #0x0900, lsl #16   // UART base = 0x09000000
-    movz w11, #0x2E              // '.' = returned from wfi
-    str w11, [x10]               // Write to UART
-    
     // After interrupt fires and handler returns, loop again
     b idle_loop
+
+// Exit via semihosting
+exit_via_semihosting:
+    // Print 'X' to indicate we're about to exit
+    movz x10, #0x0900, lsl #16   // UART base = 0x09000000
+    movz w11, #0x58              // 'X' = eXiting
+    str w11, [x10]               // Write to UART
+    movz w11, #0x0A              // '\n'
+    str w11, [x10]               // Write to UART
+    
+    // Use semihosting to exit
+    // SYS_EXIT = 0x18
+    movz x0, #0x18               // x0 = 0x18 (SYS_EXIT opcode)
+    movz x1, #0                  // x1 = 0 (exit code)
+    hlt #0xF000                  // Semihosting call (AArch64)
 
 // UART initialization failed - loop forever
 uart_init_failed:
