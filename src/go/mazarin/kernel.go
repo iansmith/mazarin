@@ -413,6 +413,10 @@ func kernelMainBody() {
 	uartPutc('T') // Breadcrumb: text init succeeded (capital T for success)
 	uartPuts("DEBUG: InitFramebufferText completed\r\n")
 
+	// Test framebuffer text rendering
+	testFramebufferText()
+	uartPutc('p') // Breadcrumb: text written
+
 	uartPuts("DEBUG: stage4 complete, proceeding to stage5 (exceptions)\r\n")
 
 	// Stage 5: exception handler init
@@ -441,6 +445,33 @@ func kernelMainBody() {
 	uartPuts("DEBUG: stage7 complete, returning early\r\n")
 	uartPuts("DEBUG: kernelMainBody about to return\r\n")
 	return
+}
+
+// testFramebufferText tests the framebuffer text rendering system
+//
+//go:nosplit
+func testFramebufferText() {
+	uartPuts("DEBUG: Framebuffer text system test starting\r\n")
+
+	// Try to render the boot image first
+	uartPuts("DEBUG: About to render boot image\r\n")
+	imageData := GetBootMazarinImageData()
+	if imageData != nil {
+		uartPuts("DEBUG: Boot image data found, rendering at center\r\n")
+		// Center the image on screen (1920x1080)
+		// Assuming image is 512x512, center would be at (704, 284)
+		RenderImageData(imageData, 704, 284, false)
+		uartPuts("DEBUG: Boot image rendered\r\n")
+	} else {
+		uartPuts("DEBUG: Boot image data not available\r\n")
+	}
+
+	FramebufferPuts("===== Mazarin Kernel =====\r\n")
+	FramebufferPuts("Framebuffer Text Output Ready\r\n")
+	FramebufferPuts("\r\n")
+	FramebufferPuts("Display: 1920x1080 pixels\r\n")
+	FramebufferPuts("Format: XRGB8888 (32-bit)\r\n")
+	uartPuts("DEBUG: Framebuffer text system test complete\r\n")
 }
 
 // drawTestPattern draws a simple test pattern to the framebuffer
