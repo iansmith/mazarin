@@ -218,7 +218,7 @@ var interruptsEnabled bool
 func gicHandleInterrupt() {
 	// Print 'H' to show we entered gicHandleInterrupt
 	uartPutc('H')
-	
+
 	// On first interrupt, enable interrupts from assembly
 	// This avoids issues with Go runtime triggering exceptions
 	if !interruptsEnabled {

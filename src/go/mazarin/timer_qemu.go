@@ -80,26 +80,15 @@ func timerInit() {
 	write_cntv_ctl_el0(0)
 	uartPuts("DEBUG: Virtual timer disabled\r\n")
 
-	uartPuts("DEBUG: About to set virtual timer compare value (CVAL)...\r\n")
-	// Use CVAL (absolute compare value) - like reference repo!
-	// 1. Read current counter value
-	currentCount := read_cntvct_el0()
-	uartPuts("DEBUG: Current counter = 0x")
-	uartPutHex64(currentCount)
-	uartPuts("\r\n")
-	// 2. Set CVAL to fire 100ms from now (1/10 of 1 second)
-	targetCount := currentCount + uint64(freq)/10
-	uartPuts("DEBUG: Setting CVAL to 0x")
-	uartPutHex64(targetCount)
-	uartPuts("\r\n")
-	write_cntv_cval_el0(targetCount)
-	
-	// Verify the write worked
-	verifyVal := read_cntv_cval_el0()
-	uartPuts("DEBUG: Verified CVAL = 0x")
-	uartPutHex64(verifyVal)
-	uartPuts("\r\n")
-	uartPuts("DEBUG: Virtual timer CVAL set (fires when counter reaches target)\r\n")
+	uartPuts("DEBUG: About to set virtual timer value (TVAL)...\r\n")
+	// Use TVAL (timer value - counts down) - simpler and more direct!
+	// TVAL is a 32-bit countdown timer, fires when reaches 0
+	// Set to 6250000 ticks = 100ms at 62.5MHz
+	timerValue := freq / 10  // 6250000
+	write_cntv_tval_el0(uint32(timerValue))
+	uartPuts("DEBUG: Virtual timer TVAL set to 0x")
+	uartPutUint32(uint32(timerValue))
+	uartPuts(" (counts down to 0)\r\n")
 
 	uartPuts("DEBUG: About to enable virtual timer...\r\n")
 	// Enable timer with interrupts unmasked
@@ -140,11 +129,9 @@ func timerInterruptHandler() {
 	uartPutc('T')
 
 	// Reset timer to fire again in 100ms
-	// Use CVAL (absolute compare value) - like reference repo!
-	currentCount := read_cntvct_el0()
-	freq := uint64(62500000) // Default QEMU virt timer frequency = 62.5MHz
-	targetCount := currentCount + freq/10 // Fire every 100ms
-	write_cntv_cval_el0(targetCount)
+	// Use TVAL (timer value - counts down)
+	freq := uint64(62500000)              // Default QEMU virt timer frequency = 62.5MHz
+	write_cntv_tval_el0(uint32(freq/10)) // Set countdown timer for 100ms
 }
 
 // timerSet sets the timer to fire after a specified number of microseconds
@@ -169,4 +156,3 @@ func timerSet(usec uint32) {
 	}
 	write_cntv_tval_el0(uint32(ticks))
 }
-
