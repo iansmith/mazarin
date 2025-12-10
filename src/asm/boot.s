@@ -10,16 +10,24 @@ _start:
     bne cpu_halt_loop
 
     // CPU 0 continues here
+    // Breadcrumb: CPU 0 selected
+    movz x14, #0x0900, lsl #16     // UART base = 0x09000000
+    movz w15, #0x30                // '0' = CPU 0 selected
+    str w15, [x14]
     
     // ========================================
     // Drop from EL2 to EL1 if necessary
     // QEMU virt with virtualization=on starts at EL2
     // We need to be at EL1 for proper OS operation
     // ========================================
+    movz w15, #0x45                // 'E' = Checking EL
+    str w15, [x14]
     mrs x0, CurrentEL
     lsr x0, x0, #2               // Extract EL bits [3:2]
     cmp x0, #2                   // Are we at EL2?
     bne at_el1                   // If not, skip EL2->EL1 transition
+    movz w15, #0x32              // '2' = At EL2, dropping to EL1
+    str w15, [x14]
     
     // We're at EL2, need to drop to EL1
     // Configure HCR_EL2 (Hypervisor Configuration Register)
@@ -60,8 +68,10 @@ _start:
 
 at_el1:
     // Now we're at EL1
-    // UART initialization will happen in uartInit() called from kernel_main
-    // No early debug writes - wait for proper initialization
+    // Breadcrumb: At EL1
+    movz x14, #0x0900, lsl #16     // UART base = 0x09000000
+    movz w15, #0x31                // '1' = At EL1
+    str w15, [x14]
     
     // QEMU virt machine memory layout (1GB RAM):
     // - 0x00000000-0x08000000: Flash/ROM (kernel loaded at 0x200000)
@@ -69,15 +79,21 @@ at_el1:
     // - 0x40000000-0x40100000: DTB (QEMU device tree blob, 1MB)
     // - 0x40100000-0x60000000: Kernel RAM (512MB allocated for kernel)
     //   - 0x40100000-0x401xxxxx: BSS section
-    //   - 0x40400000-0x60000000: Stack (grows downward from 0x60000000)
-    //   - 0x40500000-0x60000000: Heap (after stack region)
+    //   - After BSS: Heap (grows upward)
+    //   - 0x5E000000-0x5F000000: Stack (16MB, grows downward from 0x5F000000)
     //
-    // Set stack pointer to top of kernel RAM: 0x60000000 (512MB boundary)
-    // Stack grows downward, giving us ~508MB of stack space
-    movz x0, #0x6000, lsl #16    // 0x60000000 (top of 512MB kernel region)
+    // Set stack pointer to 0x5F000000 (16MB stack, grows downward)
+    // Stack bottom is at 0x5E000000, heap should end before this
+    movz w15, #0x53                // 'S' = Setting stack
+    str w15, [x14]
+    movz x0, #0x5F00, lsl #16    // 0x5F000000 (16MB stack top)
     mov sp, x0
+    movz w15, #0x73                // 's' = Stack set
+    str w15, [x14]
 
     // Clear BSS section (now in RAM region at 0x40100000, after DTB)
+    movz w15, #0x42                // 'B' = Clearing BSS
+    str w15, [x14]
     ldr x4, =__bss_start         // 0x40100000
     ldr x9, =__bss_end           // ~0x4003c000
     mov x5, #0
@@ -97,6 +113,9 @@ at_el1:
     cmp x4, x9
     blo 1b
 
+    movz w15, #0x62              // 'b' = BSS cleared
+    str w15, [x14]
+
     // Enable write barrier flag AFTER clearing BSS
     // runtime.writeBarrier is in BSS at 0x40026b40 (RAM region)
     // The Go compiler checks this flag before pointer assignments
@@ -106,14 +125,24 @@ at_el1:
     mov w11, #1                    // Enable write barrier
     strb w11, [x10]                // Store byte (bool field)
     dsb sy                         // Memory barrier
+    movz w15, #0x57                // 'W' = Write barrier enabled
+    str w15, [x14]
     
     // Set exception vector base to our table (required before enabling IRQs)
+    movz w15, #0x56                // 'V' = Setting VBAR
+    str w15, [x14]
     ldr x0, =exception_vectors
     dsb sy
     msr VBAR_EL1, x0
     isb
+    movz w15, #0x76                // 'v' = VBAR set
+    str w15, [x14]
     
-    // No early debug writes - UART will be initialized in kernel_main
+    // Breadcrumb: About to call kernel_main
+    // Write 'B' (0x42) to UART to show we reached this point
+    movz x14, #0x0900, lsl #16     // UART base = 0x09000000
+    movz w15, #0x42                // 'B' = Boot complete, about to call kernel_main
+    str w15, [x14]
 
     // Jump to kernel_main
     ldr x0, =kernel_main

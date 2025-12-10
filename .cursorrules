@@ -55,8 +55,11 @@ This file contains architectural rules and patterns that must be followed for al
 
 ## Quick Build/Run (local QEMU)
 
-- Build: `make clean && make qemu` (run from `src/`)
-- Run: `timeout 10 /Users/iansmith/mazzy/docker/mazboot` (needs Cocoa/VNC window)
+- Build: `cd src && make qemu` (builds and copies kernel to `docker/builtin/kernel.elf`)
+- Run: `mazboot` (requires environment script to be sourced first)
+  - Normal mode: `mazboot` (Cocoa display window, UART output in terminal)
+  - Terminal-only: `NOGRAPHIC=1 mazboot` (no GUI window)
+  - Separate logs: `SEPARATE_OUTPUT=1 mazboot` (kernel output → kernel-uart.log, QEMU debug → qemu-debug.log)
 
 ## Cross-Compiler Tooling
 
@@ -76,12 +79,20 @@ source /Users/iansmith/mazzy/enable-mazzy
 source enable-mazzy
 ```
 
-This adds the `bin/` directory to PATH, making available:
-- Cross-compiler tools (`target-gcc`, `target-objdump`, etc.)
-- QEMU scripts (`runqemu-fb`, `runqemu-debug`, `runqemu-trace`, etc.)
+This script adds the `bin/` directory to PATH, making available:
+- Cross-compiler tools (`target-gcc`, `target-objdump`, `target-readelf`, `target-gdb`, etc.)
+- QEMU scripts (`runqemu-fb`, `runqemu-debug`, `runqemu-trace`, `mazboot`, etc.)
 - Utility tools (`timeout`, etc.)
 
-**Important:** The QEMU scripts (`runqemu-fb`, etc.) require the environment to be sourced to work correctly.
+**What the environment script does:**
+- Sets `PATH=/Users/iansmith/mazzy/bin:$PATH` to make tools available
+- The `bin/` directory contains symlinks to cross-compiler tools with `target-` prefix
+- Example: `target-gcc` → `/Users/iansmith/mazzy/aarch64-none-elf/bin/aarch64-none-elf-gcc`
+
+**Important:** 
+- The QEMU scripts (`runqemu-fb`, `mazboot`, etc.) require the environment to be sourced to work correctly
+- The `mazboot` script runs QEMU locally (not in Docker) with Cocoa display for macOS
+- Always source the environment script in each new terminal session before building or running tests
 
 ## Assembly Conventions
 

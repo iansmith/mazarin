@@ -4,9 +4,17 @@
 # This uses the same command line as runqemu-virt-vga but runs QEMU directly on the host
 #
 # Usage:
-#   docker/mazboot                    # Normal mode with Cocoa display (output streams mixed)
+#   docker/mazboot                    # Normal mode with VNC display (output streams mixed)
+#   docker/mazboot -c                 # Use Cocoa display instead of VNC
+#   docker/mazboot -k                 # Kill any process using the VNC port before starting
+#   docker/mazboot -c -k              # Use Cocoa and kill port processes
+#   docker/mazboot -g                 # Enable GDB server on port 1234 (pauses until GDB connects)
+#   GDB_PORT=1235 docker/mazboot -g   # Use custom GDB port
+#   TRACE_INSTRUCTIONS=1 docker/mazboot  # Trace every instruction (WARNING: huge output!)
+#   TRACE_MMIO=1 docker/mazboot       # Trace MMIO accesses
 #   SEPARATE_OUTPUT=1 docker/mazboot  # Separate kernel and QEMU debug output to files
 #   NOGRAPHIC=1 docker/mazboot        # Terminal-only mode (no GUI window)
+#   SCREENSHOT=1 docker/mazboot        # Take screenshot and save UART output to /tmp
 #
 # Output Streams:
 #   - Kernel UART (PL011) → stdout (via -serial stdio)
@@ -54,16 +62,72 @@ else
     echo "Using system QEMU: $(which qemu-system-aarch64)"
 fi
 
-# Check for output separation mode
+# Parse command line options
+USE_COCOA=0
+KILL_PORT=0
+USE_GDB=0
+GDB_PORT="${GDB_PORT:-1234}"
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -c)
+            USE_COCOA=1
+            shift
+            ;;
+        -k)
+            KILL_PORT=1
+            shift
+            ;;
+        -g)
+            USE_GDB=1
+            shift
+            ;;
+        -gdb)
+            USE_GDB=1
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            echo "Usage: $0 [-c] [-k] [-g]" >&2
+            echo "  -c: Use Cocoa display instead of VNC" >&2
+            echo "  -k: Kill any process using the VNC port" >&2
+            echo "  -g: Enable GDB server on port $GDB_PORT (use GDB_PORT=1235 to change)" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Check for output separation mode and screenshot mode
 SEPARATE_OUTPUT="${SEPARATE_OUTPUT:-0}"
 NOGRAPHIC="${NOGRAPHIC:-0}"
+SCREENSHOT="${SCREENSHOT:-0}"
 
 if [ "$NOGRAPHIC" = "1" ]; then
     echo "Starting QEMU in nographic mode (terminal only, no GUI)"
     DISPLAY_MODE="-nographic"
-else
+elif [ "$USE_COCOA" = "1" ]; then
     echo "Starting QEMU locally with 'virt' machine type and Cocoa display"
     DISPLAY_MODE="-display cocoa"
+    echo "Cocoa display window will open automatically"
+else
+    echo "Starting QEMU locally with 'virt' machine type and VNC display"
+    VNC_PORT="${VNC_PORT:-5900}"
+    VNC_DISPLAY_NUM=$(( (VNC_PORT - 5900) ))
+    
+    # Kill process on port if requested
+    if [ "$KILL_PORT" = "1" ]; then
+        PORT_PID=$(lsof -ti :$VNC_PORT 2>/dev/null)
+        if [ -n "$PORT_PID" ]; then
+            echo "Killing process $PORT_PID on port $VNC_PORT"
+            kill -9 "$PORT_PID" 2>/dev/null
+            sleep 0.5
+        else
+            echo "No process found on port $VNC_PORT"
+        fi
+    fi
+    
+    DISPLAY_MODE="-display vnc=:${VNC_DISPLAY_NUM}"
+    echo "VNC server will be available on port $VNC_PORT (display :${VNC_DISPLAY_NUM})"
+    echo "Connect with: vncviewer localhost:$VNC_PORT"
 fi
 
 echo ""
@@ -77,8 +141,8 @@ echo "      The kernel is built for Raspberry Pi, so some hardware-specific"
 echo "      features (like UART) may not work correctly with 'virt' machine."
 echo ""
 
-if [ "$NOGRAPHIC" != "1" ]; then
-    echo "Cocoa display window will open automatically"
+if [ "$NOGRAPHIC" != "1" ] && [ "$USE_COCOA" != "1" ]; then
+    echo "VNC display will be available - connect with vncviewer"
 fi
 
 echo "UART output will appear in this terminal"
@@ -89,6 +153,18 @@ if [ "$SEPARATE_OUTPUT" = "1" ]; then
     echo "Output separation enabled:"
     echo "  - Kernel UART → kernel-uart.log"
     echo "  - QEMU debug → qemu-debug.log"
+    echo ""
+fi
+
+if [ "$SCREENSHOT" = "1" ]; then
+    TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+    SCREENSHOT_FILE="/tmp/mazarin-screenshot-${TIMESTAMP}.ppm"
+    UART_OUTPUT_FILE="/tmp/mazarin-uart-${TIMESTAMP}.log"
+    MONITOR_PORT=$(( 5555 + $$ % 1000 ))  # Use process ID to avoid conflicts
+    echo "Screenshot mode enabled:"
+    echo "  - Screenshot → $SCREENSHOT_FILE"
+    echo "  - UART output → $UART_OUTPUT_FILE"
+    echo "  - Monitor port → $MONITOR_PORT"
     echo ""
 fi
 
@@ -137,18 +213,87 @@ QEMU_CMD=(
     -cpu cortex-a72
     -m 1G
     -kernel "$KERNEL_PATH"
+    -nodefaults     # Disable default devices to avoid serial conflicts
     -device ramfb
     $DISPLAY_MODE
-    -serial stdio
+    -serial stdio   # Direct UART output to terminal
     -semihosting
-    -semihosting-config enable=on,target=native
     -no-reboot
+    -trace "gic_*"  # Enable GIC tracing for interrupt debugging
+    -trace "exceptions"  # Trace exceptions (sync, IRQ, etc.)
+    -d guest_errors,unimp,int  # Enable guest error, unimplemented, and interrupt logging
 )
+
+# Add enhanced tracing if requested (WARNING: generates LOTS of output)
+if [ "$TRACE_INSTRUCTIONS" = "1" ]; then
+    echo "WARNING: Instruction tracing enabled - this will generate massive output!"
+    QEMU_CMD+=(-d exec,in_asm,op)
+fi
+
+# Add MMIO tracing if requested
+if [ "$TRACE_MMIO" = "1" ]; then
+    QEMU_CMD+=(-trace "mmio*")
+fi
+
+# Add GDB server if requested
+if [ "$USE_GDB" = "1" ]; then
+    echo "GDB server enabled on port $GDB_PORT"
+    echo "Connect with: target-gdb kernel.elf"
+    echo "Then in GDB: (gdb) target remote localhost:$GDB_PORT"
+    QEMU_CMD+=(-gdb "tcp::$GDB_PORT" -S)  # -S pauses execution until GDB connects
+fi
+
+# Add monitor if screenshot mode is enabled and not using Cocoa (use telnet for better compatibility)
+if [ "$SCREENSHOT" = "1" ] && [ "$USE_COCOA" != "1" ]; then
+    QEMU_CMD+=(-monitor "telnet:127.0.0.1:$MONITOR_PORT,server,nowait")
+fi
 
 # Display the full command line
 echo "QEMU command:"
 echo "${QEMU_CMD[@]}"
 echo ""
+
+# Function to take screenshot via QEMU monitor
+take_screenshot() {
+    if [ "$SCREENSHOT" != "1" ]; then
+        return
+    fi
+    
+    # Screenshot only works with VNC, not Cocoa
+    if [ "$USE_COCOA" = "1" ]; then
+        echo "Warning: Screenshot not available with Cocoa display (use VNC instead)" >&2
+        return
+    fi
+    
+    # Wait a moment for monitor to be ready
+    sleep 1
+    
+    # Wait for kernel to run (allow up to 6 seconds for timer-based exit)
+    echo "Waiting for kernel to run (up to 6 seconds)..."
+    sleep 6
+    
+    # Take screenshot via monitor using telnet
+    echo "Taking screenshot via monitor on port $MONITOR_PORT..."
+    
+    # Use nc (netcat) to connect to telnet monitor
+    if command -v nc &> /dev/null; then
+        # Send screendump command and wait for response
+        (echo "screendump $SCREENSHOT_FILE"; sleep 0.5) | nc 127.0.0.1 "$MONITOR_PORT" >/dev/null 2>&1
+    else
+        echo "Error: nc (netcat) not found. Cannot take screenshot." >&2
+        echo "Please install netcat or use: brew install netcat" >&2
+        return
+    fi
+    
+    # Small delay to allow screenshot to complete
+    sleep 0.5
+    
+    if [ -f "$SCREENSHOT_FILE" ]; then
+        echo "Screenshot saved to: $SCREENSHOT_FILE"
+    else
+        echo "Warning: Screenshot file not created" >&2
+    fi
+}
 
 # Set up output redirection if requested
 if [ "$SEPARATE_OUTPUT" = "1" ]; then
@@ -164,14 +309,48 @@ if [ "$SEPARATE_OUTPUT" = "1" ]; then
     # Kernel UART (stdout) → kernel log (also shown in terminal via tee)
     # QEMU debug (stderr) → QEMU debug log (also shown in terminal via tee)
     # Note: This uses process substitution which works in bash
-    "${QEMU_CMD[@]}" < /dev/null \
-        2> >(tee "$QEMU_DEBUG_LOG" >&2) \
-        | tee "$KERNEL_LOG"
+    if [ "$SCREENSHOT" = "1" ]; then
+        # In screenshot mode, run QEMU in background and capture output
+        "${QEMU_CMD[@]}" < /dev/null \
+            2> >(tee "$QEMU_DEBUG_LOG" >&2) \
+            | tee "$UART_OUTPUT_FILE" > "$KERNEL_LOG" &
+        QEMU_PID=$!
+        
+        # Take screenshot before QEMU exits
+        take_screenshot
+        
+        # Wait for QEMU to finish
+        wait $QEMU_PID
+    else
+        "${QEMU_CMD[@]}" < /dev/null \
+            2> >(tee "$QEMU_DEBUG_LOG" >&2) \
+            | tee "$KERNEL_LOG"
+    fi
     
     echo ""
     echo "Output logs saved:"
     echo "  Kernel UART: $KERNEL_LOG"
     echo "  QEMU debug: $QEMU_DEBUG_LOG"
+    if [ "$SCREENSHOT" = "1" ]; then
+        echo "  UART output: $UART_OUTPUT_FILE"
+        echo "  Screenshot: $SCREENSHOT_FILE"
+    fi
+elif [ "$SCREENSHOT" = "1" ]; then
+    # Screenshot mode without separate output - capture UART to file
+    echo "Capturing UART output to: $UART_OUTPUT_FILE"
+    "${QEMU_CMD[@]}" < /dev/null 2>&1 | tee "$UART_OUTPUT_FILE" &
+    QEMU_PID=$!
+    
+    # Take screenshot before QEMU exits
+    take_screenshot
+    
+    # Wait for QEMU to finish
+    wait $QEMU_PID
+    
+    echo ""
+    echo "Files saved:"
+    echo "  UART output: $UART_OUTPUT_FILE"
+    echo "  Screenshot: $SCREENSHOT_FILE"
 else
     # Execute QEMU normally (output mixed in terminal)
     # All output (kernel UART + QEMU debug) appears together

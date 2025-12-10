@@ -43,7 +43,8 @@ func heapInit(heapStart uintptr) {
 
 	// Initialize the first segment to represent the entire heap as free
 	// But limit it to available space before stack region
-	const STACK_BOTTOM = 0x41000000 // Updated to match linker.ld (16MB into RAM)
+	// Stack is 16MB at 0x5E000000-0x5F000000 (grows downward from 0x5F000000)
+	const STACK_BOTTOM = 0x5E000000 // Stack bottom (heap must end before this)
 	heapEnd := heapStart + uintptr(KERNEL_HEAP_SIZE)
 	actualHeapSize := uint32(KERNEL_HEAP_SIZE)
 
@@ -246,6 +247,7 @@ func kfree(ptr unsafe.Pointer) {
 //
 //go:nosplit
 func memInit(atagsPtr uintptr) {
+	uartPutc('I') // Breadcrumb: memInit entry
 	uartPuts("memInit: Starting...\r\n")
 	// Step 1: Initialize page management system (Part 04)
 	// This also reserves heap pages
@@ -266,8 +268,8 @@ func memInit(atagsPtr uintptr) {
 	heapStart := (heapStartBase + HEAP_ALIGNMENT - 1) &^ (HEAP_ALIGNMENT - 1)
 
 	// Step 2.5: Verify heap fits before stack region
-	// Stack starts at 0x41000000 (16MB into RAM), heap must end before that
-	const STACK_BOTTOM = 0x41000000 // Updated to match linker.ld
+	// Stack is 16MB at 0x5E000000-0x5F000000 (grows downward from 0x5F000000)
+	const STACK_BOTTOM = 0x5E000000 // Stack bottom (heap must end before this)
 	heapEnd := heapStart + KERNEL_HEAP_SIZE
 	if heapEnd > STACK_BOTTOM {
 		// Heap would overlap with stack - reduce heap size
@@ -289,4 +291,5 @@ func memInit(atagsPtr uintptr) {
 	uartPuts("memInit: Calling heapInit...\r\n")
 	heapInit(heapStart)
 	uartPuts("memInit: Complete\r\n")
+	uartPutc('i') // Breadcrumb: memInit about to return
 }

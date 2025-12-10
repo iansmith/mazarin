@@ -157,9 +157,10 @@ kernel_main:
     
     // Set x28 (goroutine pointer) to point to runtime.g0
     // This is required for write barrier to work
-    // runtime.g0 is at address 0x331a00
-    movz x28, #0x331a, lsl #16    // Load upper 16 bits: 0x331a00
-    movk x28, #0x0000, lsl #0     // Load lower 16 bits
+    // runtime.g0 is at address 0x40100ce0 (in RAM region)
+    // Use movz/movk to load 64-bit address
+    movz x28, #0x4010, lsl #16    // Load bits 16-31: 0x40100000
+    movk x28, #0x0ce0, lsl #0     // Load bits 0-15: 0x40100ce0
     
     // Note: Write barrier flag is set in boot.s AFTER BSS clear
     // (Setting it here would be overwritten by BSS clear)

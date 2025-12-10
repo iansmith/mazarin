@@ -20,12 +20,12 @@ const (
 	_StackSmall = 128  // Small stack threshold
 
 	// Kernel stack bounds (from linker.ld and boot.s)
-	// Stack top: 0x60000000 (top of 512MB kernel region)
-	// Stack bottom: 0x41000000 (16MB into RAM, leaves room for page array + heap)
-	// Stack size: ~496MB (plenty for development)
-	KERNEL_STACK_TOP    = 0x60000000
-	KERNEL_STACK_BOTTOM = 0x41000000
-	KERNEL_STACK_SIZE   = KERNEL_STACK_TOP - KERNEL_STACK_BOTTOM // ~496MB
+	// Stack top: 0x5F000000 (16MB stack)
+	// Stack bottom: 0x5E000000 (heap must end before this)
+	// Stack size: 16MB (grows downward from top)
+	KERNEL_STACK_TOP    = 0x5F000000
+	KERNEL_STACK_BOTTOM = 0x5E000000
+	KERNEL_STACK_SIZE   = KERNEL_STACK_TOP - KERNEL_STACK_BOTTOM // 16MB
 )
 
 // Stack growth constants
@@ -250,5 +250,3 @@ func GrowStackForCurrent() {
 		}
 	}
 }
-
-

@@ -13,8 +13,8 @@ package main
 //
 //go:nosplit
 func initRuntimeStubs() {
-	g0Addr := uintptr(0x40100aa0) // runtime.g0 (from target-readelf -s)
-	m0Addr := uintptr(0x401011a0) // runtime.m0 (from target-readelf -s)
+	g0Addr := uintptr(0x40100ce0) // runtime.g0 (from target-readelf -s, verified)
+	m0Addr := uintptr(0x401013e0) // runtime.m0 (from target-readelf -s, verified)
 
 	// Initialize g0 stack bounds so compiler stack checks pass
 	// g.stack.lo (offset 0), g.stack.hi (offset 8), g.stackguard0 (offset 16), g.stackguard1 (offset 24)

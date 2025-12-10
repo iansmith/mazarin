@@ -169,6 +169,9 @@ func uartPutHex8(val uint8) {
 
 //go:nosplit
 func uartPuts(str string) {
+	// Breadcrumb: uartPuts entry (using assembly to avoid any Go overhead)
+	uart_putc_pl011('P')
+
 	// NOTE: String literals are not accessible in bare-metal Go
 	// The .rodata section may not be loaded, or Go places string literals
 	// in a way that's not accessible. For now, we'll use a workaround:
@@ -183,6 +186,7 @@ func uartPuts(str string) {
 	// Use unsafe.StringData() if available (Go 1.20+), otherwise fall back to manual access
 	// For bare-metal, we use the manual string header access pattern
 	// String layout: [data *uintptr, len int] = [2]uintptr on 64-bit
+	uart_putc_pl011('h') // Breadcrumb: about to access string header
 	strHeader := (*[2]uintptr)(unsafe.Pointer(&str))
 
 	// Extract data pointer and length
@@ -199,7 +203,9 @@ func uartPuts(str string) {
 	strLen := int(strLenVal)
 
 	// Call uartPutsBytes with the extracted pointer and length
+	uart_putc_pl011('b') // Breadcrumb: about to call uartPutsBytes
 	uartPutsBytes(dataPtr, strLen)
+	uart_putc_pl011('p') // Breadcrumb: uartPuts returning
 }
 
 // uitoa converts a uint32 to its decimal string representation
@@ -284,7 +290,6 @@ func SimpleTestKernel() {
 // KernelMain is the entry point called from boot.s
 // For bare metal, we ensure it's not optimized away
 //
-//go:nosplit
 //go:noinline
 func KernelMain(r0, r1, atags uint32) {
 	// Uncomment the line below to use simplified test kernel
@@ -294,23 +299,37 @@ func KernelMain(r0, r1, atags uint32) {
 	_ = r0
 	_ = r1
 
+	// Breadcrumb: Entry to KernelMain
 	// Raw UART poke before init to prove we reached KernelMain
 	mmio_write(0x09000000, uint32('K'))
+	mmio_write(0x09000000, uint32('M')) // 'M' = KernelMain entry
+
+	// Breadcrumb: About to init UART
+	mmio_write(0x09000000, uint32('U')) // 'U' = UART init starting
 
 	// Initialize UART first for early debugging
 	uartInit()
+	mmio_write(0x09000000, uint32('u')) // 'u' = UART init done
 	uartPuts("DEBUG: KernelMain after uartInit\r\n")
+
+	// Breadcrumb: About to init runtime stubs
+	uartPutc('R') // 'R' = Runtime stubs init starting
 
 	// Initialize minimal runtime structures for write barrier
 	// This sets up g0, m0, and write barrier buffers so that gcWriteBarrier can work
 	// Note: x28 (goroutine pointer) is set in lib.s before calling KernelMain
 	initRuntimeStubs()
+	uartPutc('r') // 'r' = Runtime stubs init done
 	uartPuts("DEBUG: KernelMain after initRuntimeStubs\r\n")
+
+	// Breadcrumb: About to init kernel stack
+	uartPutc('S') // 'S' = Stack init starting
 
 	// Initialize kernel stack info for Go runtime stack checks
 	// The actual stack pointer is set in boot.s, but we need to tell
 	// the Go runtime where the stack bounds are
 	initKernelStack()
+	uartPutc('s') // 's' = Stack init done
 
 	// Reference GrowStackForCurrent to prevent optimization
 	// This function is called from assembly (morestack) and must not be optimized away
@@ -340,7 +359,6 @@ func KernelMain(r0, r1, atags uint32) {
 	uartPuts("DEBUG: KernelMain about to return\r\n")
 }
 
-//go:nosplit
 //go:noinline
 func kernelMainBodyWrapper() {
 	uartPuts("DEBUG: Entered kernelMainBodyWrapper\r\n")
@@ -352,7 +370,6 @@ func kernelMainBodyWrapper() {
 // kernelMainBody performs the full initialization sequence on a regular stack.
 //
 //go:noinline
-//go:nosplit
 func kernelMainBody() {
 	// Minimal staged bring-up with early return after stage2
 
@@ -364,9 +381,11 @@ func kernelMainBody() {
 		uartPutc(c)
 	}
 	puts := func(s string) {
+		uartPutc('p') // Breadcrumb: puts function entered
 		for i := 0; i < len(s); i++ {
 			putc(s[i])
 		}
+		uartPutc('P') // Breadcrumb: puts function exiting
 	}
 	puts("Hello, Mazarin!\r\n")
 	puts("\r\n")
@@ -385,12 +404,30 @@ func kernelMainBody() {
 
 	// Stage 3: memory init
 	uartPuts("DEBUG: stage3 memInit start\r\n")
+	uartPutc('3') // Breadcrumb: about to call puts for memInit start
 	puts("Initializing memory management...\r\n")
-	memInit(0) // No ATAGs in QEMU, pass 0
-	puts("Memory management initialized\r\n")
+	uartPutc('3') // Breadcrumb: puts for memInit start returned
+	uartPutc('M') // Breadcrumb: about to call memInit
+	memInit(0)    // No ATAGs in QEMU, pass 0
+	// CRITICAL: Use assembly-level UART write to avoid any Go function call overhead
+	// This helps us see if the crash is in the return path or in a function call
+	uart_putc_pl011('m') // Breadcrumb: memInit returned (assembly-level, bypasses Go)
+	uart_putc_pl011('4') // Breadcrumb: about to call uartPuts (assembly-level)
+	// Use direct uartPuts instead of closure to avoid potential write barrier issues
+	uartPuts("Memory management initialized\r\n")
+	// CRITICAL: Immediately after uartPuts returns, use assembly to print breadcrumb
+	// This helps us see if the crash is during return or after
+	uart_putc_pl011('X') // Breadcrumb: uartPuts returned (X = eXit from uartPuts)
+	// CRITICAL: Add memory barrier and delay after uartPuts returns
+	// This ensures any pending write barrier operations complete
+	dsb()
+	uart_putc_pl011('4') // Breadcrumb: after barrier (assembly-level)
+	uart_putc_pl011('m') // Breadcrumb: memInit message printed (assembly-level)
 
 	// Initialize UART ring buffer now that memory management is available
+	uartPutc('Q') // Breadcrumb: about to call uartInitRingBufferAfterMemInit
 	uartInitRingBufferAfterMemInit()
+	uartPutc('q') // Breadcrumb: uartInitRingBufferAfterMemInit returned
 
 	uartPuts("DEBUG: stage3 complete, proceeding to stage4 (framebuffer)\r\n")
 
@@ -465,11 +502,11 @@ func testFramebufferText() {
 	imageData := GetBootMazarinImageData()
 	if imageData != nil {
 		uartPuts("DEBUG: Boot image data found, rendering along right edge\r\n")
-		// Position 512x768 image along right edge of 1024x768 screen
+		// Position 512x768 image along right edge of 640x480 screen
 		// Image will be pushed up as text is emitted
-		// X position: 1024 - 512 = 512 (right edge)
+		// X position: 640 - 512 = 128 (right edge, image will be partially visible)
 		// Y position: 0 (top, will scroll up as text is added)
-		RenderImageData(imageData, 512, 0, false)
+		RenderImageData(imageData, 128, 0, false)
 		uartPuts("DEBUG: Boot image rendered\r\n")
 	} else {
 		uartPuts("DEBUG: Boot image data not available\r\n")
@@ -478,7 +515,7 @@ func testFramebufferText() {
 	FramebufferPuts("===== Mazarin Kernel =====\r\n")
 	FramebufferPuts("Framebuffer Text Output Ready\r\n")
 	FramebufferPuts("\r\n")
-	FramebufferPuts("Display: 1024x768 pixels\r\n")
+	FramebufferPuts("Display: 640x480 pixels\r\n")
 	FramebufferPuts("Format: XRGB8888 (32-bit)\r\n")
 	uartPuts("DEBUG: Framebuffer text system test complete\r\n")
 }
@@ -564,6 +601,13 @@ func main() {
 	// Call KernelMain with dummy values to ensure it's compiled
 	// This will never execute in bare metal, but ensures the function exists
 	KernelMain(0, 0, 0)
+
+	// Reference interrupt handlers to prevent optimization
+	// These are called from assembly interrupt handlers and must not be optimized away
+	// This will never execute in bare metal, but ensures the functions exist
+	handleTimerIRQ()
+	handleUARTIRQ()
+
 	// This should never execute in bare metal
 	for {
 	}

@@ -58,6 +58,7 @@ const (
 var (
 	timerInitialized bool
 	timerTicks       uint64 // Number of timer ticks since initialization
+	timerExitCount   uint32 // Countdown to exit (decremented on each timer interrupt)
 )
 
 // timerInit initializes the ARM Generic Timer
@@ -83,10 +84,10 @@ func timerInit() {
 	uartPuts("DEBUG: About to set virtual timer value (TVAL)...\r\n")
 	// Use TVAL (timer value - counts down) - simpler and more direct!
 	// TVAL is a 32-bit countdown timer, fires when reaches 0
-	// Set to 6250000 ticks = 100ms at 62.5MHz
-	timerValue := freq / 10 // 6250000
+	// Set to 62500000 ticks = 1 second at 62.5MHz (will fire every second)
+	timerValue := freq * 1 // 62500000 (1 second)
 	write_cntv_tval_el0(uint32(timerValue))
-	uartPuts("DEBUG: Virtual timer TVAL set (100ms countdown)\r\n")
+	uartPuts("DEBUG: Virtual timer TVAL set (1 second countdown, will exit after 5 interrupts)\r\n")
 
 	uartPuts("DEBUG: About to enable virtual timer...\r\n")
 	// Enable timer with interrupts unmasked
@@ -94,29 +95,51 @@ func timerInit() {
 	write_cntv_ctl_el0(CNTV_CTL_ENABLE)
 	uartPuts("DEBUG: Virtual timer enabled (ENABLE=1, IMASK=0)\r\n")
 
-	uartPuts("DEBUG: Registering timer interrupt handler...\r\n")
-	uartPuts("DEBUG: IRQ_ID_TIMER_PPI=0x")
-	uartPutHex8(uint8(IRQ_ID_TIMER_PPI))
-	uartPuts("\r\n")
-	// Register timer interrupt handler with GIC
-	uartPuts("DEBUG: About to call registerInterruptHandler\r\n")
-	registerInterruptHandler(IRQ_ID_TIMER_PPI, timerInterruptHandler)
-	uartPuts("DEBUG: Handler registered\r\n")
-
 	uartPuts("DEBUG: Enabling timer interrupt in GIC...\r\n")
+	// Note: Timer interrupt is handled by assembly handler (handle_timer_irq)
+	// which calls the Go handleTimerIRQ function (nosplit, minimal)
 	// Enable timer interrupt in GIC
 	gicEnableInterrupt(IRQ_ID_TIMER_PPI)
 	uartPuts("DEBUG: Timer interrupt enabled in GIC\r\n")
 
 	timerInitialized = true
-	uartPuts("Timer initialized\r\n")
+	timerExitCount = 5 // Exit after 5 timer interrupts (5 seconds)
+	uartPuts("Timer initialized (will exit after 5 seconds)\r\n")
 
 	// Note: enable_irqs() hangs - msr DAIFCLR causes sync exception
 	// Interrupts will be enabled from pure assembly after initialization
 	// For now, timer is configured and ready - interrupts just need to be enabled
 }
 
-// timerInterruptHandler handles timer interrupts
+// handleTimerIRQ is called from assembly interrupt handler
+// This is a minimal nosplit function that handles timer interrupts
+//
+//go:linkname handleTimerIRQ handleTimerIRQ
+//go:nosplit
+//go:noinline
+func handleTimerIRQ() {
+	// Decrement exit counter
+	if timerExitCount > 0 {
+		timerExitCount--
+		if timerExitCount == 0 {
+			// Exit after 5 seconds (5 timer interrupts)
+			uartPuts("Timer: 5 seconds elapsed, exiting via semihosting...\r\n")
+			qemu_exit()
+			return
+		}
+	}
+
+	// Reset timer to fire again in 1 second
+	// Use TVAL (timer value - counts down)
+	freq := uint64(62500000)              // Default QEMU virt timer frequency = 62.5MHz
+	write_cntv_tval_el0(uint32(freq * 1)) // Set countdown timer for 1 second
+
+	// Output '.' to framebuffer
+	fb_putc_irq('.')
+}
+
+// timerInterruptHandler is the old handler - kept for reference but not used
+// The assembly handler calls handleTimerIRQ directly instead
 //
 //go:nosplit
 func timerInterruptHandler() {
@@ -126,10 +149,10 @@ func timerInterruptHandler() {
 	// Print 'T' to show timer interrupt fired
 	uartPutc('T')
 
-	// Reset timer to fire again in 100ms
+	// Reset timer to fire again in 5 seconds
 	// Use TVAL (timer value - counts down)
-	freq := uint64(62500000)               // Default QEMU virt timer frequency = 62.5MHz
-	write_cntv_tval_el0(uint32(freq / 10)) // Set countdown timer for 100ms
+	freq := uint64(62500000)              // Default QEMU virt timer frequency = 62.5MHz
+	write_cntv_tval_el0(uint32(freq * 5)) // Set countdown timer for 5 seconds
 }
 
 // timerSet sets the timer to fire after a specified number of microseconds

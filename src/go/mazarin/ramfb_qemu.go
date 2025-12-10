@@ -278,8 +278,6 @@ func qemu_cfg_check_dma_support() bool {
 
 // ramfbInit initializes the ramfb device via fw_cfg
 // Allocates framebuffer memory and configures ramfb to use it
-//
-//go:nosplit
 func ramfbInit() bool {
 	uartPuts("RAMFB: ramfbInit() entry\r\n")
 	uartPuts("RAMFB: Initializing...\r\n")
@@ -309,8 +307,8 @@ func ramfbInit() bool {
 
 	// Allocate framebuffer memory
 	// Must match QEMU_FB_WIDTH and QEMU_FB_HEIGHT from framebuffer_qemu.go
-	fbWidth := uint32(1024)
-	fbHeight := uint32(768)
+	fbWidth := uint32(640)
+	fbHeight := uint32(480)
 	fbSize := fbWidth * fbHeight * 4
 
 	fbMem := kmalloc(fbSize)
@@ -323,7 +321,7 @@ func ramfbInit() bool {
 	fbAddr := pointerToUintptr(fbMem)
 	// Use 32-bit format (XRGB8888) like working example
 	// Working code: stride = fb_width * sizeof(uint32_t) = width * 4
-	fbStride := fbWidth * 4 // 1280 * 4 = 5120
+	fbStride := fbWidth * 4 // 640 * 4 = 2560
 
 	// Create RAMFB configuration structure in global variable
 	// IMPORTANT: The RAMFBCfg structure fields must be in big-endian format
@@ -875,8 +873,6 @@ func printFileInfo(entryNum uint32, qfile *QemuCfgFile) {
 
 // qemu_cfg_find_file searches the fw_cfg file directory for "etc/ramfb" and returns its selector
 // Uses traditional interface (not DMA) as recommended in DMA-INVESTIGATION-COMPLETE.md
-//
-//go:nosplit
 func qemu_cfg_find_file() uint32 {
 	// Read file directory count (first 4 bytes of file_dir) using traditional interface
 	// Traditional interface is 100% reliable, DMA has issues with multiple consecutive reads

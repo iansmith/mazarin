@@ -53,8 +53,9 @@ func uartSetupInterrupts() {
 	// This triggers when receive FIFO has data
 	mmio_write(QEMU_UART_BASE+0x38, 1<<4) // UART_IMSC - set RXIM bit
 
-	// Register handler and enable in GIC
-	registerInterruptHandler(IRQ_ID_UART_SPI, uartInterruptHandler)
+	// Enable interrupt in GIC
+	// Note: UART interrupt is handled by assembly handler (handle_uart_irq)
+	// which calls the Go handleUARTIRQ function (nosplit, minimal)
 	gicEnableInterrupt(IRQ_ID_UART_SPI)
 
 	uartPuts("UART interrupts enabled\r\n")
@@ -123,28 +124,40 @@ var uartRingBuf *uartRingBuffer
 //
 //go:nosplit
 func uartInitRingBuffer() {
+	uartPutc('Q') // Breadcrumb: uartInitRingBuffer entry
+
 	// Allocate ring buffer structure via kmalloc
+	uartPutc('k') // Breadcrumb: about to kmalloc struct
 	buf := kmalloc(uint32(unsafe.Sizeof(uartRingBuffer{})))
 	if buf == nil {
+		uartPutc('!') // Breadcrumb: kmalloc struct failed
 		uartPuts("UART: ERROR - Failed to allocate ring buffer struct\r\n")
 		return
 	}
+	uartPutc('K') // Breadcrumb: kmalloc struct succeeded
 
 	// Allocate the buffer array
+	uartPutc('b') // Breadcrumb: about to kmalloc buffer
 	buffer := kmalloc(UART_RING_BUFFER_SIZE)
 	if buffer == nil {
+		uartPutc('!') // Breadcrumb: kmalloc buffer failed
 		uartPuts("UART: ERROR - Failed to allocate ring buffer data\r\n")
 		return
 	}
+	uartPutc('B') // Breadcrumb: kmalloc buffer succeeded
 
 	// Initialize the ring buffer
+	uartPutc('i') // Breadcrumb: about to initialize ring buffer
 	ringBuf := (*uartRingBuffer)(buf)
 	ringBuf.buf = (*[UART_RING_BUFFER_SIZE]byte)(buffer)
 	ringBuf.head = 0
 	ringBuf.tail = 0
 
+	uartPutc('a') // Breadcrumb: about to assign uartRingBuf
 	uartRingBuf = ringBuf
+	uartPutc('A') // Breadcrumb: uartRingBuf assigned
 	uartPuts("UART: Ring buffer initialized (4KB)\r\n")
+	uartPutc('q') // Breadcrumb: uartInitRingBuffer done
 }
 
 // uartEnqueue adds a character to the ring buffer
@@ -253,8 +266,41 @@ func uartEnqueueOrOverflow(c byte) bool {
 // UART Interrupt Handler for Interrupt-Driven Transmission
 // ============================================================================
 
-// uartInterruptHandler handles UART transmit interrupts
-// Minimal handler for testing - just clear interrupt
+// handleUARTIRQ is called from assembly interrupt handler
+// This is a minimal nosplit function that handles UART interrupts
+//
+//go:linkname handleUARTIRQ handleUARTIRQ
+//go:nosplit
+//go:noinline
+func handleUARTIRQ() {
+	// Check if UART TX FIFO has space (TXFF bit clear = FIFO not full)
+	fr := mmio_read(QEMU_UART_FR)
+	if fr&(1<<5) != 0 {
+		// TXFF bit set = FIFO is full, can't write
+		// Clear interrupt and return
+		mmio_write(QEMU_UART_ICR, 0x7FF)
+		return
+	}
+
+	// UART is ready to write - try to dequeue a character from buffer
+	c, ok := uartDequeue()
+	if !ok {
+		// Buffer is empty - disable TX interrupt to avoid unnecessary interrupts
+		mmio_write(QEMU_UART_BASE+0x38, 0) // UART_IMSC - clear TXIM bit (5)
+		// Clear interrupt and return
+		mmio_write(QEMU_UART_ICR, 0x7FF)
+		return
+	}
+
+	// Write character to UART
+	mmio_write(QEMU_UART_DR, uint32(c))
+
+	// Clear UART interrupt (write 0x7FF to ICR to clear all interrupts)
+	mmio_write(QEMU_UART_ICR, 0x7FF)
+}
+
+// uartInterruptHandler is the old handler - kept for reference but not used
+// The assembly handler calls handleUARTIRQ directly instead
 //
 //go:nosplit
 //go:noinline

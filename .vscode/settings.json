@@ -1,0 +1,18 @@
+{
+  // Set the color theme for this workspace only
+  // Common themes include: "Default Dark+", "Default Light+", "Monokai", "Solarized Dark", "Solarized Light", "GitHub Dark", "GitHub Light", etc.
+  // You can see all available themes by opening Command Palette (Cmd+Shift+P) and typing "Preferences: Color Theme"
+  "workbench.colorTheme": "Solarized Light"
+}
+
+
+
+
+
+
+
+
+
+
+
+

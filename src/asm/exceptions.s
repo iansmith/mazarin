@@ -19,6 +19,11 @@
 .global exception_vectors
 .global exception_vectors_start_addr
 
+// External Go function declarations (called from interrupt handlers)
+.extern fb_putc_irq
+.extern handleTimerIRQ
+.extern handleUARTIRQ
+
 // 2KB align the exception vector table
 .align 11  // 2^11 = 2048 bytes = 2KB
 
@@ -72,6 +77,21 @@ sync_exception_el1:
     movz w15, #0x43                // 'C'
     str w15, [x14]
     
+    // Try to read ESR_EL1 (Exception Syndrome Register) to get exception info
+    // ESR bits 31:26 = EC (Exception Class), bits 25:0 = ISS (Instruction Specific Syndrome)
+    mrs x15, ESR_EL1
+    // Print ESR high byte (EC field)
+    lsr x15, x15, #24              // Shift right 24 bits to get top 8 bits
+    and x15, x15, #0xFF            // Mask to 8 bits
+    // Convert to hex and print (simplified - just print low 4 bits)
+    and w16, w15, #0xF             // Get low 4 bits
+    cmp w16, #9
+    b.le print_digit
+    add w16, w16, #7               // Add 7 for A-F
+print_digit:
+    add w16, w16, #0x30            // Convert to ASCII
+    str w16, [x14]                 // Print hex digit
+    
     // Hang forever - sync exception occurred
     b .
     
@@ -80,10 +100,11 @@ sync_exception_el1:
     .align 7
 irq_exception_el1:
     // Switch to dedicated exception stack immediately
-    // Exception stack: 32KB region below main stack (0x5FFF8000)
+    // Exception stack: 1KB region below main stack (0x5EFFFC00)
+    // All interrupt handler paths are nosplit, so stack usage is bounded
     mov x0, sp                     // Save current SP
-    movz x1, #0x5FFF, lsl #16
-    movk x1, #0x8000, lsl #0
+    movz x1, #0x5EFF, lsl #16
+    movk x1, #0xFC00, lsl #0       // 0x5EFFFC00 (1KB below main stack at 0x5F000000)
     mov sp, x1                     // Switch to exception stack
     
     // Save registers on exception stack
@@ -108,28 +129,13 @@ irq_exception_el1:
     b irq_eoi                     // Unknown interrupt - just EOI
     
 handle_timer_irq:
-    // Reset virtual timer for next tick (100ms = 6.25M ticks at 62.5MHz)
-    mrs x3, CNTVCT_EL0
-    movz x4, #0x005F, lsl #16     // 0x005F0000
-    movk x4, #0x5E10, lsl #0      // Complete to 6250000 (100ms)
-    add x3, x3, x4
-    msr CNTV_CVAL_EL0, x3
-    
-    // Output '.' to framebuffer via Go function
-    movz w0, #0x2E                // '.' character
-    bl fb_putc_irq
+    // Call Go timer interrupt handler (minimal nosplit function)
+    bl handleTimerIRQ
     b irq_eoi
     
 handle_uart_irq:
-    // Output '+' to framebuffer via Go function  
-    movz w0, #0x2B                // '+' character
-    bl fb_putc_irq
-    
-    // Clear UART interrupt
-    movz x1, #0x0900, lsl #16
-    movk x1, #0x0044, lsl #0      // UART_ICR
-    movz w3, #0x7FF               // Clear all interrupts
-    str w3, [x1]
+    // Call Go UART interrupt handler (minimal nosplit function)
+    bl handleUARTIRQ
     b irq_eoi
     
 irq_eoi:
