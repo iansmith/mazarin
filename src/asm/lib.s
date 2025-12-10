@@ -51,13 +51,6 @@ busy_wait_loop:
 busy_wait_done:
     ret                     // Return
 
-// wfi_instruction() - Wait For Interrupt
-// Puts CPU into low-power state until an interrupt wakes it.
-.global wfi_instruction
-wfi_instruction:
-    wfi
-    ret
-
 // mmio_write64(uintptr_t reg, uint64_t data)
 // x0 = register address, x1 = data (64-bit)
 .global mmio_write64
@@ -146,7 +139,6 @@ qemu_exit:
 .global kernel_main
 .extern main.KernelMain
 .extern main.GrowStackForCurrent
-.extern printHex64
 kernel_main:
     // Set up proper ARM64 stack frame for Go compatibility
     // Save frame pointer and link register
@@ -165,107 +157,20 @@ kernel_main:
     
     // Set x28 (goroutine pointer) to point to runtime.g0
     // This is required for write barrier to work
-    // runtime.g0 is at address 0x40100ce0 (found via target-nm)
-    movz x28, #0x4010, lsl #16    // Load bits [31:16]: 0x4010
-    movk x28, #0x0ce0, lsl #0     // Load bits [15:0]:  0x0ce0
-    
-    // Initialize g0.stackguard0 (offset +16 in g structure)
-    // Set to bottom of heap (0x40500000) so stack check always passes
-    // Stack: 0x60000000 (grows down) -> Heap: 0x40500000 (grows up)
-    // Setting guard to heap top means "if SP < 0x40500000, panic" which gives us ~508MB
-    movz x11, #0x4050, lsl #16    // Load 0x40500000
-    movk x11, #0x0000, lsl #0
-    str  x11, [x28, #16]          // Store to g0.stackguard0
+    // runtime.g0 is at address 0x331a00
+    movz x28, #0x331a, lsl #16    // Load upper 16 bits: 0x331a00
+    movk x28, #0x0000, lsl #0     // Load lower 16 bits
     
     // Note: Write barrier flag is set in boot.s AFTER BSS clear
     // (Setting it here would be overwritten by BSS clear)
-    
-    // DEBUG: Print stack pointer and stackguard0 values
-    movz x10, #0x0900, lsl #16   // UART base = 0x09000000
-    
-    // Print 'S' = stackguard set
-    movz w11, #0x53              // 'S'
-    str w11, [x10]
-    
-    // Print 'P' = about to print SP
-    movz w11, #0x50              // 'P'
-    str w11, [x10]
-    movz w11, #0x3A              // ':'
-    str w11, [x10]
-    
-    // Print actual SP value
-    mov  x12, sp                 // Copy SP to x12
-    mov  x13, #60                // bit position
-1:
-    lsr  x14, x12, x13
-    and  x14, x14, #0xF
-    cmp  x14, #9
-    add  x15, x14, #0x30         // '0'
-    b.le 2f
-    add  x15, x14, #0x37         // 'A' - 10
-2:
-    str  w15, [x10]
-    sub  x13, x13, #4
-    cmp  x13, #-4
-    b.ge 1b
-    movz w11, #0x20              // space
-    str  w11, [x10]
-    
-    // Print 'G' = stackGuard
-    movz w11, #0x47              // 'G'
-    str w11, [x10]
-    movz w11, #0x3A              // ':'
-    str w11, [x10]
-    
-    // Print stackguard0 value (should be 0x40500000)
-    ldr  x12, [x28, #16]         // Read back stackguard0
-    mov  x13, #60                // bit position
-3:
-    lsr  x14, x12, x13
-    and  x14, x14, #0xF
-    cmp  x14, #9
-    add  x15, x14, #0x30         // '0'
-    b.le 4f
-    add  x15, x14, #0x37         // 'A' - 10
-4:
-    str  w15, [x10]
-    sub  x13, x13, #4
-    cmp  x13, #-4
-    b.ge 3b
-    movz w11, #0x20              // space
-    str  w11, [x10]
-    
-    // Breadcrumb before jumping into Go, also print Go entry address
-    movz w11, #0x4D              // 'M' = main address follows
-    str w11, [x10]
-    movz w11, #0x3A              // ':'
-    str w11, [x10]
-    // Emit address of main.KernelMain
-    adrp x12, main.KernelMain
-    add  x12, x12, :lo12:main.KernelMain
-    mov  x13, #60                // bit position
-1:
-    lsr  x14, x12, x13
-    and  x14, x14, #0xF
-    cmp  x14, #9
-    add  x15, x14, #0x30         // '0'
-    b.le 2f
-    add  x15, x14, #0x37         // 'A' - 10
-2:
-    str  w15, [x10]
-    sub  x13, x13, #4
-    cmp  x13, #-4
-    b.ge 1b
-    movz w11, #0x20              // space
-    str  w11, [x10]
     
     // Call Go function - this will initialize everything
     bl main.KernelMain
 
     // KernelMain returns after initialization is complete
-    // DEBUG: Print 'g' after Go KernelMain returns
+    // DEBUG: Print 'G' after Go KernelMain returns
     movz x10, #0x0900, lsl #16   // UART base = 0x09000000
-    movz w11, #0x67              // 'g' = Go returned
+    movz w11, #0x47              // 'G' = Go KernelMain returned
     str w11, [x10]               // Write to UART
     
     // DEBUG: Print 'Z' before returning to boot.s
@@ -276,18 +181,6 @@ kernel_main:
     // Restore frame pointer and link register
     ldp x29, x30, [sp], #16       // Pop FP and LR, adjust SP
     ret                            // Return to boot.s
-
-// Bridge function: go_event_loop -> main.GoEventLoopEntry (Go trampoline via Go asm)
-.global go_event_loop
-.extern main.GoEventLoopEntry
-go_event_loop:
-    stp x29, x30, [sp, #-16]!      // Save FP and LR for Go ABI
-    mov x29, sp
-
-    bl  main.GoEventLoopEntry      // Jump into Go event loop (trampoline)
-
-    ldp x29, x30, [sp], #16        // Restore FP and LR
-    ret                            // Return to boot.s (should not happen)
 
 // =================================================================
 // Stack Growth Functions (Bare-Metal Implementation)

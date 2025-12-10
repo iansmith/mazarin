@@ -2,8 +2,6 @@ package main
 
 import (
 	"unsafe"
-
-	dummy "mazarin/go/dummy"
 )
 
 // Link to external assembly functions from lib.s
@@ -55,10 +53,6 @@ func bzero(ptr unsafe.Pointer, size uint32)
 //go:linkname dsb dsb
 //go:nosplit
 func dsb()
-
-//go:linkname WfiInstruction wfi_instruction
-//go:nosplit
-func WfiInstruction()
 
 //go:linkname qemu_exit qemu_exit
 //go:nosplit
@@ -290,6 +284,7 @@ func SimpleTestKernel() {
 // KernelMain is the entry point called from boot.s
 // For bare metal, we ensure it's not optimized away
 //
+//go:nosplit
 //go:noinline
 func KernelMain(r0, r1, atags uint32) {
 	// Uncomment the line below to use simplified test kernel
@@ -298,13 +293,6 @@ func KernelMain(r0, r1, atags uint32) {
 
 	_ = r0
 	_ = r1
-	mmio_write(0x09000000, uint32('K'))
-	if fn := dummy.GoEventLoopEntryFunc(); false {
-		fn()
-	}
-	if false {
-		GoEventLoopEntry()
-	}
 
 	// Raw UART poke before init to prove we reached KernelMain
 	mmio_write(0x09000000, uint32('K'))
@@ -344,15 +332,27 @@ func KernelMain(r0, r1, atags uint32) {
 	uh(" GUARD=0x", kernelStack.guard0)
 	uartPuts("\r\n")
 
-	uartPuts("DEBUG: KernelMain about to enter kernelMainBody\r\n")
-	kernelMainBody()
+	// TEMP: bypass systemstack to see if body itself is safe
+	uartPuts("DEBUG: KernelMain calling kernelMainBodyWrapper directly (bypass systemstack)\r\n")
+	kernelMainBodyWrapper()
+	// systemstack(kernelMainBodyWrapper)
 
 	uartPuts("DEBUG: KernelMain about to return\r\n")
+}
+
+//go:nosplit
+//go:noinline
+func kernelMainBodyWrapper() {
+	uartPuts("DEBUG: Entered kernelMainBodyWrapper\r\n")
+	uartPuts("DEBUG: wrapper about to call kernelMainBody\r\n")
+	kernelMainBody()
+	uartPuts("DEBUG: wrapper returned from kernelMainBody (unexpected)\r\n")
 }
 
 // kernelMainBody performs the full initialization sequence on a regular stack.
 //
 //go:noinline
+//go:nosplit
 func kernelMainBody() {
 	// Minimal staged bring-up with early return after stage2
 
@@ -446,18 +446,6 @@ func kernelMainBody() {
 	uartPuts("DEBUG: kernelMainBody about to return\r\n")
 	return
 }
-
-// GoEventLoopEntry is invoked from assembly once initialization completes.
-// Keep it simple for now: just park the CPU in WFI.
-//
-//go:noinline
-func GoEventLoopEntry() {
-	for {
-		WfiInstruction()
-	}
-}
-
-var _ = GoEventLoopEntry
 
 // testFramebufferText tests the framebuffer text rendering system
 //

@@ -906,10 +906,8 @@ func qemu_cfg_find_file() uint32 {
 	// Iterate through file entries
 	uartPuts("RAMFB: Searching files...\r\n")
 	for e := uint32(0); e < countVal; e++ {
-		uartPutc('E') // Breadcrumb: about to read fw_cfg entry
 		var qfile QemuCfgFile
-		qemu_cfg_read_entry_traditional(unsafe.Pointer(&qfile), FW_CFG_FILE_DIR, 64)
-		uartPutc('e') // Breadcrumb: entry read returned
+		qemu_cfg_read(unsafe.Pointer(&qfile), 64) // Use sequential read, not traditional
 
 		if checkRamfbName(&qfile.Name) {
 			selector := uint32(swap16(qfile.Select))
