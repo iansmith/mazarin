@@ -388,6 +388,10 @@ func kernelMainBody() {
 	puts("Initializing memory management...\r\n")
 	memInit(0) // No ATAGs in QEMU, pass 0
 	puts("Memory management initialized\r\n")
+
+	// Initialize UART ring buffer now that memory management is available
+	uartInitRingBufferAfterMemInit()
+
 	uartPuts("DEBUG: stage3 complete, proceeding to stage4 (framebuffer)\r\n")
 
 	// Stage 4: framebuffer init + framebuffer text init
@@ -434,6 +438,9 @@ func kernelMainBody() {
 	uartPuts("DEBUG: stage6 gicInit start\r\n")
 	gicInit()
 	uartPuts("DEBUG: gicInit completed\r\n")
+
+	// Set up UART interrupts now that GIC is initialized
+	uartSetupInterrupts()
 
 	uartPuts("DEBUG: stage6 complete, proceeding to stage7 (timer)\r\n")
 

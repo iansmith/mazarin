@@ -2,6 +2,8 @@
 
 package main
 
+import "unsafe"
+
 // QEMU virt machine UART constants
 // The virt machine uses PL011 UART at 0x9000000 (different from Raspberry Pi)
 const (
@@ -26,14 +28,70 @@ const (
 func uartInit() {
 	// Initialize UART using proper PL011 sequence
 	uart_init_pl011()
+
+	// Note: Ring buffer initialization deferred until after memInit()
+	// Call uartInitRingBuffer() after memory management is set up
+}
+
+// uartInitRingBufferAfterMemInit initializes the ring buffer after memory is available
+// Call this after memInit() has been called
+//
+//go:nosplit
+func uartInitRingBufferAfterMemInit() {
+	// Initialize ring buffer for interrupt-driven transmission
+	uartInitRingBuffer()
+
+	uartPuts("UART: Ring buffer ready (interrupt setup deferred until after GIC init)\r\n")
+}
+
+// uartSetupInterrupts configures UART interrupts after GIC initialization
+// Call this after gicInit() has been called
+//
+//go:nosplit
+func uartSetupInterrupts() {
+	uartPuts("UART: Setting up interrupt handler for ID 1 (VIRT_UART0)...\r\n")
+	// Use interrupt ID 1 for PL011 UART (confirmed from QEMU virt.c source)
+	registerInterruptHandler(IRQ_ID_UART_SPI, uartInterruptHandler)
+	gicEnableInterrupt(IRQ_ID_UART_SPI)
+
+	// Initially disable TX interrupt in UART (will enable when characters are queued)
+	mmio_write(QEMU_UART_BASE+0x38, 0) // UART_IMSC - clear TXIM bit (5)
+
+	uartPuts("UART: Interrupt-driven UART ready\r\n")
+}
+
+// uartDrainRingBuffer drains one character from ring buffer to UART
+// Call this periodically to transmit queued characters when interrupts are disabled
+//
+//go:nosplit
+func uartDrainRingBuffer() {
+	if uartRingBuf == nil {
+		return
+	}
+
+	// Check if UART TX FIFO has space
+	fr := mmio_read(QEMU_UART_BASE + 0x18) // UART_FR
+	if fr&(1<<5) == 0 {                    // TXFF bit clear = FIFO not full
+		// Try to dequeue a character
+		if c, ok := uartDequeue(); ok {
+			// Write character to UART
+			mmio_write(QEMU_UART_DR, uint32(c))
+		}
+	}
 }
 
 // uartPutc outputs a character via UART (QEMU virt machine)
-// Uses proper PL011 UART assembly function
+// Uses interrupt-driven transmission via ring buffer when available
 //
 //go:nosplit
 func uartPutc(c byte) {
-	uart_putc_pl011(c)
+	// Try to enqueue character to ring buffer
+	if uartEnqueueOrOverflow(c) {
+		// Character was enqueued successfully
+		// Enable TX interrupt to start transmission
+		mmio_write(QEMU_UART_BASE+0x38, 1<<5) // UART_IMSC - set TXIM bit (5)
+	}
+	// If enqueue failed (overflow), character was dropped and "***" was added
 }
 
 // uartGetc reads a character from UART (QEMU virt machine)
@@ -45,3 +103,200 @@ func uartGetc() byte {
 	}
 	return byte(mmio_read(QEMU_UART_DR))
 }
+
+// ============================================================================
+// UART Ring Buffer Implementation for Interrupt-Driven Transmission
+// ============================================================================
+
+const UART_RING_BUFFER_SIZE = 4096 // 4KB buffer
+
+type uartRingBuffer struct {
+	buf  *[UART_RING_BUFFER_SIZE]byte // Fixed-size buffer
+	head uint32                       // Write position (producer)
+	tail uint32                       // Read position (consumer)
+}
+
+// Global ring buffer instance
+var uartRingBuf *uartRingBuffer
+
+// uartInitRingBuffer initializes the UART ring buffer
+//
+//go:nosplit
+func uartInitRingBuffer() {
+	// Allocate ring buffer structure via kmalloc
+	buf := kmalloc(uint32(unsafe.Sizeof(uartRingBuffer{})))
+	if buf == nil {
+		uartPuts("UART: ERROR - Failed to allocate ring buffer struct\r\n")
+		return
+	}
+
+	// Allocate the buffer array
+	buffer := kmalloc(UART_RING_BUFFER_SIZE)
+	if buffer == nil {
+		uartPuts("UART: ERROR - Failed to allocate ring buffer data\r\n")
+		return
+	}
+
+	// Initialize the ring buffer
+	ringBuf := (*uartRingBuffer)(buf)
+	ringBuf.buf = (*[UART_RING_BUFFER_SIZE]byte)(buffer)
+	ringBuf.head = 0
+	ringBuf.tail = 0
+
+	uartRingBuf = ringBuf
+	uartPuts("UART: Ring buffer initialized (4KB)\r\n")
+}
+
+// uartEnqueue adds a character to the ring buffer
+// Returns true if successful, false if buffer is full
+//
+//go:nosplit
+func uartEnqueue(c byte) bool {
+	if uartRingBuf == nil {
+		return false // Not initialized
+	}
+
+	nextHead := (uartRingBuf.head + 1) % UART_RING_BUFFER_SIZE
+
+	// Check if buffer is full
+	if nextHead == uartRingBuf.tail {
+		return false // Buffer full
+	}
+
+	// Add character to buffer
+	uartRingBuf.buf[uartRingBuf.head] = c
+	uartRingBuf.head = nextHead
+
+	return true
+}
+
+// uartDequeue removes a character from the ring buffer
+// Returns (character, true) if successful, (_, false) if empty
+//
+//go:nosplit
+func uartDequeue() (byte, bool) {
+	if uartRingBuf == nil {
+		return 0, false // Not initialized
+	}
+
+	// Check if buffer is empty
+	if uartRingBuf.head == uartRingBuf.tail {
+		return 0, false // Buffer empty
+	}
+
+	// Get character from buffer
+	c := uartRingBuf.buf[uartRingBuf.tail]
+	uartRingBuf.tail = (uartRingBuf.tail + 1) % UART_RING_BUFFER_SIZE
+
+	return c, true
+}
+
+// uartSpaceAvailable returns the number of free slots in the buffer
+//
+//go:nosplit
+func uartSpaceAvailable() uint32 {
+	if uartRingBuf == nil {
+		return 0
+	}
+
+	if uartRingBuf.head >= uartRingBuf.tail {
+		return UART_RING_BUFFER_SIZE - (uartRingBuf.head - uartRingBuf.tail) - 1
+	} else {
+		return uartRingBuf.tail - uartRingBuf.head - 1
+	}
+}
+
+// uartIsNearFull returns true if buffer has exactly 3 or fewer slots remaining
+//
+//go:nosplit
+func uartIsNearFull() bool {
+	return uartSpaceAvailable() <= 3
+}
+
+// uartEnqueueOverflowMarker enqueues "***" marker and drops the triggering character
+//
+//go:nosplit
+func uartEnqueueOverflowMarker(droppedChar byte) {
+	// Enqueue "***" marker
+	uartEnqueue('*')
+	uartEnqueue('*')
+	uartEnqueue('*')
+
+	// droppedChar is already lost - no need to enqueue it
+}
+
+// uartEnqueueOrOverflow handles enqueue with overflow protection
+// Returns true if character was enqueued, false if dropped due to overflow
+//
+//go:nosplit
+func uartEnqueueOrOverflow(c byte) bool {
+	if uartRingBuf == nil {
+		// Fallback to direct UART output if ring buffer not initialized
+		uart_putc_pl011(c)
+		return true
+	}
+
+	// Check if we would be at or below 3 slots remaining after this enqueue
+	spaceBefore := uartSpaceAvailable()
+	if spaceBefore <= 3 {
+		// This would put us at or below 3 slots remaining
+		// Enqueue overflow marker and drop this character
+		uartEnqueueOverflowMarker(c)
+		return false // Character dropped
+	}
+
+	// Normal enqueue
+	return uartEnqueue(c)
+}
+
+// ============================================================================
+// UART Interrupt Handler for Interrupt-Driven Transmission
+// ============================================================================
+
+// uartInterruptHandler handles UART transmit interrupts
+// Called when UART TX FIFO becomes ready for more data
+//
+//go:nosplit
+//go:noinline
+func uartInterruptHandler() {
+	// Clear the UART interrupt by reading MIS and writing to ICR
+	mis := mmio_read(QEMU_UART_BASE + 0x40) // UART_MIS
+	mmio_write(QEMU_UART_BASE+0x44, mis)    // UART_ICR
+
+	// Transmit characters from ring buffer while UART TX FIFO has space
+	for {
+		// Check if UART TX FIFO is full (bit 5 of UART_FR register)
+		fr := mmio_read(QEMU_UART_BASE + 0x18) // UART_FR
+		if fr&(1<<5) != 0 {                    // TXFF bit set = FIFO full
+			break
+		}
+
+		// Try to dequeue a character from ring buffer
+		c, ok := uartDequeue()
+		if !ok {
+			// Ring buffer empty - disable TX interrupt since no more data to send
+			mmio_write(QEMU_UART_BASE+0x38, 0) // UART_IMSC - clear TXIM bit (5)
+			break
+		}
+
+		// Write character to UART
+		mmio_write(QEMU_UART_DR, uint32(c))
+	}
+}
+
+// Note: The current logic is wrong. When spaceBefore == 3, we should allow the enqueue
+// because it would leave 2 slots remaining, which is still > 3. Overflow should only
+// trigger when spaceBefore <= 3. But let me check the test again...
+
+// Actually, looking at the test, the buffer has exactly 3 slots remaining.
+// When I call uartEnqueueOrOverflow('O'), spaceBefore = 3, so spaceBefore <= 3 is true,
+// which triggers overflow. But that's wrong - we should allow enqueues that leave 3 or more slots.
+
+// The correct logic should be: trigger overflow when spaceBefore <= 3.
+// But that means when we have 3 slots, we can't enqueue anything else.
+// That would mean the "near full" threshold is actually 4 slots remaining.
+
+// Let me reconsider the requirement: "when the buffer reaches 3 slots before the ring buffer is full"
+// This means when there are 3 or fewer slots remaining, we should add "***" and drop new characters.
+
+// So the logic should be: if spaceBefore <= 3, then overflow.

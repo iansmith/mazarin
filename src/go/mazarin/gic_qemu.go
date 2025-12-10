@@ -50,6 +50,7 @@ const (
 	// PPIs (Private Peripheral Interrupts): 16-31
 	// SPIs (Shared Peripheral Interrupts): 32-1019
 	IRQ_ID_TIMER_PPI = 27 // ARM Generic Timer PPI - Virtual Timer (CNTV) for EL1 - ID 27 (like reference repo)
+	IRQ_ID_UART_SPI  = 1  // PL011 UART SPI interrupt (for QEMU virt machine - VIRT_UART0 = 1)
 )
 
 // Interrupt handler function type
