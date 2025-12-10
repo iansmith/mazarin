@@ -457,10 +457,12 @@ func testFramebufferText() {
 	uartPuts("DEBUG: About to render boot image\r\n")
 	imageData := GetBootMazarinImageData()
 	if imageData != nil {
-		uartPuts("DEBUG: Boot image data found, rendering at center\r\n")
-		// Center the image on screen (1920x1080)
-		// Assuming image is 512x512, center would be at (704, 284)
-		RenderImageData(imageData, 704, 284, false)
+		uartPuts("DEBUG: Boot image data found, rendering along right edge\r\n")
+		// Position 512x768 image along right edge of 1024x768 screen
+		// Image will be pushed up as text is emitted
+		// X position: 1024 - 512 = 512 (right edge)
+		// Y position: 0 (top, will scroll up as text is added)
+		RenderImageData(imageData, 512, 0, false)
 		uartPuts("DEBUG: Boot image rendered\r\n")
 	} else {
 		uartPuts("DEBUG: Boot image data not available\r\n")
@@ -469,7 +471,7 @@ func testFramebufferText() {
 	FramebufferPuts("===== Mazarin Kernel =====\r\n")
 	FramebufferPuts("Framebuffer Text Output Ready\r\n")
 	FramebufferPuts("\r\n")
-	FramebufferPuts("Display: 1920x1080 pixels\r\n")
+	FramebufferPuts("Display: 1024x768 pixels\r\n")
 	FramebufferPuts("Format: XRGB8888 (32-bit)\r\n")
 	uartPuts("DEBUG: Framebuffer text system test complete\r\n")
 }
