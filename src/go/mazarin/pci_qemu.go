@@ -313,10 +313,10 @@ func findBochsDisplayFull() bool {
 					uartPuts("\r\n")
 
 					// For bare-metal, we need to assign BAR addresses ourselves
-					// QEMU virt machine kernel RAM: 0x40100000 - 0x60000000 (512MB)
+					// QEMU virt machine kernel RAM: 0x40100000 - 0x48100000 (128MB)
 					// Use fixed addresses within kernel RAM for bochs-display BAR programming
-					// 0x50000000 is within our kernel RAM region (between 0x40100000 and 0x60000000)
-					fbAddr := uintptr(0x50000000)  // Framebuffer address (within kernel RAM)
+					// Note: Heap can extend beyond 0x48100000 up to g0 stack at 0x5FFFFE000
+					fbAddr := uintptr(0x50000000)   // Framebuffer address (within kernel RAM)
 					mmioBase := uintptr(0x50010000) // MMIO registers (right after framebuffer)
 
 					// Program BAR0 (framebuffer) - 32-bit memory space, prefetchable

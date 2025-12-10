@@ -6,11 +6,12 @@ SECTIONS
      * 0x00000000 - 0x08000000: Flash/ROM region (kernel loaded here)
      * 0x09000000 - 0x09010000: UART PL011
      * 0x40000000 - 0x40100000: DTB (QEMU device tree blob, 1MB)
-     * 0x40100000 - 0x60000000: Kernel RAM (512MB allocated for kernel development)
+     * 0x40100000 - 0x48100000: Kernel RAM (128MB allocated for kernel development)
      *   0x40100000 - 0x401xxxxx: BSS section
-     *   0x40400000 - 0x60000000: Stack (grows downward from 0x60000000)
-     *   0x40500000 - 0x60000000: Heap (after stack region)
-     * 0x60000000 - 0x80000000: Reserved (not used by kernel)
+     *   0x401xxxxx - 0x5FFFFE000: Heap (extends to g0 stack)
+     *   0x5FFFFE000 - 0x5F000000: g0 stack (8KB, system goroutine)
+     *   0x5F000000: Stack top (SP for g0)
+     * 0x48100000 - 0x80000000: Reserved (not used by kernel)
      */
     
     /* Kernel code/data in ROM region */
@@ -66,7 +67,7 @@ SECTIONS
     /* IMPORTANT: QEMU virt machine places DTB at 0x40000000-0x40100000 (1MB)
      * We must start BSS after the DTB to avoid overlap.
      * Place BSS at 0x40100000 (right after DTB region)
-     * Kernel has 512MB total (0x40100000 - 0x60000000) */
+     * Kernel has 128MB total (0x40100000 - 0x48100000) */
     . = 0x40100000;
     __bss_start = .;
     .bss (NOLOAD) :
@@ -83,14 +84,11 @@ SECTIONS
     __bss_end = .;
     __end = .;
     
-    /* Stack region: 512MB - 16MB = 496MB available for stack
-     * Stack grows downward from 0x60000000 (top of kernel RAM)
-     * Stack bottom moved to 0x41000000 (16MB into RAM) to leave room for:
-     *   - BSS section (~1-2MB)
-     *   - Page metadata array (~3-6MB for 512MB-1GB RAM)
-     *   - Heap (64MB, but may be limited)
-     * This gives us plenty of space for kernel development */
-    . = 0x60000000;
+    /* g0 stack region: 8KB at top of kernel RAM
+     * g0 stack: 0x5FFFFE000 - 0x5F000000 (8KB, system goroutine)
+     * Main goroutine stack: 32KB (allocated from heap)
+     * Heap extends from __end to 0x5FFFFE000 (just before g0 stack) */
+    . = 0x5F000000;
     __stack_top = .;
-    __stack_bottom = 0x41000000;  /* Stack bottom (16MB into RAM, leaves room for page array + heap) */
+    __g0_stack_bottom = 0x5FFFFE000;  /* g0 stack bottom (8KB before top) */
 }

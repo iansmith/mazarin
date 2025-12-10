@@ -19,13 +19,19 @@ const (
 	_StackGuard = 928  // Guard space before stack overflow
 	_StackSmall = 128  // Small stack threshold
 
-	// Kernel stack bounds (from linker.ld and boot.s)
-	// Stack top: 0x5F000000 (16MB stack)
-	// Stack bottom: 0x5E000000 (heap must end before this)
-	// Stack size: 16MB (grows downward from top)
-	KERNEL_STACK_TOP    = 0x5F000000
-	KERNEL_STACK_BOTTOM = 0x5E000000
-	KERNEL_STACK_SIZE   = KERNEL_STACK_TOP - KERNEL_STACK_BOTTOM // 16MB
+	// g0 stack bounds (system goroutine, 8KB)
+	// g0 stack: 0x5FFFFE000 - 0x5F000000 (8KB, fixed size)
+	G0_STACK_SIZE   = 8 * 1024 // 8KB
+	G0_STACK_TOP    = 0x5F000000
+	G0_STACK_BOTTOM = 0x5FFFFE000 // G0_STACK_TOP - G0_STACK_SIZE
+
+	// Main goroutine stack size (allocated from heap)
+	KERNEL_GOROUTINE_STACK_SIZE = 32 * 1024 // 32KB
+
+	// Legacy constants (deprecated, for compatibility)
+	KERNEL_STACK_TOP    = G0_STACK_TOP
+	KERNEL_STACK_BOTTOM = G0_STACK_BOTTOM
+	KERNEL_STACK_SIZE   = G0_STACK_SIZE
 )
 
 // Stack growth constants
@@ -55,22 +61,19 @@ var kernelStack stack
 // Stack list (for tracking all stacks, future goroutine support)
 var allStacks *stack
 
-// initKernelStack initializes the kernel's initial stack
-// The stack pointer is set in boot.s to 0x60000000
-// We track this as our initial stack
-// Note: We use the large pre-allocated region, but set size to 0
-// to indicate it's the initial stack (will use INITIAL_STACK_SIZE on first growth)
+// initKernelStack initializes g0's stack (system goroutine)
+// The stack pointer is set in boot.s to 0x5F000000 (g0 stack top)
+// g0 uses a fixed 8KB stack at the top of kernel RAM
+// Main kernel goroutine will have its own 32KB stack allocated from heap
 //
 //go:nosplit
 func initKernelStack() {
-	// For initial kernel stack, we use the pre-allocated region
-	// Stack grows downward from 0x60000000 to 0x40400000
-	// But we mark size as 0 to indicate it's the initial pre-allocated stack
-	// If stack growth is needed, we'll allocate from heap
-	kernelStack.lo = KERNEL_STACK_BOTTOM
-	kernelStack.hi = KERNEL_STACK_TOP
-	kernelStack.size = 0 // 0 means using pre-allocated region (will grow to INITIAL_STACK_SIZE if needed)
-	kernelStack.guard0 = KERNEL_STACK_BOTTOM + _StackGuard
+	// g0 stack: fixed 8KB at 0x5FFFFE000 - 0x5F000000
+	// This is the system goroutine stack (for runtime operations)
+	kernelStack.lo = G0_STACK_BOTTOM
+	kernelStack.hi = G0_STACK_TOP
+	kernelStack.size = G0_STACK_SIZE // g0 stack is fixed 8KB
+	kernelStack.guard0 = G0_STACK_BOTTOM + _StackGuard
 	kernelStack.prev = nil
 
 	// Add to stack list (for future goroutine support)
@@ -158,7 +161,7 @@ func growStack(oldStack *stack) bool {
 	// Update stack structure (save old stack info first)
 	var oldSize uintptr
 	if oldStack.size == 0 {
-		oldSize = KERNEL_STACK_SIZE // Initial pre-allocated size
+		oldSize = G0_STACK_SIZE // g0 stack size (8KB)
 	} else {
 		oldSize = oldStack.size
 	}

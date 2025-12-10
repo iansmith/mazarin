@@ -39,7 +39,7 @@ WORKDIR /workspace
 # Set default entrypoint to run QEMU with virt machine type
 # -M virt: QEMU virt machine type (better UART compatibility for bare-metal)
 # -cpu cortex-a72: Use Cortex-A72 CPU (same as Raspberry Pi 4)
-# -m 512M: Allocate 512MB RAM
+# -m 1G: Allocate 1GB RAM
 # -kernel: Load kernel from /mnt/builtin/kernel.elf
 # -serial stdio: Redirect serial output to stdout/stderr
 # -semihosting: Enable semihosting for clean program exit
@@ -47,5 +47,5 @@ WORKDIR /workspace
 # -no-reboot: Exit on shutdown instead of rebooting
 # Note: No -append flag for bare-metal kernels (that's for Linux kernels)
 # Note: To enable GDB debugging, override with: -gdb tcp::1234 -S
-ENTRYPOINT ["qemu-system-aarch64", "-M", "virt", "-cpu", "cortex-a72", "-m", "512M", "-kernel", "/mnt/builtin/kernel.elf", "-serial", "stdio", "-semihosting", "-display", "none", "-no-reboot"]
+ENTRYPOINT ["qemu-system-aarch64", "-M", "virt", "-cpu", "cortex-a72", "-m", "1G", "-kernel", "/mnt/builtin/kernel.elf", "-serial", "stdio", "-semihosting", "-display", "none", "-no-reboot"]
 

@@ -42,23 +42,23 @@ func heapInit(heapStart uintptr) {
 	uartPuts("heapInit: Zeroed segment header\r\n")
 
 	// Initialize the first segment to represent the entire heap as free
-	// But limit it to available space before stack region
-	// Stack is 16MB at 0x5E000000-0x5F000000 (grows downward from 0x5F000000)
-	const STACK_BOTTOM = 0x5E000000 // Stack bottom (heap must end before this)
+	// But limit it to available space before g0 stack region
+	// g0 stack is 8KB at 0x5FFFFE000-0x5F000000 (grows downward from 0x5F000000)
+	const G0_STACK_BOTTOM = 0x5FFFFE000 // g0 stack bottom (heap must end before this)
 	heapEnd := heapStart + uintptr(KERNEL_HEAP_SIZE)
 	actualHeapSize := uint32(KERNEL_HEAP_SIZE)
 
-	// Check if heap would extend into stack
-	if heapEnd > STACK_BOTTOM {
-		// Heap would extend into stack region - limit it
-		maxSize := uint32(STACK_BOTTOM - heapStart)
+	// Check if heap would extend into g0 stack
+	if heapEnd > G0_STACK_BOTTOM {
+		// Heap would extend into g0 stack region - limit it
+		maxSize := uint32(G0_STACK_BOTTOM - heapStart)
 		if maxSize < 4*1024*1024 { // At least 4MB for framebuffer (3.6MB needed)
 			uartPuts("heapInit: ERROR - Heap too small after stack boundary check\r\n")
 			uartPuts("heapInit: Available space less than 4MB\r\n")
 			// Don't return - try with what we have, but it will fail
 		}
 		actualHeapSize = maxSize
-		uartPuts("heapInit: Limited heap size to avoid stack\r\n")
+		uartPuts("heapInit: Limited heap size to avoid g0 stack\r\n")
 	}
 
 	// Verify heap is large enough for framebuffer (3.6MB + header overhead)
@@ -267,23 +267,23 @@ func memInit(atagsPtr uintptr) {
 	heapStartBase := getLinkerSymbol("__end") + pageArraySize
 	heapStart := (heapStartBase + HEAP_ALIGNMENT - 1) &^ (HEAP_ALIGNMENT - 1)
 
-	// Step 2.5: Verify heap fits before stack region
-	// Stack is 16MB at 0x5E000000-0x5F000000 (grows downward from 0x5F000000)
-	const STACK_BOTTOM = 0x5E000000 // Stack bottom (heap must end before this)
+	// Step 2.5: Verify heap fits before g0 stack region
+	// g0 stack is 8KB at 0x5FFFFE000-0x5F000000 (grows downward from 0x5F000000)
+	const G0_STACK_BOTTOM = 0x5FFFFE000 // g0 stack bottom (heap must end before this)
 	heapEnd := heapStart + KERNEL_HEAP_SIZE
-	if heapEnd > STACK_BOTTOM {
-		// Heap would overlap with stack - reduce heap size
-		maxHeapSize := STACK_BOTTOM - heapStart
+	if heapEnd > G0_STACK_BOTTOM {
+		// Heap would overlap with g0 stack - reduce heap size
+		maxHeapSize := G0_STACK_BOTTOM - heapStart
 		if maxHeapSize < 4*1024*1024 {
 			// Not enough space for framebuffer (needs 3.6MB)
-			uartPuts("memInit: ERROR - Not enough space for heap (would overlap stack)\r\n")
+			uartPuts("memInit: ERROR - Not enough space for heap (would overlap g0 stack)\r\n")
 			uartPuts("memInit: Available space is less than 4MB\r\n")
 			return
 		}
 		// Use available space (will be set in heapInit)
-		uartPuts("WARNING: Reducing heap size to fit before stack\r\n")
+		uartPuts("WARNING: Reducing heap size to fit before g0 stack\r\n")
 		// Note: We can't change KERNEL_HEAP_SIZE constant, but heapInit uses it
-		// For now, just warn - in practice with 512MB, this shouldn't happen
+		// For now, just warn - in practice with 128MB kernel region, heap extends to g0 stack
 	}
 
 	// Step 3: Initialize heap allocator (Part 05)

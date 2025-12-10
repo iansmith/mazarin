@@ -17,11 +17,16 @@ func initRuntimeStubs() {
 	m0Addr := uintptr(0x401013e0) // runtime.m0 (from target-readelf -s, verified)
 
 	// Initialize g0 stack bounds so compiler stack checks pass
+	// g0 uses 8KB stack at top of kernel RAM
 	// g.stack.lo (offset 0), g.stack.hi (offset 8), g.stackguard0 (offset 16), g.stackguard1 (offset 24)
-	writeMemory64(g0Addr+0, uint64(KERNEL_STACK_BOTTOM))
-	writeMemory64(g0Addr+8, uint64(KERNEL_STACK_TOP))
-	writeMemory64(g0Addr+16, uint64(KERNEL_STACK_BOTTOM+_StackGuard))
-	writeMemory64(g0Addr+24, uint64(KERNEL_STACK_BOTTOM+_StackGuard))
+	const G0_STACK_SIZE = 8 * 1024 // 8KB
+	const G0_STACK_TOP = 0x5F000000
+	const G0_STACK_BOTTOM = G0_STACK_TOP - G0_STACK_SIZE // 0x5FFFFE000
+
+	writeMemory64(g0Addr+0, uint64(G0_STACK_BOTTOM))
+	writeMemory64(g0Addr+8, uint64(G0_STACK_TOP))
+	writeMemory64(g0Addr+16, uint64(G0_STACK_BOTTOM+_StackGuard))
+	writeMemory64(g0Addr+24, uint64(G0_STACK_BOTTOM+_StackGuard))
 
 	// Step 1: Set g0.m = m0 (offset 48 = 0x30)
 	// This is what gcWriteBarrier reads: ldr x0, [x28, #48]

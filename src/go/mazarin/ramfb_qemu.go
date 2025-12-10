@@ -329,6 +329,7 @@ func ramfbInit() bool {
 	uartPuts("RAMFB: Creating config struct...\r\n")
 
 	// Verify framebuffer address is within QEMU's RAM region
+	// QEMU virt machine has 1GB RAM: 0x40000000 - 0x80000000
 	const QEMU_RAM_START = 0x40000000
 	const QEMU_RAM_END = 0x80000000
 	if fbAddr < QEMU_RAM_START || fbAddr >= QEMU_RAM_END {
@@ -392,9 +393,9 @@ func ramfbInit() bool {
 	uartPuts("RAMFB: About to store framebuffer info...\r\n")
 
 	// Check stack usage before storing framebuffer info
-	// Initial stack pointer is at 0x60000000 (top of 512MB kernel region, set in boot.s)
+	// Initial stack pointer is at 0x5F000000 (g0 stack top, 8KB stack, set in boot.s)
 	// Stack grows downward, so lower values mean more stack used
-	const initialStackPtr uintptr = 0x60000000
+	const initialStackPtr uintptr = 0x5F000000
 	currentStackPtr := get_stack_pointer()
 	stackUsed := initialStackPtr - currentStackPtr
 	uartPuts("RAMFB: Stack check - initial=0x")

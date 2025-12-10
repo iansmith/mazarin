@@ -123,17 +123,18 @@ func pageInit(atagsPtr uintptr) {
 	uartPuts("pageInit: Getting memory size...\r\n")
 	memSize = getMemSize(atagsPtr)
 	if memSize == 0 {
-		// Fallback: use 512MB for kernel RAM region (not full 1GB)
-		// QEMU has 1GB total, but kernel only uses 512MB (0x40100000 - 0x60000000)
-		// This limits page array size to ~3.1MB instead of ~6.3MB
-		uartPuts("pageInit: Using 512MB for kernel RAM region (QEMU)\r\n")
-		memSize = 512 * 1024 * 1024 // 512MB for kernel RAM region
+		// Fallback: use 128MB for kernel RAM region (not full 1GB)
+		// QEMU has 1GB total, but kernel only uses 128MB (0x40100000 - 0x48100000)
+		// This limits page array size to ~0.8MB instead of ~6.3MB
+		// Heap can extend beyond 0x48100000 up to g0 stack at 0x5FFFFE000
+		uartPuts("pageInit: Using 128MB for kernel RAM region (QEMU)\r\n")
+		memSize = 128 * 1024 * 1024 // 128MB for kernel RAM region
 	} else {
 		uartPuts("pageInit: Got memory size from ATAGs\r\n")
-		// Limit to 512MB max to avoid huge page arrays
-		if memSize > 512*1024*1024 {
-			memSize = 512 * 1024 * 1024
-			uartPuts("pageInit: Limited to 512MB for kernel region\r\n")
+		// Limit to 128MB max for kernel region (heap extends beyond)
+		if memSize > 128*1024*1024 {
+			memSize = 128 * 1024 * 1024
+			uartPuts("pageInit: Limited to 128MB for kernel region\r\n")
 		}
 	}
 
