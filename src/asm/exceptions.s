@@ -13,7 +13,9 @@
 
 // Use a separate section for exception vectors so they can be 2KB aligned
 // without affecting text section alignment
-.section ".vectors"
+// CRITICAL: Use "ax" flags to make section Allocatable and Executable
+// Without these flags, the section won't be loaded into memory!
+.section ".vectors", "ax", @progbits
 .global exception_vectors
 .global exception_vectors_start_addr
 
@@ -77,90 +79,74 @@ sync_exception_el1:
     // 0x280 - 0x300: IRQ (SP_EL1) - 128 bytes
     .align 7
 irq_exception_el1:
-    // ULTRA-SIMPLE DEBUG: Print 'X' IMMEDIATELY to prove we entered handler
-    // Don't touch any registers yet - just write directly to UART
-    movz x10, #0x0900, lsl #16     // 0x09000000 (UART base)
-    movk x10, #0x0000, lsl #0
-    movz w11, #0x58                // 'X' 
-    str w11, [x10]                 // Write to UART
-    
-    // CRITICAL: Switch to dedicated exception stack immediately!
-    // This prevents corruption of the normal execution stack (SP_EL1 at 0x60000000)
-    // Exception stack: 32KB region just below main stack (0x5FFF8000)
-    //   Main stack: 0x60000000 (grows down)
-    //   Exception stack: 0x5FFF8000 (32KB = 0x8000 bytes, safe buffer)
-    
-    // Save current SP (SP_EL1) to x0 temporarily
-    mov x0, sp
-    
-    // Load exception stack address (0x5FFF8000 = 32KB below main stack)
-    movz x1, #0x5FFF, lsl #16     // 0x5FFF0000
-    movk x1, #0x8000, lsl #0      // 0x5FFF8000
+    // Switch to dedicated exception stack immediately
+    // Exception stack: 32KB region below main stack (0x5FFF8000)
+    mov x0, sp                     // Save current SP
+    movz x1, #0x5FFF, lsl #16
+    movk x1, #0x8000, lsl #0
     mov sp, x1                     // Switch to exception stack
     
-    // Save original SP_EL1 and registers on exception stack
-    sub sp, sp, #64               // Make space for 8 registers (original SP + x0-x3 + working regs)
+    // Save registers on exception stack
+    sub sp, sp, #80               // Space for 10 registers
     str x0, [sp, #0]              // Save original SP_EL1
-    stp x1, x2, [sp, #8]          // Save x1, x2
-    stp x3, x4, [sp, #24]         // Save x3, x4
+    stp x1, x2, [sp, #8]
+    stp x3, x4, [sp, #24]
+    stp x5, x6, [sp, #40]
+    stp x29, x30, [sp, #56]       // Save frame pointer and link register
     
-    // Now we can use x0-x4 freely
-    
-    // Load UART base address (PL011 at 0x09000000)
-    movz x0, #0x0900, lsl #16
-    movk x0, #0x0000, lsl #0
-    
-    // Print 'I' to show we entered handler
-    movz w1, #0x49                // 'I'
-    str w1, [x0]
-    
-    // Acknowledge interrupt from GIC
-    // GICC_IAR at 0x0801000C
+    // Acknowledge interrupt from GIC (GICC_IAR at 0x0801000C)
     movz x1, #0x0801, lsl #16
     movk x1, #0x000C, lsl #0
-    ldr w2, [x1]                  // Read IAR (this acknowledges)
+    ldr w2, [x1]                  // Read IAR (acknowledges interrupt)
     and w2, w2, #0x3FF            // Mask to get interrupt ID
     
-    // Check if this is virtual timer interrupt (ID 27 = 0x1B)
-    cmp w2, #27
-    bne irq_not_timer
+    // Check interrupt type and handle accordingly
+    cmp w2, #27                   // Timer interrupt (ID 27)?
+    beq handle_timer_irq
+    cmp w2, #33                   // UART interrupt (ID 33)?
+    beq handle_uart_irq
+    b irq_eoi                     // Unknown interrupt - just EOI
     
-    // Virtual timer interrupt - reset it for next tick using CVAL (absolute)
-    // CRITICAL: Use CVAL approach like reference repo!
-    // 1. Read current counter value (CNTVCT_EL0)
+handle_timer_irq:
+    // Reset virtual timer for next tick (100ms = 6.25M ticks at 62.5MHz)
     mrs x3, CNTVCT_EL0
-    // 2. Add 62500000 (1 second at 62.5MHz) to get target
-    movz x4, #0x03B9, lsl #16     // 0x03B90000
-    movk x4, #0xACA0, lsl #0      // Complete to 62500000
-    add x3, x3, x4                 // target = current + interval
-    // 3. Write to CNTV_CVAL_EL0 (compare value)
+    movz x4, #0x005F, lsl #16     // 0x005F0000
+    movk x4, #0x5E10, lsl #0      // Complete to 6250000 (100ms)
+    add x3, x3, x4
     msr CNTV_CVAL_EL0, x3
     
-    // Print 'T' to show we reset timer
-    movz w1, #0x54                // 'T'
-    str w1, [x0]
+    // Output '.' to framebuffer via Go function
+    movz w0, #0x2E                // '.' character
+    bl fb_putc_irq
+    b irq_eoi
     
-irq_not_timer:
-    // Signal end of interrupt to GIC
-    // GICC_EOIR at 0x08010010
+handle_uart_irq:
+    // Output '+' to framebuffer via Go function  
+    movz w0, #0x2B                // '+' character
+    bl fb_putc_irq
+    
+    // Clear UART interrupt
+    movz x1, #0x0900, lsl #16
+    movk x1, #0x0044, lsl #0      // UART_ICR
+    movz w3, #0x7FF               // Clear all interrupts
+    str w3, [x1]
+    b irq_eoi
+    
+irq_eoi:
+    // Signal end of interrupt to GIC (GICC_EOIR at 0x08010010)
     movz x1, #0x0801, lsl #16
     movk x1, #0x0010, lsl #0
     str w2, [x1]                  // Write interrupt ID to EOIR
     
-    // Print '>' to show we're returning
-    movz w1, #0x3E                // '>'
-    str w1, [x0]
-    
     // Restore registers and return to normal stack
+    ldp x29, x30, [sp, #56]
+    ldp x5, x6, [sp, #40]
+    ldp x3, x4, [sp, #24]
+    ldp x1, x2, [sp, #8]
     ldr x0, [sp, #0]              // Load original SP_EL1
-    ldp x1, x2, [sp, #8]          // Restore x1, x2
-    ldp x3, x4, [sp, #24]         // Restore x3, x4
-    add sp, sp, #64               // Clean up exception stack
+    add sp, sp, #80
+    mov sp, x0                    // Restore original SP
     
-    // Restore original SP (SP_EL1)
-    mov sp, x0
-    
-    // Return from exception
     eret
     
     

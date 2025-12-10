@@ -10,6 +10,56 @@ _start:
     bne cpu_halt_loop
 
     // CPU 0 continues here
+    
+    // ========================================
+    // Drop from EL2 to EL1 if necessary
+    // QEMU virt with virtualization=on starts at EL2
+    // We need to be at EL1 for proper OS operation
+    // ========================================
+    mrs x0, CurrentEL
+    lsr x0, x0, #2               // Extract EL bits [3:2]
+    cmp x0, #2                   // Are we at EL2?
+    bne at_el1                   // If not, skip EL2->EL1 transition
+    
+    // We're at EL2, need to drop to EL1
+    // Configure HCR_EL2 (Hypervisor Configuration Register)
+    // RW (bit 31) = 1: EL1 uses AArch64
+    // All other bits = 0: No trapping, no virtualization features
+    mov x0, #(1 << 31)           // RW bit for AArch64 at EL1
+    msr HCR_EL2, x0
+    
+    // Configure CNTHCTL_EL2 to allow EL1/EL0 access to timers
+    // EL1PCTEN (bit 0) = 1: Don't trap CNTPCT_EL0 reads from EL1
+    // EL1PCEN (bit 1) = 1: Don't trap CNTP_* accesses from EL1
+    // For virtual timer (CNTV_*), these aren't needed but good to set anyway
+    mov x0, #3                   // EL1PCTEN | EL1PCEN
+    msr CNTHCTL_EL2, x0
+    
+    // Set virtual timer offset to 0 (CNTVOFF_EL2)
+    // This ensures virtual timer counter matches physical counter
+    mov x0, #0
+    msr CNTVOFF_EL2, x0
+    
+    // Configure SPSR_EL2 for return to EL1h (EL1 using SP_EL1)
+    // M[3:0] = 0b0101 = EL1h (EL1 with SP_EL1)
+    // M[4] = 0: AArch64
+    // DAIF = 0b1111: All exceptions masked initially
+    // D (bit 9) = 1: Debug masked
+    // A (bit 8) = 1: SError masked
+    // I (bit 7) = 1: IRQ masked
+    // F (bit 6) = 1: FIQ masked
+    mov x0, #0x3C5               // 0b1111000101 = DAIF masked + EL1h
+    msr SPSR_EL2, x0
+    
+    // Set ELR_EL2 to the address we want to return to (at_el1 label)
+    adr x0, at_el1
+    msr ELR_EL2, x0
+    
+    // Return to EL1 (this is an exception return from EL2 to EL1)
+    eret
+
+at_el1:
+    // Now we're at EL1
     // UART initialization will happen in uartInit() called from kernel_main
     // No early debug writes - wait for proper initialization
     
@@ -73,67 +123,13 @@ _start:
     // 1. Enable interrupts (IRQs) - kernel has set up handlers
     // 2. Enter idle loop that prints dots and waits for interrupts
     
-    // DEBUG: Reached after kernel_main returned - print 'X'
-    movz x10, #0x0900, lsl #16   // UART base = 0x09000000
-    movz w11, #0x58              // 'X' = eXecution reached idle setup
-    str w11, [x10]               // Write to UART
-    
     // Enable IRQs by clearing I bit (bit 1) in DAIF
     msr DAIFCLR, #2              // Clear I bit - enable IRQs
     
-    // DEBUG: IRQs enabled - print 'Q'
-    movz x10, #0x0900, lsl #16   // UART base = 0x09000000
-    movz w11, #0x51              // 'Q' = iRQs enabled
-    str w11, [x10]               // Write to UART
-    
-    // Print 'Y' to confirm IRQs are now enabled
-    movz x10, #0x0900, lsl #16   // UART base = 0x09000000
-    movz w11, #0x59              // 'Y' = IRQs enabled
-    str w11, [x10]               // Write to UART
-    
-    // Print 'E' to confirm entering event loop
-    movz w11, #0x45              // 'E' = Entering event loop
-    str w11, [x10]               // Write to UART
-    
-    // Initialize counters
-    mov x12, #0                  // x12 = iteration counter (for dot printing)
-    mov x14, #0                  // x14 = iteration counter (for exit check)
-    
 idle_loop:
-    // Increment iteration counter
-    add x14, x14, #1
-    
-    // Check if we should exit (after many iterations)
-    // Exit after approximately 1 billion iterations (plenty of time for testing)
-    // 1 billion = 0x3B9ACA00, but we'll use a smaller number for faster exit
-    // 100 million = 0x5F5E100
-    movz x15, #0x5F5, lsl #16    // Load upper part
-    movk x15, #0xE100            // Load lower part (approximates 100M)
-    cmp x14, x15
-    bge exit_via_semihosting     // If >= 100M iterations, exit
-    
-    // Increment dot counter
-    add x12, x12, #1
-    
-    // Check if counter reached ~10000000
-    // Approximate 10M: load 152 << 16 = 9961472 (99.6% of 10M)
-    movz x13, #152, lsl #16      // x13 = 152 << 16 = 9961472
-    cmp x12, x13
-    bne skip_dot                 // If not reached, skip printing dot
-    
-    // Print '.' to show we're still running
-    movz x10, #0x0900, lsl #16   // UART base = 0x09000000
-    movz w11, #0x2E              // '.' character
-    str w11, [x10]               // Write to UART
-    
-    // Reset counter
-    mov x12, #0
-    
-skip_dot:
     // Wait for interrupt (low power mode)
-    wfi                          // Wait for timer interrupt
-    
-    // After interrupt fires and handler returns, loop again
+    wfi                          // Wait for timer or other interrupt
+    // Loop forever - interrupts are handled in exception handlers
     b idle_loop
 
 // Exit via semihosting

@@ -50,7 +50,7 @@ const (
 	// PPIs (Private Peripheral Interrupts): 16-31
 	// SPIs (Shared Peripheral Interrupts): 32-1019
 	IRQ_ID_TIMER_PPI = 27 // ARM Generic Timer PPI - Virtual Timer (CNTV) for EL1 - ID 27 (like reference repo)
-	IRQ_ID_UART_SPI  = 1  // PL011 UART SPI interrupt (for QEMU virt machine - VIRT_UART0 = 1)
+	IRQ_ID_UART_SPI  = 33 // Try interrupt 33 (should be safe SPI)
 )
 
 // Interrupt handler function type
@@ -98,12 +98,13 @@ func gicInit() {
 		mmio_write(GICD_ICPENDRn+uintptr(i*4), 0xFFFFFFFF)
 	}
 
-	// Step 6: Route all interrupts to Group 1NS so they signal as IRQs
-	// Group 0 delivers as FIQ when running non-secure EL1, and we never clear the F-bit.
-	// Leaving Group 0 here would prevent timer PPIs (27) from being delivered.
-	uartPuts("DEBUG: Step 6 - Set interrupt groups to Group1NS\r\n")
+	// Step 6: Route all interrupts to Group 1 (non-secure)
+	// CRITICAL: On QEMU virt, we run in non-secure state at EL1
+	// Group 0 = secure interrupts (FIQ), Group 1 = non-secure (IRQ)
+	// Non-secure EL1 can only receive Group 1 interrupts!
+	uartPuts("DEBUG: Step 6 - Set all interrupts to Group 1 (non-secure)\r\n")
 	for i := 0; i < 32; i++ {
-		mmio_write(GICD_IGROUPRn+uintptr(i*4), 0xFFFFFFFF)
+		mmio_write(GICD_IGROUPRn+uintptr(i*4), 0xFFFFFFFF) // All in Group 1
 	}
 
 	// Step 7: Set interrupt priorities (default: 0x80 = medium priority)
@@ -129,16 +130,19 @@ func gicInit() {
 	}
 
 	// Step 10: Enable distributor
-	// Enable both Group 0 and Group 1 interrupts
-	// Bit 0 = Enable Group 0, Bit 1 = Enable Group 1
+	// Enable both Group 0 and Group 1 forwarding
+	// Bit 0: EnableGrp0 - Enable Group 0 distribution
+	// Bit 1: EnableGrp1 - Enable Group 1 distribution
 	uartPuts("DEBUG: Step 10 - Enable distributor (Groups 0 and 1)\r\n")
-	mmio_write(GICD_CTLR, 0x03) // Enable both groups (0x03 = bits 0 and 1)
+	mmio_write(GICD_CTLR, 0x03) // Enable both Group 0 and Group 1
 
 	// Step 11: Enable CPU interface
-	// Enable both Group 0 and Group 1 interrupts in CPU interface
-	// Bit 0 = Enable Group 0, Bit 1 = Enable Group 1 (non-secure)
+	// Enable both Group 0 and Group 1 signaling
+	// Bit 0: EnableGrp0 - Signal Group 0 interrupts (FIQ)
+	// Bit 1: EnableGrp1 - Signal Group 1 interrupts (IRQ)
+	// For non-secure EL1, we want Group 1 to signal as IRQ
 	uartPuts("DEBUG: Step 11 - Enable CPU interface (Groups 0 and 1)\r\n")
-	mmio_write(GICC_CTLR, 0x03) // Enable both groups
+	mmio_write(GICC_CTLR, 0x03) // Enable both Group 0 and Group 1
 
 	uartPuts("GIC initialized\r\n")
 }
@@ -199,14 +203,11 @@ func gicEndOfInterrupt(irqID uint32) {
 // registerInterruptHandler registers a handler function for a specific interrupt
 //
 //go:nosplit
-//go:nosplit
 func registerInterruptHandler(irqID uint32, handler InterruptHandler) {
 	if irqID >= 1020 {
 		return // Invalid interrupt ID
 	}
-	uartPuts("DEBUG: registerInterruptHandler - about to assign to array\r\n")
 	interruptHandlers[irqID] = handler
-	uartPuts("DEBUG: registerInterruptHandler - assignment complete\r\n")
 }
 
 var interruptsEnabled bool
@@ -243,10 +244,20 @@ func gicHandleInterrupt() {
 		// Call handler
 		interruptHandlers[irqID]()
 	} else {
-		// No handler registered - log it
-		uartPuts("Unhandled interrupt: ")
-		uartPutUint32(irqID)
-		uartPuts("\r\n")
+		// No handler registered - log it using direct UART to avoid ring buffer issues
+		uart_putc_pl011('U') // 'U' for Unhandled
+		uart_putc_pl011('I') // 'I' for Interrupt
+		uart_putc_pl011(':') // ':'
+		uart_putc_pl011(' ')
+		// Simple digit output for interrupt ID
+		if irqID < 10 {
+			uart_putc_pl011(byte('0' + irqID))
+		} else {
+			uart_putc_pl011(byte('0' + irqID/10))
+			uart_putc_pl011(byte('0' + irqID%10))
+		}
+		uart_putc_pl011('\r')
+		uart_putc_pl011('\n')
 	}
 
 	// Signal end of interrupt

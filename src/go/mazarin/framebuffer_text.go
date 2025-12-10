@@ -492,6 +492,40 @@ func FramebufferPutHex64(val uint64) {
 }
 
 // ============================================================================
+// Interrupt-Safe Framebuffer Output (called from assembly IRQ handlers)
+// ============================================================================
+
+// fb_putc_irq outputs a single character to the framebuffer from an interrupt handler
+// This is called from assembly, so it must be interrupt-safe and use //go:nosplit
+// Handles line wrapping automatically
+//
+//go:linkname fb_putc_irq fb_putc_irq
+//go:nosplit
+//go:noinline
+func fb_putc_irq(c byte) {
+	if !fbTextInitialized {
+		return // Silently skip if framebuffer not initialized
+	}
+
+	// Render the character at current cursor position (8x8 for compactness)
+	pixelX := fbinfo.CharsX * 8
+	pixelY := fbinfo.CharsY * 8
+	RenderChar8x8(c, pixelX, pixelY, fbForegroundColor)
+
+	// Advance cursor with line wrapping
+	fbinfo.CharsX++
+	if fbinfo.CharsX >= fbinfo.CharsWidth {
+		fbinfo.CharsX = 0
+		fbinfo.CharsY++
+		if fbinfo.CharsY >= fbinfo.CharsHeight {
+			// Scroll screen up
+			ScrollScreenUp()
+			fbinfo.CharsY = fbinfo.CharsHeight - 1
+		}
+	}
+}
+
+// ============================================================================
 // Initialization
 // ============================================================================
 

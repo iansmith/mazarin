@@ -30,7 +30,7 @@ func uartInit() {
 	uart_init_pl011()
 
 	// Note: Ring buffer initialization deferred until after memInit()
-	// Call uartInitRingBufferAfterMemInit() after memory management is set up
+	// Call uartInitRingBuffer() after memory management is set up
 }
 
 // uartInitRingBufferAfterMemInit initializes the ring buffer after memory is available
@@ -49,15 +49,15 @@ func uartInitRingBufferAfterMemInit() {
 //
 //go:nosplit
 func uartSetupInterrupts() {
-	uartPuts("UART: Setting up interrupt handler for ID 1 (VIRT_UART0)...\r\n")
-	// Use interrupt ID 1 for PL011 UART (confirmed from QEMU virt.c source)
+	// Enable RX interrupt in UART (bit 4 = RXIM)
+	// This triggers when receive FIFO has data
+	mmio_write(QEMU_UART_BASE+0x38, 1<<4) // UART_IMSC - set RXIM bit
+
+	// Register handler and enable in GIC
 	registerInterruptHandler(IRQ_ID_UART_SPI, uartInterruptHandler)
 	gicEnableInterrupt(IRQ_ID_UART_SPI)
 
-	// Initially disable TX interrupt in UART (will enable when characters are queued)
-	mmio_write(QEMU_UART_BASE+0x38, 0) // UART_IMSC - clear TXIM bit (5)
-
-	uartPuts("UART: Interrupt-driven UART ready\r\n")
+	uartPuts("UART interrupts enabled\r\n")
 }
 
 // uartDrainRingBuffer drains one character from ring buffer to UART
@@ -81,11 +81,17 @@ func uartDrainRingBuffer() {
 }
 
 // uartPutc outputs a character via UART (QEMU virt machine)
-// Temporarily use direct UART output for debugging
+// Uses interrupt-driven transmission via ring buffer when available
 //
 //go:nosplit
 func uartPutc(c byte) {
-	uart_putc_pl011(c)
+	// Try to enqueue character to ring buffer
+	if uartEnqueueOrOverflow(c) {
+		// Character was enqueued successfully
+		// Enable TX interrupt to start transmission
+		mmio_write(QEMU_UART_BASE+0x38, 1<<5) // UART_IMSC - set TXIM bit (5)
+	}
+	// If enqueue failed (overflow), character was dropped and "***" was added
 }
 
 // uartGetc reads a character from UART (QEMU virt machine)
@@ -248,34 +254,16 @@ func uartEnqueueOrOverflow(c byte) bool {
 // ============================================================================
 
 // uartInterruptHandler handles UART transmit interrupts
-// Called when UART TX FIFO becomes ready for more data
+// Minimal handler for testing - just clear interrupt
 //
 //go:nosplit
 //go:noinline
 func uartInterruptHandler() {
-	// Clear the UART interrupt by reading MIS and writing to ICR
-	mis := mmio_read(QEMU_UART_BASE + 0x40) // UART_MIS
-	mmio_write(QEMU_UART_BASE+0x44, mis)    // UART_ICR
-
-	// Transmit characters from ring buffer while UART TX FIFO has space
-	for {
-		// Check if UART TX FIFO is full (bit 5 of UART_FR register)
-		fr := mmio_read(QEMU_UART_BASE + 0x18) // UART_FR
-		if fr&(1<<5) != 0 {                    // TXFF bit set = FIFO full
-			break
-		}
-
-		// Try to dequeue a character from ring buffer
-		c, ok := uartDequeue()
-		if !ok {
-			// Ring buffer empty - disable TX interrupt since no more data to send
-			mmio_write(QEMU_UART_BASE+0x38, 0) // UART_IMSC - clear TXIM bit (5)
-			break
-		}
-
-		// Write character to UART
-		mmio_write(QEMU_UART_DR, uint32(c))
-	}
+	// Minimal handler - just return without doing anything
+	// This tests if the handler dispatch itself is the problem
+	// mis := mmio_read(QEMU_UART_BASE + 0x40) // UART_MIS
+	// mmio_write(QEMU_UART_BASE+0x44, mis)    // UART_ICR
+	// mmio_write(QEMU_UART_BASE+0x38, 0) // UART_IMSC - clear TXIM bit (5)
 }
 
 // Note: The current logic is wrong. When spaceBefore == 3, we should allow the enqueue
