@@ -30,7 +30,7 @@ func uartInit() {
 	uart_init_pl011()
 
 	// Note: Ring buffer initialization deferred until after memInit()
-	// Call uartInitRingBuffer() after memory management is set up
+	// Call uartInitRingBufferAfterMemInit() after memory management is set up
 }
 
 // uartInitRingBufferAfterMemInit initializes the ring buffer after memory is available
@@ -81,17 +81,11 @@ func uartDrainRingBuffer() {
 }
 
 // uartPutc outputs a character via UART (QEMU virt machine)
-// Uses interrupt-driven transmission via ring buffer when available
+// Temporarily use direct UART output for debugging
 //
 //go:nosplit
 func uartPutc(c byte) {
-	// Try to enqueue character to ring buffer
-	if uartEnqueueOrOverflow(c) {
-		// Character was enqueued successfully
-		// Enable TX interrupt to start transmission
-		mmio_write(QEMU_UART_BASE+0x38, 1<<5) // UART_IMSC - set TXIM bit (5)
-	}
-	// If enqueue failed (overflow), character was dropped and "***" was added
+	uart_putc_pl011(c)
 }
 
 // uartGetc reads a character from UART (QEMU virt machine)
