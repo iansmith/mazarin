@@ -2,14 +2,28 @@
 
 # Script to connect GDB to QEMU running in debug mode
 # Usage: ./gdb-connect.sh [gdb-port]
+#
+# First, start QEMU with GDB server:
+#   cd /Users/iansmith/mazzy && docker/mazboot -g
+#
+# Then in another terminal, run this script:
+#   cd /Users/iansmith/mazzy/src && ./gdb-connect.sh
 
 GDB_PORT="${1:-1234}"
-KERNEL_ELF="kernel.elf"
 
-# Check if kernel.elf exists
+# Use the QEMU kernel (same one that mazboot uses)
+KERNEL_ELF="../docker/builtin/kernel.elf"
+
+# Fallback to local kernel.elf if builtin doesn't exist
 if [ ! -f "$KERNEL_ELF" ]; then
-    echo "Error: $KERNEL_ELF not found. Run 'make' first." >&2
-    exit 1
+    KERNEL_ELF="kernel-qemu.elf"
+    if [ ! -f "$KERNEL_ELF" ]; then
+        echo "Error: kernel.elf not found. Expected:" >&2
+        echo "  - $KERNEL_ELF" >&2
+        echo "  - kernel-qemu.elf" >&2
+        echo "Please build the QEMU kernel first: cd src && make qemu" >&2
+        exit 1
+    fi
 fi
 
 # Use the target GDB from the toolchain
@@ -24,11 +38,35 @@ echo "Connecting GDB to QEMU on port $GDB_PORT..."
 echo "Kernel: $KERNEL_ELF"
 echo ""
 
+# Get the absolute path to the source directory
+SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
+echo "Source directory: $SRC_DIR"
+echo ""
+
+echo "Useful GDB commands:"
+echo "  (gdb) continue          # Start/resume execution"
+echo "  (gdb) break <function>  # Set breakpoint (e.g., 'break main.KernelMain')"
+echo "  (gdb) info registers    # Show all registers"
+echo "  (gdb) x/10i $pc         # Disassemble 10 instructions at PC"
+echo "  (gdb) print/x $sp        # Print stack pointer in hex"
+echo "  (gdb) print/x $x28       # Print g pointer (x28) in hex"
+echo "  (gdb) info source       # Show current source file"
+echo "  (gdb) list              # Show source code around current line"
+echo "  (gdb) directory          # Show source search directories"
+echo ""
+
 # Start GDB and connect
-exec "$GDB" "$KERNEL_ELF" -ex "target remote localhost:$GDB_PORT" \
+exec "$GDB" "$KERNEL_ELF" \
+    -ex "target remote localhost:$GDB_PORT" \
     -ex "set architecture aarch64" \
+    -ex "directory $SRC_DIR" \
+    -ex "directory $SRC_DIR/asm" \
+    -ex "directory $SRC_DIR/go/mazarin" \
+    -ex "directory $SRC_DIR/bitfield" \
+    -ex "set substitute-path /Users/iansmith/mazzy/src $SRC_DIR" \
     -ex "layout asm" \
-    -ex "layout regs"
+    -ex "layout regs" \
+    -ex "set disassembly-flavor intel"
 
 
 

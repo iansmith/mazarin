@@ -62,6 +62,14 @@ func qemu_exit()
 //go:nosplit
 func get_stack_pointer() uintptr
 
+//go:linkname set_g_pointer set_g_pointer
+//go:nosplit
+func set_g_pointer(g uintptr)
+
+//go:linkname switchToGoroutine switchToGoroutine
+//go:nosplit
+func switchToGoroutine(g *runtimeG, fn uintptr)
+
 // Peripheral base address for Raspberry Pi 4
 const (
 	// Peripheral base address for Raspberry Pi 4
@@ -331,34 +339,64 @@ func KernelMain(r0, r1, atags uint32) {
 	initKernelStack()
 	uartPutc('s') // 's' = Stack init done
 
-	// Reference GrowStackForCurrent to prevent optimization
-	// This function is called from assembly (morestack) and must not be optimized away
-	// Temporarily disabled until stack growth is fully implemented
-	// var fnPtr func() = GrowStackForCurrent
-	// _ = fnPtr
+	// Initialize memory management (pages and heap) early so we can allocate the main goroutine
+	// This must happen before createKernelGoroutine since it needs kmalloc
+	uartPuts("DEBUG: Initializing memory management (early)...\r\n")
+	uartPutc('M') // 'M' = Memory init starting
+	memInit(0)    // No ATAGs in QEMU, pass 0
+	uartPutc('m') // 'm' = Memory init done
+	uartPuts("DEBUG: Memory management initialized\r\n")
 
-	// Snapshot stack state before switching stacks (DAIF read can fault here)
-	sp := get_stack_pointer()
-	uartPuts("DEBUG: Pre-systemstack state\r\n")
-	uartPuts("  SP=0x")
-	uartPutHex64(uint64(sp))
-	uh := func(label string, v uintptr) {
-		uartPuts(label)
-		uartPutHex64(uint64(v))
+	// Create main kernel goroutine with 32KB stack
+	uartPuts("DEBUG: Creating main kernel goroutine...\r\n")
+	mainG := createKernelGoroutine(nil, KERNEL_GOROUTINE_STACK_SIZE)
+	if mainG == nil {
+		uartPuts("ERROR: Failed to create main goroutine!\r\n")
+		for {
+			// Hang
+		}
 	}
-	uh(" LO=0x", kernelStack.lo)
-	uh(" HI=0x", kernelStack.hi)
-	uh(" GUARD=0x", kernelStack.guard0)
-	uartPuts("\r\n")
 
-	// TEMP: bypass systemstack to see if body itself is safe
-	uartPuts("DEBUG: KernelMain calling kernelMainBodyWrapper directly (bypass systemstack)\r\n")
+	// Set up the function to call (kernelMainBody)
+	// We'll use a wrapper function that we can get the address of
+	// For now, set PC to 0 and let the assembly function handle it
+	mainG.startpc = 0  // Will be set by switchToGoroutine
+	mainG.sched.pc = 0 // Will be set by switchToGoroutine
+
+	uartPuts("DEBUG: Switching to main goroutine stack via g0...\r\n")
+
+	// Use g0 to switch to the main goroutine
+	// This is the proper pattern: g0 (system goroutine) switches to user goroutines
+	// The assembly function will:
+	//   1. Set x28 to the new goroutine
+	//   2. Switch SP to the new goroutine's stack
+	//   3. Return, allowing us to call the function on the new stack
+	// Get function address using reflect (works in bare metal if we have reflect)
+	// For now, pass 0 and the assembly will just set up the stack/x28 and return
+	switchToGoroutine(mainG, 0)
+
+	// After switchToGoroutine returns, we're on the new stack with x28 set
+	// Now we can safely call the function
+	uartPuts("DEBUG: Stack switched by g0, calling kernelMainBodyWrapper...\r\n")
 	kernelMainBodyWrapper()
-	// systemstack(kernelMainBodyWrapper)
+
+	// Should never return here - switchToGoroutine should jump to the new goroutine
+	uartPuts("ERROR: switchToGoroutine returned (unexpected)\r\n")
+	for {
+	} // Hang
+
+	// Should never return here (kernelMainBodyWrapper should not return)
+	uartPuts("ERROR: Returned from kernelMainBodyWrapper (unexpected)\r\n")
+	for {
+		// Hang
+	}
 
 	uartPuts("DEBUG: KernelMain about to return\r\n")
 }
 
+// kernelMainBodyWrapper is called from assembly after switching to the new goroutine's stack
+// This will be promoted to a global symbol via objcopy in the Makefile
+//
 //go:noinline
 func kernelMainBodyWrapper() {
 	uartPuts("DEBUG: Entered kernelMainBodyWrapper\r\n")
@@ -369,6 +407,16 @@ func kernelMainBodyWrapper() {
 
 // kernelMainBody performs the full initialization sequence on a regular stack.
 //
+// KernelMainBody is the exported entry point for the main kernel goroutine
+// This is called from assembly after switching to the main goroutine's stack
+// Note: Go exports this as main.KernelMainBody (package.function)
+//
+//go:linkname KernelMainBody main.KernelMainBody
+//go:noinline
+func KernelMainBody() {
+	kernelMainBody()
+}
+
 //go:noinline
 func kernelMainBody() {
 	// Minimal staged bring-up with early return after stage2
@@ -400,15 +448,17 @@ func kernelMainBody() {
 	} else {
 		puts("Write barrier flag: enabled\r\n")
 	}
-	uartPuts("DEBUG: stage2 complete, proceeding to stage3 (memInit)\r\n")
+	uartPuts("DEBUG: stage2 complete, skipping stage3 (memInit already done)\r\n")
 
 	// Stage 3: memory init
-	uartPuts("DEBUG: stage3 memInit start\r\n")
-	uartPutc('3') // Breadcrumb: about to call puts for memInit start
-	puts("Initializing memory management...\r\n")
-	uartPutc('3') // Breadcrumb: puts for memInit start returned
-	uartPutc('M') // Breadcrumb: about to call memInit
-	memInit(0)    // No ATAGs in QEMU, pass 0
+	// NOTE: memInit is now called early in KernelMain (before goroutine creation)
+	// so we skip it here to avoid double initialization
+	uartPuts("DEBUG: stage3 memInit skipped (already initialized)\r\n")
+	uartPutc('3') // Breadcrumb: memInit already done
+	puts("Memory management already initialized (done early for goroutine allocation)\r\n")
+	uartPutc('3') // Breadcrumb: message printed
+	uartPutc('M') // Breadcrumb: memInit skipped
+	// memInit(0)    // Already called early in KernelMain
 	// CRITICAL: Use assembly-level UART write to avoid any Go function call overhead
 	// This helps us see if the crash is in the return path or in a function call
 	uart_putc_pl011('m') // Breadcrumb: memInit returned (assembly-level, bypasses Go)

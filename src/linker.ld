@@ -85,10 +85,11 @@ SECTIONS
     __end = .;
     
     /* g0 stack region: 8KB at top of kernel RAM
-     * g0 stack: 0x5FFFFE000 - 0x5F000000 (8KB, system goroutine)
+     * g0 stack: 0x5EFFFE000 - 0x5F000000 (8KB, system goroutine)
+     * Stack grows downward from 0x5F000000 (top) to 0x5EFFFE000 (bottom)
      * Main goroutine stack: 32KB (allocated from heap)
-     * Heap extends from __end to 0x5FFFFE000 (just before g0 stack) */
+     * Heap extends from __end to 0x5EFFFE000 (just before g0 stack) */
     . = 0x5F000000;
     __stack_top = .;
-    __g0_stack_bottom = 0x5FFFFE000;  /* g0 stack bottom (8KB before top) */
+    __g0_stack_bottom = 0x5EFFFE000;  /* g0 stack bottom (8KB below top) */
 }

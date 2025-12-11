@@ -43,8 +43,8 @@ func heapInit(heapStart uintptr) {
 
 	// Initialize the first segment to represent the entire heap as free
 	// But limit it to available space before g0 stack region
-	// g0 stack is 8KB at 0x5FFFFE000-0x5F000000 (grows downward from 0x5F000000)
-	const G0_STACK_BOTTOM = 0x5FFFFE000 // g0 stack bottom (heap must end before this)
+	// g0 stack is 8KB at 0x5EFFFE000-0x5F000000 (grows downward from 0x5F000000)
+	const G0_STACK_BOTTOM = 0x5EFFFE000 // g0 stack bottom (heap must end before this)
 	heapEnd := heapStart + uintptr(KERNEL_HEAP_SIZE)
 	actualHeapSize := uint32(KERNEL_HEAP_SIZE)
 
@@ -114,6 +114,13 @@ func kmalloc(size uint32) unsafe.Pointer {
 	loopCount := uint32(0)
 	maxLoops := uint32(1000) // Safety limit to prevent infinite loops
 	for curr != nil && loopCount < maxLoops {
+		// Safety check: validate pointer is in valid heap range
+		currPtr := uintptr(unsafe.Pointer(curr))
+		if currPtr < uintptr(unsafe.Pointer(heapSegmentListHead)) || currPtr > uintptr(unsafe.Pointer(heapSegmentListHead))+uintptr(KERNEL_HEAP_SIZE) {
+			uartPuts("kmalloc: ERROR - invalid segment pointer detected\r\n")
+			return nil
+		}
+
 		if curr.isAllocated == 0 {
 			// This segment is free
 			diff := int32(curr.segmentSize) - int32(totalSize)
@@ -124,6 +131,20 @@ func kmalloc(size uint32) unsafe.Pointer {
 				if diff == 0 {
 					break
 				}
+			}
+		}
+		// Safety check: validate next pointer before following it
+		nextPtr := uintptr(unsafe.Pointer(curr.next))
+		if curr.next != nil {
+			// Validate next pointer is in valid heap range
+			heapStart := uintptr(unsafe.Pointer(heapSegmentListHead))
+			heapEnd := heapStart + uintptr(KERNEL_HEAP_SIZE)
+			if nextPtr < heapStart || nextPtr > heapEnd {
+				uartPuts("kmalloc: ERROR - invalid next pointer detected\r\n")
+				uartPuts("kmalloc: curr=")
+				// Can't easily print hex, but we can indicate the problem
+				uartPuts("heapStart=0x401xxxxx, nextPtr out of range\r\n")
+				return nil // Heap structure corrupted, cannot allocate
 			}
 		}
 		curr = curr.next
@@ -268,8 +289,8 @@ func memInit(atagsPtr uintptr) {
 	heapStart := (heapStartBase + HEAP_ALIGNMENT - 1) &^ (HEAP_ALIGNMENT - 1)
 
 	// Step 2.5: Verify heap fits before g0 stack region
-	// g0 stack is 8KB at 0x5FFFFE000-0x5F000000 (grows downward from 0x5F000000)
-	const G0_STACK_BOTTOM = 0x5FFFFE000 // g0 stack bottom (heap must end before this)
+	// g0 stack is 8KB at 0x5EFFFE000-0x5F000000 (grows downward from 0x5F000000)
+	const G0_STACK_BOTTOM = 0x5EFFFE000 // g0 stack bottom (heap must end before this)
 	heapEnd := heapStart + KERNEL_HEAP_SIZE
 	if heapEnd > G0_STACK_BOTTOM {
 		// Heap would overlap with g0 stack - reduce heap size

@@ -79,11 +79,11 @@ at_el1:
     // - 0x40000000-0x40100000: DTB (QEMU device tree blob, 1MB)
     // - 0x40100000-0x48100000: Kernel RAM (128MB allocated for kernel)
     //   - 0x40100000-0x401xxxxx: BSS section
-    //   - After BSS: Heap (grows upward, extends to 0x5FFFFE000)
-    //   - 0x5FFFFE000-0x5F000000: g0 stack (8KB, grows downward from 0x5F000000)
+    //   - After BSS: Heap (grows upward, extends to 0x5EFFFE000)
+    //   - 0x5EFFFE000-0x5F000000: g0 stack (8KB, grows downward from 0x5F000000)
     //
     // Set stack pointer to 0x5F000000 (g0 stack top, 8KB stack)
-    // g0 stack bottom is at 0x5FFFFE000, heap should end before this
+    // g0 stack bottom is at 0x5EFFFE000, heap should end before this
     movz w15, #0x53                // 'S' = Setting stack
     str w15, [x14]
     movz x0, #0x5F00, lsl #16    // 0x5F000000 (g0 stack top, 8KB)

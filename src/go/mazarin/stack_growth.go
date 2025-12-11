@@ -20,10 +20,10 @@ const (
 	_StackSmall = 128  // Small stack threshold
 
 	// g0 stack bounds (system goroutine, 8KB)
-	// g0 stack: 0x5FFFFE000 - 0x5F000000 (8KB, fixed size)
+	// g0 stack: 0x5EFFFE000 - 0x5F000000 (8KB, fixed size)
 	G0_STACK_SIZE   = 8 * 1024 // 8KB
 	G0_STACK_TOP    = 0x5F000000
-	G0_STACK_BOTTOM = 0x5FFFFE000 // G0_STACK_TOP - G0_STACK_SIZE
+	G0_STACK_BOTTOM = 0x5EFFFE000 // G0_STACK_TOP - G0_STACK_SIZE
 
 	// Main goroutine stack size (allocated from heap)
 	KERNEL_GOROUTINE_STACK_SIZE = 32 * 1024 // 32KB
@@ -68,7 +68,7 @@ var allStacks *stack
 //
 //go:nosplit
 func initKernelStack() {
-	// g0 stack: fixed 8KB at 0x5FFFFE000 - 0x5F000000
+	// g0 stack: fixed 8KB at 0x5EFFFE000 - 0x5F000000
 	// This is the system goroutine stack (for runtime operations)
 	kernelStack.lo = G0_STACK_BOTTOM
 	kernelStack.hi = G0_STACK_TOP

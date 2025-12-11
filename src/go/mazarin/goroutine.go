@@ -53,15 +53,19 @@ func createKernelGoroutine(fn func(), stackSize uint32) *runtimeG {
 	gPtr.m = m0Ptr
 
 	// 5. Initialize scheduler state
-	// Set up stack pointer at top of stack (minus frame size)
-	frameSize := uintptr(4*8 + 16) // 4 pointers + frame overhead
+	// Set up stack pointer at top of stack (16-byte aligned for AArch64)
+	// AArch64 requires 16-byte stack alignment
+	// Reserve space for initial frame: 2 registers (x29, x30) = 16 bytes
+	frameSize := uintptr(16) // Frame pointer + return address
 	sp := stackHi - frameSize
+	// Ensure 16-byte alignment (AArch64 requirement)
+	sp = sp &^ uintptr(15) // Clear lower 4 bits
 	gPtr.sched.sp = sp
 	gPtr.stktopsp = sp
 	// Set PC to goexit (simplified - real Go uses abi.FuncPCABI0(goexit))
 	// For now, we'll set it to the function we want to run
-	gPtr.sched.pc = 0 // Will be set by gostartcallfn equivalent
-	gPtr.sched.g = guintptr(unsafe.Pointer(gPtr))
+	gPtr.sched.pc = 0                            // Will be set by gostartcallfn equivalent
+	gPtr.sched.g = uintptr(unsafe.Pointer(gPtr)) // guintptr is just uintptr
 
 	// 6. Set up function call
 	// This is simplified - in real Go, gostartcallfn() does this

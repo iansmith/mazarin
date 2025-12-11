@@ -94,6 +94,14 @@ set_stack_pointer:
     dsb sy               // Memory barrier to ensure SP update is visible
     ret                  // Return
 
+// set_g_pointer(g uintptr) - Sets x28 (g pointer register)
+// x0 = new goroutine pointer
+.global set_g_pointer
+set_g_pointer:
+    mov x28, x0          // Set x28 (g pointer) to new goroutine
+    dsb sy               // Memory barrier
+    ret                  // Return
+
 // qemu_exit() - Exit QEMU using semihosting
 // This function uses the QEMU semihosting interface to cleanly exit
 // Requires QEMU to be run with -semihosting flag

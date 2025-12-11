@@ -126,7 +126,7 @@ func pageInit(atagsPtr uintptr) {
 		// Fallback: use 128MB for kernel RAM region (not full 1GB)
 		// QEMU has 1GB total, but kernel only uses 128MB (0x40100000 - 0x48100000)
 		// This limits page array size to ~0.8MB instead of ~6.3MB
-		// Heap can extend beyond 0x48100000 up to g0 stack at 0x5FFFFE000
+		// Heap can extend beyond 0x48100000 up to g0 stack at 0x5EFFFE000
 		uartPuts("pageInit: Using 128MB for kernel RAM region (QEMU)\r\n")
 		memSize = 128 * 1024 * 1024 // 128MB for kernel RAM region
 	} else {
