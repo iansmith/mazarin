@@ -1,3 +1,11 @@
+// Put dummy buffer in BSS (will be cleared at boot)
+// This is safe - it's in the normal BSS section after other globals
+.section ".bss"
+.align 4
+.global write_barrier_dummy_buffer
+write_barrier_dummy_buffer:
+    .space 1024    // 1KB dummy buffer for write barrier (discarded writes)
+
 .section ".text"
 
 // Custom write barrier functions that perform the actual assignment
@@ -18,26 +26,28 @@
 // This global symbol should override the Go runtime's local symbol
 .global runtime.gcWriteBarrier2
 runtime.gcWriteBarrier2:
-    // x27 = destination address (set by calling code)
-    // x2 = new value (pointer to assign)
-    // Just write directly to destination - no buffer, no GC tracking
-    str x2, [x27]
+    // Return a dummy buffer address in x25
+    // The caller will write to the buffer ([x25], [x25+8], etc.)
+    // AND to the actual destination ([x27+offset])
+    // We use a dummy buffer so the buffer writes don't corrupt memory
+    adrp x25, write_barrier_dummy_buffer
+    add  x25, x25, :lo12:write_barrier_dummy_buffer
     ret
 
 // gcWriteBarrier3 - called for 3-pointer writes (24 bytes)
 .global runtime.gcWriteBarrier3
 runtime.gcWriteBarrier3:
-    // x27 = destination, x2, x3, x4 = values
-    stp x2, x3, [x27]
-    str x4, [x27, #16]
+    // Return dummy buffer address
+    adrp x25, write_barrier_dummy_buffer
+    add  x25, x25, :lo12:write_barrier_dummy_buffer
     ret
 
 // gcWriteBarrier4 - called for 4-pointer writes (32 bytes)
 .global runtime.gcWriteBarrier4
 runtime.gcWriteBarrier4:
-    // x27 = destination, x2, x3, x4, x5 = values
-    stp x2, x3, [x27]
-    stp x4, x5, [x27, #16]
+    // Return dummy buffer address
+    adrp x25, write_barrier_dummy_buffer
+    add  x25, x25, :lo12:write_barrier_dummy_buffer
     ret
 
 // Main gcWriteBarrier function (called by gcWriteBarrier2/3/4 with x25 = size)

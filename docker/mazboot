@@ -63,7 +63,8 @@ else
 fi
 
 # Parse command line options
-USE_COCOA=0
+# Default to Cocoa display (native macOS window)
+USE_COCOA="${USE_COCOA:-1}"
 KILL_PORT=0
 USE_GDB=0
 GDB_PORT="${GDB_PORT:-1234}"
@@ -71,6 +72,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         -c)
             USE_COCOA=1
+            shift
+            ;;
+        -v)
+            USE_COCOA=0
             shift
             ;;
         -k)
@@ -87,8 +92,9 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown option: $1" >&2
-            echo "Usage: $0 [-c] [-k] [-g]" >&2
-            echo "  -c: Use Cocoa display instead of VNC" >&2
+            echo "Usage: $0 [-c] [-v] [-k] [-g]" >&2
+            echo "  -c: Use Cocoa display (default, native macOS window)" >&2
+            echo "  -v: Use VNC display instead of Cocoa" >&2
             echo "  -k: Kill any process using the VNC port" >&2
             echo "  -g: Enable GDB server on port $GDB_PORT (use GDB_PORT=1235 to change)" >&2
             exit 1

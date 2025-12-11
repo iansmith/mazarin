@@ -307,8 +307,8 @@ func ramfbInit() bool {
 
 	// Allocate framebuffer memory
 	// Must match QEMU_FB_WIDTH and QEMU_FB_HEIGHT from framebuffer_qemu.go
-	fbWidth := uint32(640)
-	fbHeight := uint32(480)
+	fbWidth := uint32(1024)
+	fbHeight := uint32(768)
 	fbSize := fbWidth * fbHeight * 4
 
 	fbMem := kmalloc(fbSize)
@@ -321,7 +321,7 @@ func ramfbInit() bool {
 	fbAddr := pointerToUintptr(fbMem)
 	// Use 32-bit format (XRGB8888) like working example
 	// Working code: stride = fb_width * sizeof(uint32_t) = width * 4
-	fbStride := fbWidth * 4 // 640 * 4 = 2560
+	fbStride := fbWidth * 4 // 1024 * 4 = 4096
 
 	// Create RAMFB configuration structure in global variable
 	// IMPORTANT: The RAMFBCfg structure fields must be in big-endian format
@@ -888,12 +888,16 @@ func qemu_cfg_find_file() uint32 {
 	uartPutc('R') // Breadcrumb: about to reselect file_dir for sequential read
 
 	// Re-select file directory so sequential reads start deterministically
+	uartPutc('M') // Breadcrumb: about to write selector
 	mmio_write16(uintptr(FW_CFG_SELECTOR_ADDR), swap16(uint16(FW_CFG_FILE_DIR)))
+	uartPutc('m') // Breadcrumb: selector written
 	dsb()
-	// Skip the 4-byte count field (already read above) using traditional read
-	var skipBuf [4]byte
-	qemu_cfg_read_entry_traditional(unsafe.Pointer(&skipBuf[0]), FW_CFG_FILE_DIR, 4)
-	uartPutc('r') // Breadcrumb: skip completed
+	uartPutc('D') // Breadcrumb: dsb completed
+	// Skip the 4-byte count field by reading into the count variable again (reuse memory)
+	uartPutc('S') // Breadcrumb: about to skip count bytes
+	qemu_cfg_read_entry_traditional(unsafe.Pointer(&count), FW_CFG_FILE_DIR, 4)
+	uartPutc('s') // Breadcrumb: skip completed
+	uartPutc('r') // Breadcrumb: continuing
 
 	if countVal == 0 {
 		uartPuts("RAMFB: Count is zero, returning\r\n")
@@ -902,17 +906,33 @@ func qemu_cfg_find_file() uint32 {
 
 	// Iterate through file entries
 	uartPuts("RAMFB: Searching files...\r\n")
-	for e := uint32(0); e < countVal; e++ {
-		var qfile QemuCfgFile
-		qemu_cfg_read(unsafe.Pointer(&qfile), 64) // Use sequential read, not traditional
+	uartPutc('L') // Breadcrumb: entering loop
 
+	// Allocate qfile on heap to avoid stack issues
+	uartPutc('H') // Breadcrumb: allocating qfile on heap
+	qfile := (*QemuCfgFile)(kmalloc(64))
+	if qfile == nil {
+		uartPuts("RAMFB: ERROR - Failed to allocate qfile\r\n")
+		return 0
+	}
+	uartPutc('h') // Breadcrumb: qfile allocated
+
+	for e := uint32(0); e < countVal; e++ {
+		uartPutc('E')                            // Breadcrumb: loop iteration start
+		uartPutc('V')                            // Breadcrumb: about to read file entry
+		qemu_cfg_read(unsafe.Pointer(qfile), 64) // Use sequential read, not traditional
+		uartPutc('v')                            // Breadcrumb: file entry read completed
+
+		uartPutc('C') // Breadcrumb: about to check name
 		if checkRamfbName(&qfile.Name) {
 			selector := uint32(swap16(qfile.Select))
-			uartPutc('H') // Breadcrumb: ramfb entry matched
+			uartPutc('F') // Breadcrumb: ramfb entry matched
 			uartPuts("RAMFB: Found etc/ramfb, selector=0x")
 			printHex32Helper(selector)
 			uartPuts("\r\n")
-			uartPutc('h') // Breadcrumb: returning selector
+			uartPutc('f') // Breadcrumb: freeing qfile
+			kfree(unsafe.Pointer(qfile))
+			uartPutc('R') // Breadcrumb: returning selector
 			return selector
 		}
 		uartPutc('N') // Breadcrumb: entry not ramfb
@@ -920,6 +940,7 @@ func qemu_cfg_find_file() uint32 {
 
 	uartPuts("RAMFB: etc/ramfb not found\r\n")
 	uartPutc('Z') // Breadcrumb: search exhausted
+	kfree(unsafe.Pointer(qfile))
 	return 0
 }
 

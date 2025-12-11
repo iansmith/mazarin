@@ -189,7 +189,9 @@ func InitializeExceptions() error {
 // ExceptionHandler is called from assembly when a synchronous exception occurs
 // It handles the exception and logs details for debugging
 //
+//go:linkname ExceptionHandler ExceptionHandler
 //go:nosplit
+//go:noinline
 func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType uint32) {
 	excInfo := ExceptionInfo{
 		ExceptionType: excType,

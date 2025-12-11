@@ -26,7 +26,7 @@ const (
 	G0_STACK_BOTTOM = 0x5EFFFE000 // G0_STACK_TOP - G0_STACK_SIZE
 
 	// Main goroutine stack size (allocated from heap)
-	KERNEL_GOROUTINE_STACK_SIZE = 32 * 1024 // 32KB
+	KERNEL_GOROUTINE_STACK_SIZE = 64 * 1024 // 64KB (increased from 32KB due to deep call chains)
 
 	// Legacy constants (deprecated, for compatibility)
 	KERNEL_STACK_TOP    = G0_STACK_TOP
@@ -151,7 +151,18 @@ func growStack(oldStack *stack) bool {
 	// Old stack: [lo ... currentSP ... hi] (grows downward)
 	// New stack: [newBase ... newSP ... newTop] (grows downward)
 	// We copy from currentSP to oldStack.hi (the used portion)
-	newSP := newStackTop - usedSize
+	// CRITICAL: newSP must be 16-byte aligned (AArch64 calling convention requirement)
+	// Round down to 16-byte boundary to ensure alignment
+	newSP := (newStackTop - usedSize) &^ 0xF
+
+	// SP ALIGNMENT CHECK: Verify newSP is aligned before setting
+	if (newSP & 0xF) != 0 {
+		uartPuts("Stack: ERROR - newSP is misaligned: 0x")
+		uartPutHex64(uint64(newSP))
+		uartPuts("\r\n")
+		kfree(newStackMem)
+		return false
+	}
 
 	// Copy memory (must be done before updating SP!)
 	oldStackPtr := unsafe.Pointer(currentSP)
@@ -173,7 +184,14 @@ func growStack(oldStack *stack) bool {
 
 	// Update stack pointer register
 	// CRITICAL: After this, we're executing on the new stack!
+	// SP alignment already verified above, but checkSPAlignment will double-check
+	if !checkSPAlignmentSilent() {
+		uartPuts("Stack: WARNING - SP became misaligned before set_stack_pointer\r\n")
+	}
 	set_stack_pointer(newSP)
+	if !checkSPAlignmentSilent() {
+		uartPuts("Stack: ERROR - SP is misaligned after set_stack_pointer\r\n")
+	}
 
 	// Memory barrier to ensure SP update is visible
 	dsb()

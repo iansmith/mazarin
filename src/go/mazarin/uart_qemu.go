@@ -149,13 +149,40 @@ func uartInitRingBuffer() {
 	// Initialize the ring buffer
 	uartPutc('i') // Breadcrumb: about to initialize ring buffer
 	ringBuf := (*uartRingBuffer)(buf)
+
+	// Zero the struct first
+	uartPutc('z') // Breadcrumb: about to bzero struct
+	bzero(unsafe.Pointer(ringBuf), uint32(unsafe.Sizeof(uartRingBuffer{})))
+	uartPutc('Z') // Breadcrumb: bzero struct done
+
+	// Set individual fields carefully
+	uartPutc('1') // Breadcrumb: setting buf pointer
 	ringBuf.buf = (*[UART_RING_BUFFER_SIZE]byte)(buffer)
+	uartPutc('2') // Breadcrumb: buf pointer set
 	ringBuf.head = 0
+	uartPutc('3') // Breadcrumb: head set
 	ringBuf.tail = 0
+	uartPutc('4') // Breadcrumb: tail set
 
 	uartPutc('a') // Breadcrumb: about to assign uartRingBuf
-	uartRingBuf = ringBuf
+
+	// Use assembly function to store pointer without write barrier
+	uartPutc('x') // Debug: before assignment
+	storePointerNoBarrier(unsafe.Pointer(&uartRingBuf), unsafe.Pointer(ringBuf))
+	uartPutc('X') // Debug: after assignment
+
 	uartPutc('A') // Breadcrumb: uartRingBuf assigned
+
+	// Debug: print addresses
+	uartPuts("UART Ring buffer debug:\r\n")
+	uartPuts("  struct at: ")
+	uartPutHex64(uint64(pointerToUintptr(buf)))
+	uartPuts("\r\n  buffer at: ")
+	uartPutHex64(uint64(pointerToUintptr(buffer)))
+	uartPuts("\r\n  buf field: ")
+	uartPutHex64(uint64(pointerToUintptr(unsafe.Pointer(ringBuf.buf))))
+	uartPuts("\r\n")
+
 	uartPuts("UART: Ring buffer initialized (4KB)\r\n")
 	uartPutc('q') // Breadcrumb: uartInitRingBuffer done
 }

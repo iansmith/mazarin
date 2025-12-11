@@ -5,8 +5,8 @@ package main
 // QEMU framebuffer constants for ramfb device
 // ramfb allocates framebuffer memory via kmalloc and configures QEMU via fw_cfg
 const (
-	QEMU_FB_WIDTH  = 640
-	QEMU_FB_HEIGHT = 480
+	QEMU_FB_WIDTH  = 1024
+	QEMU_FB_HEIGHT = 768
 )
 
 // Override BYTES_PER_PIXEL for QEMU - ramfb uses XRGB8888 (32-bit, 4 bytes per pixel)

@@ -93,6 +93,30 @@ func timerInit() {
 	// Enable timer with interrupts unmasked
 	// CNTV_CTL_ENABLE = 1 (bit 0), CNTV_CTL_IMASK = 0 (bit 1 cleared = interrupts enabled)
 	write_cntv_ctl_el0(CNTV_CTL_ENABLE)
+
+	// Verify timer control register was set correctly
+	ctl := read_cntv_ctl_el0()
+	uartPuts("DEBUG: CNTV_CTL_EL0 after enable = 0x")
+	uartPutHex8(uint8(ctl))
+	uartPuts(" (ENABLE=")
+	if (ctl & CNTV_CTL_ENABLE) != 0 {
+		uartPuts("1")
+	} else {
+		uartPuts("0")
+	}
+	uartPuts(", IMASK=")
+	if (ctl & CNTV_CTL_IMASK) != 0 {
+		uartPuts("1")
+	} else {
+		uartPuts("0")
+	}
+	uartPuts(", ISTATUS=")
+	if (ctl & CNTV_CTL_ISTATUS) != 0 {
+		uartPuts("1")
+	} else {
+		uartPuts("0")
+	}
+	uartPuts(")\r\n")
 	uartPuts("DEBUG: Virtual timer enabled (ENABLE=1, IMASK=0)\r\n")
 
 	uartPuts("DEBUG: Enabling timer interrupt in GIC...\r\n")
@@ -101,6 +125,12 @@ func timerInit() {
 	// Enable timer interrupt in GIC
 	gicEnableInterrupt(IRQ_ID_TIMER_PPI)
 	uartPuts("DEBUG: Timer interrupt enabled in GIC\r\n")
+
+	// Read timer value to verify it was set (but don't print - uartPutUint32 causes alignment issues in interrupt context)
+	// tval := read_cntv_tval_el0()
+	// uartPuts("DEBUG: CNTV_TVAL_EL0 = ")
+	// uartPutUint32(tval)  // REMOVED: Causes alignment fault - creates unaligned store at [sp, #53]
+	// uartPuts(" (should be 62500000)\r\n")
 
 	timerInitialized = true
 	timerExitCount = 5 // Exit after 5 timer interrupts (5 seconds)

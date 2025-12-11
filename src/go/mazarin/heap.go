@@ -91,12 +91,29 @@ func kmalloc(size uint32) unsafe.Pointer {
 	var best *heapSegment
 	bestDiff := int32(0x7FFFFFFF) // Max signed int32
 
-	// Add the header size to the requested size
+	// Calculate the total size needed, accounting for:
+	// 1. Header size
+	// 2. Data pointer alignment (must be 16-byte aligned)
+	// 3. Header pointer storage (8 bytes stored just before data pointer for kfree)
+	// 4. Requested data size
 	headerSize := uint32(unsafe.Sizeof(heapSegment{}))
-	totalSize := size + headerSize
-
-	// Align to 16 bytes
 	align := uintptr(HEAP_ALIGNMENT)
+	headerPtrSize := uintptr(8) // 8 bytes to store segment header address (64-bit pointer)
+
+	// Calculate worst-case padding needed for data pointer alignment
+	// This assumes the segment base is 16-byte aligned (worst case for padding)
+	// Actual padding may be less, but this ensures we allocate enough space
+	headerSizeUintptr := uintptr(headerSize)
+	dataPtrAfterHeader := headerSizeUintptr
+	dataRemainder := dataPtrAfterHeader % align
+	maxDataPadding := uintptr(0)
+	if dataRemainder != 0 {
+		maxDataPadding = align - dataRemainder
+	}
+
+	// Total size = header + max data padding + header pointer storage + requested size, then align to 16 bytes
+	// We use max padding to ensure we always allocate enough, even if actual padding is less
+	totalSize := uint32(headerSizeUintptr + maxDataPadding + headerPtrSize + uintptr(size))
 	remainder := uintptr(totalSize) % align
 	if remainder != 0 {
 		totalSize = uint32(uintptr(totalSize) + align - remainder)
@@ -177,11 +194,90 @@ func kmalloc(size uint32) unsafe.Pointer {
 		return nil
 	}
 
+	// Now that we know 'best', recalculate totalSize based on actual address alignment
+	// This ensures the segment size matches the actual data pointer layout
+	bestAddr := pointerToUintptr(unsafe.Pointer(best))
+	actualDataPtrAfterHeader := bestAddr + uintptr(headerSize)
+	actualDataRemainder := actualDataPtrAfterHeader % align
+	actualDataPadding := uintptr(0)
+	if actualDataRemainder != 0 {
+		actualDataPadding = align - actualDataRemainder
+	}
+
+	// Recalculate totalSize with actual padding (including header pointer storage)
+	actualTotalSize := uint32(uintptr(headerSize) + actualDataPadding + headerPtrSize + uintptr(size))
+	actualRemainder := uintptr(actualTotalSize) % align
+	if actualRemainder != 0 {
+		actualTotalSize = uint32(uintptr(actualTotalSize) + align - actualRemainder)
+	}
+
+	// Verify the segment is still large enough with actual size
+	// (It should be, since we used worst-case padding for the search)
+	if best.segmentSize < actualTotalSize {
+		uartPuts("kmalloc: ERROR - Segment too small after recalculating alignment\r\n")
+		return nil
+	}
+
+	// Use the actual totalSize for splitting and allocation
+	// Note: totalSize may be updated later if extra padding is needed for header pointer
+	totalSize = actualTotalSize
+
+	// Calculate where the data pointer should be (16-byte aligned)
+	// We need space for the 8-byte header pointer before the data area
+	headerEndAddr := bestAddr + unsafe.Sizeof(heapSegment{})
+	dataPtrAddr := headerEndAddr
+	finalDataRemainder := dataPtrAddr % align
+	if finalDataRemainder != 0 {
+		dataPtrAddr += align - finalDataRemainder
+	}
+
+	// Reserve 8 bytes for header pointer storage before the aligned data pointer
+	// Ensure the header pointer storage area is after the segment header
+	headerPtrAddr := dataPtrAddr - 8
+	extraPadding := uintptr(0)
+	if headerPtrAddr < headerEndAddr {
+		// Need more padding to fit the header pointer storage
+		// Move data pointer forward by one alignment unit to make room
+		extraPadding = align
+		dataPtrAddr += align
+		headerPtrAddr = dataPtrAddr - 8
+		uartPuts("kmalloc: Extra padding added for header pointer\r\n")
+	}
+
+	// Update totalSize to account for extra padding if needed
+	// This MUST be done before splitting, otherwise the split will use the wrong size
+	if extraPadding > 0 {
+		// Update totalSize to include the extra padding
+		actualTotalSizeWithPadding := actualTotalSize + uint32(extraPadding)
+		// Re-align if necessary
+		paddingRemainder := uintptr(actualTotalSizeWithPadding) % align
+		if paddingRemainder != 0 {
+			actualTotalSizeWithPadding = uint32(uintptr(actualTotalSizeWithPadding) + align - paddingRemainder)
+		}
+		// Verify segment is still large enough
+		if best.segmentSize < actualTotalSizeWithPadding {
+			uartPuts("kmalloc: ERROR - Segment too small after extra padding for header pointer\r\n")
+			return nil
+		}
+		actualTotalSize = actualTotalSizeWithPadding
+		totalSize = actualTotalSize
+		// CRITICAL: Update bestDiff to reflect the new totalSize
+		bestDiff = int32(best.segmentSize) - int32(totalSize)
+	}
+
 	// If the segment is much larger than needed, split it
 	minSplitSize := uint32(2 * unsafe.Sizeof(heapSegment{}))
 	if bestDiff > int32(minSplitSize) {
-		// Calculate the address of the new segment
-		newSegAddr := pointerToUintptr(unsafe.Pointer(best)) + uintptr(totalSize)
+		uartPuts("kmalloc: Splitting segment\r\n")
+		// Calculate the address of the new segment using the updated totalSize
+		newSegAddr := bestAddr + uintptr(totalSize)
+		uartPuts("  best: ")
+		uartPutHex64(uint64(bestAddr))
+		uartPuts(", totalSize: ")
+		uartPutHex64(uint64(totalSize))
+		uartPuts(", newSeg: ")
+		uartPutHex64(uint64(newSegAddr))
+		uartPuts("\r\n")
 		newSeg := castToPointer[heapSegment](newSegAddr)
 
 		// Zero out the new segment
@@ -207,16 +303,40 @@ func kmalloc(size uint32) unsafe.Pointer {
 	best.isAllocated = 1
 
 	// Return pointer to the data area (after the header)
-	// In C: return best + 1
-	// In Go: advance pointer by sizeof(heapSegment)
 	// IMPORTANT: The data area must be 16-byte aligned for mailbox operations
-	dataPtrAddr := pointerToUintptr(unsafe.Pointer(best)) + unsafe.Sizeof(heapSegment{})
-	// Align data pointer to 16 bytes (reuse align variable from above)
-	dataRemainder := dataPtrAddr % align
-	if dataRemainder != 0 {
-		dataPtrAddr += align - dataRemainder
+	// We store the segment header address just before the data pointer so kfree can find it
+	// Layout: [header][padding if needed][header pointer (8 bytes)][data area (16-byte aligned)]
+	// Note: dataPtrAddr and headerPtrAddr are already calculated above (before splitting)
+
+	// Verify we have enough space in the segment for header pointer + data
+	segmentEnd := bestAddr + uintptr(best.segmentSize)
+	dataEnd := dataPtrAddr + uintptr(size)
+	if dataEnd > segmentEnd {
+		uartPuts("kmalloc: ERROR - Not enough space for header pointer and data\r\n")
+		return nil
 	}
+
+	// Verify header pointer storage is within segment bounds
+	if headerPtrAddr < bestAddr || headerPtrAddr >= segmentEnd {
+		uartPuts("kmalloc: ERROR - Header pointer storage outside segment bounds\r\n")
+		return nil
+	}
+
+	// Store the segment header address just before the data pointer (8 bytes for 64-bit pointer)
+	// This allows kfree to find the segment header even when data pointer is aligned
+	headerPtr := (*uintptr)(unsafe.Pointer(headerPtrAddr))
+	*headerPtr = bestAddr
+
+	// Return pointer to the data area (after the stored header pointer)
 	dataPtr := unsafe.Pointer(dataPtrAddr)
+
+	// Debug: print allocation details
+	uartPuts("kmalloc(")
+	uartPutHex64(uint64(size))
+	uartPuts("): ")
+	uartPutHex64(uint64(dataPtrAddr))
+	uartPuts("\r\n")
+
 	return dataPtr
 }
 
@@ -229,9 +349,13 @@ func kfree(ptr unsafe.Pointer) {
 		return
 	}
 
-	// Get the segment header by subtracting the header size from the pointer
-	// In C: seg = ptr - sizeof(heap_segment_t)
-	seg := castToPointer[heapSegment](pointerToUintptr(ptr) - unsafe.Sizeof(heapSegment{}))
+	// Get the segment header address stored just before the data pointer
+	// kmalloc stores the segment header address in the 8 bytes before the data pointer
+	ptrAddr := pointerToUintptr(ptr)
+	headerPtrAddr := ptrAddr - 8
+	headerPtr := (*uintptr)(unsafe.Pointer(headerPtrAddr))
+	segAddr := *headerPtr
+	seg := castToPointer[heapSegment](segAddr)
 
 	// Mark as free
 	seg.isAllocated = 0

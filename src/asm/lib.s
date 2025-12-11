@@ -51,6 +51,15 @@ busy_wait_loop:
 busy_wait_done:
     ret                     // Return
 
+// store_pointer_nobarrier(dest *unsafe.Pointer, value unsafe.Pointer)
+// x0 = destination address, x1 = pointer value to store
+// Stores a pointer without triggering Go's write barrier
+// Minimal implementation - no stack frame needed
+.global store_pointer_nobarrier
+store_pointer_nobarrier:
+    str x1, [x0]            // Store pointer directly
+    ret                     // Return
+
 // mmio_write64(uintptr_t reg, uint64_t data)
 // x0 = register address, x1 = data (64-bit)
 .global mmio_write64
@@ -86,13 +95,106 @@ get_stack_pointer:
     mov x0, sp           // Move stack pointer to x0 (return value)
     ret                  // Return
 
+// ============================================================================
+// System Control Register (SCTLR) Access Functions
+// These are used to diagnose alignment fault issues
+// ============================================================================
+
+// read_sctlr_el1() - Read SCTLR_EL1 (System Control Register for EL1)
+// Returns uint64 in x0
+// Key bits:
+//   Bit 0 (M): MMU enable (1=enabled, 0=disabled)
+//   Bit 1 (A): Alignment check enable (1=faults on unaligned, 0=allows unaligned)
+//   Bit 2 (C): Data cache enable
+//   Bit 12 (I): Instruction cache enable
+.global read_sctlr_el1
+read_sctlr_el1:
+    mrs x0, SCTLR_EL1    // Read SCTLR_EL1 into x0
+    ret                   // Return
+
+// write_sctlr_el1(value uint64) - Write SCTLR_EL1
+// x0 = value to write
+.global write_sctlr_el1
+write_sctlr_el1:
+    msr SCTLR_EL1, x0    // Write x0 to SCTLR_EL1
+    isb                   // Instruction synchronization barrier
+    ret
+
+// disable_alignment_check() - Clear the A bit in SCTLR_EL1 to disable alignment faults
+// This allows unaligned memory accesses to Normal memory regions
+.global disable_alignment_check
+disable_alignment_check:
+    mrs x0, SCTLR_EL1    // Read current SCTLR_EL1
+    bic x0, x0, #2       // Clear bit 1 (A bit) - disable alignment check
+    msr SCTLR_EL1, x0    // Write modified value back
+    isb                   // Instruction synchronization barrier
+    ret
+
 // set_stack_pointer(sp uintptr) - Sets stack pointer register
 // x0 = new stack pointer value
 .global set_stack_pointer
 set_stack_pointer:
+    // SP ALIGNMENT CHECK: Verify SP is 16-byte aligned before setting
+    and x1, x0, #0xF               // Check alignment (lower 4 bits)
+    cbnz x1, sp_misaligned_set      // If not zero, SP is misaligned!
+    
+    // SP is aligned, set it normally
     mov sp, x0           // Set stack pointer from x0
     dsb sy               // Memory barrier to ensure SP update is visible
     ret                  // Return
+    
+sp_misaligned_set:
+    // SP was misaligned!
+    // Print diagnostic via UART (minimal, no stack)
+    // Save x0 (SP value) to x2 before using registers
+    mov x2, x0                       // Save SP value
+    
+    movz x1, #0x0900, lsl #16      // UART base = 0x09000000
+    movk x1, #0x0000, lsl #0
+    
+    // Print "SP-MISALIGN: set_stack_pointer SP=0x"
+    movz w3, #0x53                 // 'S'
+    str w3, [x1]
+    movz w3, #0x50                 // 'P'
+    str w3, [x1]
+    movz w3, #0x2D                 // '-'
+    str w3, [x1]
+    movz w3, #0x4D                 // 'M'
+    str w3, [x1]
+    movz w3, #0x49                 // 'I'
+    str w3, [x1]
+    movz w3, #0x53                 // 'S'
+    str w3, [x1]
+    movz w3, #0x41                 // 'A'
+    str w3, [x1]
+    movz w3, #0x4C                 // 'L'
+    str w3, [x1]
+    movz w3, #0x49                 // 'I'
+    str w3, [x1]
+    movz w3, #0x47                 // 'G'
+    str w3, [x1]
+    movz w3, #0x3A                 // ':'
+    str w3, [x1]
+    movz w3, #0x20                 // ' '
+    str w3, [x1]
+    movz w3, #0x73                 // 's'
+    str w3, [x1]
+    movz w3, #0x65                 // 'e'
+    str w3, [x1]
+    movz w3, #0x74                 // 't'
+    str w3, [x1]
+    movz w3, #0x5F                 // '_'
+    str w3, [x1]
+    movz w3, #0x73                 // 's'
+    str w3, [x1]
+    movz w3, #0x70                 // 'p'
+    str w3, [x1]
+    
+    // Round down to 16-byte boundary and set SP anyway
+    bic x0, x2, #0xF                // Clear lower 4 bits to align (use saved value)
+    mov sp, x0                       // Set aligned SP
+    dsb sy                           // Memory barrier
+    ret                              // Return
 
 // set_g_pointer(g uintptr) - Sets x28 (g pointer register)
 // x0 = new goroutine pointer
@@ -208,6 +310,13 @@ runtime.morestack:
     // We also need to save x0-x7 (arguments) and x8 (indirect result)
     // But morestack is called from function prologue, so we need to be careful
     
+    // BREADCRUMB: Print 'M' to show morestack was called
+    // Save x0 before using it
+    stp x0, x1, [sp, #-16]!  // Save x0, x1
+    mov x0, #0x4D  // 'M'
+    bl uart_putc_pl011
+    ldp x0, x1, [sp], #16  // Restore x0, x1
+    
     // Save link register and frame pointer
     stp x29, x30, [sp, #-16]!
     mov x29, sp  // Set frame pointer
@@ -219,6 +328,12 @@ runtime.morestack:
     stp x23, x24, [sp, #32]
     stp x25, x26, [sp, #48]
     stp x27, x28, [sp, #64]
+    
+    // Print 'S' to show we're about to halt
+    stp x0, x1, [sp, #-16]!  // Save x0, x1 again
+    mov x0, #0x53  // 'S'
+    bl uart_putc_pl011
+    ldp x0, x1, [sp], #16  // Restore x0, x1
     
     // TODO: Implement stack growth
     // For now, just halt if morestack is called (shouldn't happen with large pre-allocated stack)

@@ -107,20 +107,23 @@ func WritePixelAlpha(x, y uint32, color uint32) {
 // char: ASCII character to render
 // pixelX, pixelY: top-left pixel position for the character
 //
+// CRITICAL FIX: Like RenderChar16x16, this function avoids storing the bitmap array
+// as a local variable to prevent unaligned stores when MMU is disabled.
+//
 //go:nosplit
 func RenderChar8x8(char byte, pixelX, pixelY uint32, color uint32) {
 	const bitmapWidth = 8
 	const bitmapHeight = 8
 
-	// Get bitmap for this character
+	// Bounds check
 	if char >= 128 {
 		return // Out of range
 	}
-	bitmap := fontBitmaps[char]
 
 	// Render each row of the bitmap
+	// Access fontBitmaps[char][row] directly to avoid storing array as local variable
 	for row := 0; row < bitmapHeight; row++ {
-		rowByte := bitmap[row]
+		rowByte := fontBitmaps[char][row]
 
 		// Render each bit in the row
 		// Font bitmap format: MSB (bit 7) = leftmost pixel, LSB (bit 0) = rightmost pixel
@@ -147,20 +150,33 @@ func RenderChar8x8(char byte, pixelX, pixelY uint32, color uint32) {
 // char: ASCII character to render
 // pixelX, pixelY: top-left pixel position for the character
 //
+// CRITICAL FIX: This function avoids storing pointers/arrays as local variables
+// to prevent the Go compiler from generating unaligned stores (STUR instructions).
+// When MMU is disabled, memory is Device-nGnRnE type which requires strict alignment.
+// Even STUR cannot do unaligned access to Device memory!
+//
 //go:nosplit
 func RenderChar16x16(char byte, pixelX, pixelY uint32, color uint32) {
 	const bitmapWidth = 8  // Original bitmap width
 	const bitmapHeight = 8 // Original bitmap height
 
-	// Get bitmap for this character
+	// Bounds check - do this first to avoid any array access on invalid char
 	if char >= 128 {
 		return // Out of range
 	}
-	bitmap := fontBitmaps[char]
+
+	// CRITICAL: Do NOT store the bitmap array as a local variable!
+	// The Go compiler generates `stur x1, [sp, #34]` which stores an 8-byte pointer
+	// to a 2-byte aligned address, causing an alignment fault on Device memory.
+	//
+	// Instead, access fontBitmaps[char][row] directly in the loop.
+	// This avoids the problematic store entirely.
 
 	// Render each row of the bitmap
 	for row := 0; row < bitmapHeight; row++ {
-		rowByte := bitmap[row]
+		// Access the bitmap byte directly from the global array
+		// This avoids storing a local copy that would require unaligned store
+		rowByte := fontBitmaps[char][row]
 
 		// Render each bit in the row
 		// Font bitmap format: MSB (bit 7) = leftmost pixel, LSB (bit 0) = rightmost pixel
@@ -197,9 +213,9 @@ func RenderChar(char byte, pixelX, pixelY uint32, color uint32) {
 }
 
 // DebugRenderChar same as RenderChar16x16 but with verbose debug output
+// CRITICAL FIX: Avoids storing bitmap as local variable to prevent unaligned stores
 func DebugRenderChar(char byte, pixelX, pixelY uint32, color uint32) {
 	const bitmapWidth = 8
-	const bitmapHeight = 8
 
 	if char >= 128 {
 		return
@@ -216,10 +232,9 @@ func DebugRenderChar(char byte, pixelX, pixelY uint32, color uint32) {
 	printHex32(color)
 	uartPuts("\r\n")
 
-	bitmap := fontBitmaps[char]
-
+	// Access fontBitmaps directly instead of storing as local variable
 	// Just render first row for debug
-	rowByte := bitmap[0]
+	rowByte := fontBitmaps[char][0]
 	uartPuts("DRC: Row 0 byte=0x")
 	uartPutc(byte('0' + (rowByte>>4)%16))
 	uartPutc(byte('0' + (rowByte & 0xF)))

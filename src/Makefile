@@ -36,6 +36,13 @@ IMAGE_SRC = asm/image.s
 GOROUTINE_SRC = asm/goroutine.s
 LINKER_SCRIPT = linker.ld
 
+# Asset generation tools and sources
+IMAGECONVERT_TOOL = ../tools/imageconvert/main.go
+IMAGECONVERT_GO_MOD = ../tools/imageconvert/go.mod
+# FONTRENDER_TOOL = ../tools/fontrender/fontrender.py  # Not currently used in build
+BOOT_IMAGE_BIN = ../assets/boot-mazarin.bin
+BOOT_IMAGE_SOURCES = ../assets/mazarin-original.png ../assets/mazarin50.png
+
 # Go package location
 GO_PACKAGE_DIR = go/mazarin
 
@@ -77,7 +84,11 @@ WRITEBARRIER_OBJ = writebarrier.o
 EXCEPTIONS_OBJ = exceptions.o
 IMAGE_OBJ = image.o
 GOROUTINE_OBJ = goroutine.o
+GET_CALLER_SP_OBJ = get_caller_sp.o
 KERNEL_GO_OBJ = kernel_go.o
+
+# Assembly object files list
+ASM_OBJECTS = $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ)
 
 # Output file
 KERNEL_ELF = kernel.elf
@@ -89,14 +100,22 @@ KERNEL_OBJ = $(KERNEL_GO_OBJ)
 # Default target: build the kernel
 # This automatically triggers all dependencies including bitfield code generation
 # Dependency chain: kernel.elf -> (boot.o, lib.o, exceptions.o, kernel_go.o) -> (asm sources, Go sources, bitfield gen)
-$(KERNEL_ELF): $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(KERNEL_OBJ) $(LINKER_SCRIPT)
-	$(CC) $(LDFLAGS) -o $@ $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(KERNEL_OBJ)
+$(KERNEL_ELF): $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ) $(KERNEL_OBJ) $(LINKER_SCRIPT)
+	$(CC) $(LDFLAGS) -o $@ $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ) $(KERNEL_OBJ)
 
 # Generate bitfield unpacking code
 # This is automatically triggered as a dependency of kernel_go.o
 $(BITFIELD_GEN): $(BITFIELD_GEN_SRC) $(BITFIELD_FLAGS_SRC)
 	@echo "Generating bitfield code..."
-	@GOTOOLCHAIN=local $(GO) run $(BITFIELD_GEN_SRC) > $(BITFIELD_GEN)
+	@GOTOOLCHAIN=auto $(GO) run $(BITFIELD_GEN_SRC) > $(BITFIELD_GEN)
+
+# Generate boot image binary from PNG source
+# The imageconvert tool converts PNG to raw ARGB8888 binary format
+# Note: Using mazarin50.png as the source (50x50 version for boot logo)
+# The binary is committed to git but will be regenerated if sources change
+$(BOOT_IMAGE_BIN): $(BOOT_IMAGE_SOURCES) $(IMAGECONVERT_TOOL) $(IMAGECONVERT_GO_MOD)
+	@echo "Generating boot image binary from PNG..."
+	@cd ../tools/imageconvert && $(GO) run main.go ../../assets/mazarin50.png ../../assets/boot-mazarin.bin
 
 # Compile boot.s from asm/ directory
 $(BOOT_OBJ): $(BOOT_SRC)
@@ -116,7 +135,8 @@ $(WRITEBARRIER_OBJ): $(WRITEBARRIER_SRC)
 
 # Compile image.s from asm/ directory
 # Add the image binary as dependency so changes trigger rebuild
-$(IMAGE_OBJ): $(IMAGE_SRC) ../assets/boot-mazarin.bin
+# Dependency chain: PNG sources + imageconvert tool → boot-mazarin.bin → image.o
+$(IMAGE_OBJ): $(IMAGE_SRC) $(BOOT_IMAGE_BIN)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
 # Compile goroutine.s from asm/ directory
@@ -195,6 +215,7 @@ $(KERNEL_GO_OBJ_QEMU): $(BITFIELD_GEN) go.mod $(GO_SRC)
 	             --globalize-symbol=fb_putc_irq \
 	             --globalize-symbol=handleTimerIRQ \
 	             --globalize-symbol=handleUARTIRQ \
+	             --globalize-symbol=ExceptionHandler \
 	             $(KERNEL_GO_TEMP) $@ || \
 	 (cp $(KERNEL_GO_TEMP) $@ && echo "Warning: Could not promote symbols")
 	@# Weaken Go runtime's write barrier symbols so our strong global versions override them
@@ -209,10 +230,10 @@ $(KERNEL_GO_OBJ_QEMU): $(BITFIELD_GEN) go.mod $(GO_SRC)
 	@rm -f $(KERNEL_GO_ARCHIVE) kernel_go.h __.SYMDEF
 	@# TEMP: Keep kernel_go_temp.o for inspection
 
-kernel-qemu.elf: $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
+kernel-qemu.elf: $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
 	@# Link exceptions.o, then writebarrier.o so our global symbols override Go runtime's
 	@# Our writebarrier.s provides global (T) symbols that should take precedence
-	$(CC) $(LDFLAGS) -o $@.tmp $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(KERNEL_GO_OBJ_QEMU) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ)
+	$(CC) $(LDFLAGS) -o $@.tmp $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(KERNEL_GO_OBJ_QEMU) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ)
 	@# Patch the binary to redirect calls from Go runtime functions to our implementations
 	@echo "Patching runtime function calls..."
 	@python3 $(PATCH_RUNTIME) $@.tmp $(RUNTIME_REPLACEMENTS) && mv $@.tmp $@ || \
@@ -240,11 +261,16 @@ test: $(BITFIELD_GEN)
 	@GOTOOLCHAIN=local $(GO) test -v ./bitfield
 
 # Phony targets
-.PHONY: all clean push qemu generate test
+.PHONY: all clean push qemu generate test regenerate-assets
 
 # Alias for backward compatibility (all just builds kernel.elf)
 all: $(KERNEL_ELF)
 
 # Generate code target (can be run separately)
 generate: $(BITFIELD_GEN)
+
+# Regenerate binary assets from source images/fonts
+# Useful when PNG sources or conversion tools are modified
+regenerate-assets: $(BOOT_IMAGE_BIN)
+	@echo "Assets regenerated successfully"
 

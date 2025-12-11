@@ -46,7 +46,9 @@ func createKernelGoroutine(fn func(), stackSize uint32) *runtimeG {
 	gPtr.stack.lo = stackLo
 	gPtr.stack.hi = stackHi
 	gPtr.stackguard0 = stackLo + _StackGuard
-	gPtr.stackguard1 = ^uintptr(0) // ~0 for user goroutines (triggers morestack if needed)
+	// IMPORTANT: stackguard1 should be same as stackguard0 for user goroutines
+	// Setting it to ~0 causes spurious morestack calls!
+	gPtr.stackguard1 = stackLo + _StackGuard // Same as stackguard0
 
 	// 4. Link to m0
 	m0Ptr := (*runtimeM)(unsafe.Pointer(uintptr(0x401013e0)))
@@ -60,6 +62,21 @@ func createKernelGoroutine(fn func(), stackSize uint32) *runtimeG {
 	sp := stackHi - frameSize
 	// Ensure 16-byte alignment (AArch64 requirement)
 	sp = sp &^ uintptr(15) // Clear lower 4 bits
+
+	// TESTING: Subtract 48 bytes to fix call chain SP propagation
+	// Based on analysis showing SP is consistently 48 bytes too high in call chain
+	sp = sp - 48
+
+	// SP ALIGNMENT CHECK: Verify stack pointer is aligned when creating goroutine
+	if (sp & 0xF) != 0 {
+		uartPuts("ERROR: Goroutine stack pointer is misaligned: 0x")
+		uartPutHex64(uint64(sp))
+		uartPuts("\r\n")
+		kfree(unsafe.Pointer(gPtr))
+		kfree(stackMem)
+		return nil
+	}
+
 	gPtr.sched.sp = sp
 	gPtr.stktopsp = sp
 	// Set PC to goexit (simplified - real Go uses abi.FuncPCABI0(goexit))
@@ -78,7 +95,17 @@ func createKernelGoroutine(fn func(), stackSize uint32) *runtimeG {
 	gPtr.atomicstatus = _Grunnable
 	gPtr.goid = 1 // Main goroutine gets goid=1
 
+	// Debug: print actual stack addresses
 	uartPuts("createKernelGoroutine: Created goroutine with 32KB stack\r\n")
+	uartPuts("  stackLo: ")
+	uartPutHex64(uint64(stackLo))
+	uartPuts("\r\n  stackHi: ")
+	uartPutHex64(uint64(stackHi))
+	uartPuts("\r\n  sched.sp: ")
+	uartPutHex64(uint64(gPtr.sched.sp))
+	uartPuts("\r\n  sched offset: ")
+	uartPutHex64(uint64(unsafe.Offsetof(gPtr.sched)))
+	uartPuts("\r\n")
 
 	return gPtr
 }

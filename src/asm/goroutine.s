@@ -29,14 +29,68 @@ switchToGoroutine:
     // sched.sp is at offset 56 + 0 = 56
     ldr x2, [x0, #56]  // Load g.sched.sp
     
-    // Set stack pointer to new goroutine's stack
-    // The stack pointer should already be 16-byte aligned from goroutine creation
+    // SP ALIGNMENT CHECK: Verify g.sched.sp is 16-byte aligned before setting SP
+    and x3, x2, #0xF               // Check alignment (lower 4 bits)
+    cbnz x3, sp_misaligned_switch   // If not zero, SP is misaligned!
+    
+    // SP is aligned, set it normally
     mov sp, x2
     
     // Return to caller - they will call the Go function on the new stack
     // The return address is in lr (link register), not on the stack
     // So we can safely return even though we've switched stacks
     // The Go function will allocate its own frame when called
+    ret
+    
+sp_misaligned_switch:
+    // g.sched.sp was misaligned!
+    // Print diagnostic via UART (minimal, no stack)
+    movz x3, #0x0900, lsl #16      // UART base = 0x09000000
+    movk x3, #0x0000, lsl #0
+    
+    // Print "SP-MISALIGN: switchToGoroutine g.sched.sp=0x"
+    movz w4, #0x53                 // 'S'
+    str w4, [x3]
+    movz w4, #0x50                 // 'P'
+    str w4, [x3]
+    movz w4, #0x2D                 // '-'
+    str w4, [x3]
+    movz w4, #0x4D                 // 'M'
+    str w4, [x3]
+    movz w4, #0x49                 // 'I'
+    str w4, [x3]
+    movz w4, #0x53                 // 'S'
+    str w4, [x3]
+    movz w4, #0x41                 // 'A'
+    str w4, [x3]
+    movz w4, #0x4C                 // 'L'
+    str w4, [x3]
+    movz w4, #0x49                 // 'I'
+    str w4, [x3]
+    movz w4, #0x47                 // 'G'
+    str w4, [x3]
+    movz w4, #0x3A                 // ':'
+    str w4, [x3]
+    movz w4, #0x20                 // ' '
+    str w4, [x3]
+    movz w4, #0x73                 // 's'
+    str w4, [x3]
+    movz w4, #0x77                 // 'w'
+    str w4, [x3]
+    movz w4, #0x69                 // 'i'
+    str w4, [x3]
+    movz w4, #0x74                 // 't'
+    str w4, [x3]
+    movz w4, #0x63                 // 'c'
+    str w4, [x3]
+    movz w4, #0x68                 // 'h'
+    str w4, [x3]
+    
+    // Round down to 16-byte boundary and set SP anyway
+    bic x2, x2, #0xF                // Clear lower 4 bits to align
+    mov sp, x2                       // Set aligned SP
+    
+    // Continue execution (SP is now aligned)
     ret
     
     // If kernelMainBodyWrapper returns (shouldn't happen), halt
