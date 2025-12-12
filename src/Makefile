@@ -181,6 +181,7 @@ $(KERNEL_GO_OBJ): $(BITFIELD_GEN) go.mod $(GO_SRC)
 	           --globalize-symbol=main.FIQHandler \
 	           --globalize-symbol=main.SErrorHandler \
 	           --globalize-symbol=main.GoEventLoopEntry \
+	           --globalize-symbol=main.uartTransmitHandler \
 	           $(KERNEL_GO_TEMP) $@ || \
 	 (cp $(KERNEL_GO_TEMP) $@ && echo "Warning: Could not promote symbols")
 	@rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) kernel_go.h __.SYMDEF
@@ -216,6 +217,7 @@ $(KERNEL_GO_OBJ_QEMU): $(BITFIELD_GEN) go.mod $(GO_SRC)
 	             --globalize-symbol=main.IRQHandler \
 	             --globalize-symbol=timerInterruptHandlerAsm \
 	             --globalize-symbol=ExceptionHandler \
+	             --globalize-symbol=main.uartTransmitHandler \
 	             $(KERNEL_GO_TEMP) $@ || \
 	 (cp $(KERNEL_GO_TEMP) $@ && echo "Warning: Could not promote symbols")
 	@# Weaken Go runtime's write barrier symbols so our strong global versions override them

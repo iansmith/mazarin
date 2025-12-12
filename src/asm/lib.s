@@ -584,6 +584,26 @@ read_current_el:
     mrs x0, CurrentEL       // Read CurrentEL into x0
     ret                      // Return (value in w0)
 
+// read_id_aa64pfr0_el1() - Read ID_AA64PFR0_EL1 (Processor Feature Register)
+// Returns uint64 in x0
+// Bits [15:12] = EL3 support (0000 = not implemented, 0001 = AArch64, 0010 = AArch64+AArch32)
+// Bits [7:4] = EL1 support
+// Bits [3:0] = EL0 support
+.global read_id_aa64pfr0_el1
+read_id_aa64pfr0_el1:
+    mrs x0, ID_AA64PFR0_EL1
+    ret
+
+// read_scr_el3() - Attempt to read SCR_EL3 (Secure Configuration Register)
+// This will trap if we're at EL1, but we can catch the exception
+// Returns uint64 in x0 (or 0 if trapped)
+.global read_scr_el3
+read_scr_el3:
+    // NOTE: This will cause a sync exception at EL1
+    // Only callable from EL3
+    mrs x0, SCR_EL3
+    ret
+
 // PHYSICAL TIMER FUNCTIONS (CNTP_*) - for comparison with virtual timer
 // Physical timer uses PPI 30 (virtual timer uses PPI 27)
 

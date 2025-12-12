@@ -152,16 +152,37 @@ handle_uart_irq:
     movz w1, #0x55                // 'U'
     str w1, [x0]
     
-    // TODO: Call Go function to handle ring buffer
-    // For now, just clear UART interrupt
-    // UART_ICR at offset 0x44 from UART base
-    movz w1, #0x7FF               // Clear all UART interrupts
-    str w1, [x0, #0x44]
+    // Call Go function main.uartTransmitHandler()
+    // CRITICAL: Must follow Go calling conventions:
+    // - Preserve x28 (g pointer), x29 (FP), x30 (LR)
+    // - 16-byte stack alignment
+    // - At least 16 bytes free stack space
+    // - Can clobber x0-x17 (caller-saved)
+    // - Must preserve x19-x27 (callee-saved)
     
-    // Disable UART TX interrupt to prevent continuous firing
-    // UART_IMSC at offset 0x38 from UART base
-    movz w1, #0x00                // Disable all UART interrupts
-    str w1, [x0, #0x38]
+    // Save all registers we need to preserve (expand our stack frame)
+    sub sp, sp, #128              // Expand stack for more registers
+    stp x5, x6, [sp, #64]         // Save x5, x6
+    stp x7, x8, [sp, #80]         // Save x7, x8
+    stp x28, x29, [sp, #96]       // Save x28 (g), x29 (FP)
+    str x30, [sp, #112]           // Save x30 (LR)
+    
+    // Set up frame pointer for Go
+    add x29, sp, #0
+    
+    // Call Go function (no parameters)
+    bl main.uartTransmitHandler
+    
+    // Restore preserved registers
+    ldp x5, x6, [sp, #64]
+    ldp x7, x8, [sp, #80]
+    ldp x28, x29, [sp, #96]
+    ldr x30, [sp, #112]
+    add sp, sp, #128              // Restore stack
+    
+    // Reload UART base for final breadcrumb
+    movz x0, #0x0900, lsl #16
+    movk x0, #0x0000, lsl #0
     
     b irq_done
     

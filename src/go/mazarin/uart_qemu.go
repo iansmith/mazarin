@@ -79,6 +79,44 @@ func uartDrainRingBuffer() {
 	}
 }
 
+// uartTransmitHandler handles UART transmit interrupt
+// Called from assembly IRQ handler when UART TX FIFO has space
+// This function MUST be nosplit and minimal - it's called from interrupt context
+//
+//go:nosplit
+//go:noinline
+func uartTransmitHandler() {
+	// Breadcrumb: Go UART handler called
+	uart_putc_pl011('G')
+
+	// Check if ring buffer is initialized
+	if uartRingBuf == nil {
+		// No ring buffer - just disable TX interrupt
+		uart_putc_pl011('N')               // No ring buffer
+		mmio_write(QEMU_UART_BASE+0x38, 0) // UART_IMSC - disable all interrupts
+		return
+	}
+
+	// Try to dequeue a character from ring buffer
+	if c, ok := uartDequeue(); ok {
+		// Write character to UART data register
+		mmio_write(QEMU_UART_DR, uint32(c))
+
+		// Check if buffer is empty now
+		isEmpty := (uartRingBuf.head == uartRingBuf.tail)
+		if isEmpty {
+			mmio_write(QEMU_UART_BASE+0x38, 0) // UART_IMSC - disable TX interrupt
+		}
+		// Otherwise, TX interrupt will fire again when FIFO has space
+	} else {
+		// Ring buffer empty - disable TX interrupt
+		mmio_write(QEMU_UART_BASE+0x38, 0) // UART_IMSC - disable TX interrupt
+	}
+
+	// Clear UART TX interrupt
+	mmio_write(QEMU_UART_ICR, 1<<5) // Clear TXIC bit
+}
+
 // uartPutc outputs a character via UART (QEMU virt machine)
 // Uses interrupt-driven transmission via ring buffer when available
 //

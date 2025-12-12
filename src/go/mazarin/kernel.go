@@ -752,6 +752,9 @@ func kernelMainBody() {
 	gicInit()
 	uartPuts("DEBUG: gicInit completed\r\n")
 
+	// Check security state before setting up interrupts
+	checkSecurityState()
+
 	// Set up UART interrupts now that GIC is initialized
 	uartPuts("DEBUG: Setting up UART interrupts (ID 33)...\r\n")
 	uartSetupInterrupts()
@@ -904,6 +907,7 @@ func main() {
 	FIQHandler()
 	SErrorHandler()
 	ExceptionHandler(0, 0, 0, 0, 0)
+	uartTransmitHandler() // UART TX interrupt handler
 
 	// This should never execute in bare metal
 	for {

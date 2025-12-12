@@ -6,6 +6,11 @@ import (
 	_ "unsafe" // Required for //go:linkname directives
 )
 
+//go:linkname read_id_aa64pfr0_el1 read_id_aa64pfr0_el1
+//go:nosplit
+//go:noinline
+func read_id_aa64pfr0_el1() uint64
+
 // GIC (Generic Interrupt Controller) for QEMU virt machine
 // QEMU virt uses GICv2 by default
 // Base addresses:
@@ -114,9 +119,10 @@ func gicInitFull() {
 	}
 
 	// Step 6: Route all interrupts to Group 0 (secure)
-	// CRITICAL: ID 1022 indicates we're in Secure EL1 trying to handle Group 1 interrupts
-	// If we configure interrupts as Group 0, GICC_IAR will return the actual interrupt ID
+	// CRITICAL: QEMU virt with GICv2 only works reliably with Group 0
+	// Real Raspberry Pi 4 hardware may require Group 1 (Non-secure) - TO BE TESTED
 	// Group 0 = secure interrupts (IRQ), Group 1 = non-secure (IRQ)
+	// TODO: Add runtime detection or build-time flag for real hardware
 	uartPuts("DEBUG: Step 6 - Set all interrupts to Group 0 (secure)\r\n")
 	for i := 0; i < 32; i++ {
 		mmio_write(GICD_IGROUPRn+uintptr(i*4), 0x00000000) // All in Group 0
@@ -145,18 +151,91 @@ func gicInitFull() {
 	}
 
 	// Step 10: Enable distributor
-	// Enable Group 0 only (since we're in Secure EL1)
+	// Enable Group 0 only for QEMU virt compatibility
 	// Bit 0 = Enable Group 0 (Secure)
+	// Real hardware may need Group 1 instead - TO BE TESTED
 	uartPuts("DEBUG: Step 10 - Enable distributor (Group 0 only)\r\n")
 	mmio_write(GICD_CTLR, 0x01) // Enable Group 0 only
 
 	// Step 11: Enable CPU interface
-	// Enable Group 0 only (since we're in Secure EL1)
+	// Enable Group 0 only for QEMU virt compatibility
 	// Bit 0 = Enable Group 0 (Secure)
+	// Real hardware may need Group 1 instead - TO BE TESTED
 	uartPuts("DEBUG: Step 11 - Enable CPU interface (Group 0 only)\r\n")
 	mmio_write(GICC_CTLR, 0x01) // Enable Group 0 only
 
 	uartPuts("GIC initialized\r\n")
+}
+
+// checkSecurityState checks if we're running in Secure or Non-secure EL1
+//
+//go:nosplit
+func checkSecurityState() {
+	uartPuts("\r\n=== Security State Check ===\r\n")
+
+	// Read ID_AA64PFR0_EL1 to check EL3 support
+	pfr0 := read_id_aa64pfr0_el1()
+	el3Support := (pfr0 >> 12) & 0xF
+
+	uartPuts("EL3 support: ")
+	if el3Support == 0 {
+		uartPuts("NOT implemented - likely Non-secure\r\n")
+	} else if el3Support == 1 {
+		uartPuts("AArch64 only\r\n")
+	} else if el3Support == 2 {
+		uartPuts("AArch64 + AArch32\r\n")
+	} else {
+		uartPuts("unknown\r\n")
+	}
+
+	// Check GIC Group registers - read back what we wrote
+	gicdIgroupr0 := mmio_read(GICD_IGROUPRn)
+	uartPuts("GICD_IGROUPR0: ")
+	if gicdIgroupr0 == 0x00000000 {
+		uartPuts("All interrupts in Group 0\r\n")
+	} else if gicdIgroupr0 == 0xFFFFFFFF {
+		uartPuts("All interrupts in Group 1\r\n")
+	} else {
+		uartPuts("Mixed groups\r\n")
+	}
+
+	// Check GICD_CTLR
+	gicdCtlr := mmio_read(GICD_CTLR)
+	uartPuts("GICD_CTLR: ")
+	if (gicdCtlr & 0x01) != 0 {
+		uartPuts("Group 0 enabled")
+	}
+	if (gicdCtlr & 0x02) != 0 {
+		if (gicdCtlr & 0x01) != 0 {
+			uartPuts(", ")
+		}
+		uartPuts("Group 1 enabled")
+	}
+	uartPuts("\r\n")
+
+	// Check GICC_CTLR
+	giccCtlr := mmio_read(GICC_CTLR)
+	uartPuts("GICC_CTLR: ")
+	if (giccCtlr & 0x01) != 0 {
+		uartPuts("Group 0 enabled")
+	}
+	if (giccCtlr & 0x02) != 0 {
+		if (giccCtlr & 0x01) != 0 {
+			uartPuts(", ")
+		}
+		uartPuts("Group 1 enabled")
+	}
+	uartPuts("\r\n")
+
+	uartPuts("\r\nConclusion: ")
+	if el3Support == 0 && gicdIgroupr0 == 0x00000000 {
+		uartPuts("Likely QEMU allowing Group 0 in Non-secure mode\r\n")
+	} else if el3Support != 0 && gicdIgroupr0 == 0x00000000 {
+		uartPuts("Possibly running in Secure EL1\r\n")
+	} else {
+		uartPuts("Unknown configuration\r\n")
+	}
+	uartPuts("=== End Security Check ===\r\n\r\n")
 }
 
 // gicEnableInterrupt enables a specific interrupt in the GIC
