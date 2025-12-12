@@ -49,16 +49,14 @@ func uartInitRingBufferAfterMemInit() {
 //
 //go:nosplit
 func uartSetupInterrupts() {
-	// Enable RX interrupt in UART (bit 4 = RXIM)
-	// This triggers when receive FIFO has data
-	mmio_write(QEMU_UART_BASE+0x38, 1<<4) // UART_IMSC - set RXIM bit
+	// Enable TX interrupt in UART (bit 5 = TXIM)
+	// This triggers when transmit FIFO has space available
+	// Note: We enable it in GIC but don't set IMSC yet - it's set when data is enqueued
 
-	// Enable interrupt in GIC
-	// Note: UART interrupt is handled by assembly handler (handle_uart_irq)
-	// which calls the Go handleUARTIRQ function (nosplit, minimal)
+	// Enable UART interrupt (ID 33) in GIC
 	gicEnableInterrupt(IRQ_ID_UART_SPI)
 
-	uartPuts("UART interrupts enabled\r\n")
+	uartPuts("UART: TX interrupt enabled in GIC (ID 33)\r\n")
 }
 
 // uartDrainRingBuffer drains one character from ring buffer to UART

@@ -702,10 +702,8 @@ func kernelMainBody() {
 
 	// Initialize UART ring buffer now that memory management is available
 	uartPutc('Q') // Breadcrumb: about to call uartInitRingBufferAfterMemInit
-	// TEMPORARY: Skip ring buffer to isolate crash
-	//uartInitRingBufferAfterMemInit()
-	uartPutc('S') // Breadcrumb: SKIPPED ring buffer init
-	uartPutc('q') // Breadcrumb: continuing without ring buffer
+	uartInitRingBufferAfterMemInit()
+	uartPutc('q') // Breadcrumb: ring buffer init completed
 
 	uartPuts("DEBUG: stage3 complete, proceeding to stage4 (framebuffer)\r\n")
 
@@ -755,9 +753,9 @@ func kernelMainBody() {
 	uartPuts("DEBUG: gicInit completed\r\n")
 
 	// Set up UART interrupts now that GIC is initialized
-	// DISABLED: UART interrupts are interfering with timer interrupts
-	// The handleUARTIRQ function only handles TX interrupts, not RX, causing spurious interrupts
-	// uartSetupInterrupts()
+	uartPuts("DEBUG: Setting up UART interrupts (ID 33)...\r\n")
+	uartSetupInterrupts()
+	uartPuts("DEBUG: UART interrupts configured\r\n")
 
 	uartPuts("DEBUG: stage6 complete, proceeding to stage7 (timer)\r\n")
 

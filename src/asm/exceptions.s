@@ -13,7 +13,8 @@
 
 // Use a separate section for exception vectors so they can be 2KB aligned
 // without affecting text section alignment
-.section ".vectors"
+// Flags: "ax" = allocatable + executable (required for code execution)
+.section ".vectors", "ax"
 .global exception_vectors
 .global exception_vectors_start_addr
 
@@ -77,54 +78,58 @@ sync_exception_el1:
     // 0x280 - 0x300: IRQ (SP_EL1) - 128 bytes
     .align 7
 irq_exception_el1:
-    // ULTRA-SIMPLE DEBUG: Print 'X' IMMEDIATELY to prove we entered handler
-    // Don't touch any registers yet - just write directly to UART
-    movz x10, #0x0900, lsl #16     // 0x09000000 (UART base)
+    // CRITICAL: Read GICC_IAR IMMEDIATELY to acknowledge interrupt
+    // The GIC spec says IAR must be read ASAP to prevent spurious 1022
+    // Use x10-x11 which are caller-saved and safe to clobber
+    movz x10, #0x0801, lsl #16    // GICC_IAR at 0x0801000C
+    movk x10, #0x000C, lsl #0
+    ldr w11, [x10]                // Read IAR (acknowledges interrupt)
+    and w11, w11, #0x3FF          // Mask to get interrupt ID (bits 9:0)
+    
+    // Print 'X' immediately (w11 now has interrupt ID, x10 free)
+    movz x10, #0x0900, lsl #16    // UART base
     movk x10, #0x0000, lsl #0
-    movz w11, #0x58                // 'X' 
-    str w11, [x10]                 // Write to UART
+    movz w12, #0x58               // 'X'
+    str w12, [x10]
     
-    // CRITICAL: Switch to dedicated exception stack immediately!
-    // This prevents corruption of the normal execution stack (SP_EL1 at 0x60000000)
-    // Exception stack: 32KB region just below main stack (0x5FFF8000)
-    //   Main stack: 0x60000000 (grows down)
-    //   Exception stack: 0x5FFF8000 (32KB = 0x8000 bytes, safe buffer)
+    // Now switch to exception stack (w11 has interrupt ID)
+    mov x0, sp                     // Save current SP
+    movz x1, #0x5FFF, lsl #16     // Exception stack at 0x5FFF8000
+    movk x1, #0x8000, lsl #0
+    mov sp, x1
     
-    // Save current SP (SP_EL1) to x0 temporarily
-    mov x0, sp
-    
-    // Load exception stack address (0x5FFF8000 = 32KB below main stack)
-    movz x1, #0x5FFF, lsl #16     // 0x5FFF0000
-    movk x1, #0x8000, lsl #0      // 0x5FFF8000
-    mov sp, x1                     // Switch to exception stack
-    
-    // Save original SP_EL1 and registers on exception stack
-    sub sp, sp, #64               // Make space for 8 registers (original SP + x0-x3 + working regs)
+    // Save registers on exception stack (including w11 with interrupt ID)
+    sub sp, sp, #64
     str x0, [sp, #0]              // Save original SP_EL1
     stp x1, x2, [sp, #8]          // Save x1, x2
     stp x3, x4, [sp, #24]         // Save x3, x4
+    str w11, [sp, #40]            // Save interrupt ID from w11
     
-    // Now we can use x0-x4 freely
+    // Move interrupt ID to w2 for rest of handler
+    mov w2, w11
     
-    // Load UART base address (PL011 at 0x09000000)
+    // Load UART base for further prints
     movz x0, #0x0900, lsl #16
     movk x0, #0x0000, lsl #0
     
-    // Print 'I' to show we entered handler
+    // Print 'I' to show we're processing
     movz w1, #0x49                // 'I'
     str w1, [x0]
     
-    // Acknowledge interrupt from GIC
-    // GICC_IAR at 0x0801000C
-    movz x1, #0x0801, lsl #16
-    movk x1, #0x000C, lsl #0
-    ldr w2, [x1]                  // Read IAR (this acknowledges)
-    and w2, w2, #0x3FF            // Mask to get interrupt ID
-    
     // Check if this is virtual timer interrupt (ID 27 = 0x1B)
     cmp w2, #27
-    bne irq_not_timer
+    beq handle_timer_irq
     
+    // Check if this is UART interrupt (ID 33 = 0x21)
+    cmp w2, #33
+    beq handle_uart_irq
+    
+    // Unknown interrupt - print '?' and finish
+    movz w1, #0x3F                // '?'
+    str w1, [x0]
+    b irq_done
+    
+handle_timer_irq:
     // Virtual timer interrupt - reset it for next tick using CVAL (absolute)
     // CRITICAL: Use CVAL approach like reference repo!
     // 1. Read current counter value (CNTVCT_EL0)
@@ -139,8 +144,28 @@ irq_exception_el1:
     // Print 'T' to show we reset timer
     movz w1, #0x54                // 'T'
     str w1, [x0]
+    b irq_done
     
-irq_not_timer:
+handle_uart_irq:
+    // UART transmit ready interrupt
+    // Print 'U' to show UART interrupt
+    movz w1, #0x55                // 'U'
+    str w1, [x0]
+    
+    // TODO: Call Go function to handle ring buffer
+    // For now, just clear UART interrupt
+    // UART_ICR at offset 0x44 from UART base
+    movz w1, #0x7FF               // Clear all UART interrupts
+    str w1, [x0, #0x44]
+    
+    // Disable UART TX interrupt to prevent continuous firing
+    // UART_IMSC at offset 0x38 from UART base
+    movz w1, #0x00                // Disable all UART interrupts
+    str w1, [x0, #0x38]
+    
+    b irq_done
+    
+irq_done:
     // Signal end of interrupt to GIC
     // GICC_EOIR at 0x08010010
     movz x1, #0x0801, lsl #16
@@ -226,6 +251,9 @@ serror_exception_el1:
 .global exception_vectors_end
 exception_vectors_end:
 
+// Switch back to .text section for regular functions
+// Everything after the exception vector table should be in .text, not .vectors
+.section ".text"
 
 // ============================================================================
 // Exception Handler Functions

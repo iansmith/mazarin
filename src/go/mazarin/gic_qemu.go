@@ -113,13 +113,13 @@ func gicInitFull() {
 		mmio_write(GICD_ICPENDRn+uintptr(i*4), 0xFFFFFFFF)
 	}
 
-	// Step 6: Route all interrupts to Group 1 (non-secure)
-	// CRITICAL: On QEMU virt, we run in non-secure state at EL1
-	// Group 0 = secure interrupts (FIQ), Group 1 = non-secure (IRQ)
-	// Non-secure EL1 can only receive Group 1 interrupts!
-	uartPuts("DEBUG: Step 6 - Set all interrupts to Group 1 (non-secure)\r\n")
+	// Step 6: Route all interrupts to Group 0 (secure)
+	// CRITICAL: ID 1022 indicates we're in Secure EL1 trying to handle Group 1 interrupts
+	// If we configure interrupts as Group 0, GICC_IAR will return the actual interrupt ID
+	// Group 0 = secure interrupts (IRQ), Group 1 = non-secure (IRQ)
+	uartPuts("DEBUG: Step 6 - Set all interrupts to Group 0 (secure)\r\n")
 	for i := 0; i < 32; i++ {
-		mmio_write(GICD_IGROUPRn+uintptr(i*4), 0xFFFFFFFF) // All in Group 1
+		mmio_write(GICD_IGROUPRn+uintptr(i*4), 0x00000000) // All in Group 0
 	}
 
 	// Step 7: Set interrupt priorities (default: 0x80 = medium priority)
@@ -145,16 +145,16 @@ func gicInitFull() {
 	}
 
 	// Step 10: Enable distributor
-	// Enable both Group 0 and Group 1 interrupts
-	// Bit 0 = Enable Group 0, Bit 1 = Enable Group 1
-	uartPuts("DEBUG: Step 10 - Enable distributor (Groups 0 and 1)\r\n")
-	mmio_write(GICD_CTLR, 0x03) // Enable both groups (0x03 = bits 0 and 1)
+	// Enable Group 0 only (since we're in Secure EL1)
+	// Bit 0 = Enable Group 0 (Secure)
+	uartPuts("DEBUG: Step 10 - Enable distributor (Group 0 only)\r\n")
+	mmio_write(GICD_CTLR, 0x01) // Enable Group 0 only
 
 	// Step 11: Enable CPU interface
-	// Enable both Group 0 and Group 1 interrupts in CPU interface
-	// Bit 0 = Enable Group 0, Bit 1 = Enable Group 1 (non-secure)
-	uartPuts("DEBUG: Step 11 - Enable CPU interface (Groups 0 and 1)\r\n")
-	mmio_write(GICC_CTLR, 0x03) // Enable both groups
+	// Enable Group 0 only (since we're in Secure EL1)
+	// Bit 0 = Enable Group 0 (Secure)
+	uartPuts("DEBUG: Step 11 - Enable CPU interface (Group 0 only)\r\n")
+	mmio_write(GICC_CTLR, 0x01) // Enable Group 0 only
 
 	uartPuts("GIC initialized\r\n")
 }
