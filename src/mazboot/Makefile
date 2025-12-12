@@ -8,7 +8,7 @@ GOARCH = arm64
 GOOS = linux
 
 # Runtime patching tool
-PATCH_RUNTIME = ../tools/runtime/patch_runtime.py
+PATCH_RUNTIME = ../../tools/runtime/patch_runtime.py
 
 # Runtime function replacements: <old_func> <new_func> pairs
 # These functions will have their symbols weakened and calls patched to use our implementations
@@ -27,24 +27,24 @@ LDFLAGS = -T linker.ld -ffreestanding -O2 -nostdlib -g
 GO_GCFLAGS ?= "all=-N -l"
 GO_BUILD_FLAGS = -buildmode=c-archive -gcflags $(GO_GCFLAGS)
 
-# Source files - Assembly in asm/ directory
-BOOT_SRC = asm/boot.s
-LIB_SRC = asm/lib.s
-WRITEBARRIER_SRC = asm/writebarrier.s
-EXCEPTIONS_SRC = asm/exceptions.s
-IMAGE_SRC = asm/image.s
-GOROUTINE_SRC = asm/goroutine.s
+# Source files - Assembly in asm/aarch64/ directory
+BOOT_SRC = asm/aarch64/boot.s
+LIB_SRC = asm/aarch64/lib.s
+WRITEBARRIER_SRC = asm/aarch64/writebarrier.s
+EXCEPTIONS_SRC = asm/aarch64/exceptions.s
+IMAGE_SRC = asm/aarch64/image.s
+GOROUTINE_SRC = asm/aarch64/goroutine.s
 LINKER_SCRIPT = linker.ld
 
 # Asset generation tools and sources
-IMAGECONVERT_TOOL = ../tools/imageconvert/main.go
-IMAGECONVERT_GO_MOD = ../tools/imageconvert/go.mod
-# FONTRENDER_TOOL = ../tools/fontrender/fontrender.py  # Not currently used in build
-BOOT_IMAGE_BIN = ../assets/boot-mazarin.bin
-BOOT_IMAGE_SOURCES = ../assets/mazarin-original.png ../assets/mazarin50.png
+IMAGECONVERT_TOOL = ../../tools/imageconvert/main.go
+IMAGECONVERT_GO_MOD = ../../tools/imageconvert/go.mod
+# FONTRENDER_TOOL = ../../tools/fontrender/fontrender.py  # Not currently used in build
+BOOT_IMAGE_BIN = ../../assets/boot-mazarin.bin
+BOOT_IMAGE_SOURCES = ../../assets/mazarin-original.png ../../assets/mazarin50.png
 
 # Go package location
-GO_PACKAGE_DIR = go/mazarin
+GO_PACKAGE_DIR = go/mazboot
 
 # Go source files (all files - build tags determine which are included)
 # Note: Build tags (qemu/!qemu) determine which files are actually compiled,
@@ -77,31 +77,29 @@ BITFIELD_GEN = bitfield/page_flags_gen.go
 BITFIELD_GEN_SRC = bitfield/gen.go
 BITFIELD_FLAGS_SRC = bitfield/page_flags.go
 
-# Object files
-BOOT_OBJ = boot.o
-LIB_OBJ = lib.o
-WRITEBARRIER_OBJ = writebarrier.o
-EXCEPTIONS_OBJ = exceptions.o
-IMAGE_OBJ = image.o
-GOROUTINE_OBJ = goroutine.o
-GET_CALLER_SP_OBJ = get_caller_sp.o
-KERNEL_GO_OBJ = kernel_go.o
+# Build output directory
+BUILD_DIR = ../../build/mazboot
+
+# Object files (all in build/mazboot/)
+BOOT_OBJ = $(BUILD_DIR)/boot.o
+LIB_OBJ = $(BUILD_DIR)/lib.o
+WRITEBARRIER_OBJ = $(BUILD_DIR)/writebarrier.o
+EXCEPTIONS_OBJ = $(BUILD_DIR)/exceptions.o
+IMAGE_OBJ = $(BUILD_DIR)/image.o
+GOROUTINE_OBJ = $(BUILD_DIR)/goroutine.o
+GET_CALLER_SP_OBJ = $(BUILD_DIR)/get_caller_sp.o
+KERNEL_GO_OBJ = $(BUILD_DIR)/kernel_go.o
 
 # Assembly object files list
 ASM_OBJECTS = $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ)
 
 # Output file
-KERNEL_ELF = kernel.elf
-QEMU_KERNEL_OUT = ../docker/builtin/kernel.elf
+MAZBOOT_BINARY = $(BUILD_DIR)/mazboot
+QEMU_KERNEL_OUT = ../../docker/builtin/kernel.elf
 
-# Default: use Go version
-KERNEL_OBJ = $(KERNEL_GO_OBJ)
-
-# Default target: build the kernel
+# Default target: build mazboot for QEMU
 # This automatically triggers all dependencies including bitfield code generation
-# Dependency chain: kernel.elf -> (boot.o, lib.o, exceptions.o, kernel_go.o) -> (asm sources, Go sources, bitfield gen)
-$(KERNEL_ELF): $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ) $(KERNEL_OBJ) $(LINKER_SCRIPT)
-	$(CC) $(LDFLAGS) -o $@ $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ) $(KERNEL_OBJ)
+# Dependency chain: mazboot -> (boot.o, lib.o, exceptions.o, kernel_go_qemu.o) -> (asm sources, Go sources, bitfield gen)
 
 # Generate bitfield unpacking code
 # This is automatically triggered as a dependency of kernel_go.o
@@ -115,38 +113,50 @@ $(BITFIELD_GEN): $(BITFIELD_GEN_SRC) $(BITFIELD_FLAGS_SRC)
 # The binary is committed to git but will be regenerated if sources change
 $(BOOT_IMAGE_BIN): $(BOOT_IMAGE_SOURCES) $(IMAGECONVERT_TOOL) $(IMAGECONVERT_GO_MOD)
 	@echo "Generating boot image binary from PNG..."
-	@cd ../tools/imageconvert && $(GO) run main.go ../../assets/mazarin50.png ../../assets/boot-mazarin.bin
+	@cd ../../tools/imageconvert && $(GO) run main.go ../../../assets/mazarin50.png ../../../assets/boot-mazarin.bin
 
-# Compile boot.s from asm/ directory
+# Compile boot.s from asm/aarch64/ directory
 $(BOOT_OBJ): $(BOOT_SRC)
+	@mkdir -p $(BUILD_DIR)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
-# Compile lib.s from asm/ directory
+# Compile lib.s from asm/aarch64/ directory
 $(LIB_OBJ): $(LIB_SRC)
+	@mkdir -p $(BUILD_DIR)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
-# Compile exceptions.s from asm/ directory
+# Compile exceptions.s from asm/aarch64/ directory
 $(EXCEPTIONS_OBJ): $(EXCEPTIONS_SRC)
+	@mkdir -p $(BUILD_DIR)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
-# Compile writebarrier.s from asm/ directory
+# Compile writebarrier.s from asm/aarch64/ directory
 $(WRITEBARRIER_OBJ): $(WRITEBARRIER_SRC)
+	@mkdir -p $(BUILD_DIR)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
-# Compile image.s from asm/ directory
+# Compile image.s from asm/aarch64/ directory
 # Add the image binary as dependency so changes trigger rebuild
 # Dependency chain: PNG sources + imageconvert tool → boot-mazarin.bin → image.o
 $(IMAGE_OBJ): $(IMAGE_SRC) $(BOOT_IMAGE_BIN)
+	@mkdir -p $(BUILD_DIR)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
-# Compile goroutine.s from asm/ directory
+# Compile goroutine.s from asm/aarch64/ directory
 $(GOROUTINE_OBJ): $(GOROUTINE_SRC)
+	@mkdir -p $(BUILD_DIR)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
-# Compile kernel Go sources from go/mazarin package using go build with c-archive mode
+# Compile get_caller_sp.s from asm/aarch64/ directory
+GET_CALLER_SP_SRC = asm/aarch64/get_caller_sp.s
+$(GET_CALLER_SP_OBJ): $(GET_CALLER_SP_SRC)
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+# Compile kernel Go sources from go/mazboot package using go build with c-archive mode
 # Then use objcopy to promote local symbols to global
-KERNEL_GO_ARCHIVE = kernel_go
-KERNEL_GO_TEMP = kernel_go_temp.o
+KERNEL_GO_ARCHIVE = $(BUILD_DIR)/kernel_go
+KERNEL_GO_TEMP = $(BUILD_DIR)/kernel_go_temp.o
 OBJCOPY = /Users/iansmith/mazzy/bin/target-objcopy
 
 # Build tags: REQUIRED flags for platform and architecture selection
@@ -157,8 +167,9 @@ PLATFORM ?=
 ARCH ?= 
 
 $(KERNEL_GO_OBJ): $(BITFIELD_GEN) go.mod $(GO_SRC)
+	@mkdir -p $(BUILD_DIR)
 	@# Clean up any leftover files from previous builds
-	@rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) go.o kernel_go.h __.SYMDEF
+	@rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) $(BUILD_DIR)/go.o $(BUILD_DIR)/kernel_go.h $(BUILD_DIR)/__.SYMDEF
 	@# Verify required build flags are set
 	@if [ -z "$(PLATFORM)" ]; then \
 		echo "ERROR: PLATFORM is required. Use: make PLATFORM=qemuvirt ARCH=aarch64"; \
@@ -168,12 +179,12 @@ $(KERNEL_GO_OBJ): $(BITFIELD_GEN) go.mod $(GO_SRC)
 		echo "ERROR: ARCH is required. Use: make PLATFORM=qemuvirt ARCH=aarch64"; \
 		exit 1; \
 	fi
-	@# Build Go package from go/mazarin directory with required build tags
+	@# Build Go package from go/mazboot directory with required build tags
 	@echo "Building with PLATFORM=$(PLATFORM) ARCH=$(ARCH)"
 	@GOTOOLCHAIN=auto GOARCH=$(GOARCH) GOOS=$(GOOS) $(GO) build -tags "$(PLATFORM) $(ARCH)" $(GO_BUILD_FLAGS) -o $(KERNEL_GO_ARCHIVE) ./$(GO_PACKAGE_DIR)
 	@# Extract the actual object file (go.o) from the C archive
-	ar x $(KERNEL_GO_ARCHIVE) go.o
-	mv go.o $(KERNEL_GO_TEMP)
+	@cd $(BUILD_DIR) && ar x $(notdir $(KERNEL_GO_ARCHIVE)) go.o
+	@mv $(BUILD_DIR)/go.o $(KERNEL_GO_TEMP)
 	@# Use objcopy to promote Go functions to global symbols
 	@# This allows the linker to resolve them from assembly
 	$(OBJCOPY) --globalize-symbol=main.KernelMain \
@@ -181,28 +192,25 @@ $(KERNEL_GO_OBJ): $(BITFIELD_GEN) go.mod $(GO_SRC)
 	           --globalize-symbol=main.uartTransmitHandler \
 	           $(KERNEL_GO_TEMP) $@ || \
 	 (cp $(KERNEL_GO_TEMP) $@ && echo "Warning: Could not promote symbols")
-	@rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) kernel_go.h __.SYMDEF
+	@rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) $(BUILD_DIR)/kernel_go.h $(BUILD_DIR)/__.SYMDEF
 
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -f $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(KERNEL_GO_OBJ) $(KERNEL_GO_OBJ_QEMU) $(KERNEL_ELF) kernel-qemu.elf
-	rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) go.o
-	rm -f kernel_go.pkg __.PKGDEF kernel_go.h __.SYMDEF
-	rm -f kernel.o  # Clean up any leftover object files from old builds
-	rm -f $(BITFIELD_GEN)
+	rm -rf $(BUILD_DIR)/*
 
 # QEMU build target - rebuilds Go object with qemuvirt and aarch64 tags
-KERNEL_GO_OBJ_QEMU = kernel_go_qemu.o
+KERNEL_GO_OBJ_QEMU = $(BUILD_DIR)/kernel_go_qemu.o
 $(KERNEL_GO_OBJ_QEMU): $(BITFIELD_GEN) go.mod $(GO_SRC)
+	@mkdir -p $(BUILD_DIR)
 	@# Clean up any leftover files from previous builds
-	@rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) go.o kernel_go.h __.SYMDEF
-	@# Build Go package from go/mazarin directory with required tags
+	@rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) $(BUILD_DIR)/go.o $(BUILD_DIR)/kernel_go.h $(BUILD_DIR)/__.SYMDEF
+	@# Build Go package from go/mazboot directory with required tags
 	@echo "Building for QEMU with tags: qemuvirt aarch64"
 	@GOTOOLCHAIN=auto GOARCH=$(GOARCH) GOOS=$(GOOS) $(GO) build -tags "qemuvirt aarch64" $(GO_BUILD_FLAGS) -o $(KERNEL_GO_ARCHIVE) ./$(GO_PACKAGE_DIR)
 	@# Extract the actual object file (go.o) from the C archive
-	@ar x $(KERNEL_GO_ARCHIVE) go.o
-	@mv go.o $(KERNEL_GO_TEMP)
+	@cd $(BUILD_DIR) && ar x $(notdir $(KERNEL_GO_ARCHIVE)) go.o
+	@mv $(BUILD_DIR)/go.o $(KERNEL_GO_TEMP)
 	@# Use objcopy to promote main functions and variables from local to global symbols
 	@# This allows the linker to resolve them from assembly
 	@$(OBJCOPY) --globalize-symbol=main.KernelMain \
@@ -224,10 +232,12 @@ $(KERNEL_GO_OBJ_QEMU): $(BITFIELD_GEN) go.mod $(GO_SRC)
 	             --weaken-symbol=gcWriteBarrier \
 	             $@ $@.tmp && mv $@.tmp $@ || \
 	 (echo "Warning: Could not weaken write barrier symbols")
-	@rm -f $(KERNEL_GO_ARCHIVE) kernel_go.h __.SYMDEF
+	@rm -f $(KERNEL_GO_ARCHIVE) $(BUILD_DIR)/kernel_go.h $(BUILD_DIR)/__.SYMDEF
 	@# TEMP: Keep kernel_go_temp.o for inspection
 
-kernel-qemu.elf: $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
+# Build mazboot (default: QEMU build with qemuvirt and aarch64 tags)
+$(MAZBOOT_BINARY): $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
+	@mkdir -p $(BUILD_DIR)
 	@# Link exceptions.o, then writebarrier.o so our global symbols override Go runtime's
 	@# Our writebarrier.s provides global (T) symbols that should take precedence
 	$(CC) $(LDFLAGS) -o $@.tmp $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(KERNEL_GO_OBJ_QEMU) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ)
@@ -236,21 +246,21 @@ kernel-qemu.elf: $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(
 	@python3 $(PATCH_RUNTIME) $@.tmp $(RUNTIME_REPLACEMENTS) && mv $@.tmp $@ || \
 	 (echo "Warning: Could not patch binary, using unpatched version" && mv $@.tmp $@)
 
-# Push kernel.elf to docker/builtin directory
-push: $(KERNEL_ELF)
-	@mkdir -p ../docker/builtin
-	cp $(KERNEL_ELF) ../docker/builtin/
+# Push mazboot to docker/builtin directory
+push: $(MAZBOOT_BINARY)
+	@mkdir -p ../../docker/builtin
+	cp $(MAZBOOT_BINARY) ../../docker/builtin/kernel.elf
 
 # Build QEMU kernel and push to docker/builtin directory (used by mazboot)
-# This target builds kernel-qemu.elf and copies it to ../docker/builtin/kernel.elf
+# This target builds mazboot and copies it to docker/builtin/kernel.elf
 qemu: $(QEMU_KERNEL_OUT)
 	@echo "QEMU kernel ready at $(QEMU_KERNEL_OUT)"
 
-# Rule to build and copy QEMU kernel to docker/builtin
-$(QEMU_KERNEL_OUT): kernel-qemu.elf
-	@mkdir -p ../docker/builtin
+# Rule to build and copy mazboot to docker/builtin
+$(QEMU_KERNEL_OUT): $(MAZBOOT_BINARY)
+	@mkdir -p ../../docker/builtin
 	cp $< $@
-	@echo "Copied kernel-qemu.elf to docker/builtin/kernel.elf"
+	@echo "Copied mazboot to docker/builtin/kernel.elf"
 
 # Test target - run Go tests
 test: $(BITFIELD_GEN)
@@ -260,8 +270,8 @@ test: $(BITFIELD_GEN)
 # Phony targets
 .PHONY: all clean push qemu generate test regenerate-assets
 
-# Alias for backward compatibility (all just builds kernel.elf)
-all: $(KERNEL_ELF)
+# Alias for backward compatibility (all just builds mazboot)
+all: $(MAZBOOT_BINARY)
 
 # Generate code target (can be run separately)
 generate: $(BITFIELD_GEN)

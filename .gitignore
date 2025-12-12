@@ -6,3 +6,4 @@ aarch64-none-elf/
 bin/
 docker/builtin
 enable-mazzy
+build/

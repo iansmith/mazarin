@@ -6,7 +6,7 @@
 set -e
 
 cd "$(dirname "$0")"
-cd ..
+cd ../..
 
 # Source environment
 source enable-mazzy
@@ -35,7 +35,7 @@ echo "=== Connecting GDB ==="
 echo ""
 
 # Connect GDB
-cd src
+cd "$(dirname "$0")"
 ./gdb-connect.sh
 
 # Cleanup

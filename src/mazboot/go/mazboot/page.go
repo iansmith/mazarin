@@ -3,7 +3,7 @@ package main
 import (
 	"unsafe"
 
-	"mazarin/bitfield"
+	"mazboot/bitfield"
 )
 
 // ATAG constants and structures for parsing boot parameters

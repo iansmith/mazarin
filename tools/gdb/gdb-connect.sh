@@ -7,21 +7,21 @@
 #   cd /Users/iansmith/mazzy && docker/mazboot -g
 #
 # Then in another terminal, run this script:
-#   cd /Users/iansmith/mazzy/src && ./gdb-connect.sh
+#   cd /Users/iansmith/mazzy/tools/gdb && ./gdb-connect.sh
 
 GDB_PORT="${1:-1234}"
 
 # Use the QEMU kernel (same one that mazboot uses)
-KERNEL_ELF="../docker/builtin/kernel.elf"
+KERNEL_ELF="../../docker/builtin/kernel.elf"
 
-# Fallback to local kernel.elf if builtin doesn't exist
+# Fallback to build/mazboot/mazboot if builtin doesn't exist
 if [ ! -f "$KERNEL_ELF" ]; then
-    KERNEL_ELF="kernel-qemu.elf"
+    KERNEL_ELF="../../build/mazboot/mazboot"
     if [ ! -f "$KERNEL_ELF" ]; then
         echo "Error: kernel.elf not found. Expected:" >&2
-        echo "  - $KERNEL_ELF" >&2
-        echo "  - kernel-qemu.elf" >&2
-        echo "Please build the QEMU kernel first: cd src && make qemu" >&2
+        echo "  - ../../docker/builtin/kernel.elf" >&2
+        echo "  - ../../build/mazboot/mazboot" >&2
+        echo "Please build the QEMU kernel first: cd ../../src/mazboot && make qemu" >&2
         exit 1
     fi
 fi
@@ -38,8 +38,8 @@ echo "Connecting GDB to QEMU on port $GDB_PORT..."
 echo "Kernel: $KERNEL_ELF"
 echo ""
 
-# Get the absolute path to the source directory
-SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Get the absolute path to the source directory (src/mazboot)
+SRC_DIR="$(cd "$(dirname "$0")/../../src/mazboot" && pwd)"
 echo "Source directory: $SRC_DIR"
 echo ""
 
@@ -60,10 +60,11 @@ exec "$GDB" "$KERNEL_ELF" \
     -ex "target remote localhost:$GDB_PORT" \
     -ex "set architecture aarch64" \
     -ex "directory $SRC_DIR" \
-    -ex "directory $SRC_DIR/asm" \
-    -ex "directory $SRC_DIR/go/mazarin" \
+    -ex "directory $SRC_DIR/asm/aarch64" \
+    -ex "directory $SRC_DIR/go/mazboot" \
     -ex "directory $SRC_DIR/bitfield" \
     -ex "set substitute-path /Users/iansmith/mazzy/src $SRC_DIR" \
+    -ex "set substitute-path /Users/iansmith/mazzy/src/mazboot $SRC_DIR" \
     -ex "layout asm" \
     -ex "layout regs" \
     -ex "set disassembly-flavor intel"

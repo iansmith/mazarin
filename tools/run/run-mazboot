@@ -30,7 +30,7 @@ fi
 # Verify kernel.elf exists
 if [ ! -f "$KERNEL_PATH" ]; then
     echo "Error: kernel.elf not found at $KERNEL_PATH" >&2
-    echo "Please build the QEMU kernel first: cd src && make push-qemu" >&2
+    echo "Please build the QEMU kernel first: cd src/mazboot && make push-qemu" >&2
     exit 1
 fi
 
