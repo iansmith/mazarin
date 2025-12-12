@@ -362,19 +362,6 @@ func handleUARTIRQ() {
 	mmio_write(QEMU_UART_ICR, 0x7FF)
 }
 
-// uartInterruptHandler is the old handler - kept for reference but not used
-// The assembly handler calls handleUARTIRQ directly instead
-//
-//go:nosplit
-//go:noinline
-func uartInterruptHandler() {
-	// Minimal handler - just return without doing anything
-	// This tests if the handler dispatch itself is the problem
-	// mis := mmio_read(QEMU_UART_BASE + 0x40) // UART_MIS
-	// mmio_write(QEMU_UART_BASE+0x44, mis)    // UART_ICR
-	// mmio_write(QEMU_UART_BASE+0x38, 0) // UART_IMSC - clear TXIM bit (5)
-}
-
 // Note: The current logic is wrong. When spaceBefore == 3, we should allow the enqueue
 // because it would leave 2 slots remaining, which is still > 3. Overflow should only
 // trigger when spaceBefore <= 3. But let me check the test again...

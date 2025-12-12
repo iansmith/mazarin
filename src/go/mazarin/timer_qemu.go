@@ -363,54 +363,9 @@ func checkTimerStatus() {
 	uartPuts(")\r\n")
 }
 
-// handleTimerIRQ is called from assembly interrupt handler (LEGACY - NOT USED)
-// This is a minimal nosplit function that handles timer interrupts
-// NOTE: Now using timerInterruptHandler() via gicHandleInterrupt() instead
-//
-//go:linkname handleTimerIRQ handleTimerIRQ
-//go:nosplit
-//go:noinline
-func handleTimerIRQ() {
-	// Breadcrumb: Entered handleTimerIRQ
-	uart_putc_pl011('[')
-	uart_putc_pl011('T')
-	uart_putc_pl011('H')
-	uart_putc_pl011(']') // [TH] = "Timer Handler"
-
-	// Decrement exit counter
-	if timerExitCount > 0 {
-		timerExitCount--
-		if timerExitCount == 0 {
-			// Exit after 5 seconds (5 timer interrupts at 1 second each)
-			uartPuts("Timer: 5 seconds elapsed, exiting via semihosting...\r\n")
-			qemu_exit()
-			return
-		}
-	}
-
-	// Reset timer to fire again in 1 second
-	// Use TVAL (timer value - counts down)
-	freq := uint64(62500000)           // Default QEMU virt timer frequency = 62.5MHz
-	timer_write_tval(uint32(freq * 1)) // Set countdown timer for 1 second
-
-	// Breadcrumb: About to call fb_putc_irq
-	uart_putc_pl011('[')
-	uart_putc_pl011('F')
-	uart_putc_pl011('B')
-	uart_putc_pl011(']') // [FB] = "Framebuffer"
-
-	// Output '.' to framebuffer
-	fb_putc_irq('.')
-
-	// Breadcrumb: Returned from fb_putc_irq
-	uart_putc_pl011('[')
-	uart_putc_pl011('/')
-	uart_putc_pl011('F')
-	uart_putc_pl011('B')
-	uart_putc_pl011(']') // [/FB] = "returned from Framebuffer"
-}
-
-// timerInterruptHandler is called from gicHandleInterrupt when timer interrupt fires
+// timerInterruptHandler is a legacy handler - timer interrupts are now handled
+// entirely in assembly (src/asm/exceptions.s). This function is kept for
+// reference but is not called.
 //
 //go:nosplit
 func timerInterruptHandler() {

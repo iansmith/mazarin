@@ -903,9 +903,6 @@ func main() {
 	// Reference interrupt handlers to prevent optimization
 	// These are called from assembly interrupt handlers and must not be optimized away
 	// This will never execute in bare metal, but ensures the functions exist
-	IRQHandler(0)
-	FIQHandler()
-	SErrorHandler()
 	ExceptionHandler(0, 0, 0, 0, 0)
 	uartTransmitHandler() // UART TX interrupt handler
 

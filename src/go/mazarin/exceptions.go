@@ -322,30 +322,6 @@ func serrorHandlerGo() {
 	}
 }
 
-// Export these as assembly-callable symbols using linkname
-// These create assembly-visible entry points that call the Go implementations
-//
-//go:linkname IRQHandler main.IRQHandler
-//go:nosplit
-//go:noinline
-func IRQHandler(irqID uint32) {
-	irqHandlerGo(irqID)
-}
-
-//go:linkname FIQHandler main.FIQHandler
-//go:nosplit
-//go:noinline
-func FIQHandler() {
-	fiqHandlerGo()
-}
-
-//go:linkname SErrorHandler main.SErrorHandler
-//go:nosplit
-//go:noinline
-func SErrorHandler() {
-	serrorHandlerGo()
-}
-
 // Helper: Extract EC (Exception Class) from ESR_EL1
 func extractEC(esr uint64) uint8 {
 	return uint8((esr >> 26) & 0x3F)

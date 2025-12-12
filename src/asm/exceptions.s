@@ -279,9 +279,9 @@ exception_vectors_end:
 // ============================================================================
 // Exception Handler Functions
 // ============================================================================
-// The Go functions (IRQHandler, FIQHandler, SErrorHandler) are defined in
-// exceptions.go and exported via //go:linkname. The assembly code above
-// calls these Go functions directly using 'bl main.IRQHandler', etc.
+// Go functions called from assembly (e.g., uartTransmitHandler) are defined
+// in their respective Go files and exported via //go:linkname. The assembly
+// code calls these Go functions directly using 'bl main.FunctionName'.
 // No stubs needed - Go compiler will handle the linkage.
 
 
