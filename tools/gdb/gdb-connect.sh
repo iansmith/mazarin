@@ -21,7 +21,7 @@ if [ ! -f "$KERNEL_ELF" ]; then
         echo "Error: kernel.elf not found. Expected:" >&2
         echo "  - ../../docker/builtin/kernel.elf" >&2
         echo "  - ../../build/mazboot/mazboot" >&2
-        echo "Please build the QEMU kernel first: cd ../../src/mazboot && make qemu" >&2
+        echo "Please build mazboot first: cd ../../src/mazboot && make mazboot" >&2
         exit 1
     fi
 fi

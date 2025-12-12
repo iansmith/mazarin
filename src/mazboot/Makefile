@@ -94,7 +94,9 @@ KERNEL_GO_OBJ = $(BUILD_DIR)/kernel_go.o
 ASM_OBJECTS = $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ)
 
 # Output file
-MAZBOOT_BINARY = $(BUILD_DIR)/mazboot
+MAZBOOT_BINARY = $(BUILD_DIR)/mazboot.elf
+FLASH_DIR = ../../flash
+FLASH_BINARY = $(FLASH_DIR)/mazboot.elf
 QEMU_KERNEL_OUT = ../../docker/builtin/kernel.elf
 
 # Default target: build mazboot for QEMU
@@ -251,16 +253,16 @@ push: $(MAZBOOT_BINARY)
 	@mkdir -p ../../docker/builtin
 	cp $(MAZBOOT_BINARY) ../../docker/builtin/kernel.elf
 
-# Build QEMU kernel and push to docker/builtin directory (used by mazboot)
-# This target builds mazboot and copies it to docker/builtin/kernel.elf
-qemu: $(QEMU_KERNEL_OUT)
-	@echo "QEMU kernel ready at $(QEMU_KERNEL_OUT)"
+# Build mazboot: compile binary and copy to flash directory
+# This target builds mazboot.elf and copies it to flash/mazboot.elf
+mazboot: $(FLASH_BINARY)
+	@echo "mazboot ready at $(FLASH_BINARY)"
 
-# Rule to build and copy mazboot to docker/builtin
-$(QEMU_KERNEL_OUT): $(MAZBOOT_BINARY)
-	@mkdir -p ../../docker/builtin
+# Rule to build mazboot.elf and copy to flash directory
+$(FLASH_BINARY): $(MAZBOOT_BINARY)
+	@mkdir -p $(FLASH_DIR)
 	cp $< $@
-	@echo "Copied mazboot to docker/builtin/kernel.elf"
+	@echo "Copied mazboot.elf to flash directory"
 
 # Test target - run Go tests
 test: $(BITFIELD_GEN)
@@ -268,7 +270,7 @@ test: $(BITFIELD_GEN)
 	@GOTOOLCHAIN=local $(GO) test -v ./bitfield
 
 # Phony targets
-.PHONY: all clean push qemu generate test regenerate-assets
+.PHONY: all clean push mazboot generate test regenerate-assets
 
 # Alias for backward compatibility (all just builds mazboot)
 all: $(MAZBOOT_BINARY)
