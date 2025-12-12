@@ -88,6 +88,13 @@ dsb:
     dsb sy              // Data Synchronization Barrier - system-wide
     ret                  // Return
 
+// isb() - Instruction Synchronization Barrier
+// Ensures all instructions before this barrier complete before continuing
+.global isb
+isb:
+    isb                 // Instruction Synchronization Barrier
+    ret                 // Return
+
 // get_stack_pointer() - Returns current stack pointer value
 // Returns uintptr_t (64-bit) in x0
 .global get_stack_pointer
@@ -569,6 +576,68 @@ read_cntvct_el0:
 read_cntfrq_el0:
     mrs x0, CNTFRQ_EL0      // Read CNTFRQ_EL0 into x0
     ret                      // Return (value in w0)
+
+// read_current_el() - Read CurrentEL (Current Exception Level)
+// Returns uint32 in w0 (bits [3:2] contain EL)
+.global read_current_el
+read_current_el:
+    mrs x0, CurrentEL       // Read CurrentEL into x0
+    ret                      // Return (value in w0)
+
+// PHYSICAL TIMER FUNCTIONS (CNTP_*) - for comparison with virtual timer
+// Physical timer uses PPI 30 (virtual timer uses PPI 27)
+
+// read_cntp_ctl_el0() - Read CNTP_CTL_EL0 (Physical Timer Control Register)
+// Returns uint32 in w0
+.global read_cntp_ctl_el0
+read_cntp_ctl_el0:
+    mrs x0, CNTP_CTL_EL0    // Read CNTP_CTL_EL0 into x0
+    ret                      // Return (value in w0)
+
+// write_cntp_ctl_el0(value uint32) - Write CNTP_CTL_EL0
+// w0 = value to write
+.global write_cntp_ctl_el0
+write_cntp_ctl_el0:
+    msr CNTP_CTL_EL0, x0    // Write x0 to CNTP_CTL_EL0
+    isb                      // Instruction synchronization barrier
+    ret
+
+// read_cntp_tval_el0() - Read CNTP_TVAL_EL0 (Physical Timer Value Register)
+// Returns uint32 in w0
+.global read_cntp_tval_el0
+read_cntp_tval_el0:
+    mrs x0, CNTP_TVAL_EL0   // Read CNTP_TVAL_EL0 into x0
+    ret                      // Return (value in w0)
+
+// write_cntp_tval_el0(value uint32) - Write CNTP_TVAL_EL0
+// w0 = value to write
+.global write_cntp_tval_el0
+write_cntp_tval_el0:
+    msr CNTP_TVAL_EL0, x0   // Write x0 to CNTP_TVAL_EL0
+    isb                      // Instruction synchronization barrier
+    ret
+
+// read_cntp_cval_el0() - Read CNTP_CVAL_EL0 (Physical Timer Compare Value Register)
+// Returns uint64 in x0
+.global read_cntp_cval_el0
+read_cntp_cval_el0:
+    mrs x0, CNTP_CVAL_EL0   // Read CNTP_CVAL_EL0 into x0
+    ret                      // Return (value in x0)
+
+// write_cntp_cval_el0(value uint64) - Write CNTP_CVAL_EL0
+// x0 = value to write
+.global write_cntp_cval_el0
+write_cntp_cval_el0:
+    msr CNTP_CVAL_EL0, x0   // Write x0 to CNTP_CVAL_EL0
+    isb                      // Instruction synchronization barrier
+    ret
+
+// read_cntpct_el0() - Read CNTPCT_EL0 (Physical Counter Register)
+// Returns uint64 in x0
+.global read_cntpct_el0
+read_cntpct_el0:
+    mrs x0, CNTPCT_EL0      // Read CNTPCT_EL0 into x0
+    ret                      // Return (value in x0)
 
 // ============================================================================
 // Memory Functions

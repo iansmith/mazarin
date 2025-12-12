@@ -58,6 +58,10 @@ func storePointerNoBarrier(dest unsafe.Pointer, value unsafe.Pointer)
 //go:nosplit
 func dsb()
 
+//go:linkname isb isb
+//go:nosplit
+func isb()
+
 //go:linkname qemu_exit qemu_exit
 //go:nosplit
 func qemu_exit()
@@ -184,6 +188,21 @@ func uartPutHex64(val uint64) {
 	writeHexDigit(uint32((val >> 8) & 0xF))
 	writeHexDigit(uint32((val >> 4) & 0xF))
 	writeHexDigit(uint32(val & 0xF))
+}
+
+// uartPutHex32 outputs a uint32 as an 8-digit hex string via UART
+//
+//go:nosplit
+func uartPutHex32(val uint32) {
+	// Output 8 hex digits (32 bits / 4 bits per digit)
+	for i := 7; i >= 0; i-- {
+		nibble := (val >> uint(i*4)) & 0xF
+		if nibble < 10 {
+			uartPutc(byte('0' + nibble))
+		} else {
+			uartPutc(byte('A' + (nibble - 10)))
+		}
+	}
 }
 
 //go:nosplit
@@ -736,7 +755,9 @@ func kernelMainBody() {
 	uartPuts("DEBUG: gicInit completed\r\n")
 
 	// Set up UART interrupts now that GIC is initialized
-	uartSetupInterrupts()
+	// DISABLED: UART interrupts are interfering with timer interrupts
+	// The handleUARTIRQ function only handles TX interrupts, not RX, causing spurious interrupts
+	// uartSetupInterrupts()
 
 	uartPuts("DEBUG: stage6 complete, proceeding to stage7 (timer)\r\n")
 
@@ -751,6 +772,7 @@ func kernelMainBody() {
 	// Try to enable interrupts using the assembly function
 	// Note: This might cause issues, but we need interrupts enabled for timer
 	uartPuts("DEBUG: Attempting to enable interrupts...\r\n")
+
 	enable_irqs_asm() // Use the minimal version that just does msr DAIFCLR
 
 	// CRITICAL: After enabling interrupts, avoid calling functions that might
@@ -880,8 +902,9 @@ func main() {
 	// Reference interrupt handlers to prevent optimization
 	// These are called from assembly interrupt handlers and must not be optimized away
 	// This will never execute in bare metal, but ensures the functions exist
-	handleTimerIRQ()
-	handleUARTIRQ()
+	IRQHandler(0)
+	FIQHandler()
+	SErrorHandler()
 	ExceptionHandler(0, 0, 0, 0, 0)
 
 	// This should never execute in bare metal

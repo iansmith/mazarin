@@ -518,8 +518,15 @@ func FramebufferPutHex64(val uint64) {
 //go:nosplit
 //go:noinline
 func fb_putc_irq(c byte) {
+	// Breadcrumb: Entered fb_putc_irq
+	uart_putc_pl011('[')
+	uart_putc_pl011('f')
+	uart_putc_pl011('b')
+	uart_putc_pl011(']') // [fb] = "fb_putc_irq"
+
 	if !fbTextInitialized {
-		return // Silently skip if framebuffer not initialized
+		uart_putc_pl011('!') // Print '!' if not initialized
+		return               // Silently skip if framebuffer not initialized
 	}
 
 	// Render the character at current cursor position (8x8 for compactness)

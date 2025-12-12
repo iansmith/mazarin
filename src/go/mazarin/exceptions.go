@@ -293,12 +293,13 @@ func handleException(excInfo ExceptionInfo) {
 // irqHandlerGo is the actual Go implementation
 //
 //go:nosplit
-func irqHandlerGo() {
+func irqHandlerGo(irqID uint32) {
 	// Print 'I' to show IRQ handler was called
 	uartPutc('I')
 
-	// Handle interrupt through GIC
-	gicHandleInterrupt()
+	// Handle interrupt - interrupt ID already acknowledged in assembly
+	// irqID passed from assembly (read from GICC_IAR immediately on entry)
+	gicHandleInterruptWithID(irqID)
 
 	// Print 'i' to show IRQ handler returning
 	uartPutc('i')
@@ -327,8 +328,8 @@ func serrorHandlerGo() {
 //go:linkname IRQHandler main.IRQHandler
 //go:nosplit
 //go:noinline
-func IRQHandler() {
-	irqHandlerGo()
+func IRQHandler(irqID uint32) {
+	irqHandlerGo(irqID)
 }
 
 //go:linkname FIQHandler main.FIQHandler

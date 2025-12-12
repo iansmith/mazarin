@@ -2,6 +2,10 @@
 
 package main
 
+import (
+	_ "unsafe" // Required for //go:linkname directives
+)
+
 // GIC (Generic Interrupt Controller) for QEMU virt machine
 // QEMU virt uses GICv2 by default
 // Base addresses:
@@ -49,8 +53,9 @@ const (
 	// Interrupt IDs
 	// PPIs (Private Peripheral Interrupts): 16-31
 	// SPIs (Shared Peripheral Interrupts): 32-1019
-	IRQ_ID_TIMER_PPI = 27 // ARM Generic Timer PPI - Virtual Timer (CNTV) for EL1 - ID 27 (like reference repo)
-	IRQ_ID_UART_SPI  = 33 // Try interrupt 33 (should be safe SPI)
+	IRQ_ID_TIMER_PPI          = 27 // ARM Generic Timer PPI - Virtual Timer (CNTV) for EL1 - ID 27
+	IRQ_ID_TIMER_PHYSICAL_PPI = 30 // Physical Timer (CNTP) - ID 30 (for experiments)
+	IRQ_ID_UART_SPI           = 33 // Try interrupt 33 (should be safe SPI)
 )
 
 // Interrupt handler function type
@@ -63,9 +68,19 @@ var (
 )
 
 // gicInit initializes the Generic Interrupt Controller
+// REVERTED TO FULL INIT: Minimal init experiment didn't solve the spurious 1022 issue
 //
 //go:nosplit
 func gicInit() {
+	// Call the full initialization
+	gicInitFull()
+}
+
+// gicInitFull is the original full initialization (kept for easy revert)
+// To revert: replace gicInit() body with gicInitFull() body
+//
+//go:nosplit
+func gicInitFull() {
 	uartPuts("DEBUG: gicInit called\r\n")
 
 	// Interrupts are already disabled during kernel init
@@ -130,19 +145,16 @@ func gicInit() {
 	}
 
 	// Step 10: Enable distributor
-	// Enable both Group 0 and Group 1 forwarding
-	// Bit 0: EnableGrp0 - Enable Group 0 distribution
-	// Bit 1: EnableGrp1 - Enable Group 1 distribution
+	// Enable both Group 0 and Group 1 interrupts
+	// Bit 0 = Enable Group 0, Bit 1 = Enable Group 1
 	uartPuts("DEBUG: Step 10 - Enable distributor (Groups 0 and 1)\r\n")
-	mmio_write(GICD_CTLR, 0x03) // Enable both Group 0 and Group 1
+	mmio_write(GICD_CTLR, 0x03) // Enable both groups (0x03 = bits 0 and 1)
 
 	// Step 11: Enable CPU interface
-	// Enable both Group 0 and Group 1 signaling
-	// Bit 0: EnableGrp0 - Signal Group 0 interrupts (FIQ)
-	// Bit 1: EnableGrp1 - Signal Group 1 interrupts (IRQ)
-	// For non-secure EL1, we want Group 1 to signal as IRQ
+	// Enable both Group 0 and Group 1 interrupts in CPU interface
+	// Bit 0 = Enable Group 0, Bit 1 = Enable Group 1 (non-secure)
 	uartPuts("DEBUG: Step 11 - Enable CPU interface (Groups 0 and 1)\r\n")
-	mmio_write(GICC_CTLR, 0x03) // Enable both Group 0 and Group 1
+	mmio_write(GICC_CTLR, 0x03) // Enable both groups
 
 	uartPuts("GIC initialized\r\n")
 }
@@ -179,6 +191,20 @@ func gicDisableInterrupt(irqID uint32) {
 	mmio_write(GICD_ICENABLERn+uintptr(regIndex*4), 1<<bitIndex)
 }
 
+// gicHandleInterruptWithID handles an interrupt with a pre-acknowledged ID
+// Used when assembly has already read GICC_IAR to avoid timing issues
+//
+//go:nosplit
+func gicHandleInterruptWithID(irqID uint32) {
+	if irqID >= 1020 {
+		return
+	}
+	if interruptHandlers[irqID] != nil {
+		interruptHandlers[irqID]()
+	}
+	gicEndOfInterrupt(irqID)
+}
+
 // gicAcknowledgeInterrupt reads the interrupt ID from the CPU interface
 // Returns the interrupt ID (bits 9:0) or 1023 if spurious
 //
@@ -213,7 +239,7 @@ func registerInterruptHandler(irqID uint32, handler InterruptHandler) {
 var interruptsEnabled bool
 
 // gicHandleInterrupt handles an interrupt from the GIC
-// This is called from IRQHandler and from assembly exception handlers
+// This is called from irqHandlerGo (Go IRQ handler)
 //
 //go:nosplit
 //go:noinline
@@ -221,14 +247,8 @@ func gicHandleInterrupt() {
 	// Print 'H' to show we entered gicHandleInterrupt
 	uartPutc('H')
 
-	// On first interrupt, enable interrupts from assembly
-	// This avoids issues with Go runtime triggering exceptions
-	if !interruptsEnabled {
-		// Enable interrupts from pure assembly - this is safe in interrupt context
-		enable_irqs_asm()
-		interruptsEnabled = true
-		uartPutc('!')
-	}
+	// Note: Interrupts should already be enabled before timer starts
+	// Do NOT enable interrupts from inside the interrupt handler!
 
 	// Acknowledge interrupt and get ID
 	irqID := gicAcknowledgeInterrupt()

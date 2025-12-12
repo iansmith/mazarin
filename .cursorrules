@@ -8,6 +8,12 @@ This file contains architectural rules and patterns that must be followed for al
 2. **Always use `//go:nosplit`** - Required for all functions that call assembly or do MMIO.
 3. **32-bit flags** - Use `uint32` for packed bitfields (works on both 32-bit and 64-bit processors).
 4. **Code generation** - Bitfield code must be regenerated before building (run `make generate`).
+5. **Prefer Go over Assembly** - Implement logic in Go whenever possible. Assembly should be reserved for:
+   - Specific CPU instructions not available in Go (system register access, barriers, etc.)
+   - Exception vector tables and initial exception entry/exit
+   - Small, focused operations that must execute without a stack frame
+   - Assembly should NOT contain complex logic, branching, or dispatch - delegate to Go functions instead
+6. **Minimal Assembly Functions** - Keep assembly functions small and single-purpose. Complex interrupt handling, routing, and dispatch should be done in Go where debugging is easier.
 
 ## Go + Assembly Integration
 

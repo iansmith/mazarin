@@ -213,8 +213,8 @@ $(KERNEL_GO_OBJ_QEMU): $(BITFIELD_GEN) go.mod $(GO_SRC)
 	             --globalize-symbol=main.GoEventLoopEntry \
 	             --globalize-symbol=main.kernelMainBodyWrapper \
 	             --globalize-symbol=fb_putc_irq \
-	             --globalize-symbol=handleTimerIRQ \
-	             --globalize-symbol=handleUARTIRQ \
+	             --globalize-symbol=main.IRQHandler \
+	             --globalize-symbol=timerInterruptHandlerAsm \
 	             --globalize-symbol=ExceptionHandler \
 	             $(KERNEL_GO_TEMP) $@ || \
 	 (cp $(KERNEL_GO_TEMP) $@ && echo "Warning: Could not promote symbols")
