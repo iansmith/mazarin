@@ -70,12 +70,21 @@ GO_SRC = $(GO_PACKAGE_DIR)/kernel.go \
          $(GO_PACKAGE_DIR)/uart_qemu.go \
          $(GO_PACKAGE_DIR)/goroutine.go \
          $(GO_PACKAGE_DIR)/runtime_types.go \
-         $(GO_PACKAGE_DIR)/stack_growth.go
+         $(GO_PACKAGE_DIR)/stack_growth.go \
+         $(LINKNAMES_GO) \
+         $(MAIN_GO)
 
 # Bitfield code generation
 BITFIELD_GEN = bitfield/page_flags_gen.go
 BITFIELD_GEN_SRC = bitfield/gen.go
 BITFIELD_FLAGS_SRC = bitfield/page_flags.go
+
+# Linkname and main.go code generation
+LINKNAMES_GEN = tools/generate-linknames.go
+MAIN_CALLS_GEN = tools/generate-main-calls.go
+INSERT_SCRIPT = tools/insert-between-markers.py
+LINKNAMES_GO = $(GO_PACKAGE_DIR)/linknames.go
+MAIN_GO = $(GO_PACKAGE_DIR)/main.go
 
 # Build output directory
 BUILD_DIR = ../../build/mazboot
@@ -107,7 +116,28 @@ QEMU_KERNEL_OUT = ../../docker/builtin/kernel.elf
 # This is automatically triggered as a dependency of kernel_go.o
 $(BITFIELD_GEN): $(BITFIELD_GEN_SRC) $(BITFIELD_FLAGS_SRC)
 	@echo "Generating bitfield code..."
-	@GOTOOLCHAIN=auto $(GO) run $(BITFIELD_GEN_SRC) > $(BITFIELD_GEN)
+	@GOTOOLCHAIN=1.25.6 $(GO) run $(BITFIELD_GEN_SRC) > $(BITFIELD_GEN)
+
+# Generate linknames.go content
+# Scans assembly files and generates //go:linkname declarations
+# Assumes we are in src/mazboot directory
+$(LINKNAMES_GO): $(LINKNAMES_GEN) $(wildcard asm/aarch64/*.s) $(INSERT_SCRIPT)
+	@echo "Generating linknames.go..."
+	@mkdir -p $(BUILD_DIR)
+	@GOTOOLCHAIN=local $(GO) run $(LINKNAMES_GEN) asm/aarch64 > $(BUILD_DIR)/linknames_content.tmp
+	@python3 $(INSERT_SCRIPT) $(LINKNAMES_GO) "//{{ LINKNAME START}}" "//{{ LINKNAME END}}" $(BUILD_DIR)/linknames_content.tmp
+	@rm -f $(BUILD_DIR)/linknames_content.tmp
+
+# Generate main.go dummy calls
+# Scans assembly files and generates dummy function calls to prevent dead code elimination
+# Exclude main.go itself from dependencies to avoid circular dependency
+# Assumes we are in src/mazboot directory
+$(MAIN_GO): $(MAIN_CALLS_GEN) $(wildcard asm/aarch64/*.s) $(filter-out $(MAIN_GO),$(wildcard $(GO_PACKAGE_DIR)/*.go)) $(INSERT_SCRIPT)
+	@echo "Generating main.go calls..."
+	@mkdir -p $(BUILD_DIR)
+	@GOTOOLCHAIN=local $(GO) run $(MAIN_CALLS_GEN) asm/aarch64 $(GO_PACKAGE_DIR) > $(BUILD_DIR)/main_calls_content.tmp
+	@python3 $(INSERT_SCRIPT) $(MAIN_GO) "//{{ LINKNAME START}}" "//{{ LINKNAME END}}" $(BUILD_DIR)/main_calls_content.tmp
+	@rm -f $(BUILD_DIR)/main_calls_content.tmp
 
 # Generate boot image binary from PNG source
 # The imageconvert tool converts PNG to raw ARGB8888 binary format
@@ -200,6 +230,8 @@ $(KERNEL_GO_OBJ): $(BITFIELD_GEN) go.mod $(GO_SRC)
 clean:
 	@echo "Cleaning build artifacts..."
 	rm -rf $(BUILD_DIR)/*
+	@echo "Removing generated Go files..."
+	@rm -f $(LINKNAMES_GO) $(MAIN_GO)
 
 # QEMU build target - rebuilds Go object with qemuvirt and aarch64 tags
 KERNEL_GO_OBJ_QEMU = $(BUILD_DIR)/kernel_go_qemu.o
@@ -275,8 +307,17 @@ test: $(BITFIELD_GEN)
 # Alias for backward compatibility (all just builds mazboot)
 all: $(MAZBOOT_BINARY)
 
-# Generate code target (can be run separately)
-generate: $(BITFIELD_GEN)
+# Generate code targets (can be run separately)
+# Generate all code (bitfields and assembly-to-Go linking)
+generate: generate-bitfield generateasm2go
+
+# Generate bitfield code
+generate-bitfield: $(BITFIELD_GEN)
+
+# Generate assembly-to-Go linking code (linknames.go and main.go)
+# This is the main target for assembly-to-Go code generation
+generateasm2go: $(LINKNAMES_GO) $(MAIN_GO)
+	@echo "Assembly-to-Go code generation complete"
 
 # Regenerate binary assets from source images/fonts
 # Useful when PNG sources or conversion tools are modified

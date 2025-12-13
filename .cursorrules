@@ -61,8 +61,8 @@ This file contains architectural rules and patterns that must be followed for al
 
 ## Quick Build/Run (local QEMU)
 
-- Build: `cd src && make qemu` (builds and copies kernel to `docker/builtin/kernel.elf`)
-- Run: `mazboot` (requires environment script to be sourced first)
+- Build: `cd src && make mazboot` (builds mazboot into the build directory)
+- Run: `runmazboot` (requires environment script to be sourced first)
   - Normal mode: `mazboot` (Cocoa display window, UART output in terminal)
   - Terminal-only: `NOGRAPHIC=1 mazboot` (no GUI window)
   - Separate logs: `SEPARATE_OUTPUT=1 mazboot` (kernel output → kernel-uart.log, QEMU debug → qemu-debug.log)

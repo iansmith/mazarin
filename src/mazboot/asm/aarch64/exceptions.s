@@ -152,7 +152,7 @@ handle_uart_irq:
     movz w1, #0x55                // 'U'
     str w1, [x0]
     
-    // Call Go function main.uartTransmitHandler()
+    // Call Go function main.UartTransmitHandler()
     // CRITICAL: Must follow Go calling conventions:
     // - Preserve x28 (g pointer), x29 (FP), x30 (LR)
     // - 16-byte stack alignment
@@ -171,7 +171,7 @@ handle_uart_irq:
     add x29, sp, #0
     
     // Call Go function (no parameters)
-    bl main.uartTransmitHandler
+    bl main.UartTransmitHandler
     
     // Restore preserved registers
     ldp x5, x6, [sp, #64]
@@ -279,7 +279,7 @@ exception_vectors_end:
 // ============================================================================
 // Exception Handler Functions
 // ============================================================================
-// Go functions called from assembly (e.g., uartTransmitHandler) are defined
+// Go functions called from assembly (e.g., UartTransmitHandler) are defined
 // in their respective Go files and exported via //go:linkname. The assembly
 // code calls these Go functions directly using 'bl main.FunctionName'.
 // No stubs needed - Go compiler will handle the linkage.
