@@ -24,7 +24,6 @@ const QEMU_BYTES_PER_PIXEL = 4
 //
 // ramfb allocates framebuffer memory via kmalloc and configures QEMU via fw_cfg
 func framebufferInit() int32 {
-	uartPutc('F') // Breadcrumb: framebufferInit entry
 	uartPuts("FB: framebufferInit() called\r\n")
 	uartPuts("FB: About to access fbinfo...\r\n")
 	// Set fixed dimensions for QEMU
@@ -53,12 +52,10 @@ func framebufferInit() int32 {
 
 	// Initialize ramfb (allocates framebuffer memory)
 	uartPuts("FB: Attempting ramfb initialization...\r\n")
-	uartPutc('R') // Breadcrumb: about to call ramfbInit
 	uartPuts("FB: About to call ramfbInit()...\r\n")
 	ramfbSuccess := ramfbInit()
 	uartPuts("FB: ramfbInit() returned\r\n")
 	if ramfbSuccess {
-		uartPutc('r') // Breadcrumb: ramfb succeeded
 		uartPuts("FB: ramfb reported success\r\n")
 		uartPuts("FB: ramfb initialized\r\n")
 
@@ -89,7 +86,6 @@ func framebufferInit() int32 {
 		// Fill entire framebuffer with midnight blue background
 		// Note: XRGB8888 format is 32-bit (4 bytes per pixel)
 		// Format: [X/Unused:8][Red:8][Green:8][Blue:8] = 0x00RRGGBB
-		uartPutc('P')                                  // Breadcrumb: about to access pixel buffer
 		testPixels32 := (*[1 << 28]uint32)(fbinfo.Buf) // 32-bit pixels
 		uartPuts("FB: Filling entire screen with midnight blue background...\r\n")
 
@@ -105,7 +101,6 @@ func framebufferInit() int32 {
 		uartPuts("FB: Copying row to remaining rows...\r\n")
 
 		// Copy first row to all remaining rows using MemmoveBytes
-		uartPutc('C') // Breadcrumb: about to copy rows
 		firstRowAddr := uintptr(fbinfo.Buf)
 		for y := uint32(1); y < fbinfo.Height; y++ {
 			destAddr := uintptr(fbinfo.Buf) + uintptr(y*fbinfo.Pitch)
@@ -116,7 +111,6 @@ func framebufferInit() int32 {
 				uartPuts(" copied\r\n")
 			}
 		}
-		uartPutc('c') // Breadcrumb: rows copied
 		uartPuts("FB: Screen filled\r\n")
 
 		// Verify a few pixels
@@ -132,27 +126,22 @@ func framebufferInit() int32 {
 		uartPuts("/0xA pixels\r\n")
 
 		// Force memory barrier and ensure writes are visible
-		uartPutc('M') // Breadcrumb: about to execute memory barrier
 		asm.Dsb()
 		uartPuts("FB: Memory barrier executed after pixel writes\r\n")
 		uartPuts("FB: Pixels written - ramfb was already configured, display should update\r\n")
 
 		// Give QEMU additional time to process the framebuffer update
 		uartPuts("FB: Waiting for QEMU to process framebuffer...\r\n")
-		uartPutc('W') // Breadcrumb: about to wait
 		for delay := 0; delay < 5000000; delay++ {
 			// Additional delay to ensure QEMU has time to read framebuffer
 		}
-		uartPutc('w') // Breadcrumb: wait complete
 		uartPuts("FB: Delay complete\r\n")
 
-		uartPutc('D') // Breadcrumb: framebuffer init done
 		uartPuts("FB INIT DONE (ramfb)\r\n")
 		return 0
 	}
 
 	// ramfb failed
-	uartPutc('!') // Breadcrumb: ramfb failed
 	uartPuts("FB: ERROR - ramfb initialization failed\r\n")
 	uartPuts("FB: No display device available\r\n")
 	return 1

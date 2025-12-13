@@ -89,7 +89,6 @@ func uartDrainRingBuffer() {
 //go:nosplit
 //go:noinline
 func UartTransmitHandler() {
-	// Breadcrumb: Go UART handler called
 	asm.UartPutcPl011('G')
 
 	// Check if ring buffer is initialized
@@ -163,54 +162,38 @@ var uartRingBuf *uartRingBuffer
 //
 //go:nosplit
 func uartInitRingBuffer() {
-	uartPutc('Q') // Breadcrumb: uartInitRingBuffer entry
 
 	// Allocate ring buffer structure via kmalloc
-	uartPutc('k') // Breadcrumb: about to kmalloc struct
 	buf := kmalloc(uint32(unsafe.Sizeof(uartRingBuffer{})))
 	if buf == nil {
-		uartPutc('!') // Breadcrumb: kmalloc struct failed
 		uartPuts("UART: ERROR - Failed to allocate ring buffer struct\r\n")
 		return
 	}
-	uartPutc('K') // Breadcrumb: kmalloc struct succeeded
 
 	// Allocate the buffer array
-	uartPutc('b') // Breadcrumb: about to kmalloc buffer
 	buffer := kmalloc(UART_RING_BUFFER_SIZE)
 	if buffer == nil {
-		uartPutc('!') // Breadcrumb: kmalloc buffer failed
 		uartPuts("UART: ERROR - Failed to allocate ring buffer data\r\n")
 		return
 	}
-	uartPutc('B') // Breadcrumb: kmalloc buffer succeeded
 
 	// Initialize the ring buffer
-	uartPutc('i') // Breadcrumb: about to initialize ring buffer
 	ringBuf := (*uartRingBuffer)(buf)
 
 	// Zero the struct first
-	uartPutc('z') // Breadcrumb: about to bzero struct
 	asm.Bzero(unsafe.Pointer(ringBuf), uint32(unsafe.Sizeof(uartRingBuffer{})))
-	uartPutc('Z') // Breadcrumb: bzero struct done
 
 	// Set individual fields carefully
-	uartPutc('1') // Breadcrumb: setting buf pointer
 	ringBuf.buf = (*[UART_RING_BUFFER_SIZE]byte)(buffer)
-	uartPutc('2') // Breadcrumb: buf pointer set
 	ringBuf.head = 0
-	uartPutc('3') // Breadcrumb: head set
 	ringBuf.tail = 0
-	uartPutc('4') // Breadcrumb: tail set
 
-	uartPutc('a') // Breadcrumb: about to assign uartRingBuf
 
 	// Use assembly function to store pointer without write barrier
 	uartPutc('x') // Debug: before assignment
 	asm.StorePointerNoBarrier((*unsafe.Pointer)(unsafe.Pointer(&uartRingBuf)), unsafe.Pointer(ringBuf))
 	uartPutc('X') // Debug: after assignment
 
-	uartPutc('A') // Breadcrumb: uartRingBuf assigned
 
 	// Debug: print addresses
 	uartPuts("UART Ring buffer debug:\r\n")
@@ -223,7 +206,6 @@ func uartInitRingBuffer() {
 	uartPuts("\r\n")
 
 	uartPuts("UART: Ring buffer initialized (4KB)\r\n")
-	uartPutc('q') // Breadcrumb: uartInitRingBuffer done
 }
 
 // uartEnqueue adds a character to the ring buffer

@@ -282,26 +282,19 @@ func qemu_cfg_check_dma_support() bool {
 func ramfbInit() bool {
 	uartPuts("RAMFB: ramfbInit() entry\r\n")
 	uartPuts("RAMFB: Initializing...\r\n")
-	uartPutc('A') // Breadcrumb: entered ramfbInit
 
 	// First, check if DMA is available
-	uartPutc('D') // Breadcrumb: about to check DMA support
 	if !qemu_cfg_check_dma_support() {
 		uartPuts("RAMFB: ERROR - Cannot proceed without DMA support\r\n")
-		uartPutc('X') // Breadcrumb: DMA support missing
 		return false
 	}
-	uartPutc('d') // Breadcrumb: DMA support confirmed
 
 	// Find etc/ramfb selector FIRST (before any other DMA operations)
-	uartPutc('S') // Breadcrumb: searching fw_cfg directory
 	ramfbSelector := qemu_cfg_find_file()
 	if ramfbSelector == 0 {
 		uartPuts("RAMFB: ERROR - Could not find etc/ramfb!\r\n")
-		uartPutc('F') // Breadcrumb: selector not found
 		return false
 	}
-	uartPutc('s') // Breadcrumb: selector found
 	uartPuts("RAMFB: Found etc/ramfb, selector=0x")
 	printHex32Helper(ramfbSelector)
 	uartPuts("\r\n")
@@ -315,10 +308,8 @@ func ramfbInit() bool {
 	fbMem := kmalloc(fbSize)
 	if fbMem == nil {
 		uartPuts("RAMFB: ERROR - kmalloc failed\r\n")
-		uartPutc('k') // Breadcrumb: kmalloc failed
 		return false
 	}
-	uartPutc('K') // Breadcrumb: kmalloc succeeded
 	fbAddr := pointerToUintptr(fbMem)
 	// Use 32-bit format (XRGB8888) like working example
 	// Working code: stride = fb_width * sizeof(uint32_t) = width * 4
@@ -357,14 +348,11 @@ func ramfbInit() bool {
 	ramfbCfg.SetStride(fbWidth * 4) // SetStride stores in big-endian byte order
 
 	uartPuts("RAMFB: Config struct created (big-endian)\r\n")
-	uartPutc('C') // Breadcrumb: config struct ready
 
 	// Write configuration using DMA - we need to get this working!
 	uartPuts("RAMFB: Attempting DMA write of config...\r\n")
-	uartPutc('W') // Breadcrumb: about to send DMA write
 	fw_cfg_dma_write(ramfbSelector, unsafe.Pointer(&ramfbCfg), 28)
 	uartPuts("RAMFB: DMA write returned\r\n")
-	uartPutc('w') // Breadcrumb: DMA write call returned
 	uartPuts("RAMFB: Config sent (DMA should have processed it)\r\n")
 
 	// Debug: Print the actual config values that were sent (in big-endian)
@@ -517,10 +505,8 @@ func ramfbInit() bool {
 	uartPuts("RAMFB: Storing buf pointer...\r\n")
 	fbinfo.Buf = fbMem // Use the allocated memory pointer
 	uartPuts("RAMFB: Framebuffer info stored\r\n")
-	uartPutc('I') // Breadcrumb: fbinfo stored
 
 	uartPuts("RAMFB: Initialized successfully\r\n")
-	uartPutc('i') // Breadcrumb: ramfbInit success
 	return true
 }
 
@@ -691,7 +677,6 @@ func qemu_cfg_dma_transfer(dataAddr unsafe.Pointer, length uint32, control uint3
 	accessAddr := uintptr(unsafe.Pointer(&access))
 	addr64 := uint64(accessAddr)
 	addr64Swapped := swap64(addr64)
-	uartPutc('L') // Breadcrumb: DMA descriptor prepared
 
 	uartPuts("RAMFB: DMA addr unswapped=0x")
 	for shift := 60; shift >= 0; shift -= 4 {
@@ -734,12 +719,10 @@ func qemu_cfg_dma_transfer(dataAddr unsafe.Pointer, length uint32, control uint3
 	initialControl := swap32(initialControlBE)
 	if initialControl == 0 {
 		uartPuts("RAMFB: WARNING - Control is 0! QEMU may not have processed DMA\r\n")
-		uartPutc('0') // Breadcrumb: control reported zero immediately
 	} else {
 		uartPuts("RAMFB: Control is non-zero (0x")
 		printHex32Helper(initialControl)
 		uartPuts("), QEMU is processing DMA\r\n")
-		uartPutc('1') // Breadcrumb: control non-zero after kick
 	}
 
 	for {
@@ -758,13 +741,11 @@ func qemu_cfg_dma_transfer(dataAddr unsafe.Pointer, length uint32, control uint3
 				uartPuts("RAMFB: Final control=0x")
 				printHex32Helper(control)
 				uartPuts(" (error bit 0 set)\r\n")
-				uartPutc('E') // Breadcrumb: DMA error bit set
 			} else {
 				uartPuts("RAMFB: *** DMA transfer completed successfully ***\r\n")
 				uartPuts("RAMFB: Final control=0x")
 				printHex32Helper(control)
 				uartPuts(" (all bits clear, no error)\r\n")
-				uartPutc('l') // Breadcrumb: DMA done successfully
 			}
 			uartPuts("RAMFB: Iterations waited: ")
 			// Print iterations (simple decimal)
@@ -786,7 +767,6 @@ func qemu_cfg_dma_transfer(dataAddr unsafe.Pointer, length uint32, control uint3
 			printHex32Helper(initialControl)
 			uartPuts(")\r\n")
 			uartPuts("RAMFB: Control never cleared - DMA may not be working\r\n")
-			uartPutc('T') // Breadcrumb: DMA timeout
 			break
 		}
 
@@ -880,25 +860,17 @@ func qemu_cfg_find_file() uint32 {
 	// Traditional interface is 100% reliable, DMA has issues with multiple consecutive reads
 	var count uint32
 	qemu_cfg_read_entry_traditional(unsafe.Pointer(&count), FW_CFG_FILE_DIR, 4)
-	uartPutc('C') // Breadcrumb: file count read completed
 
 	countVal := swap32(count) // Convert from big-endian
 	uartPuts("RAMFB: File count=")
 	printHex32Helper(countVal)
 	uartPuts("\r\n")
-	uartPutc('R') // Breadcrumb: about to reselect file_dir for sequential read
 
 	// Re-select file directory so sequential reads start deterministically
-	uartPutc('M') // Breadcrumb: about to write selector
 	asm.MmioWrite16(uintptr(FW_CFG_SELECTOR_ADDR), swap16(uint16(FW_CFG_FILE_DIR)))
-	uartPutc('m') // Breadcrumb: selector written
 	asm.Dsb()
-	uartPutc('D') // Breadcrumb: dsb completed
 	// Skip the 4-byte count field by reading into the count variable again (reuse memory)
-	uartPutc('S') // Breadcrumb: about to skip count bytes
 	qemu_cfg_read_entry_traditional(unsafe.Pointer(&count), FW_CFG_FILE_DIR, 4)
-	uartPutc('s') // Breadcrumb: skip completed
-	uartPutc('r') // Breadcrumb: continuing
 
 	if countVal == 0 {
 		uartPuts("RAMFB: Count is zero, returning\r\n")
@@ -907,40 +879,28 @@ func qemu_cfg_find_file() uint32 {
 
 	// Iterate through file entries
 	uartPuts("RAMFB: Searching files...\r\n")
-	uartPutc('L') // Breadcrumb: entering loop
 
 	// Allocate qfile on heap to avoid stack issues
-	uartPutc('H') // Breadcrumb: allocating qfile on heap
 	qfile := (*QemuCfgFile)(kmalloc(64))
 	if qfile == nil {
 		uartPuts("RAMFB: ERROR - Failed to allocate qfile\r\n")
 		return 0
 	}
-	uartPutc('h') // Breadcrumb: qfile allocated
 
 	for e := uint32(0); e < countVal; e++ {
-		uartPutc('E')                            // Breadcrumb: loop iteration start
-		uartPutc('V')                            // Breadcrumb: about to read file entry
 		qemu_cfg_read(unsafe.Pointer(qfile), 64) // Use sequential read, not traditional
-		uartPutc('v')                            // Breadcrumb: file entry read completed
 
-		uartPutc('C') // Breadcrumb: about to check name
 		if checkRamfbName(&qfile.Name) {
 			selector := uint32(swap16(qfile.Select))
-			uartPutc('F') // Breadcrumb: ramfb entry matched
 			uartPuts("RAMFB: Found etc/ramfb, selector=0x")
 			printHex32Helper(selector)
 			uartPuts("\r\n")
-			uartPutc('f') // Breadcrumb: freeing qfile
 			kfree(unsafe.Pointer(qfile))
-			uartPutc('R') // Breadcrumb: returning selector
 			return selector
 		}
-		uartPutc('N') // Breadcrumb: entry not ramfb
 	}
 
 	uartPuts("RAMFB: etc/ramfb not found\r\n")
-	uartPutc('Z') // Breadcrumb: search exhausted
 	kfree(unsafe.Pointer(qfile))
 	return 0
 }

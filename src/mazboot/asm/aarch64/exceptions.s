@@ -112,10 +112,6 @@ irq_exception_el1:
     movz x0, #0x0900, lsl #16
     movk x0, #0x0000, lsl #0
     
-    // Print 'I' to show we're processing
-    movz w1, #0x49                // 'I'
-    str w1, [x0]
-    
     // Check if this is virtual timer interrupt (ID 27 = 0x1B)
     cmp w2, #27
     beq handle_timer_irq
@@ -141,8 +137,8 @@ handle_timer_irq:
     // 3. Write to CNTV_CVAL_EL0 (compare value)
     msr CNTV_CVAL_EL0, x3
     
-    // Print 'T' to show we reset timer
-    movz w1, #0x54                // 'T'
+    // Print '.' to show timer interrupt
+    movz w1, #0x2E                // '.'
     str w1, [x0]
     b irq_done
     
@@ -192,10 +188,6 @@ irq_done:
     movz x1, #0x0801, lsl #16
     movk x1, #0x0010, lsl #0
     str w2, [x1]                  // Write interrupt ID to EOIR
-    
-    // Print '>' to show we're returning
-    movz w1, #0x3E                // '>'
-    str w1, [x0]
     
     // Restore registers and return to normal stack
     ldr x0, [sp, #0]              // Load original SP_EL1

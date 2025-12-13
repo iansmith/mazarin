@@ -173,7 +173,6 @@ QEMU_CMD=(
     -serial stdio   # Direct UART output to terminal
     -semihosting
     -no-reboot
-    -trace "gic_*"  # Enable GIC tracing for interrupt debugging
 )
 
 # Display the full command line

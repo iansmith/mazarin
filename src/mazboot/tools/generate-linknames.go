@@ -177,20 +177,42 @@ func generateLinknamesContent(globalSymbols []string, asmDir string, w io.Writer
 			params = sig.params
 			retType = sig.returnType
 		} else {
-			// Special case: MemmoveBytes is an alias for memmove
-			// If we don't have a signature for MemmoveBytes, try memmove
-			if sym == "MemmoveBytes" {
-				if memmoveSig, ok := signatures["memmove"]; ok {
+			params = ""
+			retType = ""
+		}
+
+		// Special case: MemmoveBytes is an alias for memmove
+		if sym == "MemmoveBytes" && retType == "" {
+			if memmoveSig, ok := signatures["memmove"]; ok {
+				if params == "" {
 					params = memmoveSig.params
-					retType = memmoveSig.returnType
-				} else {
-					params = ""
-					retType = ""
 				}
-			} else {
-				// Default: no parameters, no return
-				params = ""
-				retType = ""
+				if retType == "" {
+					retType = memmoveSig.returnType
+				}
+			}
+		}
+
+		// Special cases for return types that aren't detected automatically
+		// Apply overrides even if signature exists but has empty return type
+		if retType == "" {
+			returnTypeOverrides := map[string]string{
+				"get_caller_stack_pointer": "uintptr",
+				"mmio_read":                "uint32",
+				"mmio_read16":               "uint16",
+			}
+			if override, ok := returnTypeOverrides[sym]; ok {
+				retType = override
+			}
+		}
+
+		// Special cases for parameters that aren't detected automatically
+		if params == "" {
+			paramOverrides := map[string]string{
+				"switchToGoroutine": "g unsafe.Pointer",
+			}
+			if override, ok := paramOverrides[sym]; ok {
+				params = override
 			}
 		}
 

@@ -1,0 +1,117 @@
+#!/bin/bash
+
+# Script to run QEMU in text-only mode with timeout for automated testing
+# This is optimized for quick experiments and debugging
+#
+# Usage:
+#   tools/run/run-mazboot-text
+#
+# Features:
+#   - Always uses -nographic (no GUI)
+#   - 5 second timeout to prevent hangs
+#   - Minimal output (suitable for automated testing)
+#   - Checks build freshness
+
+# Get script directory and project root
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# Use flash directory (relative to project root)
+FLASH_DIR="$PROJECT_ROOT/flash"
+KERNEL_PATH="$FLASH_DIR/mazboot.elf"
+BUILD_BINARY="$PROJECT_ROOT/build/mazboot/mazboot.elf"
+
+# Verify flash directory exists
+if [ ! -d "$FLASH_DIR" ]; then
+    echo "Error: flash directory does not exist at $FLASH_DIR" >&2
+    exit 1
+fi
+
+# Verify mazboot.elf exists in flash directory
+if [ ! -f "$KERNEL_PATH" ]; then
+    echo "Error: mazboot.elf not found at $KERNEL_PATH" >&2
+    echo "Please build first: make" >&2
+    exit 1
+fi
+
+# Verify build binary exists for date comparison
+if [ ! -f "$BUILD_BINARY" ]; then
+    echo "Error: build binary not found at $BUILD_BINARY" >&2
+    echo "Please build first: make" >&2
+    exit 1
+fi
+
+# Compare modification dates: flash/mazboot.elf must be >= build/mazboot
+FLASH_DATE=$(stat -f %m "$KERNEL_PATH" 2>/dev/null || stat -c %Y "$KERNEL_PATH" 2>/dev/null)
+BUILD_DATE=$(stat -f %m "$BUILD_BINARY" 2>/dev/null || stat -c %Y "$BUILD_BINARY" 2>/dev/null)
+
+if [ -z "$FLASH_DATE" ] || [ -z "$BUILD_DATE" ]; then
+    echo "Error: Could not determine file modification dates" >&2
+    exit 1
+fi
+
+if [ "$FLASH_DATE" -lt "$BUILD_DATE" ]; then
+    echo "Error: flash/mazboot.elf is older than build/mazboot/mazboot.elf" >&2
+    echo "Please rebuild: make" >&2
+    exit 1
+fi
+
+# Check for homebrew QEMU first, then custom debug QEMU, fall back to system QEMU
+HOMEBREW_QEMU="$HOME/mazzy/bin/qemu-system-aarch64"
+CUSTOM_QEMU="/tmp/qemu-source/build/qemu-system-aarch64"
+
+if [ -f "$HOMEBREW_QEMU" ]; then
+    QEMU_BIN="$HOMEBREW_QEMU"
+elif [ -f "$CUSTOM_QEMU" ]; then
+    QEMU_BIN="$CUSTOM_QEMU"
+else
+    QEMU_BIN="qemu-system-aarch64"
+    if ! command -v qemu-system-aarch64 &> /dev/null; then
+        echo "Error: qemu-system-aarch64 not found in PATH" >&2
+        exit 1
+    fi
+fi
+
+# Check for timeout command
+if ! command -v timeout &> /dev/null; then
+    echo "Error: timeout command not found (required for this script)" >&2
+    exit 1
+fi
+
+# Timeout duration (5 seconds)
+TIMEOUT_SECS=5
+
+# Build QEMU command (always nographic, minimal output)
+QEMU_CMD=(
+    "$QEMU_BIN"
+    -M virt,virtualization=on
+    -cpu cortex-a72
+    -m 1G
+    -kernel "$KERNEL_PATH"
+    -nodefaults
+    -device ramfb
+    -nographic
+    -serial stdio
+    -semihosting
+    -no-reboot
+    -trace "gic_*"
+)
+
+# Run QEMU with timeout
+# timeout will kill QEMU after TIMEOUT_SECS if it's still running
+# Exit code 124 means timeout was reached (this is expected for long-running kernels)
+timeout "$TIMEOUT_SECS" "${QEMU_CMD[@]}" < /dev/null
+
+EXIT_CODE=$?
+
+if [ $EXIT_CODE -eq 124 ]; then
+    # Timeout reached - this is normal for kernels that don't exit
+    exit 0
+elif [ $EXIT_CODE -eq 0 ]; then
+    # QEMU exited normally (kernel called qemu_exit or similar)
+    exit 0
+else
+    # Some other error occurred
+    exit $EXIT_CODE
+fi
+

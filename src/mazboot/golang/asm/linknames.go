@@ -161,7 +161,7 @@ func StorePointerNoBarrier(dest *unsafe.Pointer, value unsafe.Pointer)
 
 //go:linkname SwitchToGoroutine switchToGoroutine
 //go:nosplit
-func SwitchToGoroutine()
+func SwitchToGoroutine(g unsafe.Pointer)
 
 //go:linkname UartInitPl011 uart_init_pl011
 //go:nosplit

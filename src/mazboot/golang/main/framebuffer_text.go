@@ -516,7 +516,6 @@ func FramebufferPutHex64(val uint64) {
 //go:nosplit
 //go:noinline
 func fb_putc_irq(c byte) {
-	// Breadcrumb: Entered fb_putc_irq
 	asm.UartPutcPl011('[')
 	asm.UartPutcPl011('f')
 	asm.UartPutcPl011('b')

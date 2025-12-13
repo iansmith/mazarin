@@ -331,13 +331,6 @@ func kmalloc(size uint32) unsafe.Pointer {
 	// Return pointer to the data area (after the stored header pointer)
 	dataPtr := unsafe.Pointer(dataPtrAddr)
 
-	// Debug: print allocation details
-	uartPuts("kmalloc(")
-	uartPutHex64(uint64(size))
-	uartPuts("): ")
-	uartPutHex64(uint64(dataPtrAddr))
-	uartPuts("\r\n")
-
 	return dataPtr
 }
 
@@ -393,7 +386,6 @@ func kfree(ptr unsafe.Pointer) {
 //
 //go:nosplit
 func memInit(atagsPtr uintptr) {
-	uartPutc('I') // Breadcrumb: memInit entry
 	uartPuts("memInit: Starting...\r\n")
 	// Step 1: Initialize page management system (Part 04)
 	// This also reserves heap pages
@@ -437,5 +429,4 @@ func memInit(atagsPtr uintptr) {
 	uartPuts("memInit: Calling heapInit...\r\n")
 	heapInit(heapStart)
 	uartPuts("memInit: Complete\r\n")
-	uartPutc('i') // Breadcrumb: memInit about to return
 }

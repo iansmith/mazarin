@@ -173,6 +173,10 @@ $(KERNEL_GO_OBJ_QEMU): $(MAZBOOT_SRC)/golang/go.mod $(GO_SRC) $(GLOBALIZE_SYMBOL
 	@mkdir -p $(BUILD_DIR)
 	@# Clean up any leftover files from previous builds
 	@rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) $(BUILD_DIR)/go.o $(BUILD_DIR)/kernel_go.h $(BUILD_DIR)/__.SYMDEF
+	@# Run go generate to regenerate code (linknames.go, main.go, page_flags_gen.go)
+	@# Note: go generate must run on host architecture, not target
+	@echo "Running go generate to regenerate code..."
+	@cd $(MAZBOOT_SRC)/golang && CGO_ENABLED=0 GOTOOLCHAIN=auto $(GO) generate ./...
 	@# Build Go package from golang/main directory with required tags
 	@echo "Building for QEMU with tags: qemuvirt aarch64"
 	@cd $(MAZBOOT_SRC)/golang && CGO_ENABLED=0 GOTOOLCHAIN=auto GOARCH=$(GOARCH) GOOS=$(GOOS) $(GO) build -tags "qemuvirt aarch64" $(GO_BUILD_FLAGS) -o $(abspath $(KERNEL_GO_ARCHIVE)) ./main

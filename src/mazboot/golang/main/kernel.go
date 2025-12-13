@@ -201,9 +201,6 @@ func printSPBreadcrumb(label byte) {
 
 //go:nosplit
 func uartPuts(str string) {
-	// Breadcrumb: uartPuts entry (using assembly to avoid any Go overhead)
-	asm.UartPutcPl011('P')
-
 	// NOTE: String literals are not accessible in bare-metal Go
 	// The .rodata section may not be loaded, or Go places string literals
 	// in a way that's not accessible. For now, we'll use a workaround:
@@ -218,7 +215,6 @@ func uartPuts(str string) {
 	// Use unsafe.StringData() if available (Go 1.20+), otherwise fall back to manual access
 	// For bare-metal, we use the manual string header access pattern
 	// String layout: [data *uintptr, len int] = [2]uintptr on 64-bit
-	asm.UartPutcPl011('h') // Breadcrumb: about to access string header
 	strHeader := (*[2]uintptr)(unsafe.Pointer(&str))
 
 	// Extract data pointer and length
@@ -235,9 +231,7 @@ func uartPuts(str string) {
 	strLen := int(strLenVal)
 
 	// Call uartPutsBytes with the extracted pointer and length
-	asm.UartPutcPl011('b') // Breadcrumb: about to call uartPutsBytes
 	uartPutsBytes(dataPtr, strLen)
-	asm.UartPutcPl011('p') // Breadcrumb: uartPuts returning
 }
 
 // uitoa converts a uint32 to its decimal string representation
@@ -358,12 +352,10 @@ func KernelMain(r0, r1, atags uint32) {
 	_ = r0
 	_ = r1
 
-	// Breadcrumb: Entry to KernelMain
 	// Raw UART poke before init to prove we reached KernelMain
 	asm.MmioWrite(0x09000000, uint32('K'))
 	asm.MmioWrite(0x09000000, uint32('M')) // 'M' = KernelMain entry
 
-	// Breadcrumb: About to init UART
 	asm.MmioWrite(0x09000000, uint32('U')) // 'U' = UART init starting
 
 	// Initialize UART first for early debugging
@@ -452,7 +444,6 @@ func KernelMain(r0, r1, atags uint32) {
 	// }
 	uartPuts("DEBUG: SP reading verification skipped (testing #2)\r\n")
 
-	// Breadcrumb: About to init runtime stubs
 	uartPutc('R') // 'R' = Runtime stubs init starting
 
 	// Initialize minimal runtime structures for write barrier
@@ -462,7 +453,6 @@ func KernelMain(r0, r1, atags uint32) {
 	uartPutc('r') // 'r' = Runtime stubs init done
 	uartPuts("DEBUG: KernelMain after initRuntimeStubs\r\n")
 
-	// Breadcrumb: About to init kernel stack
 	uartPutc('S') // 'S' = Stack init starting
 
 	// Initialize kernel stack info for Go runtime stack checks
@@ -474,10 +464,7 @@ func KernelMain(r0, r1, atags uint32) {
 	// Initialize memory management (pages and heap) early so we can allocate the main goroutine
 	// This must happen before createKernelGoroutine since it needs kmalloc
 	uartPuts("DEBUG: Initializing memory management (early)...\r\n")
-	uartPutc('M') // 'M' = Memory init starting
-	memInit(0)    // No ATAGs in QEMU, pass 0
-	uartPutc('m') // 'm' = Memory init done
-	uartPuts("DEBUG: Memory management initialized\r\n")
+	memInit(0) // No ATAGs in QEMU, pass 0
 
 	// Create main kernel goroutine with 32KB stack
 	uartPuts("DEBUG: Creating main kernel goroutine...\r\n")
@@ -503,9 +490,7 @@ func KernelMain(r0, r1, atags uint32) {
 	//   1. Set x28 to the new goroutine
 	//   2. Switch SP to the new goroutine's stack
 	//   3. Return, allowing us to call the function on the new stack
-	// Get function address using reflect (works in bare metal if we have reflect)
-	// For now, pass 0 and the assembly will just set up the stack/x28 and return
-	asm.SwitchToGoroutine()
+	asm.SwitchToGoroutine(unsafe.Pointer(mainG))
 
 	// After switchToGoroutine returns, we're on the new stack with x28 set
 	// Now we can safely call the function
@@ -531,8 +516,6 @@ func KernelMain(r0, r1, atags uint32) {
 //
 //go:noinline
 func kernelMainBodyWrapper() {
-	uartPuts("DEBUG: Entered kernelMainBodyWrapper\r\n")
-	uartPuts("DEBUG: wrapper about to call kernelMainBody\r\n")
 	kernelMainBody()
 	uartPuts("DEBUG: wrapper returned from kernelMainBody (unexpected)\r\n")
 }
@@ -555,17 +538,14 @@ func kernelMainBody() {
 
 	// Stage 1: simple UART prints
 	asm.MmioWrite(0x09000000, uint32('B'))
-	uartPuts("DEBUG: Entered kernelMainBody (stage1)\r\n")
 
 	putc := func(c byte) {
 		uartPutc(c)
 	}
 	puts := func(s string) {
-		uartPutc('p') // Breadcrumb: puts function entered
 		for i := 0; i < len(s); i++ {
 			putc(s[i])
 		}
-		uartPutc('P') // Breadcrumb: puts function exiting
 	}
 	puts("Hello, Mazarin!\r\n")
 	puts("\r\n")
@@ -577,8 +557,6 @@ func kernelMainBody() {
 	wbFlag := readMemory32(wbFlagAddr)
 	if wbFlag == 0 {
 		puts("ERROR: Write barrier flag not set!\r\n")
-	} else {
-		puts("Write barrier flag: enabled\r\n")
 	}
 	uartPuts("DEBUG: stage2 complete, skipping stage3 (memInit already done)\r\n")
 
@@ -586,59 +564,37 @@ func kernelMainBody() {
 	// NOTE: memInit is now called early in KernelMain (before goroutine creation)
 	// so we skip it here to avoid double initialization
 	uartPuts("DEBUG: stage3 memInit skipped (already initialized)\r\n")
-	uartPutc('3') // Breadcrumb: memInit already done
-	puts("Memory management already initialized (done early for goroutine allocation)\r\n")
-	uartPutc('3') // Breadcrumb: message printed
-	uartPutc('M') // Breadcrumb: memInit skipped
+	uartPuts("DEBUG: Memory management already initialized (done early for goroutine allocation)\r\n")
 	// memInit(0)    // Already called early in KernelMain
-	// CRITICAL: Use assembly-level UART write to avoid any Go function call overhead
-	// This helps us see if the crash is in the return path or in a function call
-	asm.UartPutcPl011('m') // Breadcrumb: memInit returned (assembly-level, bypasses Go)
-	asm.UartPutcPl011('4') // Breadcrumb: about to call uartPuts (assembly-level)
 	// Use direct uartPuts instead of closure to avoid potential write barrier issues
-	uartPuts("Memory management initialized\r\n")
-	// CRITICAL: Immediately after uartPuts returns, use assembly to print breadcrumb
-	// This helps us see if the crash is during return or after
-	asm.UartPutcPl011('X') // Breadcrumb: uartPuts returned (X = eXit from uartPuts)
-	// CRITICAL: Add memory barrier and delay after uartPuts returns
-	// This ensures any pending write barrier operations complete
+	uartPuts("DEBUG: Memory management initialized\r\n")
+	// Add memory barrier to ensure any pending write barrier operations complete
 	asm.Dsb()
-	asm.UartPutcPl011('4') // Breadcrumb: after barrier (assembly-level)
-	asm.UartPutcPl011('m') // Breadcrumb: memInit message printed (assembly-level)
 
 	// Initialize UART ring buffer now that memory management is available
-	uartPutc('Q') // Breadcrumb: about to call uartInitRingBufferAfterMemInit
 	uartInitRingBufferAfterMemInit()
-	uartPutc('q') // Breadcrumb: ring buffer init completed
 
 	uartPuts("DEBUG: stage3 complete, proceeding to stage4 (framebuffer)\r\n")
 
 	// Stage 4: framebuffer init + framebuffer text init
 	uartPuts("DEBUG: stage4 framebuffer init start\r\n")
-	uartPutc('4') // Breadcrumb: entering stage 4
 	fbResult := framebufferInit()
 	if fbResult != 0 {
 		uartPuts("ERROR: Framebuffer initialization failed!\r\n")
-		uartPutc('F') // Breadcrumb: framebuffer failed
 		asm.QemuExit()
 		return
 	}
-	uartPutc('f') // Breadcrumb: framebuffer succeeded
 	uartPuts("DEBUG: framebufferInit succeeded\r\n")
 
-	uartPutc('t') // Breadcrumb: about to init framebuffer text
 	if err := InitFramebufferText(fbinfo.Buf, fbinfo.Width, fbinfo.Height, fbinfo.Pitch); err != nil {
 		uartPuts("ERROR: Framebuffer text initialization failed\r\n")
-		uartPutc('T') // Breadcrumb: text init failed
 		asm.QemuExit()
 		return
 	}
-	uartPutc('T') // Breadcrumb: text init succeeded (capital T for success)
 	uartPuts("DEBUG: InitFramebufferText completed\r\n")
 
 	// Test framebuffer text rendering
 	testFramebufferText()
-	uartPutc('p') // Breadcrumb: text written
 
 	uartPuts("DEBUG: stage4 complete, proceeding to stage5 (exceptions)\r\n")
 
