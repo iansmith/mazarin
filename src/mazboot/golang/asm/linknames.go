@@ -51,6 +51,10 @@ func GetExceptionVectorsAddr() uintptr
 //go:nosplit
 func GetStackPointer() uintptr
 
+//go:linkname InvalidateTlbAll invalidate_tlb_all
+//go:nosplit
+func InvalidateTlbAll()
+
 //go:linkname Isb isb
 //go:nosplit
 func Isb()
@@ -131,6 +135,10 @@ func ReadCurrentEl() uint32
 //go:nosplit
 func ReadDaif()
 
+//go:linkname ReadMairEl1 read_mair_el1
+//go:nosplit
+func ReadMairEl1() uint64
+
 //go:linkname ReadSctlrEl1 read_sctlr_el1
 //go:nosplit
 func ReadSctlrEl1() uint64
@@ -138,6 +146,14 @@ func ReadSctlrEl1() uint64
 //go:linkname ReadSpsrEl1 read_spsr_el1
 //go:nosplit
 func ReadSpsrEl1()
+
+//go:linkname ReadTcrEl1 read_tcr_el1
+//go:nosplit
+func ReadTcrEl1() uint64
+
+//go:linkname ReadTtbr0El1 read_ttbr0_el1
+//go:nosplit
+func ReadTtbr0El1() uint64
 
 //go:linkname ReadVbarEl1 read_vbar_el1
 //go:nosplit
@@ -203,6 +219,10 @@ func WriteCntvTvalEl0(value uint32)
 //go:nosplit
 func WriteElrEl1()
 
+//go:linkname WriteMairEl1 write_mair_el1
+//go:nosplit
+func WriteMairEl1(value uint64)
+
 //go:linkname WriteSctlrEl1 write_sctlr_el1
 //go:nosplit
 func WriteSctlrEl1(value uint64)
@@ -210,6 +230,14 @@ func WriteSctlrEl1(value uint64)
 //go:linkname WriteSpsrEl1 write_spsr_el1
 //go:nosplit
 func WriteSpsrEl1()
+
+//go:linkname WriteTcrEl1 write_tcr_el1
+//go:nosplit
+func WriteTcrEl1(value uint64)
+
+//go:linkname WriteTtbr0El1 write_ttbr0_el1
+//go:nosplit
+func WriteTtbr0El1(value uint64)
 
 //go:linkname gcWriteBarrier gcWriteBarrier
 //go:nosplit

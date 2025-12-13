@@ -571,8 +571,8 @@ func kernelMainBody() {
 	// Add memory barrier to ensure any pending write barrier operations complete
 	asm.Dsb()
 
-	// Initialize UART ring buffer now that memory management is available
-	uartInitRingBufferAfterMemInit()
+	// TEMPORARILY DISABLE UART ring buffer init - causes interrupt issues
+	// uartInitRingBufferAfterMemInit()
 
 	uartPuts("DEBUG: stage3 complete, proceeding to stage4 (framebuffer)\r\n")
 
@@ -629,7 +629,31 @@ func kernelMainBody() {
 	timerInit()
 	uartPuts("DEBUG: timerInit completed\r\n")
 
-	uartPuts("DEBUG: stage7 complete, entering idle loop\r\n")
+	uartPuts("DEBUG: stage7 complete, proceeding to stage8 (SDHCI)\r\n")
+
+	// Stage 8: SDHCI (SD card) init
+	// CRITICAL: SD card is required to load kernel, so abort if init fails
+	uartPuts("DEBUG: stage8 sdhciInit start\r\n")
+	if !sdhciInit() {
+		abortBoot("sdhciInit failed - cannot load kernel from SD card!")
+	}
+	uartPuts("DEBUG: sdhciInit completed successfully\r\n")
+	uartPutc('S') // Breadcrumb: SDHCI done, about to proceed to MMU
+	uartPuts("DEBUG: stage8 complete, proceeding to MMU initialization\r\n")
+
+	// Initialize MMU before enabling interrupts
+	// CRITICAL: MMU is required for proper memory management, so abort if init fails
+	uartPutc('M') // 'M' = MMU init starting
+	uartPuts("DEBUG: Initializing MMU...\r\n")
+	if !initMMU() {
+		abortBoot("MMU initialization failed - cannot continue without MMU!")
+	}
+	uartPutc('m') // 'm' = MMU init done
+	if !enableMMU() {
+		abortBoot("MMU enablement failed - cannot continue without MMU!")
+	}
+	uartPutc('E') // 'E' = MMU enable done
+	uartPuts("DEBUG: MMU enabled successfully\r\n")
 	uartPuts("DEBUG: All initialization complete\r\n")
 
 	// Try to enable interrupts using the assembly function
@@ -752,4 +776,20 @@ func drawTestPattern() {
 		}
 	}
 	uartPuts("Test pattern drawn\r\n")
+}
+
+// abortBoot aborts the boot process with a fatal error message
+// This function prints the error message, exits QEMU, and hangs forever
+// Used by critical initialization failures (MMU, SDHCI, etc.)
+//
+//go:nosplit
+func abortBoot(message string) {
+	uartPuts("FATAL: ")
+	uartPuts(message)
+	uartPuts("\r\n")
+	uartPuts("Aborting boot process...\r\n")
+	asm.QemuExit()
+	for {
+		// Hang forever
+	}
 }

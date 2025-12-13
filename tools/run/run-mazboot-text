@@ -81,6 +81,18 @@ fi
 # Timeout duration (5 seconds)
 TIMEOUT_SECS=5
 
+# SD card image path
+SDCARD_IMG="/tmp/sdcard.img"
+
+# Create SD card image if it doesn't exist
+if [ ! -f "$SDCARD_IMG" ]; then
+    echo "Creating SD card image at $SDCARD_IMG (64MB)..." >&2
+    dd if=/dev/zero of="$SDCARD_IMG" bs=1M count=64 2>/dev/null
+    if [ $? -ne 0 ]; then
+        echo "Warning: Failed to create SD card image, continuing anyway" >&2
+    fi
+fi
+
 # Build QEMU command (always nographic, minimal output)
 QEMU_CMD=(
     "$QEMU_BIN"
@@ -90,6 +102,9 @@ QEMU_CMD=(
     -kernel "$KERNEL_PATH"
     -nodefaults
     -device ramfb
+    -device sdhci-pci
+    -drive if=none,file="$SDCARD_IMG",format=raw,id=sdcard
+    -device sd-card,drive=sdcard
     -nographic
     -serial stdio
     -semihosting

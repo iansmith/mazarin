@@ -92,4 +92,12 @@ SECTIONS
     . = 0x5F000000;
     __stack_top = .;
     __g0_stack_bottom = 0x5EFFFE000;  /* g0 stack bottom (8KB below top) */
+
+    /* Page tables region: 15MB reserved for MMU page tables
+     * Located at 0x5F100000 - 0x60000000 (15MB)
+     * Leaves 1MB safety margin after g0 stack (0x5F000000 - 0x5F100000)
+     * Page tables are allocated at runtime, not by linker */
+    __page_tables_start = 0x5F100000;
+    __page_tables_end = 0x60000000;
+    __page_tables_size = __page_tables_end - __page_tables_start;  /* 15MB */
 }

@@ -697,3 +697,69 @@ memmove_done:
 .global MemmoveBytes
 MemmoveBytes:
     b memmove
+
+// ============================================================================
+// MMU System Register Access Functions
+// ============================================================================
+
+// read_ttbr0_el1() - Read TTBR0_EL1 (Translation Table Base Register 0)
+// Returns uint64 in x0 (Go ABI: x0 is the return value register for uint64)
+.global read_ttbr0_el1
+read_ttbr0_el1:
+    mrs x0, TTBR0_EL1    // Read TTBR0_EL1 into x0 (return value register for uint64)
+    ret                   // Return (x0 contains the 64-bit value)
+
+// write_ttbr0_el1(value uint64) - Write TTBR0_EL1
+// x0 = value to write (Go ABI: first parameter in x0 for uint64)
+// Must be 4KB aligned, lower 12 bits ignored by hardware
+.global write_ttbr0_el1
+write_ttbr0_el1:
+    // x0 already contains the parameter (Go ABI: first uint64 param in x0)
+    msr TTBR0_EL1, x0    // Write x0 (parameter) to TTBR0_EL1
+    isb                   // Instruction synchronization barrier
+    ret                   // Return (no return value, void function)
+
+// read_mair_el1() - Read MAIR_EL1 (Memory Attribute Indirection Register)
+// Returns uint64 in x0 (Go ABI: x0 is the return value register for uint64)
+.global read_mair_el1
+read_mair_el1:
+    mrs x0, MAIR_EL1      // Read MAIR_EL1 into x0 (return value register for uint64)
+    ret                    // Return (x0 contains the 64-bit value)
+
+// write_mair_el1(value uint64) - Write MAIR_EL1
+// x0 = value to write (Go ABI: first parameter in x0 for uint64)
+// MAIR_EL1 format: 8 attributes, 8 bits each
+//   Attr0 (bits 7:0)   = Normal, Inner/Outer Write-Back Cacheable (0xFF)
+//   Attr1 (bits 15:8)  = Device-nGnRnE (0x00)
+.global write_mair_el1
+write_mair_el1:
+    // x0 already contains the parameter (Go ABI: first uint64 param in x0)
+    msr MAIR_EL1, x0      // Write x0 (parameter) to MAIR_EL1
+    isb                    // Instruction synchronization barrier
+    ret                    // Return (no return value, void function)
+
+// read_tcr_el1() - Read TCR_EL1 (Translation Control Register)
+// Returns uint64 in x0 (Go ABI: x0 is the return value register for uint64)
+.global read_tcr_el1
+read_tcr_el1:
+    mrs x0, TCR_EL1       // Read TCR_EL1 into x0 (return value register for uint64)
+    ret                    // Return (x0 contains the 64-bit value)
+
+// write_tcr_el1(value uint64) - Write TCR_EL1
+// x0 = value to write (Go ABI: first parameter in x0 for uint64)
+.global write_tcr_el1
+write_tcr_el1:
+    // x0 already contains the parameter (Go ABI: first uint64 param in x0)
+    msr TCR_EL1, x0      // Write x0 (parameter) to TCR_EL1
+    isb                   // Instruction synchronization barrier
+    ret                   // Return (no return value, void function)
+
+// invalidate_tlb_all() - Invalidate entire TLB
+// Clears all translation lookaside buffer entries
+.global invalidate_tlb_all
+invalidate_tlb_all:
+    dsb sy                   // Ensure all memory accesses complete
+    tlbi alle1               // Invalidate all EL1 TLB entries
+    dsb sy                   // Ensure TLB invalidation completes
+    isb                      // Instruction synchronization barrier
+    ret

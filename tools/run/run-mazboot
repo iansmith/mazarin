@@ -103,6 +103,9 @@ echo ""
 echo "      This script uses ramfb device, which works better with AArch64."
 echo "      Note: bochs-display has known PCI memory bar caching issues on ARM."
 echo ""
+echo "      SD card support: SDHCI PCI device with SD card image at /tmp/sdcard.img"
+echo "      The SD card image will be created automatically if it doesn't exist."
+echo ""
 echo "      The kernel is built for Raspberry Pi, so some hardware-specific"
 echo "      features (like UART) may not work correctly with 'virt' machine."
 echo ""
@@ -160,6 +163,20 @@ mkdir -p "$LOG_DIR"
 #   -d guest_errors,unimp,int,fw_cfg,mmio: Enable debug output (guest errors, unimplemented features, interrupts, fw_cfg, mmio)
 #   -trace "fw_cfg*": Trace firmware configuration operations (for debugging ramfb)
 #   -D: Log file path for QEMU debug output
+# SD card image path
+SDCARD_IMG="/tmp/sdcard.img"
+
+# Create SD card image if it doesn't exist
+if [ ! -f "$SDCARD_IMG" ]; then
+    echo "Creating SD card image at $SDCARD_IMG (64MB)..."
+    dd if=/dev/zero of="$SDCARD_IMG" bs=1M count=64 2>/dev/null
+    if [ $? -ne 0 ]; then
+        echo "Warning: Failed to create SD card image, continuing anyway" >&2
+    else
+        echo "SD card image created successfully"
+    fi
+fi
+
 # Build QEMU command
 QEMU_CMD=(
     "$QEMU_BIN"
@@ -169,6 +186,9 @@ QEMU_CMD=(
     -kernel "$KERNEL_PATH"
     -nodefaults     # Disable default devices to avoid serial conflicts
     -device ramfb
+    -device sdhci-pci
+    -drive if=none,file="$SDCARD_IMG",format=raw,id=sdcard
+    -device sd-card,drive=sdcard
     $DISPLAY_MODE
     -serial stdio   # Direct UART output to terminal
     -semihosting
