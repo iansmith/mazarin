@@ -305,7 +305,12 @@ func ramfbInit() bool {
 	fbHeight := uint32(768)
 	fbSize := fbWidth * fbHeight * 4
 
-	fbMem := kmalloc(fbSize)
+	// CRITICAL: Framebuffer memory allocated here must NEVER be freed
+	// Use kmallocReserved() to mark this allocation as permanent
+	// The framebuffer is a permanent resource that must remain valid for the
+	// lifetime of the system. Calling kfree() on this memory would cause
+	// display corruption and system instability.
+	fbMem := kmallocReserved(fbSize)
 	if fbMem == nil {
 		uartPuts("RAMFB: ERROR - kmalloc failed\r\n")
 		return false

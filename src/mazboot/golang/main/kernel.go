@@ -352,6 +352,10 @@ func KernelMain(r0, r1, atags uint32) {
 	_ = r0
 	_ = r1
 
+	// On QEMU virt, the DTB pointer is passed in as the "atags" parameter (low 32 bits).
+	// boot.s captures QEMU's reset-time x0 and passes it through to kernel_main in x2.
+	setDTBPtr(uintptr(atags))
+
 	// Raw UART poke before init to prove we reached KernelMain
 	asm.MmioWrite(0x09000000, uint32('K'))
 	asm.MmioWrite(0x09000000, uint32('M')) // 'M' = KernelMain entry
@@ -362,6 +366,21 @@ func KernelMain(r0, r1, atags uint32) {
 	uartInit()
 	asm.MmioWrite(0x09000000, uint32('u')) // 'u' = UART init done
 	uartPuts("DEBUG: KernelMain after uartInit\r\n")
+
+	// DTB pointer diagnostics (QEMU virt)
+	uartPuts("DEBUG: atags/DTB ptr = 0x")
+	uartPutHex64(uint64(uintptr(atags)))
+	uartPuts("\r\n")
+	if atags != 0 {
+		magic := *(*uint32)(unsafe.Pointer(uintptr(atags)))
+		uartPuts("DEBUG: DTB magic @atags = 0x")
+		uartPutHex64(uint64(magic))
+		uartPuts("\r\n")
+	}
+	magic400 := *(*uint32)(unsafe.Pointer(uintptr(0x40000000)))
+	uartPuts("DEBUG: DTB magic @0x40000000 = 0x")
+	uartPutHex64(uint64(magic400))
+	uartPuts("\r\n")
 
 	// CRITICAL DIAGNOSTIC: Check SCTLR_EL1 to understand alignment fault behavior
 	// Read current SCTLR_EL1 and print its value
@@ -536,34 +555,26 @@ func KernelMainBody() {
 func kernelMainBody() {
 	// Minimal staged bring-up with early return after stage2
 
-	// Stage 1: simple UART prints
-	asm.MmioWrite(0x09000000, uint32('B'))
+	// Stage 0: UART initialization (required for all debugging output)
+	uartPuts("DEBUG: Initializing UART...\r\n")
+	uartInit()
+	uartPuts("DEBUG: UART initialized\r\n")
+	uartPuts("Hello, Mazarin!\r\n")
+	uartPuts("\r\n")
 
-	putc := func(c byte) {
-		uartPutc(c)
-	}
-	puts := func(s string) {
-		for i := 0; i < len(s); i++ {
-			putc(s[i])
-		}
-	}
-	puts("Hello, Mazarin!\r\n")
-	puts("\r\n")
-	uartPuts("DEBUG: stage1 complete, proceeding to write barrier check\r\n")
-
-	// Stage 2: write barrier flag check
-	uartPuts("DEBUG: stage2 write barrier check start\r\n")
+	// Stage 1: write barrier flag check
+	uartPuts("DEBUG: stage1 write barrier check start\r\n")
 	wbFlagAddr := uintptr(0x40026b40) // runtime.writeBarrier in RAM
 	wbFlag := readMemory32(wbFlagAddr)
 	if wbFlag == 0 {
-		puts("ERROR: Write barrier flag not set!\r\n")
+		uartPuts("ERROR: Write barrier flag not set!\r\n")
 	}
 	uartPuts("DEBUG: stage2 complete, skipping stage3 (memInit already done)\r\n")
 
-	// Stage 3: memory init
+	// Stage 2: memory init
 	// NOTE: memInit is now called early in KernelMain (before goroutine creation)
 	// so we skip it here to avoid double initialization
-	uartPuts("DEBUG: stage3 memInit skipped (already initialized)\r\n")
+	uartPuts("DEBUG: stage2 memInit skipped (already initialized)\r\n")
 	uartPuts("DEBUG: Memory management already initialized (done early for goroutine allocation)\r\n")
 	// memInit(0)    // Already called early in KernelMain
 	// Use direct uartPuts instead of closure to avoid potential write barrier issues
@@ -571,78 +582,26 @@ func kernelMainBody() {
 	// Add memory barrier to ensure any pending write barrier operations complete
 	asm.Dsb()
 
-	// TEMPORARILY DISABLE UART ring buffer init - causes interrupt issues
-	// uartInitRingBufferAfterMemInit()
+	uartPuts("DEBUG: stage2 complete, proceeding to stage3 (exceptions)\r\n")
 
-	uartPuts("DEBUG: stage3 complete, proceeding to stage4 (framebuffer)\r\n")
-
-	// Stage 4: framebuffer init + framebuffer text init
-	uartPuts("DEBUG: stage4 framebuffer init start\r\n")
-	fbResult := framebufferInit()
-	if fbResult != 0 {
-		uartPuts("ERROR: Framebuffer initialization failed!\r\n")
-		asm.QemuExit()
-		return
-	}
-	uartPuts("DEBUG: framebufferInit succeeded\r\n")
-
-	if err := InitFramebufferText(fbinfo.Buf, fbinfo.Width, fbinfo.Height, fbinfo.Pitch); err != nil {
-		uartPuts("ERROR: Framebuffer text initialization failed\r\n")
-		asm.QemuExit()
-		return
-	}
-	uartPuts("DEBUG: InitFramebufferText completed\r\n")
-
-	// Test framebuffer text rendering
-	testFramebufferText()
-
-	uartPuts("DEBUG: stage4 complete, proceeding to stage5 (exceptions)\r\n")
-
-	// Stage 5: exception handler init
-	uartPuts("DEBUG: stage5 InitializeExceptions start\r\n")
+	// Stage 3: exception handler init (CRITICAL: Must be before MMU)
+	uartPuts("DEBUG: stage3 InitializeExceptions start\r\n")
 	if err := InitializeExceptions(); err != nil {
 		uartPuts("ERROR: Failed to initialize exception handling\r\n")
-		asm.QemuExit()
+		abortBoot("Exception handler initialization failed")
 		return
 	}
 	uartPuts("DEBUG: InitializeExceptions completed\r\n")
 
-	uartPuts("DEBUG: stage5 complete, proceeding to stage6 (GIC)\r\n")
+	uartPuts("DEBUG: stage3 complete, proceeding to stage4 (MMU)\r\n")
 
-	// Stage 6: GIC init
-	uartPuts("DEBUG: stage6 gicInit start\r\n")
-	gicInit()
-	uartPuts("DEBUG: gicInit completed\r\n")
+	// Stage 4: MMU initialization (interrupts disabled)
+	uartPuts("DEBUG: stage4 MMU initialization start\r\n")
 
-	// Check security state before setting up interrupts
-	checkSecurityState()
+	// CRITICAL: Disable interrupts during MMU initialization for atomicity
+	uartPuts("DEBUG: Disabling interrupts for MMU initialization...\r\n")
+	asm.DisableIrqs()
 
-	// Set up UART interrupts now that GIC is initialized
-	uartPuts("DEBUG: Setting up UART interrupts (ID 33)...\r\n")
-	uartSetupInterrupts()
-	uartPuts("DEBUG: UART interrupts configured\r\n")
-
-	uartPuts("DEBUG: stage6 complete, proceeding to stage7 (timer)\r\n")
-
-	// Stage 7: timer init
-	uartPuts("DEBUG: stage7 timerInit start\r\n")
-	timerInit()
-	uartPuts("DEBUG: timerInit completed\r\n")
-
-	uartPuts("DEBUG: stage7 complete, proceeding to stage8 (SDHCI)\r\n")
-
-	// Stage 8: SDHCI (SD card) init
-	// CRITICAL: SD card is required to load kernel, so abort if init fails
-	uartPuts("DEBUG: stage8 sdhciInit start\r\n")
-	if !sdhciInit() {
-		abortBoot("sdhciInit failed - cannot load kernel from SD card!")
-	}
-	uartPuts("DEBUG: sdhciInit completed successfully\r\n")
-	uartPutc('S') // Breadcrumb: SDHCI done, about to proceed to MMU
-	uartPuts("DEBUG: stage8 complete, proceeding to MMU initialization\r\n")
-
-	// Initialize MMU before enabling interrupts
-	// CRITICAL: MMU is required for proper memory management, so abort if init fails
 	uartPutc('M') // 'M' = MMU init starting
 	uartPuts("DEBUG: Initializing MMU...\r\n")
 	if !initMMU() {
@@ -654,13 +613,74 @@ func kernelMainBody() {
 	}
 	uartPutc('E') // 'E' = MMU enable done
 	uartPuts("DEBUG: MMU enabled successfully\r\n")
+
+	// Re-enable interrupts after MMU is fully enabled
+	uartPuts("DEBUG: Re-enabling interrupts after MMU initialization...\r\n")
+	asm.EnableIrqsAsm()
+
+	uartPuts("DEBUG: stage4 complete, proceeding to stage5 (memory management)\r\n")
+
+	// Stage 5: Memory management (if not done earlier)
+	// NOTE: memInit may already be done in KernelMain() for goroutine allocation
+	// If not, initialize it here after MMU
+
+	// Stage 6: UART ring buffer (uses kmallocReserved, requires MMU for virtual addresses)
+	uartPuts("DEBUG: stage6 Initializing UART ring buffer...\r\n")
+	uartInitRingBufferAfterMemInit()
+	uartPuts("DEBUG: UART ring buffer initialized\r\n")
+
+	// Stage 7: Framebuffer (uses kmallocReserved, requires MMU for virtual addresses)
+	uartPuts("DEBUG: stage7 Initializing framebuffer...\r\n")
+	fbResult := framebufferInit()
+	if fbResult != 0 {
+		uartPuts("ERROR: Framebuffer initialization failed!\r\n")
+		abortBoot("Framebuffer init failed after MMU enablement")
+	}
+	uartPuts("DEBUG: Framebuffer initialized successfully\r\n")
+
+	// Initialize framebuffer text rendering
+	if err := InitFramebufferText(fbinfo.Buf, fbinfo.Width, fbinfo.Height, fbinfo.Pitch); err != nil {
+		uartPuts("ERROR: Framebuffer text initialization failed\r\n")
+		abortBoot("Framebuffer text init failed after MMU enablement")
+	}
+	uartPuts("DEBUG: Framebuffer text initialized successfully\r\n")
+
+	uartPuts("DEBUG: stage7 complete, proceeding to stage8 (GIC)\r\n")
+
+	// Stage 8: GIC init (not needed for MMU, can be done after)
+	uartPuts("DEBUG: stage8 gicInit start\r\n")
+	gicInit()
+	uartPuts("DEBUG: gicInit completed\r\n")
+
+	// Check security state before setting up interrupts
+	checkSecurityState()
+
+	// Set up UART interrupts now that GIC is initialized
+	uartPuts("DEBUG: Setting up UART interrupts (ID 33)...\r\n")
+	uartSetupInterrupts()
+	uartPuts("DEBUG: UART interrupts configured\r\n")
+
+	uartPuts("DEBUG: stage8 complete, proceeding to stage9 (timer)\r\n")
+
+	// Stage 9: Timer init (not needed for MMU, can be done after)
+	uartPuts("DEBUG: stage9 timerInit start\r\n")
+	timerInit()
+	uartPuts("DEBUG: timerInit completed\r\n")
+
+	uartPuts("DEBUG: stage9 complete, proceeding to stage10 (SDHCI)\r\n")
+
+	// Stage 10: SDHCI init (not needed for MMU, can be done after)
+	uartPuts("DEBUG: stage10 sdhciInit start\r\n")
+	if !sdhciInit() {
+		abortBoot("sdhciInit failed - cannot load kernel from SD card!")
+	}
+	uartPuts("DEBUG: sdhciInit completed successfully\r\n")
+	uartPutc('S') // Breadcrumb: SDHCI done
+
 	uartPuts("DEBUG: All initialization complete\r\n")
 
-	// Try to enable interrupts using the assembly function
-	// Note: This might cause issues, but we need interrupts enabled for timer
-	uartPuts("DEBUG: Attempting to enable interrupts...\r\n")
-
-	asm.EnableIrqsAsm() // Use the minimal version that just does msr DAIFCLR
+	// Interrupts were already re-enabled after MMU initialization above
+	// No need to enable again here
 
 	// CRITICAL: After enabling interrupts, avoid calling functions that might
 	// create unaligned stores (like uartPuts with string literals) until we're

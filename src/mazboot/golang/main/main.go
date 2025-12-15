@@ -15,6 +15,7 @@ func main() {
 	// Reference interrupt handlers to prevent optimization
 	// These are called from assembly interrupt handlers and must not be optimized away
 	// This will never execute in bare metal, but ensures the functions exist
+	ExceptionHandler(0, 0, 0, 0, 0)
 	UartTransmitHandler() // UART TX interrupt handler
 
 	// Reference other functions called from assembly

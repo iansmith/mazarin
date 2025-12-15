@@ -502,3 +502,5 @@ When implementing or modifying these tools:
 - [ ] Verify generated code compiles: `make ../../build/mazboot/kernel_go_qemu.o`
 - [ ] Check for duplicate declarations (functions already in other Go files)
 
+
+

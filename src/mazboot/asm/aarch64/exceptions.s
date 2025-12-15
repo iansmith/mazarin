@@ -11,6 +11,9 @@
 //   0x300 - 0x380: FIQ (Fast Interrupt Request)
 //   0x380 - 0x400: SError (System Error)
 
+// Declare Go function for exception handling
+.extern ExceptionHandler
+
 // Use a separate section for exception vectors so they can be 2KB aligned
 // without affecting text section alignment
 // Flags: "ax" = allocatable + executable (required for code execution)
@@ -50,28 +53,47 @@ exception_vectors:
     // 0x200 - 0x280: Synchronous exception (SP_EL1) - 128 bytes
     .align 7
 sync_exception_el1:
-    // Sync exception occurred - try to print debug message via UART
-    // Load UART base address (PL011 at 0x09000000)
-    movz x14, #0x0900, lsl #16     // 0x09000000
-    movk x14, #0x0000, lsl #0
+    // CRITICAL: Print breadcrumb IMMEDIATELY to detect if exception handler is called
+    // Use UART directly (MMIO, doesn't require MMU or stack)
+    movz x10, #0x0900, lsl #16     // UART base = 0x09000000
+    movk x10, #0x0000, lsl #0
+    movz w11, #0x21                // '!' = Exception handler called!
+    str w11, [x10]                 // Print immediately
     
-    // Print 'S' (0x53) to indicate sync exception
-    movz w15, #0x53                // 'S'
-    str w15, [x14]                 // Write to UART data register
+    // Save exception state registers before calling Go handler
+    // ARM64 calling convention: x0-x7 are parameter/result registers
+    // ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType uint32)
+    // Parameters: x0=esr, x1=elr, x2=spsr, x3=far, x4=excType
     
-    // Print 'Y' (0x59)
-    movz w15, #0x59                // 'Y'
-    str w15, [x14]
+    // Read exception state registers
+    mrs x0, ESR_EL1                // Exception Syndrome Register
+    mrs x1, ELR_EL1                // Exception Link Register (return address)
+    mrs x2, SPSR_EL1               // Saved Program Status Register
+    mrs x3, FAR_EL1                // Fault Address Register
     
-    // Print 'N' (0x4E)
-    movz w15, #0x4E                // 'N'
-    str w15, [x14]
+    // Print 'E' to show we're reading exception registers
+    movz w11, #0x45                // 'E'
+    str w11, [x10]
     
-    // Print 'C' (0x43)
-    movz w15, #0x43                // 'C'
-    str w15, [x14]
+    // Set exception type to SYNC_EXCEPTION (0)
+    movz x4, #0                    // excType = SYNC_EXCEPTION
     
-    // Hang forever - sync exception occurred
+    // Print 'H' before calling Go handler
+    movz w11, #0x48                // 'H'
+    str w11, [x10]
+    
+    // Call Go exception handler
+    // Note: We're already on SP_EL1, so stack should be fine
+    // The Go handler is marked //go:nosplit so it won't grow the stack
+    bl main.ExceptionHandler
+    
+    // Print 'h' after Go handler returns (shouldn't happen, but just in case)
+    movz x10, #0x0900, lsl #16
+    movk x10, #0x0000, lsl #0
+    movz w11, #0x68                // 'h'
+    str w11, [x10]
+    
+    // If handler returns (shouldn't happen, but just in case), hang
     b .
     
     

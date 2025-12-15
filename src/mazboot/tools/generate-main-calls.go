@@ -127,6 +127,7 @@ func generateMainCallsContent(goFunctionsCalled []string, goSourceDir string, w 
 		"UartTransmitHandler":   {},
 		"kernelMainBodyWrapper": {},
 		"GrowStackForCurrent":   {},
+		"ExceptionHandler":      {"uint64", "uint64", "uint64", "uint64", "uint32"},
 	}
 
 	// Parse Go source to find signatures for unknown functions
@@ -395,5 +396,3 @@ func findGoFunctionsCalled(asmDir string) []string {
 
 	return functions
 }
-
-

@@ -138,7 +138,6 @@ func InitializeExceptions() error {
 // ExceptionHandler is called from assembly when a synchronous exception occurs
 // It handles the exception and logs details for debugging
 //
-//go:linkname ExceptionHandler ExceptionHandler
 //go:nosplit
 //go:noinline
 func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType uint32) {
@@ -153,87 +152,127 @@ func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType u
 	handleException(excInfo)
 }
 
+// Direct UART printing for exception context.
+// We avoid uartPutc/uartPuts because those may enqueue to the ring buffer and rely on interrupts,
+// which are typically masked during exception entry (so output never appears).
+//
+//go:nosplit
+func uartPutcDirect(c byte) {
+	asm.UartPutcPl011(c)
+}
+
+//go:nosplit
+func uartPutsDirect(s string) {
+	for i := 0; i < len(s); i++ {
+		uartPutcDirect(s[i])
+	}
+}
+
+//go:nosplit
+func uartPutHex8Direct(v uint8) {
+	const hexdigits = "0123456789ABCDEF"
+	uartPutcDirect(hexdigits[(v>>4)&0xF])
+	uartPutcDirect(hexdigits[v&0xF])
+}
+
+//go:nosplit
+func uartPutHex64Direct(v uint64) {
+	const hexdigits = "0123456789ABCDEF"
+	for shift := uint(60); ; shift -= 4 {
+		uartPutcDirect(hexdigits[(v>>shift)&0xF])
+		if shift == 0 {
+			break
+		}
+	}
+}
+
 // handleException dispatches the exception to the appropriate handler
 func handleException(excInfo ExceptionInfo) {
+	// CRITICAL: Print immediately to verify handler is called
+	// Use direct UART output to avoid any stack/heap issues
+	uartPutcDirect('*') // '*' = Exception handler in Go code called
+
 	// Extract exception class from ESR_EL1
 	ec := (excInfo.ESR >> 26) & 0x3F
 
-	uartPuts("EXCEPTION: ELR=0x")
-	uartPutHex64(excInfo.ELR)
-	uartPuts(" ESR=0x")
-	uartPutHex64(excInfo.ESR)
-	uartPuts(" EC=0x")
-	uartPutHex8(uint8(ec))
-	uartPuts(" SPSR=0x")
-	uartPutHex64(excInfo.SPSR)
-	uartPuts(" FAR=0x")
-	uartPutHex64(excInfo.FAR)
-	uartPuts("\r\n")
+	uartPutsDirect("EXCEPTION: ELR=0x")
+	uartPutHex64Direct(excInfo.ELR)
+	uartPutsDirect(" ESR=0x")
+	uartPutHex64Direct(excInfo.ESR)
+	uartPutsDirect(" EC=0x")
+	uartPutHex8Direct(uint8(ec))
+	uartPutsDirect(" SPSR=0x")
+	uartPutHex64Direct(excInfo.SPSR)
+	uartPutsDirect(" FAR=0x")
+	uartPutHex64Direct(excInfo.FAR)
+	uartPutsDirect("\r\n")
 
 	switch ec {
 	case EC_UNKNOWN:
-		uartPuts("Unknown exception at 0x")
-		uartPutHex64(excInfo.ELR)
-		uartPuts("\r\n")
+		uartPutsDirect("Unknown exception at 0x")
+		uartPutHex64Direct(excInfo.ELR)
+		uartPutsDirect("\r\n")
 
 	case EC_TRAP_WFx:
-		uartPuts("WFx trap at 0x")
-		uartPutHex64(excInfo.ELR)
-		uartPuts("\r\n")
+		uartPutsDirect("WFx trap at 0x")
+		uartPutHex64Direct(excInfo.ELR)
+		uartPutsDirect("\r\n")
 
 	case EC_TRAP_MSR_MRS_SYSTEM:
-		uartPuts("MSR/MRS system instruction trap at 0x")
-		uartPutHex64(excInfo.ELR)
-		uartPuts("\r\n")
+		uartPutsDirect("MSR/MRS system instruction trap at 0x")
+		uartPutHex64Direct(excInfo.ELR)
+		uartPutsDirect("\r\n")
 
 	case EC_DATA_ABORT_ELx:
-		uartPuts("Data abort at 0x")
-		uartPutHex64(excInfo.ELR)
-		uartPuts(" (fault address: 0x")
-		uartPutHex64(excInfo.FAR)
-		uartPuts(")\r\n")
+		uartPutsDirect("Data abort at 0x")
+		uartPutHex64Direct(excInfo.ELR)
+		uartPutsDirect(" (fault address: 0x")
+		uartPutHex64Direct(excInfo.FAR)
+		uartPutsDirect(")\r\n")
 
 	case EC_PREFETCH_ABORT_ELx:
-		uartPuts("Prefetch abort at 0x")
-		uartPutHex64(excInfo.ELR)
-		uartPuts("\r\n")
+		uartPutsDirect("Prefetch abort at 0x")
+		uartPutHex64Direct(excInfo.ELR)
+		uartPutsDirect("\r\n")
 
 	case EC_BREAKPOINT_ELx:
-		uartPuts("Breakpoint at 0x")
-		uartPutHex64(excInfo.ELR)
-		uartPuts("\r\n")
+		uartPutsDirect("Breakpoint at 0x")
+		uartPutHex64Direct(excInfo.ELR)
+		uartPutsDirect("\r\n")
 
 	case EC_ILLEGAL_EXECUTION:
-		uartPuts("Illegal execution state at 0x")
-		uartPutHex64(excInfo.ELR)
-		uartPuts("\r\n")
+		uartPutsDirect("Illegal execution state at 0x")
+		uartPutHex64Direct(excInfo.ELR)
+		uartPutsDirect("\r\n")
 
 	case EC_SVC_EL1_A64:
 		// Supervisor call from EL1 (AArch64)
-		uartPuts("SVC from EL1 at 0x")
-		uartPutHex64(excInfo.ELR)
-		uartPuts(" (immediate: ")
+		uartPutsDirect("SVC from EL1 at 0x")
+		uartPutHex64Direct(excInfo.ELR)
+		uartPutsDirect(" (immediate: ")
+		// Keep the old helper for decimal; it's fine if it uses ring buffer before it's initialized,
+		// but for now this path is not used during our debugging.
 		uartPutUint32(uint32(excInfo.ESR & 0xFFFF))
-		uartPuts(")\r\n")
+		uartPutsDirect(")\r\n")
 
 	case EC_SVC_EL0_A64:
 		// Supervisor call from EL0 (AArch64)
-		uartPuts("SVC from EL0 at 0x")
-		uartPutHex64(excInfo.ELR)
-		uartPuts(" (immediate: ")
+		uartPutsDirect("SVC from EL0 at 0x")
+		uartPutHex64Direct(excInfo.ELR)
+		uartPutsDirect(" (immediate: ")
 		uartPutUint32(uint32(excInfo.ESR & 0xFFFF))
-		uartPuts(")\r\n")
+		uartPutsDirect(")\r\n")
 
 	default:
-		uartPuts("Unhandled exception class 0x")
-		uartPutHex8(uint8(ec))
-		uartPuts(" at 0x")
-		uartPutHex64(excInfo.ELR)
-		uartPuts("\r\n")
+		uartPutsDirect("Unhandled exception class 0x")
+		uartPutHex8Direct(uint8(ec))
+		uartPutsDirect(" at 0x")
+		uartPutHex64Direct(excInfo.ELR)
+		uartPutsDirect("\r\n")
 	}
 
 	// Hang the system for now
-	uartPuts("System halted\r\n")
+	uartPutsDirect("System halted\r\n")
 	for {
 		// Spin forever
 	}

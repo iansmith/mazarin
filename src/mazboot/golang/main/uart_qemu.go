@@ -171,7 +171,8 @@ func uartInitRingBuffer() {
 	}
 
 	// Allocate the buffer array
-	buffer := kmalloc(UART_RING_BUFFER_SIZE)
+	// Use kmallocReserved() to mark this allocation as permanent system memory
+	buffer := kmallocReserved(UART_RING_BUFFER_SIZE)
 	if buffer == nil {
 		uartPuts("UART: ERROR - Failed to allocate ring buffer data\r\n")
 		return

@@ -39,6 +39,10 @@ func EnableIrqs()
 //go:nosplit
 func EnableIrqsAsm()
 
+//go:linkname EnableMmuMinimal enable_mmu_minimal
+//go:nosplit
+func EnableMmuMinimal()
+
 //go:linkname GetCallerStackPointer get_caller_stack_pointer
 //go:nosplit
 func GetCallerStackPointer() uintptr
@@ -238,6 +242,10 @@ func WriteTcrEl1(value uint64)
 //go:linkname WriteTtbr0El1 write_ttbr0_el1
 //go:nosplit
 func WriteTtbr0El1(value uint64)
+
+//go:linkname WriteTtbr1El1 write_ttbr1_el1
+//go:nosplit
+func WriteTtbr1El1(value uint64)
 
 //go:linkname gcWriteBarrier gcWriteBarrier
 //go:nosplit

@@ -84,7 +84,10 @@ const (
 // pciEcamBase is the PCI ECAM base address
 // For AArch64 virt machine with highmem (default): 0x4010000000
 // For AArch64 virt machine without highmem: 0x3F000000
-var pciEcamBase uintptr = 0x4010000000
+//
+// NOTE: Our MMU currently maps the *lowmem* ECAM window (0x3F000000-0x40000000).
+// Using the highmem ECAM base before mapping it will fault (e.g. FAR=0x4010000000).
+var pciEcamBase uintptr = 0x3F000000
 
 // pciConfigRead32 reads a 32-bit value from PCI configuration space
 // bus, slot, func: PCI device location
@@ -318,6 +321,8 @@ func findBochsDisplayFull() bool {
 					// QEMU virt machine kernel RAM: 0x40100000 - 0x48100000 (128MB)
 					// Use fixed addresses within kernel RAM for bochs-display BAR programming
 					// Note: Heap can extend beyond 0x48100000 up to g0 stack at 0x5EFFFE000
+					// CRITICAL: Framebuffer at 0x50000000 must NEVER be freed or reused
+					// This is a permanent resource for the lifetime of the system
 					fbAddr := uintptr(0x50000000)   // Framebuffer address (within kernel RAM)
 					mmioBase := uintptr(0x50010000) // MMIO registers (right after framebuffer)
 

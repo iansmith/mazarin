@@ -39,6 +39,8 @@ ASM_PACKAGE_DIR = $(MAZBOOT_SRC)/golang/asm
 
 # Go source files (all files - build tags determine which are included)
 GO_SRC = $(GO_PACKAGE_DIR)/kernel.go \
+         $(GO_PACKAGE_DIR)/mmu.go \
+         $(GO_PACKAGE_DIR)/exceptions.go \
          $(GO_PACKAGE_DIR)/page.go \
          $(GO_PACKAGE_DIR)/page_flags.go \
          $(GO_PACKAGE_DIR)/heap.go \

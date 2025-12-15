@@ -122,9 +122,77 @@ read_sctlr_el1:
 // write_sctlr_el1(value uint64) - Write SCTLR_EL1
 // x0 = value to write
 .global write_sctlr_el1
+// Alternative minimal MMU enable function - test if location matters
+.global enable_mmu_minimal
+enable_mmu_minimal:
+    // x0 = SCTLR value
+    // Minimal function - just enable MMU and return
+    msr SCTLR_EL1, x0
+    isb
+    ret
+
 write_sctlr_el1:
+    // Save registers we'll use
+    mov x19, x30           // Save link register
+    mov x20, x0            // Save SCTLR value
+    
+    // Print 'W' before msr (minimal UART operation)
+    movz x0, #0x0900, lsl #16    // UART base
+    movk x0, #0x0000, lsl #0
+    movz w1, #0x57                // 'W'
+    str w1, [x0]
+    
+    // CRITICAL: DSB before msr to ensure all previous memory operations
+    // (including UART writes) are complete before enabling MMU.
+    // This is especially important for QEMU which may have timing issues.
+    dsb sy                        // Data synchronization barrier - all memory ops complete
+    
+    // CRITICAL: Invalidate instruction cache before enabling MMU
+    // Even though caches are disabled, prefetch buffers may contain stale instructions
+    // This is standard practice in Linux kernel's __enable_mmu
+    ic iallu                       // Invalidate all instruction caches to PoU
+    dsb nsh                        // Ensure completion of instruction cache invalidation
+    isb                            // Synchronize instruction stream
+    
+    // TEST: Sequential execution (no branch) after MMU enable
+    // Restore SCTLR value and write it
+    mov x0, x20
     msr SCTLR_EL1, x0    // Write x0 to SCTLR_EL1
+    
+    // CRITICAL: If we get here, MMU is enabled
+    // Try to print 'X' immediately after msr to verify we can execute
+    // This will help us detect if it's an instruction fetch issue
+    movz x0, #0x0900, lsl #16    // UART base
+    movk x0, #0x0000, lsl #0
+    movz w1, #0x58                // 'X'
+    str w1, [x0]                  // Write 'X' to UART (if this executes, MMU is working)
+    
+    // CRITICAL: After enabling MMU, use sequential execution
+    // Try multiple NOPs first to see if any instruction can be fetched
+    nop                            // NOP 1 - test if this can be fetched
+    nop                            // NOP 2 - test if this can be fetched
+    nop                            // NOP 3 - test if this can be fetched
+    
+    // Now try ISB
+    isb                            // Instruction synchronization barrier - MMU now active
+    
+    // Print 'X' after msr and isb (verify we got past the critical point)
+    movz x0, #0x0900, lsl #16    // UART base
+    movk x0, #0x0000, lsl #0
+    movz w1, #0x58                // 'X'
+    str w1, [x0]
+    
+    // Additional ISB to ensure UART write completes
     isb                   // Instruction synchronization barrier
+    
+    // Print 'Y' after isb, before ret
+    movz x0, #0x0900, lsl #16    // UART base
+    movk x0, #0x0000, lsl #0
+    movz w1, #0x59                // 'Y'
+    str w1, [x0]
+    
+    // Restore link register
+    mov x30, x19
     ret
 
 // disable_alignment_check() - Clear the A bit in SCTLR_EL1 to disable alignment faults
@@ -267,10 +335,11 @@ kernel_main:
     
     // Function signature: KernelMain(r0, r1, atags uint32)
     // AArch64 calling convention: first 8 parameters in x0-x7
-    // Set parameters to 0 (no ATAGs in QEMU virt machine)
+    //
+    // NOTE: In QEMU virt, the DTB pointer is provided by QEMU in x0 at reset.
+    // boot.s preserves that pointer and passes it to kernel_main in x2, so DO NOT clobber x2 here.
     mov x0, #0                    // r0 = 0
-    mov x1, #0                    // r1 = 0  
-    mov x2, #0                    // atags = 0
+    mov x1, #0                    // r1 = 0
     
     // Set x28 (goroutine pointer) to point to runtime.g0
     // This is required for write barrier to work
@@ -719,6 +788,17 @@ write_ttbr0_el1:
     isb                   // Instruction synchronization barrier
     ret                   // Return (no return value, void function)
 
+// write_ttbr1_el1(value uint64) - Write TTBR1_EL1
+// x0 = value to write (Go ABI: first parameter in x0 for uint64)
+// Must be 4KB aligned, lower 12 bits ignored by hardware
+// Even when EPD1=1 (TTBR1 disabled), should be initialized to a safe value
+.global write_ttbr1_el1
+write_ttbr1_el1:
+    // x0 already contains the parameter (Go ABI: first uint64 param in x0)
+    msr TTBR1_EL1, x0    // Write x0 (parameter) to TTBR1_EL1
+    isb                   // Instruction synchronization barrier
+    ret                   // Return (no return value, void function)
+
 // read_mair_el1() - Read MAIR_EL1 (Memory Attribute Indirection Register)
 // Returns uint64 in x0 (Go ABI: x0 is the return value register for uint64)
 .global read_mair_el1
@@ -756,10 +836,13 @@ write_tcr_el1:
 
 // invalidate_tlb_all() - Invalidate entire TLB
 // Clears all translation lookaside buffer entries
+// NOTE: Uses tlbi vmalle1 (not alle1) because this can be executed
+// with MMU disabled during bootloader initialization.
+// tlbi alle1 requires MMU to be enabled and would cause UNDEFINED behavior.
 .global invalidate_tlb_all
 invalidate_tlb_all:
     dsb sy                   // Ensure all memory accesses complete
-    tlbi alle1               // Invalidate all EL1 TLB entries
+    tlbi vmalle1             // Invalidate all EL1 TLB entries for current VMID
     dsb sy                   // Ensure TLB invalidation completes
     isb                      // Instruction synchronization barrier
     ret

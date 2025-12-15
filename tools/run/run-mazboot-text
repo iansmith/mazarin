@@ -78,8 +78,34 @@ if ! command -v timeout &> /dev/null; then
     exit 1
 fi
 
-# Timeout duration (5 seconds)
-TIMEOUT_SECS=5
+# Timeout duration (seconds)
+# Default is short for quick experiments; override for slow init (e.g. TIMEOUT_SECS=60).
+TIMEOUT_SECS="${TIMEOUT_SECS:-5}"
+
+# Optional output separation (alias: SEPARATE_LOGS=1)
+# - Kernel UART (stdout) -> /tmp/qemu-logs/kernel-uart-<pid>.log
+# - QEMU debug/trace (stderr) -> /tmp/qemu-logs/qemu-debug-<pid>.log
+SEPARATE_OUTPUT="${SEPARATE_OUTPUT:-0}"
+SEPARATE_LOGS="${SEPARATE_LOGS:-0}"
+if [ "$SEPARATE_LOGS" = "1" ]; then
+    SEPARATE_OUTPUT=1
+fi
+
+# Optional QEMU trace option override
+# Examples:
+#   QEMU_TRACE_OPT='events=@/tmp/trace-options,file=/tmp/qemu-trace.log,enable=exec_tb'
+#   QEMU_TRACE_OPT='enable=exec_tb,exec_tb_exit'
+# If empty, we'll fall back to the previous default of tracing GIC events.
+QEMU_TRACE_OPT="${QEMU_TRACE_OPT:-}"
+
+# Optional QEMU debug flags (QEMU's -d / -D logging)
+# Examples:
+#   QEMU_D='int,mmu,guest_errors'
+#   QEMU_D='cpu_reset,int'
+# Optional override for -D file:
+#   QEMU_D_LOG='/tmp/qemu-logs/qemu-d.log'
+QEMU_D="${QEMU_D:-}"
+QEMU_D_LOG="${QEMU_D_LOG:-}"
 
 # SD card image path
 SDCARD_IMG="/tmp/sdcard.img"
@@ -94,28 +120,185 @@ if [ ! -f "$SDCARD_IMG" ]; then
 fi
 
 # Build QEMU command (always nographic, minimal output)
-QEMU_CMD=(
-    "$QEMU_BIN"
-    -M virt,virtualization=on
-    -cpu cortex-a72
-    -m 1G
-    -kernel "$KERNEL_PATH"
-    -nodefaults
-    -device ramfb
-    -device sdhci-pci
-    -drive if=none,file="$SDCARD_IMG",format=raw,id=sdcard
-    -device sd-card,drive=sdcard
-    -nographic
-    -serial stdio
-    -semihosting
-    -no-reboot
-    -trace "gic_*"
-)
+# TEST: Try different configurations to see if MMU enable works
+# Configuration can be changed via environment variable: QEMU_MMU_TEST
+# Options: "virt_no_virt", "virt_secure", "virt_highmem", "raspi4b", "default"
+#
+# NOTE: Our bootloader currently assumes the *lowmem* PCI ECAM window at 0x3F000000.
+# With QEMU virt's default highmem=on, ECAM is typically at 0x4010000000 and reads from
+# 0x3F000000 may data-abort. Default to highmem=off until we implement runtime ECAM discovery.
+QEMU_MMU_TEST="${QEMU_MMU_TEST:-virt_highmem}"
+
+case "$QEMU_MMU_TEST" in
+    "virt_no_virt")
+        # Test 1: virt machine WITHOUT virtualization=on
+        echo "TEST: Using virt machine WITHOUT virtualization=on" >&2
+        QEMU_CMD=(
+            "$QEMU_BIN"
+            -M virt
+            -cpu cortex-a72
+            -m 1G
+            -kernel "$KERNEL_PATH"
+            -nodefaults
+            -device ramfb
+            -device sdhci-pci
+            -drive if=none,file="$SDCARD_IMG",format=raw,id=sdcard
+            -device sd-card,drive=sdcard
+            -nographic
+            -serial stdio
+            -semihosting
+            -no-reboot
+        )
+        ;;
+    "virt_secure")
+        # Test 2: virt machine with secure=on
+        echo "TEST: Using virt machine with secure=on" >&2
+        QEMU_CMD=(
+            "$QEMU_BIN"
+            -M virt,secure=on
+            -cpu cortex-a72
+            -m 1G
+            -kernel "$KERNEL_PATH"
+            -nodefaults
+            -device ramfb
+            -device sdhci-pci
+            -drive if=none,file="$SDCARD_IMG",format=raw,id=sdcard
+            -device sd-card,drive=sdcard
+            -nographic
+            -serial stdio
+            -semihosting
+            -no-reboot
+        )
+        ;;
+    "virt_highmem")
+        # Test 3: virt machine with highmem=off (disable high memory)
+        echo "TEST: Using virt machine with highmem=off" >&2
+        QEMU_CMD=(
+            "$QEMU_BIN"
+            -M virt,highmem=off
+            -cpu cortex-a72
+            -m 1G
+            -kernel "$KERNEL_PATH"
+            -nodefaults
+            -device ramfb
+            -device sdhci-pci
+            -drive if=none,file="$SDCARD_IMG",format=raw,id=sdcard
+            -device sd-card,drive=sdcard
+            -nographic
+            -serial stdio
+            -semihosting
+            -no-reboot
+        )
+        ;;
+    "raspi4b")
+        # Test 4: Try raspi4b machine type (different MMU implementation)
+        echo "TEST: Using raspi4b machine type" >&2
+        QEMU_CMD=(
+            "$QEMU_BIN"
+            -M raspi4b
+            -cpu cortex-a72
+            -m 1G
+            -kernel "$KERNEL_PATH"
+            -nodefaults
+            -nographic
+            -serial stdio
+            -semihosting
+            -no-reboot
+        )
+        ;;
+    "cpu_a53")
+        # Test 5: Try different CPU model (Cortex-A53 instead of A72)
+        echo "TEST: Using Cortex-A53 CPU instead of A72" >&2
+        QEMU_CMD=(
+            "$QEMU_BIN"
+            -M virt,virtualization=on
+            -cpu cortex-a53
+            -m 1G
+            -kernel "$KERNEL_PATH"
+            -nodefaults
+            -device ramfb
+            -device sdhci-pci
+            -drive if=none,file="$SDCARD_IMG",format=raw,id=sdcard
+            -device sd-card,drive=sdcard
+            -nographic
+            -serial stdio
+            -semihosting
+            -no-reboot
+        )
+        ;;
+    "no_semihosting")
+        # Test 6: Disable semihosting (might affect MMU behavior)
+        echo "TEST: Disabling semihosting" >&2
+        QEMU_CMD=(
+            "$QEMU_BIN"
+            -M virt,virtualization=on
+            -cpu cortex-a72
+            -m 1G
+            -kernel "$KERNEL_PATH"
+            -nodefaults
+            -device ramfb
+            -device sdhci-pci
+            -drive if=none,file="$SDCARD_IMG",format=raw,id=sdcard
+            -device sd-card,drive=sdcard
+            -nographic
+            -serial stdio
+            -no-reboot
+        )
+        ;;
+    "default"|*)
+        # Default: virt machine with virtualization=on (original configuration)
+        QEMU_CMD=(
+            "$QEMU_BIN"
+            -M virt,virtualization=on
+            -cpu cortex-a72
+            -m 1G
+            -kernel "$KERNEL_PATH"
+            -nodefaults
+            -device ramfb
+            -device sdhci-pci
+            -drive if=none,file="$SDCARD_IMG",format=raw,id=sdcard
+            -device sd-card,drive=sdcard
+            -nographic
+            -serial stdio
+            -semihosting
+            -no-reboot
+        )
+        ;;
+esac
+
+# Apply tracing (env override or default)
+if [ -n "$QEMU_TRACE_OPT" ]; then
+    QEMU_CMD+=( -trace "$QEMU_TRACE_OPT" )
+else
+    # Preserve old behavior if user doesn't specify anything.
+    QEMU_CMD+=( -trace "gic_*" )
+fi
+
+# Log directory for SEPARATE_OUTPUT mode
+LOG_DIR="/tmp/qemu-logs"
+mkdir -p "$LOG_DIR"
+
+# Apply QEMU -d logging if requested
+if [ -n "$QEMU_D" ]; then
+    if [ -z "$QEMU_D_LOG" ]; then
+        QEMU_D_LOG="$LOG_DIR/qemu-d-$$.log"
+    fi
+    QEMU_CMD+=( -d "$QEMU_D" -D "$QEMU_D_LOG" )
+fi
 
 # Run QEMU with timeout
 # timeout will kill QEMU after TIMEOUT_SECS if it's still running
 # Exit code 124 means timeout was reached (this is expected for long-running kernels)
-timeout "$TIMEOUT_SECS" "${QEMU_CMD[@]}" < /dev/null
+if [ "$SEPARATE_OUTPUT" = "1" ]; then
+    KERNEL_LOG="$LOG_DIR/kernel-uart-$$.log"
+    QEMU_DEBUG_LOG="$LOG_DIR/qemu-debug-$$.log"
+
+    timeout "$TIMEOUT_SECS" "${QEMU_CMD[@]}" < /dev/null \
+        2> >(tee "$QEMU_DEBUG_LOG" >&2) \
+        | tee "$KERNEL_LOG"
+else
+    timeout "$TIMEOUT_SECS" "${QEMU_CMD[@]}" < /dev/null
+fi
 
 EXIT_CODE=$?
 
@@ -129,4 +312,6 @@ else
     # Some other error occurred
     exit $EXIT_CODE
 fi
+
+
 

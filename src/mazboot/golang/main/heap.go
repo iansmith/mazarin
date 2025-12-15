@@ -21,6 +21,7 @@ type heapSegment struct {
 	next        *heapSegment // Next segment in the list
 	prev        *heapSegment // Previous segment in the list
 	isAllocated uint32       // 1 if allocated, 0 if free
+	isReserved  uint32       // 1 if reserved (cannot be freed), 0 if normal
 	segmentSize uint32       // Total size including this header
 }
 
@@ -282,6 +283,7 @@ func kmalloc(size uint32) unsafe.Pointer {
 		newSeg := castToPointer[heapSegment](newSegAddr)
 
 		// Zero out the new segment
+		// This ensures isReserved field is 0 (Bzero zeros the entire structure)
 		asm.Bzero(unsafe.Pointer(newSeg), uint32(unsafe.Sizeof(heapSegment{})))
 
 		// Update the new segment's fields
@@ -334,6 +336,28 @@ func kmalloc(size uint32) unsafe.Pointer {
 	return dataPtr
 }
 
+// kmallocReserved allocates size bytes from the heap and marks them as reserved
+// Reserved memory cannot be freed via kfree() - it's permanent for the lifetime of the system
+// Returns nil if allocation fails (out of memory)
+// The returned pointer points to the data area (after the heapSegment header)
+//
+func kmallocReserved(size uint32) unsafe.Pointer {
+	ptr := kmalloc(size)
+	if ptr == nil {
+		return nil
+	}
+
+	// Get the segment header and mark as reserved
+	ptrAddr := pointerToUintptr(ptr)
+	headerPtrAddr := ptrAddr - 8
+	headerPtr := (*uintptr)(unsafe.Pointer(headerPtrAddr))
+	segAddr := *headerPtr
+	seg := castToPointer[heapSegment](segAddr)
+	seg.isReserved = 1
+
+	return ptr
+}
+
 // kfree frees memory previously allocated by kmalloc
 // ptr must be a pointer returned by kmalloc (points to data area, not header)
 //
@@ -350,6 +374,20 @@ func kfree(ptr unsafe.Pointer) {
 	headerPtr := (*uintptr)(unsafe.Pointer(headerPtrAddr))
 	segAddr := *headerPtr
 	seg := castToPointer[heapSegment](segAddr)
+
+	// CRITICAL: Check if this allocation is reserved
+	if seg.isReserved != 0 {
+		uartPuts("kfree: ERROR - Attempted to free reserved memory!\r\n")
+		uartPuts("kfree: Reserved memory cannot be freed (framebuffer, UART ring buffer, etc.)\r\n")
+		uartPuts("kfree: Address: 0x")
+		uartPutHex64(uint64(ptrAddr))
+		uartPuts("\r\n")
+		// Hang to prevent system corruption (avoid abortBoot to reduce stack usage)
+		uartPuts("kfree: System hanging to prevent corruption\r\n")
+		for {
+			// Infinite loop to prevent system corruption
+		}
+	}
 
 	// Mark as free
 	seg.isAllocated = 0
