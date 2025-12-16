@@ -85,9 +85,16 @@ const (
 // For AArch64 virt machine with highmem (default): 0x4010000000
 // For AArch64 virt machine without highmem: 0x3F000000
 //
-// NOTE: Our MMU currently maps the *lowmem* ECAM window (0x3F000000-0x40000000).
-// Using the highmem ECAM base before mapping it will fault (e.g. FAR=0x4010000000).
-var pciEcamBase uintptr = 0x3F000000
+// NOTE: Our MMU maps both lowmem (0x3F000000-0x40000000) and highmem (0x4010000000+) ECAM windows.
+// QEMU virt with virtualization=on typically uses highmem ECAM (0x4010000000).
+// Default to highmem, fall back to lowmem if needed.
+//
+// This variable has an initializer, so Go places it in .noptrdata.
+// The linker script places .noptrdata in RAM (writable) at 0x40100000.
+var pciEcamBase uintptr = 0x4010000000
+
+// pciFirstAccess tracks if this is the first PCI config space access (for debugging)
+var pciFirstAccess bool = true
 
 // pciConfigRead32 reads a 32-bit value from PCI configuration space
 // bus, slot, func: PCI device location
@@ -95,6 +102,12 @@ var pciEcamBase uintptr = 0x3F000000
 //
 //go:nosplit
 func pciConfigRead32(bus, slot, funcNum, offset uint8) uint32 {
+	// Safety check: verify ECAM base is set
+	if pciEcamBase == 0 {
+		uartPuts("PCI: ERROR - pciEcamBase is 0!\r\n")
+		return 0xFFFFFFFF
+	}
+
 	// Calculate config space address
 	// ECAM format: base + (bus << 20) + (device << 15) + (function << 12) + offset
 	configAddr := pciEcamBase +
@@ -103,8 +116,72 @@ func pciConfigRead32(bus, slot, funcNum, offset uint8) uint32 {
 		uintptr(funcNum)<<12 +
 		uintptr(offset&0xFC) // Align to 4-byte boundary
 
-	// Read 32-bit value
-	return asm.MmioRead(configAddr)
+	// Safety check: verify address is in expected PCI ECAM range
+	// PCI ECAM should be in range 0x3F000000 - 0x40000000 (lowmem) or 0x4010000000+ (highmem)
+	// Allow both lowmem and highmem ranges
+	isLowmem := configAddr >= 0x3F000000 && configAddr < 0x40000000
+	isHighmem := configAddr >= 0x4010000000
+	if !isLowmem && !isHighmem {
+		uartPuts("PCI: ERROR - configAddr out of range: 0x")
+		for shift := 60; shift >= 0; shift -= 4 {
+			digit := (uint64(configAddr) >> shift) & 0xF
+			if digit < 10 {
+				uartPutc(byte('0' + digit))
+			} else {
+				uartPutc(byte('A' + digit - 10))
+			}
+		}
+		uartPuts("\r\n")
+		return 0xFFFFFFFF
+	}
+
+	// Debug: log first access and test MMIO with known-good address first
+	if pciFirstAccess {
+		uartPuts("PCI: Testing MMIO with UART first...\r\n")
+		// Test MMIO read with UART (known to work) to verify MMIO reads work at all
+		testUartAddr := uintptr(0x09000000) // UART base
+		testValue := asm.MmioRead(testUartAddr)
+		uartPuts("PCI: UART test read OK, value=0x")
+		printHex32(testValue)
+		uartPuts("\r\n")
+
+		uartPuts("PCI: Now trying PCI ECAM read...\r\n")
+		uartPuts("PCI: configAddr=0x")
+		for shift := 60; shift >= 0; shift -= 4 {
+			digit := (uint64(configAddr) >> shift) & 0xF
+			if digit < 10 {
+				uartPutc(byte('0' + digit))
+			} else {
+				uartPutc(byte('A' + digit - 10))
+			}
+		}
+		uartPuts("\r\n")
+
+		// Try reading from PCI ECAM base address directly first (simpler test)
+		uartPuts("PCI: Testing direct read from ECAM base...\r\n")
+		baseTest := asm.MmioRead(pciEcamBase)
+		uartPuts("PCI: ECAM base read OK, value=0x")
+		printHex32(baseTest)
+		uartPuts("\r\n")
+
+		pciFirstAccess = false
+	}
+
+	// Memory barrier to ensure all previous writes are visible
+	asm.Dsb()
+
+	// Invalidate TLB for this specific address to ensure we use the latest mapping
+	// This is important if the mapping was added after MMU was enabled
+	asm.Isb() // Ensure all previous instructions complete
+
+	// Read 32-bit value from PCI config space
+	// Use a simple load with explicit memory barrier
+	value := asm.MmioRead(configAddr)
+
+	// Memory barrier after read
+	asm.Dsb()
+
+	return value
 }
 
 // pciConfigWrite32 writes a 32-bit value to PCI configuration space
@@ -225,31 +302,23 @@ var bochsDisplayInfo BochsDisplayInfo
 //
 //go:nosplit
 func findBochsDisplayFull() bool {
-	uartPuts("PCI1\r\n")
+	uartPuts("BOCHS: findBochsDisplayFull() entry\r\n")
+	uartPuts("BOCHS: Starting PCI device scan...\r\n")
 
-	// Test: Can we read from PCI config space at all?
-	// Try highmem address first (default)
-	testVendor1 := pciConfigRead32(0, 0, 0, PCI_VENDOR_ID)
-	uartPuts("PCI: highmem=0x")
-	printHex32(testVendor1)
-	uartPuts("\r\n")
-
-	// Try lowmem address if highmem returns 0xFFFFFFFF
-	if testVendor1 == 0xFFFFFFFF {
-		uartPuts("PCI: trying lowmem\r\n")
-		testVendor2 := pciConfigRead32Lowmem(0, 0, 0, PCI_VENDOR_ID)
-		uartPuts("PCI: lowmem=0x")
-		printHex32(testVendor2)
-		uartPuts("\r\n")
-
-		// If lowmem works, use it
-		if testVendor2 != 0xFFFFFFFF {
-			pciEcamBase = 0x3F000000
-			uartPuts("PCI: using lowmem base\r\n")
+	// ECAM base should already be set by MMU initialization (defaults to highmem 0x4010000000)
+	uartPuts("BOCHS: Using ECAM base=0x")
+	for shift := 60; shift >= 0; shift -= 4 {
+		digit := (uint64(pciEcamBase) >> shift) & 0xF
+		if digit < 10 {
+			uartPutc(byte('0' + digit))
+		} else {
+			uartPutc(byte('A' + digit - 10))
 		}
 	}
+	uartPuts("\r\n")
 
 	// Scan PCI bus (typically bus 0)
+	uartPuts("BOCHS: Starting PCI bus scan...\r\n")
 	deviceCount := uint32(0)
 	for bus := uint8(0); bus < 1; bus++ {
 		for slot := uint8(0); slot < 32; slot++ {
@@ -266,10 +335,21 @@ func findBochsDisplayFull() bool {
 				}
 
 				deviceCount++
+				uartPuts("BOCHS: Found PCI device - bus=0x")
+				printHex32(uint32(bus))
+				uartPuts(" slot=0x")
+				printHex32(uint32(slot))
+				uartPuts(" func=0x")
+				printHex32(uint32(funcNum))
+				uartPuts(" vendor=0x")
+				printHex32(vendorIDActual)
+				uartPuts(" device=0x")
+				printHex32(deviceID)
+				uartPuts("\r\n")
 
 				// Check if this is bochs-display
 				if vendorIDActual == BOCHS_VENDOR_ID && deviceID == BOCHS_DEVICE_ID {
-					uartPuts("PCI: FOUND bochs-display device!\r\n")
+					uartPuts("BOCHS: FOUND bochs-display device!\r\n")
 					uartPuts("  Bus: 0x")
 					printHex32(uint32(bus))
 					uartPuts(", Slot: 0x")
@@ -280,30 +360,37 @@ func findBochsDisplayFull() bool {
 
 					// Enable the device first (memory and I/O space)
 					// This must be done before reading BARs, as QEMU may assign them on enable
+					uartPuts("BOCHS: Reading command register...\r\n")
 					cmd := pciConfigRead32(bus, slot, funcNum, PCI_COMMAND)
-					uartPuts("Initial command register: 0x")
+					uartPuts("BOCHS: Initial command register: 0x")
 					printHex32(cmd)
 					uartPuts("\r\n")
 
+					uartPuts("BOCHS: Enabling device (I/O, memory, bus master)...\r\n")
 					cmd |= 0x7 // Enable I/O (bit 0), memory (bit 1), and bus master (bit 2)
 					pciConfigWrite32(bus, slot, funcNum, PCI_COMMAND, cmd)
+					uartPuts("BOCHS: Command register written\r\n")
 
 					// Wait for QEMU to process the command register change
+					uartPuts("BOCHS: Waiting for command register to take effect...\r\n")
 					for delay := 0; delay < 1000; delay++ {
 					}
+					uartPuts("BOCHS: Delay complete\r\n")
 
 					// Probe BARs by writing all-ones (PCI spec method to determine size)
 					// Save original values first
+					uartPuts("BOCHS: Reading original BAR values...\r\n")
 					bar0Original := pciConfigRead32(bus, slot, funcNum, PCI_BAR0)
 					bar2Original := pciConfigRead32(bus, slot, funcNum, PCI_BAR2)
 
-					uartPuts("PCI: Original BAR0=0x")
+					uartPuts("BOCHS: Original BAR0=0x")
 					printHex32(bar0Original)
 					uartPuts(" BAR2=0x")
 					printHex32(bar2Original)
 					uartPuts("\r\n")
 
 					// Write all-ones to probe size
+					uartPuts("BOCHS: Probing BAR sizes (writing 0xFFFFFFFF)...\r\n")
 					pciConfigWrite32(bus, slot, funcNum, PCI_BAR0, 0xFFFFFFFF)
 					pciConfigWrite32(bus, slot, funcNum, PCI_BAR2, 0xFFFFFFFF)
 
@@ -311,7 +398,7 @@ func findBochsDisplayFull() bool {
 					bar0Size := pciConfigRead32(bus, slot, funcNum, PCI_BAR0)
 					bar2Size := pciConfigRead32(bus, slot, funcNum, PCI_BAR2)
 
-					uartPuts("PCI: BAR size masks - BAR0=0x")
+					uartPuts("BOCHS: BAR size masks - BAR0=0x")
 					printHex32(bar0Size)
 					uartPuts(" BAR2=0x")
 					printHex32(bar2Size)
@@ -326,39 +413,54 @@ func findBochsDisplayFull() bool {
 					fbAddr := uintptr(0x50000000)   // Framebuffer address (within kernel RAM)
 					mmioBase := uintptr(0x50010000) // MMIO registers (right after framebuffer)
 
+					uartPuts("BOCHS: Programming BAR addresses...\r\n")
+					uartPuts("BOCHS: Framebuffer address: 0x50000000\r\n")
+					uartPuts("BOCHS: MMIO base address: 0x50010000\r\n")
+
 					// Program BAR0 (framebuffer) - 32-bit memory space, prefetchable
 					bar0Value := uint32(fbAddr) | 0x8 // 0x8 = prefetchable, 32-bit memory
+					uartPuts("BOCHS: Writing BAR0=0x")
+					printHex32(bar0Value)
+					uartPuts("\r\n")
 					pciConfigWrite32(bus, slot, funcNum, PCI_BAR0, bar0Value)
 
 					// Program BAR2 (MMIO) - 32-bit memory space, non-prefetchable
 					bar2Value := uint32(mmioBase) | 0x0
+					uartPuts("BOCHS: Writing BAR2=0x")
+					printHex32(bar2Value)
+					uartPuts("\r\n")
 					pciConfigWrite32(bus, slot, funcNum, PCI_BAR2, bar2Value)
 
 					// Wait for writes to complete
+					uartPuts("BOCHS: Waiting for BAR writes to complete...\r\n")
 					for delay := 0; delay < 1000; delay++ {
 					}
+					uartPuts("BOCHS: Delay complete\r\n")
 
 					// Read back to verify
+					uartPuts("BOCHS: Reading back BAR values to verify...\r\n")
 					bar0 := pciConfigRead32(bus, slot, funcNum, PCI_BAR0)
 					bar2 := pciConfigRead32(bus, slot, funcNum, PCI_BAR2)
 
-					uartPuts("BAR0 (framebuffer): 0x")
+					uartPuts("BOCHS: BAR0 (framebuffer): 0x")
 					printHex32(bar0)
 					uartPuts("\r\n")
-					uartPuts("BAR2 (MMIO registers): 0x")
+					uartPuts("BOCHS: BAR2 (MMIO registers): 0x")
 					printHex32(bar2)
 					uartPuts("\r\n")
 
 					// Check if BARs are valid (not 0xFFFFFFFF or 0x00000000)
+					uartPuts("BOCHS: Validating BAR values...\r\n")
 					if bar0 == 0xFFFFFFFF || bar0 == 0 || bar2 == 0xFFFFFFFF || bar2 == 0 {
-						uartPuts("ERROR: BARs not assigned by QEMU!\r\n")
-						uartPuts("BAR0=0x")
+						uartPuts("BOCHS: ERROR - BARs not assigned by QEMU!\r\n")
+						uartPuts("BOCHS: BAR0=0x")
 						printHex32(bar0)
 						uartPuts(" BAR2=0x")
 						printHex32(bar2)
 						uartPuts("\r\n")
 						return false
 					}
+					uartPuts("BOCHS: BAR values are valid\r\n")
 
 					// Extract addresses from BARs (mask out type bits)
 					// Bit 0 = 0 means memory space
@@ -390,12 +492,14 @@ func findBochsDisplayFull() bool {
 					uartPuts("\r\n")
 
 					// Store in global struct for framebuffer init
+					uartPuts("BOCHS: Storing device info in global struct...\r\n")
 					bochsDisplayInfo.MMIOBase = mmioBase
 					bochsDisplayInfo.Framebuffer = fbAddr
 					bochsDisplayInfo.Bus = bus
 					bochsDisplayInfo.Slot = slot
 					bochsDisplayInfo.Func = funcNum
 
+					uartPuts("BOCHS: findBochsDisplayFull() success - device found and configured\r\n")
 					return true
 				}
 			}
@@ -403,12 +507,13 @@ func findBochsDisplayFull() bool {
 	}
 
 	if deviceCount == 0 {
-		uartPuts("PCI: no devices found\r\n")
+		uartPuts("BOCHS: ERROR - No PCI devices found\r\n")
 	} else {
-		uartPuts("PCI: found ")
+		uartPuts("BOCHS: Scanned ")
 		uartPutUint32(deviceCount)
-		uartPuts(" devices, bochs not found\r\n")
+		uartPuts(" PCI devices, bochs-display not found\r\n")
 	}
+	uartPuts("BOCHS: findBochsDisplayFull() failed - device not found\r\n")
 	return false
 }
 
@@ -463,9 +568,19 @@ func readVBERegister(index uint16) uint16 {
 //
 //go:nosplit
 func initBochsDisplay(width, height, bpp uint16) bool {
+	uartPuts("VBE: initBochsDisplay() entry\r\n")
+	uartPuts("VBE: Parameters - width=0x")
+	printHex32(uint32(width))
+	uartPuts(" height=0x")
+	printHex32(uint32(height))
+	uartPuts(" bpp=0x")
+	printHex32(uint32(bpp))
+	uartPuts("\r\n")
+
 	mmioBase := bochsDisplayInfo.MMIOBase
 	if mmioBase == 0 {
 		uartPuts("VBE: ERROR - MMIO base is 0\r\n")
+		uartPuts("VBE: initBochsDisplay() failed - no MMIO base\r\n")
 		return false
 	}
 
@@ -480,8 +595,19 @@ func initBochsDisplay(width, height, bpp uint16) bool {
 		}
 	}
 	uartPuts("\r\n")
+	uartPuts("VBE: Framebuffer address: 0x")
+	for shift := 60; shift >= 0; shift -= 4 {
+		digit := (uint64(bochsDisplayInfo.Framebuffer) >> shift) & 0xF
+		if digit < 10 {
+			uartPutc(byte('0' + digit))
+		} else {
+			uartPutc(byte('A' + digit - 10))
+		}
+	}
+	uartPuts("\r\n")
 
 	// Optional: Read and verify VBE ID (for debugging)
+	uartPuts("VBE: Reading VBE ID register...\r\n")
 	id := readVBERegister(VBE_DISPI_INDEX_ID)
 	uartPuts("VBE: ID register: 0x")
 	printHex32(uint32(id))
@@ -489,56 +615,105 @@ func initBochsDisplay(width, height, bpp uint16) bool {
 	if id != 0 && (id&0xFF00) != 0xB000 {
 		uartPuts("VBE: WARNING - ID doesn't match expected Bochs VBE (0xB0xx)\r\n")
 		uartPuts("VBE: Continuing anyway...\r\n")
+	} else {
+		uartPuts("VBE: ID register looks valid\r\n")
 	}
 
 	// Check and set framebuffer endianness (QEMU 2.2+)
 	// Endianness register is at MMIO base + 0x604
+	uartPuts("VBE: Checking framebuffer endianness...\r\n")
 	endiannessAddr := mmioBase + QEMU_EXT_REG_ENDIANNESS
+	uartPuts("VBE: Endianness register address: 0x")
+	for shift := 60; shift >= 0; shift -= 4 {
+		digit := (uint64(endiannessAddr) >> shift) & 0xF
+		if digit < 10 {
+			uartPutc(byte('0' + digit))
+		} else {
+			uartPutc(byte('A' + digit - 10))
+		}
+	}
+	uartPuts("\r\n")
 	endianness := asm.MmioRead(endiannessAddr)
+	uartPuts("VBE: Current endianness: 0x")
+	printHex32(endianness)
+	uartPuts("\r\n")
 	if endianness != QEMU_ENDIANNESS_LITTLE {
 		uartPuts("VBE: Setting framebuffer to little-endian...\r\n")
 		asm.MmioWrite(endiannessAddr, QEMU_ENDIANNESS_LITTLE)
 		asm.Dsb() // Ensure write completes
+		uartPuts("VBE: Endianness set\r\n")
+	} else {
+		uartPuts("VBE: Endianness already correct\r\n")
 	}
 
 	// 1. Disable VBE extensions before changing parameters
-	uartPuts("VBE: Disabling display...\r\n")
+	uartPuts("VBE: Step 1: Disabling display...\r\n")
 	writeVBERegister(VBE_DISPI_INDEX_ENABLE, VBE_DISPI_DISABLED)
+	uartPuts("VBE: Disable command sent, verifying...\r\n")
+	enableCheck := readVBERegister(VBE_DISPI_INDEX_ENABLE)
+	uartPuts("VBE: Enable register after disable: 0x")
+	printHex32(uint32(enableCheck))
+	uartPuts("\r\n")
 	uartPuts("VBE: Disable OK\r\n")
 
 	// 2. Set the desired resolution and color depth
+	uartPuts("VBE: Step 2: Setting resolution and color depth...\r\n")
 	uartPuts("VBE: Setting XRES=")
 	printHex32(uint32(width))
 	uartPuts("\r\n")
 	writeVBERegister(VBE_DISPI_INDEX_XRES, width)
+	xresCheck := readVBERegister(VBE_DISPI_INDEX_XRES)
+	uartPuts("VBE: XRES read back: 0x")
+	printHex32(uint32(xresCheck))
+	uartPuts("\r\n")
 	uartPuts("VBE: XRES OK\r\n")
 
 	uartPuts("VBE: Setting YRES=")
 	printHex32(uint32(height))
 	uartPuts("\r\n")
 	writeVBERegister(VBE_DISPI_INDEX_YRES, height)
+	yresCheck := readVBERegister(VBE_DISPI_INDEX_YRES)
+	uartPuts("VBE: YRES read back: 0x")
+	printHex32(uint32(yresCheck))
+	uartPuts("\r\n")
 	uartPuts("VBE: YRES OK\r\n")
 
 	uartPuts("VBE: Setting BPP=")
 	printHex32(uint32(bpp))
 	uartPuts("\r\n")
 	writeVBERegister(VBE_DISPI_INDEX_BPP, bpp)
+	bppCheck := readVBERegister(VBE_DISPI_INDEX_BPP)
+	uartPuts("VBE: BPP read back: 0x")
+	printHex32(uint32(bppCheck))
+	uartPuts("\r\n")
 	uartPuts("VBE: BPP OK\r\n")
 
 	// Set virtual resolution same as physical (recommended)
+	uartPuts("VBE: Setting virtual resolution...\r\n")
 	writeVBERegister(VBE_DISPI_INDEX_VIRT_WIDTH, width)
 	writeVBERegister(VBE_DISPI_INDEX_VIRT_HEIGHT, height)
+	uartPuts("VBE: Virtual resolution set\r\n")
 
 	// Set offsets to 0
+	uartPuts("VBE: Setting offsets to 0...\r\n")
 	writeVBERegister(VBE_DISPI_INDEX_X_OFFSET, 0)
 	writeVBERegister(VBE_DISPI_INDEX_Y_OFFSET, 0)
+	uartPuts("VBE: Offsets set\r\n")
 
 	// 3. Enable VBE extensions and the Linear Frame Buffer (LFB)
-	uartPuts("VBE: Enabling display with LFB...\r\n")
-	writeVBERegister(VBE_DISPI_INDEX_ENABLE, VBE_DISPI_ENABLED|VBE_DISPI_LFB_ENABLED)
+	uartPuts("VBE: Step 3: Enabling display with LFB...\r\n")
+	enableValue := uint16(VBE_DISPI_ENABLED | VBE_DISPI_LFB_ENABLED)
+	uartPuts("VBE: Writing enable value: 0x")
+	printHex32(uint32(enableValue))
+	uartPuts("\r\n")
+	writeVBERegister(VBE_DISPI_INDEX_ENABLE, enableValue)
 
 	// Verify enable register was set correctly
+	uartPuts("VBE: Verifying enable register...\r\n")
 	enableReg := readVBERegister(VBE_DISPI_INDEX_ENABLE)
+	uartPuts("VBE: Enable register read back: 0x")
+	printHex32(uint32(enableReg))
+	uartPuts("\r\n")
 	if (enableReg & (VBE_DISPI_ENABLED | VBE_DISPI_LFB_ENABLED)) != (VBE_DISPI_ENABLED | VBE_DISPI_LFB_ENABLED) {
 		uartPuts("VBE: WARNING - Enable register verification failed\r\n")
 		uartPuts("VBE: Expected: 0x")
@@ -546,10 +721,13 @@ func initBochsDisplay(width, height, bpp uint16) bool {
 		uartPuts(", Got: 0x")
 		printHex32(uint32(enableReg))
 		uartPuts("\r\n")
-		// Continue anyway - might still work
+		uartPuts("VBE: Continuing anyway - might still work\r\n")
+	} else {
+		uartPuts("VBE: Enable register verified OK\r\n")
 	}
 
 	uartPuts("VBE: Initialization complete\r\n")
+	uartPuts("VBE: initBochsDisplay() success\r\n")
 	return true
 }
 

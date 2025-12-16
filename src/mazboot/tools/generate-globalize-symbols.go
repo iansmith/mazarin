@@ -55,11 +55,17 @@ func main() {
 }
 
 // findGoFunctionsCalledFromAssembly finds Go functions called from assembly
-// Returns list of symbols in format "main.FunctionName" for objcopy --globalize-symbol
+// Returns list of symbols in format "package.FunctionName" for objcopy --globalize-symbol
+// Supports both main.* and runtime.* symbols
 func findGoFunctionsCalledFromAssembly(asmDir string) []string {
 	var symbols []string
-	externRe := regexp.MustCompile(`\.extern\s+main\.([a-zA-Z_][a-zA-Z0-9_]*)`)
-	blRe := regexp.MustCompile(`bl\s+main\.([a-zA-Z_][a-zA-Z0-9_]*)`)
+
+	// Patterns for main.* symbols
+	externMainRe := regexp.MustCompile(`\.extern\s+main\.([a-zA-Z_][a-zA-Z0-9_]*)`)
+	blMainRe := regexp.MustCompile(`bl\s+main\.([a-zA-Z_][a-zA-Z0-9_]*)`)
+
+	// Patterns for runtime.* symbols (used via ldr =runtime.symbol)
+	ldrRuntimeRe := regexp.MustCompile(`ldr\s+\w+,\s*=runtime\.([a-zA-Z_][a-zA-Z0-9_]*)`)
 
 	seen := make(map[string]bool)
 
@@ -81,19 +87,26 @@ func findGoFunctionsCalledFromAssembly(asmDir string) []string {
 				continue
 			}
 
-			// Check for .extern declarations
-			matches := externRe.FindStringSubmatch(line)
-			if len(matches) > 1 && !seen[matches[1]] {
+			// Check for .extern main.* declarations
+			matches := externMainRe.FindStringSubmatch(line)
+			if len(matches) > 1 && !seen["main."+matches[1]] {
 				symbols = append(symbols, "main."+matches[1])
-				seen[matches[1]] = true
+				seen["main."+matches[1]] = true
 			}
 
-			// Check for bl calls (but skip if it's in a comment)
+			// Check for bl main.* calls (but skip if it's in a comment)
 			if !strings.HasPrefix(strings.TrimSpace(line), "//") {
-				matches = blRe.FindStringSubmatch(line)
-				if len(matches) > 1 && !seen[matches[1]] {
+				matches = blMainRe.FindStringSubmatch(line)
+				if len(matches) > 1 && !seen["main."+matches[1]] {
 					symbols = append(symbols, "main."+matches[1])
-					seen[matches[1]] = true
+					seen["main."+matches[1]] = true
+				}
+
+				// Check for ldr =runtime.* references (symbols loaded via linker)
+				matches = ldrRuntimeRe.FindStringSubmatch(line)
+				if len(matches) > 1 && !seen["runtime."+matches[1]] {
+					symbols = append(symbols, "runtime."+matches[1])
+					seen["runtime."+matches[1]] = true
 				}
 			}
 		}
@@ -103,6 +116,7 @@ func findGoFunctionsCalledFromAssembly(asmDir string) []string {
 
 	return symbols
 }
+
 
 
 

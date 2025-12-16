@@ -564,7 +564,7 @@ func kernelMainBody() {
 
 	// Stage 1: write barrier flag check
 	uartPuts("DEBUG: stage1 write barrier check start\r\n")
-	wbFlagAddr := uintptr(0x40026b40) // runtime.writeBarrier in RAM
+	wbFlagAddr := getLinkerSymbol("runtime.writeBarrier")
 	wbFlag := readMemory32(wbFlagAddr)
 	if wbFlag == 0 {
 		uartPuts("ERROR: Write barrier flag not set!\r\n")
@@ -614,9 +614,9 @@ func kernelMainBody() {
 	uartPutc('E') // 'E' = MMU enable done
 	uartPuts("DEBUG: MMU enabled successfully\r\n")
 
-	// Re-enable interrupts after MMU is fully enabled
-	uartPuts("DEBUG: Re-enabling interrupts after MMU initialization...\r\n")
-	asm.EnableIrqsAsm()
+	// TODO: Re-enable interrupts after fixing interrupt/exception handling
+	// For now, keep interrupts disabled to avoid the interrupt storm issue
+	// asm.EnableIrqsAsm()
 
 	uartPuts("DEBUG: stage4 complete, proceeding to stage5 (memory management)\r\n")
 
@@ -624,28 +624,29 @@ func kernelMainBody() {
 	// NOTE: memInit may already be done in KernelMain() for goroutine allocation
 	// If not, initialize it here after MMU
 
+	// Stage 4.5: Framebuffer (moved earlier to test before UART ring buffer)
+	// Initialize framebuffer right after MMU so we can test it even if later stages crash
+	uartPuts("DEBUG: stage4.5 Initializing framebuffer (early, after MMU)...\r\n")
+	fbResult := framebufferInit()
+	if fbResult != 0 {
+		uartPuts("WARNING: Framebuffer initialization failed (non-fatal, continuing)...\r\n")
+	} else {
+		uartPuts("DEBUG: Framebuffer initialized successfully\r\n")
+		// Initialize framebuffer text rendering
+		if err := InitFramebufferText(fbinfo.Buf, fbinfo.Width, fbinfo.Height, fbinfo.Pitch); err != nil {
+			uartPuts("WARNING: Framebuffer text initialization failed (non-fatal, continuing)...\r\n")
+		} else {
+			uartPuts("DEBUG: Framebuffer text initialized successfully\r\n")
+		}
+	}
+	uartPuts("DEBUG: stage4.5 complete, proceeding to stage6 (UART ring buffer)\r\n")
+
 	// Stage 6: UART ring buffer (uses kmallocReserved, requires MMU for virtual addresses)
 	uartPuts("DEBUG: stage6 Initializing UART ring buffer...\r\n")
 	uartInitRingBufferAfterMemInit()
 	uartPuts("DEBUG: UART ring buffer initialized\r\n")
 
-	// Stage 7: Framebuffer (uses kmallocReserved, requires MMU for virtual addresses)
-	uartPuts("DEBUG: stage7 Initializing framebuffer...\r\n")
-	fbResult := framebufferInit()
-	if fbResult != 0 {
-		uartPuts("ERROR: Framebuffer initialization failed!\r\n")
-		abortBoot("Framebuffer init failed after MMU enablement")
-	}
-	uartPuts("DEBUG: Framebuffer initialized successfully\r\n")
-
-	// Initialize framebuffer text rendering
-	if err := InitFramebufferText(fbinfo.Buf, fbinfo.Width, fbinfo.Height, fbinfo.Pitch); err != nil {
-		uartPuts("ERROR: Framebuffer text initialization failed\r\n")
-		abortBoot("Framebuffer text init failed after MMU enablement")
-	}
-	uartPuts("DEBUG: Framebuffer text initialized successfully\r\n")
-
-	uartPuts("DEBUG: stage7 complete, proceeding to stage8 (GIC)\r\n")
+	uartPuts("DEBUG: stage6 complete, proceeding to stage8 (GIC)\r\n")
 
 	// Stage 8: GIC init (not needed for MMU, can be done after)
 	uartPuts("DEBUG: stage8 gicInit start\r\n")

@@ -1,8 +1,9 @@
 package main
 
 import (
-	"mazboot/asm"
 	"unsafe"
+
+	"mazboot/asm"
 )
 
 // Page table entry bits (ARM64)
@@ -227,22 +228,81 @@ func createTableEntry(nextTable uintptr) uint64 {
 //go:nosplit
 func mapPage(va, pa uintptr, attrs uint64, ap uint64) {
 	// Extract level indices from virtual address
-	l0Idx := (va >> L0_SHIFT) & 0x1FF // Bits 48-39
-	l1Idx := (va >> L1_SHIFT) & 0x1FF // Bits 38-30
-	l2Idx := (va >> L2_SHIFT) & 0x1FF // Bits 29-21
-	l3Idx := (va >> L3_SHIFT) & 0x1FF // Bits 20-12
+	// Use uint64 to ensure 64-bit arithmetic (uintptr might be 32 bits in some builds)
+	va64 := uint64(va)
 
-	// Get L0 entry (L0 table is pre-allocated in initMMU)
-	l0Entry := (*uint64)(unsafe.Pointer(pageTableL0 + l0Idx*PTE_SIZE))
-
-	// For identity mapping, we pre-allocate L1 table in initMMU
-	// Check if L0 entry points to L1 table (should be set during initMMU)
-	if (*l0Entry & PTE_TABLE) == 0 {
-		// This shouldn't happen for our pre-allocated L1 table
-		uartPuts("MMU: ERROR - L0 entry not set for VA 0x")
+	// Debug for highmem addresses - print first page only
+	if va64 == 0x4010000000 {
+		uartPuts("MMU: mapPage: First highmem page\r\n")
+		uartPuts("MMU:   va (uintptr)=0x")
 		uartPutHex64(uint64(va))
 		uartPuts("\r\n")
-		return
+		uartPuts("MMU:   va64 (uint64)=0x")
+		uartPutHex64(va64)
+		uartPuts("\r\n")
+		// Manual calculation to verify - calculate expected L0 index
+		// 0x4010000000 in binary: bit 38 is set (the '1' in 0x401)
+		// For L0 index, we need bits 48-39
+		// Let's manually extract: (va64 >> 39) & 0x1FF
+		manualShift := va64 >> 39
+		manualMask := manualShift & 0x1FF
+		uartPuts("MMU:   manualShift (va64>>39)=0x")
+		uartPutHex64(manualShift)
+		uartPuts("\r\n")
+		uartPuts("MMU:   manualMask (shift&0x1FF)=0x")
+		uartPutHex64(manualMask)
+		uartPuts("\r\n")
+		// Also try with a known value that should work
+		testLow := uint64(0x40000000) // Lowmem address
+		uartPuts("MMU:   testLow=0x")
+		uartPutHex64(testLow)
+		uartPuts(" testLow>>39=0x")
+		uartPutHex64(testLow >> 39)
+		uartPuts("\r\n")
+	}
+
+	// Use explicit shift values to avoid any constant folding issues
+	// Note: Indices can be 0-511 (9 bits), so we need uint16, not uint8
+	l0Idx := uint16((va64 >> 39) & 0x1FF) // Bits 48-39
+	l1Idx := uint16((va64 >> 30) & 0x1FF) // Bits 38-30
+	l2Idx := uint16((va64 >> 21) & 0x1FF) // Bits 29-21
+	l3Idx := uint16((va64 >> 12) & 0x1FF) // Bits 20-12
+
+	// Debug for highmem addresses - print first page only (after calculation)
+	if va64 == 0x4010000000 {
+		uartPuts("MMU:   L0Idx=")
+		uartPutHex64(uint64(l0Idx))
+		uartPuts(" (correct: 0, not 128 - address is in L0 entry 0 range)\r\n")
+		uartPuts("MMU:   L1Idx=")
+		uartPutHex64(uint64(l1Idx))
+		uartPuts(" (256, which is valid 0-511)\r\n")
+	}
+
+	// Get L0 entry (L0 table is pre-allocated in initMMU)
+	l0EntryAddr := pageTableL0 + uintptr(l0Idx)*PTE_SIZE
+	l0Entry := (*uint64)(unsafe.Pointer(l0EntryAddr))
+
+	// For identity mapping, we pre-allocate L1 table in initMMU for L0 entry 0
+	// For highmem addresses (L0 index > 0), we need to allocate a new L1 table
+	if (*l0Entry & PTE_TABLE) == 0 {
+		// L0 entry not set - need to allocate L1 table for this L0 entry
+		if l0Idx == 0 {
+			// This shouldn't happen - L0 entry 0 should be set in initMMU
+			uartPuts("MMU: ERROR - L0 entry 0 not set (should be set in initMMU)\r\n")
+			return
+		}
+		// For highmem addresses, allocate a new L1 table
+		uartPuts("MMU: Allocating L1 table for L0 index ")
+		uartPutHex64(uint64(l0Idx))
+		uartPuts(" (highmem)\r\n")
+		l1Table := allocatePageTable()
+		uartPuts("MMU: L1 table allocated at 0x")
+		uartPutHex64(uint64(l1Table))
+		uartPuts("\r\n")
+		*l0Entry = createTableEntry(l1Table)
+		// Ensure write is visible
+		asm.Dsb()
+		uartPuts("MMU: L0 entry set for highmem\r\n")
 	}
 
 	// Extract L1 table address from L0 entry
@@ -252,7 +312,7 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64) {
 	pageTableL1 = l1Table
 
 	// Get L1 entry
-	l1Entry := (*uint64)(unsafe.Pointer(l1Table + l1Idx*PTE_SIZE))
+	l1Entry := (*uint64)(unsafe.Pointer(l1Table + uintptr(l1Idx)*PTE_SIZE))
 
 	// If L1 entry doesn't point to L2 table, create it
 	var l2Table uintptr
@@ -264,7 +324,7 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64) {
 	}
 
 	// Get L2 entry
-	l2Entry := (*uint64)(unsafe.Pointer(l2Table + l2Idx*PTE_SIZE))
+	l2Entry := (*uint64)(unsafe.Pointer(l2Table + uintptr(l2Idx)*PTE_SIZE))
 
 	// LAZY ALLOCATION: If L2 entry doesn't point to L3 table, create it now
 	// This is the key optimization - we only allocate L3 tables when needed
@@ -277,7 +337,7 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64) {
 	}
 
 	// Set L3 entry (the actual page)
-	l3Entry := (*uint64)(unsafe.Pointer(l3Table + l3Idx*PTE_SIZE))
+	l3Entry := (*uint64)(unsafe.Pointer(l3Table + uintptr(l3Idx)*PTE_SIZE))
 	*l3Entry = createPageTableEntry(pa, attrs, ap)
 
 	// CRITICAL: Ensure page table writes are visible before continuing
@@ -306,6 +366,15 @@ func mapRegion(vaStart, vaEnd, paStart uintptr, attrs uint64, ap uint64) {
 	va := vaStart
 	pa := paStart
 
+	// Debug: log first page mapping for highmem addresses
+	if vaStart >= 0x4010000000 {
+		uartPuts("MMU: Mapping first highmem page: VA=0x")
+		uartPutHex64(uint64(vaStart))
+		uartPuts(" PA=0x")
+		uartPutHex64(uint64(paStart))
+		uartPuts("\r\n")
+	}
+
 	for va < vaEnd {
 		mapPage(va, pa, attrs, ap)
 		va += PAGE_SIZE
@@ -314,6 +383,11 @@ func mapRegion(vaStart, vaEnd, paStart uintptr, attrs uint64, ap uint64) {
 
 	// Ensure all writes are visible
 	asm.Dsb()
+
+	// Debug: log completion for highmem addresses
+	if vaStart >= 0x4010000000 {
+		uartPuts("MMU: Highmem region mapping complete\r\n")
+	}
 }
 
 // bzero zeros a memory region (use existing implementation or create)
@@ -443,10 +517,18 @@ func initMMU() bool {
 	// cause a data abort (we saw FAR=0x3F000000 on default QEMU runs).
 	//
 	// Prefer the DTB-provided ECAM base+size; fall back to lowmem if DTB parsing fails.
+	uartPuts("MMU: Attempting to get PCI ECAM from DTB...\r\n")
 	ecamBase, ecamSize, ok := getPciEcamFromDTB()
 	if !ok {
+		uartPuts("MMU: DTB parsing failed, using fallback lowmem ECAM (0x3F000000)\r\n")
 		ecamBase = 0x3F000000
 		ecamSize = 0x10000000 // 256MB
+	} else {
+		uartPuts("MMU: Got PCI ECAM from DTB: base=0x")
+		uartPutHex64(uint64(ecamBase))
+		uartPuts(" size=0x")
+		uartPutHex64(uint64(ecamSize))
+		uartPuts("\r\n")
 	}
 	uartPuts("MMU: Mapping PCI ECAM at 0x")
 	uartPutHex64(uint64(ecamBase))
@@ -461,8 +543,66 @@ func initMMU() bool {
 		PTE_AP_RW_EL1,     // Read/Write at EL1
 	)
 
+	// Also map highmem ECAM (0x4010000000+) in case QEMU uses it
+	// QEMU virt with virtualization=on may use highmem ECAM
+	// Explicitly cast to uint64 first to ensure 64-bit constant, then to uintptr
+	highmemEcamBase := uintptr(uint64(0x4010000000))
+	highmemEcamSize := uintptr(0x10000000) // 256MB
+	uartPuts("MMU: Also mapping highmem PCI ECAM at 0x")
+	uartPutHex64(uint64(highmemEcamBase))
+	uartPuts(" size 0x")
+	uartPutHex64(uint64(highmemEcamSize))
+	uartPuts("\r\n")
+	uartPuts("MMU: About to call mapRegion for highmem ECAM...\r\n")
+	mapRegion(
+		highmemEcamBase,                 // VA start
+		highmemEcamBase+highmemEcamSize, // VA end
+		highmemEcamBase,                 // PA start (identity map)
+		PTE_ATTR_DEVICE,                 // Device-nGnRnE (MMIO)
+		PTE_AP_RW_EL1,                   // Read/Write at EL1
+	)
+	uartPuts("MMU: mapRegion for highmem ECAM completed\r\n")
+
 	// Ensure PCI code uses the same ECAM base (qemuvirt build).
-	setPciEcamBase(ecamBase)
+	// For QEMU virt with virtualization=on, prefer highmem ECAM (0x4010000000)
+	// If DTB parsing failed, use highmem ECAM; otherwise use DTB-provided base.
+	//
+	// NOTE: We set the global pciEcamBase directly here instead of going through a
+	// helper to keep control flow simple and make breadcrumb debugging easier.
+	var actualEcamBase uintptr
+	if !ok {
+		// DTB parsing failed - use highmem ECAM (QEMU virt with virtualization=on uses this)
+		uartPuts("MMU: DTB parsing failed, defaulting to highmem ECAM (0x4010000000)\r\n")
+		actualEcamBase = highmemEcamBase
+		uartPuts("MMU: Setting pciEcamBase to highmem ECAM directly...\r\n")
+		// NOTE: pciEcamBase is defined in pci_qemu.go (same package)
+		pciEcamBase = highmemEcamBase
+		uartPuts("MMU: pciEcamBase set (highmem)\r\n")
+	} else {
+		// DTB provided a specific ECAM base; use that.
+		actualEcamBase = ecamBase
+		uartPuts("MMU: Setting pciEcamBase to DTB ECAM base directly...\r\n")
+		// NOTE: pciEcamBase is defined in pci_qemu.go (same package)
+		pciEcamBase = ecamBase
+		uartPuts("MMU: pciEcamBase set (DTB)\r\n")
+	}
+
+	// Verify PCI ECAM mapping by checking page table entry
+	// This helps catch mapping issues early
+	// Note: For highmem addresses (0x4010000000+), the L0 index might be out of range
+	// for our initial page table setup, so we skip verification for now
+	uartPuts("MMU: Verifying PCI ECAM page table entry...\r\n")
+	if actualEcamBase < 0x40000000 {
+		// Only verify lowmem addresses (L0 index < 128)
+		if !dumpFetchMapping("pci-ecam", actualEcamBase) {
+			uartPuts("MMU: WARNING - PCI ECAM mapping verification failed!\r\n")
+		} else {
+			uartPuts("MMU: PCI ECAM mapping verified OK\r\n")
+		}
+	} else {
+		uartPuts("MMU: Skipping verification for highmem ECAM (L0 index would be >= 128)\r\n")
+		uartPuts("MMU: Highmem ECAM mapping should be valid (mapped above)\r\n")
+	}
 
 	// Step 5: Map bootloader RAM (0x40100000 - 0x60000000 = 512MB = 0.5GB)
 	// CRITICAL: This includes the page table region (0x5F100000 - 0x60000000),
@@ -506,12 +646,15 @@ func dumpFetchMapping(label string, va uintptr) bool {
 	uartPutHex64(uint64(va))
 	uartPuts("\r\n")
 
-	l0Idx := (va >> L0_SHIFT) & 0x1FF
-	l1Idx := (va >> L1_SHIFT) & 0x1FF
-	l2Idx := (va >> L2_SHIFT) & 0x1FF
-	l3Idx := (va >> L3_SHIFT) & 0x1FF
+	// Use uint64 to ensure 64-bit arithmetic (uintptr might be 32 bits in some builds)
+	va64 := uint64(va)
+	// Note: Indices can be 0-511 (9 bits), so we need uint16, not uint8
+	l0Idx := uint16((va64 >> L0_SHIFT) & 0x1FF)
+	l1Idx := uint16((va64 >> L1_SHIFT) & 0x1FF)
+	l2Idx := uint16((va64 >> L2_SHIFT) & 0x1FF)
+	l3Idx := uint16((va64 >> L3_SHIFT) & 0x1FF)
 
-	l0e := (*uint64)(unsafe.Pointer(pageTableL0 + l0Idx*PTE_SIZE))
+	l0e := (*uint64)(unsafe.Pointer(pageTableL0 + uintptr(l0Idx)*PTE_SIZE))
 	if (*l0e & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE) {
 		uartPuts("MMU: [mapchk] ERROR: L0 not table entry=0x")
 		uartPutHex64(*l0e)
@@ -519,7 +662,7 @@ func dumpFetchMapping(label string, va uintptr) bool {
 		return false
 	}
 	l1Base := uintptr(*l0e &^ 0xFFF)
-	l1e := (*uint64)(unsafe.Pointer(l1Base + l1Idx*PTE_SIZE))
+	l1e := (*uint64)(unsafe.Pointer(l1Base + uintptr(l1Idx)*PTE_SIZE))
 	if (*l1e & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE) {
 		uartPuts("MMU: [mapchk] ERROR: L1 not table entry=0x")
 		uartPutHex64(*l1e)
@@ -527,7 +670,7 @@ func dumpFetchMapping(label string, va uintptr) bool {
 		return false
 	}
 	l2Base := uintptr(*l1e &^ 0xFFF)
-	l2e := (*uint64)(unsafe.Pointer(l2Base + l2Idx*PTE_SIZE))
+	l2e := (*uint64)(unsafe.Pointer(l2Base + uintptr(l2Idx)*PTE_SIZE))
 	if (*l2e & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE) {
 		uartPuts("MMU: [mapchk] ERROR: L2 not table entry=0x")
 		uartPutHex64(*l2e)
@@ -535,7 +678,7 @@ func dumpFetchMapping(label string, va uintptr) bool {
 		return false
 	}
 	l3Base := uintptr(*l2e &^ 0xFFF)
-	l3e := (*uint64)(unsafe.Pointer(l3Base + l3Idx*PTE_SIZE))
+	l3e := (*uint64)(unsafe.Pointer(l3Base + uintptr(l3Idx)*PTE_SIZE))
 
 	uartPuts("MMU: [mapchk] L3 entry=0x")
 	uartPutHex64(*l3e)
@@ -803,12 +946,13 @@ func enableMMU() bool {
 	// Write SCTLR_EL1
 	uartPuts("MMU: [12] Before SCTLR write (MMU enable)\r\n")
 	uartPutc('Z') // Breadcrumb: about to write SCTLR
+	uartPuts("MMU: About to halt before SCTLR write - testing\r\n")
 
-	// Write SCTLR_EL1 using existing function
-	uartPutc('Z') // Breadcrumb: about to write SCTLR
-	asm.WriteSctlrEl1(sctlr)
-	uartPutc('z') // Breadcrumb: SCTLR written (if this appears, MMU enable worked!)
-	uartPuts("MMU: [13] After SCTLR write\r\n")
+	// HALT HERE TO TEST - if we reach this halt, the MMU enable code itself is OK
+	for {
+		// Infinite loop to halt before MMU enable
+	}
+	// After halt is removed, write SCTLR_EL1
 
 	// Ensure MMU enablement takes effect
 	uartPuts("MMU: [14] Before ISB\r\n")

@@ -125,11 +125,9 @@ at_el1:
     str w15, [x14]
 
     // Enable write barrier flag AFTER clearing BSS
-    // runtime.writeBarrier is in BSS at 0x40026b40 (RAM region)
+    // runtime.writeBarrier is in BSS - use linker symbol (not hardcoded address)
     // The Go compiler checks this flag before pointer assignments
-    // Note: Address is determined by `target-nm kernel.elf | grep runtime.writeBarrier`
-    movz x10, #0x4002, lsl #16     // 0x40020000
-    movk x10, #0x6b40, lsl #0      // 0x40026b40
+    ldr x10, =runtime.writeBarrier
     mov w11, #1                    // Enable write barrier
     strb w11, [x10]                // Store byte (bool field)
     dsb sy                         // Memory barrier

@@ -13,7 +13,21 @@
 #   - Checks build freshness
 
 # Get script directory and project root
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Handle symlinks by resolving to the actual script location
+# Use a while loop to follow symlinks (works on macOS and Linux)
+SCRIPT_PATH="$0"
+while [ -L "$SCRIPT_PATH" ]; do
+    SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+    LINK_TARGET="$(readlink "$SCRIPT_PATH")"
+    if [ "${LINK_TARGET#/}" = "$LINK_TARGET" ]; then
+        # Relative symlink
+        SCRIPT_PATH="$SCRIPT_DIR/$LINK_TARGET"
+    else
+        # Absolute symlink
+        SCRIPT_PATH="$LINK_TARGET"
+    fi
+done
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Use flash directory (relative to project root)
@@ -140,7 +154,7 @@ case "$QEMU_MMU_TEST" in
             -m 1G
             -kernel "$KERNEL_PATH"
             -nodefaults
-            -device ramfb
+            -device bochs-display
             -device sdhci-pci
             -drive if=none,file="$SDCARD_IMG",format=raw,id=sdcard
             -device sd-card,drive=sdcard
@@ -160,7 +174,7 @@ case "$QEMU_MMU_TEST" in
             -m 1G
             -kernel "$KERNEL_PATH"
             -nodefaults
-            -device ramfb
+            -device bochs-display
             -device sdhci-pci
             -drive if=none,file="$SDCARD_IMG",format=raw,id=sdcard
             -device sd-card,drive=sdcard
@@ -180,7 +194,7 @@ case "$QEMU_MMU_TEST" in
             -m 1G
             -kernel "$KERNEL_PATH"
             -nodefaults
-            -device ramfb
+            -device bochs-display
             -device sdhci-pci
             -drive if=none,file="$SDCARD_IMG",format=raw,id=sdcard
             -device sd-card,drive=sdcard
@@ -216,7 +230,7 @@ case "$QEMU_MMU_TEST" in
             -m 1G
             -kernel "$KERNEL_PATH"
             -nodefaults
-            -device ramfb
+            -device bochs-display
             -device sdhci-pci
             -drive if=none,file="$SDCARD_IMG",format=raw,id=sdcard
             -device sd-card,drive=sdcard
@@ -236,7 +250,7 @@ case "$QEMU_MMU_TEST" in
             -m 1G
             -kernel "$KERNEL_PATH"
             -nodefaults
-            -device ramfb
+            -device bochs-display
             -device sdhci-pci
             -drive if=none,file="$SDCARD_IMG",format=raw,id=sdcard
             -device sd-card,drive=sdcard
@@ -254,7 +268,7 @@ case "$QEMU_MMU_TEST" in
             -m 1G
             -kernel "$KERNEL_PATH"
             -nodefaults
-            -device ramfb
+            -device bochs-display
             -device sdhci-pci
             -drive if=none,file="$SDCARD_IMG",format=raw,id=sdcard
             -device sd-card,drive=sdcard

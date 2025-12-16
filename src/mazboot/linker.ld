@@ -63,12 +63,26 @@ SECTIONS
     . = ALIGN(4096);
     __data_end = .;
  
-    /* BSS in RAM region (0x40000000+) */
+    /* Writable data sections in RAM region (0x40000000+) */
     /* IMPORTANT: QEMU virt machine places DTB at 0x40000000-0x40100000 (1MB)
-     * We must start BSS after the DTB to avoid overlap.
-     * Place BSS at 0x40100000 (right after DTB region)
-     * Kernel has 128MB total (0x40100000 - 0x48100000) */
+     * Kernel has 128MB total (0x40100000 - 0x48100000)
+     *
+     * NOTE: All runtime addresses use linker symbols (not hardcoded), so
+     * we can safely place .noptrdata before .bss without breaking anything.
+     */
     . = 0x40100000;
+    
+    /* Go's .noptrdata: initialized globals without pointers (must be writable) */
+    __noptrdata_start = .;
+    .noptrdata : ALIGN(16)
+    {
+        *(.noptrdata)
+        *(.noptrdata.*)
+    }
+    . = ALIGN(16);
+    __noptrdata_end = .;
+    
+    /* BSS: zero-initialized data (cleared by boot.s) */
     __bss_start = .;
     .bss (NOLOAD) :
     {
@@ -76,7 +90,6 @@ SECTIONS
         *(.bss)
         *(.bss.*)
         *(COMMON)
-        /* Include .noptrbss here to avoid gaps */
         *(.noptrbss)
         *(.noptrbss.*)
     }

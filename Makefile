@@ -37,32 +37,10 @@ BOOT_IMAGE_SOURCES = assets/mazarin-original.png assets/mazarin50.png
 GO_PACKAGE_DIR = $(MAZBOOT_SRC)/golang/main
 ASM_PACKAGE_DIR = $(MAZBOOT_SRC)/golang/asm
 
-# Go source files (all files - build tags determine which are included)
-GO_SRC = $(GO_PACKAGE_DIR)/kernel.go \
-         $(GO_PACKAGE_DIR)/mmu.go \
-         $(GO_PACKAGE_DIR)/exceptions.go \
-         $(GO_PACKAGE_DIR)/page.go \
-         $(GO_PACKAGE_DIR)/page_flags.go \
-         $(GO_PACKAGE_DIR)/heap.go \
-         $(GO_PACKAGE_DIR)/gpu.go \
-         $(GO_PACKAGE_DIR)/mailbox.go \
-         $(GO_PACKAGE_DIR)/memory.go \
-         $(GO_PACKAGE_DIR)/framebuffer_common.go \
-         $(GO_PACKAGE_DIR)/framebuffer_rpi.go \
-         $(GO_PACKAGE_DIR)/framebuffer_qemu.go \
-         $(GO_PACKAGE_DIR)/framebuffer_text.go \
-         $(GO_PACKAGE_DIR)/colors.go \
-         $(GO_PACKAGE_DIR)/framebuffer_font.go \
-         $(GO_PACKAGE_DIR)/pci_qemu.go \
-         $(GO_PACKAGE_DIR)/gic_qemu.go \
-         $(GO_PACKAGE_DIR)/timer_qemu.go \
-         $(GO_PACKAGE_DIR)/ramfb_qemu.go \
-         $(GO_PACKAGE_DIR)/runtime_stub.go \
-         $(GO_PACKAGE_DIR)/uart_rpi.go \
-         $(GO_PACKAGE_DIR)/uart_qemu.go \
-         $(GO_PACKAGE_DIR)/goroutine.go \
-         $(GO_PACKAGE_DIR)/runtime_types.go \
-         $(GO_PACKAGE_DIR)/stack_growth.go
+# Go source files (all files in golang/main - build tags determine which are included)
+# IMPORTANT: Use wildcard so that adding new Go files (e.g., pci_ecam_base_qemu.go, dtb_qemu.go)
+# automatically triggers a rebuild of the Go object when they change.
+GO_SRC = $(wildcard $(GO_PACKAGE_DIR)/*.go)
 
 # Code generation tools and outputs
 GLOBALIZE_SYMBOLS_GEN_SRC = $(MAZBOOT_SRC)/tools/generate-globalize-symbols.go

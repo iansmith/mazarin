@@ -8,21 +8,22 @@ import (
 	"mazboot/asm"
 )
 
-// QEMU framebuffer constants for ramfb device
-// ramfb allocates framebuffer memory via kmalloc and configures QEMU via fw_cfg
+// QEMU framebuffer constants for bochs-display device
+// bochs-display uses a fixed framebuffer address from PCI BAR0 and configures via VBE MMIO registers
 const (
 	QEMU_FB_WIDTH  = 1024
 	QEMU_FB_HEIGHT = 768
 )
 
-// Override BYTES_PER_PIXEL for QEMU - ramfb uses XRGB8888 (32-bit, 4 bytes per pixel)
+// Override BYTES_PER_PIXEL for QEMU - bochs-display uses XRGB8888 (32-bit, 4 bytes per pixel)
 // This overrides the 3-byte value from framebuffer_common.go
+// Note: bochs-display uses BGR byte order (Blue, Green, Red) for pixel data
 const QEMU_BYTES_PER_PIXEL = 4
 
-// framebufferInit initializes the framebuffer for QEMU using ramfb device
+// framebufferInit initializes the framebuffer for QEMU using bochs-display device
 // Returns 0 on success, non-zero on error
 //
-// ramfb allocates framebuffer memory via kmalloc and configures QEMU via fw_cfg
+// bochs-display uses a fixed framebuffer address from PCI BAR0 and configures via VBE MMIO registers
 func framebufferInit() int32 {
 	uartPuts("FB: framebufferInit() called\r\n")
 	uartPuts("FB: About to access fbinfo...\r\n")
@@ -50,20 +51,38 @@ func framebufferInit() int32 {
 	fbinfo.BufSize = fbinfo.Pitch * fbinfo.Height
 	uartPuts("FB: BufSize calculated\r\n")
 
-	// Initialize ramfb (allocates framebuffer memory)
-	uartPuts("FB: Attempting ramfb initialization...\r\n")
-	uartPuts("FB: About to call ramfbInit()...\r\n")
-	ramfbSuccess := ramfbInit()
-	uartPuts("FB: ramfbInit() returned\r\n")
-	if ramfbSuccess {
-		uartPuts("FB: ramfb reported success\r\n")
-		uartPuts("FB: ramfb initialized\r\n")
+	// Initialize bochs-display (finds PCI device and configures VBE registers)
+	uartPuts("FB: Attempting bochs-display initialization...\r\n")
+	uartPuts("FB: About to call findBochsDisplayFull()...\r\n")
+	bochsFound := findBochsDisplayFull()
+	uartPuts("FB: findBochsDisplayFull() returned\r\n")
+	if !bochsFound {
+		uartPuts("FB: ERROR - bochs-display device not found\r\n")
+		uartPuts("FB: No display device available\r\n")
+		return 1
+	}
 
-		// Wait a moment for ramfb to fully initialize
-		uartPuts("FB: Waiting for ramfb to initialize...\r\n")
-		for delay := 0; delay < 2000000; delay++ {
-		}
-		uartPuts("FB: Initialization delay complete\r\n")
+	uartPuts("FB: bochs-display device found\r\n")
+	uartPuts("FB: About to call initBochsDisplay()...\r\n")
+	bochsInitSuccess := initBochsDisplay(uint16(QEMU_FB_WIDTH), uint16(QEMU_FB_HEIGHT), 32)
+	uartPuts("FB: initBochsDisplay() returned\r\n")
+	if !bochsInitSuccess {
+		uartPuts("FB: ERROR - bochs-display initialization failed\r\n")
+		uartPuts("FB: No display device available\r\n")
+		return 1
+	}
+
+	uartPuts("FB: bochs-display initialized successfully\r\n")
+
+	// Set framebuffer address from bochs-display info
+	fbinfo.Buf = unsafe.Pointer(bochsDisplayInfo.Framebuffer)
+	uartPuts("FB: Framebuffer address set from bochs-display BAR0\r\n")
+
+	// Wait a moment for bochs-display to fully initialize
+	uartPuts("FB: Waiting for bochs-display to initialize...\r\n")
+	for delay := 0; delay < 2000000; delay++ {
+	}
+	uartPuts("FB: Initialization delay complete\r\n")
 
 		// Debug: Verify framebuffer info
 		uartPuts("FB: Buf=0x")
@@ -128,7 +147,7 @@ func framebufferInit() int32 {
 		// Force memory barrier and ensure writes are visible
 		asm.Dsb()
 		uartPuts("FB: Memory barrier executed after pixel writes\r\n")
-		uartPuts("FB: Pixels written - ramfb was already configured, display should update\r\n")
+		uartPuts("FB: Pixels written - bochs-display configured, display should update\r\n")
 
 		// Give QEMU additional time to process the framebuffer update
 		uartPuts("FB: Waiting for QEMU to process framebuffer...\r\n")
@@ -137,19 +156,13 @@ func framebufferInit() int32 {
 		}
 		uartPuts("FB: Delay complete\r\n")
 
-		uartPuts("FB INIT DONE (ramfb)\r\n")
+		uartPuts("FB INIT DONE (bochs-display)\r\n")
 		return 0
-	}
-
-	// ramfb failed
-	uartPuts("FB: ERROR - ramfb initialization failed\r\n")
-	uartPuts("FB: No display device available\r\n")
-	return 1
 }
 
 // refreshFramebuffer refreshes the framebuffer to keep it visible
-// This prevents ramfb from clearing the display
 // Uses XRGB8888 format (32-bit pixels)
+// Note: bochs-display uses BGR byte order (Blue, Green, Red) for pixel data
 //
 //go:nosplit
 func refreshFramebuffer() {
