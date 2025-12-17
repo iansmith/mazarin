@@ -131,3 +131,4 @@ This document explains the memory protection requirements and initialization ord
 - Protection is by convention: document and never call `kfree()` on permanent resources
 - PCI ECAM mapping is critical for PCI device enumeration and configuration
 
+

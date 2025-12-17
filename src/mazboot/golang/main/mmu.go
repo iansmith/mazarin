@@ -585,6 +585,24 @@ func initMMU() bool {
 		PTE_AP_RW_EL1,   // Read/Write at EL1
 	)
 
+	// Step 5.5: Map bochs-display framebuffer/MMIO in the PCI MMIO window as Device memory.
+	//
+	// The QEMU "virt" machine places **PCI MMIO** at 0x10000000‑0x3FFFFFFF and
+	// guest RAM at 0x40000000+. We program the bochs-display PCI BARs as:
+	//   BAR0 (framebuffer): 0x10000000  (16MB window)
+	//   BAR2 (MMIO regs):   0x11000000  (4KB window)
+	//
+	// To make sure all accesses go through the device and are not cached as
+	// normal RAM, we map the entire 16MB BAR0 window as Device-nGnRnE here.
+	uartPuts("MMU: Mapping bochs-display framebuffer/MMIO (0x10000000-0x11000000) as Device...\r\n")
+	mapRegion(
+		0x10000000,      // VA start (framebuffer + MMIO base in PCI MMIO window)
+		0x11000000,      // VA end (16MB window for VRAM + MMIO)
+		0x10000000,      // PA start (identity map)
+		PTE_ATTR_DEVICE, // Device-nGnRnE (MMIO / framebuffer)
+		PTE_AP_RW_EL1,   // Read/Write at EL1
+	)
+
 	// Step 6: Map user RAM (0x60000000 - 0x61000000 = 16MB) - Future
 	// This will be expanded when user programs are supported
 	// For now, map a minimal test region to verify MMU works

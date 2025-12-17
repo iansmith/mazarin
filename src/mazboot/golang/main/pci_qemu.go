@@ -404,18 +404,27 @@ func findBochsDisplayFull() bool {
 					printHex32(bar2Size)
 					uartPuts("\r\n")
 
-					// For bare-metal, we need to assign BAR addresses ourselves
-					// QEMU virt machine kernel RAM: 0x40100000 - 0x48100000 (128MB)
-					// Use fixed addresses within kernel RAM for bochs-display BAR programming
-					// Note: Heap can extend beyond 0x48100000 up to g0 stack at 0x5EFFFE000
-					// CRITICAL: Framebuffer at 0x50000000 must NEVER be freed or reused
-					// This is a permanent resource for the lifetime of the system
-					fbAddr := uintptr(0x50000000)   // Framebuffer address (within kernel RAM)
-					mmioBase := uintptr(0x50010000) // MMIO registers (right after framebuffer)
+					// For bare-metal, we need to assign BAR addresses ourselves.
+					//
+					// IMPORTANT: On the QEMU "virt" machine the **PCI MMIO window**
+					// starts at 0x10000000, while guest RAM lives at 0x40000000+.
+					// BARs must therefore point into the 0x10000000‑0x3FFFFFFF range,
+					// not into RAM (0x40000000+), otherwise the framebuffer/MMIO
+					// would overlap normal RAM and the display device would not see
+					// our writes correctly.
+					//
+					// Layout we use:
+					//   BAR0 (framebuffer): 0x10000000 (16MB PCI MMIO window)
+					//   BAR2 (MMIO regs):   0x10F00000 (4KB MMIO window inside same 16MB)
+					//
+					// The MMU maps these regions as Device-nGnRnE so that CPU caches
+					// cannot hide writes from QEMU.
+					fbAddr := uintptr(0x10000000)   // Framebuffer address in PCI MMIO window
+					mmioBase := uintptr(0x10F00000) // MMIO registers in PCI MMIO window
 
 					uartPuts("BOCHS: Programming BAR addresses...\r\n")
-					uartPuts("BOCHS: Framebuffer address: 0x50000000\r\n")
-					uartPuts("BOCHS: MMIO base address: 0x50010000\r\n")
+					uartPuts("BOCHS: Framebuffer address: 0x10000000\r\n")
+					uartPuts("BOCHS: MMIO base address: 0x10F00000\r\n")
 
 					// Program BAR0 (framebuffer) - 32-bit memory space, prefetchable
 					bar0Value := uint32(fbAddr) | 0x8 // 0x8 = prefetchable, 32-bit memory
@@ -532,34 +541,37 @@ func printHex32(val uint32) {
 }
 
 // VBE register base offset from MMIO base
-// On AArch64 with MMIO, VBE registers are accessed directly at:
+// For Bochs/QEMU, the MMIO window at BAR2 contains the VBE_DISPI registers
+// laid out as a contiguous array of 16-bit registers:
 //
 //	MMIO base + 0x500 + (index << 1)
 //
-// This is different from x86 which uses I/O port index/data pair
+// This matches QEMU's BOCHS_VBE_DISPI_MMIO_INDEX definition; the separate
+// index/data pair exists only for the legacy I/O port interface (0x1CE/0x1CF),
+// not for this MMIO BAR.
 const (
 	VBE_DISPI_REG_BASE_OFFSET = 0x500 // Base offset for VBE registers
 )
 
-// writeVBERegister writes a 16-bit value directly to a VBE register
-// On AArch64 with MMIO, registers are at: MMIO base + 0x500 + (index << 1)
-// Each register is 16 bits wide, accessed directly (no index/data port pair)
+// writeVBERegister writes a 16-bit value directly to a VBE "dispi" register
+// using the MMIO layout MMIO base + 0x500 + (index << 1).
 //
 //go:nosplit
 func writeVBERegister(index, value uint16) {
 	regAddr := bochsDisplayInfo.MMIOBase + VBE_DISPI_REG_BASE_OFFSET + uintptr(index<<1)
 	asm.MmioWrite16(regAddr, value)
-	// Memory barrier to ensure write completes
-	asm.Dsb()
+	asm.Dsb() // Ensure write completes
 }
 
-// readVBERegister reads a 16-bit value directly from a VBE register
-// On AArch64 with MMIO, registers are at: MMIO base + 0x500 + (index << 1)
+// readVBERegister reads a 16-bit value directly from a VBE "dispi" register
+// using the MMIO layout MMIO base + 0x500 + (index << 1).
 //
 //go:nosplit
 func readVBERegister(index uint16) uint16 {
 	regAddr := bochsDisplayInfo.MMIOBase + VBE_DISPI_REG_BASE_OFFSET + uintptr(index<<1)
-	return asm.MmioRead16(regAddr)
+	val := asm.MmioRead16(regAddr)
+	asm.Dsb() // Barrier after read
+	return val
 }
 
 // initBochsDisplay initializes the bochs-display device via VBE registers

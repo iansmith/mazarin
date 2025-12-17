@@ -3,3 +3,4 @@
 // `go test ./...` succeeds even when no generated structs are required here.
 package bitfield
 
+
