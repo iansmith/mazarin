@@ -651,6 +651,8 @@ func kernelMainBody() {
 			uartPuts("WARNING: Framebuffer text initialization failed (non-fatal, continuing)...\r\n")
 		} else {
 			uartPuts("DEBUG: Framebuffer text initialized successfully\r\n")
+			// Render boot text and Mazarin image to verify Bochs framebuffer path
+			testFramebufferText()
 		}
 	}
 	uartPuts("DEBUG: stage4.5 complete, proceeding to stage6 (UART ring buffer)\r\n")
