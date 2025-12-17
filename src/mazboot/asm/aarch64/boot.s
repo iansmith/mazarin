@@ -9,6 +9,25 @@ _start:
     // On QEMU virt, x0 contains the DTB physical address at reset.
     // We'll carry it through early init and pass it to kernel_main in x2.
     mov x22, x0
+
+    // =====================================================
+    // Early DTB pointer diagnostic
+    // Print a single character to UART indicating whether
+    // QEMU provided a non-zero DTB pointer in x0 at reset.
+    //   'D' => DTB pointer non-zero (something was passed)
+    //   'd' => DTB pointer is zero (nothing passed)
+    // This runs before any EL transitions or BSS clearing.
+    // =====================================================
+    movz x14, #0x0900, lsl #16     // UART base = 0x09000000
+    cbz  x22, 1f                   // If dtbPtr == 0, print 'd'
+    movz w15, #0x44                // 'D' = DTB pointer non-zero
+    str  w15, [x14]
+    b    2f
+1:
+    movz w15, #0x64                // 'd' = DTB pointer zero
+    str  w15, [x14]
+2:
+
     // Get CPU ID - only run on CPU 0
     mrs x1, mpidr_el1
     ubfx x1, x1, #0, #8          // Extract Aff0 (bits 0-7)

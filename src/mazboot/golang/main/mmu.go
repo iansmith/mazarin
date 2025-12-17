@@ -516,20 +516,15 @@ func initMMU() bool {
 	// depending on machine configuration (highmem on/off). If we hit the wrong base, reads can
 	// cause a data abort (we saw FAR=0x3F000000 on default QEMU runs).
 	//
-	// Prefer the DTB-provided ECAM base+size; fall back to lowmem if DTB parsing fails.
-	uartPuts("MMU: Attempting to get PCI ECAM from DTB...\r\n")
-	ecamBase, ecamSize, ok := getPciEcamFromDTB()
-	if !ok {
-		uartPuts("MMU: DTB parsing failed, using fallback lowmem ECAM (0x3F000000)\r\n")
-		ecamBase = 0x3F000000
-		ecamSize = 0x10000000 // 256MB
-	} else {
-		uartPuts("MMU: Got PCI ECAM from DTB: base=0x")
-		uartPutHex64(uint64(ecamBase))
-		uartPuts(" size=0x")
-		uartPutHex64(uint64(ecamSize))
-		uartPuts("\r\n")
-	}
+	// IMPORTANT: Do NOT parse the DTB here. MMU is still disabled, so all
+	// memory is Device-nGnRnE and the Go compiler may emit unaligned stack
+	// accesses for any non-trivial function, causing data aborts. Instead we
+	// map a conservative lowmem ECAM window and separately map the known
+	// highmem ECAM window; later (after MMU is enabled and memory attributes
+	// are Normal) we can parse the DTB and refine pciEcamBase.
+	uartPuts("MMU: Skipping DTB ECAM parse (MMU disabled, using fallback lowmem ECAM)\r\n")
+	ecamBase := uintptr(0x3F000000)
+	ecamSize := uintptr(0x10000000) // 256MB
 	uartPuts("MMU: Mapping PCI ECAM at 0x")
 	uartPutHex64(uint64(ecamBase))
 	uartPuts(" size 0x")
@@ -563,29 +558,15 @@ func initMMU() bool {
 	)
 	uartPuts("MMU: mapRegion for highmem ECAM completed\r\n")
 
-	// Ensure PCI code uses the same ECAM base (qemuvirt build).
-	// For QEMU virt with virtualization=on, prefer highmem ECAM (0x4010000000)
-	// If DTB parsing failed, use highmem ECAM; otherwise use DTB-provided base.
-	//
-	// NOTE: We set the global pciEcamBase directly here instead of going through a
-	// helper to keep control flow simple and make breadcrumb debugging easier.
-	var actualEcamBase uintptr
-	if !ok {
-		// DTB parsing failed - use highmem ECAM (QEMU virt with virtualization=on uses this)
-		uartPuts("MMU: DTB parsing failed, defaulting to highmem ECAM (0x4010000000)\r\n")
-		actualEcamBase = highmemEcamBase
-		uartPuts("MMU: Setting pciEcamBase to highmem ECAM directly...\r\n")
-		// NOTE: pciEcamBase is defined in pci_qemu.go (same package)
-		pciEcamBase = highmemEcamBase
-		uartPuts("MMU: pciEcamBase set (highmem)\r\n")
-	} else {
-		// DTB provided a specific ECAM base; use that.
-		actualEcamBase = ecamBase
-		uartPuts("MMU: Setting pciEcamBase to DTB ECAM base directly...\r\n")
-		// NOTE: pciEcamBase is defined in pci_qemu.go (same package)
-		pciEcamBase = ecamBase
-		uartPuts("MMU: pciEcamBase set (DTB)\r\n")
-	}
+	// Ensure PCI code uses a sane ECAM base (qemuvirt build).
+	// For QEMU virt with virtualization=on we know from offline DTB inspection
+	// that the ECAM window is at 0x4010000000 of size 0x10000000, so prefer
+	// that as the runtime base. The lowmem mapping above is just to avoid
+	// potential aborts if firmware ever touched that window.
+	uartPuts("MMU: Setting pciEcamBase to known highmem ECAM (0x4010000000)\r\n")
+	actualEcamBase := highmemEcamBase
+	pciEcamBase = highmemEcamBase
+	uartPuts("MMU: pciEcamBase set (highmem)\r\n")
 
 	// Verify PCI ECAM mapping by checking page table entry
 	// This helps catch mapping issues early

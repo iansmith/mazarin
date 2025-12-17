@@ -7,8 +7,10 @@ import "unsafe"
 // Minimal FDT (Flattened Device Tree) parser for QEMU virt.
 // We only need one thing: the PCI ECAM base+size so we can map it and avoid MMIO aborts.
 //
-// QEMU virt places the DTB in RAM; in this project we assume it is at 0x40000000.
-// (We already map 0x40000000-0x40100000 as Device RO in initMMU.)
+// QEMU virt places the DTB in RAM; in this project we *assume* it is available
+// either via a pointer passed in x0 (Linux kernel boot protocol) or at a fixed
+// physical address (commonly 0x40000000 = start of RAM for virt). Our code
+// tries the pointer first and then falls back to the fixed address.
 
 const (
 	fdtMagic = 0xd00dfeed
@@ -33,17 +35,18 @@ func be64(p *byte) uint64 {
 		uint64(b[4])<<24 | uint64(b[5])<<16 | uint64(b[6])<<8 | uint64(b[7])
 }
 
+// cstring reads a NUL-terminated C-style string from p.
+//
 //go:nosplit
 func cstring(p *byte) string {
 	// Small, bounded scan (DTB strings are short). We stop at NUL.
-	// NOTE: this allocates; keep use minimal and only during init.
 	n := 0
 	for {
 		if *(*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(p)) + uintptr(n))) == 0 {
 			break
 		}
 		n++
-		// hard cap to avoid runaway in case of corrupted dtb
+		// Hard cap to avoid runaway in case of corrupted dtb
 		if n > 256 {
 			break
 		}
@@ -51,10 +54,11 @@ func cstring(p *byte) string {
 	return string(unsafe.Slice((*byte)(unsafe.Pointer(p)), n))
 }
 
+// containsCompat checks if the "compatible" property contains a particular
+// substring. The "compatible" property is a NUL-separated list of strings.
+//
 //go:nosplit
 func containsCompat(data *byte, n uint32, needle string) bool {
-	// compatible is a NUL-separated string list.
-	// We do a simple byte scan for the ASCII needle.
 	nd := []byte(needle)
 	if len(nd) == 0 || n < uint32(len(nd)) {
 		return false
@@ -74,6 +78,9 @@ func containsCompat(data *byte, n uint32, needle string) bool {
 	return false
 }
 
+// dtbPtr is set early from KernelMain(atags) when QEMU passes a DTB pointer
+// in x0 using the Linux kernel boot protocol. When that isn't available we
+// fall back to a fixed physical address.
 var dtbPtr uintptr
 
 //go:nosplit
@@ -81,22 +88,14 @@ func setDTBPtr(p uintptr) {
 	dtbPtr = p
 }
 
-// getPciEcamFromDTB returns the ECAM base and size as described by the DTB.
-// It looks for a node whose "compatible" contains "pci-host-ecam-generic" and reads its "reg".
-//
-// Assumptions (true for QEMU virt DTB):
-// - #address-cells = 2, #size-cells = 2 for the PCI host node
-// - reg[0] is the ECAM range: <addr_hi addr_lo size_hi size_lo>
+// tryDTBAtBase attempts to interpret a DTB located at dtbBase and, if valid,
+// extract the PCI ECAM base/size from a "pci-host-ecam-generic" node.
 //
 //go:nosplit
-func getPciEcamFromDTB() (base uintptr, size uintptr, ok bool) {
-	dtbBase := dtbPtr
-	if dtbBase == 0 {
-		// Fallback only; in practice boot.s passes the DTB pointer via KernelMain(atags).
-		dtbBase = uintptr(0x40000000)
-	}
+func tryDTBAtBase(dtbBase uintptr) (base uintptr, size uintptr, ok bool) {
 	hdr := (*byte)(unsafe.Pointer(dtbBase))
-	if be32(hdr) != fdtMagic {
+	magic := be32(hdr)
+	if magic != fdtMagic {
 		return 0, 0, false
 	}
 
@@ -173,4 +172,62 @@ func getPciEcamFromDTB() (base uintptr, size uintptr, ok bool) {
 	return 0, 0, false
 }
 
+// getPciEcamFromDTB returns the ECAM base and size as described by the DTB.
+// It looks for a node whose "compatible" contains "pci-host-ecam-generic"
+// and reads its "reg" property.
+//
+// Assumptions (true for QEMU virt DTB):
+// - #address-cells = 2, #size-cells = 2 for the PCI host node
+// - reg[0] is the ECAM range: <addr_hi addr_lo size_hi size_lo>
+//
+//go:nosplit
+func getPciEcamFromDTB() (base uintptr, size uintptr, ok bool) {
+	// Try candidates in order:
+	//  1) DTB pointer passed from boot.s via KernelMain(atags) (Linux protocol)
+	//  2) Physical 0x0 (some QEMU configurations place DTB at bottom of address space)
+	//  3) Physical 0x40000000 (start of RAM for virt in our layout)
 
+	// 1) Pointer from boot (if any)
+	if dtbPtr != 0 {
+		if base, size, ok := tryDTBAtBase(dtbPtr); ok {
+			return base, size, true
+		}
+	}
+
+	// 2) Physical 0x0
+	if base, size, ok := tryDTBAtBase(0); ok {
+		return base, size, true
+	}
+
+	// 3) Physical 0x40000000
+	if base, size, ok := tryDTBAtBase(uintptr(0x40000000)); ok {
+		return base, size, true
+	}
+
+	return 0, 0, false
+}
+
+// initDeviceTree parses the DTB (if present) after the MMU is enabled and
+// memory attributes are correctly set, and applies any configuration we
+// care about (currently: PCI ECAM base).
+//
+//go:nosplit
+func initDeviceTree() {
+	uartPuts("DTB: initDeviceTree() entry\r\n")
+
+	base, size, ok := getPciEcamFromDTB()
+	if !ok {
+		uartPuts("DTB: getPciEcamFromDTB() failed (no pci-host-ecam-generic)\r\n")
+		return
+	}
+
+	uartPuts("DTB: PCI ECAM from DTB: base=0x")
+	uartPutHex64(uint64(base))
+	uartPuts(" size=0x")
+	uartPutHex64(uint64(size))
+	uartPuts("\r\n")
+
+	// Set runtime ECAM base so PCI code uses the DTB-provided value.
+	// On QEMU virt with virtualization=on this should be 0x4010000000.
+	setPciEcamBase(base)
+}

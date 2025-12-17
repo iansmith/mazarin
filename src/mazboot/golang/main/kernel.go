@@ -377,6 +377,15 @@ func KernelMain(r0, r1, atags uint32) {
 		uartPutHex64(uint64(magic))
 		uartPuts("\r\n")
 	}
+
+	// Also probe for a DTB header at physical 0x0 (some QEMU configurations
+	// place the DTB at the bottom of the address space) and at 0x40000000
+	// (start of RAM for virt in our layout).
+	magic0 := *(*uint32)(unsafe.Pointer(uintptr(0x0)))
+	uartPuts("DEBUG: DTB magic @0x0 = 0x")
+	uartPutHex64(uint64(magic0))
+	uartPuts("\r\n")
+
 	magic400 := *(*uint32)(unsafe.Pointer(uintptr(0x40000000)))
 	uartPuts("DEBUG: DTB magic @0x40000000 = 0x")
 	uartPutHex64(uint64(magic400))
@@ -613,6 +622,11 @@ func kernelMainBody() {
 	}
 	uartPutc('E') // 'E' = MMU enable done
 	uartPuts("DEBUG: MMU enabled successfully\r\n")
+
+	// Now that MMU is enabled and memory attributes are Normal for our RAM
+	// regions, it is safe to parse the DTB without risking unaligned Device
+	// memory accesses. Use this to refine runtime configuration like PCI ECAM.
+	initDeviceTree()
 
 	// TODO: Re-enable interrupts after fixing interrupt/exception handling
 	// For now, keep interrupts disabled to avoid the interrupt storm issue

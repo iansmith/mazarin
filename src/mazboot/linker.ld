@@ -14,8 +14,14 @@ SECTIONS
      * 0x48100000 - 0x80000000: Reserved (not used by kernel)
      */
     
-    /* Kernel code/data in ROM region */
-    . = 0x200000;
+    /* Kernel code/data in ROM region
+     *
+     * NOTE: We start the kernel at 0x300000 instead of 0x200000 to leave room
+     * for a DTB that QEMU may place at the bottom of physical address space.
+     * Some QEMU configurations (especially when using -dtb) load the DTB at
+     * 0x0..~0x200000; placing the kernel at 0x300000 avoids overlap.
+     */
+    . = 0x300000;
     __start = .;
     __text_start = .;
     .text :
