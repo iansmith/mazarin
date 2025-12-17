@@ -558,32 +558,19 @@ func initMMU() bool {
 	)
 	uartPuts("MMU: mapRegion for highmem ECAM completed\r\n")
 
-	// Ensure PCI code uses a sane ECAM base (qemuvirt build).
-	// For QEMU virt with virtualization=on we know from offline DTB inspection
-	// that the ECAM window is at 0x4010000000 of size 0x10000000, so prefer
-	// that as the runtime base. The lowmem mapping above is just to avoid
-	// potential aborts if firmware ever touched that window.
-	uartPuts("MMU: Setting pciEcamBase to known highmem ECAM (0x4010000000)\r\n")
-	actualEcamBase := highmemEcamBase
-	pciEcamBase = highmemEcamBase
-	uartPuts("MMU: pciEcamBase set (highmem)\r\n")
-
-	// Verify PCI ECAM mapping by checking page table entry
-	// This helps catch mapping issues early
-	// Note: For highmem addresses (0x4010000000+), the L0 index might be out of range
-	// for our initial page table setup, so we skip verification for now
-	uartPuts("MMU: Verifying PCI ECAM page table entry...\r\n")
-	if actualEcamBase < 0x40000000 {
-		// Only verify lowmem addresses (L0 index < 128)
-		if !dumpFetchMapping("pci-ecam", actualEcamBase) {
-			uartPuts("MMU: WARNING - PCI ECAM mapping verification failed!\r\n")
-		} else {
-			uartPuts("MMU: PCI ECAM mapping verified OK\r\n")
-		}
+	// At this point both lowmem and highmem ECAM windows are mapped. The
+	// runtime ECAM base used by PCI code will be selected later from the DTB
+	// in initDeviceTree(), so we don't hard-code any particular base here.
+	//
+	// We still verify the lowmem mapping to catch gross page-table errors.
+	uartPuts("MMU: Verifying lowmem PCI ECAM page table entry...\r\n")
+	if !dumpFetchMapping("pci-ecam-low", ecamBase) {
+		uartPuts("MMU: WARNING - lowmem PCI ECAM mapping verification failed!\r\n")
 	} else {
-		uartPuts("MMU: Skipping verification for highmem ECAM (L0 index would be >= 128)\r\n")
-		uartPuts("MMU: Highmem ECAM mapping should be valid (mapped above)\r\n")
+		uartPuts("MMU: Lowmem PCI ECAM mapping verified OK\r\n")
 	}
+	uartPuts("MMU: Skipping verification for highmem ECAM (L0 index would be >= 128)\r\n")
+	uartPuts("MMU: Highmem ECAM mapping should be valid (mapped above)\r\n")
 
 	// Step 5: Map bootloader RAM (0x40100000 - 0x60000000 = 512MB = 0.5GB)
 	// CRITICAL: This includes the page table region (0x5F100000 - 0x60000000),
@@ -924,16 +911,10 @@ func enableMMU() bool {
 	asm.Isb()
 	uartPuts("MMU: [11.97] ISB complete\r\n")
 
-	// Write SCTLR_EL1
+	// Write SCTLR_EL1 to enable the MMU.
 	uartPuts("MMU: [12] Before SCTLR write (MMU enable)\r\n")
 	uartPutc('Z') // Breadcrumb: about to write SCTLR
-	uartPuts("MMU: About to halt before SCTLR write - testing\r\n")
-
-	// HALT HERE TO TEST - if we reach this halt, the MMU enable code itself is OK
-	for {
-		// Infinite loop to halt before MMU enable
-	}
-	// After halt is removed, write SCTLR_EL1
+	asm.WriteSctlrEl1(sctlr)
 
 	// Ensure MMU enablement takes effect
 	uartPuts("MMU: [14] Before ISB\r\n")
