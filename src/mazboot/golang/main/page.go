@@ -156,6 +156,15 @@ func pageInit(atagsPtr uintptr) {
 	// For 1GB with 4KB pages: ~262K pages * 24 bytes = ~6.3MB to zero
 	// This might be where it's hanging - bzero of large area
 	uartPuts("pageInit: Zeroing page array...\r\n")
+	uartPuts("pageInit:   start = 0x")
+	uartPutHex64(uint64(uintptr(allPagesArrayPtr)))
+	uartPuts("\r\n")
+	uartPuts("pageInit:   len = 0x")
+	uartPutHex64(uint64(pageArrayLen))
+	uartPuts("\r\n")
+	uartPuts("pageInit:   end = 0x")
+	uartPutHex64(uint64(uintptr(allPagesArrayPtr)) + uint64(pageArrayLen))
+	uartPuts("\r\n")
 	asm.Bzero(allPagesArrayPtr, pageArrayLen)
 	uartPuts("pageInit: Page array zeroed\r\n")
 

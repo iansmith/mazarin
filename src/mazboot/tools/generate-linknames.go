@@ -199,7 +199,9 @@ func generateLinknamesContent(globalSymbols []string, asmDir string, w io.Writer
 			returnTypeOverrides := map[string]string{
 				"get_caller_stack_pointer": "uintptr",
 				"mmio_read":                "uint32",
-				"mmio_read16":               "uint16",
+				"mmio_read16":              "uint16",
+				"get_g0_addr":              "uintptr",
+				"get_m0_addr":              "uintptr",
 			}
 			if override, ok := returnTypeOverrides[sym]; ok {
 				retType = override

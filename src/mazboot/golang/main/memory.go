@@ -10,10 +10,15 @@ import (
 // Linker symbol: end of kernel (from linker.ld)
 // This marks where the kernel ends and we can start using memory
 //
-//go:linkname __end __end
-var __end uintptr
+// NOTE: We use __bss_end instead of __end because Go's linkname creates
+// a variable at the LOCATION of the symbol, not a variable CONTAINING the value.
+// For marker symbols, this doesn't work as expected.
+//
+// Using a hardcoded value based on the actual linker output.
+// BSS ends at 0x40147000 based on `nm` output.
+const __end_value uintptr = 0x40147000
 
-// getLinkerSymbol returns the address of a linker symbol
+// getLinkerSymbol returns the VALUE of a linker symbol
 // Currently only supports __end, but can be extended for other symbols
 //
 //go:nosplit
@@ -21,7 +26,7 @@ func getLinkerSymbol(name string) uintptr {
 	// For now, only __end is supported
 	// In the future, we could use a map or switch statement
 	if name == "__end" {
-		return uintptr(unsafe.Pointer(&__end))
+		return __end_value // Use hardcoded constant from linker output
 	}
 	// Unknown symbol - return 0 (caller should check)
 	return 0
@@ -33,7 +38,7 @@ func getLinkerSymbol(name string) uintptr {
 //go:nosplit
 func getLinkerSymbolPointer(name string) unsafe.Pointer {
 	if name == "__end" {
-		return unsafe.Pointer(&__end)
+		return unsafe.Pointer(__end_value) // Convert constant to pointer
 	}
 	return nil
 }
@@ -72,6 +77,14 @@ func writeMemory8(addr uintptr, value uint8) {
 	*ptr = value
 }
 
+// readMemory16 reads a 16-bit value from an arbitrary memory address
+//
+//go:nosplit
+func readMemory16(addr uintptr) uint16 {
+	ptr := (*uint16)(unsafe.Pointer(addr))
+	return *ptr
+}
+
 // castToPointer converts a uintptr address to a typed pointer
 // This hides the unsafe.Pointer conversion
 //
@@ -86,6 +99,14 @@ func castToPointer[T any](addr uintptr) *T {
 func writeMemory64(addr uintptr, value uint64) {
 	ptr := (*uint64)(unsafe.Pointer(addr))
 	*ptr = value
+}
+
+// readMemory64 reads a 64-bit value from an arbitrary memory address
+//
+//go:nosplit
+func readMemory64(addr uintptr) uint64 {
+	ptr := (*uint64)(unsafe.Pointer(addr))
+	return *ptr
 }
 
 // Disable write barrier for bare-metal

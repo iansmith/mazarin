@@ -1,8 +1,6 @@
 package main
 
 import (
-	_ "unsafe" // Required for //go:linkname directives
-
 	"mazboot/asm"
 )
 
@@ -54,6 +52,18 @@ type ExceptionInfo struct {
 	SPSR          uint64 // Saved Program Status Register
 	FAR           uint64 // Fault Address Register
 }
+
+// mmap bump allocator state
+// Region: 0x60000000 - 0x200000000 (6.5GB for Go runtime heap)
+// CRITICAL: Start at 0x60000000 (after page table region at 0x5F100000-0x60000000)
+// to avoid overwriting page tables during mmap allocations!
+// Note: Go reserves large virtual address ranges but only touches a fraction.
+// This is normal behavior - we just need enough address space, not physical RAM.
+var (
+	mmapBase uintptr = 0x60000000      // Start of mmap region (after page tables)
+	mmapEnd  uintptr = 0x200000000     // End of mmap region (6.5GB for 8GB QEMU)
+	mmapNext uintptr = 0x60000000      // Next available address (bump allocator)
+)
 
 // Link to assembly functions (now in asm package)
 // Functions are accessed via asm package: asm.SetVbarEl1(), asm.EnableIrqs(), etc.
@@ -187,6 +197,10 @@ func uartPutHex64Direct(v uint64) {
 }
 
 // handleException dispatches the exception to the appropriate handler
+// CRITICAL: Must be nosplit to avoid stack growth during exception handling
+// (which could cause recursive exceptions via mmap)
+//
+//go:nosplit
 func handleException(excInfo ExceptionInfo) {
 	// CRITICAL: Print immediately to verify handler is called
 	// Use direct UART output to avoid any stack/heap issues
@@ -224,6 +238,15 @@ func handleException(excInfo ExceptionInfo) {
 		uartPutsDirect("\r\n")
 
 	case EC_DATA_ABORT_ELx:
+		// Try demand paging first - this handles page faults in mmap region
+		if HandlePageFault(uintptr(excInfo.FAR), excInfo.ESR&0x3F) {
+			// Page fault handled successfully - return to retry instruction
+			// Note: This requires the exception handler to return properly
+			// For now, we'll print success and continue (caller handles eret)
+			uartPutsDirect("PF-OK ")
+			return
+		}
+		// Not a demand-paged address - print debug info
 		uartPutsDirect("Data abort at 0x")
 		uartPutHex64Direct(excInfo.ELR)
 		uartPutsDirect(" (fault address: 0x")
@@ -322,3 +345,131 @@ func extractISS(esr uint64) uint32 {
 
 // Note: We now get the exception vector address via get_exception_vectors_addr()
 // instead of using a linker symbol, to avoid linker symbol resolution issues
+
+// HandleSyscall handles Linux syscalls by returning fake responses
+// This is called from assembly when an SVC instruction is executed
+// syscallNum is the Linux syscall number (in x8)
+// Returns the fake syscall result
+//
+//go:nosplit
+//go:noinline
+func HandleSyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) uint64 {
+	// Print syscall number for debugging (use direct UART to avoid recursion)
+	uartPutcDirect('S')
+	uartPutcDirect('Y')
+	uartPutcDirect('S')
+	uartPutcDirect(':')
+	uartPutHex64Direct(syscallNum)
+	uartPutcDirect('\r')
+	uartPutcDirect('\n')
+
+	switch syscallNum {
+	case 64: // write
+		// write(fd, buf, count) - pretend we wrote all bytes
+		return arg2 // return count
+
+	case 63: // read
+		// read(fd, buf, count) - return 0 (EOF)
+		return 0
+
+	case 56: // openat
+		// openat(dirfd, path, flags, mode) - return -ENOENT
+		return ^uint64(1) // -2 (ENOENT)
+
+	case 57: // close
+		// close(fd) - return success
+		return 0
+
+	case 93, 94: // exit, exit_group
+		// Exit syscalls - print simple markers first to confirm we reach here
+		uartPutcDirect('\r')
+		uartPutcDirect('\n')
+		uartPutcDirect('E')
+		uartPutcDirect('X')
+		uartPutcDirect('I')
+		uartPutcDirect('T')
+		uartPutcDirect(':')
+		uartPutHex64Direct(arg0) // exit code
+		uartPutcDirect('\r')
+		uartPutcDirect('\n')
+		// Use semihosting to gracefully exit QEMU
+		asm.QemuExit()
+		// If semihosting doesn't work, hang
+		for {
+		}
+
+	case 98: // futex
+		// futex - return success (common in Go runtime)
+		return 0
+
+	case 99: // nanosleep
+		// nanosleep - return success (slept)
+		return 0
+
+	case 131: // tgkill
+		// tgkill - used for signals, return success
+		return 0
+
+	case 220: // clone (used by Go runtime)
+		// clone - return -EAGAIN (can't create new thread)
+		return ^uint64(10) // -11 (EAGAIN)
+
+	case 222: // mmap
+		// mmap(addr, length, prot, flags, fd, offset)
+		// arg0 = addr (hint, ignored), arg1 = length, arg2 = prot, arg3 = flags
+		// Use bump allocator from mmap region (0x50000000-0x78000000)
+		length := uintptr(arg1)
+
+		// Align length to page size (4KB)
+		const pageSize = 4096
+		alignedLength := (length + pageSize - 1) &^ (pageSize - 1)
+
+		// Check if we have enough space
+		if mmapNext+alignedLength > mmapEnd {
+			// Out of memory - show detailed error
+			uartPutcDirect('M')
+			uartPutcDirect('!')
+			uartPutcDirect('(')
+			uartPutHex64Direct(uint64(alignedLength) >> 20) // Show MB requested
+			uartPutcDirect('M')
+			uartPutcDirect(')')
+			return ^uint64(11) // -12 (ENOMEM)
+		}
+
+		// Allocate from bump allocator
+		result := mmapNext
+		mmapNext += alignedLength
+
+		// Debug output showing allocation (compact: pages allocated)
+		uartPutcDirect('M')
+		uartPutHex64Direct(uint64(alignedLength) >> 12) // Show pages allocated
+		uartPutcDirect('@')
+		uartPutHex64Direct(uint64(result) >> 20) // Show base in MB
+		uartPutcDirect(' ')
+
+		return uint64(result)
+
+	case 226: // mprotect
+		// mprotect - return success
+		return 0
+
+	case 233: // munmap
+		// munmap - return success
+		return 0
+
+	case 261: // prlimit64
+		// prlimit64 - return success but don't actually do anything
+		return 0
+
+	case 278: // getrandom
+		// getrandom - return 0 bytes (can't provide random)
+		return 0
+
+	default:
+		// Unknown syscall - print warning and return -ENOSYS
+		uartPutsDirect("SYSCALL UNKNOWN: ")
+		uartPutHex64Direct(syscallNum)
+		uartPutsDirect("\r\n")
+		return ^uint64(37) // -38 (ENOSYS)
+	}
+}

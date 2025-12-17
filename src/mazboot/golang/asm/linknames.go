@@ -15,6 +15,10 @@ func BusyWait(count uint32)
 //go:nosplit
 func Bzero(ptr unsafe.Pointer, size uint32)
 
+//go:linkname CallMallocinit call_mallocinit
+//go:nosplit
+func CallMallocinit()
+
 //go:linkname Delay delay
 //go:nosplit
 func Delay(count int32)
@@ -50,6 +54,18 @@ func GetCallerStackPointer() uintptr
 //go:linkname GetExceptionVectorsAddr get_exception_vectors_addr
 //go:nosplit
 func GetExceptionVectorsAddr() uintptr
+
+//go:linkname GetG0Addr get_g0_addr
+//go:nosplit
+func GetG0Addr() uintptr
+
+//go:linkname GetM0Addr get_m0_addr
+//go:nosplit
+func GetM0Addr() uintptr
+
+//go:linkname GetPhysPageSizeAddr get_phys_page_size_addr
+//go:nosplit
+func GetPhysPageSizeAddr() uintptr
 
 //go:linkname GetStackPointer get_stack_pointer
 //go:nosplit

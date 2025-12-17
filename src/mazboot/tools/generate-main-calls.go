@@ -128,6 +128,7 @@ func generateMainCallsContent(goFunctionsCalled []string, goSourceDir string, w 
 		"kernelMainBodyWrapper": {},
 		"GrowStackForCurrent":   {},
 		"ExceptionHandler":      {"uint64", "uint64", "uint64", "uint64", "uint32"},
+		"HandleSyscall":         {"uint64", "uint64", "uint64", "uint64", "uint64", "uint64", "uint64"},
 	}
 
 	// Parse Go source to find signatures for unknown functions

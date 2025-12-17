@@ -1,6 +1,7 @@
 package main
 
 import (
+	// "runtime/debug" // Temporarily disabled for exit debugging
 	"unsafe"
 
 	"mazboot/asm"
@@ -481,6 +482,34 @@ func KernelMain(r0, r1, atags uint32) {
 	uartPutc('r') // 'r' = Runtime stubs init done
 	uartPuts("DEBUG: KernelMain after initRuntimeStubs\r\n")
 
+	// CRITICAL: Initialize MMU BEFORE heap initialization!
+	// The Go runtime's memmove uses unaligned memory accesses, which only work
+	// when memory is mapped as "Normal" type (with MMU enabled).
+	// Without MMU, memory is "Device" type which requires strict alignment.
+	uartPuts("DEBUG: Initializing MMU early (before heap)...\r\n")
+	uartPutc('M') // 'M' = MMU init starting
+	if !initMMU() {
+		uartPuts("FATAL: MMU initialization failed\r\n")
+		for {
+		}
+	}
+	uartPuts("DEBUG: MMU page tables set up, enabling MMU...\r\n")
+	if !enableMMU() {
+		uartPuts("FATAL: MMU enablement failed\r\n")
+		for {
+		}
+	}
+	uartPutc('m') // 'm' = MMU enabled
+	uartPuts("DEBUG: MMU enabled successfully\r\n")
+
+	// Initialize Go runtime heap allocator
+	// This calls mallocinit() which initializes the heap.
+	// Now that MMU is enabled, Normal memory allows unaligned accesses.
+	// Required for gg library and any other code that uses heap allocation.
+	uartPutc('H') // 'H' = Heap init starting
+	initGoHeap()
+	uartPutc('h') // 'h' = Heap init done
+
 	uartPutc('S') // 'S' = Stack init starting
 
 	// Initialize kernel stack info for Go runtime stack checks
@@ -494,6 +523,32 @@ func KernelMain(r0, r1, atags uint32) {
 	uartPuts("DEBUG: Initializing memory management (early)...\r\n")
 	memInit(0) // No ATAGs in QEMU, pass 0
 
+	// NOTE: Physical frame allocator is now initialized in initializeMMU() (before initGoHeap)
+	// using fixed addresses at 0x41020500+ that won't be zeroed by memInit
+
+	// DEBUG: Check mcache.alloc[] is still valid after memInit
+	// NOTE: mcache struct is now allocated at 0x41020000 (not at the pointer variable
+	// 0x40131408). This is above the page array region, so memInit won't touch it.
+	mcacheStructAddr := uintptr(0x41020000)
+	allocArrayStart := mcacheStructAddr + 0x30
+	uartPuts("DEBUG: After memInit, mcache.alloc[47] = 0x")
+	uartPutHex64(readMemory64(allocArrayStart + 47*8))
+	uartPuts("\r\n")
+
+	// The mcache struct at 0x41020000 should NOT be affected by memInit
+	// because pageInit only zeroes from __end (0x40131510) to pageArrayEnd.
+	// Verify it's still correct - if not, reinitialize.
+	if readMemory64(allocArrayStart+47*8) != 0x40108500 {
+		uartPuts("WARNING: mcache.alloc[] corrupted, reinitializing...\r\n")
+		emptymspanAddr := uint64(0x40108500) // runtime.emptymspan
+		for i := uintptr(0); i < 136; i++ {
+			writeMemory64(allocArrayStart+i*8, emptymspanAddr)
+		}
+		uartPuts("DEBUG: After reinit, mcache.alloc[47] = 0x")
+		uartPutHex64(readMemory64(allocArrayStart + 47*8))
+		uartPuts("\r\n")
+	}
+
 	// Create main kernel goroutine with 32KB stack
 	uartPuts("DEBUG: Creating main kernel goroutine...\r\n")
 	mainG := createKernelGoroutine(nil, KERNEL_GOROUTINE_STACK_SIZE)
@@ -503,6 +558,11 @@ func KernelMain(r0, r1, atags uint32) {
 			// Hang
 		}
 	}
+
+	// CRITICAL: Store mainG in a global before switching stacks!
+	// After SwitchToGoroutine, local variables on g0's stack are inaccessible.
+	// We store it in a global so we can access it from the new stack.
+	mainKernelGoroutine = mainG
 
 	// Set up the function to call (kernelMainBody)
 	// We'll use a wrapper function that we can get the address of
@@ -521,6 +581,77 @@ func KernelMain(r0, r1, atags uint32) {
 	asm.SwitchToGoroutine(unsafe.Pointer(mainG))
 
 	// After switchToGoroutine returns, we're on the new stack with x28 set
+	// CRITICAL: Update m0.curg to point to mainG so systemstack works!
+	// Without this, systemstack sees gp != mp.curg and throws "unexpected goroutine"
+	m0Addr := asm.GetM0Addr()
+
+	// Read mainG from global (local variable is on old stack and inaccessible)
+	mainGFromGlobal := mainKernelGoroutine
+
+	// Calculate the correct offset for curg using unsafe.Offsetof
+	curgOffset := unsafe.Offsetof(runtimeM{}.curg)
+	uartPuts("DEBUG: curg offset = 0x")
+	uartPutHex64(uint64(curgOffset))
+	uartPuts("\r\n")
+	uartPuts("DEBUG: m0Addr = 0x")
+	uartPutHex64(uint64(m0Addr))
+	uartPuts("\r\n")
+	uartPuts("DEBUG: mainG (from global) = 0x")
+	uartPutHex64(uint64(uintptr(unsafe.Pointer(mainGFromGlobal))))
+	uartPuts("\r\n")
+
+	// Write mainG to m0.curg
+	writeMemory64(m0Addr+curgOffset, uint64(uintptr(unsafe.Pointer(mainGFromGlobal))))
+
+	// Verify the write by reading it back
+	curgReadback := readMemory64(m0Addr + curgOffset)
+	uartPuts("DEBUG: m0.curg readback = 0x")
+	uartPutHex64(curgReadback)
+	uartPuts("\r\n")
+
+	// Also verify x28 (current goroutine pointer) is set correctly
+	g0Addr := asm.GetG0Addr()
+	uartPuts("DEBUG: g0Addr = 0x")
+	uartPutHex64(uint64(g0Addr))
+	uartPuts("\r\n")
+
+	// Dump memory around curg to see if there's a layout mismatch
+	uartPuts("DEBUG: Memory dump around m0+0xD0 to m0+0x100:\r\n")
+	for offset := uintptr(0xD0); offset <= 0x100; offset += 8 {
+		val := readMemory64(m0Addr + offset)
+		uartPuts("  m0+0x")
+		uartPutHex64(uint64(offset))
+		uartPuts(" = 0x")
+		uartPutHex64(val)
+		if val == uint64(uintptr(unsafe.Pointer(mainGFromGlobal))) {
+			uartPuts(" <- MATCH mainG!")
+		}
+		uartPuts("\r\n")
+	}
+
+	// CRITICAL: Verify g.m offset in runtimeG struct
+	// systemstack does: gp := getg(); mp := gp.m; if gp == mp.curg ...
+	// If g.m offset is wrong, mp will be garbage and mp.curg won't match gp
+	mOffset := unsafe.Offsetof(runtimeG{}.m)
+	uartPuts("DEBUG: g.m offset = 0x")
+	uartPutHex64(uint64(mOffset))
+	uartPuts("\r\n")
+
+	// Read what mainG.m points to (should be m0)
+	mainGAddr := uintptr(unsafe.Pointer(mainGFromGlobal))
+	mainGDotM := readMemory64(mainGAddr + mOffset)
+	uartPuts("DEBUG: mainG.m = 0x")
+	uartPutHex64(mainGDotM)
+	uartPuts("\r\n")
+	if mainGDotM == uint64(m0Addr) {
+		uartPuts("DEBUG: mainG.m matches m0Addr - OK!\r\n")
+	} else {
+		uartPuts("DEBUG: mainG.m DOES NOT match m0Addr - MISMATCH!\r\n")
+		uartPuts("DEBUG: Expected m0Addr = 0x")
+		uartPutHex64(uint64(m0Addr))
+		uartPuts("\r\n")
+	}
+
 	// Now we can safely call the function
 	uartPuts("DEBUG: Stack switched by g0, calling kernelMainBodyWrapper...\r\n")
 	kernelMainBodyWrapper()
@@ -604,24 +735,15 @@ func kernelMainBody() {
 
 	uartPuts("DEBUG: stage3 complete, proceeding to stage4 (MMU)\r\n")
 
-	// Stage 4: MMU initialization (interrupts disabled)
-	uartPuts("DEBUG: stage4 MMU initialization start\r\n")
+	// Stage 4: MMU initialization
+	// NOTE: MMU is now initialized early in KernelMain() before heap init.
+	// This was required because the Go runtime's memmove uses unaligned
+	// memory accesses that only work with MMU enabled (Normal memory type).
+	uartPuts("DEBUG: stage4 MMU - already initialized in KernelMain\r\n")
 
-	// CRITICAL: Disable interrupts during MMU initialization for atomicity
-	uartPuts("DEBUG: Disabling interrupts for MMU initialization...\r\n")
+	// Still need to disable interrupts for consistency with original flow
+	uartPuts("DEBUG: Disabling interrupts for continued execution...\r\n")
 	asm.DisableIrqs()
-
-	uartPutc('M') // 'M' = MMU init starting
-	uartPuts("DEBUG: Initializing MMU...\r\n")
-	if !initMMU() {
-		abortBoot("MMU initialization failed - cannot continue without MMU!")
-	}
-	uartPutc('m') // 'm' = MMU init done
-	if !enableMMU() {
-		abortBoot("MMU enablement failed - cannot continue without MMU!")
-	}
-	uartPutc('E') // 'E' = MMU enable done
-	uartPuts("DEBUG: MMU enabled successfully\r\n")
 
 	// Now that MMU is enabled and memory attributes are Normal for our RAM
 	// regions, it is safe to parse the DTB without risking unaligned Device
@@ -653,6 +775,25 @@ func kernelMainBody() {
 			uartPuts("DEBUG: Framebuffer text initialized successfully\r\n")
 			// Render boot text and Mazarin image to verify Bochs framebuffer path
 			testFramebufferText()
+			// Test simple heap allocation first
+			uartPuts("DEBUG: Testing simple heap allocation...\r\n")
+			testSlice := make([]byte, 100)
+			if testSlice != nil {
+				testSlice[0] = 42
+				uartPuts("DEBUG: Simple heap allocation SUCCESS! testSlice[0] = 0x")
+				uartPutHex64(uint64(testSlice[0]))
+				uartPuts("\r\n")
+			} else {
+				uartPuts("DEBUG: Simple heap allocation returned nil!\r\n")
+			}
+
+			// Configure Go runtime memory settings to reduce memory usage
+			// TEMPORARILY DISABLED to debug exit issue
+			uartPuts("DEBUG: Skipping Go runtime memory settings (debugging exit issue)\r\n")
+			// oldGC := debug.SetGCPercent(20)
+			// memLimit := int64(512 * 1024 * 1024) // 512MB
+			// oldLimit := debug.SetMemoryLimit(memLimit)
+
 			// After the scrolling text is drawn, render a simple gg-based
 			// circle on top of the existing framebuffer contents to verify
 			// integration of the gg 2D drawing library with the Bochs

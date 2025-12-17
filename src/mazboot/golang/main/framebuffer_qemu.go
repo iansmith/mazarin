@@ -11,8 +11,8 @@ import (
 // QEMU framebuffer constants for bochs-display device
 // bochs-display uses a fixed framebuffer address from PCI BAR0 and configures via VBE MMIO registers
 const (
-	QEMU_FB_WIDTH  = 1024
-	QEMU_FB_HEIGHT = 768
+	QEMU_FB_WIDTH  = 1280
+	QEMU_FB_HEIGHT = 720
 )
 
 // Override BYTES_PER_PIXEL for QEMU - bochs-display uses XRGB8888 (32-bit, 4 bytes per pixel)

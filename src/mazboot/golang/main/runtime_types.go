@@ -24,7 +24,8 @@ type runtimeGobuf struct {
 	ctxt unsafe.Pointer
 	lr   uintptr
 	bp   uintptr // for framepointer-enabled architectures
-	ret  uintptr
+	// NOTE: Go 1.25.5's gobuf does NOT have a 'ret' field!
+	// Total: 48 bytes (6 fields × 8 bytes)
 }
 
 // runtimeG matches Go runtime's g struct EXACTLY
@@ -106,6 +107,11 @@ type runtimeG struct {
 
 // runtimeM matches Go runtime's m struct EXACTLY
 // All fields present, unused fields remain zero
+// CRITICAL: These sizes must match Go 1.25.5 runtime exactly:
+//   - morebuf (gobuf): 48 bytes (6 fields, NO ret field)
+//   - goSigStack (gsignalStack): 40 bytes (stack:16 + stackguard0:8 + stackguard1:8 + stktopsp:8)
+//   - sigmask (sigset for linux arm64): 8 bytes ([2]uint32)
+// curg offset should be 0xB8 (184 bytes)
 type runtimeM struct {
 	g0      *runtimeG
 	morebuf runtimeGobuf
@@ -113,8 +119,8 @@ type runtimeM struct {
 
 	procid       uint64
 	gsignal      *runtimeG
-	goSigStack   [64]byte // gsignalStack (simplified)
-	sigmask      [16]byte // sigset (simplified)
+	goSigStack   [40]byte // gsignalStack: stack(16) + stackguard0(8) + stackguard1(8) + stktopsp(8) = 40 bytes
+	sigmask      [8]byte  // sigset for linux arm64: [2]uint32 = 8 bytes
 	tls          [6]uintptr
 	mstartfn     uintptr // func() (simplified)
 	curg         *runtimeG

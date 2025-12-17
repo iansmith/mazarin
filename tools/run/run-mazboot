@@ -193,7 +193,7 @@ QEMU_CMD=(
     "$QEMU_BIN"
     -M virt,virtualization=on
     -cpu cortex-a72
-    -m 1G
+    -m 8G
     -kernel "$KERNEL_PATH"
     -nodefaults     # Disable default devices to avoid serial conflicts
     -device bochs-display

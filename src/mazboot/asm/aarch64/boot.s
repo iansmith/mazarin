@@ -99,6 +99,19 @@ at_el1:
     movz x14, #0x0900, lsl #16     // UART base = 0x09000000
     movz w15, #0x31                // '1' = At EL1
     str w15, [x14]
+
+    // ========================================
+    // Enable SIMD/floating-point (required for gg library)
+    // CPACR_EL1.FPEN (bits 21:20) = 0b11: No trapping from EL0 or EL1
+    // Without this, any FPU/SIMD instruction traps with EC=0x07
+    // ========================================
+    movz w15, #0x46                // 'F' = Enabling FPU
+    str w15, [x14]
+    mov x0, #(3 << 20)             // FPEN = 0b11
+    msr CPACR_EL1, x0
+    isb                            // Ensure FPU is enabled before continuing
+    movz w15, #0x66                // 'f' = FPU enabled
+    str w15, [x14]
     
     // QEMU virt machine memory layout (1GB RAM):
     // - 0x00000000-0x08000000: Flash/ROM (kernel loaded at 0x200000)
@@ -141,6 +154,16 @@ at_el1:
     blo 1b
 
     movz w15, #0x62              // 'b' = BSS cleared
+    str w15, [x14]
+
+    // Initialize mmap bump pointer at 0x40FFF000 to 0x60000000
+    // This must be done before any syscalls (including during page fault handling)
+    movz x4, #0x40FF, lsl #16     // 0x40FF0000
+    movk x4, #0xF000, lsl #0      // 0x40FFF000
+    movz x5, #0x6000, lsl #16     // 0x60000000 - start of mmap region
+    movk x5, #0x0000, lsl #0
+    str x5, [x4]                  // Store initial mmap pointer
+    movz w15, #0x4D              // 'M' = mmap pointer initialized
     str w15, [x14]
 
     // Enable write barrier flag AFTER clearing BSS

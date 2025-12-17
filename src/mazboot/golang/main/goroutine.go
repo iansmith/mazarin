@@ -7,6 +7,12 @@ import (
 	"unsafe"
 )
 
+// mainKernelGoroutine holds a pointer to the main kernel goroutine.
+// This is stored in a global so it survives the stack switch from g0 to the
+// main goroutine's stack. Local variables on g0's stack are not accessible
+// after SwitchToGoroutine.
+var mainKernelGoroutine *runtimeG
+
 // Goroutine creation functions
 // Simplified versions of runtime.newproc() and runtime.malg()
 
@@ -51,9 +57,8 @@ func createKernelGoroutine(fn func(), stackSize uint32) *runtimeG {
 	// Setting it to ~0 causes spurious morestack calls!
 	gPtr.stackguard1 = stackLo + _StackGuard // Same as stackguard0
 
-	// 4. Link to m0
-	m0Ptr := (*runtimeM)(unsafe.Pointer(uintptr(0x401013e0)))
-	gPtr.m = m0Ptr
+	// 4. Link to m0 (use assembly function to get linker symbol address)
+	gPtr.m = (*runtimeM)(unsafe.Pointer(asm.GetM0Addr()))
 
 	// 5. Initialize scheduler state
 	// Set up stack pointer at top of stack (16-byte aligned for AArch64)

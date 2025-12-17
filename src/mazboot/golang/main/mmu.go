@@ -62,52 +62,60 @@ const (
 	L3_SHIFT = 12 // Bits 20-12
 )
 
-// Page table allocation for 8GB RAM
+// Page table allocation for demand paging with 1GB physical RAM limit
 //
-// Calculation for 8GB (0x200000000 bytes):
-// - L0: 1 table (4KB) - covers 512GB address space
-// - L1: 1 table (4KB) - covers 512GB, but we only need 8 entries for 8GB
-// - L2: Each entry covers 2MB
-//   - For 8GB: 8GB / 2MB = 4096 L2 entries needed
-//   - Each L2 table has 512 entries
-//   - Need: 4096 / 512 = 8 L2 tables
-//   - Size: 8 * 4KB = 32KB
+// DEMAND PAGING DESIGN:
+// - Total kernel physical memory limit: 1GB
+// - Virtual mmap region: 6.5GB (0x60000000 - 0x200000000)
+// - Pages are mapped on-demand when accessed (page fault handler)
+// - Go runtime reserves large virtual ranges but only touches small fraction
 //
-// - L3: Each entry covers 4KB
-//   - For 8GB: 8GB / 4KB = 2,097,152 L3 entries needed
-//   - Each L3 table has 512 entries
-//   - Need: 2,097,152 / 512 = 4096 L3 tables
-//   - Size: 4096 * 4KB = 16MB
+// Memory math:
+// - 1GB / 4KB = 262,144 pages maximum
+// - Page tables for 1GB: ~2MB (512 L3 tables × 4KB + overhead)
+// - We track total pages allocated and abort if over threshold
 //
-// Total page table size (theoretical maximum for 8GB with 4KB pages):
+// Physical memory layout (~1GB total):
+// - 0x40000000-0x40100000: Low RAM (BSS, initial data) - 1MB
+// - 0x40100000-0x50000000: Kernel code/data - ~256MB (pre-mapped)
+// - 0x50000000-0x5E000000: Reserved/page tables - 224MB
+// - 0x60000000-0x180000000: Physical frame pool - ~5GB (for demand paging)
 //
-//	L0: 4KB
-//	L1: 4KB
-//	L2: 32KB (8 tables)
-//	L3: 16MB (4,096 tables)
-//	─────────
-//	Total: 16MB + 40KB ≈ 16MB
-//
-// However, we use LAZY ALLOCATION for L3 tables:
-//   - L3 tables are allocated on-demand when memory is actually mapped
-//   - Initially, only L0, L1, and L2 tables are allocated (~40KB)
-//   - Bootloader-only operation needs ~1.25MB of L3 tables
-//   - 15MB pool can support mapping up to ~3.75GB of RAM
-//   - For full 8GB, we'll use 2MB blocks (future optimization) or extend allocation
-//
-// Placement: 0x5F100000 - 0x60000000 (15MB region)
-//   - Start: 0x5F100000 (1MB after g0 stack top, leaves safety margin)
-//   - End: 0x60000000 (end of bootloader RAM, start of user RAM)
-//   - This is sufficient for bootloader operation and initial user program support
+// When demand paging, physical frames come from anywhere in the pool.
+// We don't identity-map the mmap region - VA != PA for those pages.
+// The frame pool (0x60000000+) is mapped as identity-mapped physical memory.
 const (
-	// Page table region: 0x5F100000 - 0x60000000 (15MB)
-	// Leaves 1MB safety margin after g0 stack (0x5F000000 - 0x5F100000)
-	PAGE_TABLE_BASE = 0x5F100000       // Start of page table region
-	PAGE_TABLE_SIZE = 15 * 1024 * 1024 // 15MB (sufficient with lazy allocation)
-	PAGE_TABLE_END  = 0x60000000       // End of page table region (start of user RAM)
+	// Page table region: 0x5E000000 - 0x60000000 (32MB)
+	// 1GB needs only ~2MB of page tables, but we allow headroom
+	PAGE_TABLE_BASE = 0x5E000000       // Start of page table region
+	PAGE_TABLE_SIZE = 32 * 1024 * 1024 // 32MB (way more than needed for 1GB)
+	PAGE_TABLE_END  = 0x60000000       // End of page table region
 
-	// Maximum address space to map (8GB)
-	MAX_MAPPED_RAM = 8 * 1024 * 1024 * 1024 // 8GB = 0x200000000
+	// Physical frame allocator for demand paging
+	// Frames allocated from this pool when page faults occur
+	//
+	// CRITICAL: Frame pool must be at physical addresses OUTSIDE the mmap virtual
+	// region (0x60000000-0x200000000) to avoid conflict. We identity-map the frame
+	// pool so we can zero frames when allocating. If the frame pool overlapped with
+	// mmap VAs, the identity mapping would defeat demand paging.
+	//
+	// QEMU has 8GB RAM: 0x40000000-0x240000000
+	// We use the region above mmap VA end: 0x200000000-0x240000000 (1GB)
+	PHYS_FRAME_BASE = 0x200000000 // Start of physical frame pool (after mmap VA end)
+	PHYS_FRAME_END  = 0x240000000 // End (1GB pool, up to 8GB QEMU RAM limit)
+
+	// Virtual mmap region (large virtual, demand-paged)
+	// VA range is large but physical backing is limited by PAGE_LIMIT
+	//
+	// Go runtime arm64 hints start at 0x4000000000 (256GB) and go up.
+	// Formula: p = uintptr(i)<<40 | 0x4000000000 for i in [0, 0x7f]
+	// We accept any address from our low region up to a reasonable max.
+	MMAP_VIRT_BASE = 0x60000000     // Start of virtual mmap region (our bump allocator)
+	MMAP_VIRT_END  = 0x800000000000 // End of virtual mmap region (128TB - covers Go hints)
+
+	// Memory limits
+	MAX_KERNEL_PAGES = 262144         // 1GB / 4KB = 262,144 pages max
+	MAX_KERNEL_BYTES = 1 << 30        // 1GB
 )
 
 // Page table structure
@@ -118,12 +126,32 @@ var (
 	pageTableL3 []uintptr // Level 3 tables (PT) - allocated as needed
 )
 
-// Page table allocator state
-// Uses a simple bump allocator from the reserved page table region
-var pageTableAllocator struct {
+// Page table allocator state stored at FIXED ADDRESS to avoid being
+// zeroed by memInit's pageInit. BSS variables after __end get zeroed, but
+// this memory region (0x41020600+) is in safe pre-mapped kernel RAM.
+//
+// Memory layout in 0x41000000 region:
+//   0x41000000: P structure (used by runtime stubs)
+//   0x41010000: Write barrier buffer (64KB)
+//   0x41020000: mcache struct (~0x500 bytes)
+//   0x41020500: physFrameAllocator state (32 bytes)
+//   0x41020520: totalKernelPages (8 bytes)
+//   0x41020600: pageTableAllocator state (this)
+const (
+	PAGE_TABLE_ALLOC_ADDR = 0x41020600 // Fixed address for page table allocator state
+)
+
+// pageTableAllocatorState is the layout of allocator state at fixed address
+type pageTableAllocatorState struct {
 	base   uintptr // Base address of page table region (PAGE_TABLE_BASE)
 	offset uintptr // Current offset from base (increments by 4KB per allocation)
-	// Note: No mutex needed - we're single-threaded during MMU initialization
+}
+
+// getPageTableAllocator returns pointer to the allocator state at fixed address
+//
+//go:nosplit
+func getPageTableAllocator() *pageTableAllocatorState {
+	return (*pageTableAllocatorState)(unsafe.Pointer(uintptr(PAGE_TABLE_ALLOC_ADDR)))
 }
 
 // allocatePageTable allocates a 4KB-aligned page table from the reserved region
@@ -139,32 +167,21 @@ var pageTableAllocator struct {
 //
 //go:nosplit
 func allocatePageTable() uintptr {
-	// Initialize allocator on first call
-	if pageTableAllocator.base == 0 {
-		pageTableAllocator.base = PAGE_TABLE_BASE
-		pageTableAllocator.offset = 0
-	}
+	alloc := getPageTableAllocator()
 
 	// Calculate next allocation address
-	ptr := pageTableAllocator.base + pageTableAllocator.offset
+	ptr := alloc.base + alloc.offset
 
 	// Verify 4KB alignment (should always be true, but check anyway)
 	if (ptr & 0xFFF) != 0 {
-		uartPuts("MMU: ERROR - Page table address not 4KB aligned: 0x")
-		uartPutHex64(uint64(ptr))
-		uartPuts("\r\n")
+		uartPutsDirect("PTALIGN!")
 		for {
 		} // Halt on alignment error
 	}
 
 	// Check for overflow (ensure we don't exceed allocated region)
-	if pageTableAllocator.offset+TABLE_SIZE > PAGE_TABLE_SIZE {
-		uartPuts("MMU: ERROR - Page table allocator overflow!\r\n")
-		uartPuts("MMU: Allocated: ")
-		uartPutHex64(uint64(pageTableAllocator.offset))
-		uartPuts(" bytes, Limit: ")
-		uartPutHex64(uint64(PAGE_TABLE_SIZE))
-		uartPuts(" bytes\r\n")
+	if alloc.offset+TABLE_SIZE > PAGE_TABLE_SIZE {
+		uartPutsDirect("PTOVERFLOW!")
 		for {
 		} // Halt on overflow
 	}
@@ -173,7 +190,7 @@ func allocatePageTable() uintptr {
 	bzero(unsafe.Pointer(ptr), TABLE_SIZE)
 
 	// Update allocator state for next allocation
-	pageTableAllocator.offset += TABLE_SIZE
+	alloc.offset += TABLE_SIZE
 
 	return ptr
 }
@@ -182,13 +199,282 @@ func allocatePageTable() uintptr {
 //
 //go:nosplit
 func getPageTableAllocatorStats() (allocated uintptr, remaining uintptr) {
-	allocated = pageTableAllocator.offset
+	alloc := getPageTableAllocator()
+	allocated = alloc.offset
 	if allocated > PAGE_TABLE_SIZE {
 		remaining = 0
 	} else {
 		remaining = PAGE_TABLE_SIZE - allocated
 	}
 	return
+}
+
+// =============================================================================
+// Physical Frame Allocator (for demand paging)
+// =============================================================================
+
+// Physical frame allocator state stored at FIXED ADDRESS to avoid being
+// zeroed by memInit's pageInit. BSS variables after __end get zeroed, but
+// this memory region (0x41020500+) is in safe pre-mapped kernel RAM.
+//
+// Memory layout in 0x41000000 region:
+//   0x41000000: P structure (used by runtime stubs)
+//   0x41010000: Write barrier buffer (64KB)
+//   0x41020000: mcache struct (~0x500 bytes)
+//   0x41020500: physFrameAllocator state (this)
+const (
+	PHYS_FRAME_ALLOC_ADDR = 0x41020500 // Fixed address for allocator state
+)
+
+// physFrameAllocatorState is the layout of allocator state at fixed address
+type physFrameAllocatorState struct {
+	next       uintptr // Next physical frame to allocate
+	end        uintptr // End of physical frame pool
+	pagesAlloc uint32  // Total pages allocated (for 1GB limit check)
+	padding    uint32  // Alignment padding
+}
+
+// getPhysFrameAllocator returns pointer to the allocator state at fixed address
+//
+//go:nosplit
+func getPhysFrameAllocator() *physFrameAllocatorState {
+	return (*physFrameAllocatorState)(unsafe.Pointer(uintptr(PHYS_FRAME_ALLOC_ADDR)))
+}
+
+// Total kernel pages - also stored at fixed address (0x41020520)
+const TOTAL_KERNEL_PAGES_ADDR = 0x41020520
+
+//go:nosplit
+func getTotalKernelPages() uint32 {
+	return *(*uint32)(unsafe.Pointer(uintptr(TOTAL_KERNEL_PAGES_ADDR)))
+}
+
+//go:nosplit
+func setTotalKernelPages(v uint32) {
+	*(*uint32)(unsafe.Pointer(uintptr(TOTAL_KERNEL_PAGES_ADDR))) = v
+}
+
+//go:nosplit
+func incTotalKernelPages() {
+	ptr := (*uint32)(unsafe.Pointer(uintptr(TOTAL_KERNEL_PAGES_ADDR)))
+	*ptr++
+}
+
+// initPhysFrameAllocator initializes the physical frame allocator
+// Uses fixed address storage to avoid being zeroed by memInit
+//
+//go:nosplit
+func initPhysFrameAllocator() {
+	alloc := getPhysFrameAllocator()
+	alloc.next = PHYS_FRAME_BASE
+	alloc.end = PHYS_FRAME_END
+	alloc.pagesAlloc = 0
+
+	// Calculate pre-mapped pages (kernel code/data from 0x40000000 to 0x50000000)
+	preMappedBytes := uintptr(0x50000000 - 0x40000000) // 256MB pre-mapped
+	preMappedPages := uint32(preMappedBytes / PAGE_SIZE)
+	setTotalKernelPages(preMappedPages)
+
+	poolSize := PHYS_FRAME_END - PHYS_FRAME_BASE
+	poolPages := poolSize / PAGE_SIZE
+
+	uartPuts("MMU: Physical frame allocator initialized\r\n")
+	uartPuts("MMU:   Pre-mapped: ")
+	uartPutHex64(uint64(preMappedPages))
+	uartPuts(" pages (")
+	uartPutHex64(uint64(preMappedBytes >> 20))
+	uartPuts(" MB)\r\n")
+	uartPuts("MMU:   Frame pool: 0x")
+	uartPutHex64(uint64(PHYS_FRAME_BASE))
+	uartPuts(" - 0x")
+	uartPutHex64(uint64(PHYS_FRAME_END))
+	uartPuts(" (")
+	uartPutHex64(uint64(poolPages))
+	uartPuts(" pages = ")
+	uartPutHex64(uint64(poolSize >> 20))
+	uartPuts(" MB)\r\n")
+	uartPuts("MMU:   Kernel limit: ")
+	uartPutHex64(uint64(MAX_KERNEL_PAGES))
+	uartPuts(" pages (1GB)\r\n")
+	uartPuts("MMU:   Available for demand paging: ")
+	uartPutHex64(uint64(MAX_KERNEL_PAGES - preMappedPages))
+	uartPuts(" pages\r\n")
+}
+
+// allocPhysFrame allocates a single 4KB physical frame
+// Returns 0 if no more frames available or over 1GB limit
+//
+//go:nosplit
+func allocPhysFrame() uintptr {
+	alloc := getPhysFrameAllocator()
+	totalPages := getTotalKernelPages()
+
+	// Check 1GB kernel limit FIRST
+	if totalPages >= MAX_KERNEL_PAGES {
+		uartPutsDirect("\r\nMMU: OVER MEMORY THRESHOLD!\r\n")
+		uartPutsDirect("MMU: Kernel has used ")
+		uartPutHex64Direct(uint64(totalPages))
+		uartPutsDirect(" pages (limit: ")
+		uartPutHex64Direct(uint64(MAX_KERNEL_PAGES))
+		uartPutsDirect(" = 1GB)\r\n")
+		uartPutsDirect("MMU: ABORT - reduce heap usage or increase limit\r\n")
+		return 0
+	}
+
+	// Check physical frame pool
+	if alloc.next >= alloc.end {
+		uartPutsDirect("\r\nMMU: Physical frame pool exhausted!\r\n")
+		uartPutsDirect("MMU: next=0x")
+		uartPutHex64Direct(uint64(alloc.next))
+		uartPutsDirect(" end=0x")
+		uartPutHex64Direct(uint64(alloc.end))
+		uartPutsDirect(" pagesAlloc=0x")
+		uartPutHex64Direct(uint64(alloc.pagesAlloc))
+		uartPutsDirect("\r\n")
+		return 0
+	}
+
+	frame := alloc.next
+	alloc.next += PAGE_SIZE
+	alloc.pagesAlloc++
+	incTotalKernelPages()
+
+	totalPages = getTotalKernelPages()
+	// Print progress every 1000 pages (4MB)
+	if totalPages%1000 == 0 {
+		uartPutcDirect('[')
+		uartPutHex64Direct(uint64(totalPages))
+		uartPutcDirect('/')
+		uartPutHex64Direct(uint64(MAX_KERNEL_PAGES))
+		uartPutcDirect(']')
+	}
+
+	// Zero the frame (required for clean memory)
+	bzero(unsafe.Pointer(frame), PAGE_SIZE)
+
+	return frame
+}
+
+// getPhysFrameStats returns physical frame allocation stats
+//
+//go:nosplit
+func getPhysFrameStats() (totalPages, demandPages, remaining uint32) {
+	alloc := getPhysFrameAllocator()
+	totalPages = getTotalKernelPages()
+	demandPages = alloc.pagesAlloc
+	if totalPages >= MAX_KERNEL_PAGES {
+		remaining = 0
+	} else {
+		remaining = MAX_KERNEL_PAGES - totalPages
+	}
+	return
+}
+
+// =============================================================================
+// Demand Paging Support
+// =============================================================================
+
+// mmapPromise tracks a virtual memory promise from mmap
+// We track ranges of virtual addresses that were promised but not yet mapped
+type mmapPromise struct {
+	start uintptr // Start of virtual range
+	end   uintptr // End of virtual range (exclusive)
+}
+
+// Maximum number of mmap promises we track (should be enough for Go runtime)
+const maxMmapPromises = 256
+
+var (
+	mmapPromises    [maxMmapPromises]mmapPromise
+	mmapPromiseCount int
+)
+
+// addMmapPromise records a virtual memory promise
+// Returns true on success, false if promise table is full
+//
+//go:nosplit
+func addMmapPromise(start, size uintptr) bool {
+	if mmapPromiseCount >= maxMmapPromises {
+		uartPutsDirect("MMU: mmap promise table full!\r\n")
+		return false
+	}
+
+	mmapPromises[mmapPromiseCount] = mmapPromise{
+		start: start,
+		end:   start + size,
+	}
+	mmapPromiseCount++
+	return true
+}
+
+// isAddressPromised checks if a virtual address was promised via mmap
+//
+//go:nosplit
+func isAddressPromised(va uintptr) bool {
+	for i := 0; i < mmapPromiseCount; i++ {
+		if va >= mmapPromises[i].start && va < mmapPromises[i].end {
+			return true
+		}
+	}
+	return false
+}
+
+// HandlePageFault handles a page fault for demand paging
+// Called from the exception handler when a data abort occurs
+// Returns true if the fault was handled (page mapped), false otherwise
+//
+// Parameters:
+//   - faultAddr: The faulting virtual address (FAR_EL1)
+//   - faultStatus: The fault status from ESR_EL1 (lower bits)
+//
+// Simplified design: Any address in the mmap virtual range (0x60000000-0x200000000)
+// is considered valid. The Go runtime won't access addresses it didn't request,
+// so any fault in this range is from a legitimate mmap allocation.
+//
+//go:nosplit
+//go:noinline
+func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
+	// Print compact debug marker
+	uartPutcDirect('F')
+
+	// Check if the fault address is in the mmap virtual region
+	// Any address in this range is considered a valid demand-page request
+	if faultAddr < MMAP_VIRT_BASE || faultAddr >= MMAP_VIRT_END {
+		// Not in mmap region - this is a real fault
+		uartPutcDirect('!')
+		return false
+	}
+
+	// Align fault address to page boundary
+	pageAddr := faultAddr &^ (PAGE_SIZE - 1)
+
+	// Allocate a physical frame
+	physFrame := allocPhysFrame()
+	if physFrame == 0 {
+		// Out of physical memory - this is fatal for demand paging
+		uartPutsDirect("\r\nDEMAND PAGE OOM at VA=0x")
+		uartPutHex64Direct(uint64(faultAddr))
+		uartPutsDirect("\r\n")
+		return false
+	}
+
+	// Map the virtual page to the physical frame
+	// Note: VA != PA for demand-paged memory
+	mapPage(pageAddr, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+
+	// Ensure page table writes are visible before TLB flush
+	asm.Dsb()
+
+	// Invalidate TLB for this address (full flush for simplicity)
+	asm.InvalidateTlbAll()
+
+	// Ensure TLB invalidation completes before returning
+	asm.Isb()
+
+	// Success - print compact marker
+	uartPutcDirect('+')
+
+	return true
 }
 
 // createPageTableEntry creates a page table entry
@@ -231,52 +517,12 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64) {
 	// Use uint64 to ensure 64-bit arithmetic (uintptr might be 32 bits in some builds)
 	va64 := uint64(va)
 
-	// Debug for highmem addresses - print first page only
-	if va64 == 0x4010000000 {
-		uartPuts("MMU: mapPage: First highmem page\r\n")
-		uartPuts("MMU:   va (uintptr)=0x")
-		uartPutHex64(uint64(va))
-		uartPuts("\r\n")
-		uartPuts("MMU:   va64 (uint64)=0x")
-		uartPutHex64(va64)
-		uartPuts("\r\n")
-		// Manual calculation to verify - calculate expected L0 index
-		// 0x4010000000 in binary: bit 38 is set (the '1' in 0x401)
-		// For L0 index, we need bits 48-39
-		// Let's manually extract: (va64 >> 39) & 0x1FF
-		manualShift := va64 >> 39
-		manualMask := manualShift & 0x1FF
-		uartPuts("MMU:   manualShift (va64>>39)=0x")
-		uartPutHex64(manualShift)
-		uartPuts("\r\n")
-		uartPuts("MMU:   manualMask (shift&0x1FF)=0x")
-		uartPutHex64(manualMask)
-		uartPuts("\r\n")
-		// Also try with a known value that should work
-		testLow := uint64(0x40000000) // Lowmem address
-		uartPuts("MMU:   testLow=0x")
-		uartPutHex64(testLow)
-		uartPuts(" testLow>>39=0x")
-		uartPutHex64(testLow >> 39)
-		uartPuts("\r\n")
-	}
-
 	// Use explicit shift values to avoid any constant folding issues
 	// Note: Indices can be 0-511 (9 bits), so we need uint16, not uint8
 	l0Idx := uint16((va64 >> 39) & 0x1FF) // Bits 48-39
 	l1Idx := uint16((va64 >> 30) & 0x1FF) // Bits 38-30
 	l2Idx := uint16((va64 >> 21) & 0x1FF) // Bits 29-21
 	l3Idx := uint16((va64 >> 12) & 0x1FF) // Bits 20-12
-
-	// Debug for highmem addresses - print first page only (after calculation)
-	if va64 == 0x4010000000 {
-		uartPuts("MMU:   L0Idx=")
-		uartPutHex64(uint64(l0Idx))
-		uartPuts(" (correct: 0, not 128 - address is in L0 entry 0 range)\r\n")
-		uartPuts("MMU:   L1Idx=")
-		uartPutHex64(uint64(l1Idx))
-		uartPuts(" (256, which is valid 0-511)\r\n")
-	}
 
 	// Get L0 entry (L0 table is pre-allocated in initMMU)
 	l0EntryAddr := pageTableL0 + uintptr(l0Idx)*PTE_SIZE
@@ -288,21 +534,13 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64) {
 		// L0 entry not set - need to allocate L1 table for this L0 entry
 		if l0Idx == 0 {
 			// This shouldn't happen - L0 entry 0 should be set in initMMU
-			uartPuts("MMU: ERROR - L0 entry 0 not set (should be set in initMMU)\r\n")
+			uartPutsDirect("L0ERR")
 			return
 		}
 		// For highmem addresses, allocate a new L1 table
-		uartPuts("MMU: Allocating L1 table for L0 index ")
-		uartPutHex64(uint64(l0Idx))
-		uartPuts(" (highmem)\r\n")
 		l1Table := allocatePageTable()
-		uartPuts("MMU: L1 table allocated at 0x")
-		uartPutHex64(uint64(l1Table))
-		uartPuts("\r\n")
 		*l0Entry = createTableEntry(l1Table)
-		// Ensure write is visible
 		asm.Dsb()
-		uartPuts("MMU: L0 entry set for highmem\r\n")
 	}
 
 	// Extract L1 table address from L0 entry
@@ -413,8 +651,10 @@ func initMMU() bool {
 	// Initialize the bump allocator *after* the pre-allocated L0 + L1 tables.
 	// Otherwise allocatePageTable() would hand out PAGE_TABLE_BASE again and overwrite L0,
 	// causing bogus/unset entries and eventually allocator overflow.
-	pageTableAllocator.base = PAGE_TABLE_BASE
-	pageTableAllocator.offset = TABLE_SIZE * 2
+	// CRITICAL: Use fixed-address allocator to avoid being zeroed by memInit's pageInit()
+	ptAlloc := getPageTableAllocator()
+	ptAlloc.base = PAGE_TABLE_BASE
+	ptAlloc.offset = TABLE_SIZE * 2
 
 	// Verify page table base is 4KB aligned
 	if pageTableL0&0xFFF != 0 {
@@ -572,18 +812,46 @@ func initMMU() bool {
 	uartPuts("MMU: Skipping verification for highmem ECAM (L0 index would be >= 128)\r\n")
 	uartPuts("MMU: Highmem ECAM mapping should be valid (mapped above)\r\n")
 
-	// Step 5: Map bootloader RAM (0x40100000 - 0x60000000 = 512MB = 0.5GB)
-	// CRITICAL: This includes the page table region (0x5F100000 - 0x60000000),
-	// which provides self-mapping - the MMU can access the page tables during
-	// translation walks. This prevents the "chicken-and-egg" problem.
-	uartPuts("MMU: Mapping bootloader RAM (0x40100000-0x60000000)...\r\n")
+	// Step 5: Map bootloader RAM (0x40100000 - 0x60000000)
+	// DEMAND PAGING: Only map the pre-allocated kernel region.
+	// The mmap region (0x60000000+) is NOT mapped here - pages are
+	// mapped on-demand when accessed via page fault handler.
+	//
+	// This includes:
+	// - 0x40100000-0x50000000: Kernel code/data (~256MB, identity mapped)
+	// - 0x50000000-0x5E000000: Physical frame pool for demand paging (224MB, identity mapped)
+	// - 0x5E000000-0x60000000: Page tables (32MB, identity mapped for self-mapping)
+	//
+	// The mmap virtual region (0x60000000-0x200000000) will be mapped on demand
+	// with physical frames from the PHYS_FRAME_BASE-PHYS_FRAME_END pool.
+	uartPuts("MMU: Mapping kernel RAM (0x40100000-0x60000000)...\r\n")
 	mapRegion(
 		0x40100000,      // VA start
-		0x60000000,      // VA end (0.5GB bootloader RAM, includes page tables)
+		0x60000000,      // VA end (end of page table region)
 		0x40100000,      // PA start (identity map)
 		PTE_ATTR_NORMAL, // Normal cacheable memory
 		PTE_AP_RW_EL1,   // Read/Write at EL1
 	)
+
+	// Step 5.1: Map physical frame pool region (0x200000000-0x240000000)
+	// This identity maps the frame pool so we can zero physical frames when allocating.
+	// The frame pool is at high physical addresses (above mmap VA region end) to avoid
+	// conflict with demand paging - the mmap VA range (0x60000000-0x200000000) is NOT
+	// pre-mapped, allowing page faults to trigger demand allocation.
+	uartPuts("MMU: Mapping physical frame pool (0x200000000-0x240000000)...\r\n")
+	mapRegion(
+		PHYS_FRAME_BASE, // VA start (identity map at 0x200000000)
+		PHYS_FRAME_END,  // VA end (0x240000000)
+		PHYS_FRAME_BASE, // PA start (identity map)
+		PTE_ATTR_NORMAL, // Normal cacheable memory
+		PTE_AP_RW_EL1,   // Read/Write at EL1
+	)
+	uartPuts("MMU: Physical frame pool mapped for kernel access (1GB)\r\n")
+	uartPuts("MMU: NOTE: mmap VA region (0x60000000-0x200000000) NOT mapped - demand paging active\r\n")
+
+	// Initialize physical frame allocator for demand paging
+	// Now uses fixed addresses (0x41020500+) that won't be zeroed by memInit
+	initPhysFrameAllocator()
 
 	// Step 5.5: Map bochs-display framebuffer/MMIO in the PCI MMIO window as Device memory.
 	//
@@ -603,17 +871,8 @@ func initMMU() bool {
 		PTE_AP_RW_EL1,   // Read/Write at EL1
 	)
 
-	// Step 6: Map user RAM (0x60000000 - 0x61000000 = 16MB) - Future
-	// This will be expanded when user programs are supported
-	// For now, map a minimal test region to verify MMU works
-	uartPuts("MMU: Mapping test user RAM (0x60000000-0x61000000)...\r\n")
-	mapRegion(
-		0x60000000,      // VA start
-		0x61000000,      // VA end (16MB test region)
-		0x60000000,      // PA start (identity map)
-		PTE_ATTR_NORMAL, // Normal cacheable memory
-		PTE_AP_RW_EL1,   // Read/Write at EL1 (will change to EL0 when user programs supported)
-	)
+	// Step 6: User RAM mapping removed - now included in bootloader RAM (0x40100000-0x78000000)
+	// This will be separated when user programs are supported
 
 	uartPuts("MMU: Page tables initialized\r\n")
 	return true

@@ -1,5 +1,47 @@
 .section ".text"
 
+// get_g0_addr() - returns address of runtime.g0
+// This allows Go code to get the g0 address without hardcoding
+.global get_g0_addr
+get_g0_addr:
+    ldr x0, =runtime.g0
+    ret
+
+// get_m0_addr() - returns address of runtime.m0
+// This allows Go code to get the m0 address without hardcoding
+.global get_m0_addr
+get_m0_addr:
+    ldr x0, =runtime.m0
+    ret
+
+// call_mallocinit()
+// Call runtime.mallocinit from assembly.
+// Minimal assembly wrapper that just calls mallocinit (not full schedinit).
+// physPageSize should be set from Go before calling this.
+.global call_mallocinit
+.extern runtime.mallocinit
+call_mallocinit:
+    // Save frame pointer and link register
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+
+    // Call runtime.mallocinit()
+    // This initializes just the heap allocator, not full scheduler.
+    bl runtime.mallocinit
+
+    // Restore frame pointer and link register
+    ldp x29, x30, [sp], #16
+    ret
+
+// get_phys_page_size_addr()
+// Returns uintptr
+// This allows Go code to set physPageSize before calling schedinit.
+.global get_phys_page_size_addr
+.extern runtime.physPageSize
+get_phys_page_size_addr:
+    ldr x0, =runtime.physPageSize
+    ret
+
 // mmio_write(uintptr_t reg, uint32_t data)
 // x0 = register address, w1 = data (32-bit)
 .global mmio_write
@@ -329,10 +371,10 @@ kernel_main:
     // Save frame pointer and link register
     stp x29, x30, [sp, #-16]!      // Push FP and LR, adjust SP
     mov x29, sp                    // Set FP to current SP
-    
+
     // UART will be initialized by uartInit() called from kernel_main
     // No early debug writes
-    
+
     // Function signature: KernelMain(r0, r1, atags uint32)
     // AArch64 calling convention: first 8 parameters in x0-x7
     //
@@ -340,15 +382,15 @@ kernel_main:
     // boot.s preserves that pointer and passes it to kernel_main in x2, so DO NOT clobber x2 here.
     mov x0, #0                    // r0 = 0
     mov x1, #0                    // r1 = 0
-    
+
     // Set x28 (goroutine pointer) to point to runtime.g0
     // This is required for write barrier to work
     // Use linker symbol (not hardcoded address) so BSS can be relocated
     ldr x28, =runtime.g0
-    
+
     // Note: Write barrier flag is set in boot.s AFTER BSS clear
     // (Setting it here would be overwritten by BSS clear)
-    
+
     // Call Go function - this will initialize everything
     bl main.KernelMain
 
