@@ -271,4 +271,14 @@ func gcWriteBarrier()
 //go:nosplit
 func memmove(dest unsafe.Pointer, src unsafe.Pointer, n uint32)
 
+//go:linkname runOnGoroutine runOnGoroutine
+//go:nosplit
+func runOnGoroutine()
+
 //{{ LINKNAME END}}
+
+// Manual entries (not auto-generated):
+
+//go:linkname RunOnGoroutine runOnGoroutine
+//go:nosplit
+func RunOnGoroutine(g unsafe.Pointer, fn func())

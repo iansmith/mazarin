@@ -97,3 +97,92 @@ sp_misaligned_switch:
 halt_loop:
     wfe
     b halt_loop
+
+// runOnGoroutine switches to a new goroutine's stack, runs a function, then returns
+// This is used for cooperative goroutine spawning.
+//
+// Parameters:
+//   x0: Pointer to new goroutine (runtimeG*)
+//   x1: Function pointer to call (func())
+//
+// This function:
+//   1. Saves caller's state (SP, LR, callee-saved registers)
+//   2. Sets x28 (g pointer) to new goroutine
+//   3. Switches SP to new goroutine's stack
+//   4. Calls the function
+//   5. Restores original state and returns
+//
+.global runOnGoroutine
+runOnGoroutine:
+    // Save callee-saved registers and return address on current stack
+    // AArch64 calling convention: x19-x28 are callee-saved
+    // We also save x29 (frame pointer) and x30 (link register)
+    stp x29, x30, [sp, #-16]!
+    stp x27, x28, [sp, #-16]!
+    stp x25, x26, [sp, #-16]!
+    stp x23, x24, [sp, #-16]!
+    stp x21, x22, [sp, #-16]!
+    stp x19, x20, [sp, #-16]!
+
+    // Save current SP in a callee-saved register so we can restore it
+    mov x19, sp
+
+    // Save the old g pointer (x28) so we can restore it
+    mov x20, x28
+
+    // Save function pointer
+    mov x21, x1
+
+    // Set x28 to new goroutine pointer
+    mov x28, x0
+
+    // Get new goroutine's stack pointer from g.sched.sp (offset 56)
+    ldr x2, [x0, #56]
+
+    // Verify SP is 16-byte aligned
+    and x3, x2, #0xF
+    cbnz x3, run_sp_misaligned
+
+    // Switch to new goroutine's stack
+    mov sp, x2
+
+    // Call the function
+    // In Go, func() is a pointer to a funcval struct where first word is the code pointer
+    ldr x3, [x21]           // Load code pointer from funcval
+    blr x3                   // Call the function
+
+    // Function returned - restore original state
+run_restore:
+    // Restore original SP
+    mov sp, x19
+
+    // Restore original g pointer
+    mov x28, x20
+
+    // Restore callee-saved registers
+    ldp x19, x20, [sp], #16
+    ldp x21, x22, [sp], #16
+    ldp x23, x24, [sp], #16
+    ldp x25, x26, [sp], #16
+    ldp x27, x28, [sp], #16
+    ldp x29, x30, [sp], #16
+
+    ret
+
+run_sp_misaligned:
+    // SP was misaligned - print error via UART and halt
+    movz x3, #0x0900, lsl #16
+    movk x3, #0x0000
+    movz w4, #0x47    // 'G'
+    str w4, [x3]
+    movz w4, #0x4F    // 'O'
+    str w4, [x3]
+    movz w4, #0x2D    // '-'
+    str w4, [x3]
+    movz w4, #0x53    // 'S'
+    str w4, [x3]
+    movz w4, #0x50    // 'P'
+    str w4, [x3]
+    movz w4, #0x21    // '!'
+    str w4, [x3]
+    b run_restore     // Try to recover anyway

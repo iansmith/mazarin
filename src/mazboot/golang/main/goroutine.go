@@ -105,3 +105,89 @@ const (
 	_Gscansyscall  = _Gscan + _Gsyscall
 	_Gscanwaiting  = _Gscan + _Gwaiting
 )
+
+// nextGoroutineID is the next goroutine ID to assign
+var nextGoroutineID uint64 = 2 // 0 = g0, 1 = main kernel goroutine
+
+// spawnGoroutine creates a new goroutine and runs the given function on it.
+// When the function returns, control returns to the caller.
+// This is a simple cooperative spawn - no preemption.
+//
+//go:noinline
+func spawnGoroutine(fn func()) {
+	// Create a new goroutine with 32KB stack
+	const stackSize = 32 * 1024
+	newG := createGoroutine(stackSize)
+	if newG == nil {
+		print("spawnGoroutine: failed to create goroutine\r\n")
+		return
+	}
+
+	// Assign goroutine ID
+	newG.goid = nextGoroutineID
+	nextGoroutineID++
+
+	// Run the function on the new goroutine's stack
+	// This saves our state, switches to newG's stack, runs fn, then returns here
+	asm.RunOnGoroutine(unsafe.Pointer(newG), fn)
+
+	// Clean up the goroutine (free its stack and g struct)
+	freeGoroutine(newG)
+}
+
+// createGoroutine allocates a new goroutine with the given stack size
+//
+//go:nosplit
+func createGoroutine(stackSize uint32) *runtimeG {
+	// Allocate g structure from heap
+	gSize := unsafe.Sizeof(runtimeG{})
+	gPtr := (*runtimeG)(kmalloc(uint32(gSize)))
+	if gPtr == nil {
+		return nil
+	}
+	asm.Bzero(unsafe.Pointer(gPtr), uint32(gSize))
+
+	// Allocate stack from heap (round to power of 2)
+	stackSize = roundUpToPowerOf2(stackSize)
+	stackMem := kmalloc(stackSize)
+	if stackMem == nil {
+		kfree(unsafe.Pointer(gPtr))
+		return nil
+	}
+
+	// Initialize stack bounds
+	stackLo := pointerToUintptr(stackMem)
+	stackHi := stackLo + uintptr(stackSize)
+	gPtr.stack.lo = stackLo
+	gPtr.stack.hi = stackHi
+	gPtr.stackguard0 = stackLo + _StackGuard
+	gPtr.stackguard1 = stackLo + _StackGuard
+
+	// Link to m0
+	gPtr.m = (*runtimeM)(unsafe.Pointer(asm.GetM0Addr()))
+
+	// Set up SP at top of stack, 16-byte aligned
+	sp := stackHi - 64 // Leave room for initial frame
+	sp = sp &^ uintptr(15)
+	gPtr.sched.sp = sp
+	gPtr.stktopsp = sp
+	gPtr.sched.g = uintptr(unsafe.Pointer(gPtr))
+	gPtr.atomicstatus = _Grunnable
+
+	return gPtr
+}
+
+// freeGoroutine frees a goroutine's resources
+//
+//go:nosplit
+func freeGoroutine(g *runtimeG) {
+	if g == nil {
+		return
+	}
+	// Free stack
+	if g.stack.lo != 0 {
+		kfree(unsafe.Pointer(g.stack.lo))
+	}
+	// Free g struct
+	kfree(unsafe.Pointer(g))
+}

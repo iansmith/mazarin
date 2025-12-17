@@ -620,6 +620,17 @@ func kernelMainBody() {
 		abortBoot("sdhciInit failed - cannot load kernel from SD card!")
 	}
 
+	// Stage 11: Goroutine test
+	FramebufferPuts("Testing goroutine spawn...\r\n")
+	spawnGoroutine(testGoroutineFunc)
+	FramebufferPuts("Goroutine test complete!\r\n")
+
+	// Drain ring buffer manually since interrupts aren't enabled yet
+	// This allows print() calls from goroutine test to be visible
+	for i := 0; i < 1000; i++ {
+		uartDrainRingBuffer()
+	}
+
 	FramebufferPuts("Boot complete.\r\n")
 
 	// Enable CPU interrupts now that everything is initialized
@@ -632,6 +643,13 @@ func kernelMainBody() {
 		// Busy-wait loop - interrupts will fire and be handled
 		// The timer interrupt handler will print dots to the framebuffer
 	}
+}
+
+// testGoroutineFunc is a simple function that runs in a spawned goroutine
+//
+//go:noinline
+func testGoroutineFunc() {
+	print("go go goroutine\n")
 }
 
 // testFramebufferText tests the framebuffer text rendering system
