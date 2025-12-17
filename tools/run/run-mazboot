@@ -4,9 +4,17 @@
 # This uses the same command line as runqemu-virt-vga but runs QEMU directly on the host
 #
 # Usage:
-#   docker/mazboot                    # Normal mode with Cocoa display (output streams mixed)
-#   SEPARATE_OUTPUT=1 docker/mazboot  # Separate kernel and QEMU debug output to files
-#   NOGRAPHIC=1 docker/mazboot        # Terminal-only mode (no GUI window)
+#   run-mazboot                       # Normal mode with Cocoa display (output streams mixed)
+#   SEPARATE_OUTPUT=1 run-mazboot     # Separate kernel and QEMU debug output to files
+#   NOGRAPHIC=1 run-mazboot           # Terminal-only mode (no GUI window)
+#   SCREENSHOT=1 run-mazboot          # Take screenshot via VNC after boot
+#   SCREENSHOT_DELAY=5 SCREENSHOT=1 run-mazboot  # Wait 5 seconds before screenshot
+#
+# Screenshot Mode:
+#   - Runs QEMU with VNC display on localhost:5900
+#   - Waits for boot (default 3 seconds, configurable via SCREENSHOT_DELAY)
+#   - Takes screenshot using vncsnapshot and saves to PROJECT_ROOT/screenshots/
+#   - Requires: brew install vncsnapshot
 #
 # Output Streams:
 #   - Kernel UART (PL011) → stdout (via -serial stdio)
@@ -101,8 +109,22 @@ fi
 # Check for output separation mode
 SEPARATE_OUTPUT="${SEPARATE_OUTPUT:-0}"
 NOGRAPHIC="${NOGRAPHIC:-0}"
+SCREENSHOT="${SCREENSHOT:-0}"
+SCREENSHOT_DELAY="${SCREENSHOT_DELAY:-3}"
 
-if [ "$NOGRAPHIC" = "1" ]; then
+# Screenshot directory
+SCREENSHOT_DIR="$PROJECT_ROOT/screenshots"
+
+if [ "$SCREENSHOT" = "1" ]; then
+    # Create screenshot directory
+    mkdir -p "$SCREENSHOT_DIR"
+
+    # Use QEMU monitor for screenshots (no external tools needed)
+    MONITOR_SOCKET="/tmp/qemu-monitor-$$.sock"
+
+    echo "Starting QEMU in screenshot mode (using QEMU monitor)"
+    DISPLAY_MODE="-display cocoa"
+elif [ "$NOGRAPHIC" = "1" ]; then
     echo "Starting QEMU in nographic mode (terminal only, no GUI)"
     DISPLAY_MODE="-nographic"
 else
@@ -206,6 +228,11 @@ QEMU_CMD=(
     -no-reboot
 )
 
+# Add monitor socket for screenshot mode
+if [ "$SCREENSHOT" = "1" ]; then
+    QEMU_CMD+=(-monitor "unix:$MONITOR_SOCKET,server,nowait")
+fi
+
 # Optional: enable QEMU tracing/debugging
 # Usage:
 #   QEMU_TRACE=1 run-mazboot
@@ -241,15 +268,96 @@ echo "${QEMU_CMD[@]}"
 echo ""
 
 # Set up output redirection if requested
-if [ "$SEPARATE_OUTPUT" = "1" ]; then
+if [ "$SCREENSHOT" = "1" ]; then
+    # Screenshot mode: run QEMU in background, take screenshot via monitor, then kill it
+    TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+    SCREENSHOT_PPM="/tmp/mazboot-screenshot-$$.ppm"
+    SCREENSHOT_FILE="$SCREENSHOT_DIR/mazboot-$TIMESTAMP.png"
+
+    echo "Screenshot mode enabled:"
+    echo "  Monitor socket: $MONITOR_SOCKET"
+    echo "  Delay: ${SCREENSHOT_DELAY}s"
+    echo "  Output: $SCREENSHOT_FILE"
+    echo ""
+
+    # Clean up any existing socket
+    rm -f "$MONITOR_SOCKET"
+
+    # Start QEMU in background (redirect stdout/stderr to avoid mixing with our output)
+    "${QEMU_CMD[@]}" >/dev/null 2>&1 &
+    QEMU_PID=$!
+
+    # Wait for QEMU to start and socket to be available
+    echo "Waiting for QEMU to start..."
+    for i in {1..10}; do
+        if [ -S "$MONITOR_SOCKET" ]; then
+            break
+        fi
+        sleep 0.5
+    done
+
+    # Check if socket exists
+    if [ ! -S "$MONITOR_SOCKET" ]; then
+        echo "Error: QEMU monitor socket not created" >&2
+        kill $QEMU_PID 2>/dev/null
+        exit 1
+    fi
+
+    # Check if QEMU is still running
+    if ! kill -0 $QEMU_PID 2>/dev/null; then
+        echo "Error: QEMU failed to start" >&2
+        exit 1
+    fi
+
+    # Wait for boot to complete
+    echo "Waiting ${SCREENSHOT_DELAY}s for boot to complete..."
+    sleep "$SCREENSHOT_DELAY"
+
+    # Take screenshot via QEMU monitor (screendump command)
+    echo "Taking screenshot..."
+    # Send screendump command to monitor socket using netcat (nc)
+    echo "screendump $SCREENSHOT_PPM" | nc -U "$MONITOR_SOCKET" >/dev/null 2>&1
+    sleep 0.5  # Give QEMU time to write the file
+
+    # Check if PPM was created
+    if [ -f "$SCREENSHOT_PPM" ]; then
+        # Convert PPM to PNG using sips (macOS built-in)
+        if sips -s format png "$SCREENSHOT_PPM" --out "$SCREENSHOT_FILE" >/dev/null 2>&1; then
+            echo "Screenshot saved: $SCREENSHOT_FILE"
+            rm -f "$SCREENSHOT_PPM"
+        else
+            echo "Warning: Failed to convert to PNG, keeping PPM"
+            mv "$SCREENSHOT_PPM" "${SCREENSHOT_FILE%.png}.ppm"
+            SCREENSHOT_FILE="${SCREENSHOT_FILE%.png}.ppm"
+            echo "Screenshot saved: $SCREENSHOT_FILE"
+        fi
+    else
+        echo "Error: Failed to take screenshot" >&2
+        echo "QEMU may not have finished booting. Try increasing SCREENSHOT_DELAY." >&2
+    fi
+
+    # Kill QEMU
+    echo "Stopping QEMU..."
+    echo "quit" | nc -U "$MONITOR_SOCKET" >/dev/null 2>&1
+    sleep 0.5
+    kill $QEMU_PID 2>/dev/null
+    wait $QEMU_PID 2>/dev/null
+
+    # Clean up socket
+    rm -f "$MONITOR_SOCKET"
+
+    echo ""
+    echo "Done. Screenshot: $SCREENSHOT_FILE"
+
+elif [ "$SEPARATE_OUTPUT" = "1" ]; then
     KERNEL_LOG="$LOG_DIR/kernel-uart-$$.log"
     QEMU_DEBUG_LOG="$LOG_DIR/qemu-debug-$$.log"
-    
+
     echo "Separating output streams:"
     echo "  Kernel UART → $KERNEL_LOG"
     echo "  QEMU debug → $QEMU_DEBUG_LOG"
     echo ""
-    
+
     # Execute QEMU with separated output
     # Kernel UART (stdout) → kernel log (also shown in terminal via tee)
     # QEMU debug (stderr) → QEMU debug log (also shown in terminal via tee)
@@ -257,7 +365,7 @@ if [ "$SEPARATE_OUTPUT" = "1" ]; then
     "${QEMU_CMD[@]}" < /dev/null \
         2> >(tee "$QEMU_DEBUG_LOG" >&2) \
         | tee "$KERNEL_LOG"
-    
+
     echo ""
     echo "Output logs saved:"
     echo "  Kernel UART: $KERNEL_LOG"

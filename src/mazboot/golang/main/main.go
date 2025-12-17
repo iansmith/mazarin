@@ -21,6 +21,8 @@ func main() {
 	// Reference other functions called from assembly
 	// This will never execute in bare metal, but ensures the functions exist
 	GrowStackForCurrent()
+	SyscallWriteBuffer(nil, 0)
+	fb_putc_irq(0)
 	kernelMainBodyWrapper()
 
 	//{{ LINKNAME END}}

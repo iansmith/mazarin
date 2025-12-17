@@ -115,160 +115,67 @@ func getMemSize(atagsPtr uintptr) uint32 {
 //
 //go:nosplit
 func pageInit(atagsPtr uintptr) {
-	uartPuts("pageInit: Starting...\r\n")
 	var memSize, pageArrayLen, kernelPages, i uint32
 
-	// Get total memory size
-	uartPuts("pageInit: Getting memory size...\r\n")
+	// Get total memory size (fallback to 128MB for QEMU)
 	memSize = getMemSize(atagsPtr)
 	if memSize == 0 {
-		// Fallback: use 128MB for kernel RAM region (not full 1GB)
-		// QEMU has 1GB total, but kernel only uses 128MB (0x40100000 - 0x48100000)
-		// This limits page array size to ~0.8MB instead of ~6.3MB
-		// Heap can extend beyond 0x48100000 up to g0 stack at 0x5EFFFE000
-		uartPuts("pageInit: Using 128MB for kernel RAM region (QEMU)\r\n")
 		memSize = 128 * 1024 * 1024 // 128MB for kernel RAM region
-	} else {
-		uartPuts("pageInit: Got memory size from ATAGs\r\n")
-		// Limit to 128MB max for kernel region (heap extends beyond)
-		if memSize > 128*1024*1024 {
-			memSize = 128 * 1024 * 1024
-			uartPuts("pageInit: Limited to 128MB for kernel region\r\n")
-		}
+	} else if memSize > 128*1024*1024 {
+		memSize = 128 * 1024 * 1024
 	}
 
-	// Calculate number of pages
+	// Calculate number of pages and allocate page metadata array
 	numPages = memSize / PAGE_SIZE
-	uartPuts("pageInit: Calculated numPages\r\n")
-
-	// Allocate space for page metadata array starting at __end
 	pageArrayLen = uint32(unsafe.Sizeof(Page{})) * numPages
-	uartPuts("pageInit: Calculated pageArrayLen\r\n")
-
-	// Cast __end to Page array base pointer
-	// In C: all_pages_array = (page_t *)&__end;
 	allPagesArrayBase = getLinkerSymbol("__end")
-	uartPuts("pageInit: Got allPagesArrayBase\r\n")
 	allPagesArrayPtr := unsafe.Pointer(allPagesArrayBase)
-
-	// Zero out the page array
-	// Note: This can take a while if pageArrayLen is large
-	// For 1GB with 4KB pages: ~262K pages * 24 bytes = ~6.3MB to zero
-	// This might be where it's hanging - bzero of large area
-	uartPuts("pageInit: Zeroing page array...\r\n")
-	uartPuts("pageInit:   start = 0x")
-	uartPutHex64(uint64(uintptr(allPagesArrayPtr)))
-	uartPuts("\r\n")
-	uartPuts("pageInit:   len = 0x")
-	uartPutHex64(uint64(pageArrayLen))
-	uartPuts("\r\n")
-	uartPuts("pageInit:   end = 0x")
-	uartPutHex64(uint64(uintptr(allPagesArrayPtr)) + uint64(pageArrayLen))
-	uartPuts("\r\n")
 	asm.Bzero(allPagesArrayPtr, pageArrayLen)
-	uartPuts("pageInit: Page array zeroed\r\n")
 
-	// Calculate kernel pages (pages up to __end)
-	// __end is in RAM at 0x40100000+, so we need to calculate pages from RAM start (0x40000000)
-	// Kernel uses pages from 0x40000000 to __end
+	// Calculate kernel pages
 	const RAM_START = 0x40000000
 	__endAddr := getLinkerSymbol("__end")
-	if __endAddr < RAM_START {
-		// __end is before RAM start - shouldn't happen, but handle it
-		kernelPages = 0
-	} else {
-		// Calculate pages from RAM start to __end
+	if __endAddr >= RAM_START {
 		kernelPages = uint32((__endAddr - RAM_START) / PAGE_SIZE)
 	}
-	uartPuts("pageInit: Calculated kernelPages\r\n")
 
-	// Initialize kernel pages (mark as allocated and kernel pages)
-	// Only initialize pages that are actually in use (from RAM_START to __end)
-	uartPuts("pageInit: Initializing kernel pages...\r\n")
-	// Calculate starting page index (RAM_START / PAGE_SIZE)
+	// Initialize kernel pages (limit to 1000 to speed up initialization)
 	ramStartPage := uint32(RAM_START / PAGE_SIZE)
-	kernelPageEnd := ramStartPage + kernelPages
-	// Limit to reasonable number to avoid huge loops
-	// For now, limit to first 1000 pages to speed up initialization
-	// TODO: Process all pages but in chunks or optimize the loop
 	maxKernelPages := kernelPages
 	if maxKernelPages > 1000 {
 		maxKernelPages = 1000
-		uartPuts("pageInit: Limiting kernel pages to 1000 (workaround)\r\n")
 	}
-	kernelPageEnd = ramStartPage + maxKernelPages
+	kernelPageEnd := ramStartPage + maxKernelPages
 	if kernelPageEnd > numPages {
 		kernelPageEnd = numPages
 	}
 	for i = ramStartPage; i < kernelPageEnd; i++ {
 		pagePtr := (*Page)(unsafe.Pointer(allPagesArrayBase + uintptr(i)*unsafe.Sizeof(Page{})))
-
-		// Identity map kernel pages (physical address = page index * PAGE_SIZE)
 		pagePtr.vaddrMapped = uintptr(i * PAGE_SIZE)
-
-		// Mark as allocated and kernel page
-		flags := PageFlags{
-			Allocated:  true,
-			KernelPage: true,
-			Reserved:   0,
-		}
-		packed := PackPageFlags(flags)
-		pagePtr.flags = packed
+		pagePtr.flags = PackPageFlags(PageFlags{Allocated: true, KernelPage: true})
 	}
-	uartPuts("pageInit: Kernel pages initialized\r\n")
 
-	// Reserve pages for kernel heap (64 MB)
-	// Based on tutorial Part 05, heap pages are reserved but marked as kernel pages
-	heapPages := uint32((KERNEL_HEAP_SIZE + PAGE_SIZE - 1) / PAGE_SIZE) // Round up
+	// Reserve heap pages
+	heapPages := uint32((KMALLOC_HEAP_SIZE + PAGE_SIZE - 1) / PAGE_SIZE)
 	heapPageEnd := kernelPageEnd + heapPages
 	if heapPageEnd > numPages {
 		heapPageEnd = numPages
 	}
-
-	// Reserve heap pages (mark as allocated and kernel pages, but don't add to free list)
-	uartPuts("pageInit: Reserving heap pages...\r\n")
 	for i = kernelPageEnd; i < heapPageEnd; i++ {
 		pagePtr := (*Page)(unsafe.Pointer(allPagesArrayBase + uintptr(i)*unsafe.Sizeof(Page{})))
-
-		// Identity map heap pages
 		pagePtr.vaddrMapped = uintptr(i * PAGE_SIZE)
-
-		// Mark as allocated and kernel page (heap is kernel memory)
-		flags := PageFlags{
-			Allocated:  true,
-			KernelPage: true,
-			Reserved:   0,
-		}
-		packed := PackPageFlags(flags)
-		pagePtr.flags = packed
+		pagePtr.flags = PackPageFlags(PageFlags{Allocated: true, KernelPage: true})
 	}
-	uartPuts("pageInit: Heap pages reserved\r\n")
 
-	// Initialize free pages list (empty initially)
+	// Build free page list (limit to 1000 pages)
 	freePages = nil
-
-	// Mark remaining pages as unallocated and add to free list
-	uartPuts("pageInit: Building free page list...\r\n")
-	// Limit free page list to avoid huge loops - only process first 1000 pages for now
-	// TODO: This is a workaround - we should process all pages but in smaller chunks
 	maxFreePages := numPages
 	if maxFreePages > 1000 {
-		maxFreePages = 1000 // Limit to first 1000 pages to avoid long initialization
-		uartPuts("pageInit: Limiting free pages to 1000 (workaround)\r\n")
+		maxFreePages = 1000
 	}
 	for ; i < maxFreePages; i++ {
 		pagePtr := (*Page)(unsafe.Pointer(allPagesArrayBase + uintptr(i)*unsafe.Sizeof(Page{})))
-
-		// Mark as unallocated
-		flags := PageFlags{
-			Allocated:  false,
-			KernelPage: false,
-			Reserved:   0,
-		}
-		packed := PackPageFlags(flags)
-		pagePtr.flags = packed
-
-		// Add to free list (simple append to head)
+		pagePtr.flags = PackPageFlags(PageFlags{Allocated: false, KernelPage: false})
 		pagePtr.next = freePages
 		pagePtr.prev = nil
 		if freePages != nil {
@@ -276,8 +183,6 @@ func pageInit(atagsPtr uintptr) {
 		}
 		freePages = pagePtr
 	}
-	uartPuts("pageInit: Free page list built\r\n")
-	uartPuts("pageInit: Complete\r\n")
 }
 
 // allocPage allocates a single 4KB page and returns a pointer to it

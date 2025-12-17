@@ -235,10 +235,6 @@ func virtioPCISetupQueue(queueIndex uint16, vq *VirtQueue) bool {
 	// Enable queue
 	virtioPCIWriteCommonConfig(VIRTIO_PCI_COMMON_CFG_QUEUE_ENABLE, 1)
 
-	uartPuts("VirtIO: Queue ")
-	uartPutUint32(uint32(queueIndex))
-	uartPuts(" enabled\r\n")
-
 	return true
 }
 
@@ -247,8 +243,6 @@ func virtioPCISetupQueue(queueIndex uint16, vq *VirtQueue) bool {
 //
 //go:nosplit
 func findVirtIOGPU() bool {
-	uartPuts("VirtIO GPU: Scanning for device...\r\n")
-
 	// Scan PCI bus
 	for bus := uint8(0); bus < 1; bus++ {
 		for slot := uint8(0); slot < 32; slot++ {
@@ -265,15 +259,6 @@ func findVirtIOGPU() bool {
 
 				// Check if this is VirtIO GPU
 				if vendorID == VIRTIO_VENDOR_ID && deviceID == VIRTIO_GPU_DEVICE_ID {
-					uartPuts("VirtIO GPU: Found device!\r\n")
-					uartPuts("  Bus: 0x")
-					printHex32(uint32(bus))
-					uartPuts(", Slot: 0x")
-					printHex32(uint32(slot))
-					uartPuts(", Func: 0x")
-					printHex32(uint32(funcNum))
-					uartPuts("\r\n")
-
 					// Enable device
 					cmd := pciConfigRead32(bus, slot, funcNum, PCI_COMMAND)
 					cmd |= 0x7 // Enable I/O, memory, bus master
@@ -282,7 +267,6 @@ func findVirtIOGPU() bool {
 					// Find VirtIO capabilities
 					var common, notify, isr, device VirtIOCapabilityInfo
 					if !pciFindVirtIOCapabilities(bus, slot, funcNum, &common, &notify, &isr, &device) {
-						uartPuts("VirtIO GPU: ERROR - Failed to find capabilities\r\n")
 						return false
 					}
 
@@ -306,24 +290,12 @@ func findVirtIOGPU() bool {
 					notifyBarBase := uintptr(notifyBar & 0xFFFFFFF0)
 					virtioGPUDevice.NotifyBase = notifyBarBase + uintptr(notify.OffsetInBar)
 
-					uartPuts("VirtIO GPU: Common config at 0x")
-					for shift := 60; shift >= 0; shift -= 4 {
-						digit := (uint64(virtioGPUDevice.CommonConfigBase) >> shift) & 0xF
-						if digit < 10 {
-							uartPutc(byte('0' + digit))
-						} else {
-							uartPutc(byte('A' + digit - 10))
-						}
-					}
-					uartPuts("\r\n")
-
 					return true
 				}
 			}
 		}
 	}
 
-	uartPuts("VirtIO GPU: Device not found\r\n")
 	return false
 }
 
@@ -332,8 +304,6 @@ func findVirtIOGPU() bool {
 //
 //go:nosplit
 func virtioGPUInit() bool {
-	uartPuts("VirtIO GPU: Initializing...\r\n")
-
 	// Step 1: Reset device
 	virtioPCISetDeviceStatus(0)
 
@@ -344,7 +314,6 @@ func virtioGPUInit() bool {
 	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER)
 
 	// Step 4: Feature negotiation (skip for now - accept device defaults)
-	// In a full implementation, we'd read device features and negotiate
 
 	// Step 5: Features OK
 	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK)
@@ -352,25 +321,20 @@ func virtioGPUInit() bool {
 	// Step 6: Initialize control queue (queue 0)
 	queueSize := uint16(256) // Power of 2
 	if !virtqueueInit(&virtioGPUDevice.ControlQueue, queueSize) {
-		uartPuts("VirtIO GPU: ERROR - Failed to initialize control queue\r\n")
 		return false
 	}
 
 	// Step 7: Setup queue in device
 	if !virtioPCISetupQueue(0, &virtioGPUDevice.ControlQueue) {
-		uartPuts("VirtIO GPU: ERROR - Failed to setup control queue\r\n")
 		return false
 	}
 
 	// Step 8: Driver OK
 	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK)
 
-	// Allocate framebuffer memory here (before setup, to reduce stack pressure in framebufferInit)
-	// This will be used later in virtioGPUSetupFramebuffer
-	// For now, just initialize the resource ID
+	// Initialize the resource ID
 	virtioGPUDevice.ResourceID = 1
 
-	uartPuts("VirtIO GPU: Initialized successfully\r\n")
 	return true
 }
 
@@ -385,14 +349,12 @@ func virtioGPUSendCommand(cmdBuf unsafe.Pointer, cmdSize uint32, respBuf unsafe.
 	cmdPhys := virtqueueGetPhysicalAddr(cmdBuf)
 	cmdDescIdx := virtqueueAddDesc(vq, cmdPhys, cmdSize, 0, 0xFFFF)
 	if cmdDescIdx == 0xFFFF {
-		uartPuts("VirtIO GPU: ERROR - Failed to add command descriptor\r\n")
 		return 0xFFFF
 	}
 
 	respPhys := virtqueueGetPhysicalAddr(respBuf)
 	respDescIdx := virtqueueAddDesc(vq, respPhys, respSize, VIRTQ_DESC_F_WRITE, 0xFFFF)
 	if respDescIdx == 0xFFFF {
-		uartPuts("VirtIO GPU: ERROR - Failed to add response descriptor\r\n")
 		return 0xFFFF
 	}
 
@@ -409,7 +371,7 @@ func virtioGPUSendCommand(cmdBuf unsafe.Pointer, cmdSize uint32, respBuf unsafe.
 	queueNotifyOffset := virtioGPUDevice.NotifyBase + uintptr(vq.QueueSize)*2 // notify_off_multiplier * queue_index
 	virtqueueNotify(vq, queueNotifyOffset)
 
-	// Poll for response (simplified - in production, use interrupts or better polling)
+	// Poll for response
 	maxWait := 1000000
 	waited := 0
 	for !virtqueueHasUsed(vq) && waited < maxWait {
@@ -419,14 +381,12 @@ func virtioGPUSendCommand(cmdBuf unsafe.Pointer, cmdSize uint32, respBuf unsafe.
 	}
 
 	if waited >= maxWait {
-		uartPuts("VirtIO GPU: ERROR - Command timeout\r\n")
 		return 0xFFFF
 	}
 
 	// Get response
 	usedDescIdx, _ := virtqueueGetUsed(vq)
 	if usedDescIdx == 0xFFFF {
-		uartPuts("VirtIO GPU: ERROR - Failed to get used descriptor\r\n")
 		return 0xFFFF
 	}
 
@@ -444,16 +404,9 @@ func virtioGPUSendCommand(cmdBuf unsafe.Pointer, cmdSize uint32, respBuf unsafe.
 //
 //go:nosplit
 func virtioGPUSetupFramebuffer(width, height uint32) bool {
-	uartPuts("VirtIO GPU: Setting up framebuffer ")
-	uartPutUint32(width)
-	uartPuts("x")
-	uartPutUint32(height)
-	uartPuts("\r\n")
-
 	// Use pre-allocated static framebuffer (avoids kmalloc write barrier issues)
 	fbSize := width * height * 4 // 4 bytes per pixel (BGRA8888)
 	if fbSize > uint32(len(virtioGPUFramebuffer)) {
-		uartPuts("VirtIO GPU: ERROR - Framebuffer too large for static allocation\r\n")
 		return false
 	}
 
@@ -476,16 +429,10 @@ func virtioGPUSetupFramebuffer(width, height uint32) bool {
 
 	respType := virtioGPUSendCommand(unsafe.Pointer(&createCmd), uint32(unsafe.Sizeof(createCmd)), unsafe.Pointer(&createResp), uint32(unsafe.Sizeof(createResp)))
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
-		uartPuts("VirtIO GPU: ERROR - Create resource failed, response=0x")
-		printHex32(respType)
-		uartPuts("\r\n")
 		return false
 	}
 
-	uartPuts("VirtIO GPU: Resource created\r\n")
-
 	// Step 2: Attach backing store
-	// Use static buffer (avoids kmalloc write barrier issues)
 	attachCmdSize := uint32(unsafe.Sizeof(VirtIOGPUResourceAttachBacking{}) + unsafe.Sizeof(VirtIOGPUMemEntry{}))
 	attachCmdBuf := unsafe.Pointer(&virtioGPUAttachCmdBuf[0])
 
@@ -503,13 +450,8 @@ func virtioGPUSetupFramebuffer(width, height uint32) bool {
 	var attachResp VirtIOGPUCtrlHdr
 	respType = virtioGPUSendCommand(attachCmdBuf, attachCmdSize, unsafe.Pointer(&attachResp), uint32(unsafe.Sizeof(attachResp)))
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
-		uartPuts("VirtIO GPU: ERROR - Attach backing failed, response=0x")
-		printHex32(respType)
-		uartPuts("\r\n")
 		return false
 	}
-
-	uartPuts("VirtIO GPU: Backing store attached\r\n")
 
 	// Step 3: Set scanout
 	var scanoutCmd VirtIOGPUSetScanout
@@ -522,15 +464,9 @@ func virtioGPUSetupFramebuffer(width, height uint32) bool {
 	var scanoutResp VirtIOGPUCtrlHdr
 	respType = virtioGPUSendCommand(unsafe.Pointer(&scanoutCmd), uint32(unsafe.Sizeof(scanoutCmd)), unsafe.Pointer(&scanoutResp), uint32(unsafe.Sizeof(scanoutResp)))
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
-		uartPuts("VirtIO GPU: ERROR - Set scanout failed, response=0x")
-		printHex32(respType)
-		uartPuts("\r\n")
 		return false
 	}
 
-	uartPuts("VirtIO GPU: Scanout set\r\n")
-
-	uartPuts("VirtIO GPU: Framebuffer setup complete\r\n")
 	return true
 }
 

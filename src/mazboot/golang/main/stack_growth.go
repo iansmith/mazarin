@@ -80,8 +80,6 @@ func initKernelStack() {
 
 	// Add to stack list (for future goroutine support)
 	allStacks = &kernelStack
-
-	uartPuts("Stack OK\r\n")
 }
 
 // getCurrentStack returns the current stack (for the executing goroutine)
@@ -116,7 +114,7 @@ func growStack(oldStack *stack) bool {
 	// Allocate new stack from heap
 	newStackMem := kmalloc(uint32(newSize))
 	if newStackMem == nil {
-		uartPuts("Stack: ERROR - Failed to allocate new stack from heap\r\n")
+		print("Stack: alloc failed\r\n")
 		return false
 	}
 
@@ -133,8 +131,6 @@ func growStack(oldStack *stack) bool {
 	if oldStack.size == 0 {
 		// Initial stack: used size is from currentSP to initial top
 		if currentSP > oldStack.hi {
-			// SP is above stack top - shouldn't happen
-			uartPuts("Stack: ERROR - Invalid stack pointer (above top)\r\n")
 			kfree(newStackMem)
 			return false
 		}
@@ -142,7 +138,6 @@ func growStack(oldStack *stack) bool {
 	} else {
 		// Grown stack: used size is from currentSP to oldStack.hi
 		if currentSP > oldStack.hi {
-			uartPuts("Stack: ERROR - Invalid stack pointer\r\n")
 			kfree(newStackMem)
 			return false
 		}
@@ -159,9 +154,6 @@ func growStack(oldStack *stack) bool {
 
 	// SP ALIGNMENT CHECK: Verify newSP is aligned before setting
 	if (newSP & 0xF) != 0 {
-		uartPuts("Stack: ERROR - newSP is misaligned: 0x")
-		uartPutHex64(uint64(newSP))
-		uartPuts("\r\n")
 		kfree(newStackMem)
 		return false
 	}
@@ -171,13 +163,7 @@ func growStack(oldStack *stack) bool {
 	newStackPtr := unsafe.Pointer(newSP)
 	memmove(newStackPtr, oldStackPtr, uint32(usedSize))
 
-	// Update stack structure (save old stack info first)
-	var oldSize uintptr
-	if oldStack.size == 0 {
-		oldSize = G0_STACK_SIZE // g0 stack size (8KB)
-	} else {
-		oldSize = oldStack.size
-	}
+	// Update stack structure
 	oldStack.prev = oldStack // Save pointer to old stack for potential cleanup
 	oldStack.lo = newStackBase
 	oldStack.hi = newStackTop
@@ -186,30 +172,10 @@ func growStack(oldStack *stack) bool {
 
 	// Update stack pointer register
 	// CRITICAL: After this, we're executing on the new stack!
-	// SP alignment already verified above, but checkSPAlignment will double-check
-	if !checkSPAlignmentSilent() {
-		uartPuts("Stack: WARNING - SP became misaligned before set_stack_pointer\r\n")
-	}
 	set_stack_pointer(newSP)
-	if !checkSPAlignmentSilent() {
-		uartPuts("Stack: ERROR - SP is misaligned after set_stack_pointer\r\n")
-	}
 
 	// Memory barrier to ensure SP update is visible
 	asm.Dsb()
-
-	uartPuts("Stack: Grew from ")
-	if oldSize >= 1024*1024 {
-		uartPutUint32(uint32(oldSize / (1024 * 1024)))
-		uartPuts("MB to ")
-		uartPutUint32(uint32(newSize / (1024 * 1024)))
-		uartPuts("MB\r\n")
-	} else {
-		uartPutUint32(uint32(oldSize / 1024))
-		uartPuts("KB to ")
-		uartPutUint32(uint32(newSize / 1024))
-		uartPuts("KB\r\n")
-	}
 
 	// Note: We don't free the old stack immediately
 	// We keep it for potential reuse or cleanup later
@@ -266,9 +232,8 @@ func GrowStackForCurrent() {
 	currentStack := getCurrentStack()
 	if !growStack(currentStack) {
 		// Stack growth failed - panic
-		uartPuts("Stack: CRITICAL - Stack growth failed, halting\r\n")
+		print("FATAL: stack growth failed\r\n")
 		for {
-			// Infinite loop
 		}
 	}
 }

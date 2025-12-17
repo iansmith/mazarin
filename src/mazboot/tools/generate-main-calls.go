@@ -129,6 +129,8 @@ func generateMainCallsContent(goFunctionsCalled []string, goSourceDir string, w 
 		"GrowStackForCurrent":   {},
 		"ExceptionHandler":      {"uint64", "uint64", "uint64", "uint64", "uint32"},
 		"HandleSyscall":         {"uint64", "uint64", "uint64", "uint64", "uint64", "uint64", "uint64"},
+		"fb_putc_irq":           {"byte"},                        // Timer interrupt handler - print char to framebuffer
+		"SyscallWriteBuffer":    {"unsafe.Pointer", "uint32"},    // Syscall write handler - buffer to ring buffer
 	}
 
 	// Parse Go source to find signatures for unknown functions

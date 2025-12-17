@@ -115,8 +115,6 @@ func virtqueueSize(queueSize uint16) uintptr {
 //go:nosplit
 func virtqueueInit(vq *VirtQueue, queueSize uint16) bool {
 	if queueSize == 0 || (queueSize&(queueSize-1)) != 0 {
-		// Queue size must be a power of 2
-		uartPuts("VirtQueue: ERROR - queue size must be power of 2\r\n")
 		return false
 	}
 
@@ -128,9 +126,8 @@ func virtqueueInit(vq *VirtQueue, queueSize uint16) bool {
 	usedSize := 2 + 2 + uintptr(queueSize)*unsafe.Sizeof(VirtQUsedElem{}) + 2 // flags + idx + ring[] + avail_event
 
 	// Allocate descriptor table (must be 16-byte aligned)
-	descAlloc := kmalloc(uint32(descSize + 16)) // Allocate extra for alignment
+	descAlloc := kmalloc(uint32(descSize + 16))
 	if descAlloc == nil {
-		uartPuts("VirtQueue: ERROR - failed to allocate descriptor table\r\n")
 		return false
 	}
 
@@ -146,9 +143,8 @@ func virtqueueInit(vq *VirtQueue, queueSize uint16) bool {
 	asm.Bzero(vq.DescTable, uint32(descSize))
 
 	// Allocate available ring (must be 2-byte aligned)
-	availAlloc := kmalloc(uint32(availSize + 2)) // Allocate extra for alignment
+	availAlloc := kmalloc(uint32(availSize + 2))
 	if availAlloc == nil {
-		uartPuts("VirtQueue: ERROR - failed to allocate available ring\r\n")
 		kfree(descAlloc)
 		return false
 	}
@@ -165,9 +161,8 @@ func virtqueueInit(vq *VirtQueue, queueSize uint16) bool {
 	asm.Bzero(unsafe.Pointer(vq.Available), uint32(availSize))
 
 	// Allocate used ring (must be 4-byte aligned)
-	usedAlloc := kmalloc(uint32(usedSize + 4)) // Allocate extra for alignment
+	usedAlloc := kmalloc(uint32(usedSize + 4))
 	if usedAlloc == nil {
-		uartPuts("VirtQueue: ERROR - failed to allocate used ring\r\n")
 		kfree(descAlloc)
 		kfree(availAlloc)
 		return false
@@ -199,10 +194,6 @@ func virtqueueInit(vq *VirtQueue, queueSize uint16) bool {
 	vq.Available.Idx = 0
 	vq.Used.Idx = 0
 	vq.LastUsedIdx = 0
-
-	uartPuts("VirtQueue: Initialized queue size=")
-	uartPutUint32(uint32(queueSize))
-	uartPuts("\r\n")
 
 	return true
 }

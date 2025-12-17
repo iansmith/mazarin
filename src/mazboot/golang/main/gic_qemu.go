@@ -83,160 +83,52 @@ func gicInit() {
 }
 
 // gicInitFull is the original full initialization (kept for easy revert)
-// To revert: replace gicInit() body with gicInitFull() body
 //
 //go:nosplit
 func gicInitFull() {
-	uartPuts("DEBUG: gicInit called\r\n")
-
-	// Interrupts are already disabled during kernel init
-	// Don't call disable_irqs() - it was causing hangs
-	// disable_irqs()
-
-	uartPuts("DEBUG: Starting GIC initialization steps...\r\n")
-
-	// Step 1: Disable distributor
-	uartPuts("DEBUG: Step 1 - Disable distributor\r\n")
+	// Disable distributor and CPU interface
 	asm.MmioWrite(GICD_CTLR, 0)
-
-	// Step 2: Disable CPU interface
-	uartPuts("DEBUG: Step 2 - Disable CPU interface\r\n")
 	asm.MmioWrite(GICC_CTLR, 0)
 
-	// Step 3: Set priority mask to allow all interrupts (lowest priority = 0xFF)
-	// Lower value = higher priority
-	uartPuts("DEBUG: Step 3 - Set priority mask\r\n")
+	// Set priority mask to allow all interrupts
 	asm.MmioWrite(GICC_PMR, 0xFF)
-
-	// Step 4: Configure binary point register (BPR)
-	// BPR = 0 means 4-bit priority grouping (no preemption)
-	uartPuts("DEBUG: Step 4 - Configure BPR\r\n")
 	asm.MmioWrite(GICC_BPR, 0)
 
-	// Step 5: Clear all pending interrupts
-	uartPuts("DEBUG: Step 5 - Clear pending interrupts\r\n")
+	// Clear all pending interrupts
 	for i := 0; i < 32; i++ {
 		asm.MmioWrite(GICD_ICPENDRn+uintptr(i*4), 0xFFFFFFFF)
 	}
 
-	// Step 6: Route all interrupts to Group 0 (secure)
-	// CRITICAL: QEMU virt with GICv2 only works reliably with Group 0
-	// Real Raspberry Pi 4 hardware may require Group 1 (Non-secure) - TO BE TESTED
-	// Group 0 = secure interrupts (IRQ), Group 1 = non-secure (IRQ)
-	// TODO: Add runtime detection or build-time flag for real hardware
-	uartPuts("DEBUG: Step 6 - Set all interrupts to Group 0 (secure)\r\n")
+	// Route all interrupts to Group 0 (secure) for QEMU virt compatibility
 	for i := 0; i < 32; i++ {
-		asm.MmioWrite(GICD_IGROUPRn+uintptr(i*4), 0x00000000) // All in Group 0
+		asm.MmioWrite(GICD_IGROUPRn+uintptr(i*4), 0x00000000)
 	}
 
-	// Step 7: Set interrupt priorities (default: 0x80 = medium priority)
-	// Lower value = higher priority
-	uartPuts("DEBUG: Step 7 - Set interrupt priorities\r\n")
+	// Set interrupt priorities (0x80 = medium priority)
 	for i := 0; i < 256; i++ {
-		asm.MmioWrite(GICD_IPRIORITYRn+uintptr(i*4), 0x80808080) // 4 interrupts per register
+		asm.MmioWrite(GICD_IPRIORITYRn+uintptr(i*4), 0x80808080)
 	}
 
-	// Step 8: Route all interrupts to CPU 0
-	// For PPIs (16-31), this is ignored, but we set it anyway
-	uartPuts("DEBUG: Step 8 - Route interrupts to CPU 0\r\n")
+	// Route all interrupts to CPU 0
 	for i := 0; i < 256; i++ {
-		asm.MmioWrite(GICD_ITARGETSRn+uintptr(i*4), 0x01010101) // CPU 0 = bit 0
+		asm.MmioWrite(GICD_ITARGETSRn+uintptr(i*4), 0x01010101)
 	}
 
-	// Step 9: Configure interrupts as level-triggered (default)
-	// Bit 0 = 0 means level-triggered, 1 = edge-triggered
-	// Timer interrupts are level-triggered
-	uartPuts("DEBUG: Step 9 - Configure interrupt types\r\n")
+	// Configure interrupts as level-triggered
 	for i := 0; i < 64; i++ {
-		asm.MmioWrite(GICD_ICFGRn+uintptr(i*4), 0) // Level-triggered
+		asm.MmioWrite(GICD_ICFGRn+uintptr(i*4), 0)
 	}
 
-	// Step 10: Enable distributor
-	// Enable Group 0 only for QEMU virt compatibility
-	// Bit 0 = Enable Group 0 (Secure)
-	// Real hardware may need Group 1 instead - TO BE TESTED
-	uartPuts("DEBUG: Step 10 - Enable distributor (Group 0 only)\r\n")
-	asm.MmioWrite(GICD_CTLR, 0x01) // Enable Group 0 only
-
-	// Step 11: Enable CPU interface
-	// Enable Group 0 only for QEMU virt compatibility
-	// Bit 0 = Enable Group 0 (Secure)
-	// Real hardware may need Group 1 instead - TO BE TESTED
-	uartPuts("DEBUG: Step 11 - Enable CPU interface (Group 0 only)\r\n")
-	asm.MmioWrite(GICC_CTLR, 0x01) // Enable Group 0 only
-
-	uartPuts("GIC initialized\r\n")
+	// Enable distributor and CPU interface (Group 0 only)
+	asm.MmioWrite(GICD_CTLR, 0x01)
+	asm.MmioWrite(GICC_CTLR, 0x01)
 }
 
-// checkSecurityState checks if we're running in Secure or Non-secure EL1
+// checkSecurityState checks if we're running in Secure or Non-secure EL1 (debugging only)
 //
 //go:nosplit
 func checkSecurityState() {
-	uartPuts("\r\n=== Security State Check ===\r\n")
-
-	// Read ID_AA64PFR0_EL1 to check EL3 support
-	pfr0 := read_id_aa64pfr0_el1()
-	el3Support := (pfr0 >> 12) & 0xF
-
-	uartPuts("EL3 support: ")
-	if el3Support == 0 {
-		uartPuts("NOT implemented - likely Non-secure\r\n")
-	} else if el3Support == 1 {
-		uartPuts("AArch64 only\r\n")
-	} else if el3Support == 2 {
-		uartPuts("AArch64 + AArch32\r\n")
-	} else {
-		uartPuts("unknown\r\n")
-	}
-
-	// Check GIC Group registers - read back what we wrote
-	gicdIgroupr0 := asm.MmioRead(GICD_IGROUPRn)
-	uartPuts("GICD_IGROUPR0: ")
-	if gicdIgroupr0 == 0x00000000 {
-		uartPuts("All interrupts in Group 0\r\n")
-	} else if gicdIgroupr0 == 0xFFFFFFFF {
-		uartPuts("All interrupts in Group 1\r\n")
-	} else {
-		uartPuts("Mixed groups\r\n")
-	}
-
-	// Check GICD_CTLR
-	gicdCtlr := asm.MmioRead(GICD_CTLR)
-	uartPuts("GICD_CTLR: ")
-	if (gicdCtlr & 0x01) != 0 {
-		uartPuts("Group 0 enabled")
-	}
-	if (gicdCtlr & 0x02) != 0 {
-		if (gicdCtlr & 0x01) != 0 {
-			uartPuts(", ")
-		}
-		uartPuts("Group 1 enabled")
-	}
-	uartPuts("\r\n")
-
-	// Check GICC_CTLR
-	giccCtlr := asm.MmioRead(GICC_CTLR)
-	uartPuts("GICC_CTLR: ")
-	if (giccCtlr & 0x01) != 0 {
-		uartPuts("Group 0 enabled")
-	}
-	if (giccCtlr & 0x02) != 0 {
-		if (giccCtlr & 0x01) != 0 {
-			uartPuts(", ")
-		}
-		uartPuts("Group 1 enabled")
-	}
-	uartPuts("\r\n")
-
-	uartPuts("\r\nConclusion: ")
-	if el3Support == 0 && gicdIgroupr0 == 0x00000000 {
-		uartPuts("Likely QEMU allowing Group 0 in Non-secure mode\r\n")
-	} else if el3Support != 0 && gicdIgroupr0 == 0x00000000 {
-		uartPuts("Possibly running in Secure EL1\r\n")
-	} else {
-		uartPuts("Unknown configuration\r\n")
-	}
-	uartPuts("=== End Security Check ===\r\n\r\n")
+	// Not used during normal operation - kept for debugging
 }
 
 // gicEnableInterrupt enables a specific interrupt in the GIC
@@ -325,14 +217,14 @@ var interruptsEnabled bool
 //go:noinline
 func gicHandleInterrupt() {
 	// Print 'H' to show we entered gicHandleInterrupt
-	uartPutc('H')
+	printChar('H')
 
 	// Note: Interrupts should already be enabled before timer starts
 	// Do NOT enable interrupts from inside the interrupt handler!
 
 	// Acknowledge interrupt and get ID
 	irqID := gicAcknowledgeInterrupt()
-	uartPutc('A')
+	printChar('A')
 
 	// Check for spurious interrupt (ID 1023)
 	if irqID >= 1020 {

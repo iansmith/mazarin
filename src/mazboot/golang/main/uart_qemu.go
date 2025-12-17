@@ -43,8 +43,6 @@ func uartInit() {
 func uartInitRingBufferAfterMemInit() {
 	// Initialize ring buffer for interrupt-driven transmission
 	uartInitRingBuffer()
-
-	uartPuts("UART: Ring buffer ready (interrupt setup deferred until after GIC init)\r\n")
 }
 
 // uartSetupInterrupts configures UART interrupts after GIC initialization
@@ -58,8 +56,6 @@ func uartSetupInterrupts() {
 
 	// Enable UART interrupt (ID 33) in GIC
 	gicEnableInterrupt(IRQ_ID_UART_SPI)
-
-	uartPuts("UART: TX interrupt enabled in GIC (ID 33)\r\n")
 }
 
 // uartDrainRingBuffer drains one character from ring buffer to UART
@@ -89,12 +85,9 @@ func uartDrainRingBuffer() {
 //go:nosplit
 //go:noinline
 func UartTransmitHandler() {
-	asm.UartPutcPl011('G')
-
 	// Check if ring buffer is initialized
 	if uartRingBuf == nil {
 		// No ring buffer - just disable TX interrupt
-		asm.UartPutcPl011('N')                // No ring buffer
 		asm.MmioWrite(QEMU_UART_BASE+0x38, 0) // UART_IMSC - disable all interrupts
 		return
 	}
@@ -133,6 +126,27 @@ func uartPutc(c byte) {
 	// If enqueue failed (overflow), character was dropped and "***" was added
 }
 
+// SyscallWriteBuffer writes a buffer to the UART ring buffer
+// Called from assembly syscall handler for stdout/stderr writes
+// Returns the number of bytes written (count on success)
+//
+//go:nosplit
+//go:noinline
+func SyscallWriteBuffer(buf unsafe.Pointer, count uint32) uint32 {
+	if buf == nil || count == 0 {
+		return 0
+	}
+
+	// Write each byte to the ring buffer via uartPutc
+	// uartPutc handles ring buffer vs direct UART output
+	for i := uint32(0); i < count; i++ {
+		c := *(*byte)(unsafe.Pointer(uintptr(buf) + uintptr(i)))
+		uartPutc(c)
+	}
+
+	return count
+}
+
 // uartGetc reads a character from UART (QEMU virt machine)
 //
 //go:nosplit
@@ -166,7 +180,6 @@ func uartInitRingBuffer() {
 	// Allocate ring buffer structure via kmalloc
 	buf := kmalloc(uint32(unsafe.Sizeof(uartRingBuffer{})))
 	if buf == nil {
-		uartPuts("UART: ERROR - Failed to allocate ring buffer struct\r\n")
 		return
 	}
 
@@ -174,7 +187,6 @@ func uartInitRingBuffer() {
 	// Use kmallocReserved() to mark this allocation as permanent system memory
 	buffer := kmallocReserved(UART_RING_BUFFER_SIZE)
 	if buffer == nil {
-		uartPuts("UART: ERROR - Failed to allocate ring buffer data\r\n")
 		return
 	}
 
@@ -190,23 +202,9 @@ func uartInitRingBuffer() {
 	ringBuf.tail = 0
 
 
-	// Use assembly function to store pointer without write barrier
-	uartPutc('x') // Debug: before assignment
+	// Store pointer to global using StorePointerNoBarrier to avoid write barrier issues
+	// Go's write barrier can cause hangs in bare-metal environments
 	asm.StorePointerNoBarrier((*unsafe.Pointer)(unsafe.Pointer(&uartRingBuf)), unsafe.Pointer(ringBuf))
-	uartPutc('X') // Debug: after assignment
-
-
-	// Debug: print addresses
-	uartPuts("UART Ring buffer debug:\r\n")
-	uartPuts("  struct at: ")
-	uartPutHex64(uint64(pointerToUintptr(buf)))
-	uartPuts("\r\n  buffer at: ")
-	uartPutHex64(uint64(pointerToUintptr(buffer)))
-	uartPuts("\r\n  buf field: ")
-	uartPutHex64(uint64(pointerToUintptr(unsafe.Pointer(ringBuf.buf))))
-	uartPuts("\r\n")
-
-	uartPuts("UART: Ring buffer initialized (4KB)\r\n")
 }
 
 // uartEnqueue adds a character to the ring buffer

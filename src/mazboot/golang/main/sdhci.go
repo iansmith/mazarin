@@ -191,7 +191,6 @@ func sdhciWaitReady() bool {
 //go:nosplit
 func sdhciSendCommand(cmdIndex uint8, arg uint32, flags uint16) bool {
 	if !sdhciWaitReady() {
-		uartPuts("SDHCI: Controller not ready\r\n")
 		return false
 	}
 
@@ -210,19 +209,16 @@ func sdhciSendCommand(cmdIndex uint8, arg uint32, flags uint16) bool {
 	for timeout > 0 {
 		intStatus := sdhciRead16(SDHCI_INT_STATUS)
 		if (intStatus & SDHCI_INT_CMD_COMPLETE) != 0 {
-			// Clear interrupt
 			sdhciWrite16(SDHCI_INT_STATUS, SDHCI_INT_CMD_COMPLETE)
 			return true
 		}
 		if (intStatus & SDHCI_INT_ERROR) != 0 {
-			uartPuts("SDHCI: Command error\r\n")
 			sdhciWrite16(SDHCI_INT_STATUS, SDHCI_INT_ERROR)
 			return false
 		}
 		timeout--
 	}
 
-	uartPuts("SDHCI: Command timeout\r\n")
 	return false
 }
 

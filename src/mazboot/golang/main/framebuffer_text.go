@@ -214,59 +214,6 @@ func RenderChar(char byte, pixelX, pixelY uint32, color uint32) {
 	RenderChar16x16(char, pixelX, pixelY, color)
 }
 
-// DebugRenderChar same as RenderChar16x16 but with verbose debug output
-// CRITICAL FIX: Avoids storing bitmap as local variable to prevent unaligned stores
-func DebugRenderChar(char byte, pixelX, pixelY uint32, color uint32) {
-	const bitmapWidth = 8
-
-	if char >= 128 {
-		return
-	}
-
-	uartPuts("DRC: char=0x")
-	uartPutc(byte('0' + (char>>4)%16))
-	uartPutc(byte('0' + (char & 0xF)))
-	uartPuts(" at (")
-	uartPutc('P')
-	uartPuts(",")
-	uartPutc('Y')
-	uartPuts(") color=0x")
-	printHex32(color)
-	uartPuts("\r\n")
-
-	// Access fontBitmaps directly instead of storing as local variable
-	// Just render first row for debug
-	rowByte := fontBitmaps[char][0]
-	uartPuts("DRC: Row 0 byte=0x")
-	uartPutc(byte('0' + (rowByte>>4)%16))
-	uartPutc(byte('0' + (rowByte & 0xF)))
-	uartPuts(" bits: ")
-
-	for col := 0; col < bitmapWidth; col++ {
-		bitSet := (rowByte & (1 << uint(7-col))) != 0
-		if bitSet {
-			uartPutc('1')
-		} else {
-			uartPutc('0')
-		}
-
-		var pixelColor uint32
-		if bitSet {
-			pixelColor = color
-		} else {
-			pixelColor = fbBackgroundColor
-		}
-		// Render as 2x2 block (16x16 mode)
-		baseX := pixelX + uint32(col*2)
-		baseY := pixelY
-		WritePixel(baseX, baseY, pixelColor)
-		WritePixel(baseX+1, baseY, pixelColor)
-		WritePixel(baseX, baseY+1, pixelColor)
-		WritePixel(baseX+1, baseY+1, pixelColor)
-	}
-	uartPuts("\r\n")
-}
-
 // RenderCharAtCursor8x8 renders a character at the current cursor position using 8x8 rendering
 //
 //go:nosplit
@@ -509,21 +456,14 @@ func FramebufferPutHex64(val uint64) {
 // ============================================================================
 
 // fb_putc_irq outputs a single character to the framebuffer from an interrupt handler
-// This is called from assembly, so it must be interrupt-safe and use //go:nosplit
+// This is called from assembly (bl main.fb_putc_irq), so it must be interrupt-safe
 // Handles line wrapping automatically
 //
-//go:linkname fb_putc_irq fb_putc_irq
 //go:nosplit
 //go:noinline
 func fb_putc_irq(c byte) {
-	asm.UartPutcPl011('[')
-	asm.UartPutcPl011('f')
-	asm.UartPutcPl011('b')
-	asm.UartPutcPl011(']') // [fb] = "fb_putc_irq"
-
 	if !fbTextInitialized {
-		asm.UartPutcPl011('!') // Print '!' if not initialized
-		return                 // Silently skip if framebuffer not initialized
+		return // Skip if framebuffer not initialized
 	}
 
 	// Render the character at current cursor position (8x8 for compactness)
@@ -554,30 +494,15 @@ func fb_putc_irq(c byte) {
 //
 //go:nosplit
 func InitFramebufferText(buffer unsafe.Pointer, width, height, pitch uint32) error {
-	uartPuts("Init: 1\r\n")
-	// Note: framebufferInit() has already set:
-	// - fbinfo.Width, Height, Pitch
-	// - fbinfo.CharsWidth, CharsHeight
-	// - fbinfo.CharsX = 0, CharsY = 0
-	// We only need to set the framebuffer pointer and the text rendering parameters
-
 	// Store the framebuffer buffer pointer
 	fbinfo.Buf = buffer
-	uartPuts("Init: 2\r\n")
 
 	// Set text rendering colors
-	fbForegroundColor = FramebufferTextColor // AnsiBrightGreen
-	uartPuts("Init: 3\r\n")
+	fbForegroundColor = FramebufferTextColor      // AnsiBrightGreen
 	fbBackgroundColor = FramebufferBackgroundColor // MidnightBlue
-	uartPuts("Init: 4\r\n")
 
 	// Mark text system as initialized
 	fbTextInitialized = true
-	uartPuts("Init: 5\r\n")
-
-	// Note: Do NOT clear the screen here - framebufferInit() already set the background color
-	// Clearing here would destroy any image or content already drawn
-	// (e.g., test pattern in framebuffer_qemu.go fills top 100 rows with white)
 
 	return nil
 }
@@ -586,20 +511,10 @@ func InitFramebufferText(buffer unsafe.Pointer, width, height, pitch uint32) err
 //
 //go:nosplit
 func ClearScreen() {
-	uartPuts("ClearScreen: ENTRY\r\n")
 	if !fbTextInitialized {
-		uartPuts("ClearScreen: Not initialized\r\n")
 		return
 	}
 
 	// Fill entire framebuffer with background color
-	uartPuts("ClearScreen: Before ClearPixelRect\r\n")
 	ClearPixelRect(0, 0, fbinfo.Width, fbinfo.Height)
-	uartPuts("ClearScreen: After ClearPixelRect\r\n")
-
-	// Reset cursor (cursor should already be at 0,0 from framebufferInit, but reset anyway)
-	// Note: Skip cursor reset for now to avoid potential memory corruption
-	// fbinfo.CharsX = 0
-	// fbinfo.CharsY = 0
-	uartPuts("ClearScreen: EXIT\r\n")
 }

@@ -172,199 +172,32 @@ func timerInit() {
 		return
 	}
 
-	// Read timer frequency (CNTFRQ_EL0)
-	// TEMPORARY: Reading CNTFRQ_EL0 causes sync exception - use default
-	// QEMU virt machine typically uses 62.5 MHz = 62500000 Hz
-	freq := uint32(62500000) // Default QEMU virt timer frequency
-	uartPuts("Timer frequency: 62500000 Hz (default)\r\n")
+	// QEMU virt machine uses 62.5 MHz timer frequency
+	freq := uint32(62500000)
 
-	// Show which timer we're using
-	uartPuts("DEBUG: Using ")
-	uartPuts(timer_name())
-	uartPuts(" timer (PPI ")
-	if USE_PHYSICAL_TIMER {
-		uartPuts("30")
-	} else {
-		uartPuts("27")
-	}
-	uartPuts(")\r\n")
-
-	uartPuts("DEBUG: About to disable timer...\r\n")
-	// Disable timer first (this clears any pending interrupts)
+	// Disable timer first (clears any pending interrupts)
 	timer_write_ctl(0)
-	uartPuts("DEBUG: Timer disabled\r\n")
 
-	uartPuts("DEBUG: About to set timer value (TVAL)...\r\n")
-	// Use TVAL (timer value - counts down) - simpler and more direct!
-	// TVAL is a 32-bit countdown timer, fires when reaches 0
-	// Set to 62500000 ticks = 1 second at 62.5MHz (will fire every second)
-	timerValue := freq * 1 // 62500000 (1 second)
-	timer_write_tval(uint32(timerValue))
-	uartPuts("DEBUG: Timer TVAL set (1 second countdown)\r\n")
+	// Set TVAL for 5 second countdown (312500000 ticks at 62.5MHz)
+	timer_write_tval(freq * 5)
 
-	uartPuts("DEBUG: About to enable timer...\r\n")
 	// Enable timer with interrupts unmasked
-	// CNT_CTL_ENABLE = 1 (bit 0), CNT_CTL_IMASK = 0 (bit 1 cleared = interrupts enabled)
 	timer_write_ctl(CNT_CTL_ENABLE)
 
-	// Verify timer control register was set correctly
-	ctl := timer_read_ctl()
-	uartPuts("DEBUG: Timer CTL after enable = 0x")
-	uartPutHex8(uint8(ctl))
-	uartPuts(" (ENABLE=")
-	if (ctl & CNT_CTL_ENABLE) != 0 {
-		uartPuts("1")
-	} else {
-		uartPuts("0")
-	}
-	uartPuts(", IMASK=")
-	if (ctl & CNT_CTL_IMASK) != 0 {
-		uartPuts("1")
-	} else {
-		uartPuts("0")
-	}
-	uartPuts(", ISTATUS=")
-	if (ctl & CNT_CTL_ISTATUS) != 0 {
-		uartPuts("1")
-	} else {
-		uartPuts("0")
-	}
-	uartPuts(")\r\n")
-	uartPuts("DEBUG: Timer enabled (ENABLE=1, IMASK=0)\r\n")
-
-	uartPuts("DEBUG: Registering timer interrupt handler...\r\n")
-	// Register timer interrupt handler with GIC (use correct PPI based on timer type)
+	// Register timer interrupt handler with GIC
 	irqId := timer_irq_id()
 	registerInterruptHandler(irqId, timerInterruptHandler)
-	uartPuts("DEBUG: Handler registered\r\n")
-
-	uartPuts("DEBUG: Enabling timer interrupt in GIC...\r\n")
-	// Enable timer interrupt in GIC
 	gicEnableInterrupt(irqId)
-	uartPuts("DEBUG: Timer interrupt enabled in GIC\r\n")
 
 	timerInitialized = true
-	timerExitCount = 5 // Exit after 5 timer interrupts (5 seconds total)
-	uartPuts("Timer initialized (will exit after 5 seconds)\r\n")
-
-	// Verify timer interrupt is enabled in GIC
-	uartPuts("DEBUG: Verifying timer interrupt enable in GIC...\r\n")
-	// Read GICD_ISENABLER0 (interrupts 0-31 enable register)
-	isenabler0 := asm.MmioRead(0x08000100) // GICD_ISENABLER0
-	uartPuts("DEBUG: GICD_ISENABLER0 = 0x")
-	uartPutHex32(isenabler0)
-	uartPuts("\r\n")
-	if (isenabler0 & (1 << irqId)) != 0 {
-		uartPuts("DEBUG: Timer interrupt (")
-		if USE_PHYSICAL_TIMER {
-			uartPuts("30")
-		} else {
-			uartPuts("27")
-		}
-		uartPuts(") is ENABLED in GIC\r\n")
-	} else {
-		uartPuts("DEBUG: ERROR: Timer interrupt (")
-		if USE_PHYSICAL_TIMER {
-			uartPuts("30")
-		} else {
-			uartPuts("27")
-		}
-		uartPuts(") is NOT enabled in GIC!\r\n")
-	}
-
-	// Check timer value to see if it's counting down
-	// Read TVAL multiple times to see if it's decreasing
-	uartPuts("DEBUG: Checking if timer is counting down...\r\n")
-	tval1 := timer_read_tval()
-	uartPuts("DEBUG: Timer TVAL (first read) = ")
-	uartPutHex32(tval1)
-	uartPuts("\r\n")
-
-	// Wait a bit (busy wait) and read again
-	asm.BusyWait(1000000) // Wait ~1ms worth of cycles
-
-	tval2 := timer_read_tval()
-	uartPuts("DEBUG: Timer TVAL (after delay) = ")
-	uartPutHex32(tval2)
-	uartPuts("\r\n")
-
-	if tval2 < tval1 {
-		uartPuts("DEBUG: Timer IS counting down (decreased from ")
-		uartPutHex32(tval1)
-		uartPuts(" to ")
-		uartPutHex32(tval2)
-		uartPuts(")\r\n")
-	} else if tval2 == tval1 {
-		uartPuts("DEBUG: WARNING: Timer is NOT counting down (value unchanged: ")
-		uartPutHex32(tval1)
-		uartPuts(")\r\n")
-	} else {
-		uartPuts("DEBUG: ERROR: Timer value increased (should count down)! ")
-		uartPutHex32(tval1)
-		uartPuts(" -> ")
-		uartPutHex32(tval2)
-		uartPuts("\r\n")
-	}
-
-	// Note: enable_irqs() hangs - msr DAIFCLR causes sync exception
-	// Interrupts will be enabled from pure assembly after initialization
-	// For now, timer is configured and ready - interrupts just need to be enabled
+	timerExitCount = 5 // Exit after 5 timer interrupts (25 seconds total)
 }
 
-// checkTimerStatus checks if timer interrupt is pending and prints diagnostic info
-// This function is for debugging only - it's not called during normal operation
+// checkTimerStatus checks if timer interrupt is pending (debugging only)
 //
 //go:nosplit
 func checkTimerStatus() {
-	// Check timer ISTATUS bit
-	ctl := timer_read_ctl()
-	istatus := (ctl & CNT_CTL_ISTATUS) != 0
-	uartPuts("DEBUG: Timer status check - ISTATUS=")
-	if istatus {
-		uartPuts("1 (PENDING)")
-	} else {
-		uartPuts("0 (not pending)")
-	}
-	uartPuts(", ENABLE=")
-	if (ctl & CNT_CTL_ENABLE) != 0 {
-		uartPuts("1")
-	} else {
-		uartPuts("0")
-	}
-	uartPuts(", IMASK=")
-	if (ctl & CNT_CTL_IMASK) != 0 {
-		uartPuts("1 (masked)")
-	} else {
-		uartPuts("0 (unmasked)")
-	}
-	uartPuts("\r\n")
-
-	// Check GIC pending status for timer interrupt
-	irqId := timer_irq_id()
-	ispendr0 := asm.MmioRead(0x08000200) // GICD_ISPENDR0
-	uartPuts("DEBUG: GICD_ISPENDR0 = 0x")
-	uartPutHex32(ispendr0)
-	uartPuts(" (bit ")
-	if USE_PHYSICAL_TIMER {
-		uartPuts("30")
-	} else {
-		uartPuts("27")
-	}
-	uartPuts(" = ")
-	if (ispendr0 & (1 << irqId)) != 0 {
-		uartPuts("1 = PENDING")
-	} else {
-		uartPuts("0 = not pending")
-	}
-	uartPuts(")\r\n")
-
-	// Check GIC highest pending interrupt (HPPIR)
-	hppir := asm.MmioRead(0x08010018) // GICC_HPPIR
-	uartPuts("DEBUG: GICC_HPPIR = 0x")
-	uartPutHex32(hppir)
-	uartPuts(" (interrupt ID: ")
-	uartPutHex32(hppir & 0x3FF)
-	uartPuts(")\r\n")
+	// Not used during normal operation - kept for debugging
 }
 
 // timerInterruptHandler is a legacy handler - timer interrupts are now handled
@@ -377,23 +210,23 @@ func timerInterruptHandler() {
 	timerTicks++
 
 	// Print 'T' to show timer interrupt fired
-	uartPutc('T')
+	printChar('T')
 
 	// Decrement exit counter
 	if timerExitCount > 0 {
 		timerExitCount--
 		if timerExitCount == 0 {
 			// Exit after 5 seconds (5 timer interrupts at 1 second each)
-			uartPuts("Timer: 5 seconds elapsed, exiting via semihosting...\r\n")
+			print("Timer: 5 seconds elapsed, exiting via semihosting...\r\n")
 			asm.QemuExit()
 			return
 		}
 	}
 
-	// Reset timer to fire again in 1 second
+	// Reset timer to fire again in 5 seconds
 	// Use TVAL (timer value - counts down)
 	freq := uint64(62500000)           // Default QEMU virt timer frequency = 62.5MHz
-	timer_write_tval(uint32(freq * 1)) // Set countdown timer for 1 second
+	timer_write_tval(uint32(freq * 5)) // Set countdown timer for 5 seconds
 
 	// Output '.' to framebuffer
 	fb_putc_irq('.')
@@ -420,7 +253,7 @@ func timerInterruptHandlerAsm(irqID uint32) {
 			timerExitCount--
 			if timerExitCount == 0 {
 				// Exit after 5 seconds
-				uartPuts("\r\nTimer: 5 seconds elapsed, exiting...\r\n")
+				print("\r\nTimer: 5 seconds elapsed, exiting...\r\n")
 				asm.QemuExit()
 				return
 			}

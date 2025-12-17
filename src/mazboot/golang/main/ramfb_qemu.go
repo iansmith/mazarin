@@ -280,238 +280,57 @@ func qemu_cfg_check_dma_support() bool {
 // ramfbInit initializes the ramfb device via fw_cfg
 // Allocates framebuffer memory and configures ramfb to use it
 func ramfbInit() bool {
-	uartPuts("RAMFB: ramfbInit() entry\r\n")
-	uartPuts("RAMFB: Initializing...\r\n")
-
-	// First, check if DMA is available
+	// Check if DMA is available
 	if !qemu_cfg_check_dma_support() {
-		uartPuts("RAMFB: ERROR - Cannot proceed without DMA support\r\n")
 		return false
 	}
 
-	// Find etc/ramfb selector FIRST (before any other DMA operations)
+	// Find etc/ramfb selector
 	ramfbSelector := qemu_cfg_find_file()
 	if ramfbSelector == 0 {
-		uartPuts("RAMFB: ERROR - Could not find etc/ramfb!\r\n")
 		return false
 	}
-	uartPuts("RAMFB: Found etc/ramfb, selector=0x")
-	printHex32Helper(ramfbSelector)
-	uartPuts("\r\n")
 
 	// Allocate framebuffer memory
-	// Must match QEMU_FB_WIDTH and QEMU_FB_HEIGHT from framebuffer_qemu.go
 	fbWidth := uint32(1024)
 	fbHeight := uint32(768)
 	fbSize := fbWidth * fbHeight * 4
 
 	// CRITICAL: Framebuffer memory allocated here must NEVER be freed
-	// Use kmallocReserved() to mark this allocation as permanent
-	// The framebuffer is a permanent resource that must remain valid for the
-	// lifetime of the system. Calling kfree() on this memory would cause
-	// display corruption and system instability.
 	fbMem := kmallocReserved(fbSize)
 	if fbMem == nil {
-		uartPuts("RAMFB: ERROR - kmalloc failed\r\n")
 		return false
 	}
 	fbAddr := pointerToUintptr(fbMem)
-	// Use 32-bit format (XRGB8888) like working example
-	// Working code: stride = fb_width * sizeof(uint32_t) = width * 4
-	fbStride := fbWidth * 4 // 1024 * 4 = 4096
-
-	// Create RAMFB configuration structure in global variable
-	// IMPORTANT: The RAMFBCfg structure fields must be in big-endian format
-	// when written via fw_cfg DMA, so we convert them to big-endian
-	uartPuts("RAMFB: Creating config struct...\r\n")
+	fbStride := fbWidth * 4
 
 	// Verify framebuffer address is within QEMU's RAM region
-	// QEMU virt machine has 1GB RAM: 0x40000000 - 0x80000000
 	const QEMU_RAM_START = 0x40000000
 	const QEMU_RAM_END = 0x80000000
 	if fbAddr < QEMU_RAM_START || fbAddr >= QEMU_RAM_END {
-		uartPuts("RAMFB: ERROR - Address outside QEMU RAM\r\n")
 		return false
 	}
 
-	// Create config structure with fields in big-endian format (matching working RISC-V example)
-	// The working example does: .addr = __builtin_bswap64(fb->fb_addr)
-	// Our SetAddr() method stores bytes in big-endian order, so we pass native value
+	// Create config structure with fields in big-endian format
 	ramfbCfg.SetAddr(uint64(fbAddr))
-	uartPuts("RAMFB: Address set in config (SetAddr handles BE conversion)\r\n")
-
-	// Use 'XR24' (XRGB8888) format - matching working example exactly
-	// Working example: .fourcc = __builtin_bswap32(DRM_FORMAT_XRGB8888)
-	// DRM_FORMAT_XRGB8888 = fourcc_code('X','R','2','4') = 0x34325258
-	// SetFourCC() stores bytes in big-endian order, so we pass the native value
-	// (it will be converted to big-endian bytes internally)
 	ramfbCfg.SetFourCC(0x34325258) // 'XR24' = XRGB8888 format (32-bit)
 	ramfbCfg.SetFlags(0)
-	ramfbCfg.SetWidth(fbWidth)   // SetWidth stores in big-endian byte order
-	ramfbCfg.SetHeight(fbHeight) // SetHeight stores in big-endian byte order
-	// Stride for XRGB8888: width * 4 bytes per pixel (matching working code)
-	ramfbCfg.SetStride(fbWidth * 4) // SetStride stores in big-endian byte order
+	ramfbCfg.SetWidth(fbWidth)
+	ramfbCfg.SetHeight(fbHeight)
+	ramfbCfg.SetStride(fbWidth * 4)
 
-	uartPuts("RAMFB: Config struct created (big-endian)\r\n")
-
-	// Write configuration using DMA - we need to get this working!
-	uartPuts("RAMFB: Attempting DMA write of config...\r\n")
+	// Write configuration using DMA
 	fw_cfg_dma_write(ramfbSelector, unsafe.Pointer(&ramfbCfg), 28)
-	uartPuts("RAMFB: DMA write returned\r\n")
-	uartPuts("RAMFB: Config sent (DMA should have processed it)\r\n")
-
-	// Debug: Print the actual config values that were sent (in big-endian)
-	// Debug: Print the actual config values that were sent
-	// Note: Addr() reads back the value as stored (big-endian bytes interpreted as uint64)
-	// The bytes are stored correctly, but when read back as uint64, they represent the address
-	uartPuts("RAMFB: Config sent - Addr=0x")
-	addrVal := ramfbCfg.Addr()
-	// addrVal is the address as stored in BE bytes, which should match fbAddr
-	for shift := 60; shift >= 0; shift -= 4 {
-		digit := (addrVal >> shift) & 0xF
-		if digit < 10 {
-			uartPutc(byte('0' + digit))
-		} else {
-			uartPutc(byte('A' + digit - 10))
-		}
-	}
-	uartPuts(" Width=0x")
-	printHex32(swap32(ramfbCfg.Width()))
-	uartPuts(" Height=0x")
-	printHex32(swap32(ramfbCfg.Height()))
-	uartPuts(" Stride=0x")
-	printHex32(swap32(ramfbCfg.Stride()))
-	uartPuts(" FourCC=0x")
-	printHex32(swap32(ramfbCfg.FourCC()))
-	uartPuts("\r\n")
-	uartPuts("RAMFB: About to store framebuffer info...\r\n")
-
-	// Check stack usage before storing framebuffer info
-	// Initial stack pointer is at 0x5F000000 (g0 stack top, 8KB stack, set in boot.s)
-	// Stack grows downward, so lower values mean more stack used
-	const initialStackPtr uintptr = 0x5F000000
-	currentStackPtr := asm.GetStackPointer()
-	stackUsed := initialStackPtr - currentStackPtr
-	uartPuts("RAMFB: Stack check - initial=0x")
-	for shift := 60; shift >= 0; shift -= 4 {
-		digit := (uint64(initialStackPtr) >> shift) & 0xF
-		if digit < 10 {
-			uartPutc(byte('0' + digit))
-		} else {
-			uartPutc(byte('A' + digit - 10))
-		}
-	}
-	uartPuts(" current=0x")
-	for shift := 60; shift >= 0; shift -= 4 {
-		digit := (uint64(currentStackPtr) >> shift) & 0xF
-		if digit < 10 {
-			uartPutc(byte('0' + digit))
-		} else {
-			uartPutc(byte('A' + digit - 10))
-		}
-	}
-	uartPuts(" used=0x")
-	for shift := 60; shift >= 0; shift -= 4 {
-		digit := (uint64(stackUsed) >> shift) & 0xF
-		if digit < 10 {
-			uartPutc(byte('0' + digit))
-		} else {
-			uartPutc(byte('A' + digit - 10))
-		}
-	}
-	uartPuts("\r\n")
-
-	// Warn if stack usage is high (more than 512KB used)
-	if stackUsed > 512*1024 {
-		uartPuts("RAMFB: WARNING - High stack usage detected!\r\n")
-	}
 
 	// Store framebuffer info
-	uartPuts("RAMFB: Storing width...\r\n")
 	fbinfo.Width = fbWidth
-	uartPuts("RAMFB: Storing height...\r\n")
 	fbinfo.Height = fbHeight
-	uartPuts("RAMFB: Storing pitch...\r\n")
 	fbinfo.Pitch = fbStride
-	uartPuts("RAMFB: Calculating chars...\r\n")
-
-	// Debug: Print values before division
-	uartPuts("RAMFB: Before division - fbWidth=0x")
-	printHex32(fbWidth)
-	uartPuts(" CHAR_WIDTH=0x")
-	printHex32(CHAR_WIDTH)
-	uartPuts(" fbHeight=0x")
-	printHex32(fbHeight)
-	uartPuts(" CHAR_HEIGHT=0x")
-	printHex32(CHAR_HEIGHT)
-	uartPuts("\r\n")
-
-	// Check for zero values (shouldn't happen, but safety check)
-	if CHAR_WIDTH == 0 {
-		uartPuts("RAMFB: ERROR - CHAR_WIDTH is zero!\r\n")
-		return false
-	}
-	if CHAR_HEIGHT == 0 {
-		uartPuts("RAMFB: ERROR - CHAR_HEIGHT is zero!\r\n")
-		return false
-	}
-
-	// Use temporary variables to isolate the division operations
-	uartPuts("RAMFB: Performing division operations...\r\n")
-	tempCharsWidth := fbWidth / CHAR_WIDTH
-	uartPuts("RAMFB: Division 1 complete - tempCharsWidth=0x")
-	printHex32(tempCharsWidth)
-	uartPuts("\r\n")
-
-	tempCharsHeight := fbHeight / CHAR_HEIGHT
-	uartPuts("RAMFB: Division 2 complete - tempCharsHeight=0x")
-	printHex32(tempCharsHeight)
-	uartPuts("\r\n")
-
-	// Now assign to fbinfo struct
-	uartPuts("RAMFB: Assigning to fbinfo.CharsWidth...\r\n")
-	fbinfo.CharsWidth = tempCharsWidth
-	uartPuts("RAMFB: fbinfo.CharsWidth assigned OK\r\n")
-
-	uartPuts("RAMFB: Assigning to fbinfo.CharsHeight...\r\n")
-	fbinfo.CharsHeight = tempCharsHeight
-	uartPuts("RAMFB: fbinfo.CharsHeight assigned OK\r\n")
-
-	// Note: CharsX and CharsY cursor positioning is done in framebufferInit()
-	// after calling ramfbInit(), to position cursor at bottom of screen
-	// Don't reset them here as it would override that positioning
-	uartPuts("RAMFB: Cursor positioning handled in framebufferInit()\r\n")
-
-	// Check stack again after division operations
-	currentStackPtr2 := asm.GetStackPointer()
-	stackUsed2 := initialStackPtr - currentStackPtr2
-	uartPuts("RAMFB: Stack check after division - current=0x")
-	for shift := 60; shift >= 0; shift -= 4 {
-		digit := (uint64(currentStackPtr2) >> shift) & 0xF
-		if digit < 10 {
-			uartPutc(byte('0' + digit))
-		} else {
-			uartPutc(byte('A' + digit - 10))
-		}
-	}
-	uartPuts(" used=0x")
-	for shift := 60; shift >= 0; shift -= 4 {
-		digit := (uint64(stackUsed2) >> shift) & 0xF
-		if digit < 10 {
-			uartPutc(byte('0' + digit))
-		} else {
-			uartPutc(byte('A' + digit - 10))
-		}
-	}
-	uartPuts("\r\n")
-
-	uartPuts("RAMFB: Calculating buf size...\r\n")
+	fbinfo.CharsWidth = fbWidth / CHAR_WIDTH
+	fbinfo.CharsHeight = fbHeight / CHAR_HEIGHT
 	fbinfo.BufSize = uint32(fbStride) * fbHeight
-	uartPuts("RAMFB: Storing buf pointer...\r\n")
-	fbinfo.Buf = fbMem // Use the allocated memory pointer
-	uartPuts("RAMFB: Framebuffer info stored\r\n")
+	fbinfo.Buf = fbMem
 
-	uartPuts("RAMFB: Initialized successfully\r\n")
 	return true
 }
 
@@ -523,11 +342,7 @@ func ramfbReinit() {
 	// Re-send the config using the global ramfbCfg variable
 	// which should still have the correct values (in big-endian)
 	// ramfbReinit doesn't have access to selector, skip for now
-	if false && writeRamfbConfig(&ramfbCfg, 0) {
-		uartPuts("RAMFB: Config re-sent OK\r\n")
-	} else {
-		uartPuts("RAMFB: Config re-send failed\r\n")
-	}
+	_ = writeRamfbConfig(&ramfbCfg, 0)
 }
 
 // swap32 swaps bytes in a 32-bit value (little-endian to big-endian)
@@ -559,34 +374,6 @@ func swap64(x uint64) uint64 {
 		((x & 0x00000000000000FF) << 56)
 }
 
-// dumpDmaStructureBytes dumps the raw bytes of the DMA structure (simplified)
-//
-//go:nosplit
-func dumpDmaStructureBytes(dma *FWCfgDmaAccess) {
-	dmaPtr := unsafe.Pointer(dma)
-	uartPuts("RAMFB: DMA bytes: ")
-	// Dump first 4 bytes (control), then length, then address
-	for i := 0; i < 16; i++ {
-		b := (*byte)(unsafe.Pointer(uintptr(dmaPtr) + uintptr(i)))
-		// Print hex digit
-		hi := (*b >> 4) & 0xF
-		lo := *b & 0xF
-		if hi < 10 {
-			uartPutc(byte('0' + hi))
-		} else {
-			uartPutc(byte('A' + hi - 10))
-		}
-		if lo < 10 {
-			uartPutc(byte('0' + lo))
-		} else {
-			uartPutc(byte('A' + lo - 10))
-		}
-		if i < 15 {
-			uartPuts(" ")
-		}
-	}
-	uartPuts("\r\n")
-}
 
 // qemu_cfg_read_entry_traditional reads using traditional interface (no DMA)
 //
@@ -655,11 +442,7 @@ func qemu_cfg_read(buf unsafe.Pointer, length uint32) {
 }
 
 // qemu_cfg_dma_transfer performs a DMA transfer to/from fw_cfg
-// Direct translation of working RISC-V example
 // CRITICAL: QEMU's fw_cfg DMA region is DEVICE_BIG_ENDIAN
-//
-//	It byte-swaps values from little-endian guests
-//	So we must write byte-swapped values that become correct after QEMU's swap
 //
 //go:nosplit
 func qemu_cfg_dma_transfer(dataAddr unsafe.Pointer, length uint32, control uint32) {
@@ -668,8 +451,6 @@ func qemu_cfg_dma_transfer(dataAddr unsafe.Pointer, length uint32, control uint3
 	}
 
 	// Create LOCAL DMA structure on stack
-	// Store values in big-endian byte format (how QEMU expects to read them)
-	// QEMU will then convert with be32_to_cpu/be64_to_cpu
 	var access FWCfgDmaAccess
 	access.SetControl(control)
 	access.SetLength(length)
@@ -677,133 +458,27 @@ func qemu_cfg_dma_transfer(dataAddr unsafe.Pointer, length uint32, control uint3
 	asm.Dsb()
 
 	// Write DMA structure address to DMA register
-	// CRITICAL: Pre-swap the entire 64-bit address so QEMU's DEVICE_BIG_ENDIAN
-	// byte-swap produces the correct address in the DMA handler
+	// Pre-swap for QEMU's DEVICE_BIG_ENDIAN byte-swap
 	accessAddr := uintptr(unsafe.Pointer(&access))
-	addr64 := uint64(accessAddr)
-	addr64Swapped := swap64(addr64)
+	addr64Swapped := swap64(uint64(accessAddr))
 
-	uartPuts("RAMFB: DMA addr unswapped=0x")
-	for shift := 60; shift >= 0; shift -= 4 {
-		digit := (addr64 >> shift) & 0xF
-		if digit < 10 {
-			uartPutc(byte('0' + digit))
-		} else {
-			uartPutc(byte('A' + digit - 10))
-		}
-	}
-	uartPuts(" swapped=0x")
-	for shift := 60; shift >= 0; shift -= 4 {
-		digit := (addr64Swapped >> shift) & 0xF
-		if digit < 10 {
-			uartPutc(byte('0' + digit))
-		} else {
-			uartPutc(byte('A' + digit - 10))
-		}
-	}
-	uartPuts("\r\n")
-
-	// Write the pre-swapped address as a single 64-bit value
 	asm.MmioWrite64(uintptr(FW_CFG_DMA_ADDR), addr64Swapped)
 	asm.Dsb()
 
 	// Wait for DMA transfer to complete
-	// Matching working code: while(__builtin_bswap32(access.control) & ~QEMU_CFG_DMA_CTL_ERROR) {}
-	// The condition is: continue while (control & ~ERROR) != 0
-	// This means: continue while any bits except error bit (bit 0) are set
-	maxIterations := 50000 // Timeout for DMA - will help us see if it's timing out
-	iterations := 0
-
-	// Memory barrier before reading control field
-	// QEMU may have updated the control field, so we need to ensure we read fresh data
-	asm.Dsb()
-
-	// Check control after register write
-	asm.Dsb()
-	initialControlBE := access.Control()
-	initialControl := swap32(initialControlBE)
-	if initialControl == 0 {
-		uartPuts("RAMFB: WARNING - Control is 0! QEMU may not have processed DMA\r\n")
-	} else {
-		uartPuts("RAMFB: Control is non-zero (0x")
-		printHex32Helper(initialControl)
-		uartPuts("), QEMU is processing DMA\r\n")
-	}
-
-	for {
-		// Memory barrier before reading control field
-		// QEMU updates this field, so we need to ensure we read fresh data from memory
+	maxIterations := 50000
+	for iterations := 0; iterations < maxIterations; iterations++ {
 		asm.Dsb()
-
 		controlBE := access.Control()
-		control := swap32(controlBE)
-		// Continue while any bits except error bit are set
+		ctrl := swap32(controlBE)
 		// Stop when control is 0 (all bits clear) OR error bit is set
-		if (control & 0xFFFFFFFE) == 0 {
-			// Check for error bit
-			if (control & 0x01) != 0 {
-				uartPuts("RAMFB: *** DMA transfer ERROR bit set! ***\r\n")
-				uartPuts("RAMFB: Final control=0x")
-				printHex32Helper(control)
-				uartPuts(" (error bit 0 set)\r\n")
-			} else {
-				uartPuts("RAMFB: *** DMA transfer completed successfully ***\r\n")
-				uartPuts("RAMFB: Final control=0x")
-				printHex32Helper(control)
-				uartPuts(" (all bits clear, no error)\r\n")
-			}
-			uartPuts("RAMFB: Iterations waited: ")
-			// Print iterations (simple decimal)
-			if iterations < 1000 {
-				uartPuts("0x")
-				printHex32Helper(uint32(iterations))
-			} else {
-				uartPuts(">1000")
-			}
-			uartPuts("\r\n")
+		if (ctrl & 0xFFFFFFFE) == 0 {
 			break
 		}
-		iterations++
-		if iterations >= maxIterations {
-			uartPuts("RAMFB: *** DMA transfer TIMEOUT! ***\r\n")
-			uartPuts("RAMFB: Final control=0x")
-			printHex32Helper(control)
-			uartPuts(" (initial was 0x")
-			printHex32Helper(initialControl)
-			uartPuts(")\r\n")
-			uartPuts("RAMFB: Control never cleared - DMA may not be working\r\n")
-			break
-		}
-
-		// Print progress every 10000 iterations
-		if iterations%10000 == 0 {
-			uartPuts("RAMFB: Still waiting... control=0x")
-			printHex32Helper(control)
-			uartPuts(" iterations=")
-			uartPuts("0x")
-			printHex32Helper(uint32(iterations))
-			uartPuts("\r\n")
-		}
-		// Use proper delay function instead of empty loop
-		// This gives QEMU time to process the DMA request
-		// The delay() function is implemented in assembly and provides microsecond-scale waits
-		asm.Delay(1000) // 1000 iterations of assembly delay loop
+		asm.Delay(1000)
 	}
 }
 
-// printHex32Helper prints a uint32 in hex format (helper to reduce stack usage)
-//
-//go:nosplit
-func printHex32Helper(val uint32) {
-	for shift := 28; shift >= 0; shift -= 4 {
-		digit := (val >> shift) & 0xF
-		if digit < 10 {
-			uartPutc(byte('0' + digit))
-		} else {
-			uartPutc(byte('A' + digit - 10))
-		}
-	}
-}
 
 // checkRamfbName checks if the file name matches "etc/ramfb" or "/etc/ramfb"
 //
@@ -837,75 +512,41 @@ func checkRamfbName(name *[56]byte) bool {
 	return false
 }
 
-// printFileInfo prints information about a file entry (helper to reduce stack usage)
-//
-//go:nosplit
-func printFileInfo(entryNum uint32, qfile *QemuCfgFile) {
-	uartPuts("RAMFB: File[")
-	printHex32Helper(entryNum)
-	uartPuts("]: name=\"")
-	// Print file name up to null terminator or 56 chars
-	for i := 0; i < 56; i++ {
-		if qfile.Name[i] == 0 {
-			break
-		}
-		uartPutc(qfile.Name[i])
-	}
-	uartPuts("\" size=0x")
-	printHex32Helper(swap32(qfile.Size))
-	uartPuts(" selector=0x")
-	printHex32Helper(uint32(swap16(qfile.Select)))
-	uartPuts("\r\n")
-}
 
 // qemu_cfg_find_file searches the fw_cfg file directory for "etc/ramfb" and returns its selector
-// Uses traditional interface (not DMA) as recommended in DMA-INVESTIGATION-COMPLETE.md
+// Uses traditional interface (not DMA)
 func qemu_cfg_find_file() uint32 {
-	// Read file directory count (first 4 bytes of file_dir) using traditional interface
-	// Traditional interface is 100% reliable, DMA has issues with multiple consecutive reads
+	// Read file directory count (first 4 bytes of file_dir)
 	var count uint32
 	qemu_cfg_read_entry_traditional(unsafe.Pointer(&count), FW_CFG_FILE_DIR, 4)
 
-	countVal := swap32(count) // Convert from big-endian
-	uartPuts("RAMFB: File count=")
-	printHex32Helper(countVal)
-	uartPuts("\r\n")
+	countVal := swap32(count)
 
 	// Re-select file directory so sequential reads start deterministically
 	asm.MmioWrite16(uintptr(FW_CFG_SELECTOR_ADDR), swap16(uint16(FW_CFG_FILE_DIR)))
 	asm.Dsb()
-	// Skip the 4-byte count field by reading into the count variable again (reuse memory)
 	qemu_cfg_read_entry_traditional(unsafe.Pointer(&count), FW_CFG_FILE_DIR, 4)
 
 	if countVal == 0 {
-		uartPuts("RAMFB: Count is zero, returning\r\n")
 		return 0
 	}
-
-	// Iterate through file entries
-	uartPuts("RAMFB: Searching files...\r\n")
 
 	// Allocate qfile on heap to avoid stack issues
 	qfile := (*QemuCfgFile)(kmalloc(64))
 	if qfile == nil {
-		uartPuts("RAMFB: ERROR - Failed to allocate qfile\r\n")
 		return 0
 	}
 
 	for e := uint32(0); e < countVal; e++ {
-		qemu_cfg_read(unsafe.Pointer(qfile), 64) // Use sequential read, not traditional
+		qemu_cfg_read(unsafe.Pointer(qfile), 64)
 
 		if checkRamfbName(&qfile.Name) {
 			selector := uint32(swap16(qfile.Select))
-			uartPuts("RAMFB: Found etc/ramfb, selector=0x")
-			printHex32Helper(selector)
-			uartPuts("\r\n")
 			kfree(unsafe.Pointer(qfile))
 			return selector
 		}
 	}
 
-	uartPuts("RAMFB: etc/ramfb not found\r\n")
 	kfree(unsafe.Pointer(qfile))
 	return 0
 }
@@ -914,121 +555,23 @@ func qemu_cfg_find_file() uint32 {
 //
 //go:nosplit
 func writeRamfbConfig(cfg *RAMFBCfg, selector uint32) bool {
-	uartPuts("RAMFB: Writing config via selector 0x")
-	printHex32Helper(selector)
-	uartPuts("\r\n")
-
 	// Select the etc/ramfb entry (big-endian)
 	asm.MmioWrite16(uintptr(FW_CFG_SELECTOR_ADDR), swap16(uint16(selector)))
 	asm.Dsb()
 
 	// Write 28 bytes to data register (7 x 4-byte writes)
-	// The config structure has bytes stored in big-endian order
-	// When we write a 32-bit value via mmio_write on little-endian machine,
-	// the bytes are written in little-endian order (LSB first)
-	// So we need to write the value in reverse byte order
 	cfgPtr := unsafe.Pointer(cfg)
 	for i := uint32(0); i < 28; i += 4 {
-		// Read 4 bytes individually (they're stored in big-endian order: MSB first)
-		b0 := *(*byte)(unsafe.Pointer(uintptr(cfgPtr) + uintptr(i))) // MSB
+		b0 := *(*byte)(unsafe.Pointer(uintptr(cfgPtr) + uintptr(i)))
 		b1 := *(*byte)(unsafe.Pointer(uintptr(cfgPtr) + uintptr(i+1)))
 		b2 := *(*byte)(unsafe.Pointer(uintptr(cfgPtr) + uintptr(i+2)))
-		b3 := *(*byte)(unsafe.Pointer(uintptr(cfgPtr) + uintptr(i+3))) // LSB
+		b3 := *(*byte)(unsafe.Pointer(uintptr(cfgPtr) + uintptr(i+3)))
 
-		// Assemble in reverse order so that when written as little-endian,
-		// the bytes appear in correct big-endian order: b0, b1, b2, b3
-		// On little-endian write: LSB is written first, so we want LSB=b0
 		val := uint32(b0) | (uint32(b1) << 8) | (uint32(b2) << 16) | (uint32(b3) << 24)
-
-		// Write to data register
 		asm.MmioWrite(uintptr(FW_CFG_DATA_ADDR), val)
 	}
 	asm.Dsb()
 
-	uartPuts("RAMFB: Config written\r\n")
 	return true
 }
 
-// writeRamfbConfigDirect writes the RAMFB configuration directly to fw_cfg
-// without using DMA - just pokes the 28 bytes into memory
-// This is for debugging - to eliminate DMA as a potential issue
-// NOTE: According to QEMU docs, direct writes may be ignored in QEMU 2.4+,
-// but this function helps verify the config structure is correct
-//
-//go:nosplit
-func writeRamfbConfigDirect(cfg *RAMFBCfg) bool {
-	uartPuts("RAMFB: Direct write mode - poking 28 bytes directly to fw_cfg...\r\n")
-
-	// fw_cfg base address for AArch64 virt machine
-	// According to QEMU docs: base is 0x9020000, selector at +8, data at +0
-	// Note: 0x9020000 = 0x09020000 (same value, different notation)
-	const FW_CFG_BASE = 0x09020000
-	const FW_CFG_SELECTOR = FW_CFG_BASE + 0x08 // Selector register (2 bytes, big-endian) = 0x09020008
-	const FW_CFG_DATA = FW_CFG_BASE + 0x00     // Data register (8 bytes) = 0x09020000
-
-	// Select the etc/ramfb entry (selector 0x19)
-	// Selector is 2 bytes, big-endian
-	selectorBE := uint16(FW_CFG_RAMFB_SELECT)
-	selectorHigh := byte(selectorBE >> 8)
-	selectorLow := byte(selectorBE & 0xFF)
-
-	uartPuts("RAMFB: Writing selector 0x19 to selector register...\r\n")
-
-	// Write selector (2 bytes, big-endian)
-	// Selector register is at offset 8, 2 bytes wide
-	selectorValue := uint32(selectorHigh)<<24 | uint32(selectorLow)<<16
-	uartPuts("RAMFB: About to write selector to 0x09020008...\r\n")
-
-	// Try writing selector - if this hangs, the address might be wrong or access might be restricted
-	// Selector register is 2 bytes, but we're writing 32 bits (upper 16 bits should be ignored)
-	asm.MmioWrite(uintptr(FW_CFG_SELECTOR), selectorValue)
-
-	// If we get here, the write didn't crash
-	uartPuts("RAMFB: Selector write complete\r\n")
-	asm.Dsb()
-	uartPuts("RAMFB: Memory barrier complete\r\n")
-
-	// Now write the 28-byte config structure directly to data register
-	// Data register is 8 bytes, so we need 4 writes (28 bytes = 3 full writes + 1 partial)
-	uartPuts("RAMFB: Writing 28-byte config structure to data register...\r\n")
-
-	cfgPtr := (*[28]byte)(unsafe.Pointer(cfg))
-
-	// Write in 8-byte chunks (4 writes total, last one is partial)
-	for i := 0; i < 4; i++ {
-		offset := i * 8
-		if offset >= 28 {
-			break
-		}
-
-		// Read 8 bytes (or remaining bytes)
-		bytesToWrite := 8
-		if offset+8 > 28 {
-			bytesToWrite = 28 - offset
-		}
-
-		// Build 64-bit value from bytes (big-endian)
-		var value uint64
-		for j := 0; j < bytesToWrite && j < 8; j++ {
-			value |= uint64(cfgPtr[offset+j]) << (56 - j*8)
-		}
-
-		uartPuts("RAMFB: Writing chunk ")
-		uartPutUint32(uint32(i))
-		uartPuts(" (offset ")
-		uartPutUint32(uint32(offset))
-		uartPuts(") = 0x")
-		uartPutHex64(value)
-		uartPuts("\r\n")
-
-		// Write to data register (big-endian)
-		asm.MmioWrite64(uintptr(FW_CFG_DATA), swap64(value))
-		asm.Dsb()
-	}
-
-	uartPuts("RAMFB: Direct write complete (28 bytes written)\r\n")
-	uartPuts("RAMFB: NOTE - Direct writes may be ignored by QEMU 2.4+\r\n")
-	uartPuts("RAMFB: This function is for debugging/config verification only\r\n")
-
-	return true
-}

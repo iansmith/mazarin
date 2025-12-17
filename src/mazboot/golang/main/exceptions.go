@@ -69,78 +69,21 @@ var (
 // Functions are accessed via asm package: asm.SetVbarEl1(), asm.EnableIrqs(), etc.
 
 // InitializeExceptions sets up the exception vector table
-// This must be called early in kernel initialization
 //
 //go:nosplit
 //go:noinline
 func InitializeExceptions() error {
-	uartPuts("DEBUG: InitializeExceptions called\r\n")
-	uartPuts("DEBUG: Step 1 complete\r\n")
-
-	// Get the address of the exception vector table using assembly function
-	// This avoids linker symbol issues
-	uartPuts("DEBUG: Getting exception vector address...\r\n")
-
-	// TEMPORARY: Skip assembly call that's hanging, use linker symbol directly
-	// TODO: Fix get_exception_vectors_addr() assembly function
-	uartPuts("DEBUG: Using linker symbol exception_vectors_start directly...\r\n")
-
-	// Access linker symbol the same way as __end
-	// The linker provides exception_vectors_start, we need to access it
-	// For now, let's try accessing it via unsafe.Pointer like __end
-	// But first, let's just use a reasonable address to test if the rest works
-	// Exception vectors are typically placed right after kernel text
-	// Kernel starts at 0x200000, so vectors should be shortly after
-	// Let's use a placeholder that we'll fix properly later
-	uartPuts("DEBUG: Temporarily using placeholder address for testing...\r\n")
-	// Actual address from readelf: 0x2a5000 (found via: target-readelf -s kernel-qemu.elf | grep exception_vectors)
-	exceptionVectorAddr := uintptr(0x2a5000) // TODO: Fix proper lookup
-	uartPuts("DEBUG: Using address: 0x")
-	uartPutHex64(uint64(exceptionVectorAddr))
-	uartPuts("\r\n")
-	uartPuts("WARNING: Using hardcoded address - this is temporary!\r\n")
-	uartPuts("DEBUG: Got address: 0x")
-	uartPutHex64(uint64(exceptionVectorAddr))
-	uartPuts("\r\n")
-
-	uartPuts("Setting VBAR_EL1 to 0x")
-	uartPutHex64(uint64(exceptionVectorAddr))
-	uartPuts("\r\n")
+	// Exception vector address (hardcoded - VBAR_EL1 is set by boot.s)
+	exceptionVectorAddr := uintptr(0x2a5000)
 
 	// Verify address is 2KB aligned (required for VBAR_EL1)
 	if exceptionVectorAddr&0x7FF != 0 {
-		uartPuts("ERROR: Exception vector address not 2KB aligned!\r\n")
-		uartPuts("Address: 0x")
-		uartPutHex64(uint64(exceptionVectorAddr))
-		uartPuts(" (alignment check: 0x")
-		uartPutHex64(uint64(exceptionVectorAddr & 0x7FF))
-		uartPuts(")\r\n")
-		// Don't continue if address is wrong
+		print("FATAL: Exception vector not 2KB aligned\r\n")
 		return nil
 	}
-	uartPuts("DEBUG: Address alignment verified (2KB aligned)\r\n")
 
-	// Note: Interrupts should already be disabled during early kernel boot
-	// We don't call disable_irqs() here because if VBAR_EL1 isn't set yet,
-	// accessing DAIF might trigger an exception that can't be handled
-
-	// VBAR_EL1 is now set in boot.s before Go code runs
-	// This avoids potential issues with Go runtime triggering exceptions
-	// when trying to set VBAR_EL1 from Go code
-	uartPuts("DEBUG: VBAR_EL1 should already be set by boot.s\r\n")
-	uartPuts("DEBUG: Skipping VBAR_EL1 setup - already done in assembly\r\n")
-	// Skip readback verification - reading VBAR_EL1 causes a synchronous exception
-
-	// Add a memory barrier to ensure VBAR_EL1 is set before continuing
+	// VBAR_EL1 is set in boot.s before Go code runs
 	asm.Dsb()
-	uartPuts("DEBUG: Memory barrier complete\r\n")
-
-	uartPuts("DEBUG: After set_vbar_el1, before re-enabling interrupts\r\n")
-
-	// Keep interrupts disabled for now - we'll enable them after GIC init
-	// enable_irqs()  // Don't enable yet - wait for GIC init
-
-	uartPuts("Exception handlers initialized\r\n")
 
 	return nil
 }
@@ -202,21 +145,34 @@ func uartPutHex64Direct(v uint64) {
 //
 //go:nosplit
 func handleException(excInfo ExceptionInfo) {
-	// CRITICAL: Print immediately to verify handler is called
-	// Use direct UART output to avoid any stack/heap issues
-	uartPutcDirect('*') // '*' = Exception handler in Go code called
-
 	// Extract exception class from ESR_EL1
 	ec := (excInfo.ESR >> 26) & 0x3F
 
-	uartPutsDirect("EXCEPTION: ELR=0x")
+	// Fast path for data aborts (page faults) - suppress output for normal operation
+	if ec == EC_DATA_ABORT_ELx {
+		// Try demand paging first - this handles page faults in mmap region
+		if HandlePageFault(uintptr(excInfo.FAR), excInfo.ESR&0x3F) {
+			// Page fault handled successfully - return silently
+			return
+		}
+		// Page fault failed - print error info
+		uartPutsDirect("DATA ABORT: ELR=0x")
+		uartPutHex64Direct(excInfo.ELR)
+		uartPutsDirect(" FAR=0x")
+		uartPutHex64Direct(excInfo.FAR)
+		uartPutsDirect(" ESR=0x")
+		uartPutHex64Direct(excInfo.ESR)
+		uartPutsDirect("\r\n")
+		return
+	}
+
+	// For other exceptions, print full debug info
+	uartPutsDirect("*EXCEPTION: EC=0x")
+	uartPutHex8Direct(uint8(ec))
+	uartPutsDirect(" ELR=0x")
 	uartPutHex64Direct(excInfo.ELR)
 	uartPutsDirect(" ESR=0x")
 	uartPutHex64Direct(excInfo.ESR)
-	uartPutsDirect(" EC=0x")
-	uartPutHex8Direct(uint8(ec))
-	uartPutsDirect(" SPSR=0x")
-	uartPutHex64Direct(excInfo.SPSR)
 	uartPutsDirect(" FAR=0x")
 	uartPutHex64Direct(excInfo.FAR)
 	uartPutsDirect("\r\n")
@@ -236,22 +192,6 @@ func handleException(excInfo ExceptionInfo) {
 		uartPutsDirect("MSR/MRS system instruction trap at 0x")
 		uartPutHex64Direct(excInfo.ELR)
 		uartPutsDirect("\r\n")
-
-	case EC_DATA_ABORT_ELx:
-		// Try demand paging first - this handles page faults in mmap region
-		if HandlePageFault(uintptr(excInfo.FAR), excInfo.ESR&0x3F) {
-			// Page fault handled successfully - return to retry instruction
-			// Note: This requires the exception handler to return properly
-			// For now, we'll print success and continue (caller handles eret)
-			uartPutsDirect("PF-OK ")
-			return
-		}
-		// Not a demand-paged address - print debug info
-		uartPutsDirect("Data abort at 0x")
-		uartPutHex64Direct(excInfo.ELR)
-		uartPutsDirect(" (fault address: 0x")
-		uartPutHex64Direct(excInfo.FAR)
-		uartPutsDirect(")\r\n")
 
 	case EC_PREFETCH_ABORT_ELx:
 		uartPutsDirect("Prefetch abort at 0x")
@@ -306,28 +246,28 @@ func handleException(excInfo ExceptionInfo) {
 //go:nosplit
 func irqHandlerGo(irqID uint32) {
 	// Print 'I' to show IRQ handler was called
-	uartPutc('I')
+	printChar('I')
 
 	// Handle interrupt - interrupt ID already acknowledged in assembly
 	// irqID passed from assembly (read from GICC_IAR immediately on entry)
 	gicHandleInterruptWithID(irqID)
 
 	// Print 'i' to show IRQ handler returning
-	uartPutc('i')
+	printChar('i')
 }
 
 // fiqHandlerGo is the actual Go implementation
 //
 //go:nosplit
 func fiqHandlerGo() {
-	uartPuts("FIQ fired (not implemented)\r\n")
+	print("FIQ fired (not implemented)\r\n")
 }
 
 // serrorHandlerGo is the actual Go implementation
 //
 //go:nosplit
 func serrorHandlerGo() {
-	uartPuts("SError occurred - system error (not recoverable)\r\n")
+	print("SError occurred - system error (not recoverable)\r\n")
 	// Hang
 	for {
 	}
@@ -381,17 +321,10 @@ func HandleSyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) uint64
 		return 0
 
 	case 93, 94: // exit, exit_group
-		// Exit syscalls - print simple markers first to confirm we reach here
-		uartPutcDirect('\r')
-		uartPutcDirect('\n')
-		uartPutcDirect('E')
-		uartPutcDirect('X')
-		uartPutcDirect('I')
-		uartPutcDirect('T')
-		uartPutcDirect(':')
-		uartPutHex64Direct(arg0) // exit code
-		uartPutcDirect('\r')
-		uartPutcDirect('\n')
+		// Exit syscalls - use Go print() to test interrupt-driven UART path
+		print("\r\nEXIT:")
+		uartPutHex64Direct(arg0) // exit code (keep direct for hex output)
+		print("\r\n")
 		// Use semihosting to gracefully exit QEMU
 		asm.QemuExit()
 		// If semihosting doesn't work, hang

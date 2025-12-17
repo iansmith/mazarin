@@ -68,12 +68,6 @@ irq_exception_el1:
     ldr w11, [x10]                // Read IAR (acknowledges interrupt)
     and w11, w11, #0x3FF          // Mask to get interrupt ID (bits 9:0)
     
-    // Print 'X' immediately (w11 now has interrupt ID, x10 free)
-    movz x10, #0x0900, lsl #16    // UART base
-    movk x10, #0x0000, lsl #0
-    movz w12, #0x58               // 'X'
-    str w12, [x10]
-    
     // Now switch to exception stack (w11 has interrupt ID)
     mov x0, sp                     // Save current SP
     movz x1, #0x5FFF, lsl #16     // Exception stack at 0x5FFF8000
@@ -112,24 +106,44 @@ handle_timer_irq:
     // CRITICAL: Use CVAL approach like reference repo!
     // 1. Read current counter value (CNTVCT_EL0)
     mrs x3, CNTVCT_EL0
-    // 2. Add 62500000 (1 second at 62.5MHz) to get target
-    movz x4, #0x03B9, lsl #16     // 0x03B90000
-    movk x4, #0xACA0, lsl #0      // Complete to 62500000
+    // 2. Add 312500000 (5 seconds at 62.5MHz) to get target
+    // 312500000 = 0x12A05F20
+    movz x4, #0x12A0, lsl #16     // 0x12A00000
+    movk x4, #0x5F20, lsl #0      // Complete to 312500000
     add x3, x3, x4                 // target = current + interval
     // 3. Write to CNTV_CVAL_EL0 (compare value)
     msr CNTV_CVAL_EL0, x3
-    
-    // Print '.' to show timer interrupt
-    movz w1, #0x2E                // '.'
-    str w1, [x0]
+
+    // Print '.' to framebuffer via Go function fb_putc_irq
+    // Save additional registers needed for Go call
+    sub sp, sp, #128              // Expand stack for more registers
+    stp x5, x6, [sp, #64]         // Save x5, x6
+    stp x7, x8, [sp, #80]         // Save x7, x8
+    stp x28, x29, [sp, #96]       // Save x28 (g), x29 (FP)
+    str x30, [sp, #112]           // Save x30 (LR)
+
+    // Set up frame pointer for Go
+    add x29, sp, #0
+
+    // Call Go function fb_putc_irq('.') - pass '.' (0x2E) as first arg in x0
+    movz x0, #0x2E                // '.' character
+    bl main.fb_putc_irq
+
+    // Restore preserved registers
+    ldp x5, x6, [sp, #64]
+    ldp x7, x8, [sp, #80]
+    ldp x28, x29, [sp, #96]
+    ldr x30, [sp, #112]
+    add sp, sp, #128              // Restore stack
+
+    // Reload UART base for final breadcrumb (optional)
+    movz x0, #0x0900, lsl #16
+    movk x0, #0x0000, lsl #0
+
     b irq_done
     
 handle_uart_irq:
     // UART transmit ready interrupt
-    // Print 'U' to show UART interrupt
-    movz w1, #0x55                // 'U'
-    str w1, [x0]
-    
     // Call Go function main.UartTransmitHandler()
     // CRITICAL: Must follow Go calling conventions:
     // - Preserve x28 (g pointer), x29 (FP), x30 (LR)
@@ -167,10 +181,12 @@ handle_uart_irq:
 irq_done:
     // Signal end of interrupt to GIC
     // GICC_EOIR at 0x08010010
+    // NOTE: x2 may have been clobbered by Go functions, so reload interrupt ID from stack
+    ldr w2, [sp, #40]             // Reload saved interrupt ID (was saved at line 88)
     movz x1, #0x0801, lsl #16
     movk x1, #0x0010, lsl #0
     str w2, [x1]                  // Write interrupt ID to EOIR
-    
+
     // Restore registers and return to normal stack
     ldr x0, [sp, #0]              // Load original SP_EL1
     ldp x1, x2, [sp, #8]          // Restore x1, x2
@@ -699,19 +715,39 @@ syscall_write:
     b syscall_return
 
 syscall_write_uart:
-    // Print buffer to UART
+    // Write buffer to UART via ring buffer (interrupt-driven)
     // x1 = buf pointer, x2 = count
-    movz x9, #0x0900, lsl #16      // UART base = 0x09000000
-    movk x9, #0x0000, lsl #0
-    mov x10, x2                    // Save count for return value
-    cbz x2, syscall_write_done     // If count is 0, skip
-syscall_write_loop:
-    ldrb w11, [x1], #1             // Load byte and increment pointer
-    str w11, [x9]                  // Write to UART
-    subs x2, x2, #1                // Decrement count
-    bne syscall_write_loop
-syscall_write_done:
-    mov x0, x10                    // Return count (success)
+    // Call Go function: SyscallWriteBuffer(buf unsafe.Pointer, count uint32) uint32
+
+    // Save callee-saved registers for Go call
+    sub sp, sp, #64
+    stp x19, x20, [sp, #0]
+    stp x21, x22, [sp, #16]
+    stp x28, x29, [sp, #32]
+    str x30, [sp, #48]
+
+    // Set up frame pointer for Go
+    add x29, sp, #0
+
+    // Prepare arguments for SyscallWriteBuffer
+    mov x0, x1                     // x0 = buf pointer
+    mov w1, w2                     // x1 = count (32-bit)
+
+    // Call Go function
+    bl main.SyscallWriteBuffer
+
+    // x0 now contains return value (count written)
+    // Save return value to stack temporarily
+    str x0, [sp, #56]
+
+    // Restore callee-saved registers
+    ldp x19, x20, [sp, #0]
+    ldp x21, x22, [sp, #16]
+    ldp x28, x29, [sp, #32]
+    ldr x30, [sp, #48]
+    ldr x0, [sp, #56]              // Restore return value to x0
+    add sp, sp, #64
+
     b syscall_return
 
 syscall_read:
@@ -859,12 +895,6 @@ syscall_brk:
 
 syscall_munmap:
     // munmap(addr, length) - free mapped memory
-    // x0 = addr, x1 = length
-    // Debug: print 'U' for munmap
-    movz x9, #0x0900, lsl #16
-    movk x9, #0x0000, lsl #0
-    movz w10, #0x55                // 'U' for Unmap
-    str w10, [x9]
     // For our simple bump allocator, we don't actually reclaim memory
     // Just return success (0)
     mov x0, #0
@@ -872,12 +902,6 @@ syscall_munmap:
 
 syscall_madvise:
     // madvise(addr, length, advice) - give advice about memory usage
-    // x0 = addr, x1 = length, x2 = advice
-    // Debug: print 'A' for madvise
-    movz x9, #0x0900, lsl #16
-    movk x9, #0x0000, lsl #0
-    movz w10, #0x41                // 'A' for Advise
-    str w10, [x9]
     // Just return success (0) - we don't actually do anything
     mov x0, #0
     b syscall_return

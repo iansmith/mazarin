@@ -104,54 +104,6 @@ func initRuntimeStubs() {
 		writeMemory64(allocArrayStart+i*8, emptymspanAddr)
 	}
 
-	// DEBUG: Verify initialization - check multiple entries including spanClass 47 (0x2f)
-	uartPuts("DEBUG: mcache struct at 0x")
-	uartPutHex64(uint64(mcacheStructAddr))
-	uartPuts(", alloc[] at 0x")
-	uartPutHex64(uint64(allocArrayStart))
-	uartPuts("\r\n")
-
-	uartPuts("DEBUG: mcache.alloc[0] = 0x")
-	val := readMemory64(allocArrayStart)
-	uartPutHex64(val)
-	uartPuts("\r\n")
-
-	uartPuts("DEBUG: mcache.alloc[47] = 0x")
-	val47 := readMemory64(allocArrayStart + 47*8)
-	uartPutHex64(val47)
-	uartPuts("\r\n")
-
-	uartPuts("DEBUG: mcache.alloc[135] = 0x")
-	val135 := readMemory64(allocArrayStart + 135*8)
-	uartPutHex64(val135)
-	uartPuts(" (should all be 0x40108500)\r\n")
-
-	// DEBUG: Check emptymspan struct contents at critical offsets
-	// The refill function loads halfwords from offset 50 and 96 and compares them
-	// These must match for the emptymspan check to pass
-	uartPuts("DEBUG: emptymspan struct analysis:\r\n")
-	uartPuts("  emptymspan addr = 0x")
-	uartPutHex64(emptymspanAddr)
-	uartPuts("\r\n")
-	uartPuts("  offset 50 (halfword) = 0x")
-	val50 := readMemory16(uintptr(emptymspanAddr) + 50)
-	uartPutHex64(uint64(val50))
-	uartPuts("\r\n")
-	uartPuts("  offset 96 (halfword) = 0x")
-	val96 := readMemory16(uintptr(emptymspanAddr) + 96)
-	uartPutHex64(uint64(val96))
-	uartPuts("\r\n")
-	uartPuts("  offset 88 (word, sweepgen) = 0x")
-	val88 := readMemory32(uintptr(emptymspanAddr) + 88)
-	uartPutHex64(uint64(val88))
-	uartPuts("\r\n")
-	// Also check mheap_.sweepgen for comparison
-	mheapAddr := uintptr(0x40117f20) // runtime.mheap_
-	uartPuts("  mheap_.sweepgen (offset 0x10140) = 0x")
-	heapSweepgen := readMemory32(mheapAddr + 0x10140)
-	uartPutHex64(uint64(heapSweepgen))
-	uartPuts("\r\n")
-
 	// wbBuf.next (offset 5272 = 0x1498): current write position
 	writeMemory64(p0Addr+0x1498, uint64(wbBufStart))
 	// wbBuf.end (offset 5280 = 0x14A0): end of buffer
@@ -183,55 +135,10 @@ func initRuntimeStubs() {
 //
 //go:nosplit
 func initGoHeap() {
-	uartPuts("initGoHeap: Starting Go runtime heap initialization...\r\n")
-
-	// Step 1: Set physPageSize = 4096
-	// This is normally set by sysauxv() from AT_PAGESZ in the auxiliary vector.
-	// Without this, mallocinit() will throw "failed to get system page size"
+	// Set physPageSize = 4096 (normally set by sysauxv from AT_PAGESZ)
 	physPageSizeAddr := asm.GetPhysPageSizeAddr()
-	uartPuts("initGoHeap: physPageSize addr = 0x")
-	uartPutHex64(uint64(physPageSizeAddr))
-	uartPuts("\r\n")
-
-	// Store 4096 to physPageSize
 	writeMemory64(physPageSizeAddr, 4096)
-	uartPuts("initGoHeap: Set physPageSize = 4096\r\n")
 
-	// Step 2: Call mallocinit (not full schedinit)
-	// This initializes just the heap allocator, avoiding the OS-dependent
-	// parts of schedinit (godebug parsing, goargs, goenvs, etc.)
-	uartPuts("initGoHeap: Calling mallocinit...\r\n")
+	// Call mallocinit to initialize heap allocator
 	asm.CallMallocinit()
-	uartPuts("initGoHeap: mallocinit returned!\r\n")
-
-	// Note: mcache struct was already allocated and initialized in initRuntimeStubs
-	// (before mallocinit) because mallocinit may trigger allocations that need mcache ready
-
-	// DEBUG: Check if mallocinit changed any values
-	emptymspanAddr := uintptr(0x40108500)
-	mcacheStructAddr := uintptr(0x41020000) // Our allocated mcache struct
-	allocArrayStart := mcacheStructAddr + 0x30
-	mheapAddr := uintptr(0x40117f20)
-
-	uartPuts("initGoHeap: POST-mallocinit values:\r\n")
-	uartPuts("  mcache.alloc[0] = 0x")
-	uartPutHex64(readMemory64(allocArrayStart))
-	uartPuts("\r\n")
-	uartPuts("  mcache.alloc[47] = 0x")
-	uartPutHex64(readMemory64(allocArrayStart + 47*8))
-	uartPuts("\r\n")
-	uartPuts("  emptymspan offset 50 = 0x")
-	uartPutHex64(uint64(readMemory16(emptymspanAddr + 50)))
-	uartPuts("\r\n")
-	uartPuts("  emptymspan offset 96 = 0x")
-	uartPutHex64(uint64(readMemory16(emptymspanAddr + 96)))
-	uartPuts("\r\n")
-	uartPuts("  emptymspan offset 88 (sweepgen) = 0x")
-	uartPutHex64(uint64(readMemory32(emptymspanAddr + 88)))
-	uartPuts("\r\n")
-	uartPuts("  mheap_.sweepgen (offset 0x10140) = 0x")
-	uartPutHex64(uint64(readMemory32(mheapAddr + 0x10140)))
-	uartPuts("\r\n")
-
-	uartPuts("initGoHeap: Go runtime heap initialization complete.\r\n")
 }
