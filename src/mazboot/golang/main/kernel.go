@@ -653,6 +653,11 @@ func kernelMainBody() {
 			uartPuts("DEBUG: Framebuffer text initialized successfully\r\n")
 			// Render boot text and Mazarin image to verify Bochs framebuffer path
 			testFramebufferText()
+			// After the scrolling text is drawn, render a simple gg-based
+			// circle on top of the existing framebuffer contents to verify
+			// integration of the gg 2D drawing library with the Bochs
+			// framebuffer.
+			drawGGStartupCircle()
 		}
 	}
 	uartPuts("DEBUG: stage4.5 complete, proceeding to stage6 (UART ring buffer)\r\n")
