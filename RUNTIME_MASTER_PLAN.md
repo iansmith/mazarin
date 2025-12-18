@@ -127,6 +127,9 @@ func args(c int32, v **byte) {
 - Sets up minimal structure: argc=0, empty argv/envp, auxv with AT_PAGESZ=4096
 - Test prints "PASS" on successful completion
 
+**TODO**: Add AT_RANDOM to auxv once RNG is initialized (see Device Initialization).
+This provides 16 bytes of entropy that sysauxv() stores in startupRand.
+
 ---
 
 ### Item 4: runtime.osinit()
@@ -267,7 +270,13 @@ func stackinit() {
 
 **Scaffolding needed**:
 - Implement getrandom syscall
-- Can use timer counter XOR'd with address as entropy source
+- Initialize RNG as part of device init (see "Device Initialization" section)
+- Use ARM timer (CNTVCT_EL0) XOR'd with addresses for entropy
+
+**Note**: RNG initialization should happen alongside other device init (UART,
+framebuffer) in our bootloader, BEFORE jumping to rt0_go. This provides:
+1. AT_RANDOM bytes in auxv for args() → sysargs()
+2. Entropy source for getrandom syscall used by randinit()
 
 **Test**: Call randinit(), verify fastrand() returns varying values
 
@@ -581,6 +590,19 @@ func main() {
 - [ ] Virtual filesystem for /proc, /sys
 - [ ] UART as stdin/stdout
 - [ ] Block device interface
+
+### Device Initialization (Pre-Runtime)
+
+These must be initialized in our bootloader BEFORE jumping to rt0_go,
+as the runtime expects them to be available:
+
+- [x] UART - for print/panic output (write syscall)
+- [x] Framebuffer - for graphical output
+- [ ] Timer - for nanotime, scheduling (already have interrupts, need syscall)
+- [ ] RNG - for AT_RANDOM in auxv and getrandom syscall
+  - Use ARM generic timer (CNTVCT_EL0) XOR'd with memory addresses
+  - Initialize 16 bytes of entropy for AT_RANDOM before args()
+  - Provide getrandom syscall for randinit()
 
 ## Test Strategy
 
