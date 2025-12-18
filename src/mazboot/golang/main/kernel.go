@@ -471,6 +471,19 @@ func KernelMain(r0, r1, atags uint32) {
 	// Initialize Go runtime heap allocator
 	initGoHeap()
 
+	// =========================================
+	// TEST: Item 3 - runtime.args()
+	// Test that we can call runtime.args with a minimal argv/auxv structure
+	// This verifies the args() → sysargs() → sysauxv() path works.
+	// =========================================
+	print("Testing Item 3: runtime.args()... ")
+	result := asm.CallRuntimeArgs()
+	if result == 0 {
+		print("PASS\r\n")
+	} else {
+		print("FAIL\r\n")
+	}
+
 	// Initialize kernel stack info for Go runtime stack checks
 	initKernelStack()
 
@@ -480,11 +493,11 @@ func KernelMain(r0, r1, atags uint32) {
 	// Verify mcache.alloc[] is still valid after memInit
 	mcacheStructAddr := uintptr(0x41020000)
 	allocArrayStart := mcacheStructAddr + 0x30
-	if readMemory64(allocArrayStart+47*8) != 0x40108500 {
+	expectedEmptymspan := uint64(asm.GetEmptymspanAddr()) // Get address dynamically
+	if readMemory64(allocArrayStart+47*8) != expectedEmptymspan {
 		// Reinitialize if corrupted
-		emptymspanAddr := uint64(0x40108500)
 		for i := uintptr(0); i < 136; i++ {
-			writeMemory64(allocArrayStart+i*8, emptymspanAddr)
+			writeMemory64(allocArrayStart+i*8, expectedEmptymspan)
 		}
 	}
 
@@ -588,8 +601,8 @@ func kernelMainBody() {
 				print("ERROR: heap allocation failed\r\n")
 			}
 
-			// Render gg startup circle
-			drawGGStartupCircle()
+			// Render gg startup circle (temporarily disabled for channel testing)
+			// drawGGStartupCircle()
 		}
 	}
 	// Framebuffer is now ready - use it for boot status messages
@@ -620,36 +633,107 @@ func kernelMainBody() {
 		abortBoot("sdhciInit failed - cannot load kernel from SD card!")
 	}
 
-	// Stage 11: Goroutine test
-	FramebufferPuts("Testing goroutine spawn...\r\n")
-	spawnGoroutine(testGoroutineFunc)
-	FramebufferPuts("Goroutine test complete!\r\n")
-
-	// Drain ring buffer manually since interrupts aren't enabled yet
-	// This allows print() calls from goroutine test to be visible
-	for i := 0; i < 1000; i++ {
-		uartDrainRingBuffer()
+	// Stage 11a: Test Go heap allocation
+	FramebufferPuts("Testing Go heap allocation...\r\n")
+	asm.MmioWrite(0x09000000, uint32('H')) // Debug: about to allocate
+	testSlice := make([]byte, 100)         // Simple heap allocation test
+	asm.MmioWrite(0x09000000, uint32('A')) // Debug: allocation done
+	if testSlice == nil {
+		FramebufferPuts("FATAL: Go heap allocation failed!\r\n")
+		asm.MmioWrite(0x09000000, uint32('!'))
+		for {
+		}
 	}
+	testSlice[0] = 42 // Write to allocated memory
+	if testSlice[0] != 42 {
+		FramebufferPuts("FATAL: Go heap read/write failed!\r\n")
+		asm.MmioWrite(0x09000000, uint32('?'))
+		for {
+		}
+	}
+	asm.MmioWrite(0x09000000, uint32('O')) // Debug: heap OK
+	FramebufferPuts("Go heap allocation OK!\r\n")
+
+	// Stage 11b: Create Go channel (testing real Go channel allocation)
+	FramebufferPuts("Creating Go channel...\r\n")
+	asm.MmioWrite(0x09000000, uint32('C')) // Debug: about to create channel
+	goSignalChan = make(chan struct{}, 10) // Real Go channel with buffer
+	asm.MmioWrite(0x09000000, uint32('K')) // Debug: channel created
+	if goSignalChan == nil {
+		FramebufferPuts("FATAL: Failed to create Go channel\r\n")
+		asm.MmioWrite(0x09000000, uint32('!'))
+		for {
+		}
+	}
+
+	// Stage 11c: Create SimpleChannel for interrupt handler (still needed)
+	ch := createSimpleChannel()
+	if ch == nil {
+		FramebufferPuts("FATAL: Failed to create SimpleChannel\r\n")
+		for {
+		}
+	}
+	simpleSignalChan = ch // Store globally for interrupt handler
 
 	FramebufferPuts("Boot complete.\r\n")
 
 	// Enable CPU interrupts now that everything is initialized
 	// This unmasks the I bit in PSTATE to allow IRQs to fire
 	asm.EnableIrqsAsm()
+	FramebufferPuts("Interrupts enabled.\r\n")
 
-	// Enter idle loop - wait for timer interrupts
-	// Timer interrupts will fire every 5 seconds and print dots to framebuffer
+	// Drain any pending output
+	for i := 0; i < 1000; i++ {
+		uartDrainRingBuffer()
+	}
+
+	// Stage 12: Spawn goroutine that waits for timer signals
+	// NOTE: This goroutine has an infinite loop, so this call will never return.
+	// Timer interrupts will fire (every 5 seconds) and send signals to the channel.
+	// The goroutine will receive those signals and print "bong".
+	FramebufferPuts("Spawning timer listener goroutine...\r\n")
+	spawnGoroutine(timerListenerLoop)
+
+	// Should never reach here since testGoroutineFunc has infinite loop
+	FramebufferPuts("ERROR: goroutine returned unexpectedly!\r\n")
 	for {
-		// Busy-wait loop - interrupts will fire and be handled
-		// The timer interrupt handler will print dots to the framebuffer
 	}
 }
 
-// testGoroutineFunc is a simple function that runs in a spawned goroutine
+// timerListenerLoop runs an endless loop waiting for timer signals on the global channel.
+// Tests both SimpleChannel (from interrupt) and Go channel (from goroutine context).
 //
 //go:noinline
-func testGoroutineFunc() {
-	print("go go goroutine\n")
+func timerListenerLoop() {
+	asm.MmioWrite(0x09000000, uint32('G')) // Debug: entered goroutine
+	print("goroutine: testing Go channel...\n")
+	// Drain output
+	for i := 0; i < 100; i++ {
+		uartDrainRingBuffer()
+	}
+
+	// Test Go channel: send and receive from same goroutine
+	asm.MmioWrite(0x09000000, uint32('S')) // Debug: about to send to channel
+	goSignalChan <- struct{}{}             // Send to Go channel
+	asm.MmioWrite(0x09000000, uint32('R')) // Debug: about to receive from channel
+	<-goSignalChan                         // Receive from Go channel
+	asm.MmioWrite(0x09000000, uint32('X')) // Debug: channel send/receive worked!
+	print("Go channel send/receive works!\n")
+	for i := 0; i < 100; i++ {
+		uartDrainRingBuffer()
+	}
+
+	// Now wait for timer signals using SimpleChannel (from interrupt handler)
+	asm.MmioWrite(0x09000000, uint32('W')) // Debug: waiting for timer
+	for {
+		simpleSignalChan.receive() // Block until timer sends a signal
+		asm.MmioWrite(0x09000000, uint32('B')) // Debug: got signal
+		print("bong\n")
+		// Drain the bong output
+		for i := 0; i < 100; i++ {
+			uartDrainRingBuffer()
+		}
+	}
 }
 
 // testFramebufferText tests the framebuffer text rendering system

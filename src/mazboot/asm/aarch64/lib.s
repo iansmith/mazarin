@@ -42,6 +42,22 @@ get_phys_page_size_addr:
     ldr x0, =runtime.physPageSize
     ret
 
+// get_mcache0_addr() - returns address of runtime.mcache0
+// This allows Go code to get the mcache0 address without hardcoding
+.global get_mcache0_addr
+.extern runtime.mcache0
+get_mcache0_addr:
+    ldr x0, =runtime.mcache0
+    ret
+
+// get_emptymspan_addr() - returns address of runtime.emptymspan
+// This allows Go code to get the emptymspan address without hardcoding
+.global get_emptymspan_addr
+.extern runtime.emptymspan
+get_emptymspan_addr:
+    ldr x0, =runtime.emptymspan
+    ret
+
 // mmio_write(uintptr_t reg, uint32_t data)
 // x0 = register address, w1 = data (32-bit)
 .global mmio_write
@@ -358,6 +374,57 @@ qemu_exit:
     // If semihosting is not enabled, we'll reach here
     // Restore stack and return
     add sp, sp, #16
+    ret
+
+// =================================================================
+// Test function: call_runtime_args
+// Sets up minimal Linux-style argv/envp/auxv structure and calls runtime.args
+// This tests Item 3 of the runtime master plan.
+// Returns 0 on success (args completed without crash)
+// =================================================================
+.global call_runtime_args
+.extern runtime.args
+call_runtime_args:
+    // Save callee-saved registers and create stack frame
+    stp x29, x30, [sp, #-96]!
+    mov x29, sp
+    stp x19, x20, [sp, #16]
+    stp x21, x22, [sp, #32]
+
+    // Build the argv/envp/auxv structure on stack
+    // Layout (each entry 8 bytes):
+    //   sp+48: argv[0] = NULL (end of argv, argc=0)
+    //   sp+56: envp[0] = NULL (end of envp)
+    //   sp+64: AT_PAGESZ (6)
+    //   sp+72: 4096
+    //   sp+80: AT_NULL (0)
+    //   sp+88: 0
+
+    // argv[0] = NULL (end of argv)
+    str xzr, [sp, #48]
+    // envp[0] = NULL (end of envp)
+    str xzr, [sp, #56]
+    // auxv[0] = AT_PAGESZ (6), auxv[1] = 4096
+    mov x0, #6
+    str x0, [sp, #64]
+    mov x0, #4096
+    str x0, [sp, #72]
+    // auxv[2] = AT_NULL (0), auxv[3] = 0
+    str xzr, [sp, #80]
+    str xzr, [sp, #88]
+
+    // Call runtime.args(argc=0, argv=&sp[48])
+    mov w0, #0              // argc = 0 (int32)
+    add x1, sp, #48         // argv = pointer to our structure
+    bl runtime.args
+
+    // If we get here, args() completed without crash
+    mov x0, #0              // Return 0 = success
+
+    // Restore and return
+    ldp x19, x20, [sp, #16]
+    ldp x21, x22, [sp, #32]
+    ldp x29, x30, [sp], #96
     ret
 
 // Bridge function: kernel_main -> main.KernelMain (Go function)

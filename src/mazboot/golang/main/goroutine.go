@@ -13,6 +13,94 @@ import (
 // after SwitchToGoroutine.
 var mainKernelGoroutine *runtimeG
 
+// SimpleChannel is a minimal channel implementation that uses kmalloc
+// instead of Go's heap allocator to avoid GC issues in bare-metal.
+type SimpleChannel struct {
+	count uint32 // Number of signals pending
+}
+
+// Global signal channel instance
+var simpleSignalChan *SimpleChannel
+
+// Global Go channel for timer signals (real Go channel, not SimpleChannel)
+var goSignalChan chan struct{}
+
+// timerPendingCount tracks pending timer signals from interrupt handler
+// Incremented by interrupt handler (nosplit), decremented by goroutine
+var timerPendingCount uint32
+
+// createSimpleChannel creates a simple channel using kmalloc.
+//
+//go:nosplit
+//go:noinline
+func createSimpleChannel() *SimpleChannel {
+	// Allocate channel structure with kmalloc (bypasses Go GC)
+	ptr := kmalloc(uint32(unsafe.Sizeof(SimpleChannel{})))
+	if ptr == nil {
+		return nil
+	}
+	ch := (*SimpleChannel)(ptr)
+	ch.count = 0
+	return ch
+}
+
+// send increments the signal count (non-blocking).
+//
+//go:nosplit
+//go:noinline
+func (ch *SimpleChannel) send() {
+	if ch != nil {
+		ch.count++
+	}
+}
+
+// receive waits for a signal and decrements the count.
+// Blocks (busy-waits) until a signal is available.
+//
+//go:nosplit
+//go:noinline
+func (ch *SimpleChannel) receive() {
+	if ch == nil {
+		return
+	}
+	// Busy-wait until signal available
+	for ch.count == 0 {
+		// Spin
+	}
+	ch.count--
+}
+
+// timerSignal sends a signal to the SimpleChannel.
+// Called from timer interrupt handler.
+//
+//go:nosplit
+//go:noinline
+func timerSignal() {
+	if simpleSignalChan == nil {
+		return
+	}
+	simpleSignalChan.send()
+}
+
+// timerSignalGo sends a signal to the real Go channel.
+// Called from timer interrupt handler.
+// Uses non-blocking send to avoid blocking in interrupt context.
+// NOTE: Cannot use //go:nosplit because select may allocate
+//
+//go:noinline
+func timerSignalGo() {
+	if goSignalChan == nil {
+		return
+	}
+	// Non-blocking send to avoid blocking in interrupt context
+	select {
+	case goSignalChan <- struct{}{}:
+		// Signal sent successfully
+	default:
+		// Channel full, drop signal
+	}
+}
+
 // Goroutine creation functions
 // Simplified versions of runtime.newproc() and runtime.malg()
 

@@ -19,6 +19,10 @@ func Bzero(ptr unsafe.Pointer, size uint32)
 //go:nosplit
 func CallMallocinit()
 
+//go:linkname CallRuntimeArgs call_runtime_args
+//go:nosplit
+func CallRuntimeArgs() int
+
 //go:linkname Delay delay
 //go:nosplit
 func Delay(count int32)
@@ -51,6 +55,10 @@ func EnableMmuMinimal()
 //go:nosplit
 func GetCallerStackPointer() uintptr
 
+//go:linkname GetEmptymspanAddr get_emptymspan_addr
+//go:nosplit
+func GetEmptymspanAddr() uintptr
+
 //go:linkname GetExceptionVectorsAddr get_exception_vectors_addr
 //go:nosplit
 func GetExceptionVectorsAddr() uintptr
@@ -62,6 +70,10 @@ func GetG0Addr() uintptr
 //go:linkname GetM0Addr get_m0_addr
 //go:nosplit
 func GetM0Addr() uintptr
+
+//go:linkname GetMcache0Addr get_mcache0_addr
+//go:nosplit
+func GetMcache0Addr() uintptr
 
 //go:linkname GetPhysPageSizeAddr get_phys_page_size_addr
 //go:nosplit

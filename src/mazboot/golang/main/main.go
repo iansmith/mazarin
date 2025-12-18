@@ -24,6 +24,7 @@ func main() {
 	SyscallWriteBuffer(nil, 0)
 	fb_putc_irq(0)
 	kernelMainBodyWrapper()
+	timerSignal()
 
 	//{{ LINKNAME END}}
 	// This should never execute in bare metal

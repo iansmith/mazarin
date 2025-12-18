@@ -86,7 +86,7 @@ func initRuntimeStubs() {
 	// mcache struct is ~0x470 bytes (0x30 header + 136 * 8 byte alloc array)
 	// Allocate 0x500 bytes at 0x41020000 (after wbBuf which ends at 0x41020000)
 	mcacheStructAddr := uintptr(0x41020000)
-	mcache0PtrAddr := uintptr(0x40131408) // Address of runtime.mcache0 pointer variable
+	mcache0PtrAddr := asm.GetMcache0Addr() // Get address dynamically via linker symbol
 
 	// Store pointer to our allocated struct in runtime.mcache0
 	writeMemory64(mcache0PtrAddr, uint64(mcacheStructAddr))
@@ -97,8 +97,8 @@ func initRuntimeStubs() {
 	// Step 4b: Initialize mcache.alloc[] NOW (before mallocinit)
 	// This must be done before mallocinit because it may allocate during init
 	// mcache.alloc array starts at offset 0x30 (48) and has 136 entries
-	// Each entry should point to emptymspan (runtime.emptymspan = 0x40108500)
-	emptymspanAddr := uint64(0x40108500)
+	// Each entry should point to emptymspan - get address dynamically via linker symbol
+	emptymspanAddr := uint64(asm.GetEmptymspanAddr())
 	allocArrayStart := mcacheStructAddr + 0x30
 	for i := uintptr(0); i < 136; i++ {
 		writeMemory64(allocArrayStart+i*8, emptymspanAddr)

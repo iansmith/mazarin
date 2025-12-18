@@ -129,6 +129,9 @@ handle_timer_irq:
     movz x0, #0x2E                // '.' character
     bl main.fb_putc_irq
 
+    // Call timerSignal() to send signal to channel for goroutine
+    bl main.timerSignal
+
     // Restore preserved registers
     ldp x5, x6, [sp, #64]
     ldp x7, x8, [sp, #80]
