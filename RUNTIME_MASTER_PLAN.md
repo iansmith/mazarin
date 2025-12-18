@@ -556,7 +556,7 @@ func main() {
 | sigaltstack | 132 | signals | TODO | |
 | sched_getaffinity | 204 | osinit | TODO | Return 1 CPU |
 | getrandom | 278 | randinit | TODO | Timer-based entropy |
-| clock_gettime | 113 | nanotime | TODO | Use ARM timer |
+| clock_gettime | 113 | nanotime | TODO | ARM timer for monotonic, RTC+ticks for wall |
 | nanosleep | 101 | time.Sleep | TODO | Timer + WFI |
 | exit_group | 94 | os.Exit | TODO | Halt |
 | getpid | 172 | various | TODO | Return 1 |
@@ -603,6 +603,12 @@ as the runtime expects them to be available:
   - Use ARM generic timer (CNTVCT_EL0) XOR'd with memory addresses
   - Initialize 16 bytes of entropy for AT_RANDOM before args()
   - Provide getrandom syscall for randinit()
+- [ ] RTC (Real-Time Clock) - for wall-clock time, if present
+  - Detect RTC via DTB (e.g., PL031 on QEMU virt)
+  - Read initial time at boot
+  - Maintain tick count from timer interrupts
+  - Combine RTC base + tick delta for current wall-clock time
+  - Needed for time.Now(), file timestamps, etc.
 
 ## Test Strategy
 
