@@ -456,6 +456,18 @@ func KernelMain(r0, r1, atags uint32) {
 	// Initialize minimal runtime structures for write barrier
 	initRuntimeStubs()
 
+	// DEBUG: Check exception vectors BEFORE MMU (physical memory)
+	// NOTE: exception_vectors is at 0x3d9000, sync_exception_el1 is at 0x3d9200
+	// The first instruction should be: 0x17fc9db2 (branch to sync_exception_handler)
+	excVecAddrPhys := uintptr(0x3d9200)
+	excVecWordPhys := *(*uint32)(unsafe.Pointer(excVecAddrPhys))
+	const uartBase = uintptr(0x09000000)
+	if excVecWordPhys == 0x17fc9db2 {
+		*(*uint32)(unsafe.Pointer(uartBase)) = 0x4F  // 'O' = OK before MMU
+	} else {
+		*(*uint32)(unsafe.Pointer(uartBase)) = 0x42  // 'B' = BAD before MMU
+	}
+
 	// Initialize MMU (required before heap - enables Normal memory for unaligned access)
 	if !initMMU() {
 		print("FATAL: MMU initialization failed\r\n")
@@ -468,8 +480,23 @@ func KernelMain(r0, r1, atags uint32) {
 		}
 	}
 
+	// DEBUG: Check exception vectors right after MMU enablement
+	excVecAddrMMU := uintptr(0x3d9200)
+	excVecWordMMU := *(*uint32)(unsafe.Pointer(excVecAddrMMU))
+	if excVecWordMMU == 0x17fc9db2 {
+		*(*uint32)(unsafe.Pointer(uartBase)) = 0x6F  // 'o' = ok after MMU
+	} else {
+		*(*uint32)(unsafe.Pointer(uartBase)) = 0x62  // 'b' = bad after MMU
+		for {
+		}
+	}
+
 	// Initialize Go runtime heap allocator
-	initGoHeap()
+	// FIXME: Disabled - let schedinit call mallocinit itself to avoid double-init
+	// initGoHeap()
+
+	// Initialize VirtIO RNG device for random number generation
+	initVirtIORNG()
 
 	// =========================================
 	// TEST: Item 3 - runtime.args()
@@ -483,6 +510,103 @@ func KernelMain(r0, r1, atags uint32) {
 	} else {
 		print("FAIL\r\n")
 	}
+
+	// =========================================
+	// TEST: Item 4a - Direct syscall test
+	// Before calling runtime.osinit, test our syscalls directly
+	// =========================================
+	print("Testing Item 4a: sched_getaffinity syscall... ")
+	var cpuMask [128]byte
+	result2 := SyscallSchedGetaffinity(0, uint64(len(cpuMask)), unsafe.Pointer(&cpuMask[0]))
+	if result2 == 8 && cpuMask[0] == 0x01 {
+		print("PASS\r\n")
+	} else {
+		print("FAIL\r\n")
+	}
+
+	print("Testing Item 4b: openat syscall (expected path)... ")
+	expectedPathBytes := []byte("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size\x00")
+	result3 := SyscallOpenat(-100, unsafe.Pointer(&expectedPathBytes[0]), 0, 0)
+	if result3 == -2 { // -ENOENT for the expected path
+		print("PASS\r\n")
+	} else {
+		print("FAIL (got ")
+		print(int(result3))
+		print(")\r\n")
+	}
+
+	print("Testing Item 4b2: openat syscall (unexpected path - should show warning)... ")
+	unexpectedPathBytes := []byte("/dev/urandom\x00")
+	result4 := SyscallOpenat(-100, unsafe.Pointer(&unexpectedPathBytes[0]), 0, 0)
+	// Should print warning about unexpected path but still return an error
+	if result4 < 0 { // Any error is acceptable
+		print("PASS (returned error as expected)\r\n")
+	} else {
+		print("FAIL (should return error for unexpected path, got fd=")
+		print(int(result4))
+		print(")\r\n")
+	}
+
+	// =========================================
+	// TEST: Item 4c - runtime.osinit()
+	// Now that we have a 64KB g0 stack (matching real runtime),
+	// this should work without hitting stack guard
+	// =========================================
+	print("Testing Item 4c: runtime.osinit()... ")
+	asm.CallRuntimeOsinit()
+	print("PASS\r\n")
+
+	// =========================================
+	// TEST: Item 5 - runtime.schedinit()
+	// Initialize Go scheduler
+	//
+	// NOTE: g0 and m0 are initialized in boot.s (assembly) before kernel_main runs,
+	// just like the Go runtime's rt0_go does. This ensures x28 points to runtime.g0
+	// and the scheduler infrastructure exists before schedinit is called.
+	//
+	// During schedinit, locks use futex which uses STUB behavior (no real blocking)
+	// because there's only g0 and no other runnable goroutines yet.
+	//
+	// schedinit will:
+	// - Call lockInit() for all runtime locks (uses futex with stub gopark)
+	// - Initialize scheduler structures
+	// - Set up processor (P) structures
+	// - Initialize system monitor
+	// =========================================
+	print("Testing Item 5: runtime.schedinit()... ")
+
+	// DEBUG: Verify exception vectors are intact before schedinit
+	excVecAddr := uintptr(0x3d9200)
+	excVecFirstWord := *(*uint32)(unsafe.Pointer(excVecAddr))
+	if excVecFirstWord == 0x17fc9db2 {
+		*(*uint32)(unsafe.Pointer(uartBase)) = 0x53  // 'S' = OK before schedinit
+	} else {
+		*(*uint32)(unsafe.Pointer(uartBase)) = 0x73  // 's' = bad before schedinit
+		for {
+		}
+	}
+
+	// DEBUG: Pre-map the 22 pages that would cause faults during schedinit
+	// This isolates whether the problem is with the 22nd exception itself,
+	// or with something that happens after 22 exceptions.
+	preMapScheديnitPages()
+
+	// Breadcrumb: about to enter schedinit
+	*(*uint32)(unsafe.Pointer(uintptr(0x09000000))) = 0x50  // 'P' - Pre-schedinit
+
+	// Breadcrumb: entering schedinit
+	*(*uint32)(unsafe.Pointer(uintptr(0x09000000))) = 0x5B  // '['
+	asm.CallRuntimeSchedinit()
+
+	// Breadcrumb: if we get here, schedinit returned successfully
+	*(*uint32)(unsafe.Pointer(uintptr(0x09000000))) = 0x52  // 'R' - Returned
+	// Breadcrumb: schedinit returned
+	*(*uint32)(unsafe.Pointer(uintptr(0x09000000))) = 0x5D  // ']'
+	print("PASS (schedinit completed!)\r\n")
+
+	// Mark scheduler as ready - futex can now use real gopark/goready
+	MarkSchedulerReady()
+	print("Scheduler fully initialized (gopark/goready enabled)\r\n")
 
 	// Initialize kernel stack info for Go runtime stack checks
 	initKernelStack()

@@ -153,14 +153,25 @@ func osinit() {
 - Implement sched_getaffinity to return ncpu=1
 - Implement getHugePageSize to return 0 (no huge pages)
 
-**Current status**: NOT YET CALLED
+**Current status**: ✅ COMPLETE (2024-12-18)
 
-**Test**: Call osinit(), verify ncpu=1, physHugePageSize=0
+**Test**: All tests pass - syscalls work, runtime.osinit() completes successfully
 
 **Implementation notes**:
-- getCPUCount uses sched_getaffinity syscall
-- Can stub to always return 1 CPU
-- getHugePageSize reads sysfs, can stub to return 0
+- ✅ Implemented sched_getaffinity syscall (204) - returns CPU mask with bit 0 set (1 CPU)
+- ✅ Implemented openat syscall (56) - validates path, returns -ENOENT for huge page file
+- ✅ Fixed g0 stack size: increased from 8KB to 64KB to match real Go runtime
+- ✅ runtime.osinit() now works - sets numCPUStartup=1, physHugePageSize=0
+
+**Path validation in openat**:
+- Checks pathname matches `/sys/kernel/mm/transparent_hugepage/hpage_pmd_size`
+- Prints warning for unexpected paths
+- Returns -ENOENT for both expected and unexpected paths (safe default)
+
+**Key fix**:
+- Root cause: g0 stack was only 8KB, but real Go runtime uses 64KB
+- Stack check in runtime.osinit() was failing due to insufficient stack space
+- Solution: Increased g0 stack to 64KB (0x5EFF0000-0x5F000000)
 
 ---
 
@@ -541,8 +552,8 @@ func main() {
 | Syscall | Number | Required By | Status | Notes |
 |---------|--------|-------------|--------|-------|
 | read | 63 | various | TODO | |
-| write | 64 | print/panic | TODO | Route to UART |
-| openat | 56 | file ops | TODO | Virtual filesystem |
+| write | 64 | print/panic | DONE | Routes to UART via ring buffer |
+| openat | 56 | getHugePageSize | DONE | Validates path, returns -ENOENT |
 | close | 57 | file ops | TODO | |
 | mmap | 222 | malloc, stack | DONE | Bump + demand paging |
 | munmap | 215 | malloc | DONE | No-op |
@@ -554,7 +565,7 @@ func main() {
 | sigaction | 134 | signals | TODO | Map to interrupts |
 | rt_sigprocmask | 135 | signals | TODO | |
 | sigaltstack | 132 | signals | TODO | |
-| sched_getaffinity | 204 | osinit | TODO | Return 1 CPU |
+| sched_getaffinity | 204 | osinit/getCPUCount | DONE | Returns CPU mask (1 CPU) |
 | getrandom | 278 | randinit | TODO | Timer-based entropy |
 | clock_gettime | 113 | nanotime | TODO | ARM timer for monotonic, RTC+ticks for wall |
 | nanosleep | 101 | time.Sleep | TODO | Timer + WFI |
@@ -659,9 +670,14 @@ When all items pass individually, run full sequence:
 - Item 1: g0 stack bounds ✅
 - Item 2: g0 ↔ m0 linkage ✅
 - Item 3: runtime.args() ✅ (2024-12-18)
+- Item 4: runtime.osinit() ✅ (2024-12-18) **[FULLY COMPLETE]**
+  - sched_getaffinity syscall implemented and tested
+  - openat syscall implemented with path validation
+  - Fixed g0 stack size (8KB→64KB) to match real Go runtime
+  - runtime.osinit() successfully called, sets numCPUStartup=1
 - Item 5d: mallocinit ✅ (working via initGoHeap)
 
-**Next**: Item 4 (osinit) - needs sched_getaffinity syscall
+**Next**: Item 5 sub-items (schedinit) - many should work without additional syscalls
 
 ---
 

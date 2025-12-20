@@ -493,10 +493,20 @@ sync_exception_handler:
 
     // Check exception type - only route data aborts (EC=0x25) to Go for demand paging
     // SVC (EC=0x15) goes to syscall handler
+
+    // DEBUG: Temporarily disable exception breadcrumbs to see Go error message
     lsr x4, x3, #26                 // Extract EC from ESR
     and x4, x4, #0x3F
+
+    // CRITICAL: Check for EC=0x00 (Unknown exception) - this often indicates
+    // a NULL pointer dereference or jump to NULL. Don't try to return from
+    // these - just print diagnostics and hang to avoid infinite exception loop.
+    cbz x4, sync_unknown_exception  // EC=0x00 - unknown exception
+
     cmp x4, #0x15                   // SVC?
-    beq sync_restore_and_svc        // Go to SVC handler (restores regs first)
+    bne 3f
+    b sync_restore_and_svc          // Go to SVC handler (restores regs first)
+3:
 
     // For data aborts (EC=0x25), call Go handler
     cmp x4, #0x25
@@ -540,6 +550,12 @@ sync_exception_handler:
     //
     // Strategy: Use fixed memory (0x40000FE0) to save x0/x1 for final restoration
 
+    // DEBUG: Print 'r' to show we're in return path (lowercase to distinguish from Go's 'R')
+    movz x0, #0x0900, lsl #16
+    movk x0, #0x0000, lsl #0        // x0 = UART base
+    movz w1, #0x0072, lsl #0        // w1 = 'r'
+    str w1, [x0]
+
     // Step 1: Restore ELR_EL1 and SPSR_EL1 while still on exception stack
     ldp x0, x1, [sp, #256]          // x0 = saved ELR, x1 = saved SPSR
     msr ELR_EL1, x0                 // Restore return address
@@ -581,8 +597,144 @@ sync_exception_handler:
     ldr x6, [x7, #48]               // x6 = original x6
     ldr x7, [x7, #56]               // x7 = original x7 (self-overwriting load)
 
+    // DEBUG: Print 'e' right before ERET to show we got this far
+    // CRITICAL: ALL registers have been restored at this point!
+    // We need to save x0/x1 temporarily to UART address
+    stp x0, x1, [sp, #-16]!         // Save x0, x1 to current stack
+    movz x0, #0x0900, lsl #16
+    movk x0, #0x0000, lsl #0        // x0 = UART base
+    movz w1, #0x0065, lsl #0        // w1 = 'e' for eret
+    str w1, [x0]
+    ldp x0, x1, [sp], #16           // Restore x0, x1
+
     // Return from exception to retry the faulting instruction
     eret
+
+sync_unknown_exception:
+    // EC=0x00 - Unknown exception (often NULL pointer or undefined instruction)
+    // Print diagnostic information directly to UART and hang
+    // Don't try to return - this would create an infinite exception loop
+
+    // Load UART base
+    movz x0, #0x0900, lsl #16
+    movk x0, #0x0000, lsl #0        // x0 = 0x09000000
+
+    // Print "\r\n!UNKNOWN EXCEPTION (EC=0x00)!\r\n"
+    movz w1, #0x000D                // '\r'
+    str w1, [x0]
+    movz w1, #0x000A                // '\n'
+    str w1, [x0]
+    movz w1, #0x0021                // '!'
+    str w1, [x0]
+    movz w1, #0x0055                // 'U'
+    str w1, [x0]
+    movz w1, #0x004E                // 'N'
+    str w1, [x0]
+    movz w1, #0x004B                // 'K'
+    str w1, [x0]
+    movz w1, #0x004E                // 'N'
+    str w1, [x0]
+    movz w1, #0x004F                // 'O'
+    str w1, [x0]
+    movz w1, #0x0057                // 'W'
+    str w1, [x0]
+    movz w1, #0x004E                // 'N'
+    str w1, [x0]
+    movz w1, #0x0020                // ' '
+    str w1, [x0]
+    movz w1, #0x0045                // 'E'
+    str w1, [x0]
+    movz w1, #0x0058                // 'X'
+    str w1, [x0]
+    movz w1, #0x0043                // 'C'
+    str w1, [x0]
+    movz w1, #0x0045                // 'E'
+    str w1, [x0]
+    movz w1, #0x0050                // 'P'
+    str w1, [x0]
+    movz w1, #0x0054                // 'T'
+    str w1, [x0]
+    movz w1, #0x0049                // 'I'
+    str w1, [x0]
+    movz w1, #0x004F                // 'O'
+    str w1, [x0]
+    movz w1, #0x004E                // 'N'
+    str w1, [x0]
+    movz w1, #0x0021                // '!'
+    str w1, [x0]
+    movz w1, #0x000D                // '\r'
+    str w1, [x0]
+    movz w1, #0x000A                // '\n'
+    str w1, [x0]
+
+    // Print "ELR=0x" and the ELR value (from [sp, #256])
+    movz w1, #0x0045                // 'E'
+    str w1, [x0]
+    movz w1, #0x004C                // 'L'
+    str w1, [x0]
+    movz w1, #0x0052                // 'R'
+    str w1, [x0]
+    movz w1, #0x003D                // '='
+    str w1, [x0]
+    movz w1, #0x0030                // '0'
+    str w1, [x0]
+    movz w1, #0x0078                // 'x'
+    str w1, [x0]
+
+    // Print ELR as hex (16 hex digits)
+    ldr x2, [sp, #256]              // x2 = ELR
+    mov x3, #60                      // shift count (60, 56, ... 0)
+1:  lsr x4, x2, x3                  // Extract nibble
+    and w4, w4, #0xF
+    cmp w4, #10
+    blt 2f
+    add w4, w4, #55                 // 'A'-10 = 55
+    b 3f
+2:  add w4, w4, #48                 // '0'
+3:  str w4, [x0]
+    subs x3, x3, #4
+    bpl 1b
+
+    // Print "\r\nFAR=0x"
+    movz w1, #0x000D                // '\r'
+    str w1, [x0]
+    movz w1, #0x000A                // '\n'
+    str w1, [x0]
+    movz w1, #0x0046                // 'F'
+    str w1, [x0]
+    movz w1, #0x0041                // 'A'
+    str w1, [x0]
+    movz w1, #0x0052                // 'R'
+    str w1, [x0]
+    movz w1, #0x003D                // '='
+    str w1, [x0]
+    movz w1, #0x0030                // '0'
+    str w1, [x0]
+    movz w1, #0x0078                // 'x'
+    str w1, [x0]
+
+    // Print FAR as hex
+    ldr x2, [sp, #272]              // x2 = FAR
+    mov x3, #60
+4:  lsr x4, x2, x3
+    and w4, w4, #0xF
+    cmp w4, #10
+    blt 5f
+    add w4, w4, #55
+    b 6f
+5:  add w4, w4, #48
+6:  str w4, [x0]
+    subs x3, x3, #4
+    bpl 4b
+
+    // Print final newline
+    movz w1, #0x000D                // '\r'
+    str w1, [x0]
+    movz w1, #0x000A                // '\n'
+    str w1, [x0]
+
+    // Hang forever
+    b .
 
 sync_other_exception:
     // Other exception type - forward to Go handler but don't expect to return
@@ -657,13 +809,15 @@ handle_svc_syscall:
     //   - After eret, their code checks x0 and stores to stack
     //   - We just need to return correct x0 and advance ELR+4
 
+    // DEBUG: Syscall number printing disabled to see Go error message
+
     // Dispatch based on syscall number
     cmp x8, #64                    // write syscall
     beq syscall_write
     cmp x8, #63                    // read syscall
     beq syscall_read
     cmp x8, #56                    // openat syscall
-    beq syscall_open
+    beq syscall_openat
     cmp x8, #57                    // close syscall
     beq syscall_close
     cmp x8, #93                    // exit syscall
@@ -671,7 +825,7 @@ handle_svc_syscall:
     cmp x8, #94                    // exit_group syscall
     beq syscall_exit
     cmp x8, #98                    // futex syscall
-    beq syscall_success
+    beq syscall_futex
     cmp x8, #101                   // nanosleep syscall
     beq syscall_success
     cmp x8, #113                   // clock_gettime syscall
@@ -682,8 +836,12 @@ handle_svc_syscall:
     beq syscall_success
     cmp x8, #172                   // getpid syscall
     beq syscall_getpid
+    cmp x8, #123                   // sched_getaffinity syscall
+    beq syscall_sched_getaffinity
     cmp x8, #178                   // gettid syscall
     beq syscall_gettid
+    cmp x8, #204                   // sched_setaffinity syscall
+    beq syscall_success            // Just return success for setaffinity
     cmp x8, #214                   // brk syscall
     beq syscall_brk
     cmp x8, #215                   // munmap syscall
@@ -701,7 +859,30 @@ handle_svc_syscall:
     cmp x8, #278                   // getrandom syscall
     beq syscall_getrandom
 
-    // Unknown syscall - return -ENOSYS
+    // Unknown syscall - call Go function to print syscall number
+    // Save callee-saved registers for Go call
+    sub sp, sp, #64
+    stp x19, x20, [sp, #0]
+    stp x21, x22, [sp, #16]
+    stp x28, x29, [sp, #32]
+    stp x30, x8, [sp, #48]         // Save x30 (LR) and x8 (syscall number)
+
+    // Set up frame pointer for Go
+    add x29, sp, #0
+
+    // Pass syscall number as argument (x8 -> x0)
+    mov x0, x8
+
+    // Call Go function to print unknown syscall
+    bl main.SyscallUnknown
+
+    // Restore registers
+    ldp x19, x20, [sp, #0]
+    ldp x21, x22, [sp, #16]
+    ldp x28, x29, [sp, #32]
+    ldp x30, x8, [sp, #48]
+    add sp, sp, #64
+
     movn x0, #37                   // x0 = -38 (ENOSYS)
     b syscall_return
 
@@ -754,18 +935,150 @@ syscall_write_uart:
     b syscall_return
 
 syscall_read:
-    // read(fd, buf, count) - return 0 (EOF)
-    mov x0, #0
+    // read(fd, buf, count)
+    // x0 = fd, x1 = buf, x2 = count
+    // Call Go function to handle special FDs like /dev/urandom
+
+    // Save callee-saved registers for Go call
+    sub sp, sp, #64
+    stp x19, x20, [sp, #0]
+    stp x21, x22, [sp, #16]
+    stp x28, x29, [sp, #32]
+    str x30, [sp, #48]
+
+    // Set up frame pointer for Go
+    add x29, sp, #0
+
+    // Arguments are already in x0, x1, x2 - perfect for Go
+    // x0 = fd (int32)
+    // x1 = buf (unsafe.Pointer)
+    // x2 = count (uint64)
+
+    // Call Go function
+    bl main.SyscallRead
+
+    // x0 now contains return value (int64: bytes read or -errno)
+    // Save return value to stack temporarily
+    str x0, [sp, #56]
+
+    // Restore callee-saved registers
+    ldp x19, x20, [sp, #0]
+    ldp x21, x22, [sp, #16]
+    ldp x28, x29, [sp, #32]
+    ldr x30, [sp, #48]
+    ldr x0, [sp, #56]              // Restore return value to x0
+    add sp, sp, #64
+
     b syscall_return
 
-syscall_open:
-    // openat(dirfd, path, flags, mode) - return -ENOENT (2)
-    movn x0, #1                    // x0 = -2 (ENOENT)
+syscall_openat:
+    // openat(dirfd, pathname, flags, mode)
+    // x0 = dirfd, x1 = pathname, x2 = flags, x3 = mode
+    // Call Go function to check for special files
+
+    // Save callee-saved registers for Go call
+    sub sp, sp, #64
+    stp x19, x20, [sp, #0]
+    stp x21, x22, [sp, #16]
+    stp x28, x29, [sp, #32]
+    str x30, [sp, #48]
+
+    // Set up frame pointer for Go
+    add x29, sp, #0
+
+    // Arguments are already in x0, x1, x2, x3 - perfect for Go
+    // x0 = dirfd (int32)
+    // x1 = pathname (unsafe.Pointer - *byte)
+    // x2 = flags (int32)
+    // x3 = mode (int32)
+
+    // Call Go function
+    bl main.SyscallOpenat
+
+    // x0 now contains return value (int64: fd or -errno)
+    // Save return value to stack temporarily
+    str x0, [sp, #56]
+
+    // Restore callee-saved registers
+    ldp x19, x20, [sp, #0]
+    ldp x21, x22, [sp, #16]
+    ldp x28, x29, [sp, #32]
+    ldr x30, [sp, #48]
+    ldr x0, [sp, #56]              // Restore return value to x0
+    add sp, sp, #64
+
+    b syscall_return
+
+syscall_futex:
+    // futex(uaddr, futex_op, val, timeout, uaddr2, val3)
+    // x0 = uaddr (uint32*), x1 = futex_op (int32), x2 = val (uint32)
+    // x3 = timeout (*timespec), x4 = uaddr2 (uint32*), x5 = val3 (uint32)
+    // Call Go function to implement futex wait/wake
+
+    // Save callee-saved registers for Go call
+    sub sp, sp, #80
+    stp x19, x20, [sp, #0]
+    stp x21, x22, [sp, #16]
+    stp x28, x29, [sp, #32]
+    str x30, [sp, #48]
+
+    // Set up frame pointer for Go
+    add x29, sp, #0
+
+    // Arguments are already in x0-x5 - perfect for Go calling convention
+    // x0 = addr (unsafe.Pointer)
+    // x1 = op (int32)
+    // x2 = val (uint32)
+    // x3 = ts (unsafe.Pointer)
+    // x4 = addr2 (unsafe.Pointer)
+    // x5 = val3 (uint32)
+
+    // Call Go function
+    bl main.SyscallFutex
+
+    // x0 now contains return value (int64: 0 on success, -errno on error)
+    // Save return value to stack temporarily
+    str x0, [sp, #56]
+
+    // Restore callee-saved registers
+    ldp x19, x20, [sp, #0]
+    ldp x21, x22, [sp, #16]
+    ldp x28, x29, [sp, #32]
+    ldr x30, [sp, #48]
+    ldr x0, [sp, #56]              // Restore return value to x0
+    add sp, sp, #80
+
     b syscall_return
 
 syscall_close:
-    // close(fd) - return 0 (success)
-    mov x0, #0
+    // close(fd)
+    // x0 = fd
+    // Call Go function for debug visibility
+
+    // Save callee-saved registers for Go call
+    sub sp, sp, #64
+    stp x19, x20, [sp, #0]
+    stp x21, x22, [sp, #16]
+    stp x28, x29, [sp, #32]
+    str x30, [sp, #48]
+
+    // Set up frame pointer for Go
+    add x29, sp, #0
+
+    // Argument already in x0 (fd)
+    bl main.SyscallClose
+
+    // x0 contains return value
+    str x0, [sp, #56]
+
+    // Restore registers
+    ldp x19, x20, [sp, #0]
+    ldp x21, x22, [sp, #16]
+    ldp x28, x29, [sp, #32]
+    ldr x30, [sp, #48]
+    ldr x0, [sp, #56]
+    add sp, sp, #64
+
     b syscall_return
 
 syscall_success:
@@ -794,6 +1107,8 @@ syscall_mmap:
     //   - On success: allocated address (positive)
     //   - On error: -errno (negative, e.g., -12 for ENOMEM)
 
+    // DEBUG: mmap counter removed - found only ~20 calls before hang
+
     // Check for MAP_FIXED (0x10) first - always return requested address
     and x15, x3, #0x10
     cbnz x15, mmap_return_hint
@@ -805,7 +1120,7 @@ syscall_mmap:
 
     // No hint - use bump allocator for anonymous mappings
     // Load current mmap pointer (stored at 0x40FFF000)
-    // NOTE: This pointer is pre-initialized to 0x60000000 in boot.s
+    // NOTE: This pointer is pre-initialized to 0x48000000 in boot.s (within heap!)
     movz x11, #0x40FF, lsl #16     // 0x40FF0000
     movk x11, #0xF000, lsl #0      // 0x40FFF000
     ldr x12, [x11]                 // x12 = current mmap pointer
@@ -815,11 +1130,11 @@ syscall_mmap:
     add x17, x17, #0xFFF
     and x17, x17, #~0xFFF
 
-    // Check if we have enough space (end at 0x200000000)
+    // Check if we have enough space (end at 0x100000000 - 4GB mapped heap limit)
+    // We have 8GB QEMU RAM (0x40000000-0x240000000), so use generous limit
+    // This allows plenty of room for GC metadata and other runtime allocations
     add x13, x12, x17              // x13 = new pointer after allocation
-    movz x14, #0x0002, lsl #32     // 0x200000000 - end
-    movk x14, #0x0000, lsl #16
-    movk x14, #0x0000, lsl #0
+    movz x14, #0x0001, lsl #32     // 0x100000000 - end at 4GB
     cmp x13, x14
     bhi mmap_oom
 
@@ -832,6 +1147,9 @@ mmap_return_hint:
     // Return the hint address (x0) as-is
     // This satisfies Go's sysReserve which expects exact address match
     // Demand paging will handle actual memory backing when accessed
+
+    // DEBUG: 'H' marker disabled to see Go error message
+
     b syscall_return
 
 mmap_oom:
@@ -845,8 +1163,88 @@ syscall_prctl:
     b syscall_return
 
 syscall_getrandom:
-    // getrandom - return 0 (no random bytes)
-    mov x0, #0
+    // getrandom(void *buf, size_t buflen, unsigned int flags)
+    // x0 = buf, x1 = buflen, x2 = flags
+    //
+    // Call Go getRandomBytes() function to fill buffer with random data
+
+    // DEBUG: Print 'R' to indicate getrandom called
+    sub sp, sp, #32
+    stp x0, x1, [sp, #0]
+    stp x2, x3, [sp, #16]
+    movz x0, #0x0900, lsl #16
+    movz w1, #0x52                // 'R'
+    str w1, [x0]
+    ldp x0, x1, [sp, #0]
+    ldp x2, x3, [sp, #16]
+    add sp, sp, #32
+
+    // Save callee-saved registers for Go call
+    sub sp, sp, #64
+    stp x19, x20, [sp, #0]
+    stp x21, x22, [sp, #16]
+    stp x28, x29, [sp, #32]
+    str x30, [sp, #48]
+
+    // Set up frame pointer for Go
+    add x29, sp, #0
+
+    // Arguments already in x0 (buf), x1 (length)
+    // x0 = unsafe.Pointer (buf)
+    // x1 = uint32 (length) - convert x1 (uint64) to w1 (uint32)
+    mov w1, w1
+
+    // Call Go getRandomBytes(buf, length) -> returns uint32
+    bl main.getRandomBytes
+
+    // x0 contains return value (bytes written)
+    str x0, [sp, #56]
+
+    // Restore registers
+    ldp x19, x20, [sp, #0]
+    ldp x21, x22, [sp, #16]
+    ldp x28, x29, [sp, #32]
+    ldr x30, [sp, #48]
+    ldr x0, [sp, #56]
+    add sp, sp, #64
+
+    b syscall_return
+
+syscall_sched_getaffinity:
+    // sched_getaffinity(pid, cpusetsize, mask)
+    // x0 = pid, x1 = cpusetsize, x2 = mask pointer
+    // Call Go function to implement this
+
+    // Save callee-saved registers for Go call
+    sub sp, sp, #64
+    stp x19, x20, [sp, #0]
+    stp x21, x22, [sp, #16]
+    stp x28, x29, [sp, #32]
+    str x30, [sp, #48]
+
+    // Set up frame pointer for Go
+    add x29, sp, #0
+
+    // Arguments are already in x0, x1, x2 - perfect for Go calling convention
+    // x0 = pid (int32)
+    // x1 = cpusetsize (uint64)
+    // x2 = mask (unsafe.Pointer)
+
+    // Call Go function
+    bl main.SyscallSchedGetaffinity
+
+    // x0 now contains return value (int64: bytes written or -errno)
+    // Save return value to stack temporarily
+    str x0, [sp, #56]
+
+    // Restore callee-saved registers
+    ldp x19, x20, [sp, #0]
+    ldp x21, x22, [sp, #16]
+    ldp x28, x29, [sp, #32]
+    ldr x30, [sp, #48]
+    ldr x0, [sp, #56]              // Restore return value to x0
+    add sp, sp, #64
+
     b syscall_return
 
 syscall_clock_gettime:
@@ -1034,11 +1432,28 @@ syscall_return:
 
     // Debug output disabled - was too noisy during panic
 
+    // DEBUG: Removed x25 and 'R' markers to reduce noise
+
     // BUG FIX: ELR_EL1 is already pointing to the instruction AFTER the SVC!
     // (This is unusual - ARMv8 spec says ELR should point to the SVC itself)
     // So we do NOT add 4 - just return directly to where ELR points.
     // This lets sysMmap.abi0's cmn/branch/store logic execute correctly.
 
-    // Return from exception (ELR already correct)
+    // DEBUG: Disable verbose ELR printing to reduce noise and see Go's error messages
+    // The key findings:
+    // - ELR is advancing properly (different addresses for different syscalls)
+    // - Go code intentionally calls mmap in a loop during itabsinit
+    // - Output was getting interleaved because both exception handler and Go's
+    //   print use direct UART writes (ring buffer not initialized until after schedinit)
+
+9:
+
+    // DEBUG: Print '>' before each eret to confirm we're returning
+    movz x10, #0x0900, lsl #16
+    movk x10, #0x0000, lsl #0
+    movz w11, #0x003E, lsl #0       // '>'
+    str w11, [x10]
+
+    // Return from exception (ELR now correct)
     eret
 
