@@ -456,18 +456,6 @@ func KernelMain(r0, r1, atags uint32) {
 	// Initialize minimal runtime structures for write barrier
 	initRuntimeStubs()
 
-	// DEBUG: Check exception vectors BEFORE MMU (physical memory)
-	// NOTE: exception_vectors is at 0x3d9000, sync_exception_el1 is at 0x3d9200
-	// The first instruction should be: 0x17fc9db2 (branch to sync_exception_handler)
-	excVecAddrPhys := uintptr(0x3d9200)
-	excVecWordPhys := *(*uint32)(unsafe.Pointer(excVecAddrPhys))
-	const uartBase = uintptr(0x09000000)
-	if excVecWordPhys == 0x17fc9db2 {
-		*(*uint32)(unsafe.Pointer(uartBase)) = 0x4F  // 'O' = OK before MMU
-	} else {
-		*(*uint32)(unsafe.Pointer(uartBase)) = 0x42  // 'B' = BAD before MMU
-	}
-
 	// Initialize MMU (required before heap - enables Normal memory for unaligned access)
 	if !initMMU() {
 		print("FATAL: MMU initialization failed\r\n")
@@ -476,17 +464,6 @@ func KernelMain(r0, r1, atags uint32) {
 	}
 	if !enableMMU() {
 		print("FATAL: MMU enablement failed\r\n")
-		for {
-		}
-	}
-
-	// DEBUG: Check exception vectors right after MMU enablement
-	excVecAddrMMU := uintptr(0x3d9200)
-	excVecWordMMU := *(*uint32)(unsafe.Pointer(excVecAddrMMU))
-	if excVecWordMMU == 0x17fc9db2 {
-		*(*uint32)(unsafe.Pointer(uartBase)) = 0x6F  // 'o' = ok after MMU
-	} else {
-		*(*uint32)(unsafe.Pointer(uartBase)) = 0x62  // 'b' = bad after MMU
 		for {
 		}
 	}
@@ -574,34 +551,7 @@ func KernelMain(r0, r1, atags uint32) {
 	// - Initialize system monitor
 	// =========================================
 	print("Testing Item 5: runtime.schedinit()... ")
-
-	// DEBUG: Verify exception vectors are intact before schedinit
-	excVecAddr := uintptr(0x3d9200)
-	excVecFirstWord := *(*uint32)(unsafe.Pointer(excVecAddr))
-	if excVecFirstWord == 0x17fc9db2 {
-		*(*uint32)(unsafe.Pointer(uartBase)) = 0x53  // 'S' = OK before schedinit
-	} else {
-		*(*uint32)(unsafe.Pointer(uartBase)) = 0x73  // 's' = bad before schedinit
-		for {
-		}
-	}
-
-	// DEBUG: Pre-map the 22 pages that would cause faults during schedinit
-	// This isolates whether the problem is with the 22nd exception itself,
-	// or with something that happens after 22 exceptions.
-	preMapScheديnitPages()
-
-	// Breadcrumb: about to enter schedinit
-	*(*uint32)(unsafe.Pointer(uintptr(0x09000000))) = 0x50  // 'P' - Pre-schedinit
-
-	// Breadcrumb: entering schedinit
-	*(*uint32)(unsafe.Pointer(uintptr(0x09000000))) = 0x5B  // '['
 	asm.CallRuntimeSchedinit()
-
-	// Breadcrumb: if we get here, schedinit returned successfully
-	*(*uint32)(unsafe.Pointer(uintptr(0x09000000))) = 0x52  // 'R' - Returned
-	// Breadcrumb: schedinit returned
-	*(*uint32)(unsafe.Pointer(uintptr(0x09000000))) = 0x5D  // ']'
 	print("PASS (schedinit completed!)\r\n")
 
 	// Mark scheduler as ready - futex can now use real gopark/goready

@@ -550,12 +550,6 @@ sync_exception_handler:
     //
     // Strategy: Use fixed memory (0x40000FE0) to save x0/x1 for final restoration
 
-    // DEBUG: Print 'r' to show we're in return path (lowercase to distinguish from Go's 'R')
-    movz x0, #0x0900, lsl #16
-    movk x0, #0x0000, lsl #0        // x0 = UART base
-    movz w1, #0x0072, lsl #0        // w1 = 'r'
-    str w1, [x0]
-
     // Step 1: Restore ELR_EL1 and SPSR_EL1 while still on exception stack
     ldp x0, x1, [sp, #256]          // x0 = saved ELR, x1 = saved SPSR
     msr ELR_EL1, x0                 // Restore return address
@@ -596,16 +590,6 @@ sync_exception_handler:
     ldp x4, x5, [x7, #32]           // x4 = original x4, x5 = original x5
     ldr x6, [x7, #48]               // x6 = original x6
     ldr x7, [x7, #56]               // x7 = original x7 (self-overwriting load)
-
-    // DEBUG: Print 'e' right before ERET to show we got this far
-    // CRITICAL: ALL registers have been restored at this point!
-    // We need to save x0/x1 temporarily to UART address
-    stp x0, x1, [sp, #-16]!         // Save x0, x1 to current stack
-    movz x0, #0x0900, lsl #16
-    movk x0, #0x0000, lsl #0        // x0 = UART base
-    movz w1, #0x0065, lsl #0        // w1 = 'e' for eret
-    str w1, [x0]
-    ldp x0, x1, [sp], #16           // Restore x0, x1
 
     // Return from exception to retry the faulting instruction
     eret
@@ -1168,17 +1152,6 @@ syscall_getrandom:
     //
     // Call Go getRandomBytes() function to fill buffer with random data
 
-    // DEBUG: Print 'R' to indicate getrandom called
-    sub sp, sp, #32
-    stp x0, x1, [sp, #0]
-    stp x2, x3, [sp, #16]
-    movz x0, #0x0900, lsl #16
-    movz w1, #0x52                // 'R'
-    str w1, [x0]
-    ldp x0, x1, [sp, #0]
-    ldp x2, x3, [sp, #16]
-    add sp, sp, #32
-
     // Save callee-saved registers for Go call
     sub sp, sp, #64
     stp x19, x20, [sp, #0]
@@ -1438,21 +1411,6 @@ syscall_return:
     // (This is unusual - ARMv8 spec says ELR should point to the SVC itself)
     // So we do NOT add 4 - just return directly to where ELR points.
     // This lets sysMmap.abi0's cmn/branch/store logic execute correctly.
-
-    // DEBUG: Disable verbose ELR printing to reduce noise and see Go's error messages
-    // The key findings:
-    // - ELR is advancing properly (different addresses for different syscalls)
-    // - Go code intentionally calls mmap in a loop during itabsinit
-    // - Output was getting interleaved because both exception handler and Go's
-    //   print use direct UART writes (ring buffer not initialized until after schedinit)
-
-9:
-
-    // DEBUG: Print '>' before each eret to confirm we're returning
-    movz x10, #0x0900, lsl #16
-    movk x10, #0x0000, lsl #0
-    movz w11, #0x003E, lsl #0       // '>'
-    str w11, [x10]
 
     // Return from exception (ELR now correct)
     eret

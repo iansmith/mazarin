@@ -73,7 +73,7 @@ sp_misaligned_switch:
     str w4, [x3]
     movz w4, #0x20                 // ' '
     str w4, [x3]
-    movz w4, #0x5A                 // 'Z' - Changed from 's' to make it unique
+    movz w4, #0x73                 // 's'
     str w4, [x3]
     movz w4, #0x77                 // 'w'
     str w4, [x3]
@@ -86,16 +86,8 @@ sp_misaligned_switch:
     movz w4, #0x68                 // 'h'
     str w4, [x3]
 
-    // DEBUG: Marker before modifying SP
-    movz w4, #0x21                 // '!' - about to set SP
-    str w4, [x3]
-
     // Round down to 16-byte boundary and set SP anyway
     bic x2, x2, #0xF                // Clear lower 4 bits to align
-
-    // DEBUG: Marker right before mov sp
-    movz w4, #0x40                 // '@' - about to execute mov sp
-    str w4, [x3]
 
     mov sp, x2                       // Set aligned SP
     
