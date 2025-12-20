@@ -33,8 +33,10 @@ const (
 	// Memory attributes (bits 2-4, MAIR index)
 	// MAIR[0] = Normal, Inner/Outer Write-Back Cacheable (0xFF)
 	// MAIR[1] = Device-nGnRnE (0x00)
-	PTE_ATTR_NORMAL = 0 << 2 // MAIR index 0
-	PTE_ATTR_DEVICE = 1 << 2 // MAIR index 1
+	// MAIR[2] = Normal, Inner/Outer Non-Cacheable (0x44)
+	PTE_ATTR_NORMAL       = 0 << 2 // MAIR index 0
+	PTE_ATTR_DEVICE       = 1 << 2 // MAIR index 1
+	PTE_ATTR_NONCACHEABLE = 2 << 2 // MAIR index 2 - for page tables
 
 	// Shareability (bits 8-9)
 	PTE_SH_INNER = 3 << 8 // Inner shareable
@@ -99,10 +101,11 @@ const (
 	// pool so we can zero frames when allocating. If the frame pool overlapped with
 	// mmap VAs, the identity mapping would defeat demand paging.
 	//
-	// QEMU has 8GB RAM: 0x40000000-0x240000000
-	// We use the region above mmap VA end: 0x200000000-0x240000000 (1GB)
-	PHYS_FRAME_BASE = 0x200000000 // Start of physical frame pool (after mmap VA end)
-	PHYS_FRAME_END  = 0x240000000 // End (1GB pool, up to 8GB QEMU RAM limit)
+	// CRITICAL FIX: Use physical RAM within our actual 512MB (not 8GB assumption!)
+	// With -m 512M, RAM spans 0x40000000-0x60000000
+	// Use the gap between kernel and page tables: 0x50000000-0x5E000000 (224MB)
+	PHYS_FRAME_BASE = 0x50000000 // Start of physical frame pool
+	PHYS_FRAME_END  = 0x5E000000 // End (224MB pool, before page tables)
 
 	// Virtual mmap region (large virtual, demand-paged)
 	// VA range is large but physical backing is limited by PAGE_LIMIT
@@ -110,7 +113,8 @@ const (
 	// Go runtime arm64 hints start at 0x4000000000 (256GB) and go up.
 	// Formula: p = uintptr(i)<<40 | 0x4000000000 for i in [0, 0x7f]
 	// We accept any address from our low region up to a reasonable max.
-	MMAP_VIRT_BASE = 0x60000000     // Start of virtual mmap region (our bump allocator)
+	// FIX: Start at 0x48000000 to match mmap bump allocator in boot.s
+	MMAP_VIRT_BASE = 0x48000000     // Start of virtual mmap region (our bump allocator)
 	MMAP_VIRT_END  = 0x800000000000 // End of virtual mmap region (128TB - covers Go hints)
 
 	// Memory limits
@@ -140,6 +144,17 @@ var (
 	pageTableL1 uintptr   // Level 1 table (PUD)
 	pageTableL2 []uintptr // Level 2 tables (PMD) - allocated as needed
 	pageTableL3 []uintptr // Level 3 tables (PT) - allocated as needed
+
+	// DEBUG: Counter to reduce L3 debug verbosity
+	l3DebugCounter uint32
+
+	// DEBUG: Counter for page faults during demand paging
+	pageFaultCounter uint32
+
+	// DEBUG: Counter to detect exception loops
+	totalExceptionCounter uint32
+	lastExceptionVA uintptr
+	sameVACounter uint32
 )
 
 // Page table allocator state stored at FIXED ADDRESS to avoid being
@@ -408,6 +423,44 @@ func isAddressPromised(va uintptr) bool {
 	return false
 }
 
+// GetPageFaultCounter returns the current page fault count
+// This allows exceptions.go to access the counter for debugging
+//go:nosplit
+func GetPageFaultCounter() uint32 {
+	return pageFaultCounter
+}
+
+// preMapPages pre-maps specific pages that are known to cause issues
+// This is a workaround to test if demand paging at certain addresses causes hangs
+//go:nosplit
+func preMapPages() {
+	// Pre-map the 64KB boundary page that causes fault #17 to hang
+	// VA 0x4000010000 is exactly at a 64KB boundary
+	const targetVA = uintptr(0x4000010000)
+
+	// Allocate a physical frame
+	physFrame := allocPhysFrame()
+	if physFrame == 0 {
+		print("ERROR: Failed to allocate physical frame for pre-mapping\r\n")
+		return
+	}
+
+	// Zero the physical frame (it's identity-mapped, so we can access it directly)
+	bzero(unsafe.Pointer(physFrame), PAGE_SIZE)
+
+	// Map the page
+	mapPage(targetVA, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+
+	// Ensure the mapping is visible
+	asm.Dsb()
+	asm.InvalidateTlbAll()
+	asm.Isb()
+
+	print("Pre-mapped VA 0x4000010000 -> PA 0x")
+	uartPutHex64(uint64(physFrame))
+	print("\r\n")
+}
+
 // HandlePageFault handles a page fault for demand paging
 // Called from the exception handler when a data abort occurs
 // Returns true if the fault was handled (page mapped), false otherwise
@@ -423,6 +476,60 @@ func isAddressPromised(va uintptr) bool {
 //go:nosplit
 //go:noinline
 func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
+	// Track total exceptions to detect loops
+	totalExceptionCounter++
+
+	// Detect exception loops (same VA faulting repeatedly)
+	if faultAddr == lastExceptionVA {
+		sameVACounter++
+		if sameVACounter > 3 {
+			const uartBase = uintptr(0x09000000)
+			uartPutsDirect("\r\n!EXCEPTION LOOP! VA=0x")
+			uartPutHex64Direct(uint64(faultAddr))
+			uartPutsDirect(" count=")
+			uartPutHex64Direct(uint64(sameVACounter))
+			uartPutsDirect("\r\n")
+			for {} // Hang
+		}
+	} else {
+		sameVACounter = 1
+		lastExceptionVA = faultAddr
+	}
+
+	// Increment and print page fault counter
+	pageFaultCounter++
+	const uartBase = uintptr(0x09000000)
+
+	// Print counter
+	uartPutsDirect("\r\n#")
+	uartPutHex64Direct(uint64(pageFaultCounter))
+
+	// DEBUG: Check exception vectors on ENTRY to page fault handler
+	exceptionVectorEntry := uintptr(asm.GetExceptionVectorsAddr())
+	syncExceptionEntry := exceptionVectorEntry + 0x200
+	firstInstEntry := *(*uint32)(unsafe.Pointer(syncExceptionEntry))
+	if (firstInstEntry>>26) != 0x05 && (firstInstEntry>>26) != 0x06 {
+		uartPutsDirect("\r\n!ENTRY: Vectors corrupted BEFORE handling fault!\r\n")
+		uartPutsDirect("Fault #")
+		uartPutHex64Direct(uint64(pageFaultCounter))
+		uartPutsDirect(" VA=0x")
+		uartPutHex64Direct(uint64(faultAddr))
+		uartPutsDirect("\r\nsync_exception_el1 @ 0x")
+		uartPutHex64Direct(uint64(syncExceptionEntry))
+		uartPutsDirect(" = 0x")
+		uartPutHex64Direct(uint64(firstInstEntry))
+		uartPutsDirect("\r\n")
+		for {} // Hang
+	}
+
+	// Breadcrumb: entered HandlePageFault
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x50  // 'P' for page fault
+
+	// Log the fault address for debugging
+	uartPutsDirect(" VA=0x")
+	uartPutHex64Direct(uint64(faultAddr))
+	uartPutsDirect(" ")
+
 	// Check if the fault address is in the mmap virtual region
 	// Any address in this range is considered a valid demand-page request
 	if faultAddr < MMAP_VIRT_BASE || faultAddr >= MMAP_VIRT_END {
@@ -438,14 +545,43 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	physFrame := allocPhysFrame()
 	if physFrame == 0 {
 		// Out of physical memory - this is fatal for demand paging
+		*(*uint32)(unsafe.Pointer(uartBase)) = 0x4F  // 'O' for OOM
 		uartPutsDirect("\r\nDEMAND PAGE OOM at VA=0x")
 		uartPutHex64Direct(uint64(faultAddr))
 		uartPutsDirect("\r\n")
 		return false
 	}
 
+	// DEBUG: Print physical frame address to catch wrong allocations
+	uartPutsDirect("PA=0x")
+	uartPutHex64Direct(uint64(physFrame))
+	uartPutsDirect(" ")
+
+	// Zero the physical frame BEFORE mapping it to avoid nested exceptions
+	// Physical frames are identity-mapped in the 0x200000000-0x240000000 range
+	// so this write should not cause a page fault
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x7A  // 'z' for zeroing
+	bzero(unsafe.Pointer(physFrame), PAGE_SIZE)
+
+	// DEBUG: Verify exception vectors after bzero
+	exceptionVectorAddrZ := uintptr(asm.GetExceptionVectorsAddr())
+	syncExceptionAddrZ := exceptionVectorAddrZ + 0x200
+	firstInstZ := *(*uint32)(unsafe.Pointer(syncExceptionAddrZ))
+	if (firstInstZ>>26) != 0x05 && (firstInstZ>>26) != 0x06 {
+		uartPutsDirect("\r\n!VECTORS CORRUPTED AFTER BZERO!\r\n")
+		uartPutsDirect("After zeroing PA=0x")
+		uartPutHex64Direct(uint64(physFrame))
+		uartPutsDirect("\r\nsync_exception_el1 @ 0x")
+		uartPutHex64Direct(uint64(syncExceptionAddrZ))
+		uartPutsDirect(" = 0x")
+		uartPutHex64Direct(uint64(firstInstZ))
+		uartPutsDirect("\r\n")
+		for {} // Hang
+	}
+
 	// Map the virtual page to the physical frame
 	// Note: VA != PA for demand-paged memory
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x6D  // 'm' for mapping
 	mapPage(pageAddr, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
 
 	// Ensure page table writes are visible before TLB flush
@@ -457,6 +593,48 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	// Ensure TLB invalidation completes before returning
 	asm.Isb()
 
+	// Verify exception vectors are still intact after mapping
+	exceptionVectorAddr := uintptr(asm.GetExceptionVectorsAddr())
+	syncExceptionAddr := exceptionVectorAddr + 0x200
+	firstInst := *(*uint32)(unsafe.Pointer(syncExceptionAddr))
+	// Check if it's still a branch instruction
+	if (firstInst>>26) != 0x05 && (firstInst>>26) != 0x06 {
+		uartPutsDirect("\r\n!VECTORS CORRUPTED AFTER PAGE FAULT!\r\n")
+		uartPutsDirect("Mapped VA=0x")
+		uartPutHex64Direct(uint64(pageAddr))
+		uartPutsDirect(" to PA=0x")
+		uartPutHex64Direct(uint64(physFrame))
+		uartPutsDirect("\r\nsync_exception_el1 @ 0x")
+		uartPutHex64Direct(uint64(syncExceptionAddr))
+		uartPutsDirect(" = 0x")
+		uartPutHex64Direct(uint64(firstInst))
+		uartPutsDirect("\r\n")
+		for {} // Hang
+	}
+
+	// DEBUG: For faults #16-17, print exact fault address and verify reads
+	if pageFaultCounter >= 16 && pageFaultCounter <= 17 {
+		// Print fault address (exact VA that caused the fault)
+		uartPutsDirect(" FAR=0x")
+		uartPutHex64Direct(uint64(faultAddr))
+		// Calculate offset within page
+		pageOffset := faultAddr & 0xFFF
+		uartPutsDirect("+0x")
+		uartPutHex64Direct(uint64(pageOffset))
+
+		*(*uint32)(unsafe.Pointer(uartBase)) = 0x56  // 'V' for verifying read
+		// Try to read from BOTH the page start and the exact fault address
+		testValue1 := *(*uint32)(unsafe.Pointer(pageAddr))
+		testValue2 := *(*uint32)(unsafe.Pointer(faultAddr & ^uintptr(0xFFF)))
+		// Should be 0 since we zeroed the physical frame
+		if testValue1 != 0 || testValue2 != 0 {
+			uartPutsDirect("\r\n!READ VERIFICATION FAILED!\r\n")
+			for {} // Hang
+		}
+		*(*uint32)(unsafe.Pointer(uartBase)) = 0x76  // 'v' for verification succeeded
+	}
+
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x70  // 'p' for page fault handled
 	return true
 }
 
@@ -522,6 +700,10 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64) {
 		}
 		// For highmem addresses, allocate a new L1 table
 		l1Table := allocatePageTable()
+		if l1Table == 0 {
+			uartPutsDirect("\r\n!L1 ALLOC FAILED!\r\n")
+			return
+		}
 		*l0Entry = createTableEntry(l1Table)
 		asm.Dsb()
 	}
@@ -539,6 +721,11 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64) {
 	var l2Table uintptr
 	if (*l1Entry & PTE_TABLE) == 0 {
 		l2Table = allocatePageTable()
+		if l2Table == 0 {
+			uartPutsDirect("\r\n!L2 ALLOC FAILED!\r\n")
+			return
+		}
+
 		*l1Entry = createTableEntry(l2Table)
 	} else {
 		l2Table = uintptr(*l1Entry &^ 0xFFF)
@@ -552,6 +739,11 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64) {
 	var l3Table uintptr
 	if (*l2Entry & PTE_TABLE) == 0 {
 		l3Table = allocatePageTable() // Allocate L3 table on-demand
+		if l3Table == 0 {
+			uartPutsDirect("\r\n!L3 ALLOC FAILED!\r\n")
+			return
+		}
+
 		*l2Entry = createTableEntry(l3Table)
 	} else {
 		l3Table = uintptr(*l2Entry &^ 0xFFF)
@@ -559,7 +751,74 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64) {
 
 	// Set L3 entry (the actual page)
 	l3Entry := (*uint64)(unsafe.Pointer(l3Table + uintptr(l3Idx)*PTE_SIZE))
-	*l3Entry = createPageTableEntry(pa, attrs, ap)
+
+	// DEBUG: Count L3 entries but don't print to reduce verbosity
+	// Print summary every 1000 entries
+	l3DebugCounter++
+	if l3DebugCounter % 1000 == 0 {
+		uartPutsDirect("L3:")
+		uartPutHex64Direct(uint64(l3DebugCounter))
+		uartPutsDirect(" ")
+	}
+
+	pteValue := createPageTableEntry(pa, attrs, ap)
+	*l3Entry = pteValue
+
+	// CRITICAL: Clean data cache to ensure PTE write is visible to MMU's page table walker
+	// Without this, the walker may read stale data from memory, causing hangs
+	// TEMPORARILY DISABLED: Appears to be corrupting L0[0]
+	//asm.CleanDataCacheVA(uintptr(unsafe.Pointer(l3Entry)))
+
+	// DEBUG: Print detailed page table info for faults #15-17
+	if pageFaultCounter >= 15 && pageFaultCounter <= 17 {
+		uartPutsDirect("\r\n  PTE=0x")
+		uartPutHex64Direct(pteValue)
+		uartPutsDirect(" @L3[0x")
+		uartPutHex64Direct(uint64(l3Table))
+		uartPutsDirect("+0x")
+		uartPutHex64Direct(uint64(l3Idx))
+		uartPutsDirect("]\r\n")
+
+		// Print L0/L1/L2 hierarchy to understand table allocation
+		uartPutsDirect("  L0[")
+		uartPutHex64Direct(uint64(l0Idx))
+		uartPutsDirect("]=0x")
+		uartPutHex64Direct(*l0Entry)
+
+		uartPutsDirect(" L1[")
+		uartPutHex64Direct(uint64(l1Idx))
+		uartPutsDirect("]=0x")
+		uartPutHex64Direct(*l1Entry)
+
+		uartPutsDirect(" L2[")
+		uartPutHex64Direct(uint64(l2Idx))
+		uartPutsDirect("]=0x")
+		uartPutHex64Direct(*l2Entry)
+		uartPutsDirect("\r\n")
+
+		// Dump L3 table entries around the target to see adjacent mappings
+		uartPutsDirect("  L3 entries [")
+		start := l3Idx
+		if start > 2 {
+			start = l3Idx - 2
+		}
+		end := l3Idx + 3
+		if end > 511 {
+			end = 511
+		}
+		for i := start; i <= end; i++ {
+			if i == l3Idx {
+				uartPutsDirect(" >")
+			} else {
+				uartPutsDirect(" ")
+			}
+			uartPutHex64Direct(uint64(i))
+			uartPutsDirect(":")
+			l3EntryPtr := (*uint64)(unsafe.Pointer(l3Table + uintptr(i)*8))
+			uartPutHex64Direct(*l3EntryPtr)
+		}
+		uartPutsDirect(" ]\r\n")
+	}
 
 	// CRITICAL: Ensure page table writes are visible before continuing
 	// Use DSB to ensure all page table writes complete before any subsequent
@@ -582,8 +841,44 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64) {
 // attrs: Memory attributes
 // ap: Access permissions
 //
+var mapRegionCallCount uint32
+
 //go:nosplit
 func mapRegion(vaStart, vaEnd, paStart uintptr, attrs uint64, ap uint64) {
+	mapRegionCallCount++
+
+	// Simple UART breadcrumb debug (avoid print() which may access unmapped memory)
+	// Write directly to UART to track call frequency without complex operations
+	const uartBase = uintptr(0x09000000)
+
+	// Write breadcrumbs at different intervals to detect patterns
+	if mapRegionCallCount == 1 {
+		// First call - write '1'
+		*(*uint32)(unsafe.Pointer(uartBase)) = 0x31
+	} else if mapRegionCallCount <= 10 {
+		// First 10 calls - write 'm' (lowercase)
+		*(*uint32)(unsafe.Pointer(uartBase)) = 0x6D
+	} else if mapRegionCallCount % 100 == 0 {
+		// Every 100th call - write 'M' (uppercase)
+		*(*uint32)(unsafe.Pointer(uartBase)) = 0x4D
+	} else if mapRegionCallCount % 1000 == 0 {
+		// Every 1000th call - write '!'
+		*(*uint32)(unsafe.Pointer(uartBase)) = 0x21
+	}
+
+	// Sanity check - detect infinite loop conditions
+	if vaStart >= vaEnd {
+		// Write 'X' for error
+		*(*uint32)(unsafe.Pointer(uartBase)) = 0x58
+		return
+	}
+
+	if (vaEnd - vaStart) > 0x100000000 { // > 4GB
+		// Write 'Z' for huge range error
+		*(*uint32)(unsafe.Pointer(uartBase)) = 0x5A
+		return
+	}
+
 	va := vaStart
 	pa := paStart
 
@@ -631,9 +926,28 @@ func initMMU() bool {
 	l0Entry0 := (*uint64)(unsafe.Pointer(pageTableL0 + 0*PTE_SIZE))
 	*l0Entry0 = createTableEntry(pageTableL1)
 
-	// Map bootloader code/data (ROM region: 0x00000000 - 0x08000000)
+	// Map low memory regions with correct permissions
+	// CRITICAL FIX: Data section MUST be read-write!
+	//
+	// Memory layout:
+	//   0x000000-0x56D000: Boot code, text, rodata (read-only)
+	//   0x56D000-0x632000: Data section (READ-WRITE - was causing permission faults!)
+	//
+	// Map everything before data section as read-only (includes boot code, text, rodata)
 	mapRegion(
-		0x00000000, 0x08000000, 0x00000000,
+		0x00000000, 0x0056D000, 0x00000000,
+		PTE_ATTR_NORMAL, PTE_AP_RO_EL1,
+	)
+
+	// Map data section as read-write (this was the fix for schedinit permission fault)
+	mapRegion(
+		0x0056D000, 0x00632000, 0x0056D000,
+		PTE_ATTR_NORMAL, PTE_AP_RW_EL1,
+	)
+
+	// Map remainder up to 8MB as read-only (nothing should be here, but map it anyway)
+	mapRegion(
+		0x00632000, 0x08000000, 0x00632000,
 		PTE_ATTR_NORMAL, PTE_AP_RO_EL1,
 	)
 
@@ -674,8 +988,25 @@ func initMMU() bool {
 	// Verify lowmem mapping (silent unless error)
 	dumpFetchMapping("pci-ecam-low", ecamBase)
 
-	// Map kernel RAM (0x40100000 - 0x60000000)
-	mapRegion(0x40100000, 0x60000000, 0x40100000, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+	// Map kernel RAM (0x40100000 - 0x5E000000) - BSS, heap, stacks
+	// Start at 0x40100000 to avoid QEMU's DTB at 0x40000000-0x40100000
+	mapRegion(0x40100000, PAGE_TABLE_BASE, 0x40100000, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+
+	// CRITICAL: Map page table region (0x5E000000 - 0x60000000) as NON-CACHEABLE
+	// This ensures all PTE writes go directly to memory, not cache.
+	// The MMU's page table walker reads from memory, so this prevents cache coherency
+	// issues without needing explicit DC CVAC on every PTE write.
+	// Using Normal Non-Cacheable (not Device) to avoid Device memory's strict ordering.
+	mapRegion(PAGE_TABLE_BASE, PAGE_TABLE_END, PAGE_TABLE_BASE, PTE_ATTR_NONCACHEABLE, PTE_AP_RW_EL1)
+
+	// CRITICAL: Explicitly map stack guard region (0x5EFD0000 - 0x5F000000)
+	// This provides 128KB guard space below g0 stack bottom (0x5EFF8000)
+	// to catch stack overflow (SP can go as low as 0x5efffd10 ≈ 10KB below)
+	// Even though this is within the main RAM mapping above, we map it explicitly
+	// to ensure it's accessible and to make the guard region visible
+	const stackGuardStart = 0x5EFD0000  // 128KB below 0x5F000000
+	const stackTop = 0x5F000000
+	mapRegion(stackGuardStart, stackTop, stackGuardStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
 
 	// Map physical frame pool (0x200000000-0x240000000)
 	mapRegion(PHYS_FRAME_BASE, PHYS_FRAME_END, PHYS_FRAME_BASE, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
@@ -686,7 +1017,85 @@ func initMMU() bool {
 	// Map bochs-display framebuffer/MMIO (0x10000000-0x11000000)
 	mapRegion(0x10000000, 0x11000000, 0x10000000, PTE_ATTR_DEVICE, PTE_AP_RW_EL1)
 
+	// CRITICAL: Flush TLB to ensure all mappings are visible to CPU
+	// Without this, the CPU may have stale TLB entries that don't reflect
+	// the new mappings, causing exceptions when accessing newly mapped regions
+	asm.Dsb()               // Ensure all page table writes are visible
+	asm.InvalidateTlbAll()  // Invalidate all TLB entries
+	asm.Isb()               // Ensure TLB invalidation completes
+
 	return true
+}
+
+// preMapScheديnitPages pre-maps the 22 pages that would normally cause page faults
+// during runtime.schedinit(). This is a debugging aid to isolate whether the
+// problem is with the 22nd exception itself, or with something after 22 exceptions.
+//
+//go:nosplit
+func preMapScheديnitPages() {
+	const uartBase = uintptr(0x09000000)
+
+	// Print marker to show we're pre-mapping
+	uartPutsDirect("\r\nPre-mapping 22 schedinit pages...")
+
+	// These are the exact addresses that cause page faults during schedinit,
+	// captured from a previous run. We'll pre-map them to avoid the faults.
+	faultAddrs := [22]uintptr{
+		0x00000000D1280000,
+		0x00000000D1288000,
+		0x00000000D3292000,
+		0x0000000091300000,
+		0x000000008D290000,
+		0x000000008CA82000,
+		0x000000008C980400,
+		0x000000008C960080,
+		0x00000000B1300000,
+		0x00000000D3392000,
+		0x00000000D3280000,
+		0x00000000D3291008,
+		0x00000000D33A2000,
+		0x00000000D3290000,
+		0x0000004000001F80,
+		0x0000004000000000,
+		0x0000004000003F80,
+		0x0000004000002000,
+		0x0000004000004000,
+		0x000000400000FF80,
+		0x000000400000E000,
+		0x0000004000010000,
+	}
+
+	for i := 0; i < len(faultAddrs); i++ {
+		addr := faultAddrs[i]
+
+		// Align to page boundary
+		pageAddr := addr &^ (PAGE_SIZE - 1)
+
+		// Allocate physical frame
+		physFrame := allocPhysFrame()
+		if physFrame == 0 {
+			uartPutsDirect("\r\nOOM during pre-mapping!\r\n")
+			for {} // Hang
+		}
+
+		// Zero the frame
+		bzero(unsafe.Pointer(physFrame), PAGE_SIZE)
+
+		// Map it
+		mapPage(pageAddr, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+
+		// Print progress marker every 5 pages
+		if (i+1) % 5 == 0 {
+			*(*uint32)(unsafe.Pointer(uartBase)) = 0x2E  // '.'
+		}
+	}
+
+	// Flush TLB after all mappings
+	asm.Dsb()
+	asm.InvalidateTlbAll()
+	asm.Isb()
+
+	uartPutsDirect(" done!\r\n")
 }
 
 // dumpFetchMapping verifies the L3 mapping for a virtual address (silent unless error)

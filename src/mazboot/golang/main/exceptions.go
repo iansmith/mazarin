@@ -2,6 +2,7 @@ package main
 
 import (
 	"mazboot/asm"
+	"unsafe"
 )
 
 // Exception types
@@ -73,13 +74,29 @@ var (
 //go:nosplit
 //go:noinline
 func InitializeExceptions() error {
-	// Exception vector address (hardcoded - VBAR_EL1 is set by boot.s)
-	exceptionVectorAddr := uintptr(0x2a5000)
+	// Exception vector address is set by linker and loaded by boot.s
+	// Get actual address from boot.s (VBAR_EL1 is already set)
+	exceptionVectorAddr := uintptr(asm.GetExceptionVectorsAddr())
 
 	// Verify address is 2KB aligned (required for VBAR_EL1)
 	if exceptionVectorAddr&0x7FF != 0 {
 		print("FATAL: Exception vector not 2KB aligned\r\n")
 		return nil
+	}
+
+	// Verify the first instruction at sync_exception_el1 (offset +0x200)
+	// Should be a branch instruction (0x17xxxxxx pattern)
+	syncExceptionAddr := exceptionVectorAddr + 0x200
+	firstInst := *(*uint32)(unsafe.Pointer(syncExceptionAddr))
+	// Check if it's a branch instruction (opcode 0x14 or 0x17 in top 6 bits)
+	if (firstInst>>26) != 0x05 && (firstInst>>26) != 0x06 {
+		uartPutsDirect("\r\n!EXCEPTION VECTOR CORRUPTED!\r\n")
+		uartPutsDirect("sync_exception_el1 @ 0x")
+		uartPutHex64Direct(uint64(syncExceptionAddr))
+		uartPutsDirect(" = 0x")
+		uartPutHex64Direct(uint64(firstInst))
+		uartPutsDirect(" (expected branch)\r\n")
+		for {} // Hang
 	}
 
 	// VBAR_EL1 is set in boot.s before Go code runs
@@ -88,12 +105,73 @@ func InitializeExceptions() error {
 	return nil
 }
 
+// Nested exception detector
+var inExceptionHandler uint32
+
+// Exception counter to detect infinite loops
+var exceptionCount uint32
+
 // ExceptionHandler is called from assembly when a synchronous exception occurs
 // It handles the exception and logs details for debugging
 //
 //go:nosplit
 //go:noinline
 func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType uint32) {
+	// Increment exception counter
+	exceptionCount++
+
+	// Detect exception storms (>100 exceptions suggests infinite loop)
+	if exceptionCount > 100 {
+		uartPutsDirect("\r\n!EXCEPTION STORM! Count=")
+		uartPutHex64Direct(uint64(exceptionCount))
+		uartPutsDirect("\r\nESR=0x")
+		uartPutHex64Direct(esr)
+		uartPutsDirect(" FAR=0x")
+		uartPutHex64Direct(far)
+		uartPutsDirect(" ELR=0x")
+		uartPutHex64Direct(elr)
+		uartPutsDirect("\r\n")
+		for {} // Hang on exception storm
+	}
+
+	// Detect nested exceptions (exception during exception handling)
+	if inExceptionHandler != 0 {
+		uartPutsDirect("\r\n!NESTED EXCEPTION!\r\n")
+		uartPutsDirect("ESR=0x")
+		uartPutHex64Direct(esr)
+		uartPutsDirect(" FAR=0x")
+		uartPutHex64Direct(far)
+		uartPutsDirect("\r\n")
+		for {} // Hang on nested exception
+	}
+	inExceptionHandler = 1
+
+	// Check for stack overflow (option 2)
+	// Exception stack is at 0x5FFE0000, should be well above 0x5FFD0000
+	sp := asm.GetCallerStackPointer()
+	const minSP = uintptr(0x5FFD0000)  // 64KB below exception stack
+	const maxSP = uintptr(0x60000000)  // Top of exception stack region
+	if sp < minSP || sp > maxSP {
+		uartPutsDirect("\r\n!STACK OVERFLOW! SP=0x")
+		uartPutHex64Direct(uint64(sp))
+		uartPutsDirect("\r\n")
+		for {} // Hang on stack overflow
+	}
+
+	// DEBUG: For page faults, print ELR IMMEDIATELY
+	ec := (esr >> 26) & 0x3F
+	if ec == EC_DATA_ABORT_ELx {
+		uartPutcDirect('!')  // Breadcrumb: data abort detected
+		pfCount := GetPageFaultCounter()
+		uartPutcDirect('0' + byte(pfCount/10))  // Print tens digit
+		uartPutcDirect('0' + byte(pfCount%10))  // Print ones digit
+		if pfCount >= 15 {
+			// Print immediately so it appears in THIS exception's output
+			uartPutsDirect(" ELR=0x")
+			uartPutHex64Direct(elr)
+		}
+	}
+
 	excInfo := ExceptionInfo{
 		ExceptionType: excType,
 		ESR:           esr,
@@ -103,6 +181,11 @@ func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType u
 	}
 
 	handleException(excInfo)
+
+	inExceptionHandler = 0
+
+	// Breadcrumb: returning from exception handler
+	uartPutcDirect('R')
 }
 
 // Direct UART printing for exception context.
@@ -145,6 +228,9 @@ func uartPutHex64Direct(v uint64) {
 //
 //go:nosplit
 func handleException(excInfo ExceptionInfo) {
+	// Breadcrumb: entered handleException
+	uartPutcDirect('H')
+
 	// Extract exception class from ESR_EL1
 	ec := (excInfo.ESR >> 26) & 0x3F
 

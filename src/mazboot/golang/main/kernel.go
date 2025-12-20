@@ -550,7 +550,15 @@ func KernelMain(r0, r1, atags uint32) {
 	// - Set up processor (P) structures
 	// - Initialize system monitor
 	// =========================================
-	print("Testing Item 5: runtime.schedinit()... ")
+
+	// DEBUG: Pre-map the 64KB boundary page to prevent hang at fault #17
+	// This is a workaround to test if the issue is related to demand paging at 64KB boundaries
+	// DISABLED: Testing cache coherency fix instead
+	//print("Pre-mapping 64KB boundary page (0x4000010000)... ")
+	//preMapPages()
+	//print("DONE\r\n")
+
+	print("Testing Item 5 (with cache coherency fix): runtime.schedinit()... ")
 	asm.CallRuntimeSchedinit()
 	print("PASS (schedinit completed!)\r\n")
 

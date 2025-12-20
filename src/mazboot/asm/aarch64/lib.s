@@ -427,6 +427,73 @@ call_runtime_args:
     ldp x29, x30, [sp], #96
     ret
 
+// =================================================================
+// Test function: call_runtime_osinit
+// Calls runtime.osinit() to test syscalls:
+//   - sched_getaffinity (for getCPUCount)
+//   - openat (for getHugePageSize - should fail gracefully)
+// This tests Item 4 of the runtime master plan.
+// Returns 0 on success (osinit completed without crash)
+// =================================================================
+.global call_runtime_osinit
+.extern runtime.osinit
+call_runtime_osinit:
+    // Save callee-saved registers and create stack frame
+    stp x29, x30, [sp, #-32]!
+    mov x29, sp
+    stp x19, x20, [sp, #16]
+
+    // Call runtime.osinit()
+    // This will call getCPUCount() which uses sched_getaffinity syscall
+    // and getHugePageSize() which tries to open /sys/... (will fail gracefully)
+    bl runtime.osinit
+
+    // If we get here, osinit() completed without crash
+    mov x0, #0              // Return 0 = success
+
+    // Restore and return
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+
+// call_runtime_schedinit()
+// Call runtime.schedinit() to initialize scheduler and locks
+// This will call lockInit() for all runtime locks (Item 5a)
+// Returns 0 on success
+.global call_runtime_schedinit
+.extern runtime.schedinit
+call_runtime_schedinit:
+    // Save callee-saved registers and create stack frame
+    stp x29, x30, [sp, #-32]!
+    mov x29, sp
+    stp x19, x20, [sp, #16]
+
+    // DEBUG: Print '[' before calling schedinit
+    movz x0, #0x0900, lsl #16
+    movz w1, #0x5B              // '['
+    str w1, [x0]
+
+    // Call runtime.schedinit()
+    // This will:
+    // - Call lockInit() for all runtime locks (uses futex syscall)
+    // - Initialize scheduler structures
+    // - Set up processors (P)
+    // - Initialize system monitor
+    bl runtime.schedinit
+
+    // DEBUG: Print ']' after schedinit returns
+    movz x0, #0x0900, lsl #16
+    movz w1, #0x5D              // ']'
+    str w1, [x0]
+
+    // If we get here, schedinit() completed without crash
+    mov x0, #0              // Return 0 = success
+
+    // Restore and return
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+
 // Bridge function: kernel_main -> main.KernelMain (Go function)
 // This allows boot.s to call kernel_main, which then calls the Go KernelMain function
 // Go exports it as main.KernelMain (package.function)
@@ -953,3 +1020,32 @@ invalidate_tlb_all:
     dsb sy                   // Ensure TLB invalidation completes
     isb                      // Instruction synchronization barrier
     ret
+
+// get_current_g() uintptr - Returns pointer to current goroutine from x28 register
+// The Go runtime stores the current goroutine pointer in x28 (g register)
+// Returns: uintptr - Pointer to current G structure
+.global get_current_g
+get_current_g:
+    mov x0, x28              // Return current g pointer from x28 register
+    ret
+
+// set_current_g(gptr uintptr) - Sets the current goroutine pointer in x28 register
+// The Go runtime expects the current goroutine pointer to be in x28
+// Parameters:
+//   x0 = gptr (uintptr - pointer to goroutine structure)
+.global set_current_g
+set_current_g:
+    mov x28, x0              // Set g register (x28) to the provided G pointer
+    ret
+
+// CleanDataCacheVA(addr uintptr) - Clean data cache by virtual address
+// This ensures writes to page tables are visible to the MMU's page table walker
+// Parameters:
+//   x0 = addr (virtual address to clean)
+// Uses DC CVAC (Data Cache Clean by VA to point of Coherency)
+.global CleanDataCacheVA
+CleanDataCacheVA:
+    dc cvac, x0              // Clean data cache line containing address in x0
+    dsb sy                   // Ensure clean completes before continuing
+    ret
+

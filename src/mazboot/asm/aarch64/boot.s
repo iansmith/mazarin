@@ -119,14 +119,14 @@ at_el1:
     // - 0x40000000-0x40100000: DTB (QEMU device tree blob, 1MB)
     // - 0x40100000-0x48100000: Kernel RAM (128MB allocated for kernel)
     //   - 0x40100000-0x401xxxxx: BSS section
-    //   - After BSS: Heap (grows upward, extends to 0x5EFFFE000)
-    //   - 0x5EFFFE000-0x5F000000: g0 stack (8KB, grows downward from 0x5F000000)
+    //   - After BSS: Heap (grows upward, extends to 0x5EFF0000)
+    //   - 0x5EFF0000-0x5F000000: g0 stack (64KB, grows downward from 0x5F000000)
     //
-    // Set stack pointer to 0x5F000000 (g0 stack top, 8KB stack)
-    // g0 stack bottom is at 0x5EFFFE000, heap should end before this
+    // Set stack pointer to 0x5F000000 (g0 stack top, 64KB stack - matches real Go runtime)
+    // g0 stack bottom is at 0x5EFF0000, heap should end before this
     movz w15, #0x53                // 'S' = Setting stack
     str w15, [x14]
-    movz x0, #0x5F00, lsl #16    // 0x5F000000 (g0 stack top, 8KB)
+    movz x0, #0x5F00, lsl #16    // 0x5F000000 (g0 stack top, 64KB)
     mov sp, x0
     movz w15, #0x73                // 's' = Stack set
     str w15, [x14]
@@ -156,11 +156,13 @@ at_el1:
     movz w15, #0x62              // 'b' = BSS cleared
     str w15, [x14]
 
-    // Initialize mmap bump pointer at 0x40FFF000 to 0x60000000
-    // This must be done before any syscalls (including during page fault handling)
+    // Initialize mmap bump pointer at 0x40FFF000 to 0x48000000
+    // IMPORTANT: Must be within mapped heap region (0x40000000-0x50000000)
+    // Start at 0x48000000 to leave room for initial heap allocations
+    // FIX: Was 0x60000000 which is UNMAPPED, causing page faults in schedinit
     movz x4, #0x40FF, lsl #16     // 0x40FF0000
     movk x4, #0xF000, lsl #0      // 0x40FFF000
-    movz x5, #0x6000, lsl #16     // 0x60000000 - start of mmap region
+    movz x5, #0x4800, lsl #16     // 0x48000000 - start of mmap region (within heap!)
     movk x5, #0x0000, lsl #0
     str x5, [x4]                  // Store initial mmap pointer
     movz w15, #0x4D              // 'M' = mmap pointer initialized
@@ -211,7 +213,9 @@ vbar_ok:
     // Step 1: Configure MAIR_EL1
     // Attr0 (bits 7:0) = 0xFF (Normal, Inner/Outer WB Cacheable)
     // Attr1 (bits 15:8) = 0x00 (Device-nGnRnE)
-    movz x0, #0xFF                 // MAIR = 0xFF (Attr0=0xFF, Attr1=0x00)
+    // Attr2 (bits 23:16) = 0x44 (Normal, Inner/Outer Non-Cacheable)
+    movz x0, #0x44FF               // MAIR bits 15:0 = Attr1:Attr0
+    movk x0, #0x0044, lsl #16      // MAIR bits 31:16 = Attr3:Attr2
     msr MAIR_EL1, x0
     isb
     
@@ -330,6 +334,43 @@ vbar_test_ok:
     // Write 'B' (0x42) to UART to show we reached this point
     movz x14, #0x0900, lsl #16     // UART base = 0x09000000
     movz w15, #0x42                // 'B' = Boot complete, about to call kernel_main
+    str w15, [x14]
+
+    // =====================================================
+    // Initialize g0 and m0 (like Go runtime's rt0_go does)
+    // =====================================================
+    // The Go runtime expects g0 and m0 to be initialized before any Go code runs.
+    // Normally this is done in rt0_go, but since we jump directly to kernel_main,
+    // we must do it here.
+
+    // Step 1: Set g register (x28) to point to runtime.g0
+    ldr x28, =runtime.g0           // x28 (g register) = &runtime.g0
+
+    // Step 2: Set up stack guards for g0 (EXACTLY like rt0_go does)
+    // g0 uses the current stack (already set up by boot.s)
+    // Get current SP and set stack bounds
+    mov x7, sp                      // x7 = current stack pointer
+
+    // Set stackguard0 and stackguard1 (64KB below SP)
+    sub x0, x7, #(64*1024)          // x0 = SP - 64KB (stack guard)
+    str x0, [x28, #16]              // g.stackguard0 = x0 (offset 16 in runtimeG)
+    str x0, [x28, #24]              // g.stackguard1 = x0 (offset 24 in runtimeG)
+
+    // Set stack bounds in g.stack (NOTE: stack.lo is ALSO 64KB below, same as guard!)
+    str x0, [x28, #0]               // g.stack.lo = stack guard (offset 0)
+    str x7, [x28, #8]               // g.stack.hi = current SP (offset 8)
+
+    // Step 3: Link g0 and m0
+    ldr x0, =runtime.m0             // x0 = &runtime.m0
+    str x0, [x28, #48]              // g0.m = &m0 (offset 48 in runtimeG for 'm *m' field)
+    str x28, [x0, #0]               // m0.g0 = &g0 (offset 0 in runtimeM for 'g0 *g' field)
+
+    // NOTE: runtime·save_g is not available in our bare-metal environment
+    // (it's mainly for CGO/TLS). The g register (x28) is already set up,
+    // which is sufficient for our purposes.
+
+    // Breadcrumb: g0/m0 initialized
+    movz w15, #0x47                 // 'G' = g0/m0 initialized
     str w15, [x14]
 
     // Jump to kernel_main

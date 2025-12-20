@@ -23,6 +23,18 @@ func CallMallocinit()
 //go:nosplit
 func CallRuntimeArgs() int
 
+//go:linkname CallRuntimeOsinit call_runtime_osinit
+//go:nosplit
+func CallRuntimeOsinit()
+
+//go:linkname CallRuntimeSchedinit call_runtime_schedinit
+//go:nosplit
+func CallRuntimeSchedinit()
+
+//go:linkname CleanDataCacheVA CleanDataCacheVA
+//go:nosplit
+func CleanDataCacheVA(addr uintptr)
+
 //go:linkname Delay delay
 //go:nosplit
 func Delay(count int32)
@@ -54,6 +66,10 @@ func EnableMmuMinimal()
 //go:linkname GetCallerStackPointer get_caller_stack_pointer
 //go:nosplit
 func GetCallerStackPointer() uintptr
+
+//go:linkname GetCurrentG get_current_g
+//go:nosplit
+func GetCurrentG() uintptr
 
 //go:linkname GetEmptymspanAddr get_emptymspan_addr
 //go:nosplit
@@ -190,6 +206,10 @@ func ReadTtbr0El1() uint64
 //go:linkname ReadVbarEl1 read_vbar_el1
 //go:nosplit
 func ReadVbarEl1() uintptr
+
+//go:linkname SetCurrentG set_current_g
+//go:nosplit
+func SetCurrentG(gptr uintptr)
 
 //go:linkname SetGPointer set_g_pointer
 //go:nosplit
