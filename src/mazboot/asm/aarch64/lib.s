@@ -14,6 +14,13 @@ get_m0_addr:
     ldr x0, =runtime.m0
     ret
 
+// getGRegister() - returns current value of g register (x28)
+// This is for debugging to see what g points to
+.global getGRegister
+getGRegister:
+    mov x0, x28
+    ret
+
 // call_mallocinit()
 // Call runtime.mallocinit from assembly.
 // Minimal assembly wrapper that just calls mallocinit (not full schedinit).
@@ -128,16 +135,38 @@ mmio_write64:
 // bzero(void *ptr, uint32_t size)
 // x0 = pointer to memory (64-bit), w1 = size in bytes (32-bit unsigned)
 // Zeroes size bytes starting at ptr
+// OPTIMIZED: Uses 128-bit stores (STP) for 16x speedup
 .global bzero
 bzero:
-    cbz w1, bzero_done  // If size is zero, skip loop
-    mov w2, #0          // Zero value to write
-bzero_loop:
-    strb w2, [x0], #1   // Store byte (zero) and post-increment pointer
-    subs w1, w1, #1     // Decrement size counter
-    bne bzero_loop      // Branch if not zero
+    cbz w1, bzero_done      // If size is zero, skip
+    mov x2, #0              // Zero value (64-bit)
+    mov x3, #0              // Zero value (64-bit)
+
+    // Fast path: 16-byte chunks using STP (store pair)
+bzero_loop_16:
+    cmp w1, #16             // Check if at least 16 bytes remain
+    blt bzero_loop_8        // If less than 16, do 8-byte stores
+    stp x2, x3, [x0], #16   // Store 16 bytes (two 64-bit zeros) and increment
+    sub w1, w1, #16         // Decrement by 16
+    b bzero_loop_16         // Repeat
+
+    // Medium path: 8-byte chunks
+bzero_loop_8:
+    cmp w1, #8              // Check if at least 8 bytes remain
+    blt bzero_loop_1        // If less than 8, do byte stores
+    str x2, [x0], #8        // Store 8 bytes and increment
+    sub w1, w1, #8          // Decrement by 8
+    b bzero_loop_8          // Repeat
+
+    // Slow path: remaining bytes
+bzero_loop_1:
+    cbz w1, bzero_done      // If size is zero, done
+    strb w2, [x0], #1       // Store byte and increment
+    sub w1, w1, #1          // Decrement by 1
+    b bzero_loop_1          // Repeat
+
 bzero_done:
-    ret                 // Return
+    ret                     // Return
 
 // dsb() - Data Synchronization Barrier
 // Ensures all memory accesses before this instruction complete before continuing
@@ -1021,6 +1050,29 @@ invalidate_tlb_all:
     isb                      // Instruction synchronization barrier
     ret
 
+// invalidate_tlb_va(addr uintptr) - Invalidate TLB entry for specific virtual address
+// This is much faster than invalidating the entire TLB when mapping a single page
+// Parameters:
+//   x0 = Virtual address to invalidate (page-aligned)
+.global invalidate_tlb_va
+invalidate_tlb_va:
+    lsr x0, x0, #12          // Convert to page number (VA >> 12)
+    dsb ishst                // Ensure prior writes complete before TLB invalidation
+    tlbi vae1, x0            // Invalidate TLB entry for this VA at EL1
+    dsb ish                  // Ensure TLB invalidation completes
+    isb                      // Instruction synchronization barrier
+    ret
+
+// clean_dcache_va(addr uintptr) - Clean data cache for specific virtual address
+// This ensures modified page table entries are visible to hardware page table walker
+// Parameters:
+//   x0 = Virtual address to clean
+.global clean_dcache_va
+clean_dcache_va:
+    dc cvac, x0              // Clean data cache by VA to Point of Coherency
+    dsb ish                  // Ensure cache clean completes
+    ret
+
 // get_current_g() uintptr - Returns pointer to current goroutine from x28 register
 // The Go runtime stores the current goroutine pointer in x28 (g register)
 // Returns: uintptr - Pointer to current G structure
@@ -1049,6 +1101,17 @@ CleanDataCacheVA:
     dsb sy                   // Ensure clean completes before continuing
     ret
 
+// InvalidateInstructionCacheAll() - Invalidate all instruction caches
+// This ensures the CPU fetches fresh instructions from memory after code is modified
+// Used after relocating exception vectors or self-modifying code
+// No parameters
+.global InvalidateInstructionCacheAll
+InvalidateInstructionCacheAll:
+    ic iallu                 // Invalidate all instruction caches to Point of Unification
+    dsb sy                   // Ensure invalidation completes
+    isb                      // Synchronize context
+    ret
+
 // getCurrentSP() uintptr - Returns the current stack pointer
 // This is used for stack tracing / debugging
 .global getCurrentSP
@@ -1056,3 +1119,11 @@ getCurrentSP:
     mov x0, sp               // Copy stack pointer to x0 (return value)
     ret
 
+
+// set_vbar_el1_to_addr(addr uintptr) - Set VBAR_EL1 to specific address
+// Used to relocate exception vectors to safe RAM location
+// NOTE: Caller must execute DSB + ISB after this returns
+.global set_vbar_el1_to_addr
+set_vbar_el1_to_addr:
+    msr vbar_el1, x0         // Set VBAR_EL1 to address in x0
+    ret                       // Return (barriers done by caller)

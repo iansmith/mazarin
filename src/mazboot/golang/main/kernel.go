@@ -475,6 +475,25 @@ func KernelMain(r0, r1, atags uint32) {
 	// Initialize VirtIO RNG device for random number generation
 	initVirtIORNG()
 
+	// WORKAROUND: Pre-map 1MB of stack to avoid page faults during schedinit
+	// Even with optimized demand paging, schedinit hangs when faulting
+	{
+		print("Pre-mapping 1MB of stack (0x40000000-0x40100000)...\r\n")
+		for va := uintptr(0x40000000); va < 0x40100000; va += 0x1000 {
+			physFrame := allocPhysFrame()
+			if physFrame == 0 {
+				print("ERROR: Out of physical frames\r\n")
+				break
+			}
+			bzero(unsafe.Pointer(physFrame), 0x1000)
+			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+			if (va-0x40000000)%(64*0x1000) == 0 {
+				print(".")
+			}
+		}
+		print("\r\nPre-mapped 1MB of stack\r\n")
+	}
+
 	// =========================================
 	// TEST: Item 3 - runtime.args()
 	// Test that we can call runtime.args with a minimal argv/auxv structure
@@ -557,6 +576,20 @@ func KernelMain(r0, r1, atags uint32) {
 	//print("Pre-mapping 64KB boundary page (0x4000010000)... ")
 	//preMapPages()
 	//print("DONE\r\n")
+
+	// CRITICAL DEBUG: Check g register before schedinit
+	{
+		g0Addr := asm.GetG0Addr()
+		gReg := asm.GetCurrentG()
+		print("\r\nDEBUG: runtime.g0 @ 0x")
+		printHex64(uint64(g0Addr))
+		print(", g register (x28) = 0x")
+		printHex64(uint64(gReg))
+		if g0Addr != gReg {
+			print(" <-- MISMATCH!")
+		}
+		print("\r\n")
+	}
 
 	print("Testing Item 5 (with cache coherency fix): runtime.schedinit()... ")
 	asm.CallRuntimeSchedinit()
@@ -652,12 +685,7 @@ func kernelMainBody() {
 	// Memory barrier for write barrier operations
 	asm.Dsb()
 
-	// Stage 3: exception handler init
-	if err := InitializeExceptions(); err != nil {
-		print("ERROR: Exception init failed\r\n")
-		abortBoot("Exception handler initialization failed")
-		return
-	}
+	// Stage 3: exception handler init - now done early in KernelMain()
 
 	// Stage 4: MMU already initialized in KernelMain
 	asm.DisableIrqs()

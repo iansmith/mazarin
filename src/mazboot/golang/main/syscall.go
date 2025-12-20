@@ -276,6 +276,88 @@ func printCString(cstr unsafe.Pointer) {
 //
 // Returns: 0 on success, -errno on error
 //
+// Simple bump allocator for mmap with no hint
+// Starts at 0x48000000 (matches MMAP_VIRT_BASE) and grows upward
+var mmapBumpNext uintptr = 0x48000000
+
+//go:nosplit
+func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32, offset int64) int64 {
+	// Log mmap call using direct UART (safe in exception context)
+	uartPutsDirect("mmap(addr=0x")
+	uartPutHex64Direct(uint64(addr))
+	uartPutsDirect(", len=0x")
+	uartPutHex64Direct(length)
+	uartPutsDirect(", prot=0x")
+	uartPutHex64Direct(uint64(prot))
+	uartPutsDirect(", flags=0x")
+	uartPutHex64Direct(uint64(flags))
+	uartPutsDirect(")\r\n")
+
+	// Strategy: Return the hint address if provided, otherwise use bump allocator
+	// This matches Linux behavior for MAP_ANONYMOUS mappings
+
+	// Check for MAP_FIXED (0x10) - must return exact address
+	const MAP_FIXED = 0x10
+	if (flags & MAP_FIXED) != 0 {
+		if addr == 0 {
+			uartPutsDirect("  -> MAP_FIXED with addr=0, returning -EINVAL\r\n")
+			return -22 // -EINVAL
+		}
+		uartPutsDirect("  -> MAP_FIXED, returning 0x")
+		uartPutHex64Direct(uint64(addr))
+		uartPutsDirect("\r\n")
+		return int64(addr)
+	}
+
+	// If hint address provided, return it (Go expects this!)
+	if addr != 0 {
+		uartPutsDirect("  -> hint provided, returning 0x")
+		uartPutHex64Direct(uint64(addr))
+		uartPutsDirect("\r\n")
+		return int64(addr)
+	}
+
+	// No hint - use bump allocator
+	// Round length up to 4KB page boundary
+	pageSize := uint64(4096)
+	roundedLength := (length + pageSize - 1) &^ (pageSize - 1)
+
+	allocAddr := mmapBumpNext
+	mmapBumpNext += uintptr(roundedLength)
+
+	uartPutsDirect("  -> bump allocator, returning 0x")
+	uartPutHex64Direct(uint64(allocAddr))
+	uartPutsDirect(" (len=0x")
+	uartPutHex64Direct(roundedLength)
+	uartPutsDirect(")\r\n")
+
+	// CRITICAL DEBUG: Check g register before returning from mmap
+	gReg := asm.GetCurrentG()
+	uartPutsDirect("  -> g register after mmap = 0x")
+	uartPutHex64Direct(uint64(gReg))
+	uartPutsDirect("\r\n")
+
+	return int64(allocAddr)
+}
+
+//go:nosplit
+func SyscallBrk(addr uintptr) int64 {
+	uartPutsDirect("brk(0x")
+	uartPutHex64Direct(uint64(addr))
+	uartPutsDirect(") -> 0x50000000\r\n")
+	return 0x50000000 // Fixed break address
+}
+
+//go:nosplit
+func SyscallMunmap(addr uintptr, length uint64) int64 {
+	uartPutsDirect("munmap(0x")
+	uartPutHex64Direct(uint64(addr))
+	uartPutsDirect(", 0x")
+	uartPutHex64Direct(length)
+	uartPutsDirect(") -> 0\r\n")
+	return 0 // Success (we don't actually reclaim)
+}
+
 //go:nosplit
 func SyscallFutex(addr unsafe.Pointer, op int32, val uint32, ts unsafe.Pointer, addr2 unsafe.Pointer, val3 uint32) int64 {
 	uaddr := (*uint32)(addr)

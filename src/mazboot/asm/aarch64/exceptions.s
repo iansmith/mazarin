@@ -1095,68 +1095,118 @@ syscall_clone_fail:
 
 syscall_mmap:
     // mmap(addr, length, prot, flags, fd, offset)
-    // x0 = addr (hint or 0), x1 = length, x2 = prot, x3 = flags, x4 = fd, x5 = offset
-    //
-    // Go's sysReserve passes a HINT address and expects to get it back exactly.
-    // If we return a different address, Go frees it and tries next hint (forever).
-    //
-    // Strategy:
-    //   - If hint (x0) is non-zero: return hint address (bare-metal has no competition)
-    //   - If hint is zero: use bump allocator
-    //   - MAP_FIXED (0x10): always return requested address
-    //
-    // Return value in x0:
-    //   - On success: allocated address (positive)
-    //   - On error: -errno (negative, e.g., -12 for ENOMEM)
+    // x0-x5 contain arguments - call Go SyscallMmap function
 
-    // DEBUG: mmap counter removed - found only ~20 calls before hang
+    // Save callee-saved registers for Go call
+    // CRITICAL: Allocate 256 bytes to prevent Go function from
+    // overwriting our saved registers with its local variables
+    sub sp, sp, #256
 
-    // Check for MAP_FIXED (0x10) first - always return requested address
-    and x15, x3, #0x10
-    cbnz x15, mmap_return_hint
+    // DEBUG: Print x28 BEFORE saving it
+    movz x10, #0x0900, lsl #16
+    movk x10, #0x0000, lsl #0       // x10 = UART base 0x09000000
+    movz w11, #0x0078               // 'x'
+    str w11, [x10]
+    movz w11, #0x0032               // '2'
+    str w11, [x10]
+    movz w11, #0x0038               // '8'
+    str w11, [x10]
+    movz w11, #0x003D               // '='
+    str w11, [x10]
+    movz w11, #0x0030               // '0'
+    str w11, [x10]
+    movz w11, #0x0078               // 'x'
+    str w11, [x10]
+    // Print x28 as hex (8 digits for lower 32 bits)
+    mov x12, #28                    // Start from bit 28 (8 digits * 4 bits)
+1:  lsr x13, x28, x12               // Shift right to get nibble
+    and x13, x13, #0xF              // Mask to get 4 bits
+    cmp x13, #10
+    blt 2f
+    add x13, x13, #('A' - 10)       // A-F
+    b 3f
+2:  add x13, x13, #'0'              // 0-9
+3:  str w13, [x10]                  // Print digit
+    subs x12, x12, #4               // Next nibble
+    bpl 1b
+    movz w11, #0x0020               // ' '
+    str w11, [x10]
 
-    // Check if hint address (x0) is non-zero
-    // Go's sysReserve passes hints like 0x4000000000 (256GB) for arm64
-    // We must return EXACTLY this address, or Go will free and retry
-    cbnz x0, mmap_return_hint
+    // Save registers at HIGH offsets (192+) to avoid overlap with Go function's locals
+    stp x19, x20, [sp, #192]
+    stp x21, x22, [sp, #208]
+    stp x28, x29, [sp, #224]
+    stp x30, xzr, [sp, #240]
 
-    // No hint - use bump allocator for anonymous mappings
-    // Load current mmap pointer (stored at 0x40FFF000)
-    // NOTE: This pointer is pre-initialized to 0x48000000 in boot.s (within heap!)
-    movz x11, #0x40FF, lsl #16     // 0x40FF0000
-    movk x11, #0xF000, lsl #0      // 0x40FFF000
-    ldr x12, [x11]                 // x12 = current mmap pointer
+    // NOTE: Do NOT set x29 here! The Go function expects x29 to point to
+    // the caller's frame, not ours. If we set x29 = sp, the Go function
+    // will access [x29 + offset] which overlaps with our saved registers.
 
-    // Align length to page size (4KB)
-    mov x17, x1                    // x17 = length
-    add x17, x17, #0xFFF
-    and x17, x17, #~0xFFF
+    // Arguments already in x0-x5, call Go function
+    bl main.SyscallMmap
 
-    // Check if we have enough space (end at 0x100000000 - 4GB mapped heap limit)
-    // We have 8GB QEMU RAM (0x40000000-0x240000000), so use generous limit
-    // This allows plenty of room for GC metadata and other runtime allocations
-    add x13, x12, x17              // x13 = new pointer after allocation
-    movz x14, #0x0001, lsl #32     // 0x100000000 - end at 4GB
-    cmp x13, x14
-    bhi mmap_oom
+    // x0 contains return value (address or -errno)
+    str x0, [sp, #56]
 
-    // Allocate: return current pointer, update stored pointer
-    mov x0, x12                    // x0 = allocated address
-    str x13, [x11]                 // Update bump pointer
-    b syscall_return
+    // DEBUG: Print saved x28 value before restoring
+    ldr x10, [sp, #224]             // Load saved x28 value
+    movz x11, #0x0900, lsl #16
+    movk x11, #0x0000, lsl #0       // x11 = UART base 0x09000000
 
-mmap_return_hint:
-    // Return the hint address (x0) as-is
-    // This satisfies Go's sysReserve which expects exact address match
-    // Demand paging will handle actual memory backing when accessed
+    // Print " saved_x28=0x"
+    movz w12, #0x0020               // ' '
+    str w12, [x11]
+    movz w12, #0x0073               // 's'
+    str w12, [x11]
+    movz w12, #0x0061               // 'a'
+    str w12, [x11]
+    movz w12, #0x0076               // 'v'
+    str w12, [x11]
+    movz w12, #0x0065               // 'e'
+    str w12, [x11]
+    movz w12, #0x0064               // 'd'
+    str w12, [x11]
+    movz w12, #0x005F               // '_'
+    str w12, [x11]
+    movz w12, #0x0078               // 'x'
+    str w12, [x11]
+    movz w12, #0x0032               // '2'
+    str w12, [x11]
+    movz w12, #0x0038               // '8'
+    str w12, [x11]
+    movz w12, #0x003D               // '='
+    str w12, [x11]
+    movz w12, #0x0030               // '0'
+    str w12, [x11]
+    movz w12, #0x0078               // 'x'
+    str w12, [x11]
 
-    // DEBUG: 'H' marker disabled to see Go error message
+    // Print x10 as hex (16 digits)
+    mov x13, #60                    // Start from bit 60 (16 digits * 4 bits)
+1:  lsr x14, x10, x13               // Shift right to get nibble
+    and x14, x14, #0xF              // Mask to get 4 bits
+    cmp x14, #10
+    blt 2f
+    add x14, x14, #('A' - 10)       // A-F
+    b 3f
+2:  add x14, x14, #'0'              // 0-9
+3:  str w14, [x11]                  // Print digit
+    subs x13, x13, #4               // Next nibble
+    bpl 1b
 
-    b syscall_return
+    movz w12, #0x000D               // '\r'
+    str w12, [x11]
+    movz w12, #0x000A               // '\n'
+    str w12, [x11]
 
-mmap_oom:
-    // Out of memory - return ENOMEM
-    movn x0, #11                   // x0 = -12 (ENOMEM)
+    // Restore registers from HIGH offsets
+    ldp x19, x20, [sp, #192]
+    ldp x21, x22, [sp, #208]
+    ldp x28, x29, [sp, #224]
+    ldr x30, [sp, #240]
+    ldr x0, [sp, #56]
+    add sp, sp, #256
+
     b syscall_return
 
 syscall_prctl:
@@ -1277,19 +1327,63 @@ syscall_gettid:
     b syscall_return
 
 syscall_brk:
-    // brk(addr) - return current break (fake implementation)
+    // brk(addr) - call Go SyscallBrk function
     // x0 = requested break address (0 = query current)
-    // For Go runtime's sbrk0(), just return a fixed address in heap region
-    // Return: new break on success, -1 on failure
-    movz x0, #0x5000, lsl #16      // Return 0x50000000 as current break
-    movk x0, #0x0000, lsl #0
+
+    // Save callee-saved registers for Go call
+    sub sp, sp, #64
+    stp x19, x20, [sp, #0]
+    stp x21, x22, [sp, #16]
+    stp x28, x29, [sp, #32]
+    stp x30, xzr, [sp, #48]
+
+    // Set up frame pointer for Go
+    add x29, sp, #0
+
+    // Argument already in x0, call Go function
+    bl main.SyscallBrk
+
+    // x0 contains return value (address or -errno)
+    str x0, [sp, #56]
+
+    // Restore registers
+    ldp x19, x20, [sp, #0]
+    ldp x21, x22, [sp, #16]
+    ldp x28, x29, [sp, #32]
+    ldr x30, [sp, #48]
+    ldr x0, [sp, #56]
+    add sp, sp, #64
+
     b syscall_return
 
 syscall_munmap:
-    // munmap(addr, length) - free mapped memory
-    // For our simple bump allocator, we don't actually reclaim memory
-    // Just return success (0)
-    mov x0, #0
+    // munmap(addr, length) - call Go SyscallMunmap function
+    // x0 = addr, x1 = length
+
+    // Save callee-saved registers for Go call
+    sub sp, sp, #64
+    stp x19, x20, [sp, #0]
+    stp x21, x22, [sp, #16]
+    stp x28, x29, [sp, #32]
+    stp x30, xzr, [sp, #48]
+
+    // Set up frame pointer for Go
+    add x29, sp, #0
+
+    // Arguments already in x0, x1, call Go function
+    bl main.SyscallMunmap
+
+    // x0 contains return value (0 or -errno)
+    str x0, [sp, #56]
+
+    // Restore registers
+    ldp x19, x20, [sp, #0]
+    ldp x21, x22, [sp, #16]
+    ldp x28, x29, [sp, #32]
+    ldr x30, [sp, #48]
+    ldr x0, [sp, #56]
+    add sp, sp, #64
+
     b syscall_return
 
 syscall_madvise:
