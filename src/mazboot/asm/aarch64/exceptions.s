@@ -14,6 +14,85 @@
 // Declare Go function for exception handling
 .extern ExceptionHandler
 
+// ============================================================================
+// GO CALLING CONVENTION SUPPORT
+// ============================================================================
+//
+// Go's calling convention requires the caller to provide stack space for
+// argument spills. Arguments are passed in registers x0-x5, but Go immediately
+// spills them to the stack at POSITIVE offsets from SP.
+//
+// For a Go function with frame size F that accesses [SP + M]:
+//   - After allocating frame: Go_SP = Caller_SP - F
+//   - Go accesses: [Go_SP + M] = [Caller_SP - F + M] = [Caller_SP + (M - F)]
+//   - If M > F, this is ABOVE the caller's original SP
+//
+// SPILL_SPACE = (max_offset - frame_size + param_size + 15) & ~15
+//
+// Spill space constants (derived from disassembly analysis):
+.equ SPILL_SPACE_1PARAM,  16    // 1 parameter functions
+.equ SPILL_SPACE_2PARAM,  32    // 2 parameter functions
+.equ SPILL_SPACE_3PARAM,  32    // 3 parameter functions
+.equ SPILL_SPACE_4PARAM,  48    // 4 parameter functions
+.equ SPILL_SPACE_6PARAM,  48    // 6 parameter functions
+
+// Register save space (7 registers: x19-x22, x28-x30)
+.equ REG_SAVE_SPACE,      64    // 64 bytes (4 pairs + alignment)
+
+// CALL_GO_PROLOGUE: Prepare to call a Go function from assembly
+//   Arguments: \spill_space - bytes of spill space needed (use SPILL_SPACE_*PARAM)
+//   Clobbers: none (saves all callee-saved registers)
+//   Stack effect: Allocates REG_SAVE_SPACE + spill_space bytes
+//
+//   Stack layout after prologue:
+//     [original_SP]                           <- entry SP
+//     [original_SP - REG_SAVE_SPACE]          <- saved regs (x19-x22, x28-x30)
+//     [original_SP - REG_SAVE_SPACE - spill] <- current SP (Go's entry point)
+//
+.macro CALL_GO_PROLOGUE spill_space
+    // Allocate space for callee-saved registers per AAPCS64
+    sub sp, sp, #REG_SAVE_SPACE
+
+    // Save callee-saved registers:
+    //   x19-x28: callee-saved general purpose registers
+    //   x29: frame pointer
+    //   x30: link register
+    // We save x19-x22 (4 regs) and x28-x30 (3 regs) = 7 registers
+    stp x19, x20, [sp, #0]
+    stp x21, x22, [sp, #16]
+    stp x28, x29, [sp, #32]
+    str x30, [sp, #48]
+
+    // Adjust SP to provide spill space for Go's argument spills
+    // After this, Go can safely store args at positive offsets from its SP
+    sub sp, sp, #\spill_space
+.endm
+
+// CALL_GO_EPILOGUE: Clean up after calling a Go function
+//   Arguments: \spill_space - bytes of spill space (must match prologue)
+//   Effects: Restores registers and stack, preserves x0 (return value)
+//   Returns: x0 contains the Go function's return value
+//
+.macro CALL_GO_EPILOGUE spill_space
+    // Save return value (x0) below spill space, safe from register restore
+    str x0, [sp, #0]
+
+    // Restore SP to point at saved registers
+    add sp, sp, #\spill_space
+
+    // Restore callee-saved registers
+    ldp x19, x20, [sp, #0]
+    ldp x21, x22, [sp, #16]
+    ldp x28, x29, [sp, #32]
+    ldr x30, [sp, #48]
+
+    // Restore return value from below where we just restored SP
+    ldr x0, [sp, #-\spill_space]
+
+    // Deallocate register save space
+    add sp, sp, #REG_SAVE_SPACE
+.endm
+
 // Use a separate section for exception vectors so they can be 2KB aligned
 // without affecting text section alignment
 // Flags: "ax" = allocatable + executable (required for code execution)
@@ -902,185 +981,45 @@ syscall_write:
 
 syscall_write_uart:
     // Write buffer to UART via ring buffer (interrupt-driven)
+    // SyscallWriteBuffer(buf unsafe.Pointer, count uint32) - 2 parameters
     // x1 = buf pointer, x2 = count
-    // Call Go function: SyscallWriteBuffer(buf unsafe.Pointer, count uint32) uint32
-
-    // Save callee-saved registers for Go call
-    sub sp, sp, #64
-    stp x19, x20, [sp, #0]
-    stp x21, x22, [sp, #16]
-    stp x28, x29, [sp, #32]
-    str x30, [sp, #48]
-
-    // Set up frame pointer for Go
-    add x29, sp, #0
-
-    // Prepare arguments for SyscallWriteBuffer
     mov x0, x1                     // x0 = buf pointer
     mov w1, w2                     // x1 = count (32-bit)
-
-    // Call Go function
+    CALL_GO_PROLOGUE SPILL_SPACE_2PARAM
     bl main.SyscallWriteBuffer
-
-    // x0 now contains return value (count written)
-    // Save return value to stack temporarily
-    str x0, [sp, #56]
-
-    // Restore callee-saved registers
-    ldp x19, x20, [sp, #0]
-    ldp x21, x22, [sp, #16]
-    ldp x28, x29, [sp, #32]
-    ldr x30, [sp, #48]
-    ldr x0, [sp, #56]              // Restore return value to x0
-    add sp, sp, #64
-
+    CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
     b syscall_return
 
 syscall_read:
-    // read(fd, buf, count)
-    // x0 = fd, x1 = buf, x2 = count
-    // Call Go function to handle special FDs like /dev/urandom
-
-    // Save callee-saved registers for Go call
-    sub sp, sp, #64
-    stp x19, x20, [sp, #0]
-    stp x21, x22, [sp, #16]
-    stp x28, x29, [sp, #32]
-    str x30, [sp, #48]
-
-    // Set up frame pointer for Go
-    add x29, sp, #0
-
-    // Arguments are already in x0, x1, x2 - perfect for Go
-    // x0 = fd (int32)
-    // x1 = buf (unsafe.Pointer)
-    // x2 = count (uint64)
-
-    // Call Go function
+    // read(fd, buf, count) - 3 parameters
+    // x0-x2 contain arguments - call Go SyscallRead function
+    CALL_GO_PROLOGUE SPILL_SPACE_3PARAM
     bl main.SyscallRead
-
-    // x0 now contains return value (int64: bytes read or -errno)
-    // Save return value to stack temporarily
-    str x0, [sp, #56]
-
-    // Restore callee-saved registers
-    ldp x19, x20, [sp, #0]
-    ldp x21, x22, [sp, #16]
-    ldp x28, x29, [sp, #32]
-    ldr x30, [sp, #48]
-    ldr x0, [sp, #56]              // Restore return value to x0
-    add sp, sp, #64
-
+    CALL_GO_EPILOGUE SPILL_SPACE_3PARAM
     b syscall_return
 
 syscall_openat:
-    // openat(dirfd, pathname, flags, mode)
-    // x0 = dirfd, x1 = pathname, x2 = flags, x3 = mode
-    // Call Go function to check for special files
-
-    // Save callee-saved registers for Go call
-    sub sp, sp, #64
-    stp x19, x20, [sp, #0]
-    stp x21, x22, [sp, #16]
-    stp x28, x29, [sp, #32]
-    str x30, [sp, #48]
-
-    // Set up frame pointer for Go
-    add x29, sp, #0
-
-    // Arguments are already in x0, x1, x2, x3 - perfect for Go
-    // x0 = dirfd (int32)
-    // x1 = pathname (unsafe.Pointer - *byte)
-    // x2 = flags (int32)
-    // x3 = mode (int32)
-
-    // Call Go function
+    // openat(dirfd, pathname, flags, mode) - 4 parameters
+    // x0-x3 contain arguments - call Go SyscallOpenat function
+    CALL_GO_PROLOGUE SPILL_SPACE_4PARAM
     bl main.SyscallOpenat
-
-    // x0 now contains return value (int64: fd or -errno)
-    // Save return value to stack temporarily
-    str x0, [sp, #56]
-
-    // Restore callee-saved registers
-    ldp x19, x20, [sp, #0]
-    ldp x21, x22, [sp, #16]
-    ldp x28, x29, [sp, #32]
-    ldr x30, [sp, #48]
-    ldr x0, [sp, #56]              // Restore return value to x0
-    add sp, sp, #64
-
+    CALL_GO_EPILOGUE SPILL_SPACE_4PARAM
     b syscall_return
 
 syscall_futex:
-    // futex(uaddr, futex_op, val, timeout, uaddr2, val3)
-    // x0 = uaddr (uint32*), x1 = futex_op (int32), x2 = val (uint32)
-    // x3 = timeout (*timespec), x4 = uaddr2 (uint32*), x5 = val3 (uint32)
-    // Call Go function to implement futex wait/wake
-
-    // Save callee-saved registers for Go call
-    sub sp, sp, #80
-    stp x19, x20, [sp, #0]
-    stp x21, x22, [sp, #16]
-    stp x28, x29, [sp, #32]
-    str x30, [sp, #48]
-
-    // Set up frame pointer for Go
-    add x29, sp, #0
-
-    // Arguments are already in x0-x5 - perfect for Go calling convention
-    // x0 = addr (unsafe.Pointer)
-    // x1 = op (int32)
-    // x2 = val (uint32)
-    // x3 = ts (unsafe.Pointer)
-    // x4 = addr2 (unsafe.Pointer)
-    // x5 = val3 (uint32)
-
-    // Call Go function
+    // futex(uaddr, futex_op, val, timeout, uaddr2, val3) - 6 parameters
+    // x0-x5 contain arguments - call Go SyscallFutex function
+    CALL_GO_PROLOGUE SPILL_SPACE_6PARAM
     bl main.SyscallFutex
-
-    // x0 now contains return value (int64: 0 on success, -errno on error)
-    // Save return value to stack temporarily
-    str x0, [sp, #56]
-
-    // Restore callee-saved registers
-    ldp x19, x20, [sp, #0]
-    ldp x21, x22, [sp, #16]
-    ldp x28, x29, [sp, #32]
-    ldr x30, [sp, #48]
-    ldr x0, [sp, #56]              // Restore return value to x0
-    add sp, sp, #80
-
+    CALL_GO_EPILOGUE SPILL_SPACE_6PARAM
     b syscall_return
 
 syscall_close:
-    // close(fd)
-    // x0 = fd
-    // Call Go function for debug visibility
-
-    // Save callee-saved registers for Go call
-    sub sp, sp, #64
-    stp x19, x20, [sp, #0]
-    stp x21, x22, [sp, #16]
-    stp x28, x29, [sp, #32]
-    str x30, [sp, #48]
-
-    // Set up frame pointer for Go
-    add x29, sp, #0
-
-    // Argument already in x0 (fd)
+    // close(fd) - 1 parameter
+    // x0 = fd - call Go SyscallClose function
+    CALL_GO_PROLOGUE SPILL_SPACE_1PARAM
     bl main.SyscallClose
-
-    // x0 contains return value
-    str x0, [sp, #56]
-
-    // Restore registers
-    ldp x19, x20, [sp, #0]
-    ldp x21, x22, [sp, #16]
-    ldp x28, x29, [sp, #32]
-    ldr x30, [sp, #48]
-    ldr x0, [sp, #56]
-    add sp, sp, #64
-
+    CALL_GO_EPILOGUE SPILL_SPACE_1PARAM
     b syscall_return
 
 syscall_success:
@@ -1094,119 +1033,11 @@ syscall_clone_fail:
     b syscall_return
 
 syscall_mmap:
-    // mmap(addr, length, prot, flags, fd, offset)
+    // mmap(addr, length, prot, flags, fd, offset) - 6 parameters
     // x0-x5 contain arguments - call Go SyscallMmap function
-
-    // Save callee-saved registers for Go call
-    // CRITICAL: Allocate 256 bytes to prevent Go function from
-    // overwriting our saved registers with its local variables
-    sub sp, sp, #256
-
-    // DEBUG: Print x28 BEFORE saving it
-    movz x10, #0x0900, lsl #16
-    movk x10, #0x0000, lsl #0       // x10 = UART base 0x09000000
-    movz w11, #0x0078               // 'x'
-    str w11, [x10]
-    movz w11, #0x0032               // '2'
-    str w11, [x10]
-    movz w11, #0x0038               // '8'
-    str w11, [x10]
-    movz w11, #0x003D               // '='
-    str w11, [x10]
-    movz w11, #0x0030               // '0'
-    str w11, [x10]
-    movz w11, #0x0078               // 'x'
-    str w11, [x10]
-    // Print x28 as hex (8 digits for lower 32 bits)
-    mov x12, #28                    // Start from bit 28 (8 digits * 4 bits)
-1:  lsr x13, x28, x12               // Shift right to get nibble
-    and x13, x13, #0xF              // Mask to get 4 bits
-    cmp x13, #10
-    blt 2f
-    add x13, x13, #('A' - 10)       // A-F
-    b 3f
-2:  add x13, x13, #'0'              // 0-9
-3:  str w13, [x10]                  // Print digit
-    subs x12, x12, #4               // Next nibble
-    bpl 1b
-    movz w11, #0x0020               // ' '
-    str w11, [x10]
-
-    // Save registers at HIGH offsets (192+) to avoid overlap with Go function's locals
-    stp x19, x20, [sp, #192]
-    stp x21, x22, [sp, #208]
-    stp x28, x29, [sp, #224]
-    stp x30, xzr, [sp, #240]
-
-    // NOTE: Do NOT set x29 here! The Go function expects x29 to point to
-    // the caller's frame, not ours. If we set x29 = sp, the Go function
-    // will access [x29 + offset] which overlaps with our saved registers.
-
-    // Arguments already in x0-x5, call Go function
+    CALL_GO_PROLOGUE SPILL_SPACE_6PARAM
     bl main.SyscallMmap
-
-    // x0 contains return value (address or -errno)
-    str x0, [sp, #56]
-
-    // DEBUG: Print saved x28 value before restoring
-    ldr x10, [sp, #224]             // Load saved x28 value
-    movz x11, #0x0900, lsl #16
-    movk x11, #0x0000, lsl #0       // x11 = UART base 0x09000000
-
-    // Print " saved_x28=0x"
-    movz w12, #0x0020               // ' '
-    str w12, [x11]
-    movz w12, #0x0073               // 's'
-    str w12, [x11]
-    movz w12, #0x0061               // 'a'
-    str w12, [x11]
-    movz w12, #0x0076               // 'v'
-    str w12, [x11]
-    movz w12, #0x0065               // 'e'
-    str w12, [x11]
-    movz w12, #0x0064               // 'd'
-    str w12, [x11]
-    movz w12, #0x005F               // '_'
-    str w12, [x11]
-    movz w12, #0x0078               // 'x'
-    str w12, [x11]
-    movz w12, #0x0032               // '2'
-    str w12, [x11]
-    movz w12, #0x0038               // '8'
-    str w12, [x11]
-    movz w12, #0x003D               // '='
-    str w12, [x11]
-    movz w12, #0x0030               // '0'
-    str w12, [x11]
-    movz w12, #0x0078               // 'x'
-    str w12, [x11]
-
-    // Print x10 as hex (16 digits)
-    mov x13, #60                    // Start from bit 60 (16 digits * 4 bits)
-1:  lsr x14, x10, x13               // Shift right to get nibble
-    and x14, x14, #0xF              // Mask to get 4 bits
-    cmp x14, #10
-    blt 2f
-    add x14, x14, #('A' - 10)       // A-F
-    b 3f
-2:  add x14, x14, #'0'              // 0-9
-3:  str w14, [x11]                  // Print digit
-    subs x13, x13, #4               // Next nibble
-    bpl 1b
-
-    movz w12, #0x000D               // '\r'
-    str w12, [x11]
-    movz w12, #0x000A               // '\n'
-    str w12, [x11]
-
-    // Restore registers from HIGH offsets
-    ldp x19, x20, [sp, #192]
-    ldp x21, x22, [sp, #208]
-    ldp x28, x29, [sp, #224]
-    ldr x30, [sp, #240]
-    ldr x0, [sp, #56]
-    add sp, sp, #256
-
+    CALL_GO_EPILOGUE SPILL_SPACE_6PARAM
     b syscall_return
 
 syscall_prctl:
@@ -1216,76 +1047,20 @@ syscall_prctl:
 
 syscall_getrandom:
     // getrandom(void *buf, size_t buflen, unsigned int flags)
-    // x0 = buf, x1 = buflen, x2 = flags
-    //
-    // Call Go getRandomBytes() function to fill buffer with random data
-
-    // Save callee-saved registers for Go call
-    sub sp, sp, #64
-    stp x19, x20, [sp, #0]
-    stp x21, x22, [sp, #16]
-    stp x28, x29, [sp, #32]
-    str x30, [sp, #48]
-
-    // Set up frame pointer for Go
-    add x29, sp, #0
-
-    // Arguments already in x0 (buf), x1 (length)
-    // x0 = unsafe.Pointer (buf)
-    // x1 = uint32 (length) - convert x1 (uint64) to w1 (uint32)
-    mov w1, w1
-
-    // Call Go getRandomBytes(buf, length) -> returns uint32
+    // getRandomBytes(buf unsafe.Pointer, length uint32) - 2 parameters
+    // x0 = buf, x1 = buflen, x2 = flags (ignored)
+    mov w1, w1                     // Convert buflen to uint32
+    CALL_GO_PROLOGUE SPILL_SPACE_2PARAM
     bl main.getRandomBytes
-
-    // x0 contains return value (bytes written)
-    str x0, [sp, #56]
-
-    // Restore registers
-    ldp x19, x20, [sp, #0]
-    ldp x21, x22, [sp, #16]
-    ldp x28, x29, [sp, #32]
-    ldr x30, [sp, #48]
-    ldr x0, [sp, #56]
-    add sp, sp, #64
-
+    CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
     b syscall_return
 
 syscall_sched_getaffinity:
-    // sched_getaffinity(pid, cpusetsize, mask)
-    // x0 = pid, x1 = cpusetsize, x2 = mask pointer
-    // Call Go function to implement this
-
-    // Save callee-saved registers for Go call
-    sub sp, sp, #64
-    stp x19, x20, [sp, #0]
-    stp x21, x22, [sp, #16]
-    stp x28, x29, [sp, #32]
-    str x30, [sp, #48]
-
-    // Set up frame pointer for Go
-    add x29, sp, #0
-
-    // Arguments are already in x0, x1, x2 - perfect for Go calling convention
-    // x0 = pid (int32)
-    // x1 = cpusetsize (uint64)
-    // x2 = mask (unsafe.Pointer)
-
-    // Call Go function
+    // sched_getaffinity(pid, cpusetsize, mask) - 3 parameters
+    // x0-x2 contain arguments - call Go SyscallSchedGetaffinity function
+    CALL_GO_PROLOGUE SPILL_SPACE_3PARAM
     bl main.SyscallSchedGetaffinity
-
-    // x0 now contains return value (int64: bytes written or -errno)
-    // Save return value to stack temporarily
-    str x0, [sp, #56]
-
-    // Restore callee-saved registers
-    ldp x19, x20, [sp, #0]
-    ldp x21, x22, [sp, #16]
-    ldp x28, x29, [sp, #32]
-    ldr x30, [sp, #48]
-    ldr x0, [sp, #56]              // Restore return value to x0
-    add sp, sp, #64
-
+    CALL_GO_EPILOGUE SPILL_SPACE_3PARAM
     b syscall_return
 
 syscall_clock_gettime:
@@ -1327,63 +1102,19 @@ syscall_gettid:
     b syscall_return
 
 syscall_brk:
-    // brk(addr) - call Go SyscallBrk function
-    // x0 = requested break address (0 = query current)
-
-    // Save callee-saved registers for Go call
-    sub sp, sp, #64
-    stp x19, x20, [sp, #0]
-    stp x21, x22, [sp, #16]
-    stp x28, x29, [sp, #32]
-    stp x30, xzr, [sp, #48]
-
-    // Set up frame pointer for Go
-    add x29, sp, #0
-
-    // Argument already in x0, call Go function
+    // brk(addr) - 1 parameter
+    // x0 = requested break address - call Go SyscallBrk function
+    CALL_GO_PROLOGUE SPILL_SPACE_1PARAM
     bl main.SyscallBrk
-
-    // x0 contains return value (address or -errno)
-    str x0, [sp, #56]
-
-    // Restore registers
-    ldp x19, x20, [sp, #0]
-    ldp x21, x22, [sp, #16]
-    ldp x28, x29, [sp, #32]
-    ldr x30, [sp, #48]
-    ldr x0, [sp, #56]
-    add sp, sp, #64
-
+    CALL_GO_EPILOGUE SPILL_SPACE_1PARAM
     b syscall_return
 
 syscall_munmap:
-    // munmap(addr, length) - call Go SyscallMunmap function
-    // x0 = addr, x1 = length
-
-    // Save callee-saved registers for Go call
-    sub sp, sp, #64
-    stp x19, x20, [sp, #0]
-    stp x21, x22, [sp, #16]
-    stp x28, x29, [sp, #32]
-    stp x30, xzr, [sp, #48]
-
-    // Set up frame pointer for Go
-    add x29, sp, #0
-
-    // Arguments already in x0, x1, call Go function
+    // munmap(addr, length) - 2 parameters
+    // x0-x1 contain arguments - call Go SyscallMunmap function
+    CALL_GO_PROLOGUE SPILL_SPACE_2PARAM
     bl main.SyscallMunmap
-
-    // x0 contains return value (0 or -errno)
-    str x0, [sp, #56]
-
-    // Restore registers
-    ldp x19, x20, [sp, #0]
-    ldp x21, x22, [sp, #16]
-    ldp x28, x29, [sp, #32]
-    ldr x30, [sp, #48]
-    ldr x0, [sp, #56]
-    add sp, sp, #64
-
+    CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
     b syscall_return
 
 syscall_madvise:

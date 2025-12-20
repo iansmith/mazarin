@@ -577,20 +577,6 @@ func KernelMain(r0, r1, atags uint32) {
 	//preMapPages()
 	//print("DONE\r\n")
 
-	// CRITICAL DEBUG: Check g register before schedinit
-	{
-		g0Addr := asm.GetG0Addr()
-		gReg := asm.GetCurrentG()
-		print("\r\nDEBUG: runtime.g0 @ 0x")
-		printHex64(uint64(g0Addr))
-		print(", g register (x28) = 0x")
-		printHex64(uint64(gReg))
-		if g0Addr != gReg {
-			print(" <-- MISMATCH!")
-		}
-		print("\r\n")
-	}
-
 	print("Testing Item 5 (with cache coherency fix): runtime.schedinit()... ")
 	asm.CallRuntimeSchedinit()
 	print("PASS (schedinit completed!)\r\n")

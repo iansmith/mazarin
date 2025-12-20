@@ -331,12 +331,6 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 	uartPutHex64Direct(roundedLength)
 	uartPutsDirect(")\r\n")
 
-	// CRITICAL DEBUG: Check g register before returning from mmap
-	gReg := asm.GetCurrentG()
-	uartPutsDirect("  -> g register after mmap = 0x")
-	uartPutHex64Direct(uint64(gReg))
-	uartPutsDirect("\r\n")
-
 	return int64(allocAddr)
 }
 

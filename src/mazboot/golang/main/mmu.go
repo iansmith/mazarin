@@ -507,12 +507,6 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 		uartPutHex64Direct(uint64(pageFaultCounter))
 		uartPutsDirect(" VA=0x")
 		uartPutHex64Direct(uint64(faultAddr))
-		// CRITICAL DEBUG: Show g register (x28) value for first few faults
-		if pageFaultCounter <= 3 {
-			gAddr := asm.GetCurrentG()
-			uartPutsDirect(" g=0x")
-			uartPutHex64Direct(uint64(gAddr))
-		}
 	} else if pageFaultCounter%10 == 0 {
 		uartPutcDirect('.')
 	}
