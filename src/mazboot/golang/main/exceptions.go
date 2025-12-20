@@ -69,40 +69,96 @@ var (
 // Link to assembly functions (now in asm package)
 // Functions are accessed via asm package: asm.SetVbarEl1(), asm.EnableIrqs(), etc.
 
+// Assembly function to set VBAR_EL1 to a specific address
+//go:linkname setVbarEl1ToAddr set_vbar_el1_to_addr
+//go:nosplit
+func setVbarEl1ToAddr(addr uintptr)
+
+// Relocated exception vectors in safe RAM (non-cacheable)
+// Must be 2KB aligned and 2KB in size
+const (
+	EXCEPTION_VECTOR_RAM_ADDR = uintptr(0x41100000) // Safe address in kernel RAM
+	EXCEPTION_VECTOR_SIZE     = 0x800               // 2KB
+)
+
 // InitializeExceptions sets up the exception vector table
+// CRITICAL: This now RELOCATES exception vectors from ROM to RAM at a safe address
+// and marks the RAM region as non-cacheable to avoid cache coherency issues.
 //
 //go:nosplit
 //go:noinline
-func InitializeExceptions() error {
-	// Exception vector address is set by linker and loaded by boot.s
-	// Get actual address from boot.s (VBAR_EL1 is already set)
-	exceptionVectorAddr := uintptr(asm.GetExceptionVectorsAddr())
+func InitializeExceptions() {
+	// DEBUG: Mark entry to this function
+	const uartBase = uintptr(0x09000000)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x52 // 'R' - Relocating vectors
 
-	// Verify address is 2KB aligned (required for VBAR_EL1)
-	if exceptionVectorAddr&0x7FF != 0 {
-		print("FATAL: Exception vector not 2KB aligned\r\n")
-		return nil
+	// Get original exception vector address from linker (in ROM)
+	romVectorAddr := uintptr(asm.GetExceptionVectorsAddr())
+
+	uartPutsDirect("Relocating exception vectors from ROM 0x")
+	uartPutHex64Direct(uint64(romVectorAddr))
+	uartPutsDirect(" to RAM 0x")
+	uartPutHex64Direct(uint64(EXCEPTION_VECTOR_RAM_ADDR))
+	uartPutsDirect("\r\n")
+
+	// Verify ROM address is 2KB aligned
+	if romVectorAddr&0x7FF != 0 {
+		print("FATAL: ROM exception vector not 2KB aligned\r\n")
+		for {} // Hang
 	}
 
-	// Verify the first instruction at sync_exception_el1 (offset +0x200)
-	// Should be a branch instruction (0x17xxxxxx pattern)
-	syncExceptionAddr := exceptionVectorAddr + 0x200
+	// Copy exception vectors from ROM to RAM (2KB)
+	romPtr := (*[EXCEPTION_VECTOR_SIZE]byte)(unsafe.Pointer(romVectorAddr))
+	ramPtr := (*[EXCEPTION_VECTOR_SIZE]byte)(unsafe.Pointer(EXCEPTION_VECTOR_RAM_ADDR))
+	for i := uintptr(0); i < EXCEPTION_VECTOR_SIZE; i++ {
+		ramPtr[i] = romPtr[i]
+	}
+
+	// Clean data cache to ensure writes are visible in memory
+	for addr := EXCEPTION_VECTOR_RAM_ADDR; addr < EXCEPTION_VECTOR_RAM_ADDR+EXCEPTION_VECTOR_SIZE; addr += 64 {
+		asm.CleanDataCacheVA(addr)
+	}
+	asm.Dsb()
+
+	// Invalidate instruction cache to ensure CPU fetches new code
+	// This is CRITICAL for executing from the relocated exception vectors
+	asm.InvalidateInstructionCacheAll()
+
+	// Verify the copy succeeded - check sync_exception_el1 (offset +0x200)
+	syncExceptionAddr := EXCEPTION_VECTOR_RAM_ADDR + 0x200
 	firstInst := *(*uint32)(unsafe.Pointer(syncExceptionAddr))
-	// Check if it's a branch instruction (opcode 0x14 or 0x17 in top 6 bits)
 	if (firstInst>>26) != 0x05 && (firstInst>>26) != 0x06 {
-		uartPutsDirect("\r\n!EXCEPTION VECTOR CORRUPTED!\r\n")
+		uartPutsDirect("\r\n!VECTOR COPY FAILED!\r\n")
 		uartPutsDirect("sync_exception_el1 @ 0x")
 		uartPutHex64Direct(uint64(syncExceptionAddr))
 		uartPutsDirect(" = 0x")
 		uartPutHex64Direct(uint64(firstInst))
-		uartPutsDirect(" (expected branch)\r\n")
+		uartPutsDirect("\r\n")
 		for {} // Hang
 	}
 
-	// VBAR_EL1 is set in boot.s before Go code runs
-	asm.Dsb()
+	// Update VBAR_EL1 to point to new RAM location
+	// (This will be done via assembly helper)
+	uartPutsDirect("Updating VBAR_EL1 to 0x")
+	uartPutHex64Direct(uint64(EXCEPTION_VECTOR_RAM_ADDR))
+	uartPutsDirect("\r\n")
 
-	return nil
+	// Set VBAR_EL1 to new address (via assembly)
+	uartPutsDirect("DEBUG: About to set VBAR_EL1...\r\n")
+	setVbarEl1ToAddr(EXCEPTION_VECTOR_RAM_ADDR)
+	uartPutsDirect("DEBUG: VBAR_EL1 set\r\n")
+
+	asm.Dsb()
+	uartPutsDirect("DEBUG: DSB done\r\n")
+	asm.Isb()
+	uartPutsDirect("DEBUG: ISB done\r\n")
+
+	uartPutsDirect("Exception vectors relocated successfully\r\n")
+
+	uartPutsDirect("DEBUG: About to return from InitializeExceptions\r\n")
+
+	// Raw UART write to verify we reach this point
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x5A // 'Z' - about to return
 }
 
 // Nested exception detector
@@ -119,6 +175,12 @@ var exceptionCount uint32
 func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType uint32) {
 	// Increment exception counter
 	exceptionCount++
+
+	// DEBUG: Print marker for exceptions after #17 to detect loops
+	if exceptionCount == 18 || exceptionCount == 19 || exceptionCount == 20 {
+		const uartBase = uintptr(0x09000000)
+		*(*uint32)(unsafe.Pointer(uartBase)) = 0x58  // 'X' - exception after #17
+	}
 
 	// Detect exception storms (>100 exceptions suggests infinite loop)
 	if exceptionCount > 100 {
@@ -458,6 +520,22 @@ func HandleSyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) uint64
 		// Allocate from bump allocator
 		result := mmapNext
 		mmapNext += alignedLength
+
+		// CRITICAL: Check if allocation overlaps with critical regions
+		const romEnd = uintptr(0x8000000)          // End of ROM region
+		const pageTableStart = uintptr(0x5E000000) // Start of page tables
+		if result < romEnd {
+			uartPutsDirect("\r\n!MMAP IN ROM: 0x")
+			uartPutHex64Direct(uint64(result))
+			uartPutsDirect("\r\n")
+			for {} // Hang
+		}
+		if result >= pageTableStart && result < mmapBase {
+			uartPutsDirect("\r\n!MMAP IN PAGE TABLES: 0x")
+			uartPutHex64Direct(uint64(result))
+			uartPutsDirect("\r\n")
+			for {} // Hang
+		}
 
 		// Debug output showing allocation (compact: pages allocated)
 		uartPutcDirect('M')

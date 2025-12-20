@@ -35,6 +35,10 @@ func CallRuntimeSchedinit()
 //go:nosplit
 func CleanDataCacheVA(addr uintptr)
 
+//go:linkname CleanDcacheVa clean_dcache_va
+//go:nosplit
+func CleanDcacheVa(addr uintptr)
+
 //go:linkname Delay delay
 //go:nosplit
 func Delay(count int32)
@@ -99,9 +103,17 @@ func GetPhysPageSizeAddr() uintptr
 //go:nosplit
 func GetStackPointer() uintptr
 
+//go:linkname InvalidateInstructionCacheAll InvalidateInstructionCacheAll
+//go:nosplit
+func InvalidateInstructionCacheAll()
+
 //go:linkname InvalidateTlbAll invalidate_tlb_all
 //go:nosplit
 func InvalidateTlbAll()
+
+//go:linkname InvalidateTlbVa invalidate_tlb_va
+//go:nosplit
+func InvalidateTlbVa(addr uintptr)
 
 //go:linkname Isb isb
 //go:nosplit
@@ -223,6 +235,10 @@ func SetStackPointer(sp uintptr)
 //go:nosplit
 func SetVbarEl1()
 
+//go:linkname SetVbarEl1ToAddr set_vbar_el1_to_addr
+//go:nosplit
+func SetVbarEl1ToAddr(addr uintptr)
+
 //go:linkname StorePointerNoBarrier store_pointer_nobarrier
 //go:nosplit
 func StorePointerNoBarrier(dest *unsafe.Pointer, value unsafe.Pointer)
@@ -302,6 +318,10 @@ func gcWriteBarrier()
 //go:linkname getCurrentSP getCurrentSP
 //go:nosplit
 func getCurrentSP()
+
+//go:linkname getGRegister getGRegister
+//go:nosplit
+func getGRegister()
 
 //go:linkname memmove memmove
 //go:nosplit
