@@ -205,6 +205,7 @@ func generateLinknamesContent(globalSymbols []string, asmDir string, w io.Writer
 				"get_mcache0_addr":         "uintptr",
 				"get_emptymspan_addr":      "uintptr",
 				"call_runtime_args":        "int",
+				"get_current_g":            "uintptr",
 			}
 			if override, ok := returnTypeOverrides[sym]; ok {
 				retType = override

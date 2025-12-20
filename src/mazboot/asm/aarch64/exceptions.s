@@ -591,6 +591,24 @@ sync_exception_handler:
     ldr x6, [x7, #48]               // x6 = original x6
     ldr x7, [x7, #56]               // x7 = original x7 (self-overwriting load)
 
+    // DEBUG: Breadcrumb before eret (use x6 as scratch, will be immediately restored from next fault)
+    // Save x6 to fixed memory temporarily
+    movz x6, #0x4000, lsl #16
+    movk x6, #0x0FC0, lsl #0        // x6 = 0x40000FC0 (different from 0x40000FE0)
+    str x7, [x6]                    // Save x7
+    // Write 'E' to UART
+    movz x6, #0x0900, lsl #16
+    movk x6, #0x0000, lsl #0        // x6 = UART base
+    movz x7, #0x45, lsl #0          // 'E'
+    str w7, [x6]                    // Write to UART
+    // Restore x6, x7
+    movz x6, #0x4000, lsl #16
+    movk x6, #0x0FC0, lsl #0
+    ldr x7, [x6]                    // Restore x7
+    movz x6, #0x4000, lsl #16
+    movk x6, #0x0FE0, lsl #0
+    ldr x6, [x6, #48]               // Restore x6
+
     // Return from exception to retry the faulting instruction
     eret
 

@@ -213,7 +213,7 @@ fi
 # Build QEMU command (base arguments)
 QEMU_CMD=(
     "$QEMU_BIN"
-    -M virt,virtualization=on
+    -M virt,virtualization=off
     -cpu cortex-a72
     -m 8G
     -kernel "$KERNEL_PATH"
@@ -222,6 +222,7 @@ QEMU_CMD=(
     -device sdhci-pci
     -drive if=none,file="$SDCARD_IMG",format=raw,id=sdcard
     -device sd-card,drive=sdcard
+    -device virtio-rng-pci  # RNG device for random number generation
     $DISPLAY_MODE
     -serial stdio   # Direct UART output to terminal
     -semihosting

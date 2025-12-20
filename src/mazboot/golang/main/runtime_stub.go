@@ -23,11 +23,11 @@ func initRuntimeStubs() {
 	m0Addr := asm.GetM0Addr()
 
 	// Initialize g0 stack bounds so compiler stack checks pass
-	// g0 uses 8KB stack at top of kernel RAM
+	// g0 uses 64KB stack at top of kernel RAM (matches real Go runtime)
 	// g.stack.lo (offset 0), g.stack.hi (offset 8), g.stackguard0 (offset 16), g.stackguard1 (offset 24)
-	const G0_STACK_SIZE = 8 * 1024 // 8KB
+	const G0_STACK_SIZE = 64 * 1024 // 64KB (matches runtime/asm_arm64.s)
 	const G0_STACK_TOP = 0x5F000000
-	const G0_STACK_BOTTOM = G0_STACK_TOP - G0_STACK_SIZE // 0x5EFFFE000
+	const G0_STACK_BOTTOM = G0_STACK_TOP - G0_STACK_SIZE // 0x5EFF0000
 
 	writeMemory64(g0Addr+0, uint64(G0_STACK_BOTTOM))
 	writeMemory64(g0Addr+8, uint64(G0_STACK_TOP))

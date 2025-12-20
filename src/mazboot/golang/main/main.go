@@ -21,8 +21,15 @@ func main() {
 	// Reference other functions called from assembly
 	// This will never execute in bare metal, but ensures the functions exist
 	GrowStackForCurrent()
+	SyscallClose(0)
+	SyscallFutex(nil, 0, 0, nil, nil, 0)
+	SyscallOpenat(0, nil, 0, 0)
+	SyscallRead(0, nil, 0)
+	SyscallSchedGetaffinity(0, 0, nil)
+	SyscallUnknown(0)
 	SyscallWriteBuffer(nil, 0)
 	fb_putc_irq(0)
+	getRandomBytes(nil, 0)
 	kernelMainBodyWrapper()
 	timerSignal()
 

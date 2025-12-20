@@ -299,6 +299,10 @@ func WriteTtbr1El1(value uint64)
 //go:nosplit
 func gcWriteBarrier()
 
+//go:linkname getCurrentSP getCurrentSP
+//go:nosplit
+func getCurrentSP()
+
 //go:linkname memmove memmove
 //go:nosplit
 func memmove(dest unsafe.Pointer, src unsafe.Pointer, n uint32)

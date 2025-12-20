@@ -1049,3 +1049,10 @@ CleanDataCacheVA:
     dsb sy                   // Ensure clean completes before continuing
     ret
 
+// getCurrentSP() uintptr - Returns the current stack pointer
+// This is used for stack tracing / debugging
+.global getCurrentSP
+getCurrentSP:
+    mov x0, sp               // Copy stack pointer to x0 (return value)
+    ret
+

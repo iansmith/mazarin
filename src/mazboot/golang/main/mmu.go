@@ -752,73 +752,8 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64) {
 	// Set L3 entry (the actual page)
 	l3Entry := (*uint64)(unsafe.Pointer(l3Table + uintptr(l3Idx)*PTE_SIZE))
 
-	// DEBUG: Count L3 entries but don't print to reduce verbosity
-	// Print summary every 1000 entries
-	l3DebugCounter++
-	if l3DebugCounter % 1000 == 0 {
-		uartPutsDirect("L3:")
-		uartPutHex64Direct(uint64(l3DebugCounter))
-		uartPutsDirect(" ")
-	}
-
 	pteValue := createPageTableEntry(pa, attrs, ap)
 	*l3Entry = pteValue
-
-	// CRITICAL: Clean data cache to ensure PTE write is visible to MMU's page table walker
-	// Without this, the walker may read stale data from memory, causing hangs
-	// TEMPORARILY DISABLED: Appears to be corrupting L0[0]
-	//asm.CleanDataCacheVA(uintptr(unsafe.Pointer(l3Entry)))
-
-	// DEBUG: Print detailed page table info for faults #15-17
-	if pageFaultCounter >= 15 && pageFaultCounter <= 17 {
-		uartPutsDirect("\r\n  PTE=0x")
-		uartPutHex64Direct(pteValue)
-		uartPutsDirect(" @L3[0x")
-		uartPutHex64Direct(uint64(l3Table))
-		uartPutsDirect("+0x")
-		uartPutHex64Direct(uint64(l3Idx))
-		uartPutsDirect("]\r\n")
-
-		// Print L0/L1/L2 hierarchy to understand table allocation
-		uartPutsDirect("  L0[")
-		uartPutHex64Direct(uint64(l0Idx))
-		uartPutsDirect("]=0x")
-		uartPutHex64Direct(*l0Entry)
-
-		uartPutsDirect(" L1[")
-		uartPutHex64Direct(uint64(l1Idx))
-		uartPutsDirect("]=0x")
-		uartPutHex64Direct(*l1Entry)
-
-		uartPutsDirect(" L2[")
-		uartPutHex64Direct(uint64(l2Idx))
-		uartPutsDirect("]=0x")
-		uartPutHex64Direct(*l2Entry)
-		uartPutsDirect("\r\n")
-
-		// Dump L3 table entries around the target to see adjacent mappings
-		uartPutsDirect("  L3 entries [")
-		start := l3Idx
-		if start > 2 {
-			start = l3Idx - 2
-		}
-		end := l3Idx + 3
-		if end > 511 {
-			end = 511
-		}
-		for i := start; i <= end; i++ {
-			if i == l3Idx {
-				uartPutsDirect(" >")
-			} else {
-				uartPutsDirect(" ")
-			}
-			uartPutHex64Direct(uint64(i))
-			uartPutsDirect(":")
-			l3EntryPtr := (*uint64)(unsafe.Pointer(l3Table + uintptr(i)*8))
-			uartPutHex64Direct(*l3EntryPtr)
-		}
-		uartPutsDirect(" ]\r\n")
-	}
 
 	// CRITICAL: Ensure page table writes are visible before continuing
 	// Use DSB to ensure all page table writes complete before any subsequent
@@ -841,41 +776,10 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64) {
 // attrs: Memory attributes
 // ap: Access permissions
 //
-var mapRegionCallCount uint32
-
 //go:nosplit
 func mapRegion(vaStart, vaEnd, paStart uintptr, attrs uint64, ap uint64) {
-	mapRegionCallCount++
-
-	// Simple UART breadcrumb debug (avoid print() which may access unmapped memory)
-	// Write directly to UART to track call frequency without complex operations
-	const uartBase = uintptr(0x09000000)
-
-	// Write breadcrumbs at different intervals to detect patterns
-	if mapRegionCallCount == 1 {
-		// First call - write '1'
-		*(*uint32)(unsafe.Pointer(uartBase)) = 0x31
-	} else if mapRegionCallCount <= 10 {
-		// First 10 calls - write 'm' (lowercase)
-		*(*uint32)(unsafe.Pointer(uartBase)) = 0x6D
-	} else if mapRegionCallCount % 100 == 0 {
-		// Every 100th call - write 'M' (uppercase)
-		*(*uint32)(unsafe.Pointer(uartBase)) = 0x4D
-	} else if mapRegionCallCount % 1000 == 0 {
-		// Every 1000th call - write '!'
-		*(*uint32)(unsafe.Pointer(uartBase)) = 0x21
-	}
-
-	// Sanity check - detect infinite loop conditions
-	if vaStart >= vaEnd {
-		// Write 'X' for error
-		*(*uint32)(unsafe.Pointer(uartBase)) = 0x58
-		return
-	}
-
-	if (vaEnd - vaStart) > 0x100000000 { // > 4GB
-		// Write 'Z' for huge range error
-		*(*uint32)(unsafe.Pointer(uartBase)) = 0x5A
+	// Sanity check - detect invalid ranges
+	if vaStart >= vaEnd || (vaEnd - vaStart) > 0x100000000 {
 		return
 	}
 
@@ -978,7 +882,7 @@ func initMMU() bool {
 
 	// Map PCI ECAM (lowmem and highmem)
 	ecamBase := uintptr(0x3F000000)
-	ecamSize := uintptr(0x10000000)
+	ecamSize := uintptr(0x01000000) // 16MB, not 256MB!
 	mapRegion(ecamBase, ecamBase+ecamSize, ecamBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1)
 
 	highmemEcamBase := uintptr(uint64(0x4010000000))
@@ -997,19 +901,12 @@ func initMMU() bool {
 	// The MMU's page table walker reads from memory, so this prevents cache coherency
 	// issues without needing explicit DC CVAC on every PTE write.
 	// Using Normal Non-Cacheable (not Device) to avoid Device memory's strict ordering.
+	// NOTE: This region includes the stack guard area (0x5EFD0000-0x5F000000),
+	// which is intentionally non-cacheable along with the page tables.
 	mapRegion(PAGE_TABLE_BASE, PAGE_TABLE_END, PAGE_TABLE_BASE, PTE_ATTR_NONCACHEABLE, PTE_AP_RW_EL1)
 
-	// CRITICAL: Explicitly map stack guard region (0x5EFD0000 - 0x5F000000)
-	// This provides 128KB guard space below g0 stack bottom (0x5EFF8000)
-	// to catch stack overflow (SP can go as low as 0x5efffd10 ≈ 10KB below)
-	// Even though this is within the main RAM mapping above, we map it explicitly
-	// to ensure it's accessible and to make the guard region visible
-	const stackGuardStart = 0x5EFD0000  // 128KB below 0x5F000000
-	const stackTop = 0x5F000000
-	mapRegion(stackGuardStart, stackTop, stackGuardStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
-
-	// Map physical frame pool (0x200000000-0x240000000)
-	mapRegion(PHYS_FRAME_BASE, PHYS_FRAME_END, PHYS_FRAME_BASE, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+	// NOTE: Physical frame pool (0x50000000-0x5E000000) is already mapped
+	// as part of kernel RAM above (0x40100000-0x5E000000), so no separate mapping needed
 
 	// Initialize physical frame allocator
 	initPhysFrameAllocator()

@@ -103,14 +103,14 @@ SECTIONS
     __bss_end = .;
     __end = .;
     
-    /* g0 stack region: 8KB at top of kernel RAM
-     * g0 stack: 0x5EFFFE000 - 0x5F000000 (8KB, system goroutine)
-     * Stack grows downward from 0x5F000000 (top) to 0x5EFFFE000 (bottom)
+    /* g0 stack region: 32KB at top of kernel RAM
+     * g0 stack: 0x5EFF8000 - 0x5F000000 (32KB, system goroutine)
+     * Stack grows downward from 0x5F000000 (top) to 0x5EFF8000 (bottom)
      * Main goroutine stack: 32KB (allocated from heap)
-     * Heap extends from __end to 0x5EFFFE000 (just before g0 stack) */
+     * Heap extends from __end to 0x5EFF8000 (just before g0 stack) */
     . = 0x5F000000;
     __stack_top = .;
-    __g0_stack_bottom = 0x5EFFFE000;  /* g0 stack bottom (8KB below top) */
+    __g0_stack_bottom = 0x5EFF8000;  /* g0 stack bottom (32KB below top) */
 
     /* Page tables region: 15MB reserved for MMU page tables
      * Located at 0x5F100000 - 0x60000000 (15MB)

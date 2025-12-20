@@ -21,11 +21,11 @@ const (
 	_StackGuard = 928  // Guard space before stack overflow
 	_StackSmall = 128  // Small stack threshold
 
-	// g0 stack bounds (system goroutine, 8KB)
-	// g0 stack: 0x5EFFFE000 - 0x5F000000 (8KB, fixed size)
-	G0_STACK_SIZE   = 8 * 1024 // 8KB
+	// g0 stack bounds (system goroutine, 64KB - matches real Go runtime)
+	// g0 stack: 0x5EFF0000 - 0x5F000000 (64KB, fixed size)
+	G0_STACK_SIZE   = 64 * 1024 // 64KB (matches runtime/asm_arm64.s)
 	G0_STACK_TOP    = 0x5F000000
-	G0_STACK_BOTTOM = 0x5EFFFE000 // G0_STACK_TOP - G0_STACK_SIZE
+	G0_STACK_BOTTOM = 0x5EFF0000 // G0_STACK_TOP - G0_STACK_SIZE
 
 	// Main goroutine stack size (allocated from heap)
 	KERNEL_GOROUTINE_STACK_SIZE = 64 * 1024 // 64KB (increased from 32KB due to deep call chains)
@@ -70,11 +70,11 @@ var allStacks *stack
 //
 //go:nosplit
 func initKernelStack() {
-	// g0 stack: fixed 8KB at 0x5EFFFE000 - 0x5F000000
+	// g0 stack: fixed 64KB at 0x5EFF0000 - 0x5F000000
 	// This is the system goroutine stack (for runtime operations)
 	kernelStack.lo = G0_STACK_BOTTOM
 	kernelStack.hi = G0_STACK_TOP
-	kernelStack.size = G0_STACK_SIZE // g0 stack is fixed 8KB
+	kernelStack.size = G0_STACK_SIZE // g0 stack is fixed 64KB
 	kernelStack.guard0 = G0_STACK_BOTTOM + _StackGuard
 	kernelStack.prev = nil
 

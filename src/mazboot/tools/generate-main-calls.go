@@ -123,14 +123,22 @@ func formatWithGofmt(code string) (string, error) {
 func generateMainCallsContent(goFunctionsCalled []string, goSourceDir string, w io.Writer) {
 	// Map of known function signatures (function name -> parameter types)
 	knownSignatures := map[string][]string{
-		"KernelMain":            {"uint32", "uint32", "uint32"},
-		"UartTransmitHandler":   {},
-		"kernelMainBodyWrapper": {},
-		"GrowStackForCurrent":   {},
-		"ExceptionHandler":      {"uint64", "uint64", "uint64", "uint64", "uint32"},
-		"HandleSyscall":         {"uint64", "uint64", "uint64", "uint64", "uint64", "uint64", "uint64"},
-		"fb_putc_irq":           {"byte"},                        // Timer interrupt handler - print char to framebuffer
-		"SyscallWriteBuffer":    {"unsafe.Pointer", "uint32"},    // Syscall write handler - buffer to ring buffer
+		"KernelMain":               {"uint32", "uint32", "uint32"},
+		"UartTransmitHandler":      {},
+		"kernelMainBodyWrapper":    {},
+		"GrowStackForCurrent":      {},
+		"ExceptionHandler":         {"uint64", "uint64", "uint64", "uint64", "uint32"},
+		"HandleSyscall":            {"uint64", "uint64", "uint64", "uint64", "uint64", "uint64", "uint64"},
+		"fb_putc_irq":              {"byte"},                                                                          // Timer interrupt handler - print char to framebuffer
+		"SyscallWriteBuffer":       {"unsafe.Pointer", "uint32"},                                                      // Syscall write handler - buffer to ring buffer
+		"SyscallRead":              {"int32", "unsafe.Pointer", "uint64"},                                             // read syscall handler
+		"SyscallClose":             {"int32"},                                                                         // close syscall handler
+		"SyscallOpenat":            {"int32", "unsafe.Pointer", "int32", "int32"},                                     // openat syscall handler
+		"SyscallSchedGetaffinity":  {"int32", "uint64", "unsafe.Pointer"},                                             // sched_getaffinity syscall handler
+		"SyscallFutex":             {"unsafe.Pointer", "int32", "uint32", "unsafe.Pointer", "unsafe.Pointer", "uint32"}, // futex syscall handler
+		"SyscallUnknown":           {"uint64"},                                                                        // unknown syscall handler - print syscall number
+		"timerSignal":              {},                                                                                // Timer signal handler
+		"getRandomBytes":           {"unsafe.Pointer", "uint32"},                                                      // getrandom syscall - fill buffer with random bytes
 	}
 
 	// Parse Go source to find signatures for unknown functions
