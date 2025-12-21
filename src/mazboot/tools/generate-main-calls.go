@@ -127,7 +127,7 @@ func generateMainCallsContent(goFunctionsCalled []string, goSourceDir string, w 
 		"UartTransmitHandler":      {},
 		"kernelMainBodyWrapper":    {},
 		"GrowStackForCurrent":      {},
-		"ExceptionHandler":         {"uint64", "uint64", "uint64", "uint64", "uint32"},
+		"ExceptionHandler":         {"uint64", "uint64", "uint64", "uint64", "uint32", "uint64", "uint64", "uint64"}, // (esr, elr, spsr, far, excType, savedSP, savedLR, savedG)
 		"HandleSyscall":            {"uint64", "uint64", "uint64", "uint64", "uint64", "uint64", "uint64"},
 		"fb_putc_irq":              {"byte"},                                                                          // Timer interrupt handler - print char to framebuffer
 		"SyscallWriteBuffer":       {"unsafe.Pointer", "uint32"},                                                      // Syscall write handler - buffer to ring buffer

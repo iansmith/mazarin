@@ -497,9 +497,9 @@ call_runtime_schedinit:
     mov x29, sp
     stp x19, x20, [sp, #16]
 
-    // DEBUG: Print '[' before calling schedinit
+    // DEBUG: Print '<' before calling schedinit (marker 1)
     movz x0, #0x0900, lsl #16
-    movz w1, #0x5B              // '['
+    movz w1, #0x3C              // '<'
     str w1, [x0]
 
     // Call runtime.schedinit()
@@ -510,9 +510,14 @@ call_runtime_schedinit:
     // - Initialize system monitor
     bl runtime.schedinit
 
-    // DEBUG: Print ']' after schedinit returns
+    // DEBUG: Print '>' after schedinit returns (marker 2)
     movz x0, #0x0900, lsl #16
-    movz w1, #0x5D              // ']'
+    movz w1, #0x3E              // '>'
+    str w1, [x0]
+
+    // DEBUG: Print '!' to confirm we got here (marker 3)
+    movz x0, #0x0900, lsl #16
+    movz w1, #0x21              // '!'
     str w1, [x0]
 
     // If we get here, schedinit() completed without crash
@@ -521,6 +526,58 @@ call_runtime_schedinit:
     // Restore and return
     ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #32
+    ret
+
+// =================================================================
+// Test function: call_runtime_newproc
+// Calls runtime.newproc(runtime.mainPC) to create the main goroutine
+// This tests Item 6 of the runtime master plan.
+//
+// runtime.newproc takes a *funcval as parameter.
+// funcval is a struct with a single field: fn uintptr (function pointer)
+// runtime.mainPC is a global variable (funcval) containing the address of runtime.main
+//
+// ARM64 calling convention for newproc:
+//   SP+0: dummy LR (0)
+//   SP+8: pointer to funcval (address of runtime.mainPC)
+//
+// Returns 0 on success (newproc completed without crash)
+// =================================================================
+.global call_runtime_newproc
+.extern runtime.newproc
+.extern runtime.mainPC
+call_runtime_newproc:
+    // Save callee-saved registers and create stack frame
+    // We need extra space for newproc's calling convention
+    stp x29, x30, [sp, #-48]!
+    mov x29, sp
+    stp x19, x20, [sp, #16]
+
+    // Prepare to call runtime.newproc(runtime.mainPC)
+    // Following the same pattern as rt0_go in asm_arm64.s lines 124-129
+
+    // Load address of runtime.mainPC (this is a *funcval)
+    ldr x0, =runtime.mainPC
+
+    // Set up stack for newproc call:
+    //   SP+0: dummy LR (0)
+    //   SP+8: funcval pointer (runtime.mainPC)
+    sub sp, sp, #16
+    str xzr, [sp, #0]       // Store 0 at SP+0 (dummy LR)
+    str x0, [sp, #8]        // Store funcval pointer at SP+8
+
+    // Call runtime.newproc
+    bl runtime.newproc
+
+    // Clean up newproc's stack frame
+    add sp, sp, #16
+
+    // If we get here, newproc() completed without crash
+    mov x0, #0              // Return 0 = success
+
+    // Restore and return
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #48
     ret
 
 // Bridge function: kernel_main -> main.KernelMain (Go function)
@@ -1112,6 +1169,15 @@ InvalidateInstructionCacheAll:
     isb                      // Synchronize context
     ret
 
+// read_ctr_el0() - Read Cache Type Register
+// Returns uint64 in x0: CTR_EL0 which describes cache characteristics
+// Bit 28 (IDC): Data cache clean NOT required for I/D coherency if 1
+// Bit 29 (DIC): Instruction cache invalidation NOT required for I/D coherency if 1
+.global read_ctr_el0
+read_ctr_el0:
+    mrs x0, ctr_el0          // Read Cache Type Register
+    ret
+
 // getCurrentSP() uintptr - Returns the current stack pointer
 // This is used for stack tracing / debugging
 .global getCurrentSP
@@ -1127,3 +1193,18 @@ getCurrentSP:
 set_vbar_el1_to_addr:
     msr vbar_el1, x0         // Set VBAR_EL1 to address in x0
     ret                       // Return (barriers done by caller)
+
+// Wfi() - Wait For Interrupt
+// Puts the CPU in low-power mode until an interrupt arrives
+// This is safe to call in a loop for halting
+.global Wfi
+Wfi:
+    wfi                       // Wait for interrupt
+    ret
+
+// jump_to_null - Jumps to address 0 to trigger a prefetch abort
+// Used for testing exception handler traceback functionality
+.global jump_to_null
+jump_to_null:
+    mov x0, #0                // Load address 0
+    br x0                     // Branch to NULL - will cause prefetch abort

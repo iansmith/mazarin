@@ -475,6 +475,30 @@ func KernelMain(r0, r1, atags uint32) {
 	// Initialize VirtIO RNG device for random number generation
 	initVirtIORNG()
 
+	// Map PL031 RTC MMIO region (0x09010000, 4KB) before accessing it
+	// PL031 is a memory-mapped device, needs identity mapping with device attributes
+	{
+		pl031Base := uintptr(0x09010000)
+		pl031Size := uintptr(0x1000) // 4KB page
+		print("Mapping PL031 RTC at 0x")
+		printHex32(uint32(pl031Base))
+		print("...\r\n")
+		for offset := uintptr(0); offset < pl031Size; offset += 0x1000 {
+			va := pl031Base + offset
+			pa := pl031Base + offset // Identity mapping
+			mapPage(va, pa, PTE_ATTR_DEVICE, PTE_AP_RW_EL1)
+		}
+		print("PL031 RTC mapped\r\n")
+	}
+
+	// Initialize PL031 RTC for time services (needed by schedinit)
+	initPL031RTC()
+
+	// Set up hardware watchpoint to catch corruption of text section
+	// Watch address 0x312f38 which gets corrupted with pattern 0x0080
+	print("Setting up watchpoint on text section at 0x00312f38...\r\n")
+	asm.SetupWatchpoint(0x00312f38, 3) // 3 = doubleword (8 bytes)
+
 	// WORKAROUND: Pre-map 1MB of stack to avoid page faults during schedinit
 	// Even with optimized demand paging, schedinit hangs when faulting
 	{
@@ -577,13 +601,78 @@ func KernelMain(r0, r1, atags uint32) {
 	//preMapPages()
 	//print("DONE\r\n")
 
-	print("Testing Item 5 (with cache coherency fix): runtime.schedinit()... ")
+	print("Testing Item 5 (with cache coherency fix): runtime.schedinit()...\r\n")
+	print("  DEBUG: About to enter schedinit (this message proves we reach this point)\r\n")
+	print("  DEBUG: g0 stack: 0x5EFF0000-0x5F000000, g0.sched.sp set\r\n")
+
+	// CRITICAL: Check what g we're on BEFORE calling schedinit
+	currentGBefore := asm.GetCurrentG()
+	g0AddrBefore := asm.GetG0Addr()
+	print("  DEBUG: BEFORE schedinit - current g = ")
+	printHex64(uint64(currentGBefore))
+	print(", g0 = ")
+	printHex64(uint64(g0AddrBefore))
+	if currentGBefore == g0AddrBefore {
+		print(" (ON G0 - GOOD!)")
+	} else {
+		print(" (NOT ON G0 - THIS IS THE PROBLEM!)")
+	}
+	print("\r\n")
+
+	print("  DEBUG: Calling asm.CallRuntimeSchedinit() now...\r\n")
+
+	// TEMPORARY: Disable IRQs during schedinit to rule out interrupt issues
+	asm.DisableIrqs()
 	asm.CallRuntimeSchedinit()
+	print("  DEBUG: About to enable IRQs...\r\n")
+	asm.EnableIrqs()
+	print("  DEBUG: IRQs enabled\r\n")
+
+	print("  DEBUG: Returned from CallRuntimeSchedinit!\r\n")
+
+	// CRITICAL CHECK: Verify we're still on g0 after schedinit
+	currentG := asm.GetCurrentG()
+	g0Addr := asm.GetG0Addr()
+	print("  DEBUG: After schedinit - current g = ")
+	printHex64(uint64(currentG))
+	print(", g0 = ")
+	printHex64(uint64(g0Addr))
+	if currentG == g0Addr {
+		print(" (ON G0 - GOOD!)")
+	} else {
+		print(" (NOT ON G0 - THIS IS THE PROBLEM!)")
+	}
+	print("\r\n")
+
 	print("PASS (schedinit completed!)\r\n")
 
 	// Mark scheduler as ready - futex can now use real gopark/goready
 	MarkSchedulerReady()
 	print("Scheduler fully initialized (gopark/goready enabled)\r\n")
+
+	// =========================================
+	// TEST: Exception Handler Traceback
+	// Test the exception handler traceback by triggering a prefetch abort
+	// This will jump to address 0, causing an exception that should show
+	// a stack trace with function names and line numbers.
+	// =========================================
+	testTraceback()
+
+	// Should never reach here - testTraceback will crash the system
+	print("ERROR: Returned from testTraceback - should never happen!\r\n")
+
+	// =========================================
+	// TEST: Item 6 - runtime.newproc(runtime.mainPC)
+	// Create the main goroutine that will run runtime.main
+	// This tests that:
+	//   - newproc can allocate a g struct
+	//   - malg() can allocate a goroutine stack via stackalloc
+	//   - The new goroutine is added to the run queue
+	//   - All of this works with our mmap syscall
+	// =========================================
+	print("Testing Item 6: runtime.newproc(runtime.mainPC)... ")
+	asm.CallRuntimeNewproc()
+	print("PASS\r\n")
 
 	// Initialize kernel stack info for Go runtime stack checks
 	initKernelStack()
@@ -918,6 +1007,49 @@ func drawTestPattern() {
 		}
 	}
 }
+
+// testTraceback tests the exception handler traceback by deliberately causing a crash
+// This jumps to an invalid address to trigger a prefetch abort exception
+//
+//go:noinline
+func testTraceback() {
+	print("\r\n=== Testing Exception Traceback ===\r\n")
+	print("About to trigger a prefetch abort by jumping to NULL...\r\n")
+
+	// Call a helper function to create a deeper call stack for the traceback
+	testTracebackHelper1()
+
+	// Should never reach here
+	print("ERROR: Should not reach here!\r\n")
+}
+
+//go:noinline
+func testTracebackHelper1() {
+	print("In testTracebackHelper1\r\n")
+	testTracebackHelper2()
+}
+
+//go:noinline
+func testTracebackHelper2() {
+	print("In testTracebackHelper2\r\n")
+	testTracebackHelper3()
+}
+
+//go:noinline
+func testTracebackHelper3() {
+	print("In testTracebackHelper3 - about to crash!\r\n")
+
+	// Jump to NULL address - this will cause a prefetch abort exception
+	// We do this via assembly to avoid compiler optimizations
+	jumpToNull()
+}
+
+// jumpToNull is implemented in assembly to jump to address 0
+// This will trigger a prefetch abort exception
+//
+//go:linkname jumpToNull jump_to_null
+//go:nosplit
+func jumpToNull()
 
 // abortBoot aborts the boot process with a fatal error message
 // This function prints the error message, exits QEMU, and hangs forever

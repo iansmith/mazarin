@@ -139,6 +139,14 @@ sync_exception_el1:
     // 0x280 - 0x300: IRQ (SP_EL1) - 128 bytes
     .align 7
 irq_exception_el1:
+    // BREADCRUMB: Print 'I' immediately on IRQ entry (before anything else)
+    stp x10, x11, [sp, #-16]!     // Save x10, x11 temporarily
+    movz x10, #0x0900, lsl #16
+    movk x10, #0x0000, lsl #0
+    movz w11, #0x49                // 'I' = IRQ entry
+    str w11, [x10]
+    ldp x10, x11, [sp], #16        // Restore x10, x11
+
     // CRITICAL: Read GICC_IAR IMMEDIATELY to acknowledge interrupt
     // The GIC spec says IAR must be read ASAP to prevent spurious 1022
     // Use x10-x11 which are caller-saved and safe to clobber
@@ -225,6 +233,12 @@ handle_timer_irq:
     b irq_done
     
 handle_uart_irq:
+    // DEBUG: Print 'U' to show UART IRQ handler entered
+    movz x0, #0x0900, lsl #16
+    movk x0, #0x0000, lsl #0
+    movz w1, #0x55                // 'U'
+    str w1, [x0]
+
     // UART transmit ready interrupt
     // Call Go function main.UartTransmitHandler()
     // CRITICAL: Must follow Go calling conventions:
@@ -233,31 +247,33 @@ handle_uart_irq:
     // - At least 16 bytes free stack space
     // - Can clobber x0-x17 (caller-saved)
     // - Must preserve x19-x27 (callee-saved)
-    
+
     // Save all registers we need to preserve (expand our stack frame)
     sub sp, sp, #128              // Expand stack for more registers
     stp x5, x6, [sp, #64]         // Save x5, x6
     stp x7, x8, [sp, #80]         // Save x7, x8
     stp x28, x29, [sp, #96]       // Save x28 (g), x29 (FP)
     str x30, [sp, #112]           // Save x30 (LR)
-    
+
     // Set up frame pointer for Go
     add x29, sp, #0
-    
+
     // Call Go function (no parameters)
     bl main.UartTransmitHandler
-    
+
     // Restore preserved registers
     ldp x5, x6, [sp, #64]
     ldp x7, x8, [sp, #80]
     ldp x28, x29, [sp, #96]
     ldr x30, [sp, #112]
     add sp, sp, #128              // Restore stack
-    
-    // Reload UART base for final breadcrumb
+
+    // DEBUG: Print 'V' to show about to return from UART IRQ
     movz x0, #0x0900, lsl #16
     movk x0, #0x0000, lsl #0
-    
+    movz w1, #0x56                // 'V'
+    str w1, [x0]
+
     b irq_done
     
 irq_done:
@@ -277,7 +293,13 @@ irq_done:
     
     // Restore original SP (SP_EL1)
     mov sp, x0
-    
+
+    // DEBUG: Print 'X' to show about to eret from IRQ
+    movz x5, #0x0900, lsl #16
+    movk x5, #0x0000, lsl #0
+    movz w6, #0x58                // 'X'
+    str w6, [x5]
+
     // Return from exception
     eret
     
@@ -528,8 +550,25 @@ sync_exception_handler:
     add x30, sp, #16               // x30 = original SP (current SP + 16 for the push)
 
     // Step 3: Switch to exception stack
-    movz x29, #0x5FFE, lsl #16     // Exception stack at 0x5FFE0000
+    // CRITICAL FIX: Check if we're already on exception stack (nested exception)
+    // If SP is between 0x5FFD0000 and 0x5FFE0000, we're in a nested exception
+    movz x29, #0x5FFD, lsl #16     // x29 = 0x5FFD0000 (lower bound)
+    cmp x30, x29                    // Compare original SP with lower bound
+    b.lo use_primary_stack          // If below, use primary exception stack
+    movz x29, #0x5FFE, lsl #16     // x29 = 0x5FFE0000 (upper bound)
+    cmp x30, x29                    // Compare original SP with upper bound
+    b.hs use_primary_stack          // If above or equal, use primary stack
+
+    // We're in nested exception - use nested exception stack at 0x5FFD0000
+    movz x29, #0x5FFD, lsl #16     // Nested exception stack at 0x5FFD0000
     movk x29, #0x0000, lsl #0
+    b stack_selected
+
+use_primary_stack:
+    movz x29, #0x5FFE, lsl #16     // Primary exception stack at 0x5FFE0000
+    movk x29, #0x0000, lsl #0
+
+stack_selected:
     mov sp, x29
 
     // Allocate stack frame (320 bytes for all registers + exception state + alignment)
@@ -587,6 +626,12 @@ sync_exception_handler:
     b sync_restore_and_svc          // Go to SVC handler (restores regs first)
 3:
 
+    // Check for debug exceptions (watchpoint hit)
+    cmp x4, #0x34                   // Watchpoint from lower EL?
+    beq sync_watchpoint_hit
+    cmp x4, #0x35                   // Watchpoint from current EL?
+    beq sync_watchpoint_hit
+
     // For data aborts (EC=0x25), call Go handler
     cmp x4, #0x25
     bne sync_other_exception        // Not data abort - other exception
@@ -615,11 +660,22 @@ sync_exception_handler:
 
     // Prepare arguments for Go exception handler
     // x0 = ESR, x1 = ELR, x2 = SPSR, x3 = FAR, x4 = excType
+    // x5 = savedFP, x6 = savedLR, x7 = savedG (for traceback)
     ldp x1, x2, [sp, #256]          // x1 = ELR, x2 = SPSR
     ldp x3, x0, [sp, #272]          // x3 = FAR, x0 = ESR (note: reversed order)
     movz x4, #0                     // excType = SYNC_EXCEPTION (0)
 
-    // Call Go exception handler
+    // Load saved registers for traceback
+    // x5 = savedFP (x29), x6 = savedLR (x30), x7 = savedG (x28)
+    ldp x5, x6, [sp, #232]          // x5 = saved x29 (FP), x6 = saved x30 (LR)
+    ldr x7, [sp, #224]              // x7 = saved g (x28)
+
+    // CRITICAL: Switch to g0 before calling Go exception handler
+    // This allows runtime operations (including stack tracebacks) to work correctly
+    // The original g (x28) is saved at [sp, #224] and will be restored before eret
+    ldr x28, =runtime.g0
+
+    // Call Go exception handler with 8 parameters
     bl main.ExceptionHandler
 
     // Go handler returned - this means page fault was handled
@@ -692,6 +748,28 @@ sync_exception_handler:
     eret
 
 sync_unknown_exception:
+    // EC=0x00 - Unknown exception (often NULL pointer or jump to NULL)
+    // Call Go exception handler to print traceback and then hang
+    add x29, sp, #0
+    ldp x1, x2, [sp, #256]          // x1 = ELR, x2 = SPSR
+    ldp x3, x0, [sp, #272]          // x3 = FAR, x0 = ESR
+    movz x4, #0                     // excType = SYNC_EXCEPTION (0)
+
+    // Load saved registers for traceback
+    // x5 = savedFP (x29), x6 = savedLR (x30), x7 = savedG (x28)
+    ldp x5, x6, [sp, #232]          // x5 = saved x29 (FP), x6 = saved x30 (LR)
+    ldr x7, [sp, #224]              // x7 = saved g (x28)
+
+    // CRITICAL: Switch to g0 before calling Go exception handler
+    // This allows runtime operations (including stack tracebacks) to work correctly
+    ldr x28, =runtime.g0
+
+    bl main.ExceptionHandler
+    // If handler returns, hang
+    b .
+
+sync_unknown_exception_old:
+    // OLD CODE - kept for reference but not used
     // EC=0x00 - Unknown exception (often NULL pointer or undefined instruction)
     // Print diagnostic information directly to UART and hang
     // Don't try to return - this would create an infinite exception loop
@@ -817,17 +895,148 @@ sync_unknown_exception:
     // Hang forever
     b .
 
+sync_watchpoint_hit:
+    // Watchpoint triggered - memory at watched address was written!
+    // Print diagnostic information and hang
+
+    // Load UART base
+    movz x10, #0x0900, lsl #16
+    movk x10, #0x0000, lsl #0        // x10 = 0x09000000 (UART)
+
+    // Print "\r\n!!! WATCHPOINT HIT !!!\r\n"
+    movz w11, #'\r'
+    str w11, [x10]
+    movz w11, #'\n'
+    str w11, [x10]
+    movz w11, #'!'
+    str w11, [x10]
+    str w11, [x10]
+    str w11, [x10]
+    movz w11, #' '
+    str w11, [x10]
+    movz w11, #'W'
+    str w11, [x10]
+    movz w11, #'A'
+    str w11, [x10]
+    movz w11, #'T'
+    str w11, [x10]
+    movz w11, #'C'
+    str w11, [x10]
+    movz w11, #'H'
+    str w11, [x10]
+    movz w11, #'P'
+    str w11, [x10]
+    movz w11, #'O'
+    str w11, [x10]
+    movz w11, #'I'
+    str w11, [x10]
+    movz w11, #'N'
+    str w11, [x10]
+    movz w11, #'T'
+    str w11, [x10]
+    movz w11, #' '
+    str w11, [x10]
+    movz w11, #'H'
+    str w11, [x10]
+    movz w11, #'I'
+    str w11, [x10]
+    movz w11, #'T'
+    str w11, [x10]
+    movz w11, #' '
+    str w11, [x10]
+    movz w11, #'!'
+    str w11, [x10]
+    str w11, [x10]
+    str w11, [x10]
+    movz w11, #'\r'
+    str w11, [x10]
+    movz w11, #'\n'
+    str w11, [x10]
+
+    // Print ELR (address that caused the watchpoint)
+    ldp x0, x1, [sp, #256]          // x0 = ELR_EL1 (faulting PC)
+    bl print_watchpoint_info
+
+    // Hang (don't try to continue - we want to debug this!)
+    b .
+
+print_watchpoint_info:
+    // Print ELR address
+    // x0 = address to print
+    stp x29, x30, [sp, #-16]!
+
+    movz x10, #0x0900, lsl #16
+    movk x10, #0x0000, lsl #0        // x10 = 0x09000000 (UART)
+
+    // Print "ELR="
+    movz w11, #'E'
+    str w11, [x10]
+    movz w11, #'L'
+    str w11, [x10]
+    movz w11, #'R'
+    str w11, [x10]
+    movz w11, #'='
+    str w11, [x10]
+    movz w11, #'0'
+    str w11, [x10]
+    movz w11, #'x'
+    str w11, [x10]
+
+    // Print hex value of x0 (call external function if available, or inline)
+    mov x1, x0              // Save address
+    mov x2, #16             // 16 hex digits
+1:
+    lsr x3, x1, #60         // Get top 4 bits
+    and x3, x3, #0xF
+    cmp x3, #10
+    blt 2f
+    add x3, x3, #('A'-10)   // A-F
+    b 3f
+2:
+    add x3, x3, #'0'        // 0-9
+3:
+    str w3, [x10]
+    lsl x1, x1, #4          // Shift left 4 bits
+    subs x2, x2, #1
+    bne 1b
+
+    movz w11, #'\r'
+    str w11, [x10]
+    movz w11, #'\n'
+    str w11, [x10]
+
+    ldp x29, x30, [sp], #16
+    ret
+
 sync_other_exception:
     // Other exception type - forward to Go handler but don't expect to return
     add x29, sp, #0
-    ldp x1, x2, [sp, #256]
-    ldp x3, x0, [sp, #272]
-    movz x4, #0
+    ldp x1, x2, [sp, #256]          // x1 = ELR, x2 = SPSR
+    ldp x3, x0, [sp, #272]          // x3 = FAR, x0 = ESR
+    movz x4, #0                     // excType = SYNC_EXCEPTION (0)
+
+    // Load saved registers for traceback
+    // x5 = savedFP (x29), x6 = savedLR (x30), x7 = savedG (x28)
+    ldp x5, x6, [sp, #232]          // x5 = saved x29 (FP), x6 = saved x30 (LR)
+    ldr x7, [sp, #224]              // x7 = saved g (x28)
+
+    // CRITICAL: Switch to g0 before calling Go exception handler
+    // This allows runtime operations (including stack tracebacks) to work correctly
+    ldr x28, =runtime.g0
+
     bl main.ExceptionHandler
     // If handler returns, hang
     b .
 
 sync_restore_and_svc:
+    // BREADCRUMB: Print 'S' for SVC entry
+    stp x10, x11, [sp, #-16]!     // Save x10, x11 temporarily (use stack)
+    movz x10, #0x0900, lsl #16
+    movk x10, #0x0000, lsl #0
+    movz w11, #0x53                // 'S' = SVC entry
+    str w11, [x10]
+    ldp x10, x11, [sp], #16        // Restore x10, x11
+
     // SVC - restore registers and jump to SVC handler
     // For syscalls, we need to restore the full register state because
     // Go code expects x30 (LR) and other registers to be preserved across SVC.
@@ -858,13 +1067,24 @@ sync_restore_and_svc:
     ldp x26, x27, [sp, #208]
     ldr x28, [sp, #224]
 
-    // Step 2: Save original x0, x29/x30 to scratch area (0x40FFF020) before we lose the frame
-    // IMPORTANT: Use x10 as scratch pointer, NOT x0 (x0 contains syscall argument!)
+    // Step 2: Save ELR/SPSR and original x0, x29/x30 to scratch area (0x40FFF020)
+    // CRITICAL: We must save SPSR_EL1 so we can restore it RIGHT BEFORE eret!
+    // If we restore it now and then execute more handler code, SPSR_EL1 might
+    // get corrupted again, causing IL=1 (illegal execution state) on return.
+    //
+    // Scratch area layout:
+    //   0x40FFF020: x29 (original)
+    //   0x40FFF028: x30 (original)
+    //   0x40FFF030: x0 (original)
+    //   0x40FFF038: ELR_EL1 (saved)
+    //   0x40FFF040: SPSR_EL1 (saved)
     ldp x29, x30, [sp, #232]        // x29 = original x29, x30 = original x30
     movz x10, #0x40FF, lsl #16      // Scratch area at 0x40FFF020
     movk x10, #0xF020, lsl #0       // x10 = 0x40FFF020
-    str x0, [x10, #16]              // Save original x0 at 0x40FFF030 (syscall argument!)
     stp x29, x30, [x10]             // Save original x29/x30 at 0x40FFF020
+    str x0, [x10, #16]              // Save original x0 at 0x40FFF030
+    ldp x11, x12, [sp, #256]        // x11 = saved ELR, x12 = saved SPSR
+    stp x11, x12, [x10, #24]        // Save ELR/SPSR at 0x40FFF038
 
     // Step 3: Load original SP and switch to kernel stack
     // original_SP was saved at [sp, #248] - this is SP BEFORE we pushed x29/x30
@@ -911,8 +1131,16 @@ handle_svc_syscall:
     beq syscall_success
     cmp x8, #113                   // clock_gettime syscall
     beq syscall_clock_gettime
+    cmp x8, #129                   // kill syscall
+    beq syscall_kill
+    cmp x8, #130                   // tkill syscall
+    beq syscall_tkill
     cmp x8, #131                   // tgkill syscall
-    beq syscall_success
+    beq syscall_tgkill
+    cmp x8, #134                   // rt_sigaction syscall
+    beq syscall_rt_sigaction
+    cmp x8, #135                   // rt_sigprocmask syscall
+    beq syscall_rt_sigprocmask
     cmp x8, #167                   // prctl syscall
     beq syscall_success
     cmp x8, #172                   // getpid syscall
@@ -1068,27 +1296,10 @@ syscall_clock_gettime:
     // x0 = clockid (CLOCK_REALTIME=0, CLOCK_MONOTONIC=1)
     // x1 = pointer to timespec {tv_sec, tv_nsec}
     // Return: 0 on success
-    // Read ARM generic timer counter for monotonic time
-    mrs x9, CNTVCT_EL0             // Virtual counter value
-    mrs x10, CNTFRQ_EL0            // Counter frequency (ticks per second)
-
-    // Convert ticks to seconds and nanoseconds
-    // seconds = ticks / freq
-    udiv x11, x9, x10              // x11 = seconds
-
-    // nsec = (ticks % freq) * 1000000000 / freq
-    msub x12, x11, x10, x9         // x12 = ticks % freq (remainder)
-    movz x13, #0x3B9A, lsl #16     // 0x3B9A0000
-    movk x13, #0xCA00, lsl #0      // 0x3B9ACA00 = 1000000000 (1 billion)
-    mul x12, x12, x13              // x12 = remainder * 1e9
-    udiv x12, x12, x10             // x12 = nanoseconds
-
-    // Store to timespec if pointer is valid
-    cbz x1, 1f
-    str x11, [x1, #0]              // tv_sec
-    str x12, [x1, #8]              // tv_nsec
-1:
-    mov x0, #0                     // success
+    // Call Go implementation: SyscallClockGettime(clockid int32, timespecPtr uintptr) int64
+    CALL_GO_PROLOGUE SPILL_SPACE_2PARAM
+    bl main.SyscallClockGettime
+    CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
     b syscall_return
 
 syscall_getpid:
@@ -1123,7 +1334,55 @@ syscall_madvise:
     mov x0, #0
     b syscall_return
 
+syscall_kill:
+    // kill(pid, sig) - 2 parameters
+    // x0 = pid, x1 = sig
+    CALL_GO_PROLOGUE SPILL_SPACE_2PARAM
+    bl main.SyscallKill
+    CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
+    b syscall_return
+
+syscall_tkill:
+    // tkill(tid, sig) - 2 parameters
+    // x0 = tid, x1 = sig
+    CALL_GO_PROLOGUE SPILL_SPACE_2PARAM
+    bl main.SyscallTkill
+    CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
+    b syscall_return
+
+syscall_tgkill:
+    // tgkill(tgid, tid, sig) - 3 parameters
+    // x0 = tgid, x1 = tid, x2 = sig
+    CALL_GO_PROLOGUE SPILL_SPACE_3PARAM
+    bl main.SyscallTgkill
+    CALL_GO_EPILOGUE SPILL_SPACE_3PARAM
+    b syscall_return
+
+syscall_rt_sigaction:
+    // rt_sigaction(sig, act, oldact, sigsetsize) - 4 parameters
+    // x0 = sig, x1 = act, x2 = oldact, x3 = sigsetsize
+    CALL_GO_PROLOGUE SPILL_SPACE_4PARAM
+    bl main.SyscallRtSigaction
+    CALL_GO_EPILOGUE SPILL_SPACE_4PARAM
+    b syscall_return
+
+syscall_rt_sigprocmask:
+    // rt_sigprocmask(how, set, oldset, sigsetsize) - 4 parameters
+    // x0 = how, x1 = set, x2 = oldset, x3 = sigsetsize
+    CALL_GO_PROLOGUE SPILL_SPACE_4PARAM
+    bl main.SyscallRtSigprocmask
+    CALL_GO_EPILOGUE SPILL_SPACE_4PARAM
+    b syscall_return
+
 syscall_exit:
+    // exit/exit_group - call Go SyscallExit function
+    // x0 = exit code (int32)
+    CALL_GO_PROLOGUE SPILL_SPACE_1PARAM
+    bl main.SyscallExit
+    // SyscallExit never returns (infinite loop)
+
+syscall_exit_old:
+    // OLD exit handler - keeping for reference but not used
     // exit/exit_group - print debug info and exit via semihosting
     // At this point:
     //   x8 = syscall number (93 or 94)
@@ -1238,23 +1497,43 @@ print_exit_digit:
     b 1b
 
 syscall_return:
-    // Minimal syscall return - just advance ELR and eret
-    // x0 contains the syscall result
+    // Syscall return - restore SPSR/ELR and return via eret
+    // x0 contains the syscall result (must be preserved!)
     //
-    // After eret, Go's code (e.g., sysMmap.abi0) will:
-    //   1. Check x0 (cmn x0, #0xfff)
-    //   2. Store results to stack
-    //   3. Return to caller
+    // CRITICAL: Must restore SPSR_EL1 and ELR_EL1 from scratch area before eret!
+    // These were saved by sync_restore_and_svc to avoid corruption during handler execution.
+    //
+    // Scratch area layout (at 0x40FFF020):
+    //   0x40FFF020: x29 (original) - not needed here
+    //   0x40FFF028: x30 (original) - not needed here
+    //   0x40FFF030: x0 (original) - not needed here (x0 has syscall result)
+    //   0x40FFF038: ELR_EL1 (saved)
+    //   0x40FFF040: SPSR_EL1 (saved)
 
-    // Debug output disabled - was too noisy during panic
+    // Save x0 (syscall result) temporarily to x10
+    mov x10, x0
 
-    // DEBUG: Removed x25 and 'R' markers to reduce noise
+    // Load scratch area address into x11
+    movz x11, #0x40FF, lsl #16      // Scratch area at 0x40FFF020
+    movk x11, #0xF020, lsl #0
 
-    // BUG FIX: ELR_EL1 is already pointing to the instruction AFTER the SVC!
-    // (This is unusual - ARMv8 spec says ELR should point to the SVC itself)
-    // So we do NOT add 4 - just return directly to where ELR points.
-    // This lets sysMmap.abi0's cmn/branch/store logic execute correctly.
+    // Restore ELR_EL1 and SPSR_EL1 from scratch area
+    ldp x12, x13, [x11, #24]        // x12 = saved ELR, x13 = saved SPSR
+    msr ELR_EL1, x12                // Restore return address
+    msr SPSR_EL1, x13               // Restore saved PSTATE
+    isb                             // Ensure ELR/SPSR writes complete
 
-    // Return from exception (ELR now correct)
+    // Restore x0 (syscall result)
+    mov x0, x10
+
+    // BREADCRUMB: Print 's' for SVC exit
+    stp x10, x11, [sp, #-16]!     // Save x10, x11 temporarily
+    movz x10, #0x0900, lsl #16
+    movk x10, #0x0000, lsl #0
+    movz w11, #0x73                // 's' = SVC exit
+    str w11, [x10]
+    ldp x10, x11, [sp], #16        // Restore x10, x11
+
+    // Return from exception - PSTATE will be restored from SPSR_EL1
     eret
 

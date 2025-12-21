@@ -52,6 +52,9 @@ type ExceptionInfo struct {
 	ELR           uint64 // Exception Link Register (return address)
 	SPSR          uint64 // Saved Program Status Register
 	FAR           uint64 // Fault Address Register
+	SavedFP       uint64 // Saved frame pointer x29 (from exception frame, for stack walking)
+	SavedLR       uint64 // Saved link register x30 (from exception frame, for stack walking)
+	SavedG        uint64 // Saved g pointer x28 (from exception frame, for traceback)
 }
 
 // mmap bump allocator state
@@ -169,10 +172,11 @@ var exceptionCount uint32
 
 // ExceptionHandler is called from assembly when a synchronous exception occurs
 // It handles the exception and logs details for debugging
+// savedSP, savedLR, savedG are the values from the exception frame for traceback
 //
 //go:nosplit
 //go:noinline
-func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType uint32) {
+func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType uint32, savedFP uint64, savedLR uint64, savedG uint64) {
 	// Increment exception counter
 	exceptionCount++
 
@@ -240,6 +244,9 @@ func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType u
 		ELR:           elr,
 		SPSR:          spsr,
 		FAR:           far,
+		SavedFP:       savedFP,
+		SavedLR:       savedLR,
+		SavedG:        savedG,
 	}
 
 	handleException(excInfo)
@@ -382,8 +389,12 @@ func handleException(excInfo ExceptionInfo) {
 		uartPutsDirect("\r\n")
 	}
 
-	// Hang the system for now
-	uartPutsDirect("System halted\r\n")
+	// Print stack traceback before hanging
+	// Use the saved registers from the exception frame
+	PrintTraceback(uintptr(excInfo.ELR), uintptr(excInfo.SavedFP), uintptr(excInfo.SavedLR), uintptr(excInfo.SavedG))
+
+	// Hang the system
+	uartPutsDirect("\r\nSystem halted\r\n")
 	for {
 		// Spin forever
 	}
