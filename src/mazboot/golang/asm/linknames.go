@@ -6,6 +6,451 @@ package asm
 import "unsafe"
 
 // {{ LINKNAME START}}
+//
+//go:linkname BusyWait busy_wait
+//go:nosplit
+func BusyWait(count uint32)
+
+//go:linkname Bzero bzero
+//go:nosplit
+func Bzero(ptr unsafe.Pointer, size uint32)
+
+//go:linkname CallMallocinit call_mallocinit
+//go:nosplit
+func CallMallocinit()
+
+//go:linkname CallRuntimeArgs call_runtime_args
+//go:nosplit
+func CallRuntimeArgs() int
+
+//go:linkname CallRuntimeNewproc call_runtime_newproc
+//go:nosplit
+func CallRuntimeNewproc()
+
+//go:linkname CallRuntimeOsinit call_runtime_osinit
+//go:nosplit
+func CallRuntimeOsinit()
+
+//go:linkname CallRuntimeSchedinit call_runtime_schedinit
+//go:nosplit
+func CallRuntimeSchedinit()
+
+//go:linkname CleanDataCacheVA CleanDataCacheVA
+//go:nosplit
+func CleanDataCacheVA(addr uintptr)
+
+//go:linkname CleanDcacheVa clean_dcache_va
+//go:nosplit
+func CleanDcacheVa(addr uintptr)
+
+//go:linkname Delay delay
+//go:nosplit
+func Delay(count int32)
+
+//go:linkname DisableAlignmentCheck disable_alignment_check
+//go:nosplit
+func DisableAlignmentCheck()
+
+//go:linkname DisableIrqs disable_irqs
+//go:nosplit
+func DisableIrqs()
+
+//go:linkname Dsb dsb
+//go:nosplit
+func Dsb()
+
+//go:linkname EnableIrqs enable_irqs
+//go:nosplit
+func EnableIrqs()
+
+//go:linkname EnableIrqsAsm enable_irqs_asm
+//go:nosplit
+func EnableIrqsAsm()
+
+//go:linkname EnableMmuMinimal enable_mmu_minimal
+//go:nosplit
+func EnableMmuMinimal()
+
+//go:linkname GetBochsDisplayBase get_bochs_display_base
+//go:nosplit
+func GetBochsDisplayBase() uintptr
+
+//go:linkname GetBochsDisplaySize get_bochs_display_size
+//go:nosplit
+func GetBochsDisplaySize() uintptr
+
+//go:linkname GetBssEndAddr get_bss_end_addr
+//go:nosplit
+func GetBssEndAddr() uintptr
+
+//go:linkname GetBssStartAddr get_bss_start_addr
+//go:nosplit
+func GetBssStartAddr() uintptr
+
+//go:linkname GetCallerStackPointer get_caller_stack_pointer
+//go:nosplit
+func GetCallerStackPointer() uintptr
+
+//go:linkname GetCurrentG get_current_g
+//go:nosplit
+func GetCurrentG() uintptr
+
+//go:linkname GetDataEndAddr get_data_end_addr
+//go:nosplit
+func GetDataEndAddr() uintptr
+
+//go:linkname GetDataStartAddr get_data_start_addr
+//go:nosplit
+func GetDataStartAddr() uintptr
+
+//go:linkname GetDtbBootAddr get_dtb_boot_addr
+//go:nosplit
+func GetDtbBootAddr() uintptr
+
+//go:linkname GetDtbSize get_dtb_size
+//go:nosplit
+func GetDtbSize() uintptr
+
+//go:linkname GetEmptymspanAddr get_emptymspan_addr
+//go:nosplit
+func GetEmptymspanAddr() uintptr
+
+//go:linkname GetEndAddr get_end_addr
+//go:nosplit
+func GetEndAddr() uintptr
+
+//go:linkname GetExceptionVectorsAddr get_exception_vectors_addr
+//go:nosplit
+func GetExceptionVectorsAddr() uintptr
+
+//go:linkname GetFwcfgBase get_fwcfg_base
+//go:nosplit
+func GetFwcfgBase() uintptr
+
+//go:linkname GetFwcfgSize get_fwcfg_size
+//go:nosplit
+func GetFwcfgSize() uintptr
+
+//go:linkname GetG0Addr get_g0_addr
+//go:nosplit
+func GetG0Addr() uintptr
+
+//go:linkname GetG0StackBottom get_g0_stack_bottom
+//go:nosplit
+func GetG0StackBottom() uintptr
+
+//go:linkname GetGicBase get_gic_base
+//go:nosplit
+func GetGicBase() uintptr
+
+//go:linkname GetGicSize get_gic_size
+//go:nosplit
+func GetGicSize() uintptr
+
+//go:linkname GetM0Addr get_m0_addr
+//go:nosplit
+func GetM0Addr() uintptr
+
+//go:linkname GetMcache0Addr get_mcache0_addr
+//go:nosplit
+func GetMcache0Addr() uintptr
+
+//go:linkname GetPageTablesEndAddr get_page_tables_end_addr
+//go:nosplit
+func GetPageTablesEndAddr() uintptr
+
+//go:linkname GetPageTablesStartAddr get_page_tables_start_addr
+//go:nosplit
+func GetPageTablesStartAddr() uintptr
+
+//go:linkname GetPhysPageSizeAddr get_phys_page_size_addr
+//go:nosplit
+func GetPhysPageSizeAddr() uintptr
+
+//go:linkname GetRamStart get_ram_start
+//go:nosplit
+func GetRamStart() uintptr
+
+//go:linkname GetRodataEndAddr get_rodata_end_addr
+//go:nosplit
+func GetRodataEndAddr() uintptr
+
+//go:linkname GetRodataStartAddr get_rodata_start_addr
+//go:nosplit
+func GetRodataStartAddr() uintptr
+
+//go:linkname GetRtcBase get_rtc_base
+//go:nosplit
+func GetRtcBase() uintptr
+
+//go:linkname GetStackPointer get_stack_pointer
+//go:nosplit
+func GetStackPointer() uintptr
+
+//go:linkname GetStackTopAddr get_stack_top_addr
+//go:nosplit
+func GetStackTopAddr() uintptr
+
+//go:linkname GetStartAddr get_start_addr
+//go:nosplit
+func GetStartAddr() uintptr
+
+//go:linkname GetTextEndAddr get_text_end_addr
+//go:nosplit
+func GetTextEndAddr() uintptr
+
+//go:linkname GetTextStartAddr get_text_start_addr
+//go:nosplit
+func GetTextStartAddr() uintptr
+
+//go:linkname GetUartBase get_uart_base
+//go:nosplit
+func GetUartBase() uintptr
+
+//go:linkname GetUartSize get_uart_size
+//go:nosplit
+func GetUartSize() uintptr
+
+//go:linkname InvalidateInstructionCacheAll InvalidateInstructionCacheAll
+//go:nosplit
+func InvalidateInstructionCacheAll()
+
+//go:linkname InvalidateTlbAll invalidate_tlb_all
+//go:nosplit
+func InvalidateTlbAll()
+
+//go:linkname InvalidateTlbVa invalidate_tlb_va
+//go:nosplit
+func InvalidateTlbVa(addr uintptr)
+
+//go:linkname Isb isb
+//go:nosplit
+func Isb()
+
+//go:linkname JumpToNull jump_to_null
+//go:nosplit
+func JumpToNull()
+
+//go:linkname MemmoveBytes MemmoveBytes
+//go:nosplit
+func MemmoveBytes(dest unsafe.Pointer, src unsafe.Pointer, n uint32)
+
+//go:linkname MmioRead mmio_read
+//go:nosplit
+func MmioRead(reg uintptr) uint32
+
+//go:linkname MmioRead16 mmio_read16
+//go:nosplit
+func MmioRead16(reg uintptr) uint16
+
+//go:linkname MmioWrite mmio_write
+//go:nosplit
+func MmioWrite(reg uintptr, data uint32)
+
+//go:linkname MmioWrite16 mmio_write16
+//go:nosplit
+func MmioWrite16(reg uintptr, data uint16)
+
+//go:linkname MmioWrite64 mmio_write64
+//go:nosplit
+func MmioWrite64(reg uintptr, data uint64)
+
+//go:linkname OurGcWriteBarrier our_gcWriteBarrier
+//go:nosplit
+func OurGcWriteBarrier()
+
+//go:linkname QemuExit qemu_exit
+//go:nosplit
+func QemuExit()
+
+//go:linkname ReadCntfrqEl0 read_cntfrq_el0
+//go:nosplit
+func ReadCntfrqEl0() uint32
+
+//go:linkname ReadCntpCtlEl0 read_cntp_ctl_el0
+//go:nosplit
+func ReadCntpCtlEl0() uint32
+
+//go:linkname ReadCntpCvalEl0 read_cntp_cval_el0
+//go:nosplit
+func ReadCntpCvalEl0() uint64
+
+//go:linkname ReadCntpTvalEl0 read_cntp_tval_el0
+//go:nosplit
+func ReadCntpTvalEl0() uint32
+
+//go:linkname ReadCntpctEl0 read_cntpct_el0
+//go:nosplit
+func ReadCntpctEl0() uint64
+
+//go:linkname ReadCntvCtlEl0 read_cntv_ctl_el0
+//go:nosplit
+func ReadCntvCtlEl0() uint32
+
+//go:linkname ReadCntvCvalEl0 read_cntv_cval_el0
+//go:nosplit
+func ReadCntvCvalEl0() uint64
+
+//go:linkname ReadCntvTvalEl0 read_cntv_tval_el0
+//go:nosplit
+func ReadCntvTvalEl0() uint32
+
+//go:linkname ReadCntvctEl0 read_cntvct_el0
+//go:nosplit
+func ReadCntvctEl0() uint64
+
+//go:linkname ReadCtrEl0 read_ctr_el0
+//go:nosplit
+func ReadCtrEl0() uint64
+
+//go:linkname ReadCurrentEl read_current_el
+//go:nosplit
+func ReadCurrentEl() uint32
+
+//go:linkname ReadDaif read_daif
+//go:nosplit
+func ReadDaif()
+
+//go:linkname ReadMairEl1 read_mair_el1
+//go:nosplit
+func ReadMairEl1() uint64
+
+//go:linkname ReadSctlrEl1 read_sctlr_el1
+//go:nosplit
+func ReadSctlrEl1() uint64
+
+//go:linkname ReadSpsrEl1 read_spsr_el1
+//go:nosplit
+func ReadSpsrEl1()
+
+//go:linkname ReadTcrEl1 read_tcr_el1
+//go:nosplit
+func ReadTcrEl1() uint64
+
+//go:linkname ReadTtbr0El1 read_ttbr0_el1
+//go:nosplit
+func ReadTtbr0El1() uint64
+
+//go:linkname ReadVbarEl1 read_vbar_el1
+//go:nosplit
+func ReadVbarEl1() uintptr
+
+//go:linkname SetCurrentG set_current_g
+//go:nosplit
+func SetCurrentG(gptr uintptr)
+
+//go:linkname SetGPointer set_g_pointer
+//go:nosplit
+func SetGPointer(g uintptr)
+
+//go:linkname SetStackPointer set_stack_pointer
+//go:nosplit
+func SetStackPointer(sp uintptr)
+
+//go:linkname SetVbarEl1 set_vbar_el1
+//go:nosplit
+func SetVbarEl1()
+
+//go:linkname SetVbarEl1ToAddr set_vbar_el1_to_addr
+//go:nosplit
+func SetVbarEl1ToAddr(addr uintptr)
+
+//go:linkname StorePointerNoBarrier store_pointer_nobarrier
+//go:nosplit
+func StorePointerNoBarrier(dest *unsafe.Pointer, value unsafe.Pointer)
+
+//go:linkname SwitchToGoroutine switchToGoroutine
+//go:nosplit
+func SwitchToGoroutine(g unsafe.Pointer)
+
+//go:linkname UartInitPl011 uart_init_pl011
+//go:nosplit
+func UartInitPl011()
+
+//go:linkname UartPutcPl011 uart_putc_pl011
+//go:nosplit
+func UartPutcPl011(c byte)
+
+//go:linkname VerifyStackPointerReading verify_stack_pointer_reading
+//go:nosplit
+func VerifyStackPointerReading() int
+
+//go:linkname Wfi Wfi
+//go:nosplit
+func Wfi()
+
+//go:linkname WriteCntpCtlEl0 write_cntp_ctl_el0
+//go:nosplit
+func WriteCntpCtlEl0(value uint32)
+
+//go:linkname WriteCntpCvalEl0 write_cntp_cval_el0
+//go:nosplit
+func WriteCntpCvalEl0(value uint64)
+
+//go:linkname WriteCntpTvalEl0 write_cntp_tval_el0
+//go:nosplit
+func WriteCntpTvalEl0(value uint32)
+
+//go:linkname WriteCntvCtlEl0 write_cntv_ctl_el0
+//go:nosplit
+func WriteCntvCtlEl0(value uint32)
+
+//go:linkname WriteCntvCvalEl0 write_cntv_cval_el0
+//go:nosplit
+func WriteCntvCvalEl0(value uint64)
+
+//go:linkname WriteCntvTvalEl0 write_cntv_tval_el0
+//go:nosplit
+func WriteCntvTvalEl0(value uint32)
+
+//go:linkname WriteElrEl1 write_elr_el1
+//go:nosplit
+func WriteElrEl1()
+
+//go:linkname WriteMairEl1 write_mair_el1
+//go:nosplit
+func WriteMairEl1(value uint64)
+
+//go:linkname WriteSctlrEl1 write_sctlr_el1
+//go:nosplit
+func WriteSctlrEl1(value uint64)
+
+//go:linkname WriteSpsrEl1 write_spsr_el1
+//go:nosplit
+func WriteSpsrEl1()
+
+//go:linkname WriteTcrEl1 write_tcr_el1
+//go:nosplit
+func WriteTcrEl1(value uint64)
+
+//go:linkname WriteTtbr0El1 write_ttbr0_el1
+//go:nosplit
+func WriteTtbr0El1(value uint64)
+
+//go:linkname WriteTtbr1El1 write_ttbr1_el1
+//go:nosplit
+func WriteTtbr1El1(value uint64)
+
+//go:linkname gcWriteBarrier gcWriteBarrier
+//go:nosplit
+func gcWriteBarrier()
+
+//go:linkname getCurrentSP getCurrentSP
+//go:nosplit
+func getCurrentSP()
+
+//go:linkname getGRegister getGRegister
+//go:nosplit
+func getGRegister()
+
+//go:linkname memmove memmove
+//go:nosplit
+func memmove(dest unsafe.Pointer, src unsafe.Pointer, n uint32)
+
+//go:linkname runOnGoroutine runOnGoroutine
+//go:nosplit
+func runOnGoroutine()
+
 //{{ LINKNAME END}}
 
 // Manual entries (not auto-generated):

@@ -112,7 +112,18 @@ at_el1:
     isb                            // Ensure FPU is enabled before continuing
     movz w15, #0x66                // 'f' = FPU enabled
     str w15, [x14]
-    
+
+    // ========================================
+    // Disable strict alignment checking to allow unaligned accesses
+    // SCTLR_EL1.A (bit 1) = 0: Allow unaligned access for normal memory
+    // This is required because Go compiler places strings in .rodata without
+    // guaranteed 8-byte alignment, and runtime.memequal uses ldp which requires alignment
+    // ========================================
+    mrs x0, SCTLR_EL1
+    bic x0, x0, #(1 << 1)          // Clear bit 1 (A = alignment check)
+    msr SCTLR_EL1, x0
+    isb
+
     // QEMU virt machine memory layout (1GB RAM):
     // - 0x00000000-0x08000000: Flash/ROM (kernel loaded at 0x200000)
     // - 0x09000000-0x09010000: UART (PL011)

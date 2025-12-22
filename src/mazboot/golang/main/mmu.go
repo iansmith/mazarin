@@ -140,7 +140,7 @@ const (
 
 // MMIODevice describes an MMIO device region to be mapped
 type MMIODevice struct {
-	name  string  // Device name (for debugging)
+	// name field removed to avoid write barrier in nosplit context
 	start uintptr // Physical base address (from linker symbol)
 	size  uintptr // Size in bytes
 	attr  uint64  // Page table attributes (PTE_ATTR_*)
@@ -148,7 +148,8 @@ type MMIODevice struct {
 }
 
 // MMIO devices to map (initialized once in initMMU)
-var mmioDevices []MMIODevice
+var mmioDevices [4]MMIODevice  // Fixed-size array to avoid heap allocation
+var mmioDeviceCount int
 
 // Page table structure
 var (
@@ -217,14 +218,29 @@ func allocatePageTable() uintptr {
 
 	// Verify 4KB alignment (should always be true, but check anyway)
 	if (ptr & 0xFFF) != 0 {
-		uartPutsDirect("PTALIGN!")
+		// Fatal error - use direct UART to avoid stack depth
+		uartPutcDirect('P')
+		uartPutcDirect('T')
+		uartPutcDirect('A')
+		uartPutcDirect('L')
+		uartPutcDirect('I')
+		uartPutcDirect('G')
+		uartPutcDirect('N')
+		uartPutcDirect('!')
 		for {
 		} // Halt on alignment error
 	}
 
 	// Check for overflow (ensure we don't exceed allocated region)
 	if alloc.offset+TABLE_SIZE > PAGE_TABLE_SIZE {
-		uartPutsDirect("PTOVERFLOW!")
+		// Fatal error - use direct UART to avoid stack depth
+		uartPutcDirect('P')
+		uartPutcDirect('T')
+		uartPutcDirect('O')
+		uartPutcDirect('V')
+		uartPutcDirect('E')
+		uartPutcDirect('R')
+		uartPutcDirect('!')
 		for {
 		} // Halt on overflow
 	}
@@ -308,7 +324,9 @@ func incTotalKernelPages() {
 //
 //go:nosplit
 func initPhysFrameAllocator() {
+	uartPutcDirect('P')  // Breadcrumb: entered initPhysFrameAllocator
 	alloc := getPhysFrameAllocator()
+	uartPutcDirect('p')  // Breadcrumb: got allocator
 	alloc.next = PHYS_FRAME_BASE
 	alloc.end = PHYS_FRAME_END
 	alloc.pagesAlloc = 0
@@ -714,6 +732,12 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64) {
 
 	pteValue := createPageTableEntry(pa, attrs, ap)
 	*l3Entry = pteValue
+
+	// DEBUG: Output 'M' for every page we map in the .rodata range
+	if va >= 0x3DE000 && va < 0x3F3000 {
+		uartPutcDirect('M')
+	}
+
 	asm.CleanDcacheVa(l3EntryAddr) // Ensure PTE write is visible to page table walker
 
 	// CRITICAL: Ensure page table writes are visible before continuing
@@ -839,58 +863,86 @@ func initMMU() bool {
 	//   0x000000-0x56D000: Boot code, text, rodata (read-only)
 	//   0x56D000-0x632000: Data section (READ-WRITE - was causing permission faults!)
 	//
-	// Map everything before data section as read-only (includes boot code, text, rodata)
-	mapRegion(
-		0x00000000, 0x0056D000, 0x00000000,
-		PTE_ATTR_NORMAL, PTE_AP_RO_EL1,
-	)
-
-	// Map data section as read-write (this was the fix for schedinit permission fault)
-	mapRegion(
-		0x0056D000, 0x00632000, 0x0056D000,
-		PTE_ATTR_NORMAL, PTE_AP_RW_EL1,
-	)
-
-	// Map remainder up to 8MB as read-only (nothing should be here, but map it anyway)
-	mapRegion(
-		0x00632000, 0x08000000, 0x00632000,
-		PTE_ATTR_NORMAL, PTE_AP_RO_EL1,
-	)
-
-	// Initialize MMIO devices array (global to reduce stack usage)
-	mmioDevices = []MMIODevice{
-		{
-			name:  "GIC",
-			start: getLinkerSymbol("__gic_base"),
-			size:  getLinkerSymbol("__gic_size"),
-			attr:  PTE_ATTR_DEVICE,
-			ap:    PTE_AP_RW_EL1,
-		},
-		{
-			name:  "UART",
-			start: getLinkerSymbol("__uart_base"),
-			size:  getLinkerSymbol("__uart_size"),
-			attr:  PTE_ATTR_DEVICE,
-			ap:    PTE_AP_RW_EL1,
-		},
-		{
-			name:  "fw_cfg",
-			start: getLinkerSymbol("__fwcfg_base"),
-			size:  getLinkerSymbol("__fwcfg_size"),
-			attr:  PTE_ATTR_DEVICE,
-			ap:    PTE_AP_RW_EL1,
-		},
-		{
-			name:  "bochs-display",
-			start: getLinkerSymbol("__bochs_display_base"),
-			size:  getLinkerSymbol("__bochs_display_size"),
-			attr:  PTE_ATTR_DEVICE,
-			ap:    PTE_AP_RW_EL1,
-		},
+	// CRITICAL: Map .rodata explicitly FIRST to ensure string constants are accessible
+	// We can safely call getLinkerSymbol() here because MMU is not yet enabled -
+	// we're still using physical addressing, so .rodata is directly accessible
+	uartPutcDirect('R')  // Breadcrumb: about to map .rodata
+	rodataStart := getLinkerSymbol("__rodata_start")
+	rodataEnd := getLinkerSymbol("__rodata_end")
+	if rodataStart != 0 && rodataEnd != 0 {
+		uartPutcDirect('r')  // Breadcrumb: got .rodata addresses, about to map
+		mapRegion(rodataStart, rodataEnd, rodataStart, PTE_ATTR_NORMAL, PTE_AP_RO_EL1)
+		uartPutcDirect('D')  // Breadcrumb: .rodata mapped
+	} else {
+		uartPutcDirect('X')  // Breadcrumb: getLinkerSymbol failed!
 	}
 
+	// Get section boundaries from linker symbols
+	textStart := getLinkerSymbol("__text_start")
+	dataStart := getLinkerSymbol("__data_start")
+	dataEnd := getLinkerSymbol("__data_end")
+	endAddr := getLinkerSymbol("__end")
+
+	// Map everything before .rodata as read-only (boot code, text)
+	if textStart > 0 && rodataStart > 0 && textStart < rodataStart {
+		mapRegion(textStart, rodataStart, textStart, PTE_ATTR_NORMAL, PTE_AP_RO_EL1)
+	}
+
+	// Map everything after .rodata up to data section as read-only
+	if rodataEnd > 0 && dataStart > 0 && rodataEnd < dataStart {
+		mapRegion(rodataEnd, dataStart, rodataEnd, PTE_ATTR_NORMAL, PTE_AP_RO_EL1)
+	}
+
+	// Map data section as read-write (this was the fix for schedinit permission fault)
+	if dataStart > 0 && dataEnd > 0 {
+		mapRegion(dataStart, dataEnd, dataStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+	}
+
+	// Map remainder up to end of kernel image as read-only
+	if dataEnd > 0 && endAddr > 0 && dataEnd < endAddr {
+		mapRegion(dataEnd, endAddr, dataEnd, PTE_ATTR_NORMAL, PTE_AP_RO_EL1)
+	}
+
+	// Initialize MMIO devices array (fixed-size to avoid heap allocation)
+	uartPutcDirect('I')  // Breadcrumb: about to init MMIO devices array
+
+	// CRITICAL: Call assembly functions directly instead of getLinkerSymbol()
+	// getLinkerSymbol() uses string comparison which accesses misaligned .rodata
+	// Before MMU is enabled, ARM64 requires strict alignment, so we must avoid
+	// string access. The assembly functions return linker symbols without string ops.
+
+	// Device 0: GIC (Generic Interrupt Controller)
+	mmioDevices[0] = MMIODevice{
+		start: asm.GetGicBase(),
+		size:  asm.GetGicSize(),
+		attr:  PTE_ATTR_DEVICE,
+		ap:    PTE_AP_RW_EL1,
+	}
+	// Device 1: UART PL011
+	mmioDevices[1] = MMIODevice{
+		start: asm.GetUartBase(),
+		size:  asm.GetUartSize(),
+		attr:  PTE_ATTR_DEVICE,
+		ap:    PTE_AP_RW_EL1,
+	}
+	// Device 2: QEMU fw_cfg
+	mmioDevices[2] = MMIODevice{
+		start: asm.GetFwcfgBase(),
+		size:  asm.GetFwcfgSize(),
+		attr:  PTE_ATTR_DEVICE,
+		ap:    PTE_AP_RW_EL1,
+	}
+	// Device 3: bochs-display framebuffer
+	mmioDevices[3] = MMIODevice{
+		start: asm.GetBochsDisplayBase(),
+		size:  asm.GetBochsDisplaySize(),
+		attr:  PTE_ATTR_DEVICE,
+		ap:    PTE_AP_RW_EL1,
+	}
+	mmioDeviceCount = 4
+
 	// Map all MMIO devices
-	for i := range mmioDevices {
+	for i := 0; i < mmioDeviceCount; i++ {
 		dev := &mmioDevices[i]
 		mapRegion(dev.start, dev.start+dev.size, dev.start, dev.attr, dev.ap)
 	}
@@ -902,22 +954,31 @@ func initMMU() bool {
 		dtbStart, dtbEnd, dtbStart,
 		PTE_ATTR_NORMAL, PTE_AP_RW_EL1,
 	)
+	uartPutcDirect('B')  // Breadcrumb: DTB region mapped
 
 	// Map PCI ECAM (lowmem and highmem)
+	uartPutcDirect('E')  // Breadcrumb: about to map ECAM
 	ecamBase := uintptr(0x3F000000)
 	ecamSize := uintptr(0x01000000) // 16MB, not 256MB!
 	mapRegion(ecamBase, ecamBase+ecamSize, ecamBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1)
+	uartPutcDirect('e')  // Breadcrumb: lowmem ECAM mapped
 
-	highmemEcamBase := uintptr(uint64(0x4010000000))
+	highmemEcamBase := uintptr(0x4010000000)
 	highmemEcamSize := uintptr(0x10000000)
 	mapRegion(highmemEcamBase, highmemEcamBase+highmemEcamSize, highmemEcamBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1)
+	uartPutcDirect('h')  // Breadcrumb: highmem ECAM mapped
 
 	// Verify lowmem mapping (silent unless error)
-	dumpFetchMapping("pci-ecam-low", ecamBase)
+	// TEMPORARILY DISABLED: dumpFetchMapping() uses string parameters which access .rodata
+	// dumpFetchMapping("pci-ecam-low", ecamBase)
+	uartPutcDirect('V')  // Breadcrumb: verification done
 
 	// Map kernel RAM (after DTB to page tables) - BSS, heap, stacks
+	uartPutcDirect('0')  // Breadcrumb: about to map RAM
 	ramStart := getLinkerSymbol("__dtb_boot_addr") + getLinkerSymbol("__dtb_size")
+	uartPutcDirect('1')  // Breadcrumb: got RAM start address
 	mapRegion(ramStart, PAGE_TABLE_BASE, ramStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+	uartPutcDirect('2')  // Breadcrumb: RAM mapped
 
 	// CRITICAL: Map exception vector RAM region as NORMAL CACHEABLE
 	// Exception vectors will be relocated to 0x41100000 from ROM
@@ -943,6 +1004,7 @@ func initMMU() bool {
 
 	// Initialize physical frame allocator
 	initPhysFrameAllocator()
+	uartPutcDirect('F')  // Breadcrumb: physical frame allocator initialized
 
 	// CRITICAL: Flush TLB to ensure all mappings are visible to CPU
 	// Without this, the CPU may have stale TLB entries that don't reflect
@@ -951,6 +1013,7 @@ func initMMU() bool {
 	asm.InvalidateTlbAll()  // Invalidate all TLB entries
 	asm.Isb()               // Ensure TLB invalidation completes
 
+	uartPutcDirect('T')  // Breadcrumb: about to return true from initMMU
 	return true
 }
 
@@ -1070,6 +1133,7 @@ func dumpFetchMapping(label string, va uintptr) bool {
 //
 //go:nosplit
 func enableMMU() bool {
+	uartPutcDirect('E')  // Breadcrumb: entered enableMMU
 	if pageTableL0 == 0 {
 		print("FATAL: Page tables not initialized\r\n")
 		return false
@@ -1123,20 +1187,21 @@ func enableMMU() bool {
 	sctlr &^= 1 << 2  // C = 0 (data cache disabled)
 	sctlr &^= 1 << 12 // I = 0 (instruction cache disabled)
 
-	// Verify critical mappings before enabling
-	if !dumpFetchMapping("", uintptr(0x200264)) {
-		return false
-	}
-	if !dumpFetchMapping("", uintptr(0x276200)) {
-		return false
-	}
+	// CRITICAL: Cannot call dumpFetchMapping() before MMU is enabled!
+	// dumpFetchMapping uses print() which accesses .rodata strings, and before
+	// MMU is on, ARM64 requires strict alignment (strings are misaligned).
+	// TODO: Add verification AFTER MMU enable when unaligned access is allowed.
 
+	// Enable MMU
 	asm.Dsb()
 	asm.Isb()
 	asm.WriteSctlrEl1(sctlr)
 	asm.Isb()
 	asm.InvalidateTlbAll()
 	asm.Dsb()
+
+	// Now MMU is ON and unaligned access is allowed, can safely use print()
+	uartPutcDirect('M')  // MMU enabled successfully
 
 	return true
 }

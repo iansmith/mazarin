@@ -17,7 +17,7 @@ import (
 // Additionally, Go sometimes stores extra return addresses at [FP+40]+ for
 // functions with complex control flow (defer, panic recovery, etc.)
 //
-//go:nosplit
+// NOTE: No //go:nosplit - only called for fatal exceptions, stack split is safe
 func PrintTraceback(pc, fp, lr, gp uintptr) {
 	print("\r\n=== Stack Traceback ===\r\n")
 	print("Exception at PC=0x")
@@ -90,7 +90,7 @@ func PrintTraceback(pc, fp, lr, gp uintptr) {
 
 // printFrame prints information about a single stack frame
 //
-//go:nosplit
+// NOTE: No //go:nosplit - only called for fatal exceptions, stack split is safe
 func printFrame(frameNum int, pc uintptr) {
 	// Print frame number
 	print("#")

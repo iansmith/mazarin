@@ -62,10 +62,12 @@ SECTIONS
     . = ALIGN(0x800);
     PROVIDE(exception_vectors_end = .);
 
+    /* Align .rodata to 16 bytes for efficient ldp/stp access */
+    . = ALIGN(16);
     __rodata_start = .;
-    .rodata :
+    .rodata : ALIGN(16) SUBALIGN(16)
     {
-        *(.rodata)
+        *(.rodata .rodata.*)
     }
     . = ALIGN(4096);
     __rodata_end = .;
@@ -78,11 +80,13 @@ SECTIONS
     }
     . = ALIGN(4096);
     __image_data_end = .;
- 
+
+    /* Align .data to 16 bytes for strict ARM64 alignment requirements */
+    . = ALIGN(16);
     __data_start = .;
-    .data :
+    .data : ALIGN(16) SUBALIGN(16)
     {
-        *(.data)
+        *(.data .data.*)
     }
     . = ALIGN(4096);
     __data_end = .;

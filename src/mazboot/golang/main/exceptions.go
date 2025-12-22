@@ -274,17 +274,23 @@ func uartPutsDirect(s string) {
 }
 
 //go:nosplit
+func hexDigit(n uint8) byte {
+	if n < 10 {
+		return '0' + n
+	}
+	return 'A' + (n - 10)
+}
+
+//go:nosplit
 func uartPutHex8Direct(v uint8) {
-	const hexdigits = "0123456789ABCDEF"
-	uartPutcDirect(hexdigits[(v>>4)&0xF])
-	uartPutcDirect(hexdigits[v&0xF])
+	uartPutcDirect(hexDigit((v >> 4) & 0xF))
+	uartPutcDirect(hexDigit(v & 0xF))
 }
 
 //go:nosplit
 func uartPutHex64Direct(v uint64) {
-	const hexdigits = "0123456789ABCDEF"
 	for shift := uint(60); ; shift -= 4 {
-		uartPutcDirect(hexdigits[(v>>shift)&0xF])
+		uartPutcDirect(hexDigit(uint8((v >> shift) & 0xF)))
 		if shift == 0 {
 			break
 		}
