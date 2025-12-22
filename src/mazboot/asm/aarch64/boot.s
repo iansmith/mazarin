@@ -167,6 +167,9 @@ at_el1:
     movz w15, #0x62              // 'b' = BSS cleared
     str w15, [x14]
 
+    // NOTE: .data section is loaded directly to RAM by QEMU (no copy needed)
+    // The linker places .data at 0x40100000+ and QEMU loads it there
+
     // Initialize mmap bump pointer at 0x40FFF000 to 0x48000000
     // IMPORTANT: Must be within mapped heap region (0x40000000-0x50000000)
     // Start at 0x48000000 to leave room for initial heap allocations

@@ -81,25 +81,24 @@ SECTIONS
     . = ALIGN(4096);
     __image_data_end = .;
 
-    /* Align .data to 16 bytes for strict ARM64 alignment requirements */
-    . = ALIGN(16);
+    /* Writable data sections in RAM region (0x40000000+) */
+    /* IMPORTANT: QEMU virt machine places DTB at 0x40000000-0x40100000 (1MB)
+     * Kernel has 128MB total (0x40100000 - 0x48100000)
+     *
+     * .data is placed directly in RAM - no AT() directive needed.
+     * QEMU's -kernel loader will load .data directly at its RAM address (0x40100000+)
+     */
+    . = 0x40100000;
+
+    /* .data: initialized globals WITH pointers (must be writable) */
     __data_start = .;
     .data : ALIGN(16) SUBALIGN(16)
     {
         *(.data .data.*)
     }
-    . = ALIGN(4096);
+    . = ALIGN(16);
     __data_end = .;
- 
-    /* Writable data sections in RAM region (0x40000000+) */
-    /* IMPORTANT: QEMU virt machine places DTB at 0x40000000-0x40100000 (1MB)
-     * Kernel has 128MB total (0x40100000 - 0x48100000)
-     *
-     * NOTE: All runtime addresses use linker symbols (not hardcoded), so
-     * we can safely place .noptrdata before .bss without breaking anything.
-     */
-    . = 0x40100000;
-    
+
     /* Go's .noptrdata: initialized globals without pointers (must be writable) */
     __noptrdata_start = .;
     .noptrdata : ALIGN(16)
