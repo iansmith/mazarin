@@ -35,6 +35,7 @@
 .equ SPILL_SPACE_3PARAM,  32    // 3 parameter functions
 .equ SPILL_SPACE_4PARAM,  48    // 4 parameter functions
 .equ SPILL_SPACE_6PARAM,  48    // 6 parameter functions
+.equ SPILL_SPACE_8PARAM,  64    // 8 parameter functions
 
 // Register save space (7 registers: x19-x22, x28-x30)
 .equ REG_SAVE_SPACE,      64    // 64 bytes (4 pairs + alignment)
@@ -643,8 +644,10 @@ stack_selected:
     // Go's prolog does `stp x29, x30, [sp, #-16]!; mov x29, sp` which sets
     // Go's frame pointer 16 bytes below our sp. Go then accesses [x29+16],
     // [x29+24], etc. for locals, which maps to our [sp+0], [sp+8], etc.!
-    movz x8, #0x4000, lsl #16
-    movk x8, #0x0FE0, lsl #0        // x8 = 0x40000FE0
+    // CHANGED: Use 0x5F0FFF00 instead of 0x40000FE0 to avoid DTB region
+    // (0x40000000-0x40100000 is DTB, runtime might corrupt it)
+    movz x8, #0x5F0F, lsl #16
+    movk x8, #0xFF00, lsl #0        // x8 = 0x5F0FFF00
     ldp x5, x6, [sp, #0]            // x5 = saved x0, x6 = saved x1
     stp x5, x6, [x8]                // Store to fixed memory at +0, +8
     ldp x5, x6, [sp, #16]           // x5 = saved x2, x6 = saved x3
@@ -676,14 +679,17 @@ stack_selected:
     ldr x28, =runtime.g0
 
     // Call Go exception handler with 8 parameters
+    // Must provide spill space for Go's argument spills
+    CALL_GO_PROLOGUE SPILL_SPACE_8PARAM
     bl main.ExceptionHandler
+    CALL_GO_EPILOGUE SPILL_SPACE_8PARAM
 
     // Go handler returned - this means page fault was handled
     // Restore ALL registers and retry faulting instruction
     //
     // CRITICAL: Must restore ELR_EL1, SPSR_EL1, and SP before eret!
     //
-    // Strategy: Use fixed memory (0x40000FE0) to save x0/x1 for final restoration
+    // Strategy: Use fixed memory (0x5F0FFF00) to save x0/x1 for final restoration
 
     // Step 1: Restore ELR_EL1 and SPSR_EL1 while still on exception stack
     ldp x0, x1, [sp, #256]          // x0 = saved ELR, x1 = saved SPSR
@@ -691,7 +697,7 @@ stack_selected:
     msr SPSR_EL1, x1                // Restore saved PSTATE
     isb                             // Ensure ELR/SPSR writes complete
 
-    // Step 2: x0-x7 were already saved to fixed memory (0x40000FE0) BEFORE calling Go!
+    // Step 2: x0-x7 were already saved to fixed memory (0x5F0FFF00) BEFORE calling Go!
     // We don't need to re-read from the exception frame (which Go may have corrupted).
     // Just restore x8-x28 from exception frame, then restore x0-x7 from fixed memory.
 
@@ -718,8 +724,8 @@ stack_selected:
 
     // Step 6: Load original x0-x7 from fixed memory (stack is now kernel stack)
     // Use x7 as scratch to load the fixed memory address, then restore x7 last
-    movz x7, #0x4000, lsl #16
-    movk x7, #0x0FE0, lsl #0        // x7 = 0x40000FE0
+    movz x7, #0x5F0F, lsl #16
+    movk x7, #0xFF00, lsl #0        // x7 = 0x5F0FFF00
     ldp x0, x1, [x7]                // x0 = original x0, x1 = original x1
     ldp x2, x3, [x7, #16]           // x2 = original x2, x3 = original x3
     ldp x4, x5, [x7, #32]           // x4 = original x4, x5 = original x5
@@ -727,9 +733,9 @@ stack_selected:
     ldr x7, [x7, #56]               // x7 = original x7 (self-overwriting load)
 
     // DEBUG: Breadcrumb before eret (use x6 as scratch, will be immediately restored from next fault)
-    // Save x6 to fixed memory temporarily
-    movz x6, #0x4000, lsl #16
-    movk x6, #0x0FC0, lsl #0        // x6 = 0x40000FC0 (different from 0x40000FE0)
+    // Save x7 to fixed memory temporarily
+    movz x6, #0x5F0F, lsl #16
+    movk x6, #0xFE00, lsl #0        // x6 = 0x5F0FFE00 (different from 0x5F0FFF00)
     str x7, [x6]                    // Save x7
     // Write 'E' to UART
     movz x6, #0x0900, lsl #16
@@ -737,11 +743,11 @@ stack_selected:
     movz x7, #0x45, lsl #0          // 'E'
     str w7, [x6]                    // Write to UART
     // Restore x6, x7
-    movz x6, #0x4000, lsl #16
-    movk x6, #0x0FC0, lsl #0
+    movz x6, #0x5F0F, lsl #16
+    movk x6, #0xFE00, lsl #0
     ldr x7, [x6]                    // Restore x7
-    movz x6, #0x4000, lsl #16
-    movk x6, #0x0FE0, lsl #0
+    movz x6, #0x5F0F, lsl #16
+    movk x6, #0xFF00, lsl #0
     ldr x6, [x6, #48]               // Restore x6
 
     // Return from exception to retry the faulting instruction
@@ -764,7 +770,9 @@ sync_unknown_exception:
     // This allows runtime operations (including stack tracebacks) to work correctly
     ldr x28, =runtime.g0
 
+    CALL_GO_PROLOGUE SPILL_SPACE_8PARAM
     bl main.ExceptionHandler
+    CALL_GO_EPILOGUE SPILL_SPACE_8PARAM
     // If handler returns, hang
     b .
 
@@ -1024,7 +1032,9 @@ sync_other_exception:
     // This allows runtime operations (including stack tracebacks) to work correctly
     ldr x28, =runtime.g0
 
+    CALL_GO_PROLOGUE SPILL_SPACE_8PARAM
     bl main.ExceptionHandler
+    CALL_GO_EPILOGUE SPILL_SPACE_8PARAM
     // If handler returns, hang
     b .
 
