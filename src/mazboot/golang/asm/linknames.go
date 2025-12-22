@@ -23,6 +23,10 @@ func CallMallocinit()
 //go:nosplit
 func CallRuntimeArgs() int
 
+//go:linkname CallRuntimeNewproc call_runtime_newproc
+//go:nosplit
+func CallRuntimeNewproc()
+
 //go:linkname CallRuntimeOsinit call_runtime_osinit
 //go:nosplit
 func CallRuntimeOsinit()
@@ -119,6 +123,10 @@ func InvalidateTlbVa(addr uintptr)
 //go:nosplit
 func Isb()
 
+//go:linkname JumpToNull jump_to_null
+//go:nosplit
+func JumpToNull()
+
 //go:linkname MemmoveBytes MemmoveBytes
 //go:nosplit
 func MemmoveBytes(dest unsafe.Pointer, src unsafe.Pointer, n uint32)
@@ -186,6 +194,10 @@ func ReadCntvTvalEl0() uint32
 //go:linkname ReadCntvctEl0 read_cntvct_el0
 //go:nosplit
 func ReadCntvctEl0() uint64
+
+//go:linkname ReadCtrEl0 read_ctr_el0
+//go:nosplit
+func ReadCtrEl0() uint64
 
 //go:linkname ReadCurrentEl read_current_el
 //go:nosplit
@@ -258,6 +270,10 @@ func UartPutcPl011(c byte)
 //go:linkname VerifyStackPointerReading verify_stack_pointer_reading
 //go:nosplit
 func VerifyStackPointerReading() int
+
+//go:linkname Wfi Wfi
+//go:nosplit
+func Wfi()
 
 //go:linkname WriteCntpCtlEl0 write_cntp_ctl_el0
 //go:nosplit

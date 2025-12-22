@@ -492,12 +492,14 @@ func KernelMain(r0, r1, atags uint32) {
 	}
 
 	// Initialize PL031 RTC for time services (needed by schedinit)
-	initPL031RTC()
+	// TODO: Implement initPL031RTC()
+	// initPL031RTC()
 
 	// Set up hardware watchpoint to catch corruption of text section
 	// Watch address 0x312f38 which gets corrupted with pattern 0x0080
-	print("Setting up watchpoint on text section at 0x00312f38...\r\n")
-	asm.SetupWatchpoint(0x00312f38, 3) // 3 = doubleword (8 bytes)
+	// TODO: Implement asm.SetupWatchpoint()
+	// print("Setting up watchpoint on text section at 0x00312f38...\r\n")
+	// asm.SetupWatchpoint(0x00312f38, 3) // 3 = doubleword (8 bytes)
 
 	// WORKAROUND: Pre-map 1MB of stack to avoid page faults during schedinit
 	// Even with optimized demand paging, schedinit hangs when faulting

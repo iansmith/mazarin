@@ -47,8 +47,14 @@ GLOBALIZE_SYMBOLS_GEN_SRC = $(MAZBOOT_SRC)/tools/generate-globalize-symbols.go
 GLOBALIZE_SYMBOLS_GEN = $(BUILD_DIR)/generate-globalize-symbols
 GLOBALIZE_SYMBOLS_LIST = $(BUILD_DIR)/globalize_symbols.txt
 
-# Note: linknames.go and main.go are generated via //go:generate in their respective files.
-# They are automatically regenerated when 'go build' is invoked.
+# Generated Go files and their dependencies
+LINKNAMES_GO = $(ASM_PACKAGE_DIR)/linknames.go
+LINKNAMES_GEN = $(MAZBOOT_SRC)/tools/generate-linknames.go
+MAIN_GO = $(GO_PACKAGE_DIR)/main.go
+MAIN_GEN = $(MAZBOOT_SRC)/tools/generate-main-calls.go
+
+# Assembly source files that generators depend on
+ASM_SOURCES = $(wildcard $(MAZBOOT_SRC)/asm/aarch64/*.s)
 
 # Build output directory
 BUILD_DIR = build/mazboot
@@ -145,11 +151,22 @@ $(GLOBALIZE_SYMBOLS_LIST): $(GLOBALIZE_SYMBOLS_GEN) $(wildcard $(MAZBOOT_SRC)/as
 	@mkdir -p $(BUILD_DIR)
 	@cd $(MAZBOOT_SRC) && $(abspath $(GLOBALIZE_SYMBOLS_GEN)) -asm asm/aarch64 -o $(abspath $(GLOBALIZE_SYMBOLS_LIST))
 
+# Generate linknames.go from assembly files
+# This file contains //go:linkname directives to link Go functions to assembly symbols
+$(LINKNAMES_GO): $(LINKNAMES_GEN) $(ASM_SOURCES)
+	@echo "Regenerating linknames.go from assembly sources..."
+	@cd $(ASM_PACKAGE_DIR) && CGO_ENABLED=0 GOTOOLCHAIN=auto $(GO) generate
+
+# Generate main.go from assembly and Go files
+# This file ensures all assembly-called functions are referenced so they're not optimized away
+$(MAIN_GO): $(MAIN_GEN) $(ASM_SOURCES) $(filter-out $(MAIN_GO), $(GO_SRC))
+	@echo "Regenerating main.go from assembly and Go sources..."
+	@cd $(GO_PACKAGE_DIR) && CGO_ENABLED=0 GOTOOLCHAIN=auto $(GO) generate
+
 # QEMU build target - rebuilds Go object with qemuvirt and aarch64 tags
-# NOTE: This depends on GO_SRC, which includes $(LINKNAMES_GO) and $(MAIN_GO).
-# Make will automatically generate these files from assembly sources BEFORE building Go code.
+# NOTE: This depends on LINKNAMES_GO and MAIN_GO, which are regenerated when their sources change.
 KERNEL_GO_OBJ_QEMU = $(BUILD_DIR)/kernel_go_qemu.o
-$(KERNEL_GO_OBJ_QEMU): $(MAZBOOT_SRC)/golang/go.mod $(GO_SRC) $(GLOBALIZE_SYMBOLS_LIST)
+$(KERNEL_GO_OBJ_QEMU): $(MAZBOOT_SRC)/golang/go.mod $(GO_SRC) $(LINKNAMES_GO) $(MAIN_GO) $(GLOBALIZE_SYMBOLS_LIST)
 	@mkdir -p $(BUILD_DIR)
 	@# Clean up any leftover files from previous builds
 	@rm -f $(KERNEL_GO_ARCHIVE) $(KERNEL_GO_TEMP) $(BUILD_DIR)/go.o $(BUILD_DIR)/kernel_go.h $(BUILD_DIR)/__.SYMDEF

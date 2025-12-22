@@ -15,20 +15,27 @@ func main() {
 	// Reference interrupt handlers to prevent optimization
 	// These are called from assembly interrupt handlers and must not be optimized away
 	// This will never execute in bare metal, but ensures the functions exist
-	ExceptionHandler(0, 0, 0, 0, 0)
+	ExceptionHandler(0, 0, 0, 0, 0, 0, 0, 0)
 	UartTransmitHandler() // UART TX interrupt handler
 
 	// Reference other functions called from assembly
 	// This will never execute in bare metal, but ensures the functions exist
 	GrowStackForCurrent()
 	SyscallBrk(0)
+	SyscallClockGettime()
 	SyscallClose(0)
+	SyscallExit()
 	SyscallFutex(nil, 0, 0, nil, nil, 0)
+	SyscallKill()
 	SyscallMmap(0, 0, 0, 0, 0, 0)
 	SyscallMunmap(0, 0)
 	SyscallOpenat(0, nil, 0, 0)
 	SyscallRead(0, nil, 0)
+	SyscallRtSigaction()
+	SyscallRtSigprocmask()
 	SyscallSchedGetaffinity(0, 0, nil)
+	SyscallTgkill()
+	SyscallTkill()
 	SyscallUnknown(0)
 	SyscallWriteBuffer(nil, 0)
 	fb_putc_irq(0)

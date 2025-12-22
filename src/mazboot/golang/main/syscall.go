@@ -521,3 +521,48 @@ func freeFutexWaitSlot(slot int) {
 // - schedinit → lockInit → lock acquisition → futex WAIT → gopark (real blocking) ✓
 // - Other goroutine → lock release → futex WAKE → goready (real wakeup) ✓
 // =============================================================================
+
+// Stub syscall implementations for functions referenced by assembly but not yet implemented
+
+//go:nosplit
+func SyscallClockGettime() int64 {
+	// TODO: Implement clock_gettime syscall
+	return 0
+}
+
+//go:nosplit
+func SyscallExit() {
+	print("SyscallExit called\r\n")
+	for {
+	}
+}
+
+//go:nosplit
+func SyscallKill() int64 {
+	// TODO: Implement kill syscall
+	return 0
+}
+
+//go:nosplit
+func SyscallRtSigaction() int64 {
+	// TODO: Implement rt_sigaction syscall
+	return 0
+}
+
+//go:nosplit
+func SyscallRtSigprocmask() int64 {
+	// TODO: Implement rt_sigprocmask syscall
+	return 0
+}
+
+//go:nosplit
+func SyscallTgkill() int64 {
+	// TODO: Implement tgkill syscall
+	return 0
+}
+
+//go:nosplit
+func SyscallTkill() int64 {
+	// TODO: Implement tkill syscall
+	return 0
+}
