@@ -81,9 +81,30 @@ get_page_tables_end_addr:
     ldr x0, =__page_tables_end
     ret
 
+// get_ram_start() returns uintptr
+// Returns QEMU's physical RAM base address (platform-specific)
+.global get_ram_start
+get_ram_start:
+    ldr x0, =__ram_start
+    ret
+
 // get_dtb_boot_addr() returns uintptr
 // Returns QEMU's DTB location (platform-specific, not part of relocatable layout)
 .global get_dtb_boot_addr
 get_dtb_boot_addr:
     ldr x0, =__dtb_boot_addr
+    ret
+
+// get_dtb_size() returns uintptr
+// Returns DTB size (1MB reserved by QEMU)
+.global get_dtb_size
+get_dtb_size:
+    ldr x0, =__dtb_size
+    ret
+
+// get_g0_stack_bottom() returns uintptr
+// Returns bottom of g0 stack (32KB below stack top)
+.global get_g0_stack_bottom
+get_g0_stack_bottom:
+    ldr x0, =__g0_stack_bottom
     ret

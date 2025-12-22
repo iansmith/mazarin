@@ -501,11 +501,18 @@ func KernelMain(r0, r1, atags uint32) {
 	// print("Setting up watchpoint on text section at 0x00312f38...\r\n")
 	// asm.SetupWatchpoint(0x00312f38, 3) // 3 = doubleword (8 bytes)
 
-	// WORKAROUND: Pre-map 1MB of stack to avoid page faults during schedinit
+	// WORKAROUND: Pre-map DTB region and g0 stack to avoid page faults during schedinit
 	// Even with optimized demand paging, schedinit hangs when faulting
 	{
-		print("Pre-mapping 1MB of stack (0x40000000-0x40100000)...\r\n")
-		for va := uintptr(0x40000000); va < 0x40100000; va += 0x1000 {
+		// Map DTB region (QEMU device tree blob)
+		dtbStart := getLinkerSymbol("__dtb_boot_addr")
+		dtbEnd := dtbStart + getLinkerSymbol("__dtb_size")
+		print("Pre-mapping DTB region (0x")
+		printHex64(uint64(dtbStart))
+		print("-0x")
+		printHex64(uint64(dtbEnd))
+		print(")...\r\n")
+		for va := dtbStart; va < dtbEnd; va += 0x1000 {
 			physFrame := allocPhysFrame()
 			if physFrame == 0 {
 				print("ERROR: Out of physical frames\r\n")
@@ -513,11 +520,33 @@ func KernelMain(r0, r1, atags uint32) {
 			}
 			bzero(unsafe.Pointer(physFrame), 0x1000)
 			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
-			if (va-0x40000000)%(64*0x1000) == 0 {
+			if (va-dtbStart)%(64*0x1000) == 0 {
 				print(".")
 			}
 		}
-		print("\r\nPre-mapped 1MB of stack\r\n")
+		print("\r\nPre-mapped DTB region\r\n")
+
+		// Map g0 stack (system goroutine stack, 32KB)
+		g0StackBottom := getLinkerSymbol("__g0_stack_bottom")
+		g0StackTop := getLinkerSymbol("__stack_top")
+		print("Pre-mapping g0 stack (0x")
+		printHex64(uint64(g0StackBottom))
+		print("-0x")
+		printHex64(uint64(g0StackTop))
+		print(")...\r\n")
+		for va := g0StackBottom; va < g0StackTop; va += 0x1000 {
+			physFrame := allocPhysFrame()
+			if physFrame == 0 {
+				print("ERROR: Out of physical frames\r\n")
+				break
+			}
+			bzero(unsafe.Pointer(physFrame), 0x1000)
+			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+			if (va-g0StackBottom)%(8*0x1000) == 0 {
+				print(".")
+			}
+		}
+		print("\r\nPre-mapped g0 stack\r\n")
 	}
 
 	// =========================================

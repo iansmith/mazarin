@@ -133,14 +133,14 @@ func pageInit(atagsPtr uintptr) {
 	asm.Bzero(allPagesArrayPtr, pageArrayLen)
 
 	// Calculate kernel pages
-	const RAM_START = 0x40000000
+	ramStart := getLinkerSymbol("__ram_start")
 	__endAddr := getLinkerSymbol("__end")
-	if __endAddr >= RAM_START {
-		kernelPages = uint32((__endAddr - RAM_START) / PAGE_SIZE)
+	if __endAddr >= ramStart {
+		kernelPages = uint32((__endAddr - ramStart) / PAGE_SIZE)
 	}
 
 	// Initialize kernel pages (limit to 1000 to speed up initialization)
-	ramStartPage := uint32(RAM_START / PAGE_SIZE)
+	ramStartPage := uint32(ramStart / PAGE_SIZE)
 	maxKernelPages := kernelPages
 	if maxKernelPages > 1000 {
 		maxKernelPages = 1000
