@@ -108,3 +108,59 @@ get_dtb_size:
 get_g0_stack_bottom:
     ldr x0, =__g0_stack_bottom
     ret
+
+// MMIO device addresses (QEMU virt machine)
+
+// get_gic_base() returns uintptr
+.global get_gic_base
+get_gic_base:
+    ldr x0, =__gic_base
+    ret
+
+// get_gic_size() returns uintptr
+.global get_gic_size
+get_gic_size:
+    ldr x0, =__gic_size
+    ret
+
+// get_uart_base() returns uintptr
+.global get_uart_base
+get_uart_base:
+    ldr x0, =__uart_base
+    ret
+
+// get_uart_size() returns uintptr
+.global get_uart_size
+get_uart_size:
+    ldr x0, =__uart_size
+    ret
+
+// get_rtc_base() returns uintptr
+.global get_rtc_base
+get_rtc_base:
+    ldr x0, =__rtc_base
+    ret
+
+// get_fwcfg_base() returns uintptr
+.global get_fwcfg_base
+get_fwcfg_base:
+    ldr x0, =__fwcfg_base
+    ret
+
+// get_fwcfg_size() returns uintptr
+.global get_fwcfg_size
+get_fwcfg_size:
+    ldr x0, =__fwcfg_size
+    ret
+
+// get_bochs_display_base() returns uintptr
+.global get_bochs_display_base
+get_bochs_display_base:
+    ldr x0, =__bochs_display_base
+    ret
+
+// get_bochs_display_size() returns uintptr
+.global get_bochs_display_size
+get_bochs_display_size:
+    ldr x0, =__bochs_display_size
+    ret

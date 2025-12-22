@@ -50,6 +50,24 @@ func getLinkerSymbol(name string) uintptr {
 		return asm.GetDtbSize()
 	case "__g0_stack_bottom":
 		return asm.GetG0StackBottom()
+	case "__gic_base":
+		return asm.GetGicBase()
+	case "__gic_size":
+		return asm.GetGicSize()
+	case "__uart_base":
+		return asm.GetUartBase()
+	case "__uart_size":
+		return asm.GetUartSize()
+	case "__rtc_base":
+		return asm.GetRtcBase()
+	case "__fwcfg_base":
+		return asm.GetFwcfgBase()
+	case "__fwcfg_size":
+		return asm.GetFwcfgSize()
+	case "__bochs_display_base":
+		return asm.GetBochsDisplayBase()
+	case "__bochs_display_size":
+		return asm.GetBochsDisplaySize()
 	default:
 		// Unknown symbol - return 0 (caller should check)
 		return 0

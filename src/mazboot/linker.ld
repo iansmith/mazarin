@@ -21,6 +21,17 @@ SECTIONS
     PROVIDE(__dtb_boot_addr = 0x40000000);  /* DTB location (start of RAM) */
     PROVIDE(__dtb_size = 0x100000);         /* DTB size: 1MB (QEMU reserves this) */
 
+    /* QEMU virt machine MMIO device addresses */
+    PROVIDE(__gic_base = 0x08000000);       /* GIC (Generic Interrupt Controller) */
+    PROVIDE(__gic_size = 0x00020000);       /* GIC size: 128KB (dist + cpu interface) */
+    PROVIDE(__uart_base = 0x09000000);      /* UART PL011 */
+    PROVIDE(__uart_size = 0x00010000);      /* UART size: 64KB */
+    PROVIDE(__rtc_base = 0x09010000);       /* PL031 RTC */
+    PROVIDE(__fwcfg_base = 0x09020000);     /* QEMU fw_cfg device */
+    PROVIDE(__fwcfg_size = 0x00010000);     /* fw_cfg size: 64KB */
+    PROVIDE(__bochs_display_base = 0x10000000);  /* bochs-display framebuffer */
+    PROVIDE(__bochs_display_size = 0x01000000);  /* bochs-display size: 16MB */
+
     /* Kernel code/data in ROM region
      *
      * NOTE: We start the kernel at 0x300000 instead of 0x200000 to leave room

@@ -14,47 +14,45 @@ func read_id_aa64pfr0_el1() uint64
 
 // GIC (Generic Interrupt Controller) for QEMU virt machine
 // QEMU virt uses GICv2 by default
-// Base addresses:
-//   GIC Distributor: 0x08000000
-//   GIC CPU Interface: 0x08010000
+// Base addresses are initialized from linker symbols in gicInit()
+
+// Global variables for GIC base addresses (set once during init)
+var (
+	gicDistBase uintptr // GIC Distributor base
+	gicCpuBase  uintptr // GIC CPU Interface base
+)
 
 const (
-	// GIC Distributor base address
-	GIC_DIST_BASE = 0x08000000
+	// GIC Distributor register offsets (from base)
+	GICD_CTLR_OFFSET        = 0x000 // Distributor Control Register
+	GICD_TYPER_OFFSET       = 0x004 // Interrupt Controller Type Register
+	GICD_IGROUPRn_OFFSET    = 0x080 // Interrupt Group Registers (n = 0..31)
+	GICD_ISENABLERn_OFFSET  = 0x100 // Interrupt Set-Enable Registers (n = 0..31)
+	GICD_ICENABLERn_OFFSET  = 0x180 // Interrupt Clear-Enable Registers (n = 0..31)
+	GICD_ISPENDRn_OFFSET    = 0x200 // Interrupt Set-Pending Registers (n = 0..31)
+	GICD_ICPENDRn_OFFSET    = 0x280 // Interrupt Clear-Pending Registers (n = 0..31)
+	GICD_ISACTIVERn_OFFSET  = 0x300 // Interrupt Set-Active Registers (n = 0..31)
+	GICD_ICACTIVERn_OFFSET  = 0x380 // Interrupt Clear-Active Registers (n = 0..31)
+	GICD_IPRIORITYRn_OFFSET = 0x400 // Interrupt Priority Registers (n = 0..254)
+	GICD_ITARGETSRn_OFFSET  = 0x800 // Interrupt Target Registers (n = 0..254)
+	GICD_ICFGRn_OFFSET      = 0xC00 // Interrupt Configuration Registers (n = 0..63)
+	GICD_SGIR_OFFSET        = 0xF00 // Software Generated Interrupt Register
 
-	// GIC Distributor register offsets
-	GICD_CTLR        = GIC_DIST_BASE + 0x000 // Distributor Control Register
-	GICD_TYPER       = GIC_DIST_BASE + 0x004 // Interrupt Controller Type Register
-	GICD_IGROUPRn    = GIC_DIST_BASE + 0x080 // Interrupt Group Registers (n = 0..31)
-	GICD_ISENABLERn  = GIC_DIST_BASE + 0x100 // Interrupt Set-Enable Registers (n = 0..31)
-	GICD_ICENABLERn  = GIC_DIST_BASE + 0x180 // Interrupt Clear-Enable Registers (n = 0..31)
-	GICD_ISPENDRn    = GIC_DIST_BASE + 0x200 // Interrupt Set-Pending Registers (n = 0..31)
-	GICD_ICPENDRn    = GIC_DIST_BASE + 0x280 // Interrupt Clear-Pending Registers (n = 0..31)
-	GICD_ISACTIVERn  = GIC_DIST_BASE + 0x300 // Interrupt Set-Active Registers (n = 0..31)
-	GICD_ICACTIVERn  = GIC_DIST_BASE + 0x380 // Interrupt Clear-Active Registers (n = 0..31)
-	GICD_IPRIORITYRn = GIC_DIST_BASE + 0x400 // Interrupt Priority Registers (n = 0..254)
-	GICD_ITARGETSRn  = GIC_DIST_BASE + 0x800 // Interrupt Target Registers (n = 0..254)
-	GICD_ICFGRn      = GIC_DIST_BASE + 0xC00 // Interrupt Configuration Registers (n = 0..63)
-	GICD_SGIR        = GIC_DIST_BASE + 0xF00 // Software Generated Interrupt Register
-
-	// GIC CPU Interface base address
-	GIC_CPU_BASE = 0x08010000
-
-	// GIC CPU Interface register offsets
-	GICC_CTLR   = GIC_CPU_BASE + 0x000 // CPU Interface Control Register
-	GICC_PMR    = GIC_CPU_BASE + 0x004 // Interrupt Priority Mask Register
-	GICC_BPR    = GIC_CPU_BASE + 0x008 // Binary Point Register
-	GICC_IAR    = GIC_CPU_BASE + 0x00C // Interrupt Acknowledge Register
-	GICC_EOIR   = GIC_CPU_BASE + 0x010 // End of Interrupt Register
-	GICC_RPR    = GIC_CPU_BASE + 0x014 // Running Priority Register
-	GICC_HPPIR  = GIC_CPU_BASE + 0x018 // Highest Pending Interrupt Register
-	GICC_ABPR   = GIC_CPU_BASE + 0x01C // Aliased Binary Point Register
-	GICC_AIAR   = GIC_CPU_BASE + 0x020 // Aliased Interrupt Acknowledge Register
-	GICC_AEOIR  = GIC_CPU_BASE + 0x024 // Aliased End of Interrupt Register
-	GICC_AHPPIR = GIC_CPU_BASE + 0x028 // Aliased Highest Pending Interrupt Register
-	GICC_APR    = GIC_CPU_BASE + 0x0D0 // Active Priority Register
-	GICC_NSAPR  = GIC_CPU_BASE + 0x0E0 // Non-secure Active Priority Register
-	GICC_IIDR   = GIC_CPU_BASE + 0x0FC // CPU Interface Identification Register
+	// GIC CPU Interface register offsets (from CPU base, which is GIC_BASE + 0x10000)
+	GICC_CTLR_OFFSET   = 0x000 // CPU Interface Control Register
+	GICC_PMR_OFFSET    = 0x004 // Interrupt Priority Mask Register
+	GICC_BPR_OFFSET    = 0x008 // Binary Point Register
+	GICC_IAR_OFFSET    = 0x00C // Interrupt Acknowledge Register
+	GICC_EOIR_OFFSET   = 0x010 // End of Interrupt Register
+	GICC_RPR_OFFSET    = 0x014 // Running Priority Register
+	GICC_HPPIR_OFFSET  = 0x018 // Highest Pending Interrupt Register
+	GICC_ABPR_OFFSET   = 0x01C // Aliased Binary Point Register
+	GICC_AIAR_OFFSET   = 0x020 // Aliased Interrupt Acknowledge Register
+	GICC_AEOIR_OFFSET  = 0x024 // Aliased End of Interrupt Register
+	GICC_AHPPIR_OFFSET = 0x028 // Aliased Highest Pending Interrupt Register
+	GICC_APR_OFFSET    = 0x0D0 // Active Priority Register
+	GICC_NSAPR_OFFSET  = 0x0E0 // Non-secure Active Priority Register
+	GICC_IIDR_OFFSET   = 0x0FC // CPU Interface Identification Register
 
 	// Interrupt IDs
 	// PPIs (Private Peripheral Interrupts): 16-31
@@ -78,6 +76,10 @@ var (
 //
 //go:nosplit
 func gicInit() {
+	// Initialize GIC base addresses from linker symbols (once)
+	gicDistBase = getLinkerSymbol("__gic_base")
+	gicCpuBase = gicDistBase + 0x10000 // CPU interface is at +64KB from distributor
+
 	// Call the full initialization
 	gicInitFull()
 }
@@ -86,6 +88,17 @@ func gicInit() {
 //
 //go:nosplit
 func gicInitFull() {
+	// Compute register addresses from global base addresses
+	GICD_CTLR := gicDistBase + GICD_CTLR_OFFSET
+	GICD_ICPENDRn := gicDistBase + GICD_ICPENDRn_OFFSET
+	GICD_IGROUPRn := gicDistBase + GICD_IGROUPRn_OFFSET
+	GICD_IPRIORITYRn := gicDistBase + GICD_IPRIORITYRn_OFFSET
+	GICD_ITARGETSRn := gicDistBase + GICD_ITARGETSRn_OFFSET
+	GICD_ICFGRn := gicDistBase + GICD_ICFGRn_OFFSET
+	GICC_CTLR := gicCpuBase + GICC_CTLR_OFFSET
+	GICC_PMR := gicCpuBase + GICC_PMR_OFFSET
+	GICC_BPR := gicCpuBase + GICC_BPR_OFFSET
+
 	// Disable distributor and CPU interface
 	asm.MmioWrite(GICD_CTLR, 0)
 	asm.MmioWrite(GICC_CTLR, 0)
@@ -139,6 +152,9 @@ func gicEnableInterrupt(irqID uint32) {
 		return // Invalid interrupt ID
 	}
 
+	// Compute register address from global base
+	GICD_ISENABLERn := gicDistBase + GICD_ISENABLERn_OFFSET
+
 	// Calculate register index (32 interrupts per register)
 	regIndex := irqID / 32
 	bitIndex := irqID % 32
@@ -154,6 +170,9 @@ func gicDisableInterrupt(irqID uint32) {
 	if irqID >= 1020 {
 		return // Invalid interrupt ID
 	}
+
+	// Compute register address from global base
+	GICD_ICENABLERn := gicDistBase + GICD_ICENABLERn_OFFSET
 
 	// Calculate register index (32 interrupts per register)
 	regIndex := irqID / 32
@@ -182,6 +201,9 @@ func gicHandleInterruptWithID(irqID uint32) {
 //
 //go:nosplit
 func gicAcknowledgeInterrupt() uint32 {
+	// Compute register address from global CPU base
+	GICC_IAR := gicCpuBase + GICC_IAR_OFFSET
+
 	// Read IAR (Interrupt Acknowledge Register)
 	// Bits 9:0 = interrupt ID
 	// Bit 10 = CPU ID (for SGIs)
@@ -194,6 +216,9 @@ func gicAcknowledgeInterrupt() uint32 {
 //
 //go:nosplit
 func gicEndOfInterrupt(irqID uint32) {
+	// Compute register address from global CPU base
+	GICC_EOIR := gicCpuBase + GICC_EOIR_OFFSET
+
 	// Write interrupt ID to EOIR (End of Interrupt Register)
 	asm.MmioWrite(GICC_EOIR, irqID)
 }

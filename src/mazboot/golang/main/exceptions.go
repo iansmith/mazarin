@@ -92,7 +92,7 @@ const (
 //go:noinline
 func InitializeExceptions() {
 	// DEBUG: Mark entry to this function
-	const uartBase = uintptr(0x09000000)
+	uartBase := getLinkerSymbol("__uart_base")
 	*(*uint32)(unsafe.Pointer(uartBase)) = 0x52 // 'R' - Relocating vectors
 
 	// Get original exception vector address from linker (in ROM)
@@ -182,7 +182,7 @@ func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType u
 
 	// DEBUG: Print marker for exceptions after #17 to detect loops
 	if exceptionCount == 18 || exceptionCount == 19 || exceptionCount == 20 {
-		const uartBase = uintptr(0x09000000)
+		uartBase := getLinkerSymbol("__uart_base")
 		*(*uint32)(unsafe.Pointer(uartBase)) = 0x58  // 'X' - exception after #17
 	}
 

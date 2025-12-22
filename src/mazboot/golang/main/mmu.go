@@ -138,6 +138,18 @@ const (
 	KMALLOC_HEAP_END  = 0x4C000000              // End of kmalloc heap region
 )
 
+// MMIODevice describes an MMIO device region to be mapped
+type MMIODevice struct {
+	name  string  // Device name (for debugging)
+	start uintptr // Physical base address (from linker symbol)
+	size  uintptr // Size in bytes
+	attr  uint64  // Page table attributes (PTE_ATTR_*)
+	ap    uint64  // Access permissions (PTE_AP_*)
+}
+
+// MMIO devices to map (initialized once in initMMU)
+var mmioDevices []MMIODevice
+
 // Page table structure
 var (
 	pageTableL0 uintptr   // Level 0 table (PGD)
@@ -483,7 +495,6 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	if faultAddr == lastExceptionVA {
 		sameVACounter++
 		if sameVACounter > 3 {
-			const uartBase = uintptr(0x09000000)
 			uartPutsDirect("\r\n!EXCEPTION LOOP! VA=0x")
 			uartPutHex64Direct(uint64(faultAddr))
 			uartPutsDirect(" count=")
@@ -499,7 +510,6 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	// PERFORMANCE: Minimize debug output for fast demand paging
 	// Only print progress dots every 100 faults, not full debug info
 	pageFaultCounter++
-	const uartBase = uintptr(0x09000000)
 
 	// DEBUG: Print first 20 faults and every 10th fault thereafter
 	if pageFaultCounter <= 20 {
@@ -847,28 +857,49 @@ func initMMU() bool {
 		PTE_ATTR_NORMAL, PTE_AP_RO_EL1,
 	)
 
-	// Map UART (MMIO: 0x09000000 - 0x09010000)
-	mapRegion(
-		0x09000000, 0x09010000, 0x09000000,
-		PTE_ATTR_DEVICE, PTE_AP_RW_EL1,
-	)
+	// Initialize MMIO devices array (global to reduce stack usage)
+	mmioDevices = []MMIODevice{
+		{
+			name:  "GIC",
+			start: getLinkerSymbol("__gic_base"),
+			size:  getLinkerSymbol("__gic_size"),
+			attr:  PTE_ATTR_DEVICE,
+			ap:    PTE_AP_RW_EL1,
+		},
+		{
+			name:  "UART",
+			start: getLinkerSymbol("__uart_base"),
+			size:  getLinkerSymbol("__uart_size"),
+			attr:  PTE_ATTR_DEVICE,
+			ap:    PTE_AP_RW_EL1,
+		},
+		{
+			name:  "fw_cfg",
+			start: getLinkerSymbol("__fwcfg_base"),
+			size:  getLinkerSymbol("__fwcfg_size"),
+			attr:  PTE_ATTR_DEVICE,
+			ap:    PTE_AP_RW_EL1,
+		},
+		{
+			name:  "bochs-display",
+			start: getLinkerSymbol("__bochs_display_base"),
+			size:  getLinkerSymbol("__bochs_display_size"),
+			attr:  PTE_ATTR_DEVICE,
+			ap:    PTE_AP_RW_EL1,
+		},
+	}
 
-	// Map QEMU fw_cfg (MMIO: 0x09020000 - 0x09030000)
-	mapRegion(
-		0x09020000, 0x09030000, 0x09020000,
-		PTE_ATTR_DEVICE, PTE_AP_RW_EL1,
-	)
+	// Map all MMIO devices
+	for i := range mmioDevices {
+		dev := &mmioDevices[i]
+		mapRegion(dev.start, dev.start+dev.size, dev.start, dev.attr, dev.ap)
+	}
 
-	// Map GIC (MMIO: 0x08000000 - 0x08020000)
+	// Map low RAM (DTB region)
+	dtbStart := getLinkerSymbol("__dtb_boot_addr")
+	dtbEnd := dtbStart + getLinkerSymbol("__dtb_size")
 	mapRegion(
-		0x08000000, 0x08020000, 0x08000000,
-		PTE_ATTR_DEVICE, // Device-nGnRnE (MMIO)
-		PTE_AP_RW_EL1,   // Read/Write at EL1
-	)
-
-	// Map low RAM including BSS/stack/etc (0x40000000 - 0x40100000)
-	mapRegion(
-		0x40000000, 0x40100000, 0x40000000,
+		dtbStart, dtbEnd, dtbStart,
 		PTE_ATTR_NORMAL, PTE_AP_RW_EL1,
 	)
 
@@ -884,9 +915,9 @@ func initMMU() bool {
 	// Verify lowmem mapping (silent unless error)
 	dumpFetchMapping("pci-ecam-low", ecamBase)
 
-	// Map kernel RAM (0x40100000 - 0x5E000000) - BSS, heap, stacks
-	// Start at 0x40100000 to avoid QEMU's DTB at 0x40000000-0x40100000
-	mapRegion(0x40100000, PAGE_TABLE_BASE, 0x40100000, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+	// Map kernel RAM (after DTB to page tables) - BSS, heap, stacks
+	ramStart := getLinkerSymbol("__dtb_boot_addr") + getLinkerSymbol("__dtb_size")
+	mapRegion(ramStart, PAGE_TABLE_BASE, ramStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
 
 	// CRITICAL: Map exception vector RAM region as NORMAL CACHEABLE
 	// Exception vectors will be relocated to 0x41100000 from ROM
@@ -913,9 +944,6 @@ func initMMU() bool {
 	// Initialize physical frame allocator
 	initPhysFrameAllocator()
 
-	// Map bochs-display framebuffer/MMIO (0x10000000-0x11000000)
-	mapRegion(0x10000000, 0x11000000, 0x10000000, PTE_ATTR_DEVICE, PTE_AP_RW_EL1)
-
 	// CRITICAL: Flush TLB to ensure all mappings are visible to CPU
 	// Without this, the CPU may have stale TLB entries that don't reflect
 	// the new mappings, causing exceptions when accessing newly mapped regions
@@ -932,7 +960,8 @@ func initMMU() bool {
 //
 //go:nosplit
 func preMapScheديnitPages() {
-	const uartBase = uintptr(0x09000000)
+	// Get UART base for progress markers
+	uartBase := getLinkerSymbol("__uart_base")
 
 	// Print marker to show we're pre-mapping
 	uartPutsDirect("\r\nPre-mapping 22 schedinit pages...")
