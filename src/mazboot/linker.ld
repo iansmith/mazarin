@@ -14,6 +14,12 @@ SECTIONS
      * 0x48100000 - 0x80000000: Reserved (not used by kernel)
      */
     
+    /* QEMU DTB (Device Tree Blob) location
+     * QEMU virt machine places DTB at start of RAM (0x40000000)
+     * This is a QEMU convention, not part of our relocatable layout
+     */
+    PROVIDE(__dtb_boot_addr = 0x40000000);
+
     /* Kernel code/data in ROM region
      *
      * NOTE: We start the kernel at 0x300000 instead of 0x200000 to leave room

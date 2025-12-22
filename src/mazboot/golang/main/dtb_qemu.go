@@ -203,7 +203,7 @@ func tryDTBAtBase(dtbBase uintptr) (base uintptr, size uintptr, ok bool) {
 
 // getPciEcamFromDTB returns the ECAM base and size as described by the DTB.
 func getPciEcamFromDTB() (base uintptr, size uintptr, ok bool) {
-	// Try: 1) DTB pointer from boot, 2) Physical 0x0, 3) Physical 0x40000000
+	// Try: 1) DTB pointer from boot, 2) Physical 0x0, 3) QEMU DTB location (from linker)
 	if dtbPtr != 0 {
 		if base, size, ok := tryDTBAtBase(dtbPtr); ok {
 			return base, size, true
@@ -212,7 +212,9 @@ func getPciEcamFromDTB() (base uintptr, size uintptr, ok bool) {
 	if base, size, ok := tryDTBAtBase(0); ok {
 		return base, size, true
 	}
-	if base, size, ok := tryDTBAtBase(uintptr(0x40000000)); ok {
+	// QEMU virt places DTB at start of RAM - get address from linker symbol
+	dtbBootAddr := getLinkerSymbol("__dtb_boot_addr")
+	if base, size, ok := tryDTBAtBase(dtbBootAddr); ok {
 		return base, size, true
 	}
 	return 0, 0, false

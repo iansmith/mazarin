@@ -80,3 +80,10 @@ get_page_tables_start_addr:
 get_page_tables_end_addr:
     ldr x0, =__page_tables_end
     ret
+
+// get_dtb_boot_addr() returns uintptr
+// Returns QEMU's DTB location (platform-specific, not part of relocatable layout)
+.global get_dtb_boot_addr
+get_dtb_boot_addr:
+    ldr x0, =__dtb_boot_addr
+    ret

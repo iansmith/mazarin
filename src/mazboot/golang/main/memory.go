@@ -42,6 +42,8 @@ func getLinkerSymbol(name string) uintptr {
 		return asm.GetPageTablesStartAddr()
 	case "__page_tables_end":
 		return asm.GetPageTablesEndAddr()
+	case "__dtb_boot_addr":
+		return asm.GetDtbBootAddr()
 	default:
 		// Unknown symbol - return 0 (caller should check)
 		return 0
