@@ -71,6 +71,14 @@ func EnableIrqsAsm()
 //go:nosplit
 func EnableMmuMinimal()
 
+//go:linkname GetBssEndAddr get_bss_end_addr
+//go:nosplit
+func GetBssEndAddr() uintptr
+
+//go:linkname GetBssStartAddr get_bss_start_addr
+//go:nosplit
+func GetBssStartAddr() uintptr
+
 //go:linkname GetCallerStackPointer get_caller_stack_pointer
 //go:nosplit
 func GetCallerStackPointer() uintptr
@@ -79,9 +87,21 @@ func GetCallerStackPointer() uintptr
 //go:nosplit
 func GetCurrentG() uintptr
 
+//go:linkname GetDataEndAddr get_data_end_addr
+//go:nosplit
+func GetDataEndAddr() uintptr
+
+//go:linkname GetDataStartAddr get_data_start_addr
+//go:nosplit
+func GetDataStartAddr() uintptr
+
 //go:linkname GetEmptymspanAddr get_emptymspan_addr
 //go:nosplit
 func GetEmptymspanAddr() uintptr
+
+//go:linkname GetEndAddr get_end_addr
+//go:nosplit
+func GetEndAddr() uintptr
 
 //go:linkname GetExceptionVectorsAddr get_exception_vectors_addr
 //go:nosplit
@@ -99,13 +119,45 @@ func GetM0Addr() uintptr
 //go:nosplit
 func GetMcache0Addr() uintptr
 
+//go:linkname GetPageTablesEndAddr get_page_tables_end_addr
+//go:nosplit
+func GetPageTablesEndAddr() uintptr
+
+//go:linkname GetPageTablesStartAddr get_page_tables_start_addr
+//go:nosplit
+func GetPageTablesStartAddr() uintptr
+
 //go:linkname GetPhysPageSizeAddr get_phys_page_size_addr
 //go:nosplit
 func GetPhysPageSizeAddr() uintptr
 
+//go:linkname GetRodataEndAddr get_rodata_end_addr
+//go:nosplit
+func GetRodataEndAddr() uintptr
+
+//go:linkname GetRodataStartAddr get_rodata_start_addr
+//go:nosplit
+func GetRodataStartAddr() uintptr
+
 //go:linkname GetStackPointer get_stack_pointer
 //go:nosplit
 func GetStackPointer() uintptr
+
+//go:linkname GetStackTopAddr get_stack_top_addr
+//go:nosplit
+func GetStackTopAddr() uintptr
+
+//go:linkname GetStartAddr get_start_addr
+//go:nosplit
+func GetStartAddr() uintptr
+
+//go:linkname GetTextEndAddr get_text_end_addr
+//go:nosplit
+func GetTextEndAddr() uintptr
+
+//go:linkname GetTextStartAddr get_text_start_addr
+//go:nosplit
+func GetTextStartAddr() uintptr
 
 //go:linkname InvalidateInstructionCacheAll InvalidateInstructionCacheAll
 //go:nosplit

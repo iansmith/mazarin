@@ -1,35 +1,51 @@
 package main
 
 import (
+	"mazboot/asm"
 	"unsafe"
 )
 
-// Linker symbol access
+// Linker symbol access via assembly helpers
 // These symbols are defined in the linker script (linker.ld)
-
-// Linker symbol: end of kernel (from linker.ld)
-// This marks where the kernel ends and we can start using memory
 //
-// NOTE: We use __bss_end instead of __end because Go's linkname creates
-// a variable at the LOCATION of the symbol, not a variable CONTAINING the value.
-// For marker symbols, this doesn't work as expected.
-//
-// Using a hardcoded value based on the actual linker output.
-// BSS ends at 0x40147000 based on `nm` output.
-const __end_value uintptr = 0x40147000
+// We use assembly helper functions (in linker_symbols.s) to access linker symbols.
+// This eliminates ALL hardcoded memory addresses - the linker provides the actual values!
 
 // getLinkerSymbol returns the VALUE of a linker symbol
-// Currently only supports __end, but can be extended for other symbols
 //
 //go:nosplit
 func getLinkerSymbol(name string) uintptr {
-	// For now, only __end is supported
-	// In the future, we could use a map or switch statement
-	if name == "__end" {
-		return __end_value // Use hardcoded constant from linker output
+	switch name {
+	case "__start":
+		return asm.GetStartAddr()
+	case "__text_start":
+		return asm.GetTextStartAddr()
+	case "__text_end":
+		return asm.GetTextEndAddr()
+	case "__rodata_start":
+		return asm.GetRodataStartAddr()
+	case "__rodata_end":
+		return asm.GetRodataEndAddr()
+	case "__data_start":
+		return asm.GetDataStartAddr()
+	case "__data_end":
+		return asm.GetDataEndAddr()
+	case "__bss_start":
+		return asm.GetBssStartAddr()
+	case "__bss_end":
+		return asm.GetBssEndAddr()
+	case "__end":
+		return asm.GetEndAddr()
+	case "__stack_top":
+		return asm.GetStackTopAddr()
+	case "__page_tables_start":
+		return asm.GetPageTablesStartAddr()
+	case "__page_tables_end":
+		return asm.GetPageTablesEndAddr()
+	default:
+		// Unknown symbol - return 0 (caller should check)
+		return 0
 	}
-	// Unknown symbol - return 0 (caller should check)
-	return 0
 }
 
 // getLinkerSymbolPointer returns a pointer to a linker symbol's address
@@ -37,8 +53,9 @@ func getLinkerSymbol(name string) uintptr {
 //
 //go:nosplit
 func getLinkerSymbolPointer(name string) unsafe.Pointer {
-	if name == "__end" {
-		return unsafe.Pointer(__end_value) // Convert constant to pointer
+	addr := getLinkerSymbol(name)
+	if addr != 0 {
+		return unsafe.Pointer(addr)
 	}
 	return nil
 }

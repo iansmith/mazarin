@@ -25,6 +25,7 @@ WRITEBARRIER_SRC = $(MAZBOOT_SRC)/asm/aarch64/writebarrier.s
 EXCEPTIONS_SRC = $(MAZBOOT_SRC)/asm/aarch64/exceptions.s
 IMAGE_SRC = $(MAZBOOT_SRC)/asm/aarch64/image.s
 GOROUTINE_SRC = $(MAZBOOT_SRC)/asm/aarch64/goroutine.s
+LINKER_SYMBOLS_SRC = $(MAZBOOT_SRC)/asm/aarch64/linker_symbols.s
 LINKER_SCRIPT = $(MAZBOOT_SRC)/linker.ld
 
 # Asset generation tools and sources
@@ -67,10 +68,11 @@ EXCEPTIONS_OBJ = $(BUILD_DIR)/exceptions.o
 IMAGE_OBJ = $(BUILD_DIR)/image.o
 GOROUTINE_OBJ = $(BUILD_DIR)/goroutine.o
 GET_CALLER_SP_OBJ = $(BUILD_DIR)/get_caller_sp.o
+LINKER_SYMBOLS_OBJ = $(BUILD_DIR)/linker_symbols.o
 KERNEL_GO_OBJ = $(BUILD_DIR)/kernel_go.o
 
 # Assembly object files list
-ASM_OBJECTS = $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ)
+ASM_OBJECTS = $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ)
 
 # Output file
 MAZBOOT_BINARY = $(BUILD_DIR)/mazboot.elf
@@ -138,6 +140,10 @@ $(GOROUTINE_OBJ): $(GOROUTINE_SRC)
 
 GET_CALLER_SP_SRC = $(MAZBOOT_SRC)/asm/aarch64/get_caller_sp.s
 $(GET_CALLER_SP_OBJ): $(GET_CALLER_SP_SRC)
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(LINKER_SYMBOLS_OBJ): $(LINKER_SYMBOLS_SRC)
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
@@ -212,11 +218,11 @@ $(KERNEL_GO_OBJ_QEMU): $(MAZBOOT_SRC)/golang/go.mod $(GO_SRC) $(LINKNAMES_GO) $(
 	@rm -f $(KERNEL_GO_ARCHIVE) $(BUILD_DIR)/kernel_go.h $(BUILD_DIR)/__.SYMDEF
 
 # Build mazboot (default: QEMU build with qemuvirt and aarch64 tags)
-$(MAZBOOT_BINARY): $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
+$(MAZBOOT_BINARY): $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
 	@mkdir -p $(BUILD_DIR)
 	@# Link exceptions.o, then writebarrier.o so our global symbols override Go runtime's
 	@# Our writebarrier.s provides global (T) symbols that should take precedence
-	$(CC) $(LDFLAGS) -o $@.tmp $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(KERNEL_GO_OBJ_QEMU) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ)
+	$(CC) $(LDFLAGS) -o $@.tmp $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(KERNEL_GO_OBJ_QEMU) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ)
 	@# Patch the binary to redirect calls from Go runtime functions to our implementations
 	@# The Go tool scans .s files to determine which symbols need patching
 	@echo "Patching runtime function calls..."
