@@ -1365,3 +1365,29 @@ Wfi:
 jump_to_null:
     mov x0, #0                // Load address 0
     br x0                     // Branch to NULL - will cause prefetch abort
+
+// =================================================================
+// Runtime Stack Size Configuration
+// =================================================================
+
+// Declare runtime symbols we need to access
+.extern runtime.maxstacksize
+.extern runtime.maxstackceiling
+
+// set_maxstacksize(size uintptr) - Set runtime.maxstacksize
+// Parameter: x0 = new max stack size in bytes
+.global set_maxstacksize
+set_maxstacksize:
+    adrp x1, runtime.maxstacksize
+    add x1, x1, :lo12:runtime.maxstacksize
+    str x0, [x1]              // Store new value
+    ret
+
+// set_maxstackceiling(size uintptr) - Set runtime.maxstackceiling
+// Parameter: x0 = new max stack ceiling in bytes
+.global set_maxstackceiling
+set_maxstackceiling:
+    adrp x1, runtime.maxstackceiling
+    add x1, x1, :lo12:runtime.maxstackceiling
+    str x0, [x1]              // Store new value
+    ret

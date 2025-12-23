@@ -7,6 +7,14 @@ import (
 	"mazboot/asm"
 )
 
+// Assembly functions to set runtime stack limits
+//
+//go:linkname setMaxstacksize set_maxstacksize
+func setMaxstacksize(size uintptr)
+
+//go:linkname setMaxstackceiling set_maxstackceiling
+func setMaxstackceiling(size uintptr)
+
 // Peripheral base address for Raspberry Pi 4
 const (
 	// Peripheral base address for Raspberry Pi 4
@@ -681,6 +689,20 @@ func KernelMain(r0, r1, atags uint32) {
 
 	print("PASS (schedinit completed!)\r\n")
 
+	// Initialize max stack size (normally done in runtime.main, but we don't run that)
+	// Max stack size is 1 GB on 64-bit, 250 MB on 32-bit
+	// Using decimal instead of binary GB and MB because they look nicer in stack overflow messages
+	const ptrSize = 8 // ARM64 is 64-bit
+	var stackSize uintptr
+	if ptrSize == 8 {
+		stackSize = 1000000000 // 1 GB
+	} else {
+		stackSize = 250000000 // 250 MB
+	}
+	setMaxstacksize(stackSize)
+	setMaxstackceiling(2 * stackSize)
+	print("  Max stack size set to ", stackSize, " bytes\r\n")
+
 	// Mark scheduler as ready - futex can now use real gopark/goready
 	MarkSchedulerReady()
 	print("Scheduler fully initialized (gopark/goready enabled)\r\n")
@@ -696,12 +718,13 @@ func KernelMain(r0, r1, atags uint32) {
 	print("mazboot: Initializing hardware timer...\r\n")
 	initTime()
 
-	// TODO: Start monitoring goroutines once stack growth is implemented
-	// For now, skip monitors because they require proper stack growth support
-	print("mazboot: Monitor goroutines disabled (require stack growth support)\r\n")
-	// startGCMonitor()
-	// startScavengerMonitor()
-	// startSchedtraceMonitor()
+	// Start monitoring goroutines (now that maxstacksize is properly set)
+	print("mazboot: Starting monitor goroutines...\r\n")
+	startGCMonitor()
+	startScavengerMonitor()
+	startSchedtraceMonitor()
+	print("mazboot: All monitors started\r\n")
+	print("  (Monitors will run once they receive timer ticks)\r\n")
 	print("═══════════════════════════════════════════════\r\n\r\n")
 
 	// =========================================

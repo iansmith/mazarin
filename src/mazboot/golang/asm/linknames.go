@@ -351,6 +351,14 @@ func SetCurrentG(gptr uintptr)
 //go:nosplit
 func SetGPointer(g uintptr)
 
+//go:linkname SetMaxstackceiling set_maxstackceiling
+//go:nosplit
+func SetMaxstackceiling(size uintptr)
+
+//go:linkname SetMaxstacksize set_maxstacksize
+//go:nosplit
+func SetMaxstacksize(size uintptr)
+
 //go:linkname SetStackPointer set_stack_pointer
 //go:nosplit
 func SetStackPointer(sp uintptr)
