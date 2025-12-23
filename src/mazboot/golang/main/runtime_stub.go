@@ -65,83 +65,43 @@ func initRuntimeStubs() {
 	m0CurgOffset := unsafe.Offsetof(runtimeM{}.curg)
 	writeMemory64(m0Addr+m0CurgOffset, 0) // NULL, not g0!
 
-	// Step 2: Create a minimal P (processor) structure
-	// m.p (at offset 200) points to P, which contains:
-	//   - Offset 56: mcache pointer (points to mcache0)
-	//   - Offset 5272: wbBuf.next (write barrier buffer current position)
-	//   - Offset 5280: wbBuf.end (write barrier buffer end)
-	// CRITICAL: Must be within mapped bootloader RAM (0x40100000-0x78000000)
-	// Using 0x41000000 (16MB into RAM, safely above kernel code)
+	// Step 2: Create a minimal P (processor) structure at 0x41000000
+	// In c-archive mode, mallocinit() may call gcmarknewobject which needs M.p to be valid
+	// The real runtime in exe mode doesn't need this, but c-archive mode behaves differently
 	p0Addr := uintptr(0x41000000)
 
-	// Step 3: Allocate write barrier buffer (large enough to never fill)
-	// Buffer will be at 0x41010000 (64KB after P struct, page-aligned), size 64KB
+	// Step 3: Allocate write barrier buffer (needed for gcmarknewobject if write barrier is enabled)
 	wbBufStart := uintptr(0x41010000)
-	wbBufSize := uintptr(64 * 1024) // 64KB should be more than enough
+	wbBufSize := uintptr(64 * 1024) // 64KB
 	wbBufEnd := wbBufStart + wbBufSize
 
-	// Step 4: Set up P structure and allocate mcache struct
-	//
-	// CRITICAL FIX: runtime.mcache0 is a POINTER variable (8 bytes), not the
-	// actual mcache struct! We must allocate a proper mcache struct and store
-	// its pointer in runtime.mcache0, otherwise we corrupt other global variables.
-	//
-	// mcache struct is ~0x470 bytes (0x30 header + 136 * 8 byte alloc array)
-	// Allocate 0x500 bytes at 0x41020000 (after wbBuf which ends at 0x41020000)
+	// Step 4: Set up P structure with mcache
+	// Allocate mcache struct (runtime will initialize it properly in mallocinit)
 	mcacheStructAddr := uintptr(0x41020000)
-	mcache0PtrAddr := asm.GetMcache0Addr() // Get address dynamically via linker symbol
-
-	// Store pointer to our allocated struct in runtime.mcache0
+	mcache0PtrAddr := asm.GetMcache0Addr()
 	writeMemory64(mcache0PtrAddr, uint64(mcacheStructAddr))
+	writeMemory64(p0Addr+56, uint64(mcacheStructAddr)) // P.mcache at offset 56
 
-	// P.mcache points to our allocated struct (not the pointer variable!)
-	writeMemory64(p0Addr+56, uint64(mcacheStructAddr)) // P.mcache = &mcacheStruct
-
-	// Step 4b: Initialize mcache.alloc[] NOW (before mallocinit)
-	// This must be done before mallocinit because it may allocate during init
-	// mcache.alloc array starts at offset 0x30 (48) and has 136 entries
-	// Each entry should point to emptymspan - get address dynamically via linker symbol
+	// Step 4b: Initialize mcache.alloc[] with emptymspan
+	// mcache.alloc is at offset 0x30 (48 bytes) and has 136 entries
 	emptymspanAddr := uint64(asm.GetEmptymspanAddr())
 	allocArrayStart := mcacheStructAddr + 0x30
 	for i := uintptr(0); i < 136; i++ {
 		writeMemory64(allocArrayStart+i*8, emptymspanAddr)
 	}
 
-	// wbBuf.next (offset 5272 = 0x1498): current write position
+	// Step 4c: Initialize write barrier buffer in P
+	// wbBuf.next at offset 0x1498, wbBuf.end at offset 0x14A0
 	writeMemory64(p0Addr+0x1498, uint64(wbBufStart))
-	// wbBuf.end (offset 5280 = 0x14A0): end of buffer
 	writeMemory64(p0Addr+0x14A0, uint64(wbBufEnd))
 
-	// Step 5: Set m0.p = p0Addr (offset 200 = 0xC8)
-	// This is what gcWriteBarrier and getMCache read: ldr x0, [x0, #200]
+	// Step 5: Set m0.p = p0Addr
 	writeMemory64(m0Addr+200, uint64(p0Addr))
 
-	// Step 6: Enable write barrier flag so gcWriteBarrier gets called
-	// NOTE: This doesn't work reliably from Go because writeMemory32 may trigger
-	// its own write barrier check (recursion). The flag is set in assembly instead
-	// (in lib.s, before calling KernelMain)
-	// Address: runtime.zerobase + 704 = 0x3582C0
-	// writeBarrierFlagAddr := uintptr(0x3582C0)
-	// writeMemory32(writeBarrierFlagAddr, 1) // This doesn't work reliably
+	// Step 6: Set p.m = m0 to complete bidirectional binding
+	writeMemory64(p0Addr+0x30, uint64(m0Addr)) // P.m at offset 0x30
 
-	// Step 7: Set x28 register to point to g0
-	// This must be done in assembly (lib.s) since we can't set registers from Go
-	// We've already done this in lib.s before calling KernelMain
-}
-
-// initGoHeap initializes the Go runtime heap allocator.
-// This must be called after initRuntimeStubs() and after basic debug systems
-// (UART, framebuffer) are initialized, but before any heap allocation.
-//
-// It sets physPageSize and calls runtime.mallocinit() directly to
-// initialize just the heap allocator (not the full scheduler).
-//
-//go:nosplit
-func initGoHeap() {
-	// Set physPageSize = 4096 (normally set by sysauxv from AT_PAGESZ)
-	physPageSizeAddr := asm.GetPhysPageSizeAddr()
-	writeMemory64(physPageSizeAddr, 4096)
-
-	// Call mallocinit to initialize heap allocator
-	asm.CallMallocinit()
+	// That's all! schedinit() will handle the rest:
+	// - mallocinit() will use our mcache0
+	// - procresize() will find M0.p already set and reuse this P0
 }

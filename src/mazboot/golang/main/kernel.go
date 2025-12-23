@@ -479,10 +479,11 @@ func KernelMain(r0, r1, atags uint32) {
 		}
 	}
 
-	// Initialize Go runtime heap allocator
-	// CRITICAL: Must call BEFORE schedinit, as schedinit tries to allocate memory
-	// and needs mheap to be initialized first
-	initGoHeap()
+	// Set physPageSize before schedinit (needed by mallocinit which schedinit calls)
+	// Normally this would be set by sysauxv from AT_PAGESZ auxiliary vector
+	physPageSizeAddr := asm.GetPhysPageSizeAddr()
+	writeMemory64(physPageSizeAddr, 4096)
+	print("physPageSize set to 4096\r\n")
 
 	// Initialize VirtIO RNG device for random number generation
 	initVirtIORNG()
@@ -644,50 +645,9 @@ func KernelMain(r0, r1, atags uint32) {
 	//preMapPages()
 	//print("DONE\r\n")
 
-	print("Testing Item 5 (with cache coherency fix): runtime.schedinit()...\r\n")
-	print("  DEBUG: About to enter schedinit (this message proves we reach this point)\r\n")
-	print("  DEBUG: g0 stack: 0x5EFF0000-0x5F000000, g0.sched.sp set\r\n")
-
-	// CRITICAL: Check what g we're on BEFORE calling schedinit
-	currentGBefore := asm.GetCurrentG()
-	g0AddrBefore := asm.GetG0Addr()
-	print("  DEBUG: BEFORE schedinit - current g = ")
-	printHex64(uint64(currentGBefore))
-	print(", g0 = ")
-	printHex64(uint64(g0AddrBefore))
-	if currentGBefore == g0AddrBefore {
-		print(" (ON G0 - GOOD!)")
-	} else {
-		print(" (NOT ON G0 - THIS IS THE PROBLEM!)")
-	}
-	print("\r\n")
-
-	print("  DEBUG: Calling asm.CallRuntimeSchedinit() now...\r\n")
-
-	// TEMPORARY: Disable IRQs during schedinit to rule out interrupt issues
-	asm.DisableIrqs()
+	print("Testing Item 5: runtime.schedinit()... ")
 	asm.CallRuntimeSchedinit()
-	print("  DEBUG: About to enable IRQs...\r\n")
-	asm.EnableIrqs()
-	print("  DEBUG: IRQs enabled\r\n")
-
-	print("  DEBUG: Returned from CallRuntimeSchedinit!\r\n")
-
-	// CRITICAL CHECK: Verify we're still on g0 after schedinit
-	currentG := asm.GetCurrentG()
-	g0Addr := asm.GetG0Addr()
-	print("  DEBUG: After schedinit - current g = ")
-	printHex64(uint64(currentG))
-	print(", g0 = ")
-	printHex64(uint64(g0Addr))
-	if currentG == g0Addr {
-		print(" (ON G0 - GOOD!)")
-	} else {
-		print(" (NOT ON G0 - THIS IS THE PROBLEM!)")
-	}
-	print("\r\n")
-
-	print("PASS (schedinit completed!)\r\n")
+	print("PASS\r\n")
 
 	// Initialize max stack size (normally done in runtime.main, but we don't run that)
 	// Max stack size is 1 GB on 64-bit, 250 MB on 32-bit
