@@ -591,9 +591,9 @@ func KernelMain(r0, r1, atags uint32) {
 	}
 
 	print("Testing Item 4b2: openat syscall (unexpected path - should show warning)... ")
-	unexpectedPathBytes := []byte("/dev/urandom\x00")
+	unexpectedPathBytes := []byte("/etc/passwd\x00") // Truly unexpected path
 	result4 := SyscallOpenat(-100, unsafe.Pointer(&unexpectedPathBytes[0]), 0, 0)
-	// Should print warning about unexpected path but still return an error
+	// Should print warning about unexpected path and return an error
 	if result4 < 0 { // Any error is acceptable
 		print("PASS (returned error as expected)\r\n")
 	} else {

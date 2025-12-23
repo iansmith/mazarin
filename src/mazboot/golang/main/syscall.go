@@ -160,11 +160,12 @@ func SyscallRead(fd int32, buf unsafe.Pointer, count uint64) int64 {
 		}
 	}
 
-	// WORKAROUND: The FD value is getting corrupted somewhere in the runtime
-	// For now, treat ANY fd as /dev/urandom to allow schedinit to complete
-	// TODO: Fix the FD corruption issue
-	bytesWritten := getRandomBytes(buf, uint32(count))
-	return int64(bytesWritten)
+	// NO FD SUPPORT - We rely entirely on AT_RANDOM for random numbers
+	// If the runtime tries to read /dev/urandom, it means AT_RANDOM failed
+	print("read: unsupported fd=")
+	printHex64(uint64(fd))
+	print("\r\n")
+	return -9 // -EBADF (bad file descriptor)
 }
 
 // SyscallOpenat implements the openat syscall
@@ -202,12 +203,11 @@ func SyscallOpenat(dirfd int32, pathname unsafe.Pointer, flags int32, mode int32
 		return -14 // -EFAULT
 	}
 
-	// Check for /dev/urandom (used by runtime for random number generation)
+	// Check for /dev/urandom
+	// With AT_RANDOM support, the runtime should never try to open this
+	// If it does, return ENOENT to indicate the file doesn't exist
 	if cstringEqual(pathname, "/dev/urandom") {
-		// Return fake file descriptor 3 for /dev/urandom
-		// read() syscall will detect this FD and return random bytes
-		// Debug breadcrumb removed to reduce output noise
-		return 3 // Fake FD for /dev/urandom
+		return -2 // -ENOENT (file not found)
 	}
 
 	// Expected path from getHugePageSize()
