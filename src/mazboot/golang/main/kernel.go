@@ -1047,9 +1047,13 @@ func simpleMain() {
 	// NOTE: Must be done from user goroutine because debug/elf uses defer
 	parseEmbeddedKmazarin()
 
-	print("\r\n[g1] ELF parsing complete, exiting cleanly...\r\n")
+	print("\r\n[g1] ELF parsing complete\r\n")
 
-	// Exit QEMU cleanly
+	// Load and run the kmazarin kernel
+	loadAndRunKmazarin()
+
+	// Should never reach here
+	print("\r\n[g1] ERROR: returned from kmazarin - should never happen!\r\n")
 	asm.QemuExit()
 }
 
@@ -1294,5 +1298,420 @@ func parseEmbeddedKmazarin() {
 	printHex64(entry)
 	print("\r\n")
 
+	// Parse program headers (segments) - these tell us what to load into memory
+	// ELF64 header offsets:
+	// 0x20-0x27: Program header offset (8 bytes)
+	// 0x36-0x37: Program header entry size (2 bytes)
+	// 0x38-0x39: Program header entry count (2 bytes)
+	phoff := uint64(elfData[0x20]) |
+		(uint64(elfData[0x21]) << 8) |
+		(uint64(elfData[0x22]) << 16) |
+		(uint64(elfData[0x23]) << 24) |
+		(uint64(elfData[0x24]) << 32) |
+		(uint64(elfData[0x25]) << 40) |
+		(uint64(elfData[0x26]) << 48) |
+		(uint64(elfData[0x27]) << 56)
+
+	phentsize := uint16(elfData[0x36]) | (uint16(elfData[0x37]) << 8)
+	phnum := uint16(elfData[0x38]) | (uint16(elfData[0x39]) << 8)
+
+	print("\r\nProgram Headers (segments to load):\r\n")
+	print("  Count: ")
+	printUint32(uint32(phnum))
+	print("\r\n")
+
+	// Parse each program header
+	for i := uint16(0); i < phnum && i < 10; i++ {
+		offset := phoff + uint64(i)*uint64(phentsize)
+		if offset+56 > uint64(len(elfData)) {
+			print("  ERROR: Program header offset out of bounds\r\n")
+			break
+		}
+
+		// Program header structure (ELF64):
+		// 0x00-0x03: Type (4 bytes)
+		// 0x04-0x07: Flags (4 bytes)
+		// 0x08-0x0F: Offset in file (8 bytes)
+		// 0x10-0x17: Virtual address (8 bytes)
+		// 0x18-0x1F: Physical address (8 bytes)
+		// 0x20-0x27: File size (8 bytes)
+		// 0x28-0x2F: Memory size (8 bytes)
+		// 0x30-0x37: Alignment (8 bytes)
+
+		ptype := uint32(elfData[offset]) |
+			(uint32(elfData[offset+1]) << 8) |
+			(uint32(elfData[offset+2]) << 16) |
+			(uint32(elfData[offset+3]) << 24)
+
+		flags := uint32(elfData[offset+4]) |
+			(uint32(elfData[offset+5]) << 8) |
+			(uint32(elfData[offset+6]) << 16) |
+			(uint32(elfData[offset+7]) << 24)
+
+		poffset := uint64(elfData[offset+8]) |
+			(uint64(elfData[offset+9]) << 8) |
+			(uint64(elfData[offset+10]) << 16) |
+			(uint64(elfData[offset+11]) << 24) |
+			(uint64(elfData[offset+12]) << 32) |
+			(uint64(elfData[offset+13]) << 40) |
+			(uint64(elfData[offset+14]) << 48) |
+			(uint64(elfData[offset+15]) << 56)
+
+		vaddr := uint64(elfData[offset+16]) |
+			(uint64(elfData[offset+17]) << 8) |
+			(uint64(elfData[offset+18]) << 16) |
+			(uint64(elfData[offset+19]) << 24) |
+			(uint64(elfData[offset+20]) << 32) |
+			(uint64(elfData[offset+21]) << 40) |
+			(uint64(elfData[offset+22]) << 48) |
+			(uint64(elfData[offset+23]) << 56)
+
+		filesz := uint64(elfData[offset+32]) |
+			(uint64(elfData[offset+33]) << 8) |
+			(uint64(elfData[offset+34]) << 16) |
+			(uint64(elfData[offset+35]) << 24) |
+			(uint64(elfData[offset+36]) << 32) |
+			(uint64(elfData[offset+37]) << 40) |
+			(uint64(elfData[offset+38]) << 48) |
+			(uint64(elfData[offset+39]) << 56)
+
+		memsz := uint64(elfData[offset+40]) |
+			(uint64(elfData[offset+41]) << 8) |
+			(uint64(elfData[offset+42]) << 16) |
+			(uint64(elfData[offset+43]) << 24) |
+			(uint64(elfData[offset+44]) << 32) |
+			(uint64(elfData[offset+45]) << 40) |
+			(uint64(elfData[offset+46]) << 48) |
+			(uint64(elfData[offset+47]) << 56)
+
+		print("\r\n  [")
+		printUint32(uint32(i))
+		print("] Type: ")
+
+		// PT_LOAD = 1
+		if ptype == 1 {
+			print("LOAD")
+		} else if ptype == 2 {
+			print("DYNAMIC")
+		} else if ptype == 3 {
+			print("INTERP")
+		} else if ptype == 4 {
+			print("NOTE")
+		} else {
+			print("0x")
+			printHex64(uint64(ptype))
+		}
+
+		print("  Flags: ")
+		if (flags & 0x1) != 0 {
+			print("X")
+		} else {
+			print("-")
+		}
+		if (flags & 0x2) != 0 {
+			print("W")
+		} else {
+			print("-")
+		}
+		if (flags & 0x4) != 0 {
+			print("R")
+		} else {
+			print("-")
+		}
+
+		print("\r\n      File offset: 0x")
+		printHex64(poffset)
+		print("  Vaddr: 0x")
+		printHex64(vaddr)
+		print("\r\n      Filesz: ")
+		printUint32(uint32(filesz))
+		print("  Memsz: ")
+		printUint32(uint32(memsz))
+		print("\r\n")
+	}
+
 	print("\r\n=== End of ELF Information ===\r\n\r\n")
 }
+
+// loadAndRunKmazarin loads the embedded kmazarin ELF binary into memory and jumps to it
+// This function:
+// 1. Parses the ELF program headers to find PT_LOAD segments
+// 2. Copies each segment from the embedded binary to memory at (vaddr + 0x100000)
+//    - The 0x100000 offset avoids DTB conflict at 0x40000000-0x40100000
+// 3. Handles BSS zeroing (memsz > filesz)
+// 4. Jumps to the kmazarin entry point (entry + 0x100000)
+//
+//go:nosplit
+func loadAndRunKmazarin() {
+	print("\r\n=== Loading Kmazarin Kernel ===\r\n")
+
+	// Memory offset to avoid DTB conflict
+	// kmazarin wants to load at 0x40000000, but DTB is at 0x40000000-0x40100000
+	// So we add 0x100000 to all virtual addresses
+	const LOAD_OFFSET = uintptr(0x100000)
+
+	// Get the embedded kmazarin binary location from linker symbols
+	kmazarinStart := getLinkerSymbol("__kmazarin_start")
+	kmazarinSize := getLinkerSymbol("__kmazarin_size")
+
+	print("Loading from: 0x")
+	printHex64(uint64(kmazarinStart))
+	print(" (size: ")
+	printUint32(uint32(kmazarinSize))
+	print(" bytes)\r\n")
+
+	// Create a byte slice from the embedded binary
+	var elfData []byte
+	sliceHeader := (*struct {
+		Data uintptr
+		Len  int
+		Cap  int
+	})(unsafe.Pointer(&elfData))
+	sliceHeader.Data = kmazarinStart
+	sliceHeader.Len = int(kmazarinSize)
+	sliceHeader.Cap = int(kmazarinSize)
+
+	// Verify ELF magic
+	if len(elfData) < 64 {
+		print("ERROR: ELF data too small\r\n")
+		return
+	}
+	if elfData[0] != 0x7F || elfData[1] != 'E' || elfData[2] != 'L' || elfData[3] != 'F' {
+		print("ERROR: Invalid ELF magic bytes\r\n")
+		print("  Got: 0x")
+		printHex8(elfData[0])
+		print(" 0x")
+		printHex8(elfData[1])
+		print(" 0x")
+		printHex8(elfData[2])
+		print(" 0x")
+		printHex8(elfData[3])
+		print("\r\n")
+		return
+	}
+
+	// Parse entry point
+	entry := uint64(elfData[0x18]) |
+		(uint64(elfData[0x19]) << 8) |
+		(uint64(elfData[0x1A]) << 16) |
+		(uint64(elfData[0x1B]) << 24) |
+		(uint64(elfData[0x1C]) << 32) |
+		(uint64(elfData[0x1D]) << 40) |
+		(uint64(elfData[0x1E]) << 48) |
+		(uint64(elfData[0x1F]) << 56)
+
+	print("Entry point: 0x")
+	printHex64(entry)
+	print(" → 0x")
+	printHex64(entry + uint64(LOAD_OFFSET))
+	print(" (with offset)\r\n")
+
+	// Parse program headers
+	phoff := uint64(elfData[0x20]) |
+		(uint64(elfData[0x21]) << 8) |
+		(uint64(elfData[0x22]) << 16) |
+		(uint64(elfData[0x23]) << 24) |
+		(uint64(elfData[0x24]) << 32) |
+		(uint64(elfData[0x25]) << 40) |
+		(uint64(elfData[0x26]) << 48) |
+		(uint64(elfData[0x27]) << 56)
+
+	phentsize := uint16(elfData[0x36]) | (uint16(elfData[0x37]) << 8)
+	phnum := uint16(elfData[0x38]) | (uint16(elfData[0x39]) << 8)
+
+	print("\r\nLoading segments:\r\n")
+
+	// Load each PT_LOAD segment
+	loadCount := 0
+	for i := uint16(0); i < phnum; i++ {
+		offset := phoff + uint64(i)*uint64(phentsize)
+		if offset+56 > uint64(len(elfData)) {
+			print("ERROR: Program header offset out of bounds\r\n")
+			break
+		}
+
+		// Read program header fields
+		ptype := uint32(elfData[offset]) |
+			(uint32(elfData[offset+1]) << 8) |
+			(uint32(elfData[offset+2]) << 16) |
+			(uint32(elfData[offset+3]) << 24)
+
+		// Only process PT_LOAD segments (type 1)
+		if ptype != 1 {
+			continue
+		}
+
+		flags := uint32(elfData[offset+4]) |
+			(uint32(elfData[offset+5]) << 8) |
+			(uint32(elfData[offset+6]) << 16) |
+			(uint32(elfData[offset+7]) << 24)
+
+		poffset := uint64(elfData[offset+8]) |
+			(uint64(elfData[offset+9]) << 8) |
+			(uint64(elfData[offset+10]) << 16) |
+			(uint64(elfData[offset+11]) << 24) |
+			(uint64(elfData[offset+12]) << 32) |
+			(uint64(elfData[offset+13]) << 40) |
+			(uint64(elfData[offset+14]) << 48) |
+			(uint64(elfData[offset+15]) << 56)
+
+		vaddr := uint64(elfData[offset+16]) |
+			(uint64(elfData[offset+17]) << 8) |
+			(uint64(elfData[offset+18]) << 16) |
+			(uint64(elfData[offset+19]) << 24) |
+			(uint64(elfData[offset+20]) << 32) |
+			(uint64(elfData[offset+21]) << 40) |
+			(uint64(elfData[offset+22]) << 48) |
+			(uint64(elfData[offset+23]) << 56)
+
+		filesz := uint64(elfData[offset+32]) |
+			(uint64(elfData[offset+33]) << 8) |
+			(uint64(elfData[offset+34]) << 16) |
+			(uint64(elfData[offset+35]) << 24) |
+			(uint64(elfData[offset+36]) << 32) |
+			(uint64(elfData[offset+37]) << 40) |
+			(uint64(elfData[offset+38]) << 48) |
+			(uint64(elfData[offset+39]) << 56)
+
+		memsz := uint64(elfData[offset+40]) |
+			(uint64(elfData[offset+41]) << 8) |
+			(uint64(elfData[offset+42]) << 16) |
+			(uint64(elfData[offset+43]) << 24) |
+			(uint64(elfData[offset+44]) << 32) |
+			(uint64(elfData[offset+45]) << 40) |
+			(uint64(elfData[offset+46]) << 48) |
+			(uint64(elfData[offset+47]) << 56)
+
+		// Calculate destination address with offset
+		destAddr := uintptr(vaddr) + LOAD_OFFSET
+
+		print("  [")
+		printUint32(uint32(loadCount))
+		print("] Loading 0x")
+		printHex64(vaddr)
+		print(" → 0x")
+		printHex64(uint64(destAddr))
+		print(" (")
+		printUint32(uint32(filesz))
+		print(" bytes, flags: ")
+		if (flags & 0x4) != 0 {
+			print("R")
+		} else {
+			print("-")
+		}
+		if (flags & 0x2) != 0 {
+			print("W")
+		} else {
+			print("-")
+		}
+		if (flags & 0x1) != 0 {
+			print("X")
+		} else {
+			print("-")
+		}
+		print(")\r\n")
+
+		// Map destination pages before copying (round to 4KB pages)
+		startPage := destAddr & ^uintptr(0xFFF)
+		endPage := (destAddr + uintptr(memsz) + 0xFFF) & ^uintptr(0xFFF)
+		print("    Mapping pages: 0x")
+		printHex64(uint64(startPage))
+		print(" - 0x")
+		printHex64(uint64(endPage))
+		print(" ... ")
+		for va := startPage; va < endPage; va += 0x1000 {
+			physFrame := allocPhysFrame()
+			if physFrame == 0 {
+				print("\r\nERROR: Out of physical frames\r\n")
+				return
+			}
+			bzero(unsafe.Pointer(physFrame), 0x1000)
+
+			// Determine attributes based on segment flags
+			var attrs uint64
+			if (flags & 0x1) != 0 { // Executable
+				attrs = PTE_ATTR_NORMAL
+			} else {
+				attrs = PTE_ATTR_NORMAL
+			}
+
+			// Determine access permissions
+			var ap uint64
+			if (flags & 0x2) != 0 { // Writable
+				ap = PTE_AP_RW_EL1
+			} else {
+				ap = PTE_AP_RO_EL1
+			}
+
+			mapPage(va, physFrame, attrs, ap)
+		}
+		// Invalidate TLB to ensure MMU sees new mappings
+		asm.InvalidateTlbAll()
+		print("OK\r\n")
+
+		// Copy segment data from embedded binary to destination
+		// Handle negative file offsets (ELF files can have segments that include headers)
+		var srcAddr uintptr
+		if poffset >= 0x8000000000000000 { // Negative offset (int64 < 0)
+			// For negative offsets in an embedded ELF, use offset 0
+			// (the segment wants to include the ELF headers from the start)
+			srcAddr = kmazarinStart
+		} else {
+			srcAddr = kmazarinStart + uintptr(poffset)
+		}
+
+		if filesz > 0 {
+			print("    Copying ")
+			printUint32(uint32(filesz))
+			print(" bytes from offset 0x")
+			printHex64(poffset)
+			print(" (src=0x")
+			printHex64(uint64(srcAddr))
+			print(")... ")
+			// Use memmove for the copy
+			asm.MemmoveBytes(
+				unsafe.Pointer(destAddr),
+				unsafe.Pointer(srcAddr),
+				uint32(filesz))
+			print("OK\r\n")
+		}
+
+		// Zero BSS area if memsz > filesz
+		if memsz > filesz {
+			bssSize := memsz - filesz
+			print("    Zeroing BSS: ")
+			printUint32(uint32(bssSize))
+			print(" bytes... ")
+			bzero(unsafe.Pointer(destAddr+uintptr(filesz)), uint32(bssSize))
+			print("OK\r\n")
+		}
+
+		loadCount++
+	}
+
+	print("\r\nLoaded ")
+	printUint32(uint32(loadCount))
+	print(" segments\r\n")
+
+	// Jump to kmazarin entry point
+	entryAddr := uintptr(entry) + LOAD_OFFSET
+	print("\r\nJumping to kmazarin entry point at 0x")
+	printHex64(uint64(entryAddr))
+	print("...\r\n\r\n")
+
+	// Jump to entry point
+	// We need to do this via assembly to ensure proper register setup
+	jumpToKmazarin(entryAddr)
+
+	// Should never reach here
+	print("ERROR: Returned from kmazarin!\r\n")
+}
+
+// jumpToKmazarin jumps to the kmazarin kernel entry point
+// This is implemented in assembly (lib.s) to ensure clean transition
+// Parameter: entryAddr = address to jump to
+// NOTE: This function never returns
+//
+//go:linkname jumpToKmazarin jump_to_kmazarin
+//go:nosplit
+func jumpToKmazarin(entryAddr uintptr)

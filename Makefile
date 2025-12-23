@@ -12,6 +12,10 @@ GO = /Users/iansmith/mazzy/bin/go
 GOARCH = arm64
 GOOS = linux
 
+# IMPORTANT: CGO Policy
+# We NEVER use CGO in this project. All Go builds must explicitly set CGO_ENABLED=0
+# to ensure static binaries without C dependencies for our bare-metal environment.
+
 # Runtime patching tool (Go version that scans .s files)
 PATCH_RUNTIME = src/mazboot/tools/patch-runtime.go
 
@@ -106,7 +110,7 @@ OBJCOPY = /Users/iansmith/mazzy/bin/target-objcopy
 $(GLOBALIZE_SYMBOLS_GEN): $(GLOBALIZE_SYMBOLS_GEN_SRC)
 	@echo "Building generate-globalize-symbols tool..."
 	@mkdir -p $(BUILD_DIR)
-	@GOTOOLCHAIN=local $(GO) build -o $@ $(GLOBALIZE_SYMBOLS_GEN_SRC)
+	@CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $(GLOBALIZE_SYMBOLS_GEN_SRC)
 
 # Note: linknames.go and main.go are now generated via //go:generate directives
 # in their respective files (asm/linknames.go and main/main.go).
@@ -325,10 +329,14 @@ KMAZARIN_BINARY = $(KMAZARIN_BUILD_DIR)/kmazarin.elf
 
 # Build kmazarin kernel as a static binary
 # Standard Go build for linux/arm64 without cgo
-# Position text section at 0x40010000 (just past DTB which starts at 0x40000000)
+# Position text section at 0x40010000
+# NOTE: Go linker creates LOAD segment at 0x40000000 (page-aligned before .text)
+# CONFLICT: This overlaps DTB at 0x40000000-0x40100000, and kmazarin needs the DTB!
+# SOLUTION: ELF loader will add 0x100000 offset to all vaddrs when loading
+#           (i.e., segment at vaddr 0x40000000 will actually load at 0x40100000)
 $(KMAZARIN_BINARY): $(wildcard $(KMAZARIN_SRC)/*.go)
 	@mkdir -p $(KMAZARIN_BUILD_DIR)
-	@echo "Building kmazarin kernel (static Go binary with text at 0x40010000)..."
+	@echo "Building kmazarin kernel (static Go binary)..."
 	@cd $(KMAZARIN_SRC) && \
 		CGO_ENABLED=0 \
 		GOTOOLCHAIN=auto \

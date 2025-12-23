@@ -251,6 +251,10 @@ func InvalidateTlbVa(addr uintptr)
 //go:nosplit
 func Isb()
 
+//go:linkname JumpToKmazarin jump_to_kmazarin
+//go:nosplit
+func JumpToKmazarin(entryAddr uintptr)
+
 //go:linkname JumpToNull jump_to_null
 //go:nosplit
 func JumpToNull()
