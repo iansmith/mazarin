@@ -32,14 +32,8 @@ SECTIONS
     PROVIDE(__bochs_display_base = 0x10000000);  /* bochs-display framebuffer */
     PROVIDE(__bochs_display_size = 0x01000000);  /* bochs-display size: 16MB */
 
-    /* Kernel code/data in ROM region
-     *
-     * NOTE: We start the kernel at 0x300000 instead of 0x200000 to leave room
-     * for a DTB that QEMU may place at the bottom of physical address space.
-     * Some QEMU configurations (especially when using -dtb) load the DTB at
-     * 0x0..~0x200000; placing the kernel at 0x300000 avoids overlap.
-     */
-    . = 0x300000;
+    /* RAM-only layout for platform independence */
+    . = 0x40080000;  /* QEMU virt kernel load address */
     __start = .;
     __text_start = .;
     .text :
@@ -49,7 +43,7 @@ SECTIONS
     }
     . = ALIGN(4096);
     __text_end = .;
-    
+
     /* Exception vector table - must be 2KB (0x800) aligned */
     /* Place exception vectors after kernel text */
     . = ALIGN(0x800);  /* 2KB align */
@@ -95,14 +89,8 @@ SECTIONS
     __kmazarin_end = .;
     __kmazarin_size = __kmazarin_end - __kmazarin_start;
 
-    /* Writable data sections in RAM region (0x40000000+) */
-    /* IMPORTANT: QEMU virt machine places DTB at 0x40000000-0x40100000 (1MB)
-     * Kernel has 128MB total (0x40100000 - 0x48100000)
-     *
-     * .data is placed directly in RAM - no AT() directive needed.
-     * QEMU's -kernel loader will load .data directly at its RAM address (0x40100000+)
-     */
-    . = 0x40100000;
+    /* Writable data sections continue in RAM */
+    . = ALIGN(4096);
 
     /* .data: initialized globals WITH pointers (must be writable) */
     __data_start = .;

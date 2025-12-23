@@ -270,25 +270,51 @@ write_sctlr_el1:
     // Save registers we'll use
     mov x19, x30           // Save link register
     mov x20, x0            // Save SCTLR value
-    
+
+    // DEBUG: Get current PC to verify where we're executing from
+    adr x21, .              // x21 = current PC
+
     // Print 'W' before msr (minimal UART operation)
     movz x0, #0x0900, lsl #16    // UART base
     movk x0, #0x0000, lsl #0
     movz w1, #0x57                // 'W'
     str w1, [x0]
-    
+
+    // DEBUG: Print PC value to verify execution location
+    // Print PC in hex: "PC=0x________"
+    movz w1, #0x50                // 'P'
+    str w1, [x0]
+    movz w1, #0x43                // 'C'
+    str w1, [x0]
+    movz w1, #0x3D                // '='
+    str w1, [x0]
+    movz w1, #0x30                // '0'
+    str w1, [x0]
+    movz w1, #0x78                // 'x'
+    str w1, [x0]
+
+    // Print PC value (just the important part - upper 32 bits)
+    mov x2, x21
+    lsr x2, x2, #28            // Get top 4 bits
+    and x2, x2, #0xF
+    cmp x2, #10
+    blt 1f
+    add x2, x2, #0x41 - 10     // 'A'-'F'
+    b 2f
+1:
+    add x2, x2, #0x30          // '0'-'9'
+2:
+    str w2, [x0]
+
     // CRITICAL: DSB before msr to ensure all previous memory operations
     // (including UART writes) are complete before enabling MMU.
     // This is especially important for QEMU which may have timing issues.
     dsb sy                        // Data synchronization barrier - all memory ops complete
-    
-    // CRITICAL: Invalidate instruction cache before enabling MMU
-    // Even though caches are disabled, prefetch buffers may contain stale instructions
-    // This is standard practice in Linux kernel's __enable_mmu
-    ic iallu                       // Invalidate all instruction caches to PoU
-    dsb nsh                        // Ensure completion of instruction cache invalidation
+
+    // NOTE: NOT invalidating instruction cache before MMU enable
+    // Some systems have issues with ic iallu before MMU is on
     isb                            // Synchronize instruction stream
-    
+
     // TEST: Sequential execution (no branch) after MMU enable
     // Restore SCTLR value and write it
     mov x0, x20

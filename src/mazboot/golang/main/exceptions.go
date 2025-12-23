@@ -177,62 +177,81 @@ var exceptionCount uint32
 //go:nosplit
 //go:noinline
 func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType uint32, savedFP uint64, savedLR uint64, savedG uint64) {
-	// DEBUG: Print details BEFORE incrementing counter to see what exception triggers the crash
-	if exceptionCount == 49 {
-		print("\r\nDEBUG: BEFORE exception #50 - ELR=0x")
-		printHex64(elr)
-		print(" FAR=0x")
-		printHex64(far)
-		print(" savedG=0x")
-		printHex64(savedG)
-		print(" savedLR=0x")
-		printHex64(savedLR)
-		print("\r\n")
-	}
+	// CRITICAL: Do NOT access global variables (exceptionCount)!
+	// They might not be mapped yet and would cause nested exceptions
 
-	// Increment exception counter
-	exceptionCount++
+	// DISABLED: accessing exceptionCount global causes nested exception
+	// // DEBUG: Print details BEFORE incrementing counter to see what exception triggers the crash
+	// if exceptionCount == 49 {
+	// 	print("\r\nDEBUG: BEFORE exception #50 - ELR=0x")
+	// 	printHex64(elr)
+	// 	print(" FAR=0x")
+	// 	printHex64(far)
+	// 	print(" savedG=0x")
+	// 	printHex64(savedG)
+	// 	print(" savedLR=0x")
+	// 	printHex64(savedLR)
+	// 	print("\r\n")
+	// }
+	//
+	// // Increment exception counter
+	// exceptionCount++
+	//
+	// // DEBUG: Catch the readgstatus crash before it calls PrintTraceback
+	// if exceptionCount == 50 {
+	// 	print("DEBUG: Exception #50 IS the readgstatus crash\r\n")
+	// 	print("  This means exception #49 called PrintTraceback\r\n")
+	// 	print("  Which then crashed in readgstatus\r\n")
+	// 	print("HANGING to avoid crash loop\r\n")
+	// 	for {}
+	// }
+	//
+	// // DEBUG: Print marker for exceptions after #17 to detect loops
+	// if exceptionCount == 18 || exceptionCount == 19 || exceptionCount == 20 {
+	// 	uartBase := getLinkerSymbol("__uart_base")
+	// 	*(*uint32)(unsafe.Pointer(uartBase)) = 0x58  // 'X' - exception after #17
+	// }
 
-	// DEBUG: Catch the readgstatus crash before it calls PrintTraceback
-	if exceptionCount == 50 {
-		print("DEBUG: Exception #50 IS the readgstatus crash\r\n")
-		print("  This means exception #49 called PrintTraceback\r\n")
-		print("  Which then crashed in readgstatus\r\n")
-		print("HANGING to avoid crash loop\r\n")
-		for {}
-	}
+	// CRITICAL: Do NOT access global variables (exceptionCount, inExceptionHandler)!
+	// They might not be mapped yet and would cause nested exceptions
+	// All exception tracking and nested exception detection DISABLED
 
-	// DEBUG: Print marker for exceptions after #17 to detect loops
-	if exceptionCount == 18 || exceptionCount == 19 || exceptionCount == 20 {
-		uartBase := getLinkerSymbol("__uart_base")
-		*(*uint32)(unsafe.Pointer(uartBase)) = 0x58  // 'X' - exception after #17
-	}
+	// VERY EARLY DEBUG: Print before any complex logic
+	// DISABLED: accessing globals causes nested exception
+	// if inExceptionHandler == 0 {
+	// 	uartPutsDirect("!E1:")
+	// } else {
+	// 	uartPutsDirect("!E2:")
+	// }
+	// uartPutHex64Direct(far)
 
 	// Detect exception storms (>100 exceptions suggests infinite loop)
-	if exceptionCount > 100 {
-		uartPutsDirect("\r\n!EXCEPTION STORM! Count=")
-		uartPutHex64Direct(uint64(exceptionCount))
-		uartPutsDirect("\r\nESR=0x")
-		uartPutHex64Direct(esr)
-		uartPutsDirect(" FAR=0x")
-		uartPutHex64Direct(far)
-		uartPutsDirect(" ELR=0x")
-		uartPutHex64Direct(elr)
-		uartPutsDirect("\r\n")
-		for {} // Hang on exception storm
-	}
+	// DISABLED: accessing exceptionCount global causes nested exception
+	// if exceptionCount > 100 {
+	// 	uartPutsDirect("\r\n!EXCEPTION STORM! Count=")
+	// 	uartPutHex64Direct(uint64(exceptionCount))
+	// 	uartPutsDirect("\r\nESR=0x")
+	// 	uartPutHex64Direct(esr)
+	// 	uartPutsDirect(" FAR=0x")
+	// 	uartPutHex64Direct(far)
+	// 	uartPutsDirect(" ELR=0x")
+	// 	uartPutHex64Direct(elr)
+	// 	uartPutsDirect("\r\n")
+	// 	for {} // Hang on exception storm
+	// }
 
 	// Detect nested exceptions (exception during exception handling)
-	if inExceptionHandler != 0 {
-		uartPutsDirect("\r\n!NESTED EXCEPTION!\r\n")
-		uartPutsDirect("ESR=0x")
-		uartPutHex64Direct(esr)
-		uartPutsDirect(" FAR=0x")
-		uartPutHex64Direct(far)
-		uartPutsDirect("\r\n")
-		for {} // Hang on nested exception
-	}
-	inExceptionHandler = 1
+	// DISABLED: accessing inExceptionHandler global causes nested exception
+	// if inExceptionHandler != 0 {
+	// 	uartPutsDirect("\r\n!NESTED EXCEPTION!\r\n")
+	// 	uartPutsDirect("ESR=0x")
+	// 	uartPutHex64Direct(esr)
+	// 	uartPutsDirect(" FAR=0x")
+	// 	uartPutHex64Direct(far)
+	// 	uartPutsDirect("\r\n")
+	// 	for {} // Hang on nested exception
+	// }
+	// inExceptionHandler = 1  // DISABLED
 
 	// Check for stack overflow (option 2)
 	// Exception stack is at 0x5FFE0000, should be well above 0x5FFD0000
@@ -273,7 +292,7 @@ func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType u
 
 	handleException(excInfo)
 
-	inExceptionHandler = 0
+	// inExceptionHandler = 0  // DISABLED: accessing global causes issues
 
 	// Breadcrumb: returning from exception handler
 	uartPutcDirect('R')

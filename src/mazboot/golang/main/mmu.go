@@ -383,8 +383,9 @@ func allocPhysFrame() uintptr {
 
 	totalPages = getTotalKernelPages()
 
-	// Zero the frame (required for clean memory)
-	bzero(unsafe.Pointer(frame), PAGE_SIZE)
+	// NOTE: Frame is NOT zeroed here to avoid nested page faults
+	// The caller (HandlePageFault) will zero it after validating the address
+	// but before mapping it to the virtual address space
 
 	return frame
 }
@@ -506,55 +507,107 @@ func preMapPages() {
 //go:nosplit
 //go:noinline
 func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
+	// CRITICAL: Do NOT access global variables here!
+	// Global variables might not be mapped yet and would cause nested exceptions
+	// Commented out to prevent nested exception from unmapped globals:
+	//   totalExceptionCounter, lastExceptionVA, sameVACounter, pageFaultCounter
+
 	// Track total exceptions to detect loops
-	totalExceptionCounter++
+	// totalExceptionCounter++  // DISABLED: causes nested exception
 
 	// Detect exception loops (same VA faulting repeatedly)
-	if faultAddr == lastExceptionVA {
-		sameVACounter++
-		if sameVACounter > 3 {
-			uartPutsDirect("\r\n!EXCEPTION LOOP! VA=0x")
-			uartPutHex64Direct(uint64(faultAddr))
-			uartPutsDirect(" count=")
-			uartPutHex64Direct(uint64(sameVACounter))
-			uartPutsDirect("\r\n")
-			for {} // Hang
-		}
-	} else {
-		sameVACounter = 1
-		lastExceptionVA = faultAddr
-	}
+	// DISABLED: causes nested exception from accessing unmapped globals
+	// if faultAddr == lastExceptionVA {
+	// 	sameVACounter++
+	// 	if sameVACounter > 3 {
+	// 		uartPutsDirect("\r\n!EXCEPTION LOOP! VA=0x")
+	// 		uartPutHex64Direct(uint64(faultAddr))
+	// 		uartPutsDirect(" count=")
+	// 		uartPutHex64Direct(uint64(sameVACounter))
+	// 		uartPutsDirect("\r\n")
+	// 		for {} // Hang
+	// 	}
+	// } else {
+	// 	sameVACounter = 1
+	// 	lastExceptionVA = faultAddr
+	// }
 
 	// PERFORMANCE: Minimize debug output for fast demand paging
 	// Only print progress dots every 100 faults, not full debug info
-	pageFaultCounter++
+	// pageFaultCounter++  // DISABLED: causes nested exception
 
-	// DEBUG: Print ALL page faults to debug stackpoolalloc issue
-	uartPutsDirect("\r\nPF#")
-	uartPutHex64Direct(uint64(pageFaultCounter))
-	uartPutsDirect(" VA=0x")
-	uartPutHex64Direct(uint64(faultAddr))
+	// DEBUG: Print page fault address
+	// DISABLED: Even this might cause issues
+	// uartPutsDirect("\r\nPF VA=0x")
+	// uartPutHex64Direct(uint64(faultAddr))
 
 	// Check if the fault address is in a valid region for demand paging
-	// Accept faults in:
-	// 1. kmazarin load region: 0x40000000+ (RAM start, includes kmazarin kernel)
-	// 2. mmap region: 0x48000000+ (Go runtime allocations)
-	const KMAZARIN_BASE = 0x40000000
-	if faultAddr < KMAZARIN_BASE || faultAddr >= MMAP_VIRT_END {
-		// Not in a valid region - this is a real fault
-		uartPutsDirect("\r\n!FAULT outside valid region: VA=0x")
+	//
+	// FORBIDDEN REGIONS (abort on access):
+	// 1. NULL pointers: 0x00000000 - 0x00001000 (first 4KB)
+	// 2. ROM/Flash: 0x00001000 - 0x08000000 (we don't use ROM for platform independence)
+	// 3. MMIO devices: 0x08000000 - 0x40000000 (UART, GIC, etc. - handled separately)
+	// 4. Above mmap: >= 0x800000000000 (128TB+)
+	//
+	// VALID REGIONS (demand paging allowed):
+	// 1. DTB: 0x40000000 - 0x40100000 (pre-mapped)
+	// 2. Mazboot: 0x40100000+ (code, data, bss - pre-mapped)
+	// 3. Kmazarin: After mazboot's bss (loaded at runtime)
+	// 4. Mmap: 0x48000000+ (Go runtime allocations)
+	//
+	const NULL_POINTER_THRESHOLD = uintptr(0x00001000) // First 4KB
+	const ROM_END = uintptr(0x08000000)                // End of ROM/Flash region
+	const RAM_START = uintptr(0x40000000)              // Start of RAM (DTB)
+
+	// Reject NULL pointers
+	if faultAddr < NULL_POINTER_THRESHOLD {
+		uartPutsDirect("\r\n!NULL POINTER FAULT: VA=0x")
 		uartPutHex64Direct(uint64(faultAddr))
 		uartPutsDirect("\r\n")
 		return false
 	}
 
+	// CRITICAL: Reject ROM/Flash region (0x00001000 - 0x08000000)
+	// We do NOT use ROM for platform independence (Raspberry Pi, etc.)
+	if faultAddr >= NULL_POINTER_THRESHOLD && faultAddr < ROM_END {
+		uartPutsDirect("\r\n!ILLEGAL ROM ACCESS: VA=0x")
+		uartPutHex64Direct(uint64(faultAddr))
+		uartPutsDirect(" - ROM/Flash not supported\r\n")
+		return false
+	}
+
+	// Reject MMIO region (0x08000000 - 0x40000000)
+	// MMIO devices should be accessed directly, not via demand paging
+	if faultAddr >= ROM_END && faultAddr < RAM_START {
+		uartPutsDirect("\r\n!ILLEGAL MMIO ACCESS: VA=0x")
+		uartPutHex64Direct(uint64(faultAddr))
+		uartPutsDirect(" - Use direct MMIO access\r\n")
+		return false
+	}
+
+	// Reject above mmap region
+	if faultAddr >= MMAP_VIRT_END {
+		uartPutsDirect("\r\n!FAULT above mmap region: VA=0x")
+		uartPutHex64Direct(uint64(faultAddr))
+		uartPutsDirect("\r\n")
+		return false
+	}
+
+	// faultAddr is now in valid RAM region (0x40000000 - MMAP_VIRT_END)
+
 	// Align fault address to page boundary
 	pageAddr := faultAddr &^ (PAGE_SIZE - 1)
+
+	// uartPutsDirect(" check...")  // DISABLED
 
 	// CHECK: Is this page already mapped?
 	// This shouldn't happen - page faults should only occur for unmapped pages
 	// But if it does happen, we want to detect it
 	existingPA := getPhysicalAddress(pageAddr)
+
+	// uartPutsDirect(" exist=0x")  // DISABLED
+	// uartPutHex64Direct(uint64(existingPA))  // DISABLED
+
 	if existingPA != 0 {
 		uartPutsDirect("\r\n!DUPLICATE FAULT at VA=0x")
 		uartPutHex64Direct(uint64(pageAddr))
@@ -575,6 +628,9 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 		return false
 	}
 
+	// uartPutsDirect(" PA=0x")  // DISABLED
+	// uartPutHex64Direct(uint64(physFrame))  // DISABLED
+
 	// CRITICAL: Verify physical frame is in valid range and not in page table region
 	if physFrame < PHYS_FRAME_BASE || physFrame >= PHYS_FRAME_END {
 		uartPutsDirect("\r\n!INVALID PHYS FRAME: 0x")
@@ -589,8 +645,12 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 		for {} // Hang
 	}
 
+	// uartPutsDirect(" bzero...")  // DISABLED
+
 	// Zero the physical frame BEFORE mapping it to avoid nested exceptions
 	bzero(unsafe.Pointer(physFrame), PAGE_SIZE)
+
+	// uartPutsDirect(" map...")  // DISABLED
 
 	// Map the virtual page to the physical frame
 	// Note: VA != PA for demand-paged memory
@@ -607,7 +667,7 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	asm.Isb()
 
 	// DEBUG: Print completion for ALL faults to track success
-	uartPutsDirect(" OK")
+	// uartPutsDirect(" OK")  // DISABLED
 
 	return true
 }
@@ -623,7 +683,8 @@ func createPageTableEntry(addr uintptr, attrs uint64, ap uint64) uint64 {
 	// PXN and UXN are cleared (0) by default, allowing execution
 	// This is required for code regions to be executable
 	// NOTE: L3 page descriptors must have bits[1:0] = 0b11, so include PTE_TABLE here.
-	entry := uint64(addr) | PTE_VALID | PTE_TABLE | PTE_AF | attrs | ap | PTE_SH_INNER
+	// CRITICAL: Use Non-Shareable for now to debug MMU enable issues
+	entry := uint64(addr) | PTE_VALID | PTE_TABLE | PTE_AF | attrs | ap | PTE_SH_NONE
 	// Note: PXN and UXN bits are NOT set, so execution is allowed
 	return entry
 }
@@ -880,9 +941,21 @@ func initMMU() bool {
 	dataEnd := getLinkerSymbol("__data_end")
 	endAddr := getLinkerSymbol("__end")
 
+	// DEBUG: Print text section range to verify it includes executing code
+	uartPutsDirect("\r\n.text: 0x")
+	uartPutHex64Direct(uint64(textStart))
+	uartPutsDirect(" - 0x")
+	uartPutHex64Direct(uint64(rodataStart))
+	uartPutsDirect("\r\n")
+
 	// Map everything before .rodata as read-only (boot code, text)
+	// This includes:
+	// - .text section (code)
+	// - .vectors section (exception handlers)
 	if textStart > 0 && rodataStart > 0 && textStart < rodataStart {
 		mapRegion(textStart, rodataStart, textStart, PTE_ATTR_NORMAL, PTE_AP_RO_EL1)
+		uartPutcDirect('T')  // .text mapped
+
 	}
 
 	// Map everything after .rodata up to data section as read-only
@@ -970,12 +1043,15 @@ func initMMU() bool {
 	// dumpFetchMapping("pci-ecam-low", ecamBase)
 	uartPutcDirect('V')  // Breadcrumb: verification done
 
-	// Map kernel RAM (after DTB to page tables) - BSS, heap, stacks
+	// Map kernel RAM (after mazboot image to page tables) - heap, stacks
+	// CRITICAL: Start mapping AFTER our kernel image (endAddr) to avoid overlap
 	uartPutcDirect('0')  // Breadcrumb: about to map RAM
-	ramStart := getLinkerSymbol("__dtb_boot_addr") + getLinkerSymbol("__dtb_size")
+	ramStart := (endAddr + 0xFFF) &^ 0xFFF  // Round up to next page
 	uartPutcDirect('1')  // Breadcrumb: got RAM start address
-	mapRegion(ramStart, PAGE_TABLE_BASE, ramStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
-	uartPutcDirect('2')  // Breadcrumb: RAM mapped
+	if ramStart < PAGE_TABLE_BASE {
+		mapRegion(ramStart, PAGE_TABLE_BASE, ramStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+		uartPutcDirect('2')  // Breadcrumb: RAM mapped
+	}
 
 	// CRITICAL: Map exception vector RAM region as NORMAL CACHEABLE
 	// Exception vectors will be relocated to 0x41100000 from ROM
@@ -1009,6 +1085,13 @@ func initMMU() bool {
 	asm.Dsb()               // Ensure all page table writes are visible
 	asm.InvalidateTlbAll()  // Invalidate all TLB entries
 	asm.Isb()               // Ensure TLB invalidation completes
+
+	// DEBUG: Check if we ran out of page table space
+	_, remaining := getPageTableAllocatorStats()
+	if remaining == 0 {
+		uartPutcDirect('O')  // 'O' = Out of page table space!
+		for {} // Hang
+	}
 
 	uartPutcDirect('T')  // Breadcrumb: about to return true from initMMU
 	return true
@@ -1130,22 +1213,32 @@ func dumpFetchMapping(label string, va uintptr) bool {
 //
 //go:nosplit
 func enableMMU() bool {
-	uartPutcDirect('E')  // Breadcrumb: entered enableMMU
+	uartBase := uintptr(0x09000000)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x45 // 'E' = entered enableMMU
+
 	if pageTableL0 == 0 {
 		print("FATAL: Page tables not initialized\r\n")
 		return false
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x31 // '1' = page table check passed
 
-	// Configure MAIR_EL1: Attr0=0xFF (Normal), Attr1=0x00 (Device)
-	mairValue := uint64(0xFF)
+	// Configure MAIR_EL1: Set all 3 memory attribute indices
+	// MAIR[0] = 0xFF (Normal, Inner/Outer Write-Back Cacheable)
+	// MAIR[1] = 0x00 (Device-nGnRnE)
+	// MAIR[2] = 0x44 (Normal, Inner/Outer Non-Cacheable)
+	mairValue := uint64(0xFF) |      // Attr0: Normal cacheable
+		(uint64(0x00) << 8) |  // Attr1: Device
+		(uint64(0x44) << 16)   // Attr2: Normal non-cacheable
 	asm.WriteMairEl1(mairValue)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x32 // '2' = MAIR written
 
 	// Verify MAIR
 	mairReadback := asm.ReadMairEl1()
-	if (mairReadback & 0xFF) != 0xFF {
+	if (mairReadback & 0xFFFFFF) != mairValue {
 		print("FATAL: MAIR configuration failed\r\n")
 		return false
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x33 // '3' = MAIR verified
 
 	// Configure TCR_EL1
 	tcrValue := uint64(0)
@@ -1157,6 +1250,7 @@ func enableMMU() bool {
 	tcrValue |= 1 << 23  // EPD1 = 1
 	tcrValue |= 2 << 32  // IPS = 2
 	asm.WriteTcrEl1(tcrValue)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x34 // '4' = TCR written
 
 	// Verify TCR
 	tcrReadback := asm.ReadTcrEl1()
@@ -1164,10 +1258,12 @@ func enableMMU() bool {
 		print("FATAL: TCR T0SZ configuration failed\r\n")
 		return false
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x35 // '5' = TCR verified
 
 	asm.Isb()
 	asm.WriteTtbr1El1(0)
 	asm.WriteTtbr0El1(uint64(pageTableL0))
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x36 // '6' = TTBR written
 
 	// Verify TTBR0
 	ttbr0Readback := asm.ReadTtbr0El1()
@@ -1175,6 +1271,7 @@ func enableMMU() bool {
 		print("FATAL: TTBR0 configuration failed\r\n")
 		return false
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x37 // '7' = TTBR verified
 
 	asm.Dsb()
 
@@ -1184,21 +1281,31 @@ func enableMMU() bool {
 	sctlr &^= 1 << 2  // C = 0 (data cache disabled)
 	sctlr &^= 1 << 12 // I = 0 (instruction cache disabled)
 
+	// DEBUG: Print TTBR0 and page table base to verify setup
+	uartPutsDirect("\r\nTTBR0=0x")
+	uartPutHex64Direct(asm.ReadTtbr0El1())
+	uartPutsDirect(" PTBase=0x")
+	uartPutHex64Direct(uint64(pageTableL0))
+	uartPutsDirect("\r\n")
+
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x38 // '8' = About to enable MMU
+
 	// CRITICAL: Cannot call dumpFetchMapping() before MMU is enabled!
 	// dumpFetchMapping uses print() which accesses .rodata strings, and before
 	// MMU is on, ARM64 requires strict alignment (strings are misaligned).
 	// TODO: Add verification AFTER MMU enable when unaligned access is allowed.
 
-	// Enable MMU
+	// Enable MMU (use working sequence from b437aa9)
 	asm.Dsb()
 	asm.Isb()
 	asm.WriteSctlrEl1(sctlr)
 	asm.Isb()
 	asm.InvalidateTlbAll()
 	asm.Dsb()
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x39 // '9' = MMU enabled
 
 	// Now MMU is ON and unaligned access is allowed, can safely use print()
-	uartPutcDirect('M')  // MMU enabled successfully
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x4D // 'M' = MMU enabled successfully
 
 	return true
 }

@@ -431,6 +431,10 @@ func SimpleTestKernel() {
 //
 //go:noinline
 func KernelMain(r0, r1, atags uint32) {
+	// VERY EARLY breadcrumb - before any complex operations
+	uartBase := uintptr(0x09000000)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x4B // 'K' = Entered KernelMain
+
 	// Uncomment the line below to use simplified test kernel
 	// SimpleTestKernel()
 	// return
@@ -440,13 +444,16 @@ func KernelMain(r0, r1, atags uint32) {
 
 	// Get MMIO device addresses from linker symbols
 	_ = getLinkerSymbol("__uart_base")
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x6B // 'k' = Past linker symbol
 
 	// On QEMU virt, the DTB pointer is passed in as the "atags" parameter (low 32 bits).
 	// boot.s captures QEMU's reset-time x0 and passes it through to kernel_main in x2.
 	setDTBPtr(uintptr(atags))
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x44 // 'D' = setDTBPtr done
 
 	// Initialize UART first for early debugging
 	uartInit()
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x55 // 'U' = uartInit done
 
 	// Check SCTLR_EL1 for alignment check bit
 	sctlr := asm.ReadSctlrEl1()
@@ -456,9 +463,11 @@ func KernelMain(r0, r1, atags uint32) {
 	if alignCheck {
 		asm.DisableAlignmentCheck()
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x41 // 'A' = Alignment check done
 
 	// Initialize minimal runtime structures for write barrier
 	initRuntimeStubs()
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x52 // 'R' = Runtime stubs done
 
 	// Initialize MMU (required before heap - enables Normal memory for unaligned access)
 	if !initMMU() {
@@ -466,11 +475,14 @@ func KernelMain(r0, r1, atags uint32) {
 		for {
 		}
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x4D // 'M' = initMMU done
+
 	if !enableMMU() {
 		print("FATAL: MMU enablement failed\r\n")
 		for {
 		}
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x6D // 'm' = enableMMU done
 
 	// Set physPageSize before schedinit (needed by mallocinit which schedinit calls)
 	// Normally this would be set by sysauxv from AT_PAGESZ auxiliary vector
@@ -507,8 +519,15 @@ func KernelMain(r0, r1, atags uint32) {
 	// print("Setting up watchpoint on text section at 0x00312f38...\r\n")
 	// asm.SetupWatchpoint(0x00312f38, 3) // 3 = doubleword (8 bytes)
 
-	// WORKAROUND: Pre-map DTB region and g0 stack to avoid page faults during schedinit
-	// Even with optimized demand paging, schedinit hangs when faulting
+	// WORKAROUND: Pre-map critical memory regions to avoid page faults during demand paging
+	// These regions must be mapped before demand paging is active:
+	// 1. DTB region - QEMU device tree
+	// 2. g0 stack - system goroutine stack
+	// 3. Exception stacks - for handling page faults
+	//
+	// NOTE: We do NOT pre-map ROM/Flash or mazboot's own code/data because:
+	//   - Memory layout varies by platform (QEMU vs Raspberry Pi vs others)
+	//   - Instead, we ensure exception handlers don't access unmapped globals
 	{
 		// Map DTB region (QEMU device tree blob)
 		dtbStart := getLinkerSymbol("__dtb_boot_addr")
@@ -553,6 +572,118 @@ func KernelMain(r0, r1, atags uint32) {
 			}
 		}
 		print("\r\nPre-mapped g0 stack\r\n")
+
+		// Map exception stacks (primary and nested)
+		// Primary exception stack: 0x5FFE0000 (8KB)
+		// Nested exception stack: 0x5FFD0000 (4KB)
+		const EXC_STACK_PRIMARY = uintptr(0x5FFE0000)
+		const EXC_STACK_NESTED = uintptr(0x5FFD0000)
+		const EXC_STACK_SIZE = uintptr(0x2000) // 8KB for primary
+
+		print("Pre-mapping exception stacks (0x")
+		printHex64(uint64(EXC_STACK_NESTED))
+		print("-0x")
+		printHex64(uint64(EXC_STACK_PRIMARY + EXC_STACK_SIZE))
+		print(")...\r\n")
+
+		// Map nested exception stack (4KB)
+		for va := EXC_STACK_NESTED; va < EXC_STACK_PRIMARY; va += 0x1000 {
+			physFrame := allocPhysFrame()
+			if physFrame == 0 {
+				print("ERROR: Out of physical frames for exception stack\r\n")
+				break
+			}
+			bzero(unsafe.Pointer(physFrame), 0x1000)
+			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+			if va == EXC_STACK_NESTED {
+				print(".")
+			}
+		}
+
+		// Map primary exception stack (8KB)
+		for va := EXC_STACK_PRIMARY; va < EXC_STACK_PRIMARY+EXC_STACK_SIZE; va += 0x1000 {
+			physFrame := allocPhysFrame()
+			if physFrame == 0 {
+				print("ERROR: Out of physical frames for exception stack\r\n")
+				break
+			}
+			bzero(unsafe.Pointer(physFrame), 0x1000)
+			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+			print(".")
+		}
+		print("\r\nPre-mapped exception stacks\r\n")
+
+		// Pre-map all of mazboot's sections to avoid page faults in exception handlers
+		// This ensures all code, data, and globals are accessible without demand paging
+		// Everything is now in RAM (0x40100000+) for platform independence
+		print("Pre-mapping mazboot sections (all in RAM)...\r\n")
+
+		// Get linker symbols for section boundaries
+		textStart := getLinkerSymbol("__text_start")
+		textEnd := getLinkerSymbol("__text_end")
+		rodataStart := getLinkerSymbol("__rodata_start")
+		rodataEnd := getLinkerSymbol("__rodata_end")
+		dataStart := getLinkerSymbol("__data_start")
+		dataEnd := getLinkerSymbol("__data_end")
+		bssStart := getLinkerSymbol("__bss_start")
+		bssEnd := getLinkerSymbol("__bss_end")
+
+		// Pre-map .text (code) - now in RAM starting at 0x40100000
+		print("  .text:   0x")
+		printHex64(uint64(textStart))
+		print(" - 0x")
+		printHex64(uint64(textEnd))
+		print(" (")
+		printUint32(uint32((textEnd - textStart) / 1024))
+		print("KB)...")
+		for va := textStart &^ 0xFFF; va < textEnd; va += 0x1000 {
+			// Use identity mapping (VA == PA) with read-only permissions
+			mapPage(va, va, PTE_ATTR_NORMAL, PTE_AP_RO_EL1)
+		}
+		print(" OK\r\n")
+
+		// Pre-map .rodata (read-only data) - in RAM after .text
+		print("  .rodata: 0x")
+		printHex64(uint64(rodataStart))
+		print(" - 0x")
+		printHex64(uint64(rodataEnd))
+		print(" (")
+		printUint32(uint32((rodataEnd - rodataStart) / 1024))
+		print("KB)...")
+		for va := rodataStart &^ 0xFFF; va < rodataEnd; va += 0x1000 {
+			mapPage(va, va, PTE_ATTR_NORMAL, PTE_AP_RO_EL1)
+		}
+		print(" OK\r\n")
+
+		// Pre-map .data (initialized writable data) - in RAM after .rodata
+		print("  .data:   0x")
+		printHex64(uint64(dataStart))
+		print(" - 0x")
+		printHex64(uint64(dataEnd))
+		print(" (")
+		printUint32(uint32((dataEnd - dataStart) / 1024))
+		print("KB)...")
+		for va := dataStart &^ 0xFFF; va < dataEnd; va += 0x1000 {
+			mapPage(va, va, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+		}
+		print(" OK\r\n")
+
+		// Pre-map .bss (zero-initialized data) - in RAM after .data
+		print("  .bss:    0x")
+		printHex64(uint64(bssStart))
+		print(" - 0x")
+		printHex64(uint64(bssEnd))
+		print(" (")
+		printUint32(uint32((bssEnd - bssStart) / 1024))
+		print("KB)...")
+		for va := bssStart &^ 0xFFF; va < bssEnd; va += 0x1000 {
+			mapPage(va, va, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+		}
+		print(" OK\r\n")
+
+		print("All mazboot sections pre-mapped (")
+		printUint32(uint32((bssEnd - textStart) / 1024))
+		print("KB total)\r\n")
 	}
 
 	// =========================================
@@ -1436,19 +1567,19 @@ func parseEmbeddedKmazarin() {
 // loadAndRunKmazarin loads the embedded kmazarin ELF binary into memory and jumps to it
 // This function:
 // 1. Parses the ELF program headers to find PT_LOAD segments
-// 2. Copies each segment from the embedded binary to memory at (vaddr + 0x100000)
-//    - The 0x100000 offset avoids DTB conflict at 0x40000000-0x40100000
-// 3. Handles BSS zeroing (memsz > filesz)
-// 4. Jumps to the kmazarin entry point (entry + 0x100000)
+// 2. Computes a load offset to avoid DTB conflict at 0x40000000-0x40100000
+//    - offset = DTB_END - first_segment_vaddr
+// 3. Copies each segment from the embedded binary to memory at (vaddr + offset)
+// 4. Handles BSS zeroing (memsz > filesz)
+// 5. Jumps to the kmazarin entry point (entry + offset)
 //
 //go:nosplit
 func loadAndRunKmazarin() {
 	print("\r\n=== Loading Kmazarin Kernel ===\r\n")
 
-	// Memory offset to avoid DTB conflict
-	// kmazarin wants to load at 0x40000000, but DTB is at 0x40000000-0x40100000
-	// So we add 0x100000 to all virtual addresses
-	const LOAD_OFFSET = uintptr(0x100000)
+	// DTB region ends at 0x40100000 on QEMU virt machine
+	// We need to load kmazarin after this to avoid conflict
+	const DTB_END = uintptr(0x40100000)
 
 	// Get the embedded kmazarin binary location from linker symbols
 	kmazarinStart := getLinkerSymbol("__kmazarin_start")
@@ -1502,9 +1633,7 @@ func loadAndRunKmazarin() {
 
 	print("Entry point: 0x")
 	printHex64(entry)
-	print(" → 0x")
-	printHex64(entry + uint64(LOAD_OFFSET))
-	print(" (with offset)\r\n")
+	print("\r\n")
 
 	// Parse program headers
 	phoff := uint64(elfData[0x20]) |
@@ -1518,6 +1647,52 @@ func loadAndRunKmazarin() {
 
 	phentsize := uint16(elfData[0x36]) | (uint16(elfData[0x37]) << 8)
 	phnum := uint16(elfData[0x38]) | (uint16(elfData[0x39]) << 8)
+
+	// First pass: find the first PT_LOAD segment to compute the load offset
+	// Pack kmazarin right after mazboot's bss section for contiguous layout
+	var loadOffset uintptr
+
+	// Get end of mazboot's bss section - this is where kmazarin will be loaded
+	bssEnd := getLinkerSymbol("__bss_end")
+	// Round up to next page boundary for alignment
+	kmazarinLoadAddr := (bssEnd + 0xFFF) &^ 0xFFF
+
+	for i := uint16(0); i < phnum; i++ {
+		offset := phoff + uint64(i)*uint64(phentsize)
+		if offset+56 > uint64(len(elfData)) {
+			break
+		}
+
+		ptype := uint32(elfData[offset]) |
+			(uint32(elfData[offset+1]) << 8) |
+			(uint32(elfData[offset+2]) << 16) |
+			(uint32(elfData[offset+3]) << 24)
+
+		// Find first PT_LOAD segment (type 1)
+		if ptype == 1 {
+			firstVaddr := uint64(elfData[offset+16]) |
+				(uint64(elfData[offset+17]) << 8) |
+				(uint64(elfData[offset+18]) << 16) |
+				(uint64(elfData[offset+19]) << 24) |
+				(uint64(elfData[offset+20]) << 32) |
+				(uint64(elfData[offset+21]) << 40) |
+				(uint64(elfData[offset+22]) << 48) |
+				(uint64(elfData[offset+23]) << 56)
+
+			// Compute offset: where we want it (after mazboot) minus where it wants to be (firstVaddr)
+			loadOffset = kmazarinLoadAddr - uintptr(firstVaddr)
+			print("Computed load offset: 0x")
+			printHex64(uint64(loadOffset))
+			print(" (mazboot bss end 0x")
+			printHex64(uint64(bssEnd))
+			print(" → kmazarin load 0x")
+			printHex64(uint64(kmazarinLoadAddr))
+			print(" - first segment vaddr 0x")
+			printHex64(firstVaddr)
+			print(")\r\n")
+			break
+		}
+	}
 
 	print("\r\nLoading segments:\r\n")
 
@@ -1583,7 +1758,7 @@ func loadAndRunKmazarin() {
 			(uint64(elfData[offset+47]) << 56)
 
 		// Calculate destination address with offset
-		destAddr := uintptr(vaddr) + LOAD_OFFSET
+		destAddr := uintptr(vaddr) + loadOffset
 
 		print("  [")
 		printUint32(uint32(loadCount))
@@ -1632,7 +1807,44 @@ func loadAndRunKmazarin() {
 			printHex64(poffset)
 			print(" (src=0x")
 			printHex64(uint64(srcAddr))
-			print(")... ")
+			print(" -> dest=0x")
+			printHex64(uint64(destAddr))
+			print(")\r\n")
+
+			// Verify pointers are not NULL
+			if destAddr == 0 {
+				print("ERROR: destAddr is NULL!\r\n")
+				return
+			}
+			if srcAddr == 0 {
+				print("ERROR: srcAddr is NULL!\r\n")
+				return
+			}
+
+			// Pre-map destination pages to avoid nested page faults during memmove
+			// This prevents stack overflow from too many nested exceptions
+			// We only need to pre-map destination - source is already mapped (mazboot's data section)
+			print("    Pre-mapping ")
+			destEnd := destAddr + uintptr(filesz)
+			pageCount := uint32(0)
+			for va := destAddr &^ 0xFFF; va < destEnd; va += 0x1000 {
+				// Explicitly allocate and map each page instead of touching it
+				// This avoids triggering Go runtime code that might access unmapped globals
+				physFrame := allocPhysFrame()
+				if physFrame == 0 {
+					print("\r\nERROR: Out of physical frames during pre-mapping\r\n")
+					return
+				}
+				// Zero the frame before mapping to avoid stale data
+				bzero(unsafe.Pointer(physFrame), 0x1000)
+				// Map with normal memory attributes, RW from EL1
+				mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+				pageCount++
+			}
+			printUint32(pageCount)
+			print(" pages\r\n")
+
+			print("    Calling memmove... ")
 			// Use memmove for the copy
 			asm.MemmoveBytes(
 				unsafe.Pointer(destAddr),
@@ -1659,10 +1871,14 @@ func loadAndRunKmazarin() {
 	print(" segments\r\n")
 
 	// Jump to kmazarin entry point
-	entryAddr := uintptr(entry) + LOAD_OFFSET
+	entryAddr := uintptr(entry) + loadOffset
 	print("\r\nJumping to kmazarin entry point at 0x")
 	printHex64(uint64(entryAddr))
-	print("...\r\n\r\n")
+	print(" (entry 0x")
+	printHex64(entry)
+	print(" + offset 0x")
+	printHex64(uint64(loadOffset))
+	print(")...\r\n\r\n")
 
 	// Jump to entry point
 	// We need to do this via assembly to ensure proper register setup

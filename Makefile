@@ -327,13 +327,9 @@ KMAZARIN_BUILD_DIR = src/kmazarin/build
 # Kmazarin binary output
 KMAZARIN_BINARY = $(KMAZARIN_BUILD_DIR)/kmazarin.elf
 
-# Build kmazarin kernel as a static binary
-# Standard Go build for linux/arm64 without cgo
-# Position text section at 0x40010000
-# NOTE: Go linker creates LOAD segment at 0x40000000 (page-aligned before .text)
-# CONFLICT: This overlaps DTB at 0x40000000-0x40100000, and kmazarin needs the DTB!
-# SOLUTION: ELF loader will add 0x100000 offset to all vaddrs when loading
-#           (i.e., segment at vaddr 0x40000000 will actually load at 0x40100000)
+# Build kmazarin kernel as a static binary using Go's internal linker
+# The Go linker will position segments at 0x40000000 (page-aligned)
+# The ELF loader in mazboot applies a runtime offset of 0x100000 to avoid DTB
 $(KMAZARIN_BINARY): $(wildcard $(KMAZARIN_SRC)/*.go)
 	@mkdir -p $(KMAZARIN_BUILD_DIR)
 	@echo "Building kmazarin kernel (static Go binary)..."
@@ -342,7 +338,7 @@ $(KMAZARIN_BINARY): $(wildcard $(KMAZARIN_SRC)/*.go)
 		GOTOOLCHAIN=auto \
 		GOARCH=$(GOARCH) \
 		GOOS=$(GOOS) \
-		$(GO) build -ldflags="-T 0x40010000" -o $(abspath $(KMAZARIN_BINARY)) .
+		$(GO) build -ldflags="-T 0x40000000" -o $(abspath $(KMAZARIN_BINARY)) .
 	@echo "Kmazarin kernel built at $(KMAZARIN_BINARY)"
 
 # Build target for kmazarin
