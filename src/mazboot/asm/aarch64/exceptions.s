@@ -1235,7 +1235,7 @@ handle_svc_syscall:
     cmp x8, #124                   // sched_yield syscall
     beq syscall_success
     cmp x8, #220                   // clone syscall
-    beq syscall_clone_fail
+    beq syscall_clone_fake
     cmp x8, #222                   // mmap syscall
     beq syscall_mmap
     cmp x8, #226                   // mprotect syscall
@@ -1360,10 +1360,25 @@ syscall_success:
     mov x0, #0
     b syscall_return
 
-syscall_clone_fail:
-    // clone - return -EAGAIN (can't create new thread)
-    movn x0, #10                   // x0 = -11 (EAGAIN)
+syscall_clone_fake:
+    // clone - pretend to succeed by returning a fake TID
+    // This is a hack for single-threaded mode: the "thread" will never actually run,
+    // but the runtime thinks it was created successfully
+    // Return incrementing fake TID: 100, 101, 102, ...
+    adrp x1, fake_tid_counter
+    add x1, x1, :lo12:fake_tid_counter
+    ldr w0, [x1]                   // Load current counter
+    add w0, w0, #1                 // Increment
+    str w0, [x1]                   // Store back
+    add w0, w0, #99                // Return 100, 101, 102, ...
     b syscall_return
+
+.data
+.align 2
+fake_tid_counter:
+    .word 0                        // Counter for fake TIDs
+
+.text
 
 syscall_mmap:
     // mmap(addr, length, prot, flags, fd, offset) - 6 parameters
