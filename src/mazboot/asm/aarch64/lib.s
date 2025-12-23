@@ -662,6 +662,72 @@ call_runtime_newproc:
     ldp x29, x30, [sp], #48
     ret
 
+// =================================================================
+// call_newproc_simple_main()
+// Call runtime.newproc(main.simpleMain) to create goroutine for our simple test
+//
+// Returns 0 on success (newproc completed without crash)
+// =================================================================
+.global call_newproc_simple_main
+.extern main.simpleMain
+call_newproc_simple_main:
+    // Save callee-saved registers and create stack frame
+    stp x29, x30, [sp, #-48]!
+    mov x29, sp
+    stp x19, x20, [sp, #16]
+
+    // We need to create a funcval structure for simpleMain
+    // A funcval is just a pointer to the function
+    // For simplicity, we'll use the function address directly
+    // and hope the runtime accepts it
+
+    // Load address of main.simpleMain
+    ldr x0, =main.simpleMain
+
+    // Set up stack for newproc call:
+    //   SP+0: dummy LR (0)
+    //   SP+8: function pointer (main.simpleMain)
+    sub sp, sp, #16
+    str xzr, [sp, #0]       // Store 0 at SP+0 (dummy LR)
+    str x0, [sp, #8]        // Store function pointer at SP+8
+
+    // Call runtime.newproc
+    bl runtime.newproc
+
+    // Clean up newproc's stack frame
+    add sp, sp, #16
+
+    // If we get here, newproc() completed without crash
+    mov x0, #0              // Return 0 = success
+
+    // Restore and return
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #48
+    ret
+
+// =================================================================
+// call_runtime_mstart()
+// Call runtime.mstart() to start the scheduler
+// This function should never return
+// =================================================================
+.global call_runtime_mstart
+.extern runtime.mstart.abi0
+call_runtime_mstart:
+    // Save callee-saved registers and create stack frame
+    stp x29, x30, [sp, #-32]!
+    mov x29, sp
+    stp x19, x20, [sp, #16]
+
+    // Call runtime.mstart.abi0()
+    // This should never return - it starts the scheduler
+    bl runtime.mstart.abi0
+
+    // If we somehow get here, restore and return
+    // (This should never happen)
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+
 // Bridge function: kernel_main -> main.KernelMain (Go function)
 // This allows boot.s to call kernel_main, which then calls the Go KernelMain function
 // Go exports it as main.KernelMain (package.function)

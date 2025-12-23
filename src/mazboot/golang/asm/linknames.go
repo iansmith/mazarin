@@ -19,9 +19,17 @@ func Bzero(ptr unsafe.Pointer, size uint32)
 //go:nosplit
 func CallMallocinit()
 
+//go:linkname CallNewprocSimpleMain call_newproc_simple_main
+//go:nosplit
+func CallNewprocSimpleMain()
+
 //go:linkname CallRuntimeArgs call_runtime_args
 //go:nosplit
 func CallRuntimeArgs() int
+
+//go:linkname CallRuntimeMstart call_runtime_mstart
+//go:nosplit
+func CallRuntimeMstart()
 
 //go:linkname CallRuntimeNewproc call_runtime_newproc
 //go:nosplit

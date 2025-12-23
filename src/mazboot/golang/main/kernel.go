@@ -686,28 +686,24 @@ func KernelMain(r0, r1, atags uint32) {
 	print("Scheduler fully initialized (gopark/goready enabled)\r\n")
 
 	// =========================================
-	// TEST: Exception Handler Traceback
-	// Test the exception handler traceback by triggering a prefetch abort
-	// This will jump to address 0, causing an exception that should show
-	// a stack trace with function names and line numbers.
+	// TEST: Simple goroutine/channel test
+	// Create a goroutine to run simpleMain and start the scheduler
 	// =========================================
-	testTraceback()
+	print("\r\n=== Starting Simple Goroutine/Channel Test ===\r\n")
 
-	// Should never reach here - testTraceback will crash the system
-	print("ERROR: Returned from testTraceback - should never happen!\r\n")
+	// Create goroutine for simpleMain
+	print("Creating goroutine for simpleMain...\r\n")
+	asm.CallNewprocSimpleMain()
+	print("Goroutine created, starting scheduler...\r\n")
 
-	// =========================================
-	// TEST: Item 6 - runtime.newproc(runtime.mainPC)
-	// Create the main goroutine that will run runtime.main
-	// This tests that:
-	//   - newproc can allocate a g struct
-	//   - malg() can allocate a goroutine stack via stackalloc
-	//   - The new goroutine is added to the run queue
-	//   - All of this works with our mmap syscall
-	// =========================================
-	print("Testing Item 6: runtime.newproc(runtime.mainPC)... ")
-	asm.CallRuntimeNewproc()
-	print("PASS\r\n")
+	// Start the scheduler - this should never return
+	print("Calling runtime.mstart()...\r\n")
+	asm.CallRuntimeMstart()
+
+	// Should never reach here
+	print("ERROR: mstart returned - should never happen!\r\n")
+	for {
+	}
 
 	// Initialize kernel stack info for Go runtime stack checks
 	initKernelStack()
@@ -1046,6 +1042,97 @@ func drawTestPattern() {
 		}
 	}
 }
+
+// =================================================================
+// Simple goroutine/channel test - runs as main goroutine
+// =================================================================
+
+// simpleMain is the entry point for our simple goroutine/channel test
+// This will be run by the scheduler as the main goroutine
+//
+//go:nosplit
+func simpleMain() {
+	print("\r\n[g1] Simple main started!\r\n")
+	print("[g1] Testing goroutines and channels...\r\n")
+
+	// Create channel
+	print("[g1] Creating channel...\r\n")
+	ch := make(chan string, 1) // Buffered channel to avoid deadlock
+
+	// Launch goroutine
+	print("[g1] Launching g2...\r\n")
+	go simpleGoroutine2(ch)
+
+	// Give g2 time to start (scheduler should handle this)
+	// But add a small busy wait just in case
+	for i := 0; i < 1000000; i++ {
+		// Busy wait
+	}
+
+	// Send message to g2
+	testMessage := "Hello from g1!"
+	print("[g1] Sending message: ")
+	print(testMessage)
+	print("\r\n")
+	ch <- testMessage
+
+	// Wait for response
+	print("[g1] Waiting for response...\r\n")
+	response := <-ch
+
+	// Print response
+	print("[g1] Received response: ")
+	print(response)
+	print("\r\n")
+
+	// Close channel
+	print("[g1] Closing channel...\r\n")
+	close(ch)
+
+	// Give g2 time to detect close and exit
+	for i := 0; i < 1000000; i++ {
+		// Busy wait
+	}
+
+	print("[g1] Test complete!\r\n")
+	print("\r\nSUCCESS: Goroutines and channels working!\r\n")
+
+	// Halt - loop forever
+	for {
+	}
+}
+
+// simpleGoroutine2 is the second goroutine for the channel test
+//
+//go:nosplit
+func simpleGoroutine2(ch chan string) {
+	print("[g2] Started, waiting to receive from channel...\r\n")
+
+	// Read string from channel
+	msg := <-ch
+
+	// Print received message
+	print("[g2] Received: ")
+	print(msg)
+	print("\r\n")
+
+	// Send response back
+	print("[g2] Sending 'OK' response...\r\n")
+	ch <- "OK"
+
+	// Wait for channel to close
+	print("[g2] Waiting for channel to close...\r\n")
+	for {
+		_, ok := <-ch
+		if !ok {
+			// Channel closed - this is expected
+			print("[g2] Channel closed, exiting goroutine\r\n")
+			return
+		}
+	}
+}
+
+// =================================================================
 
 // testTraceback tests the exception handler traceback by deliberately causing a crash
 // This jumps to an invalid address to trigger a prefetch abort exception

@@ -41,6 +41,7 @@ func main() {
 	fb_putc_irq(0)
 	getRandomBytes(nil, 0)
 	kernelMainBodyWrapper()
+	simpleMain()
 	timerSignal()
 
 	//{{ LINKNAME END}}
