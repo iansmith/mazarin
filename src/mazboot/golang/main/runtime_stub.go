@@ -40,7 +40,6 @@ func patchRuntimeTLSForEL1() {
 	loadGAddr := asm.GetRuntimeLoadGAddr()
 	saveGAddr := asm.GetRuntimeSaveGAddr()
 
-	uartBase := getLinkerSymbol("__uart_base")
 	patchCount := 0
 
 	// Patch runtime.load_g - scan up to 64 instructions (256 bytes)
@@ -52,7 +51,6 @@ func patchRuntimeTLSForEL1() {
 			writeMemory32(instrAddr, MRS_TPIDR_EL1_R0)
 			asm.CleanDataCacheVA(instrAddr)
 			patchCount++
-			asm.MmioWrite(uartBase, uint32('L')) // Patched load_g
 			break // Only one instruction per function
 		}
 	}
@@ -66,7 +64,6 @@ func patchRuntimeTLSForEL1() {
 			writeMemory32(instrAddr, MRS_TPIDR_EL1_R0)
 			asm.CleanDataCacheVA(instrAddr)
 			patchCount++
-			asm.MmioWrite(uartBase, uint32('S')) // Patched save_g
 			break // Only one instruction per function
 		}
 	}
@@ -90,16 +87,10 @@ func patchRuntimeTLSForEL1() {
 //
 //go:nosplit
 func initRuntimeStubs() {
-	// Raw UART debug - write 'R' for Runtime stubs starting
-	uartBase := getLinkerSymbol("__uart_base")
-	asm.MmioWrite(uartBase, uint32('R'))
-
 	// Get addresses from assembly functions that use linker symbols
 	// This avoids hardcoding addresses that change with each build
 	g0Addr := asm.GetG0Addr()
 	m0Addr := asm.GetM0Addr()
-
-	asm.MmioWrite(uartBase, uint32('T')) // Got addresses
 
 	// CRITICAL STEP 0: Initialize TPIDR_EL0 FIRST so Go runtime can access TLS
 	// We do this BEFORE patching because print() needs TLS to work!
@@ -107,8 +98,6 @@ func initRuntimeStubs() {
 	const tlsBlockAddr = uintptr(0x41030000) // TLS block at fixed address
 	writeMemory64(tlsBlockAddr, uint64(g0Addr)) // Store g0 pointer at TLS offset 0
 	asm.WriteTpidrEl0(uint64(tlsBlockAddr))      // Set TPIDR_EL0 temporarily
-
-	asm.MmioWrite(uartBase, uint32('L')) // TLS initialized
 
 	// Initialize g0 stack bounds so compiler stack checks pass
 	// g0 uses 64KB stack at top of kernel RAM (matches real Go runtime)
@@ -193,13 +182,10 @@ func initRuntimeStubs() {
 	writeMemory64(p0Addr+0x30, uint64(m0Addr)) // P.m at offset 0x30
 
 	// Step 8: Now that runtime structures are set up, patch TLS to use TPIDR_EL1
-	asm.MmioWrite(uartBase, uint32('P')) // About to patch
 	patchRuntimeTLSForEL1()
-	asm.MmioWrite(uartBase, uint32('D')) // Patching done
 
 	// Step 9: Switch from TPIDR_EL0 to TPIDR_EL1 now that functions are patched
 	setTPIDR_EL1(tlsBlockAddr) // Set TPIDR_EL1 to TLS block (kernel TLS)
-	asm.MmioWrite(uartBase, uint32('1')) // Now using TPIDR_EL1
 
 	// That's all! schedinit() will handle the rest:
 	// - mallocinit() will use our mcache0

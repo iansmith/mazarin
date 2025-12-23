@@ -150,14 +150,6 @@ sync_exception_el1:
     // 0x280 - 0x300: IRQ (SP_EL1) - 128 bytes
     .align 7
 irq_exception_el1:
-    // BREADCRUMB: Print 'I' immediately on IRQ entry (before anything else)
-    stp x10, x11, [sp, #-16]!     // Save x10, x11 temporarily
-    movz x10, #0x0900, lsl #16
-    movk x10, #0x0000, lsl #0
-    movz w11, #0x49                // 'I' = IRQ entry
-    str w11, [x10]
-    ldp x10, x11, [sp], #16        // Restore x10, x11
-
     // CRITICAL: Read GICC_IAR IMMEDIATELY to acknowledge interrupt
     // The GIC spec says IAR must be read ASAP to prevent spurious 1022
     // Use x10-x11 which are caller-saved and safe to clobber
@@ -200,11 +192,6 @@ irq_exception_el1:
     b irq_done
     
 handle_timer_irq:
-    // DEBUG: Breadcrumb - Timer IRQ handler entered
-    movz x7, #0x0900, lsl #16
-    movz w8, #0x21                  // '!' = Timer handler entered
-    str w8, [x7]
-
     // ========== 1. RE-ARM TIMER ==========
     // Set timer to fire again in 20ms (1,250,000 hardware ticks @ 62.5 MHz)
     mrs x3, CNTVCT_EL0              // Read current hardware counter
@@ -212,11 +199,6 @@ handle_timer_irq:
     movk x4, #0x12D0, lsl #0        // Complete to 1250000
     add x3, x3, x4                  // target = current + interval
     msr CNTV_CVAL_EL0, x3           // Set compare value
-
-    // DEBUG: Breadcrumb - Timer re-armed
-    movz x7, #0x0900, lsl #16
-    movz w8, #0x52                  // 'R' = Timer re-armed
-    str w8, [x7]
 
     // ========== 2. DOT OUTPUT CHECK ==========
     // Check if we should output a dot
@@ -276,55 +258,95 @@ use_g0_stack:
     ldr x17, [x16, #8]               // x17 = g0.stack.hi
 
 timer_stack_selected:
-    // For TRUE PREEMPTION using runtime.Gosched():
-    // 1. Save interrupted PC/SP in callee-saved registers
-    // 2. Call timerPreempt() which calls Gosched()
-    // 3. When Gosched() returns (scheduler picked us again), restore PC/SP and jump to interrupted location
-    // 4. NEVER return through interrupt handler (don't do ERET)
+    // Async preemption using "call injection" (like signal-based preemption)
+    // Instead of calling timerPreempt directly, we modify the exception return
+    // context to "inject" a call to asyncPreemptBM.
+    //
+    // Strategy (replicates signal handler pushCall):
+    // 1. Allocate 16-byte frame on interrupted goroutine's stack
+    // 2. Save old LR and FP to this frame (for unwinding)
+    // 3. Set interrupted goroutine's SP to new frame location
+    // 4. Set LR (x30) = interrupted PC (where to resume after preemption)
+    // 5. Set ELR_EL1 = asyncPreemptBM (where ERET will jump)
+    // 6. ERET jumps to asyncPreemptBM with LR=interrupted PC
+    // 7. asyncPreemptBM saves all registers, calls scheduler, restores, returns to LR
 
     // Read interrupted PC from ELR_EL1
-    mrs x19, ELR_EL1                 // x19 = interrupted PC (callee-saved)
+    mrs x19, ELR_EL1                 // x19 = interrupted PC
 
     // Get interrupted SP - this is the SP when interrupt occurred
     // We saved original SP_EL1 at [x15, #0] (exception stack base)
-    ldr x20, [x15, #0]               // x20 = interrupted SP (callee-saved)
+    ldr x20, [x15, #0]               // x20 = interrupted SP
 
-    // Switch to goroutine's stack (use top of stack, 16-byte aligned)
-    // Leave 512 bytes for call frame (increased from 256 for safety)
-    sub x17, x17, #512
-    and x17, x17, #0xFFFFFFFFFFFFFFF0  // 16-byte align
-    mov sp, x17                      // Switch to goroutine stack!
+    // Read current LR value from interrupted context (for unwinding)
+    // NOTE: x30 (LR) is not saved in our exception entry, so we read it from current state
+    // This might be incorrect - ideally we'd save it on exception entry
+    // For now, we'll save 0 as placeholder (stack unwinder won't rely on it)
+    mov x21, xzr                     // x21 = 0 (placeholder for old LR)
 
-    // Call timerPreempt() which calls runtime.Gosched()
-    // This MAY return if scheduler picks us again later
-    CALL_GO_PROLOGUE 16
-    bl main.timerPreempt
-    CALL_GO_EPILOGUE 16
+    // Read frame pointer (R29) - also not saved in exception entry
+    mov x22, x29                     // x22 = current FP (may be stale)
 
-    // Gosched() returned! Scheduler picked us again.
-    // Restore interrupted state and resume execution.
+    // Implement pushCall logic:
+    // Allocate 16-byte frame on interrupted stack
+    sub x20, x20, #16                // SP -= 16
+    and x20, x20, #0xFFFFFFFFFFFFFFF0  // Ensure 16-byte alignment
 
-    // Restore interrupted SP
-    mov sp, x20                      // Restore SP to pre-interrupt value
+    // Save old LR at [SP] (for stack unwinding)
+    str x21, [x20, #0]               // *SP = old LR
 
-    // CRITICAL: Re-enable interrupts before jumping back!
-    // The exception entry masked interrupts (DAIF set)
-    // We must unmask them or no more timer interrupts will fire
-    msr DAIFClr, #2                  // Clear IRQ mask bit (bit 1)
+    // Save old FP at [SP-8] (for frame pointer tracking)
+    str x22, [x20, #8]               // *(SP+8) = old FP
 
-    // Jump to interrupted PC (NOT ERET - we've already handled the "return")
-    // This resumes execution exactly where we were interrupted
-    br x19                           // Jump to interrupted PC
+    // Now set up the injection:
+    // 1. Set LR = interrupted PC (this is where asyncPreemptBM will return to)
+    mov x30, x19                     // LR = interrupted PC
 
-    // NEVER REACHED - we jumped to interrupted code above
+    // 2. Set SP to new frame location (so asyncPreemptBM uses correct stack)
+    mov sp, x20                      // SP = new frame pointer
+
+    // 3. Set ELR_EL1 = asyncPreemptBM (so ERET jumps there instead of interrupted PC)
+    adrp x21, asyncPreemptBM
+    add x21, x21, :lo12:asyncPreemptBM
+    msr ELR_EL1, x21                 // ELR_EL1 = asyncPreemptBM
+
+    // 4. Save adjusted goroutine SP (x20) to a safe register before restoring
+    //    We need this value to set SP before ERET
+    mov x0, x20                      // x0 = adjusted goroutine SP (will be restored but that's ok)
+
+    // 5. Restore exception stack pointer to access saved registers
+    mov sp, x15                      // Back to exception stack
+
+    // 6. Restore other saved registers from exception stack
+    //    Note: This will overwrite x0 with the original interrupted SP, but we don't need it
+    ldp x19, x20, [sp, #0]           // Restore saved registers (x0->x19, x1->x20)
+    ldp x21, x22, [sp, #16]          // (x2->x21, x3->x22)
+    ldp x3, x4, [sp, #24]            // (x3->x3, x4->x4 - restoring themselves)
+    ldr w11, [sp, #40]               // Restore interrupt ID (not used)
+    add sp, sp, #64                  // Deallocate exception frame
+
+    // 7. CRITICAL: Signal end-of-interrupt to GIC BEFORE ERET
+    //    Otherwise GIC thinks we're still in interrupt and won't deliver more interrupts!
+    //    Interrupt ID is in w11 (we reloaded it at line 343)
+    movz x1, #0x0801, lsl #16
+    movk x1, #0x0010, lsl #0         // GICC_EOIR at 0x08010010
+    str w11, [x1]                    // Write interrupt ID to EOIR
+
+    // 8. CRITICAL: Set SP to adjusted goroutine stack (still in x0)
+    //    ERET doesn't change SP, so we must set it here
+    mov sp, x0                       // SP = adjusted goroutine SP
+
+    // 9. ERET will now:
+    //    - Jump to asyncPreemptBM (from ELR_EL1)
+    //    - With LR = interrupted PC
+    //    - With SP = adjusted goroutine SP (interrupted SP - 16)
+    //    - asyncPreemptBM will save all registers, call scheduler, restore, ret to LR
+    //    - GIC has been notified of EOI, so more interrupts can arrive
+    eret
+
+    // NEVER REACHED - ERET jumped to asyncPreemptBM
     
 handle_uart_irq:
-    // DEBUG: Print 'U' to show UART IRQ handler entered
-    movz x0, #0x0900, lsl #16
-    movk x0, #0x0000, lsl #0
-    movz w1, #0x55                // 'U'
-    str w1, [x0]
-
     // UART transmit ready interrupt
     // Call Go function main.UartTransmitHandler()
     // CRITICAL: Must follow Go calling conventions:
@@ -354,12 +376,6 @@ handle_uart_irq:
     ldr x30, [sp, #112]
     add sp, sp, #128              // Restore stack
 
-    // DEBUG: Print 'V' to show about to return from UART IRQ
-    movz x0, #0x0900, lsl #16
-    movk x0, #0x0000, lsl #0
-    movz w1, #0x56                // 'V'
-    str w1, [x0]
-
     b irq_done
     
 irq_done:
@@ -379,12 +395,6 @@ irq_done:
     
     // Restore original SP (SP_EL1)
     mov sp, x0
-
-    // DEBUG: Print 'X' to show about to eret from IRQ
-    movz x5, #0x0900, lsl #16
-    movk x5, #0x0000, lsl #0
-    movz w6, #0x58                // 'X'
-    str w6, [x5]
 
     // Return from exception
     eret
@@ -712,11 +722,11 @@ stack_selected:
     b sync_restore_and_svc          // Go to SVC handler (restores regs first)
 3:
 
-    // Check for debug exceptions (watchpoint hit)
+    // Check for debug exceptions (watchpoint hit) - forward to general handler
     cmp x4, #0x34                   // Watchpoint from lower EL?
-    beq sync_watchpoint_hit
+    beq sync_other_exception
     cmp x4, #0x35                   // Watchpoint from current EL?
-    beq sync_watchpoint_hit
+    beq sync_other_exception
 
     // For data aborts (EC=0x25), call Go handler
     cmp x4, #0x25
@@ -861,246 +871,6 @@ sync_unknown_exception:
     // If handler returns, hang
     b .
 
-sync_unknown_exception_old:
-    // OLD CODE - kept for reference but not used
-    // EC=0x00 - Unknown exception (often NULL pointer or undefined instruction)
-    // Print diagnostic information directly to UART and hang
-    // Don't try to return - this would create an infinite exception loop
-
-    // Load UART base
-    movz x0, #0x0900, lsl #16
-    movk x0, #0x0000, lsl #0        // x0 = 0x09000000
-
-    // Print "\r\n!UNKNOWN EXCEPTION (EC=0x00)!\r\n"
-    movz w1, #0x000D                // '\r'
-    str w1, [x0]
-    movz w1, #0x000A                // '\n'
-    str w1, [x0]
-    movz w1, #0x0021                // '!'
-    str w1, [x0]
-    movz w1, #0x0055                // 'U'
-    str w1, [x0]
-    movz w1, #0x004E                // 'N'
-    str w1, [x0]
-    movz w1, #0x004B                // 'K'
-    str w1, [x0]
-    movz w1, #0x004E                // 'N'
-    str w1, [x0]
-    movz w1, #0x004F                // 'O'
-    str w1, [x0]
-    movz w1, #0x0057                // 'W'
-    str w1, [x0]
-    movz w1, #0x004E                // 'N'
-    str w1, [x0]
-    movz w1, #0x0020                // ' '
-    str w1, [x0]
-    movz w1, #0x0045                // 'E'
-    str w1, [x0]
-    movz w1, #0x0058                // 'X'
-    str w1, [x0]
-    movz w1, #0x0043                // 'C'
-    str w1, [x0]
-    movz w1, #0x0045                // 'E'
-    str w1, [x0]
-    movz w1, #0x0050                // 'P'
-    str w1, [x0]
-    movz w1, #0x0054                // 'T'
-    str w1, [x0]
-    movz w1, #0x0049                // 'I'
-    str w1, [x0]
-    movz w1, #0x004F                // 'O'
-    str w1, [x0]
-    movz w1, #0x004E                // 'N'
-    str w1, [x0]
-    movz w1, #0x0021                // '!'
-    str w1, [x0]
-    movz w1, #0x000D                // '\r'
-    str w1, [x0]
-    movz w1, #0x000A                // '\n'
-    str w1, [x0]
-
-    // Print "ELR=0x" and the ELR value (from [sp, #256])
-    movz w1, #0x0045                // 'E'
-    str w1, [x0]
-    movz w1, #0x004C                // 'L'
-    str w1, [x0]
-    movz w1, #0x0052                // 'R'
-    str w1, [x0]
-    movz w1, #0x003D                // '='
-    str w1, [x0]
-    movz w1, #0x0030                // '0'
-    str w1, [x0]
-    movz w1, #0x0078                // 'x'
-    str w1, [x0]
-
-    // Print ELR as hex (16 hex digits)
-    ldr x2, [sp, #256]              // x2 = ELR
-    mov x3, #60                      // shift count (60, 56, ... 0)
-1:  lsr x4, x2, x3                  // Extract nibble
-    and w4, w4, #0xF
-    cmp w4, #10
-    blt 2f
-    add w4, w4, #55                 // 'A'-10 = 55
-    b 3f
-2:  add w4, w4, #48                 // '0'
-3:  str w4, [x0]
-    subs x3, x3, #4
-    bpl 1b
-
-    // Print "\r\nFAR=0x"
-    movz w1, #0x000D                // '\r'
-    str w1, [x0]
-    movz w1, #0x000A                // '\n'
-    str w1, [x0]
-    movz w1, #0x0046                // 'F'
-    str w1, [x0]
-    movz w1, #0x0041                // 'A'
-    str w1, [x0]
-    movz w1, #0x0052                // 'R'
-    str w1, [x0]
-    movz w1, #0x003D                // '='
-    str w1, [x0]
-    movz w1, #0x0030                // '0'
-    str w1, [x0]
-    movz w1, #0x0078                // 'x'
-    str w1, [x0]
-
-    // Print FAR as hex
-    ldr x2, [sp, #272]              // x2 = FAR
-    mov x3, #60
-4:  lsr x4, x2, x3
-    and w4, w4, #0xF
-    cmp w4, #10
-    blt 5f
-    add w4, w4, #55
-    b 6f
-5:  add w4, w4, #48
-6:  str w4, [x0]
-    subs x3, x3, #4
-    bpl 4b
-
-    // Print final newline
-    movz w1, #0x000D                // '\r'
-    str w1, [x0]
-    movz w1, #0x000A                // '\n'
-    str w1, [x0]
-
-    // Hang forever
-    b .
-
-sync_watchpoint_hit:
-    // Watchpoint triggered - memory at watched address was written!
-    // Print diagnostic information and hang
-
-    // Load UART base
-    movz x10, #0x0900, lsl #16
-    movk x10, #0x0000, lsl #0        // x10 = 0x09000000 (UART)
-
-    // Print "\r\n!!! WATCHPOINT HIT !!!\r\n"
-    movz w11, #'\r'
-    str w11, [x10]
-    movz w11, #'\n'
-    str w11, [x10]
-    movz w11, #'!'
-    str w11, [x10]
-    str w11, [x10]
-    str w11, [x10]
-    movz w11, #' '
-    str w11, [x10]
-    movz w11, #'W'
-    str w11, [x10]
-    movz w11, #'A'
-    str w11, [x10]
-    movz w11, #'T'
-    str w11, [x10]
-    movz w11, #'C'
-    str w11, [x10]
-    movz w11, #'H'
-    str w11, [x10]
-    movz w11, #'P'
-    str w11, [x10]
-    movz w11, #'O'
-    str w11, [x10]
-    movz w11, #'I'
-    str w11, [x10]
-    movz w11, #'N'
-    str w11, [x10]
-    movz w11, #'T'
-    str w11, [x10]
-    movz w11, #' '
-    str w11, [x10]
-    movz w11, #'H'
-    str w11, [x10]
-    movz w11, #'I'
-    str w11, [x10]
-    movz w11, #'T'
-    str w11, [x10]
-    movz w11, #' '
-    str w11, [x10]
-    movz w11, #'!'
-    str w11, [x10]
-    str w11, [x10]
-    str w11, [x10]
-    movz w11, #'\r'
-    str w11, [x10]
-    movz w11, #'\n'
-    str w11, [x10]
-
-    // Print ELR (address that caused the watchpoint)
-    ldp x0, x1, [sp, #256]          // x0 = ELR_EL1 (faulting PC)
-    bl print_watchpoint_info
-
-    // Hang (don't try to continue - we want to debug this!)
-    b .
-
-print_watchpoint_info:
-    // Print ELR address
-    // x0 = address to print
-    stp x29, x30, [sp, #-16]!
-
-    movz x10, #0x0900, lsl #16
-    movk x10, #0x0000, lsl #0        // x10 = 0x09000000 (UART)
-
-    // Print "ELR="
-    movz w11, #'E'
-    str w11, [x10]
-    movz w11, #'L'
-    str w11, [x10]
-    movz w11, #'R'
-    str w11, [x10]
-    movz w11, #'='
-    str w11, [x10]
-    movz w11, #'0'
-    str w11, [x10]
-    movz w11, #'x'
-    str w11, [x10]
-
-    // Print hex value of x0 (call external function if available, or inline)
-    mov x1, x0              // Save address
-    mov x2, #16             // 16 hex digits
-1:
-    lsr x3, x1, #60         // Get top 4 bits
-    and x3, x3, #0xF
-    cmp x3, #10
-    blt 2f
-    add x3, x3, #('A'-10)   // A-F
-    b 3f
-2:
-    add x3, x3, #'0'        // 0-9
-3:
-    str w3, [x10]
-    lsl x1, x1, #4          // Shift left 4 bits
-    subs x2, x2, #1
-    bne 1b
-
-    movz w11, #'\r'
-    str w11, [x10]
-    movz w11, #'\n'
-    str w11, [x10]
-
-    ldp x29, x30, [sp], #16
-    ret
-
 sync_other_exception:
     // Other exception type - forward to Go handler but don't expect to return
     add x29, sp, #0
@@ -1124,14 +894,6 @@ sync_other_exception:
     b .
 
 sync_restore_and_svc:
-    // BREADCRUMB: Print 'S' for SVC entry
-    stp x10, x11, [sp, #-16]!     // Save x10, x11 temporarily (use stack)
-    movz x10, #0x0900, lsl #16
-    movk x10, #0x0000, lsl #0
-    movz w11, #0x53                // 'S' = SVC entry
-    str w11, [x10]
-    ldp x10, x11, [sp], #16        // Restore x10, x11
-
     // SVC - restore registers and jump to SVC handler
     // For syscalls, we need to restore the full register state because
     // Go code expects x30 (LR) and other registers to be preserved across SVC.
@@ -1587,121 +1349,6 @@ syscall_exit:
     bl main.SyscallExit
     // SyscallExit never returns (infinite loop)
 
-syscall_exit_old:
-    // OLD exit handler - keeping for reference but not used
-    // exit/exit_group - print debug info and exit via semihosting
-    // At this point:
-    //   x8 = syscall number (93 or 94)
-    //   x0 = first argument (exit code)
-    //   x1-x5 = other arguments (unused for exit)
-
-    // Save registers we need for printing
-    mov x19, x0                    // Save original x0 (exit code)
-    mov x20, x8                    // Save syscall number
-
-    movz x9, #0x0900, lsl #16      // UART base
-    movk x9, #0x0000, lsl #0
-
-    // Print "\r\n*** EXIT ***\r\n" marker
-    movz w10, #0x0D                // '\r'
-    str w10, [x9]
-    movz w10, #0x0A                // '\n'
-    str w10, [x9]
-    movz w10, #0x2A                // '*'
-    str w10, [x9]
-    str w10, [x9]
-    str w10, [x9]
-    movz w10, #0x20                // ' '
-    str w10, [x9]
-    movz w10, #0x45                // 'E'
-    str w10, [x9]
-    movz w10, #0x58                // 'X'
-    str w10, [x9]
-    movz w10, #0x49                // 'I'
-    str w10, [x9]
-    movz w10, #0x54                // 'T'
-    str w10, [x9]
-    movz w10, #0x20                // ' '
-    str w10, [x9]
-    movz w10, #0x2A                // '*'
-    str w10, [x9]
-    str w10, [x9]
-    str w10, [x9]
-    movz w10, #0x0D                // '\r'
-    str w10, [x9]
-    movz w10, #0x0A                // '\n'
-    str w10, [x9]
-
-    // Print "syscall="
-    movz w10, #0x73                // 's'
-    str w10, [x9]
-    movz w10, #0x79                // 'y'
-    str w10, [x9]
-    movz w10, #0x73                // 's'
-    str w10, [x9]
-    movz w10, #0x3D                // '='
-    str w10, [x9]
-
-    // Print syscall number (x20) as hex
-    mov x14, x20
-    mov x16, #28                   // 8 hex digits
-print_syscall_num_loop:
-    lsr x17, x14, x16
-    and x17, x17, #0xF
-    add x17, x17, #0x30
-    cmp x17, #0x3A
-    blo print_syscall_digit
-    add x17, x17, #7
-print_syscall_digit:
-    str w17, [x9]
-    subs x16, x16, #4
-    bpl print_syscall_num_loop
-
-    // Print " x0="
-    movz w10, #0x20                // ' '
-    str w10, [x9]
-    movz w10, #0x78                // 'x'
-    str w10, [x9]
-    movz w10, #0x30                // '0'
-    str w10, [x9]
-    movz w10, #0x3D                // '='
-    str w10, [x9]
-
-    // Print x0 (exit code, x19) as 16-digit hex
-    mov x14, x19
-    mov x16, #60
-print_exit_code_loop:
-    lsr x17, x14, x16
-    and x17, x17, #0xF
-    add x17, x17, #0x30
-    cmp x17, #0x3A
-    blo print_exit_digit
-    add x17, x17, #7
-print_exit_digit:
-    str w17, [x9]
-    subs x16, x16, #4
-    bpl print_exit_code_loop
-
-    // Print newline
-    movz w10, #0x0D                // '\r'
-    str w10, [x9]
-    movz w10, #0x0A                // '\n'
-    str w10, [x9]
-
-    // Exit via semihosting
-    // Use exit code 0 since the x0 value looks corrupted
-    mov x0, #2                     // Exit code 2 (to indicate abnormal exit)
-    movz x1, #0x0002, lsl #16      // ADP_Stopped_ApplicationExit = 0x20026
-    movk x1, #0x0026, lsl #0
-    stp x1, x0, [sp, #-16]!        // Push exit reason and code
-    mov x1, sp                     // x1 = pointer to parameter block
-    movz w0, #0x18                 // SYS_EXIT operation
-    hlt #0xF000                    // Semihosting call
-
-    // If semihosting doesn't work, hang
-1:  wfi
-    b 1b
-
 syscall_return:
     // Syscall return - restore SPSR/ELR and return via eret
     // x0 contains the syscall result (must be preserved!)
@@ -1737,14 +1384,6 @@ syscall_return:
     movz x10, #0x40FF, lsl #16      // Scratch area at 0x40FFF020
     movk x10, #0xF020, lsl #0
     ldr x28, [x10, #40]             // Restore original g from 0x40FFF048
-
-    // BREADCRUMB: Print 's' for SVC exit
-    stp x10, x11, [sp, #-16]!     // Save x10, x11 temporarily
-    movz x10, #0x0900, lsl #16
-    movk x10, #0x0000, lsl #0
-    movz w11, #0x73                // 's' = SVC exit
-    str w11, [x10]
-    ldp x10, x11, [sp], #16        // Restore x10, x11
 
     // Return from exception - PSTATE will be restored from SPSR_EL1
     eret

@@ -18,9 +18,6 @@ _start:
     //   'd' => DTB pointer is zero (nothing passed)
     // This runs before any EL transitions or BSS clearing.
     // =====================================================
-    movz x14, #0x0900, lsl #16     // UART base = 0x09000000
-    cbz  x22, 1f                   // If dtbPtr == 0, print 'd'
-    movz w15, #0x44                // 'D' = DTB pointer non-zero
     str  w15, [x14]
     b    2f
 1:
@@ -36,9 +33,6 @@ _start:
 
     // CPU 0 continues here
     // Breadcrumb: CPU 0 selected
-    movz x14, #0x0900, lsl #16     // UART base = 0x09000000
-    movz w15, #0x30                // '0' = CPU 0 selected
-    str w15, [x14]
     
     // ========================================
     // Drop from EL2 to EL1 if necessary
@@ -96,9 +90,6 @@ _start:
 at_el1:
     // Now we're at EL1
     // Breadcrumb: At EL1
-    movz x14, #0x0900, lsl #16     // UART base = 0x09000000
-    movz w15, #0x31                // '1' = At EL1
-    str w15, [x14]
 
     // ========================================
     // Enable SIMD/floating-point (required for gg library)
@@ -392,9 +383,6 @@ vbar_test_ok:
     
     // Breadcrumb: About to call kernel_main
     // Write 'B' (0x42) to UART to show we reached this point
-    movz x14, #0x0900, lsl #16     // UART base = 0x09000000
-    movz w15, #0x42                // 'B' = Boot complete, about to call kernel_main
-    str w15, [x14]
 
     // =====================================================
     // Initialize g0 and m0 (like Go runtime's rt0_go does)

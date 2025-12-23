@@ -109,10 +109,6 @@ func timerPreempt() {
 //go:nosplit
 //go:noinline
 func timerSignal() {
-	// Breadcrumb: Show timer interrupt fired
-	uartBase := getLinkerSymbol("__uart_base")
-	asm.MmioWrite(uartBase, uint32('.')) // Print '.' for each timer interrupt
-
 	// Signal the monitor channels (GC, scavenger, schedtrace)
 	timerSignalMonitors()
 

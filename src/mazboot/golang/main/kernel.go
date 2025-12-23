@@ -1,7 +1,6 @@
 package main
 
 import (
-	"runtime"
 	"unsafe"
 
 	"mazboot/asm"
@@ -440,17 +439,11 @@ func KernelMain(r0, r1, atags uint32) {
 	_ = r1
 
 	// Get MMIO device addresses from linker symbols
-	uartBase := getLinkerSymbol("__uart_base")
+	_ = getLinkerSymbol("__uart_base")
 
 	// On QEMU virt, the DTB pointer is passed in as the "atags" parameter (low 32 bits).
 	// boot.s captures QEMU's reset-time x0 and passes it through to kernel_main in x2.
 	setDTBPtr(uintptr(atags))
-
-	// Raw UART poke before init to prove we reached KernelMain
-	asm.MmioWrite(uartBase, uint32('K'))
-	asm.MmioWrite(uartBase, uint32('M')) // 'M' = KernelMain entry
-
-	asm.MmioWrite(uartBase, uint32('U')) // 'U' = UART init starting
 
 	// Initialize UART first for early debugging
 	uartInit()
@@ -781,9 +774,6 @@ func KernelMainBody() {
 
 //go:noinline
 func kernelMainBody() {
-	// Get MMIO device addresses from linker symbols
-	uartBase := getLinkerSymbol("__uart_base")
-
 	// Staged kernel bring-up
 	// Early stages use UART for breadcrumbs (before framebuffer)
 	// Later stages use framebuffer for user-facing status
@@ -861,33 +851,25 @@ func kernelMainBody() {
 
 	// Stage 11a: Test Go heap allocation
 	FramebufferPuts("Testing Go heap allocation...\r\n")
-	asm.MmioWrite(uartBase, uint32('H')) // Debug: about to allocate
-	testSlice := make([]byte, 100)         // Simple heap allocation test
-	asm.MmioWrite(uartBase, uint32('A')) // Debug: allocation done
+	testSlice := make([]byte, 100) // Simple heap allocation test
 	if testSlice == nil {
 		FramebufferPuts("FATAL: Go heap allocation failed!\r\n")
-		asm.MmioWrite(uartBase, uint32('!'))
 		for {
 		}
 	}
 	testSlice[0] = 42 // Write to allocated memory
 	if testSlice[0] != 42 {
 		FramebufferPuts("FATAL: Go heap read/write failed!\r\n")
-		asm.MmioWrite(uartBase, uint32('?'))
 		for {
 		}
 	}
-	asm.MmioWrite(uartBase, uint32('O')) // Debug: heap OK
 	FramebufferPuts("Go heap allocation OK!\r\n")
 
 	// Stage 11b: Create Go channel (testing real Go channel allocation)
 	FramebufferPuts("Creating Go channel...\r\n")
-	asm.MmioWrite(uartBase, uint32('C')) // Debug: about to create channel
 	goSignalChan = make(chan struct{}, 10) // Real Go channel with buffer
-	asm.MmioWrite(uartBase, uint32('K')) // Debug: channel created
 	if goSignalChan == nil {
 		FramebufferPuts("FATAL: Failed to create Go channel\r\n")
-		asm.MmioWrite(uartBase, uint32('!'))
 		for {
 		}
 	}
@@ -931,8 +913,6 @@ func kernelMainBody() {
 //
 //go:noinline
 func timerListenerLoop() {
-	uartBase := getLinkerSymbol("__uart_base")
-	asm.MmioWrite(uartBase, uint32('G')) // Debug: entered goroutine
 	print("goroutine: testing Go channel...\n")
 	// Drain output
 	for i := 0; i < 100; i++ {
@@ -940,21 +920,16 @@ func timerListenerLoop() {
 	}
 
 	// Test Go channel: send and receive from same goroutine
-	asm.MmioWrite(uartBase, uint32('S')) // Debug: about to send to channel
-	goSignalChan <- struct{}{}             // Send to Go channel
-	asm.MmioWrite(uartBase, uint32('R')) // Debug: about to receive from channel
-	<-goSignalChan                         // Receive from Go channel
-	asm.MmioWrite(uartBase, uint32('X')) // Debug: channel send/receive worked!
+	goSignalChan <- struct{}{} // Send to Go channel
+	<-goSignalChan             // Receive from Go channel
 	print("Go channel send/receive works!\n")
 	for i := 0; i < 100; i++ {
 		uartDrainRingBuffer()
 	}
 
 	// Now wait for timer signals using SimpleChannel (from interrupt handler)
-	asm.MmioWrite(uartBase, uint32('W')) // Debug: waiting for timer
 	for {
 		simpleSignalChan.receive() // Block until timer sends a signal
-		asm.MmioWrite(uartBase, uint32('B')) // Debug: got signal
 		print("bong\n")
 		// Drain the bong output
 		for i := 0; i < 100; i++ {
@@ -1070,11 +1045,6 @@ func simpleMain() {
 	go simpleGoroutine2(nil)
 	print("[g1] g2 launched (runtime.newproc called)\r\n")
 
-	// DEBUG: Manually yield once to verify g2 was created and can run
-	print("[g1] DEBUG: Yielding once to let g2 start...\r\n")
-	runtime.Gosched()
-	print("[g1] DEBUG: Returned from Gosched(), g1 resumed\r\n")
-
 	print("[g1] Both goroutines will busy-wait WITHOUT yielding\r\n")
 	print("[g1] If timer-based preemption works, we should see '1' and '2' interleaved\r\n")
 	print("[g1] Starting busy-wait loop (NO cooperative yielding)...\r\n\r\n")
@@ -1102,10 +1072,11 @@ func simpleMain() {
 func simpleGoroutine2(ch chan string) {
 	print("[g2] Started, entering busy-wait loop (NO yielding)...\r\n")
 
+	uartBase := getLinkerSymbol("__uart_base")
+
 	// Infinite busy-wait loop to test timer-based preemption
 	// NO calls to Gosched() - the timer interrupt must forcibly preempt us
 	counter := uint64(0)
-	uartBase := getLinkerSymbol("__uart_base")
 
 	for {
 		counter++

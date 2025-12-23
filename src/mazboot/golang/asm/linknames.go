@@ -247,6 +247,14 @@ func Isb()
 //go:nosplit
 func JumpToNull()
 
+//go:linkname KmazarinBinaryEnd kmazarin_binary_end
+//go:nosplit
+func KmazarinBinaryEnd()
+
+//go:linkname KmazarinBinaryStart kmazarin_binary_start
+//go:nosplit
+func KmazarinBinaryStart()
+
 //go:linkname MemmoveBytes MemmoveBytes
 //go:nosplit
 func MemmoveBytes(dest unsafe.Pointer, src unsafe.Pointer, n uint32)
@@ -474,6 +482,10 @@ func WriteTtbr1El1(value uint64)
 //go:linkname armTimer armTimer
 //go:nosplit
 func armTimer()
+
+//go:linkname asyncPreemptBM asyncPreemptBM
+//go:nosplit
+func asyncPreemptBM()
 
 //go:linkname callOnG0Stack callOnG0Stack
 //go:nosplit
