@@ -529,15 +529,11 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	// Only print progress dots every 100 faults, not full debug info
 	pageFaultCounter++
 
-	// DEBUG: Print first 20 faults and every 10th fault thereafter
-	if pageFaultCounter <= 20 {
-		uartPutsDirect("\r\nPF#")
-		uartPutHex64Direct(uint64(pageFaultCounter))
-		uartPutsDirect(" VA=0x")
-		uartPutHex64Direct(uint64(faultAddr))
-	} else if pageFaultCounter%10 == 0 {
-		uartPutcDirect('.')
-	}
+	// DEBUG: Print ALL page faults to debug stackpoolalloc issue
+	uartPutsDirect("\r\nPF#")
+	uartPutHex64Direct(uint64(pageFaultCounter))
+	uartPutsDirect(" VA=0x")
+	uartPutHex64Direct(uint64(faultAddr))
 
 	// Check if the fault address is in the mmap virtual region
 	// Any address in this range is considered a valid demand-page request
@@ -607,10 +603,8 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	// Ensure TLB invalidation completes before returning
 	asm.Isb()
 
-	// DEBUG: Print completion for first 20 faults
-	if pageFaultCounter <= 20 {
-		uartPutsDirect(" OK")
-	}
+	// DEBUG: Print completion for ALL faults to track success
+	uartPutsDirect(" OK")
 
 	return true
 }

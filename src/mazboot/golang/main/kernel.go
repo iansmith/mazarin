@@ -472,8 +472,9 @@ func KernelMain(r0, r1, atags uint32) {
 	}
 
 	// Initialize Go runtime heap allocator
-	// FIXME: Disabled - let schedinit call mallocinit itself to avoid double-init
-	// initGoHeap()
+	// CRITICAL: Must call BEFORE schedinit, as schedinit tries to allocate memory
+	// and needs mheap to be initialized first
+	initGoHeap()
 
 	// Initialize VirtIO RNG device for random number generation
 	initVirtIORNG()

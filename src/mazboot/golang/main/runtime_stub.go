@@ -56,11 +56,14 @@ func initRuntimeStubs() {
 	// Without this, systemstack says "called from unexpected goroutine"
 	writeMemory64(m0Addr+0, uint64(g0Addr))
 
-	// Step 1c: Set m0.curg = g0 initially
-	// This will be updated when we switch to a different goroutine
+	// Step 1c: Set m0.curg = NULL initially
+	// CRITICAL: m.curg means "machine's current USER goroutine"
+	// It should NEVER point to g0 (which is the system goroutine)!
+	// When on g0, m.curg should be NULL (no user goroutine) or point to suspended user goroutine
+	// This will be set when we create and switch to the main goroutine
 	// Use unsafe.Offsetof for correctness (curg offset changed after struct fixes)
 	m0CurgOffset := unsafe.Offsetof(runtimeM{}.curg)
-	writeMemory64(m0Addr+m0CurgOffset, uint64(g0Addr))
+	writeMemory64(m0Addr+m0CurgOffset, 0) // NULL, not g0!
 
 	// Step 2: Create a minimal P (processor) structure
 	// m.p (at offset 200) points to P, which contains:
