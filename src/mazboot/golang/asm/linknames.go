@@ -439,6 +439,10 @@ func WriteTtbr0El1(value uint64)
 //go:nosplit
 func WriteTtbr1El1(value uint64)
 
+//go:linkname armTimer armTimer
+//go:nosplit
+func armTimer()
+
 //go:linkname gcWriteBarrier gcWriteBarrier
 //go:nosplit
 func gcWriteBarrier()
@@ -451,9 +455,17 @@ func getCurrentSP()
 //go:nosplit
 func getGRegister()
 
+//go:linkname getTimerFrequency getTimerFrequency
+//go:nosplit
+func getTimerFrequency()
+
 //go:linkname memmove memmove
 //go:nosplit
 func memmove(dest unsafe.Pointer, src unsafe.Pointer, n uint32)
+
+//go:linkname readTimerCounter readTimerCounter
+//go:nosplit
+func readTimerCounter()
 
 //go:linkname runOnGoroutine runOnGoroutine
 //go:nosplit

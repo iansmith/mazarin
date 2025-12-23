@@ -211,7 +211,53 @@ at_el1:
 vbar_ok:
     movz w15, #0x76                // 'v' = VBAR set and verified
     str w15, [x14]
-    
+
+    // ========================================
+    // Initialize GIC (Generic Interrupt Controller)
+    // Required to receive timer interrupts
+    // ========================================
+    movz w15, #0x47                // 'G' = Initializing GIC
+    str w15, [x14]
+
+    // QEMU virt machine GIC addresses:
+    // GICD (Distributor): 0x08000000
+    // GICC (CPU Interface): 0x08010000
+
+    // 1. Enable the GIC Distributor (GICD_CTLR at offset 0x000)
+    movz x0, #0x0800, lsl #16      // x0 = 0x08000000 (GICD base)
+    mov w1, #1                     // Enable bit
+    str w1, [x0, #0]               // GICD_CTLR = 1 (enable distributor)
+
+    // 2. Enable interrupt 27 (virtual timer PPI) in GICD_ISENABLER0
+    // Interrupt 27 is bit 27 in GICD_ISENABLER0 (offset 0x100)
+    // Each bit enables one interrupt (0-31 for ISENABLER0)
+    mov w1, #(1 << 27)             // Bit 27 for virtual timer
+    str w1, [x0, #0x100]           // GICD_ISENABLER0 = enable interrupt 27
+
+    // 3. Set priority for interrupt 27 (GICD_IPRIORITYR6 at offset 0x400 + 27)
+    // Each interrupt gets 8 bits of priority (0 = highest, 0xFF = lowest)
+    // Interrupt 27 is at byte offset 27 in the priority array
+    mov w1, #0xA0                  // Priority 0xA0 (medium priority)
+    strb w1, [x0, #0x400 + 27]     // GICD_IPRIORITYR[27] = 0xA0
+
+    // 4. Enable the CPU Interface (GICC_CTLR at offset 0x000 from GICC base)
+    movz x0, #0x0801, lsl #16      // x0 = 0x08010000 (GICC base)
+    mov w1, #1                     // Enable bit
+    str w1, [x0, #0]               // GICC_CTLR = 1 (enable CPU interface)
+
+    // 5. Set priority mask to allow all interrupts (GICC_PMR at offset 0x004)
+    // Priority mask: interrupts with priority < PMR are signaled
+    // 0xFF = allow all priorities (0x00-0xFE)
+    mov w1, #0xFF
+    str w1, [x0, #4]               // GICC_PMR = 0xFF (allow all priorities)
+
+    // Memory barrier to ensure GIC is configured before continuing
+    dsb sy
+    isb
+
+    movz w15, #0x67                // 'g' = GIC initialized
+    str w15, [x14]
+
     // ========================================
     // TEST: Enable MMU from boot.s (earliest possible location)
     // This tests if enabling MMU from pure assembly before Go code works

@@ -686,6 +686,26 @@ func KernelMain(r0, r1, atags uint32) {
 	print("Scheduler fully initialized (gopark/goready enabled)\r\n")
 
 	// =========================================
+	// Initialize Timer-Based Preemption System
+	// =========================================
+	print("\r\n═══════════════════════════════════════════════\r\n")
+	print("mazboot: Initializing Timer System\r\n")
+	print("═══════════════════════════════════════════════\r\n")
+
+	// Initialize time system (reads ARM Generic Timer frequency)
+	print("mazboot: Initializing hardware timer...\r\n")
+	initTime()
+
+	// Start monitoring goroutines
+	print("mazboot: Starting monitor goroutines...\r\n")
+	startGCMonitor()
+	startScavengerMonitor()
+	startSchedtraceMonitor()
+
+	print("mazboot: All monitors started\r\n")
+	print("═══════════════════════════════════════════════\r\n\r\n")
+
+	// =========================================
 	// TEST: Simple goroutine/channel test
 	// Create a goroutine to run simpleMain and start the scheduler
 	// =========================================

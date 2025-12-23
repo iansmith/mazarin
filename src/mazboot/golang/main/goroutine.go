@@ -70,16 +70,19 @@ func (ch *SimpleChannel) receive() {
 	ch.count--
 }
 
-// timerSignal sends a signal to the SimpleChannel.
+// timerSignal sends signals to both the simple test channel and monitor channels.
 // Called from timer interrupt handler.
 //
 //go:nosplit
 //go:noinline
 func timerSignal() {
-	if simpleSignalChan == nil {
-		return
+	// Signal the simple test channel (for backwards compatibility)
+	if simpleSignalChan != nil {
+		simpleSignalChan.send()
 	}
-	simpleSignalChan.send()
+
+	// Signal the monitor channels (GC, scavenger, schedtrace)
+	timerSignalMonitors()
 }
 
 // timerSignalGo sends a signal to the real Go channel.

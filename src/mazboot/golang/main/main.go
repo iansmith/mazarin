@@ -38,11 +38,9 @@ func main() {
 	SyscallTkill()
 	SyscallUnknown(0)
 	SyscallWriteBuffer(nil, 0)
-	fb_putc_irq(0)
 	getRandomBytes(nil, 0)
 	kernelMainBodyWrapper()
 	simpleMain()
-	timerSignal()
 
 	//{{ LINKNAME END}}
 	// This should never execute in bare metal

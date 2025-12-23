@@ -1,6 +1,6 @@
 // exceptions.s
 // AArch64 Exception Vector Table and Exception Handlers
-// 
+//
 // Layout: Exception vector table must be 2KB aligned (2048 bytes)
 // Contains 4 groups of 4 exception handlers (128 bytes each)
 // We use Group 2 (Current EL, using SP_EL1) for kernel at EL1
@@ -10,6 +10,16 @@
 //   0x280 - 0x300: IRQ (Interrupt Request)
 //   0x300 - 0x380: FIQ (Fast Interrupt Request)
 //   0x380 - 0x400: SError (System Error)
+
+// ========== DATA SECTION ==========
+.data
+.align 3
+
+// Counter for dot output (separate from timerTickCount)
+// Counts how many timer interrupts since last dot
+// Resets to 0 after outputting dot
+dot_counter:
+    .quad 0
 
 // Declare Go function for exception handling
 .extern ExceptionHandler
@@ -190,47 +200,63 @@ irq_exception_el1:
     b irq_done
     
 handle_timer_irq:
-    // Virtual timer interrupt - reset it for next tick using CVAL (absolute)
-    // CRITICAL: Use CVAL approach like reference repo!
-    // 1. Read current counter value (CNTVCT_EL0)
-    mrs x3, CNTVCT_EL0
-    // 2. Add 312500000 (5 seconds at 62.5MHz) to get target
-    // 312500000 = 0x12A05F20
-    movz x4, #0x12A0, lsl #16     // 0x12A00000
-    movk x4, #0x5F20, lsl #0      // Complete to 312500000
-    add x3, x3, x4                 // target = current + interval
-    // 3. Write to CNTV_CVAL_EL0 (compare value)
-    msr CNTV_CVAL_EL0, x3
+    // DEBUG: Breadcrumb - Timer IRQ handler entered
+    movz x7, #0x0900, lsl #16
+    movz w8, #0x21                  // '!' = Timer handler entered
+    str w8, [x7]
 
-    // Print '.' to framebuffer via Go function fb_putc_irq
-    // Save additional registers needed for Go call
-    sub sp, sp, #128              // Expand stack for more registers
-    stp x5, x6, [sp, #64]         // Save x5, x6
-    stp x7, x8, [sp, #80]         // Save x7, x8
-    stp x28, x29, [sp, #96]       // Save x28 (g), x29 (FP)
-    str x30, [sp, #112]           // Save x30 (LR)
+    // ========== 1. RE-ARM TIMER ==========
+    // Set timer to fire again in 20ms (1,250,000 hardware ticks @ 62.5 MHz)
+    mrs x3, CNTVCT_EL0              // Read current hardware counter
+    movz x4, #0x0013, lsl #16       // 1250000 = 0x1312D0
+    movk x4, #0x12D0, lsl #0        // Complete to 1250000
+    add x3, x3, x4                  // target = current + interval
+    msr CNTV_CVAL_EL0, x3           // Set compare value
 
-    // Set up frame pointer for Go
-    add x29, sp, #0
+    // DEBUG: Breadcrumb - Timer re-armed
+    movz x7, #0x0900, lsl #16
+    movz w8, #0x52                  // 'R' = Timer re-armed
+    str w8, [x7]
 
-    // Call Go function fb_putc_irq('.') - pass '.' (0x2E) as first arg in x0
-    movz x0, #0x2E                // '.' character
-    bl main.fb_putc_irq
+    // ========== 2. DOT OUTPUT CHECK ==========
+    // Check if we should output a dot
+    // Every 250 timer interrupt firings = 5 seconds
 
-    // Call timerSignal() to send signal to channel for goroutine
-    bl main.timerSignal
+    // Load dot counter
+    adrp x5, dot_counter
+    add x5, x5, :lo12:dot_counter
+    ldr x6, [x5]                    // x6 = current dot counter value
 
-    // Restore preserved registers
-    ldp x5, x6, [sp, #64]
-    ldp x7, x8, [sp, #80]
-    ldp x28, x29, [sp, #96]
-    ldr x30, [sp, #112]
-    add sp, sp, #128              // Restore stack
+    // Increment dot counter (one more interrupt fired)
+    add x6, x6, #1
+    str x6, [x5]                    // Save incremented value
 
-    // Reload UART base for final breadcrumb (optional)
-    movz x0, #0x0900, lsl #16
-    movk x0, #0x0000, lsl #0
+    // Check if we've reached 250 interrupt firings
+    cmp x6, #250
+    blt no_dot                      // If < 250, skip dot output
 
+    // We've hit 250 interrupt firings - output dot and reset
+    str xzr, [x5]                   // Reset dot counter to 0
+
+    // Output dot directly to UART (0x09000000)
+    // This is simple and avoids calling Go functions from interrupt context
+    movz x7, #0x0900, lsl #16       // UART base address
+    movz w8, #0x2E                  // '.' character
+    str w8, [x7]                    // Write to UART data register
+
+no_dot:
+    // ========== 3. SIGNAL TIMER CHANNELS ==========
+    // TODO: Call timerSignal() to send tick to monitor goroutines
+    // DISABLED: Cannot call Go functions from interrupt context due to stack checks
+    // Even with //go:nosplit, runtime.selectnbsend() does stack bounds checks
+    // Solution: Implement timer signaling entirely in assembly or use different approach
+
+    // DEBUG: Breadcrumb - skipping timerSignal for now
+    movz x7, #0x0900, lsl #16
+    movz w8, #0x54                  // 'T' = Timer interrupt handled (skip Go call)
+    str w8, [x7]
+
+    // ========== 4. RETURN FROM INTERRUPT ==========
     b irq_done
     
 handle_uart_irq:
@@ -1214,6 +1240,8 @@ handle_svc_syscall:
     beq syscall_tkill
     cmp x8, #131                   // tgkill syscall
     beq syscall_tgkill
+    cmp x8, #132                   // sigaltstack syscall
+    beq syscall_success
     cmp x8, #134                   // rt_sigaction syscall
     beq syscall_rt_sigaction
     cmp x8, #135                   // rt_sigprocmask syscall
@@ -1361,16 +1389,15 @@ syscall_success:
     b syscall_return
 
 syscall_clone_fake:
-    // clone - pretend to succeed by returning a fake TID
-    // This is a hack for single-threaded mode: the "thread" will never actually run,
-    // but the runtime thinks it was created successfully
-    // Return incrementing fake TID: 100, 101, 102, ...
+    // clone - return fake TIDs to prevent actual thread creation
+    // Runtime expects clone to succeed, but we don't want real threads
+    // sysmon is replaced by timer interrupt-driven monitors (GC, scavenger, schedtrace)
     adrp x1, fake_tid_counter
     add x1, x1, :lo12:fake_tid_counter
-    ldr w0, [x1]                   // Load current counter
-    add w0, w0, #1                 // Increment
-    str w0, [x1]                   // Store back
-    add w0, w0, #99                // Return 100, 101, 102, ...
+    ldr w0, [x1]
+    add w0, w0, #1
+    str w0, [x1]
+    add w0, w0, #99                // Return fake TID: 100, 101, 102...
     b syscall_return
 
 .data
