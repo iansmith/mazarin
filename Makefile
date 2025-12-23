@@ -27,6 +27,7 @@ IMAGE_SRC = $(MAZBOOT_SRC)/asm/aarch64/image.s
 GOROUTINE_SRC = $(MAZBOOT_SRC)/asm/aarch64/goroutine.s
 LINKER_SYMBOLS_SRC = $(MAZBOOT_SRC)/asm/aarch64/linker_symbols.s
 TIMER_SRC = $(MAZBOOT_SRC)/asm/aarch64/timer.s
+KMAZARIN_EMBED_SRC = $(MAZBOOT_SRC)/asm/aarch64/kmazarin_embed.s
 LINKER_SCRIPT = $(MAZBOOT_SRC)/linker.ld
 
 # Asset generation tools and sources
@@ -68,13 +69,15 @@ WRITEBARRIER_OBJ = $(BUILD_DIR)/writebarrier.o
 EXCEPTIONS_OBJ = $(BUILD_DIR)/exceptions.o
 IMAGE_OBJ = $(BUILD_DIR)/image.o
 GOROUTINE_OBJ = $(BUILD_DIR)/goroutine.o
+ASYNC_PREEMPT_OBJ = $(BUILD_DIR)/async_preempt.o
 GET_CALLER_SP_OBJ = $(BUILD_DIR)/get_caller_sp.o
 LINKER_SYMBOLS_OBJ = $(BUILD_DIR)/linker_symbols.o
 TIMER_OBJ = $(BUILD_DIR)/timer.o
+KMAZARIN_EMBED_OBJ = $(BUILD_DIR)/kmazarin_embed.o
 KERNEL_GO_OBJ = $(BUILD_DIR)/kernel_go.o
 
 # Assembly object files list
-ASM_OBJECTS = $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(TIMER_OBJ)
+ASM_OBJECTS = $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(TIMER_OBJ) $(KMAZARIN_EMBED_OBJ)
 
 # Output file
 MAZBOOT_BINARY = $(BUILD_DIR)/mazboot.elf
@@ -141,6 +144,11 @@ $(GOROUTINE_OBJ): $(GOROUTINE_SRC) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
+ASYNC_PREEMPT_SRC = $(MAZBOOT_SRC)/asm/aarch64/async_preempt.s
+$(ASYNC_PREEMPT_OBJ): $(ASYNC_PREEMPT_SRC) $(LINKER_SCRIPT)
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(ASFLAGS) -c $< -o $@
+
 GET_CALLER_SP_SRC = $(MAZBOOT_SRC)/asm/aarch64/get_caller_sp.s
 $(GET_CALLER_SP_OBJ): $(GET_CALLER_SP_SRC) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_DIR)
@@ -152,6 +160,12 @@ $(LINKER_SYMBOLS_OBJ): $(LINKER_SYMBOLS_SRC) $(LINKER_SCRIPT)
 
 $(TIMER_OBJ): $(TIMER_SRC) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_DIR)
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+# Embed kmazarin kernel binary - depends on kmazarin being built first
+$(KMAZARIN_EMBED_OBJ): $(KMAZARIN_EMBED_SRC) $(KMAZARIN_BINARY) $(LINKER_SCRIPT)
+	@mkdir -p $(BUILD_DIR)
+	@echo "Embedding kmazarin binary into mazboot..."
 	$(CC) $(ASFLAGS) -c $< -o $@
 
 # Compile kernel Go sources from golang/main package using go build with c-archive mode
@@ -226,11 +240,12 @@ $(KERNEL_GO_OBJ_QEMU): $(MAZBOOT_SRC)/golang/go.mod $(GO_SRC) $(LINKNAMES_GO) $(
 	@rm -f $(KERNEL_GO_ARCHIVE) $(BUILD_DIR)/kernel_go.h $(BUILD_DIR)/__.SYMDEF
 
 # Build mazboot (default: QEMU build with qemuvirt and aarch64 tags)
-$(MAZBOOT_BINARY): $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(TIMER_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
+# NOTE: Depends on KMAZARIN_EMBED_OBJ which embeds the kmazarin kernel binary
+$(MAZBOOT_BINARY): $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(TIMER_OBJ) $(KMAZARIN_EMBED_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
 	@mkdir -p $(BUILD_DIR)
 	@# Link exceptions.o, then writebarrier.o so our global symbols override Go runtime's
 	@# Our writebarrier.s provides global (T) symbols that should take precedence
-	$(CC) $(LDFLAGS) -o $@.tmp $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(KERNEL_GO_OBJ_QEMU) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(TIMER_OBJ)
+	$(CC) $(LDFLAGS) -o $@.tmp $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(KERNEL_GO_OBJ_QEMU) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(TIMER_OBJ) $(KMAZARIN_EMBED_OBJ)
 	@# Patch the binary to redirect calls from Go runtime functions to our implementations
 	@# The Go tool scans .s files to determine which symbols need patching
 	@echo "Patching runtime function calls..."
@@ -295,11 +310,42 @@ isvirgin:
 		exit 1; \
 	fi
 
-# Phony targets
-.PHONY: all clean push mazboot test regenerate-assets isvirgin
+# =========================================
+# Kmazarin Kernel Build Configuration
+# =========================================
 
-# Default target: build mazboot and copy to flash
-all: mazboot
+# Kmazarin source directory
+KMAZARIN_SRC = src/kmazarin/golang/kmazarin
+
+# Kmazarin build directory
+KMAZARIN_BUILD_DIR = src/kmazarin/build
+
+# Kmazarin binary output
+KMAZARIN_BINARY = $(KMAZARIN_BUILD_DIR)/kmazarin.elf
+
+# Build kmazarin kernel as a static binary
+# Standard Go build for linux/arm64 without cgo
+# Position text section at 0x40010000 (just past DTB which starts at 0x40000000)
+$(KMAZARIN_BINARY): $(wildcard $(KMAZARIN_SRC)/*.go)
+	@mkdir -p $(KMAZARIN_BUILD_DIR)
+	@echo "Building kmazarin kernel (static Go binary with text at 0x40010000)..."
+	@cd $(KMAZARIN_SRC) && \
+		CGO_ENABLED=0 \
+		GOTOOLCHAIN=auto \
+		GOARCH=$(GOARCH) \
+		GOOS=$(GOOS) \
+		$(GO) build -ldflags="-T 0x40010000" -o $(abspath $(KMAZARIN_BINARY)) .
+	@echo "Kmazarin kernel built at $(KMAZARIN_BINARY)"
+
+# Build target for kmazarin
+kmazarin: $(KMAZARIN_BINARY)
+	@echo "kmazarin ready at $(KMAZARIN_BINARY)"
+
+# Phony targets
+.PHONY: all clean push mazboot kmazarin test regenerate-assets isvirgin
+
+# Default target: build both mazboot and mazarin
+all: mazboot kmazarin
 
 # Regenerate binary assets from source images/fonts
 regenerate-assets: $(BOOT_IMAGE_BIN)

@@ -81,6 +81,20 @@ SECTIONS
     . = ALIGN(4096);
     __image_data_end = .;
 
+    /* Embedded kmazarin kernel binary
+     * This section contains the kmazarin.elf binary embedded in mazboot
+     * The kernel will be copied from here to its execution address at runtime
+     */
+    . = ALIGN(4096);
+    __kmazarin_start = .;
+    .kmazarin :
+    {
+        KEEP(*(.kmazarin))
+    }
+    . = ALIGN(4096);
+    __kmazarin_end = .;
+    __kmazarin_size = __kmazarin_end - __kmazarin_start;
+
     /* Writable data sections in RAM region (0x40000000+) */
     /* IMPORTANT: QEMU virt machine places DTB at 0x40000000-0x40100000 (1MB)
      * Kernel has 128MB total (0x40100000 - 0x48100000)
