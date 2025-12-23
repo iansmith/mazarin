@@ -535,11 +535,14 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	uartPutsDirect(" VA=0x")
 	uartPutHex64Direct(uint64(faultAddr))
 
-	// Check if the fault address is in the mmap virtual region
-	// Any address in this range is considered a valid demand-page request
-	if faultAddr < MMAP_VIRT_BASE || faultAddr >= MMAP_VIRT_END {
-		// Not in mmap region - this is a real fault
-		uartPutsDirect("\r\n!FAULT outside mmap region: VA=0x")
+	// Check if the fault address is in a valid region for demand paging
+	// Accept faults in:
+	// 1. kmazarin load region: 0x40000000+ (RAM start, includes kmazarin kernel)
+	// 2. mmap region: 0x48000000+ (Go runtime allocations)
+	const KMAZARIN_BASE = 0x40000000
+	if faultAddr < KMAZARIN_BASE || faultAddr >= MMAP_VIRT_END {
+		// Not in a valid region - this is a real fault
+		uartPutsDirect("\r\n!FAULT outside valid region: VA=0x")
 		uartPutHex64Direct(uint64(faultAddr))
 		uartPutsDirect("\r\n")
 		return false

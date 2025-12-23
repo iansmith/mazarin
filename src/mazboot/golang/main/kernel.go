@@ -1611,43 +1611,8 @@ func loadAndRunKmazarin() {
 		}
 		print(")\r\n")
 
-		// Map destination pages before copying (round to 4KB pages)
-		startPage := destAddr & ^uintptr(0xFFF)
-		endPage := (destAddr + uintptr(memsz) + 0xFFF) & ^uintptr(0xFFF)
-		print("    Mapping pages: 0x")
-		printHex64(uint64(startPage))
-		print(" - 0x")
-		printHex64(uint64(endPage))
-		print(" ... ")
-		for va := startPage; va < endPage; va += 0x1000 {
-			physFrame := allocPhysFrame()
-			if physFrame == 0 {
-				print("\r\nERROR: Out of physical frames\r\n")
-				return
-			}
-			bzero(unsafe.Pointer(physFrame), 0x1000)
-
-			// Determine attributes based on segment flags
-			var attrs uint64
-			if (flags & 0x1) != 0 { // Executable
-				attrs = PTE_ATTR_NORMAL
-			} else {
-				attrs = PTE_ATTR_NORMAL
-			}
-
-			// Determine access permissions
-			var ap uint64
-			if (flags & 0x2) != 0 { // Writable
-				ap = PTE_AP_RW_EL1
-			} else {
-				ap = PTE_AP_RO_EL1
-			}
-
-			mapPage(va, physFrame, attrs, ap)
-		}
-		// Invalidate TLB to ensure MMU sees new mappings
-		asm.InvalidateTlbAll()
-		print("OK\r\n")
+		// NOTE: We don't need to pre-map pages - the page fault handler
+		// will automatically allocate and map pages on demand when we access them
 
 		// Copy segment data from embedded binary to destination
 		// Handle negative file offsets (ELF files can have segments that include headers)
