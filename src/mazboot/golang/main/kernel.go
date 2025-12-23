@@ -696,13 +696,12 @@ func KernelMain(r0, r1, atags uint32) {
 	print("mazboot: Initializing hardware timer...\r\n")
 	initTime()
 
-	// Start monitoring goroutines
-	print("mazboot: Starting monitor goroutines...\r\n")
-	startGCMonitor()
-	startScavengerMonitor()
-	startSchedtraceMonitor()
-
-	print("mazboot: All monitors started\r\n")
+	// TODO: Start monitoring goroutines once stack growth is implemented
+	// For now, skip monitors because they require proper stack growth support
+	print("mazboot: Monitor goroutines disabled (require stack growth support)\r\n")
+	// startGCMonitor()
+	// startScavengerMonitor()
+	// startSchedtraceMonitor()
 	print("═══════════════════════════════════════════════\r\n\r\n")
 
 	// =========================================
@@ -1111,9 +1110,9 @@ func simpleMain() {
 	print("[g1] Test complete!\r\n")
 	print("\r\nSUCCESS: Goroutines and channels working!\r\n")
 
-	// Halt - loop forever
-	for {
-	}
+	// Clean exit - let runtime detect completion and exit gracefully
+	print("[g1] User goroutine completing...\r\n")
+	return
 }
 
 // simpleGoroutine2 is the second goroutine for the channel test

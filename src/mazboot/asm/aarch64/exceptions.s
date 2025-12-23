@@ -245,15 +245,54 @@ handle_timer_irq:
     str w8, [x7]                    // Write to UART data register
 
 no_dot:
-    // ========== 3. SIGNAL TIMER CHANNELS ==========
-    // TODO: Call timerSignal() to send tick to monitor goroutines
-    // DISABLED: Cannot call Go functions from interrupt context due to stack checks
-    // Even with //go:nosplit, runtime.selectnbsend() does stack bounds checks
-    // Solution: Implement timer signaling entirely in assembly or use different approach
+    // ========== 3. CALL TIMER SIGNAL WITH STACK SWITCHING ==========
+    // We need to switch from exception stack to goroutine stack before
+    // calling timerSignal() because channel operations do stack bounds checks
+    //
+    // Exception stack: 0x5FFFFFFF - kernel exception handler stack
+    // Goroutine stack: g.stack.lo to g.stack.hi (e.g., 0x40000...)
+    //
+    // Strategy: Temporarily switch SP to current g's stack, call timerSignal(), restore SP
 
-    // DEBUG: Breadcrumb - skipping timerSignal for now
+    // Save exception stack pointer
+    mov x15, sp                      // x15 = exception SP (0x5FFF...)
+
+    // Get current g pointer - it's saved in x28 by exception entry
+    mov x16, x28                     // x16 = current g pointer (from x28, not TPIDR_EL0)
+
+    // Check if g is valid (not null)
+    cbz x16, use_g0_stack            // If g == 0, use g0 stack instead
+
+    // Read g.stack.hi (offset 8 in runtimeStack, which is at offset 0 in runtimeG)
+    ldr x17, [x16, #8]               // x17 = g.stack.hi
+    b timer_stack_selected
+
+use_g0_stack:
+    // g is null - use g0's stack instead
+    // g0 address is in runtime.g0 symbol
+    adrp x16, runtime.g0
+    add x16, x16, :lo12:runtime.g0
+    ldr x16, [x16]                   // x16 = g0 pointer
+    ldr x17, [x16, #8]               // x17 = g0.stack.hi
+
+timer_stack_selected:
+    // Switch to goroutine's stack (use top of stack, 16-byte aligned)
+    // Leave 512 bytes for call frame (increased from 256 for safety)
+    sub x17, x17, #512
+    and x17, x17, #0xFFFFFFFFFFFFFFF0  // 16-byte align
+    mov sp, x17                      // Switch to goroutine stack!
+
+    // Now we're on goroutine stack, safe to call Go functions with channel ops
+    CALL_GO_PROLOGUE 16
+    bl main.timerSignal
+    CALL_GO_EPILOGUE 16
+
+    // Restore exception stack pointer
+    mov sp, x15                      // Back to exception stack
+
+    // DEBUG: Breadcrumb - timer signal called
     movz x7, #0x0900, lsl #16
-    movz w8, #0x54                  // 'T' = Timer interrupt handled (skip Go call)
+    movz w8, #0x54                  // 'T' = Timer signal called
     str w8, [x7]
 
     // ========== 4. RETURN FROM INTERRUPT ==========

@@ -30,6 +30,7 @@ func gcMonitorLoop() {
 	print("  Will trigger GC every ", GCTickInterval, " timer interrupt firings (")
 	print(GCPeriodSeconds, " seconds)\r\n")
 
+	// Wait on channel for timer ticks
 	for tick := range gcTimerChan {
 		// tick.Count = total number of timer interrupt firings
 		if tick.Count-lastGCTick >= GCTickInterval {

@@ -41,6 +41,7 @@ func main() {
 	getRandomBytes(nil, 0)
 	kernelMainBodyWrapper()
 	simpleMain()
+	timerSignal()
 
 	//{{ LINKNAME END}}
 	// This should never execute in bare metal

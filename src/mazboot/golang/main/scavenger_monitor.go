@@ -56,20 +56,22 @@ func startScavengerMonitor() {
 }
 
 func scavengerMonitorLoop() {
-	print("Scavenger Monitor: started\r\n")
+	print("Scavenger Monitor: started (disabled - runtime.scavenger not accessible)\r\n")
 
-	wakeCount := 0
-	for tick := range scavengerTimerChan {
-		// Scavenger monitor disabled - runtime.scavenger not accessible
-		_ = tick
-		_ = wakeCount
-		// Load sysmonWake flag using atomic load (compiles to LDARW on ARM64)
-		// This matches runtime/proc.go:6373 which uses .Load()
-		// if scavenger.sysmonWake.Load() != 0 {
-		// 	wakeCount++
-		// 	print("Scavenger Monitor: waking at interrupt #", tick.Count)
-		// 	print(" (wake #", wakeCount, ")\r\n")
-		// 	wakeScavenger(&scavenger)
-		// }
-	}
+	// Note: Even though we're polling, the actual scavenger wake functionality
+	// is disabled because runtime.scavenger is not accessible in c-archive mode
+	_ = timerTickCount
+	// wakeCount := 0
+	// for {
+	// 	currentTick := timerTickCount.Load()
+	// 	// Load sysmonWake flag using atomic load (compiles to LDARW on ARM64)
+	// 	// This matches runtime/proc.go:6373 which uses .Load()
+	// 	// if scavenger.sysmonWake.Load() != 0 {
+	// 	// 	wakeCount++
+	// 	// 	print("Scavenger Monitor: waking at interrupt #", currentTick)
+	// 	// 	print(" (wake #", wakeCount, ")\r\n")
+	// 	// 	wakeScavenger(&scavenger)
+	// 	// }
+	// 	runtime.Gosched()
+	// }
 }

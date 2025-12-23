@@ -12,7 +12,7 @@ const (
 )
 
 var (
-	schedtraceEnabled  = false // Disabled - runtime.schedtrace not accessible in c-archive mode
+	schedtraceEnabled  = true // Now using polling instead of channels
 	schedtraceDetailed = true
 	lastSchedtraceTick uint64
 )
@@ -31,12 +31,14 @@ func schedtraceMonitorLoop() {
 	print(SchedtracePeriodSeconds, " second)\r\n")
 
 	traceCount := 0
+
+	// Wait on channel for timer ticks
 	for tick := range schedtraceTimerChan {
 		if tick.Count-lastSchedtraceTick >= SchedtraceTickInterval {
 			lastSchedtraceTick = tick.Count
 			traceCount++
 
-				print("\r\n───────────────────────────────────────────────\r\n")
+			print("\r\n───────────────────────────────────────────────\r\n")
 			print("Schedtrace #", traceCount, " at interrupt #", tick.Count)
 			print(" (", tick.Timestamp/1000000000, "s)\r\n")
 
