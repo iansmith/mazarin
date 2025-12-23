@@ -1232,6 +1232,8 @@ handle_svc_syscall:
     beq syscall_brk
     cmp x8, #215                   // munmap syscall
     beq syscall_munmap
+    cmp x8, #124                   // sched_yield syscall
+    beq syscall_success
     cmp x8, #220                   // clone syscall
     beq syscall_clone_fail
     cmp x8, #222                   // mmap syscall

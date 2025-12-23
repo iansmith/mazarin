@@ -663,8 +663,21 @@ call_runtime_newproc:
     ret
 
 // =================================================================
+// Data section: funcval for simpleMain
+// This is similar to runtime.mainPC - a funcval pointing to our main function
+// =================================================================
+.section ".data"
+.global simpleMainPC
+.align 3
+simpleMainPC:
+    .quad main.simpleMain
+
+.section ".text"
+
+// =================================================================
 // call_newproc_simple_main()
-// Call runtime.newproc(main.simpleMain) to create goroutine for our simple test
+// Call runtime.newproc(simpleMainPC) to create goroutine for our simple test
+// simpleMainPC is a funcval (pointer to main.simpleMain)
 //
 // Returns 0 on success (newproc completed without crash)
 // =================================================================
@@ -676,20 +689,16 @@ call_newproc_simple_main:
     mov x29, sp
     stp x19, x20, [sp, #16]
 
-    // We need to create a funcval structure for simpleMain
-    // A funcval is just a pointer to the function
-    // For simplicity, we'll use the function address directly
-    // and hope the runtime accepts it
-
-    // Load address of main.simpleMain
-    ldr x0, =main.simpleMain
+    // Load address of simpleMainPC (the funcval structure)
+    // This is like runtime.mainPC - it contains a pointer to the function
+    ldr x0, =simpleMainPC
 
     // Set up stack for newproc call:
     //   SP+0: dummy LR (0)
-    //   SP+8: function pointer (main.simpleMain)
+    //   SP+8: funcval pointer (simpleMainPC)
     sub sp, sp, #16
     str xzr, [sp, #0]       // Store 0 at SP+0 (dummy LR)
-    str x0, [sp, #8]        // Store function pointer at SP+8
+    str x0, [sp, #8]        // Store funcval pointer at SP+8
 
     // Call runtime.newproc
     bl runtime.newproc

@@ -60,14 +60,15 @@ func main() {
 func findGoFunctionsCalledFromAssembly(asmDir string) []string {
 	var symbols []string
 
-	// Patterns for main.* symbols
-	externMainRe := regexp.MustCompile(`\.extern\s+main\.([a-zA-Z_][a-zA-Z0-9_]*)`)
-	blMainRe := regexp.MustCompile(`bl\s+main\.([a-zA-Z_][a-zA-Z0-9_]*)`)
+	// Patterns for main.* symbols (support dots for ABI suffixes like .abi0)
+	externMainRe := regexp.MustCompile(`\.extern\s+main\.([a-zA-Z_][a-zA-Z0-9_.]*[a-zA-Z0-9_])`)
+	blMainRe := regexp.MustCompile(`bl\s+main\.([a-zA-Z_][a-zA-Z0-9_.]*[a-zA-Z0-9_])`)
 
 	// Patterns for runtime.* symbols (used via ldr =runtime.symbol or bl runtime.symbol)
-	ldrRuntimeRe := regexp.MustCompile(`ldr\s+\w+,\s*=runtime\.([a-zA-Z_][a-zA-Z0-9_]*)`)
-	externRuntimeRe := regexp.MustCompile(`\.extern\s+runtime\.([a-zA-Z_][a-zA-Z0-9_]*)`)
-	blRuntimeRe := regexp.MustCompile(`bl\s+runtime\.([a-zA-Z_][a-zA-Z0-9_]*)`)
+	// Support dots for ABI suffixes like runtime.mstart.abi0
+	ldrRuntimeRe := regexp.MustCompile(`ldr\s+\w+,\s*=runtime\.([a-zA-Z_][a-zA-Z0-9_.]*[a-zA-Z0-9_])`)
+	externRuntimeRe := regexp.MustCompile(`\.extern\s+runtime\.([a-zA-Z_][a-zA-Z0-9_.]*[a-zA-Z0-9_])`)
+	blRuntimeRe := regexp.MustCompile(`bl\s+runtime\.([a-zA-Z_][a-zA-Z0-9_.]*[a-zA-Z0-9_])`)
 
 	seen := make(map[string]bool)
 

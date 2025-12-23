@@ -1057,17 +1057,11 @@ func simpleMain() {
 
 	// Create channel
 	print("[g1] Creating channel...\r\n")
-	ch := make(chan string, 1) // Buffered channel to avoid deadlock
+	ch := make(chan string) // Unbuffered channel forces synchronization
 
 	// Launch goroutine
 	print("[g1] Launching g2...\r\n")
 	go simpleGoroutine2(ch)
-
-	// Give g2 time to start (scheduler should handle this)
-	// But add a small busy wait just in case
-	for i := 0; i < 1000000; i++ {
-		// Busy wait
-	}
 
 	// Send message to g2
 	testMessage := "Hello from g1!"

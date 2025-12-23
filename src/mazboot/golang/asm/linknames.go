@@ -459,6 +459,10 @@ func memmove(dest unsafe.Pointer, src unsafe.Pointer, n uint32)
 //go:nosplit
 func runOnGoroutine()
 
+//go:linkname simpleMainPC simpleMainPC
+//go:nosplit
+func simpleMainPC()
+
 //{{ LINKNAME END}}
 
 // Manual entries (not auto-generated):
