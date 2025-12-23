@@ -660,6 +660,9 @@ func KernelMain(r0, r1, atags uint32) {
 	MarkSchedulerReady()
 	print("Scheduler fully initialized (gopark/goready enabled)\r\n")
 
+	// NOTE: parseEmbeddedKmazarin() will be called from simpleMain() (user goroutine)
+	// because debug/elf uses defer, which isn't allowed on the system stack (g0)
+
 	// =========================================
 	// Initialize Timer-Based Preemption System
 	// =========================================
@@ -1035,34 +1038,19 @@ func drawTestPattern() {
 // Modified to test preemption: both g1 and g2 busy-wait concurrently
 // We should see '1' and '2' characters interleaved as scheduler switches between them
 //
-//go:nosplit
+// NOTE: Removed //go:nosplit because this function now calls parseEmbeddedKmazarin()
+// which uses debug/elf and needs stack growth capability
 func simpleMain() {
 	print("\r\n[g1] Simple main started!\r\n")
-	print("[g1] Testing scheduler preemption with two busy-wait goroutines...\r\n")
 
-	// Launch g2 - it will busy-wait printing '2'
-	print("[g1] Launching g2...\r\n")
-	go simpleGoroutine2(nil)
-	print("[g1] g2 launched (runtime.newproc called)\r\n")
+	// Parse and display embedded kmazarin ELF information
+	// NOTE: Must be done from user goroutine because debug/elf uses defer
+	parseEmbeddedKmazarin()
 
-	print("[g1] Both goroutines will busy-wait WITHOUT yielding\r\n")
-	print("[g1] If timer-based preemption works, we should see '1' and '2' interleaved\r\n")
-	print("[g1] Starting busy-wait loop (NO cooperative yielding)...\r\n\r\n")
+	print("\r\n[g1] ELF parsing complete, exiting cleanly...\r\n")
 
-	// Infinite busy-wait loop, printing '1' periodically
-	// NO calls to Gosched() - relies purely on timer-based preemption
-	counter := uint64(0)
-	uartBase := getLinkerSymbol("__uart_base")
-
-	for {
-		counter++
-		// Every million iterations, print our marker
-		if counter%1000000 == 0 {
-			// Print '1' to show g1 is running
-			asm.MmioWrite(uartBase, uint32('1'))
-			// NO checkPreemption() call - pure busy-wait!
-		}
-	}
+	// Exit QEMU cleanly
+	asm.QemuExit()
 }
 
 // simpleGoroutine2 is the second goroutine for the preemption test
@@ -1208,4 +1196,103 @@ func dumpAllGs() {
 	}
 
 	print("  End of allgs dump\r\n")
+}
+
+// parseEmbeddedKmazarin reads the embedded kmazarin ELF binary and displays information
+// NOTE: This function requires heap allocation (for debug/elf), so must be called
+// after scheduler initialization
+func parseEmbeddedKmazarin() {
+	print("\r\n=== Embedded Kmazarin ELF Information ===\r\n")
+
+	// Get the embedded kmazarin binary location from linker symbols
+	kmazarinStart := getLinkerSymbol("__kmazarin_start")
+	kmazarinSize := getLinkerSymbol("__kmazarin_size")
+
+	print("Embedded binary location: 0x")
+	printHex64(uint64(kmazarinStart))
+	print("\r\n")
+	print("Embedded binary size: ")
+	printUint32(uint32(kmazarinSize))
+	print(" bytes\r\n")
+
+	// Create a byte slice from the embedded binary
+	// We need to use unsafe to create a slice from raw memory
+	var elfData []byte
+	sliceHeader := (*struct {
+		Data uintptr
+		Len  int
+		Cap  int
+	})(unsafe.Pointer(&elfData))
+	sliceHeader.Data = kmazarinStart
+	sliceHeader.Len = int(kmazarinSize)
+	sliceHeader.Cap = int(kmazarinSize)
+
+	// Verify we can read the ELF magic bytes
+	if len(elfData) < 64 {
+		print("ERROR: ELF data too small\r\n")
+		return
+	}
+
+	// Check ELF magic
+	if elfData[0] != 0x7F || elfData[1] != 'E' || elfData[2] != 'L' || elfData[3] != 'F' {
+		print("ERROR: Invalid ELF magic bytes\r\n")
+		return
+	}
+
+	print("Valid ELF magic bytes detected\r\n")
+
+	// Manually parse ELF header (avoiding debug/elf package to prevent defer issues)
+	// ELF64 header structure:
+	// 0x00-0x03: Magic (0x7F 'E' 'L' 'F')
+	// 0x04: Class (1=32-bit, 2=64-bit)
+	// 0x05: Data (1=little-endian, 2=big-endian)
+	// 0x10-0x11: Type
+	// 0x12-0x13: Machine
+	// 0x18-0x1F: Entry point (8 bytes for ELF64)
+
+	print("\r\nELF Header:\r\n")
+	print("  Class: ")
+	if elfData[4] == 1 {
+		print("ELF32")
+	} else if elfData[4] == 2 {
+		print("ELF64")
+	} else {
+		print("Unknown")
+	}
+	print("\r\n")
+
+	print("  Data: ")
+	if elfData[5] == 1 {
+		print("Little-endian")
+	} else if elfData[5] == 2 {
+		print("Big-endian")
+	} else {
+		print("Unknown")
+	}
+	print("\r\n")
+
+	print("  Machine: ")
+	machine := uint16(elfData[0x12]) | (uint16(elfData[0x13]) << 8)
+	if machine == 0xB7 { // EM_AARCH64
+		print("AArch64 (0x00B7)")
+	} else {
+		print("0x")
+		printHex64(uint64(machine))
+	}
+	print("\r\n")
+
+	print("  Entry point: 0x")
+	// Read 8-byte little-endian entry point
+	entry := uint64(elfData[0x18]) |
+		(uint64(elfData[0x19]) << 8) |
+		(uint64(elfData[0x1A]) << 16) |
+		(uint64(elfData[0x1B]) << 24) |
+		(uint64(elfData[0x1C]) << 32) |
+		(uint64(elfData[0x1D]) << 40) |
+		(uint64(elfData[0x1E]) << 48) |
+		(uint64(elfData[0x1F]) << 56)
+	printHex64(entry)
+	print("\r\n")
+
+	print("\r\n=== End of ELF Information ===\r\n\r\n")
 }

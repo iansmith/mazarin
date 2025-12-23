@@ -155,6 +155,14 @@ func GetGicBase() uintptr
 //go:nosplit
 func GetGicSize() uintptr
 
+//go:linkname GetKmazarinSize get_kmazarin_size
+//go:nosplit
+func GetKmazarinSize() uintptr
+
+//go:linkname GetKmazarinStart get_kmazarin_start
+//go:nosplit
+func GetKmazarinStart() uintptr
+
 //go:linkname GetM0Addr get_m0_addr
 //go:nosplit
 func GetM0Addr() uintptr

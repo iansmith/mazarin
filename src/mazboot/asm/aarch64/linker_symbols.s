@@ -165,6 +165,20 @@ get_bochs_display_size:
     ldr x0, =__bochs_display_size
     ret
 
+// Embedded kmazarin kernel symbols
+
+// get_kmazarin_start() returns uintptr
+.global get_kmazarin_start
+get_kmazarin_start:
+    ldr x0, =__kmazarin_start
+    ret
+
+// get_kmazarin_size() returns uintptr
+.global get_kmazarin_size
+get_kmazarin_size:
+    ldr x0, =__kmazarin_size
+    ret
+
 // Declare runtime TLS functions as weak so linker doesn't fail if they're not yet visible
 // Note: Go uses .abi0 suffix for ABI wrappers
 .weak runtime.load_g.abi0

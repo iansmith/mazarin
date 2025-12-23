@@ -68,6 +68,10 @@ func getLinkerSymbol(name string) uintptr {
 		return asm.GetBochsDisplayBase()
 	case "__bochs_display_size":
 		return asm.GetBochsDisplaySize()
+	case "__kmazarin_start":
+		return asm.GetKmazarinStart()
+	case "__kmazarin_size":
+		return asm.GetKmazarinSize()
 	default:
 		// Unknown symbol - return 0 (caller should check)
 		return 0
