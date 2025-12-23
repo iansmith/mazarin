@@ -685,6 +685,11 @@ func KernelMain(r0, r1, atags uint32) {
 	startSchedtraceMonitor()
 	print("mazboot: All monitors started\r\n")
 	print("  (Monitors will run once they receive timer ticks)\r\n")
+
+	// DEBUG: Dump allgs contents to understand the NULL entry issue
+	print("\r\nDEBUG: Dumping allgs contents...\r\n")
+	dumpAllGs()
+
 	print("═══════════════════════════════════════════════\r\n\r\n")
 
 	// =========================================
@@ -1093,6 +1098,10 @@ func simpleMain() {
 	print("[g1] Test complete!\r\n")
 	print("\r\nSUCCESS: Goroutines and channels working!\r\n")
 
+	// DEBUG: Dump allgs after test completes
+	print("\r\nDEBUG: Dumping allgs after test completion...\r\n")
+	dumpAllGs()
+
 	// Clean exit - let runtime detect completion and exit gracefully
 	print("[g1] User goroutine completing...\r\n")
 	return
@@ -1187,4 +1196,64 @@ func abortBoot(message string) {
 	for {
 		// Hang forever
 	}
+}
+
+// dumpAllGs uses runtime internals to dump the allgs slice
+//
+//go:nosplit
+func dumpAllGs() {
+	// Use direct memory access since we can't use go:linkname with slice types
+	// runtime.allgs is at 0x401cd3b0, runtime.allglen is at 0x401f68a8 (from nm output)
+	const allgsAddr = uintptr(0x401cd3b0)
+	const allglenAddr = uintptr(0x401f68a8)
+
+	// Read allglen (number of goroutines)
+	allglen := uintptr(readMemory64(allglenAddr))
+	print("  allglen = ")
+	printHex64(uint64(allglen))
+	print("\r\n")
+
+	if allglen == 0 {
+		print("  allgs is empty!\r\n")
+		return
+	}
+
+	// Read allgs slice header
+	// A slice is: {ptr *elem, len int, cap int}
+	allgsPtr := readMemory64(allgsAddr)      // pointer to array
+	allgsLen := readMemory64(allgsAddr + 8)  // length
+	allgsCap := readMemory64(allgsAddr + 16) // capacity
+
+	print("  allgs ptr=0x")
+	printHex64(allgsPtr)
+	print(" len=")
+	printHex64(allgsLen)
+	print(" cap=")
+	printHex64(allgsCap)
+	print("\r\n")
+
+	if allgsPtr == 0 {
+		print("  allgs backing array is NULL!\r\n")
+		return
+	}
+
+	// Iterate through allgs array
+	print("  Goroutines in allgs:\r\n")
+	for i := uint64(0); i < 20 && i < allgsLen; i++ { // Limit to first 20
+		gpAddr := readMemory64(uintptr(allgsPtr + i*8)) // Each entry is a *g (8 bytes)
+		print("    [")
+		printHex64(i)
+		print("] g=0x")
+		printHex64(gpAddr)
+
+		if gpAddr == 0 {
+			print(" <NULL>\r\n")
+			continue
+		}
+
+		// For now, just note it's valid
+		print(" (valid)\r\n")
+	}
+
+	print("  End of allgs dump\r\n")
 }

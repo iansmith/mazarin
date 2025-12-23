@@ -177,8 +177,30 @@ var exceptionCount uint32
 //go:nosplit
 //go:noinline
 func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType uint32, savedFP uint64, savedLR uint64, savedG uint64) {
+	// DEBUG: Print details BEFORE incrementing counter to see what exception triggers the crash
+	if exceptionCount == 49 {
+		print("\r\nDEBUG: BEFORE exception #50 - ELR=0x")
+		printHex64(elr)
+		print(" FAR=0x")
+		printHex64(far)
+		print(" savedG=0x")
+		printHex64(savedG)
+		print(" savedLR=0x")
+		printHex64(savedLR)
+		print("\r\n")
+	}
+
 	// Increment exception counter
 	exceptionCount++
+
+	// DEBUG: Catch the readgstatus crash before it calls PrintTraceback
+	if exceptionCount == 50 {
+		print("DEBUG: Exception #50 IS the readgstatus crash\r\n")
+		print("  This means exception #49 called PrintTraceback\r\n")
+		print("  Which then crashed in readgstatus\r\n")
+		print("HANGING to avoid crash loop\r\n")
+		for {}
+	}
 
 	// DEBUG: Print marker for exceptions after #17 to detect loops
 	if exceptionCount == 18 || exceptionCount == 19 || exceptionCount == 20 {

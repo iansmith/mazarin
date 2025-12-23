@@ -22,6 +22,14 @@ func initRuntimeStubs() {
 	g0Addr := asm.GetG0Addr()
 	m0Addr := asm.GetM0Addr()
 
+	// CRITICAL: Set up Thread-Local Storage (TLS) for c-archive mode
+	// In cgo/c-archive mode, the runtime stores the g pointer in TLS using TPIDR_EL0
+	// We need to initialize TPIDR_EL0 to point to a TLS block and store g0 there
+	const tlsBlockAddr = uintptr(0x41030000) // TLS block at fixed address
+	// runtime.tls_g is 0, so g pointer is at offset 0 in TLS block
+	writeMemory64(tlsBlockAddr, uint64(g0Addr)) // Store g0 pointer at TLS offset 0
+	setTPIDR_EL0(tlsBlockAddr)                   // Set TPIDR_EL0 to TLS block
+
 	// Initialize g0 stack bounds so compiler stack checks pass
 	// g0 uses 64KB stack at top of kernel RAM (matches real Go runtime)
 	// g.stack.lo (offset 0), g.stack.hi (offset 8), g.stackguard0 (offset 16), g.stackguard1 (offset 24)

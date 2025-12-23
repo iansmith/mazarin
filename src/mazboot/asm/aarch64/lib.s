@@ -1251,6 +1251,25 @@ write_tcr_el1:
     isb                   // Instruction synchronization barrier
     ret                   // Return (no return value, void function)
 
+// read_tpidr_el0() uint64 - Read TPIDR_EL0 (Thread Pointer ID Register, User)
+// Returns: x0 = current value of TPIDR_EL0
+// TPIDR_EL0 is used by Go runtime for thread-local storage (TLS)
+// Can be accessed from EL1 (kernel mode) without restriction
+.global read_tpidr_el0
+read_tpidr_el0:
+    mrs x0, TPIDR_EL0    // Read TPIDR_EL0 into x0 (return value)
+    ret                   // Return with value in x0
+
+// write_tpidr_el0(value uint64) - Write TPIDR_EL0 (Thread Pointer ID Register, User)
+// x0 = value to write (Go ABI: first parameter in x0 for uint64)
+// TPIDR_EL0 is used by Go runtime for thread-local storage (TLS)
+// Can be written from EL1 (kernel mode) without restriction
+.global write_tpidr_el0
+write_tpidr_el0:
+    msr TPIDR_EL0, x0    // Write x0 (parameter) to TPIDR_EL0
+    isb                   // Instruction synchronization barrier
+    ret                   // Return (no return value, void function)
+
 // invalidate_tlb_all() - Invalidate entire TLB
 // Clears all translation lookaside buffer entries
 // NOTE: Uses tlbi vmalle1 (not alle1) because this can be executed
