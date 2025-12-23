@@ -5,6 +5,79 @@ import (
 	"unsafe"
 )
 
+
+// setTPIDR_EL1 sets the TPIDR_EL1 register (kernel TLS pointer)
+//
+//go:nosplit
+func setTPIDR_EL1(addr uintptr) {
+	asm.WriteTpidrEl1(uint64(addr))
+}
+
+// patchRuntimeTLSForEL1 patches the Go runtime's TLS functions to use TPIDR_EL1 instead of TPIDR_EL0
+// This is necessary because:
+// 1. We're running the kernel at EL1 (not EL0)
+// 2. User-space programs will need TPIDR_EL0 for their own TLS
+// 3. Using TPIDR_EL1 for kernel allows true SMP without TLS conflicts
+//
+// The patch is simple: Change MRS TPIDR_EL0, R0 (0xd53bd040) to MRS TPIDR_EL1, R0 (0xd53bd041)
+// This is a one-bit change in the instruction encoding (last nibble 0->1)
+//
+//go:nosplit
+func patchRuntimeTLSForEL1() {
+	// ARM64 instruction encodings:
+	// MRS TPIDR_EL0, R0 = 0xd53bd040  (read user TLS)
+	// MRS TPIDR_EL1, R0 = 0xd53bd041  (read kernel TLS)
+	// MSR TPIDR_EL0, R0 = 0xd51bd040  (write user TLS)
+	// MSR TPIDR_EL1, R0 = 0xd51bd041  (write kernel TLS)
+	const (
+		MRS_TPIDR_EL0_R0 = uint32(0xd53bd040)
+		MRS_TPIDR_EL1_R0 = uint32(0xd53bd041)
+		MSR_TPIDR_EL0_R0 = uint32(0xd51bd040)
+		MSR_TPIDR_EL1_R0 = uint32(0xd51bd041)
+	)
+
+	// Get addresses of the two specific functions we need to patch
+	loadGAddr := asm.GetRuntimeLoadGAddr()
+	saveGAddr := asm.GetRuntimeSaveGAddr()
+
+	uartBase := getLinkerSymbol("__uart_base")
+	patchCount := 0
+
+	// Patch runtime.load_g - scan up to 64 instructions (256 bytes)
+	for offset := uintptr(0); offset < 256; offset += 4 {
+		instrAddr := loadGAddr + offset
+		instr := readMemory32(instrAddr)
+		if instr == MRS_TPIDR_EL0_R0 {
+			// Found it! Patch from EL0 to EL1 (just change last nibble from 0 to 1)
+			writeMemory32(instrAddr, MRS_TPIDR_EL1_R0)
+			asm.CleanDataCacheVA(instrAddr)
+			patchCount++
+			asm.MmioWrite(uartBase, uint32('L')) // Patched load_g
+			break // Only one instruction per function
+		}
+	}
+
+	// Patch runtime.save_g - scan up to 64 instructions (256 bytes)
+	for offset := uintptr(0); offset < 256; offset += 4 {
+		instrAddr := saveGAddr + offset
+		instr := readMemory32(instrAddr)
+		if instr == MRS_TPIDR_EL0_R0 {
+			// Found it! Patch from EL0 to EL1 (just change last nibble from 0 to 1)
+			writeMemory32(instrAddr, MRS_TPIDR_EL1_R0)
+			asm.CleanDataCacheVA(instrAddr)
+			patchCount++
+			asm.MmioWrite(uartBase, uint32('S')) // Patched save_g
+			break // Only one instruction per function
+		}
+	}
+
+	// Invalidate instruction cache once after all patches
+	if patchCount > 0 {
+		asm.InvalidateInstructionCacheAll()
+		asm.Isb()
+	}
+}
+
 // Minimal runtime stubs to make write barrier work in bare-metal
 // Based on analysis of gcWriteBarrier disassembly:
 // - x28 must point to a goroutine (g) structure
@@ -17,18 +90,25 @@ import (
 //
 //go:nosplit
 func initRuntimeStubs() {
+	// Raw UART debug - write 'R' for Runtime stubs starting
+	uartBase := getLinkerSymbol("__uart_base")
+	asm.MmioWrite(uartBase, uint32('R'))
+
 	// Get addresses from assembly functions that use linker symbols
 	// This avoids hardcoding addresses that change with each build
 	g0Addr := asm.GetG0Addr()
 	m0Addr := asm.GetM0Addr()
 
-	// CRITICAL: Set up Thread-Local Storage (TLS) for c-archive mode
-	// In cgo/c-archive mode, the runtime stores the g pointer in TLS using TPIDR_EL0
-	// We need to initialize TPIDR_EL0 to point to a TLS block and store g0 there
+	asm.MmioWrite(uartBase, uint32('T')) // Got addresses
+
+	// CRITICAL STEP 0: Initialize TPIDR_EL0 FIRST so Go runtime can access TLS
+	// We do this BEFORE patching because print() needs TLS to work!
+	// Later we'll patch to use TPIDR_EL1, but for now use EL0 to get print working
 	const tlsBlockAddr = uintptr(0x41030000) // TLS block at fixed address
-	// runtime.tls_g is 0, so g pointer is at offset 0 in TLS block
 	writeMemory64(tlsBlockAddr, uint64(g0Addr)) // Store g0 pointer at TLS offset 0
-	setTPIDR_EL0(tlsBlockAddr)                   // Set TPIDR_EL0 to TLS block
+	asm.WriteTpidrEl0(uint64(tlsBlockAddr))      // Set TPIDR_EL0 temporarily
+
+	asm.MmioWrite(uartBase, uint32('L')) // TLS initialized
 
 	// Initialize g0 stack bounds so compiler stack checks pass
 	// g0 uses 64KB stack at top of kernel RAM (matches real Go runtime)
@@ -111,6 +191,15 @@ func initRuntimeStubs() {
 
 	// Step 7: Set p.m = m0 to complete bidirectional binding
 	writeMemory64(p0Addr+0x30, uint64(m0Addr)) // P.m at offset 0x30
+
+	// Step 8: Now that runtime structures are set up, patch TLS to use TPIDR_EL1
+	asm.MmioWrite(uartBase, uint32('P')) // About to patch
+	patchRuntimeTLSForEL1()
+	asm.MmioWrite(uartBase, uint32('D')) // Patching done
+
+	// Step 9: Switch from TPIDR_EL0 to TPIDR_EL1 now that functions are patched
+	setTPIDR_EL1(tlsBlockAddr) // Set TPIDR_EL1 to TLS block (kernel TLS)
+	asm.MmioWrite(uartBase, uint32('1')) // Now using TPIDR_EL1
 
 	// That's all! schedinit() will handle the rest:
 	// - mallocinit() will use our mcache0

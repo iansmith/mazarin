@@ -191,6 +191,14 @@ func GetRodataStartAddr() uintptr
 //go:nosplit
 func GetRtcBase() uintptr
 
+//go:linkname GetRuntimeLoadGAddr get_runtime_load_g_addr
+//go:nosplit
+func GetRuntimeLoadGAddr() uintptr
+
+//go:linkname GetRuntimeSaveGAddr get_runtime_save_g_addr
+//go:nosplit
+func GetRuntimeSaveGAddr() uintptr
+
 //go:linkname GetStackPointer get_stack_pointer
 //go:nosplit
 func GetStackPointer() uintptr
@@ -335,6 +343,14 @@ func ReadSpsrEl1()
 //go:nosplit
 func ReadTcrEl1() uint64
 
+//go:linkname ReadTpidrEl0 read_tpidr_el0
+//go:nosplit
+func ReadTpidrEl0()
+
+//go:linkname ReadTpidrEl1 read_tpidr_el1
+//go:nosplit
+func ReadTpidrEl1()
+
 //go:linkname ReadTtbr0El1 read_ttbr0_el1
 //go:nosplit
 func ReadTtbr0El1() uint64
@@ -438,6 +454,14 @@ func WriteSpsrEl1()
 //go:linkname WriteTcrEl1 write_tcr_el1
 //go:nosplit
 func WriteTcrEl1(value uint64)
+
+//go:linkname WriteTpidrEl0 write_tpidr_el0
+//go:nosplit
+func WriteTpidrEl0(value uint64)
+
+//go:linkname WriteTpidrEl1 write_tpidr_el1
+//go:nosplit
+func WriteTpidrEl1(value uint64)
 
 //go:linkname WriteTtbr0El1 write_ttbr0_el1
 //go:nosplit

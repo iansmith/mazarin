@@ -164,3 +164,20 @@ get_bochs_display_base:
 get_bochs_display_size:
     ldr x0, =__bochs_display_size
     ret
+
+// Declare runtime TLS functions as weak so linker doesn't fail if they're not yet visible
+// Note: Go uses .abi0 suffix for ABI wrappers
+.weak runtime.load_g.abi0
+.weak runtime.save_g.abi0
+
+// get_runtime_load_g_addr() returns uintptr
+.global get_runtime_load_g_addr
+get_runtime_load_g_addr:
+    ldr x0, =runtime.load_g.abi0
+    ret
+
+// get_runtime_save_g_addr() returns uintptr
+.global get_runtime_save_g_addr
+get_runtime_save_g_addr:
+    ldr x0, =runtime.save_g.abi0
+    ret
