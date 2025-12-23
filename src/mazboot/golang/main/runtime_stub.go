@@ -65,18 +65,17 @@ func initRuntimeStubs() {
 	m0CurgOffset := unsafe.Offsetof(runtimeM{}.curg)
 	writeMemory64(m0Addr+m0CurgOffset, 0) // NULL, not g0!
 
-	// Step 2: Create a minimal P (processor) structure at 0x41000000
+	// Step 2: Create a properly initialized P (processor) structure at 0x41000000
 	// In c-archive mode, mallocinit() may call gcmarknewobject which needs M.p to be valid
 	// The real runtime in exe mode doesn't need this, but c-archive mode behaves differently
 	p0Addr := uintptr(0x41000000)
 
-	// Step 3: Allocate write barrier buffer (needed for gcmarknewobject if write barrier is enabled)
-	wbBufStart := uintptr(0x41010000)
-	wbBufSize := uintptr(64 * 1024) // 64KB
-	wbBufEnd := wbBufStart + wbBufSize
+	// Step 3: Initialize P0 fields (manually replicating runtime.(*p).init(0))
+	// CRITICAL fields that must be set:
+	writeMemory32(p0Addr+0, 0)  // P.id = 0
+	writeMemory32(p0Addr+4, 2)  // P.status = _Pgcstop (2)
 
-	// Step 4: Set up P structure with mcache
-	// Allocate mcache struct (runtime will initialize it properly in mallocinit)
+	// Step 4: Set up mcache0
 	mcacheStructAddr := uintptr(0x41020000)
 	mcache0PtrAddr := asm.GetMcache0Addr()
 	writeMemory64(mcache0PtrAddr, uint64(mcacheStructAddr))
@@ -90,15 +89,19 @@ func initRuntimeStubs() {
 		writeMemory64(allocArrayStart+i*8, emptymspanAddr)
 	}
 
-	// Step 4c: Initialize write barrier buffer in P
-	// wbBuf.next at offset 0x1498, wbBuf.end at offset 0x14A0
-	writeMemory64(p0Addr+0x1498, uint64(wbBufStart))
-	writeMemory64(p0Addr+0x14A0, uint64(wbBufEnd))
+	// Step 5: Initialize write barrier buffer (wbBuf.reset())
+	// wbBuf is embedded in P structure, need to calculate buffer address
+	// P.wbBuf at offset 0x1490, wbBuf.next at +0, wbBuf.end at +8, wbBuf.buf at +16
+	wbBufAddr := p0Addr + 0x1490
+	wbBufBufStart := wbBufAddr + 16 // Start of buf array
+	wbBufBufSize := 512 * 8         // 512 entries * 8 bytes each = 4096 bytes
+	writeMemory64(wbBufAddr+0, uint64(wbBufBufStart))                 // wbBuf.next = start of buf
+	writeMemory64(wbBufAddr+8, uint64(wbBufBufStart+uintptr(wbBufBufSize))) // wbBuf.end = end of buf
 
-	// Step 5: Set m0.p = p0Addr
+	// Step 6: Set m0.p = p0Addr
 	writeMemory64(m0Addr+200, uint64(p0Addr))
 
-	// Step 6: Set p.m = m0 to complete bidirectional binding
+	// Step 7: Set p.m = m0 to complete bidirectional binding
 	writeMemory64(p0Addr+0x30, uint64(m0Addr)) // P.m at offset 0x30
 
 	// That's all! schedinit() will handle the rest:
