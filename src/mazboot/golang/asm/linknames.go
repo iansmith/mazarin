@@ -325,7 +325,7 @@ func ReadCurrentEl() uint32
 
 //go:linkname ReadDaif read_daif
 //go:nosplit
-func ReadDaif()
+func ReadDaif() uint64
 
 //go:linkname ReadMairEl1 read_mair_el1
 //go:nosplit
@@ -475,6 +475,10 @@ func WriteTtbr1El1(value uint64)
 //go:nosplit
 func armTimer()
 
+//go:linkname callOnG0Stack callOnG0Stack
+//go:nosplit
+func callOnG0Stack()
+
 //go:linkname gcWriteBarrier gcWriteBarrier
 //go:nosplit
 func gcWriteBarrier()
@@ -514,3 +518,7 @@ func simpleMainPC()
 //go:linkname RunOnGoroutine runOnGoroutine
 //go:nosplit
 func RunOnGoroutine(g unsafe.Pointer, fn func())
+
+//go:linkname CallOnG0Stack callOnG0Stack
+//go:nosplit
+func CallOnG0Stack(fn func())

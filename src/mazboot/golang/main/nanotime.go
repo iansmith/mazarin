@@ -1,6 +1,7 @@
 package main
 
 import (
+	"mazboot/asm"
 	_ "unsafe"
 )
 
@@ -61,6 +62,11 @@ func initTime() {
 	print("Arming timer to fire every 20ms...\r\n")
 	armTimer()
 	print("Timer armed and enabled\r\n")
+
+	// Enable IRQs globally so timer interrupts can be delivered
+	print("Enabling IRQs...\r\n")
+	asm.EnableIrqs()
+	print("IRQs enabled\r\n")
 }
 
 // nanotime returns the current time in nanoseconds since boot.

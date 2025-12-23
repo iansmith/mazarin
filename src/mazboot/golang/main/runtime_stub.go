@@ -205,3 +205,44 @@ func initRuntimeStubs() {
 	// - mallocinit() will use our mcache0
 	// - procresize() will find M0.p already set and reuse this P0
 }
+
+// tryPreempt attempts to preempt the current goroutine if one is running.
+// Called from timer interrupt handler to trigger scheduler preemption.
+//
+// This implements the logic of runtime.preemptone() directly:
+// - Set g.preempt = true
+// - Set g.stackguard0 = stackPreempt (0xfffffffffffffade)
+//
+// The stackPreempt value causes the next function call to trigger morestack,
+// which checks for preemption and calls the scheduler.
+//
+//go:nosplit
+//go:noinline
+func tryPreempt() {
+	const stackPreempt = uintptr(0xfffffffffffffade) // Special value from runtime
+
+	// Get current g from TLS (TPIDR_EL1)
+	gAddr := asm.GetCurrentG()
+	if gAddr == 0 {
+		return // No current goroutine
+	}
+
+	// Get M0 address to access M.curg
+	m0Addr := asm.GetM0Addr()
+	if m0Addr == 0 {
+		return
+	}
+
+	// Read M.curg (current running goroutine) at offset 120
+	curgAddr := readMemory64(m0Addr + 120)
+	if curgAddr == 0 {
+		return // No current goroutine
+	}
+
+	// Set g.preempt = true (bool at offset 0x19c in runtimeG)
+	// In Go, bool is 1 byte
+	writeMemory8(uintptr(curgAddr+0x19c), 1)
+
+	// Set g.stackguard0 = stackPreempt (uintptr at offset 0x10 in runtimeG)
+	writeMemory64(uintptr(curgAddr+0x10), uint64(stackPreempt))
+}

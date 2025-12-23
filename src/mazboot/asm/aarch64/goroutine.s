@@ -187,3 +187,90 @@ run_sp_misaligned:
     movz w4, #0x21    // '!'
     str w4, [x3]
     b run_restore     // Try to recover anyway
+
+// callOnG0Stack switches to g0's stack and calls the given function.
+// This is similar to runtime.mcall() but simpler - it switches to g0,
+// calls the function, and the function must never return (it should call schedule()).
+//
+// Parameters:
+//   x0: Function pointer to call (func())
+//
+// This function:
+//   1. Saves current g register (x28)
+//   2. Gets g0 from current g.m.g0
+//   3. Sets x28 to g0
+//   4. Updates TLS (calls save_g)
+//   5. Switches SP to g0.sched.sp
+//   6. Calls the function
+//   7. NEVER RETURNS (function calls schedule())
+//
+.global callOnG0Stack
+.extern runtime.save_g.abi0
+callOnG0Stack:
+    // x0 = function pointer to call
+
+    // Save function pointer for later
+    mov x19, x0
+
+    // Save current g (in x28)
+    mov x20, x28
+
+    // Get current g's m pointer (g.m at offset from runtimeG structure)
+    // Using unsafe.Offsetof, g.m is at offset 48
+    ldr x21, [x28, #48]      // x21 = g.m
+
+    // Get m.g0 pointer (m.g0 at offset 0 of runtimeM)
+    ldr x22, [x21, #0]       // x22 = m.g0
+
+    // Switch g register to g0
+    mov x28, x22             // x28 = g0
+
+    // Update TLS to point to g0
+    bl runtime.save_g.abi0
+
+    // Get g0's stack pointer from g0.sched.sp (offset 56)
+    ldr x23, [x22, #56]      // x23 = g0.sched.sp
+
+    // Verify SP is 16-byte aligned
+    and x24, x23, #0xF
+    cbnz x24, g0_sp_misaligned
+
+    // Switch to g0's stack
+    mov sp, x23
+
+    // Call the function (it's a func() closure, first word is code pointer)
+    ldr x24, [x19]           // Load code pointer from funcval
+    blr x24                  // Call function
+
+    // NEVER REACHED - function should call schedule() which never returns
+    movz x25, #0x0900, lsl #16
+    movz w26, #0x3F          // '?'
+    str w26, [x25]
+    b .                      // Hang
+
+g0_sp_misaligned:
+    // g0.sched.sp was misaligned!
+    movz x25, #0x0900, lsl #16
+    movz w26, #0x47          // 'G'
+    str w26, [x25]
+    movz w26, #0x30          // '0'
+    str w26, [x25]
+    movz w26, #0x2D          // '-'
+    str w26, [x25]
+    movz w26, #0x53          // 'S'
+    str w26, [x25]
+    movz w26, #0x50          // 'P'
+    str w26, [x25]
+    movz w26, #0x21          // '!'
+    str w26, [x25]
+
+    // Round down to 16-byte boundary and continue anyway
+    bic x23, x23, #0xF
+    mov sp, x23
+
+    // Try to call function anyway
+    ldr x24, [x19]
+    blr x24
+
+    // Still shouldn't return
+    b .

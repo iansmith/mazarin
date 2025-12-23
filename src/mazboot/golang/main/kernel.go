@@ -1,7 +1,7 @@
 package main
 
 import (
-	// "runtime/debug" // Temporarily disabled for exit debugging
+	"runtime"
 	"unsafe"
 
 	"mazboot/asm"
@@ -1057,82 +1057,63 @@ func drawTestPattern() {
 // simpleMain is the entry point for our simple goroutine/channel test
 // This will be run by the scheduler as the main goroutine
 //
+// Modified to test preemption: both g1 and g2 busy-wait concurrently
+// We should see '1' and '2' characters interleaved as scheduler switches between them
+//
 //go:nosplit
 func simpleMain() {
 	print("\r\n[g1] Simple main started!\r\n")
-	print("[g1] Testing goroutines and channels...\r\n")
+	print("[g1] Testing scheduler preemption with two busy-wait goroutines...\r\n")
 
-	// Create channel
-	print("[g1] Creating channel...\r\n")
-	ch := make(chan string) // Unbuffered channel forces synchronization
-
-	// Launch goroutine
+	// Launch g2 - it will busy-wait printing '2'
 	print("[g1] Launching g2...\r\n")
-	go simpleGoroutine2(ch)
+	go simpleGoroutine2(nil)
+	print("[g1] g2 launched (runtime.newproc called)\r\n")
 
-	// Send message to g2
-	testMessage := "Hello from g1!"
-	print("[g1] Sending message: ")
-	print(testMessage)
-	print("\r\n")
-	ch <- testMessage
+	// DEBUG: Manually yield once to verify g2 was created and can run
+	print("[g1] DEBUG: Yielding once to let g2 start...\r\n")
+	runtime.Gosched()
+	print("[g1] DEBUG: Returned from Gosched(), g1 resumed\r\n")
 
-	// Wait for response
-	print("[g1] Waiting for response...\r\n")
-	response := <-ch
+	print("[g1] Both goroutines will busy-wait WITHOUT yielding\r\n")
+	print("[g1] If timer-based preemption works, we should see '1' and '2' interleaved\r\n")
+	print("[g1] Starting busy-wait loop (NO cooperative yielding)...\r\n\r\n")
 
-	// Print response
-	print("[g1] Received response: ")
-	print(response)
-	print("\r\n")
+	// Infinite busy-wait loop, printing '1' periodically
+	// NO calls to Gosched() - relies purely on timer-based preemption
+	counter := uint64(0)
+	uartBase := getLinkerSymbol("__uart_base")
 
-	// Close channel
-	print("[g1] Closing channel...\r\n")
-	close(ch)
-
-	// Give g2 time to detect close and exit
-	for i := 0; i < 1000000; i++ {
-		// Busy wait
+	for {
+		counter++
+		// Every million iterations, print our marker
+		if counter%1000000 == 0 {
+			// Print '1' to show g1 is running
+			asm.MmioWrite(uartBase, uint32('1'))
+			// NO checkPreemption() call - pure busy-wait!
+		}
 	}
-
-	print("[g1] Test complete!\r\n")
-	print("\r\nSUCCESS: Goroutines and channels working!\r\n")
-
-	// DEBUG: Dump allgs after test completes
-	print("\r\nDEBUG: Dumping allgs after test completion...\r\n")
-	dumpAllGs()
-
-	// Clean exit - let runtime detect completion and exit gracefully
-	print("[g1] User goroutine completing...\r\n")
-	return
 }
 
-// simpleGoroutine2 is the second goroutine for the channel test
+// simpleGoroutine2 is the second goroutine for the preemption test
+// Pure busy-wait with NO cooperative yielding
 //
 //go:nosplit
 func simpleGoroutine2(ch chan string) {
-	print("[g2] Started, waiting to receive from channel...\r\n")
+	print("[g2] Started, entering busy-wait loop (NO yielding)...\r\n")
 
-	// Read string from channel
-	msg := <-ch
+	// Infinite busy-wait loop to test timer-based preemption
+	// NO calls to Gosched() - the timer interrupt must forcibly preempt us
+	counter := uint64(0)
+	uartBase := getLinkerSymbol("__uart_base")
 
-	// Print received message
-	print("[g2] Received: ")
-	print(msg)
-	print("\r\n")
-
-	// Send response back
-	print("[g2] Sending 'OK' response...\r\n")
-	ch <- "OK"
-
-	// Wait for channel to close
-	print("[g2] Waiting for channel to close...\r\n")
 	for {
-		_, ok := <-ch
-		if !ok {
-			// Channel closed - this is expected
-			print("[g2] Channel closed, exiting goroutine\r\n")
-			return
+		counter++
+		// Every million iterations, print our marker
+		if counter%1000000 == 0 {
+			// Print '2' to show g2 is running
+			asm.MmioWrite(uartBase, uint32('2'))
+			// NO checkPreemption() call - pure busy-wait!
 		}
 	}
 }

@@ -276,27 +276,47 @@ use_g0_stack:
     ldr x17, [x16, #8]               // x17 = g0.stack.hi
 
 timer_stack_selected:
+    // For TRUE PREEMPTION using runtime.Gosched():
+    // 1. Save interrupted PC/SP in callee-saved registers
+    // 2. Call timerPreempt() which calls Gosched()
+    // 3. When Gosched() returns (scheduler picked us again), restore PC/SP and jump to interrupted location
+    // 4. NEVER return through interrupt handler (don't do ERET)
+
+    // Read interrupted PC from ELR_EL1
+    mrs x19, ELR_EL1                 // x19 = interrupted PC (callee-saved)
+
+    // Get interrupted SP - this is the SP when interrupt occurred
+    // We saved original SP_EL1 at [x15, #0] (exception stack base)
+    ldr x20, [x15, #0]               // x20 = interrupted SP (callee-saved)
+
     // Switch to goroutine's stack (use top of stack, 16-byte aligned)
     // Leave 512 bytes for call frame (increased from 256 for safety)
     sub x17, x17, #512
     and x17, x17, #0xFFFFFFFFFFFFFFF0  // 16-byte align
     mov sp, x17                      // Switch to goroutine stack!
 
-    // Now we're on goroutine stack, safe to call Go functions with channel ops
+    // Call timerPreempt() which calls runtime.Gosched()
+    // This MAY return if scheduler picks us again later
     CALL_GO_PROLOGUE 16
-    bl main.timerSignal
+    bl main.timerPreempt
     CALL_GO_EPILOGUE 16
 
-    // Restore exception stack pointer
-    mov sp, x15                      // Back to exception stack
+    // Gosched() returned! Scheduler picked us again.
+    // Restore interrupted state and resume execution.
 
-    // DEBUG: Breadcrumb - timer signal called
-    movz x7, #0x0900, lsl #16
-    movz w8, #0x54                  // 'T' = Timer signal called
-    str w8, [x7]
+    // Restore interrupted SP
+    mov sp, x20                      // Restore SP to pre-interrupt value
 
-    // ========== 4. RETURN FROM INTERRUPT ==========
-    b irq_done
+    // CRITICAL: Re-enable interrupts before jumping back!
+    // The exception entry masked interrupts (DAIF set)
+    // We must unmask them or no more timer interrupts will fire
+    msr DAIFClr, #2                  // Clear IRQ mask bit (bit 1)
+
+    // Jump to interrupted PC (NOT ERET - we've already handled the "return")
+    // This resumes execution exactly where we were interrupted
+    br x19                           // Jump to interrupted PC
+
+    // NEVER REACHED - we jumped to interrupted code above
     
 handle_uart_irq:
     // DEBUG: Print 'U' to show UART IRQ handler entered
@@ -588,8 +608,8 @@ read_far_el1:
     ret
 
 
-// uint64_t read_daif(void)
-// Read the DAIF register (interrupt mask bits)
+// read_daif() - Read the DAIF register (interrupt mask bits)
+// Returns uint64 in x0
 .global read_daif
 read_daif:
     mrs x0, DAIF

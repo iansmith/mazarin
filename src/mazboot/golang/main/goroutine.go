@@ -4,6 +4,7 @@ package main
 
 import (
 	"mazboot/asm"
+	"runtime"
 	"unsafe"
 )
 
@@ -70,19 +71,60 @@ func (ch *SimpleChannel) receive() {
 	ch.count--
 }
 
-// timerSignal sends signals to both the simple test channel and monitor channels.
-// Called from timer interrupt handler.
+// timerPreempt is called from timer interrupt handler to implement preemption.
+// This uses runtime.Gosched() which WILL return, but we handle the return
+// specially in assembly by restoring from saved state.
 //
 //go:nosplit
 //go:noinline
-func timerSignal() {
+func timerPreempt() {
+	// Breadcrumb: Show timer preemption started
+	uartBase := getLinkerSymbol("__uart_base")
+	asm.MmioWrite(uartBase, uint32('.')) // Print '.' for each timer interrupt
+
+	// Signal the monitor channels (GC, scavenger, schedtrace)
+	timerSignalMonitors()
+
 	// Signal the simple test channel (for backwards compatibility)
 	if simpleSignalChan != nil {
 		simpleSignalChan.send()
 	}
 
+	// Call runtime.Gosched() to yield to scheduler
+	// This MAY return if scheduler picks us again
+	// The assembly wrapper will handle restoration properly
+	runtime.Gosched()
+
+	// If we get here, scheduler picked us again
+	// Assembly wrapper will restore state and jump to interrupted PC
+}
+
+// timerSignal is called from timer interrupt handler to implement preemption.
+// The interrupt handler switches to the current goroutine's stack before calling this,
+// so we can safely call runtime.Gosched() to forcibly yield the goroutine.
+//
+// This implements timer-based preemptive multitasking - the goroutine is interrupted
+// and forced to yield without its cooperation.
+//
+//go:nosplit
+//go:noinline
+func timerSignal() {
+	// Breadcrumb: Show timer interrupt fired
+	uartBase := getLinkerSymbol("__uart_base")
+	asm.MmioWrite(uartBase, uint32('.')) // Print '.' for each timer interrupt
+
 	// Signal the monitor channels (GC, scavenger, schedtrace)
 	timerSignalMonitors()
+
+	// Signal the simple test channel (for backwards compatibility)
+	if simpleSignalChan != nil {
+		simpleSignalChan.send()
+	}
+
+	// FORCIBLY PREEMPT: Call Gosched() on behalf of the interrupted goroutine
+	// This makes the current goroutine yield and allows another to run
+	// This is TRUE PREEMPTION - the goroutine didn't choose to yield!
+	runtime.Gosched()
 }
 
 // timerSignalGo sends a signal to the real Go channel.
