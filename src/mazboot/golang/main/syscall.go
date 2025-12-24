@@ -314,9 +314,70 @@ func printCString(cstr unsafe.Pointer) {
 //
 // Returns: 0 on success, -errno on error
 //
-// Simple bump allocator for mmap with no hint
-// Starts at 0x48000000 (matches MMAP_VIRT_BASE) and grows upward
-var mmapBumpNext uintptr = 0x48000000
+// Bump allocator region for mmap with no hint
+// This is a fixed 2GB region that is pre-registered as Span 3
+// during boot (see preRegisterFixedSpans in kernel.go)
+const (
+	BUMP_REGION_START = uintptr(0x48000000)    // 1.125GB
+	BUMP_REGION_SIZE  = uintptr(0x80000000)    // 2GB
+	BUMP_REGION_END   = BUMP_REGION_START + BUMP_REGION_SIZE // 0xC8000000
+)
+
+var mmapBumpNext uintptr = BUMP_REGION_START
+
+// Mmap span tracking - records which virtual address ranges have been mmap'd
+// Used by page fault handler to validate that faulting addresses are legitimate
+// (not ROM/Flash/device regions which should trigger errors)
+//
+// Span 0 is reserved for the kmazarin kernel's loaded region (code/data/bss)
+// Spans 1-31 are available for Go runtime mmap() allocations
+const MAX_MMAP_SPANS = 32
+
+type mmapSpan struct {
+	startVA uintptr // Start of virtual address range
+	endVA   uintptr // End of virtual address range (exclusive)
+	inUse   bool    // Whether this span slot is occupied
+}
+
+var mmapSpans [MAX_MMAP_SPANS]mmapSpan
+
+// registerMmapSpan records a new mmap'd region
+// Returns true on success, false if all spans are exhausted
+//
+//go:nosplit
+func registerMmapSpan(startVA, endVA uintptr) bool {
+	// Find first free span
+	for i := 0; i < MAX_MMAP_SPANS; i++ {
+		if !mmapSpans[i].inUse {
+			mmapSpans[i].startVA = startVA
+			mmapSpans[i].endVA = endVA
+			mmapSpans[i].inUse = true
+
+			uartPutsDirect("  -> registered span ")
+			uartPutHex64Direct(uint64(i))
+			uartPutsDirect(": VA 0x")
+			uartPutHex64Direct(uint64(startVA))
+			uartPutsDirect("-0x")
+			uartPutHex64Direct(uint64(endVA))
+			uartPutsDirect("\r\n")
+			return true
+		}
+	}
+	return false // All spans exhausted
+}
+
+// isInMmapSpan checks if a virtual address is within any registered mmap span
+// Returns true if the address is valid (in a span), false otherwise
+//
+//go:nosplit
+func isInMmapSpan(va uintptr) bool {
+	for i := 0; i < MAX_MMAP_SPANS; i++ {
+		if mmapSpans[i].inUse && va >= mmapSpans[i].startVA && va < mmapSpans[i].endVA {
+			return true
+		}
+	}
+	return false
+}
 
 //go:nosplit
 func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32, offset int64) int64 {
@@ -331,43 +392,117 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 	uartPutHex64Direct(uint64(flags))
 	uartPutsDirect(")\r\n")
 
-	// Strategy: Return the hint address if provided, otherwise use bump allocator
-	// This matches Linux behavior for MAP_ANONYMOUS mappings
+	// Linux mmap semantics:
+	// - Without MAP_FIXED: addr is just a hint, kernel can choose different address
+	// - With MAP_FIXED: Must use exact addr or return ENOMEM
 
-	// Check for MAP_FIXED (0x10) - must return exact address
+	// Check for MAP_FIXED (0x10) - must return exact address or fail
 	const MAP_FIXED = 0x10
 	if (flags & MAP_FIXED) != 0 {
+		// MAP_FIXED validation
 		if addr == 0 {
 			uartPutsDirect("  -> MAP_FIXED with addr=0, returning -EINVAL\r\n")
 			return -22 // -EINVAL
 		}
+
+		// Check page alignment (4KB)
+		if (addr & 0xFFF) != 0 {
+			uartPutsDirect("  -> MAP_FIXED unaligned addr, returning -EINVAL\r\n")
+			return -22 // -EINVAL
+		}
+
+		// CRITICAL: Validate address is within reasonable virtual address space
+		// ARM64 with 4KB pages supports 48-bit VA = 256TB max
+		// Go runtime uses formula: uintptr(i)<<40 | 0x4000000000 for arenas
+		// Kmazarin runtime may use very high stack addresses (seen 279TB)
+		// Accept up to 1PB to handle all reasonable Go runtime addresses
+		const MAX_VIRT_ADDR = uintptr(0x4000000000000) // 1PB (1024TB)
+		if addr >= MAX_VIRT_ADDR {
+			uartPutsDirect("  -> MAP_FIXED addr too high (>1PB), returning -ENOMEM\r\n")
+			return -12 // -ENOMEM
+		}
+
+		// Check if would overflow when adding length
+		if addr+uintptr(length) < addr {
+			uartPutsDirect("  -> MAP_FIXED overflow, returning -ENOMEM\r\n")
+			return -12 // -ENOMEM
+		}
+
+		if addr+uintptr(length) > MAX_VIRT_ADDR {
+			uartPutsDirect("  -> MAP_FIXED range exceeds 1PB, returning -ENOMEM\r\n")
+			return -12 // -ENOMEM
+		}
+
+		// Round length up to page boundary
+		pageSize := uint64(4096)
+		roundedLength := (length + pageSize - 1) &^ (pageSize - 1)
+
+		// Register this span
+		if !registerMmapSpan(addr, addr+uintptr(roundedLength)) {
+			uartPutsDirect("  -> MAP_FIXED: all mmap spans exhausted, returning -ENOMEM\r\n")
+			return -12 // -ENOMEM
+		}
+
 		uartPutsDirect("  -> MAP_FIXED, returning 0x")
 		uartPutHex64Direct(uint64(addr))
 		uartPutsDirect("\r\n")
 		return int64(addr)
 	}
 
-	// If hint address provided, return it (Go expects this!)
-	if addr != 0 {
-		uartPutsDirect("  -> hint provided, returning 0x")
-		uartPutHex64Direct(uint64(addr))
-		uartPutsDirect("\r\n")
-		return int64(addr)
-	}
-
-	// No hint - use bump allocator
-	// Round length up to 4KB page boundary
+	// No MAP_FIXED - addr is just a hint, but Go runtime RELIES on hints being honored
+	// Linux doesn't guarantee honoring hints, but Go's arena allocator expects it
 	pageSize := uint64(4096)
 	roundedLength := (length + pageSize - 1) &^ (pageSize - 1)
 
+	// If hint provided and reasonable, try to honor it
+	if addr != 0 {
+		// Validate hint is reasonable (same checks as MAP_FIXED but non-fatal)
+		const MAX_VIRT_ADDR = uintptr(0x4000000000000) // 1PB (1024TB)
+		if (addr&0xFFF) == 0 && // Page aligned
+			addr < MAX_VIRT_ADDR && // Not too high
+			addr+uintptr(roundedLength) >= addr && // No overflow
+			addr+uintptr(roundedLength) <= MAX_VIRT_ADDR { // Range OK
+			// Hint is reasonable - honor it to keep Go runtime happy
+
+			// Register this span
+			if !registerMmapSpan(addr, addr+uintptr(roundedLength)) {
+				uartPutsDirect("  -> hint: all mmap spans exhausted, returning -ENOMEM\r\n")
+				return -12 // -ENOMEM
+			}
+
+			uartPutsDirect("  -> honoring hint 0x")
+			uartPutHex64Direct(uint64(addr))
+			uartPutsDirect(" (len=0x")
+			uartPutHex64Direct(roundedLength)
+			uartPutsDirect(")\r\n")
+			return int64(addr)
+		}
+		// Hint is unreasonable - fall through to bump allocator
+		uartPutsDirect("  -> hint 0x")
+		uartPutHex64Direct(uint64(addr))
+		uartPutsDirect(" too high/invalid, using bump allocator\r\n")
+	}
+
+	// No hint or hint was unreasonable - use bump allocator
+	// NOTE: Bump region (Span 3) is pre-registered during boot
+	// All allocations must fit within BUMP_REGION_START to BUMP_REGION_END
 	allocAddr := mmapBumpNext
-	mmapBumpNext += uintptr(roundedLength)
+	endAddr := allocAddr + uintptr(roundedLength)
+
+	// Check if allocation would overflow the pre-registered bump region
+	if endAddr > BUMP_REGION_END {
+		uartPutsDirect("  -> bump allocator exhausted (would exceed 2GB region), returning -ENOMEM\r\n")
+		return -12 // -ENOMEM
+	}
+
+	// Update bump pointer for next allocation
+	mmapBumpNext = endAddr
 
 	uartPutsDirect("  -> bump allocator, returning 0x")
 	uartPutHex64Direct(uint64(allocAddr))
 	uartPutsDirect(" (len=0x")
 	uartPutHex64Direct(roundedLength)
-	uartPutsDirect(")\r\n")
+	uartPutsDirect(", within pre-registered Span 3)\r\n")
 
 	return int64(allocAddr)
 }

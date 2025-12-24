@@ -111,9 +111,9 @@ func initVirtIORNGDevice(bus, slot uint8) bool {
 	command |= 0x06 // Enable memory space (bit 1) and bus master (bit 2)
 	uartPutsDirect("DEBUG: About to write PCI command\r\n")
 	pciConfigWrite32(bus, slot, funcNum, PCI_COMMAND, command)
-	uartPutcDirect('X')  // Simple marker
-	uartPutcDirect('\r')
-	uartPutcDirect('\n')
+	// uartPutcDirect('X')  // Simple marker - BREADCRUMB DISABLED
+	// uartPutcDirect('\r')
+	// uartPutcDirect('\n')
 	uartPutsDirect("DEBUG: PCI command write complete\r\n")
 
 	// Find VirtIO capabilities

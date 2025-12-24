@@ -275,30 +275,30 @@ write_sctlr_el1:
     // Simple marker sequence to debug crash location
     movz x0, #0x0900, lsl #16    // UART base
     movk x0, #0x0000, lsl #0
-    movz w1, #0x57                // 'W' = before barriers
-    str w1, [x0]
+    //     movz w1, #0x57                // 'W' = before barriers - BREADCRUMB DISABLED
+    //     str w1, [x0] - BREADCRUMB DISABLED
 
     // CRITICAL: DSB before IC invalidation
     dsb sy
-    movz w1, #0x44                // 'D' = after DSB
-    str w1, [x0]
+    //     movz w1, #0x44                // 'D' = after DSB - BREADCRUMB DISABLED
+    //     str w1, [x0] - BREADCRUMB DISABLED
 
     // Invalidate instruction cache to prevent stale instructions
     ic iallu                       // Invalidate all instruction caches to PoU
-    movz w1, #0x49                // 'I' = after IC IALLU
-    str w1, [x0]
+    //     movz w1, #0x49                // 'I' = after IC IALLU - BREADCRUMB DISABLED
+    //     str w1, [x0] - BREADCRUMB DISABLED
 
     dsb sy                         // Ensure IC invalidation completes
-    movz w1, #0x42                // 'B' = after DSB
-    str w1, [x0]
+    //     movz w1, #0x42                // 'B' = after DSB - BREADCRUMB DISABLED
+    //     str w1, [x0] - BREADCRUMB DISABLED
 
     isb                            // Synchronize instruction stream
-    movz w1, #0x53                // 'S' = after ISB, ready for MMU
-    str w1, [x0]
+    //     movz w1, #0x53                // 'S' = after ISB, ready for MMU - BREADCRUMB DISABLED
+    //     str w1, [x0] - BREADCRUMB DISABLED
 
     // Prepare for MMU enable
-    movz w1, #0x4D                // 'M' = about to enable MMU
-    str w1, [x0]
+    //     movz w1, #0x4D                // 'M' = about to enable MMU - BREADCRUMB DISABLED
+    //     str w1, [x0] - BREADCRUMB DISABLED
 
     // Restore SCTLR value and enable MMU
     mov x0, x20
@@ -308,8 +308,8 @@ write_sctlr_el1:
     // Print 'X' if we survive the MMU enable
     movz x0, #0x0900, lsl #16     // UART base (reload after using x0)
     movk x0, #0x0000, lsl #0
-    movz w1, #0x58                // 'X' = MMU enabled, first instruction fetched OK!
-    str w1, [x0]
+    //     movz w1, #0x58                // 'X' = MMU enabled, first instruction fetched OK! - BREADCRUMB DISABLED
+    //     str w1, [x0] - BREADCRUMB DISABLED
     
     // CRITICAL: After enabling MMU, use sequential execution
     // Try multiple NOPs first to see if any instruction can be fetched
@@ -323,8 +323,8 @@ write_sctlr_el1:
     // Print 'X' after msr and isb (verify we got past the critical point)
     movz x0, #0x0900, lsl #16    // UART base
     movk x0, #0x0000, lsl #0
-    movz w1, #0x58                // 'X'
-    str w1, [x0]
+    //     movz w1, #0x58                // 'X' - BREADCRUMB DISABLED
+    //     str w1, [x0] - BREADCRUMB DISABLED
     
     // Additional ISB to ensure UART write completes
     isb                   // Instruction synchronization barrier
@@ -332,8 +332,8 @@ write_sctlr_el1:
     // Print 'Y' after isb, before ret
     movz x0, #0x0900, lsl #16    // UART base
     movk x0, #0x0000, lsl #0
-    movz w1, #0x59                // 'Y'
-    str w1, [x0]
+    //     movz w1, #0x59                // 'Y' - BREADCRUMB DISABLED
+    //     str w1, [x0] - BREADCRUMB DISABLED
     
     // Restore link register
     mov x30, x19
@@ -372,27 +372,27 @@ sp_misaligned_set:
     movk x1, #0x0000, lsl #0
     
     // Print "SP-MISALIGN: set_stack_pointer SP=0x"
-    movz w3, #0x53                 // 'S'
-    str w3, [x1]
-    movz w3, #0x50                 // 'P'
-    str w3, [x1]
-    movz w3, #0x2D                 // '-'
-    str w3, [x1]
-    movz w3, #0x4D                 // 'M'
-    str w3, [x1]
-    movz w3, #0x49                 // 'I'
-    str w3, [x1]
-    movz w3, #0x53                 // 'S'
-    str w3, [x1]
-    movz w3, #0x41                 // 'A'
-    str w3, [x1]
-    movz w3, #0x4C                 // 'L'
-    str w3, [x1]
-    movz w3, #0x49                 // 'I'
-    str w3, [x1]
-    movz w3, #0x47                 // 'G'
-    str w3, [x1]
-    movz w3, #0x3A                 // ':'
+    //     movz w3, #0x53                 // 'S' - BREADCRUMB DISABLED
+    //     str w3, [x1] - BREADCRUMB DISABLED
+    //     movz w3, #0x50                 // 'P' - BREADCRUMB DISABLED
+    //     str w3, [x1] - BREADCRUMB DISABLED
+    //     movz w3, #0x2D                 // '-' - BREADCRUMB DISABLED
+    //     str w3, [x1] - BREADCRUMB DISABLED
+    //     movz w3, #0x4D                 // 'M' - BREADCRUMB DISABLED
+    //     str w3, [x1] - BREADCRUMB DISABLED
+    //     movz w3, #0x49                 // 'I' - BREADCRUMB DISABLED
+    //     str w3, [x1] - BREADCRUMB DISABLED
+    //     movz w3, #0x53                 // 'S' - BREADCRUMB DISABLED
+    //     str w3, [x1] - BREADCRUMB DISABLED
+    //     movz w3, #0x41                 // 'A' - BREADCRUMB DISABLED
+    //     str w3, [x1] - BREADCRUMB DISABLED
+    //     movz w3, #0x4C                 // 'L' - BREADCRUMB DISABLED
+    //     str w3, [x1] - BREADCRUMB DISABLED
+    //     movz w3, #0x49                 // 'I' - BREADCRUMB DISABLED
+    //     str w3, [x1] - BREADCRUMB DISABLED
+    //     movz w3, #0x47                 // 'G' - BREADCRUMB DISABLED
+    //     str w3, [x1] - BREADCRUMB DISABLED
+    //     movz w3, #0x3A                 // ':' - BREADCRUMB DISABLED
     str w3, [x1]
     movz w3, #0x20                 // ' '
     str w3, [x1]

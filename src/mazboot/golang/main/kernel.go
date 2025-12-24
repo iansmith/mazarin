@@ -14,6 +14,132 @@ func setMaxstacksize(size uintptr)
 //go:linkname setMaxstackceiling set_maxstackceiling
 func setMaxstackceiling(size uintptr)
 
+// readActualDTBSize reads the actual DTB size from the DTB header
+// instead of using the hard-coded 1MB constant.
+//
+// DTB Header Format (at DTB base address):
+//   Offset 0x00: magic (0xd00dfeed, big-endian)
+//   Offset 0x04: totalsize (uint32, big-endian) <- what we read
+//   Offset 0x08: off_dt_struct
+//   ...
+//
+// Returns the DTB size rounded up to the nearest page boundary (4KB)
+//
+//go:nosplit
+func readActualDTBSize() uintptr {
+	dtbBase := asm.GetDtbBootAddr()
+
+	// Read totalsize field at offset 0x04 (big-endian uint32)
+	sizePtr := (*uint32)(unsafe.Pointer(dtbBase + 4))
+	sizeBE := *sizePtr
+
+	// Convert from big-endian to little-endian
+	actualSize := ((sizeBE & 0xFF) << 24) |
+		((sizeBE & 0xFF00) << 8) |
+		((sizeBE & 0xFF0000) >> 8) |
+		((sizeBE & 0xFF000000) >> 24)
+
+	// Validate the size is reasonable
+	// DTB size should be between 4KB and 1MB typically
+	// If it's 0 or too large, fall back to reading from linker symbol
+	if actualSize == 0 || actualSize > 0x100000 {
+		// Fall back to linker-defined size (1MB default)
+		return asm.GetDtbSize()
+	}
+
+	// Round up to page boundary (4KB = 0x1000)
+	pageSizeRounded := (uintptr(actualSize) + 0xFFF) &^ 0xFFF
+
+	return pageSizeRounded
+}
+
+// preRegisterFixedSpans pre-registers the fixed memory regions that are
+// identity-mapped or pre-mapped before the MMU is enabled.
+//
+// This MUST be called before any mmap() syscalls to ensure:
+// - Span 0: DTB region (actual size from header, not 1MB)
+// - Span 1: Mazboot region (code/data/bss/stacks)
+//
+// Span 2 (Kmazarin) is registered later by loadAndRunKmazarin() after ELF loading.
+//
+//go:nosplit
+func preRegisterFixedSpans() {
+	uartPutsDirect("\r\n=== Pre-registering Fixed Memory Spans ===\r\n")
+
+	// Span 0: DTB Region (identity-mapped)
+	// Read actual size from DTB header instead of assuming 1MB
+	dtbStart := asm.GetDtbBootAddr()
+	dtbSize := readActualDTBSize()
+	dtbEnd := dtbStart + dtbSize
+
+	uartPutsDirect("Span 0 (DTB): 0x")
+	uartPutHex64Direct(uint64(dtbStart))
+	uartPutsDirect(" - 0x")
+	uartPutHex64Direct(uint64(dtbEnd))
+	uartPutsDirect(" (")
+	uartPutHex64Direct(uint64(dtbSize))
+	uartPutsDirect(" bytes, ")
+	uartPutHex64Direct(uint64(dtbSize / 1024))
+	uartPutsDirect(" KB)\r\n")
+
+	if !registerMmapSpan(dtbStart, dtbEnd) {
+		uartPutsDirect("ERROR: Failed to register DTB span!\r\n")
+		for {} // Hang
+	}
+
+	// Span 1: Mazboot Region (identity-mapped)
+	// Includes: .text, .rodata, .data, .bss, stacks
+	// Start: 0x40100000 (after DTB)
+	// End: bss_end (last section of mazboot)
+	mazbootStart := asm.GetTextStartAddr() // 0x40100000
+	mazbootEnd := asm.GetBssEndAddr()      // End of bss section
+
+	uartPutsDirect("Span 1 (Mazboot): 0x")
+	uartPutHex64Direct(uint64(mazbootStart))
+	uartPutsDirect(" - 0x")
+	uartPutHex64Direct(uint64(mazbootEnd))
+	uartPutsDirect(" (")
+	mazbootSize := mazbootEnd - mazbootStart
+	uartPutHex64Direct(uint64(mazbootSize))
+	uartPutsDirect(" bytes, ")
+	uartPutHex64Direct(uint64(mazbootSize / 1024))
+	uartPutsDirect(" KB)\r\n")
+
+	if !registerMmapSpan(mazbootStart, mazbootEnd) {
+		uartPutsDirect("ERROR: Failed to register Mazboot span!\r\n")
+		for {} // Hang
+	}
+
+	// Span 3: Bump Allocator Region (pre-register fixed 2GB region)
+	// This is used as a fallback when Go provides no hint (addr=0)
+	// Pre-registering avoids wasting span slots on individual small allocations
+	const BUMP_REGION_START = uintptr(0x48000000)
+	const BUMP_REGION_SIZE = uintptr(0x80000000) // 2GB
+	bumpEnd := BUMP_REGION_START + BUMP_REGION_SIZE
+
+	uartPutsDirect("Span 3 (Bump Region): 0x")
+	uartPutHex64Direct(uint64(BUMP_REGION_START))
+	uartPutsDirect(" - 0x")
+	uartPutHex64Direct(uint64(bumpEnd))
+	uartPutsDirect(" (")
+	uartPutHex64Direct(uint64(BUMP_REGION_SIZE))
+	uartPutsDirect(" bytes, ")
+	uartPutHex64Direct(uint64(BUMP_REGION_SIZE / (1024 * 1024)))
+	uartPutsDirect(" MB reserved for fallback allocations)\r\n")
+
+	if !registerMmapSpan(BUMP_REGION_START, bumpEnd) {
+		uartPutsDirect("ERROR: Failed to register bump region span!\r\n")
+		for {} // Hang
+	}
+
+	uartPutsDirect("Fixed spans pre-registered:\r\n")
+	uartPutsDirect("  Span 0: DTB\r\n")
+	uartPutsDirect("  Span 1: Mazboot\r\n")
+	uartPutsDirect("  Span 2: (reserved for Kmazarin, registered at load time)\r\n")
+	uartPutsDirect("  Span 3: Bump allocator region\r\n")
+	uartPutsDirect("  Spans 4-31: Available for Go arena hints\r\n\r\n")
+}
+
 // Peripheral base address for Raspberry Pi 4
 const (
 	// Peripheral base address for Raspberry Pi 4
@@ -154,9 +280,9 @@ func hex32(val uint32) string {
 //go:nosplit
 func hex64(val uint64) string {
 	// Build string with underscores every 4 digits for readability
-	// Format: 0x0000_0000_0000_0000 (19 chars total)
+	// Format: 0x0000_0000_0000_0000 (21 chars total)
 	const hexChars = "0123456789ABCDEF"
-	var buf [19]byte // "0x" + 16 hex digits + 3 underscores
+	var buf [21]byte // "0x" + 16 hex digits + 3 underscores
 
 	buf[0] = '0'
 	buf[1] = 'x'
@@ -174,7 +300,7 @@ func hex64(val uint64) string {
 	}
 
 	// Use unsafe.String to avoid bounds checking overhead
-	return unsafe.String(&buf[0], 19)
+	return unsafe.String(&buf[0], 21)
 }
 
 // printHex64 outputs a uint64 as a 16-digit hex string
@@ -483,8 +609,8 @@ func SimpleTestKernel() {
 //go:noinline
 func KernelMain(r0, r1, atags uint32) {
 	// VERY EARLY breadcrumb - before any complex operations
-	uartBase := uintptr(0x09000000)
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x4B // 'K' = Entered KernelMain
+	// uartBase := uintptr(0x09000000) // BREADCRUMB DISABLED
+	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x4B // 'K' = Entered KernelMain - BREADCRUMB DISABLED
 
 	// Uncomment the line below to use simplified test kernel
 	// SimpleTestKernel()
@@ -495,16 +621,16 @@ func KernelMain(r0, r1, atags uint32) {
 
 	// Get MMIO device addresses from linker symbols
 	_ = getLinkerSymbol("__uart_base")
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x6B // 'k' = Past linker symbol
+	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x6B // 'k' = Past linker symbol - BREADCRUMB DISABLED
 
 	// On QEMU virt, the DTB pointer is passed in as the "atags" parameter (low 32 bits).
 	// boot.s captures QEMU's reset-time x0 and passes it through to kernel_main in x2.
 	setDTBPtr(uintptr(atags))
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x44 // 'D' = setDTBPtr done
+	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x44 // 'D' = setDTBPtr done - BREADCRUMB DISABLED
 
 	// Initialize UART first for early debugging
 	uartInit()
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x55 // 'U' = uartInit done
+	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x55 // 'U' = uartInit done - BREADCRUMB DISABLED
 
 	// Check SCTLR_EL1 for alignment check bit
 	sctlr := asm.ReadSctlrEl1()
@@ -514,11 +640,11 @@ func KernelMain(r0, r1, atags uint32) {
 	if alignCheck {
 		asm.DisableAlignmentCheck()
 	}
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x41 // 'A' = Alignment check done
+	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x41 // 'A' = Alignment check done - BREADCRUMB DISABLED
 
 	// Initialize minimal runtime structures for write barrier
 	initRuntimeStubs()
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x52 // 'R' = Runtime stubs done
+	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x52 // 'R' = Runtime stubs done - BREADCRUMB DISABLED
 
 	// Initialize MMU (required before heap - enables Normal memory for unaligned access)
 	if !initMMU() {
@@ -526,14 +652,14 @@ func KernelMain(r0, r1, atags uint32) {
 		for {
 		}
 	}
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x4D // 'M' = initMMU done
+	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x4D // 'M' = initMMU done - BREADCRUMB DISABLED
 
 	if !enableMMU() {
 		print("FATAL: MMU enablement failed\r\n")
 		for {
 		}
 	}
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x6D // 'm' = enableMMU done
+	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x6D // 'm' = enableMMU done - BREADCRUMB DISABLED
 
 	// Set physPageSize before schedinit (needed by mallocinit which schedinit calls)
 	// Normally this would be set by sysauxv from AT_PAGESZ auxiliary vector
@@ -737,6 +863,14 @@ func KernelMain(r0, r1, atags uint32) {
 		printUint32(uint32((bssEnd - textStart) / 1024))
 		print("KB total)\r\n")
 	}
+
+	// =========================================
+	// PRE-REGISTER FIXED MEMORY SPANS
+	// Register DTB and Mazboot regions as fixed spans before any mmap() calls
+	// This must happen AFTER pre-mapping is complete (pages are allocated)
+	// but BEFORE the Go runtime starts (which triggers mmap() via schedinit)
+	// =========================================
+	preRegisterFixedSpans()
 
 	// =========================================
 	// TEST: Item 3 - runtime.args()
@@ -1320,10 +1454,10 @@ func abortBoot(message string) {
 //
 //go:nosplit
 func dumpAllGs() {
-	// Use direct memory access since we can't use go:linkname with slice types
-	// runtime.allgs is at 0x401cd3b0, runtime.allglen is at 0x401f68a8 (from nm output)
-	const allgsAddr = uintptr(0x401cd3b0)
-	const allglenAddr = uintptr(0x401f68a8)
+	// Runtime symbol addresses (use 'make update-runtime-addrs' to refresh)
+	// To manually update: nm flash/mazboot.elf | grep 'runtime.allg'
+	const allglenAddr = uintptr(0x406a32f0) // runtime.allglen
+	const allgsAddr = uintptr(0x40679db0)   // runtime.allgs
 
 	// Read allglen (number of goroutines)
 	allglen := uintptr(readMemory64(allglenAddr))
@@ -1342,7 +1476,7 @@ func dumpAllGs() {
 	allgsLen := readMemory64(allgsAddr + 8)  // length
 	allgsCap := readMemory64(allgsAddr + 16) // capacity
 
-	print("  allgs ptr=0x")
+	print("  allgs ptr=")
 	printHex64(allgsPtr)
 	print(" len=")
 	printHex64(allgsLen)
@@ -1804,28 +1938,9 @@ func loadAndRunKmazarin() {
 		}
 		print("): ")
 
-		// Determine permissions from ELF flags
-		// ELF flags: 0x1 = X (execute), 0x2 = W (write), 0x4 = R (read)
-		var ap uint64
-		var exec uint64
-
-		if (flags & 0x2) != 0 {
-			// Writable segment (.data, .bss)
-			ap = PTE_AP_RW_EL1
-		} else {
-			// Read-only segment (.text, .rodata)
-			ap = PTE_AP_RO_EL1
-		}
-
-		if (flags & 0x1) != 0 {
-			// Executable segment (.text)
-			exec = PTE_EXEC_ALLOW
-		} else {
-			// Non-executable segment (.data, .bss, .rodata)
-			exec = PTE_EXEC_NEVER
-		}
-
 		// Pre-map all pages for this segment (including BSS)
+		// CRITICAL: During loading, ALL pages must be WRITABLE so we can copy data
+		// We'll remap with correct permissions after copying
 		pageCount := uint32(0)
 		remapCount := uint32(0)
 		for va := destAddr &^ 0xFFF; va < destEnd; va += 0x1000 {
@@ -1833,8 +1948,8 @@ func loadAndRunKmazarin() {
 			existingPA := getPhysicalAddress(va)
 			if existingPA != 0 {
 				// Page already mapped (likely from heap pre-mapping)
-				// Just remap with correct permissions - reuse existing physical frame
-				mapPage(va, existingPA, PTE_ATTR_NORMAL, ap, exec)
+				// Map as RW during loading (we'll fix permissions after copy)
+				mapPage(va, existingPA, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 				remapCount++
 			} else {
 				// Page not mapped - allocate new frame
@@ -1845,8 +1960,8 @@ func loadAndRunKmazarin() {
 				}
 				// Zero the frame before mapping to avoid stale data
 				bzero(unsafe.Pointer(physFrame), 0x1000)
-				// Map with permissions based on ELF segment flags
-				mapPage(va, physFrame, PTE_ATTR_NORMAL, ap, exec)
+				// Map as RW during loading (we'll fix permissions after copy)
+				mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 			}
 			pageCount++
 		}
@@ -1937,12 +2052,13 @@ func loadAndRunKmazarin() {
 			// For negative offsets in an embedded ELF, use offset 0
 			// (the segment wants to include the ELF headers from the start)
 			srcAddr = kmazarinStart
+			print("  WARNING: Negative file offset detected: " + hex64(poffset) + ", using kmazarinStart\r\n")
 		} else {
 			srcAddr = kmazarinStart + uintptr(poffset)
 		}
 
 		if filesz > 0 {
-			print("Copying " + uint64String(filesz) + " bytes... ")
+			print("Copying " + uint64String(filesz) + " bytes from " + hex64(uint64(srcAddr)) + " to " + hex64(uint64(destAddr)) + "... ")
 
 			// Verify pointers are not NULL
 			if destAddr == 0 {
@@ -1973,6 +2089,180 @@ func loadAndRunKmazarin() {
 	}
 
 	print("\r\nLoaded " + uint64String(uint64(loadCount)) + " segments\r\n")
+
+	// Fourth pass: Remap all segments with final correct permissions
+	print("\r\nApplying final permissions:\r\n")
+	segmentCount = 0
+	for i := uint16(0); i < phnum; i++ {
+		offset := phoff + uint64(i)*uint64(phentsize)
+		if offset+56 > uint64(len(elfData)) {
+			print("ERROR: Program header offset out of bounds\r\n")
+			break
+		}
+
+		// Read program header fields
+		ptype := uint32(elfData[offset]) |
+			(uint32(elfData[offset+1]) << 8) |
+			(uint32(elfData[offset+2]) << 16) |
+			(uint32(elfData[offset+3]) << 24)
+
+		// Only process PT_LOAD segments (type 1)
+		if ptype != 1 {
+			continue
+		}
+
+		flags := uint32(elfData[offset+4]) |
+			(uint32(elfData[offset+5]) << 8) |
+			(uint32(elfData[offset+6]) << 16) |
+			(uint32(elfData[offset+7]) << 24)
+
+		vaddr := uint64(elfData[offset+16]) |
+			(uint64(elfData[offset+17]) << 8) |
+			(uint64(elfData[offset+18]) << 16) |
+			(uint64(elfData[offset+19]) << 24) |
+			(uint64(elfData[offset+20]) << 32) |
+			(uint64(elfData[offset+21]) << 40) |
+			(uint64(elfData[offset+22]) << 48) |
+			(uint64(elfData[offset+23]) << 56)
+
+		memsz := uint64(elfData[offset+40]) |
+			(uint64(elfData[offset+41]) << 8) |
+			(uint64(elfData[offset+42]) << 16) |
+			(uint64(elfData[offset+43]) << 24) |
+			(uint64(elfData[offset+44]) << 32) |
+			(uint64(elfData[offset+45]) << 40) |
+			(uint64(elfData[offset+46]) << 48) |
+			(uint64(elfData[offset+47]) << 56)
+
+		// Calculate destination address with offset
+		destAddr := uintptr(vaddr) + loadOffset
+		destEnd := destAddr + uintptr(memsz)
+
+		print("  [" + uint64String(uint64(segmentCount)) + "] " + hex64(uint64(destAddr)) + "-" + hex64(uint64(destEnd)) + ": ")
+
+		// Determine final permissions from ELF flags
+		var ap uint64
+		var exec uint64
+
+		if (flags & 0x2) != 0 {
+			// Writable segment (.data, .bss)
+			ap = PTE_AP_RW_EL1
+		} else {
+			// Read-only segment (.text, .rodata)
+			ap = PTE_AP_RO_EL1
+		}
+
+		if (flags & 0x1) != 0 {
+			// Executable segment (.text)
+			exec = PTE_EXEC_ALLOW
+		} else {
+			// Non-executable segment (.data, .bss, .rodata)
+			exec = PTE_EXEC_NEVER
+		}
+
+		// Remap all pages with final permissions
+		for va := destAddr &^ 0xFFF; va < destEnd; va += 0x1000 {
+			existingPA := getPhysicalAddress(va)
+			if existingPA == 0 {
+				print("\r\nERROR: Page not mapped during permission update!\r\n")
+				return
+			}
+			mapPage(va, existingPA, PTE_ATTR_NORMAL, ap, exec)
+		}
+
+		if (flags & 0x4) != 0 {
+			print("R")
+		} else {
+			print("-")
+		}
+		if (flags & 0x2) != 0 {
+			print("W")
+		} else {
+			print("-")
+		}
+		if (flags & 0x1) != 0 {
+			print("X")
+		} else {
+			print("-")
+		}
+		print("\r\n")
+
+		segmentCount++
+	}
+
+	// Flush TLB to ensure permission changes are visible
+	print("Flushing TLB after permission update... ")
+	asm.Dsb()
+	asm.InvalidateTlbAll()
+	asm.Dsb()
+	asm.Isb()
+	print("OK\r\n")
+
+	// CRITICAL: Register the entire loaded kernel region as an mmap span
+	// This allows the page fault handler to accept accesses to kmazarin's code/data
+	// Calculate min/max virtual addresses across all loaded segments
+	var minVA uintptr = ^uintptr(0) // Max possible value
+	var maxVA uintptr = 0
+
+	for i := uint16(0); i < phnum; i++ {
+		offset := phoff + uint64(i)*uint64(phentsize)
+		if offset+56 > uint64(len(elfData)) {
+			break
+		}
+
+		ptype := uint32(elfData[offset]) |
+			(uint32(elfData[offset+1]) << 8) |
+			(uint32(elfData[offset+2]) << 16) |
+			(uint32(elfData[offset+3]) << 24)
+
+		if ptype != 1 { // PT_LOAD
+			continue
+		}
+
+		vaddr := uint64(elfData[offset+16]) |
+			(uint64(elfData[offset+17]) << 8) |
+			(uint64(elfData[offset+18]) << 16) |
+			(uint64(elfData[offset+19]) << 24) |
+			(uint64(elfData[offset+20]) << 32) |
+			(uint64(elfData[offset+21]) << 40) |
+			(uint64(elfData[offset+22]) << 48) |
+			(uint64(elfData[offset+23]) << 56)
+
+		memsz := uint64(elfData[offset+40]) |
+			(uint64(elfData[offset+41]) << 8) |
+			(uint64(elfData[offset+42]) << 16) |
+			(uint64(elfData[offset+43]) << 24) |
+			(uint64(elfData[offset+44]) << 32) |
+			(uint64(elfData[offset+45]) << 40) |
+			(uint64(elfData[offset+46]) << 48) |
+			(uint64(elfData[offset+47]) << 56)
+
+		destAddr := uintptr(vaddr) + loadOffset
+		destEnd := destAddr + uintptr(memsz)
+
+		if destAddr < minVA {
+			minVA = destAddr
+		}
+		if destEnd > maxVA {
+			maxVA = destEnd
+		}
+	}
+
+	// Round to page boundaries
+	minVA = minVA &^ 0xFFF
+	maxVA = (maxVA + 0xFFF) &^ 0xFFF
+
+	// Register the kernel's entire loaded region as Span 2
+	// (Span 0 = DTB, Span 1 = Mazboot, Span 2 = Kmazarin)
+	// This must succeed or we can't run the kernel!
+	print("\r\nRegistering kmazarin loaded region as mmap span (Span 2):\r\n")
+	print("  VA range: 0x" + hex64(uint64(minVA)) + " - 0x" + hex64(uint64(maxVA)) + "\r\n")
+	if !registerMmapSpan(minVA, maxVA) {
+		print("ERROR: Failed to register kmazarin as mmap span!\r\n")
+		print("This should never happen - Span 2 should be available.\r\n")
+		for {} // Hang
+	}
+	print("  Registered successfully\r\n")
 
 	// Jump to kmazarin entry point
 	entryAddr := uintptr(entry) + loadOffset

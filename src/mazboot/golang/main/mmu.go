@@ -117,21 +117,34 @@ const (
 	// pool so we can zero frames when allocating. If the frame pool overlapped with
 	// mmap VAs, the identity mapping would defeat demand paging.
 	//
-	// CRITICAL FIX: Use physical RAM within our actual 512MB (not 8GB assumption!)
-	// With -m 512M, RAM spans 0x40000000-0x60000000
-	// Use the gap between kernel and page tables: 0x50000000-0x5E000000 (224MB)
-	PHYS_FRAME_BASE = 0x50000000 // Start of physical frame pool
-	PHYS_FRAME_END  = 0x5E000000 // End (224MB pool, before page tables)
+	// PHYSICAL MEMORY LAYOUT (256MB QEMU RAM: 0x40000000 - 0x50000000)
+	//
+	// Region                     Start        End          Size     Purpose
+	// --------------------------------------------------------------------------------
+	// Mazboot Executable        0x40000000 - 0x41FFFFFF   32 MB    Code/data/BSS/stack
+	// Page Table Pool           0x42000000 - 0x427FFFFF    8 MB    L1/L2/L3 page tables
+	//                                                              for demand paging
+	// Kmazarin Physical Frames  0x42800000 - 0x50000000  216 MB    Physical frame pool
+	//                                                              (demand-allocated)
+	//
+	PAGE_TABLE_POOL_START = 0x42000000 // Start of page table pool (8MB)
+	PAGE_TABLE_POOL_END   = 0x42800000 // End of page table pool
+
+	PHYS_FRAME_BASE = 0x42800000 // Start of physical frame pool (after page tables)
+	PHYS_FRAME_END  = 0x50000000 // End (216MB pool, within 256MB QEMU RAM)
 
 	// Virtual mmap region (large virtual, demand-paged)
 	// VA range is large but physical backing is limited by PAGE_LIMIT
 	//
 	// Go runtime arm64 hints start at 0x4000000000 (256GB) and go up.
 	// Formula: p = uintptr(i)<<40 | 0x4000000000 for i in [0, 0x7f]
-	// We accept any address from our low region up to a reasonable max.
-	// FIX: Start at 0x48000000 to match mmap bump allocator in boot.s
-	MMAP_VIRT_BASE = 0x48000000     // Start of virtual mmap region (our bump allocator)
-	MMAP_VIRT_END  = 0x800000000000 // End of virtual mmap region (128TB - covers Go hints)
+	// Max with formula: 0x7F0004000000 ≈ 8.4 PB
+	// ARMv8-A supports 48-bit VA = 256TB max
+	//
+	// CRITICAL: Kmazarin runtime uses very high stack addresses (seen 279TB)
+	// Accept up to 1PB to handle all reasonable Go runtime addresses
+	MMAP_VIRT_BASE = 0x48000000       // Start of virtual mmap region (our bump allocator)
+	MMAP_VIRT_END  = 0x4000000000000  // End of virtual mmap region (1PB)
 
 	// Memory limits
 	MAX_KERNEL_PAGES = 262144         // 1GB / 4KB = 262,144 pages max
@@ -340,15 +353,17 @@ func incTotalKernelPages() {
 //
 //go:nosplit
 func initPhysFrameAllocator() {
-	uartPutcDirect('P')  // Breadcrumb: entered initPhysFrameAllocator
+	// 	uartPutcDirect('P')  // Breadcrumb: entered initPhysFrameAllocator - DISABLED
 	alloc := getPhysFrameAllocator()
-	uartPutcDirect('p')  // Breadcrumb: got allocator
+	// 	uartPutcDirect('p')  // Breadcrumb: got allocator - DISABLED
 	alloc.next = PHYS_FRAME_BASE
 	alloc.end = PHYS_FRAME_END
 	alloc.pagesAlloc = 0
 
-	// Calculate pre-mapped pages (kernel code/data from 0x40000000 to 0x50000000)
-	preMappedBytes := uintptr(0x50000000 - 0x40000000) // 256MB pre-mapped
+	// Calculate pre-mapped pages
+	// Mazboot (32MB) + Page Table Pool (8MB) = 40MB pre-mapped
+	// Kmazarin frames are demand-allocated, not pre-mapped
+	preMappedBytes := uintptr(PHYS_FRAME_BASE - 0x40000000) // 40MB pre-mapped (mazboot + page tables)
 	preMappedPages := uint32(preMappedBytes / PAGE_SIZE)
 	setTotalKernelPages(preMappedPages)
 
@@ -557,59 +572,29 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	// uartPutsDirect("\r\nPF VA=0x")
 	// uartPutHex64Direct(uint64(faultAddr))
 
-	// Check if the fault address is in a valid region for demand paging
+	// CRITICAL: Validate that the fault address is in a registered mmap span
 	//
-	// FORBIDDEN REGIONS (abort on access):
-	// 1. NULL pointers: 0x00000000 - 0x00001000 (first 4KB)
-	// 2. ROM/Flash: 0x00001000 - 0x08000000 (we don't use ROM for platform independence)
-	// 3. MMIO devices: 0x08000000 - 0x40000000 (UART, GIC, etc. - handled separately)
-	// 4. Above mmap: >= 0x800000000000 (128TB+)
+	// This is our security boundary - only addresses that were explicitly mmap'd
+	// are eligible for demand paging. This automatically rejects:
+	// - NULL pointers (0x0)
+	// - ROM/Flash region (0x0-0x8000000)
+	// - MMIO devices (0x8000000-0x40000000)
+	// - Unmapped high addresses (>1PB)
+	// - Any other region that wasn't explicitly requested via mmap
 	//
-	// VALID REGIONS (demand paging allowed):
-	// 1. DTB: 0x40000000 - 0x40100000 (pre-mapped)
-	// 2. Mazboot: 0x40100000+ (code, data, bss - pre-mapped)
-	// 3. Kmazarin: After mazboot's bss (loaded at runtime)
-	// 4. Mmap: 0x48000000+ (Go runtime allocations)
-	//
-	const NULL_POINTER_THRESHOLD = uintptr(0x00001000) // First 4KB
-	const ROM_END = uintptr(0x08000000)                // End of ROM/Flash region
-	const RAM_START = uintptr(0x40000000)              // Start of RAM (DTB)
-
-	// Reject NULL pointers
-	if faultAddr < NULL_POINTER_THRESHOLD {
-		uartPutsDirect("\r\n!NULL POINTER FAULT: VA=0x")
+	if !isInMmapSpan(faultAddr) {
+		uartPutsDirect("\r\n!PAGE FAULT at unmapped address: VA=0x")
 		uartPutHex64Direct(uint64(faultAddr))
 		uartPutsDirect("\r\n")
+		uartPutsDirect("Not in any mmap span. Possible causes:\r\n")
+		uartPutsDirect("  - NULL pointer dereference\r\n")
+		uartPutsDirect("  - ROM/Flash access (not supported)\r\n")
+		uartPutsDirect("  - MMIO access (use direct MMIO functions)\r\n")
+		uartPutsDirect("  - Access to memory not allocated via mmap\r\n")
 		return false
 	}
 
-	// CRITICAL: Reject ROM/Flash region (0x00001000 - 0x08000000)
-	// We do NOT use ROM for platform independence (Raspberry Pi, etc.)
-	if faultAddr >= NULL_POINTER_THRESHOLD && faultAddr < ROM_END {
-		uartPutsDirect("\r\n!ILLEGAL ROM ACCESS: VA=0x")
-		uartPutHex64Direct(uint64(faultAddr))
-		uartPutsDirect(" - ROM/Flash not supported\r\n")
-		return false
-	}
-
-	// Reject MMIO region (0x08000000 - 0x40000000)
-	// MMIO devices should be accessed directly, not via demand paging
-	if faultAddr >= ROM_END && faultAddr < RAM_START {
-		uartPutsDirect("\r\n!ILLEGAL MMIO ACCESS: VA=0x")
-		uartPutHex64Direct(uint64(faultAddr))
-		uartPutsDirect(" - Use direct MMIO access\r\n")
-		return false
-	}
-
-	// Reject above mmap region
-	if faultAddr >= MMAP_VIRT_END {
-		uartPutsDirect("\r\n!FAULT above mmap region: VA=0x")
-		uartPutHex64Direct(uint64(faultAddr))
-		uartPutsDirect("\r\n")
-		return false
-	}
-
-	// faultAddr is now in valid RAM region (0x40000000 - MMAP_VIRT_END)
+	// faultAddr is now validated to be in a legitimate mmap'd region
 
 	// Align fault address to page boundary
 	pageAddr := faultAddr &^ (PAGE_SIZE - 1)
@@ -625,12 +610,41 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	// uartPutHex64Direct(uint64(existingPA))  // DISABLED
 
 	if existingPA != 0 {
+		// DEBUG: Get the actual PTE to see what flags are set
+		va64 := uint64(pageAddr)
+		l0Idx := uint16((va64 >> 39) & 0x1FF)
+		l1Idx := uint16((va64 >> 30) & 0x1FF)
+		l2Idx := uint16((va64 >> 21) & 0x1FF)
+		l3Idx := uint16((va64 >> 12) & 0x1FF)
+
+		l0Entry := (*uint64)(unsafe.Pointer(pageTableL0 + uintptr(l0Idx)*PTE_SIZE))
+		l1Table := uintptr(*l0Entry & PTE_ADDR_MASK)
+		l1Entry := (*uint64)(unsafe.Pointer(l1Table + uintptr(l1Idx)*PTE_SIZE))
+		l2Table := uintptr(*l1Entry & PTE_ADDR_MASK)
+		l2Entry := (*uint64)(unsafe.Pointer(l2Table + uintptr(l2Idx)*PTE_SIZE))
+		l3Table := uintptr(*l2Entry & PTE_ADDR_MASK)
+		l3Entry := (*uint64)(unsafe.Pointer(l3Table + uintptr(l3Idx)*PTE_SIZE))
+
 		uartPutsDirect("\r\n!DUPLICATE FAULT at VA=0x")
 		uartPutHex64Direct(uint64(pageAddr))
-		uartPutsDirect(" (already mapped to PA=0x")
+		uartPutsDirect(" PA=0x")
 		uartPutHex64Direct(uint64(existingPA))
-		uartPutsDirect(")\r\n")
-		// This is already mapped - just return success without allocating
+		uartPutsDirect(" PTE=0x")
+		uartPutHex64Direct(*l3Entry)
+		uartPutsDirect(" ESR=0x")
+		uartPutHex64Direct(faultStatus)
+		uartPutsDirect("\r\n")
+
+		// CRITICAL FIX: Flush TLB for this address!
+		// The page is already mapped in page tables, but TLB has stale entry
+		// Use full TLB invalidation instead of VA-specific, as VA-specific
+		// flush may not work correctly for all address ranges
+		asm.Dsb()                  // Ensure all memory operations complete
+		asm.InvalidateTlbAll()     // Invalidate ALL TLBs (nuclear option)
+		asm.Dsb()                  // Ensure TLB invalidation completes
+		asm.Isb()                  // Synchronize context
+
+		// This is already mapped - return success without allocating
 		return true
 	}
 
@@ -661,15 +675,12 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 		for {} // Hang
 	}
 
-	// uartPutsDirect(" bzero...")  // DISABLED
-
-	// Zero the physical frame BEFORE mapping it to avoid nested exceptions
-	bzero(unsafe.Pointer(physFrame), PAGE_SIZE)
-
 	// uartPutsDirect(" map...")  // DISABLED
 
-	// Map the virtual page to the physical frame
-	// Note: VA != PA for demand-paged memory
+	// CRITICAL: Map the page FIRST, then zero via VA (not PA)
+	// We cannot safely access the physical frame directly because it might not
+	// be identity-mapped. After creating the VA→PA mapping, we can safely zero
+	// via the virtual address.
 	mapPage(pageAddr, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 
 	// Ensure page table writes are visible before TLB flush
@@ -681,6 +692,13 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 
 	// Ensure TLB invalidation completes before returning
 	asm.Isb()
+
+	// uartPutsDirect(" bzero...")  // DISABLED
+
+	// NOW zero the page via the VA (not PA!)
+	// After mapPage() and TLB invalidation, the VA is accessible and mapped to physFrame
+	// SECURITY: Always zero new pages to prevent leaking old data
+	bzero(unsafe.Pointer(pageAddr), PAGE_SIZE)
 
 	// DEBUG: Print completion for ALL faults to track success
 	// uartPutsDirect(" OK")  // DISABLED
@@ -754,7 +772,8 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 			return
 		}
 		*l0Entry = createTableEntry(l1Table)
-		asm.Dsb()
+		asm.Dsb() // Ensure table entry is visible
+		// Note: TLB invalidation deferred to end of mapPage
 	}
 
 	// Extract L1 table address from L0 entry
@@ -776,6 +795,8 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 		}
 
 		*l1Entry = createTableEntry(l2Table)
+		asm.Dsb() // Ensure table entry is visible
+		// Note: TLB invalidation deferred to end of mapPage
 	} else {
 		l2Table = uintptr(*l1Entry & PTE_ADDR_MASK)
 	}
@@ -794,6 +815,8 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 		}
 
 		*l2Entry = createTableEntry(l3Table)
+		asm.Dsb() // Ensure table entry is visible
+		// Note: TLB invalidation deferred to end of mapPage
 	} else {
 		l3Table = uintptr(*l2Entry & PTE_ADDR_MASK)
 	}
@@ -820,7 +843,7 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 
 	// DEBUG: Output 'M' for every page we map in the .rodata range
 	if va >= 0x3DE000 && va < 0x3F3000 {
-		uartPutcDirect('M')
+	// 		uartPutcDirect('M') - DISABLED
 	}
 
 	asm.CleanDcacheVa(l3EntryAddr) // Ensure PTE write is visible to page table walker
@@ -829,6 +852,15 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 	// Use DSB to ensure all page table writes complete before any subsequent
 	// memory access or MMU operation
 	asm.Dsb()
+
+	// Invalidate TLB for high-memory VAs only (>4GB)
+	// Low memory (<4GB) is identity-mapped and doesn't need TLB flush during init
+	// This avoids issues with early boot when globals might not be mapped yet
+	const HIGH_MEMORY_THRESHOLD = uintptr(0x100000000) // 4GB
+	if va >= HIGH_MEMORY_THRESHOLD {
+		asm.InvalidateTlbAll()
+		asm.Isb()
+	}
 
 	// Additional verification: read back the entry to ensure it was written
 	// This helps catch any memory ordering or cache coherency issues
@@ -952,15 +984,15 @@ func initMMU() bool {
 	// CRITICAL: Map .rodata explicitly FIRST to ensure string constants are accessible
 	// We can safely call getLinkerSymbol() here because MMU is not yet enabled -
 	// we're still using physical addressing, so .rodata is directly accessible
-	uartPutcDirect('R')  // Breadcrumb: about to map .rodata
+	// 	uartPutcDirect('R')  // Breadcrumb: about to map .rodata - DISABLED
 	rodataStart := getLinkerSymbol("__rodata_start")
 	rodataEnd := getLinkerSymbol("__rodata_end")
 	if rodataStart != 0 && rodataEnd != 0 {
-		uartPutcDirect('r')  // Breadcrumb: got .rodata addresses, about to map
+	// 		uartPutcDirect('r')  // Breadcrumb: got .rodata - DISABLED addresses, about to map
 		mapRegion(rodataStart, rodataEnd, rodataStart, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
-		uartPutcDirect('D')  // Breadcrumb: .rodata mapped
+	// 		uartPutcDirect('D')  // Breadcrumb: .rodata mapped - DISABLED
 	} else {
-		uartPutcDirect('X')  // Breadcrumb: getLinkerSymbol failed!
+	// 		uartPutcDirect('X')  // Breadcrumb: getLinkerSymbol failed - DISABLED!
 	}
 
 	// Get section boundaries from linker symbols
@@ -992,7 +1024,7 @@ func initMMU() bool {
 		uartPutHex64Direct(PTE_EXEC_NEVER)
 		uartPutsDirect("\r\n")
 		mapRegion(textStart, rodataStart, textStart, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_ALLOW)
-		uartPutcDirect('T')  // .text mapped
+	// 		uartPutcDirect('T')  // .text mapped - DISABLED
 
 	}
 
@@ -1015,7 +1047,7 @@ func initMMU() bool {
 	}
 
 	// Initialize MMIO devices array (fixed-size to avoid heap allocation)
-	uartPutcDirect('I')  // Breadcrumb: about to init MMIO devices array
+	// 	uartPutcDirect('I')  // Breadcrumb: about to init MMIO - DISABLED devices array
 
 	// CRITICAL: Call assembly functions directly instead of getLinkerSymbol()
 	// getLinkerSymbol() uses string comparison which accesses misaligned .rodata
@@ -1065,28 +1097,28 @@ func initMMU() bool {
 		dtbStart, dtbEnd, dtbStart,
 		PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER,  // DTB is read-only data
 	)
-	uartPutcDirect('B')  // Breadcrumb: DTB region mapped
+	// 	uartPutcDirect('B')  // Breadcrumb: DTB region mapped - DISABLED
 
 	// Map PCI ECAM (lowmem and highmem)
-	uartPutcDirect('E')  // Breadcrumb: about to map ECAM
+	// 	uartPutcDirect('E')  // Breadcrumb: about to map ECAM - DISABLED
 	ecamBase := uintptr(0x3F000000)
 	ecamSize := uintptr(0x01000000) // 16MB, not 256MB!
 	mapRegion(ecamBase, ecamBase+ecamSize, ecamBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-	uartPutcDirect('e')  // Breadcrumb: lowmem ECAM mapped
+	// 	uartPutcDirect('e')  // Breadcrumb: lowmem ECAM mapped - DISABLED
 
 	highmemEcamBase := uintptr(0x4010000000)
 	highmemEcamSize := uintptr(0x10000000)
 	mapRegion(highmemEcamBase, highmemEcamBase+highmemEcamSize, highmemEcamBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-	uartPutcDirect('h')  // Breadcrumb: highmem ECAM mapped
+	// 	uartPutcDirect('h')  // Breadcrumb: highmem ECAM mapped - DISABLED
 
 	// Verify lowmem mapping (silent unless error)
 	// TEMPORARILY DISABLED: dumpFetchMapping() uses string parameters which access .rodata
 	// dumpFetchMapping("pci-ecam-low", ecamBase)
-	uartPutcDirect('V')  // Breadcrumb: verification done
+	// 	uartPutcDirect('V')  // Breadcrumb: verification done - DISABLED
 
 	// Map kernel RAM (after mazboot image to page tables) - heap, stacks
 	// CRITICAL: Start mapping AFTER our kernel image (endAddr) to avoid overlap
-	uartPutcDirect('0')  // Breadcrumb: about to map RAM
+	// 	uartPutcDirect('0')  // Breadcrumb: about to map RAM - DISABLED
 	ramStart := (endAddr + 0xFFF) &^ 0xFFF  // Round up to next page
 	uartPutsDirect("endAddr=0x")
 	uartPutHex64Direct(uint64(endAddr))
@@ -1095,7 +1127,7 @@ func initMMU() bool {
 	uartPutsDirect(" PAGE_TABLE_BASE=0x")
 	uartPutHex64Direct(uint64(PAGE_TABLE_BASE))
 	uartPutsDirect("\r\n")
-	uartPutcDirect('1')  // Breadcrumb: got RAM start address
+	// 	uartPutcDirect('1')  // Breadcrumb: got RAM start - DISABLED address
 	// Pre-map heap region as RW, non-executable
 	// NOTE: Kmazarin segments will overlap with this region, but will be remapped later
 	// with correct permissions (some executable). The remapping is allowed to update permissions.
@@ -1106,7 +1138,7 @@ func initMMU() bool {
 		uartPutHex64Direct(uint64(PAGE_TABLE_BASE))
 		uartPutsDirect(" (RW)\r\n")
 		mapRegion(ramStart, PAGE_TABLE_BASE, ramStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-		uartPutcDirect('2')  // Breadcrumb: RAM mapped
+	// 		uartPutcDirect('2')  // Breadcrumb: RAM mapped - DISABLED
 	}
 
 	// CRITICAL: Map exception vector RAM region as NORMAL CACHEABLE and EXECUTABLE
@@ -1133,7 +1165,7 @@ func initMMU() bool {
 
 	// Initialize physical frame allocator
 	initPhysFrameAllocator()
-	uartPutcDirect('F')  // Breadcrumb: physical frame allocator initialized
+	// 	uartPutcDirect('F')  // Breadcrumb: physical frame allocator - DISABLED initialized
 
 	// CRITICAL: Flush TLB to ensure all mappings are visible to CPU
 	// Without this, the CPU may have stale TLB entries that don't reflect
@@ -1145,11 +1177,11 @@ func initMMU() bool {
 	// DEBUG: Check if we ran out of page table space
 	_, remaining := getPageTableAllocatorStats()
 	if remaining == 0 {
-		uartPutcDirect('O')  // 'O' = Out of page table space!
+	// 		uartPutcDirect('O')  // 'O' = Out of page table - DISABLED space!
 		for {} // Hang
 	}
 
-	uartPutcDirect('T')  // Breadcrumb: about to return true from initMMU
+	// 	uartPutcDirect('T')  // Breadcrumb: about to return true - DISABLED from initMMU
 	return true
 }
 
@@ -1269,14 +1301,14 @@ func dumpFetchMapping(label string, va uintptr) bool {
 //
 //go:nosplit
 func enableMMU() bool {
-	uartBase := uintptr(0x09000000)
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x45 // 'E' = entered enableMMU
+	// uartBase := uintptr(0x09000000) // BREADCRUMB DISABLED
+	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x45 // 'E' = entered enableMMU - BREADCRUMB DISABLED
 
 	if pageTableL0 == 0 {
 		print("FATAL: Page tables not initialized\r\n")
 		return false
 	}
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x31 // '1' = page table check passed
+	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x31 // '1' = page table check passed - BREADCRUMB DISABLED
 
 	// Configure MAIR_EL1: Set all 3 memory attribute indices
 	// MAIR[0] = 0xFF (Normal, Inner/Outer Write-Back Cacheable)
@@ -1286,7 +1318,7 @@ func enableMMU() bool {
 		(uint64(0x00) << 8) |  // Attr1: Device
 		(uint64(0x44) << 16)   // Attr2: Normal non-cacheable
 	asm.WriteMairEl1(mairValue)
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x32 // '2' = MAIR written
+	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x32 // '2' = MAIR written - BREADCRUMB DISABLED
 
 	// Verify MAIR
 	mairReadback := asm.ReadMairEl1()
@@ -1294,7 +1326,7 @@ func enableMMU() bool {
 		print("FATAL: MAIR configuration failed\r\n")
 		return false
 	}
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x33 // '3' = MAIR verified
+	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x33 // '3' = MAIR verified - BREADCRUMB DISABLED
 
 	// Configure TCR_EL1
 	tcrValue := uint64(0)
@@ -1306,7 +1338,7 @@ func enableMMU() bool {
 	tcrValue |= 1 << 23  // EPD1 = 1
 	tcrValue |= 2 << 32  // IPS = 2
 	asm.WriteTcrEl1(tcrValue)
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x34 // '4' = TCR written
+	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x34 // '4' = TCR written - BREADCRUMB DISABLED
 
 	// Verify TCR
 	tcrReadback := asm.ReadTcrEl1()
@@ -1314,12 +1346,12 @@ func enableMMU() bool {
 		print("FATAL: TCR T0SZ configuration failed\r\n")
 		return false
 	}
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x35 // '5' = TCR verified
+	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x35 // '5' = TCR verified - BREADCRUMB DISABLED
 
 	asm.Isb()
 	asm.WriteTtbr1El1(0)
 	asm.WriteTtbr0El1(uint64(pageTableL0))
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x36 // '6' = TTBR written
+	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x36 // '6' = TTBR written - BREADCRUMB DISABLED
 
 	// Verify TTBR0
 	ttbr0Readback := asm.ReadTtbr0El1()
@@ -1327,7 +1359,7 @@ func enableMMU() bool {
 		print("FATAL: TTBR0 configuration failed\r\n")
 		return false
 	}
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x37 // '7' = TTBR verified
+	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x37 // '7' = TTBR verified - BREADCRUMB DISABLED
 
 	asm.Dsb()
 
@@ -1337,133 +1369,123 @@ func enableMMU() bool {
 	sctlr &^= 1 << 2  // C = 0 (data cache disabled)
 	sctlr &^= 1 << 12 // I = 0 (instruction cache disabled)
 
-	// DEBUG: Print TTBR0 and page table base to verify setup
-	uartPutsDirect("\r\nTTBR0=0x")
-	uartPutHex64Direct(asm.ReadTtbr0El1())
-	uartPutsDirect(" PTBase=0x")
-	uartPutHex64Direct(uint64(pageTableL0))
-	uartPutsDirect("\r\n")
+	// DEBUG: Print TTBR0 and page table base to verify setup - DISABLED
+	// uartPutsDirect("\r\nTTBR0=0x")
+	// uartPutHex64Direct(asm.ReadTtbr0El1())
+	// uartPutsDirect(" PTBase=0x")
+	// uartPutHex64Direct(uint64(pageTableL0))
+	// uartPutsDirect("\r\n")
 
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x38 // '8' = About to enable MMU
+	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x38 // '8' = About to enable MMU
 
-	// DEBUG: Manually walk page table for exception handler address 0x40161200
-	// This helps diagnose the L3 translation fault
-	{
-		testVA := uintptr(0x40161200)
-		uartPutsDirect("Check VA=0x")
-		uartPutHex64Direct(uint64(testVA))
-		uartPutsDirect("\r\n")
-
-		// Extract page table indices from VA
-		// VA bits [47:12] = page frame number
-		// Bits [47:39] = L0 index (9 bits)
-		// Bits [38:30] = L1 index (9 bits)
-		// Bits [29:21] = L2 index (9 bits)
-		// Bits [20:12] = L3 index (9 bits)
-
-		l0Idx := (testVA >> 39) & 0x1FF
-		l1Idx := (testVA >> 30) & 0x1FF
-		l2Idx := (testVA >> 21) & 0x1FF
-		l3Idx := (testVA >> 12) & 0x1FF
-
-		uartPutsDirect("L0[")
-		uartPutHex64Direct(uint64(l0Idx))
-		uartPutsDirect("] L1[")
-		uartPutHex64Direct(uint64(l1Idx))
-		uartPutsDirect("] L2[")
-		uartPutHex64Direct(uint64(l2Idx))
-		uartPutsDirect("] L3[")
-		uartPutHex64Direct(uint64(l3Idx))
-		uartPutsDirect("]\r\n")
-
-		// Walk page table
-		l0Table := (*[512]uint64)(unsafe.Pointer(pageTableL0))
-		l0Entry := l0Table[l0Idx]
-		uartPutsDirect("L0[")
-		uartPutHex64Direct(uint64(l0Idx))
-		uartPutsDirect("]=0x")
-		uartPutHex64Direct(l0Entry)
-		uartPutsDirect("\r\n")
-
-		if (l0Entry & 0x3) != 0x3 {
-			uartPutsDirect("L0 NOT TABLE!\r\n")
-		} else {
-			l1Base := l0Entry & PTE_ADDR_MASK
-			l1Table := (*[512]uint64)(unsafe.Pointer(uintptr(l1Base)))
-			l1Entry := l1Table[l1Idx]
-			uartPutsDirect("L1[")
-			uartPutHex64Direct(uint64(l1Idx))
-			uartPutsDirect("]=0x")
-			uartPutHex64Direct(l1Entry)
-			uartPutsDirect("\r\n")
-
-			if (l1Entry & 0x3) != 0x3 {
-				uartPutsDirect("L1 NOT TABLE!\r\n")
-			} else {
-				l2Base := l1Entry & PTE_ADDR_MASK
-				l2Table := (*[512]uint64)(unsafe.Pointer(uintptr(l2Base)))
-				l2Entry := l2Table[l2Idx]
-				uartPutsDirect("L2[")
-				uartPutHex64Direct(uint64(l2Idx))
-				uartPutsDirect("]=0x")
-				uartPutHex64Direct(l2Entry)
-				uartPutsDirect("\r\n")
-
-				if (l2Entry & 0x3) != 0x3 {
-					uartPutsDirect("L2 NOT TABLE!\r\n")
-				} else {
-					l3Base := l2Entry & PTE_ADDR_MASK
-					l3Table := (*[512]uint64)(unsafe.Pointer(uintptr(l3Base)))
-					l3Entry := l3Table[l3Idx]
-					uartPutsDirect("L3[")
-					uartPutHex64Direct(uint64(l3Idx))
-					uartPutsDirect("]=0x")
-					uartPutHex64Direct(l3Entry)
-					uartPutsDirect("\r\n")
-
-					if (l3Entry & 0x1) == 0 {
-						uartPutsDirect("L3 NOT VALID - THIS IS THE BUG!\r\n")
-					} else {
-						physAddr := l3Entry & PTE_ADDR_MASK
-						uartPutsDirect("L3 OK, PA=0x")
-						uartPutHex64Direct(physAddr)
-						uartPutsDirect("\r\n")
-					}
-				}
-			}
-		}
-	}
+	// DEBUG: Manually walk page table for exception handler address - DISABLED
+	// {
+	// 	testVA := uintptr(0x40161200)
+	// 	uartPutsDirect("Check VA=0x")
+	// 	uartPutHex64Direct(uint64(testVA))
+	// 	uartPutsDirect("\r\n")
+	//
+	// 	l0Idx := (testVA >> 39) & 0x1FF
+	// 	l1Idx := (testVA >> 30) & 0x1FF
+	// 	l2Idx := (testVA >> 21) & 0x1FF
+	// 	l3Idx := (testVA >> 12) & 0x1FF
+	//
+	// 	uartPutsDirect("L0[")
+	// 	uartPutHex64Direct(uint64(l0Idx))
+	// 	uartPutsDirect("] L1[")
+	// 	uartPutHex64Direct(uint64(l1Idx))
+	// 	uartPutsDirect("] L2[")
+	// 	uartPutHex64Direct(uint64(l2Idx))
+	// 	uartPutsDirect("] L3[")
+	// 	uartPutHex64Direct(uint64(l3Idx))
+	// 	uartPutsDirect("]\r\n")
+	//
+	// 	l0Table := (*[512]uint64)(unsafe.Pointer(pageTableL0))
+	// 	l0Entry := l0Table[l0Idx]
+	// 	uartPutsDirect("L0[")
+	// 	uartPutHex64Direct(uint64(l0Idx))
+	// 	uartPutsDirect("]=0x")
+	// 	uartPutHex64Direct(l0Entry)
+	// 	uartPutsDirect("\r\n")
+	//
+	// 	if (l0Entry & 0x3) != 0x3 {
+	// 		uartPutsDirect("L0 NOT TABLE!\r\n")
+	// 	} else {
+	// 		l1Base := l0Entry & PTE_ADDR_MASK
+	// 		l1Table := (*[512]uint64)(unsafe.Pointer(uintptr(l1Base)))
+	// 		l1Entry := l1Table[l1Idx]
+	// 		uartPutsDirect("L1[")
+	// 		uartPutHex64Direct(uint64(l1Idx))
+	// 		uartPutsDirect("]=0x")
+	// 		uartPutHex64Direct(l1Entry)
+	// 		uartPutsDirect("\r\n")
+	//
+	// 		if (l1Entry & 0x3) != 0x3 {
+	// 			uartPutsDirect("L1 NOT TABLE!\r\n")
+	// 		} else {
+	// 			l2Base := l1Entry & PTE_ADDR_MASK
+	// 			l2Table := (*[512]uint64)(unsafe.Pointer(uintptr(l2Base)))
+	// 			l2Entry := l2Table[l2Idx]
+	// 			uartPutsDirect("L2[")
+	// 			uartPutHex64Direct(uint64(l2Idx))
+	// 			uartPutsDirect("]=0x")
+	// 			uartPutHex64Direct(l2Entry)
+	// 			uartPutsDirect("\r\n")
+	//
+	// 			if (l2Entry & 0x3) != 0x3 {
+	// 				uartPutsDirect("L2 NOT TABLE!\r\n")
+	// 			} else {
+	// 				l3Base := l2Entry & PTE_ADDR_MASK
+	// 				l3Table := (*[512]uint64)(unsafe.Pointer(uintptr(l3Base)))
+	// 				l3Entry := l3Table[l3Idx]
+	// 				uartPutsDirect("L3[")
+	// 				uartPutHex64Direct(uint64(l3Idx))
+	// 				uartPutsDirect("]=0x")
+	// 				uartPutHex64Direct(l3Entry)
+	// 				uartPutsDirect("\r\n")
+	//
+	// 				if (l3Entry & 0x1) == 0 {
+	// 					uartPutsDirect("L3 NOT VALID - THIS IS THE BUG!\r\n")
+	// 				} else {
+	// 					physAddr := l3Entry & PTE_ADDR_MASK
+	// 					uartPutsDirect("L3 OK, PA=0x")
+	// 					uartPutHex64Direct(physAddr)
+	// 					uartPutsDirect("\r\n")
+	// 				}
+	// 			}
+	// 		}
+	// 	}
+	// }
 
 	// CRITICAL: Cannot call dumpFetchMapping() before MMU is enabled!
 	// dumpFetchMapping uses print() which accesses .rodata strings, and before
 	// MMU is on, ARM64 requires strict alignment (strings are misaligned).
 	// TODO: Add verification AFTER MMU enable when unaligned access is allowed.
 
-	// DEBUG: Check L3 entry for the next instruction after MMU enable
-	{
-		testVA := uintptr(0x401003b8) // NOP after msr SCTLR_EL1 (updated for new kernel address)
-		l3Idx := (testVA >> 12) & 0x1FF
-
-		// Walk to L3 table
-		l0Idx := (testVA >> 39) & 0x1FF
-		l1Idx := (testVA >> 30) & 0x1FF
-		l2Idx := (testVA >> 21) & 0x1FF
-
-		l0Table := (*[512]uint64)(unsafe.Pointer(pageTableL0))
-		l0Entry := l0Table[l0Idx]
-		l1Table := (*[512]uint64)(unsafe.Pointer(uintptr(l0Entry & PTE_ADDR_MASK)))
-		l1Entry := l1Table[l1Idx]
-		l2Table := (*[512]uint64)(unsafe.Pointer(uintptr(l1Entry & PTE_ADDR_MASK)))
-		l2Entry := l2Table[l2Idx]
-		l3Table := (*[512]uint64)(unsafe.Pointer(uintptr(l2Entry & PTE_ADDR_MASK)))
-		l3Entry := l3Table[l3Idx]
-
-		uartPutsDirect("L3[0x")
-		uartPutHex64Direct(uint64(l3Idx))
-		uartPutsDirect("]=0x")
-		uartPutHex64Direct(l3Entry)
-		uartPutsDirect("\r\n")
-	}
+	// DEBUG: Check L3 entry for the next instruction after MMU enable - DISABLED
+	// {
+	// 	testVA := uintptr(0x401003b8) // NOP after msr SCTLR_EL1 (updated for new kernel address)
+	// 	l3Idx := (testVA >> 12) & 0x1FF
+	//
+	// 	l0Idx := (testVA >> 39) & 0x1FF
+	// 	l1Idx := (testVA >> 30) & 0x1FF
+	// 	l2Idx := (testVA >> 21) & 0x1FF
+	//
+	// 	l0Table := (*[512]uint64)(unsafe.Pointer(pageTableL0))
+	// 	l0Entry := l0Table[l0Idx]
+	// 	l1Table := (*[512]uint64)(unsafe.Pointer(uintptr(l0Entry & PTE_ADDR_MASK)))
+	// 	l1Entry := l1Table[l1Idx]
+	// 	l2Table := (*[512]uint64)(unsafe.Pointer(uintptr(l1Entry & PTE_ADDR_MASK)))
+	// 	l2Entry := l2Table[l2Idx]
+	// 	l3Table := (*[512]uint64)(unsafe.Pointer(uintptr(l2Entry & PTE_ADDR_MASK)))
+	// 	l3Entry := l3Table[l3Idx]
+	//
+	// 	uartPutsDirect("L3[0x")
+	// 	uartPutHex64Direct(uint64(l3Idx))
+	// 	uartPutsDirect("]=0x")
+	// 	uartPutHex64Direct(l3Entry)
+	// 	uartPutsDirect("\r\n")
+	// }
 
 	// Invalidate TLB before enabling MMU to prevent stale translations
 	asm.InvalidateTlbAll()
@@ -1474,10 +1496,10 @@ func enableMMU() bool {
 	asm.Isb()
 	asm.WriteSctlrEl1(sctlr)
 	asm.Isb()
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x39 // '9' = MMU enabled
+	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x39 // '9' = MMU enabled - DISABLED
 
 	// Now MMU is ON and unaligned access is allowed, can safely use print()
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x4D // 'M' = MMU enabled successfully
+	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x4D // 'M' = MMU enabled successfully - DISABLED
 
 	return true
 }

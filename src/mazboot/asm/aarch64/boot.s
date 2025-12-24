@@ -28,14 +28,14 @@ _start:
     // QEMU virt with virtualization=on starts at EL2
     // We need to be at EL1 for proper OS operation
     // ========================================
-    movz w15, #0x45                // 'E' = Checking EL
-    str w15, [x14]
+    //     movz w15, #0x45                // 'E' = Checking EL - BREADCRUMB DISABLED
+    //     str w15, [x14] - BREADCRUMB DISABLED
     mrs x0, CurrentEL
     lsr x0, x0, #2               // Extract EL bits [3:2]
     cmp x0, #2                   // Are we at EL2?
     bne at_el1                   // If not, skip EL2->EL1 transition
-    movz w15, #0x32              // '2' = At EL2, dropping to EL1
-    str w15, [x14]
+    //     movz w15, #0x32              // '2' = At EL2, dropping to EL1 - BREADCRUMB DISABLED
+    //     str w15, [x14] - BREADCRUMB DISABLED
     
     // We're at EL2, need to drop to EL1
     // Configure HCR_EL2 (Hypervisor Configuration Register)
@@ -85,13 +85,13 @@ at_el1:
     // CPACR_EL1.FPEN (bits 21:20) = 0b11: No trapping from EL0 or EL1
     // Without this, any FPU/SIMD instruction traps with EC=0x07
     // ========================================
-    movz w15, #0x46                // 'F' = Enabling FPU
-    str w15, [x14]
+    //     movz w15, #0x46                // 'F' = Enabling FPU - BREADCRUMB DISABLED
+    //     str w15, [x14] - BREADCRUMB DISABLED
     mov x0, #(3 << 20)             // FPEN = 0b11
     msr CPACR_EL1, x0
     isb                            // Ensure FPU is enabled before continuing
-    movz w15, #0x66                // 'f' = FPU enabled
-    str w15, [x14]
+    //     movz w15, #0x66                // 'f' = FPU enabled - BREADCRUMB DISABLED
+    //     str w15, [x14] - BREADCRUMB DISABLED
 
     // ========================================
     // Disable strict alignment checking to allow unaligned accesses
@@ -115,16 +115,16 @@ at_el1:
     //
     // Set stack pointer to 0x5F000000 (g0 stack top, 64KB stack - matches real Go runtime)
     // g0 stack bottom is at 0x5EFF0000, heap should end before this
-    movz w15, #0x53                // 'S' = Setting stack
-    str w15, [x14]
+    //     movz w15, #0x53                // 'S' = Setting stack - BREADCRUMB DISABLED
+    //     str w15, [x14] - BREADCRUMB DISABLED
     movz x0, #0x5F00, lsl #16    // 0x5F000000 (g0 stack top, 64KB)
     mov sp, x0
-    movz w15, #0x73                // 's' = Stack set
-    str w15, [x14]
+    //     movz w15, #0x73                // 's' = Stack set - BREADCRUMB DISABLED
+    //     str w15, [x14] - BREADCRUMB DISABLED
 
     // Clear BSS section (now in RAM region at 0x40100000, after DTB)
-    movz w15, #0x42                // 'B' = Clearing BSS
-    str w15, [x14]
+    //     movz w15, #0x42                // 'B' = Clearing BSS - BREADCRUMB DISABLED
+    //     str w15, [x14] - BREADCRUMB DISABLED
     ldr x4, =__bss_start         // 0x40100000
     ldr x9, =__bss_end           // ~0x4003c000
     mov x5, #0
@@ -144,8 +144,8 @@ at_el1:
     cmp x4, x9
     blo 1b
 
-    movz w15, #0x62              // 'b' = BSS cleared
-    str w15, [x14]
+    //     movz w15, #0x62              // 'b' = BSS cleared - BREADCRUMB DISABLED
+    //     str w15, [x14] - BREADCRUMB DISABLED
 
     // NOTE: .data section is loaded directly to RAM by QEMU (no copy needed)
     // The linker places .data at 0x40100000+ and QEMU loads it there
@@ -159,8 +159,8 @@ at_el1:
     movz x5, #0x4800, lsl #16     // 0x48000000 - start of mmap region (within heap!)
     movk x5, #0x0000, lsl #0
     str x5, [x4]                  // Store initial mmap pointer
-    movz w15, #0x4D              // 'M' = mmap pointer initialized
-    str w15, [x14]
+    //     movz w15, #0x4D              // 'M' = mmap pointer initialized - BREADCRUMB DISABLED
+    //     str w15, [x14] - BREADCRUMB DISABLED
 
     // Enable write barrier flag AFTER clearing BSS
     // runtime.writeBarrier is in BSS - use linker symbol (not hardcoded address)
@@ -169,12 +169,12 @@ at_el1:
     mov w11, #1                    // Enable write barrier
     strb w11, [x10]                // Store byte (bool field)
     dsb sy                         // Memory barrier
-    movz w15, #0x57                // 'W' = Write barrier enabled
-    str w15, [x14]
+    //     movz w15, #0x57                // 'W' = Write barrier enabled - BREADCRUMB DISABLED
+    //     str w15, [x14] - BREADCRUMB DISABLED
     
     // Set exception vector base to our table (required before enabling IRQs)
-    movz w15, #0x56                // 'V' = Setting VBAR
-    str w15, [x14]
+    //     movz w15, #0x56                // 'V' = Setting VBAR - BREADCRUMB DISABLED
+    //     str w15, [x14] - BREADCRUMB DISABLED
     ldr x0, =exception_vectors
     dsb sy
     msr VBAR_EL1, x0
@@ -185,19 +185,19 @@ at_el1:
     cmp x0, x1
     beq vbar_ok
     // VBAR mismatch - print 'X' and hang
-    movz w15, #0x58                // 'X' = VBAR mismatch error
-    str w15, [x14]
+    //     movz w15, #0x58                // 'X' = VBAR mismatch error - BREADCRUMB DISABLED
+    //     str w15, [x14] - BREADCRUMB DISABLED
     b .
 vbar_ok:
-    movz w15, #0x76                // 'v' = VBAR set and verified
-    str w15, [x14]
+    //     movz w15, #0x76                // 'v' = VBAR set and verified - BREADCRUMB DISABLED
+    //     str w15, [x14] - BREADCRUMB DISABLED
 
     // ========================================
     // Initialize GIC (Generic Interrupt Controller)
     // Required to receive timer interrupts
     // ========================================
-    movz w15, #0x47                // 'G' = Initializing GIC
-    str w15, [x14]
+    //     movz w15, #0x47                // 'G' = Initializing GIC - BREADCRUMB DISABLED
+    //     str w15, [x14] - BREADCRUMB DISABLED
 
     // QEMU virt machine GIC addresses:
     // GICD (Distributor): 0x08000000
@@ -235,8 +235,8 @@ vbar_ok:
     dsb sy
     isb
 
-    movz w15, #0x67                // 'g' = GIC initialized
-    str w15, [x14]
+    //     movz w15, #0x67                // 'g' = GIC initialized - BREADCRUMB DISABLED
+    //     str w15, [x14] - BREADCRUMB DISABLED
 
     // ========================================
     // TEST: Enable MMU from boot.s (earliest possible location)
@@ -407,8 +407,8 @@ vbar_test_ok:
     // which is sufficient for our purposes.
 
     // Breadcrumb: g0/m0 initialized
-    movz w15, #0x47                 // 'G' = g0/m0 initialized
-    str w15, [x14]
+    //     movz w15, #0x47                 // 'G' = g0/m0 initialized - BREADCRUMB DISABLED
+    //     str w15, [x14] - BREADCRUMB DISABLED
 
     // Jump to kernel_main
     ldr x0, =kernel_main

@@ -58,10 +58,20 @@ func initTime() {
 	print("Time: frequency=", timerFrequency, " Hz, ")
 	print("ns_per_tick=", nanosPerTick, "\r\n")
 
+	// Initialize GIC (interrupt controller) if not already done
+	print("Initializing GIC...\r\n")
+	gicInit()
+	print("GIC initialized\r\n")
+
 	// Arm and enable the timer to start firing interrupts
 	print("Arming timer to fire every 20ms...\r\n")
 	armTimer()
 	print("Timer armed and enabled\r\n")
+
+	// Enable virtual timer interrupt (ID 27) in GIC
+	print("Enabling virtual timer interrupt in GIC...\r\n")
+	gicEnableInterrupt(IRQ_ID_TIMER_PPI) // IRQ_ID_TIMER_PPI = 27
+	print("Timer interrupt enabled in GIC\r\n")
 
 	// Enable IRQs globally so timer interrupts can be delivered
 	print("Enabling IRQs...\r\n")

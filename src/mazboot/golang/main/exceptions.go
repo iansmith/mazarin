@@ -268,10 +268,10 @@ func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType u
 	// DEBUG: For page faults, print ELR IMMEDIATELY
 	ec := (esr >> 26) & 0x3F
 	if ec == EC_DATA_ABORT_ELx {
-		uartPutcDirect('!')  // Breadcrumb: data abort detected
+		// uartPutcDirect('!')  // Breadcrumb: data abort detected - BREADCRUMB DISABLED
 		pfCount := GetPageFaultCounter()
-		uartPutcDirect('0' + byte(pfCount/10))  // Print tens digit
-		uartPutcDirect('0' + byte(pfCount%10))  // Print ones digit
+		// uartPutcDirect('0' + byte(pfCount/10))  // Print tens digit - BREADCRUMB DISABLED
+		// uartPutcDirect('0' + byte(pfCount%10))  // Print ones digit - BREADCRUMB DISABLED
 		if pfCount >= 15 {
 			// Print immediately so it appears in THIS exception's output
 			uartPutsDirect(" ELR=0x")
@@ -295,7 +295,7 @@ func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType u
 	// inExceptionHandler = 0  // DISABLED: accessing global causes issues
 
 	// Breadcrumb: returning from exception handler
-	uartPutcDirect('R')
+	// uartPutcDirect('R') // BREADCRUMB DISABLED
 }
 
 // Direct UART printing for exception context.
@@ -345,7 +345,7 @@ func uartPutHex64Direct(v uint64) {
 //go:nosplit
 func handleException(excInfo ExceptionInfo) {
 	// Breadcrumb: entered handleException
-	uartPutcDirect('H')
+	// uartPutcDirect('H') // BREADCRUMB DISABLED
 
 	// Extract exception class from ESR_EL1
 	ec := (excInfo.ESR >> 26) & 0x3F
@@ -500,14 +500,14 @@ func extractISS(esr uint64) uint32 {
 //go:nosplit
 //go:noinline
 func HandleSyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) uint64 {
-	// Print syscall number for debugging (use direct UART to avoid recursion)
-	uartPutcDirect('S')
-	uartPutcDirect('Y')
-	uartPutcDirect('S')
-	uartPutcDirect(':')
-	uartPutHex64Direct(syscallNum)
-	uartPutcDirect('\r')
-	uartPutcDirect('\n')
+	// Print syscall number for debugging (use direct UART to avoid recursion) - BREADCRUMB DISABLED
+	// uartPutcDirect('S')
+	// uartPutcDirect('Y')
+	// uartPutcDirect('S')
+	// uartPutcDirect(':')
+	// uartPutHex64Direct(syscallNum)
+	// uartPutcDirect('\r')
+	// uartPutcDirect('\n')
 
 	switch syscallNum {
 	case 64: // write
@@ -555,29 +555,33 @@ func HandleSyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) uint64
 
 	case 222: // mmap
 		// mmap(addr, length, prot, flags, fd, offset)
-		// arg0 = addr (hint, ignored), arg1 = length, arg2 = prot, arg3 = flags
-		// Use bump allocator from mmap region (0x50000000-0x78000000)
+		// arg0 = addr (hint or fixed), arg1 = length, arg2 = prot, arg3 = flags
+		addrHint := uintptr(arg0)
 		length := uintptr(arg1)
+		flags := arg3
 
 		// Align length to page size (4KB)
 		const pageSize = 4096
 		alignedLength := (length + pageSize - 1) &^ (pageSize - 1)
 
-		// Check if we have enough space
-		if mmapNext+alignedLength > mmapEnd {
-			// Out of memory - show detailed error
-			uartPutcDirect('M')
-			uartPutcDirect('!')
-			uartPutcDirect('(')
-			uartPutHex64Direct(uint64(alignedLength) >> 20) // Show MB requested
-			uartPutcDirect('M')
-			uartPutcDirect(')')
-			return ^uint64(11) // -12 (ENOMEM)
-		}
+		// Check for MAP_FIXED (0x10) - must allocate at exact address
+		const MAP_FIXED = 0x10
+		var result uintptr
 
-		// Allocate from bump allocator
-		result := mmapNext
-		mmapNext += alignedLength
+		if (flags & MAP_FIXED) != 0 && addrHint != 0 {
+			// MAP_FIXED: MUST allocate at the exact requested address
+			// The Go runtime uses this for its arena allocations
+			result = addrHint
+			// Note: We rely on demand paging to handle these addresses
+		} else {
+			// No MAP_FIXED: use bump allocator
+			// Check if we have enough space
+			if mmapNext+alignedLength > mmapEnd {
+				return ^uint64(11) // -12 (ENOMEM)
+			}
+			result = mmapNext
+			mmapNext += alignedLength
+		}
 
 		// CRITICAL: Check if allocation overlaps with critical regions
 		const romEnd = uintptr(0x8000000)          // End of ROM region
@@ -595,12 +599,12 @@ func HandleSyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) uint64
 			for {} // Hang
 		}
 
-		// Debug output showing allocation (compact: pages allocated)
-		uartPutcDirect('M')
-		uartPutHex64Direct(uint64(alignedLength) >> 12) // Show pages allocated
-		uartPutcDirect('@')
-		uartPutHex64Direct(uint64(result) >> 20) // Show base in MB
-		uartPutcDirect(' ')
+		// Debug output showing allocation (compact: pages allocated) - BREADCRUMB DISABLED
+		// uartPutcDirect('M')
+		// uartPutHex64Direct(uint64(alignedLength) >> 12) // Show pages allocated
+		// uartPutcDirect('@')
+		// uartPutHex64Direct(uint64(result) >> 20) // Show base in MB
+		// uartPutcDirect(' ')
 
 		return uint64(result)
 
