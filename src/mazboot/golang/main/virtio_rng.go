@@ -98,15 +98,23 @@ func initVirtIORNG() bool {
 
 // initVirtIORNGDevice initializes a VirtIO RNG device at the given PCI location
 func initVirtIORNGDevice(bus, slot uint8) bool {
+	uartPutsDirect("DEBUG: initVirtIORNGDevice() called\r\n")
 	funcNum := uint8(0)
 	rngBus = bus
 	rngSlot = slot
 	rngFunc = funcNum
 
+	uartPutsDirect("DEBUG: About to read PCI command register\r\n")
 	// Enable PCI bus mastering and memory access
 	command := pciConfigRead32(bus, slot, funcNum, PCI_COMMAND)
+	uartPutsDirect("DEBUG: PCI command read complete\r\n")
 	command |= 0x06 // Enable memory space (bit 1) and bus master (bit 2)
+	uartPutsDirect("DEBUG: About to write PCI command\r\n")
 	pciConfigWrite32(bus, slot, funcNum, PCI_COMMAND, command)
+	uartPutcDirect('X')  // Simple marker
+	uartPutcDirect('\r')
+	uartPutcDirect('\n')
+	uartPutsDirect("DEBUG: PCI command write complete\r\n")
 
 	// Find VirtIO capabilities
 	var common, notify, isr, device VirtIOCapabilityInfo
@@ -164,7 +172,11 @@ func initVirtIORNGDevice(bus, slot uint8) bool {
 		// BAR0: 0x10000000, BAR1: 0x10100000, BAR2: 0x10200000, etc.
 		barBase = 0x10000000 + (uint64(common.Bar) * 0x100000)
 
-		print("VirtIO RNG: Allocating BAR" + hex32(uint32(common.Bar)) + " at " + hex64(barBase) + "\r\n")
+		print("VirtIO RNG: Allocating BAR")
+		printHex32(uint32(common.Bar))
+		print(" at 0x")
+		printHex64(barBase)
+		print("\r\n")
 
 		// Write BAR address to PCI config
 		if is64Bit {
@@ -195,7 +207,11 @@ func initVirtIORNGDevice(bus, slot uint8) bool {
 	if notifyBarBase == 0 {
 		notifyBarBase = 0x10000000 + (uint64(notify.Bar) * 0x100000)
 
-		print("VirtIO RNG: Allocating notify BAR" + hex32(uint32(notify.Bar)) + " at " + hex64(notifyBarBase) + "\r\n")
+		print("VirtIO RNG: Allocating notify BAR")
+		printHex32(uint32(notify.Bar))
+		print(" at 0x")
+		printHex64(notifyBarBase)
+		print("\r\n")
 
 		if isNotify64Bit {
 			pciConfigWrite32(bus, slot, funcNum, uint8(notifyBarOffset), uint32(notifyBarBase&0xFFFFFFF0)|0x0C)
@@ -253,6 +269,90 @@ func initVirtIORNGDevice(bus, slot uint8) bool {
 	return true
 }
 
+// rngRequestBytes requests random bytes from the VirtIO RNG device
+// Returns true if request was successful
+//
+//go:nosplit
+func rngRequestBytes(length uint32) bool {
+	// Limit request size to buffer size
+	if length > uint32(len(rngBuffer)) {
+		length = uint32(len(rngBuffer))
+	}
+
+	// Get descriptor table
+	descTable := (*[8]VirtQDesc)(rngQueue.DescTable)
+
+	// Get available ring - need to access the ring array manually
+	availRing := (*[10]uint16)(unsafe.Pointer(rngQueue.Available))
+	// availRing layout: [0]=flags, [1]=idx, [2..9]=ring entries
+
+	// Use descriptor 0 for the request
+	descIdx := uint16(0)
+
+	// Set up descriptor to point to rngBuffer (device writes random data here)
+	bufPhys := pointerToUintptr(unsafe.Pointer(&rngBuffer[0]))
+	descTable[descIdx].Addr = uint64(bufPhys)
+	descTable[descIdx].Len = length
+	descTable[descIdx].Flags = VIRTQ_DESC_F_WRITE // Device writes to this buffer
+	descTable[descIdx].Next = 0
+
+	// Add descriptor to available ring
+	availIdx := availRing[1] // Current available index
+	ringPos := availIdx % 8   // Ring position (queue size is 8)
+	availRing[2+ringPos] = descIdx // Add descriptor index to ring
+
+	// Memory barrier - ensure descriptor is written before updating index
+	asm.Dsb()
+
+	// Increment available index
+	availRing[1] = availIdx + 1
+
+	// Memory barrier - ensure index is updated before notification
+	asm.Dsb()
+
+	// Notify device (write queue index to notify address)
+	// notify_addr = notify_base + queue_notify_off * notify_off_multiplier
+	notifyAddr := rngNotifyBase + uintptr(0)*uintptr(rngNotifyOffMult)
+	asm.MmioWrite16(notifyAddr, 0) // Queue 0
+
+	return true
+}
+
+// rngPollCompletion polls for completion of the RNG request
+// Returns number of bytes read, or 0 if not ready
+//
+//go:nosplit
+func rngPollCompletion() uint32 {
+	// Get used ring
+	usedRing := (*[10]uint16)(unsafe.Pointer(rngQueue.Used))
+	// usedRing layout: [0]=flags, [1]=idx, then VirtQUsedElem array
+
+	// Get last processed index
+	lastUsedIdx := rngQueue.LastUsedIdx
+
+	// Get current device index
+	currentIdx := usedRing[1]
+
+	// Check if device has processed any buffers
+	if lastUsedIdx == currentIdx {
+		return 0 // Nothing ready yet
+	}
+
+	// Get the used element
+	// Each VirtQUsedElem is 8 bytes (uint32 ID + uint32 Len)
+	// After flags(2) + idx(2) = 4 bytes offset
+	usedElemPtr := unsafe.Pointer(uintptr(unsafe.Pointer(rngQueue.Used)) + 4 + uintptr(lastUsedIdx%8)*8)
+	usedElem := (*VirtQUsedElem)(usedElemPtr)
+
+	// Get length written by device
+	bytesRead := usedElem.Len
+
+	// Update last used index
+	rngQueue.LastUsedIdx = lastUsedIdx + 1
+
+	return bytesRead
+}
+
 // getRandomBytes fills the buffer with random bytes from VirtIO RNG
 // Returns number of bytes written
 //
@@ -266,9 +366,46 @@ func getRandomBytes(buf unsafe.Pointer, length uint32) uint32 {
 		return getFakeRandomBytes(buf, length)
 	}
 
-	// TODO: Implement real VirtIO RNG read
-	// For now, use fake random data
-	return getFakeRandomBytes(buf, length)
+	// Request random bytes from device
+	requestLen := length
+	if requestLen > uint32(len(rngBuffer)) {
+		requestLen = uint32(len(rngBuffer))
+	}
+
+	if !rngRequestBytes(requestLen) {
+		// Request failed, fall back to fake data
+		return getFakeRandomBytes(buf, length)
+	}
+
+	// Poll for completion (with timeout)
+	var bytesRead uint32
+	for i := 0; i < 10000; i++ {
+		bytesRead = rngPollCompletion()
+		if bytesRead > 0 {
+			break
+		}
+		// Small delay - just burn some cycles
+		for j := 0; j < 100; j++ {
+			// Empty loop for delay
+		}
+	}
+
+	if bytesRead == 0 {
+		// Timeout, fall back to fake data
+		return getFakeRandomBytes(buf, length)
+	}
+
+	// Copy data from rngBuffer to caller's buffer
+	if bytesRead > length {
+		bytesRead = length
+	}
+
+	dst := (*[1 << 30]byte)(buf)
+	for i := uint32(0); i < bytesRead; i++ {
+		dst[i] = rngBuffer[i]
+	}
+
+	return bytesRead
 }
 
 // getFakeRandomBytes generates fake random bytes using a simple counter

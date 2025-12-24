@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"time"
 )
 
@@ -12,6 +13,27 @@ import (
 // We should see '1' and '2' characters interleaved as scheduler switches between them
 func simpleMain() {
 	fmt.Println("\r\n[g1] Simple main started!")
+
+	// Test VirtIO RNG
+	fmt.Println("[g1] Testing VirtIO RNG by reading from /dev/random...")
+	f, err := os.Open("/dev/random")
+	if err != nil {
+		fmt.Printf("[g1] ERROR: Failed to open /dev/random: %v\r\n", err)
+	} else {
+		buf := make([]byte, 16)
+		n, err := f.Read(buf)
+		if err != nil {
+			fmt.Printf("[g1] ERROR: Failed to read from /dev/random: %v\r\n", err)
+		} else {
+			fmt.Printf("[g1] Read %d random bytes: ", n)
+			for i := 0; i < n; i++ {
+				fmt.Printf("%02x ", buf[i])
+			}
+			fmt.Println()
+		}
+		f.Close()
+	}
+
 	fmt.Println("[g1] Testing scheduler preemption with two busy-wait goroutines...")
 
 	// Launch g2 - it will busy-wait printing '2'

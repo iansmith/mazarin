@@ -549,7 +549,9 @@ func KernelMain(r0, r1, atags uint32) {
 	{
 		pl031Base := getLinkerSymbol("__rtc_base")
 		pl031Size := uintptr(0x1000) // 4KB page
-		print("Mapping PL031 RTC at " + hex32(uint32(pl031Base)) + "...\r\n")
+		uartPutsDirect("Mapping PL031 RTC at 0x")
+	uartPutHex32(uint32(pl031Base))
+	uartPutsDirect("...\r\n")
 		for offset := uintptr(0); offset < pl031Size; offset += 0x1000 {
 			va := pl031Base + offset
 			pa := pl031Base + offset // Identity mapping
@@ -581,11 +583,11 @@ func KernelMain(r0, r1, atags uint32) {
 		// Map DTB region (QEMU device tree blob)
 		dtbStart := getLinkerSymbol("__dtb_boot_addr")
 		dtbEnd := dtbStart + getLinkerSymbol("__dtb_size")
-		print("Pre-mapping DTB region (0x")
-		printHex64(uint64(dtbStart))
-		print("-0x")
-		printHex64(uint64(dtbEnd))
-		print(")...\r\n")
+		uartPutsDirect("Pre-mapping DTB region (0x")
+		uartPutHex64(uint64(dtbStart))
+		uartPutsDirect("-0x")
+		uartPutHex64(uint64(dtbEnd))
+		uartPutsDirect(")...\r\n")
 		for va := dtbStart; va < dtbEnd; va += 0x1000 {
 			physFrame := allocPhysFrame()
 			if physFrame == 0 {
@@ -603,11 +605,11 @@ func KernelMain(r0, r1, atags uint32) {
 		// Map g0 stack (system goroutine stack, 32KB)
 		g0StackBottom := getLinkerSymbol("__g0_stack_bottom")
 		g0StackTop := getLinkerSymbol("__stack_top")
-		print("Pre-mapping g0 stack (0x")
-		printHex64(uint64(g0StackBottom))
-		print("-0x")
-		printHex64(uint64(g0StackTop))
-		print(")...\r\n")
+		uartPutsDirect("Pre-mapping g0 stack (0x")
+		uartPutHex64(uint64(g0StackBottom))
+		uartPutsDirect("-0x")
+		uartPutHex64(uint64(g0StackTop))
+		uartPutsDirect(")...\r\n")
 		for va := g0StackBottom; va < g0StackTop; va += 0x1000 {
 			physFrame := allocPhysFrame()
 			if physFrame == 0 {
@@ -629,11 +631,11 @@ func KernelMain(r0, r1, atags uint32) {
 		const EXC_STACK_NESTED = uintptr(0x5FFD0000)
 		const EXC_STACK_SIZE = uintptr(0x2000) // 8KB for primary
 
-		print("Pre-mapping exception stacks (0x")
-		printHex64(uint64(EXC_STACK_NESTED))
-		print("-0x")
-		printHex64(uint64(EXC_STACK_PRIMARY + EXC_STACK_SIZE))
-		print(")...\r\n")
+		uartPutsDirect("Pre-mapping exception stacks (0x")
+		uartPutHex64(uint64(EXC_STACK_NESTED))
+		uartPutsDirect("-0x")
+		uartPutHex64(uint64(EXC_STACK_PRIMARY + EXC_STACK_SIZE))
+		uartPutsDirect(")...\r\n")
 
 		// Map nested exception stack (4KB)
 		for va := EXC_STACK_NESTED; va < EXC_STACK_PRIMARY; va += 0x1000 {
@@ -678,11 +680,11 @@ func KernelMain(r0, r1, atags uint32) {
 		bssEnd := getLinkerSymbol("__bss_end")
 
 		// Pre-map .text (code) - now in RAM starting at 0x40100000
-		print("  .text:   0x")
-		printHex64(uint64(textStart))
-		print(" - 0x")
-		printHex64(uint64(textEnd))
-		print(" (")
+		uartPutsDirect("  .text:   0x")
+		uartPutHex64(uint64(textStart))
+		uartPutsDirect(" - 0x")
+		uartPutHex64(uint64(textEnd))
+		uartPutsDirect(" (")
 		printUint32(uint32((textEnd - textStart) / 1024))
 		print("KB)...")
 		for va := textStart &^ 0xFFF; va < textEnd; va += 0x1000 {
@@ -693,11 +695,11 @@ func KernelMain(r0, r1, atags uint32) {
 		print(" OK\r\n")
 
 		// Pre-map .rodata (read-only data) - in RAM after .text
-		print("  .rodata: 0x")
-		printHex64(uint64(rodataStart))
-		print(" - 0x")
-		printHex64(uint64(rodataEnd))
-		print(" (")
+		uartPutsDirect("  .rodata: 0x")
+		uartPutHex64(uint64(rodataStart))
+		uartPutsDirect(" - 0x")
+		uartPutHex64(uint64(rodataEnd))
+		uartPutsDirect(" (")
 		printUint32(uint32((rodataEnd - rodataStart) / 1024))
 		print("KB)...")
 		for va := rodataStart &^ 0xFFF; va < rodataEnd; va += 0x1000 {
@@ -706,11 +708,11 @@ func KernelMain(r0, r1, atags uint32) {
 		print(" OK\r\n")
 
 		// Pre-map .data (initialized writable data) - in RAM after .rodata
-		print("  .data:   0x")
-		printHex64(uint64(dataStart))
-		print(" - 0x")
-		printHex64(uint64(dataEnd))
-		print(" (")
+		uartPutsDirect("  .data:   0x")
+		uartPutHex64(uint64(dataStart))
+		uartPutsDirect(" - 0x")
+		uartPutHex64(uint64(dataEnd))
+		uartPutsDirect(" (")
 		printUint32(uint32((dataEnd - dataStart) / 1024))
 		print("KB)...")
 		for va := dataStart &^ 0xFFF; va < dataEnd; va += 0x1000 {
@@ -719,11 +721,11 @@ func KernelMain(r0, r1, atags uint32) {
 		print(" OK\r\n")
 
 		// Pre-map .bss (zero-initialized data) - in RAM after .data
-		print("  .bss:    0x")
-		printHex64(uint64(bssStart))
-		print(" - 0x")
-		printHex64(uint64(bssEnd))
-		print(" (")
+		uartPutsDirect("  .bss:    0x")
+		uartPutHex64(uint64(bssStart))
+		uartPutsDirect(" - 0x")
+		uartPutHex64(uint64(bssEnd))
+		uartPutsDirect(" (")
 		printUint32(uint32((bssEnd - bssStart) / 1024))
 		print("KB)...")
 		for va := bssStart &^ 0xFFF; va < bssEnd; va += 0x1000 {
