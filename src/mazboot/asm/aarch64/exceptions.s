@@ -976,65 +976,65 @@ handle_svc_syscall:
     movk x10, #0xF020, lsl #0
     str x28, [x10, #40]             // Save original g at 0x40FFF048 (offset 40)
 
-    // DEBUG: Print 'G' before loading g0
-    stp x9, x11, [sp, #-16]!
-    movz x9, #0x0900, lsl #16
-    movz w11, #'G'
-    str w11, [x9]
-    ldp x9, x11, [sp], #16
+    // DEBUG: Print 'G' before loading g0 - DISABLED
+    // stp x9, x11, [sp, #-16]!
+    // movz x9, #0x0900, lsl #16
+    // movz w11, #'G'
+    // str w11, [x9]
+    // ldp x9, x11, [sp], #16
 
     ldr x28, =runtime.g0            // x28 = address of runtime.g0 struct (the g pointer itself)
 
-    // DEBUG: Print '0' after loading g0
-    stp x9, x10, [sp, #-16]!
-    movz x9, #0x0900, lsl #16
-    movz w10, #'0'
-    str w10, [x9]
-    // Print x28 value (lower 16 bits) to verify g0 is loaded
-    movz w10, #':'
-    str w10, [x9]
-    lsr x10, x28, #12
-    and x10, x10, #0xF
-    cmp x10, #10
-    blt 5f
-    add x10, x10, #('A'-10)
-    b 6f
-5:  add x10, x10, #'0'
-6:  str w10, [x9]
-    lsr x10, x28, #8
-    and x10, x10, #0xF
-    cmp x10, #10
-    blt 7f
-    add x10, x10, #('A'-10)
-    b 8f
-7:  add x10, x10, #'0'
-8:  str w10, [x9]
-    ldp x9, x10, [sp], #16
+    // DEBUG: Print '0' after loading g0 - DISABLED
+    // stp x9, x10, [sp, #-16]!
+    // movz x9, #0x0900, lsl #16
+    // movz w10, #'0'
+    // str w10, [x9]
+    // // Print x28 value (lower 16 bits) to verify g0 is loaded
+    // movz w10, #':'
+    // str w10, [x9]
+    // lsr x10, x28, #12
+    // and x10, x10, #0xF
+    // cmp x10, #10
+    // blt 5f
+    // add x10, x10, #('A'-10)
+    // b 6f
+    // 5:  add x10, x10, #'0'
+    // 6:  str w10, [x9]
+    // lsr x10, x28, #8
+    // and x10, x10, #0xF
+    // cmp x10, #10
+    // blt 7f
+    // add x10, x10, #('A'-10)
+    // b 8f
+    // 7:  add x10, x10, #'0'
+    // 8:  str w10, [x9]
+    // ldp x9, x10, [sp], #16
 
-    // DEBUG: Print syscall number to identify which syscall is failing
-    stp x9, x10, [sp, #-16]!        // Save x9, x10
-    movz x9, #0x0900, lsl #16       // UART base
-    movk x9, #0x0000, lsl #0
-    movz w10, #'#'                  // Print '#' before syscall number
-    str w10, [x9]
-    // Print syscall number (x8) as 2 hex digits
-    lsr x10, x8, #4                 // Upper nibble
-    and x10, x10, #0xF
-    cmp x10, #10
-    blt 1f
-    add x10, x10, #('A'-10)
-    b 2f
-1:  add x10, x10, #'0'
-2:  str w10, [x9]
-    mov x10, x8                     // Lower nibble
-    and x10, x10, #0xF
-    cmp x10, #10
-    blt 3f
-    add x10, x10, #('A'-10)
-    b 4f
-3:  add x10, x10, #'0'
-4:  str w10, [x9]
-    ldp x9, x10, [sp], #16          // Restore x9, x10
+    // DEBUG: Print syscall number to identify which syscall is failing - DISABLED
+    // stp x9, x10, [sp, #-16]!        // Save x9, x10
+    // movz x9, #0x0900, lsl #16       // UART base
+    // movk x9, #0x0000, lsl #0
+    // movz w10, #'#'                  // Print '#' before syscall number
+    // str w10, [x9]
+    // // Print syscall number (x8) as 2 hex digits
+    // lsr x10, x8, #4                 // Upper nibble
+    // and x10, x10, #0xF
+    // cmp x10, #10
+    // blt 1f
+    // add x10, x10, #('A'-10)
+    // b 2f
+    // 1:  add x10, x10, #'0'
+    // 2:  str w10, [x9]
+    // mov x10, x8                     // Lower nibble
+    // and x10, x10, #0xF
+    // cmp x10, #10
+    // blt 3f
+    // add x10, x10, #('A'-10)
+    // b 4f
+    // 3:  add x10, x10, #'0'
+    // 4:  str w10, [x9]
+    // ldp x9, x10, [sp], #16          // Restore x9, x10
 
     // Dispatch based on syscall number
     cmp x8, #64                    // write syscall
@@ -1140,30 +1140,30 @@ syscall_write_uart:
     // SyscallWriteBuffer(buf unsafe.Pointer, count uint32) - 2 parameters
     // x1 = buf pointer, x2 = count
 
-    // DEBUG: Print first 4 bytes of buffer to see what's being written
-    stp x9, x10, [sp, #-16]!
-    movz x9, #0x0900, lsl #16       // UART base
-    movz w10, #'['
-    str w10, [x9]
-    cmp x2, #0                      // Check if count > 0
-    beq 1f
-    ldrb w10, [x1]                  // Load first byte
-    str w10, [x9]
-    cmp x2, #1
-    beq 1f
-    ldrb w10, [x1, #1]              // Load second byte
-    str w10, [x9]
-    cmp x2, #2
-    beq 1f
-    ldrb w10, [x1, #2]              // Load third byte
-    str w10, [x9]
-    cmp x2, #3
-    beq 1f
-    ldrb w10, [x1, #3]              // Load fourth byte
-    str w10, [x9]
-1:  movz w10, #']'
-    str w10, [x9]
-    ldp x9, x10, [sp], #16
+    // DEBUG: Print first 4 bytes of buffer to see what's being written - DISABLED
+    // stp x9, x10, [sp, #-16]!
+    // movz x9, #0x0900, lsl #16       // UART base
+    // movz w10, #'['
+    // str w10, [x9]
+    // cmp x2, #0                      // Check if count > 0
+    // beq 1f
+    // ldrb w10, [x1]                  // Load first byte
+    // str w10, [x9]
+    // cmp x2, #1
+    // beq 1f
+    // ldrb w10, [x1, #1]              // Load second byte
+    // str w10, [x9]
+    // cmp x2, #2
+    // beq 1f
+    // ldrb w10, [x1, #2]              // Load third byte
+    // str w10, [x9]
+    // cmp x2, #3
+    // beq 1f
+    // ldrb w10, [x1, #3]              // Load fourth byte
+    // str w10, [x9]
+    // 1:  movz w10, #']'
+    // str w10, [x9]
+    // ldp x9, x10, [sp], #16
 
     mov x0, x1                     // x0 = buf pointer
     mov w1, w2                     // x1 = count (32-bit)
