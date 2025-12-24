@@ -828,8 +828,9 @@ func KernelMain(r0, r1, atags uint32) {
 	// Initialize VirtIO RNG device for random number generation
 	// NOTE: Moved here (after schedinit) to allow print() usage in initialization code
 	// schedinit() used fake random data via getFakeRandomBytes() during initialization
-	print("\r\nInitializing VirtIO RNG...\r\n")
-	initVirtIORNG()
+	// DISABLED: Crashes during PCI config write return - see commit afc16d2
+	// print("\r\nInitializing VirtIO RNG...\r\n")
+	// initVirtIORNG()
 
 	// Initialize max stack size (normally done in runtime.main, but we don't run that)
 	// Max stack size is 1 GB on 64-bit, 250 MB on 32-bit
