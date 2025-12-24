@@ -272,61 +272,44 @@ write_sctlr_el1:
     mov x20, x0            // Save SCTLR value
 
     // DEBUG: Get current PC to verify where we're executing from
-    adr x21, .              // x21 = current PC
-
-    // Print 'W' before msr (minimal UART operation)
+    // Simple marker sequence to debug crash location
     movz x0, #0x0900, lsl #16    // UART base
     movk x0, #0x0000, lsl #0
-    movz w1, #0x57                // 'W'
+    movz w1, #0x57                // 'W' = before barriers
     str w1, [x0]
 
-    // DEBUG: Print PC value to verify execution location
-    // Print PC in hex: "PC=0x________"
-    movz w1, #0x50                // 'P'
-    str w1, [x0]
-    movz w1, #0x43                // 'C'
-    str w1, [x0]
-    movz w1, #0x3D                // '='
-    str w1, [x0]
-    movz w1, #0x30                // '0'
-    str w1, [x0]
-    movz w1, #0x78                // 'x'
+    // CRITICAL: DSB before IC invalidation
+    dsb sy
+    movz w1, #0x44                // 'D' = after DSB
     str w1, [x0]
 
-    // Print PC value (just the important part - upper 32 bits)
-    mov x2, x21
-    lsr x2, x2, #28            // Get top 4 bits
-    and x2, x2, #0xF
-    cmp x2, #10
-    blt 1f
-    add x2, x2, #0x41 - 10     // 'A'-'F'
-    b 2f
-1:
-    add x2, x2, #0x30          // '0'-'9'
-2:
-    str w2, [x0]
+    // Invalidate instruction cache to prevent stale instructions
+    ic iallu                       // Invalidate all instruction caches to PoU
+    movz w1, #0x49                // 'I' = after IC IALLU
+    str w1, [x0]
 
-    // CRITICAL: DSB before msr to ensure all previous memory operations
-    // (including UART writes) are complete before enabling MMU.
-    // This is especially important for QEMU which may have timing issues.
-    dsb sy                        // Data synchronization barrier - all memory ops complete
+    dsb sy                         // Ensure IC invalidation completes
+    movz w1, #0x42                // 'B' = after DSB
+    str w1, [x0]
 
-    // NOTE: NOT invalidating instruction cache before MMU enable
-    // Some systems have issues with ic iallu before MMU is on
     isb                            // Synchronize instruction stream
+    movz w1, #0x53                // 'S' = after ISB, ready for MMU
+    str w1, [x0]
 
-    // TEST: Sequential execution (no branch) after MMU enable
-    // Restore SCTLR value and write it
+    // Prepare for MMU enable
+    movz w1, #0x4D                // 'M' = about to enable MMU
+    str w1, [x0]
+
+    // Restore SCTLR value and enable MMU
     mov x0, x20
-    msr SCTLR_EL1, x0    // Write x0 to SCTLR_EL1
-    
-    // CRITICAL: If we get here, MMU is enabled
-    // Try to print 'X' immediately after msr to verify we can execute
-    // This will help us detect if it's an instruction fetch issue
-    movz x0, #0x0900, lsl #16    // UART base
+    msr SCTLR_EL1, x0             // ← MMU ENABLED HERE
+    nop                            // First instruction with MMU on
+
+    // Print 'X' if we survive the MMU enable
+    movz x0, #0x0900, lsl #16     // UART base (reload after using x0)
     movk x0, #0x0000, lsl #0
-    movz w1, #0x58                // 'X'
-    str w1, [x0]                  // Write 'X' to UART (if this executes, MMU is working)
+    movz w1, #0x58                // 'X' = MMU enabled, first instruction fetched OK!
+    str w1, [x0]
     
     // CRITICAL: After enabling MMU, use sequential execution
     // Try multiple NOPs first to see if any instruction can be fetched

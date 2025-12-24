@@ -504,7 +504,7 @@ func KernelMain(r0, r1, atags uint32) {
 		for offset := uintptr(0); offset < pl031Size; offset += 0x1000 {
 			va := pl031Base + offset
 			pa := pl031Base + offset // Identity mapping
-			mapPage(va, pa, PTE_ATTR_DEVICE, PTE_AP_RW_EL1)
+			mapPage(va, pa, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 		}
 		print("PL031 RTC mapped\r\n")
 	}
@@ -544,7 +544,7 @@ func KernelMain(r0, r1, atags uint32) {
 				break
 			}
 			bzero(unsafe.Pointer(physFrame), 0x1000)
-			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 			if (va-dtbStart)%(64*0x1000) == 0 {
 				print(".")
 			}
@@ -566,7 +566,7 @@ func KernelMain(r0, r1, atags uint32) {
 				break
 			}
 			bzero(unsafe.Pointer(physFrame), 0x1000)
-			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 			if (va-g0StackBottom)%(8*0x1000) == 0 {
 				print(".")
 			}
@@ -594,7 +594,7 @@ func KernelMain(r0, r1, atags uint32) {
 				break
 			}
 			bzero(unsafe.Pointer(physFrame), 0x1000)
-			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 			if va == EXC_STACK_NESTED {
 				print(".")
 			}
@@ -608,7 +608,7 @@ func KernelMain(r0, r1, atags uint32) {
 				break
 			}
 			bzero(unsafe.Pointer(physFrame), 0x1000)
-			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 			print(".")
 		}
 		print("\r\nPre-mapped exception stacks\r\n")
@@ -638,7 +638,7 @@ func KernelMain(r0, r1, atags uint32) {
 		print("KB)...")
 		for va := textStart &^ 0xFFF; va < textEnd; va += 0x1000 {
 			// Use identity mapping (VA == PA) with read-only permissions
-			mapPage(va, va, PTE_ATTR_NORMAL, PTE_AP_RO_EL1)
+			mapPage(va, va, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
 		}
 		print(" OK\r\n")
 
@@ -651,7 +651,7 @@ func KernelMain(r0, r1, atags uint32) {
 		printUint32(uint32((rodataEnd - rodataStart) / 1024))
 		print("KB)...")
 		for va := rodataStart &^ 0xFFF; va < rodataEnd; va += 0x1000 {
-			mapPage(va, va, PTE_ATTR_NORMAL, PTE_AP_RO_EL1)
+			mapPage(va, va, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
 		}
 		print(" OK\r\n")
 
@@ -664,7 +664,7 @@ func KernelMain(r0, r1, atags uint32) {
 		printUint32(uint32((dataEnd - dataStart) / 1024))
 		print("KB)...")
 		for va := dataStart &^ 0xFFF; va < dataEnd; va += 0x1000 {
-			mapPage(va, va, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+			mapPage(va, va, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 		}
 		print(" OK\r\n")
 
@@ -677,7 +677,7 @@ func KernelMain(r0, r1, atags uint32) {
 		printUint32(uint32((bssEnd - bssStart) / 1024))
 		print("KB)...")
 		for va := bssStart &^ 0xFFF; va < bssEnd; va += 0x1000 {
-			mapPage(va, va, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+			mapPage(va, va, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 		}
 		print(" OK\r\n")
 
@@ -1838,7 +1838,7 @@ func loadAndRunKmazarin() {
 				// Zero the frame before mapping to avoid stale data
 				bzero(unsafe.Pointer(physFrame), 0x1000)
 				// Map with normal memory attributes, RW from EL1
-				mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1)
+				mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 				pageCount++
 			}
 			printUint32(pageCount)

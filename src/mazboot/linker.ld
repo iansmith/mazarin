@@ -33,7 +33,7 @@ SECTIONS
     PROVIDE(__bochs_display_size = 0x01000000);  /* bochs-display size: 16MB */
 
     /* RAM-only layout for platform independence */
-    . = 0x40080000;  /* QEMU virt kernel load address */
+    . = 0x40100000;  /* QEMU virt kernel load address - AFTER 1MB DTB region */
     __start = .;
     __text_start = .;
     .text :
