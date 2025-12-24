@@ -52,6 +52,11 @@ const (
 	PTE_AP_RW_EL1 = 1 << 6 // Read/Write at EL1, no access at EL0
 	PTE_AP_RO     = 2 << 6 // Read-only at EL0
 	PTE_AP_RO_EL1 = 3 << 6 // Read-only at EL1, no access at EL0
+
+	// Physical address mask for extracting PA from PTE
+	// ARMv8-A: Output address is in bits 47:12 of the descriptor
+	// Must mask out both lower bits (11:0) and upper attribute bits (63:48)
+	PTE_ADDR_MASK = 0x0000FFFFFFFFF000
 )
 
 // Page table size constants
@@ -746,7 +751,7 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 	}
 
 	// Extract L1 table address from L0 entry
-	l1Table := uintptr(*l0Entry &^ 0xFFF) // Clear lower 12 bits
+	l1Table := uintptr(*l0Entry & PTE_ADDR_MASK) // Extract PA from PTE (bits 47:12)
 
 	// Update global pageTableL1 for consistency (though we don't use it in this function)
 	pageTableL1 = l1Table
@@ -765,7 +770,7 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 
 		*l1Entry = createTableEntry(l2Table)
 	} else {
-		l2Table = uintptr(*l1Entry &^ 0xFFF)
+		l2Table = uintptr(*l1Entry & PTE_ADDR_MASK)
 	}
 
 	// Get L2 entry
@@ -783,7 +788,7 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 
 		*l2Entry = createTableEntry(l3Table)
 	} else {
-		l3Table = uintptr(*l2Entry &^ 0xFFF)
+		l3Table = uintptr(*l2Entry & PTE_ADDR_MASK)
 	}
 
 	// Set L3 entry (the actual page)
@@ -870,19 +875,19 @@ func getPhysicalAddress(va uintptr) uintptr {
 	if (*l0Entry & PTE_VALID) == 0 {
 		return 0
 	}
-	l1Table := uintptr(*l0Entry &^ 0xFFF)
+	l1Table := uintptr(*l0Entry & PTE_ADDR_MASK)
 
 	l1Entry := (*uint64)(unsafe.Pointer(l1Table + uintptr(l1Idx)*PTE_SIZE))
 	if (*l1Entry & PTE_VALID) == 0 {
 		return 0
 	}
-	l2Table := uintptr(*l1Entry &^ 0xFFF)
+	l2Table := uintptr(*l1Entry & PTE_ADDR_MASK)
 
 	l2Entry := (*uint64)(unsafe.Pointer(l2Table + uintptr(l2Idx)*PTE_SIZE))
 	if (*l2Entry & PTE_VALID) == 0 {
 		return 0
 	}
-	l3Table := uintptr(*l2Entry &^ 0xFFF)
+	l3Table := uintptr(*l2Entry & PTE_ADDR_MASK)
 
 	l3Entry := (*uint64)(unsafe.Pointer(l3Table + uintptr(l3Idx)*PTE_SIZE))
 	if (*l3Entry & PTE_VALID) == 0 {
@@ -890,7 +895,7 @@ func getPhysicalAddress(va uintptr) uintptr {
 	}
 
 	// Extract physical address from L3 entry
-	pagePA := uintptr(*l3Entry &^ 0xFFF)
+	pagePA := uintptr(*l3Entry & PTE_ADDR_MASK)
 	offset := va & 0xFFF
 	return pagePA | offset
 }
@@ -954,7 +959,6 @@ func initMMU() bool {
 	// Get section boundaries from linker symbols
 	textStart := getLinkerSymbol("__text_start")
 	dataStart := getLinkerSymbol("__data_start")
-	dataEnd := getLinkerSymbol("__data_end")
 	endAddr := getLinkerSymbol("__end")
 
 	// DEBUG: Print text section range to verify it includes executing code
@@ -990,14 +994,17 @@ func initMMU() bool {
 		mapRegion(rodataEnd, dataStart, rodataEnd, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
 	}
 
-	// Map data section as read-write (this was the fix for schedinit permission fault)
-	if dataStart > 0 && dataEnd > 0 {
-		mapRegion(dataStart, dataEnd, dataStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	// Map data+BSS sections as read-write
+	// BSS starts where data ends, so we map from dataStart to __bss_end
+	// This includes both .data (initialized) and .bss (uninitialized) sections
+	bssEnd := getLinkerSymbol("__bss_end")
+	if dataStart > 0 && bssEnd > 0 {
+		mapRegion(dataStart, bssEnd, dataStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 	}
 
-	// Map remainder up to end of kernel image as read-only
-	if dataEnd > 0 && endAddr > 0 && dataEnd < endAddr {
-		mapRegion(dataEnd, endAddr, dataEnd, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
+	// Map remainder after BSS up to end of kernel image as read-only (if there's anything)
+	if bssEnd > 0 && endAddr > 0 && bssEnd < endAddr {
+		mapRegion(bssEnd, endAddr, bssEnd, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
 	}
 
 	// Initialize MMIO devices array (fixed-size to avoid heap allocation)
@@ -1225,19 +1232,19 @@ func dumpFetchMapping(label string, va uintptr) bool {
 		print("MMU: L0 mapping error\r\n")
 		return false
 	}
-	l1Base := uintptr(*l0e &^ 0xFFF)
+	l1Base := uintptr(*l0e & PTE_ADDR_MASK)
 	l1e := (*uint64)(unsafe.Pointer(l1Base + uintptr(l1Idx)*PTE_SIZE))
 	if (*l1e & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE) {
 		print("MMU: L1 mapping error\r\n")
 		return false
 	}
-	l2Base := uintptr(*l1e &^ 0xFFF)
+	l2Base := uintptr(*l1e & PTE_ADDR_MASK)
 	l2e := (*uint64)(unsafe.Pointer(l2Base + uintptr(l2Idx)*PTE_SIZE))
 	if (*l2e & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE) {
 		print("MMU: L2 mapping error\r\n")
 		return false
 	}
-	l3Base := uintptr(*l2e &^ 0xFFF)
+	l3Base := uintptr(*l2e & PTE_ADDR_MASK)
 	l3e := (*uint64)(unsafe.Pointer(l3Base + uintptr(l3Idx)*PTE_SIZE))
 
 	if (*l3e & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE) {
@@ -1371,7 +1378,7 @@ func enableMMU() bool {
 		if (l0Entry & 0x3) != 0x3 {
 			uartPutsDirect("L0 NOT TABLE!\r\n")
 		} else {
-			l1Base := l0Entry &^ 0xFFF
+			l1Base := l0Entry & PTE_ADDR_MASK
 			l1Table := (*[512]uint64)(unsafe.Pointer(uintptr(l1Base)))
 			l1Entry := l1Table[l1Idx]
 			uartPutsDirect("L1[")
@@ -1383,7 +1390,7 @@ func enableMMU() bool {
 			if (l1Entry & 0x3) != 0x3 {
 				uartPutsDirect("L1 NOT TABLE!\r\n")
 			} else {
-				l2Base := l1Entry &^ 0xFFF
+				l2Base := l1Entry & PTE_ADDR_MASK
 				l2Table := (*[512]uint64)(unsafe.Pointer(uintptr(l2Base)))
 				l2Entry := l2Table[l2Idx]
 				uartPutsDirect("L2[")
@@ -1395,7 +1402,7 @@ func enableMMU() bool {
 				if (l2Entry & 0x3) != 0x3 {
 					uartPutsDirect("L2 NOT TABLE!\r\n")
 				} else {
-					l3Base := l2Entry &^ 0xFFF
+					l3Base := l2Entry & PTE_ADDR_MASK
 					l3Table := (*[512]uint64)(unsafe.Pointer(uintptr(l3Base)))
 					l3Entry := l3Table[l3Idx]
 					uartPutsDirect("L3[")
@@ -1407,7 +1414,7 @@ func enableMMU() bool {
 					if (l3Entry & 0x1) == 0 {
 						uartPutsDirect("L3 NOT VALID - THIS IS THE BUG!\r\n")
 					} else {
-						physAddr := l3Entry &^ 0xFFF
+						physAddr := l3Entry & PTE_ADDR_MASK
 						uartPutsDirect("L3 OK, PA=0x")
 						uartPutHex64Direct(physAddr)
 						uartPutsDirect("\r\n")
@@ -1434,11 +1441,11 @@ func enableMMU() bool {
 
 		l0Table := (*[512]uint64)(unsafe.Pointer(pageTableL0))
 		l0Entry := l0Table[l0Idx]
-		l1Table := (*[512]uint64)(unsafe.Pointer(uintptr(l0Entry &^ 0xFFF)))
+		l1Table := (*[512]uint64)(unsafe.Pointer(uintptr(l0Entry & PTE_ADDR_MASK)))
 		l1Entry := l1Table[l1Idx]
-		l2Table := (*[512]uint64)(unsafe.Pointer(uintptr(l1Entry &^ 0xFFF)))
+		l2Table := (*[512]uint64)(unsafe.Pointer(uintptr(l1Entry & PTE_ADDR_MASK)))
 		l2Entry := l2Table[l2Idx]
-		l3Table := (*[512]uint64)(unsafe.Pointer(uintptr(l2Entry &^ 0xFFF)))
+		l3Table := (*[512]uint64)(unsafe.Pointer(uintptr(l2Entry & PTE_ADDR_MASK)))
 		l3Entry := l3Table[l3Idx]
 
 		uartPutsDirect("L3[0x")
