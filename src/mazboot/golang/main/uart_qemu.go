@@ -114,10 +114,20 @@ func UartTransmitHandler() {
 
 // uartPutc outputs a character via UART (QEMU virt machine)
 // Uses interrupt-driven transmission via ring buffer when available
+// Auto-converts LF to CRLF for proper terminal display
 //
 //go:nosplit
 func uartPutc(c byte) {
-	// Try to enqueue character to ring buffer
+	// Auto-convert LF to CRLF for consistent terminal display
+	// This prevents double line breaks in stack traces
+	if c == '\n' {
+		// Enqueue CR before LF
+		if uartEnqueueOrOverflow('\r') {
+			asm.MmioWrite(QEMU_UART_BASE+0x38, 1<<5)
+		}
+	}
+
+	// Enqueue the character
 	if uartEnqueueOrOverflow(c) {
 		// Character was enqueued successfully
 		// Enable TX interrupt to start transmission
