@@ -107,35 +107,86 @@ func uartPutHex64(val uint64) {
 // printHex64 outputs a uint64 as a 16-digit hex string via print()
 //
 //go:nosplit
-func printHex64(val uint64) {
-	// Use a small buffer to collect hex digits
-	var buf [16]byte
-	for i := 0; i < 16; i++ {
-		nibble := (val >> uint(60-i*4)) & 0xF
-		if nibble < 10 {
-			buf[i] = byte('0' + nibble)
-		} else {
-			buf[i] = byte('A' + nibble - 10)
-		}
+//go:nosplit
+func uint64String(n uint64) string {
+	if n == 0 {
+		return "0"
 	}
-	// Print each character individually since print() doesn't take []byte
-	for i := 0; i < 16; i++ {
-		printChar(buf[i])
+
+	// Use fixed-size buffer (max uint64 is 20 digits)
+	var buf [20]byte
+	i := 19
+	for n > 0 {
+		buf[i] = byte('0' + (n % 10))
+		n /= 10
+		i--
 	}
+
+	// Use unsafe.String to avoid bounds checking overhead
+	return unsafe.String(&buf[i+1], 19-i)
 }
 
-// printHex32 outputs a uint32 as an 8-digit hex string via print()
-//
 //go:nosplit
-func printHex32(val uint32) {
-	for i := 7; i >= 0; i-- {
-		nibble := (val >> uint(i*4)) & 0xF
-		if nibble < 10 {
-			printChar(byte('0' + nibble))
-		} else {
-			printChar(byte('A' + nibble - 10))
+func hex32(val uint32) string {
+	// Format: 0x0000_0000 (11 chars total)
+	const hexChars = "0123456789ABCDEF"
+	var buf [11]byte // "0x" + 8 hex digits + 1 underscore
+
+	buf[0] = '0'
+	buf[1] = 'x'
+
+	pos := 2
+	for i := 0; i < 8; i++ {
+		nibble := (val >> uint(28-i*4)) & 0xF
+		buf[pos] = hexChars[nibble]
+		pos++
+		// Add underscore after 4 hex digits
+		if i == 3 {
+			buf[pos] = '_'
+			pos++
 		}
 	}
+
+	// Use unsafe.String to avoid bounds checking overhead
+	return unsafe.String(&buf[0], 11)
+}
+
+//go:nosplit
+func hex64(val uint64) string {
+	// Build string with underscores every 4 digits for readability
+	// Format: 0x0000_0000_0000_0000 (19 chars total)
+	const hexChars = "0123456789ABCDEF"
+	var buf [19]byte // "0x" + 16 hex digits + 3 underscores
+
+	buf[0] = '0'
+	buf[1] = 'x'
+
+	pos := 2
+	for i := 0; i < 16; i++ {
+		nibble := (val >> uint(60-i*4)) & 0xF
+		buf[pos] = hexChars[nibble]
+		pos++
+		// Add underscore after every 4 hex digits (except at the end)
+		if (i+1)%4 == 0 && i != 15 {
+			buf[pos] = '_'
+			pos++
+		}
+	}
+
+	// Use unsafe.String to avoid bounds checking overhead
+	return unsafe.String(&buf[0], 19)
+}
+
+// printHex64 outputs a uint64 as a 16-digit hex string
+// DEPRECATED: Use print(hex64(val)) instead for consistent formatting
+func printHex64(val uint64) {
+	print(hex64(val))
+}
+
+// printHex32 outputs a uint32 as an 8-digit hex string
+// DEPRECATED: Use print(hex32(val)) instead for consistent formatting
+func printHex32(val uint32) {
+	print(hex32(val))
 }
 
 // printHex8 outputs a uint8 as a 2-digit hex string via print()
@@ -490,17 +541,15 @@ func KernelMain(r0, r1, atags uint32) {
 	writeMemory64(physPageSizeAddr, 4096)
 	print("physPageSize set to 4096\r\n")
 
-	// Initialize VirtIO RNG device for random number generation
-	initVirtIORNG()
+	// NOTE: VirtIO RNG initialization moved to after schedinit() to allow print() usage
+	// schedinit() will use fake random data via getFakeRandomBytes() until RNG is initialized
 
 	// Map PL031 RTC MMIO region before accessing it
 	// PL031 is a memory-mapped device, needs identity mapping with device attributes
 	{
 		pl031Base := getLinkerSymbol("__rtc_base")
 		pl031Size := uintptr(0x1000) // 4KB page
-		print("Mapping PL031 RTC at 0x")
-		printHex32(uint32(pl031Base))
-		print("...\r\n")
+		print("Mapping PL031 RTC at " + hex32(uint32(pl031Base)) + "...\r\n")
 		for offset := uintptr(0); offset < pl031Size; offset += 0x1000 {
 			va := pl031Base + offset
 			pa := pl031Base + offset // Identity mapping
@@ -637,8 +686,9 @@ func KernelMain(r0, r1, atags uint32) {
 		printUint32(uint32((textEnd - textStart) / 1024))
 		print("KB)...")
 		for va := textStart &^ 0xFFF; va < textEnd; va += 0x1000 {
-			// Use identity mapping (VA == PA) with read-only permissions
-			mapPage(va, va, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
+			// Use identity mapping (VA == PA) with read-only, executable permissions
+			// NOTE: .text MUST be executable! Do NOT add PTE_EXEC_NEVER here!
+			mapPage(va, va, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_ALLOW)
 		}
 		print(" OK\r\n")
 
@@ -772,6 +822,12 @@ func KernelMain(r0, r1, atags uint32) {
 	print("Testing Item 5: runtime.schedinit()... ")
 	asm.CallRuntimeSchedinit()
 	print("PASS\r\n")
+
+	// Initialize VirtIO RNG device for random number generation
+	// NOTE: Moved here (after schedinit) to allow print() usage in initialization code
+	// schedinit() used fake random data via getFakeRandomBytes() during initialization
+	print("\r\nInitializing VirtIO RNG...\r\n")
+	initVirtIORNG()
 
 	// Initialize max stack size (normally done in runtime.main, but we don't run that)
 	// Max stack size is 1 GB on 64-bit, 250 MB on 32-bit
@@ -1017,29 +1073,13 @@ func kernelMainBody() {
 	}
 	simpleSignalChan = ch // Store globally for interrupt handler
 
-	FramebufferPuts("Boot complete.\r\n")
-
-	// Enable CPU interrupts now that everything is initialized
-	// This unmasks the I bit in PSTATE to allow IRQs to fire
-	asm.EnableIrqsAsm()
-	FramebufferPuts("Interrupts enabled.\r\n")
-
-	// Drain any pending output
-	for i := 0; i < 1000; i++ {
-		uartDrainRingBuffer()
-	}
-
-	// Stage 12: Spawn goroutine that waits for timer signals
-	// NOTE: This goroutine has an infinite loop, so this call will never return.
-	// Timer interrupts will fire (every 5 seconds) and send signals to the channel.
-	// The goroutine will receive those signals and print "bong".
-	FramebufferPuts("Spawning timer listener goroutine...\r\n")
-	spawnGoroutine(timerListenerLoop)
-
-	// Should never reach here since testGoroutineFunc has infinite loop
-	FramebufferPuts("ERROR: goroutine returned unexpectedly!\r\n")
-	for {
-	}
+	// NOTE: The code below is unreachable because mstart() never returns.
+	// Interrupts are actually enabled in initTime() before the scheduler starts.
+	// This is left here as documentation of the original intent.
+	//
+	// FramebufferPuts("Boot complete.\r\n")
+	// asm.EnableIrqsAsm()  // DEAD CODE - interrupts already enabled in initTime()
+	// FramebufferPuts("Interrupts enabled.\r\n")
 }
 
 // timerListenerLoop runs an endless loop waiting for timer signals on the global channel.
@@ -1573,7 +1613,8 @@ func parseEmbeddedKmazarin() {
 // 4. Handles BSS zeroing (memsz > filesz)
 // 5. Jumps to the kmazarin entry point (entry + offset)
 //
-//go:nosplit
+// Note: This function is NOT marked nosplit because it runs after the Go runtime
+// is initialized and contains many print() calls that require stack space.
 func loadAndRunKmazarin() {
 	print("\r\n=== Loading Kmazarin Kernel ===\r\n")
 
@@ -1681,23 +1722,20 @@ func loadAndRunKmazarin() {
 
 			// Compute offset: where we want it (after mazboot) minus where it wants to be (firstVaddr)
 			loadOffset = kmazarinLoadAddr - uintptr(firstVaddr)
-			print("Computed load offset: 0x")
-			printHex64(uint64(loadOffset))
-			print(" (mazboot bss end 0x")
-			printHex64(uint64(bssEnd))
-			print(" → kmazarin load 0x")
-			printHex64(uint64(kmazarinLoadAddr))
-			print(" - first segment vaddr 0x")
-			printHex64(firstVaddr)
-			print(")\r\n")
+			print("Computed load offset: " + hex64(uint64(loadOffset)) +
+				" (mazboot bss end " + hex64(uint64(bssEnd)) +
+				" → kmazarin load " + hex64(uint64(kmazarinLoadAddr)) +
+				" - first segment vaddr " + hex64(firstVaddr) + ")\r\n")
 			break
 		}
 	}
 
-	print("\r\nLoading segments:\r\n")
+	print("\r\nPre-mapping all segments:\r\n")
 
-	// Load each PT_LOAD segment
-	loadCount := 0
+	// Second pass: Pre-map ALL PT_LOAD segments upfront
+	// This separates memory allocation from data copying and makes it easier to detect OOM early
+	segmentCount := uint32(0)
+	totalPages := uint32(0)
 	for i := uint16(0); i < phnum; i++ {
 		offset := phoff + uint64(i)*uint64(phentsize)
 		if offset+56 > uint64(len(elfData)) {
@@ -1720,6 +1758,133 @@ func loadAndRunKmazarin() {
 			(uint32(elfData[offset+5]) << 8) |
 			(uint32(elfData[offset+6]) << 16) |
 			(uint32(elfData[offset+7]) << 24)
+
+		vaddr := uint64(elfData[offset+16]) |
+			(uint64(elfData[offset+17]) << 8) |
+			(uint64(elfData[offset+18]) << 16) |
+			(uint64(elfData[offset+19]) << 24) |
+			(uint64(elfData[offset+20]) << 32) |
+			(uint64(elfData[offset+21]) << 40) |
+			(uint64(elfData[offset+22]) << 48) |
+			(uint64(elfData[offset+23]) << 56)
+
+		memsz := uint64(elfData[offset+40]) |
+			(uint64(elfData[offset+41]) << 8) |
+			(uint64(elfData[offset+42]) << 16) |
+			(uint64(elfData[offset+43]) << 24) |
+			(uint64(elfData[offset+44]) << 32) |
+			(uint64(elfData[offset+45]) << 40) |
+			(uint64(elfData[offset+46]) << 48) |
+			(uint64(elfData[offset+47]) << 56)
+
+		// Calculate destination address with offset
+		destAddr := uintptr(vaddr) + loadOffset
+		destEnd := destAddr + uintptr(memsz)
+
+		print("  [" + uint64String(uint64(segmentCount)) + "] " + hex64(vaddr) +
+			" → " + hex64(uint64(destAddr)) +
+			" (" + uint64String(memsz) + " bytes, ")
+		if (flags & 0x4) != 0 {
+			print("R")
+		} else {
+			print("-")
+		}
+		if (flags & 0x2) != 0 {
+			print("W")
+		} else {
+			print("-")
+		}
+		if (flags & 0x1) != 0 {
+			print("X")
+		} else {
+			print("-")
+		}
+		print("): ")
+
+		// Determine permissions from ELF flags
+		// ELF flags: 0x1 = X (execute), 0x2 = W (write), 0x4 = R (read)
+		var ap uint64
+		var exec uint64
+
+		if (flags & 0x2) != 0 {
+			// Writable segment (.data, .bss)
+			ap = PTE_AP_RW_EL1
+		} else {
+			// Read-only segment (.text, .rodata)
+			ap = PTE_AP_RO_EL1
+		}
+
+		if (flags & 0x1) != 0 {
+			// Executable segment (.text)
+			exec = PTE_EXEC_ALLOW
+		} else {
+			// Non-executable segment (.data, .bss, .rodata)
+			exec = PTE_EXEC_NEVER
+		}
+
+		// Pre-map all pages for this segment (including BSS)
+		pageCount := uint32(0)
+		remapCount := uint32(0)
+		for va := destAddr &^ 0xFFF; va < destEnd; va += 0x1000 {
+			// Check if page is already mapped (from early heap mapping)
+			existingPA := getPhysicalAddress(va)
+			if existingPA != 0 {
+				// Page already mapped (likely from heap pre-mapping)
+				// Just remap with correct permissions - reuse existing physical frame
+				mapPage(va, existingPA, PTE_ATTR_NORMAL, ap, exec)
+				remapCount++
+			} else {
+				// Page not mapped - allocate new frame
+				physFrame := allocPhysFrame()
+				if physFrame == 0 {
+					print("\r\nERROR: Out of physical frames during pre-mapping\r\n")
+					return
+				}
+				// Zero the frame before mapping to avoid stale data
+				bzero(unsafe.Pointer(physFrame), 0x1000)
+				// Map with permissions based on ELF segment flags
+				mapPage(va, physFrame, PTE_ATTR_NORMAL, ap, exec)
+			}
+			pageCount++
+		}
+		print(uint64String(uint64(pageCount)) + " pages (" + uint64String(uint64(remapCount)) + " remapped)\r\n")
+
+		totalPages += pageCount
+		segmentCount++
+	}
+
+	print("Pre-mapped " + uint64String(uint64(segmentCount)) + " segments (" + uint64String(uint64(totalPages)) + " pages total)\r\n")
+
+	// Flush TLB to ensure all pre-mapped pages are visible
+	// Without this, the TLB still has stale "not present" entries, causing page faults
+	print("Flushing TLB... ")
+	asm.Dsb()                  // Ensure all page table writes are complete
+	asm.InvalidateTlbAll()     // Flush entire TLB
+	asm.Dsb()                  // Ensure TLB flush completes
+	asm.Isb()                  // Synchronize context
+	print("OK\r\n")
+
+	print("\r\nLoading segment data:\r\n")
+
+	// Third pass: Copy data for each PT_LOAD segment
+	loadCount := uint32(0)
+	for i := uint16(0); i < phnum; i++ {
+		offset := phoff + uint64(i)*uint64(phentsize)
+		if offset+56 > uint64(len(elfData)) {
+			print("ERROR: Program header offset out of bounds\r\n")
+			break
+		}
+
+		// Read program header fields
+		ptype := uint32(elfData[offset]) |
+			(uint32(elfData[offset+1]) << 8) |
+			(uint32(elfData[offset+2]) << 16) |
+			(uint32(elfData[offset+3]) << 24)
+
+		// Only process PT_LOAD segments (type 1)
+		if ptype != 1 {
+			continue
+		}
 
 		poffset := uint64(elfData[offset+8]) |
 			(uint64(elfData[offset+9]) << 8) |
@@ -1760,34 +1925,7 @@ func loadAndRunKmazarin() {
 		// Calculate destination address with offset
 		destAddr := uintptr(vaddr) + loadOffset
 
-		print("  [")
-		printUint32(uint32(loadCount))
-		print("] Loading 0x")
-		printHex64(vaddr)
-		print(" → 0x")
-		printHex64(uint64(destAddr))
-		print(" (")
-		printUint32(uint32(filesz))
-		print(" bytes, flags: ")
-		if (flags & 0x4) != 0 {
-			print("R")
-		} else {
-			print("-")
-		}
-		if (flags & 0x2) != 0 {
-			print("W")
-		} else {
-			print("-")
-		}
-		if (flags & 0x1) != 0 {
-			print("X")
-		} else {
-			print("-")
-		}
-		print(")\r\n")
-
-		// NOTE: We don't need to pre-map pages - the page fault handler
-		// will automatically allocate and map pages on demand when we access them
+		print("  [" + uint64String(uint64(loadCount)) + "] ")
 
 		// Copy segment data from embedded binary to destination
 		// Handle negative file offsets (ELF files can have segments that include headers)
@@ -1801,15 +1939,7 @@ func loadAndRunKmazarin() {
 		}
 
 		if filesz > 0 {
-			print("    Copying ")
-			printUint32(uint32(filesz))
-			print(" bytes from offset 0x")
-			printHex64(poffset)
-			print(" (src=0x")
-			printHex64(uint64(srcAddr))
-			print(" -> dest=0x")
-			printHex64(uint64(destAddr))
-			print(")\r\n")
+			print("Copying " + uint64String(filesz) + " bytes... ")
 
 			// Verify pointers are not NULL
 			if destAddr == 0 {
@@ -1821,64 +1951,31 @@ func loadAndRunKmazarin() {
 				return
 			}
 
-			// Pre-map destination pages to avoid nested page faults during memmove
-			// This prevents stack overflow from too many nested exceptions
-			// We only need to pre-map destination - source is already mapped (mazboot's data section)
-			print("    Pre-mapping ")
-			destEnd := destAddr + uintptr(filesz)
-			pageCount := uint32(0)
-			for va := destAddr &^ 0xFFF; va < destEnd; va += 0x1000 {
-				// Explicitly allocate and map each page instead of touching it
-				// This avoids triggering Go runtime code that might access unmapped globals
-				physFrame := allocPhysFrame()
-				if physFrame == 0 {
-					print("\r\nERROR: Out of physical frames during pre-mapping\r\n")
-					return
-				}
-				// Zero the frame before mapping to avoid stale data
-				bzero(unsafe.Pointer(physFrame), 0x1000)
-				// Map with normal memory attributes, RW from EL1
-				mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-				pageCount++
-			}
-			printUint32(pageCount)
-			print(" pages\r\n")
-
-			print("    Calling memmove... ")
-			// Use memmove for the copy
+			// Pages are already pre-mapped, just copy the data
 			asm.MemmoveBytes(
 				unsafe.Pointer(destAddr),
 				unsafe.Pointer(srcAddr),
 				uint32(filesz))
-			print("OK\r\n")
+			print("OK")
 		}
 
-		// Zero BSS area if memsz > filesz
+		// BSS area is already zeroed (we bzero'd the frames during pre-mapping)
 		if memsz > filesz {
 			bssSize := memsz - filesz
-			print("    Zeroing BSS: ")
-			printUint32(uint32(bssSize))
-			print(" bytes... ")
-			bzero(unsafe.Pointer(destAddr+uintptr(filesz)), uint32(bssSize))
-			print("OK\r\n")
+			print(" (BSS: " + uint64String(bssSize) + " bytes already zeroed)")
 		}
+		print("\r\n")
 
 		loadCount++
 	}
 
-	print("\r\nLoaded ")
-	printUint32(uint32(loadCount))
-	print(" segments\r\n")
+	print("\r\nLoaded " + uint64String(uint64(loadCount)) + " segments\r\n")
 
 	// Jump to kmazarin entry point
 	entryAddr := uintptr(entry) + loadOffset
-	print("\r\nJumping to kmazarin entry point at 0x")
-	printHex64(uint64(entryAddr))
-	print(" (entry 0x")
-	printHex64(entry)
-	print(" + offset 0x")
-	printHex64(uint64(loadOffset))
-	print(")...\r\n\r\n")
+	print("\r\nJumping to kmazarin entry point at " + hex64(uint64(entryAddr)) +
+		" (entry " + hex64(entry) +
+		" + offset " + hex64(uint64(loadOffset)) + ")...\r\n\r\n")
 
 	// Jump to entry point
 	// We need to do this via assembly to ensure proper register setup

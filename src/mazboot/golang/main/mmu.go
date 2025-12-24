@@ -30,6 +30,13 @@ const (
 	PTE_GP   = 1 << 50 // Guarded page
 	PTE_nT   = 1 << 16 // Not translation table walk
 
+	// Software-defined bits (bits 58-55, ignored by MMU hardware)
+	// These bits can be used by the OS for page metadata/bookkeeping
+	PTE_SW_LOCKED   = 1 << 55 // Page is locked, don't free
+	PTE_SW_RESERVED = 1 << 56 // Page reserved for kernel use
+	PTE_SW_KERNEL   = 1 << 57 // Kernel-owned page
+	PTE_SW_USER     = 1 << 58 // User-accessible page
+
 	// Execute permission flags
 	PTE_EXEC_ALLOW = 0                  // PXN=0, UXN=0: Allow execution
 	PTE_EXEC_NEVER = PTE_PXN | PTE_UXN  // PXN=1, UXN=1: Never execute
@@ -1089,6 +1096,9 @@ func initMMU() bool {
 	uartPutHex64Direct(uint64(PAGE_TABLE_BASE))
 	uartPutsDirect("\r\n")
 	uartPutcDirect('1')  // Breadcrumb: got RAM start address
+	// Pre-map heap region as RW, non-executable
+	// NOTE: Kmazarin segments will overlap with this region, but will be remapped later
+	// with correct permissions (some executable). The remapping is allowed to update permissions.
 	if ramStart < PAGE_TABLE_BASE {
 		uartPutsDirect("Mapping RAM: 0x")
 		uartPutHex64Direct(uint64(ramStart))

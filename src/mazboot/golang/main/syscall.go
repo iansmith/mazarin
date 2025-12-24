@@ -7,6 +7,10 @@ import (
 	_ "unsafe" // for go:linkname
 )
 
+// Simple FD tracking for /dev/random
+// Instead of a full FD table, just track if FD 3 is allocated for /dev/random
+var devRandomFDAllocated uint32 // 0 = not allocated, 1 = FD 3 is /dev/random
+
 // Runtime scheduler functions accessed via go:linkname
 //
 //go:linkname runtimeGopark runtime.gopark
@@ -124,9 +128,17 @@ func SyscallClose(fd int32) int64 {
 		for {
 		}
 	}
-	// For /dev/urandom FD (3), just return success
-	// For other FDs, also return success (no-op)
-	return 0 // Success
+
+	// Special case: FD 3 is /dev/random
+	if fd == 3 {
+		if atomic.LoadUint32(&devRandomFDAllocated) == 1 {
+			atomic.StoreUint32(&devRandomFDAllocated, 0)
+			return 0 // Success
+		}
+	}
+
+	// For all other FDs, just return success (no-op)
+	return 0
 }
 
 // SyscallRead implements the read syscall
@@ -158,6 +170,23 @@ func SyscallRead(fd int32, buf unsafe.Pointer, count uint64) int64 {
 		print("\r\nREAD LOOP! (>10000 calls)\r\n")
 		for {
 		}
+	}
+
+	// Special case: FD 3 is /dev/random
+	if fd == 3 && atomic.LoadUint32(&devRandomFDAllocated) == 1 {
+		// Validate buffer pointer
+		if buf == nil {
+			return -14 // -EFAULT (bad address)
+		}
+
+		// Limit count to uint32 max
+		if count > 0xFFFFFFFF {
+			count = 0xFFFFFFFF
+		}
+
+		// Call VirtIO RNG to get random bytes
+		bytesRead := getRandomBytes(buf, uint32(count))
+		return int64(bytesRead)
 	}
 
 	// NO FD SUPPORT - We rely entirely on AT_RANDOM for random numbers
@@ -201,6 +230,15 @@ func SyscallOpenat(dirfd int32, pathname unsafe.Pointer, flags int32, mode int32
 	if pathname == nil {
 		print("openat: pathname is nil\r\n")
 		return -14 // -EFAULT
+	}
+
+	// Check for /dev/random - allocate FD 3
+	if cstringEqual(pathname, "/dev/random") {
+		// Check if already allocated
+		if atomic.CompareAndSwapUint32(&devRandomFDAllocated, 0, 1) {
+			return 3 // Return FD 3
+		}
+		return -23 // -ENFILE (already open)
 	}
 
 	// Check for /dev/urandom

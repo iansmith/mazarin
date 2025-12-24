@@ -44,10 +44,14 @@ const (
 
 // PCI capability types
 const (
-	PCI_CAP_VENDOR_SPECIFIC = 0x09 // VirtIO Common Config
-	PCI_CAP_NOTIFY          = 0x0A // VirtIO Notify Config
-	PCI_CAP_ISR             = 0x0B // VirtIO ISR Status
-	PCI_CAP_DEVICE          = 0x0C // VirtIO Device Config
+	PCI_CAP_VENDOR_SPECIFIC = 0x09 // PCI Vendor-Specific capability type
+
+	// VirtIO cfg_type values (within vendor-specific capabilities)
+	VIRTIO_PCI_CAP_COMMON_CFG = 1 // Common configuration
+	VIRTIO_PCI_CAP_NOTIFY_CFG = 2 // Notifications
+	VIRTIO_PCI_CAP_ISR_CFG    = 3 // ISR Status
+	VIRTIO_PCI_CAP_DEVICE_CFG = 4 // Device-specific configuration
+	VIRTIO_PCI_CAP_PCI_CFG    = 5 // PCI configuration access
 )
 
 // Bochs VBE register indices (accessed via index/data register pair at MMIO base + 0x500/0x502)
@@ -397,54 +401,81 @@ type VirtIOCapabilityInfo struct {
 	Length      uint32 // Length of capability region
 }
 
+// pciFindVirtIOCapability finds a VirtIO capability by cfg_type
+// Returns the offset of the capability, or 0 if not found
+//
+//go:nosplit
+func pciFindVirtIOCapability(bus, slot, funcNum uint8, cfgType uint8) uint8 {
+	// Read capabilities pointer
+	capPtr := pciConfigRead8(bus, slot, funcNum, PCI_CAPABILITIES)
+	if capPtr == 0 || capPtr == 0xFF {
+		return 0
+	}
+
+	// Traverse capability list looking for vendor-specific (0x09) caps
+	current := capPtr
+	for i := 0; i < 32 && current != 0; i++ {
+		capTypeRead := pciConfigRead8(bus, slot, funcNum, current)
+
+		if capTypeRead == PCI_CAP_VENDOR_SPECIFIC {
+			// Check cfg_type field (offset +3)
+			virtCfgType := pciConfigRead8(bus, slot, funcNum, current+3)
+			if virtCfgType == cfgType {
+				return current
+			}
+		}
+
+		// Move to next capability
+		current = pciConfigRead8(bus, slot, funcNum, current+1)
+	}
+
+	return 0
+}
+
 // pciFindVirtIOCapabilities finds all VirtIO capabilities for a device
 //
 //go:nosplit
 func pciFindVirtIOCapabilities(bus, slot, funcNum uint8, common, notify, isr, device *VirtIOCapabilityInfo) bool {
 	// Find Common Config capability (required)
-	commonOffset := pciFindCapability(bus, slot, funcNum, PCI_CAP_VENDOR_SPECIFIC)
+	commonOffset := pciFindVirtIOCapability(bus, slot, funcNum, VIRTIO_PCI_CAP_COMMON_CFG)
 	if commonOffset == 0 {
 		return false
 	}
-	capData := pciConfigRead32(bus, slot, funcNum, commonOffset)
 	common.Offset = commonOffset
-	common.Type = PCI_CAP_VENDOR_SPECIFIC
-	common.Bar = uint8((capData >> 16) & 0xFF)
-	common.OffsetInBar = pciConfigRead32(bus, slot, funcNum, commonOffset+4) & 0xFFFFFFFC
-	common.Length = 0x100
+	common.Type = VIRTIO_PCI_CAP_COMMON_CFG
+	common.Bar = pciConfigRead8(bus, slot, funcNum, commonOffset+4)
+	common.OffsetInBar = pciConfigRead32(bus, slot, funcNum, commonOffset+8)
+	common.Length = pciConfigRead32(bus, slot, funcNum, commonOffset+12)
 
 	// Find Notify capability (required)
-	notifyOffset := pciFindCapability(bus, slot, funcNum, PCI_CAP_NOTIFY)
+	notifyOffset := pciFindVirtIOCapability(bus, slot, funcNum, VIRTIO_PCI_CAP_NOTIFY_CFG)
 	if notifyOffset == 0 {
 		return false
 	}
-	notifyCapData := pciConfigRead32(bus, slot, funcNum, notifyOffset)
 	notify.Offset = notifyOffset
-	notify.Type = PCI_CAP_NOTIFY
-	notify.Bar = uint8((notifyCapData >> 16) & 0xFF)
-	notify.OffsetInBar = pciConfigRead32(bus, slot, funcNum, notifyOffset+4) & 0xFFFFFFFC
-	notify.Length = 0x100
+	notify.Type = VIRTIO_PCI_CAP_NOTIFY_CFG
+	notify.Bar = pciConfigRead8(bus, slot, funcNum, notifyOffset+4)
+	notify.OffsetInBar = pciConfigRead32(bus, slot, funcNum, notifyOffset+8)
+	notify.Length = pciConfigRead32(bus, slot, funcNum, notifyOffset+12)
 
 	// Find ISR Status capability (optional)
-	isrOffset := pciFindCapability(bus, slot, funcNum, PCI_CAP_ISR)
+	isrOffset := pciFindVirtIOCapability(bus, slot, funcNum, VIRTIO_PCI_CAP_ISR_CFG)
 	if isrOffset != 0 {
-		isrCapData := pciConfigRead32(bus, slot, funcNum, isrOffset)
 		isr.Offset = isrOffset
-		isr.Type = PCI_CAP_ISR
-		isr.Bar = uint8((isrCapData >> 16) & 0xFF)
-		isr.OffsetInBar = pciConfigRead32(bus, slot, funcNum, isrOffset+4) & 0xFFFFFFFC
-		isr.Length = 4
+		isr.Type = VIRTIO_PCI_CAP_ISR_CFG
+		isr.Bar = pciConfigRead8(bus, slot, funcNum, isrOffset+4)
+		isr.OffsetInBar = pciConfigRead32(bus, slot, funcNum, isrOffset+8)
+		isr.Length = pciConfigRead32(bus, slot, funcNum, isrOffset+12)
 	}
 
 	// Find Device Config capability (optional)
-	deviceOffset := pciFindCapability(bus, slot, funcNum, PCI_CAP_DEVICE)
+	deviceOffset := pciFindVirtIOCapability(bus, slot, funcNum, VIRTIO_PCI_CAP_DEVICE_CFG)
 	if deviceOffset != 0 {
-		deviceCapData := pciConfigRead32(bus, slot, funcNum, deviceOffset)
 		device.Offset = deviceOffset
-		device.Type = PCI_CAP_DEVICE
-		device.Bar = uint8((deviceCapData >> 16) & 0xFF)
-		device.OffsetInBar = pciConfigRead32(bus, slot, funcNum, deviceOffset+4) & 0xFFFFFFFC
-		device.Length = 0x100
+		device.Type = VIRTIO_PCI_CAP_DEVICE_CFG
+		device.Bar = pciConfigRead8(bus, slot, funcNum, deviceOffset+4)
+		device.OffsetInBar = pciConfigRead32(bus, slot, funcNum, deviceOffset+8)
+		device.Length = pciConfigRead32(bus, slot, funcNum, deviceOffset+12)
 	}
 
 	return true
