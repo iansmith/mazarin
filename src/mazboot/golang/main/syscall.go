@@ -392,6 +392,17 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 	uartPutHex64Direct(uint64(flags))
 	uartPutsDirect(")\r\n")
 
+	// Handle zero-length mmap
+	// Linux allows this and returns a page-aligned address without actually allocating
+	// The Go runtime expects a valid (non-NULL) address even for 0-length maps
+	if length == 0 {
+		// Return a valid dummy address that won't be dereferenced
+		// Use a high address that's unlikely to conflict
+		const ZERO_LENGTH_DUMMY = uintptr(0x1000) // Page-aligned dummy
+		uartPutsDirect("  -> zero-length mmap, returning dummy address 0x1000\r\n")
+		return int64(ZERO_LENGTH_DUMMY)
+	}
+
 	// Linux mmap semantics:
 	// - Without MAP_FIXED: addr is just a hint, kernel can choose different address
 	// - With MAP_FIXED: Must use exact addr or return ENOMEM
