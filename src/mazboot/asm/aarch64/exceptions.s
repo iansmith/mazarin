@@ -771,7 +771,11 @@ stack_selected:
     // CRITICAL: Switch to g0 before calling Go exception handler
     // This allows runtime operations (including stack tracebacks) to work correctly
     // The original g (x28) is saved at [sp, #224] and will be restored before eret
-    ldr x28, =runtime.g0
+    //
+    // NOTE: For now, we DON'T switch to g0 because it causes pointer corruption issues.
+    // The exception handlers run with whatever g was active, on the exception stack.
+    // TODO: Investigate proper g0/gsignal setup for exception handlers
+    // ldr x28, =runtime.g0
 
     // Call Go exception handler with 8 parameters
     // Must provide spill space for Go's argument spills
@@ -865,6 +869,10 @@ sync_unknown_exception:
     // This allows runtime operations (including stack tracebacks) to work correctly
     ldr x28, =runtime.g0
 
+    // CRITICAL: Switch SP to g0's stack
+    ldr x10, [x28, #8]              // Load g0.stack.hi into x10
+    mov sp, x10                     // Switch SP to top of g0 stack
+
     CALL_GO_PROLOGUE SPILL_SPACE_8PARAM
     bl main.ExceptionHandler
     CALL_GO_EPILOGUE SPILL_SPACE_8PARAM
@@ -886,6 +894,10 @@ sync_other_exception:
     // CRITICAL: Switch to g0 before calling Go exception handler
     // This allows runtime operations (including stack tracebacks) to work correctly
     ldr x28, =runtime.g0
+
+    // CRITICAL: Switch SP to g0's stack
+    ldr x10, [x28, #8]              // Load g0.stack.hi into x10
+    mov sp, x10                     // Switch SP to top of g0 stack
 
     CALL_GO_PROLOGUE SPILL_SPACE_8PARAM
     bl main.ExceptionHandler
@@ -967,7 +979,34 @@ handle_svc_syscall:
     //   - After eret, their code checks x0 and stores to stack
     //   - We just need to return correct x0 and advance ELR+4
 
-    // DEBUG: Syscall number printing disabled to see Go error message
+    // DEBUG: Print syscall number for debugging (DISABLED to reduce noise)
+    // stp x9, x10, [sp, #-16]!      // Save x9, x10
+    // movz x9, #0x0900, lsl #16      // UART base
+    // movz w10, #'S'                 // Print 'S'
+    // str w10, [x9]
+    // movz w10, #':'                 // Print ':'
+    // str w10, [x9]
+    // // Print syscall number (x8) in hex
+    // mov x10, x8                    // Copy syscall number
+    // lsr x10, x10, #4               // Get upper nibble
+    // and x10, x10, #0xF
+    // cmp x10, #10
+    // blt 1f
+    // add x10, x10, #('A' - 10)      // A-F
+    // b 2f
+// 1:  add x10, x10, #'0'             // 0-9
+// 2:  str w10, [x9]
+    // mov x10, x8                    // Get lower nibble
+    // and x10, x10, #0xF
+    // cmp x10, #10
+    // blt 3f
+    // add x10, x10, #('A' - 10)
+    // b 4f
+// 3:  add x10, x10, #'0'
+// 4:  str w10, [x9]
+    // movz w10, #' '                 // Print space
+    // str w10, [x9]
+    // ldp x9, x10, [sp], #16         // Restore x9, x10
 
     // CRITICAL: Switch to g0 before calling Go syscall handlers
     // This allows runtime operations (including stack tracebacks) to work correctly
@@ -984,6 +1023,10 @@ handle_svc_syscall:
     // ldp x9, x11, [sp], #16
 
     ldr x28, =runtime.g0            // x28 = address of runtime.g0 struct (the g pointer itself)
+
+    // NOTE: We don't switch SP to g0's stack here because syscalls need to preserve
+    // the caller's stack frame and return properly. We just set x28 so Go code sees g0.
+    // Syscall handlers run on the current stack, not g0's stack.
 
     // DEBUG: Print '0' after loading g0 - DISABLED
     // stp x9, x10, [sp, #-16]!
@@ -1298,6 +1341,53 @@ syscall_munmap:
 
 syscall_madvise:
     // madvise(addr, length, advice) - give advice about memory usage
+    // x0 = addr, x1 = length, x2 = advice
+
+    // DEBUG: Print madvise parameters to check if it's being called on stack
+    stp x0, x1, [sp, #-16]!
+    stp x2, x3, [sp, #-16]!
+    stp x9, x10, [sp, #-16]!
+
+    movz x9, #0x0900, lsl #16      // UART base
+
+    // Print "madv:"
+    movz w10, #'m'
+    str w10, [x9]
+    movz w10, #'a'
+    str w10, [x9]
+    movz w10, #'d'
+    str w10, [x9]
+    movz w10, #'v'
+    str w10, [x9]
+    movz w10, #':'
+    str w10, [x9]
+
+    // Print address (x0) - just upper 32 bits for brevity
+    lsr x10, x0, #28
+    and x10, x10, #0xF
+    cmp x10, #10
+    blt 1f
+    add x10, x10, #('A' - 10)
+    b 2f
+1:  add x10, x10, #'0'
+2:  str w10, [x9]
+
+    lsr x10, x0, #24
+    and x10, x10, #0xF
+    cmp x10, #10
+    blt 3f
+    add x10, x10, #('A' - 10)
+    b 4f
+3:  add x10, x10, #'0'
+4:  str w10, [x9]
+
+    movz w10, #'\n'
+    str w10, [x9]
+
+    ldp x9, x10, [sp], #16
+    ldp x2, x3, [sp], #16
+    ldp x0, x1, [sp], #16
+
     // Just return success (0) - we don't actually do anything
     mov x0, #0
     b syscall_return
@@ -1362,6 +1452,37 @@ syscall_return:
     //   0x40FFF030: x0 (original) - not needed here (x0 has syscall result)
     //   0x40FFF038: ELR_EL1 (saved)
     //   0x40FFF040: SPSR_EL1 (saved)
+
+    // DEBUG: Print syscall return value (x0) (DISABLED to reduce noise)
+    // stp x9, x10, [sp, #-16]!      // Save x9, x10
+    // stp x11, x12, [sp, #-16]!      // Save x11, x12
+    // mov x12, x0                    // Save return value
+
+    // movz x9, #0x0900, lsl #16      // UART base
+    // movz w10, #'R'                 // Print 'R'
+    // str w10, [x9]
+    // movz w10, #':'                 // Print ':'
+    // str w10, [x9]
+
+    // // Print x0 as 16 hex digits
+    // mov x11, #60                   // Start at bit 60 (64-4)
+// .Lprint_return_loop:
+    // lsr x10, x12, x11              // Shift to get nibble
+    // and x10, x10, #0xF             // Mask to 4 bits
+    // cmp x10, #10
+    // blt 1f
+    // add x10, x10, #('A' - 10)      // A-F
+    // b 2f
+// 1:  add x10, x10, #'0'             // 0-9
+// 2:  str w10, [x9]                  // Print nibble
+    // subs x11, x11, #4              // Move to next nibble
+    // bpl .Lprint_return_loop        // Continue if >= 0
+
+    // movz w10, #'\n'                // Print newline
+    // str w10, [x9]
+
+    // ldp x11, x12, [sp], #16        // Restore x11, x12
+    // ldp x9, x10, [sp], #16         // Restore x9, x10
 
     // Save x0 (syscall result) temporarily to x10
     mov x10, x0

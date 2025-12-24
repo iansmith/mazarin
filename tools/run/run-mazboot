@@ -264,6 +264,30 @@ if [ "${QEMU_TRACE:-0}" != "0" ]; then
     )
 fi
 
+# Optional: enable GDB debugging
+# Usage:
+#   GDB=1 run-mazboot
+#
+# When enabled:
+#   - Adds "-s" to QEMU (listen for GDB on port 1234)
+#   - Adds "-S" to QEMU (pause at startup, wait for GDB)
+if [ "${GDB:-0}" != "0" ]; then
+    echo "Enabling GDB debugging:"
+    echo "  -s (GDB server on :1234)"
+    echo "  -S (pause at startup)"
+    echo ""
+    echo "In another terminal, run:"
+    echo "  $HOME/mazzy/bin/target-gdb flash/mazboot.elf"
+    echo "  (gdb) target remote :1234"
+    echo "  (gdb) continue"
+    echo ""
+
+    QEMU_CMD+=(
+        -s
+        -S
+    )
+fi
+
 # Display the full command line
 echo "QEMU command:"
 echo "${QEMU_CMD[@]}"

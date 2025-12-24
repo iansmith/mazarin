@@ -955,9 +955,22 @@ func KernelMain(r0, r1, atags uint32) {
 	//preMapPages()
 	//print("DONE\r\n")
 
-	print("Testing Item 5: runtime.schedinit()... ")
-	asm.CallRuntimeSchedinit()
+	// CHANGED: Skip full runtime.schedinit() in mazboot
+	// Mazboot is a bootloader, not a full Go program - it doesn't need GC or full heap
+	// Instead, use simple kmalloc/kfree for minimal allocation needs
+	print("Initializing simple heap (mazboot uses kmalloc, not full Go runtime heap)... ")
+
+	// Use existing heapInit (already implemented in heap.go)
+	heapInit(KMALLOC_HEAP_BASE)
 	print("PASS\r\n")
+
+	// Just call osinit to set ncpu (doesn't allocate memory)
+	print("Calling runtime.osinit()... ")
+	asm.CallRuntimeOsinit()
+	print("PASS\r\n")
+
+	// NOTE: We skip runtime.schedinit() and mallocinit() entirely
+	// kmazarin (the actual kernel) will do full Go runtime initialization
 
 	// Initialize VirtIO RNG device for random number generation
 	// NOTE: Moved here (after schedinit) to allow print() usage in initialization code
@@ -990,42 +1003,40 @@ func KernelMain(r0, r1, atags uint32) {
 	// =========================================
 	// Initialize Timer-Based Preemption System
 	// =========================================
+	// SKIP TIMER/GOROUTINE TESTS IN MAZBOOT
+	// =========================================
+	// Mazboot is a bootloader, not a full Go program
+	// It doesn't need timers, GC, scheduler, or goroutines
+	// All of that will be initialized in kmazarin (the actual kernel)
+	//
+	// Skipping:
+	// - Timer initialization (requires interrupts and runtime heap)
+	// - GC/scheduler monitors (require full runtime)
+	// - Goroutine tests (require scheduler)
+	//
+	// Instead, go straight to loading and starting kmazarin
 	print("\r\n═══════════════════════════════════════════════\r\n")
-	print("mazboot: Initializing Timer System\r\n")
-	print("═══════════════════════════════════════════════\r\n")
-
-	// Initialize time system (reads ARM Generic Timer frequency)
-	print("mazboot: Initializing hardware timer...\r\n")
-	initTime()
-
-	// Start monitoring goroutines (now that maxstacksize is properly set)
-	print("mazboot: Starting monitor goroutines...\r\n")
-	startGCMonitor()
-	startScavengerMonitor()
-	startSchedtraceMonitor()
-	print("mazboot: All monitors started\r\n")
-	print("  (Monitors will run once they receive timer ticks)\r\n")
-
-	// DEBUG: Dump allgs contents to understand the NULL entry issue
-	print("\r\nDEBUG: Dumping allgs contents...\r\n")
-	dumpAllGs()
-
+	print("mazboot: Skipping runtime tests (mazboot is bootloader only)\r\n")
+	print("mazboot: Ready to load kmazarin\r\n")
 	print("═══════════════════════════════════════════════\r\n\r\n")
 
-	// =========================================
-	// TEST: Simple goroutine/channel test
-	// Create a goroutine to run simpleMain and start the scheduler
-	// =========================================
-	print("\r\n=== Starting Simple Goroutine/Channel Test ===\r\n")
+	// TODO: Add kmazarin loading code here
+	// For now, just print success and halt
+	print("mazboot initialization COMPLETE!\r\n")
+	print("TODO: Load kmazarin from storage and transfer control\r\n\r\n")
 
-	// Create goroutine for simpleMain
-	print("Creating goroutine for simpleMain...\r\n")
-	asm.CallNewprocSimpleMain()
-	print("Goroutine created, starting scheduler...\r\n")
+	// SKIP goroutine/scheduler code (requires full runtime)
+	//print("Creating goroutine for simpleMain...\r\n")
+	//asm.CallNewprocSimpleMain()
+	//print("Goroutine created, starting scheduler...\r\n")
+	//print("Calling runtime.mstart()...\r\n")
+	//asm.CallRuntimeMstart()
 
-	// Start the scheduler - this should never return
-	print("Calling runtime.mstart()...\r\n")
-	asm.CallRuntimeMstart()
+	// Mazboot init complete - idle loop
+	for {
+		// TODO: Load kmazarin and jump to it
+		// For now, just halt
+	}
 
 	// Should never reach here
 	print("ERROR: mstart returned - should never happen!\r\n")

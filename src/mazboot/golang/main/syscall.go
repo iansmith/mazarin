@@ -393,14 +393,14 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 	uartPutsDirect(")\r\n")
 
 	// Handle zero-length mmap
-	// Linux allows this and returns a page-aligned address without actually allocating
-	// The Go runtime expects a valid (non-NULL) address even for 0-length maps
+	// This should never happen and indicates a runtime initialization bug
+	// However, we'll allocate a minimal page to allow runtime to continue
 	if length == 0 {
-		// Return a valid dummy address that won't be dereferenced
-		// Use a high address that's unlikely to conflict
-		const ZERO_LENGTH_DUMMY = uintptr(0x1000) // Page-aligned dummy
-		uartPutsDirect("  -> zero-length mmap, returning dummy address 0x1000\r\n")
-		return int64(ZERO_LENGTH_DUMMY)
+		uartPutsDirect("WARNING: Zero-length mmap - allocating 1 page to prevent crash\r\n")
+		uartPutsDirect("  This indicates mheap initialization issues!\r\n")
+		// Allocate one page (4KB) from bump allocator
+		length = 4096
+		// Fall through to normal allocation
 	}
 
 	// Linux mmap semantics:

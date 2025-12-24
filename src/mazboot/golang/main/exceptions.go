@@ -254,10 +254,10 @@ func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType u
 	// inExceptionHandler = 1  // DISABLED
 
 	// Check for stack overflow (option 2)
-	// Exception stack is at 0x5FFE0000, should be well above 0x5FFD0000
+	// We now use g0 stack (0x5EFF8000-0x5F000000) for all exception/syscall handlers
 	sp := asm.GetCallerStackPointer()
-	const minSP = uintptr(0x5FFD0000)  // 64KB below exception stack
-	const maxSP = uintptr(0x60000000)  // Top of exception stack region
+	const minSP = uintptr(0x5EFF8000)  // Bottom of g0 stack
+	const maxSP = uintptr(0x60000000)  // Top of exception stack region (allows both g0 and exception stacks)
 	if sp < minSP || sp > maxSP {
 		uartPutsDirect("\r\n!STACK OVERFLOW! SP=0x")
 		uartPutHex64Direct(uint64(sp))
@@ -612,8 +612,21 @@ func HandleSyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) uint64
 		// mprotect - return success
 		return 0
 
-	case 233: // munmap
-		// munmap - return success
+	case 233: // madvise
+		// madvise - give advice about memory usage
+		// Arguments: arg0=addr, arg1=length, arg2=advice
+		// Common advice values: MADV_DONTNEED=4, MADV_FREE=8
+		// For now, just accept all advice and return success
+
+		// DEBUG: Print madvise call
+		uartPutsDirect("\r\nmadvise(addr=0x")
+		uartPutHex64Direct(arg0)
+		uartPutsDirect(", len=0x")
+		uartPutHex64Direct(arg1)
+		uartPutsDirect(", advice=")
+		uartPutHex64Direct(arg2)
+		uartPutsDirect(")\r\n")
+
 		return 0
 
 	case 261: // prlimit64

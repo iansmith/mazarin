@@ -203,6 +203,10 @@ func GetRtcBase() uintptr
 //go:nosplit
 func GetRuntimeLoadGAddr() uintptr
 
+//go:linkname GetRuntimeMheapAddr get_runtime_mheap_addr
+//go:nosplit
+func GetRuntimeMheapAddr() uintptr
+
 //go:linkname GetRuntimeSaveGAddr get_runtime_save_g_addr
 //go:nosplit
 func GetRuntimeSaveGAddr() uintptr

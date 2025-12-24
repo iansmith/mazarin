@@ -184,6 +184,17 @@ get_kmazarin_size:
 .weak runtime.load_g.abi0
 .weak runtime.save_g.abi0
 
+// Declare runtime.mheap_ global variable as external reference
+// This ensures it gets added to globalize_symbols.txt and properly linked
+.extern runtime.mheap_
+
+// get_runtime_mheap_addr() returns uintptr
+// Returns the address of runtime.mheap_ global variable
+.global get_runtime_mheap_addr
+get_runtime_mheap_addr:
+    ldr x0, =runtime.mheap_
+    ret
+
 // get_runtime_load_g_addr() returns uintptr
 .global get_runtime_load_g_addr
 get_runtime_load_g_addr:
