@@ -1442,12 +1442,38 @@ set_maxstackceiling:
 // Kmazarin Kernel Loading
 // =================================================================
 
-// jump_to_kmazarin(entryAddr uintptr) - Jump to kmazarin kernel entry point
-// This function performs a clean transition from mazboot to kmazarin
-// Parameter: x0 = entry point address
+// jump_to_kmazarin(entryAddr uintptr, argc uint64, argv uintptr, stackPointer uintptr)
+// This function sets up the Go runtime environment and jumps to kmazarin
+// Parameters (ARM64 calling convention):
+//   x0 = entryAddr - address to jump to
+//   x1 = argc - argument count
+//   x2 = argv - pointer to argv array
+//   x3 = stackPointer - pointer to argc/argv/envp/auxv structure
+// Sets up registers as expected by Go runtime _rt0_arm64_linux:
+//   R0 = argc
+//   R1 = argv
+//   SP = stackPointer (pointing to the full structure)
 // NOTE: This function never returns
 .global jump_to_kmazarin
 jump_to_kmazarin:
-    // Simply branch to the entry point in x0
-    // The kmazarin kernel should be fully loaded into memory at this point
-    br x0                     // Branch to entry point - never returns
+    // Save entry point address to x4 (we need x0 for argc)
+    mov x4, x0
+
+    // Set up Go runtime registers:
+    // R0 = argc (from x1)
+    mov x0, x1
+
+    // R1 = argv (from x2)
+    mov x1, x2
+
+    // SP = stackPointer (from x3)
+    // CRITICAL: The Go runtime expects SP to point to the start of the structure
+    // which contains argc at [SP+0], argv at [SP+8], envp at [SP+16], auxv at [SP+32]
+    mov sp, x3
+
+    // Jump to kmazarin entry point (_rt0_arm64_linux)
+    // At this point:
+    //   R0 = argc = 1
+    //   R1 = argv = pointer to argv array
+    //   SP = pointer to full argc/argv/envp/auxv structure
+    br x4                     // Branch to entry point - never returns

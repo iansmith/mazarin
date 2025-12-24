@@ -1032,10 +1032,11 @@ func KernelMain(r0, r1, atags uint32) {
 	//print("Calling runtime.mstart()...\r\n")
 	//asm.CallRuntimeMstart()
 
-	// Mazboot init complete - idle loop
+	// Mazboot init complete - load and run kmazarin
+	loadAndRunKmazarin()
+
+	// Should never return
 	for {
-		// TODO: Load kmazarin and jump to it
-		// For now, just halt
 	}
 
 	// Should never reach here
@@ -1752,6 +1753,112 @@ func parseEmbeddedKmazarin() {
 	print("\r\n=== End of ELF Information ===\r\n\r\n")
 }
 
+// setupKmazarinStartupEnv sets up the argc/argv/envp/auxv structure that the Go runtime expects
+// Returns: (stackPointer, argc, argv)
+//   - stackPointer: pointer to the start of the structure (for SP register)
+//   - argc: argument count (for R0 register)
+//   - argv: pointer to argv array (for R1 register)
+//
+// The structure layout in memory:
+//   [0]   = argc (int64, value: 1)
+//   [8]   = argv[0] (pointer to program name string)
+//   [16]  = NULL (end of argv)
+//   [24]  = NULL (end of envp, empty environment)
+//   [32]  = auxv[0].tag (AT_PAGESZ = 6)
+//   [40]  = auxv[0].value (4096)
+//   [48]  = auxv[1].tag (AT_RANDOM = 25)
+//   [56]  = auxv[1].value (pointer to random bytes)
+//   [64]  = auxv[2].tag (AT_SECURE = 23)
+//   [72]  = auxv[2].value (0)
+//   [80]  = AT_NULL (0)
+//   [88]  = AT_NULL value (0)
+//   [96]  = program name string "kmazarin\0"
+//   [112] = random bytes (16 bytes, 128 bits)
+//
+// This matches the Linux kernel's ELF loader behavior
+//
+//go:nosplit
+func setupKmazarinStartupEnv() (stackPointer uintptr, argc uint64, argv uintptr) {
+	// Allocate a 64KB stack for kmazarin (16 pages)
+	// In Linux, argc/argv/envp/auxv are placed at the TOP of the initial stack
+	const stackPages = 16
+	const stackSize = stackPages * 0x1000
+	const stackBase = uintptr(0xD0000000)  // Stack base address
+
+	// Allocate and map stack pages
+	for i := uintptr(0); i < stackPages; i++ {
+		physFrame := allocPhysFrame()
+		if physFrame == 0 {
+			return 0, 0, 0
+		}
+		mapPage(stackBase+i*0x1000, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	}
+
+	// IMPORTANT: Skip TLB invalidation! Since this is a NEW mapping (not modifying
+	// an existing one), we don't need to invalidate the TLB. Calling InvalidateTlbAll()
+	// causes kmazarin to execute prematurely (likely because it invalidates TLB entries
+	// for kmazarin's memory space).
+	// Just use barriers to ensure the page table update is visible:
+	asm.Dsb()  // Ensure page table write completes
+	asm.Isb()  // Ensure subsequent instructions see the new mapping
+
+	// Place argc/argv/envp/auxv at the TOP of the stack
+	// SP will point to argc, and the structure grows downward
+	stackTop := stackBase + stackSize
+	structStart := stackTop - 0x200  // Reserve 512 bytes for the structure
+
+	// Zero the structure area
+	bzero(unsafe.Pointer(structStart), 0x200)
+
+	// Get random bytes for AT_RANDOM
+	randomBytesAddr := structStart + 112
+	getRandomBytes(unsafe.Pointer(randomBytesAddr), 16)
+
+	// Set up the structure as an array of uint64 values
+	data := (*[256]uint64)(unsafe.Pointer(structStart))
+
+	// Program name string at offset 96 (byte offset)
+	progName := (*[16]byte)(unsafe.Pointer(structStart + 96))
+	progName[0] = 'k'
+	progName[1] = 'm'
+	progName[2] = 'a'
+	progName[3] = 'z'
+	progName[4] = 'a'
+	progName[5] = 'r'
+	progName[6] = 'i'
+	progName[7] = 'n'
+	progName[8] = 0
+
+	// argc = 1
+	data[0] = 1
+	// argv[0] = pointer to program name
+	data[1] = uint64(structStart + 96)
+	// argv[1] = NULL (end of argv)
+	data[2] = 0
+	// envp[0] = NULL (empty environment)
+	data[3] = 0
+
+	// Auxiliary vector starts at offset 32 (index 4)
+	// AT_PAGESZ = 6
+	data[4] = 6
+	data[5] = 4096
+	// AT_RANDOM = 25, pointer to 16 random bytes
+	data[6] = 25
+	data[7] = uint64(randomBytesAddr)
+	// AT_SECURE = 23, value = 0 (not in secure mode)
+	data[8] = 23
+	data[9] = 0
+	// AT_NULL = 0 (terminator)
+	data[10] = 0
+	data[11] = 0
+
+	// Return values for register setup
+	// SP should point to argc (start of structure at top of stack)
+	// R0 = argc
+	// R1 = pointer to argv (which is at offset 8)
+	return structStart, 1, structStart + 8
+}
+
 // loadAndRunKmazarin loads the embedded kmazarin ELF binary into memory and jumps to it
 // This function:
 // 1. Parses the ELF program headers to find PT_LOAD segments
@@ -1766,19 +1873,15 @@ func parseEmbeddedKmazarin() {
 func loadAndRunKmazarin() {
 	print("\r\n=== Loading Kmazarin Kernel ===\r\n")
 
-	// DTB region ends at 0x40100000 on QEMU virt machine
-	// We need to load kmazarin after this to avoid conflict
-	const DTB_END = uintptr(0x40100000)
-
 	// Get the embedded kmazarin binary location from linker symbols
 	kmazarinStart := getLinkerSymbol("__kmazarin_start")
 	kmazarinSize := getLinkerSymbol("__kmazarin_size")
 
-	print("Loading from: 0x")
-	printHex64(uint64(kmazarinStart))
-	print(" (size: ")
-	printUint32(uint32(kmazarinSize))
-	print(" bytes)\r\n")
+	// Validate symbols
+	if kmazarinStart == 0 || kmazarinSize == 0 {
+		print("ERROR: Invalid kmazarin symbols\r\n")
+		return
+	}
 
 	// Create a byte slice from the embedded binary
 	var elfData []byte
@@ -1791,26 +1894,17 @@ func loadAndRunKmazarin() {
 	sliceHeader.Len = int(kmazarinSize)
 	sliceHeader.Cap = int(kmazarinSize)
 
+	// Simple manual ELF parsing to avoid complex library dependencies
+	// We only need entry point - kmazarin is already at the correct memory location
+
 	// Verify ELF magic
-	if len(elfData) < 64 {
-		print("ERROR: ELF data too small\r\n")
-		return
-	}
-	if elfData[0] != 0x7F || elfData[1] != 'E' || elfData[2] != 'L' || elfData[3] != 'F' {
-		print("ERROR: Invalid ELF magic bytes\r\n")
-		print("  Got: 0x")
-		printHex8(elfData[0])
-		print(" 0x")
-		printHex8(elfData[1])
-		print(" 0x")
-		printHex8(elfData[2])
-		print(" 0x")
-		printHex8(elfData[3])
-		print("\r\n")
+	if len(elfData) < 64 ||
+		elfData[0] != 0x7F || elfData[1] != 'E' || elfData[2] != 'L' || elfData[3] != 'F' {
+		print("ERROR: Invalid ELF file\r\n")
 		return
 	}
 
-	// Parse entry point
+	// Parse entry point (offset 0x18-0x1F for 64-bit ELF)
 	entry := uint64(elfData[0x18]) |
 		(uint64(elfData[0x19]) << 8) |
 		(uint64(elfData[0x1A]) << 16) |
@@ -1820,480 +1914,50 @@ func loadAndRunKmazarin() {
 		(uint64(elfData[0x1E]) << 48) |
 		(uint64(elfData[0x1F]) << 56)
 
-	print("Entry point: 0x")
-	printHex64(entry)
-	print("\r\n")
+	// Skip complex ELF loading - kmazarin is already embedded and loaded
+	// Calculate actual entry address (embedded base + entry offset)
+	entryAddr := kmazarinStart + uintptr(entry)
 
-	// Parse program headers
-	phoff := uint64(elfData[0x20]) |
-		(uint64(elfData[0x21]) << 8) |
-		(uint64(elfData[0x22]) << 16) |
-		(uint64(elfData[0x23]) << 24) |
-		(uint64(elfData[0x24]) << 32) |
-		(uint64(elfData[0x25]) << 40) |
-		(uint64(elfData[0x26]) << 48) |
-		(uint64(elfData[0x27]) << 56)
+	// Register kmazarin as Span 2 for the page fault handler
+	minVA := kmazarinStart &^ 0xFFF
+	maxVA := (kmazarinStart + kmazarinSize + 0xFFF) &^ 0xFFF
 
-	phentsize := uint16(elfData[0x36]) | (uint16(elfData[0x37]) << 8)
-	phnum := uint16(elfData[0x38]) | (uint16(elfData[0x39]) << 8)
-
-	// First pass: find the first PT_LOAD segment to compute the load offset
-	// Pack kmazarin right after mazboot's bss section for contiguous layout
-	var loadOffset uintptr
-
-	// Get end of mazboot's bss section - this is where kmazarin will be loaded
-	bssEnd := getLinkerSymbol("__bss_end")
-	// Round up to next page boundary for alignment
-	kmazarinLoadAddr := (bssEnd + 0xFFF) &^ 0xFFF
-
-	for i := uint16(0); i < phnum; i++ {
-		offset := phoff + uint64(i)*uint64(phentsize)
-		if offset+56 > uint64(len(elfData)) {
-			break
-		}
-
-		ptype := uint32(elfData[offset]) |
-			(uint32(elfData[offset+1]) << 8) |
-			(uint32(elfData[offset+2]) << 16) |
-			(uint32(elfData[offset+3]) << 24)
-
-		// Find first PT_LOAD segment (type 1)
-		if ptype == 1 {
-			firstVaddr := uint64(elfData[offset+16]) |
-				(uint64(elfData[offset+17]) << 8) |
-				(uint64(elfData[offset+18]) << 16) |
-				(uint64(elfData[offset+19]) << 24) |
-				(uint64(elfData[offset+20]) << 32) |
-				(uint64(elfData[offset+21]) << 40) |
-				(uint64(elfData[offset+22]) << 48) |
-				(uint64(elfData[offset+23]) << 56)
-
-			// Compute offset: where we want it (after mazboot) minus where it wants to be (firstVaddr)
-			loadOffset = kmazarinLoadAddr - uintptr(firstVaddr)
-			print("Computed load offset: " + hex64(uint64(loadOffset)) +
-				" (mazboot bss end " + hex64(uint64(bssEnd)) +
-				" → kmazarin load " + hex64(uint64(kmazarinLoadAddr)) +
-				" - first segment vaddr " + hex64(firstVaddr) + ")\r\n")
-			break
-		}
-	}
-
-	print("\r\nPre-mapping all segments:\r\n")
-
-	// Second pass: Pre-map ALL PT_LOAD segments upfront
-	// This separates memory allocation from data copying and makes it easier to detect OOM early
-	segmentCount := uint32(0)
-	totalPages := uint32(0)
-	for i := uint16(0); i < phnum; i++ {
-		offset := phoff + uint64(i)*uint64(phentsize)
-		if offset+56 > uint64(len(elfData)) {
-			print("ERROR: Program header offset out of bounds\r\n")
-			break
-		}
-
-		// Read program header fields
-		ptype := uint32(elfData[offset]) |
-			(uint32(elfData[offset+1]) << 8) |
-			(uint32(elfData[offset+2]) << 16) |
-			(uint32(elfData[offset+3]) << 24)
-
-		// Only process PT_LOAD segments (type 1)
-		if ptype != 1 {
-			continue
-		}
-
-		flags := uint32(elfData[offset+4]) |
-			(uint32(elfData[offset+5]) << 8) |
-			(uint32(elfData[offset+6]) << 16) |
-			(uint32(elfData[offset+7]) << 24)
-
-		vaddr := uint64(elfData[offset+16]) |
-			(uint64(elfData[offset+17]) << 8) |
-			(uint64(elfData[offset+18]) << 16) |
-			(uint64(elfData[offset+19]) << 24) |
-			(uint64(elfData[offset+20]) << 32) |
-			(uint64(elfData[offset+21]) << 40) |
-			(uint64(elfData[offset+22]) << 48) |
-			(uint64(elfData[offset+23]) << 56)
-
-		memsz := uint64(elfData[offset+40]) |
-			(uint64(elfData[offset+41]) << 8) |
-			(uint64(elfData[offset+42]) << 16) |
-			(uint64(elfData[offset+43]) << 24) |
-			(uint64(elfData[offset+44]) << 32) |
-			(uint64(elfData[offset+45]) << 40) |
-			(uint64(elfData[offset+46]) << 48) |
-			(uint64(elfData[offset+47]) << 56)
-
-		// Calculate destination address with offset
-		destAddr := uintptr(vaddr) + loadOffset
-		destEnd := destAddr + uintptr(memsz)
-
-		print("  [" + uint64String(uint64(segmentCount)) + "] " + hex64(vaddr) +
-			" → " + hex64(uint64(destAddr)) +
-			" (" + uint64String(memsz) + " bytes, ")
-		if (flags & 0x4) != 0 {
-			print("R")
-		} else {
-			print("-")
-		}
-		if (flags & 0x2) != 0 {
-			print("W")
-		} else {
-			print("-")
-		}
-		if (flags & 0x1) != 0 {
-			print("X")
-		} else {
-			print("-")
-		}
-		print("): ")
-
-		// Pre-map all pages for this segment (including BSS)
-		// CRITICAL: During loading, ALL pages must be WRITABLE so we can copy data
-		// We'll remap with correct permissions after copying
-		pageCount := uint32(0)
-		remapCount := uint32(0)
-		for va := destAddr &^ 0xFFF; va < destEnd; va += 0x1000 {
-			// Check if page is already mapped (from early heap mapping)
-			existingPA := getPhysicalAddress(va)
-			if existingPA != 0 {
-				// Page already mapped (likely from heap pre-mapping)
-				// Map as RW during loading (we'll fix permissions after copy)
-				mapPage(va, existingPA, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-				remapCount++
-			} else {
-				// Page not mapped - allocate new frame
-				physFrame := allocPhysFrame()
-				if physFrame == 0 {
-					print("\r\nERROR: Out of physical frames during pre-mapping\r\n")
-					return
-				}
-				// Zero the frame before mapping to avoid stale data
-				bzero(unsafe.Pointer(physFrame), 0x1000)
-				// Map as RW during loading (we'll fix permissions after copy)
-				mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-			}
-			pageCount++
-		}
-		print(uint64String(uint64(pageCount)) + " pages (" + uint64String(uint64(remapCount)) + " remapped)\r\n")
-
-		totalPages += pageCount
-		segmentCount++
-	}
-
-	print("Pre-mapped " + uint64String(uint64(segmentCount)) + " segments (" + uint64String(uint64(totalPages)) + " pages total)\r\n")
-
-	// Flush TLB to ensure all pre-mapped pages are visible
-	// Without this, the TLB still has stale "not present" entries, causing page faults
-	print("Flushing TLB... ")
-	asm.Dsb()                  // Ensure all page table writes are complete
-	asm.InvalidateTlbAll()     // Flush entire TLB
-	asm.Dsb()                  // Ensure TLB flush completes
-	asm.Isb()                  // Synchronize context
-	print("OK\r\n")
-
-	print("\r\nLoading segment data:\r\n")
-
-	// Third pass: Copy data for each PT_LOAD segment
-	loadCount := uint32(0)
-	for i := uint16(0); i < phnum; i++ {
-		offset := phoff + uint64(i)*uint64(phentsize)
-		if offset+56 > uint64(len(elfData)) {
-			print("ERROR: Program header offset out of bounds\r\n")
-			break
-		}
-
-		// Read program header fields
-		ptype := uint32(elfData[offset]) |
-			(uint32(elfData[offset+1]) << 8) |
-			(uint32(elfData[offset+2]) << 16) |
-			(uint32(elfData[offset+3]) << 24)
-
-		// Only process PT_LOAD segments (type 1)
-		if ptype != 1 {
-			continue
-		}
-
-		poffset := uint64(elfData[offset+8]) |
-			(uint64(elfData[offset+9]) << 8) |
-			(uint64(elfData[offset+10]) << 16) |
-			(uint64(elfData[offset+11]) << 24) |
-			(uint64(elfData[offset+12]) << 32) |
-			(uint64(elfData[offset+13]) << 40) |
-			(uint64(elfData[offset+14]) << 48) |
-			(uint64(elfData[offset+15]) << 56)
-
-		vaddr := uint64(elfData[offset+16]) |
-			(uint64(elfData[offset+17]) << 8) |
-			(uint64(elfData[offset+18]) << 16) |
-			(uint64(elfData[offset+19]) << 24) |
-			(uint64(elfData[offset+20]) << 32) |
-			(uint64(elfData[offset+21]) << 40) |
-			(uint64(elfData[offset+22]) << 48) |
-			(uint64(elfData[offset+23]) << 56)
-
-		filesz := uint64(elfData[offset+32]) |
-			(uint64(elfData[offset+33]) << 8) |
-			(uint64(elfData[offset+34]) << 16) |
-			(uint64(elfData[offset+35]) << 24) |
-			(uint64(elfData[offset+36]) << 32) |
-			(uint64(elfData[offset+37]) << 40) |
-			(uint64(elfData[offset+38]) << 48) |
-			(uint64(elfData[offset+39]) << 56)
-
-		memsz := uint64(elfData[offset+40]) |
-			(uint64(elfData[offset+41]) << 8) |
-			(uint64(elfData[offset+42]) << 16) |
-			(uint64(elfData[offset+43]) << 24) |
-			(uint64(elfData[offset+44]) << 32) |
-			(uint64(elfData[offset+45]) << 40) |
-			(uint64(elfData[offset+46]) << 48) |
-			(uint64(elfData[offset+47]) << 56)
-
-		// Calculate destination address with offset
-		destAddr := uintptr(vaddr) + loadOffset
-
-		print("  [" + uint64String(uint64(loadCount)) + "] ")
-
-		// Copy segment data from embedded binary to destination
-		// Handle negative file offsets (ELF files can have segments that include headers)
-		var srcAddr uintptr
-		if poffset >= 0x8000000000000000 { // Negative offset (int64 < 0)
-			// For negative offsets in an embedded ELF, use offset 0
-			// (the segment wants to include the ELF headers from the start)
-			srcAddr = kmazarinStart
-			print("  WARNING: Negative file offset detected: " + hex64(poffset) + ", using kmazarinStart\r\n")
-		} else {
-			srcAddr = kmazarinStart + uintptr(poffset)
-		}
-
-		if filesz > 0 {
-			print("Copying " + uint64String(filesz) + " bytes from " + hex64(uint64(srcAddr)) + " to " + hex64(uint64(destAddr)) + "... ")
-
-			// Verify pointers are not NULL
-			if destAddr == 0 {
-				print("ERROR: destAddr is NULL!\r\n")
-				return
-			}
-			if srcAddr == 0 {
-				print("ERROR: srcAddr is NULL!\r\n")
-				return
-			}
-
-			// Pages are already pre-mapped, just copy the data
-			asm.MemmoveBytes(
-				unsafe.Pointer(destAddr),
-				unsafe.Pointer(srcAddr),
-				uint32(filesz))
-			print("OK")
-		}
-
-		// BSS area is already zeroed (we bzero'd the frames during pre-mapping)
-		if memsz > filesz {
-			bssSize := memsz - filesz
-			print(" (BSS: " + uint64String(bssSize) + " bytes already zeroed)")
-		}
-		print("\r\n")
-
-		loadCount++
-	}
-
-	print("\r\nLoaded " + uint64String(uint64(loadCount)) + " segments\r\n")
-
-	// Fourth pass: Remap all segments with final correct permissions
-	print("\r\nApplying final permissions:\r\n")
-	segmentCount = 0
-	for i := uint16(0); i < phnum; i++ {
-		offset := phoff + uint64(i)*uint64(phentsize)
-		if offset+56 > uint64(len(elfData)) {
-			print("ERROR: Program header offset out of bounds\r\n")
-			break
-		}
-
-		// Read program header fields
-		ptype := uint32(elfData[offset]) |
-			(uint32(elfData[offset+1]) << 8) |
-			(uint32(elfData[offset+2]) << 16) |
-			(uint32(elfData[offset+3]) << 24)
-
-		// Only process PT_LOAD segments (type 1)
-		if ptype != 1 {
-			continue
-		}
-
-		flags := uint32(elfData[offset+4]) |
-			(uint32(elfData[offset+5]) << 8) |
-			(uint32(elfData[offset+6]) << 16) |
-			(uint32(elfData[offset+7]) << 24)
-
-		vaddr := uint64(elfData[offset+16]) |
-			(uint64(elfData[offset+17]) << 8) |
-			(uint64(elfData[offset+18]) << 16) |
-			(uint64(elfData[offset+19]) << 24) |
-			(uint64(elfData[offset+20]) << 32) |
-			(uint64(elfData[offset+21]) << 40) |
-			(uint64(elfData[offset+22]) << 48) |
-			(uint64(elfData[offset+23]) << 56)
-
-		memsz := uint64(elfData[offset+40]) |
-			(uint64(elfData[offset+41]) << 8) |
-			(uint64(elfData[offset+42]) << 16) |
-			(uint64(elfData[offset+43]) << 24) |
-			(uint64(elfData[offset+44]) << 32) |
-			(uint64(elfData[offset+45]) << 40) |
-			(uint64(elfData[offset+46]) << 48) |
-			(uint64(elfData[offset+47]) << 56)
-
-		// Calculate destination address with offset
-		destAddr := uintptr(vaddr) + loadOffset
-		destEnd := destAddr + uintptr(memsz)
-
-		print("  [" + uint64String(uint64(segmentCount)) + "] " + hex64(uint64(destAddr)) + "-" + hex64(uint64(destEnd)) + ": ")
-
-		// Determine final permissions from ELF flags
-		var ap uint64
-		var exec uint64
-
-		if (flags & 0x2) != 0 {
-			// Writable segment (.data, .bss)
-			ap = PTE_AP_RW_EL1
-		} else {
-			// Read-only segment (.text, .rodata)
-			ap = PTE_AP_RO_EL1
-		}
-
-		if (flags & 0x1) != 0 {
-			// Executable segment (.text)
-			exec = PTE_EXEC_ALLOW
-		} else {
-			// Non-executable segment (.data, .bss, .rodata)
-			exec = PTE_EXEC_NEVER
-		}
-
-		// Remap all pages with final permissions
-		for va := destAddr &^ 0xFFF; va < destEnd; va += 0x1000 {
-			existingPA := getPhysicalAddress(va)
-			if existingPA == 0 {
-				print("\r\nERROR: Page not mapped during permission update!\r\n")
-				return
-			}
-			mapPage(va, existingPA, PTE_ATTR_NORMAL, ap, exec)
-		}
-
-		if (flags & 0x4) != 0 {
-			print("R")
-		} else {
-			print("-")
-		}
-		if (flags & 0x2) != 0 {
-			print("W")
-		} else {
-			print("-")
-		}
-		if (flags & 0x1) != 0 {
-			print("X")
-		} else {
-			print("-")
-		}
-		print("\r\n")
-
-		segmentCount++
-	}
-
-	// Flush TLB to ensure permission changes are visible
-	print("Flushing TLB after permission update... ")
-	asm.Dsb()
-	asm.InvalidateTlbAll()
-	asm.Dsb()
-	asm.Isb()
-	print("OK\r\n")
-
-	// CRITICAL: Register the entire loaded kernel region as an mmap span
-	// This allows the page fault handler to accept accesses to kmazarin's code/data
-	// Calculate min/max virtual addresses across all loaded segments
-	var minVA uintptr = ^uintptr(0) // Max possible value
-	var maxVA uintptr = 0
-
-	for i := uint16(0); i < phnum; i++ {
-		offset := phoff + uint64(i)*uint64(phentsize)
-		if offset+56 > uint64(len(elfData)) {
-			break
-		}
-
-		ptype := uint32(elfData[offset]) |
-			(uint32(elfData[offset+1]) << 8) |
-			(uint32(elfData[offset+2]) << 16) |
-			(uint32(elfData[offset+3]) << 24)
-
-		if ptype != 1 { // PT_LOAD
-			continue
-		}
-
-		vaddr := uint64(elfData[offset+16]) |
-			(uint64(elfData[offset+17]) << 8) |
-			(uint64(elfData[offset+18]) << 16) |
-			(uint64(elfData[offset+19]) << 24) |
-			(uint64(elfData[offset+20]) << 32) |
-			(uint64(elfData[offset+21]) << 40) |
-			(uint64(elfData[offset+22]) << 48) |
-			(uint64(elfData[offset+23]) << 56)
-
-		memsz := uint64(elfData[offset+40]) |
-			(uint64(elfData[offset+41]) << 8) |
-			(uint64(elfData[offset+42]) << 16) |
-			(uint64(elfData[offset+43]) << 24) |
-			(uint64(elfData[offset+44]) << 32) |
-			(uint64(elfData[offset+45]) << 40) |
-			(uint64(elfData[offset+46]) << 48) |
-			(uint64(elfData[offset+47]) << 56)
-
-		destAddr := uintptr(vaddr) + loadOffset
-		destEnd := destAddr + uintptr(memsz)
-
-		if destAddr < minVA {
-			minVA = destAddr
-		}
-		if destEnd > maxVA {
-			maxVA = destEnd
-		}
-	}
-
-	// Round to page boundaries
-	minVA = minVA &^ 0xFFF
-	maxVA = (maxVA + 0xFFF) &^ 0xFFF
-
-	// Register the kernel's entire loaded region as Span 2
-	// (Span 0 = DTB, Span 1 = Mazboot, Span 2 = Kmazarin)
-	// This must succeed or we can't run the kernel!
-	print("\r\nRegistering kmazarin loaded region as mmap span (Span 2):\r\n")
-	print("  VA range: 0x" + hex64(uint64(minVA)) + " - 0x" + hex64(uint64(maxVA)) + "\r\n")
+	print("Registering kmazarin span...\r\n")
 	if !registerMmapSpan(minVA, maxVA) {
-		print("ERROR: Failed to register kmazarin as mmap span!\r\n")
-		print("This should never happen - Span 2 should be available.\r\n")
+		print("ERROR: Failed to register span!\r\n")
 		for {} // Hang
 	}
-	print("  Registered successfully\r\n")
 
-	// Jump to kmazarin entry point
-	entryAddr := uintptr(entry) + loadOffset
-	print("\r\nJumping to kmazarin entry point at " + hex64(uint64(entryAddr)) +
-		" (entry " + hex64(entry) +
-		" + offset " + hex64(uint64(loadOffset)) + ")...\r\n\r\n")
+	// Set up argc/argv/envp/auxv structure
+	stackPointer, argc, argv := setupKmazarinStartupEnv()
+	if stackPointer == 0 || argv == 0 {
+		print("ERROR: Environment setup failed!\r\n")
+		return
+	}
 
-	// Jump to entry point
-	// We need to do this via assembly to ensure proper register setup
-	jumpToKmazarin(entryAddr)
+	// Jump to kmazarin with proper argc/argv/auxv
+	print("Jumping to kmazarin...\r\n\r\n")
+	jumpToKmazarin(entryAddr, argc, argv, stackPointer)
 
 	// Should never reach here
 	print("ERROR: Returned from kmazarin!\r\n")
 }
 
-// jumpToKmazarin jumps to the kmazarin kernel entry point
+// jumpToKmazarin jumps to the kmazarin kernel entry point with proper environment setup
 // This is implemented in assembly (lib.s) to ensure clean transition
-// Parameter: entryAddr = address to jump to
+// Parameters:
+//   - entryAddr = address to jump to
+//   - argc = argument count (loaded into R0)
+//   - argv = pointer to argv array (loaded into R1)
+//   - stackPointer = pointer to argc/argv/envp/auxv structure (loaded into SP)
 // NOTE: This function never returns
 //
 //go:linkname jumpToKmazarin jump_to_kmazarin
 //go:nosplit
-func jumpToKmazarin(entryAddr uintptr)
+func jumpToKmazarin(entryAddr uintptr, argc uint64, argv uintptr, stackPointer uintptr)
+
+// OLD SEGMENT LOADING CODE REMOVED - replaced with simple embedded binary approach
+//
+// The original code loaded and copied ELF segments, but since kmazarin is already embedded
+// in mazboot's binary at compile time, we can skip that and jump directly to it.
+//

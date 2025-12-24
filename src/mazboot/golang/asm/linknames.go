@@ -257,7 +257,7 @@ func Isb()
 
 //go:linkname JumpToKmazarin jump_to_kmazarin
 //go:nosplit
-func JumpToKmazarin(entryAddr uintptr)
+func JumpToKmazarin(entryAddr uintptr, argc uint64, argv uintptr, stackPointer uintptr)
 
 //go:linkname JumpToNull jump_to_null
 //go:nosplit
