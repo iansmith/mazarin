@@ -673,7 +673,7 @@ func KernelMain(r0, r1, atags uint32) {
 	// Normally this would be set by sysauxv from AT_PAGESZ auxiliary vector
 	physPageSizeAddr := asm.GetPhysPageSizeAddr()
 	writeMemory64(physPageSizeAddr, 4096)
-	print("physPageSize set to 4096\r\n")
+	uartPutsDirect("physPageSize set to 4096\r\n")
 
 	// NOTE: VirtIO RNG initialization moved to after schedinit() to allow print() usage
 	// schedinit() will use fake random data via getFakeRandomBytes() until RNG is initialized
@@ -684,14 +684,14 @@ func KernelMain(r0, r1, atags uint32) {
 		pl031Base := getLinkerSymbol("__rtc_base")
 		pl031Size := uintptr(0x1000) // 4KB page
 		uartPutsDirect("Mapping PL031 RTC at 0x")
-	uartPutHex32(uint32(pl031Base))
-	uartPutsDirect("...\r\n")
+		uartPutHex32(uint32(pl031Base))
+		uartPutsDirect("...\r\n")
 		for offset := uintptr(0); offset < pl031Size; offset += 0x1000 {
 			va := pl031Base + offset
 			pa := pl031Base + offset // Identity mapping
 			mapPage(va, pa, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 		}
-		print("PL031 RTC mapped\r\n")
+		uartPutsDirect("PL031 RTC mapped\r\n")
 	}
 
 	// Initialize PL031 RTC for time services (needed by schedinit)
@@ -725,151 +725,29 @@ func KernelMain(r0, r1, atags uint32) {
 		for va := dtbStart; va < dtbEnd; va += 0x1000 {
 			physFrame := allocPhysFrame()
 			if physFrame == 0 {
-				print("ERROR: Out of physical frames\r\n")
+				uartPutsDirect("ERROR: Out of physical frames\r\n")
 				break
 			}
-			bzero(unsafe.Pointer(physFrame), 0x1000)
 			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+			// Zero the frame AFTER mapping (so we can access it via VA)
+			bzero(unsafe.Pointer(va), 0x1000)
 			if (va-dtbStart)%(64*0x1000) == 0 {
-				print(".")
+				uartPutcDirect('.')
 			}
 		}
-		print("\r\nPre-mapped DTB region\r\n")
+		uartPutsDirect("\r\nPre-mapped DTB region\r\n")
 
-		// Map g0 stack (system goroutine stack, 32KB)
-		g0StackBottom := getLinkerSymbol("__g0_stack_bottom")
-		g0StackTop := getLinkerSymbol("__stack_top")
-		uartPutsDirect("Pre-mapping g0 stack (0x")
-		uartPutHex64(uint64(g0StackBottom))
-		uartPutsDirect("-0x")
-		uartPutHex64(uint64(g0StackTop))
-		uartPutsDirect(")...\r\n")
-		for va := g0StackBottom; va < g0StackTop; va += 0x1000 {
-			physFrame := allocPhysFrame()
-			if physFrame == 0 {
-				print("ERROR: Out of physical frames\r\n")
-				break
-			}
-			bzero(unsafe.Pointer(physFrame), 0x1000)
-			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-			if (va-g0StackBottom)%(8*0x1000) == 0 {
-				print(".")
-			}
-		}
-		print("\r\nPre-mapped g0 stack\r\n")
+		// NOTE: g0 stack is already mapped during initMMU() at 0x5EFF0000-0x5F000000
+		// No need to pre-map it again here
+		uartPutsDirect("g0 stack already mapped during MMU init\r\n")
 
-		// Map exception stacks (primary and nested)
-		// Primary exception stack: 0x5FFE0000 (8KB)
-		// Nested exception stack: 0x5FFD0000 (4KB)
-		const EXC_STACK_PRIMARY = uintptr(0x5FFE0000)
-		const EXC_STACK_NESTED = uintptr(0x5FFD0000)
-		const EXC_STACK_SIZE = uintptr(0x2000) // 8KB for primary
+		// NOTE: Exception stack is already mapped during initMMU() at 0x5F000000-0x5F010000
+		// No need to pre-map it again here
+		uartPutsDirect("Exception stack already mapped during MMU init\r\n")
 
-		uartPutsDirect("Pre-mapping exception stacks (0x")
-		uartPutHex64(uint64(EXC_STACK_NESTED))
-		uartPutsDirect("-0x")
-		uartPutHex64(uint64(EXC_STACK_PRIMARY + EXC_STACK_SIZE))
-		uartPutsDirect(")...\r\n")
-
-		// Map nested exception stack (4KB)
-		for va := EXC_STACK_NESTED; va < EXC_STACK_PRIMARY; va += 0x1000 {
-			physFrame := allocPhysFrame()
-			if physFrame == 0 {
-				print("ERROR: Out of physical frames for exception stack\r\n")
-				break
-			}
-			bzero(unsafe.Pointer(physFrame), 0x1000)
-			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-			if va == EXC_STACK_NESTED {
-				print(".")
-			}
-		}
-
-		// Map primary exception stack (8KB)
-		for va := EXC_STACK_PRIMARY; va < EXC_STACK_PRIMARY+EXC_STACK_SIZE; va += 0x1000 {
-			physFrame := allocPhysFrame()
-			if physFrame == 0 {
-				print("ERROR: Out of physical frames for exception stack\r\n")
-				break
-			}
-			bzero(unsafe.Pointer(physFrame), 0x1000)
-			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-			print(".")
-		}
-		print("\r\nPre-mapped exception stacks\r\n")
-
-		// Pre-map all of mazboot's sections to avoid page faults in exception handlers
-		// This ensures all code, data, and globals are accessible without demand paging
-		// Everything is now in RAM (0x40100000+) for platform independence
-		print("Pre-mapping mazboot sections (all in RAM)...\r\n")
-
-		// Get linker symbols for section boundaries
-		textStart := getLinkerSymbol("__text_start")
-		textEnd := getLinkerSymbol("__text_end")
-		rodataStart := getLinkerSymbol("__rodata_start")
-		rodataEnd := getLinkerSymbol("__rodata_end")
-		dataStart := getLinkerSymbol("__data_start")
-		dataEnd := getLinkerSymbol("__data_end")
-		bssStart := getLinkerSymbol("__bss_start")
-		bssEnd := getLinkerSymbol("__bss_end")
-
-		// Pre-map .text (code) - now in RAM starting at 0x40100000
-		uartPutsDirect("  .text:   0x")
-		uartPutHex64(uint64(textStart))
-		uartPutsDirect(" - 0x")
-		uartPutHex64(uint64(textEnd))
-		uartPutsDirect(" (")
-		printUint32(uint32((textEnd - textStart) / 1024))
-		print("KB)...")
-		for va := textStart &^ 0xFFF; va < textEnd; va += 0x1000 {
-			// Use identity mapping (VA == PA) with read-only, executable permissions
-			// NOTE: .text MUST be executable! Do NOT add PTE_EXEC_NEVER here!
-			mapPage(va, va, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_ALLOW)
-		}
-		print(" OK\r\n")
-
-		// Pre-map .rodata (read-only data) - in RAM after .text
-		uartPutsDirect("  .rodata: 0x")
-		uartPutHex64(uint64(rodataStart))
-		uartPutsDirect(" - 0x")
-		uartPutHex64(uint64(rodataEnd))
-		uartPutsDirect(" (")
-		printUint32(uint32((rodataEnd - rodataStart) / 1024))
-		print("KB)...")
-		for va := rodataStart &^ 0xFFF; va < rodataEnd; va += 0x1000 {
-			mapPage(va, va, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
-		}
-		print(" OK\r\n")
-
-		// Pre-map .data (initialized writable data) - in RAM after .rodata
-		uartPutsDirect("  .data:   0x")
-		uartPutHex64(uint64(dataStart))
-		uartPutsDirect(" - 0x")
-		uartPutHex64(uint64(dataEnd))
-		uartPutsDirect(" (")
-		printUint32(uint32((dataEnd - dataStart) / 1024))
-		print("KB)...")
-		for va := dataStart &^ 0xFFF; va < dataEnd; va += 0x1000 {
-			mapPage(va, va, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-		}
-		print(" OK\r\n")
-
-		// Pre-map .bss (zero-initialized data) - in RAM after .data
-		uartPutsDirect("  .bss:    0x")
-		uartPutHex64(uint64(bssStart))
-		uartPutsDirect(" - 0x")
-		uartPutHex64(uint64(bssEnd))
-		uartPutsDirect(" (")
-		printUint32(uint32((bssEnd - bssStart) / 1024))
-		print("KB)...")
-		for va := bssStart &^ 0xFFF; va < bssEnd; va += 0x1000 {
-			mapPage(va, va, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-		}
-		print(" OK\r\n")
-
-		print("All mazboot sections pre-mapped (")
-		printUint32(uint32((bssEnd - textStart) / 1024))
-		print("KB total)\r\n")
+		// NOTE: All mazboot sections (.text, .rodata, .data, .bss) are already
+		// mapped during initMMU(). No need to pre-map them again here.
+		uartPutsDirect("Mazboot sections already mapped during MMU init\r\n")
 	}
 
 	// =========================================
@@ -879,19 +757,24 @@ func KernelMain(r0, r1, atags uint32) {
 	// but BEFORE the Go runtime starts (which triggers mmap() via schedinit)
 	// =========================================
 	preRegisterFixedSpans()
+	uartPutcDirect('E') // After preRegisterFixedSpans
 
 	// =========================================
 	// TEST: Item 3 - runtime.args()
 	// Test that we can call runtime.args with a minimal argv/auxv structure
 	// This verifies the args() → sysargs() → sysauxv() path works.
 	// =========================================
-	print("Testing Item 3: runtime.args()... ")
+	uartPutcDirect('F') // Before print
+	uartPutsDirect("Testing Item 3: runtime.args()... ")
+	uartPutcDirect('G') // After print
 	result := asm.CallRuntimeArgs()
+	uartPutcDirect('J') // After CallRuntimeArgs
 	if result == 0 {
-		print("PASS\r\n")
+		uartPutsDirect("PASS\r\n")
 	} else {
-		print("FAIL\r\n")
+		uartPutsDirect("FAIL\r\n")
 	}
+	uartPutcDirect('K') // After result check
 
 	// =========================================
 	// TEST: Item 4a - Direct syscall test

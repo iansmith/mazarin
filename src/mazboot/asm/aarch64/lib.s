@@ -425,74 +425,54 @@ qemu_exit:
 // This tests Item 3 of the runtime master plan.
 // Returns 0 on success (args completed without crash)
 //
-// NEW: Now provides AT_RANDOM with 16 bytes from VirtIO RNG!
-// This prevents the runtime from ever trying to open /dev/urandom.
+// NOTE: Only provides AT_PAGESZ for now (AT_RANDOM requires VirtIO RNG init)
 // =================================================================
 .global call_runtime_args
 .extern runtime.args
-.extern main.getRandomBytes
 call_runtime_args:
     // Save callee-saved registers and create stack frame
-    // Need extra space for:
-    //   - 16 bytes for AT_RANDOM data
-    //   - Extra auxv entries (AT_RANDOM)
-    //   - Callee-saved registers
-    stp x29, x30, [sp, #-144]!
+    stp x29, x30, [sp, #-96]!
     mov x29, sp
     stp x19, x20, [sp, #16]
     stp x21, x22, [sp, #32]
-    stp x23, x24, [sp, #48]
-
-    // Fill 16 bytes of random data from VirtIO RNG
-    // Save buffer address in x19 (callee-saved) before calling getRandomBytes
-    add x19, sp, #64        // x19 = buffer address (sp+64)
-
-    // Call main.getRandomBytes(buf=x19, length=16) using Go calling convention
-    mov x0, x19             // x0 = buffer address
-    mov w1, #16             // w1 = length (16 bytes)
-    CALL_GO_PROLOGUE SPILL_SPACE_2PARAM
-    bl main.getRandomBytes
-    CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
-    // x19 is preserved by CALL_GO_EPILOGUE
 
     // Build the argv/envp/auxv structure on stack
     // Layout (each entry 8 bytes):
-    //   sp+64:  16 bytes of random data (for AT_RANDOM)
-    //   sp+80:  argv[0] = NULL (end of argv, argc=0)
-    //   sp+88:  envp[0] = NULL (end of envp)
-    //   sp+96:  AT_RANDOM (25)
-    //   sp+104: pointer to sp+64 (random data)
-    //   sp+112: AT_PAGESZ (6)
-    //   sp+120: 4096
-    //   sp+128: AT_NULL (0)
-    //   sp+136: 0
+    //   sp+48: argv[0] = NULL (end of argv, argc=0)
+    //   sp+56: envp[0] = NULL (end of envp)
+    //   sp+64: AT_PAGESZ (6)
+    //   sp+72: 4096
+    //   sp+80: AT_NULL (0)
+    //   sp+88: 0
 
     // argv[0] = NULL (end of argv)
-    str xzr, [sp, #80]
+    str xzr, [sp, #48]
     // envp[0] = NULL (end of envp)
+    str xzr, [sp, #56]
+    // auxv[0] = AT_PAGESZ (6), auxv[1] = 4096
+    mov x0, #6
+    str x0, [sp, #64]
+    mov x0, #4096
+    str x0, [sp, #72]
+    // auxv[2] = AT_NULL (0), auxv[3] = 0
+    str xzr, [sp, #80]
     str xzr, [sp, #88]
 
-    // auxv[0] = AT_RANDOM (25), auxv[1] = pointer to random data
-    mov x0, #25             // AT_RANDOM = 25
-    str x0, [sp, #96]
-    add x0, sp, #64         // Pointer to our 16 random bytes
-    str x0, [sp, #104]
-
-    // auxv[2] = AT_PAGESZ (6), auxv[3] = 4096
-    mov x0, #6
-    str x0, [sp, #112]
-    mov x0, #4096
-    str x0, [sp, #120]
-
-    // auxv[4] = AT_NULL (0), auxv[5] = 0
-    str xzr, [sp, #128]
-    str xzr, [sp, #136]
-
-    // Call runtime.args(argc=0, argv=&sp[80])
-    // NOTE: runtime.args is a special runtime init function that doesn't need CALL_GO_PROLOGUE
+    // Call runtime.args(argc=0, argv=&sp[48])
     mov w0, #0              // argc = 0 (int32)
-    add x1, sp, #80         // argv = pointer to our structure
+    add x1, sp, #48         // argv = pointer to our structure
+
+    // DEBUG: Print 'H' before calling runtime.args
+    mov x20, #0x09000000    // UART base
+    mov w21, #'H'
+    str w21, [x20]
+
     bl runtime.args
+
+    // DEBUG: Print 'I' after runtime.args returns
+    mov x20, #0x09000000    // UART base
+    mov w21, #'I'
+    str w21, [x20]
 
     // If we get here, args() completed without crash
     mov x0, #0              // Return 0 = success
@@ -500,8 +480,7 @@ call_runtime_args:
     // Restore and return
     ldp x19, x20, [sp, #16]
     ldp x21, x22, [sp, #32]
-    ldp x23, x24, [sp, #48]
-    ldp x29, x30, [sp], #144
+    ldp x29, x30, [sp], #96
     ret
 
 // =================================================================
