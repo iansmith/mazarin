@@ -275,30 +275,30 @@ write_sctlr_el1:
     // Simple marker sequence to debug crash location
     movz x0, #0x0900, lsl #16    // UART base
     movk x0, #0x0000, lsl #0
-    //     movz w1, #0x57                // 'W' = before barriers - BREADCRUMB DISABLED
-    //     str w1, [x0] - BREADCRUMB DISABLED
+    movz w1, #0x57                // 'W' = before barriers
+    str w1, [x0]
 
     // CRITICAL: DSB before IC invalidation
     dsb sy
-    //     movz w1, #0x44                // 'D' = after DSB - BREADCRUMB DISABLED
-    //     str w1, [x0] - BREADCRUMB DISABLED
+    movz w1, #0x44                // 'D' = after DSB
+    str w1, [x0]
 
     // Invalidate instruction cache to prevent stale instructions
     ic iallu                       // Invalidate all instruction caches to PoU
-    //     movz w1, #0x49                // 'I' = after IC IALLU - BREADCRUMB DISABLED
-    //     str w1, [x0] - BREADCRUMB DISABLED
+    movz w1, #0x49                // 'I' = after IC IALLU
+    str w1, [x0]
 
     dsb sy                         // Ensure IC invalidation completes
-    //     movz w1, #0x42                // 'B' = after DSB - BREADCRUMB DISABLED
-    //     str w1, [x0] - BREADCRUMB DISABLED
+    movz w1, #0x42                // 'B' = after DSB
+    str w1, [x0]
 
     isb                            // Synchronize instruction stream
-    //     movz w1, #0x53                // 'S' = after ISB, ready for MMU - BREADCRUMB DISABLED
-    //     str w1, [x0] - BREADCRUMB DISABLED
+    movz w1, #0x53                // 'S' = after ISB, ready for MMU
+    str w1, [x0]
 
     // Prepare for MMU enable
-    //     movz w1, #0x4D                // 'M' = about to enable MMU - BREADCRUMB DISABLED
-    //     str w1, [x0] - BREADCRUMB DISABLED
+    movz w1, #0x4D                // 'M' = about to enable MMU
+    str w1, [x0]
 
     // Restore SCTLR value and enable MMU
     mov x0, x20
@@ -308,33 +308,33 @@ write_sctlr_el1:
     // Print 'X' if we survive the MMU enable
     movz x0, #0x0900, lsl #16     // UART base (reload after using x0)
     movk x0, #0x0000, lsl #0
-    //     movz w1, #0x58                // 'X' = MMU enabled, first instruction fetched OK! - BREADCRUMB DISABLED
-    //     str w1, [x0] - BREADCRUMB DISABLED
-    
+    movz w1, #0x58                // 'X' = MMU enabled, first instruction fetched OK!
+    str w1, [x0]
+
     // CRITICAL: After enabling MMU, use sequential execution
     // Try multiple NOPs first to see if any instruction can be fetched
     nop                            // NOP 1 - test if this can be fetched
     nop                            // NOP 2 - test if this can be fetched
     nop                            // NOP 3 - test if this can be fetched
-    
+
     // Now try ISB
     isb                            // Instruction synchronization barrier - MMU now active
-    
+
     // Print 'X' after msr and isb (verify we got past the critical point)
     movz x0, #0x0900, lsl #16    // UART base
     movk x0, #0x0000, lsl #0
-    //     movz w1, #0x58                // 'X' - BREADCRUMB DISABLED
-    //     str w1, [x0] - BREADCRUMB DISABLED
-    
+    movz w1, #0x58                // 'X'
+    str w1, [x0]
+
     // Additional ISB to ensure UART write completes
     isb                   // Instruction synchronization barrier
-    
+
     // Print 'Y' after isb, before ret
     movz x0, #0x0900, lsl #16    // UART base
     movk x0, #0x0000, lsl #0
-    //     movz w1, #0x59                // 'Y' - BREADCRUMB DISABLED
-    //     str w1, [x0] - BREADCRUMB DISABLED
-    
+    movz w1, #0x59                // 'Y'
+    str w1, [x0]
+
     // Restore link register
     mov x30, x19
     ret
