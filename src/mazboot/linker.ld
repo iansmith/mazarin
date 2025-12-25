@@ -1,27 +1,41 @@
 ENTRY(_start)
- 
+
 SECTIONS
 {
-    /* QEMU virt machine memory layout (1GB RAM):
-     * 0x00000000 - 0x08000000: Flash/ROM region (kernel loaded here)
-     * 0x09000000 - 0x09010000: UART PL011
-     * 0x40000000 - 0x40100000: DTB (QEMU device tree blob, 1MB)
-     * 0x40100000 - 0x48100000: Kernel RAM (128MB allocated for kernel development)
-     *   0x40100000 - 0x401xxxxx: BSS section
-     *   0x401xxxxx - 0x5FFFFE000: Heap (extends to g0 stack)
-     *   0x5FFFFE000 - 0x5F000000: g0 stack (8KB, system goroutine)
-     *   0x5F000000: Stack top (SP for g0)
-     * 0x48100000 - 0x80000000: Reserved (not used by kernel)
+    /* ============================================================================
+     * MEMORY LAYOUT BASE ADDRESS - SINGLE SOURCE OF TRUTH
+     * ============================================================================
+     * To relocate the entire kernel to a different virtual address (e.g., higher
+     * half kernel at 0xFFFF000000000000), change ONLY this value. All other
+     * addresses are calculated relative to BOOT_ADDRESS.
      */
-    
-    /* QEMU virt machine platform constants
-     * These addresses are fixed by QEMU hardware, not part of our relocatable layout
-     */
-    PROVIDE(__ram_start = 0x40000000);      /* Physical RAM base address */
-    PROVIDE(__dtb_boot_addr = 0x40000000);  /* DTB location (start of RAM) */
-    PROVIDE(__dtb_size = 0x100000);         /* DTB size: 1MB (QEMU reserves this) */
+    BOOT_ADDRESS = 0x40000000;
 
-    /* QEMU virt machine MMIO device addresses */
+    /* ============================================================================
+     * ALLOCATION SIZES - CONFIGURED HERE
+     * ============================================================================ */
+    DTB_SIZE = 0x100000;                    /* 1 MB for Device Tree Blob */
+    ALLOCATION_SIZE_MAZBOOT = 0xF00000;     /* 15 MB for mazboot (code+data+bss+heap) */
+    PAGE_TABLE_SIZE = 0x800000;             /* 8 MB for page tables (L0/L1/L2/L3) */
+
+    /* ============================================================================
+     * CALCULATED MEMORY BOUNDARIES - DO NOT HARDCODE ADDRESSES
+     * ============================================================================ */
+    DTB_START = BOOT_ADDRESS;
+    DTB_END = DTB_START + DTB_SIZE;
+
+    MAZBOOT_START = DTB_END;                /* Mazboot starts after DTB */
+    MAZBOOT_END = MAZBOOT_START + ALLOCATION_SIZE_MAZBOOT;
+
+    PAGE_TABLE_START = MAZBOOT_END;         /* Page tables start after mazboot */
+    PAGE_TABLE_END = PAGE_TABLE_START + PAGE_TABLE_SIZE;
+
+    KMAZARIN_START = PAGE_TABLE_END;        /* Kmazarin starts after page tables */
+
+    /* ============================================================================
+     * QEMU VIRT MACHINE MMIO DEVICE ADDRESSES
+     * These are PHYSICAL addresses fixed by QEMU hardware, independent of VA layout
+     * ============================================================================ */
     PROVIDE(__gic_base = 0x08000000);       /* GIC (Generic Interrupt Controller) */
     PROVIDE(__gic_size = 0x00020000);       /* GIC size: 128KB (dist + cpu interface) */
     PROVIDE(__uart_base = 0x09000000);      /* UART PL011 */
@@ -32,8 +46,24 @@ SECTIONS
     PROVIDE(__bochs_display_base = 0x10000000);  /* bochs-display framebuffer */
     PROVIDE(__bochs_display_size = 0x01000000);  /* bochs-display size: 16MB */
 
-    /* RAM-only layout for platform independence */
-    . = 0x40100000;  /* QEMU virt kernel load address - AFTER 1MB DTB region */
+    /* ============================================================================
+     * EXPORTED SYMBOLS FOR RUNTIME USE
+     * ============================================================================ */
+    PROVIDE(__ram_start = BOOT_ADDRESS);
+    PROVIDE(__dtb_boot_addr = DTB_START);
+    PROVIDE(__dtb_size = DTB_SIZE);
+    PROVIDE(__mazboot_start = MAZBOOT_START);
+    PROVIDE(__mazboot_end = MAZBOOT_END);
+    PROVIDE(__mazboot_allocation_size = ALLOCATION_SIZE_MAZBOOT);
+    PROVIDE(__page_table_start = PAGE_TABLE_START);
+    PROVIDE(__page_table_end = PAGE_TABLE_END);
+    PROVIDE(__page_table_size = PAGE_TABLE_SIZE);
+    PROVIDE(__kmazarin_load_addr = KMAZARIN_START);
+
+    /* ============================================================================
+     * MAZBOOT KERNEL SECTIONS
+     * ============================================================================ */
+    . = MAZBOOT_START;
     __start = .;
     __text_start = .;
     .text :
@@ -125,21 +155,36 @@ SECTIONS
     . = ALIGN(4096);
     __bss_end = .;
     __end = .;
-    
-    /* g0 stack region: 32KB at top of kernel RAM
-     * g0 stack: 0x5EFF8000 - 0x5F000000 (32KB, system goroutine)
-     * Stack grows downward from 0x5F000000 (top) to 0x5EFF8000 (bottom)
-     * Main goroutine stack: 32KB (allocated from heap)
-     * Heap extends from __end to 0x5EFF8000 (just before g0 stack) */
-    . = 0x5F000000;
-    __stack_top = .;
-    __g0_stack_bottom = 0x5EFF8000;  /* g0 stack bottom (32KB below top) */
 
-    /* Page tables region: 15MB reserved for MMU page tables
-     * Located at 0x5F100000 - 0x60000000 (15MB)
-     * Leaves 1MB safety margin after g0 stack (0x5F000000 - 0x5F100000)
-     * Page tables are allocated at runtime, not by linker */
-    __page_tables_start = 0x5F100000;
-    __page_tables_end = 0x60000000;
-    __page_tables_size = __page_tables_end - __page_tables_start;  /* 15MB */
+    /* ============================================================================
+     * KMALLOC HEAP REGION
+     * ============================================================================
+     * Heap starts immediately after BSS (page-aligned) and extends to mazboot_end.
+     * The kmalloc/kfree allocator uses this region for dynamic allocations.
+     * Heap boundaries are calculated at runtime in Go code using:
+     *   - heap_start = (__bss_end + 4095) & ~4095  (page-aligned)
+     *   - heap_end = __mazboot_end
+     *   - heap_size = heap_end - heap_start
+     */
+    PROVIDE(__heap_start_hint = ALIGN(., 4096));  /* Suggested heap start (page-aligned) */
+
+    /* Mazboot allocation ends here - heap extends from __heap_start_hint to __mazboot_end */
+    ASSERT(. <= MAZBOOT_END, "ERROR: Mazboot sections exceed 15MB allocation! Increase ALLOCATION_SIZE_MAZBOOT")
+
+    /* ============================================================================
+     * LEGACY SYMBOLS FOR BACKWARD COMPATIBILITY
+     * ============================================================================
+     * These symbols exist for compatibility with existing code that references them.
+     * They are NOT used for actual allocation - everything is calculated dynamically.
+     */
+    /* Note: The following are PLACEHOLDER values only - actual values calculated at runtime:
+     *   - g0 stack: Allocated dynamically from heap
+     *   - Stack top: Depends on g0 stack allocation
+     */
+    PROVIDE(__stack_top = 0);           /* Placeholder - g0 stack top (calculated at runtime) */
+    PROVIDE(__g0_stack_bottom = 0);     /* Placeholder - g0 stack bottom (calculated at runtime) */
+
+    /* Page table symbols now point to calculated values (no longer placeholders) */
+    PROVIDE(__page_tables_start = PAGE_TABLE_START);
+    PROVIDE(__page_tables_end = PAGE_TABLE_END);
 }

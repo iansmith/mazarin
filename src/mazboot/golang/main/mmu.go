@@ -103,35 +103,35 @@ const (
 // We don't identity-map the mmap region - VA != PA for those pages.
 // The frame pool (0x60000000+) is mapped as identity-mapped physical memory.
 const (
-	// Page table region: 0x5E000000 - 0x60000000 (32MB)
-	// 1GB needs only ~2MB of page tables, but we allow headroom
-	PAGE_TABLE_BASE = 0x5E000000       // Start of page table region
-	PAGE_TABLE_SIZE = 32 * 1024 * 1024 // 32MB (way more than needed for 1GB)
-	PAGE_TABLE_END  = 0x60000000       // End of page table region
-
-	// Physical frame allocator for demand paging
-	// Frames allocated from this pool when page faults occur
-	//
-	// CRITICAL: Frame pool must be at physical addresses OUTSIDE the mmap virtual
-	// region (0x60000000-0x200000000) to avoid conflict. We identity-map the frame
-	// pool so we can zero frames when allocating. If the frame pool overlapped with
-	// mmap VAs, the identity mapping would defeat demand paging.
-	//
 	// PHYSICAL MEMORY LAYOUT (256MB QEMU RAM: 0x40000000 - 0x50000000)
+	//
+	// All addresses calculated from linker.ld - SINGLE SOURCE OF TRUTH
 	//
 	// Region                     Start        End          Size     Purpose
 	// --------------------------------------------------------------------------------
-	// Mazboot Executable        0x40000000 - 0x41FFFFFF   32 MB    Code/data/BSS/stack
-	// Page Table Pool           0x42000000 - 0x427FFFFF    8 MB    L1/L2/L3 page tables
-	//                                                              for demand paging
-	// Kmazarin Physical Frames  0x42800000 - 0x50000000  216 MB    Physical frame pool
-	//                                                              (demand-allocated)
+	// DTB                       0x40000000 - 0x40100000    1 MB    Device Tree Blob
+	// Mazboot Executable        0x40100000 - 0x41000000   15 MB    Code/data/BSS/heap
+	// Page Tables               0x41000000 - 0x41800000    8 MB    L0/L1/L2/L3 tables
+	//                                                              (from linker.ld)
+	// Kmazarin Executable       0x41800000 - ~0x41A00000  ~2 MB    ELF segments
+	//                                                              (loaded at runtime)
+	// Physical Frame Pool       ~0x41A00000 - 0x50000000 ~230 MB   Demand paging pool
+	//                                                              (exact start varies)
 	//
-	PAGE_TABLE_POOL_START = 0x42000000 // Start of page table pool (8MB)
-	PAGE_TABLE_POOL_END   = 0x42800000 // End of page table pool
+	// Page tables are identity-mapped at addresses from linker.ld:
+	//   __page_tables_start = 0x41000000 (from linker.ld PAGE_TABLE_START)
+	//   __page_tables_end   = 0x41800000 (from linker.ld PAGE_TABLE_END)
+	//
+	// NOTE: Do NOT hardcode page table addresses here. Use getLinkerSymbol() to
+	// retrieve __page_tables_start and __page_tables_end at runtime.
 
-	PHYS_FRAME_BASE = 0x42800000 // Start of physical frame pool (after page tables)
-	PHYS_FRAME_END  = 0x50000000 // End (216MB pool, within 256MB QEMU RAM)
+	// Physical frame pool end (256 MB limit)
+	PHYS_FRAME_END  = 0x50000000 // End of 256MB RAM (BOOT_ADDRESS + 256MB)
+
+	// Kmazarin conservative size estimate (for initial PHYS_FRAME_BASE calculation)
+	// Actual kmazarin size is determined after ELF load; this is a safe upper bound
+	// Typical kmazarin is 1-3 MB, we reserve 8 MB to be safe
+	KMAZARIN_CONSERVATIVE_SIZE = 8 * 1024 * 1024 // 8 MB
 
 	// Virtual mmap region (large virtual, demand-paged)
 	// VA range is large but physical backing is limited by PAGE_LIMIT
@@ -157,14 +157,15 @@ const (
 	//   - Go's runtime heap (uses demand paging at 0x4000000000+)
 	//
 	// Memory layout:
-	//   0x40147000: __end (BSS ends)
-	//   0x40147000-0x40247000: Page metadata array (~1MB reserved)
-	//   0x48000000-0x4C000000: kmalloc heap (64MB, this region)
-	//   0x5E000000-0x60000000: MMU page tables
-	//   0x5EFFFE000: g0 stack bottom
-	KMALLOC_HEAP_BASE = 0x48000000              // Fixed start address for kmalloc heap
-	KMALLOC_HEAP_SIZE = 64 * 1024 * 1024        // 64MB heap size
-	KMALLOC_HEAP_END  = 0x4C000000              // End of kmalloc heap region
+	//   Page tables and heap are calculated dynamically at runtime - see initKmallocHeap()
+)
+
+// Kmalloc heap boundaries - calculated dynamically from linker symbols
+// DO NOT initialize these with hardcoded values - they are set by initKmallocHeap()
+var (
+	KMALLOC_HEAP_BASE uintptr // Start of kmalloc heap (page-aligned after BSS)
+	KMALLOC_HEAP_SIZE uintptr // Size of kmalloc heap in bytes
+	KMALLOC_HEAP_END  uintptr // End of kmalloc heap (= __mazboot_end)
 )
 
 // MMIODevice describes an MMIO device region to be mapped
@@ -353,21 +354,25 @@ func incTotalKernelPages() {
 //
 //go:nosplit
 func initPhysFrameAllocator() {
-	// 	uartPutcDirect('P')  // Breadcrumb: entered initPhysFrameAllocator - DISABLED
+	// Calculate physical frame pool start from linker symbols
+	// Physical frames start after kmazarin executable
+	// Since kmazarin hasn't been loaded yet, use conservative estimate
+	kmazarinLoadAddr := getLinkerSymbol("__kmazarin_load_addr")
+	physFrameBase := kmazarinLoadAddr + KMAZARIN_CONSERVATIVE_SIZE // ~0x42000000
+
 	alloc := getPhysFrameAllocator()
-	// 	uartPutcDirect('p')  // Breadcrumb: got allocator - DISABLED
-	alloc.next = PHYS_FRAME_BASE
+	alloc.next = physFrameBase
 	alloc.end = PHYS_FRAME_END
 	alloc.pagesAlloc = 0
 
 	// Calculate pre-mapped pages
-	// Mazboot (32MB) + Page Table Pool (8MB) = 40MB pre-mapped
-	// Kmazarin frames are demand-allocated, not pre-mapped
-	preMappedBytes := uintptr(PHYS_FRAME_BASE - 0x40000000) // 40MB pre-mapped (mazboot + page tables)
+	// DTB (1MB) + Mazboot (15MB) + Page Tables (8MB) + Kmazarin (~8MB) = ~32MB pre-mapped
+	// Note: Actual kmazarin size may be less, this is conservative
+	preMappedBytes := uintptr(physFrameBase - 0x40000000)
 	preMappedPages := uint32(preMappedBytes / PAGE_SIZE)
 	setTotalKernelPages(preMappedPages)
 
-	poolSize := PHYS_FRAME_END - PHYS_FRAME_BASE
+	poolSize := PHYS_FRAME_END - physFrameBase
 	poolPages := poolSize / PAGE_SIZE
 
 	// Suppress verbose output - physical frame allocator ready
@@ -661,14 +666,24 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	// uartPutsDirect(" PA=0x")  // DISABLED
 	// uartPutHex64Direct(uint64(physFrame))  // DISABLED
 
-	// CRITICAL: Verify physical frame is in valid range and not in page table region
-	if physFrame < PHYS_FRAME_BASE || physFrame >= PHYS_FRAME_END {
-		uartPutsDirect("\r\n!INVALID PHYS FRAME: 0x")
+	// CRITICAL: Verify physical frame is in valid range
+	// Get current physical frame pool range from allocator state
+	alloc := getPhysFrameAllocator()
+	physFrameBase := alloc.next  // Current next frame to allocate
+
+	if physFrame >= PHYS_FRAME_END {
+		uartPutsDirect("\r\n!INVALID PHYS FRAME (beyond 256MB): 0x")
 		uartPutHex64Direct(uint64(physFrame))
+		uartPutsDirect(" end=0x")
+		uartPutHex64Direct(uint64(PHYS_FRAME_END))
 		uartPutsDirect("\r\n")
 		for {} // Hang
 	}
-	if physFrame >= PAGE_TABLE_BASE && physFrame < PAGE_TABLE_END {
+
+	// Verify frame is not in page table region
+	pageTableStart := getLinkerSymbol("__page_tables_start")
+	pageTableEnd := getLinkerSymbol("__page_tables_end")
+	if physFrame >= pageTableStart && physFrame < pageTableEnd {
 		uartPutsDirect("\r\n!PHYS FRAME IN PAGE TABLE REGION: 0x")
 		uartPutHex64Direct(uint64(physFrame))
 		uartPutsDirect("\r\n")
@@ -952,13 +967,16 @@ func bzero(ptr unsafe.Pointer, size uint32) {
 //
 //go:nosplit
 func initMMU() bool {
+	// Get page table region from linker.ld (calculated values, not hardcoded)
+	pageTableBase := getLinkerSymbol("__page_tables_start")
+
 	// Allocate page table memory
-	pageTableL0 = PAGE_TABLE_BASE
-	pageTableL1 = PAGE_TABLE_BASE + TABLE_SIZE
+	pageTableL0 = pageTableBase
+	pageTableL1 = pageTableBase + TABLE_SIZE
 
 	// Initialize the bump allocator after the pre-allocated L0 + L1 tables
 	ptAlloc := getPageTableAllocator()
-	ptAlloc.base = PAGE_TABLE_BASE
+	ptAlloc.base = pageTableBase
 	ptAlloc.offset = TABLE_SIZE * 2
 
 	// Verify page table base is 4KB aligned
@@ -1116,52 +1134,48 @@ func initMMU() bool {
 	// dumpFetchMapping("pci-ecam-low", ecamBase)
 	// 	uartPutcDirect('V')  // Breadcrumb: verification done - DISABLED
 
+	// Get page table region boundaries from linker.ld
+	pageTableEnd := getLinkerSymbol("__page_tables_end")
+
 	// Map kernel RAM (after mazboot image to page tables) - heap, stacks
 	// CRITICAL: Start mapping AFTER our kernel image (endAddr) to avoid overlap
-	// 	uartPutcDirect('0')  // Breadcrumb: about to map RAM - DISABLED
+	// We map from end of mazboot to start of page tables
 	ramStart := (endAddr + 0xFFF) &^ 0xFFF  // Round up to next page
 	uartPutsDirect("endAddr=0x")
 	uartPutHex64Direct(uint64(endAddr))
 	uartPutsDirect(" ramStart=0x")
 	uartPutHex64Direct(uint64(ramStart))
-	uartPutsDirect(" PAGE_TABLE_BASE=0x")
-	uartPutHex64Direct(uint64(PAGE_TABLE_BASE))
+	uartPutsDirect(" pageTableBase=0x")
+	uartPutHex64Direct(uint64(pageTableBase))
 	uartPutsDirect("\r\n")
-	// 	uartPutcDirect('1')  // Breadcrumb: got RAM start - DISABLED address
-	// Pre-map heap region as RW, non-executable
-	// NOTE: Kmazarin segments will overlap with this region, but will be remapped later
-	// with correct permissions (some executable). The remapping is allowed to update permissions.
-	if ramStart < PAGE_TABLE_BASE {
+
+	// Pre-map heap region (mazboot kmalloc heap) as RW, non-executable
+	// This maps from end of mazboot sections to start of page tables
+	if ramStart < pageTableBase {
 		uartPutsDirect("Mapping RAM: 0x")
 		uartPutHex64Direct(uint64(ramStart))
 		uartPutsDirect(" - 0x")
-		uartPutHex64Direct(uint64(PAGE_TABLE_BASE))
+		uartPutHex64Direct(uint64(pageTableBase))
 		uartPutsDirect(" (RW)\r\n")
-		mapRegion(ramStart, PAGE_TABLE_BASE, ramStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-	// 		uartPutcDirect('2')  // Breadcrumb: RAM mapped - DISABLED
+		mapRegion(ramStart, pageTableBase, ramStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 	}
 
-	// CRITICAL: Map exception vector RAM region as NORMAL CACHEABLE and EXECUTABLE
-	// Exception vectors will be relocated to 0x41100000 from ROM
-	// Must be cacheable for instruction fetch (CPUs cannot execute from non-cacheable memory)
-	// Cache coherency is ensured by cleaning instruction cache after copying vectors
-	const EXCEPTION_VECTOR_RAM_START = uintptr(0x41100000)
-	const EXCEPTION_VECTOR_RAM_END = uintptr(0x41101000) // 4KB (2KB needed, rounded up)
-	mapRegion(EXCEPTION_VECTOR_RAM_START, EXCEPTION_VECTOR_RAM_END,
-		EXCEPTION_VECTOR_RAM_START, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_ALLOW)
-
-	// PERFORMANCE: Map page table region (0x5E000000 - 0x60000000) as CACHEABLE
+	// PERFORMANCE: Map page table region as CACHEABLE
 	// ARM64's hardware page table walker is cache-coherent - it will see cached updates.
 	// Using Normal Cacheable memory dramatically improves performance by avoiding slow
 	// memory accesses on every page table walk.
 	// We use proper barriers (DSB ISH) after PTE modifications and TLB invalidation
 	// to ensure coherency between CPU data cache and page table walker.
-	// NOTE: This region includes the stack guard area (0x5EFD0000-0x5F000000),
-	// which is now cacheable along with the page tables.
-	mapRegion(PAGE_TABLE_BASE, PAGE_TABLE_END, PAGE_TABLE_BASE, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	// Page table region is from linker.ld: 0x41000000 - 0x41800000 (8MB)
+	mapRegion(pageTableBase, pageTableEnd, pageTableBase, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 
-	// NOTE: Physical frame pool (0x50000000-0x5E000000) is already mapped
-	// as part of kernel RAM above (0x40100000-0x5E000000), so no separate mapping needed
+	// NOTE: Exception vectors are now embedded in .text section at their final location
+	// They no longer need a separate RAM mapping at 0x41100000 (which would conflict
+	// with page tables). The vectors are mapped as part of the .text section mapping above.
+
+	// NOTE: Physical frame pool starts after kmazarin executable and extends to PHYS_FRAME_END
+	// The exact start address depends on kmazarin size (determined at runtime after ELF load)
+	// This region will be identity-mapped as part of the general RAM mapping
 
 	// Initialize physical frame allocator
 	initPhysFrameAllocator()
