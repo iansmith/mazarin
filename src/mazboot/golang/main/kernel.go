@@ -1742,9 +1742,10 @@ func parseEmbeddedKmazarin() {
 //
 //go:nosplit
 func setupKmazarinStartupEnv() (stackPointer uintptr, argc uint64, argv uintptr) {
-	// Allocate a 64KB stack for kmazarin (16 pages)
+	// Allocate a 1MB stack for kmazarin (256 pages)
 	// In Linux, argc/argv/envp/auxv are placed at the TOP of the initial stack
-	const stackPages = 16
+	// IMPORTANT: Go runtime needs substantial stack space for initialization
+	const stackPages = 256
 	const stackSize = stackPages * 0x1000
 	const stackBase = uintptr(0xD0000000)  // Stack base address
 
@@ -1874,6 +1875,27 @@ func loadAndRunKmazarin() {
 		(uint64(elfData[0x1E]) << 48) |
 		(uint64(elfData[0x1F]) << 56)
 
+	// DEBUG: Print the entry point we read from ELF
+	uartPutsDirect("DEBUG: Entry point from ELF = ")
+	// Print each byte for debugging
+	for i := 0x18; i <= 0x1F; i++ {
+		b := elfData[i]
+		nibbleHigh := (b >> 4) & 0xF
+		nibbleLow := b & 0xF
+		if nibbleHigh < 10 {
+			uartPutsDirect(string([]byte{'0' + nibbleHigh}))
+		} else {
+			uartPutsDirect(string([]byte{'a' + (nibbleHigh - 10)}))
+		}
+		if nibbleLow < 10 {
+			uartPutsDirect(string([]byte{'0' + nibbleLow}))
+		} else {
+			uartPutsDirect(string([]byte{'a' + (nibbleLow - 10)}))
+		}
+		uartPutsDirect(" ")
+	}
+	uartPutsDirect("\r\n")
+
 	// Parse program header offset (0x20-0x27)
 	phoff := uint64(elfData[0x20]) |
 		(uint64(elfData[0x21]) << 8) |
@@ -1913,6 +1935,19 @@ func loadAndRunKmazarin() {
 		if pType != PT_LOAD {
 			continue
 		}
+
+		// Parse segment flags (offset +4)
+		// Bits: PF_X=0x1 (execute), PF_W=0x2 (write), PF_R=0x4 (read)
+		pFlags := uint32(elfData[phOffset+4]) |
+			(uint32(elfData[phOffset+5]) << 8) |
+			(uint32(elfData[phOffset+6]) << 16) |
+			(uint32(elfData[phOffset+7]) << 24)
+
+		const (
+			PF_X = 0x1 // Execute
+			PF_W = 0x2 // Write
+			PF_R = 0x4 // Read
+		)
 
 		// Parse PT_LOAD segment fields
 		pOffset := uint64(elfData[phOffset+8]) |
@@ -1964,9 +1999,27 @@ func loadAndRunKmazarin() {
 			maxVA = vaEnd
 		}
 
+		// Determine execute permission based on segment flags
+		var execPerm uint64 = PTE_EXEC_NEVER
+		if (pFlags & PF_X) != 0 {
+			execPerm = PTE_EXEC_ALLOW
+		}
+
+		// DEBUG: Print segment permissions
+		uartPutsDirect("Segment VA 0x")
+		uartPutHex64Direct(uint64(vaStart))
+		uartPutsDirect("-0x")
+		uartPutHex64Direct(uint64(vaEnd))
+		uartPutsDirect(" flags=0x")
+		uartPutHex64Direct(uint64(pFlags))
+		if execPerm == PTE_EXEC_ALLOW {
+			uartPutsDirect(" [EXEC]")
+		} else {
+			uartPutsDirect(" [NOEXEC]")
+		}
+		uartPutsDirect("\r\n")
+
 		// Map all pages for this segment
-		// IMPORTANT: Map as RW during loading (we need to write segment data)
-		// TODO: Optionally remap with correct permissions after loading
 		for pageIdx := uintptr(0); pageIdx < numPages; pageIdx++ {
 			va := vaStart + (pageIdx << 12)
 			physFrame := allocPhysFrame()
@@ -1975,8 +2028,10 @@ func loadAndRunKmazarin() {
 				return
 			}
 
-			// Map as RW+exec_never during loading (will remap with correct perms later if needed)
-			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+			// Map with permissions based on segment flags
+			// For now, map as RW regardless (we need to write during loading)
+			// Execute permission is set based on PF_X flag
+			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, execPerm)
 		}
 
 		// Use barriers after mapping (no TLB invalidation needed for new mappings)
@@ -2026,7 +2081,71 @@ func loadAndRunKmazarin() {
 			bssSize := pMemsz - pFilesz
 			bzero(bssStart, uint32(bssSize))
 		}
+
+		// CRITICAL: Remap executable pages as Read-Only
+		// ARM architecture requires code pages to be RO+X, not RW+X
+		if execPerm == PTE_EXEC_ALLOW {
+			uartPutsDirect("Remapping executable segment as Read-Only...\r\n")
+			for pageIdx := uintptr(0); pageIdx < numPages; pageIdx++ {
+				va := vaStart + (pageIdx << 12)
+				// Get the physical address from the existing PTE
+				l0Index := (va >> 39) & 0x1FF
+				l1Index := (va >> 30) & 0x1FF
+				l2Index := (va >> 21) & 0x1FF
+				l3Index := (va >> 12) & 0x1FF
+
+				ttbr0 := asm.ReadTtbr0El1()
+				l0Table := uintptr(ttbr0 & ^uint64(0xFFF))
+				l0Entry := (*uint64)(unsafe.Pointer(l0Table + l0Index*8))
+				l1Table := uintptr(*l0Entry & ^uint64(0xFFF))
+				l1Entry := (*uint64)(unsafe.Pointer(l1Table + l1Index*8))
+				l2Table := uintptr(*l1Entry & ^uint64(0xFFF))
+				l2Entry := (*uint64)(unsafe.Pointer(l2Table + l2Index*8))
+				l3Table := uintptr(*l2Entry & ^uint64(0xFFF))
+				l3Entry := (*uint64)(unsafe.Pointer(l3Table + l3Index*8))
+
+				// Extract physical address from existing PTE
+				physAddr := uintptr(*l3Entry & ^uint64(0xFFF))
+
+				// Remap with Read-Only permissions
+				mapPage(va, physAddr, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, execPerm)
+			}
+			// Invalidate TLB for this region after remapping
+			asm.Dsb()
+			asm.InvalidateTlbAll()
+			asm.Isb()
+			uartPutsDirect("Executable segment remapped\r\n")
+		}
 	}
+
+	// CRITICAL: Cache maintenance for executable code
+	// After loading code into memory, we must:
+	// 1. Clean D-cache (DC CVAU) - ensure data is visible to I-cache
+	// 2. Invalidate I-cache (IC IVAU) - discard stale instructions
+	// 3. Use barriers to ensure ordering
+	uartPutsDirect("Cleaning caches for executable code...\r\n")
+	for va := minVA; va < maxVA; va += 64 {
+		// DC CVAU - Data Cache Clean by VA to Point of Unification
+		asm.DcCvauManual(va)
+	}
+	asm.Dsb() // Ensure all DC operations complete
+
+	for va := minVA; va < maxVA; va += 64 {
+		// IC IVAU - Instruction Cache Invalidate by VA to Point of Unification
+		asm.IcIvauManual(va)
+	}
+	asm.Dsb() // Ensure all IC operations complete
+	asm.Isb() // Synchronize context
+	uartPutsDirect("Cache maintenance complete\r\n")
+
+	// CRITICAL: Invalidate TLB after mapping new code pages
+	// The TLB might have cached "not present" entries from earlier failed translations
+	// or speculative fetches. We must invalidate before attempting to execute the code.
+	uartPutsDirect("Invalidating TLB for kmazarin code...\r\n")
+	asm.InvalidateTlbAll()
+	asm.Dsb()
+	asm.Isb()
+	uartPutsDirect("TLB invalidated\r\n")
 
 	if !registerMmapSpan(minVA, maxVA) {
 		// Failed to register - hang
@@ -2040,8 +2159,173 @@ func loadAndRunKmazarin() {
 		return
 	}
 
+	// Debug: Verify stack structure before jumping
+	uartPutsDirect("=== Stack Structure Verification ===\r\n")
+
+	// Read the stack structure (do this BEFORE any printHex calls to verify access)
+	data := (*[20]uint64)(unsafe.Pointer(stackPointer))
+
+	// Verify we can read the data
+	uartPutsDirect("Stack allocated, reading data...\r\n")
+
+	// Check basic structure (just report success/failure, no hex printing yet)
+	if data[0] != 1 {
+		uartPutsDirect("ERROR: argc is not 1!\r\n")
+		return
+	}
+	uartPutsDirect("argc = 1 OK\r\n")
+
+	if data[2] != 0 {
+		uartPutsDirect("ERROR: argv[1] is not NULL!\r\n")
+		return
+	}
+	uartPutsDirect("argv[1] = NULL OK\r\n")
+
+	if data[3] != 0 {
+		uartPutsDirect("ERROR: envp[0] is not NULL!\r\n")
+		return
+	}
+	uartPutsDirect("envp[0] = NULL OK\r\n")
+
+	if data[4] != 6 {
+		uartPutsDirect("ERROR: AT_PAGESZ tag is not 6!\r\n")
+		return
+	}
+	uartPutsDirect("AT_PAGESZ tag OK\r\n")
+
+	if data[5] != 4096 {
+		uartPutsDirect("ERROR: AT_PAGESZ value is not 4096!\r\n")
+		return
+	}
+	uartPutsDirect("AT_PAGESZ value OK\r\n")
+
+	if data[10] != 0 {
+		uartPutsDirect("ERROR: AT_NULL tag is not 0!\r\n")
+		return
+	}
+	uartPutsDirect("AT_NULL tag OK\r\n")
+
+	uartPutsDirect("Stack structure verified!\r\n")
+
 	// Use entry point directly (it's already the correct virtual address)
 	entryAddr := uintptr(entry)
+
+	// DEBUG: Print the actual entry address we're about to jump to
+	uartPutsDirect("Entry addr = ")
+	// Print bytes of entryAddr
+	entryBytes := (*[8]byte)(unsafe.Pointer(&entryAddr))
+	for i := 0; i < 8; i++ {
+		b := entryBytes[i]
+		nibbleHigh := (b >> 4) & 0xF
+		nibbleLow := b & 0xF
+		if nibbleHigh < 10 {
+			uartPutsDirect(string([]byte{'0' + nibbleHigh}))
+		} else {
+			uartPutsDirect(string([]byte{'a' + (nibbleHigh - 10)}))
+		}
+		if nibbleLow < 10 {
+			uartPutsDirect(string([]byte{'0' + nibbleLow}))
+		} else {
+			uartPutsDirect(string([]byte{'a' + (nibbleLow - 10)}))
+		}
+		uartPutsDirect(" ")
+	}
+	uartPutsDirect("\r\n")
+
+	// DEBUG: Check PTE for entry point page
+	entryPage := entryAddr &^ 0xFFF
+	uartPutsDirect("Entry page: 0x")
+	uartPutHex64Direct(uint64(entryPage))
+	uartPutsDirect("\r\n")
+
+	// Walk page tables to find PTE
+	ttbr0 := asm.ReadTtbr0El1()
+	uartPutsDirect("TTBR0_EL1=0x")
+	uartPutHex64Direct(ttbr0)
+	uartPutsDirect(" Expected=0x")
+	uartPutHex64Direct(uint64(asm.GetPageTablesStartAddr()))
+	uartPutsDirect("\r\n")
+	l0Table := uintptr(ttbr0 & ^uint64(0xFFF))
+
+	l0Index := (entryPage >> 39) & 0x1FF
+	l0Entry := (*uint64)(unsafe.Pointer(l0Table + l0Index*8))
+	uartPutsDirect("L0[")
+	uartPutHex64Direct(uint64(l0Index))
+	uartPutsDirect("]=0x")
+	uartPutHex64Direct(*l0Entry)
+	uartPutsDirect("\r\n")
+
+	if (*l0Entry & PTE_VALID) == 0 {
+		uartPutsDirect("ERROR: L0 entry not valid!\r\n")
+		return
+	}
+
+	l1Table := uintptr(*l0Entry & ^uint64(0xFFF))
+	l1Index := (entryPage >> 30) & 0x1FF
+	l1Entry := (*uint64)(unsafe.Pointer(l1Table + l1Index*8))
+	uartPutsDirect("L1[")
+	uartPutHex64Direct(uint64(l1Index))
+	uartPutsDirect("]=0x")
+	uartPutHex64Direct(*l1Entry)
+	uartPutsDirect("\r\n")
+
+	if (*l1Entry & PTE_VALID) == 0 {
+		uartPutsDirect("ERROR: L1 entry not valid!\r\n")
+		return
+	}
+
+	l2Table := uintptr(*l1Entry & ^uint64(0xFFF))
+	l2Index := (entryPage >> 21) & 0x1FF
+	l2Entry := (*uint64)(unsafe.Pointer(l2Table + l2Index*8))
+	uartPutsDirect("L2[")
+	uartPutHex64Direct(uint64(l2Index))
+	uartPutsDirect("]=0x")
+	uartPutHex64Direct(*l2Entry)
+	uartPutsDirect("\r\n")
+
+	if (*l2Entry & PTE_VALID) == 0 {
+		uartPutsDirect("ERROR: L2 entry not valid!\r\n")
+		return
+	}
+
+	l3Table := uintptr(*l2Entry & ^uint64(0xFFF))
+	l3Index := (entryPage >> 12) & 0x1FF
+	l3Entry := (*uint64)(unsafe.Pointer(l3Table + l3Index*8))
+	uartPutsDirect("L3[")
+	uartPutHex64Direct(uint64(l3Index))
+	uartPutsDirect("]=0x")
+	uartPutHex64Direct(*l3Entry)
+	if (*l3Entry & PTE_PXN) != 0 {
+		uartPutsDirect(" PXN")
+	}
+	if (*l3Entry & PTE_UXN) != 0 {
+		uartPutsDirect(" UXN")
+	}
+	if (*l3Entry & PTE_PXN) == 0 && (*l3Entry & PTE_UXN) == 0 {
+		uartPutsDirect(" EXEC_OK")
+	}
+	uartPutsDirect("\r\n")
+
+	// DEBUG: Read and verify the bytes at the entry point
+	uartPutsDirect("Bytes at entry point: ")
+	entryInstructions := (*[16]byte)(unsafe.Pointer(entryAddr))
+	for i := 0; i < 16; i++ {
+		b := entryInstructions[i]
+		nibbleHigh := (b >> 4) & 0xF
+		nibbleLow := b & 0xF
+		if nibbleHigh < 10 {
+			uartPutsDirect(string([]byte{'0' + nibbleHigh}))
+		} else {
+			uartPutsDirect(string([]byte{'a' + (nibbleHigh - 10)}))
+		}
+		if nibbleLow < 10 {
+			uartPutsDirect(string([]byte{'0' + nibbleLow}))
+		} else {
+			uartPutsDirect(string([]byte{'a' + (nibbleLow - 10)}))
+		}
+		uartPutsDirect(" ")
+	}
+	uartPutsDirect("\r\n")
 
 	// Jump to kmazarin with proper argc/argv/auxv
 	uartPutsDirect("Jumping to kmazarin...\r\n\r\n")

@@ -51,6 +51,10 @@ func CleanDataCacheVA(addr uintptr)
 //go:nosplit
 func CleanDcacheVa(addr uintptr)
 
+//go:linkname DcCvau DcCvau
+//go:nosplit
+func DcCvau()
+
 //go:linkname Delay delay
 //go:nosplit
 func Delay(count int32)
@@ -259,6 +263,10 @@ func GetUartBase() uintptr
 //go:nosplit
 func GetUartSize() uintptr
 
+//go:linkname IcIvau IcIvau
+//go:nosplit
+func IcIvau()
+
 //go:linkname InvalidateInstructionCacheAll InvalidateInstructionCacheAll
 //go:nosplit
 func InvalidateInstructionCacheAll()
@@ -270,6 +278,10 @@ func InvalidateTlbAll()
 //go:linkname InvalidateTlbVa invalidate_tlb_va
 //go:nosplit
 func InvalidateTlbVa(addr uintptr)
+
+//go:linkname IrqExceptionHandlerEl0 irq_exception_handler_el0
+//go:nosplit
+func IrqExceptionHandlerEl0()
 
 //go:linkname Isb isb
 //go:nosplit
@@ -439,6 +451,10 @@ func StorePointerNoBarrier(dest *unsafe.Pointer, value unsafe.Pointer)
 //go:nosplit
 func SwitchToGoroutine(g unsafe.Pointer)
 
+//go:linkname SyncExceptionHandlerEl0 sync_exception_handler_el0
+//go:nosplit
+func SyncExceptionHandlerEl0()
+
 //go:linkname UartInitPl011 uart_init_pl011
 //go:nosplit
 func UartInitPl011()
@@ -570,3 +586,13 @@ func RunOnGoroutine(g unsafe.Pointer, fn func())
 //go:linkname CallOnG0Stack callOnG0Stack
 //go:nosplit
 func CallOnG0Stack(fn func())
+
+// Manual overrides for cache maintenance (auto-gen doesn't detect params correctly):
+
+//go:linkname DcCvauManual DcCvau
+//go:nosplit
+func DcCvauManual(addr uintptr)
+
+//go:linkname IcIvauManual IcIvau
+//go:nosplit
+func IcIvauManual(addr uintptr)

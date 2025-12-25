@@ -1395,9 +1395,19 @@ jump_to_kmazarin:
     // Save entry point address to x4 (we need x0 for argc)
     mov x4, x0
 
+    // DEBUG: Print 'J' before setting up registers
+    movz x5, #0x0900, lsl #16    // UART base
+    movz w6, #0x4A               // 'J'
+    str w6, [x5]
+
     // Set up Go runtime registers:
     // R0 = argc (from x1)
     mov x0, x1
+
+    // DEBUG: Print 'K' after setting R0
+    movz x5, #0x0900, lsl #16
+    movz w6, #0x4B               // 'K'
+    str w6, [x5]
 
     // R1 = argv (from x2)
     mov x1, x2
@@ -1407,9 +1417,75 @@ jump_to_kmazarin:
     // which contains argc at [SP+0], argv at [SP+8], envp at [SP+16], auxv at [SP+32]
     mov sp, x3
 
+    // DEBUG: Print 'L' right before jump
+    movz x5, #0x0900, lsl #16
+    movz w6, #0x4C               // 'L'
+    str w6, [x5]
+
+    // DEBUG: Print X4 value (entry address) before jump
+    movz x5, #0x0900, lsl #16    // UART base
+    movz w6, #0x58               // 'X'
+    str w6, [x5]
+    movz w6, #0x34               // '4'
+    str w6, [x5]
+    movz w6, #0x3D               // '='
+    str w6, [x5]
+
+    // Print each byte of x4 in hex
+    mov x7, x4                   // Save x4 to x7
+    mov x8, #8                   // 8 bytes to print
+1:  and x9, x7, #0xFF            // Get lowest byte
+    lsr x10, x9, #4              // High nibble
+    and x11, x9, #0xF            // Low nibble
+
+    // Print high nibble
+    cmp x10, #10
+    bge 2f
+    add w6, w10, #0x30           // '0'-'9'
+    b 3f
+2:  add w6, w10, #0x57           // 'a'-'f' (0x57 = 'a' - 10)
+3:  str w6, [x5]
+
+    // Print low nibble
+    cmp x11, #10
+    bge 4f
+    add w6, w11, #0x30           // '0'-'9'
+    b 5f
+4:  add w6, w11, #0x57           // 'a'-'f'
+5:  str w6, [x5]
+
+    movz w6, #0x20               // ' ' (space)
+    str w6, [x5]
+
+    lsr x7, x7, #8               // Shift to next byte
+    sub x8, x8, #1
+    cbnz x8, 1b
+
+    movz w6, #0x0D               // '\r'
+    str w6, [x5]
+    movz w6, #0x0A               // '\n'
+    str w6, [x5]
+
     // Jump to kmazarin entry point (_rt0_arm64_linux)
     // At this point:
     //   R0 = argc = 1
     //   R1 = argv = pointer to argv array
     //   SP = pointer to full argc/argv/envp/auxv structure
     br x4                     // Branch to entry point - never returns
+
+// Cache maintenance operations
+// These are CRITICAL for ensuring executable code is visible to the CPU
+
+.global DcCvau
+DcCvau:
+    // DC CVAU - Data Cache Clean by VA to Point of Unification
+    // Clean data cache line containing address x0
+    dc cvau, x0
+    ret
+
+.global IcIvau
+IcIvau:
+    // IC IVAU - Instruction Cache Invalidate by VA to Point of Unification
+    // Invalidate instruction cache line containing address x0
+    ic ivau, x0
+    ret

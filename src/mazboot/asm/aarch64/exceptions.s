@@ -116,23 +116,23 @@ dot_counter:
 
 exception_vectors:
     // Group 0: Current EL, using SP_EL0 (0x000-0x1ff)
-    // These are for kernel code using SP_EL0 (we don't use this)
-    
+    // We use this when running kmazarin in EL1t mode
+
     // 0x000 - 0x080: Synchronous exception (SP_EL0)
     .align 7  // 128 bytes per handler
-    b .  // Hang - we don't use SP_EL0 at EL1
-    
+    b sync_exception_handler_el0  // Jump to handler
+
     // 0x080 - 0x100: IRQ (SP_EL0)
     .align 7
-    b .  // Hang
-    
+    b irq_exception_handler_el0   // Jump to IRQ handler
+
     // 0x100 - 0x180: FIQ (SP_EL0)
     .align 7
-    b .  // Hang
-    
+    b .  // Hang - FIQ not used
+
     // 0x180 - 0x200: SError (SP_EL0)
     .align 7
-    b .  // Hang
+    b .  // Hang - SError not used
 
 
     // ========================================
@@ -647,21 +647,23 @@ sync_exception_handler:
 
     // Step 3: Switch to exception stack
     // CRITICAL FIX: Check if we're already on exception stack (nested exception)
-    // If SP is between 0x5FFD0000 and 0x5FFE0000, we're in a nested exception
-    movz x29, #0x5FFD, lsl #16     // x29 = 0x5FFD0000 (lower bound)
+    // Exception stack is at 0x5F000000-0x5F010000 (64KB)
+    // If SP is in this range, we're in a nested exception
+    movz x29, #0x5F00, lsl #16     // x29 = 0x5F000000 (lower bound)
     cmp x30, x29                    // Compare original SP with lower bound
     b.lo use_primary_stack          // If below, use primary exception stack
-    movz x29, #0x5FFE, lsl #16     // x29 = 0x5FFE0000 (upper bound)
+    movz x29, #0x5F01, lsl #16     // x29 = 0x5F010000 (upper bound)
     cmp x30, x29                    // Compare original SP with upper bound
     b.hs use_primary_stack          // If above or equal, use primary stack
 
-    // We're in nested exception - use nested exception stack at 0x5FFD0000
-    movz x29, #0x5FFD, lsl #16     // Nested exception stack at 0x5FFD0000
-    movk x29, #0x0000, lsl #0
+    // We're in nested exception - use alternate stack within exception stack
+    // Use bottom half of exception stack for nested exceptions
+    movz x29, #0x5F00, lsl #16     // Nested exception stack at 0x5F008000
+    movk x29, #0x8000, lsl #0      // (middle of 64KB exception stack)
     b stack_selected
 
 use_primary_stack:
-    movz x29, #0x5FFE, lsl #16     // Primary exception stack at 0x5FFE0000
+    movz x29, #0x5F01, lsl #16     // Primary exception stack at 0x5F010000 (top)
     movk x29, #0x0000, lsl #0
 
 stack_selected:
@@ -1508,4 +1510,21 @@ syscall_return:
 
     // Return from exception - PSTATE will be restored from SPSR_EL1
     eret
+
+// ============================================================================
+// EL1t MODE (SP_EL0) EXCEPTION HANDLERS
+// ============================================================================
+// When running in EL1t mode (using SP_EL0), exceptions automatically switch
+// to EL1h mode (using SP_EL1) for the handler. This means the handlers can
+// be identical to the EL1h handlers - they already use the exception stack.
+
+.global sync_exception_handler_el0
+sync_exception_handler_el0:
+    // Just jump to the regular sync handler - it works for both modes
+    b sync_exception_handler
+
+.global irq_exception_handler_el0
+irq_exception_handler_el0:
+    // Just jump to the regular IRQ handler
+    b irq_exception_el1
 

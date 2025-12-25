@@ -360,7 +360,7 @@ func uartPutHex64Direct(v uint64) {
 //go:nosplit
 func handleException(excInfo ExceptionInfo) {
 	// Breadcrumb: entered handleException
-	// uartPutcDirect('H') // BREADCRUMB DISABLED
+	uartPutcDirect('H') // Exception handler breadcrumb
 
 	// Extract exception class from ESR_EL1
 	ec := (excInfo.ESR >> 26) & 0x3F
@@ -515,14 +515,14 @@ func extractISS(esr uint64) uint32 {
 //go:nosplit
 //go:noinline
 func HandleSyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) uint64 {
-	// Print syscall number for debugging (use direct UART to avoid recursion) - BREADCRUMB DISABLED
-	// uartPutcDirect('S')
-	// uartPutcDirect('Y')
-	// uartPutcDirect('S')
-	// uartPutcDirect(':')
-	// uartPutHex64Direct(syscallNum)
-	// uartPutcDirect('\r')
-	// uartPutcDirect('\n')
+	// Print syscall number for debugging (use direct UART to avoid recursion)
+	uartPutcDirect('S')
+	uartPutcDirect('Y')
+	uartPutcDirect('S')
+	uartPutcDirect(':')
+	uartPutHex64Direct(syscallNum)
+	uartPutcDirect('\r')
+	uartPutcDirect('\n')
 
 	switch syscallNum {
 	case 64: // write
