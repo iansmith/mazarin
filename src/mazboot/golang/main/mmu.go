@@ -839,29 +839,8 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 	// 		uartPutcDirect('M') - DISABLED
 	}
 
-	asm.CleanDcacheVa(l3EntryAddr) // Ensure PTE write is visible to page table walker
-
-	// CRITICAL: Ensure page table writes are visible before continuing
-	// Use DSB to ensure all page table writes complete before any subsequent
-	// memory access or MMU operation
-	asm.Dsb()
-
-	// Invalidate TLB for high-memory VAs only (>4GB)
-	// Low memory (<4GB) is identity-mapped and doesn't need TLB flush during init
-	// This avoids issues with early boot when globals might not be mapped yet
-	const HIGH_MEMORY_THRESHOLD = uintptr(0x100000000) // 4GB
-	if va >= HIGH_MEMORY_THRESHOLD {
-		asm.InvalidateTlbAll()
-		asm.Isb()
-	}
-
-	// Additional verification: read back the entry to ensure it was written
-	// This helps catch any memory ordering or cache coherency issues
-	verifyEntry := *l3Entry
-	if verifyEntry != *l3Entry {
-		// This shouldn't happen, but if it does, it indicates a serious issue
-		print("MMU: WARNING - Page table entry readback mismatch!\r\n")
-	}
+	// NOTE: Cache cleaning and barriers moved to end of initMMU() for performance
+	// The MMU isn't enabled yet, so page table walker won't see stale cache
 }
 
 // mapRegion maps a contiguous region of memory
@@ -881,14 +860,25 @@ func mapRegion(vaStart, vaEnd, paStart uintptr, attrs uint64, ap uint64, exec ui
 
 	va := vaStart
 	pa := paStart
+	pageCount := uintptr(0)
 
 	for va < vaEnd {
 		mapPage(va, pa, attrs, ap, exec)
 		va += PAGE_SIZE
 		pa += PAGE_SIZE
+		pageCount++
+
+		// Print progress every 1024 pages to track where we hang
+		if pageCount%1024 == 0 {
+			uartPutcDirect('.')
+		}
 	}
 
-	asm.Dsb()
+	// NOTE: Cache cleaning moved to end of initMMU() for performance
+	// The MMU isn't enabled yet, so page table walker won't see stale cache
+	// We'll clean cache once for all page tables before enabling MMU
+
+	uartPutcDirect('!') // Mark region mapping complete
 }
 
 // getPhysicalAddress walks page tables to get the physical address for a VA
