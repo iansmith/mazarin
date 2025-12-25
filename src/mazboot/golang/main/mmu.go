@@ -168,6 +168,9 @@ var (
 	KMALLOC_HEAP_END  uintptr // End of kmalloc heap (= __mazboot_end)
 )
 
+// Page table size - read from linker symbol
+var PAGE_TABLE_SIZE uintptr
+
 // MMIODevice describes an MMIO device region to be mapped
 type MMIODevice struct {
 	// name field removed to avoid write barrier in nosplit context
@@ -200,32 +203,20 @@ var (
 	sameVACounter uint32
 )
 
-// Page table allocator state stored at FIXED ADDRESS to avoid being
-// zeroed by memInit's pageInit. BSS variables after __end get zeroed, but
-// this memory region (0x41020600+) is in safe pre-mapped kernel RAM.
-//
-// Memory layout in 0x41000000 region:
-//   0x41000000: P structure (used by runtime stubs)
-//   0x41010000: Write barrier buffer (64KB)
-//   0x41020000: mcache struct (~0x500 bytes)
-//   0x41020500: physFrameAllocator state (32 bytes)
-//   0x41020520: totalKernelPages (8 bytes)
-//   0x41020600: pageTableAllocator state (this)
-const (
-	PAGE_TABLE_ALLOC_ADDR = 0x41020600 // Fixed address for page table allocator state
-)
+// Page table allocator state - BSS global to avoid circular dependency with heap
+var pageTableAllocatorState_global pageTableAllocatorState
 
-// pageTableAllocatorState is the layout of allocator state at fixed address
+// pageTableAllocatorState is the layout of allocator state
 type pageTableAllocatorState struct {
 	base   uintptr // Base address of page table region (PAGE_TABLE_BASE)
 	offset uintptr // Current offset from base (increments by 4KB per allocation)
 }
 
-// getPageTableAllocator returns pointer to the allocator state at fixed address
+// getPageTableAllocator returns pointer to the allocator state
 //
 //go:nosplit
 func getPageTableAllocator() *pageTableAllocatorState {
-	return (*pageTableAllocatorState)(unsafe.Pointer(uintptr(PAGE_TABLE_ALLOC_ADDR)))
+	return &pageTableAllocatorState_global
 }
 
 // allocatePageTable allocates a 4KB-aligned page table from the reserved region
@@ -302,20 +293,10 @@ func getPageTableAllocatorStats() (allocated uintptr, remaining uintptr) {
 // Physical Frame Allocator (for demand paging)
 // =============================================================================
 
-// Physical frame allocator state stored at FIXED ADDRESS to avoid being
-// zeroed by memInit's pageInit. BSS variables after __end get zeroed, but
-// this memory region (0x41020500+) is in safe pre-mapped kernel RAM.
-//
-// Memory layout in 0x41000000 region:
-//   0x41000000: P structure (used by runtime stubs)
-//   0x41010000: Write barrier buffer (64KB)
-//   0x41020000: mcache struct (~0x500 bytes)
-//   0x41020500: physFrameAllocator state (this)
-const (
-	PHYS_FRAME_ALLOC_ADDR = 0x41020500 // Fixed address for allocator state
-)
+// Physical frame allocator state - BSS global to avoid circular dependency with heap
+var physFrameAllocatorState_global physFrameAllocatorState
 
-// physFrameAllocatorState is the layout of allocator state at fixed address
+// physFrameAllocatorState is the layout of allocator state
 type physFrameAllocatorState struct {
 	next       uintptr // Next physical frame to allocate
 	end        uintptr // End of physical frame pool
@@ -323,30 +304,29 @@ type physFrameAllocatorState struct {
 	padding    uint32  // Alignment padding
 }
 
-// getPhysFrameAllocator returns pointer to the allocator state at fixed address
+// getPhysFrameAllocator returns pointer to the allocator state
 //
 //go:nosplit
 func getPhysFrameAllocator() *physFrameAllocatorState {
-	return (*physFrameAllocatorState)(unsafe.Pointer(uintptr(PHYS_FRAME_ALLOC_ADDR)))
+	return &physFrameAllocatorState_global
 }
 
-// Total kernel pages - also stored at fixed address (0x41020520)
-const TOTAL_KERNEL_PAGES_ADDR = 0x41020520
+// Total kernel pages - BSS global to avoid circular dependency with heap
+var totalKernelPages_global uint32
 
 //go:nosplit
 func getTotalKernelPages() uint32 {
-	return *(*uint32)(unsafe.Pointer(uintptr(TOTAL_KERNEL_PAGES_ADDR)))
+	return totalKernelPages_global
 }
 
 //go:nosplit
 func setTotalKernelPages(v uint32) {
-	*(*uint32)(unsafe.Pointer(uintptr(TOTAL_KERNEL_PAGES_ADDR))) = v
+	totalKernelPages_global = v
 }
 
 //go:nosplit
 func incTotalKernelPages() {
-	ptr := (*uint32)(unsafe.Pointer(uintptr(TOTAL_KERNEL_PAGES_ADDR)))
-	*ptr++
+	totalKernelPages_global++
 }
 
 // initPhysFrameAllocator initializes the physical frame allocator
@@ -357,7 +337,8 @@ func initPhysFrameAllocator() {
 	// Calculate physical frame pool start from linker symbols
 	// Physical frames start after kmazarin executable
 	// Since kmazarin hasn't been loaded yet, use conservative estimate
-	kmazarinLoadAddr := getLinkerSymbol("__kmazarin_load_addr")
+	// CRITICAL: Called from initMMU() before MMU is enabled, so use direct assembly call
+	kmazarinLoadAddr := asm.GetKmazarinLoadAddr()
 	physFrameBase := kmazarinLoadAddr + KMAZARIN_CONSERVATIVE_SIZE // ~0x42000000
 
 	alloc := getPhysFrameAllocator()
@@ -667,10 +648,6 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	// uartPutHex64Direct(uint64(physFrame))  // DISABLED
 
 	// CRITICAL: Verify physical frame is in valid range
-	// Get current physical frame pool range from allocator state
-	alloc := getPhysFrameAllocator()
-	physFrameBase := alloc.next  // Current next frame to allocate
-
 	if physFrame >= PHYS_FRAME_END {
 		uartPutsDirect("\r\n!INVALID PHYS FRAME (beyond 256MB): 0x")
 		uartPutHex64Direct(uint64(physFrame))
@@ -681,8 +658,9 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	}
 
 	// Verify frame is not in page table region
-	pageTableStart := getLinkerSymbol("__page_tables_start")
-	pageTableEnd := getLinkerSymbol("__page_tables_end")
+	// This runs after MMU is enabled, so string access is OK, but use direct calls for consistency
+	pageTableStart := asm.GetPageTablesStartAddr()
+	pageTableEnd := asm.GetPageTablesEndAddr()
 	if physFrame >= pageTableStart && physFrame < pageTableEnd {
 		uartPutsDirect("\r\n!PHYS FRAME IN PAGE TABLE REGION: 0x")
 		uartPutHex64Direct(uint64(physFrame))
@@ -965,10 +943,16 @@ func bzero(ptr unsafe.Pointer, size uint32) {
 // This must be called before enabling the MMU
 // Returns true on success, false on failure
 //
-//go:nosplit
+// NOTE: Not nosplit - called from KernelMain which allows stack growth
 func initMMU() bool {
-	// Get page table region from linker.ld (calculated values, not hardcoded)
-	pageTableBase := getLinkerSymbol("__page_tables_start")
+	// CRITICAL: Call assembly helpers directly instead of getLinkerSymbol()
+	// because getLinkerSymbol() uses string comparisons that access .rodata
+	// which isn't mapped yet when initMMU() is called!
+	pageTableBase := asm.GetPageTablesStartAddr()
+	pageTableEnd := asm.GetPageTablesEndAddr()
+
+	// Calculate PAGE_TABLE_SIZE from the difference
+	PAGE_TABLE_SIZE = pageTableEnd - pageTableBase
 
 	// Allocate page table memory
 	pageTableL0 = pageTableBase
@@ -981,8 +965,17 @@ func initMMU() bool {
 
 	// Verify page table base is 4KB aligned
 	if pageTableL0&0xFFF != 0 {
-		print("FATAL: Page table base not 4KB aligned\r\n")
-		return false
+		// Fatal error - use direct UART (character by character to avoid .rodata access)
+		uartPutcDirect('P')
+		uartPutcDirect('T')
+		uartPutcDirect('0')
+		uartPutcDirect('!')
+		uartPutcDirect(' ')
+		uartPutHex64Direct(uint64(pageTableL0))
+		uartPutcDirect('\r')
+		uartPutcDirect('\n')
+		for {
+		} // Halt
 	}
 
 	// Zero out page tables
@@ -999,24 +992,23 @@ func initMMU() bool {
 	//   0x000000-0x56D000: Boot code, text, rodata (read-only)
 	//   0x56D000-0x632000: Data section (READ-WRITE - was causing permission faults!)
 	//
-	// CRITICAL: Map .rodata explicitly FIRST to ensure string constants are accessible
-	// We can safely call getLinkerSymbol() here because MMU is not yet enabled -
-	// we're still using physical addressing, so .rodata is directly accessible
+	// CRITICAL: Call assembly helpers directly instead of getLinkerSymbol()
+	// because getLinkerSymbol() uses string comparisons that access .rodata!
 	// 	uartPutcDirect('R')  // Breadcrumb: about to map .rodata - DISABLED
-	rodataStart := getLinkerSymbol("__rodata_start")
-	rodataEnd := getLinkerSymbol("__rodata_end")
+	rodataStart := asm.GetRodataStartAddr()
+	rodataEnd := asm.GetRodataEndAddr()
 	if rodataStart != 0 && rodataEnd != 0 {
 	// 		uartPutcDirect('r')  // Breadcrumb: got .rodata - DISABLED addresses, about to map
 		mapRegion(rodataStart, rodataEnd, rodataStart, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
 	// 		uartPutcDirect('D')  // Breadcrumb: .rodata mapped - DISABLED
 	} else {
-	// 		uartPutcDirect('X')  // Breadcrumb: getLinkerSymbol failed - DISABLED!
+	// 		uartPutcDirect('X')  // Breadcrumb: assembly helper failed - DISABLED!
 	}
 
 	// Get section boundaries from linker symbols
-	textStart := getLinkerSymbol("__text_start")
-	dataStart := getLinkerSymbol("__data_start")
-	endAddr := getLinkerSymbol("__end")
+	textStart := asm.GetTextStartAddr()
+	dataStart := asm.GetDataStartAddr()
+	endAddr := asm.GetEndAddr()
 
 	// DEBUG: Print text section range to verify it includes executing code
 	uartPutsDirect("\r\n.text: 0x")
@@ -1054,7 +1046,7 @@ func initMMU() bool {
 	// Map data+BSS sections as read-write
 	// BSS starts where data ends, so we map from dataStart to __bss_end
 	// This includes both .data (initialized) and .bss (uninitialized) sections
-	bssEnd := getLinkerSymbol("__bss_end")
+	bssEnd := asm.GetBssEndAddr()
 	if dataStart > 0 && bssEnd > 0 {
 		mapRegion(dataStart, bssEnd, dataStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 	}
@@ -1109,8 +1101,8 @@ func initMMU() bool {
 	}
 
 	// Map DTB region (now that kernel starts at 0x40100000, no overlap!)
-	dtbStart := getLinkerSymbol("__dtb_boot_addr")
-	dtbEnd := dtbStart + getLinkerSymbol("__dtb_size")
+	dtbStart := asm.GetDtbBootAddr()
+	dtbEnd := dtbStart + asm.GetDtbSize()
 	mapRegion(
 		dtbStart, dtbEnd, dtbStart,
 		PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER,  // DTB is read-only data
@@ -1135,7 +1127,8 @@ func initMMU() bool {
 	// 	uartPutcDirect('V')  // Breadcrumb: verification done - DISABLED
 
 	// Get page table region boundaries from linker.ld
-	pageTableEnd := getLinkerSymbol("__page_tables_end")
+	// Note: pageTableEnd already declared earlier in function
+	pageTableEnd = asm.GetPageTablesEndAddr()
 
 	// Map kernel RAM (after mazboot image to page tables) - heap, stacks
 	// CRITICAL: Start mapping AFTER our kernel image (endAddr) to avoid overlap
@@ -1206,7 +1199,7 @@ func initMMU() bool {
 //go:nosplit
 func preMapScheديnitPages() {
 	// Get UART base for progress markers
-	uartBase := getLinkerSymbol("__uart_base")
+	uartBase := asm.GetUartBase()
 
 	// Print marker to show we're pre-mapping
 	uartPutsDirect("\r\nPre-mapping 22 schedinit pages...")

@@ -303,6 +303,11 @@ func hex64(val uint64) string {
 	return unsafe.String(&buf[0], 21)
 }
 
+// printHex outputs a uint64 as a 16-digit hex string
+func printHex(val uint64) {
+	print(hex64(val))
+}
+
 // printHex64 outputs a uint64 as a 16-digit hex string
 // DEPRECATED: Use print(hex64(val)) instead for consistent formatting
 func printHex64(val uint64) {
@@ -618,10 +623,6 @@ func KernelMain(r0, r1, atags uint32) {
 
 	_ = r0
 	_ = r1
-
-	// Get MMIO device addresses from linker symbols
-	_ = getLinkerSymbol("__uart_base")
-	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x6B // 'k' = Past linker symbol - BREADCRUMB DISABLED
 
 	// On QEMU virt, the DTB pointer is passed in as the "atags" parameter (low 32 bits).
 	// boot.s captures QEMU's reset-time x0 and passes it through to kernel_main in x2.
@@ -960,9 +961,16 @@ func KernelMain(r0, r1, atags uint32) {
 	// Instead, use simple kmalloc/kfree for minimal allocation needs
 	print("Initializing simple heap (mazboot uses kmalloc, not full Go runtime heap)... ")
 
+	// CRITICAL: Must call initKmallocHeap() BEFORE heapInit() to calculate KMALLOC_HEAP_BASE
+	// initKmallocHeap() reads linker symbols to determine heap boundaries
+	initKmallocHeap()
+
 	// Use existing heapInit (already implemented in heap.go)
 	heapInit(KMALLOC_HEAP_BASE)
 	print("PASS\r\n")
+
+	// NOTE: Runtime structures (MMU allocators, TLS, P, mcache, exception vectors)
+	// are now BSS globals to avoid circular dependency with heap initialization
 
 	// Just call osinit to set ncpu (doesn't allocate memory)
 	print("Calling runtime.osinit()... ")
@@ -1866,7 +1874,7 @@ func setupKmazarinStartupEnv() (stackPointer uintptr, argc uint64, argv uintptr)
 //    - offset = DTB_END - first_segment_vaddr
 // 3. Copies each segment from the embedded binary to memory at (vaddr + offset)
 // 4. Handles BSS zeroing (memsz > filesz)
-// 5. Jumps to the kmazarin entry point (entry + offset)
+// 5. Jumps to the kmazarin entry point
 //
 // Note: This function is NOT marked nosplit because it runs after the Go runtime
 // is initialized and contains many print() calls that require stack space.
@@ -1894,9 +1902,6 @@ func loadAndRunKmazarin() {
 	sliceHeader.Len = int(kmazarinSize)
 	sliceHeader.Cap = int(kmazarinSize)
 
-	// Simple manual ELF parsing to avoid complex library dependencies
-	// We only need entry point - kmazarin is already at the correct memory location
-
 	// Verify ELF magic
 	if len(elfData) < 64 ||
 		elfData[0] != 0x7F || elfData[1] != 'E' || elfData[2] != 'L' || elfData[3] != 'F' {
@@ -1914,18 +1919,156 @@ func loadAndRunKmazarin() {
 		(uint64(elfData[0x1E]) << 48) |
 		(uint64(elfData[0x1F]) << 56)
 
-	// Skip complex ELF loading - kmazarin is already embedded and loaded
-	// Calculate actual entry address (embedded base + entry offset)
-	entryAddr := kmazarinStart + uintptr(entry)
+	// Parse program header offset (0x20-0x27)
+	phoff := uint64(elfData[0x20]) |
+		(uint64(elfData[0x21]) << 8) |
+		(uint64(elfData[0x22]) << 16) |
+		(uint64(elfData[0x23]) << 24) |
+		(uint64(elfData[0x24]) << 32) |
+		(uint64(elfData[0x25]) << 40) |
+		(uint64(elfData[0x26]) << 48) |
+		(uint64(elfData[0x27]) << 56)
 
-	// Register kmazarin as Span 2 for the page fault handler
-	minVA := kmazarinStart &^ 0xFFF
-	maxVA := (kmazarinStart + kmazarinSize + 0xFFF) &^ 0xFFF
+	// Parse program header entry size and count
+	phentsize := uint16(elfData[0x36]) | (uint16(elfData[0x37]) << 8)
+	phnum := uint16(elfData[0x38]) | (uint16(elfData[0x39]) << 8)
 
-	print("Registering kmazarin span...\r\n")
+	// PT_LOAD = 1
+	const PT_LOAD = 1
+
+	// Track min/max VAs for page fault handler registration
+	var minVA, maxVA uintptr
+
+	// Process each program header
+	for i := uint16(0); i < phnum; i++ {
+		phOffset := phoff + uint64(i)*uint64(phentsize)
+		if phOffset+56 > uint64(len(elfData)) {
+			print("ERROR: Invalid program header\r\n")
+			return
+		}
+
+		// Parse program header type
+		pType := uint32(elfData[phOffset]) |
+			(uint32(elfData[phOffset+1]) << 8) |
+			(uint32(elfData[phOffset+2]) << 16) |
+			(uint32(elfData[phOffset+3]) << 24)
+
+		if pType != PT_LOAD {
+			continue
+		}
+
+		// Parse PT_LOAD segment fields
+		pOffset := uint64(elfData[phOffset+8]) |
+			(uint64(elfData[phOffset+9]) << 8) |
+			(uint64(elfData[phOffset+10]) << 16) |
+			(uint64(elfData[phOffset+11]) << 24) |
+			(uint64(elfData[phOffset+12]) << 32) |
+			(uint64(elfData[phOffset+13]) << 40) |
+			(uint64(elfData[phOffset+14]) << 48) |
+			(uint64(elfData[phOffset+15]) << 56)
+
+		pVaddr := uint64(elfData[phOffset+16]) |
+			(uint64(elfData[phOffset+17]) << 8) |
+			(uint64(elfData[phOffset+18]) << 16) |
+			(uint64(elfData[phOffset+19]) << 24) |
+			(uint64(elfData[phOffset+20]) << 32) |
+			(uint64(elfData[phOffset+21]) << 40) |
+			(uint64(elfData[phOffset+22]) << 48) |
+			(uint64(elfData[phOffset+23]) << 56)
+
+		pFilesz := uint64(elfData[phOffset+32]) |
+			(uint64(elfData[phOffset+33]) << 8) |
+			(uint64(elfData[phOffset+34]) << 16) |
+			(uint64(elfData[phOffset+35]) << 24) |
+			(uint64(elfData[phOffset+36]) << 32) |
+			(uint64(elfData[phOffset+37]) << 40) |
+			(uint64(elfData[phOffset+38]) << 48) |
+			(uint64(elfData[phOffset+39]) << 56)
+
+		pMemsz := uint64(elfData[phOffset+40]) |
+			(uint64(elfData[phOffset+41]) << 8) |
+			(uint64(elfData[phOffset+42]) << 16) |
+			(uint64(elfData[phOffset+43]) << 24) |
+			(uint64(elfData[phOffset+44]) << 32) |
+			(uint64(elfData[phOffset+45]) << 40) |
+			(uint64(elfData[phOffset+46]) << 48) |
+			(uint64(elfData[phOffset+47]) << 56)
+
+		pFlags := uint32(elfData[phOffset+4]) |
+			(uint32(elfData[phOffset+5]) << 8) |
+			(uint32(elfData[phOffset+6]) << 16) |
+			(uint32(elfData[phOffset+7]) << 24)
+
+		// Calculate page-aligned range
+		vaStart := uintptr(pVaddr) &^ 0xFFF
+		vaEnd := (uintptr(pVaddr) + uintptr(pMemsz) + 0xFFF) &^ 0xFFF
+		numPages := (vaEnd - vaStart) >> 12
+
+		// Update min/max for span registration
+		if minVA == 0 || vaStart < minVA {
+			minVA = vaStart
+		}
+		if vaEnd > maxVA {
+			maxVA = vaEnd
+		}
+
+		// Determine page permissions
+		var apBits, execBits uint64
+		if pFlags&0x2 != 0 { // PF_W (writable)
+			apBits = PTE_AP_RW_EL1
+		} else {
+			apBits = PTE_AP_RO_EL1
+		}
+		if pFlags&0x1 == 0 { // !PF_X (not executable)
+			execBits = PTE_EXEC_NEVER
+		} else {
+			execBits = 0
+		}
+
+		// Map all pages for this segment
+		for pageIdx := uintptr(0); pageIdx < numPages; pageIdx++ {
+			va := vaStart + (pageIdx << 12)
+			physFrame := allocPhysFrame()
+			if physFrame == 0 {
+				print("ERROR: Out of memory mapping segment\r\n")
+				return
+			}
+
+			// Map the page
+			mapPage(va, physFrame, PTE_ATTR_NORMAL, apBits, execBits)
+		}
+
+		// Use barriers after mapping (no TLB invalidation needed for new mappings)
+		asm.Dsb()
+		asm.Isb()
+
+		// Copy file data to mapped memory
+		if pFilesz > 0 {
+			// Handle negative offsets (common in position-dependent executables)
+			var srcOffset uintptr
+			if pOffset > 0x8000000000000000 { // Negative offset
+				// Skip segments with negative offsets (e.g., first LOAD segment at -0xF000)
+				continue
+			} else {
+				srcOffset = kmazarinStart + uintptr(pOffset)
+			}
+
+			dst := unsafe.Pointer(uintptr(pVaddr))
+			src := unsafe.Pointer(srcOffset)
+			memmove(dst, src, uint32(pFilesz))
+		}
+
+		// Zero BSS section (MemSz > FileSz)
+		if pMemsz > pFilesz {
+			bssStart := unsafe.Pointer(uintptr(pVaddr) + uintptr(pFilesz))
+			bssSize := pMemsz - pFilesz
+			bzero(bssStart, uint32(bssSize))
+		}
+	}
+
 	if !registerMmapSpan(minVA, maxVA) {
-		print("ERROR: Failed to register span!\r\n")
-		for {} // Hang
+		// Failed to register - hang
+		for {}
 	}
 
 	// Set up argc/argv/envp/auxv structure
@@ -1934,6 +2077,9 @@ func loadAndRunKmazarin() {
 		print("ERROR: Environment setup failed!\r\n")
 		return
 	}
+
+	// Use entry point directly (it's already the correct virtual address)
+	entryAddr := uintptr(entry)
 
 	// Jump to kmazarin with proper argc/argv/auxv
 	print("Jumping to kmazarin...\r\n\r\n")

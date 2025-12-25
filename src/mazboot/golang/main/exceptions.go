@@ -80,9 +80,21 @@ func setVbarEl1ToAddr(addr uintptr)
 // Relocated exception vectors in safe RAM (non-cacheable)
 // Must be 2KB aligned and 2KB in size
 const (
-	EXCEPTION_VECTOR_RAM_ADDR = uintptr(0x41100000) // Safe address in kernel RAM
-	EXCEPTION_VECTOR_SIZE     = 0x800               // 2KB
+	EXCEPTION_VECTOR_SIZE = 0x800 // 2KB
 )
+
+// Exception vectors - BSS global to avoid circular dependency with heap
+// Allocate 4KB to ensure 2KB alignment (extra space for alignment padding)
+var exceptionVectorRAM_global [4096]byte
+
+// getExceptionVectorRAMAddr returns the 2KB-aligned address of exception vectors
+//
+//go:nosplit
+func getExceptionVectorRAMAddr() uintptr {
+	// Calculate 2KB-aligned address within the buffer
+	addr := uintptr(unsafe.Pointer(&exceptionVectorRAM_global[0]))
+	return (addr + 0x7FF) &^ 0x7FF // Round up to 2KB boundary
+}
 
 // InitializeExceptions sets up the exception vector table
 // CRITICAL: This now RELOCATES exception vectors from ROM to RAM at a safe address
@@ -98,10 +110,13 @@ func InitializeExceptions() {
 	// Get original exception vector address from linker (in ROM)
 	romVectorAddr := uintptr(asm.GetExceptionVectorsAddr())
 
+	// Get aligned exception vector RAM address
+	exceptionVectorRAMAddr := getExceptionVectorRAMAddr()
+
 	uartPutsDirect("Relocating exception vectors from ROM 0x")
 	uartPutHex64Direct(uint64(romVectorAddr))
 	uartPutsDirect(" to RAM 0x")
-	uartPutHex64Direct(uint64(EXCEPTION_VECTOR_RAM_ADDR))
+	uartPutHex64Direct(uint64(exceptionVectorRAMAddr))
 	uartPutsDirect("\r\n")
 
 	// Verify ROM address is 2KB aligned
@@ -112,13 +127,13 @@ func InitializeExceptions() {
 
 	// Copy exception vectors from ROM to RAM (2KB)
 	romPtr := (*[EXCEPTION_VECTOR_SIZE]byte)(unsafe.Pointer(romVectorAddr))
-	ramPtr := (*[EXCEPTION_VECTOR_SIZE]byte)(unsafe.Pointer(EXCEPTION_VECTOR_RAM_ADDR))
+	ramPtr := (*[EXCEPTION_VECTOR_SIZE]byte)(unsafe.Pointer(exceptionVectorRAMAddr))
 	for i := uintptr(0); i < EXCEPTION_VECTOR_SIZE; i++ {
 		ramPtr[i] = romPtr[i]
 	}
 
 	// Clean data cache to ensure writes are visible in memory
-	for addr := EXCEPTION_VECTOR_RAM_ADDR; addr < EXCEPTION_VECTOR_RAM_ADDR+EXCEPTION_VECTOR_SIZE; addr += 64 {
+	for addr := exceptionVectorRAMAddr; addr < exceptionVectorRAMAddr+EXCEPTION_VECTOR_SIZE; addr += 64 {
 		asm.CleanDataCacheVA(addr)
 	}
 	asm.Dsb()
@@ -128,7 +143,7 @@ func InitializeExceptions() {
 	asm.InvalidateInstructionCacheAll()
 
 	// Verify the copy succeeded - check sync_exception_el1 (offset +0x200)
-	syncExceptionAddr := EXCEPTION_VECTOR_RAM_ADDR + 0x200
+	syncExceptionAddr := exceptionVectorRAMAddr + 0x200
 	firstInst := *(*uint32)(unsafe.Pointer(syncExceptionAddr))
 	if (firstInst>>26) != 0x05 && (firstInst>>26) != 0x06 {
 		uartPutsDirect("\r\n!VECTOR COPY FAILED!\r\n")
@@ -143,12 +158,12 @@ func InitializeExceptions() {
 	// Update VBAR_EL1 to point to new RAM location
 	// (This will be done via assembly helper)
 	uartPutsDirect("Updating VBAR_EL1 to 0x")
-	uartPutHex64Direct(uint64(EXCEPTION_VECTOR_RAM_ADDR))
+	uartPutHex64Direct(uint64(exceptionVectorRAMAddr))
 	uartPutsDirect("\r\n")
 
 	// Set VBAR_EL1 to new address (via assembly)
 	uartPutsDirect("DEBUG: About to set VBAR_EL1...\r\n")
-	setVbarEl1ToAddr(EXCEPTION_VECTOR_RAM_ADDR)
+	setVbarEl1ToAddr(exceptionVectorRAMAddr)
 	uartPutsDirect("DEBUG: VBAR_EL1 set\r\n")
 
 	asm.Dsb()

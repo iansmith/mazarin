@@ -102,6 +102,27 @@ get_dtb_size:
     ldr x0, =__dtb_size
     ret
 
+// get_mazboot_end() returns uintptr
+// Returns end of mazboot 15MB allocation (where kmazarin starts)
+.global get_mazboot_end
+get_mazboot_end:
+    ldr x0, =__mazboot_end
+    ret
+
+// get_mazboot_allocation_size() returns uintptr
+// Returns total mazboot allocation size (15MB)
+.global get_mazboot_allocation_size
+get_mazboot_allocation_size:
+    ldr x0, =__mazboot_allocation_size
+    ret
+
+// get_kmazarin_load_addr() returns uintptr
+// Returns virtual address where kmazarin should be loaded
+.global get_kmazarin_load_addr
+get_kmazarin_load_addr:
+    ldr x0, =__kmazarin_load_addr
+    ret
+
 // get_g0_stack_bottom() returns uintptr
 // Returns bottom of g0 stack (32KB below stack top)
 .global get_g0_stack_bottom

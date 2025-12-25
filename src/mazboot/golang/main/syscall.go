@@ -7,9 +7,39 @@ import (
 	_ "unsafe" // for go:linkname
 )
 
-// Simple FD tracking for /dev/random
-// Instead of a full FD table, just track if FD 3 is allocated for /dev/random
+// Simple FD tracking for /dev/random and /proc/self/auxv
+// Instead of a full FD table, just track if FD 3 and FD 4 are allocated
 var devRandomFDAllocated uint32 // 0 = not allocated, 1 = FD 3 is /dev/random
+var procAuxvFDAllocated uint32  // 0 = not allocated, 1 = FD 4 is /proc/self/auxv
+
+// Auxiliary vector (auxv) for /proc/self/auxv
+// The Linux kernel provides this to processes at startup
+// Format: array of (tag, value) pairs, terminated by AT_NULL (0, 0)
+//
+// Go runtime uses these values during initialization:
+// - AT_PAGESZ: Physical page size (4096 bytes)
+// - AT_RANDOM: Pointer to 16 bytes of random data
+// - AT_SECURE: Secure mode flag (0 = not secure)
+//
+// Conservative values suitable for bare-metal ARM64:
+var auxvData = [...]uint64{
+	// AT_PAGESZ = 6
+	6, 4096,
+
+	// AT_RANDOM = 25 (pointer to randomBytes)
+	// This will be filled in dynamically with address of randomBytes
+	25, 0,  // Value set at runtime
+
+	// AT_SECURE = 23
+	23, 0,  // Not in secure mode
+
+	// AT_NULL = 0 (terminator)
+	0, 0,
+}
+
+// Random bytes for AT_RANDOM (16 bytes as required by Go runtime)
+var randomBytes [16]byte
+var randomBytesInitialized uint32 // 0 = not initialized, 1 = initialized
 
 // Runtime scheduler functions accessed via go:linkname
 //
@@ -137,6 +167,14 @@ func SyscallClose(fd int32) int64 {
 		}
 	}
 
+	// Special case: FD 4 is /proc/self/auxv
+	if fd == 4 {
+		if atomic.LoadUint32(&procAuxvFDAllocated) == 1 {
+			atomic.StoreUint32(&procAuxvFDAllocated, 0)
+			return 0 // Success
+		}
+	}
+
 	// For all other FDs, just return success (no-op)
 	return 0
 }
@@ -187,6 +225,31 @@ func SyscallRead(fd int32, buf unsafe.Pointer, count uint64) int64 {
 		// Call VirtIO RNG to get random bytes
 		bytesRead := getRandomBytes(buf, uint32(count))
 		return int64(bytesRead)
+	}
+
+	// Special case: FD 4 is /proc/self/auxv
+	if fd == 4 && atomic.LoadUint32(&procAuxvFDAllocated) == 1 {
+		// Validate buffer pointer
+		if buf == nil {
+			return -14 // -EFAULT (bad address)
+		}
+
+		// auxvData is an array of uint64 pairs
+		auxvSize := uint64(len(auxvData) * 8) // 8 bytes per uint64
+
+		// Limit count to auxv size
+		if count > auxvSize {
+			count = auxvSize
+		}
+
+		// Copy auxv data to buffer
+		dst := (*[1 << 30]byte)(buf)[:count]
+		src := (*[1 << 30]byte)(unsafe.Pointer(&auxvData[0]))[:count]
+		for i := uint64(0); i < count; i++ {
+			dst[i] = src[i]
+		}
+
+		return int64(count)
 	}
 
 	// NO FD SUPPORT - We rely entirely on AT_RANDOM for random numbers
@@ -246,6 +309,23 @@ func SyscallOpenat(dirfd int32, pathname unsafe.Pointer, flags int32, mode int32
 	// If it does, return ENOENT to indicate the file doesn't exist
 	if cstringEqual(pathname, "/dev/urandom") {
 		return -2 // -ENOENT (file not found)
+	}
+
+	// Check for /proc/self/auxv - allocate FD 4
+	if cstringEqual(pathname, "/proc/self/auxv") {
+		// Initialize randomBytes if not already done
+		if atomic.CompareAndSwapUint32(&randomBytesInitialized, 0, 1) {
+			// Get random bytes for AT_RANDOM
+			getRandomBytes(unsafe.Pointer(&randomBytes[0]), 16)
+			// Set the AT_RANDOM pointer in auxvData
+			auxvData[3] = uint64(uintptr(unsafe.Pointer(&randomBytes[0])))
+		}
+
+		// Check if already allocated
+		if atomic.CompareAndSwapUint32(&procAuxvFDAllocated, 0, 1) {
+			return 4 // Return FD 4
+		}
+		return -23 // -ENFILE (already open)
 	}
 
 	// Expected path from getHugePageSize()

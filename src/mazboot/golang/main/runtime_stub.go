@@ -5,6 +5,26 @@ import (
 	"unsafe"
 )
 
+// Runtime structures - BSS globals to avoid circular dependency with heap
+var (
+	tlsBlock_global     [256]byte      // TLS block (256 bytes)
+	p0_global           [64 * 1024]byte // P structure (64KB)
+	mcacheStruct_global [2048]byte     // mcache structure (2KB)
+)
+
+// Helper functions to get addresses of runtime structures
+func getTLSBlockAddr() uintptr {
+	return uintptr(unsafe.Pointer(&tlsBlock_global[0]))
+}
+
+func getP0Addr() uintptr {
+	return uintptr(unsafe.Pointer(&p0_global[0]))
+}
+
+func getMcacheStructAddr() uintptr {
+	return uintptr(unsafe.Pointer(&mcacheStruct_global[0]))
+}
+
 
 // setTPIDR_EL1 sets the TPIDR_EL1 register (kernel TLS pointer)
 //
@@ -95,7 +115,8 @@ func initRuntimeStubs() {
 	// CRITICAL STEP 0: Initialize TPIDR_EL0 FIRST so Go runtime can access TLS
 	// We do this BEFORE patching because print() needs TLS to work!
 	// Later we'll patch to use TPIDR_EL1, but for now use EL0 to get print working
-	const tlsBlockAddr = uintptr(0x41030000) // TLS block at fixed address
+	// TLS block is a BSS global to avoid circular dependency with heap
+	tlsBlockAddr := getTLSBlockAddr()
 	writeMemory64(tlsBlockAddr, uint64(g0Addr)) // Store g0 pointer at TLS offset 0
 	asm.WriteTpidrEl0(uint64(tlsBlockAddr))      // Set TPIDR_EL0 temporarily
 
@@ -142,10 +163,11 @@ func initRuntimeStubs() {
 	m0CurgOffset := unsafe.Offsetof(runtimeM{}.curg)
 	writeMemory64(m0Addr+m0CurgOffset, 0) // NULL, not g0!
 
-	// Step 2: Create a properly initialized P (processor) structure at 0x41000000
+	// Step 2: Create a properly initialized P (processor) structure
 	// In c-archive mode, mallocinit() may call gcmarknewobject which needs M.p to be valid
 	// The real runtime in exe mode doesn't need this, but c-archive mode behaves differently
-	p0Addr := uintptr(0x41000000)
+	// P structure is a BSS global to avoid circular dependency with heap
+	p0Addr := getP0Addr()
 
 	// Step 3: Initialize P0 fields (manually replicating runtime.(*p).init(0))
 	// CRITICAL fields that must be set:
@@ -153,7 +175,8 @@ func initRuntimeStubs() {
 	writeMemory32(p0Addr+4, 2)  // P.status = _Pgcstop (2)
 
 	// Step 4: Set up mcache0
-	mcacheStructAddr := uintptr(0x41020000)
+	// mcache structure is a BSS global to avoid circular dependency with heap
+	mcacheStructAddr := getMcacheStructAddr()
 	mcache0PtrAddr := asm.GetMcache0Addr()
 	writeMemory64(mcache0PtrAddr, uint64(mcacheStructAddr))
 	writeMemory64(p0Addr+56, uint64(mcacheStructAddr)) // P.mcache at offset 56

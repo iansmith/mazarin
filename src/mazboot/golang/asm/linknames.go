@@ -155,6 +155,10 @@ func GetGicBase() uintptr
 //go:nosplit
 func GetGicSize() uintptr
 
+//go:linkname GetKmazarinLoadAddr get_kmazarin_load_addr
+//go:nosplit
+func GetKmazarinLoadAddr() uintptr
+
 //go:linkname GetKmazarinSize get_kmazarin_size
 //go:nosplit
 func GetKmazarinSize() uintptr
@@ -166,6 +170,14 @@ func GetKmazarinStart() uintptr
 //go:linkname GetM0Addr get_m0_addr
 //go:nosplit
 func GetM0Addr() uintptr
+
+//go:linkname GetMazbootAllocationSize get_mazboot_allocation_size
+//go:nosplit
+func GetMazbootAllocationSize() uintptr
+
+//go:linkname GetMazbootEnd get_mazboot_end
+//go:nosplit
+func GetMazbootEnd() uintptr
 
 //go:linkname GetMcache0Addr get_mcache0_addr
 //go:nosplit

@@ -48,6 +48,12 @@ func getLinkerSymbol(name string) uintptr {
 		return asm.GetDtbBootAddr()
 	case "__dtb_size":
 		return asm.GetDtbSize()
+	case "__mazboot_end":
+		return asm.GetMazbootEnd()
+	case "__mazboot_allocation_size":
+		return asm.GetMazbootAllocationSize()
+	case "__kmazarin_load_addr":
+		return asm.GetKmazarinLoadAddr()
 	case "__g0_stack_bottom":
 		return asm.GetG0StackBottom()
 	case "__gic_base":

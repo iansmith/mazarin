@@ -387,10 +387,48 @@ func kfree(ptr unsafe.Pointer) {
 	}
 }
 
+// initKmallocHeap calculates kmalloc heap boundaries from linker symbols
+// This MUST be called before heapInit()
+//
+//go:nosplit
+func initKmallocHeap() {
+	// CRITICAL: Call assembly helpers directly instead of getLinkerSymbol()
+	// because getLinkerSymbol() uses string comparisons that access .rodata
+	bssEnd := asm.GetBssEndAddr()
+	mazbootEnd := asm.GetMazbootEnd()
+
+	// Heap starts at first page after BSS (page-aligned)
+	heapStart := (bssEnd + 0xFFF) &^ 0xFFF
+
+	// Heap ends at mazboot allocation boundary
+	heapEnd := mazbootEnd
+
+	// Calculate heap size
+	heapSize := heapEnd - heapStart
+
+	// Set global variables
+	KMALLOC_HEAP_BASE = heapStart
+	KMALLOC_HEAP_END = heapEnd
+	KMALLOC_HEAP_SIZE = heapSize
+
+	// Validation: ensure we have at least 1MB of heap
+	const minHeapSize = 1024 * 1024
+	if heapSize < minHeapSize {
+		print("FATAL: Heap too small: ")
+		printHex64(uint64(heapSize))
+		print(" bytes (need at least ")
+		printHex64(uint64(minHeapSize))
+		print(")\r\n")
+		for {
+		}
+	}
+}
+
 // memInit initializes both page management and heap allocator
 //
 //go:nosplit
 func memInit(atagsPtr uintptr) {
+	initKmallocHeap() // Calculate heap boundaries from linker symbols
 	pageInit(atagsPtr)
 	heapInit(KMALLOC_HEAP_BASE)
 }

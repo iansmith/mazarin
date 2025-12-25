@@ -328,17 +328,23 @@ KMAZARIN_BUILD_DIR = src/kmazarin/build
 KMAZARIN_BINARY = $(KMAZARIN_BUILD_DIR)/kmazarin.elf
 
 # Build kmazarin kernel as a static binary using Go's internal linker
-# The Go linker will position segments at 0x40000000 (page-aligned)
-# The ELF loader in mazboot applies a runtime offset of 0x100000 to avoid DTB
-$(KMAZARIN_BINARY): $(wildcard $(KMAZARIN_SRC)/*.go)
+# The load address is extracted from src/mazboot/linker.ld using kmazarin-entry.sh
+# This ensures the Makefile and linker script stay in sync automatically.
+#   - DTB:            0x40000000-0x40100000 (1MB, QEMU fixed)
+#   - Mazboot + heap: 0x40100000-0x41000000 (15MB allocated)
+#   - Kmazarin:       0x41000000-...        (loaded by ELF loader, Span 2)
+#   - Bump region:    Starts after kmazarin, 2GB for mmap/brk (Span 3)
+# The ELF loader in mazboot will load segments at their specified virtual addresses
+$(KMAZARIN_BINARY): $(wildcard $(KMAZARIN_SRC)/*.go) src/mazboot/linker.ld tools/kmazarin-entry.sh
 	@mkdir -p $(KMAZARIN_BUILD_DIR)
-	@echo "Building kmazarin kernel (static Go binary)..."
+	$(eval KMAZARIN_LOAD_ADDR := $(shell ./tools/kmazarin-entry.sh))
+	@echo "Building kmazarin kernel (static Go binary at $(KMAZARIN_LOAD_ADDR))..."
 	@cd $(KMAZARIN_SRC) && \
 		CGO_ENABLED=0 \
 		GOTOOLCHAIN=auto \
 		GOARCH=$(GOARCH) \
 		GOOS=$(GOOS) \
-		$(GO) build -ldflags="-T 0x40000000" -o $(abspath $(KMAZARIN_BINARY)) .
+		$(GO) build -ldflags="-T $(KMAZARIN_LOAD_ADDR)" -o $(abspath $(KMAZARIN_BINARY)) .
 	@echo "Kmazarin kernel built at $(KMAZARIN_BINARY)"
 
 # Build target for kmazarin
