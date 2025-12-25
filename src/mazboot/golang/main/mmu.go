@@ -765,8 +765,7 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 			return
 		}
 		*l0Entry = createTableEntry(l1Table)
-		asm.Dsb() // Ensure table entry is visible
-		// Note: TLB invalidation deferred to end of mapPage
+		// NOTE: DSB moved to end of initMMU() for performance
 	}
 
 	// Extract L1 table address from L0 entry
@@ -788,8 +787,7 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 		}
 
 		*l1Entry = createTableEntry(l2Table)
-		asm.Dsb() // Ensure table entry is visible
-		// Note: TLB invalidation deferred to end of mapPage
+		// NOTE: DSB moved to end of initMMU() for performance
 	} else {
 		l2Table = uintptr(*l1Entry & PTE_ADDR_MASK)
 	}
@@ -808,8 +806,7 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 		}
 
 		*l2Entry = createTableEntry(l3Table)
-		asm.Dsb() // Ensure table entry is visible
-		// Note: TLB invalidation deferred to end of mapPage
+		// NOTE: DSB moved to end of initMMU() for performance
 	} else {
 		l3Table = uintptr(*l2Entry & PTE_ADDR_MASK)
 	}
@@ -1161,22 +1158,38 @@ func initMMU() bool {
 	// This region will be identity-mapped as part of the general RAM mapping
 
 	// Initialize physical frame allocator
+	uartPutcDirect('B') // Before initPhysFrameAllocator
 	initPhysFrameAllocator()
-	// 	uartPutcDirect('F')  // Breadcrumb: physical frame allocator - DISABLED initialized
+	uartPutcDirect('A') // After initPhysFrameAllocator
+
+	// CRITICAL: Clean data cache for page tables before enabling MMU
+	// The hardware page table walker reads PTEs from memory, not cache.
+	// If PTEs are still in data cache (write-back), walker can't see them!
+	uartPutcDirect('C') // Before cache clean
+	pageTableSize := pageTableEnd - pageTableBase
+	for offset := uintptr(0); offset < pageTableSize; offset += 64 {
+		asm.CleanDataCacheVA(pageTableBase + offset)
+	}
+	uartPutcDirect('D') // After cache clean
 
 	// CRITICAL: Flush TLB to ensure all mappings are visible to CPU
 	// Without this, the CPU may have stale TLB entries that don't reflect
 	// the new mappings, causing exceptions when accessing newly mapped regions
-	asm.Dsb()               // Ensure all page table writes are visible
+	asm.Dsb()               // Ensure all page table writes and cache cleans complete
+	uartPutcDirect('E') // After DSB
 	asm.InvalidateTlbAll()  // Invalidate all TLB entries
+	uartPutcDirect('F') // After TLB invalidate
 	asm.Isb()               // Ensure TLB invalidation completes
+	uartPutcDirect('G') // After ISB
 
 	// DEBUG: Check if we ran out of page table space
 	_, remaining := getPageTableAllocatorStats()
+	uartPutcDirect('H') // Before remaining check
 	if remaining == 0 {
-	// 		uartPutcDirect('O')  // 'O' = Out of page table - DISABLED space!
+		uartPutcDirect('O')  // 'O' = Out of page table space!
 		for {} // Hang
 	}
+	uartPutcDirect('I') // After remaining check
 
 	// 	uartPutcDirect('T')  // Breadcrumb: about to return true - DISABLED from initMMU
 	return true
@@ -1298,14 +1311,13 @@ func dumpFetchMapping(label string, va uintptr) bool {
 //
 //go:nosplit
 func enableMMU() bool {
-	// uartBase := uintptr(0x09000000) // BREADCRUMB DISABLED
-	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x45 // 'E' = entered enableMMU - BREADCRUMB DISABLED
+	uartPutcDirect('E') // entered enableMMU
 
 	if pageTableL0 == 0 {
 		print("FATAL: Page tables not initialized\r\n")
 		return false
 	}
-	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x31 // '1' = page table check passed - BREADCRUMB DISABLED
+	uartPutcDirect('1') // page table check passed
 
 	// Configure MAIR_EL1: Set all 3 memory attribute indices
 	// MAIR[0] = 0xFF (Normal, Inner/Outer Write-Back Cacheable)
@@ -1315,7 +1327,7 @@ func enableMMU() bool {
 		(uint64(0x00) << 8) |  // Attr1: Device
 		(uint64(0x44) << 16)   // Attr2: Normal non-cacheable
 	asm.WriteMairEl1(mairValue)
-	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x32 // '2' = MAIR written - BREADCRUMB DISABLED
+	uartPutcDirect('2') // MAIR written
 
 	// Verify MAIR
 	mairReadback := asm.ReadMairEl1()
@@ -1323,7 +1335,7 @@ func enableMMU() bool {
 		print("FATAL: MAIR configuration failed\r\n")
 		return false
 	}
-	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x33 // '3' = MAIR verified - BREADCRUMB DISABLED
+	uartPutcDirect('3') // MAIR verified
 
 	// Configure TCR_EL1
 	tcrValue := uint64(0)
@@ -1335,7 +1347,7 @@ func enableMMU() bool {
 	tcrValue |= 1 << 23  // EPD1 = 1
 	tcrValue |= 2 << 32  // IPS = 2
 	asm.WriteTcrEl1(tcrValue)
-	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x34 // '4' = TCR written - BREADCRUMB DISABLED
+	uartPutcDirect('4') // TCR written
 
 	// Verify TCR
 	tcrReadback := asm.ReadTcrEl1()
@@ -1343,12 +1355,12 @@ func enableMMU() bool {
 		print("FATAL: TCR T0SZ configuration failed\r\n")
 		return false
 	}
-	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x35 // '5' = TCR verified - BREADCRUMB DISABLED
+	uartPutcDirect('5') // TCR verified
 
 	asm.Isb()
 	asm.WriteTtbr1El1(0)
 	asm.WriteTtbr0El1(uint64(pageTableL0))
-	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x36 // '6' = TTBR written - BREADCRUMB DISABLED
+	uartPutcDirect('6') // TTBR written
 
 	// Verify TTBR0
 	ttbr0Readback := asm.ReadTtbr0El1()
@@ -1356,15 +1368,17 @@ func enableMMU() bool {
 		print("FATAL: TTBR0 configuration failed\r\n")
 		return false
 	}
-	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x37 // '7' = TTBR verified - BREADCRUMB DISABLED
+	uartPutcDirect('7') // TTBR verified
 
 	asm.Dsb()
 
 	// Read and modify SCTLR_EL1
+	uartPutcDirect('8') // About to read SCTLR
 	sctlr := asm.ReadSctlrEl1()
+	uartPutcDirect('9') // SCTLR read, modifying
 	sctlr |= 1 << 0   // M = 1 (MMU enable)
-	sctlr &^= 1 << 2  // C = 0 (data cache disabled)
-	sctlr &^= 1 << 12 // I = 0 (instruction cache disabled)
+	sctlr &^= 1 << 2  // C = 0 (data cache DISABLED initially)
+	sctlr &^= 1 << 12 // I = 0 (instruction cache DISABLED initially)
 
 	// DEBUG: Print TTBR0 and page table base to verify setup - DISABLED
 	// uartPutsDirect("\r\nTTBR0=0x")
@@ -1485,18 +1499,40 @@ func enableMMU() bool {
 	// }
 
 	// Invalidate TLB before enabling MMU to prevent stale translations
+	uartPutcDirect('A') // Before TLB invalidate
 	asm.InvalidateTlbAll()
+	uartPutcDirect('B') // After TLB invalidate
 	asm.Dsb()
+	uartPutcDirect('C') // After DSB
 
 	// Enable MMU
 	asm.Dsb()
 	asm.Isb()
-	asm.WriteSctlrEl1(sctlr)
+	uartPutcDirect('D') // About to enable MMU
+
+	// DEBUG: Print SCTLR value we're about to write
+	uartPutsDirect("\r\nSCTLR=0x")
+	uartPutHex64Direct(sctlr)
+	uartPutsDirect("\r\n")
+
+	// CRITICAL WORKAROUND: Multiple barriers before/after SCTLR write
+	// Some QEMU versions or CPU models have issues with MMU enable
+	asm.Dsb()
+	asm.Dsb()
 	asm.Isb()
-	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x39 // '9' = MMU enabled - DISABLED
+	asm.Isb()
+
+	asm.WriteSctlrEl1(sctlr)
+
+	asm.Isb()
+	asm.Isb()
+	asm.Dsb()
+	asm.Dsb()
+
+	uartPutcDirect('X') // MMU enabled!
 
 	// Now MMU is ON and unaligned access is allowed, can safely use print()
-	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x4D // 'M' = MMU enabled successfully - DISABLED
+	uartPutcDirect('Y') // About to return
 
 	return true
 }

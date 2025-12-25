@@ -647,20 +647,27 @@ func KernelMain(r0, r1, atags uint32) {
 	initRuntimeStubs()
 	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x52 // 'R' = Runtime stubs done - BREADCRUMB DISABLED
 
+	// CRITICAL: Set up exception vectors BEFORE enabling MMU
+	// If MMU enable causes an exception, we need a valid handler
+	// Use assembly helper to get exception vector address without accessing .rodata
+	exceptionVectorAddr := asm.GetExceptionVectorsAddr()
+	setVbarEl1ToAddr(exceptionVectorAddr)
+	uartPutcDirect('V') // VBAR set
+
 	// Initialize MMU (required before heap - enables Normal memory for unaligned access)
 	if !initMMU() {
 		print("FATAL: MMU initialization failed\r\n")
 		for {
 		}
 	}
-	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x4D // 'M' = initMMU done - BREADCRUMB DISABLED
+	uartPutcDirect('M') // initMMU done
 
 	if !enableMMU() {
 		print("FATAL: MMU enablement failed\r\n")
 		for {
 		}
 	}
-	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x6D // 'm' = enableMMU done - BREADCRUMB DISABLED
+	uartPutcDirect('m') // enableMMU done
 
 	// Set physPageSize before schedinit (needed by mallocinit which schedinit calls)
 	// Normally this would be set by sysauxv from AT_PAGESZ auxiliary vector
