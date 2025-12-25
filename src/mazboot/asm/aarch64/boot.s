@@ -22,20 +22,16 @@ _start:
 
     // CPU 0 continues here
     // Breadcrumb: CPU 0 selected
-    
+
     // ========================================
     // Drop from EL2 to EL1 if necessary
     // QEMU virt with virtualization=on starts at EL2
     // We need to be at EL1 for proper OS operation
     // ========================================
-    //     movz w15, #0x45                // 'E' = Checking EL - BREADCRUMB DISABLED
-    //     str w15, [x14] - BREADCRUMB DISABLED
     mrs x0, CurrentEL
     lsr x0, x0, #2               // Extract EL bits [3:2]
     cmp x0, #2                   // Are we at EL2?
     bne at_el1                   // If not, skip EL2->EL1 transition
-    //     movz w15, #0x32              // '2' = At EL2, dropping to EL1 - BREADCRUMB DISABLED
-    //     str w15, [x14] - BREADCRUMB DISABLED
     
     // We're at EL2, need to drop to EL1
     // Configure HCR_EL2 (Hypervisor Configuration Register)
@@ -81,6 +77,33 @@ at_el1:
     // Breadcrumb: At EL1
 
     // ========================================
+    // CRITICAL: Set up BOTH stacks FIRST, before any other operations
+    // We just entered EL1h mode (using SP_EL1), but SP_EL1 is uninitialized!
+    //
+    // Stack Architecture:
+    // - SP_EL1 (0x5F010000): Exception handler stack, used in EL1h mode
+    // - SP_EL0 (0x5F000000): g0/kernel stack, used in EL1t mode
+    //
+    // Both stacks operate at EL1 privilege level - no EL0 execution yet!
+    // ========================================
+
+    // Set SP_EL1 (exception stack) to 0x5F010000
+    // NOTE: We're in EL1h mode (using SP_EL1), so use 'mov sp' not 'msr SP_EL1'
+    // Using 'msr SP_EL1' while in EL1h mode causes the system to hang
+    movz x0, #0x5F01, lsl #16    // 0x5F010000 (exception stack top, 64KB)
+    mov sp, x0                   // Set current stack (which is SP_EL1 in EL1h mode)
+
+    // Set SP_EL0 (g0 stack for normal kernel execution) to 0x5F000000
+    // This is safe because we're using SP_EL1 currently
+    movz x0, #0x5F00, lsl #16    // 0x5F000000 (g0 stack top, 64KB)
+    msr SP_EL0, x0               // Set g0 stack
+
+    // CRITICAL: Switch to EL1t mode to use SP_EL0 for normal execution
+    // SPSel=0 means use SP_EL0 for normal code (still at EL1 privilege!)
+    // When exceptions occur, CPU will switch to SP_EL1 (exception stack)
+    msr SPSel, xzr               // SPSel = 0, use SP_EL0 for normal execution
+
+    // ========================================
     // Enable SIMD/floating-point (required for gg library)
     // CPACR_EL1.FPEN (bits 21:20) = 0b11: No trapping from EL0 or EL1
     // Without this, any FPU/SIMD instruction traps with EC=0x07
@@ -113,14 +136,7 @@ at_el1:
     //   - After BSS: Heap (grows upward, extends to 0x5EFF0000)
     //   - 0x5EFF0000-0x5F000000: g0 stack (64KB, grows downward from 0x5F000000)
     //
-    // Set stack pointer to 0x5F000000 (g0 stack top, 64KB stack - matches real Go runtime)
-    // g0 stack bottom is at 0x5EFF0000, heap should end before this
-    //     movz w15, #0x53                // 'S' = Setting stack - BREADCRUMB DISABLED
-    //     str w15, [x14] - BREADCRUMB DISABLED
-    movz x0, #0x5F00, lsl #16    // 0x5F000000 (g0 stack top, 64KB)
-    mov sp, x0
-    //     movz w15, #0x73                // 's' = Stack set - BREADCRUMB DISABLED
-    //     str w15, [x14] - BREADCRUMB DISABLED
+    // Stack setup complete (moved earlier to ensure SP_EL1 is valid immediately)
 
     // Clear BSS section (now in RAM region at 0x40100000, after DTB)
     //     movz w15, #0x42                // 'B' = Clearing BSS - BREADCRUMB DISABLED

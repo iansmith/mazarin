@@ -1157,6 +1157,36 @@ func initMMU() bool {
 	// The exact start address depends on kmazarin size (determined at runtime after ELF load)
 	// This region will be identity-mapped as part of the general RAM mapping
 
+	// CRITICAL FIX: Map BOTH stacks - g0 stack and exception stack
+	// Both operate at EL1 privilege level (no EL0 execution yet)
+	//
+	// Stack Architecture:
+	// - g0 stack (SP_EL0): Used for normal kernel execution in EL1t mode (SPSel=0)
+	// - Exception stack (SP_EL1): Used for exception handlers in EL1h mode (SPSel=1)
+
+	// Map g0 stack (SP_EL0) - boot.s sets SP_EL0 to 0x5F000000, runs in EL1t mode
+	// Stack is 64KB: 0x5EFF0000 - 0x5F000000
+	g0StackBottom := uintptr(0x5EFF0000)
+	g0StackTop := uintptr(0x5F000000)
+	uartPutsDirect("Mapping g0 stack (SP_EL0): 0x")
+	uartPutHex64Direct(uint64(g0StackBottom))
+	uartPutsDirect(" - 0x")
+	uartPutHex64Direct(uint64(g0StackTop))
+	uartPutsDirect(" (RW)\r\n")
+	mapRegion(g0StackBottom, g0StackTop, g0StackBottom, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+
+	// Map exception stack (SP_EL1) - boot.s sets SP_EL1 to 0x5F010000
+	// Stack is 64KB: 0x5F000000 - 0x5F010000
+	// Used when exceptions occur (CPU switches to EL1h mode, using SP_EL1)
+	exceptionStackBottom := uintptr(0x5F000000)
+	exceptionStackTop := uintptr(0x5F010000)
+	uartPutsDirect("Mapping exception stack (SP_EL1): 0x")
+	uartPutHex64Direct(uint64(exceptionStackBottom))
+	uartPutsDirect(" - 0x")
+	uartPutHex64Direct(uint64(exceptionStackTop))
+	uartPutsDirect(" (RW)\r\n")
+	mapRegion(exceptionStackBottom, exceptionStackTop, exceptionStackBottom, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+
 	// Initialize physical frame allocator
 	uartPutcDirect('B') // Before initPhysFrameAllocator
 	initPhysFrameAllocator()
@@ -1523,6 +1553,10 @@ func enableMMU() bool {
 	asm.Isb()
 
 	asm.WriteSctlrEl1(sctlr)
+
+	// CRITICAL: Test if we return from assembly
+	// Try uartPutcDirect instead of direct pointer write
+	uartPutcDirect('Z') // Should print Z if we return
 
 	asm.Isb()
 	asm.Isb()

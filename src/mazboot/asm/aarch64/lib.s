@@ -267,76 +267,33 @@ enable_mmu_minimal:
     ret
 
 write_sctlr_el1:
-    // Save registers we'll use
-    mov x19, x30           // Save link register
-    mov x20, x0            // Save SCTLR value
+    // Clean implementation - no debug breadcrumbs
+    // Now that stack is mapped, this should work
 
-    // DEBUG: Get current PC to verify where we're executing from
-    // Simple marker sequence to debug crash location
-    movz x0, #0x0900, lsl #16    // UART base
-    movk x0, #0x0000, lsl #0
-    movz w1, #0x57                // 'W' = before barriers
-    str w1, [x0]
+    // Save x30 (link register) on stack - stack is now mapped!
+    str x30, [sp, #-16]!
 
-    // CRITICAL: DSB before IC invalidation
+    // Ensure all prior operations complete
     dsb sy
-    movz w1, #0x44                // 'D' = after DSB
-    str w1, [x0]
+    isb
 
-    // Invalidate instruction cache to prevent stale instructions
-    ic iallu                       // Invalidate all instruction caches to PoU
-    movz w1, #0x49                // 'I' = after IC IALLU
-    str w1, [x0]
+    // Invalidate TLB before enabling MMU
+    tlbi vmalle1
+    dsb sy
+    isb
 
-    dsb sy                         // Ensure IC invalidation completes
-    movz w1, #0x42                // 'B' = after DSB
-    str w1, [x0]
+    // Write SCTLR_EL1 to enable MMU
+    msr SCTLR_EL1, x0
+    isb
 
-    isb                            // Synchronize instruction stream
-    movz w1, #0x53                // 'S' = after ISB, ready for MMU
-    str w1, [x0]
+    // Invalidate caches after MMU enable
+    ic iallu
+    tlbi vmalle1
+    dsb sy
+    isb
 
-    // Prepare for MMU enable
-    movz w1, #0x4D                // 'M' = about to enable MMU
-    str w1, [x0]
-
-    // Restore SCTLR value and enable MMU
-    mov x0, x20
-    msr SCTLR_EL1, x0             // ← MMU ENABLED HERE
-    nop                            // First instruction with MMU on
-
-    // Print 'X' if we survive the MMU enable
-    movz x0, #0x0900, lsl #16     // UART base (reload after using x0)
-    movk x0, #0x0000, lsl #0
-    movz w1, #0x58                // 'X' = MMU enabled, first instruction fetched OK!
-    str w1, [x0]
-
-    // CRITICAL: After enabling MMU, use sequential execution
-    // Try multiple NOPs first to see if any instruction can be fetched
-    nop                            // NOP 1 - test if this can be fetched
-    nop                            // NOP 2 - test if this can be fetched
-    nop                            // NOP 3 - test if this can be fetched
-
-    // Now try ISB
-    isb                            // Instruction synchronization barrier - MMU now active
-
-    // Print 'X' after msr and isb (verify we got past the critical point)
-    movz x0, #0x0900, lsl #16    // UART base
-    movk x0, #0x0000, lsl #0
-    movz w1, #0x58                // 'X'
-    str w1, [x0]
-
-    // Additional ISB to ensure UART write completes
-    isb                   // Instruction synchronization barrier
-
-    // Print 'Y' after isb, before ret
-    movz x0, #0x0900, lsl #16    // UART base
-    movk x0, #0x0000, lsl #0
-    movz w1, #0x59                // 'Y'
-    str w1, [x0]
-
-    // Restore link register
-    mov x30, x19
+    // Restore x30 and return
+    ldr x30, [sp], #16
     ret
 
 // disable_alignment_check() - Clear the A bit in SCTLR_EL1 to disable alignment faults
