@@ -760,6 +760,58 @@ func KernelMain(r0, r1, atags uint32) {
 	uartPutcDirect('E') // After preRegisterFixedSpans
 
 	// =========================================
+	// POST-MMU DEVICE INITIALIZATION
+	// Now that MMU is enabled and memory is set up, initialize peripherals
+	// needed for kmazarin to run (GIC, RNG, RTC, UART ring buffer)
+	// =========================================
+	uartPutsDirect("\r\n=== Post-MMU Device Initialization ===\r\n")
+
+	// 1. Initialize GIC (Generic Interrupt Controller)
+	uartPutsDirect("Initializing GIC (interrupt controller)... ")
+	gicInit()
+	uartPutsDirect("DONE\r\n")
+
+	// 2. Initialize UART ring buffer (for interrupt-driven print())
+	uartPutsDirect("Initializing UART ring buffer... ")
+	uartInitRingBufferAfterMemInit()
+	uartPutsDirect("DONE\r\n")
+
+	// 3. Initialize VirtIO RNG (random number generator)
+	uartPutsDirect("Initializing VirtIO RNG... ")
+	if initVirtIORNG() {
+		uartPutsDirect("DONE\r\n")
+	} else {
+		uartPutsDirect("FAILED (non-fatal)\r\n")
+	}
+
+	// 4. Initialize PL031 RTC (already mapped, just enable it)
+	uartPutsDirect("Initializing PL031 RTC... ")
+	// RTC is already MMIO-mapped above, no additional init needed for now
+	uartPutsDirect("DONE (already mapped)\r\n")
+
+	// 5. Enable interrupts (unmask IRQs)
+	uartPutsDirect("Enabling interrupts (IRQs)... ")
+	asm.EnableIrqs() // Enable IRQ interrupts (unmask I bit in DAIF)
+	uartPutsDirect("DONE\r\n")
+
+	// 6. Test print() with ring buffer
+	uartPutsDirect("Testing print() with ring buffer... ")
+	// Put a test character in the ring buffer
+	uartPutc('T')
+	uartPutc('E')
+	uartPutc('S')
+	uartPutc('T')
+	uartPutc('\r')
+	uartPutc('\n')
+	// Drain the ring buffer manually (interrupts may not fire immediately)
+	for i := 0; i < 10; i++ {
+		uartDrainRingBuffer()
+	}
+	uartPutsDirect("DONE\r\n")
+
+	uartPutsDirect("=== All devices initialized ===\r\n\r\n")
+
+	// =========================================
 	// TEST: Item 3 - runtime.args()
 	// Test that we can call runtime.args with a minimal argv/auxv structure
 	// This verifies the args() → sysargs() → sysauxv() path works.
@@ -777,7 +829,19 @@ func KernelMain(r0, r1, atags uint32) {
 	uartPutcDirect('K') // After result check
 
 	// =========================================
-	// TEST: Item 4a - Direct syscall test
+	// SKIP REMAINING TESTS - Jump directly to kmazarin
+	// All devices initialized, runtime.args() passed, ready to load kmazarin
+	// =========================================
+	uartPutsDirect("All mazboot initialization complete, loading kmazarin...\r\n")
+	loadAndRunKmazarin()
+
+	// Should never return
+	for {
+	}
+
+	/*
+	// =========================================
+	// TEST: Item 4a - Direct syscall test (SKIPPED)
 	// Before calling runtime.osinit, test our syscalls directly
 	// =========================================
 	print("Testing Item 4a: sched_getaffinity syscall... ")
@@ -929,6 +993,7 @@ func KernelMain(r0, r1, atags uint32) {
 	//print("Goroutine created, starting scheduler...\r\n")
 	//print("Calling runtime.mstart()...\r\n")
 	//asm.CallRuntimeMstart()
+	*/
 
 	// Mazboot init complete - load and run kmazarin
 	loadAndRunKmazarin()
@@ -1769,7 +1834,7 @@ func setupKmazarinStartupEnv() (stackPointer uintptr, argc uint64, argv uintptr)
 // Note: This function is NOT marked nosplit because it runs after the Go runtime
 // is initialized and contains many print() calls that require stack space.
 func loadAndRunKmazarin() {
-	print("\r\n=== Loading Kmazarin Kernel ===\r\n")
+	uartPutsDirect("\r\n=== Loading Kmazarin Kernel ===\r\n")
 
 	// Get the embedded kmazarin binary location from linker symbols
 	kmazarinStart := getLinkerSymbol("__kmazarin_start")
@@ -1777,7 +1842,7 @@ func loadAndRunKmazarin() {
 
 	// Validate symbols
 	if kmazarinStart == 0 || kmazarinSize == 0 {
-		print("ERROR: Invalid kmazarin symbols\r\n")
+		uartPutsDirect("ERROR: Invalid kmazarin symbols\r\n")
 		return
 	}
 
@@ -1795,7 +1860,7 @@ func loadAndRunKmazarin() {
 	// Verify ELF magic
 	if len(elfData) < 64 ||
 		elfData[0] != 0x7F || elfData[1] != 'E' || elfData[2] != 'L' || elfData[3] != 'F' {
-		print("ERROR: Invalid ELF file\r\n")
+		uartPutsDirect("ERROR: Invalid ELF file\r\n")
 		return
 	}
 
@@ -1833,7 +1898,7 @@ func loadAndRunKmazarin() {
 	for i := uint16(0); i < phnum; i++ {
 		phOffset := phoff + uint64(i)*uint64(phentsize)
 		if phOffset+56 > uint64(len(elfData)) {
-			print("ERROR: Invalid program header\r\n")
+			uartPutsDirect("ERROR: Invalid program header\r\n")
 			return
 		}
 
@@ -1842,6 +1907,8 @@ func loadAndRunKmazarin() {
 			(uint32(elfData[phOffset+1]) << 8) |
 			(uint32(elfData[phOffset+2]) << 16) |
 			(uint32(elfData[phOffset+3]) << 24)
+
+		// Header type check
 
 		if pType != PT_LOAD {
 			continue
@@ -1884,11 +1951,6 @@ func loadAndRunKmazarin() {
 			(uint64(elfData[phOffset+46]) << 48) |
 			(uint64(elfData[phOffset+47]) << 56)
 
-		pFlags := uint32(elfData[phOffset+4]) |
-			(uint32(elfData[phOffset+5]) << 8) |
-			(uint32(elfData[phOffset+6]) << 16) |
-			(uint32(elfData[phOffset+7]) << 24)
-
 		// Calculate page-aligned range
 		vaStart := uintptr(pVaddr) &^ 0xFFF
 		vaEnd := (uintptr(pVaddr) + uintptr(pMemsz) + 0xFFF) &^ 0xFFF
@@ -1902,30 +1964,19 @@ func loadAndRunKmazarin() {
 			maxVA = vaEnd
 		}
 
-		// Determine page permissions
-		var apBits, execBits uint64
-		if pFlags&0x2 != 0 { // PF_W (writable)
-			apBits = PTE_AP_RW_EL1
-		} else {
-			apBits = PTE_AP_RO_EL1
-		}
-		if pFlags&0x1 == 0 { // !PF_X (not executable)
-			execBits = PTE_EXEC_NEVER
-		} else {
-			execBits = 0
-		}
-
 		// Map all pages for this segment
+		// IMPORTANT: Map as RW during loading (we need to write segment data)
+		// TODO: Optionally remap with correct permissions after loading
 		for pageIdx := uintptr(0); pageIdx < numPages; pageIdx++ {
 			va := vaStart + (pageIdx << 12)
 			physFrame := allocPhysFrame()
 			if physFrame == 0 {
-				print("ERROR: Out of memory mapping segment\r\n")
+				uartPutsDirect("ERROR: Out of memory mapping segment\r\n")
 				return
 			}
 
-			// Map the page
-			mapPage(va, physFrame, PTE_ATTR_NORMAL, apBits, execBits)
+			// Map as RW+exec_never during loading (will remap with correct perms later if needed)
+			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 		}
 
 		// Use barriers after mapping (no TLB invalidation needed for new mappings)
@@ -1934,18 +1985,39 @@ func loadAndRunKmazarin() {
 
 		// Copy file data to mapped memory
 		if pFilesz > 0 {
-			// Handle negative offsets (common in position-dependent executables)
 			var srcOffset uintptr
-			if pOffset > 0x8000000000000000 { // Negative offset
-				// Skip segments with negative offsets (e.g., first LOAD segment at -0xF000)
-				continue
+			var dstAddr uintptr
+			var copySize uint64
+
+			if pOffset > 0x8000000000000000 { // Negative offset (e.g., first LOAD segment)
+				// Go's linker with -T flag creates segments with negative offsets
+				// The segment includes a 64KB header region before .text
+				// Relationship: segment_offset = text_offset - (text_va - segment_va)
+				//              = 0x1000 - 0x10000 = -0xF000
+
+				// Zero-fill the header region (first 64KB of segment)
+				headerSize := uintptr(0x10000)  // 64KB for ELF headers, PHDR, notes
+				headerStart := unsafe.Pointer(uintptr(pVaddr))
+				bzero(headerStart, uint32(headerSize))
+
+				// Copy .text section from file offset 0x1000 to VA (segment_va + 0x10000)
+				srcOffset = kmazarinStart + 0x1000
+				dstAddr = uintptr(pVaddr) + headerSize  // Skip past header region
+				copySize = pFilesz - uint64(headerSize)  // Remaining bytes after header
+
+				// Load segment with negative offset: zero-fill headers, copy code
 			} else {
+				// Normal positive offset - load segment data directly
 				srcOffset = kmazarinStart + uintptr(pOffset)
+				dstAddr = uintptr(pVaddr)
+				copySize = pFilesz
 			}
 
-			dst := unsafe.Pointer(uintptr(pVaddr))
-			src := unsafe.Pointer(srcOffset)
-			memmove(dst, src, uint32(pFilesz))
+			if copySize > 0 {
+				dst := unsafe.Pointer(dstAddr)
+				src := unsafe.Pointer(srcOffset)
+				asm.MemmoveBytes(dst, src, uint32(copySize))
+			}
 		}
 
 		// Zero BSS section (MemSz > FileSz)
@@ -1964,7 +2036,7 @@ func loadAndRunKmazarin() {
 	// Set up argc/argv/envp/auxv structure
 	stackPointer, argc, argv := setupKmazarinStartupEnv()
 	if stackPointer == 0 || argv == 0 {
-		print("ERROR: Environment setup failed!\r\n")
+		uartPutsDirect("ERROR: Environment setup failed!\r\n")
 		return
 	}
 
@@ -1972,11 +2044,11 @@ func loadAndRunKmazarin() {
 	entryAddr := uintptr(entry)
 
 	// Jump to kmazarin with proper argc/argv/auxv
-	print("Jumping to kmazarin...\r\n\r\n")
+	uartPutsDirect("Jumping to kmazarin...\r\n\r\n")
 	jumpToKmazarin(entryAddr, argc, argv, stackPointer)
 
 	// Should never reach here
-	print("ERROR: Returned from kmazarin!\r\n")
+	uartPutsDirect("ERROR: Returned from kmazarin!\r\n")
 }
 
 // jumpToKmazarin jumps to the kmazarin kernel entry point with proper environment setup

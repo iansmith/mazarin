@@ -46,6 +46,12 @@ SECTIONS
     PROVIDE(__bochs_display_base = 0x10000000);  /* bochs-display framebuffer */
     PROVIDE(__bochs_display_size = 0x01000000);  /* bochs-display size: 16MB */
 
+    /* PCI BAR allocation pool - for VirtIO and other PCI devices
+     * Starts after bochs-display (0x11000000) to avoid conflicts
+     * 240MB region: 0x11000000 - 0x20000000 */
+    PROVIDE(__pci_bar_base = 0x11000000);        /* PCI BAR allocation start */
+    PROVIDE(__pci_bar_size = 0x0F000000);        /* PCI BAR pool size: 240MB */
+
     /* ============================================================================
      * EXPORTED SYMBOLS FOR RUNTIME USE
      * ============================================================================ */

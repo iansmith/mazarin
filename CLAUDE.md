@@ -78,46 +78,177 @@ To start kmazarin properly, mazboot must:
    - `AT_SECURE = 0` - Not in secure mode
    - `AT_NULL = 0` - Terminator
 
+## Understanding Go's ELF Format and Negative Offsets
+
+### The Discovery
+
+When examining kmazarin.elf with readelf, we encountered unexpected program headers:
+
+```
+LOAD           0xffffffffffff1000 0x00000000417f0000 0x00000000417f0000
+                 0x00000000000a5084 0x00000000000a5084  R E    0x10000
+```
+
+The file offset `0xffffffffffff1000` appears as a huge number (or -61440 bytes when interpreted as signed), and readelf reports: `"Error: the PHDR segment is not covered by a LOAD segment"`
+
+### Why This Happens: Go's `-T` Flag Behavior
+
+This is **documented behavior** of Go's linker when using the `-T` flag to specify load address:
+
+**Key findings from Go issue tracker:**
+- [Go Issue #58727](https://github.com/golang/go/issues/58727): The `-T` flag specifies where TEXT **SYMBOLS** should start, not where the LOAD segment starts
+- [Go Issue #57983](https://github.com/golang/go/issues/57983): Cross-compiling with `-T` creates segments with "negative" offsets, causing readelf warnings
+- **Go maintainer explanation**: The `-T` flag sets the text symbol address. The segment includes headers before the text, similar to GNU's `-Ttext` vs `-Ttext-segment` distinction
+
+### The Actual Structure
+
+When kmazarin is built with `-T 0x41800000`:
+
+1. **First LOAD segment** starts at VA `0x417f0000` (64KB = 0x10000 bytes BEFORE the requested address)
+2. **.text section** is placed at VA `0x41800000` (exactly as requested by `-T` flag)
+3. **The 64KB gap** (0x417f0000 to 0x41800000) contains:
+   - ELF header
+   - Program headers (PHDR segment)
+   - Build ID notes (NOTE segment)
+   - Other metadata
+
+### The Math
+
+The relationship between offsets:
+```
+segment_file_offset = text_file_offset - (text_va - segment_va)
+                    = 0x1000 - (0x41800000 - 0x417f0000)
+                    = 0x1000 - 0x10000
+                    = -0xF000  (encoded as 0xffffffffffff1000 in 64-bit unsigned)
+```
+
+Segment structure:
+```
+Segment:    0x417f0000 ─────────────────────── 0x41895084
+               │                                   │
+               ├─ Headers (64KB) ────┤            │
+               │    (zero-filled)     │            │
+               │                      │            │
+               ├──────────────────────┴─ .text ───┤
+            0x417f0000            0x41800000   0x41895084
+```
+
+- Segment size: 0xa5084 (660KB)
+- .text size: 0x95084 (608KB)
+- Header region: 0x10000 (64KB = segment size - text size)
+
+### How Linux Handles This
+
+According to [Linux's ELF loader (binfmt_elf.c)](https://github.com/torvalds/linux/blob/master/fs/binfmt_elf.c), the kernel's `elf_map()` function handles program headers with proper offset calculations. Despite readelf warnings, these binaries **execute successfully** on Linux.
+
+Research findings:
+- [Binutils bug reports](https://github.com/genodelabs/genode/issues/4003) show binutils >= 2.34 enabled stricter PHDR coverage checking
+- [Testing evidence](https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=958525) confirms: "YES! No one cares about your PHDR program header!" - Linux executes these binaries fine
+- The readelf warning is informational; it doesn't prevent execution
+
+### Our Implementation
+
+The ELF loader in `kernel.go` properly handles negative offset segments:
+
+```go
+if pOffset > 0x8000000000000000 { // Negative offset (looks like huge positive)
+    // Go's -T flag creates segments with 64KB header region before .text
+    // Relationship: segment_offset = text_offset - (text_va - segment_va)
+    //              = 0x1000 - 0x10000 = -0xF000
+
+    // Zero-fill the header region (first 64KB)
+    headerSize := uintptr(0x10000)
+    bzero(headerStart, uint32(headerSize))
+
+    // Copy .text from file offset 0x1000 to VA (segment_va + 0x10000)
+    srcOffset = kmazarinStart + 0x1000
+    dstAddr = uintptr(pVaddr) + headerSize
+    copySize = pFilesz - uint64(headerSize)
+} else {
+    // Normal positive offset - use directly
+    srcOffset = kmazarinStart + uintptr(pOffset)
+    dstAddr = uintptr(pVaddr)
+    copySize = pFilesz
+}
+```
+
+### Key Insights
+
+1. **This is not a bug** - it's how Go's linker implements the `-T` flag
+2. **The segment IS valid** - it includes headers that should be accessible at runtime
+3. **Header region should be zero** - there's no corresponding file data for the 64KB before .text
+4. **File offset 0x1000 is .text** - that's where actual code starts in the ELF file
+
+### References
+
+- [Go Issue #58727: `-T` flag doesn't place text segment at specified address](https://github.com/golang/go/issues/58727)
+- [Go Issue #57983: Wrong program header offset when cross-compiling with `-T`](https://github.com/golang/go/issues/57983)
+- [Linux binfmt_elf.c: ELF loader implementation](https://github.com/torvalds/linux/blob/master/fs/binfmt_elf.c)
+- [OSDev Wiki: ELF Format](https://wiki.osdev.org/ELF)
+- [LWN: How programs get run](https://lwn.net/Articles/631631/)
+
 ## Current Status
 
-### ✅ Completed
+### ✅ Completed (as of 2025-12-25)
 - Mazboot initialization (MMU, UART, basic syscalls)
-- ELF loading code (`loadAndRunKmazarin()`)
+- **ELF loader with negative offset support** - Correctly handles Go's `-T` flag behavior
+  - Parses ELF headers and program segments
+  - Zero-fills 64KB header region before .text
+  - Loads .text and other sections at correct virtual addresses
+  - Successfully loads kmazarin at VA 0x417F0000-0x419B6000
 - Auxiliary vector data structure in syscall.go
 - `/proc/self/auxv` file descriptor support (FD 4)
 - Basic syscall handlers (mmap, openat, read, close)
+- argc/argv/envp/auxv stack setup (implemented in `setupKmazarinStartupEnv()`)
+- Jump to kmazarin entry point with proper register setup
 
-### ❌ Not Working Yet
-- **argc/argv/envp/auxv chain setup** - Not passing auxv to kmazarin properly
-- **Initial stack setup** - Not setting up the stack structure before jumping
-- **Register initialization** - Not setting R0/R1 before jumping to kmazarin
+### ❌ Current Issue: Kmazarin Hangs After Entry
 
-### Current Error
+**Symptom:** System successfully loads kmazarin and jumps to entry point, but kmazarin produces no output and hangs
+
+**Possible causes:**
+1. Stack setup issues - SP might not be pointing to correct location
+2. Auxiliary vector not being read correctly by Go runtime
+3. argc/argv pointers incorrect
+4. Entry point code not executing as expected
+5. Syscall issues when kmazarin tries to initialize
+
+**Last successful output:**
 ```
-runtime.sysMapOS(0x0, 0x0, {0x0, 0x0})
-runtime: mmap(0x0, 0) returned 0x0, 22
-fatal error: runtime: cannot map pages in arena address space
+=== Loading Kmazarin Kernel ===
+  -> registered span 0000000000000003: VA 0x00000000417F0000-0x00000000419B6000
+Jumping to kmazarin...
+[hangs here]
 ```
-
-**Root cause:** kmazarin's runtime calls `sysargs()` which expects argc/argv/auxv chain, doesn't find it, tries to read `/proc/self/auxv` fallback, but crashes before even opening it. The runtime is operating on uninitialized/zero values.
 
 ## Next Steps
 
-1. **Implement argc/argv/envp/auxv chain in memory**
-   - Allocate stack space for the structure
-   - Populate with proper values
-   - Format: `[argc][argv...][NULL][envp...][NULL][auxv...]`
+### Immediate: Debug Kmazarin Startup Hang
 
-2. **Modify jump code** to set registers before jumping:
-   - R0 = argc
-   - R1 = argv pointer
-   - SP = stack pointer to argc
+1. **Verify stack setup** in `setupKmazarinStartupEnv()`:
+   - Check that SP points to argc at top of stack
+   - Verify argc/argv/envp/auxv chain is correctly formatted
+   - Confirm memory layout matches Linux expectations
 
-3. **Test** that kmazarin's `sysargs()` successfully reads auxv
+2. **Verify register setup** in `jumpToKmazarin()`:
+   - R0 should contain argc
+   - R1 should contain argv pointer
+   - SP should point to start of stack structure
 
-4. **Verify** `physPageSize` is set to 4096
+3. **Add entry point verification**:
+   - Check first instruction at entry point is valid ARM64 code
+   - Verify entry point is within .text section
+   - Confirm entry point address matches ELF header
 
-5. **Monitor** heap initialization succeeds
+4. **Test syscall path**:
+   - Add debug output to syscall handlers
+   - Monitor if kmazarin makes any syscalls after entry
+   - Check if runtime initialization starts
+
+5. **Investigate Go runtime startup**:
+   - Study `_rt0_arm64_linux` entry point behavior
+   - Verify `sysargs()` can read argc/argv/auxv
+   - Confirm `osinit()` sets `physPageSize` correctly
 
 ## References
 

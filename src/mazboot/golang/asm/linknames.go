@@ -191,6 +191,14 @@ func GetPageTablesEndAddr() uintptr
 //go:nosplit
 func GetPageTablesStartAddr() uintptr
 
+//go:linkname GetPciBarBase get_pci_bar_base
+//go:nosplit
+func GetPciBarBase() uintptr
+
+//go:linkname GetPciBarSize get_pci_bar_size
+//go:nosplit
+func GetPciBarSize() uintptr
+
 //go:linkname GetPhysPageSizeAddr get_phys_page_size_addr
 //go:nosplit
 func GetPhysPageSizeAddr() uintptr

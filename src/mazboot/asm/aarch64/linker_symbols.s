@@ -186,6 +186,18 @@ get_bochs_display_size:
     ldr x0, =__bochs_display_size
     ret
 
+// get_pci_bar_base() returns uintptr
+.global get_pci_bar_base
+get_pci_bar_base:
+    ldr x0, =__pci_bar_base
+    ret
+
+// get_pci_bar_size() returns uintptr
+.global get_pci_bar_size
+get_pci_bar_size:
+    ldr x0, =__pci_bar_size
+    ret
+
 // Embedded kmazarin kernel symbols
 
 // get_kmazarin_start() returns uintptr

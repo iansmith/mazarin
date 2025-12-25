@@ -43,9 +43,32 @@ var (
 	rngUsedRing   [36]byte          // flags(2) + idx(2) + ring[8](16) + avail_event(2) = 36 bytes (actually 34, but align to 4)
 )
 
+// Direct hex output without string allocation (for use before heap is ready)
+//go:nosplit
+func putHex32Direct(val uint32) {
+	const hexChars = "0123456789ABCDEF"
+	uartPutcDirect('0')
+	uartPutcDirect('x')
+	for i := 0; i < 8; i++ {
+		nibble := (val >> uint(28-i*4)) & 0xF
+		uartPutcDirect(hexChars[nibble])
+	}
+}
+
+//go:nosplit
+func putHex64Direct(val uint64) {
+	const hexChars = "0123456789ABCDEF"
+	uartPutcDirect('0')
+	uartPutcDirect('x')
+	for i := 0; i < 16; i++ {
+		nibble := (val >> uint(60-i*4)) & 0xF
+		uartPutcDirect(hexChars[nibble])
+	}
+}
+
 // initVirtIORNG initializes the VirtIO RNG device
 func initVirtIORNG() bool {
-	print("VirtIO RNG: Scanning PCI bus...\r\n")
+	uartPutsDirect("Scanning PCI bus...\r\n")
 
 	// Scan PCI bus for VirtIO RNG device (vendor 0x1AF4, device 0x1044)
 	for bus := uint8(0); bus < 4; bus++ {
@@ -55,44 +78,35 @@ func initVirtIORNG() bool {
 			vendorID := uint16(reg & 0xFFFF)      // Bits 0-15
 			deviceID := uint16((reg >> 16) & 0xFFFF) // Bits 16-31
 
-			// Debug: print all non-0xFFFF devices found
-			if vendorID != 0xFFFF {
-				print("PCI ")
-				printHex32(uint32(bus))
-				print(":")
-				printHex32(uint32(slot))
-				print(" vendor=0x")
-				printHex32(uint32(vendorID))
-				print(" device=0x")
-				printHex32(uint32(deviceID))
-				print("\r\n")
-			}
+			// Debug: print all non-0xFFFF devices found (DISABLED - causes hang)
+			// Skip debug output for all PCI devices, only print when we find VirtIO RNG
+			_ = vendorID // Suppress unused warning
 
 			// Check for both legacy and modern VirtIO RNG device IDs
 			if vendorID == VIRTIO_VENDOR_ID &&
 			   (deviceID == VIRTIO_RNG_DEVICE_ID_LEGACY || deviceID == VIRTIO_RNG_DEVICE_ID_MODERN) {
-				print("VirtIO RNG: Found at PCI ")
-				printHex32(uint32(bus))
-				print(":")
-				printHex32(uint32(slot))
-				print(" (device ID 0x")
-				printHex32(uint32(deviceID))
-				print(")\r\n")
+				uartPutsDirect("Found at PCI ")
+				putHex32Direct(uint32(bus))
+				uartPutsDirect(":")
+				putHex32Direct(uint32(slot))
+				uartPutsDirect(" (device ID ")
+				putHex32Direct(uint32(deviceID))
+				uartPutsDirect(")\r\n")
 
 				// Initialize the device
 				if !initVirtIORNGDevice(bus, slot) {
-					print("VirtIO RNG: Initialization failed\r\n")
+					uartPutsDirect("Initialization failed\r\n")
 					return false
 				}
 
 				atomic.StoreUint32(&virtioRNGInitialized, 1)
-				print("VirtIO RNG: Ready\r\n")
+				uartPutsDirect("Ready\r\n")
 				return true
 			}
 		}
 	}
 
-	print("VirtIO RNG: Device not found on PCI bus\r\n")
+	uartPutsDirect("Device not found on PCI bus\r\n")
 	return false
 }
 
@@ -121,33 +135,33 @@ func initVirtIORNGDevice(bus, slot uint8) bool {
 
 	// Debug: Check if device has capabilities and dump them
 	capPtr := pciConfigRead8(bus, slot, funcNum, PCI_CAPABILITIES)
-	print("VirtIO RNG: Capability pointer = 0x")
-	printHex32(uint32(capPtr))
-	print("\r\n")
+	uartPutsDirect("Capability pointer = ")
+	putHex32Direct(uint32(capPtr))
+	uartPutsDirect("\r\n")
 
 	// Dump all capabilities
 	current := capPtr
 	for i := 0; i < 10 && current != 0; i++ {
 		capType := pciConfigRead8(bus, slot, funcNum, current)
 		nextPtr := pciConfigRead8(bus, slot, funcNum, current+1)
-		print("  Cap at 0x")
-		printHex32(uint32(current))
-		print(": type=0x")
-		printHex32(uint32(capType))
+		uartPutsDirect("  Cap at ")
+		putHex32Direct(uint32(current))
+		uartPutsDirect(": type=")
+		putHex32Direct(uint32(capType))
 		if capType == 0x09 {
 			// Vendor-specific - read cfg_type
 			cfgType := pciConfigRead8(bus, slot, funcNum, current+3)
-			print(" cfg_type=0x")
-			printHex32(uint32(cfgType))
+			uartPutsDirect(" cfg_type=")
+			putHex32Direct(uint32(cfgType))
 		}
-		print(" next=0x")
-		printHex32(uint32(nextPtr))
-		print("\r\n")
+		uartPutsDirect(" next=")
+		putHex32Direct(uint32(nextPtr))
+		uartPutsDirect("\r\n")
 		current = nextPtr
 	}
 
 	if !pciFindVirtIOCapabilities(bus, slot, funcNum, &common, &notify, &isr, &device) {
-		print("VirtIO RNG: Failed to find capabilities\r\n")
+		uartPutsDirect("Failed to find capabilities\r\n")
 		return false
 	}
 
@@ -166,17 +180,18 @@ func initVirtIORNGDevice(bus, slot uint8) bool {
 	}
 
 	// If BAR is not allocated (base is 0), allocate it manually
-	// Use fixed MMIO region: 0x10000000 (256MB, well above RAM and below PCI ECAM)
+	// Use PCI BAR pool from linker.ld (starts at 0x11000000, after bochs-display)
 	if barBase == 0 {
 		// Allocate unique addresses for each BAR
-		// BAR0: 0x10000000, BAR1: 0x10100000, BAR2: 0x10200000, etc.
-		barBase = 0x10000000 + (uint64(common.Bar) * 0x100000)
+		// BAR0: base+0, BAR1: base+1MB, BAR2: base+2MB, etc.
+		pciBarBase := uint64(asm.GetPciBarBase()) // 0x11000000 from linker.ld
+		barBase = pciBarBase + (uint64(common.Bar) * 0x100000)
 
-		print("VirtIO RNG: Allocating BAR")
-		printHex32(uint32(common.Bar))
-		print(" at 0x")
-		printHex64(barBase)
-		print("\r\n")
+		uartPutsDirect("Allocating BAR")
+		putHex32Direct(uint32(common.Bar))
+		uartPutsDirect(" at ")
+		putHex64Direct(barBase)
+		uartPutsDirect("\r\n")
 
 		// Write BAR address to PCI config
 		if is64Bit {
@@ -205,13 +220,14 @@ func initVirtIORNGDevice(bus, slot uint8) bool {
 
 	// If BAR is not allocated, allocate it manually
 	if notifyBarBase == 0 {
-		notifyBarBase = 0x10000000 + (uint64(notify.Bar) * 0x100000)
+		pciBarBase := uint64(asm.GetPciBarBase()) // 0x11000000 from linker.ld
+		notifyBarBase = pciBarBase + (uint64(notify.Bar) * 0x100000)
 
-		print("VirtIO RNG: Allocating notify BAR")
-		printHex32(uint32(notify.Bar))
-		print(" at 0x")
-		printHex64(notifyBarBase)
-		print("\r\n")
+		uartPutsDirect("Allocating notify BAR")
+		putHex32Direct(uint32(notify.Bar))
+		uartPutsDirect(" at ")
+		putHex64Direct(notifyBarBase)
+		uartPutsDirect("\r\n")
 
 		if isNotify64Bit {
 			pciConfigWrite32(bus, slot, funcNum, uint8(notifyBarOffset), uint32(notifyBarBase&0xFFFFFFF0)|0x0C)
@@ -223,9 +239,9 @@ func initVirtIORNGDevice(bus, slot uint8) bool {
 
 	rngNotifyBase = uintptr(notifyBarBase) + uintptr(notify.OffsetInBar)
 
-	print("VirtIO RNG: Common config at 0x")
-	printHex64(uint64(rngCommonCfgBase))
-	print("\r\n")
+	uartPutsDirect("Common config at ")
+	putHex64Direct(uint64(rngCommonCfgBase))
+	uartPutsDirect("\r\n")
 
 	// Reset device
 	rngWriteCommonConfig(VIRTIO_PCI_COMMON_CFG_DEVICE_STATUS, 0)
@@ -251,13 +267,13 @@ func initVirtIORNGDevice(bus, slot uint8) bool {
 	// Verify FEATURES_OK is still set
 	status := rngReadCommonConfig(VIRTIO_PCI_COMMON_CFG_DEVICE_STATUS)
 	if (status & VIRTIO_STATUS_FEATURES_OK) == 0 {
-		print("VirtIO RNG: Feature negotiation failed\r\n")
+		uartPutsDirect("Feature negotiation failed\r\n")
 		return false
 	}
 
 	// Set up the request queue (queue 0)
 	if !rngSetupQueue(VIRTIO_RNG_REQUESTQ) {
-		print("VirtIO RNG: Failed to set up queue\r\n")
+		uartPutsDirect("Failed to set up queue\r\n")
 		return false
 	}
 
@@ -265,7 +281,7 @@ func initVirtIORNGDevice(bus, slot uint8) bool {
 	rngWriteCommonConfig(VIRTIO_PCI_COMMON_CFG_DEVICE_STATUS,
 		VIRTIO_STATUS_ACKNOWLEDGE|VIRTIO_STATUS_DRIVER|VIRTIO_STATUS_FEATURES_OK|VIRTIO_STATUS_DRIVER_OK)
 
-	print("VirtIO RNG: Initialized successfully\r\n")
+	uartPutsDirect("Initialized successfully\r\n")
 	return true
 }
 
@@ -451,15 +467,15 @@ func rngSetupQueue(queueIdx uint16) bool {
 	// Check if queue is available
 	queueSize := rngReadCommonConfig(VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE)
 	if queueSize == 0 {
-		print("VirtIO RNG: Queue ")
-		printHex32(uint32(queueIdx))
-		print(" not available\r\n")
+		uartPutsDirect("Queue ")
+		putHex32Direct(uint32(queueIdx))
+		uartPutsDirect(" not available\r\n")
 		return false
 	}
 
-	print("VirtIO RNG: Queue size = ")
-	printHex32(uint32(queueSize))
-	print("\r\n")
+	uartPutsDirect("Queue size = ")
+	putHex32Direct(uint32(queueSize))
+	uartPutsDirect("\r\n")
 
 	// Use queue size 8 (matching our static buffer allocation)
 	if queueSize > 8 {
@@ -496,13 +512,13 @@ func rngSetupQueue(queueIdx uint16) bool {
 	availPhys := pointerToUintptr(unsafe.Pointer(&rngAvailRing[0]))
 	usedPhys := pointerToUintptr(unsafe.Pointer(&rngUsedRing[0]))
 
-	print("VirtIO RNG: Desc=0x")
-	printHex64(uint64(descPhys))
-	print(" Avail=0x")
-	printHex64(uint64(availPhys))
-	print(" Used=0x")
-	printHex64(uint64(usedPhys))
-	print("\r\n")
+	uartPutsDirect("Desc=")
+	putHex64Direct(uint64(descPhys))
+	uartPutsDirect(" Avail=")
+	putHex64Direct(uint64(availPhys))
+	uartPutsDirect(" Used=")
+	putHex64Direct(uint64(usedPhys))
+	uartPutsDirect("\r\n")
 
 	// Write queue addresses to device
 	rngWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_LOW, uint32(descPhys&0xFFFFFFFF))
@@ -515,6 +531,6 @@ func rngSetupQueue(queueIdx uint16) bool {
 	// Enable the queue
 	rngWriteCommonConfig(VIRTIO_PCI_COMMON_CFG_QUEUE_ENABLE, 1)
 
-	print("VirtIO RNG: Queue enabled\r\n")
+	uartPutsDirect("Queue enabled\r\n")
 	return true
 }

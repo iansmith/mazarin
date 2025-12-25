@@ -1117,6 +1117,18 @@ func initMMU() bool {
 	mapRegion(highmemEcamBase, highmemEcamBase+highmemEcamSize, highmemEcamBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 	// 	uartPutcDirect('h')  // Breadcrumb: highmem ECAM mapped - DISABLED
 
+	// Map PCI BAR region (for VirtIO devices)
+	// VirtIO RNG and other PCI devices allocate BARs from this pool
+	// Region starts at 0x11000000 (after bochs-display) to avoid conflicts
+	pciBarBase := asm.GetPciBarBase()     // 0x11000000 from linker.ld
+	pciBarSize := asm.GetPciBarSize()     // 240MB from linker.ld
+	mapRegion(pciBarBase, pciBarBase+pciBarSize, pciBarBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	uartPutsDirect("Mapped PCI BARs: ")
+	uartPutHex64Direct(uint64(pciBarBase))
+	uartPutsDirect(" - ")
+	uartPutHex64Direct(uint64(pciBarBase + pciBarSize))
+	uartPutsDirect("\r\n")
+
 	// Verify lowmem mapping (silent unless error)
 	// TEMPORARILY DISABLED: dumpFetchMapping() uses string parameters which access .rodata
 	// dumpFetchMapping("pci-ecam-low", ecamBase)
