@@ -416,30 +416,38 @@ const MAX_MMAP_SPANS = 32
 type mmapSpan struct {
 	startVA uintptr // Start of virtual address range
 	endVA   uintptr // End of virtual address range (exclusive)
+	prot    int32   // Protection flags (PROT_READ|PROT_WRITE|PROT_EXEC)
+	flags   int32   // Mapping flags (MAP_PRIVATE|MAP_ANONYMOUS|etc)
 	inUse   bool    // Whether this span slot is occupied
 }
 
 var mmapSpans [MAX_MMAP_SPANS]mmapSpan
 
-// registerMmapSpan records a new mmap'd region
+// registerMmapSpan records a new mmap'd region with its parameters
 // Returns true on success, false if all spans are exhausted
 //
 //go:nosplit
-func registerMmapSpan(startVA, endVA uintptr) bool {
+func registerMmapSpan(startVA, endVA uintptr, prot, flags int32) bool {
 	// Find first free span
 	for i := 0; i < MAX_MMAP_SPANS; i++ {
 		if !mmapSpans[i].inUse {
 			mmapSpans[i].startVA = startVA
 			mmapSpans[i].endVA = endVA
+			mmapSpans[i].prot = prot
+			mmapSpans[i].flags = flags
 			mmapSpans[i].inUse = true
 
-			uartPutsDirect("  -> registered span ")
+			uartPutsDirect("  -> registered virtual address range (span ")
 			uartPutHex64Direct(uint64(i))
-			uartPutsDirect(": VA 0x")
+			uartPutsDirect("): VA 0x")
 			uartPutHex64Direct(uint64(startVA))
 			uartPutsDirect("-0x")
 			uartPutHex64Direct(uint64(endVA))
-			uartPutsDirect("\r\n")
+			uartPutsDirect(" prot=0x")
+			uartPutHex64Direct(uint64(prot))
+			uartPutsDirect(" flags=0x")
+			uartPutHex64Direct(uint64(flags))
+			uartPutsDirect(" (no physical pages allocated yet)\r\n")
 			return true
 		}
 	}
@@ -528,13 +536,13 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 		pageSize := uint64(4096)
 		roundedLength := (length + pageSize - 1) &^ (pageSize - 1)
 
-		// Register this span
-		if !registerMmapSpan(addr, addr+uintptr(roundedLength)) {
+		// Register this span with its protection and mapping flags
+		if !registerMmapSpan(addr, addr+uintptr(roundedLength), prot, flags) {
 			uartPutsDirect("  -> MAP_FIXED: all mmap spans exhausted, returning -ENOMEM\r\n")
 			return -12 // -ENOMEM
 		}
 
-		uartPutsDirect("  -> MAP_FIXED, returning 0x")
+		uartPutsDirect("  -> MAP_FIXED, returning virtual address 0x")
 		uartPutHex64Direct(uint64(addr))
 		uartPutsDirect("\r\n")
 		return int64(addr)
@@ -555,13 +563,13 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 			addr+uintptr(roundedLength) <= MAX_VIRT_ADDR { // Range OK
 			// Hint is reasonable - honor it to keep Go runtime happy
 
-			// Register this span
-			if !registerMmapSpan(addr, addr+uintptr(roundedLength)) {
+			// Register this span with its protection and mapping flags
+			if !registerMmapSpan(addr, addr+uintptr(roundedLength), prot, flags) {
 				uartPutsDirect("  -> hint: all mmap spans exhausted, returning -ENOMEM\r\n")
 				return -12 // -ENOMEM
 			}
 
-			uartPutsDirect("  -> honoring hint 0x")
+			uartPutsDirect("  -> honoring hint, returning virtual address 0x")
 			uartPutHex64Direct(uint64(addr))
 			uartPutsDirect(" (len=0x")
 			uartPutHex64Direct(roundedLength)
@@ -574,26 +582,34 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 		uartPutsDirect(" too high/invalid, using bump allocator\r\n")
 	}
 
-	// No hint or hint was unreasonable - use bump allocator
-	// NOTE: Bump region (Span 3) is pre-registered during boot
+	// No hint or hint was unreasonable - allocate from bump region
+	// Bump region (0x48000000-0xC8000000) is pre-registered as Span 2 during boot
 	// All allocations must fit within BUMP_REGION_START to BUMP_REGION_END
 	allocAddr := mmapBumpNext
 	endAddr := allocAddr + uintptr(roundedLength)
 
 	// Check if allocation would overflow the pre-registered bump region
 	if endAddr > BUMP_REGION_END {
-		uartPutsDirect("  -> bump allocator exhausted (would exceed 2GB region), returning -ENOMEM\r\n")
+		uartPutsDirect("  -> bump region exhausted (would exceed 2GB limit), returning -ENOMEM\r\n")
+		return -12 // -ENOMEM
+	}
+
+	// Register this specific allocation as a new span (allows tracking per-allocation prot/flags)
+	// The bump region span (Span 2) covers the entire range, but individual allocations
+	// are tracked separately for their specific protection flags
+	if !registerMmapSpan(allocAddr, endAddr, prot, flags) {
+		uartPutsDirect("  -> all mmap spans exhausted, returning -ENOMEM\r\n")
 		return -12 // -ENOMEM
 	}
 
 	// Update bump pointer for next allocation
 	mmapBumpNext = endAddr
 
-	uartPutsDirect("  -> bump allocator, returning 0x")
+	uartPutsDirect("  -> allocated from bump region, returning virtual address 0x")
 	uartPutHex64Direct(uint64(allocAddr))
 	uartPutsDirect(" (len=0x")
 	uartPutHex64Direct(roundedLength)
-	uartPutsDirect(", within pre-registered Span 3)\r\n")
+	uartPutsDirect(", within bump region Span 2)\r\n")
 
 	return int64(allocAddr)
 }

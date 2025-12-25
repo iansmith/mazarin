@@ -82,7 +82,14 @@ func preRegisterFixedSpans() {
 	uartPutHex64Direct(uint64(dtbSize / 1024))
 	uartPutsDirect(" KB)\r\n")
 
-	if !registerMmapSpan(dtbStart, dtbEnd) {
+	// Protection flags (from Linux mman.h)
+	const PROT_READ = 0x1
+	const PROT_WRITE = 0x2
+	const PROT_EXEC = 0x4
+	const MAP_PRIVATE = 0x02
+	const MAP_ANONYMOUS = 0x20
+
+	if !registerMmapSpan(dtbStart, dtbEnd, PROT_READ, MAP_PRIVATE|MAP_ANONYMOUS) {
 		uartPutsDirect("ERROR: Failed to register DTB span!\r\n")
 		for {} // Hang
 	}
@@ -105,7 +112,7 @@ func preRegisterFixedSpans() {
 	uartPutHex64Direct(uint64(mazbootSize / 1024))
 	uartPutsDirect(" KB)\r\n")
 
-	if !registerMmapSpan(mazbootStart, mazbootEnd) {
+	if !registerMmapSpan(mazbootStart, mazbootEnd, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANONYMOUS) {
 		uartPutsDirect("ERROR: Failed to register Mazboot span!\r\n")
 		for {} // Hang
 	}
@@ -127,7 +134,7 @@ func preRegisterFixedSpans() {
 	uartPutHex64Direct(uint64(BUMP_REGION_SIZE / (1024 * 1024)))
 	uartPutsDirect(" MB reserved for fallback allocations)\r\n")
 
-	if !registerMmapSpan(BUMP_REGION_START, bumpEnd) {
+	if !registerMmapSpan(BUMP_REGION_START, bumpEnd, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS) {
 		uartPutsDirect("ERROR: Failed to register bump region span!\r\n")
 		for {} // Hang
 	}
@@ -2147,7 +2154,15 @@ func loadAndRunKmazarin() {
 	asm.Isb()
 	uartPutsDirect("TLB invalidated\r\n")
 
-	if !registerMmapSpan(minVA, maxVA) {
+	// Register kmazarin's loaded region (code + data + bss)
+	// Use RWX permissions since this region contains mixed segments
+	const PROT_READ = 0x1
+	const PROT_WRITE = 0x2
+	const PROT_EXEC = 0x4
+	const MAP_PRIVATE = 0x02
+	const MAP_ANONYMOUS = 0x20
+
+	if !registerMmapSpan(minVA, maxVA, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANONYMOUS) {
 		// Failed to register - hang
 		for {}
 	}
