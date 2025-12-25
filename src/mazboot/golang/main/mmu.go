@@ -128,6 +128,15 @@ const (
 	// Physical frame pool end (256 MB limit)
 	PHYS_FRAME_END  = 0x50000000 // End of 256MB RAM (BOOT_ADDRESS + 256MB)
 
+	// Stack sizes (must be page-aligned multiples)
+	STACK_SIZE_G0_MAZBOOT      = 64 * 1024  // 64KB for g0 stack (normal execution)
+	STACK_SIZE_EXCEPTION_EL1   = 64 * 1024  // 64KB for exception handler stack
+
+	// Stack base address (nice round number, placed after frame pool)
+	// This is the TOP of the exception stack (highest address)
+	// Stacks grow downward from here
+	STACK_BASE = 0x5F010000  // Round number ending in 0000
+
 	// Kmazarin conservative size estimate (for initial PHYS_FRAME_BASE calculation)
 	// Actual kmazarin size is determined after ELF load; this is a safe upper bound
 	// Typical kmazarin is 1-3 MB, we reserve 8 MB to be safe
@@ -1163,11 +1172,23 @@ func initMMU() bool {
 	// Stack Architecture:
 	// - g0 stack (SP_EL0): Used for normal kernel execution in EL1t mode (SPSel=0)
 	// - Exception stack (SP_EL1): Used for exception handlers in EL1h mode (SPSel=1)
+	//
+	// Stack layout (grows downward from STACK_BASE):
+	//   STACK_BASE (0x5F010000) ← SP_EL1 (exception stack top)
+	//   ↓ exception stack (STACK_SIZE_EXCEPTION_EL1 = 64KB)
+	//   0x5F000000 ← SP_EL0 (g0 stack top)
+	//   ↓ g0 stack (STACK_SIZE_G0_MAZBOOT = 64KB)
+	//   0x5EFF0000 (g0 stack bottom)
 
-	// Map g0 stack (SP_EL0) - boot.s sets SP_EL0 to 0x5F000000, runs in EL1t mode
-	// Stack is 64KB: 0x5EFF0000 - 0x5F000000
-	g0StackBottom := uintptr(0x5EFF0000)
-	g0StackTop := uintptr(0x5F000000)
+	// Compute exception stack addresses from STACK_BASE
+	exceptionStackTop := uintptr(STACK_BASE)
+	exceptionStackBottom := exceptionStackTop - uintptr(STACK_SIZE_EXCEPTION_EL1)
+
+	// Compute g0 stack addresses (grows downward from exception stack bottom)
+	g0StackTop := exceptionStackBottom
+	g0StackBottom := g0StackTop - uintptr(STACK_SIZE_G0_MAZBOOT)
+
+	// Map g0 stack (SP_EL0) - boot.s must set SP_EL0 to g0StackTop
 	uartPutsDirect("Mapping g0 stack (SP_EL0): 0x")
 	uartPutHex64Direct(uint64(g0StackBottom))
 	uartPutsDirect(" - 0x")
@@ -1175,11 +1196,7 @@ func initMMU() bool {
 	uartPutsDirect(" (RW)\r\n")
 	mapRegion(g0StackBottom, g0StackTop, g0StackBottom, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 
-	// Map exception stack (SP_EL1) - boot.s sets SP_EL1 to 0x5F010000
-	// Stack is 64KB: 0x5F000000 - 0x5F010000
-	// Used when exceptions occur (CPU switches to EL1h mode, using SP_EL1)
-	exceptionStackBottom := uintptr(0x5F000000)
-	exceptionStackTop := uintptr(0x5F010000)
+	// Map exception stack (SP_EL1) - boot.s must set SP_EL1 to exceptionStackTop
 	uartPutsDirect("Mapping exception stack (SP_EL1): 0x")
 	uartPutHex64Direct(uint64(exceptionStackBottom))
 	uartPutsDirect(" - 0x")
