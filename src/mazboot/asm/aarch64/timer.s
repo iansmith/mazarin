@@ -46,8 +46,9 @@ armTimer:
     // Set compare value to trigger first interrupt
     msr CNTV_CVAL_EL0, x0
 
+    // TEMPORARY: Disable timer to test if async preemption is causing corruption
     // Enable timer: set bit 0 (ENABLE) and clear bit 1 (IMASK - unmask interrupt)
-    mov x0, #1                      // ENABLE = 1, IMASK = 0
-    msr CNTV_CTL_EL0, x0
+    // mov x0, #1                      // ENABLE = 1, IMASK = 0
+    // msr CNTV_CTL_EL0, x0
 
     ret

@@ -557,9 +557,10 @@ timer_stack_selected:
     // Read interrupted PC from ELR_EL1
     mrs x19, ELR_EL1                 // x19 = interrupted PC
 
-    // Get interrupted SP - this is the SP when interrupt occurred
-    // We saved original SP_EL1 at [x15, #0] (exception stack base)
-    ldr x20, [x15, #0]               // x20 = interrupted SP
+    // Get interrupted goroutine's stack pointer (SP_EL0)
+    // The interrupt occurred while running in EL1t mode (using SP_EL0 for kmazarin's stack)
+    // We need to modify SP_EL0, not SP_EL1 (exception stack)
+    mrs x20, SP_EL0                  // x20 = interrupted goroutine SP (SP_EL0)
 
     // Read current LR value from interrupted context (for unwinding)
     // NOTE: x30 (LR) is not saved in our exception entry, so we read it from current state
@@ -585,8 +586,9 @@ timer_stack_selected:
     // 1. Set LR = interrupted PC (this is where asyncPreemptBM will return to)
     mov x30, x19                     // LR = interrupted PC
 
-    // 2. Set SP to new frame location (so asyncPreemptBM uses correct stack)
-    mov sp, x20                      // SP = new frame pointer
+    // 2. Set SP_EL0 to new frame location (so asyncPreemptBM uses correct stack)
+    // CRITICAL: We're in EL1h mode (using SP_EL1), but we need to modify SP_EL0!
+    msr SP_EL0, x20                  // SP_EL0 = new frame pointer
 
     // 3. Set ELR_EL1 = asyncPreemptBM (so ERET jumps there instead of interrupted PC)
     adrp x21, asyncPreemptBM
@@ -1040,6 +1042,81 @@ stack_selected:
     // Actually, we need to re-read SP_EL0 now that we're on exception stack
     SAVE_SP_EL0_TO_STACK            // Save SP_EL0 to frame offset 288
 
+    // DEBUG: Print SP_EL0 value on SVC entry (only for kmazarin code)
+    lsr x4, x3, #26                 // Extract EC from ESR
+    cmp x4, #0x15                   // SVC?
+    b.ne 1f                         // Skip if not SVC
+
+    // Print "S0=" prefix
+    stp x0, x1, [sp, #-16]!
+    mov w0, #0x53                   // 'S'
+    UART_PUTC
+    mov w0, #0x30                   // '0'
+    UART_PUTC
+    mov w0, #0x3D                   // '='
+    UART_PUTC
+
+    // Print SP_EL0 value
+    mrs x0, SP_EL0
+    bl print_hex64
+    mov w0, #0x20                   // ' '
+    UART_PUTC
+
+    // Print value at [SP_EL0+72] to see what kmazarin stored there
+    mrs x2, SP_EL0
+    add x2, x2, #72                 // x2 = SP_EL0 + 72
+    ldr x2, [x2]                    // x2 = *[SP_EL0+72]
+    mov w0, #0x4D                   // 'M'
+    UART_PUTC
+    mov w0, #0x45                   // 'E'
+    UART_PUTC
+    mov w0, #0x4D                   // 'M'
+    UART_PUTC
+    mov w0, #0x3D                   // '='
+    UART_PUTC
+    // Print last 4 hex digits of x2
+    lsr x1, x2, #12
+    and x1, x1, #0xF
+    cmp x1, #10
+    blt 2f
+    add x1, x1, #0x37
+    b 3f
+2:  add x1, x1, #0x30
+3:  mov w0, w1
+    UART_PUTC
+    lsr x1, x2, #8
+    and x1, x1, #0xF
+    cmp x1, #10
+    blt 4f
+    add x1, x1, #0x37
+    b 5f
+4:  add x1, x1, #0x30
+5:  mov w0, w1
+    UART_PUTC
+    lsr x1, x2, #4
+    and x1, x1, #0xF
+    cmp x1, #10
+    blt 6f
+    add x1, x1, #0x37
+    b 7f
+6:  add x1, x1, #0x30
+7:  mov w0, w1
+    UART_PUTC
+    mov x1, x2
+    and x1, x1, #0xF
+    cmp x1, #10
+    blt 8f
+    add x1, x1, #0x37
+    b 9f
+8:  add x1, x1, #0x30
+9:  mov w0, w1
+    UART_PUTC
+    mov w0, #0x20                   // ' '
+    UART_PUTC
+
+    ldp x0, x1, [sp], #16
+1:
+
     // Check exception type - only route data aborts (EC=0x25) to Go for demand paging
     // SVC (EC=0x15) goes to syscall handler
 
@@ -1342,6 +1419,14 @@ handle_svc_syscall:
     str w1, [x0]
     ldp x0, x1, [sp], #16           // Restore x0, x1
 
+    // CRITICAL: Disable timer interrupts during syscall execution
+    // This prevents async preemption from corrupting syscall stack frames
+    // We'll re-enable interrupts in syscall_return before eret
+    mrs x10, DAIF                   // Read current interrupt mask state
+    orr x10, x10, #0x80             // Set I bit (IRQ mask) to disable timer interrupts
+    msr DAIF, x10                   // Write back to DAIF
+    isb                             // Ensure change takes effect before continuing
+
     // CRITICAL: Switch to g0 before calling Go syscall handlers
     // This allows runtime operations (including stack tracebacks) to work correctly
     // NOTE: Original g (x28) was already saved to exception frame at offset 296
@@ -1533,6 +1618,42 @@ syscall_mmap:
     // mmap(addr, length, prot, flags, fd, offset) - 6 parameters
     // x0-x5 contain arguments - call Go SyscallMmap function
 
+    // DEBUG: Print mmap parameters to verify they're correct
+    stp x0, x1, [sp, #-16]!
+    stp x2, x3, [sp, #-16]!
+
+    // Print "MMAP(len="
+    mov w0, #0x4D                    // 'M'
+    UART_PUTC
+    mov w0, #0x4D                    // 'M'
+    UART_PUTC
+    mov w0, #0x41                    // 'A'
+    UART_PUTC
+    mov w0, #0x50                    // 'P'
+    UART_PUTC
+    mov w0, #0x28                    // '('
+    UART_PUTC
+    mov w0, #0x6C                    // 'l'
+    UART_PUTC
+    mov w0, #0x65                    // 'e'
+    UART_PUTC
+    mov w0, #0x6E                    // 'n'
+    UART_PUTC
+    mov w0, #0x3D                    // '='
+    UART_PUTC
+
+    // Print x1 (length parameter)
+    ldr x0, [sp, #8]                 // Load saved x1 (length)
+    bl print_hex64
+
+    mov w0, #0x29                    // ')'
+    UART_PUTC
+    mov w0, #0x20                    // ' '
+    UART_PUTC
+
+    ldp x2, x3, [sp], #16
+    ldp x0, x1, [sp], #16
+
     CALL_GO_PROLOGUE SPILL_SPACE_6PARAM
     bl main.SyscallMmap
 
@@ -1681,8 +1802,12 @@ syscall_exit:
     b 1b                           // Loop forever
 
 syscall_return:
-    // Syscall return - restore SPSR/ELR and return via eret
-    // x0 contains the syscall result (must be preserved!)
+    // Syscall return - restore SPSR/ELR and ALL registers, then return via eret
+    // x0 contains the syscall result (will be saved to frame, then restored at end)
+
+    // CRITICAL: Save syscall return value (x0) back to exception frame
+    // This ensures when we restore all registers below, x0 has the correct return value
+    str x0, [sp, #0]                // Save return value to frame offset 0
 
     // Restore ELR_EL1 and SPSR_EL1 from exception frame
     ldp x12, x13, [sp, #EXC_FRAME_ELR_SPSR]  // x12 = saved ELR, x13 = saved SPSR
@@ -1694,13 +1819,197 @@ syscall_return:
     msr SPSR_EL1, x13               // Restore saved PSTATE
     isb                             // Ensure ELR/SPSR writes complete
 
-    // Restore original g (x28), LR (x30), and FP (x29) from exception frame
-    ldr x30, [sp, #EXC_FRAME_SAVED_LR]  // Restore original LR (offset 312)
-    ldr x28, [sp, #EXC_FRAME_SAVED_G]   // Restore original g (offset 296)
-    ldr x29, [sp, #EXC_FRAME_X29_X30]   // Restore original x29 (offset 232)
-
-    // Restore SP_EL0 before eret
+    // Restore SP_EL0 before restoring other registers
     RESTORE_SP_EL0_FROM_STACK       // Restore from frame offset 288
+
+    // DEBUG: Print value FROM EXCEPTION FRAME before restore
+    stp x0, x1, [sp, #-16]!         // Save x0, x1
+    ldr x0, [sp, #304]              // Load saved SP_EL0 from frame (offset 288 + 16 for push = 304)
+    movz x1, #0x0900, lsl #16       // UART base
+    mov w2, #0x46                   // 'F'
+    str w2, [x1]
+    mov w2, #0x52                   // 'R'
+    str w2, [x1]
+    mov w2, #0x4D                   // 'M'
+    str w2, [x1]
+    mov w2, #0x3D                   // '='
+    str w2, [x1]
+    // Print last 4 hex digits of frame value
+    lsr x2, x0, #12
+    and x2, x2, #0xF
+    cmp x2, #10
+    blt 1f
+    add x2, x2, #0x37
+    b 2f
+1:  add x2, x2, #0x30
+2:  str w2, [x1]
+    lsr x2, x0, #8
+    and x2, x2, #0xF
+    cmp x2, #10
+    blt 3f
+    add x2, x2, #0x37
+    b 4f
+3:  add x2, x2, #0x30
+4:  str w2, [x1]
+    lsr x2, x0, #4
+    and x2, x2, #0xF
+    cmp x2, #10
+    blt 5f
+    add x2, x2, #0x37
+    b 6f
+5:  add x2, x2, #0x30
+6:  str w2, [x1]
+    mov x2, x0
+    and x2, x2, #0xF
+    cmp x2, #10
+    blt 7f
+    add x2, x2, #0x37
+    b 8f
+7:  add x2, x2, #0x30
+8:  str w2, [x1]
+    mov w2, #0x20                   // Space
+    str w2, [x1]
+    ldp x0, x1, [sp], #16           // Restore
+
+    // DEBUG: Print x4 value from exception frame BEFORE restoring
+    stp x0, x1, [sp, #-16]!         // Save x0, x1
+    ldr x0, [sp, #48]               // Load x4 from frame (offset 32 + 16 for push = 48)
+    movz x1, #0x0900, lsl #16       // UART base
+    mov w2, #0x58                   // 'X'
+    str w2, [x1]
+    mov w2, #0x34                   // '4'
+    str w2, [x1]
+    mov w2, #0x3D                   // '='
+    str w2, [x1]
+    // Print top 2 hex digits of x4
+    lsr x2, x0, #28
+    and x2, x2, #0xF
+    cmp x2, #10
+    blt 1f
+    add x2, x2, #0x37
+    b 2f
+1:  add x2, x2, #0x30
+2:  str w2, [x1]
+    lsr x2, x0, #24
+    and x2, x2, #0xF
+    cmp x2, #10
+    blt 3f
+    add x2, x2, #0x37
+    b 4f
+3:  add x2, x2, #0x30
+4:  str w2, [x1]
+    mov w2, #0x20                   // Space
+    str w2, [x1]
+    ldp x0, x1, [sp], #16           // Restore
+
+    // CRITICAL: Restore ALL registers x1-x30 from exception frame
+    // This ensures registers clobbered by syscall handler are restored
+    // x0 will be restored last with syscall return value
+    // Registers are saved/restored in pairs at 16-byte aligned offsets
+    ldp x2, x3, [sp, #16]           // Restore x2, x3
+    ldp x4, x5, [sp, #32]           // Restore x4, x5  ← CRITICAL: Restore x4!
+    ldp x6, x7, [sp, #48]           // Restore x6, x7
+    ldp x8, x9, [sp, #64]           // Restore x8, x9
+    ldp x10, x11, [sp, #80]         // Restore x10, x11
+    ldp x12, x13, [sp, #96]         // Restore x12, x13
+    ldp x14, x15, [sp, #112]        // Restore x14, x15
+    ldp x16, x17, [sp, #128]        // Restore x16, x17
+    ldp x18, x19, [sp, #144]        // Restore x18, x19
+    ldp x20, x21, [sp, #160]        // Restore x20, x21
+    ldp x22, x23, [sp, #176]        // Restore x22, x23
+    ldp x24, x25, [sp, #192]        // Restore x24, x25
+    ldp x26, x27, [sp, #208]        // Restore x26, x27
+    // CRITICAL: Restore x28 (g) from SAVED_G, not from exception frame offset 224!
+    // We saved original g to offset 296 before setting x28=g0 for syscall handler
+    ldr x28, [sp, #EXC_FRAME_SAVED_G]  // Restore x28 (g) from offset 296
+    ldp x29, x30, [sp, #232]        // Restore x29 (FP), x30 (LR)
+    ldr x1, [sp, #8]                // Restore x1 last (offset 8, not 0!)
+
+    // CRITICAL: Finally restore x0 with syscall return value
+    // This must be done LAST after all other register restores
+    ldr x0, [sp, #0]                // Restore x0 with syscall return value
+
+    // DEBUG: Print x0 value (syscall return value) right before eret
+    // CRITICAL: x1 was already restored above, so we need to save/restore it for debug print
+    str x1, [sp, #-16]!             // Save x1
+    mov x1, x0                      // x1 = x0 (syscall return value)
+    lsr x1, x1, #28                 // Get top nibble
+    and x1, x1, #0xF
+    cmp x1, #10
+    blt 1f
+    add x1, x1, #0x37               // 'A'-10
+    b 2f
+1:  add x1, x1, #0x30               // '0'
+2:  movz x2, #0x0900, lsl #16      // UART base
+    str w1, [x2]                    // Print top nibble of x0
+    mov w1, #0x20                   // Space
+    str w1, [x2]
+    ldr x1, [sp], #16               // Restore x1 again (was modified by debug)
+
+    // DEBUG: Verify SP_EL0 right before eret
+    stp x0, x1, [sp, #-16]!
+    mrs x0, SP_EL0
+    movz x1, #0x0900, lsl #16
+    mov w2, #0x45                   // 'E'
+    str w2, [x1]
+    mov w2, #0x52                   // 'R'
+    str w2, [x1]
+    mov w2, #0x45                   // 'E'
+    str w2, [x1]
+    mov w2, #0x54                   // 'T'
+    str w2, [x1]
+    mov w2, #0x3D                   // '='
+    str w2, [x1]
+    // Print last 4 hex digits of SP_EL0
+    lsr x2, x0, #12
+    and x2, x2, #0xF
+    cmp x2, #10
+    blt 1f
+    add x2, x2, #0x37
+    b 2f
+1:  add x2, x2, #0x30
+2:  mov w0, w2
+    str w0, [x1]
+    mrs x0, SP_EL0
+    lsr x2, x0, #8
+    and x2, x2, #0xF
+    cmp x2, #10
+    blt 3f
+    add x2, x2, #0x37
+    b 4f
+3:  add x2, x2, #0x30
+4:  mov w0, w2
+    str w0, [x1]
+    mrs x0, SP_EL0
+    lsr x2, x0, #4
+    and x2, x2, #0xF
+    cmp x2, #10
+    blt 5f
+    add x2, x2, #0x37
+    b 6f
+5:  add x2, x2, #0x30
+6:  mov w0, w2
+    str w0, [x1]
+    mrs x0, SP_EL0
+    and x2, x0, #0xF
+    cmp x2, #10
+    blt 7f
+    add x2, x2, #0x37
+    b 8f
+7:  add x2, x2, #0x30
+8:  mov w0, w2
+    str w0, [x1]
+    mov w0, #0x20                   // Space
+    str w0, [x1]
+    ldp x0, x1, [sp], #16
+
+    // CRITICAL: Re-enable timer interrupts before returning from syscall
+    // We disabled them in handle_svc_syscall to prevent stack corruption
+    // Now we can safely re-enable before eret returns to user code
+    mrs x10, DAIF                   // Read current interrupt mask state
+    bic x10, x10, #0x80             // Clear I bit (IRQ mask) to enable timer interrupts
+    msr DAIF, x10                   // Write back to DAIF
+    isb                             // Ensure change takes effect before eret
 
     // Deallocate exception frame before ERET
     add sp, sp, #320                 // Restore SP_EL1 to exception stack top
