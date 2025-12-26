@@ -1721,12 +1721,71 @@ syscall_return:
     // Restore ELR_EL1 and SPSR_EL1 from exception frame
     ldp x12, x13, [sp, #EXC_FRAME_ELR_SPSR]  // x12 = saved ELR, x13 = saved SPSR
 
-    // CRITICAL: Advance ELR_EL1 by 4 to skip past SVC instruction
-    add x12, x12, #4                // ELR += 4 (instruction after SVC)
+    // DEBUG: Print ELR before incrementing (only for kmazarin code)
+    movz x10, #0x4180, lsl #16
+    cmp x12, x10
+    b.lt 2f
+    movz x10, #0x4190, lsl #16
+    cmp x12, x10
+    b.ge 2f
 
-    msr ELR_EL1, x12                // Restore return address
+    sub sp, sp, #32
+    stp x0, x1, [sp]
+    stp x2, x3, [sp, #16]
+
+    movz x0, #0x0900, lsl #16
+    movz w1, #0x45                   // 'E'
+    str w1, [x0]
+    movz w1, #0x3D                   // '='
+    str w1, [x0]
+
+    mov x0, x12                      // Print original ELR
+    bl print_hex64
+
+    ldp x2, x3, [sp, #16]
+    ldp x0, x1, [sp]
+    add sp, sp, #32
+2:
+
+    // NOTE: For SVC exceptions, ELR already points to the instruction AFTER the SVC!
+    // The ARM architecture automatically advances ELR past the SVC instruction.
+    // We do NOT need to increment ELR - just restore it as-is.
+    // (Previously we incorrectly added 4, which caused us to skip error handling!)
+
+    msr ELR_EL1, x12                // Restore return address (no increment needed!)
     msr SPSR_EL1, x13               // Restore saved PSTATE
     isb                             // Ensure ELR/SPSR writes complete
+
+    // DEBUG: Print value at 0x419A1068 (persistent.base) after syscall
+    // Only do this if ELR points to kmazarin code (0x41800000-0x41900000)
+    movz x10, #0x4180, lsl #16
+    cmp x12, x10
+    b.lt 1f                          // Skip if ELR < 0x41800000
+    movz x10, #0x4190, lsl #16
+    cmp x12, x10
+    b.ge 1f                          // Skip if ELR >= 0x41900000
+
+    // We're returning to kmazarin - print persistent.base value
+    sub sp, sp, #32
+    stp x0, x1, [sp]
+    stp x2, x3, [sp, #16]
+
+    movz x0, #0x0900, lsl #16
+    movz w1, #0x50                   // 'P'
+    str w1, [x0]
+    movz w1, #0x3D                   // '='
+    str w1, [x0]
+
+    // Load value at 0x419A1068
+    movz x0, #0x419A, lsl #16
+    movk x0, #0x1068
+    ldr x0, [x0]                     // x0 = value at persistent.base
+    bl print_hex64
+
+    ldp x2, x3, [sp, #16]
+    ldp x0, x1, [sp]
+    add sp, sp, #32
+1:
 
     // Restore original g (x28), LR (x30), and FP (x29) from exception frame
     ldr x30, [sp, #EXC_FRAME_SAVED_LR]  // Restore original LR (offset 312)
