@@ -455,6 +455,15 @@ var mmapCallCount uint32
 
 //go:nosplit
 func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32, offset int64) int64 {
+	// DEBUG: Check if kmazarin memstats field is corrupted at START of mmap
+	const memstatsFieldAddr = uintptr(0x419A39A8)
+	memstatsFieldValue := *(*uint64)(unsafe.Pointer(memstatsFieldAddr))
+	if memstatsFieldValue != 0 {
+		uartPutsDirect("!!! CORRUPTION AT MMAP START: value=0x")
+		uartPutHex64Direct(memstatsFieldValue)
+		uartPutsDirect("\r\n")
+	}
+
 	// Increment and print call count
 	mmapCallCount++
 	uartPutsDirect("MMAP #")
@@ -589,6 +598,15 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 	retval := int64(allocAddr)
 	uartPutHex64Direct(uint64(retval))
 	uartPutsDirect("\r\n")
+
+	// DEBUG: Check if kmazarin memstats field is corrupted at END of mmap
+	memstatsFieldValue = *(*uint64)(unsafe.Pointer(memstatsFieldAddr))
+	if memstatsFieldValue != 0 {
+		uartPutsDirect("!!! CORRUPTION AT MMAP END: value=0x")
+		uartPutHex64Direct(memstatsFieldValue)
+		uartPutsDirect("\r\n")
+	}
+
 	return retval
 }
 

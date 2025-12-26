@@ -1661,18 +1661,36 @@ syscall_return:
     // Syscall return - restore SPSR/ELR and return via eret
     // x0 contains the syscall result (must be preserved!)
 
-    // DEBUG: Check if memstats field got corrupted
-    stp x0, x1, [sp, #-16]!          // Save x0, x1
-    movz x0, #0x419A, lsl #16
-    movk x0, #0x39A8, lsl #0        // x0 = 0x419A39A8
-    ldr x1, [x0]                    // Load value at 0x419A39A8
-    cmp x1, #0
-    b.eq syscall_check_ok           // If zero, all good
-    // Non-zero! Print "!"
-    mov w10, #0x21                  // '!'
+    // DEBUG: Print 'R' to mark syscall_return entry
+    // UART_PUTC expects character in w0, so save x0 first
+    str x0, [sp, #-16]!             // Save x0 (syscall result)
+    mov w0, #0x52                   // 'R'
     UART_PUTC
-syscall_check_ok:
-    ldp x0, x1, [sp], #16           // Restore x0, x1
+    ldr x0, [sp], #16               // Restore x0
+
+    // DEBUG: Check value at 0x419A39A8 and print if it's 0xDEAD000E
+    // Use minimal stack - NO function calls
+    stp x1, x2, [sp, #-16]!          // Save x1, x2 (x0 must be preserved!)
+    stp x3, x4, [sp, #-16]!          // Save x3, x4
+
+    movz x1, #0x419A, lsl #16
+    movk x1, #0x39A8, lsl #0        // x1 = 0x419A39A8
+    ldr x2, [x1]                    // x2 = value at 0x419A39A8
+
+    // Check if value is specifically 0xDEAD000E
+    movz x3, #0xDEAD, lsl #16
+    movk x3, #0x000E, lsl #0        // x3 = 0xDEAD000E
+    cmp x2, x3
+    b.ne 1f
+
+    // It's 0xDEAD000E! Print '!' to mark poison value detected
+    str x0, [sp, #-16]!             // Save x0
+    mov w0, #0x21                   // '!'
+    UART_PUTC
+    ldr x0, [sp], #16               // Restore x0
+
+1:  ldp x3, x4, [sp], #16           // Restore x3, x4
+    ldp x1, x2, [sp], #16           // Restore x1, x2
 
     // Restore ELR_EL1 and SPSR_EL1 from exception frame
     ldp x12, x13, [sp, #EXC_FRAME_ELR_SPSR]  // x12 = saved ELR, x13 = saved SPSR
