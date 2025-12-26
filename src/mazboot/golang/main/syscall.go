@@ -112,8 +112,15 @@ func SyscallSchedGetaffinity(pid int32, cpusetsize uint64, mask unsafe.Pointer) 
 	//   byte 1: bit 0 = CPU 8, bit 1 = CPU 9, ..., bit 7 = CPU 15
 	//   etc.
 
+	// Zero out the entire mask buffer to avoid garbage data
+	// Write 8 bytes (standard CPU mask size for up to 64 CPUs)
+	maskBytes := (*[8]byte)(mask)
+	for i := 0; i < 8; i++ {
+		maskBytes[i] = 0
+	}
+
 	// Set bit 0 (CPU 0 available)
-	*(*byte)(mask) = 0x01
+	maskBytes[0] = 0x01
 
 	// Return 8 bytes as the size of the CPU mask
 	// This is the standard size for up to 64 CPUs (8 bytes * 8 bits/byte = 64 CPUs)

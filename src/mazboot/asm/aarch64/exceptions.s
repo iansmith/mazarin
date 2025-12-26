@@ -1342,33 +1342,16 @@ handle_svc_syscall:
     str w1, [x0]
     ldp x0, x1, [sp], #16           // Restore x0, x1
 
-    // CRITICAL: Switch to g0 and g0's stack before calling Go syscall handlers
-    // Go code MUST run on a proper Go stack, not the exception stack!
-    //
-    // STRATEGY: Stay in EL1h mode (keep using SP_EL1), but manually switch
-    // the sp register to point to g0's stack. This preserves access to the
-    // exception frame throughout the syscall handling.
-    //
-    // Key insight from user: "Do we need to preserve anything (like SP_EL1?)
-    // during this process so we can ERET to the correct place?"
-    // YES! We MUST preserve SP_EL1 because that's where the exception frame is!
+    // CRITICAL: Switch to g0 before calling Go syscall handlers
+    // This allows runtime operations (including stack tracebacks) to work correctly
+    // NOTE: Original g (x28) was already saved to exception frame at offset 296
+    // by sync_restore_and_svc (see SAVE_SYSCALL_CONTEXT equivalent above)
 
-    ldr x28, =runtime.g0            // x28 = address of runtime.g0 struct
+    ldr x28, =runtime.g0            // x28 = address of runtime.g0 struct (the g pointer itself)
 
-    // CRITICAL: Save exception frame pointer on g0's stack!
-    // This is nested-exception-safe: each exception level has its own saved pointer.
-    // User insight: "we cannot use scratch areas because of nested exceptions"
-    mov x10, sp                     // x10 = exception frame pointer
-
-    // Switch to g0's stack
-    ldr x11, [x28, #8]              // x11 = g0.stack.hi (top of g0's stack)
-    mov sp, x11                     // Switch sp to g0's stack (still in EL1h mode!)
-
-    // Push exception frame pointer onto g0's stack
-    str x10, [sp, #-16]!            // Push exception frame ptr, decrement sp by 16
-
-    // Now: sp points to g0's stack (with exception frame ptr saved at [sp])
-    //      x10 contains exception frame pointer (for later verification)
+    // NOTE: We don't switch SP to g0's stack here because syscalls need to preserve
+    // the caller's stack frame and return properly. We just set x28 so Go code sees g0.
+    // Syscall handlers run on the current stack, not g0's stack.
 
     // Dispatch based on syscall number
     cmp x8, #0                     // io_setup syscall (async I/O)
@@ -1701,32 +1684,13 @@ syscall_return:
     // Syscall return - restore SPSR/ELR and return via eret
     // x0 contains the syscall result (must be preserved!)
 
-    // DEBUG: Minimal breadcrumb - just print 'R' to mark syscall_return
-    // Print 'R' breadcrumb (syscall return)
-    // We're on g0's stack, so use it carefully
-    sub sp, sp, #16                 // Allocate stack space
-    str x0, [sp]                    // Save x0 (syscall result)
-    mov w0, #0x52                   // 'R'
-    UART_PUTC
-    ldr x0, [sp]                    // Restore x0
-    add sp, sp, #16                 // Deallocate stack space
-
-    // Pop exception frame pointer from g0's stack
-    ldr x10, [sp], #16              // Pop exception frame ptr, increment sp by 16
-
-    // Restore sp to exception frame
-    mov sp, x10                     // Restore sp from popped value
-    // Now sp points to exception frame again!
-
     // Restore ELR_EL1 and SPSR_EL1 from exception frame
     ldp x12, x13, [sp, #EXC_FRAME_ELR_SPSR]  // x12 = saved ELR, x13 = saved SPSR
 
-    // NOTE: For SVC exceptions, ELR already points to the instruction AFTER the SVC!
-    // The ARM architecture automatically advances ELR past the SVC instruction.
-    // We do NOT need to increment ELR - just restore it as-is.
-    // (Previously we incorrectly added 4, which caused us to skip error handling!)
+    // CRITICAL: Advance ELR_EL1 by 4 to skip past SVC instruction
+    add x12, x12, #4                // ELR += 4 (instruction after SVC)
 
-    msr ELR_EL1, x12                // Restore return address (no increment needed!)
+    msr ELR_EL1, x12                // Restore return address
     msr SPSR_EL1, x13               // Restore saved PSTATE
     isb                             // Ensure ELR/SPSR writes complete
 

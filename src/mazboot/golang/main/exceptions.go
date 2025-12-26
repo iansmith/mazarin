@@ -372,15 +372,17 @@ func handleException(excInfo ExceptionInfo) {
 			// Page fault handled successfully - return silently
 			return
 		}
-		// Page fault failed - print error info
-		uartPutsDirect("DATA ABORT: ELR=0x")
+		// Page fault failed - print error info and HALT to avoid infinite loop
+		uartPutsDirect("\r\n\r\n!FATAL DATA ABORT (cannot handle):\r\n")
+		uartPutsDirect("  ELR=0x")
 		uartPutHex64Direct(excInfo.ELR)
-		uartPutsDirect(" FAR=0x")
+		uartPutsDirect("\r\n  FAR=0x")
 		uartPutHex64Direct(excInfo.FAR)
-		uartPutsDirect(" ESR=0x")
+		uartPutsDirect("\r\n  ESR=0x")
 		uartPutHex64Direct(excInfo.ESR)
-		uartPutsDirect("\r\n")
-		return
+		uartPutsDirect("\r\n\r\nHalting to prevent infinite loop.\r\n")
+		// HALT - don't return, as that would retry the faulting instruction
+		for {}
 	}
 
 	// For other exceptions, print full debug info

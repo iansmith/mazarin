@@ -35,6 +35,34 @@ Kmazarin is an **unmodified Go binary** that must start up in "absolutely the no
 - Will eventually provide syscall/OS support to user-space Go programs
 - Acts as the real operating system kernel
 
+## Critical Development Practices
+
+### Debug Output Safety
+
+**CRITICAL**: When adding debug output in assembly code, ALWAYS use existing print helper functions that are designed to be register-safe. NEVER send data directly to UART without using these helpers.
+
+**Why this matters:**
+- Direct UART writes can corrupt registers that exception handlers depend on
+- Stack pointer manipulation during debug output can break exception frame handling
+- Debug code that uses pre-decrement addressing (`[sp, #-16]!`) can move SP away from critical data structures
+
+**Safe debugging practices:**
+1. Use `UART_PUTC` macro for single characters
+2. Use `print_hex64` function for hex values
+3. Use `uartPutsDirect` for strings
+4. Always save/restore registers if you must use temporary registers
+5. DO NOT modify SP with pre-decrement when the current SP value is critical
+6. Test debug code thoroughly - bad debug output can introduce worse bugs than the ones you're trying to find
+
+**Example of UNSAFE debug code that broke syscall handling:**
+```assembly
+// BAD - modifies SP with pre-decrement when SP must stay at exception frame
+stp x0, x1, [sp, #-16]!          // Decrements SP by 16!
+// ... debug code ...
+ldp x0, x1, [sp], #16            // Increments SP back
+// Problem: Code between these expects SP to be unchanged!
+```
+
 ## Current Challenge: Starting Kmazarin
 
 ### The Problem
