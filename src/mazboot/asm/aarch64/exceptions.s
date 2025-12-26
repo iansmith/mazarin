@@ -21,6 +21,13 @@
 dot_counter:
     .quad 0
 
+// Bump allocator state for mmap
+// Start of bump region = 0x48000000
+.global mmapBumpNext
+.align 3
+mmapBumpNext:
+    .quad 0x48000000
+
 // Declare Go function for exception handling
 .extern ExceptionHandler
 
@@ -85,6 +92,36 @@ dot_counter:
     ldr x0, [sp, #EXC_FRAME_SAVED_X0]   // Restore syscall return value
     ldr x28, [sp, #EXC_FRAME_SAVED_G]   // Restore original g
     ldr x30, [sp, #EXC_FRAME_SAVED_LR]  // Restore original LR
+.endm
+
+// ============================================================================
+// DEBUG MACROS - SAFE REGISTER PRESERVATION
+// ============================================================================
+//
+// DEBUG_SAVE_REGS: Save all scratch registers (x0-x15) to stack
+// Use this at the start of debug code to protect register state
+.macro DEBUG_SAVE_REGS
+    stp x0, x1, [sp, #-128]!
+    stp x2, x3, [sp, #16]
+    stp x4, x5, [sp, #32]
+    stp x6, x7, [sp, #48]
+    stp x8, x9, [sp, #64]
+    stp x10, x11, [sp, #80]
+    stp x12, x13, [sp, #96]
+    stp x14, x15, [sp, #112]
+.endm
+
+// DEBUG_RESTORE_REGS: Restore all scratch registers from stack
+// Use this at the end of debug code to restore register state
+.macro DEBUG_RESTORE_REGS
+    ldp x14, x15, [sp, #112]
+    ldp x12, x13, [sp, #96]
+    ldp x10, x11, [sp, #80]
+    ldp x8, x9, [sp, #64]
+    ldp x6, x7, [sp, #48]
+    ldp x4, x5, [sp, #32]
+    ldp x2, x3, [sp, #16]
+    ldp x0, x1, [sp], #128
 .endm
 
 // ============================================================================
@@ -1242,6 +1279,26 @@ handle_svc_syscall:
     msr DAIF, x10                   // Write back to DAIF
     isb                             // Ensure change takes effect before continuing
 
+    // DEBUG: Print "SVC=" + syscall number (X8) as 16 hex digits
+    DEBUG_SAVE_REGS
+
+    mov w0, #'S'
+    UART_PUTC
+    mov w0, #'V'
+    UART_PUTC
+    mov w0, #'C'
+    UART_PUTC
+    mov w0, #'='
+    UART_PUTC
+
+    mov x0, x8                  // x0 = syscall number
+    bl print_hex64              // Print all 16 hex digits
+
+    mov w0, #' '
+    UART_PUTC
+
+    DEBUG_RESTORE_REGS
+
     // CRITICAL: Switch to g0 before calling Go syscall handlers
     // This allows runtime operations (including stack tracebacks) to work correctly
     // NOTE: Original g (x28) was already saved to exception frame at offset 296
@@ -1431,11 +1488,33 @@ fake_tid_counter:
 
 syscall_mmap:
     // mmap(addr, length, prot, flags, fd, offset) - 6 parameters
-    // x0-x5 contain arguments - call Go SyscallMmap function
+    // x0-x5 contain arguments
+    // x1 = length (size to allocate)
+    // NOTE: QEMU initializes all RAM to zero, so we don't need to zero it here
 
-    CALL_GO_PROLOGUE SPILL_SPACE_6PARAM
-    bl main.SyscallMmap
-    CALL_GO_EPILOGUE SPILL_SPACE_6PARAM
+    // DEBUG breadcrumb
+    stp x0, x1, [sp, #-16]!
+    mov w0, #'X'
+    UART_PUTC
+    ldp x0, x1, [sp], #16
+
+    // Implement bump allocator: load current pointer, increment by size, return old pointer
+    // Load address of mmapBumpNext variable
+    ldr x10, =mmapBumpNext             // x10 = address of bump pointer variable
+    ldr x11, [x10]                     // x11 = current bump pointer value
+
+    // Round up length to page size (4096 bytes)
+    add x12, x1, #4095                 // x12 = length + 4095
+    and x12, x12, #~4095               // x12 = (length + 4095) & ~4095 = round up to 4KB
+
+    // Calculate new bump pointer
+    add x13, x11, x12                  // x13 = old pointer + rounded length
+
+    // Store new bump pointer
+    str x13, [x10]                     // mmapBumpNext = new pointer
+
+    // Return old pointer in x0
+    mov x0, x11
 
     b syscall_return
 
@@ -1561,9 +1640,22 @@ syscall_return:
     // Syscall return - restore SPSR/ELR and ALL registers, then return via eret
     // x0 contains the syscall result (will be saved to frame, then restored at end)
 
+    // DEBUG: Print "R=" + full 16 hex digits of X0 (syscall return value)
+    DEBUG_SAVE_REGS
+
+    mov w0, #'R'
+    UART_PUTC
+    mov w0, #'='
+    UART_PUTC
+
+    // Load X0 from saved registers and print as 16 hex digits
+    ldr x0, [sp]                // x0 = saved syscall return value
+    bl print_hex64              // Print all 16 hex digits
+
+    DEBUG_RESTORE_REGS
+
     // CRITICAL: Save syscall return value (x0) back to exception frame
-    // This ensures when we restore all registers below, x0 has the correct return value
-    str x0, [sp, #0]                // Save return value to frame offset 0
+    str x0, [sp, #EXC_FRAME_SAVED_X0]  // Save to offset 304
 
     // Restore ELR_EL1 and SPSR_EL1 from exception frame
     ldp x12, x13, [sp, #EXC_FRAME_ELR_SPSR]  // x12 = saved ELR, x13 = saved SPSR
@@ -1603,15 +1695,12 @@ syscall_return:
 
     // CRITICAL: Finally restore x0 with syscall return value
     // This must be done LAST after all other register restores
-    ldr x0, [sp, #0]                // Restore x0 with syscall return value
+    ldr x0, [sp, #EXC_FRAME_SAVED_X0]  // Restore x0 with syscall return value (offset 304)
 
-    // CRITICAL: Re-enable timer interrupts before returning from syscall
-    // We disabled them in handle_svc_syscall to prevent stack corruption
-    // Now we can safely re-enable before eret returns to user code
-    mrs x10, DAIF                   // Read current interrupt mask state
-    bic x10, x10, #0x80             // Clear I bit (IRQ mask) to enable timer interrupts
-    msr DAIF, x10                   // Write back to DAIF
-    isb                             // Ensure change takes effect before eret
+    // NOTE: We keep interrupts DISABLED until eret
+    // The eret instruction will restore SPSR_EL1 → PSTATE, which includes interrupt state
+    // This is safer than manually re-enabling interrupts, which could cause stack corruption
+    // if an interrupt fires after we deallocate the exception frame but before eret
 
     // Deallocate exception frame before ERET
     add sp, sp, #320                 // Restore SP_EL1 to exception stack top

@@ -27,7 +27,6 @@ func main() {
 	SyscallExit()
 	SyscallFutex(nil, 0, 0, nil, nil, 0)
 	SyscallKill()
-	SyscallMmap(0, 0, 0, 0, 0, 0)
 	SyscallMunmap(0, 0)
 	SyscallOpenat(0, nil, 0, 0)
 	SyscallRead(0, nil, 0)

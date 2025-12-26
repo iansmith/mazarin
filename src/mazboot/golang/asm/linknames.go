@@ -567,6 +567,10 @@ func getTimerFrequency()
 //go:nosplit
 func memmove(dest unsafe.Pointer, src unsafe.Pointer, n uint32)
 
+//go:linkname mmapBumpNext mmapBumpNext
+//go:nosplit
+func mmapBumpNext()
+
 //go:linkname readTimerCounter readTimerCounter
 //go:nosplit
 func readTimerCounter()

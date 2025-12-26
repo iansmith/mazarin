@@ -461,6 +461,7 @@ func isInMmapSpan(va uintptr) bool {
 var mmapCallCount uint32
 
 //go:nosplit
+//go:noinline
 func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32, offset int64) int64 {
 	// Minimal breadcrumb for mmap calls
 	mmapCallCount++
@@ -528,6 +529,9 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 			return -12 // -ENOMEM
 		}
 
+		// DEBUG: Print 'F' to show MAP_FIXED path
+		uartPutsDirect("F")
+
 		return int64(addr)
 	}
 
@@ -552,6 +556,9 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 				return -12 // -ENOMEM
 			}
 
+			// DEBUG: Print 'H' to show hint path
+			uartPutsDirect("H")
+
 			return int64(addr)
 		}
 	}
@@ -571,16 +578,16 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 	// Update bump pointer for next allocation
 	mmapBumpNext = endAddr
 
-	// DEBUG: Verify persistent.base AFTER mmap allocation
-	// Check if the value we stored earlier is still intact
-	afterValue := *persistentBasePtr
-	if beforeValue != afterValue {
-		uartPutsDirect("\r\nCORRUPT: persistent.base changed from ")
-		printHex64(uint64(beforeValue))
-		uartPutsDirect(" to ")
-		printHex64(uint64(afterValue))
-		uartPutsDirect(" during mmap!\r\n")
+	// DEBUG: Print 'B' to show bump allocator path taken
+	uartPutsDirect("B")
+
+	// DEBUG: Check if allocAddr is zero (BUG!)
+	if allocAddr == 0 {
+		uartPutsDirect("Z")  // Z = Zero address!
 	}
+
+	// DEBUG: Return value printed via 'M' breadcrumb
+	// (removed unsafe printHex64 calls that could trigger stack growth)
 
 	return int64(allocAddr)
 }

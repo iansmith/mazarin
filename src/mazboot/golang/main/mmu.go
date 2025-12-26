@@ -1023,6 +1023,11 @@ func initMMU() bool {
 	// This includes both .data (initialized) and .bss (uninitialized) sections
 	bssEnd := asm.GetBssEndAddr()
 	if dataStart > 0 && bssEnd > 0 {
+		uartPutsDirect("Mapping .data+.bss: 0x")
+		uartPutHex64Direct(uint64(dataStart))
+		uartPutsDirect(" - 0x")
+		uartPutHex64Direct(uint64(bssEnd))
+		uartPutsDirect("\r\n")
 		mapRegion(dataStart, bssEnd, dataStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 	}
 
