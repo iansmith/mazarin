@@ -1661,6 +1661,19 @@ syscall_return:
     // Syscall return - restore SPSR/ELR and return via eret
     // x0 contains the syscall result (must be preserved!)
 
+    // DEBUG: Check if memstats field got corrupted
+    stp x0, x1, [sp, #-16]!          // Save x0, x1
+    movz x0, #0x419A, lsl #16
+    movk x0, #0x39A8, lsl #0        // x0 = 0x419A39A8
+    ldr x1, [x0]                    // Load value at 0x419A39A8
+    cmp x1, #0
+    b.eq syscall_check_ok           // If zero, all good
+    // Non-zero! Print "!"
+    mov w10, #0x21                  // '!'
+    UART_PUTC
+syscall_check_ok:
+    ldp x0, x1, [sp], #16           // Restore x0, x1
+
     // Restore ELR_EL1 and SPSR_EL1 from exception frame
     ldp x12, x13, [sp, #EXC_FRAME_ELR_SPSR]  // x12 = saved ELR, x13 = saved SPSR
 

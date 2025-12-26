@@ -1896,6 +1896,29 @@ func loadAndRunKmazarin() {
 			execPerm = PTE_EXEC_ALLOW
 		}
 
+		// DEBUG: Print segment info
+		uartPutsDirect("  Segment ")
+		uartPutHex64Direct(uint64(i))
+		uartPutsDirect(": VA 0x")
+		uartPutHex64Direct(uint64(vaStart))
+		uartPutsDirect("-0x")
+		uartPutHex64Direct(uint64(vaEnd))
+		uartPutsDirect(" flags=")
+		if (pFlags & PF_R) != 0 {
+			uartPutsDirect("R")
+		}
+		if (pFlags & PF_W) != 0 {
+			uartPutsDirect("W")
+		}
+		if (pFlags & PF_X) != 0 {
+			uartPutsDirect("X")
+		}
+		uartPutsDirect(" FileSz=0x")
+		uartPutHex64Direct(pFilesz)
+		uartPutsDirect(" MemSz=0x")
+		uartPutHex64Direct(pMemsz)
+		uartPutsDirect("\r\n")
+
 		// Map all pages for this segment
 		for pageIdx := uintptr(0); pageIdx < numPages; pageIdx++ {
 			va := vaStart + (pageIdx << 12)
@@ -1956,7 +1979,31 @@ func loadAndRunKmazarin() {
 		if pMemsz > pFilesz {
 			bssStart := unsafe.Pointer(uintptr(pVaddr) + uintptr(pFilesz))
 			bssSize := pMemsz - pFilesz
+
+			// DEBUG: Print BSS zeroing info
+			uartPutsDirect("  BSS: zeroing 0x")
+			uartPutHex64Direct(uint64(uintptr(bssStart)))
+			uartPutsDirect(" - 0x")
+			uartPutHex64Direct(uint64(uintptr(bssStart) + uintptr(bssSize)))
+			uartPutsDirect(" (")
+			uartPutHex64Direct(uint64(bssSize))
+			uartPutsDirect(" bytes)\r\n")
+
 			bzero(bssStart, uint32(bssSize))
+
+			// DEBUG: Verify critical BSS addresses are zeroed
+			if uintptr(bssStart) <= 0x419A1060 && 0x419A1060 < uintptr(bssStart)+uintptr(bssSize) {
+				uartPutsDirect("  Verifying globalAlloc at 0x419A1060: ")
+				globalAllocPtr := (*uint64)(unsafe.Pointer(uintptr(0x419A1060)))
+				uartPutHex64Direct(*globalAllocPtr)
+				uartPutsDirect("\r\n")
+
+				// Also check the address that loads 0xDEAD000E (x4 = 0x419A39A8)
+				uartPutsDirect("  Verifying memstats field at 0x419A39A8: ")
+				memstatsFieldPtr := (*uint64)(unsafe.Pointer(uintptr(0x419A39A8)))
+				uartPutHex64Direct(*memstatsFieldPtr)
+				uartPutsDirect("\r\n")
+			}
 		}
 
 		// CRITICAL: Remap executable pages as Read-Only
