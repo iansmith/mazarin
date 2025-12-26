@@ -1245,9 +1245,9 @@ sync_restore_and_svc:
     // x28 (g pointer), and x30 (LR) so they can be restored after Go handler returns.
 
     // Save current syscall context to extended frame area BEFORE calling Go handler
-    // x0 = original x0 (from frame), x28 = current g, x30 = original x30 (from frame)
-    ldr x10, [sp, #0]               // x10 = original x0
-    str x10, [sp, #EXC_FRAME_SAVED_X0]  // Save to offset 304
+    // We save g and LR, but NOT x0 - the return value will overwrite the argument
+    // x28 = current g, x30 = original x30 (from frame)
+    // CRITICAL: Do NOT save x0 here - it will be overwritten with return value!
     str x28, [sp, #EXC_FRAME_SAVED_G]   // Save g to offset 296
     ldp x10, x11, [sp, #232]        // x10 = original x29, x11 = original x30
     str x11, [sp, #EXC_FRAME_SAVED_LR]  // Save LR to offset 312
@@ -1280,24 +1280,25 @@ handle_svc_syscall:
     isb                             // Ensure change takes effect before continuing
 
     // DEBUG: Print "SVC=" + syscall number (X8) as 16 hex digits
-    DEBUG_SAVE_REGS
-
-    mov w0, #'S'
-    UART_PUTC
-    mov w0, #'V'
-    UART_PUTC
-    mov w0, #'C'
-    UART_PUTC
-    mov w0, #'='
-    UART_PUTC
-
-    mov x0, x8                  // x0 = syscall number
-    bl print_hex64              // Print all 16 hex digits
-
-    mov w0, #' '
-    UART_PUTC
-
-    DEBUG_RESTORE_REGS
+    // DISABLED - too much spam
+    // DEBUG_SAVE_REGS
+    //
+    // mov w0, #'S'
+    // UART_PUTC
+    // mov w0, #'V'
+    // UART_PUTC
+    // mov w0, #'C'
+    // UART_PUTC
+    // mov w0, #'='
+    // UART_PUTC
+    //
+    // mov x0, x8                  // x0 = syscall number
+    // bl print_hex64              // Print all 16 hex digits
+    //
+    // mov w0, #' '
+    // UART_PUTC
+    //
+    // DEBUG_RESTORE_REGS
 
     // CRITICAL: Switch to g0 before calling Go syscall handlers
     // This allows runtime operations (including stack tracebacks) to work correctly
@@ -1625,24 +1626,41 @@ syscall_exit:
 
 syscall_return:
     // Syscall return - restore SPSR/ELR and ALL registers, then return via eret
-    // x0 contains the syscall result (will be saved to frame, then restored at end)
+    // x0 contains the syscall result from Go handler
+
+    // CRITICAL: Save syscall return value IMMEDIATELY before any other operations
+    str x0, [sp, #EXC_FRAME_SAVED_X0]  // Save return value to offset 304
+
+    // DEBUG: Print "S=" + value we just saved (only if non-zero)
+    // DISABLED - print_hex64 triggers more syscalls, causing stack overflow
+    // cbz x0, 1f
+    // mov x9, x0                      // Save x0 to x9 (callee-saved)
+    // mov w0, #'S'
+    // movz x1, #0x0900, lsl #16
+    // strb w0, [x1]
+    // mov w0, #'='
+    // strb w0, [x1]
+    // mov x0, x9                      // x0 = return value
+    // bl print_hex64
+    // mov w0, #' '
+    // movz x1, #0x0900, lsl #16
+    // strb w0, [x1]
+    // 1:
 
     // DEBUG: Print "R=" + full 16 hex digits of X0 (syscall return value)
-    DEBUG_SAVE_REGS
-
-    mov w0, #'R'
-    UART_PUTC
-    mov w0, #'='
-    UART_PUTC
-
-    // Load X0 from saved registers and print as 16 hex digits
-    ldr x0, [sp]                // x0 = saved syscall return value
-    bl print_hex64              // Print all 16 hex digits
-
-    DEBUG_RESTORE_REGS
-
-    // CRITICAL: Save syscall return value (x0) back to exception frame
-    str x0, [sp, #EXC_FRAME_SAVED_X0]  // Save to offset 304
+    // DISABLED - too much spam, makes output unreadable
+    // DEBUG_SAVE_REGS
+    //
+    // mov w0, #'R'
+    // UART_PUTC
+    // mov w0, #'='
+    // UART_PUTC
+    //
+    // // Load X0 from exception frame and print as 16 hex digits
+    // ldr x0, [sp, #EXC_FRAME_SAVED_X0]  // x0 = syscall return value from offset 304
+    // bl print_hex64              // Print all 16 hex digits
+    //
+    // DEBUG_RESTORE_REGS
 
     // Restore ELR_EL1 and SPSR_EL1 from exception frame
     ldp x12, x13, [sp, #EXC_FRAME_ELR_SPSR]  // x12 = saved ELR, x13 = saved SPSR
@@ -1683,7 +1701,6 @@ syscall_return:
     // CRITICAL: Finally restore x0 with syscall return value
     // This must be done LAST after all other register restores
     ldr x0, [sp, #EXC_FRAME_SAVED_X0]  // Restore x0 with syscall return value (offset 304)
-
     // NOTE: We keep interrupts DISABLED until eret
     // The eret instruction will restore SPSR_EL1 → PSTATE, which includes interrupt state
     // This is safer than manually re-enabling interrupts, which could cause stack corruption

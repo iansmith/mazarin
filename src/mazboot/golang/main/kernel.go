@@ -102,11 +102,7 @@ func preRegisterFixedSpans() {
 		print("FATAL: Failed to register bump region span\r\n")
 		for {} // Hang
 	}
-	print("  -> registered span 3: Bump region ")
-	printHex64(uint64(BUMP_REGION_START))
-	print("-")
-	printHex64(uint64(bumpEnd))
-	print("\r\n")
+	print("  -> registered span 3: Bump region\r\n")
 }
 
 // Peripheral base address for Raspberry Pi 4

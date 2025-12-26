@@ -261,9 +261,7 @@ func SyscallRead(fd int32, buf unsafe.Pointer, count uint64) int64 {
 
 	// NO FD SUPPORT - We rely entirely on AT_RANDOM for random numbers
 	// If the runtime tries to read /dev/urandom, it means AT_RANDOM failed
-	print("read: unsupported fd=")
-	printHex64(uint64(fd))
-	print("\r\n")
+	// DEBUG REMOVED - print/printHex64 allocate memory and corrupt X0
 	return -9 // -EBADF (bad file descriptor)
 }
 
@@ -465,13 +463,13 @@ var mmapCallCount uint32
 func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32, offset int64) int64 {
 	// Minimal breadcrumb for mmap calls
 	mmapCallCount++
-	uartPutsDirect("M")
+	// DEBUG REMOVED - any output here corrupts X0
 
 	// Handle zero-length mmap
 	// This should never happen and indicates a runtime initialization bug
 	// However, we'll allocate a minimal page to allow runtime to continue
 	if length == 0 {
-		uartPutsDirect("0") // Zero-length mmap
+		// DEBUG REMOVED - any output here corrupts X0
 		// Allocate one page (4KB) from bump allocator
 		length = 4096
 		// CRITICAL: If addr=0 with zero length, clear address to force bump allocator
@@ -524,12 +522,8 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 
 		// Register this span
 		if !registerMmapSpan(addr, addr+uintptr(roundedLength)) {
-			uartPutsDirect("!span\r\n")
 			return -12 // -ENOMEM
 		}
-
-		// DEBUG: Print 'F' to show MAP_FIXED path
-		uartPutsDirect("F")
 
 		return int64(addr)
 	}
@@ -549,12 +543,8 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 
 			// Register this span
 			if !registerMmapSpan(addr, addr+uintptr(roundedLength)) {
-				uartPutsDirect("!span2\r\n")
 				return -12 // -ENOMEM
 			}
-
-			// DEBUG: Print 'H' to show hint path
-			uartPutsDirect("H")
 
 			return int64(addr)
 		}
@@ -569,23 +559,11 @@ use_bump_allocator:
 
 	// Check if allocation would overflow the pre-registered bump region
 	if endAddr > BUMP_REGION_END {
-		uartPutsDirect("!bump\r\n")
 		return -12 // -ENOMEM
 	}
 
 	// Update bump pointer for next allocation
 	mmapBumpNext = endAddr
-
-	// DEBUG: Print 'B' to show bump allocator path taken
-	uartPutsDirect("B")
-
-	// DEBUG: Check if allocAddr is zero (BUG!)
-	if allocAddr == 0 {
-		uartPutsDirect("Z")  // Z = Zero address!
-	}
-
-	// DEBUG: Return value printed via 'M' breadcrumb
-	// (removed unsafe printHex64 calls that could trigger stack growth)
 
 	return int64(allocAddr)
 }
@@ -606,14 +584,9 @@ func SyscallFutex(addr unsafe.Pointer, op int32, val uint32, ts unsafe.Pointer, 
 	addrVal := uintptr(addr)
 
 	// Early-use detection: Log if futex is used before scheduler is ready
+	// DEBUG REMOVED - print/printHex allocate memory and corrupt X0
 	if atomic.LoadUint32(&schedulerReady) == 0 {
-		if atomic.CompareAndSwapUint32(&futexEarlyUseDetected, 0, 1) {
-			print("FUTEX: Early use detected (before scheduler ready) - op=")
-			printHex32(uint32(op))
-			print(" addr=")
-			printHex64(uint64(addrVal))
-			print("\r\n")
-		}
+		atomic.CompareAndSwapUint32(&futexEarlyUseDetected, 0, 1)
 	}
 
 	switch op {
