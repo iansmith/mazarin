@@ -462,17 +462,7 @@ call_runtime_args:
     mov w0, #0              // argc = 0 (int32)
     add x1, sp, #48         // argv = pointer to our structure
 
-    // DEBUG: Print 'H' before calling runtime.args
-    mov x20, #0x09000000    // UART base
-    mov w21, #'H'
-    str w21, [x20]
-
     bl runtime.args
-
-    // DEBUG: Print 'I' after runtime.args returns
-    mov x20, #0x09000000    // UART base
-    mov w21, #'I'
-    str w21, [x20]
 
     // If we get here, args() completed without crash
     mov x0, #0              // Return 0 = success
@@ -524,11 +514,6 @@ call_runtime_schedinit:
     mov x29, sp
     stp x19, x20, [sp, #16]
 
-    // DEBUG: Print '<' before calling schedinit (marker 1)
-    movz x0, #0x0900, lsl #16
-    movz w1, #0x3C              // '<'
-    str w1, [x0]
-
     // Call runtime.schedinit()
     // This will:
     // - Call lockInit() for all runtime locks (uses futex syscall)
@@ -536,16 +521,6 @@ call_runtime_schedinit:
     // - Set up processors (P)
     // - Initialize system monitor
     bl runtime.schedinit
-
-    // DEBUG: Print '>' after schedinit returns (marker 2)
-    movz x0, #0x0900, lsl #16
-    movz w1, #0x3E              // '>'
-    str w1, [x0]
-
-    // DEBUG: Print '!' to confirm we got here (marker 3)
-    movz x0, #0x0900, lsl #16
-    movz w1, #0x21              // '!'
-    str w1, [x0]
 
     // If we get here, schedinit() completed without crash
     mov x0, #0              // Return 0 = success
@@ -717,16 +692,6 @@ kernel_main:
     bl main.KernelMain
 
     // KernelMain returns after initialization is complete
-    // DEBUG: Print 'G' after Go KernelMain returns
-    movz x10, #0x0900, lsl #16   // UART base = 0x09000000
-    movz w11, #0x47              // 'G' = Go KernelMain returned
-    str w11, [x10]               // Write to UART
-    
-    // DEBUG: Print 'Z' before returning to boot.s
-    movz x10, #0x0900, lsl #16   // UART base = 0x09000000
-    movz w11, #0x5A              // 'Z' = aboZt to return to boot.s
-    str w11, [x10]               // Write to UART
-    
     // Restore frame pointer and link register
     ldp x29, x30, [sp], #16       // Pop FP and LR, adjust SP
     ret                            // Return to boot.s
@@ -747,14 +712,7 @@ runtime.morestack:
     // AArch64 calling convention: x19-x28, x29 (FP), x30 (LR) are callee-saved
     // We also need to save x0-x7 (arguments) and x8 (indirect result)
     // But morestack is called from function prologue, so we need to be careful
-    
-    // BREADCRUMB: Print 'M' to show morestack was called
-    // Save x0 before using it
-    stp x0, x1, [sp, #-16]!  // Save x0, x1
-    mov x0, #0x4D  // 'M'
-    bl uart_putc_pl011
-    ldp x0, x1, [sp], #16  // Restore x0, x1
-    
+
     // Save link register and frame pointer
     stp x29, x30, [sp, #-16]!
     mov x29, sp  // Set frame pointer
@@ -1395,19 +1353,9 @@ jump_to_kmazarin:
     // Save entry point address to x4 (we need x0 for argc)
     mov x4, x0
 
-    // DEBUG: Print 'J' before setting up registers
-    movz x5, #0x0900, lsl #16    // UART base
-    movz w6, #0x4A               // 'J'
-    str w6, [x5]
-
     // Set up Go runtime registers:
     // R0 = argc (from x1)
     mov x0, x1
-
-    // DEBUG: Print 'K' after setting R0
-    movz x5, #0x0900, lsl #16
-    movz w6, #0x4B               // 'K'
-    str w6, [x5]
 
     // R1 = argv (from x2)
     mov x1, x2
@@ -1416,55 +1364,6 @@ jump_to_kmazarin:
     // CRITICAL: The Go runtime expects SP to point to the start of the structure
     // which contains argc at [SP+0], argv at [SP+8], envp at [SP+16], auxv at [SP+32]
     mov sp, x3
-
-    // DEBUG: Print 'L' right before jump
-    movz x5, #0x0900, lsl #16
-    movz w6, #0x4C               // 'L'
-    str w6, [x5]
-
-    // DEBUG: Print X4 value (entry address) before jump
-    movz x5, #0x0900, lsl #16    // UART base
-    movz w6, #0x58               // 'X'
-    str w6, [x5]
-    movz w6, #0x34               // '4'
-    str w6, [x5]
-    movz w6, #0x3D               // '='
-    str w6, [x5]
-
-    // Print each byte of x4 in hex
-    mov x7, x4                   // Save x4 to x7
-    mov x8, #8                   // 8 bytes to print
-1:  and x9, x7, #0xFF            // Get lowest byte
-    lsr x10, x9, #4              // High nibble
-    and x11, x9, #0xF            // Low nibble
-
-    // Print high nibble
-    cmp x10, #10
-    bge 2f
-    add w6, w10, #0x30           // '0'-'9'
-    b 3f
-2:  add w6, w10, #0x57           // 'a'-'f' (0x57 = 'a' - 10)
-3:  str w6, [x5]
-
-    // Print low nibble
-    cmp x11, #10
-    bge 4f
-    add w6, w11, #0x30           // '0'-'9'
-    b 5f
-4:  add w6, w11, #0x57           // 'a'-'f'
-5:  str w6, [x5]
-
-    movz w6, #0x20               // ' ' (space)
-    str w6, [x5]
-
-    lsr x7, x7, #8               // Shift to next byte
-    sub x8, x8, #1
-    cbnz x8, 1b
-
-    movz w6, #0x0D               // '\r'
-    str w6, [x5]
-    movz w6, #0x0A               // '\n'
-    str w6, [x5]
 
     // Jump to kmazarin entry point (_rt0_arm64_linux)
     // At this point:

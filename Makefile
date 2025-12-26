@@ -338,13 +338,14 @@ KMAZARIN_BINARY = $(KMAZARIN_BUILD_DIR)/kmazarin.elf
 $(KMAZARIN_BINARY): $(wildcard $(KMAZARIN_SRC)/*.go) src/mazboot/linker.ld tools/kmazarin-entry.sh
 	@mkdir -p $(KMAZARIN_BUILD_DIR)
 	$(eval KMAZARIN_LOAD_ADDR := $(shell ./tools/kmazarin-entry.sh))
-	@echo "Building kmazarin kernel (static Go binary at $(KMAZARIN_LOAD_ADDR))..."
+	@echo "Building kmazarin kernel (static Go binary at $(KMAZARIN_LOAD_ADDR)) with instrumented runtime..."
 	@cd $(KMAZARIN_SRC) && \
 		CGO_ENABLED=0 \
 		GOTOOLCHAIN=auto \
 		GOARCH=$(GOARCH) \
 		GOOS=$(GOOS) \
-		$(GO) build -ldflags="-T $(KMAZARIN_LOAD_ADDR)" -o $(abspath $(KMAZARIN_BINARY)) .
+		GOROOT=$(HOME)/mazzy/bin/old.go.1.25.5 \
+		$(HOME)/mazzy/bin/old.go.1.25.5/bin/go build -ldflags="-T $(KMAZARIN_LOAD_ADDR)" -o $(abspath $(KMAZARIN_BINARY)) .
 	@echo "Kmazarin kernel built at $(KMAZARIN_BINARY)"
 
 # Build target for kmazarin

@@ -432,14 +432,6 @@ func registerMmapSpan(startVA, endVA uintptr) bool {
 			mmapSpans[i].startVA = startVA
 			mmapSpans[i].endVA = endVA
 			mmapSpans[i].inUse = true
-
-			uartPutsDirect("  -> registered span ")
-			uartPutHex64Direct(uint64(i))
-			uartPutsDirect(": VA 0x")
-			uartPutHex64Direct(uint64(startVA))
-			uartPutsDirect("-0x")
-			uartPutHex64Direct(uint64(endVA))
-			uartPutsDirect("\r\n")
 			return true
 		}
 	}
@@ -459,28 +451,26 @@ func isInMmapSpan(va uintptr) bool {
 	return false
 }
 
+var mmapCallCount uint32
+
 //go:nosplit
 func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32, offset int64) int64 {
-	// CRITICAL: Log entry to this function FIRST
-	uartPutsDirect(">>> SyscallMmap ENTRY <<<\r\n")
-
-	// Log mmap call using direct UART (safe in exception context)
-	uartPutsDirect("mmap(addr=0x")
+	// Increment and print call count
+	mmapCallCount++
+	uartPutsDirect("MMAP #")
+	uartPutHex64Direct(uint64(mmapCallCount))
+	uartPutsDirect(": addr=0x")
 	uartPutHex64Direct(uint64(addr))
-	uartPutsDirect(", len=0x")
+	uartPutsDirect(" len=0x")
 	uartPutHex64Direct(length)
-	uartPutsDirect(", prot=0x")
-	uartPutHex64Direct(uint64(prot))
-	uartPutsDirect(", flags=0x")
+	uartPutsDirect(" flags=0x")
 	uartPutHex64Direct(uint64(flags))
-	uartPutsDirect(")\r\n")
+	uartPutsDirect("\r\n")
 
 	// Handle zero-length mmap
 	// This should never happen and indicates a runtime initialization bug
 	// However, we'll allocate a minimal page to allow runtime to continue
 	if length == 0 {
-		uartPutsDirect("WARNING: Zero-length mmap - allocating 1 page to prevent crash\r\n")
-		uartPutsDirect("  This indicates mheap initialization issues!\r\n")
 		// Allocate one page (4KB) from bump allocator
 		length = 4096
 		// Fall through to normal allocation
@@ -495,13 +485,11 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 	if (flags & MAP_FIXED) != 0 {
 		// MAP_FIXED validation
 		if addr == 0 {
-			uartPutsDirect("  -> MAP_FIXED with addr=0, returning -EINVAL\r\n")
 			return -22 // -EINVAL
 		}
 
 		// Check page alignment (4KB)
 		if (addr & 0xFFF) != 0 {
-			uartPutsDirect("  -> MAP_FIXED unaligned addr, returning -EINVAL\r\n")
 			return -22 // -EINVAL
 		}
 
@@ -512,18 +500,15 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 		// Accept up to 1PB to handle all reasonable Go runtime addresses
 		const MAX_VIRT_ADDR = uintptr(0x4000000000000) // 1PB (1024TB)
 		if addr >= MAX_VIRT_ADDR {
-			uartPutsDirect("  -> MAP_FIXED addr too high (>1PB), returning -ENOMEM\r\n")
 			return -12 // -ENOMEM
 		}
 
 		// Check if would overflow when adding length
 		if addr+uintptr(length) < addr {
-			uartPutsDirect("  -> MAP_FIXED overflow, returning -ENOMEM\r\n")
 			return -12 // -ENOMEM
 		}
 
 		if addr+uintptr(length) > MAX_VIRT_ADDR {
-			uartPutsDirect("  -> MAP_FIXED range exceeds 1PB, returning -ENOMEM\r\n")
 			return -12 // -ENOMEM
 		}
 
@@ -533,14 +518,17 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 
 		// Register this span
 		if !registerMmapSpan(addr, addr+uintptr(roundedLength)) {
-			uartPutsDirect("  -> MAP_FIXED: all mmap spans exhausted, returning -ENOMEM\r\n")
+			uartPutsDirect("MMAP: registerMmapSpan FAILED (hint path)\r\n")
 			return -12 // -ENOMEM
 		}
 
-		uartPutsDirect("  -> MAP_FIXED, returning 0x")
+		uartPutsDirect("MMAP: SUCCESS (hint honored) -> 0x")
 		uartPutHex64Direct(uint64(addr))
+		uartPutsDirect(" returning int64=")
+		retval := int64(addr)
+		uartPutHex64Direct(uint64(retval))
 		uartPutsDirect("\r\n")
-		return int64(addr)
+		return retval
 	}
 
 	// No MAP_FIXED - addr is just a hint, but Go runtime RELIES on hints being honored
@@ -560,21 +548,18 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 
 			// Register this span
 			if !registerMmapSpan(addr, addr+uintptr(roundedLength)) {
-				uartPutsDirect("  -> hint: all mmap spans exhausted, returning -ENOMEM\r\n")
+				uartPutsDirect("MMAP: registerMmapSpan FAILED (no-MAP_FIXED hint path)\r\n")
 				return -12 // -ENOMEM
 			}
 
-			uartPutsDirect("  -> honoring hint 0x")
+			uartPutsDirect("MMAP: SUCCESS (no-MAP_FIXED hint) -> 0x")
 			uartPutHex64Direct(uint64(addr))
-			uartPutsDirect(" (len=0x")
-			uartPutHex64Direct(roundedLength)
-			uartPutsDirect(")\r\n")
-			return int64(addr)
+			uartPutsDirect(" returning int64=")
+			retval := int64(addr)
+			uartPutHex64Direct(uint64(retval))
+			uartPutsDirect("\r\n")
+			return retval
 		}
-		// Hint is unreasonable - fall through to bump allocator
-		uartPutsDirect("  -> hint 0x")
-		uartPutHex64Direct(uint64(addr))
-		uartPutsDirect(" too high/invalid, using bump allocator\r\n")
 	}
 
 	// No hint or hint was unreasonable - use bump allocator
@@ -585,43 +570,35 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 
 	// Check if allocation would overflow the pre-registered bump region
 	if endAddr > BUMP_REGION_END {
-		uartPutsDirect("  -> bump allocator exhausted (would exceed 2GB region), returning -ENOMEM\r\n")
+		uartPutsDirect("MMAP: BUMP REGION EXHAUSTED! next=0x")
+		uartPutHex64Direct(uint64(mmapBumpNext))
+		uartPutsDirect(" needed=0x")
+		uartPutHex64Direct(uint64(endAddr))
+		uartPutsDirect(" end=0x")
+		uartPutHex64Direct(uint64(BUMP_REGION_END))
+		uartPutsDirect("\r\n")
 		return -12 // -ENOMEM
 	}
 
 	// Update bump pointer for next allocation
 	mmapBumpNext = endAddr
 
-	uartPutsDirect("  -> bump allocator, returning 0x")
+	uartPutsDirect("MMAP: SUCCESS (bump alloc) -> 0x")
 	uartPutHex64Direct(uint64(allocAddr))
-	uartPutsDirect(" (len=0x")
-	uartPutHex64Direct(roundedLength)
-	uartPutsDirect(", within pre-registered Span 3)\r\n")
-
-	// DEBUG: Confirm return value before returning
-	result := int64(allocAddr)
-	uartPutsDirect("  -> SyscallMmap returning int64: 0x")
-	uartPutHex64Direct(uint64(result))
+	uartPutsDirect(" returning int64=")
+	retval := int64(allocAddr)
+	uartPutHex64Direct(uint64(retval))
 	uartPutsDirect("\r\n")
-
-	return result
+	return retval
 }
 
 //go:nosplit
 func SyscallBrk(addr uintptr) int64 {
-	uartPutsDirect("brk(0x")
-	uartPutHex64Direct(uint64(addr))
-	uartPutsDirect(") -> 0x50000000\r\n")
 	return 0x50000000 // Fixed break address
 }
 
 //go:nosplit
 func SyscallMunmap(addr uintptr, length uint64) int64 {
-	uartPutsDirect("munmap(0x")
-	uartPutHex64Direct(uint64(addr))
-	uartPutsDirect(", 0x")
-	uartPutHex64Direct(length)
-	uartPutsDirect(") -> 0\r\n")
 	return 0 // Success (we don't actually reclaim)
 }
 

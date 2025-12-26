@@ -426,6 +426,9 @@ vbar_test_ok:
     //     movz w15, #0x47                 // 'G' = g0/m0 initialized - BREADCRUMB DISABLED
     //     str w15, [x14] - BREADCRUMB DISABLED
 
+    // Test that print functions preserve registers
+    bl test_print_functions_preserve_registers
+
     // Jump to kernel_main
     ldr x0, =kernel_main
     mov x2, x22                   // atags param used as DTB pointer (low 32 bits consumed by Go)

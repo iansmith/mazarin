@@ -64,26 +64,14 @@ func readActualDTBSize() uintptr {
 //
 //go:nosplit
 func preRegisterFixedSpans() {
-	uartPutsDirect("\r\n=== Pre-registering Fixed Memory Spans ===\r\n")
-
 	// Span 0: DTB Region (identity-mapped)
 	// Read actual size from DTB header instead of assuming 1MB
 	dtbStart := asm.GetDtbBootAddr()
 	dtbSize := readActualDTBSize()
 	dtbEnd := dtbStart + dtbSize
 
-	uartPutsDirect("Span 0 (DTB): 0x")
-	uartPutHex64Direct(uint64(dtbStart))
-	uartPutsDirect(" - 0x")
-	uartPutHex64Direct(uint64(dtbEnd))
-	uartPutsDirect(" (")
-	uartPutHex64Direct(uint64(dtbSize))
-	uartPutsDirect(" bytes, ")
-	uartPutHex64Direct(uint64(dtbSize / 1024))
-	uartPutsDirect(" KB)\r\n")
-
 	if !registerMmapSpan(dtbStart, dtbEnd) {
-		uartPutsDirect("ERROR: Failed to register DTB span!\r\n")
+		print("FATAL: Failed to register DTB span\r\n")
 		for {} // Hang
 	}
 
@@ -94,19 +82,8 @@ func preRegisterFixedSpans() {
 	mazbootStart := asm.GetTextStartAddr() // 0x40100000
 	mazbootEnd := asm.GetBssEndAddr()      // End of bss section
 
-	uartPutsDirect("Span 1 (Mazboot): 0x")
-	uartPutHex64Direct(uint64(mazbootStart))
-	uartPutsDirect(" - 0x")
-	uartPutHex64Direct(uint64(mazbootEnd))
-	uartPutsDirect(" (")
-	mazbootSize := mazbootEnd - mazbootStart
-	uartPutHex64Direct(uint64(mazbootSize))
-	uartPutsDirect(" bytes, ")
-	uartPutHex64Direct(uint64(mazbootSize / 1024))
-	uartPutsDirect(" KB)\r\n")
-
 	if !registerMmapSpan(mazbootStart, mazbootEnd) {
-		uartPutsDirect("ERROR: Failed to register Mazboot span!\r\n")
+		print("FATAL: Failed to register Mazboot span\r\n")
 		for {} // Hang
 	}
 
@@ -117,27 +94,10 @@ func preRegisterFixedSpans() {
 	const BUMP_REGION_SIZE = uintptr(0x80000000) // 2GB
 	bumpEnd := BUMP_REGION_START + BUMP_REGION_SIZE
 
-	uartPutsDirect("Span 3 (Bump Region): 0x")
-	uartPutHex64Direct(uint64(BUMP_REGION_START))
-	uartPutsDirect(" - 0x")
-	uartPutHex64Direct(uint64(bumpEnd))
-	uartPutsDirect(" (")
-	uartPutHex64Direct(uint64(BUMP_REGION_SIZE))
-	uartPutsDirect(" bytes, ")
-	uartPutHex64Direct(uint64(BUMP_REGION_SIZE / (1024 * 1024)))
-	uartPutsDirect(" MB reserved for fallback allocations)\r\n")
-
 	if !registerMmapSpan(BUMP_REGION_START, bumpEnd) {
-		uartPutsDirect("ERROR: Failed to register bump region span!\r\n")
+		print("FATAL: Failed to register bump region span\r\n")
 		for {} // Hang
 	}
-
-	uartPutsDirect("Fixed spans pre-registered:\r\n")
-	uartPutsDirect("  Span 0: DTB\r\n")
-	uartPutsDirect("  Span 1: Mazboot\r\n")
-	uartPutsDirect("  Span 2: (reserved for Kmazarin, registered at load time)\r\n")
-	uartPutsDirect("  Span 3: Bump allocator region\r\n")
-	uartPutsDirect("  Spans 4-31: Available for Go arena hints\r\n\r\n")
 }
 
 // Peripheral base address for Raspberry Pi 4
@@ -652,7 +612,6 @@ func KernelMain(r0, r1, atags uint32) {
 	// Use assembly helper to get exception vector address without accessing .rodata
 	exceptionVectorAddr := asm.GetExceptionVectorsAddr()
 	setVbarEl1ToAddr(exceptionVectorAddr)
-	uartPutcDirect('V') // VBAR set
 
 	// Initialize MMU (required before heap - enables Normal memory for unaligned access)
 	if !initMMU() {
@@ -660,20 +619,17 @@ func KernelMain(r0, r1, atags uint32) {
 		for {
 		}
 	}
-	uartPutcDirect('M') // initMMU done
 
 	if !enableMMU() {
 		print("FATAL: MMU enablement failed\r\n")
 		for {
 		}
 	}
-	uartPutcDirect('m') // enableMMU done
 
 	// Set physPageSize before schedinit (needed by mallocinit which schedinit calls)
 	// Normally this would be set by sysauxv from AT_PAGESZ auxiliary vector
 	physPageSizeAddr := asm.GetPhysPageSizeAddr()
 	writeMemory64(physPageSizeAddr, 4096)
-	uartPutsDirect("physPageSize set to 4096\r\n")
 
 	// NOTE: VirtIO RNG initialization moved to after schedinit() to allow print() usage
 	// schedinit() will use fake random data via getFakeRandomBytes() until RNG is initialized
@@ -683,15 +639,11 @@ func KernelMain(r0, r1, atags uint32) {
 	{
 		pl031Base := getLinkerSymbol("__rtc_base")
 		pl031Size := uintptr(0x1000) // 4KB page
-		uartPutsDirect("Mapping PL031 RTC at 0x")
-		uartPutHex32(uint32(pl031Base))
-		uartPutsDirect("...\r\n")
 		for offset := uintptr(0); offset < pl031Size; offset += 0x1000 {
 			va := pl031Base + offset
 			pa := pl031Base + offset // Identity mapping
 			mapPage(va, pa, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 		}
-		uartPutsDirect("PL031 RTC mapped\r\n")
 	}
 
 	// Initialize PL031 RTC for time services (needed by schedinit)
@@ -717,37 +669,25 @@ func KernelMain(r0, r1, atags uint32) {
 		// Map DTB region (QEMU device tree blob)
 		dtbStart := getLinkerSymbol("__dtb_boot_addr")
 		dtbEnd := dtbStart + getLinkerSymbol("__dtb_size")
-		uartPutsDirect("Pre-mapping DTB region (0x")
-		uartPutHex64(uint64(dtbStart))
-		uartPutsDirect("-0x")
-		uartPutHex64(uint64(dtbEnd))
-		uartPutsDirect(")...\r\n")
 		for va := dtbStart; va < dtbEnd; va += 0x1000 {
 			physFrame := allocPhysFrame()
 			if physFrame == 0 {
-				uartPutsDirect("ERROR: Out of physical frames\r\n")
-				break
+				print("FATAL: Out of physical frames\r\n")
+				for {} // Hang
 			}
 			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 			// Zero the frame AFTER mapping (so we can access it via VA)
 			bzero(unsafe.Pointer(va), 0x1000)
-			if (va-dtbStart)%(64*0x1000) == 0 {
-				uartPutcDirect('.')
-			}
 		}
-		uartPutsDirect("\r\nPre-mapped DTB region\r\n")
 
 		// NOTE: g0 stack is already mapped during initMMU() at 0x5EFF0000-0x5F000000
 		// No need to pre-map it again here
-		uartPutsDirect("g0 stack already mapped during MMU init\r\n")
 
 		// NOTE: Exception stack is already mapped during initMMU() at 0x5F000000-0x5F010000
 		// No need to pre-map it again here
-		uartPutsDirect("Exception stack already mapped during MMU init\r\n")
 
 		// NOTE: All mazboot sections (.text, .rodata, .data, .bss) are already
 		// mapped during initMMU(). No need to pre-map them again here.
-		uartPutsDirect("Mazboot sections already mapped during MMU init\r\n")
 	}
 
 	// =========================================
@@ -757,45 +697,28 @@ func KernelMain(r0, r1, atags uint32) {
 	// but BEFORE the Go runtime starts (which triggers mmap() via schedinit)
 	// =========================================
 	preRegisterFixedSpans()
-	uartPutcDirect('E') // After preRegisterFixedSpans
-
 	// =========================================
 	// POST-MMU DEVICE INITIALIZATION
 	// Now that MMU is enabled and memory is set up, initialize peripherals
 	// needed for kmazarin to run (GIC, RNG, RTC, UART ring buffer)
 	// =========================================
-	uartPutsDirect("\r\n=== Post-MMU Device Initialization ===\r\n")
 
 	// 1. Initialize GIC (Generic Interrupt Controller)
-	uartPutsDirect("Initializing GIC (interrupt controller)... ")
 	gicInit()
-	uartPutsDirect("DONE\r\n")
 
 	// 2. Initialize UART ring buffer (for interrupt-driven print())
-	uartPutsDirect("Initializing UART ring buffer... ")
 	uartInitRingBufferAfterMemInit()
-	uartPutsDirect("DONE\r\n")
 
 	// 3. Initialize VirtIO RNG (random number generator)
-	uartPutsDirect("Initializing VirtIO RNG... ")
-	if initVirtIORNG() {
-		uartPutsDirect("DONE\r\n")
-	} else {
-		uartPutsDirect("FAILED (non-fatal)\r\n")
-	}
+	initVirtIORNG()
 
 	// 4. Initialize PL031 RTC (already mapped, just enable it)
-	uartPutsDirect("Initializing PL031 RTC... ")
 	// RTC is already MMIO-mapped above, no additional init needed for now
-	uartPutsDirect("DONE (already mapped)\r\n")
 
 	// 5. Enable interrupts (unmask IRQs)
-	uartPutsDirect("Enabling interrupts (IRQs)... ")
 	asm.EnableIrqs() // Enable IRQ interrupts (unmask I bit in DAIF)
-	uartPutsDirect("DONE\r\n")
 
 	// 6. Test print() with ring buffer
-	uartPutsDirect("Testing print() with ring buffer... ")
 	// Put a test character in the ring buffer
 	uartPutc('T')
 	uartPutc('E')
@@ -807,32 +730,23 @@ func KernelMain(r0, r1, atags uint32) {
 	for i := 0; i < 10; i++ {
 		uartDrainRingBuffer()
 	}
-	uartPutsDirect("DONE\r\n")
-
-	uartPutsDirect("=== All devices initialized ===\r\n\r\n")
 
 	// =========================================
 	// TEST: Item 3 - runtime.args()
 	// Test that we can call runtime.args with a minimal argv/auxv structure
 	// This verifies the args() → sysargs() → sysauxv() path works.
 	// =========================================
-	uartPutcDirect('F') // Before print
-	uartPutsDirect("Testing Item 3: runtime.args()... ")
-	uartPutcDirect('G') // After print
 	result := asm.CallRuntimeArgs()
-	uartPutcDirect('J') // After CallRuntimeArgs
-	if result == 0 {
-		uartPutsDirect("PASS\r\n")
-	} else {
-		uartPutsDirect("FAIL\r\n")
+	if result != 0 {
+		print("FATAL: runtime.args() test failed\r\n")
+		for {
+		}
 	}
-	uartPutcDirect('K') // After result check
 
 	// =========================================
 	// SKIP REMAINING TESTS - Jump directly to kmazarin
 	// All devices initialized, runtime.args() passed, ready to load kmazarin
 	// =========================================
-	uartPutsDirect("All mazboot initialization complete, loading kmazarin...\r\n")
 	loadAndRunKmazarin()
 
 	// Should never return
@@ -1835,8 +1749,6 @@ func setupKmazarinStartupEnv() (stackPointer uintptr, argc uint64, argv uintptr)
 // Note: This function is NOT marked nosplit because it runs after the Go runtime
 // is initialized and contains many print() calls that require stack space.
 func loadAndRunKmazarin() {
-	uartPutsDirect("\r\n=== Loading Kmazarin Kernel ===\r\n")
-
 	// Get the embedded kmazarin binary location from linker symbols
 	kmazarinStart := getLinkerSymbol("__kmazarin_start")
 	kmazarinSize := getLinkerSymbol("__kmazarin_size")
@@ -1874,27 +1786,6 @@ func loadAndRunKmazarin() {
 		(uint64(elfData[0x1D]) << 40) |
 		(uint64(elfData[0x1E]) << 48) |
 		(uint64(elfData[0x1F]) << 56)
-
-	// DEBUG: Print the entry point we read from ELF
-	uartPutsDirect("DEBUG: Entry point from ELF = ")
-	// Print each byte for debugging
-	for i := 0x18; i <= 0x1F; i++ {
-		b := elfData[i]
-		nibbleHigh := (b >> 4) & 0xF
-		nibbleLow := b & 0xF
-		if nibbleHigh < 10 {
-			uartPutsDirect(string([]byte{'0' + nibbleHigh}))
-		} else {
-			uartPutsDirect(string([]byte{'a' + (nibbleHigh - 10)}))
-		}
-		if nibbleLow < 10 {
-			uartPutsDirect(string([]byte{'0' + nibbleLow}))
-		} else {
-			uartPutsDirect(string([]byte{'a' + (nibbleLow - 10)}))
-		}
-		uartPutsDirect(" ")
-	}
-	uartPutsDirect("\r\n")
 
 	// Parse program header offset (0x20-0x27)
 	phoff := uint64(elfData[0x20]) |
@@ -2005,20 +1896,6 @@ func loadAndRunKmazarin() {
 			execPerm = PTE_EXEC_ALLOW
 		}
 
-		// DEBUG: Print segment permissions
-		uartPutsDirect("Segment VA 0x")
-		uartPutHex64Direct(uint64(vaStart))
-		uartPutsDirect("-0x")
-		uartPutHex64Direct(uint64(vaEnd))
-		uartPutsDirect(" flags=0x")
-		uartPutHex64Direct(uint64(pFlags))
-		if execPerm == PTE_EXEC_ALLOW {
-			uartPutsDirect(" [EXEC]")
-		} else {
-			uartPutsDirect(" [NOEXEC]")
-		}
-		uartPutsDirect("\r\n")
-
 		// Map all pages for this segment
 		for pageIdx := uintptr(0); pageIdx < numPages; pageIdx++ {
 			va := vaStart + (pageIdx << 12)
@@ -2085,7 +1962,6 @@ func loadAndRunKmazarin() {
 		// CRITICAL: Remap executable pages as Read-Only
 		// ARM architecture requires code pages to be RO+X, not RW+X
 		if execPerm == PTE_EXEC_ALLOW {
-			uartPutsDirect("Remapping executable segment as Read-Only...\r\n")
 			for pageIdx := uintptr(0); pageIdx < numPages; pageIdx++ {
 				va := vaStart + (pageIdx << 12)
 				// Get the physical address from the existing PTE
@@ -2114,7 +1990,6 @@ func loadAndRunKmazarin() {
 			asm.Dsb()
 			asm.InvalidateTlbAll()
 			asm.Isb()
-			uartPutsDirect("Executable segment remapped\r\n")
 		}
 	}
 
@@ -2123,7 +1998,6 @@ func loadAndRunKmazarin() {
 	// 1. Clean D-cache (DC CVAU) - ensure data is visible to I-cache
 	// 2. Invalidate I-cache (IC IVAU) - discard stale instructions
 	// 3. Use barriers to ensure ordering
-	uartPutsDirect("Cleaning caches for executable code...\r\n")
 	for va := minVA; va < maxVA; va += 64 {
 		// DC CVAU - Data Cache Clean by VA to Point of Unification
 		asm.DcCvauManual(va)
@@ -2136,16 +2010,13 @@ func loadAndRunKmazarin() {
 	}
 	asm.Dsb() // Ensure all IC operations complete
 	asm.Isb() // Synchronize context
-	uartPutsDirect("Cache maintenance complete\r\n")
 
 	// CRITICAL: Invalidate TLB after mapping new code pages
 	// The TLB might have cached "not present" entries from earlier failed translations
 	// or speculative fetches. We must invalidate before attempting to execute the code.
-	uartPutsDirect("Invalidating TLB for kmazarin code...\r\n")
 	asm.InvalidateTlbAll()
 	asm.Dsb()
 	asm.Isb()
-	uartPutsDirect("TLB invalidated\r\n")
 
 	if !registerMmapSpan(minVA, maxVA) {
 		// Failed to register - hang
