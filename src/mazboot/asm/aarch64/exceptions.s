@@ -1489,33 +1489,20 @@ fake_tid_counter:
 syscall_mmap:
     // mmap(addr, length, prot, flags, fd, offset) - 6 parameters
     // x0-x5 contain arguments
-    // x1 = length (size to allocate)
-    // NOTE: QEMU initializes all RAM to zero, so we don't need to zero it here
+    // CRITICAL: Must call Go SyscallMmap to register the span!
+    // The Go function handles bump allocation AND registers spans for demand paging
 
-    // DEBUG breadcrumb
-    stp x0, x1, [sp, #-16]!
-    mov w0, #'X'
-    UART_PUTC
-    ldp x0, x1, [sp], #16
+    // Call Go implementation: SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32, offset int64) int64
+    // Parameters already in correct registers (x0-x5)
+    // Need to sign-extend 32-bit parameters to 64-bit for Go
+    sxtw x2, w2                        // prot (int32 -> int64)
+    sxtw x3, w3                        // flags (int32 -> int32)
+    sxtw x4, w4                        // fd (int32 -> int64)
+    // x0 = addr (uintptr), x1 = length (uint64), x5 = offset (int64) already correct
 
-    // Implement bump allocator: load current pointer, increment by size, return old pointer
-    // Load address of mmapBumpNext variable
-    ldr x10, =mmapBumpNext             // x10 = address of bump pointer variable
-    ldr x11, [x10]                     // x11 = current bump pointer value
-
-    // Round up length to page size (4096 bytes)
-    add x12, x1, #4095                 // x12 = length + 4095
-    and x12, x12, #~4095               // x12 = (length + 4095) & ~4095 = round up to 4KB
-
-    // Calculate new bump pointer
-    add x13, x11, x12                  // x13 = old pointer + rounded length
-
-    // Store new bump pointer
-    str x13, [x10]                     // mmapBumpNext = new pointer
-
-    // Return old pointer in x0
-    mov x0, x11
-
+    CALL_GO_PROLOGUE SPILL_SPACE_6PARAM
+    bl main.SyscallMmap
+    CALL_GO_EPILOGUE SPILL_SPACE_6PARAM
     b syscall_return
 
 syscall_prctl:

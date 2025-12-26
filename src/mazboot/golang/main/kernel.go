@@ -64,6 +64,8 @@ func readActualDTBSize() uintptr {
 //
 //go:nosplit
 func preRegisterFixedSpans() {
+	print("=== Registering fixed spans ===\r\n")
+
 	// Span 0: DTB Region (identity-mapped)
 	// Read actual size from DTB header instead of assuming 1MB
 	dtbStart := asm.GetDtbBootAddr()
@@ -74,6 +76,7 @@ func preRegisterFixedSpans() {
 		print("FATAL: Failed to register DTB span\r\n")
 		for {} // Hang
 	}
+	print("  -> registered span 0: DTB\r\n")
 
 	// Span 1: Mazboot Region (identity-mapped)
 	// Includes: .text, .rodata, .data, .bss, stacks
@@ -86,6 +89,7 @@ func preRegisterFixedSpans() {
 		print("FATAL: Failed to register Mazboot span\r\n")
 		for {} // Hang
 	}
+	print("  -> registered span 1: Mazboot\r\n")
 
 	// Span 3: Bump Allocator Region (pre-register fixed 2GB region)
 	// This is used as a fallback when Go provides no hint (addr=0)
@@ -98,6 +102,11 @@ func preRegisterFixedSpans() {
 		print("FATAL: Failed to register bump region span\r\n")
 		for {} // Hang
 	}
+	print("  -> registered span 3: Bump region ")
+	printHex64(uint64(BUMP_REGION_START))
+	print("-")
+	printHex64(uint64(bumpEnd))
+	print("\r\n")
 }
 
 // Peripheral base address for Raspberry Pi 4

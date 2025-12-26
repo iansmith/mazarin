@@ -467,21 +467,22 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 	mmapCallCount++
 	uartPutsDirect("M")
 
-	// DEBUG: Verify globalAlloc.persistent.base before mmap
-	globalAllocAddr := uintptr(0x419A1060)
-	persistentBaseAddr := globalAllocAddr + 8 // mutex (8 bytes) + base offset
-	persistentBasePtr := (*uintptr)(unsafe.Pointer(persistentBaseAddr))
-	beforeValue := *persistentBasePtr
-	_ = beforeValue // Will print after mmap
-
 	// Handle zero-length mmap
 	// This should never happen and indicates a runtime initialization bug
 	// However, we'll allocate a minimal page to allow runtime to continue
 	if length == 0 {
+		uartPutsDirect("0") // Zero-length mmap
 		// Allocate one page (4KB) from bump allocator
 		length = 4096
-		// Fall through to normal allocation
+		// CRITICAL: If addr=0 with zero length, clear address to force bump allocator
+		// This handles broken mmap(0, 0, ..., MAP_FIXED, ...) calls
+		addr = 0
+		// Fall through to normal allocation (will use bump allocator)
 	}
+
+	// Round length up to page boundary (needed for both paths)
+	pageSize := uint64(4096)
+	roundedLength := (length + pageSize - 1) &^ (pageSize - 1)
 
 	// Linux mmap semantics:
 	// - Without MAP_FIXED: addr is just a hint, kernel can choose different address
@@ -492,7 +493,9 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 	if (flags & MAP_FIXED) != 0 {
 		// MAP_FIXED validation
 		if addr == 0 {
-			return -22 // -EINVAL
+			// MAP_FIXED with addr=0 is invalid, but zero-length path forces addr=0
+			// Fall through to bump allocator by ignoring MAP_FIXED in this broken case
+			goto use_bump_allocator
 		}
 
 		// Check page alignment (4KB)
@@ -519,10 +522,6 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 			return -12 // -ENOMEM
 		}
 
-		// Round length up to page boundary
-		pageSize := uint64(4096)
-		roundedLength := (length + pageSize - 1) &^ (pageSize - 1)
-
 		// Register this span
 		if !registerMmapSpan(addr, addr+uintptr(roundedLength)) {
 			uartPutsDirect("!span\r\n")
@@ -537,8 +536,6 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 
 	// No MAP_FIXED - addr is just a hint, but Go runtime RELIES on hints being honored
 	// Linux doesn't guarantee honoring hints, but Go's arena allocator expects it
-	pageSize := uint64(4096)
-	roundedLength := (length + pageSize - 1) &^ (pageSize - 1)
 
 	// If hint provided and reasonable, try to honor it
 	if addr != 0 {
@@ -563,6 +560,7 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 		}
 	}
 
+use_bump_allocator:
 	// No hint or hint was unreasonable - use bump allocator
 	// NOTE: Bump region (Span 3) is pre-registered during boot
 	// All allocations must fit within BUMP_REGION_START to BUMP_REGION_END
