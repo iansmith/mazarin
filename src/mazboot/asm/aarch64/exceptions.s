@@ -1340,6 +1340,8 @@ handle_svc_syscall:
     // Syscall handlers run on the current stack, not g0's stack.
 
     // Dispatch based on syscall number
+    cmp x8, #0                     // io_setup syscall (async I/O)
+    beq syscall_io_setup
     cmp x8, #64                    // write syscall
     beq syscall_write
     cmp x8, #63                    // read syscall
@@ -1480,6 +1482,13 @@ syscall_close:
     CALL_GO_PROLOGUE SPILL_SPACE_1PARAM
     bl main.SyscallClose
     CALL_GO_EPILOGUE SPILL_SPACE_1PARAM
+    b syscall_return
+
+syscall_io_setup:
+    // io_setup(nr_events, ctxp) - Async I/O setup
+    // We don't support async I/O, so return ENOSYS (-38)
+    // This tells the runtime that io_setup is not implemented
+    movn x0, #37                   // x0 = -38 (ENOSYS)
     b syscall_return
 
 syscall_success:
@@ -1668,28 +1677,112 @@ syscall_return:
     UART_PUTC
     ldr x0, [sp], #16               // Restore x0
 
-    // DEBUG: Check value at 0x419A39A8 and print if it's 0xDEAD000E
-    // Use minimal stack - NO function calls
+    // DEBUG: First print persistent.base value (should contain pointer after mmap)
+    stp x1, x2, [sp, #-16]!          // Save x1, x2
+    str x3, [sp, #-16]!              // Save x3
+
+    movz x1, #0x419A, lsl #16
+    movk x1, #0x1068, lsl #0        // x1 = 0x419A1068 (persistent.base address)
+    ldr x2, [x1]                    // x2 = value at persistent.base
+
+    // Print 'P' marker for persistent.base
+    str x0, [sp, #-16]!
+    mov w0, #0x50                   // 'P'
+    UART_PUTC
+    mov w0, #0x5B                   // '['
+    UART_PUTC
+
+    // Print byte 3 of persistent.base
+    lsr x3, x2, #24
+    and x3, x3, #0xFF
+    lsr w0, w3, #4
+    cmp w0, #10
+    add w0, w0, #0x30
+    blt 101f
+    add w0, w0, #7
+101:  UART_PUTC
+    and w0, w3, #0x0F
+    cmp w0, #10
+    add w0, w0, #0x30
+    blt 102f
+    add w0, w0, #7
+102:  UART_PUTC
+
+    // Print byte 2 of persistent.base
+    lsr x3, x2, #16
+    and x3, x3, #0xFF
+    lsr w0, w3, #4
+    cmp w0, #10
+    add w0, w0, #0x30
+    blt 103f
+    add w0, w0, #7
+103:  UART_PUTC
+    and w0, w3, #0x0F
+    cmp w0, #10
+    add w0, w0, #0x30
+    blt 104f
+    add w0, w0, #7
+104:  UART_PUTC
+
+    mov w0, #0x5D                   // ']'
+    UART_PUTC
+
+    ldr x0, [sp], #16               // Restore x0
+    ldr x3, [sp], #16               // Restore x3
+    ldp x1, x2, [sp], #16           // Restore x1, x2
+
+    // DEBUG: Now print memstats.other_sys value for comparison
+    // This will show 0x00040000 vs 0xDEAD000E
     stp x1, x2, [sp, #-16]!          // Save x1, x2 (x0 must be preserved!)
-    stp x3, x4, [sp, #-16]!          // Save x3, x4
+    str x3, [sp, #-16]!              // Save x3
 
     movz x1, #0x419A, lsl #16
     movk x1, #0x39A8, lsl #0        // x1 = 0x419A39A8
     ldr x2, [x1]                    // x2 = value at 0x419A39A8
 
-    // Check if value is specifically 0xDEAD000E
-    movz x3, #0xDEAD, lsl #16
-    movk x3, #0x000E, lsl #0        // x3 = 0xDEAD000E
-    cmp x2, x3
-    b.ne 1f
-
-    // It's 0xDEAD000E! Print '!' to mark poison value detected
+    // Print opening bracket
     str x0, [sp, #-16]!             // Save x0
-    mov w0, #0x21                   // '!'
+    mov w0, #0x5B                   // '['
     UART_PUTC
-    ldr x0, [sp], #16               // Restore x0
 
-1:  ldp x3, x4, [sp], #16           // Restore x3, x4
+    // Print byte 3 (high byte of low word)
+    lsr x3, x2, #24
+    and x3, x3, #0xFF
+    lsr w0, w3, #4
+    cmp w0, #10
+    add w0, w0, #0x30
+    blt 2f
+    add w0, w0, #7
+2:  UART_PUTC
+    and w0, w3, #0x0F
+    cmp w0, #10
+    add w0, w0, #0x30
+    blt 3f
+    add w0, w0, #7
+3:  UART_PUTC
+
+    // Print byte 2
+    lsr x3, x2, #16
+    and x3, x3, #0xFF
+    lsr w0, w3, #4
+    cmp w0, #10
+    add w0, w0, #0x30
+    blt 4f
+    add w0, w0, #7
+4:  UART_PUTC
+    and w0, w3, #0x0F
+    cmp w0, #10
+    add w0, w0, #0x30
+    blt 5f
+    add w0, w0, #7
+5:  UART_PUTC
+
+    // Print closing bracket
+    mov w0, #0x5D                   // ']'
+    UART_PUTC
+
+    ldr x0, [sp], #16               // Restore x0
+    ldr x3, [sp], #16               // Restore x3
     ldp x1, x2, [sp], #16           // Restore x1, x2
 
     // Restore ELR_EL1 and SPSR_EL1 from exception frame
