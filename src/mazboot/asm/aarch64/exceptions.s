@@ -642,6 +642,17 @@ sync_exception_handler:
     // Step 1: Save x29, x30 to current stack (we'll recover them later)
     stp x29, x30, [sp, #-16]!       // Push x29, x30, decrement SP by 16
 
+    // CRITICAL: Save SP_EL0 IMMEDIATELY to fixed memory (0x40FFF000)
+    // When exception occurs in EL1t mode (using SP_EL0), the CPU switches to EL1h
+    // mode (using SP_EL1) for the handler. SP_EL0 is NOT automatically saved!
+    // If we don't save/restore SP_EL0, it will have the wrong value after eret,
+    // causing stack corruption and NOFRAME functions to write to wrong addresses.
+    mrs x29, SP_EL0                 // x29 = current SP_EL0 (kmazarin's stack)
+    movz x30, #0x40FF, lsl #16      // x30 = 0x40FF0000
+    movk x30, #0xF000, lsl #0       // x30 = 0x40FFF000 (fixed save area)
+    str x29, [x30]                  // Save SP_EL0 to 0x40FFF000
+    // Now x29 and x30 have been clobbered, but we saved the originals at [sp-16]
+
     // Step 2: Save original SP (before we pushed) to x30
     add x30, sp, #16               // x30 = original SP (current SP + 16 for the push)
 
@@ -957,18 +968,16 @@ sync_restore_and_svc:
     ldp x11, x12, [sp, #256]        // x11 = saved ELR, x12 = saved SPSR
     stp x11, x12, [x10, #24]        // Save ELR/SPSR at 0x40FFF038
 
-    // Step 3: Load original SP and switch to kernel stack
-    // original_SP was saved at [sp, #248] - this is SP BEFORE we pushed x29/x30
-    ldr x29, [sp, #248]             // x29 = original kernel SP
-    mov sp, x29                     // Switch to kernel stack
-
-    // Step 4: Restore x0, x29/x30 from scratch area
+    // Step 3: Restore x0, x29/x30 from scratch area
+    // CRITICAL: Do NOT switch SP! We must stay on exception stack (SP_EL1).
+    // If we switch to SP_EL0, the syscall handler will corrupt kmazarin's stack!
     movz x29, #0x40FF, lsl #16      // Scratch area at 0x40FFF020
     movk x29, #0xF020, lsl #0
     ldr x0, [x29, #16]              // Restore original x0 from 0x40FFF030
     ldp x29, x30, [x29]             // Restore original x29/x30
 
-    // Now x0, x29, x30 are restored and SP = original SP (before SVC)
+    // Now x0, x29, x30 are restored and SP = SP_EL1 (exception stack)
+    // SP_EL0 remains at its original value (saved at 0x40FFF000)
     b handle_svc_syscall
 
 handle_svc_syscall:
@@ -1017,12 +1026,12 @@ handle_svc_syscall:
     movk x10, #0xF020, lsl #0
     str x28, [x10, #40]             // Save original g at 0x40FFF048 (offset 40)
 
-    // DEBUG: Print 'G' before loading g0 - DISABLED
-    // stp x9, x11, [sp, #-16]!
-    // movz x9, #0x0900, lsl #16
-    // movz w11, #'G'
-    // str w11, [x9]
-    // ldp x9, x11, [sp], #16
+    // DEBUG: Print 'G' before loading g0
+    stp x9, x11, [sp, #-16]!
+    movz x9, #0x0900, lsl #16
+    movz w11, #'G'
+    str w11, [x9]
+    ldp x9, x11, [sp], #16
 
     ldr x28, =runtime.g0            // x28 = address of runtime.g0 struct (the g pointer itself)
 
@@ -1030,22 +1039,35 @@ handle_svc_syscall:
     // the caller's stack frame and return properly. We just set x28 so Go code sees g0.
     // Syscall handlers run on the current stack, not g0's stack.
 
-    // DEBUG: Print '0' after loading g0 - DISABLED
-    // stp x9, x10, [sp, #-16]!
-    // movz x9, #0x0900, lsl #16
-    // movz w10, #'0'
-    // str w10, [x9]
-    // // Print x28 value (lower 16 bits) to verify g0 is loaded
-    // movz w10, #':'
-    // str w10, [x9]
-    // lsr x10, x28, #12
-    // and x10, x10, #0xF
-    // cmp x10, #10
-    // blt 5f
-    // add x10, x10, #('A'-10)
-    // b 6f
-    // 5:  add x10, x10, #'0'
-    // 6:  str w10, [x9]
+    // DEBUG: Print '0' after loading g0
+    stp x9, x10, [sp, #-16]!
+    movz x9, #0x0900, lsl #16
+    movz w10, #'0'
+    str w10, [x9]
+    // Print x28 value (upper 16 bits) to verify g0 is loaded
+    movz w10, #':'
+    str w10, [x9]
+    lsr x10, x28, #28
+    and x10, x10, #0xF
+    cmp x10, #10
+    blt 5f
+    add x10, x10, #('A'-10)
+    b 6f
+5:  add x10, x10, #'0'
+6:  str w10, [x9]
+
+    lsr x10, x28, #24
+    and x10, x10, #0xF
+    cmp x10, #10
+    blt 7f
+    add x10, x10, #('A'-10)
+    b 8f
+7:  add x10, x10, #'0'
+8:  str w10, [x9]
+
+    movz w10, #'\n'
+    str w10, [x9]
+    ldp x9, x10, [sp], #16
     // lsr x10, x28, #8
     // and x10, x10, #0xF
     // cmp x10, #10
@@ -1056,30 +1078,30 @@ handle_svc_syscall:
     // 8:  str w10, [x9]
     // ldp x9, x10, [sp], #16
 
-    // DEBUG: Print syscall number to identify which syscall is failing - DISABLED
-    // stp x9, x10, [sp, #-16]!        // Save x9, x10
-    // movz x9, #0x0900, lsl #16       // UART base
-    // movk x9, #0x0000, lsl #0
-    // movz w10, #'#'                  // Print '#' before syscall number
-    // str w10, [x9]
-    // // Print syscall number (x8) as 2 hex digits
-    // lsr x10, x8, #4                 // Upper nibble
-    // and x10, x10, #0xF
-    // cmp x10, #10
-    // blt 1f
-    // add x10, x10, #('A'-10)
-    // b 2f
-    // 1:  add x10, x10, #'0'
-    // 2:  str w10, [x9]
-    // mov x10, x8                     // Lower nibble
-    // and x10, x10, #0xF
-    // cmp x10, #10
-    // blt 3f
-    // add x10, x10, #('A'-10)
-    // b 4f
-    // 3:  add x10, x10, #'0'
-    // 4:  str w10, [x9]
-    // ldp x9, x10, [sp], #16          // Restore x9, x10
+    // DEBUG: Print syscall number to identify which syscall is being called
+    stp x9, x10, [sp, #-16]!        // Save x9, x10
+    movz x9, #0x0900, lsl #16       // UART base
+    movk x9, #0x0000, lsl #0
+    movz w10, #'#'                  // Print '#' before syscall number
+    str w10, [x9]
+    // Print syscall number (x8) as 2 hex digits
+    lsr x10, x8, #4                 // Upper nibble
+    and x10, x10, #0xF
+    cmp x10, #10
+    blt 1f
+    add x10, x10, #('A'-10)
+    b 2f
+    1:  add x10, x10, #'0'
+    2:  str w10, [x9]
+    mov x10, x8                     // Lower nibble
+    and x10, x10, #0xF
+    cmp x10, #10
+    blt 3f
+    add x10, x10, #('A'-10)
+    b 4f
+    3:  add x10, x10, #'0'
+    4:  str w10, [x9]
+    ldp x9, x10, [sp], #16          // Restore x9, x10
 
     // Dispatch based on syscall number
     cmp x8, #64                    // write syscall
@@ -1276,9 +1298,87 @@ fake_tid_counter:
 syscall_mmap:
     // mmap(addr, length, prot, flags, fd, offset) - 6 parameters
     // x0-x5 contain arguments - call Go SyscallMmap function
+
+    // DEBUG: Print FP value BEFORE calling Go function
+    stp x9, x10, [sp, #-16]!
+    movz x9, #0x0900, lsl #16      // UART base
+
+    // Print "FP1:"
+    movz w10, #'F'
+    str w10, [x9]
+    movz w10, #'P'
+    str w10, [x9]
+    movz w10, #'1'
+    str w10, [x9]
+    movz w10, #':'
+    str w10, [x9]
+
+    // Print FP value (x29) - upper 32 bits
+    lsr x10, x29, #28
+    and x10, x10, #0xF
+    cmp x10, #10
+    blt 1f
+    add x10, x10, #('A'-10)
+    b 2f
+1:  add x10, x10, #'0'
+2:  str w10, [x9]
+
+    lsr x10, x29, #24
+    and x10, x10, #0xF
+    cmp x10, #10
+    blt 3f
+    add x10, x10, #('A'-10)
+    b 4f
+3:  add x10, x10, #'0'
+4:  str w10, [x9]
+
+    movz w10, #'\n'
+    str w10, [x9]
+
+    ldp x9, x10, [sp], #16
+
     CALL_GO_PROLOGUE SPILL_SPACE_6PARAM
     bl main.SyscallMmap
     CALL_GO_EPILOGUE SPILL_SPACE_6PARAM
+
+    // DEBUG: Print FP value AFTER Go function returns
+    stp x9, x10, [sp, #-16]!
+    movz x9, #0x0900, lsl #16      // UART base
+
+    // Print "FP2:"
+    movz w10, #'F'
+    str w10, [x9]
+    movz w10, #'P'
+    str w10, [x9]
+    movz w10, #'2'
+    str w10, [x9]
+    movz w10, #':'
+    str w10, [x9]
+
+    // Print FP value (x29) - upper 32 bits
+    lsr x10, x29, #28
+    and x10, x10, #0xF
+    cmp x10, #10
+    blt 11f
+    add x10, x10, #('A'-10)
+    b 12f
+11: add x10, x10, #'0'
+12: str w10, [x9]
+
+    lsr x10, x29, #24
+    and x10, x10, #0xF
+    cmp x10, #10
+    blt 13f
+    add x10, x10, #('A'-10)
+    b 14f
+13: add x10, x10, #'0'
+14: str w10, [x9]
+
+    movz w10, #'\n'
+    str w10, [x9]
+
+    ldp x9, x10, [sp], #16
+
     b syscall_return
 
 syscall_prctl:
@@ -1440,6 +1540,9 @@ syscall_exit:
     CALL_GO_PROLOGUE SPILL_SPACE_1PARAM
     bl main.SyscallExit
     // SyscallExit never returns (infinite loop)
+    // But if it does return, halt here instead of falling through to syscall_return
+1:  wfe                             // Wait for event (low power)
+    b 1b                           // Loop forever
 
 syscall_return:
     // Syscall return - restore SPSR/ELR and return via eret
@@ -1455,36 +1558,36 @@ syscall_return:
     //   0x40FFF038: ELR_EL1 (saved)
     //   0x40FFF040: SPSR_EL1 (saved)
 
-    // DEBUG: Print syscall return value (x0) (DISABLED to reduce noise)
-    // stp x9, x10, [sp, #-16]!      // Save x9, x10
-    // stp x11, x12, [sp, #-16]!      // Save x11, x12
-    // mov x12, x0                    // Save return value
+    // DEBUG: Print syscall return value (x0) to verify it's correct
+    stp x9, x10, [sp, #-16]!      // Save x9, x10
+    stp x11, x12, [sp, #-16]!      // Save x11, x12
+    mov x12, x0                    // Save return value
 
-    // movz x9, #0x0900, lsl #16      // UART base
-    // movz w10, #'R'                 // Print 'R'
-    // str w10, [x9]
-    // movz w10, #':'                 // Print ':'
-    // str w10, [x9]
+    movz x9, #0x0900, lsl #16      // UART base
+    movz w10, #'R'                 // Print 'R'
+    str w10, [x9]
+    movz w10, #'='                 // Print '='
+    str w10, [x9]
 
-    // // Print x0 as 16 hex digits
-    // mov x11, #60                   // Start at bit 60 (64-4)
-// .Lprint_return_loop:
-    // lsr x10, x12, x11              // Shift to get nibble
-    // and x10, x10, #0xF             // Mask to 4 bits
-    // cmp x10, #10
-    // blt 1f
-    // add x10, x10, #('A' - 10)      // A-F
-    // b 2f
-// 1:  add x10, x10, #'0'             // 0-9
-// 2:  str w10, [x9]                  // Print nibble
-    // subs x11, x11, #4              // Move to next nibble
-    // bpl .Lprint_return_loop        // Continue if >= 0
+    // Print x0 as 16 hex digits
+    mov x11, #60                   // Start at bit 60 (64-4)
+.Lprint_return_loop:
+    lsr x10, x12, x11              // Shift to get nibble
+    and x10, x10, #0xF             // Mask to 4 bits
+    cmp x10, #10
+    blt 1f
+    add x10, x10, #('A' - 10)      // A-F
+    b 2f
+1:  add x10, x10, #'0'             // 0-9
+2:  str w10, [x9]                  // Print nibble
+    subs x11, x11, #4              // Move to next nibble
+    bpl .Lprint_return_loop        // Continue if >= 0
 
-    // movz w10, #'\n'                // Print newline
-    // str w10, [x9]
+    movz w10, #' '                 // Print space
+    str w10, [x9]
 
-    // ldp x11, x12, [sp], #16        // Restore x11, x12
-    // ldp x9, x10, [sp], #16         // Restore x9, x10
+    ldp x11, x12, [sp], #16        // Restore x11, x12
+    ldp x9, x10, [sp], #16         // Restore x9, x10
 
     // Save x0 (syscall result) temporarily to x10
     mov x10, x0
@@ -1495,6 +1598,52 @@ syscall_return:
 
     // Restore ELR_EL1 and SPSR_EL1 from scratch area
     ldp x12, x13, [x11, #24]        // x12 = saved ELR, x13 = saved SPSR
+
+    // DEBUG: Print ELR value BEFORE advancing
+    stp x9, x10, [sp, #-16]!
+    mov x10, x12                   // Save ELR to x10 for printing
+    movz x9, #0x0900, lsl #16      // UART base
+
+    // Print "ELR:"
+    movz w12, #'E'
+    str w12, [x9]
+    movz w12, #'L'
+    str w12, [x9]
+    movz w12, #'R'
+    str w12, [x9]
+    movz w12, #':'
+    str w12, [x9]
+
+    // Print ELR value (x10) - upper 32 bits
+    lsr x12, x10, #28
+    and x12, x12, #0xF
+    cmp x12, #10
+    blt 31f
+    add x12, x12, #('A'-10)
+    b 32f
+31: add x12, x12, #'0'
+32: str w12, [x9]
+
+    lsr x12, x10, #24
+    and x12, x12, #0xF
+    cmp x12, #10
+    blt 33f
+    add x12, x12, #('A'-10)
+    b 34f
+33: add x12, x12, #'0'
+34: str w12, [x9]
+
+    movz w12, #'\n'
+    str w12, [x9]
+
+    mov x12, x10                   // Restore ELR to x12
+    ldp x9, x10, [sp], #16
+
+    // CRITICAL: Advance ELR_EL1 by 4 to skip past SVC instruction
+    // When SVC exception occurs, ELR_EL1 points to the SVC itself.
+    // If we don't advance it, eret will execute SVC again → infinite loop!
+    add x12, x12, #4                // ELR += 4 (instruction after SVC)
+
     msr ELR_EL1, x12                // Restore return address
     msr SPSR_EL1, x13               // Restore saved PSTATE
     isb                             // Ensure ELR/SPSR writes complete
@@ -1507,6 +1656,95 @@ syscall_return:
     movz x10, #0x40FF, lsl #16      // Scratch area at 0x40FFF020
     movk x10, #0xF020, lsl #0
     ldr x28, [x10, #40]             // Restore original g from 0x40FFF048
+
+    // DEBUG: Print FP value BEFORE eret (should match FP2)
+    stp x9, x11, [sp, #-16]!
+    movz x9, #0x0900, lsl #16      // UART base
+
+    // Print "FP3:"
+    movz w11, #'F'
+    str w11, [x9]
+    movz w11, #'P'
+    str w11, [x9]
+    movz w11, #'3'
+    str w11, [x9]
+    movz w11, #':'
+    str w11, [x9]
+
+    // Print FP value (x29) - upper 32 bits
+    lsr x11, x29, #28
+    and x11, x11, #0xF
+    cmp x11, #10
+    blt 21f
+    add x11, x11, #('A'-10)
+    b 22f
+21: add x11, x11, #'0'
+22: str w11, [x9]
+
+    lsr x11, x29, #24
+    and x11, x11, #0xF
+    cmp x11, #10
+    blt 23f
+    add x11, x11, #('A'-10)
+    b 24f
+23: add x11, x11, #'0'
+24: str w11, [x9]
+
+    movz w11, #'\n'
+    str w11, [x9]
+
+    ldp x9, x11, [sp], #16
+
+    // CRITICAL: Restore SP_EL0 before eret
+    // When eret returns to EL1t mode, the CPU switches from using SP_EL1 to SP_EL0.
+    // If SP_EL0 has the wrong value, the stack pointer will be corrupted, causing
+    // NOFRAME functions (like sysMmap) to write return values to wrong addresses!
+    movz x10, #0x40FF, lsl #16      // x10 = 0x40FF0000
+    movk x10, #0xF000, lsl #0       // x10 = 0x40FFF000 (save area)
+    ldr x10, [x10]                  // x10 = saved SP_EL0
+
+    // DEBUG: Print SP_EL0 value before restoring
+    stp x9, x11, [sp, #-16]!
+    mov x11, x10                   // Save SP_EL0 to x11 for printing
+    movz x9, #0x0900, lsl #16      // UART base
+
+    // Print "SP:"
+    movz w10, #'S'
+    str w10, [x9]
+    movz w10, #'P'
+    str w10, [x9]
+    movz w10, #':'
+    str w10, [x9]
+
+    // Print SP_EL0 value (x11) - print 8 hex digits (upper 32 bits)
+    .macro PRINT_HEX_DIGIT reg, shift
+    lsr x10, \reg, #\shift
+    and x10, x10, #0xF
+    cmp x10, #10
+    blt 1f
+    add x10, x10, #('A'-10)
+    b 2f
+1:  add x10, x10, #'0'
+2:  str w10, [x9]
+    .endm
+
+    PRINT_HEX_DIGIT x11, 60
+    PRINT_HEX_DIGIT x11, 56
+    PRINT_HEX_DIGIT x11, 52
+    PRINT_HEX_DIGIT x11, 48
+    PRINT_HEX_DIGIT x11, 44
+    PRINT_HEX_DIGIT x11, 40
+    PRINT_HEX_DIGIT x11, 36
+    PRINT_HEX_DIGIT x11, 32
+
+    movz w10, #'\n'
+    str w10, [x9]
+
+    mov x10, x11                   // Restore SP_EL0 to x10
+    ldp x9, x11, [sp], #16
+
+    msr SP_EL0, x10                 // Restore SP_EL0
+    isb                             // Ensure SP_EL0 write completes before eret
 
     // Return from exception - PSTATE will be restored from SPSR_EL1
     eret

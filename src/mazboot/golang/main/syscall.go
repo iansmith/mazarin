@@ -461,6 +461,9 @@ func isInMmapSpan(va uintptr) bool {
 
 //go:nosplit
 func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32, offset int64) int64 {
+	// CRITICAL: Log entry to this function FIRST
+	uartPutsDirect(">>> SyscallMmap ENTRY <<<\r\n")
+
 	// Log mmap call using direct UART (safe in exception context)
 	uartPutsDirect("mmap(addr=0x")
 	uartPutHex64Direct(uint64(addr))
@@ -595,7 +598,13 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 	uartPutHex64Direct(roundedLength)
 	uartPutsDirect(", within pre-registered Span 3)\r\n")
 
-	return int64(allocAddr)
+	// DEBUG: Confirm return value before returning
+	result := int64(allocAddr)
+	uartPutsDirect("  -> SyscallMmap returning int64: 0x")
+	uartPutHex64Direct(uint64(result))
+	uartPutsDirect("\r\n")
+
+	return result
 }
 
 //go:nosplit
