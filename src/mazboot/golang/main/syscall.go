@@ -459,6 +459,13 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 	mmapCallCount++
 	uartPutsDirect("M")
 
+	// DEBUG: Verify globalAlloc.persistent.base before mmap
+	globalAllocAddr := uintptr(0x419A1060)
+	persistentBaseAddr := globalAllocAddr + 8 // mutex (8 bytes) + base offset
+	persistentBasePtr := (*uintptr)(unsafe.Pointer(persistentBaseAddr))
+	beforeValue := *persistentBasePtr
+	_ = beforeValue // Will print after mmap
+
 	// Handle zero-length mmap
 	// This should never happen and indicates a runtime initialization bug
 	// However, we'll allocate a minimal page to allow runtime to continue
@@ -556,6 +563,17 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 
 	// Update bump pointer for next allocation
 	mmapBumpNext = endAddr
+
+	// DEBUG: Verify persistent.base AFTER mmap allocation
+	// Check if the value we stored earlier is still intact
+	afterValue := *persistentBasePtr
+	if beforeValue != afterValue {
+		uartPutsDirect("\r\nCORRUPT: persistent.base changed from ")
+		printHex64(uint64(beforeValue))
+		uartPutsDirect(" to ")
+		printHex64(uint64(afterValue))
+		uartPutsDirect(" during mmap!\r\n")
+	}
 
 	return int64(allocAddr)
 }

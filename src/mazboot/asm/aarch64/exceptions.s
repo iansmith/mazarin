@@ -1714,36 +1714,12 @@ syscall_return:
     // Pop exception frame pointer from g0's stack
     ldr x10, [sp], #16              // Pop exception frame ptr, increment sp by 16
 
-    // DEBUG: Print exception frame pointer value
-    str x0, [sp, #-16]!             // Save x0 on g0's stack
-    mov x0, x10
-    bl print_hex64                   // Print exception frame pointer
-    ldr x0, [sp], #16               // Restore x0 from g0's stack
-
     // Restore sp to exception frame
     mov sp, x10                     // Restore sp from popped value
     // Now sp points to exception frame again!
 
-    // DEBUG: Print '1' after restoring sp
-    sub sp, sp, #16
-    str x0, [sp]
-    movz x0, #0x0900, lsl #16
-    movz w1, #0x31                  // '1'
-    str w1, [x0]
-    ldr x0, [sp]
-    add sp, sp, #16
-
     // Restore ELR_EL1 and SPSR_EL1 from exception frame
     ldp x12, x13, [sp, #EXC_FRAME_ELR_SPSR]  // x12 = saved ELR, x13 = saved SPSR
-
-    // DEBUG: Print '2' after loading ELR/SPSR
-    sub sp, sp, #16
-    str x0, [sp]
-    movz x0, #0x0900, lsl #16
-    movz w1, #0x32                  // '2'
-    str w1, [x0]
-    ldr x0, [sp]
-    add sp, sp, #16
 
     // CRITICAL: Advance ELR_EL1 by 4 to skip past SVC instruction
     add x12, x12, #4                // ELR += 4 (instruction after SVC)
@@ -1759,13 +1735,6 @@ syscall_return:
 
     // Restore SP_EL0 before eret
     RESTORE_SP_EL0_FROM_STACK       // Restore from frame offset 288
-
-    // DEBUG: Print 'E' before ERET
-    str x0, [sp, #-16]!
-    movz x0, #0x0900, lsl #16
-    movz w1, #0x45                  // 'E'
-    str w1, [x0]
-    ldr x0, [sp], #16
 
     // Deallocate exception frame before ERET
     add sp, sp, #320                 // Restore SP_EL1 to exception stack top
