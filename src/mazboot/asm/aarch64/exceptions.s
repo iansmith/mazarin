@@ -1087,6 +1087,20 @@ stack_selected:
     mov w0, #0x20                    // ' '
     UART_PUTC
 
+    // Print "X4="
+    mov w0, #0x58                    // 'X'
+    UART_PUTC
+    mov w0, #0x34                    // '4'
+    UART_PUTC
+    mov w0, #0x3D                    // '='
+    UART_PUTC
+
+    ldr x0, [sp, #32]                // Load saved x4 from exception frame
+    bl print_hex64                   // Print x4 value
+
+    mov w0, #0x20                    // ' '
+    UART_PUTC
+
     ldp x2, x3, [sp], #16            // Restore x2, x3
     ldp x0, x1, [sp], #16            // Restore x0, x1
 
@@ -1328,16 +1342,33 @@ handle_svc_syscall:
     str w1, [x0]
     ldp x0, x1, [sp], #16           // Restore x0, x1
 
-    // CRITICAL: Switch to g0 before calling Go syscall handlers
-    // This allows runtime operations (including stack tracebacks) to work correctly
-    // NOTE: Original g (x28) was already saved to exception frame at offset 296
-    // by sync_restore_and_svc (see SAVE_SYSCALL_CONTEXT equivalent above)
+    // CRITICAL: Switch to g0 and g0's stack before calling Go syscall handlers
+    // Go code MUST run on a proper Go stack, not the exception stack!
+    //
+    // STRATEGY: Stay in EL1h mode (keep using SP_EL1), but manually switch
+    // the sp register to point to g0's stack. This preserves access to the
+    // exception frame throughout the syscall handling.
+    //
+    // Key insight from user: "Do we need to preserve anything (like SP_EL1?)
+    // during this process so we can ERET to the correct place?"
+    // YES! We MUST preserve SP_EL1 because that's where the exception frame is!
 
-    ldr x28, =runtime.g0            // x28 = address of runtime.g0 struct (the g pointer itself)
+    ldr x28, =runtime.g0            // x28 = address of runtime.g0 struct
 
-    // NOTE: We don't switch SP to g0's stack here because syscalls need to preserve
-    // the caller's stack frame and return properly. We just set x28 so Go code sees g0.
-    // Syscall handlers run on the current stack, not g0's stack.
+    // CRITICAL: Save exception frame pointer on g0's stack!
+    // This is nested-exception-safe: each exception level has its own saved pointer.
+    // User insight: "we cannot use scratch areas because of nested exceptions"
+    mov x10, sp                     // x10 = exception frame pointer
+
+    // Switch to g0's stack
+    ldr x11, [x28, #8]              // x11 = g0.stack.hi (top of g0's stack)
+    mov sp, x11                     // Switch sp to g0's stack (still in EL1h mode!)
+
+    // Push exception frame pointer onto g0's stack
+    str x10, [sp, #-16]!            // Push exception frame ptr, decrement sp by 16
+
+    // Now: sp points to g0's stack (with exception frame ptr saved at [sp])
+    //      x10 contains exception frame pointer (for later verification)
 
     // Dispatch based on syscall number
     cmp x8, #0                     // io_setup syscall (async I/O)
@@ -1670,123 +1701,49 @@ syscall_return:
     // Syscall return - restore SPSR/ELR and return via eret
     // x0 contains the syscall result (must be preserved!)
 
-    // DEBUG: Print 'R' to mark syscall_return entry
-    // UART_PUTC expects character in w0, so save x0 first
-    str x0, [sp, #-16]!             // Save x0 (syscall result)
+    // DEBUG: Minimal breadcrumb - just print 'R' to mark syscall_return
+    // Print 'R' breadcrumb (syscall return)
+    // We're on g0's stack, so use it carefully
+    sub sp, sp, #16                 // Allocate stack space
+    str x0, [sp]                    // Save x0 (syscall result)
     mov w0, #0x52                   // 'R'
     UART_PUTC
-    ldr x0, [sp], #16               // Restore x0
+    ldr x0, [sp]                    // Restore x0
+    add sp, sp, #16                 // Deallocate stack space
 
-    // DEBUG: First print persistent.base value (should contain pointer after mmap)
-    stp x1, x2, [sp, #-16]!          // Save x1, x2
-    str x3, [sp, #-16]!              // Save x3
+    // Pop exception frame pointer from g0's stack
+    ldr x10, [sp], #16              // Pop exception frame ptr, increment sp by 16
 
-    movz x1, #0x419A, lsl #16
-    movk x1, #0x1068, lsl #0        // x1 = 0x419A1068 (persistent.base address)
-    ldr x2, [x1]                    // x2 = value at persistent.base
+    // DEBUG: Print exception frame pointer value
+    str x0, [sp, #-16]!             // Save x0 on g0's stack
+    mov x0, x10
+    bl print_hex64                   // Print exception frame pointer
+    ldr x0, [sp], #16               // Restore x0 from g0's stack
 
-    // Print 'P' marker for persistent.base
-    str x0, [sp, #-16]!
-    mov w0, #0x50                   // 'P'
-    UART_PUTC
-    mov w0, #0x5B                   // '['
-    UART_PUTC
+    // Restore sp to exception frame
+    mov sp, x10                     // Restore sp from popped value
+    // Now sp points to exception frame again!
 
-    // Print byte 3 of persistent.base
-    lsr x3, x2, #24
-    and x3, x3, #0xFF
-    lsr w0, w3, #4
-    cmp w0, #10
-    add w0, w0, #0x30
-    blt 101f
-    add w0, w0, #7
-101:  UART_PUTC
-    and w0, w3, #0x0F
-    cmp w0, #10
-    add w0, w0, #0x30
-    blt 102f
-    add w0, w0, #7
-102:  UART_PUTC
-
-    // Print byte 2 of persistent.base
-    lsr x3, x2, #16
-    and x3, x3, #0xFF
-    lsr w0, w3, #4
-    cmp w0, #10
-    add w0, w0, #0x30
-    blt 103f
-    add w0, w0, #7
-103:  UART_PUTC
-    and w0, w3, #0x0F
-    cmp w0, #10
-    add w0, w0, #0x30
-    blt 104f
-    add w0, w0, #7
-104:  UART_PUTC
-
-    mov w0, #0x5D                   // ']'
-    UART_PUTC
-
-    ldr x0, [sp], #16               // Restore x0
-    ldr x3, [sp], #16               // Restore x3
-    ldp x1, x2, [sp], #16           // Restore x1, x2
-
-    // DEBUG: Now print memstats.other_sys value for comparison
-    // This will show 0x00040000 vs 0xDEAD000E
-    stp x1, x2, [sp, #-16]!          // Save x1, x2 (x0 must be preserved!)
-    str x3, [sp, #-16]!              // Save x3
-
-    movz x1, #0x419A, lsl #16
-    movk x1, #0x39A8, lsl #0        // x1 = 0x419A39A8
-    ldr x2, [x1]                    // x2 = value at 0x419A39A8
-
-    // Print opening bracket
-    str x0, [sp, #-16]!             // Save x0
-    mov w0, #0x5B                   // '['
-    UART_PUTC
-
-    // Print byte 3 (high byte of low word)
-    lsr x3, x2, #24
-    and x3, x3, #0xFF
-    lsr w0, w3, #4
-    cmp w0, #10
-    add w0, w0, #0x30
-    blt 2f
-    add w0, w0, #7
-2:  UART_PUTC
-    and w0, w3, #0x0F
-    cmp w0, #10
-    add w0, w0, #0x30
-    blt 3f
-    add w0, w0, #7
-3:  UART_PUTC
-
-    // Print byte 2
-    lsr x3, x2, #16
-    and x3, x3, #0xFF
-    lsr w0, w3, #4
-    cmp w0, #10
-    add w0, w0, #0x30
-    blt 4f
-    add w0, w0, #7
-4:  UART_PUTC
-    and w0, w3, #0x0F
-    cmp w0, #10
-    add w0, w0, #0x30
-    blt 5f
-    add w0, w0, #7
-5:  UART_PUTC
-
-    // Print closing bracket
-    mov w0, #0x5D                   // ']'
-    UART_PUTC
-
-    ldr x0, [sp], #16               // Restore x0
-    ldr x3, [sp], #16               // Restore x3
-    ldp x1, x2, [sp], #16           // Restore x1, x2
+    // DEBUG: Print '1' after restoring sp
+    sub sp, sp, #16
+    str x0, [sp]
+    movz x0, #0x0900, lsl #16
+    movz w1, #0x31                  // '1'
+    str w1, [x0]
+    ldr x0, [sp]
+    add sp, sp, #16
 
     // Restore ELR_EL1 and SPSR_EL1 from exception frame
     ldp x12, x13, [sp, #EXC_FRAME_ELR_SPSR]  // x12 = saved ELR, x13 = saved SPSR
+
+    // DEBUG: Print '2' after loading ELR/SPSR
+    sub sp, sp, #16
+    str x0, [sp]
+    movz x0, #0x0900, lsl #16
+    movz w1, #0x32                  // '2'
+    str w1, [x0]
+    ldr x0, [sp]
+    add sp, sp, #16
 
     // CRITICAL: Advance ELR_EL1 by 4 to skip past SVC instruction
     add x12, x12, #4                // ELR += 4 (instruction after SVC)
@@ -1795,12 +1752,20 @@ syscall_return:
     msr SPSR_EL1, x13               // Restore saved PSTATE
     isb                             // Ensure ELR/SPSR writes complete
 
-    // Restore original g (x28) and LR (x30) from exception frame
+    // Restore original g (x28), LR (x30), and FP (x29) from exception frame
     ldr x30, [sp, #EXC_FRAME_SAVED_LR]  // Restore original LR (offset 312)
     ldr x28, [sp, #EXC_FRAME_SAVED_G]   // Restore original g (offset 296)
+    ldr x29, [sp, #EXC_FRAME_X29_X30]   // Restore original x29 (offset 232)
 
     // Restore SP_EL0 before eret
     RESTORE_SP_EL0_FROM_STACK       // Restore from frame offset 288
+
+    // DEBUG: Print 'E' before ERET
+    str x0, [sp, #-16]!
+    movz x0, #0x0900, lsl #16
+    movz w1, #0x45                  // 'E'
+    str w1, [x0]
+    ldr x0, [sp], #16
 
     // Deallocate exception frame before ERET
     add sp, sp, #320                 // Restore SP_EL1 to exception stack top

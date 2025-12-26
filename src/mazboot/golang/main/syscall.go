@@ -455,26 +455,9 @@ var mmapCallCount uint32
 
 //go:nosplit
 func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32, offset int64) int64 {
-	// DEBUG: Check if kmazarin memstats field is corrupted at START of mmap
-	const memstatsFieldAddr = uintptr(0x419A39A8)
-	memstatsFieldValue := *(*uint64)(unsafe.Pointer(memstatsFieldAddr))
-	if memstatsFieldValue != 0 {
-		uartPutsDirect("!!! CORRUPTION AT MMAP START: value=0x")
-		uartPutHex64Direct(memstatsFieldValue)
-		uartPutsDirect("\r\n")
-	}
-
-	// Increment and print call count
+	// Minimal breadcrumb for mmap calls
 	mmapCallCount++
-	uartPutsDirect("MMAP #")
-	uartPutHex64Direct(uint64(mmapCallCount))
-	uartPutsDirect(": addr=0x")
-	uartPutHex64Direct(uint64(addr))
-	uartPutsDirect(" len=0x")
-	uartPutHex64Direct(length)
-	uartPutsDirect(" flags=0x")
-	uartPutHex64Direct(uint64(flags))
-	uartPutsDirect("\r\n")
+	uartPutsDirect("M")
 
 	// Handle zero-length mmap
 	// This should never happen and indicates a runtime initialization bug
@@ -527,17 +510,11 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 
 		// Register this span
 		if !registerMmapSpan(addr, addr+uintptr(roundedLength)) {
-			uartPutsDirect("MMAP: registerMmapSpan FAILED (hint path)\r\n")
+			uartPutsDirect("!span\r\n")
 			return -12 // -ENOMEM
 		}
 
-		uartPutsDirect("MMAP: SUCCESS (hint honored) -> 0x")
-		uartPutHex64Direct(uint64(addr))
-		uartPutsDirect(" returning int64=")
-		retval := int64(addr)
-		uartPutHex64Direct(uint64(retval))
-		uartPutsDirect("\r\n")
-		return retval
+		return int64(addr)
 	}
 
 	// No MAP_FIXED - addr is just a hint, but Go runtime RELIES on hints being honored
@@ -557,17 +534,11 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 
 			// Register this span
 			if !registerMmapSpan(addr, addr+uintptr(roundedLength)) {
-				uartPutsDirect("MMAP: registerMmapSpan FAILED (no-MAP_FIXED hint path)\r\n")
+				uartPutsDirect("!span2\r\n")
 				return -12 // -ENOMEM
 			}
 
-			uartPutsDirect("MMAP: SUCCESS (no-MAP_FIXED hint) -> 0x")
-			uartPutHex64Direct(uint64(addr))
-			uartPutsDirect(" returning int64=")
-			retval := int64(addr)
-			uartPutHex64Direct(uint64(retval))
-			uartPutsDirect("\r\n")
-			return retval
+			return int64(addr)
 		}
 	}
 
@@ -579,35 +550,14 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 
 	// Check if allocation would overflow the pre-registered bump region
 	if endAddr > BUMP_REGION_END {
-		uartPutsDirect("MMAP: BUMP REGION EXHAUSTED! next=0x")
-		uartPutHex64Direct(uint64(mmapBumpNext))
-		uartPutsDirect(" needed=0x")
-		uartPutHex64Direct(uint64(endAddr))
-		uartPutsDirect(" end=0x")
-		uartPutHex64Direct(uint64(BUMP_REGION_END))
-		uartPutsDirect("\r\n")
+		uartPutsDirect("!bump\r\n")
 		return -12 // -ENOMEM
 	}
 
 	// Update bump pointer for next allocation
 	mmapBumpNext = endAddr
 
-	uartPutsDirect("MMAP: SUCCESS (bump alloc) -> 0x")
-	uartPutHex64Direct(uint64(allocAddr))
-	uartPutsDirect(" returning int64=")
-	retval := int64(allocAddr)
-	uartPutHex64Direct(uint64(retval))
-	uartPutsDirect("\r\n")
-
-	// DEBUG: Check if kmazarin memstats field is corrupted at END of mmap
-	memstatsFieldValue = *(*uint64)(unsafe.Pointer(memstatsFieldAddr))
-	if memstatsFieldValue != 0 {
-		uartPutsDirect("!!! CORRUPTION AT MMAP END: value=0x")
-		uartPutHex64Direct(memstatsFieldValue)
-		uartPutsDirect("\r\n")
-	}
-
-	return retval
+	return int64(allocAddr)
 }
 
 //go:nosplit
