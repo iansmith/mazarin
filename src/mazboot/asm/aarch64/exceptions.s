@@ -1408,31 +1408,128 @@ sync_exception_el1:
     .align 7
 irq_exception_el1:
     // ========================================================================
-    // SIMPLIFIED IRQ HANDLER - All dispatch goes through Go
+    // IRQ HANDLER WITH TIMER PREEMPTION
     // ========================================================================
     //
     // This handler:
     // 1. Saves ALL registers (preserves interrupted code's state completely)
-    // 2. Calls irqHandlerGo(irqID) which dispatches to Go handlers
+    // 2. Checks if this is a timer interrupt (IRQ 27)
+    //    - If timer: Do "call injection" to redirect to asyncPreemptBM
+    //    - If other: Call irqHandlerGo(irqID) for Go dispatch
     // 3. Restores ALL registers and returns via ERET
     //
-    // The Go handler (irqHandlerGo) does EOI via gicEndOfInterrupt()
+    // Timer preemption uses "call injection" (like signal-based preemption):
+    // We modify the exception frame so ERET jumps to asyncPreemptBM instead
+    // of the interrupted code. asyncPreemptBM saves all state, calls
+    // runtime.Gosched(), then returns to the interrupted PC.
     // ========================================================================
 
     INTERRUPT_FULL_SAVE              // Save all regs, x0 = interrupt ID
 
-    // Set up frame pointer for Go calling convention
+    // Check if this is a timer interrupt (IRQ 27 = virtual timer)
+    cmp w0, #27
+    beq timer_preempt_handler
+
+    // Not a timer interrupt - use Go dispatch
     mov x29, sp
-
-    // x0 already contains interrupt ID from INTERRUPT_FULL_SAVE
-    // Call Go IRQ dispatcher: irqHandlerGo(irqID uint32)
     bl main.irqHandlerGo
-
-    // Go handler has completed and done EOI
-    // Restore all registers and return to interrupted code
     INTERRUPT_FULL_RESTORE           // Restores all regs + SP_EL0, does ERET
 
+timer_preempt_handler:
+    // ========================================================================
+    // TIMER PREEMPTION VIA CALL INJECTION
+    // ========================================================================
+    // We need to:
+    // 1. Check if we're on g0 (system goroutine) - if so, skip preemption
+    // 2. Re-arm the timer
+    // 3. Do call injection: modify ELR to jump to asyncPreemptBM
+    // 4. Signal EOI to GIC
+    // 5. ERET will jump to asyncPreemptBM which calls scheduler
+    // ========================================================================
+
+    // 0. CHECK IF WE'RE ON g0 - if so, skip preemption
+    // Cannot call Gosched() from g0's stack - it's the system goroutine
+    // Check: if g == g.m.g0, we're on g0
+    // Go struct offsets:
+    //   g.m   is at offset 48 in g struct
+    //   m.g0  is at offset 0 in m struct
+    ldr x3, [sp, #IRQ_FRAME_X28]    // x3 = interrupted g (saved x28)
+    cbz x3, timer_skip_preempt      // If g is nil, skip preemption
+    ldr x4, [x3, #48]               // x4 = g.m (m pointer)
+    cbz x4, timer_skip_preempt      // If m is nil, skip preemption
+    ldr x5, [x4, #0]                // x5 = m.g0 (the m's system goroutine)
+    cmp x3, x5                      // Compare current g with m.g0
+    beq timer_skip_preempt          // If g == m.g0, we're on system stack
+
+    // 1. RE-ARM TIMER - Set timer to fire again in 20ms
+    // (1,250,000 ticks @ 62.5 MHz)
+    mrs x3, CNTVCT_EL0              // Read current counter
+    movz x4, #0x0013, lsl #16       // 1,250,000 = 0x1312D0
+    movk x4, #0x12D0
+    add x3, x3, x4
+    msr CNTV_CVAL_EL0, x3           // Set compare value
+
+    // 2. CALL INJECTION
+    // Read interrupted PC and SP from our exception frame
+    ldr x19, [sp, #IRQ_FRAME_ELR]    // x19 = interrupted PC
+    ldr x20, [sp, #IRQ_FRAME_SP_EL0] // x20 = interrupted SP (goroutine stack)
+
+    // Allocate 16-byte frame on interrupted goroutine's stack
+    sub x20, x20, #16               // SP -= 16
+    and x20, x20, #0xFFFFFFFFFFFFFFF0  // Ensure 16-byte alignment
+
+    // Save old LR (0 placeholder) and FP to that frame (for stack unwinding)
+    str xzr, [x20, #0]              // *SP = 0 (placeholder LR)
+    ldr x22, [sp, #IRQ_FRAME_X29]   // Get FP (x29) from frame
+    str x22, [x20, #8]              // *(SP+8) = old FP
+
+    // Set LR (x30) = interrupted PC (asyncPreemptBM will return here)
+    str x19, [sp, #IRQ_FRAME_X30]   // Update LR in frame
+
+    // Set SP_EL0 in frame to new adjusted value
+    str x20, [sp, #IRQ_FRAME_SP_EL0]
+
+    // Set ELR_EL1 in frame to asyncPreemptBM
+    adrp x21, asyncPreemptBM
+    add x21, x21, :lo12:asyncPreemptBM
+    str x21, [sp, #IRQ_FRAME_ELR]   // ELR will be restored by INTERRUPT_FULL_RESTORE
+
+    // 3. SIGNAL EOI TO GIC (before ERET!)
+    // GICC_EOIR at 0x08010010
+    movz x1, #0x0801, lsl #16
+    movk x1, #0x0010
+    mov w2, #27                     // Timer IRQ ID
+    str w2, [x1]                    // Write to EOIR
+
+    // 4. RESTORE AND ERET
+    // INTERRUPT_FULL_RESTORE will restore all regs from frame and ERET
+    // ELR now points to asyncPreemptBM, SP_EL0 to adjusted goroutine stack
+    // x30 (LR) contains interrupted PC, so asyncPreemptBM can return there
+    INTERRUPT_FULL_RESTORE
+
     // NEVER REACHED - INTERRUPT_FULL_RESTORE includes eret
+
+timer_skip_preempt:
+    // We're on g0 - skip preemption but still re-arm timer and send EOI
+    // Print '.' to show timer is running (even if not preempting)
+    mov w14, #'.'
+    UART_PUTC_REG w14
+
+    // Re-arm timer - Set timer to fire again in 20ms
+    mrs x3, CNTVCT_EL0
+    movz x4, #0x0013, lsl #16
+    movk x4, #0x12D0
+    add x3, x3, x4
+    msr CNTV_CVAL_EL0, x3
+
+    // Send EOI to GIC
+    movz x1, #0x0801, lsl #16
+    movk x1, #0x0010
+    mov w2, #27
+    str w2, [x1]
+
+    // Return normally without preemption
+    INTERRUPT_FULL_RESTORE
 
 // ========================================================================
 // LEGACY TIMER HANDLER (kept for reference during transition)
@@ -2236,6 +2333,14 @@ handle_svc_syscall:
     // Dispatch based on syscall number
     cmp x8, #0                     // io_setup syscall (async I/O)
     beq syscall_io_setup
+    cmp x8, #19                    // eventfd2 syscall
+    beq syscall_eventfd
+    cmp x8, #20                    // epoll_create1 syscall
+    beq syscall_epoll_create
+    cmp x8, #21                    // epoll_ctl syscall
+    beq syscall_epoll_ctl
+    cmp x8, #22                    // epoll_pwait syscall
+    beq syscall_epoll_pwait
     cmp x8, #25                    // fcntl syscall
     beq syscall_fcntl
     cmp x8, #64                    // write syscall
@@ -2483,6 +2588,31 @@ syscall_io_setup:
     // We don't support async I/O, so return ENOSYS (-38)
     // This tells the runtime that io_setup is not implemented
     movn x0, #37                   // x0 = -38 (ENOSYS)
+    b syscall_return
+
+syscall_eventfd:
+    // eventfd2(initval, flags) - Create event file descriptor
+    // Return a fake eventfd (11) so the runtime thinks it succeeded
+    mov x0, #11                    // Return fake eventfd = 11
+    b syscall_return
+
+syscall_epoll_create:
+    // epoll_create1(flags) - Create epoll file descriptor
+    // Return a fake epoll fd (10) so the runtime thinks it succeeded
+    mov x0, #10                    // Return fake epoll fd = 10
+    b syscall_return
+
+syscall_epoll_ctl:
+    // epoll_ctl(epfd, op, fd, event) - Control epoll
+    // Just return success (0)
+    mov x0, #0                     // Return success
+    b syscall_return
+
+syscall_epoll_pwait:
+    // epoll_pwait(epfd, events, maxevents, timeout, sigmask, sigsetsize)
+    // Return 0 (no events) - this tells the runtime nothing is ready
+    // This should work for a basic "no network" scenario
+    mov x0, #0                     // Return 0 (no events)
     b syscall_return
 
 syscall_fcntl:

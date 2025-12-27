@@ -124,9 +124,10 @@ func ThreadCreate(stack, entryFunc, mPtr, gPtr uint64) int32 {
 	threads[slot].Context.SP = stack
 	// ELR = entry function (mstart) - where to start executing
 	threads[slot].Context.ELR = entryFunc
-	// SPSR = 0x3C4 = EL1t mode (M=0100) with DAIF masked (D=A=I=F=1)
-	// This matches what the old clone handler used for new threads
-	threads[slot].Context.SPSR = 0x3C4
+	// SPSR = 0x344 = EL1t mode (M=0100) with D=A=F masked, I=0 (IRQs enabled)
+	// D=1, A=1, I=0, F=1 -> 0011 0100 0100 = 0x344
+	// IRQs MUST be enabled for timer-based preemption to work!
+	threads[slot].Context.SPSR = 0x344
 
 	numThreads++
 

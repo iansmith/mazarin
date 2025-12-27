@@ -724,6 +724,12 @@ func KernelMain(r0, r1, atags uint32) {
 	}
 
 	// =========================================
+	// Initialize timer for preemptive scheduling
+	// Timer fires every 20ms and calls asyncPreemptBM to preempt goroutines
+	// =========================================
+	timerInit()
+
+	// =========================================
 	// Initialize thread table before loading kmazarin
 	// This sets up M0 as thread 0 for clone/futex/nanosleep syscall handling
 	// =========================================
