@@ -672,17 +672,15 @@ func KernelMain(r0, r1, atags uint32) {
 	//   - Instead, we ensure exception handlers don't access unmapped globals
 	{
 		// Map DTB region (QEMU device tree blob)
+		// CRITICAL: DTB is already loaded by QEMU at physical address __dtb_boot_addr
+		// We must IDENTITY MAP it (VA=PA) to preserve the DTB data QEMU loaded
+		// DO NOT allocate new frames or zero the memory - that would destroy the DTB!
 		dtbStart := getLinkerSymbol("__dtb_boot_addr")
 		dtbEnd := dtbStart + getLinkerSymbol("__dtb_size")
 		for va := dtbStart; va < dtbEnd; va += 0x1000 {
-			physFrame := allocPhysFrame()
-			if physFrame == 0 {
-				print("FATAL: Out of physical frames\r\n")
-				for {} // Hang
-			}
-			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-			// Zero the frame AFTER mapping (so we can access it via VA)
-			bzero(unsafe.Pointer(va), 0x1000)
+			pa := va // Identity mapping: VA = PA
+			mapPage(va, pa, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+			// DO NOT zero the memory - DTB data is already there from QEMU!
 		}
 
 		// NOTE: g0 stack is already mapped during initMMU() at 0x5EFF0000-0x5F000000
@@ -707,6 +705,11 @@ func KernelMain(r0, r1, atags uint32) {
 	// Now that MMU is enabled and memory is set up, initialize peripherals
 	// needed for kmazarin to run (GIC, RNG, RTC, UART ring buffer)
 	// =========================================
+
+	// 0. Parse device tree to configure PCI ECAM base (needed by PCI scanning)
+	// Must be called BEFORE any PCI access (GIC, VirtIO RNG, framebuffer)
+	// DTB is already mapped in memory (lines 674-686), safe to parse
+	initDeviceTree()
 
 	// 1. Initialize GIC (Generic Interrupt Controller)
 	gicInit()
@@ -1017,8 +1020,8 @@ func kernelMainBody() {
 	// Stage 4: MMU already initialized in KernelMain
 	asm.DisableIrqs()
 
-	// Parse device tree (needs MMU enabled for safe memory access)
-	initDeviceTree()
+	// NOTE: Device tree parsing moved to earlier in KernelMain() (before PCI access)
+	// initDeviceTree() is now called at line 714, before any PCI scanning
 
 	// Stage 5: Framebuffer initialization
 	fbResult := framebufferInit()
