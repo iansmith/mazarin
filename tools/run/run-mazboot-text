@@ -300,6 +300,12 @@ if [ -n "$QEMU_D" ]; then
     QEMU_CMD+=( -d "$QEMU_D" -D "$QEMU_D_LOG" )
 fi
 
+# Display the full command line
+echo "QEMU command:" >&2
+printf "%s " "${QEMU_CMD[@]}" >&2
+echo "" >&2
+echo "" >&2
+
 # Run QEMU with timeout
 # timeout will kill QEMU after TIMEOUT_SECS if it's still running
 # Exit code 124 means timeout was reached (this is expected for long-running kernels)

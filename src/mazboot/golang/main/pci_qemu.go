@@ -90,12 +90,12 @@ const (
 // For AArch64 virt machine without highmem: 0x3F000000
 //
 // NOTE: Our MMU maps both lowmem (0x3F000000-0x40000000) and highmem (0x4010000000+) ECAM windows.
-// QEMU virt with virtualization=on typically uses highmem ECAM (0x4010000000).
-// Default to highmem, fall back to lowmem if needed.
+// QEMU virt defaults to highmem=on, which places ECAM at 0x4010000000.
+// Use highmem ECAM (default).
 //
 // This variable has an initializer, so Go places it in .noptrdata.
 // The linker script places .noptrdata in RAM (writable) at 0x40100000.
-var pciEcamBase uintptr = 0x4010000000
+var pciEcamBase uintptr = 0x4010000000  // Highmem ECAM (QEMU default)
 
 // pciFirstAccess tracks if this is the first PCI config space access (for debugging)
 var pciFirstAccess bool = true

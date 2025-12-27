@@ -326,6 +326,40 @@ test_print_functions_preserve_registers:
     add x0, x0, :lo12:.Ltest_pass_msg
     bl print_string
 
+    // CRITICAL FIX: Clear all registers that had test values
+    // The test set X0-X27 to 0xDEAD0000+N to verify register preservation.
+    // We must clear them before returning, otherwise these test values will
+    // pollute kernel_main and eventually get written to memory, causing
+    // kmazarin to dereference 0xDEAD000E as a pointer.
+    mov x0, xzr
+    mov x1, xzr
+    mov x2, xzr
+    mov x3, xzr
+    mov x4, xzr
+    mov x5, xzr
+    mov x6, xzr
+    mov x7, xzr
+    mov x8, xzr
+    mov x9, xzr
+    mov x10, xzr
+    mov x11, xzr
+    mov x12, xzr
+    mov x13, xzr
+    mov x14, xzr
+    mov x15, xzr
+    mov x16, xzr
+    mov x17, xzr
+    mov x18, xzr
+    mov x19, xzr
+    mov x20, xzr
+    mov x21, xzr
+    mov x22, xzr
+    mov x23, xzr
+    mov x24, xzr
+    mov x25, xzr
+    mov x26, xzr
+    mov x27, xzr
+
     ldp x29, x30, [sp], #16
     ret
 
