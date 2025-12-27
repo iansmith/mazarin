@@ -64,8 +64,6 @@ func readActualDTBSize() uintptr {
 //
 //go:nosplit
 func preRegisterFixedSpans() {
-	print("=== Registering fixed spans ===\r\n")
-
 	// Span 0: DTB Region (identity-mapped)
 	// Read actual size from DTB header instead of assuming 1MB
 	dtbStart := asm.GetDtbBootAddr()
@@ -73,10 +71,8 @@ func preRegisterFixedSpans() {
 	dtbEnd := dtbStart + dtbSize
 
 	if !registerMmapSpan(dtbStart, dtbEnd) {
-		print("FATAL: Failed to register DTB span\r\n")
 		for {} // Hang
 	}
-	print("  -> registered span 0: DTB\r\n")
 
 	// Span 1: Mazboot Region (identity-mapped)
 	// Includes: .text, .rodata, .data, .bss, stacks
@@ -86,10 +82,8 @@ func preRegisterFixedSpans() {
 	mazbootEnd := asm.GetBssEndAddr()      // End of bss section
 
 	if !registerMmapSpan(mazbootStart, mazbootEnd) {
-		print("FATAL: Failed to register Mazboot span\r\n")
 		for {} // Hang
 	}
-	print("  -> registered span 1: Mazboot\r\n")
 
 	// Span 3: Bump Allocator Region (pre-register fixed 2GB region)
 	// This is used as a fallback when Go provides no hint (addr=0)
@@ -99,10 +93,8 @@ func preRegisterFixedSpans() {
 	bumpEnd := BUMP_REGION_START + BUMP_REGION_SIZE
 
 	if !registerMmapSpan(BUMP_REGION_START, bumpEnd) {
-		print("FATAL: Failed to register bump region span\r\n")
 		for {} // Hang
 	}
-	print("  -> registered span 3: Bump region\r\n")
 }
 
 // Peripheral base address for Raspberry Pi 4
@@ -350,17 +342,6 @@ func uartPutHex8(val uint8) {
 func checkSPAlignment(context string) bool {
 	sp := asm.GetCallerStackPointer()
 	aligned := (sp & 0xF) == 0
-
-	if !aligned {
-		print("SP-MISALIGN: ")
-		print(context)
-		print(" SP=0x")
-		printHex64(uint64(sp))
-		print(" (misaligned, last nibble=0x")
-		printHex8(uint8(sp & 0xF))
-		print(")\r\n")
-	}
-
 	return aligned
 }
 
@@ -394,12 +375,6 @@ func printSPBreadcrumb(label byte) {
 	printHex64(uint64(sp))
 	printChar('\r')
 	printChar('\n')
-
-	// Check SP alignment and print warning if misaligned
-	spAfter := asm.GetStackPointer()
-	if (spAfter & 0xF) != 0 {
-		print("!MISALIGNED!\r\n")
-	}
 }
 
 //go:nosplit
@@ -620,13 +595,11 @@ func KernelMain(r0, r1, atags uint32) {
 
 	// Initialize MMU (required before heap - enables Normal memory for unaligned access)
 	if !initMMU() {
-		print("FATAL: MMU initialization failed\r\n")
 		for {
 		}
 	}
 
 	if !enableMMU() {
-		print("FATAL: MMU enablement failed\r\n")
 		for {
 		}
 	}
@@ -746,7 +719,6 @@ func KernelMain(r0, r1, atags uint32) {
 	// =========================================
 	result := asm.CallRuntimeArgs()
 	if result != 0 {
-		print("FATAL: runtime.args() test failed\r\n")
 		for {
 		}
 	}
@@ -835,7 +807,6 @@ func KernelMain(r0, r1, atags uint32) {
 	// CHANGED: Skip full runtime.schedinit() in mazboot
 	// Mazboot is a bootloader, not a full Go program - it doesn't need GC or full heap
 	// Instead, use simple kmalloc/kfree for minimal allocation needs
-	print("Initializing simple heap (mazboot uses kmalloc, not full Go runtime heap)... ")
 
 	// CRITICAL: Must call initKmallocHeap() BEFORE heapInit() to calculate KMALLOC_HEAP_BASE
 	// initKmallocHeap() reads linker symbols to determine heap boundaries
@@ -843,15 +814,12 @@ func KernelMain(r0, r1, atags uint32) {
 
 	// Use existing heapInit (already implemented in heap.go)
 	heapInit(KMALLOC_HEAP_BASE)
-	print("PASS\r\n")
 
 	// NOTE: Runtime structures (MMU allocators, TLS, P, mcache, exception vectors)
 	// are now BSS globals to avoid circular dependency with heap initialization
 
 	// Just call osinit to set ncpu (doesn't allocate memory)
-	print("Calling runtime.osinit()... ")
 	asm.CallRuntimeOsinit()
-	print("PASS\r\n")
 
 	// NOTE: We skip runtime.schedinit() and mallocinit() entirely
 	// kmazarin (the actual kernel) will do full Go runtime initialization
@@ -875,11 +843,9 @@ func KernelMain(r0, r1, atags uint32) {
 	}
 	setMaxstacksize(stackSize)
 	setMaxstackceiling(2 * stackSize)
-	print("  Max stack size set to ", stackSize, " bytes\r\n")
 
 	// Mark scheduler as ready - futex can now use real gopark/goready
 	MarkSchedulerReady()
-	print("Scheduler fully initialized (gopark/goready enabled)\r\n")
 
 	// NOTE: parseEmbeddedKmazarin() will be called from simpleMain() (user goroutine)
 	// because debug/elf uses defer, which isn't allowed on the system stack (g0)

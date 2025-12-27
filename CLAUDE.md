@@ -50,9 +50,25 @@ Kmazarin is an **unmodified Go binary** that must start up in "absolutely the no
 1. Use `UART_PUTC` macro for single characters
 2. Use `print_hex64` function for hex values
 3. Use `uartPutsDirect` for strings
-4. Always save/restore registers if you must use temporary registers
+4. Use `DEBUG_SAVE_REGS` / `DEBUG_RESTORE_REGS` macros to preserve register state
 5. DO NOT modify SP with pre-decrement when the current SP value is critical
 6. Test debug code thoroughly - bad debug output can introduce worse bugs than the ones you're trying to find
+
+**CRITICAL: Caller-save requirement for X0 (and other live registers):**
+- Debug print functions typically use X0 as a parameter (e.g., `print_hex64` takes value in X0)
+- If X0 contains a value that must be preserved (like a syscall return value), the **CALLER** must save X0 to the stack before calling the debug function and restore it after
+- This applies to any register that might be clobbered by the debug function
+- The `DEBUG_SAVE_REGS` macro saves X0-X15 to the stack; use `DEBUG_RESTORE_REGS` to restore them
+
+**Example of SAFE debug output when X0 must be preserved:**
+```assembly
+// GOOD - save X0 before debug, restore after
+DEBUG_SAVE_REGS                  // Saves x0-x15 to stack
+mov x0, x5                       // Move value to print into x0
+bl print_hex64                   // Print it
+DEBUG_RESTORE_REGS               // Restores x0-x15 from stack
+// X0 now has its original value
+```
 
 **Example of UNSAFE debug code that broke syscall handling:**
 ```assembly
@@ -62,6 +78,53 @@ stp x0, x1, [sp, #-16]!          // Decrements SP by 16!
 ldp x0, x1, [sp], #16            // Increments SP back
 // Problem: Code between these expects SP to be unchanged!
 ```
+
+**Example of UNSAFE debug that clobbers X0:**
+```assembly
+// BAD - clobbers X0 which contains syscall return value
+movz x10, #0x0900, lsl #16       // UART base
+lsr x11, x0, #28                 // Uses X0, but then...
+// ... more code ...
+// X0 was never saved! If it contained important data, it's lost!
+```
+
+**ABSOLUTE RULE: Never use direct assembly UART writes for debugging:**
+- Do NOT write code like `movz x10, #0x0900, lsl #16; strb w11, [x10]`
+- Even if you save/restore registers, direct UART writes bypass all safety mechanisms
+- Always use the established safe macros: `UART_PUTC`, `print_hex64`, `uartPutsDirect`
+- If safe macros don't exist for your use case, create them first with proper register preservation
+
+**When using safe macros, save registers used as parameters:**
+- Safe macros like `print_hex64` take parameters in specific registers (e.g., X0)
+- Before calling such macros, save any live registers that the macro might clobber
+- Use `DEBUG_SAVE_REGS` / `DEBUG_RESTORE_REGS` or manual stp/ldp pairs
+- The caller is responsible for this - the macros assume you've handled it
+
+### ARM64 Exception Return Addresses (ELR_EL1)
+
+**CRITICAL: The value saved in ELR_EL1 differs by exception type:**
+
+| Exception Type | ELR_EL1 Contains |
+|----------------|------------------|
+| SVC (syscall) | Address of instruction **AFTER** SVC |
+| HVC, SMC | Address of instruction **AFTER** the exception instruction |
+| Data Abort | Address of the **faulting instruction** (retry-able) |
+| Instruction Abort | Address of the **faulting instruction** |
+| Other synchronous | Generally the faulting instruction address |
+
+**For SVC exceptions specifically:**
+- Hardware automatically sets ELR_EL1 to PC+4 (next instruction)
+- The syscall return path should **NOT add 4** to ELR - it's already correct
+- ERET will return directly to the instruction after SVC
+
+**For page fault exceptions:**
+- Hardware sets ELR_EL1 to the faulting instruction address
+- After fixing the page fault, ERET retries the same instruction
+- No adjustment needed if you want retry behavior
+
+**References:**
+- [ARM Exception Model Documentation](https://developer.arm.com/documentation/102412/latest/Exception-types/Synchronous-exceptions)
+- [ARM64 SVC Instruction Behavior](https://cirosantilli.com/linux-kernel-module-cheat/arm-svc-instruction.html)
 
 ## Current Challenge: Starting Kmazarin
 
@@ -324,10 +387,10 @@ Physical Address Range          Size      Purpose                      Mapped?
 ~0x41A00000 - 0x50000000        ~230 MB   Physical Frame Pool          (demand)
 
 0x50000000 - 0x5EFEFFFF         ~239 MB   Reserved/Unmapped            ✗
-0x5EFF0000 - 0x5F000000         64 KB     **g0 Stack (SP_EL0)**        ✓ (RW) ← NEW!
-0x5F000000 - 0x5F010000         64 KB     **Exception Stack (SP_EL1)** ✓ (RW) ← NEW!
+0x5EFF0000 - 0x5F000000         64 KB     **g0 Stack (SP_EL0)**        ✓ (RW)
+0x5F000000 - 0x5F020000         128 KB    **Exception Stack (SP_EL1)** ✓ (RW) ← INCREASED!
 
-0x5F010000 - 0x80000000         ~528 MB   Unused RAM                   ✗
+0x5F020000 - 0x80000000         ~528 MB   Unused RAM                   ✗
 
 0x4010000000 - 0x401FFFFFFF     256 MB    PCI ECAM (highmem)           ✓ (Device)
 ================================================================================
@@ -348,15 +411,15 @@ Physical Address Range          Size      Purpose                      Mapped?
 - **Used for**: All normal kernel execution (g0 goroutine, syscalls, etc.)
 - **CRITICAL**: Must be mapped in page tables before enabling MMU!
 
-#### Exception Stack (SP_EL1) - 0x5F000000 - 0x5F010000
-- **Size**: 64 KB
+#### Exception Stack (SP_EL1) - 0x5F000000 - 0x5F020000
+- **Size**: 128 KB (increased from 64 KB to fix stack overflow in syscall handlers)
 - **Purpose**: Exception handler stack (IRQ, FIQ, synchronous exceptions)
-- **Register**: SP_EL1 set to `0x5F010000`
+- **Register**: SP_EL1 set to `0x5F020000`
 - **Mode**: EL1h (SPSel=1, using SP_EL1)
 - **Privilege Level**: EL1 (full kernel privileges)
-- **Set in**: `boot.s:94` - `mov sp, x0` where `x0 = 0x5F010000`
+- **Set in**: `boot.s:93` - `mov sp, x0` where `x0 = 0x5F020000`
 - **Activated**: Automatically when exceptions occur
-- **Direction**: Grows downward from `0x5F010000` toward `0x5F000000`
+- **Direction**: Grows downward from `0x5F020000` toward `0x5F000000`
 - **Attributes**: Normal memory, RW, non-executable
 - **Used for**: Exception handlers only (CPU auto-switches to SP_EL1)
 - **CRITICAL**: Must be mapped in page tables before enabling MMU!
@@ -499,10 +562,11 @@ mapRegion(exceptionStackBottom, exceptionStackTop, exceptionStackBottom, PTE_ATT
 
 ```
 High Memory
-┌─────────────────────────┐ 0x5F010000 ← SP_EL1 (exception stack top)
+┌─────────────────────────┐ 0x5F020000 ← SP_EL1 (exception stack top)
 │                         │
-│   Exception Stack       │  64 KB, grows ↓
+│   Exception Stack       │  128 KB, grows ↓
 │   (SP_EL1)              │  Used by IRQ/FIQ/exception handlers
+│                         │  (Increased from 64KB to fix overflow)
 │                         │
 ├─────────────────────────┤ 0x5F000000 ← SP_EL0 (g0 stack top)
 │                         │
@@ -546,11 +610,12 @@ This is the standard OS model: user code (EL0) cannot handle its own exceptions 
 
 ```
 High Memory
-┌─────────────────────────┐ 0x5F010000 ← SP_EL1 (exception stack top)
+┌─────────────────────────┐ 0x5F020000 ← SP_EL1 (exception stack top)
 │                         │
-│   Exception Stack       │  64 KB, grows ↓
+│   Exception Stack       │  128 KB, grows ↓
 │   (SP_EL1, EL1h mode)   │  IRQ/FIQ/exception handlers
 │                         │  Full EL1 privilege
+│                         │  (Increased from 64KB to fix overflow)
 │                         │
 ├─────────────────────────┤ 0x5F000000 ← SP_EL0 (g0 stack top)
 │                         │

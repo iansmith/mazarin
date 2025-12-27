@@ -17,6 +17,7 @@ func main() {
 	// This will never execute in bare metal, but ensures the functions exist
 	ExceptionHandler(0, 0, 0, 0, 0, 0, 0, 0)
 	UartTransmitHandler() // UART TX interrupt handler
+	irqHandlerGo(0)
 
 	// Reference other functions called from assembly
 	// This will never execute in bare metal, but ensures the functions exist
@@ -42,6 +43,10 @@ func main() {
 	kernelMainBodyWrapper()
 	simpleMain()
 	timerPreempt()
+	uartPutHex32Direct(0)
+	uartPutHex64Direct(0)
+	uartPutcDirect(0)
+	uartPutsDirect("")
 
 	//{{ LINKNAME END}}
 	// This should never execute in bare metal

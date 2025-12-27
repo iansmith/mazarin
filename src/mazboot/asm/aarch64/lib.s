@@ -1388,3 +1388,22 @@ IcIvau:
     // Invalidate instruction cache line containing address x0
     ic ivau, x0
     ret
+
+// ARM Semihosting support for exiting QEMU
+
+.global SemihostingExit
+SemihostingExit:
+    // ARM Semihosting SYS_EXIT call (0x18)
+    // x0 contains exit code (passed from Go)
+    // Semihosting uses HLT #0xF000 on AArch64
+    mov x1, x0                // x1 = exit code
+    movz x0, #0x18            // x0 = SYS_EXIT (0x18)
+    hlt #0xF000               // Semihosting trap - QEMU should exit here
+    ret                       // Should never reach here
+
+// Simple NOP instruction for busy-wait loops
+
+.global Nop
+Nop:
+    nop
+    ret

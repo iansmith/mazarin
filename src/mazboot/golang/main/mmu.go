@@ -129,13 +129,13 @@ const (
 	PHYS_FRAME_END  = 0x50000000 // End of 256MB RAM (BOOT_ADDRESS + 256MB)
 
 	// Stack sizes (must be page-aligned multiples)
-	STACK_SIZE_G0_MAZBOOT      = 64 * 1024  // 64KB for g0 stack (normal execution)
-	STACK_SIZE_EXCEPTION_EL1   = 64 * 1024  // 64KB for exception handler stack
+	STACK_SIZE_G0_MAZBOOT      = 64 * 1024   // 64KB for g0 stack (normal execution)
+	STACK_SIZE_EXCEPTION_EL1   = 128 * 1024  // 128KB for exception handler stack (increased from 64KB to fix overflow)
 
 	// Stack base address (nice round number, placed after frame pool)
 	// This is the TOP of the exception stack (highest address)
 	// Stacks grow downward from here
-	STACK_BASE = 0x5F010000  // Round number ending in 0000
+	STACK_BASE = 0x5F020000  // Round number ending in 0000 (increased from 0x5F010000)
 
 	// Kmazarin conservative size estimate (for initial PHYS_FRAME_BASE calculation)
 	// Actual kmazarin size is determined after ELF load; this is a safe upper bound
@@ -498,7 +498,6 @@ func preMapPages() {
 	// Allocate a physical frame
 	physFrame := allocPhysFrame()
 	if physFrame == 0 {
-		print("ERROR: Failed to allocate physical frame for pre-mapping\r\n")
 		return
 	}
 
@@ -512,10 +511,6 @@ func preMapPages() {
 	asm.Dsb()
 	asm.InvalidateTlbAll()
 	asm.Isb()
-
-	print("Pre-mapped VA 0x4000010000 -> PA 0x")
-	uartPutHex64(uint64(physFrame))
-	print("\r\n")
 }
 
 // HandlePageFault handles a page fault for demand paging
@@ -1151,6 +1146,16 @@ func initMMU() bool {
 	// The exact start address depends on kmazarin size (determined at runtime after ELF load)
 	// This region will be identity-mapped as part of the general RAM mapping
 
+	// NOTE: Bump allocator region (0x48000000 - 0xC8000000) is registered as a span
+	// but NOT pre-mapped in page tables. Instead, pages are mapped on-demand via page
+	// fault handler when kmazarin first accesses them. This saves ~512K page table entries!
+	//
+	// When kmazarin writes to unmapped address in bump region:
+	//   1. Data abort exception occurs
+	//   2. Exception handler checks if address is in registered span
+	//   3. If yes: map the 4KB page on-demand (identity map VA=PA) and continue
+	//   4. If no: real bug, panic with fault details
+
 	// CRITICAL FIX: Map BOTH stacks - g0 stack and exception stack
 	// Both operate at EL1 privilege level (no EL0 execution yet)
 	//
@@ -1159,8 +1164,8 @@ func initMMU() bool {
 	// - Exception stack (SP_EL1): Used for exception handlers in EL1h mode (SPSel=1)
 	//
 	// Stack layout (grows downward from STACK_BASE):
-	//   STACK_BASE (0x5F010000) ← SP_EL1 (exception stack top)
-	//   ↓ exception stack (STACK_SIZE_EXCEPTION_EL1 = 64KB)
+	//   STACK_BASE (0x5F020000) ← SP_EL1 (exception stack top)
+	//   ↓ exception stack (STACK_SIZE_EXCEPTION_EL1 = 128KB)
 	//   0x5F000000 ← SP_EL0 (g0 stack top)
 	//   ↓ g0 stack (STACK_SIZE_G0_MAZBOOT = 64KB)
 	//   0x5EFF0000 (g0 stack bottom)
@@ -1311,26 +1316,22 @@ func dumpFetchMapping(label string, va uintptr) bool {
 
 	l0e := (*uint64)(unsafe.Pointer(pageTableL0 + uintptr(l0Idx)*PTE_SIZE))
 	if (*l0e & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE) {
-		print("MMU: L0 mapping error\r\n")
 		return false
 	}
 	l1Base := uintptr(*l0e & PTE_ADDR_MASK)
 	l1e := (*uint64)(unsafe.Pointer(l1Base + uintptr(l1Idx)*PTE_SIZE))
 	if (*l1e & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE) {
-		print("MMU: L1 mapping error\r\n")
 		return false
 	}
 	l2Base := uintptr(*l1e & PTE_ADDR_MASK)
 	l2e := (*uint64)(unsafe.Pointer(l2Base + uintptr(l2Idx)*PTE_SIZE))
 	if (*l2e & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE) {
-		print("MMU: L2 mapping error\r\n")
 		return false
 	}
 	l3Base := uintptr(*l2e & PTE_ADDR_MASK)
 	l3e := (*uint64)(unsafe.Pointer(l3Base + uintptr(l3Idx)*PTE_SIZE))
 
 	if (*l3e & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE) {
-		print("MMU: L3 mapping error\r\n")
 		return false
 	}
 
@@ -1342,7 +1343,6 @@ func dumpFetchMapping(label string, va uintptr) bool {
 //go:nosplit
 func enableMMU() bool {
 	if pageTableL0 == 0 {
-		print("FATAL: Page tables not initialized\r\n")
 		return false
 	}
 	// Configure MAIR_EL1: Set all 3 memory attribute indices
@@ -1357,7 +1357,6 @@ func enableMMU() bool {
 	// Verify MAIR
 	mairReadback := asm.ReadMairEl1()
 	if (mairReadback & 0xFFFFFF) != mairValue {
-		print("FATAL: MAIR configuration failed\r\n")
 		return false
 	}
 
@@ -1375,7 +1374,6 @@ func enableMMU() bool {
 	// Verify TCR
 	tcrReadback := asm.ReadTcrEl1()
 	if (tcrReadback & 0x3F) != 16 {
-		print("FATAL: TCR T0SZ configuration failed\r\n")
 		return false
 	}
 
@@ -1386,7 +1384,6 @@ func enableMMU() bool {
 	// Verify TTBR0
 	ttbr0Readback := asm.ReadTtbr0El1()
 	if (ttbr0Readback &^ 0xFFF) != uint64(pageTableL0) {
-		print("FATAL: TTBR0 configuration failed\r\n")
 		return false
 	}
 

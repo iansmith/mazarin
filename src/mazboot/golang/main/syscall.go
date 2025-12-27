@@ -7,6 +7,57 @@ import (
 	_ "unsafe" // for go:linkname
 )
 
+// ============================================================================
+// Syscall Debug Tracing Functions
+// ============================================================================
+// These functions provide clear one-line debug output for each syscall
+// Format: SYSCALL: #<num> <name>(<param>=<value>, ...) = <retval>
+
+//go:nosplit
+func syscallDebugStart(num uint32, name string) {
+	uartPutsDirect("SYSCALL: #")
+	uartPutHex32Direct(num)
+	uartPutsDirect(" ")
+	uartPutsDirect(name)
+	uartPutsDirect("(")
+}
+
+//go:nosplit
+func syscallDebugParamHex(name string, value uint64) {
+	uartPutsDirect(name)
+	uartPutsDirect("=0x")
+	uartPutHex64Direct(value)
+}
+
+//go:nosplit
+func syscallDebugParamInt(name string, value int64) {
+	uartPutsDirect(name)
+	uartPutsDirect("=")
+	if value < 0 {
+		uartPutsDirect("-")
+		value = -value
+	}
+	uartPutHex64Direct(uint64(value))
+}
+
+//go:nosplit
+func syscallDebugSep() {
+	uartPutsDirect(", ")
+}
+
+//go:nosplit
+func syscallDebugEnd(retval int64) {
+	uartPutsDirect(") = ")
+	if retval < 0 {
+		uartPutsDirect("-")
+		retval = -retval
+	}
+	uartPutHex64Direct(uint64(retval))
+	uartPutsDirect("\r\n")
+}
+
+// ============================================================================
+
 // Simple FD tracking for /dev/random and /proc/self/auxv
 // Instead of a full FD table, just track if FD 3 and FD 4 are allocated
 var devRandomFDAllocated uint32 // 0 = not allocated, 1 = FD 3 is /dev/random
@@ -132,9 +183,13 @@ func SyscallSchedGetaffinity(pid int32, cpusetsize uint64, mask unsafe.Pointer) 
 //
 //go:nosplit
 func SyscallUnknown(syscallNum uint64) {
-	print("?(")
-	printHex32(uint32(syscallNum))
-	print(")")
+	// Simple breadcrumb - don't use print() as it may allocate
+	uartPutcDirect('?')
+
+	// Return -ENOSYS (function not implemented)
+	// CRITICAL: Must return a value to avoid corrupting X0!
+	// Note: This is a void function, so we can't return here.
+	// The assembly handler must set X0 to -ENOSYS
 }
 
 // SyscallClose implements the close syscall
@@ -150,18 +205,8 @@ var closeCallCount uint32
 //go:nosplit
 func SyscallClose(fd int32) int64 {
 	closeCallCount++
-	// Print breadcrumb for first few calls
-	if closeCallCount <= 5 {
-		const uartBase = uintptr(0x09000000)
-		*(*uint32)(unsafe.Pointer(uartBase)) = 0x63  // 'c'
-	}
-	if closeCallCount % 100 == 0 {
-		// Print progress every 100 calls
-		const uartBase = uintptr(0x09000000)
-		*(*uint32)(unsafe.Pointer(uartBase)) = 0x43  // 'C' (uppercase)
-	}
-	if closeCallCount > 10000 {
-		print("\r\nCLOSE LOOP! (>10000 calls)\r\n")
+	// Loop detection: hang if called too many times (indicates infinite loop)
+	if closeCallCount > 60 {
 		for {
 		}
 	}
@@ -201,18 +246,8 @@ var readCallCount uint32
 //go:nosplit
 func SyscallRead(fd int32, buf unsafe.Pointer, count uint64) int64 {
 	readCallCount++
-	// Print breadcrumb for first few calls
-	if readCallCount <= 5 {
-		const uartBase = uintptr(0x09000000)
-		*(*uint32)(unsafe.Pointer(uartBase)) = 0x72  // 'r'
-	}
-	if readCallCount % 100 == 0 {
-		// Print progress every 100 calls
-		const uartBase = uintptr(0x09000000)
-		*(*uint32)(unsafe.Pointer(uartBase)) = 0x52  // 'R' (uppercase)
-	}
-	if readCallCount > 10000 {
-		print("\r\nREAD LOOP! (>10000 calls)\r\n")
+	// Loop detection: hang if called too many times (indicates infinite loop)
+	if readCallCount > 60 {
 		for {
 		}
 	}
@@ -284,19 +319,13 @@ var openatCallCount uint32
 //go:nosplit
 func SyscallOpenat(dirfd int32, pathname unsafe.Pointer, flags int32, mode int32) int64 {
 	openatCallCount++
-	if openatCallCount % 100 == 0 {
-		// Print progress every 100 calls
-		const uartBase = uintptr(0x09000000)
-		*(*uint32)(unsafe.Pointer(uartBase)) = 0x4F  // 'O'
-	}
-	if openatCallCount > 10000 {
-		print("\r\nOPENAT LOOP! (>10000 calls)\r\n")
+	// Loop detection: hang if called too many times (indicates infinite loop)
+	if openatCallCount > 60 {
 		for {
 		}
 	}
 
 	if pathname == nil {
-		print("openat: pathname is nil\r\n")
 		return -14 // -EFAULT
 	}
 
@@ -340,13 +369,8 @@ func SyscallOpenat(dirfd int32, pathname unsafe.Pointer, flags int32, mode int32
 		return -2 // -ENOENT
 	}
 
-	// Unexpected path - print error and abort
-	print("openat: UNEXPECTED PATH: ")
-	printCString(pathname)
-	print("\r\n")
-
-	// Return error for unexpected path
-	return -2 // -ENOENT for now, could panic if we want to be strict
+	// Unexpected path - return error
+	return -2 // -ENOENT
 }
 
 // Helper function to compare null-terminated C string with Go string
@@ -457,15 +481,37 @@ func isInMmapSpan(va uintptr) bool {
 }
 
 var mmapCallCount uint32
+var mmapTestValue uint64 = 0xDEADBEEF
+
+// uartBase points to PL011 UART data register
+var uartBase *uint8 = (*uint8)(unsafe.Pointer(uintptr(0x09000000)))
 
 //go:nosplit
 //go:noinline
 func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32, offset int64) int64 {
-	// Minimal breadcrumb for mmap calls
 	mmapCallCount++
+	// Loop detection: hang if called too many times (indicates infinite loop)
+	if mmapCallCount > 60 {
+		for {
+		}
+	}
 
-	// Simple breadcrumb - 'M' for mmap entry
-	uartPutcDirect('M')
+	// Debug trace entry - DISABLED (causes nested syscalls that corrupt return value)
+	//syscallDebugStart(222, "mmap")
+	//syscallDebugParamHex("addr", uint64(addr))
+	//syscallDebugSep()
+	//syscallDebugParamHex("len", length)
+	//syscallDebugSep()
+	//syscallDebugParamHex("prot", uint64(prot))
+	//syscallDebugSep()
+	//syscallDebugParamHex("flags", uint64(flags))
+	//syscallDebugSep()
+	//syscallDebugParamInt("fd", int64(fd))
+	//syscallDebugSep()
+	//syscallDebugParamHex("off", uint64(offset))
+	// Return value will be added at each return point
+
+	const MAP_FIXED = 0x10
 
 	// Handle zero-length mmap
 	// This should never happen and indicates a runtime initialization bug
@@ -489,7 +535,6 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 	// - With MAP_FIXED: Must use exact addr or return ENOMEM
 
 	// Check for MAP_FIXED (0x10) - must return exact address or fail
-	const MAP_FIXED = 0x10
 	if (flags & MAP_FIXED) != 0 {
 		// MAP_FIXED validation
 		if addr == 0 {
@@ -500,7 +545,8 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 
 		// Check page alignment (4KB)
 		if (addr & 0xFFF) != 0 {
-			return -22 // -EINVAL
+			// syscallDebugEnd(-22) // DISABLED - corrupts X0
+			return -22 // -EINVAL (syscall returns negative errno)
 		}
 
 		// CRITICAL: Validate address is within reasonable virtual address space
@@ -510,26 +556,31 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 		// Accept up to 1PB to handle all reasonable Go runtime addresses
 		const MAX_VIRT_ADDR = uintptr(0x4000000000000) // 1PB (1024TB)
 		if addr >= MAX_VIRT_ADDR {
-			return -12 // -ENOMEM
+			// syscallDebugEnd(-12) // DISABLED - corrupts X0
+			return -12 // -ENOMEM (syscall returns negative errno)
 		}
 
 		// Check if would overflow when adding length
 		if addr+uintptr(length) < addr {
-			return -12 // -ENOMEM
+			// syscallDebugEnd(-12) // DISABLED - corrupts X0
+			return -12 // -ENOMEM (syscall returns negative errno)
 		}
 
 		if addr+uintptr(length) > MAX_VIRT_ADDR {
-			return -12 // -ENOMEM
+			// syscallDebugEnd(-12) // DISABLED - corrupts X0
+			return -12 // -ENOMEM (syscall returns negative errno)
 		}
 
 		// Register this span
 		if !registerMmapSpan(addr, addr+uintptr(roundedLength)) {
-			uartPutcDirect('E') // E = ENOMEM
-			return -12 // -ENOMEM
+			// syscallDebugEnd(-12) // DISABLED - corrupts X0
+			return -12 // -ENOMEM (syscall returns negative errno)
 		}
 
-		uartPutcDirect('F') // F = MAP_FIXED success
-		return int64(addr)
+		// uartPutcDirect('F')  // DISABLED - corrupts X0 right before return!
+		retVal := int64(addr)
+		// syscallDebugEnd(retVal) // DISABLED - corrupts X0
+		return retVal
 	}
 
 	// No MAP_FIXED - addr is just a hint, but Go runtime RELIES on hints being honored
@@ -547,12 +598,14 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 
 			// Register this span
 			if !registerMmapSpan(addr, addr+uintptr(roundedLength)) {
-				uartPutcDirect('E') // E = ENOMEM
-				return -12 // -ENOMEM
+				// syscallDebugEnd(-12) // DISABLED - corrupts X0
+				return -12 // -ENOMEM (syscall returns negative errno)
 			}
 
-			uartPutcDirect('H') // H = Hint honored
-			return int64(addr)
+			// uartPutcDirect('H')  // DISABLED - corrupts X0 right before return!
+			retVal := int64(addr)
+			// syscallDebugEnd(retVal) // DISABLED - corrupts X0
+			return retVal
 		}
 	}
 
@@ -565,21 +618,14 @@ use_bump_allocator:
 
 	// Check if allocation would overflow the pre-registered bump region
 	if endAddr > BUMP_REGION_END {
-		uartPutcDirect('X') // X = bump exhausted
-		return -12 // -ENOMEM
+		return -12 // -ENOMEM (syscall returns negative errno)
 	}
 
 	// Update bump pointer for next allocation
 	mmapBumpNext = endAddr
 
-	uartPutcDirect('B') // B = Bump allocator success
-
-	// DEBUG: Verify return value is correct
-	retval := int64(allocAddr)
-	if retval < 0 || retval == 0 {
-		uartPutcDirect('!') // Should never happen
-	}
-	return retval
+	// Return the allocated address
+	return int64(allocAddr)
 }
 
 //go:nosplit
@@ -594,101 +640,35 @@ func SyscallMunmap(addr uintptr, length uint64) int64 {
 
 //go:nosplit
 func SyscallFutex(addr unsafe.Pointer, op int32, val uint32, ts unsafe.Pointer, addr2 unsafe.Pointer, val3 uint32) int64 {
-	uaddr := (*uint32)(addr)
-	addrVal := uintptr(addr)
+	// KMAZARIN FIX: We can't use mazboot's gopark/goready for kmazarin's syscalls.
+	// Kmazarin has its own Go runtime with its own scheduler.
+	// For now, use simple stub behavior:
+	// - FUTEX_WAIT: Check value, if matches return -EAGAIN (forces spin-wait)
+	// - FUTEX_WAKE: Return number woken (0 since no real waiters)
+	//
+	// This works because in single-core without real threads, contention
+	// should resolve quickly as kmazarin's runtime initializes.
 
-	// Early-use detection: Log if futex is used before scheduler is ready
-	// DEBUG REMOVED - print/printHex allocate memory and corrupt X0
-	if atomic.LoadUint32(&schedulerReady) == 0 {
-		atomic.CompareAndSwapUint32(&futexEarlyUseDetected, 0, 1)
-	}
+	uaddr := (*uint32)(addr)
 
 	switch op {
 	case _FUTEX_WAIT_PRIVATE:
-		// FUTEX_WAIT: Atomically check if *addr == val, and if so, sleep until woken
-		//
-		// The atomic check is CRITICAL to prevent lost wakeup:
-		//   1. Thread A checks lock, sees it's taken
-		//   2. Thread B releases lock, calls FUTEX_WAKE (but A not waiting yet)
-		//   3. Thread A calls FUTEX_WAIT (missed the wakeup - deadlock!)
-		//
-		// With atomic check:
-		//   1. Thread A calls FUTEX_WAIT(val=1)
-		//   2. Thread B changes *addr to 0 and calls FUTEX_WAKE
-		//   3. Thread A's FUTEX_WAIT sees *addr != val, returns -EAGAIN (no sleep)
-
-		// DEBUG: Log futex WAIT calls during schedinit
-		print("F")
-
-		// Step 1: Atomic check (CRITICAL)
+		// Check if value matches
 		if atomic.LoadUint32(uaddr) != val {
-			print("E") // E = EAGAIN (value mismatch)
-			return -11 // -EAGAIN: value changed, don't sleep
+			return -11 // -EAGAIN: value changed
 		}
-
-		// Step 2: Get current goroutine and allocate wait slot
-		gp := asm.GetCurrentG()
-		if gp == 0 {
-			print("FUTEX: GetCurrentG() returned 0\r\n")
-			return -11 // -EAGAIN
-		}
-
-		mySlot := allocateFutexWaitSlotWithG(addrVal, gp)
-		if mySlot < 0 {
-			print("FUTEX: No free wait slots (max ")
-			printHex32(MAX_FUTEX_WAITERS)
-			print(" waiters)\r\n")
-			return -11 // -EAGAIN: no free slots
-		}
-
-		// Step 3: Park goroutine (suspend until FUTEX_WAKE)
-		//
-		// IMPORTANT: During early bootstrap (before schedinit completes), we can't
-		// actually block because there's only g0 and no other runnable goroutines.
-		// Use stub behavior (return immediately) until scheduler is fully initialized.
-		if atomic.LoadUint32(&schedulerReady) == 0 {
-			// Scheduler not ready - use stub behavior (don't actually park)
-			print("R") // R = Returned immediately (stub)
-			freeFutexWaitSlot(mySlot)
-			return 0
-		}
-
-		// Scheduler is ready - use real gopark
-		print("P") // P = Parking
-		runtimeGopark(nil, unsafe.Pointer(&futexWaiters[mySlot]), 0, 0, 0)
-
-		// Step 4: Woken up - clean up wait slot
-		print("W") // W = Woken
-		freeFutexWaitSlot(mySlot)
+		// Value matches, but we can't block.
+		// Return 0 (success) to tell caller it was "woken up".
+		// The caller will check the condition again and either proceed or retry.
+		// This is effectively a spin-check pattern.
 		return 0
 
 	case _FUTEX_WAKE_PRIVATE:
-		// FUTEX_WAKE: Wake up to 'val' goroutines waiting on this address
-		print("w") // w = FUTEX_WAKE (lowercase to distinguish from W=woken)
-
-		woken := 0
-		for i := 0; i < MAX_FUTEX_WAITERS && woken < int(val); i++ {
-			if atomic.LoadUintptr(&futexWaiters[i].addr) == addrVal {
-				// Found a waiter on this address - wake it up
-				gp := atomic.LoadUintptr(&futexWaiters[i].gp)
-				if gp != 0 {
-					// Clear the slot before waking (the goroutine will clean up when it resumes)
-					atomic.StoreUintptr(&futexWaiters[i].gp, 0)
-					atomic.StoreUintptr(&futexWaiters[i].addr, 0)
-
-					// Wake the goroutine (mark as runnable and add to run queue)
-					runtimeGoready(unsafe.Pointer(gp), 0)
-					woken++
-				}
-			}
-		}
-
-		return int64(woken)
+		// FUTEX_WAKE: Since we don't actually block anyone, just return 0
+		// (no waiters woken - but that's fine, the memory was updated)
+		return 0
 
 	default:
-		print("FUTEX: Unsupported operation: ")
-		printHex32(uint32(op))
-		print("\r\n")
 		return -22 // -EINVAL
 	}
 }
@@ -767,8 +747,16 @@ func SyscallClockGettime() int64 {
 
 //go:nosplit
 func SyscallExit() {
-	print("SyscallExit called\r\n")
+	// Try to exit QEMU using ARM semihosting
+	// Semihosting call: SYS_EXIT (0x18) with exit code 0
+	// This uses HLT instruction which QEMU intercepts when semihosting is enabled
+	asm.SemihostingExit()
+
+	// If semihosting didn't work (or returned), deadloop with busy wait
+	// NEVER return from this function - exit syscall should never return!
 	for {
+		// Busy wait - prevents optimization from removing the loop
+		asm.Nop()
 	}
 }
 

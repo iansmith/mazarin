@@ -327,6 +327,10 @@ func MmioWrite16(reg uintptr, data uint16)
 //go:nosplit
 func MmioWrite64(reg uintptr, data uint64)
 
+//go:linkname Nop Nop
+//go:nosplit
+func Nop()
+
 //go:linkname OurGcWriteBarrier our_gcWriteBarrier
 //go:nosplit
 func OurGcWriteBarrier()
@@ -414,6 +418,10 @@ func ReadTtbr0El1() uint64
 //go:linkname ReadVbarEl1 read_vbar_el1
 //go:nosplit
 func ReadVbarEl1() uintptr
+
+//go:linkname SemihostingExit SemihostingExit
+//go:nosplit
+func SemihostingExit()
 
 //go:linkname SetCurrentG set_current_g
 //go:nosplit

@@ -87,10 +87,10 @@ at_el1:
     // Both stacks operate at EL1 privilege level - no EL0 execution yet!
     // ========================================
 
-    // Set SP_EL1 (exception stack) to 0x5F010000
+    // Set SP_EL1 (exception stack) to 0x5F020000
     // NOTE: We're in EL1h mode (using SP_EL1), so use 'mov sp' not 'msr SP_EL1'
     // Using 'msr SP_EL1' while in EL1h mode causes the system to hang
-    movz x0, #0x5F01, lsl #16    // 0x5F010000 (exception stack top, 64KB)
+    movz x0, #0x5F02, lsl #16    // 0x5F020000 (exception stack top, 128KB)
     mov sp, x0                   // Set current stack (which is SP_EL1 in EL1h mode)
 
     // Set SP_EL0 (g0 stack for normal kernel execution) to 0x5F000000

@@ -95,6 +95,173 @@ mmapBumpNext:
 .endm
 
 // ============================================================================
+// INTERRUPT FULL SAVE/RESTORE MACROS
+// ============================================================================
+// These macros save and restore ALL registers across an interrupt.
+// This ensures the interrupted code is completely unaware of the interrupt.
+//
+// Frame layout (272 bytes, 16-byte aligned):
+//   Offset   Contents
+//   ------   --------
+//   0-7      x0
+//   8-15     x1
+//   16-23    x2
+//   24-31    x3
+//   ...      ... (pairs of registers)
+//   224-231  x28
+//   232-239  x29
+//   240-247  x30
+//   248-255  SP_EL0 (interrupted code's stack pointer)
+//   256-263  ELR_EL1 (return address)
+//   264-271  SPSR_EL1 (saved processor state)
+//
+// After INTERRUPT_FULL_SAVE:
+//   - All registers saved to exception stack
+//   - x0 = interrupt ID (from GIC IAR, masked to 10 bits)
+//   - SP = exception stack with frame allocated
+//
+// INTERRUPT_FULL_RESTORE:
+//   - Signals EOI to GIC (uses interrupt ID from x0 parameter)
+//   - Restores all registers exactly as they were
+//   - Executes eret to return to interrupted code
+
+.equ IRQ_FRAME_SIZE, 272
+.equ IRQ_FRAME_X0,      0
+.equ IRQ_FRAME_X1,      8
+.equ IRQ_FRAME_X2,      16
+.equ IRQ_FRAME_X3,      24
+.equ IRQ_FRAME_X4,      32
+.equ IRQ_FRAME_X5,      40
+.equ IRQ_FRAME_X6,      48
+.equ IRQ_FRAME_X7,      56
+.equ IRQ_FRAME_X8,      64
+.equ IRQ_FRAME_X9,      72
+.equ IRQ_FRAME_X10,     80
+.equ IRQ_FRAME_X11,     88
+.equ IRQ_FRAME_X12,     96
+.equ IRQ_FRAME_X13,     104
+.equ IRQ_FRAME_X14,     112
+.equ IRQ_FRAME_X15,     120
+.equ IRQ_FRAME_X16,     128
+.equ IRQ_FRAME_X17,     136
+.equ IRQ_FRAME_X18,     144
+.equ IRQ_FRAME_X19,     152
+.equ IRQ_FRAME_X20,     160
+.equ IRQ_FRAME_X21,     168
+.equ IRQ_FRAME_X22,     176
+.equ IRQ_FRAME_X23,     184
+.equ IRQ_FRAME_X24,     192
+.equ IRQ_FRAME_X25,     200
+.equ IRQ_FRAME_X26,     208
+.equ IRQ_FRAME_X27,     216
+.equ IRQ_FRAME_X28,     224
+.equ IRQ_FRAME_X29,     232
+.equ IRQ_FRAME_X30,     240
+.equ IRQ_FRAME_SP_EL0,  248
+.equ IRQ_FRAME_ELR,     256
+.equ IRQ_FRAME_SPSR,    264
+
+// INTERRUPT_FULL_SAVE
+// Entry: In EL1h mode (exception taken), SP = SP_EL1, SP_EL0 = interrupted stack
+// Exit:  SP = exception stack with 272-byte frame, x0 = interrupt ID
+// Clobbers: None (all original values preserved in frame)
+.macro INTERRUPT_FULL_SAVE
+    // Allocate full 272-byte frame FIRST (avoids push/overlap issues)
+    sub sp, sp, #IRQ_FRAME_SIZE
+
+    // Step 1: Save x0, x1 IMMEDIATELY before clobbering
+    stp x0, x1, [sp, #IRQ_FRAME_X0]
+
+    // Step 2: Read GIC IAR to acknowledge interrupt (MUST be done quickly)
+    // Now safe to use x0, x1
+    movz x0, #0x0801, lsl #16       // GICC_IAR at 0x0801000C
+    movk x0, #0x000C
+    ldr w0, [x0]                    // w0 = IAR value
+    and w0, w0, #0x3FF              // w0 = interrupt ID (keep in x0)
+
+    // Step 3: Save x2, x3 so we can use them
+    stp x2, x3, [sp, #IRQ_FRAME_X2]
+
+    // Step 4: Read SP_EL0, ELR_EL1, SPSR_EL1
+    mrs x1, SP_EL0                  // x1 = interrupted stack
+    mrs x2, ELR_EL1                 // x2 = return address
+    mrs x3, SPSR_EL1                // x3 = saved processor state
+
+    // Step 5: Store SP_EL0, ELR, SPSR
+    str x1, [sp, #IRQ_FRAME_SP_EL0]
+    str x2, [sp, #IRQ_FRAME_ELR]
+    str x3, [sp, #IRQ_FRAME_SPSR]
+
+    // Step 6: Save remaining registers x4-x30 (these haven't been modified)
+    stp x4, x5, [sp, #IRQ_FRAME_X4]
+    stp x6, x7, [sp, #IRQ_FRAME_X6]
+    stp x8, x9, [sp, #IRQ_FRAME_X8]
+    stp x10, x11, [sp, #IRQ_FRAME_X10]
+    stp x12, x13, [sp, #IRQ_FRAME_X12]
+    stp x14, x15, [sp, #IRQ_FRAME_X14]
+    stp x16, x17, [sp, #IRQ_FRAME_X16]
+    stp x18, x19, [sp, #IRQ_FRAME_X18]
+    stp x20, x21, [sp, #IRQ_FRAME_X20]
+    stp x22, x23, [sp, #IRQ_FRAME_X22]
+    stp x24, x25, [sp, #IRQ_FRAME_X24]
+    stp x26, x27, [sp, #IRQ_FRAME_X26]
+    stp x28, x29, [sp, #IRQ_FRAME_X28]
+    str x30, [sp, #IRQ_FRAME_X30]
+
+    // x0 = interrupt ID, all registers saved in frame
+.endm
+
+// INTERRUPT_FULL_RESTORE
+// Entry: SP = exception stack with frame
+// Exit:  Returns via eret with all registers restored
+// Note:  This macro does NOT do EOI - caller must handle EOI if needed
+//        (Go handlers typically do EOI themselves via gicEndOfInterrupt)
+.macro INTERRUPT_FULL_RESTORE
+    // Step 1: Restore ELR_EL1 and SPSR_EL1
+    // These tell ERET where to return and what mode to return to
+    ldr x0, [sp, #IRQ_FRAME_ELR]
+    ldr x1, [sp, #IRQ_FRAME_SPSR]
+    msr ELR_EL1, x0
+    msr SPSR_EL1, x1
+    isb
+
+    // Step 2: Restore SP_EL0 (interrupted code's stack pointer)
+    // ERET does NOT automatically restore this - we must do it manually
+    ldr x0, [sp, #IRQ_FRAME_SP_EL0]
+    msr SP_EL0, x0
+    isb
+
+    // Step 3: Restore all GPRs (x0-x30)
+    // Restore x2-x30 first (we use x0, x1 as temporaries above)
+    ldp x2, x3, [sp, #IRQ_FRAME_X2]
+    ldp x4, x5, [sp, #IRQ_FRAME_X4]
+    ldp x6, x7, [sp, #IRQ_FRAME_X6]
+    ldp x8, x9, [sp, #IRQ_FRAME_X8]
+    ldp x10, x11, [sp, #IRQ_FRAME_X10]
+    ldp x12, x13, [sp, #IRQ_FRAME_X12]
+    ldp x14, x15, [sp, #IRQ_FRAME_X14]
+    ldp x16, x17, [sp, #IRQ_FRAME_X16]
+    ldp x18, x19, [sp, #IRQ_FRAME_X18]
+    ldp x20, x21, [sp, #IRQ_FRAME_X20]
+    ldp x22, x23, [sp, #IRQ_FRAME_X22]
+    ldp x24, x25, [sp, #IRQ_FRAME_X24]
+    ldp x26, x27, [sp, #IRQ_FRAME_X26]
+    ldp x28, x29, [sp, #IRQ_FRAME_X28]
+    ldr x30, [sp, #IRQ_FRAME_X30]
+
+    // Step 4: Restore x0, x1 LAST (after we're done using them as temps)
+    ldp x0, x1, [sp, #IRQ_FRAME_X0]
+
+    // Step 5: Deallocate frame
+    add sp, sp, #IRQ_FRAME_SIZE
+
+    // Step 6: Return from exception
+    // ERET restores: PC ← ELR_EL1, PSTATE ← SPSR_EL1
+    // SPSR contains SPSel bit which determines SP_EL0 vs SP_EL1 usage
+    eret
+.endm
+
+// ============================================================================
 // DEBUG MACROS - SAFE REGISTER PRESERVATION
 // ============================================================================
 //
@@ -122,6 +289,104 @@ mmapBumpNext:
     ldp x4, x5, [sp, #32]
     ldp x2, x3, [sp, #16]
     ldp x0, x1, [sp], #128
+.endm
+
+// ============================================================================
+// SAFE DEBUG OUTPUT MACROS
+// ============================================================================
+// These macros provide safe debug output that preserves ALL registers,
+// especially X0 which is critical for syscall return values.
+//
+// IMPORTANT: These macros save/restore X0-X15 around ALL debug operations.
+// Use these instead of direct UART writes or function calls.
+
+// DEBUG_PUTC_SAFE: Print a single character, preserving ALL registers
+// Parameter: character (immediate or register)
+// Example: DEBUG_PUTC_SAFE 'A'
+//          DEBUG_PUTC_SAFE w10
+.macro DEBUG_PUTC_SAFE char
+    DEBUG_SAVE_REGS
+    .ifnc \char,w0
+        mov w0, \char                // Move character to w0 if not already there
+    .endif
+    movz x1, #0x0900, lsl #16        // x1 = UART base
+    strb w0, [x1]                    // Write character
+    DEBUG_RESTORE_REGS
+.endm
+
+// DEBUG_PRINT_HEX64_SAFE: Print X0 as 64-bit hex, preserving ALL registers
+// Expects value to print in X0 on entry
+.macro DEBUG_PRINT_HEX64_SAFE
+    DEBUG_SAVE_REGS
+    // Value to print is now in saved X0 on stack at [sp, #0]
+    ldr x0, [sp, #0]                 // Reload value to print
+    bl print_hex64                   // Call print function
+    DEBUG_RESTORE_REGS
+.endm
+
+// DEBUG_PRINT_HEX32_SAFE: Print X0 as 32-bit hex, preserving ALL registers
+// Expects value to print in W0 on entry
+.macro DEBUG_PRINT_HEX32_SAFE
+    DEBUG_SAVE_REGS
+    ldr x0, [sp, #0]                 // Reload value to print
+    bl print_hex32                   // Call print function (need to add this)
+    DEBUG_RESTORE_REGS
+.endm
+
+// ============================================================================
+// SAFE GO FUNCTION CALL MACROS
+// ============================================================================
+// These macros safely call Go UART functions while preserving ALL registers,
+// especially X0 which may contain critical return values.
+//
+// CRITICAL: Go functions use X0 for parameters AND return values, so any call
+// to a Go function will clobber X0. These macros save/restore X0 around calls.
+
+// DEBUG_CALL_GO_PUTC: Call Go uartPutcDirect(c) safely
+// Parameter: character to print (immediate or register)
+// Example: DEBUG_CALL_GO_PUTC #'A'
+.macro DEBUG_CALL_GO_PUTC char
+    DEBUG_SAVE_REGS                  // Save all registers including X0
+    .ifnc \char,w0
+        mov w0, \char                // Move character parameter to w0
+    .else
+        ldr x0, [sp, #0]             // Reload saved x0 as parameter
+    .endif
+    bl main.uartPutcDirect           // Call Go function
+    DEBUG_RESTORE_REGS               // Restore all registers including X0
+.endm
+
+// DEBUG_CALL_GO_PUTS: Call Go uartPutsDirect(s) safely
+// Parameter: register containing string pointer (must be x0 on entry)
+// Example:
+//   ldr x0, =my_string
+//   DEBUG_CALL_GO_PUTS
+.macro DEBUG_CALL_GO_PUTS
+    DEBUG_SAVE_REGS                  // Save all registers
+    ldr x0, [sp, #0]                 // Reload string pointer from saved x0
+    bl main.uartPutsDirect           // Call Go function
+    DEBUG_RESTORE_REGS               // Restore all registers including X0
+.endm
+
+// DEBUG_CALL_GO_PUTHEX64: Call Go uartPutHex64Direct(v) safely
+// Parameter: value to print (must be in x0 on entry)
+// Example:
+//   mov x0, x8
+//   DEBUG_CALL_GO_PUTHEX64
+.macro DEBUG_CALL_GO_PUTHEX64
+    DEBUG_SAVE_REGS                  // Save all registers
+    ldr x0, [sp, #0]                 // Reload value from saved x0
+    bl main.uartPutHex64Direct       // Call Go function
+    DEBUG_RESTORE_REGS               // Restore all registers including X0
+.endm
+
+// DEBUG_CALL_GO_PUTHEX32: Call Go uartPutHex32Direct(v) safely
+// Parameter: value to print (must be in w0 on entry)
+.macro DEBUG_CALL_GO_PUTHEX32
+    DEBUG_SAVE_REGS                  // Save all registers
+    ldr x0, [sp, #0]                 // Reload value from saved x0
+    bl main.uartPutHex32Direct       // Call Go function
+    DEBUG_RESTORE_REGS               // Restore all registers including X0
 .endm
 
 // ============================================================================
@@ -504,47 +769,37 @@ sync_exception_el1:
     // 0x280 - 0x300: IRQ (SP_EL1) - 128 bytes
     .align 7
 irq_exception_el1:
-    // CRITICAL: Read GICC_IAR IMMEDIATELY to acknowledge interrupt
-    // The GIC spec says IAR must be read ASAP to prevent spurious 1022
-    // Use x10-x11 which are caller-saved and safe to clobber
-    movz x10, #0x0801, lsl #16    // GICC_IAR at 0x0801000C
-    movk x10, #0x000C, lsl #0
-    ldr w11, [x10]                // Read IAR (acknowledges interrupt)
-    and w11, w11, #0x3FF          // Mask to get interrupt ID (bits 9:0)
-    
-    // Now switch to exception stack (w11 has interrupt ID)
-    mov x0, sp                     // Save current SP
-    movz x1, #0x5FFF, lsl #16     // Exception stack at 0x5FFF8000
-    movk x1, #0x8000, lsl #0
-    mov sp, x1
-    
-    // Save registers on exception stack (including w11 with interrupt ID)
-    sub sp, sp, #64
-    str x0, [sp, #0]              // Save original SP_EL1
-    stp x1, x2, [sp, #8]          // Save x1, x2
-    stp x3, x4, [sp, #24]         // Save x3, x4
-    str w11, [sp, #40]            // Save interrupt ID from w11
-    
-    // Move interrupt ID to w2 for rest of handler
-    mov w2, w11
-    
-    // Load UART base for further prints
-    movz x0, #0x0900, lsl #16
-    movk x0, #0x0000, lsl #0
-    
-    // Check if this is virtual timer interrupt (ID 27 = 0x1B)
-    cmp w2, #27
-    beq handle_timer_irq
-    
-    // Check if this is UART interrupt (ID 33 = 0x21)
-    cmp w2, #33
-    beq handle_uart_irq
-    
-    // Unknown interrupt - print '?' and finish
-    movz w1, #0x3F                // '?'
-    str w1, [x0]
-    b irq_done
-    
+    // ========================================================================
+    // SIMPLIFIED IRQ HANDLER - All dispatch goes through Go
+    // ========================================================================
+    //
+    // This handler:
+    // 1. Saves ALL registers (preserves interrupted code's state completely)
+    // 2. Calls irqHandlerGo(irqID) which dispatches to Go handlers
+    // 3. Restores ALL registers and returns via ERET
+    //
+    // The Go handler (irqHandlerGo) does EOI via gicEndOfInterrupt()
+    // ========================================================================
+
+    INTERRUPT_FULL_SAVE              // Save all regs, x0 = interrupt ID
+
+    // Set up frame pointer for Go calling convention
+    mov x29, sp
+
+    // x0 already contains interrupt ID from INTERRUPT_FULL_SAVE
+    // Call Go IRQ dispatcher: irqHandlerGo(irqID uint32)
+    bl main.irqHandlerGo
+
+    // Go handler has completed and done EOI
+    // Restore all registers and return to interrupted code
+    INTERRUPT_FULL_RESTORE           // Restores all regs + SP_EL0, does ERET
+
+    // NEVER REACHED - INTERRUPT_FULL_RESTORE includes eret
+
+// ========================================================================
+// LEGACY TIMER HANDLER (kept for reference during transition)
+// This code will be removed once timer handling is fully in Go
+// ========================================================================
 handle_timer_irq:
     // ========== 1. RE-ARM TIMER ==========
     // Set timer to fire again in 20ms (1,250,000 hardware ticks @ 62.5 MHz)
@@ -738,21 +993,27 @@ irq_done:
     // Signal end of interrupt to GIC
     // GICC_EOIR at 0x08010010
     // NOTE: x2 may have been clobbered by Go functions, so reload interrupt ID from stack
-    ldr w2, [sp, #40]             // Reload saved interrupt ID (was saved at line 88)
+    ldr w2, [sp, #40]             // Reload saved interrupt ID
     movz x1, #0x0801, lsl #16
     movk x1, #0x0010, lsl #0
     str w2, [x1]                  // Write interrupt ID to EOIR
 
-    // Restore registers and return to normal stack
-    ldr x0, [sp, #0]              // Load original SP_EL1
+    // CRITICAL FIX: Restore ALL registers properly, including original X0!
+    // The original X0 was saved at offset 48 (via x12 at entry)
+    // This is critical because X0 may contain a syscall return value!
+    ldr x10, [sp, #48]            // Load original X0 into x10 (from offset 48)
+    ldr x11, [sp, #0]             // Load original SP into x11 (from offset 0)
     ldp x1, x2, [sp, #8]          // Restore x1, x2
     ldp x3, x4, [sp, #24]         // Restore x3, x4
     add sp, sp, #64               // Clean up exception stack
-    
-    // Restore original SP (SP_EL1)
-    mov sp, x0
 
-    // Return from exception
+    // Restore original SP (was in x11)
+    mov sp, x11
+
+    // Restore original X0 LAST (right before eret)
+    mov x0, x10
+
+    // Return from exception with X0 properly restored
     eret
     
     
@@ -1313,31 +1574,20 @@ handle_svc_syscall:
     msr DAIF, x10                   // Write back to DAIF
     isb                             // Ensure change takes effect before continuing
 
-    // DEBUG: Print "SVC=" + syscall number (X8) as 16 hex digits
-    // DISABLED - too much spam
-    // DEBUG_SAVE_REGS
-    //
-    // mov w0, #'S'
-    // UART_PUTC
-    // mov w0, #'V'
-    // UART_PUTC
-    // mov w0, #'C'
-    // UART_PUTC
-    // mov w0, #'='
-    // UART_PUTC
-    //
-    // mov x0, x8                  // x0 = syscall number
-    // bl print_hex64              // Print all 16 hex digits
-    //
-    // mov w0, #' '
-    // UART_PUTC
-    //
-    // DEBUG_RESTORE_REGS
-
     // CRITICAL: Switch to g0 before calling Go syscall handlers
     // This allows runtime operations (including stack tracebacks) to work correctly
     // NOTE: Original g (x28) was already saved to exception frame at offset 296
     // by sync_restore_and_svc (see SAVE_SYSCALL_CONTEXT equivalent above)
+
+    // DEBUG: Disabled - print_hex64 uses pre-decrement which can corrupt SP
+    // mov x14, x8                     // Save syscall number
+    // mov w0, #'#'
+    // UART_PUTC
+    // mov x0, x14                     // Print syscall number
+    // bl print_hex64
+    // mov w0, #' '
+    // UART_PUTC
+    // mov x8, x14                     // Restore syscall number
 
     ldr x28, =runtime.g0            // x28 = address of runtime.g0 struct (the g pointer itself)
 
@@ -1348,6 +1598,8 @@ handle_svc_syscall:
     // Dispatch based on syscall number
     cmp x8, #0                     // io_setup syscall (async I/O)
     beq syscall_io_setup
+    cmp x8, #25                    // fcntl syscall
+    beq syscall_fcntl
     cmp x8, #64                    // write syscall
     beq syscall_write
     cmp x8, #63                    // read syscall
@@ -1497,27 +1749,43 @@ syscall_io_setup:
     movn x0, #37                   // x0 = -38 (ENOSYS)
     b syscall_return
 
+syscall_fcntl:
+    // fcntl(fd, cmd, ...) - File control
+    // x0 = fd, x1 = cmd
+    // Go runtime calls fcntl(fd, F_GETFD) where F_GETFD=1 during checkfds()
+    // to verify stdin/stdout/stderr (fds 0-2) are valid.
+    // We return 0 (success, no flags) for fds 0-2 with F_GETFD.
+    // For anything else, return ENOSYS.
+    cmp x0, #2                     // Check if fd <= 2
+    bhi .fcntl_enosys              // If fd > 2, not supported
+    cmp x1, #1                     // Check if cmd == F_GETFD (1)
+    bne .fcntl_enosys              // If cmd != F_GETFD, not supported
+    mov x0, #0                     // Return 0 (no flags set, fd is valid)
+    b syscall_return
+.fcntl_enosys:
+    movn x0, #37                   // x0 = -38 (ENOSYS)
+    b syscall_return
+
 syscall_success:
     // Generic success return
     mov x0, #0
     b syscall_return
 
 syscall_clone_fake:
-    // clone - return fake TIDs to prevent actual thread creation
-    // Runtime expects clone to succeed, but we don't want real threads
-    // sysmon is replaced by timer interrupt-driven monitors (GC, scavenger, schedtrace)
-    adrp x1, fake_tid_counter
-    add x1, x1, :lo12:fake_tid_counter
-    ldr w0, [x1]
-    add w0, w0, #1
-    str w0, [x1]
-    add w0, w0, #99                // Return fake TID: 100, 101, 102...
+    // clone - for Go runtime thread creation
+    // We can't actually create threads. Return -EAGAIN to indicate failure.
+    // The Go runtime will crash with "failed to create new OS thread".
+    // This is expected - Go requires threads for sysmon which we don't support yet.
+    movn x0, #10                   // x0 = -11 (EAGAIN)
     b syscall_return
 
 .data
 .align 2
 fake_tid_counter:
     .word 0                        // Counter for fake TIDs
+
+mmap_call_counter:
+    .word 0                        // Counter for mmap calls
 
 .text
 
@@ -1537,12 +1805,16 @@ syscall_mmap:
 
     CALL_GO_PROLOGUE SPILL_SPACE_6PARAM
     bl main.SyscallMmap
+    // X0 = return value from Go function (mmap'd address or negative errno)
     CALL_GO_EPILOGUE SPILL_SPACE_6PARAM
+
+    // syscall_return preserves X0 and does eret
     b syscall_return
 
 syscall_prctl:
-    // prctl - return success (debug output disabled)
-    mov x0, #0
+    // prctl - return EINVAL so setVMAName marks it unsupported and stops calling
+    // This prevents repeated calls to this optional debugging feature
+    mov x0, #-22        // -EINVAL
     b syscall_return
 
 syscall_getrandom:
@@ -1659,62 +1931,34 @@ syscall_exit:
     b 1b                           // Loop forever
 
 syscall_return:
-    // Syscall return - restore SPSR/ELR and ALL registers, then return via eret
-    // x0 contains the syscall result from Go handler
-
-    // CRITICAL: Save syscall return value IMMEDIATELY before any other operations
-    str x0, [sp, #EXC_FRAME_SAVED_X0]  // Save return value to offset 304
-
-    // DEBUG: Print "S=" + value we just saved (only if non-zero)
-    // DISABLED - print_hex64 triggers more syscalls, causing stack overflow
-    // cbz x0, 1f
-    // mov x9, x0                      // Save x0 to x9 (callee-saved)
-    // mov w0, #'S'
-    // movz x1, #0x0900, lsl #16
-    // strb w0, [x1]
-    // mov w0, #'='
-    // strb w0, [x1]
-    // mov x0, x9                      // x0 = return value
-    // bl print_hex64
-    // mov w0, #' '
-    // movz x1, #0x0900, lsl #16
-    // strb w0, [x1]
-    // 1:
-
-    // DEBUG: Print "R=" + full 16 hex digits of X0 (syscall return value)
-    // DISABLED - too much spam, makes output unreadable
-    // DEBUG_SAVE_REGS
+    // Syscall return - restore SPSR/ELR and x1-x30, then return via eret
     //
-    // mov w0, #'R'
-    // UART_PUTC
-    // mov w0, #'='
-    // UART_PUTC
+    // CRITICAL: x0 contains the syscall return value - DO NOT restore it!
+    // Unlike interrupts (where we restore ALL registers), syscalls use x0 as
+    // their return value. The syscall handler sets x0, and we just preserve it.
     //
-    // // Load X0 from exception frame and print as 16 hex digits
-    // ldr x0, [sp, #EXC_FRAME_SAVED_X0]  // x0 = syscall return value from offset 304
-    // bl print_hex64              // Print all 16 hex digits
-    //
-    // DEBUG_RESTORE_REGS
+    // We only restore x1-x30 from the exception frame.
 
     // Restore ELR_EL1 and SPSR_EL1 from exception frame
+    // Use x12, x13 as temporaries (they'll be restored from frame later)
     ldp x12, x13, [sp, #EXC_FRAME_ELR_SPSR]  // x12 = saved ELR, x13 = saved SPSR
 
-    // CRITICAL: Advance ELR_EL1 by 4 to skip past SVC instruction
-    add x12, x12, #4                // ELR += 4 (instruction after SVC)
+    // NOTE: For SVC exceptions, hardware already sets ELR_EL1 to the instruction
+    // AFTER the SVC (PC+4). Do NOT add 4 here - that would skip an instruction!
+    // See ARM Architecture Reference Manual: "For exception generating instructions
+    // (SVC/HVC/SMC), the preferred return address is the instruction that follows."
 
-    msr ELR_EL1, x12                // Restore return address
+    msr ELR_EL1, x12                // Restore return address (already points to next instruction)
     msr SPSR_EL1, x13               // Restore saved PSTATE
     isb                             // Ensure ELR/SPSR writes complete
 
-    // Restore SP_EL0 before restoring other registers
+    // Restore SP_EL0 (uses x10 as temporary, will be restored later)
     RESTORE_SP_EL0_FROM_STACK       // Restore from frame offset 288
 
-    // CRITICAL: Restore ALL registers x1-x30 from exception frame
-    // This ensures registers clobbered by syscall handler are restored
-    // x0 will be restored last with syscall return value
-    // Registers are saved/restored in pairs at 16-byte aligned offsets
+    // Restore x1-x30 from exception frame (NOT x0 - it's the return value!)
+    // Registers are restored in pairs at 16-byte aligned offsets
     ldp x2, x3, [sp, #16]           // Restore x2, x3
-    ldp x4, x5, [sp, #32]           // Restore x4, x5  ← CRITICAL: Restore x4!
+    ldp x4, x5, [sp, #32]           // Restore x4, x5
     ldp x6, x7, [sp, #48]           // Restore x6, x7
     ldp x8, x9, [sp, #64]           // Restore x8, x9
     ldp x10, x11, [sp, #80]         // Restore x10, x11
@@ -1726,24 +1970,20 @@ syscall_return:
     ldp x22, x23, [sp, #176]        // Restore x22, x23
     ldp x24, x25, [sp, #192]        // Restore x24, x25
     ldp x26, x27, [sp, #208]        // Restore x26, x27
-    // CRITICAL: Restore x28 (g) from SAVED_G, not from exception frame offset 224!
-    // We saved original g to offset 296 before setting x28=g0 for syscall handler
+    // Restore x28 (g) from SAVED_G where we saved original g before syscall handler
     ldr x28, [sp, #EXC_FRAME_SAVED_G]  // Restore x28 (g) from offset 296
     ldp x29, x30, [sp, #232]        // Restore x29 (FP), x30 (LR)
-    ldr x1, [sp, #8]                // Restore x1 last (offset 8, not 0!)
+    ldr x1, [sp, #8]                // Restore x1 LAST (after all temp usage above)
 
-    // CRITICAL: Finally restore x0 with syscall return value
-    // This must be done LAST after all other register restores
-    ldr x0, [sp, #EXC_FRAME_SAVED_X0]  // Restore x0 with syscall return value (offset 304)
-    // NOTE: We keep interrupts DISABLED until eret
-    // The eret instruction will restore SPSR_EL1 → PSTATE, which includes interrupt state
-    // This is safer than manually re-enabling interrupts, which could cause stack corruption
-    // if an interrupt fires after we deallocate the exception frame but before eret
+    // x0 is NOT restored - it contains the syscall return value!
 
     // Deallocate exception frame before ERET
     add sp, sp, #320                 // Restore SP_EL1 to exception stack top
 
-    // Return from exception - PSTATE will be restored from SPSR_EL1
+    // Return from exception
+    // - PC restored from ELR_EL1 (instruction after SVC)
+    // - PSTATE restored from SPSR_EL1 (original interrupt state)
+    // - x0 = syscall return value (set by handler, preserved here)
     eret
 
 // ============================================================================

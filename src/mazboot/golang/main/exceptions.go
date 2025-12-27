@@ -121,7 +121,6 @@ func InitializeExceptions() {
 
 	// Verify ROM address is 2KB aligned
 	if romVectorAddr&0x7FF != 0 {
-		print("FATAL: ROM exception vector not 2KB aligned\r\n")
 		for {} // Hang
 	}
 
@@ -344,6 +343,16 @@ func uartPutHex8Direct(v uint8) {
 }
 
 //go:nosplit
+func uartPutHex32Direct(v uint32) {
+	for shift := uint(28); ; shift -= 4 {
+		uartPutcDirect(hexDigit(uint8((v >> shift) & 0xF)))
+		if shift == 0 {
+			break
+		}
+	}
+}
+
+//go:nosplit
 func uartPutHex64Direct(v uint64) {
 	for shift := uint(60); ; shift -= 4 {
 		uartPutcDirect(hexDigit(uint8((v >> shift) & 0xF)))
@@ -359,8 +368,8 @@ func uartPutHex64Direct(v uint64) {
 //
 //go:nosplit
 func handleException(excInfo ExceptionInfo) {
-	// Breadcrumb: entered handleException
-	uartPutcDirect('H') // Exception handler breadcrumb
+	// NOTE: 'H' breadcrumb removed to reduce noise from page faults
+	// Page faults happen frequently during normal demand paging
 
 	// Extract exception class from ESR_EL1
 	ec := (excInfo.ESR >> 26) & 0x3F
@@ -429,21 +438,21 @@ func handleException(excInfo ExceptionInfo) {
 
 	case EC_SVC_EL1_A64:
 		// Supervisor call from EL1 (AArch64)
-		uartPutsDirect("SVC from EL1 at 0x")
-		uartPutHex64Direct(excInfo.ELR)
-		uartPutsDirect(" (immediate: ")
-		// Keep the old helper for decimal; it's fine if it uses ring buffer before it's initialized,
-		// but for now this path is not used during our debugging.
-		uartPutUint32(uint32(excInfo.ESR & 0xFFFF))
-		uartPutsDirect(")\r\n")
+		// DISABLED: to avoid confusion with SVC= mystery
+		// uartPutsDirect("SVC from EL1 at 0x")
+		// uartPutHex64Direct(excInfo.ELR)
+		// uartPutsDirect(" (immediate: ")
+		// uartPutUint32(uint32(excInfo.ESR & 0xFFFF))
+		// uartPutsDirect(")\r\n")
 
 	case EC_SVC_EL0_A64:
 		// Supervisor call from EL0 (AArch64)
-		uartPutsDirect("SVC from EL0 at 0x")
-		uartPutHex64Direct(excInfo.ELR)
-		uartPutsDirect(" (immediate: ")
-		uartPutUint32(uint32(excInfo.ESR & 0xFFFF))
-		uartPutsDirect(")\r\n")
+		// DISABLED: to avoid confusion with SVC= mystery
+		// uartPutsDirect("SVC from EL0 at 0x")
+		// uartPutHex64Direct(excInfo.ELR)
+		// uartPutsDirect(" (immediate: ")
+		// uartPutUint32(uint32(excInfo.ESR & 0xFFFF))
+		// uartPutsDirect(")\r\n")
 
 	default:
 		uartPutsDirect("Unhandled exception class 0x")
@@ -483,14 +492,15 @@ func irqHandlerGo(irqID uint32) {
 //
 //go:nosplit
 func fiqHandlerGo() {
-	print("FIQ fired (not implemented)\r\n")
+	// Hang
+	for {
+	}
 }
 
 // serrorHandlerGo is the actual Go implementation
 //
 //go:nosplit
 func serrorHandlerGo() {
-	print("SError occurred - system error (not recoverable)\r\n")
 	// Hang
 	for {
 	}
@@ -517,14 +527,15 @@ func extractISS(esr uint64) uint32 {
 //go:nosplit
 //go:noinline
 func HandleSyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) uint64 {
+	// DISABLED: This function is not called from assembly
 	// Print syscall number for debugging (use direct UART to avoid recursion)
-	uartPutcDirect('S')
-	uartPutcDirect('Y')
-	uartPutcDirect('S')
-	uartPutcDirect(':')
-	uartPutHex64Direct(syscallNum)
-	uartPutcDirect('\r')
-	uartPutcDirect('\n')
+	// uartPutcDirect('S')  // DISABLED to avoid confusion with SVC= mystery
+	// uartPutcDirect('Y')
+	// uartPutcDirect('S')
+	// uartPutcDirect(':')
+	// uartPutHex64Direct(syscallNum)
+	// uartPutcDirect('\r')
+	// uartPutcDirect('\n')
 
 	switch syscallNum {
 	case 64: // write
@@ -544,10 +555,6 @@ func HandleSyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) uint64
 		return 0
 
 	case 93, 94: // exit, exit_group
-		// Exit syscalls - use Go print() to test interrupt-driven UART path
-		print("\r\nEXIT:")
-		uartPutHex64Direct(arg0) // exit code (keep direct for hex output)
-		print("\r\n")
 		// Use semihosting to gracefully exit QEMU
 		asm.QemuExit()
 		// If semihosting doesn't work, hang
