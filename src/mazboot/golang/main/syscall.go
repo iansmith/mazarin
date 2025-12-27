@@ -7,6 +7,37 @@ import (
 	_ "unsafe" // for go:linkname
 )
 
+// External symbols for pending thread (set by clone syscall in assembly)
+//
+//go:linkname pending_thread_valid pending_thread_valid
+var pending_thread_valid uint32
+
+//go:linkname pending_thread_stack pending_thread_stack
+var pending_thread_stack uintptr
+
+//go:linkname pending_thread_mp pending_thread_mp
+var pending_thread_mp uintptr
+
+//go:linkname pending_thread_gp pending_thread_gp
+var pending_thread_gp uintptr
+
+//go:linkname pending_thread_fn pending_thread_fn
+var pending_thread_fn uintptr
+
+// runPendingThread is DEFERRED - we don't run mstart immediately.
+// The user's insight: "if we can just get the program to start (finish runtime
+// initialization) we will be fine because we can cause the sysmon thread to run
+// whenever we want" via timer/channel mechanism.
+//
+// The pending thread data is captured by clone syscall and stored here.
+// It will be used later once the scheduler is running to spawn the actual thread.
+//
+//go:nosplit
+func runPendingThread() {
+	// DEFERRED: Don't run mstart yet - let runtime initialization complete first.
+	// The timer interrupt handler will run pending threads via goroutine/channel.
+}
+
 // ============================================================================
 // Syscall Debug Tracing Functions
 // ============================================================================
@@ -640,32 +671,45 @@ func SyscallMunmap(addr uintptr, length uint64) int64 {
 
 //go:nosplit
 func SyscallFutex(addr unsafe.Pointer, op int32, val uint32, ts unsafe.Pointer, addr2 unsafe.Pointer, val3 uint32) int64 {
-	// KMAZARIN FIX: We can't use mazboot's gopark/goready for kmazarin's syscalls.
-	// Kmazarin has its own Go runtime with its own scheduler.
-	// For now, use simple stub behavior:
-	// - FUTEX_WAIT: Check value, if matches return -EAGAIN (forces spin-wait)
-	// - FUTEX_WAKE: Return number woken (0 since no real waiters)
+	// KMAZARIN FIX: Since we can't actually create separate threads, we need
+	// to fake the "wake" that would come from mstart running.
 	//
-	// This works because in single-core without real threads, contention
-	// should resolve quickly as kmazarin's runtime initializes.
+	// STRATEGY: When FUTEX_WAIT is called and we have a pending thread from
+	// clone(), we simulate the notewakeup by setting the value to 1.
+	// This allows the runtime to continue past notesleep.
 
 	uaddr := (*uint32)(addr)
 
 	switch op {
 	case _FUTEX_WAIT_PRIVATE:
-		// Check if value matches
-		if atomic.LoadUint32(uaddr) != val {
-			return -11 // -EAGAIN: value changed
+		// Check if value matches the expected value (what caller is waiting for)
+		currentVal := atomic.LoadUint32(uaddr)
+		if currentVal != val {
+			return -11 // -EAGAIN: value already changed
 		}
-		// Value matches, but we can't block.
+
+		// Check if there's a pending thread that should have woken us
+		// If so, simulate notewakeup by setting the value to 1
+		if atomic.LoadUint32(&pending_thread_valid) != 0 {
+			// The pending thread would have called notewakeup which:
+			// 1. Sets the note value to 1
+			// 2. Calls futex WAKE
+			// We simulate this by setting the value to 1
+			atomic.StoreUint32(uaddr, 1)
+			// Mark that we've "run" the pending thread for this wakeup
+			// Keep pending_thread_valid set - we may need to track it later
+		} else {
+			// No pending thread, but still simulate wake to avoid spinning
+			// This handles other futex waits that aren't related to clone
+			atomic.StoreUint32(uaddr, 1)
+		}
+
 		// Return 0 (success) to tell caller it was "woken up".
-		// The caller will check the condition again and either proceed or retry.
-		// This is effectively a spin-check pattern.
 		return 0
 
 	case _FUTEX_WAKE_PRIVATE:
 		// FUTEX_WAKE: Since we don't actually block anyone, just return 0
-		// (no waiters woken - but that's fine, the memory was updated)
+		// (This means "0 waiters woken" which is fine)
 		return 0
 
 	default:

@@ -178,8 +178,9 @@ func timerInit() {
 	// Disable timer first (clears any pending interrupts)
 	timer_write_ctl(0)
 
-	// Set TVAL for 5 second countdown (312500000 ticks at 62.5MHz)
-	timer_write_tval(freq * 5)
+	// Set TVAL for 20ms countdown (62500 * 20 = 1250000 ticks at 62.5MHz)
+	// Fast timer to help with kmazarin goroutine scheduling
+	timer_write_tval(freq / 50) // 20ms
 
 	// Enable timer with interrupts unmasked
 	timer_write_ctl(CNT_CTL_ENABLE)
@@ -190,7 +191,7 @@ func timerInit() {
 	gicEnableInterrupt(irqId)
 
 	timerInitialized = true
-	timerExitCount = 5 // Exit after 5 timer interrupts (25 seconds total)
+	timerExitCount = 500 // Exit after 500 timer interrupts (10 seconds at 20ms)
 }
 
 // checkTimerStatus checks if timer interrupt is pending (debugging only)
