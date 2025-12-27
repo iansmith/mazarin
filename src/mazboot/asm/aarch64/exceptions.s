@@ -2195,103 +2195,6 @@ sync_restore_and_svc:
     b handle_svc_syscall
 
 handle_svc_syscall:
-    // Check if running M1 - if so, count syscalls and switch back after limit
-    adrp x10, running_m1
-    add x10, x10, :lo12:running_m1
-    ldr w11, [x10]
-    cbz w11, handle_svc_syscall_continue     // If not running M1, continue
-
-    // Running M1 - increment and check counter
-    adrp x10, m1_syscall_counter
-    add x10, x10, :lo12:m1_syscall_counter
-    ldr w11, [x10]
-    add w11, w11, #1
-    str w11, [x10]
-
-    // Check if we've hit the limit (5000 syscalls - give more time for GC goroutines)
-    mov w12, #5000
-    cmp w11, w12
-    blt handle_svc_syscall_continue
-
-    // M1 has made 1000 syscalls - switch back to M0!
-    mov w10, #'!'
-    UART_PUTC_REG w10
-    mov w10, #'R'
-    UART_PUTC_REG w10
-    mov w10, #'E'
-    UART_PUTC_REG w10
-    mov w10, #'T'
-    UART_PUTC_REG w10
-    mov w10, #'\n'
-    UART_PUTC_REG w10
-
-    // Clear running_m1 flag
-    adrp x10, running_m1
-    add x10, x10, :lo12:running_m1
-    str wzr, [x10]
-
-    // Clear m1_syscall_counter
-    adrp x10, m1_syscall_counter
-    add x10, x10, :lo12:m1_syscall_counter
-    str wzr, [x10]
-
-    // Restore M0's context
-    adrp x10, saved_m0_elr
-    add x10, x10, :lo12:saved_m0_elr
-    ldr x11, [x10]
-    msr ELR_EL1, x11
-
-    adrp x10, saved_m0_spsr
-    add x10, x10, :lo12:saved_m0_spsr
-    ldr x11, [x10]
-    msr SPSR_EL1, x11
-
-    adrp x10, saved_m0_sp
-    add x10, x10, :lo12:saved_m0_sp
-    ldr x11, [x10]
-    msr SP_EL0, x11
-    isb
-
-    // Restore callee-saved registers (these were saved from exception frame, so correct)
-    adrp x10, saved_m0_x19_x20
-    add x10, x10, :lo12:saved_m0_x19_x20
-    ldp x19, x20, [x10]
-
-    adrp x10, saved_m0_x21_x22
-    add x10, x10, :lo12:saved_m0_x21_x22
-    ldp x21, x22, [x10]
-
-    adrp x10, saved_m0_x23_x24
-    add x10, x10, :lo12:saved_m0_x23_x24
-    ldp x23, x24, [x10]
-
-    adrp x10, saved_m0_x25_x26
-    add x10, x10, :lo12:saved_m0_x25_x26
-    ldp x25, x26, [x10]
-
-    adrp x10, saved_m0_x27_x29
-    add x10, x10, :lo12:saved_m0_x27_x29
-    ldp x27, x29, [x10]
-
-    adrp x10, saved_m0_x30
-    add x10, x10, :lo12:saved_m0_x30
-    ldr x30, [x10]
-
-    adrp x10, saved_m0_g
-    add x10, x10, :lo12:saved_m0_g
-    ldr x28, [x10]
-
-    // Return fake TID (100) to M0
-    mov x0, #100
-
-    // Set SP_EL1 to exception stack top
-    movz x10, #0x5F02, lsl #16
-    mov sp, x10
-
-    // ERET back to M0
-    eret
-
-handle_svc_syscall_continue:
     // Handle syscalls in assembly - minimal version for testing
     // x8 contains the Linux syscall number
     // Return value goes in x0
@@ -2462,187 +2365,72 @@ syscall_openat:
     b syscall_return
 
 syscall_futex:
-    // Print 'F' for futex calls, then op type
+    // futex(uaddr, futex_op, val, timeout, uaddr2, val3) - 6 parameters
+    // x0-x5 contain arguments
+    //
+    // NEW STRATEGY: Call Go's SyscallFutexHandler which returns:
+    //   x0 = result (0 for WAIT, number woken for WAKE)
+    //   x1 = switchTo (-1 = no switch, >=0 = thread index to switch to)
+    //
+    // For now, we ignore switchTo and just return the result.
+    // Context switching will be added when the full thread infrastructure is ready.
+
+    // Print 'F' + op digit for debugging
     mov w10, #'F'
     UART_PUTC_REG w10
-
-    // Print futex op (x1) - 0=WAIT, 1=WAKE, 128=WAIT_PRIVATE, 129=WAKE_PRIVATE
     and w10, w1, #0x7F               // Mask off PRIVATE flag
     add w10, w10, #'0'               // '0'=WAIT, '1'=WAKE
     UART_PUTC_REG w10
 
-    // futex(uaddr, futex_op, val, timeout, uaddr2, val3) - 6 parameters
-    // x0-x5 contain arguments
-    //
-    // SPECIAL CASE: If we're running a cloned thread (sysmon/templateThread)
-    // and this is FUTEX_WAIT, switch back to M0.
+    // Call Go futex handler
+    // SyscallFutexHandler(uaddr uint64, op int32, val uint32) (result int64, switchTo int32)
+    // x0 = uaddr (already there)
+    // x1 = op -> need to extract int32
+    // x2 = val -> need to extract uint32
+    sxtw x1, w1                      // Sign-extend op to int64
+    mov w2, w2                       // Zero-extend val to uint64
 
-    // Check if running_cloned_thread is set
-    adrp x10, running_cloned_thread
-    add x10, x10, :lo12:running_cloned_thread
-    ldr w11, [x10]
+    CALL_GO_PROLOGUE SPILL_SPACE_3PARAM
+    bl main.SyscallFutexHandler
+    // Returns: x0 = result, x1 = switchTo
+    CALL_GO_EPILOGUE SPILL_SPACE_3PARAM
 
-    // Print running_cloned_thread value as hex digit
-    add w12, w11, #'0'               // Convert to ASCII digit
-    UART_PUTC_REG w12
-
-    cbz w11, syscall_futex_normal      // If not running cloned thread, do normal futex
-
-    // We're in a cloned thread - check if this is FUTEX_WAIT
-    // x1 = futex_op (0 = FUTEX_WAIT, 128 = FUTEX_WAIT_PRIVATE)
-    and w12, w1, #0x7F                 // Mask off PRIVATE flag
-    cbnz w12, syscall_futex_normal     // If not WAIT, do normal futex
-
-    // Print 'W' to show FUTEX_WAIT detected
-    mov w10, #'W'
-    UART_PUTC_REG w10
-
-    // Cloned thread is calling FUTEX_WAIT - switch back to M0!
-    // Print 'R' to show returning to M0
-    mov w10, #'R'
-    UART_PUTC_REG w10
-
-    // Clear the running_cloned_thread flag
-    adrp x11, running_cloned_thread
-    add x11, x11, :lo12:running_cloned_thread
-    str wzr, [x11]
-
-    // Restore callee-saved registers x19-x27
-    adrp x11, saved_m0_x19_x27
-    add x11, x11, :lo12:saved_m0_x19_x27
-    ldp x19, x20, [x11, #0]
-    ldp x21, x22, [x11, #16]
-    ldp x23, x24, [x11, #32]
-    ldp x25, x26, [x11, #48]
-    ldr x27, [x11, #64]
-
-    // Restore x29, x30
-    adrp x11, saved_m0_x29_x30
-    add x11, x11, :lo12:saved_m0_x29_x30
-    ldp x29, x30, [x11]
-
-    // Restore M0's g (x28)
-    adrp x11, saved_m0_g
-    add x11, x11, :lo12:saved_m0_g
-    ldr x28, [x11]
-
-    // Restore M0's SP_EL0
-    adrp x11, saved_m0_sp
-    add x11, x11, :lo12:saved_m0_sp
-    ldr x10, [x11]
-    msr SP_EL0, x10
-
-    // Restore ELR_EL1 (where to return in M0)
-    adrp x11, saved_m0_elr
-    add x11, x11, :lo12:saved_m0_elr
-    ldr x10, [x11]
-    msr ELR_EL1, x10
-
-    // Restore SPSR_EL1
-    adrp x11, saved_m0_spsr
-    add x11, x11, :lo12:saved_m0_spsr
-    ldr x10, [x11]
-    msr SPSR_EL1, x10
-
-    // Load the TID to return to M0
-    adrp x11, saved_m0_tid
-    add x11, x11, :lo12:saved_m0_tid
-    ldr w0, [x11]
-
-    // Print the TID being returned
-    mov w10, #'='
-    UART_PUTC_REG w10
-
-    isb
-
-    // Return to M0 (clone returns with TID)
-    eret
-
-syscall_futex_normal:
-    // Normal futex handling - call Go function
-    CALL_GO_PROLOGUE SPILL_SPACE_6PARAM
-    bl main.SyscallFutex
-    CALL_GO_EPILOGUE SPILL_SPACE_6PARAM
+    // TODO: Check x1 (switchTo) and do context switch if >= 0
+    // For now, just return x0 (result)
     b syscall_return
 
 syscall_nanosleep:
     // nanosleep(req, rem) - Sleep syscall
-    // If we're running a cloned thread (sysmon), switch back to M0
+    // req points to timespec: {tv_sec, tv_nsec}
     //
+    // NEW STRATEGY: Call Go's SyscallNanosleepHandler which returns:
+    //   x0 = result (0 on success)
+    //   x1 = switchTo (-1 = no switch, >=0 = thread index to switch to)
+    //
+    // For now, we ignore switchTo and just return the result.
+    // Context switching will be added when the full thread infrastructure is ready.
+
     // Print 'N' for nanosleep
     mov w10, #'N'
     UART_PUTC_REG w10
 
-    // Check if we're running a cloned thread
-    adrp x11, running_cloned_thread
-    add x11, x11, :lo12:running_cloned_thread
-    ldr w12, [x11]
-    cbz w12, syscall_nanosleep_normal      // If not running cloned thread, just return
+    // Read timespec from req pointer (x0)
+    // timespec { tv_sec: uint64, tv_nsec: uint64 }
+    ldr x10, [x0, #0]               // x10 = tv_sec
+    ldr x11, [x0, #8]               // x11 = tv_nsec
 
-    // We're in sysmon/templateThread - switch back to M0!
-    // Print 'R' to show returning to M0
-    mov w10, #'R'
-    UART_PUTC_REG w10
+    // Call Go nanosleep handler
+    // SyscallNanosleepHandler(seconds uint64, nanoseconds uint64) (result int64, switchTo int32)
+    mov x0, x10                      // x0 = seconds
+    mov x1, x11                      // x1 = nanoseconds
 
-    // Clear the running_cloned_thread flag
-    str wzr, [x11]
+    CALL_GO_PROLOGUE SPILL_SPACE_2PARAM
+    bl main.SyscallNanosleepHandler
+    // Returns: x0 = result, x1 = switchTo
+    CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
 
-    // Restore M0's context and return from clone with the saved TID
-
-    // Restore callee-saved registers x19-x27
-    adrp x11, saved_m0_x19_x27
-    add x11, x11, :lo12:saved_m0_x19_x27
-    ldp x19, x20, [x11, #0]
-    ldp x21, x22, [x11, #16]
-    ldp x23, x24, [x11, #32]
-    ldp x25, x26, [x11, #48]
-    ldr x27, [x11, #64]
-
-    // Restore x29, x30
-    adrp x11, saved_m0_x29_x30
-    add x11, x11, :lo12:saved_m0_x29_x30
-    ldp x29, x30, [x11]
-
-    // Restore M0's g (x28)
-    adrp x11, saved_m0_g
-    add x11, x11, :lo12:saved_m0_g
-    ldr x28, [x11]
-
-    // Restore M0's SP_EL0
-    adrp x11, saved_m0_sp
-    add x11, x11, :lo12:saved_m0_sp
-    ldr x10, [x11]
-    msr SP_EL0, x10
-
-    // Restore ELR_EL1 (where to return in M0)
-    adrp x11, saved_m0_elr
-    add x11, x11, :lo12:saved_m0_elr
-    ldr x10, [x11]
-    msr ELR_EL1, x10
-
-    // Restore SPSR_EL1
-    adrp x11, saved_m0_spsr
-    add x11, x11, :lo12:saved_m0_spsr
-    ldr x10, [x11]
-    msr SPSR_EL1, x10
-
-    // Load the TID to return to M0
-    adrp x11, saved_m0_tid
-    add x11, x11, :lo12:saved_m0_tid
-    ldr w0, [x11]
-
-    // Print the TID being returned
-    mov w10, #'='
-    UART_PUTC_REG w10
-
-    isb
-
-    // Return to M0 (clone returns with TID)
-    eret
-
-syscall_nanosleep_normal:
-    // Normal nanosleep - just return success (don't actually sleep)
-    mov x0, #0
+    // TODO: Check x1 (switchTo) and do context switch if >= 0
+    // For now, just return x0 (result)
     b syscall_return
 
 syscall_close:
@@ -2691,527 +2479,38 @@ syscall_clone_fake:
     //   [stack-16]: gp (g0 goroutine pointer)
     //   [stack-24]: fn (mstart function pointer)
     //
-    // Strategy: Save these in pending_thread structure, return fake TID.
-    // Timer interrupt handler will run fn(mstart) on the pending thread.
+    // NEW STRATEGY: Call Go's SyscallCloneHandler to create thread entry.
+    // Thread starts in READY state, runs when current thread blocks.
 
-    // Print "CLONE#" with clone number to track entries
+    // Print 'C' for clone
     mov w10, #'C'
-    UART_PUTC_REG w10
-
-    // Load and increment clone counter to see which clone this is
-    adrp x13, clone_entry_counter
-    add x13, x13, :lo12:clone_entry_counter
-    ldr w14, [x13]
-    add w14, w14, #1
-    str w14, [x13]
-
-    // Print the clone number as ASCII digit
-    add w10, w14, #'0'
-    UART_PUTC_REG w10
-
-    mov w10, #'\n'
     UART_PUTC_REG w10
 
     // x1 = stack pointer from clone args
     // Extract mp, gp, fn from the stack
-    // Go's newosproc puts on the new stack (from top, stack.hi):
-    //   [stack-8]:  mp (M struct pointer)
-    //   [stack-16]: gp (g0 goroutine pointer)
-    //   [stack-24]: fn (mstart function pointer)
-    //
-    // ldp x10, x11, [x1, #-16] loads:
-    //   x10 = mem[x1-16] = gp
-    //   x11 = mem[x1-8] = mp
     ldp x10, x11, [x1, #-16]       // x10 = gp (at stack-16), x11 = mp (at stack-8)
     ldr x12, [x1, #-24]            // x12 = fn (mstart)
 
-    // Store in pending_thread structure
-    adrp x13, pending_thread_stack
-    add x13, x13, :lo12:pending_thread_stack
-    str x1, [x13]                  // pending_thread_stack = stack
-
-    adrp x13, pending_thread_mp
-    add x13, x13, :lo12:pending_thread_mp
-    str x11, [x13]                 // pending_thread_mp = mp (from x11)
-
-    adrp x13, pending_thread_gp
-    add x13, x13, :lo12:pending_thread_gp
-    str x10, [x13]                 // pending_thread_gp = gp (from x10)
-
-    adrp x13, pending_thread_fn
-    add x13, x13, :lo12:pending_thread_fn
-    str x12, [x13]                 // pending_thread_fn = fn
-
-    // Mark thread as pending
-    adrp x13, pending_thread_valid
-    add x13, x13, :lo12:pending_thread_valid
-    mov w14, #1
-    str w14, [x13]                 // pending_thread_valid = 1
-
-    // STRATEGY: Run mstart synchronously. When mstart blocks (nanosleep/futex),
-    // switch back to M0. This ensures sysmon/templateThread run briefly before
-    // M0 continues. handoffp will then create M3 with P to run GC goroutines.
-
-    // Print 's' to show we're about to run mstart synchronously
-    mov w10, #'s'
-    UART_PUTC_REG w10
-
-    // Increment fake TID counter and get TID for this thread
-    adrp x13, fake_tid_counter
-    add x13, x13, :lo12:fake_tid_counter
-    ldr w15, [x13]
-    add w15, w15, #1
-    str w15, [x13]
-    add w15, w15, #99              // TID = 100, 101, 102, ...
-
-    // Save M0's context for return
-    // We need: ELR_EL1, SPSR_EL1, SP_EL0, x28 (g), and callee-saved regs
-
-    mrs x14, ELR_EL1
-    adrp x13, saved_m0_elr
-    add x13, x13, :lo12:saved_m0_elr
-    str x14, [x13]
-
-    mrs x14, SPSR_EL1
-    adrp x13, saved_m0_spsr
-    add x13, x13, :lo12:saved_m0_spsr
-    str x14, [x13]
-
-    mrs x14, SP_EL0
-    adrp x13, saved_m0_sp
-    add x13, x13, :lo12:saved_m0_sp
-    str x14, [x13]
-
-    // Save M0's g (x28) from exception frame
-    ldr x14, [sp, #EXC_FRAME_X28]
-    adrp x13, saved_m0_g
-    add x13, x13, :lo12:saved_m0_g
-    str x14, [x13]
-
-    // Save x29/x30 from exception frame
-    ldp x13, x14, [sp, #EXC_FRAME_X29_X30]
-    adrp x16, saved_m0_x29_x30
-    add x16, x16, :lo12:saved_m0_x29_x30
-    stp x13, x14, [x16]
-
-    // Save current callee-saved registers (x19-x27)
-    adrp x13, saved_m0_x19_x27
-    add x13, x13, :lo12:saved_m0_x19_x27
-    stp x19, x20, [x13, #0]
-    stp x21, x22, [x13, #16]
-    stp x23, x24, [x13, #32]
-    stp x25, x26, [x13, #48]
-    str x27, [x13, #64]
-
-    // Save the TID we'll return to M0 later
-    adrp x13, saved_m0_tid
-    add x13, x13, :lo12:saved_m0_tid
-    str w15, [x13]
-
-    // Mark that we're running on M1 (or M2, etc)
-    adrp x13, running_cloned_thread
-    add x13, x13, :lo12:running_cloned_thread
-    mov w14, #1
-    str w14, [x13]
-
-    // DEBUG: Verify running_cloned_thread is set
-    ldr w14, [x13]
-    add w10, w14, #'0'               // Should print '1'
-    UART_PUTC_REG w10
-    mov w10, #'!'
-    UART_PUTC_REG w10
-
-    // Now set up for mstart
-    // pending_thread_fn = mstart function
-    // pending_thread_stack = stack for new thread
-    // pending_thread_gp = g0 for new thread
-
-    adrp x13, pending_thread_fn
-    add x13, x13, :lo12:pending_thread_fn
-    ldr x12, [x13]                 // x12 = fn (mstart)
-
-    adrp x13, pending_thread_stack
-    add x13, x13, :lo12:pending_thread_stack
-    ldr x14, [x13]                 // x14 = stack
-
-    adrp x13, pending_thread_gp
-    add x13, x13, :lo12:pending_thread_gp
-    ldr x28, [x13]                 // x28 = g0 for new thread
-
-    // Print 'm' before jumping to mstart
-    mov w10, #'m'
-    UART_PUTC_REG w10
-
-    // Set up stack for new thread
-    msr SP_EL0, x14
-
-    // Clear pending_thread_valid since we're about to run it
-    adrp x13, pending_thread_valid
-    add x13, x13, :lo12:pending_thread_valid
-    str wzr, [x13]
-
-    // Set up for eret to mstart
-    // ELR_EL1 = mstart function
-    // SPSR_EL1 = EL1t mode (using SP_EL0), interrupts enabled
-    msr ELR_EL1, x12
-    mov x13, #0x04                 // EL1t mode, all interrupts enabled
-    msr SPSR_EL1, x13
-    isb
-
-    // Jump to mstart - when it blocks, we'll restore M0 context
-    eret
-
-    // FALLBACK: OLD CODE (kept for reference but not reached)
-    // The timer approach doesn't work because the crash happens in nanoseconds.
-    // Instead, we run mstart directly and return when M1 has no more work.
-    //
-    // Strategy:
-    // 1. Save M0's context (so we can return from clone later)
-    // 2. Switch to M1's stack and run mstart
-    // 3. mstart's schedule() runs GC goroutines
-    // 4. When M1 calls futex WAIT (no work), we restore M0 and return
-
-    // Print 'M' to show we're about to run mstart
-    mov w10, #'M'
-    UART_PUTC_REG w10
-
-    // Save return address for clone syscall
-    // We're in the syscall handler, ELR_EL1 has the return address
-    mrs x14, ELR_EL1
-
-    // DEBUG: Print ELR_EL1 being saved
-    stp x14, x30, [sp, #-16]!
-    mov w10, #'E'
-    UART_PUTC_REG w10
-    mov w10, #'='
-    UART_PUTC_REG w10
-    mov x0, x14
-    bl print_hex64
-    mov w10, #' '
-    UART_PUTC_REG w10
-    ldp x14, x30, [sp], #16
-
-    adrp x15, saved_m0_elr
-    add x15, x15, :lo12:saved_m0_elr
-    str x14, [x15]
-
-    // Save SPSR_EL1
-    mrs x14, SPSR_EL1
-    adrp x15, saved_m0_spsr
-    add x15, x15, :lo12:saved_m0_spsr
-    str x14, [x15]
-
-    // Save M0's SP_EL0 (the real stack, NOT the exception stack SP_EL1!)
-    // We're in EL1h mode, so SP is SP_EL1. M0's stack is in SP_EL0.
-    mrs x14, SP_EL0
-    adrp x15, saved_m0_sp
-    add x15, x15, :lo12:saved_m0_sp
-    str x14, [x15]
-
-    // Save M0's g register (x28) - we'll need to restore this when switching back
-    // CRITICAL: Read from exception frame at [sp, #224] where it was saved at exception entry
-    // The current x28 should be the same, but reading from frame is more reliable
-    ldr x14, [sp, #224]             // x14 = original x28 from exception frame
-
-    // DEBUG: Print x28 value before saving
-    stp x14, x30, [sp, #-16]!
-    mov w10, #'G'
-    UART_PUTC_REG w10
-    mov w10, #'='
-    UART_PUTC_REG w10
-    mov x0, x14
-    bl print_hex64
-    mov w10, #' '
-    UART_PUTC_REG w10
-    ldp x14, x30, [sp], #16
-
-    adrp x15, saved_m0_g
-    add x15, x15, :lo12:saved_m0_g
-    str x14, [x15]                  // Save ORIGINAL x28
-
-    // Save ALL callee-saved registers (x19-x30) - these will be corrupted by M1's syscalls
-    // CRITICAL: x29 and x30 must be read from the exception frame at [sp, #232] because
-    // they've been modified by exception handler code (bl calls, etc.)
-    adrp x15, saved_m0_x19_x20
-    add x15, x15, :lo12:saved_m0_x19_x20
-    stp x19, x20, [x15]
-
-    adrp x15, saved_m0_x21_x22
-    add x15, x15, :lo12:saved_m0_x21_x22
-    stp x21, x22, [x15]
-
-    adrp x15, saved_m0_x23_x24
-    add x15, x15, :lo12:saved_m0_x23_x24
-    stp x23, x24, [x15]
-
-    adrp x15, saved_m0_x25_x26
-    add x15, x15, :lo12:saved_m0_x25_x26
-    stp x25, x26, [x15]
-
-    // Read x29, x30 from exception frame - they were saved at [sp, #232] during exception entry
-    ldp x13, x14, [sp, #232]        // x13 = original x29, x14 = original x30
-
-    adrp x15, saved_m0_x27_x29
-    add x15, x15, :lo12:saved_m0_x27_x29
-    stp x27, x13, [x15]             // Save x27 and ORIGINAL x29
-
-    adrp x15, saved_m0_x30
-    add x15, x15, :lo12:saved_m0_x30
-    str x14, [x15]                  // Save ORIGINAL x30
-
-    // Mark that M0 context is saved
-    adrp x15, m0_context_saved
-    add x15, x15, :lo12:m0_context_saved
-    mov w14, #1
-    str w14, [x15]
-
-    // Load pending thread parameters
-    adrp x13, pending_thread_stack
-    add x13, x13, :lo12:pending_thread_stack
-    ldr x1, [x13]                  // x1 = new stack
-
-    adrp x13, pending_thread_fn
-    add x13, x13, :lo12:pending_thread_fn
-    ldr x2, [x13]                  // x2 = mstart function
-
-    adrp x13, pending_thread_gp
-    add x13, x13, :lo12:pending_thread_gp
-    ldr x3, [x13]                  // x3 = g0 for new M
-
-    // Print 'S' to show switching to mstart
-    mov w10, #'S'
-    UART_PUTC_REG w10
-
-    // Mark that we're now running M1
-    adrp x15, running_m1
-    add x15, x15, :lo12:running_m1
-    mov w14, #1
-    str w14, [x15]
-
-    // Load mp (M struct) for setting g.m
-    adrp x13, pending_thread_mp
-    add x13, x13, :lo12:pending_thread_mp
-    ldr x4, [x13]                  // x4 = mp
-
-    // Set x28 (g register) to M1's g0
-    mov x28, x3
-
-    // CRITICAL: Set g.m = mp (offset 48 in g struct)
-    // Go's clone child code does this: MOVD R0, g_m(g)
-    // Without this, mstart will crash accessing g.m
-    str x4, [x28, #48]             // g.m = mp
-
-    // Print 'G' to show g.m is set
-    mov w10, #'G'
-    UART_PUTC_REG w10
-
-    // DEBUG: Print mp value
-    mov w10, #' '
-    UART_PUTC_REG w10
-    mov w10, #'m'
-    UART_PUTC_REG w10
-    mov w10, #'p'
-    UART_PUTC_REG w10
-    mov w10, #'='
-    UART_PUTC_REG w10
-    // Save x1 before calling print_hex64 (it preserves registers but let's be safe)
-    mov x5, x1                     // Save stack pointer
-    mov x0, x4                     // x0 = mp (for print_hex64)
-    bl print_hex64
-    mov x1, x5                     // Restore stack pointer
-
-    // DEBUG: Print gp value (x28)
-    mov w10, #' '
-    UART_PUTC_REG w10
-    mov w10, #'g'
-    UART_PUTC_REG w10
-    mov w10, #'p'
-    UART_PUTC_REG w10
-    mov w10, #'='
-    UART_PUTC_REG w10
-    mov x0, x28                    // x0 = gp (g register)
-    bl print_hex64
-
-    // DEBUG: Print g.m (should equal mp)
-    mov w10, #' '
-    UART_PUTC_REG w10
-    mov w10, #'g'
-    UART_PUTC_REG w10
-    mov w10, #'.'
-    UART_PUTC_REG w10
-    mov w10, #'m'
-    UART_PUTC_REG w10
-    mov w10, #'='
-    UART_PUTC_REG w10
-    ldr x0, [x28, #48]             // Load g.m
-    bl print_hex64
-
-    // DEBUG: Print fn (mstart)
-    mov w10, #' '
-    UART_PUTC_REG w10
-    mov w10, #'f'
-    UART_PUTC_REG w10
-    mov w10, #'n'
-    UART_PUTC_REG w10
-    mov w10, #'='
-    UART_PUTC_REG w10
-    mov x0, x2                     // x0 = fn (mstart function)
-    bl print_hex64
-
-    // Print newline
-    mov w10, #'\n'
-    UART_PUTC_REG w10
-
-    // DEBUG: Print '1' to show we reached here
-    mov w10, #'1'
-    UART_PUTC_REG w10
-
-    // CRITICAL: We're in EL1h mode (exception handler mode using SP_EL1).
-    // mstart needs to run in EL1t mode (normal code mode using SP_EL0).
-    // We can't just 'br' to mstart - that would keep us in EL1h mode, and
-    // syscalls from mstart would corrupt the exception stack!
-    //
-    // Solution: Use eret to properly return to EL1t mode with:
-    // - ELR_EL1 = mstart address
-    // - SPSR_EL1 = EL1t mode (0x04) or with DAIF masked (0x3C4)
-    // - SP_EL0 = M1's stack
-
-    // Set M1's stack as SP_EL0
-    msr SP_EL0, x1
-    isb
-
-    // DEBUG: Print '2'
-    mov w10, #'2'
-    UART_PUTC_REG w10
-
-    // Set mstart as return address
-    msr ELR_EL1, x2
-    isb
-
-    // DEBUG: Print '3'
-    mov w10, #'3'
-    UART_PUTC_REG w10
-
-    // Set SPSR_EL1 for EL1t mode with interrupts masked (like normal exception return)
-    // 0x3C4 = EL1t (SPSel=0), DAIF masked (D=A=I=F=1)
-    mov x0, #0x3C4
-    msr SPSR_EL1, x0
-    isb
-
-    // DEBUG: Print '4'
-    mov w10, #'4'
-    UART_PUTC_REG w10
-
-    // Restore exception stack pointer to original location
-    // (we saved M0's SP in saved_m0_sp, but we need to restore SP_EL1 to
-    // the exception stack top so future exceptions work correctly)
-    // Exception stack top is at 0x5F020000
-    movz x0, #0x5F02, lsl #16
-    mov sp, x0
-
-    // Print 'E' to show we're about to eret
-    mov w10, #'E'
-    UART_PUTC_REG w10
-
-    // Jump to mstart via eret (switches to EL1t mode, uses SP_EL0)
-    eret
-
-    // NEVER REACHED - mstart doesn't return
-    // When M1 calls futex WAIT, we'll restore M0 context there
-
-    // Return fake TID (100 + counter)
-    adrp x13, fake_tid_counter
-    add x13, x13, :lo12:fake_tid_counter
-    ldr w0, [x13]
-    add w0, w0, #1
-    str w0, [x13]
-    add w0, w0, #99                // TID = 100, 101, 102, ...
-
+    // Set up parameters for Go call:
+    // SyscallCloneHandler(stack uint64, entryFunc uint64, mPtr uint64, gPtr uint64)
+    // x0 = stack (already in x1)
+    // x1 = entryFunc (fn)
+    // x2 = mPtr (mp)
+    // x3 = gPtr (gp)
+    mov x0, x1                      // x0 = stack
+    mov x1, x12                     // x1 = fn (mstart)
+    mov x2, x11                     // x2 = mp
+    mov x3, x10                     // x3 = gp
+
+    // Call Go handler
+    CALL_GO_PROLOGUE SPILL_SPACE_4PARAM
+    bl main.SyscallCloneHandler
+    // Returns: x0 = TID (or -1 on error), x1 = switchTo (-1 = no switch)
+    CALL_GO_EPILOGUE SPILL_SPACE_4PARAM
+
+    // For now, ignore switchTo (x1) and just return TID
+    // Context switching will be added when futex_wait triggers it
     b syscall_return
-
-.data
-.align 3
-
-pending_thread_valid:
-    .word 0                        // 1 if a thread is pending
-
-pending_thread_stack:
-    .quad 0                        // Stack pointer for pending thread
-
-pending_thread_mp:
-    .quad 0                        // M struct pointer
-
-pending_thread_gp:
-    .quad 0                        // g0 goroutine pointer
-
-pending_thread_fn:
-    .quad 0                        // Function to call (mstart)
-
-fake_tid_counter:
-    .word 0                        // Counter for fake TIDs
-
-mmap_call_counter:
-    .word 0                        // Counter for mmap calls
-
-m1_syscall_counter:
-    .word 0                        // Counter for syscalls made by M1
-
-// M0 context save area (for restoring after M1's mstart runs)
-.align 3
-saved_m0_elr:
-    .quad 0                        // Saved ELR_EL1 (return address)
-
-saved_m0_spsr:
-    .quad 0                        // Saved SPSR_EL1 (processor state)
-
-saved_m0_sp:
-    .quad 0                        // Saved stack pointer (SP_EL0)
-
-saved_m0_g:
-    .quad 0                        // Saved g register (x28)
-
-// Callee-saved registers (x19-x30) - 12 registers = 96 bytes
-saved_m0_x19_x20:
-    .quad 0, 0
-saved_m0_x21_x22:
-    .quad 0, 0
-saved_m0_x23_x24:
-    .quad 0, 0
-saved_m0_x25_x26:
-    .quad 0, 0
-saved_m0_x27_x29:
-    .quad 0, 0                     // x27 and x29 (frame pointer) - OLD format
-saved_m0_x30:
-    .quad 0                        // Link register - OLD format
-
-// NEW format: save x19-x27 contiguously (9 registers = 72 bytes)
-saved_m0_x19_x27:
-    .quad 0, 0, 0, 0, 0, 0, 0, 0, 0  // x19, x20, x21, x22, x23, x24, x25, x26, x27
-
-// NEW format: save x29, x30 together (2 registers = 16 bytes)
-saved_m0_x29_x30:
-    .quad 0, 0                     // x29 (FP), x30 (LR)
-
-// TID to return to M0 when cloned thread blocks
-saved_m0_tid:
-    .word 0
-
-// Counter for clone entries (to track how many times clone is called)
-clone_entry_counter:
-    .word 0
-
-m0_context_saved:
-    .word 0                        // 1 if M0 context is saved
-
-// Flag to indicate we're currently running a cloned thread (M1, M2, etc.)
-running_cloned_thread:
-    .word 0                        // 1 if currently running cloned thread
-
-// OLD variable kept for compatibility
-running_m1:
-    .word 0                        // 1 if currently running M1
-
-.text
 
 syscall_mmap:
     // mmap(addr, length, prot, flags, fd, offset) - 6 parameters

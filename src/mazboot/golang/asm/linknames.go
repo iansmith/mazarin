@@ -51,6 +51,10 @@ func CleanDataCacheVA(addr uintptr)
 //go:nosplit
 func CleanDcacheVa(addr uintptr)
 
+//go:linkname CurrentThreadIdx current_thread_idx
+//go:nosplit
+func CurrentThreadIdx()
+
 //go:linkname DcCvau DcCvau
 //go:nosplit
 func DcCvau()
@@ -263,6 +267,10 @@ func GetUartBase() uintptr
 //go:nosplit
 func GetUartSize() uintptr
 
+//go:linkname GlobalTickCounter global_tick_counter
+//go:nosplit
+func GlobalTickCounter()
+
 //go:linkname IcIvau IcIvau
 //go:nosplit
 func IcIvau()
@@ -327,9 +335,17 @@ func MmioWrite16(reg uintptr, data uint16)
 //go:nosplit
 func MmioWrite64(reg uintptr, data uint64)
 
+//go:linkname NextThreadTid next_thread_tid
+//go:nosplit
+func NextThreadTid()
+
 //go:linkname Nop Nop
 //go:nosplit
 func Nop()
+
+//go:linkname NumThreads num_threads
+//go:nosplit
+func NumThreads()
 
 //go:linkname OurGcWriteBarrier our_gcWriteBarrier
 //go:nosplit
@@ -466,6 +482,14 @@ func SyncExceptionHandlerEl0()
 //go:linkname TestPrintFunctionsPreserveRegisters test_print_functions_preserve_registers
 //go:nosplit
 func TestPrintFunctionsPreserveRegisters()
+
+//go:linkname ThreadTable thread_table
+//go:nosplit
+func ThreadTable()
+
+//go:linkname TimerFrequencyHz timer_frequency_hz
+//go:nosplit
+func TimerFrequencyHz()
 
 //go:linkname UartInitPl011 uart_init_pl011
 //go:nosplit

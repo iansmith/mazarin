@@ -16,6 +16,9 @@ func main() {
 	// These are called from assembly interrupt handlers and must not be optimized away
 	// This will never execute in bare metal, but ensures the functions exist
 	ExceptionHandler(0, 0, 0, 0, 0, 0, 0, 0)
+	SyscallCloneHandler(0, 0, 0, 0)
+	SyscallFutexHandler(0, 0, 0)
+	SyscallNanosleepHandler(0, 0)
 	UartTransmitHandler() // UART TX interrupt handler
 	irqHandlerGo(0)
 
@@ -26,7 +29,6 @@ func main() {
 	SyscallClockGettime()
 	SyscallClose(0)
 	SyscallExit()
-	SyscallFutex(nil, 0, 0, nil, nil, 0)
 	SyscallKill()
 	SyscallMmap(0, 0, 0, 0, 0, 0)
 	SyscallMunmap(0, 0)

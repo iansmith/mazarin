@@ -69,6 +69,7 @@ var globalTickCounter uint64 = 0
 // InitThreads initializes the thread table with M0 as thread 0
 //
 //go:nosplit
+//go:noinline
 func InitThreads() {
 	// M0 is thread 0, already running
 	threads[0].State = ThreadRunning

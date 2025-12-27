@@ -724,7 +724,13 @@ func KernelMain(r0, r1, atags uint32) {
 	}
 
 	// =========================================
-	// SKIP REMAINING TESTS - Jump directly to kmazarin
+	// Initialize thread table before loading kmazarin
+	// This sets up M0 as thread 0 for clone/futex/nanosleep syscall handling
+	// =========================================
+	InitThreads()
+
+	// =========================================
+	// Load and run kmazarin
 	// All devices initialized, runtime.args() passed, ready to load kmazarin
 	// =========================================
 	loadAndRunKmazarin()
@@ -1031,6 +1037,10 @@ func kernelMainBody() {
 	// Stage 9: Timer init
 	FramebufferPuts("Initializing timer...\r\n")
 	timerInit()
+
+	// Stage 9b: Thread table init (for clone/futex/nanosleep syscall handling)
+	FramebufferPuts("Initializing thread table...\r\n")
+	InitThreads()
 
 	// Stage 10: SDHCI init (SD card controller)
 	FramebufferPuts("Initializing SD card...\r\n")
