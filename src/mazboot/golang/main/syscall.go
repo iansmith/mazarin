@@ -463,7 +463,9 @@ var mmapCallCount uint32
 func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32, offset int64) int64 {
 	// Minimal breadcrumb for mmap calls
 	mmapCallCount++
-	// DEBUG REMOVED - any output here corrupts X0
+
+	// Simple breadcrumb - 'M' for mmap entry
+	uartPutcDirect('M')
 
 	// Handle zero-length mmap
 	// This should never happen and indicates a runtime initialization bug
@@ -522,9 +524,11 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 
 		// Register this span
 		if !registerMmapSpan(addr, addr+uintptr(roundedLength)) {
+			uartPutcDirect('E') // E = ENOMEM
 			return -12 // -ENOMEM
 		}
 
+		uartPutcDirect('F') // F = MAP_FIXED success
 		return int64(addr)
 	}
 
@@ -543,9 +547,11 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 
 			// Register this span
 			if !registerMmapSpan(addr, addr+uintptr(roundedLength)) {
+				uartPutcDirect('E') // E = ENOMEM
 				return -12 // -ENOMEM
 			}
 
+			uartPutcDirect('H') // H = Hint honored
 			return int64(addr)
 		}
 	}
@@ -559,13 +565,21 @@ use_bump_allocator:
 
 	// Check if allocation would overflow the pre-registered bump region
 	if endAddr > BUMP_REGION_END {
+		uartPutcDirect('X') // X = bump exhausted
 		return -12 // -ENOMEM
 	}
 
 	// Update bump pointer for next allocation
 	mmapBumpNext = endAddr
 
-	return int64(allocAddr)
+	uartPutcDirect('B') // B = Bump allocator success
+
+	// DEBUG: Verify return value is correct
+	retval := int64(allocAddr)
+	if retval < 0 || retval == 0 {
+		uartPutcDirect('!') // Should never happen
+	}
+	return retval
 }
 
 //go:nosplit
