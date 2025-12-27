@@ -24,6 +24,7 @@ func main() {
 
 	// Reference other functions called from assembly
 	// This will never execute in bare metal, but ensures the functions exist
+	DoContextSwitch(0, 0)
 	GrowStackForCurrent()
 	SyscallBrk(0)
 	SyscallClockGettime()

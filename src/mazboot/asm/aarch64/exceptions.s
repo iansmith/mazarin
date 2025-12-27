@@ -2395,9 +2395,29 @@ syscall_futex:
     // Returns: x0 = result, x1 = switchTo
     CALL_GO_EPILOGUE SPILL_SPACE_3PARAM
 
-    // TODO: Check x1 (switchTo) and do context switch if >= 0
-    // For now, just return x0 (result)
-    b syscall_return
+    // Check if context switch is needed
+    // x0 = result, x1 = switchTo
+    cmp x1, #0
+    blt syscall_return              // If switchTo < 0, just return normally
+
+    // Context switch needed!
+    // Save result (x0) temporarily - we need it after the switch
+    // For futex_wait, result is always 0, so we can just reload it
+    mov x19, x0                     // Save result in callee-saved register
+
+    // Call DoContextSwitch(framePtr=sp, targetIdx=x1)
+    // This saves current context and returns pointer to new thread's Context
+    mov x0, sp                      // x0 = frame pointer (exception frame)
+    sxtw x1, w1                     // x1 = targetIdx (sign-extend to 64-bit)
+
+    CALL_GO_PROLOGUE SPILL_SPACE_2PARAM
+    bl main.DoContextSwitch
+    // Returns: x0 = pointer to new ThreadContext
+    CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
+
+    // x0 now points to the new thread's ThreadContext
+    // Load context and switch to new thread
+    b load_context_and_eret
 
 syscall_nanosleep:
     // nanosleep(req, rem) - Sleep syscall
@@ -2429,9 +2449,26 @@ syscall_nanosleep:
     // Returns: x0 = result, x1 = switchTo
     CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
 
-    // TODO: Check x1 (switchTo) and do context switch if >= 0
-    // For now, just return x0 (result)
-    b syscall_return
+    // Check if context switch is needed
+    // x0 = result, x1 = switchTo
+    cmp x1, #0
+    blt syscall_return              // If switchTo < 0, just return normally
+
+    // Context switch needed!
+    mov x19, x0                     // Save result in callee-saved register
+
+    // Call DoContextSwitch(framePtr=sp, targetIdx=x1)
+    mov x0, sp                      // x0 = frame pointer (exception frame)
+    sxtw x1, w1                     // x1 = targetIdx (sign-extend to 64-bit)
+
+    CALL_GO_PROLOGUE SPILL_SPACE_2PARAM
+    bl main.DoContextSwitch
+    // Returns: x0 = pointer to new ThreadContext
+    CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
+
+    // x0 now points to the new thread's ThreadContext
+    // Load context and switch to new thread
+    b load_context_and_eret
 
 syscall_close:
     // close(fd) - 1 parameter
@@ -2652,6 +2689,87 @@ syscall_exit:
     // But if it does return, halt here instead of falling through to syscall_return
 1:  wfe                             // Wait for event (low power)
     b 1b                           // Loop forever
+
+// ============================================================================
+// load_context_and_eret - Load thread context and switch to new thread
+// ============================================================================
+// Entry: x0 = pointer to ThreadContext struct
+//
+// ThreadContext layout (from threads.go):
+//   X[0-30]:  offsets 0-240  (31 * 8 = 248 bytes)
+//   SP:       offset 248
+//   ELR:      offset 256
+//   SPSR:     offset 264
+//
+// This routine:
+// 1. Loads SP_EL0 from Context.SP
+// 2. Loads ELR_EL1 from Context.ELR
+// 3. Loads SPSR_EL1 from Context.SPSR
+// 4. Loads all general purpose registers x0-x30
+// 5. Performs eret to switch to the new thread
+//
+load_context_and_eret:
+    // x0 = pointer to ThreadContext
+    mov x10, x0                     // Save context pointer in x10
+
+    // Print debug marker 'S' for switch
+    mov w11, #'S'
+    UART_PUTC_REG w11
+
+    // Load SP_EL0 from Context.SP (offset 248)
+    ldr x11, [x10, #248]
+    msr SP_EL0, x11
+    isb
+
+    // Load ELR_EL1 from Context.ELR (offset 256)
+    ldr x11, [x10, #256]
+    msr ELR_EL1, x11
+    isb
+
+    // Load SPSR_EL1 from Context.SPSR (offset 264)
+    ldr x11, [x10, #264]
+    msr SPSR_EL1, x11
+    isb
+
+    // Now load all general purpose registers from Context.X[]
+    // We need to be careful - we're using x10 as the context pointer
+    // Load x0-x9 first (except x10)
+    ldp x0, x1, [x10, #0]           // X[0], X[1]
+    ldp x2, x3, [x10, #16]          // X[2], X[3]
+    ldp x4, x5, [x10, #32]          // X[4], X[5]
+    ldp x6, x7, [x10, #48]          // X[6], X[7]
+    ldp x8, x9, [x10, #64]          // X[8], X[9]
+    // Skip x10, x11 for now (we're using them)
+
+    // Load x12-x27
+    ldp x12, x13, [x10, #96]        // X[12], X[13]
+    ldp x14, x15, [x10, #112]       // X[14], X[15]
+    ldp x16, x17, [x10, #128]       // X[16], X[17]
+    ldp x18, x19, [x10, #144]       // X[18], X[19]
+    ldp x20, x21, [x10, #160]       // X[20], X[21]
+    ldp x22, x23, [x10, #176]       // X[22], X[23]
+    ldp x24, x25, [x10, #192]       // X[24], X[25]
+    ldp x26, x27, [x10, #208]       // X[26], X[27]
+
+    // Load x28 (g pointer), x29 (FP), x30 (LR)
+    ldr x28, [x10, #224]            // X[28] - Go's g register
+    ldp x29, x30, [x10, #232]       // X[29], X[30]
+
+    // Finally load x10 and x11 (last because we were using x10 as base)
+    ldr x11, [x10, #88]             // X[11]
+    ldr x10, [x10, #80]             // X[10] - MUST BE LAST (clobbers our base pointer)
+
+    // Reset exception stack pointer to top before eret
+    // This is important - we're leaving the current exception frame behind
+    // and starting fresh with the new thread
+    // Exception stack top is at 0x5F020000
+    // NOTE: We can't use x10/x11 anymore - use the sp directly
+    // Actually, we need to set SP_EL1 (exception stack) back to top
+    // But we're about to eret which uses SP_EL0, not SP_EL1...
+    // The exception stack cleanup happens on next exception entry.
+
+    // Switch to new thread!
+    eret
 
 syscall_return:
     // Syscall return - restore SPSR/ELR and x1-x30, then return via eret

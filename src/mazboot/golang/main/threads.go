@@ -3,7 +3,7 @@
 package main
 
 import (
-	_ "unsafe"
+	"unsafe"
 )
 
 // Syscall return codes for assembly
@@ -118,14 +118,15 @@ func ThreadCreate(stack, entryFunc, mPtr, gPtr uint64) int32 {
 	threads[slot].EntryFunc = entryFunc
 
 	// Set up initial context
-	// x28 = g pointer
+	// x28 = g pointer (Go's g register)
 	threads[slot].Context.X[28] = gPtr
-	// SP = stack
+	// SP = stack pointer for the new thread
 	threads[slot].Context.SP = stack
-	// ELR = entry function (mstart)
+	// ELR = entry function (mstart) - where to start executing
 	threads[slot].Context.ELR = entryFunc
-	// SPSR = EL1t mode, interrupts enabled
-	threads[slot].Context.SPSR = 0x00000000
+	// SPSR = 0x3C4 = EL1t mode (M=0100) with DAIF masked (D=A=I=F=1)
+	// This matches what the old clone handler used for new threads
+	threads[slot].Context.SPSR = 0x3C4
 
 	numThreads++
 
@@ -330,6 +331,85 @@ func SaveCurrentThreadContext(
 	t.Context.SP = sp
 	t.Context.ELR = elr
 	t.Context.SPSR = spsr
+}
+
+// Exception frame offsets (must match exceptions.s)
+const (
+	excFrameX0       = 0   // x0, x1, x2, ... stored sequentially
+	excFrameX28      = 224 // x28 (g pointer)
+	excFrameX29X30   = 232 // x29, x30 (FP, LR)
+	excFrameSPEL0    = 288 // Saved SP_EL0
+	excFrameELR      = 256 // ELR_EL1
+	excFrameSPSR     = 264 // SPSR_EL1
+)
+
+// SaveContextFromFrame saves the current thread's context from an exception frame
+// This is easier to call from assembly than SaveCurrentThreadContext
+// framePtr = pointer to the exception frame (SP value in exception handler)
+//
+//go:nosplit
+//go:noinline
+func SaveContextFromFrame(framePtr uintptr) {
+	t := &threads[currentThreadIdx]
+
+	// Read all registers from exception frame
+	// x0-x27 are stored sequentially starting at offset 0 (each is 8 bytes)
+	frame := (*[40]uint64)(unsafe.Pointer(framePtr))
+
+	for i := 0; i < 28; i++ {
+		t.Context.X[i] = frame[i]
+	}
+
+	// x28 is at offset 224 = 28*8, so frame[28]
+	t.Context.X[28] = frame[28]
+
+	// x29, x30 are at offset 232 = 29*8, so frame[29] and frame[30]
+	t.Context.X[29] = frame[29]
+	t.Context.X[30] = frame[30]
+
+	// SP_EL0 is at offset 288 = 36*8, so frame[36]
+	t.Context.SP = frame[36]
+
+	// ELR_EL1 is at offset 256 = 32*8, so frame[32]
+	t.Context.ELR = frame[32]
+
+	// SPSR_EL1 is at offset 264 = 33*8, so frame[33]
+	t.Context.SPSR = frame[33]
+}
+
+// DoContextSwitch performs a context switch from current thread to targetIdx
+// Saves current context from frame, updates thread states, returns new context
+// Returns pointer to new thread's Context (for assembly to load)
+//
+//go:nosplit
+//go:noinline
+func DoContextSwitch(framePtr uintptr, targetIdx int32) *ThreadContext {
+	// Save current thread's context from exception frame
+	SaveContextFromFrame(framePtr)
+
+	// Debug output
+	uartPutsDirect("ContextSwitch: ")
+	uartPutHex32Direct(uint32(currentThreadIdx))
+	uartPutsDirect(" -> ")
+	uartPutHex32Direct(uint32(targetIdx))
+	uartPutsDirect("\r\n")
+
+	// Update thread indices and states
+	// Note: The blocking state was already set by the syscall handler
+	// (e.g., ThreadBlockFutex sets state to ThreadBlockedFutex)
+	oldIdx := currentThreadIdx
+	currentThreadIdx = targetIdx
+
+	// New thread becomes running
+	threads[targetIdx].State = ThreadRunning
+
+	// If old thread was still marked Running, set it to Ready
+	// (This shouldn't happen - syscall handlers should have set blocking state)
+	if threads[oldIdx].State == ThreadRunning {
+		threads[oldIdx].State = ThreadReady
+	}
+
+	return &threads[targetIdx].Context
 }
 
 // ============================================================================
