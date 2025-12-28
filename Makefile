@@ -78,8 +78,14 @@ LINKER_SYMBOLS_OBJ = $(BUILD_DIR)/linker_symbols.o
 KMAZARIN_EMBED_OBJ = $(BUILD_DIR)/kmazarin_embed.o
 KERNEL_GO_OBJ = $(BUILD_DIR)/kernel_go.o
 
+# Transpiled Go assembly object (from Go Plan 9 syntax)
+GOASM_TEST_SRC = $(MAZBOOT_SRC)/asm/goasm/goasm_test.s
+GOASM_TEST_OBJ = $(BUILD_DIR)/goasm_test.o
+GOASM2GNU_SRC = $(MAZBOOT_SRC)/tools/goasm2gnu.go
+GOASM2GNU = $(BUILD_DIR)/goasm2gnu
+
 # Assembly object files list
-ASM_OBJECTS = $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ)
+ASM_OBJECTS = $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(GOASM_TEST_OBJ)
 
 # Output file
 MAZBOOT_BINARY = $(BUILD_DIR)/mazboot.elf
@@ -109,6 +115,12 @@ $(GLOBALIZE_SYMBOLS_GEN): $(GLOBALIZE_SYMBOLS_GEN_SRC)
 	@echo "Building generate-globalize-symbols tool..."
 	@mkdir -p $(BUILD_DIR)
 	@CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $(GLOBALIZE_SYMBOLS_GEN_SRC)
+
+# Build goasm2gnu tool for transpiling Go assembly to ELF
+$(GOASM2GNU): $(GOASM2GNU_SRC)
+	@echo "Building goasm2gnu tool..."
+	@mkdir -p $(BUILD_DIR)
+	@CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $(GOASM2GNU_SRC)
 
 # Note: linknames.go and main.go are now generated via //go:generate directives
 # in their respective files (asm/linknames.go and main/main.go).
@@ -159,6 +171,12 @@ $(GET_CALLER_SP_OBJ): $(GET_CALLER_SP_SRC) $(LINKER_SCRIPT)
 $(LINKER_SYMBOLS_OBJ): $(LINKER_SYMBOLS_SRC) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(ASFLAGS) -c $< -o $@
+
+# Transpile Go assembly (Plan 9 syntax) to ELF using goasm2gnu tool
+$(GOASM_TEST_OBJ): $(GOASM_TEST_SRC) $(GOASM2GNU)
+	@mkdir -p $(BUILD_DIR)
+	@echo "Transpiling Go assembly: $<"
+	$(GOASM2GNU) -elf -o $@ $<
 
 # Embed kmazarin kernel binary - depends on kmazarin being built first
 $(KMAZARIN_EMBED_OBJ): $(KMAZARIN_EMBED_SRC) $(KMAZARIN_BINARY) $(LINKER_SCRIPT)
@@ -239,11 +257,12 @@ $(KERNEL_GO_OBJ_QEMU): $(MAZBOOT_SRC)/golang/go.mod $(GO_SRC) $(LINKNAMES_GO) $(
 
 # Build mazboot (default: QEMU build with qemuvirt and aarch64 tags)
 # NOTE: Depends on KMAZARIN_EMBED_OBJ which embeds the kmazarin kernel binary
-$(MAZBOOT_BINARY): $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
+$(MAZBOOT_BINARY): $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(GOASM_TEST_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
 	@mkdir -p $(BUILD_DIR)
 	@# Link exceptions.o, then writebarrier.o so our global symbols override Go runtime's
 	@# Our writebarrier.s provides global (T) symbols that should take precedence
-	$(CC) $(LDFLAGS) -o $@.tmp $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(KERNEL_GO_OBJ_QEMU) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ)
+	@# GOASM_TEST_OBJ contains transpiled Go assembly (from Plan 9 syntax)
+	$(CC) $(LDFLAGS) -o $@.tmp $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(KERNEL_GO_OBJ_QEMU) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(GOASM_TEST_OBJ)
 	@# Patch the binary to redirect calls from Go runtime functions to our implementations
 	@# The Go tool scans .s files to determine which symbols need patching
 	@echo "Patching runtime function calls..."

@@ -713,6 +713,32 @@ func KernelMain(r0, r1, atags uint32) {
 	}
 
 	// =========================================
+	// TEST: Go Assembly Transpilation (goasm2gnu)
+	// Verify that code written in Go's Plan 9 syntax and transpiled to ELF works
+	// =========================================
+	print("Testing Go assembly transpilation... ")
+	magic := asm.TestGoAsmMagic()
+	if magic == 0xCAFEBABE {
+		print("magic=OK ")
+	} else {
+		print("magic=FAIL(")
+		printHex64(magic)
+		print(") ")
+	}
+	sum := asm.TestGoAsmAdd(100, 23)
+	if sum == 123 {
+		print("add=OK")
+	} else {
+		print("add=FAIL(")
+		print(int(sum))
+		print(")")
+	}
+	print("\r\n")
+	for i := 0; i < 10; i++ {
+		uartDrainRingBuffer()
+	}
+
+	// =========================================
 	// TEST: Item 3 - runtime.args()
 	// Test that we can call runtime.args with a minimal argv/auxv structure
 	// This verifies the args() → sysargs() → sysauxv() path works.
