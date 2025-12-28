@@ -1287,13 +1287,58 @@ timer_preempt_handler:
     // Go struct offsets:
     //   g.m   is at offset 48 in g struct
     //   m.g0  is at offset 0 in m struct
-    ldr x3, [sp, #IRQ_FRAME_X28]    // x3 = interrupted g (saved x28)
+    // NOTE: Go on arm64 without cgo uses x28 directly as the g pointer.
+    // With cgo, TPIDR_EL0 + offset 16 contains g.
+    // Kmazarin is compiled without cgo (runtime.iscgo = 0), so x28 = g.
+    // We saved x28 in the exception frame, so read it from there.
+    ldr x3, [sp, #IRQ_FRAME_X28]    // x3 = interrupted x28 = g
     cbz x3, timer_skip_preempt      // If g is nil, skip preemption
+
+    // Check if g is in kmazarin's virtual address ranges:
+    // Go runtime uses HIGH virtual addresses: 0x4000000000 (256GB base) for arenas
+    // Kmazarin ELF is at LOW addresses: 0x417F0000 - 0x41A00000
+    //
+    // Range 1: HIGH VA (Go arenas) = 0x4000000000 - 0x8000000000
+    // Range 2: LOW VA (kmazarin ELF) = 0x417F0000 - 0x41A00000
+    // Anything else = mazboot's address space
+
+    // Check HIGH VA range first (Go's arena/heap addresses)
+    // 0x4000000000 = 64 << 32 = 0x40 in bits 39-32
+    movz x6, #0x40, lsl #32         // 0x4000000000 (256GB)
+    cmp x3, x6
+    blt check_kmazarin_elf_range    // Less than 256GB, check ELF range
+    movz x6, #0x80, lsl #32         // 0x8000000000 (512GB upper bound)
+    cmp x3, x6
+    blt found_kmazarin_g            // In Go's high VA range!
+
+check_kmazarin_elf_range:
+    // Check LOW VA range (kmazarin ELF binary)
+    movz x6, #0x417F, lsl #16       // kmazarin ELF start
+    cmp x3, x6
+    blt timer_skip_mazboot          // g pointer < kmazarin start, it's mazboot's
+    movz x6, #0x41A0, lsl #16       // kmazarin ELF end
+    cmp x3, x6
+    bge timer_skip_mazboot          // g pointer >= kmazarin end, it's mazboot's
+
+found_kmazarin_g:
+    // g is likely a kmazarin pointer!
+    // Save g for comparison
+    mov x6, x3                      // x6 = g
+
     ldr x4, [x3, #48]               // x4 = g.m (m pointer)
     cbz x4, timer_skip_preempt      // If m is nil, skip preemption
     ldr x5, [x4, #0]                // x5 = m.g0 (the m's system goroutine)
-    cmp x3, x5                      // Compare current g with m.g0
-    beq timer_skip_preempt          // If g == m.g0, we're on system stack
+    cmp x6, x5                      // Compare current g with m.g0
+    bne not_g0_preempt              // If g != m.g0, we can preempt!
+
+    // g == m.g0, we're on scheduler. Print first digit of g address for debug
+    // Print 'S' + hex digit of high nibble to show we're seeing different g0s
+    // Actually, for first pass, just print 'S' once every ~100 times
+    // Skip printing - too noisy
+    b timer_skip_preempt
+
+not_g0_preempt:
+    // g != m.g0! We can preempt this goroutine
 
     // 1. RE-ARM TIMER - Set timer to fire again in 20ms
     // (1,250,000 ticks @ 62.5 MHz)
@@ -1317,16 +1362,38 @@ timer_preempt_handler:
     ldr x22, [sp, #IRQ_FRAME_X29]   // Get FP (x29) from frame
     str x22, [x20, #8]              // *(SP+8) = old FP
 
-    // Set LR (x30) = interrupted PC (asyncPreemptBM will return here)
+    // Set LR (x30) = interrupted PC (asyncPreempt will return here)
     str x19, [sp, #IRQ_FRAME_X30]   // Update LR in frame
 
     // Set SP_EL0 in frame to new adjusted value
     str x20, [sp, #IRQ_FRAME_SP_EL0]
 
-    // Set ELR_EL1 in frame to asyncPreemptBM
+    // Determine which asyncPreempt to call:
+    // - If interrupted PC is in kmazarin (0x417F0000-0x41A00000), use kmazarin's
+    // - Otherwise use mazboot's asyncPreemptBM
+    movz x21, #0x417F, lsl #16      // x21 = 0x417F0000 (kmazarin start)
+    cmp x19, x21                    // Compare interrupted PC with kmazarin start
+    blt use_mazboot_preempt         // If PC < 0x417F0000, use mazboot
+    movz x21, #0x41A0, lsl #16      // x21 = 0x41A00000 (kmazarin end approx)
+    cmp x19, x21                    // Compare interrupted PC with kmazarin end
+    bge use_mazboot_preempt         // If PC >= 0x41A00000, use mazboot
+
+    // Use kmazarin's runtime.asyncPreempt.abi0 at 0x41871e10
+    movz x21, #0x4187, lsl #16      // 0x41870000
+    movk x21, #0x1e10               // 0x41871e10
+    b set_elr_and_continue
+
+use_mazboot_preempt:
+    // Use mazboot's asyncPreemptBM
     adrp x21, asyncPreemptBM
     add x21, x21, :lo12:asyncPreemptBM
+
+set_elr_and_continue:
     str x21, [sp, #IRQ_FRAME_ELR]   // ELR will be restored by INTERRUPT_FULL_RESTORE
+
+    // NOTE: x28 (g pointer) should already be correct in the saved frame
+    // since kmazarin uses x28 directly (no cgo TLS).
+    // Go's asyncPreempt2 uses x28 to access g struct.
 
     // 3. SIGNAL EOI TO GIC (before ERET!)
     // GICC_EOIR at 0x08010010
@@ -1337,18 +1404,20 @@ timer_preempt_handler:
 
     // 4. RESTORE AND ERET
     // INTERRUPT_FULL_RESTORE will restore all regs from frame and ERET
-    // ELR now points to asyncPreemptBM, SP_EL0 to adjusted goroutine stack
-    // x30 (LR) contains interrupted PC, so asyncPreemptBM can return there
+    // ELR now points to asyncPreempt, SP_EL0 to adjusted goroutine stack
+    // x30 (LR) contains interrupted PC, x28 has correct g pointer
     INTERRUPT_FULL_RESTORE
 
     // NEVER REACHED - INTERRUPT_FULL_RESTORE includes eret
 
-timer_skip_preempt:
-    // We're on g0 - skip preemption but still re-arm timer and send EOI
-    // Print '.' to show timer is running (even if not preempting)
-    mov w14, #'.'
-    UART_PUTC_REG w14
+timer_skip_mazboot:
+    // Mazboot's g0 - skip preemption
+    b timer_common_skip
 
+timer_skip_preempt:
+    // Kmazarin's g0 (scheduler) - skip preemption
+
+timer_common_skip:
     // Re-arm timer - Set timer to fire again in 20ms
     mrs x3, CNTVCT_EL0
     movz x4, #0x0013, lsl #16

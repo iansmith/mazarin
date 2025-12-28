@@ -487,10 +487,6 @@ func UartInitPl011()
 //go:nosplit
 func UartPutcPl011(c byte)
 
-//go:linkname VerifyStackPointerReading verify_stack_pointer_reading
-//go:nosplit
-func VerifyStackPointerReading() int
-
 //go:linkname Wfi Wfi
 //go:nosplit
 func Wfi()
