@@ -141,29 +141,6 @@ mmio_read16:
     ldrh w0, [x0]       // Load 16-bit value from address in x0 to w0
     ret                 // Return (value already in w0)
 
-// delay(int32_t count)
-// w0 = count (32-bit signed integer)
-.global delay
-delay:
-    cbz w0, delay_done  // If count is zero, skip loop
-delay_loop:
-    subs w0, w0, #1     // Decrement count
-    bne delay_loop      // Branch if not zero
-delay_done:
-    ret                 // Return
-
-// busy_wait(uint32_t count)
-// w0 = count (32-bit unsigned integer)
-// Simple busy wait loop - cannot be optimized away
-.global busy_wait
-busy_wait:
-    cbz w0, busy_wait_done  // If count is zero, skip loop
-busy_wait_loop:
-    subs w0, w0, #1         // Decrement count
-    bne busy_wait_loop      // Branch if not zero
-busy_wait_done:
-    ret                     // Return
-
 // store_pointer_nobarrier(dest *unsafe.Pointer, value unsafe.Pointer)
 // x0 = destination address, x1 = pointer value to store
 // Stores a pointer without triggering Go's write barrier
@@ -320,54 +297,8 @@ set_stack_pointer:
     ret                  // Return
     
 sp_misaligned_set:
-    // SP was misaligned!
-    // Print diagnostic via UART (minimal, no stack)
-    // Save x0 (SP value) to x2 before using registers
-    mov x2, x0                       // Save SP value
-    
-    movz x1, #0x0900, lsl #16      // UART base = 0x09000000
-    movk x1, #0x0000, lsl #0
-    
-    // Print "SP-MISALIGN: set_stack_pointer SP=0x"
-    //     movz w3, #0x53                 // 'S' - BREADCRUMB DISABLED
-    //     str w3, [x1] - BREADCRUMB DISABLED
-    //     movz w3, #0x50                 // 'P' - BREADCRUMB DISABLED
-    //     str w3, [x1] - BREADCRUMB DISABLED
-    //     movz w3, #0x2D                 // '-' - BREADCRUMB DISABLED
-    //     str w3, [x1] - BREADCRUMB DISABLED
-    //     movz w3, #0x4D                 // 'M' - BREADCRUMB DISABLED
-    //     str w3, [x1] - BREADCRUMB DISABLED
-    //     movz w3, #0x49                 // 'I' - BREADCRUMB DISABLED
-    //     str w3, [x1] - BREADCRUMB DISABLED
-    //     movz w3, #0x53                 // 'S' - BREADCRUMB DISABLED
-    //     str w3, [x1] - BREADCRUMB DISABLED
-    //     movz w3, #0x41                 // 'A' - BREADCRUMB DISABLED
-    //     str w3, [x1] - BREADCRUMB DISABLED
-    //     movz w3, #0x4C                 // 'L' - BREADCRUMB DISABLED
-    //     str w3, [x1] - BREADCRUMB DISABLED
-    //     movz w3, #0x49                 // 'I' - BREADCRUMB DISABLED
-    //     str w3, [x1] - BREADCRUMB DISABLED
-    //     movz w3, #0x47                 // 'G' - BREADCRUMB DISABLED
-    //     str w3, [x1] - BREADCRUMB DISABLED
-    //     movz w3, #0x3A                 // ':' - BREADCRUMB DISABLED
-    str w3, [x1]
-    movz w3, #0x20                 // ' '
-    str w3, [x1]
-    movz w3, #0x73                 // 's'
-    str w3, [x1]
-    movz w3, #0x65                 // 'e'
-    str w3, [x1]
-    movz w3, #0x74                 // 't'
-    str w3, [x1]
-    movz w3, #0x5F                 // '_'
-    str w3, [x1]
-    movz w3, #0x73                 // 's'
-    str w3, [x1]
-    movz w3, #0x70                 // 'p'
-    str w3, [x1]
-    
-    // Round down to 16-byte boundary and set SP anyway
-    bic x0, x2, #0xF                // Clear lower 4 bits to align (use saved value)
+    // SP was misaligned - round down to 16-byte boundary and continue
+    bic x0, x0, #0xF                // Clear lower 4 bits to align
     mov sp, x0                       // Set aligned SP
     dsb sy                           // Memory barrier
     ret                              // Return

@@ -591,7 +591,7 @@ func KernelMain(r0, r1, atags uint32) {
 	// If MMU enable causes an exception, we need a valid handler
 	// Use assembly helper to get exception vector address without accessing .rodata
 	exceptionVectorAddr := asm.GetExceptionVectorsAddr()
-	setVbarEl1ToAddr(exceptionVectorAddr)
+	asm.SetVbarEl1ToAddr(exceptionVectorAddr)
 
 	// Initialize MMU (required before heap - enables Normal memory for unaligned access)
 	if !initMMU() {
@@ -1033,9 +1033,6 @@ func kernelMainBody() {
 	// Stage 8: GIC init (interrupt controller)
 	FramebufferPuts("Initializing interrupts...\r\n")
 	gicInit()
-
-	// Check security state before setting up interrupts
-	checkSecurityState()
 
 	// Set up UART TX interrupts for interrupt-driven output
 	uartSetupInterrupts()

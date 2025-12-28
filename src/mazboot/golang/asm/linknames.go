@@ -7,10 +7,6 @@ import "unsafe"
 
 // {{ LINKNAME START}}
 //
-//go:linkname BusyWait busy_wait
-//go:nosplit
-func BusyWait(count uint32)
-
 //go:linkname Bzero bzero
 //go:nosplit
 func Bzero(ptr unsafe.Pointer, size uint32)
@@ -58,10 +54,6 @@ func CurrentThreadIdx()
 //go:linkname DcCvau DcCvau
 //go:nosplit
 func DcCvau()
-
-//go:linkname Delay delay
-//go:nosplit
-func Delay(count int32)
 
 //go:linkname DisableAlignmentCheck disable_alignment_check
 //go:nosplit
@@ -479,10 +471,6 @@ func SwitchToGoroutine(g unsafe.Pointer)
 //go:nosplit
 func SyncExceptionHandlerEl0()
 
-//go:linkname TestPrintFunctionsPreserveRegisters test_print_functions_preserve_registers
-//go:nosplit
-func TestPrintFunctionsPreserveRegisters()
-
 //go:linkname ThreadTable thread_table
 //go:nosplit
 func ThreadTable()
@@ -567,10 +555,6 @@ func WriteTtbr0El1(value uint64)
 //go:nosplit
 func WriteTtbr1El1(value uint64)
 
-//go:linkname armTimer armTimer
-//go:nosplit
-func armTimer()
-
 //go:linkname asyncPreemptBM asyncPreemptBM
 //go:nosplit
 func asyncPreemptBM()
@@ -591,10 +575,6 @@ func getCurrentSP()
 //go:nosplit
 func getGRegister()
 
-//go:linkname getTimerFrequency getTimerFrequency
-//go:nosplit
-func getTimerFrequency()
-
 //go:linkname memmove memmove
 //go:nosplit
 func memmove(dest unsafe.Pointer, src unsafe.Pointer, n uint32)
@@ -602,10 +582,6 @@ func memmove(dest unsafe.Pointer, src unsafe.Pointer, n uint32)
 //go:linkname mmapBumpNext mmapBumpNext
 //go:nosplit
 func mmapBumpNext()
-
-//go:linkname readTimerCounter readTimerCounter
-//go:nosplit
-func readTimerCounter()
 
 //go:linkname runOnGoroutine runOnGoroutine
 //go:nosplit

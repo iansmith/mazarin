@@ -108,13 +108,9 @@ at_el1:
     // CPACR_EL1.FPEN (bits 21:20) = 0b11: No trapping from EL0 or EL1
     // Without this, any FPU/SIMD instruction traps with EC=0x07
     // ========================================
-    //     movz w15, #0x46                // 'F' = Enabling FPU - BREADCRUMB DISABLED
-    //     str w15, [x14] - BREADCRUMB DISABLED
     mov x0, #(3 << 20)             // FPEN = 0b11
     msr CPACR_EL1, x0
     isb                            // Ensure FPU is enabled before continuing
-    //     movz w15, #0x66                // 'f' = FPU enabled - BREADCRUMB DISABLED
-    //     str w15, [x14] - BREADCRUMB DISABLED
 
     // ========================================
     // Disable strict alignment checking to allow unaligned accesses
@@ -139,8 +135,6 @@ at_el1:
     // Stack setup complete (moved earlier to ensure SP_EL1 is valid immediately)
 
     // Clear BSS section (now in RAM region at 0x40100000, after DTB)
-    //     movz w15, #0x42                // 'B' = Clearing BSS - BREADCRUMB DISABLED
-    //     str w15, [x14] - BREADCRUMB DISABLED
     ldr x4, =__bss_start         // 0x40100000
     ldr x9, =__bss_end           // ~0x4003c000
     mov x5, #0
@@ -160,9 +154,6 @@ at_el1:
     cmp x4, x9
     blo 1b
 
-    //     movz w15, #0x62              // 'b' = BSS cleared - BREADCRUMB DISABLED
-    //     str w15, [x14] - BREADCRUMB DISABLED
-
     // NOTE: .data section is loaded directly to RAM by QEMU (no copy needed)
     // The linker places .data at 0x40100000+ and QEMU loads it there
 
@@ -175,8 +166,6 @@ at_el1:
     movz x5, #0x4800, lsl #16     // 0x48000000 - start of mmap region (within heap!)
     movk x5, #0x0000, lsl #0
     str x5, [x4]                  // Store initial mmap pointer
-    //     movz w15, #0x4D              // 'M' = mmap pointer initialized - BREADCRUMB DISABLED
-    //     str w15, [x14] - BREADCRUMB DISABLED
 
     // Enable write barrier flag AFTER clearing BSS
     // runtime.writeBarrier is in BSS - use linker symbol (not hardcoded address)
@@ -185,12 +174,8 @@ at_el1:
     mov w11, #1                    // Enable write barrier
     strb w11, [x10]                // Store byte (bool field)
     dsb sy                         // Memory barrier
-    //     movz w15, #0x57                // 'W' = Write barrier enabled - BREADCRUMB DISABLED
-    //     str w15, [x14] - BREADCRUMB DISABLED
-    
+
     // Set exception vector base to our table (required before enabling IRQs)
-    //     movz w15, #0x56                // 'V' = Setting VBAR - BREADCRUMB DISABLED
-    //     str w15, [x14] - BREADCRUMB DISABLED
     ldr x0, =exception_vectors
     dsb sy
     msr VBAR_EL1, x0
@@ -200,20 +185,14 @@ at_el1:
     mrs x1, VBAR_EL1
     cmp x0, x1
     beq vbar_ok
-    // VBAR mismatch - print 'X' and hang
-    //     movz w15, #0x58                // 'X' = VBAR mismatch error - BREADCRUMB DISABLED
-    //     str w15, [x14] - BREADCRUMB DISABLED
+    // VBAR mismatch - hang
     b .
 vbar_ok:
-    //     movz w15, #0x76                // 'v' = VBAR set and verified - BREADCRUMB DISABLED
-    //     str w15, [x14] - BREADCRUMB DISABLED
 
     // ========================================
     // Initialize GIC (Generic Interrupt Controller)
     // Required to receive timer interrupts
     // ========================================
-    //     movz w15, #0x47                // 'G' = Initializing GIC - BREADCRUMB DISABLED
-    //     str w15, [x14] - BREADCRUMB DISABLED
 
     // QEMU virt machine GIC addresses:
     // GICD (Distributor): 0x08000000
@@ -250,9 +229,6 @@ vbar_ok:
     // Memory barrier to ensure GIC is configured before continuing
     dsb sy
     isb
-
-    //     movz w15, #0x67                // 'g' = GIC initialized - BREADCRUMB DISABLED
-    //     str w15, [x14] - BREADCRUMB DISABLED
 
     // ========================================
     // TEST: Enable MMU from boot.s (earliest possible location)
@@ -421,13 +397,6 @@ vbar_test_ok:
     // NOTE: runtime·save_g is not available in our bare-metal environment
     // (it's mainly for CGO/TLS). The g register (x28) is already set up,
     // which is sufficient for our purposes.
-
-    // Breadcrumb: g0/m0 initialized
-    //     movz w15, #0x47                 // 'G' = g0/m0 initialized - BREADCRUMB DISABLED
-    //     str w15, [x14] - BREADCRUMB DISABLED
-
-    // Test that print functions preserve registers
-    bl test_print_functions_preserve_registers
 
     // Jump to kernel_main
     ldr x0, =kernel_main

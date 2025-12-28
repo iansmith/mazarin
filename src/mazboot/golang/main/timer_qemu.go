@@ -4,18 +4,11 @@ package main
 
 import (
 	"mazboot/asm"
-
-	_ "unsafe"
+	_ "unsafe" // Required for //go:linkname
 )
-
-// Required for //go:linkname directives
 
 // ARM Generic Timer for QEMU virt machine
 // The ARM Generic Timer is integrated into each CPU core
-//
-// EXPERIMENT: Testing PHYSICAL timer (CNTP_*) vs VIRTUAL timer (CNTV_*)
-// Set USE_PHYSICAL_TIMER = true to test physical timer (PPI 30)
-// Set USE_PHYSICAL_TIMER = false to revert to virtual timer (PPI 27)
 //
 // Timer interrupts are PPIs (Private Peripheral Interrupts) routed through GIC
 // Virtual Timer PPI ID: 27
@@ -23,71 +16,6 @@ import (
 
 // SWITCH: Set to true for physical timer, false for virtual timer
 const USE_PHYSICAL_TIMER = false // Use virtual timer (matches working commit)
-
-// System register access functions (must be implemented in assembly)
-// VIRTUAL timer functions (CNTV_*)
-//
-//go:linkname read_cntv_ctl_el0 read_cntv_ctl_el0
-//go:nosplit
-func read_cntv_ctl_el0() uint32
-
-//go:linkname write_cntv_ctl_el0 write_cntv_ctl_el0
-//go:nosplit
-func write_cntv_ctl_el0(value uint32)
-
-//go:linkname read_cntv_tval_el0 read_cntv_tval_el0
-//go:nosplit
-func read_cntv_tval_el0() uint32
-
-//go:linkname write_cntv_tval_el0 write_cntv_tval_el0
-//go:nosplit
-func write_cntv_tval_el0(value uint32)
-
-//go:linkname read_cntv_cval_el0 read_cntv_cval_el0
-//go:nosplit
-func read_cntv_cval_el0() uint64
-
-//go:linkname write_cntv_cval_el0 write_cntv_cval_el0
-//go:nosplit
-func write_cntv_cval_el0(value uint64)
-
-//go:linkname read_cntvct_el0 read_cntvct_el0
-//go:nosplit
-func read_cntvct_el0() uint64
-
-// PHYSICAL timer functions (CNTP_*)
-//
-//go:linkname read_cntp_ctl_el0 read_cntp_ctl_el0
-//go:nosplit
-func read_cntp_ctl_el0() uint32
-
-//go:linkname write_cntp_ctl_el0 write_cntp_ctl_el0
-//go:nosplit
-func write_cntp_ctl_el0(value uint32)
-
-//go:linkname read_cntp_tval_el0 read_cntp_tval_el0
-//go:nosplit
-func read_cntp_tval_el0() uint32
-
-//go:linkname write_cntp_tval_el0 write_cntp_tval_el0
-//go:nosplit
-func write_cntp_tval_el0(value uint32)
-
-//go:linkname read_cntp_cval_el0 read_cntp_cval_el0
-//go:nosplit
-func read_cntp_cval_el0() uint64
-
-//go:linkname write_cntp_cval_el0 write_cntp_cval_el0
-//go:nosplit
-func write_cntp_cval_el0(value uint64)
-
-//go:linkname read_cntpct_el0 read_cntpct_el0
-//go:nosplit
-func read_cntpct_el0() uint64
-
-//go:linkname read_cntfrq_el0 read_cntfrq_el0
-//go:nosplit
-func read_cntfrq_el0() uint32
 
 // Timer control register bits (same for physical and virtual timers)
 const (
@@ -112,34 +40,34 @@ var (
 //go:nosplit
 func timer_read_ctl() uint32 {
 	if USE_PHYSICAL_TIMER {
-		return read_cntp_ctl_el0()
+		return asm.ReadCntpCtlEl0()
 	}
-	return read_cntv_ctl_el0()
+	return asm.ReadCntvCtlEl0()
 }
 
 //go:nosplit
 func timer_write_ctl(value uint32) {
 	if USE_PHYSICAL_TIMER {
-		write_cntp_ctl_el0(value)
+		asm.WriteCntpCtlEl0(value)
 	} else {
-		write_cntv_ctl_el0(value)
+		asm.WriteCntvCtlEl0(value)
 	}
 }
 
 //go:nosplit
 func timer_read_tval() uint32 {
 	if USE_PHYSICAL_TIMER {
-		return read_cntp_tval_el0()
+		return asm.ReadCntpTvalEl0()
 	}
-	return read_cntv_tval_el0()
+	return asm.ReadCntvTvalEl0()
 }
 
 //go:nosplit
 func timer_write_tval(value uint32) {
 	if USE_PHYSICAL_TIMER {
-		write_cntp_tval_el0(value)
+		asm.WriteCntpTvalEl0(value)
 	} else {
-		write_cntv_tval_el0(value)
+		asm.WriteCntvTvalEl0(value)
 	}
 }
 
@@ -275,7 +203,7 @@ func timerSet(usec uint32) {
 	}
 
 	// Read timer frequency
-	freq := read_cntfrq_el0()
+	freq := asm.ReadCntfrqEl0()
 
 	// Calculate ticks: usec * freq / 1000000
 	// Use 64-bit arithmetic to avoid overflow
@@ -285,5 +213,5 @@ func timerSet(usec uint32) {
 	if ticks > 0xFFFFFFFF {
 		ticks = 0xFFFFFFFF // Clamp to 32-bit
 	}
-	write_cntv_tval_el0(uint32(ticks))
+	asm.WriteCntvTvalEl0(uint32(ticks))
 }

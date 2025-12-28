@@ -70,12 +70,7 @@ var (
 )
 
 // Link to assembly functions (now in asm package)
-// Functions are accessed via asm package: asm.SetVbarEl1(), asm.EnableIrqs(), etc.
-
-// Assembly function to set VBAR_EL1 to a specific address
-//go:linkname setVbarEl1ToAddr set_vbar_el1_to_addr
-//go:nosplit
-func setVbarEl1ToAddr(addr uintptr)
+// Functions are accessed via asm package: asm.SetVbarEl1ToAddr(), asm.EnableIrqs(), etc.
 
 // Relocated exception vectors in safe RAM (non-cacheable)
 // Must be 2KB aligned and 2KB in size
@@ -162,7 +157,7 @@ func InitializeExceptions() {
 
 	// Set VBAR_EL1 to new address (via assembly)
 	uartPutsDirect("DEBUG: About to set VBAR_EL1...\r\n")
-	setVbarEl1ToAddr(exceptionVectorRAMAddr)
+	asm.SetVbarEl1ToAddr(exceptionVectorRAMAddr)
 	uartPutsDirect("DEBUG: VBAR_EL1 set\r\n")
 
 	asm.Dsb()

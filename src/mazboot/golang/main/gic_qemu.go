@@ -4,13 +4,7 @@ package main
 
 import (
 	"mazboot/asm"
-	_ "unsafe" // Required for //go:linkname directives
 )
-
-//go:linkname read_id_aa64pfr0_el1 read_id_aa64pfr0_el1
-//go:nosplit
-//go:noinline
-func read_id_aa64pfr0_el1() uint64
 
 // GIC (Generic Interrupt Controller) for QEMU virt machine
 // QEMU virt uses GICv2 by default
@@ -135,13 +129,6 @@ func gicInitFull() {
 	// Enable distributor and CPU interface (Group 0 only)
 	asm.MmioWrite(GICD_CTLR, 0x01)
 	asm.MmioWrite(GICC_CTLR, 0x01)
-}
-
-// checkSecurityState checks if we're running in Secure or Non-secure EL1 (debugging only)
-//
-//go:nosplit
-func checkSecurityState() {
-	// Not used during normal operation - kept for debugging
 }
 
 // gicEnableInterrupt enables a specific interrupt in the GIC

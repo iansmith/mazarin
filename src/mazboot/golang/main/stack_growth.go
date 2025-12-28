@@ -172,7 +172,7 @@ func growStack(oldStack *stack) bool {
 
 	// Update stack pointer register
 	// CRITICAL: After this, we're executing on the new stack!
-	set_stack_pointer(newSP)
+	asm.SetStackPointer(newSP)
 
 	// Memory barrier to ensure SP update is visible
 	asm.Dsb()
@@ -212,13 +212,6 @@ func memmove(dst, src unsafe.Pointer, size uint32) {
 	// Memory barrier to ensure copy is visible
 	asm.Dsb()
 }
-
-// set_stack_pointer updates the stack pointer register
-// This must be implemented in assembly
-//
-//go:linkname set_stack_pointer set_stack_pointer
-//go:nosplit
-func set_stack_pointer(sp uintptr)
 
 // GrowStackForCurrent is called from morestack assembly
 // It gets the current stack and grows it
