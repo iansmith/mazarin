@@ -48,50 +48,8 @@
 
 // =================================================================
 // Simple getter functions moved to lib_getters.s (Go/Plan9 assembly)
-
-// mmio_write(uintptr_t reg, uint32_t data)
-// x0 = register address, w1 = data (32-bit)
-.global mmio_write
-mmio_write:
-    str w1, [x0]        // Store 32-bit value from w1 to address in x0
-    ret                 // Return
-
-// mmio_read(uintptr_t reg)
-// x0 = register address, returns uint32_t in w0
-.global mmio_read
-mmio_read:
-    ldr w0, [x0]        // Load 32-bit value from address in x0 to w0
-    ret                 // Return (value already in w0)
-
-// mmio_write16(uintptr_t reg, uint16_t data)
-// x0 = register address, w1 = data (16-bit, zero-extended to 32-bit)
-.global mmio_write16
-mmio_write16:
-    strh w1, [x0]       // Store 16-bit value from w1 to address in x0
-    ret                 // Return
-
-// mmio_read16(uintptr_t reg)
-// x0 = register address, returns uint16_t in w0 (zero-extended to 32-bit)
-.global mmio_read16
-mmio_read16:
-    ldrh w0, [x0]       // Load 16-bit value from address in x0 to w0
-    ret                 // Return (value already in w0)
-
-// store_pointer_nobarrier(dest *unsafe.Pointer, value unsafe.Pointer)
-// x0 = destination address, x1 = pointer value to store
-// Stores a pointer without triggering Go's write barrier
-// Minimal implementation - no stack frame needed
-.global store_pointer_nobarrier
-store_pointer_nobarrier:
-    str x1, [x0]            // Store pointer directly
-    ret                     // Return
-
-// mmio_write64(uintptr_t reg, uint64_t data)
-// x0 = register address, x1 = data (64-bit)
-.global mmio_write64
-mmio_write64:
-    str x1, [x0]        // Store 64-bit value from x1 to address in x0
-    ret                 // Return
+// MMIO functions moved to lib_mmio.s (Go/Plan9 assembly)
+// Barrier functions moved to lib_barriers.s (Go/Plan9 assembly)
 
 // bzero(void *ptr, uint32_t size)
 // x0 = pointer to memory (64-bit), w1 = size in bytes (32-bit unsigned)
@@ -129,26 +87,7 @@ bzero_loop_1:
 bzero_done:
     ret                     // Return
 
-// dsb() - Data Synchronization Barrier
-// Ensures all memory accesses before this instruction complete before continuing
-.global dsb
-dsb:
-    dsb sy              // Data Synchronization Barrier - system-wide
-    ret                  // Return
-
-// isb() - Instruction Synchronization Barrier
-// Ensures all instructions before this barrier complete before continuing
-.global isb
-isb:
-    isb                 // Instruction Synchronization Barrier
-    ret                 // Return
-
-// get_stack_pointer() - Returns current stack pointer value
-// Returns uintptr_t (64-bit) in x0
-.global get_stack_pointer
-get_stack_pointer:
-    mov x0, sp           // Move stack pointer to x0 (return value)
-    ret                  // Return
+// dsb, isb, get_stack_pointer, set_stack_pointer, set_g_pointer moved to lib_barriers.s
 
 // ============================================================================
 // System Control Register (SCTLR) Access Functions
@@ -219,33 +158,7 @@ disable_alignment_check:
     isb                   // Instruction synchronization barrier
     ret
 
-// set_stack_pointer(sp uintptr) - Sets stack pointer register
-// x0 = new stack pointer value
-.global set_stack_pointer
-set_stack_pointer:
-    // SP ALIGNMENT CHECK: Verify SP is 16-byte aligned before setting
-    and x1, x0, #0xF               // Check alignment (lower 4 bits)
-    cbnz x1, sp_misaligned_set      // If not zero, SP is misaligned!
-    
-    // SP is aligned, set it normally
-    mov sp, x0           // Set stack pointer from x0
-    dsb sy               // Memory barrier to ensure SP update is visible
-    ret                  // Return
-    
-sp_misaligned_set:
-    // SP was misaligned - round down to 16-byte boundary and continue
-    bic x0, x0, #0xF                // Clear lower 4 bits to align
-    mov sp, x0                       // Set aligned SP
-    dsb sy                           // Memory barrier
-    ret                              // Return
-
-// set_g_pointer(g uintptr) - Sets x28 (g pointer register)
-// x0 = new goroutine pointer
-.global set_g_pointer
-set_g_pointer:
-    mov x28, x0          // Set x28 (g pointer) to new goroutine
-    dsb sy               // Memory barrier
-    ret                  // Return
+// set_stack_pointer, set_g_pointer moved to lib_barriers.s
 
 // qemu_exit() - Exit QEMU using semihosting
 // This function uses the QEMU semihosting interface to cleanly exit
@@ -1094,22 +1007,7 @@ clean_dcache_va:
     dsb ish                  // Ensure cache clean completes
     ret
 
-// get_current_g() uintptr - Returns pointer to current goroutine from x28 register
-// The Go runtime stores the current goroutine pointer in x28 (g register)
-// Returns: uintptr - Pointer to current G structure
-.global get_current_g
-get_current_g:
-    mov x0, x28              // Return current g pointer from x28 register
-    ret
-
-// set_current_g(gptr uintptr) - Sets the current goroutine pointer in x28 register
-// The Go runtime expects the current goroutine pointer to be in x28
-// Parameters:
-//   x0 = gptr (uintptr - pointer to goroutine structure)
-.global set_current_g
-set_current_g:
-    mov x28, x0              // Set g register (x28) to the provided G pointer
-    ret
+// NOTE: get_current_g and set_current_g moved to asm/goasm/lib_barriers.s
 
 // CleanDataCacheVA(addr uintptr) - Clean data cache by virtual address
 // This ensures writes to page tables are visible to the MMU's page table walker
@@ -1142,13 +1040,7 @@ read_ctr_el0:
     mrs x0, ctr_el0          // Read Cache Type Register
     ret
 
-// getCurrentSP() uintptr - Returns the current stack pointer
-// This is used for stack tracing / debugging
-.global getCurrentSP
-getCurrentSP:
-    mov x0, sp               // Copy stack pointer to x0 (return value)
-    ret
-
+// NOTE: getCurrentSP moved to asm/goasm/lib_barriers.s
 
 // set_vbar_el1_to_addr(addr uintptr) - Set VBAR_EL1 to specific address
 // Used to relocate exception vectors to safe RAM location
@@ -1158,13 +1050,7 @@ set_vbar_el1_to_addr:
     msr vbar_el1, x0         // Set VBAR_EL1 to address in x0
     ret                       // Return (barriers done by caller)
 
-// Wfi() - Wait For Interrupt
-// Puts the CPU in low-power mode until an interrupt arrives
-// This is safe to call in a loop for halting
-.global Wfi
-Wfi:
-    wfi                       // Wait for interrupt
-    ret
+// NOTE: Wfi moved to asm/goasm/lib_barriers.s
 
 // jump_to_null - Jumps to address 0 to trigger a prefetch abort
 // Used for testing exception handler traceback functionality
@@ -1268,9 +1154,4 @@ SemihostingExit:
     hlt #0xF000               // Semihosting trap - QEMU should exit here
     ret                       // Should never reach here
 
-// Simple NOP instruction for busy-wait loops
-
-.global Nop
-Nop:
-    nop
-    ret
+// NOTE: Nop moved to asm/goasm/lib_barriers.s

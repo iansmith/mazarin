@@ -214,7 +214,7 @@ func uartInitRingBuffer() {
 
 	// Store pointer to global using StorePointerNoBarrier to avoid write barrier issues
 	// Go's write barrier can cause hangs in bare-metal environments
-	asm.StorePointerNoBarrier((*unsafe.Pointer)(unsafe.Pointer(&uartRingBuf)), unsafe.Pointer(ringBuf))
+	asm.StorePointerNoBarrier(uintptr(unsafe.Pointer(&uartRingBuf)), uintptr(unsafe.Pointer(ringBuf)))
 }
 
 // uartEnqueue adds a character to the ring buffer
