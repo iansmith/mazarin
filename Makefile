@@ -84,6 +84,11 @@ GOASM_TEST_OBJ = $(BUILD_DIR)/goasm_test.o
 GOASM2GNU_SRC = $(MAZBOOT_SRC)/tools/goasm2gnu.go
 GOASM2GNU = $(BUILD_DIR)/goasm2gnu
 
+# Kmazarin symbol extraction tool
+EXTRACT_SYMBOLS_SRC = $(MAZBOOT_SRC)/tools/extract-kmazarin-symbols.go
+EXTRACT_SYMBOLS = $(BUILD_DIR)/extract-kmazarin-symbols
+KMAZARIN_SYMBOLS_S = $(BUILD_DIR)/kmazarin_symbols.s
+
 # Assembly object files list
 ASM_OBJECTS = $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(GOASM_TEST_OBJ)
 
@@ -122,6 +127,12 @@ $(GOASM2GNU): $(GOASM2GNU_SRC)
 	@mkdir -p $(BUILD_DIR)
 	@CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $(GOASM2GNU_SRC)
 
+# Build extract-kmazarin-symbols tool for extracting symbol addresses from kmazarin.elf
+$(EXTRACT_SYMBOLS): $(EXTRACT_SYMBOLS_SRC)
+	@echo "Building extract-kmazarin-symbols tool..."
+	@mkdir -p $(BUILD_DIR)
+	@CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $(EXTRACT_SYMBOLS_SRC)
+
 # Note: linknames.go and main.go are now generated via //go:generate directives
 # in their respective files (asm/linknames.go and main/main.go).
 # They are automatically regenerated when 'go build' is invoked during
@@ -142,7 +153,7 @@ $(LIB_OBJ): $(LIB_SRC) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
-$(EXCEPTIONS_OBJ): $(EXCEPTIONS_SRC) $(LINKER_SCRIPT)
+$(EXCEPTIONS_OBJ): $(EXCEPTIONS_SRC) $(LINKER_SCRIPT) $(KMAZARIN_SYMBOLS_S)
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
@@ -361,6 +372,12 @@ $(KMAZARIN_BINARY): $(wildcard $(KMAZARIN_SRC)/*.go) src/mazboot/linker.ld tools
 		GOOS=$(GOOS) \
 		$(GO) build -ldflags="-T $(KMAZARIN_LOAD_ADDR)" -o $(abspath $(KMAZARIN_BINARY)) .
 	@echo "Kmazarin kernel built at $(KMAZARIN_BINARY)"
+
+# Extract symbol addresses from kmazarin.elf and generate assembly constants file
+# This MUST run after kmazarin.elf is built and BEFORE mazboot assembly files are compiled
+$(KMAZARIN_SYMBOLS_S): $(KMAZARIN_BINARY) $(EXTRACT_SYMBOLS)
+	@echo "Extracting symbols from kmazarin.elf..."
+	$(EXTRACT_SYMBOLS) $(KMAZARIN_BINARY) $@
 
 # Build target for kmazarin
 kmazarin: $(KMAZARIN_BINARY)

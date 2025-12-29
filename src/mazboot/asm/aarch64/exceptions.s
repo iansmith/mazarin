@@ -11,6 +11,9 @@
 //   0x300 - 0x380: FIQ (Fast Interrupt Request)
 //   0x380 - 0x400: SError (System Error)
 
+// Include kmazarin symbol addresses (auto-generated from kmazarin.elf)
+.include "build/mazboot/kmazarin_symbols.s"
+
 // ========== DATA SECTION ==========
 .data
 .align 3
@@ -1296,10 +1299,10 @@ timer_preempt_handler:
 
     // Check if g is in kmazarin's virtual address ranges:
     // Go runtime uses HIGH virtual addresses: 0x4000000000 (256GB base) for arenas
-    // Kmazarin ELF is at LOW addresses: 0x417F0000 - 0x41A00000
+    // Kmazarin ELF is at LOW addresses (see kmazarin_symbols.s for exact range)
     //
     // Range 1: HIGH VA (Go arenas) = 0x4000000000 - 0x8000000000
-    // Range 2: LOW VA (kmazarin ELF) = 0x417F0000 - 0x41A00000
+    // Range 2: LOW VA (kmazarin ELF) = KMAZARIN_TEXT_START - KMAZARIN_TEXT_END
     // Anything else = mazboot's address space
 
     // Check HIGH VA range first (Go's arena/heap addresses)
@@ -1312,11 +1315,13 @@ timer_preempt_handler:
     blt found_kmazarin_g            // In Go's high VA range!
 
 check_kmazarin_elf_range:
-    // Check LOW VA range (kmazarin ELF binary)
-    movz x6, #0x417F, lsl #16       // kmazarin ELF start
+    // Check LOW VA range (kmazarin ELF binary text section)
+    movz x6, #(KMAZARIN_TEXT_START >> 16), lsl #16
+    movk x6, #(KMAZARIN_TEXT_START & 0xFFFF)
     cmp x3, x6
     blt timer_skip_mazboot          // g pointer < kmazarin start, it's mazboot's
-    movz x6, #0x41A0, lsl #16       // kmazarin ELF end
+    movz x6, #(KMAZARIN_TEXT_END >> 16), lsl #16
+    movk x6, #(KMAZARIN_TEXT_END & 0xFFFF)
     cmp x3, x6
     bge timer_skip_mazboot          // g pointer >= kmazarin end, it's mazboot's
 
@@ -1357,8 +1362,9 @@ not_g0_preempt:
     sub x20, x20, #16               // SP -= 16
     and x20, x20, #0xFFFFFFFFFFFFFFF0  // Ensure 16-byte alignment
 
-    // Save old LR (0 placeholder) and FP to that frame (for stack unwinding)
-    str xzr, [x20, #0]              // *SP = 0 (placeholder LR)
+    // Save interrupted PC and FP to that frame (for proper ARM64 stack unwinding)
+    // This creates a valid stack frame where [FP-8] = return address, [FP] = previous FP
+    str x19, [x20, #0]              // *SP = interrupted PC (return address for unwinding)
     ldr x22, [sp, #IRQ_FRAME_X29]   // Get FP (x29) from frame
     str x22, [x20, #8]              // *(SP+8) = old FP
 
@@ -1369,18 +1375,20 @@ not_g0_preempt:
     str x20, [sp, #IRQ_FRAME_SP_EL0]
 
     // Determine which asyncPreempt to call:
-    // - If interrupted PC is in kmazarin (0x417F0000-0x41A00000), use kmazarin's
+    // - If interrupted PC is in kmazarin text section, use kmazarin's runtime.asyncPreempt
     // - Otherwise use mazboot's asyncPreemptBM
-    movz x21, #0x417F, lsl #16      // x21 = 0x417F0000 (kmazarin start)
-    cmp x19, x21                    // Compare interrupted PC with kmazarin start
-    blt use_mazboot_preempt         // If PC < 0x417F0000, use mazboot
-    movz x21, #0x41A0, lsl #16      // x21 = 0x41A00000 (kmazarin end approx)
-    cmp x19, x21                    // Compare interrupted PC with kmazarin end
-    bge use_mazboot_preempt         // If PC >= 0x41A00000, use mazboot
+    // Uses auto-generated constants from kmazarin.elf (see kmazarin_symbols.s)
+    movz x21, #(KMAZARIN_TEXT_START >> 16), lsl #16
+    movk x21, #(KMAZARIN_TEXT_START & 0xFFFF)
+    cmp x19, x21                    // Compare interrupted PC with kmazarin .text start
+    blt use_mazboot_preempt         // If PC < text start, use mazboot
+    movz x21, #(KMAZARIN_TEXT_END >> 16), lsl #16
+    movk x21, #(KMAZARIN_TEXT_END & 0xFFFF)
+    cmp x19, x21                    // Compare interrupted PC with kmazarin .text end
+    bge use_mazboot_preempt         // If PC >= text end, use mazboot
 
-    // Use kmazarin's runtime.asyncPreempt.abi0 at 0x41871e10
-    movz x21, #0x4187, lsl #16      // 0x41870000
-    movk x21, #0x1e10               // 0x41871e10
+    // Use kmazarin's runtime.asyncPreempt.abi0 (address auto-extracted from kmazarin.elf)
+    LOAD_KMAZARIN_ASYNCPREEMPT x21
     b set_elr_and_continue
 
 use_mazboot_preempt:
