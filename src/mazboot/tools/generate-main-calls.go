@@ -4,13 +4,17 @@
 // Code generator for main.go dummy calls
 // Scans assembly files to find Go functions called from assembly
 // Generates dummy function calls to prevent dead code elimination
-// Reads existing file, preserves non-generated content, and inserts generated code between markers.
-// Formats output with gofmt.
+// Generates a complete Go file (no markers needed).
 //
-// Usage: go run generate-main-calls.go [-asm <dir>] [-file <path>] [-go <dir>]
-//   -asm: Assembly source directory (default: asm/aarch64)
-//   -file: Target Go file to modify (default: main/main.go)
+// Supports both:
+//   - GCC assembly (.extern/.bl main.X in asm/aarch64/)
+//   - Go/Plan9 assembly (BL main·X(SB) in asm/goasm/)
+//
+// Usage: go run generate-main-calls.go [-asm <dir>] [-goasm <dir>] [-go <dir>] [-o <path>]
+//   -asm: GCC assembly source directory (default: asm/aarch64)
+//   -goasm: Go/Plan9 assembly source directory (default: asm/goasm)
 //   -go: Go source directory for signature discovery (default: main)
+//   -o: Output Go file (default: stdout)
 
 package main
 
@@ -32,79 +36,45 @@ import (
 
 func main() {
 	// Parse command line flags
-	var targetFile string
+	var outputFile string
 	var asmDir string
+	var goasmDir string
 	var goSourceDir string
-	flag.StringVar(&asmDir, "asm", "asm/aarch64", "Assembly source directory")
-	flag.StringVar(&targetFile, "file", "main/main.go", "Target Go file to modify")
+	flag.StringVar(&asmDir, "asm", "asm/aarch64", "GCC assembly source directory")
+	flag.StringVar(&goasmDir, "goasm", "asm/goasm", "Go/Plan9 assembly source directory")
 	flag.StringVar(&goSourceDir, "go", "main", "Go source directory for signature discovery")
+	flag.StringVar(&outputFile, "o", "", "Output file (default: stdout)")
 	flag.Parse()
 
-	// Find all Go functions called from assembly
+	// Find all Go functions called from GCC assembly
 	goFunctionsCalled := findGoFunctionsCalled(asmDir)
 
-	// Read existing file and extract before/after content
-	beforeContent, afterContent, err := readFileMarkers(targetFile, "//{{ LINKNAME START}}", "//{{ LINKNAME END}}")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
-		os.Exit(1)
-	}
+	// Find all Go functions called from Go/Plan9 assembly and merge
+	goasmFunctions := findGoAsmFunctionsCalled(goasmDir)
+	goFunctionsCalled = mergeFunctions(goFunctionsCalled, goasmFunctions)
 
-	// Generate main calls content
+	// Generate the complete file
 	var generated strings.Builder
-	generateMainCallsContent(goFunctionsCalled, goSourceDir, &generated)
-
-	// Combine all content
-	combined := beforeContent + generated.String() + afterContent
+	generateCompleteFile(goFunctionsCalled, goSourceDir, &generated)
 
 	// Format with gofmt
-	formatted, err := formatWithGofmt(combined)
+	formatted, err := formatWithGofmt(generated.String())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: gofmt failed, using unformatted output: %v\n", err)
-		formatted = combined
+		formatted = generated.String()
 	}
 
-	// Write to file
-	if err := ioutil.WriteFile(targetFile, []byte(formatted), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing to %s: %v\n", targetFile, err)
-		os.Exit(1)
-	}
-
-	fmt.Fprintf(os.Stderr, "Generated %s\n", targetFile)
-}
-
-// readFileMarkers reads a file and returns content before markers, after markers
-// If file doesn't exist, returns empty before content and default structure
-func readFileMarkers(filename, startMarker, endMarker string) (string, string, error) {
-	content, err := ioutil.ReadFile(filename)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// File doesn't exist, create default structure
-			header := `package main
-
-`
-			footer := "\n"
-			return header, footer, nil
+	// Write output
+	if outputFile == "" {
+		// Write to stdout
+		fmt.Print(formatted)
+	} else {
+		if err := ioutil.WriteFile(outputFile, []byte(formatted), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing to %s: %v\n", outputFile, err)
+			os.Exit(1)
 		}
-		return "", "", err
+		fmt.Fprintf(os.Stderr, "Generated %s\n", outputFile)
 	}
-
-	fileStr := string(content)
-
-	// Find marker positions
-	startIdx := strings.Index(fileStr, startMarker)
-	endIdx := strings.Index(fileStr, endMarker)
-
-	if startIdx == -1 || endIdx == -1 {
-		// Markers not found, return whole file as "before"
-		return fileStr, "", nil
-	}
-
-	// Extract content before, between, and after markers
-	before := fileStr[:startIdx+len(startMarker)]
-	after := fileStr[endIdx:]
-
-	return before + "\n", "\n" + after, nil
 }
 
 // formatWithGofmt formats Go code using gofmt
@@ -118,27 +88,75 @@ func formatWithGofmt(code string) (string, error) {
 	return string(output), nil
 }
 
+// mergeFunctions merges two function lists, removing duplicates
+func mergeFunctions(a, b []string) []string {
+	seen := make(map[string]bool)
+	var result []string
+	for _, f := range a {
+		if !seen[f] {
+			seen[f] = true
+			result = append(result, f)
+		}
+	}
+	for _, f := range b {
+		if !seen[f] {
+			seen[f] = true
+			result = append(result, f)
+		}
+	}
+	return result
+}
+
+// generateCompleteFile generates the complete main.go file
+func generateCompleteFile(goFunctionsCalled []string, goSourceDir string, w io.Writer) {
+	// Write file header
+	fmt.Fprintln(w, "// Code generated by generate-main-calls.go. DO NOT EDIT.")
+	fmt.Fprintln(w, "// Run 'make generate-main' to regenerate.")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "package main")
+	fmt.Fprintln(w, "")
+
+	// Generate the main function with dummy calls
+	fmt.Fprintln(w, "// Dummy main() function required by Go's c-archive build mode")
+	fmt.Fprintln(w, "// This is never called - boot.s calls KernelMain directly")
+	fmt.Fprintln(w, "// We call functions here to ensure they're compiled and not optimized away")
+	fmt.Fprintln(w, "func main() {")
+
+	// Generate the function calls
+	generateMainCallsContent(goFunctionsCalled, goSourceDir, w)
+
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "\t// This should never execute in bare metal")
+	fmt.Fprintln(w, "\tfor {")
+	fmt.Fprintln(w, "\t}")
+	fmt.Fprintln(w, "}")
+}
+
 // generateMainCallsContent generates dummy function calls for Go functions called from assembly
 // Writes to the provided writer
 func generateMainCallsContent(goFunctionsCalled []string, goSourceDir string, w io.Writer) {
 	// Map of known function signatures (function name -> parameter types)
 	knownSignatures := map[string][]string{
-		"KernelMain":               {"uint32", "uint32", "uint32"},
-		"UartTransmitHandler":      {},
-		"kernelMainBodyWrapper":    {},
-		"GrowStackForCurrent":      {},
-		"ExceptionHandler":         {"uint64", "uint64", "uint64", "uint64", "uint32", "uint64", "uint64", "uint64"}, // (esr, elr, spsr, far, excType, savedSP, savedLR, savedG)
-		"HandleSyscall":            {"uint64", "uint64", "uint64", "uint64", "uint64", "uint64", "uint64"},
-		"fb_putc_irq":              {"byte"},                                                                          // Timer interrupt handler - print char to framebuffer
-		"SyscallWriteBuffer":       {"unsafe.Pointer", "uint32"},                                                      // Syscall write handler - buffer to ring buffer
-		"SyscallRead":              {"int32", "unsafe.Pointer", "uint64"},                                             // read syscall handler
-		"SyscallClose":             {"int32"},                                                                         // close syscall handler
-		"SyscallOpenat":            {"int32", "unsafe.Pointer", "int32", "int32"},                                     // openat syscall handler
-		"SyscallSchedGetaffinity":  {"int32", "uint64", "unsafe.Pointer"},                                             // sched_getaffinity syscall handler
-		"SyscallFutex":             {"unsafe.Pointer", "int32", "uint32", "unsafe.Pointer", "unsafe.Pointer", "uint32"}, // futex syscall handler
-		"SyscallUnknown":           {"uint64"},                                                                        // unknown syscall handler - print syscall number
-		"timerSignal":              {},                                                                                // Timer signal handler
-		"getRandomBytes":           {"unsafe.Pointer", "uint32"},                                                      // getrandom syscall - fill buffer with random bytes
+		"KernelMain":              {"uint32", "uint32", "uint32"},
+		"UartTransmitHandler":     {},
+		"kernelMainBodyWrapper":   {},
+		"GrowStackForCurrent":     {},
+		"ExceptionHandler":        {"uint64", "uint64", "uint64", "uint64", "uint32", "uint64", "uint64", "uint64"}, // (esr, elr, spsr, far, excType, savedSP, savedLR, savedG)
+		"HandleSyscall":           {"uint64", "uint64", "uint64", "uint64", "uint64", "uint64", "uint64"},
+		"fb_putc_irq":             {"byte"},                                                                         // Timer interrupt handler - print char to framebuffer
+		"SyscallWriteBuffer":      {"unsafe.Pointer", "uint32"},                                                     // Syscall write handler - buffer to ring buffer
+		"SyscallRead":             {"int32", "unsafe.Pointer", "uint64"},                                            // read syscall handler
+		"SyscallClose":            {"int32"},                                                                        // close syscall handler
+		"SyscallOpenat":           {"int32", "unsafe.Pointer", "int32", "int32"},                                    // openat syscall handler
+		"SyscallSchedGetaffinity": {"int32", "uint64", "unsafe.Pointer"},                                            // sched_getaffinity syscall handler
+		"SyscallFutex":            {"unsafe.Pointer", "int32", "uint32", "unsafe.Pointer", "unsafe.Pointer", "uint32"},
+		"SyscallUnknown":          {"uint64"},                            // unknown syscall handler - print syscall number
+		"timerSignal":             {},                                    // Timer signal handler
+		"getRandomBytes":          {"unsafe.Pointer", "uint32"},          // getrandom syscall - fill buffer with random bytes
+		"uartPutsDirect":          {"string"},                            // Direct UART string output
+		"uartPutcDirect":          {"byte"},                              // Direct UART char output
+		"uartPutHex32Direct":      {"uint32"},                            // Direct UART hex32 output
+		"uartPutHex64Direct":      {"uint64"},                            // Direct UART hex64 output
 	}
 
 	// Parse Go source to find signatures for unknown functions
@@ -190,16 +208,10 @@ func generateMainCallsContent(goFunctionsCalled []string, goSourceDir string, w 
 	if len(interruptHandlers) > 0 {
 		fmt.Fprintf(w, "\t// Reference interrupt handlers to prevent optimization\n")
 		fmt.Fprintf(w, "\t// These are called from assembly interrupt handlers and must not be optimized away\n")
-		fmt.Fprintf(w, "\t// This will never execute in bare metal, but ensures the functions exist\n")
 		for _, funcName := range interruptHandlers {
 			params := knownSignatures[funcName]
 			call := generateFunctionCall(funcName, params)
-			comment := getFunctionComment(funcName)
-			if comment != "" {
-				fmt.Fprintf(w, "\t%s // %s\n", call, comment)
-			} else {
-				fmt.Fprintf(w, "\t%s\n", call)
-			}
+			fmt.Fprintf(w, "\t%s\n", call)
 		}
 		fmt.Fprintf(w, "\n")
 	}
@@ -262,16 +274,6 @@ func generateDummyArg(paramType string, index int) string {
 		}
 		return "0"
 	}
-}
-
-// getFunctionComment returns a descriptive comment for a function
-func getFunctionComment(funcName string) string {
-	comments := map[string]string{
-		"UartTransmitHandler":   "UART TX interrupt handler",
-		"KernelMain":            "Kernel entry point",
-		"kernelMainBodyWrapper": "Goroutine entry wrapper",
-	}
-	return comments[funcName]
 }
 
 // FunctionSignature represents a Go function's signature
@@ -359,7 +361,7 @@ func exprToString(expr ast.Expr) string {
 	}
 }
 
-// findGoFunctionsCalled finds Go functions called from assembly
+// findGoFunctionsCalled finds Go functions called from GCC assembly
 func findGoFunctionsCalled(asmDir string) []string {
 	var functions []string
 	externRe := regexp.MustCompile(`\.extern\s+main\.([a-zA-Z_][a-zA-Z0-9_]*)`)
@@ -399,6 +401,46 @@ func findGoFunctionsCalled(asmDir string) []string {
 					functions = append(functions, matches[1])
 					seen[matches[1]] = true
 				}
+			}
+		}
+
+		return nil
+	})
+
+	return functions
+}
+
+// findGoAsmFunctionsCalled finds Go functions called from Go/Plan9 assembly
+func findGoAsmFunctionsCalled(goasmDir string) []string {
+	var functions []string
+	// Match BL main·FuncName(SB) or CALL main·FuncName(SB)
+	blRe := regexp.MustCompile(`(?:BL|CALL)\s+main·([a-zA-Z_][a-zA-Z0-9_]*)\(SB\)`)
+
+	seen := make(map[string]bool)
+
+	filepath.Walk(goasmDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || !strings.HasSuffix(path, ".s") {
+			return nil
+		}
+
+		content, err := ioutil.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+
+		lines := strings.Split(string(content), "\n")
+		for _, line := range lines {
+			// Skip comment-only lines
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "//") {
+				continue
+			}
+
+			// Check for BL/CALL to main.X
+			matches := blRe.FindStringSubmatch(line)
+			if len(matches) > 1 && !seen[matches[1]] {
+				functions = append(functions, matches[1])
+				seen[matches[1]] = true
 			}
 		}
 
