@@ -3,8 +3,15 @@ package main
 import (
 	"fmt"
 	"os"
-	"time"
+	"unsafe"
 )
+
+// uartPutc writes a single character directly to UART (bypasses Go runtime)
+//go:nosplit
+func uartPutc(c byte) {
+	const uartBase = uintptr(0x09000000)
+	*(*byte)(unsafe.Pointer(uartBase)) = c
+}
 
 // simpleMain is the entry point for our simple goroutine/channel test
 // This will be run by the scheduler as the main goroutine
@@ -51,10 +58,10 @@ func simpleMain() {
 
 	for {
 		counter++
-		// Every million iterations, print our marker
-		if counter%10000000 == 0 {
-			// Print '1' to show g1 is running
-			fmt.Print("1")
+		// Every 1000 iterations, print our marker
+		if counter%1000 == 0 {
+			// Print '1' to show g1 is running (direct UART, no runtime)
+			uartPutc('1')
 			// NO checkPreemption() call - pure busy-wait!
 		}
 	}
@@ -65,19 +72,16 @@ func simpleMain() {
 func simpleGoroutine2(ch chan string) {
 	fmt.Println("[g2] Started, entering busy-wait loop (NO yielding)...")
 
-	// Give g1 a moment to start its loop
-	time.Sleep(100 * time.Millisecond)
-
 	// Infinite busy-wait loop to test timer-based preemption
 	// NO calls to Gosched() - the timer interrupt must forcibly preempt us
 	counter := uint64(0)
 
 	for {
 		counter++
-		// Every million iterations, print our marker
-		if counter%10000000 == 0 {
-			// Print '2' to show g2 is running
-			fmt.Print("2")
+		// Every 1000 iterations, print our marker
+		if counter%1000 == 0 {
+			// Print '2' to show g2 is running (direct UART, no runtime)
+			uartPutc('2')
 			// NO checkPreemption() call - pure busy-wait!
 		}
 	}

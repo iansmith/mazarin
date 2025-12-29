@@ -1277,14 +1277,23 @@ timer_preempt_handler:
     // TIMER PREEMPTION VIA CALL INJECTION
     // ========================================================================
     // We need to:
-    // 1. Check if we're on g0 (system goroutine) - if so, skip preemption
-    // 2. Re-arm the timer
-    // 3. Do call injection: modify ELR to jump to asyncPreemptBM
-    // 4. Signal EOI to GIC
-    // 5. ERET will jump to asyncPreemptBM which calls scheduler
+    // 1. Increment tick counter and check sleeping threads (ALWAYS)
+    // 2. Check if we're on g0 (system goroutine) - if so, skip preemption
+    // 3. Re-arm the timer
+    // 4. Do call injection: modify ELR to jump to asyncPreemptBM
+    // 5. Signal EOI to GIC
+    // 6. ERET will jump to asyncPreemptBM which calls scheduler
     // ========================================================================
 
-    // 0. CHECK IF WE'RE ON g0 - if so, skip preemption
+    // 0. DEBUG: Print 'T' to show timer interrupt fired
+    mov w0, #'T'
+    UART_PUTC
+
+    // Handle timer tick (increment counter, wake sleeping threads)
+    mov x29, sp
+    bl main.TimerTickHandler
+
+    // 1. CHECK IF WE'RE ON g0 - if so, skip preemption
     // Cannot call Gosched() from g0's stack - it's the system goroutine
     // Check: if g == g.m.g0, we're on g0
     // Go struct offsets:
@@ -1345,6 +1354,10 @@ found_kmazarin_g:
 not_g0_preempt:
     // g != m.g0! We can preempt this goroutine
 
+    // DEBUG: Print 'P' to show we're taking preemption path
+    mov w0, #'P'
+    UART_PUTC
+
     // 1. RE-ARM TIMER - Set timer to fire again in 20ms
     // (1,250,000 ticks @ 62.5 MHz)
     mrs x3, CNTVCT_EL0              // Read current counter
@@ -1389,12 +1402,21 @@ not_g0_preempt:
 
     // Use kmazarin's runtime.asyncPreempt.abi0 (address auto-extracted from kmazarin.elf)
     LOAD_KMAZARIN_ASYNCPREEMPT x21
+
+    // DEBUG: Print 'K' to show using kmazarin asyncPreempt
+    mov w0, #'K'
+    UART_PUTC
+
     b set_elr_and_continue
 
 use_mazboot_preempt:
     // Use mazboot's asyncPreemptBM
     adrp x21, asyncPreemptBM
     add x21, x21, :lo12:asyncPreemptBM
+
+    // DEBUG: Print 'M' to show using mazboot asyncPreempt
+    mov w0, #'M'
+    UART_PUTC
 
 set_elr_and_continue:
     str x21, [sp, #IRQ_FRAME_ELR]   // ELR will be restored by INTERRUPT_FULL_RESTORE

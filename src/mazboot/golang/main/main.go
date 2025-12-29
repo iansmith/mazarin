@@ -19,6 +19,7 @@ func main() {
 	SyscallCloneHandler(0, 0, 0, 0)
 	SyscallFutexHandler(0, 0, 0)
 	SyscallNanosleepHandler(0, 0)
+	TimerTickHandler()
 	irqHandlerGo(0)
 
 	// Reference other functions called from assembly

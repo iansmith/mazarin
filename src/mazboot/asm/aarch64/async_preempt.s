@@ -5,6 +5,12 @@
 // The interrupt handler modifies ELR_EL1 to point here, with LR set to interrupted PC.
 // This saves all registers, calls the scheduler, then returns to interrupted location.
 
+// UART debug output macro (from exceptions.s)
+.macro UART_PUTC
+    movz x10, #0x0900, lsl #16
+    strb w0, [x10]
+.endm
+
 .text
 .align 2
 
@@ -25,6 +31,15 @@
 //
 .global asyncPreemptBM
 asyncPreemptBM:
+    // DEBUG: Print 'A' to show asyncPreemptBM was reached
+    // Save x0 first since UART_PUTC uses it
+    sub sp, sp, #16
+    str x0, [sp]
+    mov w0, #'A'
+    UART_PUTC
+    ldr x0, [sp]
+    add sp, sp, #16
+
     // Save current LR (= interrupted PC, set by timer handler) BEFORE moving SP
     // We allocate 504 bytes (not 496) to include space for x27
     // ARM64 pre-indexed str has limited range (-256 to +255), so we do this in two steps
@@ -148,6 +163,15 @@ asyncPreemptBM:
 
     // Deallocate our frame (504 bytes) + the 16 bytes pushCall allocated
     add sp, sp, #520
+
+    // DEBUG: Print 'R' to show we're returning from asyncPreemptBM
+    // Save x30 (interrupted PC) and x0
+    sub sp, sp, #16
+    stp x0, x30, [sp]
+    mov w0, #'R'
+    UART_PUTC
+    ldp x0, x30, [sp]
+    add sp, sp, #16
 
     // Jump to interrupted PC via ret (which jumps to x30/LR)
     // This restores execution at the interrupted location
