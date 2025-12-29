@@ -239,3 +239,50 @@ get_runtime_load_g_addr:
 get_runtime_save_g_addr:
     ldr x0, =runtime.save_g.abi0
     ret
+
+// ============================================================================
+// Runtime symbol accessors - Moved from lib_getters.s (Go assembly)
+// These need GCC assembly because goasm2gnu can't handle external relocations
+// ============================================================================
+
+// Declare runtime symbols as external
+.extern runtime.g0
+.extern runtime.m0
+.extern runtime.physPageSize
+.extern runtime.mcache0
+.extern runtime.emptymspan
+
+// get_g0_addr() returns uintptr
+// Returns the address of runtime.g0
+.global get_g0_addr
+get_g0_addr:
+    ldr x0, =runtime.g0
+    ret
+
+// get_m0_addr() returns uintptr
+// Returns the address of runtime.m0
+.global get_m0_addr
+get_m0_addr:
+    ldr x0, =runtime.m0
+    ret
+
+// get_phys_page_size_addr() returns uintptr
+// Returns the address of runtime.physPageSize
+.global get_phys_page_size_addr
+get_phys_page_size_addr:
+    ldr x0, =runtime.physPageSize
+    ret
+
+// get_mcache0_addr() returns uintptr
+// Returns the address of runtime.mcache0
+.global get_mcache0_addr
+get_mcache0_addr:
+    ldr x0, =runtime.mcache0
+    ret
+
+// get_emptymspan_addr() returns uintptr
+// Returns the address of runtime.emptymspan
+.global get_emptymspan_addr
+get_emptymspan_addr:
+    ldr x0, =runtime.emptymspan
+    ret
