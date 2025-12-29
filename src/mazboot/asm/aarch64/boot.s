@@ -2,8 +2,6 @@
 
 .global _start
 
-.equ ENABLE_MMU_IN_BOOT, 0
-
 _start:
     // Initialize UART base address for early breadcrumb debugging
     // x14 = 0x09000000 (UART PL011 base on QEMU virt)
@@ -230,140 +228,10 @@ vbar_ok:
     dsb sy
     isb
 
-    // ========================================
-    // TEST: Enable MMU from boot.s (earliest possible location)
-    // This tests if enabling MMU from pure assembly before Go code works
-    // ========================================
-    .if ENABLE_MMU_IN_BOOT
-    movz w15, #0x4D                // 'M' = Starting MMU setup in boot.s
-    str w15, [x14]
-    
-    // Set up minimal page tables for identity mapping
-    // Page table base: 0x5F100000 (same as Go code uses)
-    // We'll set up just enough to map the code region (0x00000000-0x08000000)
-    
-    // Step 1: Configure MAIR_EL1
-    // Attr0 (bits 7:0) = 0xFF (Normal, Inner/Outer WB Cacheable)
-    // Attr1 (bits 15:8) = 0x00 (Device-nGnRnE)
-    // Attr2 (bits 23:16) = 0x44 (Normal, Inner/Outer Non-Cacheable)
-    movz x0, #0x44FF               // MAIR bits 15:0 = Attr1:Attr0
-    movk x0, #0x0044, lsl #16      // MAIR bits 31:16 = Attr3:Attr2
-    msr MAIR_EL1, x0
-    isb
-    
-    // Step 2: Configure TCR_EL1
-    // T0SZ = 16, T1SZ = 16, IRGN0 = 1, ORGN0 = 1, SH0 = 3, TG0 = 0
-    // EPD1 = 1, IPS = 2, AS = 0
-    movz x0, #0x3510               // Low 16 bits: T0SZ=16, IRGN0=1, ORGN0=1, SH0=3
-    movk x0, #0x0010, lsl #16      // T1SZ=16, EPD1=1
-    movk x0, #0x0002, lsl #32      // IPS=2
-    msr TCR_EL1, x0
-    isb
-    
-    // Step 3: Set up minimal page tables
-    // We need to create a minimal identity mapping for code execution
-    // For simplicity, we'll use the same page table location as Go code: 0x5F100000
-    // L0 table at 0x5F100000, L1 table at 0x5F101000
-    
-    // Zero out page tables (we'll use a simple approach - zero just what we need)
-    movz x1, #0x5F10, lsl #16      // Page table base = 0x5F100000
-    movk x1, #0x0000, lsl #0
-    mov x2, x1
-    add x2, x2, #0x2000             // Clear 8KB (L0 + L1 tables)
-    mov x3, #0
-    mov x4, #0
-    
-1:  // Clear loop
-    stp x3, x4, [x1], #16
-    cmp x1, x2
-    blo 1b
-    
-    // Set up L0 entry 0 to point to L1 table
-    // L0 entry format: bits 1:0 = 0b11 (table), bits 47:12 = L1 table address
-    movz x1, #0x5F10, lsl #16      // L0 table base = 0x5F100000
-    movk x1, #0x0000, lsl #0
-    movz x2, #0x5F10, lsl #16      // L1 table base = 0x5F101000
-    movk x2, #0x1000, lsl #0
-    orr x2, x2, #0x3               // Set table bits (bits 1:0 = 0b11)
-    str x2, [x1]                   // Store L0 entry 0
-    
-    // Set up L1 entry 0 to point to L2 table (we'll create one on the fly)
-    // For simplicity, map first 2MB as a block (L1 block entry)
-    // L1 block entry: bits 1:0 = 0b01 (block), AttrIndx=0 (Normal), AP=0b01 (RW_EL1)
-    movz x1, #0x5F10, lsl #16      // L1 table base = 0x5F101000
-    movk x1, #0x1000, lsl #0
-    movz x2, #0x0000, lsl #16      // Physical address = 0x00000000
-    movk x2, #0x0000, lsl #0
-    orr x2, x2, #0x1               // Valid (bit 0)
-    orr x2, x2, #0x40              // AP (bits 7:6 = 0b01 = RW_EL1)
-    orr x2, x2, #0x300             // SH (bits 9:8 = 0b11 = Inner Shareable)
-    orr x2, x2, #0x400             // AF (bit 10 = Access Flag)
-    str x2, [x1]                   // Store L1 block entry 0 (maps 0x00000000-0x001FFFFF)
-    
-    // Set TTBR0_EL1
-    movz x0, #0x5F10, lsl #16      // L0 table base = 0x5F100000
-    movk x0, #0x0000, lsl #0
-    msr TTBR0_EL1, x0
-    isb
-    
-    // Set TTBR1_EL1 to safe value (0)
-    mov x0, #0
-    msr TTBR1_EL1, x0
-    isb
-    
-    // Final barriers
-    dsb sy
-    isb
-    
-    // CRITICAL: Test if exceptions work at all before enabling MMU
-    // We'll trigger a deliberate exception to verify the handler is working
-    movz w15, #0x54                // 'T' = Testing exception handler
-    str w15, [x14]
-    
-    // Trigger a deliberate undefined instruction exception
-    // This should call our exception handler if it's working
-    // We'll use an invalid instruction: 0x00000000 (all zeros is invalid)
-    // But actually, let's use a simpler test - try to access an invalid system register
-    // Actually, let's just verify VBAR is set and exception vectors are accessible
-    ldr x0, =exception_vectors     // Load exception vectors address
-    mrs x1, VBAR_EL1               // Read VBAR
-    cmp x0, x1
-    beq vbar_test_ok
-    // VBAR mismatch - this shouldn't happen, but if it does, print error
-    movz w15, #0x58                // 'X' = VBAR test failed
-    str w15, [x14]
-    b .
-vbar_test_ok:
-    movz w15, #0x74                // 't' = Exception handler test passed
-    str w15, [x14]
-    
-    // Step 4: Enable MMU with minimal SCTLR (only M bit)
-    movz w15, #0x6D                // 'm' = About to enable MMU
-    str w15, [x14]
-    
-    // CRITICAL: Add breadcrumb right before msr to catch any exception
-    movz w15, #0x3A                // ':' = About to write SCTLR_EL1
-    str w15, [x14]
-    
-    mrs x0, SCTLR_EL1
-    mov x0, #1                      // Set only M bit (MMU enable)
-    msr SCTLR_EL1, x0
-    
-    // CRITICAL: Add breadcrumb immediately after msr (before ISB)
-    // If we get here, msr completed without exception
-    movz w15, #0x3B                // ';' = msr SCTLR_EL1 completed
-    str w15, [x14]
-    
-    isb                             // Critical: ISB after MMU enable
-    
-    // CRITICAL: Add breadcrumb after ISB
-    // If we get here, ISB completed and MMU should be enabled
-    movz w15, #0x4D                // 'M' = MMU enabled (if this appears, it worked!)
-    str w15, [x14]
-    .endif
-    
     // Breadcrumb: About to call kernel_main
     // Write 'B' (0x42) to UART to show we reached this point
+    movz w15, #0x42                // 'B' = About to call kernel_main
+    str w15, [x14]
 
     // =====================================================
     // Initialize g0 and m0 (like Go runtime's rt0_go does)
@@ -374,6 +242,10 @@ vbar_test_ok:
 
     // Step 1: Set g register (x28) to point to runtime.g0
     ldr x28, =runtime.g0           // x28 (g register) = &runtime.g0
+
+    // Breadcrumb after loading g0
+    movz w15, #0x67                // 'g' = loaded g0
+    str w15, [x14]
 
     // Step 2: Set up stack guards for g0 (EXACTLY like rt0_go does)
     // g0 uses the current stack (already set up by boot.s)
@@ -389,14 +261,26 @@ vbar_test_ok:
     str x0, [x28, #0]               // g.stack.lo = stack guard (offset 0)
     str x7, [x28, #8]               // g.stack.hi = current SP (offset 8)
 
+    // Breadcrumb after stack setup
+    movz w15, #0x73                // 's' = stack setup done
+    str w15, [x14]
+
     // Step 3: Link g0 and m0
     ldr x0, =runtime.m0             // x0 = &runtime.m0
     str x0, [x28, #48]              // g0.m = &m0 (offset 48 in runtimeG for 'm *m' field)
     str x28, [x0, #0]               // m0.g0 = &g0 (offset 0 in runtimeM for 'g0 *g' field)
 
+    // Breadcrumb after m0 link
+    movz w15, #0x6D                // 'm' = m0 linked
+    str w15, [x14]
+
     // NOTE: runtime·save_g is not available in our bare-metal environment
     // (it's mainly for CGO/TLS). The g register (x28) is already set up,
     // which is sufficient for our purposes.
+
+    // Breadcrumb before kernel_main call
+    movz w15, #0x3E                // '>' = about to call kernel_main
+    str w15, [x14]
 
     // Jump to kernel_main
     ldr x0, =kernel_main

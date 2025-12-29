@@ -8,10 +8,10 @@
 
 // getGRegister returns current value of g register
 // This is for debugging to see what g points to
-// Returns: current value of g (R28)
+// Returns: current value of g (R28) in R0 (Go register ABI)
 TEXT getGRegister(SB), NOSPLIT|NOFRAME, $0-8
 	MOVD g, R0
-	MOVD R0, ret+0(FP)
+	// Return value already in R0 for Go register ABI
 	RET
 
 // call_mallocinit calls runtime.mallocinit from assembly

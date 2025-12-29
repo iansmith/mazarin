@@ -554,8 +554,8 @@ func SimpleTestKernel() {
 //go:noinline
 func KernelMain(r0, r1, atags uint32) {
 	// VERY EARLY breadcrumb - before any complex operations
-	// uartBase := uintptr(0x09000000) // BREADCRUMB DISABLED
-	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x4B // 'K' = Entered KernelMain - BREADCRUMB DISABLED
+	uartBase := uintptr(0x09000000)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x4B // 'K' = Entered KernelMain
 
 	// Uncomment the line below to use simplified test kernel
 	// SimpleTestKernel()
@@ -567,11 +567,11 @@ func KernelMain(r0, r1, atags uint32) {
 	// On QEMU virt, the DTB pointer is passed in as the "atags" parameter (low 32 bits).
 	// boot.s captures QEMU's reset-time x0 and passes it through to kernel_main in x2.
 	setDTBPtr(uintptr(atags))
-	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x44 // 'D' = setDTBPtr done - BREADCRUMB DISABLED
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x44 // 'D' = setDTBPtr done
 
 	// Initialize UART first for early debugging
 	uartInit()
-	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x55 // 'U' = uartInit done - BREADCRUMB DISABLED
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x55 // 'U' = uartInit done
 
 	// Check SCTLR_EL1 for alignment check bit
 	sctlr := asm.ReadSctlrEl1()
@@ -581,28 +581,33 @@ func KernelMain(r0, r1, atags uint32) {
 	if alignCheck {
 		asm.DisableAlignmentCheck()
 	}
-	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x41 // 'A' = Alignment check done - BREADCRUMB DISABLED
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x41 // 'A' = Alignment check done
 
 	// Initialize minimal runtime structures for write barrier
 	initRuntimeStubs()
-	// *(*uint32)(unsafe.Pointer(uartBase)) = 0x52 // 'R' = Runtime stubs done - BREADCRUMB DISABLED
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x52 // 'R' = Runtime stubs done
 
 	// CRITICAL: Set up exception vectors BEFORE enabling MMU
 	// If MMU enable causes an exception, we need a valid handler
 	// Use assembly helper to get exception vector address without accessing .rodata
 	exceptionVectorAddr := asm.GetExceptionVectorsAddr()
 	asm.SetVbarEl1ToAddr(exceptionVectorAddr)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x56 // 'V' = VBAR set
 
 	// Initialize MMU (required before heap - enables Normal memory for unaligned access)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x4D // 'M' = Starting MMU init
 	if !initMMU() {
 		for {
 		}
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x6D // 'm' = initMMU done
 
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x45 // 'E' = Starting enableMMU
 	if !enableMMU() {
 		for {
 		}
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x65 // 'e' = enableMMU done
 
 	// Set physPageSize before schedinit (needed by mallocinit which schedinit calls)
 	// Normally this would be set by sysauxv from AT_PAGESZ auxiliary vector

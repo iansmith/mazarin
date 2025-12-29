@@ -248,35 +248,29 @@ func allocatePageTable() uintptr {
 
 	// Verify 4KB alignment (should always be true, but check anyway)
 	if (ptr & 0xFFF) != 0 {
-		// Fatal error - use direct UART to avoid stack depth
-		uartPutcDirect('P')
-		uartPutcDirect('T')
-		uartPutcDirect('A')
-		uartPutcDirect('L')
-		uartPutcDirect('I')
-		uartPutcDirect('G')
-		uartPutcDirect('N')
-		uartPutcDirect('!')
+		// Fatal error - use direct UART write
+		*(*uint32)(unsafe.Pointer(uintptr(0x09000000))) = 'A'
+		*(*uint32)(unsafe.Pointer(uintptr(0x09000000))) = 'L'
+		*(*uint32)(unsafe.Pointer(uintptr(0x09000000))) = 'N'
 		for {
 		} // Halt on alignment error
 	}
 
 	// Check for overflow (ensure we don't exceed allocated region)
 	if alloc.offset+TABLE_SIZE > PAGE_TABLE_SIZE {
-		// Fatal error - use direct UART to avoid stack depth
-		uartPutcDirect('P')
-		uartPutcDirect('T')
-		uartPutcDirect('O')
-		uartPutcDirect('V')
-		uartPutcDirect('E')
-		uartPutcDirect('R')
-		uartPutcDirect('!')
+		// Fatal error - use direct UART write
+		*(*uint32)(unsafe.Pointer(uintptr(0x09000000))) = 'O'
+		*(*uint32)(unsafe.Pointer(uintptr(0x09000000))) = 'V'
+		*(*uint32)(unsafe.Pointer(uintptr(0x09000000))) = 'R'
 		for {
 		} // Halt on overflow
 	}
 
 	// Zero the allocated table (required - page tables must start empty)
 	bzero(unsafe.Pointer(ptr), TABLE_SIZE)
+
+	// Ensure all memory writes from bzero are visible before returning
+	asm.Dsb()
 
 	// Update allocator state for next allocation
 	alloc.offset += TABLE_SIZE
@@ -736,8 +730,21 @@ func createTableEntry(nextTable uintptr) uint64 {
 // LAZY ALLOCATION: L3 tables are allocated on-demand when first page in a 2MB region is mapped.
 // This allows us to fit 16MB of theoretical page tables into 15MB by only allocating what's needed.
 //
-//go:nosplit
-func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
+// mapPageInitMMU is used during initMMU (before MMU enabled, Go runtime not ready)
+// This version can use more stack because it's NOT called from exception handlers
+// It avoids morestack by being called from non-nosplit initMMU
+// mapPageDebugCount tracks how many pages have been mapped during initMMU
+var mapPageDebugCount uint32
+
+func mapPageInitMMU(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
+	uartBase := uintptr(0x09000000)
+
+	// DEBUG: Print a dot every 100 pages for first few
+	mapPageDebugCount++
+	if mapPageDebugCount <= 5 {
+		*(*uint32)(unsafe.Pointer(uartBase)) = '.'
+	}
+
 	// Extract level indices from virtual address
 	// Use uint64 to ensure 64-bit arithmetic (uintptr might be 32 bits in some builds)
 	va64 := uint64(va)
@@ -749,9 +756,19 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 	l2Idx := uint16((va64 >> 21) & 0x1FF) // Bits 29-21
 	l3Idx := uint16((va64 >> 12) & 0x1FF) // Bits 20-12
 
+	doDebug := mapPageDebugCount <= 3
+
+	if doDebug {
+		*(*uint32)(unsafe.Pointer(uartBase)) = 'I' // got Indices
+	}
+
 	// Get L0 entry (L0 table is pre-allocated in initMMU)
 	l0EntryAddr := pageTableL0 + uintptr(l0Idx)*PTE_SIZE
 	l0Entry := (*uint64)(unsafe.Pointer(l0EntryAddr))
+
+	if doDebug {
+		*(*uint32)(unsafe.Pointer(uartBase)) = '0' // got L0 entry
+	}
 
 	// For identity mapping, we pre-allocate L1 table in initMMU for L0 entry 0
 	// For highmem addresses (L0 index > 0), we need to allocate a new L1 table
@@ -759,17 +776,24 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 		// L0 entry not set - need to allocate L1 table for this L0 entry
 		if l0Idx == 0 {
 			// This shouldn't happen - L0 entry 0 should be set in initMMU
-			uartPutsDirect("L0ERR")
+			*(*uint32)(unsafe.Pointer(uartBase)) = 'L'
+			*(*uint32)(unsafe.Pointer(uartBase)) = '0'
+			*(*uint32)(unsafe.Pointer(uartBase)) = 'E'
 			return
 		}
 		// For highmem addresses, allocate a new L1 table
 		l1Table := allocatePageTable()
 		if l1Table == 0 {
-			uartPutsDirect("\r\n!L1 ALLOC FAILED!\r\n")
+			*(*uint32)(unsafe.Pointer(uartBase)) = 'L'
+			*(*uint32)(unsafe.Pointer(uartBase)) = '1'
+			*(*uint32)(unsafe.Pointer(uartBase)) = '!'
 			return
 		}
 		*l0Entry = createTableEntry(l1Table)
-		// NOTE: DSB moved to end of initMMU() for performance
+	}
+
+	if doDebug {
+		*(*uint32)(unsafe.Pointer(uartBase)) = '1' // L0 handled
 	}
 
 	// Extract L1 table address from L0 entry
@@ -781,19 +805,38 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 	// Get L1 entry
 	l1Entry := (*uint64)(unsafe.Pointer(l1Table + uintptr(l1Idx)*PTE_SIZE))
 
+	if doDebug {
+		*(*uint32)(unsafe.Pointer(uartBase)) = '2' // got L1 entry
+	}
+
 	// If L1 entry doesn't point to L2 table, create it
 	var l2Table uintptr
 	if (*l1Entry & PTE_TABLE) == 0 {
+		if doDebug {
+			*(*uint32)(unsafe.Pointer(uartBase)) = 'A' // allocating L2
+			// Print the ptr we're about to allocate
+			alloc := getPageTableAllocator()
+			uartPutHex64Direct(uint64(alloc.base + alloc.offset))
+			*(*uint32)(unsafe.Pointer(uartBase)) = '/'
+		}
 		l2Table = allocatePageTable()
+		if doDebug {
+			*(*uint32)(unsafe.Pointer(uartBase)) = 'B' // L2 allocated
+		}
 		if l2Table == 0 {
-			uartPutsDirect("\r\n!L2 ALLOC FAILED!\r\n")
+			*(*uint32)(unsafe.Pointer(uartBase)) = 'L'
+			*(*uint32)(unsafe.Pointer(uartBase)) = '2'
+			*(*uint32)(unsafe.Pointer(uartBase)) = '!'
 			return
 		}
 
 		*l1Entry = createTableEntry(l2Table)
-		// NOTE: DSB moved to end of initMMU() for performance
 	} else {
 		l2Table = uintptr(*l1Entry & PTE_ADDR_MASK)
+	}
+
+	if doDebug {
+		*(*uint32)(unsafe.Pointer(uartBase)) = '3' // L1 handled
 	}
 
 	// Get L2 entry
@@ -803,16 +846,27 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 	// This is the key optimization - we only allocate L3 tables when needed
 	var l3Table uintptr
 	if (*l2Entry & PTE_TABLE) == 0 {
+		if doDebug {
+			*(*uint32)(unsafe.Pointer(uartBase)) = 'C' // allocating L3
+		}
 		l3Table = allocatePageTable() // Allocate L3 table on-demand
 		if l3Table == 0 {
-			uartPutsDirect("\r\n!L3 ALLOC FAILED!\r\n")
+			*(*uint32)(unsafe.Pointer(uartBase)) = 'L'
+			*(*uint32)(unsafe.Pointer(uartBase)) = '3'
+			*(*uint32)(unsafe.Pointer(uartBase)) = '!'
 			return
+		}
+		if doDebug {
+			*(*uint32)(unsafe.Pointer(uartBase)) = 'D' // L3 allocated
 		}
 
 		*l2Entry = createTableEntry(l3Table)
-		// NOTE: DSB moved to end of initMMU() for performance
 	} else {
 		l3Table = uintptr(*l2Entry & PTE_ADDR_MASK)
+	}
+
+	if doDebug {
+		*(*uint32)(unsafe.Pointer(uartBase)) = '4' // L2 handled
 	}
 
 	// Set L3 entry (the actual page)
@@ -827,16 +881,75 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 	// The MMU isn't enabled yet, so page table walker won't see stale cache
 }
 
-// mapRegion maps a contiguous region of memory
+// mapPage is a minimal nosplit implementation for demand paging from exception handlers
+// CRITICAL: This must fit within nosplit stack limits!
+// It does the absolute minimum needed to map a single page:
+// - Assumes L0/L1 tables are already set up (done during initMMU)
+// - Only allocates L2/L3 tables if needed
+//
+//go:nosplit
+func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
+	// This calls mapPageInitMMU which is NOT nosplit
+	// Go compiler should allow this because mapPage is called from nosplit but
+	// mapPageInitMMU is not in the nosplit chain from ExceptionHandler
+	// Actually wait - it IS in the chain via HandlePageFault!
+	//
+	// We need a truly minimal inline implementation here
+	va64 := uint64(va)
+	l0Idx := uint16((va64 >> 39) & 0x1FF)
+	l1Idx := uint16((va64 >> 30) & 0x1FF)
+	l2Idx := uint16((va64 >> 21) & 0x1FF)
+	l3Idx := uint16((va64 >> 12) & 0x1FF)
+
+	l0EntryAddr := pageTableL0 + uintptr(l0Idx)*PTE_SIZE
+	l0Entry := (*uint64)(unsafe.Pointer(l0EntryAddr))
+
+	if (*l0Entry & PTE_TABLE) == 0 {
+		// L0 not set - can't allocate in nosplit context, just fail silently
+		return
+	}
+
+	l1Table := uintptr(*l0Entry & PTE_ADDR_MASK)
+	l1Entry := (*uint64)(unsafe.Pointer(l1Table + uintptr(l1Idx)*PTE_SIZE))
+
+	var l2Table uintptr
+	if (*l1Entry & PTE_TABLE) == 0 {
+		l2Table = allocatePageTable()
+		if l2Table == 0 {
+			return
+		}
+		*l1Entry = createTableEntry(l2Table)
+	} else {
+		l2Table = uintptr(*l1Entry & PTE_ADDR_MASK)
+	}
+
+	l2Entry := (*uint64)(unsafe.Pointer(l2Table + uintptr(l2Idx)*PTE_SIZE))
+
+	var l3Table uintptr
+	if (*l2Entry & PTE_TABLE) == 0 {
+		l3Table = allocatePageTable()
+		if l3Table == 0 {
+			return
+		}
+		*l2Entry = createTableEntry(l3Table)
+	} else {
+		l3Table = uintptr(*l2Entry & PTE_ADDR_MASK)
+	}
+
+	l3EntryAddr := l3Table + uintptr(l3Idx)*PTE_SIZE
+	l3Entry := (*uint64)(unsafe.Pointer(l3EntryAddr))
+	*l3Entry = createPageTableEntry(pa, attrs, ap, exec)
+}
+
+// mapRegionInitMMU maps a contiguous region during initMMU
+// Uses mapPageInitMMU which is NOT nosplit (ok because not in exception handler chain)
 // vaStart: Start virtual address (must be 4KB aligned)
 // vaEnd: End virtual address (exclusive, must be 4KB aligned)
 // paStart: Start physical address (must be 4KB aligned)
 // attrs: Memory attributes
 // ap: Access permissions
 // exec: Execute permissions
-//
-//go:nosplit
-func mapRegion(vaStart, vaEnd, paStart uintptr, attrs uint64, ap uint64, exec uint64) {
+func mapRegionInitMMU(vaStart, vaEnd, paStart uintptr, attrs uint64, ap uint64, exec uint64) {
 	// Sanity check - detect invalid ranges
 	if vaStart >= vaEnd || (vaEnd - vaStart) > 0x100000000 {
 		return
@@ -846,7 +959,7 @@ func mapRegion(vaStart, vaEnd, paStart uintptr, attrs uint64, ap uint64, exec ui
 	pa := paStart
 
 	for va < vaEnd {
-		mapPage(va, pa, attrs, ap, exec)
+		mapPageInitMMU(va, pa, attrs, ap, exec)
 		va += PAGE_SIZE
 		pa += PAGE_SIZE
 	}
@@ -910,23 +1023,33 @@ func bzero(ptr unsafe.Pointer, size uint32) {
 //
 // NOTE: Not nosplit - called from KernelMain which allows stack growth
 func initMMU() bool {
+	// Early breadcrumb - write directly to UART to avoid any function call issues
+	uartBase := uintptr(0x09000000)
+	*(*uint32)(unsafe.Pointer(uartBase)) = '1'
+
 	// CRITICAL: Call assembly helpers directly instead of getLinkerSymbol()
 	// because getLinkerSymbol() uses string comparisons that access .rodata
 	// which isn't mapped yet when initMMU() is called!
 	pageTableBase := asm.GetPageTablesStartAddr()
+	*(*uint32)(unsafe.Pointer(uartBase)) = '2'
 	pageTableEnd := asm.GetPageTablesEndAddr()
+	*(*uint32)(unsafe.Pointer(uartBase)) = '3'
 
 	// Calculate PAGE_TABLE_SIZE from the difference
 	PAGE_TABLE_SIZE = pageTableEnd - pageTableBase
+	*(*uint32)(unsafe.Pointer(uartBase)) = '4'
 
 	// Allocate page table memory
 	pageTableL0 = pageTableBase
 	pageTableL1 = pageTableBase + TABLE_SIZE
+	*(*uint32)(unsafe.Pointer(uartBase)) = '5'
 
 	// Initialize the bump allocator after the pre-allocated L0 + L1 tables
 	ptAlloc := getPageTableAllocator()
+	*(*uint32)(unsafe.Pointer(uartBase)) = '6'
 	ptAlloc.base = pageTableBase
 	ptAlloc.offset = TABLE_SIZE * 2
+	*(*uint32)(unsafe.Pointer(uartBase)) = '7'
 
 	// Verify page table base is 4KB aligned
 	if pageTableL0&0xFFF != 0 {
@@ -943,12 +1066,18 @@ func initMMU() bool {
 		} // Halt
 	}
 
-	// Zero out page tables
-	bzero(unsafe.Pointer(pageTableL0), TABLE_SIZE*2)
+	// Zero out page tables (L0 + L1, each 4KB = 8KB total)
+	*(*uint32)(unsafe.Pointer(uartBase)) = '8'
+	uartPutHex64Direct(uint64(pageTableL0))
+	*(*uint32)(unsafe.Pointer(uartBase)) = ':'
+	bzero(unsafe.Pointer(pageTableL0), TABLE_SIZE)
+	bzero(unsafe.Pointer(pageTableL1), TABLE_SIZE)
+	*(*uint32)(unsafe.Pointer(uartBase)) = '9'
 
 	// Set up L0 table to point to L1 table for identity mapping
 	l0Entry0 := (*uint64)(unsafe.Pointer(pageTableL0 + 0*PTE_SIZE))
 	*l0Entry0 = createTableEntry(pageTableL1)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'a'
 
 	// Map low memory regions with correct permissions
 	// CRITICAL FIX: Data section MUST be read-write!
@@ -959,16 +1088,25 @@ func initMMU() bool {
 	//
 	// CRITICAL: Call assembly helpers directly instead of getLinkerSymbol()
 	// because getLinkerSymbol() uses string comparisons that access .rodata!
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'b'
 	rodataStart := asm.GetRodataStartAddr()
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'c'
 	rodataEnd := asm.GetRodataEndAddr()
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'd'
 	if rodataStart != 0 && rodataEnd != 0 {
-		mapRegion(rodataStart, rodataEnd, rodataStart, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
+		*(*uint32)(unsafe.Pointer(uartBase)) = '['
+		mapRegionInitMMU(rodataStart, rodataEnd, rodataStart, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
+		*(*uint32)(unsafe.Pointer(uartBase)) = ']'
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'e'
 
 	// Get section boundaries from linker symbols
 	textStart := asm.GetTextStartAddr()
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'f'
 	dataStart := asm.GetDataStartAddr()
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'g'
 	endAddr := asm.GetEndAddr()
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'h'
 
 	// DEBUG: Print text section range to verify it includes executing code
 	uartPutsDirect("\r\n.text: 0x")
@@ -993,12 +1131,12 @@ func initMMU() bool {
 		uartPutsDirect(" EXEC_NEVER=0x")
 		uartPutHex64Direct(PTE_EXEC_NEVER)
 		uartPutsDirect("\r\n")
-		mapRegion(textStart, rodataStart, textStart, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_ALLOW)
+		mapRegionInitMMU(textStart, rodataStart, textStart, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_ALLOW)
 	}
 
 	// Map everything after .rodata up to data section as read-only
 	if rodataEnd > 0 && dataStart > 0 && rodataEnd < dataStart {
-		mapRegion(rodataEnd, dataStart, rodataEnd, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
+		mapRegionInitMMU(rodataEnd, dataStart, rodataEnd, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
 	}
 
 	// Map data+BSS sections as read-write
@@ -1011,12 +1149,12 @@ func initMMU() bool {
 		uartPutsDirect(" - 0x")
 		uartPutHex64Direct(uint64(bssEnd))
 		uartPutsDirect("\r\n")
-		mapRegion(dataStart, bssEnd, dataStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+		mapRegionInitMMU(dataStart, bssEnd, dataStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 	}
 
 	// Map remainder after BSS up to end of kernel image as read-only (if there's anything)
 	if bssEnd > 0 && endAddr > 0 && bssEnd < endAddr {
-		mapRegion(bssEnd, endAddr, bssEnd, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
+		mapRegionInitMMU(bssEnd, endAddr, bssEnd, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
 	}
 
 	// Initialize MMIO devices array (fixed-size to avoid heap allocation)
@@ -1058,13 +1196,13 @@ func initMMU() bool {
 	// Map all MMIO devices
 	for i := 0; i < mmioDeviceCount; i++ {
 		dev := &mmioDevices[i]
-		mapRegion(dev.start, dev.start+dev.size, dev.start, dev.attr, dev.ap, PTE_EXEC_NEVER)
+		mapRegionInitMMU(dev.start, dev.start+dev.size, dev.start, dev.attr, dev.ap, PTE_EXEC_NEVER)
 	}
 
 	// Map DTB region (now that kernel starts at 0x40100000, no overlap!)
 	dtbStart := asm.GetDtbBootAddr()
 	dtbEnd := dtbStart + asm.GetDtbSize()
-	mapRegion(
+	mapRegionInitMMU(
 		dtbStart, dtbEnd, dtbStart,
 		PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER,  // DTB is read-only data
 	)
@@ -1072,18 +1210,18 @@ func initMMU() bool {
 	// Map PCI ECAM (lowmem and highmem)
 	ecamBase := uintptr(0x3F000000)
 	ecamSize := uintptr(0x01000000) // 16MB, not 256MB!
-	mapRegion(ecamBase, ecamBase+ecamSize, ecamBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	mapRegionInitMMU(ecamBase, ecamBase+ecamSize, ecamBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 
 	highmemEcamBase := uintptr(0x4010000000)
 	highmemEcamSize := uintptr(0x10000000)
-	mapRegion(highmemEcamBase, highmemEcamBase+highmemEcamSize, highmemEcamBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	mapRegionInitMMU(highmemEcamBase, highmemEcamBase+highmemEcamSize, highmemEcamBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 
 	// Map PCI BAR region (for VirtIO devices)
 	// VirtIO RNG and other PCI devices allocate BARs from this pool
 	// Region starts at 0x11000000 (after bochs-display) to avoid conflicts
 	pciBarBase := asm.GetPciBarBase()     // 0x11000000 from linker.ld
 	pciBarSize := asm.GetPciBarSize()     // 240MB from linker.ld
-	mapRegion(pciBarBase, pciBarBase+pciBarSize, pciBarBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	mapRegionInitMMU(pciBarBase, pciBarBase+pciBarSize, pciBarBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 	uartPutsDirect("Mapped PCI BARs: ")
 	uartPutHex64Direct(uint64(pciBarBase))
 	uartPutsDirect(" - ")
@@ -1114,7 +1252,7 @@ func initMMU() bool {
 		uartPutsDirect(" - 0x")
 		uartPutHex64Direct(uint64(pageTableBase))
 		uartPutsDirect(" (RW)\r\n")
-		mapRegion(ramStart, pageTableBase, ramStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+		mapRegionInitMMU(ramStart, pageTableBase, ramStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 	}
 
 	// PERFORMANCE: Map page table region as CACHEABLE
@@ -1124,7 +1262,7 @@ func initMMU() bool {
 	// We use proper barriers (DSB ISH) after PTE modifications and TLB invalidation
 	// to ensure coherency between CPU data cache and page table walker.
 	// Page table region is from linker.ld: 0x41000000 - 0x41800000 (8MB)
-	mapRegion(pageTableBase, pageTableEnd, pageTableBase, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	mapRegionInitMMU(pageTableBase, pageTableEnd, pageTableBase, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 
 	// NOTE: Exception vectors are now embedded in .text section at their final location
 	// They no longer need a separate RAM mapping at 0x41100000 (which would conflict
@@ -1172,7 +1310,7 @@ func initMMU() bool {
 	uartPutsDirect(" - 0x")
 	uartPutHex64Direct(uint64(g0StackTop))
 	uartPutsDirect(" (RW)\r\n")
-	mapRegion(g0StackBottom, g0StackTop, g0StackBottom, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	mapRegionInitMMU(g0StackBottom, g0StackTop, g0StackBottom, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 
 	// Map exception stack (SP_EL1) - boot.s must set SP_EL1 to exceptionStackTop
 	uartPutsDirect("Mapping exception stack (SP_EL1): 0x")
@@ -1180,7 +1318,7 @@ func initMMU() bool {
 	uartPutsDirect(" - 0x")
 	uartPutHex64Direct(uint64(exceptionStackTop))
 	uartPutsDirect(" (RW)\r\n")
-	mapRegion(exceptionStackBottom, exceptionStackTop, exceptionStackBottom, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	mapRegionInitMMU(exceptionStackBottom, exceptionStackTop, exceptionStackBottom, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 
 	// Initialize physical frame allocator
 	uartPutcDirect('C')
@@ -1330,9 +1468,14 @@ func dumpFetchMapping(label string, va uintptr) bool {
 //
 //go:nosplit
 func enableMMU() bool {
+	uartBase := uintptr(0x09000000)
+	*(*uint32)(unsafe.Pointer(uartBase)) = '1' // Entry
+
 	if pageTableL0 == 0 {
 		return false
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = '2' // L0 ok
+
 	// Configure MAIR_EL1: Set all 3 memory attribute indices
 	// MAIR[0] = 0xFF (Normal, Inner/Outer Write-Back Cacheable)
 	// MAIR[1] = 0x00 (Device-nGnRnE)
@@ -1341,12 +1484,15 @@ func enableMMU() bool {
 		(uint64(0x00) << 8) |  // Attr1: Device
 		(uint64(0x44) << 16)   // Attr2: Normal non-cacheable
 	asm.WriteMairEl1(mairValue)
+	*(*uint32)(unsafe.Pointer(uartBase)) = '3' // MAIR written
 
 	// Verify MAIR
 	mairReadback := asm.ReadMairEl1()
 	if (mairReadback & 0xFFFFFF) != mairValue {
+		*(*uint32)(unsafe.Pointer(uartBase)) = 'X' // MAIR verify failed
 		return false
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = '4' // MAIR verified
 
 	// Configure TCR_EL1
 	tcrValue := uint64(0)
@@ -1358,30 +1504,38 @@ func enableMMU() bool {
 	tcrValue |= 1 << 23  // EPD1 = 1
 	tcrValue |= 2 << 32  // IPS = 2
 	asm.WriteTcrEl1(tcrValue)
+	*(*uint32)(unsafe.Pointer(uartBase)) = '5' // TCR written
 
 	// Verify TCR
 	tcrReadback := asm.ReadTcrEl1()
 	if (tcrReadback & 0x3F) != 16 {
+		*(*uint32)(unsafe.Pointer(uartBase)) = 'Y' // TCR verify failed
 		return false
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = '6' // TCR verified
 
 	asm.Isb()
 	asm.WriteTtbr1El1(0)
 	asm.WriteTtbr0El1(uint64(pageTableL0))
+	*(*uint32)(unsafe.Pointer(uartBase)) = '7' // TTBRs written
 
 	// Verify TTBR0
 	ttbr0Readback := asm.ReadTtbr0El1()
 	if (ttbr0Readback &^ 0xFFF) != uint64(pageTableL0) {
+		*(*uint32)(unsafe.Pointer(uartBase)) = 'Z' // TTBR0 verify failed
 		return false
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = '8' // TTBR0 verified
 
 	asm.Dsb()
+	*(*uint32)(unsafe.Pointer(uartBase)) = '9' // Pre-SCTLR
 
 	// Read and modify SCTLR_EL1
 	sctlr := asm.ReadSctlrEl1()
 	sctlr |= 1 << 0   // M = 1 (MMU enable)
 	sctlr &^= 1 << 2  // C = 0 (data cache DISABLED initially)
 	sctlr &^= 1 << 12 // I = 0 (instruction cache DISABLED initially)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'A' // SCTLR prepared
 
 	// CRITICAL: Cannot call dumpFetchMapping() before MMU is enabled!
 	// dumpFetchMapping uses print() which accesses .rodata strings, and before
@@ -1391,10 +1545,12 @@ func enableMMU() bool {
 	// Invalidate TLB before enabling MMU to prevent stale translations
 	asm.InvalidateTlbAll()
 	asm.Dsb()
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'B' // TLB invalidated
 
 	// Enable MMU
 	asm.Dsb()
 	asm.Isb()
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'C' // Pre-enable barriers done
 
 	// CRITICAL WORKAROUND: Multiple barriers before/after SCTLR write
 	// Some QEMU versions or CPU models have issues with MMU enable
@@ -1402,13 +1558,16 @@ func enableMMU() bool {
 	asm.Dsb()
 	asm.Isb()
 	asm.Isb()
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'D' // About to write SCTLR
 
 	asm.WriteSctlrEl1(sctlr)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'F' // SCTLR written, MMU ON
 
 	asm.Isb()
 	asm.Isb()
 	asm.Dsb()
 	asm.Dsb()
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'G' // Post-enable barriers done
 
 	// Now MMU is ON and unaligned access is allowed, can safely use print()
 	return true
