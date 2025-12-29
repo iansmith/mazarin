@@ -84,12 +84,20 @@ func main() {
 	}
 	defer cleanup()
 
-	// Step 2: Extract symbols and bytes using go tool objdump
+	// Step 2: Extract symbols and bytes using go tool objdump (for text)
 	symbols, err := extractSymbols(objFile, *verbose)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error extracting symbols: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Step 2b: Extract data symbols from the Go object file
+	dataSymbols, err := extractDataSymbols(objFile, *verbose)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error extracting data symbols: %v\n", err)
+		os.Exit(1)
+	}
+	symbols = append(symbols, dataSymbols...)
 
 	if len(symbols) == 0 {
 		fmt.Fprintf(os.Stderr, "Warning: no symbols found in %s\n", inputFile)
@@ -249,6 +257,134 @@ func parseObjdumpOutput(data []byte) ([]Symbol, error) {
 	}
 
 	return symbols, scanner.Err()
+}
+
+func extractDataSymbols(objFile string, verbose bool) ([]Symbol, error) {
+	// Read the entire Go object file
+	data, err := os.ReadFile(objFile)
+	if err != nil {
+		return nil, err
+	}
+
+	// Use go tool nm to find data symbols
+	cmd := exec.Command("go", "tool", "nm", objFile)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("go tool nm failed: %v", err)
+	}
+
+	var symbols []Symbol
+	scanner := bufio.NewScanner(&stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Format: "  offset type name"
+		// We're looking for 'R' (read-only data) and 'D' (data) symbols
+		parts := strings.Fields(line)
+		if len(parts) < 3 {
+			continue
+		}
+
+		symbolType := parts[1]
+		symbolName := parts[2]
+
+		// Only process read-only data symbols
+		if symbolType != "R" {
+			continue
+		}
+
+		// Parse offset
+		offsetStr := parts[0]
+		offset, err := strconv.ParseUint(offsetStr, 16, 64)
+		if err != nil {
+			continue
+		}
+
+		// Clean up the symbol name
+		symbolName = strings.TrimPrefix(symbolName, "<unlinkable>.")
+		symbolName = strings.ReplaceAll(symbolName, "·", "_")
+
+		// The Go object file contains the data at the symbol's offset
+		// We need to find the size by looking at the next symbol or end of data
+		// For now, we'll extract the data by reading the object file
+		// This is a simplification - proper implementation would parse the Go object format
+
+		if verbose {
+			fmt.Fprintf(os.Stderr, "Found data symbol: %s at offset 0x%x\n", symbolName, offset)
+		}
+
+		// Read data from the Go object file
+		// The Go object file format has data sections after the header
+		// For simplicity, we'll extract by finding the data in the file
+		symbolBytes, err := extractDataFromGoObj(data, offset, symbolName)
+		if err != nil || len(symbolBytes) == 0 {
+			if verbose {
+				fmt.Fprintf(os.Stderr, "Warning: could not extract data for %s: %v\n", symbolName, err)
+			}
+			continue
+		}
+
+		symbols = append(symbols, Symbol{
+			Name:    symbolName,
+			Offset:  offset,
+			Bytes:   symbolBytes,
+			Section: ".rodata",
+		})
+	}
+
+	return symbols, scanner.Err()
+}
+
+func extractDataFromGoObj(objData []byte, offset uint64, name string) ([]byte, error) {
+	// Go object files are in a custom format
+	// The data section starts after the symbol table
+	// This is a simplified extraction that reads the actual data bytes
+
+	// Search for the data pattern in the object file
+	// Go stores data sequentially after the header and symbol table
+	// For DATA directives, the actual bytes are embedded in the object file
+
+	// Since we can't easily parse the Go object format without using internal packages,
+	// we'll use a heuristic: the data should be present in the file
+	// We'll search for likely data sections
+
+	// For now, try to find data by reading from a reasonable offset
+	// The Go object format typically has data after offset 0x200 or so
+	if int(offset) >= len(objData) {
+		return nil, fmt.Errorf("offset beyond file size")
+	}
+
+	// Try to find the actual data size by looking for the next symbol or zero padding
+	// This is approximate - a proper implementation would parse the object file format
+	dataStart := int(offset)
+	dataEnd := dataStart
+
+	// Scan forward to find the extent of the data
+	// Stop at excessive zeros or end of file
+	zeroCount := 0
+	maxZeros := 16 // Allow some internal zeros
+	for dataEnd < len(objData) && dataEnd-dataStart < 2*1024*1024 { // Max 2MB per symbol
+		if objData[dataEnd] == 0 {
+			zeroCount++
+			if zeroCount > maxZeros {
+				break
+			}
+		} else {
+			zeroCount = 0
+		}
+		dataEnd++
+	}
+
+	// Back up past the trailing zeros
+	for dataEnd > dataStart && objData[dataEnd-1] == 0 {
+		dataEnd--
+	}
+
+	if dataEnd <= dataStart {
+		return nil, fmt.Errorf("no data found")
+	}
+
+	return objData[dataStart:dataEnd], nil
 }
 
 func generateGNUAsm(w io.Writer, symbols []Symbol, section string, global bool) {
