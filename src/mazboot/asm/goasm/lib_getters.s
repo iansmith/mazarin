@@ -1,21 +1,10 @@
 #include "textflag.h"
 
-// lib_getters.s - Simple getter functions for runtime symbols
-// These allow Go code to access runtime symbols without hardcoding addresses
-
-// get_g0_addr returns the address of runtime.g0
-// Returns: address of runtime.g0
-TEXT get_g0_addr(SB), NOSPLIT|NOFRAME, $0-8
-	MOVD $runtime·g0(SB), R0
-	MOVD R0, ret+0(FP)
-	RET
-
-// get_m0_addr returns the address of runtime.m0
-// Returns: address of runtime.m0
-TEXT get_m0_addr(SB), NOSPLIT|NOFRAME, $0-8
-	MOVD $runtime·m0(SB), R0
-	MOVD R0, ret+0(FP)
-	RET
+// lib_getters.s - Simple getter functions that DON'T reference external symbols
+//
+// NOTE: Functions that reference Go runtime symbols (runtime.g0, runtime.m0,
+// runtime.physPageSize, etc.) have been moved to linker_symbols.s (GCC assembly)
+// because goasm2gnu cannot properly handle external symbol relocations.
 
 // getGRegister returns current value of g register
 // This is for debugging to see what g points to
@@ -43,26 +32,4 @@ TEXT call_mallocinit(SB), NOSPLIT, $0-0
 	MOVD 0(RSP), R29
 	MOVD 8(RSP), R30
 	ADD $16, RSP
-	RET
-
-// get_phys_page_size_addr returns the address of runtime.physPageSize
-// This allows Go code to set physPageSize before calling schedinit
-// Returns: address of runtime.physPageSize
-TEXT get_phys_page_size_addr(SB), NOSPLIT|NOFRAME, $0-8
-	MOVD $runtime·physPageSize(SB), R0
-	MOVD R0, ret+0(FP)
-	RET
-
-// get_mcache0_addr returns the address of runtime.mcache0
-// Returns: address of runtime.mcache0
-TEXT get_mcache0_addr(SB), NOSPLIT|NOFRAME, $0-8
-	MOVD $runtime·mcache0(SB), R0
-	MOVD R0, ret+0(FP)
-	RET
-
-// get_emptymspan_addr returns the address of runtime.emptymspan
-// Returns: address of runtime.emptymspan
-TEXT get_emptymspan_addr(SB), NOSPLIT|NOFRAME, $0-8
-	MOVD $runtime·emptymspan(SB), R0
-	MOVD R0, ret+0(FP)
 	RET

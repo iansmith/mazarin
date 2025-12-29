@@ -446,7 +446,7 @@ func writeELF(filename string, symbols []Symbol, section string) error {
 	shstrtabIdx := len(shstrtab)
 	shstrtab = append(shstrtab, ".shstrtab\x00"...)
 	textIdx := len(shstrtab)
-	shstrtab = append(shstrtab, section[1:]...) // Remove leading '.'
+	shstrtab = append(shstrtab, section...) // Keep the full section name (e.g., ".text")
 	shstrtab = append(shstrtab, 0)
 	symtabIdx := len(shstrtab)
 	shstrtab = append(shstrtab, ".symtab\x00"...)

@@ -822,18 +822,6 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 	pteValue := createPageTableEntry(pa, attrs, ap, exec)
 	*l3Entry = pteValue
 
-	// DEBUG: For .text section first page, print the PTE value
-	if va == 0x40100000 {  // Updated for new kernel load address
-		uartPutsDirect("\nDEBUG .text first page: VA=0x")
-		uartPutHex64Direct(uint64(va))
-		uartPutsDirect(" PA=0x")
-		uartPutHex64Direct(uint64(pa))
-		uartPutsDirect(" exec=0x")
-		uartPutHex64Direct(exec)
-		uartPutsDirect(" PTE=0x")
-		uartPutHex64Direct(pteValue)
-		uartPutsDirect("\n")
-	}
 
 	// NOTE: Cache cleaning and barriers moved to end of initMMU() for performance
 	// The MMU isn't enabled yet, so page table walker won't see stale cache
