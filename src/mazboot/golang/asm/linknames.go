@@ -11,10 +11,6 @@ import "unsafe"
 //go:nosplit
 func Bzero(ptr unsafe.Pointer, size uint32)
 
-//go:linkname CallMallocinit call_mallocinit
-//go:nosplit
-func CallMallocinit()
-
 //go:linkname CallNewprocSimpleMain call_newproc_simple_main
 //go:nosplit
 func CallNewprocSimpleMain()
@@ -119,10 +115,6 @@ func GetDtbBootAddr() uintptr
 //go:nosplit
 func GetDtbSize() uintptr
 
-//go:linkname GetEmptymspanAddr get_emptymspan_addr
-//go:nosplit
-func GetEmptymspanAddr() uintptr
-
 //go:linkname GetEndAddr get_end_addr
 //go:nosplit
 func GetEndAddr() uintptr
@@ -138,10 +130,6 @@ func GetFwcfgBase() uintptr
 //go:linkname GetFwcfgSize get_fwcfg_size
 //go:nosplit
 func GetFwcfgSize() uintptr
-
-//go:linkname GetG0Addr get_g0_addr
-//go:nosplit
-func GetG0Addr() uintptr
 
 //go:linkname GetG0StackBottom get_g0_stack_bottom
 //go:nosplit
@@ -167,10 +155,6 @@ func GetKmazarinSize() uintptr
 //go:nosplit
 func GetKmazarinStart() uintptr
 
-//go:linkname GetM0Addr get_m0_addr
-//go:nosplit
-func GetM0Addr() uintptr
-
 //go:linkname GetMazbootAllocationSize get_mazboot_allocation_size
 //go:nosplit
 func GetMazbootAllocationSize() uintptr
@@ -178,10 +162,6 @@ func GetMazbootAllocationSize() uintptr
 //go:linkname GetMazbootEnd get_mazboot_end
 //go:nosplit
 func GetMazbootEnd() uintptr
-
-//go:linkname GetMcache0Addr get_mcache0_addr
-//go:nosplit
-func GetMcache0Addr() uintptr
 
 //go:linkname GetPageTablesEndAddr get_page_tables_end_addr
 //go:nosplit
@@ -198,10 +178,6 @@ func GetPciBarBase() uintptr
 //go:linkname GetPciBarSize get_pci_bar_size
 //go:nosplit
 func GetPciBarSize() uintptr
-
-//go:linkname GetPhysPageSizeAddr get_phys_page_size_addr
-//go:nosplit
-func GetPhysPageSizeAddr() uintptr
 
 //go:linkname GetRamStart get_ram_start
 //go:nosplit
@@ -566,10 +542,6 @@ func gcWriteBarrier()
 //go:linkname getCurrentSP getCurrentSP
 //go:nosplit
 func getCurrentSP()
-
-//go:linkname getGRegister getGRegister
-//go:nosplit
-func getGRegister()
 
 //go:linkname memmove memmove
 //go:nosplit

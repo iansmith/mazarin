@@ -47,71 +47,7 @@
 .endm
 
 // =================================================================
-
-// get_g0_addr() - returns address of runtime.g0
-// This allows Go code to get the g0 address without hardcoding
-.global get_g0_addr
-get_g0_addr:
-    ldr x0, =runtime.g0
-    ret
-
-// get_m0_addr() - returns address of runtime.m0
-// This allows Go code to get the m0 address without hardcoding
-.global get_m0_addr
-get_m0_addr:
-    ldr x0, =runtime.m0
-    ret
-
-// getGRegister() - returns current value of g register (x28)
-// This is for debugging to see what g points to
-.global getGRegister
-getGRegister:
-    mov x0, x28
-    ret
-
-// call_mallocinit()
-// Call runtime.mallocinit from assembly.
-// Minimal assembly wrapper that just calls mallocinit (not full schedinit).
-// physPageSize should be set from Go before calling this.
-.global call_mallocinit
-.extern runtime.mallocinit
-call_mallocinit:
-    // Save frame pointer and link register
-    stp x29, x30, [sp, #-16]!
-    mov x29, sp
-
-    // Call runtime.mallocinit()
-    // This initializes just the heap allocator, not full scheduler.
-    bl runtime.mallocinit
-
-    // Restore frame pointer and link register
-    ldp x29, x30, [sp], #16
-    ret
-
-// get_phys_page_size_addr()
-// Returns uintptr
-// This allows Go code to set physPageSize before calling schedinit.
-.global get_phys_page_size_addr
-.extern runtime.physPageSize
-get_phys_page_size_addr:
-    ldr x0, =runtime.physPageSize
-    ret
-
-// get_mcache0_addr() - returns address of runtime.mcache0
-// This allows Go code to get the mcache0 address without hardcoding
-.global get_mcache0_addr
-.extern runtime.mcache0
-get_mcache0_addr:
-    ldr x0, =runtime.mcache0
-    ret
-
-// get_emptymspan_addr() - returns address of runtime.emptymspan
-// This allows Go code to get the emptymspan address without hardcoding
-.global get_emptymspan_addr
-.extern runtime.emptymspan
-get_emptymspan_addr:
-    ldr x0, =runtime.emptymspan
-    ret
+// Simple getter functions moved to lib_getters.s (Go/Plan9 assembly)
 
 // mmio_write(uintptr_t reg, uint32_t data)
 // x0 = register address, w1 = data (32-bit)

@@ -76,6 +76,7 @@ EXCEPTIONS_OBJ = $(BUILD_MAZBOOT_DIR)/exceptions.o
 IMAGE_OBJ = $(BUILD_MAZBOOT_DIR)/image.o
 GOROUTINE_OBJ = $(BUILD_MAZBOOT_DIR)/goroutine.o
 ASYNC_PREEMPT_OBJ = $(BUILD_MAZBOOT_DIR)/async_preempt.o
+LIB_GETTERS_OBJ = $(BUILD_MAZBOOT_DIR)/lib_getters.o
 GET_CALLER_SP_OBJ = $(BUILD_MAZBOOT_DIR)/get_caller_sp.o
 LINKER_SYMBOLS_OBJ = $(BUILD_MAZBOOT_DIR)/linker_symbols.o
 KMAZARIN_EMBED_OBJ = $(BUILD_MAZBOOT_DIR)/kmazarin_embed.o
@@ -215,6 +216,13 @@ $(ASYNC_PREEMPT_OBJ): $(ASYNC_PREEMPT_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@echo "Transpiling async_preempt Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
+# Transpile lib_getters Go assembly to ELF
+LIB_GETTERS_GOASM_SRC = $(MAZBOOT_SRC)/asm/goasm/lib_getters.s
+$(LIB_GETTERS_OBJ): $(LIB_GETTERS_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
+	@mkdir -p $(BUILD_MAZBOOT_DIR)
+	@echo "Transpiling lib_getters Go assembly: $<"
+	$(GOASM2GNU) -elf -o $@ $<
+
 GET_CALLER_SP_SRC = $(MAZBOOT_SRC)/asm/aarch64/get_caller_sp.s
 $(GET_CALLER_SP_OBJ): $(GET_CALLER_SP_SRC) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_MAZBOOT_DIR)
@@ -315,12 +323,12 @@ $(KERNEL_GO_OBJ_QEMU): $(MAZBOOT_SRC)/golang/go.mod $(GO_SRC) $(LINKNAMES_GO) $(
 
 # Build mazboot (default: QEMU build with qemuvirt and aarch64 tags)
 # NOTE: Depends on KMAZARIN_EMBED_OBJ and KMAZARIN_EMBED_DATA_OBJ which embed the kmazarin kernel binary
-$(MAZBOOT_BINARY): $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
+$(MAZBOOT_BINARY): $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(LIB_GETTERS_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
 	@mkdir -p $(BUILD_DIR)
 	@# Link exceptions.o, then writebarrier.o so our global symbols override Go runtime's
 	@# Our writebarrier.s provides global (T) symbols that should take precedence
 	@# GOASM_TEST_OBJ contains transpiled Go assembly (from Plan 9 syntax)
-	$(CC) $(LDFLAGS) -o $@.tmp $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(KERNEL_GO_OBJ_QEMU) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ)
+	$(CC) $(LDFLAGS) -o $@.tmp $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(KERNEL_GO_OBJ_QEMU) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(LIB_GETTERS_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ)
 	@# Patch the binary to redirect calls from Go runtime functions to our implementations
 	@# The Go tool scans .s files to determine which symbols need patching
 	@echo "Patching runtime function calls..."
