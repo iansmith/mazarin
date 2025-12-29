@@ -272,10 +272,11 @@ KERNEL_GO_ARCHIVE = $(BUILD_MAZBOOT_DIR)/kernel_go
 KERNEL_GO_TEMP = $(BUILD_MAZBOOT_DIR)/kernel_go_temp.o
 
 # Generate list of symbols that need globalizing (discovered from assembly files)
-$(GLOBALIZE_SYMBOLS_LIST): $(GLOBALIZE_SYMBOLS_GEN) $(wildcard $(MAZBOOT_SRC)/asm/aarch64/*.s)
+# Scans both GNU assembly (asm/aarch64/) and Go/Plan9 assembly (asm/goasm/) for symbol references
+$(GLOBALIZE_SYMBOLS_LIST): $(GLOBALIZE_SYMBOLS_GEN) $(wildcard $(MAZBOOT_SRC)/asm/aarch64/*.s) $(wildcard $(MAZBOOT_SRC)/asm/goasm/*.s)
 	@echo "Discovering symbols that need globalizing..."
 	@mkdir -p $(BUILD_MAZBOOT_DIR)
-	@cd $(MAZBOOT_SRC) && $(abspath $(GLOBALIZE_SYMBOLS_GEN)) -asm asm/aarch64 -o $(abspath $(GLOBALIZE_SYMBOLS_LIST))
+	@cd $(MAZBOOT_SRC) && $(abspath $(GLOBALIZE_SYMBOLS_GEN)) -asm asm/aarch64 -goasm asm/goasm -o $(abspath $(GLOBALIZE_SYMBOLS_LIST))
 
 # Generate linknames.go from assembly files (both GCC and Go/Plan9 assembly)
 # This file contains //go:linkname directives to link Go functions to assembly symbols

@@ -31,24 +31,50 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
 
-type Symbol struct {
-	Name    string
-	Offset  uint64 // Offset within the text section
-	Size    int
-	Bytes   []byte
-	Section string // .text, .rodata, etc.
+// Relocation represents an ELF relocation entry
+type Relocation struct {
+	Offset     uint64 // Offset within the section
+	Type       uint32 // ELF relocation type (R_AARCH64_*)
+	SymbolName string // Target symbol name
+	Addend     int64  // Addend value
 }
+
+type Symbol struct {
+	Name        string
+	Offset      uint64 // Offset within the text section
+	Size        int
+	Bytes       []byte
+	Section     string        // .text, .rodata, etc.
+	Relocations []Relocation  // Relocations for this symbol
+}
+
+// ARM64 ELF relocation types
+const (
+	R_AARCH64_NONE              = 0
+	R_AARCH64_ABS64             = 257
+	R_AARCH64_ABS32             = 258
+	R_AARCH64_CALL26            = 283
+	R_AARCH64_JUMP26            = 282
+	R_AARCH64_ADR_PREL_PG_HI21  = 275
+	R_AARCH64_ADD_ABS_LO12_NC   = 277
+	R_AARCH64_LDST64_ABS_LO12_NC = 286
+)
 
 var (
 	// Matches: TEXT <unlinkable>.sync_el1_handler(SB) /path/file.s
 	textHeaderRe = regexp.MustCompile(`^TEXT\s+(?:<[^>]+>\.)?(\S+)\(SB\)`)
 
-	// Matches: file.s:5  0x3a0  d2824680  MOVD $4660, R0
+	// Matches: file.s:5  0x3a0  d2824680  MOVD $4660, R0  [reloc info]
+	// The relocation info is optional: [start:size]R_TYPE:symbol
 	objdumpLineRe = regexp.MustCompile(`^\s+\S+:\d+\s+(0x[0-9a-fA-F]+)\s+([0-9a-fA-F]+)\s+`)
+
+	// Matches relocation info: [0:8]R_ADDRARM64:runtime.g0
+	relocRe = regexp.MustCompile(`\[(\d+):(\d+)\](R_\w+):(\S+)`)
 )
 
 func main() {
@@ -200,6 +226,8 @@ func extractSymbols(objFile string, verbose bool) ([]Symbol, error) {
 func parseObjdumpOutput(data []byte) ([]Symbol, error) {
 	var symbols []Symbol
 	var currentSym *Symbol
+	var firstOffset uint64 // First offset in the file (to compute relative offsets)
+	var gotFirstOffset bool
 
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
@@ -215,14 +243,16 @@ func parseObjdumpOutput(data []byte) ([]Symbol, error) {
 			name := matches[1]
 			// Remove parentheses if present
 			name = strings.TrimSuffix(name, "(SB)")
-			// Convert · to _ for GNU asm compatibility
-			name = strings.ReplaceAll(name, "·", "_")
+			// Convert · to . for ELF symbol compatibility (e.g., runtime·g0 -> runtime.g0)
+			name = strings.ReplaceAll(name, "·", ".")
 
 			currentSym = &Symbol{
-				Name:    name,
-				Bytes:   make([]byte, 0),
-				Section: ".text",
+				Name:        name,
+				Bytes:       make([]byte, 0),
+				Section:     ".text",
+				Relocations: make([]Relocation, 0),
 			}
+			gotFirstOffset = false
 			continue
 		}
 
@@ -234,9 +264,13 @@ func parseObjdumpOutput(data []byte) ([]Symbol, error) {
 
 				// Parse offset
 				offset, _ := strconv.ParseUint(offsetStr[2:], 16, 64)
-				if currentSym.Offset == 0 && offset > 0 {
-					currentSym.Offset = offset
+				if !gotFirstOffset {
+					firstOffset = offset
+					gotFirstOffset = true
 				}
+
+				// Compute relative offset within this symbol's bytes
+				relativeOffset := offset - firstOffset
 
 				// Parse hex bytes (they come as a single hex number, e.g., "d2824680")
 				// Convert to little-endian bytes
@@ -246,6 +280,55 @@ func parseObjdumpOutput(data []byte) ([]Symbol, error) {
 					b := make([]byte, 4)
 					binary.LittleEndian.PutUint32(b, uint32(val))
 					currentSym.Bytes = append(currentSym.Bytes, b...)
+				}
+
+				// Check for relocation info in the line
+				if relocMatches := relocRe.FindAllStringSubmatch(line, -1); relocMatches != nil {
+					for _, rm := range relocMatches {
+						// rm[1] = start, rm[2] = size, rm[3] = type, rm[4] = symbol
+						relocType := rm[3]
+						relocSymbol := rm[4]
+
+						// Convert Go relocation types to ELF types
+						// R_ADDRARM64 maps to ADRP+ADD pair
+						// R_CALLARM64 maps to CALL26
+						var elfType uint32
+						switch relocType {
+						case "R_ADDRARM64":
+							// This is the ADRP instruction, ADD follows
+							elfType = R_AARCH64_ADR_PREL_PG_HI21
+						case "R_CALLARM64":
+							elfType = R_AARCH64_CALL26
+						case "R_ARM64_PCREL_LDST8", "R_ARM64_PCREL_LDST16",
+						     "R_ARM64_PCREL_LDST32", "R_ARM64_PCREL_LDST64":
+							elfType = R_AARCH64_LDST64_ABS_LO12_NC
+						default:
+							// Unknown type, skip
+							continue
+						}
+
+						// Clean up symbol name (remove trailing whitespace, convert · to .)
+						relocSymbol = strings.TrimSpace(relocSymbol)
+						relocSymbol = strings.ReplaceAll(relocSymbol, "·", ".")
+
+						currentSym.Relocations = append(currentSym.Relocations, Relocation{
+							Offset:     relativeOffset,
+							Type:       elfType,
+							SymbolName: relocSymbol,
+							Addend:     0,
+						})
+
+						// For R_ADDRARM64, we also need to add the ADD relocation
+						// The ADD instruction follows immediately (offset + 4)
+						if relocType == "R_ADDRARM64" {
+							currentSym.Relocations = append(currentSym.Relocations, Relocation{
+								Offset:     relativeOffset + 4,
+								Type:       R_AARCH64_ADD_ABS_LO12_NC,
+								SymbolName: relocSymbol,
+								Addend:     0,
+							})
+						}
+					}
 				}
 			}
 		}
@@ -430,13 +513,42 @@ func writeELF(filename string, symbols []Symbol, section string) error {
 	}
 	defer f.Close()
 
-	// Calculate sizes
+	// Calculate sizes and collect all relocations
 	var textData []byte
 	symOffsets := make(map[string]uint64)
+	var allRelocations []Relocation
+
 	for _, sym := range symbols {
-		symOffsets[sym.Name] = uint64(len(textData))
+		symOffset := uint64(len(textData))
+		symOffsets[sym.Name] = symOffset
 		textData = append(textData, sym.Bytes...)
+
+		// Adjust relocation offsets to be relative to section start
+		for _, r := range sym.Relocations {
+			adjustedReloc := r
+			adjustedReloc.Offset += symOffset
+			allRelocations = append(allRelocations, adjustedReloc)
+		}
 	}
+
+	// Collect unique external symbols referenced by relocations
+	externalSymbols := make(map[string]bool)
+	for _, r := range allRelocations {
+		externalSymbols[r.SymbolName] = true
+	}
+
+	// Remove defined symbols from external list
+	for _, sym := range symbols {
+		delete(externalSymbols, sym.Name)
+	}
+
+	// Create ordered list of external symbols
+	var extSymList []string
+	for name := range externalSymbols {
+		extSymList = append(extSymList, name)
+	}
+	// Sort for deterministic output
+	sort.Strings(extSymList)
 
 	// Build string table
 	strtab := []byte{0} // Start with null byte
@@ -453,12 +565,47 @@ func writeELF(filename string, symbols []Symbol, section string) error {
 	strtabSectionIdx := len(shstrtab)
 	shstrtab = append(shstrtab, ".strtab\x00"...)
 
-	// Symbol names
+	// Add .rela section name if we have relocations
+	var relaIdx int
+	hasRelocations := len(allRelocations) > 0
+	if hasRelocations {
+		relaIdx = len(shstrtab)
+		relaName := ".rela" + section
+		shstrtab = append(shstrtab, relaName...)
+		shstrtab = append(shstrtab, 0)
+	}
+
+	// Symbol names - defined symbols first, then external
 	symNameOffsets := make(map[string]uint32)
+	symIndices := make(map[string]uint32) // 1-based index in symbol table
+
+	symIndex := uint32(1) // 0 is null symbol
+
+	// Add defined symbols
 	for _, sym := range symbols {
 		symNameOffsets[sym.Name] = uint32(len(strtab))
+		symIndices[sym.Name] = symIndex
 		strtab = append(strtab, sym.Name...)
 		strtab = append(strtab, 0)
+		symIndex++
+	}
+
+	// Add external symbols
+	for _, name := range extSymList {
+		symNameOffsets[name] = uint32(len(strtab))
+		symIndices[name] = symIndex
+		strtab = append(strtab, name...)
+		strtab = append(strtab, 0)
+		symIndex++
+	}
+
+	// Total symbols: null + defined + external
+	totalSymbols := 1 + len(symbols) + len(extSymList)
+
+	// Number of section headers
+	numSections := 5 // null + .text + .symtab + .strtab + .shstrtab
+	if hasRelocations {
+		numSections++ // + .rela.text
 	}
 
 	// ELF Header
@@ -476,28 +623,45 @@ func writeELF(filename string, symbols []Symbol, section string) error {
 		Version:   1,
 		Entry:     0,
 		Phoff:     0,
-		Shoff:     64, // Section headers start after ELF header (will update)
+		Shoff:     64, // Will update later
 		Flags:     0,
 		Ehsize:    64,
 		Phentsize: 0,
 		Phnum:     0,
 		Shentsize: 64,
-		Shnum:     5, // null + .text + .symtab + .strtab + .shstrtab
+		Shnum:     uint16(numSections),
 		Shstrndx:  4, // .shstrtab is section 4
 	}
 
 	// Calculate offsets
-	// Layout: ELF header | .text | .symtab | .strtab | .shstrtab | section headers
+	// Layout: ELF header | .text | .rela.text | .symtab | .strtab | .shstrtab | section headers
 	textOff := uint64(64)
-	symtabOff := textOff + uint64(len(textData))
+
+	// Relocation section (if any)
+	var relaOff uint64
+	var relaSize uint64
+	if hasRelocations {
+		relaOff = textOff + uint64(len(textData))
+		// Align to 8 bytes
+		if relaOff%8 != 0 {
+			relaOff += 8 - (relaOff % 8)
+		}
+		relaSize = uint64(len(allRelocations) * 24) // Elf64_Rela is 24 bytes
+	}
+
+	// Symbol table
+	var symtabOff uint64
+	if hasRelocations {
+		symtabOff = relaOff + relaSize
+	} else {
+		symtabOff = textOff + uint64(len(textData))
+	}
 	// Align symtab to 8 bytes
 	if symtabOff%8 != 0 {
 		symtabOff += 8 - (symtabOff % 8)
 	}
 
-	// Symbol table: null + one per symbol
-	symtabEntries := 1 + len(symbols)
-	symtabSize := uint64(symtabEntries * 24) // Elf64_Sym is 24 bytes
+	symtabSize := uint64(totalSymbols * 24) // Elf64_Sym is 24 bytes
 
 	strtabOff := symtabOff + symtabSize
 	shstrtabOff := strtabOff + uint64(len(strtab))
@@ -535,7 +699,7 @@ func writeELF(filename string, symbols []Symbol, section string) error {
 			Off:       symtabOff,
 			Size:      symtabSize,
 			Link:      3, // .strtab
-			Info:      1, // First non-local symbol
+			Info:      1, // Index of first GLOBAL symbol (symbol 0 is null/LOCAL, symbol 1+ are GLOBAL)
 			Addralign: 8,
 			Entsize:   24,
 		},
@@ -567,6 +731,22 @@ func writeELF(filename string, symbols []Symbol, section string) error {
 		},
 	}
 
+	// Add .rela.text section if we have relocations
+	if hasRelocations {
+		shdrs = append(shdrs, elf.Section64{
+			Name:      uint32(relaIdx),
+			Type:      uint32(elf.SHT_RELA),
+			Flags:     uint64(elf.SHF_INFO_LINK),
+			Addr:      0,
+			Off:       relaOff,
+			Size:      relaSize,
+			Link:      2, // .symtab
+			Info:      1, // .text section
+			Addralign: 8,
+			Entsize:   24,
+		})
+	}
+
 	// Write ELF header
 	if err := binary.Write(f, binary.LittleEndian, &ehdr); err != nil {
 		return err
@@ -577,10 +757,40 @@ func writeELF(filename string, symbols []Symbol, section string) error {
 		return err
 	}
 
+	// Write .rela.text section if we have relocations
+	if hasRelocations {
+		// Pad to rela offset
+		currentPos := textOff + uint64(len(textData))
+		if currentPos < relaOff {
+			padding := make([]byte, relaOff-currentPos)
+			if _, err := f.Write(padding); err != nil {
+				return err
+			}
+		}
+
+		// Write relocations
+		for _, r := range allRelocations {
+			symIdx := symIndices[r.SymbolName]
+			// Elf64_Rela: offset (8) + info (8) + addend (8)
+			// info = (sym << 32) | type
+			info := (uint64(symIdx) << 32) | uint64(r.Type)
+
+			if err := binary.Write(f, binary.LittleEndian, r.Offset); err != nil {
+				return err
+			}
+			if err := binary.Write(f, binary.LittleEndian, info); err != nil {
+				return err
+			}
+			if err := binary.Write(f, binary.LittleEndian, r.Addend); err != nil {
+				return err
+			}
+		}
+	}
+
 	// Pad to symtab offset
-	currentPos := textOff + uint64(len(textData))
-	if currentPos < symtabOff {
-		padding := make([]byte, symtabOff-currentPos)
+	currentPosInt, _ := f.Seek(0, io.SeekCurrent)
+	if uint64(currentPosInt) < symtabOff {
+		padding := make([]byte, symtabOff-uint64(currentPosInt))
 		if _, err := f.Write(padding); err != nil {
 			return err
 		}
@@ -593,7 +803,7 @@ func writeELF(filename string, symbols []Symbol, section string) error {
 		return err
 	}
 
-	// Symbols
+	// Defined symbols (local)
 	for _, sym := range symbols {
 		s := elf.Sym64{
 			Name:  symNameOffsets[sym.Name],
@@ -602,6 +812,21 @@ func writeELF(filename string, symbols []Symbol, section string) error {
 			Shndx: 1, // .text section
 			Value: symOffsets[sym.Name],
 			Size:  uint64(len(sym.Bytes)),
+		}
+		if err := binary.Write(f, binary.LittleEndian, &s); err != nil {
+			return err
+		}
+	}
+
+	// External symbols (undefined)
+	for _, name := range extSymList {
+		s := elf.Sym64{
+			Name:  symNameOffsets[name],
+			Info:  uint8(elf.STB_GLOBAL)<<4 | uint8(elf.STT_NOTYPE),
+			Other: 0,
+			Shndx: 0, // SHN_UNDEF
+			Value: 0,
+			Size:  0,
 		}
 		if err := binary.Write(f, binary.LittleEndian, &s); err != nil {
 			return err
@@ -619,7 +844,7 @@ func writeELF(filename string, symbols []Symbol, section string) error {
 	}
 
 	// Pad to section header offset
-	currentPosInt, _ := f.Seek(0, io.SeekCurrent)
+	currentPosInt, _ = f.Seek(0, io.SeekCurrent)
 	if uint64(currentPosInt) < shdrOff {
 		padding := make([]byte, shdrOff-uint64(currentPosInt))
 		if _, err := f.Write(padding); err != nil {

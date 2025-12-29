@@ -253,7 +253,8 @@ TEXT callOnG0Stack(SB), NOSPLIT, $0
 	MOVD R22, g      // g = g0
 
 	// Update TLS to point to g0
-	CALL runtime·save_g(SB)
+	// Note: Use .abi0 suffix to match the actual Go runtime symbol name
+	CALL runtime·save_g·abi0(SB)
 
 	// Get g0's stack pointer from g0.sched.sp (offset 56)
 	MOVD 56(R22), R23  // R23 = g0.sched.sp

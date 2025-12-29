@@ -25,18 +25,26 @@ import (
 func main() {
 	var outputFile string
 	var asmDir string
+	var goasmDir string
 	flag.StringVar(&outputFile, "o", "", "Output file path (required)")
-	flag.StringVar(&asmDir, "asm", "asm/aarch64", "Assembly source directory")
+	flag.StringVar(&asmDir, "asm", "asm/aarch64", "GNU assembly source directory")
+	flag.StringVar(&goasmDir, "goasm", "", "Go/Plan9 assembly source directory (optional)")
 	flag.Parse()
 
 	if outputFile == "" {
 		fmt.Fprintf(os.Stderr, "Error: -o flag is required\n")
-		fmt.Fprintf(os.Stderr, "Usage: %s -o <output_file> [-asm <asm_dir>]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s -o <output_file> [-asm <asm_dir>] [-goasm <goasm_dir>]\n", os.Args[0])
 		os.Exit(1)
 	}
 
 	// Find all Go functions called from assembly
 	symbols := findGoFunctionsCalledFromAssembly(asmDir)
+
+	// Also scan Go assembly files if specified
+	if goasmDir != "" {
+		goasmSymbols := findRuntimeSymbolsInGoAsm(goasmDir)
+		symbols = append(symbols, goasmSymbols...)
+	}
 
 	// Sort for consistent output
 	sort.Strings(symbols)
@@ -136,7 +144,51 @@ func findGoFunctionsCalledFromAssembly(asmDir string) []string {
 	return symbols
 }
 
+// findRuntimeSymbolsInGoAsm scans Go/Plan9 assembly files for runtime symbol references
+// These use syntax like: MOVD $runtime·physPageSize(SB), R0
+func findRuntimeSymbolsInGoAsm(goasmDir string) []string {
+	var symbols []string
 
+	// Pattern for runtime.* symbols in Go assembly: runtime·symbolname(SB)
+	// The · is the Unicode middle dot character, common in Go assembly
+	runtimeSymbolRe := regexp.MustCompile(`runtime[·.]([a-zA-Z_][a-zA-Z0-9_]*)\(SB\)`)
 
+	seen := make(map[string]bool)
 
+	filepath.Walk(goasmDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || !strings.HasSuffix(path, ".s") {
+			return nil
+		}
+
+		content, err := ioutil.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+
+		lines := strings.Split(string(content), "\n")
+		for _, line := range lines {
+			// Skip comment-only lines
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "//") {
+				continue
+			}
+
+			// Check for runtime.* symbol references
+			matches := runtimeSymbolRe.FindAllStringSubmatch(line, -1)
+			for _, match := range matches {
+				if len(match) > 1 {
+					sym := "runtime." + match[1]
+					if !seen[sym] {
+						symbols = append(symbols, sym)
+						seen[sym] = true
+					}
+				}
+			}
+		}
+
+		return nil
+	})
+
+	return symbols
+}
 
