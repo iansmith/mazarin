@@ -651,3 +651,34 @@ Low Memory
   - No actual EL0 (user mode) execution yet
   - Future EL0 exceptions will escalate to EL1 handlers
 - **Result**: ✅ Boot succeeds, dual-stack configured, exception safety implemented!
+
+## Git Practices
+
+### Committing Changes
+
+When creating commits, follow the project's commit message format:
+- Clear, descriptive title summarizing the change
+- Detailed body explaining what was changed and why
+- Include testing results
+- End with the Claude Code attribution footer
+
+### Pushing Changes
+
+**CRITICAL**: Always use explicit remote and branch when pushing:
+
+```bash
+git push origin <branch-name>
+```
+
+**Never use bare `git push`** - always specify the remote (`origin`) and branch name explicitly.
+
+Example:
+```bash
+# Correct
+git push origin stack_principles
+
+# Incorrect (too ambiguous)
+git push
+```
+
+This ensures pushes go to the correct remote and branch, preventing accidental pushes to wrong locations.
