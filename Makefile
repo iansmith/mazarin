@@ -107,6 +107,8 @@ IMAGE_DATA_OBJ = $(BUILD_MAZBOOT_DIR)/image_data.o
 KMAZARIN_EMBED_GOASM_SRC = $(MAZBOOT_SRC)/asm/goasm/kmazarin_embed.s
 KMAZARIN_EMBED_DATA_OBJ = $(BUILD_MAZBOOT_DIR)/kmazarin_embed_data.o
 
+GOROUTINE_GOASM_SRC = $(MAZBOOT_SRC)/asm/goasm/goroutine.s
+
 # Assembly object files list
 ASM_OBJECTS = $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ)
 
@@ -200,9 +202,11 @@ $(IMAGE_OBJ): $(IMAGE_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@echo "Transpiling image Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
-$(GOROUTINE_OBJ): $(GOROUTINE_SRC) $(LINKER_SCRIPT)
+# Transpile goroutine Go assembly to ELF
+$(GOROUTINE_OBJ): $(GOROUTINE_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_MAZBOOT_DIR)
-	$(CC) $(ASFLAGS) -c $< -o $@
+	@echo "Transpiling goroutine Go assembly: $<"
+	$(GOASM2GNU) -elf -o $@ $<
 
 ASYNC_PREEMPT_SRC = $(MAZBOOT_SRC)/asm/aarch64/async_preempt.s
 $(ASYNC_PREEMPT_OBJ): $(ASYNC_PREEMPT_SRC) $(LINKER_SCRIPT)
