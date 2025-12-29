@@ -47,12 +47,17 @@ Kmazarin is an **unmodified Go binary** that must start up in "absolutely the no
 - Debug code that uses pre-decrement addressing (`[sp, #-16]!`) can move SP away from critical data structures
 
 **Safe debugging practices:**
-1. Use `UART_PUTC` macro for single characters
+1. Use `UART_PUTC_SAFE` macro for single characters (or other `*_SAFE` macros)
 2. Use `print_hex64` function for hex values
 3. Use `uartPutsDirect` for strings
 4. Use `DEBUG_SAVE_REGS` / `DEBUG_RESTORE_REGS` macros to preserve register state
 5. DO NOT modify SP with pre-decrement when the current SP value is critical
 6. Test debug code thoroughly - bad debug output can introduce worse bugs than the ones you're trying to find
+
+**Macro naming convention:**
+- Safe debug macros end with `_SAFE` suffix (e.g., `UART_PUTC_SAFE`)
+- `_SAFE` macros save/restore any internal registers they use
+- Parameters are still caller-saved (caller must save/restore parameter registers)
 
 **CRITICAL: Caller-save requirement for X0 (and other live registers):**
 - Debug print functions typically use X0 as a parameter (e.g., `print_hex64` takes value in X0)
@@ -91,14 +96,73 @@ lsr x11, x0, #28                 // Uses X0, but then...
 **ABSOLUTE RULE: Never use direct assembly UART writes for debugging:**
 - Do NOT write code like `movz x10, #0x0900, lsl #16; strb w11, [x10]`
 - Even if you save/restore registers, direct UART writes bypass all safety mechanisms
-- Always use the established safe macros: `UART_PUTC`, `print_hex64`, `uartPutsDirect`
+- Always use the established safe macros: `UART_PUTC_SAFE`, `print_hex64`, `uartPutsDirect`
 - If safe macros don't exist for your use case, create them first with proper register preservation
+- New macros should use the `_SAFE` suffix and save/restore all internal registers
 
 **When using safe macros, save registers used as parameters:**
 - Safe macros like `print_hex64` take parameters in specific registers (e.g., X0)
 - Before calling such macros, save any live registers that the macro might clobber
 - Use `DEBUG_SAVE_REGS` / `DEBUG_RESTORE_REGS` or manual stp/ldp pairs
 - The caller is responsible for this - the macros assume you've handled it
+
+#### Debug Macros in Assembly Code
+
+**CRITICAL RULE: NEVER inline debug macros - always use the defined macros!**
+
+Debug macros like `UART_PUTC` exist to ensure ALL code that does debug printing uses the same, KNOWN TO BE SAFE, code. There have been many problems in the past with debug prints that inadvertently corrupted registers.
+
+**Purpose of debug macros:**
+1. **Consistency**: All debug output uses the same, tested code path
+2. **Safety**: Macros are carefully designed to not corrupt registers
+3. **Maintainability**: Fixes to debug code only need to happen in one place
+4. **Register preservation**: Macros document which registers they use
+
+**Macro parameter conventions:**
+- Macros typically take a parameter (e.g., character to print)
+- The **CALLER is responsible** for:
+  - Saving the register(s) holding the parameter(s) to the stack
+  - Putting the parameter in the expected register (usually R0/X0)
+  - Restoring the register(s) after the macro returns
+- Normally this means saving only R0 to the stack, but different macros may have different requirements
+
+**Example: Using UART_PUTC_SAFE macro correctly**
+```assembly
+// GOOD - Save R0, call macro, restore R0
+SUB $16, RSP
+MOVD R0, 0(RSP)
+MOVD $'A', R0
+UART_PUTC_SAFE         // Macro expects character in R0, saves/restores R10 internally
+MOVD 0(RSP), R0
+ADD $16, RSP
+```
+
+**Example: WRONG - Inlining the macro**
+```assembly
+// BAD - Direct UART access bypasses safety mechanisms
+MOVD $'A', R0
+MOVD $0x09000000, R10
+MOVW R0, 0(R10)        // Direct write - NO! Use UART_PUTC_SAFE macro!
+```
+
+**Example: How _SAFE macros preserve internal registers**
+```assembly
+// UART_PUTC_SAFE definition - saves/restores R10 internally
+#define UART_PUTC_SAFE \
+	SUB $16, RSP; \
+	MOVD R10, 0(RSP);      /* Save R10 (internal use) */ \
+	MOVD $0x09000000, R10; /* UART base */ \
+	MOVW R0, 0(R10);       /* Write character */ \
+	MOVD 0(RSP), R10;      /* Restore R10 */ \
+	ADD $16, RSP
+// Note: R0 is the parameter - caller must save/restore if needed
+```
+
+**When converting assembly to Go/Plan9 syntax:**
+- Keep macro calls as macro calls - DO NOT inline them
+- Convert macro definitions to Go assembly syntax if needed
+- Preserve the register usage contract (which registers the macro uses)
+- Document any changes to parameter passing conventions
 
 ### ARM64 Exception Return Addresses (ELR_EL1)
 

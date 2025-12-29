@@ -208,10 +208,12 @@ $(GOROUTINE_OBJ): $(GOROUTINE_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@echo "Transpiling goroutine Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
-ASYNC_PREEMPT_SRC = $(MAZBOOT_SRC)/asm/aarch64/async_preempt.s
-$(ASYNC_PREEMPT_OBJ): $(ASYNC_PREEMPT_SRC) $(LINKER_SCRIPT)
+# Transpile async_preempt Go assembly to ELF
+ASYNC_PREEMPT_GOASM_SRC = $(MAZBOOT_SRC)/asm/goasm/async_preempt.s
+$(ASYNC_PREEMPT_OBJ): $(ASYNC_PREEMPT_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_MAZBOOT_DIR)
-	$(CC) $(ASFLAGS) -c $< -o $@
+	@echo "Transpiling async_preempt Go assembly: $<"
+	$(GOASM2GNU) -elf -o $@ $<
 
 GET_CALLER_SP_SRC = $(MAZBOOT_SRC)/asm/aarch64/get_caller_sp.s
 $(GET_CALLER_SP_OBJ): $(GET_CALLER_SP_SRC) $(LINKER_SCRIPT)
