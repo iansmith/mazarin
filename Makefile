@@ -281,6 +281,7 @@ $(GLOBALIZE_SYMBOLS_LIST): $(GLOBALIZE_SYMBOLS_GEN) $(wildcard $(MAZBOOT_SRC)/as
 # This file contains //go:linkname directives to link Go functions to assembly symbols
 $(LINKNAMES_GO): $(LINKNAMES_GEN) $(ASM_SOURCES) $(GOASM_SOURCES)
 	@echo "Regenerating linknames.go from assembly sources..."
+	@mkdir -p $(ASM_PACKAGE_DIR)
 	@CGO_ENABLED=0 GOTOOLCHAIN=auto $(GO) run $(LINKNAMES_GEN) \
 		-asm $(MAZBOOT_SRC)/asm/aarch64 \
 		-goasm $(MAZBOOT_SRC)/asm/goasm \
