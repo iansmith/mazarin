@@ -869,8 +869,7 @@ write_spsr_el1:
 // to the Go exception handler.
 
 .global sync_exception_handler
-.global syscall_return
-.global load_context_and_eret
+// NOTE: syscall_return and load_context_and_eret are now in Go/Plan9 assembly (exc_syscall.s)
 sync_exception_handler:
     // CRITICAL FOR DEMAND PAGING: Save ALL registers IMMEDIATELY before ANY operations
     // This ensures we can restore exact state for retry after handling page faults.
@@ -1175,199 +1174,17 @@ sync_restore_and_svc:
 
     // Now x0, x29, x30 are restored and SP = SP_EL1 (exception stack)
     // SP_EL0 remains at its original value (saved at 0x40FFF000)
+    //
+    // Branch to Go/Plan9 assembly handler (in exc_syscall.s)
+    // handle_svc_syscall will:
+    //   1. Disable timer interrupts
+    //   2. Set x28 to runtime.g0
+    //   3. Call syscall_dispatch -> SyscallDispatch()
+    //   4. Handle context switch or return via syscall_return
     b handle_svc_syscall
 
-handle_svc_syscall:
-    // Handle syscalls in assembly - minimal version for testing
-    // x8 contains the Linux syscall number
-    // Return value goes in x0
-    //
-    // IMPORTANT: Go's syscall wrappers (sysMmap.abi0, etc.) expect:
-    //   - SVC returns x0 = result (or -errno for error)
-    //   - After eret, their code checks x0 and stores to stack
-    //   - We just need to return correct x0 and advance ELR+4
-
-    // CRITICAL: Disable timer interrupts during syscall execution
-    // This prevents async preemption from corrupting syscall stack frames
-    // We'll re-enable interrupts in syscall_return before eret
-    mrs x10, DAIF                   // Read current interrupt mask state
-    orr x10, x10, #0x80             // Set I bit (IRQ mask) to disable timer interrupts
-    msr DAIF, x10                   // Write back to DAIF
-    isb                             // Ensure change takes effect before continuing
-
-    // CRITICAL: Switch to g0 before calling Go syscall handlers
-    // This allows runtime operations (including stack tracebacks) to work correctly
-    // NOTE: Original g (x28) was already saved to exception frame at offset 296
-    // by sync_restore_and_svc (see SAVE_SYSCALL_CONTEXT equivalent above)
-
-    // DEBUG: Disabled - print_hex64 uses pre-decrement which can corrupt SP
-    // mov x14, x8                     // Save syscall number
-    // mov w0, #'#'
-    // UART_PUTC
-    // mov x0, x14                     // Print syscall number
-    // bl print_hex64
-    // mov w0, #' '
-    // UART_PUTC
-    // mov x8, x14                     // Restore syscall number
-
-    ldr x28, =runtime.g0            // x28 = address of runtime.g0 struct (the g pointer itself)
-
-    // NOTE: We don't switch SP to g0's stack here because syscalls need to preserve
-    // the caller's stack frame and return properly. We just set x28 so Go code sees g0.
-    // Syscall handlers run on the current stack, not g0's stack.
-
-    // ========================================================================
-    // NEW: Dispatch all syscalls through Go's SyscallDispatch function
-    // ========================================================================
-    // syscall_dispatch is defined in Go/Plan9 assembly (exc_syscall.s).
-    // It takes:
-    //   - x0-x5: Syscall arguments (already in place from exception frame restore)
-    //   - x8: Syscall number (already in place)
-    //   - SP: Points to exception frame
-    //
-    // syscall_dispatch will:
-    //   1. Call Go's SyscallDispatch(num, arg0-arg5, framePtr) -> (result, switchTo)
-    //   2. If switchTo >= 0: call DoContextSwitch and branch to load_context_and_eret
-    //   3. Otherwise: branch to syscall_return with result in x0
-    //
-    b syscall_dispatch
-
-// ============================================================================
-// load_context_and_eret - Load thread context and switch to new thread
-// ============================================================================
-// Entry: x0 = pointer to ThreadContext struct
-//
-// ThreadContext layout (from threads.go):
-//   X[0-30]:  offsets 0-240  (31 * 8 = 248 bytes)
-//   SP:       offset 248
-//   ELR:      offset 256
-//   SPSR:     offset 264
-//
-// This routine:
-// 1. Loads SP_EL0 from Context.SP
-// 2. Loads ELR_EL1 from Context.ELR
-// 3. Loads SPSR_EL1 from Context.SPSR
-// 4. Loads all general purpose registers x0-x30
-// 5. Performs eret to switch to the new thread
-//
-load_context_and_eret:
-    // x0 = pointer to ThreadContext
-    mov x10, x0                     // Save context pointer in x10
-
-    // Print debug marker 'S' for switch
-    mov w11, #'S'
-    UART_PUTC_REG w11
-
-    // Load SP_EL0 from Context.SP (offset 248)
-    ldr x11, [x10, #248]
-    msr SP_EL0, x11
-    isb
-
-    // Load ELR_EL1 from Context.ELR (offset 256)
-    ldr x11, [x10, #256]
-    msr ELR_EL1, x11
-    isb
-
-    // Load SPSR_EL1 from Context.SPSR (offset 264)
-    ldr x11, [x10, #264]
-    msr SPSR_EL1, x11
-    isb
-
-    // Now load all general purpose registers from Context.X[]
-    // We need to be careful - we're using x10 as the context pointer
-    // Load x0-x9 first (except x10)
-    ldp x0, x1, [x10, #0]           // X[0], X[1]
-    ldp x2, x3, [x10, #16]          // X[2], X[3]
-    ldp x4, x5, [x10, #32]          // X[4], X[5]
-    ldp x6, x7, [x10, #48]          // X[6], X[7]
-    ldp x8, x9, [x10, #64]          // X[8], X[9]
-    // Skip x10, x11 for now (we're using them)
-
-    // Load x12-x27
-    ldp x12, x13, [x10, #96]        // X[12], X[13]
-    ldp x14, x15, [x10, #112]       // X[14], X[15]
-    ldp x16, x17, [x10, #128]       // X[16], X[17]
-    ldp x18, x19, [x10, #144]       // X[18], X[19]
-    ldp x20, x21, [x10, #160]       // X[20], X[21]
-    ldp x22, x23, [x10, #176]       // X[22], X[23]
-    ldp x24, x25, [x10, #192]       // X[24], X[25]
-    ldp x26, x27, [x10, #208]       // X[26], X[27]
-
-    // Load x28 (g pointer), x29 (FP), x30 (LR)
-    ldr x28, [x10, #224]            // X[28] - Go's g register
-    ldp x29, x30, [x10, #232]       // X[29], X[30]
-
-    // Finally load x10 and x11 (last because we were using x10 as base)
-    ldr x11, [x10, #88]             // X[11]
-    ldr x10, [x10, #80]             // X[10] - MUST BE LAST (clobbers our base pointer)
-
-    // Reset exception stack pointer to top before eret
-    // This is important - we're leaving the current exception frame behind
-    // and starting fresh with the new thread
-    // Exception stack top is at 0x5F020000
-    // NOTE: We can't use x10/x11 anymore - use the sp directly
-    // Actually, we need to set SP_EL1 (exception stack) back to top
-    // But we're about to eret which uses SP_EL0, not SP_EL1...
-    // The exception stack cleanup happens on next exception entry.
-
-    // Switch to new thread!
-    eret
-
-syscall_return:
-    // Syscall return - restore SPSR/ELR and x1-x30, then return via eret
-    //
-    // CRITICAL: x0 contains the syscall return value - DO NOT restore it!
-    // Unlike interrupts (where we restore ALL registers), syscalls use x0 as
-    // their return value. The syscall handler sets x0, and we just preserve it.
-    //
-    // We only restore x1-x30 from the exception frame.
-
-    // Restore ELR_EL1 and SPSR_EL1 from exception frame
-    // Use x12, x13 as temporaries (they'll be restored from frame later)
-    ldp x12, x13, [sp, #EXC_FRAME_ELR_SPSR]  // x12 = saved ELR, x13 = saved SPSR
-
-    // NOTE: For SVC exceptions, hardware already sets ELR_EL1 to the instruction
-    // AFTER the SVC (PC+4). Do NOT add 4 here - that would skip an instruction!
-    // See ARM Architecture Reference Manual: "For exception generating instructions
-    // (SVC/HVC/SMC), the preferred return address is the instruction that follows."
-
-    msr ELR_EL1, x12                // Restore return address (already points to next instruction)
-    msr SPSR_EL1, x13               // Restore saved PSTATE
-    isb                             // Ensure ELR/SPSR writes complete
-
-    // Restore SP_EL0 (uses x10 as temporary, will be restored later)
-    RESTORE_SP_EL0_FROM_STACK       // Restore from frame offset 288
-
-    // Restore x1-x30 from exception frame (NOT x0 - it's the return value!)
-    // Registers are restored in pairs at 16-byte aligned offsets
-    ldp x2, x3, [sp, #16]           // Restore x2, x3
-    ldp x4, x5, [sp, #32]           // Restore x4, x5
-    ldp x6, x7, [sp, #48]           // Restore x6, x7
-    ldp x8, x9, [sp, #64]           // Restore x8, x9
-    ldp x10, x11, [sp, #80]         // Restore x10, x11
-    ldp x12, x13, [sp, #96]         // Restore x12, x13
-    ldp x14, x15, [sp, #112]        // Restore x14, x15
-    ldp x16, x17, [sp, #128]        // Restore x16, x17
-    ldp x18, x19, [sp, #144]        // Restore x18, x19
-    ldp x20, x21, [sp, #160]        // Restore x20, x21
-    ldp x22, x23, [sp, #176]        // Restore x22, x23
-    ldp x24, x25, [sp, #192]        // Restore x24, x25
-    ldp x26, x27, [sp, #208]        // Restore x26, x27
-    // Restore x28 (g) from SAVED_G where we saved original g before syscall handler
-    ldr x28, [sp, #EXC_FRAME_SAVED_G]  // Restore x28 (g) from offset 296
-    ldp x29, x30, [sp, #232]        // Restore x29 (FP), x30 (LR)
-    ldr x1, [sp, #8]                // Restore x1 LAST (after all temp usage above)
-
-    // x0 is NOT restored - it contains the syscall return value!
-
-    // Deallocate exception frame before ERET
-    add sp, sp, #320                 // Restore SP_EL1 to exception stack top
-
-    // Return from exception
-    // - PC restored from ELR_EL1 (instruction after SVC)
-    // - PSTATE restored from SPSR_EL1 (original interrupt state)
-    // - x0 = syscall return value (set by handler, preserved here)
-    eret
+// NOTE: load_context_and_eret has been migrated to Go/Plan9 assembly (exc_syscall.s)
+// NOTE: syscall_return has been migrated to Go/Plan9 assembly (exc_syscall.s)
 
 // ============================================================================
 // EL1t MODE (SP_EL0) EXCEPTION HANDLERS
