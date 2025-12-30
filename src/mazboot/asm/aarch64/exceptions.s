@@ -501,51 +501,12 @@
     // x0 already contains return value from Go function
 .endm
 
-// Use a separate section for exception vectors so they can be 2KB aligned
-// without affecting text section alignment
-// Flags: "ax" = allocatable + executable (required for code execution)
-.section ".vectors", "ax"
-.global exception_vectors
-.global exception_vectors_start_addr
-
-// 2KB align the exception vector table
-.align 11  // 2^11 = 2048 bytes = 2KB
-
-exception_vectors:
-    // Group 0: Current EL, using SP_EL0 (0x000-0x1ff)
-    // We use this when running kmazarin in EL1t mode
-
-    // 0x000 - 0x080: Synchronous exception (SP_EL0)
-    .align 7  // 128 bytes per handler
-    b sync_exception_handler_el0  // Jump to handler
-
-    // 0x080 - 0x100: IRQ (SP_EL0)
-    .align 7
-    b irq_exception_handler_el0   // Jump to IRQ handler
-
-    // 0x100 - 0x180: FIQ (SP_EL0)
-    .align 7
-    b .  // Hang - FIQ not used
-
-    // 0x180 - 0x200: SError (SP_EL0)
-    .align 7
-    b .  // Hang - SError not used
-
-
-    // ========================================
-    // Group 1: Current EL, using SP_EL1 (0x200-0x3ff)
-    // This is what we use for the kernel at EL1
-    // ========================================
-    
-    // 0x200 - 0x280: Synchronous exception (SP_EL1) - 128 bytes
-    // MUST fit in 128 bytes, so jump to external handler
-    .align 7
-sync_exception_el1:
-    b sync_exception_handler       // Jump to handler outside vector table
-    
-    
-    // 0x280 - 0x300: IRQ (SP_EL1) - 128 bytes
-    .align 7
+// ============================================================================
+// IRQ Exception Handler (placed in .text section)
+// ============================================================================
+// Called from vector table entry vec_irq_sp_el1 (via branch)
+// This is the main IRQ handler with timer preemption support.
+.global irq_exception_el1
 irq_exception_el1:
     // ========================================================================
     // IRQ HANDLER WITH TIMER PREEMPTION
@@ -775,71 +736,6 @@ timer_common_skip:
     // Return normally without preemption
     INTERRUPT_FULL_RESTORE
 
-    // 0x300 - 0x380: FIQ (SP_EL1) - 128 bytes
-    .align 7
-fiq_exception_el1:
-    // FIQ not used - just hang
-    b .
-    
-    
-    // 0x380 - 0x400: SError (SP_EL1) - 128 bytes
-    .align 7
-serror_exception_el1:
-    // SError not used - just hang
-    b .
-
-
-    // ========================================
-    // Group 2: Lower EL, AArch64 (0x400-0x5ff)
-    // For exceptions from EL0 running AArch64 code
-    // (Not used until we have EL0 processes)
-    // ========================================
-    
-    // 0x400 - 0x480: Synchronous exception (Lower EL, AArch64)
-    .align 7
-    b .  // Hang - not implemented yet
-    
-    // 0x480 - 0x500: IRQ (Lower EL, AArch64)
-    .align 7
-    b .  // Hang - not implemented yet
-    
-    // 0x500 - 0x580: FIQ (Lower EL, AArch64)
-    .align 7
-    b .  // Hang - not implemented yet
-    
-    // 0x580 - 0x600: SError (Lower EL, AArch64)
-    .align 7
-    b .  // Hang - not implemented yet
-
-
-    // ========================================
-    // Group 3: Lower EL, AArch32 (0x600-0x7ff)
-    // For exceptions from EL0 running AArch32 code
-    // (Not used - we only support AArch64)
-    // ========================================
-    
-    // 0x600 - 0x680: Synchronous exception (Lower EL, AArch32)
-    .align 7
-    b .  // Hang - not implemented (AArch32 not supported)
-    
-    // 0x680 - 0x700: IRQ (Lower EL, AArch32)
-    .align 7
-    b .  // Hang
-    
-    // 0x700 - 0x780: FIQ (Lower EL, AArch32)
-    .align 7
-    b .  // Hang
-    
-    // 0x780 - 0x800: SError (Lower EL, AArch32)
-    .align 7
-    b .  // Hang
-
-.global exception_vectors_end
-exception_vectors_end:
-
-// Switch back to .text section for regular functions
-// Everything after the exception vector table should be in .text, not .vectors
-.section ".text"
 
 // ============================================================================
 // Exception Handler Functions
@@ -881,17 +777,17 @@ read_vbar_el1:
     mrs x0, VBAR_EL1
     ret
 
-// get_exception_vectors_addr() - Returns the address of exception_vectors
+// get_exception_vectors_addr() - Returns the address of new vector table
 // Returns uintptr in x0
+// Points to vec_sync_sp_el0 which is the first entry of the new Go/Plan9 vector table
 // Use adrp + add for addresses that might be far away (>1MB)
 // adrp loads the page-aligned address (4KB aligned), add adds the page offset
-// Syntax matches image.s which uses :lo12: without #
 .global get_exception_vectors_addr
 get_exception_vectors_addr:
     // Ensure function is properly aligned
     .align 2
-    adrp x0, exception_vectors
-    add  x0, x0, :lo12:exception_vectors
+    adrp x0, vec_sync_sp_el0
+    add  x0, x0, :lo12:vec_sync_sp_el0
     ret
 
 
@@ -972,6 +868,7 @@ write_spsr_el1:
 // It handles SVC syscalls by faking responses, and forwards other exceptions
 // to the Go exception handler.
 
+.global sync_exception_handler
 sync_exception_handler:
     // CRITICAL FOR DEMAND PAGING: Save ALL registers IMMEDIATELY before ANY operations
     // This ensures we can restore exact state for retry after handling page faults.
@@ -1947,25 +1844,10 @@ syscall_return:
 // ============================================================================
 // EL1t MODE (SP_EL0) EXCEPTION HANDLERS
 // ============================================================================
-// When running in EL1t mode (using SP_EL0), exceptions automatically switch
-// to EL1h mode (using SP_EL1) for the handler. This means the handlers can
-// be identical to the EL1h handlers - they already use the exception stack.
-
-.global sync_exception_handler_el0
-sync_exception_handler_el0:
-    // Just jump to the regular sync handler - it works for both modes
-    b sync_exception_handler
-
-.global irq_exception_handler_el0
-irq_exception_handler_el0:
-    // DEBUG: Print '@' to show EL0 IRQ path taken
-    stp x0, x1, [sp, #-16]!
-    movz x1, #0x0900, lsl #16
-    mov w0, #'@'
-    strb w0, [x1]
-    ldp x0, x1, [sp], #16
-    // Just jump to the regular IRQ handler
-    b irq_exception_el1
+// NOTE: These handlers have been migrated to src/mazboot/asm/goasm/exc_handlers.s
+// They are now in Go/Plan9 assembly format:
+//   - sync_exception_handler_el0
+//   - irq_exception_handler_el0
 
 // print_decimal_uart and print_hex_byte_uart have been migrated to asm/goasm/exc_utils.s
 

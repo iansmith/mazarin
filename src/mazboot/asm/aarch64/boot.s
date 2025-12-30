@@ -174,7 +174,8 @@ at_el1:
     dsb sy                         // Memory barrier
 
     // Set exception vector base to our table (required before enabling IRQs)
-    ldr x0, =exception_vectors
+    // vec_sync_sp_el0 is the first entry of the new Go/Plan9 vector table
+    ldr x0, =vec_sync_sp_el0
     dsb sy
     msr VBAR_EL1, x0
     isb

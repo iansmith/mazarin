@@ -86,6 +86,8 @@ LIB_MMU_OBJ = $(BUILD_MAZBOOT_DIR)/lib_mmu.o
 LIB_MISC_OBJ = $(BUILD_MAZBOOT_DIR)/lib_misc.o
 LIB_RUNTIME_OBJ = $(BUILD_MAZBOOT_DIR)/lib_runtime.o
 EXC_UTILS_OBJ = $(BUILD_MAZBOOT_DIR)/exc_utils.o
+EXC_VECTORS_OBJ = $(BUILD_MAZBOOT_DIR)/exc_vectors.o
+EXC_HANDLERS_OBJ = $(BUILD_MAZBOOT_DIR)/exc_handlers.o
 GET_CALLER_SP_OBJ = $(BUILD_MAZBOOT_DIR)/get_caller_sp.o
 LINKER_SYMBOLS_OBJ = $(BUILD_MAZBOOT_DIR)/linker_symbols.o
 KMAZARIN_EMBED_OBJ = $(BUILD_MAZBOOT_DIR)/kmazarin_embed.o
@@ -120,7 +122,7 @@ KMAZARIN_EMBED_DATA_OBJ = $(BUILD_MAZBOOT_DIR)/kmazarin_embed_data.o
 GOROUTINE_GOASM_SRC = $(MAZBOOT_SRC)/asm/goasm/goroutine.s
 
 # Assembly object files list
-ASM_OBJECTS = $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ) $(LIB_SYSREGS_OBJ) $(LIB_TIMER_OBJ) $(LIB_MMU_OBJ) $(LIB_MISC_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ)
+ASM_OBJECTS = $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ) $(LIB_SYSREGS_OBJ) $(LIB_TIMER_OBJ) $(LIB_MMU_OBJ) $(LIB_MISC_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ) $(EXC_VECTORS_OBJ) $(EXC_HANDLERS_OBJ)
 
 # Output files
 MAZBOOT_BINARY = $(BUILD_DIR)/mazboot.elf
@@ -288,6 +290,22 @@ $(EXC_UTILS_OBJ): $(EXC_UTILS_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@echo "Transpiling exc_utils Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
+# Transpile exc_vectors Go assembly to ELF (exception vector table)
+# Uses -section .vectors for linker placement, -align 11 for 2KB alignment,
+# -pad-to 128 to pad each entry to 128 bytes, -check-size 128 to error if exceeded
+EXC_VECTORS_GOASM_SRC = $(MAZBOOT_SRC)/asm/goasm/exc_vectors.s
+$(EXC_VECTORS_OBJ): $(EXC_VECTORS_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
+	@mkdir -p $(BUILD_MAZBOOT_DIR)
+	@echo "Transpiling exc_vectors Go assembly: $<"
+	$(GOASM2GNU) -elf -section .vectors -align 11 -pad-to 128 -check-size 128 -o $@ $<
+
+# Transpile exc_handlers Go assembly to ELF (exception handler entry points)
+EXC_HANDLERS_GOASM_SRC = $(MAZBOOT_SRC)/asm/goasm/exc_handlers.s
+$(EXC_HANDLERS_OBJ): $(EXC_HANDLERS_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
+	@mkdir -p $(BUILD_MAZBOOT_DIR)
+	@echo "Transpiling exc_handlers Go assembly: $<"
+	$(GOASM2GNU) -elf -o $@ $<
+
 GET_CALLER_SP_SRC = $(MAZBOOT_SRC)/asm/aarch64/get_caller_sp.s
 $(GET_CALLER_SP_OBJ): $(GET_CALLER_SP_SRC) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_MAZBOOT_DIR)
@@ -414,12 +432,12 @@ $(KERNEL_GO_OBJ_QEMU): $(MAZBOOT_SRC)/golang/go.mod $(GO_SRC) $(LINKNAMES_GO) $(
 
 # Build mazboot (default: QEMU build with qemuvirt and aarch64 tags)
 # NOTE: Depends on KMAZARIN_EMBED_OBJ and KMAZARIN_EMBED_DATA_OBJ which embed the kmazarin kernel binary
-$(MAZBOOT_BINARY): $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(LIB_MMIO_OBJ) $(LIB_BARRIERS_OBJ) $(LIB_SYSREGS_OBJ) $(LIB_TIMER_OBJ) $(LIB_MMU_OBJ) $(LIB_MISC_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
+$(MAZBOOT_BINARY): $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(LIB_MMIO_OBJ) $(LIB_BARRIERS_OBJ) $(LIB_SYSREGS_OBJ) $(LIB_TIMER_OBJ) $(LIB_MMU_OBJ) $(LIB_MISC_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ) $(EXC_VECTORS_OBJ) $(EXC_HANDLERS_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
 	@mkdir -p $(BUILD_DIR)
 	@# Link exceptions.o, then writebarrier.o so our global symbols override Go runtime's
 	@# Our writebarrier.s provides global (T) symbols that should take precedence
 	@# GOASM_TEST_OBJ contains transpiled Go assembly (from Plan 9 syntax)
-	$(CC) $(LDFLAGS) -o $@.tmp $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(KERNEL_GO_OBJ_QEMU) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(LIB_MMIO_OBJ) $(LIB_BARRIERS_OBJ) $(LIB_SYSREGS_OBJ) $(LIB_TIMER_OBJ) $(LIB_MMU_OBJ) $(LIB_MISC_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ)
+	$(CC) $(LDFLAGS) -o $@.tmp $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(KERNEL_GO_OBJ_QEMU) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(LIB_MMIO_OBJ) $(LIB_BARRIERS_OBJ) $(LIB_SYSREGS_OBJ) $(LIB_TIMER_OBJ) $(LIB_MMU_OBJ) $(LIB_MISC_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ) $(EXC_VECTORS_OBJ) $(EXC_HANDLERS_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ)
 	@# Patch the binary to redirect calls from Go runtime functions to our implementations
 	@# The Go tool scans .s files to determine which symbols need patching
 	@echo "Patching runtime function calls..."
