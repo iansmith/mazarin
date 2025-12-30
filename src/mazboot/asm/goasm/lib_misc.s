@@ -69,10 +69,14 @@ bzero_done:
 // memmove(dest unsafe.Pointer, src unsafe.Pointer, n uint64)
 // Copy n bytes from src to dest
 // Optimized for speed using 16-byte chunks
+//
+// NOTE: Go 1.17+ register-based ABI:
+//   R0 = dest pointer
+//   R1 = src pointer
+//   R2 = n (byte count)
 TEXT memmove(SB), NOSPLIT|NOFRAME, $0-24
-	MOVD	dest+0(FP), R0		// dest
-	MOVD	src+8(FP), R1		// src
-	MOVD	n+16(FP), R2		// size
+	// Arguments already in registers from Go ABI:
+	// R0 = dest, R1 = src, R2 = size
 	CBZ	R2, memmove_done
 
 	// Check if we can do 16-byte copies
@@ -101,11 +105,15 @@ memmove_done:
 	RET
 
 // MemmoveBytes(dest unsafe.Pointer, src unsafe.Pointer, n uint32)
-// Go-callable alias for memmove
+// Go-callable memmove with uint32 size parameter
+//
+// NOTE: Go 1.17+ register-based ABI:
+//   R0 = dest pointer
+//   R1 = src pointer
+//   R2 = n (lower 32 bits used)
 TEXT MemmoveBytes(SB), NOSPLIT|NOFRAME, $0-20
-	MOVD	dest+0(FP), R0
-	MOVD	src+8(FP), R1
-	MOVWU	n+16(FP), R2
+	// Arguments already in registers from Go ABI:
+	// R0 = dest, R1 = src, R2 = size (as uint32)
 	CBZ	R2, memmove_bytes_done
 
 memmove_bytes_loop:
