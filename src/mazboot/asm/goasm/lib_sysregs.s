@@ -163,6 +163,55 @@ TEXT write_tpidr_el1(SB), NOSPLIT|NOFRAME, $0-8
 	RET
 
 // ============================================================================
+// ESR_EL1 and ELR_EL1 - Exception Syndrome and Link Registers
+// ============================================================================
+
+// read_esr_el1() uint64
+// Read ESR_EL1 (Exception Syndrome Register for EL1)
+// Contains information about the exception (type, fault status, etc.)
+// Returns value in R0 (Go register ABI)
+TEXT read_esr_el1(SB), NOSPLIT|NOFRAME, $0-8
+	MRS	ESR_EL1, R0
+	// Return value already in R0 for Go register ABI
+	RET
+
+// read_elr_el1() uint64
+// Read ELR_EL1 (Exception Link Register for EL1)
+// Contains the address to return to after exception handling
+// Returns value in R0 (Go register ABI)
+TEXT read_elr_el1(SB), NOSPLIT|NOFRAME, $0-8
+	MRS	ELR_EL1, R0
+	// Return value already in R0 for Go register ABI
+	RET
+
+// write_elr_el1(value uint64)
+// Write to ELR_EL1 (Exception Link Register for EL1)
+// Sets the address to return to after exception handling
+// Argument arrives in R0 (Go register ABI)
+TEXT write_elr_el1(SB), NOSPLIT|NOFRAME, $0-8
+	// R0 already contains value from Go register ABI
+	MSR	R0, ELR_EL1
+	RET
+
+// read_far_el1() uint64
+// Read FAR_EL1 (Fault Address Register for EL1)
+// Contains the virtual address that caused a memory access fault
+// Returns value in R0 (Go register ABI)
+TEXT read_far_el1(SB), NOSPLIT|NOFRAME, $0-8
+	MRS	FAR_EL1, R0
+	// Return value already in R0 for Go register ABI
+	RET
+
+// read_daif() uint64
+// Read DAIF register (interrupt mask bits)
+// Bits: D=Debug, A=SError, I=IRQ, F=FIQ mask flags
+// Returns value in R0 (Go register ABI)
+TEXT read_daif(SB), NOSPLIT|NOFRAME, $0-8
+	MRS	DAIF, R0
+	// Return value already in R0 for Go register ABI
+	RET
+
+// ============================================================================
 // VBAR_EL1 - Vector Base Address Register
 // ============================================================================
 

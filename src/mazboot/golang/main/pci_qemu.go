@@ -102,13 +102,23 @@ var pciFirstAccess bool = true
 
 // pciConfigRead32 reads a 32-bit value from PCI configuration space
 //
+// IMPORTANT: We use a local variable `ecamBase := pciEcamBase` instead of
+// accessing the global directly. This is required because Go's compiler may
+// optimize away reloads of global variables across function calls, which
+// causes incorrect values to be used when the global is modified between
+// initialization and first use. The local variable forces a fresh load from
+// memory on each function call.
+//
 //go:nosplit
 func pciConfigRead32(bus, slot, funcNum, offset uint8) uint32 {
-	if pciEcamBase == 0 {
+	// Load global into local variable - forces memory reload each call
+	ecamBase := pciEcamBase
+
+	if ecamBase == 0 {
 		return 0xFFFFFFFF
 	}
 
-	configAddr := pciEcamBase +
+	configAddr := ecamBase +
 		uintptr(bus)<<20 +
 		uintptr(slot)<<15 +
 		uintptr(funcNum)<<12 +
@@ -122,10 +132,7 @@ func pciConfigRead32(bus, slot, funcNum, offset uint8) uint32 {
 	}
 
 	pciFirstAccess = false
-	asm.Dsb()
-	asm.Isb()
 	value := asm.MmioRead(configAddr)
-	asm.Dsb()
 	return value
 }
 

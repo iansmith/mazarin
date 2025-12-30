@@ -79,7 +79,9 @@ func (ch *SimpleChannel) receive() {
 //go:noinline
 func timerPreempt() {
 	// Breadcrumb: Show timer preemption started
-	uartBase := getLinkerSymbol("__uart_base")
+	// NOTE: Call asm.GetUartBase() directly instead of getLinkerSymbol() to avoid
+	// potential optimizer issues with switch statements and function returns.
+	uartBase := asm.GetUartBase()
 	asm.MmioWrite(uartBase, uint32('.')) // Print '.' for each timer interrupt
 
 	// Signal the monitor channels (GC, scavenger, schedtrace)

@@ -1650,44 +1650,8 @@ write_spsr_el1:
     ret
 
 
-// uint64_t read_elr_el1(void)
-// Read the Exception Link Register
-.global read_elr_el1
-read_elr_el1:
-    mrs x0, ELR_EL1
-    ret
-
-
-// void write_elr_el1(uint64_t value)
-// Write to ELR_EL1
-.global write_elr_el1
-write_elr_el1:
-    msr ELR_EL1, x0
-    ret
-
-
-// uint64_t read_esr_el1(void)
-// Read the Exception Syndrome Register
-.global read_esr_el1
-read_esr_el1:
-    mrs x0, ESR_EL1
-    ret
-
-
-// uint64_t read_far_el1(void)
-// Read the Fault Address Register
-.global read_far_el1
-read_far_el1:
-    mrs x0, FAR_EL1
-    ret
-
-
-// read_daif() - Read the DAIF register (interrupt mask bits)
-// Returns uint64 in x0
-.global read_daif
-read_daif:
-    mrs x0, DAIF
-    ret
+// NOTE: The following functions have been migrated to Go/Plan9 assembly in lib_sysregs.s:
+//   read_elr_el1, write_elr_el1, read_esr_el1, read_far_el1, read_daif
 
 
 // ============================================================================

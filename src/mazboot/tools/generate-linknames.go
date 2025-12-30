@@ -108,12 +108,6 @@ func generateCompleteFile(globalSymbols []string, asmDir string, goasmDir string
 		"_binary_boot_mazarin_bin_start": true,
 		"_binary_boot_mazarin_bin_end":   true,
 		"_binary_boot_mazarin_bin_size":  true,
-		// Functions already declared in other Go files
-		"read_elr_el1":         true,
-		"read_esr_el1":         true,
-		"read_far_el1":         true,
-		"read_id_aa64pfr0_el1": true,
-		"read_scr_el3":         true,
 	}
 
 	// Filter and collect valid symbols with their signatures
@@ -193,6 +187,9 @@ func generateCompleteFile(globalSymbols []string, asmDir string, goasmDir string
 				"getGRegister":             "uintptr",
 				"get_phys_page_size_addr":  "uintptr",
 				"getCurrentSP":             "uintptr",
+				"read_esr_el1":             "uint64",
+				"read_elr_el1":             "uint64",
+				"read_far_el1":             "uint64",
 			}
 			if override, ok := returnTypeOverrides[sym]; ok {
 				retType = override
@@ -212,6 +209,7 @@ func generateCompleteFile(globalSymbols []string, asmDir string, goasmDir string
 				"set_stack_pointer":      "sp uintptr",
 				"set_g_pointer":          "g uintptr",
 				"set_current_g":          "gptr uintptr",
+				"write_elr_el1":          "value uint64",
 			}
 			if override, ok := paramOverrides[sym]; ok {
 				params = override

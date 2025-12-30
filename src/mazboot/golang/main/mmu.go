@@ -615,8 +615,16 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 		uartPutHex64Direct(uint64(existingPA))
 		uartPutsDirect(" PTE=0x")
 		uartPutHex64Direct(*l3Entry)
-		uartPutsDirect(" ESR=0x")
+		uartPutsDirect(" IFSC=0x")
 		uartPutHex64Direct(faultStatus)
+		// Print full ESR by reading it directly
+		esr := asm.ReadEsrEl1()
+		uartPutsDirect(" ESR=0x")
+		uartPutHex64Direct(esr)
+		// Print ELR to see what address we're returning to
+		elr := asm.ReadElrEl1()
+		uartPutsDirect(" ELR=0x")
+		uartPutHex64Direct(elr)
 		uartPutsDirect("\r\n")
 
 		// CRITICAL FIX: Flush TLB for this address!
