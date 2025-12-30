@@ -214,13 +214,15 @@ func SyscallSchedGetaffinity(pid int32, cpusetsize uint64, mask unsafe.Pointer) 
 //
 //go:nosplit
 func SyscallUnknown(syscallNum uint64) {
-	// Simple breadcrumb - don't use print() as it may allocate
-	uartPutcDirect('?')
+	// Print clear error message
+	uartPutsDirect("Unknown System Call ")
+	uartPutHex64Direct(syscallNum)
+	uartPutsDirect("\r\n")
 
-	// Return -ENOSYS (function not implemented)
-	// CRITICAL: Must return a value to avoid corrupting X0!
-	// Note: This is a void function, so we can't return here.
-	// The assembly handler must set X0 to -ENOSYS
+	// Call exit to halt the system - unknown syscalls are fatal
+	SyscallExit()
+
+	// Never returns - SyscallExit halts the system
 }
 
 // SyscallClose implements the close syscall
@@ -832,4 +834,387 @@ func SyscallTgkill() int64 {
 func SyscallTkill() int64 {
 	// TODO: Implement tkill syscall
 	return 0
+}
+
+// ============================================================================
+// Syscall handlers for functions previously inlined in assembly
+// ============================================================================
+// These functions ensure ALL syscalls go through Go for consistent handling.
+// The assembly just sets up arguments and calls these functions.
+
+// SyscallGetpid returns the process ID
+// In bare-metal, we always return 1 (init process)
+//
+//go:nosplit
+func SyscallGetpid() int64 {
+	return 1
+}
+
+// SyscallGettid returns the thread ID
+// In bare-metal, we always return 1 (main thread)
+//
+//go:nosplit
+func SyscallGettid() int64 {
+	return 1
+}
+
+// SyscallMadvise gives advice about memory usage
+// We don't actually do anything with the advice, just return success
+//
+// Parameters:
+//   - addr: Start address of memory region
+//   - length: Length of memory region
+//   - advice: Advice type (MADV_DONTNEED, etc.)
+//
+//go:nosplit
+func SyscallMadvise(addr uintptr, length uint64, advice int32) int64 {
+	return 0 // Success
+}
+
+// SyscallPrctl performs process control operations
+// We return -EINVAL so setVMAName marks it unsupported and stops calling
+//
+// Parameters:
+//   - option: Operation to perform
+//   - arg2-arg5: Operation-specific arguments
+//
+//go:nosplit
+func SyscallPrctl(option int32, arg2, arg3, arg4, arg5 uint64) int64 {
+	return -22 // -EINVAL
+}
+
+// SyscallIoSetup sets up async I/O context
+// We don't support async I/O, return -ENOSYS
+//
+// Parameters:
+//   - nrEvents: Maximum number of events
+//   - ctxp: Pointer to context ID
+//
+//go:nosplit
+func SyscallIoSetup(nrEvents uint32, ctxp unsafe.Pointer) int64 {
+	return -38 // -ENOSYS
+}
+
+// SyscallEventfd creates an event file descriptor
+// Returns a fake eventfd (11) so the runtime thinks it succeeded
+//
+// Parameters:
+//   - initval: Initial counter value
+//   - flags: EFD_CLOEXEC, EFD_NONBLOCK, EFD_SEMAPHORE
+//
+//go:nosplit
+func SyscallEventfd(initval uint32, flags int32) int64 {
+	return 11 // Fake eventfd
+}
+
+// SyscallEpollCreate creates an epoll file descriptor
+// Returns a fake epoll fd (10) so the runtime thinks it succeeded
+//
+// Parameters:
+//   - flags: EPOLL_CLOEXEC
+//
+//go:nosplit
+func SyscallEpollCreate(flags int32) int64 {
+	return 10 // Fake epoll fd
+}
+
+// SyscallEpollCtl controls an epoll file descriptor
+// Just returns success (0)
+//
+// Parameters:
+//   - epfd: Epoll file descriptor
+//   - op: Operation (EPOLL_CTL_ADD, EPOLL_CTL_MOD, EPOLL_CTL_DEL)
+//   - fd: Target file descriptor
+//   - event: Event structure pointer
+//
+//go:nosplit
+func SyscallEpollCtl(epfd int32, op int32, fd int32, event unsafe.Pointer) int64 {
+	return 0 // Success
+}
+
+// SyscallEpollPwait waits for events on an epoll file descriptor
+// Returns 0 (no events) - this tells the runtime nothing is ready
+//
+// Parameters:
+//   - epfd: Epoll file descriptor
+//   - events: Buffer for returned events
+//   - maxevents: Maximum number of events to return
+//   - timeout: Timeout in milliseconds (-1 = infinite)
+//   - sigmask: Signal mask
+//   - sigsetsize: Size of signal mask
+//
+//go:nosplit
+func SyscallEpollPwait(epfd int32, events unsafe.Pointer, maxevents int32, timeout int32, sigmask unsafe.Pointer, sigsetsize uint64) int64 {
+	return 0 // No events
+}
+
+// SyscallFcntl performs file control operations
+// Go runtime calls fcntl(fd, F_GETFD) to verify stdin/stdout/stderr are valid
+//
+// Parameters:
+//   - fd: File descriptor
+//   - cmd: Command (F_GETFD=1, F_SETFD=2, etc.)
+//   - arg: Command-specific argument
+//
+//go:nosplit
+func SyscallFcntl(fd int32, cmd int32, arg int64) int64 {
+	// F_GETFD = 1: Get file descriptor flags
+	if cmd == 1 && fd <= 2 {
+		return 0 // No flags set, fd is valid
+	}
+	return -38 // -ENOSYS for anything else
+}
+
+// SyscallWrite writes data to a file descriptor
+// Handles stdout/stderr by writing to UART, other fds return count
+//
+// Parameters:
+//   - fd: File descriptor (1=stdout, 2=stderr)
+//   - buf: Buffer to write
+//   - count: Number of bytes to write
+//
+//go:nosplit
+func SyscallWrite(fd int32, buf unsafe.Pointer, count uint64) int64 {
+	if fd == 1 || fd == 2 {
+		// Write to UART via ring buffer
+		return int64(SyscallWriteBuffer(buf, uint32(count)))
+	}
+	// For other fds, pretend we wrote all bytes
+	return int64(count)
+}
+
+// SyscallSigaltstack sets up an alternate signal stack
+// We don't support signals, just return success
+//
+// Parameters:
+//   - ss: New signal stack (can be nil)
+//   - oldSs: Previous signal stack buffer (can be nil)
+//
+//go:nosplit
+func SyscallSigaltstack(ss unsafe.Pointer, oldSs unsafe.Pointer) int64 {
+	return 0 // Success
+}
+
+// SyscallSchedSetaffinity sets CPU affinity for a process
+// We only have one CPU, just return success
+//
+// Parameters:
+//   - pid: Process ID (0 = current)
+//   - cpusetsize: Size of mask buffer
+//   - mask: CPU mask pointer
+//
+//go:nosplit
+func SyscallSchedSetaffinity(pid int32, cpusetsize uint64, mask unsafe.Pointer) int64 {
+	return 0 // Success
+}
+
+// SyscallSchedYield yields the processor
+// In bare-metal with one CPU, this is a no-op
+//
+//go:nosplit
+func SyscallSchedYield() int64 {
+	return 0 // Success
+}
+
+// SyscallMprotect changes memory protection
+// We don't enforce memory protection, just return success
+//
+// Parameters:
+//   - addr: Start address (must be page-aligned)
+//   - length: Length of region
+//   - prot: Protection flags (PROT_READ, PROT_WRITE, PROT_EXEC)
+//
+//go:nosplit
+func SyscallMprotect(addr uintptr, length uint64, prot int32) int64 {
+	return 0 // Success
+}
+
+// SyscallPrlimit64 gets/sets resource limits
+// We don't enforce resource limits, just return success
+//
+// Parameters:
+//   - pid: Process ID (0 = current)
+//   - resource: Resource type (RLIMIT_STACK, etc.)
+//   - newLimit: New limit (can be nil)
+//   - oldLimit: Buffer for old limit (can be nil)
+//
+//go:nosplit
+func SyscallPrlimit64(pid int32, resource int32, newLimit unsafe.Pointer, oldLimit unsafe.Pointer) int64 {
+	return 0 // Success
+}
+
+// ============================================================================
+// Syscall Dispatch - Central entry point for all syscalls
+// ============================================================================
+
+// Linux ARM64 syscall numbers
+const (
+	SYS_io_setup          = 0
+	SYS_eventfd2          = 19
+	SYS_epoll_create1     = 20
+	SYS_epoll_ctl         = 21
+	SYS_epoll_pwait       = 22
+	SYS_fcntl             = 25
+	SYS_openat            = 56
+	SYS_close             = 57
+	SYS_read              = 63
+	SYS_write             = 64
+	SYS_exit              = 93
+	SYS_exit_group        = 94
+	SYS_futex             = 98
+	SYS_nanosleep         = 101
+	SYS_clock_gettime     = 113
+	SYS_sched_getaffinity = 123
+	SYS_sched_yield       = 124
+	SYS_kill              = 129
+	SYS_tkill             = 130
+	SYS_tgkill            = 131
+	SYS_sigaltstack       = 132
+	SYS_rt_sigaction      = 134
+	SYS_rt_sigprocmask    = 135
+	SYS_prctl             = 167
+	SYS_getpid            = 172
+	SYS_gettid            = 178
+	SYS_sched_setaffinity = 204
+	SYS_brk               = 214
+	SYS_munmap            = 215
+	SYS_clone             = 220
+	SYS_mmap              = 222
+	SYS_mprotect          = 226
+	SYS_madvise           = 233
+	SYS_prlimit64         = 261
+	SYS_getrandom         = 278
+)
+
+// SyscallDispatch is the central entry point for all syscalls.
+// It takes the syscall number and arguments, dispatches to the appropriate
+// handler, and returns the result.
+//
+// Parameters:
+//   - num: Syscall number (from x8)
+//   - arg0-arg5: Syscall arguments (from x0-x5)
+//   - framePtr: Pointer to exception frame (for context switching)
+//
+// Returns:
+//   - result: Syscall return value (goes in x0)
+//   - switchTo: Thread index to switch to (-1 = no switch)
+//
+//go:nosplit
+func SyscallDispatch(num int64, arg0, arg1, arg2, arg3, arg4, arg5 uint64, framePtr uintptr) (result int64, switchTo int32) {
+	switchTo = -1 // Default: no context switch
+
+	switch num {
+	// Simple syscalls - just return a constant
+	case SYS_getpid:
+		return SyscallGetpid(), -1
+	case SYS_gettid:
+		return SyscallGettid(), -1
+	case SYS_sched_yield:
+		return SyscallSchedYield(), -1
+
+	// Success stubs
+	case SYS_sigaltstack:
+		return SyscallSigaltstack(unsafe.Pointer(uintptr(arg0)), unsafe.Pointer(uintptr(arg1))), -1
+	case SYS_sched_setaffinity:
+		return SyscallSchedSetaffinity(int32(arg0), arg1, unsafe.Pointer(uintptr(arg2))), -1
+	case SYS_prctl:
+		return SyscallPrctl(int32(arg0), arg1, arg2, arg3, arg4), -1
+	case SYS_mprotect:
+		return SyscallMprotect(uintptr(arg0), arg1, int32(arg2)), -1
+	case SYS_prlimit64:
+		return SyscallPrlimit64(int32(arg0), int32(arg1), unsafe.Pointer(uintptr(arg2)), unsafe.Pointer(uintptr(arg3))), -1
+
+	// I/O syscalls
+	case SYS_io_setup:
+		return SyscallIoSetup(uint32(arg0), unsafe.Pointer(uintptr(arg1))), -1
+	case SYS_eventfd2:
+		return SyscallEventfd(uint32(arg0), int32(arg1)), -1
+	case SYS_epoll_create1:
+		return SyscallEpollCreate(int32(arg0)), -1
+	case SYS_epoll_ctl:
+		return SyscallEpollCtl(int32(arg0), int32(arg1), int32(arg2), unsafe.Pointer(uintptr(arg3))), -1
+	case SYS_epoll_pwait:
+		return SyscallEpollPwait(int32(arg0), unsafe.Pointer(uintptr(arg1)), int32(arg2), int32(arg3), unsafe.Pointer(uintptr(arg4)), arg5), -1
+	case SYS_fcntl:
+		return SyscallFcntl(int32(arg0), int32(arg1), int64(arg2)), -1
+
+	// File syscalls
+	case SYS_write:
+		return SyscallWrite(int32(arg0), unsafe.Pointer(uintptr(arg1)), arg2), -1
+	case SYS_read:
+		return SyscallRead(int32(arg0), unsafe.Pointer(uintptr(arg1)), arg2), -1
+	case SYS_openat:
+		return SyscallOpenat(int32(arg0), unsafe.Pointer(uintptr(arg1)), int32(arg2), int32(arg3)), -1
+	case SYS_close:
+		return SyscallClose(int32(arg0)), -1
+
+	// Memory syscalls
+	case SYS_mmap:
+		return SyscallMmap(uintptr(arg0), arg1, int32(arg2), int32(arg3), int32(arg4), int64(arg5)), -1
+	case SYS_munmap:
+		return SyscallMunmap(uintptr(arg0), arg1), -1
+	case SYS_brk:
+		return SyscallBrk(uintptr(arg0)), -1
+	case SYS_madvise:
+		return SyscallMadvise(uintptr(arg0), arg1, int32(arg2)), -1
+
+	// Signal syscalls - these are stubs with no parameters
+	case SYS_rt_sigaction:
+		return SyscallRtSigaction(), -1
+	case SYS_rt_sigprocmask:
+		return SyscallRtSigprocmask(), -1
+	case SYS_kill:
+		return SyscallKill(), -1
+	case SYS_tkill:
+		return SyscallTkill(), -1
+	case SYS_tgkill:
+		return SyscallTgkill(), -1
+
+	// Time syscalls - stub with no parameters
+	case SYS_clock_gettime:
+		return SyscallClockGettime(), -1
+
+	// Scheduling syscalls
+	case SYS_sched_getaffinity:
+		return SyscallSchedGetaffinity(int32(arg0), arg1, unsafe.Pointer(uintptr(arg2))), -1
+
+	// Random syscalls
+	case SYS_getrandom:
+		getRandomBytes(unsafe.Pointer(uintptr(arg0)), uint32(arg1))
+		return int64(arg1), -1
+
+	// Exit syscalls - stub with no parameters
+	case SYS_exit, SYS_exit_group:
+		SyscallExit()
+		// Never returns, but compiler needs a return
+		return 0, -1
+
+	// Complex syscalls that may need context switching
+	case SYS_futex:
+		result, switchTo = SyscallFutexHandler(arg0, int32(arg1), uint32(arg2))
+		return result, switchTo
+
+	case SYS_nanosleep:
+		// Read timespec from pointer
+		reqPtr := unsafe.Pointer(uintptr(arg0))
+		tvSec := *(*uint64)(reqPtr)
+		tvNsec := *(*uint64)(unsafe.Pointer(uintptr(reqPtr) + 8))
+		result, switchTo = SyscallNanosleepHandler(tvSec, tvNsec)
+		return result, switchTo
+
+	case SYS_clone:
+		// Extract stack, mp, gp, fn from clone args
+		stack := arg1
+		stackPtr := unsafe.Pointer(uintptr(stack))
+		gp := *(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 16))
+		mp := *(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 8))
+		fn := *(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 24))
+		result, switchTo = SyscallCloneHandler(stack, fn, mp, gp)
+		return result, switchTo
+
+	default:
+		// Unknown syscall
+		SyscallUnknown(uint64(num))
+		return -38, -1 // -ENOSYS
+	}
 }

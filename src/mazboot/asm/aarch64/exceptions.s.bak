@@ -1216,21 +1216,495 @@ handle_svc_syscall:
     // the caller's stack frame and return properly. We just set x28 so Go code sees g0.
     // Syscall handlers run on the current stack, not g0's stack.
 
-    // ========================================================================
-    // NEW: Dispatch all syscalls through Go's SyscallDispatch function
-    // ========================================================================
-    // syscall_dispatch is defined in Go/Plan9 assembly (exc_syscall.s).
-    // It takes:
-    //   - x0-x5: Syscall arguments (already in place from exception frame restore)
-    //   - x8: Syscall number (already in place)
-    //   - SP: Points to exception frame
+    // Dispatch based on syscall number
+    cmp x8, #0                     // io_setup syscall (async I/O)
+    beq syscall_io_setup
+    cmp x8, #19                    // eventfd2 syscall
+    beq syscall_eventfd
+    cmp x8, #20                    // epoll_create1 syscall
+    beq syscall_epoll_create
+    cmp x8, #21                    // epoll_ctl syscall
+    beq syscall_epoll_ctl
+    cmp x8, #22                    // epoll_pwait syscall
+    beq syscall_epoll_pwait
+    cmp x8, #25                    // fcntl syscall
+    beq syscall_fcntl
+    cmp x8, #64                    // write syscall
+    beq syscall_write
+    cmp x8, #63                    // read syscall
+    beq syscall_read
+    cmp x8, #56                    // openat syscall
+    beq syscall_openat
+    cmp x8, #57                    // close syscall
+    beq syscall_close
+    cmp x8, #93                    // exit syscall
+    beq syscall_exit
+    cmp x8, #94                    // exit_group syscall
+    beq syscall_exit
+    cmp x8, #98                    // futex syscall
+    beq syscall_futex
+    cmp x8, #101                   // nanosleep syscall
+    beq syscall_nanosleep
+    cmp x8, #113                   // clock_gettime syscall
+    beq syscall_clock_gettime
+    cmp x8, #129                   // kill syscall
+    beq syscall_kill
+    cmp x8, #130                   // tkill syscall
+    beq syscall_tkill
+    cmp x8, #131                   // tgkill syscall
+    beq syscall_tgkill
+    cmp x8, #132                   // sigaltstack syscall
+    beq syscall_success
+    cmp x8, #134                   // rt_sigaction syscall
+    beq syscall_rt_sigaction
+    cmp x8, #135                   // rt_sigprocmask syscall
+    beq syscall_rt_sigprocmask
+    cmp x8, #167                   // prctl syscall
+    beq syscall_success
+    cmp x8, #172                   // getpid syscall
+    beq syscall_getpid
+    cmp x8, #123                   // sched_getaffinity syscall
+    beq syscall_sched_getaffinity
+    cmp x8, #178                   // gettid syscall
+    beq syscall_gettid
+    cmp x8, #204                   // sched_setaffinity syscall
+    beq syscall_success            // Just return success for setaffinity
+    cmp x8, #214                   // brk syscall
+    beq syscall_brk
+    cmp x8, #215                   // munmap syscall
+    beq syscall_munmap
+    cmp x8, #124                   // sched_yield syscall
+    beq syscall_success
+    cmp x8, #220                   // clone syscall
+    beq syscall_clone_fake
+    cmp x8, #222                   // mmap syscall
+    beq syscall_mmap
+    cmp x8, #226                   // mprotect syscall
+    beq syscall_success
+    cmp x8, #233                   // madvise syscall
+    beq syscall_madvise
+    cmp x8, #261                   // prlimit64 syscall
+    beq syscall_success
+    cmp x8, #278                   // getrandom syscall
+    beq syscall_getrandom
+
+    // Unknown syscall - call Go function to print syscall number
+    // Save callee-saved registers for Go call
+    sub sp, sp, #64
+    stp x19, x20, [sp, #0]
+    stp x21, x22, [sp, #16]
+    stp x28, x29, [sp, #32]
+    stp x30, x8, [sp, #48]         // Save x30 (LR) and x8 (syscall number)
+
+    // Set up frame pointer for Go
+    add x29, sp, #0
+
+    // Pass syscall number as argument (x8 -> x0)
+    mov x0, x8
+
+    // Call Go function to print unknown syscall
+    bl main.SyscallUnknown
+
+    // Restore registers
+    ldp x19, x20, [sp, #0]
+    ldp x21, x22, [sp, #16]
+    ldp x28, x29, [sp, #32]
+    ldp x30, x8, [sp, #48]
+    add sp, sp, #64
+
+    movn x0, #37                   // x0 = -38 (ENOSYS)
+    b syscall_return
+
+syscall_write:
+    // write(fd, buf, count)
+    // x0 = fd, x1 = buf, x2 = count
+    // If fd is 1 (stdout) or 2 (stderr), print to UART
+    cmp x0, #1
+    beq syscall_write_uart
+    cmp x0, #2
+    beq syscall_write_uart
+    // For other fds, just pretend we wrote all bytes
+    mov x0, x2
+    b syscall_return
+
+syscall_write_uart:
+    // Write buffer to UART via ring buffer (interrupt-driven)
+    // SyscallWriteBuffer(buf unsafe.Pointer, count uint32) - 2 parameters
+    // x1 = buf pointer, x2 = count
+
+    mov x0, x1                     // x0 = buf pointer
+    mov w1, w2                     // x1 = count (32-bit)
+    CALL_GO_PROLOGUE SPILL_SPACE_2PARAM
+    bl main.SyscallWriteBuffer
+    CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
+    b syscall_return
+
+syscall_read:
+    // read(fd, buf, count) - 3 parameters
+    // x0-x2 contain arguments - call Go SyscallRead function
+    CALL_GO_PROLOGUE SPILL_SPACE_3PARAM
+    bl main.SyscallRead
+    CALL_GO_EPILOGUE SPILL_SPACE_3PARAM
+    b syscall_return
+
+syscall_openat:
+    // openat(dirfd, pathname, flags, mode) - 4 parameters
+    // x0-x3 contain arguments - call Go SyscallOpenat function
+    CALL_GO_PROLOGUE SPILL_SPACE_4PARAM
+    bl main.SyscallOpenat
+    CALL_GO_EPILOGUE SPILL_SPACE_4PARAM
+    b syscall_return
+
+syscall_futex:
+    // futex(uaddr, futex_op, val, timeout, uaddr2, val3) - 6 parameters
+    // x0-x5 contain arguments
     //
-    // syscall_dispatch will:
-    //   1. Call Go's SyscallDispatch(num, arg0-arg5, framePtr) -> (result, switchTo)
-    //   2. If switchTo >= 0: call DoContextSwitch and branch to load_context_and_eret
-    //   3. Otherwise: branch to syscall_return with result in x0
+    // NEW STRATEGY: Call Go's SyscallFutexHandler which returns:
+    //   x0 = result (0 for WAIT, number woken for WAKE)
+    //   x1 = switchTo (-1 = no switch, >=0 = thread index to switch to)
     //
-    b syscall_dispatch
+    // For now, we ignore switchTo and just return the result.
+    // Context switching will be added when the full thread infrastructure is ready.
+
+    // Print 'F' + op digit for debugging
+    mov w10, #'F'
+    UART_PUTC_REG w10
+    and w10, w1, #0x7F               // Mask off PRIVATE flag
+    add w10, w10, #'0'               // '0'=WAIT, '1'=WAKE
+    UART_PUTC_REG w10
+
+    // Call Go futex handler
+    // SyscallFutexHandler(uaddr uint64, op int32, val uint32) (result int64, switchTo int32)
+    // x0 = uaddr (already there)
+    // x1 = op -> need to extract int32
+    // x2 = val -> need to extract uint32
+    sxtw x1, w1                      // Sign-extend op to int64
+    mov w2, w2                       // Zero-extend val to uint64
+
+    CALL_GO_PROLOGUE SPILL_SPACE_3PARAM
+    bl main.SyscallFutexHandler
+    // Returns: x0 = result, x1 = switchTo
+    CALL_GO_EPILOGUE SPILL_SPACE_3PARAM
+
+    // Check if context switch is needed
+    // x0 = result, x1 = switchTo
+    cmp x1, #0
+    blt syscall_return              // If switchTo < 0, just return normally
+
+    // Context switch needed!
+    // Save result (x0) temporarily - we need it after the switch
+    // For futex_wait, result is always 0, so we can just reload it
+    mov x19, x0                     // Save result in callee-saved register
+
+    // Call DoContextSwitch(framePtr=sp, targetIdx=x1)
+    // This saves current context and returns pointer to new thread's Context
+    mov x0, sp                      // x0 = frame pointer (exception frame)
+    sxtw x1, w1                     // x1 = targetIdx (sign-extend to 64-bit)
+
+    CALL_GO_PROLOGUE SPILL_SPACE_2PARAM
+    bl main.DoContextSwitch
+    // Returns: x0 = pointer to new ThreadContext
+    CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
+
+    // x0 now points to the new thread's ThreadContext
+    // Load context and switch to new thread
+    b load_context_and_eret
+
+syscall_nanosleep:
+    // nanosleep(req, rem) - Sleep syscall
+    // req points to timespec: {tv_sec, tv_nsec}
+    //
+    // NEW STRATEGY: Call Go's SyscallNanosleepHandler which returns:
+    //   x0 = result (0 on success)
+    //   x1 = switchTo (-1 = no switch, >=0 = thread index to switch to)
+    //
+    // For now, we ignore switchTo and just return the result.
+    // Context switching will be added when the full thread infrastructure is ready.
+
+    // Print 'N' for nanosleep
+    mov w10, #'N'
+    UART_PUTC_REG w10
+
+    // Read timespec from req pointer (x0)
+    // timespec { tv_sec: uint64, tv_nsec: uint64 }
+    ldr x10, [x0, #0]               // x10 = tv_sec
+    ldr x11, [x0, #8]               // x11 = tv_nsec
+
+    // Call Go nanosleep handler
+    // SyscallNanosleepHandler(seconds uint64, nanoseconds uint64) (result int64, switchTo int32)
+    mov x0, x10                      // x0 = seconds
+    mov x1, x11                      // x1 = nanoseconds
+
+    CALL_GO_PROLOGUE SPILL_SPACE_2PARAM
+    bl main.SyscallNanosleepHandler
+    // Returns: x0 = result, x1 = switchTo
+    CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
+
+    // Check if context switch is needed
+    // x0 = result, x1 = switchTo
+    cmp x1, #0
+    blt syscall_return              // If switchTo < 0, just return normally
+
+    // Context switch needed!
+    mov x19, x0                     // Save result in callee-saved register
+
+    // Call DoContextSwitch(framePtr=sp, targetIdx=x1)
+    mov x0, sp                      // x0 = frame pointer (exception frame)
+    sxtw x1, w1                     // x1 = targetIdx (sign-extend to 64-bit)
+
+    CALL_GO_PROLOGUE SPILL_SPACE_2PARAM
+    bl main.DoContextSwitch
+    // Returns: x0 = pointer to new ThreadContext
+    CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
+
+    // x0 now points to the new thread's ThreadContext
+    // Load context and switch to new thread
+    b load_context_and_eret
+
+syscall_close:
+    // close(fd) - 1 parameter
+    // x0 = fd - call Go SyscallClose function
+    CALL_GO_PROLOGUE SPILL_SPACE_1PARAM
+    bl main.SyscallClose
+    CALL_GO_EPILOGUE SPILL_SPACE_1PARAM
+    b syscall_return
+
+syscall_io_setup:
+    // io_setup(nr_events, ctxp) - Async I/O setup
+    // We don't support async I/O, so return ENOSYS (-38)
+    // This tells the runtime that io_setup is not implemented
+    movn x0, #37                   // x0 = -38 (ENOSYS)
+    b syscall_return
+
+syscall_eventfd:
+    // eventfd2(initval, flags) - Create event file descriptor
+    // Return a fake eventfd (11) so the runtime thinks it succeeded
+    mov x0, #11                    // Return fake eventfd = 11
+    b syscall_return
+
+syscall_epoll_create:
+    // epoll_create1(flags) - Create epoll file descriptor
+    // Return a fake epoll fd (10) so the runtime thinks it succeeded
+    mov x0, #10                    // Return fake epoll fd = 10
+    b syscall_return
+
+syscall_epoll_ctl:
+    // epoll_ctl(epfd, op, fd, event) - Control epoll
+    // Just return success (0)
+    mov x0, #0                     // Return success
+    b syscall_return
+
+syscall_epoll_pwait:
+    // epoll_pwait(epfd, events, maxevents, timeout, sigmask, sigsetsize)
+    // Return 0 (no events) - this tells the runtime nothing is ready
+    // This should work for a basic "no network" scenario
+    mov x0, #0                     // Return 0 (no events)
+    b syscall_return
+
+syscall_fcntl:
+    // fcntl(fd, cmd, ...) - File control
+    // x0 = fd, x1 = cmd
+    // Go runtime calls fcntl(fd, F_GETFD) where F_GETFD=1 during checkfds()
+    // to verify stdin/stdout/stderr (fds 0-2) are valid.
+    // We return 0 (success, no flags) for fds 0-2 with F_GETFD.
+    // For anything else, return ENOSYS.
+    cmp x0, #2                     // Check if fd <= 2
+    bhi .fcntl_enosys              // If fd > 2, not supported
+    cmp x1, #1                     // Check if cmd == F_GETFD (1)
+    bne .fcntl_enosys              // If cmd != F_GETFD, not supported
+    mov x0, #0                     // Return 0 (no flags set, fd is valid)
+    b syscall_return
+.fcntl_enosys:
+    movn x0, #37                   // x0 = -38 (ENOSYS)
+    b syscall_return
+
+syscall_success:
+    // Generic success return
+    mov x0, #0
+    b syscall_return
+
+syscall_clone_fake:
+    // clone(flags, stack, parent_tid, tls, child_tid) on ARM64 Linux
+    // x0 = flags, x1 = stack, x2 = parent_tid*, x3 = tls, x4 = child_tid*
+    //
+    // Go's newosproc puts on the new stack (from top):
+    //   [stack-8]:  mp (M struct pointer)
+    //   [stack-16]: gp (g0 goroutine pointer)
+    //   [stack-24]: fn (mstart function pointer)
+    //
+    // NEW STRATEGY: Call Go's SyscallCloneHandler to create thread entry.
+    // Thread starts in READY state, runs when current thread blocks.
+
+    // Print 'C' for clone
+    mov w10, #'C'
+    UART_PUTC_REG w10
+
+    // x1 = stack pointer from clone args
+    // Extract mp, gp, fn from the stack
+    ldp x10, x11, [x1, #-16]       // x10 = gp (at stack-16), x11 = mp (at stack-8)
+    ldr x12, [x1, #-24]            // x12 = fn (mstart)
+
+    // Set up parameters for Go call:
+    // SyscallCloneHandler(stack uint64, entryFunc uint64, mPtr uint64, gPtr uint64)
+    // x0 = stack (already in x1)
+    // x1 = entryFunc (fn)
+    // x2 = mPtr (mp)
+    // x3 = gPtr (gp)
+    mov x0, x1                      // x0 = stack
+    mov x1, x12                     // x1 = fn (mstart)
+    mov x2, x11                     // x2 = mp
+    mov x3, x10                     // x3 = gp
+
+    // Call Go handler
+    CALL_GO_PROLOGUE SPILL_SPACE_4PARAM
+    bl main.SyscallCloneHandler
+    // Returns: x0 = TID (or -1 on error), x1 = switchTo (-1 = no switch)
+    CALL_GO_EPILOGUE SPILL_SPACE_4PARAM
+
+    // For now, ignore switchTo (x1) and just return TID
+    // Context switching will be added when futex_wait triggers it
+    b syscall_return
+
+syscall_mmap:
+    // mmap(addr, length, prot, flags, fd, offset) - 6 parameters
+    // x0-x5 contain arguments
+    // CRITICAL: Must call Go SyscallMmap to register the span!
+    // The Go function handles bump allocation AND registers spans for demand paging
+
+    // Call Go implementation: SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32, offset int64) int64
+    // Parameters already in correct registers (x0-x5)
+    // Need to sign-extend 32-bit parameters to 64-bit for Go
+    sxtw x2, w2                        // prot (int32 -> int64)
+    sxtw x3, w3                        // flags (int32 -> int32)
+    sxtw x4, w4                        // fd (int32 -> int64)
+    // x0 = addr (uintptr), x1 = length (uint64), x5 = offset (int64) already correct
+
+    CALL_GO_PROLOGUE SPILL_SPACE_6PARAM
+    bl main.SyscallMmap
+    // X0 = return value from Go function (mmap'd address or negative errno)
+    CALL_GO_EPILOGUE SPILL_SPACE_6PARAM
+
+    // syscall_return preserves X0 and does eret
+    b syscall_return
+
+syscall_prctl:
+    // prctl - return EINVAL so setVMAName marks it unsupported and stops calling
+    // This prevents repeated calls to this optional debugging feature
+    mov x0, #-22        // -EINVAL
+    b syscall_return
+
+syscall_getrandom:
+    // getrandom(void *buf, size_t buflen, unsigned int flags)
+    // getRandomBytes(buf unsafe.Pointer, length uint32) - 2 parameters
+    // x0 = buf, x1 = buflen, x2 = flags (ignored)
+    mov w1, w1                     // Convert buflen to uint32
+    CALL_GO_PROLOGUE SPILL_SPACE_2PARAM
+    bl main.getRandomBytes
+    CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
+    b syscall_return
+
+syscall_sched_getaffinity:
+    // sched_getaffinity(pid, cpusetsize, mask) - 3 parameters
+    // x0-x2 contain arguments - call Go SyscallSchedGetaffinity function
+    CALL_GO_PROLOGUE SPILL_SPACE_3PARAM
+    bl main.SyscallSchedGetaffinity
+    CALL_GO_EPILOGUE SPILL_SPACE_3PARAM
+    b syscall_return
+
+syscall_clock_gettime:
+    // clock_gettime(clockid, timespec*)
+    // x0 = clockid (CLOCK_REALTIME=0, CLOCK_MONOTONIC=1)
+    // x1 = pointer to timespec {tv_sec, tv_nsec}
+    // Return: 0 on success
+    // Call Go implementation: SyscallClockGettime(clockid int32, timespecPtr uintptr) int64
+    CALL_GO_PROLOGUE SPILL_SPACE_2PARAM
+    bl main.SyscallClockGettime
+    CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
+    b syscall_return
+
+syscall_getpid:
+    // getpid() - return fake PID 1 (init process)
+    mov x0, #1
+    b syscall_return
+
+syscall_gettid:
+    // gettid() - return fake TID 1 (main thread)
+    mov x0, #1
+    b syscall_return
+
+syscall_brk:
+    // brk(addr) - 1 parameter
+    // x0 = requested break address - call Go SyscallBrk function
+    CALL_GO_PROLOGUE SPILL_SPACE_1PARAM
+    bl main.SyscallBrk
+    CALL_GO_EPILOGUE SPILL_SPACE_1PARAM
+    b syscall_return
+
+syscall_munmap:
+    // munmap(addr, length) - 2 parameters
+    // x0-x1 contain arguments - call Go SyscallMunmap function
+    CALL_GO_PROLOGUE SPILL_SPACE_2PARAM
+    bl main.SyscallMunmap
+    CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
+    b syscall_return
+
+syscall_madvise:
+    // madvise(addr, length, advice) - give advice about memory usage
+    // x0 = addr, x1 = length, x2 = advice
+
+    // Just return success (0) - we don't actually do anything
+    mov x0, #0
+    b syscall_return
+
+syscall_kill:
+    // kill(pid, sig) - 2 parameters
+    // x0 = pid, x1 = sig
+    CALL_GO_PROLOGUE SPILL_SPACE_2PARAM
+    bl main.SyscallKill
+    CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
+    b syscall_return
+
+syscall_tkill:
+    // tkill(tid, sig) - 2 parameters
+    // x0 = tid, x1 = sig
+    CALL_GO_PROLOGUE SPILL_SPACE_2PARAM
+    bl main.SyscallTkill
+    CALL_GO_EPILOGUE SPILL_SPACE_2PARAM
+    b syscall_return
+
+syscall_tgkill:
+    // tgkill(tgid, tid, sig) - 3 parameters
+    // x0 = tgid, x1 = tid, x2 = sig
+    CALL_GO_PROLOGUE SPILL_SPACE_3PARAM
+    bl main.SyscallTgkill
+    CALL_GO_EPILOGUE SPILL_SPACE_3PARAM
+    b syscall_return
+
+syscall_rt_sigaction:
+    // rt_sigaction(sig, act, oldact, sigsetsize) - 4 parameters
+    // x0 = sig, x1 = act, x2 = oldact, x3 = sigsetsize
+    CALL_GO_PROLOGUE SPILL_SPACE_4PARAM
+    bl main.SyscallRtSigaction
+    CALL_GO_EPILOGUE SPILL_SPACE_4PARAM
+    b syscall_return
+
+syscall_rt_sigprocmask:
+    // rt_sigprocmask(how, set, oldset, sigsetsize) - 4 parameters
+    // x0 = how, x1 = set, x2 = oldset, x3 = sigsetsize
+    CALL_GO_PROLOGUE SPILL_SPACE_4PARAM
+    bl main.SyscallRtSigprocmask
+    CALL_GO_EPILOGUE SPILL_SPACE_4PARAM
+    b syscall_return
+
+syscall_exit:
+    // exit/exit_group - call Go SyscallExit function
+    // x0 = exit code (int32)
+    CALL_GO_PROLOGUE SPILL_SPACE_1PARAM
+    bl main.SyscallExit
+    // SyscallExit never returns (infinite loop)
+    // But if it does return, halt here instead of falling through to syscall_return
+1:  wfe                             // Wait for event (low power)
+    b 1b                           // Loop forever
 
 // ============================================================================
 // load_context_and_eret - Load thread context and switch to new thread
