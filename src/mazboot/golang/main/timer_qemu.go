@@ -97,21 +97,33 @@ func timer_irq_id() uint32 {
 //go:nosplit
 func timerInit() {
 	if timerInitialized {
+		uartPutsDirect("timerInit: already initialized, returning\r\n")
 		return
 	}
+
+	uartPutsDirect("timerInit: starting\r\n")
 
 	// QEMU virt machine uses 62.5 MHz timer frequency
 	freq := uint32(62500000)
 
 	// Disable timer first (clears any pending interrupts)
 	timer_write_ctl(0)
+	uartPutsDirect("timerInit: disabled, CTL=0x")
+	uartPutHex32Direct(asm.ReadCntvCtlEl0())
+	uartPutsDirect("\r\n")
 
 	// Set TVAL for 20ms countdown (62500 * 20 = 1250000 ticks at 62.5MHz)
 	// Fast timer to help with kmazarin goroutine scheduling
 	timer_write_tval(freq / 50) // 20ms
 
 	// Enable timer with interrupts unmasked
+	uartPutsDirect("timerInit: about to enable with CNT_CTL_ENABLE=0x")
+	uartPutHex32Direct(CNT_CTL_ENABLE)
+	uartPutsDirect("\r\n")
 	timer_write_ctl(CNT_CTL_ENABLE)
+	uartPutsDirect("timerInit: enabled, CTL=0x")
+	uartPutHex32Direct(asm.ReadCntvCtlEl0())
+	uartPutsDirect("\r\n")
 
 	// Register timer interrupt handler with GIC
 	irqId := timer_irq_id()
@@ -120,6 +132,8 @@ func timerInit() {
 
 	timerInitialized = true
 	timerExitCount = 500 // Exit after 500 timer interrupts (10 seconds at 20ms)
+
+	uartPutsDirect("timerInit: done\r\n")
 }
 
 // checkTimerStatus checks if timer interrupt is pending (debugging only)

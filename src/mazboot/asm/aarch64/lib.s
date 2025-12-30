@@ -560,6 +560,66 @@ uart_not_enabled:
 // NOTE: This function never returns
 .global jump_to_kmazarin
 jump_to_kmazarin:
+    // DEBUG: Print DAIF value before jumping
+    // Save all caller args to stack
+    stp x0, x1, [sp, #-32]!
+    stp x2, x3, [sp, #16]
+
+    // Print "D="
+    movz x1, #0x0900, lsl #16
+    mov w0, #'D'
+    strb w0, [x1]
+    mov w0, #'='
+    strb w0, [x1]
+
+    // Read DAIF and print as hex
+    mrs x5, DAIF
+    // Print high nibble (bits 15-12)
+    lsr x0, x5, #12
+    and w0, w0, #0xF
+    cmp w0, #10
+    blt 1f
+    add w0, w0, #('A' - 10)
+    b 2f
+1:  add w0, w0, #'0'
+2:  strb w0, [x1]
+    // Print next nibble (bits 11-8)
+    lsr x0, x5, #8
+    and w0, w0, #0xF
+    cmp w0, #10
+    blt 3f
+    add w0, w0, #('A' - 10)
+    b 4f
+3:  add w0, w0, #'0'
+4:  strb w0, [x1]
+    // Print next nibble (bits 7-4)
+    lsr x0, x5, #4
+    and w0, w0, #0xF
+    cmp w0, #10
+    blt 5f
+    add w0, w0, #('A' - 10)
+    b 6f
+5:  add w0, w0, #'0'
+6:  strb w0, [x1]
+    // Print low nibble (bits 3-0)
+    and w0, w5, #0xF
+    cmp w0, #10
+    blt 7f
+    add w0, w0, #('A' - 10)
+    b 8f
+7:  add w0, w0, #'0'
+8:  strb w0, [x1]
+
+    // Print newline
+    mov w0, #'\r'
+    strb w0, [x1]
+    mov w0, #'\n'
+    strb w0, [x1]
+
+    // Restore args
+    ldp x2, x3, [sp, #16]
+    ldp x0, x1, [sp], #32
+
     // Save entry point address to x4 (we need x0 for argc)
     mov x4, x0
 

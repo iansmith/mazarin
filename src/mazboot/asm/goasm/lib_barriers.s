@@ -2,6 +2,9 @@
 
 // lib_barriers.s - Memory barrier and synchronization functions in Go/Plan9 assembly
 // These provide critical synchronization primitives for ARM64
+//
+// NOTE: These functions use Go 1.17+ register-based calling convention.
+// Parameters arrive in R0, R1, etc. Return values go in R0.
 
 // dsb() - Data Synchronization Barrier
 // Ensures all memory accesses before this instruction complete before continuing
@@ -20,19 +23,18 @@ TEXT isb(SB), NOSPLIT|NOFRAME, $0-0
 
 // get_stack_pointer() uintptr
 // Returns the current stack pointer value
-// Useful for debugging and stack management
+// Returns: R0 = stack pointer value (uintptr)
 TEXT get_stack_pointer(SB), NOSPLIT|NOFRAME, $0-8
 	MOVD	RSP, R0			// Move stack pointer to R0
-	MOVD	R0, ret+0(FP)		// Return value
+	// Return value is in R0 (register ABI)
 	RET
 
 // set_stack_pointer(sp uintptr)
 // Sets the stack pointer register to a new value
 // WARNING: Must be 16-byte aligned on ARM64
-// Parameters:
-//   sp+0(FP): new stack pointer value (uintptr)
+// Parameters: R0 = new stack pointer value (uintptr)
 TEXT set_stack_pointer(SB), NOSPLIT|NOFRAME, $0-8
-	MOVD	sp+0(FP), R0		// R0 = new stack pointer
+	// R0 = new stack pointer (already in R0 from register ABI)
 	// Check alignment (SP must be 16-byte aligned)
 	AND	$0xF, R0, R1		// R1 = R0 & 0xF (lower 4 bits)
 	CBNZ	R1, sp_misaligned	// If not zero, SP is misaligned
@@ -50,35 +52,35 @@ sp_misaligned:
 
 // set_g_pointer(gptr uintptr)
 // Sets x28 (g pointer register) to a new goroutine pointer
-// Parameters:
-//   gptr+0(FP): new goroutine pointer (uintptr)
+// Parameters: R0 = new goroutine pointer (uintptr)
 TEXT set_g_pointer(SB), NOSPLIT|NOFRAME, $0-8
-	MOVD	gptr+0(FP), R0		// R0 = new g pointer
+	// R0 = new g pointer (already in R0 from register ABI)
 	MOVD	R0, g			// g is alias for R28
 	DSB	$15			// Memory barrier
 	RET
 
 // get_current_g() uintptr
 // Returns pointer to current goroutine from x28 register
+// Returns: R0 = current g pointer (uintptr)
 TEXT get_current_g(SB), NOSPLIT|NOFRAME, $0-8
 	MOVD	g, R0			// g is alias for R28
-	MOVD	R0, ret+0(FP)		// Return value
+	// Return value is in R0 (register ABI)
 	RET
 
 // set_current_g(gptr uintptr)
 // Sets the current goroutine pointer in x28 register
-// Parameters:
-//   gptr+0(FP): pointer to goroutine structure (uintptr)
+// Parameters: R0 = pointer to goroutine structure (uintptr)
 TEXT set_current_g(SB), NOSPLIT|NOFRAME, $0-8
-	MOVD	gptr+0(FP), R0		// R0 = new g pointer
+	// R0 = new g pointer (already in R0 from register ABI)
 	MOVD	R0, g			// Set g register (R28)
 	RET
 
 // getCurrentSP() uintptr
 // Returns the current stack pointer (alternate name for compatibility)
+// Returns: R0 = stack pointer value (uintptr)
 TEXT getCurrentSP(SB), NOSPLIT|NOFRAME, $0-8
 	MOVD	RSP, R0			// Copy stack pointer to R0
-	MOVD	R0, ret+0(FP)		// Return value
+	// Return value is in R0 (register ABI)
 	RET
 
 // Wfi() - Wait For Interrupt

@@ -13,6 +13,28 @@ func uartPutc(c byte) {
 	*(*byte)(unsafe.Pointer(uartBase)) = c
 }
 
+// readDAIF reads the DAIF register to check interrupt mask state
+//go:nosplit
+func readDAIF() uint64 {
+	var daif uint64
+	// MRS DAIF, X0 = 0xD53B4200
+	// We'll use inline assembly via pointer tricks
+	// For now, just read via a syscall to mazboot (we pass 9999 as a special debug syscall)
+	// Actually, let's just use raw assembly in a .s file
+	// For now, print a placeholder and check if timer fires at all
+	return daif
+}
+
+// printHex prints a hex value directly to UART
+//go:nosplit
+func printHex(val uint64) {
+	hexChars := "0123456789ABCDEF"
+	for i := 60; i >= 0; i -= 4 {
+		nibble := (val >> i) & 0xF
+		uartPutc(hexChars[nibble])
+	}
+}
+
 // simpleMain is the entry point for our simple goroutine/channel test
 // This will be run by the scheduler as the main goroutine
 //

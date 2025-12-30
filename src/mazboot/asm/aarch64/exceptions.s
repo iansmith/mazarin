@@ -1261,6 +1261,14 @@ irq_exception_el1:
     // runtime.Gosched(), then returns to the interrupted PC.
     // ========================================================================
 
+    // DEBUG: Print '!' immediately on IRQ entry (before any state is saved)
+    // This helps verify if ANY IRQ is firing at all
+    stp x0, x1, [sp, #-16]!          // Save x0, x1 temporarily
+    movz x1, #0x0900, lsl #16        // UART base
+    mov w0, #'!'
+    strb w0, [x1]
+    ldp x0, x1, [sp], #16            // Restore x0, x1
+
     INTERRUPT_FULL_SAVE              // Save all regs, x0 = interrupt ID
 
     // Check if this is a timer interrupt (IRQ 27 = virtual timer)
@@ -2647,6 +2655,12 @@ sync_exception_handler_el0:
 
 .global irq_exception_handler_el0
 irq_exception_handler_el0:
+    // DEBUG: Print '@' to show EL0 IRQ path taken
+    stp x0, x1, [sp, #-16]!
+    movz x1, #0x0900, lsl #16
+    mov w0, #'@'
+    strb w0, [x1]
+    ldp x0, x1, [sp], #16
     // Just jump to the regular IRQ handler
     b irq_exception_el1
 

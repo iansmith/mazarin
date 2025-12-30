@@ -760,6 +760,11 @@ func KernelMain(r0, r1, atags uint32) {
 	// =========================================
 	timerInit()
 
+	// DEBUG: Verify timer is enabled after timerInit
+	uartPutsDirect("After timerInit: CTL=0x")
+	uartPutHex32Direct(asm.ReadCntvCtlEl0())
+	uartPutsDirect("\r\n")
+
 	// =========================================
 	// Initialize thread table before loading kmazarin
 	// This sets up M0 as thread 0 for clone/futex/nanosleep syscall handling
@@ -2264,7 +2269,17 @@ func loadAndRunKmazarin() {
 	uartPutsDirect("\r\n")
 
 	// Jump to kmazarin with proper argc/argv/auxv
-	uartPutsDirect("Jumping to kmazarin...\r\n\r\n")
+	uartPutsDirect("Jumping to kmazarin...\r\n")
+
+	// DEBUG: Check timer status before jumping
+	uartPutsDirect("Timer CTL=0x")
+	ctl := asm.ReadCntvCtlEl0()
+	uartPutHex32Direct(ctl)
+	uartPutsDirect(" TVAL=0x")
+	tval := asm.ReadCntvTvalEl0()
+	uartPutHex32Direct(tval)
+	uartPutsDirect("\r\n")
+
 	jumpToKmazarin(entryAddr, argc, argv, stackPointer)
 
 	// Should never reach here
