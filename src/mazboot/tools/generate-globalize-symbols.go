@@ -144,14 +144,18 @@ func findGoFunctionsCalledFromAssembly(asmDir string) []string {
 	return symbols
 }
 
-// findRuntimeSymbolsInGoAsm scans Go/Plan9 assembly files for runtime symbol references
-// These use syntax like: MOVD $runtime·physPageSize(SB), R0
+// findRuntimeSymbolsInGoAsm scans Go/Plan9 assembly files for runtime and main symbol references
+// These use syntax like: MOVD $runtime·physPageSize(SB), R0 or CALL main·KernelMain(SB)
 func findRuntimeSymbolsInGoAsm(goasmDir string) []string {
 	var symbols []string
 
 	// Pattern for runtime.* symbols in Go assembly: runtime·symbolname(SB)
 	// The · is the Unicode middle dot character, common in Go assembly
-	runtimeSymbolRe := regexp.MustCompile(`runtime[·.]([a-zA-Z_][a-zA-Z0-9_]*)\(SB\)`)
+	// Also support .abi0 suffixes like runtime·mstart·abi0(SB)
+	runtimeSymbolRe := regexp.MustCompile(`runtime[·.]([a-zA-Z_][a-zA-Z0-9_·.]*[a-zA-Z0-9_])\(SB\)`)
+
+	// Pattern for main.* symbols in Go assembly: main·FunctionName(SB)
+	mainSymbolRe := regexp.MustCompile(`main[·.]([a-zA-Z_][a-zA-Z0-9_]*)\(SB\)`)
 
 	seen := make(map[string]bool)
 
@@ -177,7 +181,21 @@ func findRuntimeSymbolsInGoAsm(goasmDir string) []string {
 			matches := runtimeSymbolRe.FindAllStringSubmatch(line, -1)
 			for _, match := range matches {
 				if len(match) > 1 {
-					sym := "runtime." + match[1]
+					// Convert middle dots to regular dots for the output symbol name
+					symName := strings.ReplaceAll(match[1], "·", ".")
+					sym := "runtime." + symName
+					if !seen[sym] {
+						symbols = append(symbols, sym)
+						seen[sym] = true
+					}
+				}
+			}
+
+			// Check for main.* symbol references
+			matches = mainSymbolRe.FindAllStringSubmatch(line, -1)
+			for _, match := range matches {
+				if len(match) > 1 {
+					sym := "main." + match[1]
 					if !seen[sym] {
 						symbols = append(symbols, sym)
 						seen[sym] = true
