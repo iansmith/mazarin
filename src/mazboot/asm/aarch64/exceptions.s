@@ -525,64 +525,8 @@ next_thread_tid:
     ldp x0, x1, [sp], #16
 .endm
 
-// print_hex64: Print a 64-bit value as 16 hex digits
-// Input: x0 = value to print
-// Preserves: ALL registers (x0-x30)
-print_hex64:
-    // Save ALL caller-saved and callee-saved registers
-    stp x29, x30, [sp, #-16]!
-    stp x0, x1, [sp, #-16]!
-    stp x2, x3, [sp, #-16]!
-    stp x4, x5, [sp, #-16]!
-
-    mov x4, x0                       // x4 = value to print
-    mov x5, #16                      // x5 = digit counter
-
-.Lhex64_loop:
-    lsr x0, x4, #60                  // Get top nibble
-    and w0, w0, #0xF
-    cmp w0, #10
-    blt .Lhex64_digit
-    add w0, w0, #0x37                // 'A'-10
-    b .Lhex64_print
-.Lhex64_digit:
-    add w0, w0, #0x30                // '0'
-.Lhex64_print:
-    movz x1, #0x0900, lsl #16
-    strb w0, [x1]
-    lsl x4, x4, #4                   // Shift for next nibble
-    sub x5, x5, #1
-    cbnz x5, .Lhex64_loop
-
-    // Restore ALL registers
-    ldp x4, x5, [sp], #16
-    ldp x2, x3, [sp], #16
-    ldp x0, x1, [sp], #16
-    ldp x29, x30, [sp], #16
-    ret
-
-// print_string: Print a null-terminated string
-// Input: x0 = pointer to string
-// Preserves: ALL registers
-print_string:
-    stp x29, x30, [sp, #-16]!
-    stp x0, x1, [sp, #-16]!
-    stp x2, x3, [sp, #-16]!
-
-    mov x2, x0                       // x2 = string pointer
-    movz x3, #0x0900, lsl #16        // x3 = UART base
-
-.Lstring_loop:
-    ldrb w0, [x2], #1                // Load byte, increment pointer
-    cbz w0, .Lstring_done            // If null, done
-    strb w0, [x3]                    // Write to UART
-    b .Lstring_loop
-
-.Lstring_done:
-    ldp x2, x3, [sp], #16
-    ldp x0, x1, [sp], #16
-    ldp x29, x30, [sp], #16
-    ret
+// print_hex64 and print_string have been migrated to asm/goasm/exc_utils.s
+// These functions are now provided by exc_utils.o
 
 // ============================================================================
 // THREAD SCHEDULER FUNCTIONS
@@ -2664,62 +2608,5 @@ irq_exception_handler_el0:
     // Just jump to the regular IRQ handler
     b irq_exception_el1
 
-// Helper: print decimal number in x1 to UART at x0
-// Clobbers: x1, x2, x3, x4, x5
-print_decimal_uart:
-    stp x29, x30, [sp, #-16]!       // Save FP, LR
-    mov x2, x1                      // x2 = number to print
-    mov x3, #10                     // x3 = divisor
-    mov x4, sp                      // x4 = buffer pointer (use stack)
-    sub sp, sp, #32                 // Reserve 32 bytes for digits
-
-    // Handle zero special case
-    cbnz x2, 1f
-    movz w5, #0x30                  // '0'
-    str w5, [x0]
-    add sp, sp, #32
-    ldp x29, x30, [sp], #16
-    ret
-
-1:  // Convert to decimal digits (reverse order)
-    mov x5, x4
-2:  udiv x6, x2, x3                 // x6 = number / 10
-    msub x7, x6, x3, x2             // x7 = number % 10
-    add x7, x7, #0x30               // Convert to ASCII
-    strb w7, [x5], #1               // Store digit
-    mov x2, x6                      // number = number / 10
-    cbnz x2, 2b                     // Continue if non-zero
-
-    // Print digits in correct order
-3:  sub x5, x5, #1                  // Move back one digit
-    ldrb w6, [x5]                   // Load digit
-    str w6, [x0]                    // Print to UART
-    cmp x5, x4                      // At start?
-    bne 3b                          // Continue if not
-
-    add sp, sp, #32                 // Restore stack
-    ldp x29, x30, [sp], #16         // Restore FP, LR
-    ret
-
-// Helper: print byte in x2 as 2 hex digits to UART at x1
-// Clobbers: x3
-print_hex_byte_uart:
-    stp x29, x30, [sp, #-16]!
-    and x2, x2, #0xFF               // Mask to byte
-    lsr x3, x2, #4                  // High nibble
-    cmp x3, #10
-    blt 1f
-    add x3, x3, #0x37               // 'A'-10
-    b 2f
-1:  add x3, x3, #0x30               // '0'
-2:  str w3, [x1]
-    and x3, x2, #0xF                // Low nibble
-    cmp x3, #10
-    blt 3f
-    add x3, x3, #0x37
-    b 4f
-3:  add x3, x3, #0x30
-4:  str w3, [x1]
-    ldp x29, x30, [sp], #16
-    ret
+// print_decimal_uart and print_hex_byte_uart have been migrated to asm/goasm/exc_utils.s
 
