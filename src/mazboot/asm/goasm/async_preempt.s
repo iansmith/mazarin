@@ -176,3 +176,11 @@ TEXT asyncPreemptBM(SB), NOSPLIT, $0
 	// Jump to interrupted PC via ret (which jumps to R30/LR)
 	// This restores execution at the interrupted location
 	RET                        // Jump to LR (interrupted PC)
+
+// get_asyncPreemptBM_addr returns the address of asyncPreemptBM
+// This is used by Go code to get the function address for timer preemption
+// Returns: R0 = address of asyncPreemptBM
+TEXT get_asyncPreemptBM_addr(SB), NOSPLIT|NOFRAME, $0-8
+	MOVD $asyncPreemptBM(SB), R0
+	MOVD R0, ret+0(FP)
+	RET

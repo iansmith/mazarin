@@ -513,6 +513,36 @@ func isInMmapSpan(va uintptr) bool {
 	return false
 }
 
+// verifyMmapSpansMapped checks that the mmapSpans array is properly mapped
+// Called by VerifyCriticalGlobalsMapped() in mmu.go
+func verifyMmapSpansMapped() bool {
+	mmapSpansAddr := uintptr(unsafe.Pointer(&mmapSpans[0]))
+	pa := getPhysicalAddress(mmapSpansAddr)
+	print("  mmapSpans array at VA=0x")
+	printHex64ForVerify(uint64(mmapSpansAddr))
+	if pa != 0 {
+		print(" -> PA=0x")
+		printHex64ForVerify(uint64(pa))
+		print(" OK\r\n")
+		return true
+	} else {
+		print(" -> NOT MAPPED! FATAL\r\n")
+		return false
+	}
+}
+
+// printHex64ForVerify is a local hex printer for verification
+// (avoids dependency on mmu.go's printHex64)
+func printHex64ForVerify(v uint64) {
+	const digits = "0123456789abcdef"
+	var buf [16]byte
+	for i := 15; i >= 0; i-- {
+		buf[i] = digits[v&0xF]
+		v >>= 4
+	}
+	print(string(buf[:]))
+}
+
 var mmapCallCount uint32
 var mmapTestValue uint64 = 0xDEADBEEF
 
@@ -528,6 +558,20 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 		for {
 		}
 	}
+
+	// Compact debug: A=sysAlloc, R=sysReserve, C=sysMap(commit)
+	const MAP_FIXED_LOCAL = 0x10
+	if addr == 0 && (flags & MAP_FIXED_LOCAL) == 0 {
+		uartPutcDirect('A')  // Alloc from anywhere
+	} else if (flags & MAP_FIXED_LOCAL) != 0 {
+		uartPutcDirect('C')  // Commit at fixed addr
+	} else {
+		uartPutcDirect('R')  // Reserve with hint
+	}
+	uartPutHex64Direct(uint64(addr))
+	uartPutcDirect('/')
+	uartPutHex64Direct(length)
+	uartPutcDirect(' ')
 
 	// Debug trace entry - DISABLED (causes nested syscalls that corrupt return value)
 	//syscallDebugStart(222, "mmap")
@@ -606,14 +650,15 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 
 		// Register this span
 		if !registerMmapSpan(addr, addr+uintptr(roundedLength)) {
-			// syscallDebugEnd(-12) // DISABLED - corrupts X0
+			uartPutsDirect("FIX_SPAN_FULL!")
 			return -12 // -ENOMEM (syscall returns negative errno)
 		}
 
-		// uartPutcDirect('F')  // DISABLED - corrupts X0 right before return!
-		retVal := int64(addr)
-		// syscallDebugEnd(retVal) // DISABLED - corrupts X0
-		return retVal
+		// Return the exact address
+		uartPutcDirect('F')
+		uartPutHex64Direct(uint64(addr))
+		uartPutcDirect('\n')
+		return int64(addr)
 	}
 
 	// No MAP_FIXED - addr is just a hint, but Go runtime RELIES on hints being honored
@@ -621,25 +666,32 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 
 	// If hint provided and reasonable, try to honor it
 	if addr != 0 {
-		// Validate hint is reasonable (same checks as MAP_FIXED but non-fatal)
-		const MAX_VIRT_ADDR = uintptr(0x4000000000000) // 1PB (1024TB)
+		// Validate hint is reasonable
+		// CRITICAL INSIGHT: L0 entry 0 covers the first 512GB (2^39 bytes).
+		// Any address < 512GB can be mapped on demand because:
+		//   - L0 index 0 is valid (set in initMMU)
+		//   - L1/L2/L3 entries are allocated on demand in mapPage()
+		// Go's arena allocator uses addresses like 0x4000000000 (256GB), which
+		// is well within the 512GB L0 coverage.
+		const MAX_MAPPABLE_ADDR = uintptr(0x8000000000) // 512GB (L0 entry 0 coverage)
 		if (addr&0xFFF) == 0 && // Page aligned
-			addr < MAX_VIRT_ADDR && // Not too high
 			addr+uintptr(roundedLength) >= addr && // No overflow
-			addr+uintptr(roundedLength) <= MAX_VIRT_ADDR { // Range OK
-			// Hint is reasonable - honor it to keep Go runtime happy
+			addr+uintptr(roundedLength) <= MAX_MAPPABLE_ADDR { // Range OK
+			// Hint is within mappable range - honor it
 
-			// Register this span
+			// Register this span for demand paging
 			if !registerMmapSpan(addr, addr+uintptr(roundedLength)) {
-				// syscallDebugEnd(-12) // DISABLED - corrupts X0
+				uartPutsDirect("SPAN_FULL!")
 				return -12 // -ENOMEM (syscall returns negative errno)
 			}
 
-			// uartPutcDirect('H')  // DISABLED - corrupts X0 right before return!
-			retVal := int64(addr)
-			// syscallDebugEnd(retVal) // DISABLED - corrupts X0
-			return retVal
+			// Return the requested address
+			uartPutcDirect('=')
+			uartPutHex64Direct(uint64(addr))
+			uartPutcDirect('\n')
+			return int64(addr)
 		}
+		// Hint is outside mappable range (> 512GB) - fall through to bump allocator
 	}
 
 use_bump_allocator:
@@ -651,6 +703,7 @@ use_bump_allocator:
 
 	// Check if allocation would overflow the pre-registered bump region
 	if endAddr > BUMP_REGION_END {
+		uartPutsDirect("BUMP_OOM!")
 		return -12 // -ENOMEM (syscall returns negative errno)
 	}
 
@@ -658,6 +711,9 @@ use_bump_allocator:
 	mmapBumpNext = endAddr
 
 	// Return the allocated address
+	uartPutcDirect('B')
+	uartPutHex64Direct(uint64(allocAddr))
+	uartPutcDirect('\n')
 	return int64(allocAddr)
 }
 
@@ -1269,6 +1325,11 @@ func SyncExceptionDispatch(
 
 	switch ec {
 	case 0x15: // EC_SVC_EL1_A64 - Supervisor call from AArch64
+		// DEBUG: Print syscall number briefly for tracing
+		// SYS_write = 64, SYS_mmap = 222
+		if syscallNum == 64 {
+			uartPutcDirect('w') // write syscall
+		}
 		// Dispatch to syscall handler
 		result, switchTo = SyscallDispatch(
 			int64(syscallNum),

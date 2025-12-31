@@ -317,6 +317,11 @@ func getPhysFrameAllocator() *physFrameAllocatorState {
 // Total kernel pages - BSS global to avoid circular dependency with heap
 var totalKernelPages_global uint32
 
+// Page fault handler re-entrancy guard
+// CRITICAL: This MUST be in BSS (pre-mapped before MMU enable) to avoid
+// triggering a page fault when checking for nested faults!
+var inPageFaultHandler_global uint32
+
 //go:nosplit
 func getTotalKernelPages() uint32 {
 	return totalKernelPages_global
@@ -522,37 +527,58 @@ func preMapPages() {
 //go:nosplit
 //go:noinline
 func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
-	// CRITICAL: Do NOT access global variables here!
-	// Global variables might not be mapped yet and would cause nested exceptions
-	// Commented out to prevent nested exception from unmapped globals:
-	//   totalExceptionCounter, lastExceptionVA, sameVACounter, pageFaultCounter
+	// ==========================================================================
+	// CRITICAL: NESTED PAGE FAULT DETECTION
+	// ==========================================================================
+	// If we're already in a page fault handler, we have a nested fault.
+	// This is FATAL - it means the page fault handler itself is accessing
+	// unmapped memory, which would cause infinite recursion.
+	//
+	// The inPageFaultHandler_global variable MUST be in BSS (pre-mapped before
+	// MMU enable) so that reading/writing it cannot itself trigger a page fault.
+	//
+	if inPageFaultHandler_global != 0 {
+		// NESTED PAGE FAULT DETECTED - FATAL ERROR
+		uartPutsDirect("\r\n")
+		uartPutsDirect("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\r\n")
+		uartPutsDirect("! FATAL: NESTED PAGE FAULT DETECTED                         !\r\n")
+		uartPutsDirect("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\r\n")
+		uartPutsDirect("Nested fault address: VA=0x")
+		uartPutHex64Direct(uint64(faultAddr))
+		uartPutsDirect("\r\n")
+		uartPutsDirect("Fault status: 0x")
+		uartPutHex64Direct(faultStatus)
+		uartPutsDirect("\r\n")
+		uartPutsDirect("\r\n")
+		uartPutsDirect("This means the page fault handler accessed unmapped memory.\r\n")
+		uartPutsDirect("Likely causes:\r\n")
+		uartPutsDirect("  1. A global variable used by HandlePageFault is not pre-mapped\r\n")
+		uartPutsDirect("  2. physFrameAllocatorState_global not in identity-mapped BSS\r\n")
+		uartPutsDirect("  3. mmapSpans array not in identity-mapped BSS\r\n")
+		uartPutsDirect("  4. pageTableL0 pointer not accessible\r\n")
+		uartPutsDirect("\r\n")
+		uartPutsDirect("Run VerifyCriticalGlobalsMapped() at KernelMain start to debug.\r\n")
+		uartPutsDirect("\r\n")
+		// Print a simple backtrace using saved registers
+		uartPutsDirect("Halting immediately.\r\n")
+		for {
+			// Infinite loop - halt the system
+		}
+	}
 
-	// Track total exceptions to detect loops
-	// totalExceptionCounter++  // DISABLED: causes nested exception
-
-	// Detect exception loops (same VA faulting repeatedly)
-	// DISABLED: causes nested exception from accessing unmapped globals
-	// if faultAddr == lastExceptionVA {
-	// 	sameVACounter++
-	// 	if sameVACounter > 3 {
-	// 		uartPutsDirect("\r\n!EXCEPTION LOOP! VA=0x")
-	// 		uartPutHex64Direct(uint64(faultAddr))
-	// 		uartPutsDirect(" count=")
-	// 		uartPutHex64Direct(uint64(sameVACounter))
-	// 		uartPutsDirect("\r\n")
-	// 		for {} // Hang
-	// 	}
-	// } else {
-	// 	sameVACounter = 1
-	// 	lastExceptionVA = faultAddr
-	// }
-
-	// PERFORMANCE: Minimize debug output for fast demand paging
-	// Only print progress dots every 100 faults, not full debug info
-	// pageFaultCounter++  // DISABLED: causes nested exception
+	// Mark that we're now inside the page fault handler
+	inPageFaultHandler_global = 1
 
 	// DEBUG: Print simple breadcrumb to show demand paging is working
-	uartPutcDirect('.')  // Print a dot for each page fault
+	// Also print the actual fault address for low address faults (more interesting)
+	if faultAddr >= 0x4000000000 {
+		uartPutcDirect('*') // High address page fault
+	} else {
+		// For low addresses, print the fault address
+		uartPutcDirect('[')
+		uartPutHex64Direct(uint64(faultAddr))
+		uartPutcDirect(']')
+	}
 
 	// CRITICAL: Validate that the fault address is in a registered mmap span
 	//
@@ -573,6 +599,7 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 		uartPutsDirect("  - ROM/Flash access (not supported)\r\n")
 		uartPutsDirect("  - MMIO access (use direct MMIO functions)\r\n")
 		uartPutsDirect("  - Access to memory not allocated via mmap\r\n")
+		inPageFaultHandler_global = 0 // Clear re-entrancy guard before return
 		return false
 	}
 
@@ -635,6 +662,7 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 		asm.Isb()                  // Synchronize context
 
 		// This is already mapped - return success without allocating
+		inPageFaultHandler_global = 0 // Clear re-entrancy guard before return
 		return true
 	}
 
@@ -645,6 +673,7 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 		uartPutsDirect("\r\nDEMAND PAGE OOM at VA=0x")
 		uartPutHex64Direct(uint64(faultAddr))
 		uartPutsDirect("\r\n")
+		inPageFaultHandler_global = 0 // Clear re-entrancy guard before return
 		return false
 	}
 
@@ -697,9 +726,21 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	// SECURITY: Always zero new pages to prevent leaking old data
 	bzero(unsafe.Pointer(pageAddr), PAGE_SIZE)
 
+	// CRITICAL: Data Synchronization Barrier after zeroing the page
+	// Without this barrier, the zero writes may still be in the CPU's store buffer
+	// when we return from the exception. The retried instruction (e.g., writing
+	// span.startAddr) would execute, but subsequent reads could see stale data
+	// (the buffered zeroes) if the store buffer hasn't drained.
+	//
+	// DSB ensures all memory writes (including the bzero) are visible to all
+	// observers before any subsequent instructions execute.
+	asm.Dsb()
+
 	// DEBUG: Print completion for ALL faults to track success
 	// uartPutsDirect(" OK")  // DISABLED
 
+	// Clear re-entrancy guard - page fault handled successfully
+	inPageFaultHandler_global = 0
 	return true
 }
 
@@ -912,6 +953,9 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 
 	if (*l0Entry & PTE_TABLE) == 0 {
 		// L0 not set - can't allocate in nosplit context, just fail silently
+		uartPutcDirect('!')
+		uartPutcDirect('L')
+		uartPutcDirect('0')
 		return
 	}
 
@@ -922,6 +966,9 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 	if (*l1Entry & PTE_TABLE) == 0 {
 		l2Table = allocatePageTable()
 		if l2Table == 0 {
+			uartPutcDirect('!')
+			uartPutcDirect('L')
+			uartPutcDirect('2')
 			return
 		}
 		*l1Entry = createTableEntry(l2Table)
@@ -935,6 +982,9 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 	if (*l2Entry & PTE_TABLE) == 0 {
 		l3Table = allocatePageTable()
 		if l3Table == 0 {
+			uartPutcDirect('!')
+			uartPutcDirect('L')
+			uartPutcDirect('3')
 			return
 		}
 		*l2Entry = createTableEntry(l3Table)
@@ -1577,4 +1627,120 @@ func enableMMU() bool {
 
 	// Now MMU is ON and unaligned access is allowed, can safely use print()
 	return true
+}
+
+// =============================================================================
+// Critical Globals Verification
+// =============================================================================
+// These functions verify that all globals used by the page fault handler are
+// properly mapped in the page tables BEFORE any demand paging can occur.
+// If any of these are not mapped, the page fault handler would trigger
+// a nested page fault (infinite recursion) when trying to access them.
+
+// VerifyCriticalGlobalsMapped walks the page tables to verify all critical
+// globals used by HandlePageFault are already mapped.
+// Should be called at the start of KernelMain after MMU is enabled.
+//
+// Returns true if all critical globals are mapped, false if any are unmapped.
+// Prints detailed diagnostic information about each global.
+func VerifyCriticalGlobalsMapped() bool {
+	print("=== Verifying Critical Globals Are Pre-Mapped ===\r\n")
+	allMapped := true
+
+	// 1. Check pageTableL0 pointer itself (stored in BSS)
+	pageTableL0Addr := uintptr(unsafe.Pointer(&pageTableL0))
+	pa := getPhysicalAddress(pageTableL0Addr)
+	print("  pageTableL0 pointer at VA=0x")
+	printHex64ForMMU(uint64(pageTableL0Addr))
+	if pa != 0 {
+		print(" -> PA=0x")
+		printHex64ForMMU(uint64(pa))
+		print(" OK\r\n")
+	} else {
+		print(" -> NOT MAPPED! FATAL\r\n")
+		allMapped = false
+	}
+
+	// 2. Check physFrameAllocatorState_global
+	physAllocAddr := uintptr(unsafe.Pointer(&physFrameAllocatorState_global))
+	pa = getPhysicalAddress(physAllocAddr)
+	print("  physFrameAllocatorState_global at VA=0x")
+	printHex64ForMMU(uint64(physAllocAddr))
+	if pa != 0 {
+		print(" -> PA=0x")
+		printHex64ForMMU(uint64(pa))
+		print(" OK\r\n")
+	} else {
+		print(" -> NOT MAPPED! FATAL\r\n")
+		allMapped = false
+	}
+
+	// 3. Check totalKernelPages_global
+	totalPagesAddr := uintptr(unsafe.Pointer(&totalKernelPages_global))
+	pa = getPhysicalAddress(totalPagesAddr)
+	print("  totalKernelPages_global at VA=0x")
+	printHex64ForMMU(uint64(totalPagesAddr))
+	if pa != 0 {
+		print(" -> PA=0x")
+		printHex64ForMMU(uint64(pa))
+		print(" OK\r\n")
+	} else {
+		print(" -> NOT MAPPED! FATAL\r\n")
+		allMapped = false
+	}
+
+	// 4. Check inPageFaultHandler_global (re-entrancy guard)
+	reentryAddr := uintptr(unsafe.Pointer(&inPageFaultHandler_global))
+	pa = getPhysicalAddress(reentryAddr)
+	print("  inPageFaultHandler_global at VA=0x")
+	printHex64ForMMU(uint64(reentryAddr))
+	if pa != 0 {
+		print(" -> PA=0x")
+		printHex64ForMMU(uint64(pa))
+		print(" OK\r\n")
+	} else {
+		print(" -> NOT MAPPED! FATAL\r\n")
+		allMapped = false
+	}
+
+	// 5. Check mmapSpans array (defined in syscall.go)
+	// We call a helper function that's defined there
+	if !verifyMmapSpansMapped() {
+		allMapped = false
+	}
+
+	// 6. Verify the page table L0 base itself is valid and mapped
+	print("  pageTableL0 value = 0x")
+	printHex64ForMMU(uint64(pageTableL0))
+	pa = getPhysicalAddress(pageTableL0)
+	if pa != 0 {
+		print(" -> PA=0x")
+		printHex64ForMMU(uint64(pa))
+		print(" OK\r\n")
+	} else {
+		print(" -> L0 TABLE NOT MAPPED! FATAL\r\n")
+		allMapped = false
+	}
+
+	if allMapped {
+		print("=== All critical globals verified OK ===\r\n")
+	} else {
+		print("=== VERIFICATION FAILED - some globals not mapped! ===\r\n")
+		print("The page fault handler will crash with nested faults.\r\n")
+	}
+
+	return allMapped
+}
+
+// printHex64ForMMU prints a 64-bit value in hex format (helper for verification)
+// Uses print() which is safe after MMU is enabled
+// Named differently from kernel.go's printHex64 to avoid redeclaration
+func printHex64ForMMU(v uint64) {
+	const digits = "0123456789abcdef"
+	var buf [16]byte
+	for i := 15; i >= 0; i-- {
+		buf[i] = digits[v&0xF]
+		v >>= 4
+	}
+	print(string(buf[:]))
 }

@@ -664,3 +664,191 @@ func HandleSyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) uint64
 		return ^uint64(37) // -38 (ENOSYS)
 	}
 }
+
+// ============================================================================
+// IRQ Exception Dispatcher
+// ============================================================================
+
+// Kmazarin asyncPreempt address (from kmazarin_symbols.s)
+// This is runtime.asyncPreempt.abi0 in kmazarin.elf
+const kmazarinAsyncPreempt = 0x41871B60
+
+// Kmazarin text section bounds (for checking if PC/g is in kmazarin)
+const kmazarinTextStart = 0x41800000
+const kmazarinTextEnd = 0x41894AE4
+
+// Go runtime arena high VA range (for checking if g is a kmazarin pointer)
+const goArenaLow = 0x4000000000  // 256GB
+const goArenaHigh = 0x8000000000 // 512GB
+
+// IRQExceptionDispatch is the unified entry point for ALL IRQ exceptions.
+// It handles:
+//   - Timer interrupts (IRQ 27): timer tick, sleeping thread wake, preemption
+//   - Other interrupts: dispatch to registered handler
+//
+// Parameters (passed from assembly in exc_irq.s):
+//   irqID    - Interrupt ID (from GIC IAR, 10 bits)
+//   framePtr - Pointer to exception frame on stack
+//   savedG   - Saved x28/g pointer from interrupted context
+//   elr      - ELR_EL1 (interrupted PC)
+//   spEl0    - SP_EL0 (interrupted stack pointer)
+//
+// Returns:
+//   newELR    - New ELR value (asyncPreempt addr if preempting, else 0)
+//   newSP     - New SP_EL0 value (adjusted stack if preempting, else 0)
+//   newLR     - New LR value (interrupted PC if preempting, else 0)
+//   doPreempt - true if caller should modify frame for preemption
+//
+//go:nosplit
+//go:noinline
+func IRQExceptionDispatch(
+	irqID uint64,
+	framePtr uintptr,
+	savedG uint64,
+	elr uint64,
+	spEl0 uint64,
+) (newELR, newSP, newLR uint64, doPreempt bool) {
+
+	// DEBUG: Print '!' to show IRQ entry
+	uartPutcDirect('!')
+
+	// Check if this is a timer interrupt (IRQ 27 = virtual timer)
+	if irqID == 27 {
+		return handleTimerIRQ(savedG, elr, spEl0)
+	}
+
+	// Not a timer - dispatch to registered handler via irqHandlerGo
+	irqHandlerGo(uint32(irqID))
+
+	// Signal EOI to GIC for non-timer interrupts
+	gicEndOfInterrupt(uint32(irqID))
+
+	// No preemption for non-timer interrupts
+	return 0, 0, 0, false
+}
+
+// handleTimerIRQ handles timer interrupt (IRQ 27)
+// Returns preemption info if we should preempt the interrupted goroutine
+//
+//go:nosplit
+func handleTimerIRQ(savedG, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool) {
+
+	// 1. Handle timer tick (increment counter, wake sleeping threads)
+	TimerTickHandler()
+
+	// 2. Check if we should skip preemption
+	if shouldSkipPreemption(savedG) {
+		// Re-arm timer and send EOI, then return without preemption
+		rearmTimer()
+		gicEndOfInterrupt(27)
+		return 0, 0, 0, false
+	}
+
+	// 3. We can preempt! Print debug marker
+	uartPutcDirect('P')
+
+	// 4. Re-arm timer
+	rearmTimer()
+
+	// 5. Set up call injection for asyncPreempt
+	// Allocate 16-byte frame on interrupted goroutine's stack
+	adjustedSP := (spEl0 - 16) &^ 0xF // 16-byte aligned
+
+	// We need to save the interrupted PC so asyncPreempt can return to it
+	// The assembly will store the interrupted PC to the stack at adjustedSP
+
+	// 6. Determine which asyncPreempt to use
+	var asyncPreemptAddr uint64
+	if isInKmazarin(elr) {
+		asyncPreemptAddr = kmazarinAsyncPreempt
+		uartPutcDirect('K')
+	} else {
+		asyncPreemptAddr = getAsyncPreemptBMAddr()
+		uartPutcDirect('M')
+	}
+
+	// 7. Signal EOI to GIC (before ERET!)
+	gicEndOfInterrupt(27)
+
+	// 8. Return preemption info
+	// - newELR = asyncPreempt address (where ERET will jump)
+	// - newSP = adjusted stack (with room for return frame)
+	// - newLR = interrupted PC (asyncPreempt will return here)
+	return asyncPreemptAddr, adjustedSP, elr, true
+}
+
+// shouldSkipPreemption checks if we should NOT preempt
+// Returns true if:
+//   - g is nil
+//   - g is mazboot's g (not kmazarin)
+//   - g == g.m.g0 (we're on the scheduler's g0)
+//
+//go:nosplit
+func shouldSkipPreemption(savedG uint64) bool {
+	// Check for nil g
+	if savedG == 0 {
+		return true
+	}
+
+	// Check if g is a kmazarin pointer (either in Go arena or kmazarin ELF)
+	isKmazarinG := false
+	if savedG >= goArenaLow && savedG < goArenaHigh {
+		// In Go's high VA range (runtime arenas)
+		isKmazarinG = true
+	} else if savedG >= kmazarinTextStart && savedG < kmazarinTextEnd {
+		// In kmazarin's ELF text section
+		isKmazarinG = true
+	}
+
+	if !isKmazarinG {
+		// Not a kmazarin g, skip preemption (it's mazboot's g0)
+		return true
+	}
+
+	// Check if g == g.m.g0 (we're on scheduler's g0)
+	// Go struct offsets:
+	//   g.m is at offset 48 in g struct
+	//   m.g0 is at offset 0 in m struct
+	gPtr := uintptr(savedG)
+	mPtr := *(*uintptr)(unsafe.Pointer(gPtr + 48)) // g.m
+	if mPtr == 0 {
+		return true
+	}
+	g0Ptr := *(*uintptr)(unsafe.Pointer(mPtr)) // m.g0
+	if gPtr == g0Ptr {
+		// We're on g0 (scheduler goroutine), skip preemption
+		return true
+	}
+
+	// OK to preempt
+	return false
+}
+
+// isInKmazarin checks if an address is within kmazarin's text section
+//
+//go:nosplit
+func isInKmazarin(addr uint64) bool {
+	return addr >= kmazarinTextStart && addr < kmazarinTextEnd
+}
+
+// rearmTimer sets the timer to fire again in 20ms
+// QEMU virt uses 62.5 MHz timer frequency
+// 20ms = 1,250,000 ticks = 0x1312D0
+//
+//go:nosplit
+func rearmTimer() {
+	// Read current counter
+	cnt := asm.ReadCntvctEl0()
+	// Set compare value to current + 20ms
+	asm.WriteCntvCvalEl0(cnt + 1250000)
+}
+
+// getAsyncPreemptBMAddr returns the address of mazboot's asyncPreemptBM function
+// This is used when preempting mazboot code (not kmazarin)
+//
+//go:nosplit
+func getAsyncPreemptBMAddr() uint64 {
+	// Get address of asyncPreemptBM via function value
+	// We use a trick: take address of the function wrapper
+	return uint64(asm.GetAsyncPreemptBMAddr())
+}

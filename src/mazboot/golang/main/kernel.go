@@ -609,6 +609,29 @@ func KernelMain(r0, r1, atags uint32) {
 	}
 	*(*uint32)(unsafe.Pointer(uartBase)) = 0x65 // 'e' = enableMMU done
 
+	// ==========================================================================
+	// CRITICAL: Verify all globals used by page fault handler are pre-mapped
+	// ==========================================================================
+	// This MUST be done immediately after MMU is enabled, before any code path
+	// that could trigger demand paging. If any critical global is not mapped,
+	// the page fault handler will itself trigger a nested page fault, causing
+	// an infinite loop or crash.
+	//
+	// The verification function walks page tables to check that:
+	// - pageTableL0 pointer
+	// - physFrameAllocatorState_global
+	// - totalKernelPages_global
+	// - inPageFaultHandler_global (re-entrancy guard)
+	// - mmapSpans array
+	// are all in identity-mapped BSS/data sections.
+	//
+	if !VerifyCriticalGlobalsMapped() {
+		// Verification failed - halt immediately
+		uartPutsDirect("FATAL: Critical globals not mapped. Cannot proceed.\r\n")
+		for {
+		}
+	}
+
 	// Set physPageSize before schedinit (needed by mallocinit which schedinit calls)
 	// Normally this would be set by sysauxv from AT_PAGESZ auxiliary vector
 	physPageSizeAddr := asm.GetPhysPageSizeAddr()
@@ -1663,21 +1686,24 @@ func parseEmbeddedKmazarin() {
 //   - argc: argument count (for R0 register)
 //   - argv: pointer to argv array (for R1 register)
 //
-// The structure layout in memory:
+// The structure layout in memory (byte offsets):
 //   [0]   = argc (int64, value: 1)
-//   [8]   = argv[0] (pointer to program name string)
+//   [8]   = argv[0] (pointer to program name string at offset 120)
 //   [16]  = NULL (end of argv)
 //   [24]  = NULL (end of envp, empty environment)
 //   [32]  = auxv[0].tag (AT_PAGESZ = 6)
 //   [40]  = auxv[0].value (4096)
 //   [48]  = auxv[1].tag (AT_RANDOM = 25)
-//   [56]  = auxv[1].value (pointer to random bytes)
+//   [56]  = auxv[1].value (pointer to random bytes at offset 136)
 //   [64]  = auxv[2].tag (AT_SECURE = 23)
 //   [72]  = auxv[2].value (0)
-//   [80]  = AT_NULL (0)
-//   [88]  = AT_NULL value (0)
-//   [96]  = program name string "kmazarin\0"
-//   [112] = random bytes (16 bytes, 128 bits)
+//   [80]  = auxv[3].tag (AT_HWCAP = 16)
+//   [88]  = auxv[3].value (HWCAP_ASIMD = 0x2)
+//   [96]  = AT_NULL (0)
+//   [104] = AT_NULL value (0)
+//   [112] = (padding for alignment)
+//   [120] = program name string "kmazarin\0"
+//   [136] = random bytes (16 bytes, 128 bits)
 //
 // This matches the Linux kernel's ELF loader behavior
 //
@@ -1715,15 +1741,16 @@ func setupKmazarinStartupEnv() (stackPointer uintptr, argc uint64, argv uintptr)
 	// Zero the structure area
 	bzero(unsafe.Pointer(structStart), 0x200)
 
-	// Get random bytes for AT_RANDOM
-	randomBytesAddr := structStart + 112
-	getRandomBytes(unsafe.Pointer(randomBytesAddr), 16)
-
 	// Set up the structure as an array of uint64 values
 	data := (*[256]uint64)(unsafe.Pointer(structStart))
 
-	// Program name string at offset 96 (byte offset)
-	progName := (*[16]byte)(unsafe.Pointer(structStart + 96))
+	// Auxv entries use indices 4-13 (80 bytes for auxv, starting at byte 32)
+	// After auxv (112 bytes total for indices 0-13), we place strings and random data:
+	// - Program name string at byte offset 120 (after 15 uint64s worth of space for alignment)
+	// - Random bytes at byte offset 136
+
+	// Program name string at offset 120 (byte offset, 8-byte aligned)
+	progName := (*[16]byte)(unsafe.Pointer(structStart + 120))
 	progName[0] = 'k'
 	progName[1] = 'm'
 	progName[2] = 'a'
@@ -1734,28 +1761,37 @@ func setupKmazarinStartupEnv() (stackPointer uintptr, argc uint64, argv uintptr)
 	progName[7] = 'n'
 	progName[8] = 0
 
+	// Get random bytes for AT_RANDOM at offset 136
+	randomBytesAddr := structStart + 136
+	getRandomBytes(unsafe.Pointer(randomBytesAddr), 16)
+
 	// argc = 1
 	data[0] = 1
 	// argv[0] = pointer to program name
-	data[1] = uint64(structStart + 96)
+	data[1] = uint64(structStart + 120)
 	// argv[1] = NULL (end of argv)
 	data[2] = 0
 	// envp[0] = NULL (empty environment)
 	data[3] = 0
 
 	// Auxiliary vector starts at offset 32 (index 4)
-	// AT_PAGESZ = 6
+	// AT_PAGESZ = 6: Physical page size
 	data[4] = 6
 	data[5] = 4096
-	// AT_RANDOM = 25, pointer to 16 random bytes
+	// AT_RANDOM = 25: pointer to 16 bytes of random data
 	data[6] = 25
 	data[7] = uint64(randomBytesAddr)
-	// AT_SECURE = 23, value = 0 (not in secure mode)
+	// AT_SECURE = 23: secure mode flag (0 = not secure)
 	data[8] = 23
 	data[9] = 0
+	// AT_HWCAP = 16: ARM64 hardware capability bits
+	// Go runtime uses this via archauxv() -> cpu.HWCap for feature detection
+	// Provide basic ASIMD/NEON capability (bit 1) which is mandatory on AArch64
+	data[10] = 16
+	data[11] = 0x2 // HWCAP_ASIMD - Advanced SIMD (NEON)
 	// AT_NULL = 0 (terminator)
-	data[10] = 0
-	data[11] = 0
+	data[12] = 0
+	data[13] = 0
 
 	// Return values for register setup
 	// SP should point to argc (start of structure at top of stack)
@@ -2144,7 +2180,15 @@ func loadAndRunKmazarin() {
 	}
 	uartPutsDirect("AT_PAGESZ value OK\r\n")
 
-	if data[10] != 0 {
+	// Verify AT_HWCAP (tag=16) at data[10], value at data[11]
+	if data[10] != 16 {
+		uartPutsDirect("ERROR: AT_HWCAP tag is not 16!\r\n")
+		return
+	}
+	uartPutsDirect("AT_HWCAP tag OK\r\n")
+
+	// AT_NULL is now at data[12] (after adding AT_HWCAP)
+	if data[12] != 0 {
 		uartPutsDirect("ERROR: AT_NULL tag is not 0!\r\n")
 		return
 	}

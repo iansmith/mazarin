@@ -89,6 +89,8 @@ EXC_UTILS_OBJ = $(BUILD_MAZBOOT_DIR)/exc_utils.o
 EXC_VECTORS_OBJ = $(BUILD_MAZBOOT_DIR)/exc_vectors.o
 EXC_HANDLERS_OBJ = $(BUILD_MAZBOOT_DIR)/exc_handlers.o
 EXC_SYSCALL_OBJ = $(BUILD_MAZBOOT_DIR)/exc_syscall.o
+EXC_IRQ_OBJ = $(BUILD_MAZBOOT_DIR)/exc_irq.o
+EXC_SYNC_ENTRY_OBJ = $(BUILD_MAZBOOT_DIR)/exc_sync_entry.o
 GET_CALLER_SP_OBJ = $(BUILD_MAZBOOT_DIR)/get_caller_sp.o
 LINKER_SYMBOLS_OBJ = $(BUILD_MAZBOOT_DIR)/linker_symbols.o
 KMAZARIN_EMBED_OBJ = $(BUILD_MAZBOOT_DIR)/kmazarin_embed.o
@@ -120,10 +122,14 @@ IMAGE_DATA_OBJ = $(BUILD_MAZBOOT_DIR)/image_data.o
 KMAZARIN_EMBED_GOASM_SRC = $(MAZBOOT_SRC)/asm/goasm/kmazarin_embed.s
 KMAZARIN_EMBED_DATA_OBJ = $(BUILD_MAZBOOT_DIR)/kmazarin_embed_data.o
 
+# Kmazarin binary (defined early so rule dependencies work correctly)
+# BUILD_KMAZARIN_DIR is already defined above (line 55)
+KMAZARIN_BINARY = $(BUILD_KMAZARIN_DIR)/kmazarin.elf
+
 GOROUTINE_GOASM_SRC = $(MAZBOOT_SRC)/asm/goasm/goroutine.s
 
 # Assembly object files list
-ASM_OBJECTS = $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ) $(LIB_SYSREGS_OBJ) $(LIB_TIMER_OBJ) $(LIB_MMU_OBJ) $(LIB_MISC_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ) $(EXC_VECTORS_OBJ) $(EXC_HANDLERS_OBJ) $(EXC_SYSCALL_OBJ)
+ASM_OBJECTS = $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ) $(LIB_SYSREGS_OBJ) $(LIB_TIMER_OBJ) $(LIB_MMU_OBJ) $(LIB_MISC_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ) $(EXC_VECTORS_OBJ) $(EXC_HANDLERS_OBJ) $(EXC_SYSCALL_OBJ) $(EXC_IRQ_OBJ) $(EXC_SYNC_ENTRY_OBJ)
 
 # Output files
 MAZBOOT_BINARY = $(BUILD_DIR)/mazboot.elf
@@ -316,6 +322,20 @@ $(EXC_SYSCALL_OBJ): $(EXC_SYSCALL_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@echo "Transpiling exc_syscall Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
+# Transpile exc_irq Go assembly to ELF (IRQ handlers)
+EXC_IRQ_GOASM_SRC = $(MAZBOOT_SRC)/asm/goasm/exc_irq.s
+$(EXC_IRQ_OBJ): $(EXC_IRQ_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
+	@mkdir -p $(BUILD_MAZBOOT_DIR)
+	@echo "Transpiling exc_irq Go assembly: $<"
+	$(GOASM2GNU) -elf -o $@ $<
+
+# Transpile exc_sync_entry Go assembly to ELF (sync exception handler entry)
+EXC_SYNC_ENTRY_GOASM_SRC = $(MAZBOOT_SRC)/asm/goasm/exc_sync_entry.s
+$(EXC_SYNC_ENTRY_OBJ): $(EXC_SYNC_ENTRY_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
+	@mkdir -p $(BUILD_MAZBOOT_DIR)
+	@echo "Transpiling exc_sync_entry Go assembly: $<"
+	$(GOASM2GNU) -elf -o $@ $<
+
 # Transpile get_caller_sp Go assembly to ELF
 GET_CALLER_SP_GOASM_SRC = $(MAZBOOT_SRC)/asm/goasm/get_caller_sp.s
 $(GET_CALLER_SP_OBJ): $(GET_CALLER_SP_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
@@ -447,12 +467,12 @@ $(KERNEL_GO_OBJ_QEMU): $(MAZBOOT_SRC)/golang/go.mod $(GO_SRC) $(LINKNAMES_GO) $(
 
 # Build mazboot (default: QEMU build with qemuvirt and aarch64 tags)
 # NOTE: Depends on KMAZARIN_EMBED_OBJ and KMAZARIN_EMBED_DATA_OBJ which embed the kmazarin kernel binary
-$(MAZBOOT_BINARY): $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(LIB_MMIO_OBJ) $(LIB_BARRIERS_OBJ) $(LIB_SYSREGS_OBJ) $(LIB_TIMER_OBJ) $(LIB_MMU_OBJ) $(LIB_MISC_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ) $(EXC_VECTORS_OBJ) $(EXC_HANDLERS_OBJ) $(EXC_SYSCALL_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
+$(MAZBOOT_BINARY): $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(LIB_MMIO_OBJ) $(LIB_BARRIERS_OBJ) $(LIB_SYSREGS_OBJ) $(LIB_TIMER_OBJ) $(LIB_MMU_OBJ) $(LIB_MISC_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ) $(EXC_VECTORS_OBJ) $(EXC_HANDLERS_OBJ) $(EXC_SYSCALL_OBJ) $(EXC_IRQ_OBJ) $(EXC_SYNC_ENTRY_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
 	@mkdir -p $(BUILD_DIR)
 	@# Link exceptions.o, then writebarrier.o so our global symbols override Go runtime's
 	@# Our writebarrier.s provides global (T) symbols that should take precedence
 	@# GOASM_TEST_OBJ contains transpiled Go assembly (from Plan 9 syntax)
-	$(CC) $(LDFLAGS) -o $@.tmp $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(KERNEL_GO_OBJ_QEMU) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(LIB_MMIO_OBJ) $(LIB_BARRIERS_OBJ) $(LIB_SYSREGS_OBJ) $(LIB_TIMER_OBJ) $(LIB_MMU_OBJ) $(LIB_MISC_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ) $(EXC_VECTORS_OBJ) $(EXC_HANDLERS_OBJ) $(EXC_SYSCALL_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ)
+	$(CC) $(LDFLAGS) -o $@.tmp $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(KERNEL_GO_OBJ_QEMU) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(LIB_MMIO_OBJ) $(LIB_BARRIERS_OBJ) $(LIB_SYSREGS_OBJ) $(LIB_TIMER_OBJ) $(LIB_MMU_OBJ) $(LIB_MISC_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ) $(EXC_VECTORS_OBJ) $(EXC_HANDLERS_OBJ) $(EXC_SYSCALL_OBJ) $(EXC_IRQ_OBJ) $(EXC_SYNC_ENTRY_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ)
 	@# Patch the binary to redirect calls from Go runtime functions to our implementations
 	@# The Go tool scans .s files to determine which symbols need patching
 	@echo "Patching runtime function calls..."
@@ -503,8 +523,7 @@ check-generated:
 # Kmazarin source directory
 KMAZARIN_SRC = src/kmazarin/golang/kmazarin
 
-# Kmazarin binary output
-KMAZARIN_BINARY = $(BUILD_KMAZARIN_DIR)/kmazarin.elf
+# KMAZARIN_BINARY is defined earlier (around line 125) to ensure correct dependencies
 
 # Build kmazarin kernel as a static binary using Go's internal linker
 # The load address is extracted from src/mazboot/linker.ld using kmazarin-entry.sh
