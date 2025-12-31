@@ -63,7 +63,26 @@
 //   5. Based on return: syscall_return, exception_return, context_switch, or hang
 //
 TEXT sync_exception_entry(SB), NOSPLIT|NOFRAME, $0
-	// CRITICAL: Disable timer interrupts during exception handling
+	// CRITICAL: Disable IRQ interrupts during exception handling
+	//
+	// DAIF bits:
+	//   D (bit 9, 0x200) = Debug exceptions mask
+	//   A (bit 8, 0x100) = SError (asynchronous abort) mask
+	//   I (bit 7, 0x80)  = IRQ mask
+	//   F (bit 6, 0x40)  = FIQ mask
+	//
+	// We only disable IRQ (I bit = 0x80) which is sufficient for preventing
+	// timer interrupts from nesting during exception handling.
+	//
+	// NOTE: Debug exceptions (D) and SError (A) are very unlikely to be the
+	// source of nested exception problems. Masking them would be overkill:
+	//   - Debug exceptions (D): Only occur from breakpoints/watchpoints/single-step
+	//     which we don't use during normal operation
+	//   - SError (A): Asynchronous system errors (like ECC memory errors) are
+	//     rare hardware faults, not software-triggered
+	//
+	// FIQ (F) could be masked for extra safety, but we don't currently use FIQ.
+	//
 	MRS DAIF, R10
 	ORR $0x80, R10, R10            // Set I bit to disable IRQ
 	MSR R10, DAIF
@@ -110,29 +129,49 @@ TEXT sync_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	//
 	// Conflicts: R10-R15 are both sources AND destinations
 	// Solution: Save conflicting sources to stack, then set up destinations
+	//
+	// CRITICAL: Go ABI requires caller to reserve spill space for callee's
+	// register arguments. SyncExceptionDispatch takes 16 args in R0-R15,
+	// so the callee may spill these to its caller's (our) stack.
+	//
+	// The callee computes spill addresses as [callee_sp + frame_size + 8 + offset].
+	// SyncExceptionDispatch has frame_size=144, so:
+	//   - After CALL, SP = OurRSP - 8 (return address pushed)
+	//   - After callee prologue: callee_sp = OurRSP - 8 - 144 = OurRSP - 152
+	//   - Spill R0 at [callee_sp + 152] = [OurRSP]
+	//   - Spill R15 at [callee_sp + 272] = [OurRSP + 120]
+	//
+	// So the callee will spill to [OurRSP+0] through [OurRSP+120].
+	// We MUST store our data at [OurRSP+128] or higher!
+	//
+	// Stack layout after SUB $256, RSP:
+	//   [RSP+0]:   Spill area for callee (128 bytes) - DO NOT USE
+	//   [RSP+128]: Callee-saved R19-R26 (64 bytes)
+	//   [RSP+192]: Temp storage for conflicting sources (40 bytes)
+	//   [RSP+232]: Padding for 16-byte alignment (24 bytes)
 
-	// Allocate space for callee-saved registers + temp storage
-	SUB $128, RSP
+	// Allocate space: 128 (spill area) + 64 (callee-saved) + 40 (temps) + 24 (pad) = 256
+	SUB $256, RSP
 
-	// Save callee-saved registers (0-63)
-	STP (R19, R20), 0(RSP)
-	STP (R21, R22), 16(RSP)
-	STP (R23, R24), 32(RSP)
-	STP (R25, R26), 48(RSP)
+	// Save callee-saved registers at offset 128+ (ABOVE spill area)
+	STP (R19, R20), 128(RSP)
+	STP (R21, R22), 144(RSP)
+	STP (R23, R24), 160(RSP)
+	STP (R25, R26), 176(RSP)
 
-	// Save conflicting sources to stack temp area (64-103)
-	MOVD R10, 64(RSP)              // Save EC
-	MOVD R15, 72(RSP)              // Save ESR
-	MOVD R12, 80(RSP)              // Save ELR
-	MOVD R14, 88(RSP)              // Save FAR
-	MOVD R13, 96(RSP)              // Save SPSR
+	// Save conflicting sources to stack temp area at offset 192+
+	MOVD R10, 192(RSP)             // Save EC
+	MOVD R15, 200(RSP)             // Save ESR
+	MOVD R12, 208(RSP)             // Save ELR
+	MOVD R14, 216(RSP)             // Save FAR
+	MOVD R13, 224(RSP)             // Save SPSR
 
 	// Now set up all 16 arguments in R0-R15
 	// Set destinations in reverse order (R15 down to R0) to avoid clobbering
 	MOVD R26, R15                  // R15 = savedG (from R26)
 	MOVD R25, R14                  // R14 = savedLR (from R25)
 	MOVD R24, R13                  // R13 = savedFP (from R24)
-	ADD $128, RSP, R12             // R12 = framePtr (RSP before allocation)
+	ADD $256, RSP, R12             // R12 = framePtr (RSP before allocation)
 	MOVD R22, R11                  // R11 = arg5 (from R22)
 	MOVD R21, R10                  // R10 = arg4 (from R21)
 	MOVD R20, R9                   // R9 = arg3 (from R20)
@@ -140,22 +179,22 @@ TEXT sync_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	MOVD R17, R7                   // R7 = arg1 (from R17)
 	MOVD R16, R6                   // R6 = arg0 (from R16)
 	MOVD R23, R5                   // R5 = syscallNum (from R23)
-	MOVD 96(RSP), R4               // R4 = spsr (from stack temp)
-	MOVD 88(RSP), R3               // R3 = far (from stack temp)
-	MOVD 80(RSP), R2               // R2 = elr (from stack temp)
-	MOVD 72(RSP), R1               // R1 = esr (from stack temp)
-	MOVD 64(RSP), R0               // R0 = ec (from stack temp)
+	MOVD 224(RSP), R4              // R4 = spsr (from stack temp)
+	MOVD 216(RSP), R3              // R3 = far (from stack temp)
+	MOVD 208(RSP), R2              // R2 = elr (from stack temp)
+	MOVD 200(RSP), R1              // R1 = esr (from stack temp)
+	MOVD 192(RSP), R0              // R0 = ec (from stack temp)
 
 	// Call the unified Go dispatcher
 	CALL main·SyncExceptionDispatch(SB)
 	// Returns: R0 = result, R1 = switchTo, R2 = handled
 
-	// Restore callee-saved registers
-	LDP 0(RSP), (R19, R20)
-	LDP 16(RSP), (R21, R22)
-	LDP 32(RSP), (R23, R24)
-	LDP 48(RSP), (R25, R26)
-	ADD $128, RSP                  // Deallocate space
+	// Restore callee-saved registers from offset 128+
+	LDP 128(RSP), (R19, R20)
+	LDP 144(RSP), (R21, R22)
+	LDP 160(RSP), (R23, R24)
+	LDP 176(RSP), (R25, R26)
+	ADD $256, RSP                  // Deallocate space
 
 	// Check if handled
 	CBZ R2, do_exception_hang      // If not handled, hang
@@ -192,17 +231,20 @@ do_context_switch:
 	MOVD RSP, R0                   // R0 = frame pointer
 	// R1 already has targetIdx
 
+	// DoContextSwitch takes 2 args (R0, R1), so needs 16 bytes of spill space.
+	// Store our data at offset 16+ to avoid collision with spill area.
+	// Layout: [RSP+0..15] = spill area, [RSP+16..63] = our saved regs
 	SUB $64, RSP
-	STP (R19, R20), 0(RSP)
-	STP (R21, R22), 16(RSP)
-	STP (R29, R30), 32(RSP)
+	STP (R19, R20), 16(RSP)
+	STP (R21, R22), 32(RSP)
+	STP (R29, R30), 48(RSP)
 
 	CALL main·DoContextSwitch(SB)
 	// Returns: R0 = pointer to new ThreadContext
 
-	LDP 0(RSP), (R19, R20)
-	LDP 16(RSP), (R21, R22)
-	LDP 32(RSP), (R29, R30)
+	LDP 16(RSP), (R19, R20)
+	LDP 32(RSP), (R21, R22)
+	LDP 48(RSP), (R29, R30)
 	ADD $64, RSP
 
 	B load_context_and_eret(SB)
