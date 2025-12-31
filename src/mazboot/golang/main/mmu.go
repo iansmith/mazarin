@@ -551,10 +551,8 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	// Only print progress dots every 100 faults, not full debug info
 	// pageFaultCounter++  // DISABLED: causes nested exception
 
-	// DEBUG: Print page fault address
-	// DISABLED: Even this might cause issues
-	// uartPutsDirect("\r\nPF VA=0x")
-	// uartPutHex64Direct(uint64(faultAddr))
+	// DEBUG: Print simple breadcrumb to show demand paging is working
+	uartPutcDirect('.')  // Print a dot for each page fault
 
 	// CRITICAL: Validate that the fault address is in a registered mmap span
 	//

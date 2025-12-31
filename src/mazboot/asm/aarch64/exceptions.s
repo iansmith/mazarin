@@ -960,100 +960,32 @@ stack_selected:
     // Actually, we need to re-read SP_EL0 now that we're on exception stack
     SAVE_SP_EL0_TO_STACK            // Save SP_EL0 to frame offset 288
 
-    // Check exception type - only route data aborts (EC=0x25) to Go for demand paging
-    // SVC (EC=0x15) goes to syscall handler
-    lsr x4, x3, #26                 // Extract EC from ESR
-    and x4, x4, #0x3F
-
-    // CRITICAL: Check for EC=0x00 (Unknown exception) - this often indicates
-    // a NULL pointer dereference or jump to NULL. Don't try to return from
-    // these - just print diagnostics and hang to avoid infinite exception loop.
-    cbz x4, sync_unknown_exception  // EC=0x00 - unknown exception
-
-    cmp x4, #0x15                   // SVC?
-    bne 3f
-    b sync_restore_and_svc          // Go to SVC handler (restores regs first)
-3:
-
-    // Check for debug exceptions (watchpoint hit) - forward to general handler
-    cmp x4, #0x34                   // Watchpoint from lower EL?
-    beq sync_other_exception
-    cmp x4, #0x35                   // Watchpoint from current EL?
-    beq sync_other_exception
-
-    // For data aborts (EC=0x25), call Go handler
-    cmp x4, #0x25
-    bne sync_other_exception        // Not data abort - other exception
-
-    // Data abort - this might be a demand paging request
-    // NOTE: CALL_GO_PROLOGUE allocates separate stack space, protecting our exception frame
-
-    // Set up frame pointer for Go
-    add x29, sp, #0
-
-    // Prepare arguments for Go exception handler
-    // x0 = ESR, x1 = ELR, x2 = SPSR, x3 = FAR, x4 = excType
-    // x5 = savedFP, x6 = savedLR, x7 = savedG (for traceback)
-    ldp x1, x2, [sp, #256]          // x1 = ELR, x2 = SPSR
-    ldp x3, x0, [sp, #272]          // x3 = FAR, x0 = ESR (note: reversed order)
-    movz x4, #0                     // excType = SYNC_EXCEPTION (0)
-
-    // Load saved registers for traceback
-    // x5 = savedFP (x29), x6 = savedLR (x30), x7 = savedG (x28)
-    ldp x5, x6, [sp, #232]          // x5 = saved x29 (FP), x6 = saved x30 (LR)
-    ldr x7, [sp, #224]              // x7 = saved g (x28)
-
-    // CRITICAL: Switch to g0 before calling Go exception handler
-    // This allows runtime operations (including stack tracebacks) to work correctly
-    // The original g (x28) is saved at [sp, #224] and will be restored before eret
+    // ========================================================================
+    // UNIFIED EXCEPTION DISPATCH
+    // ========================================================================
+    // All synchronous exceptions now go through sync_exception_entry (Go/Plan9 asm)
+    // which dispatches based on EC to the appropriate handler:
+    //   - EC=0x15 (SVC): syscall handling
+    //   - EC=0x25 (data abort): page fault / demand paging
+    //   - Other: print error and exit
     //
-    // NOTE: For now, we DON'T switch to g0 because it causes pointer corruption issues.
-    // The exception handlers run with whatever g was active, on the exception stack.
-    // TODO: Investigate proper g0/gsignal setup for exception handlers
-    // ldr x28, =runtime.g0
-
-    // Call Go exception handler with 8 parameters
-    // Must provide spill space for Go's argument spills
-    CALL_GO_PROLOGUE SPILL_SPACE_8PARAM
-    bl main.ExceptionHandler
-    CALL_GO_EPILOGUE SPILL_SPACE_8PARAM
-
-    // Go handler returned - this means page fault was handled
-    // Restore ALL registers and retry faulting instruction
+    // Entry state for sync_exception_entry:
+    //   - SP: Points to 320-byte exception frame
+    //   - Exception frame contains all saved registers + system state
     //
-    // CRITICAL: Must restore ELR_EL1, SPSR_EL1, and SP_EL0 before eret!
+    b sync_exception_entry
+
+    // ========================================================================
+    // LEGACY CODE (kept for reference, unreachable)
+    // ========================================================================
+    // The following code paths are now handled by sync_exception_entry:
+    //   - sync_restore_and_svc (SVC syscalls)
+    //   - sync_other_exception (other exceptions)
+    //   - sync_unknown_exception (EC=0x00)
+    //   - Data abort handling
     //
-    // Strategy: Restore all registers from exception frame, then ERET
-    // NOTE: CALL_GO_PROLOGUE protects exception frame, so all registers are safe
-    // NOTE: We DON'T need to switch SP here - ERET handles mode switching automatically
-
-    // Step 1: Restore ELR_EL1 and SPSR_EL1 while still on exception stack
-    ldp x0, x1, [sp, #256]          // x0 = saved ELR, x1 = saved SPSR
-    msr ELR_EL1, x0                 // Restore return address
-    msr SPSR_EL1, x1                // Restore saved PSTATE
-    isb                             // Ensure ELR/SPSR writes complete
-
-    // Step 2: Restore SP_EL0 (kmazarin's stack pointer)
-    // This is critical because ERET may return to EL1t mode which uses SP_EL0
-    RESTORE_SP_EL0_FROM_STACK       // Restore from frame offset 288
-
-    // Step 3: Restore ALL general-purpose registers from exception frame
-    ldp x0, x1, [sp, #0]            // Restore x0, x1
-    ldp x2, x3, [sp, #16]           // Restore x2, x3
-    ldp x4, x5, [sp, #32]           // Restore x4, x5
-    ldp x6, x7, [sp, #48]           // Restore x6, x7
-    ldp x8, x9, [sp, #64]           // Restore x8, x9
-    ldp x10, x11, [sp, #80]         // Restore x10, x11
-    ldp x12, x13, [sp, #96]         // Restore x12, x13
-    ldp x14, x15, [sp, #112]        // Restore x14, x15
-    ldp x16, x17, [sp, #128]        // Restore x16, x17
-    ldp x18, x19, [sp, #144]        // Restore x18, x19
-    ldp x20, x21, [sp, #160]        // Restore x20, x21
-    ldp x22, x23, [sp, #176]        // Restore x22, x23
-    ldp x24, x25, [sp, #192]        // Restore x24, x25
-    ldp x26, x27, [sp, #208]        // Restore x26, x27
-    ldr x28, [sp, #224]             // Restore x28 (g)
-    ldp x29, x30, [sp, #232]        // Restore x29, x30
+    // This code will be removed in a future cleanup once the new path
+    // is verified to work correctly.
 
     // Step 4: Restore SP_EL1 (exception stack) to its original position
     // We need to deallocate the exception frame (320 bytes) before ERET

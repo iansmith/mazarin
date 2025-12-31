@@ -717,11 +717,15 @@ func KernelMain(r0, r1, atags uint32) {
 		uartDrainRingBuffer()
 	}
 
+	uartPutsDirect("A1\r\n") // Before print() test
+
 	// =========================================
 	// TEST: Go Assembly Transpilation (goasm2gnu)
 	// Verify that code written in Go's Plan 9 syntax and transpiled to ELF works
 	// =========================================
+	uartPutsDirect("A2\r\n") // Before print() call
 	print("Testing Go assembly transpilation... ")
+	uartPutsDirect("A3\r\n") // After print() call
 	magic := asm.TestGoAsmMagic()
 	if magic == 0xCAFEBABE {
 		print("magic=OK ")

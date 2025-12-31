@@ -1218,3 +1218,110 @@ func SyscallDispatch(num int64, arg0, arg1, arg2, arg3, arg4, arg5 uint64, frame
 		return -38, -1 // -ENOSYS
 	}
 }
+
+// ============================================================================
+// Unified Synchronous Exception Dispatcher
+// ============================================================================
+// SyncExceptionDispatch is the unified entry point for ALL synchronous exceptions.
+// It dispatches based on exception class (EC) to the appropriate handler:
+//   - EC=0x15 (SVC): syscall handling
+//   - EC=0x25 (data abort): page fault / demand paging
+//   - Other: general exception handling
+//
+// Parameters (all passed via registers from assembly):
+//   ec        - Exception class (bits 31:26 of ESR, already extracted)
+//   esr       - Full ESR_EL1 value
+//   elr       - ELR_EL1 (return address)
+//   far       - FAR_EL1 (fault address, valid for data aborts)
+//   spsr      - SPSR_EL1 (saved processor state)
+//   syscallNum - R8 (syscall number, valid for SVC)
+//   arg0-arg5 - R0-R5 (syscall arguments, valid for SVC)
+//   framePtr  - Pointer to exception frame on stack
+//   savedFP   - Saved x29 (for traceback)
+//   savedLR   - Saved x30 (for traceback)
+//   savedG    - Saved x28/g (for traceback)
+//
+// Returns:
+//   result   - Syscall return value (for SVC), or 0 for handled page faults
+//   switchTo - Thread index for context switch (-1 = no switch, >=0 = switch to thread)
+//   handled  - true if exception was handled (return via ERET), false to hang
+//
+//go:nosplit
+//go:noinline
+func SyncExceptionDispatch(
+	ec uint64,
+	esr uint64,
+	elr uint64,
+	far uint64,
+	spsr uint64,
+	syscallNum uint64,
+	arg0, arg1, arg2, arg3, arg4, arg5 uint64,
+	framePtr uintptr,
+	savedFP, savedLR, savedG uint64,
+) (result int64, switchTo int32, handled bool) {
+
+	// DEBUG: Print entry info for non-syscall exceptions
+	if ec != 0x15 && ec != 0x25 {
+		uartPutsDirect("SED:")
+		uartPutHex64Direct(ec)
+		uartPutcDirect(' ')
+	}
+
+	switch ec {
+	case 0x15: // EC_SVC_EL1_A64 - Supervisor call from AArch64
+		// Dispatch to syscall handler
+		result, switchTo = SyscallDispatch(
+			int64(syscallNum),
+			arg0, arg1, arg2, arg3, arg4, arg5,
+			framePtr,
+		)
+		return result, switchTo, true
+
+	case 0x25: // EC_DATA_ABORT_ELx - Data abort from current EL
+		// Extract fault status from ESR (bits 5:0)
+		faultStatus := esr & 0x3F
+
+		// Try demand paging
+		if HandlePageFault(uintptr(far), faultStatus) {
+			// Page fault handled - return to retry faulting instruction
+			return 0, -1, true
+		}
+
+		// Page fault failed - print error and indicate not handled
+		uartPutsDirect("\r\n!FATAL DATA ABORT:\r\n")
+		uartPutsDirect("  FAR=0x")
+		uartPutHex64Direct(far)
+		uartPutsDirect(" ELR=0x")
+		uartPutHex64Direct(elr)
+		uartPutsDirect(" ESR=0x")
+		uartPutHex64Direct(esr)
+		uartPutsDirect("\r\n")
+		return 0, -1, false
+
+	case 0x00: // EC_UNKNOWN - Unknown exception (often NULL pointer)
+		uartPutsDirect("\r\n!UNKNOWN EXCEPTION (EC=0x00):\r\n")
+		uartPutsDirect("  ELR=0x")
+		uartPutHex64Direct(elr)
+		uartPutsDirect(" FAR=0x")
+		uartPutHex64Direct(far)
+		uartPutsDirect("\r\n")
+		// Fatal - call exit
+		SyscallExit()
+		// Never returns
+		return 0, -1, false
+
+	default:
+		// Unknown EC in synchronous exception handler
+		uartPutsDirect("\r\nUnknown EC in synchronous exception handler: EC=0x")
+		uartPutHex64Direct(ec)
+		uartPutsDirect("\r\n  ELR=0x")
+		uartPutHex64Direct(elr)
+		uartPutsDirect(" FAR=0x")
+		uartPutHex64Direct(far)
+		uartPutsDirect(" ESR=0x")
+		uartPutHex64Direct(esr)
+		uartPutsDirect("\r\n")
+		// Return false to hang in assembly
+		return 0, -1, false
+	}
+}
