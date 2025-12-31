@@ -198,3 +198,33 @@ TEXT ·get_runtime_load_g_addr(SB), NOSPLIT|NOFRAME, $0-8
 TEXT ·get_runtime_save_g_addr(SB), NOSPLIT|NOFRAME, $0-8
 	MOVD	$runtime·save_g·abi0(SB), R0
 	RET
+
+// get_g0_addr() returns uintptr in R0
+// Returns the address of runtime.g0
+TEXT ·get_g0_addr(SB), NOSPLIT|NOFRAME, $0-8
+	MOVD	$runtime·g0(SB), R0
+	RET
+
+// get_m0_addr() returns uintptr in R0
+// Returns the address of runtime.m0
+TEXT ·get_m0_addr(SB), NOSPLIT|NOFRAME, $0-8
+	MOVD	$runtime·m0(SB), R0
+	RET
+
+// get_phys_page_size_addr() returns uintptr in R0
+// Returns the address of runtime.physPageSize
+TEXT ·get_phys_page_size_addr(SB), NOSPLIT|NOFRAME, $0-8
+	MOVD	$runtime·physPageSize(SB), R0
+	RET
+
+// get_mcache0_addr() returns uintptr in R0
+// Returns the address of runtime.mcache0
+TEXT ·get_mcache0_addr(SB), NOSPLIT|NOFRAME, $0-8
+	MOVD	$runtime·mcache0(SB), R0
+	RET
+
+// get_emptymspan_addr() returns uintptr in R0
+// Returns the address of runtime.emptymspan
+TEXT ·get_emptymspan_addr(SB), NOSPLIT|NOFRAME, $0-8
+	MOVD	$runtime·emptymspan(SB), R0
+	RET

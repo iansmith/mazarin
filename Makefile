@@ -25,11 +25,11 @@ MAZBOOT_SRC = src/mazboot
 # Source files - Assembly in asm/aarch64/ directory (relative to src/mazboot)
 BOOT_SRC = $(MAZBOOT_SRC)/asm/aarch64/boot.s
 LIB_SRC = $(MAZBOOT_SRC)/asm/aarch64/lib.s
-WRITEBARRIER_SRC = $(MAZBOOT_SRC)/asm/aarch64/writebarrier.s
+# writebarrier.s now uses Go/Plan9 assembly - see build rule below
 EXCEPTIONS_SRC = $(MAZBOOT_SRC)/asm/aarch64/exceptions.s
 IMAGE_SRC = $(MAZBOOT_SRC)/asm/aarch64/image.s
 GOROUTINE_SRC = $(MAZBOOT_SRC)/asm/aarch64/goroutine.s
-LINKER_SYMBOLS_SRC = $(MAZBOOT_SRC)/asm/aarch64/linker_symbols.s
+# linker_symbols.s now uses Go/Plan9 assembly - see build rule below
 KMAZARIN_EMBED_SRC = $(MAZBOOT_SRC)/asm/aarch64/kmazarin_embed.s
 LINKER_SCRIPT = $(MAZBOOT_SRC)/linker.ld
 
@@ -199,6 +199,8 @@ $(EXCEPTIONS_OBJ): $(EXCEPTIONS_SRC) $(LINKER_SCRIPT) $(KMAZARIN_SYMBOLS_S)
 	@mkdir -p $(BUILD_MAZBOOT_DIR)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
+# Build writebarrier using GCC assembly (has BSS section with .space directive)
+WRITEBARRIER_SRC = $(MAZBOOT_SRC)/asm/aarch64/writebarrier.s
 $(WRITEBARRIER_OBJ): $(WRITEBARRIER_SRC) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_MAZBOOT_DIR)
 	$(CC) $(ASFLAGS) -c $< -o $@
@@ -314,14 +316,19 @@ $(EXC_SYSCALL_OBJ): $(EXC_SYSCALL_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@echo "Transpiling exc_syscall Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
-GET_CALLER_SP_SRC = $(MAZBOOT_SRC)/asm/aarch64/get_caller_sp.s
-$(GET_CALLER_SP_OBJ): $(GET_CALLER_SP_SRC) $(LINKER_SCRIPT)
+# Transpile get_caller_sp Go assembly to ELF
+GET_CALLER_SP_GOASM_SRC = $(MAZBOOT_SRC)/asm/goasm/get_caller_sp.s
+$(GET_CALLER_SP_OBJ): $(GET_CALLER_SP_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_MAZBOOT_DIR)
-	$(CC) $(ASFLAGS) -c $< -o $@
+	@echo "Transpiling get_caller_sp Go assembly: $<"
+	$(GOASM2GNU) -elf -o $@ $<
 
-$(LINKER_SYMBOLS_OBJ): $(LINKER_SYMBOLS_SRC) $(LINKER_SCRIPT)
+# Transpile linker_symbols Go assembly to ELF
+LINKER_SYMBOLS_GOASM_SRC = $(MAZBOOT_SRC)/asm/goasm/linker_symbols.s
+$(LINKER_SYMBOLS_OBJ): $(LINKER_SYMBOLS_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_MAZBOOT_DIR)
-	$(CC) $(ASFLAGS) -c $< -o $@
+	@echo "Transpiling linker_symbols Go assembly: $<"
+	$(GOASM2GNU) -elf -o $@ $<
 
 # Transpile Go assembly (Plan 9 syntax) to ELF using goasm2gnu tool
 $(GOASM_TEST_OBJ): $(GOASM_TEST_SRC) $(GOASM2GNU)

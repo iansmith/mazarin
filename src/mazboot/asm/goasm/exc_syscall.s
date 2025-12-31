@@ -350,11 +350,3 @@ TEXT load_context_and_eret(SB), NOSPLIT|NOFRAME, $0
 
 	ERET
 
-// ============================================================================
-// LEGACY: handle_svc_syscall - Kept for backward compatibility
-// ============================================================================
-// This is called from the old GCC path. It now just jumps to sync_exception_entry.
-// Eventually this can be removed once GCC assembly is fully updated.
-//
-TEXT handle_svc_syscall(SB), NOSPLIT|NOFRAME, $0
-	B sync_exception_entry(SB)
