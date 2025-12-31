@@ -540,8 +540,18 @@ irq_exception_el1:
     beq timer_preempt_handler
 
     // Not a timer interrupt - use Go dispatch
+    //
+    // CRITICAL: Go ABI requires caller to reserve spill space for callee's
+    // register arguments. irqHandlerGo takes 1 arg (irqID in R0), so we need
+    // at least 8 bytes of spill space. We reserve 16 for alignment.
+    //
+    // Without this, irqHandlerGo would spill R0 to [SP+0], corrupting the
+    // saved x0 in our exception frame.
+    //
+    sub sp, sp, #16                  // Reserve 16 bytes spill space
     mov x29, sp
     bl main.irqHandlerGo
+    add sp, sp, #16                  // Deallocate spill space
     INTERRUPT_FULL_RESTORE           // Restores all regs + SP_EL0, does ERET
 
 timer_preempt_handler:
@@ -557,9 +567,7 @@ timer_preempt_handler:
     // 6. ERET will jump to asyncPreemptBM which calls scheduler
     // ========================================================================
 
-    // 0. DEBUG: Print 'T' to show timer interrupt fired
-    mov w0, #'T'
-    UART_PUTC
+    // 0. DEBUG: DISABLED
 
     // Handle timer tick (increment counter, wake sleeping threads)
     mov x29, sp
