@@ -747,118 +747,12 @@ timer_common_skip:
 
 
 // ============================================================================
-// Set VBAR_EL1 (Vector Base Address Register)
-// ============================================================================
-// This function is called from Go to set up the exception vector table
-// VBAR_EL1 must point to a 2KB-aligned address
-.global set_vbar_el1
-set_vbar_el1:
-    // x0 = address of exception vector table (must be 2KB aligned)
-    // Minimal implementation - just set VBAR_EL1 without touching DAIF
-    // (accessing DAIF might cause exceptions if VBAR_EL1 isn't set yet)
-    
-    // Data synchronization barrier to ensure all previous memory accesses complete
-    dsb sy
-    
-    // Set VBAR_EL1 directly from x0
-    // The msr instruction transfers the 64-bit value from x0 to VBAR_EL1
-    msr VBAR_EL1, x0
-    
-    // Instruction synchronization barrier to ensure VBAR_EL1 is set
-    // before any subsequent instructions execute
-    isb
-    
-    ret
-
-// read_vbar_el1() - Read VBAR_EL1 to verify it was set correctly
-// Returns uintptr in x0
-.global read_vbar_el1
-read_vbar_el1:
-    mrs x0, VBAR_EL1
-    ret
-
-// get_exception_vectors_addr() - Returns the address of new vector table
-// Returns uintptr in x0
-// Points to vec_sync_sp_el0 which is the first entry of the new Go/Plan9 vector table
-// Use adrp + add for addresses that might be far away (>1MB)
-// adrp loads the page-aligned address (4KB aligned), add adds the page offset
-.global get_exception_vectors_addr
-get_exception_vectors_addr:
-    // Ensure function is properly aligned
-    .align 2
-    adrp x0, vec_sync_sp_el0
-    add  x0, x0, :lo12:vec_sync_sp_el0
-    ret
-
-
-// ============================================================================
-// Enable/Disable IRQs
-// ============================================================================
-
-// void enable_irqs(void)
-// Clears the I bit in PSTATE to enable IRQ interrupts
-// DAIF bits encoding in immediate value:
-//   Bit 0 = F (FIQ)
-//   Bit 1 = I (IRQ)  <-- This is what we want to clear
-//   Bit 2 = A (SError)
-//   Bit 3 = D (Debug)
-// So #2 = 0b0010 clears bit 1 (I bit) to enable IRQs
-// This function must be called from Go with proper nosplit/noinline markers
-.global enable_irqs
-enable_irqs:
-    // Minimal implementation - just enable IRQs
-    // Data barrier to ensure all previous operations complete
-    dsb sy
-    // Clear I bit (bit 1) to enable IRQ interrupts
-    msr DAIFCLR, #2
-    // Instruction barrier to ensure interrupt enable is visible
-    isb
-    ret
-
-// enable_irqs_asm() - Minimal version to enable interrupts
-// This version tries to be as minimal as possible to avoid exceptions
-.global enable_irqs_asm
-enable_irqs_asm:
-    // Try absolute minimal approach - just the msr instruction
-    // No barriers, no other operations
-    // DAIF bits: Bit 1 = I (IRQ), so #2 clears IRQ mask
-    msr DAIFCLR, #2  // Clear I bit (bit 1) = enable IRQs
-    ret              // Return immediately
-
-
-// void disable_irqs(void)
-// Sets the I bit in PSTATE to disable IRQ interrupts
-// DAIF bits encoding in immediate value:
-//   Bit 0 = F (FIQ)
-//   Bit 1 = I (IRQ)  <-- This is what we want to set
-//   Bit 2 = A (SError)
-//   Bit 3 = D (Debug)
-// So #2 = 0b0010 sets bit 1 (I bit) to disable IRQs
-.global disable_irqs
-disable_irqs:
-    msr DAIFSET, #2  // Set I bit (bit 1) = disable IRQs
-    isb               // Instruction synchronization barrier
-    ret
-
-
-// uint64_t read_spsr_el1(void)
-// Read the Saved Program Status Register
-.global read_spsr_el1
-read_spsr_el1:
-    mrs x0, SPSR_EL1
-    ret
-
-
-// void write_spsr_el1(uint64_t value)
-// Write to SPSR_EL1
-.global write_spsr_el1
-write_spsr_el1:
-    msr SPSR_EL1, x0
-    ret
-
-
 // NOTE: The following functions have been migrated to Go/Plan9 assembly in lib_sysregs.s:
-//   read_elr_el1, write_elr_el1, read_esr_el1, read_far_el1, read_daif
+//   enable_irqs, enable_irqs_asm, disable_irqs,
+//   read_spsr_el1, write_spsr_el1,
+//   read_elr_el1, write_elr_el1, read_esr_el1, read_far_el1, read_daif,
+//   set_vbar_el1, read_vbar_el1, get_exception_vectors_addr
+// ============================================================================
 
 
 // ============================================================================

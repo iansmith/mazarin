@@ -94,36 +94,57 @@ TEXT sync_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	LDP EXC_FRAME_X29_X30(RSP), (R24, R25)   // R24 = saved FP, R25 = saved LR
 	MOVD EXC_FRAME_X28(RSP), R26             // R26 = saved g
 
-	// Set up arguments for SyncExceptionDispatch:
-	// R0 = ec, R1 = esr, R2 = elr, R3 = far, R4 = spsr
-	// R5 = syscallNum, R6 = arg0, R7 = arg1, stack: arg2-arg5, framePtr, savedFP, savedLR, savedG
-	MOVD R10, R0                   // R0 = ec
-	MOVD R15, R1                   // R1 = esr
-	MOVD R12, R2                   // R2 = elr
-	MOVD R14, R3                   // R3 = far
-	MOVD R13, R4                   // R4 = spsr
-	MOVD R23, R5                   // R5 = syscallNum (x8)
-	MOVD R16, R6                   // R6 = arg0 (x0)
-	MOVD R17, R7                   // R7 = arg1 (x1)
+	// Set up arguments for SyncExceptionDispatch using Go register ABI:
+	// Go 1.18+ arm64 uses R0-R15 for the first 16 integer arguments.
+	// Our function has exactly 16 args:
+	//   R0 = ec, R1 = esr, R2 = elr, R3 = far, R4 = spsr
+	//   R5 = syscallNum, R6 = arg0, R7 = arg1, R8 = arg2, R9 = arg3
+	//   R10 = arg4, R11 = arg5, R12 = framePtr, R13 = savedFP
+	//   R14 = savedLR, R15 = savedG
+	//
+	// Current register contents (sources):
+	//   R10 = EC, R15 = ESR, R12 = ELR, R14 = FAR, R13 = SPSR
+	//   R16 = arg0 (x0), R17 = arg1 (x1)
+	//   R19 = arg2, R20 = arg3, R21 = arg4, R22 = arg5
+	//   R23 = syscall number, R24 = savedFP, R25 = savedLR, R26 = savedG
+	//
+	// Conflicts: R10-R15 are both sources AND destinations
+	// Solution: Save conflicting sources to stack, then set up destinations
 
-	// Remaining args go on stack (Go calling convention)
-	// arg2 (R19), arg3 (R20), arg4 (R21), arg5 (R22), framePtr, savedFP, savedLR, savedG
-	SUB $128, RSP                  // Allocate stack space for args + callee-saved
-	MOVD R19, 64(RSP)              // arg2
-	MOVD R20, 72(RSP)              // arg3
-	MOVD R21, 80(RSP)              // arg4
-	MOVD R22, 88(RSP)              // arg5
-	ADD $128, RSP, R9              // R9 = frame pointer (SP before this allocation)
-	MOVD R9, 96(RSP)               // framePtr
-	MOVD R24, 104(RSP)             // savedFP
-	MOVD R25, 112(RSP)             // savedLR
-	MOVD R26, 120(RSP)             // savedG
+	// Allocate space for callee-saved registers + temp storage
+	SUB $128, RSP
 
-	// Save callee-saved registers we used
+	// Save callee-saved registers (0-63)
 	STP (R19, R20), 0(RSP)
 	STP (R21, R22), 16(RSP)
 	STP (R23, R24), 32(RSP)
 	STP (R25, R26), 48(RSP)
+
+	// Save conflicting sources to stack temp area (64-103)
+	MOVD R10, 64(RSP)              // Save EC
+	MOVD R15, 72(RSP)              // Save ESR
+	MOVD R12, 80(RSP)              // Save ELR
+	MOVD R14, 88(RSP)              // Save FAR
+	MOVD R13, 96(RSP)              // Save SPSR
+
+	// Now set up all 16 arguments in R0-R15
+	// Set destinations in reverse order (R15 down to R0) to avoid clobbering
+	MOVD R26, R15                  // R15 = savedG (from R26)
+	MOVD R25, R14                  // R14 = savedLR (from R25)
+	MOVD R24, R13                  // R13 = savedFP (from R24)
+	ADD $128, RSP, R12             // R12 = framePtr (RSP before allocation)
+	MOVD R22, R11                  // R11 = arg5 (from R22)
+	MOVD R21, R10                  // R10 = arg4 (from R21)
+	MOVD R20, R9                   // R9 = arg3 (from R20)
+	MOVD R19, R8                   // R8 = arg2 (from R19)
+	MOVD R17, R7                   // R7 = arg1 (from R17)
+	MOVD R16, R6                   // R6 = arg0 (from R16)
+	MOVD R23, R5                   // R5 = syscallNum (from R23)
+	MOVD 96(RSP), R4               // R4 = spsr (from stack temp)
+	MOVD 88(RSP), R3               // R3 = far (from stack temp)
+	MOVD 80(RSP), R2               // R2 = elr (from stack temp)
+	MOVD 72(RSP), R1               // R1 = esr (from stack temp)
+	MOVD 64(RSP), R0               // R0 = ec (from stack temp)
 
 	// Call the unified Go dispatcher
 	CALL main·SyncExceptionDispatch(SB)
@@ -134,7 +155,7 @@ TEXT sync_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	LDP 16(RSP), (R21, R22)
 	LDP 32(RSP), (R23, R24)
 	LDP 48(RSP), (R25, R26)
-	ADD $128, RSP                  // Deallocate args space
+	ADD $128, RSP                  // Deallocate space
 
 	// Check if handled
 	CBZ R2, do_exception_hang      // If not handled, hang

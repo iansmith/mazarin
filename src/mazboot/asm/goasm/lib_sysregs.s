@@ -245,3 +245,93 @@ TEXT set_maxstackceiling(SB), NOSPLIT|NOFRAME, $0-8
 	MOVD	$runtime·maxstackceiling(SB), R1
 	MOVD	R0, (R1)
 	RET
+
+// ============================================================================
+// Exception Vector and IRQ Control (migrated from exceptions.s)
+// ============================================================================
+
+// set_vbar_el1(addr uintptr)
+// Set VBAR_EL1 with proper barriers
+// This is the full version with DSB/ISB barriers
+// Argument arrives in R0 (Go register ABI)
+TEXT set_vbar_el1(SB), NOSPLIT|NOFRAME, $0-8
+	// R0 already contains addr from Go register ABI
+	// Data synchronization barrier to ensure all previous memory accesses complete
+	DSB	$15		// DSB SY
+	// Set VBAR_EL1
+	MSR	R0, VBAR_EL1
+	// Instruction synchronization barrier to ensure VBAR_EL1 is set
+	// before any subsequent instructions execute
+	ISB	$15
+	RET
+
+// read_vbar_el1() uint64
+// Read VBAR_EL1 to verify it was set correctly
+// Returns value in R0 (Go register ABI)
+TEXT read_vbar_el1(SB), NOSPLIT|NOFRAME, $0-8
+	MRS	VBAR_EL1, R0
+	RET
+
+// get_exception_vectors_addr() uintptr
+// Returns the address of the new Go/Plan9 vector table
+// Points to vec_sync_sp_el0 which is the first entry
+// Returns value in R0 (Go register ABI)
+TEXT get_exception_vectors_addr(SB), NOSPLIT|NOFRAME, $0-8
+	// Load address of vector table using Go's symbol mechanism
+	MOVD	$vec_sync_sp_el0(SB), R0
+	RET
+
+// enable_irqs()
+// Clears the I bit in PSTATE to enable IRQ interrupts
+// DAIF bits: Bit 1 = I (IRQ), so #2 clears IRQ mask
+//
+// CRITICAL: This uses DAIFCLR to CLEAR the I bit, which ENABLES interrupts
+// MSR DAIFCLR, #2 = 0xD50342FF
+TEXT enable_irqs(SB), NOSPLIT|NOFRAME, $0-0
+	// Data barrier to ensure all previous operations complete
+	DSB	$15		// DSB SY
+	// Clear I bit (bit 1) to enable IRQ interrupts
+	// MSR DAIFCLR, #2 - encoded as: 0xD50342FF
+	WORD	$0xD50342FF
+	// Instruction barrier to ensure interrupt enable is visible
+	ISB	$15
+	RET
+
+// enable_irqs_asm()
+// Minimal version to enable interrupts - just the MSR instruction
+// No barriers, for use when barriers aren't needed
+TEXT enable_irqs_asm(SB), NOSPLIT|NOFRAME, $0-0
+	// MSR DAIFCLR, #2 - Clear I bit (bit 1) = enable IRQs
+	WORD	$0xD50342FF
+	RET
+
+// disable_irqs()
+// Sets the I bit in PSTATE to disable IRQ interrupts
+// DAIF bits: Bit 1 = I (IRQ), so #2 sets IRQ mask
+//
+// CRITICAL: This uses DAIFSET to SET the I bit, which DISABLES interrupts
+// MSR DAIFSET, #2 = 0xD50342DF
+TEXT disable_irqs(SB), NOSPLIT|NOFRAME, $0-0
+	// MSR DAIFSET, #2 - Set I bit (bit 1) = disable IRQs
+	WORD	$0xD50342DF
+	ISB	$15
+	RET
+
+// ============================================================================
+// SPSR_EL1 - Saved Program Status Register
+// ============================================================================
+
+// read_spsr_el1() uint64
+// Read the Saved Program Status Register
+// Returns value in R0 (Go register ABI)
+TEXT read_spsr_el1(SB), NOSPLIT|NOFRAME, $0-8
+	MRS	SPSR_EL1, R0
+	RET
+
+// write_spsr_el1(value uint64)
+// Write to SPSR_EL1
+// Argument arrives in R0 (Go register ABI)
+TEXT write_spsr_el1(SB), NOSPLIT|NOFRAME, $0-8
+	// R0 already contains value from Go register ABI
+	MSR	R0, SPSR_EL1
+	RET
