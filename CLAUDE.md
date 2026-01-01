@@ -4,14 +4,14 @@
 
 Mazzy is a bare-metal ARM64 operating system project consisting of two main components:
 
-1. **Mazboot** - Minimal bootloader + OS shim
+1. **Cardinal** - Minimal bootloader + OS shim
 2. **Kmazarin** - The actual operating system kernel (written in Go)
 
 ## Architectural Principles
 
-### Mazboot: The Bootloader/OS Shim
+### Cardinal: The Bootloader/OS Shim
 
-Mazboot implements **just enough of an operating system** to start kmazarin (our real kernel). Since kmazarin is written in Go, mazboot must provide the minimal OS support that the Go compiler and runtime expect.
+Cardinal implements **just enough of an operating system** to start kmazarin (our real kernel). Since kmazarin is written in Go, cardinal must provide the minimal OS support that the Go compiler and runtime expect.
 
 **Key responsibilities:**
 - Initialize hardware (MMU, UART, timers, etc.)
@@ -21,9 +21,9 @@ Mazboot implements **just enough of an operating system** to start kmazarin (our
 - Jump to kmazarin's entry point (`_rt0_arm64_linux`)
 
 **Important constraints:**
-- Mazboot uses **minimal Go runtime** - skips full heap/GC initialization
+- Cardinal uses **minimal Go runtime** - skips full heap/GC initialization
 - Uses simple `kmalloc/kfree` for essential allocations only
-- No goroutines or full scheduler in mazboot
+- No goroutines or full scheduler in cardinal
 
 ### Kmazarin: The Real Kernel
 
@@ -209,9 +209,9 @@ When a Go program starts on Linux:
 5. Runtime uses this to initialize `physPageSize` and other globals
 6. Calls `runtime.schedinit()` → `runtime.mallocinit()` to set up heap
 
-### What We Must Implement in Mazboot
+### What We Must Implement in Cardinal
 
-To start kmazarin properly, mazboot must:
+To start kmazarin properly, cardinal must:
 
 1. **Study Linux kernel behavior** when exec'ing a Go binary
 2. **Replicate the kernel loader**:
@@ -345,7 +345,7 @@ if pOffset > 0x8000000000000000 { // Negative offset (looks like huge positive)
 ## Current Status
 
 ### ✅ Completed (as of 2025-12-25)
-- Mazboot initialization (MMU, UART, basic syscalls)
+- Cardinal initialization (MMU, UART, basic syscalls)
 - **ELF loader with negative offset support** - Correctly handles Go's `-T` flag behavior
   - Parses ELF headers and program segments
   - Zero-fills 64KB header region before .text
@@ -421,10 +421,10 @@ Jumping to kmazarin...
 
 ## Philosophy
 
-**Mazboot is NOT a full OS** - it's the absolute minimum needed to start the real OS (kmazarin). Think of it as:
+**Cardinal is NOT a full OS** - it's the absolute minimum needed to start the real OS (kmazarin). Think of it as:
 - GRUB/UEFI (loads the kernel)
 - + Minimal Linux kernel shim (provides just enough syscalls for Go runtime init)
-- = Mazboot
+- = Cardinal
 
 Once kmazarin is running with full Go runtime initialized, it becomes the real kernel that provides OS services to user programs.
 
@@ -440,11 +440,11 @@ Physical Address Range          Size      Purpose                      Mapped?
 0x3F000000 - 0x3FFFFFFF         16 MB     PCI ECAM (lowmem)            ✓ (Device)
 
 0x40000000 - 0x40100000         1 MB      DTB (Device Tree Blob)       ✓ (RO)
-0x40100000 - 0x401E2000         ~920 KB   Mazboot .text (code)         ✓ (RO+X)
-0x401E2000 - 0x40567000         ~3.5 MB   Mazboot .rodata              ✓ (RO)
-0x40567000 - 0x405FE000         ~604 KB   Mazboot .data                ✓ (RW)
-0x405FE000 - 0x406C8000         ~808 KB   Mazboot .bss                 ✓ (RW)
-0x406C8000 - 0x41000000         ~3.2 MB   Mazboot heap (kmalloc)       ✓ (RW)
+0x40100000 - 0x401E2000         ~920 KB   Cardinal .text (code)        ✓ (RO+X)
+0x401E2000 - 0x40567000         ~3.5 MB   Cardinal .rodata             ✓ (RO)
+0x40567000 - 0x405FE000         ~604 KB   Cardinal .data               ✓ (RW)
+0x405FE000 - 0x406C8000         ~808 KB   Cardinal .bss                ✓ (RW)
+0x406C8000 - 0x41000000         ~3.2 MB   Cardinal heap (kmalloc)      ✓ (RW)
 
 0x41000000 - 0x41800000         8 MB      Page Tables (L0/L1/L2/L3)    ✓ (RW)
 0x41800000 - ~0x41A00000        ~2 MB     Kmazarin ELF (loaded)        ✓ (varies)
@@ -464,7 +464,7 @@ Physical Address Range          Size      Purpose                      Mapped?
 
 #### g0 Stack (SP_EL0) - 0x5EFF0000 - 0x5F000000
 - **Size**: 64 KB
-- **Purpose**: Normal kernel execution stack (mazboot/kernel code)
+- **Purpose**: Normal kernel execution stack (cardinal/kernel code)
 - **Register**: SP_EL0 set to `0x5F000000`
 - **Mode**: EL1t (SPSel=0, using SP_EL0)
 - **Privilege Level**: EL1 (full kernel privileges - NOT EL0 user mode!)
@@ -523,7 +523,7 @@ Physical Address Range          Size      Purpose                      Mapped?
 
 **Exception Levels** (privilege):
 - **EL0** = User mode (unprivileged)
-- **EL1** = Kernel mode (privileged) ← Mazboot operates here
+- **EL1** = Kernel mode (privileged) ← Cardinal operates here
 - **EL2** = Hypervisor mode
 - **EL3** = Secure monitor mode
 
@@ -539,10 +539,10 @@ Physical Address Range          Size      Purpose                      Mapped?
 
 ### Dual-Stack Implementation
 
-Mazboot uses **two separate stacks, both at EL1 privilege**:
+Cardinal uses **two separate stacks, both at EL1 privilege**:
 
 1. **g0 Stack (SP_EL0, EL1t mode)**:
-   - Normal kernel execution (mazboot code, Go runtime, syscalls)
+   - Normal kernel execution (cardinal code, Go runtime, syscalls)
    - Runs in EL1t mode (SPSel=0, using SP_EL0)
    - Full EL1 privileges - can access all system registers
 

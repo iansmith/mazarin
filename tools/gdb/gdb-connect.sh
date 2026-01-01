@@ -11,17 +11,17 @@
 
 GDB_PORT="${1:-1234}"
 
-# Use the QEMU kernel (same one that mazboot uses)
+# Use the QEMU kernel (same one that cardinal uses)
 KERNEL_ELF="../../docker/builtin/kernel.elf"
 
-# Fallback to build/mazboot/mazboot if builtin doesn't exist
+# Fallback to build/cardinal/cardinal if builtin doesn't exist
 if [ ! -f "$KERNEL_ELF" ]; then
-    KERNEL_ELF="../../build/mazboot/mazboot"
+    KERNEL_ELF="../../build/cardinal/cardinal"
     if [ ! -f "$KERNEL_ELF" ]; then
         echo "Error: kernel.elf not found. Expected:" >&2
         echo "  - ../../docker/builtin/kernel.elf" >&2
-        echo "  - ../../build/mazboot/mazboot" >&2
-        echo "Please build mazboot first: cd ../../src/mazboot && make mazboot" >&2
+        echo "  - ../../build/cardinal/cardinal" >&2
+        echo "Please build cardinal first: cd ../../src/cardinal && make cardinal" >&2
         exit 1
     fi
 fi
@@ -38,8 +38,8 @@ echo "Connecting GDB to QEMU on port $GDB_PORT..."
 echo "Kernel: $KERNEL_ELF"
 echo ""
 
-# Get the absolute path to the source directory (src/mazboot)
-SRC_DIR="$(cd "$(dirname "$0")/../../src/mazboot" && pwd)"
+# Get the absolute path to the source directory (src/cardinal)
+SRC_DIR="$(cd "$(dirname "$0")/../../src/cardinal" && pwd)"
 echo "Source directory: $SRC_DIR"
 echo ""
 
@@ -61,10 +61,10 @@ exec "$GDB" "$KERNEL_ELF" \
     -ex "set architecture aarch64" \
     -ex "directory $SRC_DIR" \
     -ex "directory $SRC_DIR/asm/aarch64" \
-    -ex "directory $SRC_DIR/go/mazboot" \
+    -ex "directory $SRC_DIR/go/cardinal" \
     -ex "directory $SRC_DIR/bitfield" \
     -ex "set substitute-path /Users/iansmith/mazzy/src $SRC_DIR" \
-    -ex "set substitute-path /Users/iansmith/mazzy/src/mazboot $SRC_DIR" \
+    -ex "set substitute-path /Users/iansmith/mazzy/src/cardinal $SRC_DIR" \
     -ex "layout asm" \
     -ex "layout regs" \
     -ex "set disassembly-flavor intel"
