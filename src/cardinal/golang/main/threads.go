@@ -378,13 +378,14 @@ func SaveContextFromFrame(framePtr uintptr) {
 	t.Context.SPSR = frame[33]
 }
 
-// DoContextSwitch performs a context switch from current thread to targetIdx
+// doContextSwitchInternal performs a context switch from current thread to targetIdx
 // Saves current context from frame, updates thread states, returns new context
 // Returns pointer to new thread's Context (for assembly to load)
+// Called via ABI stub DoContextSwitch.
 //
 //go:nosplit
 //go:noinline
-func DoContextSwitch(framePtr uintptr, targetIdx int32) *ThreadContext {
+func doContextSwitchInternal(framePtr uintptr, targetIdx int32) *ThreadContext {
 	// Save current thread's context from exception frame
 	SaveContextFromFrame(framePtr)
 

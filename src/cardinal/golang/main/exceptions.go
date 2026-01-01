@@ -681,7 +681,8 @@ const kmazarinTextEnd = 0x41894AE4
 const goArenaLow = 0x4000000000  // 256GB
 const goArenaHigh = 0x8000000000 // 512GB
 
-// IRQExceptionDispatch is the unified entry point for ALL IRQ exceptions.
+// irqExceptionDispatchInternal is the unified entry point for ALL IRQ exceptions.
+// Called via ABI stub IRQExceptionDispatch.
 // It handles:
 //   - Timer interrupts (IRQ 27): timer tick, sleeping thread wake, preemption
 //   - Other interrupts: dispatch to registered handler
@@ -701,7 +702,7 @@ const goArenaHigh = 0x8000000000 // 512GB
 //
 //go:nosplit
 //go:noinline
-func IRQExceptionDispatch(
+func irqExceptionDispatchInternal(
 	irqID uint64,
 	framePtr uintptr,
 	savedG uint64,

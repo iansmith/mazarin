@@ -49,14 +49,18 @@
 // Boot Entry Point
 // ============================================================================
 
-// _rt0_arm64_mazboot is the entry point for the bare-metal kernel.
-// QEMU jumps here after loading the ELF.
+// _cardinal_boot is the bare-metal boot entry point.
+// After building, use objcopy or a post-processor to set the ELF entry point
+// to this symbol's address.
+//
+// For bare-metal, QEMU passes DTB pointer in R0 at reset.
+//
 // On entry:
-//   X0 = DTB pointer (from QEMU)
+//   R0 = DTB pointer (from QEMU)
 //   All other registers undefined
 //   Exception level: EL2 (with virtualization=off) or EL1
 //
-TEXT _rt0_arm64_mazboot(SB), NOSPLIT|NOFRAME, $0
+TEXT _cardinal_boot(SB), NOSPLIT|NOFRAME, $0
 	// Initialize UART base address for early breadcrumb debugging
 	// R14 = 0x09000000 (UART PL011 base on QEMU virt)
 	MOVD	$0x09000000, R14
@@ -174,12 +178,10 @@ at_el1:
 	// ========================================
 	// Clear BSS section
 	// ========================================
-	// Load BSS start and end from linker symbols
-	// These will be patched by the ELF post-processor
-	MOVD	$LinkerSymbols_BssStart(SB), R3
-	MOVD	(R3), R4		// R4 = BSS start address
-	MOVD	$LinkerSymbols_BssEnd(SB), R3
-	MOVD	(R3), R9		// R9 = BSS end address
+	// Load BSS start and end from Go variables in layout.go
+	// Values may be injected at build time or set by ELF post-processor
+	MOVD	main·LinkerBssStart(SB), R4	// R4 = BSS start address
+	MOVD	main·LinkerBssEnd(SB), R9	// R9 = BSS end address
 
 	// Zero registers for clearing
 	MOVD	$0, R5
@@ -333,15 +335,3 @@ cpu_halt:
 boot_halt:
 	HINT	$2			// WFE
 	B	boot_halt
-
-// ============================================================================
-// Linker Symbol Placeholders
-// ============================================================================
-// These will be patched by the ELF post-processor with actual addresses.
-// The values here are sentinels that will be overwritten.
-
-DATA	LinkerSymbols_BssStart(SB)/8, $0xDEAD0007
-GLOBL	LinkerSymbols_BssStart(SB), NOPTR, $8
-
-DATA	LinkerSymbols_BssEnd(SB)/8, $0xDEAD0008
-GLOBL	LinkerSymbols_BssEnd(SB), NOPTR, $8

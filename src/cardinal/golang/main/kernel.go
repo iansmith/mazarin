@@ -548,11 +548,11 @@ func SimpleTestKernel() {
 	asm.QemuExit()
 }
 
-// KernelMain is the entry point called from boot.s
+// kernelMainInternal is the entry point called from boot.s via ABI stub KernelMain
 // For bare metal, we ensure it's not optimized away
 //
 //go:noinline
-func KernelMain(r0, r1, atags uint32) {
+func kernelMainInternal(r0, r1, atags uint32) {
 	// VERY EARLY breadcrumb - before any complex operations
 	uartBase := uintptr(0x09000000)
 	*(*uint32)(unsafe.Pointer(uartBase)) = 0x4B // 'K' = Entered KernelMain
@@ -742,33 +742,9 @@ func KernelMain(r0, r1, atags uint32) {
 
 	uartPutsDirect("A1\r\n") // Before print() test
 
-	// =========================================
-	// TEST: Go Assembly Transpilation (goasm2gnu)
-	// Verify that code written in Go's Plan 9 syntax and transpiled to ELF works
-	// =========================================
-	uartPutsDirect("A2\r\n") // Before print() call
-	print("Testing Go assembly transpilation... ")
-	uartPutsDirect("A3\r\n") // After print() call
-	magic := asm.TestGoAsmMagic()
-	if magic == 0xCAFEBABE {
-		print("magic=OK ")
-	} else {
-		print("magic=FAIL(")
-		printHex64(magic)
-		print(") ")
-	}
-	sum := asm.TestGoAsmAdd(100, 23)
-	if sum == 123 {
-		print("add=OK")
-	} else {
-		print("add=FAIL(")
-		print(int(sum))
-		print(")")
-	}
-	print("\r\n")
-	for i := 0; i < 10; i++ {
-		uartDrainRingBuffer()
-	}
+	// TEST: Go Assembly Transpilation (goasm2gnu) - REMOVED
+	// The goasm_test.s file was removed as part of assembly reorganization.
+	// Go assembly transpilation is verified through normal kernel operation.
 
 	// =========================================
 	// TEST: Item 3 - runtime.args()
@@ -2110,13 +2086,13 @@ func loadAndRunKmazarin() {
 	// 3. Use barriers to ensure ordering
 	for va := minVA; va < maxVA; va += 64 {
 		// DC CVAU - Data Cache Clean by VA to Point of Unification
-		asm.DcCvauManual(va)
+		asm.DcCvau(va)
 	}
 	asm.Dsb() // Ensure all DC operations complete
 
 	for va := minVA; va < maxVA; va += 64 {
 		// IC IVAU - Instruction Cache Invalidate by VA to Point of Unification
-		asm.IcIvauManual(va)
+		asm.IcIvau(va)
 	}
 	asm.Dsb() // Ensure all IC operations complete
 	asm.Isb() // Synchronize context

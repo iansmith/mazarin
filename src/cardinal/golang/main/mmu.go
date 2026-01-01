@@ -524,7 +524,8 @@ func preMapPages() {
 // is considered valid. The Go runtime won't access addresses it didn't request,
 // so any fault in this range is from a legitimate mmap allocation.
 //
-//go:nosplit
+// NOTE: nosplit removed - called from syncExceptionDispatchInternal on g0 stack.
+//
 //go:noinline
 func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	// ==========================================================================

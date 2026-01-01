@@ -1278,7 +1278,8 @@ func SyscallDispatch(num int64, arg0, arg1, arg2, arg3, arg4, arg5 uint64, frame
 // ============================================================================
 // Unified Synchronous Exception Dispatcher
 // ============================================================================
-// SyncExceptionDispatch is the unified entry point for ALL synchronous exceptions.
+// syncExceptionDispatchInternal is the unified entry point for ALL synchronous exceptions.
+// Called via ABI stub SyncExceptionDispatch.
 // It dispatches based on exception class (EC) to the appropriate handler:
 //   - EC=0x15 (SVC): syscall handling
 //   - EC=0x25 (data abort): page fault / demand paging
@@ -1302,9 +1303,11 @@ func SyscallDispatch(num int64, arg0, arg1, arg2, arg3, arg4, arg5 uint64, frame
 //   switchTo - Thread index for context switch (-1 = no switch, >=0 = switch to thread)
 //   handled  - true if exception was handled (return via ERET), false to hang
 //
-//go:nosplit
+// NOTE: nosplit removed - we're on g0 with 64KB stack after sync_exception_entry switches g.
+// Stack growth isn't possible on g0, but we have enough space without the nosplit limit.
+//
 //go:noinline
-func SyncExceptionDispatch(
+func syncExceptionDispatchInternal(
 	ec uint64,
 	esr uint64,
 	elr uint64,

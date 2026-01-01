@@ -67,7 +67,9 @@ MAIN_GEN = $(CARDINAL_SRC)/tools/generate-main-calls.go
 
 # Assembly source files that generators depend on
 ASM_SOURCES = $(wildcard $(CARDINAL_SRC)/asm/aarch64/*.s)
-GOASM_SOURCES = $(wildcard $(CARDINAL_SRC)/asm/goasm/*.s)
+GOASM_SOURCES = $(wildcard $(CARDINAL_SRC)/asm/goasm/arch/arm64/*.s) \
+                $(wildcard $(CARDINAL_SRC)/asm/goasm/dev/*.s) \
+                $(wildcard $(CARDINAL_SRC)/asm/goasm/kernel/*.s)
 
 # Object files (all in build/cardinal/)
 BOOT_OBJ = $(BUILD_CARDINAL_DIR)/boot.o
@@ -76,12 +78,19 @@ IMAGE_OBJ = $(BUILD_CARDINAL_DIR)/image.o
 GOROUTINE_OBJ = $(BUILD_CARDINAL_DIR)/goroutine.o
 ASYNC_PREEMPT_OBJ = $(BUILD_CARDINAL_DIR)/async_preempt.o
 LIB_GETTERS_OBJ = $(BUILD_CARDINAL_DIR)/lib_getters.o
-LIB_MMIO_OBJ = $(BUILD_CARDINAL_DIR)/lib_mmio.o
+# Device objects (from asm/goasm/dev/)
+MMIO_OBJ = $(BUILD_CARDINAL_DIR)/mmio.o
+GENERIC_TIMER_OBJ = $(BUILD_CARDINAL_DIR)/generic_timer.o
+UART_PL011_OBJ = $(BUILD_CARDINAL_DIR)/uart_pl011.o
+SEMIHOSTING_OBJ = $(BUILD_CARDINAL_DIR)/semihosting.o
+
+# Architecture objects (from asm/goasm/arch/arm64/)
 LIB_BARRIERS_OBJ = $(BUILD_CARDINAL_DIR)/lib_barriers.o
 LIB_SYSREGS_OBJ = $(BUILD_CARDINAL_DIR)/lib_sysregs.o
-LIB_TIMER_OBJ = $(BUILD_CARDINAL_DIR)/lib_timer.o
 LIB_MMU_OBJ = $(BUILD_CARDINAL_DIR)/lib_mmu.o
-LIB_MISC_OBJ = $(BUILD_CARDINAL_DIR)/lib_misc.o
+
+# Kernel objects (from asm/goasm/kernel/)
+MEM_OBJ = $(BUILD_CARDINAL_DIR)/mem.o
 LIB_RUNTIME_OBJ = $(BUILD_CARDINAL_DIR)/lib_runtime.o
 EXC_UTILS_OBJ = $(BUILD_CARDINAL_DIR)/exc_utils.o
 EXC_VECTORS_OBJ = $(BUILD_CARDINAL_DIR)/exc_vectors.o
@@ -94,9 +103,7 @@ LINKER_SYMBOLS_OBJ = $(BUILD_CARDINAL_DIR)/linker_symbols.o
 KMAZARIN_EMBED_OBJ = $(BUILD_CARDINAL_DIR)/kmazarin_embed.o
 KERNEL_GO_OBJ = $(BUILD_CARDINAL_DIR)/kernel_go.o
 
-# Transpiled Go assembly object (from Go Plan 9 syntax)
-GOASM_TEST_SRC = $(CARDINAL_SRC)/asm/goasm/goasm_test_arm64.s
-GOASM_TEST_OBJ = $(BUILD_CARDINAL_DIR)/goasm_test.o
+# Transpiled Go assembly tools
 GOASM2GNU_SRC = $(CARDINAL_SRC)/tools/goasm2gnu.go
 GOASM2GNU = $(BUILD_TOOLS_DIR)/goasm2gnu
 
@@ -113,21 +120,21 @@ INCBIN2GOASM = $(BUILD_TOOLS_DIR)/incbin2goasm
 BIN2ELF_SRC = $(CARDINAL_SRC)/tools/bin2elf.go
 BIN2ELF = $(BUILD_TOOLS_DIR)/bin2elf
 
-# Go assembly sources (Plan 9 syntax, in asm/goasm/)
-IMAGE_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/image_arm64.s
+# Go assembly sources (Plan 9 syntax, in asm/goasm/ subdirectories)
+IMAGE_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/dev/image_arm64.s
 IMAGE_DATA_OBJ = $(BUILD_CARDINAL_DIR)/image_data.o
 
-KMAZARIN_EMBED_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/kmazarin_embed_arm64.s
+KMAZARIN_EMBED_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/dev/kmazarin_embed_arm64.s
 KMAZARIN_EMBED_DATA_OBJ = $(BUILD_CARDINAL_DIR)/kmazarin_embed_data.o
 
 # Kmazarin binary (defined early so rule dependencies work correctly)
 # BUILD_KMAZARIN_DIR is already defined above (line 55)
 KMAZARIN_BINARY = $(BUILD_KMAZARIN_DIR)/kmazarin.elf
 
-GOROUTINE_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/goroutine_arm64.s
+GOROUTINE_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/kernel/goroutine_arm64.s
 
 # Assembly object files list
-ASM_OBJECTS = $(BOOT_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ) $(LIB_SYSREGS_OBJ) $(LIB_TIMER_OBJ) $(LIB_MMU_OBJ) $(LIB_MISC_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ) $(EXC_VECTORS_OBJ) $(EXC_HANDLERS_OBJ) $(EXC_SYSCALL_OBJ) $(EXC_IRQ_OBJ) $(EXC_SYNC_ENTRY_OBJ)
+ASM_OBJECTS = $(BOOT_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(LIB_SYSREGS_OBJ) $(GENERIC_TIMER_OBJ) $(LIB_MMU_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ) $(EXC_VECTORS_OBJ) $(EXC_HANDLERS_OBJ) $(EXC_SYSCALL_OBJ) $(EXC_IRQ_OBJ) $(EXC_SYNC_ENTRY_OBJ) $(MMIO_OBJ) $(LIB_BARRIERS_OBJ) $(UART_PL011_OBJ) $(SEMIHOSTING_OBJ) $(MEM_OBJ) $(LIB_GETTERS_OBJ)
 
 # Output files
 CARDINAL_BINARY = $(BUILD_DIR)/cardinal.elf
@@ -197,7 +204,7 @@ $(BOOT_OBJ): $(BOOT_SRC) $(LINKER_SCRIPT)
 
 # Transpile writebarrier Go assembly to ELF
 # Note: The dummy buffer is defined in writebarrier_buffer.go, not in assembly
-WRITEBARRIER_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/writebarrier_arm64.s
+WRITEBARRIER_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/kernel/writebarrier_arm64.s
 $(WRITEBARRIER_OBJ): $(WRITEBARRIER_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_CARDINAL_DIR)
 	@echo "Transpiling writebarrier Go assembly: $<"
@@ -222,70 +229,84 @@ $(GOROUTINE_OBJ): $(GOROUTINE_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	$(GOASM2GNU) -elf -o $@ $<
 
 # Transpile async_preempt Go assembly to ELF
-ASYNC_PREEMPT_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/async_preempt_arm64.s
+ASYNC_PREEMPT_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/kernel/async_preempt_arm64.s
 $(ASYNC_PREEMPT_OBJ): $(ASYNC_PREEMPT_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_CARDINAL_DIR)
 	@echo "Transpiling async_preempt Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
 # Transpile lib_getters Go assembly to ELF
-LIB_GETTERS_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/lib_getters_arm64.s
+LIB_GETTERS_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/kernel/lib_getters_arm64.s
 $(LIB_GETTERS_OBJ): $(LIB_GETTERS_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_CARDINAL_DIR)
 	@echo "Transpiling lib_getters Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
-# Transpile lib_mmio Go assembly to ELF
-LIB_MMIO_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/lib_mmio_arm64.s
-$(LIB_MMIO_OBJ): $(LIB_MMIO_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
+# Transpile mmio Go assembly to ELF
+MMIO_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/dev/mmio_arm64.s
+$(MMIO_OBJ): $(MMIO_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_CARDINAL_DIR)
-	@echo "Transpiling lib_mmio Go assembly: $<"
+	@echo "Transpiling mmio Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
 # Transpile lib_barriers Go assembly to ELF
-LIB_BARRIERS_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/lib_barriers_arm64.s
+LIB_BARRIERS_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/arch/arm64/lib_barriers_arm64.s
 $(LIB_BARRIERS_OBJ): $(LIB_BARRIERS_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_CARDINAL_DIR)
 	@echo "Transpiling lib_barriers Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
 # Transpile lib_sysregs Go assembly to ELF
-LIB_SYSREGS_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/lib_sysregs_arm64.s
+LIB_SYSREGS_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/arch/arm64/lib_sysregs_arm64.s
 $(LIB_SYSREGS_OBJ): $(LIB_SYSREGS_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_CARDINAL_DIR)
 	@echo "Transpiling lib_sysregs Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
-# Transpile lib_timer Go assembly to ELF
-LIB_TIMER_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/lib_timer_arm64.s
-$(LIB_TIMER_OBJ): $(LIB_TIMER_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
+# Transpile generic_timer Go assembly to ELF
+GENERIC_TIMER_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/dev/generic_timer_arm64.s
+$(GENERIC_TIMER_OBJ): $(GENERIC_TIMER_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_CARDINAL_DIR)
-	@echo "Transpiling lib_timer Go assembly: $<"
+	@echo "Transpiling generic_timer Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
 # Transpile lib_mmu Go assembly to ELF
-LIB_MMU_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/lib_mmu_arm64.s
+LIB_MMU_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/arch/arm64/lib_mmu_arm64.s
 $(LIB_MMU_OBJ): $(LIB_MMU_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_CARDINAL_DIR)
 	@echo "Transpiling lib_mmu Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
-# Transpile lib_misc Go assembly to ELF
-LIB_MISC_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/lib_misc_arm64.s
-$(LIB_MISC_OBJ): $(LIB_MISC_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
+# Transpile uart_pl011 Go assembly to ELF
+UART_PL011_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/dev/uart_pl011_arm64.s
+$(UART_PL011_OBJ): $(UART_PL011_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_CARDINAL_DIR)
-	@echo "Transpiling lib_misc Go assembly: $<"
+	@echo "Transpiling uart_pl011 Go assembly: $<"
+	$(GOASM2GNU) -elf -o $@ $<
+
+# Transpile semihosting Go assembly to ELF
+SEMIHOSTING_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/dev/semihosting_arm64.s
+$(SEMIHOSTING_OBJ): $(SEMIHOSTING_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
+	@mkdir -p $(BUILD_CARDINAL_DIR)
+	@echo "Transpiling semihosting Go assembly: $<"
+	$(GOASM2GNU) -elf -o $@ $<
+
+# Transpile mem Go assembly to ELF
+MEM_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/kernel/mem_arm64.s
+$(MEM_OBJ): $(MEM_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
+	@mkdir -p $(BUILD_CARDINAL_DIR)
+	@echo "Transpiling mem Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
 # Transpile lib_runtime Go assembly to ELF
-LIB_RUNTIME_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/lib_runtime_arm64.s
+LIB_RUNTIME_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/kernel/lib_runtime_arm64.s
 $(LIB_RUNTIME_OBJ): $(LIB_RUNTIME_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_CARDINAL_DIR)
 	@echo "Transpiling lib_runtime Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
 # Transpile exc_utils Go assembly to ELF
-EXC_UTILS_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/exc_utils_arm64.s
+EXC_UTILS_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/kernel/exc_utils_arm64.s
 $(EXC_UTILS_OBJ): $(EXC_UTILS_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_CARDINAL_DIR)
 	@echo "Transpiling exc_utils Go assembly: $<"
@@ -294,59 +315,54 @@ $(EXC_UTILS_OBJ): $(EXC_UTILS_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 # Transpile exc_vectors Go assembly to ELF (exception vector table)
 # Uses -section .vectors for linker placement, -align 11 for 2KB alignment,
 # -pad-to 128 to pad each entry to 128 bytes, -check-size 128 to error if exceeded
-EXC_VECTORS_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/exc_vectors_arm64.s
+EXC_VECTORS_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/arch/arm64/exc_vectors_arm64.s
 $(EXC_VECTORS_OBJ): $(EXC_VECTORS_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_CARDINAL_DIR)
 	@echo "Transpiling exc_vectors Go assembly: $<"
 	$(GOASM2GNU) -elf -section .vectors -align 11 -pad-to 128 -check-size 128 -o $@ $<
 
 # Transpile exc_handlers Go assembly to ELF (exception handler entry points)
-EXC_HANDLERS_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/exc_handlers_arm64.s
+EXC_HANDLERS_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/arch/arm64/exc_handlers_arm64.s
 $(EXC_HANDLERS_OBJ): $(EXC_HANDLERS_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_CARDINAL_DIR)
 	@echo "Transpiling exc_handlers Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
 # Transpile exc_syscall Go assembly to ELF (syscall handlers)
-EXC_SYSCALL_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/exc_syscall_arm64.s
+EXC_SYSCALL_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/kernel/exc_syscall_arm64.s
 $(EXC_SYSCALL_OBJ): $(EXC_SYSCALL_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_CARDINAL_DIR)
 	@echo "Transpiling exc_syscall Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
 # Transpile exc_irq Go assembly to ELF (IRQ handlers)
-EXC_IRQ_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/exc_irq_arm64.s
+EXC_IRQ_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/arch/arm64/exc_irq_arm64.s
 $(EXC_IRQ_OBJ): $(EXC_IRQ_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_CARDINAL_DIR)
 	@echo "Transpiling exc_irq Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
 # Transpile exc_sync_entry Go assembly to ELF (sync exception handler entry)
-EXC_SYNC_ENTRY_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/exc_sync_entry_arm64.s
+EXC_SYNC_ENTRY_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/arch/arm64/exc_sync_entry_arm64.s
 $(EXC_SYNC_ENTRY_OBJ): $(EXC_SYNC_ENTRY_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_CARDINAL_DIR)
 	@echo "Transpiling exc_sync_entry Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
 # Transpile get_caller_sp Go assembly to ELF
-GET_CALLER_SP_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/get_caller_sp_arm64.s
+GET_CALLER_SP_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/kernel/get_caller_sp_arm64.s
 $(GET_CALLER_SP_OBJ): $(GET_CALLER_SP_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_CARDINAL_DIR)
 	@echo "Transpiling get_caller_sp Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
 # Transpile linker_symbols Go assembly to ELF
-LINKER_SYMBOLS_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/linker_symbols_arm64.s
+LINKER_SYMBOLS_GOASM_SRC = $(CARDINAL_SRC)/asm/goasm/kernel/linker_symbols_arm64.s
 $(LINKER_SYMBOLS_OBJ): $(LINKER_SYMBOLS_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_CARDINAL_DIR)
 	@echo "Transpiling linker_symbols Go assembly: $<"
 	$(GOASM2GNU) -elf -o $@ $<
 
-# Transpile Go assembly (Plan 9 syntax) to ELF using goasm2gnu tool
-$(GOASM_TEST_OBJ): $(GOASM_TEST_SRC) $(GOASM2GNU)
-	@mkdir -p $(BUILD_CARDINAL_DIR)
-	@echo "Transpiling Go assembly: $<"
-	$(GOASM2GNU) -elf -o $@ $<
 
 # Convert kmazarin binary directly to ELF object (in .kmazarin section)
 $(KMAZARIN_EMBED_DATA_OBJ): $(KMAZARIN_BINARY) $(BIN2ELF)
@@ -366,13 +382,15 @@ KERNEL_GO_TEMP = $(BUILD_CARDINAL_DIR)/kernel_go_temp.o
 
 # Generate list of symbols that need globalizing (discovered from assembly files)
 # Scans both GNU assembly (asm/aarch64/) and Go/Plan9 assembly (asm/goasm/) for symbol references
-$(GLOBALIZE_SYMBOLS_LIST): $(GLOBALIZE_SYMBOLS_GEN) $(wildcard $(CARDINAL_SRC)/asm/aarch64/*.s) $(wildcard $(CARDINAL_SRC)/asm/goasm/*.s)
+# Note: -goasm takes a single directory and uses filepath.Walk to traverse subdirectories
+$(GLOBALIZE_SYMBOLS_LIST): $(GLOBALIZE_SYMBOLS_GEN) $(wildcard $(CARDINAL_SRC)/asm/aarch64/*.s) $(GOASM_SOURCES)
 	@echo "Discovering symbols that need globalizing..."
 	@mkdir -p $(BUILD_CARDINAL_DIR)
 	@cd $(CARDINAL_SRC) && $(abspath $(GLOBALIZE_SYMBOLS_GEN)) -asm asm/aarch64 -goasm asm/goasm -o $(abspath $(GLOBALIZE_SYMBOLS_LIST))
 
 # Generate linknames.go from assembly files (both GCC and Go/Plan9 assembly)
 # This file contains //go:linkname directives to link Go functions to assembly symbols
+# Note: -goasm takes a single directory and uses filepath.Walk to traverse subdirectories
 $(LINKNAMES_GO): $(LINKNAMES_GEN) $(ASM_SOURCES) $(GOASM_SOURCES)
 	@echo "Regenerating linknames.go from assembly sources..."
 	@mkdir -p $(ASM_PACKAGE_DIR)
@@ -391,6 +409,7 @@ generate-linknames:
 
 # Generate main.go from assembly and Go files
 # This file ensures all assembly-called functions are referenced so they're not optimized away
+# Note: -goasm takes a single directory and uses filepath.Walk to traverse subdirectories
 $(MAIN_GO): $(MAIN_GEN) $(ASM_SOURCES) $(GOASM_SOURCES) $(filter-out $(MAIN_GO), $(GO_SRC))
 	@echo "Regenerating main.go from assembly and Go sources..."
 	@CGO_ENABLED=0 GOTOOLCHAIN=auto $(GO) run $(MAIN_GEN) \
@@ -459,12 +478,11 @@ $(KERNEL_GO_OBJ_QEMU): $(CARDINAL_SRC)/golang/go.mod $(GO_SRC) $(LINKNAMES_GO) $
 
 # Build cardinal (default: QEMU build with qemuvirt and aarch64 tags)
 # NOTE: Depends on KMAZARIN_EMBED_OBJ and KMAZARIN_EMBED_DATA_OBJ which embed the kmazarin kernel binary
-$(CARDINAL_BINARY): $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(LIB_MMIO_OBJ) $(LIB_BARRIERS_OBJ) $(LIB_SYSREGS_OBJ) $(LIB_TIMER_OBJ) $(LIB_MMU_OBJ) $(LIB_MISC_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ) $(EXC_VECTORS_OBJ) $(EXC_HANDLERS_OBJ) $(EXC_SYSCALL_OBJ) $(EXC_IRQ_OBJ) $(EXC_SYNC_ENTRY_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
+$(CARDINAL_BINARY): $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(MMIO_OBJ) $(LIB_BARRIERS_OBJ) $(LIB_SYSREGS_OBJ) $(GENERIC_TIMER_OBJ) $(LIB_MMU_OBJ) $(UART_PL011_OBJ) $(SEMIHOSTING_OBJ) $(MEM_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ) $(EXC_VECTORS_OBJ) $(EXC_HANDLERS_OBJ) $(EXC_SYSCALL_OBJ) $(EXC_IRQ_OBJ) $(EXC_SYNC_ENTRY_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(LIB_GETTERS_OBJ) $(KERNEL_GO_OBJ_QEMU) $(LINKER_SCRIPT) $(PATCH_RUNTIME)
 	@mkdir -p $(BUILD_DIR)
 	@# Link exceptions.o, then writebarrier.o so our global symbols override Go runtime's
 	@# Our writebarrier.s provides global (T) symbols that should take precedence
-	@# GOASM_TEST_OBJ contains transpiled Go assembly (from Plan 9 syntax)
-	$(CC) $(LDFLAGS) -o $@.tmp $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(KERNEL_GO_OBJ_QEMU) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(LIB_MMIO_OBJ) $(LIB_BARRIERS_OBJ) $(LIB_SYSREGS_OBJ) $(LIB_TIMER_OBJ) $(LIB_MMU_OBJ) $(LIB_MISC_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ) $(EXC_VECTORS_OBJ) $(EXC_HANDLERS_OBJ) $(EXC_SYSCALL_OBJ) $(EXC_IRQ_OBJ) $(EXC_SYNC_ENTRY_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ)
+	$(CC) $(LDFLAGS) -o $@.tmp $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(KERNEL_GO_OBJ_QEMU) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(MMIO_OBJ) $(LIB_BARRIERS_OBJ) $(LIB_SYSREGS_OBJ) $(GENERIC_TIMER_OBJ) $(LIB_MMU_OBJ) $(UART_PL011_OBJ) $(SEMIHOSTING_OBJ) $(MEM_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ) $(EXC_VECTORS_OBJ) $(EXC_HANDLERS_OBJ) $(EXC_SYSCALL_OBJ) $(EXC_IRQ_OBJ) $(EXC_SYNC_ENTRY_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(LIB_GETTERS_OBJ)
 	@# Patch the binary to redirect calls from Go runtime functions to our implementations
 	@# The Go tool scans .s files to determine which symbols need patching
 	@echo "Patching runtime function calls..."
@@ -546,6 +564,50 @@ $(KMAZARIN_SYMBOLS_S): $(KMAZARIN_BINARY) $(EXTRACT_SYMBOLS)
 # Build target for kmazarin
 kmazarin: $(KMAZARIN_BINARY)
 	@echo "kmazarin ready at $(KMAZARIN_BINARY)"
+
+# =========================================
+# Go Native Toolchain Build (Experimental)
+# =========================================
+# This builds cardinal using Go's internal linker instead of GCC.
+# All assembly is included via Go packages in golang/asm/
+
+# Tool to patch ELF entry point
+PATCH_ENTRY_TOOL = $(CARDINAL_SRC)/tools/patch-entry.go
+
+# Go-native build output
+CARDINAL_GO_NATIVE = $(BUILD_DIR)/cardinal-go.elf
+
+# Go source files for native build (includes all asm packages)
+GO_NATIVE_SRC = $(wildcard $(GO_PACKAGE_DIR)/*.go) \
+                $(wildcard $(ASM_PACKAGE_DIR)/*.go) \
+                $(wildcard $(ASM_PACKAGE_DIR)/arch/arm64/*.go) \
+                $(wildcard $(ASM_PACKAGE_DIR)/arch/arm64/*.s) \
+                $(wildcard $(ASM_PACKAGE_DIR)/dev/*.go) \
+                $(wildcard $(ASM_PACKAGE_DIR)/dev/*.s) \
+                $(wildcard $(ASM_PACKAGE_DIR)/kernel/*.go) \
+                $(wildcard $(ASM_PACKAGE_DIR)/kernel/*.s)
+
+# Build cardinal using Go's native toolchain (no GCC linking)
+# Uses -T to set text section address, then patches entry point to _cardinal_boot
+$(CARDINAL_GO_NATIVE): $(GO_NATIVE_SRC) $(CARDINAL_SRC)/golang/go.mod $(KMAZARIN_BINARY) | $(BUILD_DIR)
+	@echo "Building cardinal with Go native toolchain..."
+	@cd $(CARDINAL_SRC)/golang && \
+		CGO_ENABLED=0 \
+		GOTOOLCHAIN=local \
+		GOARCH=$(GOARCH) \
+		GOOS=$(GOOS) \
+		$(GO) build \
+			-tags "qemuvirt aarch64" \
+			-ldflags="-checklinkname=0 -T 0x40100000" \
+			-o $(abspath $@) \
+			./main
+	@echo "Patching entry point to _cardinal_boot..."
+	@$(GO) run $(PATCH_ENTRY_TOOL) $@ _cardinal_boot
+	@echo "Go-native cardinal ready at $@"
+
+# Convenience target for Go-native build
+.PHONY: cardinal-go
+cardinal-go: $(CARDINAL_GO_NATIVE)
 
 # Phony targets
 .PHONY: all clean push cardinal kmazarin test regenerate-assets isvirgin

@@ -197,52 +197,13 @@ TEXT kernel_main(SB), NOSPLIT, $16-0
 // ============================================================================
 // Stack Growth Functions (Bare-Metal Implementation)
 // ============================================================================
-// These functions are called by the Go compiler when a function
-// needs more stack space. For our large pre-allocated stack,
-// these should never be called. If they are, it indicates a stack overflow.
-
-// runtime.morestack is called by Go compiler when stack check fails
-// This implements simplified stack growth for bare-metal
-TEXT runtime·morestack(SB), NOSPLIT|NOFRAME, $0-0
-	// Save link register and frame pointer
-	SUB	$96, RSP
-	STP	(R29, R30), (RSP)
-	MOVD	RSP, R29		// Set frame pointer
-
-	// Save callee-saved registers (R19-R26, then R27 separately)
-	// Note: g (R28) is managed by runtime, not saved here
-	STP	(R19, R20), 16(RSP)
-	STP	(R21, R22), 32(RSP)
-	STP	(R23, R24), 48(RSP)
-	STP	(R25, R26), 64(RSP)
-	MOVD	R27, 80(RSP)		// R27 saved separately
-
-	// Print 'S' to show we're in morestack (stack overflow)
-	MOVD	$0x09000000, R1
-	MOVD	$'S', R0
-	MOVB	R0, (R1)
-
-	// TODO: Implement stack growth
-	// For now, just halt if morestack is called (shouldn't happen with large pre-allocated stack)
-halt_morestack:
-	B	halt_morestack
-
-	// Restore callee-saved registers (unreachable, but kept for completeness)
-	MOVD	80(RSP), R27		// R27 restored separately
-	LDP	64(RSP), (R25, R26)
-	LDP	48(RSP), (R23, R24)
-	LDP	32(RSP), (R21, R22)
-	LDP	16(RSP), (R19, R20)
-	LDP	(RSP), (R29, R30)
-	ADD	$96, RSP
-
-	RET
-
-// runtime.morestack_noctxt is called for functions without context
-TEXT runtime·morestack_noctxt(SB), NOSPLIT|NOFRAME, $0-0
-	JMP	runtime·morestack(SB)
-
-// NOTE: runtime.morestackc is provided by Go runtime (don't redefine)
+// NOTE: runtime.morestack and runtime.morestack_noctxt are now provided by Go runtime
+// The old custom implementations have been removed to avoid duplicate symbol errors
+// when using Go's native build toolchain.
+//
+// For bare-metal, the boot code sets up g0 with a large pre-allocated stack (64KB),
+// and if morestack is ever called, Go's runtime will handle it (though we expect
+// our stack should be sufficient for most kernel operations).
 
 // ============================================================================
 // Jump to Kmazarin Kernel

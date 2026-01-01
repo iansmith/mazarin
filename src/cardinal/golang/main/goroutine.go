@@ -71,13 +71,14 @@ func (ch *SimpleChannel) receive() {
 	ch.count--
 }
 
-// timerPreempt is called from timer interrupt handler to implement preemption.
+// timerPreemptInternal is called from timer interrupt handler to implement preemption.
+// Called via ABI stub timerPreempt.
 // This uses runtime.Gosched() which WILL return, but we handle the return
 // specially in assembly by restoring from saved state.
 //
 //go:nosplit
 //go:noinline
-func timerPreempt() {
+func timerPreemptInternal() {
 	// Breadcrumb: Show timer preemption started
 	// NOTE: Call asm.GetUartBase() directly instead of getLinkerSymbol() to avoid
 	// potential optimizer issues with switch statements and function returns.
