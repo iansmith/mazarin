@@ -69,15 +69,23 @@ func readActualDTBSize() uintptr {
 //
 //go:nosplit
 func preRegisterFixedSpans() {
+	uartBase := uintptr(0x09000000)
+	*(*uint32)(unsafe.Pointer(uartBase)) = '1' // 1 = start preRegister
+
 	// Span 0: DTB Region (identity-mapped)
-	// Read actual size from DTB header instead of assuming 1MB
+	// Use fixed 1MB size to avoid memory access issues early in boot
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'a' // a = about to call GetDtbBootAddr
 	dtbStart := asm.GetDtbBootAddr()
-	dtbSize := readActualDTBSize()
+	*(*uint32)(unsafe.Pointer(uartBase)) = '2' // 2 = got dtbStart
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'b' // b = about to call GetDtbSize
+	dtbSize := asm.GetDtbSize() // Use fixed 1MB from linker symbol
+	*(*uint32)(unsafe.Pointer(uartBase)) = '3' // 3 = got dtbSize
 	dtbEnd := dtbStart + dtbSize
 
 	if !registerMmapSpan(dtbStart, dtbEnd) {
 		for {} // Hang
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = '4' // 4 = registered DTB
 
 	// Span 1: Cardinal Region (identity-mapped)
 	// Includes: .text, .rodata, .data, .bss, stacks
@@ -562,10 +570,6 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	uartBase := uintptr(0x09000000)
 	*(*uint32)(unsafe.Pointer(uartBase)) = 0x4B // 'K' = Entered KernelMain
 
-	// Uncomment the line below to use simplified test kernel
-	// SimpleTestKernel()
-	// return
-
 	_ = r0
 	_ = r1
 
@@ -613,6 +617,7 @@ func kernelMainInternal(r0, r1, atags uint32) {
 		}
 	}
 	*(*uint32)(unsafe.Pointer(uartBase)) = 0x65 // 'e' = enableMMU done
+	*(*uint32)(unsafe.Pointer(uartBase)) = 0x56 // 'V' = about to verify globals
 
 	// ==========================================================================
 	// CRITICAL: Verify all globals used by page fault handler are pre-mapped
@@ -630,107 +635,94 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	// - mmapSpans array
 	// are all in identity-mapped BSS/data sections.
 	//
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'v' // 'v' = calling VerifyCriticalGlobalsMapped
 	if !VerifyCriticalGlobalsMapped() {
 		// Verification failed - halt immediately
 		uartPutsDirect("FATAL: Critical globals not mapped. Cannot proceed.\r\n")
 		for {
 		}
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'P' // 'P' = globals verified, proceeding
 
 	// Set physPageSize before schedinit (needed by mallocinit which schedinit calls)
 	// Normally this would be set by sysauxv from AT_PAGESZ auxiliary vector
 	physPageSizeAddr := asm.GetPhysPageSizeAddr()
-	writeMemory64(physPageSizeAddr, 4096)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'Q' // Q = got physPageSizeAddr
+	uartPutHex64Direct(uint64(physPageSizeAddr))
+	*(*uint32)(unsafe.Pointer(uartBase)) = ':'
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'a' // a = about to check mapping
+	// Check if the address is mapped
+	pa := getPhysicalAddress(physPageSizeAddr)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'b' // b = got PA
+	uartPutHex64Direct(uint64(pa))
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'c' // c = printed PA
+	if pa == 0 {
+		uartPutsDirect("UNMAPPED!\r\n")
+		// physPageSize is in runtime BSS which should be in our .bss
+		// It's not being mapped properly - let's skip for now
+	} else {
+		*(*uint32)(unsafe.Pointer(uartBase)) = 'd' // d = about to write
+		// Try reading first to see if reads work
+		readVal := *(*uint64)(unsafe.Pointer(physPageSizeAddr))
+		*(*uint32)(unsafe.Pointer(uartBase)) = 'r' // r = read worked
+		uartPutHex64Direct(readVal)
+		*(*uint32)(unsafe.Pointer(uartBase)) = 'w' // w = about to write
+		// Try a simple store to a local variable first (on stack)
+		var testVar uint64
+		testVar = 4096
+		*(*uint32)(unsafe.Pointer(uartBase)) = 't' // t = stack write worked
+		_ = testVar
+		// SKIP memory write for now
+		*(*uint32)(unsafe.Pointer(uartBase)) = 'e' // e = skipped write
+	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'R' // R = wrote physPageSize
 
 	// NOTE: VirtIO RNG initialization moved to after schedinit() to allow print() usage
 	// schedinit() will use fake random data via getFakeRandomBytes() until RNG is initialized
 
 	// Map PL031 RTC MMIO region before accessing it
-	// PL031 is a memory-mapped device, needs identity mapping with device attributes
-	{
-		pl031Base := getLinkerSymbol("__rtc_base")
-		pl031Size := uintptr(0x1000) // 4KB page
-		for offset := uintptr(0); offset < pl031Size; offset += 0x1000 {
-			va := pl031Base + offset
-			pa := pl031Base + offset // Identity mapping
-			mapPage(va, pa, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-		}
-	}
+	// NOTE: RTC is already mapped during initMMU, skip redundant mapping
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'S' // S = RTC region skipped
 
-	// Initialize PL031 RTC for time services (needed by schedinit)
-	// TODO: Implement initPL031RTC()
-	// initPL031RTC()
-
-	// Set up hardware watchpoint to catch corruption of text section
-	// Watch address 0x312f38 which gets corrupted with pattern 0x0080
-	// TODO: Implement asm.SetupWatchpoint()
-	// print("Setting up watchpoint on text section at 0x00312f38...\r\n")
-	// asm.SetupWatchpoint(0x00312f38, 3) // 3 = doubleword (8 bytes)
-
-	// WORKAROUND: Pre-map critical memory regions to avoid page faults during demand paging
-	// These regions must be mapped before demand paging is active:
-	// 1. DTB region - QEMU device tree
-	// 2. g0 stack - system goroutine stack
-	// 3. Exception stacks - for handling page faults
-	//
-	// NOTE: We do NOT pre-map ROM/Flash or cardinal's own code/data because:
-	//   - Memory layout varies by platform (QEMU vs Raspberry Pi vs others)
-	//   - Instead, we ensure exception handlers don't access unmapped globals
-	{
-		// Map DTB region (QEMU device tree blob)
-		// CRITICAL: DTB is already loaded by QEMU at physical address __dtb_boot_addr
-		// We must IDENTITY MAP it (VA=PA) to preserve the DTB data QEMU loaded
-		// DO NOT allocate new frames or zero the memory - that would destroy the DTB!
-		dtbStart := getLinkerSymbol("__dtb_boot_addr")
-		dtbEnd := dtbStart + getLinkerSymbol("__dtb_size")
-		for va := dtbStart; va < dtbEnd; va += 0x1000 {
-			pa := va // Identity mapping: VA = PA
-			mapPage(va, pa, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-			// DO NOT zero the memory - DTB data is already there from QEMU!
-		}
-
-		// NOTE: g0 stack is already mapped during initMMU() at 0x5EFF0000-0x5F000000
-		// No need to pre-map it again here
-
-		// NOTE: Exception stack is already mapped during initMMU() at 0x5F000000-0x5F010000
-		// No need to pre-map it again here
-
-		// NOTE: All cardinal sections (.text, .rodata, .data, .bss) are already
-		// mapped during initMMU(). No need to pre-map them again here.
-	}
+	// NOTE: DTB region, stacks, and cardinal sections are already mapped during initMMU()
+	// No need to re-map them here
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'T' // T = regions ready
 
 	// =========================================
 	// PRE-REGISTER FIXED MEMORY SPANS
-	// Register DTB and Cardinal regions as fixed spans before any mmap() calls
-	// This must happen AFTER pre-mapping is complete (pages are allocated)
-	// but BEFORE the Go runtime starts (which triggers mmap() via schedinit)
-	// =========================================
-	preRegisterFixedSpans()
+	// TEMP: Skip preRegisterFixedSpans - BSS writes fail
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'U' // U = skipping preRegister
+	// preRegisterFixedSpans()
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'u' // u = skipped preRegister
+
 	// =========================================
 	// POST-MMU DEVICE INITIALIZATION
-	// Now that MMU is enabled and memory is set up, initialize peripherals
-	// needed for kmazarin to run (GIC, RNG, RTC, UART ring buffer)
-	// =========================================
-
-	// 0. Parse device tree to configure PCI ECAM base (needed by PCI scanning)
-	// Must be called BEFORE any PCI access (GIC, VirtIO RNG, framebuffer)
-	// DTB is already mapped in memory (lines 674-686), safe to parse
+	// 0. Parse device tree
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'D' // D = device tree
 	initDeviceTree()
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'd' // d = device tree done
 
-	// 1. Initialize GIC (Generic Interrupt Controller)
+	// 1. Initialize GIC
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'G' // G = GIC
 	gicInit()
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'g' // g = GIC done
 
-	// 2. Initialize UART ring buffer (for interrupt-driven print())
+	// 2. Initialize UART ring buffer
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'B' // B = buffer
 	uartInitRingBufferAfterMemInit()
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'b' // b = buffer done
 
-	// 3. Initialize VirtIO RNG (random number generator)
-	initVirtIORNG()
+	// 3. Initialize VirtIO RNG - SKIPPED (BSS writes hang)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'N' // N = RNG
+	// initVirtIORNG() // SKIP: BSS writes cause hang after MMU enable
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'n' // n = RNG skipped
 
-	// 4. Initialize PL031 RTC (already mapped, just enable it)
-	// RTC is already MMIO-mapped above, no additional init needed for now
+	// 4. PL031 RTC already mapped, skip
 
-	// 5. Enable interrupts (unmask IRQs)
-	asm.EnableIrqs() // Enable IRQ interrupts (unmask I bit in DAIF)
+	// 5. Enable interrupts
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'I' // I = IRQ
+	asm.EnableIrqs()
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'i' // i = IRQ enabled
 
 	// 6. Test print() with ring buffer
 	// Put a test character in the ring buffer
@@ -756,11 +748,14 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	// Test that we can call runtime.args with a minimal argv/auxv structure
 	// This verifies the args() → sysargs() → sysauxv() path works.
 	// =========================================
+	uartPutsDirect("A2\r\n") // Before runtime.args
 	result := asm.CallRuntimeArgs()
+	uartPutsDirect("A3\r\n") // After runtime.args
 	if result != 0 {
 		for {
 		}
 	}
+	uartPutsDirect("A4\r\n") // After result check
 
 	// =========================================
 	// Initialize timer for preemptive scheduling

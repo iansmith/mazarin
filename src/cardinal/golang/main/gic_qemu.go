@@ -8,15 +8,13 @@ import (
 
 // GIC (Generic Interrupt Controller) for QEMU virt machine
 // QEMU virt uses GICv2 by default
-// Base addresses are initialized from linker symbols in gicInit()
-
-// Global variables for GIC base addresses (set once during init)
-var (
-	gicDistBase uintptr // GIC Distributor base
-	gicCpuBase  uintptr // GIC CPU Interface base
-)
+// Base addresses are constants (QEMU virt machine has fixed GIC addresses)
 
 const (
+	// GIC base addresses for QEMU virt machine (fixed)
+	GIC_DIST_BASE uintptr = 0x08000000 // GIC Distributor base
+	GIC_CPU_BASE  uintptr = 0x08010000 // GIC CPU Interface base (GICD + 0x10000)
+
 	// GIC Distributor register offsets (from base)
 	GICD_CTLR_OFFSET        = 0x000 // Distributor Control Register
 	GICD_TYPER_OFFSET       = 0x004 // Interrupt Controller Type Register
@@ -70,11 +68,8 @@ var (
 //
 //go:nosplit
 func gicInit() {
-	// Initialize GIC base addresses from linker symbols (once)
-	gicDistBase = getLinkerSymbol("__gic_base")
-	gicCpuBase = gicDistBase + 0x10000 // CPU interface is at +64KB from distributor
-
-	// Call the full initialization
+	// Use constants directly - no global variable writes needed
+	// (BSS writes hang after MMU enable)
 	gicInitFull()
 }
 
@@ -82,16 +77,16 @@ func gicInit() {
 //
 //go:nosplit
 func gicInitFull() {
-	// Compute register addresses from global base addresses
-	GICD_CTLR := gicDistBase + GICD_CTLR_OFFSET
-	GICD_ICPENDRn := gicDistBase + GICD_ICPENDRn_OFFSET
-	GICD_IGROUPRn := gicDistBase + GICD_IGROUPRn_OFFSET
-	GICD_IPRIORITYRn := gicDistBase + GICD_IPRIORITYRn_OFFSET
-	GICD_ITARGETSRn := gicDistBase + GICD_ITARGETSRn_OFFSET
-	GICD_ICFGRn := gicDistBase + GICD_ICFGRn_OFFSET
-	GICC_CTLR := gicCpuBase + GICC_CTLR_OFFSET
-	GICC_PMR := gicCpuBase + GICC_PMR_OFFSET
-	GICC_BPR := gicCpuBase + GICC_BPR_OFFSET
+	// Compute register addresses from constants (not global variables)
+	GICD_CTLR := GIC_DIST_BASE + GICD_CTLR_OFFSET
+	GICD_ICPENDRn := GIC_DIST_BASE + GICD_ICPENDRn_OFFSET
+	GICD_IGROUPRn := GIC_DIST_BASE + GICD_IGROUPRn_OFFSET
+	GICD_IPRIORITYRn := GIC_DIST_BASE + GICD_IPRIORITYRn_OFFSET
+	GICD_ITARGETSRn := GIC_DIST_BASE + GICD_ITARGETSRn_OFFSET
+	GICD_ICFGRn := GIC_DIST_BASE + GICD_ICFGRn_OFFSET
+	GICC_CTLR := GIC_CPU_BASE + GICC_CTLR_OFFSET
+	GICC_PMR := GIC_CPU_BASE + GICC_PMR_OFFSET
+	GICC_BPR := GIC_CPU_BASE + GICC_BPR_OFFSET
 
 	// Disable distributor and CPU interface
 	asm.MmioWrite(GICD_CTLR, 0)
@@ -139,8 +134,8 @@ func gicEnableInterrupt(irqID uint32) {
 		return // Invalid interrupt ID
 	}
 
-	// Compute register address from global base
-	GICD_ISENABLERn := gicDistBase + GICD_ISENABLERn_OFFSET
+	// Compute register address from constant base
+	GICD_ISENABLERn := GIC_DIST_BASE + GICD_ISENABLERn_OFFSET
 
 	// Calculate register index (32 interrupts per register)
 	regIndex := irqID / 32
@@ -158,8 +153,8 @@ func gicDisableInterrupt(irqID uint32) {
 		return // Invalid interrupt ID
 	}
 
-	// Compute register address from global base
-	GICD_ICENABLERn := gicDistBase + GICD_ICENABLERn_OFFSET
+	// Compute register address from constant base
+	GICD_ICENABLERn := GIC_DIST_BASE + GICD_ICENABLERn_OFFSET
 
 	// Calculate register index (32 interrupts per register)
 	regIndex := irqID / 32
@@ -188,8 +183,8 @@ func gicHandleInterruptWithID(irqID uint32) {
 //
 //go:nosplit
 func gicAcknowledgeInterrupt() uint32 {
-	// Compute register address from global CPU base
-	GICC_IAR := gicCpuBase + GICC_IAR_OFFSET
+	// Compute register address from constant CPU base
+	GICC_IAR := GIC_CPU_BASE + GICC_IAR_OFFSET
 
 	// Read IAR (Interrupt Acknowledge Register)
 	// Bits 9:0 = interrupt ID
@@ -203,8 +198,8 @@ func gicAcknowledgeInterrupt() uint32 {
 //
 //go:nosplit
 func gicEndOfInterrupt(irqID uint32) {
-	// Compute register address from global CPU base
-	GICC_EOIR := gicCpuBase + GICC_EOIR_OFFSET
+	// Compute register address from constant CPU base
+	GICC_EOIR := GIC_CPU_BASE + GICC_EOIR_OFFSET
 
 	// Write interrupt ID to EOIR (End of Interrupt Register)
 	asm.MmioWrite(GICC_EOIR, irqID)

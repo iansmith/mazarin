@@ -158,6 +158,10 @@ at_el1:
 	// SPSel=0 means use SP_EL0 (still at EL1 privilege!)
 	MSR	$0, SPSel
 
+	// Breadcrumb to confirm early boot progress
+	MOVW	$'!', R15
+	MOVW	R15, (R14)
+
 	// ========================================
 	// Enable SIMD/floating-point
 	// CPACR_EL1.FPEN (bits 21:20) = 0b11: No trapping
@@ -178,6 +182,7 @@ at_el1:
 	// ========================================
 	// Clear BSS section
 	// ========================================
+
 	// Load BSS start and end from Go variables in layout.go
 	// Values may be injected at build time or set by ELF post-processor
 	MOVD	main·LinkerBssStart(SB), R4	// R4 = BSS start address
@@ -266,21 +271,11 @@ vbar_ok:
 	ISB	$15
 
 	// ========================================
-	// Breadcrumb: About to initialize g0/m0
-	// ========================================
-	MOVW	$'B', R15
-	MOVW	R15, (R14)
-
-	// ========================================
 	// Initialize g0 and m0
 	// ========================================
 
 	// Set g register (R28) to point to runtime.g0
 	MOVD	$runtime·g0(SB), g	// g is alias for R28
-
-	// Breadcrumb
-	MOVW	$'g', R15
-	MOVW	R15, (R14)
 
 	// Set up stack guards for g0
 	MOVD	RSP, R7			// Current stack pointer
@@ -294,22 +289,10 @@ vbar_ok:
 	MOVD	R0, 0(g)		// stack.lo
 	MOVD	R7, 8(g)		// stack.hi
 
-	// Breadcrumb
-	MOVW	$'s', R15
-	MOVW	R15, (R14)
-
 	// Link g0 and m0
 	MOVD	$runtime·m0(SB), R0
 	MOVD	R0, 48(g)		// g0.m = &m0
 	MOVD	g, (R0)			// m0.g0 = &g0
-
-	// Breadcrumb
-	MOVW	$'m', R15
-	MOVW	R15, (R14)
-
-	// Breadcrumb before kernel_main
-	MOVW	$'>', R15
-	MOVW	R15, (R14)
 
 	// ========================================
 	// Jump to KernelMain

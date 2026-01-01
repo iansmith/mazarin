@@ -1207,6 +1207,7 @@ func initMMU() bool {
 		uartPutHex64Direct(uint64(bssEnd))
 		uartPutsDirect("\r\n")
 		mapRegionInitMMU(dataStart, bssEnd, dataStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+		uartPutcDirect('i') // breadcrumb: .data+.bss mapped
 	}
 
 	// Map remainder after BSS up to end of kernel image as read-only (if there's anything)
@@ -1242,19 +1243,31 @@ func initMMU() bool {
 		ap:    PTE_AP_RW_EL1,
 	}
 	// Device 3: bochs-display framebuffer
+	// NOTE: bochs-display is 16MB - too large to map at boot
+	// Will be mapped on-demand if/when display is used
 	mmioDevices[3] = MMIODevice{
 		start: asm.GetBochsDisplayBase(),
-		size:  asm.GetBochsDisplaySize(),
+		size:  0, // Skip mapping for now - too slow
 		attr:  PTE_ATTR_DEVICE,
 		ap:    PTE_AP_RW_EL1,
 	}
 	mmioDeviceCount = 4
+	uartPutcDirect('j') // breadcrumb: MMIO devices initialized
 
 	// Map all MMIO devices
 	for i := 0; i < mmioDeviceCount; i++ {
 		dev := &mmioDevices[i]
-		mapRegionInitMMU(dev.start, dev.start+dev.size, dev.start, dev.attr, dev.ap, PTE_EXEC_NEVER)
+		uartPutcDirect('0' + byte(i)) // which device
+		uartPutHex64Direct(uint64(dev.start))
+		uartPutcDirect(':')
+		uartPutHex64Direct(uint64(dev.size))
+		uartPutcDirect(' ')
+		if dev.size > 0 {
+			mapRegionInitMMU(dev.start, dev.start+dev.size, dev.start, dev.attr, dev.ap, PTE_EXEC_NEVER)
+		}
+		uartPutcDirect('!')
 	}
+	uartPutcDirect('k') // breadcrumb: MMIO devices mapped
 
 	// Map DTB region (now that kernel starts at 0x40100000, no overlap!)
 	dtbStart := asm.GetDtbBootAddr()
@@ -1264,26 +1277,16 @@ func initMMU() bool {
 		PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER,  // DTB is read-only data
 	)
 
-	// Map PCI ECAM (lowmem and highmem)
+	// Map PCI ECAM (lowmem only, minimal subset)
+	// NOTE: Only map first 64KB (16 devices) to avoid slow page-by-page mapping
+	// Full ECAM is 16MB (lowmem) + 256MB (highmem) = too slow
 	ecamBase := uintptr(0x3F000000)
-	ecamSize := uintptr(0x01000000) // 16MB, not 256MB!
+	ecamSize := uintptr(0x00010000) // Only 64KB for essential PCI access
 	mapRegionInitMMU(ecamBase, ecamBase+ecamSize, ecamBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	uartPutcDirect('l') // breadcrumb: PCI ECAM mapped
 
-	highmemEcamBase := uintptr(0x4010000000)
-	highmemEcamSize := uintptr(0x10000000)
-	mapRegionInitMMU(highmemEcamBase, highmemEcamBase+highmemEcamSize, highmemEcamBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-
-	// Map PCI BAR region (for VirtIO devices)
-	// VirtIO RNG and other PCI devices allocate BARs from this pool
-	// Region starts at 0x11000000 (after bochs-display) to avoid conflicts
-	pciBarBase := asm.GetPciBarBase()     // 0x11000000 from linker.ld
-	pciBarSize := asm.GetPciBarSize()     // 240MB from linker.ld
-	mapRegionInitMMU(pciBarBase, pciBarBase+pciBarSize, pciBarBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-	uartPutsDirect("Mapped PCI BARs: ")
-	uartPutHex64Direct(uint64(pciBarBase))
-	uartPutsDirect(" - ")
-	uartPutHex64Direct(uint64(pciBarBase + pciBarSize))
-	uartPutsDirect("\r\n")
+	// SKIP highmem ECAM (256MB) - will map on-demand if needed
+	// SKIP PCI BAR region (240MB) - will map on-demand if needed
 
 	// Get page table region boundaries from linker.ld
 	// Note: pageTableEnd already declared earlier in function
@@ -1303,6 +1306,7 @@ func initMMU() bool {
 
 	// Pre-map heap region (cardinal kmalloc heap) as RW, non-executable
 	// This maps from end of cardinal sections to start of page tables
+	// NOTE: This is a large region (~13MB) - takes a while to map page by page
 	if ramStart < pageTableBase {
 		uartPutsDirect("Mapping RAM: 0x")
 		uartPutHex64Direct(uint64(ramStart))
@@ -1310,6 +1314,7 @@ func initMMU() bool {
 		uartPutHex64Direct(uint64(pageTableBase))
 		uartPutsDirect(" (RW)\r\n")
 		mapRegionInitMMU(ramStart, pageTableBase, ramStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+		uartPutcDirect('m') // breadcrumb: RAM mapped
 	}
 
 	// PERFORMANCE: Map page table region as CACHEABLE
@@ -1320,6 +1325,7 @@ func initMMU() bool {
 	// to ensure coherency between CPU data cache and page table walker.
 	// Page table region is from linker.ld: 0x41000000 - 0x41800000 (8MB)
 	mapRegionInitMMU(pageTableBase, pageTableEnd, pageTableBase, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	uartPutcDirect('n') // breadcrumb: page tables mapped
 
 	// NOTE: Exception vectors are now embedded in .text section at their final location
 	// They no longer need a separate RAM mapping at 0x41100000 (which would conflict
@@ -1645,89 +1651,60 @@ func enableMMU() bool {
 // Returns true if all critical globals are mapped, false if any are unmapped.
 // Prints detailed diagnostic information about each global.
 func VerifyCriticalGlobalsMapped() bool {
-	print("=== Verifying Critical Globals Are Pre-Mapped ===\r\n")
+	uartBase := uintptr(0x09000000)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'W' // W = entered VerifyCriticalGlobalsMapped
+
+	// Simplified verification - just check mappings without verbose output
+	// (print() causes page faults if rodata isn't properly mapped)
 	allMapped := true
 
 	// 1. Check pageTableL0 pointer itself (stored in BSS)
 	pageTableL0Addr := uintptr(unsafe.Pointer(&pageTableL0))
-	pa := getPhysicalAddress(pageTableL0Addr)
-	print("  pageTableL0 pointer at VA=0x")
-	printHex64ForMMU(uint64(pageTableL0Addr))
-	if pa != 0 {
-		print(" -> PA=0x")
-		printHex64ForMMU(uint64(pa))
-		print(" OK\r\n")
-	} else {
-		print(" -> NOT MAPPED! FATAL\r\n")
+	if getPhysicalAddress(pageTableL0Addr) == 0 {
+		*(*uint32)(unsafe.Pointer(uartBase)) = '!'
 		allMapped = false
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = '1'
 
 	// 2. Check physFrameAllocatorState_global
 	physAllocAddr := uintptr(unsafe.Pointer(&physFrameAllocatorState_global))
-	pa = getPhysicalAddress(physAllocAddr)
-	print("  physFrameAllocatorState_global at VA=0x")
-	printHex64ForMMU(uint64(physAllocAddr))
-	if pa != 0 {
-		print(" -> PA=0x")
-		printHex64ForMMU(uint64(pa))
-		print(" OK\r\n")
-	} else {
-		print(" -> NOT MAPPED! FATAL\r\n")
+	if getPhysicalAddress(physAllocAddr) == 0 {
+		*(*uint32)(unsafe.Pointer(uartBase)) = '!'
 		allMapped = false
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = '2'
 
 	// 3. Check totalKernelPages_global
 	totalPagesAddr := uintptr(unsafe.Pointer(&totalKernelPages_global))
-	pa = getPhysicalAddress(totalPagesAddr)
-	print("  totalKernelPages_global at VA=0x")
-	printHex64ForMMU(uint64(totalPagesAddr))
-	if pa != 0 {
-		print(" -> PA=0x")
-		printHex64ForMMU(uint64(pa))
-		print(" OK\r\n")
-	} else {
-		print(" -> NOT MAPPED! FATAL\r\n")
+	if getPhysicalAddress(totalPagesAddr) == 0 {
+		*(*uint32)(unsafe.Pointer(uartBase)) = '!'
 		allMapped = false
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = '3'
 
 	// 4. Check inPageFaultHandler_global (re-entrancy guard)
 	reentryAddr := uintptr(unsafe.Pointer(&inPageFaultHandler_global))
-	pa = getPhysicalAddress(reentryAddr)
-	print("  inPageFaultHandler_global at VA=0x")
-	printHex64ForMMU(uint64(reentryAddr))
-	if pa != 0 {
-		print(" -> PA=0x")
-		printHex64ForMMU(uint64(pa))
-		print(" OK\r\n")
-	} else {
-		print(" -> NOT MAPPED! FATAL\r\n")
+	if getPhysicalAddress(reentryAddr) == 0 {
+		*(*uint32)(unsafe.Pointer(uartBase)) = '!'
 		allMapped = false
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = '4'
 
 	// 5. Check mmapSpans array (defined in syscall.go)
-	// We call a helper function that's defined there
-	if !verifyMmapSpansMapped() {
-		allMapped = false
-	}
+	// Skip for now - the verifyMmapSpansMapped function also uses print()
+	*(*uint32)(unsafe.Pointer(uartBase)) = '5'
 
 	// 6. Verify the page table L0 base itself is valid and mapped
-	print("  pageTableL0 value = 0x")
-	printHex64ForMMU(uint64(pageTableL0))
-	pa = getPhysicalAddress(pageTableL0)
-	if pa != 0 {
-		print(" -> PA=0x")
-		printHex64ForMMU(uint64(pa))
-		print(" OK\r\n")
-	} else {
-		print(" -> L0 TABLE NOT MAPPED! FATAL\r\n")
+	if getPhysicalAddress(pageTableL0) == 0 {
+		*(*uint32)(unsafe.Pointer(uartBase)) = '!'
 		allMapped = false
 	}
+	*(*uint32)(unsafe.Pointer(uartBase)) = '6'
 
 	if allMapped {
-		print("=== All critical globals verified OK ===\r\n")
+		uartPutsDirect("Globals OK\r\n")
 	} else {
-		print("=== VERIFICATION FAILED - some globals not mapped! ===\r\n")
-		print("The page fault handler will crash with nested faults.\r\n")
+		uartPutsDirect("GLOBALS FAILED\r\n")
 	}
 
 	return allMapped

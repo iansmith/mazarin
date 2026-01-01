@@ -39,6 +39,21 @@ const (
 // Linker Symbol Variables
 // ============================================================================
 
+// DataTestMagic is a unique 64-byte pattern for debugging data section loading.
+// This pattern helps locate where the data section was actually loaded in memory.
+// The pattern uses values that are the same in big-endian and little-endian,
+// making it easier to identify in memory dumps.
+var DataTestMagic = [8]uint64{
+	0xDEADBEEFDEADBEEF, // Magic[0] - "deadbeef" repeated
+	0xCAFEBABECAFEBABE, // Magic[1] - "cafebabe" repeated
+	0x0123456789ABCDEF, // Magic[2] - counting pattern
+	0xFEDCBA9876543210, // Magic[3] - reverse counting
+	0x5555555555555555, // Magic[4] - alternating bits
+	0xAAAAAAAAAAAAAAAA, // Magic[5] - inverse alternating
+	0x0F0F0F0F0F0F0F0F, // Magic[6] - nibble pattern
+	0xF0F0F0F0F0F0F0F0, // Magic[7] - inverse nibble pattern
+}
+
 var (
 	// Section boundaries - PATCHED POST-BUILD by compute-linker-values tool
 	// These must be discovered from the actual ELF binary after linking.
@@ -113,7 +128,9 @@ func init() {
 		LinkerRtcBase + LinkerFwcfgBase + LinkerFwcfgSize +
 		LinkerBochsDisplayBase + LinkerBochsDisplaySize +
 		LinkerPciBarBase + LinkerPciBarSize +
-		LinkerKmazarinStart + LinkerKmazarinSize
+		LinkerKmazarinStart + LinkerKmazarinSize +
+		DataTestMagic[0] + DataTestMagic[1] + DataTestMagic[2] + DataTestMagic[3] +
+		DataTestMagic[4] + DataTestMagic[5] + DataTestMagic[6] + DataTestMagic[7]
 
 	// Reference CardinalBoot to prevent dead-code elimination of the entry point.
 	// This function is the bare-metal entry point that QEMU jumps to.
