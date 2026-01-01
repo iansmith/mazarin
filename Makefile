@@ -23,10 +23,10 @@ PATCH_RUNTIME = src/mazboot/tools/patch-runtime.go
 MAZBOOT_SRC = src/mazboot
 
 # Source files - Assembly in asm/aarch64/ directory (relative to src/mazboot)
+# NOTE: Most assembly has been migrated to Go/Plan9 syntax in asm/goasm/
+# Only boot.s remains in GCC/GNU syntax (runs before Go runtime is initialized)
 BOOT_SRC = $(MAZBOOT_SRC)/asm/aarch64/boot.s
-LIB_SRC = $(MAZBOOT_SRC)/asm/aarch64/lib.s
 # writebarrier.s uses Go/Plan9 assembly (in asm/goasm/) - see WRITEBARRIER_OBJ rule
-EXCEPTIONS_SRC = $(MAZBOOT_SRC)/asm/aarch64/exceptions.s
 IMAGE_SRC = $(MAZBOOT_SRC)/asm/aarch64/image.s
 GOROUTINE_SRC = $(MAZBOOT_SRC)/asm/aarch64/goroutine.s
 # linker_symbols.s now uses Go/Plan9 assembly - see build rule below
@@ -71,9 +71,7 @@ GOASM_SOURCES = $(wildcard $(MAZBOOT_SRC)/asm/goasm/*.s)
 
 # Object files (all in build/mazboot/)
 BOOT_OBJ = $(BUILD_MAZBOOT_DIR)/boot.o
-LIB_OBJ = $(BUILD_MAZBOOT_DIR)/lib.o
 WRITEBARRIER_OBJ = $(BUILD_MAZBOOT_DIR)/writebarrier.o
-EXCEPTIONS_OBJ = $(BUILD_MAZBOOT_DIR)/exceptions.o
 IMAGE_OBJ = $(BUILD_MAZBOOT_DIR)/image.o
 GOROUTINE_OBJ = $(BUILD_MAZBOOT_DIR)/goroutine.o
 ASYNC_PREEMPT_OBJ = $(BUILD_MAZBOOT_DIR)/async_preempt.o
@@ -129,7 +127,7 @@ KMAZARIN_BINARY = $(BUILD_KMAZARIN_DIR)/kmazarin.elf
 GOROUTINE_GOASM_SRC = $(MAZBOOT_SRC)/asm/goasm/goroutine.s
 
 # Assembly object files list
-ASM_OBJECTS = $(BOOT_OBJ) $(LIB_OBJ) $(EXCEPTIONS_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ) $(LIB_SYSREGS_OBJ) $(LIB_TIMER_OBJ) $(LIB_MMU_OBJ) $(LIB_MISC_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ) $(EXC_VECTORS_OBJ) $(EXC_HANDLERS_OBJ) $(EXC_SYSCALL_OBJ) $(EXC_IRQ_OBJ) $(EXC_SYNC_ENTRY_OBJ)
+ASM_OBJECTS = $(BOOT_OBJ) $(WRITEBARRIER_OBJ) $(IMAGE_OBJ) $(IMAGE_DATA_OBJ) $(GOROUTINE_OBJ) $(ASYNC_PREEMPT_OBJ) $(GET_CALLER_SP_OBJ) $(LINKER_SYMBOLS_OBJ) $(KMAZARIN_EMBED_OBJ) $(KMAZARIN_EMBED_DATA_OBJ) $(GOASM_TEST_OBJ) $(LIB_SYSREGS_OBJ) $(LIB_TIMER_OBJ) $(LIB_MMU_OBJ) $(LIB_MISC_OBJ) $(LIB_RUNTIME_OBJ) $(EXC_UTILS_OBJ) $(EXC_VECTORS_OBJ) $(EXC_HANDLERS_OBJ) $(EXC_SYSCALL_OBJ) $(EXC_IRQ_OBJ) $(EXC_SYNC_ENTRY_OBJ)
 
 # Output files
 MAZBOOT_BINARY = $(BUILD_DIR)/mazboot.elf
@@ -194,14 +192,6 @@ $(BOOT_IMAGE_BIN): $(BOOT_IMAGE_SOURCES) $(IMAGECONVERT_TOOL) $(IMAGECONVERT_GO_
 # Compile assembly source files
 # All assembly files depend on linker.ld since they may use linker symbols
 $(BOOT_OBJ): $(BOOT_SRC) $(LINKER_SCRIPT)
-	@mkdir -p $(BUILD_MAZBOOT_DIR)
-	$(CC) $(ASFLAGS) -c $< -o $@
-
-$(LIB_OBJ): $(LIB_SRC) $(LINKER_SCRIPT)
-	@mkdir -p $(BUILD_MAZBOOT_DIR)
-	$(CC) $(ASFLAGS) -c $< -o $@
-
-$(EXCEPTIONS_OBJ): $(EXCEPTIONS_SRC) $(LINKER_SCRIPT) $(KMAZARIN_SYMBOLS_S)
 	@mkdir -p $(BUILD_MAZBOOT_DIR)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
