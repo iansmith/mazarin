@@ -1,61 +1,138 @@
 // layout.go - Memory layout variables for Cardinal on QEMU virt machine
 //
-// These variables replace the GNU linker script symbols. They are initialized
-// to 0 and may have their values injected by the build process (e.g., via
-// post-processing or -X linker flag).
+// These variables provide memory layout information that was previously
+// supplied by the GNU linker script (linker.ld). With Go's native toolchain,
+// we initialize constants directly and patch section boundaries post-build.
+//
+// Variable categories:
+// 1. FIXED CONSTANTS - Initialized here (QEMU virt machine addresses, memory layout)
+// 2. SECTION BOUNDARIES - Initialized to 0, patched by compute-linker-values tool
+// 3. EMBEDDED KMAZARIN - Not yet implemented in go-native build
 //
 // Variable naming: All symbols are prefixed with "Linker" to indicate they
-// correspond to linker script symbols and may be injected.
+// correspond to linker script symbols.
 
 package main
+
+import "cardinal/asm"
+
+// ============================================================================
+// Memory Layout Constants (from linker.ld)
+// ============================================================================
+const (
+	// Base addresses and sizes from QEMU virt machine / linker.ld
+	BootAddress            = 0x40000000 // RAM start on QEMU virt
+	DtbSize                = 0x100000   // 1 MB for Device Tree Blob
+	CardinalAllocationSize = 0xF00000   // 15 MB for cardinal
+	PageTableSize          = 0x800000   // 8 MB for page tables
+
+	// Calculated boundaries
+	DtbStart         = BootAddress
+	CardinalStart    = DtbStart + DtbSize
+	CardinalEnd      = CardinalStart + CardinalAllocationSize
+	PageTableStart   = CardinalEnd
+	PageTableEnd     = PageTableStart + PageTableSize
+	KmazarinLoadAddr = PageTableEnd
+)
 
 // ============================================================================
 // Linker Symbol Variables
 // ============================================================================
-// These variables correspond to the symbols defined in linker.ld.
-// They are initialized to 0 and values may be injected at build time.
 
 var (
-	// Section boundaries
-	LinkerStart       uint64 = 0 // __start
-	LinkerTextStart   uint64 = 0 // __text_start
-	LinkerTextEnd     uint64 = 0 // __text_end
-	LinkerRodataStart uint64 = 0 // __rodata_start
-	LinkerRodataEnd   uint64 = 0 // __rodata_end
-	LinkerDataStart   uint64 = 0 // __data_start
-	LinkerDataEnd     uint64 = 0 // __data_end
-	LinkerBssStart    uint64 = 0 // __bss_start
-	LinkerBssEnd      uint64 = 0 // __bss_end
-	LinkerEnd         uint64 = 0 // __end
+	// Section boundaries - PATCHED POST-BUILD by compute-linker-values tool
+	// These must be discovered from the actual ELF binary after linking.
+	// Initialized to 1 (not 0) so they're placed in .data section, not .bss.
+	// This allows the post-build tool to patch them with actual values.
+	LinkerStart       uint64 = 1 // __start (patched)
+	LinkerTextStart   uint64 = 1 // __text_start (patched)
+	LinkerTextEnd     uint64 = 1 // __text_end (patched)
+	LinkerRodataStart uint64 = 1 // __rodata_start (patched)
+	LinkerRodataEnd   uint64 = 1 // __rodata_end (patched)
+	LinkerDataStart   uint64 = 1 // __data_start (patched)
+	LinkerDataEnd     uint64 = 1 // __data_end (patched)
+	LinkerBssStart    uint64 = 1 // __bss_start (patched)
+	LinkerBssEnd      uint64 = 1 // __bss_end (patched)
+	LinkerEnd         uint64 = 1 // __end (patched)
 
-	// Memory layout boundaries
-	LinkerRamStart              uint64 = 0 // __ram_start
-	LinkerDtbBootAddr           uint64 = 0 // __dtb_boot_addr
-	LinkerDtbSize               uint64 = 0 // __dtb_size
-	LinkerCardinalEnd           uint64 = 0 // __cardinal_end
-	LinkerCardinalAllocationSize uint64 = 0 // __cardinal_allocation_size
-	LinkerKmazarinLoadAddr      uint64 = 0 // __kmazarin_load_addr
-	LinkerPageTablesStart       uint64 = 0 // __page_tables_start
-	LinkerPageTablesEnd         uint64 = 0 // __page_tables_end
+	// Memory layout boundaries - FIXED VALUES from constants above
+	LinkerRamStart               uint64 = BootAddress
+	LinkerDtbBootAddr            uint64 = DtbStart
+	LinkerDtbSize                uint64 = DtbSize
+	LinkerCardinalEnd            uint64 = CardinalEnd
+	LinkerCardinalAllocationSize uint64 = CardinalAllocationSize
+	LinkerKmazarinLoadAddr       uint64 = KmazarinLoadAddr
+	LinkerPageTablesStart        uint64 = PageTableStart
+	LinkerPageTablesEnd          uint64 = PageTableEnd
 
-	// Stack pointers
-	LinkerStackTop      uint64 = 0 // __stack_top
-	LinkerG0StackBottom uint64 = 0 // __g0_stack_bottom
+	// Stack pointers - FIXED VALUES from CLAUDE.md memory map
+	// g0 stack: 0x5EFF0000-0x5F000000 (64KB)
+	// Exception stack: 0x5F000000-0x5F020000 (128KB)
+	LinkerStackTop      uint64 = 0x5F000000
+	LinkerG0StackBottom uint64 = 0x5EFF0000
 
-	// MMIO device addresses
-	LinkerGicBase          uint64 = 0 // __gic_base
-	LinkerGicSize          uint64 = 0 // __gic_size
-	LinkerUartBase         uint64 = 0 // __uart_base
-	LinkerUartSize         uint64 = 0 // __uart_size
-	LinkerRtcBase          uint64 = 0 // __rtc_base
-	LinkerFwcfgBase        uint64 = 0 // __fwcfg_base
-	LinkerFwcfgSize        uint64 = 0 // __fwcfg_size
-	LinkerBochsDisplayBase uint64 = 0 // __bochs_display_base
-	LinkerBochsDisplaySize uint64 = 0 // __bochs_display_size
-	LinkerPciBarBase       uint64 = 0 // __pci_bar_base
-	LinkerPciBarSize       uint64 = 0 // __pci_bar_size
+	// MMIO device addresses - FIXED VALUES from QEMU virt machine
+	LinkerGicBase          uint64 = 0x08000000 // GIC base
+	LinkerGicSize          uint64 = 0x00020000 // GIC size (128KB)
+	LinkerUartBase         uint64 = 0x09000000 // UART PL011
+	LinkerUartSize         uint64 = 0x00010000 // UART size (64KB)
+	LinkerRtcBase          uint64 = 0x09010000 // PL031 RTC
+	LinkerFwcfgBase        uint64 = 0x09020000 // QEMU fw_cfg device
+	LinkerFwcfgSize        uint64 = 0x00010000 // fw_cfg size (64KB)
+	LinkerBochsDisplayBase uint64 = 0x10000000 // bochs-display framebuffer
+	LinkerBochsDisplaySize uint64 = 0x01000000 // bochs-display size (16MB)
+	LinkerPciBarBase       uint64 = 0x11000000 // PCI BAR allocation start
+	LinkerPciBarSize       uint64 = 0x0F000000 // PCI BAR pool size (240MB)
 
-	// Embedded kmazarin kernel
-	LinkerKmazarinStart uint64 = 0 // __kmazarin_start
-	LinkerKmazarinSize  uint64 = 0 // __kmazarin_size
+	// Embedded kmazarin kernel - NOT YET IMPLEMENTED in go-native build
+	// Initialized to 1 so they're in .data section for patching
+	LinkerKmazarinStart uint64 = 1 // __kmazarin_start (patched)
+	LinkerKmazarinSize  uint64 = 1 // __kmazarin_size (patched)
 )
+
+// linkerValuesSum is used to prevent dead-code elimination of Linker* variables.
+// Go's linker will eliminate unused variables, so we create a dependency.
+// This variable is never actually read at runtime.
+var linkerValuesSum uint64
+
+// init ensures all Linker* variables and critical symbols are kept by the linker.
+// Without this, Go's dead-code elimination would remove unused variables and functions.
+func init() {
+	// Touch all variables to prevent elimination
+	// The compiler can't prove these are unused since init() always runs
+	linkerValuesSum = LinkerStart + LinkerTextStart + LinkerTextEnd +
+		LinkerRodataStart + LinkerRodataEnd +
+		LinkerDataStart + LinkerDataEnd +
+		LinkerBssStart + LinkerBssEnd + LinkerEnd +
+		LinkerRamStart + LinkerDtbBootAddr + LinkerDtbSize +
+		LinkerCardinalEnd + LinkerCardinalAllocationSize +
+		LinkerKmazarinLoadAddr + LinkerPageTablesStart + LinkerPageTablesEnd +
+		LinkerStackTop + LinkerG0StackBottom +
+		LinkerGicBase + LinkerGicSize +
+		LinkerUartBase + LinkerUartSize +
+		LinkerRtcBase + LinkerFwcfgBase + LinkerFwcfgSize +
+		LinkerBochsDisplayBase + LinkerBochsDisplaySize +
+		LinkerPciBarBase + LinkerPciBarSize +
+		LinkerKmazarinStart + LinkerKmazarinSize
+
+	// Reference CardinalBoot to prevent dead-code elimination of the entry point.
+	// This function is the bare-metal entry point that QEMU jumps to.
+	// We store the function pointer in a global variable that the compiler can't
+	// prove is unused, forcing it to keep the function.
+	cardinalBootPtr = asm.CardinalBoot
+
+	// Reference KernelMain to prevent dead-code elimination.
+	// boot_arm64.s calls main·KernelMain which is implemented in abi_stubs_arm64.s.
+	// Without this reference, the entire kernel code would be eliminated.
+	// We store the function pointer in a global variable that the compiler can't
+	// prove is unused, forcing it to keep the function.
+	kernelMainPtr = KernelMain
+}
+
+// cardinalBootPtr stores a reference to CardinalBoot to prevent dead-code elimination.
+// The Go compiler can't prove this variable is never read at runtime.
+var cardinalBootPtr func()
+
+// kernelMainPtr stores a reference to KernelMain to prevent dead-code elimination.
+// The Go compiler can't prove this variable is never read at runtime.
+var kernelMainPtr func(uint32, uint32, uint32)

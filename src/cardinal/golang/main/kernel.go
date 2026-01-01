@@ -6,6 +6,11 @@ import (
 	"cardinal/asm"
 )
 
+// KernelMain is the entry point called from boot_arm64.s
+// It's implemented in abi_stubs_arm64.s as an ABI0 wrapper
+// that calls kernelMainInternal with proper register setup.
+func KernelMain(r0, r1, atags uint32)
+
 // Assembly functions to set runtime stack limits
 //
 //go:linkname setMaxstacksize set_maxstacksize
