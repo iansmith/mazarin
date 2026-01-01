@@ -410,11 +410,14 @@ func findGoFunctionsCalled(asmDir string) []string {
 	return functions
 }
 
-// findGoAsmFunctionsCalled finds Go functions called from Go/Plan9 assembly
+// findGoAsmFunctionsCalled finds Go functions and data symbols referenced from Go/Plan9 assembly
 func findGoAsmFunctionsCalled(goasmDir string) []string {
 	var functions []string
 	// Match BL main·FuncName(SB) or CALL main·FuncName(SB)
 	blRe := regexp.MustCompile(`(?:BL|CALL)\s+main·([a-zA-Z_][a-zA-Z0-9_]*)\(SB\)`)
+	// Match MOVD $main·SymbolName(SB), Rxx - for data symbol references
+	// When we find a data reference "foo", we'll look for "fooKeepAlive" function
+	movdRe := regexp.MustCompile(`MOVD\s+\$main·([a-zA-Z_][a-zA-Z0-9_]*)\(SB\)`)
 
 	seen := make(map[string]bool)
 
@@ -441,6 +444,17 @@ func findGoAsmFunctionsCalled(goasmDir string) []string {
 			if len(matches) > 1 && !seen[matches[1]] {
 				functions = append(functions, matches[1])
 				seen[matches[1]] = true
+			}
+
+			// Check for MOVD $main.X(SB) - data symbol reference
+			// Generate a KeepAlive function call for it
+			movdMatches := movdRe.FindStringSubmatch(line)
+			if len(movdMatches) > 1 {
+				keepAliveName := movdMatches[1] + "KeepAlive"
+				if !seen[keepAliveName] {
+					functions = append(functions, keepAliveName)
+					seen[keepAliveName] = true
+				}
 			}
 		}
 

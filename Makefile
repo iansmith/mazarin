@@ -25,7 +25,7 @@ MAZBOOT_SRC = src/mazboot
 # Source files - Assembly in asm/aarch64/ directory (relative to src/mazboot)
 BOOT_SRC = $(MAZBOOT_SRC)/asm/aarch64/boot.s
 LIB_SRC = $(MAZBOOT_SRC)/asm/aarch64/lib.s
-# writebarrier.s now uses Go/Plan9 assembly - see build rule below
+# writebarrier.s uses Go/Plan9 assembly (in asm/goasm/) - see WRITEBARRIER_OBJ rule
 EXCEPTIONS_SRC = $(MAZBOOT_SRC)/asm/aarch64/exceptions.s
 IMAGE_SRC = $(MAZBOOT_SRC)/asm/aarch64/image.s
 GOROUTINE_SRC = $(MAZBOOT_SRC)/asm/aarch64/goroutine.s
@@ -205,11 +205,13 @@ $(EXCEPTIONS_OBJ): $(EXCEPTIONS_SRC) $(LINKER_SCRIPT) $(KMAZARIN_SYMBOLS_S)
 	@mkdir -p $(BUILD_MAZBOOT_DIR)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
-# Build writebarrier using GCC assembly (has BSS section with .space directive)
-WRITEBARRIER_SRC = $(MAZBOOT_SRC)/asm/aarch64/writebarrier.s
-$(WRITEBARRIER_OBJ): $(WRITEBARRIER_SRC) $(LINKER_SCRIPT)
+# Transpile writebarrier Go assembly to ELF
+# Note: The dummy buffer is defined in writebarrier_buffer.go, not in assembly
+WRITEBARRIER_GOASM_SRC = $(MAZBOOT_SRC)/asm/goasm/writebarrier.s
+$(WRITEBARRIER_OBJ): $(WRITEBARRIER_GOASM_SRC) $(GOASM2GNU) $(LINKER_SCRIPT)
 	@mkdir -p $(BUILD_MAZBOOT_DIR)
-	$(CC) $(ASFLAGS) -c $< -o $@
+	@echo "Transpiling writebarrier Go assembly: $<"
+	$(GOASM2GNU) -elf -o $@ $<
 
 # Convert image data binary directly to ELF object
 $(IMAGE_DATA_OBJ): $(BOOT_IMAGE_BIN) $(BIN2ELF)
