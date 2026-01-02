@@ -14,9 +14,11 @@ TEXT KmazarinBinaryStart(SB), NOSPLIT|NOFRAME, $0-8
 	// Return value is in R0 (register ABI)
 	RET
 
-// KmazarinBinaryEnd returns the address of the embedded kmazarin binary end
-// Returns: R0 = address of kmazarin_binary_end
+// KmazarinBinaryEnd returns the end address of the embedded kmazarin binary
+// Returns: R0 = address of kmazarin_binary_start + size
 TEXT KmazarinBinaryEnd(SB), NOSPLIT|NOFRAME, $0-8
-	MOVD $kmazarin_binary_end(SB), R0
+	MOVD $kmazarin_binary_start(SB), R0
+	MOVD kmazarin_binary_size(SB), R1  // Load size value (not address)
+	ADD R1, R0
 	// Return value is in R0 (register ABI)
 	RET

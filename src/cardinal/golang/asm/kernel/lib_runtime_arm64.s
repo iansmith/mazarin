@@ -24,6 +24,14 @@
 // Returns 0 on success (args completed without crash)
 //
 // NOTE: Only provides AT_PAGESZ for now (AT_RANDOM requires VirtIO RNG init)
+//
+// CALLING CONVENTION: We must follow the C/ABI0 calling convention here because
+// that's what the Go program (kmazarin) expects from its "OS" (us). The Go runtime
+// was compiled expecting Linux, which uses the standard ARM64 C ABI. When we call
+// runtime.args, the .abi0 wrapper expects stack-based arguments:
+//   - argc (int32) at [SP+8] before the call
+//   - argv (**byte) at [SP+16] before the call
+// The .abi0 wrapper then loads these into R0/R1 for the ABIInternal runtime.args
 TEXT call_runtime_args(SB), NOSPLIT, $96-4
 	// Build the argv/envp/auxv structure on stack
 	// Layout (each entry 8 bytes):
@@ -47,9 +55,13 @@ TEXT call_runtime_args(SB), NOSPLIT, $96-4
 	MOVD	ZR, 80(RSP)
 	MOVD	ZR, 88(RSP)
 
-	// Call runtime.args(argc=0, argv=&sp[48])
-	MOVW	ZR, R0			// argc = 0 (int32)
-	ADD	$48, RSP, R1		// argv = pointer to our structure
+	// Set up stack-based arguments for runtime.args.abi0
+	// The .abi0 wrapper expects:
+	//   - argc (int32) at [SP+8]
+	//   - argv (**byte) at [SP+16]
+	MOVW	ZR, 8(RSP)		// argc = 0 at stack offset 8
+	ADD	$48, RSP, R0		// R0 = pointer to argv structure
+	MOVD	R0, 16(RSP)		// argv pointer at stack offset 16
 
 	// DEBUG: Print 'B' for "Before" runtime.args call
 	MOVD	$0x09000000, R10
@@ -64,7 +76,18 @@ TEXT call_runtime_args(SB), NOSPLIT, $96-4
 	MOVW	R11, (R10)
 
 	// If we get here, args() completed without crash
-	MOVW	ZR, R0			// Return 0 = success
+	// Return 0 = success
+	// NOTE: Go's ABIInternal wrapper expects return value on the stack.
+	// For a function with $96-4 frame (compiled to 112-byte .abi0 frame),
+	// the wrapper loads return value from [wrapper_SP+8] after call.
+	// From our perspective before our epilogue, that's at [RSP+112+8] = [RSP+120].
+	// But actually, the way Go's ABI works, the return space is at the start
+	// of our frame, so we store at the return value offset in the frame header.
+	// The wrapper's frame was 32 bytes; it loads from [SP+8] after we return.
+	// Since our prologue did str x30, [sp, #-112]!, the caller's SP is at our RSP+112.
+	// So return value goes at RSP+112+8 = RSP+120 from our perspective.
+	MOVW	ZR, R0			// R0 = 0 for success
+	MOVW	R0, 120(RSP)		// Store return value where wrapper expects it
 	RET
 
 // call_runtime_osinit() int

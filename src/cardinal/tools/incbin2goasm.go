@@ -9,10 +9,11 @@ import (
 
 func main() {
 	symbolName := flag.String("sym", "binaryData", "Symbol name for the data")
+	global := flag.Bool("global", false, "Use global symbols (no · prefix)")
 	flag.Parse()
 
 	if flag.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: %s [-sym name] input.bin > output.s\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [-sym name] [-global] input.bin > output.s\n", os.Args[0])
 		os.Exit(1)
 	}
 
@@ -22,6 +23,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Symbol prefix: · for package-local, empty for global
+	prefix := "·"
+	if *global {
+		prefix = ""
+	}
+
 	fmt.Println("#include \"textflag.h\"")
 	fmt.Println()
 	fmt.Printf("// Auto-generated from %s\n", flag.Arg(0))
@@ -29,7 +36,7 @@ func main() {
 	fmt.Println()
 
 	// Start symbol
-	fmt.Printf("GLOBL ·%s_start(SB), RODATA, $%d\n", *symbolName, len(data))
+	fmt.Printf("GLOBL %s%s_start(SB), RODATA, $%d\n", prefix, *symbolName, len(data))
 
 	// Data in 8-byte chunks
 	for i := 0; i < len(data); i += 8 {
@@ -39,16 +46,22 @@ func main() {
 			for j := 0; j < 8; j++ {
 				val |= uint64(data[i+j]) << (j * 8)
 			}
-			fmt.Printf("DATA ·%s_start+%d(SB)/8, $0x%016x\n", *symbolName, i, val)
+			fmt.Printf("DATA %s%s_start+%d(SB)/8, $0x%016x\n", prefix, *symbolName, i, val)
 		} else {
 			// Handle remaining bytes individually
 			for j := 0; j < remaining; j++ {
-				fmt.Printf("DATA ·%s_start+%d(SB)/1, $0x%02x\n", *symbolName, i+j, data[i+j])
+				fmt.Printf("DATA %s%s_start+%d(SB)/1, $0x%02x\n", prefix, *symbolName, i+j, data[i+j])
 			}
 		}
 	}
 
 	fmt.Println()
-	// End symbol (points just after the data)
-	fmt.Printf("GLOBL ·%s_end(SB), RODATA, $0\n", *symbolName)
+	// End symbol - calculate size at runtime by subtracting start from end
+	// We need a real symbol, not just a size-0 placeholder, for Go assembly
+	// The end is simply start + len(data)
+	fmt.Printf("// End symbol for size calculation: end - start = 0x%X\n", len(data))
+	// Create a simple function that returns start + size
+	fmt.Printf("// KmazarinBinaryEnd should return KmazarinBinaryStart() + 0x%X\n", len(data))
+	fmt.Printf("DATA %s%s_size(SB)/8, $0x%016x\n", prefix, *symbolName, len(data))
+	fmt.Printf("GLOBL %s%s_size(SB), RODATA, $8\n", prefix, *symbolName)
 }

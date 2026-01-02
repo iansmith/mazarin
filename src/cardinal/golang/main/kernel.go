@@ -1799,17 +1799,30 @@ func setupKmazarinStartupEnv() (stackPointer uintptr, argc uint64, argv uintptr)
 // Note: This function is NOT marked nosplit because it runs after the Go runtime
 // is initialized and contains many print() calls that require stack space.
 func loadAndRunKmazarin() {
+	uartPutsDirect("=== Loading Kmazarin ===\r\n")
+	uartPutcDirect('a') // breadcrumb: start
+
 	// Get the embedded kmazarin binary location from linker symbols
+	uartPutcDirect('b') // breadcrumb: before kmazarin_start
 	kmazarinStart := getLinkerSymbol("__kmazarin_start")
+	uartPutcDirect('c') // breadcrumb: after kmazarin_start
+	uartPutHex64Direct(uint64(kmazarinStart))
+	uartPutcDirect('d') // breadcrumb: before kmazarin_size
 	kmazarinSize := getLinkerSymbol("__kmazarin_size")
+	uartPutcDirect('e') // breadcrumb: after kmazarin_size
+	uartPutHex64Direct(uint64(kmazarinSize))
+	uartPutsDirect("\r\n")
 
 	// Validate symbols
+	uartPutcDirect('f') // breadcrumb: before validate
 	if kmazarinStart == 0 || kmazarinSize == 0 {
 		uartPutsDirect("ERROR: Invalid kmazarin symbols\r\n")
 		return
 	}
+	uartPutcDirect('g') // breadcrumb: after validate
 
 	// Create a byte slice from the embedded binary
+	uartPutcDirect('h') // breadcrumb: before slice creation
 	var elfData []byte
 	sliceHeader := (*struct {
 		Data uintptr
@@ -1819,13 +1832,16 @@ func loadAndRunKmazarin() {
 	sliceHeader.Data = kmazarinStart
 	sliceHeader.Len = int(kmazarinSize)
 	sliceHeader.Cap = int(kmazarinSize)
+	uartPutcDirect('i') // breadcrumb: after slice creation
 
 	// Verify ELF magic
+	uartPutcDirect('j') // breadcrumb: before ELF magic check
 	if len(elfData) < 64 ||
 		elfData[0] != 0x7F || elfData[1] != 'E' || elfData[2] != 'L' || elfData[3] != 'F' {
 		uartPutsDirect("ERROR: Invalid ELF file\r\n")
 		return
 	}
+	uartPutcDirect('k') // breadcrumb: after ELF magic check
 
 	// Parse entry point (offset 0x18-0x1F for 64-bit ELF)
 	entry := uint64(elfData[0x18]) |
