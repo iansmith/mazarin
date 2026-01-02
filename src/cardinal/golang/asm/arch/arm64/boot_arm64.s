@@ -63,6 +63,9 @@
 TEXT _cardinal_boot(SB), NOSPLIT|NOFRAME, $0
 	// Initialize UART base address for early breadcrumb debugging
 	// R14 = 0x09000000 (UART PL011 base on QEMU virt)
+	// NOTE: R14 is used for UART breadcrumbs throughout boot. It remains valid
+	// until the BL to KernelMain, since there are no other BL instructions
+	// that would clobber it (R14/X14 is caller-saved in AAPCS64).
 	MOVD	$0x09000000, R14
 
 	// Preserve QEMU-provided DTB pointer.
@@ -210,6 +213,11 @@ bss_clear_check:
 	CMP	R9, R4
 	BLO	bss_clear_loop
 
+	// Breadcrumb: BSS clear complete
+	// R14 still holds UART base (no BL instructions since it was set)
+	MOVW	$'B', R15
+	MOVW	R15, (R14)
+
 	// ========================================
 	// Initialize mmap bump pointer
 	// ========================================
@@ -293,6 +301,11 @@ vbar_ok:
 	MOVD	$runtime·m0(SB), R0
 	MOVD	R0, 48(g)		// g0.m = &m0
 	MOVD	g, (R0)			// m0.g0 = &g0
+
+	// Breadcrumb: About to call KernelMain
+	// R14 still holds UART base (this is the last use before BL clobbers it)
+	MOVW	$'G', R15
+	MOVW	R15, (R14)
 
 	// ========================================
 	// Jump to KernelMain

@@ -26,7 +26,10 @@
 // ============================================================================
 
 // 0x000: Synchronous exception (SP_EL0)
-TEXT vec_sync_sp_el0(SB), NOSPLIT, $0
+// CRITICAL: Vector table must be 2KB aligned for VBAR_EL1
+// PCALIGN $2048 ensures this function (and thus the vector table base) is 2KB aligned
+TEXT vec_sync_sp_el0(SB), NOSPLIT|NOFRAME, $0
+	PCALIGN	$2048
 	B	sync_exception_handler_el0(SB)
 
 // 0x080: IRQ (SP_EL0)
