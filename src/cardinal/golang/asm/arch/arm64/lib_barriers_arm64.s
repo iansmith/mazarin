@@ -6,11 +6,19 @@
 // NOTE: These functions use Go 1.17+ register-based calling convention.
 // Parameters arrive in R0, R1, etc. Return values go in R0.
 
-// dsb() - Data Synchronization Barrier
+// dsb() - Data Synchronization Barrier (System-wide)
 // Ensures all memory accesses before this instruction complete before continuing
 // Used after modifying page tables, before enabling MMU, etc.
 TEXT dsb(SB), NOSPLIT|NOFRAME, $0-0
 	DSB	$15			// DSB SY (system-wide barrier)
+	RET
+
+// dsbIsh() - Data Synchronization Barrier (Inner Shareable)
+// Like DSB but only waits for inner-shareable domain operations
+// This is what ARM Trusted Firmware uses for MMU enable sequence
+// DSB ISH = DSB $11 (0b1011 = Inner Shareable, load+store)
+TEXT dsbIsh(SB), NOSPLIT|NOFRAME, $0-0
+	DSB	$11			// DSB ISH (inner shareable barrier)
 	RET
 
 // isb() - Instruction Synchronization Barrier

@@ -744,6 +744,17 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	// Go assembly transpilation is verified through normal kernel operation.
 
 	// =========================================
+	// DEBUG: Dump page table walk for key addresses
+	// Verify that .rodata is RO and BSS is RW
+	// =========================================
+	// .rodata sample - should be RO (AP=3)
+	dumpPageTableWalk(".rodata sample (0x401C0000)", 0x401C0000)
+	// runtime.argv is at 0x402BB918 (in BSS) - should be RW (AP=1)
+	dumpPageTableWalk("runtime.argv (0x402BB918)", 0x402BB918)
+	// runtime.argc is at 0x402E4B68 (in BSS) - should be RW (AP=1)
+	dumpPageTableWalk("runtime.argc (0x402E4B68)", 0x402E4B68)
+
+	// =========================================
 	// TEST: Item 3 - runtime.args()
 	// Test that we can call runtime.args with a minimal argv/auxv structure
 	// This verifies the args() → sysargs() → sysauxv() path works.

@@ -755,8 +755,13 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 func createPageTableEntry(addr uintptr, attrs uint64, ap uint64, exec uint64) uint64 {
 	// Create page table entry
 	// NOTE: L3 page descriptors must have bits[1:0] = 0b11, so include PTE_TABLE here.
-	// CRITICAL: Use Non-Shareable for now to debug MMU enable issues
-	entry := uint64(addr) | PTE_VALID | PTE_TABLE | PTE_AF | attrs | ap | exec | PTE_SH_NONE
+	// Use Inner Shareable (SH=3) to match TCR_EL1.SH0 setting
+	//
+	// CRITICAL: addr MUST be page-aligned (low 12 bits = 0)
+	// If addr has low bits set, they will corrupt the attribute fields!
+	// Go's linker doesn't guarantee section page-alignment, so mapRegionInitMMU
+	// must page-align addresses before calling this function.
+	entry := uint64(addr) | PTE_VALID | PTE_TABLE | PTE_AF | attrs | ap | exec | PTE_SH_INNER
 	return entry
 }
 
@@ -924,7 +929,6 @@ func mapPageInitMMU(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 	pteValue := createPageTableEntry(pa, attrs, ap, exec)
 	*l3Entry = pteValue
 
-
 	// NOTE: Cache cleaning and barriers moved to end of initMMU() for performance
 	// The MMU isn't enabled yet, so page table walker won't see stale cache
 }
@@ -1012,10 +1016,17 @@ func mapRegionInitMMU(vaStart, vaEnd, paStart uintptr, attrs uint64, ap uint64, 
 		return
 	}
 
-	va := vaStart
-	pa := paStart
+	// CRITICAL: Page-align the addresses!
+	// Linker symbols may not be page-aligned (e.g., dataStart = 0x402B03C0)
+	// We need to map whole pages, so round down to page boundary
+	const PAGE_MASK = ^uintptr(PAGE_SIZE - 1) // 0xFFFFFFFFFFFFF000
+	va := vaStart & PAGE_MASK
+	pa := paStart & PAGE_MASK
 
-	for va < vaEnd {
+	// Also need to extend vaEnd to cover the last partial page
+	vaEndAligned := (vaEnd + PAGE_SIZE - 1) & PAGE_MASK
+
+	for va < vaEndAligned {
 		mapPageInitMMU(va, pa, attrs, ap, exec)
 		va += PAGE_SIZE
 		pa += PAGE_SIZE
@@ -1527,19 +1538,232 @@ func dumpFetchMapping(label string, va uintptr) bool {
 	return true
 }
 
+// dumpPageTableWalk dumps the complete page table walk for a virtual address
+// showing all L0->L1->L2->L3 entries with their bit fields.
+// This is a diagnostic function to verify page table structure.
+//
+//go:nosplit
+func dumpPageTableWalk(label string, va uintptr) {
+	uartPutsDirect("\r\n=== Page Table Walk for ")
+	uartPutsDirect(label)
+	uartPutsDirect(" ===\r\n")
+	uartPutsDirect("VA: 0x")
+	uartPutHex64Direct(uint64(va))
+	uartPutsDirect("\r\n")
+
+	va64 := uint64(va)
+	l0Idx := uint16((va64 >> L0_SHIFT) & 0x1FF)
+	l1Idx := uint16((va64 >> L1_SHIFT) & 0x1FF)
+	l2Idx := uint16((va64 >> L2_SHIFT) & 0x1FF)
+	l3Idx := uint16((va64 >> L3_SHIFT) & 0x1FF)
+
+	uartPutsDirect("Indices: L0=")
+	uartPutHex64Direct(uint64(l0Idx))
+	uartPutsDirect(" L1=")
+	uartPutHex64Direct(uint64(l1Idx))
+	uartPutsDirect(" L2=")
+	uartPutHex64Direct(uint64(l2Idx))
+	uartPutsDirect(" L3=")
+	uartPutHex64Direct(uint64(l3Idx))
+	uartPutsDirect("\r\n")
+
+	// L0 entry
+	uartPutsDirect("L0 table base: 0x")
+	uartPutHex64Direct(uint64(pageTableL0))
+	uartPutsDirect("\r\n")
+
+	l0EntryAddr := pageTableL0 + uintptr(l0Idx)*PTE_SIZE
+	l0e := *(*uint64)(unsafe.Pointer(l0EntryAddr))
+	uartPutsDirect("L0[")
+	uartPutHex64Direct(uint64(l0Idx))
+	uartPutsDirect("] @ 0x")
+	uartPutHex64Direct(uint64(l0EntryAddr))
+	uartPutsDirect(" = 0x")
+	uartPutHex64Direct(l0e)
+	dumpPTEBits(l0e, true) // true = table descriptor
+
+	if (l0e & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE) {
+		uartPutsDirect("  -> INVALID L0 entry! Bits[1:0]=")
+		uartPutHex64Direct(l0e & 3)
+		uartPutsDirect("\r\n")
+		return
+	}
+
+	// L1 entry
+	l1Base := uintptr(l0e & PTE_ADDR_MASK)
+	l1EntryAddr := l1Base + uintptr(l1Idx)*PTE_SIZE
+	l1e := *(*uint64)(unsafe.Pointer(l1EntryAddr))
+	uartPutsDirect("L1[")
+	uartPutHex64Direct(uint64(l1Idx))
+	uartPutsDirect("] @ 0x")
+	uartPutHex64Direct(uint64(l1EntryAddr))
+	uartPutsDirect(" = 0x")
+	uartPutHex64Direct(l1e)
+	dumpPTEBits(l1e, true) // table descriptor
+
+	if (l1e & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE) {
+		uartPutsDirect("  -> INVALID L1 entry! Bits[1:0]=")
+		uartPutHex64Direct(l1e & 3)
+		uartPutsDirect("\r\n")
+		return
+	}
+
+	// L2 entry
+	l2Base := uintptr(l1e & PTE_ADDR_MASK)
+	l2EntryAddr := l2Base + uintptr(l2Idx)*PTE_SIZE
+	l2e := *(*uint64)(unsafe.Pointer(l2EntryAddr))
+	uartPutsDirect("L2[")
+	uartPutHex64Direct(uint64(l2Idx))
+	uartPutsDirect("] @ 0x")
+	uartPutHex64Direct(uint64(l2EntryAddr))
+	uartPutsDirect(" = 0x")
+	uartPutHex64Direct(l2e)
+	dumpPTEBits(l2e, true) // table descriptor
+
+	if (l2e & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE) {
+		uartPutsDirect("  -> INVALID L2 entry! Bits[1:0]=")
+		uartPutHex64Direct(l2e & 3)
+		uartPutsDirect("\r\n")
+		return
+	}
+
+	// L3 entry (page descriptor)
+	l3Base := uintptr(l2e & PTE_ADDR_MASK)
+	l3EntryAddr := l3Base + uintptr(l3Idx)*PTE_SIZE
+	l3e := *(*uint64)(unsafe.Pointer(l3EntryAddr))
+	uartPutsDirect("L3[")
+	uartPutHex64Direct(uint64(l3Idx))
+	uartPutsDirect("] @ 0x")
+	uartPutHex64Direct(uint64(l3EntryAddr))
+	uartPutsDirect(" = 0x")
+	uartPutHex64Direct(l3e)
+	dumpPTEBits(l3e, false) // false = page descriptor
+
+	if (l3e & (PTE_VALID | PTE_TABLE)) != (PTE_VALID | PTE_TABLE) {
+		uartPutsDirect("  -> INVALID L3 entry! Bits[1:0]=")
+		uartPutHex64Direct(l3e & 3)
+		uartPutsDirect("\r\n")
+		return
+	}
+
+	// Extract and show the physical address
+	pa := l3e & PTE_ADDR_MASK
+	uartPutsDirect("  -> PA: 0x")
+	uartPutHex64Direct(pa)
+	uartPutsDirect("\r\n")
+}
+
+// dumpPTEBits prints the decoded bit fields of a PTE
+// isTable: true for table descriptors (L0-L2), false for page descriptors (L3)
+//
+//go:nosplit
+func dumpPTEBits(pte uint64, isTable bool) {
+	uartPutsDirect("\r\n  bits: V=")
+	if pte&PTE_VALID != 0 {
+		uartPutcDirect('1')
+	} else {
+		uartPutcDirect('0')
+	}
+
+	uartPutsDirect(" T=")
+	if pte&PTE_TABLE != 0 {
+		uartPutcDirect('1')
+	} else {
+		uartPutcDirect('0')
+	}
+
+	if !isTable {
+		// Page descriptor specific bits
+		attrIdx := (pte >> 2) & 0x7
+		uartPutsDirect(" AttrIdx=")
+		uartPutHex64Direct(attrIdx)
+
+		ap := (pte >> 6) & 0x3
+		uartPutsDirect(" AP=")
+		uartPutHex64Direct(ap)
+		switch ap {
+		case 0:
+			uartPutsDirect("(RW@EL0)")
+		case 1:
+			uartPutsDirect("(RW@EL1)")
+		case 2:
+			uartPutsDirect("(RO@EL0)")
+		case 3:
+			uartPutsDirect("(RO@EL1)")
+		}
+
+		sh := (pte >> 8) & 0x3
+		uartPutsDirect(" SH=")
+		uartPutHex64Direct(sh)
+		switch sh {
+		case 0:
+			uartPutsDirect("(None)")
+		case 2:
+			uartPutsDirect("(Outer)")
+		case 3:
+			uartPutsDirect("(Inner)")
+		}
+
+		uartPutsDirect(" AF=")
+		if pte&PTE_AF != 0 {
+			uartPutcDirect('1')
+		} else {
+			uartPutcDirect('0')
+		}
+
+		uartPutsDirect(" PXN=")
+		if pte&PTE_PXN != 0 {
+			uartPutcDirect('1')
+		} else {
+			uartPutcDirect('0')
+		}
+
+		uartPutsDirect(" UXN=")
+		if pte&PTE_UXN != 0 {
+			uartPutcDirect('1')
+		} else {
+			uartPutcDirect('0')
+		}
+	}
+
+	uartPutsDirect("\r\n")
+}
+
 // enableMMU enables the MMU and switches to virtual addressing.
+//
+// This implementation follows the ARM Trusted Firmware reference exactly:
+// https://github.com/ARM-software/arm-trusted-firmware/blob/master/lib/xlat_tables_v2/aarch64/enable_mmu.S
+//
+// The key sequence is:
+//   1. TLB invalidate FIRST (before any register setup)
+//   2. Write MAIR_EL1
+//   3. Write TCR_EL1
+//   4. Write TTBR0_EL1
+//   5. DSB ISH + ISB (context synchronization before SCTLR)
+//   6. Read/modify/write SCTLR_EL1 to enable MMU
+//   7. Single ISB after SCTLR
+//
+// Previous implementation used UART writes as implicit barriers. This version
+// uses explicit barriers per ARM TF reference, with only minimal UART output
+// for debugging without relying on Device memory ordering effects.
 //
 //go:nosplit
 func enableMMU() bool {
 	uartBase := uintptr(0x09000000)
-	*(*uint32)(unsafe.Pointer(uartBase)) = '1' // Entry
 
 	if pageTableL0 == 0 {
+		*(*uint32)(unsafe.Pointer(uartBase)) = '!'
 		return false
 	}
-	*(*uint32)(unsafe.Pointer(uartBase)) = '2' // L0 ok
 
-	// Configure MAIR_EL1: Set all 3 memory attribute indices
+	// =========================================================================
+	// Step 1: TLB invalidate FIRST (ARM TF does this before any register setup)
+	// =========================================================================
+	asm.InvalidateTlbAll()
+
+	// =========================================================================
+	// Step 2: Configure MAIR_EL1
+	// =========================================================================
 	// MAIR[0] = 0xFF (Normal, Inner/Outer Write-Back Cacheable)
 	// MAIR[1] = 0x00 (Device-nGnRnE)
 	// MAIR[2] = 0x44 (Normal, Inner/Outer Non-Cacheable)
@@ -1547,92 +1771,51 @@ func enableMMU() bool {
 		(uint64(0x00) << 8) |  // Attr1: Device
 		(uint64(0x44) << 16)   // Attr2: Normal non-cacheable
 	asm.WriteMairEl1(mairValue)
-	*(*uint32)(unsafe.Pointer(uartBase)) = '3' // MAIR written
 
-	// Verify MAIR
-	mairReadback := asm.ReadMairEl1()
-	if (mairReadback & 0xFFFFFF) != mairValue {
-		*(*uint32)(unsafe.Pointer(uartBase)) = 'X' // MAIR verify failed
-		return false
-	}
-	*(*uint32)(unsafe.Pointer(uartBase)) = '4' // MAIR verified
-
-	// Configure TCR_EL1
+	// =========================================================================
+	// Step 3: Configure TCR_EL1
+	// =========================================================================
 	tcrValue := uint64(0)
-	tcrValue |= 16 << 0  // T0SZ = 16
-	tcrValue |= 1 << 8   // IRGN0 = 1
-	tcrValue |= 1 << 10  // ORGN0 = 1
-	tcrValue |= 3 << 12  // SH0 = 3
+	tcrValue |= 16 << 0  // T0SZ = 16 (48-bit VA space)
+	tcrValue |= 1 << 8   // IRGN0 = 1 (Inner Write-Back Cacheable)
+	tcrValue |= 1 << 10  // ORGN0 = 1 (Outer Write-Back Cacheable)
+	tcrValue |= 3 << 12  // SH0 = 3 (Inner Shareable)
 	tcrValue |= 16 << 16 // T1SZ = 16
-	tcrValue |= 1 << 23  // EPD1 = 1
-	tcrValue |= 2 << 32  // IPS = 2
+	tcrValue |= 1 << 23  // EPD1 = 1 (Disable TTBR1 walks)
+	tcrValue |= 2 << 32  // IPS = 2 (40-bit PA space)
 	asm.WriteTcrEl1(tcrValue)
-	*(*uint32)(unsafe.Pointer(uartBase)) = '5' // TCR written
 
-	// Verify TCR
-	tcrReadback := asm.ReadTcrEl1()
-	if (tcrReadback & 0x3F) != 16 {
-		*(*uint32)(unsafe.Pointer(uartBase)) = 'Y' // TCR verify failed
-		return false
-	}
-	*(*uint32)(unsafe.Pointer(uartBase)) = '6' // TCR verified
-
-	asm.Isb()
+	// =========================================================================
+	// Step 4: Configure TTBR0_EL1 and TTBR1_EL1
+	// =========================================================================
 	asm.WriteTtbr1El1(0)
 	asm.WriteTtbr0El1(uint64(pageTableL0))
-	*(*uint32)(unsafe.Pointer(uartBase)) = '7' // TTBRs written
 
-	// Verify TTBR0
-	ttbr0Readback := asm.ReadTtbr0El1()
-	if (ttbr0Readback &^ 0xFFF) != uint64(pageTableL0) {
-		*(*uint32)(unsafe.Pointer(uartBase)) = 'Z' // TTBR0 verify failed
-		return false
-	}
-	*(*uint32)(unsafe.Pointer(uartBase)) = '8' // TTBR0 verified
+	// =========================================================================
+	// Step 5: DSB ISH + ISB (ARM TF uses Inner Shareable barrier)
+	// This is the CRITICAL synchronization point before enabling MMU
+	// =========================================================================
+	asm.DsbIsh()
+	asm.Isb()
 
-	asm.Dsb()
-	*(*uint32)(unsafe.Pointer(uartBase)) = '9' // Pre-SCTLR
-
-	// Read and modify SCTLR_EL1
+	// =========================================================================
+	// Step 6: Read/modify/write SCTLR_EL1 to enable MMU
+	// =========================================================================
 	sctlr := asm.ReadSctlrEl1()
 	sctlr |= 1 << 0   // M = 1 (MMU enable)
 	sctlr &^= 1 << 2  // C = 0 (data cache DISABLED initially)
 	sctlr &^= 1 << 12 // I = 0 (instruction cache DISABLED initially)
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'A' // SCTLR prepared
-
-	// CRITICAL: Cannot call dumpFetchMapping() before MMU is enabled!
-	// dumpFetchMapping uses print() which accesses .rodata strings, and before
-	// MMU is on, ARM64 requires strict alignment (strings are misaligned).
-	// TODO: Add verification AFTER MMU enable when unaligned access is allowed.
-
-	// Invalidate TLB before enabling MMU to prevent stale translations
-	asm.InvalidateTlbAll()
-	asm.Dsb()
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'B' // TLB invalidated
-
-	// Enable MMU
-	asm.Dsb()
-	asm.Isb()
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'C' // Pre-enable barriers done
-
-	// CRITICAL WORKAROUND: Multiple barriers before/after SCTLR write
-	// Some QEMU versions or CPU models have issues with MMU enable
-	asm.Dsb()
-	asm.Dsb()
-	asm.Isb()
-	asm.Isb()
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'D' // About to write SCTLR
 
 	asm.WriteSctlrEl1(sctlr)
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'F' // SCTLR written, MMU ON
 
+	// =========================================================================
+	// Step 7: Single ISB after SCTLR (per ARM TF reference)
+	// =========================================================================
 	asm.Isb()
-	asm.Isb()
-	asm.Dsb()
-	asm.Dsb()
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'G' // Post-enable barriers done
 
-	// Now MMU is ON and unaligned access is allowed, can safely use print()
+	// MMU is now ON - print a single character to confirm
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'M'
+
 	return true
 }
 

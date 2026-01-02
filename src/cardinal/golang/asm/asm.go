@@ -129,6 +129,7 @@ var (
 
 var (
 	Dsb                        = arm64.Dsb
+	DsbIsh                     = arm64.DsbIsh
 	Isb                        = arm64.Isb
 	Wfi                        = arm64.Wfi
 	Nop                        = arm64.Nop

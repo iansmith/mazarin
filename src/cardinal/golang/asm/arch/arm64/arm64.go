@@ -10,6 +10,10 @@ import _ "unsafe" // for go:linkname
 //go:nosplit
 func Dsb()
 
+//go:linkname DsbIsh dsbIsh
+//go:nosplit
+func DsbIsh()
+
 //go:linkname Isb isb
 //go:nosplit
 func Isb()

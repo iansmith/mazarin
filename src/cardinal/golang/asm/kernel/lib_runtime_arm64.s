@@ -51,7 +51,17 @@ TEXT call_runtime_args(SB), NOSPLIT, $96-4
 	MOVW	ZR, R0			// argc = 0 (int32)
 	ADD	$48, RSP, R1		// argv = pointer to our structure
 
+	// DEBUG: Print 'B' for "Before" runtime.args call
+	MOVD	$0x09000000, R10
+	MOVD	$'B', R11
+	MOVW	R11, (R10)
+
 	CALL	runtime·args(SB)
+
+	// DEBUG: Print 'C' for "Completed" runtime.args call
+	MOVD	$0x09000000, R10
+	MOVD	$'C', R11
+	MOVW	R11, (R10)
 
 	// If we get here, args() completed without crash
 	MOVW	ZR, R0			// Return 0 = success
