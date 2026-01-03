@@ -6,14 +6,17 @@ package kernel
 import "unsafe"
 
 // Memory operations (global symbols - need linkname)
-
-//go:linkname Bzero bzero
-//go:nosplit
-func Bzero(ptr unsafe.Pointer, size uint32)
+//
+// NOTE: bzero4K is now implemented as a pure Go function in mmu.go
+// and doesn't need a linkname declaration
 
 //go:linkname MemmoveBytes MemmoveBytes
 //go:nosplit
 func MemmoveBytes(dst, src unsafe.Pointer, size uint32)
+
+//go:linkname DcZva dc_zva
+//go:nosplit
+func DcZva(addr uintptr)
 
 // Async preemption (global symbol)
 

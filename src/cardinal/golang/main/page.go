@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cardinal/asm"
 	"unsafe"
 )
 
@@ -130,7 +129,7 @@ func pageInit(atagsPtr uintptr) {
 	pageArrayLen = uint32(unsafe.Sizeof(Page{})) * numPages
 	allPagesArrayBase = getLinkerSymbol("__end")
 	allPagesArrayPtr := unsafe.Pointer(allPagesArrayBase)
-	asm.Bzero(allPagesArrayPtr, pageArrayLen)
+	bzero4K(allPagesArrayPtr, pageArrayLen)
 
 	// Calculate kernel pages
 	ramStart := getLinkerSymbol("__ram_start")
@@ -222,7 +221,7 @@ func allocPage() unsafe.Pointer {
 	pageMem := unsafe.Pointer(uintptr(pageIndex) * PAGE_SIZE)
 
 	// Zero out the page (security: prevent data leakage)
-	asm.Bzero(pageMem, PAGE_SIZE)
+	bzero4K(pageMem, PAGE_SIZE)
 
 	return pageMem
 }

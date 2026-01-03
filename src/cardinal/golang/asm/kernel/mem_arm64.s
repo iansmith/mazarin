@@ -9,51 +9,22 @@
 #include "textflag.h"
 
 // ============================================================================
-// Memory Functions
+// Cache Line Operations
 // ============================================================================
 
-// bzero(ptr unsafe.Pointer, size uint32)
-// Zeroes size bytes starting at ptr
-// OPTIMIZED: Uses 128-bit stores (STP) for 16x speedup
-//
-// NOTE: Go's internal ABI passes arguments in REGISTERS (x0, w1), not on stack.
-// The linkname directive connects asm.Bzero to this function.
-// When called from Go, arguments arrive in: R0 = ptr, R1 = size (lower 32 bits)
-// We do NOT use FP-relative addressing since that doesn't work with Go's ABI.
-TEXT bzero(SB), NOSPLIT|NOFRAME, $0-12
-	// Arguments arrive in registers: R0 = ptr, R1 = size
-	// No need to load from stack - Go's register ABI passes them directly!
-
-	// R0 = ptr, R1 = size (already in registers from Go ABI)
-	CBZ	R1, bzero_done
-	MOVD	ZR, R2			// Zero value
-	MOVD	ZR, R3			// Zero value (for pair store)
-
-bzero_loop_16:
-	CMP	$16, R1
-	BLT	bzero_loop_8
-	STP	(R2, R3), (R0)
-	ADD	$16, R0
-	SUB	$16, R1
-	B	bzero_loop_16
-
-bzero_loop_8:
-	CMP	$8, R1
-	BLT	bzero_loop_1
-	MOVD	R2, (R0)
-	ADD	$8, R0
-	SUB	$8, R1
-	B	bzero_loop_8
-
-bzero_loop_1:
-	CBZ	R1, bzero_done
-	MOVB	R2, (R0)
-	ADD	$1, R0
-	SUB	$1, R1
-	B	bzero_loop_1
-
-bzero_done:
+// dc_zva zeros a cache line at the given address
+// R0 = address (must be cache-line aligned)
+TEXT dc_zva(SB), NOSPLIT|NOFRAME, $0-0
+	WORD	$0xd50b7420	// dc zva, x0
 	RET
+
+// ============================================================================
+// Memory Functions
+// ============================================================================
+//
+// NOTE: bzero is now implemented as a pure Go function in mmu.go
+// using DC ZVA instruction for cache-line-aligned zeroing.
+// The old assembly implementation has been removed.
 
 // MemmoveBytes(dest unsafe.Pointer, src unsafe.Pointer, n uint32)
 // Copy n bytes from src to dest
@@ -63,9 +34,12 @@ bzero_done:
 //   R0 = dest pointer
 //   R1 = src pointer
 //   R2 = n (lower 32 bits used)
-TEXT MemmoveBytes(SB), NOSPLIT|NOFRAME, $0-20
-	// Arguments already in registers from Go ABI:
-	// R0 = dest, R1 = src, R2 = size (as uint32)
+TEXT MemmoveBytes(SB), NOSPLIT|NOFRAME, $0-0
+	// Register ABI (ABIInternal): Arguments passed in registers
+	// R0 = dest (unsafe.Pointer)
+	// R1 = src (unsafe.Pointer)
+	// W2 = n (uint32, lower 32 bits of R2)
+	// Signature $0-0 means: no local frame, no stack args (pure register ABI)
 	CBZ	R2, memmove_done
 
 	// Check if we can do 16-byte copies

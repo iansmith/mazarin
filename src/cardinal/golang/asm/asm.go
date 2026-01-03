@@ -11,9 +11,9 @@ import (
 )
 
 // Re-export kernel package functions with proper signatures
-
-// Bzero zeros memory at ptr for size bytes
-func Bzero(ptr unsafe.Pointer, size uint32) { kernel.Bzero(ptr, size) }
+//
+// NOTE: Bzero4K is implemented in main/mmu.go, not in the asm package.
+// It's exported here only for documentation - actual calls go directly to main.bzero4K
 
 // MemmoveBytes copies size bytes from src to dst
 func MemmoveBytes(dst, src unsafe.Pointer, size uint32) { kernel.MemmoveBytes(dst, src, size) }
@@ -36,6 +36,7 @@ var (
 	PrintHexByteUart      = kernel.PrintHexByteUart
 	CallOnG0Stack         = kernel.CallOnG0Stack
 	GetGRegister            = kernel.GetGRegister
+	DcZva                   = kernel.DcZva
 	CallMallocinit          = kernel.CallMallocinit
 	CallRuntimeArgs         = kernel.CallRuntimeArgs
 	CallRuntimeOsinit       = kernel.CallRuntimeOsinit

@@ -212,6 +212,32 @@ var (
 	sameVACounter uint32
 )
 
+// kernelPanic prints a panic message and halts the system
+// Uses direct UART writes to work before UART initialization
+//
+//go:nosplit
+func kernelPanic(msg string) {
+	uartBase := uintptr(0x09000000)
+
+	// Write "Kernel Panic: "
+	panicMsg := "Kernel Panic: "
+	for i := 0; i < len(panicMsg); i++ {
+		*(*uint32)(unsafe.Pointer(uartBase)) = uint32(panicMsg[i])
+	}
+
+	// Write the actual message
+	for i := 0; i < len(msg); i++ {
+		*(*uint32)(unsafe.Pointer(uartBase)) = uint32(msg[i])
+	}
+
+	// Write newline
+	*(*uint32)(unsafe.Pointer(uartBase)) = '\r'
+	*(*uint32)(unsafe.Pointer(uartBase)) = '\n'
+
+	asm.SemihostingExit()
+	for {} // Infinite loop if semihosting doesn't work
+}
+
 // Page table allocator state - BSS global to avoid circular dependency with heap
 var pageTableAllocatorState_global pageTableAllocatorState
 
@@ -267,7 +293,7 @@ func allocatePageTable() uintptr {
 	}
 
 	// Zero the allocated table (required - page tables must start empty)
-	bzero(unsafe.Pointer(ptr), TABLE_SIZE)
+	bzero4K(unsafe.Pointer(ptr), TABLE_SIZE)
 
 	// Ensure all memory writes from bzero are visible before returning
 	asm.Dsb()
@@ -501,7 +527,7 @@ func preMapPages() {
 	}
 
 	// Zero the physical frame (it's identity-mapped, so we can access it directly)
-	bzero(unsafe.Pointer(physFrame), PAGE_SIZE)
+	bzero4K(unsafe.Pointer(physFrame), PAGE_SIZE)
 
 	// Map the page
 	mapPage(targetVA, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
@@ -725,7 +751,7 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	// NOW zero the page via the VA (not PA!)
 	// After mapPage() and TLB invalidation, the VA is accessible and mapped to physFrame
 	// SECURITY: Always zero new pages to prevent leaking old data
-	bzero(unsafe.Pointer(pageAddr), PAGE_SIZE)
+	bzero4K(unsafe.Pointer(pageAddr), PAGE_SIZE)
 
 	// CRITICAL: Data Synchronization Barrier after zeroing the page
 	// Without this barrier, the zero writes may still be in the CPU's store buffer
@@ -1026,10 +1052,15 @@ func mapRegionInitMMU(vaStart, vaEnd, paStart uintptr, attrs uint64, ap uint64, 
 	// Also need to extend vaEnd to cover the last partial page
 	vaEndAligned := (vaEnd + PAGE_SIZE - 1) & PAGE_MASK
 
+	pageNum := 0
 	for va < vaEndAligned {
+		if pageNum%8 == 0 {
+			uartPutcDirect('.') // Progress dot every 8 pages
+		}
 		mapPageInitMMU(va, pa, attrs, ap, exec)
 		va += PAGE_SIZE
 		pa += PAGE_SIZE
+		pageNum++
 	}
 
 	// NOTE: Cache cleaning moved to end of initMMU() for performance
@@ -1078,11 +1109,87 @@ func getPhysicalAddress(va uintptr) uintptr {
 	return pagePA | offset
 }
 
-// bzero zeros a memory region (use existing implementation or create)
+// Cache line size (initialized from CTR_EL0)
+var cacheLineSize uint32
+
+// initCacheLineSize reads and validates the cache line size from CTR_EL0
+// Must be called before using bzero with DC ZVA
+//go:nosplit
+func initCacheLineSize() {
+	ctr := asm.ReadCtrEl0()
+	// Extract DminLine (bits [19:16]) - log2 of number of words
+	dminLine := (ctr >> 16) & 0xF
+	// Cache line size = 4 << dminLine (4 bytes per word)
+	cacheLineSize = 4 << dminLine
+
+	// Validate: must be a power of 2, between 16 and 2048 bytes
+	// Common values: 32, 64, 128, 256 bytes
+	// If invalid or too large, disable DC ZVA optimization by setting to 0
+	if cacheLineSize < 16 || cacheLineSize > 2048 {
+		cacheLineSize = 0 // Disable DC ZVA optimization
+		return
+	}
+
+	// Check if it's a power of 2
+	if (cacheLineSize & (cacheLineSize - 1)) != 0 {
+		cacheLineSize = 0 // Not a power of 2, disable DC ZVA
+		return
+	}
+
+	// Cache line size is valid and DC ZVA can be used
+}
+
+// bzero4K zeros a memory region using DC ZVA when possible
+// CRITICAL: bzero4K is exclusively used to zero entire memory pages before they are mapped
+// or right after. Both ptr and size must be page-aligned (4K aligned).
 //
 //go:nosplit
-func bzero(ptr unsafe.Pointer, size uint32) {
-	asm.Bzero(ptr, size)
+func bzero4K(ptr unsafe.Pointer, size uint32) {
+	if size == 0 {
+		return
+	}
+
+	addr := uintptr(ptr)
+
+	// Validate page alignment (4K = 0x1000)
+	if (addr & 0xFFF) != 0 {
+		kernelPanic("bzero4K: address not page-aligned")
+	}
+	if (uint32(size) & 0xFFF) != 0 {
+		kernelPanic("bzero4K: size not page-aligned")
+	}
+
+	end := addr + uintptr(size)
+
+	// If cache line size not initialized or size too small, use simple loop
+	if cacheLineSize == 0 || size < cacheLineSize {
+		// Simple byte-by-byte zeroing for small regions
+		for addr < end {
+			*(*byte)(unsafe.Pointer(addr)) = 0
+			addr++
+		}
+		return
+	}
+
+	// Zero initial unaligned bytes
+	alignMask := uintptr(cacheLineSize - 1)
+	for addr < end && (addr&alignMask) != 0 {
+		*(*byte)(unsafe.Pointer(addr)) = 0
+		addr++
+	}
+
+	// Zero cache-line-aligned region with DC ZVA
+	alignedEnd := end &^ alignMask
+	for addr < alignedEnd {
+		asm.DcZva(addr)
+		addr += uintptr(cacheLineSize)
+	}
+
+	// Zero trailing unaligned bytes
+	for addr < end {
+		*(*byte)(unsafe.Pointer(addr)) = 0
+		addr++
+	}
 }
 
 // initMMU initializes the MMU with identity-mapped page tables
@@ -1094,6 +1201,10 @@ func initMMU() bool {
 	// Early breadcrumb - write directly to UART to avoid any function call issues
 	uartBase := uintptr(0x09000000)
 	*(*uint32)(unsafe.Pointer(uartBase)) = '1'
+
+	// Initialize cache line size for optimized bzero
+	initCacheLineSize()
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'C' // Cache line init done
 
 	// CRITICAL: Call assembly helpers directly instead of getLinkerSymbol()
 	// because getLinkerSymbol() uses string comparisons that access .rodata
@@ -1138,8 +1249,8 @@ func initMMU() bool {
 	*(*uint32)(unsafe.Pointer(uartBase)) = '8'
 	uartPutHex64Direct(uint64(pageTableL0))
 	*(*uint32)(unsafe.Pointer(uartBase)) = ':'
-	bzero(unsafe.Pointer(pageTableL0), TABLE_SIZE)
-	bzero(unsafe.Pointer(pageTableL1), TABLE_SIZE)
+	bzero4K(unsafe.Pointer(pageTableL0), TABLE_SIZE)
+	bzero4K(unsafe.Pointer(pageTableL1), TABLE_SIZE)
 	*(*uint32)(unsafe.Pointer(uartBase)) = '9'
 
 	// Set up L0 table to point to L1 table for identity mapping
@@ -1483,7 +1594,7 @@ func preMapScheديnitPages() {
 		}
 
 		// Zero the frame
-		bzero(unsafe.Pointer(physFrame), PAGE_SIZE)
+		bzero4K(unsafe.Pointer(physFrame), PAGE_SIZE)
 
 		// Map it
 		mapPage(pageAddr, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)

@@ -140,7 +140,7 @@ func virtqueueInit(vq *VirtQueue, queueSize uint16) bool {
 	vq.DescAlloc = descAlloc
 
 	// Zero out descriptor table
-	asm.Bzero(vq.DescTable, uint32(descSize))
+	bzero4K(vq.DescTable, uint32(descSize))
 
 	// Allocate available ring (must be 2-byte aligned)
 	availAlloc := kmalloc(uint32(availSize + 2))
@@ -158,7 +158,7 @@ func virtqueueInit(vq *VirtQueue, queueSize uint16) bool {
 	vq.AvailableAlloc = availAlloc
 
 	// Zero out available ring
-	asm.Bzero(unsafe.Pointer(vq.Available), uint32(availSize))
+	bzero4K(unsafe.Pointer(vq.Available), uint32(availSize))
 
 	// Allocate used ring (must be 4-byte aligned)
 	usedAlloc := kmalloc(uint32(usedSize + 4))
@@ -177,7 +177,7 @@ func virtqueueInit(vq *VirtQueue, queueSize uint16) bool {
 	vq.UsedAlloc = usedAlloc
 
 	// Zero out used ring
-	asm.Bzero(unsafe.Pointer(vq.Used), uint32(usedSize))
+	bzero4K(unsafe.Pointer(vq.Used), uint32(usedSize))
 
 	// Initialize free descriptor list
 	// All descriptors are initially free, linked in a chain
@@ -383,15 +383,15 @@ func virtqueueReset(vq *VirtQueue) {
 	// Zero out all structures
 	if vq.DescTable != nil {
 		descSize := uintptr(vq.QueueSize) * unsafe.Sizeof(VirtQDesc{})
-		asm.Bzero(vq.DescTable, uint32(descSize))
+		bzero4K(vq.DescTable, uint32(descSize))
 	}
 	if vq.Available != nil {
 		availSize := 2 + 2 + uintptr(vq.QueueSize)*2 + 2
-		asm.Bzero(unsafe.Pointer(vq.Available), uint32(availSize))
+		bzero4K(unsafe.Pointer(vq.Available), uint32(availSize))
 	}
 	if vq.Used != nil {
 		usedSize := 2 + 2 + uintptr(vq.QueueSize)*unsafe.Sizeof(VirtQUsedElem{}) + 2
-		asm.Bzero(unsafe.Pointer(vq.Used), uint32(usedSize))
+		bzero4K(unsafe.Pointer(vq.Used), uint32(usedSize))
 	}
 
 	// Reinitialize free descriptor list

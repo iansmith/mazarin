@@ -233,22 +233,43 @@ bss_clear_check:
 	MOVB	R11, (R10)
 	DSB	$15
 
+	// Breadcrumb: Write barrier enabled
+	MOVW	$'W', R15
+	MOVW	R15, (R14)
+
 	// ========================================
 	// Set exception vector base
 	// ========================================
 	MOVD	$vec_sync_sp_el0(SB), R0
+
+	// Breadcrumb: About to set VBAR_EL1
+	MOVW	$'V', R15
+	MOVW	R15, (R14)
+
 	DSB	$15
 	MSR	R0, VBAR_EL1
 	ISB	$15
 
+	// Breadcrumb: VBAR_EL1 written
+	MOVW	$'v', R15
+	MOVW	R15, (R14)
+
 	// Verify VBAR_EL1 was set correctly
 	MRS	VBAR_EL1, R1
+
+	// Breadcrumb: VBAR_EL1 read back
+	MOVW	$'X', R15
+	MOVW	R15, (R14)
+
 	CMP	R0, R1
 	BEQ	vbar_ok
 	// VBAR mismatch - hang
 	B	boot_halt
 
 vbar_ok:
+	// Breadcrumb: VBAR verified OK
+	MOVW	$'Y', R15
+	MOVW	R15, (R14)
 	// ========================================
 	// Initialize GIC (Generic Interrupt Controller)
 	// ========================================

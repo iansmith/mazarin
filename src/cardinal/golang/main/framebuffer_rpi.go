@@ -141,7 +141,7 @@ func sendMessages(tags []PropertyMessageTag) int32 {
 	msg := (*PropertyMessageBuffer)(msgPtr)
 
 	// Zero out the buffer
-	bzero(msgPtr, bufsize)
+	bzero4K(msgPtr, bufsize)
 
 	// Copy tags into buffer
 	bufpos := uint32(0)

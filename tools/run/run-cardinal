@@ -78,11 +78,33 @@ SEPARATE_OUTPUT="${SEPARATE_OUTPUT:-0}"
 NOGRAPHIC="${NOGRAPHIC:-0}"
 SCREENSHOT="${SCREENSHOT:-0}"
 SCREENSHOT_DELAY="${SCREENSHOT_DELAY:-3}"
+DEBUG_MONITOR="${DEBUG_MONITOR:-0}"
 
 # Screenshot directory
 SCREENSHOT_DIR="$PROJECT_ROOT/screenshots"
 
-if [ "$SCREENSHOT" = "1" ]; then
+# Create log directory if it doesn't exist
+LOG_DIR="/tmp/qemu-logs"
+mkdir -p "$LOG_DIR"
+
+if [ "$DEBUG_MONITOR" = "1" ]; then
+    echo "Starting QEMU in DEBUG MONITOR mode"
+    echo "  - Cocoa GUI window will open"
+    echo "  - Monitor console on stdio (this terminal)"
+    echo "  - Serial output to: $LOG_DIR/serial-debug-$$.log"
+    echo ""
+    echo "Monitor commands:"
+    echo "  info registers      - Show all CPU registers"
+    echo "  x/10i \$pc          - Disassemble at current PC"
+    echo "  info mem            - Show memory mappings"
+    echo "  stop                - Pause execution"
+    echo "  cont                - Continue execution"
+    echo "  q                   - Quit QEMU"
+    echo ""
+    DISPLAY_MODE="-display cocoa"
+    MONITOR_MODE="-monitor stdio"
+    SERIAL_MODE="-serial file:$LOG_DIR/serial-debug-$$.log"
+elif [ "$SCREENSHOT" = "1" ]; then
     # Create screenshot directory
     mkdir -p "$SCREENSHOT_DIR"
 
@@ -91,12 +113,18 @@ if [ "$SCREENSHOT" = "1" ]; then
 
     echo "Starting QEMU in screenshot mode (using QEMU monitor)"
     DISPLAY_MODE="-display cocoa"
+    MONITOR_MODE=""
+    SERIAL_MODE="-serial stdio"
 elif [ "$NOGRAPHIC" = "1" ]; then
     echo "Starting QEMU in nographic mode (terminal only, no GUI)"
     DISPLAY_MODE="-nographic"
+    MONITOR_MODE=""
+    SERIAL_MODE="-serial stdio"
 else
     echo "Starting QEMU locally with 'virt' machine type and Cocoa display"
     DISPLAY_MODE="-display cocoa"
+    MONITOR_MODE=""
+    SERIAL_MODE="-serial stdio"
 fi
 
 echo ""
@@ -130,15 +158,10 @@ fi
 echo "Press Ctrl+C to stop QEMU"
 echo ""
 
-# Create log directory if it doesn't exist
-LOG_DIR="/tmp/qemu-logs"
-mkdir -p "$LOG_DIR"
-
 # Get QEMU version for debugging
 echo "QEMU version:"
 "$QEMU_BIN" --version
 echo ""
-mkdir -p "$LOG_DIR"
 
 # Run QEMU locally with Cocoa display or nographic mode
 # 
@@ -192,10 +215,26 @@ QEMU_CMD=(
     -object rng-random,id=rng0,filename=/dev/urandom  # RNG backend from host
     -device virtio-rng-pci,rng=rng0,disable-legacy=on  # RNG device (modern VirtIO 1.0)
     $DISPLAY_MODE
-    -serial stdio   # Direct UART output to terminal
     -semihosting
     -no-reboot
 )
+
+# Add monitor mode (defaults to -monitor none unless DEBUG_MONITOR is set)
+if [ "$DEBUG_MONITOR" = "1" ]; then
+    QEMU_CMD+=($MONITOR_MODE)
+    QEMU_CMD+=($SERIAL_MODE)
+else
+    QEMU_CMD+=(-monitor none)
+    # Configure serial output
+    # In GDB mode, use file output to avoid stdin blocking issues
+    # In normal mode, use stdio for direct terminal output
+    if [ "${GDB:-0}" != "0" ]; then
+        SERIAL_LOG="$LOG_DIR/serial-$$.log"
+        QEMU_CMD+=(-serial "file:$SERIAL_LOG")
+    else
+        QEMU_CMD+=(-serial stdio)
+    fi
+fi
 
 # Add monitor socket for screenshot mode
 if [ "$SCREENSHOT" = "1" ]; then
@@ -242,9 +281,14 @@ if [ "${GDB:-0}" != "0" ]; then
     echo "Enabling GDB debugging:"
     echo "  -s (GDB server on :1234)"
     echo "  -S (pause at startup)"
+    echo "  Serial output: $SERIAL_LOG"
     echo ""
     echo "In another terminal, run:"
-    echo "  $HOME/mazzy/bin/target-gdb flash/cardinal.elf"
+    echo "  cd /Users/iansmith/mazzy/tools/gdb"
+    echo "  ./gdb-connect.sh"
+    echo ""
+    echo "Or manually:"
+    echo "  $HOME/mazzy/bin/target-gdb build/cardinal.elf"
     echo "  (gdb) target remote :1234"
     echo "  (gdb) continue"
     echo ""
@@ -366,7 +410,9 @@ elif [ "$SEPARATE_OUTPUT" = "1" ]; then
 else
     # Execute QEMU normally (output mixed in terminal)
     # All output (kernel UART + QEMU debug) appears together
-    "${QEMU_CMD[@]}"
+    # CRITICAL: Redirect stdin from /dev/null to prevent blocking on serial stdio
+    # Pipe through cat to force unbuffered output
+    "${QEMU_CMD[@]}" < /dev/null | cat
 fi
 
 

@@ -1726,7 +1726,7 @@ func setupKmazarinStartupEnv() (stackPointer uintptr, argc uint64, argv uintptr)
 	structStart := stackTop - 0x200  // Reserve 512 bytes for the structure
 
 	// Zero the structure area
-	bzero(unsafe.Pointer(structStart), 0x200)
+	bzero4K(unsafe.Pointer(structStart), 0x200)
 
 	// Set up the structure as an array of uint64 values
 	data := (*[256]uint64)(unsafe.Pointer(structStart))
@@ -2019,7 +2019,7 @@ func loadAndRunKmazarin() {
 				// Zero-fill the header region (first 64KB of segment)
 				headerSize := uintptr(0x10000)  // 64KB for ELF headers, PHDR, notes
 				headerStart := unsafe.Pointer(uintptr(pVaddr))
-				bzero(headerStart, uint32(headerSize))
+				bzero4K(headerStart, uint32(headerSize))
 
 				// Copy .text section from file offset 0x1000 to VA (segment_va + 0x10000)
 				srcOffset = kmazarinStart + 0x1000
@@ -2055,7 +2055,7 @@ func loadAndRunKmazarin() {
 			uartPutHex64Direct(uint64(bssSize))
 			uartPutsDirect(" bytes)\r\n")
 
-			bzero(bssStart, uint32(bssSize))
+			bzero4K(bssStart, uint32(bssSize))
 
 			// DEBUG: Verify critical BSS addresses are zeroed
 			if uintptr(bssStart) <= 0x419A1060 && 0x419A1060 < uintptr(bssStart)+uintptr(bssSize) {

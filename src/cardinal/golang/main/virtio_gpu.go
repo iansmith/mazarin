@@ -412,7 +412,7 @@ func virtioGPUSetupFramebuffer(width, height uint32) bool {
 
 	// Zero framebuffer
 	fbMem := unsafe.Pointer(&virtioGPUFramebuffer[0])
-	asm.Bzero(fbMem, fbSize)
+	bzero4K(fbMem, fbSize)
 
 	virtioGPUDevice.Framebuffer = fbMem
 	virtioGPUDevice.FramebufferSize = fbSize

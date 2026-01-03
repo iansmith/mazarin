@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cardinal/asm"
 	"unsafe"
 )
 
@@ -190,7 +189,7 @@ func gpuPutc(c byte) {
 		}
 		// Zero out the last row
 		lastRowStart := uintptr(fbinfo.Buf) + uintptr((numRows-1)*CHAR_HEIGHT)*uintptr(fbinfo.Pitch)
-		asm.Bzero(unsafe.Pointer(lastRowStart), fbinfo.Pitch*CHAR_HEIGHT)
+		bzero4K(unsafe.Pointer(lastRowStart), fbinfo.Pitch*CHAR_HEIGHT)
 		fbinfo.CharsY--
 	}
 
@@ -280,7 +279,7 @@ func gpuInit() int32 {
 
 	// Clear screen (black)
 	if fbinfo.Buf != nil && fbinfo.BufSize > 0 {
-		asm.Bzero(fbinfo.Buf, fbinfo.BufSize)
+		bzero4K(fbinfo.Buf, fbinfo.BufSize)
 	}
 
 	return 0

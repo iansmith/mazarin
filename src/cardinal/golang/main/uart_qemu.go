@@ -204,7 +204,7 @@ func uartInitRingBuffer() {
 	ringBuf := (*uartRingBuffer)(buf)
 
 	// Zero the struct first
-	asm.Bzero(unsafe.Pointer(ringBuf), uint32(unsafe.Sizeof(uartRingBuffer{})))
+	bzero4K(unsafe.Pointer(ringBuf), uint32(unsafe.Sizeof(uartRingBuffer{})))
 
 	// Set individual fields carefully
 	ringBuf.buf = (*[UART_RING_BUFFER_SIZE]byte)(buffer)

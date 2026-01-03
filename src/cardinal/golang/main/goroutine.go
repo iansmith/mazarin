@@ -159,7 +159,7 @@ func createKernelGoroutine(fn func(), stackSize uint32) *runtimeG {
 	if gPtr == nil {
 		return nil
 	}
-	asm.Bzero(unsafe.Pointer(gPtr), uint32(gSize))
+	bzero4K(unsafe.Pointer(gPtr), uint32(gSize))
 
 	// Allocate stack from heap (round to power of 2)
 	stackSize = roundUpToPowerOf2(stackSize)
@@ -277,7 +277,7 @@ func createGoroutine(stackSize uint32) *runtimeG {
 	if gPtr == nil {
 		return nil
 	}
-	asm.Bzero(unsafe.Pointer(gPtr), uint32(gSize))
+	bzero4K(unsafe.Pointer(gPtr), uint32(gSize))
 
 	// Allocate stack from heap (round to power of 2)
 	stackSize = roundUpToPowerOf2(stackSize)
