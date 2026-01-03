@@ -130,10 +130,10 @@ func ImageDataEnd() uintptr
 
 // Kmazarin binary accessors (global symbols)
 
-//go:linkname KmazarinBinaryStart KmazarinBinaryStart
+//go:linkname KmazarinBinaryStart kmazarinBinaryStart
 //go:nosplit
 func KmazarinBinaryStart() uintptr
 
-//go:linkname KmazarinBinaryEnd KmazarinBinaryEnd
+//go:linkname KmazarinBinaryEnd kmazarinBinaryEnd
 //go:nosplit
 func KmazarinBinaryEnd() uintptr

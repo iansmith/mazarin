@@ -410,9 +410,9 @@ elif [ "$SEPARATE_OUTPUT" = "1" ]; then
 else
     # Execute QEMU normally (output mixed in terminal)
     # All output (kernel UART + QEMU debug) appears together
-    # CRITICAL: Redirect stdin from /dev/null to prevent blocking on serial stdio
-    # Pipe through cat to force unbuffered output
-    "${QEMU_CMD[@]}" < /dev/null | cat
+    # NOTE: Do NOT redirect stdin or pipe output - this causes buffering issues
+    # where serial output never appears
+    "${QEMU_CMD[@]}"
 fi
 
 

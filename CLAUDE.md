@@ -7,6 +7,123 @@ Mazzy is a bare-metal ARM64 operating system project consisting of two main comp
 1. **Cardinal** - Minimal bootloader + OS shim
 2. **Kmazarin** - The actual operating system kernel (written in Go)
 
+## Building and Running the System
+
+### Building Cardinal
+
+To build the Cardinal kernel:
+
+```bash
+make cardinal
+```
+
+This will:
+- Build the Go components with custom compiler flags
+- Compile assembly files
+- Link everything into `build/cardinal.elf`
+- The build process is defined in the `Makefile`
+
+### Running Cardinal in QEMU
+
+**CRITICAL: QEMU Serial Output Buffering Issue**
+
+QEMU's `-serial stdio` has a severe buffering problem when output is redirected or piped. The serial output will appear ONLY when running QEMU directly without ANY pipes, redirects, or stdin manipulation.
+
+**How to Run** (the ONLY way that works):
+
+```bash
+~/mazzy/bin/qemu-system-aarch64 \
+  -M virt,virtualization=off \
+  -cpu cortex-a72 \
+  -m 8G \
+  -kernel build/cardinal.elf \
+  -nodefaults \
+  -nographic \
+  -serial stdio \
+  -monitor none
+```
+
+**CRITICAL RULES:**
+- ❌ Do NOT redirect stdin: `< /dev/null`
+- ❌ Do NOT pipe output: `| cat`, `| tee`, `| tail`, `| grep`
+- ❌ Do NOT redirect to files: `> output.log`, `2>&1 > file`
+- ✅ Run the QEMU command directly, unmodified
+- ✅ View output in the same terminal where you run the command
+
+**Why this matters:**
+- QEMU's serial stdio becomes block-buffered when connected to a pipe or file
+- The buffer never gets flushed, so ALL output is lost
+- This is a known QEMU limitation, not a Cardinal bug
+- Scripts that wrap QEMU with pipes/redirects will produce NO output
+
+### Expected Output
+
+When Cardinal boots successfully, you should see breadcrumb characters like:
+```
+!BWVvXYGKDUARVM1C
+```
+
+Each character represents a successful milestone in the boot process:
+- `!` - Entry from boot.s
+- `B` - Basic initialization started
+- `W` - UART initialized
+- `V` - Early boot stage
+- ... (additional breadcrumbs)
+- `C` - Cache line size initialized
+
+The system will then attempt to load and jump to kmazarin.
+
+### Debugging Options
+
+**GDB Debugging**:
+```bash
+~/mazzy/bin/qemu-system-aarch64 \
+  -M virt,virtualization=off \
+  -cpu cortex-a72 \
+  -m 8G \
+  -kernel build/cardinal.elf \
+  -nodefaults \
+  -nographic \
+  -serial stdio \
+  -monitor none \
+  -s \
+  -S
+```
+
+This starts QEMU with:
+- `-s` - GDB server on port 1234
+- `-S` - Pause at startup, wait for GDB
+
+In another terminal:
+```bash
+~/mazzy/bin/target-gdb build/cardinal.elf
+(gdb) target remote :1234
+(gdb) continue
+```
+
+**QEMU Execution Tracing**:
+```bash
+~/mazzy/bin/qemu-system-aarch64 \
+  -M virt,virtualization=off \
+  -cpu cortex-a72 \
+  -m 8G \
+  -kernel build/cardinal.elf \
+  -nodefaults \
+  -nographic \
+  -serial stdio \
+  -monitor none \
+  -d in_asm,cpu
+```
+
+This shows disassembly of executed instructions and CPU state. Warning: produces MASSIVE output.
+
+### Build Artifacts
+
+- **build/cardinal.elf** - Main Cardinal kernel ELF binary
+- **build/kmazarin.elf** - Kmazarin kernel (embedded in Cardinal)
+- **build/*.o** - Object files from compilation
+- **src/cardinal/golang/asm/dev/kmazarin_data_arm64.s** - Generated assembly file embedding kmazarin binary (17MB+)
+
 ## Architectural Principles
 
 ### Cardinal: The Bootloader/OS Shim
