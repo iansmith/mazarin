@@ -38,7 +38,7 @@
 	MOVD	ZR, 8(RSP); \
 	MOVD	RSP, R1; \
 	MOVW	$0x18, R0; \
-	WORD	$0xD4600000 | (0xF000 << 5)
+	WORD	$0xD45E0000
 
 // ============================================================================
 // SAFE DEBUG PRINTING FUNCTIONS

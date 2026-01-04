@@ -2,9 +2,11 @@
 //
 // This file contains functions for MMU configuration and TLB/cache maintenance.
 //
-// IMPORTANT: Go's internal ABI passes arguments in REGISTERS (R0, R1, etc.), not on the stack.
-// Functions should use R0 directly for the first argument, not load from FP.
-// Return values should be placed in R0, not stored to ret+0(FP).
+// ABI NOTES:
+// - These are abi0 functions. Go generates wrappers to call them from internal ABI.
+// - Arguments: The wrapper passes args in registers AND on stack. Use either.
+// - Return values: MUST be stored to ret+0(FP). The wrapper reads from stack, not R0.
+// - Write-only functions: No return value needed, can use R0 directly from wrapper.
 //
 // Migrated from asm/aarch64/lib.s
 
@@ -16,10 +18,10 @@
 
 // read_ttbr0_el1() uint64
 // Read TTBR0_EL1 (Translation Table Base Register 0)
-// Returns value in R0 (Go register ABI)
+// For ABI0 functions called from internal ABI, return value must be on stack
 TEXT read_ttbr0_el1(SB), NOSPLIT|NOFRAME, $0-8
 	MRS	TTBR0_EL1, R0
-	// Return value already in R0 for Go register ABI
+	MOVD	R0, ret+0(FP)
 	RET
 
 // write_ttbr0_el1(value uint64)
@@ -48,10 +50,9 @@ TEXT write_ttbr1_el1(SB), NOSPLIT|NOFRAME, $0-8
 
 // read_mair_el1() uint64
 // Read MAIR_EL1
-// Returns value in R0 (Go register ABI)
 TEXT read_mair_el1(SB), NOSPLIT|NOFRAME, $0-8
 	MRS	MAIR_EL1, R0
-	// Return value already in R0 for Go register ABI
+	MOVD	R0, ret+0(FP)
 	RET
 
 // write_mair_el1(value uint64)
@@ -72,10 +73,9 @@ TEXT write_mair_el1(SB), NOSPLIT|NOFRAME, $0-8
 
 // read_tcr_el1() uint64
 // Read TCR_EL1
-// Returns value in R0 (Go register ABI)
 TEXT read_tcr_el1(SB), NOSPLIT|NOFRAME, $0-8
 	MRS	TCR_EL1, R0
-	// Return value already in R0 for Go register ABI
+	MOVD	R0, ret+0(FP)
 	RET
 
 // write_tcr_el1(value uint64)

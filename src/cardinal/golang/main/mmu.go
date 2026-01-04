@@ -1139,6 +1139,39 @@ func initCacheLineSize() {
 	// Cache line size is valid and DC ZVA can be used
 }
 
+// bzeroSimple zeros a memory region without alignment requirements.
+// Uses 8-byte writes where possible, falls back to byte writes for unaligned portions.
+// This is suitable for BSS section zeroing where addresses may not be page-aligned.
+//
+//go:nosplit
+func bzeroSimple(ptr unsafe.Pointer, size uint32) {
+	if size == 0 {
+		return
+	}
+
+	addr := uintptr(ptr)
+	end := addr + uintptr(size)
+
+	// Zero unaligned prefix bytes (up to 8-byte alignment)
+	for addr < end && (addr&7) != 0 {
+		*(*byte)(unsafe.Pointer(addr)) = 0
+		addr++
+	}
+
+	// Zero 8-byte aligned middle portion using 64-bit writes
+	alignedEnd := end &^ 7
+	for addr < alignedEnd {
+		*(*uint64)(unsafe.Pointer(addr)) = 0
+		addr += 8
+	}
+
+	// Zero remaining suffix bytes
+	for addr < end {
+		*(*byte)(unsafe.Pointer(addr)) = 0
+		addr++
+	}
+}
+
 // bzero4K zeros a memory region using DC ZVA when possible
 // CRITICAL: bzero4K is exclusively used to zero entire memory pages before they are mapped
 // or right after. Both ptr and size must be page-aligned (4K aligned).

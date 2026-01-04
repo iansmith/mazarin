@@ -4,7 +4,6 @@ import (
 	"unsafe"
 
 	"cardinal/asm"
-	"cardinal/asm/dev"
 )
 
 // KernelMain is the entry point called from boot_arm64.s
@@ -2079,9 +2078,7 @@ func loadAndRunKmazarin() {
 				uartPutcDirect('V') // breadcrumb: after copy
 			}
 		}
-		dev.BreadcrumbExit('W') // TEST: Exit with W - should flush buffers and show output
-		//uartPutcDirect('W') // breadcrumb: after file copy section
-		//uartPutcDirect('1') // DEBUG: After W, before BSS check
+		uartPutcDirect('W') // breadcrumb: after file copy section
 
 		// Zero BSS section (MemSz > FileSz)
 		if pMemsz > pFilesz {
@@ -2097,7 +2094,7 @@ func loadAndRunKmazarin() {
 			uartPutHex64Direct(uint64(bssSize))
 			uartPutsDirect(" bytes)\r\n")
 
-			bzero4K(bssStart, uint32(bssSize))
+			bzeroSimple(bssStart, uint32(bssSize))
 
 			// DEBUG: Verify critical BSS addresses are zeroed
 			if uintptr(bssStart) <= 0x419A1060 && 0x419A1060 < uintptr(bssStart)+uintptr(bssSize) {
@@ -2148,6 +2145,8 @@ func loadAndRunKmazarin() {
 		}
 	}
 
+	// Segment loop completed - all kmazarin segments loaded
+
 	// CRITICAL: Cache maintenance for executable code
 	// After loading code into memory, we must:
 	// 1. Clean D-cache (DC CVAU) - ensure data is visible to I-cache
@@ -2173,13 +2172,18 @@ func loadAndRunKmazarin() {
 	asm.Dsb()
 	asm.Isb()
 
+	uartPutcDirect('2') // DEBUG: After cache maintenance
+
 	if !registerMmapSpan(minVA, maxVA) {
 		// Failed to register - hang
 		for {}
 	}
 
+	uartPutcDirect('3') // DEBUG: After registerMmapSpan
+
 	// Set up argc/argv/envp/auxv structure
 	stackPointer, argc, argv := setupKmazarinStartupEnv()
+	uartPutcDirect('4') // DEBUG: After setupKmazarinStartupEnv
 	if stackPointer == 0 || argv == 0 {
 		uartPutsDirect("ERROR: Environment setup failed!\r\n")
 		return

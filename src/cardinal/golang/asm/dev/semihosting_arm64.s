@@ -45,7 +45,9 @@ TEXT qemu_exit(SB), NOSPLIT, $16-0
 	MOVW	$0x18, R0		// R0 = SYS_EXIT (0x18)
 
 	// Trigger semihosting call: HLT #0xF000
-	WORD	$0xD4600000 | (0xF000 << 5)  // HLT #0xF000
+	// ARM64 HLT encoding: 1101 0100 010 imm16 00000
+	// For imm16=0xF000: 0xD45E0000
+	WORD	$0xD45E0000
 
 	RET
 
@@ -155,7 +157,9 @@ TEXT breadcrumb_exit(SB), NOSPLIT, $16-1
 	MOVW	$0x18, R0		// R0 = SYS_EXIT (0x18)
 
 	// HLT #0xF000 - semihosting call
-	WORD	$0xD4600000 | (0xF000 << 5)
+	// ARM64 HLT encoding: 1101 0100 010 imm16 00000
+	// For imm16=0xF000: 0xD45E0000
+	WORD	$0xD45E0000
 
 	// Should never return
 	MOVD	$'!', R0

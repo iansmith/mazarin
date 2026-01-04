@@ -33,16 +33,13 @@ GO_NATIVE_SRC = $(wildcard $(GO_PACKAGE_DIR)/*.go) \
 
 # Build output directory structure
 BUILD_DIR = build
-BUILD_TOOLS_DIR = $(BUILD_DIR)/tools
-BUILD_CARDINAL_DIR = $(BUILD_DIR)/cardinal
-BUILD_KMAZARIN_DIR = $(BUILD_DIR)/kmazarin
 
 # Output files
 CARDINAL_BINARY = $(BUILD_DIR)/cardinal.elf
 
 # Kmazarin source and binary
 KMAZARIN_SRC = src/kmazarin/golang/kmazarin
-KMAZARIN_BINARY = $(BUILD_KMAZARIN_DIR)/kmazarin.elf
+KMAZARIN_BINARY = $(BUILD_DIR)/kmazarin.elf
 
 # Tools
 PATCH_ENTRY_TOOL = $(CARDINAL_SRC)/tools/patch-entry.go
@@ -52,8 +49,8 @@ INCBIN2GOASM_TOOL = $(CARDINAL_SRC)/tools/incbin2goasm.go
 # Generated embedded data
 KMAZARIN_DATA_ASM = $(ASM_PACKAGE_DIR)/dev/kmazarin_data_arm64.s
 
-# Ensure build directories exist
-$(BUILD_DIR) $(BUILD_TOOLS_DIR) $(BUILD_CARDINAL_DIR) $(BUILD_KMAZARIN_DIR):
+# Ensure build directory exists
+$(BUILD_DIR):
 	@mkdir -p $@
 
 # =========================================
@@ -95,7 +92,7 @@ $(CARDINAL_BINARY): $(GO_NATIVE_SRC) $(CARDINAL_SRC)/golang/go.mod $(KMAZARIN_BI
 # =========================================
 # Builds kmazarin as a static Go binary with specified load address
 
-$(KMAZARIN_BINARY): $(wildcard $(KMAZARIN_SRC)/*.go) tools/kmazarin-entry.sh tools/print-kmazarin-addr.go src/cardinal/golang/constants/layout.go | $(BUILD_KMAZARIN_DIR)
+$(KMAZARIN_BINARY): $(wildcard $(KMAZARIN_SRC)/*.go) tools/kmazarin-entry.sh tools/print-kmazarin-addr.go src/cardinal/golang/constants/layout.go | $(BUILD_DIR)
 	$(eval KMAZARIN_LOAD_ADDR := $(shell ./tools/kmazarin-entry.sh))
 	@echo "Building kmazarin kernel (static Go binary at $(KMAZARIN_LOAD_ADDR))..."
 	@cd $(KMAZARIN_SRC) && \
