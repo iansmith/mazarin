@@ -72,7 +72,7 @@ $(KMAZARIN_DATA_ASM): $(KMAZARIN_BINARY)
 # Uses Go's internal linker with -T flag to set load address
 # Then patches entry point and linker symbol values
 
-$(CARDINAL_BINARY): $(GO_NATIVE_SRC) $(CARDINAL_SRC)/golang/go.mod $(KMAZARIN_BINARY) $(KMAZARIN_DATA_ASM) | $(BUILD_DIR)
+$(CARDINAL_BINARY): $(GO_NATIVE_SRC) $(CARDINAL_SRC)/golang/go.mod $(KMAZARIN_BINARY) $(KMAZARIN_DATA_ASM) $(CARDINAL_SRC)/golang/constants/layout.go $(COMPUTE_LINKER_VALUES_TOOL) | $(BUILD_DIR)
 	@echo "Building cardinal with Go native toolchain..."
 	@cd $(CARDINAL_SRC)/golang && \
 		CGO_ENABLED=0 \
