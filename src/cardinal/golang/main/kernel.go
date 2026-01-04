@@ -4,7 +4,7 @@ import (
 	"unsafe"
 
 	"cardinal/asm"
-	//"cardinal/asm/dev"
+	"cardinal/asm/dev"
 )
 
 // KernelMain is the entry point called from boot_arm64.s
@@ -2079,9 +2079,9 @@ func loadAndRunKmazarin() {
 				uartPutcDirect('V') // breadcrumb: after copy
 			}
 		}
-		uartPutcDirect('W') // breadcrumb: after file copy section
-		uartPutcDirect('1') // DEBUG: After W, before BSS check
-		//dev.BreadcrumbExit('1') // DEBUG: Exit immediately after W
+		dev.BreadcrumbExit('W') // TEST: Exit with W - should flush buffers and show output
+		//uartPutcDirect('W') // breadcrumb: after file copy section
+		//uartPutcDirect('1') // DEBUG: After W, before BSS check
 
 		// Zero BSS section (MemSz > FileSz)
 		if pMemsz > pFilesz {
