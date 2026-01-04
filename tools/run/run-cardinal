@@ -391,22 +391,40 @@ elif [ "$SEPARATE_OUTPUT" = "1" ]; then
     QEMU_DEBUG_LOG="$LOG_DIR/qemu-debug-$$.log"
 
     echo "Separating output streams:"
-    echo "  Kernel UART → $KERNEL_LOG"
+    echo "  Kernel UART → $KERNEL_LOG (file-based, most reliable)"
     echo "  QEMU debug → $QEMU_DEBUG_LOG"
     echo ""
 
+    # Remove the default -serial stdio and replace with file-based serial
+    # This avoids all stdio buffering issues that occur with pipes
+    # We need to rebuild QEMU_CMD without the stdio serial
+    QEMU_CMD_FILTERED=()
+    for arg in "${QEMU_CMD[@]}"; do
+        if [ "$arg" != "-serial" ] && [ "$arg" != "stdio" ]; then
+            QEMU_CMD_FILTERED+=("$arg")
+        fi
+    done
+
+    # Now add file-based serial
+    QEMU_CMD_FILTERED+=(-serial "file:$KERNEL_LOG")
+    QEMU_CMD=("${QEMU_CMD_FILTERED[@]}")
+
     # Execute QEMU with separated output
-    # Kernel UART (stdout) → kernel log (also shown in terminal via tee)
-    # QEMU debug (stderr) → QEMU debug log (also shown in terminal via tee)
-    # Note: This uses process substitution which works in bash
-    "${QEMU_CMD[@]}" < /dev/null \
-        2> >(tee "$QEMU_DEBUG_LOG" >&2) \
-        | tee "$KERNEL_LOG"
+    # Kernel UART is written directly to file by QEMU (no buffering)
+    # QEMU debug/errors (stderr) are captured to log and shown in terminal
+    "${QEMU_CMD[@]}" 2> >(tee "$QEMU_DEBUG_LOG" >&2)
 
     echo ""
     echo "Output logs saved:"
     echo "  Kernel UART: $KERNEL_LOG"
     echo "  QEMU debug: $QEMU_DEBUG_LOG"
+    echo ""
+    echo "Kernel output (last 50 lines):"
+    if [ -f "$KERNEL_LOG" ] && [ -s "$KERNEL_LOG" ]; then
+        tail -50 "$KERNEL_LOG"
+    else
+        echo "  (no output captured)"
+    fi
 else
     # Execute QEMU normally (output mixed in terminal)
     # All output (kernel UART + QEMU debug) appears together

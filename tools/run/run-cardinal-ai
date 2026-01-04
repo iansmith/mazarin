@@ -1,0 +1,117 @@
+#!/bin/bash
+
+# tools/run/run-cardinal-ai
+#
+# Run cardinal optimized for AI (Claude) consumption.
+# Uses file-based serial output for maximum reliability.
+# Provides clean, structured output with timestamps and markers.
+#
+# Usage:
+#   tools/run/run-cardinal-ai              # Run with default 10s timeout
+#   TIMEOUT=30 tools/run/run-cardinal-ai   # Custom timeout
+#   tools/run/run-cardinal-ai --no-timeout # Run until exit
+#
+# Output is written to /tmp/qemu-logs/ai-run-<timestamp>.log
+# Guarantees all output is captured even if QEMU hangs/times out.
+
+set -e
+
+PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+KERNEL_PATH="$PROJECT_ROOT/build/cardinal.elf"
+
+# Validate kernel exists
+if [ ! -f "$KERNEL_PATH" ]; then
+    echo "Error: cardinal.elf not found at $KERNEL_PATH" >&2
+    exit 1
+fi
+
+# Configuration
+TIMEOUT="${TIMEOUT:-10}"
+LOG_DIR="/tmp/qemu-logs"
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+SERIAL_LOG="$LOG_DIR/ai-run-serial-$TIMESTAMP.log"
+DEBUG_LOG="$LOG_DIR/ai-run-debug-$TIMESTAMP.log"
+
+mkdir -p "$LOG_DIR"
+
+# Find QEMU binary
+QEMU_BIN="${QEMU_BIN:-}"
+if [ -z "$QEMU_BIN" ]; then
+    if [ -f "$HOME/mazzy/bin/qemu-system-aarch64" ]; then
+        QEMU_BIN="$HOME/mazzy/bin/qemu-system-aarch64"
+    elif command -v qemu-system-aarch64 &>/dev/null; then
+        QEMU_BIN="$(command -v qemu-system-aarch64)"
+    else
+        echo "Error: qemu-system-aarch64 not found" >&2
+        exit 1
+    fi
+fi
+
+# Build QEMU command with file-based serial (most reliable)
+QEMU_CMD=(
+    "$QEMU_BIN"
+    -M virt,virtualization=off
+    -cpu cortex-a72
+    -m 8G
+    -kernel "$KERNEL_PATH"
+    -nodefaults
+    -nographic
+    -serial "file:$SERIAL_LOG"
+    -semihosting
+    -monitor none
+    -no-reboot
+)
+
+# Cleanup function
+cleanup() {
+    local exit_code=$?
+
+    # Only show output if we have it
+    if [ -f "$SERIAL_LOG" ] && [ -s "$SERIAL_LOG" ]; then
+        SIZE=$(wc -c < "$SERIAL_LOG")
+        echo "[AI-LOG] Serial output size: $SIZE bytes"
+    else
+        echo "[AI-LOG] No serial output captured"
+    fi
+
+    if [ -f "$DEBUG_LOG" ] && [ -s "$DEBUG_LOG" ]; then
+        echo "[AI-LOG] QEMU debug log available at: $DEBUG_LOG"
+    fi
+
+    return $exit_code
+}
+trap cleanup EXIT
+
+# Determine if we're running with timeout
+if [ "$1" = "--no-timeout" ]; then
+    NO_TIMEOUT=1
+else
+    NO_TIMEOUT=0
+fi
+
+# Run QEMU
+if [ $NO_TIMEOUT -eq 1 ]; then
+    timeout 3600 "${QEMU_CMD[@]}" 2>"$DEBUG_LOG" || true
+else
+    timeout --signal=TERM --kill-after=2 "$TIMEOUT" \
+        "${QEMU_CMD[@]}" 2>"$DEBUG_LOG" || true
+fi
+
+# Output results in AI-friendly format
+echo ""
+echo "=== CARDINAL RUN RESULTS ==="
+echo "Timestamp: $TIMESTAMP"
+echo "Serial log: $SERIAL_LOG"
+echo "Debug log: $DEBUG_LOG"
+echo "Timeout: ${TIMEOUT}s"
+echo ""
+
+# Show full serial output
+if [ -f "$SERIAL_LOG" ] && [ -s "$SERIAL_LOG" ]; then
+    echo "=== SERIAL OUTPUT ==="
+    cat "$SERIAL_LOG"
+    echo ""
+    echo "=== END SERIAL OUTPUT ==="
+else
+    echo "No serial output captured"
+fi

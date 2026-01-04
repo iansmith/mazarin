@@ -118,6 +118,26 @@ func SemihostingExit()
 //go:nosplit
 func JumpToNull()
 
+// BreadcrumbExit prints a single character and immediately exits QEMU.
+// Use this for debugging hangs - place calls at suspected locations and use
+// binary search to find where the kernel hangs.
+//
+// The character is printed to UART, then semihosting exit flushes all buffers,
+// guaranteeing the output appears even if QEMU times out or hangs.
+//
+// Example:
+//   dev.BreadcrumbExit('A')  // Will print "A\r\n" then exit QEMU
+//
+// Debugging pattern (binary search):
+//   1. Place BreadcrumbExit('A') at the start of suspicious function
+//   2. If 'A' appears: hang is later - move marker down
+//   3. If 'A' doesn't appear: hang is earlier - move marker up
+//   4. Repeat until you find the exact hanging instruction
+//
+//go:linkname BreadcrumbExit breadcrumb_exit
+//go:nosplit
+func BreadcrumbExit(c byte)
+
 // Image data accessors (global symbols)
 
 //go:linkname ImageDataStart imageDataStart

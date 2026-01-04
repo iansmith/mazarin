@@ -14,6 +14,33 @@
 #define UART_BASE 0x09000000
 
 // ============================================================================
+// BREADCRUMB EXIT MACRO - For Debugging Hangs
+// ============================================================================
+//
+// BREADCRUMB_EXIT(char)
+// Prints a single character to UART, then exits via semihosting.
+// Useful for debugging hangs using binary search.
+//
+// Usage in assembly:
+//   BREADCRUMB_EXIT($'A')  // Prints "A\r\n" then exits
+//
+// Important: char must be an immediate value (e.g., $'X', not a register)
+#define BREADCRUMB_EXIT(char) \
+	MOVD	$0x09000000, R10; \
+	MOVW	char, R0; \
+	MOVW	R0, 0(R10); \
+	MOVW	$'\r', R0; \
+	MOVW	R0, 0(R10); \
+	MOVW	$'\n', R0; \
+	MOVW	R0, 0(R10); \
+	MOVD	$0x20026, R1; \
+	MOVD	R1, (RSP); \
+	MOVD	ZR, 8(RSP); \
+	MOVD	RSP, R1; \
+	MOVW	$0x18, R0; \
+	WORD	$0xD4600000 | (0xF000 << 5)
+
+// ============================================================================
 // SAFE DEBUG PRINTING FUNCTIONS
 // ============================================================================
 //

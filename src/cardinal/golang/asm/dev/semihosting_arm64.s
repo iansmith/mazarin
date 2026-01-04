@@ -108,3 +108,57 @@ semihosting_halt:
 TEXT jump_to_null(SB), NOSPLIT|NOFRAME, $0-0
 	MOVD	ZR, R0			// Load address 0
 	JMP	(R0)			// Branch to NULL - will cause prefetch abort
+
+// ============================================================================
+// Breadcrumb Exit (Debugging Aid)
+// ============================================================================
+
+// breadcrumb_exit(c byte)
+// Prints a single character to UART, then exits via semihosting.
+// Useful for debugging hangs - place calls at suspected locations to narrow
+// down where the kernel hangs using binary search.
+//
+// The character is printed directly to UART, then semihosting exit flushes
+// all buffers, guaranteeing the output appears even if QEMU times out.
+//
+// Example: breadcrumb_exit('X') will print "X\r\n" then exit QEMU
+//
+// Usage in Go:
+//   import "cardinal/asm"
+//   func debugFunction() {
+//       dev.BreadcrumbExit('A')  // Prints "A\r\n" and exits
+//   }
+TEXT breadcrumb_exit(SB), NOSPLIT, $16-1
+	// Load character argument (1 byte at offset 0)
+	MOVBU	c+0(FP), R0
+
+	// Print character to UART (0x09000000)
+	MOVD	$0x09000000, R10	// UART base address
+	MOVW	R0, 0(R10)		// Write character
+
+	// Print carriage return
+	MOVW	$'\r', R0
+	MOVW	R0, 0(R10)
+
+	// Print newline
+	MOVW	$'\n', R0
+	MOVW	R0, 0(R10)
+
+	// Now exit via semihosting - this flushes all QEMU buffers
+	// Set up parameter block on stack
+	MOVD	$0x20026, R1		// ADP_Stopped_ApplicationExit
+	MOVD	R1, (RSP)		// Store reason at SP+0
+	MOVD	ZR, 8(RSP)		// Store status 0 at SP+8
+
+	// Execute SYS_EXIT semihosting call
+	MOVD	RSP, R1			// R1 = pointer to parameter block
+	MOVW	$0x18, R0		// R0 = SYS_EXIT (0x18)
+
+	// HLT #0xF000 - semihosting call
+	WORD	$0xD4600000 | (0xF000 << 5)
+
+	// Should never return
+	MOVD	$'!', R0
+	MOVD	$0x09000000, R10
+	MOVW	R0, 0(R10)		// Print '!' if we somehow return
+	B	-2(PC)			// Infinite loop
