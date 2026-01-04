@@ -61,6 +61,12 @@
 //   Exception level: EL2 (with virtualization=off) or EL1
 //
 TEXT _cardinal_boot(SB), NOSPLIT|NOFRAME, $0
+	// DEBUG: Earliest possible breadcrumb - hardcoded UART address
+	// QEMU virt PL011 UART is at 0x09000000
+	MOVD	$0x09000000, R1
+	MOVD	$'!', R0
+	MOVW	R0, (R1)
+
 	// Initialize UART base address for early breadcrumb debugging
 	// R14 = UART PL011 base (from LinkerUartBase)
 	// NOTE: R14 is used for UART breadcrumbs throughout boot. It remains valid

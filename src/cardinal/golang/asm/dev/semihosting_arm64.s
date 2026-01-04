@@ -146,6 +146,16 @@ TEXT breadcrumb_exit(SB), NOSPLIT, $16-1
 	MOVW	$'\n', R0
 	MOVW	R0, 0(R10)
 
+	// DSB to ensure UART writes complete before exit
+	DSB	$15
+
+	// Busy-wait loop to give QEMU time to flush console buffer
+	// ~100000 iterations * ~10 cycles/iteration = ~1M cycles = ~10ms at 100MHz
+	MOVD	$100000, R11
+wait_loop:
+	SUB	$1, R11, R11
+	CBNZ	R11, wait_loop
+
 	// Now exit via semihosting - this flushes all QEMU buffers
 	// Set up parameter block on stack
 	MOVD	$0x20026, R1		// ADP_Stopped_ApplicationExit

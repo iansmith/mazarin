@@ -4,6 +4,7 @@ import (
 	"unsafe"
 
 	"cardinal/asm"
+	"cardinal/asm/dev"
 )
 
 // KernelMain is the entry point called from boot_arm64.s
@@ -1280,6 +1281,7 @@ func simpleMain() {
 	// Parse and display embedded kmazarin ELF information
 	// NOTE: Must be done from user goroutine because debug/elf uses defer
 	parseEmbeddedKmazarin()
+	dev.BreadcrumbExit('1') // DEBUG: After parseEmbeddedKmazarin
 
 	print("\r\n[g1] ELF parsing complete\r\n")
 
@@ -1440,6 +1442,7 @@ func dumpAllGs() {
 // NOTE: This function requires heap allocation (for debug/elf), so must be called
 // after scheduler initialization
 func parseEmbeddedKmazarin() {
+	dev.BreadcrumbExit('P') // DEBUG: Entry to parseEmbeddedKmazarin
 	print("\r\n=== Embedded Kmazarin ELF Information ===\r\n")
 
 	// Get the embedded kmazarin binary location from linker symbols
@@ -1725,8 +1728,8 @@ func setupKmazarinStartupEnv() (stackPointer uintptr, argc uint64, argv uintptr)
 	stackTop := stackBase + stackSize
 	structStart := stackTop - 0x200  // Reserve 512 bytes for the structure
 
-	// Zero the structure area
-	bzero4K(unsafe.Pointer(structStart), 0x200)
+	// Zero the structure area (using bzeroSimple since structStart is not page-aligned)
+	bzeroSimple(unsafe.Pointer(structStart), 0x200)
 
 	// Set up the structure as an array of uint64 values
 	data := (*[256]uint64)(unsafe.Pointer(structStart))
@@ -1844,6 +1847,7 @@ func loadAndRunKmazarin() {
 		return
 	}
 	uartPutcDirect('k') // breadcrumb: after ELF magic check
+	// DEBUG: BreadcrumbExit('K') - ELF validated - removed, progressing further
 
 	// Parse entry point (offset 0x18-0x1F for 64-bit ELF)
 	entry := uint64(elfData[0x18]) |
@@ -2146,6 +2150,7 @@ func loadAndRunKmazarin() {
 	}
 
 	// Segment loop completed - all kmazarin segments loaded
+	uartPutcDirect('A') // DEBUG: After segment loop
 
 	// CRITICAL: Cache maintenance for executable code
 	// After loading code into memory, we must:
@@ -2173,15 +2178,19 @@ func loadAndRunKmazarin() {
 	asm.Isb()
 
 	uartPutcDirect('2') // DEBUG: After cache maintenance
+	uartPutcDirect('B') // DEBUG: After TLB invalidation
 
+	uartPutcDirect('R') // DEBUG: Before registerMmapSpan
 	if !registerMmapSpan(minVA, maxVA) {
 		// Failed to register - hang
 		for {}
 	}
 
 	uartPutcDirect('3') // DEBUG: After registerMmapSpan
+	uartPutcDirect('C') // DEBUG: registerMmapSpan done
 
 	// Set up argc/argv/envp/auxv structure
+	uartPutcDirect('S') // DEBUG: Before setupKmazarinStartupEnv
 	stackPointer, argc, argv := setupKmazarinStartupEnv()
 	uartPutcDirect('4') // DEBUG: After setupKmazarinStartupEnv
 	if stackPointer == 0 || argv == 0 {
