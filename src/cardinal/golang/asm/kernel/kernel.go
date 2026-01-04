@@ -9,10 +9,22 @@ import "unsafe"
 //
 // NOTE: bzero4K is now implemented as a pure Go function in mmu.go
 // and doesn't need a linkname declaration
+//
+// NOTE: MemmoveBytes is now implemented in Go (assembly version was hanging)
 
-//go:linkname MemmoveBytes MemmoveBytes
 //go:nosplit
-func MemmoveBytes(dst, src unsafe.Pointer, size uint32)
+func MemmoveBytes(dst, src unsafe.Pointer, size uint32) {
+	// Absolute simplest byte-by-byte copy
+	d := uintptr(dst)
+	s := uintptr(src)
+	n := uintptr(size)
+
+	for i := uintptr(0); i < n; i++ {
+		*(*byte)(unsafe.Pointer(d)) = *(*byte)(unsafe.Pointer(s))
+		d++
+		s++
+	}
+}
 
 //go:linkname DcZva dc_zva
 //go:nosplit

@@ -128,12 +128,14 @@ func ImageDataStart() uintptr
 //go:nosplit
 func ImageDataEnd() uintptr
 
-// Kmazarin binary accessors (global symbols)
+// Kmazarin binary accessors (package-local assembly functions)
 
-//go:linkname KmazarinBinaryStart kmazarinBinaryStart
 //go:nosplit
-func KmazarinBinaryStart() uintptr
+func kmazarinBinaryStart() uintptr
 
-//go:linkname KmazarinBinaryEnd kmazarinBinaryEnd
 //go:nosplit
-func KmazarinBinaryEnd() uintptr
+func kmazarinBinaryEnd() uintptr
+
+// Exported wrappers
+func KmazarinBinaryStart() uintptr { return kmazarinBinaryStart() }
+func KmazarinBinaryEnd() uintptr   { return kmazarinBinaryEnd() }

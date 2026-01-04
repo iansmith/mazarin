@@ -1806,10 +1806,12 @@ func loadAndRunKmazarin() {
 	uartPutcDirect('b') // breadcrumb: before kmazarin_start
 	kmazarinStart := getLinkerSymbol("__kmazarin_start")
 	uartPutcDirect('c') // breadcrumb: after kmazarin_start
+	uartPutsDirect(" kmazarinStart=0x")
 	uartPutHex64Direct(uint64(kmazarinStart))
 	uartPutcDirect('d') // breadcrumb: before kmazarin_size
 	kmazarinSize := getLinkerSymbol("__kmazarin_size")
 	uartPutcDirect('e') // breadcrumb: after kmazarin_size
+	uartPutsDirect(" kmazarinSize=0x")
 	uartPutHex64Direct(uint64(kmazarinSize))
 	uartPutsDirect("\r\n")
 
@@ -1986,31 +1988,49 @@ func loadAndRunKmazarin() {
 		uartPutsDirect("\r\n")
 
 		// Map all pages for this segment
+		uartPutcDirect('L') // breadcrumb: start page loop
 		for pageIdx := uintptr(0); pageIdx < numPages; pageIdx++ {
+			if pageIdx == 0 {
+				uartPutcDirect('M') // breadcrumb: first iteration
+			}
+			// Print progress dot every 10 pages
+			if (pageIdx % 10) == 0 {
+				uartPutcDirect('.')
+			}
 			va := vaStart + (pageIdx << 12)
 			physFrame := allocPhysFrame()
 			if physFrame == 0 {
 				uartPutsDirect("ERROR: Out of memory mapping segment\r\n")
 				return
 			}
+			if pageIdx == 0 {
+				uartPutcDirect('N') // breadcrumb: after first allocPhysFrame
+			}
 
 			// Map with permissions based on segment flags
 			// For now, map as RW regardless (we need to write during loading)
 			// Execute permission is set based on PF_X flag
 			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, execPerm)
+			if pageIdx == 0 {
+				uartPutcDirect('O') // breadcrumb: after first mapPage
+			}
 		}
+		uartPutcDirect('P') // breadcrumb: page loop completed
 
 		// Use barriers after mapping (no TLB invalidation needed for new mappings)
 		asm.Dsb()
 		asm.Isb()
+		uartPutcDirect('Q') // breadcrumb: after barriers
 
 		// Copy file data to mapped memory
+		uartPutcDirect('R') // breadcrumb: before file copy
 		if pFilesz > 0 {
 			var srcOffset uintptr
 			var dstAddr uintptr
 			var copySize uint64
 
 			if pOffset > 0x8000000000000000 { // Negative offset (e.g., first LOAD segment)
+				uartPutcDirect('S') // breadcrumb: negative offset path
 				// Go's linker with -T flag creates segments with negative offsets
 				// The segment includes a 64KB header region before .text
 				// Relationship: segment_offset = text_offset - (text_va - segment_va)
@@ -2028,6 +2048,7 @@ func loadAndRunKmazarin() {
 
 				// Load segment with negative offset: zero-fill headers, copy code
 			} else {
+				uartPutcDirect('T') // breadcrumb: positive offset path
 				// Normal positive offset - load segment data directly
 				srcOffset = kmazarinStart + uintptr(pOffset)
 				dstAddr = uintptr(pVaddr)
@@ -2035,11 +2056,25 @@ func loadAndRunKmazarin() {
 			}
 
 			if copySize > 0 {
+				uartPutcDirect('U') // breadcrumb: before copy
+				// DEBUG: Print copy parameters
+				uartPutsDirect(" src=0x")
+				uartPutHex64Direct(uint64(srcOffset))
+				uartPutsDirect(" dst=0x")
+				uartPutHex64Direct(uint64(dstAddr))
+				uartPutsDirect(" size=0x")
+				uartPutHex64Direct(copySize)
+				uartPutsDirect("\r\n")
+
+				// Use simplified assembly memmove (8-byte MOVD, no LDP/STP)
+				uartPutcDirect('Z') // breadcrumb: before copy
 				dst := unsafe.Pointer(dstAddr)
 				src := unsafe.Pointer(srcOffset)
 				asm.MemmoveBytes(dst, src, uint32(copySize))
+				uartPutcDirect('V') // breadcrumb: after copy
 			}
 		}
+		uartPutcDirect('W') // breadcrumb: after file copy section
 
 		// Zero BSS section (MemSz > FileSz)
 		if pMemsz > pFilesz {
