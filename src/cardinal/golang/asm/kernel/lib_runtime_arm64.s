@@ -348,6 +348,16 @@ daif_print4:
 	//   R0 = argc = 1
 	//   R1 = argv = pointer to argv array
 	//   SP = pointer to full argc/argv/envp/auxv structure
+
+	// DEBUG: Print 'J' before actual jump
+	MOVD	$0x09000000, R10
+	MOVD	$'J', R5
+	MOVB	R5, (R10)
+	MOVD	$'\r', R5
+	MOVB	R5, (R10)
+	MOVD	$'\n', R5
+	MOVB	R5, (R10)
+
 	JMP	(R4)			// Branch to entry point - never returns
 
 // ============================================================================

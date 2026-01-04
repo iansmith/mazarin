@@ -6,6 +6,21 @@ import (
 	"unsafe"
 )
 
+// init runs before main - print debug marker to show runtime initialized
+func init() {
+	// Print "KMAZARIN" to show we reached init
+	uartPutc('K')
+	uartPutc('M')
+	uartPutc('A')
+	uartPutc('Z')
+	uartPutc('A')
+	uartPutc('R')
+	uartPutc('I')
+	uartPutc('N')
+	uartPutc('\r')
+	uartPutc('\n')
+}
+
 // uartPutc writes a single character directly to UART (bypasses Go runtime)
 //go:nosplit
 func uartPutc(c byte) {
