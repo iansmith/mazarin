@@ -39,7 +39,6 @@ BUILD_KMAZARIN_DIR = $(BUILD_DIR)/kmazarin
 
 # Output files
 CARDINAL_BINARY = $(BUILD_DIR)/cardinal.elf
-QEMU_KERNEL_OUT = docker/builtin/kernel.elf
 
 # Kmazarin source and binary
 KMAZARIN_SRC = src/kmazarin/golang/kmazarin
@@ -120,11 +119,6 @@ kmazarin: $(KMAZARIN_BINARY)
 # Default: build both
 all: cardinal kmazarin
 
-# Push cardinal to docker/builtin directory
-push: $(CARDINAL_BINARY)
-	@mkdir -p docker/builtin
-	cp $(CARDINAL_BINARY) docker/builtin/kernel.elf
-
 # Test target - run Go tests
 test:
 	@echo "Running tests..."
@@ -138,4 +132,4 @@ clean:
 	@echo "Cleaned."
 
 # Phony targets
-.PHONY: all clean push cardinal kmazarin test
+.PHONY: all clean cardinal kmazarin test
