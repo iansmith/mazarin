@@ -1,38 +1,21 @@
 // layout.go - Memory layout variables for Cardinal on QEMU virt machine
 //
-// These variables provide memory layout information that was previously
-// supplied by the GNU linker script (linker.ld). With Go's native toolchain,
-// we initialize constants directly and patch section boundaries post-build.
+// These variables provide memory layout information using constants from
+// the constants/layout package (single source of truth).
 //
 // Variable categories:
-// 1. FIXED CONSTANTS - Initialized here (QEMU virt machine addresses, memory layout)
-// 2. SECTION BOUNDARIES - Initialized to 0, patched by compute-linker-values tool
-// 3. EMBEDDED KMAZARIN - Not yet implemented in go-native build
+// 1. FIXED CONSTANTS - Imported from constants package
+// 2. SECTION BOUNDARIES - Initialized to 1, patched by compute-linker-values tool
+// 3. EMBEDDED KMAZARIN - Initialized to 1, patched by compute-linker-values tool
 //
 // Variable naming: All symbols are prefixed with "Linker" to indicate they
 // correspond to linker script symbols.
 
 package main
 
-import "cardinal/asm"
-
-// ============================================================================
-// Memory Layout Constants (from linker.ld)
-// ============================================================================
-const (
-	// Base addresses and sizes from QEMU virt machine / linker.ld
-	BootAddress            = 0x40000000 // RAM start on QEMU virt
-	DtbSize                = 0x100000   // 1 MB for Device Tree Blob
-	CardinalAllocationSize = 0xF00000   // 15 MB for cardinal
-	PageTableSize          = 0x800000   // 8 MB for page tables
-
-	// Calculated boundaries
-	DtbStart         = BootAddress
-	CardinalStart    = DtbStart + DtbSize
-	CardinalEnd      = CardinalStart + CardinalAllocationSize
-	PageTableStart   = CardinalEnd
-	PageTableEnd     = PageTableStart + PageTableSize
-	KmazarinLoadAddr = PageTableEnd
+import (
+	"cardinal/asm"
+	"cardinal/constants"
 )
 
 // ============================================================================
@@ -70,34 +53,34 @@ var (
 	LinkerBssEnd      uint64 = 1 // __bss_end (patched)
 	LinkerEnd         uint64 = 1 // __end (patched)
 
-	// Memory layout boundaries - FIXED VALUES from constants above
-	LinkerRamStart               uint64 = BootAddress
-	LinkerDtbBootAddr            uint64 = DtbStart
-	LinkerDtbSize                uint64 = DtbSize
-	LinkerCardinalEnd            uint64 = CardinalEnd
-	LinkerCardinalAllocationSize uint64 = CardinalAllocationSize
-	LinkerKmazarinLoadAddr       uint64 = KmazarinLoadAddr
-	LinkerPageTablesStart        uint64 = PageTableStart
-	LinkerPageTablesEnd          uint64 = PageTableEnd
+	// Memory layout boundaries - FIXED VALUES from constants package
+	LinkerRamStart               uint64 = constants.BootAddress
+	LinkerDtbBootAddr            uint64 = constants.DtbStart
+	LinkerDtbSize                uint64 = constants.DtbSize
+	LinkerCardinalEnd            uint64 = constants.CardinalEnd
+	LinkerCardinalAllocationSize uint64 = constants.CardinalAllocationSize
+	LinkerKmazarinLoadAddr       uint64 = constants.KmazarinLoadAddr
+	LinkerPageTablesStart        uint64 = constants.PageTableStart
+	LinkerPageTablesEnd          uint64 = constants.PageTableEnd
 
-	// Stack pointers - FIXED VALUES from CLAUDE.md memory map
+	// Stack pointers - FIXED VALUES from constants package
 	// g0 stack: 0x5EFF0000-0x5F000000 (64KB)
 	// Exception stack: 0x5F000000-0x5F020000 (128KB)
-	LinkerStackTop      uint64 = 0x5F000000
-	LinkerG0StackBottom uint64 = 0x5EFF0000
+	LinkerStackTop      uint64 = constants.G0StackTop
+	LinkerG0StackBottom uint64 = constants.G0StackBottom
 
-	// MMIO device addresses - FIXED VALUES from QEMU virt machine
-	LinkerGicBase          uint64 = 0x08000000 // GIC base
-	LinkerGicSize          uint64 = 0x00020000 // GIC size (128KB)
-	LinkerUartBase         uint64 = 0x09000000 // UART PL011
-	LinkerUartSize         uint64 = 0x00010000 // UART size (64KB)
-	LinkerRtcBase          uint64 = 0x09010000 // PL031 RTC
-	LinkerFwcfgBase        uint64 = 0x09020000 // QEMU fw_cfg device
-	LinkerFwcfgSize        uint64 = 0x00010000 // fw_cfg size (64KB)
-	LinkerBochsDisplayBase uint64 = 0x10000000 // bochs-display framebuffer
-	LinkerBochsDisplaySize uint64 = 0x01000000 // bochs-display size (16MB)
-	LinkerPciBarBase       uint64 = 0x11000000 // PCI BAR allocation start
-	LinkerPciBarSize       uint64 = 0x0F000000 // PCI BAR pool size (240MB)
+	// MMIO device addresses - FIXED VALUES from constants package (QEMU virt machine)
+	LinkerGicBase          uint64 = constants.GicBase
+	LinkerGicSize          uint64 = constants.GicSize
+	LinkerUartBase         uint64 = constants.UartBase
+	LinkerUartSize         uint64 = constants.UartSize
+	LinkerRtcBase          uint64 = constants.RtcBase
+	LinkerFwcfgBase        uint64 = constants.FwcfgBase
+	LinkerFwcfgSize        uint64 = constants.FwcfgSize
+	LinkerBochsDisplayBase uint64 = constants.BochsDisplayBase
+	LinkerBochsDisplaySize uint64 = constants.BochsDisplaySize
+	LinkerPciBarBase       uint64 = constants.PciBarBase
+	LinkerPciBarSize       uint64 = constants.PciBarSize
 
 	// Embedded kmazarin kernel - NOT YET IMPLEMENTED in go-native build
 	// Initialized to 1 so they're in .data section for patching

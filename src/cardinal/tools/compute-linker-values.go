@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"os"
 	"sort"
+
+	"cardinal/constants"
 )
 
 // ELF64 header structure
@@ -535,55 +537,41 @@ func computeLinkerValues(sections map[string]*Section, symbolAddrs map[string]ui
 		add("LinkerEnd", "__end", bssEnd, "end of .bss/.noptrbss (same as bss_end)", true)
 	}
 
-	// === Memory Layout (from linker.ld constants) ===
-	// These are FIXED values - no patching needed (already correct in binary)
+	// === Memory Layout ===
+	// These are FIXED values from constants package - no patching needed (already correct in binary)
 
-	const (
-		BOOT_ADDRESS        = 0x40000000
-		DTB_SIZE            = 0x100000  // 1 MB
-		CARDINAL_ALLOC_SIZE = 0xF00000  // 15 MB
-		PAGE_TABLE_SIZE     = 0x800000  // 8 MB
+	add("LinkerRamStart", "__ram_start", constants.BootAddress, "QEMU virt RAM start", false)
+	add("LinkerDtbBootAddr", "__dtb_boot_addr", constants.DtbStart, "DTB location (QEMU fixed)", false)
+	add("LinkerDtbSize", "__dtb_size", constants.DtbSize, "DTB allocation size", false)
+	add("LinkerCardinalEnd", "__cardinal_end", constants.CardinalEnd, "cardinal allocation end", false)
+	add("LinkerCardinalAllocationSize", "__cardinal_allocation_size", constants.CardinalAllocationSize, "cardinal allocation size", false)
+	add("LinkerKmazarinLoadAddr", "__kmazarin_load_addr", constants.KmazarinLoadAddr, "where kmazarin is loaded", false)
+	add("LinkerPageTablesStart", "__page_tables_start", constants.PageTableStart, "page table region start", false)
+	add("LinkerPageTablesEnd", "__page_tables_end", constants.PageTableEnd, "page table region end", false)
 
-		DTB_START          = BOOT_ADDRESS
-		CARDINAL_START     = DTB_START + DTB_SIZE
-		CARDINAL_END       = CARDINAL_START + CARDINAL_ALLOC_SIZE
-		PAGE_TABLE_START   = CARDINAL_END
-		PAGE_TABLE_END     = PAGE_TABLE_START + PAGE_TABLE_SIZE
-		KMAZARIN_LOAD_ADDR = PAGE_TABLE_END
-	)
-
-	add("LinkerRamStart", "__ram_start", BOOT_ADDRESS, "QEMU virt RAM start", false)
-	add("LinkerDtbBootAddr", "__dtb_boot_addr", DTB_START, "DTB location (QEMU fixed)", false)
-	add("LinkerDtbSize", "__dtb_size", DTB_SIZE, "DTB allocation size", false)
-	add("LinkerCardinalEnd", "__cardinal_end", CARDINAL_END, "cardinal allocation end", false)
-	add("LinkerCardinalAllocationSize", "__cardinal_allocation_size", CARDINAL_ALLOC_SIZE, "cardinal allocation size", false)
-	add("LinkerKmazarinLoadAddr", "__kmazarin_load_addr", KMAZARIN_LOAD_ADDR, "where kmazarin is loaded", false)
-	add("LinkerPageTablesStart", "__page_tables_start", PAGE_TABLE_START, "page table region start", false)
-	add("LinkerPageTablesEnd", "__page_tables_end", PAGE_TABLE_END, "page table region end", false)
-
-	// === Stack (placeholders - calculated at runtime) ===
-	// Fixed values - no patching needed
-	add("LinkerStackTop", "__stack_top", 0x5F000000, "g0 stack top (from CLAUDE.md)", false)
-	add("LinkerG0StackBottom", "__g0_stack_bottom", 0x5EFF0000, "g0 stack bottom (from CLAUDE.md)", false)
+	// === Stack ===
+	// Fixed values from constants package - no patching needed
+	add("LinkerStackTop", "__stack_top", constants.G0StackTop, "g0 stack top (SP_EL0)", false)
+	add("LinkerG0StackBottom", "__g0_stack_bottom", constants.G0StackBottom, "g0 stack bottom", false)
 
 	// === MMIO Device Addresses (QEMU virt machine fixed) ===
-	// Fixed values - no patching needed
-	add("LinkerGicBase", "__gic_base", 0x08000000, "GIC base (QEMU fixed)", false)
-	add("LinkerGicSize", "__gic_size", 0x00020000, "GIC size (128KB)", false)
-	add("LinkerUartBase", "__uart_base", 0x09000000, "UART base (QEMU fixed)", false)
-	add("LinkerUartSize", "__uart_size", 0x00010000, "UART size (64KB)", false)
-	add("LinkerRtcBase", "__rtc_base", 0x09010000, "RTC base (QEMU fixed)", false)
-	add("LinkerFwcfgBase", "__fwcfg_base", 0x09020000, "fw_cfg base (QEMU fixed)", false)
-	add("LinkerFwcfgSize", "__fwcfg_size", 0x00010000, "fw_cfg size (64KB)", false)
-	add("LinkerBochsDisplayBase", "__bochs_display_base", 0x10000000, "bochs-display base", false)
-	add("LinkerBochsDisplaySize", "__bochs_display_size", 0x01000000, "bochs-display size (16MB)", false)
-	add("LinkerPciBarBase", "__pci_bar_base", 0x11000000, "PCI BAR pool start", false)
-	add("LinkerPciBarSize", "__pci_bar_size", 0x0F000000, "PCI BAR pool size (240MB)", false)
+	// Fixed values from constants package - no patching needed
+	add("LinkerGicBase", "__gic_base", constants.GicBase, "GIC base (QEMU fixed)", false)
+	add("LinkerGicSize", "__gic_size", constants.GicSize, "GIC size (128KB)", false)
+	add("LinkerUartBase", "__uart_base", constants.UartBase, "UART base (QEMU fixed)", false)
+	add("LinkerUartSize", "__uart_size", constants.UartSize, "UART size (64KB)", false)
+	add("LinkerRtcBase", "__rtc_base", constants.RtcBase, "RTC base (QEMU fixed)", false)
+	add("LinkerFwcfgBase", "__fwcfg_base", constants.FwcfgBase, "fw_cfg base (QEMU fixed)", false)
+	add("LinkerFwcfgSize", "__fwcfg_size", constants.FwcfgSize, "fw_cfg size (64KB)", false)
+	add("LinkerBochsDisplayBase", "__bochs_display_base", constants.BochsDisplayBase, "bochs-display base", false)
+	add("LinkerBochsDisplaySize", "__bochs_display_size", constants.BochsDisplaySize, "bochs-display size (16MB)", false)
+	add("LinkerPciBarBase", "__pci_bar_base", constants.PciBarBase, "PCI BAR pool start", false)
+	add("LinkerPciBarSize", "__pci_bar_size", constants.PciBarSize, "PCI BAR pool size (240MB)", false)
 
 	// === Embedded Kmazarin ===
-	// LinkerKmazarinStart is where kmazarin is loaded (same as KMAZARIN_LOAD_ADDR)
+	// LinkerKmazarinStart is where kmazarin is loaded
 	// LinkerKmazarinSize is calculated from kmazarin.elf if -kmazarin flag provided
-	add("LinkerKmazarinStart", "__kmazarin_start", KMAZARIN_LOAD_ADDR, "kmazarin load address (0x41800000)", true)
+	add("LinkerKmazarinStart", "__kmazarin_start", constants.KmazarinLoadAddr, "kmazarin load address", true)
 	if kmazarinSize > 0 {
 		add("LinkerKmazarinSize", "__kmazarin_size", kmazarinSize, "calculated from kmazarin.elf", true)
 	} else {

@@ -87,7 +87,7 @@ $(CARDINAL_BINARY): $(GO_NATIVE_SRC) $(CARDINAL_SRC)/golang/go.mod $(KMAZARIN_BI
 	@echo "Patching entry point to _cardinal_boot..."
 	@$(GO) run $(PATCH_ENTRY_TOOL) $@ _cardinal_boot
 	@echo "Patching linker values..."
-	@$(GO) run $(COMPUTE_LINKER_VALUES_TOOL) -patch -kmazarin $(KMAZARIN_BINARY) $@
+	@cd $(CARDINAL_SRC)/golang && $(GO) run ../tools/compute-linker-values.go -patch -kmazarin $(abspath $(KMAZARIN_BINARY)) $(abspath $@)
 	@echo "cardinal ready at $@"
 
 # =========================================
@@ -95,7 +95,7 @@ $(CARDINAL_BINARY): $(GO_NATIVE_SRC) $(CARDINAL_SRC)/golang/go.mod $(KMAZARIN_BI
 # =========================================
 # Builds kmazarin as a static Go binary with specified load address
 
-$(KMAZARIN_BINARY): $(wildcard $(KMAZARIN_SRC)/*.go) src/cardinal/linker.ld tools/kmazarin-entry.sh | $(BUILD_KMAZARIN_DIR)
+$(KMAZARIN_BINARY): $(wildcard $(KMAZARIN_SRC)/*.go) tools/kmazarin-entry.sh tools/print-kmazarin-addr.go src/cardinal/golang/constants/layout.go | $(BUILD_KMAZARIN_DIR)
 	$(eval KMAZARIN_LOAD_ADDR := $(shell ./tools/kmazarin-entry.sh))
 	@echo "Building kmazarin kernel (static Go binary at $(KMAZARIN_LOAD_ADDR))..."
 	@cd $(KMAZARIN_SRC) && \
