@@ -60,8 +60,10 @@ TEXT irq_exception_el1(SB), NOSPLIT, $0
 	STP (R0, R1), IRQ_FRAME_X0(RSP)
 
 	// Read GIC IAR to acknowledge interrupt (MUST be done quickly)
-	// GICC_IAR at 0x0801000C
-	MOVD $0x0801000C, R0
+	// GICC_IAR = GICC base + 0x0C (IAR offset)
+	// GICC base = GIC base + 0x10000 (GICv2 fixed offset)
+	MOVD main·LinkerGicBase(SB), R0
+	ADD $0x1000C, R0                 // R0 = GICC_IAR address
 	MOVW (R0), R0                    // R0 = IAR value
 	ANDW $0x3FF, R0, R0              // R0 = interrupt ID (10 bits)
 

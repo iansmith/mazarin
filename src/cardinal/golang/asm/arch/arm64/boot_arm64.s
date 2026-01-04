@@ -62,11 +62,11 @@
 //
 TEXT _cardinal_boot(SB), NOSPLIT|NOFRAME, $0
 	// Initialize UART base address for early breadcrumb debugging
-	// R14 = 0x09000000 (UART PL011 base on QEMU virt)
+	// R14 = UART PL011 base (from LinkerUartBase)
 	// NOTE: R14 is used for UART breadcrumbs throughout boot. It remains valid
 	// until the BL to KernelMain, since there are no other BL instructions
 	// that would clobber it (R14/X14 is caller-saved in AAPCS64).
-	MOVD	$0x09000000, R14
+	MOVD	main·LinkerUartBase(SB), R14
 
 	// Preserve QEMU-provided DTB pointer.
 	// On QEMU virt, R0 contains the DTB physical address at reset.
@@ -143,18 +143,18 @@ at_el1:
 	// We just entered EL1h mode (using SP_EL1), but SP_EL1 is uninitialized!
 	//
 	// Stack Architecture:
-	// - SP_EL1 (0x5F020000): Exception handler stack, used in EL1h mode
-	// - SP_EL0 (0x5F000000): g0/kernel stack, used in EL1t mode
+	// - SP_EL1: Exception handler stack, used in EL1h mode (from LinkerExceptionStackTop)
+	// - SP_EL0: g0/kernel stack, used in EL1t mode (from LinkerStackTop)
 	// ========================================
 
-	// Set SP_EL1 (exception stack) to 0x5F020000
+	// Set SP_EL1 (exception stack) from LinkerExceptionStackTop
 	// We're in EL1h mode, so 'MOVD Rn, RSP' sets SP_EL1
-	MOVD	$0x5F020000, R0
+	MOVD	main·LinkerExceptionStackTop(SB), R0
 	MOVD	R0, RSP
 
-	// Set SP_EL0 (g0 stack) to 0x5F000000
+	// Set SP_EL0 (g0 stack) from LinkerStackTop
 	// Use MSR to set SP_EL0 since we're currently using SP_EL1
-	MOVD	$0x5F000000, R0
+	MOVD	main·LinkerStackTop(SB), R0
 	MSR	R0, SP_EL0
 
 	// Switch to EL1t mode to use SP_EL0 for normal execution
@@ -221,8 +221,11 @@ bss_clear_check:
 	// ========================================
 	// Initialize mmap bump pointer
 	// ========================================
-	MOVD	$0x40FFF000, R4		// Address of mmap pointer
-	MOVD	$0x48000000, R5		// Initial mmap value (within heap)
+	// TODO: These should be calculated from linker symbols
+	// 0x40FFF000 is near LinkerCardinalEnd (0x41000000)
+	// 0x48000000 is beyond page tables (needs proper heap calculation)
+	MOVD	$0x40FFF000, R4		// Address of mmap pointer (TODO: use linker symbol)
+	MOVD	$0x48000000, R5		// Initial mmap value (TODO: calculate from LinkerEnd)
 	MOVD	R5, (R4)
 
 	// ========================================
@@ -275,7 +278,7 @@ vbar_ok:
 	// ========================================
 
 	// 1. Enable the GIC Distributor (GICD_CTLR)
-	MOVD	$0x08000000, R0		// GICD base
+	MOVD	main·LinkerGicBase(SB), R0	// GICD base (from LinkerGicBase)
 	MOVW	$1, R1
 	MOVW	R1, (R0)		// GICD_CTLR = 1
 
@@ -288,7 +291,9 @@ vbar_ok:
 	MOVB	R1, (0x400+27)(R0)	// GICD_IPRIORITYR[27]
 
 	// 4. Enable the CPU Interface
-	MOVD	$0x08010000, R0		// GICC base
+	// GICC base = GICD base + 0x10000 (GICv2 fixed offset)
+	MOVD	main·LinkerGicBase(SB), R0
+	ADD	$0x10000, R0		// GICC base
 	MOVW	$1, R1
 	MOVW	R1, (R0)		// GICC_CTLR = 1
 

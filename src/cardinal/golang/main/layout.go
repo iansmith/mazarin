@@ -64,10 +64,11 @@ var (
 	LinkerPageTablesEnd          uint64 = constants.PageTableEnd
 
 	// Stack pointers - FIXED VALUES from constants package
-	// g0 stack: 0x5EFF0000-0x5F000000 (64KB)
-	// Exception stack: 0x5F000000-0x5F020000 (128KB)
-	LinkerStackTop      uint64 = constants.G0StackTop
-	LinkerG0StackBottom uint64 = constants.G0StackBottom
+	// g0 stack: 0x5EFF0000-0x5F000000 (64KB, SP_EL0)
+	// Exception stack: 0x5F000000-0x5F020000 (128KB, SP_EL1)
+	LinkerStackTop          uint64 = constants.G0StackTop           // SP_EL0 top
+	LinkerG0StackBottom     uint64 = constants.G0StackBottom        // SP_EL0 bottom
+	LinkerExceptionStackTop uint64 = constants.ExceptionStackTop    // SP_EL1 top
 
 	// MMIO device addresses - FIXED VALUES from constants package (QEMU virt machine)
 	LinkerGicBase          uint64 = constants.GicBase
@@ -105,7 +106,7 @@ func init() {
 		LinkerRamStart + LinkerDtbBootAddr + LinkerDtbSize +
 		LinkerCardinalEnd + LinkerCardinalAllocationSize +
 		LinkerKmazarinLoadAddr + LinkerPageTablesStart + LinkerPageTablesEnd +
-		LinkerStackTop + LinkerG0StackBottom +
+		LinkerStackTop + LinkerG0StackBottom + LinkerExceptionStackTop +
 		LinkerGicBase + LinkerGicSize +
 		LinkerUartBase + LinkerUartSize +
 		LinkerRtcBase + LinkerFwcfgBase + LinkerFwcfgSize +

@@ -16,7 +16,7 @@
 // exc_hang - Infinite loop for unhandled exceptions
 // This uses WFE to reduce power consumption while waiting
 TEXT exc_hang(SB), NOSPLIT, $0
-	MOVD	$0x09000000, R1		// UART base
+	MOVD	main·LinkerUartBase(SB), R1	// UART base
 	MOVD	$'H', R0
 	MOVW	R0, (R1)		// Print 'H' for hang
 	MOVD	$'A', R0
@@ -51,7 +51,7 @@ TEXT irq_exception_handler_el0(SB), NOSPLIT, $0
 	MOVD	R1, 8(RSP)
 
 	// Print '@' to show EL0 IRQ path
-	MOVD	$0x09000000, R1
+	MOVD	main·LinkerUartBase(SB), R1
 	MOVD	$'@', R0
 	MOVW	R0, (R1)
 
