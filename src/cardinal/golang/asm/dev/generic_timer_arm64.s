@@ -16,10 +16,11 @@
 
 // read_cntv_ctl_el0() uint32
 // Read CNTV_CTL_EL0 (Virtual Timer Control Register)
-// Returns: R0 = control register value (uint32)
+// Returns: control register value (uint32)
+// ABI0: Must store return value to stack for wrapper to read
 TEXT read_cntv_ctl_el0(SB), NOSPLIT|NOFRAME, $0-4
 	MRS	CNTV_CTL_EL0, R0
-	// Return value is in R0 (register ABI)
+	MOVW	R0, ret+0(FP)
 	RET
 
 // write_cntv_ctl_el0(value uint32)
@@ -33,10 +34,11 @@ TEXT write_cntv_ctl_el0(SB), NOSPLIT|NOFRAME, $0-4
 
 // read_cntv_tval_el0() uint32
 // Read CNTV_TVAL_EL0 (Virtual Timer Value Register)
-// Returns: R0 = timer value (uint32)
+// Returns: timer value (uint32)
+// ABI0: Must store return value to stack for wrapper to read
 TEXT read_cntv_tval_el0(SB), NOSPLIT|NOFRAME, $0-4
 	MRS	CNTV_TVAL_EL0, R0
-	// Return value is in R0 (register ABI)
+	MOVW	R0, ret+0(FP)
 	RET
 
 // write_cntv_tval_el0(value uint32)
