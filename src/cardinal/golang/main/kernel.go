@@ -1878,6 +1878,10 @@ func loadAndRunKmazarin() {
 
 	// Process each program header
 	for i := uint16(0); i < phnum; i++ {
+		uartPutcDirect('[') // Segment start marker
+		uartPutcDirect('0' + byte(i)) // Show segment index: 0, 1, 2, etc.
+		uartPutcDirect(']')
+
 		phOffset := phoff + uint64(i)*uint64(phentsize)
 		if phOffset+56 > uint64(len(elfData)) {
 			uartPutsDirect("ERROR: Invalid program header\r\n")
