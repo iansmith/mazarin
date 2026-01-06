@@ -231,15 +231,9 @@ bss_clear_check:
 	MOVW	$'B', R15
 	MOVW	R15, (R14)
 
-	// ========================================
-	// Initialize mmap bump pointer
-	// ========================================
-	// TODO: These should be calculated from linker symbols
-	// 0x40FFF000 is near LinkerCardinalEnd (0x41000000)
-	// 0x48000000 is beyond page tables (needs proper heap calculation)
-	MOVD	$0x40FFF000, R4		// Address of mmap pointer (TODO: use linker symbol)
-	MOVD	$0x48000000, R5		// Initial mmap value (TODO: calculate from LinkerEnd)
-	MOVD	R5, (R4)
+	// NOTE: mmap bump pointer (main.mmapBumpNext) is initialized by Go's
+	// static variable initialization: var mmapBumpNext uintptr = BUMP_REGION_START
+	// No need to set it here in assembly.
 
 	// ========================================
 	// Enable write barrier flag AFTER clearing BSS

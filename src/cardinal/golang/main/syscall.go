@@ -24,6 +24,9 @@ var pending_thread_gp uintptr
 //go:linkname pending_thread_fn pending_thread_fn
 var pending_thread_fn uintptr
 
+// Debug counter for timer state prints
+var timerDebugCounter uint64
+
 // runPendingThread is DEFERRED - we don't run mstart immediately.
 // The user's insight: "if we can just get the program to start (finish runtime
 // initialization) we will be fine because we can cause the sysmon thread to run
@@ -1323,6 +1326,33 @@ func syncExceptionDispatchInternal(
 
 	// DEBUG: Print marker to verify this function is called
 	uartPutcDirect('#')
+
+	// DEBUG: Print SPSR I-bit to check if interrupts are enabled
+	// SPSR bit 7 = I mask: 0=enabled, 1=disabled
+	if (spsr & 0x80) != 0 {
+		uartPutcDirect('I') // Interrupts DISABLED in saved state
+	}
+
+	// DEBUG: Periodically print timer state (every 100th syscall)
+	timerDebugCounter++
+	if timerDebugCounter%100 == 1 {
+		vcnt := asm.ReadCntvctEl0()
+		pcnt := asm.ReadCntpctEl0()
+		cval := asm.ReadCntvCvalEl0()
+		ctl := asm.ReadCntvCtlEl0()
+		freq := asm.ReadCntfrqEl0()
+		uartPutsDirect("\r\nTIMER: vcnt=")
+		uartPutHex64Direct(vcnt)
+		uartPutsDirect(" pcnt=")
+		uartPutHex64Direct(pcnt)
+		uartPutsDirect(" cval=")
+		uartPutHex64Direct(cval)
+		uartPutsDirect(" ctl=")
+		uartPutHex32Direct(ctl)
+		uartPutsDirect(" freq=")
+		uartPutHex32Direct(freq)
+		uartPutsDirect("\r\n")
+	}
 
 	// DEBUG: Print entry info for non-syscall exceptions
 	if ec != 0x15 && ec != 0x25 {

@@ -25,9 +25,10 @@ TEXT read_cntv_ctl_el0(SB), NOSPLIT|NOFRAME, $0-4
 
 // write_cntv_ctl_el0(value uint32)
 // Write CNTV_CTL_EL0
-// Parameters: R0 = control value to write (uint32)
+// Parameters: value at stack offset 0 (uint32)
+// ABI0: Must read argument from stack
 TEXT write_cntv_ctl_el0(SB), NOSPLIT|NOFRAME, $0-4
-	// R0 = value to write (already in R0 from register ABI)
+	MOVW	value+0(FP), R0
 	MSR	R0, CNTV_CTL_EL0
 	ISB	$15
 	RET
@@ -43,44 +44,49 @@ TEXT read_cntv_tval_el0(SB), NOSPLIT|NOFRAME, $0-4
 
 // write_cntv_tval_el0(value uint32)
 // Write CNTV_TVAL_EL0
-// Parameters: R0 = timer value to write (uint32)
+// Parameters: value at stack offset 0 (uint32)
+// ABI0: Must read argument from stack
 TEXT write_cntv_tval_el0(SB), NOSPLIT|NOFRAME, $0-4
-	// R0 = value to write (already in R0 from register ABI)
+	MOVW	value+0(FP), R0
 	MSR	R0, CNTV_TVAL_EL0
 	ISB	$15
 	RET
 
 // read_cntv_cval_el0() uint64
 // Read CNTV_CVAL_EL0 (Virtual Timer Compare Value Register)
-// Returns: R0 = compare value (uint64)
+// Returns: compare value (uint64)
+// ABI0: Must store return value to stack for wrapper to read
 TEXT read_cntv_cval_el0(SB), NOSPLIT|NOFRAME, $0-8
 	MRS	CNTV_CVAL_EL0, R0
-	// Return value is in R0 (register ABI)
+	MOVD	R0, ret+0(FP)
 	RET
 
 // write_cntv_cval_el0(value uint64)
 // Write CNTV_CVAL_EL0
-// Parameters: R0 = compare value to write (uint64)
+// Parameters: value at stack offset 0 (uint64)
+// ABI0: Must read argument from stack
 TEXT write_cntv_cval_el0(SB), NOSPLIT|NOFRAME, $0-8
-	// R0 = value to write (already in R0 from register ABI)
+	MOVD	value+0(FP), R0
 	MSR	R0, CNTV_CVAL_EL0
 	ISB	$15
 	RET
 
 // read_cntvct_el0() uint64
 // Read CNTVCT_EL0 (Virtual Counter Register)
-// Returns: R0 = current counter value (uint64)
+// Returns: current counter value (uint64)
+// ABI0: Must store return value to stack for wrapper to read
 TEXT read_cntvct_el0(SB), NOSPLIT|NOFRAME, $0-8
 	MRS	CNTVCT_EL0, R0
-	// Return value is in R0 (register ABI)
+	MOVD	R0, ret+0(FP)
 	RET
 
 // read_cntfrq_el0() uint32
 // Read CNTFRQ_EL0 (Counter Frequency Register)
-// Returns: R0 = timer frequency in Hz (uint32)
+// Returns: timer frequency in Hz (uint32)
+// ABI0: Must store return value to stack for wrapper to read
 TEXT read_cntfrq_el0(SB), NOSPLIT|NOFRAME, $0-4
 	MRS	CNTFRQ_EL0, R0
-	// Return value is in R0 (register ABI)
+	MOVW	R0, ret+0(FP)
 	RET
 
 // ============================================================================
@@ -90,59 +96,66 @@ TEXT read_cntfrq_el0(SB), NOSPLIT|NOFRAME, $0-4
 
 // read_cntp_ctl_el0() uint32
 // Read CNTP_CTL_EL0 (Physical Timer Control Register)
-// Returns: R0 = control register value (uint32)
+// Returns: control register value (uint32)
+// ABI0: Must store return value to stack for wrapper to read
 TEXT read_cntp_ctl_el0(SB), NOSPLIT|NOFRAME, $0-4
 	MRS	CNTP_CTL_EL0, R0
-	// Return value is in R0 (register ABI)
+	MOVW	R0, ret+0(FP)
 	RET
 
 // write_cntp_ctl_el0(value uint32)
 // Write CNTP_CTL_EL0
-// Parameters: R0 = control value to write (uint32)
+// Parameters: value at stack offset 0 (uint32)
+// ABI0: Must read argument from stack
 TEXT write_cntp_ctl_el0(SB), NOSPLIT|NOFRAME, $0-4
-	// R0 = value to write (already in R0 from register ABI)
+	MOVW	value+0(FP), R0
 	MSR	R0, CNTP_CTL_EL0
 	ISB	$15
 	RET
 
 // read_cntp_tval_el0() uint32
 // Read CNTP_TVAL_EL0 (Physical Timer Value Register)
-// Returns: R0 = timer value (uint32)
+// Returns: timer value (uint32)
+// ABI0: Must store return value to stack for wrapper to read
 TEXT read_cntp_tval_el0(SB), NOSPLIT|NOFRAME, $0-4
 	MRS	CNTP_TVAL_EL0, R0
-	// Return value is in R0 (register ABI)
+	MOVW	R0, ret+0(FP)
 	RET
 
 // write_cntp_tval_el0(value uint32)
 // Write CNTP_TVAL_EL0
-// Parameters: R0 = timer value to write (uint32)
+// Parameters: value at stack offset 0 (uint32)
+// ABI0: Must read argument from stack
 TEXT write_cntp_tval_el0(SB), NOSPLIT|NOFRAME, $0-4
-	// R0 = value to write (already in R0 from register ABI)
+	MOVW	value+0(FP), R0
 	MSR	R0, CNTP_TVAL_EL0
 	ISB	$15
 	RET
 
 // read_cntp_cval_el0() uint64
 // Read CNTP_CVAL_EL0 (Physical Timer Compare Value Register)
-// Returns: R0 = compare value (uint64)
+// Returns: compare value (uint64)
+// ABI0: Must store return value to stack for wrapper to read
 TEXT read_cntp_cval_el0(SB), NOSPLIT|NOFRAME, $0-8
 	MRS	CNTP_CVAL_EL0, R0
-	// Return value is in R0 (register ABI)
+	MOVD	R0, ret+0(FP)
 	RET
 
 // write_cntp_cval_el0(value uint64)
 // Write CNTP_CVAL_EL0
-// Parameters: R0 = compare value to write (uint64)
+// Parameters: value at stack offset 0 (uint64)
+// ABI0: Must read argument from stack
 TEXT write_cntp_cval_el0(SB), NOSPLIT|NOFRAME, $0-8
-	// R0 = value to write (already in R0 from register ABI)
+	MOVD	value+0(FP), R0
 	MSR	R0, CNTP_CVAL_EL0
 	ISB	$15
 	RET
 
 // read_cntpct_el0() uint64
 // Read CNTPCT_EL0 (Physical Counter Register)
-// Returns: R0 = current counter value (uint64)
+// Returns: current counter value (uint64)
+// ABI0: Must store return value to stack for wrapper to read
 TEXT read_cntpct_el0(SB), NOSPLIT|NOFRAME, $0-8
 	MRS	CNTPCT_EL0, R0
-	// Return value is in R0 (register ABI)
+	MOVD	R0, ret+0(FP)
 	RET

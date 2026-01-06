@@ -44,15 +44,15 @@ TEXT ·SyncExceptionDispatch(SB), NOSPLIT, $0-144
 TEXT ·DoContextSwitch(SB), NOSPLIT, $0-24
 	JMP	·doContextSwitchInternal(SB)
 
-// IRQExceptionDispatch is called from exc_irq_arm64.s
-// Go signature: func IRQExceptionDispatch(
+// IRQDispatchGo is called from exc_irq_arm64.s
+// Go signature: func IRQDispatchGo(
 //     irqID uint64, framePtr uintptr, savedG, elr, spEl0 uint64,
 // ) (newELR, newSP, newLR uint64, doPreempt bool)
 // ABI0: 5 args (40 bytes) + 4 returns (32 bytes) = 72 bytes
 //
-// Tail-call to internal function. The .abi0 wrapper reads from caller's stack.
-TEXT ·IRQExceptionDispatch(SB), NOSPLIT, $0-72
-	JMP	·irqExceptionDispatchInternal(SB)
+// Tail-call to internal function. The internal's .abi0 wrapper reads from our stack.
+TEXT ·IRQDispatchGo(SB), NOSPLIT, $0-72
+	JMP	·IRQDispatchGoInternal(SB)
 
 // KernelMain is called from boot_arm64.s (_cardinal_boot)
 // Go signature: func KernelMain(r0, r1, atags uint32)

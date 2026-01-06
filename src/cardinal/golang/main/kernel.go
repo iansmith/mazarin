@@ -695,12 +695,8 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	// =========================================
 	// PRE-REGISTER FIXED MEMORY SPANS
 	*(*uint32)(unsafe.Pointer(uartBase)) = 'U' // U = preRegister starting
-	// Register bump region (0x48000000 - 0xC8000000) in mmapSpans[0]
-	// mmapSpan struct: startVA(8), endVA(8), inUse(1+padding=8) = 24 bytes per entry
-	mmapSpansAddr := uintptr(0x405264e0) // Address of mmapSpans from nm
-	*(*uintptr)(unsafe.Pointer(mmapSpansAddr)) = 0x48000000       // startVA
-	*(*uintptr)(unsafe.Pointer(mmapSpansAddr + 8)) = 0xC8000000   // endVA
-	*(*uintptr)(unsafe.Pointer(mmapSpansAddr + 16)) = 1           // inUse (write as uintptr)
+	// Use the proper Go function to register spans
+	preRegisterFixedSpans()
 	*(*uint32)(unsafe.Pointer(uartBase)) = 'u' // u = preRegister done
 
 	// =========================================
@@ -756,11 +752,14 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	// Verify that .rodata is RO and BSS is RW
 	// =========================================
 	// .rodata sample - should be RO (AP=3)
-	dumpPageTableWalk(".rodata sample (0x401C0000)", 0x401C0000)
-	// runtime.argv is at 0x402BB918 (in BSS) - should be RW (AP=1)
-	dumpPageTableWalk("runtime.argv (0x402BB918)", 0x402BB918)
-	// runtime.argc is at 0x402E4B68 (in BSS) - should be RW (AP=1)
-	dumpPageTableWalk("runtime.argc (0x402E4B68)", 0x402E4B68)
+	rodataStart := asm.GetRodataStartAddr()
+	dumpPageTableWalk(".rodata sample", rodataStart)
+	// runtime.argv (in BSS) - should be RW (AP=1)
+	argvAddr := uintptr(unsafe.Pointer(&runtimeArgv))
+	dumpPageTableWalk("runtime.argv", argvAddr)
+	// runtime.argc (in BSS) - should be RW (AP=1)
+	argcAddr := uintptr(unsafe.Pointer(&runtimeArgc))
+	dumpPageTableWalk("runtime.argc", argcAddr)
 
 	// =========================================
 	// TEST: Item 3 - runtime.args()
@@ -1027,17 +1026,34 @@ func abortBoot(message string) {
 	}
 }
 
+// Runtime variables accessed via go:linkname
+//
+//go:linkname runtimeAllglen runtime.allglen
+var runtimeAllglen uintptr
+
+// allgsSlice is a generic slice type to access runtime.allgs
+// We use [0]uintptr as the element type since we just need the pointer values
+type allgsSlice struct {
+	ptr uintptr
+	len int
+	cap int
+}
+
+//go:linkname runtimeAllgs runtime.allgs
+var runtimeAllgs allgsSlice
+
+//go:linkname runtimeArgv runtime.argv
+var runtimeArgv unsafe.Pointer
+
+//go:linkname runtimeArgc runtime.argc
+var runtimeArgc int32
+
 // dumpAllGs uses runtime internals to dump the allgs slice
 //
 //go:nosplit
 func dumpAllGs() {
-	// Runtime symbol addresses (use 'make update-runtime-addrs' to refresh)
-	// To manually update: nm flash/cardinal.elf | grep 'runtime.allg'
-	const allglenAddr = uintptr(0x406a32f0) // runtime.allglen
-	const allgsAddr = uintptr(0x40679db0)   // runtime.allgs
-
-	// Read allglen (number of goroutines)
-	allglen := uintptr(readMemory64(allglenAddr))
+	// Read allglen using proper go:linkname reference
+	allglen := runtimeAllglen
 	print("  allglen = ")
 	printHex64(uint64(allglen))
 	print("\r\n")
@@ -1047,11 +1063,10 @@ func dumpAllGs() {
 		return
 	}
 
-	// Read allgs slice header
-	// A slice is: {ptr *elem, len int, cap int}
-	allgsPtr := readMemory64(allgsAddr)      // pointer to array
-	allgsLen := readMemory64(allgsAddr + 8)  // length
-	allgsCap := readMemory64(allgsAddr + 16) // capacity
+	// Read allgs slice header using proper go:linkname reference
+	allgsPtr := uint64(runtimeAllgs.ptr)
+	allgsLen := uint64(runtimeAllgs.len)
+	allgsCap := uint64(runtimeAllgs.cap)
 
 	print("  allgs ptr=")
 	printHex64(allgsPtr)

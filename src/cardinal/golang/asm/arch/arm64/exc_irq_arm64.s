@@ -51,6 +51,13 @@
 
 TEXT irq_exception_el1(SB), NOSPLIT, $0
 	// ========================================================================
+	// DEBUG: Print '@' immediately to confirm IRQ handler entry
+	// ========================================================================
+	MOVD $0x09000000, R10
+	MOVD $'@', R11
+	MOVB R11, (R10)
+
+	// ========================================================================
 	// SAVE ALL REGISTERS TO EXCEPTION FRAME
 	// ========================================================================
 	// Allocate 272-byte frame
@@ -66,6 +73,36 @@ TEXT irq_exception_el1(SB), NOSPLIT, $0
 	ADD $0x1000C, R0                 // R0 = GICC_IAR address
 	MOVW (R0), R0                    // R0 = IAR value
 	ANDW $0x3FF, R0, R0              // R0 = interrupt ID (10 bits)
+
+	// DEBUG: Print IRQ ID as two hex digits (saves R0 to R12 temporarily)
+	MOVD R0, R12                     // Save IRQ ID
+	MOVD $0x09000000, R10
+	// High nibble
+	LSR $4, R12, R11
+	ANDW $0xF, R11, R11
+	CMP $10, R11
+	BLT irq_digit1
+	ADD $('A'-10), R11
+	B irq_print1
+irq_digit1:
+	ADD $'0', R11
+irq_print1:
+	MOVB R11, (R10)
+	// Low nibble
+	ANDW $0xF, R12, R11
+	CMP $10, R11
+	BLT irq_digit2
+	ADD $('A'-10), R11
+	B irq_print2
+irq_digit2:
+	ADD $'0', R11
+irq_print2:
+	MOVB R11, (R10)
+	// Print space
+	MOVD $' ', R11
+	MOVB R11, (R10)
+	// Restore R0 = IRQ ID from R12
+	MOVD R12, R0
 
 	// Save x2, x3 so we can use them
 	STP (R2, R3), IRQ_FRAME_X2(RSP)
@@ -109,32 +146,45 @@ TEXT irq_exception_el1(SB), NOSPLIT, $0
 	// R3 = elr (interrupted PC)
 	// R4 = spEl0 (interrupted SP_EL0)
 
-	// R0 already has irqID
-	MOVD RSP, R1                     // R1 = framePtr
+	// Prepare parameters for IRQExceptionDispatch
+	// R0 already has irqID from GIC IAR read above
+	MOVD RSP, R1                     // R1 = framePtr (pointer to exception frame)
 	MOVD IRQ_FRAME_X28(RSP), R2      // R2 = savedG (x28 from frame)
 	MOVD IRQ_FRAME_ELR(RSP), R3      // R3 = elr
 	MOVD IRQ_FRAME_SP_EL0(RSP), R4   // R4 = spEl0
 
-	// CRITICAL: Reserve spill space for callee's 5 register arguments
-	// IRQExceptionDispatch takes 5 args (R0-R4), needs 40 bytes of spill space
-	// Plus we need to save our callee-saved registers
-	// Layout: [RSP+0..47] = spill area (48 bytes), [RSP+48..111] = saved regs
+	// CRITICAL: Call IRQDispatchGo directly.
+	// The .abi0 wrapper expects:
+	//   args at caller_sp+8, +16, +24, +32, +40
+	//   returns stored at caller_sp+48, +56, +64, +72
+	// Frame layout: [8..47] = 5 args, [48..79] = returns, [80..111] = callee-saved
 	SUB $112, RSP
 
-	// Save callee-saved registers at offset 48+
-	STP (R19, R20), 48(RSP)
-	STP (R21, R22), 64(RSP)
-	STP (R23, R24), 80(RSP)
-	STP (R25, R26), 96(RSP)
+	// Store args on stack for IRQDispatchGo's .abi0 wrapper
+	MOVD R0, 8(RSP)                  // arg0 = irqID
+	MOVD R1, 16(RSP)                 // arg1 = framePtr
+	MOVD R2, 24(RSP)                 // arg2 = savedG
+	MOVD R3, 32(RSP)                 // arg3 = elr
+	MOVD R4, 40(RSP)                 // arg4 = spEl0
 
-	CALL main·IRQExceptionDispatch(SB)
-	// Returns: R0 = newELR, R1 = newSP, R2 = newLR, R3 = doPreempt (0 or 1)
+	// Save callee-saved registers at offset 80+
+	STP (R19, R20), 80(RSP)
+	STP (R21, R22), 96(RSP)
+
+	// Call IRQDispatchGo - its .abi0 wrapper handles ABI
+	CALL main·IRQDispatchGo(SB)
+
+	// Returns are on STACK (the .abi0 wrapper stores them there):
+	//   ret0 (newELR) at sp+48, ret1 (newSP) at sp+56,
+	//   ret2 (newLR) at sp+64, ret3 (doPreempt) at sp+72
+	MOVD 48(RSP), R0                 // R0 = newELR
+	MOVD 56(RSP), R1                 // R1 = newSP
+	MOVD 64(RSP), R2                 // R2 = newLR
+	MOVBU 72(RSP), R3                // R3 = doPreempt (bool, 1 byte)
 
 	// Restore callee-saved registers
-	LDP 48(RSP), (R19, R20)
-	LDP 64(RSP), (R21, R22)
-	LDP 80(RSP), (R23, R24)
-	LDP 96(RSP), (R25, R26)
+	LDP 80(RSP), (R19, R20)
+	LDP 96(RSP), (R21, R22)
 	ADD $112, RSP
 
 	// Check if preemption is needed

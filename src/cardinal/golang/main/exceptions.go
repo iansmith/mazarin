@@ -702,7 +702,7 @@ const goArenaHigh = 0x8000000000 // 512GB
 //
 //go:nosplit
 //go:noinline
-func irqExceptionDispatchInternal(
+func IRQDispatchGoInternal(
 	irqID uint64,
 	framePtr uintptr,
 	savedG uint64,
@@ -712,6 +712,11 @@ func irqExceptionDispatchInternal(
 
 	// DEBUG: Print '!' to show IRQ entry
 	uartPutcDirect('!')
+
+	// DEBUG: Print irqID received by Go
+	uartPutsDirect(" id=")
+	uartPutHex64Direct(irqID)
+	uartPutcDirect(' ')
 
 	// Check if this is a timer interrupt (IRQ 27 = virtual timer)
 	if irqID == 27 {
@@ -733,15 +738,20 @@ func irqExceptionDispatchInternal(
 //
 //go:nosplit
 func handleTimerIRQ(savedG, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool) {
+	// Debug: print 'T' to show handleTimerIRQ is called
+	uartPutcDirect('T')
 
 	// 1. Handle timer tick (increment counter, wake sleeping threads)
 	TimerTickHandler()
 
 	// 2. Check if we should skip preemption
+	uartPutcDirect('C') // Debug: Checking skip
 	if shouldSkipPreemption(savedG) {
+		uartPutcDirect('S') // Debug: Skipping preemption
 		// Re-arm timer and send EOI, then return without preemption
 		rearmTimer()
 		gicEndOfInterrupt(27)
+		uartPutcDirect('D') // Debug: Done with timer (skip path)
 		return 0, 0, 0, false
 	}
 
@@ -786,8 +796,13 @@ func handleTimerIRQ(savedG, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doP
 //
 //go:nosplit
 func shouldSkipPreemption(savedG uint64) bool {
+	// Debug: print savedG value
+	uartPutsDirect(" g=")
+	uartPutHex64Direct(savedG)
+
 	// Check for nil g
 	if savedG == 0 {
+		uartPutcDirect('0') // nil g
 		return true
 	}
 
@@ -796,13 +811,16 @@ func shouldSkipPreemption(savedG uint64) bool {
 	if savedG >= goArenaLow && savedG < goArenaHigh {
 		// In Go's high VA range (runtime arenas)
 		isKmazarinG = true
+		uartPutcDirect('A') // Arena match
 	} else if savedG >= kmazarinTextStart && savedG < kmazarinTextEnd {
 		// In kmazarin's ELF text section
 		isKmazarinG = true
+		uartPutcDirect('E') // ELF match
 	}
 
 	if !isKmazarinG {
 		// Not a kmazarin g, skip preemption (it's cardinal's g0)
+		uartPutcDirect('X') // not kmazarin
 		return true
 	}
 
@@ -813,13 +831,18 @@ func shouldSkipPreemption(savedG uint64) bool {
 	gPtr := uintptr(savedG)
 	mPtr := *(*uintptr)(unsafe.Pointer(gPtr + 48)) // g.m
 	if mPtr == 0 {
+		uartPutcDirect('M') // nil m
 		return true
 	}
 	g0Ptr := *(*uintptr)(unsafe.Pointer(mPtr)) // m.g0
 	if gPtr == g0Ptr {
 		// We're on g0 (scheduler goroutine), skip preemption
+		uartPutcDirect('G') // on g0
 		return true
 	}
+
+	// OK to preempt - print marker
+	uartPutcDirect('!') // will preempt
 
 	// OK to preempt
 	return false
@@ -838,10 +861,26 @@ func isInKmazarin(addr uint64) bool {
 //
 //go:nosplit
 func rearmTimer() {
+	// Debug: print 'R' to show rearmTimer is called
+	uartPutcDirect('R')
+
 	// Read current counter
 	cnt := asm.ReadCntvctEl0()
 	// Set compare value to current + 20ms
-	asm.WriteCntvCvalEl0(cnt + 1250000)
+	newCval := cnt + 1250000
+	asm.WriteCntvCvalEl0(newCval)
+
+	// Debug: print timer values and CTL
+	uartPutsDirect(" cnt=")
+	uartPutHex64Direct(cnt)
+	uartPutsDirect(" cval=")
+	uartPutHex64Direct(newCval)
+	uartPutsDirect(" ctl=")
+	uartPutHex32Direct(asm.ReadCntvCtlEl0())
+	uartPutsDirect(" ")
+
+	// Debug: print 'r' to show rearmTimer completed
+	uartPutcDirect('r')
 }
 
 // getAsyncPreemptBMAddr returns the address of cardinal's asyncPreemptBM function
