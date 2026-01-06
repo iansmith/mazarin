@@ -220,6 +220,12 @@ var (
 	kernelPageTableL3 []uintptr // Kernel L3 tables - allocated as needed
 )
 
+// Kmazarin size tracking
+// Enforces the 64MB total limit (binary + heap combined)
+var (
+	kmazarinAllocatedBytes uintptr // Total bytes allocated for kmazarin (includes binary + heap)
+)
+
 // kernelPanic prints a panic message and halts the system
 // Uses direct UART writes to work before UART initialization
 //
