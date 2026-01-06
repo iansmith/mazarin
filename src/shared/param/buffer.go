@@ -28,38 +28,85 @@ import (
 // ============================================================================
 // Writing (Cardinal side)
 // ============================================================================
+//
+// Typical usage pattern:
+//   buf := make([]byte, 128*1024)  // Reserve buffer space
+//   offset := 0
+//   offset += InitBuffer(buf[offset:])  // Initialize with null terminator
+//   offset += WriteComment(buf[offset:], "System parameters")
+//   offset += WriteParam(buf[offset:], "KEY1", 0x1234)
+//   offset += WriteParam(buf[offset:], "KEY2", 0x5678)
+//   offset += TerminateBuffer(buf[offset:])  // Write final null terminator
+//
+// The InitBuffer ensures the buffer always has a valid null terminator even
+// if subsequent writes fail. TerminateBuffer writes the final null at the
+// end of all written data.
 
-// WriteParam writes a key-value pair to the buffer at the given offset.
-// Returns the number of bytes written (including newline).
-// Format: "KEY value\n"
+// InitBuffer initializes the parameter buffer by writing a null terminator at the start.
+// This ensures that even if no data is written or all writes fail, the buffer is still
+// properly null-terminated.
+// Returns 1 if successful, 0 if the buffer is empty.
+func InitBuffer(buf []byte) int {
+	if len(buf) == 0 {
+		return 0
+	}
+	buf[0] = 0
+	return 1
+}
+
+// WriteParam writes a key-value pair to the buffer.
+// Callers should pass a slice starting at the desired offset if needed
+// (e.g., WriteParam(buf[offset:], key, value)).
+// IMPORTANT: Callers must reserve at least 1 extra byte in the buffer for the final
+// null terminator (written by TerminateBuffer).
+// Returns the number of bytes written (including newline), or 0 if the buffer is too small.
+// Format: "KEY 0xVALUE\n"
 func WriteParam(buf []byte, key string, value uint64) int {
 	// Format: "KEY 0xVALUE\n"
 	line := key + " 0x" + strconv.FormatUint(value, 16) + "\n"
+	if len(buf) < len(line) {
+		return 0 // Buffer too small
+	}
 	copy(buf, []byte(line))
 	return len(line)
 }
 
-// WriteParamString writes a key-value pair with a string value.
-// Returns the number of bytes written (including newline).
+// WriteParamString writes a key-value pair with a string value to the buffer.
+// Callers should pass a slice starting at the desired offset if needed
+// (e.g., WriteParamString(buf[offset:], key, value)).
+// Returns the number of bytes written (including newline), or 0 if the buffer is too small.
 // Format: "KEY value\n"
 func WriteParamString(buf []byte, key string, value string) int {
 	line := key + " " + value + "\n"
+	if len(buf) < len(line) {
+		return 0 // Buffer too small
+	}
 	copy(buf, []byte(line))
 	return len(line)
 }
 
 // WriteComment writes a comment line to the buffer.
-// Returns the number of bytes written (including newline).
+// Callers should pass a slice starting at the desired offset if needed.
+// Returns the number of bytes written (including newline), or 0 if the buffer is too small.
 // Format: "# comment\n"
 func WriteComment(buf []byte, comment string) int {
 	line := "# " + comment + "\n"
+	if len(buf) < len(line) {
+		return 0 // Buffer too small
+	}
 	copy(buf, []byte(line))
 	return len(line)
 }
 
-// TerminateBuffer writes a null terminator at the given offset.
-// Returns 1 (the number of bytes written).
+// TerminateBuffer writes a null terminator at the end of the written content.
+// Callers should pass a slice starting at the current offset after all writes
+// (e.g., offset += TerminateBuffer(buf[offset:])).
+// This marks the end of the parameter buffer data.
+// Returns 1 (the number of bytes written), or 0 if the buffer is empty.
 func TerminateBuffer(buf []byte) int {
+	if len(buf) == 0 {
+		return 0 // Buffer too small
+	}
 	buf[0] = 0
 	return 1
 }

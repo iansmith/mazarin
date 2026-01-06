@@ -15,6 +15,9 @@ import (
 	"unsafe"
 )
 
+// maxParamBufferSize is the maximum size of the parameter buffer we can handle
+const maxParamBufferSize = 128 * 1024
+
 // paramBuffer holds the parsed parameters from Cardinal
 var paramBuffer map[string]string
 
@@ -92,11 +95,18 @@ func readAuxv() (uintptr, int, bool) {
 // parseAuxvBuffer is a helper that actually reads and parses the parameter buffer
 // once we have its physical address and length.
 func parseAuxvBuffer(physAddr uintptr, length int) {
+	// Validate length before proceeding
+	if length <= 0 || length > maxParamBufferSize {
+		// Invalid length - cannot parse
+		paramBuffer = make(map[string]string)
+		return
+	}
+
 	// For low-memory (identity-mapped) addresses, we can access directly
 	// For high-memory addresses, we'd need to map them first
 
-	// Convert physical address to a Go slice
-	bufPtr := (*[128 * 1024]byte)(unsafe.Pointer(physAddr))
+	// Convert physical address to a Go slice (safe now that we've validated length)
+	bufPtr := (*[maxParamBufferSize]byte)(unsafe.Pointer(physAddr))
 	buf := bufPtr[:length]
 
 	// Parse the buffer
