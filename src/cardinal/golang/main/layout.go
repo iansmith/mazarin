@@ -15,7 +15,7 @@ package main
 
 import (
 	"cardinal/asm"
-	"cardinal/constants"
+	"shared/constants"
 )
 
 // ============================================================================
