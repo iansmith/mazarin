@@ -62,7 +62,7 @@ const (
 //   0x5F000000 - 0x5F020000  (128 KB) Exception stack (SP_EL1, IRQ/FIQ/exceptions)
 //
 // Layout (High Memory - Kmazarin kernel, TTBR1):
-//   0xFFFFFFFF5EFF8000 - 0xFFFFFFFF5F000000  (16 KB)  Kernel g0 stack
+//   0xFFFFFFFF5EFFC000 - 0xFFFFFFFF5F000000  (16 KB)  Kernel g0 stack
 //   0xFFFFFFFF5F000000 - 0xFFFFFFFF5F002000  (8 KB)   Kernel exception stack
 
 const (
