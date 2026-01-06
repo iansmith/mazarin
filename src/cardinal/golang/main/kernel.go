@@ -1388,17 +1388,19 @@ func loadAndRunKmazarin() {
 			(uint64(elfData[phOffset+46]) << 48) |
 			(uint64(elfData[phOffset+47]) << 56)
 
-		// Calculate page-aligned range
-		vaStart := uintptr(pVaddr) &^ 0xFFF
-		vaEnd := (uintptr(pVaddr) + uintptr(pMemsz) + 0xFFF) &^ 0xFFF
-		numPages := (vaEnd - vaStart) >> 12
+		// Calculate page-aligned range from ELF virtual address
+		// ELF is already relocated to high memory (0xFFFFFFFF41800000+)
+		// Use the addresses directly without adding offset
+		kernelVAStart := uintptr(pVaddr) &^ 0xFFF
+		kernelVAEnd := (uintptr(pVaddr) + uintptr(pMemsz) + 0xFFF) &^ 0xFFF
+		numPages := (kernelVAEnd - kernelVAStart) >> 12
 
-		// Update min/max for span registration
-		if minVA == 0 || vaStart < minVA {
-			minVA = vaStart
+		// Update min/max for span registration (use high-memory VAs)
+		if minVA == 0 || kernelVAStart < minVA {
+			minVA = kernelVAStart
 		}
-		if vaEnd > maxVA {
-			maxVA = vaEnd
+		if kernelVAEnd > maxVA {
+			maxVA = kernelVAEnd
 		}
 
 		// Determine execute permission based on segment flags
@@ -1409,10 +1411,10 @@ func loadAndRunKmazarin() {
 
 		uartPutsDirect("  Segment ")
 		uartPutHex64Direct(uint64(i))
-		uartPutsDirect(": VA 0x")
-		uartPutHex64Direct(uint64(vaStart))
+		uartPutsDirect(": Kernel VA 0x")
+		uartPutHex64Direct(uint64(kernelVAStart))
 		uartPutsDirect("-0x")
-		uartPutHex64Direct(uint64(vaEnd))
+		uartPutHex64Direct(uint64(kernelVAEnd))
 		uartPutsDirect(" flags=")
 		if (pFlags & PF_R) != 0 {
 			uartPutsDirect("R")
@@ -1429,7 +1431,9 @@ func loadAndRunKmazarin() {
 		uartPutHex64Direct(pMemsz)
 		uartPutsDirect("\r\n")
 
-		// Map all pages for this segment
+		// Map all pages for this segment in TTBR1 (high-memory kernel space)
+		// pVaddr from ELF is low memory (e.g., 0x41800000)
+		// We convert to high memory (0xFFFFFFFF41800000) and map in TTBR1
 		uartPutcDirect('L') // breadcrumb: start page loop
 		for pageIdx := uintptr(0); pageIdx < numPages; pageIdx++ {
 			if pageIdx == 0 {
@@ -1439,7 +1443,7 @@ func loadAndRunKmazarin() {
 			if (pageIdx % 10) == 0 {
 				uartPutcDirect('.')
 			}
-			va := vaStart + (pageIdx << 12)
+			kernelVA := kernelVAStart + (pageIdx << 12)
 			physFrame := allocPhysFrame()
 			if physFrame == 0 {
 				uartPutsDirect("ERROR: Out of memory mapping segment\r\n")
@@ -1449,12 +1453,12 @@ func loadAndRunKmazarin() {
 				uartPutcDirect('N') // breadcrumb: after first allocPhysFrame
 			}
 
-			// Map with permissions based on segment flags
-			// For now, map as RW regardless (we need to write during loading)
+			// Map high-memory kernel VA to physical frame in TTBR1 page tables
+			// For now, map as RW (we need to write during loading)
 			// Execute permission is set based on PF_X flag
-			mapPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, execPerm)
+			mapKernelPage(kernelVA, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, execPerm)
 			if pageIdx == 0 {
-				uartPutcDirect('O') // breadcrumb: after first mapPage
+				uartPutcDirect('O') // breadcrumb: after first mapKernelPage
 			}
 		}
 		uartPutcDirect('P') // breadcrumb: page loop completed
@@ -1464,7 +1468,7 @@ func loadAndRunKmazarin() {
 		asm.Isb()
 		uartPutcDirect('Q') // breadcrumb: after barriers
 
-		// Copy file data to mapped memory
+		// Copy file data to mapped memory (use kernel VAs - high memory)
 		uartPutcDirect('R') // breadcrumb: before file copy
 		if pFilesz > 0 {
 			var srcOffset uintptr
@@ -1478,22 +1482,22 @@ func loadAndRunKmazarin() {
 				// Relationship: segment_offset = text_offset - (text_va - segment_va)
 				//              = 0x1000 - 0x10000 = -0xF000
 
-				// Zero-fill the header region (first 64KB of segment)
+				// Zero-fill the header region (first 64KB of segment) - use kernel VA
 				headerSize := uintptr(0x10000)  // 64KB for ELF headers, PHDR, notes
-				headerStart := unsafe.Pointer(uintptr(pVaddr))
+				headerStart := unsafe.Pointer(kernelVAStart)
 				bzero4K(headerStart, uint32(headerSize))
 
-				// Copy .text section from file offset 0x1000 to VA (segment_va + 0x10000)
+				// Copy .text section from file offset 0x1000 to kernel VA (segment_va + 0x10000)
 				srcOffset = kmazarinStart + 0x1000
-				dstAddr = uintptr(pVaddr) + headerSize  // Skip past header region
+				dstAddr = kernelVAStart + headerSize  // Skip past header region
 				copySize = pFilesz - uint64(headerSize)  // Remaining bytes after header
 
 				// Load segment with negative offset: zero-fill headers, copy code
 			} else {
 				uartPutcDirect('T') // breadcrumb: positive offset path
-				// Normal positive offset - load segment data directly
+				// Normal positive offset - load segment data directly to kernel VA
 				srcOffset = kmazarinStart + uintptr(pOffset)
-				dstAddr = uintptr(pVaddr)
+				dstAddr = kernelVAStart
 				copySize = pFilesz
 			}
 
@@ -1518,9 +1522,9 @@ func loadAndRunKmazarin() {
 		}
 		uartPutcDirect('W') // breadcrumb: after file copy section
 
-		// Zero BSS section (MemSz > FileSz)
+		// Zero BSS section (MemSz > FileSz) - use kernel VA
 		if pMemsz > pFilesz {
-			bssStart := unsafe.Pointer(uintptr(pVaddr) + uintptr(pFilesz))
+			bssStart := unsafe.Pointer(kernelVAStart + uintptr(pFilesz))
 			bssSize := pMemsz - pFilesz
 
 			// DEBUG: Print BSS zeroing info
@@ -1533,35 +1537,22 @@ func loadAndRunKmazarin() {
 			uartPutsDirect(" bytes)\r\n")
 
 			bzeroSimple(bssStart, uint32(bssSize))
-
-			// DEBUG: Verify critical BSS addresses are zeroed
-			if uintptr(bssStart) <= 0x419A1060 && 0x419A1060 < uintptr(bssStart)+uintptr(bssSize) {
-				uartPutsDirect("  Verifying globalAlloc at 0x419A1060: ")
-				globalAllocPtr := (*uint64)(unsafe.Pointer(uintptr(0x419A1060)))
-				uartPutHex64Direct(*globalAllocPtr)
-				uartPutsDirect("\r\n")
-
-				// Also check the address that loads 0xDEAD000E (x4 = 0x419A39A8)
-				uartPutsDirect("  Verifying memstats field at 0x419A39A8: ")
-				memstatsFieldPtr := (*uint64)(unsafe.Pointer(uintptr(0x419A39A8)))
-				uartPutHex64Direct(*memstatsFieldPtr)
-				uartPutsDirect("\r\n")
-			}
 		}
 
 		// CRITICAL: Remap executable pages as Read-Only
 		// ARM architecture requires code pages to be RO+X, not RW+X
 		if execPerm == PTE_EXEC_ALLOW {
 			for pageIdx := uintptr(0); pageIdx < numPages; pageIdx++ {
-				va := vaStart + (pageIdx << 12)
-				// Get the physical address from the existing PTE
-				l0Index := (va >> 39) & 0x1FF
-				l1Index := (va >> 30) & 0x1FF
-				l2Index := (va >> 21) & 0x1FF
-				l3Index := (va >> 12) & 0x1FF
+				kernelVA := kernelVAStart + (pageIdx << 12)
+				// Get the physical address from the existing PTE in TTBR1
+				l0Index := (kernelVA >> 39) & 0x1FF
+				l1Index := (kernelVA >> 30) & 0x1FF
+				l2Index := (kernelVA >> 21) & 0x1FF
+				l3Index := (kernelVA >> 12) & 0x1FF
 
-				ttbr0 := asm.ReadTtbr0El1()
-				l0Table := uintptr(ttbr0 & ^uint64(0xFFF))
+				// Use TTBR1 for kernel page tables (high memory)
+				ttbr1 := asm.ReadTtbr1El1()
+				l0Table := uintptr(ttbr1 & ^uint64(0xFFF))
 				l0Entry := (*uint64)(unsafe.Pointer(l0Table + l0Index*8))
 				l1Table := uintptr(*l0Entry & ^uint64(0xFFF))
 				l1Entry := (*uint64)(unsafe.Pointer(l1Table + l1Index*8))
@@ -1573,8 +1564,8 @@ func loadAndRunKmazarin() {
 				// Extract physical address from existing PTE
 				physAddr := uintptr(*l3Entry & ^uint64(0xFFF))
 
-				// Remap with Read-Only permissions
-				mapPage(va, physAddr, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, execPerm)
+				// Remap with Read-Only permissions in TTBR1
+				mapKernelPage(kernelVA, physAddr, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, execPerm)
 			}
 			// Invalidate TLB for this region after remapping
 			asm.Dsb()
@@ -1688,7 +1679,8 @@ func loadAndRunKmazarin() {
 
 	uartPutsDirect("Stack structure verified!\r\n")
 
-	// Use entry point directly (it's already the correct virtual address)
+	// Entry point from ELF is already relocated to high memory
+	// Use it directly without adding offset
 	entryAddr := uintptr(entry)
 
 	// DEBUG: Print the actual entry address we're about to jump to
@@ -1719,14 +1711,12 @@ func loadAndRunKmazarin() {
 	uartPutHex64Direct(uint64(entryPage))
 	uartPutsDirect("\r\n")
 
-	// Walk page tables to find PTE
-	ttbr0 := asm.ReadTtbr0El1()
-	uartPutsDirect("TTBR0_EL1=0x")
-	uartPutHex64Direct(ttbr0)
-	uartPutsDirect(" Expected=0x")
-	uartPutHex64Direct(uint64(asm.GetPageTablesStartAddr()))
+	// Walk TTBR1 page tables to find PTE (kmazarin is in high memory)
+	ttbr1 := asm.ReadTtbr1El1()
+	uartPutsDirect("TTBR1_EL1=0x")
+	uartPutHex64Direct(ttbr1)
 	uartPutsDirect("\r\n")
-	l0Table := uintptr(ttbr0 & ^uint64(0xFFF))
+	l0Table := uintptr(ttbr1 & ^uint64(0xFFF))
 
 	l0Index := (entryPage >> 39) & 0x1FF
 	l0Entry := (*uint64)(unsafe.Pointer(l0Table + l0Index*8))

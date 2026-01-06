@@ -143,6 +143,7 @@ var (
 	InvalidateTlbVa            = arm64.InvalidateTlbVa
 	EnableMmuMinimal           = arm64.EnableMmuMinimal
 	ReadTtbr0El1               = arm64.ReadTtbr0El1
+	ReadTtbr1El1               = arm64.ReadTtbr1El1
 	WriteTtbr0El1              = arm64.WriteTtbr0El1
 	WriteTtbr1El1              = arm64.WriteTtbr1El1
 	ReadTcrEl1                 = arm64.ReadTcrEl1

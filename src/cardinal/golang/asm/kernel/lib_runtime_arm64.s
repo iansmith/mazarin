@@ -371,9 +371,12 @@ stack_write_ok:
 	MOVB	R5, (R10)
 stack_test_done:
 
-	// DEBUG: Test write to kmazarin g0 area (0x4197aec0)
+	// DEBUG: Test write to kmazarin g0 area (high memory: 0xFFFFFFFF4197aec0)
 	// This verifies BSS is writable
+	// Build high-memory address: 0xFFFFFFFF4197aec0
 	MOVD	$0x4197aec0, R6
+	MOVD	$0xFFFFFFFF00000000, R7
+	ADD	R7, R6, R6		// R6 = 0xFFFFFFFF4197aec0
 	MOVD	$0xCAFEBABE, R5
 	MOVD	R5, (R6)		// Write test value
 	MOVD	(R6), R7		// Read it back

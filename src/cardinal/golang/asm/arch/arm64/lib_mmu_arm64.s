@@ -24,6 +24,14 @@ TEXT read_ttbr0_el1(SB), NOSPLIT|NOFRAME, $0-8
 	MOVD	R0, ret+0(FP)
 	RET
 
+// read_ttbr1_el1() uint64
+// Read TTBR1_EL1 (Translation Table Base Register 1)
+// For ABI0 functions called from internal ABI, return value must be on stack
+TEXT read_ttbr1_el1(SB), NOSPLIT|NOFRAME, $0-8
+	MRS	TTBR1_EL1, R0
+	MOVD	R0, ret+0(FP)
+	RET
+
 // write_ttbr0_el1(value uint64)
 // Write TTBR0_EL1
 // Must be 4KB aligned, lower 12 bits ignored by hardware

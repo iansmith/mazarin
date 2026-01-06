@@ -68,6 +68,10 @@ func EnableMmuMinimal(value uint64)
 //go:nosplit
 func ReadTtbr0El1() uint64
 
+//go:linkname ReadTtbr1El1 read_ttbr1_el1
+//go:nosplit
+func ReadTtbr1El1() uint64
+
 //go:linkname WriteTtbr0El1 write_ttbr0_el1
 //go:nosplit
 func WriteTtbr0El1(value uint64)

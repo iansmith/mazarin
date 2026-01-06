@@ -103,9 +103,19 @@ $(CARDINAL_BINARY): $(GO_NATIVE_SRC) $(CARDINAL_SRC)/golang/go.mod $(KMAZARIN_BI
 # =========================================
 # Kmazarin Kernel Build
 # =========================================
-# Builds kmazarin as a static Go binary with specified load address
+# Builds kmazarin as a static Go binary with high-memory relocation
+#
+# Build process:
+# 1. Build kmazarin ELF at low memory (0x41800000) - Go linker limitation
+# 2. Fix ELF headers for QEMU compatibility (negative offsets)
+# 3. **CRITICAL**: Relocate to high memory (0xFFFFFFFF41800000) for kernel/user separation
+#    - Updates ELF entry point and segment VMAs
+#    - Relocates all pointers in data sections (.data, .rodata, .gopclntab, etc.)
+#    - PC-relative instructions (ADRP) work unchanged (relative distances preserved)
+#    - Takes ~0.7ms, ~15k relocations
+# =========================================
 
-$(KMAZARIN_BINARY): $(wildcard $(KMAZARIN_SRC)/*.go) tools/kmazarin-entry.sh tools/print-kmazarin-addr.go src/cardinal/golang/constants/layout.go | $(BUILD_DIR)
+$(KMAZARIN_BINARY): $(wildcard $(KMAZARIN_SRC)/*.go) tools/kmazarin-entry.sh tools/print-kmazarin-addr.go tools/relocate-kmazarin.go src/cardinal/golang/constants/layout.go | $(BUILD_DIR)
 	$(eval KMAZARIN_LOAD_ADDR := $(shell ./tools/kmazarin-entry.sh))
 	@echo "Building kmazarin kernel (static Go binary at $(KMAZARIN_LOAD_ADDR))..."
 	@cd $(KMAZARIN_SRC) && \
@@ -116,7 +126,10 @@ $(KMAZARIN_BINARY): $(wildcard $(KMAZARIN_SRC)/*.go) tools/kmazarin-entry.sh too
 		$(GO) build $(GCFLAGS) -ldflags="-T $(KMAZARIN_LOAD_ADDR)" -o $(abspath $(KMAZARIN_BINARY)) .
 	@echo "Fixing kmazarin ELF for QEMU compatibility..."
 	@python3 $(FIX_GO_ELF_TOOL) $(KMAZARIN_BINARY)
-	@echo "Kmazarin kernel built at $(KMAZARIN_BINARY)"
+	@echo "Relocating kmazarin to high memory (0xFFFFFFFF41800000)..."
+	@$(GO) run tools/relocate-kmazarin.go $(KMAZARIN_BINARY) $(KMAZARIN_BINARY).tmp
+	@mv $(KMAZARIN_BINARY).tmp $(KMAZARIN_BINARY)
+	@echo "Kmazarin kernel built and relocated at $(KMAZARIN_BINARY)"
 
 # =========================================
 # Main Targets

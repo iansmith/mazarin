@@ -48,8 +48,13 @@ const (
 	PageTableStart = CardinalEnd
 	PageTableEnd   = PageTableStart + PageTableSize
 
-	// Kmazarin load address (immediately after page tables)
+	// Kmazarin load address (low memory, for ELF build with -T flag)
+	// The ELF is built with this address, but we map it to high memory at runtime
 	KmazarinLoadAddr = PageTableEnd // = 0x41800000
+
+	// Kernel VA offset - add this to physical addresses to get high-memory kernel VAs
+	// Physical 0x40000000 -> Kernel VA 0xFFFFFFFF40000000
+	KernelVAOffset = 0xFFFFFFFF00000000
 )
 
 // ============================================================================

@@ -47,7 +47,12 @@ TEXT qemu_exit(SB), NOSPLIT, $16-0
 	// Trigger semihosting call: HLT #0xF000
 	// ARM64 HLT encoding: 1101 0100 010 imm16 00000
 	// For imm16=0xF000: 0xD45E0000
-	WORD	$0xD45E0000
+	// DISABLED: Semihosting causes QEMU internal problems
+	// WORD	$0xD45E0000
+
+	// Dead wait instead of semihosting
+qemu_exit_halt:
+	B	qemu_exit_halt
 
 	RET
 
@@ -82,9 +87,10 @@ semihosting_busy_wait:
 	// Set up semihosting call
 	MOVD	RSP, R1			// R1 = pointer to parameter block
 	MOVW	$0x18, R0		// R0 = SYS_EXIT
-	WORD	$0xD45E0000		// HLT #0xF000
+	// DISABLED: Semihosting causes QEMU internal problems
+	// WORD	$0xD45E0000		// HLT #0xF000
 
-	// If we get here, semihosting failed - print "Kernel Exit" and busy-wait
+	// Semihosting disabled - print "Kernel Exit" and busy-wait
 	// Print 'K'
 	MOVD	$'K', R0
 	UART_PUTC_SAFE
@@ -196,10 +202,9 @@ wait_uart_tx:
 	// HLT #0xF000 - semihosting call
 	// ARM64 HLT encoding: 1101 0100 010 imm16 00000
 	// For imm16=0xF000: 0xD45E0000
-	WORD	$0xD45E0000
+	// DISABLED: Semihosting causes QEMU internal problems
+	// WORD	$0xD45E0000
 
-	// Should never return
-	MOVD	$'!', R0
-	MOVD	$0x09000000, R10
-	MOVW	R0, 0(R10)		// Print '!' if we somehow return
-	B	-2(PC)			// Infinite loop
+	// Dead wait instead of semihosting
+breadcrumb_exit_halt:
+	B	breadcrumb_exit_halt
