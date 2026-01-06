@@ -160,6 +160,32 @@ const (
 )
 
 // ============================================================================
+// Auxiliary Vector (auxv) Custom Types
+// ============================================================================
+// Custom AT values for passing cardinal boot information to kmazarin.
+// These are added to the standard Linux auxv entries (AT_PAGESZ, AT_RANDOM, etc.)
+// and allow kmazarin to discover runtime configuration without a separate
+// parameter buffer.
+//
+// Standard AT values (from Linux):
+//   AT_PAGESZ = 6, AT_HWCAP = 16, AT_RANDOM = 25, etc.
+//
+// Custom AT values (0x1000+ range to avoid conflicts):
+
+const (
+	// Cardinal boot information passed via auxv
+	AT_DTB_PHYS         = 0x1000 // Physical address of DTB
+	AT_DTB_SIZE         = 0x1001 // Size of DTB in bytes
+	AT_KMAZARIN_PHYS    = 0x1002 // Physical base address of kmazarin binary
+	AT_KMAZARIN_SIZE    = 0x1003 // Total size of kmazarin binary in bytes
+	AT_FRAME_POOL_START = 0x1004 // Start of physical frame pool
+	AT_FRAME_POOL_END   = 0x1005 // End of physical frame pool
+	AT_KERNEL_UART_BASE = 0x1006 // High-memory UART base (0xFFFFFFFF09000000)
+	AT_KERNEL_GIC_BASE  = 0x1007 // High-memory GIC base (0xFFFFFFFF08000000)
+	AT_TTBR1_L0_PHYS    = 0x1008 // Physical address of TTBR1 L0 page table
+)
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 

@@ -1114,22 +1114,39 @@ func dumpAllGs() {
 //
 // The structure layout in memory (byte offsets):
 //   [0]   = argc (int64, value: 1)
-//   [8]   = argv[0] (pointer to program name string at offset 120)
+//   [8]   = argv[0] (pointer to program name string at offset 256)
 //   [16]  = NULL (end of argv)
 //   [24]  = NULL (end of envp, empty environment)
 //   [32]  = auxv[0].tag (AT_PAGESZ = 6)
 //   [40]  = auxv[0].value (4096)
 //   [48]  = auxv[1].tag (AT_RANDOM = 25)
-//   [56]  = auxv[1].value (pointer to random bytes at offset 136)
+//   [56]  = auxv[1].value (pointer to random bytes at offset 272)
 //   [64]  = auxv[2].tag (AT_SECURE = 23)
 //   [72]  = auxv[2].value (0)
 //   [80]  = auxv[3].tag (AT_HWCAP = 16)
 //   [88]  = auxv[3].value (HWCAP_ASIMD = 0x2)
-//   [96]  = AT_NULL (0)
-//   [104] = AT_NULL value (0)
-//   [112] = (padding for alignment)
-//   [120] = program name string "kmazarin\0"
-//   [136] = random bytes (16 bytes, 128 bits)
+//   [96]  = auxv[4].tag (AT_DTB_PHYS = 0x1000)
+//   [104] = auxv[4].value (DTB physical address)
+//   [112] = auxv[5].tag (AT_DTB_SIZE = 0x1001)
+//   [120] = auxv[5].value (DTB size)
+//   [128] = auxv[6].tag (AT_KMAZARIN_PHYS = 0x1002)
+//   [136] = auxv[6].value (kmazarin physical base)
+//   [144] = auxv[7].tag (AT_KMAZARIN_SIZE = 0x1003)
+//   [152] = auxv[7].value (kmazarin total size)
+//   [160] = auxv[8].tag (AT_FRAME_POOL_START = 0x1004)
+//   [168] = auxv[8].value (frame pool start)
+//   [176] = auxv[9].tag (AT_FRAME_POOL_END = 0x1005)
+//   [184] = auxv[9].value (frame pool end)
+//   [192] = auxv[10].tag (AT_KERNEL_UART_BASE = 0x1006)
+//   [200] = auxv[10].value (high-memory UART base)
+//   [208] = auxv[11].tag (AT_KERNEL_GIC_BASE = 0x1007)
+//   [216] = auxv[11].value (high-memory GIC base)
+//   [224] = auxv[12].tag (AT_TTBR1_L0_PHYS = 0x1008)
+//   [232] = auxv[12].value (TTBR1 L0 page table physical address)
+//   [240] = AT_NULL (0)
+//   [248] = AT_NULL value (0)
+//   [256] = program name string "kmazarin\0"
+//   [272] = random bytes (16 bytes, 128 bits)
 //
 // This matches the Linux kernel's ELF loader behavior
 //
@@ -1170,13 +1187,13 @@ func setupKmazarinStartupEnv() (stackPointer uintptr, argc uint64, argv uintptr)
 	// Set up the structure as an array of uint64 values
 	data := (*[256]uint64)(unsafe.Pointer(structStart))
 
-	// Auxv entries use indices 4-13 (80 bytes for auxv, starting at byte 32)
-	// After auxv (112 bytes total for indices 0-13), we place strings and random data:
-	// - Program name string at byte offset 120 (after 15 uint64s worth of space for alignment)
-	// - Random bytes at byte offset 136
+	// Auxv entries now use indices 4-31 (starting at byte 32)
+	// After auxv (ends at index 31, byte offset 248), we place strings and random data:
+	// - Program name string at byte offset 256 (index 32)
+	// - Random bytes at byte offset 272 (index 34)
 
-	// Program name string at offset 120 (byte offset, 8-byte aligned)
-	progName := (*[16]byte)(unsafe.Pointer(structStart + 120))
+	// Program name string at offset 256 (byte offset, 8-byte aligned)
+	progName := (*[16]byte)(unsafe.Pointer(structStart + 256))
 	progName[0] = 'k'
 	progName[1] = 'm'
 	progName[2] = 'a'
@@ -1187,14 +1204,14 @@ func setupKmazarinStartupEnv() (stackPointer uintptr, argc uint64, argv uintptr)
 	progName[7] = 'n'
 	progName[8] = 0
 
-	// Get random bytes for AT_RANDOM at offset 136
-	randomBytesAddr := structStart + 136
+	// Get random bytes for AT_RANDOM at offset 272
+	randomBytesAddr := structStart + 272
 	getRandomBytes(unsafe.Pointer(randomBytesAddr), 16)
 
 	// argc = 1
 	data[0] = 1
-	// argv[0] = pointer to program name
-	data[1] = uint64(structStart + 120)
+	// argv[0] = pointer to program name (at offset 256)
+	data[1] = uint64(structStart + 256)
 	// argv[1] = NULL (end of argv)
 	data[2] = 0
 	// envp[0] = NULL (empty environment)
@@ -1215,9 +1232,40 @@ func setupKmazarinStartupEnv() (stackPointer uintptr, argc uint64, argv uintptr)
 	// Provide basic ASIMD/NEON capability (bit 1) which is mandatory on AArch64
 	data[10] = 16
 	data[11] = 0x2 // HWCAP_ASIMD - Advanced SIMD (NEON)
+
+	// Custom auxv entries - Cardinal boot information for kmazarin
+	// AT_DTB_PHYS: Physical address of DTB
+	data[12] = constants.AT_DTB_PHYS
+	data[13] = uint64(asm.GetDtbBootAddr())
+	// AT_DTB_SIZE: Size of DTB
+	data[14] = constants.AT_DTB_SIZE
+	data[15] = uint64(asm.GetDtbSize())
+	// AT_KMAZARIN_PHYS: Physical base of kmazarin binary
+	data[16] = constants.AT_KMAZARIN_PHYS
+	data[17] = uint64(constants.KmazarinLoadAddr)
+	// AT_KMAZARIN_SIZE: Total size of kmazarin (from tracker)
+	data[18] = constants.AT_KMAZARIN_SIZE
+	data[19] = uint64(kmazarinAllocatedBytes)
+	// AT_FRAME_POOL_START: Start of physical frame pool
+	physAlloc := getPhysFrameAllocator()
+	framePoolStart := uint64(constants.CardinalEnd) // Frames start after cardinal
+	data[20] = constants.AT_FRAME_POOL_START
+	data[21] = framePoolStart
+	// AT_FRAME_POOL_END: End of physical frame pool
+	data[22] = constants.AT_FRAME_POOL_END
+	data[23] = uint64(physAlloc.end)
+	// AT_KERNEL_UART_BASE: High-memory UART address
+	data[24] = constants.AT_KERNEL_UART_BASE
+	data[25] = uint64(constants.KernelUartBase)
+	// AT_KERNEL_GIC_BASE: High-memory GIC address
+	data[26] = constants.AT_KERNEL_GIC_BASE
+	data[27] = uint64(constants.KernelGicBase)
+	// AT_TTBR1_L0_PHYS: Physical address of TTBR1 L0 page table
+	data[28] = constants.AT_TTBR1_L0_PHYS
+	data[29] = uint64(kernelPageTableL0)
 	// AT_NULL = 0 (terminator)
-	data[12] = 0
-	data[13] = 0
+	data[30] = 0
+	data[31] = 0
 
 	// Return values for register setup
 	// SP should point to argc (start of structure at top of stack)
@@ -1658,7 +1706,8 @@ func loadAndRunKmazarin() {
 	uartPutsDirect("=== Stack Structure Verification ===\r\n")
 
 	// Read the stack structure (do this BEFORE any printHex calls to verify access)
-	data := (*[20]uint64)(unsafe.Pointer(stackPointer))
+	// Increased to [40] to accommodate custom auxv entries
+	data := (*[40]uint64)(unsafe.Pointer(stackPointer))
 
 	// Verify we can read the data
 	uartPutsDirect("Stack allocated, reading data...\r\n")
@@ -1701,8 +1750,8 @@ func loadAndRunKmazarin() {
 	}
 	uartPutsDirect("AT_HWCAP tag OK\r\n")
 
-	// AT_NULL is now at data[12] (after adding AT_HWCAP)
-	if data[12] != 0 {
+	// AT_NULL is now at data[30] (after adding custom auxv entries)
+	if data[30] != 0 {
 		uartPutsDirect("ERROR: AT_NULL tag is not 0!\r\n")
 		return
 	}
