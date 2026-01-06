@@ -13,9 +13,52 @@ make cardinal  # Build
 ```
 
 **CRITICAL: QEMU Output Buffering**
-- ONLY works without pipes/redirects: `~/mazzy/bin/qemu-system-aarch64 -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel build/cardinal.elf -nodefaults -nographic -serial stdio -monitor none`
-- ❌ NO: `| tee`, `| tail`, `> file`, `< /dev/null`
-- ✅ Use `SEPARATE_OUTPUT=1 NOGRAPHIC=1 tools/run/run-cardinal` for logs at `/tmp/qemu-logs/`
+- ❌ NO: `| tee`, `| tail`, `> file`, `< /dev/null` - causes buffering issues
+- ✅ Use file-based serial output with TCP monitor (see below)
+
+### Reliable QEMU Debugging Setup
+
+**IMPORTANT**: The `bochs-display` device is REQUIRED for serial output to work, even in nographic mode!
+
+**Terminal 1 - Run QEMU:**
+```bash
+rm -f /tmp/cardinal-serial.log
+~/mazzy/bin/qemu-system-aarch64 \
+    -M virt,virtualization=off \
+    -cpu cortex-a72 \
+    -m 8G \
+    -kernel build/cardinal.elf \
+    -nodefaults \
+    -device bochs-display \
+    -object rng-random,id=rng0,filename=/dev/urandom \
+    -device virtio-rng-pci,rng=rng0,disable-legacy=on \
+    -display none \
+    -serial file:/tmp/cardinal-serial.log \
+    -monitor tcp:127.0.0.1:4444,server,nowait \
+    -semihosting \
+    -no-reboot &
+```
+
+**Terminal 2 - Watch serial output:**
+```bash
+tail -f /tmp/cardinal-serial.log
+```
+
+**Terminal 3 - Query QEMU monitor (Python):**
+```python
+import socket, time
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.connect(('127.0.0.1', 4444))
+sock.settimeout(2)
+time.sleep(0.2); sock.recv(4096)  # Drain banner
+sock.send(b'info registers\n')
+time.sleep(0.5)
+print(sock.recv(8192).decode())
+```
+
+**Key monitor commands:**
+- `info registers` - Show CPU registers
+- `x/20i 0xADDRESS` - Disassemble at address (use literal address, not `$pc`)
 
 ## Critical Development Rules
 
@@ -83,21 +126,75 @@ msr SPSel, xzr      // Switch to EL1t mode (use SP_EL0)
 - Use `msr SP_ELx, x0` for **inactive** stack
 - Both stacks **MUST** be mapped before MMU enable
 
+## Go ARM64 ABI - Assembly to Go Calls
+
+Go has two ABIs:
+- **ABI0**: Stack-based (stable, for cross-package assembly callers)
+- **ABIInternal**: Register-based (R0-R15 for args)
+
+### Working Pattern: Tail-Call Stub
+
+When external assembly needs to call a Go function, use this three-part pattern:
+
+**1. Forward declaration** in `asm_decl.go`:
+```go
+func FunctionName(arg0, arg1 uint64, ...) (ret0 int64, ret1 bool)
+```
+
+**2. Tail-call stub** in `abi_stubs_arm64.s`:
+```asm
+TEXT ·FunctionName(SB), NOSPLIT, $0-<framesize>
+    JMP ·functionNameInternal(SB)
+```
+
+**3. Go implementation** (lowercase, unexported):
+```go
+func functionNameInternal(arg0, arg1 uint64, ...) (ret0 int64, ret1 bool) {
+    // actual implementation
+}
+```
+
+### Why This Works
+
+- External assembly stores args at RSP+8, RSP+16, etc. and calls `main·FunctionName`
+- The stub does a tail-call (JMP) - no new stack frame added
+- Go generates `.abi0` wrapper for `functionNameInternal` (called from same-package asm)
+- The wrapper reads from sp+N+8 after its prologue, which equals the original RSP+8
+- Returns are stored at the correct offsets for the caller
+
+### Assembly Caller Pattern
+
+```asm
+SUB $<framesize>, RSP      // Allocate: 8 + (args*8) + returns, 16-aligned
+MOVD R0, 8(RSP)            // arg[0] at RSP+8
+MOVD R1, 16(RSP)           // arg[1] at RSP+16
+...
+CALL main·FunctionName(SB)
+MOVD <retoffset>(RSP), R0  // Read returns
+ADD $<framesize>, RSP
+```
+
+### Critical: Avoid Nested Wrappers
+
+**NEVER** have a Go function call another Go function when both are called from assembly.
+Go wraps both with `.abi0`, causing the second wrapper to read garbage (first put args
+in registers, second expects stack). The tail-call stub pattern avoids this.
+
 ## Current Status
 
 ### ✅ Working
-- Cardinal boots, MMU, UART, basic syscalls
+- Cardinal boots, MMU, UART
 - ELF loader handles Go's negative offsets
-- Kmazarin symbols load correctly (using `·` prefix pattern)
-- Page allocation and mapping works
+- Kmazarin loads and starts executing
+- Exception handling (SVC syscalls, data abort page faults)
+- Syscall dispatch (clone, mmap, futex, etc.)
+- Demand paging for kmazarin memory
+- Thread creation and context switches
+- Page allocation and mapping
 - Stack setup (argc/argv/envp/auxv)
 
-### ❌ Blocked
-- **MemmoveBytes hangs** when copying kmazarin code (~608KB)
-- Even byte-by-byte loop hangs after breadcrumb 'Z'
-- Issue: No exception handlers configured - any fault hangs system
-- Addresses are valid and aligned, pages are writable
-- Simplified 8-byte MOVD version also hangs
+### 🔄 In Progress
+- Full Go runtime initialization in kmazarin
 
 ## Git Practices
 

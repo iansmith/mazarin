@@ -353,6 +353,103 @@ daif_print4:
 	MOVD	$0x09000000, R10
 	MOVD	$'J', R5
 	MOVB	R5, (R10)
+
+	// DEBUG: Test write to [SP-16] (where rt0_go will write LR)
+	// This verifies the stack below our structure is writable
+	MOVD	$0xDEADBEEF, R5
+	MOVD	R5, -16(RSP)		// Write test value
+	MOVD	-16(RSP), R6		// Read it back
+	CMP	R5, R6
+	BEQ	stack_write_ok
+	// Write failed - print 'X'
+	MOVD	$'X', R5
+	MOVB	R5, (R10)
+	B	stack_test_done
+stack_write_ok:
+	// Write succeeded - print 'W'
+	MOVD	$'W', R5
+	MOVB	R5, (R10)
+stack_test_done:
+
+	// DEBUG: Test write to kmazarin g0 area (0x4197aec0)
+	// This verifies BSS is writable
+	MOVD	$0x4197aec0, R6
+	MOVD	$0xCAFEBABE, R5
+	MOVD	R5, (R6)		// Write test value
+	MOVD	(R6), R7		// Read it back
+	CMP	R5, R7
+	BEQ	g0_write_ok
+	// Write failed - print 'Y'
+	MOVD	$'Y', R5
+	MOVB	R5, (R10)
+	B	g0_test_done
+g0_write_ok:
+	// Write succeeded - print 'G'
+	MOVD	$'G', R5
+	MOVB	R5, (R10)
+g0_test_done:
+	// Clear the test value we wrote
+	MOVD	ZR, (R6)
+
+	// DEBUG: Print VBAR_EL1 address to verify exception vectors are set
+	MOVD	$'V', R5
+	MOVB	R5, (R10)
+	MRS	VBAR_EL1, R6
+	// Print first 4 hex digits of VBAR (should be 0x4010...)
+	LSR	$28, R6, R5
+	AND	$0xF, R5
+	ADD	$'0', R5
+	CMP	$'9', R5
+	BLE	vbar_digit1
+	ADD	$('A'-'0'-10), R5
+vbar_digit1:
+	MOVB	R5, (R10)
+	LSR	$24, R6, R5
+	AND	$0xF, R5
+	ADD	$'0', R5
+	CMP	$'9', R5
+	BLE	vbar_digit2
+	ADD	$('A'-'0'-10), R5
+vbar_digit2:
+	MOVB	R5, (R10)
+	LSR	$20, R6, R5
+	AND	$0xF, R5
+	ADD	$'0', R5
+	CMP	$'9', R5
+	BLE	vbar_digit3
+	ADD	$('A'-'0'-10), R5
+vbar_digit3:
+	MOVB	R5, (R10)
+	LSR	$16, R6, R5
+	AND	$0xF, R5
+	ADD	$'0', R5
+	CMP	$'9', R5
+	BLE	vbar_digit4
+	ADD	$('A'-'0'-10), R5
+vbar_digit4:
+	MOVB	R5, (R10)
+
+	// DEBUG: Print CurrentEL
+	MOVD	$'L', R5
+	MOVB	R5, (R10)
+	MRS	CurrentEL, R6
+	// CurrentEL bits 3:2 = EL (4=EL1, 8=EL2, 12=EL3)
+	LSR	$2, R6, R5
+	AND	$0x3, R5
+	ADD	$'0', R5
+	MOVB	R5, (R10)
+
+	// DEBUG: Print SPSel (0=SP_EL0, 1=SP_EL1)
+	MOVD	$'P', R5
+	MOVB	R5, (R10)
+	MRS	SPSel, R6
+	AND	$1, R6, R5
+	ADD	$'0', R5
+	MOVB	R5, (R10)
+
+	// NOTE: Cannot read SP_EL1 via MRS from EL1 - it's only allowed from EL2+
+	// SP_EL1 was set during boot in boot_arm64.s via direct RSP assignment
+
 	MOVD	$'\r', R5
 	MOVB	R5, (R10)
 	MOVD	$'\n', R5

@@ -568,6 +568,8 @@ func SimpleTestKernel() {
 func kernelMainInternal(r0, r1, atags uint32) {
 	// VERY EARLY breadcrumb - before any complex operations
 	uartBase := uintptr(0x09000000)
+	*(*uint32)(unsafe.Pointer(uartBase)) = '\r'
+	*(*uint32)(unsafe.Pointer(uartBase)) = '\n'
 	*(*uint32)(unsafe.Pointer(uartBase)) = 0x4B // 'K' = Entered KernelMain
 
 	_ = r0
@@ -617,6 +619,8 @@ func kernelMainInternal(r0, r1, atags uint32) {
 		}
 	}
 	*(*uint32)(unsafe.Pointer(uartBase)) = 0x65 // 'e' = enableMMU done
+	*(*uint32)(unsafe.Pointer(uartBase)) = '\r'
+	*(*uint32)(unsafe.Pointer(uartBase)) = '\n'
 	*(*uint32)(unsafe.Pointer(uartBase)) = 0x56 // 'V' = about to verify globals
 
 	// ==========================================================================
@@ -690,10 +694,14 @@ func kernelMainInternal(r0, r1, atags uint32) {
 
 	// =========================================
 	// PRE-REGISTER FIXED MEMORY SPANS
-	// TEMP: Skip preRegisterFixedSpans - BSS writes fail
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'U' // U = skipping preRegister
-	// preRegisterFixedSpans()
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'u' // u = skipped preRegister
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'U' // U = preRegister starting
+	// Register bump region (0x48000000 - 0xC8000000) in mmapSpans[0]
+	// mmapSpan struct: startVA(8), endVA(8), inUse(1+padding=8) = 24 bytes per entry
+	mmapSpansAddr := uintptr(0x405264e0) // Address of mmapSpans from nm
+	*(*uintptr)(unsafe.Pointer(mmapSpansAddr)) = 0x48000000       // startVA
+	*(*uintptr)(unsafe.Pointer(mmapSpansAddr + 8)) = 0xC8000000   // endVA
+	*(*uintptr)(unsafe.Pointer(mmapSpansAddr + 16)) = 1           // inUse (write as uintptr)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'u' // u = preRegister done
 
 	// =========================================
 	// POST-MMU DEVICE INITIALIZATION

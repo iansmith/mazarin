@@ -26,40 +26,15 @@ TEXT ·timerPreempt(SB), NOSPLIT, $0-0
 // Go signature: func SyncExceptionDispatch(
 //     ec, esr, elr, far, spsr, syscallNum uint64,
 //     arg0, arg1, arg2, arg3, arg4, arg5 uint64,
-//     framePtr uintptr,
-//     savedFP, savedLR, savedG uint64,
+//     framePtr uintptr, savedFP, savedLR, savedG uint64,
 // ) (result int64, switchTo int32, handled bool)
+// ABI0: 16 args (128 bytes) + 3 returns (16 bytes) = 144 bytes
 //
-// ABI0: 16 uint64 args (128 bytes) + returns (24 bytes) = 152 bytes on stack
-// ABIInternal: R0-R15 for args, R0-R2 for returns
-TEXT ·SyncExceptionDispatch(SB), NOSPLIT, $0-152
-	// Load all 16 arguments from stack into registers
-	MOVD	ec+0(FP), R0
-	MOVD	esr+8(FP), R1
-	MOVD	elr+16(FP), R2
-	MOVD	far+24(FP), R3
-	MOVD	spsr+32(FP), R4
-	MOVD	syscallNum+40(FP), R5
-	MOVD	arg0+48(FP), R6
-	MOVD	arg1+56(FP), R7
-	MOVD	arg2+64(FP), R8
-	MOVD	arg3+72(FP), R9
-	MOVD	arg4+80(FP), R10
-	MOVD	arg5+88(FP), R11
-	MOVD	framePtr+96(FP), R12
-	MOVD	savedFP+104(FP), R13
-	MOVD	savedLR+112(FP), R14
-	MOVD	savedG+120(FP), R15
-
-	// Call ABIInternal implementation
-	BL	·syncExceptionDispatchInternal(SB)
-
-	// Store return values to stack
-	// ABIInternal returns: R0=result, R1=switchTo, R2=handled
-	MOVD	R0, result+128(FP)
-	MOVW	R1, switchTo+136(FP)
-	MOVB	R2, handled+140(FP)
-	RET
+// Tail-call to the internal function. The .abi0 wrapper will read args from
+// our caller's stack (which is exactly where they were placed by exc_syscall_arm64.s).
+// This avoids adding to the nosplit stack chain.
+TEXT ·SyncExceptionDispatch(SB), NOSPLIT, $0-144
+	JMP	·syncExceptionDispatchInternal(SB)
 
 // DoContextSwitch is called from exc_syscall_arm64.s
 // Go signature: func DoContextSwitch(framePtr uintptr, targetIdx int32) *ThreadContext

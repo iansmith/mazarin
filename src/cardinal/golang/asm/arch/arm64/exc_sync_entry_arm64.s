@@ -171,6 +171,44 @@ stack_selected:
 	MRS SPSR_EL1, R1                   // Saved PSTATE
 	MRS FAR_EL1, R2                    // Fault address
 	MRS ESR_EL1, R3                    // Exception syndrome
+
+	// DEBUG: Print ESR immediately after reading to verify it's not 0
+	// Save registers we'll clobber
+	SUB $32, RSP
+	STP (R0, R1), 0(RSP)
+	STP (R2, R3), 16(RSP)
+
+	// Print '>' as ESR marker
+	MOVD $0x09000000, R0
+	MOVD $'>', R1
+	MOVB R1, (R0)
+
+	// Print EC from ESR (bits 31:26) as 2 hex digits
+	LSR $26, R3, R1
+	AND $0x3F, R1                      // R1 = EC
+	// Print high nibble
+	LSR $4, R1, R2
+	AND $0xF, R2
+	ADD $'0', R2
+	CMP $'9', R2
+	BLE esr_debug_d1
+	ADD $('A'-'0'-10), R2
+esr_debug_d1:
+	MOVB R2, (R0)
+	// Print low nibble
+	AND $0xF, R1, R2
+	ADD $'0', R2
+	CMP $'9', R2
+	BLE esr_debug_d2
+	ADD $('A'-'0'-10), R2
+esr_debug_d2:
+	MOVB R2, (R0)
+
+	// Restore registers
+	LDP 0(RSP), (R0, R1)
+	LDP 16(RSP), (R2, R3)
+	ADD $32, RSP
+
 	STP (R0, R1), EXC_FRAME_ELR_SPSR(RSP)   // ELR, SPSR
 	STP (R2, R3), EXC_FRAME_FAR_ESR(RSP)    // FAR, ESR
 

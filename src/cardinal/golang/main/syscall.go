@@ -1279,7 +1279,9 @@ func SyscallDispatch(num int64, arg0, arg1, arg2, arg3, arg4, arg5 uint64, frame
 // Unified Synchronous Exception Dispatcher
 // ============================================================================
 // syncExceptionDispatchInternal is the unified entry point for ALL synchronous exceptions.
-// Called via ABI stub SyncExceptionDispatch.
+// Called from SyncExceptionDispatch stub in abi_stubs_arm64.s, which is called from
+// exc_syscall_arm64.s. The stub loads args from stack to registers and uses BL to call
+// this function directly at its ABIInternal entry point (no wrapper).
 // It dispatches based on exception class (EC) to the appropriate handler:
 //   - EC=0x15 (SVC): syscall handling
 //   - EC=0x25 (data abort): page fault / demand paging
@@ -1319,6 +1321,9 @@ func syncExceptionDispatchInternal(
 	savedFP, savedLR, savedG uint64,
 ) (result int64, switchTo int32, handled bool) {
 
+	// DEBUG: Print marker to verify this function is called
+	uartPutcDirect('#')
+
 	// DEBUG: Print entry info for non-syscall exceptions
 	if ec != 0x15 && ec != 0x25 {
 		uartPutsDirect("SED:")
@@ -1328,11 +1333,10 @@ func syncExceptionDispatchInternal(
 
 	switch ec {
 	case 0x15: // EC_SVC_EL1_A64 - Supervisor call from AArch64
-		// DEBUG: Print syscall number briefly for tracing
-		// SYS_write = 64, SYS_mmap = 222
-		if syscallNum == 64 {
-			uartPutcDirect('w') // write syscall
-		}
+		// DEBUG: Print syscall number for tracing
+		uartPutcDirect('S')
+		uartPutHex32Direct(uint32(syscallNum))
+		uartPutcDirect(' ')
 		// Dispatch to syscall handler
 		result, switchTo = SyscallDispatch(
 			int64(syscallNum),

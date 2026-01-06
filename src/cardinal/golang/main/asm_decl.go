@@ -9,15 +9,6 @@ package main
 // Implemented in abi_stubs_arm64.s
 func timerPreempt()
 
-// SyncExceptionDispatch is called from exc_syscall_arm64.s
-// Implemented in abi_stubs_arm64.s
-func SyncExceptionDispatch(
-	ec, esr, elr, far, spsr, syscallNum uint64,
-	arg0, arg1, arg2, arg3, arg4, arg5 uint64,
-	framePtr uintptr,
-	savedFP, savedLR, savedG uint64,
-) (result int64, switchTo int32, handled bool)
-
 // DoContextSwitch is called from exc_syscall_arm64.s
 // Implemented in abi_stubs_arm64.s
 func DoContextSwitch(framePtr uintptr, targetIdx int32) *ThreadContext
@@ -27,3 +18,17 @@ func DoContextSwitch(framePtr uintptr, targetIdx int32) *ThreadContext
 func IRQExceptionDispatch(
 	irqID uint64, framePtr uintptr, savedG, elr, spEl0 uint64,
 ) (newELR, newSP, newLR uint64, doPreempt bool)
+
+// SyncExceptionDispatch is called from exc_syscall_arm64.s
+// Implemented in abi_stubs_arm64.s
+func SyncExceptionDispatch(
+	ec uint64,
+	esr uint64,
+	elr uint64,
+	far uint64,
+	spsr uint64,
+	syscallNum uint64,
+	arg0, arg1, arg2, arg3, arg4, arg5 uint64,
+	framePtr uintptr,
+	savedFP, savedLR, savedG uint64,
+) (result int64, switchTo int32, handled bool)

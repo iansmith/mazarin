@@ -55,7 +55,32 @@ TEXT qemu_exit(SB), NOSPLIT, $16-0
 // ARM Semihosting SYS_EXIT call with exit code 0
 // If semihosting fails (not enabled), prints "Kernel Exit" and busy-waits
 TEXT SemihostingExit(SB), NOSPLIT, $16-0
-	MOVD	ZR, R1			// R1 = exit code 0
+	// Wait for UART TX FIFO to empty before exiting
+	// PL011 UART Flag Register (FR) is at UART_BASE + 0x18
+	MOVD	$0x09000000, R2		// UART base
+	ADD	$0x18, R2, R3		// R3 = UART_FR address
+
+	// Wait for TX FIFO to be empty (bit 7 = TXFE)
+semihosting_txfe_wait:
+	MOVW	(R3), R4		// Read Flag Register
+	AND	$0x80, R4, R4		// Isolate TXFE bit (bit 7)
+	CBZ	R4, semihosting_txfe_wait	// Loop while TXFE=0 (FIFO not empty)
+
+	// Also wait for not BUSY (bit 3)
+semihosting_busy_wait:
+	MOVW	(R3), R4		// Read Flag Register
+	AND	$8, R4, R4		// Isolate BUSY bit (bit 3)
+	CBNZ	R4, semihosting_busy_wait	// Loop while BUSY=1
+
+	// Set up parameter block on stack (function has $16 frame)
+	// [SP+0] = exit reason code: ADP_Stopped_ApplicationExit (0x20026)
+	// [SP+8] = status code: 0 (success)
+	MOVD	$0x20026, R1
+	MOVD	R1, (RSP)		// Store reason at SP+0
+	MOVD	ZR, 8(RSP)		// Store status 0 at SP+8
+
+	// Set up semihosting call
+	MOVD	RSP, R1			// R1 = pointer to parameter block
 	MOVW	$0x18, R0		// R0 = SYS_EXIT
 	WORD	$0xD45E0000		// HLT #0xF000
 
@@ -146,17 +171,19 @@ TEXT breadcrumb_exit(SB), NOSPLIT, $16-1
 	MOVW	$'\n', R0
 	MOVW	R0, 0(R10)
 
-	// DSB to ensure UART writes complete before exit
+	// Wait for UART TX to complete by polling FR_BUSY (bit 3) in Flag Register
+	// PL011 Flag Register is at UART_BASE + 0x18
+	// FR_BUSY (bit 3) = 1 means transmission in progress
+	ADD	$0x18, R10, R11		// R11 = UART_FR address (0x09000018)
+wait_uart_tx:
+	MOVW	0(R11), R0		// Read Flag Register
+	AND	$8, R0, R0		// Isolate FR_BUSY (bit 3)
+	CBNZ	R0, wait_uart_tx	// Loop while BUSY
+
+	// DSB to ensure all memory operations complete
 	DSB	$15
 
-	// Busy-wait loop to give QEMU time to flush console buffer
-	// ~100000 iterations * ~10 cycles/iteration = ~1M cycles = ~10ms at 100MHz
-	MOVD	$100000, R11
-wait_loop:
-	SUB	$1, R11, R11
-	CBNZ	R11, wait_loop
-
-	// Now exit via semihosting - this flushes all QEMU buffers
+	// Now exit via semihosting
 	// Set up parameter block on stack
 	MOVD	$0x20026, R1		// ADP_Stopped_ApplicationExit
 	MOVD	R1, (RSP)		// Store reason at SP+0

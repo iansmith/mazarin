@@ -9,6 +9,15 @@ GO = /Users/iansmith/mazzy/bin/go
 GOARCH = arm64
 GOOS = linux
 
+# Debug build: disable optimizations and inlining for better GDB debugging
+# Usage: make cardinal DEBUG=1
+DEBUG ?= 0
+ifeq ($(DEBUG),1)
+    GCFLAGS = -gcflags="all=-N -l"
+else
+    GCFLAGS =
+endif
+
 # IMPORTANT: CGO Policy
 # We NEVER use CGO in this project. All Go builds must explicitly set CGO_ENABLED=0
 # to ensure static binaries without C dependencies for our bare-metal environment.
@@ -45,6 +54,7 @@ KMAZARIN_BINARY = $(BUILD_DIR)/kmazarin.elf
 PATCH_ENTRY_TOOL = $(CARDINAL_SRC)/tools/patch-entry.go
 COMPUTE_LINKER_VALUES_TOOL = $(CARDINAL_SRC)/tools/compute-linker-values.go
 INCBIN2GOASM_TOOL = $(CARDINAL_SRC)/tools/incbin2goasm.go
+FIX_GO_ELF_TOOL = tools/fix-go-elf.py
 
 # Generated embedded data
 KMAZARIN_DATA_ASM = $(ASM_PACKAGE_DIR)/dev/kmazarin_data_arm64.s
@@ -61,7 +71,7 @@ $(BUILD_DIR):
 $(KMAZARIN_DATA_ASM): $(KMAZARIN_BINARY)
 	@echo "Generating embedded kmazarin data..."
 	@$(GO) run $(INCBIN2GOASM_TOOL) -sym kmazarin_binary -global $< > $@
-	@echo "Generated $(KMAZARIN_DATA_ASM) ($(shell wc -l < $@ | tr -d ' ') lines)"
+	@echo "Generated $(KMAZARIN_DATA_ASM) ($$(wc -l < $@ | tr -d ' ') lines)"
 
 # =========================================
 # Cardinal Build (Go Native Toolchain)
@@ -78,6 +88,7 @@ $(CARDINAL_BINARY): $(GO_NATIVE_SRC) $(CARDINAL_SRC)/golang/go.mod $(KMAZARIN_BI
 		GOOS=$(GOOS) \
 		$(GO) build \
 			-tags "qemuvirt aarch64" \
+			$(GCFLAGS) \
 			-ldflags="-checklinkname=0 -T 0x40100000" \
 			-o $(abspath $@) \
 			./main
@@ -85,6 +96,8 @@ $(CARDINAL_BINARY): $(GO_NATIVE_SRC) $(CARDINAL_SRC)/golang/go.mod $(KMAZARIN_BI
 	@$(GO) run $(PATCH_ENTRY_TOOL) $@ _cardinal_boot
 	@echo "Patching linker values..."
 	@cd $(CARDINAL_SRC)/golang && $(GO) run ../tools/compute-linker-values.go -patch -kmazarin $(abspath $(KMAZARIN_BINARY)) $(abspath $@)
+	@echo "Fixing ELF for QEMU compatibility..."
+	@python3 $(FIX_GO_ELF_TOOL) $@
 	@echo "cardinal ready at $@"
 
 # =========================================
@@ -100,7 +113,9 @@ $(KMAZARIN_BINARY): $(wildcard $(KMAZARIN_SRC)/*.go) tools/kmazarin-entry.sh too
 		GOTOOLCHAIN=auto \
 		GOARCH=$(GOARCH) \
 		GOOS=$(GOOS) \
-		$(GO) build -ldflags="-T $(KMAZARIN_LOAD_ADDR)" -o $(abspath $(KMAZARIN_BINARY)) .
+		$(GO) build $(GCFLAGS) -ldflags="-T $(KMAZARIN_LOAD_ADDR)" -o $(abspath $(KMAZARIN_BINARY)) .
+	@echo "Fixing kmazarin ELF for QEMU compatibility..."
+	@python3 $(FIX_GO_ELF_TOOL) $(KMAZARIN_BINARY)
 	@echo "Kmazarin kernel built at $(KMAZARIN_BINARY)"
 
 # =========================================

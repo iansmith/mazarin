@@ -63,7 +63,14 @@
 TEXT _cardinal_boot(SB), NOSPLIT|NOFRAME, $0
 	// DEBUG: Earliest possible breadcrumb - hardcoded UART address
 	// QEMU virt PL011 UART is at 0x09000000
+	// Wait for TX FIFO not full (bit 5 = TXFF) before writing
 	MOVD	$0x09000000, R1
+	ADD	$0x18, R1, R3		// R3 = Flag Register address
+boot_txff_wait:
+	MOVW	(R3), R2
+	AND	$0x20, R2, R2		// Isolate TXFF bit (bit 5)
+	CBNZ	R2, boot_txff_wait	// Loop while FIFO full
+
 	MOVD	$'!', R0
 	MOVW	R0, (R1)
 

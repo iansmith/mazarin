@@ -113,13 +113,12 @@ TEXT sync_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	LDP EXC_FRAME_X29_X30(RSP), (R24, R25)   // R24 = saved FP, R25 = saved LR
 	MOVD EXC_FRAME_X28(RSP), R26             // R26 = saved g
 
-	// Set up arguments for SyncExceptionDispatch using Go register ABI:
-	// Go 1.18+ arm64 uses R0-R15 for the first 16 integer arguments.
-	// Our function has exactly 16 args:
-	//   R0 = ec, R1 = esr, R2 = elr, R3 = far, R4 = spsr
-	//   R5 = syscallNum, R6 = arg0, R7 = arg1, R8 = arg2, R9 = arg3
-	//   R10 = arg4, R11 = arg5, R12 = framePtr, R13 = savedFP
-	//   R14 = savedLR, R15 = savedG
+	// CALLING CONVENTION FIX: SyncExceptionDispatch is ABI0
+	// The .abi0 wrapper does: str x30, [sp, #-16]!
+	// Then loads args from [SP+24], [SP+32], ... [SP+144]
+	// After wrapper prologue: wrapper_SP = our_SP - 16
+	// So wrapper reads from [our_SP + 8], [our_SP + 16], ... [our_SP + 128]
+	// Returns are stored at [our_SP + 136], [our_SP + 144], [our_SP + 148]
 	//
 	// Current register contents (sources):
 	//   R10 = EC, R15 = ESR, R12 = ELR, R14 = FAR, R13 = SPSR
@@ -127,74 +126,83 @@ TEXT sync_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	//   R19 = arg2, R20 = arg3, R21 = arg4, R22 = arg5
 	//   R23 = syscall number, R24 = savedFP, R25 = savedLR, R26 = savedG
 	//
-	// Conflicts: R10-R15 are both sources AND destinations
-	// Solution: Save conflicting sources to stack, then set up destinations
+	// Stack layout after SUB $272, RSP:
+	// Go's generated .abi0 wrapper does: str x30, [sp, #-16]!
+	// Then loads args from [wrapper_SP+24], [wrapper_SP+32], etc.
+	// After wrapper prologue: wrapper_SP = our_SP - 16
+	// So wrapper loads from: our_SP + 8, our_SP + 16, ... our_SP + 136
+	// Returns go to: our_SP + 144, our_SP + 152, our_SP + 156
 	//
-	// CRITICAL: Go ABI requires caller to reserve spill space for callee's
-	// register arguments. SyncExceptionDispatch takes 16 args in R0-R15,
-	// so the callee may spill these to its caller's (our) stack.
-	//
-	// The callee computes spill addresses as [callee_sp + frame_size + 8 + offset].
-	// SyncExceptionDispatch has frame_size=144, so:
-	//   - After CALL, SP = OurRSP - 8 (return address pushed)
-	//   - After callee prologue: callee_sp = OurRSP - 8 - 144 = OurRSP - 152
-	//   - Spill R0 at [callee_sp + 152] = [OurRSP]
-	//   - Spill R15 at [callee_sp + 272] = [OurRSP + 120]
-	//
-	// So the callee will spill to [OurRSP+0] through [OurRSP+120].
-	// We MUST store our data at [OurRSP+128] or higher!
-	//
-	// Stack layout after SUB $256, RSP:
-	//   [RSP+0]:   Spill area for callee (128 bytes) - DO NOT USE
-	//   [RSP+128]: Callee-saved R19-R26 (64 bytes)
-	//   [RSP+192]: Temp storage for conflicting sources (40 bytes)
-	//   [RSP+232]: Padding for 16-byte alignment (24 bytes)
+	//   [RSP+8]:   arg0 (ec) -> wrapper reads from SP+24 = RSP+8
+	//   [RSP+16]:  arg1 (esr)
+	//   ...
+	//   [RSP+128]: arg15 (savedG)
+	//   [RSP+136]: return0 (result)
+	//   [RSP+144]: return1 (switchTo)
+	//   [RSP+148]: return2 (handled)
+	//   [RSP+152]: saved R19-R26 (64 bytes)
+	//   [RSP+216]: temp storage (48 bytes)
 
-	// Allocate space: 128 (spill area) + 64 (callee-saved) + 40 (temps) + 24 (pad) = 256
-	SUB $256, RSP
+	// Allocate space
+	SUB $272, RSP
 
-	// Save callee-saved registers at offset 128+ (ABOVE spill area)
-	STP (R19, R20), 128(RSP)
-	STP (R21, R22), 144(RSP)
-	STP (R23, R24), 160(RSP)
-	STP (R25, R26), 176(RSP)
+	// Save callee-saved registers
+	STP (R19, R20), 152(RSP)
+	STP (R21, R22), 168(RSP)
+	STP (R23, R24), 184(RSP)
+	STP (R25, R26), 200(RSP)
 
-	// Save conflicting sources to stack temp area at offset 192+
-	MOVD R10, 192(RSP)             // Save EC
-	MOVD R15, 200(RSP)             // Save ESR
-	MOVD R12, 208(RSP)             // Save ELR
-	MOVD R14, 216(RSP)             // Save FAR
-	MOVD R13, 224(RSP)             // Save SPSR
+	// Save conflicting sources to temp area
+	MOVD R10, 216(RSP)             // Save EC
+	MOVD R15, 224(RSP)             // Save ESR
+	MOVD R12, 232(RSP)             // Save ELR
+	MOVD R14, 240(RSP)             // Save FAR
+	MOVD R13, 248(RSP)             // Save SPSR
 
-	// Now set up all 16 arguments in R0-R15
-	// Set destinations in reverse order (R15 down to R0) to avoid clobbering
-	MOVD R26, R15                  // R15 = savedG (from R26)
-	MOVD R25, R14                  // R14 = savedLR (from R25)
-	MOVD R24, R13                  // R13 = savedFP (from R24)
-	ADD $256, RSP, R12             // R12 = framePtr (RSP before allocation)
-	MOVD R22, R11                  // R11 = arg5 (from R22)
-	MOVD R21, R10                  // R10 = arg4 (from R21)
-	MOVD R20, R9                   // R9 = arg3 (from R20)
-	MOVD R19, R8                   // R8 = arg2 (from R19)
-	MOVD R17, R7                   // R7 = arg1 (from R17)
-	MOVD R16, R6                   // R6 = arg0 (from R16)
-	MOVD R23, R5                   // R5 = syscallNum (from R23)
-	MOVD 224(RSP), R4              // R4 = spsr (from stack temp)
-	MOVD 216(RSP), R3              // R3 = far (from stack temp)
-	MOVD 208(RSP), R2              // R2 = elr (from stack temp)
-	MOVD 200(RSP), R1              // R1 = esr (from stack temp)
-	MOVD 192(RSP), R0              // R0 = ec (from stack temp)
+	// Store args to stack for Go's .abi0 wrapper (args start at RSP+8)
+	// Order: ec, esr, elr, far, spsr, syscallNum, arg0..5, framePtr, savedFP, savedLR, savedG
+	MOVD 216(RSP), R0              // Load EC from temp
+	MOVD R0, 8(RSP)                // arg0 = ec
+	MOVD 224(RSP), R0              // Load ESR from temp
+	MOVD R0, 16(RSP)               // arg1 = esr
+	MOVD 232(RSP), R0              // Load ELR from temp
+	MOVD R0, 24(RSP)               // arg2 = elr
+	MOVD 240(RSP), R0              // Load FAR from temp
+	MOVD R0, 32(RSP)               // arg3 = far
+	MOVD 248(RSP), R0              // Load SPSR from temp
+	MOVD R0, 40(RSP)               // arg4 = spsr
+	MOVD R23, 48(RSP)              // arg5 = syscallNum
+	MOVD R16, 56(RSP)              // arg6 = arg0
+	MOVD R17, 64(RSP)              // arg7 = arg1
+	MOVD R19, 72(RSP)              // arg8 = arg2
+	MOVD R20, 80(RSP)              // arg9 = arg3
+	MOVD R21, 88(RSP)              // arg10 = arg4
+	MOVD R22, 96(RSP)              // arg11 = arg5
+	ADD $272, RSP, R0              // framePtr = original RSP
+	MOVD R0, 104(RSP)              // arg12 = framePtr
+	MOVD R24, 112(RSP)             // arg13 = savedFP
+	MOVD R25, 120(RSP)             // arg14 = savedLR
+	MOVD R26, 128(RSP)             // arg15 = savedG
 
-	// Call the unified Go dispatcher
+	// Call the Go exception dispatcher
+	// SyncExceptionDispatch is a manual stub in abi_stubs_arm64.s that:
+	// 1. Loads args from stack (ABI0 style)
+	// 2. Calls syncExceptionDispatchInternal via BL (direct to ABIInternal)
+	// This avoids nested wrapper issues.
 	CALL main·SyncExceptionDispatch(SB)
-	// Returns: R0 = result, R1 = switchTo, R2 = handled
 
-	// Restore callee-saved registers from offset 128+
-	LDP 128(RSP), (R19, R20)
-	LDP 144(RSP), (R21, R22)
-	LDP 160(RSP), (R23, R24)
-	LDP 176(RSP), (R25, R26)
-	ADD $256, RSP                  // Deallocate space
+	// Load return values from stack
+	// The stub stores returns at: result at caller_SP+136, switchTo at SP+144, handled at SP+148
+	MOVD 136(RSP), R0              // result
+	MOVW 144(RSP), R1              // switchTo
+	MOVBU 148(RSP), R2             // handled
+
+	// Restore callee-saved registers
+	LDP 152(RSP), (R19, R20)
+	LDP 168(RSP), (R21, R22)
+	LDP 184(RSP), (R23, R24)
+	LDP 200(RSP), (R25, R26)
+	ADD $272, RSP                  // Deallocate space
 
 	// Check if handled
 	CBZ R2, do_exception_hang      // If not handled, hang

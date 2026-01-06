@@ -270,15 +270,19 @@ TEXT set_vbar_el1(SB), NOSPLIT|NOFRAME, $0-8
 // Returns value in R0 (Go register ABI)
 TEXT read_vbar_el1(SB), NOSPLIT|NOFRAME, $0-8
 	MRS	VBAR_EL1, R0
+	MOVD	R0, ret+0(FP)
 	RET
 
 // get_exception_vectors_addr() uintptr
 // Returns the address of the new Go/Plan9 vector table
 // Points to vec_sync_sp_el0 which is the first entry
-// Returns value in R0 (Go register ABI)
+// CRITICAL: Must store return value at ret+0(FP) for ABI0 compatibility
+// The Go compiler generates an ABI wrapper that loads from [SP+8]
 TEXT get_exception_vectors_addr(SB), NOSPLIT|NOFRAME, $0-8
 	// Load address of vector table using Go's symbol mechanism
 	MOVD	$vec_sync_sp_el0(SB), R0
+	// Store to return value slot (required for ABI0)
+	MOVD	R0, ret+0(FP)
 	RET
 
 // enable_irqs()
