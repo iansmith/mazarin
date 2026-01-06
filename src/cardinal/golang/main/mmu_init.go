@@ -349,6 +349,11 @@ func initMMU() bool {
 	initKernelPageTables()
 	uartPutcDirect('k')
 
+	// Set up high-memory kernel stacks in TTBR1
+	uartPutcDirect('T')
+	setupKernelStacks()
+	uartPutcDirect('t')
+
 	// DEBUG: Check if we ran out of page table space
 	_, remaining := getPageTableAllocatorStats()
 	uartPutcDirect('l')
@@ -804,6 +809,82 @@ func initKernelPageTables() {
 	*l0Entry = uint64(kernelPageTableL1) | PTE_VALID | PTE_TABLE
 
 	*(*uint32)(unsafe.Pointer(uartBase)) = 'k' // k = Kernel page tables done
+}
+
+// setupKernelStacks allocates and maps high-memory kernel stacks in TTBR1.
+//
+// This function creates two stacks for kmazarin execution:
+//   - Kernel g0 stack (SP_EL0): 16KB at KernelG0StackBottom-KernelG0StackTop
+//   - Kernel exception stack (SP_EL1): 8KB at KernelExcStackBottom-KernelExcStackTop
+//
+// Stack sizes are tuned for the tail-call ABI stub pattern used throughout
+// the codebase, where ABI stubs use JMP (not CALL) to minimize stack usage.
+//
+// Note: These stacks are separate from Cardinal's bootstrap stacks and are
+// only used when kmazarin is executing at high memory addresses.
+//
+//go:nosplit
+func setupKernelStacks() {
+	uartBase := uintptr(0x09000000)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'T' // T = sTack setup
+
+	// High-memory kernel stack addresses (from constants/layout.go)
+	const (
+		KernelG0StackTop      = uintptr(0xFFFFFFFF5F000000)
+		KernelG0StackSize     = uintptr(0x4000) // 16KB
+		KernelExcStackTop     = uintptr(0xFFFFFFFF5F002000)
+		KernelExcStackSize    = uintptr(0x2000) // 8KB
+	)
+	KernelG0StackBottom := KernelG0StackTop - KernelG0StackSize
+	KernelExcStackBottom := KernelExcStackTop - KernelExcStackSize
+
+	// Calculate number of pages needed for each stack
+	const g0StackPages = uintptr(KernelG0StackSize / PAGE_SIZE)       // 16KB = 4 pages
+	const excStackPages = uintptr(KernelExcStackSize / PAGE_SIZE)    // 8KB = 2 pages
+
+	// Allocate and map g0 stack (SP_EL0, 16KB)
+	uartPutsDirect("Mapping kernel g0 stack (TTBR1): 0x")
+	uartPutHex64Direct(uint64(KernelG0StackBottom))
+	uartPutsDirect(" - 0x")
+	uartPutHex64Direct(uint64(KernelG0StackTop))
+	uartPutsDirect(" (16KB)\r\n")
+
+	for i := uintptr(0); i < g0StackPages; i++ {
+		physFrame := allocPhysFrame()
+		if physFrame == 0 {
+			kernelPanic("setupKernelStacks: Failed to allocate g0 stack page")
+		}
+
+		// Zero the physical frame
+		bzero4K(unsafe.Pointer(physFrame), PAGE_SIZE)
+
+		// Map at high-memory VA
+		va := KernelG0StackBottom + i*PAGE_SIZE
+		mapKernelPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	}
+
+	// Allocate and map exception stack (SP_EL1, 8KB)
+	uartPutsDirect("Mapping kernel exception stack (TTBR1): 0x")
+	uartPutHex64Direct(uint64(KernelExcStackBottom))
+	uartPutsDirect(" - 0x")
+	uartPutHex64Direct(uint64(KernelExcStackTop))
+	uartPutsDirect(" (8KB)\r\n")
+
+	for i := uintptr(0); i < excStackPages; i++ {
+		physFrame := allocPhysFrame()
+		if physFrame == 0 {
+			kernelPanic("setupKernelStacks: Failed to allocate exception stack page")
+		}
+
+		// Zero the physical frame
+		bzero4K(unsafe.Pointer(physFrame), PAGE_SIZE)
+
+		// Map at high-memory VA
+		va := KernelExcStackBottom + i*PAGE_SIZE
+		mapKernelPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	}
+
+	*(*uint32)(unsafe.Pointer(uartBase)) = 't' // t = sTack setup done
 }
 
 // mapKernelPage maps a physical address to a high-memory virtual address

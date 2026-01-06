@@ -57,15 +57,33 @@ const (
 // ============================================================================
 // Stacks are located at high memory, below the 1GB boundary.
 //
-// Layout:
+// Layout (Low Memory - Cardinal bootstrap only):
 //   0x5EFF0000 - 0x5F000000  (64 KB)  g0 stack (SP_EL0, normal kernel execution)
 //   0x5F000000 - 0x5F020000  (128 KB) Exception stack (SP_EL1, IRQ/FIQ/exceptions)
+//
+// Layout (High Memory - Kmazarin kernel, TTBR1):
+//   0xFFFFFFFF5EFFC000 - 0xFFFFFFFF5F000000  (16 KB)  Kernel g0 stack
+//   0xFFFFFFFF5F000000 - 0xFFFFFFFF5F002000  (8 KB)   Kernel exception stack
 
 const (
+	// Low-memory stacks (Cardinal bootstrap, TTBR0)
 	G0StackBottom      = 0x5EFF0000 // Bottom of g0 stack
 	G0StackTop         = 0x5F000000 // Top of g0 stack (SP_EL0)
 	ExceptionStackTop  = 0x5F020000 // Top of exception stack (SP_EL1)
 	ExceptionStackSize = 0x20000    // 128 KB
+
+	// High-memory stacks (Kmazarin kernel, TTBR1)
+	// Stack sizes tuned for tail-call optimization pattern:
+	// - ABI stubs use JMP (tail-call), not CALL - no stack frame added
+	// - Exception handlers save ~256 bytes + small working space
+	// - Go runtime init needs ~8KB peak during schedinit
+	KernelG0StackSize     = 0x4000                             // 16 KB
+	KernelG0StackTop      = 0xFFFFFFFF5F000000                 // Top of kernel g0 stack
+	KernelG0StackBottom   = KernelG0StackTop - KernelG0StackSize
+
+	KernelExcStackSize    = 0x2000                             // 8 KB
+	KernelExcStackTop     = 0xFFFFFFFF5F002000                 // Top of kernel exception stack
+	KernelExcStackBottom  = KernelExcStackTop - KernelExcStackSize
 )
 
 // ============================================================================
