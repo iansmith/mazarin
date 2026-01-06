@@ -1,0 +1,931 @@
+# command-line-arguments
+main.main STEXT size=1968 args=0x0 locals=0x258 funcid=0x0 align=0x0
+	0x0000 00000 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	TEXT	main.main(SB), ABIInternal, $608-0
+	0x0000 00000 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	MOVD	16(g), R16
+	0x0004 00004 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	PCDATA	$0, $-2
+	0x0004 00004 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	SUB	$480, RSP, R17
+	0x0008 00008 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	CMP	R16, R17
+	0x000c 00012 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	BLS	1948
+	0x0010 00016 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	PCDATA	$0, $-1
+	0x0010 00016 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	SUB	$608, RSP, R20
+	0x0014 00020 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	STP	(R29, R30), -8(R20)
+	0x0018 00024 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	PCDATA	$0, $-2
+	0x0018 00024 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	MOVD	R20, RSP
+	0x001c 00028 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	PCDATA	$0, $-1
+	0x001c 00028 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	SUB	$8, RSP, R29
+	0x0020 00032 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	FUNCDATA	$0, gclocals·XhHydcwudYgAAAHTAKMedg==(SB)
+	0x0020 00032 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	FUNCDATA	$1, gclocals·Gar/j+m3fub4LbFKif57YA==(SB)
+	0x0020 00032 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	FUNCDATA	$2, main.main.stkobj(SB)
+	0x0020 00032 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:9)	MOVD	$type:string(SB), R5
+	0x0028 00040 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:9)	MOVD	$main..stmp_0(SB), R6
+	0x0030 00048 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:9)	PCDATA	$0, $-3
+	0x0030 00048 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:9)	STP	(R5, R6), main..autotmp_180-16(SP)
+	0x0038 00056 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:9)	PCDATA	$0, $-4
+	0x0038 00056 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	os.Stdout(SB), R1
+	0x0040 00064 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	PCDATA	$0, $-1
+	0x0040 00064 (<unknown line number>)	NOP
+	0x0040 00064 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x0048 00072 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$main..autotmp_180-16(SP), R2
+	0x004c 00076 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$1, R3
+	0x0050 00080 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	R3, R4
+	0x0054 00084 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	PCDATA	$1, $0
+	0x0054 00084 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	CALL	fmt.Fprintln(SB)
+	0x0058 00088 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:12)	MOVD	$type:string(SB), R5
+	0x0060 00096 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:12)	MOVD	$main..stmp_1(SB), R6
+	0x0068 00104 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:12)	PCDATA	$0, $-3
+	0x0068 00104 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:12)	STP	(R5, R6), main..autotmp_182-32(SP)
+	0x0070 00112 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:12)	PCDATA	$0, $-4
+	0x0070 00112 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	os.Stdout(SB), R1
+	0x0078 00120 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	PCDATA	$0, $-1
+	0x0078 00120 (<unknown line number>)	NOP
+	0x0078 00120 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x0080 00128 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$main..autotmp_182-32(SP), R2
+	0x0084 00132 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$1, R3
+	0x0088 00136 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	R3, R4
+	0x008c 00140 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	CALL	fmt.Fprintln(SB)
+	0x0090 00144 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:13)	HINT	$0
+	0x0094 00148 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:400)	MOVD	$go:string."/tmp/test_syscall.txt"(SB), R0
+	0x009c 00156 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:400)	MOVD	$21, R1
+	0x00a0 00160 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:400)	MOVD	$578, R2
+	0x00a4 00164 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:400)	MOVD	$438, R3
+	0x00a8 00168 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:400)	CALL	os.OpenFile(SB)
+	0x00ac 00172 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:14)	CBZ	R1, 256
+	0x00b0 00176 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:14)	PCDATA	$0, $-3
+	0x00b0 00176 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:15)	STP	(ZR, ZR), main..autotmp_184-48(SP)
+	0x00b8 00184 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:15)	PCDATA	$0, $-1
+	0x00b8 00184 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:15)	CBZ	R1, 192
+	0x00bc 00188 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:15)	MOVD	8(R1), R1
+	0x00c0 00192 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:15)	PCDATA	$0, $-4
+	0x00c0 00192 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:15)	STP	(R1, R2), main..autotmp_184-48(SP)
+	0x00c8 00200 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:15)	PCDATA	$0, $-3
+	0x00c8 00200 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x00d0 00208 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x00d0 00208 (<unknown line number>)	NOP
+	0x00d0 00208 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x00d8 00216 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."Error creating file: %v\n"(SB), R2
+	0x00e0 00224 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$24, R3
+	0x00e4 00228 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$main..autotmp_184-48(SP), R4
+	0x00e8 00232 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$1, R5
+	0x00ec 00236 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x00f0 00240 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x00f4 00244 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:16)	LDP	-8(RSP), (R29, R30)
+	0x00f8 00248 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:16)	ADD	$608, RSP
+	0x00fc 00252 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:16)	RET	(R30)
+	0x0100 00256 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:400)	MOVD	R0, os.f-400(SP)
+	0x0104 00260 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:18)	PCDATA	$1, $1
+	0x0104 00260 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:18)	CALL	os.(*File).Fd(SB)
+	0x0108 00264 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:18)	PCDATA	$0, $-4
+	0x0108 00264 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:18)	STP	(ZR, ZR), main..autotmp_188-64(SP)
+	0x0110 00272 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:18)	PCDATA	$0, $-1
+	0x0110 00272 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:18)	PCDATA	$1, $2
+	0x0110 00272 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:18)	CALL	runtime.convT64(SB)
+	0x0114 00276 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:18)	MOVD	$type:uintptr(SB), R1
+	0x011c 00284 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:18)	PCDATA	$0, $-3
+	0x011c 00284 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:18)	STP	(R1, R0), main..autotmp_188-64(SP)
+	0x0124 00292 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:18)	PCDATA	$0, $-4
+	0x0124 00292 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x012c 00300 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x012c 00300 (<unknown line number>)	NOP
+	0x012c 00300 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x0134 00308 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."Created file, fd=%v\n"(SB), R2
+	0x013c 00316 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$20, R3
+	0x0140 00320 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$main..autotmp_188-64(SP), R4
+	0x0144 00324 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$1, R5
+	0x0148 00328 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x014c 00332 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$1, $1
+	0x014c 00332 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x0150 00336 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:21)	MOVD	$type:string(SB), R1
+	0x0158 00344 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:21)	MOVD	$main..stmp_2(SB), R2
+	0x0160 00352 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:21)	PCDATA	$0, $-3
+	0x0160 00352 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:21)	STP	(R1, R2), main..autotmp_191-80(SP)
+	0x0168 00360 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:21)	PCDATA	$0, $-4
+	0x0168 00360 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	os.Stdout(SB), R1
+	0x0170 00368 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	PCDATA	$0, $-1
+	0x0170 00368 (<unknown line number>)	NOP
+	0x0170 00368 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x0178 00376 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$main..autotmp_191-80(SP), R2
+	0x017c 00380 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$1, R3
+	0x0180 00384 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	R3, R4
+	0x0184 00388 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	CALL	fmt.Fprintln(SB)
+	0x0188 00392 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:320)	MOVD	$go:string."Hello from syscall test\n"(SB), R1
+	0x0190 00400 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:320)	NEG	R1, R1
+	0x0194 00404 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:23)	HINT	$0
+	0x0198 00408 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:320)	CMP	$24, R1
+	0x019c 00412 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:320)	BLO	1940
+	0x01a0 00416 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:321)	MOVD	os.f-400(SP), R0
+	0x01a4 00420 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:321)	MOVD	$go:string."Hello from syscall test\n"(SB), R1
+	0x01ac 00428 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:321)	MOVD	$24, R2
+	0x01b0 00432 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:321)	MOVD	R2, R3
+	0x01b4 00436 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:321)	CALL	os.(*File).Write(SB)
+	0x01b8 00440 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:24)	CBZ	R1, 516
+	0x01bc 00444 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:25)	STP	(ZR, ZR), main..autotmp_196-96(SP)
+	0x01c0 00448 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:25)	CBZ	R1, 456
+	0x01c4 00452 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:25)	MOVD	8(R1), R1
+	0x01c8 00456 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:25)	STP	(R1, R2), main..autotmp_196-96(SP)
+	0x01cc 00460 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:25)	PCDATA	$0, $-3
+	0x01cc 00460 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x01d4 00468 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x01d4 00468 (<unknown line number>)	NOP
+	0x01d4 00468 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x01dc 00476 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."Error writing: %v\n"(SB), R2
+	0x01e4 00484 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$18, R3
+	0x01e8 00488 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$main..autotmp_196-96(SP), R4
+	0x01ec 00492 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$1, R5
+	0x01f0 00496 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x01f4 00500 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$1, $0
+	0x01f4 00500 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x01f8 00504 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:26)	LDP	-8(RSP), (R29, R30)
+	0x01fc 00508 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:26)	ADD	$608, RSP
+	0x0200 00512 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:26)	RET	(R30)
+	0x0204 00516 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:28)	STP	(ZR, ZR), main..autotmp_200-112(SP)
+	0x0208 00520 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:28)	PCDATA	$1, $3
+	0x0208 00520 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:28)	CALL	runtime.convT64(SB)
+	0x020c 00524 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:28)	MOVD	$type:int(SB), R1
+	0x0214 00532 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:28)	STP	(R1, R0), main..autotmp_200-112(SP)
+	0x0218 00536 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:28)	PCDATA	$0, $-4
+	0x0218 00536 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x0220 00544 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x0220 00544 (<unknown line number>)	NOP
+	0x0220 00544 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x0228 00552 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."Wrote %d bytes\n"(SB), R2
+	0x0230 00560 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$15, R3
+	0x0234 00564 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$main..autotmp_200-112(SP), R4
+	0x0238 00568 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$1, R5
+	0x023c 00572 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x0240 00576 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$1, $1
+	0x0240 00576 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x0244 00580 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:31)	MOVD	$type:string(SB), R1
+	0x024c 00588 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:31)	MOVD	$main..stmp_3(SB), R2
+	0x0254 00596 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:31)	STP	(R1, R2), main..autotmp_203-128(SP)
+	0x0258 00600 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:31)	PCDATA	$0, $-3
+	0x0258 00600 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	os.Stdout(SB), R1
+	0x0260 00608 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	PCDATA	$0, $-1
+	0x0260 00608 (<unknown line number>)	NOP
+	0x0260 00608 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x0268 00616 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$main..autotmp_203-128(SP), R2
+	0x026c 00620 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$1, R3
+	0x0270 00624 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	R3, R4
+	0x0274 00628 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	CALL	fmt.Fprintln(SB)
+	0x0278 00632 (<unknown line number>)	NOP
+	0x0278 00632 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file_posix.go:20)	MOVD	os.f-400(SP), R0
+	0x027c 00636 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file_posix.go:20)	CBNZ	R0, 656
+	0x0280 00640 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file_posix.go:20)	PCDATA	$0, $-4
+	0x0280 00640 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:32)	LDP	os.ErrInvalid(SB), (R7, R8)
+	0x028c 00652 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:32)	PCDATA	$0, $-1
+	0x028c 00652 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:32)	JMP	672
+	0x0290 00656 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file_posix.go:23)	MOVD	(R0), R0
+	0x0294 00660 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file_posix.go:23)	PCDATA	$1, $0
+	0x0294 00660 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file_posix.go:23)	CALL	os.(*file).close(SB)
+	0x0298 00664 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:32)	MOVD	R0, R7
+	0x029c 00668 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:32)	MOVD	R1, R8
+	0x02a0 00672 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:33)	CBZ	R7, 748
+	0x02a4 00676 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:34)	STP	(ZR, ZR), main..autotmp_206-144(SP)
+	0x02a8 00680 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:34)	CBZ	R7, 688
+	0x02ac 00684 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:34)	MOVD	8(R7), R7
+	0x02b0 00688 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:34)	STP	(R7, R8), main..autotmp_206-144(SP)
+	0x02b4 00692 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:34)	PCDATA	$0, $-3
+	0x02b4 00692 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x02bc 00700 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x02bc 00700 (<unknown line number>)	NOP
+	0x02bc 00700 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x02c4 00708 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."Error closing: %v\n"(SB), R2
+	0x02cc 00716 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$18, R3
+	0x02d0 00720 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$main..autotmp_206-144(SP), R4
+	0x02d4 00724 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$1, R5
+	0x02d8 00728 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x02dc 00732 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x02e0 00736 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:35)	LDP	-8(RSP), (R29, R30)
+	0x02e4 00740 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:35)	ADD	$608, RSP
+	0x02e8 00744 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:35)	RET	(R30)
+	0x02ec 00748 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:37)	MOVD	$type:string(SB), R5
+	0x02f4 00756 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:37)	MOVD	$main..stmp_4(SB), R6
+	0x02fc 00764 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:37)	STP	(R5, R6), main..autotmp_210-160(SP)
+	0x0300 00768 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:37)	PCDATA	$0, $-4
+	0x0300 00768 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	os.Stdout(SB), R1
+	0x0308 00776 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	PCDATA	$0, $-1
+	0x0308 00776 (<unknown line number>)	NOP
+	0x0308 00776 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x0310 00784 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$main..autotmp_210-160(SP), R2
+	0x0314 00788 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$1, R3
+	0x0318 00792 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	R3, R4
+	0x031c 00796 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	CALL	fmt.Fprintln(SB)
+	0x0320 00800 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:40)	MOVD	$type:string(SB), R5
+	0x0328 00808 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:40)	MOVD	$main..stmp_5(SB), R6
+	0x0330 00816 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:40)	STP	(R5, R6), main..autotmp_212-176(SP)
+	0x0334 00820 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:40)	PCDATA	$0, $-3
+	0x0334 00820 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	os.Stdout(SB), R1
+	0x033c 00828 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	PCDATA	$0, $-1
+	0x033c 00828 (<unknown line number>)	NOP
+	0x033c 00828 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x0344 00836 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$main..autotmp_212-176(SP), R2
+	0x0348 00840 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$1, R3
+	0x034c 00844 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	R3, R4
+	0x0350 00848 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	CALL	fmt.Fprintln(SB)
+	0x0354 00852 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:41)	HINT	$0
+	0x0358 00856 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:390)	MOVD	$go:string."/tmp/this_file_does_not_exist.txt"(SB), R0
+	0x0360 00864 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:390)	MOVD	$33, R1
+	0x0364 00868 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:390)	MOVD	ZR, R2
+	0x0368 00872 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:390)	MOVD	ZR, R3
+	0x036c 00876 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:390)	CALL	os.OpenFile(SB)
+	0x0370 00880 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:42)	CBZ	R1, 948
+	0x0374 00884 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:43)	STP	(ZR, ZR), main..autotmp_214-192(SP)
+	0x0378 00888 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:43)	CBZ	R1, 896
+	0x037c 00892 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:43)	MOVD	8(R1), R1
+	0x0380 00896 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:43)	STP	(R1, R2), main..autotmp_214-192(SP)
+	0x0384 00900 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:43)	PCDATA	$0, $-4
+	0x0384 00900 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x038c 00908 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x038c 00908 (<unknown line number>)	NOP
+	0x038c 00908 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x0394 00916 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."Expected error opening non-existent file: %v\n"(SB), R2
+	0x039c 00924 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$45, R3
+	0x03a0 00928 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$main..autotmp_214-192(SP), R4
+	0x03a4 00932 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$1, R5
+	0x03a8 00936 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x03ac 00940 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x03b0 00944 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:43)	JMP	1040
+	0x03b4 00948 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:390)	MOVD	R0, os.f-408(SP)
+	0x03b8 00952 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:46)	PCDATA	$1, $4
+	0x03b8 00952 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:46)	CALL	os.(*File).Fd(SB)
+	0x03bc 00956 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:46)	STP	(ZR, ZR), main..autotmp_218-208(SP)
+	0x03c0 00960 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:46)	PCDATA	$1, $5
+	0x03c0 00960 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:46)	CALL	runtime.convT64(SB)
+	0x03c4 00964 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:46)	MOVD	$type:uintptr(SB), R1
+	0x03cc 00972 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:46)	STP	(R1, R0), main..autotmp_218-208(SP)
+	0x03d0 00976 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:46)	PCDATA	$0, $-3
+	0x03d0 00976 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x03d8 00984 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x03d8 00984 (<unknown line number>)	NOP
+	0x03d8 00984 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x03e0 00992 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."ERROR: Should have failed but got fd=%v\n"(SB), R2
+	0x03e8 01000 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$40, R3
+	0x03ec 01004 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$main..autotmp_218-208(SP), R4
+	0x03f0 01008 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$1, R5
+	0x03f4 01012 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x03f8 01016 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$1, $4
+	0x03f8 01016 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x03fc 01020 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:47)	HINT	$0
+	0x0400 01024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file_posix.go:20)	MOVD	os.f-408(SP), R0
+	0x0404 01028 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file_posix.go:20)	CBZ	R0, 1040
+	0x0408 01032 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file_posix.go:23)	MOVD	(R0), R0
+	0x040c 01036 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file_posix.go:23)	PCDATA	$1, $0
+	0x040c 01036 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file_posix.go:23)	CALL	os.(*file).close(SB)
+	0x0410 01040 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:51)	MOVD	$type:string(SB), R5
+	0x0418 01048 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:51)	MOVD	$main..stmp_6(SB), R6
+	0x0420 01056 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:51)	STP	(R5, R6), main..autotmp_222-224(SP)
+	0x0424 01060 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:51)	PCDATA	$0, $-4
+	0x0424 01060 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	os.Stdout(SB), R1
+	0x042c 01068 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	PCDATA	$0, $-1
+	0x042c 01068 (<unknown line number>)	NOP
+	0x042c 01068 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x0434 01076 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$main..autotmp_222-224(SP), R2
+	0x0438 01080 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$1, R3
+	0x043c 01084 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	R3, R4
+	0x0440 01088 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	CALL	fmt.Fprintln(SB)
+	0x0444 01092 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:52)	HINT	$0
+	0x0448 01096 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:390)	MOVD	$go:string."/tmp/test_syscall.txt"(SB), R0
+	0x0450 01104 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:390)	MOVD	$21, R1
+	0x0454 01108 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:390)	MOVD	ZR, R2
+	0x0458 01112 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:390)	MOVD	ZR, R3
+	0x045c 01116 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:390)	CALL	os.OpenFile(SB)
+	0x0460 01120 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:53)	CBZ	R1, 1196
+	0x0464 01124 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:54)	STP	(ZR, ZR), main..autotmp_224-240(SP)
+	0x0468 01128 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:54)	CBZ	R1, 1136
+	0x046c 01132 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:54)	MOVD	8(R1), R1
+	0x0470 01136 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:54)	STP	(R1, R2), main..autotmp_224-240(SP)
+	0x0474 01140 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:54)	PCDATA	$0, $-3
+	0x0474 01140 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x047c 01148 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x047c 01148 (<unknown line number>)	NOP
+	0x047c 01148 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x0484 01156 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."Error opening created file: %v\n"(SB), R2
+	0x048c 01164 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$31, R3
+	0x0490 01168 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$main..autotmp_224-240(SP), R4
+	0x0494 01172 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$1, R5
+	0x0498 01176 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x049c 01180 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x04a0 01184 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:55)	LDP	-8(RSP), (R29, R30)
+	0x04a4 01188 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:55)	ADD	$608, RSP
+	0x04a8 01192 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:55)	RET	(R30)
+	0x04ac 01196 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:390)	MOVD	R0, main.~r0-416(SP)
+	0x04b0 01200 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:57)	PCDATA	$1, $6
+	0x04b0 01200 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:57)	CALL	os.(*File).Fd(SB)
+	0x04b4 01204 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:57)	STP	(ZR, ZR), main..autotmp_228-256(SP)
+	0x04b8 01208 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:57)	PCDATA	$1, $7
+	0x04b8 01208 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:57)	CALL	runtime.convT64(SB)
+	0x04bc 01212 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:57)	MOVD	$type:uintptr(SB), R1
+	0x04c4 01220 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:57)	STP	(R1, R0), main..autotmp_228-256(SP)
+	0x04c8 01224 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:57)	PCDATA	$0, $-4
+	0x04c8 01224 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x04d0 01232 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x04d0 01232 (<unknown line number>)	NOP
+	0x04d0 01232 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x04d8 01240 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."Opened file successfully, fd=%v\n"(SB), R2
+	0x04e0 01248 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$32, R3
+	0x04e4 01252 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$main..autotmp_228-256(SP), R4
+	0x04e8 01256 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$1, R5
+	0x04ec 01260 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x04f0 01264 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$1, $6
+	0x04f0 01264 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x04f4 01268 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:60)	MOVD	$type:string(SB), R1
+	0x04fc 01276 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:60)	MOVD	$main..stmp_7(SB), R2
+	0x0504 01284 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:60)	STP	(R1, R2), main..autotmp_231-272(SP)
+	0x0508 01288 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:60)	PCDATA	$0, $-3
+	0x0508 01288 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	os.Stdout(SB), R1
+	0x0510 01296 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	PCDATA	$0, $-1
+	0x0510 01296 (<unknown line number>)	NOP
+	0x0510 01296 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x0518 01304 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$main..autotmp_231-272(SP), R2
+	0x051c 01308 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$1, R3
+	0x0520 01312 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	R3, R4
+	0x0524 01316 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	CALL	fmt.Fprintln(SB)
+	0x0528 01320 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:61)	MOVD	$main..autotmp_232-532(SP), R20
+	0x052c 01324 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:61)	PCDATA	$0, $-2
+	0x052c 01324 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:61)	ADR	1340, runtime.duffzero+232(R27)(R27)(REG)
+	0x0530 01328 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:61)	STP	(R29, R27), -24(RSP)
+	0x0534 01332 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:61)	SUB	$24, RSP, R29
+	0x0538 01336 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:61)	DUFFZERO	runtime.duffzero(SB)
+	0x053c 01340 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:61)	SUB	$8, RSP, R29
+	0x0540 01344 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:61)	PCDATA	$0, $-1
+	0x0540 01344 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:61)	MOVD	ZR, main..autotmp_232-440(SP)
+	0x0544 01348 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:62)	MOVD	main.~r0-416(SP), R0
+	0x0548 01352 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:62)	MOVD	$main..autotmp_232-532(SP), R1
+	0x054c 01356 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:62)	MOVD	$100, R2
+	0x0550 01360 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:62)	MOVD	R2, R3
+	0x0554 01364 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:62)	CALL	os.(*File).Read(SB)
+	0x0558 01368 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:62)	MOVD	R0, main.n-432(SP)
+	0x055c 01372 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:63)	CBNZ	R1, 1384
+	0x0560 01376 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:63)	MOVD	ZR, R7
+	0x0564 01380 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:63)	JMP	1460
+	0x0568 01384 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:62)	MOVD	R2, main.err.data-392(SP)
+	0x056c 01388 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:62)	MOVD	R1, main.err.itab-424(SP)
+	0x0570 01392 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:63)	MOVD	24(R1), R1
+	0x0574 01396 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:63)	MOVD	R2, R0
+	0x0578 01400 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:63)	PCDATA	$1, $8
+	0x0578 01400 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:63)	CALL	(R1)
+	0x057c 01404 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:63)	CMP	$3, R1
+	0x0580 01408 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:63)	BNE	1428
+	0x0584 01412 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:63)	MOVHU	(R0), R7
+	0x0588 01416 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:63)	MOVD	$20293, R8
+	0x058c 01420 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:63)	CMPW	R8, R7
+	0x0590 01424 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:63)	BEQ	1436
+	0x0594 01428 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:63)	MOVD	$1, R7
+	0x0598 01432 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:63)	JMP	1448
+	0x059c 01436 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:63)	MOVBU	2(R0), R7
+	0x05a0 01440 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:63)	CMPW	$70, R7
+	0x05a4 01444 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:63)	CSET	NE, R7
+	0x05a8 01448 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	MOVD	main.n-432(SP), R0
+	0x05ac 01452 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:64)	MOVD	main.err.itab-424(SP), R1
+	0x05b0 01456 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:64)	MOVD	main.err.data-392(SP), R2
+	0x05b4 01460 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:63)	TBZ	$0, R7, 1536
+	0x05b8 01464 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:64)	STP	(ZR, ZR), main..autotmp_234-288(SP)
+	0x05bc 01468 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:64)	CBZ	R1, 1476
+	0x05c0 01472 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:64)	MOVD	8(R1), R1
+	0x05c4 01476 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:64)	STP	(R1, R2), main..autotmp_234-288(SP)
+	0x05c8 01480 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:64)	PCDATA	$0, $-4
+	0x05c8 01480 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x05d0 01488 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x05d0 01488 (<unknown line number>)	NOP
+	0x05d0 01488 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x05d8 01496 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."Error reading: %v\n"(SB), R2
+	0x05e0 01504 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$18, R3
+	0x05e4 01508 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$main..autotmp_234-288(SP), R4
+	0x05e8 01512 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$1, R5
+	0x05ec 01516 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x05f0 01520 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$1, $0
+	0x05f0 01520 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x05f4 01524 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:65)	LDP	-8(RSP), (R29, R30)
+	0x05f8 01528 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:65)	ADD	$608, RSP
+	0x05fc 01532 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:65)	RET	(R30)
+	0x0600 01536 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	CMP	$100, R0
+	0x0604 01540 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	BHI	1928
+	0x0608 01544 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	STP	(ZR, ZR), main..autotmp_238-320(SP)
+	0x060c 01548 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	STP	(ZR, ZR), main..autotmp_238-304(SP)
+	0x0610 01552 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	PCDATA	$1, $9
+	0x0610 01552 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	CALL	runtime.convT64(SB)
+	0x0614 01556 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	MOVD	$type:int(SB), R1
+	0x061c 01564 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	STP	(R1, R0), main..autotmp_238-320(SP)
+	0x0620 01568 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	MOVD	ZR, R0
+	0x0624 01572 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	MOVD	$main..autotmp_232-532(SP), R1
+	0x0628 01576 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	MOVD	main.n-432(SP), R2
+	0x062c 01580 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	CALL	runtime.slicebytetostring(SB)
+	0x0630 01584 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	CALL	runtime.convTstring(SB)
+	0x0634 01588 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	MOVD	$type:string(SB), R1
+	0x063c 01596 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	STP	(R1, R0), main..autotmp_238-304(SP)
+	0x0640 01600 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	PCDATA	$0, $-3
+	0x0640 01600 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x0648 01608 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x0648 01608 (<unknown line number>)	NOP
+	0x0648 01608 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x0650 01616 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."Read %d bytes: %s\n"(SB), R2
+	0x0658 01624 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$18, R3
+	0x065c 01628 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$main..autotmp_238-320(SP), R4
+	0x0660 01632 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$2, R5
+	0x0664 01636 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x0668 01640 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$1, $6
+	0x0668 01640 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x066c 01644 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:70)	MOVD	$type:string(SB), R1
+	0x0674 01652 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:70)	MOVD	$main..stmp_8(SB), R2
+	0x067c 01660 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:70)	STP	(R1, R2), main..autotmp_243-336(SP)
+	0x0680 01664 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:70)	PCDATA	$0, $-4
+	0x0680 01664 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	os.Stdout(SB), R1
+	0x0688 01672 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	PCDATA	$0, $-1
+	0x0688 01672 (<unknown line number>)	NOP
+	0x0688 01672 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x0690 01680 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$main..autotmp_243-336(SP), R2
+	0x0694 01684 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$1, R3
+	0x0698 01688 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	R3, R4
+	0x069c 01692 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	CALL	fmt.Fprintln(SB)
+	0x06a0 01696 (<unknown line number>)	NOP
+	0x06a0 01696 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file_posix.go:20)	MOVD	main.~r0-416(SP), R0
+	0x06a4 01700 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file_posix.go:20)	CBNZ	R0, 1720
+	0x06a8 01704 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file_posix.go:20)	PCDATA	$0, $-3
+	0x06a8 01704 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:71)	LDP	os.ErrInvalid(SB), (R7, R8)
+	0x06b4 01716 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:71)	PCDATA	$0, $-1
+	0x06b4 01716 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:71)	JMP	1736
+	0x06b8 01720 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file_posix.go:23)	MOVD	(R0), R0
+	0x06bc 01724 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file_posix.go:23)	PCDATA	$1, $0
+	0x06bc 01724 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file_posix.go:23)	CALL	os.(*file).close(SB)
+	0x06c0 01728 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:71)	MOVD	R0, R7
+	0x06c4 01732 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:71)	MOVD	R1, R8
+	0x06c8 01736 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:72)	CBZ	R7, 1812
+	0x06cc 01740 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:73)	STP	(ZR, ZR), main..autotmp_246-352(SP)
+	0x06d0 01744 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:73)	CBZ	R7, 1752
+	0x06d4 01748 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:73)	MOVD	8(R7), R7
+	0x06d8 01752 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:73)	STP	(R7, R8), main..autotmp_246-352(SP)
+	0x06dc 01756 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:73)	PCDATA	$0, $-4
+	0x06dc 01756 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x06e4 01764 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x06e4 01764 (<unknown line number>)	NOP
+	0x06e4 01764 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x06ec 01772 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."Error closing: %v\n"(SB), R2
+	0x06f4 01780 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$18, R3
+	0x06f8 01784 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$main..autotmp_246-352(SP), R4
+	0x06fc 01788 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$1, R5
+	0x0700 01792 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x0704 01796 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x0708 01800 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:74)	LDP	-8(RSP), (R29, R30)
+	0x070c 01804 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:74)	ADD	$608, RSP
+	0x0710 01808 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:74)	RET	(R30)
+	0x0714 01812 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:76)	MOVD	$type:string(SB), R5
+	0x071c 01820 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:76)	MOVD	$main..stmp_9(SB), R6
+	0x0724 01828 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:76)	STP	(R5, R6), main..autotmp_250-368(SP)
+	0x0728 01832 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:76)	PCDATA	$0, $-3
+	0x0728 01832 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	os.Stdout(SB), R1
+	0x0730 01840 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	PCDATA	$0, $-1
+	0x0730 01840 (<unknown line number>)	NOP
+	0x0730 01840 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x0738 01848 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$main..autotmp_250-368(SP), R2
+	0x073c 01852 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$1, R3
+	0x0740 01856 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	R3, R4
+	0x0744 01860 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	CALL	fmt.Fprintln(SB)
+	0x0748 01864 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:78)	MOVD	$type:string(SB), R5
+	0x0750 01872 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:78)	MOVD	$main..stmp_10(SB), R6
+	0x0758 01880 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:78)	STP	(R5, R6), main..autotmp_252-384(SP)
+	0x075c 01884 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:78)	PCDATA	$0, $-4
+	0x075c 01884 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	os.Stdout(SB), R1
+	0x0764 01892 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	PCDATA	$0, $-1
+	0x0764 01892 (<unknown line number>)	NOP
+	0x0764 01892 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x076c 01900 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$main..autotmp_252-384(SP), R2
+	0x0770 01904 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	$1, R3
+	0x0774 01908 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	MOVD	R3, R4
+	0x0778 01912 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:314)	CALL	fmt.Fprintln(SB)
+	0x077c 01916 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:79)	LDP	-8(RSP), (R29, R30)
+	0x0780 01920 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:79)	ADD	$608, RSP
+	0x0784 01924 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:79)	RET	(R30)
+	0x0788 01928 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	MOVD	R0, R1
+	0x078c 01932 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	MOVD	$100, R2
+	0x0790 01936 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:67)	CALL	runtime.panicSliceAcap(SB)
+	0x0794 01940 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:320)	CALL	runtime.panicunsafeslicelen(SB)
+	0x0798 01944 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:320)	HINT	$0
+	0x079c 01948 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/file.go:320)	NOP
+	0x079c 01948 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	PCDATA	$1, $-1
+	0x079c 01948 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	PCDATA	$0, $-2
+	0x079c 01948 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	MOVD	R30, R3
+	0x07a0 01952 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	CALL	runtime.morestack_noctxt(SB)
+	0x07a4 01956 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	PCDATA	$0, $-1
+	0x07a4 01956 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test03_syscalls/main.go:8)	JMP	0
+	0x0000 90 0b 40 f9 f1 83 07 d1 3f 02 10 eb 89 3c 00 54  ..@.....?....<.T
+	0x0010 f4 83 09 d1 9d fa 3f a9 9f 02 00 91 fd 23 00 d1  ......?......#..
+	0x0020 05 00 00 90 a5 00 00 91 06 00 00 90 c6 00 00 91  ................
+	0x0030 fb 23 09 91 65 1b 00 a9 1b 00 00 90 61 03 40 f9  .#..e.......a.@.
+	0x0040 00 00 00 90 00 00 00 91 e2 23 09 91 e3 03 40 b2  .........#....@.
+	0x0050 e4 03 03 aa 00 00 00 94 05 00 00 90 a5 00 00 91  ................
+	0x0060 06 00 00 90 c6 00 00 91 fb e3 08 91 65 1b 00 a9  ............e...
+	0x0070 1b 00 00 90 61 03 40 f9 00 00 00 90 00 00 00 91  ....a.@.........
+	0x0080 e2 e3 08 91 e3 03 40 b2 e4 03 03 aa 00 00 00 94  ......@.........
+	0x0090 1f 20 03 d5 00 00 00 90 00 00 00 91 a1 02 80 d2  . ..............
+	0x00a0 42 48 80 d2 c3 36 80 d2 00 00 00 94 a1 02 00 b4  BH...6..........
+	0x00b0 fb a3 08 91 7f 7f 00 a9 41 00 00 b4 21 04 40 f9  ........A...!.@.
+	0x00c0 fb a3 08 91 61 0b 00 a9 1b 00 00 90 61 03 40 f9  ....a.......a.@.
+	0x00d0 00 00 00 90 00 00 00 91 02 00 00 90 42 00 00 91  ............B...
+	0x00e0 e3 07 7d b2 e4 a3 08 91 e5 03 40 b2 e6 03 05 aa  ..}.......@.....
+	0x00f0 00 00 00 94 fd fb 7f a9 ff 83 09 91 c0 03 5f d6  .............._.
+	0x0100 e0 67 00 f9 00 00 00 94 fb 63 08 91 7f 7f 00 a9  .g.......c......
+	0x0110 00 00 00 94 01 00 00 90 21 00 00 91 fb 63 08 91  ........!....c..
+	0x0120 61 03 00 a9 1b 00 00 90 61 03 40 f9 00 00 00 90  a.......a.@.....
+	0x0130 00 00 00 91 02 00 00 90 42 00 00 91 83 02 80 d2  ........B.......
+	0x0140 e4 63 08 91 e5 03 40 b2 e6 03 05 aa 00 00 00 94  .c....@.........
+	0x0150 01 00 00 90 21 00 00 91 02 00 00 90 42 00 00 91  ....!.......B...
+	0x0160 fb 23 08 91 61 0b 00 a9 1b 00 00 90 61 03 40 f9  .#..a.......a.@.
+	0x0170 00 00 00 90 00 00 00 91 e2 23 08 91 e3 03 40 b2  .........#....@.
+	0x0180 e4 03 03 aa 00 00 00 94 01 00 00 90 21 00 00 91  ............!...
+	0x0190 e1 03 01 cb 1f 20 03 d5 3f 60 00 f1 c3 2f 00 54  ..... ..?`.../.T
+	0x01a0 e0 67 40 f9 01 00 00 90 21 00 00 91 e2 07 7d b2  .g@.....!.....}.
+	0x01b0 e3 03 02 aa 00 00 00 94 61 02 00 b4 ff ff 1f a9  ........a.......
+	0x01c0 41 00 00 b4 21 04 40 f9 e1 8b 1f a9 1b 00 00 90  A...!.@.........
+	0x01d0 61 03 40 f9 00 00 00 90 00 00 00 91 02 00 00 90  a.@.............
+	0x01e0 42 00 00 91 43 02 80 d2 e4 e3 07 91 e5 03 40 b2  B...C.........@.
+	0x01f0 e6 03 05 aa 00 00 00 94 fd fb 7f a9 ff 83 09 91  ................
+	0x0200 c0 03 5f d6 ff ff 1e a9 00 00 00 94 01 00 00 90  .._.............
+	0x0210 21 00 00 91 e1 83 1e a9 1b 00 00 90 61 03 40 f9  !...........a.@.
+	0x0220 00 00 00 90 00 00 00 91 02 00 00 90 42 00 00 91  ............B...
+	0x0230 e3 0f 40 b2 e4 a3 07 91 e5 03 40 b2 e6 03 05 aa  ..@.......@.....
+	0x0240 00 00 00 94 01 00 00 90 21 00 00 91 02 00 00 90  ........!.......
+	0x0250 42 00 00 91 e1 8b 1d a9 1b 00 00 90 61 03 40 f9  B...........a.@.
+	0x0260 00 00 00 90 00 00 00 91 e2 63 07 91 e3 03 40 b2  .........c....@.
+	0x0270 e4 03 03 aa 00 00 00 94 e0 67 40 f9 a0 00 00 b5  .........g@.....
+	0x0280 1b 00 00 90 7b 03 00 91 67 23 40 a9 05 00 00 14  ....{...g#@.....
+	0x0290 00 00 40 f9 00 00 00 94 e7 03 00 aa e8 03 01 aa  ..@.............
+	0x02a0 67 02 00 b4 ff ff 1c a9 47 00 00 b4 e7 04 40 f9  g.......G.....@.
+	0x02b0 e7 a3 1c a9 1b 00 00 90 61 03 40 f9 00 00 00 90  ........a.@.....
+	0x02c0 00 00 00 91 02 00 00 90 42 00 00 91 43 02 80 d2  ........B...C...
+	0x02d0 e4 23 07 91 e5 03 40 b2 e6 03 05 aa 00 00 00 94  .#....@.........
+	0x02e0 fd fb 7f a9 ff 83 09 91 c0 03 5f d6 05 00 00 90  .........._.....
+	0x02f0 a5 00 00 91 06 00 00 90 c6 00 00 91 e5 9b 1b a9  ................
+	0x0300 1b 00 00 90 61 03 40 f9 00 00 00 90 00 00 00 91  ....a.@.........
+	0x0310 e2 e3 06 91 e3 03 40 b2 e4 03 03 aa 00 00 00 94  ......@.........
+	0x0320 05 00 00 90 a5 00 00 91 06 00 00 90 c6 00 00 91  ................
+	0x0330 e5 9b 1a a9 1b 00 00 90 61 03 40 f9 00 00 00 90  ........a.@.....
+	0x0340 00 00 00 91 e2 a3 06 91 e3 03 40 b2 e4 03 03 aa  ..........@.....
+	0x0350 00 00 00 94 1f 20 03 d5 00 00 00 90 00 00 00 91  ..... ..........
+	0x0360 21 04 80 d2 e2 03 1f aa e3 03 1f aa 00 00 00 94  !...............
+	0x0370 21 02 00 b4 ff ff 19 a9 41 00 00 b4 21 04 40 f9  !.......A...!.@.
+	0x0380 e1 8b 19 a9 1b 00 00 90 61 03 40 f9 00 00 00 90  ........a.@.....
+	0x0390 00 00 00 91 02 00 00 90 42 00 00 91 a3 05 80 d2  ........B.......
+	0x03a0 e4 63 06 91 e5 03 40 b2 e6 03 05 aa 00 00 00 94  .c....@.........
+	0x03b0 18 00 00 14 e0 63 00 f9 00 00 00 94 ff ff 18 a9  .....c..........
+	0x03c0 00 00 00 94 01 00 00 90 21 00 00 91 e1 83 18 a9  ........!.......
+	0x03d0 1b 00 00 90 61 03 40 f9 00 00 00 90 00 00 00 91  ....a.@.........
+	0x03e0 02 00 00 90 42 00 00 91 03 05 80 d2 e4 23 06 91  ....B........#..
+	0x03f0 e5 03 40 b2 e6 03 05 aa 00 00 00 94 1f 20 03 d5  ..@.......... ..
+	0x0400 e0 63 40 f9 60 00 00 b4 00 00 40 f9 00 00 00 94  .c@.`.....@.....
+	0x0410 05 00 00 90 a5 00 00 91 06 00 00 90 c6 00 00 91  ................
+	0x0420 e5 9b 17 a9 1b 00 00 90 61 03 40 f9 00 00 00 90  ........a.@.....
+	0x0430 00 00 00 91 e2 e3 05 91 e3 03 40 b2 e4 03 03 aa  ..........@.....
+	0x0440 00 00 00 94 1f 20 03 d5 00 00 00 90 00 00 00 91  ..... ..........
+	0x0450 a1 02 80 d2 e2 03 1f aa e3 03 1f aa 00 00 00 94  ................
+	0x0460 61 02 00 b4 ff ff 16 a9 41 00 00 b4 21 04 40 f9  a.......A...!.@.
+	0x0470 e1 8b 16 a9 1b 00 00 90 61 03 40 f9 00 00 00 90  ........a.@.....
+	0x0480 00 00 00 91 02 00 00 90 42 00 00 91 e3 13 40 b2  ........B.....@.
+	0x0490 e4 a3 05 91 e5 03 40 b2 e6 03 05 aa 00 00 00 94  ......@.........
+	0x04a0 fd fb 7f a9 ff 83 09 91 c0 03 5f d6 e0 5f 00 f9  .........._.._..
+	0x04b0 00 00 00 94 ff ff 15 a9 00 00 00 94 01 00 00 90  ................
+	0x04c0 21 00 00 91 e1 83 15 a9 1b 00 00 90 61 03 40 f9  !...........a.@.
+	0x04d0 00 00 00 90 00 00 00 91 02 00 00 90 42 00 00 91  ............B...
+	0x04e0 e3 03 7b b2 e4 63 05 91 e5 03 40 b2 e6 03 05 aa  ..{..c....@.....
+	0x04f0 00 00 00 94 01 00 00 90 21 00 00 91 02 00 00 90  ........!.......
+	0x0500 42 00 00 91 e1 8b 14 a9 1b 00 00 90 61 03 40 f9  B...........a.@.
+	0x0510 00 00 00 90 00 00 00 91 e2 23 05 91 e3 03 40 b2  .........#....@.
+	0x0520 e4 03 03 aa 00 00 00 94 f4 13 01 91 9b 00 00 10  ................
+	0x0530 fd ef 3e a9 fd 63 00 d1 00 00 00 94 fd 23 00 d1  ..>..c.......#..
+	0x0540 ff 53 00 f9 e0 5f 40 f9 e1 13 01 91 82 0c 80 d2  .S..._@.........
+	0x0550 e3 03 02 aa 00 00 00 94 e0 57 00 f9 61 00 00 b5  .........W..a...
+	0x0560 e7 03 1f aa 14 00 00 14 e2 6b 00 f9 e1 5b 00 f9  .........k...[..
+	0x0570 21 0c 40 f9 e0 03 02 aa 20 00 3f d6 3f 0c 00 f1  !.@..... .?.?...
+	0x0580 a1 00 00 54 07 00 40 79 a8 e8 89 d2 ff 00 08 6b  ...T..@y.......k
+	0x0590 60 00 00 54 e7 03 40 b2 04 00 00 14 07 08 40 39  `..T..@.......@9
+	0x05a0 ff 18 01 71 e7 07 9f 9a e0 57 40 f9 e1 5b 40 f9  ...q.....W@..[@.
+	0x05b0 e2 6b 40 f9 67 02 00 36 ff ff 13 a9 41 00 00 b4  .k@.g..6....A...
+	0x05c0 21 04 40 f9 e1 8b 13 a9 1b 00 00 90 61 03 40 f9  !.@.........a.@.
+	0x05d0 00 00 00 90 00 00 00 91 02 00 00 90 42 00 00 91  ............B...
+	0x05e0 43 02 80 d2 e4 e3 04 91 e5 03 40 b2 e6 03 05 aa  C.........@.....
+	0x05f0 00 00 00 94 fd fb 7f a9 ff 83 09 91 c0 03 5f d6  .............._.
+	0x0600 1f 90 01 f1 28 0c 00 54 ff ff 11 a9 ff ff 12 a9  ....(..T........
+	0x0610 00 00 00 94 01 00 00 90 21 00 00 91 e1 83 11 a9  ........!.......
+	0x0620 e0 03 1f aa e1 13 01 91 e2 57 40 f9 00 00 00 94  .........W@.....
+	0x0630 00 00 00 94 01 00 00 90 21 00 00 91 e1 83 12 a9  ........!.......
+	0x0640 1b 00 00 90 61 03 40 f9 00 00 00 90 00 00 00 91  ....a.@.........
+	0x0650 02 00 00 90 42 00 00 91 43 02 80 d2 e4 63 04 91  ....B...C....c..
+	0x0660 e5 03 7f b2 e6 03 05 aa 00 00 00 94 01 00 00 90  ................
+	0x0670 21 00 00 91 02 00 00 90 42 00 00 91 e1 8b 10 a9  !.......B.......
+	0x0680 1b 00 00 90 61 03 40 f9 00 00 00 90 00 00 00 91  ....a.@.........
+	0x0690 e2 23 04 91 e3 03 40 b2 e4 03 03 aa 00 00 00 94  .#....@.........
+	0x06a0 e0 5f 40 f9 a0 00 00 b5 1b 00 00 90 7b 03 00 91  ._@.........{...
+	0x06b0 67 23 40 a9 05 00 00 14 00 00 40 f9 00 00 00 94  g#@.......@.....
+	0x06c0 e7 03 00 aa e8 03 01 aa 67 02 00 b4 ff ff 0f a9  ........g.......
+	0x06d0 47 00 00 b4 e7 04 40 f9 e7 a3 0f a9 1b 00 00 90  G.....@.........
+	0x06e0 61 03 40 f9 00 00 00 90 00 00 00 91 02 00 00 90  a.@.............
+	0x06f0 42 00 00 91 43 02 80 d2 e4 e3 03 91 e5 03 40 b2  B...C.........@.
+	0x0700 e6 03 05 aa 00 00 00 94 fd fb 7f a9 ff 83 09 91  ................
+	0x0710 c0 03 5f d6 05 00 00 90 a5 00 00 91 06 00 00 90  .._.............
+	0x0720 c6 00 00 91 e5 9b 0e a9 1b 00 00 90 61 03 40 f9  ............a.@.
+	0x0730 00 00 00 90 00 00 00 91 e2 a3 03 91 e3 03 40 b2  ..............@.
+	0x0740 e4 03 03 aa 00 00 00 94 05 00 00 90 a5 00 00 91  ................
+	0x0750 06 00 00 90 c6 00 00 91 e5 9b 0d a9 1b 00 00 90  ................
+	0x0760 61 03 40 f9 00 00 00 90 00 00 00 91 e2 63 03 91  a.@..........c..
+	0x0770 e3 03 40 b2 e4 03 03 aa 00 00 00 94 fd fb 7f a9  ..@.............
+	0x0780 ff 83 09 91 c0 03 5f d6 e1 03 00 aa 82 0c 80 d2  ......_.........
+	0x0790 00 00 00 94 00 00 00 94 1f 20 03 d5 e3 03 1e aa  ......... ......
+	0x07a0 00 00 00 94 17 fe ff 17 00 00 00 00 00 00 00 00  ................
+	rel 0+0 t=R_USEIFACE type:string+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:string+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:uintptr+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:string+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:int+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:string+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:string+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:string+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:uintptr+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:string+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:uintptr+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:string+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACEMETHOD type:error+96
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:int+0
+	rel 0+0 t=R_USEIFACE type:string+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:string+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:string+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:string+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 32+8 t=R_ADDRARM64 type:string+0
+	rel 40+8 t=R_ADDRARM64 main..stmp_0+0
+	rel 56+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 64+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 84+4 t=R_CALLARM64 fmt.Fprintln+0
+	rel 88+8 t=R_ADDRARM64 type:string+0
+	rel 96+8 t=R_ADDRARM64 main..stmp_1+0
+	rel 112+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 120+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 140+4 t=R_CALLARM64 fmt.Fprintln+0
+	rel 148+8 t=R_ADDRARM64 go:string."/tmp/test_syscall.txt"+0
+	rel 168+4 t=R_CALLARM64 os.OpenFile+0
+	rel 200+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 208+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 216+8 t=R_ADDRARM64 go:string."Error creating file: %v\n"+0
+	rel 240+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 260+4 t=R_CALLARM64 os.(*File).Fd+0
+	rel 272+4 t=R_CALLARM64 runtime.convT64+0
+	rel 276+8 t=R_ADDRARM64 type:uintptr+0
+	rel 292+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 300+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 308+8 t=R_ADDRARM64 go:string."Created file, fd=%v\n"+0
+	rel 332+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 336+8 t=R_ADDRARM64 type:string+0
+	rel 344+8 t=R_ADDRARM64 main..stmp_2+0
+	rel 360+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 368+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 388+4 t=R_CALLARM64 fmt.Fprintln+0
+	rel 392+8 t=R_ADDRARM64 go:string."Hello from syscall test\n"+0
+	rel 420+8 t=R_ADDRARM64 go:string."Hello from syscall test\n"+0
+	rel 436+4 t=R_CALLARM64 os.(*File).Write+0
+	rel 460+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 468+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 476+8 t=R_ADDRARM64 go:string."Error writing: %v\n"+0
+	rel 500+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 520+4 t=R_CALLARM64 runtime.convT64+0
+	rel 524+8 t=R_ADDRARM64 type:int+0
+	rel 536+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 544+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 552+8 t=R_ADDRARM64 go:string."Wrote %d bytes\n"+0
+	rel 576+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 580+8 t=R_ADDRARM64 type:string+0
+	rel 588+8 t=R_ADDRARM64 main..stmp_3+0
+	rel 600+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 608+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 628+4 t=R_CALLARM64 fmt.Fprintln+0
+	rel 640+8 t=R_ADDRARM64 os.ErrInvalid+0
+	rel 660+4 t=R_CALLARM64 os.(*file).close+0
+	rel 692+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 700+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 708+8 t=R_ADDRARM64 go:string."Error closing: %v\n"+0
+	rel 732+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 748+8 t=R_ADDRARM64 type:string+0
+	rel 756+8 t=R_ADDRARM64 main..stmp_4+0
+	rel 768+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 776+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 796+4 t=R_CALLARM64 fmt.Fprintln+0
+	rel 800+8 t=R_ADDRARM64 type:string+0
+	rel 808+8 t=R_ADDRARM64 main..stmp_5+0
+	rel 820+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 828+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 848+4 t=R_CALLARM64 fmt.Fprintln+0
+	rel 856+8 t=R_ADDRARM64 go:string."/tmp/this_file_does_not_exist.txt"+0
+	rel 876+4 t=R_CALLARM64 os.OpenFile+0
+	rel 900+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 908+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 916+8 t=R_ADDRARM64 go:string."Expected error opening non-existent file: %v\n"+0
+	rel 940+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 952+4 t=R_CALLARM64 os.(*File).Fd+0
+	rel 960+4 t=R_CALLARM64 runtime.convT64+0
+	rel 964+8 t=R_ADDRARM64 type:uintptr+0
+	rel 976+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 984+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 992+8 t=R_ADDRARM64 go:string."ERROR: Should have failed but got fd=%v\n"+0
+	rel 1016+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 1036+4 t=R_CALLARM64 os.(*file).close+0
+	rel 1040+8 t=R_ADDRARM64 type:string+0
+	rel 1048+8 t=R_ADDRARM64 main..stmp_6+0
+	rel 1060+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 1068+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 1088+4 t=R_CALLARM64 fmt.Fprintln+0
+	rel 1096+8 t=R_ADDRARM64 go:string."/tmp/test_syscall.txt"+0
+	rel 1116+4 t=R_CALLARM64 os.OpenFile+0
+	rel 1140+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 1148+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 1156+8 t=R_ADDRARM64 go:string."Error opening created file: %v\n"+0
+	rel 1180+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 1200+4 t=R_CALLARM64 os.(*File).Fd+0
+	rel 1208+4 t=R_CALLARM64 runtime.convT64+0
+	rel 1212+8 t=R_ADDRARM64 type:uintptr+0
+	rel 1224+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 1232+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 1240+8 t=R_ADDRARM64 go:string."Opened file successfully, fd=%v\n"+0
+	rel 1264+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 1268+8 t=R_ADDRARM64 type:string+0
+	rel 1276+8 t=R_ADDRARM64 main..stmp_7+0
+	rel 1288+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 1296+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 1316+4 t=R_CALLARM64 fmt.Fprintln+0
+	rel 1336+4 t=R_CALLARM64 runtime.duffzero+232
+	rel 1364+4 t=R_CALLARM64 os.(*File).Read+0
+	rel 1400+0 t=R_CALLIND +0
+	rel 1480+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 1488+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 1496+8 t=R_ADDRARM64 go:string."Error reading: %v\n"+0
+	rel 1520+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 1552+4 t=R_CALLARM64 runtime.convT64+0
+	rel 1556+8 t=R_ADDRARM64 type:int+0
+	rel 1580+4 t=R_CALLARM64 runtime.slicebytetostring+0
+	rel 1584+4 t=R_CALLARM64 runtime.convTstring+0
+	rel 1588+8 t=R_ADDRARM64 type:string+0
+	rel 1600+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 1608+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 1616+8 t=R_ADDRARM64 go:string."Read %d bytes: %s\n"+0
+	rel 1640+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 1644+8 t=R_ADDRARM64 type:string+0
+	rel 1652+8 t=R_ADDRARM64 main..stmp_8+0
+	rel 1664+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 1672+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 1692+4 t=R_CALLARM64 fmt.Fprintln+0
+	rel 1704+8 t=R_ADDRARM64 os.ErrInvalid+0
+	rel 1724+4 t=R_CALLARM64 os.(*file).close+0
+	rel 1756+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 1764+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 1772+8 t=R_ADDRARM64 go:string."Error closing: %v\n"+0
+	rel 1796+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 1812+8 t=R_ADDRARM64 type:string+0
+	rel 1820+8 t=R_ADDRARM64 main..stmp_9+0
+	rel 1832+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 1840+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 1860+4 t=R_CALLARM64 fmt.Fprintln+0
+	rel 1864+8 t=R_ADDRARM64 type:string+0
+	rel 1872+8 t=R_ADDRARM64 main..stmp_10+0
+	rel 1884+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 1892+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 1912+4 t=R_CALLARM64 fmt.Fprintln+0
+	rel 1936+4 t=R_CALLARM64 runtime.panicSliceAcap+0
+	rel 1940+4 t=R_CALLARM64 runtime.panicunsafeslicelen+0
+	rel 1952+4 t=R_CALLARM64 runtime.morestack_noctxt+0
+sync/atomic.(*Pointer[go.shape.struct { os.mu sync.Mutex; os.buf *[]uint8; os.nbuf int; os.bufp int }]).CompareAndSwap STEXT dupok size=80 args=0x20 locals=0x28 funcid=0x0 align=0x0
+	0x0000 00000 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	TEXT	sync/atomic.(*Pointer[go.shape.struct { os.mu sync.Mutex; os.buf *[]uint8; os.nbuf int; os.bufp int }]).CompareAndSwap(SB), DUPOK|ABIInternal, $48-32
+	0x0000 00000 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	MOVD	16(g), R16
+	0x0004 00004 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	PCDATA	$0, $-2
+	0x0004 00004 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	CMP	R16, RSP
+	0x0008 00008 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	BLS	52
+	0x000c 00012 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	PCDATA	$0, $-1
+	0x000c 00012 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	MOVD.W	R30, -48(RSP)
+	0x0010 00016 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	MOVD	R29, -8(RSP)
+	0x0014 00020 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	SUB	$8, RSP, R29
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	FUNCDATA	$0, gclocals·fD4ythl/kgeiqfs4DULCbA==(SB)
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	FUNCDATA	$1, gclocals·J26BEvPExEQhJvjp9E8Whg==(SB)
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	FUNCDATA	$5, sync/atomic.(*Pointer[go.shape.struct { os.mu sync.Mutex; os.buf *[]uint8; os.nbuf int; os.bufp int }]).CompareAndSwap.arginfo1(SB)
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	FUNCDATA	$6, sync/atomic.(*Pointer[go.shape.struct { os.mu sync.Mutex; os.buf *[]uint8; os.nbuf int; os.bufp int }]).CompareAndSwap.argliveinfo(SB)
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	PCDATA	$3, $1
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	PCDATA	$0, $-2
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:68)	MOVB	(R0), R27
+	0x001c 00028 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:68)	PCDATA	$0, $-1
+	0x001c 00028 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:68)	MOVD	R2, R1
+	0x0020 00032 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:68)	MOVD	R3, R2
+	0x0024 00036 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:68)	PCDATA	$1, $1
+	0x0024 00036 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:68)	CALL	sync/atomic.CompareAndSwapPointer(SB)
+	0x0028 00040 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:68)	MOVD	-8(RSP), R29
+	0x002c 00044 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:68)	MOVD.P	48(RSP), R30
+	0x0030 00048 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:68)	RET	(R30)
+	0x0034 00052 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:68)	NOP
+	0x0034 00052 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	PCDATA	$1, $-1
+	0x0034 00052 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	PCDATA	$0, $-2
+	0x0034 00052 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	STP	(R0, R1), 8(RSP)
+	0x0038 00056 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	STP	(R2, R3), 24(RSP)
+	0x003c 00060 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	MOVD	R30, R3
+	0x0040 00064 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	CALL	runtime.morestack_noctxt(SB)
+	0x0044 00068 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	PCDATA	$0, $-1
+	0x0044 00068 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	LDP	8(RSP), (R0, R1)
+	0x0048 00072 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	LDP	24(RSP), (R2, R3)
+	0x004c 00076 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:67)	JMP	0
+	0x0000 90 0b 40 f9 ff 63 30 eb 69 01 00 54 fe 0f 1d f8  ..@..c0.i..T....
+	0x0010 fd 83 1f f8 fd 23 00 d1 1b 00 80 39 e1 03 02 aa  .....#.....9....
+	0x0020 e2 03 03 aa 00 00 00 94 fd 83 5f f8 fe 07 43 f8  .........._...C.
+	0x0030 c0 03 5f d6 e0 87 00 a9 e2 8f 01 a9 e3 03 1e aa  .._.............
+	0x0040 00 00 00 94 e0 87 40 a9 e2 8f 41 a9 ed ff ff 17  ......@...A.....
+	rel 36+4 t=R_CALLARM64 sync/atomic.CompareAndSwapPointer+0
+	rel 64+4 t=R_CALLARM64 runtime.morestack_noctxt+0
+sync/atomic.(*Pointer[go.shape.struct { os.mu sync.Mutex; os.buf *[]uint8; os.nbuf int; os.bufp int }]).Swap STEXT dupok size=80 args=0x18 locals=0x18 funcid=0x0 align=0x0
+	0x0000 00000 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	TEXT	sync/atomic.(*Pointer[go.shape.struct { os.mu sync.Mutex; os.buf *[]uint8; os.nbuf int; os.bufp int }]).Swap(SB), DUPOK|ABIInternal, $32-24
+	0x0000 00000 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	MOVD	16(g), R16
+	0x0004 00004 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	PCDATA	$0, $-2
+	0x0004 00004 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	CMP	R16, RSP
+	0x0008 00008 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	BLS	48
+	0x000c 00012 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	PCDATA	$0, $-1
+	0x000c 00012 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	MOVD.W	R30, -32(RSP)
+	0x0010 00016 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	MOVD	R29, -8(RSP)
+	0x0014 00020 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	SUB	$8, RSP, R29
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	FUNCDATA	$0, gclocals·itaneJMpbAudh9zNu5JnHA==(SB)
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	FUNCDATA	$1, gclocals·J26BEvPExEQhJvjp9E8Whg==(SB)
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	FUNCDATA	$5, sync/atomic.(*Pointer[go.shape.struct { os.mu sync.Mutex; os.buf *[]uint8; os.nbuf int; os.bufp int }]).Swap.arginfo1(SB)
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	FUNCDATA	$6, sync/atomic.(*Pointer[go.shape.struct { os.mu sync.Mutex; os.buf *[]uint8; os.nbuf int; os.bufp int }]).Swap.argliveinfo(SB)
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	PCDATA	$3, $1
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	PCDATA	$0, $-2
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	MOVB	(R0), R27
+	0x001c 00028 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	PCDATA	$0, $-1
+	0x001c 00028 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	MOVD	R2, R1
+	0x0020 00032 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	PCDATA	$1, $1
+	0x0020 00032 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	CALL	sync/atomic.SwapPointer(SB)
+	0x0024 00036 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	MOVD	-8(RSP), R29
+	0x0028 00040 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	MOVD.P	32(RSP), R30
+	0x002c 00044 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	RET	(R30)
+	0x0030 00048 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	NOP
+	0x0030 00048 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	PCDATA	$1, $-1
+	0x0030 00048 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	PCDATA	$0, $-2
+	0x0030 00048 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	STP	(R0, R1), 8(RSP)
+	0x0034 00052 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	MOVD	R2, 24(RSP)
+	0x0038 00056 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	MOVD	R30, R3
+	0x003c 00060 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	CALL	runtime.morestack_noctxt(SB)
+	0x0040 00064 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	PCDATA	$0, $-1
+	0x0040 00064 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	LDP	8(RSP), (R0, R1)
+	0x0044 00068 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	MOVD	24(RSP), R2
+	0x0048 00072 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:64)	JMP	0
+	0x0000 90 0b 40 f9 ff 63 30 eb 49 01 00 54 fe 0f 1e f8  ..@..c0.I..T....
+	0x0010 fd 83 1f f8 fd 23 00 d1 1b 00 80 39 e1 03 02 aa  .....#.....9....
+	0x0020 00 00 00 94 fd 83 5f f8 fe 07 42 f8 c0 03 5f d6  ......_...B..._.
+	0x0030 e0 87 00 a9 e2 0f 00 f9 e3 03 1e aa 00 00 00 94  ................
+	0x0040 e0 87 40 a9 e2 0f 40 f9 ee ff ff 17 00 00 00 00  ..@...@.........
+	rel 32+4 t=R_CALLARM64 sync/atomic.SwapPointer+0
+	rel 60+4 t=R_CALLARM64 runtime.morestack_noctxt+0
+sync/atomic.(*Pointer[go.shape.struct { os.mu sync.Mutex; os.buf *[]uint8; os.nbuf int; os.bufp int }]).Store STEXT dupok size=80 args=0x18 locals=0x18 funcid=0x0 align=0x0
+	0x0000 00000 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	TEXT	sync/atomic.(*Pointer[go.shape.struct { os.mu sync.Mutex; os.buf *[]uint8; os.nbuf int; os.bufp int }]).Store(SB), DUPOK|ABIInternal, $32-24
+	0x0000 00000 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	MOVD	16(g), R16
+	0x0004 00004 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	PCDATA	$0, $-2
+	0x0004 00004 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	CMP	R16, RSP
+	0x0008 00008 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	BLS	48
+	0x000c 00012 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	PCDATA	$0, $-1
+	0x000c 00012 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	MOVD.W	R30, -32(RSP)
+	0x0010 00016 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	MOVD	R29, -8(RSP)
+	0x0014 00020 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	SUB	$8, RSP, R29
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	FUNCDATA	$0, gclocals·itaneJMpbAudh9zNu5JnHA==(SB)
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	FUNCDATA	$1, gclocals·J26BEvPExEQhJvjp9E8Whg==(SB)
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	FUNCDATA	$5, sync/atomic.(*Pointer[go.shape.struct { os.mu sync.Mutex; os.buf *[]uint8; os.nbuf int; os.bufp int }]).Store.arginfo1(SB)
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	FUNCDATA	$6, sync/atomic.(*Pointer[go.shape.struct { os.mu sync.Mutex; os.buf *[]uint8; os.nbuf int; os.bufp int }]).Store.argliveinfo(SB)
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	PCDATA	$3, $1
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	PCDATA	$0, $-2
+	0x0018 00024 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	MOVB	(R0), R27
+	0x001c 00028 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	PCDATA	$0, $-1
+	0x001c 00028 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	MOVD	R2, R1
+	0x0020 00032 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	PCDATA	$1, $1
+	0x0020 00032 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	CALL	sync/atomic.StorePointer(SB)
+	0x0024 00036 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	MOVD	-8(RSP), R29
+	0x0028 00040 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	MOVD.P	32(RSP), R30
+	0x002c 00044 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	RET	(R30)
+	0x0030 00048 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	NOP
+	0x0030 00048 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	PCDATA	$1, $-1
+	0x0030 00048 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	PCDATA	$0, $-2
+	0x0030 00048 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	STP	(R0, R1), 8(RSP)
+	0x0034 00052 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	MOVD	R2, 24(RSP)
+	0x0038 00056 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	MOVD	R30, R3
+	0x003c 00060 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	CALL	runtime.morestack_noctxt(SB)
+	0x0040 00064 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	PCDATA	$0, $-1
+	0x0040 00064 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	LDP	8(RSP), (R0, R1)
+	0x0044 00068 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/sync/atomic/type.go:61)	MOVD	24(RSP), R2
+	0x0048 00072 (/opt/home

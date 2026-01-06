@@ -1,0 +1,113 @@
+#!/bin/bash
+
+# tools/run/run-cardinal-reliable
+#
+# Reliable QEMU runner that captures ALL output, even on hangs/timeouts.
+# Uses PTY via 'script' command to force line-buffered output.
+#
+# Usage:
+#   tools/run/run-cardinal-reliable              # Run with default 10s timeout
+#   TIMEOUT=30 tools/run/run-cardinal-reliable   # Custom timeout
+#   tools/run/run-cardinal-reliable --no-timeout # Run until exit
+#
+# Output is captured to /tmp/qemu-logs/cardinal-<timestamp>.log
+# Even if QEMU hangs or timeout kills it, output will be captured.
+
+set -e
+
+PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+KERNEL_PATH="$PROJECT_ROOT/build/cardinal.elf"
+
+# Validate kernel exists
+if [ ! -f "$KERNEL_PATH" ]; then
+    echo "Error: cardinal.elf not found at $KERNEL_PATH" >&2
+    echo "Please build cardinal first: make cardinal" >&2
+    exit 1
+fi
+
+# Configuration
+TIMEOUT="${TIMEOUT:-10}"
+LOG_DIR="/tmp/qemu-logs"
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+LOG_FILE="$LOG_DIR/cardinal-$TIMESTAMP.log"
+
+mkdir -p "$LOG_DIR"
+
+# Find QEMU binary
+QEMU_BIN="${QEMU_BIN:-}"
+if [ -z "$QEMU_BIN" ]; then
+    if [ -f "$HOME/mazzy/bin/qemu-system-aarch64" ]; then
+        QEMU_BIN="$HOME/mazzy/bin/qemu-system-aarch64"
+    elif command -v qemu-system-aarch64 &>/dev/null; then
+        QEMU_BIN="$(command -v qemu-system-aarch64)"
+    else
+        echo "Error: qemu-system-aarch64 not found in PATH or $HOME/mazzy/bin" >&2
+        exit 1
+    fi
+fi
+
+# Build QEMU command as an array
+QEMU_CMD=(
+    "$QEMU_BIN"
+    -M virt,virtualization=off
+    -cpu cortex-a72
+    -m 8G
+    -kernel "$KERNEL_PATH"
+    -nodefaults
+    -nographic
+    -serial stdio
+    -semihosting
+    -monitor none
+    -no-reboot
+)
+
+# Clean up function
+cleanup() {
+    if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
+        echo ""
+        echo "========================================"
+        echo "Output captured to: $LOG_FILE"
+        echo "========================================"
+        echo ""
+        echo "Last 30 lines of output:"
+        echo "----------------------------------------"
+        tail -30 "$LOG_FILE"
+        echo "----------------------------------------"
+    fi
+}
+trap cleanup EXIT
+
+echo "Running cardinal kernel (timeout=${TIMEOUT}s)"
+echo "Log file: $LOG_FILE"
+echo ""
+echo "QEMU binary: $QEMU_BIN"
+echo ""
+
+# Run QEMU through 'script' to force PTY (line-buffered output)
+# The -F flag flushes output after each write
+# The -q flag suppresses "Script started/done" messages
+if [ "$1" = "--no-timeout" ]; then
+    # No timeout - run until QEMU exits
+    echo "Starting QEMU (no timeout, will run until exit)..."
+    script -q -F "$LOG_FILE" "${QEMU_CMD[@]}"
+    EXIT_CODE=$?
+else
+    # Use timeout with script
+    # timeout sends SIGTERM, waits --kill-after seconds, then SIGKILL
+    echo "Starting QEMU with ${TIMEOUT}s timeout..."
+    timeout --signal=TERM --kill-after=2 "$TIMEOUT" \
+        script -q -F "$LOG_FILE" "${QEMU_CMD[@]}" || true
+    EXIT_CODE=$?
+fi
+
+# Determine exit type
+echo ""
+if [ $EXIT_CODE -eq 124 ]; then
+    echo "Exit Status: TIMEOUT (${TIMEOUT}s reached)"
+elif [ $EXIT_CODE -eq 137 ]; then
+    echo "Exit Status: KILLED (SIGKILL after timeout)"
+elif [ $EXIT_CODE -eq 0 ]; then
+    echo "Exit Status: QEMU exited normally"
+else
+    echo "Exit Status: Code $EXIT_CODE"
+fi

@@ -12,7 +12,7 @@ This script tracks SP register changes instruction-by-instruction to identify wh
 # Terminal 1: Start QEMU with GDB server
 cd /Users/iansmith/mazzy
 source enable-mazzy
-mazboot -g
+GDB=1 cardinal
 
 # Terminal 2: Run GDB with SP watching script
 cd /Users/iansmith/mazzy
@@ -35,7 +35,7 @@ For interactive debugging:
 
 ```bash
 # Terminal 1: Start QEMU
-mazboot -g
+GDB=1 cardinal
 
 # Terminal 2: Connect GDB
 target-gdb kernel-qemu.elf -x ../tools/gdb/debug-crash-working.gdb
@@ -76,11 +76,14 @@ These were earlier attempts with various approaches:
 
 ## Helper Scripts
 
-- **`debug-crash.sh`** - Automates launching QEMU and connecting GDB
+- **`gdb-connect.sh`** - Connects GDB to running QEMU instance
   ```bash
-  cd /Users/iansmith/mazzy
-  source enable-mazzy
-  tools/gdb/debug-crash.sh
+  # First start QEMU with GDB support in terminal 1:
+  GDB=1 cardinal
+
+  # Then in terminal 2, run:
+  cd /Users/iansmith/mazzy/tools/gdb
+  ./gdb-connect.sh
   ```
 
 ## Current Bug Investigation
@@ -230,7 +233,7 @@ break *0x2be870 if $sp != 0x402372D0
 5. **Reset cleanly**: If QEMU hangs, kill it and restart:
    ```bash
    pkill -f qemu-system-aarch64
-   mazboot -g
+   GDB=1 cardinal
    ```
 
 ## Documentation

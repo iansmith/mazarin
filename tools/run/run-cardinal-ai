@@ -1,0 +1,36 @@
+#!/bin/bash
+
+# tools/run/run-cardinal-ai
+#
+# Run cardinal optimized for AI (Claude) consumption.
+# Wraps the main run-cardinal script with SEPARATE_OUTPUT=1 and NOGRAPHIC=1
+# for reliable file-based output capture.
+#
+# Usage:
+#   tools/run/run-cardinal-ai              # Run with default timeout
+#   TIMEOUT=30 tools/run/run-cardinal-ai   # Custom timeout
+#
+# Output is written to /tmp/qemu-logs/kernel-uart-<pid>.log
+
+set -e
+
+PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+RUN_CARDINAL="$PROJECT_ROOT/bin/run-cardinal"
+
+# Validate run-cardinal exists
+if [ ! -x "$RUN_CARDINAL" ]; then
+    echo "Error: run-cardinal not found or not executable at $RUN_CARDINAL" >&2
+    exit 1
+fi
+
+# Use the proven SEPARATE_OUTPUT=1 approach with NOGRAPHIC=1
+# This delegates to run-cardinal which has all the proper device setup
+export SEPARATE_OUTPUT=1
+export NOGRAPHIC=1
+
+# Run and capture the PID of the kernel log file for later reference
+echo "Running cardinal with SEPARATE_OUTPUT=1 and NOGRAPHIC=1..."
+echo ""
+
+# Execute run-cardinal - it will handle everything
+"$RUN_CARDINAL"

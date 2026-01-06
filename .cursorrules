@@ -61,11 +61,11 @@ This file contains architectural rules and patterns that must be followed for al
 
 ## Quick Build/Run (local QEMU)
 
-- Build: `cd src && make mazboot` (builds mazboot into the build directory)
-- Run: `runmazboot` (requires environment script to be sourced first)
-  - Normal mode: `mazboot` (Cocoa display window, UART output in terminal)
-  - Terminal-only: `NOGRAPHIC=1 mazboot` (no GUI window)
-  - Separate logs: `SEPARATE_OUTPUT=1 mazboot` (kernel output → kernel-uart.log, QEMU debug → qemu-debug.log)
+- Build: `cd src && make cardinal` (builds cardinal into the build directory)
+- Run: `runcardinal` (requires environment script to be sourced first)
+  - Normal mode: `cardinal` (Cocoa display window, UART output in terminal)
+  - Terminal-only: `NOGRAPHIC=1 cardinal` (no GUI window)
+  - Separate logs: `SEPARATE_OUTPUT=1 cardinal` (kernel output → kernel-uart.log, QEMU debug → qemu-debug.log)
 
 ## Cross-Compiler Tooling
 
@@ -87,7 +87,7 @@ source enable-mazzy
 
 This script adds the `bin/` directory to PATH, making available:
 - Cross-compiler tools (`target-gcc`, `target-objdump`, `target-readelf`, `target-gdb`, etc.)
-- QEMU scripts (`runqemu-fb`, `runqemu-debug`, `runqemu-trace`, `mazboot`, etc.)
+- QEMU scripts (`runqemu-fb`, `runqemu-debug`, `runqemu-trace`, `cardinal`, etc.)
 - Utility tools (`timeout`, etc.)
 
 **What the environment script does:**
@@ -96,8 +96,8 @@ This script adds the `bin/` directory to PATH, making available:
 - Example: `target-gcc` → `/Users/iansmith/mazzy/aarch64-none-elf/bin/aarch64-none-elf-gcc`
 
 **Important:** 
-- The QEMU scripts (`runqemu-fb`, `mazboot`, etc.) require the environment to be sourced to work correctly
-- The `mazboot` script runs QEMU locally (not in Docker) with Cocoa display for macOS
+- The QEMU scripts (`runqemu-fb`, `cardinal`, etc.) require the environment to be sourced to work correctly
+- The `cardinal` script runs QEMU locally (not in Docker) with Cocoa display for macOS
 - Always source the environment script in each new terminal session before building or running tests
 
 ## Assembly Conventions

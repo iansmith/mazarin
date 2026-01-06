@@ -1,0 +1,621 @@
+
+ * ▐▛███▜▌ *   Claude Code v2.0.76
+* ▝▜█████▛▘ *  Sonnet 4.5 · Claude API
+ *  ▘▘ ▝▝  *   ~/mazzy
+══════════════════ Conversation compacted · ctrl+o for history ═════════════════
+  ⎿  Read build/mazboot/globalize_symbols.txt (48 lines)
+  ⎿  Referenced file build/mazboot/exceptions.o
+  ⎿  Read build/mazboot/timer.o (4 lines)
+  ⎿  Read build/mazboot/linker_symbols.o (6 lines)
+  ⎿  Read build/mazboot/get_caller_sp.o (7 lines)
+  ⎿  Todo list read (6 items)
+
+⏺ Looking at the summary I just created, I've identified a critical flaw in the debugging approach: the 'm' marker treats X0=0 as an error, but many syscalls (like clock_gettime) correctly return 0 on success.
+
+  Let me improve the diagnostic logging to show both syscall number AND return value, then identify which syscall is actually failing.
+
+⏺ Read(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Read 50 lines
+
+⏺ Let me improve the debug logging to better understand what's happening. Instead of the misleading 'm' marker that triggers on any X0=0 (which is valid for many syscalls), let's add more targeted diagnostics:
+
+⏺ Update(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Error editing file
+
+⏺ Read(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Read 15 lines
+
+⏺ Update(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Added 11 lines, removed 4 lines                                     
+      1836      // Syscall return - restore SPSR/ELR and ALL registers, t
+            hen return via eret
+      1837      // x0 contains the syscall result from Go handler
+      1838  
+      1839 -    // DEBUG: Print 'm' if X0 is zero when entering syscall_r
+           -eturn                                                        
+      1840 -    cbnz x0, x0_nonzero_entry                                
+      1839 +    // DEBUG: Print 'E' if X0 is NEGATIVE (actual error), 'S'
+           + if zero/positive (success)                                  
+      1840 +    tbnz x0, #63, syscall_error_return   // Test bit 63 (sign
+           + bit)                                                        
+      1841 +    // X0 is positive or zero (success)                      
+      1842      movz x1, #0x0900, lsl #16
+      1842 -    mov w2, #'m'                                             
+      1843 +    mov w2, #'S'                                             
+      1844      strb w2, [x1]
+      1844 -x0_nonzero_entry:                                            
+      1845 +    b syscall_save_x0                                        
+      1846 +syscall_error_return:                                        
+      1847 +    // X0 is negative (error)                                
+      1848 +    movz x1, #0x0900, lsl #16                                
+      1849 +    mov w2, #'E'                                             
+      1850 +    strb w2, [x1]                                            
+      1851 +syscall_save_x0:                                             
+      1852  
+      1853      // CRITICAL: Save syscall return value IMMEDIATELY before
+             any other operations
+      1854      str x0, [sp, #EXC_FRAME_SAVED_X0]  // Save return value t
+            o offset 304
+
+⏺ Good! Now instead of printing 'm' for any X0==0 (which is misleading), we'll print:
+  - 'S' for success (X0 ≥ 0)
+  - 'E' for error (X0 < 0, negative errno)
+
+  Let's rebuild and test:
+
+⏺ Bash(make) timeout: 1m 0s
+  ⎿ /Users/iansmith/mazzy/bin/target-gcc -mcpu=cortex-a72 -march=armv8-a -f
+    freestanding -g -c src/mazboot/asm/aarch64/exceptions.s -o build/mazboo
+    t/exceptions.o
+    … +128 lines (ctrl+o to expand)
+
+
+
+⏺ Bash(NOGRAPHIC=1 timeout 20                                       timeout: 
+      /Users/iansmith/mazzy/bin/run-mazboot)                        25s
+  ⎿  Error: Exit code 124
+     qemu-system-aarch64: terminating on signal 15 from pid 15272 (<unknown 
+     process>)
+
+     Using homebrew QEMU: /Users/iansmith/mazzy/bin/qemu-system-aarch64
+     Starting QEMU in nographic mode (terminal only, no GUI)
+
+     NOTE: Using 'virt' machine type instead of 'raspi4b' for better
+           display device support. This is a generic AArch64 virtual machine.
+
+           This script uses bochs-display device for framebuffer output.
+     … +103 lines (ctrl+o to see all)
+
+⏺ Excellent! Now I can see the syscall sequence clearly:
+
+  BS8E1SZ1SZE
+
+  Decoded:
+  - 'B' = syscall 0x*B dispatched
+  - 'S' = returned successfully
+  - '8' = syscall 0x*8 dispatched
+  - 'E' = returned ERROR (X0 < 0) ← FOUND THE FAILING SYSCALL!
+  - '1' = syscall 0x*1 dispatched
+  - 'S' = returned successfully
+  - 'Z' = ? (from old debug code)
+  - '1' = syscall 0x*1 again
+  - 'S' = returned successfully
+  - 'Z' = ?
+  - 'E' = syscall 0x*E (mmap = 0xDE)
+
+  Key Finding: Syscall 0x*8 is FAILING (returning negative error code)!
+
+  Since we're only printing the last hex digit, '8' could be syscall 8, 24, 120, 168, etc. Let me add better logging to show the FULL syscall number:
+
+⏺ Read(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Read 15 lines
+
+⏺ Let me enhance the syscall logging to print the full syscall number (3 decimal digits) so I can identify exactly which syscall is failing:
+
+⏺ Update(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Added 25 lines, removed 10 lines                                    
+      1411      msr DAIF, x10                   // Write back to DAIF
+      1412      isb                             // Ensure change takes ef
+            fect before continuing
+      1413  
+      1414 -    // DEBUG: Print syscall number as single digit (0-9, A-F 
+           -for 10-15)                                                   
+      1415 -    movz x10, #0x0900, lsl #16                               
+      1416 -    mov w11, w8                     // w11 = syscall number (
+           -low byte)                                                    
+      1417 -    and w11, w11, #0xF              // Keep only last hex dig
+           -it                                                           
+      1418 -    cmp w11, #10                                             
+      1419 -    blt 1f                                                   
+      1420 -    add w11, w11, #('A' - 10)       // Convert 10-15 to A-F  
+      1421 -    b 2f                                                     
+      1422 -1:  add w11, w11, #'0'              // Convert 0-9 to '0'-'9'
+      1423 -2:  strb w11, [x10]                 // Print single character
+      1414 +    // DEBUG: Print full syscall number as 3 decimal digits (
+           +e.g., "123")                                                 
+      1415 +    movz x10, #0x0900, lsl #16      // UART base             
+      1416 +    mov w11, w8                      // w11 = syscall number 
+      1417  
+      1418 +    // Print hundreds digit                                  
+      1419 +    mov w12, #100                                            
+      1420 +    udiv w13, w11, w12               // w13 = num / 100      
+      1421 +    msub w11, w13, w12, w11          // w11 = num % 100      
+      1422 +    add w13, w13, #'0'                                       
+      1423 +    strb w13, [x10]                                          
+      1424 +                                                             
+      1425 +    // Print tens digit                                      
+      1426 +    mov w12, #10                                             
+      1427 +    udiv w13, w11, w12               // w13 = num / 10       
+      1428 +    msub w11, w13, w12, w11          // w11 = num % 10       
+      1429 +    add w13, w13, #'0'                                       
+      1430 +    strb w13, [x10]                                          
+      1431 +                                                             
+      1432 +    // Print ones digit                                      
+      1433 +    add w11, w11, #'0'                                       
+      1434 +    strb w11, [x10]                                          
+      1435 +                                                             
+      1436 +    // Print space separator                                 
+      1437 +    mov w11, #' '                                            
+      1438 +    strb w11, [x10]                                          
+      1439 +                                                             
+      1440      // CRITICAL: Switch to g0 before calling Go syscall handl
+            ers
+      1441      // This allows runtime operations (including stack traceb
+            acks) to work correctly
+      1442      // NOTE: Original g (x28) was already saved to exception 
+            frame at offset 296
+
+⏺ Perfect! Now let's rebuild and see the exact failing syscall number:
+
+⏺ Bash(make) timeout: 1m 0s
+  ⎿ /Users/iansmith/mazzy/bin/target-gcc -mcpu=cortex-a72 -march=armv8-a -f
+    freestanding -g -c src/mazboot/asm/aarch64/exceptions.s -o build/mazboo
+    t/exceptions.o
+    … +128 lines (ctrl+o to expand)
+
+
+
+⏺ Bash(NOGRAPHIC=1 timeout 20 /Users/iansmith/mazzy/bin/run-mazboot   timeout: 
+      2>&1 | head -100)                                               25s
+  ⎿  Using homebrew QEMU: /Users/iansmith/mazzy/bin/qemu-system-aarch64
+     Starting QEMU in nographic mode (terminal only, no GUI)
+     … +136 lines (ctrl+o to expand)
+
+⏺ Excellent! Now I can see the exact failing syscall:
+
+  123 S = syscall 123 (sched_getaffinity) SUCCESS
+  056 E = syscall 56 (openat) FAILED ← Expected, kmazarin falls back to stack auxv
+  113 S = syscall 113 (clock_gettime) SUCCESS
+  113 S = syscall 113 (clock_gettime) SUCCESS
+  222   = syscall 222 (mmap) dispatched...
+
+  But here's the critical issue: After mmap (222), kmazarin's debug output shows:
+  #0000000000000001 M(0000000000000000,0000000000040000) SSVC=00000000
+
+  The 'S' appears AFTER kmazarin's debug message because kmazarin's debug is printed inside the SyscallMmap Go function. This means:
+
+  1. Mmap executes and returns successfully ('S' marker)
+  2. But kmazarin sees "SVC=00000000" (X0=0 after SVC returns)
+
+  This proves the systematic X0 save fix is STILL not working correctly!
+
+  Let me check the syscall_mmap code to verify the X0 save is actually happening:
+
+⏺ Read(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Read 25 lines
+
+⏺ The code looks correct - X0 is saved at [sp, #688] before the epilogue (line 1711). But wait, let me check syscall_return to see if X0 is being corrupted BEFORE it's saved the second time:
+
+⏺ Read(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Read 35 lines
+
+⏺ Wait, I see a potential issue. Let me check the CALL_GO_EPILOGUE macro to see if it might be restoring X0 from the stack:
+
+⏺ Read(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Read 20 lines
+
+⏺ The epilogue looks correct - it doesn't touch X0. But let me check where X0 is restored in syscall_return before eret:
+
+⏺ Read(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Read 25 lines
+
+⏺ Read(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Read 25 lines
+
+⏺ FOUND THE 'Z' MARKER!
+
+  Lines 1931-1934 show the old debug code that prints 'Z' if X0 is zero AFTER loading from the exception frame! This is the source of the 'Z' markers we've been seeing.
+
+  The critical lines are:
+  - Line 1869: Save X0 to exception frame[304]
+  - Line 1928: Load X0 from exception frame[304]
+  - Lines 1931-1934: Print 'Z' if loaded X0 is zero
+
+  Since we're seeing 'Z', this means the value loaded from exception frame[304] IS ZERO!
+
+  But wait - we also see 'S' (success) which means X0 was non-negative when entering syscall_return. However, 'S' includes X0==0! The check at line 1855 is tbnz x0, #63 which only checks if X0 is negative (sign bit set).
+
+  So the sequence is:
+  1. Go function returns X0 = 0
+  2. Check X0 >= 0 → YES, print 'S' (success, because not negative)
+  3. Save X0 = 0 to exception frame[304]
+  4. Load X0 = 0 from exception frame[304]
+  5. Check X0 == 0 → YES, print 'Z'
+
+  The issue: SyscallMmap is returning 0 instead of a valid address!
+
+  Let me check the SyscallMmap implementation:
+
+⏺ Bash(grep -n "func SyscallMmap"
+      /Users/iansmith/mazzy/src/mazboot/golang/main/syscall.go)
+  ⎿ 488:func SyscallMmap(addr uintptr, length uint64, prot int32, flags int
+    32, fd int32, offset int64) int64 {
+
+
+⏺ Read(src/mazboot/golang/main/syscall.go)
+  ⎿  Read 100 lines
+
+⏺ Read(src/mazboot/golang/main/syscall.go)
+  ⎿  Read 60 lines
+
+⏺ The SyscallMmap code looks correct - it should return either a positive address or a negative error code, never 0. But kmazarin is seeing 0!
+
+  Let me check what mmapBumpNext is initialized to, as that's what gets returned for the first allocation:
+
+⏺ Bash(grep -n "mmapBumpNext"
+      /Users/iansmith/mazzy/src/mazboot/golang/main/syscall.go | head -20)
+  ⎿  435:var mmapBumpNext uintptr = BUMP_REGION_START
+     617:	allocAddr := mmapBumpNext
+     627:	mmapBumpNext = endAddr
+
+⏺ Bash(grep -n "BUMP_REGION_START"
+      /Users/iansmith/mazzy/src/mazboot/golang/main/syscall.go | head -5)
+  ⎿ 430:	BUMP_REGION_START = uintptr(0x48000000)    // 1.125GB             
+    432:	BUMP_REGION_END   = BUMP_REGION_START + BUMP_REGION_SIZE // 0xC800
+    0000
+    … +3 lines (ctrl+o to expand)
+
+
+⏺ So BUMP_REGION_START = 0x48000000, which means the first mmap should return 0x48000000! But kmazarin sees 0!
+
+  Let me check if there's any debug output being added to SyscallMmap that could corrupt X0:
+
+⏺ Bash(grep -A5 "syscallDebugStart\|uartPut\|fmt.Print"
+      /Users/iansmith/mazzy/src/mazboot/golang/main/syscall.go | grep -v "^--$"
+      | head -40)
+  ⎿  func syscallDebugStart(num uint32, name string) {
+     	uartPutsDirect("SYSCALL: #")
+     	uartPutHex32Direct(num)
+     … +37 lines (ctrl+o to expand)
+
+⏺ The debug output is all disabled in SyscallMmap. But I think I found the issue! Let me add specific debug to verify X0 right before and after the save at offset 688:
+
+⏺ Read(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Read 20 lines
+
+⏺ I see the 'M' marker checks X0 after the Go function (and hangs if zero). Since we're not hanging, X0 must be 0x48000000 at that point. Let me add debug to check X0 AFTER the epilogue but BEFORE entering syscall_return:
+
+⏺ Update(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Added 8 lines                                                       
+      1713      // CALL_GO_EPILOGUE restores callee-saved regs (x19-x30) 
+            and deallocates frame
+      1714      CALL_GO_EPILOGUE SPILL_SPACE_6PARAM
+      1715  
+      1716 +    // DEBUG: Verify X0 is still good AFTER epilogue         
+      1717 +    cbnz x0, mmap_after_epilogue_ok                          
+      1718 +    movz x1, #0x0900, lsl #16                                
+      1719 +    mov w2, #'P'                     // Print 'P' if X0 is ze
+           +ro AFTER epilogue!                                           
+      1720 +    strb w2, [x1]                                            
+      1721 +    b mmap_hang                                              
+      1722 +mmap_after_epilogue_ok:                                      
+      1723 +                                                             
+      1724      b syscall_return
+      1725  
+      1726  mmap_hang:
+
+⏺ Now let's rebuild and test to see if X0 is corrupted by the epilogue:
+
+⏺ Bash(make && NOGRAPHIC=1 timeout 20                               timeout: 1m 
+      /Users/iansmith/mazzy/bin/run-mazboot 2>&1 | grep -A15        20s
+      "Jumping to kmazarin")
+  ⎿ /Users/iansmith/mazzy/bin/target-gcc -mcpu=cortex-a72 -march=armv8-a -f
+    freestanding -g -c src/mazboot/asm/aarch64/exceptions.s -o build/mazboo
+    t/exceptions.o
+    … +159 lines (ctrl+o to expand)
+
+
+
+⏺ Good! No 'P' appeared, which means X0 is still good AFTER the epilogue. So the corruption happens later, between saving X0 and loading it back. The issue must be with the offset calculation!
+
+  Let me verify EXC_FRAME_SAVED_X0 is actually 304:
+
+⏺ Bash(grep -n "EXC_FRAME_SAVED_X0"
+      /Users/iansmith/mazzy/src/mazboot/asm/aarch64/exceptions.s | head -5)
+  ⎿ 53:.equ EXC_FRAME_SAVED_X0,     304    // Saved x0 for syscall return v
+    alue
+    83:    str x0, [sp, #EXC_FRAME_SAVED_X0]   // Save syscall return value
+    … +7 lines (ctrl+o to expand)
+
+
+
+⏺ Wait, I see something at line 1877! That's a second save to EXC_FRAME_SAVED_X0. Let me check if the first save at syscall_mmap (line 1711) is actually writing to the CORRECT location. Let me verify line 1711 is using [sp, #688]:
+
+⏺ Read(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Read 8 lines
+
+⏺ The offset looks correct. Let me double-check the REG_SAVE_SPACE and SPILL_SPACE_6PARAM values:
+
+⏺ Bash(grep -n "\.equ REG_SAVE_SPACE\|\.equ SPILL_SPACE_6PARAM"
+      /Users/iansmith/mazzy/src/mazboot/asm/aarch64/exceptions.s)
+  ⎿ 503:.equ SPILL_SPACE_6PARAM,  320   // 6 parameter functions (Go uses s
+    p-128+144=272, round up)
+    507:.equ REG_SAVE_SPACE,      64    // 64 bytes (4 pairs + alignment)
+
+
+⏺ The values are correct: REG_SAVE_SPACE=64, SPILL_SPACE_6PARAM=320, total=384. So offset 688 is right.
+
+  But I just realized - we're seeing 'S' which means X0 is non-negative when we CHECK it, but then we SAVE it, and later LOAD it back as zero!
+
+  Let me add debug to print what we're SAVING vs what we're LOADING:
+
+⏺ Update(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  File must be read first
+
+⏺ Read(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Read 10 lines
+
+⏺ Read(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Read 10 lines
+
+⏺ Update(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Added 15 lines                                                      
+      1873      strb w2, [x1]
+      1874  syscall_save_x0:
+      1875  
+      1876 +    // DEBUG: Verify X0 before save                          
+      1877 +    cbnz x0, syscall_x0_nonzero_before_save                  
+      1878 +    movz x1, #0x0900, lsl #16                                
+      1879 +    mov w2, #'Q'                         // Print 'Q' if X0 i
+           +s zero BEFORE save!                                          
+      1880 +    strb w2, [x1]                                            
+      1881 +syscall_x0_nonzero_before_save:                              
+      1882 +                                                             
+      1883      // CRITICAL: Save syscall return value IMMEDIATELY before
+             any other operations
+      1884      str x0, [sp, #EXC_FRAME_SAVED_X0]  // Save return value t
+            o offset 304
+      1885  
+      1886 +    // DEBUG: Verify what we saved by loading it back immedia
+           +tely                                                         
+      1887 +    ldr x10, [sp, #EXC_FRAME_SAVED_X0]                       
+      1888 +    cbnz x10, syscall_verify_save_ok                         
+      1889 +    movz x1, #0x0900, lsl #16                                
+      1890 +    mov w2, #'R'                         // Print 'R' if load
+           +ed value is zero!                                            
+      1891 +    strb w2, [x1]                                            
+      1892 +syscall_verify_save_ok:                                      
+      1893 +                                                             
+      1894      // NOTE: NO DEBUG OUTPUT HERE! DEBUG_SAVE_REGS would corr
+            upt SP offset calculations!
+      1895  
+      1896      // DEBUG: Print "R=" + full 16 hex digits of X0 (syscall 
+            return value)
+
+⏺ Perfect! Now let's rebuild and test to see if:
+  - 'Q' prints → X0 is already zero before we save it
+  - 'R' prints → The save is writing zero or the load is reading zero
+
+⏺ Bash(make && NOGRAPHIC=1 timeout 20                               timeout: 1m 
+      /Users/iansmith/mazzy/bin/run-mazboot 2>&1 | grep -A15        20s
+      "Jumping to kmazarin")
+  ⎿ /Users/iansmith/mazzy/bin/target-gcc -mcpu=cortex-a72 -march=armv8-a -f
+    freestanding -g -c src/mazboot/asm/aarch64/exceptions.s -o build/mazboo
+    t/exceptions.o
+    … +159 lines (ctrl+o to expand)
+
+
+
+⏺ CRITICAL FINDING! I see 'Q' and 'R' markers:
+
+  113 SQRZ = clock_gettime returns 0 (success), X0 IS ZERO ('Q'), save/load confirms zero ('R'), eret with zero ('Z')
+  222 #...# S = mmap returns non-zero (NO 'Q'), but kmazarin sees "SVC=00000000"!
+
+  So clock_gettime correctly returns 0 (not an error). But for mmap, there's NO 'Q' marker, which means X0 is NOT zero at the syscall_return save point!
+
+  But mmap uses a DIFFERENT save path - it saves at [sp, #688] BEFORE branching to syscall_return! Let me check if that first save is working:
+
+⏺ Update(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  File must be read first
+
+⏺ Read(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Read 10 lines
+
+⏺ Update(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Added 15 lines                                                      
+      1704      b mmap_hang
+      1705  mmap_x0_ok:
+      1706  
+      1707 +    // DEBUG: Check X0 before first save at offset 688       
+      1708 +    cbnz x0, mmap_x0_nonzero_before_688                      
+      1709 +    movz x1, #0x0900, lsl #16                                
+      1710 +    mov w2, #'T'                         // Print 'T' if X0 i
+           +s zero before mmap's first save!                             
+      1711 +    strb w2, [x1]                                            
+      1712 +mmap_x0_nonzero_before_688:                                  
+      1713 +                                                             
+      1714      // CRITICAL: Save X0 BEFORE epilogue - SP will change aft
+            er epilogue!
+      1715      // After CALL_GO_PROLOGUE, SP was decremented by (REG_SAV
+            E_SPACE + SPILL_SPACE_6PARAM)
+      1716      // So exception frame is at [sp, #(64 + 320)] = [sp, #384
+            ]
+      1717      // To save to EXC_FRAME_SAVED_X0 (offset 304 in frame): [
+            sp, #(384 + 304)] = [sp, #688]
+      1718      str x0, [sp, #688]
+      1719  
+      1720 +    // DEBUG: Verify first save by loading back              
+      1721 +    ldr x10, [sp, #688]                                      
+      1722 +    cbnz x10, mmap_first_save_ok                             
+      1723 +    movz x1, #0x0900, lsl #16                                
+      1724 +    mov w2, #'U'                         // Print 'U' if firs
+           +t save reads back as zero!                                   
+      1725 +    strb w2, [x1]                                            
+      1726 +mmap_first_save_ok:                                          
+      1727 +                                                             
+      1728      // CALL_GO_EPILOGUE restores callee-saved regs (x19-x30) 
+            and deallocates frame
+      1729      CALL_GO_EPILOGUE SPILL_SPACE_6PARAM
+      1730  
+
+⏺ Perfect! Now let's test if the FIRST save (at offset 688) is working for mmap:
+
+⏺ Bash(make && NOGRAPHIC=1 timeout 20                               timeout: 1m 
+      /Users/iansmith/mazzy/bin/run-mazboot 2>&1 | grep -A3 "222")  20s
+
+  ⎿ /Users/iansmith/mazzy/bin/target-gcc -mcpu=cortex-a72 -march=armv8-a -f
+    freestanding -g -c src/mazboot/asm/aarch64/exceptions.s -o build/mazboo
+    t/exceptions.o
+    … +133 lines (ctrl+o to expand)
+
+
+
+⏺ AMAZING DISCOVERY! Looking at mmap's output:
+  222 #...# S   (no T, U, P, Q, R, or Z!)
+
+  For mmap, NONE of the zero-check markers appear! This means:
+  - X0 is non-zero after Go function (no M)
+  - X0 is non-zero before first save (no T)
+  - First save reads back correctly (no U)
+  - X0 is non-zero after epilogue (no P)
+  - X0 is non-zero at syscall_return entry (S, no Q)
+  - Second save reads back correctly (no R)
+  - X0 is non-zero before eret (no Z)!
+
+  But kmazarin STILL sees "SVC=00000000"!
+
+  This means the X0 value is being LOST during the eret or AFTER returning to kmazarin! Let me check the final X0 restore before eret to make sure we're loading from the correct location:
+
+⏺ Read(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Read 25 lines
+
+⏺ Read(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Read 20 lines
+
+⏺ Read(src/mazboot/asm/aarch64/exceptions.s)
+  ⎿  Read 15 lines
+
+⏺ I see the eret at line 1985. X0 was loaded at line 1966, and for mmap, no 'Z' appeared, so X0 is non-zero before eret.
+
+  But kmazarin still sees "SVC=00000000"! This is very strange. Let me check if kmazarin's debug output might be from a DIFFERENT mmap call. Let me see how many times "222" appears in the output:
+
+⏺ Bash(NOGRAPHIC=1 timeout 20 /Users/iansmith/mazzy/bin/run-mazboot   timeout: 
+      2>&1 | tr -d '\n' | grep -o "222" | wc -l)                      25s
+  ⎿  1
+
+⏺ Only ONE mmap call! So kmazarin's "#0000000000000001 M(...) SVC=00000000" is definitely from that single mmap. But our debug shows X0 is non-zero throughout!
+
+  Wait - the "#..." debug output is from kmazarin itself (it's inside the kmazarin binary we loaded). Kmazarin is printing this from its own mmap wrapper code, AFTER the SVC instruction returns!
+
+  This means:
+  1. Mazboot's syscall handler executes correctly, X0 = 0x48000000 throughout
+  2. Mazboot does eret with X0 = 0x48000000
+  3. Kmazarin resumes execution after SVC
+  4. Kmazarin's code reads X0 and sees 0!
+
+  The problem must be that eret is NOT properly restoring X0 to kmazarin! Let me check the eret instruction and SPSR restoration. Maybe SPSR is corrupting the registers somehow?
+
+  Actually, I just realized - let me verify that EXC_FRAME_SAVED_X0 (offset 304) is actually WHERE we initially saved X0 when the exception occurred. Let me check the exception entry code:
+
+⏺ Bash(grep -n "EXC_FRAME_X0_X1\|stp x0, x1"
+      /Users/iansmith/mazzy/src/mazboot/asm/aarch64/exceptions.s | head -10)
+  ⎿  43:.equ EXC_FRAME_X0_X1,        0      // x0, x1 saved here
+     104:    stp x0, x1, [sp, #-128]!
+     236:    stp x0, x1, [sp, #-16]!          // Save x0, x1
+     … +6 lines (ctrl+o to expand)
+
+⏺ CRITICAL FINDING! I see EXC_FRAME_X0_X1 = 0 - X0 is saved at offset 0 when the exception first occurs. But we're saving the syscall return value at offset 304 and restoring from 304 before eret.
+
+  But what if there's code that mistakenly restores X0 from offset 0 (the ORIGINAL X0 from kmazarin) instead of offset 304 (the syscall return value)?
+
+  Let me check if there are any other X0 loads after line 1966:
+
+⏺ Bash(grep -n "ldr x0"
+      /Users/iansmith/mazzy/src/mazboot/asm/aarch64/exceptions.s | grep -A2 -B2
+      "1966\|1973\|1982")
+  ⎿ 1176:    ldr x0, [sp, #232]              // x0 = original x29 (NOT SP_E
+    L0!)
+    1921:    // ldr x0, [sp, #EXC_FRAME_SAVED_X0]  // x0 = syscall return v
+    … +4 lines (ctrl+o to expand)
+
+
+
+⏺ The X0 loads look correct - both use offset 304. But I'm suspicious about the exception frame size. Line 1982 does add sp, sp, #320, but let me verify the exception frame structure:
+
+⏺ Bash(grep "\.equ EXC_FRAME"
+      /Users/iansmith/mazzy/src/mazboot/asm/aarch64/exceptions.s | head -20)
+  ⎿  .equ EXC_FRAME_X0_X1,        0      // x0, x1 saved here
+     .equ EXC_FRAME_X28,          224    // x28 (g pointer)
+     .equ EXC_FRAME_X29_X30,      232    // x29, x30 (FP, LR)
+     … +10 lines (ctrl+o to expand)
+
+⏺ AHA! The exception frame has:
+  - Offset 0: ORIGINAL X0/X1 (from kmazarin when SVC was called)
+  - Offset 304: Syscall return value
+
+  We correctly load from offset 304 at line 1966. But let me check if there's code that mistakenly loads the ORIGINAL X0 from offset 0:
+
+⏺ Bash(sed -n '1940,1985p'
+      /Users/iansmith/mazzy/src/mazboot/asm/aarch64/exceptions.s | grep -n
+      "ldp\|ldr")
+  ⎿ 6:    ldp x2, x3, [sp, #16]           // Restore x2, x3                
+    7:    ldp x4, x5, [sp, #32]           // Restore x4, x5  ← CRITICAL: Re
+    store x4!
+    … +19 lines (ctrl+o to expand)
+
+
+⏺ The register restore code looks correct - we restore X0 from offset 304 (syscall return value), not from offset 0 (original X0).
+
+  But I just realized something - the "#0000000000000001 M(...) SVC=00000000" output might be printed by mazboot's SyscallMmap function, not by kmazarin! Let me check if there's debug output in our SyscallMmap:
+
+⏺ Bash(grep -n "fmt\|Print\|uart"
+      /Users/iansmith/mazzy/src/mazboot/golang/main/syscall.go | grep -B5 -A5
+      "mmap\|Mmap" | head -40)
+  ⎿  (No content)
+
+> /config 
+
+⏺ I see you sent "/config" - I'll continue investigating the mmap issue. Let me update the todo list with our current findings and then provide a summary:
+
+⏺ Current Investigation Status
+
+  We've made significant progress debugging the mmap return value issue:
+
+  What We Know:
+
+  1. Clock_gettime correctly returns 0 (not an error) - the 'S' marker confirms this
+  2. Syscall 56 (openat) fails with error code (returns negative) - expected behavior
+  3. Mmap (syscall 222) executes with X0=0x48000000 throughout our exception handler:
+    - No 'M' → X0 non-zero after Go function
+    - No 'T' → X0 non-zero before first save (offset 688)
+    - No 'U' → First save/load works correctly
+    - No 'P' → X0 non-zero after epilogue
+    - No 'Q' → X0 non-zero before second save (offset 304)
+    - No 'R' → Second save/load works correctly
+    - No 'Z' → X0 non-zero before eret
+  4. But kmazarin sees "SVC=00000000" after the syscall returns
+
+  The Mystery:
+
+  X0 = 0x48000000 all the way through our exception handler, we eret with X0 = 0x48000000, but kmazarin reports seeing X0 = 0!
+
+  Next Steps:
+
+  The "#0000000000000001 M(...) SVC=00000000" output might be:
+  1. From kmazarin's own debug code (inside the kmazarin binary)
+  2. OR from our SyscallMmap function in syscall.go
+
+  Let me check our syscall.go for any debug output that matches this pattern.
+
+
+

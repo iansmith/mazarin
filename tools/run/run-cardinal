@@ -1,0 +1,139 @@
+#!/bin/bash
+#
+# run-cardinal - Run cardinal kernel in QEMU
+#
+# This script uses a reliable QEMU configuration that avoids known issues:
+#   - Uses file-based serial output (no pipe buffering issues)
+#   - Uses chardev for GDB (avoids race condition in -gdb tcp::PORT)
+#   - No semihosting (avoids QEMU 9.0+ regression)
+#   - bochs-display device required for serial output to work
+#
+# Usage:
+#   run-cardinal                    # Run with GUI display
+#   NOGRAPHIC=1 run-cardinal        # Run without GUI (serial to file)
+#   GDB=1 run-cardinal              # Enable GDB server on port 1234
+#   MEMORY=2G run-cardinal          # Set memory size (default: 8G)
+#   TIMEOUT=30 run-cardinal         # Auto-kill after N seconds
+#
+# Output:
+#   Serial output is written to /tmp/cardinal-serial.log
+#   Use 'tail -f /tmp/cardinal-serial.log' to watch output
+#
+
+set -e
+
+# Resolve script directory (handle symlinks)
+SCRIPT_PATH="$0"
+while [ -L "$SCRIPT_PATH" ]; do
+    SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+    LINK_TARGET="$(readlink "$SCRIPT_PATH")"
+    if [ "${LINK_TARGET#/}" = "$LINK_TARGET" ]; then
+        SCRIPT_PATH="$SCRIPT_DIR/$LINK_TARGET"
+    else
+        SCRIPT_PATH="$LINK_TARGET"
+    fi
+done
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# Configuration
+KERNEL_PATH="$PROJECT_ROOT/build/cardinal.elf"
+SERIAL_LOG="/tmp/cardinal-serial.log"
+MONITOR_PORT=4444
+GDB_PORT=1234
+
+# Environment variables
+NOGRAPHIC="${NOGRAPHIC:-0}"
+GDB="${GDB:-0}"
+MEMORY="${MEMORY:-8G}"
+TIMEOUT="${TIMEOUT:-0}"
+
+# Find QEMU
+QEMU_BIN="$HOME/mazzy/bin/qemu-system-aarch64"
+if [ ! -x "$QEMU_BIN" ]; then
+    QEMU_BIN="/opt/homebrew/bin/qemu-system-aarch64"
+fi
+if [ ! -x "$QEMU_BIN" ]; then
+    QEMU_BIN="$(which qemu-system-aarch64 2>/dev/null || true)"
+fi
+if [ -z "$QEMU_BIN" ] || [ ! -x "$QEMU_BIN" ]; then
+    echo "Error: qemu-system-aarch64 not found" >&2
+    exit 1
+fi
+
+# Verify kernel exists
+if [ ! -f "$KERNEL_PATH" ]; then
+    echo "Error: Kernel not found at $KERNEL_PATH" >&2
+    echo "Run 'make cardinal' first" >&2
+    exit 1
+fi
+
+# Clear old serial log
+rm -f "$SERIAL_LOG"
+
+# Build QEMU command
+QEMU_CMD=(
+    "$QEMU_BIN"
+    -M virt,virtualization=off
+    -cpu cortex-a72
+    -m "$MEMORY"
+    -kernel "$KERNEL_PATH"
+    -nodefaults
+    -device bochs-display
+    -object rng-random,id=rng0,filename=/dev/urandom
+    -device virtio-rng-pci,rng=rng0,disable-legacy=on
+    -serial "file:$SERIAL_LOG"
+    -monitor "tcp:127.0.0.1:$MONITOR_PORT,server,nowait"
+    -no-reboot
+)
+
+# Display mode
+if [ "$NOGRAPHIC" = "1" ]; then
+    QEMU_CMD+=(-display none)
+else
+    QEMU_CMD+=(-display cocoa)
+fi
+
+# GDB mode - use chardev to avoid race condition
+if [ "$GDB" = "1" ] || [ "$GDB" != "0" ] && [ -n "$GDB" ]; then
+    QEMU_CMD+=(
+        -chardev "socket,id=gdb0,host=127.0.0.1,port=$GDB_PORT,server=on,wait=off"
+        -gdb chardev:gdb0
+    )
+    if [ "$GDB" = "1" ]; then
+        QEMU_CMD+=(-S)  # Pause at startup if GDB=1 (not just GDB=port)
+    fi
+fi
+
+# Print info
+echo "Cardinal QEMU Runner"
+echo "===================="
+echo "Kernel:  $KERNEL_PATH"
+echo "Serial:  $SERIAL_LOG"
+echo "Monitor: tcp:127.0.0.1:$MONITOR_PORT"
+if [ "$GDB" != "0" ]; then
+    echo "GDB:     tcp:127.0.0.1:$GDB_PORT"
+fi
+echo ""
+echo "Watch serial output with: tail -f $SERIAL_LOG"
+echo ""
+
+# Run QEMU
+if [ "$TIMEOUT" != "0" ]; then
+    echo "Running with ${TIMEOUT}s timeout..."
+    timeout "$TIMEOUT" "${QEMU_CMD[@]}" &
+    QEMU_PID=$!
+
+    # Wait and show serial output
+    sleep 1
+    if [ -f "$SERIAL_LOG" ]; then
+        echo "--- Serial Output ---"
+        cat "$SERIAL_LOG"
+    fi
+
+    wait $QEMU_PID 2>/dev/null || true
+else
+    echo "Starting QEMU (Ctrl+C to stop)..."
+    echo ""
+    "${QEMU_CMD[@]}"
+fi
