@@ -193,7 +193,7 @@ type MMIODevice struct {
 var mmioDevices [4]MMIODevice  // Fixed-size array to avoid heap allocation
 var mmioDeviceCount int
 
-// Page table structure
+// Page table structure (TTBR0 - user/low memory)
 var (
 	pageTableL0 uintptr   // Level 0 table (PGD)
 	pageTableL1 uintptr   // Level 1 table (PUD)
@@ -210,6 +210,14 @@ var (
 	totalExceptionCounter uint32
 	lastExceptionVA uintptr
 	sameVACounter uint32
+)
+
+// Kernel page table structure (TTBR1 - kernel/high memory)
+var (
+	kernelPageTableL0 uintptr   // Kernel L0 table (for TTBR1)
+	kernelPageTableL1 uintptr   // Kernel L1 table (index 511)
+	kernelPageTableL2 []uintptr // Kernel L2 tables - allocated as needed
+	kernelPageTableL3 []uintptr // Kernel L3 tables - allocated as needed
 )
 
 // kernelPanic prints a panic message and halts the system
@@ -1917,23 +1925,37 @@ func enableMMU() bool {
 	asm.WriteMairEl1(mairValue)
 
 	// =========================================================================
-	// Step 3: Configure TCR_EL1
+	// Step 3: Configure TCR_EL1 (with TTBR1 enabled for high-memory kernel)
 	// =========================================================================
 	tcrValue := uint64(0)
+
+	// TTBR0 configuration (user/low memory)
 	tcrValue |= 16 << 0  // T0SZ = 16 (48-bit VA space)
 	tcrValue |= 1 << 8   // IRGN0 = 1 (Inner Write-Back Cacheable)
 	tcrValue |= 1 << 10  // ORGN0 = 1 (Outer Write-Back Cacheable)
 	tcrValue |= 3 << 12  // SH0 = 3 (Inner Shareable)
-	tcrValue |= 16 << 16 // T1SZ = 16
-	tcrValue |= 1 << 23  // EPD1 = 1 (Disable TTBR1 walks)
+	tcrValue |= 0 << 14  // TG0 = 0 (4KB granule for TTBR0)
+
+	// TTBR1 configuration (kernel/high memory)
+	tcrValue |= 16 << 16 // T1SZ = 16 (48-bit VA space)
+	tcrValue |= 0 << 23  // EPD1 = 0 (ENABLE TTBR1 walks) *** KEY CHANGE ***
+	tcrValue |= 1 << 24  // IRGN1 = 1 (Inner Write-Back Cacheable)
+	tcrValue |= 1 << 26  // ORGN1 = 1 (Outer Write-Back Cacheable)
+	tcrValue |= 3 << 28  // SH1 = 3 (Inner Shareable)
+	tcrValue |= 2 << 30  // TG1 = 2 (4KB granule for TTBR1) - NOTE: different encoding!
+
 	tcrValue |= 2 << 32  // IPS = 2 (40-bit PA space)
 	asm.WriteTcrEl1(tcrValue)
 
 	// =========================================================================
 	// Step 4: Configure TTBR0_EL1 and TTBR1_EL1
 	// =========================================================================
-	asm.WriteTtbr1El1(0)
 	asm.WriteTtbr0El1(uint64(pageTableL0))
+	if kernelPageTableL0 != 0 {
+		asm.WriteTtbr1El1(uint64(kernelPageTableL0))
+	} else {
+		asm.WriteTtbr1El1(0) // Fallback if kernel page tables not initialized
+	}
 
 	// =========================================================================
 	// Step 5: DSB ISH + ISB (ARM TF uses Inner Shareable barrier)
@@ -1961,6 +1983,107 @@ func enableMMU() bool {
 	*(*uint32)(unsafe.Pointer(uartBase)) = 'M'
 
 	return true
+}
+
+// =============================================================================
+// Kernel Page Table Initialization (TTBR1)
+// =============================================================================
+
+// initKernelPageTables creates and initializes the TTBR1 page tables for
+// high-memory kernel space (VAs with bit 63 = 1).
+//
+// For VA 0xFFFF_FFFF_4xxx_xxxx (kernel base):
+//   L0 index = (VA >> 39) & 0x1FF = 511
+//   L1 index = (VA >> 30) & 0x1FF = 511
+//
+// This function allocates L0 and L1 tables and links them properly.
+func initKernelPageTables() {
+	uartBase := uintptr(0x09000000)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'K' // K = Kernel page tables init
+
+	// Allocate L0 table for TTBR1
+	kernelPageTableL0 = allocatePageTable()
+	if kernelPageTableL0 == 0 {
+		kernelPanic("Failed to allocate kernel L0 page table")
+	}
+
+	// Zero the L0 table
+	bzero4K(unsafe.Pointer(kernelPageTableL0), TABLE_SIZE)
+
+	// Allocate L1 table for index 511 (high memory)
+	kernelPageTableL1 = allocatePageTable()
+	if kernelPageTableL1 == 0 {
+		kernelPanic("Failed to allocate kernel L1 page table")
+	}
+
+	// Zero the L1 table
+	bzero4K(unsafe.Pointer(kernelPageTableL1), TABLE_SIZE)
+
+	// Link L1 table into L0[511]
+	l0Entry := (*uint64)(unsafe.Pointer(kernelPageTableL0 + 511*8))
+	*l0Entry = uint64(kernelPageTableL1) | PTE_VALID | PTE_TABLE
+
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'k' // k = Kernel page tables done
+}
+
+// mapKernelPage maps a physical address to a high-memory virtual address
+// in the TTBR1 page tables. The VA must have bit 63 = 1 (kernel space).
+//
+// This is similar to mapPage but uses the kernel page table structures.
+func mapKernelPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
+	// Validate VA is in kernel space (bit 63 must be 1)
+	if (va >> 63) != 1 {
+		kernelPanic("mapKernelPage: VA not in kernel space")
+	}
+
+	// Extract page table indices
+	l0Idx := (va >> 39) & 0x1FF
+	l1Idx := (va >> 30) & 0x1FF
+	l2Idx := (va >> 21) & 0x1FF
+	l3Idx := (va >> 12) & 0x1FF
+
+	// L0 entry should point to L1 (already set up in initKernelPageTables)
+	l0Entry := (*uint64)(unsafe.Pointer(kernelPageTableL0 + l0Idx*8))
+	if (*l0Entry & PTE_VALID) == 0 {
+		kernelPanic("mapKernelPage: L0 entry not valid")
+	}
+
+	// Get L1 table address
+	l1Table := uintptr(*l0Entry & PTE_ADDR_MASK)
+
+	// Check/allocate L2 table
+	l1Entry := (*uint64)(unsafe.Pointer(l1Table + l1Idx*8))
+	var l2Table uintptr
+	if (*l1Entry & PTE_VALID) == 0 {
+		// Allocate new L2 table
+		l2Table = allocatePageTable()
+		if l2Table == 0 {
+			kernelPanic("mapKernelPage: Failed to allocate L2 table")
+		}
+		bzero4K(unsafe.Pointer(l2Table), TABLE_SIZE)
+		*l1Entry = uint64(l2Table) | PTE_VALID | PTE_TABLE
+	} else {
+		l2Table = uintptr(*l1Entry & PTE_ADDR_MASK)
+	}
+
+	// Check/allocate L3 table
+	l2Entry := (*uint64)(unsafe.Pointer(l2Table + l2Idx*8))
+	var l3Table uintptr
+	if (*l2Entry & PTE_VALID) == 0 {
+		// Allocate new L3 table
+		l3Table = allocatePageTable()
+		if l3Table == 0 {
+			kernelPanic("mapKernelPage: Failed to allocate L3 table")
+		}
+		bzero4K(unsafe.Pointer(l3Table), TABLE_SIZE)
+		*l2Entry = uint64(l3Table) | PTE_VALID | PTE_TABLE
+	} else {
+		l3Table = uintptr(*l2Entry & PTE_ADDR_MASK)
+	}
+
+	// Write L3 entry (page mapping)
+	l3Entry := (*uint64)(unsafe.Pointer(l3Table + l3Idx*8))
+	*l3Entry = createPageTableEntry(pa, attrs, ap, exec)
 }
 
 // =============================================================================
