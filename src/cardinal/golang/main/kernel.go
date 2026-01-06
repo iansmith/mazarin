@@ -1446,12 +1446,15 @@ func loadAndRunKmazarin() {
 			}
 			kernelVA := kernelVAStart + (pageIdx << 12)
 
-			// Enforce kmazarin size limit (512MB total)
+			// Enforce kmazarin size limit (64MB total)
 			if kmazarinAllocatedBytes + 0x1000 > uintptr(constants.KmazarinTotalLimit) {
-				uartPutsDirect("ERROR: Kmazarin exceeded 512MB limit\r\n")
+				uartPutsDirect("ERROR: Kmazarin exceeded 64MB limit\r\n")
 				uartPutsDirect("Allocated: 0x")
 				uartPutHex64Direct(uint64(kmazarinAllocatedBytes))
-				uartPutsDirect("\r\n")
+				uartPutsDirect(" bytes\r\n")
+				uartPutsDirect("Limit: 0x")
+				uartPutHex64Direct(uint64(constants.KmazarinTotalLimit))
+				uartPutsDirect(" bytes\r\n")
 				kernelPanic("Kmazarin size limit exceeded")
 			}
 

@@ -221,7 +221,7 @@ var (
 )
 
 // Kmazarin size tracking
-// Enforces the 512MB total limit (binary + heap combined)
+// Enforces the 64MB total limit (binary + heap combined)
 var (
 	kmazarinAllocatedBytes uintptr // Total bytes allocated for kmazarin (includes binary + heap)
 )
