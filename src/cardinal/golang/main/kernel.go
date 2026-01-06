@@ -4,6 +4,7 @@ import (
 	"unsafe"
 
 	"cardinal/asm"
+	"cardinal/constants"
 )
 
 // KernelMain is the entry point called from boot_arm64.s
@@ -1444,11 +1445,25 @@ func loadAndRunKmazarin() {
 				uartPutcDirect('.')
 			}
 			kernelVA := kernelVAStart + (pageIdx << 12)
+
+			// Enforce kmazarin size limit (512MB total)
+			if kmazarinAllocatedBytes + 0x1000 > uintptr(constants.KmazarinTotalLimit) {
+				uartPutsDirect("ERROR: Kmazarin exceeded 512MB limit\r\n")
+				uartPutsDirect("Allocated: 0x")
+				uartPutHex64Direct(uint64(kmazarinAllocatedBytes))
+				uartPutsDirect("\r\n")
+				kernelPanic("Kmazarin size limit exceeded")
+			}
+
 			physFrame := allocPhysFrame()
 			if physFrame == 0 {
 				uartPutsDirect("ERROR: Out of memory mapping segment\r\n")
 				return
 			}
+
+			// Track kmazarin allocation
+			kmazarinAllocatedBytes += 0x1000
+
 			if pageIdx == 0 {
 				uartPutcDirect('N') // breadcrumb: after first allocPhysFrame
 			}
@@ -1576,6 +1591,19 @@ func loadAndRunKmazarin() {
 
 	// Segment loop completed - all kmazarin segments loaded
 	uartPutcDirect('A') // DEBUG: After segment loop
+
+	// Print kmazarin size summary
+	uartPutsDirect("\r\nKmazarin binary size: ")
+	uartPutHex64Direct(uint64(kmazarinAllocatedBytes))
+	uartPutsDirect(" bytes (")
+	// Print in MB for readability
+	uartPutHex64Direct(uint64(kmazarinAllocatedBytes) / (1024 * 1024))
+	uartPutsDirect(" MB)\r\n")
+	uartPutsDirect("Limit: ")
+	uartPutHex64Direct(uint64(constants.KmazarinTotalLimit))
+	uartPutsDirect(" bytes (")
+	uartPutHex64Direct(uint64(constants.KmazarinTotalLimit) / (1024 * 1024))
+	uartPutsDirect(" MB)\r\n")
 
 	// CRITICAL: Cache maintenance for executable code
 	// After loading code into memory, we must:

@@ -55,6 +55,13 @@ const (
 	// Kernel VA offset - add this to physical addresses to get high-memory kernel VAs
 	// Physical 0x40000000 -> Kernel VA 0xFFFFFFFF40000000
 	KernelVAOffset = 0xFFFFFFFF00000000
+
+	// Kmazarin kernel virtual base address (high memory, TTBR1)
+	KernelVABase = KernelVAOffset + BootAddress // 0xFFFFFFFF40000000
+
+	// Kmazarin size limits (enforced at boot and runtime)
+	KmazarinBinaryMaxSize = 0x800000       // 8 MB max for kmazarin binary (enforced at boot)
+	KmazarinTotalLimit    = 64 * 1024 * 1024 // 64 MB for binary + heap combined
 )
 
 // ============================================================================
@@ -126,27 +133,66 @@ const (
 )
 
 // ============================================================================
+// High-Memory Kernel Addresses (TTBR1)
+// ============================================================================
+// These addresses are used by kmazarin when running at high memory.
+// They map to the same physical devices as the low-memory addresses above,
+// but through TTBR1 for kernel-space access.
+
+const (
+	// High-memory MMIO offset - add this to physical MMIO addresses
+	// Physical 0x08000000 -> Kernel MMIO VA 0xFFFFFFFF08000000
+	KernelMMIOOffset = 0xFFFFFFFF00000000
+
+	// High-memory MMIO device addresses (kernel access via TTBR1)
+	KernelUartBase   = KernelMMIOOffset + UartBase   // 0xFFFFFFFF09000000
+	KernelGicBase    = KernelMMIOOffset + GicBase    // 0xFFFFFFFF08000000
+
+	// Kmazarin memory regions (high memory, TTBR1)
+	// These are virtual addresses where kmazarin code, heap, and page tables live
+	KernelTextBase       = KernelVAOffset + KmazarinLoadAddr  // 0xFFFFFFFF41800000
+	KernelHeapStart      = 0xFFFFFFFF4A000000                 // Heap starts after binary
+	KernelPageTableBase  = 0xFFFFFFFF60000000                 // TTBR1 page tables (8MB)
+	KernelPageTableSize  = 0x800000                           // 8 MB
+
+	// DTB mapped to high memory (read-only kernel copy)
+	KernelDtbBase = KernelVAOffset + DtbStart // 0xFFFFFFFF40000000
+)
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
 // MemoryLayoutSummary returns a human-readable summary of the memory layout.
 // Useful for debugging and documentation.
 func MemoryLayoutSummary() string {
-	return `Cardinal Memory Layout:
+	return `Cardinal Memory Layout (Low Memory, TTBR0):
   RAM Start:       0x40000000
   DTB:             0x40000000 - 0x40100000 (1 MB)
   Cardinal:        0x40100000 - 0x41000000 (15 MB)
-  Page Tables:     0x41000000 - 0x41800000 (8 MB)
-  Kmazarin:        0x41800000+
+  Page Tables:     0x41000000 - 0x41800000 (8 MB, TTBR0)
+  Kmazarin:        0x41800000 - ~0x42000000 (physical, ~8MB max)
   g0 Stack:        0x5EFF0000 - 0x5F000000 (64 KB, SP_EL0)
   Exception Stack: 0x5F000000 - 0x5F020000 (128 KB, SP_EL1)
 
-MMIO Devices (QEMU virt):
+Kmazarin Kernel Layout (High Memory, TTBR1):
+  DTB:             0xFFFFFFFF40000000 - 0xFFFFFFFF40100000 (1 MB, read-only)
+  Kernel Text:     0xFFFFFFFF41800000 - ~0xFFFFFFFF42000000 (8 MB max)
+  Kernel Heap:     0xFFFFFFFF4A000000+ (64 MB limit total)
+  g0 Stack:        0xFFFFFFFF5EFFC000 - 0xFFFFFFFF5F000000 (16 KB)
+  Exception Stack: 0xFFFFFFFF5F000000 - 0xFFFFFFFF5F002000 (8 KB)
+  Page Tables:     0xFFFFFFFF60000000 - 0xFFFFFFFF60800000 (8 MB, TTBR1)
+
+MMIO Devices (Physical):
   GIC:             0x08000000 - 0x08020000 (128 KB)
   UART:            0x09000000 - 0x09010000 (64 KB)
   RTC:             0x09010000
   fw_cfg:          0x09020000 - 0x09030000 (64 KB)
   bochs-display:   0x10000000 - 0x11000000 (16 MB)
   PCI BARs:        0x11000000 - 0x20000000 (240 MB)
+
+MMIO Devices (Kernel High Memory, TTBR1):
+  GIC:             0xFFFFFFFF08000000 - 0xFFFFFFFF08020000
+  UART:            0xFFFFFFFF09000000 - 0xFFFFFFFF09010000
 `
 }
