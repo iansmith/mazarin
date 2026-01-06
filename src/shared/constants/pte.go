@@ -21,7 +21,7 @@ const (
 	PTE_TABLE = 1 << 1
 	PTE_PAGE  = 0 // Unused; we always emit L3 pages with bits[1:0] = 0b11.
 
-	// Page attributes (bits 2-7)
+	// Access flag and global bit (bits 10-11)
 	PTE_AF = 1 << 10 // Access flag (must be 1 for hardware-managed)
 	PTE_NG = 1 << 11 // Not global (0 = global, 1 = per-ASID)
 
@@ -33,7 +33,7 @@ const (
 	PTE_GP   = 1 << 50 // Guarded page
 	PTE_nT   = 1 << 16 // Not translation table walk
 
-	// Software-defined bits (bits 58-55, ignored by MMU hardware)
+	// Software-defined bits (bits 55-58, ignored by MMU hardware)
 	// These bits can be used by the OS for page metadata/bookkeeping
 	PTE_SW_LOCKED   = 1 << 55 // Page is locked, don't free
 	PTE_SW_RESERVED = 1 << 56 // Page reserved for kernel use
