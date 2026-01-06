@@ -234,26 +234,31 @@ do_context_switch:
 	// R0 = result (syscall return value to save)
 	// R1 = target thread index
 	MOVD R0, R19                   // Save result in callee-saved
+	MOVD R1, R20                   // Save targetIdx in callee-saved
+	MOVD RSP, R21                  // Save framePtr (current RSP = exception frame)
 
-	// Call DoContextSwitch(framePtr, targetIdx)
-	MOVD RSP, R0                   // R0 = frame pointer
-	// R1 already has targetIdx
+	// DoContextSwitch(framePtr, targetIdx) - ABI0 expects args on stack
+	// Layout: [RSP+0..7]=pad, [RSP+8..15]=framePtr, [RSP+16..23]=targetIdx,
+	//         [RSP+24..31]=return, [RSP+32..79]=callee-saved
+	SUB $80, RSP
 
-	// DoContextSwitch takes 2 args (R0, R1), so needs 16 bytes of spill space.
-	// Store our data at offset 16+ to avoid collision with spill area.
-	// Layout: [RSP+0..15] = spill area, [RSP+16..63] = our saved regs
-	SUB $64, RSP
-	STP (R19, R20), 16(RSP)
-	STP (R21, R22), 32(RSP)
-	STP (R29, R30), 48(RSP)
+	// Store args on stack (ABI0)
+	MOVD R21, 8(RSP)               // arg0 = framePtr
+	MOVW R20, 16(RSP)              // arg1 = targetIdx (int32)
+
+	// Save callee-saved registers
+	STP (R19, R20), 32(RSP)
+	STP (R21, R22), 48(RSP)
+	STP (R29, R30), 64(RSP)
 
 	CALL main·DoContextSwitch(SB)
-	// Returns: R0 = pointer to new ThreadContext
+	// Returns: R0 = pointer to new ThreadContext (also at RSP+24)
 
-	LDP 16(RSP), (R19, R20)
-	LDP 32(RSP), (R21, R22)
-	LDP 48(RSP), (R29, R30)
-	ADD $64, RSP
+	// Restore callee-saved registers
+	LDP 32(RSP), (R19, R20)
+	LDP 48(RSP), (R21, R22)
+	LDP 64(RSP), (R29, R30)
+	ADD $80, RSP
 
 	B load_context_and_eret(SB)
 

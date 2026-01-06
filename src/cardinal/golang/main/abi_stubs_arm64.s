@@ -39,41 +39,20 @@ TEXT ·SyncExceptionDispatch(SB), NOSPLIT, $0-144
 // DoContextSwitch is called from exc_syscall_arm64.s
 // Go signature: func DoContextSwitch(framePtr uintptr, targetIdx int32) *ThreadContext
 // ABI0: 2 args (16 bytes) + 1 return (8 bytes) = 24 bytes
+//
+// Tail-call to internal function. The .abi0 wrapper reads from caller's stack.
 TEXT ·DoContextSwitch(SB), NOSPLIT, $0-24
-	// Load args from stack
-	MOVD	framePtr+0(FP), R0
-	MOVW	targetIdx+8(FP), R1
-
-	// Call ABIInternal implementation
-	BL	·doContextSwitchInternal(SB)
-
-	// Store return value
-	MOVD	R0, ret+16(FP)
-	RET
+	JMP	·doContextSwitchInternal(SB)
 
 // IRQExceptionDispatch is called from exc_irq_arm64.s
 // Go signature: func IRQExceptionDispatch(
 //     irqID uint64, framePtr uintptr, savedG, elr, spEl0 uint64,
 // ) (newELR, newSP, newLR uint64, doPreempt bool)
 // ABI0: 5 args (40 bytes) + 4 returns (32 bytes) = 72 bytes
+//
+// Tail-call to internal function. The .abi0 wrapper reads from caller's stack.
 TEXT ·IRQExceptionDispatch(SB), NOSPLIT, $0-72
-	// Load args from stack
-	MOVD	irqID+0(FP), R0
-	MOVD	framePtr+8(FP), R1
-	MOVD	savedG+16(FP), R2
-	MOVD	elr+24(FP), R3
-	MOVD	spEl0+32(FP), R4
-
-	// Call ABIInternal implementation
-	BL	·irqExceptionDispatchInternal(SB)
-
-	// Store return values
-	// ABIInternal returns: R0=newELR, R1=newSP, R2=newLR, R3=doPreempt
-	MOVD	R0, newELR+40(FP)
-	MOVD	R1, newSP+48(FP)
-	MOVD	R2, newLR+56(FP)
-	MOVB	R3, doPreempt+64(FP)
-	RET
+	JMP	·irqExceptionDispatchInternal(SB)
 
 // KernelMain is called from boot_arm64.s (_cardinal_boot)
 // Go signature: func KernelMain(r0, r1, atags uint32)
