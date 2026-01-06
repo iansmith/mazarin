@@ -360,12 +360,12 @@ func initMMU() bool {
 	return true
 }
 
-// preMapScheديnitPages pre-maps the 22 pages that would normally cause page faults
+// preMapSchedInitPages pre-maps the 22 pages that would normally cause page faults
 // during runtime.schedinit(). This is a debugging aid to isolate whether the
 // problem is with the 22nd exception itself, or with something after 22 exceptions.
 //
 //go:nosplit
-func preMapScheديnitPages() {
+func preMapSchedInitPages() {
 	// Get UART base for progress markers
 	uartBase := asm.GetUartBase()
 
