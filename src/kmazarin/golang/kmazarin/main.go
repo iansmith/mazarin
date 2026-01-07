@@ -19,6 +19,33 @@ func init() {
 	uartPutc('N')
 	uartPutc('\r')
 	uartPutc('\n')
+
+	// Set VBAR_EL1 to kmazarin's exception vector
+	vbar := GetExceptionVectorBase()
+	uartPutc('V')
+	uartPutc('B')
+	uartPutc('A')
+	uartPutc('R')
+	uartPutc('=')
+	printHex(uint64(vbar))
+	uartPutc('\r')
+	uartPutc('\n')
+	SetVBAR(vbar)
+	uartPutc('[')
+	uartPutc('V')
+	uartPutc('B')
+	uartPutc('A')
+	uartPutc('R')
+	uartPutc(' ')
+	uartPutc('S')
+	uartPutc('E')
+	uartPutc('T')
+	uartPutc(']')
+	uartPutc('\r')
+	uartPutc('\n')
+
+	// Initialize thread table
+	// InitThreads()
 }
 
 // uartPutc writes a single character directly to UART (bypasses Go runtime)

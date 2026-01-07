@@ -458,6 +458,24 @@ vbar_digit4:
 	MOVD	$'\n', R5
 	MOVB	R5, (R10)
 
+	// ===================================================================
+	// CRITICAL: Swap exception vector to kmazarin before jumping
+	// ===================================================================
+	// Kmazarin's exception vector table is at the start of its .text section
+	// (0xFFFFFFFF41800000) due to .align 11 in exceptions_arm64.s
+	//
+	// This switches all exception handling from Cardinal to kmazarin:
+	//   - Syscalls (SVC) → kmazarin handlers
+	//   - Timer (IRQ) → kmazarin handlers
+	//   - Page faults → kmazarin handlers
+	//
+	// After this point, Cardinal code is never called again.
+	//
+	// NOTE: If kmazarin's memory layout changes, this address must be updated!
+
+	// NOTE: VBAR_EL1 setting moved to kmazarin init()
+	// Kmazarin calls GetExceptionVectorBase() and SetVBAR() itself
+
 	JMP	(R4)			// Branch to entry point - never returns
 
 // ============================================================================
