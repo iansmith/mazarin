@@ -1890,6 +1890,11 @@ func loadAndRunKmazarin() {
 	uartPutHex32Direct(tval)
 	uartPutsDirect("\r\n")
 
+	// CRITICAL: Disable all interrupts before transferring control
+	// Kmazarin will re-enable them after installing its handlers
+	asm.DisableIrqs()
+	uartPutsDirect("[IRQs DISABLED]\r\n")
+
 	jumpToKmazarin(entryAddr, argc, argv, stackPointer)
 
 	// Should never reach here

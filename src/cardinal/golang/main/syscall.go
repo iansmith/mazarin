@@ -1035,8 +1035,9 @@ func SyscallFcntl(fd int32, cmd int32, arg int64) int64 {
 //go:nosplit
 func SyscallWrite(fd int32, buf unsafe.Pointer, count uint64) int64 {
 	if fd == 1 || fd == 2 {
-		// Write to UART via ring buffer
-		return int64(SyscallWriteBuffer(buf, uint32(count)))
+		// Use direct UART output for writes from kmazarin
+		// The ring buffer+interrupt mechanism isn't reliable across address spaces
+		return int64(SyscallWriteDirect(buf, uint32(count)))
 	}
 	// For other fds, pretend we wrote all bytes
 	return int64(count)
