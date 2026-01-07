@@ -510,37 +510,33 @@ print_r3_char:
 	MOVD	$'}', R5
 	MOVB	R5, (R10)
 
-	// CRITICAL: Set SP_EL1 BEFORE switching to EL1t mode
-	// We're currently in EL1h mode, so SP = SP_EL1
-	// Set it to high-memory exception stack top: 0xFFFFFFFF5F002000
-	MOVD	$0x5F002000, R6
-	MOVD	$0xFFFFFFFF00000000, R7
-	ADD	R7, R6, R6			// R6 = 0xFFFFFFFF5F002000
-	MOVD	R6, RSP				// Set SP_EL1 via SP (we're in EL1h)
+	// ========================================
+	// Set SP_EL1 to high memory via HVC call to EL2
+	// ========================================
+	// We're still at EL1, but we can call HVC to get EL2 to set SP_EL1 for us
+	// This is the only way to change SP_EL1 from EL1
 
-	// Print 'X' and verify SP_EL1 was actually set
+	// Print 'H' to show we're about to call HVC
 	MOVD	$0x09000000, R10
-	MOVD	$'X', R5
+	MOVD	$'H', R5
 	MOVB	R5, (R10)
 
-	// Print '[' then RSP to verify it was set
-	MOVD	$'[', R5
-	MOVB	R5, (R10)
-	MOVD	RSP, R12
-	LSR	$60, R12, R5
-	AND	$0xF, R5
-	CMP	$10, R5
-	BLT	print_sp_el1_digit
-	ADD	$('A'-10), R5
-	B	print_sp_el1_char
-print_sp_el1_digit:
-	ADD	$'0', R5
-print_sp_el1_char:
-	MOVB	R5, (R10)
-	MOVD	$']', R5
+	// Calculate high-memory exception stack address
+	MOVD	$0x5F002000, R0
+	MOVD	$0xFFFFFFFF00000000, R1
+	ADD	R1, R0, R0		// R0 = 0xFFFFFFFF5F002000
+
+	// Call HVC #1 to set SP_EL1 (X0 contains the value)
+	WORD	$0xD4000022		// hvc #1
+
+	// When we return here, SP_EL1 is set to high memory!
+	// Print 'h' to show HVC returned successfully
+	MOVD	$0x09000000, R10
+	MOVD	$'h', R5
 	MOVB	R5, (R10)
 
-	// Now switch to EL1t mode (this makes SP point to SP_EL0 instead)
+	// Switch to EL1t mode
+	// SP_EL1 is now at high-memory address (0xFFFFFFFF5F002000)
 	MSR	$0, SPSel
 
 	// Print 'T' for "EL1t mode switched"
@@ -552,27 +548,7 @@ print_sp_el1_char:
 	DSB	$15
 	ISB	$15
 
-	// DEBUG: Verify SP_EL1 is still correct after mode switch
-	// In EL1t mode, we can't directly read SP (it's SP_EL0 now)
-	// But we can read SP_EL1 by switching back temporarily
-	MSR	$1, SPSel			// Temporarily switch to EL1h
-	MOVD	RSP, R12			// R12 = SP_EL1
-	MSR	$0, SPSel			// Switch back to EL1t
-	// Print '|' then SP_EL1 value
-	MOVD	$'|', R5
-	MOVB	R5, (R10)
-	LSR	$60, R12, R5
-	AND	$0xF, R5
-	CMP	$10, R5
-	BLT	print_sp_el1_after_digit
-	ADD	$('A'-10), R5
-	B	print_sp_el1_after_char
-print_sp_el1_after_digit:
-	ADD	$'0', R5
-print_sp_el1_after_char:
-	MOVB	R5, (R10)
-
-	// Now set SP (which is SP_EL0 in EL1t mode) to high-memory kernel g0 stack
+	// Set SP (which is SP_EL0 in EL1t mode) to high-memory kernel g0 stack
 	// R3 contains kernelG0StackPointer = 0xFFFFFFFF5EFFFE00 (from setupKmazarinStartupEnv)
 	// Use MOV SP, X3 to set the stack pointer
 	MOVD	R3, RSP
