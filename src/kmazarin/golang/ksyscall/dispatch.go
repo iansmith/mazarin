@@ -57,7 +57,7 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 //
 //go:nosplit
 func syscallPanic(msg string, syscallNum uint64) {
-	const uartBase = uintptr(0x09000000)
+	const uartBase = uintptr(0xFFFFFFFF09000000)
 
 	// Print "PANIC: "
 	uartPuts := func(s string) {

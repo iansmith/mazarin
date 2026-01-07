@@ -183,6 +183,7 @@ const (
 	AT_KERNEL_UART_BASE = 0x1006 // High-memory UART base (0xFFFFFFFF09000000)
 	AT_KERNEL_GIC_BASE  = 0x1007 // High-memory GIC base (0xFFFFFFFF08000000)
 	AT_TTBR1_L0_PHYS    = 0x1008 // Physical address of TTBR1 L0 page table
+	AT_STARTUP_PARAMS   = 0x1009 // High-memory address of kmazarin StartupParams BSS array
 )
 
 // ============================================================================

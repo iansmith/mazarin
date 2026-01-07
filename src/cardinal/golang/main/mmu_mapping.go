@@ -263,6 +263,50 @@ func mapPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 	*l3Entry = createPageTableEntry(pa, attrs, ap, exec)
 }
 
+// unmapPage removes a 4KB page mapping from TTBR0 page tables
+// This clears the valid bit in the L3 PTE, causing future accesses to fault.
+// Note: Does NOT free the physical frame or invalidate TLB (caller must do that)
+func unmapPage(va uintptr) {
+	va64 := uint64(va)
+	l0Idx := uint16((va64 >> 39) & 0x1FF)
+	l1Idx := uint16((va64 >> 30) & 0x1FF)
+	l2Idx := uint16((va64 >> 21) & 0x1FF)
+	l3Idx := uint16((va64 >> 12) & 0x1FF)
+
+	l0EntryAddr := pageTableL0 + uintptr(l0Idx)*PTE_SIZE
+	l0Entry := (*uint64)(unsafe.Pointer(l0EntryAddr))
+
+	if (*l0Entry & PTE_TABLE) == 0 {
+		// L0 not present - page not mapped
+		return
+	}
+
+	l1Table := uintptr(*l0Entry & PTE_ADDR_MASK)
+	l1EntryAddr := l1Table + uintptr(l1Idx)*PTE_SIZE
+	l1Entry := (*uint64)(unsafe.Pointer(l1EntryAddr))
+
+	if (*l1Entry & PTE_TABLE) == 0 {
+		// L1 not present - page not mapped
+		return
+	}
+
+	l2Table := uintptr(*l1Entry & PTE_ADDR_MASK)
+	l2EntryAddr := l2Table + uintptr(l2Idx)*PTE_SIZE
+	l2Entry := (*uint64)(unsafe.Pointer(l2EntryAddr))
+
+	if (*l2Entry & PTE_TABLE) == 0 {
+		// L2 not present - page not mapped
+		return
+	}
+
+	l3Table := uintptr(*l2Entry & PTE_ADDR_MASK)
+	l3EntryAddr := l3Table + uintptr(l3Idx)*PTE_SIZE
+	l3Entry := (*uint64)(unsafe.Pointer(l3EntryAddr))
+
+	// Clear valid bit (bit 0) to unmap the page
+	*l3Entry &^= 1
+}
+
 // mapRegionInitMMU maps a contiguous region during initMMU
 // Uses mapPageInitMMU which is NOT nosplit (ok because not in exception handler chain)
 // vaStart: Start virtual address (must be 4KB aligned)

@@ -42,12 +42,9 @@ func init() {
 	uartPutc('\r')
 	uartPutc('\n')
 
-	// Set VBAR_EL1 to kmazarin's exception vector
-	// Safe to do here because Cardinal disabled interrupts before jumping to us
-	uartPuts("[VBAR Setup]\r\n")
-	vbar := GetExceptionVectorBase()
-	SetVBAR(vbar)
-	uartPuts("[VBAR Done]\r\n")
+	// NOTE: VBAR_EL1 is already set by Cardinal before jumping to kmazarin
+	// This must happen before the Go runtime initializes (which runs before init())
+	// because runtime init calls mmap() syscalls that need kmazarin's handlers.
 
 	// Initialize critical early devices (UART, GIC, Timer, RNG)
 	EarlyInit()
@@ -62,9 +59,10 @@ func init() {
 }
 
 // uartPutc writes a single character directly to UART (bypasses Go runtime)
+// NOTE: Use high-memory UART address since kmazarin runs at high memory
 //go:nosplit
 func uartPutc(c byte) {
-	const uartBase = uintptr(0x09000000)
+	const uartBase = uintptr(0xFFFFFFFF09000000)
 	*(*byte)(unsafe.Pointer(uartBase)) = c
 }
 
@@ -73,6 +71,38 @@ func uartPutc(c byte) {
 func uartPuts(s string) {
 	for i := 0; i < len(s); i++ {
 		uartPutc(s[i])
+	}
+}
+
+// uartPutsDirect writes a string directly to UART (alias for uartPuts)
+// Used by ksyscall and kthread packages via linkname
+//go:linkname uartPutsDirect kmazarin/ksyscall.uartPutsDirect
+//go:nosplit
+func uartPutsDirect(s string) {
+	uartPuts(s)
+}
+
+// uartPutHex64Direct writes a 64-bit hex value to UART
+// Used by ksyscall and kthread packages via linkname
+//go:linkname uartPutHex64Direct kmazarin/ksyscall.uartPutHex64Direct
+//go:nosplit
+func uartPutHex64Direct(val uint64) {
+	hexChars := "0123456789ABCDEF"
+	for i := 60; i >= 0; i -= 4 {
+		nibble := (val >> i) & 0xF
+		uartPutc(hexChars[nibble])
+	}
+}
+
+// uartPutHex32Direct writes a 32-bit hex value to UART
+// Used by ksyscall and kthread packages via linkname
+//go:linkname uartPutHex32Direct kmazarin/ksyscall.uartPutHex32Direct
+//go:nosplit
+func uartPutHex32Direct(val uint32) {
+	hexChars := "0123456789ABCDEF"
+	for i := 28; i >= 0; i -= 4 {
+		nibble := (val >> i) & 0xF
+		uartPutc(hexChars[nibble])
 	}
 }
 

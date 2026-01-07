@@ -13,13 +13,7 @@ const (
 	SyscallReturnBlock  = 2 // Block current thread, switch to thread in x1
 )
 
-// Futex operations
-const (
-	FutexWait        = 0
-	FutexWake        = 1
-	FutexWaitPrivate = 128
-	FutexWakePrivate = 129
-)
+// Futex operations are defined in futex.go
 
 // Debug output functions - implemented in main package
 func uartPutsDirect(s string)
@@ -115,7 +109,7 @@ func SyscallNanosleepHandler(seconds uint64, nanoseconds uint64) (result int64, 
 	// To avoid overflow: ticks = (ns / 1000) * (freq / 1000000)
 	//                         = (ns / 1000) * (freq_mhz)
 	const timerFrequencyHz = 62500000 // 62.5 MHz for QEMU
-	freqMHz := timerFrequencyHz / 1000000
+	freqMHz := uint64(timerFrequencyHz / 1000000)
 	ticks := (totalNs / 1000) * freqMHz
 
 	if ticks == 0 {

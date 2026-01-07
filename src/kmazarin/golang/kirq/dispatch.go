@@ -71,7 +71,7 @@ func DispatchIRQ(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo
 //
 //go:nosplit
 func irqPanic(msg string, irqNum uint64) {
-	const uartBase = uintptr(0x09000000)
+	const uartBase = uintptr(0xFFFFFFFF09000000)
 
 	// Print "PANIC: "
 	uartPuts := func(s string) {

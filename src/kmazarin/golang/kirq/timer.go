@@ -17,7 +17,7 @@ const asyncPreemptAddr = 0x41871b70
 //go:nosplit
 //go:noinline
 func TimerIRQHandlerPreemptable(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo {
-	const uartBase = uintptr(0x09000000)
+	const uartBase = uintptr(0xFFFFFFFF09000000)
 	*(*byte)(unsafe.Pointer(uartBase)) = 'T' // Debug: timer IRQ fired
 
 	// Re-arm timer for next interrupt (~10ms)

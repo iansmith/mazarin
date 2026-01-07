@@ -10,8 +10,9 @@
 #include "textflag.h"
 
 // UART base for minimal debug output
-// NOTE: Use low-memory address since high-memory UART mapping may not be set up yet
-#define UART_BASE 0x09000000
+// NOTE: Use high-memory UART address since kmazarin runs at high memory
+// Cardinal maps UART at 0xFFFFFFFF09000000 before jumping to us
+#define UART_BASE 0xFFFFFFFF09000000
 
 // Exception frame layout (same as Cardinal for compatibility)
 #define EXC_FRAME_X0         0
@@ -402,7 +403,9 @@ sync_return:
 // ============================================================================
 // irq_exception_handler - Hardware interrupts (timer, UART, etc.)
 // ============================================================================
-#define GIC_CPU_BASE	0x08010000
+// NOTE: Use high-memory GIC address since kmazarin runs at high memory
+// Cardinal maps GIC at 0xFFFFFFFF08000000 before jumping to us
+#define GIC_CPU_BASE	0xFFFFFFFF08010000
 #define GICC_IAR	0x000C  // Interrupt Acknowledge Register offset
 #define GICC_EOIR	0x0010  // End Of Interrupt Register offset
 

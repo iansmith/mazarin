@@ -354,6 +354,11 @@ func initMMU() bool {
 	setupKernelStacks()
 	uartPutcDirect('t')
 
+	// Map essential early MMIO devices to high memory in TTBR1
+	uartPutcDirect('M')
+	setupEarlyKernelMMIO()
+	uartPutcDirect('m')
+
 	// DEBUG: Check if we ran out of page table space
 	_, remaining := getPageTableAllocatorStats()
 	uartPutcDirect('l')
@@ -885,6 +890,57 @@ func setupKernelStacks() {
 	}
 
 	*(*uint32)(unsafe.Pointer(uartBase)) = 't' // t = sTack setup done
+}
+
+// setupEarlyKernelMMIO maps essential early-boot MMIO devices to high memory in TTBR1.
+// This allows kmazarin (running at high memory) to access UART, GIC during early boot.
+// The high-memory MMIO addresses follow the pattern: physical + 0xFFFFFFFF00000000
+// Additional MMIO devices will be discovered and mapped during DTB scan.
+func setupEarlyKernelMMIO() {
+	uartBase := uintptr(0x09000000)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'M' // M = MMIO setup
+
+	// Map UART (0x09000000 → 0xFFFFFFFF09000000)
+	// Size: 64KB (0x10000)
+	const uartPhys = uintptr(0x09000000)
+	const uartSize = uintptr(0x10000)
+	const kernelUartVA = uintptr(0xFFFFFFFF09000000)
+
+	uartPutsDirect("Mapping kernel UART (TTBR1): PA 0x")
+	uartPutHex64Direct(uint64(uartPhys))
+	uartPutsDirect(" -> VA 0x")
+	uartPutHex64Direct(uint64(kernelUartVA))
+	uartPutsDirect("\r\n")
+
+	// Map 64KB in 4KB pages (16 pages)
+	const uartPages = uartSize / PAGE_SIZE
+	for i := uintptr(0); i < uartPages; i++ {
+		va := kernelUartVA + i*PAGE_SIZE
+		pa := uartPhys + i*PAGE_SIZE
+		mapKernelPage(va, pa, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	}
+
+	// Map GIC (0x08000000 → 0xFFFFFFFF08000000)
+	// Size: 128KB (0x20000) for GICD + GICC
+	const gicPhys = uintptr(0x08000000)
+	const gicSize = uintptr(0x20000)
+	const kernelGicVA = uintptr(0xFFFFFFFF08000000)
+
+	uartPutsDirect("Mapping kernel GIC (TTBR1): PA 0x")
+	uartPutHex64Direct(uint64(gicPhys))
+	uartPutsDirect(" -> VA 0x")
+	uartPutHex64Direct(uint64(kernelGicVA))
+	uartPutsDirect("\r\n")
+
+	// Map 128KB in 4KB pages (32 pages)
+	const gicPages = gicSize / PAGE_SIZE
+	for i := uintptr(0); i < gicPages; i++ {
+		va := kernelGicVA + i*PAGE_SIZE
+		pa := gicPhys + i*PAGE_SIZE
+		mapKernelPage(va, pa, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	}
+
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'm' // m = MMIO setup done
 }
 
 // mapKernelPage maps a physical address to a high-memory virtual address

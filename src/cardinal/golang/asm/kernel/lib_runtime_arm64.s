@@ -459,22 +459,35 @@ vbar_digit4:
 	MOVB	R5, (R10)
 
 	// ===================================================================
-	// CRITICAL: Swap exception vector to kmazarin before jumping
+	// CRITICAL: Set up exception vector and high-memory stacks before jumping
 	// ===================================================================
-	// Kmazarin's exception vector table is at the start of its .text section
-	// (0xFFFFFFFF41800000) due to .align 11 in exceptions_arm64.s
+	// Kmazarin runs entirely in high memory and needs:
+	// 1. VBAR_EL1: Must point to kmazarin's exception handlers (SET FIRST!)
+	// 2. SP_EL1 (exception stack): Must switch from Cardinal's low-memory stack
+	// 3. SP_EL0 (g0 stack): Already set to kernelG0Stack at 0xFFFFFFFF5EFFFE00
 	//
-	// This switches all exception handling from Cardinal to kmazarin:
-	//   - Syscalls (SVC) → kmazarin handlers
-	//   - Timer (IRQ) → kmazarin handlers
-	//   - Page faults → kmazarin handlers
-	//
-	// After this point, Cardinal code is never called again.
-	//
-	// NOTE: If kmazarin's memory layout changes, this address must be updated!
+	// CRITICAL: Set VBAR_EL1 FIRST! If SP_EL1 setup causes an exception,
+	// we want kmazarin's handlers to catch it, not Cardinal's.
 
-	// NOTE: VBAR_EL1 setting moved to kmazarin init()
-	// Kmazarin calls GetExceptionVectorBase() and SetVBAR() itself
+	// Set VBAR_EL1 to kmazarin's exception vector (0xFFFFFFFF41800000)
+	// Build the address in R6: high word = 0xFFFFFFFF, low word = 0x41800000
+	MOVD	$0x41800000, R6
+	MOVD	$0xFFFFFFFF00000000, R7
+	ADD	R7, R6, R6			// R6 = 0xFFFFFFFF41800000
+	MSR	R6, VBAR_EL1
+
+	// Print 'V' to show VBAR was set
+	MOVD	$0x09000000, R10
+	MOVD	$'V', R5
+	MOVB	R5, (R10)
+
+	// Ensure VBAR write completes before jumping
+	DSB	$15				// Full system DSB
+	ISB	$15				// Instruction sync barrier
+
+	// TODO: Set SP_EL1 to high-memory stack
+	// For now, keeping Cardinal's low-memory exception stack (0x5F020000)
+	// to see if kmazarin can at least start
 
 	JMP	(R4)			// Branch to entry point - never returns
 

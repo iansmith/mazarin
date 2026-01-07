@@ -1151,38 +1151,22 @@ func dumpAllGs() {
 // This matches the Linux kernel's ELF loader behavior
 //
 //go:nosplit
-func setupKmazarinStartupEnv() (stackPointer uintptr, argc uint64, argv uintptr) {
-	// Allocate a 1MB stack for kmazarin (256 pages)
-	// In Linux, argc/argv/envp/auxv are placed at the TOP of the initial stack
-	// IMPORTANT: Go runtime needs substantial stack space for initialization
-	const stackPages = 256
-	const stackSize = stackPages * 0x1000
-	const stackBase = uintptr(0xD0000000)  // Stack base address
+func setupKmazarinStartupEnv(kmazarinStartupParamsVA uintptr) (stackPointer uintptr, argc uint64, argv uintptr) {
+	// CRITICAL: Place argc/argv/envp/auxv at the TOP of the kernel g0 stack (high memory)
+	// The kernel g0 stack is already mapped at 0xFFFFFFFF5EFFC000-0xFFFFFFFF5F000000 (16KB)
+	// by setupKernelStacks(). We place the parameters near the top, leaving room for stack growth.
+	const kernelG0StackTop = uintptr(0xFFFFFFFF5F000000)
+	const paramSize = 0x200  // 512 bytes for argc/argv/envp/auxv structure
 
-	// Allocate and map stack pages
-	for i := uintptr(0); i < stackPages; i++ {
-		physFrame := allocPhysFrame()
-		if physFrame == 0 {
-			return 0, 0, 0
-		}
-		mapPage(stackBase+i*0x1000, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-	}
+	// Place structure 512 bytes below stack top
+	structStart := kernelG0StackTop - paramSize
 
-	// IMPORTANT: Skip TLB invalidation! Since this is a NEW mapping (not modifying
-	// an existing one), we don't need to invalidate the TLB. Calling InvalidateTlbAll()
-	// causes kmazarin to execute prematurely (likely because it invalidates TLB entries
-	// for kmazarin's memory space).
-	// Just use barriers to ensure the page table update is visible:
-	asm.Dsb()  // Ensure page table write completes
-	asm.Isb()  // Ensure subsequent instructions see the new mapping
+	uartPutsDirect("Using kernel g0 stack for parameters at 0x")
+	uartPutHex64Direct(uint64(structStart))
+	uartPutsDirect("\r\n")
 
-	// Place argc/argv/envp/auxv at the TOP of the stack
-	// SP will point to argc, and the structure grows downward
-	stackTop := stackBase + stackSize
-	structStart := stackTop - 0x200  // Reserve 512 bytes for the structure
-
-	// Zero the structure area (using bzeroSimple since structStart is not page-aligned)
-	bzeroSimple(unsafe.Pointer(structStart), 0x200)
+	// Zero the structure area
+	bzeroSimple(unsafe.Pointer(structStart), paramSize)
 
 	// Set up the structure as an array of uint64 values
 	data := (*[256]uint64)(unsafe.Pointer(structStart))
@@ -1263,14 +1247,26 @@ func setupKmazarinStartupEnv() (stackPointer uintptr, argc uint64, argv uintptr)
 	// AT_TTBR1_L0_PHYS: Physical address of TTBR1 L0 page table
 	data[28] = constants.AT_TTBR1_L0_PHYS
 	data[29] = uint64(kernelPageTableL0)
+	// AT_STARTUP_PARAMS: High-memory address of kmazarin StartupParams BSS array
+	data[30] = constants.AT_STARTUP_PARAMS
+	data[31] = uint64(kmazarinStartupParamsVA)
 	// AT_NULL = 0 (terminator)
-	data[30] = 0
-	data[31] = 0
+	data[32] = 0
+	data[33] = 0
 
-	// Return values for register setup
-	// SP should point to argc (start of structure at top of stack)
+	// ========================================================================
+	// Return stack pointer - structure is already on kernel g0 stack
+	// ========================================================================
+	// SP should point to argc (start of structure on kernel g0 stack)
 	// R0 = argc
-	// R1 = pointer to argv (which is at offset 8)
+	// R1 = pointer to argv (which is at offset 8 from structStart)
+	//
+	// The Go runtime will use the ~15.5KB of stack space below structStart
+	// for initialization and early execution.
+
+	uartPutsDirect("Kernel g0 stack ready with parameters\r\n")
+	asm.Dsb()  // Ensure all writes complete
+
 	return structStart, 1, structStart + 8
 }
 
@@ -1362,6 +1358,10 @@ func loadAndRunKmazarin() {
 
 	// Track min/max VAs for page fault handler registration
 	var minVA, maxVA uintptr
+
+	// Track kmazarin's StartupParams BSS address (high-memory VA)
+	// This is where Cardinal will copy argc/argv/envp/auxv before jumping
+	var kmazarinStartupParamsVA uintptr
 
 	// Process each program header
 	for i := uint16(0); i < phnum; i++ {
@@ -1593,6 +1593,15 @@ func loadAndRunKmazarin() {
 			bssStart := unsafe.Pointer(kernelVAStart + uintptr(pFilesz))
 			bssSize := pMemsz - pFilesz
 
+			// Track StartupParams address (first BSS segment only)
+			// The StartupParams array is at the beginning of kmazarin's BSS
+			if kmazarinStartupParamsVA == 0 {
+				kmazarinStartupParamsVA = uintptr(bssStart)
+				uartPutsDirect("  StartupParams VA: 0x")
+				uartPutHex64Direct(uint64(kmazarinStartupParamsVA))
+				uartPutsDirect("\r\n")
+			}
+
 			// DEBUG: Print BSS zeroing info
 			uartPutsDirect("  BSS: zeroing 0x")
 			uartPutHex64Direct(uint64(uintptr(bssStart)))
@@ -1695,7 +1704,7 @@ func loadAndRunKmazarin() {
 
 	// Set up argc/argv/envp/auxv structure
 	uartPutcDirect('S') // DEBUG: Before setupKmazarinStartupEnv
-	stackPointer, argc, argv := setupKmazarinStartupEnv()
+	stackPointer, argc, argv := setupKmazarinStartupEnv(kmazarinStartupParamsVA)
 	uartPutcDirect('4') // DEBUG: After setupKmazarinStartupEnv
 	if stackPointer == 0 || argv == 0 {
 		uartPutsDirect("ERROR: Environment setup failed!\r\n")
@@ -1750,8 +1759,8 @@ func loadAndRunKmazarin() {
 	}
 	uartPutsDirect("AT_HWCAP tag OK\r\n")
 
-	// AT_NULL is now at data[30] (after adding custom auxv entries)
-	if data[30] != 0 {
+	// AT_NULL is now at data[32] (after adding AT_STARTUP_PARAMS)
+	if data[32] != 0 {
 		uartPutsDirect("ERROR: AT_NULL tag is not 0!\r\n")
 		return
 	}
