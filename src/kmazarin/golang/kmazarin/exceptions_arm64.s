@@ -45,20 +45,27 @@ exception_vector_base:
 // Each vector entry must be 128 bytes - pad with NOPs
 el1_sp0_sync:
 	// Go runtime runs at EL1 using SP_EL0, so sync exceptions come here
-	// Use same handler as el1_spx_sync
+	// Print '1' to show sync exception occurred
+	MOVD	$UART_BASE, R10
+	MOVD	$'1', R11
+	MOVB	R11, (R10)
 	B	sync_exception_handler
-	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
-	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
-	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0; WORD $0
 
 el1_sp0_irq:
 	// IRQs also come here when using SP_EL0
+	// Print 'I' to show IRQ occurred
+	MOVD	$UART_BASE, R10
+	MOVD	$'I', R11
+	MOVB	R11, (R10)
 	B	irq_exception_handler
-	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
-	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
-	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0; WORD $0
 
 el1_sp0_fiq:
 	MOVD	$UART_BASE, R10
@@ -229,11 +236,27 @@ hang:
 // sync_exception_handler - Synchronous exceptions (SVC, data abort, etc.)
 // ============================================================================
 sync_exception_handler:
+	// Print 's' to show we reached sync handler
+	MOVD	$UART_BASE, R10
+	MOVD	$'s', R11
+	MOVB	R11, (R10)
+
 	// Save all registers to exception frame
 	SUB	$EXC_FRAME_SIZE, RSP
 
+	// Print 'S' to show SUB succeeded
+	MOVD	$UART_BASE, R10
+	MOVD	$'S', R11
+	MOVB	R11, (R10)
+
 	// Save X0-X7
 	STP	(R0, R1), EXC_FRAME_X0(RSP)
+
+	// Print '0' to show first STP succeeded
+	MOVD	$UART_BASE, R10
+	MOVD	$'0', R11
+	MOVB	R11, (R10)
+
 	STP	(R2, R3), EXC_FRAME_X0+16(RSP)
 	STP	(R4, R5), EXC_FRAME_X0+32(RSP)
 	STP	(R6, R7), EXC_FRAME_X0+48(RSP)

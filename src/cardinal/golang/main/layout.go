@@ -85,8 +85,9 @@ var (
 
 	// Embedded kmazarin kernel - NOT YET IMPLEMENTED in go-native build
 	// Initialized to 1 so they're in .data section for patching
-	LinkerKmazarinStart uint64 = 1 // __kmazarin_start (patched)
-	LinkerKmazarinSize  uint64 = 1 // __kmazarin_size (patched)
+	LinkerKmazarinStart            uint64 = 1 // __kmazarin_start (patched)
+	LinkerKmazarinSize             uint64 = 1 // __kmazarin_size (patched)
+	LinkerKmazarinExceptionVector  uint64 = 1 // __kmazarin_exception_vector (patched from symbol table)
 )
 
 // linkerValuesSum is used to prevent dead-code elimination of Linker* variables.
@@ -112,7 +113,7 @@ func init() {
 		LinkerRtcBase + LinkerFwcfgBase + LinkerFwcfgSize +
 		LinkerBochsDisplayBase + LinkerBochsDisplaySize +
 		LinkerPciBarBase + LinkerPciBarSize +
-		LinkerKmazarinStart + LinkerKmazarinSize +
+		LinkerKmazarinStart + LinkerKmazarinSize + LinkerKmazarinExceptionVector +
 		DataTestMagic[0] + DataTestMagic[1] + DataTestMagic[2] + DataTestMagic[3] +
 		DataTestMagic[4] + DataTestMagic[5] + DataTestMagic[6] + DataTestMagic[7]
 

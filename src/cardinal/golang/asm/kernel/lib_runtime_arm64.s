@@ -469,11 +469,9 @@ vbar_digit4:
 	// CRITICAL: Set VBAR_EL1 FIRST! If SP_EL1 setup causes an exception,
 	// we want kmazarin's handlers to catch it, not Cardinal's.
 
-	// Set VBAR_EL1 to kmazarin's exception vector (0xFFFFFFFF41800000)
-	// Build the address in R6: high word = 0xFFFFFFFF, low word = 0x41800000
-	MOVD	$0x41800000, R6
-	MOVD	$0xFFFFFFFF00000000, R7
-	ADD	R7, R6, R6			// R6 = 0xFFFFFFFF41800000
+	// Set VBAR_EL1 to kmazarin's exception vector
+	// Load the actual address from main.LinkerKmazarinExceptionVector (patched by build tool)
+	MOVD	main·LinkerKmazarinExceptionVector(SB), R6
 	MSR	R6, VBAR_EL1
 
 	// Print 'V' to show VBAR was set
@@ -488,6 +486,24 @@ vbar_digit4:
 	// TODO: Set SP_EL1 to high-memory stack
 	// For now, keeping Cardinal's low-memory exception stack (0x5F020000)
 	// to see if kmazarin can at least start
+
+	// CRITICAL: Switch to EL1t mode (use SP_EL0) before jumping!
+	// Kmazarin expects to use SP_EL0 (g0 stack), but we're currently in EL1h mode (using SP_EL1)
+	// Clear SPSel bit to switch to EL1t mode
+	MSR	$0, SPSel
+
+	// Print 'T' for "EL1t mode"
+	MOVD	$0x09000000, R10
+	MOVD	$'T', R5
+	MOVB	R5, (R10)
+
+	// Ensure mode switch completes
+	DSB	$15
+	ISB	$15
+
+	// Print 'J' for "Jumping now"
+	MOVD	$'J', R5
+	MOVB	R5, (R10)
 
 	JMP	(R4)			// Branch to entry point - never returns
 

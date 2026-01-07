@@ -118,15 +118,19 @@ func main() {
 
 	elfPath := flag.Arg(0)
 
-	// Calculate kmazarin size if path provided
+	// Calculate kmazarin size and exception vector address if path provided
 	var kmazarinSize uint64
+	var kmazarinExceptionVectorAddr uint64
 	if kmazarinPath != "" {
 		var err error
-		kmazarinSize, err = calculateKmazarinSize(kmazarinPath)
+		kmazarinSize, kmazarinExceptionVectorAddr, err = calculateKmazarinInfo(kmazarinPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Could not calculate kmazarin size: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Warning: Could not calculate kmazarin info: %v\n", err)
 		} else {
 			fmt.Fprintf(os.Stderr, "Kmazarin memory size: 0x%X (%d bytes)\n", kmazarinSize, kmazarinSize)
+			if kmazarinExceptionVectorAddr != 0 {
+				fmt.Fprintf(os.Stderr, "Kmazarin exception vector: 0x%X\n", kmazarinExceptionVectorAddr)
+			}
 		}
 	}
 
@@ -253,7 +257,7 @@ func main() {
 	}
 
 	// Compute linker values
-	values := computeLinkerValues(sections, symbolAddrs, kmazarinSize)
+	values := computeLinkerValues(sections, symbolAddrs, kmazarinSize, kmazarinExceptionVectorAddr)
 
 	if patchMode {
 		// Patch the binary
@@ -394,21 +398,22 @@ func patchBinary(data []byte, values []LinkerValue, sections map[string]*Section
 	return data
 }
 
-// calculateKmazarinSize parses kmazarin.elf and returns the memory size needed
-// This is from .text start to end of the last section (BSS/noptrbss)
-func calculateKmazarinSize(path string) (uint64, error) {
+// calculateKmazarinInfo parses kmazarin.elf and returns:
+// 1. The memory size needed (from .text start to end of the last section)
+// 2. The address of main.ExceptionVectorTable symbol (or 0 if not found)
+func calculateKmazarinInfo(path string) (uint64, uint64, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	if len(data) < 64 {
-		return 0, fmt.Errorf("file too small")
+		return 0, 0, fmt.Errorf("file too small")
 	}
 
 	// Check ELF magic
 	if data[0] != 0x7f || data[1] != 'E' || data[2] != 'L' || data[3] != 'F' {
-		return 0, fmt.Errorf("not an ELF file")
+		return 0, 0, fmt.Errorf("not an ELF file")
 	}
 
 	// Parse section headers to find .text start and last section end
@@ -420,19 +425,20 @@ func calculateKmazarinSize(path string) (uint64, error) {
 	// Get section string table
 	shstrOff := shOff + uint64(shStrNdx)*uint64(shEntSize)
 	if shstrOff+64 > uint64(len(data)) {
-		return 0, fmt.Errorf("section string table out of bounds")
+		return 0, 0, fmt.Errorf("section string table out of bounds")
 	}
 	shstrOffset := binary.LittleEndian.Uint64(data[shstrOff+24 : shstrOff+32])
 	shstrSize := binary.LittleEndian.Uint64(data[shstrOff+32 : shstrOff+40])
 	if shstrOffset+shstrSize > uint64(len(data)) {
-		return 0, fmt.Errorf("section string table data out of bounds")
+		return 0, 0, fmt.Errorf("section string table data out of bounds")
 	}
 	shstrtab := data[shstrOffset : shstrOffset+shstrSize]
 
 	var textStart uint64
 	var maxEnd uint64
+	var symtabOff, symtabSize, strtabOff, strtabSize uint64
 
-	// Parse sections to find .text start and highest end address
+	// Parse sections to find .text start, highest end address, and symbol table
 	for i := uint16(0); i < shNum; i++ {
 		off := shOff + uint64(i)*uint64(shEntSize)
 		if off+64 > uint64(len(data)) {
@@ -440,7 +446,9 @@ func calculateKmazarinSize(path string) (uint64, error) {
 		}
 
 		nameIdx := binary.LittleEndian.Uint32(data[off : off+4])
+		sectionType := binary.LittleEndian.Uint32(data[off+4 : off+8])
 		addr := binary.LittleEndian.Uint64(data[off+16 : off+24])
+		offset := binary.LittleEndian.Uint64(data[off+24 : off+32])
 		size := binary.LittleEndian.Uint64(data[off+32 : off+40])
 
 		// Get section name
@@ -458,6 +466,18 @@ func calculateKmazarinSize(path string) (uint64, error) {
 			textStart = addr
 		}
 
+		// Find .symtab (symbol table)
+		if sectionType == SHT_SYMTAB {
+			symtabOff = offset
+			symtabSize = size
+		}
+
+		// Find .strtab (string table for symbols)
+		if name == ".strtab" {
+			strtabOff = offset
+			strtabSize = size
+		}
+
 		// Track highest end address (for loaded sections)
 		// Include .bss and .noptrbss which have NOBITS but consume memory
 		if addr != 0 && size != 0 {
@@ -469,14 +489,51 @@ func calculateKmazarinSize(path string) (uint64, error) {
 	}
 
 	if textStart == 0 {
-		return 0, fmt.Errorf(".text section not found")
+		return 0, 0, fmt.Errorf(".text section not found")
 	}
 
 	// Size is from .text start to end of last section
-	return maxEnd - textStart, nil
+	kmazarinSize := maxEnd - textStart
+
+	// Parse symbol table to find main.ExceptionVectorTable
+	var exceptionVectorAddr uint64
+	if symtabOff != 0 && symtabSize != 0 && strtabOff != 0 && strtabSize != 0 {
+		if strtabOff+strtabSize <= uint64(len(data)) {
+			strtab := data[strtabOff : strtabOff+strtabSize]
+
+			// Each symbol is 24 bytes (Elf64Sym)
+			numSymbols := symtabSize / 24
+			for i := uint64(0); i < numSymbols; i++ {
+				symOff := symtabOff + i*24
+				if symOff+24 > uint64(len(data)) {
+					continue
+				}
+
+				nameIdx := binary.LittleEndian.Uint32(data[symOff : symOff+4])
+				value := binary.LittleEndian.Uint64(data[symOff+8 : symOff+16])
+
+				// Get symbol name
+				if nameIdx < uint32(len(strtab)) {
+					end := nameIdx
+					for end < uint32(len(strtab)) && strtab[end] != 0 {
+						end++
+					}
+					symName := string(strtab[nameIdx:end])
+
+					// Look for main.ExceptionVectorTable or main.ExceptionVectorTable.abi0
+					if symName == "main.ExceptionVectorTable" || symName == "main.ExceptionVectorTable.abi0" {
+						exceptionVectorAddr = value
+						break
+					}
+				}
+			}
+		}
+	}
+
+	return kmazarinSize, exceptionVectorAddr, nil
 }
 
-func computeLinkerValues(sections map[string]*Section, symbolAddrs map[string]uint64, kmazarinSize uint64) []LinkerValue {
+func computeLinkerValues(sections map[string]*Section, symbolAddrs map[string]uint64, kmazarinSize uint64, kmazarinExceptionVectorAddr uint64) []LinkerValue {
 	var values []LinkerValue
 
 	// Helper to add a value
@@ -571,11 +628,19 @@ func computeLinkerValues(sections map[string]*Section, symbolAddrs map[string]ui
 	// === Embedded Kmazarin ===
 	// LinkerKmazarinStart is where kmazarin is loaded
 	// LinkerKmazarinSize is calculated from kmazarin.elf if -kmazarin flag provided
+	// LinkerKmazarinExceptionVector is the address of kmazarin's exception vector table
 	add("LinkerKmazarinStart", "__kmazarin_start", constants.KmazarinLoadAddr, "kmazarin load address", true)
 	if kmazarinSize > 0 {
 		add("LinkerKmazarinSize", "__kmazarin_size", kmazarinSize, "calculated from kmazarin.elf", true)
 	} else {
 		add("LinkerKmazarinSize", "__kmazarin_size", 0, "not calculated (use -kmazarin flag)", true)
+	}
+	if kmazarinExceptionVectorAddr > 0 {
+		// Relocate to high memory: add 0xFFFFFFFF00000000
+		highMemAddr := kmazarinExceptionVectorAddr + 0xFFFFFFFF00000000
+		add("LinkerKmazarinExceptionVector", "__kmazarin_exception_vector", highMemAddr, "kmazarin exception vector (high mem)", true)
+	} else {
+		add("LinkerKmazarinExceptionVector", "__kmazarin_exception_vector", 0, "not found in kmazarin.elf", true)
 	}
 
 	// Sort by address for readability

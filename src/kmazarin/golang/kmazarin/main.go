@@ -46,6 +46,13 @@ func init() {
 	// This must happen before the Go runtime initializes (which runs before init())
 	// because runtime init calls mmap() syscalls that need kmazarin's handlers.
 
+	// CRITICAL: Call GetExceptionVectorBase() to force linker to include exception vector table
+	// Without this, the linker removes ExceptionVectorTable as dead code!
+	vectorAddr := GetExceptionVectorBase()
+	uartPuts("[Exception Vector] Located at 0x")
+	uartPutHex64Direct(uint64(vectorAddr))
+	uartPuts("\r\n")
+
 	// Initialize critical early devices (UART, GIC, Timer, RNG)
 	EarlyInit()
 
