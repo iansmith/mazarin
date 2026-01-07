@@ -511,32 +511,18 @@ print_r3_char:
 	MOVB	R5, (R10)
 
 	// ========================================
-	// Set SP_EL1 to high memory via HVC call to EL2
+	// SP_EL1 is already set to high memory by boot code at EL2
 	// ========================================
-	// We're still at EL1, but we can call HVC to get EL2 to set SP_EL1 for us
-	// This is the only way to change SP_EL1 from EL1
+	// The boot code set SP_EL1 to 0xFFFFFFFF5F002000 before dropping from EL2 to EL1
+	// We just need to switch to EL1t mode to use SP_EL0 for normal execution
 
-	// Print 'H' to show we're about to call HVC
+	// Print 'H' to show SP_EL1 is ready
 	MOVD	$0x09000000, R10
 	MOVD	$'H', R5
 	MOVB	R5, (R10)
 
-	// Calculate high-memory exception stack address
-	MOVD	$0x5F002000, R0
-	MOVD	$0xFFFFFFFF00000000, R1
-	ADD	R1, R0, R0		// R0 = 0xFFFFFFFF5F002000
-
-	// Call HVC #1 to set SP_EL1 (X0 contains the value)
-	WORD	$0xD4000022		// hvc #1
-
-	// When we return here, SP_EL1 is set to high memory!
-	// Print 'h' to show HVC returned successfully
-	MOVD	$0x09000000, R10
-	MOVD	$'h', R5
-	MOVB	R5, (R10)
-
 	// Switch to EL1t mode
-	// SP_EL1 is now at high-memory address (0xFFFFFFFF5F002000)
+	// SP_EL1 remains at high-memory address (0xFFFFFFFF5F002000) set by boot code
 	MSR	$0, SPSel
 
 	// Print 'T' for "EL1t mode switched"
