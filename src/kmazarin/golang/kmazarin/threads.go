@@ -98,6 +98,7 @@ func InitThreads() {
 // Returns TID on success, -1 if no slots available
 //
 //go:nosplit
+//go:noinline
 func ThreadCreate(stack, entryFunc, mPtr, gPtr uint64) int32 {
 	// Find a free slot
 	var slot int32 = -1
@@ -239,7 +240,16 @@ func GetCurrentThreadIdx() int32 {
 //go:nosplit
 func SetCurrentThreadIdx(idx int32) {
 	if idx >= 0 && idx < MaxThreads {
-		threads[currentThreadIdx].State = ThreadReady // Old thread becomes ready (unless blocked)
+		old := currentThreadIdx
+
+		// Only mark old thread as ready if it's not blocked and not the same thread
+		if old != idx {
+			oldState := threads[old].State
+			if oldState != ThreadBlockedFutex && oldState != ThreadSleeping {
+				threads[old].State = ThreadReady
+			}
+		}
+
 		currentThreadIdx = idx
 		threads[idx].State = ThreadRunning
 	}
