@@ -241,57 +241,179 @@ sync_exception_handler:
 	MOVD	$'s', R11
 	MOVB	R11, (R10)
 
+	// Print 'E' before ESR
+	MOVD	$'E', R11
+	MOVB	R11, (R10)
+
+	// Print ESR_EL1 to see what exception this is
+	MRS	ESR_EL1, R12
+	MOVD	$16, R13		// Counter for 16 hex digits
+print_esr_loop:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_esr_digit
+	ADD	$('A'-10), R11
+	B	print_esr_char
+print_esr_digit:
+	ADD	$'0', R11
+print_esr_char:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_esr_loop
+
+	// Print space after ESR
+	MOVD	$' ', R11
+	MOVB	R11, (R10)
+
+	// Print 'L' before ELR
+	MOVD	$'L', R11
+	MOVB	R11, (R10)
+
+	// Print ELR_EL1 to see where exception came from
+	MRS	ELR_EL1, R12
+	MOVD	$16, R13		// Counter for 16 hex digits
+print_elr_loop:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_elr_digit
+	ADD	$('A'-10), R11
+	B	print_elr_char
+print_elr_digit:
+	ADD	$'0', R11
+print_elr_char:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_elr_loop
+
+	// Print space after ELR
+	MOVD	$' ', R11
+	MOVB	R11, (R10)
+
+	// Print 'F' before FAR (Fault Address Register)
+	MOVD	$'F', R11
+	MOVB	R11, (R10)
+
+	// Print FAR_EL1 (faulting address for data aborts)
+	MRS	FAR_EL1, R12
+	MOVD	$16, R13		// Counter for 16 hex digits
+print_far_loop:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_far_digit
+	ADD	$('A'-10), R11
+	B	print_far_char
+print_far_digit:
+	ADD	$'0', R11
+print_far_char:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_far_loop
+
+	// Print space after FAR
+	MOVD	$' ', R11
+	MOVB	R11, (R10)
+
+	// Print '<' before original RSP
+	MOVD	$'<', R11
+	MOVB	R11, (R10)
+
+	// Print ORIGINAL RSP value before SUB (full 64-bit hex)
+	MOVD	RSP, R12
+	MOVD	$16, R13		// Counter for 16 hex digits
+print_rsp_before_loop:
+	// Extract top 4 bits
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_rsp_before_digit
+	ADD	$('A'-10), R11
+	B	print_rsp_before_char
+print_rsp_before_digit:
+	ADD	$'0', R11
+print_rsp_before_char:
+	MOVB	R11, (R10)
+	// Shift left to get next nibble
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_rsp_before_loop
+
+	// Print '>' after hex value
+	MOVD	$'>', R11
+	MOVB	R11, (R10)
+
 	// Save all registers to exception frame
 	SUB	$EXC_FRAME_SIZE, RSP
 
-	// Print 'S' to show SUB succeeded, then print RSP value
+	// Print 'S' to show SUB succeeded, then print FULL RSP value
 	MOVD	$UART_BASE, R10
 	MOVD	$'S', R11
 	MOVB	R11, (R10)
 
-	// Print RSP (hex) - just high nibbles to debug
+	// Print '[' before hex value
+	MOVD	$'[', R11
+	MOVB	R11, (R10)
+
+	// Print full 64-bit RSP value in hex (16 digits)
+	MOVD	RSP, R12
+	MOVD	$16, R13		// Counter for 16 hex digits
+print_rsp_loop:
+	// Extract top 4 bits
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_rsp_digit
+	ADD	$('A'-10), R11
+	B	print_rsp_char
+print_rsp_digit:
+	ADD	$'0', R11
+print_rsp_char:
+	MOVB	R11, (R10)
+	// Shift left to get next nibble
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_rsp_loop
+
+	// Print ']' after hex value
+	MOVD	$']', R11
+	MOVB	R11, (R10)
+
+	// DEBUG: Print 'Z' to show we completed the print loop
+	MOVD	$'Z', R11
+	MOVB	R11, (R10)
+
+	// DEBUG: Print '@' then current RSP value right before STP
+	MOVD	$'@', R11
+	MOVB	R11, (R10)
 	MOVD	RSP, R12
 	LSR	$60, R12, R11
+	AND	$0xF, R11
 	CMP	$10, R11
-	BLT	print_sp_digit1
+	BLT	print_final_sp_digit
 	ADD	$('A'-10), R11
-	B	print_sp_done1
-print_sp_digit1:
+	B	print_final_sp_char
+print_final_sp_digit:
 	ADD	$'0', R11
-print_sp_done1:
+print_final_sp_char:
+	MOVB	R11, (R10)
+
+	// DEBUG: Print '!' right before STP
+	MOVD	$'!', R11
 	MOVB	R11, (R10)
 
 	// Save X0-X7
 	STP	(R0, R1), EXC_FRAME_X0(RSP)
-
-	// Print '0' to show first STP succeeded
-	MOVD	$UART_BASE, R10
-	MOVD	$'0', R11
-	MOVB	R11, (R10)
-
 	STP	(R2, R3), EXC_FRAME_X0+16(RSP)
-
-	// Print '2' after saving R2,R3
-	MOVD	$UART_BASE, R10
-	MOVD	$'2', R11
-	MOVB	R11, (R10)
-
 	STP	(R4, R5), EXC_FRAME_X0+32(RSP)
 	STP	(R6, R7), EXC_FRAME_X0+48(RSP)
 
-	// Print '7' after saving R0-R7
-	MOVD	$UART_BASE, R10
-	MOVD	$'7', R11
-	MOVB	R11, (R10)
-
 	// Save X8-X27
 	STP	(R8, R9), EXC_FRAME_X8(RSP)
-
-	// Print '8' after saving R8,R9
-	MOVD	$UART_BASE, R10
-	MOVD	$'8', R11
-	MOVB	R11, (R10)
-
 	STP	(R10, R11), EXC_FRAME_X8+16(RSP)
 	STP	(R12, R13), EXC_FRAME_X8+32(RSP)
 	STP	(R14, R15), EXC_FRAME_X8+48(RSP)
@@ -313,10 +435,38 @@ print_sp_done1:
 	MOVD	LR, R10
 	MOVD	R10, EXC_FRAME_X28+16(RSP)
 
+	// DEBUG: Print 'R' to show all registers saved
+	MOVD	$UART_BASE, R10
+	MOVD	$'R', R11
+	MOVB	R11, (R10)
+
 	// Save ELR, SPSR, FAR, ESR
 	MRS	ELR_EL1, R10
 	MRS	SPSR_EL1, R11
 	STP	(R10, R11), EXC_FRAME_ELR_SPSR(RSP)
+
+	// DEBUG: Print 'P' then SPSR value to see what mode we're returning to
+	MOVD	$UART_BASE, R14
+	MOVD	$'P', R15
+	MOVB	R15, (R14)
+	MOVD	R11, R12
+	MOVD	$8, R13		// Print only first 8 hex digits (top 32 bits)
+print_spsr_loop_sync:
+	LSR	$60, R12, R15
+	AND	$0xF, R15
+	CMP	$10, R15
+	BLT	print_spsr_digit_sync
+	ADD	$('A'-10), R15
+	B	print_spsr_char_sync
+print_spsr_digit_sync:
+	ADD	$'0', R15
+print_spsr_char_sync:
+	MOVB	R15, (R14)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_spsr_loop_sync
+	MOVD	$' ', R15
+	MOVB	R15, (R14)
 
 	MRS	FAR_EL1, R10
 	MRS	ESR_EL1, R11
@@ -503,6 +653,29 @@ irq_exception_handler:
 	MRS	ELR_EL1, R10
 	MRS	SPSR_EL1, R11
 	STP	(R10, R11), EXC_FRAME_ELR_SPSR(RSP)
+
+	// DEBUG: Print 'P' then SPSR value to see what mode we're returning to
+	MOVD	$UART_BASE, R14
+	MOVD	$'P', R15
+	MOVB	R15, (R14)
+	MOVD	R11, R12
+	MOVD	$8, R13		// Print only first 8 hex digits (top 32 bits)
+print_spsr_loop_irq:
+	LSR	$60, R12, R15
+	AND	$0xF, R15
+	CMP	$10, R15
+	BLT	print_spsr_digit_irq
+	ADD	$('A'-10), R15
+	B	print_spsr_char_irq
+print_spsr_digit_irq:
+	ADD	$'0', R15
+print_spsr_char_irq:
+	MOVB	R15, (R14)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_spsr_loop_irq
+	MOVD	$' ', R15
+	MOVB	R15, (R14)
 
 	MRS	FAR_EL1, R10
 	MRS	ESR_EL1, R11

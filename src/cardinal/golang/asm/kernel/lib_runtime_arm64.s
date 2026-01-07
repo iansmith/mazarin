@@ -483,50 +483,67 @@ vbar_digit4:
 	DSB	$15				// Full system DSB
 	ISB	$15				// Instruction sync barrier
 
-	// Print R3 high nibble before setting SP_EL0
+	// Print '{' before R3 value
 	MOVD	$0x09000000, R10
+	MOVD	$'{', R5
+	MOVB	R5, (R10)
+
+	// Print full R3 value (stack pointer we're about to set)
 	MOVD	R3, R12
+	MOVD	$16, R14		// Counter for 16 hex digits
+print_r3_loop:
 	LSR	$60, R12, R5
+	AND	$0xF, R5
 	CMP	$10, R5
 	BLT	print_r3_digit
 	ADD	$('A'-10), R5
-	B	print_r3_done
+	B	print_r3_char
 print_r3_digit:
 	ADD	$'0', R5
-print_r3_done:
+print_r3_char:
+	MOVB	R5, (R10)
+	LSL	$4, R12
+	SUB	$1, R14
+	CBNZ	R14, print_r3_loop
+
+	// Print '}' after R3 value
+	MOVD	$'}', R5
 	MOVB	R5, (R10)
 
-	// Set SP_EL0 to high-memory kernel g0 stack
-	// R3 contains kernelG0StackPointer = 0xFFFFFFFF5EFFFE00 (from setupKmazarinStartupEnv)
-	// MSR SP_EL0, X3 = 0xD5184003 (raw instruction - Go asm doesn't support SP_EL0)
-	WORD	$0xD5184003
+	// CRITICAL: Set SP_EL1 BEFORE switching to EL1t mode
+	// We're currently in EL1h mode, so SP = SP_EL1
+	// Set it to high-memory exception stack top: 0xFFFFFFFF5F002000
+	MOVD	$0x5F002000, R6
+	MOVD	$0xFFFFFFFF00000000, R7
+	ADD	R7, R6, R6			// R6 = 0xFFFFFFFF5F002000
+	MOVD	R6, RSP				// Set SP_EL1 via SP (we're in EL1h)
 
-	// Print 'G' to show SP_EL0 was set (G = G0 stack)
-	MOVD	$'G', R5
+	// Print 'X' and verify SP_EL1 was actually set
+	MOVD	$0x09000000, R10
+	MOVD	$'X', R5
 	MOVB	R5, (R10)
 
-	// DEBUG: Read back SP_EL0 to verify it was set
-	// MRS X12, SP_EL0 = 0xD5384002
-	WORD	$0xD5384002
+	// Print '[' then RSP to verify it was set
+	MOVD	$'[', R5
+	MOVB	R5, (R10)
+	MOVD	RSP, R12
 	LSR	$60, R12, R5
+	AND	$0xF, R5
 	CMP	$10, R5
-	BLT	print_sp_el0_digit
+	BLT	print_sp_el1_digit
 	ADD	$('A'-10), R5
-	B	print_sp_el0_done
-print_sp_el0_digit:
+	B	print_sp_el1_char
+print_sp_el1_digit:
 	ADD	$'0', R5
-print_sp_el0_done:
+print_sp_el1_char:
+	MOVB	R5, (R10)
+	MOVD	$']', R5
 	MOVB	R5, (R10)
 
-	// TODO: Set SP_EL1 to high-memory exception stack
-	// For now, keeping Cardinal's low-memory exception stack (0x5F020000)
-
-	// CRITICAL: Switch to EL1t mode (use SP_EL0) before jumping!
-	// Kmazarin expects to use SP_EL0 (g0 stack), but we're currently in EL1h mode (using SP_EL1)
-	// Clear SPSel bit to switch to EL1t mode
+	// Now switch to EL1t mode (this makes SP point to SP_EL0 instead)
 	MSR	$0, SPSel
 
-	// Print 'T' for "EL1t mode"
+	// Print 'T' for "EL1t mode switched"
 	MOVD	$0x09000000, R10
 	MOVD	$'T', R5
 	MOVB	R5, (R10)
@@ -535,7 +552,64 @@ print_sp_el0_done:
 	DSB	$15
 	ISB	$15
 
+	// DEBUG: Verify SP_EL1 is still correct after mode switch
+	// In EL1t mode, we can't directly read SP (it's SP_EL0 now)
+	// But we can read SP_EL1 by switching back temporarily
+	MSR	$1, SPSel			// Temporarily switch to EL1h
+	MOVD	RSP, R12			// R12 = SP_EL1
+	MSR	$0, SPSel			// Switch back to EL1t
+	// Print '|' then SP_EL1 value
+	MOVD	$'|', R5
+	MOVB	R5, (R10)
+	LSR	$60, R12, R5
+	AND	$0xF, R5
+	CMP	$10, R5
+	BLT	print_sp_el1_after_digit
+	ADD	$('A'-10), R5
+	B	print_sp_el1_after_char
+print_sp_el1_after_digit:
+	ADD	$'0', R5
+print_sp_el1_after_char:
+	MOVB	R5, (R10)
+
+	// Now set SP (which is SP_EL0 in EL1t mode) to high-memory kernel g0 stack
+	// R3 contains kernelG0StackPointer = 0xFFFFFFFF5EFFFE00 (from setupKmazarinStartupEnv)
+	// Use MOV SP, X3 to set the stack pointer
+	MOVD	R3, RSP
+
+	// Print 'G' to show SP (SP_EL0) was set (G = G0 stack)
+	MOVD	$0x09000000, R10
+	MOVD	$'G', R5
+	MOVB	R5, (R10)
+
+	// Print '(' before SP readback
+	MOVD	$'(', R5
+	MOVB	R5, (R10)
+
+	// DEBUG: Read back SP to verify it was set (full 64-bit)
+	MOVD	RSP, R12
+	MOVD	$16, R14		// Counter for 16 hex digits
+print_sp_readback_loop:
+	LSR	$60, R12, R5
+	AND	$0xF, R5
+	CMP	$10, R5
+	BLT	print_sp_readback_digit
+	ADD	$('A'-10), R5
+	B	print_sp_readback_char
+print_sp_readback_digit:
+	ADD	$'0', R5
+print_sp_readback_char:
+	MOVB	R5, (R10)
+	LSL	$4, R12
+	SUB	$1, R14
+	CBNZ	R14, print_sp_readback_loop
+
+	// Print ')' after readback
+	MOVD	$')', R5
+	MOVB	R5, (R10)
+
 	// Print 'J' for "Jumping now"
+	MOVD	$0x09000000, R10
 	MOVD	$'J', R5
 	MOVB	R5, (R10)
 
