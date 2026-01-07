@@ -483,9 +483,43 @@ vbar_digit4:
 	DSB	$15				// Full system DSB
 	ISB	$15				// Instruction sync barrier
 
-	// TODO: Set SP_EL1 to high-memory stack
+	// Print R3 high nibble before setting SP_EL0
+	MOVD	$0x09000000, R10
+	MOVD	R3, R12
+	LSR	$60, R12, R5
+	CMP	$10, R5
+	BLT	print_r3_digit
+	ADD	$('A'-10), R5
+	B	print_r3_done
+print_r3_digit:
+	ADD	$'0', R5
+print_r3_done:
+	MOVB	R5, (R10)
+
+	// Set SP_EL0 to high-memory kernel g0 stack
+	// R3 contains kernelG0StackPointer = 0xFFFFFFFF5EFFFE00 (from setupKmazarinStartupEnv)
+	// MSR SP_EL0, X3 = 0xD5184003 (raw instruction - Go asm doesn't support SP_EL0)
+	WORD	$0xD5184003
+
+	// Print 'G' to show SP_EL0 was set (G = G0 stack)
+	MOVD	$'G', R5
+	MOVB	R5, (R10)
+
+	// DEBUG: Read back SP_EL0 to verify it was set
+	// MRS X12, SP_EL0 = 0xD5384002
+	WORD	$0xD5384002
+	LSR	$60, R12, R5
+	CMP	$10, R5
+	BLT	print_sp_el0_digit
+	ADD	$('A'-10), R5
+	B	print_sp_el0_done
+print_sp_el0_digit:
+	ADD	$'0', R5
+print_sp_el0_done:
+	MOVB	R5, (R10)
+
+	// TODO: Set SP_EL1 to high-memory exception stack
 	// For now, keeping Cardinal's low-memory exception stack (0x5F020000)
-	// to see if kmazarin can at least start
 
 	// CRITICAL: Switch to EL1t mode (use SP_EL0) before jumping!
 	// Kmazarin expects to use SP_EL0 (g0 stack), but we're currently in EL1h mode (using SP_EL1)

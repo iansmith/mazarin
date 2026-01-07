@@ -244,9 +244,21 @@ sync_exception_handler:
 	// Save all registers to exception frame
 	SUB	$EXC_FRAME_SIZE, RSP
 
-	// Print 'S' to show SUB succeeded
+	// Print 'S' to show SUB succeeded, then print RSP value
 	MOVD	$UART_BASE, R10
 	MOVD	$'S', R11
+	MOVB	R11, (R10)
+
+	// Print RSP (hex) - just high nibbles to debug
+	MOVD	RSP, R12
+	LSR	$60, R12, R11
+	CMP	$10, R11
+	BLT	print_sp_digit1
+	ADD	$('A'-10), R11
+	B	print_sp_done1
+print_sp_digit1:
+	ADD	$'0', R11
+print_sp_done1:
 	MOVB	R11, (R10)
 
 	// Save X0-X7
@@ -258,11 +270,28 @@ sync_exception_handler:
 	MOVB	R11, (R10)
 
 	STP	(R2, R3), EXC_FRAME_X0+16(RSP)
+
+	// Print '2' after saving R2,R3
+	MOVD	$UART_BASE, R10
+	MOVD	$'2', R11
+	MOVB	R11, (R10)
+
 	STP	(R4, R5), EXC_FRAME_X0+32(RSP)
 	STP	(R6, R7), EXC_FRAME_X0+48(RSP)
 
+	// Print '7' after saving R0-R7
+	MOVD	$UART_BASE, R10
+	MOVD	$'7', R11
+	MOVB	R11, (R10)
+
 	// Save X8-X27
 	STP	(R8, R9), EXC_FRAME_X8(RSP)
+
+	// Print '8' after saving R8,R9
+	MOVD	$UART_BASE, R10
+	MOVD	$'8', R11
+	MOVB	R11, (R10)
+
 	STP	(R10, R11), EXC_FRAME_X8+16(RSP)
 	STP	(R12, R13), EXC_FRAME_X8+32(RSP)
 	STP	(R14, R15), EXC_FRAME_X8+48(RSP)
