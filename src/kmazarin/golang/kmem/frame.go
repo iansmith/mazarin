@@ -144,12 +144,22 @@ type runtimeConfigStruct struct {
 }
 
 // getRuntimeConfigTyped returns the runtime config with proper type.
-// This helper avoids the interface{} indirection in hot paths.
+// CRITICAL: Must extract data pointer from interface, not address of interface!
+//
+// Go interface layout: {tab *itab, data unsafe.Pointer}
+// We need the data pointer (second field), not the interface itself.
 //
 //go:nosplit
 func getRuntimeConfigTyped() *runtimeConfigStruct {
 	cfgInterface := getRuntimeConfig()
-	return (*runtimeConfigStruct)(unsafe.Pointer(&cfgInterface))
+
+	// Extract data pointer from interface (second field at offset 8)
+	type iface struct {
+		tab  *byte
+		data unsafe.Pointer
+	}
+	ifacePtr := (*iface)(unsafe.Pointer(&cfgInterface))
+	return (*runtimeConfigStruct)(ifacePtr.data)
 }
 
 // uartPuts writes a string directly to UART

@@ -18,6 +18,11 @@ func getRuntimeConfig() interface{}
 //
 //go:nosplit
 func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
+	// DEBUG: Log mmap request
+	uartPutsDirect("mmap(len=0x")
+	uartPutHex64Direct(length)
+	uartPutsDirect(") ")
+
 	// For now, ignore addr hint and just allocate from a bump pointer
 	// This is very simplified - real mmap needs:
 	// - Respect MAP_FIXED if addr != 0 and MAP_FIXED is set
@@ -31,9 +36,16 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 
 	// Get memory from bump allocator (returns high-memory VA)
 	result := bumpAlloc(alignedLength)
+
+	// DEBUG: Log result
 	if result == 0 {
+		uartPutsDirect("-> FAIL\r\n")
 		return -12 // ENOMEM
 	}
+
+	uartPutsDirect("-> 0x")
+	uartPutHex64Direct(result)
+	uartPutsDirect("\r\n")
 
 	return int64(result)
 }
@@ -97,8 +109,20 @@ type runtimeConfigStruct struct {
 }
 
 // getRuntimeConfigTyped returns the runtime config with proper type.
+// CRITICAL: Must extract data pointer from interface, not address of interface!
+//
+// Go interface layout: {tab *itab, data unsafe.Pointer}
+// We need the data pointer (second field), not the interface itself.
+//
 //go:nosplit
 func getRuntimeConfigTyped() *runtimeConfigStruct {
 	cfgInterface := getRuntimeConfig()
-	return (*runtimeConfigStruct)(unsafe.Pointer(&cfgInterface))
+
+	// Extract data pointer from interface (second field at offset 8)
+	type iface struct {
+		tab  *byte
+		data unsafe.Pointer
+	}
+	ifacePtr := (*iface)(unsafe.Pointer(&cfgInterface))
+	return (*runtimeConfigStruct)(ifacePtr.data)
 }
