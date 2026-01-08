@@ -88,6 +88,7 @@ var (
 	LinkerKmazarinStart            uint64 = 1 // __kmazarin_start (patched)
 	LinkerKmazarinSize             uint64 = 1 // __kmazarin_size (patched)
 	LinkerKmazarinExceptionVector  uint64 = 1 // __kmazarin_exception_vector (patched from symbol table)
+	LinkerKmazarinStartupParams    uint64 = 1 // __kmazarin_startup_params (patched from symbol table)
 )
 
 // linkerValuesSum is used to prevent dead-code elimination of Linker* variables.
@@ -114,6 +115,7 @@ func init() {
 		LinkerBochsDisplayBase + LinkerBochsDisplaySize +
 		LinkerPciBarBase + LinkerPciBarSize +
 		LinkerKmazarinStart + LinkerKmazarinSize + LinkerKmazarinExceptionVector +
+		LinkerKmazarinStartupParams +
 		DataTestMagic[0] + DataTestMagic[1] + DataTestMagic[2] + DataTestMagic[3] +
 		DataTestMagic[4] + DataTestMagic[5] + DataTestMagic[6] + DataTestMagic[7]
 

@@ -46,14 +46,12 @@ type RuntimeConfig struct {
 	ExceptionStackSize uint64 // Exception stack size
 }
 
-// runtimeConfig is the global configuration, populated at package init time.
-// CRITICAL: Must be initialized BEFORE Go runtime starts (which calls mmap syscalls).
-var runtimeConfig RuntimeConfig
-var runtimeConfigInitialized bool
-
-// init reads the pre-populated RuntimeConfig from StartupParams.
-// This runs at package initialization time, before the Go runtime starts.
-func init() {
+// getRuntimeConfigFromStartupParams reads the RuntimeConfig from StartupParams.
+// This is called during package-level variable initialization, which happens
+// BEFORE the Go runtime starts (and before it makes any syscalls).
+//
+//go:nosplit
+func getRuntimeConfigFromStartupParams() RuntimeConfig {
 	// Read the RuntimeConfig that Cardinal wrote to StartupParams[0]
 	// StartupParams is a BSS global, so its address is known at link time
 	configPtr := (*RuntimeConfig)(unsafe.Pointer(&StartupParams[RuntimeConfigOffset]))
@@ -68,26 +66,32 @@ func init() {
 		}
 	}
 
-	// Copy to our global (avoids needing to cast every time)
-	runtimeConfig = *configPtr
-	runtimeConfigInitialized = true
+	// Return a copy
+	return *configPtr
 }
 
+// runtimeConfig is the global configuration, populated at package-level variable init time.
+// CRITICAL: Must be initialized BEFORE Go runtime starts (which calls mmap syscalls).
+// This is initialized as a package-level variable, which happens before init() runs.
+var runtimeConfig = getRuntimeConfigFromStartupParams()
+var runtimeConfigInitialized = true
+
 // GetRuntimeConfig returns the global runtime configuration.
-// MUST be called after initRuntimeConfigFromAuxv() has been called (in init()).
+// MUST be called after init() has been called.
 // NO lazy initialization - this is required for nosplit stack limits.
 //
 //go:nosplit
-//go:linkname GetRuntimeConfig
 func GetRuntimeConfig() *RuntimeConfig {
 	return &runtimeConfig
 }
 
 // GetUartBase returns the UART base address from runtime config.
-// This is provided as a helper for other packages via go:linkname.
+// This reads directly from StartupParams to avoid any dependency on
+// package initialization order.
 //
 //go:nosplit
-//go:linkname GetUartBase
 func GetUartBase() uintptr {
-	return uintptr(GetRuntimeConfig().KernelUartBase)
+	// Read directly from StartupParams to avoid initialization order issues
+	configPtr := (*RuntimeConfig)(unsafe.Pointer(&StartupParams[RuntimeConfigOffset]))
+	return uintptr(configPtr.KernelUartBase)
 }

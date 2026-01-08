@@ -1395,9 +1395,13 @@ func loadAndRunKmazarin() {
 	// Track min/max VAs for page fault handler registration
 	var minVA, maxVA uintptr
 
-	// Track kmazarin's StartupParams BSS address (high-memory VA)
+	// Get kmazarin's StartupParams address from linker symbol
 	// This is where Cardinal will copy argc/argv/envp/auxv before jumping
-	var kmazarinStartupParamsVA uintptr
+	// The address is extracted from kmazarin.elf symbol table at build time
+	kmazarinStartupParamsVA := uintptr(LinkerKmazarinStartupParams)
+	uartPutsDirect("  StartupParams VA: 0x")
+	uartPutHex64Direct(uint64(kmazarinStartupParamsVA))
+	uartPutsDirect("\r\n")
 
 	// Process each program header
 	for i := uint16(0); i < phnum; i++ {
@@ -1628,15 +1632,6 @@ func loadAndRunKmazarin() {
 		if pMemsz > pFilesz {
 			bssStart := unsafe.Pointer(kernelVAStart + uintptr(pFilesz))
 			bssSize := pMemsz - pFilesz
-
-			// Track StartupParams address (first BSS segment only)
-			// The StartupParams array is at the beginning of kmazarin's BSS
-			if kmazarinStartupParamsVA == 0 {
-				kmazarinStartupParamsVA = uintptr(bssStart)
-				uartPutsDirect("  StartupParams VA: 0x")
-				uartPutHex64Direct(uint64(kmazarinStartupParamsVA))
-				uartPutsDirect("\r\n")
-			}
 
 			// DEBUG: Print BSS zeroing info
 			uartPutsDirect("  BSS: zeroing 0x")
