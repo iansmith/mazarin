@@ -558,10 +558,63 @@ not_svc_hang:
 	B	not_svc_hang
 
 data_abort:
-	// Print 'D' for data abort (temporary - will add proper handling)
+	// Print 'D' for data abort
 	MOVD	$UART_BASE, R10
 	MOVD	$'D', R11
 	MOVB	R11, (R10)
+	MOVD	$'A', R11
+	MOVB	R11, (R10)
+	MOVD	$':', R11
+	MOVB	R11, (R10)
+
+	// Print FAR (fault address)
+	MRS	FAR_EL1, R12
+	MOVD	$16, R13		// Counter for 16 hex digits
+print_far_data_abort:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_far_digit_da
+	ADD	$('A'-10), R11
+	B	print_far_char_da
+print_far_digit_da:
+	ADD	$'0', R11
+print_far_char_da:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_far_data_abort
+
+	// Print " x28="
+	MOVD	$' ', R11
+	MOVB	R11, (R10)
+	MOVD	$'x', R11
+	MOVB	R11, (R10)
+	MOVD	$'2', R11
+	MOVB	R11, (R10)
+	MOVD	$'8', R11
+	MOVB	R11, (R10)
+	MOVD	$'=', R11
+	MOVB	R11, (R10)
+
+	// Read x28 from saved context (at [sp, #224])
+	MOVD	EXC_FRAME_X28(RSP), R12
+	MOVD	$16, R13		// Counter for 16 hex digits
+print_x28_data_abort:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_x28_digit_da
+	ADD	$('A'-10), R11
+	B	print_x28_char_da
+print_x28_digit_da:
+	ADD	$'0', R11
+print_x28_char_da:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_x28_data_abort
+
 	MOVD	$'\r', R11
 	MOVB	R11, (R10)
 	MOVD	$'\n', R11
@@ -581,9 +634,9 @@ sync_return:
 
 	// Restore X28-X30 (R28 is g, use raw instruction)
 	// ldr x28, [sp, #224]
-	WORD	$0xf94070fc  // ldr x28, [sp, #224]
+	WORD	$0xf94073fc  // ldr x28, [sp, #224] - NOTE: 73fc not 70fc (Rn=31=sp)
 	// ldr x29, [sp, #232]
-	WORD	$0xf94074fd  // ldr x29, [sp, #232]
+	WORD	$0xf94077fd  // ldr x29, [sp, #232] - NOTE: 77fd not 74fd (Rn=31=sp)
 	MOVD	EXC_FRAME_X28+16(RSP), R10
 	MOVD	R10, LR
 
@@ -760,9 +813,9 @@ irq_return:
 
 	// Restore X28-X30 (R28 is g, use raw instruction)
 	// ldr x28, [sp, #224]
-	WORD	$0xf94070fc  // ldr x28, [sp, #224]
+	WORD	$0xf94073fc  // ldr x28, [sp, #224] - NOTE: 73fc not 70fc (Rn=31=sp)
 	// ldr x29, [sp, #232]
-	WORD	$0xf94074fd  // ldr x29, [sp, #232]
+	WORD	$0xf94077fd  // ldr x29, [sp, #232] - NOTE: 77fd not 74fd (Rn=31=sp)
 	MOVD	EXC_FRAME_X28+16(RSP), R10
 	MOVD	R10, LR
 
@@ -796,6 +849,26 @@ irq_return:
 // ============================================================================
 TEXT ·GetExceptionVectorBase(SB), NOSPLIT, $0-8
 	MOVD	$·ExceptionVectorTable(SB), R0
+	MOVD	R0, ret+0(FP)
+	RET
+
+// ============================================================================
+// GetGRegister - Returns the value of the g register (x28)
+// ============================================================================
+TEXT ·GetGRegister(SB), NOSPLIT, $0-8
+	// Read x28 (g register) using raw instruction
+	// movd x28, x0 = 0xaa1c03e0
+	WORD	$0xaa1c03e0  // mov x0, x28
+	MOVD	R0, ret+0(FP)
+	RET
+
+// ============================================================================
+// GetPC - Returns the current PC value
+// ============================================================================
+TEXT ·GetPC(SB), NOSPLIT, $0-8
+	// ADR X0, PC+0 - get current PC into X0
+	// adr x0, . = 0x10000000
+	WORD	$0x10000000  // adr x0, .
 	MOVD	R0, ret+0(FP)
 	RET
 
