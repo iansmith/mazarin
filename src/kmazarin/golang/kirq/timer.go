@@ -6,10 +6,18 @@ import (
 	"unsafe"
 )
 
+// getUartBase is provided by main package via go:linkname.
+func getUartBase() uintptr
+
 // Address of runtime.asyncPreempt.abi0 in kmazarin
 // This is where we inject calls for async preemption
-// NOTE: This address may change with each build - verify with: nm build/kmazarin.elf | grep asyncPreempt
-const asyncPreemptAddr = 0x41871b70
+// TODO: This hardcoded address is BROKEN and needs to be discovered dynamically!
+// It changes with every build. We need to either:
+// 1. Get it from Cardinal via auxv (add AT_ASYNC_PREEMPT)
+// 2. Look it up via symbol table at runtime
+// 3. Use a linker trick to get a reference
+// For now, DISABLING PREEMPTION until we can do this properly.
+const asyncPreemptAddr = 0 // DISABLED - see TODO above
 
 // TimerIRQHandlerPreemptable handles the ARM Generic Timer interrupt (IRQ 27)
 // Returns preemption info to trigger call injection if preemption should occur
@@ -17,7 +25,7 @@ const asyncPreemptAddr = 0x41871b70
 //go:nosplit
 //go:noinline
 func TimerIRQHandlerPreemptable(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo {
-	const uartBase = uintptr(0xFFFFFFFF09000000)
+	uartBase := getUartBase()
 	*(*byte)(unsafe.Pointer(uartBase)) = 'T' // Debug: timer IRQ fired
 
 	// Re-arm timer for next interrupt (~10ms)
@@ -25,27 +33,18 @@ func TimerIRQHandlerPreemptable(irqNum uint64, framePtr uintptr, elr, spEl0 uint
 	// 10ms * 62.5MHz = 625000 ticks = 0x98968
 	rearmTimer(0x98968)
 
-	// Debug: show we're checking for preemption
-	*(*byte)(unsafe.Pointer(uartBase)) = 'P'
+	// CRITICAL: Preemption is DISABLED because asyncPreemptAddr is hardcoded.
+	// We need to fix this before enabling preemption.
+	// For now, just acknowledge the timer and return without preempting.
 
-	// For now, always trigger preemption when timer fires
-	// TODO: Add logic to skip preemption in certain cases (e.g., if in scheduler)
+	*(*byte)(unsafe.Pointer(uartBase)) = 't' // Debug: timer acknowledged, no preempt
 
-	// Set up call injection:
-	// 1. Allocate 16-byte frame on interrupted goroutine's stack
-	// 2. Set ELR to asyncPreempt (where ERET will jump)
-	// 3. Set LR to interrupted PC (so asyncPreempt can return)
-	// 4. Adjust SP for the new frame
-
-	adjustedSP := (spEl0 - 16) &^ 0xF // 16-byte aligned
-
-	*(*byte)(unsafe.Pointer(uartBase)) = 'p' // Debug: preemption setup done
-
+	// Return without preemption
 	return PreemptInfo{
-		NewELR:    asyncPreemptAddr,
-		NewSP:     adjustedSP,
-		NewLR:     elr, // Interrupted PC
-		DoPreempt: true,
+		NewELR:    0,
+		NewSP:     0,
+		NewLR:     0,
+		DoPreempt: false, // DISABLED until asyncPreemptAddr is fixed
 	}
 }
 

@@ -558,7 +558,7 @@ not_svc_hang:
 	B	not_svc_hang
 
 data_abort:
-	// Print 'D' for data abort
+	// Print 'DA:' for data abort
 	MOVD	$UART_BASE, R10
 	MOVD	$'D', R11
 	MOVB	R11, (R10)
@@ -567,8 +567,9 @@ data_abort:
 	MOVD	$':', R11
 	MOVB	R11, (R10)
 
-	// Print FAR (fault address)
+	// Print FAR (fault address) for debugging
 	MRS	FAR_EL1, R12
+	MOVD	R12, R19		// Save FAR in R19 for later use
 	MOVD	$16, R13		// Counter for 16 hex digits
 print_far_data_abort:
 	LSR	$60, R12, R11
@@ -584,6 +585,52 @@ print_far_char_da:
 	LSL	$4, R12
 	SUB	$1, R13
 	CBNZ	R13, print_far_data_abort
+
+	MOVD	$' ', R11
+	MOVB	R11, (R10)
+
+	// Call HandlePageFaultAsm(faultAddr) to try to handle the page fault
+	// Allocate 32 bytes for ABI0 call: 8 (arg) + 8 (return) + 16 (alignment)
+	SUB	$32, RSP
+
+	// Store FAR (fault address) as argument
+	MOVD	R19, 8(RSP)		// faultAddr at RSP+8
+
+	// Call HandlePageFaultAsm
+	CALL	·HandlePageFaultAsm(SB)
+
+	// Read return value (1 = handled, 0 = not handled)
+	MOVD	16(RSP), R0		// Return value at RSP+16
+	ADD	$32, RSP
+
+	// Check if fault was handled
+	CMP	$0, R0
+	BEQ	data_abort_unhandled
+
+	// Fault handled successfully - return to faulting instruction
+	// The instruction will retry and succeed now that the page is mapped
+	// Print 'OK' to show success
+	MOVD	$UART_BASE, R10
+	MOVD	$'O', R11
+	MOVB	R11, (R10)
+	MOVD	$'K', R11
+	MOVB	R11, (R10)
+	MOVD	$' ', R11
+	MOVB	R11, (R10)
+
+	B	sync_return
+
+data_abort_unhandled:
+	// Fault not handled - print error info and hang
+	MOVD	$UART_BASE, R10
+	MOVD	$'F', R11
+	MOVB	R11, (R10)
+	MOVD	$'A', R11
+	MOVB	R11, (R10)
+	MOVD	$'I', R11
+	MOVB	R11, (R10)
+	MOVD	$'L', R11
+	MOVB	R11, (R10)
 
 	// Print " x28="
 	MOVD	$' ', R11

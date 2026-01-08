@@ -4,6 +4,7 @@ import (
 	"unsafe"
 
 	"cardinal/asm"
+	"cardinal/constants"
 )
 
 // initMMU initializes the MMU with identity-mapped page tables
@@ -358,6 +359,11 @@ func initMMU() bool {
 	uartPutcDirect('M')
 	setupEarlyKernelMMIO()
 	uartPutcDirect('m')
+
+	// Set up demand paging infrastructure for kmazarin
+	uartPutcDirect('E')
+	setupKernelDemandPaging()
+	uartPutcDirect('e')
 
 	// DEBUG: Check if we ran out of page table space
 	_, remaining := getPageTableAllocatorStats()
@@ -943,6 +949,135 @@ func setupEarlyKernelMMIO() {
 	}
 
 	*(*uint32)(unsafe.Pointer(uartBase)) = 'm' // m = MMIO setup done
+}
+
+// setupKernelDemandPaging sets up the memory infrastructure that allows kmazarin
+// to implement demand paging for its heap. This involves:
+//
+// 1. Identity-mapping the TTBR1 page tables into high memory (PA + KernelVAOffset)
+//    This allows kmazarin to access any page table by computing VA = PA + offset
+//
+// 2. Pre-allocating and mapping the PT Pool region - physical frames that kmazarin
+//    can use to allocate new L2/L3 page tables for demand paging
+//
+// The heap VA space itself (KernelHeapStart to KernelHeapEnd) is NOT pre-mapped.
+// Kmazarin will handle page faults in that region by allocating physical frames
+// and mapping them on-demand.
+//
+//go:nosplit
+func setupKernelDemandPaging() {
+	uartBase := uintptr(0x09000000)
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'E' // E = dEmand paging setup
+
+	// =========================================================================
+	// Step 1: Identity-map the page table region to high memory
+	// =========================================================================
+	// Map the entire Cardinal page table region (0x41000000-0x41800000) to
+	// high memory using identity mapping: VA = PA + 0xFFFFFFFF00000000
+	// This allows kmazarin to access any page table (TTBR0 or TTBR1) by simply
+	// adding the kernel VA offset to the physical address.
+	//
+	// This is much simpler than the previous approach of mapping specific tables
+	// to a fixed VA region, because now kmazarin can compute any page table's VA
+	// from its PA trivially.
+
+	const KernelVAOffset = uintptr(0xFFFFFFFF00000000)
+	ptBase := getPageTableAllocator().base  // 0x41000000
+
+	uartPutsDirect("Identity-mapping page table region to high memory\r\n")
+	uartPutsDirect("  PA range: 0x")
+	uartPutHex64Direct(uint64(ptBase))
+	uartPutsDirect(" - 0x")
+	uartPutHex64Direct(uint64(ptBase + PAGE_TABLE_SIZE))
+	uartPutsDirect("\r\n")
+	uartPutsDirect("  VA range: 0x")
+	uartPutHex64Direct(uint64(ptBase + KernelVAOffset))
+	uartPutsDirect(" - 0x")
+	uartPutHex64Direct(uint64(ptBase + PAGE_TABLE_SIZE + KernelVAOffset))
+	uartPutsDirect("\r\n")
+
+	// Get current allocation offset to know how many pages are in use
+	allocOffset := getPageTableAllocator().offset
+	usedPages := (allocOffset + PAGE_SIZE - 1) / PAGE_SIZE
+
+	// Map each 4KB page of the page table region
+	// We map the entire region that could be used, not just currently allocated
+	for pa := ptBase; pa < ptBase+PAGE_TABLE_SIZE; pa += PAGE_SIZE {
+		va := pa + KernelVAOffset
+		mapKernelPage(va, pa, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	}
+
+	uartPutsDirect("  Mapped ")
+	uartPutHex64Direct(uint64(PAGE_TABLE_SIZE / PAGE_SIZE))
+	uartPutsDirect(" pages (")
+	uartPutHex64Direct(uint64(usedPages))
+	uartPutsDirect(" currently in use)\r\n")
+
+	// Print TTBR1 table addresses for reference
+	uartPutsDirect("  TTBR1 L0: PA 0x")
+	uartPutHex64Direct(uint64(kernelPageTableL0))
+	uartPutsDirect(" -> VA 0x")
+	uartPutHex64Direct(uint64(kernelPageTableL0 + KernelVAOffset))
+	uartPutsDirect("\r\n")
+	uartPutsDirect("  TTBR1 L1: PA 0x")
+	uartPutHex64Direct(uint64(kernelPageTableL1))
+	uartPutsDirect(" -> VA 0x")
+	uartPutHex64Direct(uint64(kernelPageTableL1 + KernelVAOffset))
+	uartPutsDirect("\r\n")
+
+	// =========================================================================
+	// Step 2: Pre-allocate and map the PT Pool region
+	// =========================================================================
+	// Kmazarin needs physical frames to allocate new L2/L3 tables for demand paging.
+	// We pre-allocate a pool of pages and map them to a known VA range.
+	// These pages will be used for L2/L3 tables when kmazarin needs to extend
+	// the page table structure for demand paging.
+
+	uartPutsDirect("Mapping PT Pool: VA 0x")
+	uartPutHex64Direct(uint64(constants.KernelPTPoolStart))
+	uartPutsDirect(" - 0x")
+	uartPutHex64Direct(uint64(constants.KernelPTPoolEnd))
+	uartPutsDirect("\r\n")
+
+	ptPoolPages := uintptr(constants.KernelPTPoolEnd-constants.KernelPTPoolStart) / PAGE_SIZE
+	for i := uintptr(0); i < ptPoolPages; i++ {
+		physFrame := allocPhysFrame()
+		if physFrame == 0 {
+			uartPutsDirect("ERROR: Failed to allocate PT pool frame ")
+			uartPutHex64Direct(uint64(i))
+			uartPutsDirect("\r\n")
+			kernelPanic("setupKernelDemandPaging: Out of physical frames for PT pool")
+		}
+
+		// Zero the frame (page tables should start zeroed)
+		bzero4K(unsafe.Pointer(physFrame), PAGE_SIZE)
+
+		// Map to high-memory VA (PT pool at fixed VA)
+		va := constants.KernelPTPoolStart + i*PAGE_SIZE
+		mapKernelPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+
+		// ALSO identity-map to high memory so kmazarin can compute VA from PA
+		identityVA := physFrame + KernelVAOffset
+		mapKernelPage(identityVA, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	}
+	uartPutsDirect("  Allocated ")
+	uartPutHex64Direct(uint64(ptPoolPages))
+	uartPutsDirect(" pages for PT pool\r\n")
+
+	// =========================================================================
+	// Step 3: Record demand paging region boundaries
+	// =========================================================================
+	// The heap VA range (KernelHeapStart to KernelHeapEnd) is NOT mapped yet.
+	// Kmazarin will use the constants to know the boundaries and will
+	// handle page faults in this region by allocating from the frame pool.
+
+	uartPutsDirect("Heap VA range (demand-paged): 0x")
+	uartPutHex64Direct(uint64(constants.KernelHeapStart))
+	uartPutsDirect(" - 0x")
+	uartPutHex64Direct(uint64(constants.KernelHeapEnd))
+	uartPutsDirect("\r\n")
+
+	*(*uint32)(unsafe.Pointer(uartBase)) = 'e' // e = demand paging setup done
 }
 
 // mapKernelPage maps a physical address to a high-memory virtual address

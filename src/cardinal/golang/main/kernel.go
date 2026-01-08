@@ -1106,6 +1106,85 @@ func dumpAllGs() {
 // NOTE: parseEmbeddedKmazarin() was removed - it was dead code that was only
 // called from the old goroutine-based startup path (simpleMain)
 
+// populateRuntimeConfig populates the RuntimeConfig structure at the beginning
+// of the StartupParams buffer. This provides kmazarin with immediate access to
+// all runtime configuration before the Go runtime initializes.
+//
+//go:nosplit
+func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
+	// Get frame pool info
+	physAlloc := getPhysFrameAllocator()
+
+	// Compute derived values
+	const KernelVAOffset = uint64(0xFFFFFFFF00000000)
+	const TTBR1RegionVA = uint64(0x419C0000)  // Where TTBR1 tables are mapped (low-mem)
+	const TTBR1RegionSize = uint64(0x10000)   // 64KB for TTBR1 tables
+	const PTPoolSize = uint64(0x30000)        // 192KB (48 pages)
+
+	ptPoolStart := TTBR1RegionVA + TTBR1RegionSize + KernelVAOffset
+	ptPoolEnd := ptPoolStart + PTPoolSize
+	heapStart := ptPoolEnd
+	heapEnd := uint64(constants.KmazarinLoadAddr) + KernelVAOffset + 64*1024*1024 // 64MB from kernel start
+
+	// Cast StartupParams buffer to RuntimeConfig struct
+	// Note: We're using shared/constants.RuntimeConfig structure
+	type RuntimeConfig struct {
+		Magic             uint32
+		Version           uint32
+		DtbPhysAddr       uint64
+		DtbSize           uint64
+		KmazarinPhysAddr  uint64
+		KmazarinSize      uint64
+		FramePoolStart    uint64
+		FramePoolEnd      uint64
+		KernelUartBase    uint64
+		KernelGicBase     uint64
+		TTBR1L0Phys       uint64
+		StartupParamsAddr uint64
+		KernelVAOffset    uint64
+		KernelPTPoolStart uint64
+		KernelPTPoolEnd   uint64
+		KernelHeapStart   uint64
+		KernelHeapEnd     uint64
+		PageSize          uint64
+		HWCap             uint64
+		G0StackBottom      uint64
+		G0StackTop         uint64
+		ExceptionStackTop  uint64
+		ExceptionStackSize uint64
+	}
+
+	config := (*RuntimeConfig)(unsafe.Pointer(kmazarinStartupParamsVA))
+
+	// Populate the struct
+	config.Magic = 0x4B4D5A52 // "KMZR"
+	config.Version = 1
+	config.DtbPhysAddr = uint64(asm.GetDtbBootAddr())
+	config.DtbSize = uint64(asm.GetDtbSize())
+	config.KmazarinPhysAddr = uint64(constants.KmazarinLoadAddr)
+	config.KmazarinSize = uint64(kmazarinAllocatedBytes)
+	config.FramePoolStart = uint64(physAlloc.next)
+	config.FramePoolEnd = uint64(physAlloc.end)
+	config.KernelUartBase = uint64(constants.KernelUartBase)
+	config.KernelGicBase = uint64(constants.KernelGicBase)
+	config.TTBR1L0Phys = uint64(ttbr1L0PA)
+	config.StartupParamsAddr = uint64(kmazarinStartupParamsVA)
+	config.KernelVAOffset = KernelVAOffset
+	config.KernelPTPoolStart = ptPoolStart
+	config.KernelPTPoolEnd = ptPoolEnd
+	config.KernelHeapStart = heapStart
+	config.KernelHeapEnd = heapEnd
+	config.PageSize = 4096
+	config.HWCap = 0x2 // HWCAP_ASIMD
+	config.G0StackBottom = uint64(constants.G0StackBottom)
+	config.G0StackTop = uint64(constants.G0StackTop)
+	config.ExceptionStackTop = uint64(constants.ExceptionStackTop)
+	config.ExceptionStackSize = uint64(constants.ExceptionStackSize)
+
+	// Ensure writes complete
+	asm.Dsb()
+}
+
 // setupKmazarinStartupEnv sets up the argc/argv/envp/auxv structure that the Go runtime expects
 // Returns: (stackPointer, argc, argv)
 //   - stackPointer: pointer to the start of the structure (for SP register)
@@ -1125,30 +1204,17 @@ func dumpAllGs() {
 //   [72]  = auxv[2].value (0)
 //   [80]  = auxv[3].tag (AT_HWCAP = 16)
 //   [88]  = auxv[3].value (HWCAP_ASIMD = 0x2)
-//   [96]  = auxv[4].tag (AT_DTB_PHYS = 0x1000)
-//   [104] = auxv[4].value (DTB physical address)
-//   [112] = auxv[5].tag (AT_DTB_SIZE = 0x1001)
-//   [120] = auxv[5].value (DTB size)
-//   [128] = auxv[6].tag (AT_KMAZARIN_PHYS = 0x1002)
-//   [136] = auxv[6].value (kmazarin physical base)
-//   [144] = auxv[7].tag (AT_KMAZARIN_SIZE = 0x1003)
-//   [152] = auxv[7].value (kmazarin total size)
-//   [160] = auxv[8].tag (AT_FRAME_POOL_START = 0x1004)
-//   [168] = auxv[8].value (frame pool start)
-//   [176] = auxv[9].tag (AT_FRAME_POOL_END = 0x1005)
-//   [184] = auxv[9].value (frame pool end)
-//   [192] = auxv[10].tag (AT_KERNEL_UART_BASE = 0x1006)
-//   [200] = auxv[10].value (high-memory UART base)
-//   [208] = auxv[11].tag (AT_KERNEL_GIC_BASE = 0x1007)
-//   [216] = auxv[11].value (high-memory GIC base)
-//   [224] = auxv[12].tag (AT_TTBR1_L0_PHYS = 0x1008)
-//   [232] = auxv[12].value (TTBR1 L0 page table physical address)
-//   [240] = AT_NULL (0)
-//   [248] = AT_NULL value (0)
+//   [96]  = auxv[4].tag (AT_NULL = 0)
+//   [104] = auxv[4].value (0)
 //   [256] = program name string "kmazarin\0"
 //   [272] = random bytes (16 bytes, 128 bits)
 //
-// This matches the Linux kernel's ELF loader behavior
+// This matches the Linux kernel's ELF loader behavior.
+//
+// NOTE: All Cardinal boot information (DTB, frame pools, UART, GIC, TTBR1, etc.)
+// is passed via RuntimeConfig structure at the beginning of StartupParams buffer,
+// eliminating the need for custom AT_* auxv entries. RuntimeConfig is the single
+// source of truth.
 //
 //go:nosplit
 func setupKmazarinStartupEnv(kmazarinStartupParamsVA uintptr) (stackPointer uintptr, argc uint64, argv uintptr) {
@@ -1171,8 +1237,8 @@ func setupKmazarinStartupEnv(kmazarinStartupParamsVA uintptr) (stackPointer uint
 	// Set up the structure as an array of uint64 values
 	data := (*[256]uint64)(unsafe.Pointer(structStart))
 
-	// Auxv entries now use indices 4-31 (starting at byte 32)
-	// After auxv (ends at index 31, byte offset 248), we place strings and random data:
+	// Auxv entries use indices 4-13 (starting at byte 32, ending at byte 104)
+	// After auxv, we place strings and random data:
 	// - Program name string at byte offset 256 (index 32)
 	// - Random bytes at byte offset 272 (index 34)
 
@@ -1217,42 +1283,12 @@ func setupKmazarinStartupEnv(kmazarinStartupParamsVA uintptr) (stackPointer uint
 	data[10] = 16
 	data[11] = 0x2 // HWCAP_ASIMD - Advanced SIMD (NEON)
 
-	// Custom auxv entries - Cardinal boot information for kmazarin
-	// AT_DTB_PHYS: Physical address of DTB
-	data[12] = constants.AT_DTB_PHYS
-	data[13] = uint64(asm.GetDtbBootAddr())
-	// AT_DTB_SIZE: Size of DTB
-	data[14] = constants.AT_DTB_SIZE
-	data[15] = uint64(asm.GetDtbSize())
-	// AT_KMAZARIN_PHYS: Physical base of kmazarin binary
-	data[16] = constants.AT_KMAZARIN_PHYS
-	data[17] = uint64(constants.KmazarinLoadAddr)
-	// AT_KMAZARIN_SIZE: Total size of kmazarin (from tracker)
-	data[18] = constants.AT_KMAZARIN_SIZE
-	data[19] = uint64(kmazarinAllocatedBytes)
-	// AT_FRAME_POOL_START: Start of physical frame pool
-	physAlloc := getPhysFrameAllocator()
-	framePoolStart := uint64(constants.CardinalEnd) // Frames start after cardinal
-	data[20] = constants.AT_FRAME_POOL_START
-	data[21] = framePoolStart
-	// AT_FRAME_POOL_END: End of physical frame pool
-	data[22] = constants.AT_FRAME_POOL_END
-	data[23] = uint64(physAlloc.end)
-	// AT_KERNEL_UART_BASE: High-memory UART address
-	data[24] = constants.AT_KERNEL_UART_BASE
-	data[25] = uint64(constants.KernelUartBase)
-	// AT_KERNEL_GIC_BASE: High-memory GIC address
-	data[26] = constants.AT_KERNEL_GIC_BASE
-	data[27] = uint64(constants.KernelGicBase)
-	// AT_TTBR1_L0_PHYS: Physical address of TTBR1 L0 page table
-	data[28] = constants.AT_TTBR1_L0_PHYS
-	data[29] = uint64(kernelPageTableL0)
-	// AT_STARTUP_PARAMS: High-memory address of kmazarin StartupParams BSS array
-	data[30] = constants.AT_STARTUP_PARAMS
-	data[31] = uint64(kmazarinStartupParamsVA)
 	// AT_NULL = 0 (terminator)
-	data[32] = 0
-	data[33] = 0
+	// NOTE: All Cardinal boot information is now passed via RuntimeConfig in StartupParams,
+	// eliminating the need for custom AT_* auxv entries. RuntimeConfig is the single source
+	// of truth for DTB, frame pools, UART, GIC, TTBR1, etc.
+	data[12] = 0
+	data[13] = 0
 
 	// ========================================================================
 	// Return stack pointer - structure is already on kernel g0 stack
@@ -1759,7 +1795,13 @@ func loadAndRunKmazarin() {
 	uartPutcDirect('3') // DEBUG: After registerMmapSpan
 	uartPutcDirect('C') // DEBUG: registerMmapSpan done
 
-	// Set up argc/argv/envp/auxv structure
+	// CRITICAL: Populate RuntimeConfig in StartupParams buffer FIRST
+	// This must happen before jumping to kmazarin, so config is available immediately
+	uartPutcDirect('R') // DEBUG: Before populateRuntimeConfig
+	populateRuntimeConfig(kmazarinStartupParamsVA, kernelPageTableL0)
+	uartPutcDirect('C') // DEBUG: After populateRuntimeConfig
+
+	// Set up argc/argv/envp/auxv structure on g0 stack
 	uartPutcDirect('S') // DEBUG: Before setupKmazarinStartupEnv
 	stackPointer, argc, argv := setupKmazarinStartupEnv(kmazarinStartupParamsVA)
 	uartPutcDirect('4') // DEBUG: After setupKmazarinStartupEnv
@@ -1816,8 +1858,8 @@ func loadAndRunKmazarin() {
 	}
 	uartPutsDirect("AT_HWCAP tag OK\r\n")
 
-	// AT_NULL is now at data[32] (after adding AT_STARTUP_PARAMS)
-	if data[32] != 0 {
+	// AT_NULL terminator at data[12]
+	if data[12] != 0 {
 		uartPutsDirect("ERROR: AT_NULL tag is not 0!\r\n")
 		return
 	}

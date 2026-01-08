@@ -572,6 +572,45 @@ print_sp_readback_char:
 	MOVD	$')', R5
 	MOVB	R5, (R10)
 
+	// DEBUG: Read and print g0 memory at 0xFFFFFFFF4197bf20
+	MOVD	$'[', R5
+	MOVB	R5, (R10)
+	MOVD	$'g', R5
+	MOVB	R5, (R10)
+	MOVD	$'0', R5
+	MOVB	R5, (R10)
+	MOVD	$'=', R5
+	MOVB	R5, (R10)
+	// Build address: 0xFFFFFFFF4197bf20
+	MOVD	$0x4197bf20, R6
+	MOVD	$0xFFFFFFFF00000000, R7
+	ADD	R7, R6, R6		// R6 = 0xFFFFFFFF4197bf20
+	// Read 64-bit value at g0
+	MOVD	(R6), R7
+	// Print as hex (16 digits)
+	MOVD	$16, R8
+g0_print_loop:
+	LSR	$60, R7, R9
+	AND	$0xF, R9
+	CMP	$10, R9
+	BLT	g0_digit
+	ADD	$('A'-10), R9
+	B	g0_char
+g0_digit:
+	ADD	$'0', R9
+g0_char:
+	MOVB	R9, (R10)
+	LSL	$4, R7
+	SUB	$1, R8
+	CBNZ	R8, g0_print_loop
+	MOVD	$']', R5
+	MOVB	R5, (R10)
+
+	// CRITICAL FIX: Zero x28 before jumping to kmazarin
+	// The g register must start as zero so rt0_go can set it properly
+	// mov x28, xzr = 0xAA1F03FC
+	WORD	$0xAA1F03FC  // mov x28, xzr
+
 	// Print 'J' for "Jumping now"
 	MOVD	$0x09000000, R10
 	MOVD	$'J', R5

@@ -13,7 +13,7 @@ func Exit()
 //
 //go:nosplit
 func KernelPanic(msg string) {
-	const uartBase = uintptr(0xFFFFFFFF09000000)
+	uartBase := GetUartBase()
 
 	// Helper to write a string
 	uartPuts := func(s string) {

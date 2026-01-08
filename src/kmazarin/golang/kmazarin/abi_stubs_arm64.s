@@ -23,3 +23,10 @@ TEXT ·SyscallDispatch(SB), NOSPLIT, $0-64
 // Tail-call to internal function. The internal's .abi0 wrapper reads from our stack.
 TEXT ·IRQDispatch(SB), NOSPLIT, $0-64
 	JMP	·irqDispatchInternal(SB)
+
+// HandlePageFaultAsm is called from data_abort in exceptions_arm64.s
+// Go signature: func HandlePageFaultAsm(faultAddr uint64) uint64
+// ABI0: 1 arg (8 bytes) + 1 return (8 bytes) = 16 bytes
+// Returns 1 if handled, 0 if not.
+TEXT ·HandlePageFaultAsm(SB), NOSPLIT, $0-16
+	JMP	·handlePageFaultInternal(SB)

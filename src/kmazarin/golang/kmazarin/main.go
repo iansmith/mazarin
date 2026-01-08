@@ -4,6 +4,7 @@ import (
 	"fmt"
 	//  "kmazarin/dtb"
 	"kmazarin/kirq"
+	"kmazarin/kmem"
 	"kmazarin/ksyscall"
 	_ "os" // Keep to maintain BSS size
 	"runtime"
@@ -30,9 +31,25 @@ func irqDispatchInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (ne
 	return info.NewELR, info.NewSP, info.NewLR, info.DoPreempt
 }
 
+// HandlePageFaultAsm is defined in abi_stubs_arm64.s as an ABI0 entry point
+// that tail-calls handlePageFaultInternal. This is the actual implementation.
+// Returns 1 if the fault was handled successfully, 0 otherwise.
+//
+//go:nosplit
+//go:noinline
+func handlePageFaultInternal(faultAddr uint64) uint64 {
+	if kmem.HandlePageFault(uintptr(faultAddr)) {
+		return 1
+	}
+	return 0
+}
+
 // init runs before main - called after Go runtime is fully initialized
 // Set up exception handlers and enable interrupts
 func init() {
+	// NOTE: Runtime config is already initialized in runtime_config.go:init()
+	// which runs at package load time, before the Go runtime initializes.
+
 	// Print "INIT" to show runtime has initialized
 	uartPutc('I')
 	uartPutc('N')
@@ -66,11 +83,11 @@ func init() {
 }
 
 // uartPutc writes a single character directly to UART (bypasses Go runtime)
-// NOTE: Use high-memory UART address since kmazarin runs at high memory
+// NOTE: UART address comes from runtime config (auxv from Cardinal)
 //go:nosplit
 func uartPutc(c byte) {
-	const uartBase = uintptr(0xFFFFFFFF09000000)
-	*(*byte)(unsafe.Pointer(uartBase)) = c
+	cfg := GetRuntimeConfig()
+	*(*byte)(unsafe.Pointer(uintptr(cfg.KernelUartBase))) = c
 }
 
 // uartPuts writes a string directly to UART
@@ -87,6 +104,34 @@ func uartPuts(s string) {
 //go:nosplit
 func uartPutsDirect(s string) {
 	uartPuts(s)
+}
+
+// getRuntimeConfigForKmem provides runtime config to kmem package via linkname
+//go:linkname getRuntimeConfigForKmem kmazarin/kmem.getRuntimeConfig
+//go:nosplit
+func getRuntimeConfigForKmem() interface{} {
+	return GetRuntimeConfig()
+}
+
+// getUartBaseForKsyscall provides UART base to ksyscall package via linkname
+//go:linkname getUartBaseForKsyscall kmazarin/ksyscall.getUartBase
+//go:nosplit
+func getUartBaseForKsyscall() uintptr {
+	return GetUartBase()
+}
+
+// getUartBaseForKirq provides UART base to kirq package via linkname
+//go:linkname getUartBaseForKirq kmazarin/kirq.getUartBase
+//go:nosplit
+func getUartBaseForKirq() uintptr {
+	return GetUartBase()
+}
+
+// getRuntimeConfigForKsyscall provides runtime config to ksyscall package via linkname
+//go:linkname getRuntimeConfigForKsyscall kmazarin/ksyscall.getRuntimeConfig
+//go:nosplit
+func getRuntimeConfigForKsyscall() interface{} {
+	return GetRuntimeConfig()
 }
 
 // uartPutHex64Direct writes a 64-bit hex value to UART
@@ -266,6 +311,17 @@ func simpleMain() {
 	uartPutc('N')
 	uartPutc('\r')
 	uartPutc('\n')
+
+	// DEBUG: Print g register and PC values at start
+	gVal := GetGRegister()
+	uartPuts("[g register] = 0x")
+	uartPutHex64Direct(gVal)
+	uartPuts("\r\n")
+
+	pcVal := GetPC()
+	uartPuts("[PC] = 0x")
+	uartPutHex64Direct(pcVal)
+	uartPuts("\r\n")
 
 	Print("")
 	Print("[g1] Kmazarin kernel starting...")

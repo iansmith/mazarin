@@ -115,7 +115,14 @@ $(CARDINAL_BINARY): $(GO_NATIVE_SRC) $(CARDINAL_SRC)/golang/go.mod $(KMAZARIN_BI
 #    - Takes ~0.7ms, ~15k relocations
 # =========================================
 
-$(KMAZARIN_BINARY): $(wildcard $(KMAZARIN_SRC)/*.go) $(wildcard $(KMAZARIN_SRC)/*.s) tools/kmazarin-entry.sh tools/print-kmazarin-addr.go tools/relocate-kmazarin.go src/cardinal/golang/constants/layout.go | $(BUILD_DIR)
+# Kmazarin package directories (main + sub-packages)
+KMAZARIN_KMEM_SRC = src/kmazarin/golang/kmem
+KMAZARIN_KSYSCALL_SRC = src/kmazarin/golang/ksyscall
+
+$(KMAZARIN_BINARY): $(wildcard $(KMAZARIN_SRC)/*.go) $(wildcard $(KMAZARIN_SRC)/*.s) \
+                    $(wildcard $(KMAZARIN_KMEM_SRC)/*.go) $(wildcard $(KMAZARIN_KMEM_SRC)/*.s) \
+                    $(wildcard $(KMAZARIN_KSYSCALL_SRC)/*.go) $(wildcard $(KMAZARIN_KSYSCALL_SRC)/*.s) \
+                    tools/kmazarin-entry.sh tools/print-kmazarin-addr.go tools/relocate-kmazarin.go src/cardinal/golang/constants/layout.go | $(BUILD_DIR)
 	$(eval KMAZARIN_LOAD_ADDR := $(shell ./tools/kmazarin-entry.sh))
 	@echo "Building kmazarin kernel (static Go binary at $(KMAZARIN_LOAD_ADDR))..."
 	@cd $(KMAZARIN_SRC) && \

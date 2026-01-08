@@ -59,18 +59,6 @@ var syscallTable = [512]SyscallHandler{
 //go:nosplit
 //go:noinline
 func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
-	const uartBase = uintptr(0xFFFFFFFF09000000)
-
-	// DEBUG: Print syscall number
-	*(*byte)(unsafe.Pointer(uartBase)) = 'D'
-	*(*byte)(unsafe.Pointer(uartBase)) = ':'
-	hexChars := "0123456789ABCDEF"
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (syscallNum >> i) & 0xF
-		*(*byte)(unsafe.Pointer(uartBase)) = hexChars[nibble]
-	}
-	*(*byte)(unsafe.Pointer(uartBase)) = ' '
-
 	// Check if syscall number is in range
 	if syscallNum >= 512 {
 		syscallPanic("Invalid syscall number", syscallNum)
@@ -80,19 +68,9 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 	// Get handler from table
 	handler := syscallTable[syscallNum]
 	if handler == nil {
-		// DEBUG: Print that handler is nil
-		*(*byte)(unsafe.Pointer(uartBase)) = 'N'
-		*(*byte)(unsafe.Pointer(uartBase)) = 'I'
-		*(*byte)(unsafe.Pointer(uartBase)) = 'L'
-		*(*byte)(unsafe.Pointer(uartBase)) = ' '
 		syscallPanic("Syscall not implemented", syscallNum)
 		return -1 // unreachable
 	}
-
-	// DEBUG: Print that we're calling handler
-	*(*byte)(unsafe.Pointer(uartBase)) = 'O'
-	*(*byte)(unsafe.Pointer(uartBase)) = 'K'
-	*(*byte)(unsafe.Pointer(uartBase)) = ' '
 
 	// Call the handler
 	return handler(arg0, arg1, arg2, arg3, arg4, arg5)
@@ -102,7 +80,7 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 //
 //go:nosplit
 func syscallPanic(msg string, syscallNum uint64) {
-	const uartBase = uintptr(0xFFFFFFFF09000000)
+	uartBase := getUartBase()
 
 	// Print "PANIC: "
 	uartPuts := func(s string) {

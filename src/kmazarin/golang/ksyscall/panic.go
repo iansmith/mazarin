@@ -8,12 +8,15 @@ import "unsafe"
 // Implemented in panic_arm64.s
 func Exit()
 
+// getUartBase is provided by main package via go:linkname.
+func getUartBase() uintptr
+
 // KernelPanic prints an error message directly to UART and hangs the system
 // This is used when syscalls fail critically or are not implemented
 //
 //go:nosplit
 func KernelPanic(msg string) {
-	const uartBase = uintptr(0xFFFFFFFF09000000)
+	uartBase := getUartBase()
 
 	// Helper to write a string
 	uartPuts := func(s string) {

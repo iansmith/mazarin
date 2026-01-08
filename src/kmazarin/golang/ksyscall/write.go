@@ -11,8 +11,9 @@ import (
 //
 //go:nosplit
 func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
+	uartBase := getUartBase()
+
 	// Debug marker - entry
-	const uartBase = uintptr(0xFFFFFFFF09000000)
 	*(*byte)(unsafe.Pointer(uartBase)) = 'W'
 
 	// Only support stdout/stderr for now
