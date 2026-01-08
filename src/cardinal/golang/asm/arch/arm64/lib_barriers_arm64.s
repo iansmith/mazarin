@@ -21,6 +21,14 @@ TEXT dsbIsh(SB), NOSPLIT|NOFRAME, $0-0
 	DSB	$11			// DSB ISH (inner shareable barrier)
 	RET
 
+// dsbIshst() - Data Synchronization Barrier (Inner Shareable, Store-only)
+// Like DSB ISH but only for store operations
+// Used before modifying page table entries
+// DSB ISHST = DSB $10 (0b1010 = Inner Shareable, store-only)
+TEXT dsbIshst(SB), NOSPLIT|NOFRAME, $0-0
+	DSB	$10			// DSB ISHST (inner shareable store barrier)
+	RET
+
 // isb() - Instruction Synchronization Barrier
 // Flushes the pipeline and ensures all instructions before this barrier
 // complete before any instructions after it begin execution

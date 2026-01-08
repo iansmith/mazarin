@@ -14,6 +14,10 @@ func Dsb()
 //go:nosplit
 func DsbIsh()
 
+//go:linkname DsbIshst dsbIshst
+//go:nosplit
+func DsbIshst()
+
 //go:linkname Isb isb
 //go:nosplit
 func Isb()

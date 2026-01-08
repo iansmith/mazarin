@@ -1614,48 +1614,8 @@ func loadAndRunKmazarin() {
 			bzeroSimple(bssStart, uint32(bssSize))
 		}
 
-		// CRITICAL: Remap executable pages as Read-Only
-		// ARM architecture requires code pages to be RO+X, not RW+X
-		if execPerm == PTE_EXEC_ALLOW {
-			uartPutcDirect('[') // DEBUG: Starting remapping
-			for pageIdx := uintptr(0); pageIdx < numPages; pageIdx++ {
-				kernelVA := kernelVAStart + (pageIdx << 12)
-				// Get the physical address from the existing PTE in TTBR1
-				l0Index := (kernelVA >> 39) & 0x1FF
-				l1Index := (kernelVA >> 30) & 0x1FF
-				l2Index := (kernelVA >> 21) & 0x1FF
-				l3Index := (kernelVA >> 12) & 0x1FF
-
-				// Use TTBR1 for kernel page tables (high memory)
-				ttbr1 := asm.ReadTtbr1El1()
-				l0Table := uintptr(ttbr1 & ^uint64(0xFFF))
-				l0Entry := (*uint64)(unsafe.Pointer(l0Table + l0Index*8))
-				l1Table := uintptr(*l0Entry & PTE_ADDR_MASK)
-				l1Entry := (*uint64)(unsafe.Pointer(l1Table + l1Index*8))
-				l2Table := uintptr(*l1Entry & PTE_ADDR_MASK)
-				l2Entry := (*uint64)(unsafe.Pointer(l2Table + l2Index*8))
-				l3Table := uintptr(*l2Entry & PTE_ADDR_MASK)
-				l3Entry := (*uint64)(unsafe.Pointer(l3Table + l3Index*8))
-
-				// Extract physical address from existing PTE (bits 47:12 only)
-				physAddr := uintptr(*l3Entry & PTE_ADDR_MASK)
-
-				// DEBUG: Print first page's physical address
-				if pageIdx == 0 {
-					uartPutsDirect("PA=0x")
-					uartPutHex64Direct(uint64(physAddr))
-					uartPutsDirect(" ")
-				}
-
-				// Remap with Read-Only permissions in TTBR1
-				mapKernelPage(kernelVA, physAddr, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, execPerm)
-			}
-			uartPutcDirect(']') // DEBUG: Remapping complete
-			// Invalidate TLB for this region after remapping
-			asm.Dsb()
-			asm.InvalidateTlbAll()
-			asm.Isb()
-		}
+		// NOTE: Remapping to RO is deferred until after cache maintenance
+		// ARM requires: write code → clean D-cache → remap RO → invalidate I-cache
 	}
 
 	// Segment loop completed - all kmazarin segments loaded
@@ -1674,17 +1634,113 @@ func loadAndRunKmazarin() {
 	uartPutHex64Direct(uint64(constants.KmazarinTotalLimit) / (1024 * 1024))
 	uartPutsDirect(" MB)\r\n")
 
-	// CRITICAL: Cache maintenance for executable code
-	// After loading code into memory, we must:
-	// 1. Clean D-cache (DC CVAU) - ensure data is visible to I-cache
-	// 2. Invalidate I-cache (IC IVAU) - discard stale instructions
-	// 3. Use barriers to ensure ordering
+	// CRITICAL: Cache maintenance and remapping for executable code
+	// ARM Architecture mandates this sequence:
+	// 1. DC CVAU (clean D-cache) - make code visible to hardware walker
+	// 2. DSB - ensure cache clean completes
+	// 3. Remap pages to RO (modify PTEs)
+	// 4. DSB ISHST + TLBI + DSB ISH - ensure PTE changes visible
+	// 5. IC IVAU (invalidate I-cache) - discard stale instructions
+	// 6. DSB + ISB - final synchronization
+
+	// Step 1-2: Clean D-cache for all code pages
 	for va := minVA; va < maxVA; va += 64 {
 		// DC CVAU - Data Cache Clean by VA to Point of Unification
 		asm.DcCvau(va)
 	}
 	asm.Dsb() // Ensure all DC operations complete
 
+	// Step 3-4: Remap executable segments to Read-Only
+	// Iterate over all loaded segments and remap those with EXEC permission
+	const PF_X_CONST = 0x1 // Execute permission flag
+	for i := uint16(0); i < phnum; i++ {
+		phOffset := phoff + uint64(i)*uint64(phentsize)
+		if phOffset+56 > uint64(len(elfData)) {
+			continue
+		}
+
+		// Parse program header
+		pType := uint32(elfData[phOffset]) |
+			(uint32(elfData[phOffset+1]) << 8) |
+			(uint32(elfData[phOffset+2]) << 16) |
+			(uint32(elfData[phOffset+3]) << 24)
+
+		// Skip non-LOAD segments
+		if pType != PT_LOAD {
+			continue
+		}
+
+		// Parse segment flags
+		pFlags := uint32(elfData[phOffset+4]) |
+			(uint32(elfData[phOffset+5]) << 8) |
+			(uint32(elfData[phOffset+6]) << 16) |
+			(uint32(elfData[phOffset+7]) << 24)
+
+		// Only remap executable segments
+		if (pFlags & PF_X_CONST) == 0 {
+			continue
+		}
+
+		// Parse pVaddr and pMemsz
+		pVaddr := uint64(elfData[phOffset+16]) |
+			(uint64(elfData[phOffset+17]) << 8) |
+			(uint64(elfData[phOffset+18]) << 16) |
+			(uint64(elfData[phOffset+19]) << 24) |
+			(uint64(elfData[phOffset+20]) << 32) |
+			(uint64(elfData[phOffset+21]) << 40) |
+			(uint64(elfData[phOffset+22]) << 48) |
+			(uint64(elfData[phOffset+23]) << 56)
+
+		pMemsz := uint64(elfData[phOffset+40]) |
+			(uint64(elfData[phOffset+41]) << 8) |
+			(uint64(elfData[phOffset+42]) << 16) |
+			(uint64(elfData[phOffset+43]) << 24) |
+			(uint64(elfData[phOffset+44]) << 32) |
+			(uint64(elfData[phOffset+45]) << 40) |
+			(uint64(elfData[phOffset+46]) << 48) |
+			(uint64(elfData[phOffset+47]) << 56)
+
+		// Calculate VAs for this segment (pVaddr already has high-memory address)
+		kernelVAStart := uintptr(pVaddr) &^ 0xFFF
+		kernelVAEnd := (uintptr(pVaddr) + uintptr(pMemsz) + 0xFFF) &^ 0xFFF
+		numPages := (kernelVAEnd - kernelVAStart) >> 12
+
+		uartPutcDirect('[') // DEBUG: Remapping segment
+
+		// Remap each page to RO
+		asm.DsbIsh() // Ensure prior stores complete (use DsbIsh since DsbIshst may not exist yet)
+
+		for pageIdx := uintptr(0); pageIdx < numPages; pageIdx++ {
+			kernelVA := kernelVAStart + (pageIdx << 12)
+
+			// Walk page tables to find PTE
+			ttbr1 := asm.ReadTtbr1El1()
+			l0Table := uintptr(ttbr1 & ^uint64(0xFFF))
+			l0Index := (kernelVA >> 39) & 0x1FF
+			l0Entry := (*uint64)(unsafe.Pointer(l0Table + l0Index*8))
+			l1Table := uintptr(*l0Entry & PTE_ADDR_MASK)
+			l1Index := (kernelVA >> 30) & 0x1FF
+			l1Entry := (*uint64)(unsafe.Pointer(l1Table + l1Index*8))
+			l2Table := uintptr(*l1Entry & PTE_ADDR_MASK)
+			l2Index := (kernelVA >> 21) & 0x1FF
+			l2Entry := (*uint64)(unsafe.Pointer(l2Table + l2Index*8))
+			l3Table := uintptr(*l2Entry & PTE_ADDR_MASK)
+			l3Index := (kernelVA >> 12) & 0x1FF
+			l3Entry := (*uint64)(unsafe.Pointer(l3Table + l3Index*8))
+
+			// Modify PTE: change AP from RW to RO
+			oldPTE := *l3Entry
+			newPTE := (oldPTE & ^uint64(0xC0)) | PTE_AP_RO_EL1
+			*l3Entry = newPTE
+		}
+
+		asm.DsbIsh()           // Ensure PTE writes visible
+		asm.InvalidateTlbAll() // Invalidate TLB (contains DSB+ISB)
+
+		uartPutcDirect(']') // DEBUG: Remapping complete
+	}
+
+	// Step 5-6: Invalidate I-cache and synchronize
 	for va := minVA; va < maxVA; va += 64 {
 		// IC IVAU - Instruction Cache Invalidate by VA to Point of Unification
 		asm.IcIvau(va)
@@ -1692,15 +1748,7 @@ func loadAndRunKmazarin() {
 	asm.Dsb() // Ensure all IC operations complete
 	asm.Isb() // Synchronize context
 
-	// CRITICAL: Invalidate TLB after mapping new code pages
-	// The TLB might have cached "not present" entries from earlier failed translations
-	// or speculative fetches. We must invalidate before attempting to execute the code.
-	asm.InvalidateTlbAll()
-	asm.Dsb()
-	asm.Isb()
-
 	uartPutcDirect('2') // DEBUG: After cache maintenance
-	uartPutcDirect('B') // DEBUG: After TLB invalidation
 
 	uartPutcDirect('R') // DEBUG: Before registerMmapSpan
 	if !registerMmapSpan(minVA, maxVA) {
