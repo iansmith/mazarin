@@ -1617,6 +1617,7 @@ func loadAndRunKmazarin() {
 		// CRITICAL: Remap executable pages as Read-Only
 		// ARM architecture requires code pages to be RO+X, not RW+X
 		if execPerm == PTE_EXEC_ALLOW {
+			uartPutcDirect('[') // DEBUG: Starting remapping
 			for pageIdx := uintptr(0); pageIdx < numPages; pageIdx++ {
 				kernelVA := kernelVAStart + (pageIdx << 12)
 				// Get the physical address from the existing PTE in TTBR1
@@ -1629,19 +1630,27 @@ func loadAndRunKmazarin() {
 				ttbr1 := asm.ReadTtbr1El1()
 				l0Table := uintptr(ttbr1 & ^uint64(0xFFF))
 				l0Entry := (*uint64)(unsafe.Pointer(l0Table + l0Index*8))
-				l1Table := uintptr(*l0Entry & ^uint64(0xFFF))
+				l1Table := uintptr(*l0Entry & PTE_ADDR_MASK)
 				l1Entry := (*uint64)(unsafe.Pointer(l1Table + l1Index*8))
-				l2Table := uintptr(*l1Entry & ^uint64(0xFFF))
+				l2Table := uintptr(*l1Entry & PTE_ADDR_MASK)
 				l2Entry := (*uint64)(unsafe.Pointer(l2Table + l2Index*8))
-				l3Table := uintptr(*l2Entry & ^uint64(0xFFF))
+				l3Table := uintptr(*l2Entry & PTE_ADDR_MASK)
 				l3Entry := (*uint64)(unsafe.Pointer(l3Table + l3Index*8))
 
-				// Extract physical address from existing PTE
-				physAddr := uintptr(*l3Entry & ^uint64(0xFFF))
+				// Extract physical address from existing PTE (bits 47:12 only)
+				physAddr := uintptr(*l3Entry & PTE_ADDR_MASK)
+
+				// DEBUG: Print first page's physical address
+				if pageIdx == 0 {
+					uartPutsDirect("PA=0x")
+					uartPutHex64Direct(uint64(physAddr))
+					uartPutsDirect(" ")
+				}
 
 				// Remap with Read-Only permissions in TTBR1
 				mapKernelPage(kernelVA, physAddr, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, execPerm)
 			}
+			uartPutcDirect(']') // DEBUG: Remapping complete
 			// Invalidate TLB for this region after remapping
 			asm.Dsb()
 			asm.InvalidateTlbAll()
