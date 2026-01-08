@@ -50,7 +50,7 @@ el1_sp0_sync:
 	MOVD	$'1', R11
 	MOVB	R11, (R10)
 	B	sync_exception_handler
-	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0
@@ -62,7 +62,7 @@ el1_sp0_irq:
 	MOVD	$'I', R11
 	MOVB	R11, (R10)
 	B	irq_exception_handler
-	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0
@@ -72,24 +72,20 @@ el1_sp0_fiq:
 	MOVD	$'2', R11
 	MOVB	R11, (R10)
 	B	unhandled_exception
-	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
-	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0; WORD $0
 
 el1_sp0_serror:
 	MOVD	$UART_BASE, R10
 	MOVD	$'3', R11
 	MOVB	R11, (R10)
 	B	unhandled_exception
-	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
-	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
-
-// ============================================================================
-// Current EL with SPx (0x200-0x3FF) - Kmazarin exceptions
-// ============================================================================
+	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
+	// CRITICAL: el1_spx_sync MUST start at EXACTLY offset 0x200 (no alignment!)
 el1_spx_sync:
 	B	sync_exception_handler
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
@@ -109,20 +105,20 @@ el1_spx_fiq:
 	MOVD	$'F', R11
 	MOVB	R11, (R10)
 	B	unhandled_exception
-	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
-	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0; WORD $0
 
 el1_spx_serror:
 	MOVD	$UART_BASE, R10
 	MOVD	$'S', R11
 	MOVB	R11, (R10)
 	B	unhandled_exception
-	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
-	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0; WORD $0
 
 // ============================================================================
 // Lower EL AArch64 (0x400-0x5FF) - Not used (no user space yet)
