@@ -1314,15 +1314,9 @@ func SyscallDispatch(num int64, arg0, arg1, arg2, arg3, arg4, arg5 uint64, frame
 //
 //go:noinline
 func syncExceptionDispatchInternal(
-	ec uint64,
-	esr uint64,
-	elr uint64,
-	far uint64,
-	spsr uint64,
+	ctx *ExceptionContext,
 	syscallNum uint64,
 	arg0, arg1, arg2, arg3, arg4, arg5 uint64,
-	framePtr uintptr,
-	savedFP, savedLR, savedG uint64,
 ) (result int64, switchTo int32, handled bool) {
 
 	// DEBUG: Print marker to verify this function is called
@@ -1330,7 +1324,7 @@ func syncExceptionDispatchInternal(
 
 	// DEBUG: Print SPSR I-bit to check if interrupts are enabled
 	// SPSR bit 7 = I mask: 0=enabled, 1=disabled
-	if (spsr & 0x80) != 0 {
+	if (ctx.SPSR & 0x80) != 0 {
 		uartPutcDirect('I') // Interrupts DISABLED in saved state
 	}
 
@@ -1356,13 +1350,13 @@ func syncExceptionDispatchInternal(
 	}
 
 	// DEBUG: Print entry info for non-syscall exceptions
-	if ec != 0x15 && ec != 0x25 {
+	if ctx.EC != 0x15 && ctx.EC != 0x25 {
 		uartPutsDirect("SED:")
-		uartPutHex64Direct(ec)
+		uartPutHex64Direct(ctx.EC)
 		uartPutcDirect(' ')
 	}
 
-	switch ec {
+	switch ctx.EC {
 	case 0x15: // EC_SVC_EL1_A64 - Supervisor call from AArch64
 		// DEBUG: Print syscall number for tracing
 		uartPutcDirect('S')
@@ -1372,16 +1366,16 @@ func syncExceptionDispatchInternal(
 		result, switchTo = SyscallDispatch(
 			int64(syscallNum),
 			arg0, arg1, arg2, arg3, arg4, arg5,
-			framePtr,
+			uintptr(ctx.FramePtr),
 		)
 		return result, switchTo, true
 
 	case 0x25: // EC_DATA_ABORT_ELx - Data abort from current EL
 		// Extract fault status from ESR (bits 5:0)
-		faultStatus := esr & 0x3F
+		faultStatus := ctx.ESR & 0x3F
 
 		// Try demand paging
-		if HandlePageFault(uintptr(far), faultStatus) {
+		if HandlePageFault(uintptr(ctx.FAR), faultStatus) {
 			// Page fault handled - return to retry faulting instruction
 			return 0, -1, true
 		}
@@ -1389,20 +1383,20 @@ func syncExceptionDispatchInternal(
 		// Page fault failed - print error and indicate not handled
 		uartPutsDirect("\r\n!FATAL DATA ABORT:\r\n")
 		uartPutsDirect("  FAR=0x")
-		uartPutHex64Direct(far)
+		uartPutHex64Direct(ctx.FAR)
 		uartPutsDirect(" ELR=0x")
-		uartPutHex64Direct(elr)
+		uartPutHex64Direct(ctx.ELR)
 		uartPutsDirect(" ESR=0x")
-		uartPutHex64Direct(esr)
+		uartPutHex64Direct(ctx.ESR)
 		uartPutsDirect("\r\n")
 		return 0, -1, false
 
 	case 0x00: // EC_UNKNOWN - Unknown exception (often NULL pointer)
 		uartPutsDirect("\r\n!UNKNOWN EXCEPTION (EC=0x00):\r\n")
 		uartPutsDirect("  ELR=0x")
-		uartPutHex64Direct(elr)
+		uartPutHex64Direct(ctx.ELR)
 		uartPutsDirect(" FAR=0x")
-		uartPutHex64Direct(far)
+		uartPutHex64Direct(ctx.FAR)
 		uartPutsDirect("\r\n")
 		// Fatal - call exit
 		SyscallExit()
@@ -1412,13 +1406,13 @@ func syncExceptionDispatchInternal(
 	default:
 		// Unknown EC in synchronous exception handler
 		uartPutsDirect("\r\nUnknown EC in synchronous exception handler: EC=0x")
-		uartPutHex64Direct(ec)
+		uartPutHex64Direct(ctx.EC)
 		uartPutsDirect("\r\n  ELR=0x")
-		uartPutHex64Direct(elr)
+		uartPutHex64Direct(ctx.ELR)
 		uartPutsDirect(" FAR=0x")
-		uartPutHex64Direct(far)
+		uartPutHex64Direct(ctx.FAR)
 		uartPutsDirect(" ESR=0x")
-		uartPutHex64Direct(esr)
+		uartPutHex64Direct(ctx.ESR)
 		uartPutsDirect("\r\n")
 		// Return false to hang in assembly
 		return 0, -1, false

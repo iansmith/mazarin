@@ -41,6 +41,7 @@ func init() {
 	uartPutc('\r')
 	uartPutc('\n')
 
+	// NOTE: Syscall table is initialized at package level, before runtime init
 	// NOTE: VBAR_EL1 is already set by Cardinal before jumping to kmazarin
 	// This must happen before the Go runtime initializes (which runs before init())
 	// because runtime init calls mmap() syscalls that need kmazarin's handlers.

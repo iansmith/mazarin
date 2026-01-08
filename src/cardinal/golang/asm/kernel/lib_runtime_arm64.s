@@ -10,6 +10,7 @@
 // Migrated from asm/aarch64/lib.s
 
 #include "textflag.h"
+#include "../../../../../docs/abi/go_abi_macros_arm64.h"
 
 // External Go runtime symbols
 // Note: In Go assembly, we reference these with package prefix or via linkname
@@ -201,12 +202,11 @@ TEXT call_runtime_mstart(SB), NOSPLIT, $32-0
 //   R0 = 0 (reserved)
 //   R1 = 0 (reserved)
 //   R2 = DTB pointer (passed by QEMU)
-TEXT kernel_main(SB), NOSPLIT, $16-0
+TEXT kernel_main(SB), NOSPLIT, $0-0
 	// UART will be initialized by uartInit() called from kernel_main
 	// No early debug writes
 
 	// Function signature: KernelMain(r0, r1, atags uint32)
-	// AArch64 calling convention: first 8 parameters in R0-R7
 	//
 	// NOTE: In QEMU virt, the DTB pointer is provided by QEMU in R0 at reset.
 	// boot.s preserves that pointer and passes it to kernel_main in R2.
@@ -221,8 +221,10 @@ TEXT kernel_main(SB), NOSPLIT, $16-0
 	// Note: Write barrier flag is set in boot.s AFTER BSS clear
 	// (Setting it here would be overwritten by BSS clear)
 
-	// Call Go function - this will initialize everything
-	CALL	main·KernelMain(SB)
+	// Call Go function using Linux entry convention
+	// This properly stores args to stack for ABI0, mimicking how
+	// Go's rt0 receives argc/argv from Linux
+	LINUX_ENTRY_CALL_3_0(main·KernelMain, R0, R1, R2)
 
 	// KernelMain returns after initialization is complete
 	RET

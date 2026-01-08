@@ -8,6 +8,7 @@
 // CRITICAL: Exception vector MUST be 2KB aligned (ARM64 requirement)
 
 #include "textflag.h"
+#include "../../../../docs/abi/go_abi_macros_arm64.h"
 
 // UART base for minimal debug output
 // NOTE: Use high-memory UART address since kmazarin runs at high memory
@@ -705,50 +706,26 @@ print_spsr_char_irq:
 	// Mask to get interrupt ID (bits 0-9, max 1020 for GICv2)
 	AND	$0x3FF, R0  // R0 = IRQ number (0-1019)
 
-	// Prepare stack frame for ABI0 call to IRQDispatch
-	// Frame layout (72 bytes, 16-byte aligned):
-	//   RSP+0:  (alignment padding)
-	//   RSP+8:  arg0 - irqNum
-	//   RSP+16: arg1 - framePtr
-	//   RSP+24: arg2 - elr
-	//   RSP+32: arg3 - spEl0
-	//   RSP+40: ret0 - newELR
-	//   RSP+48: ret1 - newSP
-	//   RSP+56: ret2 - newLR
-	//   RSP+64: ret3 - doPreempt
-	SUB	$80, RSP  // Allocate frame (16-byte aligned)
-
-	// Store arguments on stack
-	MOVD	R0, 8(RSP)   // irqNum
-	MOVD	RSP, R1
-	ADD	$80, R1      // R1 = original RSP (exception frame pointer)
-	MOVD	R1, 16(RSP)  // framePtr
-	MOVD	EXC_FRAME_ELR_SPSR+80(RSP), R2  // saved ELR
-	MOVD	R2, 24(RSP)
-	MOVD	EXC_FRAME_SP_EL0+80(RSP), R3    // saved SP_EL0
-	MOVD	R3, 32(RSP)
+	// Prepare arguments in registers for IRQDispatch
+	// func IRQDispatch(irqNum, framePtr, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool)
+	MOVD	R19, R0                          // R0 = irqNum (from R19)
+	MOVD	RSP, R1                          // R1 = framePtr (exception frame pointer)
+	MOVD	EXC_FRAME_ELR_SPSR(RSP), R2      // R2 = elr (from exception frame)
+	MOVD	EXC_FRAME_SP_EL0(RSP), R3        // R3 = spEl0 (from exception frame)
 
 	// DEBUG: Print '@' before call
 	MOVD	$UART_BASE, R9
 	MOVD	$'@', R8
 	MOVB	R8, (R9)
 
-	// Call main.IRQDispatch(irqNum, framePtr, elr, spEl0)
-	CALL	·IRQDispatch(SB)
+	// Call IRQDispatch using macro - handles frame alloc, arg store, call, return load, cleanup
+	// Returns: R20=newELR, R21=newSP, R22=newLR, R23=doPreempt
+	GO_CALL_4_3B(·IRQDispatch, R0, R1, R2, R3, R20, R21, R22, R23)
 
 	// DEBUG: Print '#' after call
 	MOVD	$UART_BASE, R9
 	MOVD	$'#', R8
 	MOVB	R8, (R9)
-
-	// Read return values from stack
-	MOVD	40(RSP), R20  // R20 = newELR
-	MOVD	48(RSP), R21  // R21 = newSP
-	MOVD	56(RSP), R22  // R22 = newLR
-	MOVD	64(RSP), R23  // R23 = doPreempt
-
-	// Clean up stack frame
-	ADD	$80, RSP
 
 	// Write End Of Interrupt (must do before modifying frame!)
 	MOVD	$(GIC_CPU_BASE + GICC_EOIR), R10

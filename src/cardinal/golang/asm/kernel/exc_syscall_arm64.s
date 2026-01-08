@@ -32,6 +32,7 @@
 //   [SP+312]: saved LR (for syscall) (8 bytes)
 
 #include "textflag.h"
+#include "../../../../../docs/abi/go_abi_macros_arm64.h"
 
 // Exception frame offsets
 #define EXC_FRAME_X0         0
@@ -124,96 +125,57 @@ irqs_were_enabled:
 	LDP EXC_FRAME_X29_X30(RSP), (R24, R25)   // R24 = saved FP, R25 = saved LR
 	MOVD EXC_FRAME_X28(RSP), R26             // R26 = saved g
 
-	// CALLING CONVENTION FIX: SyncExceptionDispatch is ABI0
-	// The .abi0 wrapper does: str x30, [sp, #-16]!
-	// Then loads args from [SP+24], [SP+32], ... [SP+144]
-	// After wrapper prologue: wrapper_SP = our_SP - 16
-	// So wrapper reads from [our_SP + 8], [our_SP + 16], ... [our_SP + 128]
-	// Returns are stored at [our_SP + 136], [our_SP + 144], [our_SP + 148]
+	// NEW APPROACH: Build ExceptionContext struct and use GO_CALL_8_2B macro
 	//
-	// Current register contents (sources):
+	// Current register contents:
 	//   R10 = EC, R15 = ESR, R12 = ELR, R14 = FAR, R13 = SPSR
 	//   R16 = arg0 (x0), R17 = arg1 (x1)
 	//   R19 = arg2, R20 = arg3, R21 = arg4, R22 = arg5
 	//   R23 = syscall number, R24 = savedFP, R25 = savedLR, R26 = savedG
 	//
-	// Stack layout after SUB $272, RSP:
-	// Go's generated .abi0 wrapper does: str x30, [sp, #-16]!
-	// Then loads args from [wrapper_SP+24], [wrapper_SP+32], etc.
-	// After wrapper prologue: wrapper_SP = our_SP - 16
-	// So wrapper loads from: our_SP + 8, our_SP + 16, ... our_SP + 136
-	// Returns go to: our_SP + 144, our_SP + 152, our_SP + 156
+	// Function signature:
+	//   func SyncExceptionDispatch(
+	//       ctx *ExceptionContext,
+	//       syscallNum uint64,
+	//       arg0, arg1, arg2, arg3, arg4, arg5 uint64,
+	//   ) (result int64, switchTo int32, handled bool)
 	//
-	//   [RSP+8]:   arg0 (ec) -> wrapper reads from SP+24 = RSP+8
-	//   [RSP+16]:  arg1 (esr)
-	//   ...
-	//   [RSP+128]: arg15 (savedG)
-	//   [RSP+136]: return0 (result)
-	//   [RSP+144]: return1 (switchTo)
-	//   [RSP+148]: return2 (handled)
-	//   [RSP+152]: saved R19-R26 (64 bytes)
-	//   [RSP+216]: temp storage (48 bytes)
+	// ExceptionContext layout (72 bytes):
+	//   [0]:  EC       [8]:  ESR      [16]: ELR      [24]: FAR
+	//   [32]: SPSR     [40]: FramePtr [48]: SavedFP  [56]: SavedLR
+	//   [64]: SavedG
 
-	// Allocate space
-	SUB $272, RSP
+	// Allocate space for ExceptionContext (72 bytes, round to 80)
+	SUB $80, RSP
 
-	// Save callee-saved registers
-	STP (R19, R20), 152(RSP)
-	STP (R21, R22), 168(RSP)
-	STP (R23, R24), 184(RSP)
-	STP (R25, R26), 200(RSP)
+	// Build ExceptionContext at RSP+0..71
+	MOVD R10, 0(RSP)               // ctx.EC
+	MOVD R15, 8(RSP)               // ctx.ESR
+	MOVD R12, 16(RSP)              // ctx.ELR
+	MOVD R14, 24(RSP)              // ctx.FAR
+	MOVD R13, 32(RSP)              // ctx.SPSR
+	ADD $80, RSP, R0               // FramePtr = original RSP (exception frame)
+	MOVD R0, 40(RSP)               // ctx.FramePtr
+	MOVD R24, 48(RSP)              // ctx.SavedFP
+	MOVD R25, 56(RSP)              // ctx.SavedLR
+	MOVD R26, 64(RSP)              // ctx.SavedG
 
-	// Save conflicting sources to temp area
-	MOVD R10, 216(RSP)             // Save EC
-	MOVD R15, 224(RSP)             // Save ESR
-	MOVD R12, 232(RSP)             // Save ELR
-	MOVD R14, 240(RSP)             // Save FAR
-	MOVD R13, 248(RSP)             // Save SPSR
+	// Prepare arguments in registers for GO_CALL_8_2B
+	MOVD RSP, R0                   // arg0 = &ctx
+	MOVD R23, R1                   // arg1 = syscallNum
+	MOVD R16, R2                   // arg2 = arg0
+	MOVD R17, R3                   // arg3 = arg1
+	MOVD R19, R4                   // arg4 = arg2
+	MOVD R20, R5                   // arg5 = arg3
+	MOVD R21, R6                   // arg6 = arg4
+	MOVD R22, R7                   // arg7 = arg5
 
-	// Store args to stack for Go's .abi0 wrapper (args start at RSP+8)
-	// Order: ec, esr, elr, far, spsr, syscallNum, arg0..5, framePtr, savedFP, savedLR, savedG
-	MOVD 216(RSP), R0              // Load EC from temp
-	MOVD R0, 8(RSP)                // arg0 = ec
-	MOVD 224(RSP), R0              // Load ESR from temp
-	MOVD R0, 16(RSP)               // arg1 = esr
-	MOVD 232(RSP), R0              // Load ELR from temp
-	MOVD R0, 24(RSP)               // arg2 = elr
-	MOVD 240(RSP), R0              // Load FAR from temp
-	MOVD R0, 32(RSP)               // arg3 = far
-	MOVD 248(RSP), R0              // Load SPSR from temp
-	MOVD R0, 40(RSP)               // arg4 = spsr
-	MOVD R23, 48(RSP)              // arg5 = syscallNum
-	MOVD R16, 56(RSP)              // arg6 = arg0
-	MOVD R17, 64(RSP)              // arg7 = arg1
-	MOVD R19, 72(RSP)              // arg8 = arg2
-	MOVD R20, 80(RSP)              // arg9 = arg3
-	MOVD R21, 88(RSP)              // arg10 = arg4
-	MOVD R22, 96(RSP)              // arg11 = arg5
-	ADD $272, RSP, R0              // framePtr = original RSP
-	MOVD R0, 104(RSP)              // arg12 = framePtr
-	MOVD R24, 112(RSP)             // arg13 = savedFP
-	MOVD R25, 120(RSP)             // arg14 = savedLR
-	MOVD R26, 128(RSP)             // arg15 = savedG
+	// Call using macro (allocates its own 96-byte frame)
+	GO_CALL_8_2B(main·SyncExceptionDispatch, R0, R1, R2, R3, R4, R5, R6, R7, R0, R1, R2)
+	// Returns: R0 = result (int64), R1 = switchTo (int32), R2 = handled (bool)
 
-	// Call the Go exception dispatcher
-	// SyncExceptionDispatch is a manual stub in abi_stubs_arm64.s that:
-	// 1. Loads args from stack (ABI0 style)
-	// 2. Calls syncExceptionDispatchInternal via BL (direct to ABIInternal)
-	// This avoids nested wrapper issues.
-	CALL main·SyncExceptionDispatch(SB)
-
-	// Load return values from stack
-	// The stub stores returns at: result at caller_SP+136, switchTo at SP+144, handled at SP+148
-	MOVD 136(RSP), R0              // result
-	MOVW 144(RSP), R1              // switchTo
-	MOVBU 148(RSP), R2             // handled
-
-	// Restore callee-saved registers
-	LDP 152(RSP), (R19, R20)
-	LDP 168(RSP), (R21, R22)
-	LDP 184(RSP), (R23, R24)
-	LDP 200(RSP), (R25, R26)
-	ADD $272, RSP                  // Deallocate space
+	// Deallocate frame
+	ADD $80, RSP
 
 	// Check if handled
 	CBZ R2, do_exception_hang      // If not handled, hang
@@ -248,28 +210,25 @@ do_context_switch:
 	MOVD R1, R20                   // Save targetIdx in callee-saved
 	MOVD RSP, R21                  // Save framePtr (current RSP = exception frame)
 
-	// DoContextSwitch(framePtr, targetIdx) - ABI0 expects args on stack
-	// Layout: [RSP+0..7]=pad, [RSP+8..15]=framePtr, [RSP+16..23]=targetIdx,
-	//         [RSP+24..31]=return, [RSP+32..79]=callee-saved
-	SUB $80, RSP
-
-	// Store args on stack (ABI0)
-	MOVD R21, 8(RSP)               // arg0 = framePtr
-	MOVW R20, 16(RSP)              // arg1 = targetIdx (int32)
-
 	// Save callee-saved registers
-	STP (R19, R20), 32(RSP)
-	STP (R21, R22), 48(RSP)
-	STP (R29, R30), 64(RSP)
+	SUB $48, RSP
+	STP (R19, R20), 0(RSP)
+	STP (R21, R22), 16(RSP)
+	STP (R29, R30), 32(RSP)
 
-	CALL main·DoContextSwitch(SB)
-	// Returns: R0 = pointer to new ThreadContext (also at RSP+24)
+	// Call DoContextSwitch using macro
+	// func DoContextSwitch(framePtr uintptr, targetIdx int32) *ThreadContext
+	// Note: R20 is int32, but Go ABI0 promotes to 64-bit on stack
+	MOVD R21, R0                   // arg0 = framePtr
+	MOVD R20, R1                   // arg1 = targetIdx (promoted to uint64)
+	GO_CALL_2_1(main·DoContextSwitch, R0, R1)
+	// Returns: R0 = pointer to new ThreadContext
 
 	// Restore callee-saved registers
-	LDP 32(RSP), (R19, R20)
-	LDP 48(RSP), (R21, R22)
-	LDP 64(RSP), (R29, R30)
-	ADD $80, RSP
+	LDP 0(RSP), (R19, R20)
+	LDP 16(RSP), (R21, R22)
+	LDP 32(RSP), (R29, R30)
+	ADD $48, RSP
 
 	B load_context_and_eret(SB)
 

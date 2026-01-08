@@ -10,24 +10,47 @@ import (
 // Takes 6 arguments (x0-x5) and returns a result (x0)
 type SyscallHandler func(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64
 
-// syscallTable is the dispatch table for all 255 possible syscalls
+// syscallTable is the dispatch table for all syscalls
 // Indexed by syscall number, nil entries are unimplemented
-var syscallTable [256]SyscallHandler
-
-// init registers all implemented syscalls in the dispatch table
-func init() {
-	// Register syscall handlers at their syscall numbers
-	syscallTable[64] = SyscallWrite             // write
-	syscallTable[93] = SyscallExit              // exit
-	syscallTable[96] = SyscallSetTidAddress     // set_tid_address
-	syscallTable[98] = SyscallFutex             // futex
-	syscallTable[101] = SyscallNanosleep        // nanosleep
-	syscallTable[123] = SyscallSchedGetaffinity // sched_getaffinity
-	syscallTable[135] = SyscallRtSigprocmask    // rt_sigprocmask
-	syscallTable[215] = SyscallMunmap           // munmap
-	syscallTable[220] = SyscallClone            // clone
-	syscallTable[222] = SyscallMmap             // mmap
-	// Note: raisesig (261) is beyond our table size - it's a Cardinal internal syscall
+// Size 512 to accommodate syscalls up to 278 (getrandom)
+// IMPORTANT: Initialized at package level so it's available before init() runs
+var syscallTable = [512]SyscallHandler{
+	// I/O and file operations
+	0:   SyscallIoSetup,     // io_setup
+	19:  SyscallEventfd,     // eventfd2
+	20:  SyscallEpollCreate, // epoll_create1
+	21:  SyscallEpollCtl,    // epoll_ctl
+	22:  SyscallEpollPwait,  // epoll_pwait
+	25:  SyscallFcntl,       // fcntl
+	56:  SyscallOpenat,      // openat
+	57:  SyscallClose,       // close
+	63:  SyscallRead,        // read
+	64:  SyscallWrite,       // write
+	93:  SyscallExit,        // exit
+	96:  SyscallSetTidAddress,     // set_tid_address
+	98:  SyscallFutex,              // futex
+	101: SyscallNanosleep,          // nanosleep
+	113: SyscallClockGettime,       // clock_gettime
+	123: SyscallSchedGetaffinity,   // sched_getaffinity
+	124: SyscallSchedYield,         // sched_yield
+	129: SyscallKill,               // kill
+	130: SyscallTkill,              // tkill
+	131: SyscallTgkill,             // tgkill
+	132: SyscallSigaltstack,        // sigaltstack
+	134: SyscallRtSigaction,        // rt_sigaction
+	135: SyscallRtSigprocmask,      // rt_sigprocmask
+	167: SyscallPrctl,              // prctl
+	172: SyscallGetpid,             // getpid
+	178: SyscallGettid,             // gettid
+	204: SyscallSchedSetaffinity,   // sched_setaffinity
+	214: SyscallBrk,                // brk
+	215: SyscallMunmap,             // munmap
+	220: SyscallClone,              // clone
+	222: SyscallMmap,               // mmap
+	226: SyscallMprotect,           // mprotect
+	233: SyscallMadvise,            // madvise
+	261: SyscallPrlimit64,          // prlimit64
+	278: SyscallGetrandom,          // getrandom
 }
 
 // DispatchSyscall is called from assembly exception handler
@@ -36,8 +59,20 @@ func init() {
 //go:nosplit
 //go:noinline
 func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
+	const uartBase = uintptr(0xFFFFFFFF09000000)
+
+	// DEBUG: Print syscall number
+	*(*byte)(unsafe.Pointer(uartBase)) = 'D'
+	*(*byte)(unsafe.Pointer(uartBase)) = ':'
+	hexChars := "0123456789ABCDEF"
+	for i := 60; i >= 0; i -= 4 {
+		nibble := (syscallNum >> i) & 0xF
+		*(*byte)(unsafe.Pointer(uartBase)) = hexChars[nibble]
+	}
+	*(*byte)(unsafe.Pointer(uartBase)) = ' '
+
 	// Check if syscall number is in range
-	if syscallNum >= 256 {
+	if syscallNum >= 512 {
 		syscallPanic("Invalid syscall number", syscallNum)
 		return -1 // unreachable
 	}
@@ -45,9 +80,19 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 	// Get handler from table
 	handler := syscallTable[syscallNum]
 	if handler == nil {
+		// DEBUG: Print that handler is nil
+		*(*byte)(unsafe.Pointer(uartBase)) = 'N'
+		*(*byte)(unsafe.Pointer(uartBase)) = 'I'
+		*(*byte)(unsafe.Pointer(uartBase)) = 'L'
+		*(*byte)(unsafe.Pointer(uartBase)) = ' '
 		syscallPanic("Syscall not implemented", syscallNum)
 		return -1 // unreachable
 	}
+
+	// DEBUG: Print that we're calling handler
+	*(*byte)(unsafe.Pointer(uartBase)) = 'O'
+	*(*byte)(unsafe.Pointer(uartBase)) = 'K'
+	*(*byte)(unsafe.Pointer(uartBase)) = ' '
 
 	// Call the handler
 	return handler(arg0, arg1, arg2, arg3, arg4, arg5)

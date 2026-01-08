@@ -8,6 +8,7 @@
 // sets up parameters and calls Go for all decision-making.
 
 #include "textflag.h"
+#include "../../../../../../docs/abi/go_abi_macros_arm64.h"
 
 // ============================================================================
 // IRQ Frame Layout (272 bytes, 16-byte aligned)
@@ -153,39 +154,20 @@ irq_print2:
 	MOVD IRQ_FRAME_ELR(RSP), R3      // R3 = elr
 	MOVD IRQ_FRAME_SP_EL0(RSP), R4   // R4 = spEl0
 
-	// CRITICAL: Call IRQDispatchGo directly.
-	// The .abi0 wrapper expects:
-	//   args at caller_sp+8, +16, +24, +32, +40
-	//   returns stored at caller_sp+48, +56, +64, +72
-	// Frame layout: [8..47] = 5 args, [48..79] = returns, [80..111] = callee-saved
-	SUB $112, RSP
+	// Save callee-saved registers (will survive the Go call)
+	SUB $32, RSP
+	STP (R19, R20), 0(RSP)
+	STP (R21, R22), 16(RSP)
 
-	// Store args on stack for IRQDispatchGo's .abi0 wrapper
-	MOVD R0, 8(RSP)                  // arg0 = irqID
-	MOVD R1, 16(RSP)                 // arg1 = framePtr
-	MOVD R2, 24(RSP)                 // arg2 = savedG
-	MOVD R3, 32(RSP)                 // arg3 = elr
-	MOVD R4, 40(RSP)                 // arg4 = spEl0
-
-	// Save callee-saved registers at offset 80+
-	STP (R19, R20), 80(RSP)
-	STP (R21, R22), 96(RSP)
-
-	// Call IRQDispatchGo - its .abi0 wrapper handles ABI
-	CALL main·IRQDispatchGo(SB)
-
-	// Returns are on STACK (the .abi0 wrapper stores them there):
-	//   ret0 (newELR) at sp+48, ret1 (newSP) at sp+56,
-	//   ret2 (newLR) at sp+64, ret3 (doPreempt) at sp+72
-	MOVD 48(RSP), R0                 // R0 = newELR
-	MOVD 56(RSP), R1                 // R1 = newSP
-	MOVD 64(RSP), R2                 // R2 = newLR
-	MOVBU 72(RSP), R3                // R3 = doPreempt (bool, 1 byte)
+	// Call IRQDispatchGo using macro
+	// func IRQDispatchGo(irqID, framePtr, savedG, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool)
+	// Args already in R0-R4, returns will be in R0-R3
+	GO_CALL_5_3B(main·IRQDispatchGo, R0, R1, R2, R3, R4, R0, R1, R2, R3)
 
 	// Restore callee-saved registers
-	LDP 80(RSP), (R19, R20)
-	LDP 96(RSP), (R21, R22)
-	ADD $112, RSP
+	LDP 0(RSP), (R19, R20)
+	LDP 16(RSP), (R21, R22)
+	ADD $32, RSP
 
 	// Check if preemption is needed
 	CBZ R3, irq_normal_return
