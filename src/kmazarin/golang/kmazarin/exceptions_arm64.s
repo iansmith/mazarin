@@ -414,10 +414,10 @@ print_final_sp_char:
 	STP	(R12, R13), EXC_FRAME_X8+32(RSP)
 	STP	(R14, R15), EXC_FRAME_X8+48(RSP)
 	STP	(R16, R17), EXC_FRAME_X8+64(RSP)
-	// R18 is platform register, use raw instruction: str x18, [sp, #80]
-	WORD	$0xf90028f2  // str x18, [sp, #80]
-	// Save R19: str x19, [sp, #88]
-	WORD	$0xf9002cf3  // str x19, [sp, #88]
+	// R18 is platform register, use raw instruction: str x18, [sp, #144]
+	WORD	$0xf9004bf2  // str x18, [sp, #144]
+	// Save R19: str x19, [sp, #152]
+	WORD	$0xf9004ff3  // str x19, [sp, #152]
 	STP	(R20, R21), EXC_FRAME_X8+96(RSP)
 	STP	(R22, R23), EXC_FRAME_X8+112(RSP)
 	STP	(R24, R25), EXC_FRAME_X8+128(RSP)
@@ -425,9 +425,9 @@ print_final_sp_char:
 
 	// Save X28-X30 (R28 is g, use raw instruction)
 	// str x28, [sp, #224]
-	WORD	$0xf90070fc  // str x28, [sp, #224]
+	WORD	$0xf90073fc  // str x28, [sp, #224]
 	// str x29, [sp, #232]
-	WORD	$0xf90074fd  // str x29, [sp, #232]
+	WORD	$0xf90077fd  // str x29, [sp, #232]
 	MOVD	LR, R10
 	MOVD	R10, EXC_FRAME_X28+16(RSP)
 
@@ -481,20 +481,33 @@ print_spsr_char_sync:
 	CMP	$0x15, R10
 	BNE	not_svc
 
-	// SVC: Call syscall dispatcher
-	// R8 has syscall number, R0-R5 have arguments
-	// Load them from exception frame
-	LDP	EXC_FRAME_X8(RSP), (R0, R1)     // R0 = syscall num, R1 = X9
-	LDP	EXC_FRAME_X0(RSP), (R1, R2)     // R1 = arg0, R2 = arg1
-	LDP	EXC_FRAME_X0+16(RSP), (R3, R4)  // R3 = arg2, R4 = arg3
-	LDP	EXC_FRAME_X0+32(RSP), (R5, R6)  // R5 = arg4, R6 = arg5
+	// SVC: Call syscall dispatcher using ABI0 calling convention
+	// Load arguments from exception frame first (before adjusting RSP)
+	LDP	EXC_FRAME_X8(RSP), (R0, R1)        // R0 = syscall num (X8), R1 = X9
+	LDP	EXC_FRAME_X0(RSP), (R2, R3)        // R2 = arg0 (X0), R3 = arg1 (X1)
+	LDP	EXC_FRAME_X0+16(RSP), (R4, R5)     // R4 = arg2 (X2), R5 = arg3 (X3)
+	LDP	EXC_FRAME_X0+32(RSP), (R6, R7)     // R6 = arg4 (X4), R7 = arg5 (X5)
 
-	// Call main.SyscallDispatch(syscallNum, arg0-arg5)
-	// The function signature is: func(uint64, uint64, uint64, uint64, uint64, uint64, uint64) int64
-	// Go's calling convention: args in R0-R6, return in R0
+	// Allocate frame for ABI0 call: 8 (pad) + 7*8 (args) + 8 (return) = 72, round to 80
+	SUB	$80, RSP
+
+	// Store arguments on stack for ABI0
+	MOVD	R0, 8(RSP)      // syscallNum at RSP+8
+	MOVD	R2, 16(RSP)     // arg0 at RSP+16
+	MOVD	R3, 24(RSP)     // arg1 at RSP+24
+	MOVD	R4, 32(RSP)     // arg2 at RSP+32
+	MOVD	R5, 40(RSP)     // arg3 at RSP+40
+	MOVD	R6, 48(RSP)     // arg4 at RSP+48
+	MOVD	R7, 56(RSP)     // arg5 at RSP+56
+
+	// Call ABI0 stub (will tail-call syscallDispatchInternal via ABIInternal)
 	CALL	·SyscallDispatch(SB)
 
-	// Store return value back to X0 in frame
+	// Read return value from stack
+	MOVD	64(RSP), R0     // Return value at RSP+64
+	ADD	$80, RSP
+
+	// Store return value back to X0 in exception frame
 	MOVD	R0, EXC_FRAME_X0(RSP)
 
 	// Restore and return
@@ -579,10 +592,10 @@ sync_return:
 	LDP	EXC_FRAME_X8+32(RSP), (R12, R13)
 	LDP	EXC_FRAME_X8+48(RSP), (R14, R15)
 	LDP	EXC_FRAME_X8+64(RSP), (R16, R17)
-	// R18 is platform register, use raw instruction: ldr x18, [sp, #80]
-	WORD	$0xf94028f2  // ldr x18, [sp, #80]
-	// Restore R19: ldr x19, [sp, #88]
-	WORD	$0xf9402cf3  // ldr x19, [sp, #88]
+	// R18 is platform register, use raw instruction: ldr x18, [sp, #144]
+	WORD	$0xf9404bf2  // ldr x18, [sp, #144]
+	// Restore R19: ldr x19, [sp, #152]
+	WORD	$0xf9404ff3  // ldr x19, [sp, #152]
 	LDP	EXC_FRAME_X8+96(RSP), (R20, R21)
 	LDP	EXC_FRAME_X8+112(RSP), (R22, R23)
 	LDP	EXC_FRAME_X8+128(RSP), (R24, R25)
@@ -628,10 +641,10 @@ irq_exception_handler:
 	STP	(R12, R13), EXC_FRAME_X8+32(RSP)
 	STP	(R14, R15), EXC_FRAME_X8+48(RSP)
 	STP	(R16, R17), EXC_FRAME_X8+64(RSP)
-	// R18 is platform register, use raw instruction: str x18, [sp, #80]
-	WORD	$0xf90028f2  // str x18, [sp, #80]
-	// Save R19: str x19, [sp, #88]
-	WORD	$0xf9002cf3  // str x19, [sp, #88]
+	// R18 is platform register, use raw instruction: str x18, [sp, #144]
+	WORD	$0xf9004bf2  // str x18, [sp, #144]
+	// Save R19: str x19, [sp, #152]
+	WORD	$0xf9004ff3  // str x19, [sp, #152]
 	STP	(R20, R21), EXC_FRAME_X8+96(RSP)
 	STP	(R22, R23), EXC_FRAME_X8+112(RSP)
 	STP	(R24, R25), EXC_FRAME_X8+128(RSP)
@@ -639,9 +652,9 @@ irq_exception_handler:
 
 	// Save X28-X30 (R28 is g, use raw instruction)
 	// str x28, [sp, #224]
-	WORD	$0xf90070fc  // str x28, [sp, #224]
+	WORD	$0xf90073fc  // str x28, [sp, #224]
 	// str x29, [sp, #232]
-	WORD	$0xf90074fd  // str x29, [sp, #232]
+	WORD	$0xf90077fd  // str x29, [sp, #232]
 	MOVD	LR, R10
 	MOVD	R10, EXC_FRAME_X28+16(RSP)
 
@@ -782,10 +795,10 @@ irq_return:
 	LDP	EXC_FRAME_X8+32(RSP), (R12, R13)
 	LDP	EXC_FRAME_X8+48(RSP), (R14, R15)
 	LDP	EXC_FRAME_X8+64(RSP), (R16, R17)
-	// R18 is platform register, use raw instruction: ldr x18, [sp, #80]
-	WORD	$0xf94028f2  // ldr x18, [sp, #80]
-	// Restore R19: ldr x19, [sp, #88]
-	WORD	$0xf9402cf3  // ldr x19, [sp, #88]
+	// R18 is platform register, use raw instruction: ldr x18, [sp, #144]
+	WORD	$0xf9404bf2  // ldr x18, [sp, #144]
+	// Restore R19: ldr x19, [sp, #152]
+	WORD	$0xf9404ff3  // ldr x19, [sp, #152]
 	LDP	EXC_FRAME_X8+96(RSP), (R20, R21)
 	LDP	EXC_FRAME_X8+112(RSP), (R22, R23)
 	LDP	EXC_FRAME_X8+128(RSP), (R24, R25)

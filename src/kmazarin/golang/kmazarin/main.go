@@ -11,22 +11,21 @@ import (
 	"unsafe"
 )
 
-// SyscallDispatch is called from assembly exception handler
-// It's a thin wrapper around ksyscall.DispatchSyscall
+// SyscallDispatch is defined in abi_stubs_arm64.s as an ABI0 entry point
+// that tail-calls syscallDispatchInternal. This is the actual implementation.
 //
 //go:nosplit
 //go:noinline
-func SyscallDispatch(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
+func syscallDispatchInternal(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	return ksyscall.DispatchSyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5)
 }
 
-// IRQDispatch is called from assembly IRQ exception handler
-// It's a thin wrapper around kirq.DispatchIRQ
-// Returns preemption info for call injection
+// IRQDispatch is defined in abi_stubs_arm64.s as an ABI0 entry point
+// that tail-calls irqDispatchInternal. This is the actual implementation.
 //
 //go:nosplit
 //go:noinline
-func IRQDispatch(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool) {
+func irqDispatchInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool) {
 	info := kirq.DispatchIRQ(irqNum, framePtr, elr, spEl0)
 	return info.NewELR, info.NewSP, info.NewLR, info.DoPreempt
 }
