@@ -67,35 +67,34 @@ const (
 // ============================================================================
 // Stack Layout
 // ============================================================================
-// Stacks are located at high memory, below the 1GB boundary.
-//
-// Layout (Low Memory - Cardinal bootstrap only):
-//   0x5EFF8000 - 0x5F000000  (32 KB)  g0 stack (SP_EL0, normal kernel execution)
-//   0x5F000000 - 0x5F004000  (16 KB)  Exception stack (SP_EL1, IRQ/FIQ/exceptions)
-//
-// Layout (High Memory - Kmazarin kernel, TTBR1):
-//   0xFFFFFFFF5EFFC000 - 0xFFFFFFFF5F000000  (16 KB)  Kernel g0 stack
-//   0xFFFFFFFF5F000000 - 0xFFFFFFFF5F002000  (8 KB)   Kernel exception stack
+// Stacks are located at high memory, well above Cardinal and kmazarin regions.
+// All stack addresses are COMPUTED from a base physical address - no hardcoded addresses.
 
 const (
-	// Low-memory stacks (Cardinal bootstrap, TTBR0)
-	G0StackBottom      = 0x5EFF8000 // Bottom of g0 stack (32 KB)
-	G0StackTop         = 0x5F000000 // Top of g0 stack (SP_EL0)
-	ExceptionStackTop  = 0x5F004000 // Top of exception stack (SP_EL1)
-	ExceptionStackSize = 0x4000     // 16 KB
+	// Stack sizes (these are configuration, not addresses)
+	// DOUBLED from 16KB/8KB to test if stack overflow is causing x28 corruption
+	KernelG0StackSize  = 0x8000 // 32 KB (doubled from 16KB)
+	KernelExcStackSize = 0x4000 // 16 KB (doubled from 8KB)
 
-	// High-memory stacks (Kmazarin kernel, TTBR1)
-	// Stack sizes tuned for tail-call optimization pattern:
-	// - ABI stubs use JMP (tail-call), not CALL - no stack frame added
-	// - Exception handlers save ~256 bytes + small working space
-	// - Go runtime init needs ~8KB peak during schedinit
-	KernelG0StackSize     = 0x4000                             // 16 KB
-	KernelG0StackTop      = 0xFFFFFFFF5F000000                 // Top of kernel g0 stack
-	KernelG0StackBottom   = KernelG0StackTop - KernelG0StackSize
+	// Physical base address for kernel stacks region
+	// Placed at offset from RAM start, chosen to avoid conflicts with:
+	// - DTB (1MB), Cardinal (15MB), Page Tables (8MB), Kmazarin (up to 64MB)
+	// This gives us ~480MB from RAM start = plenty of safety margin
+	KernelStacksPhysOffset = 0x1EFF8000                              // ~494MB from RAM start
+	KernelStacksPhysBase   = BootAddress + KernelStacksPhysOffset    // 0x5EFF8000
+	KernelStacksVirtBase   = KernelVAOffset + KernelStacksPhysBase   // 0xFFFFFFFF5EFF8000
 
-	KernelExcStackSize    = 0x2000                             // 8 KB
-	KernelExcStackTop     = 0xFFFFFFFF5F002000                 // Top of kernel exception stack
-	KernelExcStackBottom  = KernelExcStackTop - KernelExcStackSize
+	// Low-memory stacks (Cardinal bootstrap, TTBR0) - computed from base
+	G0StackBottom      = KernelStacksPhysBase                        // Bottom of g0 stack
+	G0StackTop         = G0StackBottom + KernelG0StackSize           // Top of g0 stack (SP_EL0)
+	ExceptionStackTop  = G0StackTop + KernelExcStackSize             // Top of exception stack (SP_EL1)
+	ExceptionStackSize = KernelExcStackSize                          // Exception stack size
+
+	// High-memory stacks (Kmazarin kernel, TTBR1) - computed from virtual base
+	KernelG0StackBottom  = KernelStacksVirtBase                      // Bottom of kernel g0 stack
+	KernelG0StackTop     = KernelG0StackBottom + KernelG0StackSize   // Top of kernel g0 stack (SP_EL0)
+	KernelExcStackBottom = KernelG0StackTop                          // Bottom of exception stack
+	KernelExcStackTop    = KernelExcStackBottom + KernelExcStackSize // Top of exception stack (SP_EL1)
 )
 
 // ============================================================================
@@ -233,16 +232,16 @@ func MemoryLayoutSummary() string {
   Cardinal:        0x40100000 - 0x41000000 (15 MB)
   Page Tables:     0x41000000 - 0x41800000 (8 MB, TTBR0)
   Kmazarin:        0x41800000 - ~0x42000000 (physical, ~8MB max)
-  g0 Stack:        0x5EFF8000 - 0x5F000000 (32 KB, SP_EL0)
-  Exception Stack: 0x5F000000 - 0x5F004000 (16 KB, SP_EL1)
+  g0 Stack:        Computed: KernelStacksPhysBase + KernelG0StackSize (32 KB, SP_EL0)
+  Exception Stack: Computed: G0StackTop + KernelExcStackSize (16 KB, SP_EL1)
 
 Kmazarin Kernel Layout (High Memory, TTBR1):
-  DTB:             0xFFFFFFFF40000000 - 0xFFFFFFFF40100000 (1 MB, read-only)
-  Kernel Text:     0xFFFFFFFF41800000 - ~0xFFFFFFFF42000000 (8 MB max)
-  Kernel Heap:     0xFFFFFFFF4A000000+ (64 MB limit total)
-  g0 Stack:        0xFFFFFFFF5EFFC000 - 0xFFFFFFFF5F000000 (16 KB)
-  Exception Stack: 0xFFFFFFFF5F000000 - 0xFFFFFFFF5F002000 (8 KB)
-  Page Tables:     0xFFFFFFFF60000000 - 0xFFFFFFFF60800000 (8 MB, TTBR1)
+  DTB:             Computed: DtbPhysAddr + KernelVAOffset (1 MB, read-only)
+  Kernel Text:     Computed: KmazarinLoadAddr + KernelVAOffset (8 MB max)
+  Kernel Heap:     Computed from KernelHeapStart to KernelHeapEnd (demand-paged)
+  g0 Stack:        Computed: KernelStacksVirtBase to KernelG0StackTop (32 KB)
+  Exception Stack: Computed: KernelG0StackTop to KernelExcStackTop (16 KB)
+  Page Tables:     Identity-mapped via setupKernelPageTables() (TTBR1)
 
 MMIO Devices (Physical):
   GIC:             0x08000000 - 0x08020000 (128 KB)

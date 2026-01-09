@@ -143,16 +143,9 @@ boot_txff_wait:
 	// ========================================
 	// CRITICAL: Set SP_EL1 to high-memory exception stack NOW (while at EL2)
 	// After ERET to EL1, we can't use HVC to set it (virtualization=off)
-	// Build 0xFFFFFFFF5F002000 using MOVZ/MOVK
+	// Load address from LinkerExceptionStackTop symbol (value from constants/layout.go)
 	// ========================================
-	// MOVZ R0, #0x2000, LSL #0  => R0 = 0x0000000000002000
-	WORD	$0xD2840000		// movz x0, #0x2000
-	// MOVK R0, #0x5F00, LSL #16 => R0 = 0x000000005F002000
-	WORD	$0xF2ABE000		// movk x0, #0x5F00, lsl #16
-	// MOVK R0, #0xFFFF, LSL #32 => R0 = 0xFFFFFFFF5F002000
-	WORD	$0xF2DFFFF0		// movk x0, #0xFFFF, lsl #32
-	// MOVK R0, #0xFFFF, LSL #48 => R0 = 0xFFFFFFFF5F002000
-	WORD	$0xF2FFFFF0		// movk x0, #0xFFFF, lsl #48
+	MOVD	main·LinkerExceptionStackTop(SB), R0
 
 	// DEBUG: Print R0 value before MSR
 	MOVD	$0x09000000, R10
@@ -204,26 +197,15 @@ at_el1:
 
 	// ========================================
 	// CRITICAL: Set up BOTH stacks FIRST
-	// SP_EL1 was already set to high memory (0xFFFFFFFF5F002000) at EL2
+	// SP_EL1 was already set to high memory at EL2 from LinkerExceptionStackTop
 	// We just need to set SP_EL0
 	//
 	// Stack Architecture:
-	// - SP_EL1: Exception handler stack, HIGH MEMORY (set at EL2)
+	// - SP_EL1: Exception handler stack, HIGH MEMORY (set at EL2 from LinkerExceptionStackTop)
 	// - SP_EL0: g0/kernel stack, used in EL1t mode (from LinkerStackTop)
 	// ========================================
-
-	// Set SP_EL1 to high memory NOW (we're in EL1h mode)
-	// Build 0xFFFFFFFF5F002000 using simple arithmetic
-	MOVD	$0x5F002000, R0		// R0 = 0x000000005F002000
-	MOVD	$-1, R1			// R1 = 0xFFFFFFFFFFFFFFFF
-	LSL	$32, R1, R1		// R1 = 0xFFFFFFFF00000000
-	ORR	R1, R0, R0		// R0 = 0xFFFFFFFF5F002000
-	MOVD	R0, RSP			// Set SP (which is SP_EL1 in EL1h mode)
-
-	// Print 'Q' to show SP_EL1 was set
-	MOVD	$0x09000000, R10
-	MOVD	$'Q', R5
-	MOVB	R5, (R10)
+	//
+	// NOTE: SP_EL1 already set at EL2, no need to set it again here
 
 	// Set SP_EL0 (g0 stack) from LinkerStackTop
 	// Use MSR to set SP_EL0 since we're currently using SP_EL1

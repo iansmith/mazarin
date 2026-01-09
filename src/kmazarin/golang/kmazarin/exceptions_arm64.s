@@ -363,13 +363,13 @@ not_svc_hang:
 	B	not_svc_hang
 
 data_abort:
+	// Save FAR first (before any printing)
+	MRS	FAR_EL1, R19
+
 	// Print '.' for page fault
 	MOVD	$UART_BASE, R10
 	MOVD	$'.', R11
 	MOVB	R11, (R10)
-
-	// Save FAR for later use
-	MRS	FAR_EL1, R19
 
 	// Call HandlePageFaultAsm(faultAddr) to try to handle the page fault
 	// Allocate 32 bytes for ABI0 call: 8 (arg) + 8 (return) + 16 (alignment)

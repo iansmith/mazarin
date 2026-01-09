@@ -825,11 +825,12 @@ func initKernelPageTables() {
 // setupKernelStacks allocates and maps high-memory kernel stacks in TTBR1.
 //
 // This function creates two stacks for kmazarin execution:
-//   - Kernel g0 stack (SP_EL0): 16KB at KernelG0StackBottom-KernelG0StackTop
-//   - Kernel exception stack (SP_EL1): 8KB at KernelExcStackBottom-KernelExcStackTop
+//   - Kernel g0 stack (SP_EL0): 32KB at KernelG0StackBottom-KernelG0StackTop
+//   - Kernel exception stack (SP_EL1): 16KB at KernelExcStackBottom-KernelExcStackTop
 //
 // Stack sizes are tuned for the tail-call ABI stub pattern used throughout
 // the codebase, where ABI stubs use JMP (not CALL) to minimize stack usage.
+// DOUBLED from 16KB/8KB to test if stack overflow is causing x28 corruption.
 //
 // Note: These stacks are separate from Cardinal's bootstrap stacks and are
 // only used when kmazarin is executing at high memory addresses.
@@ -842,22 +843,22 @@ func setupKernelStacks() {
 	// High-memory kernel stack addresses (from constants/layout.go)
 	const (
 		KernelG0StackTop      = uintptr(0xFFFFFFFF5F000000)
-		KernelG0StackSize     = uintptr(0x4000) // 16KB
-		KernelExcStackTop     = uintptr(0xFFFFFFFF5F002000)
-		KernelExcStackSize    = uintptr(0x2000) // 8KB
+		KernelG0StackSize     = uintptr(0x8000) // 32KB (doubled from 16KB)
+		KernelExcStackTop     = uintptr(0xFFFFFFFF5F004000)
+		KernelExcStackSize    = uintptr(0x4000) // 16KB (doubled from 8KB)
 	)
 	KernelG0StackBottom := KernelG0StackTop - KernelG0StackSize
 
 	// Calculate number of pages needed for each stack
-	const g0StackPages = uintptr(KernelG0StackSize / PAGE_SIZE)       // 16KB = 4 pages
-	const excStackPages = uintptr(KernelExcStackSize / PAGE_SIZE)    // 8KB = 2 pages
+	const g0StackPages = uintptr(KernelG0StackSize / PAGE_SIZE)       // 32KB = 8 pages
+	const excStackPages = uintptr(KernelExcStackSize / PAGE_SIZE)    // 16KB = 4 pages
 
-	// Allocate and map g0 stack (SP_EL0, 16KB)
+	// Allocate and map g0 stack (SP_EL0, 32KB)
 	uartPutsDirect("Mapping kernel g0 stack (TTBR1): 0x")
 	uartPutHex64Direct(uint64(KernelG0StackBottom))
 	uartPutsDirect(" - 0x")
 	uartPutHex64Direct(uint64(KernelG0StackTop))
-	uartPutsDirect(" (16KB)\r\n")
+	uartPutsDirect(" (32KB)\r\n")
 
 	for i := uintptr(0); i < g0StackPages; i++ {
 		physFrame := allocPhysFrame()
@@ -873,15 +874,15 @@ func setupKernelStacks() {
 		mapKernelPage(va, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 	}
 
-	// Allocate and map exception stack (SP_EL1, 8KB) in high memory
-	// SP_EL1 will be set to 0xFFFFFFFF5F002000 via HVC call before jumping to kmazarin
+	// Allocate and map exception stack (SP_EL1, 16KB) in high memory
+	// SP_EL1 will be set to 0xFFFFFFFF5F004000 via HVC call before jumping to kmazarin
 	KernelExcStackBottom := KernelExcStackTop - KernelExcStackSize
 
 	uartPutsDirect("Mapping kernel exception stack (TTBR1): 0x")
 	uartPutHex64Direct(uint64(KernelExcStackBottom))
 	uartPutsDirect(" - 0x")
 	uartPutHex64Direct(uint64(KernelExcStackTop))
-	uartPutsDirect(" (8KB)\r\n")
+	uartPutsDirect(" (16KB)\r\n")
 
 	for i := uintptr(0); i < excStackPages; i++ {
 		physFrame := allocPhysFrame()

@@ -38,6 +38,8 @@ func irqDispatchInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (ne
 //go:nosplit
 //go:noinline
 func handlePageFaultInternal(faultAddr uint64) uint64 {
+	// DEBUG: Print 'E' at entry to show we reached Go code
+	uartPutc('E')
 	if kmem.HandlePageFault(uintptr(faultAddr)) {
 		return 1
 	}
@@ -341,6 +343,17 @@ func simpleMain() {
 
 	Print("")
 	Print("[g1] Kmazarin kernel starting...")
+	Print("")
+
+	// =============================================
+	// CRITICAL: Unmap all Cardinal pages
+	// =============================================
+	// Now that we're safely executing in Kmazarin (high memory, TTBR1),
+	// cut off Cardinal completely by unmapping all low-memory (TTBR0) pages.
+	// After this, any access to low memory will fault - we're fully standalone.
+	Print("[g1] Unmapping Cardinal...")
+	unmapCardinal()
+	Print("[g1] Cardinal unmapped - Kmazarin is standalone")
 	Print("")
 
 	// =============================================

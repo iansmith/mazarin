@@ -130,6 +130,8 @@ func allocPTPage() uintptr {
 //
 //go:nosplit
 func HandlePageFault(faultAddr uintptr) bool {
+	// DEBUG: Print 'G' at absolute entry (before anything else)
+	uartPutcDirect('G')
 	// DEBUG: Breadcrumb H = HandlePageFault entry
 	uartPutcDirect('H')
 
@@ -154,6 +156,35 @@ func HandlePageFault(faultAddr uintptr) bool {
 	// Calculate kmazarin VA start: PhysAddr + VAOffset
 	kmazarinVAStart := uintptr(cfg.KmazarinPhysAddr + cfg.KernelVAOffset)
 	heapEnd := uintptr(cfg.KernelHeapEnd)
+
+	// Check if fault is in stack regions (should be pre-mapped by Cardinal!)
+	g0StackBottom := uintptr(cfg.G0StackBottom)
+	g0StackTop := uintptr(cfg.G0StackTop)
+	excStackTop := uintptr(cfg.ExceptionStackTop)
+	excStackSize := uintptr(cfg.ExceptionStackSize)
+	excStackBottom := excStackTop - excStackSize
+
+	if faultAddr >= g0StackBottom && faultAddr < g0StackTop {
+		// Fault in g0 stack region - should not happen!
+		uartPutcDirect('S')
+		uartPutcDirect('0')
+		uartPutcDirect('!')
+		uartPutcDirect('[')
+		uartPutHex64Direct(uint64(faultAddr))
+		uartPutcDirect(']')
+		return false
+	}
+
+	if faultAddr >= excStackBottom && faultAddr < excStackTop {
+		// Fault in exception stack region - should not happen!
+		uartPutcDirect('S')
+		uartPutcDirect('1')
+		uartPutcDirect('!')
+		uartPutcDirect('[')
+		uartPutHex64Direct(uint64(faultAddr))
+		uartPutcDirect(']')
+		return false
+	}
 
 	if faultAddr < kmazarinVAStart || faultAddr >= heapEnd {
 		// DEBUG: R = Range check failed, print fault address

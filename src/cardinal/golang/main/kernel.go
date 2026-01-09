@@ -968,29 +968,32 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 	// Cast StartupParams buffer to RuntimeConfig struct
 	// Note: We're using shared/constants.RuntimeConfig structure
 	type RuntimeConfig struct {
-		Magic             uint32
-		Version           uint32
-		DtbPhysAddr       uint64
-		DtbSize           uint64
-		KmazarinPhysAddr  uint64
-		KmazarinSize      uint64
-		FramePoolStart    uint64
-		FramePoolEnd      uint64
-		KernelUartBase    uint64
-		KernelGicBase     uint64
-		TTBR1L0Phys       uint64
-		StartupParamsAddr uint64
-		KernelVAOffset    uint64
-		KernelPTPoolStart uint64
-		KernelPTPoolEnd   uint64
-		KernelHeapStart   uint64
-		KernelHeapEnd     uint64
-		PageSize          uint64
-		HWCap             uint64
-		G0StackBottom      uint64
-		G0StackTop         uint64
-		ExceptionStackTop  uint64
-		ExceptionStackSize uint64
+		Magic                uint32
+		Version              uint32
+		DtbPhysAddr          uint64
+		DtbSize              uint64
+		DtbVirtAddr          uint64
+		KmazarinPhysAddr     uint64
+		KmazarinSize         uint64
+		FramePoolStart       uint64
+		FramePoolEnd         uint64
+		KernelUartBase       uint64
+		KernelGicBase        uint64
+		TTBR1L0Phys          uint64
+		StartupParamsAddr    uint64
+		KernelVAOffset       uint64
+		KernelPTPoolStart    uint64
+		KernelPTPoolEnd      uint64
+		KernelHeapStart      uint64
+		KernelHeapEnd        uint64
+		PageSize             uint64
+		HWCap                uint64
+		G0StackBottom        uint64
+		G0StackTop           uint64
+		G0StackSize          uint64
+		ExceptionStackBottom uint64
+		ExceptionStackTop    uint64
+		ExceptionStackSize   uint64
 	}
 
 	config := (*RuntimeConfig)(unsafe.Pointer(kmazarinStartupParamsVA))
@@ -998,27 +1001,48 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 	// Populate the struct
 	config.Magic = 0x4B4D5A52 // "KMZR"
 	config.Version = 1
-	config.DtbPhysAddr = uint64(asm.GetDtbBootAddr())
+
+	// DTB information
+	dtbPhys := uint64(asm.GetDtbBootAddr())
+	config.DtbPhysAddr = dtbPhys
 	config.DtbSize = uint64(asm.GetDtbSize())
+	config.DtbVirtAddr = dtbPhys + KernelVAOffset // Compute DTB VA from physical
+
+	// Kmazarin binary information
 	config.KmazarinPhysAddr = uint64(constants.KmazarinLoadAddr)
 	config.KmazarinSize = uint64(kmazarinAllocatedBytes)
+
+	// Frame pool
 	config.FramePoolStart = uint64(physAlloc.next)
 	config.FramePoolEnd = uint64(physAlloc.end)
+
+	// MMIO devices (already in high memory)
 	config.KernelUartBase = uint64(constants.KernelUartBase)
 	config.KernelGicBase = uint64(constants.KernelGicBase)
+
+	// Page tables
 	config.TTBR1L0Phys = uint64(ttbr1L0PA)
 	config.StartupParamsAddr = uint64(kmazarinStartupParamsVA)
+
+	// Memory layout
 	config.KernelVAOffset = KernelVAOffset
 	config.KernelPTPoolStart = ptPoolStart
 	config.KernelPTPoolEnd = ptPoolEnd
 	config.KernelHeapStart = heapStart
 	config.KernelHeapEnd = heapEnd
+
+	// Standard values
 	config.PageSize = 4096
 	config.HWCap = 0x2 // HWCAP_ASIMD
-	config.G0StackBottom = uint64(constants.G0StackBottom)
-	config.G0StackTop = uint64(constants.G0StackTop)
-	config.ExceptionStackTop = uint64(constants.ExceptionStackTop)
-	config.ExceptionStackSize = uint64(constants.ExceptionStackSize)
+
+	// CRITICAL: Pass KERNEL high-memory stack addresses (NOT Cardinal bootstrap stacks)
+	// All values computed from constants, not hardcoded
+	config.G0StackBottom = uint64(constants.KernelG0StackBottom)
+	config.G0StackTop = uint64(constants.KernelG0StackTop)
+	config.G0StackSize = uint64(constants.KernelG0StackSize)
+	config.ExceptionStackBottom = uint64(constants.KernelExcStackBottom)
+	config.ExceptionStackTop = uint64(constants.KernelExcStackTop)
+	config.ExceptionStackSize = uint64(constants.KernelExcStackSize)
 
 	// Ensure writes complete
 	asm.Dsb()
@@ -1058,9 +1082,9 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 //go:nosplit
 func setupKmazarinStartupEnv(kmazarinStartupParamsVA uintptr) (stackPointer uintptr, argc uint64, argv uintptr) {
 	// CRITICAL: Place argc/argv/envp/auxv at the TOP of the kernel g0 stack (high memory)
-	// The kernel g0 stack is already mapped at 0xFFFFFFFF5EFFC000-0xFFFFFFFF5F000000 (16KB)
-	// by setupKernelStacks(). We place the parameters near the top, leaving room for stack growth.
-	const kernelG0StackTop = uintptr(0xFFFFFFFF5F000000)
+	// The kernel g0 stack is already mapped by setupKernelStacks() using computed addresses
+	// from constants. We place the parameters near the top, leaving room for stack growth.
+	kernelG0StackTop := uintptr(constants.KernelG0StackTop)
 	const paramSize = 0x200  // 512 bytes for argc/argv/envp/auxv structure
 
 	// Place structure 512 bytes below stack top
