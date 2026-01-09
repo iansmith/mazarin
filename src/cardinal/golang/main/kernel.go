@@ -567,23 +567,14 @@ func SimpleTestKernel() {
 //
 //go:noinline
 func kernelMainInternal(r0, r1, atags uint32) {
-	// VERY EARLY breadcrumb - before any complex operations
-	uartBase := uintptr(0x09000000)
-	*(*uint32)(unsafe.Pointer(uartBase)) = '\r'
-	*(*uint32)(unsafe.Pointer(uartBase)) = '\n'
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x4B // 'K' = Entered KernelMain
-
 	_ = r0
 	_ = r1
 
-	// On QEMU virt, the DTB pointer is passed in as the "atags" parameter (low 32 bits).
-	// boot.s captures QEMU's reset-time x0 and passes it through to kernel_main in x2.
+	// On QEMU virt, the DTB pointer is passed in as the "atags" parameter
 	setDTBPtr(uintptr(atags))
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x44 // 'D' = setDTBPtr done
 
 	// Initialize UART first for early debugging
 	uartInit()
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x55 // 'U' = uartInit done
 
 	// Check SCTLR_EL1 for alignment check bit
 	sctlr := asm.ReadSctlrEl1()
@@ -593,210 +584,58 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	if alignCheck {
 		asm.DisableAlignmentCheck()
 	}
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x41 // 'A' = Alignment check done
 
 	// Initialize minimal runtime structures for write barrier
 	initRuntimeStubs()
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x52 // 'R' = Runtime stubs done
 
-	// CRITICAL: Set up exception vectors BEFORE enabling MMU
-	// If MMU enable causes an exception, we need a valid handler
-	// Use assembly helper to get exception vector address without accessing .rodata
+	// Set up exception vectors BEFORE enabling MMU
 	exceptionVectorAddr := asm.GetExceptionVectorsAddr()
 	asm.SetVbarEl1ToAddr(exceptionVectorAddr)
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x56 // 'V' = VBAR set
 
 	// Initialize MMU (required before heap - enables Normal memory for unaligned access)
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x4D // 'M' = Starting MMU init
 	if !initMMU() {
+		uartPutsDirect("FATAL: MMU init failed\r\n")
 		for {
 		}
 	}
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x6D // 'm' = initMMU done
 
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x45 // 'E' = Starting enableMMU
 	if !enableMMU() {
+		uartPutsDirect("FATAL: MMU enable failed\r\n")
 		for {
 		}
 	}
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x65 // 'e' = enableMMU done
-	*(*uint32)(unsafe.Pointer(uartBase)) = '\r'
-	*(*uint32)(unsafe.Pointer(uartBase)) = '\n'
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x56 // 'V' = about to verify globals
 
-	// ==========================================================================
-	// CRITICAL: Verify all globals used by page fault handler are pre-mapped
-	// ==========================================================================
-	// This MUST be done immediately after MMU is enabled, before any code path
-	// that could trigger demand paging. If any critical global is not mapped,
-	// the page fault handler will itself trigger a nested page fault, causing
-	// an infinite loop or crash.
-	//
-	// The verification function walks page tables to check that:
-	// - pageTableL0 pointer
-	// - physFrameAllocatorState_global
-	// - totalKernelPages_global
-	// - inPageFaultHandler_global (re-entrancy guard)
-	// - mmapSpans array
-	// are all in identity-mapped BSS/data sections.
-	//
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'v' // 'v' = calling VerifyCriticalGlobalsMapped
+	// Verify all globals used by page fault handler are pre-mapped
 	if !VerifyCriticalGlobalsMapped() {
-		// Verification failed - halt immediately
-		uartPutsDirect("FATAL: Critical globals not mapped. Cannot proceed.\r\n")
+		uartPutsDirect("FATAL: Critical globals not mapped\r\n")
 		for {
 		}
 	}
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'P' // 'P' = globals verified, proceeding
 
-	// Set physPageSize before schedinit (needed by mallocinit which schedinit calls)
-	// Normally this would be set by sysauxv from AT_PAGESZ auxiliary vector
-	physPageSizeAddr := asm.GetPhysPageSizeAddr()
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'Q' // Q = got physPageSizeAddr
-	uartPutHex64Direct(uint64(physPageSizeAddr))
-	*(*uint32)(unsafe.Pointer(uartBase)) = ':'
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'a' // a = about to check mapping
-	// Check if the address is mapped
-	pa := getPhysicalAddress(physPageSizeAddr)
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'b' // b = got PA
-	uartPutHex64Direct(uint64(pa))
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'c' // c = printed PA
-	if pa == 0 {
-		uartPutsDirect("UNMAPPED!\r\n")
-		// physPageSize is in runtime BSS which should be in our .bss
-		// It's not being mapped properly - let's skip for now
-	} else {
-		*(*uint32)(unsafe.Pointer(uartBase)) = 'd' // d = about to write
-		// Try reading first to see if reads work
-		readVal := *(*uint64)(unsafe.Pointer(physPageSizeAddr))
-		*(*uint32)(unsafe.Pointer(uartBase)) = 'r' // r = read worked
-		uartPutHex64Direct(readVal)
-		*(*uint32)(unsafe.Pointer(uartBase)) = 'w' // w = about to write
-		// Try a simple store to a local variable first (on stack)
-		var testVar uint64
-		testVar = 4096
-		*(*uint32)(unsafe.Pointer(uartBase)) = 't' // t = stack write worked
-		_ = testVar
-		// SKIP memory write for now
-		*(*uint32)(unsafe.Pointer(uartBase)) = 'e' // e = skipped write
-	}
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'R' // R = wrote physPageSize
-
-	// NOTE: VirtIO RNG initialization moved to after schedinit() to allow print() usage
-	// schedinit() will use fake random data via getFakeRandomBytes() until RNG is initialized
-
-	// Map PL031 RTC MMIO region before accessing it
-	// NOTE: RTC is already mapped during initMMU, skip redundant mapping
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'S' // S = RTC region skipped
-
-	// NOTE: DTB region, stacks, and cardinal sections are already mapped during initMMU()
-	// No need to re-map them here
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'T' // T = regions ready
-
-	// =========================================
-	// PRE-REGISTER FIXED MEMORY SPANS
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'U' // U = preRegister starting
-	// Use the proper Go function to register spans
+	// Pre-register fixed memory spans
 	preRegisterFixedSpans()
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'u' // u = preRegister done
 
-	// =========================================
-	// POST-MMU DEVICE INITIALIZATION
-	// 0. Parse device tree
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'D' // D = device tree
+	// Post-MMU device initialization
 	initDeviceTree()
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'd' // d = device tree done
-
-	// 1. Initialize GIC
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'G' // G = GIC
 	gicInit()
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'g' // g = GIC done
-
-	// 2. Initialize UART ring buffer
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'B' // B = buffer
 	uartInitRingBufferAfterMemInit()
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'b' // b = buffer done
-
-	// 3. Initialize VirtIO RNG - SKIPPED (BSS writes hang)
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'N' // N = RNG
-	// initVirtIORNG() // SKIP: BSS writes cause hang after MMU enable
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'n' // n = RNG skipped
-
-	// 4. PL031 RTC already mapped, skip
-
-	// 5. Enable interrupts
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'I' // I = IRQ
 	asm.EnableIrqs()
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'i' // i = IRQ enabled
 
-	// 6. Test print() with ring buffer
-	// Put a test character in the ring buffer
-	uartPutc('T')
-	uartPutc('E')
-	uartPutc('S')
-	uartPutc('T')
-	uartPutc('\r')
-	uartPutc('\n')
-	// Drain the ring buffer manually (interrupts may not fire immediately)
-	for i := 0; i < 10; i++ {
-		uartDrainRingBuffer()
-	}
-
-	uartPutsDirect("A1\r\n") // Before print() test
-
-	// TEST: Go Assembly Transpilation (goasm2gnu) - REMOVED
-	// The goasm_test.s file was removed as part of assembly reorganization.
-	// Go assembly transpilation is verified through normal kernel operation.
-
-	// =========================================
-	// DEBUG: Dump page table walk for key addresses
-	// Verify that .rodata is RO and BSS is RW
-	// =========================================
-	// .rodata sample - should be RO (AP=3)
-	rodataStart := asm.GetRodataStartAddr()
-	dumpPageTableWalk(".rodata sample", rodataStart)
-	// runtime.argv (in BSS) - should be RW (AP=1)
-	argvAddr := uintptr(unsafe.Pointer(&runtimeArgv))
-	dumpPageTableWalk("runtime.argv", argvAddr)
-	// runtime.argc (in BSS) - should be RW (AP=1)
-	argcAddr := uintptr(unsafe.Pointer(&runtimeArgc))
-	dumpPageTableWalk("runtime.argc", argcAddr)
-
-	// =========================================
-	// TEST: Item 3 - runtime.args()
-	// Test that we can call runtime.args with a minimal argv/auxv structure
-	// This verifies the args() → sysargs() → sysauxv() path works.
-	// =========================================
-	uartPutsDirect("A2\r\n") // Before runtime.args
+	// Call runtime.args with minimal argv/auxv structure
 	result := asm.CallRuntimeArgs()
-	uartPutsDirect("A3\r\n") // After runtime.args
 	if result != 0 {
+		uartPutsDirect("ERROR: runtime.args failed\r\n")
 		for {
 		}
 	}
-	uartPutsDirect("A4\r\n") // After result check
 
-	// =========================================
 	// Initialize timer for preemptive scheduling
-	// Timer fires every 20ms and calls asyncPreemptBM to preempt goroutines
-	// =========================================
 	timerInit()
 
-	// DEBUG: Verify timer is enabled after timerInit
-	uartPutsDirect("After timerInit: CTL=0x")
-	uartPutHex32Direct(asm.ReadCntvCtlEl0())
-	uartPutsDirect("\r\n")
-
-	// =========================================
-	// Initialize thread table before loading kmazarin
-	// This sets up M0 as thread 0 for clone/futex/nanosleep syscall handling
-	// =========================================
+	// Initialize thread table (M0 as thread 0 for syscall handling)
 	InitThreads()
 
-	// =========================================
 	// Load and run kmazarin
-	// All devices initialized, runtime.args() passed, ready to load kmazarin
-	// =========================================
 	loadAndRunKmazarin()
 
 	// Should never return
@@ -1318,32 +1157,19 @@ func setupKmazarinStartupEnv(kmazarinStartupParamsVA uintptr) (stackPointer uint
 // Note: This function is NOT marked nosplit because it runs after the Go runtime
 // is initialized and contains many print() calls that require stack space.
 func loadAndRunKmazarin() {
-	uartPutsDirect("=== Loading Kmazarin ===\r\n")
-	uartPutcDirect('a') // breadcrumb: start
+	uartPutsDirect("Loading Kmazarin...\r\n")
 
 	// Get the embedded kmazarin binary location from linker symbols
-	uartPutcDirect('b') // breadcrumb: before kmazarin_start
 	kmazarinStart := getLinkerSymbol("__kmazarin_start")
-	uartPutcDirect('c') // breadcrumb: after kmazarin_start
-	uartPutsDirect(" kmazarinStart=0x")
-	uartPutHex64Direct(uint64(kmazarinStart))
-	uartPutcDirect('d') // breadcrumb: before kmazarin_size
 	kmazarinSize := getLinkerSymbol("__kmazarin_size")
-	uartPutcDirect('e') // breadcrumb: after kmazarin_size
-	uartPutsDirect(" kmazarinSize=0x")
-	uartPutHex64Direct(uint64(kmazarinSize))
-	uartPutsDirect("\r\n")
 
 	// Validate symbols
-	uartPutcDirect('f') // breadcrumb: before validate
 	if kmazarinStart == 0 || kmazarinSize == 0 {
 		uartPutsDirect("ERROR: Invalid kmazarin symbols\r\n")
 		return
 	}
-	uartPutcDirect('g') // breadcrumb: after validate
 
 	// Create a byte slice from the embedded binary
-	uartPutcDirect('h') // breadcrumb: before slice creation
 	var elfData []byte
 	sliceHeader := (*struct {
 		Data uintptr
@@ -1353,17 +1179,13 @@ func loadAndRunKmazarin() {
 	sliceHeader.Data = kmazarinStart
 	sliceHeader.Len = int(kmazarinSize)
 	sliceHeader.Cap = int(kmazarinSize)
-	uartPutcDirect('i') // breadcrumb: after slice creation
 
 	// Verify ELF magic
-	uartPutcDirect('j') // breadcrumb: before ELF magic check
 	if len(elfData) < 64 ||
 		elfData[0] != 0x7F || elfData[1] != 'E' || elfData[2] != 'L' || elfData[3] != 'F' {
 		uartPutsDirect("ERROR: Invalid ELF file\r\n")
 		return
 	}
-	uartPutcDirect('k') // breadcrumb: after ELF magic check
-	// DEBUG: BreadcrumbExit('K') - ELF validated - removed, progressing further
 
 	// Parse entry point (offset 0x18-0x1F for 64-bit ELF)
 	entry := uint64(elfData[0x18]) |
@@ -1399,15 +1221,9 @@ func loadAndRunKmazarin() {
 	// This is where Cardinal will copy argc/argv/envp/auxv before jumping
 	// The address is extracted from kmazarin.elf symbol table at build time
 	kmazarinStartupParamsVA := uintptr(LinkerKmazarinStartupParams)
-	uartPutsDirect("  StartupParams VA: 0x")
-	uartPutHex64Direct(uint64(kmazarinStartupParamsVA))
-	uartPutsDirect("\r\n")
 
 	// Process each program header
 	for i := uint16(0); i < phnum; i++ {
-		uartPutcDirect('[') // Segment start marker
-		uartPutcDirect('0' + byte(i)) // Show segment index: 0, 1, 2, etc.
-		uartPutcDirect(']')
 
 		phOffset := phoff + uint64(i)*uint64(phentsize)
 		if phOffset+56 > uint64(len(elfData)) {
@@ -1498,40 +1314,8 @@ func loadAndRunKmazarin() {
 			execPerm = PTE_EXEC_ALLOW
 		}
 
-		uartPutsDirect("  Segment ")
-		uartPutHex64Direct(uint64(i))
-		uartPutsDirect(": Kernel VA 0x")
-		uartPutHex64Direct(uint64(kernelVAStart))
-		uartPutsDirect("-0x")
-		uartPutHex64Direct(uint64(kernelVAEnd))
-		uartPutsDirect(" flags=")
-		if (pFlags & PF_R) != 0 {
-			uartPutsDirect("R")
-		}
-		if (pFlags & PF_W) != 0 {
-			uartPutsDirect("W")
-		}
-		if (pFlags & PF_X) != 0 {
-			uartPutsDirect("X")
-		}
-		uartPutsDirect(" FileSz=0x")
-		uartPutHex64Direct(pFilesz)
-		uartPutsDirect(" MemSz=0x")
-		uartPutHex64Direct(pMemsz)
-		uartPutsDirect("\r\n")
-
 		// Map all pages for this segment in TTBR1 (high-memory kernel space)
-		// pVaddr from ELF is low memory (e.g., 0x41800000)
-		// We convert to high memory (0xFFFFFFFF41800000) and map in TTBR1
-		uartPutcDirect('L') // breadcrumb: start page loop
 		for pageIdx := uintptr(0); pageIdx < numPages; pageIdx++ {
-			if pageIdx == 0 {
-				uartPutcDirect('M') // breadcrumb: first iteration
-			}
-			// Print progress dot every 10 pages
-			if (pageIdx % 10) == 0 {
-				uartPutcDirect('.')
-			}
 			kernelVA := kernelVAStart + (pageIdx << 12)
 
 			// Enforce kmazarin size limit (64MB total)
@@ -1555,38 +1339,25 @@ func loadAndRunKmazarin() {
 			// Track kmazarin allocation
 			kmazarinAllocatedBytes += 0x1000
 
-			if pageIdx == 0 {
-				uartPutcDirect('N') // breadcrumb: after first allocPhysFrame
-			}
-
 			// Map high-memory kernel VA to physical frame in TTBR1 page tables
 			// For now, map as RW (we need to write during loading)
 			// Execute permission is set based on PF_X flag
 			mapKernelPage(kernelVA, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, execPerm)
-			if pageIdx == 0 {
-				uartPutcDirect('O') // breadcrumb: after first mapKernelPage
-			}
 		}
-		uartPutcDirect('P') // breadcrumb: page loop completed
 
 		// Use barriers after mapping (no TLB invalidation needed for new mappings)
 		asm.Dsb()
 		asm.Isb()
-		uartPutcDirect('Q') // breadcrumb: after barriers
 
 		// Copy file data to mapped memory (use kernel VAs - high memory)
-		uartPutcDirect('R') // breadcrumb: before file copy
 		if pFilesz > 0 {
 			var srcOffset uintptr
 			var dstAddr uintptr
 			var copySize uint64
 
 			if pOffset > 0x8000000000000000 { // Negative offset (e.g., first LOAD segment)
-				uartPutcDirect('S') // breadcrumb: negative offset path
 				// Go's linker with -T flag creates segments with negative offsets
 				// The segment includes a 64KB header region before .text
-				// Relationship: segment_offset = text_offset - (text_va - segment_va)
-				//              = 0x1000 - 0x10000 = -0xF000
 
 				// Zero-fill the header region (first 64KB of segment) - use kernel VA
 				headerSize := uintptr(0x10000)  // 64KB for ELF headers, PHDR, notes
@@ -1597,10 +1368,7 @@ func loadAndRunKmazarin() {
 				srcOffset = kmazarinStart + 0x1000
 				dstAddr = kernelVAStart + headerSize  // Skip past header region
 				copySize = pFilesz - uint64(headerSize)  // Remaining bytes after header
-
-				// Load segment with negative offset: zero-fill headers, copy code
 			} else {
-				uartPutcDirect('T') // breadcrumb: positive offset path
 				// Normal positive offset - load segment data directly to kernel VA
 				srcOffset = kmazarinStart + uintptr(pOffset)
 				dstAddr = kernelVAStart
@@ -1608,62 +1376,22 @@ func loadAndRunKmazarin() {
 			}
 
 			if copySize > 0 {
-				uartPutcDirect('U') // breadcrumb: before copy
-				// DEBUG: Print copy parameters
-				uartPutsDirect(" src=0x")
-				uartPutHex64Direct(uint64(srcOffset))
-				uartPutsDirect(" dst=0x")
-				uartPutHex64Direct(uint64(dstAddr))
-				uartPutsDirect(" size=0x")
-				uartPutHex64Direct(copySize)
-				uartPutsDirect("\r\n")
-
-				// Use simplified assembly memmove (8-byte MOVD, no LDP/STP)
-				uartPutcDirect('Z') // breadcrumb: before copy
 				dst := unsafe.Pointer(dstAddr)
 				src := unsafe.Pointer(srcOffset)
 				asm.MemmoveBytes(dst, src, uint32(copySize))
-				uartPutcDirect('V') // breadcrumb: after copy
 			}
 		}
-		uartPutcDirect('W') // breadcrumb: after file copy section
 
 		// Zero BSS section (MemSz > FileSz) - use kernel VA
 		if pMemsz > pFilesz {
 			bssStart := unsafe.Pointer(kernelVAStart + uintptr(pFilesz))
 			bssSize := pMemsz - pFilesz
-
-			// DEBUG: Print BSS zeroing info
-			uartPutsDirect("  BSS: zeroing 0x")
-			uartPutHex64Direct(uint64(uintptr(bssStart)))
-			uartPutsDirect(" - 0x")
-			uartPutHex64Direct(uint64(uintptr(bssStart) + uintptr(bssSize)))
-			uartPutsDirect(" (")
-			uartPutHex64Direct(uint64(bssSize))
-			uartPutsDirect(" bytes)\r\n")
-
 			bzeroSimple(bssStart, uint32(bssSize))
 		}
 
 		// NOTE: Remapping to RO is deferred until after cache maintenance
 		// ARM requires: write code → clean D-cache → remap RO → invalidate I-cache
 	}
-
-	// Segment loop completed - all kmazarin segments loaded
-	uartPutcDirect('A') // DEBUG: After segment loop
-
-	// Print kmazarin size summary
-	uartPutsDirect("\r\nKmazarin binary size: ")
-	uartPutHex64Direct(uint64(kmazarinAllocatedBytes))
-	uartPutsDirect(" bytes (")
-	// Print in MB for readability
-	uartPutHex64Direct(uint64(kmazarinAllocatedBytes) / (1024 * 1024))
-	uartPutsDirect(" MB)\r\n")
-	uartPutsDirect("Limit: ")
-	uartPutHex64Direct(uint64(constants.KmazarinTotalLimit))
-	uartPutsDirect(" bytes (")
-	uartPutHex64Direct(uint64(constants.KmazarinTotalLimit) / (1024 * 1024))
-	uartPutsDirect(" MB)\r\n")
 
 	// CRITICAL: Cache maintenance and remapping for executable code
 	// ARM Architecture mandates this sequence:
@@ -1736,8 +1464,6 @@ func loadAndRunKmazarin() {
 		kernelVAEnd := (uintptr(pVaddr) + uintptr(pMemsz) + 0xFFF) &^ 0xFFF
 		numPages := (kernelVAEnd - kernelVAStart) >> 12
 
-		uartPutcDirect('[') // DEBUG: Remapping segment
-
 		// Remap each page to RO
 		asm.DsbIsh() // Ensure prior stores complete (use DsbIsh since DsbIshst may not exist yet)
 
@@ -1767,8 +1493,6 @@ func loadAndRunKmazarin() {
 
 		asm.DsbIsh()           // Ensure PTE writes visible
 		asm.InvalidateTlbAll() // Invalidate TLB (contains DSB+ISB)
-
-		uartPutcDirect(']') // DEBUG: Remapping complete
 	}
 
 	// Step 5-6: Invalidate I-cache and synchronize
@@ -1779,219 +1503,28 @@ func loadAndRunKmazarin() {
 	asm.Dsb() // Ensure all IC operations complete
 	asm.Isb() // Synchronize context
 
-	uartPutcDirect('2') // DEBUG: After cache maintenance
-
-	uartPutcDirect('R') // DEBUG: Before registerMmapSpan
 	if !registerMmapSpan(minVA, maxVA) {
 		// Failed to register - hang
 		for {}
 	}
 
-	uartPutcDirect('3') // DEBUG: After registerMmapSpan
-	uartPutcDirect('C') // DEBUG: registerMmapSpan done
-
 	// CRITICAL: Populate RuntimeConfig in StartupParams buffer FIRST
 	// This must happen before jumping to kmazarin, so config is available immediately
-	uartPutcDirect('R') // DEBUG: Before populateRuntimeConfig
 	populateRuntimeConfig(kmazarinStartupParamsVA, kernelPageTableL0)
-	uartPutcDirect('C') // DEBUG: After populateRuntimeConfig
 
 	// Set up argc/argv/envp/auxv structure on g0 stack
-	uartPutcDirect('S') // DEBUG: Before setupKmazarinStartupEnv
 	stackPointer, argc, argv := setupKmazarinStartupEnv(kmazarinStartupParamsVA)
-	uartPutcDirect('4') // DEBUG: After setupKmazarinStartupEnv
 	if stackPointer == 0 || argv == 0 {
 		uartPutsDirect("ERROR: Environment setup failed!\r\n")
 		return
 	}
 
-	// Debug: Verify stack structure before jumping
-	uartPutsDirect("=== Stack Structure Verification ===\r\n")
-
-	// Read the stack structure (do this BEFORE any printHex calls to verify access)
-	// Increased to [40] to accommodate custom auxv entries
-	data := (*[40]uint64)(unsafe.Pointer(stackPointer))
-
-	// Verify we can read the data
-	uartPutsDirect("Stack allocated, reading data...\r\n")
-
-	// Check basic structure (just report success/failure, no hex printing yet)
-	if data[0] != 1 {
-		uartPutsDirect("ERROR: argc is not 1!\r\n")
-		return
-	}
-	uartPutsDirect("argc = 1 OK\r\n")
-
-	if data[2] != 0 {
-		uartPutsDirect("ERROR: argv[1] is not NULL!\r\n")
-		return
-	}
-	uartPutsDirect("argv[1] = NULL OK\r\n")
-
-	if data[3] != 0 {
-		uartPutsDirect("ERROR: envp[0] is not NULL!\r\n")
-		return
-	}
-	uartPutsDirect("envp[0] = NULL OK\r\n")
-
-	if data[4] != 6 {
-		uartPutsDirect("ERROR: AT_PAGESZ tag is not 6!\r\n")
-		return
-	}
-	uartPutsDirect("AT_PAGESZ tag OK\r\n")
-
-	if data[5] != 4096 {
-		uartPutsDirect("ERROR: AT_PAGESZ value is not 4096!\r\n")
-		return
-	}
-	uartPutsDirect("AT_PAGESZ value OK\r\n")
-
-	// Verify AT_HWCAP (tag=16) at data[10], value at data[11]
-	if data[10] != 16 {
-		uartPutsDirect("ERROR: AT_HWCAP tag is not 16!\r\n")
-		return
-	}
-	uartPutsDirect("AT_HWCAP tag OK\r\n")
-
-	// AT_NULL terminator at data[12]
-	if data[12] != 0 {
-		uartPutsDirect("ERROR: AT_NULL tag is not 0!\r\n")
-		return
-	}
-	uartPutsDirect("AT_NULL tag OK\r\n")
-
-	uartPutsDirect("Stack structure verified!\r\n")
-
 	// Entry point from ELF is already relocated to high memory
 	// Use it directly without adding offset
 	entryAddr := uintptr(entry)
 
-	// DEBUG: Print the actual entry address we're about to jump to
-	uartPutsDirect("Entry addr = ")
-	// Print bytes of entryAddr
-	entryBytes := (*[8]byte)(unsafe.Pointer(&entryAddr))
-	for i := 0; i < 8; i++ {
-		b := entryBytes[i]
-		nibbleHigh := (b >> 4) & 0xF
-		nibbleLow := b & 0xF
-		if nibbleHigh < 10 {
-			uartPutsDirect(string([]byte{'0' + nibbleHigh}))
-		} else {
-			uartPutsDirect(string([]byte{'a' + (nibbleHigh - 10)}))
-		}
-		if nibbleLow < 10 {
-			uartPutsDirect(string([]byte{'0' + nibbleLow}))
-		} else {
-			uartPutsDirect(string([]byte{'a' + (nibbleLow - 10)}))
-		}
-		uartPutsDirect(" ")
-	}
-	uartPutsDirect("\r\n")
-
-	// DEBUG: Check PTE for entry point page
-	entryPage := entryAddr &^ 0xFFF
-	uartPutsDirect("Entry page: 0x")
-	uartPutHex64Direct(uint64(entryPage))
-	uartPutsDirect("\r\n")
-
-	// Walk TTBR1 page tables to find PTE (kmazarin is in high memory)
-	ttbr1 := asm.ReadTtbr1El1()
-	uartPutsDirect("TTBR1_EL1=0x")
-	uartPutHex64Direct(ttbr1)
-	uartPutsDirect("\r\n")
-	l0Table := uintptr(ttbr1 & ^uint64(0xFFF))
-
-	l0Index := (entryPage >> 39) & 0x1FF
-	l0Entry := (*uint64)(unsafe.Pointer(l0Table + l0Index*8))
-	uartPutsDirect("L0[")
-	uartPutHex64Direct(uint64(l0Index))
-	uartPutsDirect("]=0x")
-	uartPutHex64Direct(*l0Entry)
-	uartPutsDirect("\r\n")
-
-	if (*l0Entry & PTE_VALID) == 0 {
-		uartPutsDirect("ERROR: L0 entry not valid!\r\n")
-		return
-	}
-
-	l1Table := uintptr(*l0Entry & ^uint64(0xFFF))
-	l1Index := (entryPage >> 30) & 0x1FF
-	l1Entry := (*uint64)(unsafe.Pointer(l1Table + l1Index*8))
-	uartPutsDirect("L1[")
-	uartPutHex64Direct(uint64(l1Index))
-	uartPutsDirect("]=0x")
-	uartPutHex64Direct(*l1Entry)
-	uartPutsDirect("\r\n")
-
-	if (*l1Entry & PTE_VALID) == 0 {
-		uartPutsDirect("ERROR: L1 entry not valid!\r\n")
-		return
-	}
-
-	l2Table := uintptr(*l1Entry & ^uint64(0xFFF))
-	l2Index := (entryPage >> 21) & 0x1FF
-	l2Entry := (*uint64)(unsafe.Pointer(l2Table + l2Index*8))
-	uartPutsDirect("L2[")
-	uartPutHex64Direct(uint64(l2Index))
-	uartPutsDirect("]=0x")
-	uartPutHex64Direct(*l2Entry)
-	uartPutsDirect("\r\n")
-
-	if (*l2Entry & PTE_VALID) == 0 {
-		uartPutsDirect("ERROR: L2 entry not valid!\r\n")
-		return
-	}
-
-	l3Table := uintptr(*l2Entry & ^uint64(0xFFF))
-	l3Index := (entryPage >> 12) & 0x1FF
-	l3Entry := (*uint64)(unsafe.Pointer(l3Table + l3Index*8))
-	uartPutsDirect("L3[")
-	uartPutHex64Direct(uint64(l3Index))
-	uartPutsDirect("]=0x")
-	uartPutHex64Direct(*l3Entry)
-	if (*l3Entry & PTE_PXN) != 0 {
-		uartPutsDirect(" PXN")
-	}
-	if (*l3Entry & PTE_UXN) != 0 {
-		uartPutsDirect(" UXN")
-	}
-	if (*l3Entry & PTE_PXN) == 0 && (*l3Entry & PTE_UXN) == 0 {
-		uartPutsDirect(" EXEC_OK")
-	}
-	uartPutsDirect("\r\n")
-
-	// DEBUG: Read and verify the bytes at the entry point
-	uartPutsDirect("Bytes at entry point: ")
-	entryInstructions := (*[16]byte)(unsafe.Pointer(entryAddr))
-	for i := 0; i < 16; i++ {
-		b := entryInstructions[i]
-		nibbleHigh := (b >> 4) & 0xF
-		nibbleLow := b & 0xF
-		if nibbleHigh < 10 {
-			uartPutsDirect(string([]byte{'0' + nibbleHigh}))
-		} else {
-			uartPutsDirect(string([]byte{'a' + (nibbleHigh - 10)}))
-		}
-		if nibbleLow < 10 {
-			uartPutsDirect(string([]byte{'0' + nibbleLow}))
-		} else {
-			uartPutsDirect(string([]byte{'a' + (nibbleLow - 10)}))
-		}
-		uartPutsDirect(" ")
-	}
-	uartPutsDirect("\r\n")
-
 	// Jump to kmazarin with proper argc/argv/auxv
 	uartPutsDirect("Jumping to kmazarin...\r\n")
-
-	// DEBUG: Check timer status before jumping
-	uartPutsDirect("Timer CTL=0x")
-	ctl := asm.ReadCntvCtlEl0()
-	uartPutHex32Direct(ctl)
-	uartPutsDirect(" TVAL=0x")
-	tval := asm.ReadCntvTvalEl0()
-	uartPutHex32Direct(tval)
-	uartPutsDirect("\r\n")
 
 	// CRITICAL: Disable all interrupts before transferring control
 	// Kmazarin will re-enable them after installing its handlers

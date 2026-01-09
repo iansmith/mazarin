@@ -26,6 +26,9 @@ import "unsafe"
 // Size: 16KB provides ample space.
 // RuntimeConfig is at offset 0 for immediate access.
 // argc/argv/envp/auxv starts at offset 256 (SP points there).
+//
+// CRITICAL: Uninitialized BSS allocation. Cardinal zeros this during ELF loading,
+// then populates RuntimeConfig AFTER zeroing. Go runtime does not re-zero BSS.
 var StartupParams [16384]byte // 16KB BSS allocation
 
 // RuntimeConfigOffset is the offset of RuntimeConfig within StartupParams

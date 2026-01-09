@@ -83,11 +83,12 @@ func init() {
 }
 
 // uartPutc writes a single character directly to UART (bypasses Go runtime)
-// NOTE: UART address comes from runtime config (auxv from Cardinal)
+// NOTE: UART address comes directly from StartupParams (not runtimeConfig copy)
+// to avoid package initialization order issues.
 //go:nosplit
 func uartPutc(c byte) {
-	cfg := GetRuntimeConfig()
-	*(*byte)(unsafe.Pointer(uintptr(cfg.KernelUartBase))) = c
+	uartBase := GetUartBase()  // Read directly from StartupParams
+	*(*byte)(unsafe.Pointer(uartBase)) = c
 }
 
 // uartPuts writes a string directly to UART

@@ -56,32 +56,25 @@ func getRuntimeConfigFromStartupParams() RuntimeConfig {
 	// StartupParams is a BSS global, so its address is known at link time
 	configPtr := (*RuntimeConfig)(unsafe.Pointer(&StartupParams[RuntimeConfigOffset]))
 
-	// Verify magic number
-	const expectedMagic = uint32(0x4B4D5A52) // "KMZR"
-	if configPtr.Magic != expectedMagic {
-		// Fatal error - config not initialized by Cardinal
-		// We can't do much here since UART might not be set up yet
-		// Just halt
-		for {
-		}
-	}
-
 	// Return a copy
 	return *configPtr
 }
 
-// runtimeConfig is the global configuration, populated at package-level variable init time.
-// CRITICAL: Must be initialized BEFORE Go runtime starts (which calls mmap syscalls).
-// This is initialized as a package-level variable, which happens before init() runs.
-var runtimeConfig = getRuntimeConfigFromStartupParams()
-var runtimeConfigInitialized = true
+// runtimeConfig is the global configuration, lazily initialized on first access.
+// CRITICAL: Cannot use package-level initialization because mmap is called DURING runtime
+// initialization (in mallocinit), BEFORE package init functions run!
+var runtimeConfig RuntimeConfig
+var runtimeConfigInitialized bool
 
 // GetRuntimeConfig returns the global runtime configuration.
-// MUST be called after init() has been called.
-// NO lazy initialization - this is required for nosplit stack limits.
+// Lazy-initializes on first call, which happens before any mmap syscalls.
 //
 //go:nosplit
 func GetRuntimeConfig() *RuntimeConfig {
+	if !runtimeConfigInitialized {
+		runtimeConfig = getRuntimeConfigFromStartupParams()
+		runtimeConfigInitialized = true
+	}
 	return &runtimeConfig
 }
 

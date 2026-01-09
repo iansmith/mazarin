@@ -233,175 +233,8 @@ hang:
 // sync_exception_handler - Synchronous exceptions (SVC, data abort, etc.)
 // ============================================================================
 sync_exception_handler:
-	// Print 's' to show we reached sync handler
-	MOVD	$UART_BASE, R10
-	MOVD	$'s', R11
-	MOVB	R11, (R10)
-
-	// Print 'E' before ESR
-	MOVD	$'E', R11
-	MOVB	R11, (R10)
-
-	// Print ESR_EL1 to see what exception this is
-	MRS	ESR_EL1, R12
-	MOVD	$16, R13		// Counter for 16 hex digits
-print_esr_loop:
-	LSR	$60, R12, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	print_esr_digit
-	ADD	$('A'-10), R11
-	B	print_esr_char
-print_esr_digit:
-	ADD	$'0', R11
-print_esr_char:
-	MOVB	R11, (R10)
-	LSL	$4, R12
-	SUB	$1, R13
-	CBNZ	R13, print_esr_loop
-
-	// Print space after ESR
-	MOVD	$' ', R11
-	MOVB	R11, (R10)
-
-	// Print 'L' before ELR
-	MOVD	$'L', R11
-	MOVB	R11, (R10)
-
-	// Print ELR_EL1 to see where exception came from
-	MRS	ELR_EL1, R12
-	MOVD	$16, R13		// Counter for 16 hex digits
-print_elr_loop:
-	LSR	$60, R12, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	print_elr_digit
-	ADD	$('A'-10), R11
-	B	print_elr_char
-print_elr_digit:
-	ADD	$'0', R11
-print_elr_char:
-	MOVB	R11, (R10)
-	LSL	$4, R12
-	SUB	$1, R13
-	CBNZ	R13, print_elr_loop
-
-	// Print space after ELR
-	MOVD	$' ', R11
-	MOVB	R11, (R10)
-
-	// Print 'F' before FAR (Fault Address Register)
-	MOVD	$'F', R11
-	MOVB	R11, (R10)
-
-	// Print FAR_EL1 (faulting address for data aborts)
-	MRS	FAR_EL1, R12
-	MOVD	$16, R13		// Counter for 16 hex digits
-print_far_loop:
-	LSR	$60, R12, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	print_far_digit
-	ADD	$('A'-10), R11
-	B	print_far_char
-print_far_digit:
-	ADD	$'0', R11
-print_far_char:
-	MOVB	R11, (R10)
-	LSL	$4, R12
-	SUB	$1, R13
-	CBNZ	R13, print_far_loop
-
-	// Print space after FAR
-	MOVD	$' ', R11
-	MOVB	R11, (R10)
-
-	// Print '<' before original RSP
-	MOVD	$'<', R11
-	MOVB	R11, (R10)
-
-	// Print ORIGINAL RSP value before SUB (full 64-bit hex)
-	MOVD	RSP, R12
-	MOVD	$16, R13		// Counter for 16 hex digits
-print_rsp_before_loop:
-	// Extract top 4 bits
-	LSR	$60, R12, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	print_rsp_before_digit
-	ADD	$('A'-10), R11
-	B	print_rsp_before_char
-print_rsp_before_digit:
-	ADD	$'0', R11
-print_rsp_before_char:
-	MOVB	R11, (R10)
-	// Shift left to get next nibble
-	LSL	$4, R12
-	SUB	$1, R13
-	CBNZ	R13, print_rsp_before_loop
-
-	// Print '>' after hex value
-	MOVD	$'>', R11
-	MOVB	R11, (R10)
-
 	// Save all registers to exception frame
 	SUB	$EXC_FRAME_SIZE, RSP
-
-	// Print 'S' to show SUB succeeded, then print FULL RSP value
-	MOVD	$UART_BASE, R10
-	MOVD	$'S', R11
-	MOVB	R11, (R10)
-
-	// Print '[' before hex value
-	MOVD	$'[', R11
-	MOVB	R11, (R10)
-
-	// Print full 64-bit RSP value in hex (16 digits)
-	MOVD	RSP, R12
-	MOVD	$16, R13		// Counter for 16 hex digits
-print_rsp_loop:
-	// Extract top 4 bits
-	LSR	$60, R12, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	print_rsp_digit
-	ADD	$('A'-10), R11
-	B	print_rsp_char
-print_rsp_digit:
-	ADD	$'0', R11
-print_rsp_char:
-	MOVB	R11, (R10)
-	// Shift left to get next nibble
-	LSL	$4, R12
-	SUB	$1, R13
-	CBNZ	R13, print_rsp_loop
-
-	// Print ']' after hex value
-	MOVD	$']', R11
-	MOVB	R11, (R10)
-
-	// DEBUG: Print 'Z' to show we completed the print loop
-	MOVD	$'Z', R11
-	MOVB	R11, (R10)
-
-	// DEBUG: Print '@' then current RSP value right before STP
-	MOVD	$'@', R11
-	MOVB	R11, (R10)
-	MOVD	RSP, R12
-	LSR	$60, R12, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	print_final_sp_digit
-	ADD	$('A'-10), R11
-	B	print_final_sp_char
-print_final_sp_digit:
-	ADD	$'0', R11
-print_final_sp_char:
-	MOVB	R11, (R10)
-
-	// DEBUG: Print '!' right before STP
-	MOVD	$'!', R11
-	MOVB	R11, (R10)
 
 	// Save X0-X7
 	STP	(R0, R1), EXC_FRAME_X0(RSP)
@@ -432,38 +265,10 @@ print_final_sp_char:
 	MOVD	LR, R10
 	MOVD	R10, EXC_FRAME_X28+16(RSP)
 
-	// DEBUG: Print 'R' to show all registers saved
-	MOVD	$UART_BASE, R10
-	MOVD	$'R', R11
-	MOVB	R11, (R10)
-
 	// Save ELR, SPSR, FAR, ESR
 	MRS	ELR_EL1, R10
 	MRS	SPSR_EL1, R11
 	STP	(R10, R11), EXC_FRAME_ELR_SPSR(RSP)
-
-	// DEBUG: Print 'P' then SPSR value to see what mode we're returning to
-	MOVD	$UART_BASE, R14
-	MOVD	$'P', R15
-	MOVB	R15, (R14)
-	MOVD	R11, R12
-	MOVD	$8, R13		// Print only first 8 hex digits (top 32 bits)
-print_spsr_loop_sync:
-	LSR	$60, R12, R15
-	AND	$0xF, R15
-	CMP	$10, R15
-	BLT	print_spsr_digit_sync
-	ADD	$('A'-10), R15
-	B	print_spsr_char_sync
-print_spsr_digit_sync:
-	ADD	$'0', R15
-print_spsr_char_sync:
-	MOVB	R15, (R14)
-	LSL	$4, R12
-	SUB	$1, R13
-	CBNZ	R13, print_spsr_loop_sync
-	MOVD	$' ', R15
-	MOVB	R15, (R14)
 
 	MRS	FAR_EL1, R10
 	MRS	ESR_EL1, R11
@@ -558,36 +363,13 @@ not_svc_hang:
 	B	not_svc_hang
 
 data_abort:
-	// Print 'DA:' for data abort
+	// Print '.' for page fault
 	MOVD	$UART_BASE, R10
-	MOVD	$'D', R11
-	MOVB	R11, (R10)
-	MOVD	$'A', R11
-	MOVB	R11, (R10)
-	MOVD	$':', R11
+	MOVD	$'.', R11
 	MOVB	R11, (R10)
 
-	// Print FAR (fault address) for debugging
-	MRS	FAR_EL1, R12
-	MOVD	R12, R19		// Save FAR in R19 for later use
-	MOVD	$16, R13		// Counter for 16 hex digits
-print_far_data_abort:
-	LSR	$60, R12, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	print_far_digit_da
-	ADD	$('A'-10), R11
-	B	print_far_char_da
-print_far_digit_da:
-	ADD	$'0', R11
-print_far_char_da:
-	MOVB	R11, (R10)
-	LSL	$4, R12
-	SUB	$1, R13
-	CBNZ	R13, print_far_data_abort
-
-	MOVD	$' ', R11
-	MOVB	R11, (R10)
+	// Save FAR for later use
+	MRS	FAR_EL1, R19
 
 	// Call HandlePageFaultAsm(faultAddr) to try to handle the page fault
 	// Allocate 32 bytes for ABI0 call: 8 (arg) + 8 (return) + 16 (alignment)
@@ -608,16 +390,6 @@ print_far_char_da:
 	BEQ	data_abort_unhandled
 
 	// Fault handled successfully - return to faulting instruction
-	// The instruction will retry and succeed now that the page is mapped
-	// Print 'OK' to show success
-	MOVD	$UART_BASE, R10
-	MOVD	$'O', R11
-	MOVB	R11, (R10)
-	MOVD	$'K', R11
-	MOVB	R11, (R10)
-	MOVD	$' ', R11
-	MOVB	R11, (R10)
-
 	B	sync_return
 
 data_abort_unhandled:
@@ -763,29 +535,6 @@ irq_exception_handler:
 	MRS	ELR_EL1, R10
 	MRS	SPSR_EL1, R11
 	STP	(R10, R11), EXC_FRAME_ELR_SPSR(RSP)
-
-	// DEBUG: Print 'P' then SPSR value to see what mode we're returning to
-	MOVD	$UART_BASE, R14
-	MOVD	$'P', R15
-	MOVB	R15, (R14)
-	MOVD	R11, R12
-	MOVD	$8, R13		// Print only first 8 hex digits (top 32 bits)
-print_spsr_loop_irq:
-	LSR	$60, R12, R15
-	AND	$0xF, R15
-	CMP	$10, R15
-	BLT	print_spsr_digit_irq
-	ADD	$('A'-10), R15
-	B	print_spsr_char_irq
-print_spsr_digit_irq:
-	ADD	$'0', R15
-print_spsr_char_irq:
-	MOVB	R15, (R14)
-	LSL	$4, R12
-	SUB	$1, R13
-	CBNZ	R13, print_spsr_loop_irq
-	MOVD	$' ', R15
-	MOVB	R15, (R14)
 
 	MRS	FAR_EL1, R10
 	MRS	ESR_EL1, R11
