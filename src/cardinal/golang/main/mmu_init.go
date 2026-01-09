@@ -1059,10 +1059,20 @@ func setupKernelDemandPaging() {
 		// ALSO identity-map to high memory so kmazarin can compute VA from PA
 		identityVA := physFrame + KernelVAOffset
 		mapKernelPage(identityVA, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+
+		// DEBUG: Print breadcrumb every 10 pages
+		if (i % 10) == 0 {
+			uartPutcDirect('P')
+		}
 	}
 	uartPutsDirect("  Allocated ")
 	uartPutHex64Direct(uint64(ptPoolPages))
 	uartPutsDirect(" pages for PT pool\r\n")
+
+	// CRITICAL: Ensure all PT pool mappings are visible
+	asm.Dsb()
+	asm.InvalidateTlbAll()
+	asm.Isb()
 
 	// =========================================================================
 	// Step 3: Record demand paging region boundaries

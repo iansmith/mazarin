@@ -107,6 +107,14 @@ func uartPutsDirect(s string) {
 	uartPuts(s)
 }
 
+// uartPutcDirectForKmem writes a byte directly to UART
+// Used by kmem package via linkname
+//go:linkname uartPutcDirectForKmem kmazarin/kmem.uartPutcDirect
+//go:nosplit
+func uartPutcDirectForKmem(c byte) {
+	uartPutc(c)
+}
+
 // getRuntimeConfigForKmem provides runtime config to kmem package via linkname
 //go:linkname getRuntimeConfigForKmem kmazarin/kmem.getRuntimeConfig
 //go:nosplit
@@ -136,8 +144,9 @@ func getRuntimeConfigForKsyscall() interface{} {
 }
 
 // uartPutHex64Direct writes a 64-bit hex value to UART
-// Used by ksyscall and kthread packages via linkname
+// Used by ksyscall, kthread, and kmem packages via linkname
 //go:linkname uartPutHex64Direct kmazarin/ksyscall.uartPutHex64Direct
+//go:linkname uartPutHex64DirectForKmem kmazarin/kmem.uartPutHex64Direct
 //go:nosplit
 func uartPutHex64Direct(val uint64) {
 	hexChars := "0123456789ABCDEF"
@@ -145,6 +154,12 @@ func uartPutHex64Direct(val uint64) {
 		nibble := (val >> i) & 0xF
 		uartPutc(hexChars[nibble])
 	}
+}
+
+// Alias for kmem package linkname
+//go:nosplit
+func uartPutHex64DirectForKmem(val uint64) {
+	uartPutHex64Direct(val)
 }
 
 // uartPutHex32Direct writes a 32-bit hex value to UART

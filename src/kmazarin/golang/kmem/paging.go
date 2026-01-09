@@ -6,6 +6,14 @@ import (
 	"unsafe"
 )
 
+// uartPutcDirect writes a byte to UART (linked from kmazarin package)
+//go:linkname uartPutcDirect kmazarin/kmem.uartPutcDirect
+func uartPutcDirect(c byte)
+
+// uartPutHex64Direct writes a 64-bit hex value to UART (linked from kmazarin package)
+//go:linkname uartPutHex64Direct kmazarin/kmem.uartPutHex64Direct
+func uartPutHex64Direct(val uint64)
+
 // Page table constants for ARM64 4KB granule
 const (
 	// Page table indices - 48-bit VA, 4KB pages, 4-level tables
@@ -122,8 +130,12 @@ func allocPTPage() uintptr {
 //
 //go:nosplit
 func HandlePageFault(faultAddr uintptr) bool {
+	// DEBUG: Breadcrumb H = HandlePageFault entry
+	uartPutcDirect('H')
+
 	// Lazy initialization - read TTBR1_EL1 to get L0 table PA
 	if !pagingInitialized {
+		uartPutcDirect('I') // DEBUG: Init path
 		ttbr1L0PA = readTTBR1EL1()
 		// L1 is found by reading the L0 entry for the high memory region
 		// For 0xFFFFFFFF... addresses, L0 index is 511 (0x1FF)
@@ -135,9 +147,21 @@ func HandlePageFault(faultAddr uintptr) bool {
 		pagingInitialized = true
 	}
 
-	// Check if fault is in heap range (from runtime config)
+	// Check if fault is in manageable range
+	// Accept faults from kmazarin VA start to heap end
 	cfg := getRuntimeConfigTyped()
-	if faultAddr < uintptr(cfg.KernelHeapStart) || faultAddr >= uintptr(cfg.KernelHeapEnd) {
+
+	// Calculate kmazarin VA start: PhysAddr + VAOffset
+	kmazarinVAStart := uintptr(cfg.KmazarinPhysAddr + cfg.KernelVAOffset)
+	heapEnd := uintptr(cfg.KernelHeapEnd)
+
+	if faultAddr < kmazarinVAStart || faultAddr >= heapEnd {
+		// DEBUG: R = Range check failed, print fault address
+		uartPutcDirect('R')
+		uartPutcDirect('!')
+		uartPutcDirect('[')
+		uartPutHex64Direct(uint64(faultAddr))
+		uartPutcDirect(']')
 		return false
 	}
 
@@ -147,12 +171,18 @@ func HandlePageFault(faultAddr uintptr) bool {
 	// Allocate a physical frame
 	frame := AllocFrame()
 	if frame == 0 {
+		// DEBUG: A = Alloc failed
+		uartPutcDirect('A')
+		uartPutcDirect('!')
 		return false
 	}
 
 	// Map the page FIRST (before zeroing!)
 	// ZeroFrame accesses the VA, so the page must be mapped first.
 	if !mapPage(pageAddr, frame) {
+		// DEBUG: M = Map failed
+		uartPutcDirect('M')
+		uartPutcDirect('!')
 		return false
 	}
 
@@ -176,12 +206,16 @@ func mapPage(va, pa uintptr) bool {
 	// Get L0 table VA
 	l0VA := paToVA(ttbr1L0PA)
 	if l0VA == 0 {
+		uartPutcDirect('0')
+		uartPutcDirect('!')
 		return false
 	}
 
 	// Read L0 entry (should be valid - points to L1)
 	l0Entry := (*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
 	if (*l0Entry & PTE_VALID) == 0 {
+		uartPutcDirect('1')
+		uartPutcDirect('!')
 		return false
 	}
 
@@ -189,6 +223,8 @@ func mapPage(va, pa uintptr) bool {
 	l1PA := uintptr(*l0Entry & PTE_ADDR_MASK)
 	l1VA := paToVA(l1PA)
 	if l1VA == 0 {
+		uartPutcDirect('2')
+		uartPutcDirect('!')
 		return false
 	}
 
@@ -200,6 +236,8 @@ func mapPage(va, pa uintptr) bool {
 		// Need to allocate L2 table
 		l2VA = allocPTPage()
 		if l2VA == 0 {
+			uartPutcDirect('3')
+			uartPutcDirect('!')
 			return false
 		}
 
@@ -212,6 +250,8 @@ func mapPage(va, pa uintptr) bool {
 		l2PA := uintptr(*l1Entry & PTE_ADDR_MASK)
 		l2VA = paToVA(l2PA)
 		if l2VA == 0 {
+			uartPutcDirect('4')
+			uartPutcDirect('!')
 			return false
 		}
 	}
@@ -224,6 +264,8 @@ func mapPage(va, pa uintptr) bool {
 		// Need to allocate L3 table
 		l3VA = allocPTPage()
 		if l3VA == 0 {
+			uartPutcDirect('5')
+			uartPutcDirect('!')
 			return false
 		}
 
@@ -236,6 +278,8 @@ func mapPage(va, pa uintptr) bool {
 		l3PA := uintptr(*l2Entry & PTE_ADDR_MASK)
 		l3VA = paToVA(l3PA)
 		if l3VA == 0 {
+			uartPutcDirect('6')
+			uartPutcDirect('!')
 			return false
 		}
 	}
