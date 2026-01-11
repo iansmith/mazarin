@@ -606,10 +606,12 @@ g0_char:
 	MOVD	$']', R5
 	MOVB	R5, (R10)
 
-	// CRITICAL FIX: Zero x28 before jumping to kmazarin
-	// The g register must start as zero so rt0_go can set it properly
-	// mov x28, xzr = 0xAA1F03FC
-	WORD	$0xAA1F03FC  // mov x28, xzr
+	// Set x28 (g register) to kmazarin's runtime.g0 address before jumping
+	// rt0_go will reinitialize it, but having it point to valid memory is safer
+	// for any code that might read x28 before rt0_go runs (e.g., exception handlers)
+	MOVD	main·LinkerKmazarinRuntimeG0(SB), R5
+	// mov x28, x5 = 0xAA0503FC
+	WORD	$0xAA0503FC  // mov x28, x5
 
 	// Print 'J' for "Jumping now"
 	MOVD	$0x09000000, R10

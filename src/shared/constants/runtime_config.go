@@ -44,12 +44,18 @@ type RuntimeConfig struct {
 	HWCap    uint64 // AT_HWCAP - ARM64 hardware capabilities
 
 	// Stack boundaries and sizes (high-memory kernel stacks, NOT Cardinal bootstrap)
-	G0StackBottom      uint64 // Bottom of g0 stack (SP_EL0) - high memory
-	G0StackTop         uint64 // Top of g0 stack (SP_EL0) - high memory
-	G0StackSize        uint64 // Size of g0 stack
+	G0StackBottom        uint64 // Bottom of g0 stack (SP_EL0) - high memory
+	G0StackTop           uint64 // Top of g0 stack (SP_EL0) - high memory
+	G0StackSize          uint64 // Size of g0 stack
 	ExceptionStackBottom uint64 // Bottom of exception stack (SP_EL1) - high memory
-	ExceptionStackTop  uint64 // Top of exception stack (SP_EL1) - high memory
-	ExceptionStackSize uint64 // Exception stack size
+	ExceptionStackTop    uint64 // Top of exception stack (SP_EL1) - high memory
+	ExceptionStackSize   uint64 // Exception stack size
+
+	// Goroutine struct copy (for unmapping Cardinal's low memory)
+	G0StructAddr uint64 // High-memory address where g0 struct should be copied
+
+	// Preemption support
+	AsyncPreemptAddr uint64 // High-memory address of runtime.asyncPreempt function
 }
 
 // RuntimeConfigMagic is the expected magic value for a valid RuntimeConfig

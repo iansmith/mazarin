@@ -9,15 +9,10 @@ import (
 // getUartBase is provided by main package via go:linkname.
 func getUartBase() uintptr
 
-// Address of runtime.asyncPreempt.abi0 in kmazarin
-// This is where we inject calls for async preemption
-// TODO: This hardcoded address is BROKEN and needs to be discovered dynamically!
-// It changes with every build. We need to either:
-// 1. Get it from Cardinal via auxv (add AT_ASYNC_PREEMPT)
-// 2. Look it up via symbol table at runtime
-// 3. Use a linker trick to get a reference
-// For now, DISABLING PREEMPTION until we can do this properly.
-const asyncPreemptAddr = 0 // DISABLED - see TODO above
+// getAsyncPreemptAddr is provided by main package via go:linkname.
+// Returns the address of runtime.asyncPreempt from RuntimeConfig,
+// populated by Cardinal at boot time.
+func getAsyncPreemptAddr() uintptr
 
 // TimerIRQHandlerPreemptable handles the ARM Generic Timer interrupt (IRQ 27)
 // Returns preemption info to trigger call injection if preemption should occur
@@ -62,18 +57,36 @@ func TimerIRQHandlerPreemptable(irqNum uint64, framePtr uintptr, elr, spEl0 uint
 	// 1s * 62.5MHz = 62500000 ticks = 0x3B9ACA0
 	rearmTimer(0x3B9ACA0)
 
-	// CRITICAL: Preemption is DISABLED because asyncPreemptAddr is hardcoded.
-	// We need to fix this before enabling preemption.
-	// For now, just acknowledge the timer and return without preempting.
+	// Get asyncPreempt address from RuntimeConfig (set by Cardinal at boot)
+	asyncPreemptAddr := getAsyncPreemptAddr()
 
-	*(*byte)(unsafe.Pointer(uartBase)) = 't' // Debug: timer acknowledged, no preempt
+	// Check if preemption is enabled (address is non-zero)
+	if asyncPreemptAddr == 0 {
+		// Preemption disabled - address not configured
+		*(*byte)(unsafe.Pointer(uartBase)) = 't' // Debug: timer acknowledged, no preempt
+		return PreemptInfo{
+			NewELR:    0,
+			NewSP:     0,
+			NewLR:     0,
+			DoPreempt: false,
+		}
+	}
 
-	// Return without preemption
+	// Preemption enabled! Inject call to runtime.asyncPreempt
+	// This will cause the interrupted code to call asyncPreempt when it returns
+	// from the exception handler.
+	//
+	// We do this by:
+	// 1. Setting NewELR to asyncPreemptAddr (where to "return" to)
+	// 2. Setting NewLR to original ELR (so asyncPreempt returns to original code)
+	// 3. Keeping SP unchanged
+	*(*byte)(unsafe.Pointer(uartBase)) = 'P' // Debug: preempt triggered
+
 	return PreemptInfo{
-		NewELR:    0,
-		NewSP:     0,
-		NewLR:     0,
-		DoPreempt: false, // DISABLED until asyncPreemptAddr is fixed
+		NewELR:    uint64(asyncPreemptAddr), // Jump to asyncPreempt
+		NewSP:     spEl0,                    // Keep current stack
+		NewLR:     elr,                      // Return to interrupted instruction
+		DoPreempt: true,
 	}
 }
 

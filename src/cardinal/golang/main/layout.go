@@ -88,10 +88,13 @@ var (
 
 	// Embedded kmazarin kernel - NOT YET IMPLEMENTED in go-native build
 	// Initialized to 1 so they're in .data section for patching
-	LinkerKmazarinStart            uint64 = 1 // __kmazarin_start (patched)
-	LinkerKmazarinSize             uint64 = 1 // __kmazarin_size (patched)
-	LinkerKmazarinExceptionVector  uint64 = 1 // __kmazarin_exception_vector (patched from symbol table)
-	LinkerKmazarinStartupParams    uint64 = 1 // __kmazarin_startup_params (patched from symbol table)
+	LinkerKmazarinStart           uint64 = 1 // __kmazarin_start (patched)
+	LinkerKmazarinSize            uint64 = 1 // __kmazarin_size (patched)
+	LinkerKmazarinExceptionVector uint64 = 1 // __kmazarin_exception_vector (patched from symbol table)
+	LinkerKmazarinStartupParams   uint64 = 1 // __kmazarin_startup_params (patched from symbol table)
+	LinkerKmazarinG0Struct        uint64 = 1 // __kmazarin_g0_struct (patched from symbol table)
+	LinkerKmazarinAsyncPreempt    uint64 = 1 // __kmazarin_async_preempt (patched from symbol table)
+	LinkerKmazarinRuntimeG0       uint64 = 1 // __kmazarin_runtime_g0 (kmazarin's g0, patched from symbol table)
 )
 
 // linkerValuesSum is used to prevent dead-code elimination of Linker* variables.
@@ -118,7 +121,8 @@ func init() {
 		LinkerBochsDisplayBase + LinkerBochsDisplaySize +
 		LinkerPciBarBase + LinkerPciBarSize +
 		LinkerKmazarinStart + LinkerKmazarinSize + LinkerKmazarinExceptionVector +
-		LinkerKmazarinStartupParams +
+		LinkerKmazarinStartupParams + LinkerKmazarinG0Struct + LinkerKmazarinAsyncPreempt +
+		LinkerKmazarinRuntimeG0 +
 		DataTestMagic[0] + DataTestMagic[1] + DataTestMagic[2] + DataTestMagic[3] +
 		DataTestMagic[4] + DataTestMagic[5] + DataTestMagic[6] + DataTestMagic[7]
 

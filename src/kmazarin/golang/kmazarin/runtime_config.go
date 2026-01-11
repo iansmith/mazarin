@@ -48,6 +48,12 @@ type RuntimeConfig struct {
 	ExceptionStackBottom uint64 // Bottom of exception stack (SP_EL1)
 	ExceptionStackTop    uint64 // Top of exception stack (SP_EL1)
 	ExceptionStackSize   uint64 // Exception stack size
+
+	// Goroutine struct copy (for unmapping Cardinal's low memory)
+	G0StructAddr uint64 // High-memory address where g0 struct should be copied
+
+	// Preemption support
+	AsyncPreemptAddr uint64 // High-memory address of runtime.asyncPreempt function
 }
 
 // getRuntimeConfigFromStartupParams reads the RuntimeConfig from StartupParams.
@@ -92,3 +98,17 @@ func GetUartBase() uintptr {
 	configPtr := (*RuntimeConfig)(unsafe.Pointer(&StartupParams[RuntimeConfigOffset]))
 	return uintptr(configPtr.KernelUartBase)
 }
+
+// GetAsyncPreemptAddr returns the address of runtime.asyncPreempt from RuntimeConfig.
+// This is used by the timer interrupt handler to inject preemption calls.
+// Returns 0 if not set (preemption disabled).
+//
+//go:nosplit
+func GetAsyncPreemptAddr() uintptr {
+	configPtr := (*RuntimeConfig)(unsafe.Pointer(&StartupParams[RuntimeConfigOffset]))
+	return uintptr(configPtr.AsyncPreemptAddr)
+}
+
+// NOTE: GetG0StructAddr is defined in startup.go since it returns the actual
+// address of the G0Struct buffer in kmazarin's BSS. The RuntimeConfig.G0StructAddr
+// field contains the same value (set by Cardinal), but startup.go is the source of truth.

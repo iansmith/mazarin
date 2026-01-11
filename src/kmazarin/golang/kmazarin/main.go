@@ -81,6 +81,14 @@ func init() {
 	uartPutHex64Direct(uint64(vectorAddr))
 	uartPuts("\r\n")
 
+	// CRITICAL: Reference G0Struct to force linker to include it
+	// This buffer is where Cardinal copies the g0 goroutine struct for kmazarin to use.
+	// Without this reference, the linker removes G0Struct as dead code!
+	g0StructAddr := GetG0StructAddr()
+	uartPuts("[G0Struct] Located at 0x")
+	uartPutHex64Direct(uint64(g0StructAddr))
+	uartPuts("\r\n")
+
 	// Initialize critical early devices (UART, GIC, Timer, RNG)
 	EarlyInit()
 
@@ -145,6 +153,13 @@ func getUartBaseForKsyscall() uintptr {
 //go:nosplit
 func getUartBaseForKirq() uintptr {
 	return GetUartBase()
+}
+
+// getAsyncPreemptAddrForKirq provides asyncPreempt address to kirq package via linkname
+//go:linkname getAsyncPreemptAddrForKirq kmazarin/kirq.getAsyncPreemptAddr
+//go:nosplit
+func getAsyncPreemptAddrForKirq() uintptr {
+	return GetAsyncPreemptAddr()
 }
 
 // getRuntimeConfigForKsyscall provides runtime config to ksyscall package via linkname
