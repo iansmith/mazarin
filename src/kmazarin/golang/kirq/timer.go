@@ -21,41 +21,17 @@ func getAsyncPreemptAddr() uintptr
 //go:noinline
 func TimerIRQHandlerPreemptable(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo {
 	uartBase := getUartBase()
-	*(*byte)(unsafe.Pointer(uartBase)) = 'T' // Debug: timer IRQ fired
 
-	// DEBUG: Print ELR, X0, SP from frame to see thread state
-	hexChars := "0123456789ABCDEF"
-
-	// Read from frame - X0 at offset 0, SP_EL0 at offset 36
-	frame := (*[40]uint64)(unsafe.Pointer(framePtr))
-	x0 := frame[0]
-
-	*(*byte)(unsafe.Pointer(uartBase)) = 'E'
-	*(*byte)(unsafe.Pointer(uartBase)) = '='
-	for i := 28; i >= 0; i -= 4 {
-		*(*byte)(unsafe.Pointer(uartBase)) = hexChars[(elr>>i)&0xF]
-	}
-	*(*byte)(unsafe.Pointer(uartBase)) = ' '
-	*(*byte)(unsafe.Pointer(uartBase)) = 'X'
-	*(*byte)(unsafe.Pointer(uartBase)) = '0'
-	*(*byte)(unsafe.Pointer(uartBase)) = '='
-	for i := 28; i >= 0; i -= 4 {
-		*(*byte)(unsafe.Pointer(uartBase)) = hexChars[(x0>>i)&0xF]
-	}
-	*(*byte)(unsafe.Pointer(uartBase)) = ' '
-	*(*byte)(unsafe.Pointer(uartBase)) = 'S'
-	*(*byte)(unsafe.Pointer(uartBase)) = 'P'
-	*(*byte)(unsafe.Pointer(uartBase)) = '='
-	for i := 28; i >= 0; i -= 4 {
-		*(*byte)(unsafe.Pointer(uartBase)) = hexChars[(spEl0>>i)&0xF]
-	}
-	*(*byte)(unsafe.Pointer(uartBase)) = '\r'
-	*(*byte)(unsafe.Pointer(uartBase)) = '\n'
-
-	// Re-arm timer for next interrupt (~1 second for debugging)
+	// Re-arm timer for next interrupt (~100ms for responsive preemption)
 	// Assuming 62.5MHz timer frequency
-	// 1s * 62.5MHz = 62500000 ticks = 0x3B9ACA0
-	rearmTimer(0x3B9ACA0)
+	// 100ms * 62.5MHz = 6250000 ticks = 0x5F5E10
+	rearmTimer(0x5F5E10)
+
+	// Minimal debug output - just a dot
+	*(*byte)(unsafe.Pointer(uartBase)) = '.'
+
+	// Suppress unused warnings
+	_ = framePtr
 
 	// Get asyncPreempt address from RuntimeConfig (set by Cardinal at boot)
 	asyncPreemptAddr := getAsyncPreemptAddr()

@@ -115,13 +115,25 @@ $(CARDINAL_BINARY): $(GO_NATIVE_SRC) $(CARDINAL_SRC)/golang/go.mod $(KMAZARIN_BI
 #    - Takes ~0.7ms, ~15k relocations
 # =========================================
 
-# Kmazarin package directories (main + sub-packages)
-KMAZARIN_KMEM_SRC = src/kmazarin/golang/kmem
-KMAZARIN_KSYSCALL_SRC = src/kmazarin/golang/ksyscall
+# Kmazarin package directories (main + all sub-packages)
+KMAZARIN_BASE = src/kmazarin/golang
+KMAZARIN_KMEM_SRC = $(KMAZARIN_BASE)/kmem
+KMAZARIN_KSYSCALL_SRC = $(KMAZARIN_BASE)/ksyscall
+KMAZARIN_KIRQ_SRC = $(KMAZARIN_BASE)/kirq
+KMAZARIN_KTHREAD_SRC = $(KMAZARIN_BASE)/kthread
+KMAZARIN_DEVICE_SRC = $(KMAZARIN_BASE)/device
+KMAZARIN_DTB_SRC = $(KMAZARIN_BASE)/dtb
 
-$(KMAZARIN_BINARY): $(wildcard $(KMAZARIN_SRC)/*.go) $(wildcard $(KMAZARIN_SRC)/*.s) \
-                    $(wildcard $(KMAZARIN_KMEM_SRC)/*.go) $(wildcard $(KMAZARIN_KMEM_SRC)/*.s) \
-                    $(wildcard $(KMAZARIN_KSYSCALL_SRC)/*.go) $(wildcard $(KMAZARIN_KSYSCALL_SRC)/*.s) \
+# All kmazarin Go/assembly sources
+KMAZARIN_ALL_SRC = $(wildcard $(KMAZARIN_SRC)/*.go) $(wildcard $(KMAZARIN_SRC)/*.s) \
+                   $(wildcard $(KMAZARIN_KMEM_SRC)/*.go) $(wildcard $(KMAZARIN_KMEM_SRC)/*.s) \
+                   $(wildcard $(KMAZARIN_KSYSCALL_SRC)/*.go) $(wildcard $(KMAZARIN_KSYSCALL_SRC)/*.s) \
+                   $(wildcard $(KMAZARIN_KIRQ_SRC)/*.go) $(wildcard $(KMAZARIN_KIRQ_SRC)/*.s) \
+                   $(wildcard $(KMAZARIN_KTHREAD_SRC)/*.go) $(wildcard $(KMAZARIN_KTHREAD_SRC)/*.s) \
+                   $(wildcard $(KMAZARIN_DEVICE_SRC)/*.go) $(wildcard $(KMAZARIN_DEVICE_SRC)/*.s) \
+                   $(wildcard $(KMAZARIN_DTB_SRC)/*.go) $(wildcard $(KMAZARIN_DTB_SRC)/*.s)
+
+$(KMAZARIN_BINARY): $(KMAZARIN_ALL_SRC) \
                     tools/kmazarin-entry.sh tools/print-kmazarin-addr.go tools/relocate-kmazarin.go src/cardinal/golang/constants/layout.go | $(BUILD_DIR)
 	$(eval KMAZARIN_LOAD_ADDR := $(shell ./tools/kmazarin-entry.sh))
 	@echo "Building kmazarin kernel (static Go binary at $(KMAZARIN_LOAD_ADDR))..."

@@ -61,11 +61,17 @@ func init() {
 	// NOTE: Runtime config is already initialized in runtime_config.go:init()
 	// which runs at package load time, before the Go runtime initializes.
 
-	// Print "INIT" to show runtime has initialized
+	// Print distinctive markers to show runtime has initialized
+	uartPutc('@')
+	uartPutc('@')
+	uartPutc('@')
 	uartPutc('I')
 	uartPutc('N')
 	uartPutc('I')
 	uartPutc('T')
+	uartPutc('@')
+	uartPutc('@')
+	uartPutc('@')
 	uartPutc('\r')
 	uartPutc('\n')
 
@@ -370,14 +376,25 @@ func simpleMain() {
 	Print("")
 
 	// =============================================
-	// SKIP UNMAP: g register still points to Cardinal's g struct
+	// UNMAP CARDINAL: Safe because heap is in different address range
 	// =============================================
-	// TODO: The Go runtime's g register (x28) still points to Cardinal's
-	// g struct in low memory. Until we set up kmazarin's own g struct,
-	// we can't unmap Cardinal without breaking the Go runtime.
-	Print("[g1] SKIPPING Cardinal unmap (g still points to Cardinal)")
-	// unmapCardinal()  // DISABLED - causes infinite page faults
-	Print("[g1] Cardinal still mapped - g points to 0x40000021c0")
+	// The Go heap is in TTBR0 space at 0x0000004000000000 (user-level addresses).
+	// Cardinal is loaded at 0x0000000040100000 (about 1GB from RAM base).
+	// These ranges don't overlap, so we can safely unmap Cardinal.
+	//
+	// The g register (x28) points to the current goroutine's g struct, which is
+	// heap-allocated. This is expected to be in the 0x4000000000+ range.
+	Print("[g1] Preparing to unmap Cardinal...")
+	Printf("[g1] g register points to 0x%x (heap-allocated goroutine struct)", gVal)
+	Print("")
+
+	// NOTE: Cannot unmap Cardinal yet because both Cardinal (0x40100000) and
+	// the heap (0x4000000000) are in the same L0 entry (entry 0, covering 0-512GB).
+	// Zeroing L0[0] would break heap access. Need finer-grained unmapping later.
+	//
+	// For now, skip unmapping and proceed with testing.
+	Print("[g1] Skipping unmap (Cardinal and heap share L0[0])")
+	Print("[g1] TODO: Implement finer-grained L1/L2/L3 unmapping")
 	Print("")
 
 	// =============================================

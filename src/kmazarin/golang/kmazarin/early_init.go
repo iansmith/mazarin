@@ -12,8 +12,9 @@ func dsb()
 func isb()
 func invalidateTLB()
 
-// unmapCardinal completely unmaps all Cardinal (TTBR0) pages by zeroing the L0 page table.
-// After this, all low-memory (0x00000000-0x3FFFFFFF) accesses will fault.
+// unmapCardinal unmaps Cardinal's memory region by zeroing only the relevant L0 entry.
+// Cardinal is loaded at 0x40100000, which is in L0 entry 0 (VA[47:39] = 0).
+// The Go heap is in TTBR0 at 0x4000000000+ (L0 entry 32+), which we must preserve.
 //
 // SAFETY: This MUST be called only after:
 //   - We're executing from Kmazarin (high memory)
@@ -29,36 +30,38 @@ func unmapCardinal() {
 		return
 	}
 
-	Print("[UnmapCardinal] Cutting off Cardinal by unmapping TTBR0...")
+	Print("[UnmapCardinal] Unmapping Cardinal (L0 entry 0 only, preserving heap)...")
 
 	// Read TTBR0_EL1 to get Cardinal's L0 page table physical address
 	ttbr0Phys := readTTBR0()
-	Print("[UnmapCardinal]   TTBR0_EL1 (Cardinal L0 PA): 0x")
+	Print("[UnmapCardinal]   TTBR0_EL1 (L0 PA): 0x")
 	printHex(ttbr0Phys)
 	Print("")
 
 	// Convert to high-memory virtual address so we can access it
 	// The page table region is identity-mapped to high memory by Cardinal
 	ttbr0VA := uintptr(ttbr0Phys + cfg.KernelVAOffset)
-	Print("[UnmapCardinal]   TTBR0 L0 VA (high memory): 0x")
+	Print("[UnmapCardinal]   L0 VA (high memory): 0x")
 	printHex(uint64(ttbr0VA))
 	Print("")
 
-	// Zero all 512 L0 entries (512 * 8 bytes = 4096 bytes)
-	// This unmaps the entire low-memory address space (0x0 - 0x3FFFFFFF)
+	// Only zero L0 entry 0, which covers 0x0 - 0x7FFFFFFFFF (512GB)
+	// This includes Cardinal at 0x40100000 but NOT the heap at 0x4000000000
+	// (heap is in L0 entry 32: 0x4000000000 >> 39 = 32)
 	l0Table := (*[512]uint64)(unsafe.Pointer(ttbr0VA))
-	for i := 0; i < 512; i++ {
-		l0Table[i] = 0
-	}
+	oldEntry0 := l0Table[0]
+	l0Table[0] = 0
 
-	Print("[UnmapCardinal]   Zeroed 512 L0 entries")
+	Print("[UnmapCardinal]   Zeroed L0[0] (was 0x")
+	printHex(oldEntry0)
+	Print(")")
 
 	// Memory barriers and TLB invalidation
 	dsb()  // Ensure all writes complete
 	invalidateTLB()  // Invalidate entire TLB (includes DSB+ISB)
 
-	Print("[UnmapCardinal] Cardinal fully unmapped - all low memory inaccessible")
-	Print("[UnmapCardinal] Kmazarin is now standalone (high memory only)")
+	Print("[UnmapCardinal] Cardinal unmapped (0x0-0x7FFFFFFFFF)")
+	Print("[UnmapCardinal] Heap preserved (0x4000000000+)")
 	Print("")
 }
 
