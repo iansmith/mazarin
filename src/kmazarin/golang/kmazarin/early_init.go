@@ -84,6 +84,12 @@ func unmapCardinal() {
 func EarlyInit() {
 	Print("[Early] Initializing critical devices...")
 
+	// DEBUG: Print asyncPreempt address from RuntimeConfig
+	asyncPreemptAddr := GetAsyncPreemptAddr()
+	uartPuts("[Early]   AsyncPreempt address: 0x")
+	uartPutHex64Direct(uint64(asyncPreemptAddr))
+	uartPuts("\r\n")
+
 	// 1. UART is already working (we're using direct mode)
 	Print("[Early]   UART: already initialized (direct mode)")
 

@@ -36,3 +36,7 @@ func DoContextSwitch(framePtr uint64, targetIdx int32) uint64
 // SetSyscallELR stores the ELR_EL1 for the current syscall.
 // Called by assembly before DispatchSyscall so clone can get the proper return address.
 func SetSyscallELR(elr uint64)
+
+// SetSyscallSPSR stores the SPSR_EL1 for the current syscall.
+// Called by assembly before DispatchSyscall so clone can get the proper processor state.
+func SetSyscallSPSR(spsr uint64)

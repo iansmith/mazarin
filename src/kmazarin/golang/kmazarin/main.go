@@ -69,6 +69,10 @@ func init() {
 	g0StructAddr := GetG0StructAddr()
 	_ = g0StructAddr // Suppress unused warning
 
+	// Initialize thread table - M0 is thread 0
+	// MUST happen before any clone syscalls!
+	InitThreads()
+
 	// Initialize critical early devices (UART, GIC, Timer, RNG)
 	EarlyInit()
 

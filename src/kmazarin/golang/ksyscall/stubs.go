@@ -4,6 +4,12 @@ package ksyscall
 
 import "unsafe"
 
+//go:linkname threadFindReadyForYield main.ThreadFindReady
+func threadFindReadyForYield() int32
+
+//go:linkname setSyscallSwitchTargetForYield main.SetSyscallSwitchTarget
+func setSyscallSwitchTargetForYield(target int32)
+
 // ============================================================================
 // Simple stub syscalls that return constants or success
 // ============================================================================
@@ -24,11 +30,20 @@ func SyscallGettid(_, _, _, _, _, _ uint64) int64 {
 	return 1
 }
 
-// SyscallSchedYield yields the processor
-// No-op in bare-metal with one CPU
+// SyscallSchedYield yields the processor to another ready thread
+// If no other threads are ready, returns immediately
 //
 //go:nosplit
 func SyscallSchedYield(_, _, _, _, _, _ uint64) int64 {
+	// Try to find another ready thread to switch to
+	nextThread := threadFindReadyForYield()
+
+	if nextThread >= 0 {
+		// Found a ready thread - yield to it
+		setSyscallSwitchTargetForYield(nextThread)
+	}
+	// else: No other ready thread, return immediately
+
 	return 0 // Success
 }
 

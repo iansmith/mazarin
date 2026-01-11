@@ -669,17 +669,28 @@ func HandleSyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) uint64
 // IRQ Exception Dispatcher
 // ============================================================================
 
-// Kmazarin asyncPreempt address (from kmazarin_symbols.s)
-// This is runtime.asyncPreempt.abi0 in kmazarin.elf
-const kmazarinAsyncPreempt = 0x41871B60
-
-// Kmazarin text section bounds (for checking if PC/g is in kmazarin)
-const kmazarinTextStart = 0x41800000
-const kmazarinTextEnd = 0x41894AE4
-
 // Go runtime arena high VA range (for checking if g is a kmazarin pointer)
 const goArenaLow = 0x4000000000  // 256GB
 const goArenaHigh = 0x8000000000 // 512GB
+
+// kmazarinAsyncPreempt returns the asyncPreempt address from linker symbols
+// Extracted from kmazarin.elf at build time and patched by compute-linker-values
+//go:nosplit
+func kmazarinAsyncPreempt() uint64 {
+	return uint64(LinkerKmazarinAsyncPreempt)
+}
+
+// kmazarinTextStart returns the start of kmazarin's text section
+//go:nosplit
+func kmazarinTextStart() uint64 {
+	return uint64(LinkerKmazarinStart)
+}
+
+// kmazarinTextEnd returns the end of kmazarin's memory region
+//go:nosplit
+func kmazarinTextEnd() uint64 {
+	return uint64(LinkerKmazarinStart + LinkerKmazarinSize)
+}
 
 // irqExceptionDispatchInternal is the unified entry point for ALL IRQ exceptions.
 // Called via ABI stub IRQExceptionDispatch.
@@ -771,7 +782,7 @@ func handleTimerIRQ(savedG, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doP
 	// 6. Determine which asyncPreempt to use
 	var asyncPreemptAddr uint64
 	if isInKmazarin(elr) {
-		asyncPreemptAddr = kmazarinAsyncPreempt
+		asyncPreemptAddr = kmazarinAsyncPreempt() // Use linker-extracted address
 		uartPutcDirect('K')
 	} else {
 		asyncPreemptAddr = getAsyncPreemptBMAddr()
@@ -812,7 +823,7 @@ func shouldSkipPreemption(savedG uint64) bool {
 		// In Go's high VA range (runtime arenas)
 		isKmazarinG = true
 		uartPutcDirect('A') // Arena match
-	} else if savedG >= kmazarinTextStart && savedG < kmazarinTextEnd {
+	} else if savedG >= kmazarinTextStart() && savedG < kmazarinTextEnd() {
 		// In kmazarin's ELF text section
 		isKmazarinG = true
 		uartPutcDirect('E') // ELF match
@@ -852,7 +863,7 @@ func shouldSkipPreemption(savedG uint64) bool {
 //
 //go:nosplit
 func isInKmazarin(addr uint64) bool {
-	return addr >= kmazarinTextStart && addr < kmazarinTextEnd
+	return addr >= kmazarinTextStart() && addr < kmazarinTextEnd()
 }
 
 // rearmTimer sets the timer to fire again in 20ms

@@ -281,12 +281,16 @@ sync_exception_handler:
 	CMP	$0x15, R10
 	BNE	not_svc
 
-	// SVC: First save ELR so clone can get child's return address
-	// ELR is already in the exception frame from earlier save
-	MOVD	EXC_FRAME_ELR_SPSR(RSP), R0    // Load ELR from frame
-	SUB	$16, RSP                         // Allocate frame for SetSyscallELR
-	MOVD	R0, 8(RSP)                      // arg0: elr
+	// SVC: First save ELR and SPSR so clone can get child's return address and state
+	// ELR and SPSR are already in the exception frame from earlier save
+	LDP	EXC_FRAME_ELR_SPSR(RSP), (R0, R1)  // Load ELR and SPSR from frame
+	SUB	$16, RSP                           // Allocate frame for SetSyscallELR
+	MOVD	R0, 8(RSP)                        // arg0: elr
 	CALL	·SetSyscallELR(SB)
+	ADD	$16, RSP
+	SUB	$16, RSP                           // Allocate frame for SetSyscallSPSR
+	MOVD	R1, 8(RSP)                        // arg0: spsr
+	CALL	·SetSyscallSPSR(SB)
 	ADD	$16, RSP
 
 	// Now call syscall dispatcher using ABI0 calling convention
@@ -350,6 +354,36 @@ sync_exception_handler:
 	// Copy X0-X7 (0-64 in ThreadContext, 0-64 in frame)
 	LDP	0(R21), (R0, R1)
 	STP	(R0, R1), EXC_FRAME_X0(RSP)
+
+	// DEBUG: Print X0 value being restored
+	MOVD	$UART_BASE, R10
+	MOVD	$'[', R11
+	MOVB	R11, (R10)
+	MOVD	$'X', R11
+	MOVB	R11, (R10)
+	MOVD	$'0', R11
+	MOVB	R11, (R10)
+	MOVD	$'=', R11
+	MOVB	R11, (R10)
+	MOVD	R0, R12  // X0 value
+	MOVD	$16, R13  // 16 hex digits
+x0_print_loop:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	x0_print_digit
+	ADD	$('A'-10), R11
+	B	x0_print_char
+x0_print_digit:
+	ADD	$'0', R11
+x0_print_char:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, x0_print_loop
+	MOVD	$']', R11
+	MOVB	R11, (R10)
+
 	LDP	16(R21), (R0, R1)
 	STP	(R0, R1), EXC_FRAME_X0+16(RSP)
 	LDP	32(R21), (R0, R1)
@@ -398,6 +432,64 @@ sync_exception_handler:
 	// DEBUG: Print 'Z' for context loaded
 	MOVD	$UART_BASE, R10
 	MOVD	$'Z', R11
+	MOVB	R11, (R10)
+
+	// DEBUG: Print X28 value being loaded (stored at sp+224)
+	MOVD	$'[', R11
+	MOVB	R11, (R10)
+	MOVD	$'g', R11
+	MOVB	R11, (R10)
+	MOVD	$'=', R11
+	MOVB	R11, (R10)
+	// Load X28 from exception frame and print it
+	MOVD	EXC_FRAME_X28(RSP), R12
+	// Print each nibble of R12
+	MOVD	$16, R13  // Counter for 16 hex digits
+print_x28_loop:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_x28_digit
+	ADD	$('A'-10), R11
+	B	print_x28_char
+print_x28_digit:
+	ADD	$'0', R11
+print_x28_char:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_x28_loop
+	MOVD	$']', R11
+	MOVB	R11, (R10)
+
+	// DEBUG: Also print ELR being loaded (where execution will resume)
+	MOVD	$'[', R11
+	MOVB	R11, (R10)
+	MOVD	$'P', R11
+	MOVB	R11, (R10)
+	MOVD	$'C', R11
+	MOVB	R11, (R10)
+	MOVD	$'=', R11
+	MOVB	R11, (R10)
+	MOVD	EXC_FRAME_ELR_SPSR(RSP), R12
+	MOVD	$16, R13
+print_elr_loop:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_elr_digit
+	ADD	$('A'-10), R11
+	B	print_elr_char
+print_elr_digit:
+	ADD	$'0', R11
+print_elr_char:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_elr_loop
+	MOVD	$']', R11
+	MOVB	R11, (R10)
+	MOVD	$'\n', R11
 	MOVB	R11, (R10)
 
 	B	sync_return
