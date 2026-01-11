@@ -793,12 +793,11 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 	ptPoolStart := TTBR1RegionVA + TTBR1RegionSize + KernelVAOffset
 	ptPoolEnd := ptPoolStart + PTPoolSize
 
-	// Use TTBR0 (user-space) addresses for heap - Go runtime expects this!
-	// Go on ARM64/Linux allocates heap starting around 0x40 << 32 = 0x4000000000
-	// TTBR0 with T0SZ=16 covers 0x0000000000000000 - 0x0000FFFFFFFFFFFF (256TB)
-	// Kernel code stays in TTBR1 (high addresses), heap in TTBR0 (low addresses)
-	heapStart := uint64(0x0000004000000000) // Where Go expects heap (0x40 << 32)
-	heapEnd := uint64(0x0000800000000000)   // 128TB available - way more than Go needs
+	// Use TTBR1 (kernel-space) addresses for heap - high memory
+	// This tests whether we can make Go work with high-memory addresses
+	// by patching the arena index checks in the Go runtime.
+	heapStart := uint64(constants.KernelHeapStart) // High memory: 0xFFFFFFFF41A00000
+	heapEnd := uint64(constants.KernelHeapEnd)     // High memory: 0xFFFFFFFF45800000
 
 	// Cast StartupParams buffer to RuntimeConfig struct
 	// Note: We're using shared/constants.RuntimeConfig structure

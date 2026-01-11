@@ -157,12 +157,12 @@ const (
 	// =========================================================================
 	// Kmazarin Demand Paging Memory Layout (64MB total kernel footprint)
 	// =========================================================================
-	// Memory layout within 64MB kernel space:
+	// Memory layout:
 	//   0xFFFFFFFF41800000 - Kmazarin static (code/data/bss) ~2MB
 	//   0xFFFFFFFF419C0000 - TTBR1 PT Region (mapped page tables) 64KB
 	//   0xFFFFFFFF419D0000 - PT Pool (for L2/L3 allocation) 192KB
-	//   0xFFFFFFFF41A00000 - Heap VA space (demand-paged) ~62MB
-	//   0xFFFFFFFF45800000 - End of 64MB kernel
+	//   0xFFFFFFFF41A00000 - Heap VA space (demand-paged) ~1GB
+	//   0xFFFFFFFF80000000 - End of heap VA space
 
 	// TTBR1 page table region - Cardinal's TTBR1 L0/L1/L2 tables mapped here
 	// so kmazarin can modify them for demand paging
@@ -175,8 +175,12 @@ const (
 	KernelPTPoolSize  = KernelPTPoolEnd - KernelPTPoolStart
 
 	// Heap VA space - demand-paged, backed by frame pool
-	KernelHeapStart = 0xFFFFFFFF41A00000 // Start of heap VA space
-	KernelHeapEnd   = 0xFFFFFFFF45800000 // End of 64MB kernel
+	// Go wants to reserve huge contiguous VA regions (many GB) for arena metadata.
+	// VA space is free - only accessed pages consume physical frames.
+	// With arenaBaseOffset = 0xFFFF000000000000, we can use up to 128TB of VA space.
+	// The arena index formula: (addr - offset) >> 26 must be < 2^22
+	KernelHeapStart = 0xFFFF000100000000 // Start in TTBR1 space (256GB from base)
+	KernelHeapEnd   = 0xFFFF100000000000 // End of heap VA space (16TB range)
 	KernelHeapSize  = KernelHeapEnd - KernelHeapStart
 
 	// Kernel frame pool - backing pages for kmazarin heap demand paging
@@ -184,7 +188,7 @@ const (
 	// NOTE: This is the KERNEL frame pool. User-space processes will have
 	// their own separate frame pool (to be defined later).
 	KernelFramePoolPhysStart = 0x41A00000 // Physical start of kernel frame pool
-	KernelFramePoolPhysEnd   = 0x45800000 // Physical end (64MB from kernel start)
+	KernelFramePoolPhysEnd   = 0x80000000 // Physical end (~1GB, end of RAM)
 	KernelFramePoolSize      = KernelFramePoolPhysEnd - KernelFramePoolPhysStart
 
 	// Legacy constant for compatibility (now equals KernelTTBR1RegionVA)
