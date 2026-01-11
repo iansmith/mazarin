@@ -49,6 +49,13 @@ func DispatchIRQ(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo
 		return PreemptInfo{} // unreachable
 	}
 
+	// CRITICAL: Handle timer IRQ 27 directly, before checking the table.
+	// This is needed because init() hasn't run yet during early runtime boot,
+	// so the handler table is empty when the first timer IRQ fires.
+	if irqNum == 27 {
+		return TimerIRQHandlerPreemptable(irqNum, framePtr, elr, spEl0)
+	}
+
 	// Try preemptable handler first
 	handlerPreempt := irqTablePreemptable[irqNum]
 	if handlerPreempt != nil {

@@ -66,6 +66,56 @@ var nextTID int32 = 100
 // Global tick counter (incremented by timer)
 var globalTickCounter uint64 = 0
 
+// Syscall context switch signaling
+// Set by syscall handlers (futex, nanosleep) when they need to block
+// Checked by assembly after DispatchSyscall returns
+// -1 = normal return, >=0 = switch to that thread index
+var syscallSwitchTarget int32 = -1
+
+// syscallELR stores the ELR_EL1 for the current syscall
+// Set by assembly before calling DispatchSyscall
+// Used by clone to get the proper return address for child threads
+var syscallELR uint64 = 0
+
+// setSyscallELRInternal is called by assembly via ABI stub to store the current ELR
+//
+//go:nosplit
+//go:noinline
+func setSyscallELRInternal(elr uint64) {
+	syscallELR = elr
+}
+
+// GetSyscallELR returns the ELR for the current syscall
+// Called by clone to get the child's return address
+//
+//go:nosplit
+//go:noinline
+//go:linkname GetSyscallELR kmazarin/ksyscall.GetSyscallELR
+func GetSyscallELR() uint64 {
+	return syscallELR
+}
+
+// getSyscallSwitchTargetInternal returns the switch target and resets it
+// Called from assembly via ABI stub after syscall dispatch
+// Returns int64 to avoid sign extension issues in assembly
+//
+//go:nosplit
+//go:noinline
+func getSyscallSwitchTargetInternal() int64 {
+	target := int64(syscallSwitchTarget)
+	syscallSwitchTarget = -1 // Reset for next syscall
+	return target
+}
+
+// SetSyscallSwitchTarget sets the thread to switch to
+// Called by syscall handlers that need to block
+//
+//go:nosplit
+//go:noinline
+func SetSyscallSwitchTarget(target int32) {
+	syscallSwitchTarget = target
+}
+
 // InitThreads initializes the thread table with M0 as thread 0
 //
 //go:nosplit
@@ -140,6 +190,99 @@ func ThreadCreate(stack, entryFunc, mPtr, gPtr uint64) int32 {
 	threads[slot].Context.SPSR = 0x344
 
 	numThreads++
+
+	return tid
+}
+
+// CloneThread creates a new thread for Go runtime's clone syscall.
+// This properly handles Go's clone wrapper which expects:
+// - Child returns from clone with x0=0
+// - x10=mp, x11=gp, x12=fn preserved (used by Go's wrapper after clone returns)
+// - ELR = return address (same as parent - instruction after SVC)
+//
+// Parameters:
+//   - stack: New thread's stack pointer
+//   - returnAddr: Return address (ELR_EL1 from parent - where both parent/child "return")
+//   - mp: M pointer (goes in x10, used by Go's settls)
+//   - gp: G pointer (goes in x11, Go's wrapper sets g register from this)
+//   - fn: Entry function (goes in x12, Go's wrapper calls this)
+//
+// Returns TID on success, -1 if no slots available
+//
+//go:nosplit
+//go:noinline
+//go:linkname CloneThread kmazarin/ksyscall.CloneThread
+func CloneThread(stack, returnAddr, mp, gp, fn uint64) int32 {
+	// Debug output
+	uartPutc('[')
+	uartPutc('C')
+	uartPutc('T')
+	uartPutc(']')
+
+	// Find a free slot
+	var slot int32 = -1
+	for i := int32(0); i < MaxThreads; i++ {
+		if threads[i].State == ThreadFree {
+			slot = i
+			break
+		}
+	}
+
+	if slot < 0 {
+		uartPutc('!')
+		return -1
+	}
+
+	// Allocate TID
+	tid := nextTID
+	nextTID++
+
+	// Initialize thread
+	threads[slot].State = ThreadReady
+	threads[slot].TID = tid
+	threads[slot].FutexAddr = 0
+	threads[slot].WakeupTick = 0
+	threads[slot].MPtr = mp
+	threads[slot].GPtr = gp
+	threads[slot].EntryFunc = fn
+
+	// Set up initial context for cloned thread
+	// CRITICAL: Go's runtime/sys_linux_arm64.s clone wrapper expects:
+	//   - x0 = 0 (clone returns 0 to child)
+	//   - x10 = mp (for settls call)
+	//   - x11 = gp (for setting g register)
+	//   - x12 = fn (entry function to call)
+	//   - ELR = return address (CMP $0, R0 instruction after SVC)
+	//
+	// The wrapper does:
+	//   CMP $0, R0      // Check if child (x0 == 0)
+	//   BEQ child       // Branch to child label if x0 == 0
+	//   RET             // Parent returns with TID in x0
+	// child:
+	//   MOVD R11, g     // Set g register from x11 (gp)
+	//   MOVD R10, R0    // arg for settls
+	//   BL settls       // Set up TLS
+	//   MOVD R12, R0    // fn to call
+	//   BL (R0)         // Call the entry function (mstart)
+
+	threads[slot].Context.X[0] = 0        // Clone returns 0 to child
+	threads[slot].Context.X[10] = mp      // mp for settls
+	threads[slot].Context.X[11] = gp      // gp for g register setup
+	threads[slot].Context.X[12] = fn      // fn entry function
+	threads[slot].Context.SP = stack      // New stack
+	threads[slot].Context.ELR = returnAddr // Return to instruction after SVC
+	// SPSR = 0x344 = EL1t mode (M=0100) with D=A=F masked, I=0 (IRQs enabled)
+	threads[slot].Context.SPSR = 0x344
+
+	numThreads++
+
+	// Debug: print TID
+	uartPutc('=')
+	hexChars := "0123456789ABCDEF"
+	uartPutc(hexChars[(tid>>4)&0xF])
+	uartPutc(hexChars[tid&0xF])
+	uartPutc('\r')
+	uartPutc('\n')
 
 	return tid
 }
@@ -369,14 +512,29 @@ func SaveContextFromFrame(framePtr uintptr) {
 	t.Context.SPSR = frame[33]
 }
 
-// doContextSwitchInternal performs a context switch from current thread to targetIdx
-// Saves current context from frame, updates thread states, returns new context
-// Returns pointer to new thread's Context (for assembly to load)
-// Called via ABI stub DoContextSwitch.
+// doContextSwitchABI0 is the ABI0 entry point for context switching
+// Takes uint64/int32 args from assembly, returns pointer as uint64
 //
 //go:nosplit
 //go:noinline
-func doContextSwitchInternal(framePtr uintptr, targetIdx int32) *ThreadContext {
+func doContextSwitchABI0(framePtr uint64, targetIdx int32) uint64 {
+	uartPutc('[')
+	uartPutc('C')
+	uartPutc('S')
+	uartPutc('W')
+	uartPutc(']')
+
+	ctx := doContextSwitchImpl(uintptr(framePtr), targetIdx)
+	return uint64(uintptr(unsafe.Pointer(ctx)))
+}
+
+// doContextSwitchImpl performs a context switch from current thread to targetIdx
+// Saves current context from frame, updates thread states, returns new context
+// Returns pointer to new thread's Context (for assembly to load)
+//
+//go:nosplit
+//go:noinline
+func doContextSwitchImpl(framePtr uintptr, targetIdx int32) *ThreadContext {
 	// Save current thread's context from exception frame
 	SaveContextFromFrame(framePtr)
 

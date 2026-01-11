@@ -35,3 +35,11 @@ TEXT ·readTTBR1EL1(SB), NOSPLIT, $0-8
 	MRS	TTBR1_EL1, R0
 	MOVD	R0, ret+0(FP)
 	RET
+
+// dcCIVACAsm - Clean and Invalidate Data Cache by VA to PoC
+// Ensures page table entry is written to memory (visible to hardware walker)
+TEXT ·dcCIVACAsm(SB), NOSPLIT, $0-8
+	MOVD	va+0(FP), R0
+	// DC CIVAC, X0 = 0xD50B7E20
+	WORD	$0xD50B7E20
+	RET

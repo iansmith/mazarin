@@ -3,8 +3,10 @@
 #include "textflag.h"
 
 // GIC-400 (GICv2) register offsets
-#define GICD_BASE	0x08000000
-#define GICC_BASE	0x08010000
+// NOTE: Using high-memory addresses since kmazarin runs in high memory
+// Cardinal maps GIC at 0xFFFFFFFF08000000 before jumping to kmazarin
+#define GICD_BASE	0xFFFFFFFF08000000
+#define GICC_BASE	0xFFFFFFFF08010000
 
 // GICD registers
 #define GICD_CTLR	0x0000
@@ -53,13 +55,17 @@ TEXT ·RearmTimerNow(SB), NOSPLIT, $0
 	// Set CNTV_TVAL_EL0 to ~10ms worth of ticks
 	// Assuming 62.5MHz: 10ms * 62.5MHz = 625000 = 0x98968
 	MOVD	$0x98968, R0
-	// MSR CNTV_TVAL_EL0, X0 = 0xD51BE000
-	WORD	$0xD51BE000
+	// MSR CNTV_TVAL_EL0, X0
+	// CNTV_TVAL_EL0 = S3_3_C14_C3_0 (op0=3, op1=3, CRn=14, CRm=3, op2=0)
+	// Encoding: 0xD51BE300 (NOT 0xD51BE000 which has wrong CRm=0!)
+	WORD	$0xD51BE300
 
 	// Enable timer: CNTV_CTL_EL0 = 1 (enable bit)
 	MOVD	$1, R0
-	// MSR CNTV_CTL_EL0, X0 = 0xD51BE020
-	WORD	$0xD51BE020
+	// MSR CNTV_CTL_EL0, X0
+	// CNTV_CTL_EL0 = S3_3_C14_C3_1 (op0=3, op1=3, CRn=14, CRm=3, op2=1)
+	// Encoding: 0xD51BE320 (NOT 0xD51BE020 which has wrong CRm=0!)
+	WORD	$0xD51BE320
 
 	ISB	$15
 	RET

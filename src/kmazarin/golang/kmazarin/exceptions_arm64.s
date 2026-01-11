@@ -46,46 +46,40 @@ exception_vector_base:
 // Each vector entry must be 128 bytes - pad with NOPs
 el1_sp0_sync:
 	// Go runtime runs at EL1 using SP_EL0, so sync exceptions come here
-	// Print '1' to show sync exception occurred
-	MOVD	$UART_BASE, R10
-	MOVD	$'1', R11
-	MOVB	R11, (R10)
+	// CRITICAL: Do NOT use any registers here before saving them!
+	// Go's clone relies on R10-R12 containing mp, gp, fn during page faults.
 	B	sync_exception_handler
+	// 1 instruction = 4 bytes, need 124 bytes padding = 31 WORDs
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
-	WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 
 el1_sp0_irq:
 	// IRQs also come here when using SP_EL0
-	// Print 'I' to show IRQ occurred
-	MOVD	$UART_BASE, R10
-	MOVD	$'I', R11
-	MOVB	R11, (R10)
+	// CRITICAL: Do NOT use any registers here before saving them!
 	B	irq_exception_handler
+	// 1 instruction = 4 bytes, need 124 bytes padding = 31 WORDs
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
-	WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 
 el1_sp0_fiq:
-	MOVD	$UART_BASE, R10
-	MOVD	$'2', R11
-	MOVB	R11, (R10)
+	// FIQ - unlikely, but save registers first
 	B	unhandled_exception
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
-	WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 
 el1_sp0_serror:
-	MOVD	$UART_BASE, R10
-	MOVD	$'3', R11
-	MOVB	R11, (R10)
+	// SError - unlikely, but save registers first
 	B	unhandled_exception
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	// CRITICAL: el1_spx_sync MUST start at EXACTLY offset 0x200 (no alignment!)
 el1_spx_sync:
 	B	sync_exception_handler
@@ -287,7 +281,15 @@ sync_exception_handler:
 	CMP	$0x15, R10
 	BNE	not_svc
 
-	// SVC: Call syscall dispatcher using ABI0 calling convention
+	// SVC: First save ELR so clone can get child's return address
+	// ELR is already in the exception frame from earlier save
+	MOVD	EXC_FRAME_ELR_SPSR(RSP), R0    // Load ELR from frame
+	SUB	$16, RSP                         // Allocate frame for SetSyscallELR
+	MOVD	R0, 8(RSP)                      // arg0: elr
+	CALL	·SetSyscallELR(SB)
+	ADD	$16, RSP
+
+	// Now call syscall dispatcher using ABI0 calling convention
 	// Load arguments from exception frame first (before adjusting RSP)
 	LDP	EXC_FRAME_X8(RSP), (R0, R1)        // R0 = syscall num (X8), R1 = X9
 	LDP	EXC_FRAME_X0(RSP), (R2, R3)        // R2 = arg0 (X0), R3 = arg1 (X1)
@@ -316,7 +318,92 @@ sync_exception_handler:
 	// Store return value back to X0 in exception frame
 	MOVD	R0, EXC_FRAME_X0(RSP)
 
-	// Restore and return
+	// Check if syscall handler requested a context switch
+	// Call GetSyscallSwitchTarget() - returns -1 if no switch, >=0 for target
+	SUB	$16, RSP           // Allocate frame for call (0 args + 8 return, 16-aligned)
+	CALL	·GetSyscallSwitchTarget(SB)
+	MOVD	8(RSP), R20        // Read return value (int64)
+	ADD	$16, RSP
+
+	// Check if context switch needed (R20 >= 0 means switch)
+	CMP	$0, R20
+	BLT	syscall_no_switch
+
+	// Context switch requested!
+	// DEBUG: Print 'S' for switch
+	MOVD	$UART_BASE, R10
+	MOVD	$'S', R11
+	MOVB	R11, (R10)
+
+	// Call DoContextSwitch(framePtr, targetIdx) to get new context
+	SUB	$32, RSP           // Allocate: 8 pad + 8 arg0 + 8 arg1 + 8 return = 32
+	MOVD	RSP, R0
+	ADD	$32, R0            // R0 = framePtr (RSP before this allocation)
+	MOVD	R0, 8(RSP)         // arg0: framePtr
+	MOVW	R20, 16(RSP)       // arg1: targetIdx (as int32)
+	CALL	·DoContextSwitch(SB)
+	MOVD	24(RSP), R21       // R21 = pointer to new ThreadContext
+	ADD	$32, RSP
+
+	// Copy ThreadContext to exception frame, then sync_return will restore it
+	// ThreadContext: X[31], SP, ELR, SPSR
+	// Copy X0-X7 (0-64 in ThreadContext, 0-64 in frame)
+	LDP	0(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X0(RSP)
+	LDP	16(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X0+16(RSP)
+	LDP	32(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X0+32(RSP)
+	LDP	48(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X0+48(RSP)
+
+	// Copy X8-X27 (64-224 in ThreadContext, 64-224 in frame)
+	LDP	64(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8(RSP)
+	LDP	80(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+16(RSP)
+	LDP	96(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+32(RSP)
+	LDP	112(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+48(RSP)
+	LDP	128(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+64(RSP)
+	LDP	144(R21), (R0, R1)      // x18, x19
+	WORD	$0xf9004be0  // str x0, [sp, #144]  x18
+	WORD	$0xf9004fe1  // str x1, [sp, #152]  x19
+	LDP	160(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+96(RSP)
+	LDP	176(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+112(RSP)
+	LDP	192(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+128(RSP)
+	LDP	208(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+144(RSP)
+
+	// Copy X28-X30 (224-248 in ThreadContext)
+	MOVD	224(R21), R0
+	WORD	$0xf90073e0  // str x0, [sp, #224]  x28
+	LDP	232(R21), (R0, R1)
+	WORD	$0xf90077e0  // str x0, [sp, #232]  x29
+	MOVD	R1, EXC_FRAME_X28+16(RSP)  // x30 at frame offset 248
+
+	// Copy SP_EL0 (248 in ThreadContext)
+	MOVD	248(R21), R0
+	MOVD	R0, EXC_FRAME_SP_EL0(RSP)
+
+	// Copy ELR and SPSR (256, 264 in ThreadContext)
+	LDP	256(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_ELR_SPSR(RSP)
+
+	// DEBUG: Print 'Z' for context loaded
+	MOVD	$UART_BASE, R10
+	MOVD	$'Z', R11
+	MOVB	R11, (R10)
+
+	B	sync_return
+
+syscall_no_switch:
+	// No context switch, normal return
 	B	sync_return
 
 not_svc:

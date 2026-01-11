@@ -29,6 +29,7 @@ type RuntimeConfig struct {
 	KernelUartBase    uint64 // High-memory UART VA
 	KernelGicBase     uint64 // High-memory GIC VA
 	TTBR1L0Phys       uint64 // Physical address of TTBR1 L0
+	TTBR0L0Phys       uint64 // Physical address of TTBR0 L0 (for user-space/heap)
 	StartupParamsAddr uint64 // Address of StartupParams buffer itself
 
 	// Derived values (computed by Cardinal)

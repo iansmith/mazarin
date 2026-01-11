@@ -515,8 +515,8 @@ print_r3_char:
 	// ========================================
 	// SP_EL1 is already set to high memory by boot code at EL2
 	// ========================================
-	// The boot code set SP_EL1 to LinkerExceptionStackTop before dropping from EL2 to EL1
-	// We just need to switch to EL1t mode to use SP_EL0 for normal execution
+	// The boot code set SP_EL1 to LinkerKernelExcStackTop (0xFFFFFFFF5F004000)
+	// before dropping from EL2 to EL1. We just need to switch to EL1t mode.
 
 	// Print 'H' to show SP_EL1 is ready
 	MOVD	$0x09000000, R10
@@ -524,7 +524,7 @@ print_r3_char:
 	MOVB	R5, (R10)
 
 	// Switch to EL1t mode
-	// SP_EL1 remains at high-memory address (LinkerExceptionStackTop) set by boot code
+	// SP_EL1 remains at high-memory address (LinkerKernelExcStackTop) set by boot code
 	MSR	$0, SPSel
 
 	// Print 'T' for "EL1t mode switched"

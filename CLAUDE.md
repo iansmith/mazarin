@@ -12,6 +12,20 @@
 make cardinal  # Build
 ```
 
+### Helper Scripts (bin/claude/)
+
+For convenience, use these scripts:
+
+```bash
+bin/claude/build          # Build cardinal and kmazarin
+bin/claude/build clean    # Clean build
+bin/claude/run            # Start QEMU (waits 3s, shows last 500 chars)
+bin/claude/run 10         # Start QEMU with 10s wait
+bin/claude/stop           # Stop any running QEMU instances
+```
+
+Output is written to `/tmp/cardinal-serial.log`. Use `tail -f /tmp/cardinal-serial.log` to watch live.
+
 **CRITICAL: QEMU Output Buffering**
 - ❌ NO: `| tee`, `| tail`, `> file`, `< /dev/null` - causes buffering issues
 - ✅ Use file-based serial output with TCP monitor (see below)

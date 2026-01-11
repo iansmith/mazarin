@@ -28,10 +28,39 @@ func TimerIRQHandlerPreemptable(irqNum uint64, framePtr uintptr, elr, spEl0 uint
 	uartBase := getUartBase()
 	*(*byte)(unsafe.Pointer(uartBase)) = 'T' // Debug: timer IRQ fired
 
-	// Re-arm timer for next interrupt (~10ms)
+	// DEBUG: Print ELR, X0, SP from frame to see thread state
+	hexChars := "0123456789ABCDEF"
+
+	// Read from frame - X0 at offset 0, SP_EL0 at offset 36
+	frame := (*[40]uint64)(unsafe.Pointer(framePtr))
+	x0 := frame[0]
+
+	*(*byte)(unsafe.Pointer(uartBase)) = 'E'
+	*(*byte)(unsafe.Pointer(uartBase)) = '='
+	for i := 28; i >= 0; i -= 4 {
+		*(*byte)(unsafe.Pointer(uartBase)) = hexChars[(elr>>i)&0xF]
+	}
+	*(*byte)(unsafe.Pointer(uartBase)) = ' '
+	*(*byte)(unsafe.Pointer(uartBase)) = 'X'
+	*(*byte)(unsafe.Pointer(uartBase)) = '0'
+	*(*byte)(unsafe.Pointer(uartBase)) = '='
+	for i := 28; i >= 0; i -= 4 {
+		*(*byte)(unsafe.Pointer(uartBase)) = hexChars[(x0>>i)&0xF]
+	}
+	*(*byte)(unsafe.Pointer(uartBase)) = ' '
+	*(*byte)(unsafe.Pointer(uartBase)) = 'S'
+	*(*byte)(unsafe.Pointer(uartBase)) = 'P'
+	*(*byte)(unsafe.Pointer(uartBase)) = '='
+	for i := 28; i >= 0; i -= 4 {
+		*(*byte)(unsafe.Pointer(uartBase)) = hexChars[(spEl0>>i)&0xF]
+	}
+	*(*byte)(unsafe.Pointer(uartBase)) = '\r'
+	*(*byte)(unsafe.Pointer(uartBase)) = '\n'
+
+	// Re-arm timer for next interrupt (~1 second for debugging)
 	// Assuming 62.5MHz timer frequency
-	// 10ms * 62.5MHz = 625000 ticks = 0x98968
-	rearmTimer(0x98968)
+	// 1s * 62.5MHz = 62500000 ticks = 0x3B9ACA0
+	rearmTimer(0x3B9ACA0)
 
 	// CRITICAL: Preemption is DISABLED because asyncPreemptAddr is hardcoded.
 	// We need to fix this before enabling preemption.

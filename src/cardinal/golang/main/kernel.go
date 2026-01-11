@@ -962,8 +962,13 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 
 	ptPoolStart := TTBR1RegionVA + TTBR1RegionSize + KernelVAOffset
 	ptPoolEnd := ptPoolStart + PTPoolSize
-	heapStart := ptPoolEnd
-	heapEnd := uint64(constants.KmazarinLoadAddr) + KernelVAOffset + 64*1024*1024 // 64MB from kernel start
+
+	// Use TTBR0 (user-space) addresses for heap - Go runtime expects this!
+	// Go on ARM64/Linux allocates heap starting around 0x40 << 32 = 0x4000000000
+	// TTBR0 with T0SZ=16 covers 0x0000000000000000 - 0x0000FFFFFFFFFFFF (256TB)
+	// Kernel code stays in TTBR1 (high addresses), heap in TTBR0 (low addresses)
+	heapStart := uint64(0x0000004000000000) // Where Go expects heap (0x40 << 32)
+	heapEnd := uint64(0x0000800000000000)   // 128TB available - way more than Go needs
 
 	// Cast StartupParams buffer to RuntimeConfig struct
 	// Note: We're using shared/constants.RuntimeConfig structure
@@ -980,6 +985,7 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 		KernelUartBase       uint64
 		KernelGicBase        uint64
 		TTBR1L0Phys          uint64
+		TTBR0L0Phys          uint64
 		StartupParamsAddr    uint64
 		KernelVAOffset       uint64
 		KernelPTPoolStart    uint64
@@ -1022,6 +1028,10 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 
 	// Page tables
 	config.TTBR1L0Phys = uint64(ttbr1L0PA)
+	config.TTBR0L0Phys = uint64(pageTableL0)
+	uartPutsDirect("TTBR0 L0 PA: 0x")
+	uartPutHex64Direct(uint64(pageTableL0))
+	uartPutsDirect("\r\n")
 	config.StartupParamsAddr = uint64(kmazarinStartupParamsVA)
 
 	// Memory layout

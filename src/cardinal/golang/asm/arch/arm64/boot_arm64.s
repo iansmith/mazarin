@@ -44,7 +44,7 @@
 #define MRS_ESR_EL2_X1      WORD $0xD53C5201   // mrs x1, esr_el2
 
 // MSR encodings for setting system registers
-#define MSR_VBAR_EL2_X0     WORD $0xD51C1000   // msr vbar_el2, x0
+#define MSR_VBAR_EL2_X0     WORD $0xD51CC000   // msr vbar_el2, x0
 #define MSR_SP_EL1_X0       WORD $0xD51C4100   // msr sp_el1, x0
 
 // Other instruction encodings
@@ -111,6 +111,15 @@ boot_txff_wait:
 	MRS_CURRENTEL_X0
 	// Extract EL bits [3:2]
 	LSR	$2, R0, R0
+
+	// DEBUG: Print 'E' followed by the EL value (should be '2' for EL2)
+	MOVD	$0x09000000, R10
+	MOVD	$'E', R5
+	MOVB	R5, (R10)
+	// Print EL number as digit '0', '1', '2', or '3'
+	ADD	$'0', R0, R5
+	MOVB	R5, (R10)
+
 	CMP	$2, R0
 	BNE	at_el1
 
@@ -120,10 +129,18 @@ boot_txff_wait:
 	MOVD	$'2', R5
 	MOVB	R5, (R10)
 
+	// DEBUG: Print 'a' before HCR_EL2
+	MOVD	$'a', R5
+	MOVB	R5, (R10)
+
 	// Configure HCR_EL2 (Hypervisor Configuration Register)
 	// RW (bit 31) = 1: EL1 uses AArch64
 	MOVD	$(1<<31), R0
 	MSR_HCR_EL2_X0
+
+	// DEBUG: Print 'b' after HCR_EL2
+	MOVD	$'b', R5
+	MOVB	R5, (R10)
 
 	// Configure CNTHCTL_EL2 to allow EL1/EL0 access to timers
 	// EL1PCTEN (bit 0) = 1: Don't trap CNTPCT_EL0 reads from EL1
@@ -131,35 +148,143 @@ boot_txff_wait:
 	MOVD	$3, R0
 	MSR_CNTHCTL_EL2_X0
 
+	// DEBUG: Print 'c' after CNTHCTL_EL2
+	MOVD	$'c', R5
+	MOVB	R5, (R10)
+
 	// Set virtual timer offset to 0 (CNTVOFF_EL2)
 	MOVD	$0, R0
 	MSR_CNTVOFF_EL2_X0
 
+	// DEBUG: Print 'd' after CNTVOFF_EL2
+	MOVD	$'d', R5
+	MOVB	R5, (R10)
+
 	// Set up EL2 exception vectors BEFORE dropping to EL1
 	// This allows us to call back to EL2 later to modify SP_EL1
+
+	// DEBUG: Print # BEFORE VBAR_EL2
+	MOVD	$0x09000000, R10
+	MOVD	$'#', R5
+	MOVB	R5, (R10)
+
 	MOVD	$el2_exception_vectors(SB), R0
 	MSR_VBAR_EL2_X0
+
+	// DEBUG: Print @ AFTER VBAR_EL2
+	MOVD	$0x09000000, R10
+	MOVD	$'@', R5
+	MOVB	R5, (R10)
 
 	// ========================================
 	// CRITICAL: Set SP_EL1 to high-memory exception stack NOW (while at EL2)
 	// After ERET to EL1, we can't use HVC to set it (virtualization=off)
-	// Load address from LinkerExceptionStackTop symbol (value from constants/layout.go)
+	// Load address from LinkerKernelExcStackTop (high memory for kmazarin)
 	// ========================================
-	MOVD	main·LinkerExceptionStackTop(SB), R0
+	MOVD	main·LinkerKernelExcStackTop(SB), R0
 
-	// DEBUG: Print R0 value before MSR
+	// DEBUG: Print SP_EL1 value before MSR using distinctive markers
+	// Format: <SP1=XXXXXXXX> where X is top 8 hex digits (bits 63-32)
 	MOVD	$0x09000000, R10
-	MOVD	$'[', R5
+	MOVD	$'<', R5
 	MOVB	R5, (R10)
-	LSR	$60, R0, R5
+	MOVD	$'S', R5
+	MOVB	R5, (R10)
+	MOVD	$'P', R5
+	MOVB	R5, (R10)
+	MOVD	$'1', R5
+	MOVB	R5, (R10)
+	MOVD	$'=', R5
+	MOVB	R5, (R10)
+
+	// Print 8 hex digits (bits 63-32 of R0)
+	// Save R0 to R11 since we'll modify it
+	MOVD	R0, R11
+
+	// Digit 1 (bits 63-60)
+	LSR	$60, R11, R5
 	AND	$0xF, R5
 	CMP	$10, R5
-	BLT	1(PC)
+	BLT	3(PC)
 	ADD	$('A'-10), R5
 	B	2(PC)
 	ADD	$'0', R5
 	MOVB	R5, (R10)
-	MOVD	$']', R5
+
+	// Digit 2 (bits 59-56)
+	LSR	$56, R11, R5
+	AND	$0xF, R5
+	CMP	$10, R5
+	BLT	3(PC)
+	ADD	$('A'-10), R5
+	B	2(PC)
+	ADD	$'0', R5
+	MOVB	R5, (R10)
+
+	// Digit 3 (bits 55-52)
+	LSR	$52, R11, R5
+	AND	$0xF, R5
+	CMP	$10, R5
+	BLT	3(PC)
+	ADD	$('A'-10), R5
+	B	2(PC)
+	ADD	$'0', R5
+	MOVB	R5, (R10)
+
+	// Digit 4 (bits 51-48)
+	LSR	$48, R11, R5
+	AND	$0xF, R5
+	CMP	$10, R5
+	BLT	3(PC)
+	ADD	$('A'-10), R5
+	B	2(PC)
+	ADD	$'0', R5
+	MOVB	R5, (R10)
+
+	// Digit 5 (bits 47-44)
+	LSR	$44, R11, R5
+	AND	$0xF, R5
+	CMP	$10, R5
+	BLT	3(PC)
+	ADD	$('A'-10), R5
+	B	2(PC)
+	ADD	$'0', R5
+	MOVB	R5, (R10)
+
+	// Digit 6 (bits 43-40)
+	LSR	$40, R11, R5
+	AND	$0xF, R5
+	CMP	$10, R5
+	BLT	3(PC)
+	ADD	$('A'-10), R5
+	B	2(PC)
+	ADD	$'0', R5
+	MOVB	R5, (R10)
+
+	// Digit 7 (bits 39-36)
+	LSR	$36, R11, R5
+	AND	$0xF, R5
+	CMP	$10, R5
+	BLT	3(PC)
+	ADD	$('A'-10), R5
+	B	2(PC)
+	ADD	$'0', R5
+	MOVB	R5, (R10)
+
+	// Digit 8 (bits 35-32)
+	LSR	$32, R11, R5
+	AND	$0xF, R5
+	CMP	$10, R5
+	BLT	3(PC)
+	ADD	$('A'-10), R5
+	B	2(PC)
+	ADD	$'0', R5
+	MOVB	R5, (R10)
+
+	// Restore R0 from R11
+	MOVD	R11, R0
+
+	MOVD	$'>', R5
 	MOVB	R5, (R10)
 
 	MSR_SP_EL1_X0
@@ -194,21 +319,52 @@ boot_txff_wait:
 
 at_el1:
 	// Now we're at EL1
+	// NOTE: We may have arrived here from EL2 (via ERET) or started directly at EL1
 
 	// ========================================
-	// CRITICAL: Set up BOTH stacks FIRST
-	// SP_EL1 was already set to high memory at EL2 from LinkerExceptionStackTop
-	// We just need to set SP_EL0
+	// CRITICAL: Set up BOTH stacks
+	// If we came from EL2, SP_EL1 was set there.
+	// If we started at EL1, we need to set SP_EL1 NOW!
 	//
 	// Stack Architecture:
-	// - SP_EL1: Exception handler stack, HIGH MEMORY (set at EL2 from LinkerExceptionStackTop)
-	// - SP_EL0: g0/kernel stack, used in EL1t mode (from LinkerStackTop)
+	// - SP_EL1: Exception handler stack, HIGH MEMORY (LinkerKernelExcStackTop)
+	// - SP_EL0: g0/kernel stack, used in EL1t mode (LinkerStackTop)
 	// ========================================
-	//
-	// NOTE: SP_EL1 already set at EL2, no need to set it again here
 
-	// Set SP_EL0 (g0 stack) from LinkerStackTop
-	// Use MSR to set SP_EL0 since we're currently using SP_EL1
+	// First, set SP_EL1 (exception stack) by switching to EL1h mode
+	// From EL1, we can only write to SP_EL1 when SPSel=1 (EL1h mode)
+	MSR	$1, SPSel		// Switch to EL1h mode (SP = SP_EL1)
+	ISB	$15
+
+	// Load the exception stack top address
+	MOVD	main·LinkerKernelExcStackTop(SB), R0
+
+	// DEBUG: Print 'X' and the SP_EL1 value we're about to set
+	MOVD	$0x09000000, R10
+	MOVD	$'X', R5
+	MOVB	R5, (R10)
+	// Print first 4 hex digits of R0 (should be FFFF)
+	MOVD	R0, R11
+	LSR	$60, R11, R5
+	AND	$0xF, R5
+	CMP	$10, R5
+	BLT	sp_el1_digit1
+	ADD	$('A'-10), R5
+	B	sp_el1_print1
+sp_el1_digit1:
+	ADD	$'0', R5
+sp_el1_print1:
+	MOVB	R5, (R10)
+
+	// Set SP (which is SP_EL1 in EL1h mode) to exception stack top
+	MOVD	R0, RSP			// This sets SP_EL1!
+
+	// DEBUG: Print 'Y' to confirm SP_EL1 was set
+	MOVD	$0x09000000, R10
+	MOVD	$'Y', R5
+	MOVB	R5, (R10)
+
+	// Now set SP_EL0 (g0 stack)
 	MOVD	main·LinkerStackTop(SB), R0
 	MSR	R0, SP_EL0
 

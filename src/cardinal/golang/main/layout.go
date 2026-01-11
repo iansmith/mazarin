@@ -68,7 +68,10 @@ var (
 	// Exception stack: 0x5F000000-0x5F020000 (128KB, SP_EL1)
 	LinkerStackTop          uint64 = constants.G0StackTop           // SP_EL0 top
 	LinkerG0StackBottom     uint64 = constants.G0StackBottom        // SP_EL0 bottom
-	LinkerExceptionStackTop uint64 = constants.ExceptionStackTop    // SP_EL1 top
+	LinkerExceptionStackTop uint64 = constants.ExceptionStackTop    // SP_EL1 top (low memory, Cardinal)
+
+	// High-memory stacks for kmazarin (TTBR1)
+	LinkerKernelExcStackTop uint64 = uint64(constants.KernelExcStackTop) // SP_EL1 top (high memory, kmazarin)
 
 	// MMIO device addresses - FIXED VALUES from constants package (QEMU virt machine)
 	LinkerGicBase          uint64 = constants.GicBase
@@ -108,7 +111,7 @@ func init() {
 		LinkerRamStart + LinkerDtbBootAddr + LinkerDtbSize +
 		LinkerCardinalEnd + LinkerCardinalAllocationSize +
 		LinkerKmazarinLoadAddr + LinkerPageTablesStart + LinkerPageTablesEnd +
-		LinkerStackTop + LinkerG0StackBottom + LinkerExceptionStackTop +
+		LinkerStackTop + LinkerG0StackBottom + LinkerExceptionStackTop + LinkerKernelExcStackTop +
 		LinkerGicBase + LinkerGicSize +
 		LinkerUartBase + LinkerUartSize +
 		LinkerRtcBase + LinkerFwcfgBase + LinkerFwcfgSize +

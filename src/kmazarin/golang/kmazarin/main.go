@@ -35,16 +35,25 @@ func irqDispatchInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (ne
 // that tail-calls handlePageFaultInternal. This is the actual implementation.
 // Returns 1 if the fault was handled successfully, 0 otherwise.
 //
-//go:nosplit
+// Note: We don't use nosplit here because HandlePageFault needs a full call chain.
+// The exception handler runs on SP_EL1 (exception stack) which has 16KB available.
+//
 //go:noinline
 func handlePageFaultInternal(faultAddr uint64) uint64 {
-	// DEBUG: Print 'E' at entry to show we reached Go code
-	uartPutc('E')
+	// Debug: print 'P' to show we reached the page fault handler
+	uartPutc('P')
+	uartPutc('[')
+	uartPutHex64Direct(faultAddr)
+	uartPutc(']')
+
 	if kmem.HandlePageFault(uintptr(faultAddr)) {
+		uartPutc('+')
 		return 1
 	}
+	uartPutc('-')
 	return 0
 }
+
 
 // init runs before main - called after Go runtime is fully initialized
 // Set up exception handlers and enable interrupts
@@ -346,14 +355,14 @@ func simpleMain() {
 	Print("")
 
 	// =============================================
-	// CRITICAL: Unmap all Cardinal pages
+	// SKIP UNMAP: g register still points to Cardinal's g struct
 	// =============================================
-	// Now that we're safely executing in Kmazarin (high memory, TTBR1),
-	// cut off Cardinal completely by unmapping all low-memory (TTBR0) pages.
-	// After this, any access to low memory will fault - we're fully standalone.
-	Print("[g1] Unmapping Cardinal...")
-	unmapCardinal()
-	Print("[g1] Cardinal unmapped - Kmazarin is standalone")
+	// TODO: The Go runtime's g register (x28) still points to Cardinal's
+	// g struct in low memory. Until we set up kmazarin's own g struct,
+	// we can't unmap Cardinal without breaking the Go runtime.
+	Print("[g1] SKIPPING Cardinal unmap (g still points to Cardinal)")
+	// unmapCardinal()  // DISABLED - causes infinite page faults
+	Print("[g1] Cardinal still mapped - g points to 0x40000021c0")
 	Print("")
 
 	// =============================================

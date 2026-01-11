@@ -19,13 +19,15 @@ type RuntimeConfig struct {
 	// Memory layout parameters from Cardinal
 	DtbPhysAddr       uint64 // Physical address of DTB
 	DtbSize           uint64 // Size of DTB
+	DtbVirtAddr       uint64 // High-memory virtual address of DTB
 	KmazarinPhysAddr  uint64 // Physical base of kmazarin binary
 	KmazarinSize      uint64 // Size of kmazarin binary
 	FramePoolStart    uint64 // Physical frame pool start
 	FramePoolEnd      uint64 // Physical frame pool end
 	KernelUartBase    uint64 // High-memory UART VA (0xFFFFFFFF09000000)
 	KernelGicBase     uint64 // High-memory GIC VA
-	TTBR1L0Phys       uint64 // Physical address of TTBR1 L0
+	TTBR1L0Phys       uint64 // Physical address of TTBR1 L0 (kernel space)
+	TTBR0L0Phys       uint64 // Physical address of TTBR0 L0 (user space for heap)
 	StartupParamsAddr uint64 // Address of StartupParams buffer
 
 	// Derived values (computed by Cardinal)
@@ -39,11 +41,13 @@ type RuntimeConfig struct {
 	PageSize uint64 // Page size (4096)
 	HWCap    uint64 // ARM64 hardware capabilities
 
-	// Stack boundaries (Cardinal bootstrap stacks)
-	G0StackBottom      uint64 // Bottom of g0 stack (SP_EL0)
-	G0StackTop         uint64 // Top of g0 stack (SP_EL0)
-	ExceptionStackTop  uint64 // Top of exception stack (SP_EL1)
-	ExceptionStackSize uint64 // Exception stack size
+	// Stack boundaries (high-memory kernel stacks)
+	G0StackBottom        uint64 // Bottom of g0 stack (SP_EL0)
+	G0StackTop           uint64 // Top of g0 stack (SP_EL0)
+	G0StackSize          uint64 // Size of g0 stack
+	ExceptionStackBottom uint64 // Bottom of exception stack (SP_EL1)
+	ExceptionStackTop    uint64 // Top of exception stack (SP_EL1)
+	ExceptionStackSize   uint64 // Exception stack size
 }
 
 // getRuntimeConfigFromStartupParams reads the RuntimeConfig from StartupParams.

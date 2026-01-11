@@ -65,14 +65,21 @@ func InitFrameAllocator() {
 //
 //go:nosplit
 func AllocFrame() uintptr {
+	uartPutcDirect('F') // DEBUG: entered AllocFrame
+
 	// Lazy initialization from runtime config
 	if !initialized {
+		uartPutcDirect('i') // DEBUG: init path
 		cfg := getRuntimeConfigTyped()
+		uartPutcDirect('g') // DEBUG: got config
 		frameAllocator.nextFrame = uintptr(cfg.FramePoolStart)
 		frameAllocator.endFrame = uintptr(cfg.FramePoolEnd)
 		frameAllocator.allocated = 0
 		initialized = true
+		uartPutcDirect('k') // DEBUG: init done
 	}
+
+	uartPutcDirect('n') // DEBUG: checking bounds
 
 	if frameAllocator.nextFrame >= frameAllocator.endFrame {
 		uartPuts("[kmem] OOM!\r\n")
@@ -83,6 +90,7 @@ func AllocFrame() uintptr {
 	frameAllocator.nextFrame += PageSize
 	frameAllocator.allocated++
 
+	uartPutcDirect('f') // DEBUG: frame allocated
 	return frame
 }
 
@@ -91,16 +99,22 @@ func AllocFrame() uintptr {
 //
 //go:nosplit
 func ZeroFrame(physAddr uintptr) {
+	uartPutcDirect('Z') // DEBUG: entered ZeroFrame
+
 	// We need to access the physical memory. Since we're in high memory,
 	// we need to use the kernel VA offset to access physical memory.
 	cfg := getRuntimeConfigTyped()
+	uartPutcDirect('c') // DEBUG: got config
 	va := physAddr + uintptr(cfg.KernelVAOffset)
+	uartPutcDirect('v') // DEBUG: calculated VA
 
 	// Zero 4KB in 8-byte chunks (512 iterations)
 	ptr := (*[512]uint64)(unsafe.Pointer(va))
+	uartPutcDirect('p') // DEBUG: got pointer
 	for i := 0; i < 512; i++ {
 		ptr[i] = 0
 	}
+	uartPutcDirect('x') // DEBUG: done zeroing
 }
 
 // GetFrameStats returns the current frame allocator statistics.
@@ -116,31 +130,35 @@ func GetFrameStats() (allocated, remaining uint64) {
 }
 
 // runtimeConfigStruct is a local copy of RuntimeConfig to avoid circular imports.
-// Must match the layout in kmazarin/runtime_config.go exactly.
+// Must match the layout in shared/constants/runtime_config.go exactly.
 type runtimeConfigStruct struct {
-	Magic             uint32
-	Version           uint32
-	DtbPhysAddr       uint64
-	DtbSize           uint64
-	KmazarinPhysAddr  uint64
-	KmazarinSize      uint64
-	FramePoolStart    uint64
-	FramePoolEnd      uint64
-	KernelUartBase    uint64
-	KernelGicBase     uint64
-	TTBR1L0Phys       uint64
-	StartupParamsAddr uint64
-	KernelVAOffset    uint64
-	KernelPTPoolStart uint64
-	KernelPTPoolEnd   uint64
-	KernelHeapStart   uint64
-	KernelHeapEnd     uint64
-	PageSize          uint64
-	HWCap             uint64
-	G0StackBottom      uint64
-	G0StackTop         uint64
-	ExceptionStackTop  uint64
-	ExceptionStackSize uint64
+	Magic                uint32
+	Version              uint32
+	DtbPhysAddr          uint64
+	DtbSize              uint64
+	DtbVirtAddr          uint64 // High-memory virtual address of DTB
+	KmazarinPhysAddr     uint64
+	KmazarinSize         uint64
+	FramePoolStart       uint64
+	FramePoolEnd         uint64
+	KernelUartBase       uint64
+	KernelGicBase        uint64
+	TTBR1L0Phys          uint64
+	TTBR0L0Phys          uint64
+	StartupParamsAddr    uint64
+	KernelVAOffset       uint64
+	KernelPTPoolStart    uint64
+	KernelPTPoolEnd      uint64
+	KernelHeapStart      uint64
+	KernelHeapEnd        uint64
+	PageSize             uint64
+	HWCap                uint64
+	G0StackBottom        uint64
+	G0StackTop           uint64
+	G0StackSize          uint64 // Size of g0 stack
+	ExceptionStackBottom uint64 // Bottom of exception stack
+	ExceptionStackTop    uint64
+	ExceptionStackSize   uint64
 }
 
 // getRuntimeConfigTyped returns the runtime config with proper type.

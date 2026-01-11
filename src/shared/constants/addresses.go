@@ -50,10 +50,10 @@ const (
 	// Total memory limit for kmazarin (binary + heap combined)
 	KmazarinTotalLimit = 512 * 1024 * 1024 // 512MB
 
-	// Stack sizes - tuned for tail-call ABI stub pattern
-	// These are MUCH smaller than original because tail-calls don't add stack frames
-	KernelG0StackSize  = 0x4000 // 16KB (was 64KB) - Go runtime init needs ~8KB peak
-	KernelExcStackSize = 0x2000 // 8KB (was 128KB) - exception handling is shallow
+	// Stack sizes - MUST match cardinal/golang/constants/layout.go
+	// These were doubled from 16KB/8KB to debug potential stack overflow issues
+	KernelG0StackSize  = 0x8000 // 32KB - g0 stack for normal kernel execution
+	KernelExcStackSize = 0x4000 // 16KB - exception stack for handlers
 
 	// Page table allocation for TTBR1
 	KernelPageTableSize = 0x00800000 // 8MB (policy)
@@ -66,15 +66,23 @@ const (
 // High-Memory Stack Addresses
 // ============================================================================
 // These are VIRTUAL addresses in kernel space (TTBR1)
+// COMPUTED from base address - no hardcoded addresses!
+// Memory layout: g0 stack immediately followed by exception stack
 
 const (
+	// Base address for kernel stacks in high memory
+	// Physical 0x5EFF8000 -> Virtual 0xFFFFFFFF5EFF8000
+	KernelStacksVirtBase = 0xFFFFFFFF5EFF8000
+
 	// g0 stack - used for normal kernel execution in EL1t mode (SP_EL0)
-	KernelG0StackTop    = 0xFFFFFFFF5F000000
-	KernelG0StackBottom = KernelG0StackTop - KernelG0StackSize
+	// Range: 0xFFFFFFFF5EFF8000 - 0xFFFFFFFF5F000000 (32KB)
+	KernelG0StackBottom = KernelStacksVirtBase
+	KernelG0StackTop    = KernelG0StackBottom + KernelG0StackSize
 
 	// Exception stack - used for exception handlers in EL1h mode (SP_EL1)
-	KernelExcStackTop    = 0xFFFFFFFF5F008000
-	KernelExcStackBottom = KernelExcStackTop - KernelExcStackSize
+	// Range: 0xFFFFFFFF5F000000 - 0xFFFFFFFF5F004000 (16KB)
+	KernelExcStackBottom = KernelG0StackTop
+	KernelExcStackTop    = KernelExcStackBottom + KernelExcStackSize
 )
 
 // ============================================================================

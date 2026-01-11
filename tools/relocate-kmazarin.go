@@ -153,10 +153,10 @@ func relocateTextSection(data []byte, f *elf.File, stats *RelocStats) {
 				imm |= 0xFFE00000
 			}
 
-			// Calculate current target page (BEFORE relocation)
+			// Calculate current target address (BEFORE relocation)
 			// PC for ADRP is the address of the instruction itself
 			pc := text.Addr + i
-			targetPage := (pc & ^uint64(0xFFF)) + (uint64(int64(int32(imm<<12))) >> 12)
+			targetPage := (pc & ^uint64(0xFFF)) + uint64(int64(int32(imm<<12)))
 
 			// If target is in kmazarin range, we need to adjust
 			if targetPage >= kmazarinBase && targetPage < kmazarinEnd {
