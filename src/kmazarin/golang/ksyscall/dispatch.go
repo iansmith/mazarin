@@ -60,19 +60,11 @@ var syscallTable = [512]SyscallHandler{
 //go:nosplit
 //go:noinline
 func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
-	// DEBUG: Print 'D' to show we entered dispatch
-	*(*byte)(unsafe.Pointer(uintptr(0xFFFFFFFF09000000))) = 'D'
-
 	// Check if syscall number is in range
 	if syscallNum >= 512 {
 		syscallPanic("Invalid syscall number", syscallNum)
 		return -1 // unreachable
 	}
-
-	// DEBUG: Print syscall number as 2 hex digits
-	hexChars := "0123456789ABCDEF"
-	*(*byte)(unsafe.Pointer(uintptr(0xFFFFFFFF09000000))) = hexChars[(syscallNum>>4)&0xF]
-	*(*byte)(unsafe.Pointer(uintptr(0xFFFFFFFF09000000))) = hexChars[syscallNum&0xF]
 
 	// Get handler from table
 	handler := syscallTable[syscallNum]
@@ -81,16 +73,8 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 		return -1 // unreachable
 	}
 
-	// DEBUG: Print 'H' before calling handler
-	*(*byte)(unsafe.Pointer(uintptr(0xFFFFFFFF09000000))) = 'H'
-
 	// Call the handler
-	result := handler(arg0, arg1, arg2, arg3, arg4, arg5)
-
-	// DEBUG: Print 'X' after handler returns
-	*(*byte)(unsafe.Pointer(uintptr(0xFFFFFFFF09000000))) = 'X'
-
-	return result
+	return handler(arg0, arg1, arg2, arg3, arg4, arg5)
 }
 
 // syscallPanic handles syscall-specific panics with the syscall number

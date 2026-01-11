@@ -131,17 +131,6 @@ func InitThreads() {
 	for i := 1; i < MaxThreads; i++ {
 		threads[i].State = ThreadFree
 	}
-
-	uartPutc('[')
-	uartPutc('T')
-	uartPutc('H')
-	uartPutc('R')
-	uartPutc('E')
-	uartPutc('A')
-	uartPutc('D')
-	uartPutc(']')
-	uartPutc('\r')
-	uartPutc('\n')
 }
 
 // ThreadCreate creates a new thread entry for clone syscall
@@ -213,12 +202,6 @@ func ThreadCreate(stack, entryFunc, mPtr, gPtr uint64) int32 {
 //go:noinline
 //go:linkname CloneThread kmazarin/ksyscall.CloneThread
 func CloneThread(stack, returnAddr, mp, gp, fn uint64) int32 {
-	// Debug output
-	uartPutc('[')
-	uartPutc('C')
-	uartPutc('T')
-	uartPutc(']')
-
 	// Find a free slot
 	var slot int32 = -1
 	for i := int32(0); i < MaxThreads; i++ {
@@ -275,14 +258,6 @@ func CloneThread(stack, returnAddr, mp, gp, fn uint64) int32 {
 	threads[slot].Context.SPSR = 0x344
 
 	numThreads++
-
-	// Debug: print TID
-	uartPutc('=')
-	hexChars := "0123456789ABCDEF"
-	uartPutc(hexChars[(tid>>4)&0xF])
-	uartPutc(hexChars[tid&0xF])
-	uartPutc('\r')
-	uartPutc('\n')
 
 	return tid
 }
@@ -518,12 +493,6 @@ func SaveContextFromFrame(framePtr uintptr) {
 //go:nosplit
 //go:noinline
 func doContextSwitchABI0(framePtr uint64, targetIdx int32) uint64 {
-	uartPutc('[')
-	uartPutc('C')
-	uartPutc('S')
-	uartPutc('W')
-	uartPutc(']')
-
 	ctx := doContextSwitchImpl(uintptr(framePtr), targetIdx)
 	return uint64(uintptr(unsafe.Pointer(ctx)))
 }

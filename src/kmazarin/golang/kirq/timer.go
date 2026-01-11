@@ -2,10 +2,6 @@
 
 package kirq
 
-import (
-	"unsafe"
-)
-
 // getUartBase is provided by main package via go:linkname.
 func getUartBase() uintptr
 
@@ -20,17 +16,13 @@ func getAsyncPreemptAddr() uintptr
 //go:nosplit
 //go:noinline
 func TimerIRQHandlerPreemptable(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo {
-	uartBase := getUartBase()
-
 	// Re-arm timer for next interrupt (~100ms for responsive preemption)
 	// Assuming 62.5MHz timer frequency
 	// 100ms * 62.5MHz = 6250000 ticks = 0x5F5E10
 	rearmTimer(0x5F5E10)
 
-	// Minimal debug output - just a dot
-	*(*byte)(unsafe.Pointer(uartBase)) = '.'
-
 	// Suppress unused warnings
+	_ = irqNum
 	_ = framePtr
 
 	// Get asyncPreempt address from RuntimeConfig (set by Cardinal at boot)
@@ -39,7 +31,6 @@ func TimerIRQHandlerPreemptable(irqNum uint64, framePtr uintptr, elr, spEl0 uint
 	// Check if preemption is enabled (address is non-zero)
 	if asyncPreemptAddr == 0 {
 		// Preemption disabled - address not configured
-		*(*byte)(unsafe.Pointer(uartBase)) = 't' // Debug: timer acknowledged, no preempt
 		return PreemptInfo{
 			NewELR:    0,
 			NewSP:     0,
@@ -56,8 +47,6 @@ func TimerIRQHandlerPreemptable(irqNum uint64, framePtr uintptr, elr, spEl0 uint
 	// 1. Setting NewELR to asyncPreemptAddr (where to "return" to)
 	// 2. Setting NewLR to original ELR (so asyncPreempt returns to original code)
 	// 3. Keeping SP unchanged
-	*(*byte)(unsafe.Pointer(uartBase)) = 'P' // Debug: preempt triggered
-
 	return PreemptInfo{
 		NewELR:    uint64(asyncPreemptAddr), // Jump to asyncPreempt
 		NewSP:     spEl0,                    // Keep current stack

@@ -40,17 +40,9 @@ func irqDispatchInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (ne
 //
 //go:noinline
 func handlePageFaultInternal(faultAddr uint64) uint64 {
-	// Debug: print 'P' to show we reached the page fault handler
-	uartPutc('P')
-	uartPutc('[')
-	uartPutHex64Direct(faultAddr)
-	uartPutc(']')
-
 	if kmem.HandlePageFault(uintptr(faultAddr)) {
-		uartPutc('+')
 		return 1
 	}
-	uartPutc('-')
 	return 0
 }
 
@@ -61,20 +53,6 @@ func init() {
 	// NOTE: Runtime config is already initialized in runtime_config.go:init()
 	// which runs at package load time, before the Go runtime initializes.
 
-	// Print distinctive markers to show runtime has initialized
-	uartPutc('@')
-	uartPutc('@')
-	uartPutc('@')
-	uartPutc('I')
-	uartPutc('N')
-	uartPutc('I')
-	uartPutc('T')
-	uartPutc('@')
-	uartPutc('@')
-	uartPutc('@')
-	uartPutc('\r')
-	uartPutc('\n')
-
 	// NOTE: Syscall table is initialized at package level, before runtime init
 	// NOTE: VBAR_EL1 is already set by Cardinal before jumping to kmazarin
 	// This must happen before the Go runtime initializes (which runs before init())
@@ -83,28 +61,19 @@ func init() {
 	// CRITICAL: Call GetExceptionVectorBase() to force linker to include exception vector table
 	// Without this, the linker removes ExceptionVectorTable as dead code!
 	vectorAddr := GetExceptionVectorBase()
-	uartPuts("[Exception Vector] Located at 0x")
-	uartPutHex64Direct(uint64(vectorAddr))
-	uartPuts("\r\n")
+	_ = vectorAddr // Suppress unused warning
 
 	// CRITICAL: Reference G0Struct to force linker to include it
 	// This buffer is where Cardinal copies the g0 goroutine struct for kmazarin to use.
 	// Without this reference, the linker removes G0Struct as dead code!
 	g0StructAddr := GetG0StructAddr()
-	uartPuts("[G0Struct] Located at 0x")
-	uartPutHex64Direct(uint64(g0StructAddr))
-	uartPuts("\r\n")
+	_ = g0StructAddr // Suppress unused warning
 
 	// Initialize critical early devices (UART, GIC, Timer, RNG)
 	EarlyInit()
 
 	// Now enable interrupts - handlers are ready
-	uartPuts("[Enabling IRQs]\r\n")
 	EnableIRQs()
-	uartPuts("[IRQs Enabled]\r\n")
-
-	// Initialize thread table
-	// InitThreads()
 }
 
 // uartPutc writes a single character directly to UART (bypasses Go runtime)
@@ -388,14 +357,9 @@ func simpleMain() {
 	Printf("[g1] g register points to 0x%x (heap-allocated goroutine struct)", gVal)
 	Print("")
 
-	// NOTE: Cannot unmap Cardinal yet because both Cardinal (0x40100000) and
-	// the heap (0x4000000000) are in the same L0 entry (entry 0, covering 0-512GB).
-	// Zeroing L0[0] would break heap access. Need finer-grained unmapping later.
-	//
-	// For now, skip unmapping and proceed with testing.
-	Print("[g1] Skipping unmap (Cardinal and heap share L0[0])")
-	Print("[g1] TODO: Implement finer-grained L1/L2/L3 unmapping")
-	Print("")
+	// Unmap Cardinal at L1 level - zeros L1[0-2] (0-3GB) while preserving L1[256+] for heap
+	unmapCardinal()
+	Print("[g1] Cardinal unmapped (L1-level, heap preserved)")
 
 	// =============================================
 	// CHECKPOINT: Test if Go runtime is fully ready

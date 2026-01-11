@@ -45,18 +45,7 @@ func InitFrameAllocator() {
 	frameAllocator.allocated = 0
 	initialized = true
 
-	poolSize := cfg.FramePoolEnd - cfg.FramePoolStart
-	uartPuts("[kmem] Frame allocator initialized\r\n")
-	uartPuts("  Pool: 0x")
-	uartPutHex64(cfg.FramePoolStart)
-	uartPuts(" - 0x")
-	uartPutHex64(cfg.FramePoolEnd)
-	uartPuts("\r\n")
-	uartPuts("  Size: ")
-	uartPutHex64(poolSize / (1024 * 1024))
-	uartPuts(" MB (")
-	uartPutHex64(poolSize / PageSize)
-	uartPuts(" frames)\r\n")
+	_ = cfg.FramePoolEnd - cfg.FramePoolStart // Pool size calculated but not printed
 }
 
 // AllocFrame allocates a single physical frame from the kernel frame pool.
@@ -65,21 +54,21 @@ func InitFrameAllocator() {
 //
 //go:nosplit
 func AllocFrame() uintptr {
-	uartPutcDirect('F') // DEBUG: entered AllocFrame
+	debugPrint('F') // DEBUG: entered AllocFrame
 
 	// Lazy initialization from runtime config
 	if !initialized {
-		uartPutcDirect('i') // DEBUG: init path
+		debugPrint('i') // DEBUG: init path
 		cfg := getRuntimeConfigTyped()
-		uartPutcDirect('g') // DEBUG: got config
+		debugPrint('g') // DEBUG: got config
 		frameAllocator.nextFrame = uintptr(cfg.FramePoolStart)
 		frameAllocator.endFrame = uintptr(cfg.FramePoolEnd)
 		frameAllocator.allocated = 0
 		initialized = true
-		uartPutcDirect('k') // DEBUG: init done
+		debugPrint('k') // DEBUG: init done
 	}
 
-	uartPutcDirect('n') // DEBUG: checking bounds
+	debugPrint('n') // DEBUG: checking bounds
 
 	if frameAllocator.nextFrame >= frameAllocator.endFrame {
 		uartPuts("[kmem] OOM!\r\n")
@@ -90,7 +79,7 @@ func AllocFrame() uintptr {
 	frameAllocator.nextFrame += PageSize
 	frameAllocator.allocated++
 
-	uartPutcDirect('f') // DEBUG: frame allocated
+	debugPrint('f') // DEBUG: frame allocated
 	return frame
 }
 
@@ -99,22 +88,22 @@ func AllocFrame() uintptr {
 //
 //go:nosplit
 func ZeroFrame(physAddr uintptr) {
-	uartPutcDirect('Z') // DEBUG: entered ZeroFrame
+	debugPrint('Z') // DEBUG: entered ZeroFrame
 
 	// We need to access the physical memory. Since we're in high memory,
 	// we need to use the kernel VA offset to access physical memory.
 	cfg := getRuntimeConfigTyped()
-	uartPutcDirect('c') // DEBUG: got config
+	debugPrint('c') // DEBUG: got config
 	va := physAddr + uintptr(cfg.KernelVAOffset)
-	uartPutcDirect('v') // DEBUG: calculated VA
+	debugPrint('v') // DEBUG: calculated VA
 
 	// Zero 4KB in 8-byte chunks (512 iterations)
 	ptr := (*[512]uint64)(unsafe.Pointer(va))
-	uartPutcDirect('p') // DEBUG: got pointer
+	debugPrint('p') // DEBUG: got pointer
 	for i := 0; i < 512; i++ {
 		ptr[i] = 0
 	}
-	uartPutcDirect('x') // DEBUG: done zeroing
+	debugPrint('x') // DEBUG: done zeroing
 }
 
 // GetFrameStats returns the current frame allocator statistics.

@@ -53,11 +53,7 @@ var mapPageDebugCount uint32
 func mapPageInitMMU(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 	uartBase := uintptr(0x09000000)
 
-	// DEBUG: Print a dot every 100 pages for first few
 	mapPageDebugCount++
-	if mapPageDebugCount <= 5 {
-		*(*uint32)(unsafe.Pointer(uartBase)) = '.'
-	}
 
 	// Extract level indices from virtual address
 	// Use uint64 to ensure 64-bit arithmetic (uintptr might be 32 bits in some builds)
@@ -70,7 +66,8 @@ func mapPageInitMMU(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 	l2Idx := uint16((va64 >> 21) & 0x1FF) // Bits 29-21
 	l3Idx := uint16((va64 >> 12) & 0x1FF) // Bits 20-12
 
-	doDebug := mapPageDebugCount <= 3
+	// Debug flag - disabled for cleaner output
+	doDebug := false
 
 	if doDebug {
 		*(*uint32)(unsafe.Pointer(uartBase)) = 'I' // got Indices

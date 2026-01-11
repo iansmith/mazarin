@@ -24,15 +24,6 @@ func GetSyscallELR() uint64
 //
 //go:nosplit
 func SyscallClone(flags, stack, ptid, tls, ctid, _ uint64) int64 {
-	uart := uintptr(0xFFFFFFFF09000000)
-	*(*byte)(unsafe.Pointer(uart)) = '['
-	*(*byte)(unsafe.Pointer(uart)) = 'c'
-	*(*byte)(unsafe.Pointer(uart)) = 'l'
-	*(*byte)(unsafe.Pointer(uart)) = 'o'
-	*(*byte)(unsafe.Pointer(uart)) = 'n'
-	*(*byte)(unsafe.Pointer(uart)) = 'e'
-	*(*byte)(unsafe.Pointer(uart)) = ']'
-
 	// Extract mp, gp, fn from the stack (same as Cardinal)
 	// Go writes values at negative offsets from the original stack pointer,
 	// then does SUB $32, but the syscall apparently receives the PRE-SUB stack.
@@ -46,46 +37,11 @@ func SyscallClone(flags, stack, ptid, tls, ctid, _ uint64) int64 {
 	gp := *(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 16))
 	fn := *(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 24))
 
-	// Debug: print key parameters
-	hexChars := "0123456789ABCDEF"
-
-	*(*byte)(unsafe.Pointer(uart)) = 'S'
-	*(*byte)(unsafe.Pointer(uart)) = '='
-	for i := 60; i >= 0; i -= 4 {
-		*(*byte)(unsafe.Pointer(uart)) = hexChars[(stack>>i)&0xF]
-	}
-	*(*byte)(unsafe.Pointer(uart)) = '\r'
-	*(*byte)(unsafe.Pointer(uart)) = '\n'
-
-	// Dump stack contents at various offsets (fixed for negative offsets)
-	// Negative offsets: -32, -24, -16, -8
-	for absOff := uint64(32); absOff >= 8; absOff -= 8 {
-		addr := stack - absOff
-		val := *(*uint64)(unsafe.Pointer(uintptr(addr)))
-		*(*byte)(unsafe.Pointer(uart)) = '-'
-		*(*byte)(unsafe.Pointer(uart)) = hexChars[(absOff>>4)&0xF]
-		*(*byte)(unsafe.Pointer(uart)) = hexChars[absOff&0xF]
-		*(*byte)(unsafe.Pointer(uart)) = ':'
-		for i := 60; i >= 0; i -= 4 {
-			*(*byte)(unsafe.Pointer(uart)) = hexChars[(val>>i)&0xF]
-		}
-		*(*byte)(unsafe.Pointer(uart)) = '\r'
-		*(*byte)(unsafe.Pointer(uart)) = '\n'
-	}
-	// Positive offsets: 0, 8, 16, 24, 32
-	for off := uint64(0); off <= 32; off += 8 {
-		addr := stack + off
-		val := *(*uint64)(unsafe.Pointer(uintptr(addr)))
-		*(*byte)(unsafe.Pointer(uart)) = '+'
-		*(*byte)(unsafe.Pointer(uart)) = hexChars[(off>>4)&0xF]
-		*(*byte)(unsafe.Pointer(uart)) = hexChars[off&0xF]
-		*(*byte)(unsafe.Pointer(uart)) = ':'
-		for i := 60; i >= 0; i -= 4 {
-			*(*byte)(unsafe.Pointer(uart)) = hexChars[(val>>i)&0xF]
-		}
-		*(*byte)(unsafe.Pointer(uart)) = '\r'
-		*(*byte)(unsafe.Pointer(uart)) = '\n'
-	}
+	// Suppress unused warnings
+	_ = flags
+	_ = ptid
+	_ = tls
+	_ = ctid
 
 	// Get the actual return address (instruction after SVC) for the child
 	// Both parent and child should "return" to the same place,
@@ -96,21 +52,10 @@ func SyscallClone(flags, stack, ptid, tls, ctid, _ uint64) int64 {
 	tid := CloneThread(stack, returnAddr, mp, gp, fn)
 
 	if tid < 0 {
-		*(*byte)(unsafe.Pointer(uart)) = '!'
 		return -1 // EAGAIN - no free thread slots
 	}
 
 	// Return TID to parent
 	// Child thread is now in READY state and will be scheduled later
-	*(*byte)(unsafe.Pointer(uart)) = 'T'
-	*(*byte)(unsafe.Pointer(uart)) = 'I'
-	*(*byte)(unsafe.Pointer(uart)) = 'D'
-	*(*byte)(unsafe.Pointer(uart)) = '='
-	for i := 28; i >= 0; i -= 4 {
-		*(*byte)(unsafe.Pointer(uart)) = hexChars[(int64(tid)>>i)&0xF]
-	}
-	*(*byte)(unsafe.Pointer(uart)) = '\r'
-	*(*byte)(unsafe.Pointer(uart)) = '\n'
-
 	return int64(tid)
 }

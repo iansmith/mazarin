@@ -6,6 +6,10 @@ import (
 	"unsafe"
 )
 
+// debugPaging enables verbose page fault debugging output
+// Set to false for production, true for debugging
+const debugPaging = false
+
 // uartPutcDirect writes a byte to UART (linked from kmazarin package)
 //go:linkname uartPutcDirect kmazarin/kmem.uartPutcDirect
 func uartPutcDirect(c byte)
@@ -13,6 +17,22 @@ func uartPutcDirect(c byte)
 // uartPutHex64Direct writes a 64-bit hex value to UART (linked from kmazarin package)
 //go:linkname uartPutHex64Direct kmazarin/kmem.uartPutHex64Direct
 func uartPutHex64Direct(val uint64)
+
+// debugPrint conditionally outputs a character if debugging is enabled
+//go:nosplit
+func debugPrint(c byte) {
+	if debugPaging {
+		uartPutcDirect(c)
+	}
+}
+
+// debugPrintHex conditionally outputs a hex value if debugging is enabled
+//go:nosplit
+func debugPrintHex(val uint64) {
+	if debugPaging {
+		uartPutHex64Direct(val)
+	}
+}
 
 // Page table constants for ARM64 4KB granule
 const (
@@ -185,32 +205,32 @@ func walkPageTable(va uintptr) uintptr {
 //go:nosplit
 func HandlePageFault(faultAddr uintptr) bool {
 	// DEBUG: Print 'G' at absolute entry (before anything else)
-	uartPutcDirect('G')
+	debugPrint('G')
 	// DEBUG: Breadcrumb H = HandlePageFault entry
-	uartPutcDirect('H')
+	debugPrint('H')
 
 	// Lazy initialization - call InitPaging to read config and set up TTBR0/TTBR1
 	if !pagingInitialized {
-		uartPutcDirect('I') // DEBUG: Init path
+		debugPrint('I') // DEBUG: Init path
 		InitPaging()
-		uartPutcDirect('i') // DEBUG: InitPaging done
+		debugPrint('i') // DEBUG: InitPaging done
 	}
 
-	uartPutcDirect('5') // DEBUG: After init
+	debugPrint('5') // DEBUG: After init
 
 	// Check if fault is in manageable range
 	// Accept faults from kmazarin VA start to heap end
 	cfg := getRuntimeConfigTyped()
-	uartPutcDirect('6') // DEBUG: Got config
+	debugPrint('6') // DEBUG: Got config
 
 	// Calculate ranges for kmazarin binary and heap
 	kmazarinVAStart := uintptr(cfg.KmazarinPhysAddr + cfg.KernelVAOffset)
 	kmazarinVAEnd := kmazarinVAStart + uintptr(cfg.KmazarinSize)
 	heapStart := uintptr(cfg.KernelHeapStart)
 	heapEnd := uintptr(cfg.KernelHeapEnd)
-	uartPutcDirect('7') // DEBUG: Calculated ranges
+	debugPrint('7') // DEBUG: Calculated ranges
 
-	uartPutcDirect('8') // DEBUG: Before stack checks
+	debugPrint('8') // DEBUG: Before stack checks
 
 	// Check if fault is in stack regions (should be pre-mapped by Cardinal!)
 	g0StackBottom := uintptr(cfg.G0StackBottom)
@@ -219,31 +239,31 @@ func HandlePageFault(faultAddr uintptr) bool {
 	excStackSize := uintptr(cfg.ExceptionStackSize)
 	excStackBottom := excStackTop - excStackSize
 
-	uartPutcDirect('9') // DEBUG: Stack vars calculated
+	debugPrint('9') // DEBUG: Stack vars calculated
 
 	if faultAddr >= g0StackBottom && faultAddr < g0StackTop {
 		// Fault in g0 stack region - should not happen!
-		uartPutcDirect('S')
-		uartPutcDirect('0')
-		uartPutcDirect('!')
-		uartPutcDirect('[')
-		uartPutHex64Direct(uint64(faultAddr))
-		uartPutcDirect(']')
+		debugPrint('S')
+		debugPrint('0')
+		debugPrint('!')
+		debugPrint('[')
+		debugPrintHex(uint64(faultAddr))
+		debugPrint(']')
 		return false
 	}
-	uartPutcDirect('a') // DEBUG: passed g0 stack check
+	debugPrint('a') // DEBUG: passed g0 stack check
 
 	if faultAddr >= excStackBottom && faultAddr < excStackTop {
 		// Fault in exception stack region - should not happen!
-		uartPutcDirect('S')
-		uartPutcDirect('1')
-		uartPutcDirect('!')
-		uartPutcDirect('[')
-		uartPutHex64Direct(uint64(faultAddr))
-		uartPutcDirect(']')
+		debugPrint('S')
+		debugPrint('1')
+		debugPrint('!')
+		debugPrint('[')
+		debugPrintHex(uint64(faultAddr))
+		debugPrint(']')
 		return false
 	}
-	uartPutcDirect('b') // DEBUG: passed exc stack check
+	debugPrint('b') // DEBUG: passed exc stack check
 
 	// Check if fault is in valid range: either in kmazarin binary OR in heap
 	// These ranges may not be contiguous (heap can be in lower TTBR1 space)
@@ -251,59 +271,59 @@ func HandlePageFault(faultAddr uintptr) bool {
 	inHeap := faultAddr >= heapStart && faultAddr < heapEnd
 	if !inKmazarin && !inHeap {
 		// DEBUG: R = Range check failed, print fault address
-		uartPutcDirect('R')
-		uartPutcDirect('!')
-		uartPutcDirect('[')
-		uartPutHex64Direct(uint64(faultAddr))
-		uartPutcDirect(']')
+		debugPrint('R')
+		debugPrint('!')
+		debugPrint('[')
+		debugPrintHex(uint64(faultAddr))
+		debugPrint(']')
 		return false
 	}
-	uartPutcDirect('c') // DEBUG: passed range check
+	debugPrint('c') // DEBUG: passed range check
 
 	// Align to page boundary
 	pageAddr := faultAddr &^ (PageSize - 1)
-	uartPutcDirect('d') // DEBUG: aligned
+	debugPrint('d') // DEBUG: aligned
 
 	// Allocate a physical frame
 	frame := AllocFrame()
 	if frame == 0 {
 		// DEBUG: A = Alloc failed
-		uartPutcDirect('A')
-		uartPutcDirect('!')
+		debugPrint('A')
+		debugPrint('!')
 		return false
 	}
 
-	uartPutcDirect('e') // DEBUG: about to map
+	debugPrint('e') // DEBUG: about to map
 
 	// Map the page FIRST (before zeroing!)
 	// ZeroFrame accesses the VA, so the page must be mapped first.
 	if !mapPage(pageAddr, frame) {
 		// DEBUG: M = Map failed
-		uartPutcDirect('M')
-		uartPutcDirect('!')
+		debugPrint('M')
+		debugPrint('!')
 		return false
 	}
-	uartPutcDirect('m') // DEBUG: mapped
+	debugPrint('m') // DEBUG: mapped
 
 	// Zero the frame using the just-mapped VA (pageAddr), NOT via physAddr + KernelVAOffset!
 	// The frame pool physical memory isn't mapped at PA + KernelVAOffset.
 	// But pageAddr was just mapped to the physical frame, so we can zero via pageAddr.
-	uartPutcDirect('Z') // DEBUG: about to zero
-	uartPutcDirect('[')
-	uartPutHex64Direct(uint64(pageAddr))
-	uartPutcDirect(']')
-	uartPutcDirect('>')
-	uartPutHex64Direct(uint64(frame))
-	uartPutcDirect('<')
+	debugPrint('Z') // DEBUG: about to zero
+	debugPrint('[')
+	debugPrintHex(uint64(pageAddr))
+	debugPrint(']')
+	debugPrint('>')
+	debugPrintHex(uint64(frame))
+	debugPrint('<')
 
 	// Extra barrier before accessing newly-mapped memory
 	dsbSY()
 	isbSY()
-	uartPutcDirect('B') // DEBUG: barriers done
+	debugPrint('B') // DEBUG: barriers done
 
 	// SKIP zeroing for now to test if mapping works
 	// The Go runtime will access the page and we'll see if it works
-	uartPutcDirect('S') // DEBUG: skipping zero, returning success
+	debugPrint('S') // DEBUG: skipping zero, returning success
 	_ = pageAddr // suppress unused warning
 
 	return true
@@ -322,74 +342,74 @@ func mapPage(va, pa uintptr) bool {
 	l3Idx := (va >> L3Shift) & 0x1FF
 
 	// DEBUG: Print indices
-	uartPutcDirect('[')
-	uartPutcDirect('I')
-	uartPutHex64Direct(uint64(l1Idx))
-	uartPutcDirect('/')
-	uartPutHex64Direct(uint64(l2Idx))
-	uartPutcDirect('/')
-	uartPutHex64Direct(uint64(l3Idx))
-	uartPutcDirect(']')
+	debugPrint('[')
+	debugPrint('I')
+	debugPrintHex(uint64(l1Idx))
+	debugPrint('/')
+	debugPrintHex(uint64(l2Idx))
+	debugPrint('/')
+	debugPrintHex(uint64(l3Idx))
+	debugPrint(']')
 
 	// Determine which translation table to use based on VA bit 55
 	// Bit 55 = 0 -> TTBR0 (user space), Bit 55 = 1 -> TTBR1 (kernel space)
 	var l0PA uintptr
 	if (va>>55)&1 == 0 {
 		// TTBR0 (user space / heap)
-		uartPutcDirect('T')
-		uartPutcDirect('0')
+		debugPrint('T')
+		debugPrint('0')
 		l0PA = ttbr0L0PA
-		uartPutcDirect('{')
-		uartPutHex64Direct(uint64(l0PA))
-		uartPutcDirect('}')
+		debugPrint('{')
+		debugPrintHex(uint64(l0PA))
+		debugPrint('}')
 	} else {
 		// TTBR1 (kernel space)
-		uartPutcDirect('T')
-		uartPutcDirect('1')
+		debugPrint('T')
+		debugPrint('1')
 		l0PA = ttbr1L0PA
 	}
 
 	// Get L0 table VA
 	l0VA := paToVA(l0PA)
-	uartPutcDirect('V')
-	uartPutHex64Direct(uint64(l0VA))
+	debugPrint('V')
+	debugPrintHex(uint64(l0VA))
 	if l0VA == 0 {
-		uartPutcDirect('0')
-		uartPutcDirect('!')
+		debugPrint('0')
+		debugPrint('!')
 		return false
 	}
 
 	// Calculate L0 entry address and print for debug
 	l0EntryAddr := l0VA + l0Idx*8
-	uartPutcDirect('E')
-	uartPutHex64Direct(uint64(l0EntryAddr))
+	debugPrint('E')
+	debugPrintHex(uint64(l0EntryAddr))
 
 	// Read L0 entry
-	uartPutcDirect('R')
+	debugPrint('R')
 	l0Entry := (*uint64)(unsafe.Pointer(l0EntryAddr))
 
 	var l1VA uintptr
 
 	if (*l0Entry & PTE_VALID) == 0 {
 		// Need to allocate L1 table (new for expanded VA space support)
-		uartPutcDirect('L')
-		uartPutcDirect('1')
-		uartPutcDirect('N') // DEBUG: New L1 table needed
+		debugPrint('L')
+		debugPrint('1')
+		debugPrint('N') // DEBUG: New L1 table needed
 
 		l1VA = allocPTPage()
 		if l1VA == 0 {
-			uartPutcDirect('1')
-			uartPutcDirect('a')
-			uartPutcDirect('!')
+			debugPrint('1')
+			debugPrint('a')
+			debugPrint('!')
 			return false
 		}
 
 		// Get physical address of new L1 table
 		l1PA := walkPageTable(l1VA)
 		if l1PA == 0 {
-			uartPutcDirect('1')
-			uartPutcDirect('w')
-			uartPutcDirect('!')
+			debugPrint('1')
+			debugPrint('w')
+			debugPrint('!')
 			return false
 		}
 
@@ -408,19 +428,19 @@ func mapPage(va, pa uintptr) bool {
 		l1VA = paToVA(l1PA)
 	}
 	if l1VA == 0 {
-		uartPutcDirect('2')
-		uartPutcDirect('!')
+		debugPrint('2')
+		debugPrint('!')
 		return false
 	}
 
 	// Read L1 entry
 	l1Entry := (*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
 	// DEBUG: Print L1 entry value
-	uartPutcDirect('L')
-	uartPutcDirect('1')
-	uartPutcDirect('=')
-	uartPutHex64Direct(*l1Entry)
-	uartPutcDirect('|')
+	debugPrint('L')
+	debugPrint('1')
+	debugPrint('=')
+	debugPrintHex(*l1Entry)
+	debugPrint('|')
 
 	var l2VA uintptr
 
@@ -428,16 +448,16 @@ func mapPage(va, pa uintptr) bool {
 		// Need to allocate L2 table
 		l2VA = allocPTPage()
 		if l2VA == 0 {
-			uartPutcDirect('3')
-			uartPutcDirect('!')
+			debugPrint('3')
+			debugPrint('!')
 			return false
 		}
 
 		// CRITICAL FIX: Use walkPageTable instead of vaToPa!
 		l2PA := walkPageTable(l2VA)
 		if l2PA == 0 {
-			uartPutcDirect('w')
-			uartPutcDirect('!')
+			debugPrint('w')
+			debugPrint('!')
 			return false
 		}
 
@@ -447,8 +467,8 @@ func mapPage(va, pa uintptr) bool {
 		l2PA := uintptr(*l1Entry & PTE_ADDR_MASK)
 		l2VA = paToVA(l2PA)
 		if l2VA == 0 {
-			uartPutcDirect('4')
-			uartPutcDirect('!')
+			debugPrint('4')
+			debugPrint('!')
 			return false
 		}
 	}
@@ -456,21 +476,21 @@ func mapPage(va, pa uintptr) bool {
 	// Read L2 entry
 	l2Entry := (*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
 	// DEBUG: Print L2 entry value before modification
-	uartPutcDirect('L')
-	uartPutcDirect('2')
-	uartPutcDirect('=')
-	uartPutHex64Direct(*l2Entry)
-	uartPutcDirect('|')
+	debugPrint('L')
+	debugPrint('2')
+	debugPrint('=')
+	debugPrintHex(*l2Entry)
+	debugPrint('|')
 
 	var l3VA uintptr
 
 	if (*l2Entry & PTE_VALID) == 0 {
-		uartPutcDirect('N') // DEBUG: New L3 table needed
+		debugPrint('N') // DEBUG: New L3 table needed
 		// Need to allocate L3 table
 		l3VA = allocPTPage()
 		if l3VA == 0 {
-			uartPutcDirect('5')
-			uartPutcDirect('!')
+			debugPrint('5')
+			debugPrint('!')
 			return false
 		}
 
@@ -480,27 +500,27 @@ func mapPage(va, pa uintptr) bool {
 		// to find the actual PA.
 		l3PA := walkPageTable(l3VA)
 		if l3PA == 0 {
-			uartPutcDirect('W')
-			uartPutcDirect('!')
+			debugPrint('W')
+			debugPrint('!')
 			return false
 		}
 		// DEBUG: Print both VAs and PAs
-		uartPutcDirect('{')
-		uartPutHex64Direct(uint64(l3VA))
-		uartPutcDirect(':')
-		uartPutHex64Direct(uint64(l3PA))
-		uartPutcDirect('}')
+		debugPrint('{')
+		debugPrintHex(uint64(l3VA))
+		debugPrint(':')
+		debugPrintHex(uint64(l3PA))
+		debugPrint('}')
 
 		// Link new L3 table into L2
 		*l2Entry = uint64(l3PA) | PTE_VALID | PTE_TABLE
 
 		// DEBUG: Print new L2 entry value
-		uartPutcDirect('L')
-		uartPutcDirect('2')
-		uartPutcDirect('N')
-		uartPutcDirect('=')
-		uartPutHex64Direct(*l2Entry)
-		uartPutcDirect('|')
+		debugPrint('L')
+		debugPrint('2')
+		debugPrint('N')
+		debugPrint('=')
+		debugPrintHex(*l2Entry)
+		debugPrint('|')
 
 		// Clean cache for L2 entry so hardware page walker can see it
 		dcCIVAC(uintptr(unsafe.Pointer(l2Entry)))
@@ -509,18 +529,18 @@ func mapPage(va, pa uintptr) bool {
 		// Verify L2 entry readback
 		readback := *l2Entry
 		if readback != uint64(l3PA)|PTE_VALID|PTE_TABLE {
-			uartPutcDirect('V')
-			uartPutcDirect('!')
-			uartPutHex64Direct(readback)
+			debugPrint('V')
+			debugPrint('!')
+			debugPrintHex(readback)
 			return false
 		}
-		uartPutcDirect('V') // DEBUG: Verified L2
+		debugPrint('V') // DEBUG: Verified L2
 	} else {
 		l3PA := uintptr(*l2Entry & PTE_ADDR_MASK)
 		l3VA = paToVA(l3PA)
 		if l3VA == 0 {
-			uartPutcDirect('6')
-			uartPutcDirect('!')
+			debugPrint('6')
+			debugPrint('!')
 			return false
 		}
 	}
@@ -532,34 +552,34 @@ func mapPage(va, pa uintptr) bool {
 	*l3Entry = pteValue
 
 	// DEBUG: Print L3 entry details
-	uartPutcDirect('L')
-	uartPutcDirect('3')
-	uartPutcDirect('@')
-	uartPutHex64Direct(uint64(l3VA + l3Idx*8))
-	uartPutcDirect('=')
-	uartPutHex64Direct(pteValue)
-	uartPutcDirect('|')
+	debugPrint('L')
+	debugPrint('3')
+	debugPrint('@')
+	debugPrintHex(uint64(l3VA + l3Idx*8))
+	debugPrint('=')
+	debugPrintHex(pteValue)
+	debugPrint('|')
 
 	// Clean cache for L3 entry so hardware page walker can see it
 	dcCIVAC(uintptr(unsafe.Pointer(l3Entry)))
 	dsbSY()
-	uartPutcDirect('C') // DEBUG: Cache cleaned
+	debugPrint('C') // DEBUG: Cache cleaned
 
 	// Verify L3 entry readback
 	l3Readback := *l3Entry
 	if l3Readback != pteValue {
-		uartPutcDirect('X')
-		uartPutcDirect('!')
+		debugPrint('X')
+		debugPrint('!')
 		return false
 	}
-	uartPutcDirect('X') // DEBUG: Verified L3
+	debugPrint('X') // DEBUG: Verified L3
 
 	// Memory barriers and TLB invalidate
 	tlbiVAE1IS(va)
 	dsbSY()
 	isbSY()
 
-	uartPutcDirect('T') // DEBUG: TLB invalidated
+	debugPrint('T') // DEBUG: TLB invalidated
 
 	return true
 }

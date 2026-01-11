@@ -12,9 +12,16 @@ func dsb()
 func isb()
 func invalidateTLB()
 
-// unmapCardinal unmaps Cardinal's memory region by zeroing only the relevant L0 entry.
-// Cardinal is loaded at 0x40100000, which is in L0 entry 0 (VA[47:39] = 0).
-// The Go heap is in TTBR0 at 0x4000000000+ (L0 entry 32+), which we must preserve.
+// unmapCardinal unmaps Cardinal's memory region at the L1 level.
+//
+// Memory layout in L0[0] (covers 0 - 512GB with L1 entries of 1GB each):
+//   L1[0]:   0x00000000 - 0x3FFFFFFF (unused)
+//   L1[1]:   0x40000000 - 0x7FFFFFFF (Cardinal + page tables)
+//   L1[2-255]: mostly unused
+//   L1[256]: 0x4000000000 - 0x403FFFFFFF (Go heap start)
+//
+// We zero L1[0-2] to unmap Cardinal while preserving L1[256+] for the heap.
+// Page tables at 0x41000000 are still accessible via TTBR1 (high memory).
 //
 // SAFETY: This MUST be called only after:
 //   - We're executing from Kmazarin (high memory)
@@ -26,43 +33,45 @@ func invalidateTLB()
 func unmapCardinal() {
 	cfg := GetRuntimeConfig()
 	if cfg == nil {
-		Print("[UnmapCardinal] ERROR: RuntimeConfig not available!")
+		uartPuts("[UnmapCardinal] ERROR: RuntimeConfig not available!\r\n")
 		return
 	}
 
-	Print("[UnmapCardinal] Unmapping Cardinal (L0 entry 0 only, preserving heap)...")
+	uartPuts("[UnmapCardinal] Unmapping Cardinal at L1 level...\r\n")
 
-	// Read TTBR0_EL1 to get Cardinal's L0 page table physical address
+	// Read TTBR0_EL1 to get L0 page table physical address
 	ttbr0Phys := readTTBR0()
-	Print("[UnmapCardinal]   TTBR0_EL1 (L0 PA): 0x")
-	printHex(ttbr0Phys)
-	Print("")
 
-	// Convert to high-memory virtual address so we can access it
-	// The page table region is identity-mapped to high memory by Cardinal
-	ttbr0VA := uintptr(ttbr0Phys + cfg.KernelVAOffset)
-	Print("[UnmapCardinal]   L0 VA (high memory): 0x")
-	printHex(uint64(ttbr0VA))
-	Print("")
+	// Convert to high-memory virtual address (page tables mapped via TTBR1)
+	l0VA := uintptr(ttbr0Phys + cfg.KernelVAOffset)
 
-	// Only zero L0 entry 0, which covers 0x0 - 0x7FFFFFFFFF (512GB)
-	// This includes Cardinal at 0x40100000 but NOT the heap at 0x4000000000
-	// (heap is in L0 entry 32: 0x4000000000 >> 39 = 32)
-	l0Table := (*[512]uint64)(unsafe.Pointer(ttbr0VA))
-	oldEntry0 := l0Table[0]
-	l0Table[0] = 0
+	// Read L0[0] to get L1 table address
+	l0Table := (*[512]uint64)(unsafe.Pointer(l0VA))
+	l0Entry0 := l0Table[0]
 
-	Print("[UnmapCardinal]   Zeroed L0[0] (was 0x")
-	printHex(oldEntry0)
-	Print(")")
+	// Check if L0[0] is valid and points to a table
+	if (l0Entry0 & 0x3) != 0x3 {
+		uartPuts("[UnmapCardinal] ERROR: L0[0] is not a valid table descriptor!\r\n")
+		return
+	}
+
+	// Extract L1 table physical address (bits 47:12)
+	l1Phys := l0Entry0 & 0x0000FFFFFFFFF000
+	l1VA := uintptr(l1Phys + cfg.KernelVAOffset)
+
+	// Zero L1 entries 0-2 (covers 0x0 - 0xBFFFFFFF, about 3GB)
+	// This unmaps Cardinal (0x40100000) and page tables (0x41000000)
+	// but those are still accessible via TTBR1 high-memory mappings
+	l1Table := (*[512]uint64)(unsafe.Pointer(l1VA))
+	for i := 0; i < 3; i++ {
+		l1Table[i] = 0
+	}
 
 	// Memory barriers and TLB invalidation
-	dsb()  // Ensure all writes complete
-	invalidateTLB()  // Invalidate entire TLB (includes DSB+ISB)
+	dsb()
+	invalidateTLB()
 
-	Print("[UnmapCardinal] Cardinal unmapped (0x0-0x7FFFFFFFFF)")
-	Print("[UnmapCardinal] Heap preserved (0x4000000000+)")
-	Print("")
+	uartPuts("[UnmapCardinal] Cardinal unmapped (L1[0-2] zeroed)\r\n")
 }
 
 // EarlyInit initializes devices that must be set up before DTB scanning

@@ -70,23 +70,15 @@ func readActualDTBSize() uintptr {
 //
 //go:nosplit
 func preRegisterFixedSpans() {
-	uartBase := uintptr(0x09000000)
-	*(*uint32)(unsafe.Pointer(uartBase)) = '1' // 1 = start preRegister
-
 	// Span 0: DTB Region (identity-mapped)
 	// Use fixed 1MB size to avoid memory access issues early in boot
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'a' // a = about to call GetDtbBootAddr
 	dtbStart := asm.GetDtbBootAddr()
-	*(*uint32)(unsafe.Pointer(uartBase)) = '2' // 2 = got dtbStart
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'b' // b = about to call GetDtbSize
 	dtbSize := asm.GetDtbSize() // Use fixed 1MB from linker symbol
-	*(*uint32)(unsafe.Pointer(uartBase)) = '3' // 3 = got dtbSize
 	dtbEnd := dtbStart + dtbSize
 
 	if !registerMmapSpan(dtbStart, dtbEnd) {
 		for {} // Hang
 	}
-	*(*uint32)(unsafe.Pointer(uartBase)) = '4' // 4 = registered DTB
 
 	// Span 1: Cardinal Region (identity-mapped)
 	// Includes: .text, .rodata, .data, .bss, stacks
@@ -635,175 +627,13 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	// Initialize thread table (M0 as thread 0 for syscall handling)
 	InitThreads()
 
-	// Load and run kmazarin
-	loadAndRunKmazarin()
-
-	// Should never return
-	for {
-	}
-
-	/*
-	// =========================================
-	// TEST: Item 4a - Direct syscall test (SKIPPED)
-	// Before calling runtime.osinit, test our syscalls directly
-	// =========================================
-	print("Testing Item 4a: sched_getaffinity syscall... ")
-	var cpuMask [128]byte
-	result2 := SyscallSchedGetaffinity(0, uint64(len(cpuMask)), unsafe.Pointer(&cpuMask[0]))
-	if result2 == 8 && cpuMask[0] == 0x01 {
-		print("PASS\r\n")
-	} else {
-		print("FAIL\r\n")
-	}
-
-	print("Testing Item 4b: openat syscall (expected path)... ")
-	expectedPathBytes := []byte("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size\x00")
-	result3 := SyscallOpenat(-100, unsafe.Pointer(&expectedPathBytes[0]), 0, 0)
-	if result3 == -2 { // -ENOENT for the expected path
-		print("PASS\r\n")
-	} else {
-		print("FAIL (got ")
-		print(int(result3))
-		print(")\r\n")
-	}
-
-	print("Testing Item 4b2: openat syscall (unexpected path - should show warning)... ")
-	unexpectedPathBytes := []byte("/etc/passwd\x00") // Truly unexpected path
-	result4 := SyscallOpenat(-100, unsafe.Pointer(&unexpectedPathBytes[0]), 0, 0)
-	// Should print warning about unexpected path and return an error
-	if result4 < 0 { // Any error is acceptable
-		print("PASS (returned error as expected)\r\n")
-	} else {
-		print("FAIL (should return error for unexpected path, got fd=")
-		print(int(result4))
-		print(")\r\n")
-	}
-
-	// =========================================
-	// TEST: Item 4c - runtime.osinit()
-	// Now that we have a 64KB g0 stack (matching real runtime),
-	// this should work without hitting stack guard
-	// =========================================
-	print("Testing Item 4c: runtime.osinit()... ")
-	asm.CallRuntimeOsinit()
-	print("PASS\r\n")
-
-	// =========================================
-	// TEST: Item 5 - runtime.schedinit()
-	// Initialize Go scheduler
-	//
-	// NOTE: g0 and m0 are initialized in boot.s (assembly) before kernel_main runs,
-	// just like the Go runtime's rt0_go does. This ensures x28 points to runtime.g0
-	// and the scheduler infrastructure exists before schedinit is called.
-	//
-	// During schedinit, locks use futex which uses STUB behavior (no real blocking)
-	// because there's only g0 and no other runnable goroutines yet.
-	//
-	// schedinit will:
-	// - Call lockInit() for all runtime locks (uses futex with stub gopark)
-	// - Initialize scheduler structures
-	// - Set up processor (P) structures
-	// - Initialize system monitor
-	// =========================================
-
-	// DEBUG: Pre-map the 64KB boundary page to prevent hang at fault #17
-	// This is a workaround to test if the issue is related to demand paging at 64KB boundaries
-	// DISABLED: Testing cache coherency fix instead
-	//print("Pre-mapping 64KB boundary page (0x4000010000)... ")
-	//preMapPages()
-	//print("DONE\r\n")
-
-	// CHANGED: Skip full runtime.schedinit() in cardinal
-	// Cardinal is a bootloader, not a full Go program - it doesn't need GC or full heap
-	// Instead, use simple kmalloc/kfree for minimal allocation needs
-
-	// CRITICAL: Must call initKmallocHeap() BEFORE heapInit() to calculate KMALLOC_HEAP_BASE
-	// initKmallocHeap() reads linker symbols to determine heap boundaries
-	initKmallocHeap()
-
-	// Use existing heapInit (already implemented in heap.go)
-	heapInit(KMALLOC_HEAP_BASE)
-
-	// NOTE: Runtime structures (MMU allocators, TLS, P, mcache, exception vectors)
-	// are now BSS globals to avoid circular dependency with heap initialization
-
-	// Just call osinit to set ncpu (doesn't allocate memory)
-	asm.CallRuntimeOsinit()
-
-	// NOTE: We skip runtime.schedinit() and mallocinit() entirely
-	// kmazarin (the actual kernel) will do full Go runtime initialization
-
-	// Initialize VirtIO RNG device for random number generation
-	// NOTE: Moved here (after schedinit) to allow print() usage in initialization code
-	// schedinit() used fake random data via getFakeRandomBytes() during initialization
-	// DISABLED: Crashes during PCI config write return - see commit afc16d2
-	// print("\r\nInitializing VirtIO RNG...\r\n")
-	// initVirtIORNG()
-
-	// Initialize max stack size (normally done in runtime.main, but we don't run that)
-	// Max stack size is 1 GB on 64-bit, 250 MB on 32-bit
-	// Using decimal instead of binary GB and MB because they look nicer in stack overflow messages
-	const ptrSize = 8 // ARM64 is 64-bit
-	var stackSize uintptr
-	if ptrSize == 8 {
-		stackSize = 1000000000 // 1 GB
-	} else {
-		stackSize = 250000000 // 250 MB
-	}
-	setMaxstacksize(stackSize)
-	setMaxstackceiling(2 * stackSize)
-
-	// Mark scheduler as ready - futex can now use real gopark/goready
-	MarkSchedulerReady()
-
-	// =========================================
-	// Initialize Timer-Based Preemption System
-	// =========================================
-	// SKIP TIMER/GOROUTINE TESTS IN CARDINAL
-	// =========================================
-	// Cardinal is a bootloader, not a full Go program
-	// It doesn't need timers, GC, scheduler, or goroutines
-	// All of that will be initialized in kmazarin (the actual kernel)
-	//
-	// Skipping:
-	// - Timer initialization (requires interrupts and runtime heap)
-	// - GC/scheduler monitors (require full runtime)
-	// - Goroutine tests (require scheduler)
-	//
-	// Instead, go straight to loading and starting kmazarin
-	print("\r\n═══════════════════════════════════════════════\r\n")
-	print("cardinal: Skipping runtime tests (cardinal is bootloader only)\r\n")
-	print("cardinal: Ready to load kmazarin\r\n")
-	print("═══════════════════════════════════════════════\r\n\r\n")
-
-	// TODO: Add kmazarin loading code here
-	// For now, just print success and halt
-	print("cardinal initialization COMPLETE!\r\n")
-	print("TODO: Load kmazarin from storage and transfer control\r\n\r\n")
-
-	// SKIP goroutine/scheduler code (requires full runtime)
-	//print("Creating goroutine for simpleMain...\r\n")
-	//asm.CallNewprocSimpleMain()
-	//print("Goroutine created, starting scheduler...\r\n")
-	//print("Calling runtime.mstart()...\r\n")
-	//asm.CallRuntimeMstart()
-	*/
-
-	// Cardinal init complete - load and run kmazarin
+	// Load and run kmazarin (never returns)
 	loadAndRunKmazarin()
 
 	// Should never return - if we get here, something went very wrong
 	print("FATAL: loadAndRunKmazarin returned unexpectedly\r\n")
 	asm.SemihostingExit()
 }
-
-// NOTE: Dead code removed (Jan 2026)
-// The following functions were removed because they were part of an old goroutine-based
-// startup path that is no longer used. Cardinal now calls loadAndRunKmazarin() directly
-// without setting up Go scheduler/goroutines (that's kmazarin's job):
-//   - kernelMainBodyWrapper, KernelMainBody, kernelMainBody
-//   - timerListenerLoop, testFramebufferText, drawTestPattern
-//   - simpleMain, simpleGoroutine2
 
 // =================================================================
 
@@ -1031,9 +861,6 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 	// Page tables
 	config.TTBR1L0Phys = uint64(ttbr1L0PA)
 	config.TTBR0L0Phys = uint64(pageTableL0)
-	uartPutsDirect("TTBR0 L0 PA: 0x")
-	uartPutHex64Direct(uint64(pageTableL0))
-	uartPutsDirect("\r\n")
 	config.StartupParamsAddr = uint64(kmazarinStartupParamsVA)
 
 	// Memory layout
@@ -1108,10 +935,6 @@ func setupKmazarinStartupEnv(kmazarinStartupParamsVA uintptr) (stackPointer uint
 	// Place structure 512 bytes below stack top
 	structStart := kernelG0StackTop - paramSize
 
-	uartPutsDirect("Using kernel g0 stack for parameters at 0x")
-	uartPutHex64Direct(uint64(structStart))
-	uartPutsDirect("\r\n")
-
 	// Zero the structure area
 	bzeroSimple(unsafe.Pointer(structStart), paramSize)
 
@@ -1180,8 +1003,6 @@ func setupKmazarinStartupEnv(kmazarinStartupParamsVA uintptr) (stackPointer uint
 	//
 	// The Go runtime will use the ~15.5KB of stack space below structStart
 	// for initialization and early execution.
-
-	uartPutsDirect("Kernel g0 stack ready with parameters\r\n")
 	asm.Dsb()  // Ensure all writes complete
 
 	return structStart, 1, structStart + 8

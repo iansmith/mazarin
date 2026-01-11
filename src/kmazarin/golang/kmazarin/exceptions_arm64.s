@@ -450,13 +450,8 @@ not_svc_hang:
 	B	not_svc_hang
 
 data_abort:
-	// Save FAR first (before any printing)
+	// Save FAR first
 	MRS	FAR_EL1, R19
-
-	// Print '.' for page fault
-	MOVD	$UART_BASE, R10
-	MOVD	$'.', R11
-	MOVB	R11, (R10)
 
 	// Call HandlePageFaultAsm(faultAddr) to try to handle the page fault
 	// Allocate 32 bytes for ABI0 call: 8 (arg) + 8 (return) + 16 (alignment)
@@ -581,11 +576,6 @@ sync_return:
 #define GICC_EOIR	0x0010  // End Of Interrupt Register offset
 
 irq_exception_handler:
-	// DEBUG: Print '!' to show IRQ entry
-	MOVD	$UART_BASE, R9
-	MOVD	$'!', R8
-	MOVB	R8, (R9)
-
 	// Save all registers to exception frame
 	SUB	$EXC_FRAME_SIZE, RSP
 
@@ -649,19 +639,9 @@ irq_exception_handler:
 	MOVD	EXC_FRAME_ELR_SPSR(RSP), R2      // R2 = elr (from exception frame)
 	MOVD	EXC_FRAME_SP_EL0(RSP), R3        // R3 = spEl0 (from exception frame)
 
-	// DEBUG: Print '@' before call
-	MOVD	$UART_BASE, R9
-	MOVD	$'@', R8
-	MOVB	R8, (R9)
-
 	// Call IRQDispatch using macro - handles frame alloc, arg store, call, return load, cleanup
 	// Returns: R20=newELR, R21=newSP, R22=newLR, R23=doPreempt
 	GO_CALL_4_3B(·IRQDispatch, R0, R1, R2, R3, R20, R21, R22, R23)
-
-	// DEBUG: Print '#' after call
-	MOVD	$UART_BASE, R9
-	MOVD	$'#', R8
-	MOVB	R8, (R9)
 
 	// Write End Of Interrupt (must do before modifying frame!)
 	MOVD	$(GIC_CPU_BASE + GICC_EOIR), R10
