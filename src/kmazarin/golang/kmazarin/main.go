@@ -15,7 +15,7 @@ import (
 // SyscallDispatch is defined in abi_stubs_arm64.s as an ABI0 entry point
 // that tail-calls syscallDispatchInternal. This is the actual implementation.
 //
-//go:nosplit
+// Removed //go:nosplit - not needed (page fault handler proves this)
 //go:noinline
 func syscallDispatchInternal(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	return ksyscall.DispatchSyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5)
@@ -24,7 +24,7 @@ func syscallDispatchInternal(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint
 // IRQDispatch is defined in abi_stubs_arm64.s as an ABI0 entry point
 // that tail-calls irqDispatchInternal. This is the actual implementation.
 //
-//go:nosplit
+// Removed //go:nosplit - not needed (page fault handler proves this)
 //go:noinline
 func irqDispatchInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool) {
 	info := kirq.DispatchIRQ(irqNum, framePtr, elr, spEl0)
@@ -76,7 +76,9 @@ func init() {
 	// Initialize critical early devices (UART, GIC, Timer, RNG)
 	EarlyInit()
 
-	// Now enable interrupts - handlers are ready
+	// Enable interrupts - handlers are ready
+	// NOTE: This happens during runtime init, which causes asyncPreempt issues
+	// but delaying to main() causes exit(21). Need to investigate proper timing.
 	EnableIRQs()
 }
 
@@ -141,6 +143,13 @@ func getAsyncPreemptAddrForKirq() uintptr {
 	return GetAsyncPreemptAddr()
 }
 
+// getReadyForAsyncPreemptAddrForKirq provides readyForAsyncPreempt flag address to kirq package via linkname
+//go:linkname getReadyForAsyncPreemptAddrForKirq kmazarin/kirq.getReadyForAsyncPreemptAddr
+//go:nosplit
+func getReadyForAsyncPreemptAddrForKirq() uintptr {
+	return GetReadyForAsyncPreemptAddr()
+}
+
 // getRuntimeConfigForKsyscall provides runtime config to ksyscall package via linkname
 //go:linkname getRuntimeConfigForKsyscall kmazarin/ksyscall.getRuntimeConfig
 //go:nosplit
@@ -181,6 +190,11 @@ func uartPutHex32Direct(val uint32) {
 
 // Runtime readiness flag - set to true once we verify runtime is fully initialized
 var runtimeReady = false
+
+// ReadyForAsyncPreempt controls whether timer IRQs should trigger async preemption.
+// Set to false initially, then true in main() after Go runtime is fully initialized.
+// This prevents asyncPreempt crashes during runtime.doInit1 (package init phase).
+var readyForAsyncPreempt uint32 = 0  // uint32 for atomic operations
 
 // Print uses direct UART before runtime is ready, fmt.Println after
 func Print(s string) {
@@ -406,14 +420,20 @@ func simpleMain() {
 	Print("[g1] Starting busy-wait loop (NO cooperative yielding)...")
 	Print("")
 
+	// Enable async preemption - runtime is now fully initialized
+	Print("[g1] Enabling async preemption...")
+	readyForAsyncPreempt = 1
+	Print("[g1] Async preemption ENABLED")
+	Print("")
+
 	// Infinite busy-wait loop, printing '1' periodically
 	// NO calls to Gosched() - relies purely on timer-based preemption
 	counter := uint64(0)
 
 	for {
 		counter++
-		// Every 1000 iterations, print our marker
-		if counter%1000 == 0 {
+		// Every 100000 iterations, print our marker
+		if counter%100000 == 0 {
 			// Print '1' to show g1 is running (direct UART, no runtime)
 			uartPutc('1')
 			// NO checkPreemption() call - pure busy-wait!
@@ -432,8 +452,8 @@ func simpleGoroutine2(ch chan string) {
 
 	for {
 		counter++
-		// Every 1000 iterations, print our marker
-		if counter%1000 == 0 {
+		// Every 100000 iterations, print our marker
+		if counter%100000 == 0 {
 			// Print '2' to show g2 is running (direct UART, no runtime)
 			uartPutc('2')
 			// NO checkPreemption() call - pure busy-wait!

@@ -84,7 +84,8 @@ var syscallSPSR uint64 = 0
 
 // setSyscallELRInternal is called by assembly via ABI stub to store the current ELR
 //
-//go:nosplit
+// EXPERIMENT: Removed //go:nosplit to test if it's actually needed
+// Page fault handler (handlePageFaultInternal) runs in same context without NOSPLIT
 //go:noinline
 func setSyscallELRInternal(elr uint64) {
 	syscallELR = elr
@@ -92,7 +93,7 @@ func setSyscallELRInternal(elr uint64) {
 
 // setSyscallSPSRInternal is called by assembly via ABI stub to store the current SPSR
 //
-//go:nosplit
+// EXPERIMENT: Removed //go:nosplit - not needed (page fault handler proves this)
 //go:noinline
 func setSyscallSPSRInternal(spsr uint64) {
 	syscallSPSR = spsr
@@ -101,7 +102,7 @@ func setSyscallSPSRInternal(spsr uint64) {
 // GetSyscallELR returns the ELR for the current syscall
 // Called by clone to get the child's return address
 //
-//go:nosplit
+// Removed //go:nosplit - not needed (simple getter, single variable read)
 //go:noinline
 //go:linkname GetSyscallELR kmazarin/ksyscall.GetSyscallELR
 func GetSyscallELR() uint64 {
@@ -111,7 +112,7 @@ func GetSyscallELR() uint64 {
 // GetSyscallSPSR returns the SPSR for the current syscall
 // Called by clone to get the child's processor state
 //
-//go:nosplit
+// Removed //go:nosplit - not needed (simple getter, single variable read)
 //go:noinline
 //go:linkname GetSyscallSPSR kmazarin/ksyscall.GetSyscallSPSR
 func GetSyscallSPSR() uint64 {
@@ -122,7 +123,7 @@ func GetSyscallSPSR() uint64 {
 // Called from assembly via ABI stub after syscall dispatch
 // Returns int64 to avoid sign extension issues in assembly
 //
-//go:nosplit
+// Removed //go:nosplit - not needed (page fault handler proves this)
 //go:noinline
 func getSyscallSwitchTargetInternal() int64 {
 	target := int64(syscallSwitchTarget)
@@ -133,7 +134,7 @@ func getSyscallSwitchTargetInternal() int64 {
 // SetSyscallSwitchTarget sets the thread to switch to
 // Called by syscall handlers that need to block
 //
-//go:nosplit
+// Removed //go:nosplit - not needed (simple setter, single variable write)
 //go:noinline
 func SetSyscallSwitchTarget(target int32) {
 	syscallSwitchTarget = target
@@ -368,7 +369,7 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
 // ThreadFindReady finds the next READY thread using round-robin
 // Returns thread index, or -1 if none found
 //
-//go:nosplit
+// Removed //go:nosplit - not needed (simple loop with bounds check, ~15 lines)
 func ThreadFindReady() int32 {
 	// Start from current+1, wrap around
 	start := (currentThreadIdx + 1) % numThreads
@@ -386,6 +387,9 @@ func ThreadFindReady() int32 {
 // ThreadBlockFutex marks current thread as blocked on futex and finds next thread
 // Returns index of next thread to run, or -1 if none (caller should spin/idle)
 //
+// CRITICAL: MUST keep //go:nosplit
+// Tested removing it - system crashes with nested page fault (0 patterns vs expected 68-69)
+// Reason: Called from futex syscall handlers which may have complex call chains
 //go:nosplit
 func ThreadBlockFutex(futexAddr uint64) int32 {
 	// Mark current thread as blocked
@@ -399,6 +403,9 @@ func ThreadBlockFutex(futexAddr uint64) int32 {
 // ThreadWakeFutex wakes threads blocked on the given futex address
 // Returns number of threads woken
 //
+// CRITICAL: MUST keep //go:nosplit
+// Tested removing it - system crashes with nested page fault (0 patterns vs expected 68-69)
+// Reason: Called from futex syscall handlers which have complex call chains
 //go:nosplit
 func ThreadWakeFutex(futexAddr uint64, maxWake int32) int32 {
 	woken := int32(0)
@@ -429,7 +436,7 @@ func ThreadBlockSleep(durationTicks uint64) int32 {
 // ThreadCheckSleepers wakes threads whose sleep time has elapsed
 // Called from timer interrupt
 //
-//go:nosplit
+// Removed //go:nosplit - not needed (simple loop checking wake times, ~15 lines)
 func ThreadCheckSleepers() {
 	for i := int32(0); i < numThreads; i++ {
 		if threads[i].State == ThreadSleeping {
@@ -444,14 +451,14 @@ func ThreadCheckSleepers() {
 // ThreadIncrementTick increments the global tick counter
 // Called from timer interrupt
 //
-//go:nosplit
+// Removed //go:nosplit - not needed (simple increment operation)
 func ThreadIncrementTick() {
 	globalTickCounter++
 }
 
 // GetCurrentThreadIdx returns the current thread index
 //
-//go:nosplit
+// Removed //go:nosplit - not needed (simple getter, single variable read)
 func GetCurrentThreadIdx() int32 {
 	return currentThreadIdx
 }
@@ -479,7 +486,7 @@ func SetCurrentThreadIdx(idx int32) {
 // GetThreadContext returns a pointer to a thread's context
 // Used by assembly for context switch
 //
-//go:nosplit
+// Removed //go:nosplit - not needed (simple array lookup with bounds check)
 func GetThreadContext(idx int32) *ThreadContext {
 	if idx >= 0 && idx < MaxThreads {
 		return &threads[idx].Context
@@ -489,7 +496,7 @@ func GetThreadContext(idx int32) *ThreadContext {
 
 // GetThread returns a pointer to a thread entry
 //
-//go:nosplit
+// Removed //go:nosplit - not needed (simple array lookup with bounds check)
 func GetThread(idx int32) *Thread {
 	if idx >= 0 && idx < MaxThreads {
 		return &threads[idx]
@@ -616,6 +623,15 @@ func SaveContextFromFrame(framePtr uintptr) {
 // doContextSwitchABI0 is the ABI0 entry point for context switching
 // Takes uint64/int32 args from assembly, returns pointer as uint64
 //
+// CRITICAL: MUST keep //go:nosplit
+// Tested removing it - system crashes with nested page fault:
+//   Nested fault address: VA=0xFFFFFFFF4197A000
+//   Fault status: 0x0000000000000007
+//   Preemptive scheduling patterns: 0 (vs expected 68-69)
+// Reason: Function is large (~100 lines) with deep call chain. Go inserts stack
+// growth checks that can trigger page faults while already in exception context.
+// See docs/abi/CONTEXT_SWITCH_NOSPLIT.md for full analysis.
+//
 //go:nosplit
 //go:noinline
 func doContextSwitchABI0(framePtr uint64, targetIdx int32) uint64 {
@@ -650,6 +666,13 @@ func doContextSwitchABI0(framePtr uint64, targetIdx int32) uint64 {
 // doContextSwitchImpl performs a context switch from current thread to targetIdx
 // Saves current context from frame, updates thread states, returns new context
 // Returns pointer to new thread's Context (for assembly to load)
+//
+// CRITICAL: MUST keep //go:nosplit
+// Tested removing it - system crashes with nested page fault (same as doContextSwitchABI0).
+// This function is called by doContextSwitchABI0, which then calls SaveContextFromFrame,
+// creating a 3-level deep call chain with extensive debug output and loops.
+// Total estimated stack usage: ~210 bytes (well within 792 byte limit).
+// Crash occurs because Go's stack growth checks can trigger page faults in exception context.
 //
 //go:nosplit
 //go:noinline
