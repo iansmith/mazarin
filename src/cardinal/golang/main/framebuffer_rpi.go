@@ -119,21 +119,16 @@ func sendMessages(tags []PropertyMessageTag) int32 {
 
 	// Safety check: bufsize should be reasonable (max 1KB for property messages)
 	if bufsize == 0 {
-		uartPuts("sendMessages: ERROR - buffer size is 0!\r\n")
 		return -5 // -5 = invalid buffer size (zero)
 	}
 
 	if bufsize > 1024 {
-		uartPuts("sendMessages: Buffer size too large (>1KB)\r\n")
 		return -4 // -4 = buffer size too large
 	}
 
 	// Allocate buffer (kmalloc returns 16-byte aligned addresses)
 	msgPtr := kmalloc(uint32(bufsize))
 	if msgPtr == nil {
-		uartPuts("sendMessages: kmalloc failed for size: ")
-		uartPutUint32(bufsize)
-		uartPuts("\r\n")
 		return -1 // -1 = memory allocation failed
 	}
 
@@ -211,7 +206,6 @@ func sendMessages(tags []PropertyMessageTag) int32 {
 
 	// Check if address fits in 32 bits (after adding 0x40000000)
 	if physAddr > 0x3FFFFFFF {
-		uartPuts("sendMessages: ERROR - address too high for mailbox (64-bit not supported)\r\n")
 		kfree(msgPtr)
 		return -6 // -6 = address too high
 	}
@@ -236,9 +230,8 @@ func sendMessages(tags []PropertyMessageTag) int32 {
 			// No response yet, keep waiting
 			responseCount++
 			if responseCount > 1000 {
-				uartPuts("sendMessages: Timeout waiting for response\r\n")
 				kfree(msgPtr)
-				return -2
+				return -2 // timeout
 			}
 			continue
 		}
@@ -252,9 +245,8 @@ func sendMessages(tags []PropertyMessageTag) int32 {
 		// Address doesn't match - keep reading
 		responseCount++
 		if responseCount > 1000 {
-			uartPuts("sendMessages: Too many mismatched responses, giving up\r\n")
 			kfree(msgPtr)
-			return -2
+			return -2 // too many mismatched responses
 		}
 	}
 
@@ -265,22 +257,19 @@ func sendMessages(tags []PropertyMessageTag) int32 {
 		// due to cache coherency. Let's check the response address as a workaround
 		expectedRespAddr := (mailboxAddr & 0xFFFFFFF0) | (PROPERTY_CHANNEL & 0xF)
 		if response != expectedRespAddr && (response&0xFFFFFFF0) != (expectedRespAddr&0xFFFFFFF0) {
-			uartPuts("sendMessages: Still REQUEST and address mismatch (GPU didn't process)\r\n")
 			kfree(msgPtr)
-			return 1
+			return 1 // GPU didn't process
 		}
 	}
 	if msg.ReqResCode == RESPONSE_ERROR {
-		uartPuts("sendMessages: GPU returned error\r\n")
 		kfree(msgPtr)
-		return 2
+		return 2 // GPU returned error
 	}
 	if msg.ReqResCode != RESPONSE {
 		// If ReqResCode is still REQUEST but we got our address back,
 		// this might be a QEMU cache coherency issue
 		expectedRespAddr := (mailboxAddr & 0xFFFFFFF0) | (PROPERTY_CHANNEL & 0xF)
 		if (response & 0xFFFFFFF0) != (expectedRespAddr & 0xFFFFFFF0) {
-			uartPuts("sendMessages: Unexpected response code\r\n")
 			kfree(msgPtr)
 			return -3 // -3 = unexpected response code
 		}
@@ -298,13 +287,11 @@ func sendMessages(tags []PropertyMessageTag) int32 {
 		tagRespCode := msg.Tags[bufpos]
 		if (tagRespCode & 0x80000000) == 0 {
 			// Tag not processed
-			uartPuts("sendMessages: Tag not processed when copying back\r\n")
 			kfree(msgPtr)
 			return 1
 		}
 		if (tagRespCode & 0x1) != 0 {
 			// Tag returned error
-			uartPuts("sendMessages: Tag returned error when copying back\r\n")
 			kfree(msgPtr)
 			return 1
 		}
@@ -350,13 +337,10 @@ func framebufferInit() int32 {
 	tags[3].Proptag = NULL_TAG
 
 	// Send initialization request (set dimensions and color depth)
-	uartPuts("framebufferInit (RPI): Calling sendMessages (set dims)\r\n")
 	result := sendMessages(tags[:])
 	if result != 0 {
-		uartPuts("framebufferInit (RPI): sendMessages (set dims) failed\r\n")
 		return result
 	}
-	uartPuts("framebufferInit (RPI): sendMessages (set dims) succeeded\r\n")
 
 	// Store dimensions
 	fbinfo.Width = tags[0].ValueBuffer.fbScreenSize.Width
@@ -371,13 +355,10 @@ func framebufferInit() int32 {
 	tags[0].Proptag = FB_GET_BYTES_PER_ROW
 	tags[1].Proptag = NULL_TAG
 
-	uartPuts("framebufferInit (RPI): Calling sendMessages (get pitch)\r\n")
 	// Don't fail if this query fails - just use calculated pitch
 	if sendMessages(tags[:]) == 0 {
-		uartPuts("framebufferInit (RPI): sendMessages (get pitch) succeeded\r\n")
 		fbinfo.Pitch = tags[0].ValueBuffer.fbBytesPerRow
 	} else {
-		uartPuts("framebufferInit (RPI): sendMessages (get pitch) failed, using calculated pitch\r\n")
 		// Fallback: calculate pitch as width * bytes_per_pixel
 		fbinfo.Pitch = fbinfo.Width * BYTES_PER_PIXEL
 	}
@@ -387,13 +368,10 @@ func framebufferInit() int32 {
 	tags[0].ValueBuffer.fbAllocateAlign = 16
 	tags[1].Proptag = NULL_TAG
 
-	uartPuts("framebufferInit (RPI): Calling sendMessages (alloc buffer)\r\n")
 	result = sendMessages(tags[:])
 	if result != 0 {
-		uartPuts("framebufferInit (RPI): sendMessages (alloc buffer) failed\r\n")
 		return result
 	}
-	uartPuts("framebufferInit (RPI): sendMessages (alloc buffer) succeeded\r\n")
 
 	// Store framebuffer address and size
 	// The mailbox returns the address as a 64-bit value in the response

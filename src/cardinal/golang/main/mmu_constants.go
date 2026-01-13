@@ -199,17 +199,6 @@ var (
 	pageTableL1 uintptr   // Level 1 table (PUD)
 	pageTableL2 []uintptr // Level 2 tables (PMD) - allocated as needed
 	pageTableL3 []uintptr // Level 3 tables (PT) - allocated as needed
-
-	// DEBUG: Counter to reduce L3 debug verbosity
-	l3DebugCounter uint32
-
-	// DEBUG: Counter for page faults during demand paging
-	pageFaultCounter uint32
-
-	// DEBUG: Counter to detect exception loops
-	totalExceptionCounter uint32
-	lastExceptionVA uintptr
-	sameVACounter uint32
 )
 
 // Kernel page table structure (TTBR1 - kernel/high memory)

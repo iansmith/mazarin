@@ -98,25 +98,15 @@ func getExceptionVectorRAMAddr() uintptr {
 //go:nosplit
 //go:noinline
 func InitializeExceptions() {
-	// DEBUG: Mark entry to this function
-	uartBase := getLinkerSymbol("__uart_base")
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x52 // 'R' - Relocating vectors
-
 	// Get original exception vector address from linker (in ROM)
 	romVectorAddr := uintptr(asm.GetExceptionVectorsAddr())
 
 	// Get aligned exception vector RAM address
 	exceptionVectorRAMAddr := getExceptionVectorRAMAddr()
 
-	uartPutsDirect("Relocating exception vectors from ROM 0x")
-	uartPutHex64Direct(uint64(romVectorAddr))
-	uartPutsDirect(" to RAM 0x")
-	uartPutHex64Direct(uint64(exceptionVectorRAMAddr))
-	uartPutsDirect("\r\n")
-
 	// Verify ROM address is 2KB aligned
 	if romVectorAddr&0x7FF != 0 {
-		for {} // Hang
+		kernelPanic("Exception vector ROM address not 2KB aligned")
 	}
 
 	// Copy exception vectors from ROM to RAM (2KB)
@@ -140,37 +130,13 @@ func InitializeExceptions() {
 	syncExceptionAddr := exceptionVectorRAMAddr + 0x200
 	firstInst := *(*uint32)(unsafe.Pointer(syncExceptionAddr))
 	if (firstInst>>26) != 0x05 && (firstInst>>26) != 0x06 {
-		uartPutsDirect("\r\n!VECTOR COPY FAILED!\r\n")
-		uartPutsDirect("sync_exception_el1 @ 0x")
-		uartPutHex64Direct(uint64(syncExceptionAddr))
-		uartPutsDirect(" = 0x")
-		uartPutHex64Direct(uint64(firstInst))
-		uartPutsDirect("\r\n")
-		for {} // Hang
+		kernelPanic("Exception vector copy failed")
 	}
 
-	// Update VBAR_EL1 to point to new RAM location
-	// (This will be done via assembly helper)
-	uartPutsDirect("Updating VBAR_EL1 to 0x")
-	uartPutHex64Direct(uint64(exceptionVectorRAMAddr))
-	uartPutsDirect("\r\n")
-
 	// Set VBAR_EL1 to new address (via assembly)
-	uartPutsDirect("DEBUG: About to set VBAR_EL1...\r\n")
 	asm.SetVbarEl1ToAddr(exceptionVectorRAMAddr)
-	uartPutsDirect("DEBUG: VBAR_EL1 set\r\n")
-
 	asm.Dsb()
-	uartPutsDirect("DEBUG: DSB done\r\n")
 	asm.Isb()
-	uartPutsDirect("DEBUG: ISB done\r\n")
-
-	uartPutsDirect("Exception vectors relocated successfully\r\n")
-
-	uartPutsDirect("DEBUG: About to return from InitializeExceptions\r\n")
-
-	// Raw UART write to verify we reach this point
-	*(*uint32)(unsafe.Pointer(uartBase)) = 0x5A // 'Z' - about to return
 }
 
 // Nested exception detector
@@ -186,83 +152,7 @@ var exceptionCount uint32
 //go:nosplit
 //go:noinline
 func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType uint32, savedFP uint64, savedLR uint64, savedG uint64) {
-	// CRITICAL: Do NOT access global variables (exceptionCount)!
-	// They might not be mapped yet and would cause nested exceptions
-
-	// DISABLED: accessing exceptionCount global causes nested exception
-	// // DEBUG: Print details BEFORE incrementing counter to see what exception triggers the crash
-	// if exceptionCount == 49 {
-	// 	print("\r\nDEBUG: BEFORE exception #50 - ELR=0x")
-	// 	printHex64(elr)
-	// 	print(" FAR=0x")
-	// 	printHex64(far)
-	// 	print(" savedG=0x")
-	// 	printHex64(savedG)
-	// 	print(" savedLR=0x")
-	// 	printHex64(savedLR)
-	// 	print("\r\n")
-	// }
-	//
-	// // Increment exception counter
-	// exceptionCount++
-	//
-	// // DEBUG: Catch the readgstatus crash before it calls PrintTraceback
-	// if exceptionCount == 50 {
-	// 	print("DEBUG: Exception #50 IS the readgstatus crash\r\n")
-	// 	print("  This means exception #49 called PrintTraceback\r\n")
-	// 	print("  Which then crashed in readgstatus\r\n")
-	// 	print("HANGING to avoid crash loop\r\n")
-	// 	for {}
-	// }
-	//
-	// // DEBUG: Print marker for exceptions after #17 to detect loops
-	// if exceptionCount == 18 || exceptionCount == 19 || exceptionCount == 20 {
-	// 	uartBase := getLinkerSymbol("__uart_base")
-	// 	*(*uint32)(unsafe.Pointer(uartBase)) = 0x58  // 'X' - exception after #17
-	// }
-
-	// CRITICAL: Do NOT access global variables (exceptionCount, inExceptionHandler)!
-	// They might not be mapped yet and would cause nested exceptions
-	// All exception tracking and nested exception detection DISABLED
-
-	// VERY EARLY DEBUG: Print before any complex logic
-	// DISABLED: accessing globals causes nested exception
-	// if inExceptionHandler == 0 {
-	// 	uartPutsDirect("!E1:")
-	// } else {
-	// 	uartPutsDirect("!E2:")
-	// }
-	// uartPutHex64Direct(far)
-
-	// Detect exception storms (>100 exceptions suggests infinite loop)
-	// DISABLED: accessing exceptionCount global causes nested exception
-	// if exceptionCount > 100 {
-	// 	uartPutsDirect("\r\n!EXCEPTION STORM! Count=")
-	// 	uartPutHex64Direct(uint64(exceptionCount))
-	// 	uartPutsDirect("\r\nESR=0x")
-	// 	uartPutHex64Direct(esr)
-	// 	uartPutsDirect(" FAR=0x")
-	// 	uartPutHex64Direct(far)
-	// 	uartPutsDirect(" ELR=0x")
-	// 	uartPutHex64Direct(elr)
-	// 	uartPutsDirect("\r\n")
-	// 	for {} // Hang on exception storm
-	// }
-
-	// Detect nested exceptions (exception during exception handling)
-	// DISABLED: accessing inExceptionHandler global causes nested exception
-	// if inExceptionHandler != 0 {
-	// 	uartPutsDirect("\r\n!NESTED EXCEPTION!\r\n")
-	// 	uartPutsDirect("ESR=0x")
-	// 	uartPutHex64Direct(esr)
-	// 	uartPutsDirect(" FAR=0x")
-	// 	uartPutHex64Direct(far)
-	// 	uartPutsDirect("\r\n")
-	// 	for {} // Hang on nested exception
-	// }
-	// inExceptionHandler = 1  // DISABLED
-
-	// Check for stack overflow (option 2)
+	// Check for stack overflow
 	// We now use g0 stack (0x5EFF8000-0x5F000000) for all exception/syscall handlers
 	sp := asm.GetCallerStackPointer()
 	const minSP = uintptr(0x5EFF8000)  // Bottom of g0 stack
@@ -272,20 +162,6 @@ func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType u
 		uartPutHex64Direct(uint64(sp))
 		uartPutsDirect("\r\n")
 		for {} // Hang on stack overflow
-	}
-
-	// DEBUG: For page faults, print ELR IMMEDIATELY
-	ec := (esr >> 26) & 0x3F
-	if ec == EC_DATA_ABORT_ELx {
-		// uartPutcDirect('!')  // Breadcrumb: data abort detected - BREADCRUMB DISABLED
-		pfCount := GetPageFaultCounter()
-		// uartPutcDirect('0' + byte(pfCount/10))  // Print tens digit - BREADCRUMB DISABLED
-		// uartPutcDirect('0' + byte(pfCount%10))  // Print ones digit - BREADCRUMB DISABLED
-		if pfCount >= 15 {
-			// Print immediately so it appears in THIS exception's output
-			uartPutsDirect(" ELR=0x")
-			uartPutHex64Direct(elr)
-		}
 	}
 
 	excInfo := ExceptionInfo{
@@ -300,11 +176,6 @@ func ExceptionHandler(esr uint64, elr uint64, spsr uint64, far uint64, excType u
 	}
 
 	handleException(excInfo)
-
-	// inExceptionHandler = 0  // DISABLED: accessing global causes issues
-
-	// Breadcrumb: returning from exception handler
-	// uartPutcDirect('R') // BREADCRUMB DISABLED
 }
 
 // Direct UART printing for exception context.
@@ -432,22 +303,10 @@ func handleException(excInfo ExceptionInfo) {
 		uartPutsDirect("\r\n")
 
 	case EC_SVC_EL1_A64:
-		// Supervisor call from EL1 (AArch64)
-		// DISABLED: to avoid confusion with SVC= mystery
-		// uartPutsDirect("SVC from EL1 at 0x")
-		// uartPutHex64Direct(excInfo.ELR)
-		// uartPutsDirect(" (immediate: ")
-		// uartPutUint32(uint32(excInfo.ESR & 0xFFFF))
-		// uartPutsDirect(")\r\n")
+		// Supervisor call from EL1 (AArch64) - handled by assembly
 
 	case EC_SVC_EL0_A64:
-		// Supervisor call from EL0 (AArch64)
-		// DISABLED: to avoid confusion with SVC= mystery
-		// uartPutsDirect("SVC from EL0 at 0x")
-		// uartPutHex64Direct(excInfo.ELR)
-		// uartPutsDirect(" (immediate: ")
-		// uartPutUint32(uint32(excInfo.ESR & 0xFFFF))
-		// uartPutsDirect(")\r\n")
+		// Supervisor call from EL0 (AArch64) - handled by assembly
 
 	default:
 		uartPutsDirect("Unhandled exception class 0x")
@@ -522,16 +381,6 @@ func extractISS(esr uint64) uint32 {
 //go:nosplit
 //go:noinline
 func HandleSyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) uint64 {
-	// DISABLED: This function is not called from assembly
-	// Print syscall number for debugging (use direct UART to avoid recursion)
-	// uartPutcDirect('S')  // DISABLED to avoid confusion with SVC= mystery
-	// uartPutcDirect('Y')
-	// uartPutcDirect('S')
-	// uartPutcDirect(':')
-	// uartPutHex64Direct(syscallNum)
-	// uartPutcDirect('\r')
-	// uartPutcDirect('\n')
-
 	switch syscallNum {
 	case 64: // write
 		// write(fd, buf, count) - pretend we wrote all bytes
@@ -618,13 +467,6 @@ func HandleSyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) uint64
 			for {} // Hang
 		}
 
-		// Debug output showing allocation (compact: pages allocated) - BREADCRUMB DISABLED
-		// uartPutcDirect('M')
-		// uartPutHex64Direct(uint64(alignedLength) >> 12) // Show pages allocated
-		// uartPutcDirect('@')
-		// uartPutHex64Direct(uint64(result) >> 20) // Show base in MB
-		// uartPutcDirect(' ')
-
 		return uint64(result)
 
 	case 226: // mprotect
@@ -636,16 +478,6 @@ func HandleSyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) uint64
 		// Arguments: arg0=addr, arg1=length, arg2=advice
 		// Common advice values: MADV_DONTNEED=4, MADV_FREE=8
 		// For now, just accept all advice and return success
-
-		// DEBUG: Print madvise call
-		uartPutsDirect("\r\nmadvise(addr=0x")
-		uartPutHex64Direct(arg0)
-		uartPutsDirect(", len=0x")
-		uartPutHex64Direct(arg1)
-		uartPutsDirect(", advice=")
-		uartPutHex64Direct(arg2)
-		uartPutsDirect(")\r\n")
-
 		return 0
 
 	case 261: // prlimit64
@@ -720,15 +552,6 @@ func IRQDispatchGoInternal(
 	elr uint64,
 	spEl0 uint64,
 ) (newELR, newSP, newLR uint64, doPreempt bool) {
-
-	// DEBUG: Print '!' to show IRQ entry
-	uartPutcDirect('!')
-
-	// DEBUG: Print irqID received by Go
-	uartPutsDirect(" id=")
-	uartPutHex64Direct(irqID)
-	uartPutcDirect(' ')
-
 	// Check if this is a timer interrupt (IRQ 27 = virtual timer)
 	if irqID == 27 {
 		return handleTimerIRQ(savedG, elr, spEl0)
@@ -749,50 +572,36 @@ func IRQDispatchGoInternal(
 //
 //go:nosplit
 func handleTimerIRQ(savedG, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool) {
-	// Debug: print 'T' to show handleTimerIRQ is called
-	uartPutcDirect('T')
-
-	// 1. Handle timer tick (increment counter, wake sleeping threads)
+	// Handle timer tick (increment counter, wake sleeping threads)
 	TimerTickHandler()
 
-	// 2. Check if we should skip preemption
-	uartPutcDirect('C') // Debug: Checking skip
+	// Check if we should skip preemption
 	if shouldSkipPreemption(savedG) {
-		uartPutcDirect('S') // Debug: Skipping preemption
 		// Re-arm timer and send EOI, then return without preemption
 		rearmTimer()
 		gicEndOfInterrupt(27)
-		uartPutcDirect('D') // Debug: Done with timer (skip path)
 		return 0, 0, 0, false
 	}
 
-	// 3. We can preempt! Print debug marker
-	uartPutcDirect('P')
-
-	// 4. Re-arm timer
+	// Re-arm timer
 	rearmTimer()
 
-	// 5. Set up call injection for asyncPreempt
+	// Set up call injection for asyncPreempt
 	// Allocate 16-byte frame on interrupted goroutine's stack
 	adjustedSP := (spEl0 - 16) &^ 0xF // 16-byte aligned
 
-	// We need to save the interrupted PC so asyncPreempt can return to it
-	// The assembly will store the interrupted PC to the stack at adjustedSP
-
-	// 6. Determine which asyncPreempt to use
+	// Determine which asyncPreempt to use
 	var asyncPreemptAddr uint64
 	if isInKmazarin(elr) {
 		asyncPreemptAddr = kmazarinAsyncPreempt() // Use linker-extracted address
-		uartPutcDirect('K')
 	} else {
 		asyncPreemptAddr = getAsyncPreemptBMAddr()
-		uartPutcDirect('M')
 	}
 
-	// 7. Signal EOI to GIC (before ERET!)
+	// Signal EOI to GIC (before ERET!)
 	gicEndOfInterrupt(27)
 
-	// 8. Return preemption info
+	// Return preemption info
 	// - newELR = asyncPreempt address (where ERET will jump)
 	// - newSP = adjusted stack (with room for return frame)
 	// - newLR = interrupted PC (asyncPreempt will return here)
@@ -807,13 +616,8 @@ func handleTimerIRQ(savedG, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doP
 //
 //go:nosplit
 func shouldSkipPreemption(savedG uint64) bool {
-	// Debug: print savedG value
-	uartPutsDirect(" g=")
-	uartPutHex64Direct(savedG)
-
 	// Check for nil g
 	if savedG == 0 {
-		uartPutcDirect('0') // nil g
 		return true
 	}
 
@@ -822,16 +626,13 @@ func shouldSkipPreemption(savedG uint64) bool {
 	if savedG >= goArenaLow && savedG < goArenaHigh {
 		// In Go's high VA range (runtime arenas)
 		isKmazarinG = true
-		uartPutcDirect('A') // Arena match
 	} else if savedG >= kmazarinTextStart() && savedG < kmazarinTextEnd() {
 		// In kmazarin's ELF text section
 		isKmazarinG = true
-		uartPutcDirect('E') // ELF match
 	}
 
 	if !isKmazarinG {
 		// Not a kmazarin g, skip preemption (it's cardinal's g0)
-		uartPutcDirect('X') // not kmazarin
 		return true
 	}
 
@@ -842,18 +643,13 @@ func shouldSkipPreemption(savedG uint64) bool {
 	gPtr := uintptr(savedG)
 	mPtr := *(*uintptr)(unsafe.Pointer(gPtr + 48)) // g.m
 	if mPtr == 0 {
-		uartPutcDirect('M') // nil m
 		return true
 	}
 	g0Ptr := *(*uintptr)(unsafe.Pointer(mPtr)) // m.g0
 	if gPtr == g0Ptr {
 		// We're on g0 (scheduler goroutine), skip preemption
-		uartPutcDirect('G') // on g0
 		return true
 	}
-
-	// OK to preempt - print marker
-	uartPutcDirect('!') // will preempt
 
 	// OK to preempt
 	return false
@@ -872,26 +668,11 @@ func isInKmazarin(addr uint64) bool {
 //
 //go:nosplit
 func rearmTimer() {
-	// Debug: print 'R' to show rearmTimer is called
-	uartPutcDirect('R')
-
 	// Read current counter
 	cnt := asm.ReadCntvctEl0()
 	// Set compare value to current + 20ms
 	newCval := cnt + 1250000
 	asm.WriteCntvCvalEl0(newCval)
-
-	// Debug: print timer values and CTL
-	uartPutsDirect(" cnt=")
-	uartPutHex64Direct(cnt)
-	uartPutsDirect(" cval=")
-	uartPutHex64Direct(newCval)
-	uartPutsDirect(" ctl=")
-	uartPutHex32Direct(asm.ReadCntvCtlEl0())
-	uartPutsDirect(" ")
-
-	// Debug: print 'r' to show rearmTimer completed
-	uartPutcDirect('r')
 }
 
 // getAsyncPreemptBMAddr returns the address of cardinal's asyncPreemptBM function

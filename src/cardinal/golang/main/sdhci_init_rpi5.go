@@ -22,42 +22,19 @@ const (
 //
 //go:nosplit
 func sdhciInit() bool {
-	uartPuts("SDHCI: Initializing for Raspberry Pi 5 (Arasan SDHCI at 0xFE300000)\r\n")
-
 	// Set global MMIO base
 	sdhciMMIOBase = RPI5_SDHCI_BASE
 
-	// Read and display capabilities
-	capabilities := sdhciRead32(SDHCI_CAPABILITIES)
-	uartPuts("SDHCI: Capabilities: 0x")
-	uartPutHex32(capabilities)
-	uartPuts("\r\n")
-
-	// Read present state
-	presentState := sdhciRead32(SDHCI_PRESENT_STATE)
-	uartPuts("SDHCI: Present State: 0x")
-	uartPutHex32(presentState)
-	uartPuts("\r\n")
-
-	// Check if card is present
-	if (presentState & SDHCI_CARD_PRESENT) != 0 {
-		uartPuts("SDHCI: Card detected\r\n")
-	} else {
-		uartPuts("SDHCI: No card detected\r\n")
-	}
-
-	// Read host version
-	version := sdhciRead16(SDHCI_HOST_VERSION)
-	uartPuts("SDHCI: Host Version: 0x")
-	uartPutHex32(uint32(version))
-	uartPuts("\r\n")
+	// Read capabilities and present state (needed for card detection)
+	_ = sdhciRead32(SDHCI_CAPABILITIES)
+	_ = sdhciRead32(SDHCI_PRESENT_STATE)
+	_ = sdhciRead16(SDHCI_HOST_VERSION)
 
 	// Enable interrupts (basic set)
 	intEnable := uint16(SDHCI_INT_CMD_COMPLETE | SDHCI_INT_XFER_COMPLETE | SDHCI_INT_ERROR)
 	sdhciWrite16(SDHCI_INT_ENABLE, intEnable)
 	sdhciWrite16(SDHCI_SIGNAL_ENABLE, intEnable)
 
-	uartPuts("SDHCI: Initialization complete\r\n")
 	return true
 }
 

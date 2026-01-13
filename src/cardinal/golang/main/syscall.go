@@ -280,7 +280,6 @@ func SyscallRead(fd int32, buf unsafe.Pointer, count uint64) int64 {
 
 	// NO FD SUPPORT - We rely entirely on AT_RANDOM for random numbers
 	// If the runtime tries to read /dev/urandom, it means AT_RANDOM failed
-	// DEBUG REMOVED - print/printHex64 allocate memory and corrupt X0
 	return -9 // -EBADF (bad file descriptor)
 }
 
@@ -516,7 +515,6 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 	// This should never happen and indicates a runtime initialization bug
 	// However, we'll allocate a minimal page to allow runtime to continue
 	if length == 0 {
-		// DEBUG REMOVED - any output here corrupts X0
 		// Allocate one page (4KB) from bump allocator
 		length = 4096
 		// CRITICAL: If addr=0 with zero length, clear address to force bump allocator
@@ -544,7 +542,6 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 
 		// Check page alignment (4KB)
 		if (addr & 0xFFF) != 0 {
-			// syscallDebugEnd(-22) // DISABLED - corrupts X0
 			return -22 // -EINVAL (syscall returns negative errno)
 		}
 
@@ -555,18 +552,15 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 		// Accept up to 1PB to handle all reasonable Go runtime addresses
 		const MAX_VIRT_ADDR = uintptr(0x4000000000000) // 1PB (1024TB)
 		if addr >= MAX_VIRT_ADDR {
-			// syscallDebugEnd(-12) // DISABLED - corrupts X0
 			return -12 // -ENOMEM (syscall returns negative errno)
 		}
 
 		// Check if would overflow when adding length
 		if addr+uintptr(length) < addr {
-			// syscallDebugEnd(-12) // DISABLED - corrupts X0
 			return -12 // -ENOMEM (syscall returns negative errno)
 		}
 
 		if addr+uintptr(length) > MAX_VIRT_ADDR {
-			// syscallDebugEnd(-12) // DISABLED - corrupts X0
 			return -12 // -ENOMEM (syscall returns negative errno)
 		}
 

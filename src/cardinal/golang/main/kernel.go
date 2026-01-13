@@ -164,35 +164,6 @@ func uartPutsBytes(data *byte, length int) {
 	}
 }
 
-//go:nosplit
-func uartPutHex64(val uint64) {
-	// Write hex digits using uartPutc (which checks if UART is enabled)
-	writeHexDigit := func(digit uint32) {
-		if digit < 10 {
-			uartPutc(byte('0' + digit))
-		} else {
-			uartPutc(byte('A' + digit - 10))
-		}
-	}
-
-	writeHexDigit(uint32((val >> 60) & 0xF))
-	writeHexDigit(uint32((val >> 56) & 0xF))
-	writeHexDigit(uint32((val >> 52) & 0xF))
-	writeHexDigit(uint32((val >> 48) & 0xF))
-	writeHexDigit(uint32((val >> 44) & 0xF))
-	writeHexDigit(uint32((val >> 40) & 0xF))
-	writeHexDigit(uint32((val >> 36) & 0xF))
-	writeHexDigit(uint32((val >> 32) & 0xF))
-	writeHexDigit(uint32((val >> 28) & 0xF))
-	writeHexDigit(uint32((val >> 24) & 0xF))
-	writeHexDigit(uint32((val >> 20) & 0xF))
-	writeHexDigit(uint32((val >> 16) & 0xF))
-	writeHexDigit(uint32((val >> 12) & 0xF))
-	writeHexDigit(uint32((val >> 8) & 0xF))
-	writeHexDigit(uint32((val >> 4) & 0xF))
-	writeHexDigit(uint32(val & 0xF))
-}
-
 // printHex64 outputs a uint64 as a 16-digit hex string via print()
 //
 //go:nosplit
@@ -283,24 +254,6 @@ func printHex32(val uint32) {
 	print(hex32(val))
 }
 
-// printHex8 outputs a uint8 as a 2-digit hex string via print()
-//
-//go:nosplit
-func printHex8(val uint8) {
-	nibbleHi := (val >> 4) & 0xF
-	nibbleLo := val & 0xF
-	if nibbleHi < 10 {
-		printChar(byte('0' + nibbleHi))
-	} else {
-		printChar(byte('A' + nibbleHi - 10))
-	}
-	if nibbleLo < 10 {
-		printChar(byte('0' + nibbleLo))
-	} else {
-		printChar(byte('A' + nibbleLo - 10))
-	}
-}
-
 // printChar outputs a single character via the syscall mechanism
 // This uses the same path as print() but for a single byte
 //
@@ -323,64 +276,6 @@ func uartPutHex32(val uint32) {
 			uartPutc(byte('A' + (nibble - 10)))
 		}
 	}
-}
-
-//go:nosplit
-func uartPutHex8(val uint8) {
-	// Write 2 hex digits for a byte
-	writeHexDigit := func(digit uint32) {
-		if digit < 10 {
-			uartPutc(byte('0' + digit))
-		} else {
-			uartPutc(byte('A' + digit - 10))
-		}
-	}
-
-	writeHexDigit(uint32((val >> 4) & 0xF))
-	writeHexDigit(uint32(val & 0xF))
-}
-
-// checkSPAlignment checks if SP is 16-byte aligned and prints diagnostic info
-// Returns true if aligned, false if misaligned
-// This function must be nosplit and use minimal stack
-//
-//go:nosplit
-func checkSPAlignment(context string) bool {
-	sp := asm.GetCallerStackPointer()
-	aligned := (sp & 0xF) == 0
-	return aligned
-}
-
-// checkSPAlignmentSilent checks if SP is 16-byte aligned without printing
-// Returns true if aligned, false if misaligned
-//
-//go:nosplit
-func checkSPAlignmentSilent() bool {
-	sp := asm.GetCallerStackPointer()
-	return (sp & 0xF) == 0
-}
-
-// printSPBreadcrumb prints a breadcrumb with label and SP value
-// Format: "[label] SP=0xXXXXXXXX\r\n"
-// Uses printChar for all characters via the ring buffer path
-//
-//go:nosplit
-func printSPBreadcrumb(label byte) {
-	// Get SP BEFORE any function calls to avoid corruption
-	sp := asm.GetCallerStackPointer()
-
-	printChar('[')
-	printChar(label)
-	printChar(']')
-	printChar(' ')
-	printChar('S')
-	printChar('P')
-	printChar('=')
-	printChar('0')
-	printChar('x')
-	printHex64(uint64(sp))
-	printChar('\r')
-	printChar('\n')
 }
 
 //go:nosplit
@@ -487,26 +382,6 @@ func uartPutUint32(n uint32) {
 	}
 }
 
-// printMemSize formats and displays memory size in a human-readable format
-// Displays as MB or GB depending on size
-//
-//go:nosplit
-func printMemSize(sizeBytes uint32) {
-	// Convert to MB (dividing by 1024*1024)
-	sizeMB := sizeBytes / (1024 * 1024)
-
-	if sizeMB >= 1024 {
-		// Display as GB
-		sizeGB := sizeMB / 1024
-		printUint32(sizeGB)
-		print(" GB")
-	} else {
-		// Display as MB
-		printUint32(sizeMB)
-		print(" MB")
-	}
-}
-
 // printUint32 outputs a uint32 as a decimal string via print()
 //
 //go:nosplit
@@ -535,23 +410,6 @@ func printUint32(n uint32) {
 		printChar(byte('0' + digit))
 		divisor /= 10
 	}
-}
-
-// SimpleTestKernel is a minimal test kernel for fast UART debugging
-// Just initializes UART, writes a string, and exits via semihosting
-//
-//go:nosplit
-//go:noinline
-func SimpleTestKernel() {
-	// Initialize UART
-	uartInit()
-
-	// Write test string
-	print("UART Test: Hello from simplified kernel!\r\n")
-
-	// Exit via semihosting
-	print("Exiting via semihosting\r\n")
-	asm.QemuExit()
 }
 
 // kernelMainInternal is the entry point called from boot.s via ABI stub KernelMain
@@ -635,51 +493,6 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	asm.SemihostingExit()
 }
 
-// =================================================================
-
-// testTraceback tests the exception handler traceback by deliberately causing a crash
-// This jumps to an invalid address to trigger a prefetch abort exception
-//
-//go:noinline
-func testTraceback() {
-	print("\r\n=== Testing Exception Traceback ===\r\n")
-	print("About to trigger a prefetch abort by jumping to NULL...\r\n")
-
-	// Call a helper function to create a deeper call stack for the traceback
-	testTracebackHelper1()
-
-	// Should never reach here
-	print("ERROR: Should not reach here!\r\n")
-}
-
-//go:noinline
-func testTracebackHelper1() {
-	print("In testTracebackHelper1\r\n")
-	testTracebackHelper2()
-}
-
-//go:noinline
-func testTracebackHelper2() {
-	print("In testTracebackHelper2\r\n")
-	testTracebackHelper3()
-}
-
-//go:noinline
-func testTracebackHelper3() {
-	print("In testTracebackHelper3 - about to crash!\r\n")
-
-	// Jump to NULL address - this will cause a prefetch abort exception
-	// We do this via assembly to avoid compiler optimizations
-	jumpToNull()
-}
-
-// jumpToNull is implemented in assembly to jump to address 0
-// This will trigger a prefetch abort exception
-//
-//go:linkname jumpToNull jump_to_null
-//go:nosplit
-func jumpToNull()
-
 // abortBoot aborts the boot process with a fatal error message
 // This function prints the error message, exits QEMU, and hangs forever
 // Used by critical initialization failures (MMU, SDHCI, etc.)
@@ -694,82 +507,6 @@ func abortBoot(message string) {
 	for {
 		// Hang forever
 	}
-}
-
-// Runtime variables accessed via go:linkname
-//
-//go:linkname runtimeAllglen runtime.allglen
-var runtimeAllglen uintptr
-
-// allgsSlice is a generic slice type to access runtime.allgs
-// We use [0]uintptr as the element type since we just need the pointer values
-type allgsSlice struct {
-	ptr uintptr
-	len int
-	cap int
-}
-
-//go:linkname runtimeAllgs runtime.allgs
-var runtimeAllgs allgsSlice
-
-//go:linkname runtimeArgv runtime.argv
-var runtimeArgv unsafe.Pointer
-
-//go:linkname runtimeArgc runtime.argc
-var runtimeArgc int32
-
-// dumpAllGs uses runtime internals to dump the allgs slice
-//
-//go:nosplit
-func dumpAllGs() {
-	// Read allglen using proper go:linkname reference
-	allglen := runtimeAllglen
-	print("  allglen = ")
-	printHex64(uint64(allglen))
-	print("\r\n")
-
-	if allglen == 0 {
-		print("  allgs is empty!\r\n")
-		return
-	}
-
-	// Read allgs slice header using proper go:linkname reference
-	allgsPtr := uint64(runtimeAllgs.ptr)
-	allgsLen := uint64(runtimeAllgs.len)
-	allgsCap := uint64(runtimeAllgs.cap)
-
-	print("  allgs ptr=")
-	printHex64(allgsPtr)
-	print(" len=")
-	printHex64(allgsLen)
-	print(" cap=")
-	printHex64(allgsCap)
-	print("\r\n")
-
-	if allgsPtr == 0 {
-		print("  allgs backing array is NULL!\r\n")
-		return
-	}
-
-	// Iterate through allgs array
-	print("  Goroutines in allgs:\r\n")
-	for i := uint64(0); i < 20 && i < allgsLen; i++ { // Limit to first 20
-		gpAddr := readMemory64(uintptr(allgsPtr + i*8)) // Each entry is a *g (8 bytes)
-		print("    [")
-		printHex64(i)
-		print("] g=0x")
-		printHex64(gpAddr)
-
-		if gpAddr == 0 {
-			print(" <NULL>\r\n")
-			continue
-		}
-
-		// For now, just note it's valid
-		print(" (valid)\r\n")
-	}
-
-	print("  End of allgs dump\r\n")
 }
 
 // NOTE: parseEmbeddedKmazarin() was removed - it was dead code that was only
@@ -1023,8 +760,6 @@ func setupKmazarinStartupEnv(kmazarinStartupParamsVA uintptr) (stackPointer uint
 // Note: This function is NOT marked nosplit because it runs after the Go runtime
 // is initialized and contains many print() calls that require stack space.
 func loadAndRunKmazarin() {
-	uartPutsDirect("Loading Kmazarin...\r\n")
-
 	// Get the embedded kmazarin binary location from linker symbols
 	kmazarinStart := getLinkerSymbol("__kmazarin_start")
 	kmazarinSize := getLinkerSymbol("__kmazarin_size")
@@ -1185,14 +920,7 @@ func loadAndRunKmazarin() {
 			kernelVA := kernelVAStart + (pageIdx << 12)
 
 			// Enforce kmazarin size limit (64MB total)
-			if kmazarinAllocatedBytes + 0x1000 > uintptr(constants.KmazarinTotalLimit) {
-				uartPutsDirect("ERROR: Kmazarin exceeded 64MB limit\r\n")
-				uartPutsDirect("Allocated: 0x")
-				uartPutHex64Direct(uint64(kmazarinAllocatedBytes))
-				uartPutsDirect(" bytes\r\n")
-				uartPutsDirect("Limit: 0x")
-				uartPutHex64Direct(uint64(constants.KmazarinTotalLimit))
-				uartPutsDirect(" bytes\r\n")
+			if kmazarinAllocatedBytes+0x1000 > uintptr(constants.KmazarinTotalLimit) {
 				kernelPanic("Kmazarin size limit exceeded")
 			}
 
@@ -1389,13 +1117,9 @@ func loadAndRunKmazarin() {
 	// Use it directly without adding offset
 	entryAddr := uintptr(entry)
 
-	// Jump to kmazarin with proper argc/argv/auxv
-	uartPutsDirect("Jumping to kmazarin...\r\n")
-
 	// CRITICAL: Disable all interrupts before transferring control
 	// Kmazarin will re-enable them after installing its handlers
 	asm.DisableIrqs()
-	uartPutsDirect("[IRQs DISABLED]\r\n")
 
 	jumpToKmazarin(entryAddr, argc, argv, stackPointer)
 

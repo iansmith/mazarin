@@ -328,15 +328,10 @@ func mapRegionInitMMU(vaStart, vaEnd, paStart uintptr, attrs uint64, ap uint64, 
 	// Also need to extend vaEnd to cover the last partial page
 	vaEndAligned := (vaEnd + PAGE_SIZE - 1) & PAGE_MASK
 
-	pageNum := 0
 	for va < vaEndAligned {
-		if pageNum%8 == 0 {
-			uartPutcDirect('.') // Progress dot every 8 pages
-		}
 		mapPageInitMMU(va, pa, attrs, ap, exec)
 		va += PAGE_SIZE
 		pa += PAGE_SIZE
-		pageNum++
 	}
 
 	// NOTE: Cache cleaning moved to end of initMMU() for performance

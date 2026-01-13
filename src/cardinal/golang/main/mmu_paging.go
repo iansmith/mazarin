@@ -55,13 +55,6 @@ func isAddressPromised(va uintptr) bool {
 	return false
 }
 
-// GetPageFaultCounter returns the current page fault count
-// This allows exceptions.go to access the counter for debugging
-//go:nosplit
-func GetPageFaultCounter() uint32 {
-	return pageFaultCounter
-}
-
 // preMapPages pre-maps specific pages that are known to cause issues
 // This is a workaround to test if demand paging at certain addresses causes hangs
 //go:nosplit
@@ -146,17 +139,6 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	// Mark that we're now inside the page fault handler
 	inPageFaultHandler_global = 1
 
-	// DEBUG: Print simple breadcrumb to show demand paging is working
-	// Also print the actual fault address for low address faults (more interesting)
-	if faultAddr >= 0x4000000000 {
-		uartPutcDirect('*') // High address page fault
-	} else {
-		// For low addresses, print the fault address
-		uartPutcDirect('[')
-		uartPutHex64Direct(uint64(faultAddr))
-		uartPutcDirect(']')
-	}
-
 	// CRITICAL: Validate that the fault address is in a registered mmap span
 	//
 	// This is our security boundary - only addresses that were explicitly mmap'd
@@ -185,18 +167,13 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	// Align fault address to page boundary
 	pageAddr := faultAddr &^ (PAGE_SIZE - 1)
 
-	// uartPutsDirect(" check...")  // DISABLED
-
 	// CHECK: Is this page already mapped?
 	// This shouldn't happen - page faults should only occur for unmapped pages
 	// But if it does happen, we want to detect it
 	existingPA := getPhysicalAddress(pageAddr)
 
-	// uartPutsDirect(" exist=0x")  // DISABLED
-	// uartPutHex64Direct(uint64(existingPA))  // DISABLED
-
 	if existingPA != 0 {
-		// DEBUG: Get the actual PTE to see what flags are set
+		// Get the actual PTE to report flags in error message
 		va64 := uint64(pageAddr)
 		l0Idx := uint16((va64 >> 39) & 0x1FF)
 		l1Idx := uint16((va64 >> 30) & 0x1FF)
@@ -254,9 +231,6 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 		return false
 	}
 
-	// uartPutsDirect(" PA=0x")  // DISABLED
-	// uartPutHex64Direct(uint64(physFrame))  // DISABLED
-
 	// CRITICAL: Verify physical frame is in valid range
 	if physFrame >= PHYS_FRAME_END {
 		uartPutsDirect("\r\n!INVALID PHYS FRAME (beyond 256MB): 0x")
@@ -278,8 +252,6 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 		for {} // Hang
 	}
 
-	// uartPutsDirect(" map...")  // DISABLED
-
 	// CRITICAL: Map the page FIRST, then zero via VA (not PA)
 	// We cannot safely access the physical frame directly because it might not
 	// be identity-mapped. After creating the VA→PA mapping, we can safely zero
@@ -296,8 +268,6 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	// Ensure TLB invalidation completes before returning
 	asm.Isb()
 
-	// uartPutsDirect(" bzero...")  // DISABLED
-
 	// NOW zero the page via the VA (not PA!)
 	// After mapPage() and TLB invalidation, the VA is accessible and mapped to physFrame
 	// SECURITY: Always zero new pages to prevent leaking old data
@@ -312,9 +282,6 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	// DSB ensures all memory writes (including the bzero) are visible to all
 	// observers before any subsequent instructions execute.
 	asm.Dsb()
-
-	// DEBUG: Print completion for ALL faults to track success
-	// uartPutsDirect(" OK")  // DISABLED
 
 	// Clear re-entrancy guard - page fault handled successfully
 	inPageFaultHandler_global = 0
