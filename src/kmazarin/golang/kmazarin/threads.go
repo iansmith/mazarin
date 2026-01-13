@@ -316,10 +316,12 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
 // Removed //go:nosplit - not needed (simple loop with bounds check, ~15 lines)
 func ThreadFindReady() int32 {
 	// Start from current+1, wrap around
-	start := (currentThreadIdx + 1) % numThreads
+	// Iterate over all MaxThreads slots to handle non-contiguous thread allocation
+	start := (currentThreadIdx + 1) % MaxThreads
 
-	for i := int32(0); i < numThreads; i++ {
-		idx := (start + i) % numThreads
+	for i := int32(0); i < MaxThreads; i++ {
+		idx := (start + i) % MaxThreads
+		// Skip free slots and only consider ready threads
 		if threads[idx].State == ThreadReady {
 			return idx
 		}

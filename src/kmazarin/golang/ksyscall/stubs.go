@@ -2,7 +2,10 @@
 
 package ksyscall
 
-import "unsafe"
+import (
+	"kmazarin/kirq"
+	"unsafe"
+)
 
 //go:linkname threadFindReadyForYield main.ThreadFindReady
 func threadFindReadyForYield() int32
@@ -225,11 +228,38 @@ func SyscallTgkill(_, _, _, _, _, _ uint64) int64 {
 // ============================================================================
 
 // SyscallClockGettime gets the current time
-// Return fake time for now
+// arg0: clockid (ignored - we only support one clock)
+// arg1: pointer to timespec structure (tv_sec, tv_nsec)
 //
 //go:nosplit
-func SyscallClockGettime(_, _, _, _, _, _ uint64) int64 {
-	return 0 // Success (would need to fill timespec pointer)
+func SyscallClockGettime(clockid, timespecPtr, _, _, _, _ uint64) int64 {
+	_ = clockid // Ignore clock ID for now
+
+	if timespecPtr == 0 {
+		return -14 // EFAULT - invalid pointer
+	}
+
+	// Read current timer counter value
+	counterValue := kirq.ReadCounterValue()
+
+	// Get timer frequency (Hz)
+	frequency := uint64(kirq.GetTimerFrequency())
+
+	// Convert to seconds and nanoseconds
+	// seconds = counterValue / frequency
+	// nanoseconds = (counterValue % frequency) * 1000000000 / frequency
+	seconds := counterValue / frequency
+	remainder := counterValue % frequency
+	nanoseconds := (remainder * 1000000000) / frequency
+
+	// Write to timespec structure
+	// struct timespec { time_t tv_sec; long tv_nsec; }
+	// Both fields are 8 bytes on 64-bit ARM
+	ptr := (*[2]uint64)(unsafe.Pointer(uintptr(timespecPtr)))
+	ptr[0] = seconds
+	ptr[1] = nanoseconds
+
+	return 0 // Success
 }
 
 // ============================================================================

@@ -64,8 +64,11 @@ func unmapCardinal() {
 	}
 
 	// Memory barriers and TLB invalidation
+	// Sequence: dsb → invalidate → dsb → isb (ensures TLB invalidation completes)
 	dsb()
 	invalidateTLB()
+	dsb()
+	isb()
 }
 
 // EarlyInit initializes devices that must be set up before DTB scanning

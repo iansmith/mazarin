@@ -2,34 +2,18 @@
 
 package ksyscall
 
-import "unsafe"
+import _ "unsafe" // for go:linkname
 
 // Exit hangs the system in an infinite loop
 // Implemented in panic_arm64.s
 func Exit()
 
 // getUartBase is provided by main package via go:linkname.
+//
+//go:linkname getUartBase main.GetUartBase
 func getUartBase() uintptr
 
-// KernelPanic prints an error message directly to UART and hangs the system
-// This is used when syscalls fail critically or are not implemented
+// KernelPanic forwards to the main package implementation to avoid duplication
 //
-//go:nosplit
-func KernelPanic(msg string) {
-	uartBase := getUartBase()
-
-	// Helper to write a string
-	uartPuts := func(s string) {
-		for i := 0; i < len(s); i++ {
-			*(*byte)(unsafe.Pointer(uartBase)) = s[i]
-		}
-	}
-
-	// Print the panic message
-	uartPuts("\r\n*** KERNEL PANIC ***\r\n")
-	uartPuts(msg)
-	uartPuts("\r\n")
-
-	// Halt the system
-	Exit()
-}
+//go:linkname KernelPanic main.KernelPanic
+func KernelPanic(msg string)

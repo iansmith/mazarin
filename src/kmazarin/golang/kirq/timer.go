@@ -2,7 +2,10 @@
 
 package kirq
 
-import "unsafe"
+import (
+	"sync/atomic"
+	"unsafe"
+)
 
 // getUartBase is provided by main package via go:linkname.
 func getUartBase() uintptr
@@ -17,6 +20,21 @@ func getAsyncPreemptAddr() uintptr
 // which controls whether timer IRQs should trigger async preemption.
 func getReadyForAsyncPreemptAddr() uintptr
 
+// timerFrequency caches the counter frequency (read once at initialization)
+// Default to 62.5MHz for safety if not initialized
+var timerFrequency uint32 = 62500000
+
+// InitTimer reads the counter frequency from CNTFRQ_EL0 and caches it
+// Should be called during early initialization
+//
+//go:nosplit
+func InitTimer() {
+	freq := asm_readCntfrqEl0()
+	if freq > 0 {
+		timerFrequency = freq
+	}
+}
+
 // TimerIRQHandlerPreemptable handles the ARM Generic Timer interrupt (IRQ 27)
 // Returns preemption info to trigger call injection if preemption should occur
 //
@@ -24,9 +42,10 @@ func getReadyForAsyncPreemptAddr() uintptr
 //go:noinline
 func TimerIRQHandlerPreemptable(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo {
 	// Re-arm timer for next interrupt (~100ms for responsive preemption)
-	// Assuming 62.5MHz timer frequency
-	// 100ms * 62.5MHz = 6250000 ticks = 0x5F5E10
-	rearmTimer(0x5F5E10)
+	// Calculate ticks based on actual timer frequency (read from CNTFRQ_EL0)
+	// 100ms * frequency = ticks
+	ticks := (uint64(timerFrequency) * 100) / 1000
+	rearmTimer(int32(ticks))
 
 	// Suppress unused warnings
 	_ = irqNum
@@ -50,8 +69,8 @@ func TimerIRQHandlerPreemptable(irqNum uint64, framePtr uintptr, elr, spEl0 uint
 	// This flag is set to false during runtime init, then true when main() starts
 	readyFlagAddr := getReadyForAsyncPreemptAddr()
 	if readyFlagAddr != 0 {
-		// Read the flag value (uint32)
-		readyFlag := *(*uint32)(unsafe.Pointer(readyFlagAddr))
+		// Read the flag value atomically (accessed from both main and IRQ context)
+		readyFlag := atomic.LoadUint32((*uint32)(unsafe.Pointer(readyFlagAddr)))
 		if readyFlag == 0 {
 			// Runtime not ready - skip preemption
 			return PreemptInfo{
@@ -94,3 +113,27 @@ func rearmTimer(ticks int32) {
 
 // asm_rearmTimer is implemented in timer_arm64.s
 func asm_rearmTimer(ticks uint64)
+
+// asm_readCntfrqEl0 is implemented in timer_arm64.s
+// Reads CNTFRQ_EL0 (Counter Frequency Register) and returns the timer frequency in Hz
+func asm_readCntfrqEl0() uint32
+
+// asm_readCntvctEl0 is implemented in timer_arm64.s
+// Reads CNTVCT_EL0 (Counter Value Register) and returns the current counter value
+func asm_readCntvctEl0() uint64
+
+// GetTimerFrequency returns the cached timer frequency in Hz
+// Used by syscall handlers that need to convert counter values to time
+//
+//go:nosplit
+func GetTimerFrequency() uint32 {
+	return timerFrequency
+}
+
+// ReadCounterValue reads the current timer counter value
+// Returns the raw counter value from CNTVCT_EL0
+//
+//go:nosplit
+func ReadCounterValue() uint64 {
+	return asm_readCntvctEl0()
+}

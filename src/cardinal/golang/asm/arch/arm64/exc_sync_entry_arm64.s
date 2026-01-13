@@ -167,7 +167,8 @@ stack_selected:
 	STP (R14, R15), (EXC_FRAME_X0+112)(RSP)
 	STP (R16, R17), (EXC_FRAME_X0+128)(RSP)
 	// R18 is platform register - Go assembly doesn't support it, skip saving
-	// Save only R19 at the second slot of offset 144
+	// Zero the R18 slot to avoid information leaks, then save R19 at offset 144+8
+	MOVD ZR, (EXC_FRAME_X0+144)(RSP)
 	MOVD R19, (EXC_FRAME_X0+144+8)(RSP)
 	STP (R20, R21), (EXC_FRAME_X0+160)(RSP)
 	STP (R22, R23), (EXC_FRAME_X0+176)(RSP)

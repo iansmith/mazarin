@@ -30,6 +30,8 @@ func ThreadBlockFutex(futexAddr uint64) int32
 //go:linkname ThreadWakeFutex main.ThreadWakeFutex
 func ThreadWakeFutex(futexAddr uint64, maxWake int32) int32
 
+// SetSyscallSwitchTarget links to kmazarin's main package (kmazarin/golang/kmazarin/threads.go)
+// Note: "main" refers to kmazarin's main package, not cardinal's, since this is part of the kmazarin binary
 //go:linkname SetSyscallSwitchTarget main.SetSyscallSwitchTarget
 func SetSyscallSwitchTarget(target int32)
 

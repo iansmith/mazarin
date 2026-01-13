@@ -37,10 +37,10 @@ var (
 	rngBufferPos  uint32 // Current read position in buffer
 
 	// Static buffers for virtqueue (avoid kmalloc)
-	// For queue size 8: descriptors=128 bytes, avail=20 bytes, used=36 bytes
+	// For queue size 8: descriptors=128 bytes, avail=20 bytes, used=70 bytes
 	rngDescTable  [8]VirtQDesc      // 8 * 16 bytes = 128 bytes
 	rngAvailRing  [20]byte          // flags(2) + idx(2) + ring[8](16) = 20 bytes
-	rngUsedRing   [36]byte          // flags(2) + idx(2) + ring[8](16) + avail_event(2) = 36 bytes (actually 34, but align to 4)
+	rngUsedRing   [70]byte          // flags(2) + idx(2) + ring[8](64) + avail_event(2) = 70 bytes (VirtQUsedElem is 8 bytes)
 )
 
 // initVirtIORNG initializes the VirtIO RNG device

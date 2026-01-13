@@ -51,6 +51,11 @@ func run() error {
 		goPath = "go"
 	}
 
+	// Verify Go version before building
+	if err := checkGoVersion(goPath); err != nil {
+		return err
+	}
+
 	// Check if "clean" argument was passed
 	clean := len(os.Args) > 1 && os.Args[1] == "clean"
 

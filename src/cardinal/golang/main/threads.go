@@ -137,10 +137,12 @@ func ThreadCreate(stack, entryFunc, mPtr, gPtr uint64) int32 {
 //go:nosplit
 func ThreadFindReady() int32 {
 	// Start from current+1, wrap around
-	start := (currentThreadIdx + 1) % numThreads
+	// Iterate over all MaxThreads slots to handle non-contiguous thread allocation
+	start := (currentThreadIdx + 1) % MaxThreads
 
-	for i := int32(0); i < numThreads; i++ {
-		idx := (start + i) % numThreads
+	for i := int32(0); i < MaxThreads; i++ {
+		idx := (start + i) % MaxThreads
+		// Skip free slots and only consider ready threads
 		if threads[idx].State == ThreadReady {
 			return idx
 		}
@@ -169,7 +171,9 @@ func ThreadBlockFutex(futexAddr uint64) int32 {
 func ThreadWakeFutex(futexAddr uint64, maxWake int32) int32 {
 	woken := int32(0)
 
-	for i := int32(0); i < numThreads && woken < maxWake; i++ {
+	// Iterate over all MaxThreads slots to handle non-contiguous thread allocation
+	for i := int32(0); i < MaxThreads && woken < maxWake; i++ {
+		// Skip free slots, only check blocked threads
 		if threads[i].State == ThreadBlockedFutex && threads[i].FutexAddr == futexAddr {
 			threads[i].State = ThreadReady
 			threads[i].FutexAddr = 0
@@ -197,7 +201,9 @@ func ThreadBlockSleep(durationTicks uint64) int32 {
 //
 //go:nosplit
 func ThreadCheckSleepers() {
-	for i := int32(0); i < numThreads; i++ {
+	// Iterate over all MaxThreads slots to handle non-contiguous thread allocation
+	for i := int32(0); i < MaxThreads; i++ {
+		// Skip free slots, only check sleeping threads
 		if threads[i].State == ThreadSleeping {
 			if globalTickCounter >= threads[i].WakeupTick {
 				threads[i].State = ThreadReady
@@ -227,7 +233,11 @@ func GetCurrentThreadIdx() int32 {
 //go:nosplit
 func SetCurrentThreadIdx(idx int32) {
 	if idx >= 0 && idx < MaxThreads {
-		threads[currentThreadIdx].State = ThreadReady // Old thread becomes ready (unless blocked)
+		// Only mark old thread as Ready if it was Running
+		// (blocked or sleeping threads should retain their state)
+		if threads[currentThreadIdx].State == ThreadRunning {
+			threads[currentThreadIdx].State = ThreadReady
+		}
 		currentThreadIdx = idx
 		threads[idx].State = ThreadRunning
 	}

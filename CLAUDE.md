@@ -1,5 +1,23 @@
 # Mazzy Architecture - Essential Guide
 
+## Quick Reference - Environment Variables
+
+**On this system (Homebrew on macOS):**
+```bash
+GO=/opt/homebrew/Cellar/go/1.25.5/bin/go
+QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
+GOTOOLCHAIN=auto  # Optional: auto-downloads Go 1.25.5 if you have Go 1.24+
+```
+
+**Usage:**
+```bash
+# Build
+GO=/opt/homebrew/Cellar/go/1.25.5/bin/go build/tools/build
+
+# Run
+QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 build/tools/run 5
+```
+
 ## Overview
 
 **Cardinal** (bootloader/OS shim) + **Kmazarin** (Go kernel)
@@ -18,11 +36,29 @@ QEMU 10.2 or later is required. Earlier versions have issues with the ELF loadin
 
 ### Installing Go 1.25.5
 
-If Go 1.25.5 is not in your PATH, you can:
+If Go 1.25.5 is not in your PATH, you have three options:
 
-1. Install it and add to PATH
-2. Override per-command: `GO=/path/to/go1.25.5 build/tools/build`
-3. Override per-command: `make GO=/path/to/go1.25.5 cardinal`
+1. **Install Go 1.25.5 directly** and add to PATH
+2. **Use Homebrew** (recommended on macOS):
+   ```bash
+   brew install go@1.25.5
+   ```
+3. **Use GOTOOLCHAIN** (if you have Go 1.24.x or later):
+   ```bash
+   GOTOOLCHAIN=auto go version  # Automatically downloads Go 1.25.5 when required
+   ```
+
+**On this system (Homebrew installation):**
+```bash
+# Explicit path to Go 1.25.5 binary:
+GO=/opt/homebrew/Cellar/go/1.25.5/bin/go build/tools/build
+GO=/opt/homebrew/Cellar/go/1.25.5/bin/go make cardinal
+
+# Or use GOTOOLCHAIN (requires Go 1.24+ in PATH):
+GOTOOLCHAIN=auto go run tools/cmd-build.go
+```
+
+**Important:** The build tools check for Go 1.25.5 and will abort with a helpful error if the wrong version is detected. Always specify the GO environment variable when running build commands.
 
 ### Installing QEMU 10.2+
 
@@ -30,6 +66,11 @@ If qemu-system-aarch64 is not in your PATH, you can:
 
 1. Install it and add to PATH
 2. Override per-command: `QEMU=/path/to/qemu-system-aarch64 build/tools/run`
+
+**On this system (Homebrew installation):**
+```bash
+QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 build/tools/run
+```
 
 ## Build & Run
 
@@ -45,23 +86,47 @@ All build and run tools are Go programs compiled for the host system (not the ta
 
 **First time setup:** Build the host tools:
 ```bash
+# On this system (Homebrew):
+GO=/opt/homebrew/Cellar/go/1.25.5/bin/go make host-tools
+
+# Generic:
 make GO=/path/to/go1.25.5 host-tools
 ```
 
 **Then use the tools:**
 ```bash
+# On this system (Homebrew):
+GO=/opt/homebrew/Cellar/go/1.25.5/bin/go build/tools/build
+GO=/opt/homebrew/Cellar/go/1.25.5/bin/go build/tools/build clean
+QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 build/tools/run 5
+build/tools/stop  # Stop doesn't need environment variables
+
+# Generic (if tools are in PATH):
 build/tools/build          # Build cardinal and kmazarin
 build/tools/build clean    # Clean build
 build/tools/run            # Start QEMU (waits 3s, shows last 500 chars)
 build/tools/run 10         # Start QEMU with 10s wait
 build/tools/stop           # Stop any running QEMU instances
 
-# Or using make directly
-make GO=/path/to/go1.25.5 cardinal
+# Or using make directly:
+GO=/opt/homebrew/Cellar/go/1.25.5/bin/go make cardinal
 ```
 
 ### Complete Development Workflow
 
+**On this system (with Homebrew paths):**
+```bash
+# 1. Stop any running QEMU
+build/tools/stop
+
+# 2. Build
+GO=/opt/homebrew/Cellar/go/1.25.5/bin/go build/tools/build clean
+
+# 3. Run
+QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 build/tools/run 5
+```
+
+**Generic workflow (if tools are in PATH):**
 ```bash
 # 1. Stop any running QEMU
 build/tools/stop

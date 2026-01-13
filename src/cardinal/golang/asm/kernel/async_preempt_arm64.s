@@ -54,6 +54,10 @@ TEXT asyncPreemptBM(SB), NOSPLIT, $0
 	// SEGMENT 2: Save GPRs
 	// ========================================================================
 	// Save R0-R27 (skip g, R29=FP already saved, R30=LR already saved).
+	// NOTE: R18 (platform register) is intentionally omitted - Go Plan9 assembly
+	// doesn't support it directly. Cardinal's bare-metal context doesn't use R18,
+	// unlike kmazarin which saves it via raw WORD instructions. This is consistent
+	// with all of cardinal's exception handlers (see exc_sync_entry_arm64.s, etc).
 	STP (R0, R1), 8(RSP)
 	STP (R2, R3), 24(RSP)      // Save R2, R3
 	STP (R4, R5), 40(RSP)      // Save R4, R5
@@ -63,6 +67,7 @@ TEXT asyncPreemptBM(SB), NOSPLIT, $0
 	STP (R12, R13), 104(RSP)   // Save R12, R13
 	STP (R14, R15), 120(RSP)   // Save R14, R15
 	STP (R16, R17), 136(RSP)   // Save R16, R17
+	// R18 skipped (see NOTE above)
 	STP (R19, R20), 152(RSP)   // Save R19, R20
 	STP (R21, R22), 168(RSP)   // Save R21, R22
 	STP (R23, R24), 184(RSP)   // Save R23, R24

@@ -265,7 +265,14 @@ func (n *DTBNode) GetRegMulti(result *[4][2]uint64) int {
 // Returns (irq, ok)
 // Format: <type(4) irq(4) flags(4)>
 //
-//go:nosplit
+// GIC interrupt types:
+//   - Type 0 (SPI): Shared Peripheral Interrupt - external devices
+//   - Type 1 (PPI): Private Peripheral Interrupt - per-CPU (e.g., timer)
+//   - Type 2 (SGI): Software Generated Interrupt - IPI
+//
+// DTB device discovery is for external peripherals, so we only expect SPIs.
+// PPIs (like timer) are hardcoded, SGIs are not in DTB.
+// If a non-SPI interrupt type is encountered, we panic with an error message.
 func (n *DTBNode) GetInterrupt() (int, bool) {
 	intr := n.findProperty("interrupts")
 	if intr == nil || intr.valueLen < 12 {
@@ -273,9 +280,29 @@ func (n *DTBNode) GetInterrupt() (int, bool) {
 	}
 
 	// Parse: <type irq-num flags>
-	// type := swapU32(*(*uint32)(unsafe.Pointer(&intr.value[0])))
+	intrType := swapU32(*(*uint32)(unsafe.Pointer(&intr.value[0])))
 	irqNum := swapU32(*(*uint32)(unsafe.Pointer(&intr.value[4])))
 	// flags := swapU32(*(*uint32)(unsafe.Pointer(&intr.value[8])))
+
+	// Validate interrupt type - we only support SPI (type 0) for DTB devices
+	if intrType != 0 {
+		// Get node name for error message
+		var nameBuf [64]byte
+		nameLen := n.GetNameBuf(nameBuf[:])
+		name := string(nameBuf[:nameLen])
+
+		// Format error message with type name
+		typeName := "unknown"
+		switch intrType {
+		case 1:
+			typeName = "PPI"
+		case 2:
+			typeName = "SGI"
+		}
+
+		panic("DTB: unexpected interrupt type " + typeName + " for device '" + name +
+			"' (expected SPI type 0 for external peripherals)")
+	}
 
 	// For GIC SPI (type 0), add 32 to get interrupt ID
 	return int(irqNum) + 32, true

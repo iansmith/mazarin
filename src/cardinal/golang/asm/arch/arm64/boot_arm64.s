@@ -375,6 +375,8 @@ vbar_ok:
 	// ========================================
 	// Call Go entry point with DTB pointer.
 	// POST-BOOT: N/A (Go calling convention)
+	MOVD	$0, R0			// First argument (unused)
+	MOVD	$0, R1			// Second argument (unused)
 	MOVD	R22, R2			// DTB pointer as third argument
 	BL	main·KernelMain(SB)
 

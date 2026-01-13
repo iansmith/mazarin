@@ -2,7 +2,10 @@
 
 package ksyscall
 
-import "unsafe"
+import (
+	"sync/atomic"
+	"unsafe"
+)
 
 // Kernel heap VA range comes from runtime configuration (auxv from Cardinal).
 // These pages are NOT pre-mapped - they will be demand-paged on first access.
@@ -54,36 +57,51 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 
 // Simple bump allocator for mmap
 // Allocates from the kernel heap VA range (high memory, demand-paged)
+// Thread-safe: uses atomic operations for concurrent allocation
 var bumpPointer uint64 = 0
-var bumpInitialized bool
+var bumpInitialized uint32 // uint32 for atomic operations
 
 //go:nosplit
 func bumpAlloc(size uint64) uint64 {
-	// Lazy initialization from runtime config
-	if !bumpInitialized {
-		cfg := getRuntimeConfigTyped()
-		bumpPointer = uint64(cfg.KernelHeapStart)
-		bumpInitialized = true
+	// Lazy initialization from runtime config (atomic check)
+	if atomic.LoadUint32(&bumpInitialized) == 0 {
+		// Use compare-and-swap to ensure only one thread initializes
+		if atomic.CompareAndSwapUint32(&bumpInitialized, 0, 1) {
+			cfg := getRuntimeConfigTyped()
+			atomic.StoreUint64(&bumpPointer, uint64(cfg.KernelHeapStart))
+		} else {
+			// Another thread won the race, wait for it to complete initialization
+			for atomic.LoadUint32(&bumpInitialized) == 0 {
+				// Spin wait
+			}
+		}
 	}
 
 	// Align to page boundary
 	pageSize := uint64(4096)
 	aligned := (size + pageSize - 1) & ^(pageSize - 1)
 
-	// Check if we have space in the heap range
+	// Get heap end for bounds checking
 	cfg := getRuntimeConfigTyped()
 	heapEnd := uint64(cfg.KernelHeapEnd)
 
-	// Check for wrap-around AND exceeding heap end
-	nextPointer := bumpPointer + aligned
-	if nextPointer < bumpPointer || nextPointer > heapEnd {
-		return 0 // Out of heap VA space or wrap-around
+	// Atomically allocate from bump pointer
+	for {
+		currentPtr := atomic.LoadUint64(&bumpPointer)
+		nextPtr := currentPtr + aligned
+
+		// Check for wrap-around AND exceeding heap end
+		if nextPtr < currentPtr || nextPtr > heapEnd {
+			return 0 // Out of heap VA space or wrap-around
+		}
+
+		// Try to atomically update the bump pointer
+		if atomic.CompareAndSwapUint64(&bumpPointer, currentPtr, nextPtr) {
+			// Successfully allocated
+			return currentPtr
+		}
+		// CAS failed, another thread allocated, retry
 	}
-
-	result := bumpPointer
-	bumpPointer += aligned
-
-	return result
 }
 
 // runtimeConfigStruct is a local copy of RuntimeConfig to avoid circular imports.
@@ -116,6 +134,8 @@ type runtimeConfigStruct struct {
 	ExceptionStackBottom uint64 // Bottom of exception stack
 	ExceptionStackTop    uint64
 	ExceptionStackSize   uint64
+	G0StructAddr         uint64 // High-memory address where g0 struct should be copied
+	AsyncPreemptAddr     uint64 // High-memory address of runtime.asyncPreempt function
 }
 
 // getRuntimeConfigTyped returns the runtime config with proper type.

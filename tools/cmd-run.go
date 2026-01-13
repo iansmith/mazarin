@@ -105,6 +105,12 @@ func run() error {
 		return fmt.Errorf("starting QEMU: %w", err)
 	}
 
+	// Start goroutine to wait for process and reap zombie
+	// This prevents the QEMU process from becoming a zombie when it exits
+	go func() {
+		cmd.Wait()
+	}()
+
 	fmt.Printf("QEMU PID: %d\n", cmd.Process.Pid)
 	fmt.Printf("Log file: %s\n", logFile)
 	fmt.Printf("Monitor: tcp:127.0.0.1:4444\n")

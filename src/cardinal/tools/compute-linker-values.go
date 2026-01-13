@@ -526,58 +526,64 @@ func calculateKmazarinInfo(path string) (*KmazarinInfo, error) {
 
 	// Parse symbol table to find important symbols
 	if symtabOff != 0 && symtabSize != 0 && strtabOff != 0 && strtabSize != 0 {
-		if strtabOff+strtabSize <= uint64(len(data)) {
-			strtab := data[strtabOff : strtabOff+strtabSize]
+		// Verify both symtab and strtab are within bounds before accessing
+		if symtabOff+symtabSize > uint64(len(data)) {
+			return nil, fmt.Errorf("symbol table out of bounds")
+		}
+		if strtabOff+strtabSize > uint64(len(data)) {
+			return nil, fmt.Errorf("string table out of bounds")
+		}
 
-			// Each symbol is 24 bytes (Elf64Sym)
-			numSymbols := symtabSize / 24
-			for i := uint64(0); i < numSymbols; i++ {
-				symOff := symtabOff + i*24
-				if symOff+24 > uint64(len(data)) {
-					continue
+		strtab := data[strtabOff : strtabOff+strtabSize]
+
+		// Each symbol is 24 bytes (Elf64Sym)
+		numSymbols := symtabSize / 24
+		for i := uint64(0); i < numSymbols; i++ {
+			symOff := symtabOff + i*24
+			if symOff+24 > uint64(len(data)) {
+				continue
+			}
+
+			nameIdx := binary.LittleEndian.Uint32(data[symOff : symOff+4])
+			value := binary.LittleEndian.Uint64(data[symOff+8 : symOff+16])
+
+			// Get symbol name
+			if nameIdx < uint32(len(strtab)) {
+				end := nameIdx
+				for end < uint32(len(strtab)) && strtab[end] != 0 {
+					end++
+				}
+				symName := string(strtab[nameIdx:end])
+
+				// Look for main.ExceptionVectorTable or main.ExceptionVectorTable.abi0
+				if symName == "main.ExceptionVectorTable" || symName == "main.ExceptionVectorTable.abi0" {
+					info.ExceptionVectorAddr = value
 				}
 
-				nameIdx := binary.LittleEndian.Uint32(data[symOff : symOff+4])
-				value := binary.LittleEndian.Uint64(data[symOff+8 : symOff+16])
+				// Look for main.StartupParams
+				if symName == "main.StartupParams" {
+					info.StartupParamsAddr = value
+				}
 
-				// Get symbol name
-				if nameIdx < uint32(len(strtab)) {
-					end := nameIdx
-					for end < uint32(len(strtab)) && strtab[end] != 0 {
-						end++
-					}
-					symName := string(strtab[nameIdx:end])
+				// Look for main.G0Struct (destination for g struct copy)
+				if symName == "main.G0Struct" {
+					info.G0StructAddr = value
+				}
 
-					// Look for main.ExceptionVectorTable or main.ExceptionVectorTable.abi0
-					if symName == "main.ExceptionVectorTable" || symName == "main.ExceptionVectorTable.abi0" {
-						info.ExceptionVectorAddr = value
-					}
+				// Look for runtime.asyncPreempt (for timer preemption)
+				// Go may use .abi0 suffix
+				if symName == "runtime.asyncPreempt" || symName == "runtime.asyncPreempt.abi0" {
+					info.AsyncPreemptAddr = value
+				}
 
-					// Look for main.StartupParams
-					if symName == "main.StartupParams" {
-						info.StartupParamsAddr = value
-					}
+				// Look for main.readyForAsyncPreempt (flag controlling preemption)
+				if symName == "main.readyForAsyncPreempt" {
+					info.ReadyForAsyncPreemptAddr = value
+				}
 
-					// Look for main.G0Struct (destination for g struct copy)
-					if symName == "main.G0Struct" {
-						info.G0StructAddr = value
-					}
-
-					// Look for runtime.asyncPreempt (for timer preemption)
-					// Go may use .abi0 suffix
-					if symName == "runtime.asyncPreempt" || symName == "runtime.asyncPreempt.abi0" {
-						info.AsyncPreemptAddr = value
-					}
-
-					// Look for main.readyForAsyncPreempt (flag controlling preemption)
-					if symName == "main.readyForAsyncPreempt" {
-						info.ReadyForAsyncPreemptAddr = value
-					}
-
-					// Look for runtime.g0 (kmazarin's g0 goroutine struct)
-					if symName == "runtime.g0" {
-						info.RuntimeG0Addr = value
-					}
+				// Look for runtime.g0 (kmazarin's g0 goroutine struct)
+				if symName == "runtime.g0" {
+					info.RuntimeG0Addr = value
 				}
 			}
 		}

@@ -9,6 +9,7 @@ import (
 	_ "os" // Keep to maintain BSS size
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -75,6 +76,10 @@ func init() {
 
 	// Initialize critical early devices (UART, GIC, Timer, RNG)
 	EarlyInit()
+
+	// Initialize timer with actual frequency from CNTFRQ_EL0
+	// Must be done before enabling IRQs to ensure correct timer tick calculation
+	kirq.InitTimer()
 
 	// Enable interrupts - handlers are ready
 	// NOTE: This happens during runtime init, which causes asyncPreempt issues
@@ -191,10 +196,11 @@ func uartPutHex32Direct(val uint32) {
 // Runtime readiness flag - set to true once we verify runtime is fully initialized
 var runtimeReady = false
 
-// ReadyForAsyncPreempt controls whether timer IRQs should trigger async preemption.
-// Set to false initially, then true in main() after Go runtime is fully initialized.
+// readyForAsyncPreempt controls whether timer IRQs should trigger async preemption.
+// Set to 0 initially, then 1 in main() after Go runtime is fully initialized.
 // This prevents asyncPreempt crashes during runtime.doInit1 (package init phase).
-var readyForAsyncPreempt uint32 = 0  // uint32 for atomic operations
+// Accessed atomically from interrupt context.
+var readyForAsyncPreempt atomic.Uint32
 
 // Print uses direct UART before runtime is ready, fmt.Println after
 func Print(s string) {
@@ -406,7 +412,7 @@ func simpleMain() {
 
 	// Enable async preemption - runtime is now fully initialized
 	Print("[g1] Enabling async preemption...")
-	readyForAsyncPreempt = 1
+	readyForAsyncPreempt.Store(1)
 	Print("[g1] Async preemption ENABLED")
 	Print("")
 

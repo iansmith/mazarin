@@ -5,6 +5,7 @@
 package kmem
 
 import (
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -26,7 +27,8 @@ type frameAllocatorState struct {
 var frameAllocator frameAllocatorState
 
 // initialized tracks whether the frame allocator has been initialized
-var initialized bool
+// Uses atomic operations to prevent races during lazy initialization
+var initialized uint32
 
 // getRuntimeConfig is provided by main package via go:linkname.
 func getRuntimeConfig() interface{}
@@ -43,7 +45,7 @@ func InitFrameAllocator() {
 	frameAllocator.nextFrame = uintptr(cfg.FramePoolStart)
 	frameAllocator.endFrame = uintptr(cfg.FramePoolEnd)
 	frameAllocator.allocated = 0
-	initialized = true
+	atomic.StoreUint32(&initialized, 1)
 
 	_ = cfg.FramePoolEnd - cfg.FramePoolStart // Pool size calculated but not printed
 }
@@ -51,36 +53,52 @@ func InitFrameAllocator() {
 // AllocFrame allocates a single physical frame from the kernel frame pool.
 // Returns the physical address of the frame, or 0 if the pool is exhausted.
 // The frame is NOT zeroed - caller should zero it if needed.
+// Thread-safe: uses atomic operations for concurrent allocation.
 //
 //go:nosplit
 func AllocFrame() uintptr {
 	debugPrint('F') // DEBUG: entered AllocFrame
 
-	// Lazy initialization from runtime config
-	if !initialized {
+	// Lazy initialization from runtime config (atomic check)
+	if atomic.LoadUint32(&initialized) == 0 {
 		debugPrint('i') // DEBUG: init path
-		cfg := getRuntimeConfigTyped()
-		debugPrint('g') // DEBUG: got config
-		frameAllocator.nextFrame = uintptr(cfg.FramePoolStart)
-		frameAllocator.endFrame = uintptr(cfg.FramePoolEnd)
-		frameAllocator.allocated = 0
-		initialized = true
-		debugPrint('k') // DEBUG: init done
+		// Use compare-and-swap to ensure only one thread initializes
+		if atomic.CompareAndSwapUint32(&initialized, 0, 1) {
+			cfg := getRuntimeConfigTyped()
+			debugPrint('g') // DEBUG: got config
+			atomic.StoreUintptr(&frameAllocator.nextFrame, uintptr(cfg.FramePoolStart))
+			atomic.StoreUintptr(&frameAllocator.endFrame, uintptr(cfg.FramePoolEnd))
+			atomic.StoreUint64(&frameAllocator.allocated, 0)
+			debugPrint('k') // DEBUG: init done
+		} else {
+			// Another thread won the race, wait for it to complete initialization
+			for atomic.LoadUint32(&initialized) == 0 {
+				// Spin wait
+			}
+		}
 	}
 
 	debugPrint('n') // DEBUG: checking bounds
 
-	if frameAllocator.nextFrame >= frameAllocator.endFrame {
-		uartPuts("[kmem] OOM!\r\n")
-		return 0
+	// Atomically allocate a frame
+	for {
+		currentNext := atomic.LoadUintptr(&frameAllocator.nextFrame)
+		endFrame := atomic.LoadUintptr(&frameAllocator.endFrame)
+
+		if currentNext >= endFrame {
+			uartPuts("[kmem] OOM!\r\n")
+			return 0
+		}
+
+		newNext := currentNext + PageSize
+		if atomic.CompareAndSwapUintptr(&frameAllocator.nextFrame, currentNext, newNext) {
+			// Successfully allocated frame
+			atomic.AddUint64(&frameAllocator.allocated, 1)
+			debugPrint('f') // DEBUG: frame allocated
+			return currentNext
+		}
+		// CAS failed, another thread allocated, retry
 	}
-
-	frame := frameAllocator.nextFrame
-	frameAllocator.nextFrame += PageSize
-	frameAllocator.allocated++
-
-	debugPrint('f') // DEBUG: frame allocated
-	return frame
 }
 
 // ZeroFrame zeros a physical frame at the given address.
