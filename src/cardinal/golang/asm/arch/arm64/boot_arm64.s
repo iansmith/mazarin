@@ -9,18 +9,31 @@
 // - Cannot call Go functions (except via raw BL)
 // - Must use NOSPLIT|NOFRAME to prevent stack frame manipulation
 //
-// Responsibilities:
-// 1. Initialize UART for early debugging
-// 2. Preserve DTB pointer from QEMU
-// 3. Check CPU ID (only run on CPU 0)
-// 4. Drop from EL2 to EL1
-// 5. Initialize both stacks (SP_EL0 and SP_EL1)
-// 6. Enable SIMD/FPU
-// 7. Disable alignment checking
-// 8. Clear BSS section
-// 9. Initialize runtime structures (g0, m0, write barrier)
-// 10. Set up exception vectors and GIC
-// 11. Jump to KernelMain
+// ============================================================================
+// BOOT SEQUENCE SEGMENTS (see asm/docs/boot_decomposition.md)
+// ============================================================================
+//
+// Segment 1:  DTB Preservation & CPU Check - Preserve R0, halt non-boot CPUs
+// Segment 2:  Exception Level Detection - Check if EL2 or EL1
+// Segment 3:  EL2 Configuration - Configure HCR, timers, vectors (EL2 only)
+// Segment 4:  SP_EL1 Setup at EL2 - Set exception stack while at EL2
+// Segment 5:  ERET to EL1 - Configure SPSR/ELR and return to EL1
+// Segment 6:  Stack Setup at EL1 - Configure SP_EL0 and SP_EL1
+// Segment 7:  SIMD/FPU Enable - Set CPACR_EL1.FPEN
+// Segment 8:  Alignment Check Disable - Clear SCTLR_EL1.A
+// Segment 9:  BSS Clear - Zero .bss section
+// Segment 10: Write Barrier Enable - Set runtime.writeBarrier flag
+// Segment 11: Exception Vector Setup - Set VBAR_EL1
+// Segment 12: GIC Initialization - Enable distributor and CPU interface
+// Segment 13: g0/m0 Initialization - Set up Go runtime structures
+// Segment 14: Jump to KernelMain - Call Go entry point
+// Segment 15: Post-KernelMain Idle - Enable IRQs and WFI loop
+//
+// POST-BOOT NOTE: After boot completes, use decomposed primitives from:
+//   - lib_sysregs_arm64.s for system register access
+//   - lib_barriers_arm64.s for memory barriers
+//   - mmio_arm64.s for device register access
+// See boot_decomposition.md for detailed primitive mapping per segment.
 
 #include "textflag.h"
 
@@ -67,6 +80,13 @@
 //   Exception level: EL2 (with virtualization=off) or EL1
 //
 TEXT _cardinal_boot(SB), NOSPLIT|NOFRAME, $0
+
+	// ========================================
+	// SEGMENT 1: DTB Preservation & CPU Check
+	// ========================================
+	// Preserve QEMU-provided DTB pointer and halt non-boot CPUs.
+	// POST-BOOT: N/A (one-time boot operation)
+
 	// Preserve QEMU-provided DTB pointer.
 	// On QEMU virt, R0 contains the DTB physical address at reset.
 	// We'll carry it through early init and pass it to KernelMain.
@@ -82,10 +102,11 @@ TEXT _cardinal_boot(SB), NOSPLIT|NOFRAME, $0
 	// CPU 0 continues here
 
 	// ========================================
-	// Drop from EL2 to EL1 if necessary
-	// QEMU virt with virtualization=off starts at EL2
-	// We need to be at EL1 for proper OS operation
+	// SEGMENT 2: Exception Level Detection
 	// ========================================
+	// Detect current EL to determine if EL2→EL1 drop is needed.
+	// QEMU virt with virtualization=off starts at EL2.
+	// POST-BOOT: Use readCurrentEL() from lib_sysregs for diagnostics
 
 	// mrs x0, CurrentEL
 	MRS_CURRENTEL_X0
@@ -94,6 +115,13 @@ TEXT _cardinal_boot(SB), NOSPLIT|NOFRAME, $0
 
 	CMP	$2, R0
 	BNE	at_el1
+
+	// ========================================
+	// SEGMENT 3: EL2 Configuration
+	// ========================================
+	// Configure EL2 hypervisor registers before dropping to EL1.
+	// These use WORD encodings because Go assembler doesn't support EL2 regs.
+	// POST-BOOT: N/A (EL2 registers not accessible from EL1)
 
 	// We're at EL2, need to drop to EL1
 	// Configure HCR_EL2 (Hypervisor Configuration Register)
@@ -117,12 +145,22 @@ TEXT _cardinal_boot(SB), NOSPLIT|NOFRAME, $0
 	MSR_VBAR_EL2_X0
 
 	// ========================================
+	// SEGMENT 4: SP_EL1 Setup at EL2
+	// ========================================
+	// Set exception stack while still at EL2 (can't be done easily from EL1).
+	// POST-BOOT: N/A (SP_EL1 set once, modified only by mode switching)
+
 	// CRITICAL: Set SP_EL1 to high-memory exception stack NOW (while at EL2)
 	// After ERET to EL1, we can't use HVC to set it (virtualization=off)
 	// Load address from LinkerKernelExcStackTop (high memory for kmazarin)
-	// ========================================
 	MOVD	main·LinkerKernelExcStackTop(SB), R0
 	MSR_SP_EL1_X0
+
+	// ========================================
+	// SEGMENT 5: ERET to EL1
+	// ========================================
+	// Configure return state and perform exception return to EL1.
+	// POST-BOOT: N/A (one-time transition)
 
 	// Configure SPSR_EL2 for return to EL1h (EL1 using SP_EL1)
 	// M[3:0] = 0b0101 = EL1h (EL1 with SP_EL1)
@@ -153,14 +191,17 @@ at_el1:
 	// NOTE: We may have arrived here from EL2 (via ERET) or started directly at EL1
 
 	// ========================================
-	// CRITICAL: Set up BOTH stacks
-	// If we came from EL2, SP_EL1 was set there.
+	// SEGMENT 6: Stack Setup at EL1
+	// ========================================
+	// Configure both stacks (SP_EL0 for kernel, SP_EL1 for exceptions).
+	// If we came from EL2, SP_EL1 was already set there.
 	// If we started at EL1, we need to set SP_EL1 NOW!
 	//
 	// Stack Architecture:
 	// - SP_EL1: Exception handler stack, HIGH MEMORY (LinkerKernelExcStackTop)
 	// - SP_EL0: g0/kernel stack, used in EL1t mode (LinkerStackTop)
-	// ========================================
+	//
+	// POST-BOOT: Use writeSPSel() and instructionBarrier() from lib_barriers
 
 	// First, set SP_EL1 (exception stack) by switching to EL1h mode
 	// From EL1, we can only write to SP_EL1 when SPSel=1 (EL1h mode)
@@ -182,25 +223,32 @@ at_el1:
 	MSR	$0, SPSel
 
 	// ========================================
-	// Enable SIMD/floating-point
-	// CPACR_EL1.FPEN (bits 21:20) = 0b11: No trapping
+	// SEGMENT 7: SIMD/FPU Enable
 	// ========================================
+	// Enable floating-point and SIMD instructions.
+	// CPACR_EL1.FPEN (bits 21:20) = 0b11: No trapping
+	// POST-BOOT: Use instructionBarrier() from lib_barriers
 	MOVD	$(3<<20), R0
 	MSR	R0, CPACR_EL1
 	ISB	$15
 
 	// ========================================
-	// Disable strict alignment checking
-	// SCTLR_EL1.A (bit 1) = 0: Allow unaligned access
+	// SEGMENT 8: Alignment Check Disable
 	// ========================================
+	// Disable strict alignment checking for Go runtime compatibility.
+	// SCTLR_EL1.A (bit 1) = 0: Allow unaligned access
+	// POST-BOOT: Use readSystemControlRegister(), clearAlignmentCheckBit(),
+	//            writeSystemControlRegister(), instructionBarrier() from lib_sysregs
 	MRS	SCTLR_EL1, R0
 	AND	$~2, R0, R0		// Clear bit 1 (A = alignment check)
 	MSR	R0, SCTLR_EL1
 	ISB	$15
 
 	// ========================================
-	// Clear BSS section
+	// SEGMENT 9: BSS Clear
 	// ========================================
+	// Zero-initialize the BSS section before any Go code runs.
+	// POST-BOOT: N/A (one-time initialization)
 
 	// Load BSS start and end from Go variables in layout.go
 	// Values may be injected at build time or set by ELF post-processor
@@ -234,16 +282,21 @@ bss_clear_check:
 	// No need to set it here in assembly.
 
 	// ========================================
-	// Enable write barrier flag AFTER clearing BSS
+	// SEGMENT 10: Write Barrier Enable
 	// ========================================
+	// Enable Go's write barrier after BSS is cleared.
+	// POST-BOOT: Use dataBarrierFullSystem() from lib_barriers
 	MOVD	$runtime·writeBarrier(SB), R10
 	MOVW	$1, R11
 	MOVB	R11, (R10)
 	DSB	$15
 
 	// ========================================
-	// Set exception vector base
+	// SEGMENT 11: Exception Vector Setup
 	// ========================================
+	// Install EL1 exception vector table.
+	// POST-BOOT: Use dataBarrierFullSystem(), writeExceptionVectorBase(),
+	//            instructionBarrier(), readExceptionVectorBase() from lib_sysregs
 	MOVD	$vec_sync_sp_el0(SB), R0
 	DSB	$15
 	MSR	R0, VBAR_EL1
@@ -257,8 +310,11 @@ bss_clear_check:
 
 vbar_ok:
 	// ========================================
-	// Initialize GIC (Generic Interrupt Controller)
+	// SEGMENT 12: GIC Initialization
 	// ========================================
+	// Initialize Generic Interrupt Controller for timer interrupts.
+	// POST-BOOT: Use mmioWrite32(), mmioRead32() from mmio,
+	//            dataBarrierFullSystem(), instructionBarrier() from lib_barriers
 
 	// 1. Enable the GIC Distributor (GICD_CTLR)
 	MOVD	main·LinkerGicBase(SB), R0	// GICD base (from LinkerGicBase)
@@ -288,8 +344,11 @@ vbar_ok:
 	ISB	$15
 
 	// ========================================
-	// Initialize g0 and m0
+	// SEGMENT 13: g0/m0 Initialization
 	// ========================================
+	// Initialize Go runtime's g0 and m0 structures.
+	// POST-BOOT: Use setGoroutinePointer() from lib_barriers,
+	//            LinkerRuntimeG0(), LinkerRuntimeM0() from linker_symbols
 
 	// Set g register (R28) to point to runtime.g0
 	MOVD	$runtime·g0(SB), g	// g is alias for R28
@@ -312,14 +371,18 @@ vbar_ok:
 	MOVD	g, (R0)			// m0.g0 = &g0
 
 	// ========================================
-	// Jump to KernelMain
+	// SEGMENT 14: Jump to KernelMain
 	// ========================================
+	// Call Go entry point with DTB pointer.
+	// POST-BOOT: N/A (Go calling convention)
 	MOVD	R22, R2			// DTB pointer as third argument
 	BL	main·KernelMain(SB)
 
 	// ========================================
-	// After KernelMain returns: enable IRQs and idle
+	// SEGMENT 15: Post-KernelMain Idle
 	// ========================================
+	// Enable IRQs and enter idle loop after KernelMain returns.
+	// POST-BOOT: Use enableIRQs() if added to lib_sysregs
 
 	// Enable IRQs by clearing I bit (MSR DAIFCLR, #2)
 	WORD	$0xD50342FF

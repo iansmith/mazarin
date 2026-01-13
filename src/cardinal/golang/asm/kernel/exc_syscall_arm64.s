@@ -1,10 +1,41 @@
-// exc_syscall.s - Synchronous exception handling in Go/Plan9 assembly
+// exc_syscall.s - Synchronous Exception Dispatch (Go/Plan9 Assembly)
 //
 // This file provides the unified synchronous exception handling path:
-//   1. sync_exception_entry - Entry point from GCC sync_exception_handler
+//   1. sync_exception_entry - Entry point from sync_exception_handler
 //   2. syscall_return       - Restores registers and executes ERET (for syscalls)
 //   3. exception_return     - Restores ALL registers and executes ERET (for page faults)
 //   4. load_context_and_eret - Context switch to new thread
+//
+// ============================================================================
+// SEGMENT OVERVIEW (see asm/docs/exception_handling_decomposition.md)
+// ============================================================================
+//
+// sync_exception_entry segments:
+//   Segment 1: IRQ Disable - Mask IRQ during exception handling
+//   Segment 2: Save g & Switch to g0 - Preserve g, switch to g0 for Go safety
+//   Segment 3: Load Exception Info - Read ESR, ELR, SPSR, FAR from frame
+//   Segment 4: Extract EC & Load Args - Get exception class and syscall args
+//   Segment 5: Build ExceptionContext - Create context struct on stack
+//   Segment 6: Call Go Dispatcher - Call SyncExceptionDispatch
+//   Segment 7: Handle Result - Route to appropriate return path
+//
+// syscall_return segments:
+//   Segment 1: Restore System Regs - Restore ELR, SPSR, SP_EL0
+//   Segment 2: Restore GPRs (except R0) - R0 has return value
+//   Segment 3: ERET - Return from exception
+//
+// exception_return segments:
+//   Segment 1: Restore System Regs - Restore ELR, SPSR, SP_EL0
+//   Segment 2: Restore ALL GPRs - Including R0 for retry
+//   Segment 3: ERET - Return from exception
+//
+// load_context_and_eret segments:
+//   Segment 1: Load System Regs - Load SP_EL0, ELR, SPSR
+//   Segment 2: Load GPRs - Load all registers from ThreadContext
+//   Segment 3: ERET - Switch to new thread
+//
+// POST-BOOT NOTE: This is exception dispatch code - must remain inline assembly.
+// The dispatcher calls Go functions but the entry/exit sequences are atomic.
 //
 // Exception frame layout (320 bytes, saved by sync_exception_handler):
 //   [SP+0]:   x0, x1        (16 bytes)
@@ -64,57 +95,49 @@
 //   5. Based on return: syscall_return, exception_return, context_switch, or hang
 //
 TEXT sync_exception_entry(SB), NOSPLIT|NOFRAME, $0
-	// CRITICAL: Disable IRQ interrupts during exception handling
-	//
-	// DAIF bits:
-	//   D (bit 9, 0x200) = Debug exceptions mask
-	//   A (bit 8, 0x100) = SError (asynchronous abort) mask
-	//   I (bit 7, 0x80)  = IRQ mask
-	//   F (bit 6, 0x40)  = FIQ mask
-	//
-	// We only disable IRQ (I bit = 0x80) which is sufficient for preventing
-	// timer interrupts from nesting during exception handling.
-	//
-	// NOTE: Debug exceptions (D) and SError (A) are very unlikely to be the
-	// source of nested exception problems. Masking them would be overkill:
-	//   - Debug exceptions (D): Only occur from breakpoints/watchpoints/single-step
-	//     which we don't use during normal operation
-	//   - SError (A): Asynchronous system errors (like ECC memory errors) are
-	//     rare hardware faults, not software-triggered
-	//
-	// FIQ (F) could be masked for extra safety, but we don't currently use FIQ.
-	//
+	// ========================================================================
+	// SEGMENT 1: IRQ Disable
+	// ========================================================================
+	// CRITICAL: Disable IRQ interrupts during exception handling.
+	// DAIF bits: D(debug)=0x200, A(SError)=0x100, I(IRQ)=0x80, F(FIQ)=0x40
+	// We only mask IRQ - sufficient for preventing timer interrupt nesting.
 	MRS DAIF, R10
 	ORR $0x80, R10, R10            // Set I bit to disable IRQ
 	MSR R10, DAIF
 	ISB $15
 
-	// Save original g to exception frame before switching to g0
+	// ========================================================================
+	// SEGMENT 2: Save g & Switch to g0
+	// ========================================================================
+	// Save original g to exception frame before switching to g0 for Go safety.
 	MOVD g, EXC_FRAME_SAVED_G(RSP)
-
-	// Switch to g0 for Go runtime safety
 	MOVD $runtime·g0(SB), g
 
-	// Load exception info from frame and system registers
-	// ESR is at offset 280 (272 + 8), ELR at 256, SPSR at 264, FAR at 272
+	// ========================================================================
+	// SEGMENT 3: Load Exception Info
+	// ========================================================================
+	// Load exception info from frame: ESR, ELR, SPSR, FAR
 	LDP EXC_FRAME_FAR_ESR(RSP), (R14, R15)   // R14 = FAR, R15 = ESR
 	LDP EXC_FRAME_ELR_SPSR(RSP), (R12, R13)  // R12 = ELR, R13 = SPSR
 
-	// Extract EC from ESR (bits 31:26)
+	// ========================================================================
+	// SEGMENT 4: Extract EC & Load Args
+	// ========================================================================
+	// Extract exception class from ESR (bits 31:26).
+	// Load syscall arguments and saved registers for traceback.
 	LSR $26, R15, R10              // R10 = EC (exception class)
 	AND $0x3F, R10, R10            // Mask to 6 bits
-
-	// Load syscall arguments from exception frame (needed if EC=0x15)
 	LDP EXC_FRAME_X0(RSP), (R16, R17)        // R16 = x0 (arg0), R17 = x1 (arg1)
 	LDP 16(RSP), (R19, R20)                  // R19 = x2 (arg2), R20 = x3 (arg3)
 	LDP 32(RSP), (R21, R22)                  // R21 = x4 (arg4), R22 = x5 (arg5)
 	MOVD EXC_FRAME_X8(RSP), R23              // R23 = x8 (syscall number)
-
-	// Load saved FP, LR, g for traceback
 	LDP EXC_FRAME_X29_X30(RSP), (R24, R25)   // R24 = saved FP, R25 = saved LR
 	MOVD EXC_FRAME_X28(RSP), R26             // R26 = saved g
 
-	// NEW APPROACH: Build ExceptionContext struct and use GO_CALL_8_2B macro
+	// ========================================================================
+	// SEGMENT 5: Build ExceptionContext
+	// ========================================================================
+	// Build ExceptionContext struct on stack for Go dispatcher.
 	//
 	// Current register contents:
 	//   R10 = EC, R15 = ESR, R12 = ELR, R14 = FAR, R13 = SPSR
@@ -149,7 +172,10 @@ TEXT sync_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	MOVD R25, 56(RSP)              // ctx.SavedLR
 	MOVD R26, 64(RSP)              // ctx.SavedG
 
-	// Prepare arguments in registers for GO_CALL_8_2B
+	// ========================================================================
+	// SEGMENT 6: Call Go Dispatcher
+	// ========================================================================
+	// Prepare arguments and call SyncExceptionDispatch.
 	MOVD RSP, R0                   // arg0 = &ctx
 	MOVD R23, R1                   // arg1 = syscallNum
 	MOVD R16, R2                   // arg2 = arg0
@@ -158,15 +184,14 @@ TEXT sync_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	MOVD R20, R5                   // arg5 = arg3
 	MOVD R21, R6                   // arg6 = arg4
 	MOVD R22, R7                   // arg7 = arg5
-
-	// Call using macro (allocates its own 96-byte frame)
 	GO_CALL_8_2B(main·SyncExceptionDispatch, R0, R1, R2, R3, R4, R5, R6, R7, R0, R1, R2)
 	// Returns: R0 = result (int64), R1 = switchTo (int32), R2 = handled (bool)
+	ADD $80, RSP                   // Deallocate ExceptionContext frame
 
-	// Deallocate frame
-	ADD $80, RSP
-
-	// Check if handled
+	// ========================================================================
+	// SEGMENT 7: Handle Result
+	// ========================================================================
+	// Route to appropriate return path based on dispatcher result.
 	CBZ R2, do_exception_hang      // If not handled, hang
 
 	// Check if context switch needed
@@ -236,18 +261,22 @@ do_exception_hang:
 // CRITICAL: R0 contains the syscall return value - DO NOT restore it!
 //
 TEXT syscall_return(SB), NOSPLIT|NOFRAME, $0
-	// Restore ELR_EL1 and SPSR_EL1 from exception frame
+	// ========================================================================
+	// SEGMENT 1: Restore System Regs
+	// ========================================================================
+	// Restore ELR_EL1, SPSR_EL1, SP_EL0 from exception frame.
 	LDP EXC_FRAME_ELR_SPSR(RSP), (R12, R13)
 	MSR R12, ELR_EL1
 	MSR R13, SPSR_EL1
 	ISB $15
-
-	// Restore SP_EL0
 	MOVD EXC_FRAME_SP_EL0(RSP), R10
 	MSR R10, SP_EL0
 	ISB $15
 
-	// Restore R1-R30 from exception frame (NOT R0!)
+	// ========================================================================
+	// SEGMENT 2: Restore GPRs (except R0)
+	// ========================================================================
+	// R0 contains syscall return value - DO NOT restore it!
 	LDP 16(RSP), (R2, R3)
 	LDP 32(RSP), (R4, R5)
 	LDP 48(RSP), (R6, R7)
@@ -266,6 +295,9 @@ TEXT syscall_return(SB), NOSPLIT|NOFRAME, $0
 	LDP EXC_FRAME_X29_X30(RSP), (R29, R30)
 	MOVD 8(RSP), R1                // Restore R1 LAST
 
+	// ========================================================================
+	// SEGMENT 3: ERET
+	// ========================================================================
 	ADD $320, RSP                  // Deallocate exception frame
 	ERET
 
@@ -279,18 +311,22 @@ TEXT syscall_return(SB), NOSPLIT|NOFRAME, $0
 // with the EXACT same register state.
 //
 TEXT exception_return(SB), NOSPLIT|NOFRAME, $0
-	// Restore ELR_EL1 and SPSR_EL1 from exception frame
+	// ========================================================================
+	// SEGMENT 1: Restore System Regs
+	// ========================================================================
+	// Restore ELR_EL1, SPSR_EL1, SP_EL0 from exception frame.
 	LDP EXC_FRAME_ELR_SPSR(RSP), (R12, R13)
 	MSR R12, ELR_EL1
 	MSR R13, SPSR_EL1
 	ISB $15
-
-	// Restore SP_EL0
 	MOVD EXC_FRAME_SP_EL0(RSP), R10
 	MSR R10, SP_EL0
 	ISB $15
 
-	// Restore ALL registers including R0
+	// ========================================================================
+	// SEGMENT 2: Restore ALL GPRs
+	// ========================================================================
+	// Restore ALL registers including R0 for retry.
 	LDP 0(RSP), (R0, R1)           // Restore R0, R1
 	LDP 16(RSP), (R2, R3)
 	LDP 32(RSP), (R4, R5)
@@ -309,6 +345,9 @@ TEXT exception_return(SB), NOSPLIT|NOFRAME, $0
 	MOVD EXC_FRAME_X28(RSP), g     // Restore g from exception frame
 	LDP EXC_FRAME_X29_X30(RSP), (R29, R30)
 
+	// ========================================================================
+	// SEGMENT 3: ERET
+	// ========================================================================
 	ADD $320, RSP                  // Deallocate exception frame
 	ERET
 
@@ -325,22 +364,24 @@ TEXT load_context_and_eret(SB), NOSPLIT|NOFRAME, $0
 	MOVD $'S', R12
 	MOVW R12, (R11)
 
-	// Load SP_EL0 from Context.SP (offset 248)
-	MOVD 248(R10), R11
+	// ========================================================================
+	// SEGMENT 1: Load System Regs
+	// ========================================================================
+	// Load SP_EL0, ELR_EL1, SPSR_EL1 from ThreadContext.
+	MOVD 248(R10), R11             // Context.SP (offset 248)
 	MSR R11, SP_EL0
 	ISB $15
-
-	// Load ELR_EL1 from Context.ELR (offset 256)
-	MOVD 256(R10), R11
+	MOVD 256(R10), R11             // Context.ELR (offset 256)
 	MSR R11, ELR_EL1
 	ISB $15
-
-	// Load SPSR_EL1 from Context.SPSR (offset 264)
-	MOVD 264(R10), R11
+	MOVD 264(R10), R11             // Context.SPSR (offset 264)
 	MSR R11, SPSR_EL1
 	ISB $15
 
-	// Load all GPRs from Context.X[]
+	// ========================================================================
+	// SEGMENT 2: Load GPRs
+	// ========================================================================
+	// Load all general-purpose registers from ThreadContext.X[].
 	LDP 0(R10), (R0, R1)
 	LDP 16(R10), (R2, R3)
 	LDP 32(R10), (R4, R5)
@@ -358,9 +399,11 @@ TEXT load_context_and_eret(SB), NOSPLIT|NOFRAME, $0
 	MOVD 224(R10), g               // g (R28)
 	LDP 232(R10), (R29, R30)
 
-	// Load R10, R11 last
+	// ========================================================================
+	// SEGMENT 3: ERET
+	// ========================================================================
+	// Load R10, R11 last, then execute ERET to switch to new thread.
 	MOVD 88(R10), R11
 	MOVD 80(R10), R10              // Clobbers base pointer - MUST BE LAST
-
 	ERET
 

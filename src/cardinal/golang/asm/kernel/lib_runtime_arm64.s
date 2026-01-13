@@ -1,20 +1,35 @@
-// lib_runtime.s - Go runtime initialization wrapper functions in Go/Plan9 assembly
+// lib_runtime.s - Go Runtime Initialization Wrappers (Go/Plan9 Assembly)
 //
 // This file contains functions that call Go runtime initialization functions
 // (runtime.args, runtime.osinit, runtime.schedinit, runtime.newproc, runtime.mstart)
 // and the kernel_main bridge function.
 //
+// ============================================================================
+// SEGMENT OVERVIEW (see asm/docs/lib_runtime_decomposition.md)
+// ============================================================================
+//
+// Runtime initialization wrappers:
+//   call_runtime_args     - Build argv/envp/auxv, call runtime.args
+//   call_runtime_osinit   - Call runtime.osinit()
+//   call_runtime_schedinit - Call runtime.schedinit()
+//   call_runtime_newproc  - Create main goroutine (runtime.mainPC)
+//   call_newproc_simple_main - Create goroutine for simple test
+//   call_runtime_mstart   - Start scheduler (never returns)
+//
+// Kernel entry points:
+//   kernel_main           - Bridge from boot to main.KernelMain
+//   jump_to_kmazarin      - Set up kmazarin environment and jump
+//
+// POST-BOOT NOTE: These wrappers are called during boot/initialization.
+// They use ABI0 calling convention to interface with Go runtime.
+// After boot completes, use standard Go function calls.
+//
 // NOTE: These functions use Go 1.17+ register-based calling convention.
 // Parameters arrive in R0, R1, etc. Return values go in R0.
 //
-// Migrated from asm/aarch64/lib.s
 
 #include "textflag.h"
 #include "../../../../../docs/abi/go_abi_macros_arm64.h"
-
-// External Go runtime symbols
-// Note: In Go assembly, we reference these with package prefix or via linkname
-// The Go linker resolves these at link time
 
 // ============================================================================
 // Runtime Initialization Wrappers
@@ -34,36 +49,26 @@
 //   - argv (**byte) at [SP+16] before the call
 // The .abi0 wrapper then loads these into R0/R1 for the ABIInternal runtime.args
 TEXT call_runtime_args(SB), NOSPLIT, $96-4
-	// Build the argv/envp/auxv structure on stack
-	// Layout (each entry 8 bytes):
-	//   SP+48: argv[0] = NULL (end of argv, argc=0)
-	//   SP+56: envp[0] = NULL (end of envp)
-	//   SP+64: AT_PAGESZ (6)
-	//   SP+72: 4096
-	//   SP+80: AT_NULL (0)
-	//   SP+88: 0
-
-	// argv[0] = NULL (end of argv)
-	MOVD	ZR, 48(RSP)
-	// envp[0] = NULL (end of envp)
-	MOVD	ZR, 56(RSP)
-	// auxv[0] = AT_PAGESZ (6), auxv[1] = 4096
-	MOVD	$6, R0
+	// ========================================================================
+	// SEGMENT 1: Build argv/envp/auxv Structure
+	// ========================================================================
+	// Build minimal Linux-style structure on stack.
+	MOVD	ZR, 48(RSP)		// argv[0] = NULL (end of argv, argc=0)
+	MOVD	ZR, 56(RSP)		// envp[0] = NULL (end of envp)
+	MOVD	$6, R0			// AT_PAGESZ = 6
 	MOVD	R0, 64(RSP)
 	MOVD	$4096, R0
-	MOVD	R0, 72(RSP)
-	// auxv[2] = AT_NULL (0), auxv[3] = 0
-	MOVD	ZR, 80(RSP)
+	MOVD	R0, 72(RSP)		// Page size = 4096
+	MOVD	ZR, 80(RSP)		// AT_NULL = 0
 	MOVD	ZR, 88(RSP)
 
-	// Set up stack-based arguments for runtime.args.abi0
-	// The .abi0 wrapper expects:
-	//   - argc (int32) at [SP+8]
-	//   - argv (**byte) at [SP+16]
-	MOVW	ZR, 8(RSP)		// argc = 0 at stack offset 8
-	ADD	$48, RSP, R0		// R0 = pointer to argv structure
-	MOVD	R0, 16(RSP)		// argv pointer at stack offset 16
-
+	// ========================================================================
+	// SEGMENT 2: Call runtime.args
+	// ========================================================================
+	// Set up ABI0 stack-based arguments.
+	MOVW	ZR, 8(RSP)		// argc = 0
+	ADD	$48, RSP, R0
+	MOVD	R0, 16(RSP)		// argv pointer
 	CALL	runtime·args(SB)
 
 	// If we get here, args() completed without crash
@@ -247,31 +252,37 @@ TEXT kernel_main(SB), NOSPLIT, $0-0
 //   SP = stackPointer (pointing to the full structure)
 // NOTE: This function never returns
 TEXT jump_to_kmazarin(SB), NOSPLIT|NOFRAME, $0-32
-	// Save entry point address to R4 (we need R0 for argc)
-	MOVD	R0, R4
+	// ========================================================================
+	// SEGMENT 1: Save Entry Point
+	// ========================================================================
+	MOVD	R0, R4			// Save entry point (need R0 for argc)
 
-	// Set VBAR_EL1 to kmazarin's exception vector
+	// ========================================================================
+	// SEGMENT 2: Set Exception Vector
+	// ========================================================================
+	// Set VBAR_EL1 to kmazarin's exception vector.
 	MOVD	main·LinkerKmazarinExceptionVector(SB), R6
 	MSR	R6, VBAR_EL1
 	DSB	$15
 	ISB	$15
 
-	// Switch to EL1t mode (SP_EL1 already set by boot code)
+	// ========================================================================
+	// SEGMENT 3: Switch Mode & Stack
+	// ========================================================================
+	// Switch to EL1t mode, set SP to kmazarin's g0 stack.
 	MSR	$0, SPSel
 	DSB	$15
 	ISB	$15
+	MOVD	R3, RSP			// SP = stackPointer arg
 
-	// Set SP (SP_EL0 in EL1t mode) to high-memory kernel g0 stack
-	MOVD	R3, RSP
-
-	// Set x28 (g register) to kmazarin's runtime.g0 address
+	// ========================================================================
+	// SEGMENT 4: Set g & Jump
+	// ========================================================================
+	// Set g to kmazarin's runtime.g0, set up argc/argv, jump.
 	MOVD	main·LinkerKmazarinRuntimeG0(SB), R5
-	WORD	$0xAA0503FC  // mov x28, x5
-
-	// Set up Go runtime registers
+	WORD	$0xAA0503FC		// mov x28, x5 (g = kmazarin g0)
 	MOVD	R1, R0			// R0 = argc
 	MOVD	R2, R1			// R1 = argv
-
 	JMP	(R4)			// Branch to entry point - never returns
 
 // ============================================================================

@@ -1,12 +1,27 @@
-// exc_irq.s - IRQ Exception Handler in Go/Plan9 Assembly
+// exc_irq.s - IRQ Exception Handler (Go/Plan9 Assembly)
 //
 // This file contains the IRQ exception handler that saves state and dispatches
-// to a Go function (IRQExceptionDispatch) which handles all interrupt logic
+// to a Go function (IRQDispatchGo) which handles all interrupt logic
 // including timer preemption.
 //
-// This follows the same pattern as exc_syscall.s - minimal assembly that
-// sets up parameters and calls Go for all decision-making.
-
+// ============================================================================
+// SEGMENT OVERVIEW (see asm/docs/exception_handling_decomposition.md)
+// ============================================================================
+//
+// irq_exception_el1 segments:
+//   Segment 1: Save Initial Regs - Save x0/x1, read GIC IAR
+//   Segment 2: Save System Regs - Save SP_EL0, ELR, SPSR to frame
+//   Segment 3: Save Remaining GPRs - Save x4-x30 to frame
+//   Segment 4: Call Go Dispatcher - Prepare args, call IRQDispatchGo
+//   Segment 5: Check Preemption - Route based on doPreempt flag
+//   Segment 6: Preemption Path - Modify frame for asyncPreempt
+//   Segment 7: Restore System Regs - Restore ELR, SPSR, SP_EL0
+//   Segment 8: Restore GPRs - Restore all registers
+//   Segment 9: ERET - Return from interrupt
+//
+// POST-BOOT NOTE: This is IRQ entry code - must remain inline assembly.
+// The GIC acknowledgment must happen within microseconds of interrupt.
+//
 #include "textflag.h"
 #include "../../../../../../docs/abi/go_abi_macros_arm64.h"
 
@@ -52,36 +67,34 @@
 
 TEXT irq_exception_el1(SB), NOSPLIT, $0
 	// ========================================================================
-	// SAVE ALL REGISTERS TO EXCEPTION FRAME
+	// SEGMENT 1: Save Initial Regs
 	// ========================================================================
-	// Allocate 272-byte frame
+	// Allocate frame, save x0/x1, read GIC IAR immediately.
 	SUB $IRQ_FRAME_SIZE, RSP
-
-	// Save x0, x1 IMMEDIATELY before clobbering
 	STP (R0, R1), IRQ_FRAME_X0(RSP)
 
-	// Read GIC IAR to acknowledge interrupt (MUST be done quickly)
-	// GICC_IAR = GICC base + 0x0C (IAR offset)
-	// GICC base = GIC base + 0x10000 (GICv2 fixed offset)
+	// Read GIC IAR to acknowledge interrupt (MUST be done quickly).
+	// GICC_IAR = GICC base + 0x0C. GICC base = GIC base + 0x10000.
 	MOVD main·LinkerGicBase(SB), R0
 	ADD $0x1000C, R0                 // R0 = GICC_IAR address
 	MOVW (R0), R0                    // R0 = IAR value
 	ANDW $0x3FF, R0, R0              // R0 = interrupt ID (10 bits)
 
-	// Save x2, x3 so we can use them
+	// ========================================================================
+	// SEGMENT 2: Save System Regs
+	// ========================================================================
+	// Save SP_EL0, ELR_EL1, SPSR_EL1 to frame.
 	STP (R2, R3), IRQ_FRAME_X2(RSP)
-
-	// Read SP_EL0, ELR_EL1, SPSR_EL1
 	MRS SP_EL0, R1                   // R1 = interrupted stack
 	MRS ELR_EL1, R2                  // R2 = return address
 	MRS SPSR_EL1, R3                 // R3 = saved processor state
-
-	// Store SP_EL0, ELR, SPSR in frame
 	MOVD R1, IRQ_FRAME_SP_EL0(RSP)
 	MOVD R2, IRQ_FRAME_ELR(RSP)
 	MOVD R3, IRQ_FRAME_SPSR(RSP)
 
-	// Save remaining registers x4-x30
+	// ========================================================================
+	// SEGMENT 3: Save Remaining GPRs
+	// ========================================================================
 	STP (R4, R5), IRQ_FRAME_X4(RSP)
 	STP (R6, R7), IRQ_FRAME_X6(RSP)
 	STP (R8, R9), IRQ_FRAME_X8(RSP)
@@ -99,45 +112,31 @@ TEXT irq_exception_el1(SB), NOSPLIT, $0
 	MOVD R30, IRQ_FRAME_X30(RSP)
 
 	// ========================================================================
-	// CALL GO DISPATCHER
+	// SEGMENT 4: Call Go Dispatcher
 	// ========================================================================
-	// IRQExceptionDispatch(irqID, framePtr, savedG, elr, spEl0 uint64)
-	//     returns (newELR, newSP, newLR uint64, doPreempt bool)
-	//
-	// R0 = irqID (already set from GIC IAR above)
-	// R1 = framePtr (pointer to exception frame)
-	// R2 = savedG (interrupted x28/g pointer)
-	// R3 = elr (interrupted PC)
-	// R4 = spEl0 (interrupted SP_EL0)
-
-	// Prepare parameters for IRQExceptionDispatch
-	// R0 already has irqID from GIC IAR read above
-	MOVD RSP, R1                     // R1 = framePtr (pointer to exception frame)
+	// Prepare args and call IRQDispatchGo. R0 already has irqID.
+	MOVD RSP, R1                     // R1 = framePtr
 	MOVD IRQ_FRAME_X28(RSP), R2      // R2 = savedG (x28 from frame)
 	MOVD IRQ_FRAME_ELR(RSP), R3      // R3 = elr
 	MOVD IRQ_FRAME_SP_EL0(RSP), R4   // R4 = spEl0
-
-	// Save callee-saved registers (will survive the Go call)
 	SUB $32, RSP
 	STP (R19, R20), 0(RSP)
 	STP (R21, R22), 16(RSP)
-
-	// Call IRQDispatchGo using macro
-	// func IRQDispatchGo(irqID, framePtr, savedG, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool)
-	// Args already in R0-R4, returns will be in R0-R3
 	GO_CALL_5_3B(main·IRQDispatchGo, R0, R1, R2, R3, R4, R0, R1, R2, R3)
-
-	// Restore callee-saved registers
+	// Returns: R0=newELR, R1=newSP, R2=newLR, R3=doPreempt
 	LDP 0(RSP), (R19, R20)
 	LDP 16(RSP), (R21, R22)
 	ADD $32, RSP
 
-	// Check if preemption is needed
+	// ========================================================================
+	// SEGMENT 5: Check Preemption
+	// ========================================================================
 	CBZ R3, irq_normal_return
 
 	// ========================================================================
-	// PREEMPTION PATH: Modify frame and ERET to asyncPreempt
+	// SEGMENT 6: Preemption Path
 	// ========================================================================
+	// Modify frame for asyncPreempt: update ELR, SP_EL0, LR.
 	// R0 = newELR (asyncPreempt address)
 	// R1 = newSP (adjusted SP_EL0 with return frame)
 	// R2 = newLR (interrupted PC, for asyncPreempt to return to)
@@ -149,23 +148,21 @@ TEXT irq_exception_el1(SB), NOSPLIT, $0
 
 irq_normal_return:
 	// ========================================================================
-	// RESTORE ALL REGISTERS AND ERET
+	// SEGMENT 7: Restore System Regs
 	// ========================================================================
-	// Note: Go dispatcher has already handled EOI
-
-	// Restore ELR_EL1 and SPSR_EL1
+	// Restore ELR_EL1, SPSR_EL1, SP_EL0. Go dispatcher handled EOI.
 	MOVD IRQ_FRAME_ELR(RSP), R0
 	MOVD IRQ_FRAME_SPSR(RSP), R1
 	MSR R0, ELR_EL1
 	MSR R1, SPSR_EL1
 	ISB $15
-
-	// Restore SP_EL0
 	MOVD IRQ_FRAME_SP_EL0(RSP), R0
 	MSR R0, SP_EL0
 	ISB $15
 
-	// Restore all GPRs (x2-x30 first, x0/x1 last)
+	// ========================================================================
+	// SEGMENT 8: Restore GPRs
+	// ========================================================================
 	LDP IRQ_FRAME_X2(RSP), (R2, R3)
 	LDP IRQ_FRAME_X4(RSP), (R4, R5)
 	LDP IRQ_FRAME_X6(RSP), (R6, R7)
@@ -186,8 +183,8 @@ irq_normal_return:
 	// Restore x0, x1 LAST
 	LDP IRQ_FRAME_X0(RSP), (R0, R1)
 
-	// Deallocate frame
+	// ========================================================================
+	// SEGMENT 9: ERET
+	// ========================================================================
 	ADD $IRQ_FRAME_SIZE, RSP
-
-	// Return from exception
 	ERET
