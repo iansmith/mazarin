@@ -1,7 +1,32 @@
 #include "textflag.h"
 
-// async_preempt.s - Async Preemption Handler (Go/Plan9 Assembly)
-// Based on Go runtime's asyncPreempt mechanism.
+// async_preempt_arm64.s - Async Preemption Handler
+//
+// ============================================================================
+// OVERVIEW
+// ============================================================================
+// Handles asynchronous preemption injected by timer interrupts. Based on
+// Go runtime's asyncPreempt mechanism but adapted for bare-metal.
+//
+// Functions:
+//   - asyncPreemptBM() - Preemption handler (9 segments, 504-byte frame)
+//
+// OPERATION:
+// Timer interrupt handler modifies ELR_EL1 to inject execution here:
+//   1. Entry: LR = interrupted PC, SP = interrupted SP - 16
+//   2. Allocates 504-byte frame
+//   3. Saves ALL registers (R0-R29, FP/SIMD F0-F31, status flags NZCV/FPSR)
+//   4. Calls timerPreempt() which calls runtime.Gosched() to yield CPU
+//   5. When rescheduled, restores ALL registers
+//   6. Returns to interrupted PC (via LR)
+//
+// WHY NOT DECOMPOSE:
+// Async preemption is a critical orchestration that cannot be decomposed:
+//   1. ALL registers must be saved atomically - no function calls allowed
+//   2. Frame layout must match what timer interrupt handler expects
+//   3. Must preserve exact execution state for transparent preemption
+//   4. Cannot use any primitives that might clobber registers
+// Decomposing would corrupt state and break preemptive scheduling.
 //
 // ============================================================================
 // SEGMENT OVERVIEW (see asm/docs/small_files_decomposition.md)

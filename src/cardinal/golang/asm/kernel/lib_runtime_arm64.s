@@ -1,8 +1,34 @@
-// lib_runtime.s - Go Runtime Initialization Wrappers (Go/Plan9 Assembly)
+// lib_runtime_arm64.s - Go Runtime Initialization Wrappers
 //
-// This file contains functions that call Go runtime initialization functions
-// (runtime.args, runtime.osinit, runtime.schedinit, runtime.newproc, runtime.mstart)
-// and the kernel_main bridge function.
+// ============================================================================
+// OVERVIEW
+// ============================================================================
+// Provides wrappers that call Go runtime initialization functions and kernel
+// entry points. These bridge between assembly boot code and Go runtime.
+//
+// Runtime Initialization Functions (6):
+//   - call_runtime_args() - Build argv/envp/auxv, call runtime.args
+//   - call_runtime_osinit() - Call runtime.osinit()
+//   - call_runtime_schedinit() - Call runtime.schedinit()
+//   - call_runtime_newproc() - Create main goroutine
+//   - call_newproc_simple_main() - Create goroutine for simple test
+//   - call_runtime_mstart() - Start scheduler (never returns)
+//
+// Kernel Entry Points (2):
+//   - kernel_main() - Bridge from boot to main.KernelMain
+//   - jump_to_kmazarin() - Set up kmazarin environment and jump
+//
+// ABI NOTES:
+// These wrappers use ABI0 (stack-based) calling convention to interface
+// with Go runtime functions. They must follow C/ABI0 conventions because
+// the Go runtime was compiled expecting Linux syscall ABI.
+//
+// WHY NOT DECOMPOSE:
+// These are already minimal wrappers (typically 10-30 lines each):
+//   1. Runtime init wrappers: Set up stack args, call runtime function, return
+//   2. Kernel entry points: Set up environment, call target, handle return
+// Each performs a single well-defined initialization step. Decomposing would
+// add complexity without benefit - they're coordination functions by nature.
 //
 // ============================================================================
 // SEGMENT OVERVIEW (see asm/docs/lib_runtime_decomposition.md)

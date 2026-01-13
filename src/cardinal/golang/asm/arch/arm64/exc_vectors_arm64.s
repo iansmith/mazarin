@@ -1,10 +1,39 @@
 // exc_vectors_arm64.s - ARM64 Exception Vector Table
 //
-// ARM64 exception vector table for EL1.
-// The table MUST be 2KB aligned and contain 16 entries at 128-byte intervals.
+// ============================================================================
+// OVERVIEW
+// ============================================================================
+// Defines the ARM64 exception vector table for EL1. This table contains 16
+// exception vectors organized in 4 groups based on exception level and stack pointer.
 //
-// CRITICAL: All 16 entries must be in ONE TEXT block to prevent the linker
-// from placing other functions between them!
+// Structure:
+//   - vec_sync_sp_el0(SB) - Base address (set to VBAR_EL1)
+//   - 16 vectors × 128 bytes each = 2KB total
+//   - Each vector: 1 branch instruction + 31 NOPs
+//
+// Vector Groups:
+//   Group 0 (0x000-0x1FF): Current EL, SP_EL0 - Sync, IRQ, FIQ, SError
+//   Group 1 (0x200-0x3FF): Current EL, SP_EL1 - Sync, IRQ, FIQ, SError
+//   Group 2 (0x400-0x5FF): Lower EL (AArch64) - Sync, IRQ, FIQ, SError
+//   Group 3 (0x600-0x7FF): Lower EL (AArch32) - Sync, IRQ, FIQ, SError
+//
+// CRITICAL REQUIREMENTS:
+//   1. MUST be 2KB (2048-byte) aligned (enforced by PCALIGN $2048)
+//   2. ALL 16 entries MUST be in ONE TEXT block (prevents linker separation)
+//   3. Each entry MUST be exactly 128 bytes
+//
+// WHY NOT DECOMPOSE:
+// The vector table is a hardware-defined structure that ARM64 CPUs expect
+// at a specific layout. It cannot be decomposed because:
+//   1. Hardware requirement - CPU reads from fixed offsets
+//   2. Alignment critical - 2KB alignment required by ARM64 architecture
+//   3. Atomic unit - all 16 vectors must be contiguous
+//   4. Linker constraints - single TEXT block prevents separation
+//
+// This file only defines the table structure. Actual handlers are in:
+//   - exc_handlers_arm64.s (handler entry points)
+//   - exc_sync_entry_arm64.s (synchronous exception handling)
+//   - exc_irq_arm64.s (IRQ handling)
 
 #include "textflag.h"
 

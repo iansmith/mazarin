@@ -1,14 +1,41 @@
-// abi_stubs_arm64.s - ABI0 entry points for functions called from assembly
+// abi_stubs_arm64.s - ABI0 Entry Points for Cross-Package Assembly Calls
 //
+// ============================================================================
+// OVERVIEW
+// ============================================================================
 // When assembly in another package (cardinal/asm/kernel) calls main·functionName,
-// Go expects ABI0 entry points. These stubs provide ABI0 wrappers that read
-// arguments from the stack and call the ABIInternal implementations with
-// arguments in registers.
+// Go expects ABI0 (stack-based) entry points. These stubs provide ABI0 wrappers
+// that bridge to ABIInternal (register-based) implementations.
 //
-// Pattern from Go runtime (see runtime/asm_arm64.s):
-// - ABI0: args on stack, read with name+offset(FP)
-// - ABIInternal: args in R0, R1, R2, ...
-// - Returns: ABI0 writes to ret+offset(FP), ABIInternal returns in R0, R1, ...
+// Functions:
+//   - timerPreempt() - Timer preemption handler (BL + RET)
+//   - SyncExceptionDispatch() - Syscall dispatcher (tail-call JMP)
+//   - DoContextSwitch() - Thread context switcher (tail-call JMP)
+//   - IRQDispatchGo() - IRQ handler (tail-call JMP)
+//   - KernelMain() - Boot entry point (load args + BL + RET)
+//
+// TWO PATTERNS USED:
+//
+// 1. Tail-Call (JMP) - For functions with many arguments
+//    - No stack frame allocation ($0-N)
+//    - Jump to *Internal function
+//    - Go's .abi0 wrapper reads args from caller's stack
+//    - Most efficient: avoids adding to nosplit stack chain
+//
+// 2. Load-and-Call (BL) - For simple functions
+//    - Optionally load args from stack to registers
+//    - Call *Internal function with BL
+//    - Return with RET
+//
+// WHY NOT DECOMPOSE:
+// These functions are already minimal ABI bridging primitives (1-5 instructions).
+// They perform the minimal operation required to bridge ABI0→ABIInternal calling
+// conventions. This cannot be decomposed further.
+//
+// ABI CONVENTIONS:
+// - ABI0 (stack-based): args at name+offset(FP), returns at ret+offset(FP)
+// - ABIInternal (register-based): args in R0-R15, returns in R0-R15
+// - Pattern from Go runtime (runtime/asm_arm64.s)
 
 #include "textflag.h"
 

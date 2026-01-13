@@ -1,11 +1,30 @@
-// exc_handlers.s - Exception Handler Entry Points
+// exc_handlers_arm64.s - Exception Handler Entry Points
 //
-// This file provides the exception handler entry points that the vector
-// table branches to. These handlers are small stubs that redirect to the
-// main exception handling code.
+// ============================================================================
+// OVERVIEW
+// ============================================================================
+// Provides exception handler entry points that the vector table branches to.
+// These are minimal stub functions that redirect to the main exception handlers.
 //
-// Note: The actual exception handling logic (sync_exception_handler,
-// irq_handler_entry) are more complex and will be migrated separately.
+// Functions:
+//   - exc_hang() - Infinite loop for unimplemented exceptions (prints "HANG")
+//   - sync_exception_handler_el0() - Redirect EL0 sync to main handler
+//   - irq_exception_handler_el0() - Redirect EL0 IRQ to EL1 handler
+//
+// EXCEPTION MODE SWITCHING:
+// When running in EL1t mode (using SP_EL0), exceptions automatically switch
+// to EL1h mode (using SP_EL1) for the handler. This means EL0 handlers can
+// simply redirect to the EL1 handlers.
+//
+// WHY NOT DECOMPOSE:
+// These are already minimal stub functions (1-3 instructions each):
+//   - exc_hang: Prints "HANG\n" and loops (debugging aid)
+//   - EL0 redirects: Single branch instruction to actual handler
+// They cannot be decomposed further as they perform atomic redirection.
+//
+// The actual exception handling logic is in:
+//   - exc_sync_entry_arm64.s (sync_exception_handler)
+//   - exc_irq_arm64.s (irq_exception_el1)
 
 #include "textflag.h"
 
