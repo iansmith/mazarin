@@ -67,26 +67,6 @@
 //   Exception level: EL2 (with virtualization=off) or EL1
 //
 TEXT _cardinal_boot(SB), NOSPLIT|NOFRAME, $0
-	// DEBUG: Earliest possible breadcrumb - hardcoded UART address
-	// QEMU virt PL011 UART is at 0x09000000
-	// Wait for TX FIFO not full (bit 5 = TXFF) before writing
-	MOVD	$0x09000000, R1
-	ADD	$0x18, R1, R3		// R3 = Flag Register address
-boot_txff_wait:
-	MOVW	(R3), R2
-	AND	$0x20, R2, R2		// Isolate TXFF bit (bit 5)
-	CBNZ	R2, boot_txff_wait	// Loop while FIFO full
-
-	MOVD	$'!', R0
-	MOVW	R0, (R1)
-
-	// Initialize UART base address for early breadcrumb debugging
-	// R14 = UART PL011 base (from LinkerUartBase)
-	// NOTE: R14 is used for UART breadcrumbs throughout boot. It remains valid
-	// until the BL to KernelMain, since there are no other BL instructions
-	// that would clobber it (R14/X14 is caller-saved in AAPCS64).
-	MOVD	main·LinkerUartBase(SB), R14
-
 	// Preserve QEMU-provided DTB pointer.
 	// On QEMU virt, R0 contains the DTB physical address at reset.
 	// We'll carry it through early init and pass it to KernelMain.
@@ -112,35 +92,14 @@ boot_txff_wait:
 	// Extract EL bits [3:2]
 	LSR	$2, R0, R0
 
-	// DEBUG: Print 'E' followed by the EL value (should be '2' for EL2)
-	MOVD	$0x09000000, R10
-	MOVD	$'E', R5
-	MOVB	R5, (R10)
-	// Print EL number as digit '0', '1', '2', or '3'
-	ADD	$'0', R0, R5
-	MOVB	R5, (R10)
-
 	CMP	$2, R0
 	BNE	at_el1
 
 	// We're at EL2, need to drop to EL1
-	// Print '2' to show we're at EL2
-	MOVD	$0x09000000, R10
-	MOVD	$'2', R5
-	MOVB	R5, (R10)
-
-	// DEBUG: Print 'a' before HCR_EL2
-	MOVD	$'a', R5
-	MOVB	R5, (R10)
-
 	// Configure HCR_EL2 (Hypervisor Configuration Register)
 	// RW (bit 31) = 1: EL1 uses AArch64
 	MOVD	$(1<<31), R0
 	MSR_HCR_EL2_X0
-
-	// DEBUG: Print 'b' after HCR_EL2
-	MOVD	$'b', R5
-	MOVB	R5, (R10)
 
 	// Configure CNTHCTL_EL2 to allow EL1/EL0 access to timers
 	// EL1PCTEN (bit 0) = 1: Don't trap CNTPCT_EL0 reads from EL1
@@ -148,33 +107,14 @@ boot_txff_wait:
 	MOVD	$3, R0
 	MSR_CNTHCTL_EL2_X0
 
-	// DEBUG: Print 'c' after CNTHCTL_EL2
-	MOVD	$'c', R5
-	MOVB	R5, (R10)
-
 	// Set virtual timer offset to 0 (CNTVOFF_EL2)
 	MOVD	$0, R0
 	MSR_CNTVOFF_EL2_X0
 
-	// DEBUG: Print 'd' after CNTVOFF_EL2
-	MOVD	$'d', R5
-	MOVB	R5, (R10)
-
 	// Set up EL2 exception vectors BEFORE dropping to EL1
 	// This allows us to call back to EL2 later to modify SP_EL1
-
-	// DEBUG: Print # BEFORE VBAR_EL2
-	MOVD	$0x09000000, R10
-	MOVD	$'#', R5
-	MOVB	R5, (R10)
-
 	MOVD	$el2_exception_vectors(SB), R0
 	MSR_VBAR_EL2_X0
-
-	// DEBUG: Print @ AFTER VBAR_EL2
-	MOVD	$0x09000000, R10
-	MOVD	$'@', R5
-	MOVB	R5, (R10)
 
 	// ========================================
 	// CRITICAL: Set SP_EL1 to high-memory exception stack NOW (while at EL2)
@@ -182,116 +122,7 @@ boot_txff_wait:
 	// Load address from LinkerKernelExcStackTop (high memory for kmazarin)
 	// ========================================
 	MOVD	main·LinkerKernelExcStackTop(SB), R0
-
-	// DEBUG: Print SP_EL1 value before MSR using distinctive markers
-	// Format: <SP1=XXXXXXXX> where X is top 8 hex digits (bits 63-32)
-	MOVD	$0x09000000, R10
-	MOVD	$'<', R5
-	MOVB	R5, (R10)
-	MOVD	$'S', R5
-	MOVB	R5, (R10)
-	MOVD	$'P', R5
-	MOVB	R5, (R10)
-	MOVD	$'1', R5
-	MOVB	R5, (R10)
-	MOVD	$'=', R5
-	MOVB	R5, (R10)
-
-	// Print 8 hex digits (bits 63-32 of R0)
-	// Save R0 to R11 since we'll modify it
-	MOVD	R0, R11
-
-	// Digit 1 (bits 63-60)
-	LSR	$60, R11, R5
-	AND	$0xF, R5
-	CMP	$10, R5
-	BLT	3(PC)
-	ADD	$('A'-10), R5
-	B	2(PC)
-	ADD	$'0', R5
-	MOVB	R5, (R10)
-
-	// Digit 2 (bits 59-56)
-	LSR	$56, R11, R5
-	AND	$0xF, R5
-	CMP	$10, R5
-	BLT	3(PC)
-	ADD	$('A'-10), R5
-	B	2(PC)
-	ADD	$'0', R5
-	MOVB	R5, (R10)
-
-	// Digit 3 (bits 55-52)
-	LSR	$52, R11, R5
-	AND	$0xF, R5
-	CMP	$10, R5
-	BLT	3(PC)
-	ADD	$('A'-10), R5
-	B	2(PC)
-	ADD	$'0', R5
-	MOVB	R5, (R10)
-
-	// Digit 4 (bits 51-48)
-	LSR	$48, R11, R5
-	AND	$0xF, R5
-	CMP	$10, R5
-	BLT	3(PC)
-	ADD	$('A'-10), R5
-	B	2(PC)
-	ADD	$'0', R5
-	MOVB	R5, (R10)
-
-	// Digit 5 (bits 47-44)
-	LSR	$44, R11, R5
-	AND	$0xF, R5
-	CMP	$10, R5
-	BLT	3(PC)
-	ADD	$('A'-10), R5
-	B	2(PC)
-	ADD	$'0', R5
-	MOVB	R5, (R10)
-
-	// Digit 6 (bits 43-40)
-	LSR	$40, R11, R5
-	AND	$0xF, R5
-	CMP	$10, R5
-	BLT	3(PC)
-	ADD	$('A'-10), R5
-	B	2(PC)
-	ADD	$'0', R5
-	MOVB	R5, (R10)
-
-	// Digit 7 (bits 39-36)
-	LSR	$36, R11, R5
-	AND	$0xF, R5
-	CMP	$10, R5
-	BLT	3(PC)
-	ADD	$('A'-10), R5
-	B	2(PC)
-	ADD	$'0', R5
-	MOVB	R5, (R10)
-
-	// Digit 8 (bits 35-32)
-	LSR	$32, R11, R5
-	AND	$0xF, R5
-	CMP	$10, R5
-	BLT	3(PC)
-	ADD	$('A'-10), R5
-	B	2(PC)
-	ADD	$'0', R5
-	MOVB	R5, (R10)
-
-	// Restore R0 from R11
-	MOVD	R11, R0
-
-	MOVD	$'>', R5
-	MOVB	R5, (R10)
-
 	MSR_SP_EL1_X0
-
-	// Print 'Q' to show SP_EL1 was set at EL2
-	MOVD	$'Q', R5
-	MOVB	R5, (R10)
 
 	// Configure SPSR_EL2 for return to EL1h (EL1 using SP_EL1)
 	// M[3:0] = 0b0101 = EL1h (EL1 with SP_EL1)
@@ -339,30 +170,8 @@ at_el1:
 	// Load the exception stack top address
 	MOVD	main·LinkerKernelExcStackTop(SB), R0
 
-	// DEBUG: Print 'X' and the SP_EL1 value we're about to set
-	MOVD	$0x09000000, R10
-	MOVD	$'X', R5
-	MOVB	R5, (R10)
-	// Print first 4 hex digits of R0 (should be FFFF)
-	MOVD	R0, R11
-	LSR	$60, R11, R5
-	AND	$0xF, R5
-	CMP	$10, R5
-	BLT	sp_el1_digit1
-	ADD	$('A'-10), R5
-	B	sp_el1_print1
-sp_el1_digit1:
-	ADD	$'0', R5
-sp_el1_print1:
-	MOVB	R5, (R10)
-
 	// Set SP (which is SP_EL1 in EL1h mode) to exception stack top
 	MOVD	R0, RSP			// This sets SP_EL1!
-
-	// DEBUG: Print 'Y' to confirm SP_EL1 was set
-	MOVD	$0x09000000, R10
-	MOVD	$'Y', R5
-	MOVB	R5, (R10)
 
 	// Now set SP_EL0 (g0 stack)
 	MOVD	main·LinkerStackTop(SB), R0
@@ -371,10 +180,6 @@ sp_el1_print1:
 	// Switch to EL1t mode to use SP_EL0 for normal execution
 	// SPSel=0 means use SP_EL0 (still at EL1 privilege!)
 	MSR	$0, SPSel
-
-	// Breadcrumb to confirm early boot progress
-	MOVW	$'!', R15
-	MOVW	R15, (R14)
 
 	// ========================================
 	// Enable SIMD/floating-point
@@ -424,11 +229,6 @@ bss_clear_check:
 	CMP	R9, R4
 	BLO	bss_clear_loop
 
-	// Breadcrumb: BSS clear complete
-	// R14 still holds UART base (no BL instructions since it was set)
-	MOVW	$'B', R15
-	MOVW	R15, (R14)
-
 	// NOTE: mmap bump pointer (main.mmapBumpNext) is initialized by Go's
 	// static variable initialization: var mmapBumpNext uintptr = BUMP_REGION_START
 	// No need to set it here in assembly.
@@ -441,43 +241,21 @@ bss_clear_check:
 	MOVB	R11, (R10)
 	DSB	$15
 
-	// Breadcrumb: Write barrier enabled
-	MOVW	$'W', R15
-	MOVW	R15, (R14)
-
 	// ========================================
 	// Set exception vector base
 	// ========================================
 	MOVD	$vec_sync_sp_el0(SB), R0
-
-	// Breadcrumb: About to set VBAR_EL1
-	MOVW	$'V', R15
-	MOVW	R15, (R14)
-
 	DSB	$15
 	MSR	R0, VBAR_EL1
 	ISB	$15
 
-	// Breadcrumb: VBAR_EL1 written
-	MOVW	$'v', R15
-	MOVW	R15, (R14)
-
 	// Verify VBAR_EL1 was set correctly
 	MRS	VBAR_EL1, R1
-
-	// Breadcrumb: VBAR_EL1 read back
-	MOVW	$'X', R15
-	MOVW	R15, (R14)
-
 	CMP	R0, R1
 	BEQ	vbar_ok
-	// VBAR mismatch - hang
 	B	boot_halt
 
 vbar_ok:
-	// Breadcrumb: VBAR verified OK
-	MOVW	$'Y', R15
-	MOVW	R15, (R14)
 	// ========================================
 	// Initialize GIC (Generic Interrupt Controller)
 	// ========================================
@@ -532,11 +310,6 @@ vbar_ok:
 	MOVD	$runtime·m0(SB), R0
 	MOVD	R0, 48(g)		// g0.m = &m0
 	MOVD	g, (R0)			// m0.g0 = &g0
-
-	// Breadcrumb: About to call KernelMain
-	// R14 still holds UART base (this is the last use before BL clobbers it)
-	MOVW	$'G', R15
-	MOVW	R15, (R14)
 
 	// ========================================
 	// Jump to KernelMain
@@ -747,16 +520,7 @@ TEXT el2_hvc_handler(SB), NOSPLIT|NOFRAME, $0
 	BNE	el2_panic_bad_imm
 
 	// Validation passed - set SP_EL1
-	// Print 'M' before MSR
-	MOVD	$0x09000000, R10
-	MOVD	$'M', R5
-	MOVB	R5, (R10)
-
 	MSR_SP_EL1_X0
-
-	// Print 'N' after MSR
-	MOVD	$'N', R5
-	MOVB	R5, (R10)
 
 	// Return to EL1
 	ERET_INSN

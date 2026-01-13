@@ -85,17 +85,6 @@ TEXT sync_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	// FIQ (F) could be masked for extra safety, but we don't currently use FIQ.
 	//
 	MRS DAIF, R10
-
-	// DEBUG: Check if IRQs were ALREADY disabled before we disable them
-	// This helps detect if interrupt enable/disable is unbalanced
-	TST $0x80, R10                 // Test I bit (bit 7)
-	BEQ irqs_were_enabled
-	// IRQs were already disabled - this is unexpected, print 'd'
-	MOVD $0x09000000, R11
-	MOVD $'d', R12
-	MOVB R12, (R11)
-irqs_were_enabled:
-
 	ORR $0x80, R10, R10            // Set I bit to disable IRQ
 	MSR R10, DAIF
 	ISB $15
@@ -348,15 +337,6 @@ TEXT load_context_and_eret(SB), NOSPLIT|NOFRAME, $0
 
 	// Load SPSR_EL1 from Context.SPSR (offset 264)
 	MOVD 264(R10), R11
-
-	// DEBUG: Print 'i' if SPSR.I bit is set (IRQs will be disabled after ERET)
-	TST $0x80, R11                 // Test bit 7 (I mask)
-	BEQ spsr_irq_ok
-	MOVD $0x09000000, R12
-	MOVD $'i', R13
-	MOVB R13, (R12)                // Print 'i' = IRQs disabled in SPSR
-spsr_irq_ok:
-
 	MSR R11, SPSR_EL1
 	ISB $15
 
