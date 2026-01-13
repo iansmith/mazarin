@@ -33,8 +33,13 @@ If qemu-system-aarch64 is not in your PATH, you can:
 
 ## Build & Run
 
+**First time setup:** Build the helper scripts (compiled Go binaries):
 ```bash
-# Using helper scripts (RECOMMENDED)
+make GO=/path/to/go1.25.5 host-tools
+```
+
+**Then use the scripts:**
+```bash
 scripts/build          # Build cardinal and kmazarin
 scripts/build clean    # Clean build
 scripts/run            # Start QEMU (waits 3s, shows last 500 chars)
@@ -42,7 +47,7 @@ scripts/run 10         # Start QEMU with 10s wait
 scripts/stop           # Stop any running QEMU instances
 
 # Or using make directly
-make cardinal          # Build cardinal (version check included)
+make GO=/path/to/go1.25.5 cardinal
 ```
 
 ### Complete Development Workflow

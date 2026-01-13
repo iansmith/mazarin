@@ -85,11 +85,18 @@ CARDINAL_BINARY = $(BUILD_DIR)/cardinal.elf
 KMAZARIN_SRC = src/kmazarin/golang/kmazarin
 KMAZARIN_BINARY = $(BUILD_DIR)/kmazarin.elf
 
-# Tools
+# Tools (run via go run)
 PATCH_ENTRY_TOOL = $(CARDINAL_SRC)/tools/patch-entry.go
 COMPUTE_LINKER_VALUES_TOOL = $(CARDINAL_SRC)/tools/compute-linker-values.go
 INCBIN2GOASM_TOOL = $(CARDINAL_SRC)/tools/incbin2goasm.go
 FIX_GO_ELF_TOOL = tools/fix-go-elf.go
+
+# Host tools (compiled binaries for local system, not target)
+# These are built with host GOOS/GOARCH, not linux/arm64
+SCRIPTS_DIR = scripts
+HOST_BUILD = $(SCRIPTS_DIR)/build
+HOST_RUN = $(SCRIPTS_DIR)/run
+HOST_STOP = $(SCRIPTS_DIR)/stop
 
 # Generated embedded data
 KMAZARIN_DATA_ASM = $(ASM_PACKAGE_DIR)/dev/kmazarin_data_arm64.s
@@ -195,6 +202,30 @@ $(KMAZARIN_BINARY): $(KMAZARIN_ALL_SRC) $(KMAZARIN_OVERLAY) \
 	@echo "Kmazarin kernel built and relocated at $(KMAZARIN_BINARY)"
 
 # =========================================
+# Host Tools (for local system)
+# =========================================
+# These tools run on the build host, not the target.
+# Built with GOWORK=off to avoid go.work version requirements.
+
+$(SCRIPTS_DIR):
+	@mkdir -p $@
+
+$(HOST_BUILD): tools/cmd-build.go | $(SCRIPTS_DIR)
+	@echo "Building scripts/build for host..."
+	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
+
+$(HOST_RUN): tools/cmd-run.go | $(SCRIPTS_DIR)
+	@echo "Building scripts/run for host..."
+	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
+
+$(HOST_STOP): tools/cmd-stop.go | $(SCRIPTS_DIR)
+	@echo "Building scripts/stop for host..."
+	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
+
+# Build all host tools
+host-tools: $(HOST_BUILD) $(HOST_RUN) $(HOST_STOP)
+
+# =========================================
 # Main Targets
 # =========================================
 
@@ -216,8 +247,9 @@ test: check-go-version
 clean:
 	@echo "Cleaning build artifacts..."
 	rm -rf $(BUILD_DIR)
+	rm -rf $(SCRIPTS_DIR)
 	rm -f $(KMAZARIN_DATA_ASM)
 	@echo "Cleaned."
 
 # Phony targets
-.PHONY: all clean cardinal kmazarin test
+.PHONY: all clean cardinal kmazarin test host-tools
