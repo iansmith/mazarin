@@ -9,6 +9,11 @@ GO = /Users/iansmith/mazzy/bin/go
 GOARCH = arm64
 GOOS = linux
 
+# Runtime overlay for kmazarin - patches malloc.go for high-memory heap support
+# The overlay JSON is generated dynamically based on GOROOT
+KMAZARIN_OVERLAY = $(BUILD_DIR)/kmazarin-overlay.json
+RUNTIME_PATCHES_DIR = runtime-patches
+
 # Debug build: disable optimizations and inlining for better GDB debugging
 # Usage: make cardinal DEBUG=1
 DEBUG ?= 0
@@ -54,7 +59,7 @@ KMAZARIN_BINARY = $(BUILD_DIR)/kmazarin.elf
 PATCH_ENTRY_TOOL = $(CARDINAL_SRC)/tools/patch-entry.go
 COMPUTE_LINKER_VALUES_TOOL = $(CARDINAL_SRC)/tools/compute-linker-values.go
 INCBIN2GOASM_TOOL = $(CARDINAL_SRC)/tools/incbin2goasm.go
-FIX_GO_ELF_TOOL = tools/fix-go-elf.py
+FIX_GO_ELF_TOOL = tools/fix-go-elf.go
 
 # Generated embedded data
 KMAZARIN_DATA_ASM = $(ASM_PACKAGE_DIR)/dev/kmazarin_data_arm64.s
@@ -70,7 +75,7 @@ $(BUILD_DIR):
 
 $(KMAZARIN_DATA_ASM): $(KMAZARIN_BINARY)
 	@echo "Generating embedded kmazarin data..."
-	@$(GO) run $(INCBIN2GOASM_TOOL) -sym kmazarin_binary -global $< > $@
+	@GOTOOLCHAIN=local $(GO) run $(INCBIN2GOASM_TOOL) -sym kmazarin_binary -global $< > $@
 	@echo "Generated $(KMAZARIN_DATA_ASM) ($$(wc -l < $@ | tr -d ' ') lines)"
 
 # =========================================
@@ -93,11 +98,11 @@ $(CARDINAL_BINARY): $(GO_NATIVE_SRC) $(CARDINAL_SRC)/golang/go.mod $(KMAZARIN_BI
 			-o $(abspath $@) \
 			./main
 	@echo "Patching entry point to _cardinal_boot..."
-	@$(GO) run $(PATCH_ENTRY_TOOL) $@ _cardinal_boot
+	@GOTOOLCHAIN=local $(GO) run $(PATCH_ENTRY_TOOL) $@ _cardinal_boot
 	@echo "Patching linker values..."
-	@cd $(CARDINAL_SRC)/golang && $(GO) run ../tools/compute-linker-values.go -patch -kmazarin $(abspath $(KMAZARIN_BINARY)) $(abspath $@)
+	@cd $(CARDINAL_SRC)/golang && GOTOOLCHAIN=local $(GO) run ../tools/compute-linker-values.go -patch -kmazarin $(abspath $(KMAZARIN_BINARY)) $(abspath $@)
 	@echo "Fixing ELF for QEMU compatibility..."
-	@python3 $(FIX_GO_ELF_TOOL) $@
+	@GOTOOLCHAIN=local $(GO) run $(FIX_GO_ELF_TOOL) $@
 	@echo "cardinal ready at $@"
 
 # =========================================
@@ -133,20 +138,29 @@ KMAZARIN_ALL_SRC = $(wildcard $(KMAZARIN_SRC)/*.go) $(wildcard $(KMAZARIN_SRC)/*
                    $(wildcard $(KMAZARIN_DEVICE_SRC)/*.go) $(wildcard $(KMAZARIN_DEVICE_SRC)/*.s) \
                    $(wildcard $(KMAZARIN_DTB_SRC)/*.go) $(wildcard $(KMAZARIN_DTB_SRC)/*.s)
 
-$(KMAZARIN_BINARY): $(KMAZARIN_ALL_SRC) \
+# Generate overlay JSON for kmazarin runtime patches
+# This allows using vanilla Go with our malloc.go patch for high-memory heap support
+# GOTOOLCHAIN=local ensures we get the actual GOROOT, not a downloaded toolchain
+$(KMAZARIN_OVERLAY): $(RUNTIME_PATCHES_DIR)/malloc.go | $(BUILD_DIR)
+	@echo "Generating runtime overlay for kmazarin..."
+	@GOROOT=$$(GOTOOLCHAIN=local $(GO) env GOROOT) && \
+		echo "{\"Replace\":{\"$$GOROOT/src/runtime/malloc.go\":\"$(abspath $(RUNTIME_PATCHES_DIR)/malloc.go)\"}}" > $(KMAZARIN_OVERLAY)
+	@echo "  Overlay: $(KMAZARIN_OVERLAY)"
+
+$(KMAZARIN_BINARY): $(KMAZARIN_ALL_SRC) $(KMAZARIN_OVERLAY) \
                     tools/kmazarin-entry.sh tools/print-kmazarin-addr.go tools/relocate-kmazarin.go src/cardinal/golang/constants/layout.go | $(BUILD_DIR)
-	$(eval KMAZARIN_LOAD_ADDR := $(shell ./tools/kmazarin-entry.sh))
+	$(eval KMAZARIN_LOAD_ADDR := $(shell cd src/cardinal/golang && GOTOOLCHAIN=local $(GO) run ../../../tools/print-kmazarin-addr.go))
 	@echo "Building kmazarin kernel (static Go binary at $(KMAZARIN_LOAD_ADDR))..."
 	@cd $(KMAZARIN_SRC) && \
 		CGO_ENABLED=0 \
-		GOTOOLCHAIN=auto \
+		GOTOOLCHAIN=local \
 		GOARCH=$(GOARCH) \
 		GOOS=$(GOOS) \
-		$(GO) build -tags "qemuvirt aarch64" $(GCFLAGS) -ldflags="-T $(KMAZARIN_LOAD_ADDR)" -o $(abspath $(KMAZARIN_BINARY)) .
+		$(GO) build -overlay=$(abspath $(KMAZARIN_OVERLAY)) -tags "qemuvirt aarch64" $(GCFLAGS) -ldflags="-T $(KMAZARIN_LOAD_ADDR)" -o $(abspath $(KMAZARIN_BINARY)) .
 	@echo "Fixing kmazarin ELF for QEMU compatibility..."
-	@python3 $(FIX_GO_ELF_TOOL) $(KMAZARIN_BINARY)
+	@GOTOOLCHAIN=local $(GO) run $(FIX_GO_ELF_TOOL) $(KMAZARIN_BINARY)
 	@echo "Relocating kmazarin to high memory (0xFFFFFFFF41800000)..."
-	@$(GO) run tools/relocate-kmazarin.go $(KMAZARIN_BINARY) $(KMAZARIN_BINARY).tmp
+	@GOTOOLCHAIN=local $(GO) run tools/relocate-kmazarin.go $(KMAZARIN_BINARY) $(KMAZARIN_BINARY).tmp
 	@mv $(KMAZARIN_BINARY).tmp $(KMAZARIN_BINARY)
 	@echo "Kmazarin kernel built and relocated at $(KMAZARIN_BINARY)"
 
