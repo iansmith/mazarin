@@ -1,59 +1,166 @@
 # Mazzy Architecture - Essential Guide
 
+## Quick Reference - Environment Variables
+
+**On this system (Homebrew on macOS):**
+```bash
+GO=/opt/homebrew/Cellar/go/1.25.5/bin/go
+QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
+GOTOOLCHAIN=auto  # Optional: auto-downloads Go 1.25.5 if you have Go 1.24+
+```
+
+**Usage:**
+```bash
+# Build
+GO=/opt/homebrew/Cellar/go/1.25.5/bin/go build/tools/build
+
+# Run
+QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 build/tools/run 5
+```
+
 ## Overview
 
 **Cardinal** (bootloader/OS shim) + **Kmazarin** (Go kernel)
 - Cardinal: Minimal OS providing syscalls/environment for Go runtime to start
 - Kmazarin: Unmodified Go binary - full OS kernel with Go runtime
 
+## Prerequisites
+
+**Go Version: 1.25.5 (REQUIRED)**
+
+This project requires Go 1.25.5 exactly. The build will abort with a helpful error if the wrong version is detected.
+
+**QEMU Version: 10.2+ (REQUIRED)**
+
+QEMU 10.2 or later is required. Earlier versions have issues with the ELF loading.
+
+### Installing Go 1.25.5
+
+If Go 1.25.5 is not in your PATH, you have three options:
+
+1. **Install Go 1.25.5 directly** and add to PATH
+2. **Use Homebrew** (recommended on macOS):
+   ```bash
+   brew install go@1.25.5
+   ```
+3. **Use GOTOOLCHAIN** (if you have Go 1.24.x or later):
+   ```bash
+   GOTOOLCHAIN=auto go version  # Automatically downloads Go 1.25.5 when required
+   ```
+
+**On this system (Homebrew installation):**
+```bash
+# Explicit path to Go 1.25.5 binary:
+GO=/opt/homebrew/Cellar/go/1.25.5/bin/go build/tools/build
+GO=/opt/homebrew/Cellar/go/1.25.5/bin/go make cardinal
+
+# Or use GOTOOLCHAIN (requires Go 1.24+ in PATH):
+GOTOOLCHAIN=auto go run tools/cmd-build.go
+```
+
+**Important:** The build tools check for Go 1.25.5 and will abort with a helpful error if the wrong version is detected. Always specify the GO environment variable when running build commands.
+
+### Installing QEMU 10.2+
+
+If qemu-system-aarch64 is not in your PATH, you can:
+
+1. Install it and add to PATH
+2. Override per-command: `QEMU=/path/to/qemu-system-aarch64 build/tools/run`
+
+**On this system (Homebrew installation):**
+```bash
+QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 build/tools/run
+```
+
 ## Build & Run
 
+### Host Tools
+
+All build and run tools are Go programs compiled for the host system (not the target arm64).
+
+**Source locations:**
+- `tools/*.go` - Standalone tools (fix-go-elf, relocate-kmazarin, incbin2goasm, patch-entry, cmd-build, cmd-run, cmd-stop)
+- `src/cardinal/tools/*.go` - Tools that import cardinal packages (compute-linker-values, print-kmazarin-addr)
+
+**Binary output:** `build/tools/` (created by `make host-tools`)
+
+**First time setup:** Build the host tools:
 ```bash
-make cardinal  # Build
+# On this system (Homebrew):
+GO=/opt/homebrew/Cellar/go/1.25.5/bin/go make host-tools
+
+# Generic:
+make GO=/path/to/go1.25.5 host-tools
 ```
+
+**Then use the tools:**
+```bash
+# On this system (Homebrew):
+GO=/opt/homebrew/Cellar/go/1.25.5/bin/go build/tools/build
+GO=/opt/homebrew/Cellar/go/1.25.5/bin/go build/tools/build clean
+QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 build/tools/run 5
+build/tools/stop  # Stop doesn't need environment variables
+
+# Generic (if tools are in PATH):
+build/tools/build          # Build cardinal and kmazarin
+build/tools/build clean    # Clean build
+build/tools/run            # Start QEMU (waits 3s, shows last 500 chars)
+build/tools/run 10         # Start QEMU with 10s wait
+build/tools/stop           # Stop any running QEMU instances
+
+# Or using make directly:
+GO=/opt/homebrew/Cellar/go/1.25.5/bin/go make cardinal
+```
+
+### Complete Development Workflow
+
+**On this system (with Homebrew paths):**
+```bash
+# 1. Stop any running QEMU
+build/tools/stop
+
+# 2. Build
+GO=/opt/homebrew/Cellar/go/1.25.5/bin/go build/tools/build clean
+
+# 3. Run
+QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 build/tools/run 5
+```
+
+**Generic workflow (if tools are in PATH):**
+```bash
+# 1. Stop any running QEMU
+build/tools/stop
+
+# 2. Build
+build/tools/build clean    # or just: build/tools/build
+
+# 3. Run
+build/tools/run 5          # Wait 5 seconds before showing output
+```
+
+Output is written to `/tmp/cardinal-serial.log`.
+
+**CRITICAL: Serial Log Safety**
+- The serial log contains terminal control sequences that can freeze your terminal
+- NEVER: `cat /tmp/cardinal-serial.log` or Read the raw file directly
+- ALWAYS: Filter control characters first:
+  ```bash
+  tail -f /tmp/cardinal-serial.log | tr -d '\000-\010\013-\037\177-\377'
+  ```
+- The `build/tools/run` script automatically applies safe filtering
 
 **CRITICAL: QEMU Output Buffering**
-- ❌ NO: `| tee`, `| tail`, `> file`, `< /dev/null` - causes buffering issues
-- ✅ Use file-based serial output with TCP monitor (see below)
+- NO: `| tee`, `| tail`, `> file`, `< /dev/null` piped to QEMU - causes buffering issues
+- Use file-based serial output with TCP monitor (see below)
 
-### Reliable QEMU Debugging Setup
+### QEMU Monitor Access
 
-**IMPORTANT**: The `bochs-display` device is REQUIRED for serial output to work, even in nographic mode!
+The build/tools/run script starts QEMU with a TCP monitor on port 4444.
 
-**Terminal 1 - Run QEMU:**
+**Query QEMU monitor:**
 ```bash
-rm -f /tmp/cardinal-serial.log
-~/mazzy/bin/qemu-system-aarch64 \
-    -M virt,virtualization=off \
-    -cpu cortex-a72 \
-    -m 8G \
-    -kernel build/cardinal.elf \
-    -nodefaults \
-    -device bochs-display \
-    -object rng-random,id=rng0,filename=/dev/urandom \
-    -device virtio-rng-pci,rng=rng0,disable-legacy=on \
-    -display none \
-    -serial file:/tmp/cardinal-serial.log \
-    -monitor tcp:127.0.0.1:4444,server,nowait \
-    -semihosting \
-    -no-reboot &
-```
-
-**Terminal 2 - Watch serial output:**
-```bash
-tail -f /tmp/cardinal-serial.log
-```
-
-**Terminal 3 - Query QEMU monitor (Python):**
-```python
-import socket, time
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.connect(('127.0.0.1', 4444))
-sock.settimeout(2)
-time.sleep(0.2); sock.recv(4096)  # Drain banner
-sock.send(b'info registers\n')
-time.sleep(0.5)
-print(sock.recv(8192).decode())
+# Using netcat
+echo "info registers" | nc 127.0.0.1 4444
 ```
 
 **Key monitor commands:**

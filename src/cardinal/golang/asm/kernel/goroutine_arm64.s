@@ -1,7 +1,32 @@
 #include "textflag.h"
 
-// Goroutine switching assembly functions
-// Simplified versions of Go runtime's gogo() function
+// goroutine.s - Goroutine Context Switching (Go/Plan9 Assembly)
+//
+// ============================================================================
+// SEGMENT OVERVIEW (see asm/docs/small_files_decomposition.md)
+// ============================================================================
+//
+// switchToGoroutine segments:
+//   Segment 1: Set g - Set g register to new goroutine
+//   Segment 2: Get Stack - Load stack pointer from g.sched.sp
+//   Segment 3: Verify Alignment - Check 16-byte alignment, error if misaligned
+//   Segment 4: Switch SP & Return - Set RSP and return to caller
+//
+// runOnGoroutine segments:
+//   Segment 1: Save Caller State - Save callee-saved registers on current stack
+//   Segment 2: Set g & Get Stack - Switch g, load new goroutine's stack
+//   Segment 3: Execute Function - Call the function on new stack
+//   Segment 4: Restore & Return - Restore state and return to caller
+//
+// callOnG0Stack segments:
+//   Segment 1: Save State - Save function pointer and current g
+//   Segment 2: Get g0 - Load g0 from current g.m.g0
+//   Segment 3: Switch to g0 - Set g, update TLS, switch SP
+//   Segment 4: Execute Function - Call function (never returns)
+//
+// POST-BOOT NOTE: These are context switch operations - must remain inline assembly.
+// Stack manipulation and g pointer changes require atomic sequences.
+//
 
 // switchToGoroutine switches execution to a new goroutine
 // This is called from Go code on g0's stack (the system goroutine)
@@ -18,27 +43,29 @@ TEXT switchToGoroutine(SB), NOSPLIT, $0
 	// R0 = new goroutine pointer (runtimeG*)
 	// R1 = function address (currently unused)
 
-	// Set g to new goroutine (CRITICAL for Go runtime)
-	// The Go runtime reads the current goroutine via g register
+	// ========================================================================
+	// SEGMENT 1: Set g
+	// ========================================================================
+	// Set g register to new goroutine (CRITICAL for Go runtime).
 	MOVD R0, g
 
-	// Get new goroutine's stack pointer from g.sched.sp
-	// runtimeG layout: stack(16) + stackguard0(8) + stackguard1(8) + _panic(8) + _defer(8) + m(8) = 56
-	// sched starts at offset 56
-	// sched.sp is at offset 56 + 0 = 56
-	MOVD 56(R0), R2  // Load g.sched.sp
+	// ========================================================================
+	// SEGMENT 2: Get Stack
+	// ========================================================================
+	// Load g.sched.sp (offset 56 in runtimeG).
+	MOVD 56(R0), R2
 
-	// SP ALIGNMENT CHECK: Verify g.sched.sp is 16-byte aligned before setting RSP
-	AND $0xF, R2, R3              // Check alignment (lower 4 bits)
-	CBNZ R3, sp_misaligned_switch // If not zero, SP is misaligned!
+	// ========================================================================
+	// SEGMENT 3: Verify Alignment
+	// ========================================================================
+	// SP must be 16-byte aligned.
+	AND $0xF, R2, R3
+	CBNZ R3, sp_misaligned_switch
 
-	// SP is aligned, set it normally
+	// ========================================================================
+	// SEGMENT 4: Switch SP & Return
+	// ========================================================================
 	MOVD R2, RSP
-
-	// Return to caller - they will call the Go function on the new stack
-	// The return address is in R30 (link register), not on the stack
-	// So we can safely return even though we've switched stacks
-	// The Go function will allocate its own frame when called
 	RET
 
 sp_misaligned_switch:
@@ -111,61 +138,51 @@ halt_loop:
 //   5. Restores original state and returns
 //
 TEXT runOnGoroutine(SB), NOSPLIT, $0
-	// Save callee-saved registers and return address on current stack
-	// AArch64 calling convention: R19-g are callee-saved
-	// We also save R29 (frame pointer) and R30 (link register)
+	// ========================================================================
+	// SEGMENT 1: Save Caller State
+	// ========================================================================
+	// Save callee-saved registers on current stack.
 	SUB $16, RSP
 	MOVD R29, 0(RSP)
 	MOVD R30, 8(RSP)
-
 	SUB $16, RSP
 	MOVD R27, 0(RSP)
 	MOVD g, 8(RSP)
-
 	SUB $16, RSP
 	MOVD R25, 0(RSP)
 	MOVD R26, 8(RSP)
-
 	SUB $16, RSP
 	MOVD R23, 0(RSP)
 	MOVD R24, 8(RSP)
-
 	SUB $16, RSP
 	MOVD R21, 0(RSP)
 	MOVD R22, 8(RSP)
-
 	SUB $16, RSP
 	MOVD R19, 0(RSP)
 	MOVD R20, 8(RSP)
+	MOVD RSP, R19                    // Save current RSP
+	MOVD g, R20                      // Save old g pointer
+	MOVD R1, R21                     // Save function pointer
 
-	// Save current RSP in a callee-saved register so we can restore it
-	MOVD RSP, R19
-
-	// Save the old g pointer (g) so we can restore it
-	MOVD g, R20
-
-	// Save function pointer
-	MOVD R1, R21
-
-	// Set g to new goroutine pointer
-	MOVD R0, g
-
-	// Get new goroutine's stack pointer from g.sched.sp (offset 56)
-	MOVD 56(R0), R2
-
-	// Verify SP is 16-byte aligned
+	// ========================================================================
+	// SEGMENT 2: Set g & Get Stack
+	// ========================================================================
+	MOVD R0, g                       // Set g to new goroutine
+	MOVD 56(R0), R2                  // Get g.sched.sp (offset 56)
 	AND $0xF, R2, R3
 	CBNZ R3, run_sp_misaligned
+	MOVD R2, RSP                     // Switch to new goroutine's stack
 
-	// Switch to new goroutine's stack
-	MOVD R2, RSP
+	// ========================================================================
+	// SEGMENT 3: Execute Function
+	// ========================================================================
+	// In Go, func() is a funcval struct where first word is code pointer.
+	MOVD (R21), R3
+	CALL (R3)
 
-	// Call the function
-	// In Go, func() is a pointer to a funcval struct where first word is the code pointer
-	MOVD (R21), R3  // Load code pointer from funcval
-	CALL (R3)       // Call the function
-
-	// Function returned - restore original state
+	// ========================================================================
+	// SEGMENT 4: Restore & Return
+	// ========================================================================
 run_restore:
 	// Restore original RSP
 	MOVD R19, RSP
@@ -236,39 +253,37 @@ run_sp_misaligned:
 TEXT callOnG0Stack(SB), NOSPLIT, $0
 	// R0 = function pointer to call
 
-	// Save function pointer for later
-	MOVD R0, R19
+	// ========================================================================
+	// SEGMENT 1: Save State
+	// ========================================================================
+	// Save function pointer and current g.
+	MOVD R0, R19                     // Save function pointer
+	MOVD g, R20                      // Save current g
 
-	// Save current g (in g)
-	MOVD g, R20
+	// ========================================================================
+	// SEGMENT 2: Get g0
+	// ========================================================================
+	// Get g0 from g.m.g0. g.m is at offset 48, m.g0 at offset 0.
+	MOVD 48(g), R21                  // R21 = g.m
+	MOVD 0(R21), R22                 // R22 = m.g0
 
-	// Get current g's m pointer (g.m at offset from runtimeG structure)
-	// Using unsafe.Offsetof, g.m is at offset 48
-	MOVD 48(g), R21  // R21 = g.m
-
-	// Get m.g0 pointer (m.g0 at offset 0 of runtimeM)
-	MOVD 0(R21), R22   // R22 = m.g0
-
-	// Switch g register to g0
-	MOVD R22, g      // g = g0
-
-	// Update TLS to point to g0
-	// Note: Use .abi0 suffix to match the actual Go runtime symbol name
-	CALL runtime·save_g·abi0(SB)
-
-	// Get g0's stack pointer from g0.sched.sp (offset 56)
-	MOVD 56(R22), R23  // R23 = g0.sched.sp
-
-	// Verify SP is 16-byte aligned
+	// ========================================================================
+	// SEGMENT 3: Switch to g0
+	// ========================================================================
+	// Set g to g0, update TLS, switch to g0's stack.
+	MOVD R22, g
+	CALL runtime·save_g·abi0(SB)     // Update TLS
+	MOVD 56(R22), R23                // R23 = g0.sched.sp
 	AND $0xF, R23, R24
 	CBNZ R24, g0_sp_misaligned
+	MOVD R23, RSP                    // Switch to g0's stack
 
-	// Switch to g0's stack
-	MOVD R23, RSP
-
-	// Call the function (it's a func() closure, first word is code pointer)
-	MOVD (R19), R24  // Load code pointer from funcval
-	CALL (R24)       // Call function
+	// ========================================================================
+	// SEGMENT 4: Execute Function
+	// ========================================================================
+	// Call function (never returns - should call schedule()).
+	MOVD (R19), R24
+	CALL (R24)
 
 	// NEVER REACHED - function should call schedule() which never returns
 	MOVD $0x09000000, R25

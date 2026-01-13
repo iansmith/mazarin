@@ -1,24 +1,29 @@
 #include "textflag.h"
 
-// async_preempt.s - Bare-metal async preemption for ARM64
-// Based on Go runtime's asyncPreempt mechanism
+// async_preempt.s - Async Preemption Handler (Go/Plan9 Assembly)
+// Based on Go runtime's asyncPreempt mechanism.
+//
+// ============================================================================
+// SEGMENT OVERVIEW (see asm/docs/small_files_decomposition.md)
+// ============================================================================
+//
+// asyncPreemptBM segments:
+//   Segment 1: Allocate Frame & Save LR - Save interrupted PC, set up frame
+//   Segment 2: Save GPRs - Save R0-R27 to frame
+//   Segment 3: Save Status Regs - Save NZCV, FPSR condition flags
+//   Segment 4: Save FP/SIMD - Save F0-F31 floating-point registers
+//   Segment 5: Call Go Handler - Call timerPreempt() -> Gosched()
+//   Segment 6: Restore FP/SIMD - Restore F0-F31
+//   Segment 7: Restore Status Regs - Restore NZCV, FPSR
+//   Segment 8: Restore GPRs - Restore R0-R27, R29
+//   Segment 9: Return - Load LR, deallocate frame, RET to interrupted PC
+//
+// POST-BOOT NOTE: This is preemption code - must remain inline assembly.
+// Timer interrupts inject execution here; all registers must be preserved.
 //
 // This function is "injected" by the timer interrupt handler.
 // The interrupt handler modifies ELR_EL1 to point here, with LR set to interrupted PC.
 // This saves all registers, calls the scheduler, then returns to interrupted location.
-
-// UART debug output macro (from exceptions.s)
-// CRITICAL: This macro must be used for all debug output, never inline UART writes!
-// Expects: R0 contains the character to print (caller-saved)
-// Preserves: All registers except R0 (R10 is saved/restored internally)
-// Caller must save/restore R0 if needed before/after calling
-#define UART_PUTC_SAFE \
-	SUB $16, RSP; \
-	MOVD R10, 0(RSP); \
-	MOVD $0x09000000, R10; \
-	MOVW R0, 0(R10); \
-	MOVD 0(RSP), R10; \
-	ADD $16, RSP
 
 // asyncPreemptBM is the bare-metal equivalent of runtime.asyncPreempt
 // Entry state (set by timer interrupt handler):
@@ -36,29 +41,24 @@
 //   4. Returns to LR (interrupted PC)
 //
 TEXT asyncPreemptBM(SB), NOSPLIT, $0
-	// DEBUG: Print 'A' to show asyncPreemptBM was reached
-	// Save R0 first since UART_PUTC_SAFE uses it as parameter
-	SUB $16, RSP
-	MOVD R0, 0(RSP)
-	MOVD $'A', R0
-	UART_PUTC_SAFE
-	MOVD 0(RSP), R0
-	ADD $16, RSP
+	// ========================================================================
+	// SEGMENT 1: Allocate Frame & Save LR
+	// ========================================================================
+	// Save LR (= interrupted PC) before allocating frame.
+	SUB $504, RSP
+	MOVD R30, 0(RSP)           // Store interrupted PC at [SP+0]
+	MOVD R29, 496(RSP)         // Save FP
+	ADD $496, RSP, R29         // FP = SP + 496
 
-	// Save current LR (= interrupted PC, set by timer handler) BEFORE moving SP
-	// We allocate 504 bytes (not 496) to include space for R27
-	// ARM64 pre-indexed str has limited range (-256 to +255), so we do this in two steps
-	SUB $504, RSP              // SP -= 504
-	MOVD R30, 0(RSP)           // Store LR at [SP+0]
-
-	// Set up frame pointer for stack walking
-	// Save current FP at [SP-8] (relative to entry SP, now [SP+504-8])
-	MOVD R29, 496(RSP)
-	ADD $496, RSP, R29         // FP = SP + 496 (points to saved FP location)
-
-	// Save all general-purpose registers (R0-R27, skip g, R29=FP, R30=LR already saved)
-	// Use offsets from SP (which now points to saved LR)
-	STP (R0, R1), 8(RSP)       // Save R0, R1 at SP+8
+	// ========================================================================
+	// SEGMENT 2: Save GPRs
+	// ========================================================================
+	// Save R0-R27 (skip g, R29=FP already saved, R30=LR already saved).
+	// NOTE: R18 (platform register) is intentionally omitted - Go Plan9 assembly
+	// doesn't support it directly. Cardinal's bare-metal context doesn't use R18,
+	// unlike kmazarin which saves it via raw WORD instructions. This is consistent
+	// with all of cardinal's exception handlers (see exc_sync_entry_arm64.s, etc).
+	STP (R0, R1), 8(RSP)
 	STP (R2, R3), 24(RSP)      // Save R2, R3
 	STP (R4, R5), 40(RSP)      // Save R4, R5
 	STP (R6, R7), 56(RSP)      // Save R6, R7
@@ -67,26 +67,26 @@ TEXT asyncPreemptBM(SB), NOSPLIT, $0
 	STP (R12, R13), 104(RSP)   // Save R12, R13
 	STP (R14, R15), 120(RSP)   // Save R14, R15
 	STP (R16, R17), 136(RSP)   // Save R16, R17
+	// R18 skipped (see NOTE above)
 	STP (R19, R20), 152(RSP)   // Save R19, R20
 	STP (R21, R22), 168(RSP)   // Save R21, R22
 	STP (R23, R24), 184(RSP)   // Save R23, R24
 	STP (R25, R26), 200(RSP)   // Save R25, R26
-	MOVD R27, 216(RSP)         // Save R27 (CRITICAL: we interrupt at arbitrary points, not safe points!)
-	// Note: g pointer managed by runtime, updated by Gosched()
-	// Note: R29 (FP) already saved above
-	// Note: R30 (LR) already saved at SP+0
+	MOVD R27, 216(RSP)         // Save R27 (CRITICAL: interrupt at arbitrary points!)
 
-	// Save condition flags (NZCV)
+	// ========================================================================
+	// SEGMENT 3: Save Status Regs
+	// ========================================================================
+	// Save NZCV and FPSR condition flags.
 	MRS NZCV, R0
-	MOVD R0, 224(RSP)          // Save NZCV at SP+224
-
-	// Save floating-point status register
+	MOVD R0, 224(RSP)
 	MRS FPSR, R0
-	MOVD R0, 232(RSP)          // Save FPSR at SP+232
+	MOVD R0, 232(RSP)
 
-	// Save all floating-point/SIMD registers (F0-F31, 64-bit view)
-	// Use FSTPD to save pairs of 64-bit floating-point registers
-	// Note: This saves only 64 bits per register, matching Go runtime's asyncPreempt
+	// ========================================================================
+	// SEGMENT 4: Save FP/SIMD
+	// ========================================================================
+	// Save F0-F31 (64-bit view, matching Go runtime's asyncPreempt).
 	FSTPD (F0, F1), 240(RSP)
 	FSTPD (F2, F3), 256(RSP)
 	FSTPD (F4, F5), 272(RSP)
@@ -104,13 +104,16 @@ TEXT asyncPreemptBM(SB), NOSPLIT, $0
 	FSTPD (F28, F29), 464(RSP)
 	FSTPD (F30, F31), 480(RSP)
 
-	// Now call the Go preemption handler
-	// This will call runtime.Gosched() which may switch goroutines
-	// When it returns, we're back on this goroutine's stack
+	// ========================================================================
+	// SEGMENT 5: Call Go Handler
+	// ========================================================================
+	// Call timerPreempt() which calls runtime.Gosched().
 	CALL main·timerPreempt(SB)
 
-	// Restore all floating-point/SIMD registers (F0-F31)
-	// Use FLDPD to restore pairs of 64-bit floating-point registers
+	// ========================================================================
+	// SEGMENT 6: Restore FP/SIMD
+	// ========================================================================
+	// Restore F0-F31.
 	FLDPD 480(RSP), (F30, F31)
 	FLDPD 464(RSP), (F28, F29)
 	FLDPD 448(RSP), (F26, F27)
@@ -128,15 +131,19 @@ TEXT asyncPreemptBM(SB), NOSPLIT, $0
 	FLDPD 256(RSP), (F2, F3)
 	FLDPD 240(RSP), (F0, F1)
 
-	// Restore floating-point status
+	// ========================================================================
+	// SEGMENT 7: Restore Status Regs
+	// ========================================================================
+	// Restore NZCV and FPSR.
 	MOVD 232(RSP), R0
 	MSR R0, FPSR
-
-	// Restore condition flags
 	MOVD 224(RSP), R0
 	MSR R0, NZCV
 
-	// Restore general-purpose registers (R0-R26, then R27 separately)
+	// ========================================================================
+	// SEGMENT 8: Restore GPRs
+	// ========================================================================
+	// Restore R0-R27, R29.
 	LDP 200(RSP), (R25, R26)
 	LDP 184(RSP), (R23, R24)
 	LDP 168(RSP), (R21, R22)
@@ -154,27 +161,14 @@ TEXT asyncPreemptBM(SB), NOSPLIT, $0
 	// Restore frame pointer
 	MOVD 496(RSP), R29
 
-	// Restore R27 (needed because we interrupt at arbitrary points)
-	MOVD 216(RSP), R27
+	MOVD 216(RSP), R27         // Restore R27
 
-	// CRITICAL: Load saved LR (interrupted PC) into R30
-	// We do this BEFORE deallocating the frame
+	// ========================================================================
+	// SEGMENT 9: Return
+	// ========================================================================
+	// Load LR (interrupted PC), deallocate frame, return.
 	MOVD 0(RSP), R30           // R30 = interrupted PC
-
-	// Deallocate our frame (504 bytes) + the 16 bytes pushCall allocated
-	ADD $520, RSP
-
-	// DEBUG: Print 'R' to show we're returning from asyncPreemptBM
-	// Save R30 (interrupted PC) and R0 since UART_PUTC_SAFE uses R0 as parameter
-	SUB $16, RSP
-	STP (R0, R30), 0(RSP)
-	MOVD $'R', R0
-	UART_PUTC_SAFE
-	LDP 0(RSP), (R0, R30)
-	ADD $16, RSP
-
-	// Jump to interrupted PC via ret (which jumps to R30/LR)
-	// This restores execution at the interrupted location
+	ADD $520, RSP              // Deallocate 504 + 16 bytes
 	RET                        // Jump to LR (interrupted PC)
 
 // get_asyncPreemptBM_addr returns the address of asyncPreemptBM

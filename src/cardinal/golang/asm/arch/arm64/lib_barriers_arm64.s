@@ -21,6 +21,14 @@ TEXT dsbIsh(SB), NOSPLIT|NOFRAME, $0-0
 	DSB	$11			// DSB ISH (inner shareable barrier)
 	RET
 
+// dsbIshst() - Data Synchronization Barrier (Inner Shareable, Store-only)
+// Like DSB ISH but only for store operations
+// Used before modifying page table entries
+// DSB ISHST = DSB $10 (0b1010 = Inner Shareable, store-only)
+TEXT dsbIshst(SB), NOSPLIT|NOFRAME, $0-0
+	DSB	$10			// DSB ISHST (inner shareable store barrier)
+	RET
+
 // isb() - Instruction Synchronization Barrier
 // Flushes the pipeline and ensures all instructions before this barrier
 // complete before any instructions after it begin execution
@@ -81,14 +89,6 @@ TEXT get_current_g(SB), NOSPLIT|NOFRAME, $0-8
 TEXT set_current_g(SB), NOSPLIT|NOFRAME, $0-8
 	// R0 = new g pointer (already in R0 from register ABI)
 	MOVD	R0, g			// Set g register (R28)
-	RET
-
-// getCurrentSP() uintptr
-// Returns the current stack pointer (alternate name for compatibility)
-// Returns: R0 = stack pointer value (uintptr)
-TEXT getCurrentSP(SB), NOSPLIT|NOFRAME, $0-8
-	MOVD	RSP, R0			// Copy stack pointer to R0
-	// Return value is in R0 (register ABI)
 	RET
 
 // Wfi() - Wait For Interrupt

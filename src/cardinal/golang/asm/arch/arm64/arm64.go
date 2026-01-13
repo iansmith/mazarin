@@ -8,22 +8,32 @@ import _ "unsafe" // for go:linkname
 
 //go:linkname Dsb dsb
 //go:nosplit
+//go:noinline
 func Dsb()
 
 //go:linkname DsbIsh dsbIsh
 //go:nosplit
+//go:noinline
 func DsbIsh()
+
+//go:linkname DsbIshst dsbIshst
+//go:nosplit
+//go:noinline
+func DsbIshst()
 
 //go:linkname Isb isb
 //go:nosplit
+//go:noinline
 func Isb()
 
 //go:linkname Wfi Wfi
 //go:nosplit
+//go:noinline
 func Wfi()
 
 //go:linkname Nop Nop
 //go:nosplit
+//go:noinline
 func Nop()
 
 // Cache operations (global symbols)
@@ -117,10 +127,6 @@ func GetStackPointer() uintptr
 //go:linkname SetStackPointer set_stack_pointer
 //go:nosplit
 func SetStackPointer(value uintptr)
-
-//go:linkname GetCurrentSP getCurrentSP
-//go:nosplit
-func GetCurrentSP() uintptr
 
 //go:linkname GetCurrentG get_current_g
 //go:nosplit

@@ -153,15 +153,43 @@ func relocateTextSection(data []byte, f *elf.File, stats *RelocStats) {
 				imm |= 0xFFE00000
 			}
 
-			// Calculate current target page
+			// Calculate current target address (BEFORE relocation)
+			// PC for ADRP is the address of the instruction itself
 			pc := text.Addr + i
-			targetPage := (pc & ^uint64(0xFFF)) + (uint64(int64(int32(imm<<12))) >> 12)
+			targetPage := (pc & ^uint64(0xFFF)) + uint64(int64(int32(imm<<12)))
 
 			// If target is in kmazarin range, we need to adjust
 			if targetPage >= kmazarinBase && targetPage < kmazarinEnd {
-				// This is tricky - we can't just add offset to the immediate
-				// because it's a PC-relative offset, and PC also changed
-				// For now, count it but don't patch (would need full disassembly)
+				// ADRP is PC-relative, so we need to recalculate the offset
+				// Original: target = (oldPC & ~0xFFF) + (imm << 12)
+				// After relocation:
+				//   - oldPC becomes newPC = oldPC + highMemOffset
+				//   - target becomes newTarget = target + highMemOffset
+				// We need: newTarget = (newPC & ~0xFFF) + (newImm << 12)
+				// Therefore: newImm = ((newTarget - (newPC & ~0xFFF)) >> 12)
+
+				newPC := pc + highMemOffset
+				newTarget := targetPage + highMemOffset
+				newPCPage := newPC & ^uint64(0xFFF)
+
+				// Calculate new offset in pages
+				offsetPages := int64(newTarget) - int64(newPCPage)
+				newImm := offsetPages >> 12
+
+				// Ensure new immediate fits in 21 bits (signed)
+				if newImm < -0x100000 || newImm > 0xFFFFF {
+					// Offset too large - this shouldn't happen for kmazarin
+					continue
+				}
+
+				// Extract new immlo (bits 1-0) and immhi (bits 20-2)
+				newImmlo := uint32(newImm) & 0x3
+				newImmhi := (uint32(newImm) >> 2) & 0x7FFFF
+
+				// Reconstruct instruction with new immediate
+				newInsn := (insn & 0x9F00001F) | (newImmlo << 29) | (newImmhi << 5)
+				binary.LittleEndian.PutUint32(textData[i:i+4], newInsn)
+
 				stats.AdrpInstructions++
 			}
 		}
@@ -169,7 +197,10 @@ func relocateTextSection(data []byte, f *elf.File, stats *RelocStats) {
 }
 
 func relocateDataSections(data []byte, f *elf.File, stats *RelocStats) {
-	sections := []string{".data", ".rodata", ".noptrdata", ".go.buildinfo", ".gopclntab", ".typelink", ".itablink"}
+	// CRITICAL: Include .text to relocate literal pool entries
+	// When Go assembly does MOVD $symbol(SB), the assembler generates a PC-relative
+	// load from a literal pool embedded in .text. These literal values must be relocated.
+	sections := []string{".text", ".data", ".rodata", ".noptrdata", ".go.buildinfo", ".gopclntab", ".typelink", ".itablink"}
 
 	for _, name := range sections {
 		sect := f.Section(name)

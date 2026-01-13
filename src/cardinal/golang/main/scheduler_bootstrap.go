@@ -41,41 +41,19 @@ type runtimeP struct {
 //
 //go:nosplit
 func bootstrapScheduler() bool {
-	print("Bootstrapping scheduler (g0, m0, P)...\r\n")
-
-	// Step 1: Get pointers to runtime.g0 and runtime.m0
+	// Get pointers to runtime.g0 and runtime.m0
 	// These are defined in the runtime package and we access them via assembly helpers
-	print("  Getting g0 address...\r\n")
 	g0Addr := asm.GetG0Addr()
-	print("  g0Addr = ")
-	printHex64(uint64(g0Addr))
-	print("\r\n")
-
-	print("  Getting m0 address...\r\n")
 	m0Addr := asm.GetM0Addr()
-	print("  m0Addr = ")
-	printHex64(uint64(m0Addr))
-	print("\r\n")
 
 	if g0Addr == 0 || m0Addr == 0 {
-		print("ERROR: Failed to get g0/m0 addresses\r\n")
 		return false
 	}
 
-	print("  Addresses retrieved successfully\r\n")
-
-	// Step 2: Simply set x28 to point to runtime.g0
-	// Don't try to initialize g0/m0 - let schedinit do that
-	//
-	// The key insight: schedinit NEEDS x28 (current G) to be set before it runs,
+	// Set x28 to point to runtime.g0
+	// schedinit NEEDS x28 (current G) to be set before it runs,
 	// but it will handle initializing the g0/m0 structures itself.
-	//
-	// Just set the register and let the runtime do its job!
-	print("  Setting x28 register to g0...\r\n")
 	asm.SetCurrentG(g0Addr)
-	print("  x28 now points to runtime.g0\r\n")
-
-	print("Scheduler bootstrap complete!\r\n")
 
 	return true
 }

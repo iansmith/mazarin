@@ -79,7 +79,6 @@ func (ch *SimpleChannel) receive() {
 //go:nosplit
 //go:noinline
 func timerPreemptInternal() {
-	// Breadcrumb: Show timer preemption started
 	// NOTE: Call asm.GetUartBase() directly instead of getLinkerSymbol() to avoid
 	// potential optimizer issues with switch statements and function returns.
 	uartBase := asm.GetUartBase()

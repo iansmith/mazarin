@@ -267,52 +267,6 @@ func kmalloc(size uint32) unsafe.Pointer {
 	return dataPtr
 }
 
-// heapDebugDump prints the state of all heap segments for debugging
-//
-//go:nosplit
-func heapDebugDump() {
-	print("=== HEAP DEBUG DUMP ===\r\n")
-
-	// DEBUG: Check struct offsets once at start
-	print("  sizeof(heapSegment)=0x")
-	printHex64(uint64(unsafe.Sizeof(heapSegment{})))
-	print(" next@0x")
-	printHex64(uint64(unsafe.Offsetof(heapSegment{}.next)))
-	print(" size@0x")
-	printHex64(uint64(unsafe.Offsetof(heapSegment{}.segmentSize)))
-	print(" alloc@0x")
-	printHex64(uint64(unsafe.Offsetof(heapSegment{}.isAllocated)))
-	print("\r\n")
-
-	curr := heapSegmentListHead
-	count := 0
-	for curr != nil && count < 10 {
-		currAddr := uintptr(unsafe.Pointer(curr))
-		print("  seg[")
-		printHex64(uint64(count))
-		print("] addr=0x")
-		printHex64(uint64(currAddr))
-		// Compare struct access vs raw memory access for size field
-		structSize := curr.segmentSize
-		rawSize := readMemory32(currAddr + 0x18) // offset of segmentSize
-		print(" size=0x")
-		printHex64(uint64(structSize))
-		if structSize != rawSize {
-			print("(raw=0x")
-			printHex64(uint64(rawSize))
-			print("!)")
-		}
-		print(" alloc=")
-		printHex64(uint64(curr.isAllocated))
-		print(" next=0x")
-		printHex64(uint64(uintptr(unsafe.Pointer(curr.next))))
-		print("\r\n")
-		curr = curr.next
-		count++
-	}
-	print("=== END HEAP DUMP ===\r\n")
-}
-
 // kmallocReserved allocates size bytes from the heap and marks them as reserved
 // Reserved memory cannot be freed via kfree() - it's permanent for the lifetime of the system
 // Returns nil if allocation fails (out of memory)

@@ -1,10 +1,41 @@
-// exc_syscall.s - Synchronous exception handling in Go/Plan9 assembly
+// exc_syscall.s - Synchronous Exception Dispatch (Go/Plan9 Assembly)
 //
 // This file provides the unified synchronous exception handling path:
-//   1. sync_exception_entry - Entry point from GCC sync_exception_handler
+//   1. sync_exception_entry - Entry point from sync_exception_handler
 //   2. syscall_return       - Restores registers and executes ERET (for syscalls)
 //   3. exception_return     - Restores ALL registers and executes ERET (for page faults)
 //   4. load_context_and_eret - Context switch to new thread
+//
+// ============================================================================
+// SEGMENT OVERVIEW (see asm/docs/exception_handling_decomposition.md)
+// ============================================================================
+//
+// sync_exception_entry segments:
+//   Segment 1: IRQ Disable - Mask IRQ during exception handling
+//   Segment 2: Save g & Switch to g0 - Preserve g, switch to g0 for Go safety
+//   Segment 3: Load Exception Info - Read ESR, ELR, SPSR, FAR from frame
+//   Segment 4: Extract EC & Load Args - Get exception class and syscall args
+//   Segment 5: Build ExceptionContext - Create context struct on stack
+//   Segment 6: Call Go Dispatcher - Call SyncExceptionDispatch
+//   Segment 7: Handle Result - Route to appropriate return path
+//
+// syscall_return segments:
+//   Segment 1: Restore System Regs - Restore ELR, SPSR, SP_EL0
+//   Segment 2: Restore GPRs (except R0) - R0 has return value
+//   Segment 3: ERET - Return from exception
+//
+// exception_return segments:
+//   Segment 1: Restore System Regs - Restore ELR, SPSR, SP_EL0
+//   Segment 2: Restore ALL GPRs - Including R0 for retry
+//   Segment 3: ERET - Return from exception
+//
+// load_context_and_eret segments:
+//   Segment 1: Load System Regs - Load SP_EL0, ELR, SPSR
+//   Segment 2: Load GPRs - Load all registers from ThreadContext
+//   Segment 3: ERET - Switch to new thread
+//
+// POST-BOOT NOTE: This is exception dispatch code - must remain inline assembly.
+// The dispatcher calls Go functions but the entry/exit sequences are atomic.
 //
 // Exception frame layout (320 bytes, saved by sync_exception_handler):
 //   [SP+0]:   x0, x1        (16 bytes)
@@ -32,6 +63,7 @@
 //   [SP+312]: saved LR (for syscall) (8 bytes)
 
 #include "textflag.h"
+#include "../../../../../docs/abi/go_abi_macros_arm64.h"
 
 // Exception frame offsets
 #define EXC_FRAME_X0         0
@@ -63,159 +95,103 @@
 //   5. Based on return: syscall_return, exception_return, context_switch, or hang
 //
 TEXT sync_exception_entry(SB), NOSPLIT|NOFRAME, $0
-	// CRITICAL: Disable IRQ interrupts during exception handling
-	//
-	// DAIF bits:
-	//   D (bit 9, 0x200) = Debug exceptions mask
-	//   A (bit 8, 0x100) = SError (asynchronous abort) mask
-	//   I (bit 7, 0x80)  = IRQ mask
-	//   F (bit 6, 0x40)  = FIQ mask
-	//
-	// We only disable IRQ (I bit = 0x80) which is sufficient for preventing
-	// timer interrupts from nesting during exception handling.
-	//
-	// NOTE: Debug exceptions (D) and SError (A) are very unlikely to be the
-	// source of nested exception problems. Masking them would be overkill:
-	//   - Debug exceptions (D): Only occur from breakpoints/watchpoints/single-step
-	//     which we don't use during normal operation
-	//   - SError (A): Asynchronous system errors (like ECC memory errors) are
-	//     rare hardware faults, not software-triggered
-	//
-	// FIQ (F) could be masked for extra safety, but we don't currently use FIQ.
-	//
+	// ========================================================================
+	// SEGMENT 1: IRQ Disable
+	// ========================================================================
+	// CRITICAL: Disable IRQ interrupts during exception handling.
+	// DAIF bits: D(debug)=0x200, A(SError)=0x100, I(IRQ)=0x80, F(FIQ)=0x40
+	// We only mask IRQ - sufficient for preventing timer interrupt nesting.
 	MRS DAIF, R10
-
-	// DEBUG: Check if IRQs were ALREADY disabled before we disable them
-	// This helps detect if interrupt enable/disable is unbalanced
-	TST $0x80, R10                 // Test I bit (bit 7)
-	BEQ irqs_were_enabled
-	// IRQs were already disabled - this is unexpected, print 'd'
-	MOVD $0x09000000, R11
-	MOVD $'d', R12
-	MOVB R12, (R11)
-irqs_were_enabled:
-
 	ORR $0x80, R10, R10            // Set I bit to disable IRQ
 	MSR R10, DAIF
 	ISB $15
 
-	// Save original g to exception frame before switching to g0
+	// ========================================================================
+	// SEGMENT 2: Save g & Switch to g0
+	// ========================================================================
+	// Save original g to exception frame before switching to g0 for Go safety.
 	MOVD g, EXC_FRAME_SAVED_G(RSP)
-
-	// Switch to g0 for Go runtime safety
 	MOVD $runtime·g0(SB), g
 
-	// Load exception info from frame and system registers
-	// ESR is at offset 280 (272 + 8), ELR at 256, SPSR at 264, FAR at 272
+	// ========================================================================
+	// SEGMENT 3: Load Exception Info
+	// ========================================================================
+	// Load exception info from frame: ESR, ELR, SPSR, FAR
 	LDP EXC_FRAME_FAR_ESR(RSP), (R14, R15)   // R14 = FAR, R15 = ESR
 	LDP EXC_FRAME_ELR_SPSR(RSP), (R12, R13)  // R12 = ELR, R13 = SPSR
 
-	// Extract EC from ESR (bits 31:26)
+	// ========================================================================
+	// SEGMENT 4: Extract EC & Load Args
+	// ========================================================================
+	// Extract exception class from ESR (bits 31:26).
+	// Load syscall arguments and saved registers for traceback.
 	LSR $26, R15, R10              // R10 = EC (exception class)
 	AND $0x3F, R10, R10            // Mask to 6 bits
-
-	// Load syscall arguments from exception frame (needed if EC=0x15)
 	LDP EXC_FRAME_X0(RSP), (R16, R17)        // R16 = x0 (arg0), R17 = x1 (arg1)
 	LDP 16(RSP), (R19, R20)                  // R19 = x2 (arg2), R20 = x3 (arg3)
 	LDP 32(RSP), (R21, R22)                  // R21 = x4 (arg4), R22 = x5 (arg5)
 	MOVD EXC_FRAME_X8(RSP), R23              // R23 = x8 (syscall number)
-
-	// Load saved FP, LR, g for traceback
 	LDP EXC_FRAME_X29_X30(RSP), (R24, R25)   // R24 = saved FP, R25 = saved LR
 	MOVD EXC_FRAME_X28(RSP), R26             // R26 = saved g
 
-	// CALLING CONVENTION FIX: SyncExceptionDispatch is ABI0
-	// The .abi0 wrapper does: str x30, [sp, #-16]!
-	// Then loads args from [SP+24], [SP+32], ... [SP+144]
-	// After wrapper prologue: wrapper_SP = our_SP - 16
-	// So wrapper reads from [our_SP + 8], [our_SP + 16], ... [our_SP + 128]
-	// Returns are stored at [our_SP + 136], [our_SP + 144], [our_SP + 148]
+	// ========================================================================
+	// SEGMENT 5: Build ExceptionContext
+	// ========================================================================
+	// Build ExceptionContext struct on stack for Go dispatcher.
 	//
-	// Current register contents (sources):
+	// Current register contents:
 	//   R10 = EC, R15 = ESR, R12 = ELR, R14 = FAR, R13 = SPSR
 	//   R16 = arg0 (x0), R17 = arg1 (x1)
 	//   R19 = arg2, R20 = arg3, R21 = arg4, R22 = arg5
 	//   R23 = syscall number, R24 = savedFP, R25 = savedLR, R26 = savedG
 	//
-	// Stack layout after SUB $272, RSP:
-	// Go's generated .abi0 wrapper does: str x30, [sp, #-16]!
-	// Then loads args from [wrapper_SP+24], [wrapper_SP+32], etc.
-	// After wrapper prologue: wrapper_SP = our_SP - 16
-	// So wrapper loads from: our_SP + 8, our_SP + 16, ... our_SP + 136
-	// Returns go to: our_SP + 144, our_SP + 152, our_SP + 156
+	// Function signature:
+	//   func SyncExceptionDispatch(
+	//       ctx *ExceptionContext,
+	//       syscallNum uint64,
+	//       arg0, arg1, arg2, arg3, arg4, arg5 uint64,
+	//   ) (result int64, switchTo int32, handled bool)
 	//
-	//   [RSP+8]:   arg0 (ec) -> wrapper reads from SP+24 = RSP+8
-	//   [RSP+16]:  arg1 (esr)
-	//   ...
-	//   [RSP+128]: arg15 (savedG)
-	//   [RSP+136]: return0 (result)
-	//   [RSP+144]: return1 (switchTo)
-	//   [RSP+148]: return2 (handled)
-	//   [RSP+152]: saved R19-R26 (64 bytes)
-	//   [RSP+216]: temp storage (48 bytes)
+	// ExceptionContext layout (72 bytes):
+	//   [0]:  EC       [8]:  ESR      [16]: ELR      [24]: FAR
+	//   [32]: SPSR     [40]: FramePtr [48]: SavedFP  [56]: SavedLR
+	//   [64]: SavedG
 
-	// Allocate space
-	SUB $272, RSP
+	// Allocate space for ExceptionContext (72 bytes, round to 80)
+	SUB $80, RSP
 
-	// Save callee-saved registers
-	STP (R19, R20), 152(RSP)
-	STP (R21, R22), 168(RSP)
-	STP (R23, R24), 184(RSP)
-	STP (R25, R26), 200(RSP)
+	// Build ExceptionContext at RSP+0..71
+	MOVD R10, 0(RSP)               // ctx.EC
+	MOVD R15, 8(RSP)               // ctx.ESR
+	MOVD R12, 16(RSP)              // ctx.ELR
+	MOVD R14, 24(RSP)              // ctx.FAR
+	MOVD R13, 32(RSP)              // ctx.SPSR
+	ADD $80, RSP, R0               // FramePtr = original RSP (exception frame)
+	MOVD R0, 40(RSP)               // ctx.FramePtr
+	MOVD R24, 48(RSP)              // ctx.SavedFP
+	MOVD R25, 56(RSP)              // ctx.SavedLR
+	MOVD R26, 64(RSP)              // ctx.SavedG
 
-	// Save conflicting sources to temp area
-	MOVD R10, 216(RSP)             // Save EC
-	MOVD R15, 224(RSP)             // Save ESR
-	MOVD R12, 232(RSP)             // Save ELR
-	MOVD R14, 240(RSP)             // Save FAR
-	MOVD R13, 248(RSP)             // Save SPSR
+	// ========================================================================
+	// SEGMENT 6: Call Go Dispatcher
+	// ========================================================================
+	// Prepare arguments and call SyncExceptionDispatch.
+	MOVD RSP, R0                   // arg0 = &ctx
+	MOVD R23, R1                   // arg1 = syscallNum
+	MOVD R16, R2                   // arg2 = arg0
+	MOVD R17, R3                   // arg3 = arg1
+	MOVD R19, R4                   // arg4 = arg2
+	MOVD R20, R5                   // arg5 = arg3
+	MOVD R21, R6                   // arg6 = arg4
+	MOVD R22, R7                   // arg7 = arg5
+	GO_CALL_8_2B(main·SyncExceptionDispatch, R0, R1, R2, R3, R4, R5, R6, R7, R0, R1, R2)
+	// Returns: R0 = result (int64), R1 = switchTo (int32), R2 = handled (bool)
+	ADD $80, RSP                   // Deallocate ExceptionContext frame
 
-	// Store args to stack for Go's .abi0 wrapper (args start at RSP+8)
-	// Order: ec, esr, elr, far, spsr, syscallNum, arg0..5, framePtr, savedFP, savedLR, savedG
-	MOVD 216(RSP), R0              // Load EC from temp
-	MOVD R0, 8(RSP)                // arg0 = ec
-	MOVD 224(RSP), R0              // Load ESR from temp
-	MOVD R0, 16(RSP)               // arg1 = esr
-	MOVD 232(RSP), R0              // Load ELR from temp
-	MOVD R0, 24(RSP)               // arg2 = elr
-	MOVD 240(RSP), R0              // Load FAR from temp
-	MOVD R0, 32(RSP)               // arg3 = far
-	MOVD 248(RSP), R0              // Load SPSR from temp
-	MOVD R0, 40(RSP)               // arg4 = spsr
-	MOVD R23, 48(RSP)              // arg5 = syscallNum
-	MOVD R16, 56(RSP)              // arg6 = arg0
-	MOVD R17, 64(RSP)              // arg7 = arg1
-	MOVD R19, 72(RSP)              // arg8 = arg2
-	MOVD R20, 80(RSP)              // arg9 = arg3
-	MOVD R21, 88(RSP)              // arg10 = arg4
-	MOVD R22, 96(RSP)              // arg11 = arg5
-	ADD $272, RSP, R0              // framePtr = original RSP
-	MOVD R0, 104(RSP)              // arg12 = framePtr
-	MOVD R24, 112(RSP)             // arg13 = savedFP
-	MOVD R25, 120(RSP)             // arg14 = savedLR
-	MOVD R26, 128(RSP)             // arg15 = savedG
-
-	// Call the Go exception dispatcher
-	// SyncExceptionDispatch is a manual stub in abi_stubs_arm64.s that:
-	// 1. Loads args from stack (ABI0 style)
-	// 2. Calls syncExceptionDispatchInternal via BL (direct to ABIInternal)
-	// This avoids nested wrapper issues.
-	CALL main·SyncExceptionDispatch(SB)
-
-	// Load return values from stack
-	// The stub stores returns at: result at caller_SP+136, switchTo at SP+144, handled at SP+148
-	MOVD 136(RSP), R0              // result
-	MOVW 144(RSP), R1              // switchTo
-	MOVBU 148(RSP), R2             // handled
-
-	// Restore callee-saved registers
-	LDP 152(RSP), (R19, R20)
-	LDP 168(RSP), (R21, R22)
-	LDP 184(RSP), (R23, R24)
-	LDP 200(RSP), (R25, R26)
-	ADD $272, RSP                  // Deallocate space
-
-	// Check if handled
+	// ========================================================================
+	// SEGMENT 7: Handle Result
+	// ========================================================================
+	// Route to appropriate return path based on dispatcher result.
 	CBZ R2, do_exception_hang      // If not handled, hang
 
 	// Check if context switch needed
@@ -248,28 +224,25 @@ do_context_switch:
 	MOVD R1, R20                   // Save targetIdx in callee-saved
 	MOVD RSP, R21                  // Save framePtr (current RSP = exception frame)
 
-	// DoContextSwitch(framePtr, targetIdx) - ABI0 expects args on stack
-	// Layout: [RSP+0..7]=pad, [RSP+8..15]=framePtr, [RSP+16..23]=targetIdx,
-	//         [RSP+24..31]=return, [RSP+32..79]=callee-saved
-	SUB $80, RSP
-
-	// Store args on stack (ABI0)
-	MOVD R21, 8(RSP)               // arg0 = framePtr
-	MOVW R20, 16(RSP)              // arg1 = targetIdx (int32)
-
 	// Save callee-saved registers
-	STP (R19, R20), 32(RSP)
-	STP (R21, R22), 48(RSP)
-	STP (R29, R30), 64(RSP)
+	SUB $48, RSP
+	STP (R19, R20), 0(RSP)
+	STP (R21, R22), 16(RSP)
+	STP (R29, R30), 32(RSP)
 
-	CALL main·DoContextSwitch(SB)
-	// Returns: R0 = pointer to new ThreadContext (also at RSP+24)
+	// Call DoContextSwitch using macro
+	// func DoContextSwitch(framePtr uintptr, targetIdx int32) *ThreadContext
+	// Note: R20 is int32, but Go ABI0 promotes to 64-bit on stack
+	MOVD R21, R0                   // arg0 = framePtr
+	MOVD R20, R1                   // arg1 = targetIdx (promoted to uint64)
+	GO_CALL_2_1(main·DoContextSwitch, R0, R1)
+	// Returns: R0 = pointer to new ThreadContext
 
 	// Restore callee-saved registers
-	LDP 32(RSP), (R19, R20)
-	LDP 48(RSP), (R21, R22)
-	LDP 64(RSP), (R29, R30)
-	ADD $80, RSP
+	LDP 0(RSP), (R19, R20)
+	LDP 16(RSP), (R21, R22)
+	LDP 32(RSP), (R29, R30)
+	ADD $48, RSP
 
 	B load_context_and_eret(SB)
 
@@ -288,18 +261,22 @@ do_exception_hang:
 // CRITICAL: R0 contains the syscall return value - DO NOT restore it!
 //
 TEXT syscall_return(SB), NOSPLIT|NOFRAME, $0
-	// Restore ELR_EL1 and SPSR_EL1 from exception frame
+	// ========================================================================
+	// SEGMENT 1: Restore System Regs
+	// ========================================================================
+	// Restore ELR_EL1, SPSR_EL1, SP_EL0 from exception frame.
 	LDP EXC_FRAME_ELR_SPSR(RSP), (R12, R13)
 	MSR R12, ELR_EL1
 	MSR R13, SPSR_EL1
 	ISB $15
-
-	// Restore SP_EL0
 	MOVD EXC_FRAME_SP_EL0(RSP), R10
 	MSR R10, SP_EL0
 	ISB $15
 
-	// Restore R1-R30 from exception frame (NOT R0!)
+	// ========================================================================
+	// SEGMENT 2: Restore GPRs (except R0)
+	// ========================================================================
+	// R0 contains syscall return value - DO NOT restore it!
 	LDP 16(RSP), (R2, R3)
 	LDP 32(RSP), (R4, R5)
 	LDP 48(RSP), (R6, R7)
@@ -318,6 +295,9 @@ TEXT syscall_return(SB), NOSPLIT|NOFRAME, $0
 	LDP EXC_FRAME_X29_X30(RSP), (R29, R30)
 	MOVD 8(RSP), R1                // Restore R1 LAST
 
+	// ========================================================================
+	// SEGMENT 3: ERET
+	// ========================================================================
 	ADD $320, RSP                  // Deallocate exception frame
 	ERET
 
@@ -331,18 +311,22 @@ TEXT syscall_return(SB), NOSPLIT|NOFRAME, $0
 // with the EXACT same register state.
 //
 TEXT exception_return(SB), NOSPLIT|NOFRAME, $0
-	// Restore ELR_EL1 and SPSR_EL1 from exception frame
+	// ========================================================================
+	// SEGMENT 1: Restore System Regs
+	// ========================================================================
+	// Restore ELR_EL1, SPSR_EL1, SP_EL0 from exception frame.
 	LDP EXC_FRAME_ELR_SPSR(RSP), (R12, R13)
 	MSR R12, ELR_EL1
 	MSR R13, SPSR_EL1
 	ISB $15
-
-	// Restore SP_EL0
 	MOVD EXC_FRAME_SP_EL0(RSP), R10
 	MSR R10, SP_EL0
 	ISB $15
 
-	// Restore ALL registers including R0
+	// ========================================================================
+	// SEGMENT 2: Restore ALL GPRs
+	// ========================================================================
+	// Restore ALL registers including R0 for retry.
 	LDP 0(RSP), (R0, R1)           // Restore R0, R1
 	LDP 16(RSP), (R2, R3)
 	LDP 32(RSP), (R4, R5)
@@ -361,6 +345,9 @@ TEXT exception_return(SB), NOSPLIT|NOFRAME, $0
 	MOVD EXC_FRAME_X28(RSP), g     // Restore g from exception frame
 	LDP EXC_FRAME_X29_X30(RSP), (R29, R30)
 
+	// ========================================================================
+	// SEGMENT 3: ERET
+	// ========================================================================
 	ADD $320, RSP                  // Deallocate exception frame
 	ERET
 
@@ -377,31 +364,24 @@ TEXT load_context_and_eret(SB), NOSPLIT|NOFRAME, $0
 	MOVD $'S', R12
 	MOVW R12, (R11)
 
-	// Load SP_EL0 from Context.SP (offset 248)
-	MOVD 248(R10), R11
+	// ========================================================================
+	// SEGMENT 1: Load System Regs
+	// ========================================================================
+	// Load SP_EL0, ELR_EL1, SPSR_EL1 from ThreadContext.
+	MOVD 248(R10), R11             // Context.SP (offset 248)
 	MSR R11, SP_EL0
 	ISB $15
-
-	// Load ELR_EL1 from Context.ELR (offset 256)
-	MOVD 256(R10), R11
+	MOVD 256(R10), R11             // Context.ELR (offset 256)
 	MSR R11, ELR_EL1
 	ISB $15
-
-	// Load SPSR_EL1 from Context.SPSR (offset 264)
-	MOVD 264(R10), R11
-
-	// DEBUG: Print 'i' if SPSR.I bit is set (IRQs will be disabled after ERET)
-	TST $0x80, R11                 // Test bit 7 (I mask)
-	BEQ spsr_irq_ok
-	MOVD $0x09000000, R12
-	MOVD $'i', R13
-	MOVB R13, (R12)                // Print 'i' = IRQs disabled in SPSR
-spsr_irq_ok:
-
+	MOVD 264(R10), R11             // Context.SPSR (offset 264)
 	MSR R11, SPSR_EL1
 	ISB $15
 
-	// Load all GPRs from Context.X[]
+	// ========================================================================
+	// SEGMENT 2: Load GPRs
+	// ========================================================================
+	// Load all general-purpose registers from ThreadContext.X[].
 	LDP 0(R10), (R0, R1)
 	LDP 16(R10), (R2, R3)
 	LDP 32(R10), (R4, R5)
@@ -419,9 +399,11 @@ spsr_irq_ok:
 	MOVD 224(R10), g               // g (R28)
 	LDP 232(R10), (R29, R30)
 
-	// Load R10, R11 last
+	// ========================================================================
+	// SEGMENT 3: ERET
+	// ========================================================================
+	// Load R10, R11 last, then execute ERET to switch to new thread.
 	MOVD 88(R10), R11
 	MOVD 80(R10), R10              // Clobbers base pointer - MUST BE LAST
-
 	ERET
 

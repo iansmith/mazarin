@@ -67,35 +67,34 @@ const (
 // ============================================================================
 // Stack Layout
 // ============================================================================
-// Stacks are located at high memory, below the 1GB boundary.
-//
-// Layout (Low Memory - Cardinal bootstrap only):
-//   0x5EFF0000 - 0x5F000000  (64 KB)  g0 stack (SP_EL0, normal kernel execution)
-//   0x5F000000 - 0x5F020000  (128 KB) Exception stack (SP_EL1, IRQ/FIQ/exceptions)
-//
-// Layout (High Memory - Kmazarin kernel, TTBR1):
-//   0xFFFFFFFF5EFFC000 - 0xFFFFFFFF5F000000  (16 KB)  Kernel g0 stack
-//   0xFFFFFFFF5F000000 - 0xFFFFFFFF5F002000  (8 KB)   Kernel exception stack
+// Stacks are located at high memory, well above Cardinal and kmazarin regions.
+// All stack addresses are COMPUTED from a base physical address - no hardcoded addresses.
 
 const (
-	// Low-memory stacks (Cardinal bootstrap, TTBR0)
-	G0StackBottom      = 0x5EFF0000 // Bottom of g0 stack
-	G0StackTop         = 0x5F000000 // Top of g0 stack (SP_EL0)
-	ExceptionStackTop  = 0x5F020000 // Top of exception stack (SP_EL1)
-	ExceptionStackSize = 0x20000    // 128 KB
+	// Stack sizes (these are configuration, not addresses)
+	// DOUBLED from 16KB/8KB to test if stack overflow is causing x28 corruption
+	KernelG0StackSize  = 0x8000 // 32 KB (doubled from 16KB)
+	KernelExcStackSize = 0x4000 // 16 KB (doubled from 8KB)
 
-	// High-memory stacks (Kmazarin kernel, TTBR1)
-	// Stack sizes tuned for tail-call optimization pattern:
-	// - ABI stubs use JMP (tail-call), not CALL - no stack frame added
-	// - Exception handlers save ~256 bytes + small working space
-	// - Go runtime init needs ~8KB peak during schedinit
-	KernelG0StackSize     = 0x4000                             // 16 KB
-	KernelG0StackTop      = 0xFFFFFFFF5F000000                 // Top of kernel g0 stack
-	KernelG0StackBottom   = KernelG0StackTop - KernelG0StackSize
+	// Physical base address for kernel stacks region
+	// Placed at offset from RAM start, chosen to avoid conflicts with:
+	// - DTB (1MB), Cardinal (15MB), Page Tables (8MB), Kmazarin (up to 64MB)
+	// This gives us ~480MB from RAM start = plenty of safety margin
+	KernelStacksPhysOffset = 0x1EFF8000                              // ~494MB from RAM start
+	KernelStacksPhysBase   = BootAddress + KernelStacksPhysOffset    // 0x5EFF8000
+	KernelStacksVirtBase   = KernelVAOffset + KernelStacksPhysBase   // 0xFFFFFFFF5EFF8000
 
-	KernelExcStackSize    = 0x2000                             // 8 KB
-	KernelExcStackTop     = 0xFFFFFFFF5F002000                 // Top of kernel exception stack
-	KernelExcStackBottom  = KernelExcStackTop - KernelExcStackSize
+	// Low-memory stacks (Cardinal bootstrap, TTBR0) - computed from base
+	G0StackBottom      = KernelStacksPhysBase                        // Bottom of g0 stack
+	G0StackTop         = G0StackBottom + KernelG0StackSize           // Top of g0 stack (SP_EL0)
+	ExceptionStackTop  = G0StackTop + KernelExcStackSize             // Top of exception stack (SP_EL1)
+	ExceptionStackSize = KernelExcStackSize                          // Exception stack size
+
+	// High-memory stacks (Kmazarin kernel, TTBR1) - computed from virtual base
+	KernelG0StackBottom  = KernelStacksVirtBase                      // Bottom of kernel g0 stack
+	KernelG0StackTop     = KernelG0StackBottom + KernelG0StackSize   // Top of kernel g0 stack (SP_EL0)
+	KernelExcStackBottom = KernelG0StackTop                          // Bottom of exception stack
+	KernelExcStackTop    = KernelExcStackBottom + KernelExcStackSize // Top of exception stack (SP_EL1)
 )
 
 // ============================================================================
@@ -145,18 +144,56 @@ const (
 	KernelMMIOOffset = 0xFFFFFFFF00000000
 
 	// High-memory MMIO device addresses (kernel access via TTBR1)
-	KernelUartBase   = KernelMMIOOffset + UartBase   // 0xFFFFFFFF09000000
-	KernelGicBase    = KernelMMIOOffset + GicBase    // 0xFFFFFFFF08000000
+	KernelUartBase = KernelMMIOOffset + UartBase // 0xFFFFFFFF09000000
+	KernelGicBase  = KernelMMIOOffset + GicBase  // 0xFFFFFFFF08000000
 
 	// Kmazarin memory regions (high memory, TTBR1)
 	// These are virtual addresses where kmazarin code, heap, and page tables live
-	KernelTextBase       = KernelVAOffset + KmazarinLoadAddr  // 0xFFFFFFFF41800000
-	KernelHeapStart      = 0xFFFFFFFF4A000000                 // Heap starts after binary
-	KernelPageTableBase  = 0xFFFFFFFF60000000                 // TTBR1 page tables (8MB)
-	KernelPageTableSize  = 0x800000                           // 8 MB
+	KernelTextBase = KernelVAOffset + KmazarinLoadAddr // 0xFFFFFFFF41800000
 
 	// DTB mapped to high memory (read-only kernel copy)
 	KernelDtbBase = KernelVAOffset + DtbStart // 0xFFFFFFFF40000000
+
+	// =========================================================================
+	// Kmazarin Demand Paging Memory Layout (64MB total kernel footprint)
+	// =========================================================================
+	// Memory layout:
+	//   0xFFFFFFFF41800000 - Kmazarin static (code/data/bss) ~2MB
+	//   0xFFFFFFFF419C0000 - TTBR1 PT Region (mapped page tables) 64KB
+	//   0xFFFFFFFF419D0000 - PT Pool (for L2/L3 allocation) 192KB
+	//   0xFFFFFFFF41A00000 - Heap VA space (demand-paged) ~1GB
+	//   0xFFFFFFFF80000000 - End of heap VA space
+
+	// TTBR1 page table region - Cardinal's TTBR1 L0/L1/L2 tables mapped here
+	// so kmazarin can modify them for demand paging
+	KernelTTBR1RegionVA   = 0xFFFFFFFF419C0000 // Where TTBR1 tables are mapped
+	KernelTTBR1RegionSize = 0x10000            // 64KB (16 page tables max)
+
+	// PT Pool - kmazarin allocates new L2/L3 tables from here
+	KernelPTPoolStart = 0xFFFFFFFF419D0000 // Start of PT pool
+	KernelPTPoolEnd   = 0xFFFFFFFF41A00000 // End of PT pool (192KB)
+	KernelPTPoolSize  = KernelPTPoolEnd - KernelPTPoolStart
+
+	// Heap VA space - demand-paged, backed by frame pool
+	// Go wants to reserve huge contiguous VA regions (many GB) for arena metadata.
+	// VA space is free - only accessed pages consume physical frames.
+	// With arenaBaseOffset = 0xFFFF000000000000, we can use up to 128TB of VA space.
+	// The arena index formula: (addr - offset) >> 26 must be < 2^22
+	KernelHeapStart = 0xFFFF000100000000 // Start in TTBR1 space (256GB from base)
+	KernelHeapEnd   = 0xFFFF100000000000 // End of heap VA space (16TB range)
+	KernelHeapSize  = KernelHeapEnd - KernelHeapStart
+
+	// Kernel frame pool - backing pages for kmazarin heap demand paging
+	// Physical memory after kmazarin static region, used to back heap pages
+	// NOTE: This is the KERNEL frame pool. User-space processes will have
+	// their own separate frame pool (to be defined later).
+	KernelFramePoolPhysStart = 0x41A00000 // Physical start of kernel frame pool
+	KernelFramePoolPhysEnd   = 0x80000000 // Physical end (~1GB, end of RAM)
+	KernelFramePoolSize      = KernelFramePoolPhysEnd - KernelFramePoolPhysStart
+
+	// Legacy constant for compatibility (now equals KernelTTBR1RegionVA)
+	KernelPageTableBase = KernelTTBR1RegionVA
+	KernelPageTableSize = 0x800000 // 8 MB (unused, kept for compatibility)
 )
 
 // ============================================================================
@@ -183,6 +220,7 @@ const (
 	AT_KERNEL_UART_BASE = 0x1006 // High-memory UART base (0xFFFFFFFF09000000)
 	AT_KERNEL_GIC_BASE  = 0x1007 // High-memory GIC base (0xFFFFFFFF08000000)
 	AT_TTBR1_L0_PHYS    = 0x1008 // Physical address of TTBR1 L0 page table
+	AT_STARTUP_PARAMS   = 0x1009 // High-memory address of kmazarin StartupParams BSS array
 )
 
 // ============================================================================
@@ -198,16 +236,16 @@ func MemoryLayoutSummary() string {
   Cardinal:        0x40100000 - 0x41000000 (15 MB)
   Page Tables:     0x41000000 - 0x41800000 (8 MB, TTBR0)
   Kmazarin:        0x41800000 - ~0x42000000 (physical, ~8MB max)
-  g0 Stack:        0x5EFF0000 - 0x5F000000 (64 KB, SP_EL0)
-  Exception Stack: 0x5F000000 - 0x5F020000 (128 KB, SP_EL1)
+  g0 Stack:        Computed: KernelStacksPhysBase + KernelG0StackSize (32 KB, SP_EL0)
+  Exception Stack: Computed: G0StackTop + KernelExcStackSize (16 KB, SP_EL1)
 
 Kmazarin Kernel Layout (High Memory, TTBR1):
-  DTB:             0xFFFFFFFF40000000 - 0xFFFFFFFF40100000 (1 MB, read-only)
-  Kernel Text:     0xFFFFFFFF41800000 - ~0xFFFFFFFF42000000 (8 MB max)
-  Kernel Heap:     0xFFFFFFFF4A000000+ (64 MB limit total)
-  g0 Stack:        0xFFFFFFFF5EFFC000 - 0xFFFFFFFF5F000000 (16 KB)
-  Exception Stack: 0xFFFFFFFF5F000000 - 0xFFFFFFFF5F002000 (8 KB)
-  Page Tables:     0xFFFFFFFF60000000 - 0xFFFFFFFF60800000 (8 MB, TTBR1)
+  DTB:             Computed: DtbPhysAddr + KernelVAOffset (1 MB, read-only)
+  Kernel Text:     Computed: KmazarinLoadAddr + KernelVAOffset (8 MB max)
+  Kernel Heap:     Computed from KernelHeapStart to KernelHeapEnd (demand-paged)
+  g0 Stack:        Computed: KernelStacksVirtBase to KernelG0StackTop (32 KB)
+  Exception Stack: Computed: KernelG0StackTop to KernelExcStackTop (16 KB)
+  Page Tables:     Identity-mapped via setupKernelPageTables() (TTBR1)
 
 MMIO Devices (Physical):
   GIC:             0x08000000 - 0x08020000 (128 KB)

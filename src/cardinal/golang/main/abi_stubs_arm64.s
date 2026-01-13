@@ -24,16 +24,16 @@ TEXT ·timerPreempt(SB), NOSPLIT, $0-0
 
 // SyncExceptionDispatch is called from exc_syscall_arm64.s
 // Go signature: func SyncExceptionDispatch(
-//     ec, esr, elr, far, spsr, syscallNum uint64,
+//     ctx *ExceptionContext,
+//     syscallNum uint64,
 //     arg0, arg1, arg2, arg3, arg4, arg5 uint64,
-//     framePtr uintptr, savedFP, savedLR, savedG uint64,
 // ) (result int64, switchTo int32, handled bool)
-// ABI0: 16 args (128 bytes) + 3 returns (16 bytes) = 144 bytes
+// ABI0: 8 args (64 bytes) + 3 returns (13 bytes) = 77, round to 80
 //
 // Tail-call to the internal function. The .abi0 wrapper will read args from
 // our caller's stack (which is exactly where they were placed by exc_syscall_arm64.s).
 // This avoids adding to the nosplit stack chain.
-TEXT ·SyncExceptionDispatch(SB), NOSPLIT, $0-144
+TEXT ·SyncExceptionDispatch(SB), NOSPLIT, $0-80
 	JMP	·syncExceptionDispatchInternal(SB)
 
 // DoContextSwitch is called from exc_syscall_arm64.s

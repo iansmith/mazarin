@@ -157,6 +157,32 @@ func SyscallWriteBuffer(buf unsafe.Pointer, count uint32) uint32 {
 	return count
 }
 
+// SyscallWriteDirect writes a buffer directly to UART hardware (no ring buffer)
+// Used for writes from kmazarin where ring buffer/interrupt mechanism isn't reliable
+// Returns the number of bytes written (count on success)
+//
+//go:nosplit
+//go:noinline
+func SyscallWriteDirect(buf unsafe.Pointer, count uint32) uint32 {
+	if buf == nil || count == 0 {
+		return 0
+	}
+
+	// Write each byte directly to UART hardware
+	for i := uint32(0); i < count; i++ {
+		c := *(*byte)(unsafe.Pointer(uintptr(buf) + uintptr(i)))
+
+		// Auto-convert LF to CRLF for proper terminal display
+		if c == '\n' {
+			asm.UartPutcPl011('\r')
+		}
+
+		asm.UartPutcPl011(c)
+	}
+
+	return count
+}
+
 // uartGetc reads a character from UART (QEMU virt machine)
 //
 //go:nosplit

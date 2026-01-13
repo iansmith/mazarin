@@ -3,6 +3,26 @@
 // This file provides sync_exception_handler, the entry point called from the
 // exception vector table (vec_sync_sp_el1) for synchronous exceptions at EL1h.
 //
+// ============================================================================
+// SEGMENT OVERVIEW (see asm/docs/exception_handling_decomposition.md)
+// ============================================================================
+//
+// Segment 1:  Temporary Save - Push x29, x30 to current stack
+// Segment 2:  Save SP_EL0 - Preserve interrupted SP before clobbering registers
+// Segment 3:  Calculate Original SP - Compute SP before our push
+// Segment 4:  Nested Detection - Check if SP is in exception stack range
+// Segment 5:  Stack Switch - Switch to exception stack and allocate frame
+// Segment 6:  Save Original SP - Store original SP in frame
+// Segment 7:  Save GPRs - Save x0-x28 to frame
+// Segment 8:  Recover x29/x30 - Load from temp location, save to frame
+// Segment 9:  Save System Regs - Save ELR, SPSR, FAR, ESR
+// Segment 10: Save SP_EL0 - Store SP_EL0 in frame
+// Segment 11: Dispatch - Branch to sync_exception_entry
+//
+// POST-BOOT NOTE: This is exception entry code - must remain inline assembly.
+// The register save sequence cannot call functions. After boot, use primitives
+// from lib_sysregs for any system register access in normal kernel code.
+//
 // The handler:
 //   1. Saves x29, x30 to current stack temporarily
 //   2. Detects nested exceptions and selects appropriate exception stack
@@ -76,7 +96,7 @@
 //
 TEXT sync_exception_handler(SB), NOSPLIT|NOFRAME, $0
 	// ========================================================================
-	// STEP 1: Save x29, x30 to current stack temporarily
+	// SEGMENT 1: Temporary Save
 	// ========================================================================
 	// We need x29 and x30 as scratch registers to set up exception stack.
 	// Push them to current stack - we'll recover them after switching stacks.
@@ -85,7 +105,7 @@ TEXT sync_exception_handler(SB), NOSPLIT|NOFRAME, $0
 	STP (R29, R30), 0(RSP)
 
 	// ========================================================================
-	// STEP 2: Save SP_EL0 to R29 for later
+	// SEGMENT 2: Save SP_EL0
 	// ========================================================================
 	// When exception occurs in EL1t mode (using SP_EL0), the CPU switches
 	// to EL1h mode (using SP_EL1). SP_EL0 is NOT automatically saved!
@@ -93,12 +113,12 @@ TEXT sync_exception_handler(SB), NOSPLIT|NOFRAME, $0
 	MRS SP_EL0, R29                    // R29 = SP_EL0 (will be saved to frame later)
 
 	// ========================================================================
-	// STEP 3: Calculate original SP before our push
+	// SEGMENT 3: Calculate Original SP
 	// ========================================================================
 	ADD $16, RSP, R30                  // R30 = original SP (current SP + 16)
 
 	// ========================================================================
-	// STEP 4: Detect nested exception and select stack
+	// SEGMENT 4: Nested Detection
 	// ========================================================================
 	// Exception stack range: 0x5F000000 - 0x5F020000 (128 KB)
 	// If current SP is in this range, we're in a nested exception.
@@ -122,20 +142,21 @@ use_primary_stack:
 
 stack_selected:
 	// ========================================================================
-	// STEP 5: Switch to exception stack and allocate frame
+	// SEGMENT 5: Stack Switch
 	// ========================================================================
 	MOVD R29, RSP                      // Switch to exception stack
 	SUB $EXC_FRAME_SIZE, RSP           // Allocate 320-byte frame
 
 	// ========================================================================
-	// STEP 6: Save original SP to frame
+	// SEGMENT 6: Save Original SP
 	// ========================================================================
 	// R30 contains original SP (before we pushed x29, x30)
 	MOVD R30, EXC_FRAME_ORIG_SP(RSP)
 
 	// ========================================================================
-	// STEP 7: Save ALL registers x0-x28 to frame
+	// SEGMENT 7: Save GPRs
 	// ========================================================================
+	// Save all general-purpose registers x0-x28 to exception frame.
 	STP (R0, R1), (EXC_FRAME_X0+0)(RSP)
 	STP (R2, R3), (EXC_FRAME_X0+16)(RSP)
 	STP (R4, R5), (EXC_FRAME_X0+32)(RSP)
@@ -146,7 +167,8 @@ stack_selected:
 	STP (R14, R15), (EXC_FRAME_X0+112)(RSP)
 	STP (R16, R17), (EXC_FRAME_X0+128)(RSP)
 	// R18 is platform register - Go assembly doesn't support it, skip saving
-	// Save only R19 at the second slot of offset 144
+	// Zero the R18 slot to avoid information leaks, then save R19 at offset 144+8
+	MOVD ZR, (EXC_FRAME_X0+144)(RSP)
 	MOVD R19, (EXC_FRAME_X0+144+8)(RSP)
 	STP (R20, R21), (EXC_FRAME_X0+160)(RSP)
 	STP (R22, R23), (EXC_FRAME_X0+176)(RSP)
@@ -155,7 +177,7 @@ stack_selected:
 	MOVD g, EXC_FRAME_X28(RSP)         // g = R28
 
 	// ========================================================================
-	// STEP 8: Recover original x29, x30 from temporary save location
+	// SEGMENT 8: Recover x29/x30
 	// ========================================================================
 	// We pushed them to the original stack at [originalSP - 16]
 	// R30 = original SP (saved in step 6), so x29/x30 are at [R30 - 16]
@@ -165,62 +187,25 @@ stack_selected:
 	STP (R1, R2), EXC_FRAME_X29_X30(RSP)  // Save to frame
 
 	// ========================================================================
-	// STEP 9: Save exception system registers
+	// SEGMENT 9: Save System Regs
 	// ========================================================================
+	// Save ELR_EL1, SPSR_EL1, FAR_EL1, ESR_EL1 to exception frame.
 	MRS ELR_EL1, R0                    // Return address
 	MRS SPSR_EL1, R1                   // Saved PSTATE
 	MRS FAR_EL1, R2                    // Fault address
 	MRS ESR_EL1, R3                    // Exception syndrome
-
-	// DEBUG: Print ESR immediately after reading to verify it's not 0
-	// Save registers we'll clobber
-	SUB $32, RSP
-	STP (R0, R1), 0(RSP)
-	STP (R2, R3), 16(RSP)
-
-	// Print '>' as ESR marker
-	MOVD $0x09000000, R0
-	MOVD $'>', R1
-	MOVB R1, (R0)
-
-	// Print EC from ESR (bits 31:26) as 2 hex digits
-	LSR $26, R3, R1
-	AND $0x3F, R1                      // R1 = EC
-	// Print high nibble
-	LSR $4, R1, R2
-	AND $0xF, R2
-	ADD $'0', R2
-	CMP $'9', R2
-	BLE esr_debug_d1
-	ADD $('A'-'0'-10), R2
-esr_debug_d1:
-	MOVB R2, (R0)
-	// Print low nibble
-	AND $0xF, R1, R2
-	ADD $'0', R2
-	CMP $'9', R2
-	BLE esr_debug_d2
-	ADD $('A'-'0'-10), R2
-esr_debug_d2:
-	MOVB R2, (R0)
-
-	// Restore registers
-	LDP 0(RSP), (R0, R1)
-	LDP 16(RSP), (R2, R3)
-	ADD $32, RSP
-
 	STP (R0, R1), EXC_FRAME_ELR_SPSR(RSP)   // ELR, SPSR
 	STP (R2, R3), EXC_FRAME_FAR_ESR(RSP)    // FAR, ESR
 
 	// ========================================================================
-	// STEP 10: Save SP_EL0 to frame
+	// SEGMENT 10: Save SP_EL0
 	// ========================================================================
 	// Re-read SP_EL0 (R29 was clobbered for stack selection)
 	MRS SP_EL0, R0
 	MOVD R0, EXC_FRAME_SP_EL0(RSP)
 
 	// ========================================================================
-	// STEP 11: Branch to unified exception dispatcher
+	// SEGMENT 11: Dispatch
 	// ========================================================================
 	// sync_exception_entry (in exc_syscall.s) handles:
 	//   - EC=0x15 (SVC): syscall handling

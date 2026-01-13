@@ -118,16 +118,37 @@ func main() {
 
 	elfPath := flag.Arg(0)
 
-	// Calculate kmazarin size if path provided
-	var kmazarinSize uint64
+	// Calculate kmazarin symbols if path provided
+	var kmazarinInfo *KmazarinInfo
 	if kmazarinPath != "" {
 		var err error
-		kmazarinSize, err = calculateKmazarinSize(kmazarinPath)
+		kmazarinInfo, err = calculateKmazarinInfo(kmazarinPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Could not calculate kmazarin size: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Warning: Could not calculate kmazarin info: %v\n", err)
+			kmazarinInfo = &KmazarinInfo{}
 		} else {
-			fmt.Fprintf(os.Stderr, "Kmazarin memory size: 0x%X (%d bytes)\n", kmazarinSize, kmazarinSize)
+			fmt.Fprintf(os.Stderr, "Kmazarin memory size: 0x%X (%d bytes)\n", kmazarinInfo.Size, kmazarinInfo.Size)
+			if kmazarinInfo.ExceptionVectorAddr != 0 {
+				fmt.Fprintf(os.Stderr, "Kmazarin exception vector: 0x%X\n", kmazarinInfo.ExceptionVectorAddr)
+			}
+			if kmazarinInfo.StartupParamsAddr != 0 {
+				fmt.Fprintf(os.Stderr, "Kmazarin StartupParams: 0x%X\n", kmazarinInfo.StartupParamsAddr)
+			}
+			if kmazarinInfo.G0StructAddr != 0 {
+				fmt.Fprintf(os.Stderr, "Kmazarin G0Struct: 0x%X\n", kmazarinInfo.G0StructAddr)
+			}
+			if kmazarinInfo.AsyncPreemptAddr != 0 {
+				fmt.Fprintf(os.Stderr, "Kmazarin asyncPreempt: 0x%X\n", kmazarinInfo.AsyncPreemptAddr)
+			}
+			if kmazarinInfo.ReadyForAsyncPreemptAddr != 0 {
+				fmt.Fprintf(os.Stderr, "Kmazarin readyForAsyncPreempt: 0x%X\n", kmazarinInfo.ReadyForAsyncPreemptAddr)
+			}
+			if kmazarinInfo.RuntimeG0Addr != 0 {
+				fmt.Fprintf(os.Stderr, "Kmazarin runtime.g0: 0x%X\n", kmazarinInfo.RuntimeG0Addr)
+			}
 		}
+	} else {
+		kmazarinInfo = &KmazarinInfo{}
 	}
 
 	data, err := os.ReadFile(elfPath)
@@ -253,7 +274,7 @@ func main() {
 	}
 
 	// Compute linker values
-	values := computeLinkerValues(sections, symbolAddrs, kmazarinSize)
+	values := computeLinkerValues(sections, symbolAddrs, kmazarinInfo)
 
 	if patchMode {
 		// Patch the binary
@@ -313,7 +334,9 @@ func printValues(values []LinkerValue) {
 			"LinkerBochsDisplayBase", "LinkerBochsDisplaySize",
 			"LinkerPciBarBase", "LinkerPciBarSize":
 			categories["MMIO Devices"] = append(categories["MMIO Devices"], v)
-		case "LinkerKmazarinStart", "LinkerKmazarinSize":
+		case "LinkerKmazarinStart", "LinkerKmazarinSize", "LinkerKmazarinExceptionVector",
+			"LinkerKmazarinStartupParams", "LinkerKmazarinG0Struct", "LinkerKmazarinAsyncPreempt",
+			"LinkerKmazarinReadyForPreempt", "LinkerKmazarinRuntimeG0":
 			categories["Embedded Kmazarin"] = append(categories["Embedded Kmazarin"], v)
 		}
 	}
@@ -394,21 +417,32 @@ func patchBinary(data []byte, values []LinkerValue, sections map[string]*Section
 	return data
 }
 
-// calculateKmazarinSize parses kmazarin.elf and returns the memory size needed
-// This is from .text start to end of the last section (BSS/noptrbss)
-func calculateKmazarinSize(path string) (uint64, error) {
+// KmazarinInfo holds all symbols extracted from kmazarin.elf
+type KmazarinInfo struct {
+	Size                uint64
+	ExceptionVectorAddr uint64
+	StartupParamsAddr   uint64
+	G0StructAddr            uint64
+	AsyncPreemptAddr        uint64
+	ReadyForAsyncPreemptAddr uint64 // Address of main.readyForAsyncPreempt flag
+	RuntimeG0Addr           uint64 // Address of runtime.g0 (kmazarin's g0 goroutine struct)
+}
+
+// calculateKmazarinInfo parses kmazarin.elf and returns all relevant symbol addresses
+func calculateKmazarinInfo(path string) (*KmazarinInfo, error) {
+	info := &KmazarinInfo{}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	if len(data) < 64 {
-		return 0, fmt.Errorf("file too small")
+		return nil, fmt.Errorf("file too small")
 	}
 
 	// Check ELF magic
 	if data[0] != 0x7f || data[1] != 'E' || data[2] != 'L' || data[3] != 'F' {
-		return 0, fmt.Errorf("not an ELF file")
+		return nil, fmt.Errorf("not an ELF file")
 	}
 
 	// Parse section headers to find .text start and last section end
@@ -420,19 +454,20 @@ func calculateKmazarinSize(path string) (uint64, error) {
 	// Get section string table
 	shstrOff := shOff + uint64(shStrNdx)*uint64(shEntSize)
 	if shstrOff+64 > uint64(len(data)) {
-		return 0, fmt.Errorf("section string table out of bounds")
+		return nil, fmt.Errorf("section string table out of bounds")
 	}
 	shstrOffset := binary.LittleEndian.Uint64(data[shstrOff+24 : shstrOff+32])
 	shstrSize := binary.LittleEndian.Uint64(data[shstrOff+32 : shstrOff+40])
 	if shstrOffset+shstrSize > uint64(len(data)) {
-		return 0, fmt.Errorf("section string table data out of bounds")
+		return nil, fmt.Errorf("section string table data out of bounds")
 	}
 	shstrtab := data[shstrOffset : shstrOffset+shstrSize]
 
 	var textStart uint64
 	var maxEnd uint64
+	var symtabOff, symtabSize, strtabOff, strtabSize uint64
 
-	// Parse sections to find .text start and highest end address
+	// Parse sections to find .text start, highest end address, and symbol table
 	for i := uint16(0); i < shNum; i++ {
 		off := shOff + uint64(i)*uint64(shEntSize)
 		if off+64 > uint64(len(data)) {
@@ -440,7 +475,9 @@ func calculateKmazarinSize(path string) (uint64, error) {
 		}
 
 		nameIdx := binary.LittleEndian.Uint32(data[off : off+4])
+		sectionType := binary.LittleEndian.Uint32(data[off+4 : off+8])
 		addr := binary.LittleEndian.Uint64(data[off+16 : off+24])
+		offset := binary.LittleEndian.Uint64(data[off+24 : off+32])
 		size := binary.LittleEndian.Uint64(data[off+32 : off+40])
 
 		// Get section name
@@ -458,6 +495,18 @@ func calculateKmazarinSize(path string) (uint64, error) {
 			textStart = addr
 		}
 
+		// Find .symtab (symbol table)
+		if sectionType == SHT_SYMTAB {
+			symtabOff = offset
+			symtabSize = size
+		}
+
+		// Find .strtab (string table for symbols)
+		if name == ".strtab" {
+			strtabOff = offset
+			strtabSize = size
+		}
+
 		// Track highest end address (for loaded sections)
 		// Include .bss and .noptrbss which have NOBITS but consume memory
 		if addr != 0 && size != 0 {
@@ -469,14 +518,81 @@ func calculateKmazarinSize(path string) (uint64, error) {
 	}
 
 	if textStart == 0 {
-		return 0, fmt.Errorf(".text section not found")
+		return nil, fmt.Errorf(".text section not found")
 	}
 
 	// Size is from .text start to end of last section
-	return maxEnd - textStart, nil
+	info.Size = maxEnd - textStart
+
+	// Parse symbol table to find important symbols
+	if symtabOff != 0 && symtabSize != 0 && strtabOff != 0 && strtabSize != 0 {
+		// Verify both symtab and strtab are within bounds before accessing
+		if symtabOff+symtabSize > uint64(len(data)) {
+			return nil, fmt.Errorf("symbol table out of bounds")
+		}
+		if strtabOff+strtabSize > uint64(len(data)) {
+			return nil, fmt.Errorf("string table out of bounds")
+		}
+
+		strtab := data[strtabOff : strtabOff+strtabSize]
+
+		// Each symbol is 24 bytes (Elf64Sym)
+		numSymbols := symtabSize / 24
+		for i := uint64(0); i < numSymbols; i++ {
+			symOff := symtabOff + i*24
+			if symOff+24 > uint64(len(data)) {
+				continue
+			}
+
+			nameIdx := binary.LittleEndian.Uint32(data[symOff : symOff+4])
+			value := binary.LittleEndian.Uint64(data[symOff+8 : symOff+16])
+
+			// Get symbol name
+			if nameIdx < uint32(len(strtab)) {
+				end := nameIdx
+				for end < uint32(len(strtab)) && strtab[end] != 0 {
+					end++
+				}
+				symName := string(strtab[nameIdx:end])
+
+				// Look for main.ExceptionVectorTable or main.ExceptionVectorTable.abi0
+				if symName == "main.ExceptionVectorTable" || symName == "main.ExceptionVectorTable.abi0" {
+					info.ExceptionVectorAddr = value
+				}
+
+				// Look for main.StartupParams
+				if symName == "main.StartupParams" {
+					info.StartupParamsAddr = value
+				}
+
+				// Look for main.G0Struct (destination for g struct copy)
+				if symName == "main.G0Struct" {
+					info.G0StructAddr = value
+				}
+
+				// Look for runtime.asyncPreempt (for timer preemption)
+				// Go may use .abi0 suffix
+				if symName == "runtime.asyncPreempt" || symName == "runtime.asyncPreempt.abi0" {
+					info.AsyncPreemptAddr = value
+				}
+
+				// Look for main.readyForAsyncPreempt (flag controlling preemption)
+				if symName == "main.readyForAsyncPreempt" {
+					info.ReadyForAsyncPreemptAddr = value
+				}
+
+				// Look for runtime.g0 (kmazarin's g0 goroutine struct)
+				if symName == "runtime.g0" {
+					info.RuntimeG0Addr = value
+				}
+			}
+		}
+	}
+
+	return info, nil
 }
 
-func computeLinkerValues(sections map[string]*Section, symbolAddrs map[string]uint64, kmazarinSize uint64) []LinkerValue {
+func computeLinkerValues(sections map[string]*Section, symbolAddrs map[string]uint64, kinfo *KmazarinInfo) []LinkerValue {
 	var values []LinkerValue
 
 	// Helper to add a value
@@ -571,11 +687,54 @@ func computeLinkerValues(sections map[string]*Section, symbolAddrs map[string]ui
 	// === Embedded Kmazarin ===
 	// LinkerKmazarinStart is where kmazarin is loaded
 	// LinkerKmazarinSize is calculated from kmazarin.elf if -kmazarin flag provided
+	// LinkerKmazarinExceptionVector is the address of kmazarin's exception vector table
 	add("LinkerKmazarinStart", "__kmazarin_start", constants.KmazarinLoadAddr, "kmazarin load address", true)
-	if kmazarinSize > 0 {
-		add("LinkerKmazarinSize", "__kmazarin_size", kmazarinSize, "calculated from kmazarin.elf", true)
+	if kinfo.Size > 0 {
+		add("LinkerKmazarinSize", "__kmazarin_size", kinfo.Size, "calculated from kmazarin.elf", true)
 	} else {
 		add("LinkerKmazarinSize", "__kmazarin_size", 0, "not calculated (use -kmazarin flag)", true)
+	}
+	if kinfo.ExceptionVectorAddr > 0 {
+		// Relocate to high memory: add 0xFFFFFFFF00000000
+		highMemAddr := kinfo.ExceptionVectorAddr + 0xFFFFFFFF00000000
+		add("LinkerKmazarinExceptionVector", "__kmazarin_exception_vector", highMemAddr, "kmazarin exception vector (high mem)", true)
+	} else {
+		add("LinkerKmazarinExceptionVector", "__kmazarin_exception_vector", 0, "not found in kmazarin.elf", true)
+	}
+	if kinfo.StartupParamsAddr > 0 {
+		// Relocate to high memory: add 0xFFFFFFFF00000000
+		highMemAddr := kinfo.StartupParamsAddr + 0xFFFFFFFF00000000
+		add("LinkerKmazarinStartupParams", "__kmazarin_startup_params", highMemAddr, "kmazarin StartupParams (high mem)", true)
+	} else {
+		add("LinkerKmazarinStartupParams", "__kmazarin_startup_params", 0, "not found in kmazarin.elf", true)
+	}
+	if kinfo.G0StructAddr > 0 {
+		// Relocate to high memory: add 0xFFFFFFFF00000000
+		highMemAddr := kinfo.G0StructAddr + 0xFFFFFFFF00000000
+		add("LinkerKmazarinG0Struct", "__kmazarin_g0_struct", highMemAddr, "kmazarin G0Struct (high mem)", true)
+	} else {
+		add("LinkerKmazarinG0Struct", "__kmazarin_g0_struct", 0, "not found in kmazarin.elf", true)
+	}
+	if kinfo.AsyncPreemptAddr > 0 {
+		// Relocate to high memory: add 0xFFFFFFFF00000000
+		highMemAddr := kinfo.AsyncPreemptAddr + 0xFFFFFFFF00000000
+		add("LinkerKmazarinAsyncPreempt", "__kmazarin_async_preempt", highMemAddr, "kmazarin asyncPreempt (high mem)", true)
+	} else {
+		add("LinkerKmazarinAsyncPreempt", "__kmazarin_async_preempt", 0, "not found in kmazarin.elf", true)
+	}
+	if kinfo.ReadyForAsyncPreemptAddr > 0 {
+		// Relocate to high memory: add 0xFFFFFFFF00000000
+		highMemAddr := kinfo.ReadyForAsyncPreemptAddr + 0xFFFFFFFF00000000
+		add("LinkerKmazarinReadyForPreempt", "__kmazarin_ready_for_asyncpreempt", highMemAddr, "kmazarin readyForAsyncPreempt flag (high mem)", true)
+	} else {
+		add("LinkerKmazarinReadyForPreempt", "__kmazarin_ready_for_asyncpreempt", 0, "not found in kmazarin.elf", true)
+	}
+	if kinfo.RuntimeG0Addr > 0 {
+		// Relocate to high memory: add 0xFFFFFFFF00000000
+		highMemAddr := kinfo.RuntimeG0Addr + 0xFFFFFFFF00000000
+		add("LinkerKmazarinRuntimeG0", "__kmazarin_runtime_g0", highMemAddr, "kmazarin runtime.g0 (high mem)", true)
+	} else {
+		add("LinkerKmazarinRuntimeG0", "__kmazarin_runtime_g0", 0, "not found in kmazarin.elf", true)
 	}
 
 	// Sort by address for readability

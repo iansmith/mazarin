@@ -1,19 +1,35 @@
-// lib_runtime.s - Go runtime initialization wrapper functions in Go/Plan9 assembly
+// lib_runtime.s - Go Runtime Initialization Wrappers (Go/Plan9 Assembly)
 //
 // This file contains functions that call Go runtime initialization functions
 // (runtime.args, runtime.osinit, runtime.schedinit, runtime.newproc, runtime.mstart)
 // and the kernel_main bridge function.
 //
+// ============================================================================
+// SEGMENT OVERVIEW (see asm/docs/lib_runtime_decomposition.md)
+// ============================================================================
+//
+// Runtime initialization wrappers:
+//   call_runtime_args     - Build argv/envp/auxv, call runtime.args
+//   call_runtime_osinit   - Call runtime.osinit()
+//   call_runtime_schedinit - Call runtime.schedinit()
+//   call_runtime_newproc  - Create main goroutine (runtime.mainPC)
+//   call_newproc_simple_main - Create goroutine for simple test
+//   call_runtime_mstart   - Start scheduler (never returns)
+//
+// Kernel entry points:
+//   kernel_main           - Bridge from boot to main.KernelMain
+//   jump_to_kmazarin      - Set up kmazarin environment and jump
+//
+// POST-BOOT NOTE: These wrappers are called during boot/initialization.
+// They use ABI0 calling convention to interface with Go runtime.
+// After boot completes, use standard Go function calls.
+//
 // NOTE: These functions use Go 1.17+ register-based calling convention.
 // Parameters arrive in R0, R1, etc. Return values go in R0.
 //
-// Migrated from asm/aarch64/lib.s
 
 #include "textflag.h"
-
-// External Go runtime symbols
-// Note: In Go assembly, we reference these with package prefix or via linkname
-// The Go linker resolves these at link time
+#include "../../../../../docs/abi/go_abi_macros_arm64.h"
 
 // ============================================================================
 // Runtime Initialization Wrappers
@@ -33,47 +49,27 @@
 //   - argv (**byte) at [SP+16] before the call
 // The .abi0 wrapper then loads these into R0/R1 for the ABIInternal runtime.args
 TEXT call_runtime_args(SB), NOSPLIT, $96-4
-	// Build the argv/envp/auxv structure on stack
-	// Layout (each entry 8 bytes):
-	//   SP+48: argv[0] = NULL (end of argv, argc=0)
-	//   SP+56: envp[0] = NULL (end of envp)
-	//   SP+64: AT_PAGESZ (6)
-	//   SP+72: 4096
-	//   SP+80: AT_NULL (0)
-	//   SP+88: 0
-
-	// argv[0] = NULL (end of argv)
-	MOVD	ZR, 48(RSP)
-	// envp[0] = NULL (end of envp)
-	MOVD	ZR, 56(RSP)
-	// auxv[0] = AT_PAGESZ (6), auxv[1] = 4096
-	MOVD	$6, R0
+	// ========================================================================
+	// SEGMENT 1: Build argv/envp/auxv Structure
+	// ========================================================================
+	// Build minimal Linux-style structure on stack.
+	MOVD	ZR, 48(RSP)		// argv[0] = NULL (end of argv, argc=0)
+	MOVD	ZR, 56(RSP)		// envp[0] = NULL (end of envp)
+	MOVD	$6, R0			// AT_PAGESZ = 6
 	MOVD	R0, 64(RSP)
 	MOVD	$4096, R0
-	MOVD	R0, 72(RSP)
-	// auxv[2] = AT_NULL (0), auxv[3] = 0
-	MOVD	ZR, 80(RSP)
+	MOVD	R0, 72(RSP)		// Page size = 4096
+	MOVD	ZR, 80(RSP)		// AT_NULL = 0
 	MOVD	ZR, 88(RSP)
 
-	// Set up stack-based arguments for runtime.args.abi0
-	// The .abi0 wrapper expects:
-	//   - argc (int32) at [SP+8]
-	//   - argv (**byte) at [SP+16]
-	MOVW	ZR, 8(RSP)		// argc = 0 at stack offset 8
-	ADD	$48, RSP, R0		// R0 = pointer to argv structure
-	MOVD	R0, 16(RSP)		// argv pointer at stack offset 16
-
-	// DEBUG: Print 'B' for "Before" runtime.args call
-	MOVD	$0x09000000, R10
-	MOVD	$'B', R11
-	MOVW	R11, (R10)
-
+	// ========================================================================
+	// SEGMENT 2: Call runtime.args
+	// ========================================================================
+	// Set up ABI0 stack-based arguments.
+	MOVW	ZR, 8(RSP)		// argc = 0
+	ADD	$48, RSP, R0
+	MOVD	R0, 16(RSP)		// argv pointer
 	CALL	runtime·args(SB)
-
-	// DEBUG: Print 'C' for "Completed" runtime.args call
-	MOVD	$0x09000000, R10
-	MOVD	$'C', R11
-	MOVW	R11, (R10)
 
 	// If we get here, args() completed without crash
 	// Return 0 = success
@@ -201,12 +197,11 @@ TEXT call_runtime_mstart(SB), NOSPLIT, $32-0
 //   R0 = 0 (reserved)
 //   R1 = 0 (reserved)
 //   R2 = DTB pointer (passed by QEMU)
-TEXT kernel_main(SB), NOSPLIT, $16-0
+TEXT kernel_main(SB), NOSPLIT, $0-0
 	// UART will be initialized by uartInit() called from kernel_main
 	// No early debug writes
 
 	// Function signature: KernelMain(r0, r1, atags uint32)
-	// AArch64 calling convention: first 8 parameters in R0-R7
 	//
 	// NOTE: In QEMU virt, the DTB pointer is provided by QEMU in R0 at reset.
 	// boot.s preserves that pointer and passes it to kernel_main in R2.
@@ -221,8 +216,10 @@ TEXT kernel_main(SB), NOSPLIT, $16-0
 	// Note: Write barrier flag is set in boot.s AFTER BSS clear
 	// (Setting it here would be overwritten by BSS clear)
 
-	// Call Go function - this will initialize everything
-	CALL	main·KernelMain(SB)
+	// Call Go function using Linux entry convention
+	// This properly stores args to stack for ABI0, mimicking how
+	// Go's rt0 receives argc/argv from Linux
+	LINUX_ENTRY_CALL_3_0(main·KernelMain, R0, R1, R2)
 
 	// KernelMain returns after initialization is complete
 	RET
@@ -255,227 +252,37 @@ TEXT kernel_main(SB), NOSPLIT, $16-0
 //   SP = stackPointer (pointing to the full structure)
 // NOTE: This function never returns
 TEXT jump_to_kmazarin(SB), NOSPLIT|NOFRAME, $0-32
-	// Save entry point address to R4 (we need R0 for argc)
-	MOVD	R0, R4
+	// ========================================================================
+	// SEGMENT 1: Save Entry Point
+	// ========================================================================
+	MOVD	R0, R4			// Save entry point (need R0 for argc)
 
-	// DEBUG: Print DAIF value before jumping
-	// Save all caller args to stack
-	SUB	$32, RSP
-	STP	(R0, R1), (RSP)
-	STP	(R2, R3), 16(RSP)
+	// ========================================================================
+	// SEGMENT 2: Set Exception Vector
+	// ========================================================================
+	// Set VBAR_EL1 to kmazarin's exception vector.
+	MOVD	main·LinkerKmazarinExceptionVector(SB), R6
+	MSR	R6, VBAR_EL1
+	DSB	$15
+	ISB	$15
 
-	// Print "D="
-	MOVD	$0x09000000, R10
-	MOVD	$'D', R0
-	MOVB	R0, (R10)
-	MOVD	$'=', R0
-	MOVB	R0, (R10)
+	// ========================================================================
+	// SEGMENT 3: Switch Mode & Stack
+	// ========================================================================
+	// Switch to EL1t mode, set SP to kmazarin's g0 stack.
+	MSR	$0, SPSel
+	DSB	$15
+	ISB	$15
+	MOVD	R3, RSP			// SP = stackPointer arg
 
-	// Read DAIF and print as hex
-	MRS	DAIF, R5
-	// Print high nibble (bits 15-12)
-	LSR	$12, R5, R0
-	AND	$0xF, R0
-	CMP	$10, R0
-	BLT	daif_digit1
-	ADD	$('A'-10), R0
-	B	daif_print1
-daif_digit1:
-	ADD	$'0', R0
-daif_print1:
-	MOVB	R0, (R10)
-	// Print next nibble (bits 11-8)
-	LSR	$8, R5, R0
-	AND	$0xF, R0
-	CMP	$10, R0
-	BLT	daif_digit2
-	ADD	$('A'-10), R0
-	B	daif_print2
-daif_digit2:
-	ADD	$'0', R0
-daif_print2:
-	MOVB	R0, (R10)
-	// Print next nibble (bits 7-4)
-	LSR	$4, R5, R0
-	AND	$0xF, R0
-	CMP	$10, R0
-	BLT	daif_digit3
-	ADD	$('A'-10), R0
-	B	daif_print3
-daif_digit3:
-	ADD	$'0', R0
-daif_print3:
-	MOVB	R0, (R10)
-	// Print low nibble (bits 3-0)
-	AND	$0xF, R5, R0
-	CMP	$10, R0
-	BLT	daif_digit4
-	ADD	$('A'-10), R0
-	B	daif_print4
-daif_digit4:
-	ADD	$'0', R0
-daif_print4:
-	MOVB	R0, (R10)
-
-	// Print newline
-	MOVD	$'\r', R0
-	MOVB	R0, (R10)
-	MOVD	$'\n', R0
-	MOVB	R0, (R10)
-
-	// Restore args
-	LDP	16(RSP), (R2, R3)
-	LDP	(RSP), (R0, R1)
-	ADD	$32, RSP
-
-	// Restore entry point from R4
-	MOVD	R4, R4			// Keep entry point in R4
-
-	// Set up Go runtime registers:
-	// R0 = argc (from R1)
-	MOVD	R1, R0
-
-	// R1 = argv (from R2)
-	MOVD	R2, R1
-
-	// SP = stackPointer (from R3)
-	// CRITICAL: The Go runtime expects SP to point to the start of the structure
-	// which contains argc at [SP+0], argv at [SP+8], envp at [SP+16], auxv at [SP+32]
-	MOVD	R3, RSP
-
-	// Jump to kmazarin entry point (_rt0_arm64_linux)
-	// At this point:
-	//   R0 = argc = 1
-	//   R1 = argv = pointer to argv array
-	//   SP = pointer to full argc/argv/envp/auxv structure
-
-	// DEBUG: Print 'J' before actual jump
-	MOVD	$0x09000000, R10
-	MOVD	$'J', R5
-	MOVB	R5, (R10)
-
-	// DEBUG: Test write to [SP-16] (where rt0_go will write LR)
-	// This verifies the stack below our structure is writable
-	MOVD	$0xDEADBEEF, R5
-	MOVD	R5, -16(RSP)		// Write test value
-	MOVD	-16(RSP), R6		// Read it back
-	CMP	R5, R6
-	BEQ	stack_write_ok
-	// Write failed - print 'X'
-	MOVD	$'X', R5
-	MOVB	R5, (R10)
-	B	stack_test_done
-stack_write_ok:
-	// Write succeeded - print 'W'
-	MOVD	$'W', R5
-	MOVB	R5, (R10)
-stack_test_done:
-
-	// DEBUG: Test write to kmazarin g0 area (high memory: 0xFFFFFFFF4197aec0)
-	// This verifies BSS is writable
-	// Build high-memory address: 0xFFFFFFFF4197aec0
-	MOVD	$0x4197aec0, R6
-	MOVD	$0xFFFFFFFF00000000, R7
-	ADD	R7, R6, R6		// R6 = 0xFFFFFFFF4197aec0
-	MOVD	$0xCAFEBABE, R5
-	MOVD	R5, (R6)		// Write test value
-	MOVD	(R6), R7		// Read it back
-	CMP	R5, R7
-	BEQ	g0_write_ok
-	// Write failed - print 'Y'
-	MOVD	$'Y', R5
-	MOVB	R5, (R10)
-	B	g0_test_done
-g0_write_ok:
-	// Write succeeded - print 'G'
-	MOVD	$'G', R5
-	MOVB	R5, (R10)
-g0_test_done:
-	// Clear the test value we wrote
-	MOVD	ZR, (R6)
-
-	// DEBUG: Print VBAR_EL1 address to verify exception vectors are set
-	MOVD	$'V', R5
-	MOVB	R5, (R10)
-	MRS	VBAR_EL1, R6
-	// Print first 4 hex digits of VBAR (should be 0x4010...)
-	LSR	$28, R6, R5
-	AND	$0xF, R5
-	ADD	$'0', R5
-	CMP	$'9', R5
-	BLE	vbar_digit1
-	ADD	$('A'-'0'-10), R5
-vbar_digit1:
-	MOVB	R5, (R10)
-	LSR	$24, R6, R5
-	AND	$0xF, R5
-	ADD	$'0', R5
-	CMP	$'9', R5
-	BLE	vbar_digit2
-	ADD	$('A'-'0'-10), R5
-vbar_digit2:
-	MOVB	R5, (R10)
-	LSR	$20, R6, R5
-	AND	$0xF, R5
-	ADD	$'0', R5
-	CMP	$'9', R5
-	BLE	vbar_digit3
-	ADD	$('A'-'0'-10), R5
-vbar_digit3:
-	MOVB	R5, (R10)
-	LSR	$16, R6, R5
-	AND	$0xF, R5
-	ADD	$'0', R5
-	CMP	$'9', R5
-	BLE	vbar_digit4
-	ADD	$('A'-'0'-10), R5
-vbar_digit4:
-	MOVB	R5, (R10)
-
-	// DEBUG: Print CurrentEL
-	MOVD	$'L', R5
-	MOVB	R5, (R10)
-	MRS	CurrentEL, R6
-	// CurrentEL bits 3:2 = EL (4=EL1, 8=EL2, 12=EL3)
-	LSR	$2, R6, R5
-	AND	$0x3, R5
-	ADD	$'0', R5
-	MOVB	R5, (R10)
-
-	// DEBUG: Print SPSel (0=SP_EL0, 1=SP_EL1)
-	MOVD	$'P', R5
-	MOVB	R5, (R10)
-	MRS	SPSel, R6
-	AND	$1, R6, R5
-	ADD	$'0', R5
-	MOVB	R5, (R10)
-
-	// NOTE: Cannot read SP_EL1 via MRS from EL1 - it's only allowed from EL2+
-	// SP_EL1 was set during boot in boot_arm64.s via direct RSP assignment
-
-	MOVD	$'\r', R5
-	MOVB	R5, (R10)
-	MOVD	$'\n', R5
-	MOVB	R5, (R10)
-
-	// ===================================================================
-	// CRITICAL: Swap exception vector to kmazarin before jumping
-	// ===================================================================
-	// Kmazarin's exception vector table is at the start of its .text section
-	// (0xFFFFFFFF41800000) due to .align 11 in exceptions_arm64.s
-	//
-	// This switches all exception handling from Cardinal to kmazarin:
-	//   - Syscalls (SVC) → kmazarin handlers
-	//   - Timer (IRQ) → kmazarin handlers
-	//   - Page faults → kmazarin handlers
-	//
-	// After this point, Cardinal code is never called again.
-	//
-	// NOTE: If kmazarin's memory layout changes, this address must be updated!
-
-	// NOTE: VBAR_EL1 setting moved to kmazarin init()
-	// Kmazarin calls GetExceptionVectorBase() and SetVBAR() itself
-
+	// ========================================================================
+	// SEGMENT 4: Set g & Jump
+	// ========================================================================
+	// Set g to kmazarin's runtime.g0, set up argc/argv, jump.
+	MOVD	main·LinkerKmazarinRuntimeG0(SB), R5
+	WORD	$0xAA0503FC		// mov x28, x5 (g = kmazarin g0)
+	MOVD	R1, R0			// R0 = argc
+	MOVD	R2, R1			// R1 = argv
 	JMP	(R4)			// Branch to entry point - never returns
 
 // ============================================================================

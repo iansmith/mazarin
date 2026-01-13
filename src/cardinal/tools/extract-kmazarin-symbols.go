@@ -56,6 +56,7 @@ func main() {
 	requiredSymbols := []string{
 		"runtime.asyncPreempt.abi0",
 		"runtime.asyncPreempt2",
+		"main.readyForAsyncPreempt",
 	}
 
 	for _, name := range requiredSymbols {
@@ -101,6 +102,11 @@ func main() {
 	if addr, ok := symbolAddrs["runtime.asyncPreempt2"]; ok {
 		fmt.Fprintf(out, "// runtime.asyncPreempt2 - Async preemption handler\n")
 		fmt.Fprintf(out, ".equ KMAZARIN_ASYNCPREEMPT2, 0x%X\n\n", addr)
+	}
+
+	if addr, ok := symbolAddrs["main.readyForAsyncPreempt"]; ok {
+		fmt.Fprintf(out, "// main.readyForAsyncPreempt - Flag controlling async preemption\n")
+		fmt.Fprintf(out, ".equ KMAZARIN_READY_FOR_ASYNCPREEMPT, 0x%X\n\n", addr)
 	}
 
 	// Write memory ranges

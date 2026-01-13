@@ -24,9 +24,6 @@ var pending_thread_gp uintptr
 //go:linkname pending_thread_fn pending_thread_fn
 var pending_thread_fn uintptr
 
-// Debug counter for timer state prints
-var timerDebugCounter uint64
-
 // runPendingThread is DEFERRED - we don't run mstart immediately.
 // The user's insight: "if we can just get the program to start (finish runtime
 // initialization) we will be fine because we can cause the sysmon thread to run
@@ -39,55 +36,6 @@ var timerDebugCounter uint64
 func runPendingThread() {
 	// DEFERRED: Don't run mstart yet - let runtime initialization complete first.
 	// The timer interrupt handler will run pending threads via goroutine/channel.
-}
-
-// ============================================================================
-// Syscall Debug Tracing Functions
-// ============================================================================
-// These functions provide clear one-line debug output for each syscall
-// Format: SYSCALL: #<num> <name>(<param>=<value>, ...) = <retval>
-
-//go:nosplit
-func syscallDebugStart(num uint32, name string) {
-	uartPutsDirect("SYSCALL: #")
-	uartPutHex32Direct(num)
-	uartPutsDirect(" ")
-	uartPutsDirect(name)
-	uartPutsDirect("(")
-}
-
-//go:nosplit
-func syscallDebugParamHex(name string, value uint64) {
-	uartPutsDirect(name)
-	uartPutsDirect("=0x")
-	uartPutHex64Direct(value)
-}
-
-//go:nosplit
-func syscallDebugParamInt(name string, value int64) {
-	uartPutsDirect(name)
-	uartPutsDirect("=")
-	if value < 0 {
-		uartPutsDirect("-")
-		value = -value
-	}
-	uartPutHex64Direct(uint64(value))
-}
-
-//go:nosplit
-func syscallDebugSep() {
-	uartPutsDirect(", ")
-}
-
-//go:nosplit
-func syscallDebugEnd(retval int64) {
-	uartPutsDirect(") = ")
-	if retval < 0 {
-		uartPutsDirect("-")
-		retval = -retval
-	}
-	uartPutHex64Direct(uint64(retval))
-	uartPutsDirect("\r\n")
 }
 
 // ============================================================================
@@ -332,7 +280,6 @@ func SyscallRead(fd int32, buf unsafe.Pointer, count uint64) int64 {
 
 	// NO FD SUPPORT - We rely entirely on AT_RANDOM for random numbers
 	// If the runtime tries to read /dev/urandom, it means AT_RANDOM failed
-	// DEBUG REMOVED - print/printHex64 allocate memory and corrupt X0
 	return -9 // -EBADF (bad file descriptor)
 }
 
@@ -562,42 +509,12 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 		}
 	}
 
-	// Compact debug: A=sysAlloc, R=sysReserve, C=sysMap(commit)
-	const MAP_FIXED_LOCAL = 0x10
-	if addr == 0 && (flags & MAP_FIXED_LOCAL) == 0 {
-		uartPutcDirect('A')  // Alloc from anywhere
-	} else if (flags & MAP_FIXED_LOCAL) != 0 {
-		uartPutcDirect('C')  // Commit at fixed addr
-	} else {
-		uartPutcDirect('R')  // Reserve with hint
-	}
-	uartPutHex64Direct(uint64(addr))
-	uartPutcDirect('/')
-	uartPutHex64Direct(length)
-	uartPutcDirect(' ')
-
-	// Debug trace entry - DISABLED (causes nested syscalls that corrupt return value)
-	//syscallDebugStart(222, "mmap")
-	//syscallDebugParamHex("addr", uint64(addr))
-	//syscallDebugSep()
-	//syscallDebugParamHex("len", length)
-	//syscallDebugSep()
-	//syscallDebugParamHex("prot", uint64(prot))
-	//syscallDebugSep()
-	//syscallDebugParamHex("flags", uint64(flags))
-	//syscallDebugSep()
-	//syscallDebugParamInt("fd", int64(fd))
-	//syscallDebugSep()
-	//syscallDebugParamHex("off", uint64(offset))
-	// Return value will be added at each return point
-
 	const MAP_FIXED = 0x10
 
 	// Handle zero-length mmap
 	// This should never happen and indicates a runtime initialization bug
 	// However, we'll allocate a minimal page to allow runtime to continue
 	if length == 0 {
-		// DEBUG REMOVED - any output here corrupts X0
 		// Allocate one page (4KB) from bump allocator
 		length = 4096
 		// CRITICAL: If addr=0 with zero length, clear address to force bump allocator
@@ -625,7 +542,6 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 
 		// Check page alignment (4KB)
 		if (addr & 0xFFF) != 0 {
-			// syscallDebugEnd(-22) // DISABLED - corrupts X0
 			return -22 // -EINVAL (syscall returns negative errno)
 		}
 
@@ -636,31 +552,24 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 		// Accept up to 1PB to handle all reasonable Go runtime addresses
 		const MAX_VIRT_ADDR = uintptr(0x4000000000000) // 1PB (1024TB)
 		if addr >= MAX_VIRT_ADDR {
-			// syscallDebugEnd(-12) // DISABLED - corrupts X0
 			return -12 // -ENOMEM (syscall returns negative errno)
 		}
 
 		// Check if would overflow when adding length
 		if addr+uintptr(length) < addr {
-			// syscallDebugEnd(-12) // DISABLED - corrupts X0
 			return -12 // -ENOMEM (syscall returns negative errno)
 		}
 
 		if addr+uintptr(length) > MAX_VIRT_ADDR {
-			// syscallDebugEnd(-12) // DISABLED - corrupts X0
 			return -12 // -ENOMEM (syscall returns negative errno)
 		}
 
 		// Register this span
 		if !registerMmapSpan(addr, addr+uintptr(roundedLength)) {
-			uartPutsDirect("FIX_SPAN_FULL!")
 			return -12 // -ENOMEM (syscall returns negative errno)
 		}
 
 		// Return the exact address
-		uartPutcDirect('F')
-		uartPutHex64Direct(uint64(addr))
-		uartPutcDirect('\n')
 		return int64(addr)
 	}
 
@@ -684,14 +593,10 @@ func SyscallMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32,
 
 			// Register this span for demand paging
 			if !registerMmapSpan(addr, addr+uintptr(roundedLength)) {
-				uartPutsDirect("SPAN_FULL!")
 				return -12 // -ENOMEM (syscall returns negative errno)
 			}
 
 			// Return the requested address
-			uartPutcDirect('=')
-			uartPutHex64Direct(uint64(addr))
-			uartPutcDirect('\n')
 			return int64(addr)
 		}
 		// Hint is outside mappable range (> 512GB) - fall through to bump allocator
@@ -706,7 +611,6 @@ use_bump_allocator:
 
 	// Check if allocation would overflow the pre-registered bump region
 	if endAddr > BUMP_REGION_END {
-		uartPutsDirect("BUMP_OOM!")
 		return -12 // -ENOMEM (syscall returns negative errno)
 	}
 
@@ -714,9 +618,6 @@ use_bump_allocator:
 	mmapBumpNext = endAddr
 
 	// Return the allocated address
-	uartPutcDirect('B')
-	uartPutHex64Direct(uint64(allocAddr))
-	uartPutcDirect('\n')
 	return int64(allocAddr)
 }
 
@@ -1035,8 +936,9 @@ func SyscallFcntl(fd int32, cmd int32, arg int64) int64 {
 //go:nosplit
 func SyscallWrite(fd int32, buf unsafe.Pointer, count uint64) int64 {
 	if fd == 1 || fd == 2 {
-		// Write to UART via ring buffer
-		return int64(SyscallWriteBuffer(buf, uint32(count)))
+		// Use direct UART output for writes from kmazarin
+		// The ring buffer+interrupt mechanism isn't reliable across address spaces
+		return int64(SyscallWriteDirect(buf, uint32(count)))
 	}
 	// For other fds, pretend we wrote all bytes
 	return int64(count)
@@ -1313,74 +1215,27 @@ func SyscallDispatch(num int64, arg0, arg1, arg2, arg3, arg4, arg5 uint64, frame
 //
 //go:noinline
 func syncExceptionDispatchInternal(
-	ec uint64,
-	esr uint64,
-	elr uint64,
-	far uint64,
-	spsr uint64,
+	ctx *ExceptionContext,
 	syscallNum uint64,
 	arg0, arg1, arg2, arg3, arg4, arg5 uint64,
-	framePtr uintptr,
-	savedFP, savedLR, savedG uint64,
 ) (result int64, switchTo int32, handled bool) {
 
-	// DEBUG: Print marker to verify this function is called
-	uartPutcDirect('#')
-
-	// DEBUG: Print SPSR I-bit to check if interrupts are enabled
-	// SPSR bit 7 = I mask: 0=enabled, 1=disabled
-	if (spsr & 0x80) != 0 {
-		uartPutcDirect('I') // Interrupts DISABLED in saved state
-	}
-
-	// DEBUG: Periodically print timer state (every 100th syscall)
-	timerDebugCounter++
-	if timerDebugCounter%100 == 1 {
-		vcnt := asm.ReadCntvctEl0()
-		pcnt := asm.ReadCntpctEl0()
-		cval := asm.ReadCntvCvalEl0()
-		ctl := asm.ReadCntvCtlEl0()
-		freq := asm.ReadCntfrqEl0()
-		uartPutsDirect("\r\nTIMER: vcnt=")
-		uartPutHex64Direct(vcnt)
-		uartPutsDirect(" pcnt=")
-		uartPutHex64Direct(pcnt)
-		uartPutsDirect(" cval=")
-		uartPutHex64Direct(cval)
-		uartPutsDirect(" ctl=")
-		uartPutHex32Direct(ctl)
-		uartPutsDirect(" freq=")
-		uartPutHex32Direct(freq)
-		uartPutsDirect("\r\n")
-	}
-
-	// DEBUG: Print entry info for non-syscall exceptions
-	if ec != 0x15 && ec != 0x25 {
-		uartPutsDirect("SED:")
-		uartPutHex64Direct(ec)
-		uartPutcDirect(' ')
-	}
-
-	switch ec {
+	switch ctx.EC {
 	case 0x15: // EC_SVC_EL1_A64 - Supervisor call from AArch64
-		// DEBUG: Print syscall number for tracing
-		uartPutcDirect('S')
-		uartPutHex32Direct(uint32(syscallNum))
-		uartPutcDirect(' ')
 		// Dispatch to syscall handler
 		result, switchTo = SyscallDispatch(
 			int64(syscallNum),
 			arg0, arg1, arg2, arg3, arg4, arg5,
-			framePtr,
+			uintptr(ctx.FramePtr),
 		)
 		return result, switchTo, true
 
 	case 0x25: // EC_DATA_ABORT_ELx - Data abort from current EL
 		// Extract fault status from ESR (bits 5:0)
-		faultStatus := esr & 0x3F
+		faultStatus := ctx.ESR & 0x3F
 
 		// Try demand paging
-		if HandlePageFault(uintptr(far), faultStatus) {
+		if HandlePageFault(uintptr(ctx.FAR), faultStatus) {
 			// Page fault handled - return to retry faulting instruction
 			return 0, -1, true
 		}
@@ -1388,20 +1243,20 @@ func syncExceptionDispatchInternal(
 		// Page fault failed - print error and indicate not handled
 		uartPutsDirect("\r\n!FATAL DATA ABORT:\r\n")
 		uartPutsDirect("  FAR=0x")
-		uartPutHex64Direct(far)
+		uartPutHex64Direct(ctx.FAR)
 		uartPutsDirect(" ELR=0x")
-		uartPutHex64Direct(elr)
+		uartPutHex64Direct(ctx.ELR)
 		uartPutsDirect(" ESR=0x")
-		uartPutHex64Direct(esr)
+		uartPutHex64Direct(ctx.ESR)
 		uartPutsDirect("\r\n")
 		return 0, -1, false
 
 	case 0x00: // EC_UNKNOWN - Unknown exception (often NULL pointer)
 		uartPutsDirect("\r\n!UNKNOWN EXCEPTION (EC=0x00):\r\n")
 		uartPutsDirect("  ELR=0x")
-		uartPutHex64Direct(elr)
+		uartPutHex64Direct(ctx.ELR)
 		uartPutsDirect(" FAR=0x")
-		uartPutHex64Direct(far)
+		uartPutHex64Direct(ctx.FAR)
 		uartPutsDirect("\r\n")
 		// Fatal - call exit
 		SyscallExit()
@@ -1411,13 +1266,13 @@ func syncExceptionDispatchInternal(
 	default:
 		// Unknown EC in synchronous exception handler
 		uartPutsDirect("\r\nUnknown EC in synchronous exception handler: EC=0x")
-		uartPutHex64Direct(ec)
+		uartPutHex64Direct(ctx.EC)
 		uartPutsDirect("\r\n  ELR=0x")
-		uartPutHex64Direct(elr)
+		uartPutHex64Direct(ctx.ELR)
 		uartPutsDirect(" FAR=0x")
-		uartPutHex64Direct(far)
+		uartPutHex64Direct(ctx.FAR)
 		uartPutsDirect(" ESR=0x")
-		uartPutHex64Direct(esr)
+		uartPutHex64Direct(ctx.ESR)
 		uartPutsDirect("\r\n")
 		// Return false to hang in assembly
 		return 0, -1, false
