@@ -15,11 +15,6 @@ const (
 
 // Futex operations are defined in futex.go
 
-// Debug output functions - implemented in main package
-func uartPutsDirect(s string)
-func uartPutHex32Direct(v uint32)
-func uartPutHex64Direct(v uint64)
-
 // SyscallCloneHandler handles the clone syscall
 // Called from assembly with clone parameters already extracted from stack
 // Returns: (tid int64, switchTo int32)
@@ -29,12 +24,6 @@ func uartPutHex64Direct(v uint64)
 //go:nosplit
 //go:noinline
 func SyscallCloneHandler(stack, entryFunc, mPtr, gPtr uint64) (tid int64, switchTo int32) {
-	uartPutsDirect("[ksyscall] CloneHandler: stack=")
-	uartPutHex64Direct(stack)
-	uartPutsDirect(" entry=")
-	uartPutHex64Direct(entryFunc)
-	uartPutsDirect("\r\n")
-
 	// Create new thread in READY state
 	newTID := kthread.ThreadCreate(stack, entryFunc, mPtr, gPtr)
 	if newTID < 0 {
@@ -60,36 +49,20 @@ func SyscallFutexHandler(uaddr uint64, op int32, val uint32) (result int64, swit
 	switch opMasked {
 	case FutexWait:
 		// FUTEX_WAIT: Block until someone wakes us
-		uartPutsDirect("[ksyscall] FutexWait: addr=")
-		uartPutHex64Direct(uaddr)
-		uartPutsDirect("\r\n")
-
-		// Find next thread to run
 		nextThread := kthread.ThreadBlockFutex(uaddr)
 		if nextThread >= 0 {
 			// Context switch to next thread
 			return 0, nextThread
 		}
 		// No other thread ready - spurious wakeup
-		uartPutsDirect("[ksyscall] FutexWait: no ready threads, spurious wakeup\r\n")
-		// Unblock ourselves (this should be handled in assembly)
 		return 0, -1
 
 	case FutexWake:
 		// FUTEX_WAKE: Wake up to 'val' threads blocked on this address
-		uartPutsDirect("[ksyscall] FutexWake: addr=")
-		uartPutHex64Direct(uaddr)
-		uartPutsDirect(" val=")
-		uartPutHex32Direct(val)
-		uartPutsDirect("\r\n")
-
 		woken := kthread.ThreadWakeFutex(uaddr, int32(val))
 		return int64(woken), -1
 
 	default:
-		uartPutsDirect("[ksyscall] FutexHandler: unknown op ")
-		uartPutHex32Direct(uint32(op))
-		uartPutsDirect("\r\n")
 		return 0, -1
 	}
 }
@@ -116,12 +89,6 @@ func SyscallNanosleepHandler(seconds uint64, nanoseconds uint64) (result int64, 
 		ticks = 1 // Minimum 1 tick
 	}
 
-	uartPutsDirect("[ksyscall] NanosleepHandler: ")
-	uartPutHex64Direct(totalNs)
-	uartPutsDirect("ns = ")
-	uartPutHex64Direct(ticks)
-	uartPutsDirect(" ticks\r\n")
-
 	// Block current thread
 	nextThread := kthread.ThreadBlockSleep(ticks)
 	if nextThread >= 0 {
@@ -129,7 +96,6 @@ func SyscallNanosleepHandler(seconds uint64, nanoseconds uint64) (result int64, 
 	}
 
 	// No other thread ready - don't actually sleep
-	uartPutsDirect("[ksyscall] NanosleepHandler: no ready threads, skip sleep\r\n")
 	return 0, -1
 }
 
@@ -159,19 +125,8 @@ func TimerTickHandler() int32 {
 //go:nosplit
 //go:noinline
 func SyscallMmapHandler(addr uint64, length uint64, prot int32, flags int32, fd int32, offset uint64) (result int64, err int32) {
-	uartPutsDirect("[ksyscall] MmapHandler: addr=")
-	uartPutHex64Direct(addr)
-	uartPutsDirect(" length=")
-	uartPutHex64Direct(length)
-	uartPutsDirect(" prot=")
-	uartPutHex32Direct(uint32(prot))
-	uartPutsDirect(" flags=")
-	uartPutHex32Direct(uint32(flags))
-	uartPutsDirect("\r\n")
-
 	// TODO: Implement proper page allocation and mapping
-	// For now, return error
-	uartPutsDirect("[ksyscall] MmapHandler: NOT IMPLEMENTED\r\n")
+	// For now, return error (not implemented)
 	return -1, 0
 }
 
@@ -182,14 +137,7 @@ func SyscallMmapHandler(addr uint64, length uint64, prot int32, flags int32, fd 
 //go:nosplit
 //go:noinline
 func SyscallMunmapHandler(addr uint64, length uint64) (result int64, err int32) {
-	uartPutsDirect("[ksyscall] MunmapHandler: addr=")
-	uartPutHex64Direct(addr)
-	uartPutsDirect(" length=")
-	uartPutHex64Direct(length)
-	uartPutsDirect("\r\n")
-
 	// TODO: Implement proper page deallocation
 	// For now, return success (no-op)
-	uartPutsDirect("[ksyscall] MunmapHandler: NOT IMPLEMENTED (no-op)\r\n")
 	return 0, 0
 }
