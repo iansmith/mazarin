@@ -145,17 +145,6 @@ func SetSyscallSwitchTarget(target int32) {
 //go:nosplit
 //go:noinline
 func InitThreads() {
-	// DEBUG: Print marker to confirm InitThreads runs before clone
-	uartPutc('[')
-	uartPutc('I')
-	uartPutc('N')
-	uartPutc('I')
-	uartPutc('T')
-	uartPutc(' ')
-	uartPutc('T')
-	uartPutc('0')
-	uartPutc(']')
-
 	// M0 is thread 0, already running
 	threads[0].State = ThreadRunning
 	threads[0].TID = 1 // M0 gets TID 1 (like Linux main thread)
@@ -237,8 +226,6 @@ func ThreadCreate(stack, entryFunc, mPtr, gPtr uint64) int32 {
 //go:noinline
 //go:linkname CloneThread kmazarin/ksyscall.CloneThread
 func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
-	hexChars := "0123456789ABCDEF"
-
 	// Check if thread 0 hasn't been initialized yet (InitThreads not called)
 	// If so, reserve slot 0 for M0 by marking it as ThreadRunning now
 	if threads[0].State == ThreadFree {
@@ -248,12 +235,6 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
 		currentThreadIdx = 0
 		nextTID = 2 // Next clone gets TID 2
 		numThreads = 1
-		// Print debug marker
-		uartPutc('[')
-		uartPutc('T')
-		uartPutc('0')
-		uartPutc('!')
-		uartPutc(']')
 	}
 
 	// Find a free slot (will skip slot 0 since we just marked it as Running)
@@ -266,24 +247,8 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
 	}
 
 	if slot < 0 {
-		uartPutc('!')
 		return -1
 	}
-
-	// DEBUG: Print slot assignment
-	uartPutc('<')
-	uartPutc('s')
-	uartPutc('=')
-	uartPutc(hexChars[slot&0xF])
-	uartPutc(' ')
-	uartPutc('g')
-	uartPutc('=')
-	// Print gp value (last 4 hex digits)
-	uartPutc(hexChars[(gp>>12)&0xF])
-	uartPutc(hexChars[(gp>>8)&0xF])
-	uartPutc(hexChars[(gp>>4)&0xF])
-	uartPutc(hexChars[gp&0xF])
-	uartPutc('>')
 
 	// Allocate TID
 	tid := nextTID
@@ -334,27 +299,6 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
 	//   [stack-24] = fn (loaded into X12)
 	// This is the same layout that clone() sets up before calling SVC.
 	stackPtr := unsafe.Pointer(uintptr(stack))
-
-	// DEBUG: Print stack address and gp value
-	uartPutc('[')
-	uartPutc('S')
-	uartPutc('T')
-	uartPutc('K')
-	uartPutc('=')
-	stackVal := uint64(uintptr(stackPtr))
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (stackVal >> i) & 0xF
-		uartPutc(hexChars[nibble])
-	}
-	uartPutc(' ')
-	uartPutc('g')
-	uartPutc('p')
-	uartPutc('=')
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (gp >> i) & 0xF
-		uartPutc(hexChars[nibble])
-	}
-	uartPutc(']')
 
 	*(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 8)) = mp
 	*(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 16)) = gp
@@ -570,7 +514,6 @@ const (
 //go:nosplit
 //go:noinline
 func SaveContextFromFrame(framePtr uintptr) {
-	hexChars := "0123456789ABCDEF"
 	t := &threads[currentThreadIdx]
 
 	// Read all registers from exception frame
@@ -583,28 +526,6 @@ func SaveContextFromFrame(framePtr uintptr) {
 
 	// x28 is at offset 224 = 28*8, so frame[28]
 	t.Context.X[28] = frame[28]
-
-	// DEBUG: Print thread idx and X28 being saved
-	uartPutc('{')
-	uartPutc('S')
-	uartPutc('A')
-	uartPutc('V')
-	uartPutc('E')
-	uartPutc(' ')
-	uartPutc('t')
-	uartPutc('=')
-	uartPutc(hexChars[currentThreadIdx&0xF])
-	uartPutc(' ')
-	uartPutc('x')
-	uartPutc('2')
-	uartPutc('8')
-	uartPutc('=')
-	x28val := t.Context.X[28]
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (x28val >> i) & 0xF
-		uartPutc(hexChars[nibble])
-	}
-	uartPutc('}')
 
 	// x29, x30 are at offset 232 = 29*8, so frame[29] and frame[30]
 	t.Context.X[29] = frame[29]
@@ -635,32 +556,8 @@ func SaveContextFromFrame(framePtr uintptr) {
 //go:nosplit
 //go:noinline
 func doContextSwitchABI0(framePtr uint64, targetIdx int32) uint64 {
-	// DEBUG: Print what targetIdx we received
-	uartPutc('~')
-	uartPutc('t')
-	uartPutc('=')
-	// Print targetIdx as hex digits
-	hexChars := "0123456789ABCDEF"
-	uartPutc(hexChars[(targetIdx>>12)&0xF])
-	uartPutc(hexChars[(targetIdx>>8)&0xF])
-	uartPutc(hexChars[(targetIdx>>4)&0xF])
-	uartPutc(hexChars[targetIdx&0xF])
-	uartPutc('~')
-
 	ctx := doContextSwitchImpl(uintptr(framePtr), targetIdx)
-
-	// DEBUG: Print the context pointer
-	uartPutc('~')
-	uartPutc('c')
-	uartPutc('=')
-	ctxAddr := uint64(uintptr(unsafe.Pointer(ctx)))
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (ctxAddr >> i) & 0xF
-		uartPutc(hexChars[nibble])
-	}
-	uartPutc('~')
-
-	return ctxAddr
+	return uint64(uintptr(unsafe.Pointer(ctx)))
 }
 
 // doContextSwitchImpl performs a context switch from current thread to targetIdx
@@ -669,70 +566,12 @@ func doContextSwitchABI0(framePtr uint64, targetIdx int32) uint64 {
 //
 // CRITICAL: MUST keep //go:nosplit
 // Tested removing it - system crashes with nested page fault (same as doContextSwitchABI0).
-// This function is called by doContextSwitchABI0, which then calls SaveContextFromFrame,
-// creating a 3-level deep call chain with extensive debug output and loops.
-// Total estimated stack usage: ~210 bytes (well within 792 byte limit).
+// This function is called by doContextSwitchABI0, which then calls SaveContextFromFrame.
 // Crash occurs because Go's stack growth checks can trigger page faults in exception context.
 //
 //go:nosplit
 //go:noinline
 func doContextSwitchImpl(framePtr uintptr, targetIdx int32) *ThreadContext {
-	hexChars := "0123456789ABCDEF"
-
-	// DEBUG: Print threads array base and thread context addresses
-	uartPutc('[')
-	uartPutc('A')
-	uartPutc('=')
-	threadsBase := uint64(uintptr(unsafe.Pointer(&threads[0])))
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (threadsBase >> i) & 0xF
-		uartPutc(hexChars[nibble])
-	}
-	uartPutc(']')
-
-	uartPutc('[')
-	uartPutc('1')
-	uartPutc('=')
-	ctx1 := uint64(uintptr(unsafe.Pointer(&threads[1].Context)))
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (ctx1 >> i) & 0xF
-		uartPutc(hexChars[nibble])
-	}
-	uartPutc(']')
-
-	uartPutc('[')
-	uartPutc('2')
-	uartPutc('=')
-	ctx2 := uint64(uintptr(unsafe.Pointer(&threads[2].Context)))
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (ctx2 >> i) & 0xF
-		uartPutc(hexChars[nibble])
-	}
-	uartPutc(']')
-
-	// DEBUG: Print X[28] from each thread's context
-	uartPutc('[')
-	uartPutc('X')
-	uartPutc('1')
-	uartPutc('=')
-	x28_1 := threads[1].Context.X[28]
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (x28_1 >> i) & 0xF
-		uartPutc(hexChars[nibble])
-	}
-	uartPutc(']')
-
-	uartPutc('[')
-	uartPutc('X')
-	uartPutc('2')
-	uartPutc('=')
-	x28_2 := threads[2].Context.X[28]
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (x28_2 >> i) & 0xF
-		uartPutc(hexChars[nibble])
-	}
-	uartPutc(']')
-
 	// Save current thread's context from exception frame
 	SaveContextFromFrame(framePtr)
 
@@ -750,28 +589,6 @@ func doContextSwitchImpl(framePtr uintptr, targetIdx int32) *ThreadContext {
 	if threads[oldIdx].State == ThreadRunning {
 		threads[oldIdx].State = ThreadReady
 	}
-
-	// DEBUG: Print thread we're restoring and its X28
-	uartPutc('{')
-	uartPutc('R')
-	uartPutc('E')
-	uartPutc('S')
-	uartPutc('T')
-	uartPutc(' ')
-	uartPutc('t')
-	uartPutc('=')
-	uartPutc(hexChars[targetIdx&0xF])
-	uartPutc(' ')
-	uartPutc('x')
-	uartPutc('2')
-	uartPutc('8')
-	uartPutc('=')
-	x28restore := threads[targetIdx].Context.X[28]
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (x28restore >> i) & 0xF
-		uartPutc(hexChars[nibble])
-	}
-	uartPutc('}')
 
 	return &threads[targetIdx].Context
 }

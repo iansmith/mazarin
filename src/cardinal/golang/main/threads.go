@@ -81,8 +81,6 @@ func InitThreads() {
 	for i := 1; i < MaxThreads; i++ {
 		threads[i].State = ThreadFree
 	}
-
-	uartPutsDirect("InitThreads: M0 is thread 0\r\n")
 }
 
 // ThreadCreate creates a new thread entry for clone syscall
@@ -100,7 +98,6 @@ func ThreadCreate(stack, entryFunc, mPtr, gPtr uint64) int32 {
 	}
 
 	if slot < 0 {
-		uartPutsDirect("ThreadCreate: no free slots!\r\n")
 		return -1
 	}
 
@@ -130,14 +127,6 @@ func ThreadCreate(stack, entryFunc, mPtr, gPtr uint64) int32 {
 	threads[slot].Context.SPSR = 0x344
 
 	numThreads++
-
-	uartPutsDirect("ThreadCreate: created thread ")
-	uartPutHex32Direct(uint32(tid))
-	uartPutsDirect(" in slot ")
-	uartPutHex32Direct(uint32(slot))
-	uartPutsDirect(" entry=")
-	uartPutHex64Direct(entryFunc)
-	uartPutsDirect("\r\n")
 
 	return tid
 }
@@ -169,12 +158,6 @@ func ThreadBlockFutex(futexAddr uint64) int32 {
 	threads[currentThreadIdx].State = ThreadBlockedFutex
 	threads[currentThreadIdx].FutexAddr = futexAddr
 
-	uartPutsDirect("ThreadBlockFutex: thread ")
-	uartPutHex32Direct(uint32(currentThreadIdx))
-	uartPutsDirect(" blocked on ")
-	uartPutHex64Direct(futexAddr)
-	uartPutsDirect("\r\n")
-
 	// Find next ready thread
 	return ThreadFindReady()
 }
@@ -191,10 +174,6 @@ func ThreadWakeFutex(futexAddr uint64, maxWake int32) int32 {
 			threads[i].State = ThreadReady
 			threads[i].FutexAddr = 0
 			woken++
-
-			uartPutsDirect("ThreadWakeFutex: woke thread ")
-			uartPutHex32Direct(uint32(i))
-			uartPutsDirect("\r\n")
 		}
 	}
 
@@ -210,12 +189,6 @@ func ThreadBlockSleep(durationTicks uint64) int32 {
 	threads[currentThreadIdx].State = ThreadSleeping
 	threads[currentThreadIdx].WakeupTick = wakeupTick
 
-	uartPutsDirect("ThreadBlockSleep: thread ")
-	uartPutHex32Direct(uint32(currentThreadIdx))
-	uartPutsDirect(" sleeping until tick ")
-	uartPutHex64Direct(wakeupTick)
-	uartPutsDirect("\r\n")
-
 	return ThreadFindReady()
 }
 
@@ -229,10 +202,6 @@ func ThreadCheckSleepers() {
 			if globalTickCounter >= threads[i].WakeupTick {
 				threads[i].State = ThreadReady
 				threads[i].WakeupTick = 0
-
-				uartPutsDirect("ThreadCheckSleepers: woke thread ")
-				uartPutHex32Direct(uint32(i))
-				uartPutsDirect("\r\n")
 			}
 		}
 	}
@@ -389,13 +358,6 @@ func doContextSwitchInternal(framePtr uintptr, targetIdx int32) *ThreadContext {
 	// Save current thread's context from exception frame
 	SaveContextFromFrame(framePtr)
 
-	// Debug output
-	uartPutsDirect("ContextSwitch: ")
-	uartPutHex32Direct(uint32(currentThreadIdx))
-	uartPutsDirect(" -> ")
-	uartPutHex32Direct(uint32(targetIdx))
-	uartPutsDirect("\r\n")
-
 	// Update thread indices and states
 	// Note: The blocking state was already set by the syscall handler
 	// (e.g., ThreadBlockFutex sets state to ThreadBlockedFutex)
@@ -434,12 +396,6 @@ func doContextSwitchInternal(framePtr uintptr, targetIdx int32) *ThreadContext {
 //go:nosplit
 //go:noinline
 func SyscallCloneHandler(stack, entryFunc, mPtr, gPtr uint64) (tid int64, switchTo int32) {
-	uartPutsDirect("SyscallCloneHandler: stack=")
-	uartPutHex64Direct(stack)
-	uartPutsDirect(" entry=")
-	uartPutHex64Direct(entryFunc)
-	uartPutsDirect("\r\n")
-
 	// Create new thread in READY state
 	newTID := ThreadCreate(stack, entryFunc, mPtr, gPtr)
 	if newTID < 0 {
@@ -473,37 +429,22 @@ func SyscallFutexHandler(uaddr uint64, op int32, val uint32) (result int64, swit
 	switch opMasked {
 	case FutexWait:
 		// FUTEX_WAIT: Block until someone wakes us
-		uartPutsDirect("FutexWait: addr=")
-		uartPutHex64Direct(uaddr)
-		uartPutsDirect("\r\n")
-
 		// Find next thread to run
 		nextThread := ThreadBlockFutex(uaddr)
 		if nextThread >= 0 {
 			// Context switch to next thread
 			return 0, nextThread
 		}
-		// No other thread ready - this is a problem!
-		// For now, return immediately (spurious wakeup)
-		uartPutsDirect("FutexWait: no ready threads, spurious wakeup\r\n")
+		// No other thread ready - spurious wakeup
 		threads[currentThreadIdx].State = ThreadRunning // Unblock ourselves
 		return 0, -1
 
 	case FutexWake:
 		// FUTEX_WAKE: Wake up to 'val' threads blocked on this address
-		uartPutsDirect("FutexWake: addr=")
-		uartPutHex64Direct(uaddr)
-		uartPutsDirect(" val=")
-		uartPutHex32Direct(val)
-		uartPutsDirect("\r\n")
-
 		woken := ThreadWakeFutex(uaddr, int32(val))
 		return int64(woken), -1
 
 	default:
-		uartPutsDirect("FutexHandler: unknown op ")
-		uartPutHex32Direct(uint32(op))
-		uartPutsDirect("\r\n")
 		return 0, -1
 	}
 }
@@ -529,12 +470,6 @@ func SyscallNanosleepHandler(seconds uint64, nanoseconds uint64) (result int64, 
 		ticks = 1 // Minimum 1 tick
 	}
 
-	uartPutsDirect("NanosleepHandler: ")
-	uartPutHex64Direct(totalNs)
-	uartPutsDirect("ns = ")
-	uartPutHex64Direct(ticks)
-	uartPutsDirect(" ticks\r\n")
-
 	// Block current thread
 	nextThread := ThreadBlockSleep(ticks)
 	if nextThread >= 0 {
@@ -542,8 +477,6 @@ func SyscallNanosleepHandler(seconds uint64, nanoseconds uint64) (result int64, 
 	}
 
 	// No other thread ready - busy wait
-	// This shouldn't happen in practice, but handle it
-	uartPutsDirect("NanosleepHandler: no ready threads, busy wait\r\n")
 	threads[currentThreadIdx].State = ThreadRunning
 	return 0, -1
 }

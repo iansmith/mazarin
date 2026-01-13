@@ -33,11 +33,8 @@ func invalidateTLB()
 func unmapCardinal() {
 	cfg := GetRuntimeConfig()
 	if cfg == nil {
-		uartPuts("[UnmapCardinal] ERROR: RuntimeConfig not available!\r\n")
-		return
+		KernelPanic("unmapCardinal: RuntimeConfig not available")
 	}
-
-	uartPuts("[UnmapCardinal] Unmapping Cardinal at L1 level...\r\n")
 
 	// Read TTBR0_EL1 to get L0 page table physical address
 	ttbr0Phys := readTTBR0()
@@ -51,8 +48,7 @@ func unmapCardinal() {
 
 	// Check if L0[0] is valid and points to a table
 	if (l0Entry0 & 0x3) != 0x3 {
-		uartPuts("[UnmapCardinal] ERROR: L0[0] is not a valid table descriptor!\r\n")
-		return
+		KernelPanic("unmapCardinal: L0[0] is not a valid table descriptor")
 	}
 
 	// Extract L1 table physical address (bits 47:12)
@@ -70,8 +66,6 @@ func unmapCardinal() {
 	// Memory barriers and TLB invalidation
 	dsb()
 	invalidateTLB()
-
-	uartPuts("[UnmapCardinal] Cardinal unmapped (L1[0-2] zeroed)\r\n")
 }
 
 // EarlyInit initializes devices that must be set up before DTB scanning
@@ -83,12 +77,6 @@ func unmapCardinal() {
 // Called from init() before the Go runtime is fully initialized
 func EarlyInit() {
 	Print("[Early] Initializing critical devices...")
-
-	// DEBUG: Print asyncPreempt address from RuntimeConfig
-	asyncPreemptAddr := GetAsyncPreemptAddr()
-	uartPuts("[Early]   AsyncPreempt address: 0x")
-	uartPutHex64Direct(uint64(asyncPreemptAddr))
-	uartPuts("\r\n")
 
 	// 1. UART is already working (we're using direct mode)
 	Print("[Early]   UART: already initialized (direct mode)")

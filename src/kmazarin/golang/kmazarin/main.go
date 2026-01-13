@@ -339,24 +339,8 @@ func testRuntimeReadiness() bool {
 // simpleMain is the entry point for our simple goroutine/channel test
 // This will be run by the scheduler as the main goroutine
 func simpleMain() {
-	// Direct UART to verify entry
-	uartPutc('M')
-	uartPutc('A')
-	uartPutc('I')
-	uartPutc('N')
-	uartPutc('\r')
-	uartPutc('\n')
-
-	// DEBUG: Print g register and PC values at start
+	// Get g register value (used later for logging)
 	gVal := GetGRegister()
-	uartPuts("[g register] = 0x")
-	uartPutHex64Direct(gVal)
-	uartPuts("\r\n")
-
-	pcVal := GetPC()
-	uartPuts("[PC] = 0x")
-	uartPutHex64Direct(pcVal)
-	uartPuts("\r\n")
 
 	Print("")
 	Print("[g1] Kmazarin kernel starting...")
@@ -444,8 +428,6 @@ func simpleMain() {
 // simpleGoroutine2 is the second goroutine for the preemption test
 // Pure busy-wait with NO cooperative yielding
 func simpleGoroutine2(ch chan string) {
-	uartPuts("[g2] Started, entering busy-wait loop (NO yielding)...\r\n")
-
 	// Infinite busy-wait loop to test timer-based preemption
 	// NO calls to Gosched() - the timer interrupt must forcibly preempt us
 	counter := uint64(0)

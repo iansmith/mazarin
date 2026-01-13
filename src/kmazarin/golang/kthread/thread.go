@@ -59,11 +59,6 @@ var globalTickCounter uint64 = 0
 // Timer frequency (Hz) - set during initialization
 var timerFrequencyHz uint64 = 62500000 // Default 62.5 MHz for QEMU
 
-// Debug output functions - implemented in main package
-func uartPutsDirect(s string)
-func uartPutHex32Direct(v uint32)
-func uartPutHex64Direct(v uint64)
-
 // Assembly function declarations
 func DoContextSwitch(framePtr uintptr, targetIdx int32) *ThreadContext
 
@@ -82,8 +77,6 @@ func InitThreads() {
 	for i := 1; i < MaxThreads; i++ {
 		threads[i].State = ThreadFree
 	}
-
-	uartPutsDirect("[kthread] InitThreads: M0 is thread 0\r\n")
 }
 
 // ThreadCreate creates a new thread entry for clone syscall
@@ -101,7 +94,6 @@ func ThreadCreate(stack, entryFunc, mPtr, gPtr uint64) int32 {
 	}
 
 	if slot < 0 {
-		uartPutsDirect("[kthread] ThreadCreate: no free slots!\r\n")
 		return -1
 	}
 
@@ -131,14 +123,6 @@ func ThreadCreate(stack, entryFunc, mPtr, gPtr uint64) int32 {
 	threads[slot].Context.SPSR = 0x344
 
 	numThreads++
-
-	uartPutsDirect("[kthread] ThreadCreate: created thread ")
-	uartPutHex32Direct(uint32(tid))
-	uartPutsDirect(" in slot ")
-	uartPutHex32Direct(uint32(slot))
-	uartPutsDirect(" entry=")
-	uartPutHex64Direct(entryFunc)
-	uartPutsDirect("\r\n")
 
 	return tid
 }
@@ -170,12 +154,6 @@ func ThreadBlockFutex(futexAddr uint64) int32 {
 	threads[currentThreadIdx].State = ThreadBlockedFutex
 	threads[currentThreadIdx].FutexAddr = futexAddr
 
-	uartPutsDirect("[kthread] ThreadBlockFutex: thread ")
-	uartPutHex32Direct(uint32(currentThreadIdx))
-	uartPutsDirect(" blocked on ")
-	uartPutHex64Direct(futexAddr)
-	uartPutsDirect("\r\n")
-
 	// Find next ready thread
 	return ThreadFindReady()
 }
@@ -192,10 +170,6 @@ func ThreadWakeFutex(futexAddr uint64, maxWake int32) int32 {
 			threads[i].State = ThreadReady
 			threads[i].FutexAddr = 0
 			woken++
-
-			uartPutsDirect("[kthread] ThreadWakeFutex: woke thread ")
-			uartPutHex32Direct(uint32(i))
-			uartPutsDirect("\r\n")
 		}
 	}
 
@@ -211,12 +185,6 @@ func ThreadBlockSleep(durationTicks uint64) int32 {
 	threads[currentThreadIdx].State = ThreadSleeping
 	threads[currentThreadIdx].WakeupTick = wakeupTick
 
-	uartPutsDirect("[kthread] ThreadBlockSleep: thread ")
-	uartPutHex32Direct(uint32(currentThreadIdx))
-	uartPutsDirect(" sleeping until tick ")
-	uartPutHex64Direct(wakeupTick)
-	uartPutsDirect("\r\n")
-
 	return ThreadFindReady()
 }
 
@@ -230,10 +198,6 @@ func ThreadCheckSleepers() {
 			if globalTickCounter >= threads[i].WakeupTick {
 				threads[i].State = ThreadReady
 				threads[i].WakeupTick = 0
-
-				uartPutsDirect("[kthread] ThreadCheckSleepers: woke thread ")
-				uartPutHex32Direct(uint32(i))
-				uartPutsDirect("\r\n")
 			}
 		}
 	}
@@ -329,13 +293,6 @@ func SaveContextFromFrame(framePtr uintptr) {
 func doContextSwitchInternal(framePtr uintptr, targetIdx int32) *ThreadContext {
 	// Save current thread's context from exception frame
 	SaveContextFromFrame(framePtr)
-
-	// Debug output
-	uartPutsDirect("[kthread] ContextSwitch: ")
-	uartPutHex32Direct(uint32(currentThreadIdx))
-	uartPutsDirect(" -> ")
-	uartPutHex32Direct(uint32(targetIdx))
-	uartPutsDirect("\r\n")
 
 	// Update thread indices and states
 	// Note: The blocking state was already set by the syscall handler
