@@ -53,7 +53,8 @@ type RuntimeConfig struct {
 	G0StructAddr uint64 // High-memory address where g0 struct should be copied
 
 	// Preemption support
-	AsyncPreemptAddr uint64 // High-memory address of runtime.asyncPreempt function
+	AsyncPreemptAddr      uint64 // High-memory address of runtime.asyncPreempt function
+	ReadyForAsyncPreempt  uint64 // Address of readyForAsyncPreempt flag
 }
 
 // getRuntimeConfigFromStartupParams reads the RuntimeConfig from StartupParams.
@@ -107,6 +108,15 @@ func GetUartBase() uintptr {
 func GetAsyncPreemptAddr() uintptr {
 	configPtr := (*RuntimeConfig)(unsafe.Pointer(&StartupParams[RuntimeConfigOffset]))
 	return uintptr(configPtr.AsyncPreemptAddr)
+}
+
+// GetReadyForAsyncPreemptAddr returns the address of the readyForAsyncPreempt flag.
+// The IRQ handler checks this flag before calling asyncPreempt.
+//
+//go:nosplit
+func GetReadyForAsyncPreemptAddr() uintptr {
+	configPtr := (*RuntimeConfig)(unsafe.Pointer(&StartupParams[RuntimeConfigOffset]))
+	return uintptr(configPtr.ReadyForAsyncPreempt)
 }
 
 // NOTE: GetG0StructAddr is defined in startup.go since it returns the actual

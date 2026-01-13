@@ -1,6 +1,6 @@
 module cardinal
 
-go 1.24.0
+go 1.25.5
 
 require (
 	github.com/fogleman/gg v1.3.0

@@ -2,6 +2,8 @@
 
 package kirq
 
+import "unsafe"
+
 // getUartBase is provided by main package via go:linkname.
 func getUartBase() uintptr
 
@@ -9,6 +11,11 @@ func getUartBase() uintptr
 // Returns the address of runtime.asyncPreempt from RuntimeConfig,
 // populated by Cardinal at boot time.
 func getAsyncPreemptAddr() uintptr
+
+// getReadyForAsyncPreemptAddr is provided by main package via go:linkname.
+// Returns the address of the readyForAsyncPreempt flag in kmazarin,
+// which controls whether timer IRQs should trigger async preemption.
+func getReadyForAsyncPreemptAddr() uintptr
 
 // TimerIRQHandlerPreemptable handles the ARM Generic Timer interrupt (IRQ 27)
 // Returns preemption info to trigger call injection if preemption should occur
@@ -36,6 +43,23 @@ func TimerIRQHandlerPreemptable(irqNum uint64, framePtr uintptr, elr, spEl0 uint
 			NewSP:     0,
 			NewLR:     0,
 			DoPreempt: false,
+		}
+	}
+
+	// Check if runtime is ready for async preemption
+	// This flag is set to false during runtime init, then true when main() starts
+	readyFlagAddr := getReadyForAsyncPreemptAddr()
+	if readyFlagAddr != 0 {
+		// Read the flag value (uint32)
+		readyFlag := *(*uint32)(unsafe.Pointer(readyFlagAddr))
+		if readyFlag == 0 {
+			// Runtime not ready - skip preemption
+			return PreemptInfo{
+				NewELR:    0,
+				NewSP:     0,
+				NewLR:     0,
+				DoPreempt: false,
+			}
 		}
 	}
 

@@ -21,7 +21,7 @@ QEMU 10.2 or later is required. Earlier versions have issues with the ELF loadin
 If Go 1.25.5 is not in your PATH, you can:
 
 1. Install it and add to PATH
-2. Override per-command: `GO=/path/to/go1.25.5 scripts/build`
+2. Override per-command: `GO=/path/to/go1.25.5 build/tools/build`
 3. Override per-command: `make GO=/path/to/go1.25.5 cardinal`
 
 ### Installing QEMU 10.2+
@@ -29,22 +29,32 @@ If Go 1.25.5 is not in your PATH, you can:
 If qemu-system-aarch64 is not in your PATH, you can:
 
 1. Install it and add to PATH
-2. Override per-command: `QEMU=/path/to/qemu-system-aarch64 scripts/run`
+2. Override per-command: `QEMU=/path/to/qemu-system-aarch64 build/tools/run`
 
 ## Build & Run
 
-**First time setup:** Build the helper scripts (compiled Go binaries):
+### Host Tools
+
+All build and run tools are Go programs compiled for the host system (not the target arm64).
+
+**Source locations:**
+- `tools/*.go` - Standalone tools (fix-go-elf, relocate-kmazarin, incbin2goasm, patch-entry, cmd-build, cmd-run, cmd-stop)
+- `src/cardinal/tools/*.go` - Tools that import cardinal packages (compute-linker-values, print-kmazarin-addr)
+
+**Binary output:** `build/tools/` (created by `make host-tools`)
+
+**First time setup:** Build the host tools:
 ```bash
 make GO=/path/to/go1.25.5 host-tools
 ```
 
-**Then use the scripts:**
+**Then use the tools:**
 ```bash
-scripts/build          # Build cardinal and kmazarin
-scripts/build clean    # Clean build
-scripts/run            # Start QEMU (waits 3s, shows last 500 chars)
-scripts/run 10         # Start QEMU with 10s wait
-scripts/stop           # Stop any running QEMU instances
+build/tools/build          # Build cardinal and kmazarin
+build/tools/build clean    # Clean build
+build/tools/run            # Start QEMU (waits 3s, shows last 500 chars)
+build/tools/run 10         # Start QEMU with 10s wait
+build/tools/stop           # Stop any running QEMU instances
 
 # Or using make directly
 make GO=/path/to/go1.25.5 cardinal
@@ -54,13 +64,13 @@ make GO=/path/to/go1.25.5 cardinal
 
 ```bash
 # 1. Stop any running QEMU
-scripts/stop
+build/tools/stop
 
 # 2. Build
-scripts/build clean    # or just: scripts/build
+build/tools/build clean    # or just: build/tools/build
 
 # 3. Run
-scripts/run 5          # Wait 5 seconds before showing output
+build/tools/run 5          # Wait 5 seconds before showing output
 ```
 
 Output is written to `/tmp/cardinal-serial.log`.
@@ -72,7 +82,7 @@ Output is written to `/tmp/cardinal-serial.log`.
   ```bash
   tail -f /tmp/cardinal-serial.log | tr -d '\000-\010\013-\037\177-\377'
   ```
-- The `scripts/run` script automatically applies safe filtering
+- The `build/tools/run` script automatically applies safe filtering
 
 **CRITICAL: QEMU Output Buffering**
 - NO: `| tee`, `| tail`, `> file`, `< /dev/null` piped to QEMU - causes buffering issues
@@ -80,7 +90,7 @@ Output is written to `/tmp/cardinal-serial.log`.
 
 ### QEMU Monitor Access
 
-The scripts/run script starts QEMU with a TCP monitor on port 4444.
+The build/tools/run script starts QEMU with a TCP monitor on port 4444.
 
 **Query QEMU monitor:**
 ```bash

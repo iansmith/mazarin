@@ -284,14 +284,8 @@ sync_exception_handler:
 	// SVC: First save ELR and SPSR so clone can get child's return address and state
 	// ELR and SPSR are already in the exception frame from earlier save
 	LDP	EXC_FRAME_ELR_SPSR(RSP), (R0, R1)  // Load ELR and SPSR from frame
-	SUB	$16, RSP                           // Allocate frame for SetSyscallELR
-	MOVD	R0, 8(RSP)                        // arg0: elr
-	CALL	·SetSyscallELR(SB)
-	ADD	$16, RSP
-	SUB	$16, RSP                           // Allocate frame for SetSyscallSPSR
-	MOVD	R1, 8(RSP)                        // arg0: spsr
-	CALL	·SetSyscallSPSR(SB)
-	ADD	$16, RSP
+	GO_CALL_1_0(·SetSyscallELR, R0)        // SetSyscallELR(elr)
+	GO_CALL_1_0(·SetSyscallSPSR, R1)       // SetSyscallSPSR(spsr)
 
 	// Now call syscall dispatcher using ABI0 calling convention
 	// Load arguments from exception frame first (before adjusting RSP)
@@ -300,34 +294,17 @@ sync_exception_handler:
 	LDP	EXC_FRAME_X0+16(RSP), (R4, R5)     // R4 = arg2 (X2), R5 = arg3 (X3)
 	LDP	EXC_FRAME_X0+32(RSP), (R6, R7)     // R6 = arg4 (X4), R7 = arg5 (X5)
 
-	// Allocate frame for ABI0 call: 8 (pad) + 7*8 (args) + 8 (return) = 72, round to 80
-	SUB	$80, RSP
-
-	// Store arguments on stack for ABI0
-	MOVD	R0, 8(RSP)      // syscallNum at RSP+8
-	MOVD	R2, 16(RSP)     // arg0 at RSP+16
-	MOVD	R3, 24(RSP)     // arg1 at RSP+24
-	MOVD	R4, 32(RSP)     // arg2 at RSP+32
-	MOVD	R5, 40(RSP)     // arg3 at RSP+40
-	MOVD	R6, 48(RSP)     // arg4 at RSP+48
-	MOVD	R7, 56(RSP)     // arg5 at RSP+56
-
-	// Call ABI0 stub (will tail-call syscallDispatchInternal via ABIInternal)
-	CALL	·SyscallDispatch(SB)
-
-	// Read return value from stack
-	MOVD	64(RSP), R0     // Return value at RSP+64
-	ADD	$80, RSP
+	// Call using macro: func SyscallDispatch(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64
+	GO_CALL_7_1(·SyscallDispatch, R0, R2, R3, R4, R5, R6, R7)
+	// R0 now contains return value
 
 	// Store return value back to X0 in exception frame
 	MOVD	R0, EXC_FRAME_X0(RSP)
 
 	// Check if syscall handler requested a context switch
 	// Call GetSyscallSwitchTarget() - returns -1 if no switch, >=0 for target
-	SUB	$16, RSP           // Allocate frame for call (0 args + 8 return, 16-aligned)
-	CALL	·GetSyscallSwitchTarget(SB)
-	MOVD	8(RSP), R20        // Read return value (int64)
-	ADD	$16, RSP
+	GO_CALL_0_1(·GetSyscallSwitchTarget)
+	MOVD	R0, R20            // R20 = switch target (int64)
 
 	// Check if context switch needed (R20 >= 0 means switch)
 	CMP	$0, R20
@@ -340,14 +317,10 @@ sync_exception_handler:
 	MOVB	R11, (R10)
 
 	// Call DoContextSwitch(framePtr, targetIdx) to get new context
-	SUB	$32, RSP           // Allocate: 8 pad + 8 arg0 + 8 arg1 + 8 return = 32
-	MOVD	RSP, R0
-	ADD	$32, R0            // R0 = framePtr (RSP before this allocation)
-	MOVD	R0, 8(RSP)         // arg0: framePtr
-	MOVW	R20, 16(RSP)       // arg1: targetIdx (as int32)
-	CALL	·DoContextSwitch(SB)
-	MOVD	24(RSP), R21       // R21 = pointer to new ThreadContext
-	ADD	$32, RSP
+	MOVD	RSP, R0            // R0 = framePtr (current exception frame)
+	MOVW	R20, R1            // R1 = targetIdx (as int32, promoted to uint64 by macro)
+	GO_CALL_2_1(·DoContextSwitch, R0, R1)
+	MOVD	R0, R21            // R21 = pointer to new ThreadContext
 
 	// Copy ThreadContext to exception frame, then sync_return will restore it
 	// ThreadContext: X[31], SP, ELR, SPSR
@@ -546,18 +519,9 @@ data_abort:
 	MRS	FAR_EL1, R19
 
 	// Call HandlePageFaultAsm(faultAddr) to try to handle the page fault
-	// Allocate 32 bytes for ABI0 call: 8 (arg) + 8 (return) + 16 (alignment)
-	SUB	$32, RSP
-
-	// Store FAR (fault address) as argument
-	MOVD	R19, 8(RSP)		// faultAddr at RSP+8
-
-	// Call HandlePageFaultAsm
-	CALL	·HandlePageFaultAsm(SB)
-
-	// Read return value (1 = handled, 0 = not handled)
-	MOVD	16(RSP), R0		// Return value at RSP+16
-	ADD	$32, RSP
+	// func HandlePageFaultAsm(faultAddr uint64) uint64 - returns 1 if handled, 0 if not
+	GO_CALL_1_1(·HandlePageFaultAsm, R19)
+	// R0 = return value (1 = handled, 0 = not handled)
 
 	// Check if fault was handled
 	CMP	$0, R0

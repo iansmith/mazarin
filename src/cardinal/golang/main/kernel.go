@@ -831,6 +831,7 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 		ExceptionStackSize   uint64
 		G0StructAddr         uint64 // High-memory address for g0 struct copy
 		AsyncPreemptAddr     uint64 // High-memory address of runtime.asyncPreempt
+		ReadyForAsyncPreempt uint64 // Address of readyForAsyncPreempt flag
 	}
 
 	config := (*RuntimeConfig)(unsafe.Pointer(kmazarinStartupParamsVA))
@@ -887,6 +888,9 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 
 	// AsyncPreempt address (for timer-based preemption in kmazarin)
 	config.AsyncPreemptAddr = uint64(LinkerKmazarinAsyncPreempt)
+
+	// ReadyForAsyncPreempt flag address (kmazarin checks this before preempting)
+	config.ReadyForAsyncPreempt = uint64(LinkerKmazarinReadyForPreempt)
 
 	// Ensure writes complete
 	asm.Dsb()

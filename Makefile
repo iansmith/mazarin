@@ -85,18 +85,20 @@ CARDINAL_BINARY = $(BUILD_DIR)/cardinal.elf
 KMAZARIN_SRC = src/kmazarin/golang/kmazarin
 KMAZARIN_BINARY = $(BUILD_DIR)/kmazarin.elf
 
-# Tools (run via go run)
-PATCH_ENTRY_TOOL = $(CARDINAL_SRC)/tools/patch-entry.go
-COMPUTE_LINKER_VALUES_TOOL = $(CARDINAL_SRC)/tools/compute-linker-values.go
-INCBIN2GOASM_TOOL = $(CARDINAL_SRC)/tools/incbin2goasm.go
-FIX_GO_ELF_TOOL = tools/fix-go-elf.go
+# Host tools directory (compiled binaries for local system, not target)
+# All tools are built with host GOOS/GOARCH, not linux/arm64
+TOOLS_BIN_DIR = $(BUILD_DIR)/tools
 
-# Host tools (compiled binaries for local system, not target)
-# These are built with host GOOS/GOARCH, not linux/arm64
-SCRIPTS_DIR = scripts
-HOST_BUILD = $(SCRIPTS_DIR)/build
-HOST_RUN = $(SCRIPTS_DIR)/run
-HOST_STOP = $(SCRIPTS_DIR)/stop
+# Tool binaries (compiled from tools/*.go)
+TOOL_PATCH_ENTRY = $(TOOLS_BIN_DIR)/patch-entry
+TOOL_COMPUTE_LINKER = $(TOOLS_BIN_DIR)/compute-linker-values
+TOOL_INCBIN2GOASM = $(TOOLS_BIN_DIR)/incbin2goasm
+TOOL_FIX_GO_ELF = $(TOOLS_BIN_DIR)/fix-go-elf
+TOOL_PRINT_KMAZARIN_ADDR = $(TOOLS_BIN_DIR)/print-kmazarin-addr
+TOOL_RELOCATE_KMAZARIN = $(TOOLS_BIN_DIR)/relocate-kmazarin
+TOOL_BUILD = $(TOOLS_BIN_DIR)/build
+TOOL_RUN = $(TOOLS_BIN_DIR)/run
+TOOL_STOP = $(TOOLS_BIN_DIR)/stop
 
 # Generated embedded data
 KMAZARIN_DATA_ASM = $(ASM_PACKAGE_DIR)/dev/kmazarin_data_arm64.s
@@ -110,9 +112,9 @@ $(BUILD_DIR):
 # =========================================
 # Generate Go assembly with embedded kmazarin binary
 
-$(KMAZARIN_DATA_ASM): $(KMAZARIN_BINARY)
+$(KMAZARIN_DATA_ASM): $(KMAZARIN_BINARY) $(TOOL_INCBIN2GOASM)
 	@echo "Generating embedded kmazarin data..."
-	@GOTOOLCHAIN=local $(GO) run $(INCBIN2GOASM_TOOL) -sym kmazarin_binary -global $< > $@
+	@$(TOOL_INCBIN2GOASM) -sym kmazarin_binary -global $< > $@
 	@echo "Generated $(KMAZARIN_DATA_ASM) ($$(wc -l < $@ | tr -d ' ') lines)"
 
 # =========================================
@@ -121,7 +123,8 @@ $(KMAZARIN_DATA_ASM): $(KMAZARIN_BINARY)
 # Uses Go's internal linker with -T flag to set load address
 # Then patches entry point and linker symbol values
 
-$(CARDINAL_BINARY): $(GO_NATIVE_SRC) $(CARDINAL_SRC)/golang/go.mod $(KMAZARIN_BINARY) $(KMAZARIN_DATA_ASM) $(CARDINAL_SRC)/golang/constants/layout.go $(COMPUTE_LINKER_VALUES_TOOL) | $(BUILD_DIR)
+$(CARDINAL_BINARY): $(GO_NATIVE_SRC) $(CARDINAL_SRC)/golang/go.mod $(KMAZARIN_BINARY) $(KMAZARIN_DATA_ASM) $(CARDINAL_SRC)/golang/constants/layout.go \
+                    $(TOOL_PATCH_ENTRY) $(TOOL_COMPUTE_LINKER) $(TOOL_FIX_GO_ELF) | $(BUILD_DIR)
 	@echo "Building cardinal with Go native toolchain..."
 	@cd $(CARDINAL_SRC)/golang && \
 		CGO_ENABLED=0 \
@@ -135,11 +138,11 @@ $(CARDINAL_BINARY): $(GO_NATIVE_SRC) $(CARDINAL_SRC)/golang/go.mod $(KMAZARIN_BI
 			-o $(abspath $@) \
 			./main
 	@echo "Patching entry point to _cardinal_boot..."
-	@GOTOOLCHAIN=local $(GO) run $(PATCH_ENTRY_TOOL) $@ _cardinal_boot
+	@$(TOOL_PATCH_ENTRY) $@ _cardinal_boot
 	@echo "Patching linker values..."
-	@cd $(CARDINAL_SRC)/golang && GOTOOLCHAIN=local $(GO) run ../tools/compute-linker-values.go -patch -kmazarin $(abspath $(KMAZARIN_BINARY)) $(abspath $@)
+	@$(TOOL_COMPUTE_LINKER) -patch -kmazarin $(KMAZARIN_BINARY) $@
 	@echo "Fixing ELF for QEMU compatibility..."
-	@GOTOOLCHAIN=local $(GO) run $(FIX_GO_ELF_TOOL) $@
+	@$(TOOL_FIX_GO_ELF) $@
 	@echo "cardinal ready at $@"
 
 # =========================================
@@ -184,9 +187,9 @@ $(KMAZARIN_OVERLAY): $(RUNTIME_PATCHES_DIR)/malloc.go | $(BUILD_DIR)
 		echo "{\"Replace\":{\"$$GOROOT/src/runtime/malloc.go\":\"$(abspath $(RUNTIME_PATCHES_DIR)/malloc.go)\"}}" > $(KMAZARIN_OVERLAY)
 	@echo "  Overlay: $(KMAZARIN_OVERLAY)"
 
-$(KMAZARIN_BINARY): $(KMAZARIN_ALL_SRC) $(KMAZARIN_OVERLAY) \
-                    tools/kmazarin-entry.sh tools/print-kmazarin-addr.go tools/relocate-kmazarin.go src/cardinal/golang/constants/layout.go | $(BUILD_DIR)
-	$(eval KMAZARIN_LOAD_ADDR := $(shell cd src/cardinal/golang && GOTOOLCHAIN=local $(GO) run ../../../tools/print-kmazarin-addr.go))
+$(KMAZARIN_BINARY): $(KMAZARIN_ALL_SRC) $(KMAZARIN_OVERLAY) src/cardinal/golang/constants/layout.go \
+                    $(TOOL_PRINT_KMAZARIN_ADDR) $(TOOL_FIX_GO_ELF) $(TOOL_RELOCATE_KMAZARIN) | $(BUILD_DIR)
+	$(eval KMAZARIN_LOAD_ADDR := $(shell $(TOOL_PRINT_KMAZARIN_ADDR)))
 	@echo "Building kmazarin kernel (static Go binary at $(KMAZARIN_LOAD_ADDR))..."
 	@cd $(KMAZARIN_SRC) && \
 		CGO_ENABLED=0 \
@@ -195,9 +198,9 @@ $(KMAZARIN_BINARY): $(KMAZARIN_ALL_SRC) $(KMAZARIN_OVERLAY) \
 		GOOS=$(GOOS) \
 		$(GO) build -overlay=$(abspath $(KMAZARIN_OVERLAY)) -tags "qemuvirt aarch64" $(GCFLAGS) -ldflags="-T $(KMAZARIN_LOAD_ADDR)" -o $(abspath $(KMAZARIN_BINARY)) .
 	@echo "Fixing kmazarin ELF for QEMU compatibility..."
-	@GOTOOLCHAIN=local $(GO) run $(FIX_GO_ELF_TOOL) $(KMAZARIN_BINARY)
+	@$(TOOL_FIX_GO_ELF) $(KMAZARIN_BINARY)
 	@echo "Relocating kmazarin to high memory (0xFFFFFFFF41800000)..."
-	@GOTOOLCHAIN=local $(GO) run tools/relocate-kmazarin.go $(KMAZARIN_BINARY) $(KMAZARIN_BINARY).tmp
+	@$(TOOL_RELOCATE_KMAZARIN) $(KMAZARIN_BINARY) $(KMAZARIN_BINARY).tmp
 	@mv $(KMAZARIN_BINARY).tmp $(KMAZARIN_BINARY)
 	@echo "Kmazarin kernel built and relocated at $(KMAZARIN_BINARY)"
 
@@ -206,24 +209,55 @@ $(KMAZARIN_BINARY): $(KMAZARIN_ALL_SRC) $(KMAZARIN_OVERLAY) \
 # =========================================
 # These tools run on the build host, not the target.
 # Built with GOWORK=off to avoid go.work version requirements.
+# IMPORTANT: No GOOS/GOARCH set - uses host defaults.
 
-$(SCRIPTS_DIR):
+$(TOOLS_BIN_DIR):
 	@mkdir -p $@
 
-$(HOST_BUILD): tools/cmd-build.go | $(SCRIPTS_DIR)
-	@echo "Building scripts/build for host..."
+# Build-time tools
+$(TOOL_PATCH_ENTRY): tools/patch-entry.go | $(TOOLS_BIN_DIR)
+	@echo "Building $@..."
 	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
 
-$(HOST_RUN): tools/cmd-run.go | $(SCRIPTS_DIR)
-	@echo "Building scripts/run for host..."
+# This tool imports cardinal/constants, so must be built from cardinal module
+$(TOOL_COMPUTE_LINKER): $(CARDINAL_SRC)/tools/compute-linker-values.go $(CARDINAL_SRC)/golang/constants/layout.go | $(TOOLS_BIN_DIR)
+	@echo "Building $@..."
+	@cd $(CARDINAL_SRC)/golang && GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $(abspath $@) ../tools/compute-linker-values.go
+
+$(TOOL_INCBIN2GOASM): tools/incbin2goasm.go | $(TOOLS_BIN_DIR)
+	@echo "Building $@..."
 	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
 
-$(HOST_STOP): tools/cmd-stop.go | $(SCRIPTS_DIR)
-	@echo "Building scripts/stop for host..."
+$(TOOL_FIX_GO_ELF): tools/fix-go-elf.go | $(TOOLS_BIN_DIR)
+	@echo "Building $@..."
+	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
+
+# This tool imports cardinal/constants, so must be built from cardinal module
+$(TOOL_PRINT_KMAZARIN_ADDR): $(CARDINAL_SRC)/tools/print-kmazarin-addr.go $(CARDINAL_SRC)/golang/constants/layout.go | $(TOOLS_BIN_DIR)
+	@echo "Building $@..."
+	@cd $(CARDINAL_SRC)/golang && GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $(abspath $@) ../tools/print-kmazarin-addr.go
+
+$(TOOL_RELOCATE_KMAZARIN): tools/relocate-kmazarin.go | $(TOOLS_BIN_DIR)
+	@echo "Building $@..."
+	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
+
+# User-facing tools
+$(TOOL_BUILD): tools/cmd-build.go | $(TOOLS_BIN_DIR)
+	@echo "Building $@..."
+	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
+
+$(TOOL_RUN): tools/cmd-run.go | $(TOOLS_BIN_DIR)
+	@echo "Building $@..."
+	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
+
+$(TOOL_STOP): tools/cmd-stop.go | $(TOOLS_BIN_DIR)
+	@echo "Building $@..."
 	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
 
 # Build all host tools
-host-tools: $(HOST_BUILD) $(HOST_RUN) $(HOST_STOP)
+host-tools: $(TOOL_PATCH_ENTRY) $(TOOL_COMPUTE_LINKER) $(TOOL_INCBIN2GOASM) \
+            $(TOOL_FIX_GO_ELF) $(TOOL_PRINT_KMAZARIN_ADDR) $(TOOL_RELOCATE_KMAZARIN) \
+            $(TOOL_BUILD) $(TOOL_RUN) $(TOOL_STOP)
 
 # =========================================
 # Main Targets
@@ -247,7 +281,6 @@ test: check-go-version
 clean:
 	@echo "Cleaning build artifacts..."
 	rm -rf $(BUILD_DIR)
-	rm -rf $(SCRIPTS_DIR)
 	rm -f $(KMAZARIN_DATA_ASM)
 	@echo "Cleaned."
 

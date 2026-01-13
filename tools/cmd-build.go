@@ -28,23 +28,16 @@ func main() {
 }
 
 func run() error {
-	// Find project root (parent of scripts directory)
+	// Find project root from executable location
+	// Executable is at build/tools/build, so we need 3 Dir() calls
 	exe, err := os.Executable()
-	if err != nil {
+	var projectRoot string
+	if err == nil && !strings.Contains(exe, "go-build") {
+		// build/tools/build -> build/tools -> build -> project root
+		projectRoot = filepath.Dir(filepath.Dir(filepath.Dir(exe)))
+	} else {
 		// Fallback: use working directory
-		exe, _ = os.Getwd()
-	}
-	projectRoot := filepath.Dir(filepath.Dir(exe))
-
-	// If running with "go run", use current directory's parent
-	if strings.Contains(exe, "go-build") {
-		wd, _ := os.Getwd()
-		// Check if we're in scripts/ or project root
-		if filepath.Base(wd) == "scripts" {
-			projectRoot = filepath.Dir(wd)
-		} else {
-			projectRoot = wd
-		}
+		projectRoot, _ = os.Getwd()
 	}
 
 	// Change to project root

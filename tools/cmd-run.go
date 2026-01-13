@@ -131,9 +131,11 @@ func run() error {
 
 func findProjectRoot() (string, error) {
 	// Try to find project root from executable location
+	// Executable is at build/tools/run, so we need 3 Dir() calls
 	exe, err := os.Executable()
 	if err == nil && !strings.Contains(exe, "go-build") {
-		return filepath.Dir(filepath.Dir(exe)), nil
+		// build/tools/run -> build/tools -> build -> project root
+		return filepath.Dir(filepath.Dir(filepath.Dir(exe))), nil
 	}
 
 	// Fallback: use working directory
@@ -142,10 +144,6 @@ func findProjectRoot() (string, error) {
 		return "", fmt.Errorf("getting working directory: %w", err)
 	}
 
-	// Check if we're in scripts/ or project root
-	if filepath.Base(wd) == "scripts" {
-		return filepath.Dir(wd), nil
-	}
 	return wd, nil
 }
 

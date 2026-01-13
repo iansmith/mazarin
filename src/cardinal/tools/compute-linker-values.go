@@ -140,6 +140,9 @@ func main() {
 			if kmazarinInfo.AsyncPreemptAddr != 0 {
 				fmt.Fprintf(os.Stderr, "Kmazarin asyncPreempt: 0x%X\n", kmazarinInfo.AsyncPreemptAddr)
 			}
+			if kmazarinInfo.ReadyForAsyncPreemptAddr != 0 {
+				fmt.Fprintf(os.Stderr, "Kmazarin readyForAsyncPreempt: 0x%X\n", kmazarinInfo.ReadyForAsyncPreemptAddr)
+			}
 			if kmazarinInfo.RuntimeG0Addr != 0 {
 				fmt.Fprintf(os.Stderr, "Kmazarin runtime.g0: 0x%X\n", kmazarinInfo.RuntimeG0Addr)
 			}
@@ -333,7 +336,7 @@ func printValues(values []LinkerValue) {
 			categories["MMIO Devices"] = append(categories["MMIO Devices"], v)
 		case "LinkerKmazarinStart", "LinkerKmazarinSize", "LinkerKmazarinExceptionVector",
 			"LinkerKmazarinStartupParams", "LinkerKmazarinG0Struct", "LinkerKmazarinAsyncPreempt",
-			"LinkerKmazarinRuntimeG0":
+			"LinkerKmazarinReadyForPreempt", "LinkerKmazarinRuntimeG0":
 			categories["Embedded Kmazarin"] = append(categories["Embedded Kmazarin"], v)
 		}
 	}
@@ -419,9 +422,10 @@ type KmazarinInfo struct {
 	Size                uint64
 	ExceptionVectorAddr uint64
 	StartupParamsAddr   uint64
-	G0StructAddr        uint64
-	AsyncPreemptAddr    uint64
-	RuntimeG0Addr       uint64 // Address of runtime.g0 (kmazarin's g0 goroutine struct)
+	G0StructAddr            uint64
+	AsyncPreemptAddr        uint64
+	ReadyForAsyncPreemptAddr uint64 // Address of main.readyForAsyncPreempt flag
+	RuntimeG0Addr           uint64 // Address of runtime.g0 (kmazarin's g0 goroutine struct)
 }
 
 // calculateKmazarinInfo parses kmazarin.elf and returns all relevant symbol addresses
@@ -565,6 +569,11 @@ func calculateKmazarinInfo(path string) (*KmazarinInfo, error) {
 						info.AsyncPreemptAddr = value
 					}
 
+					// Look for main.readyForAsyncPreempt (flag controlling preemption)
+					if symName == "main.readyForAsyncPreempt" {
+						info.ReadyForAsyncPreemptAddr = value
+					}
+
 					// Look for runtime.g0 (kmazarin's g0 goroutine struct)
 					if symName == "runtime.g0" {
 						info.RuntimeG0Addr = value
@@ -706,6 +715,13 @@ func computeLinkerValues(sections map[string]*Section, symbolAddrs map[string]ui
 		add("LinkerKmazarinAsyncPreempt", "__kmazarin_async_preempt", highMemAddr, "kmazarin asyncPreempt (high mem)", true)
 	} else {
 		add("LinkerKmazarinAsyncPreempt", "__kmazarin_async_preempt", 0, "not found in kmazarin.elf", true)
+	}
+	if kinfo.ReadyForAsyncPreemptAddr > 0 {
+		// Relocate to high memory: add 0xFFFFFFFF00000000
+		highMemAddr := kinfo.ReadyForAsyncPreemptAddr + 0xFFFFFFFF00000000
+		add("LinkerKmazarinReadyForPreempt", "__kmazarin_ready_for_asyncpreempt", highMemAddr, "kmazarin readyForAsyncPreempt flag (high mem)", true)
+	} else {
+		add("LinkerKmazarinReadyForPreempt", "__kmazarin_ready_for_asyncpreempt", 0, "not found in kmazarin.elf", true)
 	}
 	if kinfo.RuntimeG0Addr > 0 {
 		// Relocate to high memory: add 0xFFFFFFFF00000000
