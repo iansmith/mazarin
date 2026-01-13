@@ -52,13 +52,6 @@
 
 TEXT irq_exception_el1(SB), NOSPLIT, $0
 	// ========================================================================
-	// DEBUG: Print '@' immediately to confirm IRQ handler entry
-	// ========================================================================
-	MOVD $0x09000000, R10
-	MOVD $'@', R11
-	MOVB R11, (R10)
-
-	// ========================================================================
 	// SAVE ALL REGISTERS TO EXCEPTION FRAME
 	// ========================================================================
 	// Allocate 272-byte frame
@@ -74,36 +67,6 @@ TEXT irq_exception_el1(SB), NOSPLIT, $0
 	ADD $0x1000C, R0                 // R0 = GICC_IAR address
 	MOVW (R0), R0                    // R0 = IAR value
 	ANDW $0x3FF, R0, R0              // R0 = interrupt ID (10 bits)
-
-	// DEBUG: Print IRQ ID as two hex digits (saves R0 to R12 temporarily)
-	MOVD R0, R12                     // Save IRQ ID
-	MOVD $0x09000000, R10
-	// High nibble
-	LSR $4, R12, R11
-	ANDW $0xF, R11, R11
-	CMP $10, R11
-	BLT irq_digit1
-	ADD $('A'-10), R11
-	B irq_print1
-irq_digit1:
-	ADD $'0', R11
-irq_print1:
-	MOVB R11, (R10)
-	// Low nibble
-	ANDW $0xF, R12, R11
-	CMP $10, R11
-	BLT irq_digit2
-	ADD $('A'-10), R11
-	B irq_print2
-irq_digit2:
-	ADD $'0', R11
-irq_print2:
-	MOVB R11, (R10)
-	// Print space
-	MOVD $' ', R11
-	MOVB R11, (R10)
-	// Restore R0 = IRQ ID from R12
-	MOVD R12, R0
 
 	// Save x2, x3 so we can use them
 	STP (R2, R3), IRQ_FRAME_X2(RSP)

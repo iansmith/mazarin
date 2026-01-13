@@ -7,19 +7,6 @@
 // The interrupt handler modifies ELR_EL1 to point here, with LR set to interrupted PC.
 // This saves all registers, calls the scheduler, then returns to interrupted location.
 
-// UART debug output macro (from exceptions.s)
-// CRITICAL: This macro must be used for all debug output, never inline UART writes!
-// Expects: R0 contains the character to print (caller-saved)
-// Preserves: All registers except R0 (R10 is saved/restored internally)
-// Caller must save/restore R0 if needed before/after calling
-#define UART_PUTC_SAFE \
-	SUB $16, RSP; \
-	MOVD R10, 0(RSP); \
-	MOVD $0x09000000, R10; \
-	MOVW R0, 0(R10); \
-	MOVD 0(RSP), R10; \
-	ADD $16, RSP
-
 // asyncPreemptBM is the bare-metal equivalent of runtime.asyncPreempt
 // Entry state (set by timer interrupt handler):
 //   - PC = asyncPreemptBM (via modified ELR_EL1)
@@ -36,15 +23,6 @@
 //   4. Returns to LR (interrupted PC)
 //
 TEXT asyncPreemptBM(SB), NOSPLIT, $0
-	// DEBUG: Print 'A' to show asyncPreemptBM was reached
-	// Save R0 first since UART_PUTC_SAFE uses it as parameter
-	SUB $16, RSP
-	MOVD R0, 0(RSP)
-	MOVD $'A', R0
-	UART_PUTC_SAFE
-	MOVD 0(RSP), R0
-	ADD $16, RSP
-
 	// Save current LR (= interrupted PC, set by timer handler) BEFORE moving SP
 	// We allocate 504 bytes (not 496) to include space for R27
 	// ARM64 pre-indexed str has limited range (-256 to +255), so we do this in two steps
@@ -163,15 +141,6 @@ TEXT asyncPreemptBM(SB), NOSPLIT, $0
 
 	// Deallocate our frame (504 bytes) + the 16 bytes pushCall allocated
 	ADD $520, RSP
-
-	// DEBUG: Print 'R' to show we're returning from asyncPreemptBM
-	// Save R30 (interrupted PC) and R0 since UART_PUTC_SAFE uses R0 as parameter
-	SUB $16, RSP
-	STP (R0, R30), 0(RSP)
-	MOVD $'R', R0
-	UART_PUTC_SAFE
-	LDP 0(RSP), (R0, R30)
-	ADD $16, RSP
 
 	// Jump to interrupted PC via ret (which jumps to R30/LR)
 	// This restores execution at the interrupted location
