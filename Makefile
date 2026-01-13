@@ -5,9 +5,39 @@
 .DEFAULT_GOAL := all
 
 # Go compiler and tools
-GO = /Users/iansmith/mazzy/bin/go
+# Default to 'go' from PATH, can be overridden: make GO=/path/to/go cardinal
+GO ?= go
 GOARCH = arm64
 GOOS = linux
+REQUIRED_GO_VERSION = 1.25.5
+
+# Version check - verify Go version is exactly 1.25.5
+# This runs as a dependency of the main targets
+.PHONY: check-go-version
+check-go-version:
+	@GOTOOLCHAIN=local $(GO) version > /dev/null 2>&1 || { \
+		echo ""; \
+		echo "ERROR: Go compiler not found."; \
+		echo ""; \
+		echo "Please install Go $(REQUIRED_GO_VERSION) or set GO to point to it:"; \
+		echo "  make GO=/path/to/go$(REQUIRED_GO_VERSION) cardinal"; \
+		echo ""; \
+		exit 1; \
+	}
+	@GO_VERSION=$$(GOTOOLCHAIN=local $(GO) version | grep -oE 'go[0-9]+\.[0-9]+\.[0-9]+' | head -1 | sed 's/go//'); \
+	if [ "$$GO_VERSION" != "$(REQUIRED_GO_VERSION)" ]; then \
+		echo ""; \
+		echo "ERROR: Go version mismatch."; \
+		echo ""; \
+		echo "  Required: go$(REQUIRED_GO_VERSION)"; \
+		echo "  Found:    go$$GO_VERSION (from: $(GO))"; \
+		echo ""; \
+		echo "Please install Go $(REQUIRED_GO_VERSION) or set GO to point to it:"; \
+		echo "  make GO=/path/to/go$(REQUIRED_GO_VERSION) cardinal"; \
+		echo ""; \
+		exit 1; \
+	fi
+	@echo "Go version check passed: go$(REQUIRED_GO_VERSION)"
 
 # Runtime overlay for kmazarin - patches malloc.go for high-memory heap support
 # The overlay JSON is generated dynamically based on GOROOT
@@ -168,19 +198,19 @@ $(KMAZARIN_BINARY): $(KMAZARIN_ALL_SRC) $(KMAZARIN_OVERLAY) \
 # Main Targets
 # =========================================
 
-# Build cardinal
-cardinal: $(CARDINAL_BINARY)
+# Build cardinal (includes Go version check)
+cardinal: check-go-version $(CARDINAL_BINARY)
 
-# Build kmazarin
-kmazarin: $(KMAZARIN_BINARY)
+# Build kmazarin (includes Go version check)
+kmazarin: check-go-version $(KMAZARIN_BINARY)
 
 # Default: build both
 all: cardinal kmazarin
 
 # Test target - run Go tests
-test:
+test: check-go-version
 	@echo "Running tests..."
-	@cd $(CARDINAL_SRC)/golang && GOTOOLCHAIN=auto $(GO) test -v ./bitfield
+	@cd $(CARDINAL_SRC)/golang && GOTOOLCHAIN=local $(GO) test -v ./bitfield
 
 # Clean build artifacts
 clean:
