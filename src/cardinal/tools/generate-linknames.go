@@ -186,7 +186,6 @@ func generateCompleteFile(globalSymbols []string, asmDir string, goasmDir string
 				"get_stack_pointer":         "uintptr",
 				"getGRegister":              "uintptr",
 				"get_phys_page_size_addr":   "uintptr",
-				"getCurrentSP":              "uintptr",
 				"read_esr_el1":              "uint64",
 				"read_elr_el1":              "uint64",
 				"read_far_el1":              "uint64",

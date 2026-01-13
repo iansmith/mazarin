@@ -155,7 +155,6 @@ var (
 	ReadCurrentEl              = arm64.ReadCurrentEl
 	GetStackPointer            = arm64.GetStackPointer
 	SetStackPointer            = arm64.SetStackPointer
-	GetCurrentSP               = arm64.GetCurrentSP
 	GetCurrentG                = arm64.GetCurrentG
 	SetCurrentG                = arm64.SetCurrentG
 	SetGPointer                = arm64.SetGPointer

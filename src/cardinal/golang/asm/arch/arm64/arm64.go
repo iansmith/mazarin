@@ -122,10 +122,6 @@ func GetStackPointer() uintptr
 //go:nosplit
 func SetStackPointer(value uintptr)
 
-//go:linkname GetCurrentSP getCurrentSP
-//go:nosplit
-func GetCurrentSP() uintptr
-
 //go:linkname GetCurrentG get_current_g
 //go:nosplit
 func GetCurrentG() uintptr

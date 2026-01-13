@@ -91,14 +91,6 @@ TEXT set_current_g(SB), NOSPLIT|NOFRAME, $0-8
 	MOVD	R0, g			// Set g register (R28)
 	RET
 
-// getCurrentSP() uintptr
-// Returns the current stack pointer (alternate name for compatibility)
-// Returns: R0 = stack pointer value (uintptr)
-TEXT getCurrentSP(SB), NOSPLIT|NOFRAME, $0-8
-	MOVD	RSP, R0			// Copy stack pointer to R0
-	// Return value is in R0 (register ABI)
-	RET
-
 // Wfi() - Wait For Interrupt
 // Puts the CPU in low-power mode until an interrupt arrives
 TEXT Wfi(SB), NOSPLIT|NOFRAME, $0-0
