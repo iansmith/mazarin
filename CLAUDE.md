@@ -6,68 +6,81 @@
 - Cardinal: Minimal OS providing syscalls/environment for Go runtime to start
 - Kmazarin: Unmodified Go binary - full OS kernel with Go runtime
 
+## Prerequisites
+
+**Go Version: 1.25.5 (REQUIRED)**
+
+This project requires Go 1.25.5 exactly. The build will abort with a helpful error if the wrong version is detected.
+
+**QEMU Version: 10.2+ (REQUIRED)**
+
+QEMU 10.2 or later is required. Earlier versions have issues with the ELF loading.
+
+### Installing Go 1.25.5
+
+If Go 1.25.5 is not in your PATH, you can:
+
+1. Install it and add to PATH
+2. Override per-command: `GO=/path/to/go1.25.5 scripts/build`
+3. Override per-command: `make GO=/path/to/go1.25.5 cardinal`
+
+### Installing QEMU 10.2+
+
+If qemu-system-aarch64 is not in your PATH, you can:
+
+1. Install it and add to PATH
+2. Override per-command: `QEMU=/path/to/qemu-system-aarch64 scripts/run`
+
 ## Build & Run
 
 ```bash
-make cardinal  # Build
+# Using helper scripts (RECOMMENDED)
+scripts/build          # Build cardinal and kmazarin
+scripts/build clean    # Clean build
+scripts/run            # Start QEMU (waits 3s, shows last 500 chars)
+scripts/run 10         # Start QEMU with 10s wait
+scripts/stop           # Stop any running QEMU instances
+
+# Or using make directly
+make cardinal          # Build cardinal (version check included)
 ```
 
-### Helper Scripts (bin/claude/)
-
-For convenience, use these scripts:
+### Complete Development Workflow
 
 ```bash
-bin/claude/build          # Build cardinal and kmazarin
-bin/claude/build clean    # Clean build
-bin/claude/run            # Start QEMU (waits 3s, shows last 500 chars)
-bin/claude/run 10         # Start QEMU with 10s wait
-bin/claude/stop           # Stop any running QEMU instances
+# 1. Stop any running QEMU
+scripts/stop
+
+# 2. Build
+scripts/build clean    # or just: scripts/build
+
+# 3. Run
+scripts/run 5          # Wait 5 seconds before showing output
 ```
 
-Output is written to `/tmp/cardinal-serial.log`. Use `tail -f /tmp/cardinal-serial.log` to watch live.
+Output is written to `/tmp/cardinal-serial.log`.
+
+**CRITICAL: Serial Log Safety**
+- The serial log contains terminal control sequences that can freeze your terminal
+- NEVER: `cat /tmp/cardinal-serial.log` or Read the raw file directly
+- ALWAYS: Filter control characters first:
+  ```bash
+  tail -f /tmp/cardinal-serial.log | tr -d '\000-\010\013-\037\177-\377'
+  ```
+- The `scripts/run` script automatically applies safe filtering
 
 **CRITICAL: QEMU Output Buffering**
-- ❌ NO: `| tee`, `| tail`, `> file`, `< /dev/null` - causes buffering issues
-- ✅ Use file-based serial output with TCP monitor (see below)
+- NO: `| tee`, `| tail`, `> file`, `< /dev/null` piped to QEMU - causes buffering issues
+- Use file-based serial output with TCP monitor (see below)
 
-### Reliable QEMU Debugging Setup
+### QEMU Monitor Access
 
-**IMPORTANT**: The `bochs-display` device is REQUIRED for serial output to work, even in nographic mode!
+The scripts/run script starts QEMU with a TCP monitor on port 4444.
 
-**Terminal 1 - Run QEMU:**
+**Query QEMU monitor:**
 ```bash
-rm -f /tmp/cardinal-serial.log
-~/mazzy/bin/qemu-system-aarch64 \
-    -M virt,virtualization=off \
-    -cpu cortex-a72 \
-    -m 8G \
-    -kernel build/cardinal.elf \
-    -nodefaults \
-    -device bochs-display \
-    -object rng-random,id=rng0,filename=/dev/urandom \
-    -device virtio-rng-pci,rng=rng0,disable-legacy=on \
-    -display none \
-    -serial file:/tmp/cardinal-serial.log \
-    -monitor tcp:127.0.0.1:4444,server,nowait \
-    -semihosting \
-    -no-reboot &
-```
-
-**Terminal 2 - Watch serial output:**
-```bash
-tail -f /tmp/cardinal-serial.log
-```
-
-**Terminal 3 - Query QEMU monitor (Python):**
-```python
-import socket, time
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.connect(('127.0.0.1', 4444))
-sock.settimeout(2)
-time.sleep(0.2); sock.recv(4096)  # Drain banner
-sock.send(b'info registers\n')
-time.sleep(0.5)
-print(sock.recv(8192).decode())
+# Using netcat
+echo "info registers" | nc 127.0.0.1 4444
 ```
 
 **Key monitor commands:**

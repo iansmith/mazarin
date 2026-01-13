@@ -1,0 +1,34 @@
+#!/bin/bash
+# Build cardinal and kmazarin
+# Usage: scripts/build [clean]
+#
+# Environment:
+#   GO          Path to Go 1.25.5 compiler (default: 'go' from PATH)
+#
+# Requires Go 1.25.5 exactly.
+
+# Determine script location and project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MAZZY_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+cd "$MAZZY_ROOT"
+
+if [ "$1" = "clean" ]; then
+    echo "=== Clean build ==="
+    make clean
+fi
+
+echo "=== Building ==="
+# Pass GO to make if set in environment
+if [ -n "$GO" ]; then
+    GOTOOLCHAIN=auto make GO="$GO" cardinal 2>&1
+else
+    GOTOOLCHAIN=auto make cardinal 2>&1
+fi
+
+if [ $? -eq 0 ]; then
+    echo "=== Build successful ==="
+else
+    echo "=== Build FAILED ==="
+    exit 1
+fi
