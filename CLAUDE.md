@@ -4,7 +4,7 @@
 
 **On this system (Homebrew on macOS):**
 ```bash
-GO=/opt/homebrew/Cellar/go/1.25.5/bin/go
+GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go
 QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 GOTOOLCHAIN=auto  # Optional: auto-downloads Go 1.25.5 if you have Go 1.24+
 ```
@@ -12,7 +12,7 @@ GOTOOLCHAIN=auto  # Optional: auto-downloads Go 1.25.5 if you have Go 1.24+
 **Usage:**
 ```bash
 # Build
-GO=/opt/homebrew/Cellar/go/1.25.5/bin/go build/tools/build
+GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build
 
 # Run
 QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 build/tools/run 5
@@ -51,8 +51,8 @@ If Go 1.25.5 is not in your PATH, you have three options:
 **On this system (Homebrew installation):**
 ```bash
 # Explicit path to Go 1.25.5 binary:
-GO=/opt/homebrew/Cellar/go/1.25.5/bin/go build/tools/build
-GO=/opt/homebrew/Cellar/go/1.25.5/bin/go make cardinal
+GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build
+GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go make cardinal
 
 # Or use GOTOOLCHAIN (requires Go 1.24+ in PATH):
 GOTOOLCHAIN=auto go run tools/cmd-build.go
@@ -87,7 +87,7 @@ All build and run tools are Go programs compiled for the host system (not the ta
 **First time setup:** Build the host tools:
 ```bash
 # On this system (Homebrew):
-GO=/opt/homebrew/Cellar/go/1.25.5/bin/go make host-tools
+GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go make host-tools
 
 # Generic:
 make GO=/path/to/go1.25.5 host-tools
@@ -96,8 +96,8 @@ make GO=/path/to/go1.25.5 host-tools
 **Then use the tools:**
 ```bash
 # On this system (Homebrew):
-GO=/opt/homebrew/Cellar/go/1.25.5/bin/go build/tools/build
-GO=/opt/homebrew/Cellar/go/1.25.5/bin/go build/tools/build clean
+GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build
+GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build clean
 QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 build/tools/run 5
 build/tools/stop  # Stop doesn't need environment variables
 
@@ -109,7 +109,7 @@ build/tools/run 10         # Start QEMU with 10s wait
 build/tools/stop           # Stop any running QEMU instances
 
 # Or using make directly:
-GO=/opt/homebrew/Cellar/go/1.25.5/bin/go make cardinal
+GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go make cardinal
 ```
 
 ### Complete Development Workflow
@@ -120,7 +120,7 @@ GO=/opt/homebrew/Cellar/go/1.25.5/bin/go make cardinal
 build/tools/stop
 
 # 2. Build
-GO=/opt/homebrew/Cellar/go/1.25.5/bin/go build/tools/build clean
+GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build clean
 
 # 3. Run
 QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 build/tools/run 5
@@ -166,6 +166,29 @@ echo "info registers" | nc 127.0.0.1 4444
 **Key monitor commands:**
 - `info registers` - Show CPU registers
 - `x/20i 0xADDRESS` - Disassemble at address (use literal address, not `$pc`)
+
+## Binary Utilities (Cross-compilation)
+
+For examining ARM64 binaries on this macOS system, use the `target-*` prefixed utilities in the project's `bin/` directory:
+
+```bash
+# Disassemble kmazarin ELF
+bin/target-objdump -d build/kmazarin.elf | less
+
+# Disassemble around a specific address
+bin/target-objdump -d build/kmazarin.elf | grep -A5 "41812cf"
+
+# Show ELF sections
+bin/target-readelf -S build/kmazarin.elf
+
+# Show symbols
+bin/target-nm build/kmazarin.elf | grep FunctionName
+
+# Debugging with GDB (if needed)
+bin/target-gdb build/kmazarin.elf
+```
+
+**Available tools:** `target-objdump`, `target-readelf`, `target-nm`, `target-objcopy`, `target-addr2line`, `target-gdb`, etc.
 
 ## Critical Development Rules
 

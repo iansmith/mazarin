@@ -20,6 +20,12 @@ func getAsyncPreemptAddr() uintptr
 // which controls whether timer IRQs should trigger async preemption.
 func getReadyForAsyncPreemptAddr() uintptr
 
+// processDeadlines is provided by main package via go:linkname.
+// Processes all deadlines that have passed and wakes sleeping threads.
+//
+//go:linkname processDeadlines main.ProcessDeadlines
+func processDeadlines()
+
 // timerFrequency caches the counter frequency (read once at initialization)
 // Default to 62.5MHz for safety if not initialized
 var timerFrequency uint32 = 62500000
@@ -35,17 +41,21 @@ func InitTimer() {
 	}
 }
 
-// TimerIRQHandlerPreemptable handles the ARM Generic Timer interrupt (IRQ 27)
-// Returns preemption info to trigger call injection if preemption should occur
+// TimerIRQHandlerCanPreempt handles the ARM Generic Timer interrupt (IRQ 27)
+// Returns preemption info to trigger call injection if goroutine preemption should occur
 //
 //go:nosplit
 //go:noinline
-func TimerIRQHandlerPreemptable(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo {
+func TimerIRQHandlerCanPreempt(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo {
 	// Re-arm timer for next interrupt (~100ms for responsive preemption)
 	// Calculate ticks based on actual timer frequency (read from CNTFRQ_EL0)
 	// 100ms * frequency = ticks
 	ticks := (uint64(timerFrequency) * 100) / 1000
+
 	rearmTimer(int32(ticks))
+
+	// Process deadline queue - wake up threads whose sleep time has elapsed
+	processDeadlines()
 
 	// Suppress unused warnings
 	_ = irqNum
@@ -57,6 +67,48 @@ func TimerIRQHandlerPreemptable(irqNum uint64, framePtr uintptr, elr, spEl0 uint
 	// Check if preemption is enabled (address is non-zero)
 	if asyncPreemptAddr == 0 {
 		// Preemption disabled - address not configured
+		return PreemptInfo{
+			NewELR:    0,
+			NewSP:     0,
+			NewLR:     0,
+			DoPreempt: false,
+		}
+	}
+
+	// CRITICAL: Don't preempt if we're already executing asyncPreempt
+	// This prevents nested preemptions which could corrupt the stack
+	// asyncPreempt is ~100 bytes, so check if ELR is within [asyncPreempt, asyncPreempt+256)
+	if elr >= uint64(asyncPreemptAddr) && elr < uint64(asyncPreemptAddr)+256 {
+		// We're currently executing inside asyncPreempt - skip preemption
+		return PreemptInfo{
+			NewELR:    0,
+			NewSP:     0,
+			NewLR:     0,
+			DoPreempt: false,
+		}
+	}
+
+	// CRITICAL: Validate that ELR is properly 4-byte aligned
+	// ARM64 instructions must be 4-byte aligned. If ELR is misaligned,
+	// it indicates corruption and we should not attempt preemption.
+	if (elr & 0x3) != 0 {
+		// ELR is misaligned - print it for debugging
+		uartBase := getUartBase()
+		printStr(uartBase, "\r\n!MISALIGNED ELR=0x")
+		printHex64(uartBase, elr)
+		printStr(uartBase, "\r\n")
+		// Skip preemption to avoid PC alignment fault
+		return PreemptInfo{
+			NewELR:    0,
+			NewSP:     0,
+			NewLR:     0,
+			DoPreempt: false,
+		}
+	}
+
+	// CRITICAL: Validate that asyncPreempt address is properly 4-byte aligned
+	if (uint64(asyncPreemptAddr) & 0x3) != 0 {
+		// asyncPreempt is misaligned - should never happen!
 		return PreemptInfo{
 			NewELR:    0,
 			NewSP:     0,
@@ -136,4 +188,30 @@ func GetTimerFrequency() uint32 {
 //go:nosplit
 func ReadCounterValue() uint64 {
 	return asm_readCntvctEl0()
+}
+
+// Debug helpers
+//go:nosplit
+func printStr(uartBase uintptr, s string) {
+	for i := 0; i < len(s); i++ {
+		*(*byte)(unsafe.Pointer(uartBase)) = s[i]
+	}
+}
+
+//go:nosplit
+func printHex32(uartBase uintptr, val uint32) {
+	hexChars := "0123456789ABCDEF"
+	for i := 28; i >= 0; i -= 4 {
+		nibble := (val >> i) & 0xF
+		*(*byte)(unsafe.Pointer(uartBase)) = hexChars[nibble]
+	}
+}
+
+//go:nosplit
+func printHex64(uartBase uintptr, val uint64) {
+	hexChars := "0123456789ABCDEF"
+	for i := 60; i >= 0; i -= 4 {
+		nibble := (val >> i) & 0xF
+		*(*byte)(unsafe.Pointer(uartBase)) = hexChars[nibble]
+	}
 }

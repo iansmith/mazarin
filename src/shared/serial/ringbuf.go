@@ -131,3 +131,8 @@ func (r *RingBuffer) Reset() {
 	atomic.StoreUint32(&r.head, 0)
 	atomic.StoreUint32(&r.tail, 0)
 }
+
+// UartOutput is the global UART output ring buffer
+// Shared between Cardinal (writer) and Kmazarin (IRQ handler drains it)
+// Must be initialized before use
+var UartOutput RingBuffer

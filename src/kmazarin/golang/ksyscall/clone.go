@@ -26,7 +26,7 @@ func GetSyscallSPSR() uint64
 //   stack+16: gp (g pointer)
 //   stack+24: mp (m pointer)
 //
-//go:nosplit
+// Note: No //go:nosplit because CloneThread allocates memory for thread nodes.
 func SyscallClone(flags, stack, ptid, tls, ctid, _ uint64) int64 {
 	// DEBUG: Print clone syscall entry
 	debugPrint('C')

@@ -3,8 +3,19 @@
 package main
 
 import (
+	"kmazarin/ds"
+	"kmazarin/kirq"
+	"kmazarin/util"
 	"unsafe"
 )
+
+// debugPrint writes a single character to UART for debugging
+//
+//go:nosplit
+func debugPrint(c byte) {
+	uartBase := GetUartBase()
+	*(*byte)(unsafe.Pointer(uartBase)) = c
+}
 
 // Syscall return codes for assembly
 const (
@@ -25,8 +36,9 @@ const (
 	ThreadSleeping     = 4 // Blocked on nanosleep
 )
 
-// Maximum number of threads
-const MaxThreads = 8
+// MaxThreads is the maximum number of threads supported
+// Using fixed array to avoid heap allocation during early boot
+const MaxThreads = 16
 
 // ThreadContext holds saved CPU state for a thread
 type ThreadContext struct {
@@ -41,27 +53,27 @@ type ThreadContext struct {
 
 // Thread represents a single thread (corresponds to a Go M)
 type Thread struct {
-	State      int32  // ThreadFree, ThreadRunning, etc.
-	TID        int32  // Thread ID (returned by clone)
-	FutexAddr  uint64 // Address being waited on (for ThreadBlockedFutex)
-	WakeupTick uint64 // Tick at which to wake (for ThreadSleeping)
-	MPtr       uint64 // Pointer to Go M struct
-	GPtr       uint64 // Pointer to Go g struct (g0 for this M)
-	EntryFunc  uint64 // Entry function (mstart)
-	Context    ThreadContext
+	State     int32  // ThreadRunning, ThreadReady, etc.
+	TID       int32  // Thread ID (returned by clone)
+	FutexAddr uint64 // Address being waited on (for ThreadBlockedFutex)
+	MPtr      uint64 // Pointer to Go M struct
+	GPtr      uint64 // Pointer to Go g struct (g0 for this M)
+	EntryFunc uint64 // Entry function (mstart)
+	Context   ThreadContext
+
+	// Preemption tracking
+	LastSeenG uint64 // g pointer seen at last timer tick
+	StartTick uint64 // globalTickCounter when this run started
 }
 
-// Thread table - all threads in the system
+// Fixed-size thread array - no heap allocation needed
 var threads [MaxThreads]Thread
 
-// Current thread index (0 = M0)
-var currentThreadIdx int32 = 0
-
-// Number of threads created
-var numThreads int32 = 1
+// Current thread index (-1 = none)
+var currentThreadIdx int32 = -1
 
 // Next TID to assign
-var nextTID int32 = 100
+var nextTID int32 = 1
 
 // Global tick counter (incremented by timer)
 var globalTickCounter uint64 = 0
@@ -69,7 +81,7 @@ var globalTickCounter uint64 = 0
 // Syscall context switch signaling
 // Set by syscall handlers (futex, nanosleep) when they need to block
 // Checked by assembly after DispatchSyscall returns
-// -1 = normal return, >=0 = switch to that thread index
+// -1 = no switch, >= 0 = switch to that thread index
 var syscallSwitchTarget int32 = -1
 
 // syscallELR stores the ELR_EL1 for the current syscall
@@ -82,10 +94,16 @@ var syscallELR uint64 = 0
 // Used by clone to get the proper processor state for child threads
 var syscallSPSR uint64 = 0
 
+// threadsInitialized tracks if InitThreads has been called
+var threadsInitialized bool = false
+
+// deadlineQueue holds TimerDeadlines sorted by deadline time (ascending).
+// Used for nanosleep and other timed wakeups.
+// nil until InitDeadlineQueue is called.
+var deadlineQueue *ds.OrderedList[*util.TimerDeadline]
+
 // setSyscallELRInternal is called by assembly via ABI stub to store the current ELR
 //
-// EXPERIMENT: Removed //go:nosplit to test if it's actually needed
-// Page fault handler (handlePageFaultInternal) runs in same context without NOSPLIT
 //go:noinline
 func setSyscallELRInternal(elr uint64) {
 	syscallELR = elr
@@ -93,7 +111,6 @@ func setSyscallELRInternal(elr uint64) {
 
 // setSyscallSPSRInternal is called by assembly via ABI stub to store the current SPSR
 //
-// EXPERIMENT: Removed //go:nosplit - not needed (page fault handler proves this)
 //go:noinline
 func setSyscallSPSRInternal(spsr uint64) {
 	syscallSPSR = spsr
@@ -102,7 +119,6 @@ func setSyscallSPSRInternal(spsr uint64) {
 // GetSyscallELR returns the ELR for the current syscall
 // Called by clone to get the child's return address
 //
-// Removed //go:nosplit - not needed (simple getter, single variable read)
 //go:noinline
 //go:linkname GetSyscallELR kmazarin/ksyscall.GetSyscallELR
 func GetSyscallELR() uint64 {
@@ -112,7 +128,6 @@ func GetSyscallELR() uint64 {
 // GetSyscallSPSR returns the SPSR for the current syscall
 // Called by clone to get the child's processor state
 //
-// Removed //go:nosplit - not needed (simple getter, single variable read)
 //go:noinline
 //go:linkname GetSyscallSPSR kmazarin/ksyscall.GetSyscallSPSR
 func GetSyscallSPSR() uint64 {
@@ -121,124 +136,143 @@ func GetSyscallSPSR() uint64 {
 
 // getSyscallSwitchTargetInternal returns the switch target and resets it
 // Called from assembly via ABI stub after syscall dispatch
-// Returns int64 to avoid sign extension issues in assembly
+// Returns uint64: high 32 bits unused, low 32 bits = target index (-1 = no switch)
+// For compatibility with assembly that expects uintptr, returns 0 for no-switch
 //
-// Removed //go:nosplit - not needed (page fault handler proves this)
 //go:noinline
-func getSyscallSwitchTargetInternal() int64 {
-	target := int64(syscallSwitchTarget)
+func getSyscallSwitchTargetInternal() uint64 {
+	target := syscallSwitchTarget
 	syscallSwitchTarget = -1 // Reset for next syscall
-	return target
+	if target < 0 {
+		return 0 // No switch needed
+	}
+	// Return pointer to thread's context for assembly
+	return uint64(uintptr(unsafe.Pointer(&threads[target].Context)))
 }
 
-// SetSyscallSwitchTarget sets the thread to switch to
+// SetSyscallSwitchTarget sets the thread index to switch to
 // Called by syscall handlers that need to block
+// target is thread index, or -1 for no switch
 //
-// Removed //go:nosplit - not needed (simple setter, single variable write)
 //go:noinline
-func SetSyscallSwitchTarget(target int32) {
-	syscallSwitchTarget = target
+func SetSyscallSwitchTarget(target uintptr) {
+	// Convert uintptr back to index - this is a bit hacky but works
+	// When called with 0, means no switch
+	if target == 0 {
+		syscallSwitchTarget = -1
+	} else {
+		// target is actually an index encoded as uintptr
+		syscallSwitchTarget = int32(target)
+	}
 }
 
-// InitThreads initializes the thread table with M0 as thread 0
+// InitThreads initializes the thread management system
+// Creates M0's thread as the current running thread
 //
 //go:nosplit
 //go:noinline
 func InitThreads() {
-	// M0 is thread 0, already running
-	threads[0].State = ThreadRunning
-	threads[0].TID = 1 // M0 gets TID 1 (like Linux main thread)
-	numThreads = 1
-	currentThreadIdx = 0
+	if threadsInitialized {
+		return
+	}
 
-	// Mark all other slots as free
-	for i := 1; i < MaxThreads; i++ {
+	// Initialize all threads as free
+	for i := 0; i < MaxThreads; i++ {
 		threads[i].State = ThreadFree
+		threads[i].TID = 0
+	}
+
+	// Set up thread 0 for M0 (the main thread)
+	threads[0].State = ThreadRunning
+	threads[0].TID = nextTID
+	threads[0].StartTick = globalTickCounter
+	nextTID++
+
+	currentThreadIdx = 0
+	threadsInitialized = true
+}
+
+// InitDeadlineQueue initializes the deadline queue.
+// Call this after the heap is ready.
+//
+//go:noinline
+func InitDeadlineQueue() {
+	if deadlineQueue == nil {
+		deadlineQueue = ds.NewOrderedList[*util.TimerDeadline](true) // ascending order
 	}
 }
 
-// ThreadCreate creates a new thread entry for clone syscall
-// Returns TID on success, -1 if no slots available
+// AddDeadline adds a deadline to the queue.
+// Returns false if the queue is not initialized.
 //
 //go:nosplit
 //go:noinline
-func ThreadCreate(stack, entryFunc, mPtr, gPtr uint64) int32 {
-	// Find a free slot
-	var slot int32 = -1
-	for i := int32(0); i < MaxThreads; i++ {
-		if threads[i].State == ThreadFree {
-			slot = i
-			break
+//go:linkname AddDeadline kmazarin/ksyscall.AddDeadline
+func AddDeadline(deadline uint64, threadIdx int32) bool {
+	if deadlineQueue == nil {
+		return false
+	}
+	action := NewWakeThreadAction(threadIdx)
+	td := util.NewTimerDeadline(deadline, action)
+	deadlineQueue.Insert(td)
+	return true
+}
+
+// ProcessDeadlines processes all deadlines that have passed.
+// Wakes up sleeping threads whose deadlines have been reached.
+// Uses the hardware timer counter (CNTVCT_EL0) for accurate timing.
+//
+//go:nosplit
+func ProcessDeadlines() {
+	if deadlineQueue == nil {
+		return
+	}
+	currentTick := kirq.ReadCounterValue()
+	for !deadlineQueue.IsEmpty() && deadlineQueue.Peek() <= currentTick {
+		td := deadlineQueue.Pop()
+		td.Execute()
+	}
+}
+
+// IdleLoop is called when no threads are ready to run.
+// It processes deadlines and uses WFI to wait for the next interrupt.
+// Returns the index of a ready thread when one becomes available.
+//
+//go:nosplit
+func IdleLoop() int32 {
+	for {
+		ProcessDeadlines()
+		ready := ThreadFindReady()
+		if ready >= 0 {
+			return ready
 		}
+		WaitForInterrupt()
 	}
-
-	if slot < 0 {
-		// TODO: error output
-		return -1
-	}
-
-	// Allocate TID
-	tid := nextTID
-	nextTID++
-
-	// Initialize thread
-	threads[slot].State = ThreadReady
-	threads[slot].TID = tid
-	threads[slot].FutexAddr = 0
-	threads[slot].WakeupTick = 0
-	threads[slot].MPtr = mPtr
-	threads[slot].GPtr = gPtr
-	threads[slot].EntryFunc = entryFunc
-
-	// Set up initial context
-	// x28 = g pointer (Go's g register)
-	threads[slot].Context.X[28] = gPtr
-	// SP = stack pointer for the new thread
-	threads[slot].Context.SP = stack
-	// ELR = entry function (mstart) - where to start executing
-	threads[slot].Context.ELR = entryFunc
-	// SPSR = 0x344 = EL1t mode (M=0100) with D=A=F masked, I=0 (IRQs enabled)
-	// D=1, A=1, I=0, F=1 -> 0011 0100 0100 = 0x344
-	// IRQs MUST be enabled for timer-based preemption to work!
-	threads[slot].Context.SPSR = 0x344
-
-	numThreads++
-
-	return tid
 }
 
 // CloneThread creates a new thread for Go runtime's clone syscall.
-// This properly handles Go's clone wrapper which expects:
-// - Child returns from clone with x0=0
-// - x10=mp, x11=gp, x12=fn preserved (used by Go's wrapper after clone returns)
-// - ELR = return address (same as parent - instruction after SVC)
-//
-// Parameters:
-//   - stack: New thread's stack pointer
-//   - returnAddr: Return address (ELR_EL1 from parent - where both parent/child "return")
-//   - mp: M pointer (goes in x10, used by Go's settls)
-//   - gp: G pointer (goes in x11, Go's wrapper sets g register from this)
-//   - fn: Entry function (goes in x12, Go's wrapper calls this)
-//
-// Returns TID on success, -1 if no slots available
+// Uses fixed array - NO heap allocation.
 //
 //go:nosplit
 //go:noinline
 //go:linkname CloneThread kmazarin/ksyscall.CloneThread
 func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
-	// Check if thread 0 hasn't been initialized yet (InitThreads not called)
-	// If so, reserve slot 0 for M0 by marking it as ThreadRunning now
-	if threads[0].State == ThreadFree {
-		// Initialize thread 0 for M0 (the main thread that's already running)
-		threads[0].State = ThreadRunning
-		threads[0].TID = 1 // M0 gets TID 1
-		currentThreadIdx = 0
-		nextTID = 2 // Next clone gets TID 2
-		numThreads = 1
+	// DEBUG: Entry marker
+	debugPrint('T')
+	debugPrint('1')
+
+	// Lazy initialization
+	if !threadsInitialized {
+		debugPrint('I')
+		InitThreads()
+		debugPrint('i')
 	}
 
-	// Find a free slot (will skip slot 0 since we just marked it as Running)
-	var slot int32 = -1
+	debugPrint('T')
+	debugPrint('2')
+
+	// Find a free slot
+	slot := int32(-1)
 	for i := int32(0); i < MaxThreads; i++ {
 		if threads[i].State == ThreadFree {
 			slot = i
@@ -247,116 +281,107 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
 	}
 
 	if slot < 0 {
-		return -1
+		debugPrint('F')
+		debugPrint('!')
+		return -1 // No free slots
 	}
+
+	debugPrint('T')
+	debugPrint('3')
 
 	// Allocate TID
 	tid := nextTID
 	nextTID++
 
-	// Initialize thread
-	threads[slot].State = ThreadReady
-	threads[slot].TID = tid
-	threads[slot].FutexAddr = 0
-	threads[slot].WakeupTick = 0
-	threads[slot].MPtr = mp
-	threads[slot].GPtr = gp
-	threads[slot].EntryFunc = fn
+	debugPrint('T')
+	debugPrint('4')
+
+	// Initialize the thread
+	t := &threads[slot]
+	t.State = ThreadReady
+	t.TID = tid
+	t.FutexAddr = 0
+	t.MPtr = mp
+	t.GPtr = gp
+	t.EntryFunc = fn
+	t.StartTick = globalTickCounter
+	t.LastSeenG = gp
+
+	debugPrint('T')
+	debugPrint('5')
 
 	// Set up initial context for cloned thread
-	// CRITICAL: Go's runtime/sys_linux_arm64.s clone wrapper expects:
-	//   - x0 = 0 (clone returns 0 to child)
-	//   - x10 = mp (for settls call)
-	//   - x11 = gp (for setting g register)
-	//   - x12 = fn (entry function to call)
-	//   - ELR = return address (CMP $0, R0 instruction after SVC)
-	//
-	// The wrapper does:
-	//   CMP $0, R0      // Check if child (x0 == 0)
-	//   BEQ child       // Branch to child label if x0 == 0
-	//   RET             // Parent returns with TID in x0
-	// child:
-	//   MOVD R11, g     // Set g register from x11 (gp)
-	//   MOVD R10, R0    // arg for settls
-	//   BL settls       // Set up TLS
-	//   MOVD R12, R0    // fn to call
-	//   BL (R0)         // Call the entry function (mstart)
+	t.Context.X[0] = 0         // Clone returns 0 to child
+	t.Context.SP = stack       // New stack
+	t.Context.ELR = returnAddr // Return to instruction after SVC
+	t.Context.SPSR = spsr      // Same processor state as parent
+	t.Context.X[28] = gp       // g register valid immediately
 
-	threads[slot].Context.X[0] = 0        // Clone returns 0 to child
-	threads[slot].Context.SP = stack      // New stack
-	threads[slot].Context.ELR = returnAddr // Return to instruction after SVC
-	// Use the SPSR from the parent thread so child has same processor state
-	threads[slot].Context.SPSR = spsr
-	// CRITICAL: Set X[28] (g register) to gp so the g register is valid immediately
-	// after context switch. Go's wrapper will also set it from X[11], but we need
-	// it valid BEFORE the first instruction runs in case of any exceptions.
-	threads[slot].Context.X[28] = gp
+	debugPrint('T')
+	debugPrint('6')
 
 	// CRITICAL: Write mp, gp, fn to the stack so clone wrapper's ldur instructions work.
-	// Clone wrapper expects to find them at:
-	//   [stack-8]  = mp (loaded into X10)
-	//   [stack-16] = gp (loaded into X11)
-	//   [stack-24] = fn (loaded into X12)
-	// This is the same layout that clone() sets up before calling SVC.
 	stackPtr := unsafe.Pointer(uintptr(stack))
-
 	*(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 8)) = mp
 	*(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 16)) = gp
 	*(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 24)) = fn
-	*(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 32)) = 1234 // Magic number for stack validation
+	*(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 32)) = 1234 // Magic number
 
-	numThreads++
+	debugPrint('T')
+	debugPrint('7')
 
 	return tid
 }
 
-// ThreadFindReady finds the next READY thread using round-robin
+// ThreadFindReady finds the next READY thread
 // Returns thread index, or -1 if none found
 //
-// Removed //go:nosplit - not needed (simple loop with bounds check, ~15 lines)
+//go:nosplit
 func ThreadFindReady() int32 {
-	// Start from current+1, wrap around
-	// Iterate over all MaxThreads slots to handle non-contiguous thread allocation
-	start := (currentThreadIdx + 1) % MaxThreads
+	// Simple round-robin starting after current thread
+	start := currentThreadIdx + 1
+	if start < 0 {
+		start = 0
+	}
 
 	for i := int32(0); i < MaxThreads; i++ {
 		idx := (start + i) % MaxThreads
-		// Skip free slots and only consider ready threads
 		if threads[idx].State == ThreadReady {
 			return idx
 		}
 	}
-
 	return -1
 }
 
 // ThreadBlockFutex marks current thread as blocked on futex and finds next thread
-// Returns index of next thread to run, or -1 if none (caller should spin/idle)
+// Returns index of next thread to run, or -1 if none
 //
-// CRITICAL: MUST keep //go:nosplit
-// Tested removing it - system crashes with nested page fault (0 patterns vs expected 68-69)
-// Reason: Called from futex syscall handlers which may have complex call chains
 //go:nosplit
-func ThreadBlockFutex(futexAddr uint64) int32 {
+func ThreadBlockFutex(futexAddr uint64) uintptr {
+	if currentThreadIdx < 0 {
+		return 0
+	}
+
 	// Mark current thread as blocked
 	threads[currentThreadIdx].State = ThreadBlockedFutex
 	threads[currentThreadIdx].FutexAddr = futexAddr
 
 	// Find next ready thread
-	return ThreadFindReady()
+	next := ThreadFindReady()
+	if next < 0 {
+		return 0
+	}
+	return uintptr(next)
 }
 
 // ThreadWakeFutex wakes threads blocked on the given futex address
 // Returns number of threads woken
 //
-// CRITICAL: MUST keep //go:nosplit
-// Tested removing it - system crashes with nested page fault (0 patterns vs expected 68-69)
-// Reason: Called from futex syscall handlers which have complex call chains
 //go:nosplit
 func ThreadWakeFutex(futexAddr uint64, maxWake int32) int32 {
 	woken := int32(0)
 
-	for i := int32(0); i < numThreads && woken < maxWake; i++ {
+	for i := int32(0); i < MaxThreads && woken < maxWake; i++ {
 		if threads[i].State == ThreadBlockedFutex && threads[i].FutexAddr == futexAddr {
 			threads[i].State = ThreadReady
 			threads[i].FutexAddr = 0
@@ -367,92 +392,170 @@ func ThreadWakeFutex(futexAddr uint64, maxWake int32) int32 {
 	return woken
 }
 
-// ThreadBlockSleep marks current thread as sleeping until wakeupTick
+// ThreadBlockSleep marks current thread as sleeping
 // Returns index of next thread to run, or -1 if none
 //
 //go:nosplit
-func ThreadBlockSleep(durationTicks uint64) int32 {
-	wakeupTick := globalTickCounter + durationTicks
-	threads[currentThreadIdx].State = ThreadSleeping
-	threads[currentThreadIdx].WakeupTick = wakeupTick
+//go:linkname ThreadBlockSleep kmazarin/ksyscall.ThreadBlockSleep
+func ThreadBlockSleep() uintptr {
+	if currentThreadIdx < 0 {
+		return 0
+	}
 
-	return ThreadFindReady()
+	// Mark current thread as sleeping
+	threads[currentThreadIdx].State = ThreadSleeping
+
+	// Find next ready thread
+	next := ThreadFindReady()
+	if next < 0 {
+		return 0
+	}
+	return uintptr(next)
 }
 
-// ThreadCheckSleepers wakes threads whose sleep time has elapsed
-// Called from timer interrupt
+// ThreadWakeSleeper moves a thread from sleeping to ready by index
 //
-// Removed //go:nosplit - not needed (simple loop checking wake times, ~15 lines)
-func ThreadCheckSleepers() {
-	for i := int32(0); i < numThreads; i++ {
-		if threads[i].State == ThreadSleeping {
-			if globalTickCounter >= threads[i].WakeupTick {
-				threads[i].State = ThreadReady
-				threads[i].WakeupTick = 0
-			}
-		}
+//go:nosplit
+func ThreadWakeSleeper(idx uintptr) {
+	if idx >= MaxThreads {
+		return
+	}
+	if threads[idx].State == ThreadSleeping {
+		threads[idx].State = ThreadReady
 	}
 }
 
 // ThreadIncrementTick increments the global tick counter
 // Called from timer interrupt
 //
-// Removed //go:nosplit - not needed (simple increment operation)
+//go:nosplit
 func ThreadIncrementTick() {
 	globalTickCounter++
 }
 
-// GetCurrentThreadIdx returns the current thread index
-//
-// Removed //go:nosplit - not needed (simple getter, single variable read)
-func GetCurrentThreadIdx() int32 {
-	return currentThreadIdx
-}
-
-// SetCurrentThreadIdx sets the current thread index (called after context switch)
+// GetCurrentThread returns the current thread index as uintptr
 //
 //go:nosplit
-func SetCurrentThreadIdx(idx int32) {
-	if idx >= 0 && idx < MaxThreads {
-		old := currentThreadIdx
+//go:linkname GetCurrentThread kmazarin/ksyscall.GetCurrentThread
+func GetCurrentThread() uintptr {
+	if currentThreadIdx < 0 {
+		return 0
+	}
+	return uintptr(currentThreadIdx)
+}
 
-		// Only mark old thread as ready if it's not blocked and not the same thread
-		if old != idx {
-			oldState := threads[old].State
-			if oldState != ThreadBlockedFutex && oldState != ThreadSleeping {
-				threads[old].State = ThreadReady
-			}
+// GetGlobalTickCounter returns the global tick counter
+//
+//go:nosplit
+func GetGlobalTickCounter() uint64 {
+	return globalTickCounter
+}
+
+// Exception frame offsets (must match exceptions.s)
+const (
+	excFrameX0     = 0   // x0, x1, x2, ... stored sequentially
+	excFrameX28    = 224 // x28 (g pointer)
+	excFrameX29X30 = 232 // x29, x30 (FP, LR)
+	excFrameSPEL0  = 288 // Saved SP_EL0
+	excFrameELR    = 256 // ELR_EL1
+	excFrameSPSR   = 264 // SPSR_EL1
+)
+
+// SaveContextFromFrame saves the current thread's context from an exception frame
+//
+//go:nosplit
+//go:noinline
+func SaveContextFromFrame(framePtr uintptr) {
+	if currentThreadIdx < 0 {
+		return
+	}
+
+	t := &threads[currentThreadIdx]
+	frame := (*[40]uint64)(unsafe.Pointer(framePtr))
+
+	for i := 0; i < 28; i++ {
+		t.Context.X[i] = frame[i]
+	}
+
+	t.Context.X[28] = frame[28]
+	t.Context.X[29] = frame[29]
+	t.Context.X[30] = frame[30]
+	t.Context.SP = frame[36]
+	t.Context.ELR = frame[32]
+	t.Context.SPSR = frame[33]
+}
+
+// doContextSwitchABI0 is the ABI0 entry point for context switching
+// targetPtr is actually a pointer to ThreadContext (returned by getSyscallSwitchTargetInternal)
+//
+//go:nosplit
+//go:noinline
+func doContextSwitchABI0(framePtr uint64, targetPtr uint64) uint64 {
+	// Find which thread owns this context
+	targetCtx := (*ThreadContext)(unsafe.Pointer(uintptr(targetPtr)))
+
+	// Find the thread index by matching context pointer
+	targetIdx := int32(-1)
+	for i := int32(0); i < MaxThreads; i++ {
+		if &threads[i].Context == targetCtx {
+			targetIdx = i
+			break
 		}
-
-		currentThreadIdx = idx
-		threads[idx].State = ThreadRunning
 	}
+
+	if targetIdx < 0 {
+		return 0
+	}
+
+	ctx := doContextSwitchImpl(uintptr(framePtr), targetIdx)
+	return uint64(uintptr(unsafe.Pointer(ctx)))
 }
 
-// GetThreadContext returns a pointer to a thread's context
-// Used by assembly for context switch
+// doContextSwitchImpl performs a context switch from current thread to target
 //
-// Removed //go:nosplit - not needed (simple array lookup with bounds check)
-func GetThreadContext(idx int32) *ThreadContext {
-	if idx >= 0 && idx < MaxThreads {
-		return &threads[idx].Context
+//go:nosplit
+//go:noinline
+func doContextSwitchImpl(framePtr uintptr, targetIdx int32) *ThreadContext {
+	// Save current thread's context
+	SaveContextFromFrame(framePtr)
+
+	oldIdx := currentThreadIdx
+	currentThreadIdx = targetIdx
+
+	// New thread becomes running
+	threads[targetIdx].State = ThreadRunning
+	threads[targetIdx].StartTick = globalTickCounter
+	threads[targetIdx].LastSeenG = threads[targetIdx].GPtr
+
+	// Old thread goes to ready if it was running
+	if oldIdx >= 0 && threads[oldIdx].State == ThreadRunning {
+		threads[oldIdx].State = ThreadReady
 	}
-	return nil
+
+	return &threads[targetIdx].Context
 }
 
-// GetThread returns a pointer to a thread entry
+// GetThreadContext returns a pointer to a thread's context by index
 //
-// Removed //go:nosplit - not needed (simple array lookup with bounds check)
-func GetThread(idx int32) *Thread {
-	if idx >= 0 && idx < MaxThreads {
-		return &threads[idx]
+//go:nosplit
+func GetThreadContext(idx uintptr) *ThreadContext {
+	if idx >= MaxThreads {
+		return nil
 	}
-	return nil
+	return &threads[idx].Context
+}
+
+// GetThread returns a pointer to a thread entry by index
+//
+//go:nosplit
+func GetThread(idx uintptr) *Thread {
+	if idx >= MaxThreads {
+		return nil
+	}
+	return &threads[idx]
 }
 
 // SaveCurrentThreadContext saves the current thread's context
-// Called from assembly before context switch
-// The context is passed from the exception frame
 //
 //go:nosplit
 func SaveCurrentThreadContext(
@@ -462,6 +565,10 @@ func SaveCurrentThreadContext(
 	x24, x25, x26, x27, x28, x29, x30 uint64,
 	sp, elr, spsr uint64,
 ) {
+	if currentThreadIdx < 0 {
+		return
+	}
+
 	t := &threads[currentThreadIdx]
 	t.Context.X[0] = x0
 	t.Context.X[1] = x1
@@ -497,100 +604,4 @@ func SaveCurrentThreadContext(
 	t.Context.SP = sp
 	t.Context.ELR = elr
 	t.Context.SPSR = spsr
-}
-
-// Exception frame offsets (must match exceptions.s)
-const (
-	excFrameX0     = 0   // x0, x1, x2, ... stored sequentially
-	excFrameX28    = 224 // x28 (g pointer)
-	excFrameX29X30 = 232 // x29, x30 (FP, LR)
-	excFrameSPEL0  = 288 // Saved SP_EL0
-	excFrameELR    = 256 // ELR_EL1
-	excFrameSPSR   = 264 // SPSR_EL1
-)
-
-// SaveContextFromFrame saves the current thread's context from an exception frame
-// This is easier to call from assembly than SaveCurrentThreadContext
-// framePtr = pointer to the exception frame (SP value in exception handler)
-//
-//go:nosplit
-//go:noinline
-func SaveContextFromFrame(framePtr uintptr) {
-	t := &threads[currentThreadIdx]
-
-	// Read all registers from exception frame
-	// x0-x27 are stored sequentially starting at offset 0 (each is 8 bytes)
-	frame := (*[40]uint64)(unsafe.Pointer(framePtr))
-
-	for i := 0; i < 28; i++ {
-		t.Context.X[i] = frame[i]
-	}
-
-	// x28 is at offset 224 = 28*8, so frame[28]
-	t.Context.X[28] = frame[28]
-
-	// x29, x30 are at offset 232 = 29*8, so frame[29] and frame[30]
-	t.Context.X[29] = frame[29]
-	t.Context.X[30] = frame[30]
-
-	// SP_EL0 is at offset 288 = 36*8, so frame[36]
-	t.Context.SP = frame[36]
-
-	// ELR_EL1 is at offset 256 = 32*8, so frame[32]
-	t.Context.ELR = frame[32]
-
-	// SPSR_EL1 is at offset 264 = 33*8, so frame[33]
-	t.Context.SPSR = frame[33]
-}
-
-// doContextSwitchABI0 is the ABI0 entry point for context switching
-// Takes uint64/int32 args from assembly, returns pointer as uint64
-//
-// CRITICAL: MUST keep //go:nosplit
-// Tested removing it - system crashes with nested page fault:
-//   Nested fault address: VA=0xFFFFFFFF4197A000
-//   Fault status: 0x0000000000000007
-//   Preemptive scheduling patterns: 0 (vs expected 68-69)
-// Reason: Function is large (~100 lines) with deep call chain. Go inserts stack
-// growth checks that can trigger page faults while already in exception context.
-// See docs/abi/CONTEXT_SWITCH_NOSPLIT.md for full analysis.
-//
-//go:nosplit
-//go:noinline
-func doContextSwitchABI0(framePtr uint64, targetIdx int32) uint64 {
-	ctx := doContextSwitchImpl(uintptr(framePtr), targetIdx)
-	return uint64(uintptr(unsafe.Pointer(ctx)))
-}
-
-// doContextSwitchImpl performs a context switch from current thread to targetIdx
-// Saves current context from frame, updates thread states, returns new context
-// Returns pointer to new thread's Context (for assembly to load)
-//
-// CRITICAL: MUST keep //go:nosplit
-// Tested removing it - system crashes with nested page fault (same as doContextSwitchABI0).
-// This function is called by doContextSwitchABI0, which then calls SaveContextFromFrame.
-// Crash occurs because Go's stack growth checks can trigger page faults in exception context.
-//
-//go:nosplit
-//go:noinline
-func doContextSwitchImpl(framePtr uintptr, targetIdx int32) *ThreadContext {
-	// Save current thread's context from exception frame
-	SaveContextFromFrame(framePtr)
-
-	// Update thread indices and states
-	// Note: The blocking state was already set by the syscall handler
-	// (e.g., ThreadBlockFutex sets state to ThreadBlockedFutex)
-	oldIdx := currentThreadIdx
-	currentThreadIdx = targetIdx
-
-	// New thread becomes running
-	threads[targetIdx].State = ThreadRunning
-
-	// If old thread was still marked Running, set it to Ready
-	// (This shouldn't happen - syscall handlers should have set blocking state)
-	if threads[oldIdx].State == ThreadRunning {
-		threads[oldIdx].State = ThreadReady
-	}
-
-	return &threads[targetIdx].Context
 }

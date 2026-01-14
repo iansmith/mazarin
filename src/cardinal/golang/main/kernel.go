@@ -468,7 +468,6 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	// Post-MMU device initialization
 	initDeviceTree()
 	gicInit()
-	uartInitRingBufferAfterMemInit()
 	asm.EnableIrqs()
 
 	// Call runtime.args with minimal argv/auxv structure

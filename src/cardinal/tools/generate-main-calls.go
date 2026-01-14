@@ -138,7 +138,6 @@ func generateMainCallsContent(goFunctionsCalled []string, goSourceDir string, w 
 	// Map of known function signatures (function name -> parameter types)
 	knownSignatures := map[string][]string{
 		"KernelMain":              {"uint32", "uint32", "uint32"},
-		"UartTransmitHandler":     {},
 		"kernelMainBodyWrapper":   {},
 		"GrowStackForCurrent":     {},
 		"ExceptionHandler":        {"uint64", "uint64", "uint64", "uint64", "uint32", "uint64", "uint64", "uint64"}, // (esr, elr, spsr, far, excType, savedSP, savedLR, savedG)

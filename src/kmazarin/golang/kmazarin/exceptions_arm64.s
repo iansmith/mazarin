@@ -302,13 +302,12 @@ sync_exception_handler:
 	MOVD	R0, EXC_FRAME_X0(RSP)
 
 	// Check if syscall handler requested a context switch
-	// Call GetSyscallSwitchTarget() - returns -1 if no switch, >=0 for target
+	// Call GetSyscallSwitchTarget() - returns 0 if no switch, non-zero for target node pointer
 	GO_CALL_0_1(·GetSyscallSwitchTarget)
-	MOVD	R0, R20            // R20 = switch target (int64)
+	MOVD	R0, R20            // R20 = switch target (thread node pointer as uint64)
 
-	// Check if context switch needed (R20 >= 0 means switch)
-	CMP	$0, R20
-	BLT	syscall_no_switch
+	// Check if context switch needed (R20 != 0 means switch to that thread node)
+	CBZ	R20, syscall_no_switch
 
 	// Context switch requested!
 	// DEBUG: Print 'S' for switch
@@ -316,9 +315,9 @@ sync_exception_handler:
 	MOVD	$'S', R11
 	MOVB	R11, (R10)
 
-	// Call DoContextSwitch(framePtr, targetIdx) to get new context
+	// Call DoContextSwitch(framePtr, targetPtr) to get new context
 	MOVD	RSP, R0            // R0 = framePtr (current exception frame)
-	MOVW	R20, R1            // R1 = targetIdx (as int32, promoted to uint64 by macro)
+	MOVD	R20, R1            // R1 = targetPtr (thread node pointer)
 	GO_CALL_2_1(·DoContextSwitch, R0, R1)
 	MOVD	R0, R21            // R21 = pointer to new ThreadContext
 
@@ -485,6 +484,9 @@ not_svc:
 	MOVD	$':', R11
 	MOVB	R11, (R12)
 
+	// Save R10 (EC) for later checks
+	MOVD	R10, R20  // Save EC in R20
+
 	// Print EC as 2 hex digits
 	LSR	$4, R10, R11
 	AND	$0xF, R11
@@ -507,6 +509,43 @@ not_svc_second_digit:
 not_svc_second:
 	MOVB	R10, (R12)
 
+	// Check if this is PC alignment fault (EC=0x22)
+	CMP	$0x22, R20
+	BNE	not_pc_align
+
+	// PC alignment fault - print the faulting ELR
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+	MOVD	$'P', R11
+	MOVB	R11, (R12)
+	MOVD	$'C', R11
+	MOVB	R11, (R12)
+	MOVD	$'=', R11
+	MOVB	R11, (R12)
+	MOVD	$'0', R11
+	MOVB	R11, (R12)
+	MOVD	$'x', R11
+	MOVB	R11, (R12)
+
+	// Print ELR (faulting PC) - 16 hex digits
+	MOVD	EXC_FRAME_ELR_SPSR(RSP), R14
+	MOVD	$16, R15
+print_fault_pc_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_fault_pc_digit
+	ADD	$('A'-10), R11
+	B	print_fault_pc_char
+print_fault_pc_digit:
+	ADD	$'0', R11
+print_fault_pc_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, print_fault_pc_loop
+
+not_pc_align:
 	MOVD	$'\r', R11
 	MOVB	R11, (R12)
 	MOVD	$'\n', R11
@@ -541,6 +580,66 @@ data_abort_unhandled:
 	MOVB	R11, (R10)
 	MOVD	$'L', R11
 	MOVB	R11, (R10)
+
+	// Print " FAR="
+	MOVD	$' ', R11
+	MOVB	R11, (R10)
+	MOVD	$'F', R11
+	MOVB	R11, (R10)
+	MOVD	$'A', R11
+	MOVB	R11, (R10)
+	MOVD	$'R', R11
+	MOVB	R11, (R10)
+	MOVD	$'=', R11
+	MOVB	R11, (R10)
+
+	// Print FAR (fault address) - stored in R19 from earlier
+	MOVD	R19, R12
+	MOVD	$16, R13		// Counter for 16 hex digits
+print_far_data_abort:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_far_digit_da
+	ADD	$('A'-10), R11
+	B	print_far_char_da
+print_far_digit_da:
+	ADD	$'0', R11
+print_far_char_da:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_far_data_abort
+
+	// Print " ELR="
+	MOVD	$' ', R11
+	MOVB	R11, (R10)
+	MOVD	$'E', R11
+	MOVB	R11, (R10)
+	MOVD	$'L', R11
+	MOVB	R11, (R10)
+	MOVD	$'R', R11
+	MOVB	R11, (R10)
+	MOVD	$'=', R11
+	MOVB	R11, (R10)
+
+	// Print ELR (faulting instruction)
+	MOVD	EXC_FRAME_ELR_SPSR(RSP), R12
+	MOVD	$16, R13
+print_elr_data_abort:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_elr_digit_da
+	ADD	$('A'-10), R11
+	B	print_elr_char_da
+print_elr_digit_da:
+	ADD	$'0', R11
+print_elr_char_da:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_elr_data_abort
 
 	// Print " x28="
 	MOVD	$' ', R11
@@ -688,17 +787,42 @@ irq_exception_handler:
 	// Mask to get interrupt ID (bits 0-9, max 1020 for GICv2)
 	AND	$0x3FF, R0  // R0 = IRQ number (0-1019)
 
-	// Prepare arguments in registers for IRQDispatch
-	// func IRQDispatch(irqNum, framePtr, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool)
-	MOVD	R19, R0                          // R0 = irqNum (from R19)
-	MOVD	RSP, R1                          // R1 = framePtr (exception frame pointer)
-	MOVD	EXC_FRAME_ELR_SPSR(RSP), R2      // R2 = elr (from exception frame)
-	MOVD	EXC_FRAME_SP_EL0(RSP), R3        // R3 = spEl0 (from exception frame)
+	// Check if this is the timer IRQ (27)
+	CMP	$27, R0
+	BNE	irq_not_timer
 
-	// Call IRQDispatch using macro - handles frame alloc, arg store, call, return load, cleanup
-	// Returns: R20=newELR, R21=newSP, R22=newLR, R23=doPreempt
-	GO_CALL_4_3B(·IRQDispatch, R0, R1, R2, R3, R20, R21, R22, R23)
+	// ========================================================================
+	// Timer IRQ (27) - Call pure assembly handler
+	// ========================================================================
+	// The timer handler sets g.preempt and g.stackguard0 directly without
+	// calling any Go functions. This is safe because we're not using the
+	// Go runtime at all - just setting memory locations.
+	//
+	// R28 contains g (saved earlier in exception frame)
+	// The handler will read g from R28 and set preemption flags.
+	CALL	kmazarin∕kirq·TimerIRQHandlerAsm(SB)
 
+	// Timer handler doesn't inject asyncPreempt - it uses cooperative preemption.
+	// Set return values to indicate no frame modification needed.
+	MOVD	$0, R20  // newELR (unused)
+	MOVD	$0, R21  // newSP (unused)
+	MOVD	$0, R22  // newLR (unused)
+	MOVD	$0, R23  // doPreempt = false (cooperative, not async)
+	B	irq_write_eoir
+
+irq_not_timer:
+	// ========================================================================
+	// Non-timer IRQs - Handle with simple ACK for now
+	// ========================================================================
+	// TODO: Add softirq infrastructure for complex device handling.
+	// For now, just ACK the interrupt and return.
+	// UART and other devices will be handled via polling or deferred work.
+	MOVD	$0, R20
+	MOVD	$0, R21
+	MOVD	$0, R22
+	MOVD	$0, R23
+
+irq_write_eoir:
 	// Write End Of Interrupt (must do before modifying frame!)
 	MOVD	$(GIC_CPU_BASE + GICC_EOIR), R10
 	MOVW	R19, (R10)  // Write original IAR value to EOIR

@@ -32,6 +32,13 @@ func irqDispatchInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (ne
 	return info.NewELR, info.NewSP, info.NewLR, info.DoPreempt
 }
 
+// timerIRQHandlerInternal is called directly from exception handler for timer IRQs
+//go:noinline
+func timerIRQHandlerInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool) {
+	info := kirq.TimerIRQHandlerCanPreempt(irqNum, framePtr, elr, spEl0)
+	return info.NewELR, info.NewSP, info.NewLR, info.DoPreempt
+}
+
 // HandlePageFaultAsm is defined in abi_stubs_arm64.s as an ABI0 entry point
 // that tail-calls handlePageFaultInternal. This is the actual implementation.
 // Returns 1 if the fault was handled successfully, 0 otherwise.
@@ -79,22 +86,67 @@ func init() {
 
 	// Initialize timer with actual frequency from CNTFRQ_EL0
 	// Must be done before enabling IRQs to ensure correct timer tick calculation
+	Print("[Init] Calling kirq.InitTimer()...")
 	kirq.InitTimer()
+	Print("[Init] kirq.InitTimer() done")
+
+	// Register IRQ handlers BEFORE enabling interrupts
+	// This ensures the dispatch tables are populated before any IRQs fire
+	Print("[Init] Calling kirq.RegisterHandlers()...")
+	kirq.RegisterHandlers()
+	Print("[Init] kirq.RegisterHandlers() done")
+
+	// Initialize preemption subsystem - reads runtime offsets
+	// Must be done before enabling IRQs so timer handler can access offsets
+	Print("[Init] Calling kirq.InitPreemption()...")
+	kirq.InitPreemption()
+	Print("[Init] kirq.InitPreemption() done")
+
+	// Debug: print preemption offsets
+	sg0, preempt, status, stackPreempt, gRunning, gScan := kirq.GetPreemptOffsetDebug()
+	Print("[Init] Preemption offsets:")
+	Print("[Init]   stackguard0 offset: ")
+	PrintHex64(uint64(sg0))
+	Print("[Init]   preempt offset: ")
+	PrintHex64(uint64(preempt))
+	Print("[Init]   atomicstatus offset: ")
+	PrintHex64(uint64(status))
+	Print("[Init]   stackPreempt value: ")
+	PrintHex64(uint64(stackPreempt))
+	Print("[Init]   _Grunning: ")
+	PrintHex64(uint64(gRunning))
+	Print("[Init]   _Gscan: ")
+	PrintHex64(uint64(gScan))
+	Print("[Init]   SystemTimerFrequency: ")
+	PrintHex64(kirq.SystemTimerFrequency)
 
 	// Enable interrupts - handlers are ready
 	// NOTE: This happens during runtime init, which causes asyncPreempt issues
 	// but delaying to main() causes exit(21). Need to investigate proper timing.
+	Print("[Init] Calling EnableIRQs()...")
 	EnableIRQs()
+	Print("[Init] EnableIRQs() done")
+	Print("[Init] init() complete")
 }
 
-// uartPutc writes a single character directly to UART (bypasses Go runtime)
-// NOTE: UART address comes directly from StartupParams (not runtimeConfig copy)
-// to avoid package initialization order issues.
+// uartPutc writes a single character to UART
+// Before interrupt mode: direct UART write
+// After interrupt mode: uses ring buffer with TX interrupt
 //go:nosplit
 func uartPutc(c byte) {
-	uartBase := GetUartBase()  // Read directly from StartupParams
-	*(*byte)(unsafe.Pointer(uartBase)) = c
+	// Check if interrupt-driven UART is ready
+	if uartInterruptReady {
+		// Use interrupt-driven ring buffer
+		kirq.UARTPutc(c)
+	} else {
+		// Direct UART write for early boot
+		uartBase := GetUartBase() // Read directly from StartupParams
+		*(*byte)(unsafe.Pointer(uartBase)) = c
+	}
 }
+
+// uartInterruptReady tracks whether interrupt-driven UART is ready
+var uartInterruptReady bool
 
 // uartPuts writes a string directly to UART
 //go:nosplit
@@ -153,6 +205,13 @@ func getAsyncPreemptAddrForKirq() uintptr {
 //go:nosplit
 func getReadyForAsyncPreemptAddrForKirq() uintptr {
 	return GetReadyForAsyncPreemptAddr()
+}
+
+// processDeadlinesForKirq provides deadline processing to kirq package via linkname
+//go:linkname processDeadlinesForKirq kmazarin/kirq.processDeadlines
+//go:nosplit
+func processDeadlinesForKirq() {
+	ProcessDeadlines()
 }
 
 // getRuntimeConfigForKsyscall provides runtime config to ksyscall package via linkname
@@ -259,6 +318,13 @@ func printHex(val uint64) {
 		nibble := (val >> i) & 0xF
 		uartPutc(hexChars[nibble])
 	}
+}
+
+// PrintHex64 prints a hex value with 0x prefix and newline
+func PrintHex64(val uint64) {
+	uartPuts("0x")
+	printHex(val)
+	uartPuts("\r\n")
 }
 
 // testRuntimeReadiness runs a comprehensive test suite to verify Go runtime is ready
@@ -381,6 +447,14 @@ func simpleMain() {
 		Print("")
 		Print("*** RUNTIME READY (but staying with direct UART - fmt hangs) ***")
 		Print("")
+
+		// Test interrupt-driven UART with a message that proved working before
+		Print("[Init] Testing interrupt-driven UART...")
+		uartInterruptReady = true
+		Print("[Init] >>> Interrupt-driven UART test: This long message should trigger both FIFO priming and the IRQ handler <<<")
+		uartInterruptReady = false
+		Print("[Init] Test complete - switching back to direct mode")
+		Print("")
 	} else {
 		// FAILED - runtime not ready, stay with direct UART
 		Print("")
@@ -412,6 +486,11 @@ func simpleMain() {
 
 	// Enable async preemption - runtime is now fully initialized
 	Print("[g1] Enabling async preemption...")
+
+	// Enable timer IRQ now that we're ready to handle it
+	EnableTimerIRQ()
+	Print("[g1] Timer IRQ 27 enabled")
+
 	readyForAsyncPreempt.Store(1)
 	Print("[g1] Async preemption ENABLED")
 	Print("")

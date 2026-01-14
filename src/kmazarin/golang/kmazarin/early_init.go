@@ -55,11 +55,14 @@ func unmapCardinal() {
 	l1Phys := l0Entry0 & 0x0000FFFFFFFFF000
 	l1VA := uintptr(l1Phys + cfg.KernelVAOffset)
 
-	// Zero L1 entries 0-2 (covers 0x0 - 0xBFFFFFFF, about 3GB)
+	// Zero L1 entries 1-2 (covers 0x40000000 - 0xBFFFFFFF)
 	// This unmaps Cardinal (0x40100000) and page tables (0x41000000)
 	// but those are still accessible via TTBR1 high-memory mappings
+	//
+	// IMPORTANT: We keep L1[0] (0x0 - 0x3FFFFFFF) mapped because it contains
+	// device MMIO regions like UART (0x09000000), GIC (0x08000000), etc.
 	l1Table := (*[512]uint64)(unsafe.Pointer(l1VA))
-	for i := 0; i < 3; i++ {
+	for i := 1; i < 3; i++ { // Start from 1, not 0!
 		l1Table[i] = 0
 	}
 
@@ -81,24 +84,26 @@ func unmapCardinal() {
 func EarlyInit() {
 	Print("[Early] Initializing critical devices...")
 
-	// 1. UART is already working (we're using direct mode)
-	Print("[Early]   UART: already initialized (direct mode)")
+	// 1. UART is already working in direct mode (Cardinal initialized it)
+	Print("[Early]   UART: using direct mode (interrupt mode deferred)")
 
 	// 2. GIC is already initialized by Cardinal - don't reinitialize!
 	// Just enable our specific IRQs
 	Print("[Early]   GIC: using Cardinal's setup")
 
-	// 3. Enable timer interrupt (IRQ 27) in GIC
-	Print("[Early]   Timer IRQ: enabling IRQ 27...")
-	EnableTimerIRQ()
-	Print("[Early]   Timer IRQ: IRQ 27 enabled")
+	// 3. Timer interrupt (IRQ 27) will be enabled later in main() when ready for preemption
+	Print("[Early]   Timer IRQ: deferred to main()")
 
-	// 4. Timer is already armed by Cardinal - will fire soon
-	Print("[Early]   Timer: relying on Cardinal's setup")
+	// 4. Timer is already armed by Cardinal - but IRQ is not enabled yet
+	Print("[Early]   Timer: will be enabled when preemption is ready")
 
 	// 5. RNG initialization would go here
 	// TODO: Add VirtIO RNG initialization when we have VirtIO support
 	Print("[Early]   RNG: not yet implemented")
+
+	// 6. Thread management system
+	InitThreads()
+	Print("[Early]   Threads: initialized")
 
 	Print("[Early] Early initialization complete")
 }

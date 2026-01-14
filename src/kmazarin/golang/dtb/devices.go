@@ -4,6 +4,8 @@ package dtb
 
 import (
 	"unsafe"
+
+	"kmazarin/asm"
 )
 
 // Device types we support
@@ -196,24 +198,12 @@ func initVirtIORNG(dev *DiscoveredDevice) {
 	_ = dev // Suppress unused warning
 }
 
-// mmio_read32 is implemented in mmio_arm64.s
-// Reads a 32-bit value from MMIO using volatile memory access
-//
-//go:nosplit
-func mmio_read32(addr uintptr) uint32
-
-// mmio_write32 is implemented in mmio_arm64.s
-// Writes a 32-bit value to MMIO using volatile memory access
-//
-//go:nosplit
-func mmio_write32(addr uintptr, val uint32)
-
 // readMMIO32 reads a 32-bit value from MMIO
 // Uses assembly volatile read to prevent compiler optimization
 //
 //go:nosplit
 func readMMIO32(addr uintptr) uint32 {
-	return mmio_read32(addr)
+	return asm.MmioRead32(addr)
 }
 
 // GetDiscoveredDevices returns the list of discovered devices
