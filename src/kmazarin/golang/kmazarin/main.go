@@ -333,7 +333,7 @@ func testRuntimeReadiness() bool {
 	Print("=== Go Runtime Readiness Test Suite ===")
 
 	// Test 1: Memory allocation with make()
-	Print("[1/7] Testing make() allocation...")
+	Print("[1/8] Testing make() allocation...")
 	s := make([]byte, 16)
 	if len(s) != 16 {
 		Print("  FAIL: make() returned wrong length")
@@ -347,7 +347,7 @@ func testRuntimeReadiness() bool {
 	Print("  PASS")
 
 	// Test 2: Memory allocation with new()
-	Print("[2/7] Testing new() allocation...")
+	Print("[2/8] Testing new() allocation...")
 	p := new(int)
 	if p == nil {
 		Print("  FAIL: new() returned nil")
@@ -361,7 +361,7 @@ func testRuntimeReadiness() bool {
 	Print("  PASS")
 
 	// Test 3: GOMAXPROCS (scheduler P structs)
-	Print("[3/7] Testing GOMAXPROCS...")
+	Print("[3/8] Testing GOMAXPROCS...")
 	n := runtime.GOMAXPROCS(0)
 	if n == 0 {
 		Print("  FAIL: GOMAXPROCS returned 0")
@@ -370,7 +370,7 @@ func testRuntimeReadiness() bool {
 	Print("  PASS")
 
 	// Test 4: Goroutine count
-	Print("[4/7] Testing NumGoroutine...")
+	Print("[4/8] Testing NumGoroutine...")
 	ng := runtime.NumGoroutine()
 	if ng == 0 {
 		Print("  FAIL: NumGoroutine returned 0")
@@ -379,14 +379,14 @@ func testRuntimeReadiness() bool {
 	Print("  PASS")
 
 	// Test 5: Mutex operations
-	Print("[5/7] Testing sync.Mutex...")
+	Print("[5/8] Testing sync.Mutex...")
 	var mu sync.Mutex
 	mu.Lock()
 	mu.Unlock()
 	Print("  PASS")
 
 	// Test 6: String operations (uses runtime)
-	Print("[6/7] Testing string concatenation...")
+	Print("[6/8] Testing string concatenation...")
 	str1 := "Hello"
 	str2 := "World"
 	str3 := str1 + " " + str2
@@ -396,12 +396,62 @@ func testRuntimeReadiness() bool {
 	}
 	Print("  PASS")
 
-	// Test 7: fmt.Println (the big one!)
-	Print("[7/7] Testing fmt.Println...")
-	Print("  SKIP - fmt package causes hang (needs debugging)")
-	// TODO: Debug why fmt.Sprintf hangs
-	// str := fmt.Sprintf("test %d", 42)
-	// fmt.Println("  fmt.Println works!")
+	// Test 7: Thread structure allocation (328 bytes)
+	Print("[7/8] Testing Thread struct allocation...")
+	Print("  Allocating Thread with new()...")
+	thread := new(Thread)
+	if thread == nil {
+		Print("  FAIL: new(Thread) returned nil")
+		return false
+	}
+	Print("  Thread allocated at: ")
+	PrintHex64(uint64(uintptr(unsafe.Pointer(thread))))
+	// Test writing to the struct
+	thread.State = ThreadReady
+	thread.TID = 999
+	thread.Context.X[0] = 0xDEADBEEF
+	thread.Context.SP = 0x12345678
+	// Verify writes
+	if thread.State != ThreadReady {
+		Print("  FAIL: Thread.State not writable")
+		return false
+	}
+	if thread.TID != 999 {
+		Print("  FAIL: Thread.TID not writable")
+		return false
+	}
+	if thread.Context.X[0] != 0xDEADBEEF {
+		Print("  FAIL: Thread.Context.X[0] not writable")
+		return false
+	}
+	Print("  PASS")
+
+	// Test 8: Slice of Threads allocation
+	Print("[8/8] Testing []Thread slice allocation...")
+	Print("  Allocating slice of 4 Threads...")
+	threadSlice := make([]Thread, 4)
+	if len(threadSlice) != 4 {
+		Print("  FAIL: make([]Thread, 4) returned wrong length")
+		return false
+	}
+	Print("  Slice backing array at: ")
+	PrintHex64(uint64(uintptr(unsafe.Pointer(&threadSlice[0]))))
+	// Test writing to each element
+	for i := 0; i < 4; i++ {
+		threadSlice[i].TID = int32(100 + i)
+		threadSlice[i].State = ThreadReady
+	}
+	// Verify writes
+	for i := 0; i < 4; i++ {
+		if threadSlice[i].TID != int32(100+i) {
+			Print("  FAIL: threadSlice[i].TID not correct")
+			return false
+		}
+	}
+	Print("  PASS")
+
+	// Skip fmt test
+	Print("[SKIP] Testing fmt.Println... (causes hang)")
 
 	Print("=== All Runtime Tests Passed! ===")
 	Print("")

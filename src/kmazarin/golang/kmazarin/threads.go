@@ -72,6 +72,11 @@ var threads [MaxThreads]Thread
 // Current thread index (-1 = none)
 var currentThreadIdx int32 = -1
 
+// Current thread pointer (nil = none)
+// This is maintained alongside currentThreadIdx for assembly access.
+// Assembly can read this pointer directly instead of calculating from index.
+var currentThread *Thread = nil
+
 // Next TID to assign
 var nextTID int32 = 1
 
@@ -181,6 +186,7 @@ func InitThreads() {
 	nextTID++
 
 	currentThreadIdx = 0
+	currentThread = &threads[0]
 	threadsInitialized = true
 }
 
@@ -549,6 +555,7 @@ func doContextSwitchImpl(framePtr uintptr, targetIdx int32) *ThreadContext {
 
 	oldIdx := currentThreadIdx
 	currentThreadIdx = targetIdx
+	currentThread = &threads[targetIdx]
 
 	// New thread becomes running
 	threads[targetIdx].State = ThreadRunning

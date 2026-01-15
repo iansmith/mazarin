@@ -136,24 +136,12 @@ rearm_timer:
 	// ========================================================================
 	// R4 = current g pointer (validated above)
 
-	// Load currentThreadIdx from main package
-	MOVW	main·currentThreadIdx(SB), R5  // int32
-
-	// Check if valid (>= 0)
-	// Since it's int32, negative values have bit 31 set
-	TBZ	$31, R5, thread_valid  // Branch if bit 31 is 0 (non-negative)
-	B	timer_return  // No current thread, skip
-
-thread_valid:
-	// Calculate thread address: &threads[currentThreadIdx]
-	// ThreadSize = 328 bytes
-	MOVD	$328, R6
-	MUL	R5, R6, R6  // R6 = idx * 328
-	MOVD	$main·threads(SB), R7
-	ADD	R6, R7  // R7 = &threads[idx]
+	// Load currentThread pointer directly (no index calculation needed)
+	MOVD	main·currentThread(SB), R7  // *Thread
+	CBZ	R7, timer_return  // No current thread, skip
 
 	// Load LastSeenG: offset 312
-	MOVD	312(R7), R8  // R8 = threads[idx].LastSeenG
+	MOVD	312(R7), R8  // R8 = currentThread.LastSeenG
 
 	// Compare with current g (R4)
 	CMP	R4, R8
@@ -163,18 +151,18 @@ thread_valid:
 	// G changed! Go runtime switched goroutines internally.
 	// Reset: store current g as LastSeenG, store current tick as StartTick
 	// ========================================================================
-	MOVD	R4, 312(R7)  // threads[idx].LastSeenG = current g
+	MOVD	R4, 312(R7)  // currentThread.LastSeenG = current g
 
 	// Read current counter: MRS X8, CNTVCT_EL0
 	WORD	$0xD53BE048
-	MOVD	R8, 320(R7)  // threads[idx].StartTick = current tick
+	MOVD	R8, 320(R7)  // currentThread.StartTick = current tick
 
 	B	timer_return  // No preemption needed, just reset
 
 same_goroutine:
 	// Same g - check elapsed time
 	// Load StartTick: offset 320
-	MOVD	320(R7), R8  // R8 = threads[idx].StartTick
+	MOVD	320(R7), R8  // R8 = currentThread.StartTick
 	CBZ	R8, init_start_tick  // Not initialized yet
 
 	// Read current counter: MRS X9, CNTVCT_EL0
@@ -205,8 +193,8 @@ init_start_tick:
 	// Initialize StartTick and LastSeenG for this thread
 	// Read current counter: MRS X8, CNTVCT_EL0
 	WORD	$0xD53BE048
-	MOVD	R8, 320(R7)  // threads[idx].StartTick = current tick
-	MOVD	R4, 312(R7)  // threads[idx].LastSeenG = current g
+	MOVD	R8, 320(R7)  // currentThread.StartTick = current tick
+	MOVD	R4, 312(R7)  // currentThread.LastSeenG = current g
 	// Fall through to timer_return
 
 timer_return:
