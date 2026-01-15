@@ -280,11 +280,6 @@ sync_exception_handler:
 	MRS	SP_EL0, R10
 	MOVD	R10, EXC_FRAME_SP_EL0(RSP)
 
-	// DEBUG: Print '!' to indicate sync exception (now safe - registers saved!)
-	MOVD	$UART_BASE, R10
-	MOVD	$'!', R11
-	MOVB	R11, (R10)
-
 	// Extract exception class (EC) from ESR_EL1 (saved in exception frame)
 	// EC is in bits 31:26
 	MOVD	EXC_FRAME_FAR_ESR+8(RSP), R10  // Load ESR from frame
@@ -323,13 +318,7 @@ sync_exception_handler:
 	// Check if context switch needed (R20 != 0 means switch to that thread node)
 	CBZ	R20, syscall_no_switch
 
-	// Context switch requested!
-	// DEBUG: Print 'S' for switch
-	MOVD	$UART_BASE, R10
-	MOVD	$'S', R11
-	MOVB	R11, (R10)
-
-	// Call DoContextSwitch(framePtr, targetPtr) to get new context
+	// Context switch requested - call DoContextSwitch(framePtr, targetPtr) to get new context
 	MOVD	RSP, R0            // R0 = framePtr (current exception frame)
 	MOVD	R20, R1            // R1 = targetPtr (thread node pointer)
 	GO_CALL_2_1(·DoContextSwitch, R0, R1)
@@ -340,36 +329,6 @@ sync_exception_handler:
 	// Copy X0-X7 (0-64 in ThreadContext, 0-64 in frame)
 	LDP	0(R21), (R0, R1)
 	STP	(R0, R1), EXC_FRAME_X0(RSP)
-
-	// DEBUG: Print X0 value being restored
-	MOVD	$UART_BASE, R10
-	MOVD	$'[', R11
-	MOVB	R11, (R10)
-	MOVD	$'X', R11
-	MOVB	R11, (R10)
-	MOVD	$'0', R11
-	MOVB	R11, (R10)
-	MOVD	$'=', R11
-	MOVB	R11, (R10)
-	MOVD	R0, R12  // X0 value
-	MOVD	$16, R13  // 16 hex digits
-x0_print_loop:
-	LSR	$60, R12, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	x0_print_digit
-	ADD	$('A'-10), R11
-	B	x0_print_char
-x0_print_digit:
-	ADD	$'0', R11
-x0_print_char:
-	MOVB	R11, (R10)
-	LSL	$4, R12
-	SUB	$1, R13
-	CBNZ	R13, x0_print_loop
-	MOVD	$']', R11
-	MOVB	R11, (R10)
-
 	LDP	16(R21), (R0, R1)
 	STP	(R0, R1), EXC_FRAME_X0+16(RSP)
 	LDP	32(R21), (R0, R1)
@@ -414,69 +373,6 @@ x0_print_char:
 	// Copy ELR and SPSR (256, 264 in ThreadContext)
 	LDP	256(R21), (R0, R1)
 	STP	(R0, R1), EXC_FRAME_ELR_SPSR(RSP)
-
-	// DEBUG: Print 'Z' for context loaded
-	MOVD	$UART_BASE, R10
-	MOVD	$'Z', R11
-	MOVB	R11, (R10)
-
-	// DEBUG: Print X28 value being loaded (stored at sp+224)
-	MOVD	$'[', R11
-	MOVB	R11, (R10)
-	MOVD	$'g', R11
-	MOVB	R11, (R10)
-	MOVD	$'=', R11
-	MOVB	R11, (R10)
-	// Load X28 from exception frame and print it
-	MOVD	EXC_FRAME_X28(RSP), R12
-	// Print each nibble of R12
-	MOVD	$16, R13  // Counter for 16 hex digits
-print_x28_loop:
-	LSR	$60, R12, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	print_x28_digit
-	ADD	$('A'-10), R11
-	B	print_x28_char
-print_x28_digit:
-	ADD	$'0', R11
-print_x28_char:
-	MOVB	R11, (R10)
-	LSL	$4, R12
-	SUB	$1, R13
-	CBNZ	R13, print_x28_loop
-	MOVD	$']', R11
-	MOVB	R11, (R10)
-
-	// DEBUG: Also print ELR being loaded (where execution will resume)
-	MOVD	$'[', R11
-	MOVB	R11, (R10)
-	MOVD	$'P', R11
-	MOVB	R11, (R10)
-	MOVD	$'C', R11
-	MOVB	R11, (R10)
-	MOVD	$'=', R11
-	MOVB	R11, (R10)
-	MOVD	EXC_FRAME_ELR_SPSR(RSP), R12
-	MOVD	$16, R13
-print_elr_loop:
-	LSR	$60, R12, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	print_elr_digit
-	ADD	$('A'-10), R11
-	B	print_elr_char
-print_elr_digit:
-	ADD	$'0', R11
-print_elr_char:
-	MOVB	R11, (R10)
-	LSL	$4, R12
-	SUB	$1, R13
-	CBNZ	R13, print_elr_loop
-	MOVD	$']', R11
-	MOVB	R11, (R10)
-	MOVD	$'\n', R11
-	MOVB	R11, (R10)
 
 	B	sync_return
 
@@ -801,11 +697,6 @@ irq_exception_handler:
 	MRS	SP_EL0, R10
 	MOVD	R10, EXC_FRAME_SP_EL0(RSP)
 
-	// DEBUG: Print 'I' to indicate IRQ entry (now safe - registers saved!)
-	MOVD	$UART_BASE, R10
-	MOVD	$'I', R11
-	MOVB	R11, (R10)
-
 	// Read interrupt number from GIC CPU interface
 	// IAR = GICC_BASE + 0x0C
 	MOVD	$(GIC_CPU_BASE + GICC_IAR), R10
@@ -869,11 +760,6 @@ irq_exception_handler:
 	MOVW	$0, R12
 	MOVW	R12, kmazarin∕kirq·NeedsAsyncPreempt(SB)
 
-	// DEBUG: Print 'A' when async preemption is being injected
-	MOVD	$UART_BASE, R12
-	MOVD	$'A', R13
-	MOVB	R13, (R12)
-
 	// Set up preemption return values
 	// R20 = NewELR (asyncPreempt address)
 	// R21 = NewSP (unchanged, from exception frame)
@@ -908,11 +794,6 @@ irq_not_timer:
 	MOVD	$0, R23
 
 irq_write_eoir:
-	// DEBUG: Print 'E' before EOIR write
-	MOVD	$UART_BASE, R10
-	MOVD	$'E', R11
-	MOVB	R11, (R10)
-
 	// Write End Of Interrupt (must do before modifying frame!)
 	MOVD	$(GIC_CPU_BASE + GICC_EOIR), R10
 	MOVW	R19, (R10)  // Write original IAR value to EOIR
@@ -973,11 +854,6 @@ irq_return:
 	LDP	EXC_FRAME_X0+32(RSP), (R4, R5)
 	LDP	EXC_FRAME_X0+48(RSP), (R6, R7)
 
-	// DEBUG: Print 'X' before ERET
-	MOVD	$UART_BASE, R10
-	MOVD	$'X', R11
-	MOVB	R11, (R10)
-
 	// Clean up stack and return
 	ADD	$EXC_FRAME_SIZE, RSP
 	ERET
@@ -1008,19 +884,9 @@ TEXT ·asyncPreemptWrapper(SB), NOSPLIT, $16
 	// Save original LR to R19 (asyncPreempt2 must preserve R19)
 	MOVD	LR, R19
 
-	// DEBUG: Print 'W' to show wrapper entry
-	MOVD	$UART_BASE, R10
-	MOVD	$'W', R11
-	MOVB	R11, (R10)
-
 	// Call asyncPreempt2 directly
 	// R28 (g) is valid, R19 holds our return address
 	BL	runtime·asyncPreempt2(SB)
-
-	// DEBUG: Print 'w' to show wrapper return
-	MOVD	$UART_BASE, R10
-	MOVD	$'w', R11
-	MOVB	R11, (R10)
 
 	// Restore LR from R19
 	MOVD	R19, LR

@@ -8,7 +8,7 @@ import (
 
 // debugPaging enables verbose page fault debugging output
 // Set to false for production, true for debugging
-const debugPaging = true
+const debugPaging = false
 
 // uartPutcDirect writes a byte to UART (linked from kmazarin package)
 //go:linkname uartPutcDirect kmazarin/kmem.uartPutcDirect

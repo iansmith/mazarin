@@ -82,28 +82,10 @@ func unmapCardinal() {
 //
 // Called from init() before the Go runtime is fully initialized
 func EarlyInit() {
-	Print("[Early] Initializing critical devices...")
+	// UART is already working in direct mode (Cardinal initialized it)
+	// GIC is already initialized by Cardinal
+	// Timer IRQ will be enabled later in main() when ready for preemption
 
-	// 1. UART is already working in direct mode (Cardinal initialized it)
-	Print("[Early]   UART: using direct mode (interrupt mode deferred)")
-
-	// 2. GIC is already initialized by Cardinal - don't reinitialize!
-	// Just enable our specific IRQs
-	Print("[Early]   GIC: using Cardinal's setup")
-
-	// 3. Timer interrupt (IRQ 27) will be enabled later in main() when ready for preemption
-	Print("[Early]   Timer IRQ: deferred to main()")
-
-	// 4. Timer is already armed by Cardinal - but IRQ is not enabled yet
-	Print("[Early]   Timer: will be enabled when preemption is ready")
-
-	// 5. RNG initialization would go here
-	// TODO: Add VirtIO RNG initialization when we have VirtIO support
-	Print("[Early]   RNG: not yet implemented")
-
-	// 6. Thread management system
+	// Initialize thread management system
 	InitThreads()
-	Print("[Early]   Threads: initialized")
-
-	Print("[Early] Early initialization complete")
 }

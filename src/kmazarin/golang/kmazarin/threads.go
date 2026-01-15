@@ -287,19 +287,10 @@ func IdleLoop() int32 {
 //go:noinline
 //go:linkname CloneThread kmazarin/ksyscall.CloneThread
 func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
-	// DEBUG: Entry marker
-	debugPrint('T')
-	debugPrint('1')
-
 	// Lazy initialization
 	if !threadsInitialized {
-		debugPrint('I')
 		InitThreads()
-		debugPrint('i')
 	}
-
-	debugPrint('T')
-	debugPrint('2')
 
 	// BEGIN CRITICAL SECTION - protect thread allocation and state
 	savedDAIF := SaveAndDisableIRQs()
@@ -315,20 +306,12 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
 
 	if slot < 0 {
 		RestoreIRQs(savedDAIF)
-		debugPrint('F')
-		debugPrint('!')
 		return -1 // No free slots
 	}
-
-	debugPrint('T')
-	debugPrint('3')
 
 	// Allocate TID
 	tid := nextTID
 	nextTID++
-
-	debugPrint('T')
-	debugPrint('4')
 
 	// Initialize the thread
 	t := &threads[slot]
@@ -350,9 +333,6 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
 	// END CRITICAL SECTION
 	RestoreIRQs(savedDAIF)
 
-	debugPrint('T')
-	debugPrint('5')
-
 	// Set up initial context for cloned thread
 	t.Context.X[0] = 0         // Clone returns 0 to child
 	t.Context.SP = stack       // New stack
@@ -360,18 +340,12 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
 	t.Context.SPSR = spsr      // Same processor state as parent
 	t.Context.X[28] = gp       // g register valid immediately
 
-	debugPrint('T')
-	debugPrint('6')
-
 	// CRITICAL: Write mp, gp, fn to the stack so clone wrapper's ldur instructions work.
 	stackPtr := unsafe.Pointer(uintptr(stack))
 	*(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 8)) = mp
 	*(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 16)) = gp
 	*(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 24)) = fn
 	*(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 32)) = 1234 // Magic number
-
-	debugPrint('T')
-	debugPrint('7')
 
 	return tid
 }
