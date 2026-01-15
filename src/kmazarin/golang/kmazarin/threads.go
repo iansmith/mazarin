@@ -64,6 +64,10 @@ type Thread struct {
 	// Preemption tracking
 	LastSeenG uint64 // g pointer seen at last timer tick
 	StartTick uint64 // globalTickCounter when this run started
+
+	// Ready queue node - for O(1) removal from readyQueue
+	// nil when thread is not in the ready queue
+	readyNode *util.DNode[*Thread]
 }
 
 // Fixed-size thread array - no heap allocation needed
@@ -76,6 +80,11 @@ var currentThreadIdx int32 = -1
 // This is maintained alongside currentThreadIdx for assembly access.
 // Assembly can read this pointer directly instead of calculating from index.
 var currentThread *Thread = nil
+
+// Ready queue - threads waiting to be scheduled
+// Uses DLinkedList for O(1) enqueue/dequeue.
+// nil until InitReadyQueue is called (after heap is ready).
+var readyQueue *util.DLinkedList[*Thread]
 
 // Next TID to assign
 var nextTID int32 = 1
@@ -200,6 +209,16 @@ func InitDeadlineQueue() {
 	}
 }
 
+// InitReadyQueue initializes the ready queue.
+// Call this after the heap is ready.
+//
+//go:noinline
+func InitReadyQueue() {
+	if readyQueue == nil {
+		readyQueue = util.NewDLinkedList[*Thread]()
+	}
+}
+
 // AddDeadline adds a deadline to the queue.
 // Returns false if the queue is not initialized.
 //
@@ -304,6 +323,12 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
 	t.EntryFunc = fn
 	t.StartTick = globalTickCounter
 	t.LastSeenG = gp
+	t.readyNode = nil
+
+	// Add to ready queue if available
+	if readyQueue != nil {
+		t.readyNode = readyQueue.PushBack(t)
+	}
 
 	debugPrint('T')
 	debugPrint('5')
@@ -331,13 +356,42 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
 	return tid
 }
 
+// threadToIdx converts a Thread pointer to its index in the threads array.
+// Returns -1 if the pointer is nil or not in the array.
+//
+//go:nosplit
+func threadToIdx(t *Thread) int32 {
+	if t == nil {
+		return -1
+	}
+	base := uintptr(unsafe.Pointer(&threads[0]))
+	ptr := uintptr(unsafe.Pointer(t))
+	if ptr < base {
+		return -1
+	}
+	offset := ptr - base
+	idx := int32(offset / unsafe.Sizeof(threads[0]))
+	if idx < 0 || idx >= MaxThreads {
+		return -1
+	}
+	return idx
+}
+
 // threadFindReadyIdx finds the next READY thread
 // Returns thread index, or -1 if none found
 // Internal function - use ThreadFindReady for external API
 //
 //go:nosplit
 func threadFindReadyIdx() int32 {
-	// Simple round-robin starting after current thread
+	// If readyQueue is available and non-empty, use it
+	if readyQueue != nil && !readyQueue.IsEmpty() {
+		front := readyQueue.Front()
+		if front != nil {
+			return threadToIdx(front.Value)
+		}
+	}
+
+	// Fall back to scanning array (before readyQueue init, or if empty)
 	start := currentThreadIdx + 1
 	if start < 0 {
 		start = 0
@@ -410,6 +464,10 @@ func ThreadWakeFutex(futexAddr uint64, maxWake int32) int32 {
 		if threads[i].State == ThreadBlockedFutex && threads[i].FutexAddr == futexAddr {
 			threads[i].State = ThreadReady
 			threads[i].FutexAddr = 0
+			// Add to ready queue if available
+			if readyQueue != nil && threads[i].readyNode == nil {
+				threads[i].readyNode = readyQueue.PushBack(&threads[i])
+			}
 			woken++
 		}
 	}
@@ -456,6 +514,10 @@ func ThreadWakeSleeper(idx uintptr) {
 	}
 	if threads[idx].State == ThreadSleeping {
 		threads[idx].State = ThreadReady
+		// Add to ready queue if available
+		if readyQueue != nil && threads[idx].readyNode == nil {
+			threads[idx].readyNode = readyQueue.PushBack(&threads[idx])
+		}
 	}
 }
 
@@ -557,6 +619,12 @@ func doContextSwitchImpl(framePtr uintptr, targetIdx int32) *ThreadContext {
 	currentThreadIdx = targetIdx
 	currentThread = &threads[targetIdx]
 
+	// Remove target thread from ready queue (it's now running)
+	if readyQueue != nil && threads[targetIdx].readyNode != nil {
+		readyQueue.Remove(threads[targetIdx].readyNode)
+		threads[targetIdx].readyNode = nil
+	}
+
 	// New thread becomes running
 	threads[targetIdx].State = ThreadRunning
 	threads[targetIdx].StartTick = globalTickCounter
@@ -565,6 +633,10 @@ func doContextSwitchImpl(framePtr uintptr, targetIdx int32) *ThreadContext {
 	// Old thread goes to ready if it was running
 	if oldIdx >= 0 && threads[oldIdx].State == ThreadRunning {
 		threads[oldIdx].State = ThreadReady
+		// Add old thread to ready queue
+		if readyQueue != nil && threads[oldIdx].readyNode == nil {
+			threads[oldIdx].readyNode = readyQueue.PushBack(&threads[oldIdx])
+		}
 	}
 
 	return &threads[targetIdx].Context

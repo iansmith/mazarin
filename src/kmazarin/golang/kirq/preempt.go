@@ -52,10 +52,11 @@ var preemptTickCounts [1024]uint32
 //   State(4) + TID(4) + FutexAddr(8) + MPtr(8) + GPtr(8) + EntryFunc(8) = 40
 //   Context: X[31]*8 + SP(8) + ELR(8) + SPSR(8) = 272
 //   LastSeenG at offset 40+272=312, StartTick at offset 320
+//   readyNode (pointer) at offset 328, total size 336
 const (
 	ThreadLastSeenGOffset = 312 // Offset of Thread.LastSeenG
 	ThreadStartTickOffset = 320 // Offset of Thread.StartTick
-	ThreadSize            = 328 // Size of Thread struct
+	ThreadSize            = 336 // Size of Thread struct (includes readyNode)
 )
 
 // AsyncPreemptThreshold is the number of timer ticks before forcing

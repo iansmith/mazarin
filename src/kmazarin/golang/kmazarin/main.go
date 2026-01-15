@@ -498,6 +498,10 @@ func simpleMain() {
 		Print("*** RUNTIME READY (but staying with direct UART - fmt hangs) ***")
 		Print("")
 
+		// Initialize heap-based data structures now that heap is ready
+		InitDeadlineQueue()
+		InitReadyQueue()
+
 		// Test interrupt-driven UART with a message that proved working before
 		Print("[Init] Testing interrupt-driven UART...")
 		uartInterruptReady = true
