@@ -8,10 +8,10 @@ import (
 )
 
 //go:linkname threadFindReadyForYield main.ThreadFindReady
-func threadFindReadyForYield() int32
+func threadFindReadyForYield() uintptr
 
 //go:linkname setSyscallSwitchTargetForYield main.SetSyscallSwitchTarget
-func setSyscallSwitchTargetForYield(target int32)
+func setSyscallSwitchTargetForYield(target uintptr)
 
 // ============================================================================
 // Simple stub syscalls that return constants or success
@@ -41,7 +41,7 @@ func SyscallSchedYield(_, _, _, _, _, _ uint64) int64 {
 	// Try to find another ready thread to switch to
 	nextThread := threadFindReadyForYield()
 
-	if nextThread >= 0 {
+	if nextThread != 0 {
 		// Found a ready thread - yield to it
 		setSyscallSwitchTargetForYield(nextThread)
 	}

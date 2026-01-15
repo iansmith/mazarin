@@ -1,13 +1,42 @@
 #include "textflag.h"
 
-// linker_symbols.s - Assembly helpers to access memory layout values
+// linker_symbols_arm64.s - Linker-Injected Memory Layout Accessors
 //
-// These functions return the values stored in Go variables (defined in main/layout.go).
-// The Go variables are initialized to 0 and may have their values injected at build time.
+// ============================================================================
+// OVERVIEW
+// ============================================================================
+// This file contains 41 accessor functions for linker-injected memory layout values.
+// These values define Cardinal's memory layout and are computed at build time.
 //
-// IMPORTANT: These are ABI0 functions called from Go code.
-// The return value MUST be stored to ret+0(FP), not just left in R0.
-// The functions cannot use NOFRAME because they need to access FP.
+// The Go variables (defined in main/layout.go) are initialized to 0 and have
+// their values injected during the build process by the patch-linker-values tool.
+//
+// ALL 41 FUNCTIONS FOLLOW THIS IDENTICAL 3-INSTRUCTION PATTERN:
+//   TEXT ·get_xxx(SB), NOSPLIT, $0-8
+//       MOVD    main·LinkerXxx(SB), R0   // Load from Go variable
+//       MOVD    R0, ret+0(FP)            // Store to return slot (ABI0)
+//       RET
+//
+// WHY NOT DECOMPOSE:
+// These functions are already atomic primitives. Each performs exactly one
+// operation: read a linker symbol value and return it. This is the minimal
+// possible implementation and cannot be decomposed further.
+//
+// FUNCTION CATEGORIES:
+//   Cardinal Layout (10): start, text_start, text_end, rodata_start, rodata_end,
+//                         data_start, data_end, bss_start, bss_end, end
+//   Memory Regions (7): stack_top, page_tables_start, page_tables_end,
+//                       ram_start, dtb_boot_addr, kmazarin_start, kmazarin_size
+//   Kmazarin Symbols (6): kmazarin_exception_vector, kmazarin_g0_struct,
+//                         kmazarin_async_preempt, kmazarin_ready_for_preempt,
+//                         kmazarin_startup_params, kmazarin_runtime_g0
+//   Runtime Symbols (18): Various Go runtime addresses accessed in kmazarin
+//
+// ABI NOTES:
+// - These are ABI0 (stack-based) functions callable from external Go code
+// - Return value MUST be stored to ret+0(FP), not just left in R0
+// - Cannot use NOFRAME because they access FP for return value storage
+// - Frame size: $0-8 (0 bytes locals, 8 bytes return value)
 
 // get_start_addr() returns uintptr
 TEXT ·get_start_addr(SB), NOSPLIT, $0-8

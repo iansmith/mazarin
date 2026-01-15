@@ -2,26 +2,88 @@
 
 package ksyscall
 
+import (
+	"kmazarin/kirq"
+	"unsafe"
+)
+
+// GetCurrentThread is provided by main package via go:linkname.
+// Returns the current thread index.
+func GetCurrentThread() uintptr
+
+// AddDeadline is provided by main package via go:linkname.
+// Adds a deadline to the queue. Returns false if queue not initialized.
+func AddDeadline(deadline uint64, threadIdx int32) bool
+
+// ThreadBlockSleep is provided by main package via go:linkname.
+// Marks the current thread as sleeping and returns the next ready thread index.
+func ThreadBlockSleep() uintptr
+
 // SyscallNanosleep implements the nanosleep(2) syscall
-// Yields to another ready thread if available
-// NOTE: We don't actually sleep for the requested duration yet - we just yield.
-// This prevents busy-wait loops when Go's runtime calls nanosleep to idle.
+// Sleeps for the requested duration using the deadline queue.
+// If no deadline queue is available, falls back to yield behavior.
 //
 //go:nosplit
 func SyscallNanosleep(req, rem, _, _, _, _ uint64) int64 {
 	// req points to timespec struct: {tv_sec: i64, tv_nsec: i64}
 	// rem would get remaining time if interrupted
-	// For now, we ignore the requested sleep duration and just yield
+	_ = rem // We don't support interruption
 
-	// Try to find another ready thread to switch to
-	nextThread := ThreadFindReady()
+	if req == 0 {
+		return 0 // No-op if no request
+	}
 
-	if nextThread >= 0 {
-		// Found a ready thread - yield to it
+	// Read the timespec structure
+	ts := (*[2]int64)(unsafe.Pointer(uintptr(req)))
+	seconds := ts[0]
+	nanoseconds := ts[1]
+
+	// Get current thread index
+	currentIdx := int32(GetCurrentThread())
+
+	// Get timer frequency
+	frequency := uint64(kirq.GetTimerFrequency())
+
+	// Calculate ticks to sleep
+	// ticks = (seconds * frequency) + (nanoseconds * frequency / 1e9)
+	var ticks uint64
+	if seconds > 0 {
+		ticks = uint64(seconds) * frequency
+	}
+	if nanoseconds > 0 {
+		ticks += (uint64(nanoseconds) * frequency) / 1000000000
+	}
+
+	// If requested sleep is 0, just yield
+	if ticks == 0 {
+		nextThread := ThreadFindReady()
+		if nextThread != 0 {
+			SetSyscallSwitchTarget(nextThread)
+		}
+		return 0
+	}
+
+	// Calculate deadline tick
+	currentTick := kirq.ReadCounterValue()
+	deadline := currentTick + ticks
+
+	// Try to add to deadline queue
+	added := AddDeadline(deadline, currentIdx)
+	if !added {
+		// Deadline queue not initialized - fall back to yield
+		nextThread := ThreadFindReady()
+		if nextThread != 0 {
+			SetSyscallSwitchTarget(nextThread)
+		}
+		return 0
+	}
+
+	// Mark current thread as sleeping and find next thread
+	nextThread := ThreadBlockSleep()
+	if nextThread != 0 {
 		SetSyscallSwitchTarget(nextThread)
 	}
-	// else: No other ready thread, return immediately and keep running
+	// else: No ready threads - will enter idle loop on return
 
-	// Return 0 (success - slept for 0 time)
 	return 0
 }

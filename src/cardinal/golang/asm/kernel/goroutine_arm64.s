@@ -1,6 +1,43 @@
 #include "textflag.h"
 
-// goroutine.s - Goroutine Context Switching (Go/Plan9 Assembly)
+// goroutine_arm64.s - Goroutine Context Switching
+//
+// ============================================================================
+// OVERVIEW
+// ============================================================================
+// Provides goroutine context switching operations for the Go runtime scheduler.
+// These functions manipulate the g register and stack pointers to switch
+// between goroutines.
+//
+// Functions:
+//   - switchToGoroutine(newG, fn) - Switch to new goroutine (4 segments)
+//   - runOnGoroutine(gp, fn) - Execute function on goroutine's stack (4 segments)
+//   - callOnG0Stack(fn) - Call function on g0 stack, never returns (4 segments)
+//
+// GOROUTINE SWITCHING:
+//   1. switchToGoroutine: Called from g0, switches to user goroutine
+//      - Sets g register
+//      - Switches to goroutine's stack
+//      - Calls entry function
+//
+//   2. runOnGoroutine: Temporarily runs function on different goroutine's stack
+//      - Saves caller state
+//      - Switches g and stack
+//      - Executes function
+//      - Restores original state
+//
+//   3. callOnG0Stack: Switches to g0 (system goroutine), doesn't return
+//      - Used when current goroutine must exit
+//      - Switches to g0's stack
+//      - Calls function (typically scheduler)
+//
+// WHY NOT DECOMPOSE:
+// Goroutine context switching requires atomic orchestration:
+//   1. g register and stack must be switched together atomically
+//   2. Stack pointer changes cannot call functions (would corrupt stack)
+//   3. Caller state save/restore must match exactly
+//   4. Go runtime expects specific g register state at function boundaries
+// Decomposing would break the runtime's goroutine management invariants.
 //
 // ============================================================================
 // SEGMENT OVERVIEW (see asm/docs/small_files_decomposition.md)

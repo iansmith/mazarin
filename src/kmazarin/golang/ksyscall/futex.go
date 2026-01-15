@@ -23,20 +23,27 @@ const (
 
 // Thread functions imported from main package via go:linkname
 // These handle the actual thread state management
+// Note: Functions return uintptr (thread node pointer, 0 = none)
 
 //go:linkname ThreadBlockFutex main.ThreadBlockFutex
-func ThreadBlockFutex(futexAddr uint64) int32
+func ThreadBlockFutex(futexAddr uint64) uintptr
 
 //go:linkname ThreadWakeFutex main.ThreadWakeFutex
 func ThreadWakeFutex(futexAddr uint64, maxWake int32) int32
 
 // SetSyscallSwitchTarget links to kmazarin's main package (kmazarin/golang/kmazarin/threads.go)
 // Note: "main" refers to kmazarin's main package, not cardinal's, since this is part of the kmazarin binary
+// target is a uintptr (thread node pointer, 0 = no switch)
 //go:linkname SetSyscallSwitchTarget main.SetSyscallSwitchTarget
-func SetSyscallSwitchTarget(target int32)
+func SetSyscallSwitchTarget(target uintptr)
 
 //go:linkname ThreadFindReady main.ThreadFindReady
-func ThreadFindReady() int32
+func ThreadFindReady() uintptr
+
+// WaitForInterrupt puts CPU into low-power idle state until interrupt
+// Used to prevent busy-wait when futex can't block
+//go:linkname waitForInterrupt main.WaitForInterrupt
+func waitForInterrupt()
 
 // SyscallFutex is the exported entry point called via function pointer from dispatch.go
 // Implemented as an assembly stub in abi_stubs_arm64.s that tail-calls syscallFutexInternal
@@ -62,23 +69,33 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 			return -11 // -EAGAIN: value already changed
 		}
 
-		// Find another thread to run
+		// Try to find another thread to run and block current thread
+		// ThreadBlockFutex only marks us blocked if there's a thread to switch to
 		nextThread := ThreadBlockFutex(uaddr)
 
-		if nextThread < 0 {
-			// No other threads to run - return to idle loop
-			// Signal -2 for idle loop (all threads blocked)
-			// TODO(ABI0): Original code tried to fake wakeup with atomic.StoreUint32,
-			// but this triggers an ABI/stack corruption issue in the wrapper epilogue.
-			// This workaround returns -2 to signal idle loop instead.
-			return -2
+		if nextThread != 0 {
+			// Successfully blocked - context switch to next thread
+			SetSyscallSwitchTarget(nextThread)
+			// Return 0 - when we're woken up later, we'll return success
+			return 0
 		}
 
-		// Signal that we need to context switch to nextThread
-		SetSyscallSwitchTarget(nextThread)
+		// No ready thread to switch to - we couldn't actually block
+		// DEBUG: Print 'W' to show we're entering idle wait
+		*(*byte)(unsafe.Pointer(getUartBase())) = 'W'
 
-		// Return 0 - when we're woken up later, we'll return success
-		return 0
+		// Enter idle loop waiting for interrupt (timer will fire and may wake threads)
+		// WFI - Wait For Interrupt: puts CPU in low-power state until interrupt
+		waitForInterrupt()
+
+		// After WFI, check if someone woke us (value changed or wake signal)
+		currentVal = atomic.LoadUint32(uaddrPtr)
+		if currentVal != uint32(val) {
+			return 0 // Value changed - treat as woken
+		}
+
+		// Value still matches - retry
+		return -11 // -EAGAIN
 
 	case FutexWake:
 		// FUTEX_WAKE: Wake up to 'val' threads waiting on this address

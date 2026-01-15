@@ -1,7 +1,36 @@
-// exc_sync_entry.s - Synchronous Exception Handler Entry Point (Go/Plan9 Assembly)
+// exc_sync_entry_arm64.s - Synchronous Exception Handler Entry Point
 //
-// This file provides sync_exception_handler, the entry point called from the
-// exception vector table (vec_sync_sp_el1) for synchronous exceptions at EL1h.
+// ============================================================================
+// OVERVIEW
+// ============================================================================
+// Entry point for synchronous exceptions (SVC syscalls, data aborts, etc.)
+// Called from exception vector table (vec_sync_sp_el1) for exceptions at EL1h.
+//
+// Functions:
+//   - sync_exception_handler() - Main entry point (11 segments, 320-byte frame)
+//
+// OPERATION:
+//   1. Saves x29, x30 temporarily to current stack
+//   2. Detects nested exceptions (checks if already on exception stack)
+//   3. Switches to exception stack (128KB at 0x5F000000-0x5F020000)
+//   4. Allocates 320-byte exception frame
+//   5. Saves ALL registers (x0-x30)
+//   6. Saves system registers (ELR, SPSR, FAR, ESR, SP_EL0)
+//   7. Branches to sync_exception_entry (in exc_syscall_arm64.s) for dispatch
+//
+// WHY NOT DECOMPOSE:
+// Synchronous exception entry is a critical orchestration that cannot be decomposed:
+//   1. Register save must be atomic - no function calls allowed
+//   2. Nested exception detection requires inline logic
+//   3. Stack switching must happen before any other operations
+//   4. Frame layout is tightly coupled with dispatcher expectations
+// Decomposing would corrupt registers or break exception handling contract.
+//
+// EXCEPTION TYPES HANDLED:
+//   - SVC (Supervisor Call) - syscalls from Go code
+//   - Data Abort - page faults, invalid memory access
+//   - Instruction Abort - execution from invalid address
+//   - Other synchronous faults
 //
 // ============================================================================
 // SEGMENT OVERVIEW (see asm/docs/exception_handling_decomposition.md)

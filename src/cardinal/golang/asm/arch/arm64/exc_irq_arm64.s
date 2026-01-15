@@ -1,8 +1,31 @@
-// exc_irq.s - IRQ Exception Handler (Go/Plan9 Assembly)
+// exc_irq_arm64.s - IRQ Exception Handler
 //
-// This file contains the IRQ exception handler that saves state and dispatches
-// to a Go function (IRQDispatchGo) which handles all interrupt logic
-// including timer preemption.
+// ============================================================================
+// OVERVIEW
+// ============================================================================
+// Handles IRQ exceptions (hardware interrupts) including timer interrupts
+// for preemptive scheduling. This is the entry point for all interrupts.
+//
+// Functions:
+//   - irq_exception_el1() - IRQ handler entry point (9 segments)
+//
+// OPERATION:
+//   1. Saves all registers to exception frame (272 bytes)
+//   2. Reads GIC IAR to acknowledge interrupt (time-critical)
+//   3. Calls IRQDispatchGo (Go function) to handle interrupt logic
+//   4. Based on return values, either:
+//      - Returns normally (restores state, ERET)
+//      - Triggers preemption (modifies frame for asyncPreempt, ERET)
+//   5. Signals EOI to GIC
+//   6. Restores all registers and returns via ERET
+//
+// WHY NOT DECOMPOSE:
+// IRQ handling is a time-critical orchestration that cannot be decomposed:
+//   1. GIC IAR must be read within microseconds of interrupt
+//   2. Register save/restore must be atomic (no intermediate function calls)
+//   3. Frame manipulation for preemption requires direct control
+//   4. ERET must happen immediately after restore
+// Decomposing would add latency and break the exception handling contract.
 //
 // ============================================================================
 // SEGMENT OVERVIEW (see asm/docs/exception_handling_decomposition.md)

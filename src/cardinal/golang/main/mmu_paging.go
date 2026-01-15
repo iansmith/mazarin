@@ -173,45 +173,10 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	existingPA := getPhysicalAddress(pageAddr)
 
 	if existingPA != 0 {
-		// Get the actual PTE to report flags in error message
-		va64 := uint64(pageAddr)
-		l0Idx := uint16((va64 >> 39) & 0x1FF)
-		l1Idx := uint16((va64 >> 30) & 0x1FF)
-		l2Idx := uint16((va64 >> 21) & 0x1FF)
-		l3Idx := uint16((va64 >> 12) & 0x1FF)
-
-		l0Entry := (*uint64)(unsafe.Pointer(pageTableL0 + uintptr(l0Idx)*PTE_SIZE))
-		l1Table := uintptr(*l0Entry & PTE_ADDR_MASK)
-		l1Entry := (*uint64)(unsafe.Pointer(l1Table + uintptr(l1Idx)*PTE_SIZE))
-		l2Table := uintptr(*l1Entry & PTE_ADDR_MASK)
-		l2Entry := (*uint64)(unsafe.Pointer(l2Table + uintptr(l2Idx)*PTE_SIZE))
-		l3Table := uintptr(*l2Entry & PTE_ADDR_MASK)
-		l3Entry := (*uint64)(unsafe.Pointer(l3Table + uintptr(l3Idx)*PTE_SIZE))
-
-		uartPutsDirect("\r\n!DUPLICATE FAULT at VA=0x")
-		uartPutHex64Direct(uint64(pageAddr))
-		uartPutsDirect(" PA=0x")
-		uartPutHex64Direct(uint64(existingPA))
-		uartPutsDirect(" PTE=0x")
-		uartPutHex64Direct(*l3Entry)
-		uartPutsDirect(" IFSC=0x")
-		uartPutHex64Direct(faultStatus)
-		// Print full ESR by reading it directly
-		esr := asm.ReadEsrEl1()
-		uartPutsDirect(" ESR=0x")
-		uartPutHex64Direct(esr)
-		// Print ELR to see what address we're returning to
-		elr := asm.ReadElrEl1()
-		uartPutsDirect(" ELR=0x")
-		uartPutHex64Direct(elr)
-		uartPutsDirect("\r\n")
-
-		// CRITICAL FIX: Flush TLB for this address!
-		// The page is already mapped in page tables, but TLB has stale entry
-		// Use full TLB invalidation instead of VA-specific, as VA-specific
-		// flush may not work correctly for all address ranges
+		// Page is already mapped in page tables, but TLB has stale entry
+		// Flush TLB to make the existing mapping visible
 		asm.Dsb()                  // Ensure all memory operations complete
-		asm.InvalidateTlbAll()     // Invalidate ALL TLBs (nuclear option)
+		asm.InvalidateTlbAll()     // Invalidate ALL TLBs
 		asm.Dsb()                  // Ensure TLB invalidation completes
 		asm.Isb()                  // Synchronize context
 

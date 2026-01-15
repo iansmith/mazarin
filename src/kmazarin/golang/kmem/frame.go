@@ -57,19 +57,14 @@ func InitFrameAllocator() {
 //
 //go:nosplit
 func AllocFrame() uintptr {
-	debugPrint('F') // DEBUG: entered AllocFrame
-
 	// Lazy initialization from runtime config (atomic check)
 	if atomic.LoadUint32(&initialized) == 0 {
-		debugPrint('i') // DEBUG: init path
 		// Use compare-and-swap to ensure only one thread initializes
 		if atomic.CompareAndSwapUint32(&initialized, 0, 1) {
 			cfg := getRuntimeConfigTyped()
-			debugPrint('g') // DEBUG: got config
 			atomic.StoreUintptr(&frameAllocator.nextFrame, uintptr(cfg.FramePoolStart))
 			atomic.StoreUintptr(&frameAllocator.endFrame, uintptr(cfg.FramePoolEnd))
 			atomic.StoreUint64(&frameAllocator.allocated, 0)
-			debugPrint('k') // DEBUG: init done
 		} else {
 			// Another thread won the race, wait for it to complete initialization
 			for atomic.LoadUint32(&initialized) == 0 {
@@ -77,8 +72,6 @@ func AllocFrame() uintptr {
 			}
 		}
 	}
-
-	debugPrint('n') // DEBUG: checking bounds
 
 	// Atomically allocate a frame
 	for {
@@ -94,7 +87,6 @@ func AllocFrame() uintptr {
 		if atomic.CompareAndSwapUintptr(&frameAllocator.nextFrame, currentNext, newNext) {
 			// Successfully allocated frame
 			atomic.AddUint64(&frameAllocator.allocated, 1)
-			debugPrint('f') // DEBUG: frame allocated
 			return currentNext
 		}
 		// CAS failed, another thread allocated, retry
@@ -106,22 +98,16 @@ func AllocFrame() uintptr {
 //
 //go:nosplit
 func ZeroFrame(physAddr uintptr) {
-	debugPrint('Z') // DEBUG: entered ZeroFrame
-
 	// We need to access the physical memory. Since we're in high memory,
 	// we need to use the kernel VA offset to access physical memory.
 	cfg := getRuntimeConfigTyped()
-	debugPrint('c') // DEBUG: got config
 	va := physAddr + uintptr(cfg.KernelVAOffset)
-	debugPrint('v') // DEBUG: calculated VA
 
 	// Zero 4KB in 8-byte chunks (512 iterations)
 	ptr := (*[512]uint64)(unsafe.Pointer(va))
-	debugPrint('p') // DEBUG: got pointer
 	for i := 0; i < 512; i++ {
 		ptr[i] = 0
 	}
-	debugPrint('x') // DEBUG: done zeroing
 }
 
 // GetFrameStats returns the current frame allocator statistics.

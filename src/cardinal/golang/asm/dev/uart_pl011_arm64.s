@@ -1,10 +1,29 @@
 // uart_pl011_arm64.s - PL011 UART Driver for QEMU virt machine
 //
-// This file contains the PL011 UART initialization and character output functions.
-// The PL011 is the standard UART on QEMU's virt machine at 0x09000000.
+// ============================================================================
+// OVERVIEW
+// ============================================================================
+// This file contains PL011 UART driver functions for QEMU virt machine.
+// The PL011 is the standard UART peripheral at 0x09000000.
 //
-// NOTE: These functions use Go 1.17+ register-based calling convention.
-// Parameters arrive in R0, R1, etc. Return values go in R0.
+// Functions:
+//   - uart_init_pl011() - Initialize UART following PL011 specification
+//   - uart_putc_pl011(c byte) - Output single character to UART
+//
+// Initialization follows proper 9-step PL011 sequence:
+//   1. Disable UART (clear UARTEN)
+//   2. Wait for transmission complete
+//   3. Flush FIFOs
+//   4. Configure baud rate divisors
+//   5. Configure line control (8N1 with FIFO)
+//   6. Mask all interrupts
+//   7. Disable DMA
+//   8. Enable transmitter
+//   9. Enable UART
+//
+// ABI NOTES:
+// - These functions use Go 1.17+ register-based calling convention
+// - Parameters arrive in R0, R1, etc.
 
 #include "textflag.h"
 
@@ -27,38 +46,57 @@
 #define FR_TXFF			(1 << 5)	// Transmit FIFO Full bit
 #define LCR_FEN			(1 << 4)	// FIFO Enable bit
 
-// uart_init_pl011()
+// ============================================================================
+// uart_init_pl011() - Initialize PL011 UART
+// ============================================================================
 // Initializes the PL011 UART for QEMU virt machine
 // Follows proper PL011 initialization sequence from specification
+//
+// Segments:
+//   1. Load UART base address
+//   2. Disable UART (clear UARTEN bit)
+//   3. Wait for transmission complete
+//   4. Flush FIFOs (clear FEN bit)
+//   5. Configure baud rate divisors
+//   6. Configure line control (8N1 with FIFO)
+//   7. Mask all interrupts
+//   8. Disable DMA
+//   9. Enable transmitter (TXE bit)
+//  10. Enable UART (UARTEN bit)
+//  11. Wait for UART ready
+//  12. Verify UART is enabled
+//  13. Return to caller (or loop on failure)
+//
 TEXT uart_init_pl011(SB), NOSPLIT, $0-0
+	// Segment 1: Load UART base address
 	MOVD	$QEMU_UART_BASE, R1
 
-	// Step 1: Disable UART (clear UARTEN bit)
+	// Segment 2: Disable UART
 	MOVW	UART_CR_OFFSET(R1), R2
 	AND	$~CR_UARTEN, R2
 	MOVW	R2, UART_CR_OFFSET(R1)
 	DSB	$15			// Memory barrier
 
-	// Step 2: Wait for any ongoing transmission to complete
+	// Segment 3: Wait for transmission complete
 wait_tx_complete:
 	MOVW	UART_FR_OFFSET(R1), R2
 	TST	$FR_BUSY, R2		// Test BUSY bit
 	BNE	wait_tx_complete	// If busy, keep waiting
 
-	// Step 3: Flush FIFOs (clear FEN bit in UARTLCR_H)
+	// Segment 4: Flush FIFOs
 	MOVW	UART_LCRH_OFFSET(R1), R2
 	AND	$~LCR_FEN, R2		// Clear FEN bit to flush FIFOs
 	MOVW	R2, UART_LCRH_OFFSET(R1)
 	DSB	$15
 
-	// Step 4: Configure Baud Rate divisors
+	// Segment 5: Configure baud rate divisors
 	// For QEMU, use simple divisors (115200 baud with 24MHz clock)
 	MOVW	$1, R2			// IBRD = 1
 	MOVW	R2, UART_IBRD_OFFSET(R1)
 	MOVW	ZR, UART_FBRD_OFFSET(R1)	// FBRD = 0
 	DSB	$15
 
-	// Step 5: Configure Line Control (UARTLCR_H)
+	// Segment 6: Configure line control (8N1 with FIFO)
 	// 8 data bits: WLEN = 3 (bits 5-6 = 0b11)
 	// FIFO enabled: FEN = 1 (bit 4)
 	// 1 stop bit: STP2 = 0 (bit 3)
@@ -68,51 +106,63 @@ wait_tx_complete:
 	MOVW	R2, UART_LCRH_OFFSET(R1)
 	DSB	$15
 
-	// Step 6: Mask all interrupts (UARTIMSC)
+	// Segment 7: Mask all interrupts
 	MOVW	$0x7FF, R2		// Mask all 11 interrupt sources
 	MOVW	R2, UART_IMSC_OFFSET(R1)
 	DSB	$15
 
-	// Step 7: Disable DMA (UARTDMACR)
+	// Segment 8: Disable DMA
 	MOVW	ZR, UART_DMACR_OFFSET(R1)
 	DSB	$15
 
-	// Step 8: Enable Transmitter (TXE bit)
+	// Segment 9: Enable transmitter
 	MOVW	$CR_TXEN, R2		// Enable TXE only
 	MOVW	R2, UART_CR_OFFSET(R1)
 	DSB	$15
 
-	// Step 9: Enable UART (UARTEN bit) - must be last step
+	// Segment 10: Enable UART (must be last)
 	MOVW	$(CR_TXEN | CR_UARTEN), R2	// Enable both TXE and UARTEN
 	MOVW	R2, UART_CR_OFFSET(R1)
 	DSB	$15			// Memory barrier to ensure enable is visible
 
-	// Wait for UART to be ready by checking that it's not busy
+	// Segment 11: Wait for UART ready
 wait_uart_ready:
 	MOVW	UART_FR_OFFSET(R1), R2
 	TST	$FR_BUSY, R2		// Check BUSY bit
 	BNE	wait_uart_ready		// If busy, keep waiting
 
-	// Verify UART is enabled by reading control register
+	// Segment 12: Verify UART is enabled
 	MOVW	UART_CR_OFFSET(R1), R2
 	TST	$CR_UARTEN, R2		// Check UARTEN bit
 	BEQ	uart_init_failed	// If not enabled, something went wrong
 
+	// Segment 13: Return
 	RET
 
 uart_init_failed:
-	// UART initialization failed - loop forever
+	// Initialization failed - loop forever
 	HINT	$1			// WFI instruction
 	B	uart_init_failed
 
-// uart_putc_pl011(c byte)
+// ============================================================================
+// uart_putc_pl011(c byte) - Output Character to UART
+// ============================================================================
 // Sends a single character via PL011 UART
 // Parameters: R0 = character to send (byte)
+//
+// Segments:
+//   1. Load UART base address
+//   2. Verify UART is enabled (UARTEN and TXE bits)
+//   3. Wait for TX FIFO not full
+//   4. Write character to data register
+//   5. Return to caller
+//
 TEXT uart_putc_pl011(SB), NOSPLIT|NOFRAME, $0-1
+	// Segment 1: Load UART base address
 	// R0 = character (already in R0 from register ABI)
 	MOVD	$QEMU_UART_BASE, R1
 
-	// Verify UART is enabled before writing
+	// Segment 2: Verify UART is enabled
 	// Check UARTEN bit (bit 0) and TXE bit (bit 8) in UART_CR
 	MOVW	UART_CR_OFFSET(R1), R2
 	TST	$CR_UARTEN, R2
@@ -120,12 +170,16 @@ TEXT uart_putc_pl011(SB), NOSPLIT|NOFRAME, $0-1
 	TST	$CR_TXEN, R2
 	BEQ	uart_not_enabled	// If TXE not set, skip write
 
+	// Segment 3: Wait for TX FIFO not full
 check_tx_full:
 	MOVW	UART_FR_OFFSET(R1), R2
 	TST	$FR_TXFF, R2		// Test if TXFF bit (bit 5) is set
 	BNE	check_tx_full		// If set, branch back and wait
 
+	// Segment 4: Write character
 	MOVB	R0, UART_DR_OFFSET(R1)	// Store the character
+
+	// Segment 5: Return
 	RET
 
 uart_not_enabled:

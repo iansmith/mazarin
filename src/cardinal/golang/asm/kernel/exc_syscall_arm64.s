@@ -1,10 +1,36 @@
-// exc_syscall.s - Synchronous Exception Dispatch (Go/Plan9 Assembly)
+// exc_syscall_arm64.s - Synchronous Exception Dispatch and Return Paths
 //
-// This file provides the unified synchronous exception handling path:
-//   1. sync_exception_entry - Entry point from sync_exception_handler
-//   2. syscall_return       - Restores registers and executes ERET (for syscalls)
-//   3. exception_return     - Restores ALL registers and executes ERET (for page faults)
-//   4. load_context_and_eret - Context switch to new thread
+// ============================================================================
+// OVERVIEW
+// ============================================================================
+// Provides the unified synchronous exception handling path for syscalls and
+// page faults. Called after sync_exception_handler saves all registers.
+//
+// Functions:
+//   - sync_exception_entry() - Dispatch to Go handler (7 segments)
+//   - syscall_return() - Return from syscall with result (3 segments)
+//   - exception_return() - Return from page fault (3 segments)
+//   - load_context_and_eret() - Context switch to new thread (3 segments)
+//
+// OPERATION:
+//   1. sync_exception_entry:
+//      - Disables IRQs
+//      - Switches to g0 stack (Go safety requirement)
+//      - Extracts exception class (EC) from ESR
+//      - Calls SyncExceptionDispatch (Go function)
+//      - Routes to appropriate return path based on result
+//
+//   2. syscall_return: Returns R0 as result, preserves modified registers
+//   3. exception_return: Restores ALL registers for retry
+//   4. load_context_and_eret: Loads new thread context for context switch
+//
+// WHY NOT DECOMPOSE:
+// Exception dispatch is a critical orchestration that cannot be decomposed:
+//   1. IRQ masking must happen before any other operations
+//   2. g0 stack switch required for Go runtime safety
+//   3. Register restore must be atomic (no function calls)
+//   4. ERET must happen immediately after restore
+// Decomposing would break exception handling contract or introduce race conditions.
 //
 // ============================================================================
 // SEGMENT OVERVIEW (see asm/docs/exception_handling_decomposition.md)

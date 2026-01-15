@@ -60,14 +60,6 @@ var syscallTable = [512]SyscallHandler{
 //go:nosplit
 //go:noinline
 func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
-	// DEBUG: Print syscall number for tracing
-	uartBase := getUartBase()
-	hexChars := "0123456789ABCDEF"
-	*(*byte)(unsafe.Pointer(uartBase)) = '('
-	*(*byte)(unsafe.Pointer(uartBase)) = hexChars[(syscallNum>>4)&0xF]
-	*(*byte)(unsafe.Pointer(uartBase)) = hexChars[syscallNum&0xF]
-	*(*byte)(unsafe.Pointer(uartBase)) = ')'
-
 	// Check if syscall number is in range
 	if syscallNum >= 512 {
 		syscallPanic("Invalid syscall number", syscallNum)

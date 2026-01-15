@@ -425,6 +425,7 @@ func kernelMainInternal(r0, r1, atags uint32) {
 
 	// Initialize UART first for early debugging
 	uartInit()
+	uartPuts("Cardinal\n")
 
 	// Check SCTLR_EL1 for alignment check bit
 	sctlr := asm.ReadSctlrEl1()
@@ -468,7 +469,6 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	// Post-MMU device initialization
 	initDeviceTree()
 	gicInit()
-	uartInitRingBufferAfterMemInit()
 	asm.EnableIrqs()
 
 	// Call runtime.args with minimal argv/auxv structure
@@ -1121,6 +1121,7 @@ func loadAndRunKmazarin() {
 	// Kmazarin will re-enable them after installing its handlers
 	asm.DisableIrqs()
 
+	uartPuts("Jumping To kmazarin\n")
 	jumpToKmazarin(entryAddr, argc, argv, stackPointer)
 
 	// Should never reach here

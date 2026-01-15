@@ -32,6 +32,13 @@ func irqDispatchInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (ne
 	return info.NewELR, info.NewSP, info.NewLR, info.DoPreempt
 }
 
+// timerIRQHandlerInternal is called directly from exception handler for timer IRQs
+//go:noinline
+func timerIRQHandlerInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool) {
+	info := kirq.TimerIRQHandlerCanPreempt(irqNum, framePtr, elr, spEl0)
+	return info.NewELR, info.NewSP, info.NewLR, info.DoPreempt
+}
+
 // HandlePageFaultAsm is defined in abi_stubs_arm64.s as an ABI0 entry point
 // that tail-calls handlePageFaultInternal. This is the actual implementation.
 // Returns 1 if the fault was handled successfully, 0 otherwise.
@@ -77,24 +84,34 @@ func init() {
 	// Initialize critical early devices (UART, GIC, Timer, RNG)
 	EarlyInit()
 
-	// Initialize timer with actual frequency from CNTFRQ_EL0
-	// Must be done before enabling IRQs to ensure correct timer tick calculation
+	// Initialize timer, IRQ handlers, and preemption subsystem
 	kirq.InitTimer()
+	kirq.RegisterHandlers()
+	kirq.InitPreemption()
 
 	// Enable interrupts - handlers are ready
-	// NOTE: This happens during runtime init, which causes asyncPreempt issues
-	// but delaying to main() causes exit(21). Need to investigate proper timing.
 	EnableIRQs()
+	Print("[Init] Initialization complete")
 }
 
-// uartPutc writes a single character directly to UART (bypasses Go runtime)
-// NOTE: UART address comes directly from StartupParams (not runtimeConfig copy)
-// to avoid package initialization order issues.
+// uartPutc writes a single character to UART
+// Before interrupt mode: direct UART write
+// After interrupt mode: uses ring buffer with TX interrupt
 //go:nosplit
 func uartPutc(c byte) {
-	uartBase := GetUartBase()  // Read directly from StartupParams
-	*(*byte)(unsafe.Pointer(uartBase)) = c
+	// Check if interrupt-driven UART is ready
+	if uartInterruptReady {
+		// Use interrupt-driven ring buffer
+		kirq.UARTPutc(c)
+	} else {
+		// Direct UART write for early boot
+		uartBase := GetUartBase() // Read directly from StartupParams
+		*(*byte)(unsafe.Pointer(uartBase)) = c
+	}
 }
+
+// uartInterruptReady tracks whether interrupt-driven UART is ready
+var uartInterruptReady bool
 
 // uartPuts writes a string directly to UART
 //go:nosplit
@@ -153,6 +170,13 @@ func getAsyncPreemptAddrForKirq() uintptr {
 //go:nosplit
 func getReadyForAsyncPreemptAddrForKirq() uintptr {
 	return GetReadyForAsyncPreemptAddr()
+}
+
+// processDeadlinesForKirq provides deadline processing to kirq package via linkname
+//go:linkname processDeadlinesForKirq kmazarin/kirq.processDeadlines
+//go:nosplit
+func processDeadlinesForKirq() {
+	ProcessDeadlines()
 }
 
 // getRuntimeConfigForKsyscall provides runtime config to ksyscall package via linkname
@@ -261,171 +285,136 @@ func printHex(val uint64) {
 	}
 }
 
+// PrintHex64 prints a hex value with 0x prefix and newline
+func PrintHex64(val uint64) {
+	uartPuts("0x")
+	printHex(val)
+	uartPuts("\r\n")
+}
+
 // testRuntimeReadiness runs a comprehensive test suite to verify Go runtime is ready
 // Returns true if all tests pass, false otherwise
 func testRuntimeReadiness() bool {
-	Print("=== Go Runtime Readiness Test Suite ===")
-
 	// Test 1: Memory allocation with make()
-	Print("[1/7] Testing make() allocation...")
 	s := make([]byte, 16)
 	if len(s) != 16 {
-		Print("  FAIL: make() returned wrong length")
 		return false
 	}
 	s[0] = 42
 	if s[0] != 42 {
-		Print("  FAIL: make() memory not writable")
 		return false
 	}
-	Print("  PASS")
 
 	// Test 2: Memory allocation with new()
-	Print("[2/7] Testing new() allocation...")
 	p := new(int)
 	if p == nil {
-		Print("  FAIL: new() returned nil")
 		return false
 	}
 	*p = 123
 	if *p != 123 {
-		Print("  FAIL: new() memory not writable")
 		return false
 	}
-	Print("  PASS")
 
 	// Test 3: GOMAXPROCS (scheduler P structs)
-	Print("[3/7] Testing GOMAXPROCS...")
 	n := runtime.GOMAXPROCS(0)
 	if n == 0 {
-		Print("  FAIL: GOMAXPROCS returned 0")
 		return false
 	}
-	Print("  PASS")
 
 	// Test 4: Goroutine count
-	Print("[4/7] Testing NumGoroutine...")
 	ng := runtime.NumGoroutine()
 	if ng == 0 {
-		Print("  FAIL: NumGoroutine returned 0")
 		return false
 	}
-	Print("  PASS")
 
 	// Test 5: Mutex operations
-	Print("[5/7] Testing sync.Mutex...")
 	var mu sync.Mutex
 	mu.Lock()
 	mu.Unlock()
-	Print("  PASS")
 
 	// Test 6: String operations (uses runtime)
-	Print("[6/7] Testing string concatenation...")
 	str1 := "Hello"
 	str2 := "World"
 	str3 := str1 + " " + str2
 	if len(str3) != 11 {
-		Print("  FAIL: String concat wrong length")
 		return false
 	}
-	Print("  PASS")
 
-	// Test 7: fmt.Println (the big one!)
-	Print("[7/7] Testing fmt.Println...")
-	Print("  SKIP - fmt package causes hang (needs debugging)")
-	// TODO: Debug why fmt.Sprintf hangs
-	// str := fmt.Sprintf("test %d", 42)
-	// fmt.Println("  fmt.Println works!")
+	// Test 7: Thread structure allocation
+	thread := new(Thread)
+	if thread == nil {
+		return false
+	}
+	thread.State = ThreadReady
+	thread.TID = 999
+	thread.Context.X[0] = 0xDEADBEEF
+	if thread.State != ThreadReady || thread.TID != 999 || thread.Context.X[0] != 0xDEADBEEF {
+		return false
+	}
 
-	Print("=== All Runtime Tests Passed! ===")
-	Print("")
+	// Test 8: Slice of Threads allocation
+	threadSlice := make([]Thread, 4)
+	if len(threadSlice) != 4 {
+		return false
+	}
+	for i := 0; i < 4; i++ {
+		threadSlice[i].TID = int32(100 + i)
+	}
+	for i := 0; i < 4; i++ {
+		if threadSlice[i].TID != int32(100+i) {
+			return false
+		}
+	}
+
 	return true
 }
 
 // simpleMain is the entry point for our simple goroutine/channel test
 // This will be run by the scheduler as the main goroutine
 func simpleMain() {
-	// Get g register value (used later for logging)
-	gVal := GetGRegister()
-
-	Print("")
-	Print("[g1] Kmazarin kernel starting...")
-	Print("")
-
-	// =============================================
-	// UNMAP CARDINAL: Safe because heap is in different address range
-	// =============================================
-	// The Go heap is in TTBR0 space at 0x0000004000000000 (user-level addresses).
-	// Cardinal is loaded at 0x0000000040100000 (about 1GB from RAM base).
-	// These ranges don't overlap, so we can safely unmap Cardinal.
-	//
-	// The g register (x28) points to the current goroutine's g struct, which is
-	// heap-allocated. This is expected to be in the 0x4000000000+ range.
-	Print("[g1] Preparing to unmap Cardinal...")
-	Printf("[g1] g register points to 0x%x (heap-allocated goroutine struct)", gVal)
-	Print("")
+	Print("[Main] Kmazarin kernel starting...")
 
 	// Unmap Cardinal at L1 level - zeros L1[0-2] (0-3GB) while preserving L1[256+] for heap
 	unmapCardinal()
-	Print("[g1] Cardinal unmapped (L1-level, heap preserved)")
 
-	// =============================================
-	// CHECKPOINT: Test if Go runtime is fully ready
-	// =============================================
-	Print("[g1] Running runtime readiness tests...")
-	Print("")
-
+	// Test runtime readiness and initialize heap-based structures
 	if testRuntimeReadiness() {
-		// SUCCESS! Runtime is fully initialized
-		// NOTE: Keep runtimeReady = false because fmt hangs (needs investigation)
-		Print("")
-		Print("*** RUNTIME READY (but staying with direct UART - fmt hangs) ***")
-		Print("")
+		Print("[Main] Runtime ready")
+		InitDeadlineQueue()
+		InitReadyQueue()
 	} else {
-		// FAILED - runtime not ready, stay with direct UART
-		Print("")
-		Print("!!! RUNTIME NOT READY - Staying with direct UART output !!!")
-		Print("")
+		Print("[Main] Runtime not ready - continuing with direct UART")
 	}
 
-	// Keep using Print/Printf with direct UART (runtimeReady stays false)
-
-	// TODO: DTB discovery hangs - investigate later
-	// Skipping for now to test preemption
-
-	Print("")
-	Print("[g1] === Skipping DTB Discovery - Testing Preemption ===" )
-	Print("")
-
-	// Test scheduler preemption with two busy-wait goroutines
-	Print("[g1] Testing scheduler preemption with two busy-wait goroutines...")
-
-	// Launch g2 - it will busy-wait printing '2'
-	Print("[g1] Launching g2...")
+	// Launch second goroutine for preemption test
+	Print("[Main] Starting preemption test...")
 	go simpleGoroutine2(nil)
-	Print("[g1] g2 launched (runtime.newproc called)")
 
-	Print("[g1] Both goroutines will busy-wait WITHOUT yielding")
-	Print("[g1] If timer-based preemption works, we should see '1' and '2' interleaved")
-	Print("[g1] Starting busy-wait loop (NO cooperative yielding)...")
-	Print("")
-
-	// Enable async preemption - runtime is now fully initialized
-	Print("[g1] Enabling async preemption...")
+	// Enable async preemption
+	EnableTimerIRQ()
+	asyncPreemptAddr := GetAsyncPreemptAddr()
+	kirq.SetAsyncPreemptAddr(asyncPreemptAddr)
 	readyForAsyncPreempt.Store(1)
-	Print("[g1] Async preemption ENABLED")
-	Print("")
+	kirq.SetReadyForAsyncPreempt()
+	Print("[Main] Async preemption enabled")
 
 	// Infinite busy-wait loop, printing '1' periodically
 	// NO calls to Gosched() - relies purely on timer-based preemption
 	counter := uint64(0)
+	printCount := uint64(0)
 
 	for {
 		counter++
 		// Every 100000 iterations, print our marker
 		if counter%100000 == 0 {
-			// Print '1' to show g1 is running (direct UART, no runtime)
-			uartPutc('1')
+			printCount++
+			if printCount%72 == 0 {
+				// Emit newline every 72 prints
+				uartPutc('\n')
+			} else {
+				// Print '1' to show g1 is running (direct UART, no runtime)
+				uartPutc('1')
+			}
 			// NO checkPreemption() call - pure busy-wait!
 		}
 	}
@@ -437,13 +426,20 @@ func simpleGoroutine2(ch chan string) {
 	// Infinite busy-wait loop to test timer-based preemption
 	// NO calls to Gosched() - the timer interrupt must forcibly preempt us
 	counter := uint64(0)
+	printCount := uint64(0)
 
 	for {
 		counter++
 		// Every 100000 iterations, print our marker
 		if counter%100000 == 0 {
-			// Print '2' to show g2 is running (direct UART, no runtime)
-			uartPutc('2')
+			printCount++
+			if printCount%72 == 0 {
+				// Emit newline every 72 prints
+				uartPutc('\n')
+			} else {
+				// Print '2' to show g2 is running (direct UART, no runtime)
+				uartPutc('2')
+			}
 			// NO checkPreemption() call - pure busy-wait!
 		}
 	}

@@ -77,7 +77,19 @@ var (
 	ttbr0L0PA         uintptr // Physical address of TTBR0 L0 table (for heap)
 	ttbr1L1PA         uintptr // Physical address of TTBR1 L1 table (lazy init)
 	ptPoolNext        uintptr // Next page in PT pool (lazy init)
+
+	// Cache for allocated page table VAs
+	// Since we can't compute VA from PA (Cardinal doesn't map all RAM),
+	// we need to track the VAs of page tables we allocate.
+	// Key: PA of page table, Value: VA of page table
+	ptVACache     [64]ptVACacheEntry // Simple fixed-size cache
+	ptVACacheSize int
 )
+
+type ptVACacheEntry struct {
+	pa uintptr
+	va uintptr
+}
 
 // InitPaging initializes the paging subsystem.
 // All values come from runtime configuration (auxv from Cardinal).
@@ -101,6 +113,40 @@ func InitPaging() {
 func paToVA(pa uintptr) uintptr {
 	cfg := getRuntimeConfigTyped()
 	return pa + uintptr(cfg.KernelVAOffset)
+}
+
+// cachePTVA stores a PA -> VA mapping for an allocated page table.
+//
+//go:nosplit
+func cachePTVA(pa, va uintptr) {
+	if ptVACacheSize < len(ptVACache) {
+		ptVACache[ptVACacheSize] = ptVACacheEntry{pa: pa, va: va}
+		ptVACacheSize++
+	}
+}
+
+// lookupPTVA looks up the VA for a given PA in the cache.
+// Returns 0 if not found.
+//
+//go:nosplit
+func lookupPTVA(pa uintptr) uintptr {
+	for i := 0; i < ptVACacheSize; i++ {
+		if ptVACache[i].pa == pa {
+			return ptVACache[i].va
+		}
+	}
+	return 0
+}
+
+// paToVAOrCache converts a PA to VA, checking the cache first for PT pool pages.
+// Falls back to paToVA if not in cache (for pre-mapped pages).
+//
+//go:nosplit
+func paToVAOrCache(pa uintptr) uintptr {
+	if va := lookupPTVA(pa); va != 0 {
+		return va
+	}
+	return paToVA(pa)
 }
 
 // vaToPa converts a high-memory virtual address to a physical address.
@@ -388,6 +434,11 @@ func mapPage(va, pa uintptr) bool {
 	debugPrint('R')
 	l0Entry := (*uint64)(unsafe.Pointer(l0EntryAddr))
 
+	// DEBUG: Print L0 entry value
+	debugPrint('(')
+	debugPrintHex(*l0Entry)
+	debugPrint(')')
+
 	var l1VA uintptr
 
 	if (*l0Entry & PTE_VALID) == 0 {
@@ -413,6 +464,9 @@ func mapPage(va, pa uintptr) bool {
 			return false
 		}
 
+		// Cache the VA for this PA so we can find it later
+		cachePTVA(l1PA, l1VA)
+
 		// Link new L1 table into L0
 		*l0Entry = uint64(l1PA) | PTE_VALID | PTE_TABLE
 
@@ -423,9 +477,9 @@ func mapPage(va, pa uintptr) bool {
 		dsbSY()
 		isbSY()
 	} else {
-		// Get existing L1 table VA
+		// Get existing L1 table VA - check cache first for PT pool pages
 		l1PA := uintptr(*l0Entry & PTE_ADDR_MASK)
-		l1VA = paToVA(l1PA)
+		l1VA = paToVAOrCache(l1PA)
 	}
 	if l1VA == 0 {
 		debugPrint('2')
@@ -461,11 +515,14 @@ func mapPage(va, pa uintptr) bool {
 			return false
 		}
 
+		// Cache the VA for this PA
+		cachePTVA(l2PA, l2VA)
+
 		// Link new L2 table into L1
 		*l1Entry = uint64(l2PA) | PTE_VALID | PTE_TABLE
 	} else {
 		l2PA := uintptr(*l1Entry & PTE_ADDR_MASK)
-		l2VA = paToVA(l2PA)
+		l2VA = paToVAOrCache(l2PA)
 		if l2VA == 0 {
 			debugPrint('4')
 			debugPrint('!')
@@ -511,6 +568,9 @@ func mapPage(va, pa uintptr) bool {
 		debugPrintHex(uint64(l3PA))
 		debugPrint('}')
 
+		// Cache the VA for this PA
+		cachePTVA(l3PA, l3VA)
+
 		// Link new L3 table into L2
 		*l2Entry = uint64(l3PA) | PTE_VALID | PTE_TABLE
 
@@ -537,7 +597,7 @@ func mapPage(va, pa uintptr) bool {
 		debugPrint('V') // DEBUG: Verified L2
 	} else {
 		l3PA := uintptr(*l2Entry & PTE_ADDR_MASK)
-		l3VA = paToVA(l3PA)
+		l3VA = paToVAOrCache(l3PA)
 		if l3VA == 0 {
 			debugPrint('6')
 			debugPrint('!')

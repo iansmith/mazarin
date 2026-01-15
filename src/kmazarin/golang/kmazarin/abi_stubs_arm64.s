@@ -24,6 +24,12 @@ TEXT ·SyscallDispatch(SB), NOSPLIT, $0-64
 TEXT ·IRQDispatch(SB), NOSPLIT, $0-64
 	JMP	·irqDispatchInternal(SB)
 
+// TimerIRQHandler is called from exceptions_arm64.s for timer IRQs
+// Go signature: func TimerIRQHandler(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool)
+// ABI0: 4 args (32 bytes) + 4 returns (32 bytes) = 64 bytes
+TEXT ·TimerIRQHandler(SB), NOSPLIT, $0-64
+	JMP	·timerIRQHandlerInternal(SB)
+
 // HandlePageFaultAsm is called from data_abort in exceptions_arm64.s
 // Go signature: func HandlePageFaultAsm(faultAddr uint64) uint64
 // ABI0: 1 arg (8 bytes) + 1 return (8 bytes) = 16 bytes
@@ -35,14 +41,16 @@ TEXT ·HandlePageFaultAsm(SB), $0-16
 	JMP	·handlePageFaultInternal(SB)
 
 // GetSyscallSwitchTarget returns context switch target set by syscall handlers
-// Go signature: func GetSyscallSwitchTarget() int64
-// ABI0: 0 args + 1 return (8 bytes) = 8 bytes, 16-aligned = 16 bytes frame
+// Go signature: func GetSyscallSwitchTarget() uint64
+// ABI0: 0 args + 1 return (8 bytes) = 8 bytes
+// Returns thread node pointer as uint64, 0 = no switch needed
 TEXT ·GetSyscallSwitchTarget(SB), NOSPLIT, $0-8
 	JMP	·getSyscallSwitchTargetInternal(SB)
 
 // DoContextSwitch saves current context and returns new context pointer
-// Go signature: func DoContextSwitch(framePtr uint64, targetIdx int32) uint64
+// Go signature: func DoContextSwitch(framePtr uint64, targetPtr uint64) uint64
 // ABI0: 2 args (16 bytes) + 1 return (8 bytes) = 24 bytes
+// targetPtr is thread node pointer (not index)
 TEXT ·DoContextSwitch(SB), NOSPLIT, $0-24
 	JMP	·doContextSwitchABI0(SB)
 

@@ -17,23 +17,26 @@ type PreemptInfo struct {
 // Takes the IRQ number and returns nothing
 type IRQHandlerSimple func(irqNum uint64)
 
-// IRQHandlerPreemptable is the type for handlers that can trigger preemption
+// IRQHandlerCanPreempt is the type for handlers that can trigger goroutine preemption
 // Takes IRQ number, exception frame pointer, and returns preemption info
-type IRQHandlerPreemptable func(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo
+type IRQHandlerCanPreempt func(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo
 
 // irqTableSimple is the dispatch table for simple IRQ handlers
 var irqTableSimple [1020]IRQHandlerSimple
 
-// irqTablePreemptable is the dispatch table for preemptable IRQ handlers
-var irqTablePreemptable [1020]IRQHandlerPreemptable
+// irqTableCanPreempt is the dispatch table for IRQ handlers that can preempt goroutines
+var irqTableCanPreempt [1020]IRQHandlerCanPreempt
 
-// init registers all implemented IRQ handlers in the dispatch table
-func init() {
-	// Register preemptable handlers (timer can trigger preemption)
-	irqTablePreemptable[27] = TimerIRQHandlerPreemptable
+// RegisterHandlers registers all implemented IRQ handlers in the dispatch table
+// MUST be called before EnableIRQs() to ensure handlers are ready
+//
+//go:nosplit
+func RegisterHandlers() {
+	// Register handlers that can trigger preemption (timer can preempt goroutines)
+	irqTableCanPreempt[27] = TimerIRQHandlerCanPreempt
 
-	// Simple handlers would go in irqTableSimple
-	// irqTableSimple[33] = HandlePL011  // PL011 UART (typically SPI 1, IRQ 33)
+	// Register simple handlers (no preemption)
+	irqTableSimple[33] = UartIRQHandler // PL011 UART TX interrupt (IRQ 33)
 }
 
 // DispatchIRQ is called from assembly IRQ exception handler
@@ -49,17 +52,10 @@ func DispatchIRQ(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo
 		return PreemptInfo{} // unreachable
 	}
 
-	// CRITICAL: Handle timer IRQ 27 directly, before checking the table.
-	// This is needed because init() hasn't run yet during early runtime boot,
-	// so the handler table is empty when the first timer IRQ fires.
-	if irqNum == 27 {
-		return TimerIRQHandlerPreemptable(irqNum, framePtr, elr, spEl0)
-	}
-
-	// Try preemptable handler first
-	handlerPreempt := irqTablePreemptable[irqNum]
-	if handlerPreempt != nil {
-		return handlerPreempt(irqNum, framePtr, elr, spEl0)
+	// Try handlers that can preempt first
+	handlerCanPreempt := irqTableCanPreempt[irqNum]
+	if handlerCanPreempt != nil {
+		return handlerCanPreempt(irqNum, framePtr, elr, spEl0)
 	}
 
 	// Try simple handler

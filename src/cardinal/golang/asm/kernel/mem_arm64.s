@@ -1,21 +1,47 @@
-// mem_arm64.s - Memory Operation Functions
+// mem_arm64.s - Memory Operation Primitives
 //
-// This file contains memory operation functions like bzero and memmove.
-// These are low-level, architecture-optimized memory routines.
+// ============================================================================
+// OVERVIEW
+// ============================================================================
+// This file contains low-level memory operation primitives.
 //
-// NOTE: These functions use Go 1.17+ register-based calling convention.
-// Parameters arrive in R0, R1, etc. Return values go in R0.
+// Active Functions:
+//   - dc_zva(addr uintptr) - Zero entire cache line at address
+//
+// Removed Functions (now implemented in Go):
+//   - bzero - Implemented as pure Go function in mmu.go using dc_zva
+//   - MemmoveBytes - Implemented in Go (kernel.go) due to assembly issues
+//
+// WHY NOT DECOMPOSE:
+// dc_zva is already an atomic primitive - it's a single ARM64 instruction wrapper.
+// This cannot be decomposed further as it performs exactly one hardware operation.
+//
+// ABI NOTES:
+// - These functions use Go 1.17+ register-based calling convention
+// - Parameters arrive in R0, R1, etc.
+// - dc_zva requires cache-line-aligned address in R0
 
 #include "textflag.h"
 
 // ============================================================================
-// Cache Line Operations
+// dc_zva(addr uintptr) - Zero Cache Line
 // ============================================================================
-
-// dc_zva zeros a cache line at the given address
-// R0 = address (must be cache-line aligned)
+// Zeros an entire cache line at the given address using ARM64 DC ZVA instruction
+// This is the most efficient way to zero memory on ARM64 when the address
+// is cache-line aligned.
+//
+// Parameters (register ABI):
+//   R0: address (must be cache-line aligned, typically 64 bytes)
+//
+// Segments:
+//   1. Execute DC ZVA instruction to zero cache line
+//   2. Return to caller
+//
 TEXT dc_zva(SB), NOSPLIT|NOFRAME, $0-0
-	WORD	$0xd50b7420	// dc zva, x0
+	// Segment 1: Zero cache line
+	WORD	$0xd50b7420		// dc zva, x0 (zeros cache line at R0)
+
+	// Segment 2: Return
 	RET
 
 // ============================================================================

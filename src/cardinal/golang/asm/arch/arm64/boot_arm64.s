@@ -1,13 +1,34 @@
-// boot_arm64.s - ARM64 Boot Code in Go/Plan9 Assembly
+// boot_arm64.s - ARM64 Bare-Metal Boot Sequence
 //
-// This is the entry point for bare-metal execution on ARM64.
-// QEMU loads this code and jumps here at reset.
+// ============================================================================
+// OVERVIEW
+// ============================================================================
+// This is the bare-metal boot entry point for ARM64. QEMU loads Cardinal's
+// ELF and jumps to _cardinal_boot at reset.
 //
-// This code runs BEFORE the Go runtime is initialized, so:
-// - Cannot use any Go runtime features
-// - Cannot allocate memory
-// - Cannot call Go functions (except via raw BL)
+// Functions:
+//   - _cardinal_boot() - Main boot sequence (15 segments)
+//
+// This code runs BEFORE the Go runtime is initialized:
+// - Cannot use any Go runtime features (no heap, no GC, no goroutines)
+// - Cannot allocate memory (heap not initialized)
+// - Cannot call Go functions normally (except via raw BL to known addresses)
 // - Must use NOSPLIT|NOFRAME to prevent stack frame manipulation
+//
+// WHY NOT DECOMPOSE:
+// Boot is a large orchestration function that coordinates hardware initialization.
+// It cannot be decomposed because:
+//   1. Runs before Go runtime - cannot call Go functions normally
+//   2. Order-dependent - each step depends on previous (EL detection → EL config → stack setup)
+//   3. State transitions - moves between exception levels (EL2 → EL1)
+//   4. One-time execution - runs once at boot, not a reusable component
+//
+// POST-BOOT: After KernelMain starts, use decomposed primitives from:
+//   - lib_sysregs_arm64.s for system register access
+//   - lib_barriers_arm64.s for memory barriers
+//   - mmio_arm64.s for device register access
+//
+// See asm/docs/boot_decomposition.md for detailed primitive mapping.
 //
 // ============================================================================
 // BOOT SEQUENCE SEGMENTS (see asm/docs/boot_decomposition.md)
