@@ -800,14 +800,53 @@ irq_exception_handler:
 	//
 	// R28 contains g (saved earlier in exception frame)
 	// The handler will read g from R28 and set preemption flags.
+	// It also sets NeedsAsyncPreempt if threshold exceeded.
 	CALL	kmazarin∕kirq·TimerIRQHandlerAsm(SB)
 
-	// Timer handler doesn't inject asyncPreempt - it uses cooperative preemption.
-	// Set return values to indicate no frame modification needed.
-	MOVD	$0, R20  // newELR (unused)
-	MOVD	$0, R21  // newSP (unused)
-	MOVD	$0, R22  // newLR (unused)
-	MOVD	$0, R23  // doPreempt = false (cooperative, not async)
+	// ALWAYS call Go handler to process deadline queue.
+	// This ensures sleeping threads get woken by timer interrupts.
+	// Previously we only called Go handler when NeedsAsyncPreempt was set,
+	// but that meant processDeadlines() wasn't called when all threads were blocked.
+
+	// Reset the async preemption flag (might be set by TimerIRQHandlerAsm)
+	MOVW	$0, R21
+	MOVW	R21, kmazarin∕kirq·NeedsAsyncPreempt(SB)
+
+	// Call Go handler for deadline processing and optional preemption
+	// TimerIRQHandler: processes deadline queue (wakes sleeping threads) and
+	// checks if async preemption should occur (returns PreemptInfo)
+	// TimerIRQHandler(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool)
+	// R19 = IAR value (has IRQ number in bits 0-9)
+	AND	$0x3FF, R19, R0  // arg0: irqNum = 27
+	MOVD	RSP, R1          // arg1: framePtr
+	MOVD	EXC_FRAME_ELR_SPSR(RSP), R2  // arg2: ELR from frame
+	MRS	SP_EL0, R3       // arg3: SP_EL0
+
+	// Allocate frame for call (ABI0 stack-based calling)
+	// TimerIRQHandler: 4 args (32 bytes) + 4 returns (32 bytes) = 64 bytes
+	SUB	$64, RSP
+
+	// Store arguments on stack (ABI0 convention)
+	MOVD	R0, 8(RSP)   // arg0: irqNum
+	// framePtr needs adjustment since we modified RSP
+	ADD	$64, R1      // Fix framePtr to point to original frame
+	MOVD	R1, 16(RSP)  // arg1: framePtr (corrected)
+	MOVD	R2, 24(RSP)  // arg2: elr
+	MOVD	R3, 32(RSP)  // arg3: spEl0
+
+	// Call through ABI0 stub which forwards to timerIRQHandlerInternal
+	CALL	·TimerIRQHandler(SB)
+
+	// Read return values from stack
+	// Returns: newELR(8), newSP(8), newLR(8), doPreempt(bool, 1 byte padded)
+	MOVD	40(RSP), R20  // newELR
+	MOVD	48(RSP), R21  // newSP
+	MOVD	56(RSP), R22  // newLR
+	MOVB	64(RSP), R23  // doPreempt (bool)
+
+	// Restore stack
+	ADD	$64, RSP
+
 	B	irq_write_eoir
 
 irq_not_timer:

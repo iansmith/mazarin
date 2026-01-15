@@ -81,8 +81,8 @@ var globalTickCounter uint64 = 0
 // Syscall context switch signaling
 // Set by syscall handlers (futex, nanosleep) when they need to block
 // Checked by assembly after DispatchSyscall returns
-// -1 = no switch, >= 0 = switch to that thread index
-var syscallSwitchTarget int32 = -1
+// 0 = no switch, non-zero = pointer to ThreadContext to switch to
+var syscallSwitchTarget uintptr = 0
 
 // syscallELR stores the ELR_EL1 for the current syscall
 // Set by assembly before calling DispatchSyscall
@@ -136,34 +136,26 @@ func GetSyscallSPSR() uint64 {
 
 // getSyscallSwitchTargetInternal returns the switch target and resets it
 // Called from assembly via ABI stub after syscall dispatch
-// Returns uint64: high 32 bits unused, low 32 bits = target index (-1 = no switch)
-// For compatibility with assembly that expects uintptr, returns 0 for no-switch
+// Returns uint64: context pointer to switch to, or 0 for no switch
 //
 //go:noinline
 func getSyscallSwitchTargetInternal() uint64 {
 	target := syscallSwitchTarget
-	syscallSwitchTarget = -1 // Reset for next syscall
-	if target < 0 {
-		return 0 // No switch needed
-	}
-	// Return pointer to thread's context for assembly
-	return uint64(uintptr(unsafe.Pointer(&threads[target].Context)))
+	syscallSwitchTarget = 0 // Reset for next syscall
+	// Return context pointer directly (0 means no switch)
+	return uint64(target)
 }
 
-// SetSyscallSwitchTarget sets the thread index to switch to
+// SetSyscallSwitchTarget sets the context pointer to switch to
 // Called by syscall handlers that need to block
-// target is thread index, or -1 for no switch
+// target is a ThreadContext pointer, or 0 for no switch
 //
 //go:noinline
 func SetSyscallSwitchTarget(target uintptr) {
-	// Convert uintptr back to index - this is a bit hacky but works
-	// When called with 0, means no switch
-	if target == 0 {
-		syscallSwitchTarget = -1
-	} else {
-		// target is actually an index encoded as uintptr
-		syscallSwitchTarget = int32(target)
-	}
+	// Store context pointer directly
+	// ThreadBlockFutex/ThreadBlockSleep now return context pointers,
+	// so 0 unambiguously means "no switch" and non-zero is valid target
+	syscallSwitchTarget = target
 }
 
 // InitThreads initializes the thread management system
@@ -242,7 +234,7 @@ func ProcessDeadlines() {
 func IdleLoop() int32 {
 	for {
 		ProcessDeadlines()
-		ready := ThreadFindReady()
+		ready := threadFindReadyIdx()
 		if ready >= 0 {
 			return ready
 		}
@@ -333,11 +325,12 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
 	return tid
 }
 
-// ThreadFindReady finds the next READY thread
+// threadFindReadyIdx finds the next READY thread
 // Returns thread index, or -1 if none found
+// Internal function - use ThreadFindReady for external API
 //
 //go:nosplit
-func ThreadFindReady() int32 {
+func threadFindReadyIdx() int32 {
 	// Simple round-robin starting after current thread
 	start := currentThreadIdx + 1
 	if start < 0 {
@@ -353,8 +346,30 @@ func ThreadFindReady() int32 {
 	return -1
 }
 
+// ThreadFindReady finds the next READY thread
+// Returns CONTEXT POINTER of ready thread, or 0 (nil) if none found
+//
+// NOTE: Returns context pointer (not index) so 0 unambiguously means "no switch".
+// Thread index 0 is valid and would return a non-zero context pointer.
+//
+//go:nosplit
+func ThreadFindReady() uintptr {
+	idx := threadFindReadyIdx()
+	if idx < 0 {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(&threads[idx].Context))
+}
+
 // ThreadBlockFutex marks current thread as blocked on futex and finds next thread
-// Returns index of next thread to run, or -1 if none
+// Returns CONTEXT POINTER of next thread to run, or 0 (nil) if none
+//
+// CRITICAL: Only marks thread as blocked if there's another thread to switch to.
+// If no ready thread exists, returns 0 WITHOUT marking current thread as blocked.
+// This prevents busy-wait loops where futex returns success but thread can't block.
+//
+// NOTE: Returns context pointer (not index) so 0 unambiguously means "no switch".
+// Thread index 0 is valid and would return a non-zero context pointer.
 //
 //go:nosplit
 func ThreadBlockFutex(futexAddr uint64) uintptr {
@@ -362,16 +377,20 @@ func ThreadBlockFutex(futexAddr uint64) uintptr {
 		return 0
 	}
 
-	// Mark current thread as blocked
+	// Find next ready thread FIRST - don't block if no one to switch to
+	next := threadFindReadyIdx()
+	if next < 0 {
+		// No ready thread - don't block current thread, let it spin/retry
+		// This will be handled by timer interrupts eventually
+		return 0
+	}
+
+	// Found a ready thread - now safe to mark current as blocked
 	threads[currentThreadIdx].State = ThreadBlockedFutex
 	threads[currentThreadIdx].FutexAddr = futexAddr
 
-	// Find next ready thread
-	next := ThreadFindReady()
-	if next < 0 {
-		return 0
-	}
-	return uintptr(next)
+	// Return context pointer (not index) - allows switching to thread 0
+	return uintptr(unsafe.Pointer(&threads[next].Context))
 }
 
 // ThreadWakeFutex wakes threads blocked on the given futex address
@@ -393,7 +412,13 @@ func ThreadWakeFutex(futexAddr uint64, maxWake int32) int32 {
 }
 
 // ThreadBlockSleep marks current thread as sleeping
-// Returns index of next thread to run, or -1 if none
+// Returns CONTEXT POINTER of next thread to run, or 0 (nil) if none
+//
+// CRITICAL: Only marks thread as sleeping if there's another thread to switch to.
+// If no ready thread exists, returns 0 WITHOUT marking current thread as sleeping.
+//
+// NOTE: Returns context pointer (not index) so 0 unambiguously means "no switch".
+// Thread index 0 is valid and would return a non-zero context pointer.
 //
 //go:nosplit
 //go:linkname ThreadBlockSleep kmazarin/ksyscall.ThreadBlockSleep
@@ -402,15 +427,18 @@ func ThreadBlockSleep() uintptr {
 		return 0
 	}
 
-	// Mark current thread as sleeping
-	threads[currentThreadIdx].State = ThreadSleeping
-
-	// Find next ready thread
-	next := ThreadFindReady()
+	// Find next ready thread FIRST - don't sleep if no one to switch to
+	next := threadFindReadyIdx()
 	if next < 0 {
+		// No ready thread - don't mark as sleeping
 		return 0
 	}
-	return uintptr(next)
+
+	// Found a ready thread - now safe to mark current as sleeping
+	threads[currentThreadIdx].State = ThreadSleeping
+
+	// Return context pointer (not index) - allows switching to thread 0
+	return uintptr(unsafe.Pointer(&threads[next].Context))
 }
 
 // ThreadWakeSleeper moves a thread from sleeping to ready by index

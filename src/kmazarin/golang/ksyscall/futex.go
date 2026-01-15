@@ -40,6 +40,11 @@ func SetSyscallSwitchTarget(target uintptr)
 //go:linkname ThreadFindReady main.ThreadFindReady
 func ThreadFindReady() uintptr
 
+// WaitForInterrupt puts CPU into low-power idle state until interrupt
+// Used to prevent busy-wait when futex can't block
+//go:linkname waitForInterrupt main.WaitForInterrupt
+func waitForInterrupt()
+
 // SyscallFutex is the exported entry point called via function pointer from dispatch.go
 // Implemented as an assembly stub in abi_stubs_arm64.s that tail-calls syscallFutexInternal
 func SyscallFutex(uaddr, op, val, timeout, uaddr2, val3 uint64) int64
@@ -64,19 +69,33 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 			return -11 // -EAGAIN: value already changed
 		}
 
-		// Find another thread to run (marks current as blocked)
+		// Try to find another thread to run and block current thread
+		// ThreadBlockFutex only marks us blocked if there's a thread to switch to
 		nextThread := ThreadBlockFutex(uaddr)
 
 		if nextThread != 0 {
-			// Signal that we need to context switch to nextThread
+			// Successfully blocked - context switch to next thread
 			SetSyscallSwitchTarget(nextThread)
+			// Return 0 - when we're woken up later, we'll return success
+			return 0
 		}
-		// If nextThread == 0: No ready threads, but current thread is blocked.
-		// Timer interrupts will fire ProcessDeadlines which may wake threads.
-		// For now we return 0 and let the system idle naturally.
 
-		// Return 0 - when we're woken up later, we'll return success
-		return 0
+		// No ready thread to switch to - we couldn't actually block
+		// DEBUG: Print 'W' to show we're entering idle wait
+		*(*byte)(unsafe.Pointer(getUartBase())) = 'W'
+
+		// Enter idle loop waiting for interrupt (timer will fire and may wake threads)
+		// WFI - Wait For Interrupt: puts CPU in low-power state until interrupt
+		waitForInterrupt()
+
+		// After WFI, check if someone woke us (value changed or wake signal)
+		currentVal = atomic.LoadUint32(uaddrPtr)
+		if currentVal != uint32(val) {
+			return 0 // Value changed - treat as woken
+		}
+
+		// Value still matches - retry
+		return -11 // -EAGAIN
 
 	case FutexWake:
 		// FUTEX_WAKE: Wake up to 'val' threads waiting on this address

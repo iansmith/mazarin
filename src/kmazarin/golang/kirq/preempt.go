@@ -46,6 +46,28 @@ var (
 // cooperatively after 10 ticks (100ms), we force async preemption.
 var preemptTickCounts [1024]uint32
 
+// Thread struct offsets for assembly access.
+// These match the Thread struct layout in threads.go.
+// Computed from struct layout:
+//   State(4) + TID(4) + FutexAddr(8) + MPtr(8) + GPtr(8) + EntryFunc(8) = 40
+//   Context: X[31]*8 + SP(8) + ELR(8) + SPSR(8) = 272
+//   LastSeenG at offset 40+272=312, StartTick at offset 320
+const (
+	ThreadLastSeenGOffset = 312 // Offset of Thread.LastSeenG
+	ThreadStartTickOffset = 320 // Offset of Thread.StartTick
+	ThreadSize            = 328 // Size of Thread struct
+)
+
+// AsyncPreemptThreshold is the number of timer ticks before forcing
+// async preemption on a goroutine that hasn't yielded.
+// At 10ms per tick, 10 ticks = 100ms max runtime without yield.
+const AsyncPreemptThreshold uint64 = 10
+
+// NeedsAsyncPreempt is set by assembly when a goroutine has exceeded
+// the preemption threshold and needs async preemption injection.
+// Checked by Go timer handler after TimerIRQHandlerAsm returns.
+var NeedsAsyncPreempt uint32
+
 // System timer frequency in Hz - read from CNTFRQ_EL0 at init.
 // Exported for use by other packages and assembly.
 var SystemTimerFrequency uint64

@@ -132,28 +132,82 @@ rearm_timer:
 	MOVD	R6, (R5)  // g.stackguard0 = stackPreempt
 
 	// ========================================================================
-	// Step 8: Increment tick counter for async fallback tracking
+	// Step 8: Check for g change and track preemption time
 	// ========================================================================
-	// Hash g pointer to get index: (g >> 8) & 0x3FF
-	LSR	$8, R4, R5
-	AND	$0x3FF, R5  // R5 = hash index (0-1023)
+	// R4 = current g pointer (validated above)
 
-	// Calculate address: &preemptTickCounts[index]
-	MOVD	·preemptTickCounts(SB), R6
-	LSL	$2, R5  // R5 = index * 4 (sizeof uint32)
-	ADD	R5, R6  // R6 = &preemptTickCounts[index]
+	// Load currentThreadIdx from main package
+	MOVW	main·currentThreadIdx(SB), R5  // int32
 
-	// Atomic increment
-	MOVW	$1, R7
-atomic_inc:
-	LDAXRW	(R6), R8      // Load exclusive
-	ADD	R7, R8        // Increment
-	STLXRW	R8, (R6), R9  // Store exclusive
-	CBNZ	R9, atomic_inc  // Retry if failed
+	// Check if valid (>= 0)
+	// Since it's int32, negative values have bit 31 set
+	TBZ	$31, R5, thread_valid  // Branch if bit 31 is 0 (non-negative)
+	B	timer_return  // No current thread, skip
 
-	// R8 now contains new tick count
-	// TODO: If R8 >= 10, consider async preemption injection
-	// For Phase 1, we just rely on cooperative preemption
+thread_valid:
+	// Calculate thread address: &threads[currentThreadIdx]
+	// ThreadSize = 328 bytes
+	MOVD	$328, R6
+	MUL	R5, R6, R6  // R6 = idx * 328
+	MOVD	$main·threads(SB), R7
+	ADD	R6, R7  // R7 = &threads[idx]
+
+	// Load LastSeenG: offset 312
+	MOVD	312(R7), R8  // R8 = threads[idx].LastSeenG
+
+	// Compare with current g (R4)
+	CMP	R4, R8
+	BEQ	same_goroutine
+
+	// ========================================================================
+	// G changed! Go runtime switched goroutines internally.
+	// Reset: store current g as LastSeenG, store current tick as StartTick
+	// ========================================================================
+	MOVD	R4, 312(R7)  // threads[idx].LastSeenG = current g
+
+	// Read current counter: MRS X8, CNTVCT_EL0
+	WORD	$0xD53BE048
+	MOVD	R8, 320(R7)  // threads[idx].StartTick = current tick
+
+	B	timer_return  // No preemption needed, just reset
+
+same_goroutine:
+	// Same g - check elapsed time
+	// Load StartTick: offset 320
+	MOVD	320(R7), R8  // R8 = threads[idx].StartTick
+	CBZ	R8, init_start_tick  // Not initialized yet
+
+	// Read current counter: MRS X9, CNTVCT_EL0
+	WORD	$0xD53BE049
+
+	// Calculate elapsed ticks
+	SUB	R8, R9, R9  // R9 = current - start = elapsed
+
+	// Convert to timer intervals (divide by ticks per 10ms)
+	// ticks_per_10ms = freq / 100
+	MOVD	·SystemTimerFrequency(SB), R8
+	MOVD	$100, R10
+	UDIV	R10, R8, R8  // R8 = ticks per 10ms
+	CBZ	R8, timer_return  // Avoid divide by zero
+
+	UDIV	R8, R9, R9  // R9 = elapsed intervals (10ms units)
+
+	// Check against threshold (10 intervals = 100ms)
+	CMP	$10, R9
+	BLT	timer_return  // Under threshold, done
+
+	// Elapsed >= threshold: signal async preemption needed
+	MOVW	$1, R8
+	MOVW	R8, ·NeedsAsyncPreempt(SB)
+	B	timer_return
+
+init_start_tick:
+	// Initialize StartTick and LastSeenG for this thread
+	// Read current counter: MRS X8, CNTVCT_EL0
+	WORD	$0xD53BE048
+	MOVD	R8, 320(R7)  // threads[idx].StartTick = current tick
+	MOVD	R4, 312(R7)  // threads[idx].LastSeenG = current g
+	// Fall through to timer_return
 
 timer_return:
 	RET
