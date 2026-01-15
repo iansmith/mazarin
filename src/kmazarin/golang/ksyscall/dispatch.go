@@ -77,6 +77,18 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 	return handler(arg0, arg1, arg2, arg3, arg4, arg5)
 }
 
+// DispatchFromOverlay is the entry point for syscalls from the Go runtime
+// when running in kernel mode. Called via linkname from the overlay's
+// internal/runtime/syscall.Syscall6 replacement.
+//
+// This function has the same semantics as DispatchSyscall but takes uintptr
+// arguments to match the runtime's calling convention.
+//
+//go:nosplit
+func DispatchFromOverlay(num, a1, a2, a3, a4, a5, a6 uintptr) int64 {
+	return DispatchSyscall(uint64(num), uint64(a1), uint64(a2), uint64(a3), uint64(a4), uint64(a5), uint64(a6))
+}
+
 // syscallPanic handles syscall-specific panics with the syscall number
 //
 //go:nosplit
