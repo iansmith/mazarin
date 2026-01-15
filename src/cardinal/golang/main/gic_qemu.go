@@ -223,15 +223,11 @@ var interruptsEnabled bool
 //go:nosplit
 //go:noinline
 func gicHandleInterrupt() {
-	// Print 'H' to show we entered gicHandleInterrupt
-	printChar('H')
-
 	// Note: Interrupts should already be enabled before timer starts
 	// Do NOT enable interrupts from inside the interrupt handler!
 
 	// Acknowledge interrupt and get ID
 	irqID := gicAcknowledgeInterrupt()
-	printChar('A')
 
 	// Check for spurious interrupt (ID 1023)
 	if irqID >= 1020 {
@@ -240,23 +236,7 @@ func gicHandleInterrupt() {
 
 	// Call registered handler if available
 	if interruptHandlers[irqID] != nil {
-		// Call handler
 		interruptHandlers[irqID]()
-	} else {
-		// No handler registered - log it using direct UART to avoid ring buffer issues
-		asm.UartPutcPl011('U') // 'U' for Unhandled
-		asm.UartPutcPl011('I') // 'I' for Interrupt
-		asm.UartPutcPl011(':') // ':'
-		asm.UartPutcPl011(' ')
-		// Simple digit output for interrupt ID
-		if irqID < 10 {
-			asm.UartPutcPl011(byte('0' + irqID))
-		} else {
-			asm.UartPutcPl011(byte('0' + irqID/10))
-			asm.UartPutcPl011(byte('0' + irqID%10))
-		}
-		asm.UartPutcPl011('\r')
-		asm.UartPutcPl011('\n')
 	}
 
 	// Signal end of interrupt

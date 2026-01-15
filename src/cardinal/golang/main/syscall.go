@@ -468,17 +468,7 @@ func isInMmapSpan(va uintptr) bool {
 func verifyMmapSpansMapped() bool {
 	mmapSpansAddr := uintptr(unsafe.Pointer(&mmapSpans[0]))
 	pa := getPhysicalAddress(mmapSpansAddr)
-	print("  mmapSpans array at VA=0x")
-	printHex64ForVerify(uint64(mmapSpansAddr))
-	if pa != 0 {
-		print(" -> PA=0x")
-		printHex64ForVerify(uint64(pa))
-		print(" OK\r\n")
-		return true
-	} else {
-		print(" -> NOT MAPPED! FATAL\r\n")
-		return false
-	}
+	return pa != 0
 }
 
 // printHex64ForVerify is a local hex printer for verification

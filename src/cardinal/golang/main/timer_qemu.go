@@ -128,15 +128,10 @@ func timerInterruptHandler() {
 	// Increment tick counter
 	timerTicks++
 
-	// Print 'T' to show timer interrupt fired
-	printChar('T')
-
 	// Decrement exit counter
 	if timerExitCount > 0 {
 		timerExitCount--
 		if timerExitCount == 0 {
-			// Exit after 5 seconds (5 timer interrupts at 1 second each)
-			print("Timer: 5 seconds elapsed, exiting via semihosting...\r\n")
 			asm.QemuExit()
 			return
 		}
@@ -146,9 +141,6 @@ func timerInterruptHandler() {
 	// Use TVAL (timer value - counts down)
 	freq := uint64(62500000)           // Default QEMU virt timer frequency = 62.5MHz
 	timer_write_tval(uint32(freq * 5)) // Set countdown timer for 5 seconds
-
-	// Output '.' to framebuffer
-	fb_putc_irq('.')
 }
 
 // timerInterruptHandlerAsm is called directly from assembly after time-critical
@@ -171,15 +163,10 @@ func timerInterruptHandlerAsm(irqID uint32) {
 		if timerExitCount > 0 {
 			timerExitCount--
 			if timerExitCount == 0 {
-				// Exit after 5 seconds
-				print("\r\nTimer: 5 seconds elapsed, exiting...\r\n")
 				asm.QemuExit()
 				return
 			}
 		}
-
-		// Output '.' to framebuffer (non-time-critical)
-		fb_putc_irq('.')
 	}
 }
 

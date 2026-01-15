@@ -331,15 +331,9 @@ func handleException(excInfo ExceptionInfo) {
 //
 //go:nosplit
 func irqHandlerGo(irqID uint32) {
-	// Print 'I' to show IRQ handler was called
-	printChar('I')
-
 	// Handle interrupt - interrupt ID already acknowledged in assembly
 	// irqID passed from assembly (read from GICC_IAR immediately on entry)
 	gicHandleInterruptWithID(irqID)
-
-	// Print 'i' to show IRQ handler returning
-	printChar('i')
 }
 
 // fiqHandlerGo is the actual Go implementation
