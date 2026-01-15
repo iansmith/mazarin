@@ -178,15 +178,25 @@ KMAZARIN_ALL_SRC = $(wildcard $(KMAZARIN_SRC)/*.go) $(wildcard $(KMAZARIN_SRC)/*
                    $(wildcard $(KMAZARIN_DEVICE_SRC)/*.go) $(wildcard $(KMAZARIN_DEVICE_SRC)/*.s) \
                    $(wildcard $(KMAZARIN_DTB_SRC)/*.go) $(wildcard $(KMAZARIN_DTB_SRC)/*.s)
 
+# Runtime patch files for overlay
+RUNTIME_PATCH_MALLOC = $(RUNTIME_PATCHES_DIR)/malloc.go
+RUNTIME_PATCH_PREEMPT = $(RUNTIME_PATCHES_DIR)/preempt.go
+RUNTIME_PATCH_SYSCALL = $(RUNTIME_PATCHES_DIR)/syscall/syscall_linux.go
+
 # Generate overlay JSON for kmazarin runtime patches
 # This allows using vanilla Go with our runtime patches:
 #   - malloc.go: high-memory heap support (arenaBaseOffset for TTBR1 space)
 #   - preempt.go: expose preemption offsets for kernel IRQ handling (added GetPreemptOffsets)
+#   - syscall_linux_arm64.go: RawSyscall6 calls dispatcher directly (no SVC, pure Go)
 # GOTOOLCHAIN=local ensures we get the actual GOROOT, not a downloaded toolchain
-$(KMAZARIN_OVERLAY): $(RUNTIME_PATCHES_DIR)/malloc.go $(RUNTIME_PATCHES_DIR)/preempt.go | $(BUILD_DIR)
+$(KMAZARIN_OVERLAY): $(RUNTIME_PATCH_MALLOC) $(RUNTIME_PATCH_PREEMPT) $(RUNTIME_PATCH_SYSCALL) | $(BUILD_DIR)
 	@echo "Generating runtime overlay for kmazarin..."
 	@GOROOT=$$(GOTOOLCHAIN=local $(GO) env GOROOT) && \
-		echo "{\"Replace\":{\"$$GOROOT/src/runtime/malloc.go\":\"$(abspath $(RUNTIME_PATCHES_DIR)/malloc.go)\",\"$$GOROOT/src/runtime/preempt.go\":\"$(abspath $(RUNTIME_PATCHES_DIR)/preempt.go)\"}}" > $(KMAZARIN_OVERLAY)
+		echo "{\"Replace\":{\
+\"$$GOROOT/src/runtime/malloc.go\":\"$(abspath $(RUNTIME_PATCH_MALLOC))\",\
+\"$$GOROOT/src/runtime/preempt.go\":\"$(abspath $(RUNTIME_PATCH_PREEMPT))\",\
+\"$$GOROOT/src/syscall/syscall_linux.go\":\"$(abspath $(RUNTIME_PATCH_SYSCALL))\"\
+}}" > $(KMAZARIN_OVERLAY)
 	@echo "  Overlay: $(KMAZARIN_OVERLAY)"
 
 $(KMAZARIN_BINARY): $(KMAZARIN_ALL_SRC) $(KMAZARIN_OVERLAY) src/cardinal/golang/constants/layout.go \
