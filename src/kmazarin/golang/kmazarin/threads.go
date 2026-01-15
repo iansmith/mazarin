@@ -255,11 +255,20 @@ func ProcessDeadlines() {
 // It processes deadlines and uses WFI to wait for the next interrupt.
 // Returns the index of a ready thread when one becomes available.
 //
+// CRITICAL: ProcessDeadlines and threadFindReadyIdx are protected by IRQ masking
+// because this loop runs OUTSIDE exception context. The timer handler also calls
+// ProcessDeadlines, so without protection we'd have re-entrant corruption.
+//
 //go:nosplit
 func IdleLoop() int32 {
 	for {
+		// Disable IRQs while checking deadlines and ready queue
+		// This prevents timer IRQ from re-entering ProcessDeadlines
+		savedDAIF := SaveAndDisableIRQs()
 		ProcessDeadlines()
 		ready := threadFindReadyIdx()
+		RestoreIRQs(savedDAIF)
+
 		if ready >= 0 {
 			return ready
 		}
@@ -269,6 +278,10 @@ func IdleLoop() int32 {
 
 // CloneThread creates a new thread for Go runtime's clone syscall.
 // Uses fixed array - NO heap allocation.
+//
+// CRITICAL SECTION: Modifies threads[], nextTID, readyQueue. Although currently
+// only called from SVC context (hardware IRQ masked), we explicitly disable IRQs
+// as defensive programming.
 //
 //go:nosplit
 //go:noinline
@@ -288,6 +301,9 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
 	debugPrint('T')
 	debugPrint('2')
 
+	// BEGIN CRITICAL SECTION - protect thread allocation and state
+	savedDAIF := SaveAndDisableIRQs()
+
 	// Find a free slot
 	slot := int32(-1)
 	for i := int32(0); i < MaxThreads; i++ {
@@ -298,6 +314,7 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
 	}
 
 	if slot < 0 {
+		RestoreIRQs(savedDAIF)
 		debugPrint('F')
 		debugPrint('!')
 		return -1 // No free slots
@@ -329,6 +346,9 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
 	if readyQueue != nil {
 		t.readyNode = readyQueue.PushBack(t)
 	}
+
+	// END CRITICAL SECTION
+	RestoreIRQs(savedDAIF)
 
 	debugPrint('T')
 	debugPrint('5')
@@ -437,17 +457,24 @@ func ThreadBlockFutex(futexAddr uint64) uintptr {
 		return 0
 	}
 
+	// BEGIN CRITICAL SECTION - protect thread state modification
+	savedDAIF := SaveAndDisableIRQs()
+
 	// Find next ready thread FIRST - don't block if no one to switch to
 	next := threadFindReadyIdx()
 	if next < 0 {
 		// No ready thread - don't block current thread, let it spin/retry
 		// This will be handled by timer interrupts eventually
+		RestoreIRQs(savedDAIF)
 		return 0
 	}
 
 	// Found a ready thread - now safe to mark current as blocked
 	threads[currentThreadIdx].State = ThreadBlockedFutex
 	threads[currentThreadIdx].FutexAddr = futexAddr
+
+	// END CRITICAL SECTION
+	RestoreIRQs(savedDAIF)
 
 	// Return context pointer (not index) - allows switching to thread 0
 	return uintptr(unsafe.Pointer(&threads[next].Context))
@@ -458,6 +485,9 @@ func ThreadBlockFutex(futexAddr uint64) uintptr {
 //
 //go:nosplit
 func ThreadWakeFutex(futexAddr uint64, maxWake int32) int32 {
+	// BEGIN CRITICAL SECTION - protect thread state modifications
+	savedDAIF := SaveAndDisableIRQs()
+
 	woken := int32(0)
 
 	for i := int32(0); i < MaxThreads && woken < maxWake; i++ {
@@ -471,6 +501,9 @@ func ThreadWakeFutex(futexAddr uint64, maxWake int32) int32 {
 			woken++
 		}
 	}
+
+	// END CRITICAL SECTION
+	RestoreIRQs(savedDAIF)
 
 	return woken
 }
@@ -491,15 +524,22 @@ func ThreadBlockSleep() uintptr {
 		return 0
 	}
 
+	// BEGIN CRITICAL SECTION - protect thread state modification
+	savedDAIF := SaveAndDisableIRQs()
+
 	// Find next ready thread FIRST - don't sleep if no one to switch to
 	next := threadFindReadyIdx()
 	if next < 0 {
 		// No ready thread - don't mark as sleeping
+		RestoreIRQs(savedDAIF)
 		return 0
 	}
 
 	// Found a ready thread - now safe to mark current as sleeping
 	threads[currentThreadIdx].State = ThreadSleeping
+
+	// END CRITICAL SECTION
+	RestoreIRQs(savedDAIF)
 
 	// Return context pointer (not index) - allows switching to thread 0
 	return uintptr(unsafe.Pointer(&threads[next].Context))
@@ -507,11 +547,19 @@ func ThreadBlockSleep() uintptr {
 
 // ThreadWakeSleeper moves a thread from sleeping to ready by index
 //
+// NOTE: Currently called from ProcessDeadlines which is already protected
+// by its callers (IdleLoop and timer handler), but we add protection
+// defensively in case this is ever called directly.
+//
 //go:nosplit
 func ThreadWakeSleeper(idx uintptr) {
 	if idx >= MaxThreads {
 		return
 	}
+
+	// BEGIN CRITICAL SECTION - protect thread state modification
+	savedDAIF := SaveAndDisableIRQs()
+
 	if threads[idx].State == ThreadSleeping {
 		threads[idx].State = ThreadReady
 		// Add to ready queue if available
@@ -519,6 +567,9 @@ func ThreadWakeSleeper(idx uintptr) {
 			threads[idx].readyNode = readyQueue.PushBack(&threads[idx])
 		}
 	}
+
+	// END CRITICAL SECTION
+	RestoreIRQs(savedDAIF)
 }
 
 // ThreadIncrementTick increments the global tick counter
@@ -609,11 +660,18 @@ func doContextSwitchABI0(framePtr uint64, targetPtr uint64) uint64 {
 
 // doContextSwitchImpl performs a context switch from current thread to target
 //
+// CRITICAL SECTION: This function modifies currentThread/currentThreadIdx and
+// thread state. Although currently only called from SVC context (where IRQs are
+// hardware-masked), we explicitly disable IRQs as defensive programming.
+//
 //go:nosplit
 //go:noinline
 func doContextSwitchImpl(framePtr uintptr, targetIdx int32) *ThreadContext {
 	// Save current thread's context
 	SaveContextFromFrame(framePtr)
+
+	// BEGIN CRITICAL SECTION - protect thread state modifications
+	savedDAIF := SaveAndDisableIRQs()
 
 	oldIdx := currentThreadIdx
 	currentThreadIdx = targetIdx
@@ -638,6 +696,9 @@ func doContextSwitchImpl(framePtr uintptr, targetIdx int32) *ThreadContext {
 			threads[oldIdx].readyNode = readyQueue.PushBack(&threads[oldIdx])
 		}
 	}
+
+	// END CRITICAL SECTION
+	RestoreIRQs(savedDAIF)
 
 	return &threads[targetIdx].Context
 }

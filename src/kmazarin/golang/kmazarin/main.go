@@ -35,7 +35,15 @@ func irqDispatchInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (ne
 // timerIRQHandlerInternal is called directly from exception handler for timer IRQs
 //go:noinline
 func timerIRQHandlerInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool) {
+	// DEBUG: Print '[' to show we entered the handler
+	uartBase := GetUartBase()
+	*(*byte)(unsafe.Pointer(uartBase)) = '['
+
 	info := kirq.TimerIRQHandlerCanPreempt(irqNum, framePtr, elr, spEl0)
+
+	// DEBUG: Print ']' to show we're returning
+	*(*byte)(unsafe.Pointer(uartBase)) = ']'
+
 	return info.NewELR, info.NewSP, info.NewLR, info.DoPreempt
 }
 
@@ -545,20 +553,33 @@ func simpleMain() {
 	EnableTimerIRQ()
 	Print("[g1] Timer IRQ 27 enabled")
 
+	// Set up asyncPreempt address for assembly IRQ handler
+	asyncPreemptAddr := GetAsyncPreemptAddr()
+	kirq.SetAsyncPreemptAddr(asyncPreemptAddr)
+	Printf("[g1] AsyncPreempt address set: 0x%x", asyncPreemptAddr)
+
 	readyForAsyncPreempt.Store(1)
+	kirq.SetReadyForAsyncPreempt()
 	Print("[g1] Async preemption ENABLED")
 	Print("")
 
 	// Infinite busy-wait loop, printing '1' periodically
 	// NO calls to Gosched() - relies purely on timer-based preemption
 	counter := uint64(0)
+	printCount := uint64(0)
 
 	for {
 		counter++
 		// Every 100000 iterations, print our marker
 		if counter%100000 == 0 {
-			// Print '1' to show g1 is running (direct UART, no runtime)
-			uartPutc('1')
+			printCount++
+			if printCount%72 == 0 {
+				// Emit newline every 72 prints
+				uartPutc('\n')
+			} else {
+				// Print '1' to show g1 is running (direct UART, no runtime)
+				uartPutc('1')
+			}
 			// NO checkPreemption() call - pure busy-wait!
 		}
 	}
@@ -570,13 +591,20 @@ func simpleGoroutine2(ch chan string) {
 	// Infinite busy-wait loop to test timer-based preemption
 	// NO calls to Gosched() - the timer interrupt must forcibly preempt us
 	counter := uint64(0)
+	printCount := uint64(0)
 
 	for {
 		counter++
 		// Every 100000 iterations, print our marker
 		if counter%100000 == 0 {
-			// Print '2' to show g2 is running (direct UART, no runtime)
-			uartPutc('2')
+			printCount++
+			if printCount%72 == 0 {
+				// Emit newline every 72 prints
+				uartPutc('\n')
+			} else {
+				// Print '2' to show g2 is running (direct UART, no runtime)
+				uartPutc('2')
+			}
 			// NO checkPreemption() call - pure busy-wait!
 		}
 	}

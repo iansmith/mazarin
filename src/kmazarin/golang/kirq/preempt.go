@@ -39,6 +39,10 @@ var (
 	PreemptGRunning          uint32  // _Grunning constant (2)
 	PreemptGScan             uint32  // _Gscan bit mask (0x1000)
 	PreemptOffsetsValid      uint32  // 1 when offsets have been initialized
+
+	// Async preemption addresses - set by SetAsyncPreemptAddr, read by assembly
+	AsyncPreemptAddr       uint64 // Address of runtime.asyncPreempt
+	ReadyForAsyncPreempt   uint32 // 1 when ready for async preemption
 )
 
 // Per-goroutine tick tracking for async preemption fallback.
@@ -61,8 +65,8 @@ const (
 
 // AsyncPreemptThreshold is the number of timer ticks before forcing
 // async preemption on a goroutine that hasn't yielded.
-// At 10ms per tick, 10 ticks = 100ms max runtime without yield.
-const AsyncPreemptThreshold uint64 = 10
+// At 10ms per tick, 5 ticks = 50ms max runtime without yield.
+const AsyncPreemptThreshold uint64 = 5
 
 // NeedsAsyncPreempt is set by assembly when a goroutine has exceeded
 // the preemption threshold and needs async preemption injection.
@@ -112,6 +116,22 @@ func InitPreemption() {
 
 	// Memory barrier to ensure all stores are visible before setting valid flag
 	atomic.StoreUint32(&PreemptOffsetsValid, 1)
+}
+
+// SetAsyncPreemptAddr sets the asyncPreempt address and marks ready for async preemption.
+// Called from main package after getting the address from RuntimeConfig.
+//
+//go:nosplit
+func SetAsyncPreemptAddr(addr uintptr) {
+	AsyncPreemptAddr = uint64(addr)
+}
+
+// SetReadyForAsyncPreempt marks the system as ready for async preemption.
+// Called when the Go runtime is fully initialized.
+//
+//go:nosplit
+func SetReadyForAsyncPreempt() {
+	atomic.StoreUint32(&ReadyForAsyncPreempt, 1)
 }
 
 // GetPreemptOffsetDebug returns the preemption offsets for debug printing.

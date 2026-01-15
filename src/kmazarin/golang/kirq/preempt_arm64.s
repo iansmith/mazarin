@@ -30,6 +30,11 @@
 // Clobbers: R0-R9 (caller must save if needed)
 //
 TEXT ·TimerIRQHandlerAsm(SB), NOSPLIT|NOFRAME, $0
+	// DEBUG: Print 'T' at start of timer handler
+	MOVD	$0xFFFFFFFF09000000, R0
+	MOVD	$'T', R1
+	MOVB	R1, (R0)
+
 	// ========================================================================
 	// Step 1: Re-arm timer immediately
 	// ========================================================================
@@ -64,11 +69,22 @@ rearm_timer:
 	MOVD	$1, R2
 	WORD	$0xD51BE322
 
+	// DEBUG: Print 'R' after timer re-armed
+	MOVD	$0xFFFFFFFF09000000, R3
+	MOVD	$'R', R4
+	MOVB	R4, (R3)
+
 	// ========================================================================
 	// Step 2: Check if preemption offsets are initialized
 	// ========================================================================
 	MOVW	·PreemptOffsetsValid(SB), R0  // uint32 - use MOVW not MOVD
-	CBZ	R0, timer_return  // Not initialized, skip preemption
+	CBNZ	R0, offsets_valid
+	// DEBUG: Print 'O' if offsets not valid
+	MOVD	$0xFFFFFFFF09000000, R0
+	MOVD	$'O', R1
+	MOVB	R1, (R0)
+	B	timer_return
+offsets_valid:
 
 	// ========================================================================
 	// Step 3: Get g pointer
@@ -78,7 +94,13 @@ rearm_timer:
 	WORD	$0xAA1C03E4  // mov x4, x28
 
 	// R4 = g pointer
-	CBZ	R4, timer_return  // g is nil, skip
+	CBNZ	R4, g_not_nil
+	// DEBUG: Print 'N' if g is nil
+	MOVD	$0xFFFFFFFF09000000, R0
+	MOVD	$'N', R1
+	MOVB	R1, (R0)
+	B	timer_return
+g_not_nil:
 
 	// ========================================================================
 	// Step 4: Validate g pointer
@@ -87,7 +109,13 @@ rearm_timer:
 	LSR	$48, R4, R5
 	MOVD	$0xFFFF, R6
 	CMP	R5, R6
-	BNE	timer_return  // Not in kernel memory, skip
+	BEQ	g_in_kernel
+	// DEBUG: Print 'K' if g not in kernel memory
+	MOVD	$0xFFFFFFFF09000000, R0
+	MOVD	$'K', R1
+	MOVB	R1, (R0)
+	B	timer_return
+g_in_kernel:
 
 	// ========================================================================
 	// Step 5: Check g.atomicstatus == _Grunning
@@ -138,7 +166,13 @@ rearm_timer:
 
 	// Load currentThread pointer directly (no index calculation needed)
 	MOVD	main·currentThread(SB), R7  // *Thread
-	CBZ	R7, timer_return  // No current thread, skip
+	CBNZ	R7, thread_not_nil
+	// DEBUG: Print 'C' if currentThread is nil
+	MOVD	$0xFFFFFFFF09000000, R0
+	MOVD	$'C', R1
+	MOVB	R1, (R0)
+	B	timer_return
+thread_not_nil:
 
 	// Load LastSeenG: offset 312
 	MOVD	312(R7), R8  // R8 = currentThread.LastSeenG
@@ -151,6 +185,11 @@ rearm_timer:
 	// G changed! Go runtime switched goroutines internally.
 	// Reset: store current g as LastSeenG, store current tick as StartTick
 	// ========================================================================
+	// DEBUG: Print 'G' when goroutine changes
+	MOVD	$0xFFFFFFFF09000000, R8
+	MOVD	$'G', R9
+	MOVB	R9, (R8)
+
 	MOVD	R4, 312(R7)  // currentThread.LastSeenG = current g
 
 	// Read current counter: MRS X8, CNTVCT_EL0
@@ -160,6 +199,11 @@ rearm_timer:
 	B	timer_return  // No preemption needed, just reset
 
 same_goroutine:
+	// DEBUG: Print '.' when we see same goroutine
+	MOVD	$0xFFFFFFFF09000000, R8
+	MOVD	$'.', R9
+	MOVB	R9, (R8)
+
 	// Same g - check elapsed time
 	// Load StartTick: offset 320
 	MOVD	320(R7), R8  // R8 = currentThread.StartTick
@@ -180,13 +224,19 @@ same_goroutine:
 
 	UDIV	R8, R9, R9  // R9 = elapsed intervals (10ms units)
 
-	// Check against threshold (10 intervals = 100ms)
-	CMP	$10, R9
+	// Check against threshold (5 intervals = 50ms)
+	CMP	$5, R9
 	BLT	timer_return  // Under threshold, done
 
 	// Elapsed >= threshold: signal async preemption needed
 	MOVW	$1, R8
 	MOVW	R8, ·NeedsAsyncPreempt(SB)
+
+	// DEBUG: Print 'P' when preemption threshold exceeded
+	MOVD	$0xFFFFFFFF09000000, R8  // UART base
+	MOVD	$'P', R9
+	MOVB	R9, (R8)
+
 	B	timer_return
 
 init_start_tick:

@@ -18,6 +18,20 @@ func SetVBAR(addr uintptr)
 func EnableIRQs()
 
 //go:nosplit
+func DisableIRQs()
+
+// SaveAndDisableIRQs saves the current DAIF state and disables IRQs.
+// Returns the saved DAIF value which should be passed to RestoreIRQs.
+// This allows nested disable/restore pairs.
+//go:nosplit
+func SaveAndDisableIRQs() uint64
+
+// RestoreIRQs restores the DAIF register to a previously saved state.
+// Use with SaveAndDisableIRQs for nested critical sections.
+//go:nosplit
+func RestoreIRQs(savedDAIF uint64)
+
+//go:nosplit
 func getAuxval(tag uint64) uint64
 
 //go:nosplit
@@ -34,6 +48,12 @@ func GetGRegister() uint64
 
 //go:nosplit
 func GetPC() uint64
+
+// asyncPreemptWrapper is the wrapper that saves g around asyncPreempt calls.
+// Used by the IRQ handler for safe async preemption.
+// Defined in exceptions_arm64.s
+//go:nosplit
+func asyncPreemptWrapper()
 
 // HandlePageFaultAsm is the ABI0 entry point for the page fault handler.
 // Called from data_abort in exceptions_arm64.s

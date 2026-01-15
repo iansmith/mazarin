@@ -47,12 +47,19 @@ func InitTimer() {
 //go:nosplit
 //go:noinline
 func TimerIRQHandlerCanPreempt(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo {
+	// DEBUG: Print '1' at handler entry
+	uartBase := getUartBase()
+	*(*byte)(unsafe.Pointer(uartBase)) = '['
+
 	// Re-arm timer for next interrupt (~100ms for responsive preemption)
 	// Calculate ticks based on actual timer frequency (read from CNTFRQ_EL0)
 	// 100ms * frequency = ticks
 	ticks := (uint64(timerFrequency) * 100) / 1000
 
 	rearmTimer(int32(ticks))
+
+	// DEBUG: Print '2' after rearm
+	*(*byte)(unsafe.Pointer(uartBase)) = ']'
 
 	// Process deadline queue - wake up threads whose sleep time has elapsed
 	processDeadlines()
@@ -134,7 +141,28 @@ func TimerIRQHandlerCanPreempt(irqNum uint64, framePtr uintptr, elr, spEl0 uint6
 		}
 	}
 
-	// Preemption enabled! Inject call to runtime.asyncPreempt
+	// Check if assembly handler requested async preemption
+	// NeedsAsyncPreempt is set by TimerIRQHandlerAsm when the same goroutine
+	// has been running for too long (threshold exceeded)
+	needsPreempt := atomic.LoadUint32(&NeedsAsyncPreempt)
+	if needsPreempt == 0 {
+		// Threshold not exceeded - skip async preemption
+		// (cooperative preemption via g.stackguard0 is still active)
+		return PreemptInfo{
+			NewELR:    0,
+			NewSP:     0,
+			NewLR:     0,
+			DoPreempt: false,
+		}
+	}
+
+	// Clear the flag now that we've read it
+	atomic.StoreUint32(&NeedsAsyncPreempt, 0)
+
+	// DEBUG: Print 'A' when async preemption is being injected
+	*(*byte)(unsafe.Pointer(uartBase)) = 'A'
+
+	// Preemption needed! Inject call to runtime.asyncPreempt
 	// This will cause the interrupted code to call asyncPreempt when it returns
 	// from the exception handler.
 	//

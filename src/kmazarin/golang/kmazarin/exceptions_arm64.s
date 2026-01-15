@@ -227,10 +227,18 @@ hang:
 // sync_exception_handler - Synchronous exceptions (SVC, data abort, etc.)
 // ============================================================================
 sync_exception_handler:
-	// Save all registers to exception frame
+	// CRITICAL: Switch to SP_EL1 IMMEDIATELY before using RSP for anything.
+	// When an exception is taken from EL1t mode (Go code using SP_EL0),
+	// ARM64 preserves PSTATE.SP=0, meaning RSP still aliases SP_EL0!
+	// Without this switch, we'd corrupt the interrupted code's stack.
+	MSR	$1, SPSel
+
+	// CRITICAL: Save X0-X7 BEFORE any debug output!
+	// These contain syscall arguments and must not be clobbered.
+	// Allocate frame first
 	SUB	$EXC_FRAME_SIZE, RSP
 
-	// Save X0-X7
+	// Save X0-X7 IMMEDIATELY (before debug print clobbers them!)
 	STP	(R0, R1), EXC_FRAME_X0(RSP)
 	STP	(R2, R3), EXC_FRAME_X0+16(RSP)
 	STP	(R4, R5), EXC_FRAME_X0+32(RSP)
@@ -272,9 +280,15 @@ sync_exception_handler:
 	MRS	SP_EL0, R10
 	MOVD	R10, EXC_FRAME_SP_EL0(RSP)
 
-	// Extract exception class (EC) from ESR_EL1
+	// DEBUG: Print '!' to indicate sync exception (now safe - registers saved!)
+	MOVD	$UART_BASE, R10
+	MOVD	$'!', R11
+	MOVB	R11, (R10)
+
+	// Extract exception class (EC) from ESR_EL1 (saved in exception frame)
 	// EC is in bits 31:26
-	LSR	$26, R11, R10
+	MOVD	EXC_FRAME_FAR_ESR+8(RSP), R10  // Load ESR from frame
+	LSR	$26, R10, R10
 	AND	$0x3F, R10
 
 	// Check if this is SVC (EC = 0x15)
@@ -509,11 +523,14 @@ not_svc_second_digit:
 not_svc_second:
 	MOVB	R10, (R12)
 
-	// Check if this is PC alignment fault (EC=0x22)
+	// Check if this is PC alignment fault (EC=0x22) or instruction abort (EC=0x21)
 	CMP	$0x22, R20
+	BEQ	print_faulting_pc
+	CMP	$0x21, R20
 	BNE	not_pc_align
 
-	// PC alignment fault - print the faulting ELR
+print_faulting_pc:
+	// PC alignment fault or instruction abort - print the faulting ELR
 	MOVD	$' ', R11
 	MOVB	R11, (R12)
 	MOVD	$'P', R11
@@ -731,10 +748,18 @@ sync_return:
 #define GICC_EOIR	0x0010  // End Of Interrupt Register offset
 
 irq_exception_handler:
-	// Save all registers to exception frame
+	// CRITICAL: Switch to SP_EL1 IMMEDIATELY before using RSP for anything.
+	// When an exception is taken from EL1t mode (Go code using SP_EL0),
+	// ARM64 preserves PSTATE.SP=0, meaning RSP still aliases SP_EL0!
+	// Without this switch, we'd corrupt the interrupted code's stack.
+	MSR	$1, SPSel
+
+	// CRITICAL: Save X0-X7 BEFORE any debug output!
+	// These may contain important values that must not be clobbered.
+	// Allocate frame first
 	SUB	$EXC_FRAME_SIZE, RSP
 
-	// Save X0-X7
+	// Save X0-X7 IMMEDIATELY (before debug print clobbers them!)
 	STP	(R0, R1), EXC_FRAME_X0(RSP)
 	STP	(R2, R3), EXC_FRAME_X0+16(RSP)
 	STP	(R4, R5), EXC_FRAME_X0+32(RSP)
@@ -776,6 +801,11 @@ irq_exception_handler:
 	MRS	SP_EL0, R10
 	MOVD	R10, EXC_FRAME_SP_EL0(RSP)
 
+	// DEBUG: Print 'I' to indicate IRQ entry (now safe - registers saved!)
+	MOVD	$UART_BASE, R10
+	MOVD	$'I', R11
+	MOVB	R11, (R10)
+
 	// Read interrupt number from GIC CPU interface
 	// IAR = GICC_BASE + 0x0C
 	MOVD	$(GIC_CPU_BASE + GICC_IAR), R10
@@ -803,49 +833,65 @@ irq_exception_handler:
 	// It also sets NeedsAsyncPreempt if threshold exceeded.
 	CALL	kmazarin∕kirq·TimerIRQHandlerAsm(SB)
 
-	// ALWAYS call Go handler to process deadline queue.
-	// This ensures sleeping threads get woken by timer interrupts.
-	// Previously we only called Go handler when NeedsAsyncPreempt was set,
-	// but that meant processDeadlines() wasn't called when all threads were blocked.
+	// ========================================================================
+	// Async preemption injection (pure assembly, no Go calls)
+	// ========================================================================
+	// Check if assembly handler requested async preemption.
+	// This is set by TimerIRQHandlerAsm when threshold exceeded.
+	MOVW	kmazarin∕kirq·NeedsAsyncPreempt(SB), R10
+	CBZ	R10, timer_no_preempt
 
-	// Reset the async preemption flag (might be set by TimerIRQHandlerAsm)
-	MOVW	$0, R21
-	MOVW	R21, kmazarin∕kirq·NeedsAsyncPreempt(SB)
+	// Check if runtime is ready for async preemption
+	MOVW	kmazarin∕kirq·ReadyForAsyncPreempt(SB), R10
+	CBZ	R10, timer_no_preempt
 
-	// Call Go handler for deadline processing and optional preemption
-	// TimerIRQHandler: processes deadline queue (wakes sleeping threads) and
-	// checks if async preemption should occur (returns PreemptInfo)
-	// TimerIRQHandler(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool)
-	// R19 = IAR value (has IRQ number in bits 0-9)
-	AND	$0x3FF, R19, R0  // arg0: irqNum = 27
-	MOVD	RSP, R1          // arg1: framePtr
-	MOVD	EXC_FRAME_ELR_SPSR(RSP), R2  // arg2: ELR from frame
-	MRS	SP_EL0, R3       // arg3: SP_EL0
+	// Get asyncPreemptWrapper address (our wrapper that saves g)
+	MOVD	$·asyncPreemptWrapper(SB), R10
 
-	// Allocate frame for call (ABI0 stack-based calling)
-	// TimerIRQHandler: 4 args (32 bytes) + 4 returns (32 bytes) = 64 bytes
-	SUB	$64, RSP
+	// Validate wrapper address is 4-byte aligned
+	TST	$3, R10
+	BNE	timer_no_preempt
 
-	// Store arguments on stack (ABI0 convention)
-	MOVD	R0, 8(RSP)   // arg0: irqNum
-	// framePtr needs adjustment since we modified RSP
-	ADD	$64, R1      // Fix framePtr to point to original frame
-	MOVD	R1, 16(RSP)  // arg1: framePtr (corrected)
-	MOVD	R2, 24(RSP)  // arg2: elr
-	MOVD	R3, 32(RSP)  // arg3: spEl0
+	// Get original ELR from exception frame
+	MOVD	EXC_FRAME_ELR_SPSR(RSP), R11
 
-	// Call through ABI0 stub which forwards to timerIRQHandlerInternal
-	CALL	·TimerIRQHandler(SB)
+	// Validate ELR is 4-byte aligned
+	TST	$3, R11
+	BNE	timer_no_preempt
 
-	// Read return values from stack
-	// Returns: newELR(8), newSP(8), newLR(8), doPreempt(bool, 1 byte padded)
-	MOVD	40(RSP), R20  // newELR
-	MOVD	48(RSP), R21  // newSP
-	MOVD	56(RSP), R22  // newLR
-	MOVB	64(RSP), R23  // doPreempt (bool)
+	// Check we're not already in asyncPreempt (avoid nested preemption)
+	// asyncPreempt is ~100 bytes, check if ELR is within [asyncPreempt, asyncPreempt+256)
+	SUB	R10, R11, R12  // R12 = ELR - asyncPreemptAddr
+	CMP	$256, R12
+	BLO	timer_no_preempt  // If ELR within 256 bytes of asyncPreempt, skip
 
-	// Restore stack
-	ADD	$64, RSP
+	// Clear NeedsAsyncPreempt flag
+	MOVW	$0, R12
+	MOVW	R12, kmazarin∕kirq·NeedsAsyncPreempt(SB)
+
+	// DEBUG: Print 'A' when async preemption is being injected
+	MOVD	$UART_BASE, R12
+	MOVD	$'A', R13
+	MOVB	R13, (R12)
+
+	// Set up preemption return values
+	// R20 = NewELR (asyncPreempt address)
+	// R21 = NewSP (unchanged, from exception frame)
+	// R22 = NewLR (original ELR, so asyncPreempt can return)
+	// R23 = DoPreempt (1 = true)
+	MOVD	R10, R20                        // NewELR = asyncPreemptAddr
+	MOVD	EXC_FRAME_SP_EL0(RSP), R21      // NewSP = original SP
+	MOVD	R11, R22                        // NewLR = original ELR
+	MOVD	$1, R23                         // DoPreempt = true
+
+	B	irq_write_eoir
+
+timer_no_preempt:
+	// No preemption - cooperative preemption via stackguard0 is still active
+	MOVD	$0, R20
+	MOVD	$0, R21
+	MOVD	$0, R22
+	MOVD	$0, R23
 
 	B	irq_write_eoir
 
@@ -862,6 +908,11 @@ irq_not_timer:
 	MOVD	$0, R23
 
 irq_write_eoir:
+	// DEBUG: Print 'E' before EOIR write
+	MOVD	$UART_BASE, R10
+	MOVD	$'E', R11
+	MOVB	R11, (R10)
+
 	// Write End Of Interrupt (must do before modifying frame!)
 	MOVD	$(GIC_CPU_BASE + GICC_EOIR), R10
 	MOVW	R19, (R10)  // Write original IAR value to EOIR
@@ -922,9 +973,63 @@ irq_return:
 	LDP	EXC_FRAME_X0+32(RSP), (R4, R5)
 	LDP	EXC_FRAME_X0+48(RSP), (R6, R7)
 
+	// DEBUG: Print 'X' before ERET
+	MOVD	$UART_BASE, R10
+	MOVD	$'X', R11
+	MOVB	R11, (R10)
+
 	// Clean up stack and return
 	ADD	$EXC_FRAME_SIZE, RSP
 	ERET
+
+// ============================================================================
+// asyncPreemptWrapper - Wrapper that calls asyncPreempt2 directly
+// ============================================================================
+// We can't use asyncPreempt directly because it saves LR to R28, but
+// asyncPreempt2 expects R28 to be g. Instead, we call asyncPreempt2 directly
+// while keeping g (R28) valid.
+//
+// When called (via ERET from IRQ handler):
+//   LR = original interrupted PC (set by IRQ handler)
+//   R28 = g (restored from exception frame)
+//
+// The wrapper:
+//   1. Saves LR (original PC) and R19 to stack (R19 is callee-saved)
+//   2. Copies LR to R19 for safekeeping
+//   3. Calls asyncPreempt2 directly (R28/g remains valid)
+//   4. Restores LR from R19 and restores R19
+//   5. Returns to original PC
+//
+TEXT ·asyncPreemptWrapper(SB), NOSPLIT, $16
+	// Allocate 16 bytes of stack (Go assembler handles prologue)
+	// Save R19 (callee-saved) so we can use it to hold LR
+	MOVD	R19, 8(RSP)
+
+	// Save original LR to R19 (asyncPreempt2 must preserve R19)
+	MOVD	LR, R19
+
+	// DEBUG: Print 'W' to show wrapper entry
+	MOVD	$UART_BASE, R10
+	MOVD	$'W', R11
+	MOVB	R11, (R10)
+
+	// Call asyncPreempt2 directly
+	// R28 (g) is valid, R19 holds our return address
+	BL	runtime·asyncPreempt2(SB)
+
+	// DEBUG: Print 'w' to show wrapper return
+	MOVD	$UART_BASE, R10
+	MOVD	$'w', R11
+	MOVB	R11, (R10)
+
+	// Restore LR from R19
+	MOVD	R19, LR
+
+	// Restore R19
+	MOVD	8(RSP), R19
+
+	// Return to original PC (now in LR)
+	RET
 
 // ============================================================================
 // GetExceptionVectorBase - Returns address of exception vector table
@@ -971,4 +1076,40 @@ TEXT ·EnableIRQs(SB), NOSPLIT, $0
 	// Encoded as: 0xD50342FF
 	WORD	$0xD50342FF
 	ISB	$15		// Synchronize context
+	RET
+
+// ============================================================================
+// DisableIRQs - Disable interrupts by setting the I bit in DAIF
+// ============================================================================
+TEXT ·DisableIRQs(SB), NOSPLIT, $0
+	// MSR DAIFSET, #2 - Set I bit (bit 1) = disable IRQs
+	// Encoded as: 0xD50342DF
+	WORD	$0xD50342DF
+	ISB	$15		// Synchronize context
+	RET
+
+// ============================================================================
+// SaveAndDisableIRQs - Save DAIF and disable IRQs atomically
+// Returns: saved DAIF value in R0
+// ============================================================================
+TEXT ·SaveAndDisableIRQs(SB), NOSPLIT, $0-8
+	// MRS X0, DAIF - Read current DAIF into R0
+	// Encoded as: 0xD53B4220
+	WORD	$0xD53B4200
+	// MSR DAIFSET, #2 - Set I bit = disable IRQs
+	WORD	$0xD50342DF
+	ISB	$15
+	MOVD	R0, ret+0(FP)
+	RET
+
+// ============================================================================
+// RestoreIRQs - Restore DAIF to a previously saved value
+// Input: savedDAIF in first argument
+// ============================================================================
+TEXT ·RestoreIRQs(SB), NOSPLIT, $0-8
+	MOVD	savedDAIF+0(FP), R0
+	// MSR DAIF, X0 - Write R0 to DAIF
+	// Encoded as: 0xD51B4200
+	WORD	$0xD51B4200
+	ISB	$15
 	RET
