@@ -667,29 +667,10 @@ func printTimerDebug() {
 
 // EnableTimerIRQ enables the timer IRQ (27) using the GIC device driver.
 func EnableTimerIRQ() {
-	// DEBUG: Show we're enabling timer
-	const uartBase = 0xFFFFFFFF09000000
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'E'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'T'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'I'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'M'
-
 	if gic, ok := device.GetInterruptController(); ok {
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'Y'  // GIC found
 		gic.EnableIRQ(27)
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'y'  // IRQ enabled
-
 		// Start the timer hardware
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'R'  // Rearming
 		RearmTimerNow()
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'r'  // Timer started
-
-		// Print detailed timer state
-		// DEBUG: Temporarily disabled to isolate crash
-		// printTimerDebug()
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'D'  // Debug disabled
-	} else {
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'N'  // No GIC
 	}
 }
 
@@ -768,43 +749,10 @@ func testDeviceDiscovery() {
 
 		// Switch to interrupt-driven PL011 console
 		if bs, ok := device.GetByteStream(); ok {
-			// DEBUG: Check ByteStream pointer
-			const uartBase = 0xFFFFFFFF09000000
-			bsPtr := uintptr(unsafe.Pointer(&bs))
-			debugPrintHex64(uartBase, "bs ptr: ", bsPtr)
-
 			// Type assert to *uart.PL011 to access AsConsole()
 			if pl011, ok := bs.(*uart.PL011); ok {
-				// DEBUG: Check PL011 pointer
-				pl011Ptr := uintptr(unsafe.Pointer(pl011))
-				debugPrintHex64(uartBase, "pl011 ptr: ", pl011Ptr)
-
 				console.Println("[DeviceTest] Switching to PL011 interrupt-driven console...")
-
-				// Get console adapter
-				consoleAdapter := pl011.AsConsole()
-				adapterPtr := uintptr(unsafe.Pointer(consoleAdapter))
-				debugPrintHex64(uartBase, "adapter ptr: ", adapterPtr)
-
-				console.Set(consoleAdapter)
-				*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'O'
-				*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'K'
-				*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '\r'
-				*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '\n'
-
-				// Check what console.Get() returns
-				currentConsole := console.Get()
-				if currentConsole == nil {
-					*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'N'
-					*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'I'
-					*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'L'
-				} else {
-					currentPtr := uintptr(unsafe.Pointer(&currentConsole))
-					debugPrintHex64(uartBase, "current ptr: ", currentPtr)
-				}
-				*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '\r'
-				*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '\n'
-
+				console.Set(pl011.AsConsole())
 				console.Println("[DeviceTest] Now using PL011 interrupt-driven console!")
 			}
 		}
@@ -832,22 +780,7 @@ func simpleMain() {
 	// We must update VBAR_EL1 to use kmazarin's vectors at high memory.
 	// This must happen BEFORE any device initialization that might enable interrupts!
 	vectorAddr := GetExceptionVectorBase()
-	const uartBase = 0xFFFFFFFF09000000
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'V'  // VBAR
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'B'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'A'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'R'
 	SetVBAR(vectorAddr)
-	// Verify it was set correctly
-	readBack := ReadVBAR()
-	if readBack == vectorAddr {
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'O'  // OK
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'K'
-	} else {
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'E'  // ERROR
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'R'
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'R'
-	}
 
 	// Test DTB-based device discovery BEFORE unmapping Cardinal
 	// (DTB is at 0x40000000 in Cardinal's memory region)
@@ -855,59 +788,11 @@ func simpleMain() {
 
 	// CRITICAL: Enable IRQs at CPU AFTER GIC is initialized (matches Cardinal's order)
 	// This unmasks IRQs at the CPU (clears DAIF.I bit)
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'C'  // CPU IRQs
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'P'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'U'
 	EnableIRQs()
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'I'  // IRQs enabled
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'R'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'Q'
 	Print("[Main] IRQs enabled at CPU")
 
 	// NOW enable timer IRQ for async preemption (after GIC is initialized)
-	// DEBUG: Check DAIF before enabling timer
-	daif := ReadDAIF()
-	if (daif & (1 << 7)) != 0 {
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'M'  // Masked!
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'A'
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'S'
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'K'
-	} else {
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'U'  // Unmasked
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'N'
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'M'
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'S'
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'K'
-	}
 	EnableTimerIRQ()
-
-	// DEBUG: Poll GICD_ISPENDR0 to see if bit 27 ever gets set (timer interrupt pending)
-	const gicDist = 0x08000000
-	const gicCpu = 0x08010000
-	for i := 0; i < 100000; i++ {
-		ispendr := *(*uint32)(unsafe.Pointer(uintptr(gicDist + 0x200)))
-		if (ispendr & (1 << 27)) != 0 {
-			*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'P'  // Pending!
-			*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'E'
-			*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'N'
-			*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'D'
-
-			// DEBUG: Try manually reading GICC_IAR to see what interrupt number we get
-			iar := *(*uint32)(unsafe.Pointer(uintptr(gicCpu + 0x00C)))
-			irqNum := iar & 0x3FF
-			if irqNum == 27 {
-				*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'G'  // Got IRQ 27!
-				*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'O'
-				*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'T'
-			} else if irqNum == 1023 {
-				*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'S'  // Spurious
-				*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'P'
-				*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'U'
-				*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'R'
-			}
-			break
-		}
-	}
 
 	asyncPreemptAddr := GetAsyncPreemptAddr()
 	kirq.SetAsyncPreemptAddr(asyncPreemptAddr)

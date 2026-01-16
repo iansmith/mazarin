@@ -37,13 +37,6 @@ func (d *GICv2Driver) Probe(node *dtb.Node) bool {
 }
 
 func (d *GICv2Driver) Init(node *dtb.Node) (deviceapi.Closable, error) {
-	// DEBUG: Print that Init was called - use very distinctive pattern
-	const uartBase = 0xFFFFFFFF09000000
-	for i := 0; i < 10; i++ {
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'X'
-	}
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '\n'
-
 	// Convert physical address to high-memory kernel address
 	// Physical: 0x08000000 → Kernel: 0xFFFFFFFF08000000
 	// This matches what the exception handler uses for GIC access
@@ -53,23 +46,8 @@ func (d *GICv2Driver) Init(node *dtb.Node) (deviceapi.Closable, error) {
 		cpuBase:  node.Reg[1].Address + KernelMMIOOffset, // CPU interface (high memory)
 	}
 
-	// DEBUG: Print after struct creation
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '['
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'S'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'T'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'R'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = ']'
-
 	// Initialize GIC hardware
 	gic.initHardware()
-
-	// DEBUG: Print after initHardware
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '['
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'D'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'O'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'N'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'E'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = ']'
 
 	return gic, nil
 }
@@ -124,8 +102,6 @@ func (g *GICv2) DisableIRQ(irq uint32) {
 
 // Hardware initialization
 func (g *GICv2) initHardware() {
-	const uartBase = 0xFFFFFFFF09000000
-
 	// Check if GIC is already initialized
 	// QEMU virt machine pre-initializes GIC with Group 0 (Secure) interrupts:
 	//   - GICD_CTLR = 0x01 (only Group 0 enabled)
@@ -136,13 +112,6 @@ func (g *GICv2) initHardware() {
 	// FIX: Reconfigure GIC for Non-Secure EL1 by moving all interrupts to Group 1.
 	gicdCtrl := g.readDistReg(GICD_CTLR)
 	if gicdCtrl != 0 {
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '['
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'G'
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'R'
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'P'
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '1'
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = ']'
-
 		// CRITICAL: Move all interrupts to Group 1 (Non-Secure)
 		// GICv2 spec: Group 0 = Secure, Group 1 = Non-Secure
 		// In Non-Secure EL1, we can ONLY receive Group 1 interrupts
@@ -176,73 +145,33 @@ func (g *GICv2) initHardware() {
 		ipri8 = (ipri8 & 0xFFFF00FF) | 0x00008000  // Set byte 1 (IRQ 33) to 0x80
 		g.writeDistReg(0x420, ipri8)
 
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '['
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'P'
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'R'
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'I'
-		*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = ']'
 		return
 	}
 
 	// GIC not yet initialized - perform full initialization
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '['
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'I'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'N'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'I'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'T'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = ']'
-
 	// CRITICAL: Disable CPU interface FIRST to stop interrupt delivery
 	g.writeCPUReg(GICC_CTLR, 0)
 
 	// Disable distributor
 	g.writeDistReg(GICD_CTLR, 0)
 
-	// TEST: Verify write took effect
-	testVal2 := g.readDistReg(GICD_CTLR)
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'A'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'F'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '='
-	// Print testVal2 in hex
-	for shift := 28; shift >= 0; shift -= 4 {
-		nibble := (testVal2 >> uint(shift)) & 0xF
-		if nibble < 10 {
-			*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '0' + uint32(nibble)
-		} else {
-			*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'A' + uint32(nibble-10)
-		}
-	}
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '\n'
-
-	// DEBUG: Mark we're about to start configuration loops
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '['
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'L'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'O'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'O'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'P'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'S'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = ']'
-
 	// Disable all interrupts (clear all ISENABLER registers)
 	// This ensures no interrupts from Cardinal are still enabled
 	for i := uintptr(0); i < 32; i++ {
 		g.writeDistReg(GICD_ICENABLER+(i*4), 0xFFFFFFFF)
 	}
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'D' // After disable loop
 
 	// Clear all pending interrupts
 	// This ensures no pending interrupts from Cardinal are latched
 	for i := uintptr(0); i < 32; i++ {
 		g.writeDistReg(0x280+(i*4), 0xFFFFFFFF) // GICD_ICPENDR
 	}
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'P' // After pending clear loop
 
 	// Clear all active interrupts
 	// This ensures no active interrupts from Cardinal are stuck
 	for i := uintptr(0); i < 32; i++ {
 		g.writeDistReg(0x380+(i*4), 0xFFFFFFFF) // GICD_ICACTIVER
 	}
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'A' // After active clear loop
 
 	// CRITICAL: Route all interrupts to Group 0 (secure)
 	// This matches Cardinal's initialization and is required for proper delivery
@@ -250,60 +179,24 @@ func (g *GICv2) initHardware() {
 	for i := uintptr(0); i < 32; i++ {
 		g.writeDistReg(0x080+(i*4), 0x00000000) // GICD_IGROUPR - all Group 0
 	}
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'G' // After group assignment loop
 
 	// Set all interrupts to medium priority (0x80, matches Cardinal)
 	for i := uintptr(0); i < 256; i++ {
 		g.writeDistReg(GICD_IPRIORITYR+(i*4), 0x80808080)
 	}
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'M' // After priority loop
 
 	// CRITICAL: Set timer IRQ (27) to HIGHEST priority (0x00)
 	// IRQ 27 is in GICD_IPRIORITYR6, byte 3
 	// Read-modify-write to only change byte 3
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '1'
 	ipri6 := g.readDistReg(GICD_IPRIORITYR + 24)  // Register 6 (IRQ 24-27)
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '2'
 	ipri6 = (ipri6 & 0x00FFFFFF) | (0x00 << 24)    // Set byte 3 to 0x00
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '3'
 	g.writeDistReg(GICD_IPRIORITYR+24, ipri6)
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '4'
-
-	// DEBUG: Mark before ITARGETSR loop
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'B'
 
 	// CRITICAL: Route all interrupts to CPU 0 (matches Cardinal's init)
 	// Even for PPIs (IRQ 16-31), QEMU/GICv2 requires GICD_ITARGETSR to be set
 	for i := uintptr(0); i < 256; i++ {
 		g.writeDistReg(0x800+(i*4), 0x01010101) // GICD_ITARGETSR
 	}
-
-	// DEBUG: Check if we reach this point
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'K'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'T'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'G'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'T'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '1'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '\n'
-
-	// Read back GICD_ITARGETSR6 to verify write took effect
-	itargetsr6_after := g.readDistReg(0x800 + 24)
-
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'K'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'T'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'G'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'T'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '2'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '='
-	for shift := 28; shift >= 0; shift -= 4 {
-		nibble := (itargetsr6_after >> uint(shift)) & 0xF
-		if nibble < 10 {
-			*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '0' + uint32(nibble)
-		} else {
-			*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'A' + uint32(nibble-10)
-		}
-	}
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '\n'
 
 	// CRITICAL: Configure all interrupts as level-triggered (matches Cardinal)
 	// GICD_ICFGR: 2 bits per interrupt, 0b00 = level-triggered
@@ -315,25 +208,6 @@ func (g *GICv2) initHardware() {
 	// Bit 0 = Enable Group 0
 	// Since all interrupts are assigned to Group 0, we only enable that group
 	g.writeDistReg(GICD_CTLR, 0x01)  // Enable Group 0 only
-	// Verify it took effect
-	gicdCtrl = g.readDistReg(GICD_CTLR)
-
-	// DEBUG: Print current GIC configuration via direct UART
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'D'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'C'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'T'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'R'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '='
-	// Print gicdCtrl in hex
-	for shift := 28; shift >= 0; shift -= 4 {
-		nibble := (gicdCtrl >> uint(shift)) & 0xF
-		if nibble < 10 {
-			*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '0' + uint32(nibble)
-		} else {
-			*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'A' + uint32(nibble-10)
-		}
-	}
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '\n'
 
 	// Configure CPU interface
 	g.writeCPUReg(GICC_PMR, 0xFF) // Set priority mask to 0xFF (allow ALL priorities)
@@ -343,49 +217,9 @@ func (g *GICv2) initHardware() {
 	// Bit 0 = EnableGrp0 (Group 0 interrupts signal IRQ)
 	// Since all interrupts are in Group 0, we only enable Group 0
 	g.writeCPUReg(GICC_CTLR, 0x01)  // Enable Group 0 only
-	// Verify it took effect
-	giccCtrl := g.readCPUReg(GICC_CTLR)
-	giccPmr := g.readCPUReg(GICC_PMR)
-	giccBpr := g.readCPUReg(0x008) // GICC_BPR
-
-	// DEBUG: Print CPU interface configuration
-	println("GIC Init: GICC_CTLR =", hex(giccCtrl))
-	println("GIC Init: GICC_PMR =", hex(giccPmr))
-	println("GIC Init: GICC_BPR =", hex(giccBpr))
-
-	// DEBUG: Check IRQ 27 interrupt group assignment (GICD_IGROUPR0 covers IRQ 0-31)
-	igroupr0 := g.readDistReg(0x080) // GICD_IGROUPR0
-	println("GIC Init: GICD_IGROUPR0 =", hex(igroupr0), "bit27=", (igroupr0>>27)&1)
-
-	// DEBUG: Check GICD_ITARGETSR6 as read by CPU (should show 0x01010101 for CPU 0)
-	itargetsr6 := g.readDistReg(0x800 + 24) // Register 6 (IRQ 24-27)
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'T'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'G'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'T'
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '='
-	for shift := 28; shift >= 0; shift -= 4 {
-		nibble := (itargetsr6 >> uint(shift)) & 0xF
-		if nibble < 10 {
-			*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '0' + uint32(nibble)
-		} else {
-			*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = 'A' + uint32(nibble-10)
-		}
-	}
-	*(*uint32)(unsafe.Pointer(uintptr(uartBase))) = '\n'
 
 	// NOTE: Timer IRQ (27) will be explicitly enabled later via EnableTimerIRQ()
 	// We don't disable it here since we'll need it for async preemption
-}
-
-// hex formats a uint32 as hex string
-func hex(v uint32) string {
-	const digits = "0123456789abcdef"
-	buf := [10]byte{'0', 'x'}
-	for i := 7; i >= 0; i-- {
-		buf[2+i] = digits[v&0xF]
-		v >>= 4
-	}
-	return string(buf[:])
 }
 
 // Hardware access
