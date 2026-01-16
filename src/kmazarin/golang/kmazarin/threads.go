@@ -3,19 +3,19 @@
 package main
 
 import (
-	"kmazarin/console"
 	"kmazarin/ds"
 	"kmazarin/kirq"
 	"kmazarin/util"
 	"unsafe"
 )
 
-// debugPrint writes a single character to console for debugging
-// Uses console abstraction which provides spinlock protection
+// debugPrint writes a single character for debugging.
+// Safe to call from any context including nosplit functions.
+// Uses direct UART breadcrumb to avoid stack growth.
 //
 //go:nosplit
 func debugPrint(c byte) {
-	console.WriteByte(c)
+	Breadcrumb(c)
 }
 
 // Syscall return codes for assembly

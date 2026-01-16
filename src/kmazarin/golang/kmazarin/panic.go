@@ -2,8 +2,6 @@
 
 package main
 
-import "kmazarin/console"
-
 // Exit hangs the system in an infinite loop
 // Implemented in panic_arm64.s
 func Exit()
@@ -14,9 +12,10 @@ func Exit()
 //
 //go:nosplit
 func KernelPanic(msg string) {
-	console.WriteString("\r\n*** KERNEL PANIC ***\r\n")
-	console.WriteString(msg)
-	console.WriteString("\r\n")
+	// Use breadcrumbs for panic output - safe from any context
+	BreadcrumbString("\r\n*** KERNEL PANIC ***\r\n")
+	BreadcrumbString(msg)
+	BreadcrumbString("\r\n")
 
 	// Halt the system
 	Exit()

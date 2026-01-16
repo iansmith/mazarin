@@ -85,6 +85,9 @@ func init() {
 	// Initialize critical early devices (UART, GIC, Timer, RNG)
 	EarlyInit()
 
+	// Initialize breadcrumb cache for safe debug output from any context
+	InitBreadcrumbs()
+
 	// Initialize timer, IRQ handlers, and preemption subsystem
 	kirq.InitTimer()
 	kirq.RegisterHandlers()
@@ -93,20 +96,22 @@ func init() {
 	// NOTE: OLD UART initialization disabled - now using PL011 device driver
 	// kirq.InitUART()
 
-	// NOTE: Bottom half processors disabled - PL011 driver handles interrupts directly
-	// StartBottomHalfProcessors()
+	// Start bottom-half processors for interrupt dispatch
+	// The event poller will check IRQ pending flags and call handlers in safe Go context
+	StartBottomHalfProcessors()
 
 	// Enable interrupts - handlers and bottom halves are ready
 	EnableIRQs()
 	Print("[Init] Initialization complete")
 }
 
-// uartPutc writes a single character to UART using the console abstraction.
-// This is safe to call from any Go context (not IRQ context).
+// uartPutc writes a single character to UART.
+// Safe to call from any context including nosplit functions.
+// Uses direct UART breadcrumb to avoid stack growth.
 //
 //go:nosplit
 func uartPutc(c byte) {
-	console.WriteByte(c)
+	Breadcrumb(c)
 }
 
 // uartPuts writes a string directly to UART

@@ -3,9 +3,10 @@
 package main
 
 import (
+	"kmazarin/console"
+	"kmazarin/kirq"
 	"runtime"
 	"sync/atomic"
-	"time"
 	"unsafe"
 )
 
@@ -59,6 +60,17 @@ var (
 )
 
 // ============================================================================
+// Generic IRQ Pending Flags (for bottom-half dispatch)
+// ============================================================================
+
+// irqPendingFlags is an array of flags, one per IRQ number (0-1019).
+// The assembly IRQ handler sets irqPendingFlags[irqNum] = 1 when an IRQ fires.
+// The event poller checks these flags and dispatches to bottom-half handlers.
+//
+// This allows us to avoid calling Go code from IRQ context (unsafe on exception stack).
+var irqPendingFlags [1020]uint32
+
+// ============================================================================
 // Event Channels
 // ============================================================================
 
@@ -73,20 +85,28 @@ var (
 // ============================================================================
 
 // eventPoller runs continuously, checking atomic flags set by IRQ handlers
-// and sending on channels to wake the appropriate bottom half processor.
+// and dispatching to registered Go handlers in safe context.
 //
 // This goroutine is the bridge between:
 //   - Async world: IRQ handlers set flags (unsafe for Go calls)
-//   - Sync world: Channel sends wake goroutines (safe Go context)
+//   - Sync world: Call Go handlers in safe goroutine context
 //
-// Latency: Polls every 10µs, so worst-case wakeup delay is 10µs.
+// NOTE: Using busy-loop instead of time.Ticker to avoid timer initialization issues.
 //
 func eventPoller() {
-	ticker := time.NewTicker(10 * time.Microsecond)
-	defer ticker.Stop()
+	for {
+		// Yield to other goroutines periodically
+		runtime.Gosched()
+		// Check generic IRQ pending flags
+		// Scan the entire array and call registered handlers
+		for irqNum := uint32(0); irqNum < 1020; irqNum++ {
+			if atomic.SwapUint32(&irqPendingFlags[irqNum], 0) == 1 {
+				// IRQ fired - call registered handler in safe Go context
+				dispatchIRQ(irqNum)
+			}
+		}
 
-	for range ticker.C {
-		// Check UART RX flag
+		// Check UART RX flag (legacy - will be replaced by generic dispatch)
 		if atomic.SwapUint32(&uartRxPending, 0) == 1 {
 			// Non-blocking send - if channel already has a pending event, skip
 			select {
@@ -95,7 +115,7 @@ func eventPoller() {
 			}
 		}
 
-		// Check UART TX flag
+		// Check UART TX flag (legacy - will be replaced by generic dispatch)
 		if atomic.SwapUint32(&uartTxPending, 0) == 1 {
 			select {
 			case uartTxEventChan <- struct{}{}:
@@ -111,6 +131,15 @@ func eventPoller() {
 			}
 		}
 	}
+}
+
+// dispatchIRQ calls the registered handler for the given IRQ number.
+// This runs in safe Go context (event poller goroutine).
+//
+func dispatchIRQ(irqNum uint32) {
+	// Call kirq.DispatchIRQ with dummy values for framePtr, elr, spEl0
+	// (these aren't needed for simple handlers like UART)
+	kirq.DispatchIRQ(uint64(irqNum), 0, 0, 0)
 }
 
 // ============================================================================
@@ -158,12 +187,12 @@ func processUartRxBuffer() {
 
 // processRxByte handles a single received byte.
 // This is where protocol handling, echoing, etc. would go.
+// Runs in normal goroutine context, safe to call console functions.
 //
-//go:nosplit
 func processRxByte(b byte) {
-	// For now, just echo back
+	// For now, just echo back using console abstraction
 	// In the future, this could build command buffers, parse protocols, etc.
-	UartWriteByte(b)
+	console.WriteByte(b)
 }
 
 // ============================================================================
@@ -198,67 +227,36 @@ func deadlineBottomHalf() {
 }
 
 // ============================================================================
-// UART Write Functions (Called from Go Code)
+// Breadcrumb Debug Output (Safe from ANY context, including IRQ handlers)
 // ============================================================================
 
-// UartWriteByte writes a single byte to the UART TX ring buffer.
-// If the buffer is full, it falls back to direct MMIO (blocking).
+// breadcrumbUartBase is a cached copy of the UART base address.
+// Set once at boot, never changes. This avoids reading from potentially
+// corrupted memory during async preemption or context switches.
+var breadcrumbUartBase uintptr
+
+// InitBreadcrumbs initializes the breadcrumb UART base address.
+// Must be called early in boot before any breadcrumbs are used.
+func InitBreadcrumbs() {
+	breadcrumbUartBase = GetUartBase()
+}
+
+// Breadcrumb writes a single byte directly to UART hardware.
+// This bypasses all abstractions and is safe to call from:
+//   - IRQ handlers (exception stack)
+//   - Any context where Print() might deadlock
+//   - Early boot before console is initialized
+//
+// Use sparingly for critical debug output only.
 //
 //go:nosplit
-func UartWriteByte(b byte) {
-	// Try to add to ring buffer
-	head := atomic.LoadUint32(&uartTxRingHead)
-	tail := atomic.LoadUint32(&uartTxRingTail)
-	nextTail := (tail + 1) & (uartTxRingSize - 1)
-
-	if nextTail == head {
-		// Buffer full - fall back to direct MMIO
-		uartPutcDirect(b)
+func Breadcrumb(b byte) {
+	// Use cached UART base to avoid reading from potentially corrupted memory
+	uartBase := breadcrumbUartBase
+	// Safety: if UART base is not set, bail out silently
+	if uartBase == 0 {
 		return
 	}
-
-	// Add to ring buffer
-	uartTxRingBuffer[tail] = b
-	atomic.StoreUint32(&uartTxRingTail, nextTail)
-
-	// Enable TX interrupt to drain buffer
-	enableUartTxInterrupt()
-}
-
-// UartWrite writes multiple bytes to the UART TX ring buffer.
-// Returns the number of bytes written.
-//
-func UartWrite(data []byte) int {
-	written := 0
-
-	for _, b := range data {
-		head := atomic.LoadUint32(&uartTxRingHead)
-		tail := atomic.LoadUint32(&uartTxRingTail)
-		nextTail := (tail + 1) & (uartTxRingSize - 1)
-
-		if nextTail == head {
-			// Buffer full - can't write more
-			break
-		}
-
-		uartTxRingBuffer[tail] = b
-		atomic.StoreUint32(&uartTxRingTail, nextTail)
-		written++
-	}
-
-	if written > 0 {
-		enableUartTxInterrupt()
-	}
-
-	return written
-}
-
-// uartPutcDirect writes directly to UART hardware (blocking).
-// Used as fallback when ring buffer is full.
-//
-//go:nosplit
-func uartPutcDirect(b byte) {
-	uartBase := GetUartBase()
 	// Wait for TX FIFO to have space (bit 5 = TXFF)
 	for (*(*uint32)(unsafe.Pointer(uartBase + 0x18)) & 0x20) != 0 {
 		// Busy wait
@@ -267,10 +265,15 @@ func uartPutcDirect(b byte) {
 	*(*uint32)(unsafe.Pointer(uartBase + 0x00)) = uint32(b)
 }
 
-// enableUartTxInterrupt enables the UART TX interrupt.
-// This is implemented in assembly to safely access UART registers.
+// BreadcrumbString writes a string as breadcrumbs.
+// Safe from any context, but blocks - use for debug only.
 //
-func enableUartTxInterrupt()
+//go:nosplit
+func BreadcrumbString(s string) {
+	for i := 0; i < len(s); i++ {
+		Breadcrumb(s[i])
+	}
+}
 
 // ============================================================================
 // Startup
@@ -280,18 +283,37 @@ func enableUartTxInterrupt()
 // Must be called during initialization, BEFORE enabling interrupts.
 //
 func StartBottomHalfProcessors() {
+	BreadcrumbString("A")
 	Print("[BottomHalf] Starting event poller and processors...")
+	BreadcrumbString("B")
 
+	Print("[BottomHalf] Starting event poller...")
+	BreadcrumbString("C")
 	// Start event poller
 	go eventPoller()
+	BreadcrumbString("D")
+	Print("[BottomHalf] Event poller started")
+	BreadcrumbString("E")
 
+	Print("[BottomHalf] Starting RX processor...")
+	BreadcrumbString("F")
 	// Start bottom half processors
 	go uartRxBottomHalf()
+	BreadcrumbString("G")
+	Print("[BottomHalf] Starting TX processor...")
+	BreadcrumbString("H")
 	go uartTxBottomHalf()
+	BreadcrumbString("I")
+	Print("[BottomHalf] Starting deadline processor...")
+	BreadcrumbString("J")
 	go deadlineBottomHalf()
+	BreadcrumbString("K")
+	Print("[BottomHalf] All goroutines launched")
+	BreadcrumbString("L")
 
-	// Give goroutines a moment to start
-	runtime.Gosched()
+	Print("[BottomHalf] About to finish...")
+	BreadcrumbString("M")
 
-	Print("[BottomHalf] All processors started")
+	Print("[BottomHalf] Finished!")
+	BreadcrumbString("N")
 }

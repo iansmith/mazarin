@@ -815,26 +815,42 @@ timer_no_preempt:
 
 irq_not_timer:
 	// ========================================================================
-	// Non-timer IRQs - Dispatch to registered handlers via kirq.DispatchIRQ
+	// Non-timer IRQs - Set pending flag for bottom-half processing
 	// ========================================================================
 	// R0 contains the masked IRQ number
+	//
+	// We can't call Go code from IRQ context (wrong stack, wrong g, etc.)
+	// Instead, set a flag that the event poller will check, then the
+	// bottom-half processor will call the registered handler in safe Go context.
+	//
+	// This is the same pattern used for UART RX/TX and timer deadlines.
 
-	// Call kirq.DispatchIRQ(irqNum, framePtr, elr, spEl0) PreemptInfo
-	// Load arguments from exception frame
-	MOVD	EXC_FRAME_ELR_SPSR(RSP), R2   // R2 = ELR
-	MOVD	EXC_FRAME_SP_EL0(RSP), R3     // R3 = SP_EL0
-	MOVD	RSP, R1                        // R1 = framePtr
-	// R0 already contains IRQ number
+	// Check if IRQ number is in valid range (0-1019)
+	CMP	$1020, R0
+	BGE	irq_invalid
 
-	// Call using macro: func DispatchIRQ(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo
-	// Returns: (NewELR, NewSP, NewLR uint64, DoPreempt bool)
-	GO_CALL_4_4(·IRQDispatch, R0, R1, R2, R3, R10, R11, R12, R13)
+	// Set pending flag: irqPendingFlags[irqNum] = 1
+	// Calculate address: &irqPendingFlags[0] + (irqNum * 4)
+	MOVD	$·irqPendingFlags(SB), R10
+	MOVD	$4, R11           // sizeof(uint32)
+	MUL	R11, R0, R11      // R11 = irqNum * 4
+	ADD	R11, R10          // R10 = &irqPendingFlags[irqNum]
+	MOVD	$1, R12
+	MOVW	R12, (R10)        // Store 1 to flag
 
-	// Save return values for later use
-	MOVD	R10, R20  // R20 = NewELR
-	MOVD	R11, R21  // R21 = NewSP
-	MOVD	R12, R22  // R22 = NewLR
-	MOVD	R13, R23  // R23 = DoPreempt
+	// Non-timer IRQs don't trigger preemption (only timer does)
+	MOVD	$0, R20
+	MOVD	$0, R21
+	MOVD	$0, R22
+	MOVD	$0, R23
+	B	irq_write_eoir
+
+irq_invalid:
+	// Invalid IRQ number - just acknowledge and return
+	MOVD	$0, R20
+	MOVD	$0, R21
+	MOVD	$0, R22
+	MOVD	$0, R23
 
 irq_write_eoir:
 	// Write End Of Interrupt (must do before modifying frame!)
