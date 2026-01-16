@@ -88,4 +88,8 @@ func EarlyInit() {
 
 	// Initialize thread management system
 	InitThreads()
+
+	// NOTE: DTB-based device discovery is NOT done here yet
+	// It will be integrated in a future phase to replace hardcoded device init
+	// For now, we continue using the hardcoded device addresses from Cardinal
 }

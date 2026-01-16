@@ -3,8 +3,6 @@
 package dtb
 
 import (
-	"unsafe"
-
 	"kmazarin/asm"
 )
 

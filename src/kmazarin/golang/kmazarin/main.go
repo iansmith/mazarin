@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"kmazarin/device"
 	//  "kmazarin/dtb"
 	"kmazarin/kirq"
 	"kmazarin/kmem"
@@ -369,15 +370,64 @@ func testRuntimeReadiness() bool {
 	return true
 }
 
+// testDeviceDiscovery tests the DTB-based device discovery system
+// This is a temporary test function to verify DTB parsing and device matching
+func testDeviceDiscovery() {
+	fmt.Println("\n[DeviceTest] === Testing DTB Device Discovery ===")
+
+	// Register all device drivers
+	device.RegisterAllDrivers()
+
+	// Get DTB address from runtime config
+	cfg := GetRuntimeConfig()
+	if cfg == nil {
+		fmt.Println("[DeviceTest] ERROR: RuntimeConfig not available")
+		return
+	}
+
+	// Use physical address - DTB is in low memory which is still mapped
+	dtbAddr := uintptr(cfg.DtbPhysAddr)
+	fmt.Printf("[DeviceTest] DTB physical address: 0x%X\n", dtbAddr)
+
+	// Parse DTB and discover devices
+	err := device.InitFromDTB(dtbAddr)
+	if err != nil {
+		fmt.Printf("[DeviceTest] ERROR: %v\n", err)
+		return
+	}
+
+	// Show what was discovered
+	fmt.Println("\n[DeviceTest] Discovered devices:")
+
+	// Check for byte streams (UART)
+	if uart, ok := device.GetByteStream(); ok {
+		fmt.Printf("  - ByteStream: %s\n", uart.Name())
+	}
+
+	// Check for interrupt controller (GIC)
+	if gic, ok := device.GetInterruptController(); ok {
+		fmt.Printf("  - InterruptController: %s\n", gic.Name())
+	}
+
+	// Check for random source (VirtIO RNG)
+	if rng, ok := device.GetRandomSource(); ok {
+		fmt.Printf("  - RandomSource: %s\n", rng.Name())
+	}
+
+	// Check for block devices
+	if blk, ok := device.GetBlockDevice(); ok {
+		fmt.Printf("  - BlockDevice: %s\n", blk.Name())
+	}
+
+	fmt.Println("[DeviceTest] === Test Complete ===\n")
+}
+
 // simpleMain is the entry point for our simple goroutine/channel test
 // This will be run by the scheduler as the main goroutine
 func simpleMain() {
 	Print("[Main] Kmazarin kernel starting...")
 
-	// Unmap Cardinal at L1 level - zeros L1[0-2] (0-3GB) while preserving L1[256+] for heap
-	unmapCardinal()
-
-	// Test runtime readiness and initialize heap-based structures
+	// Test runtime readiness FIRST (before unmapping Cardinal)
 	if testRuntimeReadiness() {
 		Print("[Main] Runtime ready")
 		InitDeadlineQueue()
@@ -385,6 +435,13 @@ func simpleMain() {
 	} else {
 		Print("[Main] Runtime not ready - continuing with direct UART")
 	}
+
+	// Test DTB-based device discovery BEFORE unmapping Cardinal
+	// (DTB is at 0x40000000 in Cardinal's memory region)
+	testDeviceDiscovery()
+
+	// Unmap Cardinal at L1 level - zeros L1[1-2] (1-3GB) while preserving L1[0] for MMIO and L1[256+] for heap
+	unmapCardinal()
 
 	// Launch second goroutine for preemption test
 	Print("[Main] Starting preemption test...")
