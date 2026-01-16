@@ -93,6 +93,11 @@ func init() {
 	kirq.RegisterHandlers()
 	kirq.InitPreemption()
 
+	// Store asyncPreemptWrapper address for IRQ handler to read.
+	// This must be done before EnableIRQs() since the timer IRQ handler
+	// needs this address to inject async preemption.
+	kirq.SetAsyncPreemptWrapperAddr(getAsyncPreemptWrapperAddr())
+
 	// NOTE: OLD UART initialization disabled - now using PL011 device driver
 	// kirq.InitUART()
 
@@ -106,36 +111,39 @@ func init() {
 }
 
 // uartPutc writes a single character to UART.
-// Safe to call from any context including nosplit functions.
-// Uses direct UART breadcrumb to avoid stack growth.
+// This function can be called from normal Go code (preemptible goroutines).
+// It's NOT marked nosplit because it calls into the console package.
 //
-//go:nosplit
+// NOTE: Do not call from IRQ handlers or nosplit contexts - use Breadcrumb() instead.
+//
 func uartPutc(c byte) {
-	Breadcrumb(c)
+	console.WriteByte(c)
 }
 
-// uartPuts writes a string directly to UART
-//go:nosplit
+// uartPuts writes a string to UART.
+// Safe for normal Go code (preemptible).
 func uartPuts(s string) {
 	for i := 0; i < len(s); i++ {
 		uartPutc(s[i])
 	}
 }
 
-// uartPutsDirect writes a string directly to UART (alias for uartPuts)
-// Used by ksyscall and kthread packages via linkname
+// uartPutsDirect writes a string directly to UART using breadcrumbs.
+// Used by ksyscall and kthread packages via linkname (nosplit contexts).
+// Uses Breadcrumb which is NOT safe for async preemption.
 //go:linkname uartPutsDirect kmazarin/ksyscall.uartPutsDirect
 //go:nosplit
 func uartPutsDirect(s string) {
-	uartPuts(s)
+	BreadcrumbString(s)
 }
 
-// uartPutcDirectForKmem writes a byte directly to UART
-// Used by kmem package via linkname
+// uartPutcDirectForKmem writes a byte directly to UART using breadcrumbs.
+// Used by kmem package via linkname (nosplit context).
+// Uses Breadcrumb which is NOT safe for async preemption.
 //go:linkname uartPutcDirectForKmem kmazarin/kmem.uartPutcDirect
 //go:nosplit
 func uartPutcDirectForKmem(c byte) {
-	uartPutc(c)
+	Breadcrumb(c)
 }
 
 // getRuntimeConfigForKmem provides runtime config to kmem package via linkname

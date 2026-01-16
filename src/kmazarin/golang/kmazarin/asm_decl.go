@@ -55,6 +55,14 @@ func GetPC() uint64
 //go:nosplit
 func asyncPreemptWrapper()
 
+// getAsyncPreemptWrapperAddr returns the address of asyncPreemptWrapper.
+// This function exists because loading function addresses directly in assembly
+// may not work correctly with Go's ABI system. By calling this Go function,
+// we let the Go toolchain handle the ABI0 symbol resolution properly.
+// Defined in exceptions_arm64.s
+//go:nosplit
+func getAsyncPreemptWrapperAddr() uintptr
+
 // HandlePageFaultAsm is the ABI0 entry point for the page fault handler.
 // Called from data_abort in exceptions_arm64.s
 // Takes faultAddr as argument, returns bool (1=handled, 0=not handled)

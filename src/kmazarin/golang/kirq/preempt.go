@@ -41,8 +41,9 @@ var (
 	PreemptOffsetsValid      uint32  // 1 when offsets have been initialized
 
 	// Async preemption addresses - set by SetAsyncPreemptAddr, read by assembly
-	AsyncPreemptAddr       uint64 // Address of runtime.asyncPreempt
-	ReadyForAsyncPreempt   uint32 // 1 when ready for async preemption
+	AsyncPreemptAddr        uint64 // Address of runtime.asyncPreempt
+	AsyncPreemptWrapperAddr uint64 // Address of main.asyncPreemptWrapper
+	ReadyForAsyncPreempt    uint32 // 1 when ready for async preemption
 )
 
 // Per-goroutine tick tracking for async preemption fallback.
@@ -124,6 +125,15 @@ func InitPreemption() {
 //go:nosplit
 func SetAsyncPreemptAddr(addr uintptr) {
 	AsyncPreemptAddr = uint64(addr)
+}
+
+// SetAsyncPreemptWrapperAddr sets the asyncPreemptWrapper address.
+// Called from main package init() after getting the address via assembly helper.
+// The IRQ handler reads this address to inject async preemption.
+//
+//go:nosplit
+func SetAsyncPreemptWrapperAddr(addr uintptr) {
+	AsyncPreemptWrapperAddr = uint64(addr)
 }
 
 // SetReadyForAsyncPreempt marks the system as ready for async preemption.

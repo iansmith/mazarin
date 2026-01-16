@@ -736,10 +736,12 @@ irq_exception_handler:
 	MOVW	kmazarin∕kirq·ReadyForAsyncPreempt(SB), R10
 	CBZ	R10, timer_no_preempt_not_ready
 
-	// Get asyncPreemptWrapper address (our wrapper that saves g)
-	MOVD	$·asyncPreemptWrapper(SB), R10
+	// Get runtime.asyncPreempt address from global variable (set by Go init)
+	// We use the runtime's asyncPreempt which properly saves/restores ALL registers.
+	// Our wrapper was broken - it only saved R19/LR, causing register corruption.
+	MOVD	kmazarin∕kirq·AsyncPreemptAddr(SB), R10
 
-	// Validate wrapper address is 4-byte aligned
+	// Validate asyncPreempt address is 4-byte aligned
 	TST	$3, R10
 	BNE	timer_no_preempt_wrapper_misaligned
 
@@ -762,11 +764,14 @@ irq_exception_handler:
 
 	// Set up preemption return values
 	// R20 = NewELR (asyncPreempt address)
-	// R21 = NewSP (unchanged, from exception frame)
+	// R21 = NewSP (adjusted downward to make room for asyncPreempt's frame)
 	// R22 = NewLR (original ELR, so asyncPreempt can return)
 	// R23 = DoPreempt (1 = true)
 	MOVD	R10, R20                        // NewELR = asyncPreemptAddr
-	MOVD	EXC_FRAME_SP_EL0(RSP), R21      // NewSP = original SP
+	MOVD	EXC_FRAME_SP_EL0(RSP), R21      // Load original SP
+	// Don't adjust SP - asyncPreempt manages its own stack frame.
+	// In signal-based preemption, asyncPreempt runs with the goroutine's
+	// original SP and allocates/deallocates its own frame.
 	MOVD	R11, R22                        // NewLR = original ELR
 	MOVD	$1, R23                         // DoPreempt = true
 
@@ -961,6 +966,17 @@ TEXT ·asyncPreemptWrapper(SB), NOSPLIT, $16
 // ============================================================================
 TEXT ·GetExceptionVectorBase(SB), NOSPLIT, $0-8
 	MOVD	$·ExceptionVectorTable(SB), R0
+	MOVD	R0, ret+0(FP)
+	RET
+
+// ============================================================================
+// getAsyncPreemptWrapperAddr - Returns address of asyncPreemptWrapper
+// ============================================================================
+// This function returns the address of asyncPreemptWrapper so it can be stored
+// in a global variable for the IRQ handler to read. This avoids issues with
+// loading function addresses directly in assembly (ABI0 symbol resolution).
+TEXT ·getAsyncPreemptWrapperAddr(SB), NOSPLIT, $0-8
+	MOVD	$·asyncPreemptWrapper(SB), R0
 	MOVD	R0, ret+0(FP)
 	RET
 
