@@ -727,38 +727,48 @@ irq_exception_handler:
 	// ========================================================================
 	// Async preemption injection (pure assembly, no Go calls)
 	// ========================================================================
+	// DEBUG: Print '?' to show we're checking preemption
+	MOVD	$(UART_BASE), R10
+	MOVD	$'?', R11
+	MOVB	R11, (R10)
+
 	// Check if assembly handler requested async preemption.
 	// This is set by TimerIRQHandlerAsm when threshold exceeded.
 	MOVW	kmazarin∕kirq·NeedsAsyncPreempt(SB), R10
-	CBZ	R10, timer_no_preempt
+	CBZ	R10, timer_no_preempt_no_flag
 
 	// Check if runtime is ready for async preemption
 	MOVW	kmazarin∕kirq·ReadyForAsyncPreempt(SB), R10
-	CBZ	R10, timer_no_preempt
+	CBZ	R10, timer_no_preempt_not_ready
 
 	// Get asyncPreemptWrapper address (our wrapper that saves g)
 	MOVD	$·asyncPreemptWrapper(SB), R10
 
 	// Validate wrapper address is 4-byte aligned
 	TST	$3, R10
-	BNE	timer_no_preempt
+	BNE	timer_no_preempt_wrapper_misaligned
 
 	// Get original ELR from exception frame
 	MOVD	EXC_FRAME_ELR_SPSR(RSP), R11
 
 	// Validate ELR is 4-byte aligned
 	TST	$3, R11
-	BNE	timer_no_preempt
+	BNE	timer_no_preempt_elr_misaligned
 
 	// Check we're not already in asyncPreempt (avoid nested preemption)
 	// asyncPreempt is ~100 bytes, check if ELR is within [asyncPreempt, asyncPreempt+256)
 	SUB	R10, R11, R12  // R12 = ELR - asyncPreemptAddr
 	CMP	$256, R12
-	BLO	timer_no_preempt  // If ELR within 256 bytes of asyncPreempt, skip
+	BLO	timer_no_preempt_already_in_async  // If ELR within 256 bytes of asyncPreempt, skip
 
 	// Clear NeedsAsyncPreempt flag
 	MOVW	$0, R12
 	MOVW	R12, kmazarin∕kirq·NeedsAsyncPreempt(SB)
+
+	// DEBUG: Print 'A' to show async preemption will be injected
+	MOVD	$(UART_BASE), R12
+	MOVD	$'A', R13
+	MOVB	R13, (R12)
 
 	// Set up preemption return values
 	// R20 = NewELR (asyncPreempt address)
@@ -772,6 +782,41 @@ irq_exception_handler:
 
 	B	irq_write_eoir
 
+timer_no_preempt_no_flag:
+	// DEBUG: NeedsAsyncPreempt not set
+	MOVD	$(UART_BASE), R10
+	MOVD	$'N', R11
+	MOVB	R11, (R10)
+	B	timer_no_preempt
+
+timer_no_preempt_not_ready:
+	// DEBUG: Runtime not ready
+	MOVD	$(UART_BASE), R10
+	MOVD	$'R', R11
+	MOVB	R11, (R10)
+	B	timer_no_preempt
+
+timer_no_preempt_wrapper_misaligned:
+	// DEBUG: Wrapper misaligned
+	MOVD	$(UART_BASE), R10
+	MOVD	$'W', R11
+	MOVB	R11, (R10)
+	B	timer_no_preempt
+
+timer_no_preempt_elr_misaligned:
+	// DEBUG: ELR misaligned
+	MOVD	$(UART_BASE), R10
+	MOVD	$'E', R11
+	MOVB	R11, (R10)
+	B	timer_no_preempt
+
+timer_no_preempt_already_in_async:
+	// DEBUG: Already in asyncPreempt
+	MOVD	$(UART_BASE), R10
+	MOVD	$'I', R11
+	MOVB	R11, (R10)
+	B	timer_no_preempt
+
 timer_no_preempt:
 	// No preemption - cooperative preemption via stackguard0 is still active
 	MOVD	$0, R20
@@ -783,19 +828,39 @@ timer_no_preempt:
 
 irq_not_timer:
 	// ========================================================================
-	// Non-timer IRQs - Dispatch through kirq.DispatchNonTimerIRQ
+	// Non-timer IRQs - Dispatch to pure assembly handlers
 	// ========================================================================
-	// Store IRQ number in global for Go function to read (avoids ABI complexity)
-	// R0 still contains the masked IRQ number from earlier
-	MOVD	R0, kmazarin∕kirq·CurrentIRQNum(SB)
+	// R0 contains the masked IRQ number
 
-	// Call Go dispatcher - handles UART, etc.
-	// NOTE: This is safe because:
-	//   1. We're on the exception stack (SP_EL1)
-	//   2. R28 still has g pointer
-	//   3. DispatchNonTimerIRQ is //go:nosplit
-	CALL	kmazarin∕kirq·DispatchNonTimerIRQ(SB)
+	// Check if this is UART IRQ (33)
+	CMP	$33, R0
+	BEQ	handle_uart_irq
 
+	// Unknown IRQ - just acknowledge and return
+	// In the future, add other device handlers here
+	MOVD	$0, R20
+	MOVD	$0, R21
+	MOVD	$0, R22
+	MOVD	$0, R23
+	B	irq_write_eoir
+
+handle_uart_irq:
+	// UART interrupt - check MIS register to see RX/TX/both
+	MOVD	$0xFFFFFFFF09000000, R10  // UART base
+	MOVW	0x40(R10), R11            // Read MIS (masked interrupt status)
+
+	// Check RX interrupt (bit 4)
+	TST	$0x10, R11
+	BEQ	uart_skip_rx
+	CALL	·uartRxIRQHandler(SB)
+
+uart_skip_rx:
+	// Check TX interrupt (bit 5)
+	TST	$0x20, R11
+	BEQ	uart_skip_tx
+	CALL	·uartTxIRQHandler(SB)
+
+uart_skip_tx:
 	// Non-timer IRQs don't trigger preemption (only timer does)
 	MOVD	$0, R20
 	MOVD	$0, R21

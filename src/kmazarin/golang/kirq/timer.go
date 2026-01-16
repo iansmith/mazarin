@@ -20,8 +20,12 @@ func getAsyncPreemptAddr() uintptr
 // which controls whether timer IRQs should trigger async preemption.
 func getReadyForAsyncPreemptAddr() uintptr
 
-// processDeadlines is provided by main package via go:linkname.
-// Processes all deadlines that have passed and wakes sleeping threads.
+// processDeadlines is NO LONGER CALLED from timer IRQ context.
+// Instead, the timer IRQ handler sets deadlinePending flag,
+// and the deadline bottom half processor calls ProcessDeadlines
+// in safe Go goroutine context.
+//
+// This linkname is kept for reference but is no longer used.
 //
 //go:linkname processDeadlines main.ProcessDeadlines
 func processDeadlines()
@@ -61,8 +65,12 @@ func TimerIRQHandlerCanPreempt(irqNum uint64, framePtr uintptr, elr, spEl0 uint6
 	// DEBUG: Print '2' after rearm
 	*(*byte)(unsafe.Pointer(uartBase)) = ']'
 
-	// Process deadline queue - wake up threads whose sleep time has elapsed
-	processDeadlines()
+	// NOTE: Deadline processing now happens in bottom half (safe Go context)
+	// The assembly timer handler sets deadlinePending flag instead of calling
+	// processDeadlines() directly from IRQ context.
+	//
+	// OLD (UNSAFE): processDeadlines()  // Called Go code from IRQ context!
+	// NEW (SAFE): Timer handler sets flag → bottom half goroutine processes
 
 	// Suppress unused warnings
 	_ = irqNum

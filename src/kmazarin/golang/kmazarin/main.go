@@ -91,18 +91,25 @@ func init() {
 	kirq.RegisterHandlers()
 	kirq.InitPreemption()
 
-	// Enable interrupts - handlers are ready
+	// Initialize UART interrupts (enables IRQ 33 in GIC)
+	kirq.InitUART()
+
+	// Start bottom half processors BEFORE enabling interrupts
+	// These goroutines will handle deferred work from IRQ handlers in safe Go context
+	StartBottomHalfProcessors()
+
+	// Enable interrupts - handlers and bottom halves are ready
 	EnableIRQs()
 	Print("[Init] Initialization complete")
 }
 
-// uartPutc writes a single character to UART via the console abstraction.
-// Before device discovery: uses MMIOUartConsole (direct MMIO writes)
-// After device discovery + interrupt wiring: uses interrupt-driven PL011Console
+// uartPutc writes a single character to UART using the ring buffer system.
+// This is safe to call from any Go context (not IRQ context).
+// The TX IRQ handler will drain the ring buffer to the UART FIFO.
 //
 //go:nosplit
 func uartPutc(c byte) {
-	console.WriteByte(c)
+	UartWriteByte(c)
 }
 
 // uartPuts writes a string directly to UART

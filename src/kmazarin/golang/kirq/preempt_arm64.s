@@ -30,6 +30,11 @@
 // Clobbers: R0-R9 (caller must save if needed)
 //
 TEXT ·TimerIRQHandlerAsm(SB), NOSPLIT|NOFRAME, $0
+	// DEBUG: Print '[' to show timer fired
+	MOVD	$0xFFFFFFFF09000000, R10  // UART base
+	MOVD	$'[', R11
+	MOVB	R11, (R10)  // Write to UART_DR
+
 	// ========================================================================
 	// Step 1: Re-arm timer immediately
 	// ========================================================================
@@ -196,6 +201,11 @@ same_goroutine:
 	MOVW	$1, R8
 	MOVW	R8, ·NeedsAsyncPreempt(SB)
 
+	// DEBUG: Print 'T' to show async preempt threshold reached
+	MOVD	$0xFFFFFFFF09000000, R10  // UART base
+	MOVD	$'T', R11
+	MOVB	R11, (R10)
+
 	B	timer_return
 
 init_start_tick:
@@ -207,4 +217,15 @@ init_start_tick:
 	// Fall through to timer_return
 
 timer_return:
+	// Set deadline flag to trigger bottom half processing
+	// This allows deadline queue processing to happen in safe Go context
+	// instead of from IRQ context
+	MOVW	$1, R8
+	MOVW	R8, main·deadlinePending(SB)
+
+	// DEBUG: Print ']' to show timer handler completed
+	MOVD	$0xFFFFFFFF09000000, R10  // UART base
+	MOVD	$']', R11
+	MOVB	R11, (R10)
+
 	RET

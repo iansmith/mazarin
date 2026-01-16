@@ -99,6 +99,21 @@ func DispatchIRQ(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo
 	return PreemptInfo{} // unreachable
 }
 
+// ============================================================================
+// OLD DISPATCH CODE - NO LONGER USED
+// ============================================================================
+// Non-timer IRQs now use pure assembly handlers (see uart_irq_arm64.s).
+// This code is kept for reference but is no longer called from exceptions_arm64.s.
+//
+// REMOVED: Calling Go code from IRQ context is unsafe because:
+//   1. We're on the exception stack (SP_EL1), not a goroutine stack
+//   2. R28 (g) points to interrupted goroutine (not the handler's context)
+//   3. Violates Go runtime assumptions about stack/goroutine consistency
+//
+// NEW APPROACH: IRQ handlers (assembly) → set flags → bottom half (goroutine)
+// ============================================================================
+
+/*
 // CurrentIRQNum holds the IRQ number for assembly-to-Go dispatch.
 // Set by assembly before calling DispatchNonTimerIRQ.
 // Using a global avoids ABI complexity for cross-package calls.
@@ -134,6 +149,7 @@ func dispatchNonTimerIRQInternal() {
 	// No handler registered - this is an error
 	irqPanic("Unhandled IRQ", irqNum)
 }
+*/
 
 // irqPanic handles IRQ-specific panics with the IRQ number
 //
