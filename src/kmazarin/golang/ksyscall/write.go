@@ -13,17 +13,12 @@ import (
 func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 	uartBase := getUartBase()
 
-	// Debug marker - entry
-	*(*byte)(unsafe.Pointer(uartBase)) = 'W'
-
 	// Only support stdout/stderr for now
 	if fd != 1 && fd != 2 {
-		*(*byte)(unsafe.Pointer(uartBase)) = 'X'
 		return -1 // EBADF
 	}
 
 	if count == 0 {
-		*(*byte)(unsafe.Pointer(uartBase)) = '0'
 		return 0
 	}
 
@@ -40,7 +35,5 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 		*(*byte)(unsafe.Pointer(uartBase)) = c
 	}
 
-	// Debug marker - exit
-	*(*byte)(unsafe.Pointer(uartBase)) = 'w'
 	return int64(count)
 }

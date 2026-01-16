@@ -85,6 +85,9 @@ func (r *RNGDevice) Read(p []byte) (n int, err error) {
 	return n, nil
 }
 
+// IsRandomSource is a marker method to distinguish from ByteStream
+func (r *RNGDevice) IsRandomSource() {}
+
 func (r *RNGDevice) init() error {
 	// VirtIO initialization sequence
 	// 1. Reset device

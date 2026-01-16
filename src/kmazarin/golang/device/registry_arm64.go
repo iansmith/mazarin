@@ -1,9 +1,13 @@
-//go:build linux && arm64
+//go:build qemuvirt && aarch64
 
 package device
 
+import (
+	"kmazarin/arch/arm64/gic"
+)
+
 // ArchSpecificDrivers contains ARM64-specific device drivers.
-// Go will only compile this file when GOARCH=arm64.
+// Go will only compile this file when building for qemuvirt/aarch64.
 //
 // These drivers typically use ARM-specific instructions or system registers:
 // - MSR/MRS instructions for system registers
@@ -13,13 +17,9 @@ package device
 // When adding a new ARM64 driver:
 // 1. Import the driver's package from arch/arm64/
 // 2. Add &DriverType{} to this list
-//
-// NOTE: Temporarily disabled to avoid import cycles.
-// The GIC driver needs to be refactored to avoid importing device package.
 var ArchSpecificDrivers = []Discoverable{
-	// ARM Generic Interrupt Controller - disabled due to import cycle
-	// &gic.GICv2Driver{},
-	// &gic.GICv3Driver{},
+	// ARM Generic Interrupt Controller
+	&gic.GICv2Driver{},
 
 	// ARM Generic Timer - will be added
 	// &timer.GenericTimerDriver{},

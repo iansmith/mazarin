@@ -1,9 +1,9 @@
-//go:build linux && arm64
+//go:build qemuvirt && aarch64
 
 package gic
 
 import (
-	"kmazarin/device"
+	"kmazarin/deviceapi"
 	"kmazarin/dtb"
 	"unsafe"
 )
@@ -35,10 +35,12 @@ func (d *GICv2Driver) Probe(node *dtb.Node) bool {
 	return node.Reg != nil && len(node.Reg) >= 2
 }
 
-func (d *GICv2Driver) Init(node *dtb.Node) (device.Closable, error) {
+func (d *GICv2Driver) Init(node *dtb.Node) (deviceapi.Closable, error) {
+	// Use physical addresses directly - high memory mapping appears to have issues
+	// with GIC ISENABLER writes even though UART high-memory works
 	gic := &GICv2{
-		distBase: node.Reg[0].Address, // Distributor
-		cpuBase:  node.Reg[1].Address, // CPU interface
+		distBase: node.Reg[0].Address, // Distributor (physical)
+		cpuBase:  node.Reg[1].Address, // CPU interface (physical)
 	}
 
 	// Initialize GIC hardware
@@ -74,14 +76,14 @@ func (g *GICv2) RegisterHandler(irq uint32, handler func()) {
 }
 
 func (g *GICv2) EnableIRQ(irq uint32) {
-	reg := irq / 32
+	reg := uintptr(irq / 32)
 	bit := irq % 32
 	offset := GICD_ISENABLER + (reg * 4)
 	g.writeDistReg(offset, 1<<bit)
 }
 
 func (g *GICv2) DisableIRQ(irq uint32) {
-	reg := irq / 32
+	reg := uintptr(irq / 32)
 	bit := irq % 32
 	offset := GICD_ICENABLER + (reg * 4)
 	g.writeDistReg(offset, 1<<bit)

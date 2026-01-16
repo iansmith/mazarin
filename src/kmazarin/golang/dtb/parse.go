@@ -1,9 +1,12 @@
 package dtb
 
 import (
-	"fmt"
+	"errors"
 	"unsafe"
 )
+
+// ErrInvalidDTB is returned when DTB magic is invalid
+var ErrInvalidDTB = errors.New("invalid DTB magic")
 
 // Node represents a device tree node for the new device system
 type Node struct {
@@ -31,25 +34,19 @@ func Parse(dtbAddr uintptr) (*Tree, error) {
 
 	// Validate DTB magic
 	if !header.Validate() {
-		return nil, fmt.Errorf("invalid DTB magic at 0x%X", dtbAddr)
+		return nil, ErrInvalidDTB
 	}
-
-	totalSize := header.GetTotalSize()
 
 	tree := &Tree{
 		dtbAddr: dtbAddr,
 		nodes:   make([]*Node, 0, 32),
 	}
 
-	fmt.Printf("[DTB] Parsing at 0x%X, size %d bytes\n", dtbAddr, totalSize)
-
 	// Walk the DTB and collect nodes
 	Walk(dtbAddr, func(dtbNode *DTBNode) {
 		node := convertNode(dtbNode)
 		tree.nodes = append(tree.nodes, node)
 	})
-
-	fmt.Printf("[DTB] Found %d nodes\n", len(tree.nodes))
 
 	return tree, nil
 }

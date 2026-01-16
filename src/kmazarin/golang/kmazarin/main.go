@@ -2,16 +2,16 @@ package main
 
 import (
 	"fmt"
+	"kmazarin/console"
 	"kmazarin/device"
-	//  "kmazarin/dtb"
 	"kmazarin/kirq"
 	"kmazarin/kmem"
 	"kmazarin/ksyscall"
-	_ "os" // Keep to maintain BSS size
+	_ "os"     // Keep to maintain BSS size
+	_ "unsafe" // Required for //go:linkname directives
 	"runtime"
 	"sync"
 	"sync/atomic"
-	"unsafe"
 )
 
 // SyscallDispatch is defined in abi_stubs_arm64.s as an ABI0 entry point
@@ -95,9 +95,10 @@ func init() {
 	Print("[Init] Initialization complete")
 }
 
-// uartPutc writes a single character to UART
-// Before interrupt mode: direct UART write
-// After interrupt mode: uses ring buffer with TX interrupt
+// uartPutc writes a single character to UART via the console abstraction.
+// Before interrupt mode: uses MMIOUartConsole (direct MMIO writes)
+// After interrupt mode: uses interrupt-driven console
+//
 //go:nosplit
 func uartPutc(c byte) {
 	// Check if interrupt-driven UART is ready
@@ -105,9 +106,8 @@ func uartPutc(c byte) {
 		// Use interrupt-driven ring buffer
 		kirq.UARTPutc(c)
 	} else {
-		// Direct UART write for early boot
-		uartBase := GetUartBase() // Read directly from StartupParams
-		*(*byte)(unsafe.Pointer(uartBase)) = c
+		// Use console abstraction (MMIOUartConsole during early boot)
+		console.WriteByte(c)
 	}
 }
 
@@ -373,53 +373,68 @@ func testRuntimeReadiness() bool {
 // testDeviceDiscovery tests the DTB-based device discovery system
 // This is a temporary test function to verify DTB parsing and device matching
 func testDeviceDiscovery() {
-	fmt.Println("\n[DeviceTest] === Testing DTB Device Discovery ===")
+	console.Println("\n[DeviceTest] === Testing DTB Device Discovery ===")
 
-	// Register all device drivers
-	device.RegisterAllDrivers()
+	// NOTE: Drivers are already registered in EarlyInit()
 
 	// Get DTB address from runtime config
 	cfg := GetRuntimeConfig()
 	if cfg == nil {
-		fmt.Println("[DeviceTest] ERROR: RuntimeConfig not available")
+		console.Println("[DeviceTest] ERROR: RuntimeConfig not available")
 		return
 	}
 
 	// Use physical address - DTB is in low memory which is still mapped
 	dtbAddr := uintptr(cfg.DtbPhysAddr)
-	fmt.Printf("[DeviceTest] DTB physical address: 0x%X\n", dtbAddr)
+	console.WriteString("[DeviceTest] DTB physical address: ")
+	console.PrintHex64(cfg.DtbPhysAddr)
+	console.Println("")
 
-	// Parse DTB and discover devices
+	// Parse DTB and discover devices (silent - no printing inside)
 	err := device.InitFromDTB(dtbAddr)
 	if err != nil {
-		fmt.Printf("[DeviceTest] ERROR: %v\n", err)
+		console.WriteString("[DeviceTest] ERROR: ")
+		console.Println(err.Error())
 		return
 	}
 
 	// Show what was discovered
-	fmt.Println("\n[DeviceTest] Discovered devices:")
+	console.Println("\n[DeviceTest] Discovered devices:")
 
 	// Check for byte streams (UART)
 	if uart, ok := device.GetByteStream(); ok {
-		fmt.Printf("  - ByteStream: %s\n", uart.Name())
+		console.WriteString("  - ByteStream: ")
+		console.Println(uart.Name())
 	}
 
 	// Check for interrupt controller (GIC)
 	if gic, ok := device.GetInterruptController(); ok {
-		fmt.Printf("  - InterruptController: %s\n", gic.Name())
+		console.WriteString("  - InterruptController: ")
+		console.Println(gic.Name())
 	}
 
 	// Check for random source (VirtIO RNG)
 	if rng, ok := device.GetRandomSource(); ok {
-		fmt.Printf("  - RandomSource: %s\n", rng.Name())
+		console.WriteString("  - RandomSource: ")
+		console.Println(rng.Name())
 	}
 
 	// Check for block devices
 	if blk, ok := device.GetBlockDevice(); ok {
-		fmt.Printf("  - BlockDevice: %s\n", blk.Name())
+		console.WriteString("  - BlockDevice: ")
+		console.Println(blk.Name())
 	}
 
-	fmt.Println("[DeviceTest] === Test Complete ===\n")
+	// Wire up interrupts now that GIC is discovered
+	console.Println("\n[DeviceTest] Wiring interrupts...")
+	if err := device.WireInterrupts(); err != nil {
+		console.WriteString("[DeviceTest] ERROR wiring interrupts: ")
+		console.Println(err.Error())
+	} else {
+		console.Println("[DeviceTest] Interrupts wired successfully")
+	}
+
+	console.Println("[DeviceTest] === Test Complete ===\n")
 }
 
 // simpleMain is the entry point for our simple goroutine/channel test

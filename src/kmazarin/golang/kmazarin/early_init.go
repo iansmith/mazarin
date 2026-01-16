@@ -3,6 +3,8 @@
 package main
 
 import (
+	"kmazarin/console"
+	"kmazarin/device"
 	"unsafe"
 )
 
@@ -74,22 +76,23 @@ func unmapCardinal() {
 	isb()
 }
 
-// EarlyInit initializes devices that must be set up before DTB scanning
-// This includes:
-//   - UART (direct mode for early debug output)
-//   - GIC (interrupt controller)
-//   - Timer (for scheduling/preemption)
+// EarlyInit initializes the early console and thread management.
+// Called from init() before the Go runtime is fully initialized.
 //
-// Called from init() before the Go runtime is fully initialized
+// Boot sequence:
+// 1. Set up MMIOUartConsole using Cardinal's UART base (allows debug output)
+// 2. Initialize thread management
+// 3. Later, main() will run device discovery and wire up interrupts
 func EarlyInit() {
-	// UART is already working in direct mode (Cardinal initialized it)
-	// GIC is already initialized by Cardinal
-	// Timer IRQ will be enabled later in main() when ready for preemption
+	// Set up early console using direct MMIO writes
+	// This allows debug output before device discovery and interrupt setup
+	uartBase := GetUartBase()
+	earlyConsole := console.NewMMIOUartConsole(uartBase)
+	console.Set(earlyConsole)
 
 	// Initialize thread management system
 	InitThreads()
 
-	// NOTE: DTB-based device discovery is NOT done here yet
-	// It will be integrated in a future phase to replace hardcoded device init
-	// For now, we continue using the hardcoded device addresses from Cardinal
+	// Register all device drivers (no hardware access yet)
+	device.RegisterAllDrivers()
 }

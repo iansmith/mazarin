@@ -2,7 +2,16 @@
 // This breaks import cycles between device and driver packages.
 package deviceapi
 
-import "kmazarin/dtb"
+import (
+	"errors"
+	"kmazarin/dtb"
+)
+
+// ErrNotMyDevice is returned by Init when a driver determines this device
+// is not the type it handles. This allows multiple drivers to match the same
+// compatible string (e.g., multiple VirtIO device types all match "virtio,mmio").
+// The device manager will try the next matching driver when this error is returned.
+var ErrNotMyDevice = errors.New("not my device type")
 
 // Discoverable handles DTB matching and device initialization.
 // All device drivers implement this interface.
@@ -60,6 +69,10 @@ type RandomSource interface {
 	// Returns number of bytes read and any error.
 	// Should not block - returns immediately with available entropy.
 	Read(p []byte) (n int, err error)
+
+	// IsRandomSource is a marker method to distinguish RandomSource from ByteStream.
+	// Both interfaces have Read(), but only RandomSource has this marker.
+	IsRandomSource()
 }
 
 // BlockDevice is for block storage devices.
@@ -197,4 +210,16 @@ type InterruptController interface {
 
 	// DisableIRQ disables the given IRQ.
 	DisableIRQ(irq uint32)
+}
+
+// InterruptUser is implemented by devices that use interrupts.
+// After device discovery, the device manager calls WireInterrupts()
+// to connect these devices to the InterruptController.
+type InterruptUser interface {
+	Closable
+
+	// WireInterrupts registers this device's interrupt handler(s) with the
+	// interrupt controller and enables the IRQ(s).
+	// Called after both the device and interrupt controller are initialized.
+	WireInterrupts(ic InterruptController) error
 }

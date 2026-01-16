@@ -2,6 +2,9 @@ package device
 
 import "kmazarin/deviceapi"
 
+// Re-export ErrNotMyDevice for drivers that need to signal wrong device type
+var ErrNotMyDevice = deviceapi.ErrNotMyDevice
+
 // Re-export interfaces from deviceapi for convenience
 type Discoverable = deviceapi.Discoverable
 type Closable = deviceapi.Closable
@@ -13,6 +16,7 @@ type Display = deviceapi.Display
 type InputDevice = deviceapi.InputDevice
 type GPIO = deviceapi.GPIO
 type InterruptController = deviceapi.InterruptController
+type InterruptUser = deviceapi.InterruptUser
 
 // Re-export types
 type FramebufferInfo = deviceapi.FramebufferInfo

@@ -73,13 +73,14 @@ func (d *PL011Driver) Init(node *dtb.Node) (deviceapi.Closable, error) {
 	return uart, nil
 }
 
-// PL011 implements ByteStream interface
+// PL011 implements ByteStream and InterruptUser interfaces
 type PL011 struct {
 	name     string
 	baseAddr uintptr
 	irq      uint32
 	rxBuf    *RingBuffer
 	txBuf    *RingBuffer
+	ic       deviceapi.InterruptController // Set by WireInterrupts
 }
 
 // Closable implementation
@@ -88,9 +89,33 @@ func (u *PL011) Name() string {
 }
 
 func (u *PL011) Close() error {
+	// Disable IRQ at the interrupt controller if wired
+	if u.ic != nil {
+		u.ic.DisableIRQ(u.irq)
+	}
 	// Disable interrupts and UART
 	u.WriteReg(RegIMSC, 0)
 	u.WriteReg(RegCR, 0)
+	return nil
+}
+
+// WireInterrupts implements InterruptUser interface.
+// Registers the UART's interrupt handler with the interrupt controller.
+// NOTE: Currently disabled because kmazarin's exception handler doesn't
+// integrate with the device-based GIC yet. The UART works in polled mode.
+func (u *PL011) WireInterrupts(ic deviceapi.InterruptController) error {
+	u.ic = ic
+
+	// Clear any pending UART interrupts
+	u.WriteReg(RegICR, 0x7FF)
+
+	// TODO: Enable interrupt-driven mode once kmazarin's exception handler
+	// is updated to dispatch IRQs through the device-based GIC.
+	// For now, the UART works in direct/polled mode.
+	//
+	// ic.RegisterHandler(u.irq, u.handleInterrupt)
+	// ic.EnableIRQ(u.irq)
+
 	return nil
 }
 
