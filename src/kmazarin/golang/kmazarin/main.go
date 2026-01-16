@@ -7,6 +7,7 @@ import (
 	"kmazarin/kirq"
 	"kmazarin/kmem"
 	"kmazarin/ksyscall"
+	// "kmazarin/uart" // Temporarily commented for debugging
 	_ "os"     // Keep to maintain BSS size
 	_ "unsafe" // Required for //go:linkname directives
 	"runtime"
@@ -430,9 +431,21 @@ func testDeviceDiscovery() {
 	} else {
 		console.Println("[DeviceTest] Interrupts wired successfully")
 
-		// NOTE: PL011 interrupt-driven console available but not switching yet
-		// TODO: Debug why switching causes "W" character flood
-		console.Println("[DeviceTest] PL011 interrupt-driven console ready (not switching yet)")
+		// Switch to interrupt-driven PL011 console now that interrupts are wired
+		// TEMPORARILY DISABLED to debug timer IRQ issue
+		/*
+		if bs, ok := device.GetByteStream(); ok {
+			// Type assert to *uart.PL011 to access AsConsole()
+			if pl011, ok := bs.(*uart.PL011); ok {
+				console.Println("[DeviceTest] Switching to PL011 interrupt-driven console...")
+				console.Println("[DeviceTest] About to call console.Set()...")
+				console.Set(pl011.AsConsole())
+				console.Println("[DeviceTest] console.Set() returned")
+				console.Println("[DeviceTest] Now using PL011 interrupt-driven console!")
+			}
+		}
+		*/
+		console.Println("[DeviceTest] PL011 console switch SKIPPED for debugging")
 	}
 
 	console.Println("[DeviceTest] === Test Complete ===")
@@ -455,6 +468,13 @@ func simpleMain() {
 	// Test DTB-based device discovery BEFORE unmapping Cardinal
 	// (DTB is at 0x40000000 in Cardinal's memory region)
 	testDeviceDiscovery()
+
+	// CRITICAL: Disable timer IRQ after device discovery
+	// GIC device initialization resets the distributor, which may re-enable IRQ 27
+	// that was enabled by Cardinal. We need to keep it disabled until async
+	// preemption is fully set up (SetAsyncPreemptAddr + ReadyForAsyncPreempt).
+	DisableTimerIRQ()
+	Print("[Main] Timer IRQ disabled until preemption ready")
 
 	// Unmap Cardinal at L1 level - zeros L1[1-2] (1-3GB) while preserving L1[0] for MMIO and L1[256+] for heap
 	unmapCardinal()

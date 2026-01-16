@@ -741,6 +741,10 @@ irq_exception_handler:
 	// Our wrapper was broken - it only saved R19/LR, causing register corruption.
 	MOVD	kmazarin∕kirq·AsyncPreemptAddr(SB), R10
 
+	// CRITICAL: Check if asyncPreempt address is zero (not yet initialized)
+	// Skip preemption if address is not set
+	CBZ	R10, timer_no_preempt
+
 	// Validate asyncPreempt address is 4-byte aligned
 	TST	$3, R10
 	BNE	timer_no_preempt_wrapper_misaligned

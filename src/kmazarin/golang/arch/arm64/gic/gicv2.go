@@ -99,6 +99,18 @@ func (g *GICv2) initHardware() {
 	// Disable distributor
 	g.writeDistReg(GICD_CTLR, 0)
 
+	// Disable all interrupts (clear all ISENABLER registers)
+	// This ensures no interrupts from Cardinal are still enabled
+	for i := uintptr(0); i < 32; i++ {
+		g.writeDistReg(GICD_ICENABLER+(i*4), 0xFFFFFFFF)
+	}
+
+	// Clear all pending interrupts
+	// This ensures no pending interrupts from Cardinal are latched
+	for i := uintptr(0); i < 32; i++ {
+		g.writeDistReg(0x280+(i*4), 0xFFFFFFFF) // GICD_ICPENDR
+	}
+
 	// Set all interrupts to lowest priority
 	for i := uintptr(0); i < 256; i++ {
 		g.writeDistReg(GICD_IPRIORITYR+(i*4), 0xA0A0A0A0)
@@ -110,6 +122,11 @@ func (g *GICv2) initHardware() {
 	// Configure CPU interface
 	g.writeCPUReg(GICC_PMR, 0xF0) // Set priority mask
 	g.writeCPUReg(GICC_CTLR, 1)   // Enable CPU interface
+
+	// CRITICAL: Ensure timer IRQ (27) stays disabled
+	// Cardinal enabled it, and even though we cleared all ISENABLERs above,
+	// we explicitly disable it again to be safe
+	g.DisableIRQ(27)
 }
 
 // Hardware access

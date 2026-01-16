@@ -1117,7 +1117,13 @@ func loadAndRunKmazarin() {
 	// Use it directly without adding offset
 	entryAddr := uintptr(entry)
 
-	// CRITICAL: Disable all interrupts before transferring control
+	// CRITICAL: Clean up timer and interrupt state before jumping
+	uartPuts("Disabling timer and IRQs...\n")
+	// 1. Disable timer (stop it from firing)
+	timer_write_ctl(0)
+	// 2. Disable timer IRQ at GIC level
+	gicDisableInterrupt(timer_irq_id())
+	// 3. Disable CPU interrupts
 	// Kmazarin will re-enable them after installing its handlers
 	asm.DisableIrqs()
 

@@ -38,6 +38,9 @@ func getAuxval(tag uint64) uint64
 func EnableGIC()
 
 //go:nosplit
+func DisableTimerIRQ()
+
+//go:nosplit
 func EnableTimerIRQ()
 
 //go:nosplit

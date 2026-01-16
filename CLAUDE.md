@@ -141,10 +141,19 @@ build/tools/run 5          # Wait 5 seconds before showing output
 Output is written to `/tmp/cardinal-serial.log`.
 
 **CRITICAL: Serial Log Safety**
-- The serial log contains terminal control sequences that can freeze your terminal
+- The serial log can contain:
+  - Terminal control sequences that freeze your terminal
+  - Ridiculously long lines (millions of characters) that crash tools
 - NEVER: `cat /tmp/cardinal-serial.log` or Read the raw file directly
-- ALWAYS: Filter control characters first:
+- ALWAYS: Use the safe reader tools:
   ```bash
+  # Check if the file is safe to read
+  build/tools/check-serial-safe
+
+  # Safely view the log (handles long lines + control chars)
+  build/tools/safe-serial-read
+
+  # Or manually filter (only safe for reasonable line lengths):
   tail -f /tmp/cardinal-serial.log | tr -d '\000-\010\013-\037\177-\377'
   ```
 - The `build/tools/run` script automatically applies safe filtering
