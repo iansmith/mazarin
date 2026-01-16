@@ -70,6 +70,10 @@ var (
 // This allows us to avoid calling Go code from IRQ context (unsafe on exception stack).
 var irqPendingFlags [1020]uint32
 
+// IAR values for each IRQ (used to write GICC_EOIR after handling)
+// Set by assembly IRQ handler alongside irqPendingFlags
+var irqIARValues [1020]uint32
+
 // ============================================================================
 // Event Channels
 // ============================================================================
@@ -97,6 +101,7 @@ func eventPoller() {
 	for {
 		// Yield to other goroutines periodically
 		runtime.Gosched()
+
 		// Check generic IRQ pending flags
 		// Scan the entire array and call registered handlers
 		for irqNum := uint32(0); irqNum < 1020; irqNum++ {
@@ -133,13 +138,36 @@ func eventPoller() {
 	}
 }
 
+// writeGICCEOIR writes to the GIC End Of Interrupt Register to acknowledge
+// that an interrupt has been fully serviced.
+//
+//go:nosplit
+func writeGICCEOIR(iarValue uint32) {
+	// GICC_EOIR = GIC CPU interface base + 0x10
+	// Physical: 0x08010000 → High-memory: 0xFFFFFFFF08010000
+	const GICC_BASE_PHYS = 0x08010000
+	const KERNEL_MMIO_OFFSET = 0xFFFFFFFF00000000
+	const GICC_EOIR_OFFSET = 0x10
+	eoir := (*uint32)(unsafe.Pointer(uintptr(GICC_BASE_PHYS + KERNEL_MMIO_OFFSET + GICC_EOIR_OFFSET)))
+	*eoir = iarValue
+}
+
 // dispatchIRQ calls the registered handler for the given IRQ number.
 // This runs in safe Go context (event poller goroutine).
 //
 func dispatchIRQ(irqNum uint32) {
+	// Read IAR value saved by exception handler
+	iarValue := atomic.LoadUint32(&irqIARValues[irqNum])
+
 	// Call kirq.DispatchIRQ with dummy values for framePtr, elr, spEl0
 	// (these aren't needed for simple handlers like UART)
 	kirq.DispatchIRQ(uint64(irqNum), 0, 0, 0)
+
+	// CRITICAL: Write GICC_EOIR AFTER handler completes
+	// For level-triggered interrupts (like UART TX), the handler must clear
+	// the interrupt condition (e.g., drain TX buffer, disable TX interrupt)
+	// BEFORE we write EOIR. Otherwise, the GIC immediately re-fires the IRQ.
+	writeGICCEOIR(iarValue)
 }
 
 // ============================================================================
@@ -283,37 +311,23 @@ func BreadcrumbString(s string) {
 // Must be called during initialization, BEFORE enabling interrupts.
 //
 func StartBottomHalfProcessors() {
-	BreadcrumbString("A")
 	Print("[BottomHalf] Starting event poller and processors...")
-	BreadcrumbString("B")
 
 	Print("[BottomHalf] Starting event poller...")
-	BreadcrumbString("C")
 	// Start event poller
 	go eventPoller()
-	BreadcrumbString("D")
 	Print("[BottomHalf] Event poller started")
-	BreadcrumbString("E")
 
 	Print("[BottomHalf] Starting RX processor...")
-	BreadcrumbString("F")
 	// Start bottom half processors
 	go uartRxBottomHalf()
-	BreadcrumbString("G")
 	Print("[BottomHalf] Starting TX processor...")
-	BreadcrumbString("H")
 	go uartTxBottomHalf()
-	BreadcrumbString("I")
 	Print("[BottomHalf] Starting deadline processor...")
-	BreadcrumbString("J")
 	go deadlineBottomHalf()
-	BreadcrumbString("K")
 	Print("[BottomHalf] All goroutines launched")
-	BreadcrumbString("L")
 
 	Print("[BottomHalf] About to finish...")
-	BreadcrumbString("M")
 
 	Print("[BottomHalf] Finished!")
-	BreadcrumbString("N")
 }

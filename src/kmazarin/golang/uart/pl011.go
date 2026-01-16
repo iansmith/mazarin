@@ -3,6 +3,7 @@ package uart
 import (
 	"kmazarin/deviceapi"
 	"kmazarin/dtb"
+	"runtime"
 	"sync/atomic"
 	"unsafe"
 )
@@ -83,6 +84,7 @@ type PL011 struct {
 	txBuf    *RingBuffer
 	ic       deviceapi.InterruptController // Set by WireInterrupts
 	txLock   uint32                         // Spinlock for TX buffer access
+	rxLock   uint32                         // Spinlock for RX buffer access
 }
 
 // Closable implementation
@@ -121,15 +123,36 @@ func (u *PL011) WireInterrupts(ic deviceapi.InterruptController) error {
 	return nil
 }
 
+// rxLockAcquire acquires the RX spinlock
+//
+//go:nosplit
+func (u *PL011) rxLockAcquire() {
+	for !atomic.CompareAndSwapUint32(&u.rxLock, 0, 1) {
+		// Spin until we get the lock
+	}
+}
+
+// rxLockRelease releases the RX spinlock
+//
+//go:nosplit
+func (u *PL011) rxLockRelease() {
+	atomic.StoreUint32(&u.rxLock, 0)
+}
+
 // ByteStream implementation
 func (u *PL011) Read(p []byte) (n int, err error) {
-	return u.rxBuf.Read(p)
+	u.rxLockAcquire()
+	n, err = u.rxBuf.Read(p)
+	u.rxLockRelease()
+	return n, err
 }
 
 func (u *PL011) Write(p []byte) (n int, err error) {
+	u.txLockAcquire()
 	n = u.txBuf.Write(p)
 	// Enable TX interrupt to drain buffer
 	u.WriteReg(RegIMSC, IRQ_RX|IRQ_TX)
+	u.txLockRelease()
 	return n, nil
 }
 
@@ -161,7 +184,9 @@ func (u *PL011) WriteByte(c byte) {
 	u.txLockAcquire()
 
 	// Try to write to ring buffer
-	if u.txBuf.WriteByte(c) {
+	success := u.txBuf.WriteByte(c)
+
+	if success {
 		// Enable TX interrupt to drain buffer
 		u.WriteReg(RegIMSC, IRQ_RX|IRQ_TX)
 		u.txLockRelease()
@@ -169,8 +194,9 @@ func (u *PL011) WriteByte(c byte) {
 		u.txLockRelease()
 		// Buffer full - fall back to direct MMIO (busy-wait for FIFO space)
 		// Note: Release lock before busy-waiting to avoid deadlock
+		// IMPORTANT: Yield to scheduler so event poller can run
 		for u.ReadReg(RegFR)&FR_TXFF != 0 {
-			// Wait for TX FIFO to have space
+			runtime.Gosched() // Allow other goroutines (event poller) to run
 		}
 		u.WriteReg(RegDR, uint32(c))
 	}
@@ -180,6 +206,7 @@ func (u *PL011) WriteByte(c byte) {
 // Implements console.Console interface.
 //
 //go:nosplit
+//go:noinline
 func (u *PL011) WriteString(s string) {
 	for i := 0; i < len(s); i++ {
 		u.WriteByte(s[i])
@@ -219,6 +246,7 @@ func (c *PL011Console) WriteByte(b byte) {
 // WriteString implements console.Console.WriteString
 //
 //go:nosplit
+//go:noinline
 func (c *PL011Console) WriteString(s string) {
 	c.uart.WriteString(s)
 }
@@ -240,20 +268,26 @@ func (u *PL011) txTryLock() bool {
 	return atomic.CompareAndSwapUint32(&u.txLock, 0, 1)
 }
 
-// Interrupt handler
+// handleInterrupt is called from the bottom-half dispatcher when UART IRQ fires.
+// It runs in a goroutine context (safe for Go code), not in IRQ context.
+// CRITICAL: Must clear the interrupt condition BEFORE returning, since
+// GICC_EOIR is written after this handler returns.
+//
 //go:nosplit
 func (u *PL011) handleInterrupt() {
 	status := u.ReadReg(RegMIS)
 
-	// Handle receive interrupt
+	// Handle receive interrupt - drain RX FIFO into ring buffer
 	if status&IRQ_RX != 0 {
+		u.rxLockAcquire()
 		for u.ReadReg(RegFR)&FR_RXFE == 0 {
 			data := u.ReadReg(RegDR)
 			u.rxBuf.WriteByte(byte(data))
 		}
+		u.rxLockRelease()
 	}
 
-	// Handle transmit interrupt
+	// Handle transmit interrupt - drain ring buffer to TX FIFO
 	if status&IRQ_TX != 0 {
 		// Try to get lock - if held by WriteByte, skip and try next interrupt
 		if u.txTryLock() {
@@ -261,7 +295,9 @@ func (u *PL011) handleInterrupt() {
 				data := u.txBuf.ReadByte()
 				u.WriteReg(RegDR, uint32(data))
 			}
-			// If buffer empty, disable TX interrupt
+			// CRITICAL: If buffer empty, disable TX interrupt to clear the condition.
+			// For level-triggered interrupts, EOIR is written after this handler.
+			// If TX interrupt stays enabled and FIFO has space, GIC will re-fire.
 			if u.txBuf.Available() == 0 {
 				u.WriteReg(RegIMSC, IRQ_RX)
 			}
@@ -270,7 +306,7 @@ func (u *PL011) handleInterrupt() {
 		// If lock not acquired, TX interrupt stays enabled and will retry
 	}
 
-	// Clear interrupts
+	// Clear the interrupt flags in the UART's ICR register
 	u.WriteReg(RegICR, status)
 }
 

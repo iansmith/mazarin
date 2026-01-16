@@ -168,6 +168,10 @@ KMAZARIN_KIRQ_SRC = $(KMAZARIN_BASE)/kirq
 KMAZARIN_KTHREAD_SRC = $(KMAZARIN_BASE)/kthread
 KMAZARIN_DEVICE_SRC = $(KMAZARIN_BASE)/device
 KMAZARIN_DTB_SRC = $(KMAZARIN_BASE)/dtb
+KMAZARIN_UART_SRC = $(KMAZARIN_BASE)/uart
+KMAZARIN_CONSOLE_SRC = $(KMAZARIN_BASE)/console
+KMAZARIN_DEVICEAPI_SRC = $(KMAZARIN_BASE)/deviceapi
+KMAZARIN_GIC_SRC = $(KMAZARIN_BASE)/arch/arm64/gic
 
 # All kmazarin Go/assembly sources
 KMAZARIN_ALL_SRC = $(wildcard $(KMAZARIN_SRC)/*.go) $(wildcard $(KMAZARIN_SRC)/*.s) \
@@ -176,7 +180,11 @@ KMAZARIN_ALL_SRC = $(wildcard $(KMAZARIN_SRC)/*.go) $(wildcard $(KMAZARIN_SRC)/*
                    $(wildcard $(KMAZARIN_KIRQ_SRC)/*.go) $(wildcard $(KMAZARIN_KIRQ_SRC)/*.s) \
                    $(wildcard $(KMAZARIN_KTHREAD_SRC)/*.go) $(wildcard $(KMAZARIN_KTHREAD_SRC)/*.s) \
                    $(wildcard $(KMAZARIN_DEVICE_SRC)/*.go) $(wildcard $(KMAZARIN_DEVICE_SRC)/*.s) \
-                   $(wildcard $(KMAZARIN_DTB_SRC)/*.go) $(wildcard $(KMAZARIN_DTB_SRC)/*.s)
+                   $(wildcard $(KMAZARIN_DTB_SRC)/*.go) $(wildcard $(KMAZARIN_DTB_SRC)/*.s) \
+                   $(wildcard $(KMAZARIN_UART_SRC)/*.go) $(wildcard $(KMAZARIN_UART_SRC)/*.s) \
+                   $(wildcard $(KMAZARIN_CONSOLE_SRC)/*.go) $(wildcard $(KMAZARIN_CONSOLE_SRC)/*.s) \
+                   $(wildcard $(KMAZARIN_DEVICEAPI_SRC)/*.go) $(wildcard $(KMAZARIN_DEVICEAPI_SRC)/*.s) \
+                   $(wildcard $(KMAZARIN_GIC_SRC)/*.go) $(wildcard $(KMAZARIN_GIC_SRC)/*.s)
 
 # Runtime patch files for overlay
 RUNTIME_PATCH_MALLOC = $(RUNTIME_PATCHES_DIR)/malloc.go

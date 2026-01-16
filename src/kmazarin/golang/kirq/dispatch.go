@@ -2,7 +2,17 @@
 
 package kirq
 
-import "kmazarin/console"
+import (
+	_ "unsafe" // Required for //go:linkname directives
+)
+
+// breadcrumbString is provided by main package via linkname
+// Used for direct UART output to avoid console recursion in panic paths
+func breadcrumbString(s string)
+
+// breadcrumbHex is provided by main package via linkname
+// Writes a 64-bit hex value directly to UART
+func breadcrumbHex(val uint64)
 
 // PreemptInfo contains call injection information for async preemption
 // Returned by IRQ handlers that want to trigger preemption
@@ -152,15 +162,16 @@ func dispatchNonTimerIRQInternal() {
 */
 
 // irqPanic handles IRQ-specific panics with the IRQ number
-// Uses console abstraction which provides spinlock protection
+// Uses breadcrumbs (direct UART) to avoid console recursion when console is PL011
 //
 //go:nosplit
 func irqPanic(msg string, irqNum uint64) {
-	console.WriteString("\r\n*** KERNEL PANIC ***\r\n")
-	console.WriteString(msg)
-	console.WriteString(": IRQ #")
-	console.PrintHex64(irqNum)
-	console.WriteString("\r\n")
+	breadcrumbString("\r\n*** KERNEL PANIC ***\r\n")
+	breadcrumbString(msg)
+	breadcrumbString(": IRQ #")
+	breadcrumbString("0x")
+	breadcrumbHex(irqNum)
+	breadcrumbString("\r\n")
 
 	// Halt using Exit
 	Exit()

@@ -23,25 +23,34 @@ type Console interface {
 	WriteString(s string)
 }
 
-// current holds the active console implementation.
+// consoleWrapper wraps a Console interface so atomic.Value always stores the same concrete type.
+// This is necessary because atomic.Value panics if you try to store different concrete types.
+type consoleWrapper struct {
+	impl Console
+}
+
+// current holds the active console implementation wrapped in consoleWrapper.
 // Uses atomic.Value for safe swapping from any context.
 var current atomic.Value
 
 // Set sets the active console implementation.
 // Safe to call from any context.
 func Set(c Console) {
-	current.Store(c)
+	current.Store(&consoleWrapper{impl: c})
 }
 
 // Get returns the current console, or nil if not set.
 //
 //go:nosplit
+//go:noinline
 func Get() Console {
 	v := current.Load()
 	if v == nil {
 		return nil
 	}
-	return v.(Console)
+
+	wrapper := v.(*consoleWrapper)
+	return wrapper.impl
 }
 
 // Write writes bytes to the current console.

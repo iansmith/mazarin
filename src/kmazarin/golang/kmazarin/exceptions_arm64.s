@@ -650,6 +650,11 @@ irq_exception_handler:
 	// Without this switch, we'd corrupt the interrupted code's stack.
 	MSR	$1, SPSel
 
+	// DEBUG: Print 'I' to show we entered IRQ handler
+	MOVD	$UART_BASE, R10
+	MOVD	$'I', R11
+	MOVB	R11, (R10)
+
 	// CRITICAL: Save X0-X7 BEFORE any debug output!
 	// These may contain important values that must not be clobbered.
 	// Allocate frame first
@@ -725,6 +730,17 @@ irq_exception_handler:
 	CALL	kmazarin∕kirq·TimerIRQHandlerAsm(SB)
 
 	// ========================================================================
+	// CRITICAL: Write GICC_EOIR for timer IRQ IMMEDIATELY after handler
+	// ========================================================================
+	// The timer handler clears the interrupt condition (updates CNTV_CVAL_EL0),
+	// so it's safe to write EOIR now. Without this, the timer IRQ stays ACTIVE
+	// and no new timer interrupts can be delivered, breaking preemption.
+	//
+	// R19 contains the full IAR value saved at the start of the IRQ handler.
+	MOVD	$(GIC_CPU_BASE + GICC_EOIR), R10
+	MOVW	R19, (R10)  // Write IAR value to EOIR
+
+	// ========================================================================
 	// Async preemption injection (pure assembly, no Go calls)
 	// ========================================================================
 	// Check if assembly handler requested async preemption.
@@ -736,10 +752,11 @@ irq_exception_handler:
 	MOVW	kmazarin∕kirq·ReadyForAsyncPreempt(SB), R10
 	CBZ	R10, timer_no_preempt_not_ready
 
-	// Get runtime.asyncPreempt address from global variable (set by Go init)
-	// We use the runtime's asyncPreempt which properly saves/restores ALL registers.
-	// Our wrapper was broken - it only saved R19/LR, causing register corruption.
-	MOVD	kmazarin∕kirq·AsyncPreemptAddr(SB), R10
+	// Get asyncPreemptWrapper address from global variable (set by Go init)
+	// We use our own wrapper because runtime.asyncPreempt has a stack management bug
+	// (allocates 0x1f0 but deallocates 0x200, causing 16-byte stack leak per preemption).
+	// Our wrapper properly saves ALL registers with matched stack allocation/deallocation.
+	MOVD	kmazarin∕kirq·AsyncPreemptWrapperAddr(SB), R10
 
 	// CRITICAL: Check if asyncPreempt address is zero (not yet initialized)
 	// Skip preemption if address is not set
@@ -847,6 +864,12 @@ irq_not_timer:
 	MOVD	$1, R12
 	MOVW	R12, (R10)        // Store 1 to flag
 
+	// Store IAR value: irqIARValues[irqNum] = IAR (for EOIR write in bottom-half)
+	MOVD	$·irqIARValues(SB), R10
+	// R11 still contains irqNum * 4
+	ADD	R11, R10          // R10 = &irqIARValues[irqNum]
+	MOVW	R19, (R10)        // Store IAR value (R19 saved earlier)
+
 	// Non-timer IRQs don't trigger preemption (only timer does)
 	MOVD	$0, R20
 	MOVD	$0, R21
@@ -862,9 +885,10 @@ irq_invalid:
 	MOVD	$0, R23
 
 irq_write_eoir:
-	// Write End Of Interrupt (must do before modifying frame!)
-	MOVD	$(GIC_CPU_BASE + GICC_EOIR), R10
-	MOVW	R19, (R10)  // Write original IAR value to EOIR
+	// NOTE: Do NOT write GICC_EOIR here!
+	// For level-triggered interrupts (UART TX), writing EOIR while the condition
+	// is still true causes an immediate re-fire, creating an interrupt storm.
+	// The bottom-half dispatcher will write EOIR after the handler clears the condition.
 
 	// Check if we should modify frame for preemption
 	CMP	$0, R23  // doPreempt == true?
@@ -884,6 +908,12 @@ irq_write_eoir:
 	// Fall through to irq_return
 
 irq_return:
+	// NOTE: Do NOT write GICC_EOIR here for level-triggered interrupts!
+	// For level-triggered interrupts (like UART TX), the interrupt condition
+	// may still be true (e.g., TX FIFO has space). Writing EOIR now would
+	// cause the GIC to immediately re-fire the interrupt, creating a storm.
+	// Instead, the bottom-half writes EOIR after clearing the interrupt condition.
+
 	// Restore SP_EL0
 	MOVD	EXC_FRAME_SP_EL0(RSP), R10
 	MSR	R10, SP_EL0
@@ -927,42 +957,167 @@ irq_return:
 	ERET
 
 // ============================================================================
-// asyncPreemptWrapper - Wrapper that calls asyncPreempt2 directly
+// asyncPreemptWrapper - Full register-saving wrapper for async preemption
 // ============================================================================
-// We can't use asyncPreempt directly because it saves LR to R28, but
-// asyncPreempt2 expects R28 to be g. Instead, we call asyncPreempt2 directly
-// while keeping g (R28) valid.
+// runtime.asyncPreempt has a stack management bug (allocates 0x1f0, deallocates
+// 0x200), causing a 16-byte stack leak per preemption. This wrapper properly
+// saves ALL registers and has matched stack allocation/deallocation.
 //
 // When called (via ERET from IRQ handler):
 //   LR = original interrupted PC (set by IRQ handler)
 //   R28 = g (restored from exception frame)
+//   All other registers = goroutine's values at interruption point
 //
-// The wrapper:
-//   1. Saves LR (original PC) and R19 to stack (R19 is callee-saved)
-//   2. Copies LR to R19 for safekeeping
-//   3. Calls asyncPreempt2 directly (R28/g remains valid)
-//   4. Restores LR from R19 and restores R19
-//   5. Returns to original PC
+// Frame layout (512 bytes total, 0x200):
+//   [SP+0]:   LR (return address)
+//   [SP+8]:   X0-X26 (216 bytes, 27 registers)
+//   [SP+224]: X29 (frame pointer)
+//   [SP+232]: NZCV
+//   [SP+240]: FPSR
+//   [SP+248]: D0-D31 (256 bytes, 32 FP registers)
+//   [SP+504]: padding to 512
 //
-TEXT ·asyncPreemptWrapper(SB), NOSPLIT, $16
-	// Allocate 16 bytes of stack (Go assembler handles prologue)
-	// Save R19 (callee-saved) so we can use it to hold LR
-	MOVD	R19, 8(RSP)
+// This is a NOFRAME function - we manage the stack ourselves to ensure
+// exact match between allocation and deallocation.
+//
+TEXT ·asyncPreemptWrapper(SB), NOSPLIT|NOFRAME, $0
+	// Allocate 512 bytes for save area (must match deallocation exactly!)
+	SUB	$512, RSP
 
-	// Save original LR to R19 (asyncPreempt2 must preserve R19)
-	MOVD	LR, R19
+	// Save LR (original interrupted PC) at [SP+0]
+	MOVD	LR, (RSP)
 
-	// Call asyncPreempt2 directly
-	// R28 (g) is valid, R19 holds our return address
+	// Save X0-X7 at [SP+8]
+	STP	(R0, R1), 8(RSP)
+	STP	(R2, R3), 24(RSP)
+	STP	(R4, R5), 40(RSP)
+	STP	(R6, R7), 56(RSP)
+
+	// Save X8-X15 at [SP+72]
+	STP	(R8, R9), 72(RSP)
+	STP	(R10, R11), 88(RSP)
+	STP	(R12, R13), 104(RSP)
+	STP	(R14, R15), 120(RSP)
+
+	// Save X16-X17 at [SP+136]
+	STP	(R16, R17), 136(RSP)
+
+	// Save X19-X26 at [SP+152] (skip X18 platform register, skip X28 g register)
+	// X19-X20
+	WORD	$0xa9094ff3  // stp x19, x20, [sp, #144]
+	// X21-X22
+	WORD	$0xa90a57f5  // stp x21, x22, [sp, #160]
+	// X23-X24
+	WORD	$0xa90b5ff7  // stp x23, x24, [sp, #176]
+	// X25-X26
+	WORD	$0xa90c67f9  // stp x25, x26, [sp, #192]
+
+	// Save X27 at [SP+208]
+	WORD	$0xf90073fb  // str x27, [sp, #208]
+
+	// Save X29 (frame pointer) at [SP+216]
+	WORD	$0xf90073fd  // str x29, [sp, #216]
+
+	// Save NZCV at [SP+224]
+	MRS	NZCV, R0
+	MOVD	R0, 224(RSP)
+
+	// Save FPSR at [SP+232]
+	// MRS FPSR, X0 = 0xD53B4420
+	WORD	$0xD53B4420
+	MOVD	R0, 232(RSP)
+
+	// Save FP registers D0-D31 at [SP+240]
+	// 6d0f87e0 = stp d0, d1, [sp, #248] (immediate = 248/8 = 31 = 0x1f)
+	// Using offsets: 240, 256, 272, 288, 304, 320, 336, 352, 368, 384, 400, 416, 432, 448, 464, 480
+	WORD	$0x6d0f87e0  // stp d0, d1, [sp, #240]
+	WORD	$0x6d108fe2  // stp d2, d3, [sp, #256]
+	WORD	$0x6d1197e4  // stp d4, d5, [sp, #272]
+	WORD	$0x6d129fe6  // stp d6, d7, [sp, #288]
+	WORD	$0x6d13a7e8  // stp d8, d9, [sp, #304]
+	WORD	$0x6d14afea  // stp d10, d11, [sp, #320]
+	WORD	$0x6d15b7ec  // stp d12, d13, [sp, #336]
+	WORD	$0x6d16bfee  // stp d14, d15, [sp, #352]
+	WORD	$0x6d17c7f0  // stp d16, d17, [sp, #368]
+	WORD	$0x6d18cff2  // stp d18, d19, [sp, #384]
+	WORD	$0x6d19d7f4  // stp d20, d21, [sp, #400]
+	WORD	$0x6d1adff6  // stp d22, d23, [sp, #416]
+	WORD	$0x6d1be7f8  // stp d24, d25, [sp, #432]
+	WORD	$0x6d1ceff4  // stp d26, d27, [sp, #448]
+	WORD	$0x6d1df7fc  // stp d28, d29, [sp, #464]
+	WORD	$0x6d1efffe  // stp d30, d31, [sp, #480]
+
+	// Call asyncPreempt2
+	// R28 (g) is still valid (not saved, not modified)
 	BL	runtime·asyncPreempt2(SB)
 
-	// Restore LR from R19
-	MOVD	R19, LR
+	// Restore FP registers D0-D31 from [SP+240]
+	WORD	$0x6d4f87e0  // ldp d0, d1, [sp, #240]
+	WORD	$0x6d508fe2  // ldp d2, d3, [sp, #256]
+	WORD	$0x6d5197e4  // ldp d4, d5, [sp, #272]
+	WORD	$0x6d529fe6  // ldp d6, d7, [sp, #288]
+	WORD	$0x6d53a7e8  // ldp d8, d9, [sp, #304]
+	WORD	$0x6d54afea  // ldp d10, d11, [sp, #320]
+	WORD	$0x6d55b7ec  // ldp d12, d13, [sp, #336]
+	WORD	$0x6d56bfee  // ldp d14, d15, [sp, #352]
+	WORD	$0x6d57c7f0  // ldp d16, d17, [sp, #368]
+	WORD	$0x6d58cff2  // ldp d18, d19, [sp, #384]
+	WORD	$0x6d59d7f4  // ldp d20, d21, [sp, #400]
+	WORD	$0x6d5adff6  // ldp d22, d23, [sp, #416]
+	WORD	$0x6d5be7f8  // ldp d24, d25, [sp, #432]
+	WORD	$0x6d5ceff4  // ldp d26, d27, [sp, #448]
+	WORD	$0x6d5df7fc  // ldp d28, d29, [sp, #464]
+	WORD	$0x6d5efffe  // ldp d30, d31, [sp, #480]
 
-	// Restore R19
-	MOVD	8(RSP), R19
+	// Restore FPSR from [SP+232]
+	MOVD	232(RSP), R0
+	// MSR FPSR, X0 = 0xD51B4420
+	WORD	$0xD51B4420
 
-	// Return to original PC (now in LR)
+	// Restore NZCV from [SP+224]
+	MOVD	224(RSP), R0
+	MSR	R0, NZCV
+
+	// Restore X29 from [SP+216]
+	WORD	$0xf94073fd  // ldr x29, [sp, #216]
+
+	// Restore X27 from [SP+208]
+	WORD	$0xf94073fb  // ldr x27, [sp, #208]
+
+	// Restore X25-X26 from [SP+192]
+	WORD	$0xa94c67f9  // ldp x25, x26, [sp, #192]
+
+	// Restore X23-X24 from [SP+176]
+	WORD	$0xa94b5ff7  // ldp x23, x24, [sp, #176]
+
+	// Restore X21-X22 from [SP+160]
+	WORD	$0xa94a57f5  // ldp x21, x22, [sp, #160]
+
+	// Restore X19-X20 from [SP+144]
+	WORD	$0xa9494ff3  // ldp x19, x20, [sp, #144]
+
+	// Restore X16-X17 from [SP+136]
+	LDP	136(RSP), (R16, R17)
+
+	// Restore X8-X15 from [SP+72]
+	LDP	72(RSP), (R8, R9)
+	LDP	88(RSP), (R10, R11)
+	LDP	104(RSP), (R12, R13)
+	LDP	120(RSP), (R14, R15)
+
+	// Restore X0-X7 from [SP+8]
+	LDP	8(RSP), (R0, R1)
+	LDP	24(RSP), (R2, R3)
+	LDP	40(RSP), (R4, R5)
+	LDP	56(RSP), (R6, R7)
+
+	// Restore LR from [SP+0]
+	MOVD	(RSP), LR
+
+	// Deallocate stack (MUST match allocation exactly!)
+	ADD	$512, RSP
+
+	// Return to original interrupted PC
 	RET
 
 // ============================================================================
@@ -1011,6 +1166,14 @@ TEXT ·SetVBAR(SB), NOSPLIT, $0-8
 	MOVD	addr+0(FP), R0
 	MSR	R0, VBAR_EL1
 	ISB	$15		// Synchronize context
+	RET
+
+// ============================================================================
+// ReadVBAR - Reads the current VBAR_EL1 value
+// ============================================================================
+TEXT ·ReadVBAR(SB), NOSPLIT, $0-8
+	MRS	VBAR_EL1, R0
+	MOVD	R0, ret+0(FP)
 	RET
 
 // ============================================================================

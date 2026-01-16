@@ -327,7 +327,8 @@ func InitConsoleFromDTB(dtbAddr uintptr) ByteStream {
 					console = bs
 					// Store in device registry
 					devices[dev.Name()] = dev
-					byteStreams = append(byteStreams, bs)
+					// Index by interfaces (including InterruptUser)
+					indexDeviceByInterfaces(dev)
 					return nil // Stop walking
 				}
 

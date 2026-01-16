@@ -15,6 +15,9 @@ func ExceptionVectorTable()
 func SetVBAR(addr uintptr)
 
 //go:nosplit
+func ReadVBAR() uintptr
+
+//go:nosplit
 func EnableIRQs()
 
 //go:nosplit
@@ -37,14 +40,32 @@ func getAuxval(tag uint64) uint64
 //go:nosplit
 func EnableGIC()
 
-//go:nosplit
-func DisableTimerIRQ()
+// DisableTimerIRQ and EnableTimerIRQ are now implemented in main.go using the GIC device driver
+// instead of direct assembly register access. This ensures consistent address mapping.
 
+// DisableTimerHardware disables the ARM timer hardware (CNTV_CTL_EL0)
+// This stops the timer from generating interrupt requests
 //go:nosplit
-func EnableTimerIRQ()
+func DisableTimerHardware()
 
 //go:nosplit
 func RearmTimerNow()
+
+// Timer register read functions for debugging
+//go:nosplit
+func ReadCntvCtlEl0() uint64
+
+//go:nosplit
+func ReadCntvTvalEl0() uint64
+
+//go:nosplit
+func ReadCntvctEl0() uint64
+
+//go:nosplit
+func ReadCntfrqEl0() uint64
+
+//go:nosplit
+func ReadDAIF() uint64
 
 //go:nosplit
 func GetGRegister() uint64

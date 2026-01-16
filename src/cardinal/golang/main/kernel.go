@@ -468,8 +468,9 @@ func kernelMainInternal(r0, r1, atags uint32) {
 
 	// Post-MMU device initialization
 	initDeviceTree()
-	gicInit()
-	asm.EnableIrqs()
+	// DISABLED: Let kmazarin initialize GIC from scratch
+	// gicInit()
+	// asm.EnableIrqs()
 
 	// Call runtime.args with minimal argv/auxv structure
 	result := asm.CallRuntimeArgs()
@@ -479,8 +480,8 @@ func kernelMainInternal(r0, r1, atags uint32) {
 		}
 	}
 
-	// Initialize timer for preemptive scheduling
-	timerInit()
+	// DISABLED: Don't initialize timer - kmazarin will do it
+	// timerInit()
 
 	// Initialize thread table (M0 as thread 0 for syscall handling)
 	InitThreads()
