@@ -24,24 +24,24 @@ type Console interface {
 }
 
 // current holds the active console implementation.
-// Uses atomic.Pointer for safe swapping from any context.
-var current atomic.Pointer[Console]
+// Uses atomic.Value for safe swapping from any context.
+var current atomic.Value
 
 // Set sets the active console implementation.
 // Safe to call from any context.
 func Set(c Console) {
-	current.Store(&c)
+	current.Store(c)
 }
 
 // Get returns the current console, or nil if not set.
 //
 //go:nosplit
 func Get() Console {
-	p := current.Load()
-	if p == nil {
+	v := current.Load()
+	if v == nil {
 		return nil
 	}
-	return *p
+	return v.(Console)
 }
 
 // Write writes bytes to the current console.
@@ -111,8 +111,10 @@ func PrintHex64(val uint64) {
 // MMIOUartConsole implements Console using direct MMIO writes.
 // This is used during early boot before interrupt-driven UART is available.
 // It has no dependencies on GIC or interrupts.
+// Uses a spinlock to prevent interleaved output from IRQ handlers.
 type MMIOUartConsole struct {
 	baseAddr uintptr
+	lock     uint32 // Spinlock: 0=unlocked, 1=locked
 }
 
 // NewMMIOUartConsole creates a new MMIO-based console.
@@ -121,13 +123,31 @@ func NewMMIOUartConsole(baseAddr uintptr) *MMIOUartConsole {
 	return &MMIOUartConsole{baseAddr: baseAddr}
 }
 
+// acquire acquires the spinlock
+//
+//go:nosplit
+func (c *MMIOUartConsole) acquire() {
+	for !atomic.CompareAndSwapUint32(&c.lock, 0, 1) {
+		// Spin
+	}
+}
+
+// release releases the spinlock
+//
+//go:nosplit
+func (c *MMIOUartConsole) release() {
+	atomic.StoreUint32(&c.lock, 0)
+}
+
 // Write implements Console.Write
 //
 //go:nosplit
 func (c *MMIOUartConsole) Write(p []byte) int {
+	c.acquire()
 	for _, b := range p {
-		c.WriteByte(b)
+		c.writeByteLocked(b)
 	}
+	c.release()
 	return len(p)
 }
 
@@ -135,7 +155,15 @@ func (c *MMIOUartConsole) Write(p []byte) int {
 //
 //go:nosplit
 func (c *MMIOUartConsole) WriteByte(b byte) {
-	// Direct MMIO write to UART data register
+	c.acquire()
+	c.writeByteLocked(b)
+	c.release()
+}
+
+// writeByteLocked writes a byte with lock already held
+//
+//go:nosplit
+func (c *MMIOUartConsole) writeByteLocked(b byte) {
 	*(*byte)(unsafe.Pointer(c.baseAddr)) = b
 }
 
@@ -143,7 +171,9 @@ func (c *MMIOUartConsole) WriteByte(b byte) {
 //
 //go:nosplit
 func (c *MMIOUartConsole) WriteString(s string) {
+	c.acquire()
 	for i := 0; i < len(s); i++ {
-		c.WriteByte(s[i])
+		c.writeByteLocked(s[i])
 	}
+	c.release()
 }

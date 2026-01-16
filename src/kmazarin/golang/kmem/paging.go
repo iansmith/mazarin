@@ -3,6 +3,7 @@
 package kmem
 
 import (
+	"kmazarin/console"
 	"unsafe"
 )
 
@@ -10,27 +11,23 @@ import (
 // Set to false for production, true for debugging
 const debugPaging = false
 
-// uartPutcDirect writes a byte to UART (linked from kmazarin package)
-//go:linkname uartPutcDirect kmazarin/kmem.uartPutcDirect
-func uartPutcDirect(c byte)
-
-// uartPutHex64Direct writes a 64-bit hex value to UART (linked from kmazarin package)
-//go:linkname uartPutHex64Direct kmazarin/kmem.uartPutHex64Direct
-func uartPutHex64Direct(val uint64)
-
 // debugPrint conditionally outputs a character if debugging is enabled
+// Uses console abstraction which provides spinlock protection
+//
 //go:nosplit
 func debugPrint(c byte) {
 	if debugPaging {
-		uartPutcDirect(c)
+		console.WriteByte(c)
 	}
 }
 
 // debugPrintHex conditionally outputs a hex value if debugging is enabled
+// Uses console abstraction which provides spinlock protection
+//
 //go:nosplit
 func debugPrintHex(val uint64) {
 	if debugPaging {
-		uartPutHex64Direct(val)
+		console.PrintHex64(val)
 	}
 }
 

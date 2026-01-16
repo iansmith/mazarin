@@ -68,7 +68,7 @@ func (d *PL011Driver) Init(node *dtb.Node) (deviceapi.Closable, error) {
 	uart.WriteReg(RegIBRD, 26)           // 115200 baud at 24MHz
 	uart.WriteReg(RegFBRD, 3)            // Fractional part
 	uart.WriteReg(RegLCRH, 0x70)         // 8N1, enable FIFOs
-	uart.WriteReg(RegIMSC, IRQ_RX|IRQ_TX) // Enable RX/TX interrupts
+	uart.WriteReg(RegIMSC, 0)            // Interrupts disabled initially
 	uart.WriteReg(RegCR, 0x301)          // Enable UART
 
 	return uart, nil
@@ -114,6 +114,9 @@ func (u *PL011) WireInterrupts(ic deviceapi.InterruptController) error {
 	// so the exception handler can dispatch this IRQ.
 	ic.RegisterHandler(u.irq, u.handleInterrupt)
 	ic.EnableIRQ(u.irq)
+
+	// Now enable UART interrupts (RX only initially - TX enabled when data is queued)
+	u.WriteReg(RegIMSC, IRQ_RX)
 
 	return nil
 }

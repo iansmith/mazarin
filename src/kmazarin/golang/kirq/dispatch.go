@@ -2,7 +2,7 @@
 
 package kirq
 
-import "unsafe"
+import "kmazarin/console"
 
 // PreemptInfo contains call injection information for async preemption
 // Returned by IRQ handlers that want to trigger preemption
@@ -152,31 +152,15 @@ func dispatchNonTimerIRQInternal() {
 */
 
 // irqPanic handles IRQ-specific panics with the IRQ number
+// Uses console abstraction which provides spinlock protection
 //
 //go:nosplit
 func irqPanic(msg string, irqNum uint64) {
-	uartBase := getUartBase()
-
-	// Print "PANIC: "
-	uartPuts := func(s string) {
-		for i := 0; i < len(s); i++ {
-			*(*byte)(unsafe.Pointer(uartBase)) = s[i]
-		}
-	}
-
-	printHex := func(val uint64) {
-		hexChars := "0123456789ABCDEF"
-		for i := 60; i >= 0; i -= 4 {
-			nibble := (val >> i) & 0xF
-			*(*byte)(unsafe.Pointer(uartBase)) = hexChars[nibble]
-		}
-	}
-
-	uartPuts("\r\n*** KERNEL PANIC ***\r\n")
-	uartPuts(msg)
-	uartPuts(": IRQ #")
-	printHex(irqNum)
-	uartPuts("\r\n")
+	console.WriteString("\r\n*** KERNEL PANIC ***\r\n")
+	console.WriteString(msg)
+	console.WriteString(": IRQ #")
+	console.PrintHex64(irqNum)
+	console.WriteString("\r\n")
 
 	// Halt using Exit
 	Exit()

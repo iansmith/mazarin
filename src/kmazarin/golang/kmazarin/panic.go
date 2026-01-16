@@ -2,30 +2,21 @@
 
 package main
 
-import "unsafe"
+import "kmazarin/console"
 
 // Exit hangs the system in an infinite loop
 // Implemented in panic_arm64.s
 func Exit()
 
-// KernelPanic prints an error message directly to UART and hangs the system
+// KernelPanic prints an error message directly to console and hangs the system
 // This is used when something goes critically wrong and we cannot continue
+// Uses console abstraction which provides spinlock protection
 //
 //go:nosplit
 func KernelPanic(msg string) {
-	uartBase := GetUartBase()
-
-	// Helper to write a string
-	uartPuts := func(s string) {
-		for i := 0; i < len(s); i++ {
-			*(*byte)(unsafe.Pointer(uartBase)) = s[i]
-		}
-	}
-
-	// Print the panic message
-	uartPuts("\r\n*** KERNEL PANIC ***\r\n")
-	uartPuts(msg)
-	uartPuts("\r\n")
+	console.WriteString("\r\n*** KERNEL PANIC ***\r\n")
+	console.WriteString(msg)
+	console.WriteString("\r\n")
 
 	// Halt the system
 	Exit()

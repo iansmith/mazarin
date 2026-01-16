@@ -7,9 +7,6 @@ import (
 	"unsafe"
 )
 
-// getUartBase is provided by main package via go:linkname.
-func getUartBase() uintptr
-
 // getAsyncPreemptAddr is provided by main package via go:linkname.
 // Returns the address of runtime.asyncPreempt from RuntimeConfig,
 // populated by Cardinal at boot time.
@@ -48,22 +45,19 @@ func InitTimer() {
 // TimerIRQHandlerCanPreempt handles the ARM Generic Timer interrupt (IRQ 27)
 // Returns preemption info to trigger call injection if goroutine preemption should occur
 //
+// NOTE: This Go handler is not currently called for timer IRQs - the assembly
+// handler (TimerIRQHandlerAsm) is used instead for safety in IRQ context.
+// This remains here for future use if we need Go-level timer handling.
+//
 //go:nosplit
 //go:noinline
 func TimerIRQHandlerCanPreempt(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo {
-	// DEBUG: Print '1' at handler entry
-	uartBase := getUartBase()
-	*(*byte)(unsafe.Pointer(uartBase)) = '['
-
 	// Re-arm timer for next interrupt (~100ms for responsive preemption)
 	// Calculate ticks based on actual timer frequency (read from CNTFRQ_EL0)
 	// 100ms * frequency = ticks
 	ticks := (uint64(timerFrequency) * 100) / 1000
 
 	rearmTimer(int32(ticks))
-
-	// DEBUG: Print '2' after rearm
-	*(*byte)(unsafe.Pointer(uartBase)) = ']'
 
 	// NOTE: Deadline processing now happens in bottom half (safe Go context)
 	// The assembly timer handler sets deadlinePending flag instead of calling
@@ -107,12 +101,7 @@ func TimerIRQHandlerCanPreempt(irqNum uint64, framePtr uintptr, elr, spEl0 uint6
 	// ARM64 instructions must be 4-byte aligned. If ELR is misaligned,
 	// it indicates corruption and we should not attempt preemption.
 	if (elr & 0x3) != 0 {
-		// ELR is misaligned - print it for debugging
-		uartBase := getUartBase()
-		printStr(uartBase, "\r\n!MISALIGNED ELR=0x")
-		printHex64(uartBase, elr)
-		printStr(uartBase, "\r\n")
-		// Skip preemption to avoid PC alignment fault
+		// ELR is misaligned - skip preemption to avoid PC alignment fault
 		return PreemptInfo{
 			NewELR:    0,
 			NewSP:     0,
@@ -166,9 +155,6 @@ func TimerIRQHandlerCanPreempt(irqNum uint64, framePtr uintptr, elr, spEl0 uint6
 
 	// Clear the flag now that we've read it
 	atomic.StoreUint32(&NeedsAsyncPreempt, 0)
-
-	// DEBUG: Print 'A' when async preemption is being injected
-	*(*byte)(unsafe.Pointer(uartBase)) = 'A'
 
 	// Preemption needed! Inject call to runtime.asyncPreempt
 	// This will cause the interrupted code to call asyncPreempt when it returns
@@ -224,30 +210,4 @@ func GetTimerFrequency() uint32 {
 //go:nosplit
 func ReadCounterValue() uint64 {
 	return asm_readCntvctEl0()
-}
-
-// Debug helpers
-//go:nosplit
-func printStr(uartBase uintptr, s string) {
-	for i := 0; i < len(s); i++ {
-		*(*byte)(unsafe.Pointer(uartBase)) = s[i]
-	}
-}
-
-//go:nosplit
-func printHex32(uartBase uintptr, val uint32) {
-	hexChars := "0123456789ABCDEF"
-	for i := 28; i >= 0; i -= 4 {
-		nibble := (val >> i) & 0xF
-		*(*byte)(unsafe.Pointer(uartBase)) = hexChars[nibble]
-	}
-}
-
-//go:nosplit
-func printHex64(uartBase uintptr, val uint64) {
-	hexChars := "0123456789ABCDEF"
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (val >> i) & 0xF
-		*(*byte)(unsafe.Pointer(uartBase)) = hexChars[nibble]
-	}
 }

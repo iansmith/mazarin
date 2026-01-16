@@ -2,9 +2,7 @@
 
 package ksyscall
 
-import (
-	"unsafe"
-)
+import "kmazarin/console"
 
 // SyscallHandler is the type for all syscall handler functions
 // Takes 6 arguments (x0-x5) and returns a result (x0)
@@ -90,31 +88,15 @@ func DispatchFromOverlay(num, a1, a2, a3, a4, a5, a6 uintptr) int64 {
 }
 
 // syscallPanic handles syscall-specific panics with the syscall number
+// Uses console abstraction which provides spinlock protection
 //
 //go:nosplit
 func syscallPanic(msg string, syscallNum uint64) {
-	uartBase := getUartBase()
-
-	// Print "PANIC: "
-	uartPuts := func(s string) {
-		for i := 0; i < len(s); i++ {
-			*(*byte)(unsafe.Pointer(uartBase)) = s[i]
-		}
-	}
-
-	printHex := func(val uint64) {
-		hexChars := "0123456789ABCDEF"
-		for i := 60; i >= 0; i -= 4 {
-			nibble := (val >> i) & 0xF
-			*(*byte)(unsafe.Pointer(uartBase)) = hexChars[nibble]
-		}
-	}
-
-	uartPuts("\r\n*** KERNEL PANIC ***\r\n")
-	uartPuts(msg)
-	uartPuts(": syscall #")
-	printHex(syscallNum)
-	uartPuts("\r\n")
+	console.WriteString("\r\n*** KERNEL PANIC ***\r\n")
+	console.WriteString(msg)
+	console.WriteString(": syscall #")
+	console.PrintHex64(syscallNum)
+	console.WriteString("\r\n")
 
 	// Halt using Exit
 	Exit()

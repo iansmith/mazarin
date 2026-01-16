@@ -5,6 +5,7 @@
 package kmem
 
 import (
+	"kmazarin/console"
 	"sync/atomic"
 	"unsafe"
 )
@@ -173,26 +174,18 @@ func getRuntimeConfigTyped() *runtimeConfigStruct {
 	return (*runtimeConfigStruct)(ifacePtr.data)
 }
 
-// uartPuts writes a string directly to UART
+// uartPuts writes a string to console
+// Uses console abstraction which provides spinlock protection
 //
 //go:nosplit
 func uartPuts(s string) {
-	cfg := getRuntimeConfigTyped()
-	uartBase := uintptr(cfg.KernelUartBase)
-	for i := 0; i < len(s); i++ {
-		*(*byte)(unsafe.Pointer(uartBase)) = s[i]
-	}
+	console.WriteString(s)
 }
 
-// uartPutHex64 writes a 64-bit hex value to UART
+// uartPutHex64 writes a 64-bit hex value to console
+// Uses console abstraction which provides spinlock protection
 //
 //go:nosplit
 func uartPutHex64(val uint64) {
-	cfg := getRuntimeConfigTyped()
-	uartBase := uintptr(cfg.KernelUartBase)
-	hexChars := "0123456789ABCDEF"
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (val >> i) & 0xF
-		*(*byte)(unsafe.Pointer(uartBase)) = hexChars[nibble]
-	}
+	console.PrintHex64(val)
 }

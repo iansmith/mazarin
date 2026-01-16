@@ -727,11 +727,6 @@ irq_exception_handler:
 	// ========================================================================
 	// Async preemption injection (pure assembly, no Go calls)
 	// ========================================================================
-	// DEBUG: Print '?' to show we're checking preemption
-	MOVD	$(UART_BASE), R10
-	MOVD	$'?', R11
-	MOVB	R11, (R10)
-
 	// Check if assembly handler requested async preemption.
 	// This is set by TimerIRQHandlerAsm when threshold exceeded.
 	MOVW	kmazarin∕kirq·NeedsAsyncPreempt(SB), R10
@@ -765,11 +760,6 @@ irq_exception_handler:
 	MOVW	$0, R12
 	MOVW	R12, kmazarin∕kirq·NeedsAsyncPreempt(SB)
 
-	// DEBUG: Print 'A' to show async preemption will be injected
-	MOVD	$(UART_BASE), R12
-	MOVD	$'A', R13
-	MOVB	R13, (R12)
-
 	// Set up preemption return values
 	// R20 = NewELR (asyncPreempt address)
 	// R21 = NewSP (unchanged, from exception frame)
@@ -783,10 +773,7 @@ irq_exception_handler:
 	B	irq_write_eoir
 
 timer_no_preempt_no_flag:
-	// DEBUG: NeedsAsyncPreempt not set
-	MOVD	$(UART_BASE), R10
-	MOVD	$'N', R11
-	MOVB	R11, (R10)
+	// NeedsAsyncPreempt not set - cooperative preemption will handle it
 	B	timer_no_preempt
 
 timer_no_preempt_not_ready:

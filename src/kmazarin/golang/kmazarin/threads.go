@@ -3,18 +3,19 @@
 package main
 
 import (
+	"kmazarin/console"
 	"kmazarin/ds"
 	"kmazarin/kirq"
 	"kmazarin/util"
 	"unsafe"
 )
 
-// debugPrint writes a single character to UART for debugging
+// debugPrint writes a single character to console for debugging
+// Uses console abstraction which provides spinlock protection
 //
 //go:nosplit
 func debugPrint(c byte) {
-	uartBase := GetUartBase()
-	*(*byte)(unsafe.Pointer(uartBase)) = c
+	console.WriteByte(c)
 }
 
 // Syscall return codes for assembly

@@ -7,7 +7,6 @@ import (
 	"kmazarin/kirq"
 	"kmazarin/kmem"
 	"kmazarin/ksyscall"
-	"kmazarin/uart"
 	_ "os"     // Keep to maintain BSS size
 	_ "unsafe" // Required for //go:linkname directives
 	"runtime"
@@ -91,12 +90,11 @@ func init() {
 	kirq.RegisterHandlers()
 	kirq.InitPreemption()
 
-	// Initialize UART interrupts (enables IRQ 33 in GIC)
-	kirq.InitUART()
+	// NOTE: OLD UART initialization disabled - now using PL011 device driver
+	// kirq.InitUART()
 
-	// Start bottom half processors BEFORE enabling interrupts
-	// These goroutines will handle deferred work from IRQ handlers in safe Go context
-	StartBottomHalfProcessors()
+	// NOTE: Bottom half processors disabled - PL011 driver handles interrupts directly
+	// StartBottomHalfProcessors()
 
 	// Enable interrupts - handlers and bottom halves are ready
 	EnableIRQs()
@@ -141,20 +139,6 @@ func uartPutcDirectForKmem(c byte) {
 //go:nosplit
 func getRuntimeConfigForKmem() interface{} {
 	return GetRuntimeConfig()
-}
-
-// getUartBaseForKsyscall provides UART base to ksyscall package via linkname
-//go:linkname getUartBaseForKsyscall kmazarin/ksyscall.getUartBase
-//go:nosplit
-func getUartBaseForKsyscall() uintptr {
-	return GetUartBase()
-}
-
-// getUartBaseForKirq provides UART base to kirq package via linkname
-//go:linkname getUartBaseForKirq kmazarin/kirq.getUartBase
-//go:nosplit
-func getUartBaseForKirq() uintptr {
-	return GetUartBase()
 }
 
 // getAsyncPreemptAddrForKirq provides asyncPreempt address to kirq package via linkname
@@ -434,16 +418,9 @@ func testDeviceDiscovery() {
 	} else {
 		console.Println("[DeviceTest] Interrupts wired successfully")
 
-		// TODO: Enable interrupt-driven console once working
-		// For now, keep using direct MMIO console for debugging
-		// Swap to interrupt-driven console now that UART interrupts are wired
-		// if bs, ok := device.GetByteStream(); ok {
-		// 	if pl011, ok := bs.(*uart.PL011); ok {
-		// 		console.Set(pl011.AsConsole())
-		// 		console.Println("[DeviceTest] Switched to interrupt-driven console")
-		// 	}
-		// }
-		_ = uart.PL011{} // Suppress unused import
+		// NOTE: PL011 interrupt-driven console available but not switching yet
+		// TODO: Debug why switching causes "W" character flood
+		console.Println("[DeviceTest] PL011 interrupt-driven console ready (not switching yet)")
 	}
 
 	console.Println("[DeviceTest] === Test Complete ===")
