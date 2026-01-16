@@ -7,6 +7,7 @@ import (
 	"kmazarin/kirq"
 	"kmazarin/kmem"
 	"kmazarin/ksyscall"
+	"kmazarin/uart"
 	_ "os"     // Keep to maintain BSS size
 	_ "unsafe" // Required for //go:linkname directives
 	"runtime"
@@ -96,23 +97,13 @@ func init() {
 }
 
 // uartPutc writes a single character to UART via the console abstraction.
-// Before interrupt mode: uses MMIOUartConsole (direct MMIO writes)
-// After interrupt mode: uses interrupt-driven console
+// Before device discovery: uses MMIOUartConsole (direct MMIO writes)
+// After device discovery + interrupt wiring: uses interrupt-driven PL011Console
 //
 //go:nosplit
 func uartPutc(c byte) {
-	// Check if interrupt-driven UART is ready
-	if uartInterruptReady {
-		// Use interrupt-driven ring buffer
-		kirq.UARTPutc(c)
-	} else {
-		// Use console abstraction (MMIOUartConsole during early boot)
-		console.WriteByte(c)
-	}
+	console.WriteByte(c)
 }
-
-// uartInterruptReady tracks whether interrupt-driven UART is ready
-var uartInterruptReady bool
 
 // uartPuts writes a string directly to UART
 //go:nosplit
@@ -373,7 +364,8 @@ func testRuntimeReadiness() bool {
 // testDeviceDiscovery tests the DTB-based device discovery system
 // This is a temporary test function to verify DTB parsing and device matching
 func testDeviceDiscovery() {
-	console.Println("\n[DeviceTest] === Testing DTB Device Discovery ===")
+	console.Println("")
+	console.Println("[DeviceTest] === Testing DTB Device Discovery ===")
 
 	// NOTE: Drivers are already registered in EarlyInit()
 
@@ -399,7 +391,8 @@ func testDeviceDiscovery() {
 	}
 
 	// Show what was discovered
-	console.Println("\n[DeviceTest] Discovered devices:")
+	console.Println("")
+	console.Println("[DeviceTest] Discovered devices:")
 
 	// Check for byte streams (UART)
 	if uart, ok := device.GetByteStream(); ok {
@@ -426,15 +419,27 @@ func testDeviceDiscovery() {
 	}
 
 	// Wire up interrupts now that GIC is discovered
-	console.Println("\n[DeviceTest] Wiring interrupts...")
+	console.Println("")
+	console.Println("[DeviceTest] Wiring interrupts...")
 	if err := device.WireInterrupts(); err != nil {
 		console.WriteString("[DeviceTest] ERROR wiring interrupts: ")
 		console.Println(err.Error())
 	} else {
 		console.Println("[DeviceTest] Interrupts wired successfully")
+
+		// TODO: Enable interrupt-driven console once working
+		// For now, keep using direct MMIO console for debugging
+		// Swap to interrupt-driven console now that UART interrupts are wired
+		// if bs, ok := device.GetByteStream(); ok {
+		// 	if pl011, ok := bs.(*uart.PL011); ok {
+		// 		console.Set(pl011.AsConsole())
+		// 		console.Println("[DeviceTest] Switched to interrupt-driven console")
+		// 	}
+		// }
+		_ = uart.PL011{} // Suppress unused import
 	}
 
-	console.Println("[DeviceTest] === Test Complete ===\n")
+	console.Println("[DeviceTest] === Test Complete ===")
 }
 
 // simpleMain is the entry point for our simple goroutine/channel test

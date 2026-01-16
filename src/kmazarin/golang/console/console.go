@@ -80,6 +80,13 @@ func WriteString(s string) {
 	c.WriteString(s)
 }
 
+// Print writes a string to the console (no newline).
+//
+//go:nosplit
+func Print(s string) {
+	WriteString(s)
+}
+
 // Println writes a string followed by CRLF.
 //
 //go:nosplit

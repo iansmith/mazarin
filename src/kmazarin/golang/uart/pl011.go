@@ -3,6 +3,7 @@ package uart
 import (
 	"kmazarin/deviceapi"
 	"kmazarin/dtb"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -81,6 +82,7 @@ type PL011 struct {
 	rxBuf    *RingBuffer
 	txBuf    *RingBuffer
 	ic       deviceapi.InterruptController // Set by WireInterrupts
+	txLock   uint32                         // Spinlock for TX buffer access
 }
 
 // Closable implementation
@@ -128,6 +130,96 @@ func (u *PL011) Write(p []byte) (n int, err error) {
 	return n, nil
 }
 
+// Console interface implementation
+// These methods allow PL011 to be used as a console.Console
+
+// txLockAcquire acquires the TX spinlock
+//
+//go:nosplit
+func (u *PL011) txLockAcquire() {
+	for !atomic.CompareAndSwapUint32(&u.txLock, 0, 1) {
+		// Spin until we get the lock
+	}
+}
+
+// txLockRelease releases the TX spinlock
+//
+//go:nosplit
+func (u *PL011) txLockRelease() {
+	atomic.StoreUint32(&u.txLock, 0)
+}
+
+// WriteByte writes a single byte to the TX ring buffer.
+// If buffer is full, falls back to direct MMIO write.
+// Implements console.Console interface.
+//
+//go:nosplit
+func (u *PL011) WriteByte(c byte) {
+	u.txLockAcquire()
+
+	// Try to write to ring buffer
+	if u.txBuf.WriteByte(c) {
+		// Enable TX interrupt to drain buffer
+		u.WriteReg(RegIMSC, IRQ_RX|IRQ_TX)
+		u.txLockRelease()
+	} else {
+		u.txLockRelease()
+		// Buffer full - fall back to direct MMIO (busy-wait for FIFO space)
+		// Note: Release lock before busy-waiting to avoid deadlock
+		for u.ReadReg(RegFR)&FR_TXFF != 0 {
+			// Wait for TX FIFO to have space
+		}
+		u.WriteReg(RegDR, uint32(c))
+	}
+}
+
+// WriteString writes a string to the TX ring buffer.
+// Implements console.Console interface.
+//
+//go:nosplit
+func (u *PL011) WriteString(s string) {
+	for i := 0; i < len(s); i++ {
+		u.WriteByte(s[i])
+	}
+}
+
+// AsConsole returns a console.Console adapter for this PL011.
+// The adapter uses the interrupt-driven ring buffer for output.
+func (u *PL011) AsConsole() *PL011Console {
+	return &PL011Console{uart: u}
+}
+
+// PL011Console adapts PL011 to the console.Console interface.
+// This wrapper is needed because ByteStream.Write and Console.Write
+// have different signatures.
+type PL011Console struct {
+	uart *PL011
+}
+
+// Write implements console.Console.Write
+//
+//go:nosplit
+func (c *PL011Console) Write(p []byte) int {
+	for _, b := range p {
+		c.uart.WriteByte(b)
+	}
+	return len(p)
+}
+
+// WriteByte implements console.Console.WriteByte
+//
+//go:nosplit
+func (c *PL011Console) WriteByte(b byte) {
+	c.uart.WriteByte(b)
+}
+
+// WriteString implements console.Console.WriteString
+//
+//go:nosplit
+func (c *PL011Console) WriteString(s string) {
+	c.uart.WriteString(s)
+}
+
 // Hardware access
 func (u *PL011) ReadReg(offset uintptr) uint32 {
 	return *(*uint32)(unsafe.Pointer(u.baseAddr + offset))
@@ -135,6 +227,14 @@ func (u *PL011) ReadReg(offset uintptr) uint32 {
 
 func (u *PL011) WriteReg(offset uintptr, value uint32) {
 	*(*uint32)(unsafe.Pointer(u.baseAddr + offset)) = value
+}
+
+// txTryLock attempts to acquire the TX spinlock without blocking.
+// Returns true if lock acquired, false if already held.
+//
+//go:nosplit
+func (u *PL011) txTryLock() bool {
+	return atomic.CompareAndSwapUint32(&u.txLock, 0, 1)
 }
 
 // Interrupt handler
@@ -152,14 +252,19 @@ func (u *PL011) handleInterrupt() {
 
 	// Handle transmit interrupt
 	if status&IRQ_TX != 0 {
-		for u.txBuf.Available() > 0 && u.ReadReg(RegFR)&FR_TXFF == 0 {
-			data := u.txBuf.ReadByte()
-			u.WriteReg(RegDR, uint32(data))
+		// Try to get lock - if held by WriteByte, skip and try next interrupt
+		if u.txTryLock() {
+			for u.txBuf.Available() > 0 && u.ReadReg(RegFR)&FR_TXFF == 0 {
+				data := u.txBuf.ReadByte()
+				u.WriteReg(RegDR, uint32(data))
+			}
+			// If buffer empty, disable TX interrupt
+			if u.txBuf.Available() == 0 {
+				u.WriteReg(RegIMSC, IRQ_RX)
+			}
+			u.txLockRelease()
 		}
-		// If buffer empty, disable TX interrupt
-		if u.txBuf.Available() == 0 {
-			u.WriteReg(RegIMSC, IRQ_RX)
-		}
+		// If lock not acquired, TX interrupt stays enabled and will retry
 	}
 
 	// Clear interrupts
@@ -194,11 +299,13 @@ func (r *RingBuffer) Write(p []byte) int {
 	return n
 }
 
-func (r *RingBuffer) WriteByte(b byte) {
-	if (r.tail+1)%r.size != r.head {
-		r.buf[r.tail] = b
-		r.tail = (r.tail + 1) % r.size
+func (r *RingBuffer) WriteByte(b byte) bool {
+	if (r.tail+1)%r.size == r.head {
+		return false // Buffer full
 	}
+	r.buf[r.tail] = b
+	r.tail = (r.tail + 1) % r.size
+	return true
 }
 
 func (r *RingBuffer) Read(p []byte) (int, error) {
