@@ -101,13 +101,12 @@ func init() {
 	Print("[Init] Initialization complete")
 }
 
-// uartPutc writes a single character to UART using the ring buffer system.
+// uartPutc writes a single character to UART using the console abstraction.
 // This is safe to call from any Go context (not IRQ context).
-// The TX IRQ handler will drain the ring buffer to the UART FIFO.
 //
 //go:nosplit
 func uartPutc(c byte) {
-	UartWriteByte(c)
+	console.WriteByte(c)
 }
 
 // uartPuts writes a string directly to UART

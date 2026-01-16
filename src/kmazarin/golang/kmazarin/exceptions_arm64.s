@@ -815,44 +815,26 @@ timer_no_preempt:
 
 irq_not_timer:
 	// ========================================================================
-	// Non-timer IRQs - Dispatch to pure assembly handlers
+	// Non-timer IRQs - Dispatch to registered handlers via kirq.DispatchIRQ
 	// ========================================================================
 	// R0 contains the masked IRQ number
 
-	// Check if this is UART IRQ (33)
-	CMP	$33, R0
-	BEQ	handle_uart_irq
+	// Call kirq.DispatchIRQ(irqNum, framePtr, elr, spEl0) PreemptInfo
+	// Load arguments from exception frame
+	MOVD	EXC_FRAME_ELR_SPSR(RSP), R2   // R2 = ELR
+	MOVD	EXC_FRAME_SP_EL0(RSP), R3     // R3 = SP_EL0
+	MOVD	RSP, R1                        // R1 = framePtr
+	// R0 already contains IRQ number
 
-	// Unknown IRQ - just acknowledge and return
-	// In the future, add other device handlers here
-	MOVD	$0, R20
-	MOVD	$0, R21
-	MOVD	$0, R22
-	MOVD	$0, R23
-	B	irq_write_eoir
+	// Call using macro: func DispatchIRQ(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo
+	// Returns: (NewELR, NewSP, NewLR uint64, DoPreempt bool)
+	GO_CALL_4_4(·IRQDispatch, R0, R1, R2, R3, R10, R11, R12, R13)
 
-handle_uart_irq:
-	// UART interrupt - check MIS register to see RX/TX/both
-	MOVD	$0xFFFFFFFF09000000, R10  // UART base
-	MOVW	0x40(R10), R11            // Read MIS (masked interrupt status)
-
-	// Check RX interrupt (bit 4)
-	TST	$0x10, R11
-	BEQ	uart_skip_rx
-	CALL	·uartRxIRQHandler(SB)
-
-uart_skip_rx:
-	// Check TX interrupt (bit 5)
-	TST	$0x20, R11
-	BEQ	uart_skip_tx
-	CALL	·uartTxIRQHandler(SB)
-
-uart_skip_tx:
-	// Non-timer IRQs don't trigger preemption (only timer does)
-	MOVD	$0, R20
-	MOVD	$0, R21
-	MOVD	$0, R22
-	MOVD	$0, R23
+	// Save return values for later use
+	MOVD	R10, R20  // R20 = NewELR
+	MOVD	R11, R21  // R21 = NewSP
+	MOVD	R12, R22  // R22 = NewLR
+	MOVD	R13, R23  // R23 = DoPreempt
 
 irq_write_eoir:
 	// Write End Of Interrupt (must do before modifying frame!)

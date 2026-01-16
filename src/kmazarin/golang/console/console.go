@@ -155,6 +155,10 @@ func (c *MMIOUartConsole) Write(p []byte) int {
 //
 //go:nosplit
 func (c *MMIOUartConsole) WriteByte(b byte) {
+	// Safety check: if c is nil, just return
+	if c == nil {
+		return
+	}
 	c.acquire()
 	c.writeByteLocked(b)
 	c.release()
