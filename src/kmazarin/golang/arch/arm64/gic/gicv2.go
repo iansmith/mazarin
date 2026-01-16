@@ -5,6 +5,7 @@ package gic
 import (
 	"kmazarin/deviceapi"
 	"kmazarin/dtb"
+	"kmazarin/kirq"
 	"unsafe"
 )
 
@@ -72,6 +73,10 @@ func (g *GICv2) Close() error {
 func (g *GICv2) RegisterHandler(irq uint32, handler func()) {
 	if irq < 1024 {
 		g.handlers[irq] = handler
+		// Also register with kirq dispatch table so the exception handler
+		// can dispatch this IRQ. The exception handler calls kirq.DispatchNonTimerIRQ
+		// which looks up handlers in kirq's table, not ours.
+		kirq.RegisterSimpleHandler(irq, handler)
 	}
 }
 

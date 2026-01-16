@@ -783,11 +783,20 @@ timer_no_preempt:
 
 irq_not_timer:
 	// ========================================================================
-	// Non-timer IRQs - Handle with simple ACK for now
+	// Non-timer IRQs - Dispatch through kirq.DispatchNonTimerIRQ
 	// ========================================================================
-	// TODO: Add softirq infrastructure for complex device handling.
-	// For now, just ACK the interrupt and return.
-	// UART and other devices will be handled via polling or deferred work.
+	// Store IRQ number in global for Go function to read (avoids ABI complexity)
+	// R0 still contains the masked IRQ number from earlier
+	MOVD	R0, kmazarin∕kirq·CurrentIRQNum(SB)
+
+	// Call Go dispatcher - handles UART, etc.
+	// NOTE: This is safe because:
+	//   1. We're on the exception stack (SP_EL1)
+	//   2. R28 still has g pointer
+	//   3. DispatchNonTimerIRQ is //go:nosplit
+	CALL	kmazarin∕kirq·DispatchNonTimerIRQ(SB)
+
+	// Non-timer IRQs don't trigger preemption (only timer does)
 	MOVD	$0, R20
 	MOVD	$0, R21
 	MOVD	$0, R22

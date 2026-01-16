@@ -35,8 +35,37 @@ func RegisterHandlers() {
 	// Register handlers that can trigger preemption (timer can preempt goroutines)
 	irqTableCanPreempt[27] = TimerIRQHandlerCanPreempt
 
-	// Register simple handlers (no preemption)
-	irqTableSimple[33] = UartIRQHandler // PL011 UART TX interrupt (IRQ 33)
+	// Note: Device-specific handlers (like UART) are now registered dynamically
+	// via RegisterSimpleHandler when devices call WireInterrupts.
+}
+
+// RegisterSimpleHandler registers a simple (non-preempting) IRQ handler.
+// Called by device drivers during WireInterrupts to register their handlers.
+// The handler will be called from DispatchNonTimerIRQ when the IRQ fires.
+//
+// The handler signature func() matches deviceapi.InterruptController.RegisterHandler.
+// The IRQ number is not passed since devices know which IRQ they registered for.
+//
+//go:nosplit
+func RegisterSimpleHandler(irq uint32, handler func()) {
+	if irq < 1020 {
+		// Wrap the device handler to match our table signature
+		irqTableSimple[irq] = func(irqNum uint64) {
+			_ = irqNum // IRQ number available but most handlers don't need it
+			handler()
+		}
+	}
+}
+
+// UnregisterHandler removes a handler for the given IRQ.
+// Called when a device is closed.
+//
+//go:nosplit
+func UnregisterHandler(irq uint32) {
+	if irq < 1020 {
+		irqTableSimple[irq] = nil
+		irqTableCanPreempt[irq] = nil
+	}
 }
 
 // DispatchIRQ is called from assembly IRQ exception handler
@@ -68,6 +97,42 @@ func DispatchIRQ(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo
 	// No handler registered
 	irqPanic("IRQ not implemented", irqNum)
 	return PreemptInfo{} // unreachable
+}
+
+// CurrentIRQNum holds the IRQ number for assembly-to-Go dispatch.
+// Set by assembly before calling DispatchNonTimerIRQ.
+// Using a global avoids ABI complexity for cross-package calls.
+var CurrentIRQNum uint64
+
+// DispatchNonTimerIRQ is the ABI0 entry point for assembly.
+// Forward declaration - implementation is via tail-call stub in dispatch_arm64.s.
+func DispatchNonTimerIRQ()
+
+// dispatchNonTimerIRQInternal is the actual implementation.
+// Called via tail-call from the assembly stub.
+// Reads the IRQ number from CurrentIRQNum global.
+// This function does NOT support preemption - only timer IRQs can preempt.
+//
+//go:nosplit
+//go:noinline
+func dispatchNonTimerIRQInternal() {
+	irqNum := CurrentIRQNum
+
+	// Check if IRQ number is in range
+	if irqNum >= 1020 {
+		irqPanic("Invalid IRQ number", irqNum)
+		return
+	}
+
+	// Try simple handler (non-timer IRQs don't preempt)
+	handler := irqTableSimple[irqNum]
+	if handler != nil {
+		handler(irqNum)
+		return
+	}
+
+	// No handler registered - this is an error
+	irqPanic("Unhandled IRQ", irqNum)
 }
 
 // irqPanic handles IRQ-specific panics with the IRQ number

@@ -101,20 +101,17 @@ func (u *PL011) Close() error {
 
 // WireInterrupts implements InterruptUser interface.
 // Registers the UART's interrupt handler with the interrupt controller.
-// NOTE: Currently disabled because kmazarin's exception handler doesn't
-// integrate with the device-based GIC yet. The UART works in polled mode.
 func (u *PL011) WireInterrupts(ic deviceapi.InterruptController) error {
 	u.ic = ic
 
 	// Clear any pending UART interrupts
 	u.WriteReg(RegICR, 0x7FF)
 
-	// TODO: Enable interrupt-driven mode once kmazarin's exception handler
-	// is updated to dispatch IRQs through the device-based GIC.
-	// For now, the UART works in direct/polled mode.
-	//
-	// ic.RegisterHandler(u.irq, u.handleInterrupt)
-	// ic.EnableIRQ(u.irq)
+	// Register our interrupt handler with the GIC.
+	// The GIC's RegisterHandler also registers with kirq's dispatch table,
+	// so the exception handler can dispatch this IRQ.
+	ic.RegisterHandler(u.irq, u.handleInterrupt)
+	ic.EnableIRQ(u.irq)
 
 	return nil
 }
