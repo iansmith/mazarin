@@ -92,11 +92,11 @@ func DispatchFromOverlay(num, a1, a2, a3, a4, a5, a6 uintptr) int64 {
 //
 //go:nosplit
 func syscallPanic(msg string, syscallNum uint64) {
-	console.WriteString("\r\n*** KERNEL PANIC ***\r\n")
-	console.WriteString(msg)
-	console.WriteString(": syscall #")
-	console.PrintHex64(syscallNum)
-	console.WriteString("\r\n")
+	console.KWriteString("\r\n*** KERNEL PANIC ***\r\n")
+	console.KWriteString(msg)
+	console.KWriteString(": syscall #")
+	console.KPrintHex64(syscallNum)
+	console.KWriteString("\r\n")
 
 	// Halt using Exit
 	Exit()

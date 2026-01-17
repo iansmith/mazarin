@@ -29,10 +29,10 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 
 		// Auto-convert LF to CRLF for proper terminal display
 		if c == '\n' {
-			console.WriteByte('\r')
+			console.KWriteByte('\r')
 		}
 
-		console.WriteByte(c)
+		console.KWriteByte(c)
 	}
 
 	return int64(count)

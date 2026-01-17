@@ -4,6 +4,8 @@
 package console
 
 import (
+	"fmt"
+	"reflect"
 	"sync/atomic"
 	"unsafe"
 )
@@ -12,15 +14,30 @@ import (
 // Implementations must be safe to call from any context, including
 // interrupt handlers (nosplit).
 type Console interface {
-	// Write writes bytes to the console.
+	// KWrite writes bytes to the console.
 	// Returns number of bytes written.
-	Write(p []byte) int
+	KWrite(p []byte) int
 
-	// WriteByte writes a single byte to the console.
-	WriteByte(c byte)
+	// KWriteByte writes a single byte to the console.
+	KWriteByte(c byte)
 
-	// WriteString writes a string to the console.
-	WriteString(s string)
+	// KWriteString writes a string to the console.
+	KWriteString(s string)
+
+	// KPrintf formats and writes to the console (like fmt.Printf).
+	KPrintf(format string, args ...interface{})
+
+	// KErrPrintf formats and writes error output to the console.
+	KErrPrintf(format string, args ...interface{})
+
+	// KPrintHex formats and writes a value in hex with appropriate width.
+	// Uses reflection to determine the type and format integers/pointers accordingly.
+	KPrintHex(value interface{})
+
+	// Breadcrumb writes a single byte directly to UART hardware.
+	// This is safe to call from any context, including IRQ handlers.
+	// Bypasses all abstractions and ring buffers.
+	Breadcrumb(b byte)
 }
 
 // consoleWrapper wraps a Console interface so atomic.Value always stores the same concrete type.
@@ -53,68 +70,132 @@ func Get() Console {
 	return wrapper.impl
 }
 
-// Write writes bytes to the current console.
+// KWrite writes bytes to the current console.
 // No-op if no console is set.
 //
 //go:nosplit
-func Write(p []byte) int {
+func KWrite(p []byte) int {
 	c := Get()
 	if c == nil {
 		return 0
 	}
-	return c.Write(p)
+	return c.KWrite(p)
 }
 
-// WriteByte writes a single byte to the current console.
+// KWriteByte writes a single byte to the current console.
 // No-op if no console is set.
 //
 //go:nosplit
-func WriteByte(b byte) {
+func KWriteByte(b byte) {
 	c := Get()
 	if c == nil {
 		return
 	}
-	c.WriteByte(b)
+	c.KWriteByte(b)
 }
 
-// WriteString writes a string to the current console.
+// KWriteString writes a string to the current console.
 // No-op if no console is set.
 //
 //go:nosplit
-func WriteString(s string) {
+func KWriteString(s string) {
 	c := Get()
 	if c == nil {
 		return
 	}
-	c.WriteString(s)
+	c.KWriteString(s)
 }
 
-// Print writes a string to the console (no newline).
+// KPrint writes a string to the console (no newline).
 //
 //go:nosplit
-func Print(s string) {
-	WriteString(s)
+func KPrint(s string) {
+	KWriteString(s)
 }
 
-// Println writes a string followed by CRLF.
+// KPrintln writes a string followed by CRLF.
 //
 //go:nosplit
-func Println(s string) {
-	WriteString(s)
-	WriteByte('\r')
-	WriteByte('\n')
+func KPrintln(s string) {
+	KWriteString(s)
+	KWriteByte('\r')
+	KWriteByte('\n')
 }
 
-// PrintHex64 writes a 64-bit value in hex.
+// KPrintHex64 writes a 64-bit value in hex.
 //
 //go:nosplit
-func PrintHex64(val uint64) {
+func KPrintHex64(val uint64) {
 	hexChars := "0123456789ABCDEF"
-	WriteString("0x")
+	KWriteString("0x")
 	for i := 60; i >= 0; i -= 4 {
 		nibble := (val >> i) & 0xF
-		WriteByte(hexChars[nibble])
+		KWriteByte(hexChars[nibble])
 	}
+}
+
+// KPrintf formats and writes to the current console.
+// No-op if no console is set.
+func KPrintf(format string, args ...interface{}) {
+	c := Get()
+	if c == nil {
+		return
+	}
+	c.KPrintf(format, args...)
+}
+
+// KErrPrintf formats and writes error output to the current console.
+// No-op if no console is set.
+func KErrPrintf(format string, args ...interface{}) {
+	c := Get()
+	if c == nil {
+		return
+	}
+	c.KErrPrintf(format, args...)
+}
+
+// KPrintHex formats and writes a value in hex with appropriate width.
+// Uses reflection to determine the type and format integers/pointers accordingly.
+// No-op if no console is set.
+func KPrintHex(value interface{}) {
+	c := Get()
+	if c == nil {
+		return
+	}
+	c.KPrintHex(value)
+}
+
+// Breadcrumb writes a single byte directly to UART hardware.
+// Safe to call from any context, including IRQ handlers.
+// If console is set, uses console's Breadcrumb method; otherwise uses direct MMIO.
+//
+//go:nosplit
+func Breadcrumb(b byte) {
+	c := Get()
+	if c == nil {
+		// No console set - use direct MMIO
+		breadcrumb(b)
+		return
+	}
+	c.Breadcrumb(b)
+}
+
+// breadcrumb writes a byte directly to UART MMIO.
+// This is the low-level implementation used by all console implementations.
+// Safe to call from any context, including IRQ handlers.
+//
+//go:nosplit
+func breadcrumb(b byte) {
+	// UART base address (high-memory mapped)
+	const uartBase uintptr = 0xFFFFFFFF09000000
+
+	// Wait for TX FIFO to have space (bit 5 = TXFF in FR register at offset 0x18)
+	for (*(*uint32)(unsafe.Pointer(uartBase + 0x18)) & 0x20) != 0 {
+		// Busy wait
+	}
+
+	// Write byte to data register (offset 0x00)
+	*(*uint32)(unsafe.Pointer(uartBase + 0x00)) = uint32(b)
 }
 
 // MMIOUartConsole implements Console using direct MMIO writes.
@@ -148,10 +229,10 @@ func (c *MMIOUartConsole) release() {
 	atomic.StoreUint32(&c.lock, 0)
 }
 
-// Write implements Console.Write
+// KWrite implements Console.KWrite
 //
 //go:nosplit
-func (c *MMIOUartConsole) Write(p []byte) int {
+func (c *MMIOUartConsole) KWrite(p []byte) int {
 	c.acquire()
 	for _, b := range p {
 		c.writeByteLocked(b)
@@ -160,10 +241,10 @@ func (c *MMIOUartConsole) Write(p []byte) int {
 	return len(p)
 }
 
-// WriteByte implements Console.WriteByte
+// KWriteByte implements Console.KWriteByte
 //
 //go:nosplit
-func (c *MMIOUartConsole) WriteByte(b byte) {
+func (c *MMIOUartConsole) KWriteByte(b byte) {
 	// Safety check: if c is nil, just return
 	if c == nil {
 		return
@@ -180,13 +261,53 @@ func (c *MMIOUartConsole) writeByteLocked(b byte) {
 	*(*byte)(unsafe.Pointer(c.baseAddr)) = b
 }
 
-// WriteString implements Console.WriteString
+// KWriteString implements Console.KWriteString
 //
 //go:nosplit
-func (c *MMIOUartConsole) WriteString(s string) {
+func (c *MMIOUartConsole) KWriteString(s string) {
 	c.acquire()
 	for i := 0; i < len(s); i++ {
 		c.writeByteLocked(s[i])
 	}
 	c.release()
+}
+
+// KPrintf implements Console.KPrintf
+func (c *MMIOUartConsole) KPrintf(format string, args ...interface{}) {
+	s := fmt.Sprintf(format, args...)
+	c.KWriteString(s)
+}
+
+// KErrPrintf implements Console.KErrPrintf
+func (c *MMIOUartConsole) KErrPrintf(format string, args ...interface{}) {
+	s := fmt.Sprintf(format, args...)
+	c.KWriteString(s)
+}
+
+// KPrintHex implements Console.KPrintHex
+func (c *MMIOUartConsole) KPrintHex(value interface{}) {
+	v := reflect.ValueOf(value)
+	kind := v.Kind()
+
+	switch kind {
+	case reflect.Int8, reflect.Uint8:
+		c.KPrintf("0x%02X", value)
+	case reflect.Int16, reflect.Uint16:
+		c.KPrintf("0x%04X", value)
+	case reflect.Int32, reflect.Uint32:
+		c.KPrintf("0x%08X", value)
+	case reflect.Int64, reflect.Uint64, reflect.Int, reflect.Uint, reflect.Uintptr:
+		c.KPrintf("0x%016X", value)
+	case reflect.Ptr, reflect.UnsafePointer:
+		c.KPrintf("0x%016X", v.Pointer())
+	default:
+		c.KWriteString("not hex value")
+	}
+}
+
+// Breadcrumb implements Console.Breadcrumb
+//
+//go:nosplit
+func (c *MMIOUartConsole) Breadcrumb(b byte) {
+	breadcrumb(b)
 }

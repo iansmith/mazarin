@@ -179,7 +179,7 @@ func getRuntimeConfigTyped() *runtimeConfigStruct {
 //
 //go:nosplit
 func uartPuts(s string) {
-	console.WriteString(s)
+	console.KWriteString(s)
 }
 
 // uartPutHex64 writes a 64-bit hex value to console
@@ -187,5 +187,5 @@ func uartPuts(s string) {
 //
 //go:nosplit
 func uartPutHex64(val uint64) {
-	console.PrintHex64(val)
+	console.KPrintHex64(val)
 }

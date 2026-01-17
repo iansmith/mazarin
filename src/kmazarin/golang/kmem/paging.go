@@ -17,7 +17,7 @@ const debugPaging = false
 //go:nosplit
 func debugPrint(c byte) {
 	if debugPaging {
-		console.WriteByte(c)
+		console.KWriteByte(c)
 	}
 }
 
@@ -27,7 +27,7 @@ func debugPrint(c byte) {
 //go:nosplit
 func debugPrintHex(val uint64) {
 	if debugPaging {
-		console.PrintHex64(val)
+		console.KPrintHex64(val)
 	}
 }
 

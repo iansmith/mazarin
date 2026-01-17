@@ -10,17 +10,17 @@ import "kmazarin/console"
 //go:nosplit
 func SyscallExit(status, _, _, _, _, _ uint64) int64 {
 	// Print exit status using console (spinlock protected)
-	console.WriteString("\r\n=== EXIT CALLED ===\r\nStatus: ")
+	console.KWriteString("\r\n=== EXIT CALLED ===\r\nStatus: ")
 
 	// Print status as decimal
 	hexChars := "0123456789ABCDEF"
 	tens := (status / 10) % 10
 	ones := status % 10
 	if tens > 0 {
-		console.WriteByte(hexChars[tens])
+		console.KWriteByte(hexChars[tens])
 	}
-	console.WriteByte(hexChars[ones])
-	console.WriteString("\r\n")
+	console.KWriteByte(hexChars[ones])
+	console.KWriteString("\r\n")
 
 	KernelPanic("Runtime called exit() during initialization")
 	return 0 // unreachable

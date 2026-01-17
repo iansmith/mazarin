@@ -86,9 +86,6 @@ func init() {
 	// Initialize critical early devices (UART, GIC, Timer, RNG)
 	EarlyInit()
 
-	// Initialize breadcrumb cache for safe debug output from any context
-	InitBreadcrumbs()
-
 	// Initialize timer, IRQ handlers, and preemption subsystem
 	kirq.InitTimer()
 	kirq.RegisterHandlers()
@@ -117,7 +114,7 @@ func init() {
 // NOTE: Do not call from IRQ handlers or nosplit contexts - use Breadcrumb() instead.
 //
 func uartPutc(c byte) {
-	console.WriteByte(c)
+	console.KWriteByte(c)
 }
 
 // uartPuts writes a string to UART.
@@ -677,23 +674,23 @@ func EnableTimerIRQ() {
 // testDeviceDiscovery tests the DTB-based device discovery system
 // This is a temporary test function to verify DTB parsing and device matching
 func testDeviceDiscovery() {
-	console.Println("")
-	console.Println("[DeviceTest] === Testing DTB Device Discovery ===")
+	console.KPrintln("")
+	console.KPrintln("[DeviceTest] === Testing DTB Device Discovery ===")
 
 	// NOTE: Drivers are already registered in EarlyInit()
 
 	// Get DTB address from runtime config
 	cfg := GetRuntimeConfig()
 	if cfg == nil {
-		console.Println("[DeviceTest] ERROR: RuntimeConfig not available")
+		console.KPrintln("[DeviceTest] ERROR: RuntimeConfig not available")
 		return
 	}
 
 	// Use physical address - DTB is in low memory which is still mapped
 	dtbAddr := uintptr(cfg.DtbPhysAddr)
-	console.WriteString("[DeviceTest] DTB physical address: ")
-	console.PrintHex64(cfg.DtbPhysAddr)
-	console.Println("")
+	console.KWriteString("[DeviceTest] DTB physical address: ")
+	console.KPrintHex64(cfg.DtbPhysAddr)
+	console.KPrintln("")
 
 	// Register all device drivers BEFORE discovering devices
 	device.RegisterAllDrivers()
@@ -701,64 +698,118 @@ func testDeviceDiscovery() {
 	// Parse DTB and discover devices (silent - no printing inside)
 	err := device.InitFromDTB(dtbAddr)
 	if err != nil {
-		console.WriteString("[DeviceTest] ERROR: ")
-		console.Println(err.Error())
+		console.KWriteString("[DeviceTest] ERROR: ")
+		console.KPrintln(err.Error())
 		return
 	}
 
 	// Show what was discovered
-	console.Println("")
-	console.Println("[DeviceTest] Discovered devices:")
+	console.KPrintln("")
+	console.KPrintln("[DeviceTest] Discovered devices:")
 
 	// Check for byte streams (UART)
 	if uart, ok := device.GetByteStream(); ok {
-		console.WriteString("  - ByteStream: ")
-		console.Println(uart.Name())
+		console.KWriteString("  - ByteStream: ")
+		console.KPrintln(uart.Name())
 	}
 
 	// Check for interrupt controller (GIC)
 	if gic, ok := device.GetInterruptController(); ok {
-		console.WriteString("  - InterruptController: ")
-		console.Println(gic.Name())
+		console.KWriteString("  - InterruptController: ")
+		console.KPrintln(gic.Name())
 	}
 
 	// Check for random source (VirtIO RNG)
 	if rng, ok := device.GetRandomSource(); ok {
-		console.WriteString("  - RandomSource: ")
-		console.Println(rng.Name())
+		console.KWriteString("  - RandomSource: ")
+		console.KPrintln(rng.Name())
 	}
 
 	// Check for block devices
 	if blk, ok := device.GetBlockDevice(); ok {
-		console.WriteString("  - BlockDevice: ")
-		console.Println(blk.Name())
+		console.KWriteString("  - BlockDevice: ")
+		console.KPrintln(blk.Name())
 	}
 
 	// Wire up interrupts now that GIC is discovered
-	console.Println("")
-	console.Println("[DeviceTest] Wiring interrupts...")
+	console.KPrintln("")
+	console.KPrintln("[DeviceTest] Wiring interrupts...")
 	if err := device.WireInterrupts(); err != nil {
-		console.WriteString("[DeviceTest] ERROR wiring interrupts: ")
-		console.Println(err.Error())
+		console.KWriteString("[DeviceTest] ERROR wiring interrupts: ")
+		console.KPrintln(err.Error())
 	} else {
-		console.Println("[DeviceTest] Interrupts wired successfully")
+		console.KPrintln("[DeviceTest] Interrupts wired successfully")
 
 		// NOTE: Timer IRQ remains enabled to allow goroutine preemption.
 		// The event poller needs to run to dispatch UART interrupts.
-		console.Println("[DeviceTest] Timer IRQ remains enabled for scheduler preemption")
+		console.KPrintln("[DeviceTest] Timer IRQ remains enabled for scheduler preemption")
 
 		// Switch to interrupt-driven PL011 console
 		if bs, ok := device.GetByteStream(); ok {
 			// Type assert to *uart.PL011 to access AsConsole()
 			if pl011, ok := bs.(*uart.PL011); ok {
-				console.Println("[DeviceTest] Switching to PL011 interrupt-driven console...")
+				console.KPrintln("[DeviceTest] Switching to PL011 interrupt-driven console...")
 				console.Set(pl011.AsConsole())
-				console.Println("[DeviceTest] Now using PL011 interrupt-driven console!")
+				console.KPrintln("[DeviceTest] Now using PL011 interrupt-driven console!")
 			}
 		}
 	}
 
-	console.Println("[DeviceTest] === Test Complete ===")
+	console.KPrintln("[DeviceTest] === Test Complete ===")
+
+	// Test KPrintHex() with various types
+	testKPrintHex()
+}
+
+// testKPrintHex tests the KPrintHex() method with various value types
+func testKPrintHex() {
+	console.KPrintln("")
+	console.KPrintln("[HexTest] === Testing KPrintHex() ===")
+
+	// Test uint8
+	var u8 uint8 = 0xAB
+	console.KWriteString("[HexTest] uint8(0xAB): ")
+	console.KPrintHex(u8)
+	console.KPrintln("")
+
+	// Test uint16
+	var u16 uint16 = 0x1234
+	console.KWriteString("[HexTest] uint16(0x1234): ")
+	console.KPrintHex(u16)
+	console.KPrintln("")
+
+	// Test uint32
+	var u32 uint32 = 0x12345678
+	console.KWriteString("[HexTest] uint32(0x12345678): ")
+	console.KPrintHex(u32)
+	console.KPrintln("")
+
+	// Test uint64
+	var u64 uint64 = 0x123456789ABCDEF0
+	console.KWriteString("[HexTest] uint64(0x123456789ABCDEF0): ")
+	console.KPrintHex(u64)
+	console.KPrintln("")
+
+	// Test uintptr
+	var uptr uintptr = 0xFFFFFFFF41800000
+	console.KWriteString("[HexTest] uintptr(0xFFFFFFFF41800000): ")
+	console.KPrintHex(uptr)
+	console.KPrintln("")
+
+	// Test pointer
+	testVar := uint32(42)
+	testPtr := &testVar
+	console.KWriteString("[HexTest] pointer(&testVar): ")
+	console.KPrintHex(testPtr)
+	console.KPrintln("")
+
+	// Test string (should print "not hex value")
+	testStr := "hello"
+	console.KWriteString("[HexTest] string(\"hello\"): ")
+	console.KPrintHex(testStr)
+	console.KPrintln("")
+
+	console.KPrintln("[HexTest] === Test Complete ===")
 }
 
 // simpleMain is the entry point for our simple goroutine/channel test
@@ -819,10 +870,10 @@ func simpleMain() {
 			printCount++
 			if printCount%72 == 0 {
 				// Emit newline every 72 prints
-				uartPutc('\n')
+				console.KPrintf("\n")
 			} else {
-				// Print '1' to show g1 is running (direct UART, no runtime)
-				uartPutc('1')
+				// Print '1' to show g1 is running
+				console.KPrintf("1")
 			}
 			// NO checkPreemption() call - pure busy-wait!
 		}
@@ -844,10 +895,10 @@ func simpleGoroutine2(ch chan string) {
 			printCount++
 			if printCount%72 == 0 {
 				// Emit newline every 72 prints
-				uartPutc('\n')
+				console.KPrintf("\n")
 			} else {
-				// Print '2' to show g2 is running (direct UART, no runtime)
-				uartPutc('2')
+				// Print '2' to show g2 is running
+				console.KPrintf("2")
 			}
 			// NO checkPreemption() call - pure busy-wait!
 		}

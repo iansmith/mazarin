@@ -220,7 +220,7 @@ func processUartRxBuffer() {
 func processRxByte(b byte) {
 	// For now, just echo back using console abstraction
 	// In the future, this could build command buffers, parse protocols, etc.
-	console.WriteByte(b)
+	console.KWriteByte(b)
 }
 
 // ============================================================================
@@ -258,17 +258,6 @@ func deadlineBottomHalf() {
 // Breadcrumb Debug Output (Safe from ANY context, including IRQ handlers)
 // ============================================================================
 
-// breadcrumbUartBase is a cached copy of the UART base address.
-// Set once at boot, never changes. This avoids reading from potentially
-// corrupted memory during async preemption or context switches.
-var breadcrumbUartBase uintptr
-
-// InitBreadcrumbs initializes the breadcrumb UART base address.
-// Must be called early in boot before any breadcrumbs are used.
-func InitBreadcrumbs() {
-	breadcrumbUartBase = GetUartBase()
-}
-
 // Breadcrumb writes a single byte directly to UART hardware.
 // This bypasses all abstractions and is safe to call from:
 //   - IRQ handlers (exception stack)
@@ -279,18 +268,7 @@ func InitBreadcrumbs() {
 //
 //go:nosplit
 func Breadcrumb(b byte) {
-	// Use cached UART base to avoid reading from potentially corrupted memory
-	uartBase := breadcrumbUartBase
-	// Safety: if UART base is not set, bail out silently
-	if uartBase == 0 {
-		return
-	}
-	// Wait for TX FIFO to have space (bit 5 = TXFF)
-	for (*(*uint32)(unsafe.Pointer(uartBase + 0x18)) & 0x20) != 0 {
-		// Busy wait
-	}
-	// Write byte
-	*(*uint32)(unsafe.Pointer(uartBase + 0x00)) = uint32(b)
+	console.Breadcrumb(b)
 }
 
 // BreadcrumbString writes a string as breadcrumbs.
@@ -299,7 +277,7 @@ func Breadcrumb(b byte) {
 //go:nosplit
 func BreadcrumbString(s string) {
 	for i := 0; i < len(s); i++ {
-		Breadcrumb(s[i])
+		console.Breadcrumb(s[i])
 	}
 }
 

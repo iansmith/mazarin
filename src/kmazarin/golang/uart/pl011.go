@@ -1,11 +1,14 @@
 package uart
 
 import (
+	"fmt"
 	"kmazarin/deviceapi"
 	"kmazarin/dtb"
+	"reflect"
 	"runtime"
 	"sync/atomic"
 	"unsafe"
+	_ "unsafe" // for go:linkname
 )
 
 // PL011 register offsets
@@ -226,30 +229,77 @@ type PL011Console struct {
 	uart *PL011
 }
 
-// Write implements console.Console.Write
+// KWrite implements console.Console.KWrite
 //
 //go:nosplit
-func (c *PL011Console) Write(p []byte) int {
+func (c *PL011Console) KWrite(p []byte) int {
 	for _, b := range p {
 		c.uart.WriteByte(b)
 	}
 	return len(p)
 }
 
-// WriteByte implements console.Console.WriteByte
+// KWriteByte implements console.Console.KWriteByte
 //
 //go:nosplit
-func (c *PL011Console) WriteByte(b byte) {
+func (c *PL011Console) KWriteByte(b byte) {
 	c.uart.WriteByte(b)
 }
 
-// WriteString implements console.Console.WriteString
+// KWriteString implements console.Console.KWriteString
 //
 //go:nosplit
 //go:noinline
-func (c *PL011Console) WriteString(s string) {
+func (c *PL011Console) KWriteString(s string) {
 	c.uart.WriteString(s)
 }
+
+// KPrintf implements console.Console.KPrintf
+func (c *PL011Console) KPrintf(format string, args ...interface{}) {
+	s := fmt.Sprintf(format, args...)
+	c.uart.WriteString(s)
+}
+
+// KErrPrintf implements console.Console.KErrPrintf
+func (c *PL011Console) KErrPrintf(format string, args ...interface{}) {
+	s := fmt.Sprintf(format, args...)
+	c.uart.WriteString(s)
+}
+
+// KPrintHex implements console.Console.KPrintHex
+func (c *PL011Console) KPrintHex(value interface{}) {
+	v := reflect.ValueOf(value)
+	kind := v.Kind()
+
+	var s string
+	switch kind {
+	case reflect.Int8, reflect.Uint8:
+		s = fmt.Sprintf("0x%02X", value)
+	case reflect.Int16, reflect.Uint16:
+		s = fmt.Sprintf("0x%04X", value)
+	case reflect.Int32, reflect.Uint32:
+		s = fmt.Sprintf("0x%08X", value)
+	case reflect.Int64, reflect.Uint64, reflect.Int, reflect.Uint, reflect.Uintptr:
+		s = fmt.Sprintf("0x%016X", value)
+	case reflect.Ptr, reflect.UnsafePointer:
+		s = fmt.Sprintf("0x%016X", v.Pointer())
+	default:
+		s = "not hex value"
+	}
+	c.uart.WriteString(s)
+}
+
+// Breadcrumb implements console.Console.Breadcrumb
+// Uses the private breadcrumb function from console package via linkname
+//
+//go:nosplit
+func (c *PL011Console) Breadcrumb(b byte) {
+	breadcrumb(b)
+}
+
+// breadcrumb is linked from console package's private breadcrumb function
+//go:linkname breadcrumb kmazarin/console.breadcrumb
+func breadcrumb(b byte)
 
 // Hardware access
 func (u *PL011) ReadReg(offset uintptr) uint32 {

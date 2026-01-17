@@ -650,11 +650,6 @@ irq_exception_handler:
 	// Without this switch, we'd corrupt the interrupted code's stack.
 	MSR	$1, SPSel
 
-	// DEBUG: Print 'I' to show we entered IRQ handler
-	MOVD	$UART_BASE, R10
-	MOVD	$'I', R11
-	MOVB	R11, (R10)
-
 	// CRITICAL: Save X0-X7 BEFORE any debug output!
 	// These may contain important values that must not be clobbered.
 	// Allocate frame first
@@ -824,10 +819,7 @@ timer_no_preempt_elr_misaligned:
 	B	timer_no_preempt
 
 timer_no_preempt_already_in_async:
-	// DEBUG: Already in asyncPreempt
-	MOVD	$(UART_BASE), R10
-	MOVD	$'I', R11
-	MOVB	R11, (R10)
+	// Already in asyncPreempt - skip preemption
 	B	timer_no_preempt
 
 timer_no_preempt:

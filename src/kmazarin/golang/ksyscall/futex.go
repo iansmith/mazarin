@@ -83,7 +83,7 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 
 		// No ready thread to switch to - we couldn't actually block
 		// DEBUG: Print 'W' to show we're entering idle wait
-		console.WriteByte('W')
+		console.KWriteByte('W')
 
 		// Enter idle loop waiting for interrupt (timer will fire and may wake threads)
 		// WFI - Wait For Interrupt: puts CPU in low-power state until interrupt

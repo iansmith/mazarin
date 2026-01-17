@@ -9,7 +9,7 @@ import "kmazarin/console"
 //
 //go:nosplit
 func debugPrint(c byte) {
-	console.WriteByte(c)
+	console.KWriteByte(c)
 }
 
 // debugPrintHex outputs a 64-bit value as 16 hex characters
@@ -17,5 +17,5 @@ func debugPrint(c byte) {
 //
 //go:nosplit
 func debugPrintHex(val uint64) {
-	console.PrintHex64(val)
+	console.KPrintHex64(val)
 }
