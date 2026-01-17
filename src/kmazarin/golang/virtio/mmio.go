@@ -1,6 +1,6 @@
 package virtio
 
-import "unsafe"
+import "kmazarin/asm"
 
 // MMIO register offsets (VirtIO 1.0 spec)
 const (
@@ -44,13 +44,17 @@ type MMIOTransport struct {
 }
 
 // ReadReg reads a 32-bit register
+//
+//go:nosplit
 func (t *MMIOTransport) ReadReg(offset uintptr) uint32 {
-	return *(*uint32)(unsafe.Pointer(t.baseAddr + offset))
+	return asm.MmioRead32(t.baseAddr + offset)
 }
 
 // WriteReg writes a 32-bit register
+//
+//go:nosplit
 func (t *MMIOTransport) WriteReg(offset uintptr, value uint32) {
-	*(*uint32)(unsafe.Pointer(t.baseAddr + offset)) = value
+	asm.MmioWrite32(t.baseAddr+offset, value)
 }
 
 // ReadDeviceType reads the device type from MMIO registers

@@ -2,7 +2,7 @@ package device
 
 import (
 	"kmazarin/uart"
-	// "kmazarin/virtio"  // Disabled for now
+	"kmazarin/virtio"
 )
 
 // ArchIndependentDrivers contains device drivers that work on any architecture.
@@ -17,9 +17,9 @@ var ArchIndependentDrivers = []Discoverable{
 	&uart.PL011Driver{},
 	// &uart.NS16550Driver{},
 
-	// VirtIO devices (MMIO-based, arch-independent) - disabled for now
-	// &virtio.RNGDriver{},
-	// &virtio.RTCDriver{},
+	// VirtIO devices (MMIO-based, arch-independent)
+	&virtio.RNGDriver{},
+	// &virtio.RTCDriver{},  // Not yet implemented
 	// &virtio.InputDriver{},
 	// &virtio.BlockDriver{},
 	// &virtio.NetDriver{},
