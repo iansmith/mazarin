@@ -4,6 +4,7 @@ package gpu
 
 import (
 	"kmazarin/asm"
+	"kmazarin/console"
 	"kmazarin/device/virtio"
 	"kmazarin/pci"
 	"shared/constants"
@@ -134,19 +135,28 @@ type VirtIOGPUTransferToHost2D struct {
 	Padding    uint32        // Padding
 }
 
+// VirtIOGPUResourceFlush requests the host to flush a resource to display
+type VirtIOGPUResourceFlush struct {
+	Hdr        VirtIOGPUCtrlHdr
+	Rect       VirtIOGPURect // Region to flush
+	ResourceID uint32        // Resource ID
+	Padding    uint32        // Padding
+}
+
 // VirtIOGPUDevice holds VirtIO GPU device state
 type VirtIOGPUDevice struct {
 	Bus              uint8
 	Slot             uint8
 	Func             uint8
-	CommonConfig     VirtIOCapabilityInfo // Common Config capability
-	NotifyConfig     VirtIOCapabilityInfo // Notify Config capability
-	ISRConfig        VirtIOCapabilityInfo // ISR Config capability
-	DeviceConfig     VirtIOCapabilityInfo // Device Config capability
-	CommonConfigBase uintptr              // MMIO base for common config
-	NotifyBase       uintptr              // MMIO base for notify
-	ControlQueue     VirtQueue            // Control queue for GPU commands
-	ResourceID       uint32               // Current resource ID
+	CommonConfig     pci.VirtIOCapabilityInfo // Common Config capability
+	NotifyConfig     pci.VirtIOCapabilityInfo // Notify Config capability
+	ISRConfig        pci.VirtIOCapabilityInfo // ISR Config capability
+	DeviceConfig     pci.VirtIOCapabilityInfo // Device Config capability
+	CommonConfigBase uintptr                  // MMIO base for common config
+	NotifyBase       uintptr                  // MMIO base for notify
+	ControlQueue          virtio.VirtQueue // Control queue for GPU commands
+	ControlQueueNotifyOff uint16           // Notify offset for control queue
+	ResourceID            uint32           // Current resource ID
 	Framebuffer      unsafe.Pointer       // Framebuffer memory
 	FramebufferSize  uint32               // Framebuffer size in bytes
 	Width            uint32               // Framebuffer width in pixels
@@ -215,29 +225,38 @@ func virtioPCIGetDeviceStatus() uint8 {
 // virtioPCISetupQueue sets up a virtqueue
 //
 //go:nosplit
-func virtioPCISetupQueue(queueIndex uint16, vq *VirtQueue) bool {
+func virtioPCISetupQueue(queueIndex uint16, vq *virtio.VirtQueue) bool {
 	// Select queue
 	virtioPCIWriteCommonConfig(VIRTIO_PCI_COMMON_CFG_QUEUE_SELECT, queueIndex)
 
+	// Read max queue size from device and clamp if needed
+	maxQueueSize := virtioPCIReadCommonConfig(VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE)
+	actualSize := vq.QueueSize
+	if actualSize > maxQueueSize {
+		actualSize = maxQueueSize
+		vq.QueueSize = actualSize
+	}
+
 	// Set queue size
-	virtioPCIWriteCommonConfig(VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE, vq.QueueSize)
+	virtioPCIWriteCommonConfig(VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE, actualSize)
 
-	// Get physical addresses
-	descPhys := virtqueueGetPhysicalAddr(vq.DescTable)
-	availPhys := virtqueueGetPhysicalAddr(unsafe.Pointer(vq.Available))
-	usedPhys := virtqueueGetPhysicalAddr(unsafe.Pointer(vq.Used))
+	// Get physical addresses and configure queue
+	descPhys := virtio.VirtqueueGetPhysicalAddr(vq.DescTable)
+	availPhys := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(vq.Available))
+	usedPhys := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(vq.Used))
 
-	// Set descriptor table address (64-bit, split into low/high)
 	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_LOW, uint32(descPhys))
 	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_HIGH, uint32(descPhys>>32))
-
-	// Set available ring address
 	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_AVAIL_LOW, uint32(availPhys))
 	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_AVAIL_HIGH, uint32(availPhys>>32))
-
-	// Set used ring address
 	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_USED_LOW, uint32(usedPhys))
 	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_USED_HIGH, uint32(usedPhys>>32))
+
+	// Read queue_notify_off for this queue
+	queueNotifyOff := virtioPCIReadCommonConfig(VIRTIO_PCI_COMMON_CFG_QUEUE_NOTIFY_OFF)
+	if queueIndex == 0 {
+		virtioGPUDevice.ControlQueueNotifyOff = queueNotifyOff
+	}
 
 	// Enable queue
 	virtioPCIWriteCommonConfig(VIRTIO_PCI_COMMON_CFG_QUEUE_ENABLE, 1)
@@ -250,7 +269,7 @@ func virtioPCISetupQueue(queueIndex uint16, vq *VirtQueue) bool {
 //
 //go:nosplit
 func findVirtIOGPU() bool {
-	uartPutsDirect("VirtIO GPU: Scanning PCI bus...\r\n")
+	// Debug output commented out
 
 
 	// Scan PCI bus
@@ -258,7 +277,7 @@ func findVirtIOGPU() bool {
 		for slot := uint8(0); slot < 32; slot++ {
 			for funcNum := uint8(0); funcNum < 8; funcNum++ {
 				// Read vendor/device ID
-				fullReg := pciConfigRead32(bus, slot, funcNum, PCI_VENDOR_ID)
+				fullReg := pci.ConfigRead32(bus, slot, funcNum, pci.PCI_VENDOR_ID)
 				vendorID := fullReg & 0xFFFF
 				deviceID := (fullReg >> 16) & 0xFFFF
 
@@ -268,58 +287,50 @@ func findVirtIOGPU() bool {
 				}
 
 				// Debug: show all found devices
-				uartPutsDirect("VirtIO GPU: Found device - bus=")
-				uartPutHex8Direct(bus)
-				uartPutsDirect(" slot=")
-				uartPutHex8Direct(slot)
-				uartPutsDirect(" func=")
-				uartPutHex8Direct(funcNum)
-				uartPutsDirect(" vendor=")
-				uartPutHex16Direct(uint16(vendorID))
-				uartPutsDirect(" device=")
-				uartPutHex16Direct(uint16(deviceID))
-				uartPutsDirect("\r\n")
+				// uartPutsDirect("VirtIO GPU: Found device - bus=")
+				// uartPutHex8Direct(bus)
+				// uartPutsDirect(" slot=")
+				// uartPutHex8Direct(slot)
+				// uartPutsDirect(" func=")
+				// uartPutHex8Direct(funcNum)
+				// uartPutsDirect(" vendor=")
+				// uartPutHex16Direct(uint16(vendorID))
+				// uartPutsDirect(" device=")
+				// uartPutHex16Direct(uint16(deviceID))
+				// Debug output commented out
 
 				// Check if this is VirtIO GPU
-				if vendorID == VIRTIO_VENDOR_ID && deviceID == VIRTIO_GPU_DEVICE_ID {
+				if vendorID == pci.VIRTIO_VENDOR_ID && deviceID == pci.VIRTIO_GPU_DEVICE_ID {
 					// Enable device
-					cmd := pciConfigRead32(bus, slot, funcNum, PCI_COMMAND)
+					cmd := pci.ConfigRead32(bus, slot, funcNum, pci.PCI_COMMAND)
 					cmd |= 0x7 // Enable I/O, memory, bus master
-					pciConfigWrite32(bus, slot, funcNum, PCI_COMMAND, cmd)
+					pci.ConfigWrite32(bus, slot, funcNum, pci.PCI_COMMAND, cmd)
 
 					// Find VirtIO capabilities
-					var common, notify, isr, device VirtIOCapabilityInfo
-					if !pciFindVirtIOCapabilities(bus, slot, funcNum, &common, &notify, &isr, &device) {
+					var common, notify, isr, device pci.VirtIOCapabilityInfo
+					if !pci.FindVirtIOCapabilities(bus, slot, funcNum, &common, &notify, &isr, &device) {
 						return false
 					}
 
 					// Read BAR for common config
 					barOffset := 0x10 + common.Bar*4 // BAR0 = 0x10, BAR1 = 0x14, etc.
-					bar := pciConfigRead32(bus, slot, funcNum, uint8(barOffset))
+					bar := pci.ConfigRead32(bus, slot, funcNum, uint8(barOffset))
 
 					// Check if BAR needs programming (base address is 0)
 					if (bar & 0xFFFFFFF0) == 0 {
 						// Program BAR to use PCI MMIO space at 0x10000000
-						// This is within QEMU's pcie-mmio window: 0x10000000-0x3EFEFFFF
 						const PCI_MMIO_BASE = uint32(0x10000000)
-						pciConfigWrite32(bus, slot, funcNum, uint8(barOffset), PCI_MMIO_BASE)
+						pci.ConfigWrite32(bus, slot, funcNum, uint8(barOffset), PCI_MMIO_BASE)
 
 						// If it's a 64-bit BAR, also program the high 32 bits
-						if (bar & 0x6) == 0x4 { // Bits 1-2 = 10 means 64-bit BAR
-							pciConfigWrite32(bus, slot, funcNum, uint8(barOffset+4), 0)
+						if (bar & 0x6) == 0x4 {
+							pci.ConfigWrite32(bus, slot, funcNum, uint8(barOffset+4), 0)
 						}
 
-						// Re-read to confirm
-						bar = pciConfigRead32(bus, slot, funcNum, uint8(barOffset))
+						bar = pci.ConfigRead32(bus, slot, funcNum, uint8(barOffset))
 					}
 
-					barBase := uintptr(bar & 0xFFFFFFF0) // Mask out type bits
-
-					uartPutsDirect("VirtIO GPU: Using BAR")
-					uartPutHex8Direct(common.Bar)
-					uartPutsDirect(" at 0x")
-					uartPutHex64Direct(uint64(barBase))
-					uartPutsDirect("\r\n")
+					barBase := uintptr(bar & 0xFFFFFFF0)
 
 					virtioGPUDevice.Bus = bus
 					virtioGPUDevice.Slot = slot
@@ -332,7 +343,7 @@ func findVirtIOGPU() bool {
 
 					// Calculate notify base
 					notifyBarOffset := 0x10 + notify.Bar*4
-					notifyBar := pciConfigRead32(bus, slot, funcNum, uint8(notifyBarOffset))
+					notifyBar := pci.ConfigRead32(bus, slot, funcNum, uint8(notifyBarOffset))
 					notifyBarBase := uintptr(notifyBar & 0xFFFFFFF0)
 					virtioGPUDevice.NotifyBase = notifyBarBase + uintptr(notify.OffsetInBar)
 
@@ -350,128 +361,190 @@ func findVirtIOGPU() bool {
 //
 //go:nosplit
 func virtioGPUInit() bool {
-	uartPutsDirect("VirtIO GPU: Initializing device...\r\n")
-
-	// Step 1: Reset device
+	// Reset device
 	virtioPCISetDeviceStatus(0)
 
-	// Step 2: Acknowledge device
+	// Acknowledge and indicate driver present
 	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE)
-
-	// Step 3: Driver is present
 	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER)
 
-	// Step 4: Feature negotiation (skip for now - accept device defaults)
+	// Feature negotiation - read device features (not used, just for completeness)
+	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE_SELECT, 0)
+	_ = virtioPCIReadCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE)
+	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE_SELECT, 1)
+	_ = virtioPCIReadCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE)
 
-	// Step 5: Features OK
+	// Accept VIRTIO_F_VERSION_1 (bit 32)
+	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE_SELECT, 0)
+	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE, 0)
+	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE_SELECT, 1)
+	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE, 1) // VIRTIO_F_VERSION_1
+
+	// Features OK
 	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK)
 
-	// Step 6: Initialize control queue (queue 0)
-	uartPutsDirect("VirtIO GPU: Init queue...\r\n")
-	queueSize := uint16(256) // Power of 2
-	if !virtqueueInit(&virtioGPUDevice.ControlQueue, queueSize) {
-		uartPutsDirect("VirtIO GPU: virtqueueInit failed\r\n")
+	// Verify FEATURES_OK is still set
+	status := virtioPCIGetDeviceStatus()
+	if (status & VIRTIO_STATUS_FEATURES_OK) == 0 {
+		console.KPrintln("[VirtIO GPU] ERROR: Device rejected features")
 		return false
 	}
 
-	// Step 7: Setup queue in device
-	uartPutsDirect("VirtIO GPU: Setup queue...\r\n")
+	// Initialize control queue
+	queueSize := uint16(64)
+	if !virtio.VirtqueueInit(&virtioGPUDevice.ControlQueue, queueSize) {
+		console.KPrintln("[VirtIO GPU] ERROR: Failed to init control queue")
+		return false
+	}
+
+	// Setup queue in device
 	if !virtioPCISetupQueue(0, &virtioGPUDevice.ControlQueue) {
-		uartPutsDirect("VirtIO GPU: virtioPCISetupQueue failed\r\n")
+		console.KPrintln("[VirtIO GPU] ERROR: Failed to setup queue")
 		return false
 	}
 
-	// Step 8: Driver OK
+	// Driver OK
 	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK)
 
-	// Initialize the resource ID
-	virtioGPUDevice.ResourceID = 1
+	// Check if FAILED bit is set
+	finalStatus := virtioPCIGetDeviceStatus()
+	if (finalStatus & VIRTIO_STATUS_FAILED) != 0 {
+		console.KPrintln("[VirtIO GPU] ERROR: Device failed")
+		return false
+	}
 
-	uartPutsDirect("VirtIO GPU: Init complete\r\n")
+	virtioGPUDevice.ResourceID = 1
 	return true
 }
 
 // virtioGPUSendCommand sends a GPU command via the control queue
 // Returns response type, or 0xFFFF on error
 //
-//go:nosplit
 func virtioGPUSendCommand(cmdBuf unsafe.Pointer, cmdSize uint32, respBuf unsafe.Pointer, respSize uint32) uint32 {
 	vq := &virtioGPUDevice.ControlQueue
 
 	// Allocate descriptors for command and response
-	cmdPhys := virtqueueGetPhysicalAddr(cmdBuf)
-	cmdDescIdx := virtqueueAddDesc(vq, cmdPhys, cmdSize, 0, 0xFFFF)
+	cmdPhys := virtio.VirtqueueGetPhysicalAddr(cmdBuf)
+	cmdDescIdx := virtio.VirtqueueAddDesc(vq, cmdPhys, cmdSize, 0, 0xFFFF)
 	if cmdDescIdx == 0xFFFF {
+		console.KPrintln("[VirtIO GPU] ERROR: Failed to allocate cmd descriptor")
 		return 0xFFFF
 	}
 
-	respPhys := virtqueueGetPhysicalAddr(respBuf)
-	respDescIdx := virtqueueAddDesc(vq, respPhys, respSize, VIRTQ_DESC_F_WRITE, 0xFFFF)
+	respPhys := virtio.VirtqueueGetPhysicalAddr(respBuf)
+	respDescIdx := virtio.VirtqueueAddDesc(vq, respPhys, respSize, virtio.VIRTQ_DESC_F_WRITE, 0xFFFF)
 	if respDescIdx == 0xFFFF {
+		console.KPrintln("[VirtIO GPU] ERROR: Failed to allocate resp descriptor")
 		return 0xFFFF
 	}
 
 	// Link descriptors
-	var descSize uintptr = unsafe.Sizeof(VirtQDesc{})
-	cmdDescPtr := castToPointer[VirtQDesc](pointerToUintptr(vq.DescTable) + uintptr(cmdDescIdx)*descSize)
-	cmdDescPtr.Flags |= VIRTQ_DESC_F_NEXT
+	var descSize uintptr = unsafe.Sizeof(virtio.VirtQDesc{})
+	cmdDescPtr := virtio.CastToPointer[virtio.VirtQDesc](virtio.PointerToUintptr(vq.DescTable) + uintptr(cmdDescIdx)*descSize)
+	cmdDescPtr.Flags |= virtio.VIRTQ_DESC_F_NEXT
 	cmdDescPtr.Next = respDescIdx
 
 	// Add to available ring
-	virtqueueAddToAvailable(vq, cmdDescIdx)
+	virtio.VirtqueueAddToAvailable(vq, cmdDescIdx)
+
+	// Cache maintenance for DMA coherency
+	descTableSize := uintptr(vq.QueueSize) * unsafe.Sizeof(virtio.VirtQDesc{})
+	descTableAddr := virtio.PointerToUintptr(vq.DescTable)
+	asm.CleanDCacheRange(descTableAddr, descTableSize)
+
+	availSize := uintptr(4 + vq.QueueSize*2 + 2)
+	asm.CleanDCacheRange(virtio.PointerToUintptr(unsafe.Pointer(vq.Available)), availSize)
+
+	// DMA write barrier
+	asm.DmaWmb()
 
 	// Notify device
-	queueNotifyOffset := virtioGPUDevice.NotifyBase + uintptr(vq.QueueSize)*2 // notify_off_multiplier * queue_index
-	virtqueueNotify(vq, queueNotifyOffset)
+	queueIndex := uint16(0) // Control queue
+	queueNotifyAddr := virtioGPUDevice.NotifyBase +
+		uintptr(virtioGPUDevice.ControlQueueNotifyOff)*uintptr(virtioGPUDevice.NotifyConfig.NotifyOffMultiplier)
+	virtio.VirtqueueNotify(vq, queueNotifyAddr, queueIndex)
 
 	// Poll for response
 	maxWait := 1000000
 	waited := 0
-	for !virtqueueHasUsed(vq) && waited < maxWait {
+	for !virtio.VirtqueueHasUsed(vq) && waited < maxWait {
 		for delay := 0; delay < 100; delay++ {
 		}
 		waited++
 	}
 
 	if waited >= maxWait {
+		console.KPrintln("[VirtIO GPU] ERROR: Timeout waiting for response")
 		return 0xFFFF
 	}
 
+	// DMA read barrier - ensure device writes are visible
+	asm.DmaRmb()
+
 	// Get response
-	usedDescIdx, _ := virtqueueGetUsed(vq)
+	usedDescIdx, _ := virtio.VirtqueueGetUsed(vq)
 	if usedDescIdx == 0xFFFF {
+		console.KPrintln("[VirtIO GPU] ERROR: Failed to get used descriptor")
 		return 0xFFFF
 	}
 
 	// Free descriptor chain
-	virtqueueFreeDescChain(vq, uint16(usedDescIdx))
+	virtio.VirtqueueFreeDescChain(vq, uint16(usedDescIdx))
+
+	// DMA read barrier before reading response buffer
+	asm.DmaRmb()
 
 	// Read response type from response buffer
 	respHdr := (*VirtIOGPUCtrlHdr)(respBuf)
 	return respHdr.Type
 }
 
+// virtioGPUGetDisplayInfo queries the GPU for display information
+// This is a simple test command to verify the command channel works
+func virtioGPUGetDisplayInfo() bool {
+	// Prepare GET_DISPLAY_INFO command
+	var cmd VirtIOGPUCtrlHdr
+	cmd.Type = VIRTIO_GPU_CMD_GET_DISPLAY_INFO
+	cmd.Flags = 0
+	cmd.FenceID = 0
+	cmd.CtxID = 0
+	cmd.Padding = 0
+
+	// Response buffer (header + display info)
+	var resp [384]byte // VirtIOGPUCtrlHdr (24 bytes) + display info (360 bytes max)
+
+	console.KPrintf("[VirtIO GPU] Sending GET_DISPLAY_INFO (type=0x%x)\n", cmd.Type)
+
+	respType := virtioGPUSendCommand(
+		unsafe.Pointer(&cmd),
+		uint32(unsafe.Sizeof(cmd)),
+		unsafe.Pointer(&resp[0]),
+		uint32(len(resp)))
+
+	return respType == VIRTIO_GPU_RESP_OK_DISPLAY_INFO
+}
+
 // virtioGPUSetupFramebuffer sets up the framebuffer using VirtIO GPU
-// Allocates framebuffer memory internally
 // Returns true on success, false on failure
 //
-//go:nosplit
 func virtioGPUSetupFramebuffer(width, height uint32) bool {
 	// Use dedicated framebuffer region at fixed address
 	fbSize := width * height * 4 // 4 bytes per pixel (BGRA8888)
+
 	if fbSize > virtioGPUFramebufferSize {
+		console.KPrintln("[VirtIO GPU] ERROR: Framebuffer size too large")
 		return false
 	}
 
 	// Zero framebuffer
 	fbMem := unsafe.Pointer(uintptr(virtioGPUFramebufferAddr))
-	bzero4K(fbMem, fbSize)
+	virtio.Bzero4K(fbMem, fbSize)
 
 	virtioGPUDevice.Framebuffer = fbMem
 	virtioGPUDevice.FramebufferSize = fbSize
 	virtioGPUDevice.Width = width
 	virtioGPUDevice.Height = height
-	virtioGPUDevice.Pitch = width * 4 // 4 bytes per pixel
+	virtioGPUDevice.Pitch = width * 4
 
 	// Step 1: Create 2D resource
 	var createCmd VirtIOGPUResourceCreate2D
@@ -485,6 +558,7 @@ func virtioGPUSetupFramebuffer(width, height uint32) bool {
 
 	respType := virtioGPUSendCommand(unsafe.Pointer(&createCmd), uint32(unsafe.Sizeof(createCmd)), unsafe.Pointer(&createResp), uint32(unsafe.Sizeof(createResp)))
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
+		console.KPrintf("[VirtIO GPU] ERROR: CREATE_2D failed (0x%04x)\n", respType)
 		return false
 	}
 
@@ -493,19 +567,23 @@ func virtioGPUSetupFramebuffer(width, height uint32) bool {
 	attachCmdBuf := unsafe.Pointer(&virtioGPUAttachCmdBuf[0])
 
 	// Set up command structure
-	cmdPtr := castToPointer[VirtIOGPUResourceAttachBacking](pointerToUintptr(attachCmdBuf))
+	cmdPtr := virtio.CastToPointer[VirtIOGPUResourceAttachBacking](virtio.PointerToUintptr(attachCmdBuf))
 	cmdPtr.Hdr.Type = VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING
 	cmdPtr.ResourceID = virtioGPUDevice.ResourceID
 	cmdPtr.NrEntries = 1
 
 	// Add memory entry
-	memEntryPtr := castToPointer[VirtIOGPUMemEntry](pointerToUintptr(attachCmdBuf) + unsafe.Sizeof(VirtIOGPUResourceAttachBacking{}))
-	memEntryPtr.Addr = virtqueueGetPhysicalAddr(fbMem)
+	// Note: fbMem points to the dedicated framebuffer region at a fixed physical address
+	// (virtioGPUFramebufferAddr = 0x41000000), so we use that directly instead of
+	// calling VirtqueueGetPhysicalAddr which expects a kernel virtual address.
+	memEntryPtr := virtio.CastToPointer[VirtIOGPUMemEntry](virtio.PointerToUintptr(attachCmdBuf) + unsafe.Sizeof(VirtIOGPUResourceAttachBacking{}))
+	memEntryPtr.Addr = uint64(virtioGPUFramebufferAddr)
 	memEntryPtr.Len = fbSize
 
 	var attachResp VirtIOGPUCtrlHdr
 	respType = virtioGPUSendCommand(attachCmdBuf, attachCmdSize, unsafe.Pointer(&attachResp), uint32(unsafe.Sizeof(attachResp)))
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
+		console.KPrintf("[VirtIO GPU] ERROR: ATTACH_BACKING failed (0x%04x)\n", respType)
 		return false
 	}
 
@@ -520,16 +598,24 @@ func virtioGPUSetupFramebuffer(width, height uint32) bool {
 	var scanoutResp VirtIOGPUCtrlHdr
 	respType = virtioGPUSendCommand(unsafe.Pointer(&scanoutCmd), uint32(unsafe.Sizeof(scanoutCmd)), unsafe.Pointer(&scanoutResp), uint32(unsafe.Sizeof(scanoutResp)))
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
+		console.KPrintf("[VirtIO GPU] ERROR: SET_SCANOUT failed (0x%04x)\n", respType)
 		return false
 	}
 
+	console.KPrintf("[VirtIO GPU] Framebuffer ready (%dx%d @ 32bpp)\n", width, height)
 	return true
 }
 
 // virtioGPUTransferToHost transfers framebuffer data to host (updates display)
-//
-//go:nosplit
 func virtioGPUTransferToHost(x, y, width, height uint32) {
+	// Flush framebuffer cache before DMA transfer to ensure GPU sees latest data
+	pitch := virtioGPUDevice.Pitch
+	fbBase := uintptr(virtioGPUDevice.Framebuffer)
+	startOffset := uintptr(y)*uintptr(pitch) + uintptr(x)*4
+	regionSize := uintptr(height) * uintptr(pitch)
+	asm.CleanDCacheRange(fbBase+startOffset, regionSize)
+	asm.DmaWmb()
+
 	var transferCmd VirtIOGPUTransferToHost2D
 	transferCmd.Hdr.Type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D
 	transferCmd.Hdr.Flags = 0
@@ -541,8 +627,6 @@ func virtioGPUTransferToHost(x, y, width, height uint32) {
 	transferCmd.Rect.Width = width
 	transferCmd.Rect.Height = height
 	// Calculate offset: y * pitch + x * bytes_per_pixel
-	// Pitch is stored in device struct (width * 4 bytes per pixel)
-	pitch := virtioGPUDevice.Pitch
 	transferCmd.Offset = uint64(y)*uint64(pitch) + uint64(x)*4
 	transferCmd.ResourceID = virtioGPUDevice.ResourceID
 	transferCmd.Padding = 0
@@ -553,4 +637,31 @@ func virtioGPUTransferToHost(x, y, width, height uint32) {
 		// Silently fail - don't spam UART
 		return
 	}
+}
+
+// virtioGPUFlush flushes a region of the framebuffer to the display
+// This must be called after virtioGPUTransferToHost to make changes visible
+//
+//go:nosplit
+func virtioGPUFlush(x, y, width, height uint32) {
+	var flushCmd VirtIOGPUResourceFlush
+	flushCmd.Hdr.Type = VIRTIO_GPU_CMD_RESOURCE_FLUSH
+	flushCmd.Hdr.Flags = 0
+	flushCmd.Hdr.FenceID = 0
+	flushCmd.Hdr.CtxID = 0
+	flushCmd.Hdr.Padding = 0
+	flushCmd.Rect.X = x
+	flushCmd.Rect.Y = y
+	flushCmd.Rect.Width = width
+	flushCmd.Rect.Height = height
+	flushCmd.ResourceID = virtioGPUDevice.ResourceID
+	flushCmd.Padding = 0
+
+	var flushResp VirtIOGPUCtrlHdr
+	respType := virtioGPUSendCommand(unsafe.Pointer(&flushCmd), uint32(unsafe.Sizeof(flushCmd)), unsafe.Pointer(&flushResp), uint32(unsafe.Sizeof(flushResp)))
+	if respType != VIRTIO_GPU_RESP_OK_NODATA {
+		console.KPrintf("[VirtIO GPU] FLUSH failed (0x%04x)\n", respType)
+		return
+	}
+	console.KPrintln("[VirtIO GPU] FLUSH succeeded")
 }

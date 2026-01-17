@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"kmazarin/console"
 	"kmazarin/device"
+	"kmazarin/device/virtio/gpu"
 	"kmazarin/kirq"
 	"kmazarin/kmem"
 	"kmazarin/ksyscall"
@@ -734,10 +735,11 @@ func testDeviceDiscovery() {
 		// Switch to interrupt-driven PL011 console
 		if bs, ok := device.GetByteStream(); ok {
 			// Type assert to *uart.PL011 to access AsConsole()
-			if pl011, ok := bs.(*uart.PL011); ok {
-				console.KPrintln("[DeviceTest] Switching to PL011 interrupt-driven console...")
-				console.Set(pl011.AsConsole())
-				console.KPrintln("[DeviceTest] Now using PL011 interrupt-driven console!")
+			if _, ok := bs.(*uart.PL011); ok {
+				console.KPrintln("[DeviceTest] PL011 available but keeping polling console for stability")
+				// DISABLED: Switching to interrupt-driven console causes crash
+				// console.Set(pl011.AsConsole())
+				// console.KPrintln("[DeviceTest] Now using PL011 interrupt-driven console!")
 			}
 		}
 	}
@@ -746,6 +748,33 @@ func testDeviceDiscovery() {
 
 	// Test KPrintHex() with various types
 	testKPrintHex()
+}
+
+// initVirtIOGPU initializes the VirtIO GPU device for display output
+func initVirtIOGPU() {
+	console.KPrintln("")
+	console.KPrintln("[VirtIO GPU] === Initializing Display ===")
+
+	if !gpu.Init() {
+		console.KPrintln("[VirtIO GPU] ERROR: Initialization failed")
+		console.KPrintln("[VirtIO GPU] Continuing without display")
+		return
+	}
+
+	console.KPrintln("[VirtIO GPU] Display ready")
+
+	// Render boot image if available
+	config := GetRuntimeConfig()
+	if config.BootImagePhysAddr != 0 && config.BootImageSize > 0 {
+		console.KPrintf("[VirtIO GPU] Boot image at 0x%x, size %d\n", config.BootImagePhysAddr, config.BootImageSize)
+		if gpu.RenderBootImage(uintptr(config.BootImagePhysAddr), config.BootImageSize) {
+			// Transfer and flush the rendered image to display
+			gpu.UpdateDisplay(0, 0, gpu.GetWidth(), gpu.GetHeight())
+			console.KPrintln("[VirtIO GPU] Boot image displayed")
+		}
+	} else {
+		console.KPrintln("[VirtIO GPU] No boot image available")
+	}
 }
 
 // testKPrintHex tests the KPrintHex() method with various value types
@@ -823,6 +852,13 @@ func simpleMain() {
 	// Test DTB-based device discovery BEFORE unmapping Cardinal
 	// (DTB is at 0x40000000 in Cardinal's memory region)
 	testDeviceDiscovery()
+
+	console.KPrintln("[Main] About to initialize VirtIO GPU...")
+
+	// Initialize VirtIO GPU for display output
+	initVirtIOGPU()
+
+	console.KPrintln("[Main] VirtIO GPU initialization complete or skipped")
 
 	// CRITICAL: Enable IRQs at CPU AFTER GIC is initialized (matches Cardinal's order)
 	// This unmasks IRQs at the CPU (clears DAIF.I bit)

@@ -9,17 +9,17 @@ import (
 
 // Helper functions for VirtIO device drivers
 
-// castToPointer casts a uintptr to a typed pointer
+// CastToPointer casts a uintptr to a typed pointer
 //
 //go:nosplit
-func castToPointer[T any](addr uintptr) *T {
+func CastToPointer[T any](addr uintptr) *T {
 	return (*T)(unsafe.Pointer(addr))
 }
 
-// pointerToUintptr converts an unsafe.Pointer to uintptr
+// PointerToUintptr converts an unsafe.Pointer to uintptr
 //
 //go:nosplit
-func pointerToUintptr(ptr unsafe.Pointer) uintptr {
+func PointerToUintptr(ptr unsafe.Pointer) uintptr {
 	return uintptr(ptr)
 }
 
@@ -85,11 +85,11 @@ func kfree(ptr unsafe.Pointer) {
 	// No-op: Go's garbage collector will handle memory freeing
 }
 
-// bzero4K zeros a memory region
+// Bzero4K zeros a memory region
 // Note: In kmazarin we can be more flexible with alignment than Cardinal
 //
 //go:nosplit
-func bzero4K(ptr unsafe.Pointer, size uint32) {
+func Bzero4K(ptr unsafe.Pointer, size uint32) {
 	if size == 0 || ptr == nil {
 		return
 	}

@@ -93,7 +93,7 @@ func run() error {
 		"-device", "virtio-gpu-pci",
 		"-object", "rng-random,id=rng0,filename=/dev/urandom",
 		"-device", "virtio-rng-device,rng=rng0",
-		"-display", "none",
+		"-display", "cocoa",
 		"-serial", "file:"+logFile,
 		"-monitor", "tcp:127.0.0.1:4444,server,nowait",
 		"-semihosting",

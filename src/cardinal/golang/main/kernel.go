@@ -603,6 +603,8 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 		ReadyForAsyncPreempt uint64 // Address of readyForAsyncPreempt flag
 		FramebufferPhysAddr  uint64 // Physical address of VirtIO GPU framebuffer
 		FramebufferSize      uint64 // Size of framebuffer in bytes
+		BootImagePhysAddr    uint64 // Physical address of boot image data
+		BootImageSize        uint64 // Size of boot image in bytes
 	}
 
 	config := (*RuntimeConfig)(unsafe.Pointer(kmazarinStartupParamsVA))
@@ -666,6 +668,12 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 	// VirtIO GPU framebuffer information
 	config.FramebufferPhysAddr = uint64(constants.FramebufferPhysAddr)
 	config.FramebufferSize = uint64(constants.FramebufferSize)
+
+	// Boot image information (embedded mazarin image)
+	imageStart := asm.ImageDataStart()
+	imageEnd := asm.ImageDataEnd()
+	config.BootImagePhysAddr = uint64(imageStart)
+	config.BootImageSize = uint64(imageEnd - imageStart)
 
 	// Ensure writes complete
 	asm.Dsb()

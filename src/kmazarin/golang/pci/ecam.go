@@ -100,7 +100,7 @@ var pciEcamBase uintptr = 0x4010000000  // High-memory ECAM (from device tree)
 // pciFirstAccess tracks if this is the first PCI config space access (for debugging)
 var pciFirstAccess bool = true
 
-// pciConfigRead32 reads a 32-bit value from PCI configuration space
+// ConfigRead32 reads a 32-bit value from PCI configuration space
 //
 // IMPORTANT: We use a local variable `ecamBase := pciEcamBase` instead of
 // accessing the global directly. This is required because Go's compiler may
@@ -139,7 +139,7 @@ func ConfigRead32(bus, slot, funcNum, offset uint8) uint32 {
 	return value
 }
 
-// pciConfigWrite32 writes a 32-bit value to PCI configuration space
+// ConfigWrite32 writes a 32-bit value to PCI configuration space
 //
 //go:nosplit
 func ConfigWrite32(bus, slot, funcNum, offset uint8, value uint32) {
@@ -151,7 +151,7 @@ func ConfigWrite32(bus, slot, funcNum, offset uint8, value uint32) {
 	asm.MmioWrite(configAddr, value)
 }
 
-// pciConfigRead32Lowmem reads using lowmem ECAM address (for testing)
+// ConfigRead32Lowmem reads using lowmem ECAM address (for testing)
 //
 //go:nosplit
 func ConfigRead32Lowmem(bus, slot, funcNum, offset uint8) uint32 {
@@ -171,13 +171,13 @@ func findBochsDisplay() uintptr {
 	for bus := uint8(0); bus < 1; bus++ {
 		for slot := uint8(0); slot < 32; slot++ {
 			for funcNum := uint8(0); funcNum < 8; funcNum++ {
-				vendorID := pciConfigRead32(bus, slot, funcNum, PCI_VENDOR_ID) & 0xFFFF
+				vendorID := ConfigRead32(bus, slot, funcNum, PCI_VENDOR_ID) & 0xFFFF
 				if vendorID == 0xFFFF || vendorID == 0 {
 					continue
 				}
-				deviceID := pciConfigRead32(bus, slot, funcNum, PCI_DEVICE_ID) & 0xFFFF
+				deviceID := ConfigRead32(bus, slot, funcNum, PCI_DEVICE_ID) & 0xFFFF
 				if vendorID == BOCHS_VENDOR_ID && deviceID == BOCHS_DEVICE_ID {
-					bar0 := pciConfigRead32(bus, slot, funcNum, PCI_BAR0)
+					bar0 := ConfigRead32(bus, slot, funcNum, PCI_BAR0)
 					return uintptr(bar0 & 0xFFFFFFF0)
 				}
 			}
@@ -205,7 +205,7 @@ func findBochsDisplayFull() bool {
 	for bus := uint8(0); bus < 1; bus++ {
 		for slot := uint8(0); slot < 32; slot++ {
 			for funcNum := uint8(0); funcNum < 8; funcNum++ {
-				fullReg := pciConfigRead32(bus, slot, funcNum, PCI_VENDOR_ID)
+				fullReg := ConfigRead32(bus, slot, funcNum, PCI_VENDOR_ID)
 				vendorIDActual := fullReg & 0xFFFF
 				deviceID := (fullReg >> 16) & 0xFFFF
 
@@ -215,29 +215,29 @@ func findBochsDisplayFull() bool {
 
 				if vendorIDActual == BOCHS_VENDOR_ID && deviceID == BOCHS_DEVICE_ID {
 					// Enable device (I/O, memory, bus master)
-					cmd := pciConfigRead32(bus, slot, funcNum, PCI_COMMAND)
+					cmd := ConfigRead32(bus, slot, funcNum, PCI_COMMAND)
 					cmd |= 0x7
-					pciConfigWrite32(bus, slot, funcNum, PCI_COMMAND, cmd)
+					ConfigWrite32(bus, slot, funcNum, PCI_COMMAND, cmd)
 					for delay := 0; delay < 1000; delay++ {
 					}
 
 					// Probe BARs
-					pciConfigWrite32(bus, slot, funcNum, PCI_BAR0, 0xFFFFFFFF)
-					pciConfigWrite32(bus, slot, funcNum, PCI_BAR2, 0xFFFFFFFF)
-					pciConfigRead32(bus, slot, funcNum, PCI_BAR0) // size mask
-					pciConfigRead32(bus, slot, funcNum, PCI_BAR2) // size mask
+					ConfigWrite32(bus, slot, funcNum, PCI_BAR0, 0xFFFFFFFF)
+					ConfigWrite32(bus, slot, funcNum, PCI_BAR2, 0xFFFFFFFF)
+					ConfigRead32(bus, slot, funcNum, PCI_BAR0) // size mask
+					ConfigRead32(bus, slot, funcNum, PCI_BAR2) // size mask
 
 					// Program BAR addresses (PCI MMIO window at 0x10000000)
 					fbAddr := uintptr(0x10000000)
 					mmioBase := uintptr(0x10F00000)
-					pciConfigWrite32(bus, slot, funcNum, PCI_BAR0, uint32(fbAddr)|0x8)
-					pciConfigWrite32(bus, slot, funcNum, PCI_BAR2, uint32(mmioBase))
+					ConfigWrite32(bus, slot, funcNum, PCI_BAR0, uint32(fbAddr)|0x8)
+					ConfigWrite32(bus, slot, funcNum, PCI_BAR2, uint32(mmioBase))
 					for delay := 0; delay < 1000; delay++ {
 					}
 
 					// Read back and validate
-					bar0 := pciConfigRead32(bus, slot, funcNum, PCI_BAR0)
-					bar2 := pciConfigRead32(bus, slot, funcNum, PCI_BAR2)
+					bar0 := ConfigRead32(bus, slot, funcNum, PCI_BAR0)
+					bar2 := ConfigRead32(bus, slot, funcNum, PCI_BAR2)
 					if bar0 == 0xFFFFFFFF || bar0 == 0 || bar2 == 0xFFFFFFFF || bar2 == 0 {
 						return false
 					}
@@ -332,14 +332,14 @@ func initBochsDisplay(width, height, bpp uint16) bool {
 
 // PCI Capability Reading Functions
 
-// pciConfigRead8 reads an 8-bit value from PCI configuration space
+// ConfigRead8 reads an 8-bit value from PCI configuration space
 //
 //go:nosplit
 func ConfigRead8(bus, slot, funcNum, offset uint8) uint8 {
 	// Read 32-bit value and extract the byte
 	wordOffset := offset & 0xFC // Align to 4-byte boundary
 	byteOffset := offset & 0x03 // Byte within word
-	word := pciConfigRead32(bus, slot, funcNum, wordOffset)
+	word := ConfigRead32(bus, slot, funcNum, wordOffset)
 	return uint8((word >> (byteOffset * 8)) & 0xFF)
 }
 
@@ -349,7 +349,7 @@ func ConfigRead8(bus, slot, funcNum, offset uint8) uint8 {
 //go:nosplit
 func pciFindCapability(bus, slot, funcNum uint8, capType uint8) uint8 {
 	// Read capabilities pointer from offset 0x34
-	capPtr := pciConfigRead8(bus, slot, funcNum, PCI_CAPABILITIES)
+	capPtr := ConfigRead8(bus, slot, funcNum, PCI_CAPABILITIES)
 
 	// If capabilities pointer is 0 or 0xFF, no capabilities
 	if capPtr == 0 || capPtr == 0xFF {
@@ -364,7 +364,7 @@ func pciFindCapability(bus, slot, funcNum uint8, capType uint8) uint8 {
 
 	for current != 0 && iterations < maxIterations {
 		// Read capability type (first byte)
-		capTypeRead := pciConfigRead8(bus, slot, funcNum, current)
+		capTypeRead := ConfigRead8(bus, slot, funcNum, current)
 
 		if capTypeRead == capType {
 			// Found it!
@@ -372,7 +372,7 @@ func pciFindCapability(bus, slot, funcNum uint8, capType uint8) uint8 {
 		}
 
 		// Read next pointer (second byte)
-		nextPtr := pciConfigRead8(bus, slot, funcNum, current+1)
+		nextPtr := ConfigRead8(bus, slot, funcNum, current+1)
 
 		// If next is 0, we've reached the end
 		if nextPtr == 0 {
@@ -392,32 +392,33 @@ func pciFindCapability(bus, slot, funcNum uint8, capType uint8) uint8 {
 //go:nosplit
 func pciReadCapability(bus, slot, funcNum, capOffset uint8) (capType uint8, data uint32) {
 	// Read capability type
-	capType = pciConfigRead8(bus, slot, funcNum, capOffset)
+	capType = ConfigRead8(bus, slot, funcNum, capOffset)
 
 	// For VirtIO capabilities, read the full 32-bit capability structure
 	// Format: [type:8][next:8][length:8][cfg_type:8]
 	// Then device-specific data follows
-	capData := pciConfigRead32(bus, slot, funcNum, capOffset)
+	capData := ConfigRead32(bus, slot, funcNum, capOffset)
 
 	return capType, capData
 }
 
 // VirtIOCapabilityInfo holds information about a VirtIO PCI capability
 type VirtIOCapabilityInfo struct {
-	Offset      uint8  // Offset in PCI config space
-	Type        uint8  // Capability type
-	Bar         uint8  // BAR number (for Common Config, Notify, Device Config)
-	OffsetInBar uint32 // Offset within BAR
-	Length      uint32 // Length of capability region
+	Offset              uint8  // Offset in PCI config space
+	Type                uint8  // Capability type
+	Bar                 uint8  // BAR number (for Common Config, Notify, Device Config)
+	OffsetInBar         uint32 // Offset within BAR
+	Length              uint32 // Length of capability region
+	NotifyOffMultiplier uint32 // Notify capability only: multiplier for queue_notify_off
 }
 
-// pciFindVirtIOCapability finds a VirtIO capability by cfg_type
+// FindVirtIOCapability finds a VirtIO capability by cfg_type
 // Returns the offset of the capability, or 0 if not found
 //
 //go:nosplit
 func FindVirtIOCapability(bus, slot, funcNum uint8, cfgType uint8) uint8 {
 	// Read capabilities pointer
-	capPtr := pciConfigRead8(bus, slot, funcNum, PCI_CAPABILITIES)
+	capPtr := ConfigRead8(bus, slot, funcNum, PCI_CAPABILITIES)
 	if capPtr == 0 || capPtr == 0xFF {
 		return 0
 	}
@@ -425,18 +426,18 @@ func FindVirtIOCapability(bus, slot, funcNum uint8, cfgType uint8) uint8 {
 	// Traverse capability list looking for vendor-specific (0x09) caps
 	current := capPtr
 	for i := 0; i < 32 && current != 0; i++ {
-		capTypeRead := pciConfigRead8(bus, slot, funcNum, current)
+		capTypeRead := ConfigRead8(bus, slot, funcNum, current)
 
 		if capTypeRead == PCI_CAP_VENDOR_SPECIFIC {
 			// Check cfg_type field (offset +3)
-			virtCfgType := pciConfigRead8(bus, slot, funcNum, current+3)
+			virtCfgType := ConfigRead8(bus, slot, funcNum, current+3)
 			if virtCfgType == cfgType {
 				return current
 			}
 		}
 
 		// Move to next capability
-		current = pciConfigRead8(bus, slot, funcNum, current+1)
+		current = ConfigRead8(bus, slot, funcNum, current+1)
 	}
 
 	return 0
@@ -447,45 +448,46 @@ func FindVirtIOCapability(bus, slot, funcNum uint8, cfgType uint8) uint8 {
 //go:nosplit
 func FindVirtIOCapabilities(bus, slot, funcNum uint8, common, notify, isr, device *VirtIOCapabilityInfo) bool {
 	// Find Common Config capability (required)
-	commonOffset := pciFindVirtIOCapability(bus, slot, funcNum, VIRTIO_PCI_CAP_COMMON_CFG)
+	commonOffset := FindVirtIOCapability(bus, slot, funcNum, VIRTIO_PCI_CAP_COMMON_CFG)
 	if commonOffset == 0 {
 		return false
 	}
 	common.Offset = commonOffset
 	common.Type = VIRTIO_PCI_CAP_COMMON_CFG
-	common.Bar = pciConfigRead8(bus, slot, funcNum, commonOffset+4)
-	common.OffsetInBar = pciConfigRead32(bus, slot, funcNum, commonOffset+8)
-	common.Length = pciConfigRead32(bus, slot, funcNum, commonOffset+12)
+	common.Bar = ConfigRead8(bus, slot, funcNum, commonOffset+4)
+	common.OffsetInBar = ConfigRead32(bus, slot, funcNum, commonOffset+8)
+	common.Length = ConfigRead32(bus, slot, funcNum, commonOffset+12)
 
 	// Find Notify capability (required)
-	notifyOffset := pciFindVirtIOCapability(bus, slot, funcNum, VIRTIO_PCI_CAP_NOTIFY_CFG)
+	notifyOffset := FindVirtIOCapability(bus, slot, funcNum, VIRTIO_PCI_CAP_NOTIFY_CFG)
 	if notifyOffset == 0 {
 		return false
 	}
 	notify.Offset = notifyOffset
 	notify.Type = VIRTIO_PCI_CAP_NOTIFY_CFG
-	notify.Bar = pciConfigRead8(bus, slot, funcNum, notifyOffset+4)
-	notify.OffsetInBar = pciConfigRead32(bus, slot, funcNum, notifyOffset+8)
-	notify.Length = pciConfigRead32(bus, slot, funcNum, notifyOffset+12)
+	notify.Bar = ConfigRead8(bus, slot, funcNum, notifyOffset+4)
+	notify.OffsetInBar = ConfigRead32(bus, slot, funcNum, notifyOffset+8)
+	notify.Length = ConfigRead32(bus, slot, funcNum, notifyOffset+12)
+	notify.NotifyOffMultiplier = ConfigRead32(bus, slot, funcNum, notifyOffset+16)
 
 	// Find ISR Status capability (optional)
-	isrOffset := pciFindVirtIOCapability(bus, slot, funcNum, VIRTIO_PCI_CAP_ISR_CFG)
+	isrOffset := FindVirtIOCapability(bus, slot, funcNum, VIRTIO_PCI_CAP_ISR_CFG)
 	if isrOffset != 0 {
 		isr.Offset = isrOffset
 		isr.Type = VIRTIO_PCI_CAP_ISR_CFG
-		isr.Bar = pciConfigRead8(bus, slot, funcNum, isrOffset+4)
-		isr.OffsetInBar = pciConfigRead32(bus, slot, funcNum, isrOffset+8)
-		isr.Length = pciConfigRead32(bus, slot, funcNum, isrOffset+12)
+		isr.Bar = ConfigRead8(bus, slot, funcNum, isrOffset+4)
+		isr.OffsetInBar = ConfigRead32(bus, slot, funcNum, isrOffset+8)
+		isr.Length = ConfigRead32(bus, slot, funcNum, isrOffset+12)
 	}
 
 	// Find Device Config capability (optional)
-	deviceOffset := pciFindVirtIOCapability(bus, slot, funcNum, VIRTIO_PCI_CAP_DEVICE_CFG)
+	deviceOffset := FindVirtIOCapability(bus, slot, funcNum, VIRTIO_PCI_CAP_DEVICE_CFG)
 	if deviceOffset != 0 {
 		device.Offset = deviceOffset
 		device.Type = VIRTIO_PCI_CAP_DEVICE_CFG
-		device.Bar = pciConfigRead8(bus, slot, funcNum, deviceOffset+4)
-		device.OffsetInBar = pciConfigRead32(bus, slot, funcNum, deviceOffset+8)
-		device.Length = pciConfigRead32(bus, slot, funcNum, deviceOffset+12)
+		device.Bar = ConfigRead8(bus, slot, funcNum, deviceOffset+4)
+		device.OffsetInBar = ConfigRead32(bus, slot, funcNum, deviceOffset+8)
+		device.Length = ConfigRead32(bus, slot, funcNum, deviceOffset+12)
 	}
 
 	return true
