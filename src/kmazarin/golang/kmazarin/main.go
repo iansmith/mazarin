@@ -706,6 +706,12 @@ func testDeviceDiscovery() {
 		console.KPrintln(rng.Name())
 	}
 
+	// Check for clock (RTC)
+	if clk, ok := device.GetClock(); ok {
+		console.KWriteString("  - Clock: ")
+		console.KPrintln(clk.Name())
+	}
+
 	// Check for block devices
 	if blk, ok := device.GetBlockDevice(); ok {
 		console.KWriteString("  - BlockDevice: ")

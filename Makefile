@@ -173,6 +173,7 @@ KMAZARIN_CONSOLE_SRC = $(KMAZARIN_BASE)/console
 KMAZARIN_DEVICEAPI_SRC = $(KMAZARIN_BASE)/deviceapi
 KMAZARIN_GIC_SRC = $(KMAZARIN_BASE)/arch/arm64/gic
 KMAZARIN_VIRTIO_SRC = $(KMAZARIN_BASE)/virtio
+KMAZARIN_RTC_SRC = $(KMAZARIN_BASE)/rtc
 
 # All kmazarin Go/assembly sources
 KMAZARIN_ALL_SRC = $(wildcard $(KMAZARIN_SRC)/*.go) $(wildcard $(KMAZARIN_SRC)/*.s) \
@@ -186,7 +187,8 @@ KMAZARIN_ALL_SRC = $(wildcard $(KMAZARIN_SRC)/*.go) $(wildcard $(KMAZARIN_SRC)/*
                    $(wildcard $(KMAZARIN_CONSOLE_SRC)/*.go) $(wildcard $(KMAZARIN_CONSOLE_SRC)/*.s) \
                    $(wildcard $(KMAZARIN_DEVICEAPI_SRC)/*.go) $(wildcard $(KMAZARIN_DEVICEAPI_SRC)/*.s) \
                    $(wildcard $(KMAZARIN_GIC_SRC)/*.go) $(wildcard $(KMAZARIN_GIC_SRC)/*.s) \
-                   $(wildcard $(KMAZARIN_VIRTIO_SRC)/*.go) $(wildcard $(KMAZARIN_VIRTIO_SRC)/*.s)
+                   $(wildcard $(KMAZARIN_VIRTIO_SRC)/*.go) $(wildcard $(KMAZARIN_VIRTIO_SRC)/*.s) \
+                   $(wildcard $(KMAZARIN_RTC_SRC)/*.go) $(wildcard $(KMAZARIN_RTC_SRC)/*.s)
 
 # Runtime patch files for overlay
 RUNTIME_PATCH_MALLOC = $(RUNTIME_PATCHES_DIR)/malloc.go

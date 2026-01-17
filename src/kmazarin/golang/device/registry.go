@@ -1,6 +1,7 @@
 package device
 
 import (
+	"kmazarin/rtc"
 	"kmazarin/uart"
 	"kmazarin/virtio"
 )
@@ -16,6 +17,9 @@ var ArchIndependentDrivers = []Discoverable{
 	// UART devices (pure MMIO)
 	&uart.PL011Driver{},
 	// &uart.NS16550Driver{},
+
+	// RTC devices (pure MMIO)
+	&rtc.PL031Driver{},
 
 	// VirtIO devices (MMIO-based, arch-independent)
 	&virtio.RNGDriver{},
