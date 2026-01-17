@@ -90,7 +90,7 @@ func run() error {
 		"-m", "8G",
 		"-kernel", kernelPath,
 		"-nodefaults",
-		"-device", "bochs-display",
+		"-device", "virtio-gpu-pci",
 		"-object", "rng-random,id=rng0,filename=/dev/urandom",
 		"-device", "virtio-rng-device,rng=rng0",
 		"-display", "none",

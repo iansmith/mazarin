@@ -37,7 +37,7 @@ func heapInit(heapStart uintptr) {
 	heapSegmentListHead = castToPointer[heapSegment](heapStart)
 
 	// Zero out the initial segment header
-	bzero4K(unsafe.Pointer(heapSegmentListHead), uint32(unsafe.Sizeof(heapSegment{})))
+	bzeroSimple(unsafe.Pointer(heapSegmentListHead), uint32(unsafe.Sizeof(heapSegment{})))
 
 	// Initialize the first segment to represent the entire heap as free
 	heapSegmentListHead.next = nil
@@ -217,7 +217,7 @@ func kmalloc(size uint32) unsafe.Pointer {
 
 		// Zero out the new segment
 		// This ensures isReserved field is 0 (Bzero zeros the entire structure)
-		bzero4K(unsafe.Pointer(newSeg), uint32(unsafe.Sizeof(heapSegment{})))
+		bzeroSimple(unsafe.Pointer(newSeg), uint32(unsafe.Sizeof(heapSegment{})))
 
 		// Update the new segment's fields
 		newSeg.next = best.next

@@ -4,6 +4,7 @@ package main
 
 import (
 	"cardinal/asm"
+	"cardinal/constants"
 	"unsafe"
 )
 
@@ -146,13 +147,17 @@ type VirtIOGPUDevice struct {
 	ResourceID       uint32               // Current resource ID
 	Framebuffer      unsafe.Pointer       // Framebuffer memory
 	FramebufferSize  uint32               // Framebuffer size in bytes
+	Width            uint32               // Framebuffer width in pixels
+	Height           uint32               // Framebuffer height in pixels
+	Pitch            uint32               // Bytes per row
 }
 
 var virtioGPUDevice VirtIOGPUDevice
 
-// Static framebuffer allocation (1280x720x4 bytes = 3,686,400 bytes)
-// Pre-allocated to avoid kmalloc() write barrier stack issues
-var virtioGPUFramebuffer [1280 * 720 * 4]byte
+// Framebuffer is at fixed physical address 0x41000000 (8 MB)
+// Defined in constants/layout.go
+const virtioGPUFramebufferAddr = constants.FramebufferPhysAddr
+const virtioGPUFramebufferSize = constants.FramebufferSize
 
 // Static buffer for attach backing command (small, avoids kmalloc)
 var virtioGPUAttachCmdBuf [unsafe.Sizeof(VirtIOGPUResourceAttachBacking{}) + unsafe.Sizeof(VirtIOGPUMemEntry{})]byte
@@ -243,6 +248,9 @@ func virtioPCISetupQueue(queueIndex uint16, vq *VirtQueue) bool {
 //
 //go:nosplit
 func findVirtIOGPU() bool {
+	uartPutsDirect("VirtIO GPU: Scanning PCI bus...\r\n")
+
+
 	// Scan PCI bus
 	for bus := uint8(0); bus < 1; bus++ {
 		for slot := uint8(0); slot < 32; slot++ {
@@ -256,6 +264,19 @@ func findVirtIOGPU() bool {
 				if vendorID == 0xFFFF || vendorID == 0 {
 					continue
 				}
+
+				// Debug: show all found devices
+				uartPutsDirect("VirtIO GPU: Found device - bus=")
+				uartPutHex8Direct(bus)
+				uartPutsDirect(" slot=")
+				uartPutHex8Direct(slot)
+				uartPutsDirect(" func=")
+				uartPutHex8Direct(funcNum)
+				uartPutsDirect(" vendor=")
+				uartPutHex16Direct(uint16(vendorID))
+				uartPutsDirect(" device=")
+				uartPutHex16Direct(uint16(deviceID))
+				uartPutsDirect("\r\n")
 
 				// Check if this is VirtIO GPU
 				if vendorID == VIRTIO_VENDOR_ID && deviceID == VIRTIO_GPU_DEVICE_ID {
@@ -273,7 +294,30 @@ func findVirtIOGPU() bool {
 					// Read BAR for common config
 					barOffset := 0x10 + common.Bar*4 // BAR0 = 0x10, BAR1 = 0x14, etc.
 					bar := pciConfigRead32(bus, slot, funcNum, uint8(barOffset))
+
+					// Check if BAR needs programming (base address is 0)
+					if (bar & 0xFFFFFFF0) == 0 {
+						// Program BAR to use PCI MMIO space at 0x10000000
+						// This is within QEMU's pcie-mmio window: 0x10000000-0x3EFEFFFF
+						const PCI_MMIO_BASE = uint32(0x10000000)
+						pciConfigWrite32(bus, slot, funcNum, uint8(barOffset), PCI_MMIO_BASE)
+
+						// If it's a 64-bit BAR, also program the high 32 bits
+						if (bar & 0x6) == 0x4 { // Bits 1-2 = 10 means 64-bit BAR
+							pciConfigWrite32(bus, slot, funcNum, uint8(barOffset+4), 0)
+						}
+
+						// Re-read to confirm
+						bar = pciConfigRead32(bus, slot, funcNum, uint8(barOffset))
+					}
+
 					barBase := uintptr(bar & 0xFFFFFFF0) // Mask out type bits
+
+					uartPutsDirect("VirtIO GPU: Using BAR")
+					uartPutHex8Direct(common.Bar)
+					uartPutsDirect(" at 0x")
+					uartPutHex64Direct(uint64(barBase))
+					uartPutsDirect("\r\n")
 
 					virtioGPUDevice.Bus = bus
 					virtioGPUDevice.Slot = slot
@@ -304,6 +348,8 @@ func findVirtIOGPU() bool {
 //
 //go:nosplit
 func virtioGPUInit() bool {
+	uartPutsDirect("VirtIO GPU: Initializing device...\r\n")
+
 	// Step 1: Reset device
 	virtioPCISetDeviceStatus(0)
 
@@ -319,13 +365,17 @@ func virtioGPUInit() bool {
 	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK)
 
 	// Step 6: Initialize control queue (queue 0)
+	uartPutsDirect("VirtIO GPU: Init queue...\r\n")
 	queueSize := uint16(256) // Power of 2
 	if !virtqueueInit(&virtioGPUDevice.ControlQueue, queueSize) {
+		uartPutsDirect("VirtIO GPU: virtqueueInit failed\r\n")
 		return false
 	}
 
 	// Step 7: Setup queue in device
+	uartPutsDirect("VirtIO GPU: Setup queue...\r\n")
 	if !virtioPCISetupQueue(0, &virtioGPUDevice.ControlQueue) {
+		uartPutsDirect("VirtIO GPU: virtioPCISetupQueue failed\r\n")
 		return false
 	}
 
@@ -335,6 +385,7 @@ func virtioGPUInit() bool {
 	// Initialize the resource ID
 	virtioGPUDevice.ResourceID = 1
 
+	uartPutsDirect("VirtIO GPU: Init complete\r\n")
 	return true
 }
 
@@ -404,18 +455,21 @@ func virtioGPUSendCommand(cmdBuf unsafe.Pointer, cmdSize uint32, respBuf unsafe.
 //
 //go:nosplit
 func virtioGPUSetupFramebuffer(width, height uint32) bool {
-	// Use pre-allocated static framebuffer (avoids kmalloc write barrier issues)
+	// Use dedicated framebuffer region at fixed address
 	fbSize := width * height * 4 // 4 bytes per pixel (BGRA8888)
-	if fbSize > uint32(len(virtioGPUFramebuffer)) {
+	if fbSize > virtioGPUFramebufferSize {
 		return false
 	}
 
 	// Zero framebuffer
-	fbMem := unsafe.Pointer(&virtioGPUFramebuffer[0])
+	fbMem := unsafe.Pointer(uintptr(virtioGPUFramebufferAddr))
 	bzero4K(fbMem, fbSize)
 
 	virtioGPUDevice.Framebuffer = fbMem
 	virtioGPUDevice.FramebufferSize = fbSize
+	virtioGPUDevice.Width = width
+	virtioGPUDevice.Height = height
+	virtioGPUDevice.Pitch = width * 4 // 4 bytes per pixel
 
 	// Step 1: Create 2D resource
 	var createCmd VirtIOGPUResourceCreate2D
@@ -485,9 +539,8 @@ func virtioGPUTransferToHost(x, y, width, height uint32) {
 	transferCmd.Rect.Width = width
 	transferCmd.Rect.Height = height
 	// Calculate offset: y * pitch + x * bytes_per_pixel
-	// Pitch = width * 4 (BGRA8888 = 4 bytes per pixel)
-	// We know the width from setup (1280 pixels = 5120 bytes per row)
-	pitch := uint32(1280 * 4) // 1280 pixels * 4 bytes per pixel
+	// Pitch is stored in device struct (width * 4 bytes per pixel)
+	pitch := virtioGPUDevice.Pitch
 	transferCmd.Offset = uint64(y)*uint64(pitch) + uint64(x)*4
 	transferCmd.ResourceID = virtioGPUDevice.ResourceID
 	transferCmd.Padding = 0

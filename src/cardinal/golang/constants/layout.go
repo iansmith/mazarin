@@ -26,6 +26,7 @@ const (
 	// Allocation sizes for each component
 	DtbSize                = 0x100000  // 1 MB - Device Tree Blob
 	CardinalAllocationSize = 0xF00000  // 15 MB - Cardinal code+data+bss+heap
+	FramebufferSize        = 0x800000  // 8 MB - VirtIO GPU framebuffer
 	PageTableSize          = 0x800000  // 8 MB - ARM64 page tables (L0/L1/L2/L3)
 )
 
@@ -44,13 +45,17 @@ const (
 	CardinalStart = DtbEnd
 	CardinalEnd   = CardinalStart + CardinalAllocationSize
 
-	// Page table region
-	PageTableStart = CardinalEnd
+	// VirtIO GPU framebuffer region
+	FramebufferPhysAddr = CardinalEnd      // = 0x41000000
+	FramebufferEnd      = FramebufferPhysAddr + FramebufferSize
+
+	// Page table region (shifted after framebuffer)
+	PageTableStart = FramebufferEnd        // = 0x41800000
 	PageTableEnd   = PageTableStart + PageTableSize
 
 	// Kmazarin load address (low memory, for ELF build with -T flag)
 	// The ELF is built with this address, but we map it to high memory at runtime
-	KmazarinLoadAddr = PageTableEnd // = 0x41800000
+	KmazarinLoadAddr = PageTableEnd        // = 0x42000000
 
 	// Kernel VA offset - add this to physical addresses to get high-memory kernel VAs
 	// Physical 0x40000000 -> Kernel VA 0xFFFFFFFF40000000
@@ -149,7 +154,7 @@ const (
 
 	// Kmazarin memory regions (high memory, TTBR1)
 	// These are virtual addresses where kmazarin code, heap, and page tables live
-	KernelTextBase = KernelVAOffset + KmazarinLoadAddr // 0xFFFFFFFF41800000
+	KernelTextBase = KernelVAOffset + KmazarinLoadAddr // 0xFFFFFFFF42000000
 
 	// DTB mapped to high memory (read-only kernel copy)
 	KernelDtbBase = KernelVAOffset + DtbStart // 0xFFFFFFFF40000000
@@ -158,20 +163,20 @@ const (
 	// Kmazarin Demand Paging Memory Layout (64MB total kernel footprint)
 	// =========================================================================
 	// Memory layout:
-	//   0xFFFFFFFF41800000 - Kmazarin static (code/data/bss) ~2MB
-	//   0xFFFFFFFF419C0000 - TTBR1 PT Region (mapped page tables) 64KB
-	//   0xFFFFFFFF419D0000 - PT Pool (for L2/L3 allocation) 192KB
-	//   0xFFFFFFFF41A00000 - Heap VA space (demand-paged) ~1GB
+	//   0xFFFFFFFF42000000 - Kmazarin static (code/data/bss) ~2MB
+	//   0xFFFFFFFF421C0000 - TTBR1 PT Region (mapped page tables) 64KB
+	//   0xFFFFFFFF421D0000 - PT Pool (for L2/L3 allocation) 192KB
+	//   0xFFFFFFFF42200000 - Heap VA space (demand-paged) ~1GB
 	//   0xFFFFFFFF80000000 - End of heap VA space
 
 	// TTBR1 page table region - Cardinal's TTBR1 L0/L1/L2 tables mapped here
 	// so kmazarin can modify them for demand paging
-	KernelTTBR1RegionVA   = 0xFFFFFFFF419C0000 // Where TTBR1 tables are mapped
+	KernelTTBR1RegionVA   = 0xFFFFFFFF421C0000 // Where TTBR1 tables are mapped
 	KernelTTBR1RegionSize = 0x10000            // 64KB (16 page tables max)
 
 	// PT Pool - kmazarin allocates new L2/L3 tables from here
-	KernelPTPoolStart = 0xFFFFFFFF419D0000 // Start of PT pool
-	KernelPTPoolEnd   = 0xFFFFFFFF41A00000 // End of PT pool (192KB)
+	KernelPTPoolStart = 0xFFFFFFFF421D0000 // Start of PT pool
+	KernelPTPoolEnd   = 0xFFFFFFFF42200000 // End of PT pool (192KB)
 	KernelPTPoolSize  = KernelPTPoolEnd - KernelPTPoolStart
 
 	// Heap VA space - demand-paged, backed by frame pool
@@ -187,7 +192,7 @@ const (
 	// Physical memory after kmazarin static region, used to back heap pages
 	// NOTE: This is the KERNEL frame pool. User-space processes will have
 	// their own separate frame pool (to be defined later).
-	KernelFramePoolPhysStart = 0x41A00000 // Physical start of kernel frame pool
+	KernelFramePoolPhysStart = 0x42200000 // Physical start of kernel frame pool
 	KernelFramePoolPhysEnd   = 0x80000000 // Physical end (~1GB, end of RAM)
 	KernelFramePoolSize      = KernelFramePoolPhysEnd - KernelFramePoolPhysStart
 
@@ -221,6 +226,8 @@ const (
 	AT_KERNEL_GIC_BASE  = 0x1007 // High-memory GIC base (0xFFFFFFFF08000000)
 	AT_TTBR1_L0_PHYS    = 0x1008 // Physical address of TTBR1 L0 page table
 	AT_STARTUP_PARAMS   = 0x1009 // High-memory address of kmazarin StartupParams BSS array
+	AT_FRAMEBUFFER_PHYS = 0x100A // Physical address of VirtIO GPU framebuffer
+	AT_FRAMEBUFFER_SIZE = 0x100B // Size of framebuffer in bytes
 )
 
 // ============================================================================
@@ -234,8 +241,9 @@ func MemoryLayoutSummary() string {
   RAM Start:       0x40000000
   DTB:             0x40000000 - 0x40100000 (1 MB)
   Cardinal:        0x40100000 - 0x41000000 (15 MB)
-  Page Tables:     0x41000000 - 0x41800000 (8 MB, TTBR0)
-  Kmazarin:        0x41800000 - ~0x42000000 (physical, ~8MB max)
+  Framebuffer:     0x41000000 - 0x41800000 (8 MB, VirtIO GPU)
+  Page Tables:     0x41800000 - 0x42000000 (8 MB, TTBR0)
+  Kmazarin:        0x42000000 - ~0x42200000 (physical, ~8MB max)
   g0 Stack:        Computed: KernelStacksPhysBase + KernelG0StackSize (32 KB, SP_EL0)
   Exception Stack: Computed: G0StackTop + KernelExcStackSize (16 KB, SP_EL1)
 

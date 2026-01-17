@@ -114,7 +114,12 @@ func virtqueueSize(queueSize uint16) uintptr {
 //
 //go:nosplit
 func virtqueueInit(vq *VirtQueue, queueSize uint16) bool {
+	uartPutsDirect("virtqueueInit: start, queueSize=")
+	uartPutHex16Direct(queueSize)
+	uartPutsDirect("\r\n")
+
 	if queueSize == 0 || (queueSize&(queueSize-1)) != 0 {
+		uartPutsDirect("virtqueueInit: invalid queue size\r\n")
 		return false
 	}
 
@@ -125,11 +130,17 @@ func virtqueueInit(vq *VirtQueue, queueSize uint16) bool {
 	availSize := 2 + 2 + uintptr(queueSize)*2 + 2                             // flags + idx + ring[] + used_event
 	usedSize := 2 + 2 + uintptr(queueSize)*unsafe.Sizeof(VirtQUsedElem{}) + 2 // flags + idx + ring[] + avail_event
 
+	uartPutsDirect("virtqueueInit: allocating descTable, size=")
+	uartPutHex32Direct(uint32(descSize + 16))
+	uartPutsDirect("\r\n")
+
 	// Allocate descriptor table (must be 16-byte aligned)
 	descAlloc := kmalloc(uint32(descSize + 16))
 	if descAlloc == nil {
+		uartPutsDirect("virtqueueInit: descAlloc failed\r\n")
 		return false
 	}
+	uartPutsDirect("virtqueueInit: descAlloc succeeded\r\n")
 
 	// Align to 16 bytes
 	descAddr := pointerToUintptr(descAlloc)

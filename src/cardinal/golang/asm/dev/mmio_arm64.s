@@ -36,12 +36,17 @@
 //   2. Return to caller
 //
 TEXT mmio_write(SB), NOSPLIT|NOFRAME, $0-12
-	// Segment 1: Store to MMIO register
-	// R0 = register address (already in R0)
-	// R1 = 32-bit data value (already in R1)
+	// For ABI0 compatibility, the wrapper stores args on stack
+	// Input: address at 8(RSP), data at 16(RSP)
+	// No return value
+
+	// Load address and data from stack
+	MOVD	8(RSP), R0		// Load address argument from stack
+	MOVW	16(RSP), R1		// Load 32-bit data from stack
+
+	// Store 32-bit value to MMIO address
 	MOVW	R1, (R0)		// Store 32-bit value to address
 
-	// Segment 2: Return
 	RET
 
 // ============================================================================
@@ -58,12 +63,19 @@ TEXT mmio_write(SB), NOSPLIT|NOFRAME, $0-12
 //   2. Return to caller
 //
 TEXT mmio_read(SB), NOSPLIT|NOFRAME, $0-12
-	// Segment 1: Load from MMIO register
-	// R0 = register address (already in R0)
-	MOVW	(R0), R0		// Load 32-bit value from address into R0
+	// For ABI0 compatibility, the wrapper stores args on stack and reads return from stack
+	// Input: address at 8(RSP)
+	// Output: must store result at 16(RSP) - this is 8 bytes after the 8-byte input
 
-	// Segment 2: Return
-	// Return value is in R0 (register ABI)
+	// Load address from stack
+	MOVD	8(RSP), R0		// Load address argument from stack
+
+	// Load 32-bit value from MMIO address
+	MOVWU	(R0), R0		// Load unsigned 32-bit value (zero-extend to 64-bit)
+
+	// Store result to stack at return location
+	MOVW	R0, 16(RSP)		// Store 32-bit result at return location
+
 	RET
 
 // ============================================================================
@@ -79,12 +91,17 @@ TEXT mmio_read(SB), NOSPLIT|NOFRAME, $0-12
 //   2. Return to caller
 //
 TEXT mmio_write16(SB), NOSPLIT|NOFRAME, $0-10
-	// Segment 1: Store to MMIO register
-	// R0 = register address (already in R0)
-	// R1 = 16-bit data value (already in R1)
+	// For ABI0 compatibility, the wrapper stores args on stack
+	// Input: address at 8(RSP), data at 16(RSP)
+	// No return value
+
+	// Load address and data from stack
+	MOVD	8(RSP), R0		// Load address argument from stack
+	MOVH	16(RSP), R1		// Load 16-bit data from stack
+
+	// Store 16-bit value to MMIO address
 	MOVH	R1, (R0)		// Store 16-bit value to address
 
-	// Segment 2: Return
 	RET
 
 // ============================================================================
@@ -101,12 +118,19 @@ TEXT mmio_write16(SB), NOSPLIT|NOFRAME, $0-10
 //   2. Return to caller
 //
 TEXT mmio_read16(SB), NOSPLIT|NOFRAME, $0-10
-	// Segment 1: Load from MMIO register
-	// R0 = register address (already in R0)
-	MOVHU	(R0), R0		// Load 16-bit value from address (zero-extended)
+	// For ABI0 compatibility, the wrapper stores args on stack and reads return from stack
+	// Input: address at 8(RSP)
+	// Output: must store result at 16(RSP)
 
-	// Segment 2: Return
-	// Return value is in R0 (register ABI)
+	// Load address from stack
+	MOVD	8(RSP), R0		// Load address argument from stack
+
+	// Load 16-bit value from MMIO address
+	MOVHU	(R0), R0		// Load unsigned 16-bit value (zero-extended to 64-bit)
+
+	// Store result to stack at return location
+	MOVH	R0, 16(RSP)		// Store 16-bit result at return location
+
 	RET
 
 // ============================================================================
@@ -122,12 +146,17 @@ TEXT mmio_read16(SB), NOSPLIT|NOFRAME, $0-10
 //   2. Return to caller
 //
 TEXT mmio_write64(SB), NOSPLIT|NOFRAME, $0-16
-	// Segment 1: Store to MMIO register
-	// R0 = register address (already in R0)
-	// R1 = 64-bit data value (already in R1)
+	// For ABI0 compatibility, the wrapper stores args on stack
+	// Input: address at 8(RSP), data at 16(RSP)
+	// No return value
+
+	// Load address and data from stack
+	MOVD	8(RSP), R0		// Load address argument from stack
+	MOVD	16(RSP), R1		// Load 64-bit data from stack
+
+	// Store 64-bit value to MMIO address
 	MOVD	R1, (R0)		// Store 64-bit value to address
 
-	// Segment 2: Return
 	RET
 
 // ============================================================================
@@ -144,10 +173,15 @@ TEXT mmio_write64(SB), NOSPLIT|NOFRAME, $0-16
 //   2. Return to caller
 //
 TEXT store_pointer_nobarrier(SB), NOSPLIT|NOFRAME, $0-16
-	// Segment 1: Store pointer
-	// R0 = destination address (already in R0)
-	// R1 = pointer value (already in R1)
+	// For ABI0 compatibility, the wrapper stores args on stack
+	// Input: dest at 8(RSP), value at 16(RSP)
+	// No return value
+
+	// Load destination and value from stack
+	MOVD	8(RSP), R0		// Load destination address from stack
+	MOVD	16(RSP), R1		// Load pointer value from stack
+
+	// Store pointer directly (no write barrier)
 	MOVD	R1, (R0)		// Store pointer directly
 
-	// Segment 2: Return
 	RET

@@ -91,11 +91,11 @@ const (
 //
 // NOTE: Our MMU maps both lowmem (0x3F000000-0x40000000) and highmem (0x4010000000+) ECAM windows.
 // QEMU virt defaults to highmem=on, which places ECAM at 0x4010000000.
-// Use highmem ECAM (default).
+// TEMPORARY: Use lowmem ECAM for testing (highmem mapping may have issues with 64-bit addresses).
 //
 // This variable has an initializer, so Go places it in .noptrdata.
 // The linker script places .noptrdata in RAM (writable) at 0x40100000.
-var pciEcamBase uintptr = 0x4010000000  // Highmem ECAM (QEMU default)
+var pciEcamBase uintptr = 0x4010000000  // High-memory ECAM (from device tree)
 
 // pciFirstAccess tracks if this is the first PCI config space access (for debugging)
 var pciFirstAccess bool = true
@@ -132,7 +132,10 @@ func pciConfigRead32(bus, slot, funcNum, offset uint8) uint32 {
 	}
 
 	pciFirstAccess = false
+
+	// Use asm.MmioRead - now fixed to work with high-memory addresses
 	value := asm.MmioRead(configAddr)
+
 	return value
 }
 

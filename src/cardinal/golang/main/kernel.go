@@ -91,7 +91,37 @@ func preRegisterFixedSpans() {
 		for {} // Hang
 	}
 
-	// Span 3: Bump Allocator Region (pre-register fixed 2GB region)
+	// Span 3: PCI ECAM Region - Lowmem (MMIO for PCI configuration space)
+	// QEMU virt lowmem ECAM at 0x3F000000 (16MB window)
+	const PCI_ECAM_LOWMEM_BASE = uintptr(0x3F000000)
+	const PCI_ECAM_LOWMEM_SIZE = uintptr(0x01000000) // 16MB
+	pciEcamLowmemEnd := PCI_ECAM_LOWMEM_BASE + PCI_ECAM_LOWMEM_SIZE
+
+	if !registerMmapSpan(PCI_ECAM_LOWMEM_BASE, pciEcamLowmemEnd) {
+		for {} // Hang
+	}
+
+	// Span 4: PCI ECAM Region - Highmem (MMIO for PCI configuration space)
+	// QEMU virt machine provides high-memory ECAM at 0x4010000000 (256MB window)
+	const PCI_ECAM_BASE = uintptr(0x4010000000)
+	const PCI_ECAM_SIZE = uintptr(0x10000000) // 256MB
+	pciEcamEnd := PCI_ECAM_BASE + PCI_ECAM_SIZE
+
+	if !registerMmapSpan(PCI_ECAM_BASE, pciEcamEnd) {
+		for {} // Hang
+	}
+
+	// Span 6: PCI MMIO Region (for device BARs)
+	// QEMU virt provides MMIO window at 0x10000000-0x3EFFFFFF (~750MB)
+	const PCI_MMIO_BASE = uintptr(0x10000000)
+	const PCI_MMIO_SIZE = uintptr(0x2EFF0000) // ~750MB
+	pciMmioEnd := PCI_MMIO_BASE + PCI_MMIO_SIZE
+
+	if !registerMmapSpan(PCI_MMIO_BASE, pciMmioEnd) {
+		for {} // Hang
+	}
+
+	// Span 5: Bump Allocator Region (pre-register fixed 2GB region)
 	// This is used as a fallback when Go provides no hint (addr=0)
 	// Pre-registering avoids wasting span slots on individual small allocations
 	const BUMP_REGION_START = uintptr(0x48000000)
@@ -468,6 +498,7 @@ func kernelMainInternal(r0, r1, atags uint32) {
 
 	// Post-MMU device initialization
 	initDeviceTree()
+
 	// DISABLED: Let kmazarin initialize GIC from scratch
 	// gicInit()
 	// asm.EnableIrqs()
@@ -570,6 +601,8 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 		G0StructAddr         uint64 // High-memory address for g0 struct copy
 		AsyncPreemptAddr     uint64 // High-memory address of runtime.asyncPreempt
 		ReadyForAsyncPreempt uint64 // Address of readyForAsyncPreempt flag
+		FramebufferPhysAddr  uint64 // Physical address of VirtIO GPU framebuffer
+		FramebufferSize      uint64 // Size of framebuffer in bytes
 	}
 
 	config := (*RuntimeConfig)(unsafe.Pointer(kmazarinStartupParamsVA))
@@ -629,6 +662,10 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 
 	// ReadyForAsyncPreempt flag address (kmazarin checks this before preempting)
 	config.ReadyForAsyncPreempt = uint64(LinkerKmazarinReadyForPreempt)
+
+	// VirtIO GPU framebuffer information
+	config.FramebufferPhysAddr = uint64(constants.FramebufferPhysAddr)
+	config.FramebufferSize = uint64(constants.FramebufferSize)
 
 	// Ensure writes complete
 	asm.Dsb()

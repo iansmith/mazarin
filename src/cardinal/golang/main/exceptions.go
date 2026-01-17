@@ -209,6 +209,12 @@ func uartPutHex8Direct(v uint8) {
 }
 
 //go:nosplit
+func uartPutHex16Direct(v uint16) {
+	uartPutHex8Direct(uint8(v >> 8))
+	uartPutHex8Direct(uint8(v & 0xFF))
+}
+
+//go:nosplit
 func uartPutHex32Direct(v uint32) {
 	for shift := uint(28); ; shift -= 4 {
 		uartPutcDirect(hexDigit(uint8((v >> shift) & 0xF)))

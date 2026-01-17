@@ -102,27 +102,43 @@ func initMMU() bool {
 	dtbEnd := dtbStart + asm.GetDtbSize()
 	mapRegionInitMMU(dtbStart, dtbEnd, dtbStart, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
 
-	// Map PCI ECAM (lowmem only, minimal subset)
+	// Map PCI ECAM (lowmem, full 16MB window)
 	ecamBase := uintptr(0x3F000000)
-	ecamSize := uintptr(0x00010000)
+	ecamSize := uintptr(0x01000000) // 16MB - full ECAM window
 	mapRegionInitMMU(ecamBase, ecamBase+ecamSize, ecamBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 
-	// SKIP highmem ECAM (256MB) - will map on-demand if needed
+	// Map highmem PCI ECAM (needed for VirtIO GPU device enumeration)
+	// QEMU virt places high-memory PCI ECAM at 0x4010000000 (256MB region)
+	ecamHighBase := uintptr(0x4010000000)
+	ecamHighSize := uintptr(0x10000000) // 256MB
+	mapRegionInitMMU(ecamHighBase, ecamHighBase+ecamHighSize, ecamHighBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+
+	// Map PCI MMIO region (for device BARs)
+	// QEMU virt provides MMIO window at 0x10000000-0x3EFFFFFF (~750MB)
+	pciMmioBase := uintptr(0x10000000)
+	pciMmioSize := uintptr(0x2EFF0000) // ~750MB
+	mapRegionInitMMU(pciMmioBase, pciMmioBase+pciMmioSize, pciMmioBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+
 	// SKIP PCI BAR region (240MB) - will map on-demand if needed
 
 	// Get page table region boundaries from linker.ld
 	// Note: pageTableEnd already declared earlier in function
 	pageTableEnd = asm.GetPageTablesEndAddr()
 
-	// Map kernel RAM (after cardinal image to page tables) - heap, stacks
+	// Map kernel RAM (after cardinal image to framebuffer) - heap
 	// CRITICAL: Start mapping AFTER our kernel image (endAddr) to avoid overlap
-	// We map from end of cardinal to start of page tables
 	ramStart := (endAddr + 0xFFF) &^ 0xFFF // Round up to next page
 
-	// Pre-map heap region (cardinal kmalloc heap) as RW, non-executable
-	if ramStart < pageTableBase {
-		mapRegionInitMMU(ramStart, pageTableBase, ramStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	// Pre-map heap region (cardinal kmalloc heap) before framebuffer as RW, non-executable
+	framebufferStart := uintptr(constants.FramebufferPhysAddr)
+	if ramStart < framebufferStart {
+		mapRegionInitMMU(ramStart, framebufferStart, ramStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 	}
+
+	// Map VirtIO GPU framebuffer region (8 MB, read-write, Normal memory)
+	// Region: 0x41000000 - 0x41800000
+	framebufferEnd := uintptr(constants.FramebufferEnd)
+	mapRegionInitMMU(framebufferStart, framebufferEnd, framebufferStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 
 	// Map page table region as CACHEABLE (ARM64's PTW is cache-coherent)
 	mapRegionInitMMU(pageTableBase, pageTableEnd, pageTableBase, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
