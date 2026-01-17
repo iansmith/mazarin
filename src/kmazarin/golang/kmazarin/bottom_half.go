@@ -3,11 +3,11 @@
 package main
 
 import (
+	"kmazarin/asm"
 	"kmazarin/console"
 	"kmazarin/kirq"
 	"runtime"
 	"sync/atomic"
-	"unsafe"
 )
 
 // ============================================================================
@@ -148,8 +148,8 @@ func writeGICCEOIR(iarValue uint32) {
 	const GICC_BASE_PHYS = 0x08010000
 	const KERNEL_MMIO_OFFSET = 0xFFFFFFFF00000000
 	const GICC_EOIR_OFFSET = 0x10
-	eoir := (*uint32)(unsafe.Pointer(uintptr(GICC_BASE_PHYS + KERNEL_MMIO_OFFSET + GICC_EOIR_OFFSET)))
-	*eoir = iarValue
+	addr := uintptr(GICC_BASE_PHYS + KERNEL_MMIO_OFFSET + GICC_EOIR_OFFSET)
+	asm.MmioWrite32(addr, iarValue)
 }
 
 // dispatchIRQ calls the registered handler for the given IRQ number.

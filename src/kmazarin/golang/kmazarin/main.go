@@ -380,25 +380,6 @@ func testRuntimeReadiness() bool {
 	return true
 }
 
-// debugPrintHex64 prints a label and 64-bit hex value directly to UART
-//go:nosplit
-func debugPrintHex64(uartBase uintptr, label string, val uintptr) {
-	// Print label
-	for i := 0; i < len(label); i++ {
-		*(*uint32)(unsafe.Pointer(uartBase)) = uint32(label[i])
-	}
-	// Print hex value (16 digits for 64-bit)
-	hexChars := "0123456789ABCDEF"
-	*(*uint32)(unsafe.Pointer(uartBase)) = '0'
-	*(*uint32)(unsafe.Pointer(uartBase)) = 'x'
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (val >> i) & 0xF
-		*(*uint32)(unsafe.Pointer(uartBase)) = uint32(hexChars[nibble])
-	}
-	*(*uint32)(unsafe.Pointer(uartBase)) = '\r'
-	*(*uint32)(unsafe.Pointer(uartBase)) = '\n'
-}
-
 // DisableTimerIRQ disables BOTH the timer hardware and its IRQ at the GIC.
 // This is necessary because disabling just the IRQ masks delivery but doesn't
 // stop the timer from generating interrupt requests.

@@ -2,12 +2,12 @@ package uart
 
 import (
 	"fmt"
+	"kmazarin/asm"
 	"kmazarin/deviceapi"
 	"kmazarin/dtb"
 	"reflect"
 	"runtime"
 	"sync/atomic"
-	"unsafe"
 	_ "unsafe" // for go:linkname
 )
 
@@ -302,12 +302,15 @@ func (c *PL011Console) Breadcrumb(b byte) {
 func breadcrumb(b byte)
 
 // Hardware access
+//
+//go:nosplit
 func (u *PL011) ReadReg(offset uintptr) uint32 {
-	return *(*uint32)(unsafe.Pointer(u.baseAddr + offset))
+	return asm.MmioRead32(u.baseAddr + offset)
 }
 
+//go:nosplit
 func (u *PL011) WriteReg(offset uintptr, value uint32) {
-	*(*uint32)(unsafe.Pointer(u.baseAddr + offset)) = value
+	asm.MmioWrite32(u.baseAddr+offset, value)
 }
 
 // txTryLock attempts to acquire the TX spinlock without blocking.

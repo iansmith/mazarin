@@ -5,9 +5,9 @@ package console
 
 import (
 	"fmt"
+	"kmazarin/asm"
 	"reflect"
 	"sync/atomic"
-	"unsafe"
 )
 
 // Console is the interface for kernel console output.
@@ -190,12 +190,12 @@ func breadcrumb(b byte) {
 	const uartBase uintptr = 0xFFFFFFFF09000000
 
 	// Wait for TX FIFO to have space (bit 5 = TXFF in FR register at offset 0x18)
-	for (*(*uint32)(unsafe.Pointer(uartBase + 0x18)) & 0x20) != 0 {
+	for (asm.MmioRead32(uartBase + 0x18) & 0x20) != 0 {
 		// Busy wait
 	}
 
 	// Write byte to data register (offset 0x00)
-	*(*uint32)(unsafe.Pointer(uartBase + 0x00)) = uint32(b)
+	asm.MmioWrite32(uartBase, uint32(b))
 }
 
 // MMIOUartConsole implements Console using direct MMIO writes.
@@ -258,7 +258,7 @@ func (c *MMIOUartConsole) KWriteByte(b byte) {
 //
 //go:nosplit
 func (c *MMIOUartConsole) writeByteLocked(b byte) {
-	*(*byte)(unsafe.Pointer(c.baseAddr)) = b
+	asm.MmioWrite32(c.baseAddr, uint32(b))
 }
 
 // KWriteString implements Console.KWriteString

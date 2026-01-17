@@ -3,10 +3,10 @@
 package gic
 
 import (
+	"kmazarin/asm"
 	"kmazarin/deviceapi"
 	"kmazarin/dtb"
 	"kmazarin/kirq"
-	"unsafe"
 )
 
 // GICv2 register offsets
@@ -223,12 +223,15 @@ func (g *GICv2) initHardware() {
 }
 
 // Hardware access
+//
+//go:nosplit
 func (g *GICv2) readDistReg(offset uintptr) uint32 {
-	return *(*uint32)(unsafe.Pointer(g.distBase + offset))
+	return asm.MmioRead32(g.distBase + offset)
 }
 
+//go:nosplit
 func (g *GICv2) writeDistReg(offset uintptr, value uint32) {
-	*(*uint32)(unsafe.Pointer(g.distBase + offset)) = value
+	asm.MmioWrite32(g.distBase+offset, value)
 	// NOTE: Barriers removed - Cardinal doesn't use them and they may interfere
 	// with rapid MMIO writes during GIC configuration
 	// asm_dsb_sy()
@@ -247,12 +250,14 @@ func asm_dsb_sy()
 //go:nosplit
 func asm_isb()
 
+//go:nosplit
 func (g *GICv2) readCPUReg(offset uintptr) uint32 {
-	return *(*uint32)(unsafe.Pointer(g.cpuBase + offset))
+	return asm.MmioRead32(g.cpuBase + offset)
 }
 
+//go:nosplit
 func (g *GICv2) writeCPUReg(offset uintptr, value uint32) {
-	*(*uint32)(unsafe.Pointer(g.cpuBase + offset)) = value
+	asm.MmioWrite32(g.cpuBase+offset, value)
 	// NOTE: Barriers removed - Cardinal doesn't use them and they may interfere
 	// with rapid MMIO writes during GIC configuration
 	// asm_dsb_sy()
