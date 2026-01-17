@@ -201,7 +201,15 @@ func breadcrumb(b byte) {
 // MMIOUartConsole implements Console using direct MMIO writes.
 // This is used during early boot before interrupt-driven UART is available.
 // It has no dependencies on GIC or interrupts.
-// Uses a spinlock to prevent interleaved output from IRQ handlers.
+//
+// CRITICAL IRQ SAFETY WARNING:
+// The spinlock-protected methods (KWrite, KWriteByte, KWriteString, KPrintf, etc.)
+// MUST NOT be called from IRQ context. If an IRQ preempts a thread holding the lock
+// and then tries to acquire it, deadlock will occur (the interrupted thread can never
+// release the lock because the IRQ handler spins forever).
+//
+// For IRQ-safe output, use Breadcrumb() which bypasses the spinlock and writes
+// directly to UART hardware.
 type MMIOUartConsole struct {
 	baseAddr uintptr
 	lock     uint32 // Spinlock: 0=unlocked, 1=locked
@@ -213,19 +221,22 @@ func NewMMIOUartConsole(baseAddr uintptr) *MMIOUartConsole {
 	return &MMIOUartConsole{baseAddr: baseAddr}
 }
 
-// acquire acquires the spinlock
+// acquireNoIRQ acquires the spinlock.
+//
+// WARNING: MUST NOT be called from IRQ context - use Breadcrumb() instead.
+// If an IRQ preempts a lock holder and tries to acquire, deadlock occurs.
 //
 //go:nosplit
-func (c *MMIOUartConsole) acquire() {
+func (c *MMIOUartConsole) acquireNoIRQ() {
 	for !atomic.CompareAndSwapUint32(&c.lock, 0, 1) {
 		// Spin
 	}
 }
 
-// release releases the spinlock
+// releaseNoIRQ releases the spinlock.
 //
 //go:nosplit
-func (c *MMIOUartConsole) release() {
+func (c *MMIOUartConsole) releaseNoIRQ() {
 	atomic.StoreUint32(&c.lock, 0)
 }
 
@@ -233,11 +244,11 @@ func (c *MMIOUartConsole) release() {
 //
 //go:nosplit
 func (c *MMIOUartConsole) KWrite(p []byte) int {
-	c.acquire()
+	c.acquireNoIRQ()
 	for _, b := range p {
 		c.writeByteLocked(b)
 	}
-	c.release()
+	c.releaseNoIRQ()
 	return len(p)
 }
 
@@ -249,9 +260,9 @@ func (c *MMIOUartConsole) KWriteByte(b byte) {
 	if c == nil {
 		return
 	}
-	c.acquire()
+	c.acquireNoIRQ()
 	c.writeByteLocked(b)
-	c.release()
+	c.releaseNoIRQ()
 }
 
 // writeByteLocked writes a byte with lock already held
@@ -265,11 +276,11 @@ func (c *MMIOUartConsole) writeByteLocked(b byte) {
 //
 //go:nosplit
 func (c *MMIOUartConsole) KWriteString(s string) {
-	c.acquire()
+	c.acquireNoIRQ()
 	for i := 0; i < len(s); i++ {
 		c.writeByteLocked(s[i])
 	}
-	c.release()
+	c.releaseNoIRQ()
 }
 
 // KPrintf implements Console.KPrintf
