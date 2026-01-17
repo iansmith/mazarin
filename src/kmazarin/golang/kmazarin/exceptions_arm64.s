@@ -1005,10 +1005,10 @@ TEXT ·asyncPreemptWrapper(SB), NOSPLIT|NOFRAME, $0
 	WORD	$0xa90c67f9  // stp x25, x26, [sp, #192]
 
 	// Save X27 at [SP+208]
-	WORD	$0xf90073fb  // str x27, [sp, #208]
+	WORD	$0xf9006bfb  // str x27, [sp, #208]
 
 	// Save X29 (frame pointer) at [SP+216]
-	WORD	$0xf90073fd  // str x29, [sp, #216]
+	WORD	$0xf9006ffd  // str x29, [sp, #216]
 
 	// Save NZCV at [SP+224]
 	MRS	NZCV, R0
@@ -1035,7 +1035,7 @@ TEXT ·asyncPreemptWrapper(SB), NOSPLIT|NOFRAME, $0
 	WORD	$0x6d19d7f4  // stp d20, d21, [sp, #400]
 	WORD	$0x6d1adff6  // stp d22, d23, [sp, #416]
 	WORD	$0x6d1be7f8  // stp d24, d25, [sp, #432]
-	WORD	$0x6d1ceff4  // stp d26, d27, [sp, #448]
+	WORD	$0x6d1ceffa  // stp d26, d27, [sp, #448]
 	WORD	$0x6d1df7fc  // stp d28, d29, [sp, #464]
 	WORD	$0x6d1efffe  // stp d30, d31, [sp, #480]
 
@@ -1057,7 +1057,7 @@ TEXT ·asyncPreemptWrapper(SB), NOSPLIT|NOFRAME, $0
 	WORD	$0x6d59d7f4  // ldp d20, d21, [sp, #400]
 	WORD	$0x6d5adff6  // ldp d22, d23, [sp, #416]
 	WORD	$0x6d5be7f8  // ldp d24, d25, [sp, #432]
-	WORD	$0x6d5ceff4  // ldp d26, d27, [sp, #448]
+	WORD	$0x6d5ceffa  // ldp d26, d27, [sp, #448]
 	WORD	$0x6d5df7fc  // ldp d28, d29, [sp, #464]
 	WORD	$0x6d5efffe  // ldp d30, d31, [sp, #480]
 
@@ -1071,10 +1071,10 @@ TEXT ·asyncPreemptWrapper(SB), NOSPLIT|NOFRAME, $0
 	MSR	R0, NZCV
 
 	// Restore X29 from [SP+216]
-	WORD	$0xf94073fd  // ldr x29, [sp, #216]
+	WORD	$0xf9406ffd  // ldr x29, [sp, #216]
 
 	// Restore X27 from [SP+208]
-	WORD	$0xf94073fb  // ldr x27, [sp, #208]
+	WORD	$0xf9406bfb  // ldr x27, [sp, #208]
 
 	// Restore X25-X26 from [SP+192]
 	WORD	$0xa94c67f9  // ldp x25, x26, [sp, #192]
