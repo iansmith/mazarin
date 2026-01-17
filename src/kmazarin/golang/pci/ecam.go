@@ -1,8 +1,8 @@
 //go:build qemuvirt && aarch64
 
-package main
+package pci
 
-import "cardinal/asm"
+import "kmazarin/asm"
 
 // bochs-display device for QEMU virt machine
 //
@@ -110,7 +110,7 @@ var pciFirstAccess bool = true
 // memory on each function call.
 //
 //go:nosplit
-func pciConfigRead32(bus, slot, funcNum, offset uint8) uint32 {
+func ConfigRead32(bus, slot, funcNum, offset uint8) uint32 {
 	// Load global into local variable - forces memory reload each call
 	ecamBase := pciEcamBase
 
@@ -142,7 +142,7 @@ func pciConfigRead32(bus, slot, funcNum, offset uint8) uint32 {
 // pciConfigWrite32 writes a 32-bit value to PCI configuration space
 //
 //go:nosplit
-func pciConfigWrite32(bus, slot, funcNum, offset uint8, value uint32) {
+func ConfigWrite32(bus, slot, funcNum, offset uint8, value uint32) {
 	configAddr := pciEcamBase +
 		uintptr(bus)<<20 +
 		uintptr(slot)<<15 +
@@ -154,7 +154,7 @@ func pciConfigWrite32(bus, slot, funcNum, offset uint8, value uint32) {
 // pciConfigRead32Lowmem reads using lowmem ECAM address (for testing)
 //
 //go:nosplit
-func pciConfigRead32Lowmem(bus, slot, funcNum, offset uint8) uint32 {
+func ConfigRead32Lowmem(bus, slot, funcNum, offset uint8) uint32 {
 	pciEcamBaseLow := uintptr(0x3F000000)
 	configAddr := pciEcamBaseLow +
 		uintptr(bus)<<20 +
@@ -335,7 +335,7 @@ func initBochsDisplay(width, height, bpp uint16) bool {
 // pciConfigRead8 reads an 8-bit value from PCI configuration space
 //
 //go:nosplit
-func pciConfigRead8(bus, slot, funcNum, offset uint8) uint8 {
+func ConfigRead8(bus, slot, funcNum, offset uint8) uint8 {
 	// Read 32-bit value and extract the byte
 	wordOffset := offset & 0xFC // Align to 4-byte boundary
 	byteOffset := offset & 0x03 // Byte within word
@@ -415,7 +415,7 @@ type VirtIOCapabilityInfo struct {
 // Returns the offset of the capability, or 0 if not found
 //
 //go:nosplit
-func pciFindVirtIOCapability(bus, slot, funcNum uint8, cfgType uint8) uint8 {
+func FindVirtIOCapability(bus, slot, funcNum uint8, cfgType uint8) uint8 {
 	// Read capabilities pointer
 	capPtr := pciConfigRead8(bus, slot, funcNum, PCI_CAPABILITIES)
 	if capPtr == 0 || capPtr == 0xFF {
@@ -445,7 +445,7 @@ func pciFindVirtIOCapability(bus, slot, funcNum uint8, cfgType uint8) uint8 {
 // pciFindVirtIOCapabilities finds all VirtIO capabilities for a device
 //
 //go:nosplit
-func pciFindVirtIOCapabilities(bus, slot, funcNum uint8, common, notify, isr, device *VirtIOCapabilityInfo) bool {
+func FindVirtIOCapabilities(bus, slot, funcNum uint8, common, notify, isr, device *VirtIOCapabilityInfo) bool {
 	// Find Common Config capability (required)
 	commonOffset := pciFindVirtIOCapability(bus, slot, funcNum, VIRTIO_PCI_CAP_COMMON_CFG)
 	if commonOffset == 0 {

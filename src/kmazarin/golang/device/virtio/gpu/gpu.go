@@ -1,10 +1,12 @@
 //go:build qemuvirt && aarch64
 
-package main
+package gpu
 
 import (
-	"cardinal/asm"
-	"cardinal/constants"
+	"kmazarin/asm"
+	"kmazarin/device/virtio"
+	"kmazarin/pci"
+	"shared/constants"
 	"unsafe"
 )
 

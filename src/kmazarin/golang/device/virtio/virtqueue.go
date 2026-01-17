@@ -1,9 +1,9 @@
 //go:build qemuvirt && aarch64
 
-package main
+package virtio
 
 import (
-	"cardinal/asm"
+	"kmazarin/asm"
 	"unsafe"
 )
 
@@ -81,7 +81,7 @@ type VirtQueue struct {
 // Returns size in bytes
 //
 //go:nosplit
-func virtqueueSize(queueSize uint16) uintptr {
+func VirtqueueSize(queueSize uint16) uintptr {
 	// Descriptor table: queue_size * sizeof(VirtQDesc)
 	descSize := uintptr(queueSize) * unsafe.Sizeof(VirtQDesc{})
 
@@ -113,7 +113,7 @@ func virtqueueSize(queueSize uint16) uintptr {
 // Returns true on success, false on failure
 //
 //go:nosplit
-func virtqueueInit(vq *VirtQueue, queueSize uint16) bool {
+func VirtqueueInit(vq *VirtQueue, queueSize uint16) bool {
 	uartPutsDirect("virtqueueInit: start, queueSize=")
 	uartPutHex16Direct(queueSize)
 	uartPutsDirect("\r\n")
@@ -212,7 +212,7 @@ func virtqueueInit(vq *VirtQueue, queueSize uint16) bool {
 // virtqueueCleanup frees memory allocated for a virtqueue
 //
 //go:nosplit
-func virtqueueCleanup(vq *VirtQueue) {
+func VirtqueueCleanup(vq *VirtQueue) {
 	if vq.DescAlloc != nil {
 		kfree(vq.DescAlloc)
 		vq.DescAlloc = nil
@@ -237,7 +237,7 @@ func virtqueueCleanup(vq *VirtQueue) {
 // Since we're identity-mapped, virtual address = physical address
 //
 //go:nosplit
-func virtqueueGetPhysicalAddr(ptr unsafe.Pointer) uint64 {
+func VirtqueueGetPhysicalAddr(ptr unsafe.Pointer) uint64 {
 	return uint64(pointerToUintptr(ptr))
 }
 
@@ -245,7 +245,7 @@ func virtqueueGetPhysicalAddr(ptr unsafe.Pointer) uint64 {
 // Returns descriptor index, or 0xFFFF on failure
 //
 //go:nosplit
-func virtqueueAddDesc(vq *VirtQueue, addr uint64, len uint32, flags uint16, next uint16) uint16 {
+func VirtqueueAddDesc(vq *VirtQueue, addr uint64, len uint32, flags uint16, next uint16) uint16 {
 	if vq.NumFree == 0 {
 		return 0xFFFF // No free descriptors
 	}
@@ -272,7 +272,7 @@ func virtqueueAddDesc(vq *VirtQueue, addr uint64, len uint32, flags uint16, next
 // virtqueueGetRingElement returns a pointer to an element in the available ring
 //
 //go:nosplit
-func virtqueueGetRingElement(vq *VirtQueue, index uint16) *uint16 {
+func VirtqueueGetRingElement(vq *VirtQueue, index uint16) *uint16 {
 	// Ring starts after flags (2 bytes) and idx (2 bytes)
 	ringBase := pointerToUintptr(unsafe.Pointer(vq.Available)) + 4
 	ringPtr := castToPointer[uint16](ringBase + uintptr(index)*2)
@@ -282,7 +282,7 @@ func virtqueueGetRingElement(vq *VirtQueue, index uint16) *uint16 {
 // virtqueueGetUsedElement returns a pointer to an element in the used ring
 //
 //go:nosplit
-func virtqueueGetUsedElement(vq *VirtQueue, index uint16) *VirtQUsedElem {
+func VirtqueueGetUsedElement(vq *VirtQueue, index uint16) *VirtQUsedElem {
 	// Ring starts after flags (2 bytes) and idx (2 bytes)
 	ringBase := pointerToUintptr(unsafe.Pointer(vq.Used)) + 4
 	ringPtr := castToPointer[VirtQUsedElem](ringBase + uintptr(index)*unsafe.Sizeof(VirtQUsedElem{}))
@@ -293,12 +293,12 @@ func virtqueueGetUsedElement(vq *VirtQueue, index uint16) *VirtQUsedElem {
 // Returns true on success
 //
 //go:nosplit
-func virtqueueAddToAvailable(vq *VirtQueue, descIdx uint16) bool {
+func VirtqueueAddToAvailable(vq *VirtQueue, descIdx uint16) bool {
 	// Get current available index
 	availIdx := vq.Available.Idx
 
 	// Add descriptor index to available ring
-	ringElem := virtqueueGetRingElement(vq, availIdx%vq.QueueSize)
+	ringElem := VirtqueueGetRingElement(vq, availIdx%vq.QueueSize)
 	*ringElem = descIdx
 
 	// Memory barrier to ensure descriptor is written before index
@@ -313,7 +313,7 @@ func virtqueueAddToAvailable(vq *VirtQueue, descIdx uint16) bool {
 // virtqueueHasUsed checks if there are used descriptors to process
 //
 //go:nosplit
-func virtqueueHasUsed(vq *VirtQueue) bool {
+func VirtqueueHasUsed(vq *VirtQueue) bool {
 	// Memory barrier to ensure we read the latest used index
 	asm.Dsb()
 
@@ -325,14 +325,14 @@ func virtqueueHasUsed(vq *VirtQueue) bool {
 // Returns descriptor index and length, or 0xFFFF if none available
 //
 //go:nosplit
-func virtqueueGetUsed(vq *VirtQueue) (descIdx uint32, len uint32) {
-	if !virtqueueHasUsed(vq) {
+func VirtqueueGetUsed(vq *VirtQueue) (descIdx uint32, len uint32) {
+	if !VirtqueueHasUsed(vq) {
 		return 0xFFFF, 0
 	}
 
 	// Get used element
 	usedIdx := vq.LastUsedIdx % vq.QueueSize
-	usedElem := virtqueueGetUsedElement(vq, usedIdx)
+	usedElem := VirtqueueGetUsedElement(vq, usedIdx)
 
 	descIdx = usedElem.ID
 	len = usedElem.Len
@@ -351,7 +351,7 @@ func virtqueueGetUsed(vq *VirtQueue) (descIdx uint32, len uint32) {
 // Traverses the chain starting at descIdx and frees all descriptors
 //
 //go:nosplit
-func virtqueueFreeDescChain(vq *VirtQueue, descIdx uint16) {
+func VirtqueueFreeDescChain(vq *VirtQueue, descIdx uint16) {
 	current := descIdx
 	var descSize uintptr = unsafe.Sizeof(VirtQDesc{})
 	for {
@@ -380,7 +380,7 @@ func virtqueueFreeDescChain(vq *VirtQueue, descIdx uint16) {
 // For now, this is a placeholder - actual implementation depends on VirtIO PCI transport
 //
 //go:nosplit
-func virtqueueNotify(vq *VirtQueue, notifyOffset uintptr) {
+func VirtqueueNotify(vq *VirtQueue, notifyOffset uintptr) {
 	// Write queue index to notify register
 	// Format: queue_index (16-bit)
 	asm.MmioWrite16(notifyOffset, vq.Available.Idx-1) // Notify about last added descriptor
@@ -390,7 +390,7 @@ func virtqueueNotify(vq *VirtQueue, notifyOffset uintptr) {
 // virtqueueReset resets a virtqueue to initial state
 //
 //go:nosplit
-func virtqueueReset(vq *VirtQueue) {
+func VirtqueueReset(vq *VirtQueue) {
 	// Zero out all structures
 	if vq.DescTable != nil {
 		descSize := uintptr(vq.QueueSize) * unsafe.Sizeof(VirtQDesc{})
