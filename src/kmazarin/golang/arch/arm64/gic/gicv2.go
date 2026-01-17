@@ -73,10 +73,10 @@ func (g *GICv2) Close() error {
 
 // InterruptController implementation
 func (g *GICv2) RegisterHandler(irq uint32, handler func()) {
-	if irq < 1024 {
+	if irq < 1020 {
 		g.handlers[irq] = handler
 		// Also register with kirq dispatch table so the exception handler
-		// can dispatch this IRQ. The exception handler calls kirq.DispatchNonTimerIRQ
+		// can dispatch this IRQ. The exception handler calls kirq.DispatchIRQ
 		// which looks up handlers in kirq's table, not ours.
 		kirq.RegisterSimpleHandler(irq, handler)
 	}
@@ -272,7 +272,7 @@ func (g *GICv2) DispatchIRQ() {
 	irq := g.readCPUReg(GICC_IAR) & 0x3FF
 
 	// Call handler if registered
-	if irq < 1024 && g.handlers[irq] != nil {
+	if irq < 1020 && g.handlers[irq] != nil {
 		g.handlers[irq]()
 	}
 

@@ -51,7 +51,7 @@ func RegisterHandlers() {
 
 // RegisterSimpleHandler registers a simple (non-preempting) IRQ handler.
 // Called by device drivers during WireInterrupts to register their handlers.
-// The handler will be called from DispatchNonTimerIRQ when the IRQ fires.
+// The handler will be called from DispatchIRQ when the IRQ fires.
 //
 // The handler signature func() matches deviceapi.InterruptController.RegisterHandler.
 // The IRQ number is not passed since devices know which IRQ they registered for.
