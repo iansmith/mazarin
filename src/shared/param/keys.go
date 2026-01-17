@@ -51,6 +51,10 @@ const (
 	// Page table information
 	KeyTTBR0L0Phys = "TTBR0_L0_PHYS" // Physical address of TTBR0 L0 table
 	KeyTTBR1L0Phys = "TTBR1_L0_PHYS" // Physical address of TTBR1 L0 table (once implemented)
+
+	// Boot image information
+	KeyBootImagePhys = "BOOT_IMAGE_PHYS" // Physical address of boot image data
+	KeyBootImageSize = "BOOT_IMAGE_SIZE" // Size of boot image in bytes
 )
 
 // ============================================================================

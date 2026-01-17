@@ -26,6 +26,7 @@ const (
 	// Allocation sizes for each component
 	DtbSize                = 0x100000  // 1 MB - Device Tree Blob
 	CardinalAllocationSize = 0xF00000  // 15 MB - Cardinal code+data+bss+heap
+	FramebufferSize        = 0x800000  // 8 MB - VirtIO GPU framebuffer
 	PageTableSize          = 0x800000  // 8 MB - ARM64 page tables (L0/L1/L2/L3)
 )
 
@@ -44,12 +45,16 @@ const (
 	CardinalStart = DtbEnd
 	CardinalEnd   = CardinalStart + CardinalAllocationSize
 
-	// Page table region
-	PageTableStart = CardinalEnd
+	// VirtIO GPU framebuffer region
+	FramebufferPhysAddr = CardinalEnd      // = 0x41000000
+	FramebufferEnd      = FramebufferPhysAddr + FramebufferSize
+
+	// Page table region (shifted after framebuffer)
+	PageTableStart = FramebufferEnd        // = 0x41800000
 	PageTableEnd   = PageTableStart + PageTableSize
 
 	// Kmazarin load address (immediately after page tables)
-	KmazarinLoadAddr = PageTableEnd // = 0x41800000
+	KmazarinLoadAddr = PageTableEnd        // = 0x42000000
 )
 
 // ============================================================================
@@ -113,8 +118,9 @@ func MemoryLayoutSummary() string {
   RAM Start:       0x40000000
   DTB:             0x40000000 - 0x40100000 (1 MB)
   Cardinal:        0x40100000 - 0x41000000 (15 MB)
-  Page Tables:     0x41000000 - 0x41800000 (8 MB)
-  Kmazarin:        0x41800000+
+  Framebuffer:     0x41000000 - 0x41800000 (8 MB, VirtIO GPU)
+  Page Tables:     0x41800000 - 0x42000000 (8 MB)
+  Kmazarin:        0x42000000+
   g0 Stack:        0x5EFF0000 - 0x5F000000 (64 KB, SP_EL0)
   Exception Stack: 0x5F000000 - 0x5F020000 (128 KB, SP_EL1)
 

@@ -15,8 +15,9 @@ const (
 
 	// Original kmazarin address range
 	// Must cover all sections including .bss and .noptrbss
-	kmazarinBase = 0x41800000
-	kmazarinEnd  = 0x41C00000 // Extended to cover BSS (ends ~0x419B6000)
+	// Updated to match actual build address (0x42000000) after fix-go-elf
+	kmazarinBase = 0x42000000
+	kmazarinEnd  = 0x42400000 // Extended to cover BSS (ends ~0x421D4000)
 )
 
 func main() {

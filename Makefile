@@ -102,6 +102,10 @@ TOOL_STOP = $(TOOLS_BIN_DIR)/stop
 
 # Generated embedded data
 KMAZARIN_DATA_ASM = $(ASM_PACKAGE_DIR)/dev/kmazarin_data_arm64.s
+BOOT_IMAGE_DATA_ASM = $(ASM_PACKAGE_DIR)/dev/boot_mazarin_data_arm64.s
+
+# Boot image source
+BOOT_IMAGE_BIN = assets/boot-mazarin.bin
 
 # Ensure build directory exists
 $(BUILD_DIR):
@@ -117,13 +121,19 @@ $(KMAZARIN_DATA_ASM): $(KMAZARIN_BINARY) $(TOOL_INCBIN2GOASM)
 	@$(TOOL_INCBIN2GOASM) -sym kmazarin_binary -global $< > $@
 	@echo "Generated $(KMAZARIN_DATA_ASM) ($$(wc -l < $@ | tr -d ' ') lines)"
 
+# Generate embedded boot image data
+$(BOOT_IMAGE_DATA_ASM): $(BOOT_IMAGE_BIN) $(TOOL_INCBIN2GOASM)
+	@echo "Generating embedded boot image data..."
+	@$(TOOL_INCBIN2GOASM) -sym _binary_boot_mazarin_bin -global $< > $@
+	@echo "Generated $(BOOT_IMAGE_DATA_ASM) ($$(wc -l < $@ | tr -d ' ') lines)"
+
 # =========================================
 # Cardinal Build (Go Native Toolchain)
 # =========================================
 # Uses Go's internal linker with -T flag to set load address
 # Then patches entry point and linker symbol values
 
-$(CARDINAL_BINARY): $(GO_NATIVE_SRC) $(CARDINAL_SRC)/golang/go.mod $(KMAZARIN_BINARY) $(KMAZARIN_DATA_ASM) $(CARDINAL_SRC)/golang/constants/layout.go \
+$(CARDINAL_BINARY): $(GO_NATIVE_SRC) $(CARDINAL_SRC)/golang/go.mod $(KMAZARIN_BINARY) $(KMAZARIN_DATA_ASM) $(BOOT_IMAGE_DATA_ASM) $(CARDINAL_SRC)/golang/constants/layout.go \
                     $(TOOL_PATCH_ENTRY) $(TOOL_COMPUTE_LINKER) $(TOOL_FIX_GO_ELF) | $(BUILD_DIR)
 	@echo "Building cardinal with Go native toolchain..."
 	@cd $(CARDINAL_SRC)/golang && \
@@ -306,6 +316,7 @@ clean:
 	@echo "Cleaning build artifacts..."
 	rm -rf $(BUILD_DIR)
 	rm -f $(KMAZARIN_DATA_ASM)
+	rm -f $(BOOT_IMAGE_DATA_ASM)
 	@echo "Cleaned."
 
 # Phony targets

@@ -55,7 +55,16 @@ type RuntimeConfig struct {
 	G0StructAddr uint64 // High-memory address where g0 struct should be copied
 
 	// Preemption support
-	AsyncPreemptAddr uint64 // High-memory address of runtime.asyncPreempt function
+	AsyncPreemptAddr     uint64 // High-memory address of runtime.asyncPreempt function
+	ReadyForAsyncPreempt uint64 // Address of readyForAsyncPreempt flag
+
+	// VirtIO GPU framebuffer information
+	FramebufferPhysAddr uint64 // Physical address of VirtIO GPU framebuffer
+	FramebufferSize     uint64 // Size of framebuffer in bytes
+
+	// Boot image information (embedded mazarin image)
+	BootImagePhysAddr uint64 // Physical address of boot image data
+	BootImageSize     uint64 // Size of boot image in bytes
 }
 
 // RuntimeConfigMagic is the expected magic value for a valid RuntimeConfig

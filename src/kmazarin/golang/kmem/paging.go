@@ -185,6 +185,17 @@ func allocPTPage() uintptr {
 	return page
 }
 
+// WalkPageTable translates a VA to PA by walking the page tables.
+// This works even for non-identity-mapped addresses.
+// CRITICAL: This is needed because the PT pool VAs are NOT identity-mapped!
+// They were mapped by cardinal to different PAs.
+// Exported for use by device drivers (VirtIO) to get actual physical addresses.
+//
+//go:nosplit
+func WalkPageTable(va uintptr) uintptr {
+	return walkPageTable(va)
+}
+
 // walkPageTable translates a VA to PA by walking the page tables.
 // This works even for non-identity-mapped addresses.
 // CRITICAL: This is needed because the PT pool VAs are NOT identity-mapped!

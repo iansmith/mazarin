@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -82,6 +83,19 @@ func run() error {
 
 	fmt.Printf("=== Starting QEMU (wait %ds) ===\n", waitSecs)
 
+	// Select display backend based on platform
+	var displayBackend string
+	switch runtime.GOOS {
+	case "darwin":
+		displayBackend = "cocoa"
+	case "linux":
+		displayBackend = "gtk"
+	case "windows":
+		displayBackend = "sdl"
+	default:
+		displayBackend = "default"
+	}
+
 	// Start QEMU
 	kernelPath := filepath.Join(projectRoot, "build", "cardinal.elf")
 	cmd := exec.Command(qemuPath,
@@ -90,10 +104,10 @@ func run() error {
 		"-m", "8G",
 		"-kernel", kernelPath,
 		"-nodefaults",
-		"-device", "bochs-display",
+		"-device", "virtio-gpu-pci",
 		"-object", "rng-random,id=rng0,filename=/dev/urandom",
 		"-device", "virtio-rng-device,rng=rng0",
-		"-display", "none",
+		"-display", displayBackend,
 		"-serial", "file:"+logFile,
 		"-monitor", "tcp:127.0.0.1:4444,server,nowait",
 		"-semihosting",
