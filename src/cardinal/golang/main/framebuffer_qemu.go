@@ -29,14 +29,9 @@ func framebufferInit() int32 {
 }
 
 // refreshFramebuffer refreshes the framebuffer to keep it visible
-// For VirtIO GPU, transfers framebuffer contents to host display
+// Cardinal no longer handles GPU - this is now done in kmazarin
 //
 //go:nosplit
 func refreshFramebuffer() {
-	if fbinfo.Buf == nil {
-		return
-	}
-
-	// VirtIO GPU: Transfer entire screen to host
-	virtioGPUTransferToHost(0, 0, QEMU_FB_WIDTH, QEMU_FB_HEIGHT)
+	// No-op: GPU initialization and refresh are handled by kmazarin
 }

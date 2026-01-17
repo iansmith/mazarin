@@ -220,10 +220,7 @@ func getPciEcamFromDTB() (base uintptr, size uintptr, ok bool) {
 }
 
 // initDeviceTree parses the DTB and applies configuration (PCI ECAM base).
+// Cardinal no longer initializes devices - this is handled by kmazarin.
 func initDeviceTree() {
-	base, _, ok := getPciEcamFromDTB()
-	if !ok {
-		return
-	}
-	setPciEcamBase(base)
+	// No-op: PCI ECAM base and device initialization are handled by kmazarin
 }

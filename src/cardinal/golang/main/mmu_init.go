@@ -466,6 +466,11 @@ func setupKernelDemandPaging() {
 func mapKernelPage(va, pa uintptr, attrs uint64, ap uint64, exec uint64) {
 	// Validate VA is in kernel space (bit 63 must be 1)
 	if (va >> 63) != 1 {
+		uartPutsDirect("mapKernelPage: VA=0x")
+		uartPutHex64Direct(uint64(va))
+		uartPutsDirect(" PA=0x")
+		uartPutHex64Direct(uint64(pa))
+		uartPutsDirect("\r\n")
 		kernelPanic("mapKernelPage: VA not in kernel space")
 	}
 
