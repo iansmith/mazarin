@@ -64,6 +64,11 @@ func uartPutHex64Direct(val uint64) {
 	uartPutHex32Direct(uint32(val))
 }
 
+// kmallocAllocations keeps allocated slices alive to prevent GC collection.
+// When kmalloc returns an unsafe.Pointer to a slice's backing array, the slice
+// header goes out of scope. Without this, the GC could collect the backing array.
+var kmallocAllocations [][]byte
+
 // kmalloc allocates memory using Go's runtime
 // For kmazarin, we just use make() to allocate a byte slice
 func kmalloc(size uint32) unsafe.Pointer {
@@ -75,6 +80,9 @@ func kmalloc(size uint32) unsafe.Pointer {
 	if len(buf) == 0 {
 		return nil
 	}
+	// Keep slice alive by storing it in a global slice
+	// This prevents GC from collecting the backing array
+	kmallocAllocations = append(kmallocAllocations, buf)
 	return unsafe.Pointer(&buf[0])
 }
 

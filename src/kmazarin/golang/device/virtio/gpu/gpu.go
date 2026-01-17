@@ -229,16 +229,20 @@ func virtioPCISetupQueue(queueIndex uint16, vq *virtio.VirtQueue) bool {
 	// Select queue
 	virtioPCIWriteCommonConfig(VIRTIO_PCI_COMMON_CFG_QUEUE_SELECT, queueIndex)
 
-	// Read max queue size from device and clamp if needed
+	// Read max queue size from device
 	maxQueueSize := virtioPCIReadCommonConfig(VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE)
-	actualSize := vq.QueueSize
-	if actualSize > maxQueueSize {
-		actualSize = maxQueueSize
-		vq.QueueSize = actualSize
+
+	// Fail fast if device max is smaller than requested
+	// We can't safely clamp after VirtqueueInit because NumFree and the free list
+	// are already sized for the original queue size
+	if vq.QueueSize > maxQueueSize {
+		console.KPrintf("[VirtIO GPU] Queue size %d exceeds device max %d\n",
+			vq.QueueSize, maxQueueSize)
+		return false
 	}
 
 	// Set queue size
-	virtioPCIWriteCommonConfig(VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE, actualSize)
+	virtioPCIWriteCommonConfig(VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE, vq.QueueSize)
 
 	// Get physical addresses and configure queue
 	descPhys := virtio.VirtqueueGetPhysicalAddr(vq.DescTable)
@@ -420,6 +424,7 @@ func virtioGPUInit() bool {
 // virtioGPUSendCommand sends a GPU command via the control queue
 // Returns response type, or 0xFFFF on error
 //
+//go:nosplit
 func virtioGPUSendCommand(cmdBuf unsafe.Pointer, cmdSize uint32, respBuf unsafe.Pointer, respSize uint32) uint32 {
 	vq := &virtioGPUDevice.ControlQueue
 
@@ -435,6 +440,8 @@ func virtioGPUSendCommand(cmdBuf unsafe.Pointer, cmdSize uint32, respBuf unsafe.
 	respDescIdx := virtio.VirtqueueAddDesc(vq, respPhys, respSize, virtio.VIRTQ_DESC_F_WRITE, 0xFFFF)
 	if respDescIdx == 0xFFFF {
 		console.KPrintln("[VirtIO GPU] ERROR: Failed to allocate resp descriptor")
+		// Free the already-allocated cmd descriptor to avoid leak
+		virtio.VirtqueueFreeDescChain(vq, cmdDescIdx)
 		return 0xFFFF
 	}
 
@@ -607,6 +614,8 @@ func virtioGPUSetupFramebuffer(width, height uint32) bool {
 }
 
 // virtioGPUTransferToHost transfers framebuffer data to host (updates display)
+//
+//go:nosplit
 func virtioGPUTransferToHost(x, y, width, height uint32) {
 	// Flush framebuffer cache before DMA transfer to ensure GPU sees latest data
 	pitch := virtioGPUDevice.Pitch

@@ -122,12 +122,13 @@ func VirtqueueInit(vq *VirtQueue, queueSize uint16) bool {
 	vq.QueueSize = queueSize
 
 	// Calculate sizes
-	descSize := uintptr(queueSize) * unsafe.Sizeof(VirtQDesc{})
+	descStride := unsafe.Sizeof(VirtQDesc{})                                  // Size of one descriptor
+	descTableSize := uintptr(queueSize) * descStride                          // Total descriptor table size
 	availSize := 2 + 2 + uintptr(queueSize)*2 + 2                             // flags + idx + ring[] + used_event
 	usedSize := 2 + 2 + uintptr(queueSize)*unsafe.Sizeof(VirtQUsedElem{}) + 2 // flags + idx + ring[] + avail_event
 
 	// Allocate descriptor table (must be 16-byte aligned)
-	descAlloc := kmalloc(uint32(descSize + 16))
+	descAlloc := kmalloc(uint32(descTableSize + 16))
 	if descAlloc == nil {
 		return false
 	}
@@ -141,7 +142,7 @@ func VirtqueueInit(vq *VirtQueue, queueSize uint16) bool {
 	vq.DescAlloc = descAlloc
 
 	// Zero out descriptor table
-	Bzero4K(vq.DescTable, uint32(descSize))
+	Bzero4K(vq.DescTable, uint32(descTableSize))
 
 	// Allocate available ring (must be 2-byte aligned)
 	availAlloc := kmalloc(uint32(availSize + 2))
@@ -185,10 +186,10 @@ func VirtqueueInit(vq *VirtQueue, queueSize uint16) bool {
 	vq.FreeHead = 0
 	vq.NumFree = queueSize
 	for i := uint16(0); i < queueSize-1; i++ {
-		descPtr := CastToPointer[VirtQDesc](PointerToUintptr(vq.DescTable) + uintptr(i)*descSize)
+		descPtr := CastToPointer[VirtQDesc](PointerToUintptr(vq.DescTable) + uintptr(i)*descStride)
 		descPtr.Next = i + 1
 	}
-	lastDescPtr := CastToPointer[VirtQDesc](PointerToUintptr(vq.DescTable) + uintptr(queueSize-1)*descSize)
+	lastDescPtr := CastToPointer[VirtQDesc](PointerToUintptr(vq.DescTable) + uintptr(queueSize-1)*descStride)
 	lastDescPtr.Next = 0xFFFF // End of chain marker
 
 	// Initialize ring indices

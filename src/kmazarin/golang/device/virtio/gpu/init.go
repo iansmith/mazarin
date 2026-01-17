@@ -95,14 +95,19 @@ func RenderBootImage(imageAddr uintptr, imageSize uint64) bool {
 	imgWidth := *(*uint32)(unsafe.Pointer(imageAddr))
 	imgHeight := *(*uint32)(unsafe.Pointer(imageAddr + 4))
 
-	// Validate dimensions
-	expectedSize := uint64(8 + imgWidth*imgHeight*4)
+	// Validate dimensions are non-zero
+	if imgWidth == 0 || imgHeight == 0 {
+		console.KPrintln("[VirtIO GPU] Boot image has zero dimensions")
+		return false
+	}
+
+	// Calculate expected size using 64-bit math to avoid overflow
+	// imgWidth * imgHeight * 4 could overflow uint32 for large images
+	expectedSize := uint64(8) + uint64(imgWidth)*uint64(imgHeight)*4
 	if imageSize < expectedSize {
 		console.KPrintf("[VirtIO GPU] Boot image size mismatch: got %d, expected %d\n", imageSize, expectedSize)
 		return false
 	}
-
-	console.KPrintf("[VirtIO GPU] Rendering boot image (%dx%d)\n", imgWidth, imgHeight)
 
 	// Get framebuffer info
 	fbWidth := virtioGPUDevice.Width
@@ -115,7 +120,16 @@ func RenderBootImage(imageAddr uintptr, imageSize uint64) bool {
 		return false
 	}
 
-	// Calculate centered position
+	// Validate image fits in framebuffer
+	if imgWidth > fbWidth || imgHeight > fbHeight {
+		console.KPrintf("[VirtIO GPU] Boot image too large: %dx%d > %dx%d\n",
+			imgWidth, imgHeight, fbWidth, fbHeight)
+		return false
+	}
+
+	console.KPrintf("[VirtIO GPU] Rendering boot image (%dx%d)\n", imgWidth, imgHeight)
+
+	// Calculate centered position (safe now that we've validated dimensions)
 	startX := (fbWidth - imgWidth) / 2
 	startY := (fbHeight - imgHeight) / 2
 
