@@ -6,7 +6,6 @@ import (
 )
 
 // ArchSpecificDrivers contains ARM64-specific device drivers.
-// Go will only compile this file when building for qemuvirt/aarch64.
 //
 // These drivers typically use ARM-specific instructions or system registers:
 // - MSR/MRS instructions for system registers

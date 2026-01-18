@@ -1,5 +1,3 @@
-// +build aarch64
-
 package main
 
 // ArchitectureName is the name of the target architecture

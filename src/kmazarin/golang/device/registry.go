@@ -23,9 +23,9 @@ var ArchIndependentDrivers = []Discoverable{
 
 	// VirtIO devices (MMIO-based, arch-independent)
 	&virtio.RNGDriver{},
+	&virtio.BlockDriver{},
 	// &virtio.RTCDriver{},  // Not yet implemented
 	// &virtio.InputDriver{},
-	// &virtio.BlockDriver{},
 	// &virtio.NetDriver{},
 
 	// GPIO devices - will be added
