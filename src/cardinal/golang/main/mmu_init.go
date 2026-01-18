@@ -403,8 +403,10 @@ func setupKernelStacks() {
 // The high-memory MMIO addresses follow the pattern: physical + 0xFFFFFFFF00000000
 // Additional MMIO devices will be discovered and mapped during DTB scan.
 func setupEarlyKernelMMIO() {
-	// Map UART (0x09000000 → 0xFFFFFFFF09000000)
-	const uartPhys, uartSize = uintptr(0x09000000), uintptr(0x10000)
+	// Map UART + RTC region (0x09000000 → 0xFFFFFFFF09000000)
+	// UART is at 0x09000000, RTC (PL031) is at 0x09010000
+	// Map 128KB to cover both devices
+	const uartPhys, uartSize = uintptr(0x09000000), uintptr(0x20000)
 	const kernelUartVA = uintptr(0xFFFFFFFF09000000)
 	for i := uintptr(0); i < uartSize/PAGE_SIZE; i++ {
 		mapKernelPage(kernelUartVA+i*PAGE_SIZE, uartPhys+i*PAGE_SIZE, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
