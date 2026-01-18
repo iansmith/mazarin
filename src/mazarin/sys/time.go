@@ -30,3 +30,9 @@ func GetTime() (TimeSpec, error) {
 
 	return ts, nil
 }
+
+// RawSyscall makes a raw syscall with 6 arguments.
+// This is used by priest to forward Mazzy syscalls to the kernel.
+func RawSyscall(num, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, errno syscall.Errno) {
+	return syscall.RawSyscall6(num, a1, a2, a3, a4, a5, a6)
+}
