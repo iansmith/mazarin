@@ -303,6 +303,34 @@ cardinal: check-go-version $(CARDINAL_BINARY)
 # Build kmazarin (includes Go version check)
 kmazarin: check-go-version $(KMAZARIN_BINARY)
 
+# =========================================
+# Flock Userspace Programs
+# =========================================
+# Userspace programs use the same syscall overlay as kmazarin
+# but don't need high-memory relocation
+
+FLOCK_BASE = src/flock
+PRIEST_SRC = $(FLOCK_BASE)/cmd/priest
+PRIEST_BINARY = $(BUILD_DIR)/priest.elf
+
+# Priest sources
+PRIEST_ALL_SRC = $(wildcard $(PRIEST_SRC)/*.go) \
+                 $(wildcard src/mazarin/sys/*.go)
+
+$(PRIEST_BINARY): $(PRIEST_ALL_SRC) | $(BUILD_DIR)
+	@echo "Building priest (first userspace program)..."
+	@cd $(PRIEST_SRC) && \
+		CGO_ENABLED=0 \
+		GOTOOLCHAIN=local \
+		GOARCH=$(GOARCH) \
+		GOOS=$(GOOS) \
+		$(GO) build -tags "qemuvirt aarch64" $(GCFLAGS) -o $(abspath $@) .
+	@echo "Priest built at $@"
+
+# Build priest (includes Go version check)
+# Note: No overlay - userspace uses real SVC syscalls that trap to kernel
+priest: check-go-version $(PRIEST_BINARY)
+
 # Default: build both
 all: cardinal kmazarin
 
@@ -320,4 +348,4 @@ clean:
 	@echo "Cleaned."
 
 # Phony targets
-.PHONY: all clean cardinal kmazarin test host-tools
+.PHONY: all clean cardinal kmazarin priest test host-tools

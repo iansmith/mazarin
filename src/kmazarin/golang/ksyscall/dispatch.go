@@ -58,7 +58,12 @@ var syscallTable = [512]SyscallHandler{
 //go:nosplit
 //go:noinline
 func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
-	// Check if syscall number is in range
+	// Check for Mazzy syscalls first (1000+)
+	if syscallNum >= MazzySyscallBase {
+		return dispatchMazzySyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5)
+	}
+
+	// Check if syscall number is in range for Linux syscalls
 	if syscallNum >= 512 {
 		syscallPanic("Invalid syscall number", syscallNum)
 		return -1 // unreachable
@@ -72,6 +77,25 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 	}
 
 	// Call the handler
+	return handler(arg0, arg1, arg2, arg3, arg4, arg5)
+}
+
+// dispatchMazzySyscall handles Mazzy-specific syscalls (1000+)
+//
+//go:nosplit
+func dispatchMazzySyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
+	idx := syscallNum - MazzySyscallBase
+	if idx >= uint64(len(mazzySyscallTable)) {
+		syscallPanic("Invalid Mazzy syscall number", syscallNum)
+		return -1 // unreachable
+	}
+
+	handler := mazzySyscallTable[idx]
+	if handler == nil {
+		syscallPanic("Mazzy syscall not implemented", syscallNum)
+		return -1 // unreachable
+	}
+
 	return handler(arg0, arg1, arg2, arg3, arg4, arg5)
 }
 

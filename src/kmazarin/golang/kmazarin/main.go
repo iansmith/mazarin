@@ -8,6 +8,7 @@ import (
 	"kmazarin/kirq"
 	"kmazarin/kmem"
 	"kmazarin/ksyscall"
+	"kmazarin/ktime"
 	"kmazarin/uart"
 	_ "os"     // Keep to maintain BSS size
 	"runtime"
@@ -711,6 +712,13 @@ func testDeviceDiscovery() {
 	if clk, ok := device.GetClock(); ok {
 		console.KWriteString("  - Clock: ")
 		console.KPrintln(clk.Name())
+
+		// Initialize kernel time subsystem (reads RTC once, caches for tick-based derivation)
+		if ktime.Init() {
+			console.KPrintln("  - ktime: initialized (RTC cached)")
+		} else {
+			console.KPrintln("  - ktime: ERROR: initialization failed")
+		}
 	}
 
 	// Check for block devices
