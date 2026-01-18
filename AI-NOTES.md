@@ -24,6 +24,10 @@ Notes and observations about working with AI assistants on this codebase.
    and error exposure (leaving RO actually as RW) of about 0.3%.
 
 
+* A key thing to use the AI for is low inventiveness, high tediousness implementation tasks.
+  Example, write a tool that uses go's lexer/parser of go language to find a all the functions
+  in a given package(s) and then rewrite them to be different. This implies looking for 
+  dead variables, dead types, and unused imports.
 
 
 ---

@@ -99,9 +99,6 @@ TOOL_RELOCATE_KMAZARIN = $(TOOLS_BIN_DIR)/relocate-kmazarin
 TOOL_BUILD = $(TOOLS_BIN_DIR)/build
 TOOL_RUN = $(TOOLS_BIN_DIR)/run
 TOOL_STOP = $(TOOLS_BIN_DIR)/stop
-TOOL_PATCHPRIEST = $(TOOLS_BIN_DIR)/patchpriest
-TOOL_PATCHRUNTIME = $(TOOLS_BIN_DIR)/patchruntime
-TOOL_GEN_THIN_STUBS = $(TOOLS_BIN_DIR)/gen-thin-stubs
 
 # Generated embedded data
 KMAZARIN_DATA_ASM = $(ASM_PACKAGE_DIR)/dev/kmazarin_data_arm64.s
@@ -290,23 +287,10 @@ $(TOOL_STOP): tools/cmd-stop.go | $(TOOLS_BIN_DIR)
 	@echo "Building $@..."
 	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
 
-$(TOOL_PATCHPRIEST): tools/patchpriest.go | $(TOOLS_BIN_DIR)
-	@echo "Building $@..."
-	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
-
-$(TOOL_PATCHRUNTIME): tools/patchruntime.go | $(TOOLS_BIN_DIR)
-	@echo "Building $@..."
-	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
-
-$(TOOL_GEN_THIN_STUBS): tools/gen-thin-stubs.go | $(TOOLS_BIN_DIR)
-	@echo "Building $@..."
-	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
-
 # Build all host tools
 host-tools: $(TOOL_PATCH_ENTRY) $(TOOL_COMPUTE_LINKER) $(TOOL_INCBIN2GOASM) \
             $(TOOL_FIX_GO_ELF) $(TOOL_PRINT_KMAZARIN_ADDR) $(TOOL_RELOCATE_KMAZARIN) \
-            $(TOOL_BUILD) $(TOOL_RUN) $(TOOL_STOP) $(TOOL_PATCHPRIEST) $(TOOL_PATCHRUNTIME) \
-            $(TOOL_GEN_THIN_STUBS)
+            $(TOOL_BUILD) $(TOOL_RUN) $(TOOL_STOP)
 
 # =========================================
 # Main Targets
@@ -331,31 +315,7 @@ MAZARIN_BASE = src/mazarin
 USERSPACE_OVERLAY = $(BUILD_DIR)/userspace-overlay.json
 USERSPACE_PATCH_SYSCALL = $(MAZARIN_BASE)/overlay/userspace/syscall_linux.go
 
-# Thin client overlay - NOP stubs for runtime + syscall routing
-THIN_OVERLAY_DIR = $(BUILD_DIR)/thin-overlay
-THIN_OVERLAY_JSON = $(BUILD_DIR)/thin-overlay.json
-THIN_STUBS_ASM = $(THIN_OVERLAY_DIR)/runtime/mazzy_stubs_arm64.s
-
-# Generate thin client overlay - replaces runtime with NOP stubs
-# This drastically reduces binary size (~38KB instead of ~1MB)
-$(THIN_OVERLAY_JSON): $(TOOL_GEN_THIN_STUBS) $(PRIEST_BINARY) | $(BUILD_DIR)
-	@echo "Generating thin client overlay (NOP stubs)..."
-	@GOROOT=$$(GOTOOLCHAIN=local $(GO) env GOROOT) && \
-		$(TOOL_GEN_THIN_STUBS) \
-			-runtime=$$GOROOT/src/runtime \
-			-output=$(THIN_OVERLAY_DIR) \
-			-overlay=$(THIN_OVERLAY_JSON)
-	@echo "  Generated $(THIN_OVERLAY_JSON)"
-	@echo "  Merging with userspace syscall overlay..."
-	@# Now merge the userspace syscall overlay into the thin overlay JSON
-	@GOROOT=$$(GOTOOLCHAIN=local $(GO) env GOROOT) && \
-		python3 -c "import json, sys; \
-			overlay = json.load(open('$(THIN_OVERLAY_JSON)')); \
-			overlay['Replace']['$$GOROOT/src/syscall/syscall_linux.go'] = '$(abspath $(USERSPACE_PATCH_SYSCALL))'; \
-			json.dump(overlay, open('$(THIN_OVERLAY_JSON)', 'w'), indent=2)"
-	@echo "  Thin overlay ready: $(THIN_OVERLAY_JSON)"
-
-# Generate overlay JSON for userspace programs (legacy - kept for reference)
+# Generate overlay JSON for userspace programs
 # Only overrides syscall_linux.go to route syscalls through PriestSyscallEntry
 $(USERSPACE_OVERLAY): $(USERSPACE_PATCH_SYSCALL) | $(BUILD_DIR)
 	@echo "Generating runtime overlay for userspace..."
@@ -381,35 +341,28 @@ $(PRIEST_BINARY): $(PRIEST_ALL_SRC) | $(BUILD_DIR)
 		$(GO) build $(GCFLAGS) -o $(abspath $@) .
 	@echo "Priest built at $@"
 
-# Helloworld - test program (thin client)
-# Build flow:
-# 1. Compile with thin overlay (NOP stubs for runtime + syscall routing)
-# 2. Patch NOP stubs to trampoline to priest's runtime
-# This makes helloworld a thin client (~38KB) sharing priest's runtime
+# Helloworld - test program (uses userspace overlay for syscall routing)
+# Note: Thin client support (reduced binary size) will be added via AST-based stubs
 HELLOWORLD_SRC = $(FLOCK_BASE)/cmd/helloworld
 HELLOWORLD_BINARY = $(BUILD_DIR)/helloworld.elf
 HELLOWORLD_ALL_SRC = $(wildcard $(HELLOWORLD_SRC)/*.go) \
                      $(wildcard $(MAZARIN_BASE)/sys/*.go)
 
-$(HELLOWORLD_BINARY): $(HELLOWORLD_ALL_SRC) $(THIN_OVERLAY_JSON) $(PRIEST_BINARY) $(TOOL_PATCHRUNTIME) | $(BUILD_DIR)
-	@echo "Building helloworld (thin client with NOP stubs)..."
+$(HELLOWORLD_BINARY): $(HELLOWORLD_ALL_SRC) $(USERSPACE_OVERLAY) $(PRIEST_BINARY) | $(BUILD_DIR)
+	@echo "Building helloworld (userspace program)..."
 	@cd $(HELLOWORLD_SRC) && \
 		CGO_ENABLED=0 \
 		GOTOOLCHAIN=local \
 		GOARCH=$(GOARCH) \
 		GOOS=$(GOOS) \
-		$(GO) build -overlay=$(abspath $(THIN_OVERLAY_JSON)) $(GCFLAGS) -o $(abspath $@) .
-	@echo "Binary size before patching: $$(ls -lh $@ | awk '{print $$5}')"
-	@echo "Patching NOP stubs to trampoline to priest's runtime..."
-	@$(TOOL_PATCHRUNTIME) $(PRIEST_BINARY) $@ $@
-	@echo "Binary size after patching: $$(ls -lh $@ | awk '{print $$5}')"
-	@echo "Helloworld built and patched at $@"
+		$(GO) build -overlay=$(abspath $(USERSPACE_OVERLAY)) $(GCFLAGS) -o $(abspath $@) .
+	@echo "Helloworld built at $@ ($$(ls -lh $@ | awk '{print $$5}'))"
 
 # Build priest (includes Go version check)
 priest: check-go-version $(PRIEST_BINARY)
 
-# Build helloworld (includes Go version check, depends on priest for runtime addresses)
-helloworld: check-go-version $(THIN_OVERLAY_JSON) $(PRIEST_BINARY) $(HELLOWORLD_BINARY)
+# Build helloworld (includes Go version check)
+helloworld: check-go-version $(USERSPACE_OVERLAY) $(PRIEST_BINARY) $(HELLOWORLD_BINARY)
 
 # Default: build both
 all: cardinal kmazarin
