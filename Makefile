@@ -287,10 +287,17 @@ $(TOOL_STOP): tools/cmd-stop.go | $(TOOLS_BIN_DIR)
 	@echo "Building $@..."
 	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
 
+# Thin client overlay tool
+TOOL_GEN_AST_STUBS = $(TOOLS_BIN_DIR)/gen-ast-stubs
+
+$(TOOL_GEN_AST_STUBS): tools/gen-ast-stubs.go | $(TOOLS_BIN_DIR)
+	@echo "Building $@..."
+	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
+
 # Build all host tools
 host-tools: $(TOOL_PATCH_ENTRY) $(TOOL_COMPUTE_LINKER) $(TOOL_INCBIN2GOASM) \
             $(TOOL_FIX_GO_ELF) $(TOOL_PRINT_KMAZARIN_ADDR) $(TOOL_RELOCATE_KMAZARIN) \
-            $(TOOL_BUILD) $(TOOL_RUN) $(TOOL_STOP)
+            $(TOOL_BUILD) $(TOOL_RUN) $(TOOL_STOP) $(TOOL_GEN_AST_STUBS)
 
 # =========================================
 # Main Targets
@@ -364,6 +371,49 @@ priest: check-go-version $(PRIEST_BINARY)
 # Build helloworld (includes Go version check)
 helloworld: check-go-version $(USERSPACE_OVERLAY) $(PRIEST_BINARY) $(HELLOWORLD_BINARY)
 
+# =========================================
+# Thin Client Build (AST-based stubs)
+# =========================================
+# Thin clients have minimal runtime stubs that will be patched
+# to trampoline to priest's full runtime implementation.
+# This dramatically reduces binary size (~100KB vs ~2MB).
+
+THIN_OVERLAY_DIR = $(BUILD_DIR)/thin-overlay/runtime
+THIN_OVERLAY_JSON = $(BUILD_DIR)/thin-overlay.json
+THIN_MANIFEST = $(BUILD_DIR)/thin-stubs.manifest
+
+# Generate thin overlay from Go runtime source files
+# Parses all runtime/*.go files and replaces function bodies with `for {}`
+$(THIN_OVERLAY_JSON): $(TOOL_GEN_AST_STUBS) | $(BUILD_DIR)
+	@echo "Generating thin client overlay..."
+	@GOROOT=$$(GOTOOLCHAIN=local $(GO) env GOROOT) && \
+		$(TOOL_GEN_AST_STUBS) \
+			-runtime=$$GOROOT/src/runtime \
+			-output=$(THIN_OVERLAY_DIR) \
+			-overlay=$(THIN_OVERLAY_JSON) \
+			-manifest=$(THIN_MANIFEST)
+	@echo "  Overlay: $(THIN_OVERLAY_JSON)"
+	@echo "  Manifest: $(THIN_MANIFEST)"
+
+# Helloworld thin - uses thin overlay for minimal binary size
+HELLOWORLD_THIN_BINARY = $(BUILD_DIR)/helloworld-thin.elf
+
+$(HELLOWORLD_THIN_BINARY): $(HELLOWORLD_ALL_SRC) $(THIN_OVERLAY_JSON) $(PRIEST_BINARY) | $(BUILD_DIR)
+	@echo "Building helloworld-thin (minimal runtime stubs)..."
+	@cd $(HELLOWORLD_SRC) && \
+		CGO_ENABLED=0 \
+		GOTOOLCHAIN=local \
+		GOARCH=$(GOARCH) \
+		GOOS=$(GOOS) \
+		$(GO) build -overlay=$(abspath $(THIN_OVERLAY_JSON)) $(GCFLAGS) -o $(abspath $@) .
+	@echo "Helloworld-thin built at $@ ($$(ls -lh $@ | awk '{print $$5}'))"
+
+# Build helloworld-thin (includes Go version check)
+helloworld-thin: check-go-version $(THIN_OVERLAY_JSON) $(PRIEST_BINARY) $(HELLOWORLD_THIN_BINARY)
+
+# Generate thin overlay only (for testing/debugging)
+thin-overlay: check-go-version $(THIN_OVERLAY_JSON)
+
 # Default: build both
 all: cardinal kmazarin
 
@@ -381,4 +431,4 @@ clean:
 	@echo "Cleaned."
 
 # Phony targets
-.PHONY: all clean cardinal kmazarin priest helloworld test host-tools
+.PHONY: all clean cardinal kmazarin priest helloworld helloworld-thin thin-overlay test host-tools
