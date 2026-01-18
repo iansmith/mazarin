@@ -288,6 +288,7 @@ func enableMMU() bool {
 	tcrValue |= 2 << 30  // TG1 = 2 (4KB granule for TTBR1) - NOTE: different encoding!
 
 	tcrValue |= 2 << 32  // IPS = 2 (40-bit PA space)
+	tcrValue |= 1 << 36  // AS = 1 (16-bit ASIDs for priest isolation)
 	asm.WriteTcrEl1(tcrValue)
 
 	// =========================================================================
