@@ -1,4 +1,3 @@
-//go:build qemuvirt && aarch64
 
 // priest is the syscall router for Mazzy userspace.
 // It receives syscalls from normal programs and either handles them directly

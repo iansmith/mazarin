@@ -1,4 +1,3 @@
-//go:build qemuvirt && aarch64
 
 // helloworld is the simplest userspace test program.
 // It calls GetTime (Mazzy syscall) and Printf (Linux syscall via priest).

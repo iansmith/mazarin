@@ -1,4 +1,3 @@
-//go:build qemuvirt && aarch64
 
 // runtime_arm64.s - Runtime support functions for kmazarin
 

@@ -1,4 +1,3 @@
-//go:build qemuvirt && aarch64
 
 // Package ktime provides kernel time services.
 // The RTC is read once at initialization; subsequent time queries

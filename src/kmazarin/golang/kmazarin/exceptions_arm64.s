@@ -1,4 +1,3 @@
-//go:build qemuvirt && aarch64
 
 // exceptions_arm64.s - Kmazarin exception handlers (Go/Plan9 assembly)
 //

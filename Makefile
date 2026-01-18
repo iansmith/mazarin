@@ -144,8 +144,7 @@ $(CARDINAL_BINARY): $(GO_NATIVE_SRC) $(CARDINAL_SRC)/golang/go.mod $(KMAZARIN_BI
 		GOARCH=$(GOARCH) \
 		GOOS=$(GOOS) \
 		$(GO) build \
-			-tags "qemuvirt aarch64" \
-			$(GCFLAGS) \
+				$(GCFLAGS) \
 			-ldflags="-checklinkname=0 -T 0x40100000" \
 			-o $(abspath $@) \
 			./main
@@ -232,7 +231,7 @@ $(KMAZARIN_BINARY): $(KMAZARIN_ALL_SRC) $(KMAZARIN_OVERLAY) src/cardinal/golang/
 		GOTOOLCHAIN=local \
 		GOARCH=$(GOARCH) \
 		GOOS=$(GOOS) \
-		$(GO) build -overlay=$(abspath $(KMAZARIN_OVERLAY)) -tags "qemuvirt aarch64" $(GCFLAGS) -ldflags="-T $(KMAZARIN_LOAD_ADDR)" -o $(abspath $(KMAZARIN_BINARY)) .
+		$(GO) build -overlay=$(abspath $(KMAZARIN_OVERLAY)) $(GCFLAGS) -ldflags="-T $(KMAZARIN_LOAD_ADDR)" -o $(abspath $(KMAZARIN_BINARY)) .
 	@echo "Fixing kmazarin ELF for QEMU compatibility..."
 	@$(TOOL_FIX_GO_ELF) $(KMAZARIN_BINARY)
 	@echo "Relocating kmazarin to high memory (0xFFFFFFFF41800000)..."
@@ -349,7 +348,7 @@ $(PRIEST_BINARY): $(PRIEST_ALL_SRC) | $(BUILD_DIR)
 		GOTOOLCHAIN=local \
 		GOARCH=$(GOARCH) \
 		GOOS=$(GOOS) \
-		$(GO) build -tags "qemuvirt aarch64" $(GCFLAGS) -o $(abspath $@) .
+		$(GO) build $(GCFLAGS) -o $(abspath $@) .
 	@echo "Priest built at $@"
 
 # Helloworld - test program (uses userspace overlay)
@@ -369,7 +368,7 @@ $(HELLOWORLD_BINARY): $(HELLOWORLD_ALL_SRC) $(USERSPACE_OVERLAY) $(PRIEST_BINARY
 		GOTOOLCHAIN=local \
 		GOARCH=$(GOARCH) \
 		GOOS=$(GOOS) \
-		$(GO) build -overlay=$(abspath $(USERSPACE_OVERLAY)) -tags "qemuvirt aarch64" $(GCFLAGS) -o $(abspath $@) .
+		$(GO) build -overlay=$(abspath $(USERSPACE_OVERLAY)) $(GCFLAGS) -o $(abspath $@) .
 	@echo "Patching runtime functions to use priest's runtime..."
 	@$(TOOL_PATCHRUNTIME) $(PRIEST_BINARY) $@ $@
 	@echo "Helloworld built and patched at $@"

@@ -1,4 +1,3 @@
-//go:build qemuvirt && aarch64
 
 // Package kmem provides memory management for the kmazarin kernel.
 // This includes physical frame allocation for heap pages and page table management.

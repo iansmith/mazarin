@@ -1,4 +1,3 @@
-//go:build aarch64
 // +build aarch64
 
 package main

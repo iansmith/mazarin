@@ -1,4 +1,3 @@
-//go:build qemuvirt && aarch64
 
 // asm_barriers_arm64.s - ARM64 memory barriers for page table manipulation
 //

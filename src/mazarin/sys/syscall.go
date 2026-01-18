@@ -1,4 +1,3 @@
-//go:build qemuvirt && aarch64
 
 // Package sys provides the client-side API for Mazzy-specific syscalls.
 package sys

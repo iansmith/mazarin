@@ -1,4 +1,3 @@
-//go:build qemuvirt && aarch64
 
 // Mazzy userspace runtime overlay: RuntimeTable for trampoline dispatch
 //

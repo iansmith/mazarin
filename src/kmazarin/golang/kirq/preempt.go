@@ -1,4 +1,3 @@
-//go:build qemuvirt && aarch64
 
 // Package kirq provides kernel IRQ handling including timer-based preemption.
 //

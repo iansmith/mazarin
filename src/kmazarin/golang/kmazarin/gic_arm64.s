@@ -1,4 +1,3 @@
-//go:build qemuvirt && aarch64
 
 #include "textflag.h"
 
