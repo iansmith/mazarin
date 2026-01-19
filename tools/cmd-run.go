@@ -98,7 +98,10 @@ func run() error {
 
 	// Start QEMU
 	kernelPath := filepath.Join(projectRoot, "build", "cardinal.elf")
-	cmd := exec.Command(qemuPath,
+	diskPath := filepath.Join(projectRoot, "build", "disk.img")
+
+	// Base QEMU arguments
+	args := []string{
 		"-M", "virt,virtualization=off",
 		"-cpu", "cortex-a72",
 		"-m", "8G",
@@ -108,11 +111,19 @@ func run() error {
 		"-object", "rng-random,id=rng0,filename=/dev/urandom",
 		"-device", "virtio-rng-device,rng=rng0",
 		"-display", displayBackend,
-		"-serial", "file:"+logFile,
+		"-serial", "file:" + logFile,
 		"-monitor", "tcp:127.0.0.1:4444,server,nowait",
 		"-semihosting",
 		"-no-reboot",
-	)
+	}
+
+	// Add disk image if it exists
+	if _, err := os.Stat(diskPath); err == nil {
+		args = append(args, "-drive", "file="+diskPath+",if=virtio,format=raw,readonly=on")
+		fmt.Printf("Disk image: %s\n", diskPath)
+	}
+
+	cmd := exec.Command(qemuPath, args...)
 	cmd.Dir = projectRoot
 
 	if err := cmd.Start(); err != nil {

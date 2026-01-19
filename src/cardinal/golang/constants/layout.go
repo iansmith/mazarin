@@ -255,16 +255,16 @@ Kmazarin Kernel Layout (High Memory, TTBR1):
   Exception Stack: Computed: KernelG0StackTop to KernelExcStackTop (16 KB)
   Page Tables:     Identity-mapped via setupKernelPageTables() (TTBR1)
 
-MMIO Devices (Physical):
+MMIO Devices (Physical, addresses from DTB):
   GIC:             0x08000000 - 0x08020000 (128 KB)
   UART:            0x09000000 - 0x09010000 (64 KB)
   RTC:             0x09010000 - 0x09020000 (64 KB)
   fw_cfg:          0x09020000 - 0x09030000 (64 KB)
+  VirtIO MMIO:     0x0A000000 - 0x0A004000 (16 KB, up to 16 devices)
   bochs-display:   0x10000000 - 0x11000000 (16 MB)
   PCI BARs:        0x11000000 - 0x20000000 (240 MB)
 
 MMIO Devices (Kernel High Memory, TTBR1):
-  GIC:             0xFFFFFFFF08000000 - 0xFFFFFFFF08020000
-  UART+RTC:        0xFFFFFFFF09000000 - 0xFFFFFFFF09020000
+  All devices:     0xFFFFFFFF08000000 - 0xFFFFFFFF0A004000 (mapped as contiguous region)
 `
 }

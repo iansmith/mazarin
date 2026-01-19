@@ -5,6 +5,7 @@ import (
 	device_virtio "kmazarin/device/virtio"
 	"kmazarin/deviceapi"
 	"kmazarin/dtb"
+	"kmazarin/kmem"
 	"unsafe"
 )
 
@@ -56,11 +57,18 @@ func (d *BlockDriver) Init(node *dtb.Node) (deviceapi.Closable, error) {
 		irq = node.Interrupts[0]
 	}
 
+	reg := node.Reg[0]
+
+	// Map MMIO region before accessing hardware
+	if err := kmem.MapDeviceMMIO(reg.Address, reg.Size); err != nil {
+		return nil, err
+	}
+
 	// Convert physical address to high-memory kernel address
 	const KernelMMIOOffset = 0xFFFFFFFF00000000
 
 	transport := &MMIOTransport{
-		baseAddr: node.Reg[0].Address + KernelMMIOOffset,
+		baseAddr: reg.Address + KernelMMIOOffset,
 		irq:      irq,
 	}
 

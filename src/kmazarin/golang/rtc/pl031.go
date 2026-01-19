@@ -4,6 +4,7 @@ import (
 	"kmazarin/asm"
 	"kmazarin/deviceapi"
 	"kmazarin/dtb"
+	"kmazarin/kmem"
 )
 
 // PL031 register offsets
@@ -31,10 +32,17 @@ func (d *PL031Driver) Probe(node *dtb.Node) bool {
 }
 
 func (d *PL031Driver) Init(node *dtb.Node) (deviceapi.Closable, error) {
+	reg := node.Reg[0]
+
+	// Map MMIO region before accessing hardware
+	if err := kmem.MapDeviceMMIO(reg.Address, reg.Size); err != nil {
+		return nil, err
+	}
+
 	// Convert physical address to high-memory kernel address
 	// Physical: 0x09010000 → Kernel: 0xFFFFFFFF09010000
 	const KernelMMIOOffset = 0xFFFFFFFF00000000
-	baseAddr := node.Reg[0].Address + KernelMMIOOffset
+	baseAddr := reg.Address + KernelMMIOOffset
 
 	rtc := &PL031{
 		name:     node.Name,

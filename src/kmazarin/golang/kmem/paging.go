@@ -45,6 +45,7 @@ const (
 
 	// Memory attributes (MAIR index)
 	PTE_ATTR_NORMAL = 0 << 2 // Normal cacheable (MAIR[0])
+	PTE_ATTR_DEVICE = 1 << 2 // Device-nGnRnE (MAIR[1])
 
 	// Access permissions
 	PTE_AP_RW_EL1 = 1 << 6 // Read-write at EL1, no EL0 access
@@ -683,3 +684,185 @@ func tlbiVAE1ISAsm(va uintptr)
 func isbSYAsm()
 func dcCIVACAsm(va uintptr)
 func readTTBR1EL1() uintptr
+
+// MapDeviceMMIO maps a physical MMIO region to the corresponding high-memory
+// kernel virtual address with device memory attributes.
+//
+// This is used by device drivers during initialization to map device registers
+// before accessing them. The physical address and size typically come from DTB parsing.
+//
+// Example:
+//
+//	reg := node.Reg[0]  // From DTB
+//	if err := kmem.MapDeviceMMIO(reg.Address, reg.Size); err != nil {
+//	    return err
+//	}
+//	// Now can access via reg.Address + KernelVAOffset
+//
+// Returns nil on success, error on failure.
+func MapDeviceMMIO(physAddr uintptr, size uint64) error {
+	// Lazy initialization
+	if !pagingInitialized {
+		InitPaging()
+	}
+
+	cfg := getRuntimeConfigTyped()
+
+	// Calculate number of pages needed (round up)
+	if size == 0 {
+		size = PageSize // Default to one page if size not specified
+	}
+	numPages := (size + PageSize - 1) / PageSize
+
+	// Map all pages in the region
+	for i := uint64(0); i < numPages; i++ {
+		pagePhys := (physAddr &^ (PageSize - 1)) + uintptr(i*PageSize)
+		pageVA := pagePhys + uintptr(cfg.KernelVAOffset)
+
+		if !mapDevicePage(pageVA, pagePhys) {
+			return &MappingError{addr: physAddr + uintptr(i*PageSize), msg: "failed to map device page"}
+		}
+	}
+
+	return nil
+}
+
+// MappingError represents a page mapping failure
+type MappingError struct {
+	addr uintptr
+	msg  string
+}
+
+func (e *MappingError) Error() string {
+	return e.msg
+}
+
+// mapDevicePage maps a VA to PA with device memory attributes.
+// Similar to mapPage but uses PTE_ATTR_DEVICE instead of PTE_ATTR_NORMAL.
+//
+//go:nosplit
+func mapDevicePage(va, pa uintptr) bool {
+	// Extract indices
+	l0Idx := (va >> L0Shift) & 0x1FF
+	l1Idx := (va >> L1Shift) & 0x1FF
+	l2Idx := (va >> L2Shift) & 0x1FF
+	l3Idx := (va >> L3Shift) & 0x1FF
+
+	// Use TTBR1 for kernel high memory (bit 55 = 1)
+	if (va>>55)&1 == 0 {
+		return false // Device MMIO must be in kernel space
+	}
+	l0PA := ttbr1L0PA
+
+	// Get L0 table VA
+	l0VA := paToVA(l0PA)
+	if l0VA == 0 {
+		return false
+	}
+
+	// Read L0 entry
+	l0Entry := (*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
+
+	var l1VA uintptr
+	if (*l0Entry & PTE_VALID) == 0 {
+		// Need to allocate L1 table
+		l1VA = allocPTPage()
+		if l1VA == 0 {
+			return false
+		}
+		l1PA := walkPageTable(l1VA)
+		if l1PA == 0 {
+			return false
+		}
+		cachePTVA(l1PA, l1VA)
+		*l0Entry = uint64(l1PA) | PTE_VALID | PTE_TABLE
+		dcCIVAC(uintptr(unsafe.Pointer(l0Entry)))
+		dsbSY()
+		tlbiVAE1IS(0)
+		dsbSY()
+		isbSY()
+	} else {
+		l1PA := uintptr(*l0Entry & PTE_ADDR_MASK)
+		l1VA = paToVAOrCache(l1PA)
+	}
+	if l1VA == 0 {
+		return false
+	}
+
+	// Read L1 entry
+	l1Entry := (*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
+
+	var l2VA uintptr
+	if (*l1Entry & PTE_VALID) == 0 {
+		l2VA = allocPTPage()
+		if l2VA == 0 {
+			return false
+		}
+		l2PA := walkPageTable(l2VA)
+		if l2PA == 0 {
+			return false
+		}
+		cachePTVA(l2PA, l2VA)
+		*l1Entry = uint64(l2PA) | PTE_VALID | PTE_TABLE
+		dcCIVAC(uintptr(unsafe.Pointer(l1Entry)))
+		dsbSY()
+	} else {
+		l2PA := uintptr(*l1Entry & PTE_ADDR_MASK)
+		l2VA = paToVAOrCache(l2PA)
+		if l2VA == 0 {
+			return false
+		}
+	}
+
+	// Read L2 entry
+	l2Entry := (*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
+
+	var l3VA uintptr
+	if (*l2Entry & PTE_VALID) == 0 {
+		l3VA = allocPTPage()
+		if l3VA == 0 {
+			return false
+		}
+		l3PA := walkPageTable(l3VA)
+		if l3PA == 0 {
+			return false
+		}
+		cachePTVA(l3PA, l3VA)
+		*l2Entry = uint64(l3PA) | PTE_VALID | PTE_TABLE
+		dcCIVAC(uintptr(unsafe.Pointer(l2Entry)))
+		dsbSY()
+	} else {
+		l3PA := uintptr(*l2Entry & PTE_ADDR_MASK)
+		l3VA = paToVAOrCache(l3PA)
+		if l3VA == 0 {
+			return false
+		}
+	}
+
+	// Write L3 entry with DEVICE attributes (not NORMAL)
+	l3Entry := (*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
+
+	// Check if already mapped
+	if (*l3Entry & PTE_VALID) != 0 {
+		// Already mapped - verify it points to same PA
+		existingPA := uintptr(*l3Entry & PTE_ADDR_MASK)
+		if existingPA == pa {
+			return true // Already correctly mapped
+		}
+		return false // Conflict!
+	}
+
+	// Device memory: non-cacheable, non-gathering, non-reordering
+	pteValue := uint64(pa) | PTE_VALID | PTE_TABLE | PTE_AF |
+		PTE_ATTR_DEVICE | PTE_AP_RW_EL1 | PTE_EXEC_NEVER
+	*l3Entry = pteValue
+
+	// Clean cache and invalidate TLB
+	dcCIVAC(uintptr(unsafe.Pointer(l3Entry)))
+	dsbSY()
+	tlbiVAE1IS(va)
+	dsbSY()
+	isbSY()
+
+	return true
+}

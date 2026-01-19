@@ -6,6 +6,7 @@ import (
 	"kmazarin/deviceapi"
 	"kmazarin/dtb"
 	"kmazarin/kirq"
+	"kmazarin/kmem"
 )
 
 // GICv2 register offsets
@@ -36,13 +37,25 @@ func (d *GICv2Driver) Probe(node *dtb.Node) bool {
 }
 
 func (d *GICv2Driver) Init(node *dtb.Node) (deviceapi.Closable, error) {
+	distReg := node.Reg[0]
+	cpuReg := node.Reg[1]
+
+	// Map both MMIO regions before accessing hardware.
+	// GICv2 has two regions: distributor (GICD) and CPU interface (GICC).
+	if err := kmem.MapDeviceMMIO(distReg.Address, distReg.Size); err != nil {
+		return nil, err
+	}
+	if err := kmem.MapDeviceMMIO(cpuReg.Address, cpuReg.Size); err != nil {
+		return nil, err
+	}
+
 	// Convert physical address to high-memory kernel address
 	// Physical: 0x08000000 → Kernel: 0xFFFFFFFF08000000
 	// This matches what the exception handler uses for GIC access
 	const KernelMMIOOffset = 0xFFFFFFFF00000000
 	gic := &GICv2{
-		distBase: node.Reg[0].Address + KernelMMIOOffset, // Distributor (high memory)
-		cpuBase:  node.Reg[1].Address + KernelMMIOOffset, // CPU interface (high memory)
+		distBase: distReg.Address + KernelMMIOOffset, // Distributor (high memory)
+		cpuBase:  cpuReg.Address + KernelMMIOOffset,  // CPU interface (high memory)
 	}
 
 	// Initialize GIC hardware

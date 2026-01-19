@@ -294,10 +294,17 @@ $(TOOL_GEN_AST_STUBS): tools/gen-ast-stubs.go | $(TOOLS_BIN_DIR)
 	@echo "Building $@..."
 	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
 
+# FAT32 disk image tool
+TOOL_MKFAT32 = $(TOOLS_BIN_DIR)/mkfat32
+
+$(TOOL_MKFAT32): tools/mkfat32.go | $(TOOLS_BIN_DIR)
+	@echo "Building $@..."
+	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
+
 # Build all host tools
 host-tools: $(TOOL_PATCH_ENTRY) $(TOOL_COMPUTE_LINKER) $(TOOL_INCBIN2GOASM) \
             $(TOOL_FIX_GO_ELF) $(TOOL_PRINT_KMAZARIN_ADDR) $(TOOL_RELOCATE_KMAZARIN) \
-            $(TOOL_BUILD) $(TOOL_RUN) $(TOOL_STOP) $(TOOL_GEN_AST_STUBS)
+            $(TOOL_BUILD) $(TOOL_RUN) $(TOOL_STOP) $(TOOL_GEN_AST_STUBS) $(TOOL_MKFAT32)
 
 # =========================================
 # Main Targets
@@ -414,6 +421,21 @@ helloworld-thin: check-go-version $(THIN_OVERLAY_JSON) $(PRIEST_BINARY) $(HELLOW
 # Generate thin overlay only (for testing/debugging)
 thin-overlay: check-go-version $(THIN_OVERLAY_JSON)
 
+# =========================================
+# Disk Image for VirtIO Block
+# =========================================
+# FAT32 disk image containing flock binaries for kmazarin to load
+
+DISK_IMAGE = $(BUILD_DIR)/disk.img
+
+$(DISK_IMAGE): $(PRIEST_BINARY) $(HELLOWORLD_BINARY) $(TOOL_MKFAT32) | $(BUILD_DIR)
+	@echo "Creating FAT32 disk image..."
+	@$(TOOL_MKFAT32) -o $@ $(PRIEST_BINARY) $(HELLOWORLD_BINARY)
+	@echo "Disk image created at $@ ($$(ls -lh $@ | awk '{print $$5}'))"
+
+# Build disk image (includes flock programs)
+disk: check-go-version $(DISK_IMAGE)
+
 # Default: build both
 all: cardinal kmazarin
 
@@ -431,4 +453,4 @@ clean:
 	@echo "Cleaned."
 
 # Phony targets
-.PHONY: all clean cardinal kmazarin priest helloworld helloworld-thin thin-overlay test host-tools
+.PHONY: all clean cardinal kmazarin priest helloworld helloworld-thin thin-overlay disk test host-tools

@@ -398,26 +398,23 @@ func setupKernelStacks() {
 	}
 }
 
-// setupEarlyKernelMMIO maps essential early-boot MMIO devices to high memory in TTBR1.
-// This allows kmazarin (running at high memory) to access UART, GIC during early boot.
-// The high-memory MMIO addresses follow the pattern: physical + 0xFFFFFFFF00000000
-// Additional MMIO devices will be discovered and mapped during DTB scan.
+// setupEarlyKernelMMIO maps only the essential UART to high memory in TTBR1.
+// This is the minimal mapping needed for Cardinal to output text during boot.
+//
+// All other MMIO devices (GIC, RTC, VirtIO, etc.) are mapped on-demand by
+// kmazarin during device discovery via kmem.MapDeviceMMIO().
+//
+// This keeps Cardinal minimal - it only touches VM tables long enough to
+// get kmazarin executing its text section. Kmazarin handles all other
+// device mappings based on DTB-provided addresses.
 func setupEarlyKernelMMIO() {
-	// Map UART + RTC region (0x09000000 → 0xFFFFFFFF09000000)
-	// UART is at 0x09000000, RTC (PL031) is at 0x09010000
-	// Map 128KB to cover both devices
-	const uartPhys, uartSize = uintptr(0x09000000), uintptr(0x20000)
-	const kernelUartVA = uintptr(0xFFFFFFFF09000000)
-	for i := uintptr(0); i < uartSize/PAGE_SIZE; i++ {
-		mapKernelPage(kernelUartVA+i*PAGE_SIZE, uartPhys+i*PAGE_SIZE, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-	}
+	// Only map UART for early boot output
+	// Physical: 0x09000000, Size: 64KB (one page is enough for UART)
+	const uartPhys = uintptr(0x09000000)
+	const uartVA = uintptr(0xFFFFFFFF09000000)
 
-	// Map GIC (0x08000000 → 0xFFFFFFFF08000000)
-	const gicPhys, gicSize = uintptr(0x08000000), uintptr(0x20000)
-	const kernelGicVA = uintptr(0xFFFFFFFF08000000)
-	for i := uintptr(0); i < gicSize/PAGE_SIZE; i++ {
-		mapKernelPage(kernelGicVA+i*PAGE_SIZE, gicPhys+i*PAGE_SIZE, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-	}
+	// Map one page for UART
+	mapKernelPage(uartVA, uartPhys, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 }
 
 // setupKernelDemandPaging sets up the memory infrastructure that allows kmazarin

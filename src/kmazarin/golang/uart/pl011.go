@@ -5,6 +5,7 @@ import (
 	"kmazarin/asm"
 	"kmazarin/deviceapi"
 	"kmazarin/dtb"
+	"kmazarin/kmem"
 	"reflect"
 	"runtime"
 	"sync/atomic"
@@ -52,10 +53,19 @@ func (d *PL011Driver) Init(node *dtb.Node) (deviceapi.Closable, error) {
 		irq = node.Interrupts[0]
 	}
 
+	reg := node.Reg[0]
+
+	// Map MMIO region before accessing hardware.
+	// Note: UART may already be mapped by Cardinal for early boot output.
+	// MapDeviceMMIO handles already-mapped pages gracefully.
+	if err := kmem.MapDeviceMMIO(reg.Address, reg.Size); err != nil {
+		return nil, err
+	}
+
 	// Convert physical address to high-memory kernel address
 	// Physical: 0x09000000 → Kernel: 0xFFFFFFFF09000000
 	const KernelMMIOOffset = 0xFFFFFFFF00000000
-	baseAddr := node.Reg[0].Address + KernelMMIOOffset
+	baseAddr := reg.Address + KernelMMIOOffset
 
 	uart := &PL011{
 		name:     node.Name,
