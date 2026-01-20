@@ -228,6 +228,10 @@ const (
 	AT_STARTUP_PARAMS   = 0x1009 // High-memory address of kmazarin StartupParams BSS array
 	AT_FRAMEBUFFER_PHYS = 0x100A // Physical address of VirtIO GPU framebuffer
 	AT_FRAMEBUFFER_SIZE = 0x100B // Size of framebuffer in bytes
+
+	// Kernel heap bounds - parsed by runtime overlay before first mmap
+	AT_KMAZARIN_HEAP_START = 0x1010 // Start of kernel heap VA space
+	AT_KMAZARIN_HEAP_END   = 0x1011 // End of kernel heap VA space
 )
 
 // ============================================================================

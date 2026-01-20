@@ -8,6 +8,9 @@
 //
 // CRITICAL: This runs during Go runtime init, BEFORE any package init() functions.
 // We use only primitive operations available in the runtime package itself.
+//
+// Heap bounds are passed via custom auxv entries (AT_KMAZARIN_HEAP_START/END)
+// and parsed by archauxv() in os_linux_arm64.go BEFORE this code runs.
 
 //go:build (linux && (amd64 || arm64 || loong64)) || (freebsd && amd64)
 
@@ -30,16 +33,14 @@ var _cgo_mmap unsafe.Pointer
 //go:linkname _cgo_munmap _cgo_munmap
 var _cgo_munmap unsafe.Pointer
 
-// Early-boot heap allocator constants (must match layout.go)
+// Heap allocator constants
 const (
-	kmazarinHeapStart = 0xFFFF000100000000 // KernelHeapStart from layout.go
-	kmazarinHeapEnd   = 0xFFFF100000000000 // KernelHeapEnd from layout.go
-	kmazarinPageSize  = 4096
-	kmazarinMapFixed  = 0x10 // MAP_FIXED flag
+	_kmazarinPageSize = 4096
+	_kmazarinMapFixed = 0x10 // MAP_FIXED flag
 )
 
 // kmazarinBumpPointer is the early-boot allocator for mmap calls.
-// Initialized directly in declaration - NO init() function needed.
+// Initialized lazily from auxv-derived kmazarinHeapStart.
 var kmazarinBumpPointer atomic.Uint64
 
 // kmazarinBumpInitialized tracks whether we've set the initial value.
@@ -49,6 +50,9 @@ var kmazarinBumpInitialized atomic.Uint32
 // mmap implements the mmap system call using a simple bump allocator.
 // This is called during early Go runtime init before ANY package init() runs.
 // Uses only primitive operations that work without full runtime.
+//
+// Heap bounds come from kmazarinHeapStart/End variables in os_linux_arm64.go,
+// which are set by archauxv() from custom auxv entries before this runs.
 //
 //go:nosplit
 func mmap(addr unsafe.Pointer, n uintptr, prot, flags, fd int32, off uint32) (unsafe.Pointer, int) {
@@ -61,25 +65,35 @@ func mmap(addr unsafe.Pointer, n uintptr, prot, flags, fd int32, off uint32) (un
 		return nil, 22 // EINVAL
 	}
 
-	// Lazy initialize bump pointer (can't use init() during early runtime)
+	// Get heap bounds from auxv-derived variables (set by archauxv before mallocinit)
+	heapStart := uint64(kmazarinHeapStart)
+	heapEnd := uint64(kmazarinHeapEnd)
+
+	// Sanity check: if auxv wasn't parsed, heap bounds will be 0
+	if heapStart == 0 || heapEnd == 0 {
+		// This should never happen - archauxv runs before mallocinit
+		return nil, 12 // ENOMEM
+	}
+
+	// Lazy initialize bump pointer from auxv-derived heap start
 	if kmazarinBumpInitialized.Load() == 0 {
 		if kmazarinBumpInitialized.CompareAndSwap(0, 1) {
-			kmazarinBumpPointer.Store(kmazarinHeapStart)
+			kmazarinBumpPointer.Store(heapStart)
 		}
 	}
 
 	// Align length to page size
-	alignedLength := (uint64(n) + kmazarinPageSize - 1) & ^uint64(kmazarinPageSize-1)
+	alignedLength := (uint64(n) + _kmazarinPageSize - 1) & ^uint64(_kmazarinPageSize-1)
 
 	// Handle MAP_FIXED: must return the exact address
-	if (flags & kmazarinMapFixed) != 0 {
+	if (flags & _kmazarinMapFixed) != 0 {
 		if addr == nil {
 			return nil, 22 // EINVAL - MAP_FIXED with null address
 		}
 		addrVal := uint64(uintptr(addr))
 		// For MAP_FIXED, just return the requested address
 		// The page fault handler will allocate physical pages on demand
-		if addrVal >= kmazarinHeapStart && addrVal+alignedLength <= kmazarinHeapEnd {
+		if addrVal >= heapStart && addrVal+alignedLength <= heapEnd {
 			return addr, 0
 		}
 		return nil, 12 // ENOMEM
@@ -93,7 +107,7 @@ func mmap(addr unsafe.Pointer, n uintptr, prot, flags, fd int32, off uint32) (un
 		nextPtr := currentPtr + alignedLength
 
 		// Check bounds
-		if nextPtr < currentPtr || nextPtr > kmazarinHeapEnd {
+		if nextPtr < currentPtr || nextPtr > heapEnd {
 			return nil, 12 // ENOMEM
 		}
 

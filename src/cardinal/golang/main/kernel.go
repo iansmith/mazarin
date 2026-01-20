@@ -913,12 +913,18 @@ func setupKmazarinStartupEnv(kmazarinStartupParamsVA uintptr) (stackPointer uint
 	data[10] = 16
 	data[11] = 0x2 // HWCAP_ASIMD - Advanced SIMD (NEON)
 
+	// AT_KMAZARIN_HEAP_START/END: Kernel heap VA bounds
+	// These are parsed by the runtime overlay BEFORE first mmap call,
+	// allowing dynamic heap sizing based on kmazarin binary size.
+	// The heap starts after kmazarin's static regions and extends to the limit.
+	data[12] = constants.AT_KMAZARIN_HEAP_START
+	data[13] = uint64(constants.KernelHeapStart)
+	data[14] = constants.AT_KMAZARIN_HEAP_END
+	data[15] = uint64(constants.KernelHeapEnd)
+
 	// AT_NULL = 0 (terminator)
-	// NOTE: All Cardinal boot information is now passed via RuntimeConfig in StartupParams,
-	// eliminating the need for custom AT_* auxv entries. RuntimeConfig is the single source
-	// of truth for DTB, frame pools, UART, GIC, TTBR1, etc.
-	data[12] = 0
-	data[13] = 0
+	data[16] = 0
+	data[17] = 0
 
 	// ========================================================================
 	// Return stack pointer - structure is already on kernel g0 stack

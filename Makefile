@@ -203,6 +203,7 @@ KMAZARIN_ALL_SRC = $(wildcard $(KMAZARIN_SRC)/*.go) $(wildcard $(KMAZARIN_SRC)/*
 RUNTIME_PATCH_CGO_MMAP = $(RUNTIME_PATCHES_DIR)/cgo_mmap.go
 RUNTIME_PATCH_MALLOC = $(RUNTIME_PATCHES_DIR)/malloc.go
 RUNTIME_PATCH_MCACHE = $(RUNTIME_PATCHES_DIR)/mcache.go
+RUNTIME_PATCH_OS_LINUX_ARM64 = $(RUNTIME_PATCHES_DIR)/os_linux_arm64.go
 RUNTIME_PATCH_PREEMPT = $(RUNTIME_PATCHES_DIR)/preempt.go
 RUNTIME_PATCH_TAGPTR = $(RUNTIME_PATCHES_DIR)/tagptr_64bit.go
 RUNTIME_PATCH_SYSCALL = $(RUNTIME_PATCHES_DIR)/syscall/syscall_linux.go
@@ -212,17 +213,19 @@ RUNTIME_PATCH_SYSCALL = $(RUNTIME_PATCHES_DIR)/syscall/syscall_linux.go
 #   - cgo_mmap.go: route runtime mmap/munmap through dispatcher (no SVC)
 #   - malloc.go: high-memory heap support (arenaBaseOffset for TTBR1 space)
 #   - mcache.go: accept stale cached spans in refill (sweepgen+1 in addition to sweepgen+3)
+#   - os_linux_arm64.go: parse custom auxv entries for heap bounds
 #   - preempt.go: expose preemption offsets for kernel IRQ handling (added GetPreemptOffsets)
 #   - tagptr_64bit.go: use sign extension for arm64 to support TTBR1 addresses
 #   - syscall_linux.go: RawSyscall6 calls dispatcher directly (no SVC, pure Go)
 # GOTOOLCHAIN=local ensures we get the actual GOROOT, not a downloaded toolchain
-$(KMAZARIN_OVERLAY): $(RUNTIME_PATCH_CGO_MMAP) $(RUNTIME_PATCH_MALLOC) $(RUNTIME_PATCH_MCACHE) $(RUNTIME_PATCH_PREEMPT) $(RUNTIME_PATCH_TAGPTR) $(RUNTIME_PATCH_SYSCALL) | $(BUILD_DIR)
+$(KMAZARIN_OVERLAY): $(RUNTIME_PATCH_CGO_MMAP) $(RUNTIME_PATCH_MALLOC) $(RUNTIME_PATCH_MCACHE) $(RUNTIME_PATCH_OS_LINUX_ARM64) $(RUNTIME_PATCH_PREEMPT) $(RUNTIME_PATCH_TAGPTR) $(RUNTIME_PATCH_SYSCALL) | $(BUILD_DIR)
 	@echo "Generating runtime overlay for kmazarin..."
 	@GOROOT=$$(GOTOOLCHAIN=local $(GO) env GOROOT) && \
 		echo "{\"Replace\":{\
 \"$$GOROOT/src/runtime/cgo_mmap.go\":\"$(abspath $(RUNTIME_PATCH_CGO_MMAP))\",\
 \"$$GOROOT/src/runtime/malloc.go\":\"$(abspath $(RUNTIME_PATCH_MALLOC))\",\
 \"$$GOROOT/src/runtime/mcache.go\":\"$(abspath $(RUNTIME_PATCH_MCACHE))\",\
+\"$$GOROOT/src/runtime/os_linux_arm64.go\":\"$(abspath $(RUNTIME_PATCH_OS_LINUX_ARM64))\",\
 \"$$GOROOT/src/runtime/preempt.go\":\"$(abspath $(RUNTIME_PATCH_PREEMPT))\",\
 \"$$GOROOT/src/runtime/tagptr_64bit.go\":\"$(abspath $(RUNTIME_PATCH_TAGPTR))\",\
 \"$$GOROOT/src/syscall/syscall_linux.go\":\"$(abspath $(RUNTIME_PATCH_SYSCALL))\"\
