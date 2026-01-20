@@ -573,6 +573,7 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	// Initialize UART first for early debugging
 	uartInit()
 	uartPuts("Cardinal\n")
+	uartPutsDirect("A")
 
 	// NOTE: Memory detection moved to after MMU init to avoid nosplit stack limits
 	// The DTB parsing uses large local arrays that exceed nosplit stack budget.
@@ -580,18 +581,22 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	// Check SCTLR_EL1 for alignment check bit
 	sctlr := asm.ReadSctlrEl1()
 	alignCheck := (sctlr & 2) != 0 // Bit 1: A - Alignment Check Enable
+	uartPutsDirect("B")
 
 	// Disable alignment check if enabled (required for Go runtime)
 	if alignCheck {
 		asm.DisableAlignmentCheck()
 	}
+	uartPutsDirect("C")
 
 	// Initialize minimal runtime structures for write barrier
 	initRuntimeStubs()
+	uartPutsDirect("D")
 
 	// Set up exception vectors BEFORE enabling MMU
 	exceptionVectorAddr := asm.GetExceptionVectorsAddr()
 	asm.SetVbarEl1ToAddr(exceptionVectorAddr)
+	uartPutsDirect("E")
 
 	// Initialize MMU (required before heap - enables Normal memory for unaligned access)
 	if !initMMU() {
@@ -678,14 +683,14 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 	// Get frame pool info
 	physAlloc := getKFrameAllocator()
 
-	// Compute derived values
+	// Use computed values from layout.go (not hardcoded)
 	const KernelVAOffset = uint64(0xFFFFFFFF00000000)
-	const TTBR1RegionVA = uint64(0x419C0000)  // Where TTBR1 tables are mapped (low-mem)
-	const TTBR1RegionSize = uint64(0x10000)   // 64KB for TTBR1 tables
-	const PTPoolSize = uint64(0x30000)        // 192KB (48 pages)
 
-	ptPoolStart := TTBR1RegionVA + TTBR1RegionSize + KernelVAOffset
-	ptPoolEnd := ptPoolStart + PTPoolSize
+	// PT pool addresses are dynamically computed from LinkerKmazarinSize
+	// by initComputedMemoryLayout() called during MMU setup.
+	// This ensures they're placed AFTER kmazarin's static regions.
+	ptPoolStart := uint64(computedPTPoolStart)
+	ptPoolEnd := uint64(computedPTPoolEnd)
 
 	// Use TTBR1 (kernel-space) addresses for heap - high memory
 	// This tests whether we can make Go work with high-memory addresses
@@ -755,9 +760,35 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 	config.KmazarinPhysAddr = uint64(constants.KmazarinLoadAddr)
 	config.KmazarinSize = uint64(kmazarinAllocatedBytes)
 
-	// Frame pool
-	config.FramePoolStart = uint64(physAlloc.next)
-	config.FramePoolEnd = uint64(physAlloc.end)
+	// Frame pool - compute end to match exactly the 64MB kernel limit
+	// Formula: 64MB - kmazarinSize - overhead = max heap bytes
+	// Overhead = TTBR1 region (64KB) + PT pool (512KB) = 576KB
+	const kmazarinTotalLimit = 64 * 1024 * 1024 // 64MB
+	const overheadBytes = 0x90000               // TTBR1 region + PT pool
+
+	framePoolStart := uint64(physAlloc.next)
+
+	// Calculate maximum heap bytes available within 64MB limit
+	usedByStatic := uint64(kmazarinAllocatedBytes) + overheadBytes
+	if usedByStatic >= kmazarinTotalLimit {
+		// Should never happen - kmazarin binary + overhead exceeds 64MB
+		uartPutsDirect("ERROR: kmazarin static regions exceed 64MB limit\r\n")
+		config.FramePoolStart = framePoolStart
+		config.FramePoolEnd = framePoolStart // No heap available
+	} else {
+		maxHeapBytes := kmazarinTotalLimit - usedByStatic
+		// Round down to page boundary
+		maxHeapBytes = maxHeapBytes &^ 0xFFF
+		framePoolEnd := framePoolStart + maxHeapBytes
+
+		// Don't exceed the physical frame allocator's limit
+		if framePoolEnd > uint64(physAlloc.end) {
+			framePoolEnd = uint64(physAlloc.end)
+		}
+
+		config.FramePoolStart = framePoolStart
+		config.FramePoolEnd = framePoolEnd
+	}
 
 	// MMIO devices (already in high memory)
 	config.KernelUartBase = uint64(constants.KernelUartBase)
@@ -940,6 +971,239 @@ func setupKmazarinStartupEnv(kmazarinStartupParamsVA uintptr) (stackPointer uint
 	return structStart, 1, structStart + 8
 }
 
+// parseKmazarinElfSymbols extracts symbol addresses from kmazarin.elf at runtime.
+// This allows Cardinal to locate kmazarin's StartupParams, ExceptionVectorTable,
+// and other important symbols without requiring build-time patching.
+//
+// Updates the global Linker* variables with the found addresses.
+// Returns the kmazarin memory size (end - start of loaded sections).
+func parseKmazarinElfSymbols(elfData []byte) uint64 {
+	if len(elfData) < 64 {
+		uartPutsDirect("parseKmazarinElfSymbols: ELF too small\r\n")
+		return 0
+	}
+
+	// Parse section header offset (0x28-0x2F)
+	shoff := uint64(elfData[0x28]) |
+		(uint64(elfData[0x29]) << 8) |
+		(uint64(elfData[0x2A]) << 16) |
+		(uint64(elfData[0x2B]) << 24) |
+		(uint64(elfData[0x2C]) << 32) |
+		(uint64(elfData[0x2D]) << 40) |
+		(uint64(elfData[0x2E]) << 48) |
+		(uint64(elfData[0x2F]) << 56)
+
+	// Parse section header entry size and count
+	shentsize := uint16(elfData[0x3A]) | (uint16(elfData[0x3B]) << 8)
+	shnum := uint16(elfData[0x3C]) | (uint16(elfData[0x3D]) << 8)
+	shstrndx := uint16(elfData[0x3E]) | (uint16(elfData[0x3F]) << 8)
+
+	// Section types
+	const (
+		SHT_NULL    = 0
+		SHT_SYMTAB  = 2
+		SHT_STRTAB  = 3
+		SHT_NOBITS  = 8
+	)
+
+	// Get section string table
+	shstrOff := shoff + uint64(shstrndx)*uint64(shentsize)
+	if shstrOff+64 > uint64(len(elfData)) {
+		uartPutsDirect("parseKmazarinElfSymbols: shstrtab header OOB\r\n")
+		return 0
+	}
+	shstrOffset := uint64(elfData[shstrOff+24]) |
+		(uint64(elfData[shstrOff+25]) << 8) |
+		(uint64(elfData[shstrOff+26]) << 16) |
+		(uint64(elfData[shstrOff+27]) << 24) |
+		(uint64(elfData[shstrOff+28]) << 32) |
+		(uint64(elfData[shstrOff+29]) << 40) |
+		(uint64(elfData[shstrOff+30]) << 48) |
+		(uint64(elfData[shstrOff+31]) << 56)
+	shstrSize := uint64(elfData[shstrOff+32]) |
+		(uint64(elfData[shstrOff+33]) << 8) |
+		(uint64(elfData[shstrOff+34]) << 16) |
+		(uint64(elfData[shstrOff+35]) << 24) |
+		(uint64(elfData[shstrOff+36]) << 32) |
+		(uint64(elfData[shstrOff+37]) << 40) |
+		(uint64(elfData[shstrOff+38]) << 48) |
+		(uint64(elfData[shstrOff+39]) << 56)
+
+	if shstrOffset+shstrSize > uint64(len(elfData)) {
+		uartPutsDirect("parseKmazarinElfSymbols: shstrtab OOB\r\n")
+		return 0
+	}
+
+	// Find .symtab, .strtab, and .text sections
+	var symtabOff, symtabSize, strtabOff, strtabSize uint64
+	var textStart, maxEnd uint64
+
+	for i := uint16(0); i < shnum; i++ {
+		off := shoff + uint64(i)*uint64(shentsize)
+		if off+64 > uint64(len(elfData)) {
+			continue
+		}
+
+		nameIdx := uint32(elfData[off]) |
+			(uint32(elfData[off+1]) << 8) |
+			(uint32(elfData[off+2]) << 16) |
+			(uint32(elfData[off+3]) << 24)
+		secType := uint32(elfData[off+4]) |
+			(uint32(elfData[off+4+1]) << 8) |
+			(uint32(elfData[off+4+2]) << 16) |
+			(uint32(elfData[off+4+3]) << 24)
+		secAddr := uint64(elfData[off+16]) |
+			(uint64(elfData[off+17]) << 8) |
+			(uint64(elfData[off+18]) << 16) |
+			(uint64(elfData[off+19]) << 24) |
+			(uint64(elfData[off+20]) << 32) |
+			(uint64(elfData[off+21]) << 40) |
+			(uint64(elfData[off+22]) << 48) |
+			(uint64(elfData[off+23]) << 56)
+		secOffset := uint64(elfData[off+24]) |
+			(uint64(elfData[off+25]) << 8) |
+			(uint64(elfData[off+26]) << 16) |
+			(uint64(elfData[off+27]) << 24) |
+			(uint64(elfData[off+28]) << 32) |
+			(uint64(elfData[off+29]) << 40) |
+			(uint64(elfData[off+30]) << 48) |
+			(uint64(elfData[off+31]) << 56)
+		secSize := uint64(elfData[off+32]) |
+			(uint64(elfData[off+33]) << 8) |
+			(uint64(elfData[off+34]) << 16) |
+			(uint64(elfData[off+35]) << 24) |
+			(uint64(elfData[off+36]) << 32) |
+			(uint64(elfData[off+37]) << 40) |
+			(uint64(elfData[off+38]) << 48) |
+			(uint64(elfData[off+39]) << 56)
+
+		// Get section name from string table
+		if nameIdx < uint32(shstrSize) {
+			// Check section name
+			nameStart := shstrOffset + uint64(nameIdx)
+			if nameStart < uint64(len(elfData)) {
+				// Compare section names
+				if secType == SHT_SYMTAB {
+					symtabOff = secOffset
+					symtabSize = secSize
+				}
+				// Find .strtab by name (not .shstrtab)
+				if uint64(nameIdx)+7 <= shstrSize {
+					name := elfData[nameStart:]
+					if len(name) >= 7 && name[0] == '.' && name[1] == 's' && name[2] == 't' && name[3] == 'r' && name[4] == 't' && name[5] == 'a' && name[6] == 'b' && (len(name) < 8 || name[7] == 0) {
+						strtabOff = secOffset
+						strtabSize = secSize
+					}
+					// Find .text for size calculation
+					if len(name) >= 5 && name[0] == '.' && name[1] == 't' && name[2] == 'e' && name[3] == 'x' && name[4] == 't' && (len(name) < 6 || name[5] == 0) {
+						textStart = secAddr
+					}
+				}
+			}
+		}
+
+		// Track highest end address for memory size calculation
+		if secAddr != 0 && secSize != 0 {
+			sectionEnd := secAddr + secSize
+			if sectionEnd > maxEnd {
+				maxEnd = sectionEnd
+			}
+		}
+	}
+
+	// Calculate kmazarin size
+	kmazarinMemSize := uint64(0)
+	if textStart != 0 && maxEnd > textStart {
+		kmazarinMemSize = maxEnd - textStart
+	}
+
+	// Parse symbols if we found the tables
+	if symtabOff == 0 || symtabSize == 0 || strtabOff == 0 || strtabSize == 0 {
+		uartPutsDirect("parseKmazarinElfSymbols: symtab/strtab not found\r\n")
+		return kmazarinMemSize
+	}
+
+	if symtabOff+symtabSize > uint64(len(elfData)) || strtabOff+strtabSize > uint64(len(elfData)) {
+		uartPutsDirect("parseKmazarinElfSymbols: symtab/strtab OOB\r\n")
+		return kmazarinMemSize
+	}
+
+	// Kernel VA offset for converting physical to high-memory addresses
+	const KernelVAOffset = uint64(0xFFFFFFFF00000000)
+
+	// Each symbol is 24 bytes (Elf64Sym)
+	numSymbols := symtabSize / 24
+	for i := uint64(0); i < numSymbols; i++ {
+		symOff := symtabOff + i*24
+		if symOff+24 > uint64(len(elfData)) {
+			continue
+		}
+
+		nameIdx := uint32(elfData[symOff]) |
+			(uint32(elfData[symOff+1]) << 8) |
+			(uint32(elfData[symOff+2]) << 16) |
+			(uint32(elfData[symOff+3]) << 24)
+		value := uint64(elfData[symOff+8]) |
+			(uint64(elfData[symOff+9]) << 8) |
+			(uint64(elfData[symOff+10]) << 16) |
+			(uint64(elfData[symOff+11]) << 24) |
+			(uint64(elfData[symOff+12]) << 32) |
+			(uint64(elfData[symOff+13]) << 40) |
+			(uint64(elfData[symOff+14]) << 48) |
+			(uint64(elfData[symOff+15]) << 56)
+
+		if uint64(nameIdx) >= strtabSize || value == 0 {
+			continue
+		}
+
+		// Get symbol name
+		nameStart := strtabOff + uint64(nameIdx)
+		if nameStart >= uint64(len(elfData)) {
+			continue
+		}
+
+		// Compare symbol names and set corresponding Linker* variables
+		// Symbol names are null-terminated
+		sym := elfData[nameStart:]
+		symLen := uint64(0)
+		for symLen < 100 && symLen < uint64(len(sym)) && sym[symLen] != 0 {
+			symLen++
+		}
+
+		// Helper to compare null-terminated strings
+		matchSymbol := func(name string) bool {
+			if symLen != uint64(len(name)) {
+				return false
+			}
+			for j := 0; j < len(name); j++ {
+				if sym[j] != name[j] {
+					return false
+				}
+			}
+			return true
+		}
+
+		highMemValue := value + KernelVAOffset
+
+		// Match symbols - convert to high-memory addresses
+		if matchSymbol("main.ExceptionVectorTable") || matchSymbol("main.ExceptionVectorTable.abi0") {
+			LinkerKmazarinExceptionVector = highMemValue
+		} else if matchSymbol("main.StartupParams") {
+			LinkerKmazarinStartupParams = highMemValue
+		} else if matchSymbol("main.G0Struct") {
+			LinkerKmazarinG0Struct = highMemValue
+		} else if matchSymbol("runtime.asyncPreempt") || matchSymbol("runtime.asyncPreempt.abi0") {
+			LinkerKmazarinAsyncPreempt = highMemValue
+		} else if matchSymbol("main.readyForAsyncPreempt") {
+			LinkerKmazarinReadyForPreempt = highMemValue
+		} else if matchSymbol("runtime.g0") {
+			LinkerKmazarinRuntimeG0 = highMemValue
+		}
+	}
+
+	return kmazarinMemSize
+}
+
 // loadAndRunKmazarin loads the embedded kmazarin ELF binary into memory and jumps to it
 // This function:
 // 1. Parses the ELF program headers to find PT_LOAD segments
@@ -978,6 +1242,14 @@ func loadAndRunKmazarin() {
 		elfData[0] != 0x7F || elfData[1] != 'E' || elfData[2] != 'L' || elfData[3] != 'F' {
 		uartPutsDirect("ERROR: Invalid ELF file\r\n")
 		return
+	}
+
+	// Parse ELF symbol table to extract kmazarin symbol addresses at runtime.
+	// This eliminates the need for build-time patching of these values.
+	kmazarinMemSize := parseKmazarinElfSymbols(elfData)
+	if kmazarinMemSize > 0 {
+		// Update LinkerKmazarinSize with the actual size from ELF parsing
+		LinkerKmazarinSize = kmazarinMemSize
 	}
 
 	// Parse entry point (offset 0x18-0x1F for 64-bit ELF)

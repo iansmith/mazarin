@@ -2,6 +2,7 @@ package main
 
 import (
 	"cardinal/asm"
+	"cardinal/constants"
 	"unsafe"
 )
 
@@ -512,16 +513,16 @@ func kmazarinAsyncPreempt() uint64 {
 	return uint64(LinkerKmazarinAsyncPreempt)
 }
 
-// kmazarinTextStart returns the start of kmazarin's text section
+// kmazarinTextStart returns the start of kmazarin's text section (load address)
 //go:nosplit
 func kmazarinTextStart() uint64 {
-	return uint64(LinkerKmazarinStart)
+	return uint64(constants.KmazarinLoadAddr)
 }
 
 // kmazarinTextEnd returns the end of kmazarin's memory region
 //go:nosplit
 func kmazarinTextEnd() uint64 {
-	return uint64(LinkerKmazarinStart + LinkerKmazarinSize)
+	return uint64(constants.KmazarinLoadAddr) + LinkerKmazarinSize
 }
 
 // irqExceptionDispatchInternal is the unified entry point for ALL IRQ exceptions.

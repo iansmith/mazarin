@@ -4,6 +4,7 @@ import (
 	"unsafe"
 
 	"cardinal/asm"
+	"cardinal/constants"
 )
 
 // Page table entry bits (ARM64)
@@ -214,6 +215,48 @@ var (
 var (
 	kmazarinAllocatedBytes uintptr // Total bytes allocated for kmazarin (includes binary + heap)
 )
+
+// Dynamically computed memory layout values
+// These are derived from LinkerKmazarinSize at runtime to avoid hardcoded offsets
+// that can become stale when kmazarin binary size changes.
+var (
+	// computedTTBR1RegionVA is where Cardinal's TTBR1 page tables are mapped
+	// for kmazarin to access. Computed as page-aligned end of kmazarin static region.
+	computedTTBR1RegionVA uintptr
+
+	// computedPTPoolStart/End define the page table pool kmazarin uses
+	// for demand paging. Placed immediately after the TTBR1 region.
+	computedPTPoolStart uintptr
+	computedPTPoolEnd   uintptr
+)
+
+// initComputedMemoryLayout derives memory layout values from LinkerKmazarinSize.
+// This MUST be called before setupKernelDemandPaging() uses these values.
+// The layout is:
+//   KernelTextBase + LinkerKmazarinSize = end of kmazarin static region
+//   Page-align up = computedTTBR1RegionVA (64KB for TTBR1 tables)
+//   + TTBR1 region size = computedPTPoolStart (512KB for PT allocation)
+//
+//go:nosplit
+func initComputedMemoryLayout() {
+	// KernelTextBase is computed from constants at compile time
+	kernelTextBase := uintptr(constants.KernelTextBase)
+
+	// LinkerKmazarinSize is patched at build time from kmazarin.elf
+	// It represents the total memory footprint of kmazarin's static regions
+	kmazarinEndVA := kernelTextBase + uintptr(LinkerKmazarinSize)
+
+	// Page-align up to get TTBR1 region start
+	computedTTBR1RegionVA = (kmazarinEndVA + PAGE_SIZE - 1) &^ (PAGE_SIZE - 1)
+
+	// PT pool starts after TTBR1 region (64KB for up to 16 page tables)
+	const ttbr1RegionSize = 0x10000 // 64KB
+	computedPTPoolStart = computedTTBR1RegionVA + ttbr1RegionSize
+
+	// PT pool is 512KB (128 pages)
+	const ptPoolSize = 0x80000 // 512KB
+	computedPTPoolEnd = computedPTPoolStart + ptPoolSize
+}
 
 // kernelPanic prints a panic message and halts the system
 // Uses direct UART writes to work before UART initialization

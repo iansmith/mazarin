@@ -176,8 +176,7 @@ func get_cardinal_allocation_size() uintptr
 //go:nosplit
 func get_kmazarin_load_addr() uintptr
 
-//go:nosplit
-func get_kmazarin_start() uintptr
+// NOTE: get_kmazarin_start removed - use constants.KmazarinLoadAddr directly
 
 //go:nosplit
 func get_kmazarin_size() uintptr
@@ -274,7 +273,6 @@ func GetDtbSize() uintptr                { return get_dtb_size() }
 func GetCardinalEnd() uintptr            { return get_cardinal_end() }
 func GetCardinalAllocationSize() uintptr { return get_cardinal_allocation_size() }
 func GetKmazarinLoadAddr() uintptr       { return get_kmazarin_load_addr() }
-func GetKmazarinStart() uintptr          { return get_kmazarin_start() }
 func GetKmazarinSize() uintptr           { return get_kmazarin_size() }
 func GetPageTablesStartAddr() uintptr    { return get_page_tables_start_addr() }
 func GetPageTablesEndAddr() uintptr      { return get_page_tables_end_addr() }

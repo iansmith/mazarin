@@ -334,7 +334,7 @@ func printValues(values []LinkerValue) {
 			"LinkerBochsDisplayBase", "LinkerBochsDisplaySize",
 			"LinkerPciBarBase", "LinkerPciBarSize":
 			categories["MMIO Devices"] = append(categories["MMIO Devices"], v)
-		case "LinkerKmazarinStart", "LinkerKmazarinSize", "LinkerKmazarinExceptionVector",
+		case "LinkerKmazarinSize", "LinkerKmazarinExceptionVector",
 			"LinkerKmazarinStartupParams", "LinkerKmazarinG0Struct", "LinkerKmazarinAsyncPreempt",
 			"LinkerKmazarinReadyForPreempt", "LinkerKmazarinRuntimeG0":
 			categories["Embedded Kmazarin"] = append(categories["Embedded Kmazarin"], v)
@@ -685,10 +685,9 @@ func computeLinkerValues(sections map[string]*Section, symbolAddrs map[string]ui
 	add("LinkerPciBarSize", "__pci_bar_size", constants.PciBarSize, "PCI BAR pool size (240MB)", false)
 
 	// === Embedded Kmazarin ===
-	// LinkerKmazarinStart is where kmazarin is loaded
+	// NOTE: LinkerKmazarinStart removed - use constants.KmazarinLoadAddr directly
 	// LinkerKmazarinSize is calculated from kmazarin.elf if -kmazarin flag provided
 	// LinkerKmazarinExceptionVector is the address of kmazarin's exception vector table
-	add("LinkerKmazarinStart", "__kmazarin_start", constants.KmazarinLoadAddr, "kmazarin load address", true)
 	if kinfo.Size > 0 {
 		add("LinkerKmazarinSize", "__kmazarin_size", kinfo.Size, "calculated from kmazarin.elf", true)
 	} else {

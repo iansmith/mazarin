@@ -86,16 +86,17 @@ var (
 	LinkerPciBarBase       uint64 = constants.PciBarBase
 	LinkerPciBarSize       uint64 = constants.PciBarSize
 
-	// Embedded kmazarin kernel - NOT YET IMPLEMENTED in go-native build
-	// Initialized to 1 so they're in .data section for patching
-	LinkerKmazarinStart             uint64 = 1 // __kmazarin_start (patched)
-	LinkerKmazarinSize              uint64 = 1 // __kmazarin_size (patched)
-	LinkerKmazarinExceptionVector   uint64 = 1 // __kmazarin_exception_vector (patched from symbol table)
-	LinkerKmazarinStartupParams     uint64 = 1 // __kmazarin_startup_params (patched from symbol table)
-	LinkerKmazarinG0Struct          uint64 = 1 // __kmazarin_g0_struct (patched from symbol table)
-	LinkerKmazarinAsyncPreempt      uint64 = 1 // __kmazarin_async_preempt (patched from symbol table)
-	LinkerKmazarinReadyForPreempt   uint64 = 1 // __kmazarin_ready_for_asyncpreempt (patched from symbol table)
-	LinkerKmazarinRuntimeG0         uint64 = 1 // __kmazarin_runtime_g0 (kmazarin's g0, patched from symbol table)
+	// Embedded kmazarin kernel values
+	// LinkerKmazarinSize: Still needs build-time patching (used before ELF is parsed)
+	// Other symbols: Parsed at runtime from kmazarin.elf symbol table (no patching needed)
+	// NOTE: Use constants.KmazarinLoadAddr directly instead of a redundant LinkerKmazarinStart variable
+	LinkerKmazarinSize              uint64 = 1 // __kmazarin_size (still patched - used before ELF parsing)
+	LinkerKmazarinExceptionVector   uint64 = 1 // Parsed at runtime from kmazarin.elf
+	LinkerKmazarinStartupParams     uint64 = 1 // Parsed at runtime from kmazarin.elf
+	LinkerKmazarinG0Struct          uint64 = 1 // Parsed at runtime from kmazarin.elf
+	LinkerKmazarinAsyncPreempt      uint64 = 1 // Parsed at runtime from kmazarin.elf
+	LinkerKmazarinReadyForPreempt   uint64 = 1 // Parsed at runtime from kmazarin.elf
+	LinkerKmazarinRuntimeG0         uint64 = 1 // Parsed at runtime from kmazarin.elf
 )
 
 // linkerValuesSum is used to prevent dead-code elimination of Linker* variables.
@@ -121,7 +122,7 @@ func init() {
 		LinkerRtcBase + LinkerFwcfgBase + LinkerFwcfgSize +
 		LinkerBochsDisplayBase + LinkerBochsDisplaySize +
 		LinkerPciBarBase + LinkerPciBarSize +
-		LinkerKmazarinStart + LinkerKmazarinSize + LinkerKmazarinExceptionVector +
+		LinkerKmazarinSize + LinkerKmazarinExceptionVector +
 		LinkerKmazarinStartupParams + LinkerKmazarinG0Struct + LinkerKmazarinAsyncPreempt +
 		LinkerKmazarinReadyForPreempt + LinkerKmazarinRuntimeG0 +
 		DataTestMagic[0] + DataTestMagic[1] + DataTestMagic[2] + DataTestMagic[3] +

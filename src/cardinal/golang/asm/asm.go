@@ -61,7 +61,6 @@ var (
 	GetCardinalEnd          = kernel.GetCardinalEnd
 	GetCardinalAllocationSize = kernel.GetCardinalAllocationSize
 	GetKmazarinLoadAddr     = kernel.GetKmazarinLoadAddr
-	GetKmazarinStart        = kernel.GetKmazarinStart
 	GetKmazarinSize         = kernel.GetKmazarinSize
 	GetPageTablesStartAddr  = kernel.GetPageTablesStartAddr
 	GetPageTablesEndAddr    = kernel.GetPageTablesEndAddr

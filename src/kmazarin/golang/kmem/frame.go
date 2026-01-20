@@ -12,6 +12,10 @@ import (
 // Page size (4KB)
 const PageSize = 0x1000
 
+// KmazarinTotalLimit is the 64MB limit for kmazarin kernel memory.
+// This includes: static regions (code/data/bss) + TTBR1 region + PT pool + heap frames.
+const KmazarinTotalLimit = 64 * 1024 * 1024 // 64 MB
+
 // Frame pool boundaries are retrieved from runtime configuration (auxv).
 // NO hardcoded addresses - everything comes from Cardinal at runtime.
 
@@ -55,6 +59,9 @@ func InitFrameAllocator() {
 // The frame is NOT zeroed - caller should use Bzero4K after mapping if needed.
 // Thread-safe: uses atomic operations for concurrent allocation.
 //
+// CRITICAL: This function enforces the 64MB total kernel memory limit.
+// If allocation would exceed the limit, it panics with "kernel memory exhausted".
+//
 // For userspace allocations, use AllocUserFrame() instead.
 //
 //go:nosplit
@@ -75,14 +82,42 @@ func AllocKernelFrame() uintptr {
 		}
 	}
 
+	// Check 64MB limit BEFORE allocating
+	// Total kernel memory = KmazarinSize (static) + overhead + (allocated+1)*PageSize
+	// Overhead = TTBR1 region (64KB) + PT pool (512KB) = 576KB = 0x90000
+	cfg := getRuntimeConfigTyped()
+	const overheadBytes = 0x90000 // TTBR1 region + PT pool
+	currentAllocated := atomic.LoadUint64(&frameAllocator.allocated)
+	totalAfterAlloc := cfg.KmazarinSize + overheadBytes + (currentAllocated+1)*PageSize
+
+	if totalAfterAlloc > KmazarinTotalLimit {
+		uartPuts("\r\n*** KERNEL PANIC: kernel memory exhausted (64MB limit) ***\r\n")
+		uartPuts("  KmazarinSize: ")
+		uartPutHex64(cfg.KmazarinSize)
+		uartPuts("\r\n  Overhead: ")
+		uartPutHex64(overheadBytes)
+		uartPuts("\r\n  Heap frames: ")
+		uartPutHex64(currentAllocated)
+		uartPuts("\r\n  Total: ")
+		uartPutHex64(totalAfterAlloc)
+		uartPuts(" > 64MB (")
+		uartPutHex64(KmazarinTotalLimit)
+		uartPuts(")\r\n")
+		// Infinite loop to halt
+		for {
+		}
+	}
+
 	// Atomically allocate a frame
 	for {
 		currentNext := atomic.LoadUintptr(&frameAllocator.nextFrame)
 		endFrame := atomic.LoadUintptr(&frameAllocator.endFrame)
 
 		if currentNext >= endFrame {
-			uartPuts("[kmem] OOM!\r\n")
-			return 0
+			uartPuts("\r\n*** KERNEL PANIC: frame pool exhausted ***\r\n")
+			// Infinite loop to halt
+			for {
+			}
 		}
 
 		newNext := currentNext + PageSize

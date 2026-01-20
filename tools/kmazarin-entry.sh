@@ -7,7 +7,7 @@
 #
 # HOW IT WORKS:
 #   Runs a simple Go program that imports cardinal/constants and prints
-#   constants.KmazarinLoadAddr (0x41800000).
+#   constants.KmazarinLoadAddr (computed from memory layout constants).
 #
 #   This replaces the old approach of parsing linker.ld, which is no longer
 #   used since we switched to pure Go builds.

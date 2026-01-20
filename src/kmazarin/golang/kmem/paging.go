@@ -11,6 +11,9 @@ import (
 //go:linkname getUserMmapAllocEnd kmazarin/ksyscall.GetUserMmapAllocEnd
 func getUserMmapAllocEnd() uint64
 
+//go:linkname isAddressInSpan kmazarin/ksyscall.IsAddressInSpan
+func isAddressInSpan(addr uint64) bool
+
 // debugPaging enables verbose page fault debugging output
 // Set to false for production, true for debugging
 const debugPaging = false
@@ -574,18 +577,18 @@ func HandleUserPageFault(faultAddr uintptr) bool {
 	// Get the current mmap allocation end (addresses >= this were NOT allocated)
 	allocEnd := getUserMmapAllocEnd()
 
-	// Userspace has two VA regions:
+	// Userspace has three valid VA regions:
 	// 1. MAP_FIXED region: 0x10000 to userMmapStart (ELF, thread stacks, etc.)
 	// 2. Bump-allocated region: userMmapStart to allocEnd
+	// 3. Hint-based allocations: tracked in the span list (can be anywhere in userspace range)
 	//
-	// Accept faults in either region:
-	// - MAP_FIXED region: 0x10000 to userMmapStart
-	// - Bump region: userMmapStart to allocEnd
+	// Accept faults in any of these regions
 	const minUserAddr = 0x10000 // Minimum userspace address (64KB, above NULL guard)
 	inMapFixedRegion := uint64(faultAddr) >= minUserAddr && uint64(faultAddr) < userMmapStart
 	inBumpRegion := uint64(faultAddr) >= userMmapStart && uint64(faultAddr) < allocEnd
+	inSpanRegion := isAddressInSpan(uint64(faultAddr))
 
-	if !inMapFixedRegion && !inBumpRegion {
+	if !inMapFixedRegion && !inBumpRegion && !inSpanRegion {
 		console.KWriteString("[kmem] User fault at unallocated address: ")
 		console.KPrintHex64(uint64(faultAddr))
 		console.KWriteString(" (bump end: ")
@@ -1511,6 +1514,202 @@ func mapUserPage(va, pa uintptr, elfFlags uint32) bool {
 	tlbiVAE1IS(va)
 	dsbSY()
 	isbSY()
+
+	return true
+}
+
+// MapUserDevicePage maps a physical address to a userspace VA with device memory attributes.
+// This is used for mapping MMIO regions (like framebuffer) into priest address space.
+// Unlike mapUserPage, this does NOT allocate a frame - it maps the given PA directly.
+//
+// The mapping is:
+// - RW accessible by both EL1 and EL0
+// - Device memory attributes (non-cacheable, strongly ordered)
+// - No execute (PXN + UXN)
+//
+// Returns true on success, false on failure.
+//
+//go:nosplit
+func MapUserDevicePage(va, pa uintptr) bool {
+	// Lazy initialization
+	if !pagingInitialized {
+		InitPaging()
+	}
+
+	// Extract indices
+	l0Idx := (va >> L0Shift) & 0x1FF
+	l1Idx := (va >> L1Shift) & 0x1FF
+	l2Idx := (va >> L2Shift) & 0x1FF
+	l3Idx := (va >> L3Shift) & 0x1FF
+
+	// Use TTBR0 for userspace (bit 55 = 0)
+	if (va>>55)&1 != 0 {
+		return false // User pages must be in low memory
+	}
+
+	// Use process-specific L0 if available, otherwise fallback to inherited
+	l0PA := processL0PA
+	if l0PA == 0 {
+		l0PA = ttbr0L0PA
+	}
+
+	// Get L0 table VA
+	l0VA := paToVAOrCache(l0PA)
+	if l0VA == 0 {
+		return false
+	}
+
+	// Read L0 entry
+	l0Entry := (*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
+
+	var l1VA uintptr
+	if (*l0Entry & PTE_VALID) == 0 {
+		// Need to allocate L1 table
+		l1VA = allocPTPage()
+		if l1VA == 0 {
+			return false
+		}
+		l1PA := walkPageTable(l1VA)
+		if l1PA == 0 {
+			return false
+		}
+		cachePTVA(l1PA, l1VA)
+		*l0Entry = uint64(l1PA) | PTE_VALID | PTE_TABLE
+		dcCIVAC(uintptr(unsafe.Pointer(l0Entry)))
+		dsbSY()
+		tlbiVAE1IS(0)
+		dsbSY()
+		isbSY()
+	} else {
+		l1PA := uintptr(*l0Entry & PTE_ADDR_MASK)
+		l1VA = paToVAOrCache(l1PA)
+	}
+	if l1VA == 0 {
+		return false
+	}
+
+	// Read L1 entry
+	l1Entry := (*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
+
+	var l2VA uintptr
+	if (*l1Entry & PTE_VALID) == 0 {
+		l2VA = allocPTPage()
+		if l2VA == 0 {
+			return false
+		}
+		l2PA := walkPageTable(l2VA)
+		if l2PA == 0 {
+			return false
+		}
+		cachePTVA(l2PA, l2VA)
+		*l1Entry = uint64(l2PA) | PTE_VALID | PTE_TABLE
+		dcCIVAC(uintptr(unsafe.Pointer(l1Entry)))
+		dsbSY()
+		tlbiVAE1IS(0)
+		dsbSY()
+		isbSY()
+	} else {
+		l2PA := uintptr(*l1Entry & PTE_ADDR_MASK)
+		l2VA = paToVAOrCache(l2PA)
+	}
+	if l2VA == 0 {
+		return false
+	}
+
+	// Read L2 entry
+	l2Entry := (*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
+
+	var l3VA uintptr
+	if (*l2Entry & PTE_VALID) == 0 {
+		l3VA = allocPTPage()
+		if l3VA == 0 {
+			return false
+		}
+		l3PA := walkPageTable(l3VA)
+		if l3PA == 0 {
+			return false
+		}
+		cachePTVA(l3PA, l3VA)
+		*l2Entry = uint64(l3PA) | PTE_VALID | PTE_TABLE
+		dcCIVAC(uintptr(unsafe.Pointer(l2Entry)))
+		dsbSY()
+		tlbiVAE1IS(0)
+		dsbSY()
+		isbSY()
+	} else {
+		l3PA := uintptr(*l2Entry & PTE_ADDR_MASK)
+		l3VA = paToVAOrCache(l3PA)
+	}
+	if l3VA == 0 {
+		return false
+	}
+
+	// Write L3 entry with device attributes
+	l3Entry := (*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
+
+	// Check if already mapped
+	if (*l3Entry & PTE_VALID) != 0 {
+		// Already mapped - verify it points to same PA
+		existingPA := uintptr(*l3Entry & PTE_ADDR_MASK)
+		if existingPA == pa {
+			return true // Already correctly mapped
+		}
+		return false // Conflict!
+	}
+
+	// Device memory: non-cacheable, RW for user and kernel, no execute
+	pteValue := uint64(pa) | PTE_VALID | PTE_TABLE | PTE_AF |
+		PTE_ATTR_DEVICE | PTE_AP_RW_ALL | PTE_EXEC_NEVER
+
+	*l3Entry = pteValue
+
+	// Clean cache and invalidate TLB
+	dcCIVAC(uintptr(unsafe.Pointer(l3Entry)))
+	dsbSY()
+	tlbiVAE1IS(va)
+	dsbSY()
+	isbSY()
+
+	return true
+}
+
+// MapUserFramebuffer maps the framebuffer physical memory into userspace.
+// This maps FramebufferSize bytes from FramebufferPhysAddr to UserFramebufferVA.
+// Returns true on success.
+func MapUserFramebuffer() bool {
+	// Get framebuffer info from RuntimeConfig (set by Cardinal)
+	cfg := getRuntimeConfigTyped()
+	framebufferPA := uintptr(cfg.FramebufferPhysAddr)
+	framebufferSize := uintptr(cfg.FramebufferSize)
+
+	// Fixed userspace VA for framebuffer (matches ksyscall.UserFramebufferVA)
+	const framebufferVA = 0x00007FFE00000000
+
+	console.KWriteString("[KMEM] Mapping framebuffer to userspace VA ")
+	console.KPrintHex64(framebufferVA)
+	console.KWriteString(" PA=")
+	console.KPrintHex64(uint64(framebufferPA))
+	console.KWriteString(" size=")
+	console.KPrintHex64(uint64(framebufferSize))
+	console.KWriteString("\r\n")
+
+	pageSize := uintptr(0x1000)
+	numPages := framebufferSize / pageSize
+
+	for i := uintptr(0); i < numPages; i++ {
+		va := uintptr(framebufferVA) + i*pageSize
+		pa := framebufferPA + i*pageSize
+		if !MapUserDevicePage(va, pa) {
+			console.KWriteString("[KMEM] Failed to map framebuffer page at VA ")
+			console.KPrintHex64(uint64(va))
+			console.KWriteString("\r\n")
+			return false
+		}
+	}
+
+	console.KWriteString("[KMEM] Framebuffer mapped: ")
+	console.KPrintHex64(uint64(numPages))
+	console.KWriteString(" pages\r\n")
 
 	return true
 }

@@ -46,15 +46,15 @@ const (
 	CardinalEnd   = CardinalStart + CardinalAllocationSize
 
 	// VirtIO GPU framebuffer region
-	FramebufferPhysAddr = CardinalEnd      // = 0x41000000
+	FramebufferPhysAddr = CardinalEnd
 	FramebufferEnd      = FramebufferPhysAddr + FramebufferSize
 
 	// Page table region (shifted after framebuffer)
-	PageTableStart = FramebufferEnd        // = 0x41800000
+	PageTableStart = FramebufferEnd
 	PageTableEnd   = PageTableStart + PageTableSize
 
 	// Kmazarin load address (immediately after page tables)
-	KmazarinLoadAddr = PageTableEnd        // = 0x42000000
+	KmazarinLoadAddr = PageTableEnd
 )
 
 // ============================================================================
@@ -112,24 +112,25 @@ const (
 // ============================================================================
 
 // MemoryLayoutSummary returns a human-readable summary of the memory layout.
+// NOTE: Addresses are computed from constants - see actual values in the constants above.
 // Useful for debugging and documentation.
 func MemoryLayoutSummary() string {
-	return `Cardinal Memory Layout:
+	return `Cardinal Memory Layout (addresses computed from constants):
   RAM Start:       0x40000000
-  DTB:             0x40000000 - 0x40100000 (1 MB)
-  Cardinal:        0x40100000 - 0x41000000 (15 MB)
-  Framebuffer:     0x41000000 - 0x41800000 (8 MB, VirtIO GPU)
-  Page Tables:     0x41800000 - 0x42000000 (8 MB)
-  Kmazarin:        0x42000000+
-  g0 Stack:        0x5EFF0000 - 0x5F000000 (64 KB, SP_EL0)
-  Exception Stack: 0x5F000000 - 0x5F020000 (128 KB, SP_EL1)
+  DTB:             1 MB
+  Cardinal:        15 MB
+  Framebuffer:     32 MB (VirtIO GPU)
+  Page Tables:     8 MB
+  Kmazarin:        After page tables
+  g0 Stack:        64 KB (SP_EL0)
+  Exception Stack: 128 KB (SP_EL1)
 
 MMIO Devices (QEMU virt):
-  GIC:             0x08000000 - 0x08020000 (128 KB)
-  UART:            0x09000000 - 0x09010000 (64 KB)
+  GIC:             0x08000000 (128 KB)
+  UART:            0x09000000 (64 KB)
   RTC:             0x09010000
-  fw_cfg:          0x09020000 - 0x09030000 (64 KB)
-  bochs-display:   0x10000000 - 0x11000000 (16 MB)
-  PCI BARs:        0x11000000 - 0x20000000 (240 MB)
+  fw_cfg:          0x09020000 (64 KB)
+  bochs-display:   0x10000000 (16 MB)
+  PCI BARs:        0x11000000 (240 MB)
 `
 }

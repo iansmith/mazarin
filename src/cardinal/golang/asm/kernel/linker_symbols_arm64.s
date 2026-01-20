@@ -227,12 +227,7 @@ TEXT ·get_pci_bar_size(SB), NOSPLIT, $0-8
 	RET
 
 // Embedded kmazarin kernel symbols
-
-// get_kmazarin_start() returns uintptr
-TEXT ·get_kmazarin_start(SB), NOSPLIT, $0-8
-	MOVD	main·LinkerKmazarinStart(SB), R0
-	MOVD	R0, ret+0(FP)
-	RET
+// NOTE: get_kmazarin_start removed - use constants.KmazarinLoadAddr directly
 
 // get_kmazarin_size() returns uintptr
 TEXT ·get_kmazarin_size(SB), NOSPLIT, $0-8
