@@ -26,7 +26,7 @@ const (
 	// Allocation sizes for each component
 	DtbSize                = 0x100000  // 1 MB - Device Tree Blob
 	CardinalAllocationSize = 0xF00000  // 15 MB - Cardinal code+data+bss+heap
-	FramebufferSize        = 0x800000  // 8 MB - VirtIO GPU framebuffer
+	FramebufferSize        = 0x2000000 // 32 MB - VirtIO GPU framebuffer (supports up to 4K)
 	PageTableSize          = 0x800000  // 8 MB - ARM64 page tables (L0/L1/L2/L3)
 )
 

@@ -50,8 +50,9 @@ TEXT read_sctlr_el1(SB), NOSPLIT|NOFRAME, $0-8
 	// Segment 1: Read SCTLR_EL1
 	MRS	SCTLR_EL1, R0
 
-	// Segment 2: Return
-	// Return value already in R0 for Go register ABI
+	// Segment 2: Store return value and return
+	// CRITICAL: Must store to ret+0(FP) for ABI0 compatibility
+	MOVD	R0, ret+0(FP)
 	RET
 
 // ============================================================================
@@ -85,9 +86,25 @@ TEXT write_sctlr_el1(SB), NOSPLIT, $16-8
 	DSB	$15
 	ISB	$15
 
+	// DEBUG: Write '<' to UART before MMU enable
+	MOVD	$0x09000000, R1
+	MOVD	$'<', R2
+	MOVB	R2, (R1)
+
 	// Segment 3: Write SCTLR_EL1
 	MSR	R0, SCTLR_EL1
+
+	// DEBUG: Write '=' after MSR, before ISB
+	MOVD	$0x09000000, R1
+	MOVD	$'=', R2
+	MOVB	R2, (R1)
+
 	ISB	$15
+
+	// DEBUG: Write '>' to UART after ISB
+	MOVD	$0x09000000, R1
+	MOVD	$'>', R2
+	MOVB	R2, (R1)
 
 	// Segment 4: Post-MMU invalidation
 	// Invalidate caches after MMU enable
@@ -174,8 +191,8 @@ TEXT read_current_el(SB), NOSPLIT|NOFRAME, $0-4
 	// Segment 1: Read CurrentEL
 	MRS	CurrentEL, R0
 
-	// Segment 2: Return
-	// Return value already in R0 for Go register ABI
+	// Segment 2: Store return value and return
+	MOVD	R0, ret+0(FP)
 	RET
 
 // ============================================================================
@@ -194,8 +211,8 @@ TEXT read_id_aa64pfr0_el1(SB), NOSPLIT|NOFRAME, $0-8
 	// MRS ID_AA64PFR0_EL1, X0 - encoded as: 0xD5380400
 	WORD	$0xD5380400
 
-	// Segment 2: Return
-	// Return value already in R0 for Go register ABI
+	// Segment 2: Store return value and return
+	MOVD	R0, ret+0(FP)
 	RET
 
 // ============================================================================
@@ -214,8 +231,8 @@ TEXT read_scr_el3(SB), NOSPLIT|NOFRAME, $0-8
 	// MRS SCR_EL3, X0 - encoded as: 0xD53E1100
 	WORD	$0xD53E1100
 
-	// Segment 2: Return
-	// Return value already in R0 for Go register ABI
+	// Segment 2: Store return value and return
+	MOVD	R0, ret+0(FP)
 	RET
 
 // ============================================================================
@@ -238,8 +255,8 @@ TEXT read_ctr_el0(SB), NOSPLIT|NOFRAME, $0-8
 	// Segment 1: Read CTR_EL0
 	MRS	CTR_EL0, R0
 
-	// Segment 2: Return
-	// Return value already in R0 for Go register ABI
+	// Segment 2: Store return value and return
+	MOVD	R0, ret+0(FP)
 	RET
 
 // ============================================================================
@@ -261,8 +278,8 @@ TEXT read_tpidr_el0(SB), NOSPLIT|NOFRAME, $0-8
 	// Segment 1: Read TPIDR_EL0
 	MRS	TPIDR_EL0, R0
 
-	// Segment 2: Return
-	// Return value already in R0 for Go register ABI
+	// Segment 2: Store return value and return
+	MOVD	R0, ret+0(FP)
 	RET
 
 // ============================================================================
@@ -301,8 +318,8 @@ TEXT read_tpidr_el1(SB), NOSPLIT|NOFRAME, $0-8
 	// Segment 1: Read TPIDR_EL1
 	MRS	TPIDR_EL1, R0
 
-	// Segment 2: Return
-	// Return value already in R0 for Go register ABI
+	// Segment 2: Store return value and return
+	MOVD	R0, ret+0(FP)
 	RET
 
 // ============================================================================
@@ -346,8 +363,8 @@ TEXT read_esr_el1(SB), NOSPLIT|NOFRAME, $0-8
 	// Segment 1: Read ESR_EL1
 	MRS	ESR_EL1, R0
 
-	// Segment 2: Return
-	// Return value already in R0 for Go register ABI
+	// Segment 2: Store return value and return
+	MOVD	R0, ret+0(FP)
 	RET
 
 // ============================================================================
@@ -365,8 +382,8 @@ TEXT read_elr_el1(SB), NOSPLIT|NOFRAME, $0-8
 	// Segment 1: Read ELR_EL1
 	MRS	ELR_EL1, R0
 
-	// Segment 2: Return
-	// Return value already in R0 for Go register ABI
+	// Segment 2: Store return value and return
+	MOVD	R0, ret+0(FP)
 	RET
 
 // ============================================================================
@@ -403,8 +420,8 @@ TEXT read_far_el1(SB), NOSPLIT|NOFRAME, $0-8
 	// Segment 1: Read FAR_EL1
 	MRS	FAR_EL1, R0
 
-	// Segment 2: Return
-	// Return value already in R0 for Go register ABI
+	// Segment 2: Store return value and return
+	MOVD	R0, ret+0(FP)
 	RET
 
 // ============================================================================
@@ -422,8 +439,8 @@ TEXT read_daif(SB), NOSPLIT|NOFRAME, $0-8
 	// Segment 1: Read DAIF
 	MRS	DAIF, R0
 
-	// Segment 2: Return
-	// Return value already in R0 for Go register ABI
+	// Segment 2: Store return value and return
+	MOVD	R0, ret+0(FP)
 	RET
 
 // ============================================================================
@@ -669,7 +686,8 @@ TEXT read_spsr_el1(SB), NOSPLIT|NOFRAME, $0-8
 	// Segment 1: Read SPSR_EL1
 	MRS	SPSR_EL1, R0
 
-	// Segment 2: Return
+	// Segment 2: Store return value and return
+	MOVD	R0, ret+0(FP)
 	RET
 
 // ============================================================================
