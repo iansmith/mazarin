@@ -2,6 +2,7 @@ package virtio
 
 import (
 	"kmazarin/asm"
+	"kmazarin/console"
 	device_virtio "kmazarin/device/virtio"
 	"kmazarin/deviceapi"
 	"kmazarin/dtb"
@@ -74,6 +75,11 @@ func (d *BlockDriver) Init(node *dtb.Node) (deviceapi.Closable, error) {
 
 	// Check if this is a block device
 	deviceID := transport.ReadDeviceType()
+	console.KWriteString("[VirtIO Block] Checking device at ")
+	console.KPrintHex64(uint64(reg.Address))
+	console.KWriteString(" type=")
+	console.KPrintHex64(uint64(deviceID))
+	console.KWriteString("\r\n")
 	if deviceID != DeviceIDBlock {
 		return nil, deviceapi.ErrNotMyDevice
 	}
@@ -95,6 +101,7 @@ type BlockDevice struct {
 	transport *MMIOTransport
 	vq        device_virtio.VirtQueue
 	capacity  uint64
+	version   uint32 // MMIO version (1=legacy, 2=modern)
 	// Pre-allocated buffers for requests
 	reqHeader virtioBlkReqHeader
 	status    [1]byte
@@ -121,8 +128,31 @@ func (b *BlockDevice) NumBlocks() uint64 {
 
 // init performs VirtIO initialization sequence
 func (b *BlockDevice) init() error {
+	console.KWriteString("[VirtIO Block] Initializing device...\r\n")
+
+	// Check MMIO magic and version
+	magic := b.transport.ReadReg(MagicValue)
+	version := b.transport.ReadReg(Version)
+	console.KWriteString("[VirtIO Block] Magic=")
+	console.KPrintHex64(uint64(magic))
+	console.KWriteString(" Version=")
+	console.KPrintHex64(uint64(version))
+	console.KWriteString("\r\n")
+
+	if magic != 0x74726976 {
+		return &VirtIOError{"bad magic value"}
+	}
+
+	// Store version for queue setup
+	b.version = version
+
 	// 1. Reset device
 	b.transport.Reset()
+
+	// For legacy VirtIO MMIO, set guest page size before any queue operations
+	if version == 1 {
+		b.transport.WriteReg(GuestPageSize, 4096)
+	}
 
 	// 2. Set ACKNOWLEDGE status
 	b.transport.AddStatus(StatusAcknowledge)
@@ -131,62 +161,121 @@ func (b *BlockDevice) init() error {
 	b.transport.AddStatus(StatusDriver)
 
 	// 4. Read and negotiate features
-	// For basic block device, we don't need special features
-	// Just accept VERSION_1 if offered
-	b.transport.WriteReg(DriverFeatures, 0)
+	if version == 1 {
+		// Legacy VirtIO MMIO - no feature selectors, just bits 0-31
+		devFeatures := b.transport.ReadReg(DeviceFeatures)
+		console.KWriteString("[VirtIO Block] Device features (legacy): ")
+		console.KPrintHex64(uint64(devFeatures))
+		console.KWriteString("\r\n")
 
-	// 5. Set FEATURES_OK status
-	b.transport.AddStatus(StatusFeaturesOK)
+		// Accept no special features for basic block
+		b.transport.WriteReg(DriverFeatures, 0)
+	} else {
+		// Modern VirtIO MMIO (version 2)
+		b.transport.WriteReg(DeviceFeaturesSel, 0)
+		devFeatures0 := b.transport.ReadReg(DeviceFeatures)
+		b.transport.WriteReg(DeviceFeaturesSel, 1)
+		devFeatures1 := b.transport.ReadReg(DeviceFeatures)
 
-	// 6. Verify FEATURES_OK is still set
-	if b.transport.GetStatus()&StatusFeaturesOK == 0 {
-		b.transport.AddStatus(StatusFailed)
-		return ErrFeatureNegotiation
+		console.KWriteString("[VirtIO Block] Device features: lo=")
+		console.KPrintHex64(uint64(devFeatures0))
+		console.KWriteString(" hi=")
+		console.KPrintHex64(uint64(devFeatures1))
+		console.KWriteString("\r\n")
+
+		// Accept VIRTIO_F_VERSION_1 (bit 32 = bit 0 in high word) if offered
+		drvFeatures1 := uint32(0)
+		if devFeatures1&1 != 0 {
+			drvFeatures1 = 1
+		}
+
+		b.transport.WriteReg(DriverFeaturesSel, 0)
+		b.transport.WriteReg(DriverFeatures, 0)
+		b.transport.WriteReg(DriverFeaturesSel, 1)
+		b.transport.WriteReg(DriverFeatures, drvFeatures1)
+
+		// 5. Set FEATURES_OK status (modern only)
+		b.transport.AddStatus(StatusFeaturesOK)
+
+		// 6. Verify FEATURES_OK is still set
+		if b.transport.GetStatus()&StatusFeaturesOK == 0 {
+			b.transport.AddStatus(StatusFailed)
+			return ErrFeatureNegotiation
+		}
 	}
 
 	// 7. Setup virtqueue 0 (requestq)
-	// Select queue 0
 	b.transport.WriteReg(QueueSel, 0)
 
-	// Read max queue size
 	maxQueueSize := uint16(b.transport.ReadReg(QueueNumMax))
 	if maxQueueSize == 0 {
 		b.transport.AddStatus(StatusFailed)
 		return &VirtIOError{"no queue available"}
 	}
 
-	// Use smaller of device max and our preferred size
 	queueSize := uint16(64)
 	if maxQueueSize < queueSize {
 		queueSize = maxQueueSize
 	}
 
-	// Initialize virtqueue
-	if !device_virtio.VirtqueueInit(&b.vq, queueSize) {
-		b.transport.AddStatus(StatusFailed)
-		return &VirtIOError{"failed to init virtqueue"}
-	}
-
 	// Set queue size in device
 	b.transport.WriteReg(QueueNum, uint32(queueSize))
 
-	// Set queue addresses
-	descPhys := device_virtio.VirtqueueGetPhysicalAddr(b.vq.DescTable)
-	availPhys := device_virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(b.vq.Available))
-	usedPhys := device_virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(b.vq.Used))
+	if version == 1 {
+		// Legacy VirtIO MMIO - use contiguous queue with QueuePFN
+		if !device_virtio.VirtqueueInitLegacy(&b.vq, queueSize) {
+			b.transport.AddStatus(StatusFailed)
+			return &VirtIOError{"failed to init virtqueue"}
+		}
 
-	b.transport.WriteReg(QueueDescLow, uint32(descPhys))
-	b.transport.WriteReg(QueueDescHigh, uint32(descPhys>>32))
-	b.transport.WriteReg(QueueDriverLow, uint32(availPhys))
-	b.transport.WriteReg(QueueDriverHigh, uint32(availPhys>>32))
-	b.transport.WriteReg(QueueDeviceLow, uint32(usedPhys))
-	b.transport.WriteReg(QueueDeviceHigh, uint32(usedPhys>>32))
+		// Get physical address and set QueuePFN (page frame number = addr >> 12)
+		queuePhys := device_virtio.VirtqueueGetPhysicalAddr(b.vq.DescTable)
+		pfn := uint32(queuePhys >> 12)
 
-	// Enable queue
-	b.transport.WriteReg(QueueReady, 1)
+		console.KWriteString("[VirtIO Block] Legacy queue PFN=")
+		console.KPrintHex64(uint64(pfn))
+		console.KWriteString(" (phys=")
+		console.KPrintHex64(queuePhys)
+		console.KWriteString(")\r\n")
+
+		b.transport.WriteReg(QueueAlign, 4096)
+		b.transport.WriteReg(QueuePFN, pfn)
+	} else {
+		// Modern VirtIO MMIO - use separate queue addresses
+		if !device_virtio.VirtqueueInit(&b.vq, queueSize) {
+			b.transport.AddStatus(StatusFailed)
+			return &VirtIOError{"failed to init virtqueue"}
+		}
+
+		descPhys := device_virtio.VirtqueueGetPhysicalAddr(b.vq.DescTable)
+		availPhys := device_virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(b.vq.Available))
+		usedPhys := device_virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(b.vq.Used))
+
+		console.KWriteString("[VirtIO Block] Queue desc=")
+		console.KPrintHex64(uint64(descPhys))
+		console.KWriteString(" avail=")
+		console.KPrintHex64(uint64(availPhys))
+		console.KWriteString(" used=")
+		console.KPrintHex64(uint64(usedPhys))
+		console.KWriteString("\r\n")
+
+		b.transport.WriteReg(QueueDescLow, uint32(descPhys))
+		b.transport.WriteReg(QueueDescHigh, uint32(descPhys>>32))
+		b.transport.WriteReg(QueueDriverLow, uint32(availPhys))
+		b.transport.WriteReg(QueueDriverHigh, uint32(availPhys>>32))
+		b.transport.WriteReg(QueueDeviceLow, uint32(usedPhys))
+		b.transport.WriteReg(QueueDeviceHigh, uint32(usedPhys>>32))
+
+		// Enable queue (modern only)
+		b.transport.WriteReg(QueueReady, 1)
+	}
 
 	// 8. Set DRIVER_OK status
 	b.transport.AddStatus(StatusDriverOK)
+
+	console.KWriteString("[VirtIO Block] Device status after init: ")
+	console.KPrintHex64(uint64(b.transport.GetStatus()))
+	console.KWriteString("\r\n")
 
 	// 9. Read capacity from config space
 	capLow := b.transport.ReadReg(Config + BlockConfigCapacity)
@@ -198,12 +287,28 @@ func (b *BlockDevice) init() error {
 
 // ReadBlock reads a single block at the given LBA
 func (b *BlockDevice) ReadBlock(lba uint64, buf []byte) error {
+	// Debug output disabled to reduce noise
+	// console.KWriteString("[VirtIO Block] ReadBlock LBA=")
+	// console.KPrintHex64(lba)
+	// console.KWriteString(" cap=")
+	// console.KPrintHex64(b.capacity)
+	// console.KWriteString("\r\n")
+
 	if len(buf) < 512 {
+		console.KWriteString("[VirtIO Block] ERROR: buffer too small\r\n")
 		return &VirtIOError{"buffer too small"}
 	}
 	if lba >= b.capacity {
+		console.KWriteString("[VirtIO Block] ERROR: lba out of range\r\n")
 		return &VirtIOError{"lba out of range"}
 	}
+
+	// Touch the buffer to ensure it's mapped (triggers page fault if needed)
+	// This is required for stack-allocated buffers that haven't been touched yet
+	for i := 0; i < len(buf); i += 4096 {
+		buf[i] = 0
+	}
+	buf[len(buf)-1] = 0
 
 	// Setup request header
 	b.reqHeader.Type = VIRTIO_BLK_T_IN
@@ -217,6 +322,15 @@ func (b *BlockDevice) ReadBlock(lba uint64, buf []byte) error {
 	headerPhys := device_virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(&b.reqHeader))
 	dataPhys := device_virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(&buf[0]))
 	statusPhys := device_virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(&b.status[0]))
+
+	// Debug disabled
+	// console.KWriteString("[VirtIO Block] Req hdr=")
+	// console.KPrintHex64(uint64(headerPhys))
+	// console.KWriteString(" data=")
+	// console.KPrintHex64(uint64(dataPhys))
+	// console.KWriteString(" status=")
+	// console.KPrintHex64(uint64(statusPhys))
+	// console.KWriteString("\r\n")
 
 	// Allocate descriptors
 	headerDesc := device_virtio.VirtqueueAddDesc(&b.vq, headerPhys,
@@ -263,6 +377,13 @@ func (b *BlockDevice) ReadBlock(lba uint64, buf []byte) error {
 	// Notify device
 	b.transport.WriteReg(QueueNotify, 0)
 
+	// Debug disabled
+	// console.KWriteString("[VirtIO Block] Avail idx=")
+	// console.KPrintHex64(uint64(b.vq.Available.Idx))
+	// console.KWriteString(" Last used=")
+	// console.KPrintHex64(uint64(b.vq.LastUsedIdx))
+	// console.KWriteString("\r\n")
+
 	// Poll for completion
 	maxWait := 1000000
 	for i := 0; i < maxWait; i++ {
@@ -273,6 +394,10 @@ func (b *BlockDevice) ReadBlock(lba uint64, buf []byte) error {
 	}
 
 	if !device_virtio.VirtqueueHasUsed(&b.vq) {
+		console.KWriteString("[VirtIO Block] Used idx=")
+		console.KPrintHex64(uint64(b.vq.Used.Idx))
+		console.KWriteString("\r\n")
+		console.KWriteString("[VirtIO Block] ERROR: timeout waiting for block read\r\n")
 		return &VirtIOError{"timeout waiting for block read"}
 	}
 

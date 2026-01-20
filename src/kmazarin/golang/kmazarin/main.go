@@ -12,6 +12,7 @@ import (
 	"kmazarin/uart"
 	_ "os"     // Keep to maintain BSS size
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -58,10 +59,24 @@ func handlePageFaultInternal(faultAddr uint64) uint64 {
 	return 0
 }
 
+// HandleUserPageFaultAsm is defined in abi_stubs_arm64.s as an ABI0 entry point
+// that tail-calls handleUserPageFaultInternal. This handles page faults from EL0.
+// Returns 1 if the fault was handled successfully, 0 otherwise.
+//
+//go:noinline
+func handleUserPageFaultInternal(faultAddr uint64) uint64 {
+	if kmem.HandleUserPageFault(uintptr(faultAddr)) {
+		return 1
+	}
+	return 0
+}
 
 // init runs before main - called after Go runtime is fully initialized
 // Set up exception handlers and enable interrupts
 func init() {
+	// NOTE: GC will be disabled and flushed in simpleMain() where runtime is fully ready.
+	// Disabling here is too early and causes hangs.
+
 	// NOTE: Runtime config is already initialized in runtime_config.go:init()
 	// which runs at package load time, before the Go runtime initializes.
 
@@ -844,6 +859,17 @@ func simpleMain() {
 	// Test runtime readiness FIRST (before unmapping Cardinal)
 	if testRuntimeReadiness() {
 		Print("[Main] Runtime ready")
+
+		// CRITICAL: Disable automatic GC.
+		// We cannot call runtime.GC() because it triggers taggedPointerPack errors -
+		// the Go runtime's tagged pointer code assumes 49-bit addresses but our
+		// kernel uses full 64-bit TTBR1 addresses (0xFFFF...).
+		// The "bad sweepgen in refill" error occurs when GC state becomes inconsistent.
+		// For now, we disable GC entirely to avoid both issues.
+		// TODO: Patch tagptr_64bit.go to handle TTBR1 addresses, then we can enable GC.
+		debug.SetGCPercent(-1)
+		Print("[Main] GC disabled")
+
 		InitDeadlineQueue()
 		InitReadyQueue()
 	} else {
@@ -861,10 +887,11 @@ func simpleMain() {
 	// (DTB is at 0x40000000 in Cardinal's memory region)
 	testDeviceDiscovery()
 
-	console.KPrintln("[Main] About to initialize VirtIO GPU...")
+	console.KPrintln("[Main] Skipping VirtIO GPU init (crashes, needs debugging)...")
 
 	// Initialize VirtIO GPU for display output
-	initVirtIOGPU()
+	// DISABLED: GPU init crashes - needs investigation
+	// initVirtIOGPU()
 
 	console.KPrintln("[Main] VirtIO GPU initialization complete or skipped")
 
@@ -884,6 +911,36 @@ func simpleMain() {
 
 	// Unmap Cardinal at L1 level - zeros L1[1-2] (1-3GB) while preserving L1[0] for MMIO and L1[256+] for heap
 	unmapCardinal()
+
+	// Temporarily disable timer IRQ during priest launch to avoid interrupt interference
+	DisableTimerIRQ()
+	Print("[Main] Timer IRQ disabled for priest launch")
+
+	// =========================================================================
+	// USERSPACE TEST: Launch priest in EL0
+	// =========================================================================
+	// This tests the full userspace transition:
+	//   1. Load priest.elf from FAT32 disk
+	//   2. Parse ELF and map segments with user permissions
+	//   3. Allocate user stack
+	//   4. ERET to EL0 to run priest
+	//   5. Priest makes SVC syscalls back to kernel
+	//
+	// Note: This call does NOT return - priest runs in EL0 indefinitely.
+	// Comment out to skip userspace test and run goroutine preemption test.
+
+	// DEBUG: Print GC stats before launching priest
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+	console.KPrintf("[Main] GC debug: NumGC=%d HeapAlloc=%d NextGC=%d GCPercent=%d\n",
+		memStats.NumGC, memStats.HeapAlloc, memStats.NextGC, debug.SetGCPercent(-1))
+
+	Print("[Main] Launching priest in userspace (EL0)...")
+	filename := "/priest.elf\x00"
+	filenamePtr := uintptr(unsafe.Pointer(&([]byte(filename))[0]))
+	ksyscall.SyscallLaunch(uint64(filenamePtr), 0, 0, 0, 0, 0)
+	// The above should not return - if we get here, something went wrong
+	Print("[Main] ERROR: SyscallLaunch returned unexpectedly!")
 
 	// Launch second goroutine for preemption test
 	Print("[Main] Starting preemption test...")

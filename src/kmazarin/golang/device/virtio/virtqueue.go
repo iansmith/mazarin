@@ -199,6 +199,82 @@ func VirtqueueInit(vq *VirtQueue, queueSize uint16) bool {
 	return true
 }
 
+// VirtqueueInitLegacy initializes a virtqueue for legacy VirtIO MMIO (version 1)
+// Legacy requires a single contiguous allocation with specific layout:
+// - Descriptor table at offset 0
+// - Available ring immediately after descriptors
+// - Used ring at page-aligned offset after available ring
+// Returns true on success, false on failure
+//
+//go:nosplit
+func VirtqueueInitLegacy(vq *VirtQueue, queueSize uint16) bool {
+	if queueSize == 0 || (queueSize&(queueSize-1)) != 0 {
+		return false
+	}
+
+	vq.QueueSize = queueSize
+	pageSize := uintptr(4096)
+
+	// Calculate sizes
+	descStride := unsafe.Sizeof(VirtQDesc{})
+	descTableSize := uintptr(queueSize) * descStride
+	availSize := uintptr(2 + 2 + int(queueSize)*2 + 2) // flags + idx + ring[] + used_event
+	usedSize := uintptr(2 + 2 + int(queueSize)*int(unsafe.Sizeof(VirtQUsedElem{})) + 2)
+
+	// Calculate used ring offset (page-aligned)
+	usedOffset := descTableSize + availSize
+	if usedOffset%pageSize != 0 {
+		usedOffset = ((usedOffset / pageSize) + 1) * pageSize
+	}
+
+	// Total size (must be contiguous)
+	totalSize := usedOffset + usedSize
+
+	// Allocate contiguous block with page alignment
+	// Add extra space for alignment
+	alloc := kmalloc(uint32(totalSize + pageSize))
+	if alloc == nil {
+		return false
+	}
+
+	// Align to page boundary
+	allocAddr := PointerToUintptr(alloc)
+	alignedAddr := allocAddr
+	if alignedAddr%pageSize != 0 {
+		alignedAddr = ((alignedAddr / pageSize) + 1) * pageSize
+	}
+
+	// Store allocation info (only one allocation for legacy)
+	vq.DescAlloc = alloc
+	vq.AvailableAlloc = nil // Not used in legacy mode
+	vq.UsedAlloc = nil      // Not used in legacy mode
+
+	// Set up pointers within contiguous region
+	vq.DescTable = unsafe.Pointer(alignedAddr)
+	vq.Available = CastToPointer[VirtQAvailable](alignedAddr + descTableSize)
+	vq.Used = CastToPointer[VirtQUsed](alignedAddr + usedOffset)
+
+	// Zero out entire region
+	Bzero4K(unsafe.Pointer(alignedAddr), uint32(totalSize))
+
+	// Initialize free descriptor list
+	vq.FreeHead = 0
+	vq.NumFree = queueSize
+	for i := uint16(0); i < queueSize-1; i++ {
+		descPtr := CastToPointer[VirtQDesc](PointerToUintptr(vq.DescTable) + uintptr(i)*descStride)
+		descPtr.Next = i + 1
+	}
+	lastDescPtr := CastToPointer[VirtQDesc](PointerToUintptr(vq.DescTable) + uintptr(queueSize-1)*descStride)
+	lastDescPtr.Next = 0xFFFF
+
+	// Initialize ring indices
+	vq.Available.Idx = 0
+	vq.Used.Idx = 0
+	vq.LastUsedIdx = 0
+
+	return true
+}
+
 // virtqueueCleanup frees memory allocated for a virtqueue
 //
 //go:nosplit

@@ -118,8 +118,12 @@ func run() error {
 	}
 
 	// Add disk image if it exists
+	// Use VirtIO MMIO device (not PCI) so it appears in DTB as "virtio,mmio"
 	if _, err := os.Stat(diskPath); err == nil {
-		args = append(args, "-drive", "file="+diskPath+",if=virtio,format=raw,readonly=on")
+		args = append(args,
+			"-drive", "file="+diskPath+",if=none,format=raw,readonly=on,id=disk0",
+			"-device", "virtio-blk-device,drive=disk0",
+		)
 		fmt.Printf("Disk image: %s\n", diskPath)
 	}
 

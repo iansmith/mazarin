@@ -325,10 +325,13 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
 	t.LastSeenG = gp
 	t.readyNode = nil
 
-	// Add to ready queue if available
-	if readyQueue != nil {
-		t.readyNode = readyQueue.PushBack(t)
-	}
+	// Add to ready queue
+	// DISABLED: Cannot allocate memory from SVC exception context.
+	// The Go runtime's GC requires proper goroutine/P context which we don't have.
+	// TODO: Either bypass SVC for kernel internal syscalls, or defer queue addition.
+	// if readyQueue != nil && t.readyNode == nil {
+	// 	t.readyNode = readyQueue.PushBack(t)
+	// }
 
 	// END CRITICAL SECTION
 	RestoreIRQs(savedDAIF)
@@ -340,12 +343,16 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
 	t.Context.SPSR = spsr      // Same processor state as parent
 	t.Context.X[28] = gp       // g register valid immediately
 
-	// CRITICAL: Write mp, gp, fn to the stack so clone wrapper's ldur instructions work.
-	stackPtr := unsafe.Pointer(uintptr(stack))
-	*(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 8)) = mp
-	*(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 16)) = gp
-	*(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 24)) = fn
-	*(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 32)) = 1234 // Magic number
+	// NOTE: The parent process already wrote mp, gp, fn to the stack before
+	// calling clone. We don't need to write them again here - doing so would
+	// fail if PAN (Privileged Access Never) is enabled since we can't write
+	// to userspace memory from kernel mode.
+	//
+	// The values are already on the stack at:
+	//   stack-8:  mp
+	//   stack-16: gp
+	//   stack-24: fn
+	//   stack-32: marker (1234)
 
 	return tid
 }

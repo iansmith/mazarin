@@ -19,9 +19,50 @@ import (
 )
 
 // Mazzy userspace syscall overlay: RawSyscall6 calls priest via function pointer.
-// PriestSyscallEntry is patched by priest when loading this program.
-// It must be set before any syscalls are made.
-var PriestSyscallEntry func(num, a1, a2, a3, a4, a5, a6 uintptr) int64
+// PriestSyscallEntry is patched by priest when loading userspace programs.
+// By default, it points to defaultSyscallHandler which does real SVC.
+// This allows priest itself to bootstrap before it can set up interception.
+var PriestSyscallEntry func(num, a1, a2, a3, a4, a5, a6 uintptr) int64 = defaultSyscallHandler
+
+// defaultSyscallHandler performs a real SVC syscall to the kernel.
+// This is used by priest during bootstrap before it patches userspace programs.
+// Implemented in asm_linux_arm64.s
+func defaultSyscallHandler(num, a1, a2, a3, a4, a5, a6 uintptr) int64
+
+// SYS_mmap is the Linux syscall number for mmap on arm64
+const _SYS_mmap = 222
+
+// SYS_debugPrint is Mazzy's debug print syscall (0x1006)
+const _SYS_debugPrint = 0x1006
+
+// MazzyMmapHandler is defined in runtime/cgo_mmap.go
+// We use go:linkname to set it from here to route mmap through PriestSyscallEntry
+// The runtime exports it as "MazzyMmapHandler" (without package prefix)
+//
+//go:linkname mazzyMmapHandler MazzyMmapHandler
+var mazzyMmapHandler func(addr uintptr, n uintptr, prot, flags, fd int32, off uint32) (uintptr, int)
+
+// mmapViaPriestSyscallEntry routes mmap through PriestSyscallEntry
+//
+//go:nosplit
+func mmapViaPriestSyscallEntry(addr uintptr, n uintptr, prot, flags, fd int32, off uint32) (uintptr, int) {
+	// Debug: print arguments BEFORE the mmap syscall
+	// marker 0xAABB = mmap entry, then addr, n, prot, flags, fd
+	defaultSyscallHandler(_SYS_debugPrint, 0xAABB, addr, n, uintptr(prot), uintptr(flags), uintptr(fd))
+
+	result := PriestSyscallEntry(_SYS_mmap, addr, n, uintptr(prot), uintptr(flags), uintptr(fd), uintptr(off))
+	if int64(result) < 0 {
+		return 0, int(-result)
+	}
+	return uintptr(result), 0
+}
+
+// init sets up the mmap handler to route through PriestSyscallEntry.
+// This runs after runtime init, so early heap allocation uses direct SVC,
+// but subsequent allocations go through the interceptable path.
+func init() {
+	mazzyMmapHandler = mmapViaPriestSyscallEntry
+}
 
 // Pull in entersyscall/exitsyscall for Syscall/Syscall6.
 //
@@ -65,11 +106,10 @@ func RawSyscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err Errno) {
 //go:norace
 //go:linkname RawSyscall6
 func RawSyscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errno) {
-	// Mazzy userspace: call priest via function pointer
-	if PriestSyscallEntry == nil {
-		// Priest not initialized - return ENOSYS
-		return ^uintptr(0), 0, ENOSYS
-	}
+	// Mazzy userspace: call syscall handler via function pointer.
+	// By default this is defaultSyscallHandler (real SVC).
+	// For userspace programs loaded by priest, this gets patched to
+	// point to priest's handler function.
 	result := PriestSyscallEntry(trap, a1, a2, a3, a4, a5, a6)
 
 	// Convert from Linux return convention

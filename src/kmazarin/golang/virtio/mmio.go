@@ -4,16 +4,21 @@ import "kmazarin/asm"
 
 // MMIO register offsets (VirtIO 1.0 spec)
 const (
-	MagicValue       = 0x000 // "virt" magic value (0x74726976)
-	Version          = 0x004 // Device version (must be 2 for VirtIO 1.0)
-	DeviceID         = 0x008 // Device type (1=net, 4=rng, 16=gpu, etc.)
-	VendorID         = 0x00C // Vendor ID
-	DeviceFeatures   = 0x010 // Device features
-	DriverFeatures   = 0x020 // Driver features
-	QueueSel         = 0x030 // Queue selector
+	MagicValue         = 0x000 // "virt" magic value (0x74726976)
+	Version            = 0x004 // Device version (must be 2 for VirtIO 1.0)
+	DeviceID           = 0x008 // Device type (1=net, 4=rng, 16=gpu, etc.)
+	VendorID           = 0x00C // Vendor ID
+	DeviceFeatures     = 0x010 // Device features (selected by DeviceFeaturesSel)
+	DeviceFeaturesSel  = 0x014 // Device features selector (0 = bits 0-31, 1 = bits 32-63)
+	DriverFeatures     = 0x020 // Driver features (selected by DriverFeaturesSel)
+	DriverFeaturesSel  = 0x024 // Driver features selector (0 = bits 0-31, 1 = bits 32-63)
+	GuestPageSize      = 0x028 // Guest page size (legacy only, version 1) - must be power of 2
+	QueueSel           = 0x030 // Queue selector
 	QueueNumMax      = 0x034 // Maximum queue size
 	QueueNum         = 0x038 // Queue size
-	QueueReady       = 0x044 // Queue ready bit
+	QueueAlign       = 0x03C // Queue alignment (legacy only, version 1)
+	QueuePFN         = 0x040 // Queue PFN (legacy only, version 1) - page frame number
+	QueueReady       = 0x044 // Queue ready bit (modern only, version 2)
 	QueueNotify      = 0x050 // Queue notifier
 	InterruptStatus  = 0x060 // Interrupt status
 	InterruptACK     = 0x064 // Interrupt acknowledge

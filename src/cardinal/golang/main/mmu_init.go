@@ -190,7 +190,7 @@ func initMMU() bool {
 	mapRegionInitMMU(exceptionStackBottom, exceptionStackTop, exceptionStackBottom, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 
 	// Initialize physical frame allocator
-	initPhysFrameAllocator()
+	initKFrameAllocator()
 
 	// Clean data cache for page tables before enabling MMU
 	pageTableSize := pageTableEnd - pageTableBase
@@ -310,6 +310,7 @@ func enableMMU() bool {
 	sctlr |= 1 << 0   // M = 1 (MMU enable)
 	sctlr &^= 1 << 2  // C = 0 (data cache DISABLED initially)
 	sctlr &^= 1 << 12 // I = 0 (instruction cache DISABLED initially)
+	sctlr &^= 1 << 24 // E0E = 0 (EL0 is little-endian) - CRITICAL for userspace!
 	asm.WriteSctlrEl1(sctlr)
 
 	// Single ISB after SCTLR (per ARM TF reference)
@@ -378,7 +379,7 @@ func setupKernelStacks() {
 
 	// Allocate and map g0 stack (SP_EL0)
 	for i := uintptr(0); i < g0StackPages; i++ {
-		physFrame := allocPhysFrame()
+		physFrame := allocKFrame()
 		if physFrame == 0 {
 			kernelPanic("setupKernelStacks: Failed to allocate g0 stack page")
 		}
@@ -389,7 +390,7 @@ func setupKernelStacks() {
 	// Allocate and map exception stack (SP_EL1)
 	KernelExcStackBottom := KernelExcStackTop - KernelExcStackSize
 	for i := uintptr(0); i < excStackPages; i++ {
-		physFrame := allocPhysFrame()
+		physFrame := allocKFrame()
 		if physFrame == 0 {
 			kernelPanic("setupKernelStacks: Failed to allocate exception stack page")
 		}
@@ -443,7 +444,7 @@ func setupKernelDemandPaging() {
 	// Pre-allocate and map the PT Pool region for kmazarin's demand paging
 	ptPoolPages := uintptr(constants.KernelPTPoolEnd-constants.KernelPTPoolStart) / PAGE_SIZE
 	for i := uintptr(0); i < ptPoolPages; i++ {
-		physFrame := allocPhysFrame()
+		physFrame := allocKFrame()
 		if physFrame == 0 {
 			kernelPanic("setupKernelDemandPaging: Out of physical frames for PT pool")
 		}
@@ -544,7 +545,7 @@ func VerifyCriticalGlobalsMapped() bool {
 	if getPhysicalAddress(uintptr(unsafe.Pointer(&pageTableL0))) == 0 {
 		allMapped = false
 	}
-	if getPhysicalAddress(uintptr(unsafe.Pointer(&physFrameAllocatorState_global))) == 0 {
+	if getPhysicalAddress(uintptr(unsafe.Pointer(&kFrameAllocatorState_global))) == 0 {
 		allMapped = false
 	}
 	if getPhysicalAddress(uintptr(unsafe.Pointer(&totalKernelPages_global))) == 0 {

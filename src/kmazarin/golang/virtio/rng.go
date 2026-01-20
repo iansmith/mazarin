@@ -54,13 +54,11 @@ func (d *RNGDriver) Init(node *dtb.Node) (deviceapi.Closable, error) {
 		irq:      irq,
 	}
 
-	// TODO: Verify this is actually an RNG device (DeviceID == 4)
-	// This requires reading MMIO registers which may not be mapped yet during Init()
-	// For now, we accept any virtio,mmio device and rely on DTB ordering
-	// deviceID := transport.ReadDeviceType()
-	// if deviceID != DeviceIDRNG {
-	// 	return nil, deviceapi.ErrNotMyDevice
-	// }
+	// Verify this is actually an RNG device (DeviceID == 4)
+	deviceID := transport.ReadDeviceType()
+	if deviceID != DeviceIDRNG {
+		return nil, deviceapi.ErrNotMyDevice
+	}
 
 	rng := &RNGDevice{
 		transport: transport,

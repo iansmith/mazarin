@@ -91,21 +91,21 @@ func getPageTableAllocatorStats() (allocated uintptr, remaining uintptr) {
 // =============================================================================
 
 // Physical frame allocator state - BSS global to avoid circular dependency with heap
-var physFrameAllocatorState_global physFrameAllocatorState
+var kFrameAllocatorState_global kFrameAllocatorState
 
-// physFrameAllocatorState is the layout of allocator state
-type physFrameAllocatorState struct {
+// kFrameAllocatorState is the layout of allocator state
+type kFrameAllocatorState struct {
 	next       uintptr // Next physical frame to allocate
 	end        uintptr // End of physical frame pool
 	pagesAlloc uint32  // Total pages allocated (for 1GB limit check)
 	padding    uint32  // Alignment padding
 }
 
-// getPhysFrameAllocator returns pointer to the allocator state
+// getKFrameAllocator returns pointer to the allocator state
 //
 //go:nosplit
-func getPhysFrameAllocator() *physFrameAllocatorState {
-	return &physFrameAllocatorState_global
+func getKFrameAllocator() *kFrameAllocatorState {
+	return &kFrameAllocatorState_global
 }
 
 // Total kernel pages - BSS global to avoid circular dependency with heap
@@ -131,11 +131,11 @@ func incTotalKernelPages() {
 	totalKernelPages_global++
 }
 
-// initPhysFrameAllocator initializes the physical frame allocator
+// initKFrameAllocator initializes the physical frame allocator
 // Uses fixed address storage to avoid being zeroed by memInit
 //
 //go:nosplit
-func initPhysFrameAllocator() {
+func initKFrameAllocator() {
 	// Calculate physical frame pool start from linker symbols
 	// Physical frames start after kmazarin executable
 	// Since kmazarin hasn't been loaded yet, use conservative estimate
@@ -143,7 +143,7 @@ func initPhysFrameAllocator() {
 	kmazarinLoadAddr := asm.GetKmazarinLoadAddr()
 	physFrameBase := kmazarinLoadAddr + KMAZARIN_CONSERVATIVE_SIZE // ~0x42000000
 
-	alloc := getPhysFrameAllocator()
+	alloc := getKFrameAllocator()
 	alloc.next = physFrameBase
 	alloc.end = PHYS_FRAME_END
 	alloc.pagesAlloc = 0
@@ -162,12 +162,12 @@ func initPhysFrameAllocator() {
 	_ = poolPages
 }
 
-// allocPhysFrame allocates a single 4KB physical frame
+// allocKFrame allocates a single 4KB physical frame
 // Returns 0 if no more frames available or over 1GB limit
 //
 //go:nosplit
-func allocPhysFrame() uintptr {
-	alloc := getPhysFrameAllocator()
+func allocKFrame() uintptr {
+	alloc := getKFrameAllocator()
 	totalPages := getTotalKernelPages()
 
 	// Check 1GB kernel limit FIRST
@@ -209,11 +209,11 @@ func allocPhysFrame() uintptr {
 	return frame
 }
 
-// getPhysFrameStats returns physical frame allocation stats
+// getKFrameStats returns physical frame allocation stats
 //
 //go:nosplit
-func getPhysFrameStats() (totalPages, demandPages, remaining uint32) {
-	alloc := getPhysFrameAllocator()
+func getKFrameStats() (totalPages, demandPages, remaining uint32) {
+	alloc := getKFrameAllocator()
 	totalPages = getTotalKernelPages()
 	demandPages = alloc.pagesAlloc
 	if totalPages >= MAX_KERNEL_PAGES {

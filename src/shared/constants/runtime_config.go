@@ -65,6 +65,18 @@ type RuntimeConfig struct {
 	// Boot image information (embedded mazarin image)
 	BootImagePhysAddr uint64 // Physical address of boot image data
 	BootImageSize     uint64 // Size of boot image in bytes
+
+	// Total RAM and memory region layout (from DTB detection)
+	// Memory formula: Total RAM >= 256MB
+	//   Kernel Region: 64MB (fixed)
+	//   Page Table Pool: (Total RAM - 64MB) / 513
+	//   Userspace Frame Pool: Total RAM - 64MB - PT Pool
+	TotalRAMSize           uint64 // Total RAM size detected from DTB
+	RAMBaseAddr            uint64 // Base physical address of RAM (typically 0x40000000)
+	UserspaceFramePoolStart uint64 // Start PA of userspace frame pool
+	UserspaceFramePoolEnd   uint64 // End PA of userspace frame pool
+	UserspacePTPoolStart    uint64 // Start PA of userspace page table pool
+	UserspacePTPoolEnd      uint64 // End PA of userspace page table pool
 }
 
 // RuntimeConfigMagic is the expected magic value for a valid RuntimeConfig

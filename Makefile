@@ -200,22 +200,31 @@ KMAZARIN_ALL_SRC = $(wildcard $(KMAZARIN_SRC)/*.go) $(wildcard $(KMAZARIN_SRC)/*
                    $(wildcard $(KMAZARIN_RTC_SRC)/*.go) $(wildcard $(KMAZARIN_RTC_SRC)/*.s)
 
 # Runtime patch files for overlay
+RUNTIME_PATCH_CGO_MMAP = $(RUNTIME_PATCHES_DIR)/cgo_mmap.go
 RUNTIME_PATCH_MALLOC = $(RUNTIME_PATCHES_DIR)/malloc.go
+RUNTIME_PATCH_MCACHE = $(RUNTIME_PATCHES_DIR)/mcache.go
 RUNTIME_PATCH_PREEMPT = $(RUNTIME_PATCHES_DIR)/preempt.go
+RUNTIME_PATCH_TAGPTR = $(RUNTIME_PATCHES_DIR)/tagptr_64bit.go
 RUNTIME_PATCH_SYSCALL = $(RUNTIME_PATCHES_DIR)/syscall/syscall_linux.go
 
 # Generate overlay JSON for kmazarin runtime patches
 # This allows using vanilla Go with our runtime patches:
+#   - cgo_mmap.go: route runtime mmap/munmap through dispatcher (no SVC)
 #   - malloc.go: high-memory heap support (arenaBaseOffset for TTBR1 space)
+#   - mcache.go: accept stale cached spans in refill (sweepgen+1 in addition to sweepgen+3)
 #   - preempt.go: expose preemption offsets for kernel IRQ handling (added GetPreemptOffsets)
-#   - syscall_linux_arm64.go: RawSyscall6 calls dispatcher directly (no SVC, pure Go)
+#   - tagptr_64bit.go: use sign extension for arm64 to support TTBR1 addresses
+#   - syscall_linux.go: RawSyscall6 calls dispatcher directly (no SVC, pure Go)
 # GOTOOLCHAIN=local ensures we get the actual GOROOT, not a downloaded toolchain
-$(KMAZARIN_OVERLAY): $(RUNTIME_PATCH_MALLOC) $(RUNTIME_PATCH_PREEMPT) $(RUNTIME_PATCH_SYSCALL) | $(BUILD_DIR)
+$(KMAZARIN_OVERLAY): $(RUNTIME_PATCH_CGO_MMAP) $(RUNTIME_PATCH_MALLOC) $(RUNTIME_PATCH_MCACHE) $(RUNTIME_PATCH_PREEMPT) $(RUNTIME_PATCH_TAGPTR) $(RUNTIME_PATCH_SYSCALL) | $(BUILD_DIR)
 	@echo "Generating runtime overlay for kmazarin..."
 	@GOROOT=$$(GOTOOLCHAIN=local $(GO) env GOROOT) && \
 		echo "{\"Replace\":{\
+\"$$GOROOT/src/runtime/cgo_mmap.go\":\"$(abspath $(RUNTIME_PATCH_CGO_MMAP))\",\
 \"$$GOROOT/src/runtime/malloc.go\":\"$(abspath $(RUNTIME_PATCH_MALLOC))\",\
+\"$$GOROOT/src/runtime/mcache.go\":\"$(abspath $(RUNTIME_PATCH_MCACHE))\",\
 \"$$GOROOT/src/runtime/preempt.go\":\"$(abspath $(RUNTIME_PATCH_PREEMPT))\",\
+\"$$GOROOT/src/runtime/tagptr_64bit.go\":\"$(abspath $(RUNTIME_PATCH_TAGPTR))\",\
 \"$$GOROOT/src/syscall/syscall_linux.go\":\"$(abspath $(RUNTIME_PATCH_SYSCALL))\"\
 }}" > $(KMAZARIN_OVERLAY)
 	@echo "  Overlay: $(KMAZARIN_OVERLAY)"
@@ -325,34 +334,50 @@ kmazarin: check-go-version $(KMAZARIN_BINARY)
 FLOCK_BASE = src/flock
 MAZARIN_BASE = src/mazarin
 
-# Userspace overlay - routes syscalls to priest via function pointer
+# Userspace overlay - routes syscalls through interceptable function pointer
+# This overlay is used by BOTH priest and userspace programs:
+# - Priest: uses defaultSyscallHandler (real SVC) during bootstrap
+# - Userspace programs: PriestSyscallEntry gets patched to point to priest
 USERSPACE_OVERLAY = $(BUILD_DIR)/userspace-overlay.json
-USERSPACE_PATCH_SYSCALL = $(MAZARIN_BASE)/overlay/userspace/syscall_linux.go
+USERSPACE_OVERLAY_DIR = $(MAZARIN_BASE)/overlay/userspace
+USERSPACE_PATCH_SYSCALL = $(USERSPACE_OVERLAY_DIR)/syscall_linux.go
+USERSPACE_PATCH_SYSCALL_ASM = $(USERSPACE_OVERLAY_DIR)/asm_linux_arm64.s
+USERSPACE_PATCH_RUNTIME_MMAP = $(USERSPACE_OVERLAY_DIR)/runtime/cgo_mmap.go
+USERSPACE_PATCH_LOCK_SPINBIT = $(USERSPACE_OVERLAY_DIR)/runtime/lock_spinbit.go
 
 # Generate overlay JSON for userspace programs
-# Only overrides syscall_linux.go to route syscalls through PriestSyscallEntry
-$(USERSPACE_OVERLAY): $(USERSPACE_PATCH_SYSCALL) | $(BUILD_DIR)
+# Overrides:
+# - syscall/syscall_linux.go - routes syscalls through PriestSyscallEntry
+# - syscall/asm_linux_arm64.s - provides defaultSyscallHandler (real SVC)
+# - runtime/cgo_mmap.go - routes runtime mmap through syscall package
+# - runtime/lock_spinbit.go - adds diagnostic prints to lockVerifyMSize
+$(USERSPACE_OVERLAY): $(USERSPACE_PATCH_SYSCALL) $(USERSPACE_PATCH_SYSCALL_ASM) $(USERSPACE_PATCH_RUNTIME_MMAP) $(USERSPACE_PATCH_LOCK_SPINBIT) | $(BUILD_DIR)
 	@echo "Generating runtime overlay for userspace..."
 	@GOROOT=$$(GOTOOLCHAIN=local $(GO) env GOROOT) && \
 		echo "{\"Replace\":{\
-\"$$GOROOT/src/syscall/syscall_linux.go\":\"$(abspath $(USERSPACE_PATCH_SYSCALL))\"\
+\"$$GOROOT/src/syscall/syscall_linux.go\":\"$(abspath $(USERSPACE_PATCH_SYSCALL))\",\
+\"$$GOROOT/src/syscall/asm_linux_arm64.s\":\"$(abspath $(USERSPACE_PATCH_SYSCALL_ASM))\",\
+\"$$GOROOT/src/runtime/cgo_mmap.go\":\"$(abspath $(USERSPACE_PATCH_RUNTIME_MMAP))\",\
+\"$$GOROOT/src/runtime/lock_spinbit.go\":\"$(abspath $(USERSPACE_PATCH_LOCK_SPINBIT))\"\
 }}" > $(USERSPACE_OVERLAY)
 	@echo "  Overlay: $(USERSPACE_OVERLAY)"
 
-# Priest - syscall router (no overlay, uses real SVC)
+# Priest - syscall router (uses overlay with defaultSyscallHandler for real SVC)
+# The overlay routes runtime mmap through syscall package, allowing interception.
+# PriestSyscallEntry defaults to defaultSyscallHandler which does real SVC.
 PRIEST_SRC = $(FLOCK_BASE)/cmd/priest
 PRIEST_BINARY = $(BUILD_DIR)/priest.elf
 PRIEST_ALL_SRC = $(wildcard $(PRIEST_SRC)/*.go) \
                  $(wildcard $(MAZARIN_BASE)/sys/*.go)
 
-$(PRIEST_BINARY): $(PRIEST_ALL_SRC) | $(BUILD_DIR)
-	@echo "Building priest (syscall router, real SVC)..."
+$(PRIEST_BINARY): $(PRIEST_ALL_SRC) $(USERSPACE_OVERLAY) | $(BUILD_DIR)
+	@echo "Building priest (syscall router with overlay)..."
 	@cd $(PRIEST_SRC) && \
 		CGO_ENABLED=0 \
 		GOTOOLCHAIN=local \
 		GOARCH=$(GOARCH) \
 		GOOS=$(GOOS) \
-		$(GO) build $(GCFLAGS) -o $(abspath $@) .
+		$(GO) build -overlay=$(abspath $(USERSPACE_OVERLAY)) $(GCFLAGS) -o $(abspath $@) .
 	@echo "Priest built at $@"
 
 # Helloworld - test program (uses userspace overlay for syscall routing)
@@ -422,15 +447,37 @@ helloworld-thin: check-go-version $(THIN_OVERLAY_JSON) $(PRIEST_BINARY) $(HELLOW
 thin-overlay: check-go-version $(THIN_OVERLAY_JSON)
 
 # =========================================
+# .maz Programs (Direct SVC, no overlay)
+# =========================================
+# .maz programs make direct SVC syscalls to the kernel.
+# These do NOT use priest or the userspace overlay - they're standalone.
+# Use this for testing userspace syscall handling without overlay complexity.
+
+HELLOWORLD_MAZ_BINARY = $(BUILD_DIR)/helloworld.maz
+
+$(HELLOWORLD_MAZ_BINARY): $(HELLOWORLD_ALL_SRC) | $(BUILD_DIR)
+	@echo "Building helloworld.maz (direct SVC, no overlay)..."
+	@cd $(HELLOWORLD_SRC) && \
+		CGO_ENABLED=0 \
+		GOTOOLCHAIN=local \
+		GOARCH=$(GOARCH) \
+		GOOS=$(GOOS) \
+		$(GO) build $(GCFLAGS) -o $(abspath $@) .
+	@echo "Helloworld.maz built at $@ ($$(ls -lh $@ | awk '{print $$5}'))"
+
+# Build helloworld.maz (includes Go version check)
+helloworld-maz: check-go-version $(HELLOWORLD_MAZ_BINARY)
+
+# =========================================
 # Disk Image for VirtIO Block
 # =========================================
 # FAT32 disk image containing flock binaries for kmazarin to load
 
 DISK_IMAGE = $(BUILD_DIR)/disk.img
 
-$(DISK_IMAGE): $(PRIEST_BINARY) $(HELLOWORLD_BINARY) $(TOOL_MKFAT32) | $(BUILD_DIR)
+$(DISK_IMAGE): $(PRIEST_BINARY) $(HELLOWORLD_MAZ_BINARY) $(TOOL_MKFAT32) | $(BUILD_DIR)
 	@echo "Creating FAT32 disk image..."
-	@$(TOOL_MKFAT32) -o $@ $(PRIEST_BINARY) $(HELLOWORLD_BINARY)
+	@$(TOOL_MKFAT32) -o $@ $(PRIEST_BINARY) $(HELLOWORLD_MAZ_BINARY)
 	@echo "Disk image created at $@ ($$(ls -lh $@ | awk '{print $$5}'))"
 
 # Build disk image (includes flock programs)
@@ -453,4 +500,4 @@ clean:
 	@echo "Cleaned."
 
 # Phony targets
-.PHONY: all clean cardinal kmazarin priest helloworld helloworld-thin thin-overlay disk test host-tools
+.PHONY: all clean cardinal kmazarin priest helloworld helloworld-thin helloworld-maz thin-overlay disk test host-tools

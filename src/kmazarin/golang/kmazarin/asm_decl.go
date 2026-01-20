@@ -92,6 +92,13 @@ func getAsyncPreemptWrapperAddr() uintptr
 //go:nosplit
 func HandlePageFaultAsm(faultAddr uint64) uint64
 
+// HandleUserPageFaultAsm is the ABI0 entry point for userspace page fault handler.
+// Called from el0_sync_handler for data aborts from EL0 (userspace programs).
+// Handles demand paging for mmap'd regions.
+// Takes faultAddr as argument, returns bool (1=handled, 0=not handled)
+//go:nosplit
+func HandleUserPageFaultAsm(faultAddr uint64) uint64
+
 // GetSyscallSwitchTarget returns the context switch target set by syscall handlers.
 // Returns -1 if no context switch needed, >=0 for target thread index.
 // Called from assembly after DispatchSyscall returns.

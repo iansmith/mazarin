@@ -3,9 +3,33 @@ package device
 import (
 	"errors"
 	"fmt"
+	"kmazarin/console"
 	"kmazarin/deviceapi"
 	"kmazarin/dtb"
 )
+
+// printDebug prints a debug string directly to console
+func printDebug(s string) {
+	console.KWriteString(s)
+}
+
+// printDebugInt prints an integer
+func printDebugInt(n int) {
+	if n == 0 {
+		console.KWriteByte('0')
+		return
+	}
+	var buf [20]byte
+	i := len(buf) - 1
+	for n > 0 {
+		buf[i] = byte('0' + n%10)
+		n /= 10
+		i--
+	}
+	for i++; i < len(buf); i++ {
+		console.KWriteByte(buf[i])
+	}
+}
 
 // Device storage by type - use typed interface values for type safety
 var (
@@ -48,6 +72,9 @@ func RegisterAllDrivers() {
 func registerDriver(driver Discoverable) {
 	for _, compatible := range driver.Compatible() {
 		driverRegistry[compatible] = append(driverRegistry[compatible], driver)
+		if compatible == "virtio,mmio" {
+			printDebug("[DTB] Registered virtio,mmio driver\r\n")
+		}
 	}
 }
 
@@ -76,16 +103,41 @@ func initNodeDevice(node *dtb.Node) error {
 			continue // No drivers for this compatible string
 		}
 
+		// Debug: print compatible string being tried
+		if compatible == "virtio,mmio" {
+			printDebug("[DTB] Trying virtio,mmio node: " + node.Name)
+			printDebug(" (")
+			printDebugInt(len(drivers))
+			printDebug(" drivers)\r\n")
+		}
+
 		// Try each driver that matches this compatible string
-		for _, driver := range drivers {
+		for i, driver := range drivers {
+			if compatible == "virtio,mmio" {
+				printDebug("  [DTB] Trying driver ")
+				printDebugInt(i)
+				printDebug("\r\n")
+			}
 			// Check if driver can handle this specific node (DTB-only checks)
 			if !driver.Probe(node) {
+				if compatible == "virtio,mmio" {
+					printDebug("  [DTB] Probe returned false\r\n")
+				}
 				continue
+			}
+
+			if compatible == "virtio,mmio" {
+				printDebug("  [DTB] Probe passed, calling Init\r\n")
 			}
 
 			// Try to initialize - driver may return ErrNotMyDevice
 			dev, err := driver.Init(node)
 			if err != nil {
+				if compatible == "virtio,mmio" {
+					printDebug("  [DTB] Init returned error: ")
+					printDebug(err.Error())
+					printDebug("\r\n")
+				}
 				if errors.Is(err, deviceapi.ErrNotMyDevice) {
 					// Not this driver's device type, try next driver
 					continue

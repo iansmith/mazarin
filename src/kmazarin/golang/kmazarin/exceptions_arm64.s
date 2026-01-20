@@ -95,6 +95,8 @@ el1_spx_irq:
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 
 el1_spx_fiq:
+	// MOVD $UART_BASE generates 2 instructions (mov+movk), so 5 total = 20 bytes
+	// Need 128 - 20 = 108 bytes = 27 WORDs of padding
 	MOVD	$UART_BASE, R10
 	MOVD	$'F', R11
 	MOVB	R11, (R10)
@@ -102,9 +104,11 @@ el1_spx_fiq:
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
-	WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0
 
 el1_spx_serror:
+	// MOVD $UART_BASE generates 2 instructions (mov+movk), so 5 total = 20 bytes
+	// Need 128 - 20 = 108 bytes = 27 WORDs of padding
 	MOVD	$UART_BASE, R10
 	MOVD	$'S', R11
 	MOVB	R11, (R10)
@@ -112,20 +116,23 @@ el1_spx_serror:
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
-	WORD $0; WORD $0; WORD $0; WORD $0
+	WORD $0; WORD $0; WORD $0
 
 // ============================================================================
-// Lower EL AArch64 (0x400-0x5FF) - Not used (no user space yet)
+// Lower EL AArch64 (0x400-0x5FF) - Userspace exceptions (EL0)
 // ============================================================================
 el0_aarch64_sync:
-	B	unhandled_exception
+	// Synchronous exception from EL0 (userspace)
+	// This handles SVC syscalls from userspace
+	B	el0_sync_handler
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 
 el0_aarch64_irq:
-	B	unhandled_exception
+	// IRQ from EL0 - for now, just handle like EL1 IRQ
+	B	el0_irq_handler
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
 	WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0; WORD $0
@@ -418,10 +425,12 @@ not_svc_second_digit:
 not_svc_second:
 	MOVB	R10, (R12)
 
-	// Check if this is PC alignment fault (EC=0x22) or instruction abort (EC=0x21)
+	// Check if this is PC alignment fault (EC=0x22) or instruction abort (EC=0x21) or unknown (EC=0x00)
 	CMP	$0x22, R20
 	BEQ	print_faulting_pc
 	CMP	$0x21, R20
+	BEQ	print_faulting_pc
+	CMP	$0x00, R20
 	BNE	not_pc_align
 
 print_faulting_pc:
@@ -946,6 +955,270 @@ irq_return:
 	// Clean up stack and return
 	ADD	$EXC_FRAME_SIZE, RSP
 	ERET
+
+// ============================================================================
+// el0_sync_handler - Synchronous exceptions from EL0 (userspace)
+// ============================================================================
+// Handles SVC syscalls from userspace programs (priest, etc.)
+// Very similar to sync_exception_handler but for EL0 origin.
+//
+el0_sync_handler:
+	// We're already using SP_EL1 when taking exception from EL0
+	// (ARM64 automatically switches to SP_EL1 for EL1 handlers)
+
+	// Allocate exception frame
+	SUB	$EXC_FRAME_SIZE, RSP
+
+	// Save X0-X7 (syscall arguments)
+	STP	(R0, R1), EXC_FRAME_X0(RSP)
+	STP	(R2, R3), EXC_FRAME_X0+16(RSP)
+	STP	(R4, R5), EXC_FRAME_X0+32(RSP)
+	STP	(R6, R7), EXC_FRAME_X0+48(RSP)
+
+	// Save X8-X27
+	STP	(R8, R9), EXC_FRAME_X8(RSP)
+	STP	(R10, R11), EXC_FRAME_X8+16(RSP)
+	STP	(R12, R13), EXC_FRAME_X8+32(RSP)
+	STP	(R14, R15), EXC_FRAME_X8+48(RSP)
+	STP	(R16, R17), EXC_FRAME_X8+64(RSP)
+	WORD	$0xf9004bf2  // str x18, [sp, #144]
+	WORD	$0xf9004ff3  // str x19, [sp, #152]
+	STP	(R20, R21), EXC_FRAME_X8+96(RSP)
+	STP	(R22, R23), EXC_FRAME_X8+112(RSP)
+	STP	(R24, R25), EXC_FRAME_X8+128(RSP)
+	STP	(R26, R27), EXC_FRAME_X8+144(RSP)
+
+	// Save X28-X30
+	WORD	$0xf90073fc  // str x28, [sp, #224]
+	WORD	$0xf90077fd  // str x29, [sp, #232]
+	MOVD	LR, R10
+	MOVD	R10, EXC_FRAME_X28+16(RSP)
+
+	// Save ELR, SPSR, FAR, ESR
+	MRS	ELR_EL1, R10
+	MRS	SPSR_EL1, R11
+	STP	(R10, R11), EXC_FRAME_ELR_SPSR(RSP)
+
+	MRS	FAR_EL1, R10
+	MRS	ESR_EL1, R11
+	STP	(R10, R11), EXC_FRAME_FAR_ESR(RSP)
+
+	// Save SP_EL0 (userspace stack pointer)
+	MRS	SP_EL0, R10
+	MOVD	R10, EXC_FRAME_SP_EL0(RSP)
+
+	// Extract exception class (EC) from ESR_EL1
+	MOVD	EXC_FRAME_FAR_ESR+8(RSP), R10
+	LSR	$26, R10, R10
+	AND	$0x3F, R10
+
+	// Check if this is SVC (EC = 0x15)
+	CMP	$0x15, R10
+	BNE	el0_check_data_abort
+
+	// Print 'U' to show we're handling userspace syscall
+	MOVD	$UART_BASE, R12
+	MOVD	$'U', R11
+	MOVB	R11, (R12)
+
+	// SVC from userspace - dispatch syscall
+	// Load arguments from exception frame
+	LDP	EXC_FRAME_X8(RSP), (R0, R1)        // R0 = syscall num (X8)
+	LDP	EXC_FRAME_X0(RSP), (R2, R3)        // R2 = arg0, R3 = arg1
+	LDP	EXC_FRAME_X0+16(RSP), (R4, R5)     // R4 = arg2, R5 = arg3
+	LDP	EXC_FRAME_X0+32(RSP), (R6, R7)     // R6 = arg4, R7 = arg5
+
+	// Call syscall dispatcher
+	GO_CALL_7_1(·SyscallDispatch, R0, R2, R3, R4, R5, R6, R7)
+
+	// Store return value back to X0 in exception frame
+	MOVD	R0, EXC_FRAME_X0(RSP)
+
+	B	el0_return
+
+el0_check_data_abort:
+	// Check if this is Data Abort from lower EL (EC = 0x24)
+	CMP	$0x24, R10
+	BNE	el0_not_svc
+
+	// Data Abort from userspace - try to handle page fault
+	// Get fault address from FAR_EL1 (already in exception frame)
+	MOVD	EXC_FRAME_FAR_ESR(RSP), R19
+
+	// Call HandleUserPageFaultAsm(faultAddr) to try to handle the page fault
+	// func HandleUserPageFaultAsm(faultAddr uint64) uint64 - returns 1 if handled, 0 if not
+	GO_CALL_1_1(·HandleUserPageFaultAsm, R19)
+	// R0 = return value (1 = handled, 0 = not handled)
+
+	// Check if fault was handled
+	CMP	$0, R0
+	BEQ	el0_data_abort_unhandled
+
+	// Fault handled successfully - return to faulting instruction
+	B	el0_return
+
+el0_data_abort_unhandled:
+	// Fault not handled - fall through to error print
+
+el0_not_svc:
+	// Non-SVC exception from userspace - print error and halt
+	MOVD	$UART_BASE, R12
+	MOVD	$'U', R11
+	MOVB	R11, (R12)
+	MOVD	$'E', R11
+	MOVB	R11, (R12)
+	MOVD	$':', R11
+	MOVB	R11, (R12)
+
+	// Reload EC (may have been clobbered by GO_CALL)
+	MOVD	EXC_FRAME_FAR_ESR+8(RSP), R10
+	LSR	$26, R10, R10
+	AND	$0x3F, R10
+
+	// Print EC
+	LSR	$4, R10, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	el0_not_svc_digit1
+	ADD	$('A'-10), R11
+	B	el0_not_svc_char1
+el0_not_svc_digit1:
+	ADD	$'0', R11
+el0_not_svc_char1:
+	MOVB	R11, (R12)
+
+	AND	$0xF, R10
+	CMP	$10, R10
+	BLT	el0_not_svc_digit2
+	ADD	$('A'-10), R10
+	B	el0_not_svc_char2
+el0_not_svc_digit2:
+	ADD	$'0', R10
+el0_not_svc_char2:
+	MOVB	R10, (R12)
+
+	// Print " FAR="
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+	MOVD	$'F', R11
+	MOVB	R11, (R12)
+	MOVD	$'A', R11
+	MOVB	R11, (R12)
+	MOVD	$'R', R11
+	MOVB	R11, (R12)
+	MOVD	$'=', R11
+	MOVB	R11, (R12)
+	MOVD	$'0', R11
+	MOVB	R11, (R12)
+	MOVD	$'x', R11
+	MOVB	R11, (R12)
+
+	// Print FAR_EL1 (16 hex digits)
+	MOVD	EXC_FRAME_FAR_ESR(RSP), R14
+	MOVD	$16, R15
+el0_print_far_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	el0_far_digit
+	ADD	$('A'-10), R11
+	B	el0_far_char
+el0_far_digit:
+	ADD	$'0', R11
+el0_far_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, el0_print_far_loop
+
+	// Print " ELR="
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+	MOVD	$'E', R11
+	MOVB	R11, (R12)
+	MOVD	$'L', R11
+	MOVB	R11, (R12)
+	MOVD	$'R', R11
+	MOVB	R11, (R12)
+	MOVD	$'=', R11
+	MOVB	R11, (R12)
+	MOVD	$'0', R11
+	MOVB	R11, (R12)
+	MOVD	$'x', R11
+	MOVB	R11, (R12)
+
+	// Print ELR_EL1 (16 hex digits)
+	MOVD	EXC_FRAME_ELR_SPSR(RSP), R14
+	MOVD	$16, R15
+el0_print_elr_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	el0_elr_digit
+	ADD	$('A'-10), R11
+	B	el0_elr_char
+el0_elr_digit:
+	ADD	$'0', R11
+el0_elr_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, el0_print_elr_loop
+
+	MOVD	$'\r', R11
+	MOVB	R11, (R12)
+	MOVD	$'\n', R11
+	MOVB	R11, (R12)
+
+el0_not_svc_hang:
+	B	el0_not_svc_hang
+
+el0_return:
+	// Restore SP_EL0
+	MOVD	EXC_FRAME_SP_EL0(RSP), R10
+	MSR	R10, SP_EL0
+
+	// Restore ELR and SPSR
+	LDP	EXC_FRAME_ELR_SPSR(RSP), (R10, R11)
+	MSR	R10, ELR_EL1
+	MSR	R11, SPSR_EL1
+
+	// Restore X28-X30
+	WORD	$0xf94073fc  // ldr x28, [sp, #224]
+	WORD	$0xf94077fd  // ldr x29, [sp, #232]
+	MOVD	EXC_FRAME_X28+16(RSP), R10
+	MOVD	R10, LR
+
+	// Restore X8-X27
+	LDP	EXC_FRAME_X8(RSP), (R8, R9)
+	LDP	EXC_FRAME_X8+16(RSP), (R10, R11)
+	LDP	EXC_FRAME_X8+32(RSP), (R12, R13)
+	LDP	EXC_FRAME_X8+48(RSP), (R14, R15)
+	LDP	EXC_FRAME_X8+64(RSP), (R16, R17)
+	WORD	$0xf9404bf2  // ldr x18, [sp, #144]
+	WORD	$0xf9404ff3  // ldr x19, [sp, #152]
+	LDP	EXC_FRAME_X8+96(RSP), (R20, R21)
+	LDP	EXC_FRAME_X8+112(RSP), (R22, R23)
+	LDP	EXC_FRAME_X8+128(RSP), (R24, R25)
+	LDP	EXC_FRAME_X8+144(RSP), (R26, R27)
+
+	// Restore X0-X7
+	LDP	EXC_FRAME_X0(RSP), (R0, R1)
+	LDP	EXC_FRAME_X0+16(RSP), (R2, R3)
+	LDP	EXC_FRAME_X0+32(RSP), (R4, R5)
+	LDP	EXC_FRAME_X0+48(RSP), (R6, R7)
+
+	// Clean up stack and return to userspace
+	ADD	$EXC_FRAME_SIZE, RSP
+	ERET
+
+// ============================================================================
+// el0_irq_handler - IRQ from EL0 (userspace)
+// ============================================================================
+// For now, just forward to the regular IRQ handler
+// TODO: May need different handling for userspace context
+el0_irq_handler:
+	B	irq_exception_handler
 
 // ============================================================================
 // asyncPreemptWrapper - Full register-saving wrapper for async preemption

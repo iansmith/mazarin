@@ -50,13 +50,15 @@ func InitFrameAllocator() {
 	_ = cfg.FramePoolEnd - cfg.FramePoolStart // Pool size calculated but not printed
 }
 
-// AllocFrame allocates a single physical frame from the kernel frame pool.
+// AllocKernelFrame allocates a single physical frame from the kernel frame pool.
 // Returns the physical address of the frame, or 0 if the pool is exhausted.
-// The frame is NOT zeroed - caller should zero it if needed.
+// The frame is NOT zeroed - caller should use Bzero4K after mapping if needed.
 // Thread-safe: uses atomic operations for concurrent allocation.
 //
+// For userspace allocations, use AllocUserFrame() instead.
+//
 //go:nosplit
-func AllocFrame() uintptr {
+func AllocKernelFrame() uintptr {
 	// Lazy initialization from runtime config (atomic check)
 	if atomic.LoadUint32(&initialized) == 0 {
 		// Use compare-and-swap to ensure only one thread initializes
@@ -122,6 +124,114 @@ func GetFrameStats() (allocated, remaining uint64) {
 	return
 }
 
+// =============================================================================
+// Userspace Frame Allocator
+// =============================================================================
+//
+// Separate frame allocator for userspace pages. This keeps userspace memory
+// completely separate from kernel memory for security and resource management.
+
+// userFrameAllocator tracks the userspace frame pool allocation state
+var userFrameAllocator frameAllocatorState
+
+// userInitialized tracks whether the userspace frame allocator has been initialized
+var userInitialized uint32
+
+// InitUserFrameAllocator initializes the userspace frame allocator.
+// This should be called once during kmazarin startup after kernel frame allocator.
+// Frame pool boundaries come from Cardinal via RuntimeConfig.
+//
+//go:nosplit
+func InitUserFrameAllocator() {
+	cfg := getRuntimeConfigTyped()
+
+	// Check if userspace frame pool is configured
+	if cfg.UserspaceFramePoolStart == 0 || cfg.UserspaceFramePoolEnd == 0 {
+		uartPuts("[kmem] WARNING: Userspace frame pool not configured\r\n")
+		return
+	}
+
+	userFrameAllocator.nextFrame = uintptr(cfg.UserspaceFramePoolStart)
+	userFrameAllocator.endFrame = uintptr(cfg.UserspaceFramePoolEnd)
+	userFrameAllocator.allocated = 0
+	atomic.StoreUint32(&userInitialized, 1)
+
+	poolSize := cfg.UserspaceFramePoolEnd - cfg.UserspaceFramePoolStart
+	uartPuts("[kmem] Userspace frame pool: ")
+	uartPutHex64(cfg.UserspaceFramePoolStart)
+	uartPuts(" - ")
+	uartPutHex64(cfg.UserspaceFramePoolEnd)
+	uartPuts(" (")
+	uartPutHex64(poolSize / (1024 * 1024))
+	uartPuts(" MB)\r\n")
+}
+
+// AllocUserFrame allocates a single physical frame from the userspace frame pool.
+// Returns the physical address of the frame, or 0 if the pool is exhausted.
+// The frame is NOT zeroed - caller should zero it if needed.
+// Thread-safe: uses atomic operations for concurrent allocation.
+//
+//go:nosplit
+func AllocUserFrame() uintptr {
+	// Lazy initialization from runtime config (atomic check)
+	if atomic.LoadUint32(&userInitialized) == 0 {
+		// Use compare-and-swap to ensure only one thread initializes
+		if atomic.CompareAndSwapUint32(&userInitialized, 0, 1) {
+			cfg := getRuntimeConfigTyped()
+			if cfg.UserspaceFramePoolStart == 0 || cfg.UserspaceFramePoolEnd == 0 {
+				// Not configured - fall back to kernel pool (temporary)
+				uartPuts("[kmem] WARN: Using kernel pool for userspace (legacy mode)\r\n")
+				atomic.StoreUint32(&userInitialized, 2) // Mark as not available
+				return AllocKernelFrame() // Fall back to kernel allocator
+			}
+			atomic.StoreUintptr(&userFrameAllocator.nextFrame, uintptr(cfg.UserspaceFramePoolStart))
+			atomic.StoreUintptr(&userFrameAllocator.endFrame, uintptr(cfg.UserspaceFramePoolEnd))
+			atomic.StoreUint64(&userFrameAllocator.allocated, 0)
+		} else {
+			// Another thread won the race, wait for it to complete initialization
+			for atomic.LoadUint32(&userInitialized) == 0 {
+				// Spin wait
+			}
+		}
+	}
+
+	// Check if userspace pool is not available (flag=2 means not configured)
+	if atomic.LoadUint32(&userInitialized) == 2 {
+		return AllocKernelFrame() // Fall back to kernel allocator
+	}
+
+	// Atomically allocate a frame from userspace pool
+	for {
+		currentNext := atomic.LoadUintptr(&userFrameAllocator.nextFrame)
+		endFrame := atomic.LoadUintptr(&userFrameAllocator.endFrame)
+
+		if currentNext >= endFrame {
+			uartPuts("[kmem] Userspace OOM!\r\n")
+			return 0
+		}
+
+		newNext := currentNext + PageSize
+		if atomic.CompareAndSwapUintptr(&userFrameAllocator.nextFrame, currentNext, newNext) {
+			// Successfully allocated frame
+			atomic.AddUint64(&userFrameAllocator.allocated, 1)
+			return currentNext
+		}
+		// CAS failed, another thread allocated, retry
+	}
+}
+
+// GetUserFrameStats returns the current userspace frame allocator statistics.
+//
+//go:nosplit
+func GetUserFrameStats() (allocated, remaining uint64) {
+	cfg := getRuntimeConfigTyped()
+	poolSize := cfg.UserspaceFramePoolEnd - cfg.UserspaceFramePoolStart
+	allocated = userFrameAllocator.allocated
+	totalFrames := uint64(poolSize / PageSize)
+	remaining = totalFrames - allocated
+	return
+}
+
 // runtimeConfigStruct is a local copy of RuntimeConfig to avoid circular imports.
 // Must match the layout in shared/constants/runtime_config.go exactly.
 type runtimeConfigStruct struct {
@@ -152,6 +262,20 @@ type runtimeConfigStruct struct {
 	ExceptionStackBottom uint64 // Bottom of exception stack
 	ExceptionStackTop    uint64
 	ExceptionStackSize   uint64
+	G0StructAddr         uint64
+	AsyncPreemptAddr     uint64
+	ReadyForAsyncPreempt uint64
+	FramebufferPhysAddr  uint64
+	FramebufferSize      uint64
+	BootImagePhysAddr    uint64
+	BootImageSize        uint64
+	// New userspace memory region fields
+	TotalRAMSize            uint64
+	RAMBaseAddr             uint64
+	UserspaceFramePoolStart uint64
+	UserspaceFramePoolEnd   uint64
+	UserspacePTPoolStart    uint64
+	UserspacePTPoolEnd      uint64
 }
 
 // getRuntimeConfigTyped returns the runtime config with proper type.
@@ -171,6 +295,26 @@ func getRuntimeConfigTyped() *runtimeConfigStruct {
 	}
 	ifacePtr := (*iface)(unsafe.Pointer(&cfgInterface))
 	return (*runtimeConfigStruct)(ifacePtr.data)
+}
+
+// RuntimeConfig is an exported wrapper for accessing runtime configuration.
+// Used by other packages (like idalloc) that need kernel VA offset etc.
+type RuntimeConfig struct {
+	KernelVAOffset uint64
+}
+
+// GetRuntimeConfig returns an exported view of the runtime configuration.
+// Returns nil if config is not yet available.
+//
+//go:nosplit
+func GetRuntimeConfig() *RuntimeConfig {
+	cfg := getRuntimeConfigTyped()
+	if cfg == nil {
+		return nil
+	}
+	return &RuntimeConfig{
+		KernelVAOffset: cfg.KernelVAOffset,
+	}
 }
 
 // uartPuts writes a string to console

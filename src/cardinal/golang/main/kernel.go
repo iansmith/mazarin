@@ -133,6 +133,123 @@ func preRegisterFixedSpans() {
 	}
 }
 
+// Detected memory configuration from DTB (populated early in boot)
+var (
+	detectedRAMBase uint64 // Base physical address of RAM
+	detectedRAMSize uint64 // Total RAM size from DTB
+
+	// Computed memory regions
+	userspaceFramePoolStart uint64
+	userspaceFramePoolEnd   uint64
+	userspacePTPoolStart    uint64
+	userspacePTPoolEnd      uint64
+)
+
+// Minimum RAM required (256MB)
+const MinRAMRequired = 256 * 1024 * 1024
+
+// Kernel memory budget (64MB)
+const KernelMemoryBudget = 64 * 1024 * 1024
+
+// detectAndComputeMemoryRegions detects RAM from DTB and computes memory regions.
+// Called after MMU is enabled, so stack growth is available.
+// Panics if RAM < 256MB.
+//
+// Memory layout formula:
+//   Total RAM (from DTB) >= 256MB
+//   Kernel Region: 64 MB (fixed, starts at RAM base)
+//   Page Table Pool: (Total RAM - 64MB) / 513 (full L3 coverage for userspace)
+//   Userspace Frame Pool: Total RAM - 64MB - PT Pool
+func detectAndComputeMemoryRegions() {
+	// Get memory info from DTB
+	base, size, ok := getMemoryFromDTB()
+	if !ok {
+		uartPutsDirect("FATAL: Could not detect RAM from DTB\r\n")
+		for {
+		}
+	}
+
+	detectedRAMBase = uint64(base)
+	detectedRAMSize = uint64(size)
+
+	// Print detected RAM
+	uartPutsDirect("RAM detected: base=")
+	uartPutHex32(uint32(base >> 32))
+	uartPutHex32(uint32(base))
+	uartPutsDirect(" size=")
+	uartPutHex32(uint32(size >> 32))
+	uartPutHex32(uint32(size))
+	uartPutsDirect(" (")
+	uartPutUint32(uint32(size / (1024 * 1024)))
+	uartPutsDirect(" MB)\r\n")
+
+	// Panic if RAM < 256MB
+	if size < MinRAMRequired {
+		uartPutsDirect("FATAL: Insufficient RAM. Minimum required: 256 MB, detected: ")
+		uartPutUint32(uint32(size / (1024 * 1024)))
+		uartPutsDirect(" MB\r\n")
+		for {
+		}
+	}
+
+	// Compute memory regions
+	// Userspace memory = Total RAM - Kernel Budget (64MB)
+	userspaceTotal := size - KernelMemoryBudget
+
+	// Page table pool for full L3 coverage: (userspace total) / 513
+	// Each L3 entry covers 4KB, and we need 1 page table page per 512 entries
+	// So for N bytes of userspace, we need N/4KB entries = N/4KB/512 = N/2MB PT pages
+	// Plus we need L0-L2 tables. Approximation: (userspaceTotal / 4KB) / 512 * 4KB
+	// Simpler formula: userspaceTotal / 513 gives us ~0.2% overhead for PT
+	ptPoolSize := userspaceTotal / 513
+	// Round up to page boundary
+	ptPoolSize = (ptPoolSize + 0xFFF) &^ 0xFFF
+
+	// Userspace frame pool = remaining after kernel and PT pool
+	framePoolSize := userspaceTotal - ptPoolSize
+
+	// Memory layout (all relative to RAM base):
+	// [RAM Base + 0] ... [RAM Base + 64MB) = Kernel region
+	// [RAM Base + 64MB] ... [RAM Base + 64MB + PT Pool) = Page Table Pool
+	// [RAM Base + 64MB + PT Pool] ... [RAM End) = Userspace Frame Pool
+
+	kernelEnd := uint64(base) + KernelMemoryBudget
+	userspacePTPoolStart = kernelEnd
+	userspacePTPoolEnd = kernelEnd + uint64(ptPoolSize)
+	userspaceFramePoolStart = userspacePTPoolEnd
+	userspaceFramePoolEnd = uint64(base) + uint64(size)
+
+	// Print computed regions
+	uartPutsDirect("Memory regions:\r\n")
+	uartPutsDirect("  Kernel:     ")
+	uartPutHex32(uint32(base >> 32))
+	uartPutHex32(uint32(base))
+	uartPutsDirect(" - ")
+	uartPutHex32(uint32(kernelEnd >> 32))
+	uartPutHex32(uint32(kernelEnd))
+	uartPutsDirect(" (64 MB)\r\n")
+
+	uartPutsDirect("  PT Pool:    ")
+	uartPutHex32(uint32(userspacePTPoolStart >> 32))
+	uartPutHex32(uint32(userspacePTPoolStart))
+	uartPutsDirect(" - ")
+	uartPutHex32(uint32(userspacePTPoolEnd >> 32))
+	uartPutHex32(uint32(userspacePTPoolEnd))
+	uartPutsDirect(" (")
+	uartPutUint32(uint32(ptPoolSize / (1024 * 1024)))
+	uartPutsDirect(" MB)\r\n")
+
+	uartPutsDirect("  Frame Pool: ")
+	uartPutHex32(uint32(userspaceFramePoolStart >> 32))
+	uartPutHex32(uint32(userspaceFramePoolStart))
+	uartPutsDirect(" - ")
+	uartPutHex32(uint32(userspaceFramePoolEnd >> 32))
+	uartPutHex32(uint32(userspaceFramePoolEnd))
+	uartPutsDirect(" (")
+	uartPutUint32(uint32(framePoolSize / (1024 * 1024)))
+	uartPutsDirect(" MB)\r\n")
+}
+
 // Peripheral base address for Raspberry Pi 4
 const (
 	// Peripheral base address for Raspberry Pi 4
@@ -457,6 +574,9 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	uartInit()
 	uartPuts("Cardinal\n")
 
+	// NOTE: Memory detection moved to after MMU init to avoid nosplit stack limits
+	// The DTB parsing uses large local arrays that exceed nosplit stack budget.
+
 	// Check SCTLR_EL1 for alignment check bit
 	sctlr := asm.ReadSctlrEl1()
 	alignCheck := (sctlr & 2) != 0 // Bit 1: A - Alignment Check Enable
@@ -492,6 +612,11 @@ func kernelMainInternal(r0, r1, atags uint32) {
 		for {
 		}
 	}
+
+	// Detect RAM from DTB and compute memory regions
+	// This is done after MMU init because the DTB parsing uses large local arrays
+	// that exceed the nosplit stack budget available before MMU is enabled.
+	detectAndComputeMemoryRegions()
 
 	// Pre-register fixed memory spans
 	preRegisterFixedSpans()
@@ -551,7 +676,7 @@ func abortBoot(message string) {
 //go:nosplit
 func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 	// Get frame pool info
-	physAlloc := getPhysFrameAllocator()
+	physAlloc := getKFrameAllocator()
 
 	// Compute derived values
 	const KernelVAOffset = uint64(0xFFFFFFFF00000000)
@@ -605,6 +730,13 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 		FramebufferSize      uint64 // Size of framebuffer in bytes
 		BootImagePhysAddr    uint64 // Physical address of boot image data
 		BootImageSize        uint64 // Size of boot image in bytes
+		// New memory region fields
+		TotalRAMSize            uint64 // Total RAM size from DTB
+		RAMBaseAddr             uint64 // Base physical address of RAM
+		UserspaceFramePoolStart uint64 // Start PA of userspace frame pool
+		UserspaceFramePoolEnd   uint64 // End PA of userspace frame pool
+		UserspacePTPoolStart    uint64 // Start PA of userspace page table pool
+		UserspacePTPoolEnd      uint64 // End PA of userspace page table pool
 	}
 
 	config := (*RuntimeConfig)(unsafe.Pointer(kmazarinStartupParamsVA))
@@ -674,6 +806,14 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 	imageEnd := asm.ImageDataEnd()
 	config.BootImagePhysAddr = uint64(imageStart)
 	config.BootImageSize = uint64(imageEnd - imageStart)
+
+	// Memory region layout from DTB detection (populated by detectAndComputeMemoryRegions)
+	config.TotalRAMSize = detectedRAMSize
+	config.RAMBaseAddr = detectedRAMBase
+	config.UserspaceFramePoolStart = userspaceFramePoolStart
+	config.UserspaceFramePoolEnd = userspaceFramePoolEnd
+	config.UserspacePTPoolStart = userspacePTPoolStart
+	config.UserspacePTPoolEnd = userspacePTPoolEnd
 
 	// Ensure writes complete
 	asm.Dsb()
@@ -970,7 +1110,7 @@ func loadAndRunKmazarin() {
 				kernelPanic("Kmazarin size limit exceeded")
 			}
 
-			physFrame := allocPhysFrame()
+			physFrame := allocKFrame()
 			if physFrame == 0 {
 				uartPutsDirect("ERROR: Out of memory mapping segment\r\n")
 				return

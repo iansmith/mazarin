@@ -1,7 +1,10 @@
 
 package ksyscall
 
-import "unsafe"
+import (
+	"kmazarin/console"
+	"unsafe"
+)
 
 // SyscallSchedGetaffinity implements the sched_getaffinity(2) syscall
 // The Go runtime uses this to detect available CPUs
@@ -9,6 +12,11 @@ import "unsafe"
 //
 //go:nosplit
 func SyscallSchedGetaffinity(pid, cpusetsize, mask, _, _, _ uint64) int64 {
+	// Debug: print the mask address to see where we're writing
+	console.KWriteString("[sched_getaffinity] mask=")
+	console.KPrintHex64(mask)
+	console.KWriteString("\r\n")
+
 	// Report 1 CPU available (bit 0 set in mask)
 	if cpusetsize < 8 {
 		return -22 // EINVAL

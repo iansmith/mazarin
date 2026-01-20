@@ -176,7 +176,7 @@ const (
 
 	// PT Pool - kmazarin allocates new L2/L3 tables from here
 	KernelPTPoolStart = 0xFFFFFFFF421D0000 // Start of PT pool
-	KernelPTPoolEnd   = 0xFFFFFFFF42200000 // End of PT pool (192KB)
+	KernelPTPoolEnd   = 0xFFFFFFFF42250000 // End of PT pool (512KB = 128 pages)
 	KernelPTPoolSize  = KernelPTPoolEnd - KernelPTPoolStart
 
 	// Heap VA space - demand-paged, backed by frame pool
@@ -192,7 +192,7 @@ const (
 	// Physical memory after kmazarin static region, used to back heap pages
 	// NOTE: This is the KERNEL frame pool. User-space processes will have
 	// their own separate frame pool (to be defined later).
-	KernelFramePoolPhysStart = 0x42200000 // Physical start of kernel frame pool
+	KernelFramePoolPhysStart = 0x42250000 // Physical start of kernel frame pool (after PT pool)
 	KernelFramePoolPhysEnd   = 0x80000000 // Physical end (~1GB, end of RAM)
 	KernelFramePoolSize      = KernelFramePoolPhysEnd - KernelFramePoolPhysStart
 

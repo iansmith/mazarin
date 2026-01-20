@@ -64,7 +64,7 @@ func preMapPages() {
 	const targetVA = uintptr(0x4000010000)
 
 	// Allocate a physical frame
-	physFrame := allocPhysFrame()
+	physFrame := allocKFrame()
 	if physFrame == 0 {
 		return
 	}
@@ -123,7 +123,7 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 		uartPutsDirect("This means the page fault handler accessed unmapped memory.\r\n")
 		uartPutsDirect("Likely causes:\r\n")
 		uartPutsDirect("  1. A global variable used by HandlePageFault is not pre-mapped\r\n")
-		uartPutsDirect("  2. physFrameAllocatorState_global not in identity-mapped BSS\r\n")
+		uartPutsDirect("  2. kFrameAllocatorState_global not in identity-mapped BSS\r\n")
 		uartPutsDirect("  3. mmapSpans array not in identity-mapped BSS\r\n")
 		uartPutsDirect("  4. pageTableL0 pointer not accessible\r\n")
 		uartPutsDirect("\r\n")
@@ -186,7 +186,7 @@ func HandlePageFault(faultAddr uintptr, faultStatus uint64) bool {
 	}
 
 	// Allocate a physical frame
-	physFrame := allocPhysFrame()
+	physFrame := allocKFrame()
 	if physFrame == 0 {
 		// Out of physical memory - this is fatal for demand paging
 		uartPutsDirect("\r\nDEMAND PAGE OOM at VA=0x")

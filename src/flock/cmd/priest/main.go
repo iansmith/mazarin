@@ -6,6 +6,8 @@ package main
 
 import (
 	"fmt"
+	"unsafe"
+
 	"mazarin/sys"
 )
 
@@ -46,7 +48,18 @@ func handleMazzySyscall(num, a1, a2, a3, a4, a5, a6 uintptr) int64 {
 var priestSyscallEntryAddr = PriestSyscallEntry
 
 func main() {
-	fmt.Println("[priest] Starting syscall router")
+	// =====================================================
+	// USERSPACE ENTRY POINT
+	// =====================================================
+	// This is the first code running in EL0 (userspace)!
+	// If we see this message, the kernel successfully:
+	//   1. Loaded priest.elf from FAT32 disk
+	//   2. Mapped it into low memory with user permissions
+	//   3. Performed ERET to EL0
+	//   4. We made an SVC syscall for fmt.Println and it worked!
+	fmt.Println("========================================")
+	fmt.Println("[PRIEST] RUNNING IN USERSPACE (EL0)!")
+	fmt.Println("========================================")
 
 	// Print the address of PriestSyscallEntry for debugging
 	// This also ensures the function is not stripped
@@ -62,7 +75,32 @@ func main() {
 
 	fmt.Println("[priest] Ready to handle syscalls from userspace programs")
 
-	// In the future, this will be an event loop handling syscall requests
-	// For now, just spin
+	// Try to load helloworld.elf
+	fmt.Println("[priest] Loading /helloworld.elf...")
+
+	// Get address of PriestSyscallEntry as uintptr
+	entryAddr := uintptr(unsafe.Pointer(&priestSyscallEntryAddr))
+
+	// Allocate ProgramControl on the stack (writable memory)
+	var pc sys.ProgramControl
+
+	err = sys.Run("/helloworld.elf", entryAddr, &pc)
+	if err != nil {
+		fmt.Printf("[priest] Failed to load helloworld.elf: %v\n", err)
+		fmt.Println("[priest] Entering idle loop...")
+		select {}
+	}
+
+	fmt.Printf("[priest] Loaded program %d at 0x%x, entry=0x%x\n",
+		pc.ProgramID, pc.LoadAddress, pc.EntryPoint)
+
+	// Convert entry point to function pointer and call it
+	type entryFunc func()
+	entry := *(*entryFunc)(unsafe.Pointer(&pc.EntryPoint))
+
+	fmt.Println("[priest] Calling program entry point...")
+	entry() // Calls main.MazarinMain() → main.main()
+
+	fmt.Println("[priest] Program returned")
 	select {}
 }
