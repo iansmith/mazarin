@@ -122,3 +122,11 @@ func SetSyscallELR(elr uint64)
 // Called by assembly before DispatchSyscall so clone can get the proper processor state.
 //go:nosplit
 func SetSyscallSPSR(spsr uint64)
+
+// CheckThreadPreemption checks if the current thread should be preempted.
+// If preemption is needed, saves current thread context, switches to next ready thread.
+// framePtr = exception frame pointer containing saved registers
+// Returns pointer to new ThreadContext if switch happened, 0 otherwise.
+// Called from timer IRQ handler after NeedsThreadPreempt is set.
+//go:nosplit
+func CheckThreadPreemption(framePtr uint64) uint64

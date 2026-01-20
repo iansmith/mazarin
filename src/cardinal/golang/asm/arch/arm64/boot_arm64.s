@@ -126,7 +126,7 @@ TEXT _cardinal_boot(SB), NOSPLIT|NOFRAME, $0
 	// SEGMENT 2: Exception Level Detection
 	// ========================================
 	// Detect current EL to determine if EL2→EL1 drop is needed.
-	// QEMU virt with virtualization=off starts at EL2.
+	// QEMU virt machine can start at EL2 or EL1 depending on configuration.
 	// POST-BOOT: Use readCurrentEL() from lib_sysregs for diagnostics
 
 	// mrs x0, CurrentEL
@@ -171,10 +171,11 @@ TEXT _cardinal_boot(SB), NOSPLIT|NOFRAME, $0
 	// Set exception stack while still at EL2 (can't be done easily from EL1).
 	// POST-BOOT: N/A (SP_EL1 set once, modified only by mode switching)
 
-	// CRITICAL: Set SP_EL1 to high-memory exception stack NOW (while at EL2)
-	// After ERET to EL1, we can't use HVC to set it (virtualization=off)
-	// Load address from LinkerKernelExcStackTop (high memory for kmazarin)
-	MOVD	main·LinkerKernelExcStackTop(SB), R0
+	// CRITICAL: Set SP_EL1 to LOW MEMORY exception stack NOW
+	// Must use low memory because MMU is not enabled yet and high memory
+	// addresses (0xFFFFFFFF...) don't exist in physical memory.
+	// The stack will be switched to high memory after MMU is enabled.
+	MOVD	main·LinkerExceptionStackTop(SB), R0
 	MSR_SP_EL1_X0
 
 	// ========================================
@@ -219,8 +220,13 @@ at_el1:
 	// If we started at EL1, we need to set SP_EL1 NOW!
 	//
 	// Stack Architecture:
-	// - SP_EL1: Exception handler stack, HIGH MEMORY (LinkerKernelExcStackTop)
+	// - SP_EL1: Exception handler stack, LOW MEMORY initially (LinkerExceptionStackTop)
+	//           Switched to HIGH MEMORY (LinkerKernelExcStackTop) after MMU is enabled
 	// - SP_EL0: g0/kernel stack, used in EL1t mode (LinkerStackTop)
+	//
+	// CRITICAL: Must use LOW memory for SP_EL1 during early boot because
+	// exception vectors are active but MMU is not yet enabled. High memory
+	// addresses (0xFFFFFFFF...) don't exist until MMU maps them.
 	//
 	// POST-BOOT: Use writeSPSel() and instructionBarrier() from lib_barriers
 
@@ -229,8 +235,8 @@ at_el1:
 	MSR	$1, SPSel		// Switch to EL1h mode (SP = SP_EL1)
 	ISB	$15
 
-	// Load the exception stack top address
-	MOVD	main·LinkerKernelExcStackTop(SB), R0
+	// Load the LOW MEMORY exception stack top address (for early boot before MMU)
+	MOVD	main·LinkerExceptionStackTop(SB), R0
 
 	// Set SP (which is SP_EL1 in EL1h mode) to exception stack top
 	MOVD	R0, RSP			// This sets SP_EL1!
@@ -509,7 +515,7 @@ el2_vec_start:
 	// 0x400: Lower EL using AArch64 - Synchronous (HVC lands here!)
 el2_vec_sync_lower_64:
 	B	el2_hvc_handler(SB)
-	// Fill rest of 128-byte vector with NOPs
+	// Fill rest of 128-byte vector with NOPs (31 WORDs = 124 bytes)
 	WORD $0xD503201F; WORD $0xD503201F; WORD $0xD503201F; WORD $0xD503201F
 	WORD $0xD503201F; WORD $0xD503201F; WORD $0xD503201F; WORD $0xD503201F
 	WORD $0xD503201F; WORD $0xD503201F; WORD $0xD503201F; WORD $0xD503201F

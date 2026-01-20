@@ -7,7 +7,7 @@ import (
 )
 
 // SyscallMunmap implements the munmap(2) syscall
-// Unmaps pages in the specified range.
+// Unmaps pages in the specified range and updates span tracking.
 // Does NOT currently free physical frames back to the pool.
 //
 //go:nosplit
@@ -28,6 +28,9 @@ func SyscallMunmap(addr, length, _, _, _, _ uint64) int64 {
 	alignedAddr := addr &^ (pageSize - 1)
 	alignedEnd := (addr + length + pageSize - 1) &^ (pageSize - 1)
 	alignedLength := alignedEnd - alignedAddr
+
+	// Update span tracking (remove/split spans for this range)
+	removeSpan(alignedAddr, alignedLength)
 
 	// Count how many pages we actually unmap
 	unmappedCount := uint64(0)

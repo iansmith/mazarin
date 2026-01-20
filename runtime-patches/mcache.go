@@ -197,6 +197,46 @@ func (c *mcache) refill(spc spanClass) {
 	}
 
 	// Get a new cached span from the central lists.
+	// KMAZARIN DEBUG: Print addresses to debug central array indexing
+	const uartBase = uintptr(0xFFFFFFFF09000000)
+	hexChars := "0123456789ABCDEF"
+
+	// Print spc value
+	*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('~')
+	spcVal := uint8(spc)
+	*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(hexChars[(spcVal>>4)&0xF])
+	*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(hexChars[spcVal&0xF])
+
+	// Print address of central[0]
+	*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('[')
+	*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('0')
+	*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(':')
+	c0Addr := uint64(uintptr(unsafe.Pointer(&mheap_.central[0].mcentral)))
+	for i := 28; i >= 0; i -= 4 {
+		nibble := (c0Addr >> i) & 0xF
+		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(hexChars[nibble])
+	}
+
+	// Print address of central[spc]
+	*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(']')
+	*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('[')
+	cSpcAddr := uint64(uintptr(unsafe.Pointer(&mheap_.central[spc].mcentral)))
+	for i := 28; i >= 0; i -= 4 {
+		nibble := (cSpcAddr >> i) & 0xF
+		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(hexChars[nibble])
+	}
+	*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(']')
+
+	// Print element size
+	elemSize := uintptr(unsafe.Pointer(&mheap_.central[1].mcentral)) - uintptr(unsafe.Pointer(&mheap_.central[0].mcentral))
+	*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('S')
+	for i := 12; i >= 0; i -= 4 {
+		nibble := (uint64(elemSize) >> i) & 0xF
+		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(hexChars[nibble])
+	}
+	*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('\r')
+	*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('\n')
+
 	s = mheap_.central[spc].mcentral.cacheSpan()
 	if s == nil {
 		throw("out of memory")

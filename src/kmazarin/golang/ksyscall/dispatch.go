@@ -60,6 +60,43 @@ var syscallTable = [512]SyscallHandler{
 //go:nosplit
 //go:noinline
 func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
+	// Ultra-early breadcrumb that works before console is initialized
+	// Print syscall indicator
+	switch syscallNum {
+	case 94: // exit_group
+		console.Breadcrumb('X')
+	case 222: // mmap
+		console.Breadcrumb('M')
+	case 220: // clone
+		console.Breadcrumb('C')
+	case 98: // futex
+		console.Breadcrumb('F')
+	case 96: // set_tid_address
+		console.Breadcrumb('T')
+	case 123: // sched_getaffinity
+		console.Breadcrumb('A')
+	case 135: // rt_sigprocmask
+		console.Breadcrumb('S')
+	case 134: // rt_sigaction
+		console.Breadcrumb('s')
+	case 172: // getpid
+		console.Breadcrumb('P')
+	case 178: // gettid
+		console.Breadcrumb('t')
+	case 113: // clock_gettime
+		console.Breadcrumb('G')
+	case 56: // openat
+		console.Breadcrumb('O')
+	case 57: // close
+		console.Breadcrumb('c')
+	case 63: // read
+		console.Breadcrumb('R')
+	case 64: // write
+		console.Breadcrumb('W')
+	default:
+		console.Breadcrumb('?')
+	}
+
 	// CORRUPTION DETECTOR: DISABLED - was checking wrong address (userspace instead of kernel)
 	// The original check was reading from userspace address 0x180C28 via ReadUserByte,
 	// but SizeToSizeClass128 is in kernel space, not userspace.

@@ -24,9 +24,16 @@ func (a *WakeThreadAction) Run() {
 	if a.threadIdx < 0 || a.threadIdx >= MaxThreads {
 		return
 	}
+	// Protect state modification from concurrent access
+	savedDAIF := SaveAndDisableIRQs()
 	if threads[a.threadIdx].State == ThreadSleeping {
 		threads[a.threadIdx].State = ThreadReady
+		// Add to ready queue so it can be found efficiently
+		if readyQueue != nil && threads[a.threadIdx].readyNode == nil {
+			threads[a.threadIdx].readyNode = readyQueue.PushBack(&threads[a.threadIdx])
+		}
 	}
+	RestoreIRQs(savedDAIF)
 }
 
 // Verify WakeThreadAction implements Action interface

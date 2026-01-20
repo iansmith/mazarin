@@ -27,6 +27,11 @@ const (
 // Timer frequency (set from timer init)
 var timerFrequencyHz uint64 = 62500000 // Default 62.5 MHz for QEMU
 
+// kmazarinG0Addr holds kmazarin's g0 address, set at startup.
+// The exception handler uses this to switch to a valid kmazarin g
+// when handling syscalls from userspace (which has a different g).
+var kmazarinG0Addr uint64
+
 // Thread states
 const (
 	ThreadFree         = 0 // Slot available
@@ -62,8 +67,9 @@ type Thread struct {
 	Context   ThreadContext
 
 	// Preemption tracking
-	LastSeenG uint64 // g pointer seen at last timer tick
-	StartTick uint64 // globalTickCounter when this run started
+	LastSeenG     uint64 // g pointer seen at last timer tick
+	StartTick     uint64 // globalTickCounter when this run started
+	PreemptElapsed uint64 // elapsed ticks saved when thread switched away
 
 	// Ready queue node - for O(1) removal from readyQueue
 	// nil when thread is not in the ready queue
@@ -91,6 +97,10 @@ var nextTID int32 = 1
 
 // Global tick counter (incremented by timer)
 var globalTickCounter uint64 = 0
+
+// Thread preemption threshold in 10ms intervals
+// Goroutine preemption is at 5 intervals (50ms), thread preemption is 2x that
+const ThreadPreemptionThreshold = 10 // 100ms
 
 // Syscall context switch signaling
 // Set by syscall handlers (futex, nanosleep) when they need to block
@@ -156,6 +166,12 @@ func GetSyscallSPSR() uint64 {
 func getSyscallSwitchTargetInternal() uint64 {
 	target := syscallSwitchTarget
 	syscallSwitchTarget = 0 // Reset for next syscall
+	Breadcrumb('G')
+	if target != 0 {
+		Breadcrumb('+')
+	} else {
+		Breadcrumb('-')
+	}
 	// Return context pointer directly (0 means no switch)
 	return uint64(target)
 }
@@ -166,6 +182,12 @@ func getSyscallSwitchTargetInternal() uint64 {
 //
 //go:noinline
 func SetSyscallSwitchTarget(target uintptr) {
+	Breadcrumb('S')
+	if target != 0 {
+		Breadcrumb('+')
+	} else {
+		Breadcrumb('-')
+	}
 	// Store context pointer directly
 	// ThreadBlockFutex/ThreadBlockSleep now return context pointers,
 	// so 0 unambiguously means "no switch" and non-zero is valid target
@@ -181,6 +203,11 @@ func InitThreads() {
 	if threadsInitialized {
 		return
 	}
+
+	// Save kmazarin's g address early - x28 should be pointing to kmazarin's g
+	// at this point (early init runs on g0/m0).
+	// This is used by the exception handler when handling userspace syscalls.
+	kmazarinG0Addr = GetGRegister()
 
 	// Initialize all threads as free
 	for i := 0; i < MaxThreads; i++ {
@@ -323,6 +350,7 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32 {
 	t.EntryFunc = fn
 	t.StartTick = globalTickCounter
 	t.LastSeenG = gp
+	t.PreemptElapsed = 0 // Fresh thread, no elapsed time yet
 	t.readyNode = nil
 
 	// Add to ready queue
@@ -398,12 +426,25 @@ func threadFindReadyIdx() int32 {
 		start = 0
 	}
 
+	// DEBUG: Print current thread and thread states
+	Breadcrumb('[')
+	Breadcrumb('c')
+	Breadcrumb('0' + byte(currentThreadIdx))
+	Breadcrumb(':')
+	for i := int32(0); i < 4; i++ {
+		Breadcrumb('0' + byte(threads[i].State))
+	}
+	Breadcrumb(']')
+
 	for i := int32(0); i < MaxThreads; i++ {
 		idx := (start + i) % MaxThreads
 		if threads[idx].State == ThreadReady {
+			Breadcrumb('!')
+			Breadcrumb('0' + byte(idx))
 			return idx
 		}
 	}
+	Breadcrumb('X')
 	return -1
 }
 
@@ -579,6 +620,79 @@ func GetGlobalTickCounter() uint64 {
 	return globalTickCounter
 }
 
+// checkThreadPreemptionInternal checks if the current thread should be preempted
+// and performs the context switch if needed.
+// Called from timer IRQ handler via ABI stub when NeedsThreadPreempt is set.
+//
+// framePtr: pointer to exception frame with saved registers
+// Returns: pointer to new ThreadContext if switch happened, 0 otherwise
+//
+// CRITICAL: This is called from IRQ context after EOIR, with g switched to kmazarin's g0.
+// The exception frame contains the interrupted thread's complete state.
+//
+//go:nosplit
+//go:noinline
+func checkThreadPreemptionInternal(framePtr uint64) uint64 {
+	Breadcrumb('T')  // Thread preemption check
+
+	if currentThreadIdx < 0 {
+		Breadcrumb('-')
+		return 0
+	}
+
+	// BEGIN CRITICAL SECTION - protect thread state modifications
+	savedDAIF := SaveAndDisableIRQs()
+
+	// Save current thread's context from exception frame
+	SaveContextFromFrame(uintptr(framePtr))
+
+	// Mark current thread as ready (preempted) and add to back of ready queue
+	oldIdx := currentThreadIdx
+	threads[oldIdx].State = ThreadReady
+	if readyQueue != nil && threads[oldIdx].readyNode == nil {
+		threads[oldIdx].readyNode = readyQueue.PushBack(&threads[oldIdx])
+	}
+
+	// Reset preemption tracking for the preempted thread
+	threads[oldIdx].PreemptElapsed = 0
+
+	// Find next ready thread
+	nextIdx := threadFindReadyIdx()
+	if nextIdx < 0 {
+		// No other ready thread - continue with current thread
+		// But we already added it to ready queue, so remove it and keep running
+		if readyQueue != nil && threads[oldIdx].readyNode != nil {
+			readyQueue.Remove(threads[oldIdx].readyNode)
+			threads[oldIdx].readyNode = nil
+		}
+		threads[oldIdx].State = ThreadRunning
+		threads[oldIdx].StartTick = globalTickCounter
+		RestoreIRQs(savedDAIF)
+		Breadcrumb('0')  // Same thread (no other available)
+		return 0
+	}
+
+	// Remove new thread from ready queue
+	if readyQueue != nil && threads[nextIdx].readyNode != nil {
+		readyQueue.Remove(threads[nextIdx].readyNode)
+		threads[nextIdx].readyNode = nil
+	}
+
+	// Switch to new thread
+	currentThreadIdx = nextIdx
+	currentThread = &threads[nextIdx]
+	threads[nextIdx].State = ThreadRunning
+	threads[nextIdx].StartTick = globalTickCounter
+	threads[nextIdx].LastSeenG = threads[nextIdx].Context.X[28]  // Use saved g
+	threads[nextIdx].PreemptElapsed = 0  // Fresh time slice
+
+	// END CRITICAL SECTION
+	RestoreIRQs(savedDAIF)
+
+	Breadcrumb('0' + byte(nextIdx))  // Print new thread index
+	return uint64(uintptr(unsafe.Pointer(&threads[nextIdx].Context)))
+}
+
 // Exception frame offsets (must match exceptions.s)
 const (
 	excFrameX0     = 0   // x0, x1, x2, ... stored sequentially
@@ -619,6 +733,7 @@ func SaveContextFromFrame(framePtr uintptr) {
 //go:nosplit
 //go:noinline
 func doContextSwitchABI0(framePtr uint64, targetPtr uint64) uint64 {
+	Breadcrumb('D')
 	// Find which thread owns this context
 	targetCtx := (*ThreadContext)(unsafe.Pointer(uintptr(targetPtr)))
 
@@ -632,8 +747,10 @@ func doContextSwitchABI0(framePtr uint64, targetPtr uint64) uint64 {
 	}
 
 	if targetIdx < 0 {
+		Breadcrumb('N')
 		return 0
 	}
+	Breadcrumb('0' + byte(targetIdx))
 
 	ctx := doContextSwitchImpl(uintptr(framePtr), targetIdx)
 	return uint64(uintptr(unsafe.Pointer(ctx)))
@@ -664,19 +781,29 @@ func doContextSwitchImpl(framePtr uintptr, targetIdx int32) *ThreadContext {
 		threads[targetIdx].readyNode = nil
 	}
 
-	// New thread becomes running
-	threads[targetIdx].State = ThreadRunning
-	threads[targetIdx].StartTick = globalTickCounter
-	threads[targetIdx].LastSeenG = threads[targetIdx].GPtr
-
-	// Old thread goes to ready if it was running
+	// Save preemption tracking state for old thread before switching
+	// This preserves how long the current goroutine has been running
 	if oldIdx >= 0 && threads[oldIdx].State == ThreadRunning {
+		// Save elapsed time so we can restore it when this thread resumes
+		threads[oldIdx].PreemptElapsed = globalTickCounter - threads[oldIdx].StartTick
 		threads[oldIdx].State = ThreadReady
 		// Add old thread to ready queue
 		if readyQueue != nil && threads[oldIdx].readyNode == nil {
 			threads[oldIdx].readyNode = readyQueue.PushBack(&threads[oldIdx])
 		}
 	}
+
+	// New thread becomes running
+	threads[targetIdx].State = ThreadRunning
+	// Restore StartTick from saved elapsed time so preemption tracking
+	// continues from where it left off. This ensures goroutines don't get
+	// unlimited time by repeatedly triggering context switches.
+	threads[targetIdx].StartTick = globalTickCounter - threads[targetIdx].PreemptElapsed
+	// Use saved x28 (g register) from context, NOT GPtr (g0).
+	// This preserves the goroutine that was running when the thread was
+	// preempted, allowing async preemption tracking to work correctly
+	// when we resume this thread.
+	threads[targetIdx].LastSeenG = threads[targetIdx].Context.X[28]
 
 	// END CRITICAL SECTION
 	RestoreIRQs(savedDAIF)

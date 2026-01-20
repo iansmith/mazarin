@@ -124,6 +124,17 @@
 // to support demand paging (retry after page fault).
 //
 TEXT sync_exception_handler(SB), NOSPLIT|NOFRAME, $0
+	// DEBUG: Write '!' to UART to confirm exception handler entry
+	// Save R0 temporarily on stack
+	SUB $16, RSP
+	MOVD R0, 0(RSP)
+	MOVD $0x09000000, R0   // UART base address
+	MOVD $'!', R1
+	MOVB R1, (R0)          // Write '!' to UART
+	// Restore R0
+	MOVD 0(RSP), R0
+	ADD $16, RSP
+
 	// ========================================================================
 	// SEGMENT 1: Temporary Save
 	// ========================================================================

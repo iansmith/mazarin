@@ -4,9 +4,20 @@ package ksyscall
 import (
 	"kmazarin/console"
 	"kmazarin/device"
+	"kmazarin/device/virtio/gpu"
 	"kmazarin/fs/fat32"
 	"kmazarin/kmem"
 	"unsafe"
+)
+
+// Custom auxv types for Mazzy-specific values.
+// Start at 512 to avoid conflicts with Linux auxv types (0-50).
+// These must match mazarin/priest.AuxvType values.
+const (
+	AT_MAZZY_FB_ADDR   = 512 // Framebuffer virtual address in priest space
+	AT_MAZZY_FB_WIDTH  = 513 // Framebuffer width in pixels
+	AT_MAZZY_FB_HEIGHT = 514 // Framebuffer height in pixels
+	AT_MAZZY_FB_PITCH  = 515 // Framebuffer pitch (bytes per row)
 )
 
 // ELF constants
@@ -164,6 +175,18 @@ func SyscallLaunch(filenamePtr, _, _, _, _, _ uint64) int64 {
 		return -6
 	}
 	_ = processL0PA // Suppress unused variable warning (value stored in kmem global)
+
+	// Map the framebuffer into priest address space for UI rendering
+	if !kmem.MapUserFramebuffer() {
+		console.KWriteString("[Launch] ERROR: Failed to map framebuffer to userspace\r\n")
+		return -7
+	}
+
+	// Register the framebuffer as a span to prevent mmap collisions
+	if !addSpan(UserFramebufferVA, UserFramebufferSize) {
+		console.KWriteString("[Launch] WARNING: Failed to register framebuffer span\r\n")
+		// Not fatal - continue anyway
+	}
 
 	// Parse and load ELF (now using the fresh process page table)
 	proc, err := loadELF(elfData, filename)
@@ -798,11 +821,15 @@ func setupUserStack(stackBase, stackSize uint64, filename string) (uint64, error
 	// 4. Build auxv, envp, argv, argc from top down
 	// We'll calculate the positions and write them
 
-	// auxv entries (Go runtime needs these)
+	// auxv entries (Go runtime needs these, plus Mazzy-specific framebuffer info)
 	auxvEntries := [][2]uint64{
-		{6, pageSize},          // AT_PAGESZ = 6
-		{25, randomAddr},       // AT_RANDOM = 25 (pointer to 16 random bytes)
-		{0, 0},                 // AT_NULL = 0 (terminator)
+		{6, pageSize},                            // AT_PAGESZ = 6
+		{25, randomAddr},                         // AT_RANDOM = 25 (pointer to 16 random bytes)
+		{AT_MAZZY_FB_ADDR, UserFramebufferVA},    // Framebuffer VA in priest space
+		{AT_MAZZY_FB_WIDTH, uint64(gpu.GetWidth())},   // Framebuffer width
+		{AT_MAZZY_FB_HEIGHT, uint64(gpu.GetHeight())}, // Framebuffer height
+		{AT_MAZZY_FB_PITCH, uint64(gpu.GetWidth() * 4)}, // Pitch = width * 4 bytes per pixel
+		{0, 0},                                   // AT_NULL = 0 (terminator)
 	}
 
 	// Calculate total size needed:

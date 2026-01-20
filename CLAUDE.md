@@ -1,21 +1,51 @@
 # Mazzy Architecture - Essential Guide
 
-## Quick Reference - Environment Variables
+---
+## STOP - READ THIS FIRST (Claude Code Safety)
 
-**On this system (Homebrew on macOS):**
+**DO NOT READ `/tmp/cardinal-serial.log` DIRECTLY!**
+
+This file frequently contains:
+- Lines with MILLIONS of characters (infinite loop output)
+- Terminal control sequences that freeze tools
+
+**Using Read tool or cat/head/tail on this file WILL HANG YOUR SESSION.**
+
+**ALWAYS use the safe reader:**
 ```bash
-GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go
-QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
-GOTOOLCHAIN=auto  # Optional: auto-downloads Go 1.25.5 if you have Go 1.24+
+python3 tools/safe-serial-read.py
 ```
 
-**Usage:**
+This is enforced by hooks in `.claude/settings.local.json` but read this anyway.
+
+---
+
+## Quick Reference - Environment Variables
+
+**ALWAYS set all three variables when building or running:**
+
 ```bash
-# Build
-GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build
+export GOTOOLCHAIN=auto
+export GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go
+export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
+```
+
+- **GOTOOLCHAIN=auto** - Required. Ensures the correct Go version is used even if the required version changes.
+- **GO** - Path to Go 1.25.5 binary (required for build tools and make)
+- **QEMU** - Path to qemu-system-aarch64 10.2+ (required for run)
+
+**Usage (inline or after export):**
+```bash
+# Build (all variables)
+GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build
 
 # Run
 QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 build/tools/run 5
+
+# Or export once and use throughout session:
+export GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
+build/tools/build clean
+build/tools/run 5
 ```
 
 ## Overview
@@ -50,15 +80,12 @@ If Go 1.25.5 is not in your PATH, you have three options:
 
 **On this system (Homebrew installation):**
 ```bash
-# Explicit path to Go 1.25.5 binary:
-GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build
-GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go make cardinal
-
-# Or use GOTOOLCHAIN (requires Go 1.24+ in PATH):
-GOTOOLCHAIN=auto go run tools/cmd-build.go
+# Always set GOTOOLCHAIN=auto along with GO:
+GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build
+GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go make cardinal
 ```
 
-**Important:** The build tools check for Go 1.25.5 and will abort with a helpful error if the wrong version is detected. Always specify the GO environment variable when running build commands.
+**Important:** Always set both GOTOOLCHAIN=auto and GO when running build commands. GOTOOLCHAIN=auto ensures that if the required Go version changes in the future, the build will automatically use the correct version. The build tools check for Go 1.25.5 and will abort with a helpful error if the wrong version is detected.
 
 ### Installing QEMU 10.2+
 
@@ -87,29 +114,29 @@ All build and run tools are Go programs compiled for the host system (not the ta
 **First time setup:** Build the host tools:
 ```bash
 # On this system (Homebrew):
-GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go make host-tools
+GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go make host-tools
 
 # Generic:
-make GO=/path/to/go1.25.5 host-tools
+GOTOOLCHAIN=auto make GO=/path/to/go1.25.5 host-tools
 ```
 
 **Then use the tools:**
 ```bash
-# On this system (Homebrew):
-GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build
-GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build clean
+# On this system (Homebrew) - always set GOTOOLCHAIN=auto with GO:
+GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build
+GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build clean
 QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 build/tools/run 5
 build/tools/stop  # Stop doesn't need environment variables
 
 # Generic (if tools are in PATH):
-build/tools/build          # Build cardinal and kmazarin
-build/tools/build clean    # Clean build
+GOTOOLCHAIN=auto build/tools/build          # Build cardinal and kmazarin
+GOTOOLCHAIN=auto build/tools/build clean    # Clean build
 build/tools/run            # Start QEMU (waits 3s, shows last 500 chars)
 build/tools/run 10         # Start QEMU with 10s wait
 build/tools/stop           # Stop any running QEMU instances
 
 # Or using make directly:
-GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go make cardinal
+GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go make cardinal
 ```
 
 ### Complete Development Workflow
@@ -119,11 +146,22 @@ GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go make cardinal
 # 1. Stop any running QEMU
 build/tools/stop
 
-# 2. Build
-GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build clean
+# 2. Build (always set GOTOOLCHAIN=auto with GO)
+GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build clean
 
 # 3. Run
 QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 build/tools/run 5
+```
+
+**Or export once for the session:**
+```bash
+export GOTOOLCHAIN=auto
+export GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go
+export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
+
+build/tools/stop
+build/tools/build clean
+build/tools/run 5
 ```
 
 **Generic workflow (if tools are in PATH):**
@@ -131,8 +169,8 @@ QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 build/tools/run 5
 # 1. Stop any running QEMU
 build/tools/stop
 
-# 2. Build
-build/tools/build clean    # or just: build/tools/build
+# 2. Build (always set GOTOOLCHAIN=auto)
+GOTOOLCHAIN=auto build/tools/build clean    # or just: GOTOOLCHAIN=auto build/tools/build
 
 # 3. Run
 build/tools/run 5          # Wait 5 seconds before showing output

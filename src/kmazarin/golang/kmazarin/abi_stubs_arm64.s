@@ -72,3 +72,10 @@ TEXT ·SetSyscallELR(SB), NOSPLIT, $0-8
 // ABI0: 1 arg (8 bytes) + 0 return = 8 bytes
 TEXT ·SetSyscallSPSR(SB), NOSPLIT, $0-8
 	JMP	·setSyscallSPSRInternal(SB)
+
+// CheckThreadPreemption checks if thread preemption is needed and performs switch
+// Go signature: func CheckThreadPreemption(framePtr uint64) uint64
+// ABI0: 1 arg (8 bytes) + 1 return (8 bytes) = 16 bytes
+// Returns pointer to new ThreadContext if switch happened, 0 otherwise
+TEXT ·CheckThreadPreemption(SB), NOSPLIT, $0-16
+	JMP	·checkThreadPreemptionInternal(SB)

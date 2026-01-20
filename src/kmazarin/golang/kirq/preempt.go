@@ -68,10 +68,20 @@ const (
 // At 10ms per tick, 5 ticks = 50ms max runtime without yield.
 const AsyncPreemptThreshold uint64 = 5
 
+// ThreadPreemptThreshold is the number of timer ticks before forcing
+// a thread preemption (context switch to another thread).
+// This is 2x the goroutine preemption threshold: 10 ticks = 100ms.
+const ThreadPreemptThreshold uint64 = 10
+
 // NeedsAsyncPreempt is set by assembly when a goroutine has exceeded
 // the preemption threshold and needs async preemption injection.
 // Checked by Go timer handler after TimerIRQHandlerAsm returns.
 var NeedsAsyncPreempt uint32
+
+// NeedsThreadPreempt is set by assembly when the current thread has exceeded
+// the thread preemption threshold and should be switched out.
+// Checked by exception handler after TimerIRQHandlerAsm returns.
+var NeedsThreadPreempt uint32
 
 // System timer frequency in Hz - read from CNTFRQ_EL0 at init.
 // Exported for use by other packages and assembly.

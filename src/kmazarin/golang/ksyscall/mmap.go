@@ -15,14 +15,63 @@ import (
 // End well below the userspace limit (bit 55) to leave room for stack.
 // This gives ~112TB of VA space - plenty for Go runtime arenas.
 //
-// NOTE: MAP_FIXED and bump allocations may overlap. The page fault handler
-// detects already-mapped pages and handles them correctly.
-//
 // Physical memory is only used when pages are actually faulted in.
 const (
-	userMmapStart = 0x00400000           // 4MB - above ELF load region
-	userMmapEnd   = 0x0000700000000000   // 112TB - plenty of VA space
+	userMmapStart = 0x00400000         // 4MB - above ELF load region
+	userMmapEnd   = 0x0000700000000000 // 112TB - plenty of VA space
 )
+
+// Userspace framebuffer mapping constants.
+// The framebuffer is mapped at a fixed VA for all priests to allow UI rendering.
+// Located below the stack region to avoid conflicts.
+const (
+	UserFramebufferVA   = 0x00007FFE00000000 // Fixed VA for framebuffer in priest space
+	UserFramebufferSize = 0x2000000          // 32MB - matches FramebufferSize in shared/constants
+)
+
+// ============================================================================
+// Span tracking wrapper functions
+// ============================================================================
+// These functions delegate to the current process's SpanGroup.
+// When per-process tracking is implemented, GetCurrentSpanGroup() will
+// return the appropriate SpanGroup for the calling process.
+
+// addSpan records a new VA reservation for the current process.
+//
+//go:nosplit
+func addSpan(start, length uint64) bool {
+	return GetCurrentSpanGroup().Add(start, length)
+}
+
+// removeSpan removes/splits spans overlapping the given range.
+//
+//go:nosplit
+func removeSpan(start, length uint64) {
+	GetCurrentSpanGroup().Remove(start, length)
+}
+
+// IsAddressInSpan checks if an address falls within any reserved span.
+// Used by the page fault handler to validate hint-based allocations.
+//
+//go:nosplit
+func IsAddressInSpan(addr uint64) bool {
+	return GetCurrentSpanGroup().Contains(addr)
+}
+
+// tryReserveHint attempts to reserve a hint address if it doesn't overlap.
+//
+//go:nosplit
+func tryReserveHint(hint, length uint64) uint64 {
+	return GetCurrentSpanGroup().TryReserve(hint, length)
+}
+
+// findSpanOverlapEnd returns the end of any span overlapping [start, start+length).
+// Returns 0 if no overlap. Used by bump allocator to skip past reserved regions.
+//
+//go:nosplit
+func findSpanOverlapEnd(start, length uint64) uint64 {
+	return GetCurrentSpanGroup().FindOverlapEnd(start, length)
+}
 
 // userspaceActive is set to true when we jump to userspace.
 // Mmap calls after this point (with addr=0) should use userspace allocator.
@@ -48,8 +97,15 @@ const (
 // For kernel: uses kernel heap range (high memory, TTBR1).
 // Pages are NOT mapped immediately - they will be demand-paged on first access.
 //
+// Hint handling (addr != 0 without MAP_FIXED):
+// - If the hint is valid and doesn't overlap existing spans, honor it
+// - Otherwise fall back to bump allocator
+//
 //go:nosplit
 func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
+	// Ultra-early breadcrumb (works before console is initialized)
+	console.Breadcrumb('M')
+
 	// Suppress unused warnings
 	_ = prot
 	_ = fd
@@ -70,18 +126,26 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 	isUserspace := atomic.LoadUint32(&userspaceActive) != 0
 	isMapFixed := (flags & _MAP_FIXED) != 0
 
-	// Handle MAP_FIXED: must return the exact address or fail
-	if isMapFixed && addr != 0 {
-		console.KWriteString("[MMAP-FIX] addr=")
+	// Log userspace mmap calls
+	if isUserspace {
+		console.KWriteString("[MMAP] US addr=")
 		console.KPrintHex64(addr)
 		console.KWriteString(" len=")
 		console.KPrintHex64(alignedLength)
-		console.KWriteString("\r\n")
-		if isUserspace && addr+alignedLength <= userMmapEnd {
-			// Allow MAP_FIXED anywhere in userspace range.
-			// If it overlaps with bump-allocated region, the page fault handler
-			// will detect already-mapped pages and handle them correctly.
-			// Pages will be demand-paged on access.
+		console.KWriteString(" flags=")
+		console.KPrintHex64(flags)
+	}
+
+	// Handle MAP_FIXED: must return the exact address or fail
+	// MAP_FIXED can overwrite existing mappings (dangerous but that's the semantics)
+	if isMapFixed && addr != 0 {
+		if isUserspace && addr >= userMmapStart && addr+alignedLength <= userMmapEnd {
+			// Remove any existing spans that overlap, then add new span
+			removeSpan(addr, alignedLength)
+			if !addSpan(addr, alignedLength) {
+				console.KWriteString(" -> ENOMEM (no span slots)\r\n")
+				return -12 // ENOMEM
+			}
 			result = addr
 		} else if !isUserspace || addr >= 0x0000800000000000 {
 			// Kernel fixed mapping
@@ -91,14 +155,36 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 			if addr >= heapStart && addr+alignedLength <= heapEnd {
 				result = addr
 			} else {
+				if isUserspace {
+					console.KWriteString(" -> ENOMEM (out of range)\r\n")
+				}
 				return -12 // ENOMEM - can't honor MAP_FIXED at this address
 			}
 		} else {
+			if isUserspace {
+				console.KWriteString(" -> ENOMEM (invalid addr)\r\n")
+			}
 			return -12 // ENOMEM - can't honor MAP_FIXED at this address
 		}
-	} else if isUserspace && (addr == 0 || addr < 0x0000800000000000) {
-		// Userspace request without MAP_FIXED - use userspace allocator
-		result = userBumpAlloc(alignedLength)
+	} else if isUserspace && addr < 0x0000800000000000 {
+		// Userspace request without MAP_FIXED
+		if addr != 0 && addr >= userMmapStart && addr+alignedLength <= userMmapEnd {
+			// Try to honor the hint if it doesn't overlap existing spans
+			result = tryReserveHint(addr, alignedLength)
+			if result == 0 {
+				// Hint couldn't be honored, fall back to bump allocator
+				result = userBumpAlloc(alignedLength)
+				if result != 0 {
+					addSpan(result, alignedLength)
+				}
+			}
+		} else {
+			// No hint or invalid hint - use bump allocator
+			result = userBumpAlloc(alignedLength)
+			if result != 0 {
+				addSpan(result, alignedLength)
+			}
+		}
 	} else if addr != 0 && addr >= 0x0000800000000000 {
 		// Kernel hint in high memory - try to honor it
 		cfg := getRuntimeConfigTyped()
@@ -107,11 +193,18 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 		if addr >= heapStart && addr+alignedLength <= heapEnd {
 			result = addr
 		} else {
-			result = bumpAlloc(alignedLength)
+			result = kernelBumpAlloc(alignedLength)
 		}
 	} else {
 		// Kernel request (before userspace or high memory hint)
-		result = bumpAlloc(alignedLength)
+		result = kernelBumpAlloc(alignedLength)
+	}
+
+	// Log result
+	if isUserspace {
+		console.KWriteString(" -> ")
+		console.KPrintHex64(result)
+		console.KWriteString("\r\n")
 	}
 
 	// Return result (or error)
@@ -147,6 +240,14 @@ func userBumpAlloc(size uint64) uint64 {
 		currentPtr := atomic.LoadUint64(&userBumpPointer)
 		nextPtr := currentPtr + aligned
 
+		// Check if this allocation would overlap any existing span
+		// If so, return 0 (ENOMEM) - the low memory region is large enough
+		// that this shouldn't happen in practice
+		if findSpanOverlapEnd(currentPtr, aligned) != 0 {
+			console.KWriteString("[BUMP] FAIL: overlaps span\r\n")
+			return 0 // ENOMEM - allocation conflicts with reserved span
+		}
+
 		// DEBUG: Print allocation attempt
 		console.KWriteString("[BUMP] cur=")
 		console.KPrintHex64(currentPtr)
@@ -179,23 +280,26 @@ func userBumpAlloc(size uint64) uint64 {
 	}
 }
 
-// Simple bump allocator for mmap (kernel)
-// Allocates from the kernel heap VA range (high memory, demand-paged)
-// Thread-safe: uses atomic operations for concurrent allocation
-var bumpPointer uint64 = 0
-var bumpInitialized uint32 // uint32 for atomic operations
+// ============================================================================
+// Kernel bump allocator (for kmazarin's own heap, high memory via TTBR1)
+// ============================================================================
+// This is separate from userspace allocation. The kernel has a single global
+// bump allocator since kmazarin is a single "process".
+
+var kernelBumpPointer uint64 = 0
+var kernelBumpInitialized uint32 // uint32 for atomic operations
 
 //go:nosplit
-func bumpAlloc(size uint64) uint64 {
+func kernelBumpAlloc(size uint64) uint64 {
 	// Lazy initialization from runtime config (atomic check)
-	if atomic.LoadUint32(&bumpInitialized) == 0 {
+	if atomic.LoadUint32(&kernelBumpInitialized) == 0 {
 		// Use compare-and-swap to ensure only one thread initializes
-		if atomic.CompareAndSwapUint32(&bumpInitialized, 0, 1) {
+		if atomic.CompareAndSwapUint32(&kernelBumpInitialized, 0, 1) {
 			cfg := getRuntimeConfigTyped()
-			atomic.StoreUint64(&bumpPointer, uint64(cfg.KernelHeapStart))
+			atomic.StoreUint64(&kernelBumpPointer, uint64(cfg.KernelHeapStart))
 		} else {
 			// Another thread won the race, wait for it to complete initialization
-			for atomic.LoadUint32(&bumpInitialized) == 0 {
+			for atomic.LoadUint32(&kernelBumpInitialized) == 0 {
 				// Spin wait
 			}
 		}
@@ -211,7 +315,7 @@ func bumpAlloc(size uint64) uint64 {
 
 	// Atomically allocate from bump pointer
 	for {
-		currentPtr := atomic.LoadUint64(&bumpPointer)
+		currentPtr := atomic.LoadUint64(&kernelBumpPointer)
 		nextPtr := currentPtr + aligned
 
 		// Check for wrap-around AND exceeding heap end
@@ -220,7 +324,7 @@ func bumpAlloc(size uint64) uint64 {
 		}
 
 		// Try to atomically update the bump pointer
-		if atomic.CompareAndSwapUint64(&bumpPointer, currentPtr, nextPtr) {
+		if atomic.CompareAndSwapUint64(&kernelBumpPointer, currentPtr, nextPtr) {
 			// Successfully allocated
 			return currentPtr
 		}

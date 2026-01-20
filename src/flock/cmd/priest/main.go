@@ -47,6 +47,26 @@ func handleMazzySyscall(num, a1, a2, a3, a4, a5, a6 uintptr) int64 {
 // and to provide a known symbol for the patchpriest tool to find.
 var priestSyscallEntryAddr = PriestSyscallEntry
 
+// busyLoop3s prints '3' in a tight loop to test userspace scheduling
+// alongside kmazarin's goroutines that print '1' and '2'.
+func busyLoop3s() {
+	counter := uint64(0)
+	printCount := uint64(0)
+
+	for {
+		counter++
+		// Every 100000 iterations, print our marker (same as kmazarin)
+		if counter%100000 == 0 {
+			printCount++
+			if printCount%72 == 0 {
+				fmt.Print("\n")
+			} else {
+				fmt.Print("3")
+			}
+		}
+	}
+}
+
 func main() {
 	// =====================================================
 	// USERSPACE ENTRY POINT
@@ -60,6 +80,14 @@ func main() {
 	fmt.Println("========================================")
 	fmt.Println("[PRIEST] RUNNING IN USERSPACE (EL0)!")
 	fmt.Println("========================================")
+
+	// Get framebuffer info via syscall
+	if fb, err := sys.GetFramebuffer(); err == nil {
+		fmt.Printf("[priest] Framebuffer: addr=0x%x %dx%d pitch=%d\n",
+			fb.Addr, fb.Width, fb.Height, fb.Pitch)
+	} else {
+		fmt.Printf("[priest] No framebuffer: %v\n", err)
+	}
 
 	// Print the address of PriestSyscallEntry for debugging
 	// This also ensures the function is not stripped
@@ -87,8 +115,9 @@ func main() {
 	err = sys.Run("/helloworld.elf", entryAddr, &pc)
 	if err != nil {
 		fmt.Printf("[priest] Failed to load helloworld.elf: %v\n", err)
-		fmt.Println("[priest] Entering idle loop...")
-		select {}
+		fmt.Println("[priest] Entering busy loop printing 3s...")
+		busyLoop3s()
+		return
 	}
 
 	fmt.Printf("[priest] Loaded program %d at 0x%x, entry=0x%x\n",
@@ -101,6 +130,6 @@ func main() {
 	fmt.Println("[priest] Calling program entry point...")
 	entry() // Calls main.MazarinMain() → main.main()
 
-	fmt.Println("[priest] Program returned")
-	select {}
+	fmt.Println("[priest] Program returned, entering busy loop printing 3s...")
+	busyLoop3s()
 }

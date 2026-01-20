@@ -293,7 +293,38 @@ TEXT jump_to_kmazarin(SB), NOSPLIT|NOFRAME, $0-32
 	ISB	$15
 
 	// ========================================================================
-	// SEGMENT 3: Switch Mode & Stack
+	// SEGMENT 3: Set SP_EL1 to High Memory
+	// ========================================================================
+	// SP_EL1 was set to low memory during boot (before MMU was enabled).
+	// Now that MMU is on, we need to switch SP_EL1 to high memory for kmazarin.
+	//
+	// We can set SP_EL1 directly by switching to EL1h mode (SPSel=1) where
+	// RSP aliases SP_EL1, then setting RSP, then switching back to EL1t.
+	// This works because we're already at EL1.
+
+	// Save current SP (SP_EL0) before mode switch
+	MOVD	RSP, R5
+
+	// Switch to EL1h mode (RSP now aliases SP_EL1)
+	MSR	$1, SPSel
+	ISB	$15
+
+	// Set SP_EL1 to high-memory exception stack top
+	MOVD	main·LinkerKernelExcStackTop(SB), R0
+	MOVD	R0, RSP
+
+	// Switch back to EL1t mode (RSP now aliases SP_EL0 again)
+	MSR	$0, SPSel
+	ISB	$15
+
+	// Restore SP_EL0
+	MOVD	R5, RSP
+
+	DSB	$15
+	ISB	$15
+
+	// ========================================================================
+	// SEGMENT 4: Switch Mode & Stack
 	// ========================================================================
 	// Switch to EL1t mode, set SP to kmazarin's g0 stack.
 	MSR	$0, SPSel
@@ -302,7 +333,7 @@ TEXT jump_to_kmazarin(SB), NOSPLIT|NOFRAME, $0-32
 	MOVD	R3, RSP			// SP = stackPointer arg
 
 	// ========================================================================
-	// SEGMENT 4: Set g & Jump
+	// SEGMENT 5: Set g & Jump
 	// ========================================================================
 	// Set g to kmazarin's runtime.g0, set up argc/argv, jump.
 	MOVD	main·LinkerKmazarinRuntimeG0(SB), R5

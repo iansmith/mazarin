@@ -28,10 +28,12 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 
 		// Auto-convert LF to CRLF for proper terminal display
 		if c == '\n' {
-			console.KWriteByte('\r')
+			console.Breadcrumb('\r')
 		}
 
-		console.KWriteByte(c)
+		// Use Breadcrumb instead of KWriteByte to ensure output even before
+		// console is initialized (Breadcrumb has hardcoded UART address)
+		console.Breadcrumb(c)
 	}
 
 	return int64(count)

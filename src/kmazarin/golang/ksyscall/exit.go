@@ -11,6 +11,12 @@ func haltForever()
 //
 //go:nosplit
 func SyscallExit(status, _, _, _, _, _ uint64) int64 {
+	// Breadcrumb output even if console isn't initialized
+	console.Breadcrumb('E')
+	console.Breadcrumb('X')
+	console.Breadcrumb('I')
+	console.Breadcrumb('T')
+	console.Breadcrumb(':')
 	console.KWriteString("\r\n=== EXIT CALLED ===\r\nStatus: ")
 
 	// Print status as decimal
@@ -32,6 +38,12 @@ func SyscallExit(status, _, _, _, _, _ uint64) int64 {
 //
 //go:nosplit
 func SyscallExitGroup(status, _, _, _, _, _ uint64) int64 {
+	// Breadcrumb output even if console isn't initialized
+	console.Breadcrumb('X')
+	console.Breadcrumb('G')
+	console.Breadcrumb('R')
+	console.Breadcrumb('P')
+	console.Breadcrumb(':')
 	console.KWriteString("\r\n=== EXIT GROUP CALLED ===\r\nStatus: ")
 
 	// Print status as decimal

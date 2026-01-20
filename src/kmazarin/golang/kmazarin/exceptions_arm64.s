@@ -296,6 +296,21 @@ sync_exception_handler:
 	CMP	$0x15, R10
 	BNE	not_svc
 
+	// CRITICAL: Switch to kmazarin's g0 before calling any Go code!
+	// The interrupted goroutine may have m.p=nil (parked without P), which
+	// would crash if syscall handlers try to allocate. Using g0 ensures
+	// we always have a valid mcache for heap operations.
+	// Note: x28 was already saved to the exception frame, so we can safely modify it.
+	// Only switch if kmazarinG0Addr is non-zero (initialized).
+	MOVD	·kmazarinG0Addr(SB), R10
+	CBZ	R10, skip_g_switch_el1  // Skip if not initialized
+	WORD	$0xaa0a03fc  // mov x28, x10
+	// DEBUG: Print 'L' to show we switched g in EL1 path
+	MOVD	$UART_BASE, R11
+	MOVD	$'L', R12
+	MOVB	R12, (R11)
+skip_g_switch_el1:
+
 	// SVC: First save ELR and SPSR so clone can get child's return address and state
 	// ELR and SPSR are already in the exception frame from earlier save
 	LDP	EXC_FRAME_ELR_SPSR(RSP), (R0, R1)  // Load ELR and SPSR from frame
@@ -744,6 +759,92 @@ irq_exception_handler:
 	MOVW	R19, (R10)  // Write IAR value to EOIR
 
 	// ========================================================================
+	// Thread preemption check - switch to another thread if threshold exceeded
+	// ========================================================================
+	// Check NeedsThreadPreempt flag set by TimerIRQHandlerAsm
+	MOVW	kmazarin∕kirq·NeedsThreadPreempt(SB), R10
+	CBZ	R10, timer_no_thread_preempt
+
+	// Clear NeedsThreadPreempt flag
+	MOVW	$0, R10
+	MOVW	R10, kmazarin∕kirq·NeedsThreadPreempt(SB)
+
+	// Print 'T' to show thread preemption check
+	MOVD	$UART_BASE, R11
+	MOVD	$'T', R12
+	MOVB	R12, (R11)
+
+	// CRITICAL: Switch to kmazarin's g before calling Go code
+	// The timer may have interrupted userspace (priest) which has a different g
+	MOVD	·kmazarinG0Addr(SB), R10
+	CBZ	R10, timer_no_thread_preempt  // Skip if not initialized
+	WORD	$0xaa0a03fc  // mov x28, x10
+
+	// Call CheckThreadPreemption(framePtr) to check and perform switch
+	// func CheckThreadPreemption(framePtr uint64) uint64
+	MOVD	RSP, R0                        // R0 = framePtr (exception frame)
+	GO_CALL_1_1(·CheckThreadPreemption, R0)
+	MOVD	R0, R21                        // R21 = new context pointer (or 0)
+
+	// Check if context switch happened
+	CBZ	R21, timer_no_thread_preempt
+
+	// Context switch happened - copy new ThreadContext to exception frame
+	// ThreadContext layout: X[31]*8=248 bytes, SP(8), ELR(8), SPSR(8) = 272 bytes total
+
+	// Copy X0-X7 (0-64 in ThreadContext)
+	LDP	0(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X0(RSP)
+	LDP	16(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X0+16(RSP)
+	LDP	32(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X0+32(RSP)
+	LDP	48(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X0+48(RSP)
+
+	// Copy X8-X27 (64-224 in ThreadContext)
+	LDP	64(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8(RSP)
+	LDP	80(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+16(RSP)
+	LDP	96(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+32(RSP)
+	LDP	112(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+48(RSP)
+	LDP	128(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+64(RSP)
+	LDP	144(R21), (R0, R1)      // x18, x19
+	WORD	$0xf9004be0  // str x0, [sp, #144]  x18
+	WORD	$0xf9004fe1  // str x1, [sp, #152]  x19
+	LDP	160(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+96(RSP)
+	LDP	176(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+112(RSP)
+	LDP	192(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+128(RSP)
+	LDP	208(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+144(RSP)
+
+	// Copy X28-X30 (224-248 in ThreadContext)
+	MOVD	224(R21), R0
+	WORD	$0xf90073e0  // str x0, [sp, #224]  x28
+	LDP	232(R21), (R0, R1)
+	WORD	$0xf90077e0  // str x0, [sp, #232]  x29
+	MOVD	R1, EXC_FRAME_X28+16(RSP)  // x30 at frame offset 248
+
+	// Copy SP_EL0 (248 in ThreadContext)
+	MOVD	248(R21), R0
+	MOVD	R0, EXC_FRAME_SP_EL0(RSP)
+
+	// Copy ELR and SPSR (256, 264 in ThreadContext)
+	LDP	256(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_ELR_SPSR(RSP)
+
+	// Skip async preemption - we already switched threads
+	B	timer_no_preempt
+
+timer_no_thread_preempt:
+	// ========================================================================
 	// Async preemption injection (pure assembly, no Go calls)
 	// ========================================================================
 	// Check if assembly handler requested async preemption.
@@ -1021,7 +1122,29 @@ el0_sync_handler:
 	MOVD	$'U', R11
 	MOVB	R11, (R12)
 
-	// SVC from userspace - dispatch syscall
+	// CRITICAL: Switch to kmazarin's g before calling any Go code!
+	// x28 currently contains userspace's g (e.g., priest's g), but the syscall
+	// handlers are compiled into kmazarin's Go runtime and expect kmazarin's g.
+	// We saved userspace's g in the exception frame, so we can load kmazarin's g0.
+	// Only switch if kmazarinG0Addr is non-zero (initialized).
+	MOVD	·kmazarinG0Addr(SB), R10
+	CBZ	R10, skip_g_switch_el0  // Skip if not initialized
+	// R10 now contains kmazarin's g address (stored at init time)
+	// Set x28 to this value (x28 is Go's g register)
+	WORD	$0xaa0a03fc  // mov x28, x10
+skip_g_switch_el0:
+	// DEBUG: Print 'K' to show we're in userspace syscall path
+	MOVD	$UART_BASE, R11
+	MOVD	$'K', R12
+	MOVB	R12, (R11)
+
+	// SVC from userspace - first save ELR and SPSR for clone
+	// Without this, clone would use stale values from a previous EL1 syscall!
+	LDP	EXC_FRAME_ELR_SPSR(RSP), (R0, R1)  // Load ELR and SPSR from frame
+	GO_CALL_1_0(·SetSyscallELR, R0)        // SetSyscallELR(elr)
+	GO_CALL_1_0(·SetSyscallSPSR, R1)       // SetSyscallSPSR(spsr)
+
+	// Now dispatch syscall
 	// Load arguments from exception frame
 	LDP	EXC_FRAME_X8(RSP), (R0, R1)        // R0 = syscall num (X8)
 	LDP	EXC_FRAME_X0(RSP), (R2, R3)        // R2 = arg0, R3 = arg1
@@ -1034,12 +1157,87 @@ el0_sync_handler:
 	// Store return value back to X0 in exception frame
 	MOVD	R0, EXC_FRAME_X0(RSP)
 
+	// Check if syscall handler requested a context switch
+	// Call GetSyscallSwitchTarget() - returns 0 if no switch, non-zero for target node pointer
+	GO_CALL_0_1(·GetSyscallSwitchTarget)
+	MOVD	R0, R20            // R20 = switch target (thread node pointer as uint64)
+
+	// Check if context switch needed (R20 != 0 means switch to that thread node)
+	CBZ	R20, el0_no_switch
+
+	// Context switch requested - call DoContextSwitch(framePtr, targetPtr) to get new context
+	MOVD	RSP, R0            // R0 = framePtr (current exception frame)
+	MOVD	R20, R1            // R1 = targetPtr (thread node pointer)
+	GO_CALL_2_1(·DoContextSwitch, R0, R1)
+	MOVD	R0, R21            // R21 = pointer to new ThreadContext
+
+	// Copy ThreadContext to exception frame, then el0_return will restore it
+	// ThreadContext: X[31], SP, ELR, SPSR
+	// Copy X0-X7 (0-64 in ThreadContext, 0-64 in frame)
+	LDP	0(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X0(RSP)
+	LDP	16(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X0+16(RSP)
+	LDP	32(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X0+32(RSP)
+	LDP	48(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X0+48(RSP)
+
+	// Copy X8-X27 (64-224 in ThreadContext, 64-224 in frame)
+	LDP	64(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8(RSP)
+	LDP	80(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+16(RSP)
+	LDP	96(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+32(RSP)
+	LDP	112(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+48(RSP)
+	LDP	128(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+64(RSP)
+	LDP	144(R21), (R0, R1)      // x18, x19
+	WORD	$0xf9004be0  // str x0, [sp, #144]  x18
+	WORD	$0xf9004fe1  // str x1, [sp, #152]  x19
+	LDP	160(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+96(RSP)
+	LDP	176(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+112(RSP)
+	LDP	192(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+128(RSP)
+	LDP	208(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_X8+144(RSP)
+
+	// Copy X28-X30 (224-248 in ThreadContext)
+	MOVD	224(R21), R0
+	WORD	$0xf90073e0  // str x0, [sp, #224]  x28
+	LDP	232(R21), (R0, R1)
+	WORD	$0xf90077e0  // str x0, [sp, #232]  x29
+	MOVD	R1, EXC_FRAME_X28+16(RSP)  // x30 at frame offset 248
+
+	// Copy SP_EL0 (248 in ThreadContext)
+	MOVD	248(R21), R0
+	MOVD	R0, EXC_FRAME_SP_EL0(RSP)
+
+	// Copy ELR and SPSR (256, 264 in ThreadContext)
+	LDP	256(R21), (R0, R1)
+	STP	(R0, R1), EXC_FRAME_ELR_SPSR(RSP)
+
+	B	el0_return
+
+el0_no_switch:
+	// No context switch, normal return
 	B	el0_return
 
 el0_check_data_abort:
 	// Check if this is Data Abort from lower EL (EC = 0x24)
 	CMP	$0x24, R10
 	BNE	el0_not_svc
+
+	// CRITICAL: Switch to kmazarin's g before calling Go code (same as SVC case)
+	// Only switch if kmazarinG0Addr is non-zero (initialized).
+	MOVD	·kmazarinG0Addr(SB), R10
+	CBZ	R10, skip_g_switch_el0_da
+	WORD	$0xaa0a03fc  // mov x28, x10
+skip_g_switch_el0_da:
 
 	// Data Abort from userspace - try to handle page fault
 	// Get fault address from FAR_EL1 (already in exception frame)

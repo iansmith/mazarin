@@ -187,13 +187,23 @@ same_goroutine:
 
 	UDIV	R8, R9, R9  // R9 = elapsed intervals (10ms units)
 
-	// Check against threshold (5 intervals = 50ms)
+	// Check against goroutine preemption threshold (5 intervals = 50ms)
 	CMP	$5, R9
-	BLT	timer_return  // Under threshold, done
+	BLT	check_thread_preempt  // Under goroutine threshold, check thread threshold
 
-	// Elapsed >= threshold: signal async preemption needed
+	// Elapsed >= goroutine threshold: signal async preemption needed
 	MOVW	$1, R8
 	MOVW	R8, ·NeedsAsyncPreempt(SB)
+
+check_thread_preempt:
+	// Check against thread preemption threshold (10 intervals = 100ms)
+	// R9 still contains elapsed intervals
+	CMP	$10, R9
+	BLT	timer_return  // Under thread threshold, done
+
+	// Elapsed >= thread threshold: signal thread preemption needed
+	MOVW	$1, R8
+	MOVW	R8, ·NeedsThreadPreempt(SB)
 	B	timer_return
 
 init_start_tick:

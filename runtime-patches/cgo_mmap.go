@@ -56,12 +56,41 @@ var kmazarinBumpInitialized atomic.Uint32
 //
 //go:nosplit
 func mmap(addr unsafe.Pointer, n uintptr, prot, flags, fd int32, off uint32) (unsafe.Pointer, int) {
-	_ = prot
+	// Ultra-early debug: write call type to UART
+	// 'A' = sysAllocOS (RW, no FIXED) - allocate ready memory
+	// 'R' = sysReserveOS (NONE, no FIXED) - reserve address space
+	// 'M' = sysMapOS (RW, FIXED) - map reserved space
+	const uartBase = uintptr(0xFFFFFFFF09000000)
+	isFixed := (flags & _kmazarinMapFixed) != 0
+	isProtNone := (prot == 0) // PROT_NONE
+
+	if isFixed {
+		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('M') // sysMapOS
+	} else if isProtNone {
+		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('R') // sysReserveOS
+	} else {
+		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('A') // sysAllocOS
+	}
+
 	_ = fd
 	_ = off
 
-	// Zero-length mmap is invalid
+	// Zero-length mmap is invalid - but print more debug info first
 	if n == 0 {
+		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('Z') // Debug: length=0
+		// Print whether it had MAP_FIXED (if 'M' was printed above, this confirms)
+		if isFixed {
+			*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('!')
+		}
+		// Debug: print address as hex
+		addrVal := uint64(uintptr(addr))
+		hexChars := "0123456789ABCDEF"
+		for i := 60; i >= 0; i -= 4 {
+			nibble := (addrVal >> i) & 0xF
+			*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(hexChars[nibble])
+		}
+		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('\r')
+		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('\n')
 		return nil, 22 // EINVAL
 	}
 
@@ -69,9 +98,29 @@ func mmap(addr unsafe.Pointer, n uintptr, prot, flags, fd int32, off uint32) (un
 	heapStart := uint64(kmazarinHeapStart)
 	heapEnd := uint64(kmazarinHeapEnd)
 
+	// Debug: print heap bounds on first successful mmap
+	if kmazarinBumpInitialized.Load() == 0 {
+		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('H')
+		// Print heapStart
+		hexChars := "0123456789ABCDEF"
+		for i := 60; i >= 0; i -= 4 {
+			nibble := (heapStart >> i) & 0xF
+			*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(hexChars[nibble])
+		}
+		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('-')
+		// Print heapEnd
+		for i := 60; i >= 0; i -= 4 {
+			nibble := (heapEnd >> i) & 0xF
+			*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(hexChars[nibble])
+		}
+		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('\r')
+		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('\n')
+	}
+
 	// Sanity check: if auxv wasn't parsed, heap bounds will be 0
 	if heapStart == 0 || heapEnd == 0 {
 		// This should never happen - archauxv runs before mallocinit
+		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('E') // Error: heap bounds not set
 		return nil, 12 // ENOMEM
 	}
 
@@ -86,16 +135,26 @@ func mmap(addr unsafe.Pointer, n uintptr, prot, flags, fd int32, off uint32) (un
 	alignedLength := (uint64(n) + _kmazarinPageSize - 1) & ^uint64(_kmazarinPageSize-1)
 
 	// Handle MAP_FIXED: must return the exact address
-	if (flags & _kmazarinMapFixed) != 0 {
+	if isFixed {
 		if addr == nil {
+			*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('N') // Null address with MAP_FIXED
 			return nil, 22 // EINVAL - MAP_FIXED with null address
 		}
 		addrVal := uint64(uintptr(addr))
+		// Debug: print address bits 47:32
+		hexChars := "0123456789ABCDEF"
+		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(':')
+		for i := 44; i >= 32; i -= 4 {
+			nibble := (addrVal >> i) & 0xF
+			*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(hexChars[nibble])
+		}
 		// For MAP_FIXED, just return the requested address
 		// The page fault handler will allocate physical pages on demand
 		if addrVal >= heapStart && addrVal+alignedLength <= heapEnd {
+			*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('+') // Success
 			return addr, 0
 		}
+		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('X') // Out of range
 		return nil, 12 // ENOMEM
 	}
 
@@ -108,11 +167,21 @@ func mmap(addr unsafe.Pointer, n uintptr, prot, flags, fd int32, off uint32) (un
 
 		// Check bounds
 		if nextPtr < currentPtr || nextPtr > heapEnd {
+			*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('!') // Out of bounds
 			return nil, 12 // ENOMEM
 		}
 
 		// Try to atomically update the bump pointer
 		if kmazarinBumpPointer.CompareAndSwap(currentPtr, nextPtr) {
+			// Debug: print allocated address (just high nibbles for brevity)
+			*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(':')
+			hexChars := "0123456789ABCDEF"
+			// Just print bytes 6-4 (bits 47:32) to show the unique part
+			for i := 44; i >= 32; i -= 4 {
+				nibble := (currentPtr >> i) & 0xF
+				*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(hexChars[nibble])
+			}
+			*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('+') // Success
 			return unsafe.Pointer(uintptr(currentPtr)), 0
 		}
 		// CAS failed, retry

@@ -12,12 +12,6 @@ import (
 const (
 	// Offset to add to all addresses
 	highMemOffset = 0xFFFFFFFF00000000
-
-	// Original kmazarin address range
-	// Must cover all sections including .bss and .noptrbss
-	// Updated to match actual build address (0x42000000) after fix-go-elf
-	kmazarinBase = 0x42000000
-	kmazarinEnd  = 0x42400000 // Extended to cover BSS (ends ~0x421D4000)
 )
 
 func main() {
@@ -44,19 +38,23 @@ func main() {
 	}
 	defer f.Close()
 
+	// Dynamically detect kmazarin address range from ELF program headers
+	kmazarinBase, kmazarinEnd := detectAddressRange(f)
+	fmt.Printf("Detected kmazarin range: 0x%X - 0x%X\n", kmazarinBase, kmazarinEnd)
+
 	stats := &RelocStats{}
 
 	// 1. Relocate ELF header entry point
-	relocateEntryPoint(data, stats)
+	relocateEntryPoint(data, kmazarinBase, kmazarinEnd, stats)
 
 	// 2. Relocate program headers (segment VMAs)
-	relocateProgramHeaders(data, f, stats)
+	relocateProgramHeaders(data, f, kmazarinBase, kmazarinEnd, stats)
 
 	// 3. Scan .text for ADRP instructions and relocate
-	relocateTextSection(data, f, stats)
+	relocateTextSection(data, f, kmazarinBase, kmazarinEnd, stats)
 
 	// 4. Scan data sections for pointer values
-	relocateDataSections(data, f, stats)
+	relocateDataSections(data, f, kmazarinBase, kmazarinEnd, stats)
 
 	elapsed := time.Since(start)
 
@@ -88,7 +86,48 @@ func (s *RelocStats) Total() int {
 	return s.EntryPoint + s.ProgHeaders + s.AdrpInstructions + s.DataPointers
 }
 
-func relocateEntryPoint(data []byte, stats *RelocStats) {
+// detectAddressRange scans ELF program headers to find the address range
+// that needs relocation. This makes the tool work with any memory layout.
+func detectAddressRange(f *elf.File) (base, end uint64) {
+	base = ^uint64(0) // Start with max value
+	end = 0
+
+	for _, prog := range f.Progs {
+		if prog.Type != elf.PT_LOAD {
+			continue
+		}
+
+		// Skip if already in high memory (shouldn't happen, but be safe)
+		if prog.Vaddr >= highMemOffset {
+			continue
+		}
+
+		// Update base (lowest address)
+		if prog.Vaddr < base {
+			base = prog.Vaddr
+		}
+
+		// Update end (highest address + size)
+		segEnd := prog.Vaddr + prog.Memsz
+		if segEnd > end {
+			end = segEnd
+		}
+	}
+
+	// Add margin for BSS and other sections not in PT_LOAD
+	// Round up to 4MB boundary for safety
+	end = (end + 0x3FFFFF) &^ 0x3FFFFF
+
+	// Sanity check
+	if base >= end || base == ^uint64(0) {
+		fmt.Fprintf(os.Stderr, "ERROR: Could not detect valid address range from ELF\n")
+		os.Exit(1)
+	}
+
+	return base, end
+}
+
+func relocateEntryPoint(data []byte, kmazarinBase, kmazarinEnd uint64, stats *RelocStats) {
 	// ELF64 entry point is at offset 0x18 (8 bytes)
 	entry := binary.LittleEndian.Uint64(data[0x18:0x20])
 	if entry >= kmazarinBase && entry < kmazarinEnd {
@@ -99,7 +138,7 @@ func relocateEntryPoint(data []byte, stats *RelocStats) {
 	}
 }
 
-func relocateProgramHeaders(data []byte, f *elf.File, stats *RelocStats) {
+func relocateProgramHeaders(data []byte, f *elf.File, kmazarinBase, kmazarinEnd uint64, stats *RelocStats) {
 	// Program header offset is at 0x20
 	phoff := binary.LittleEndian.Uint64(data[0x20:0x28])
 	phentsize := binary.LittleEndian.Uint16(data[0x36:0x38])
@@ -126,7 +165,7 @@ func relocateProgramHeaders(data []byte, f *elf.File, stats *RelocStats) {
 	}
 }
 
-func relocateTextSection(data []byte, f *elf.File, stats *RelocStats) {
+func relocateTextSection(data []byte, f *elf.File, kmazarinBase, kmazarinEnd uint64, stats *RelocStats) {
 	text := f.Section(".text")
 	if text == nil {
 		return
@@ -197,7 +236,7 @@ func relocateTextSection(data []byte, f *elf.File, stats *RelocStats) {
 	}
 }
 
-func relocateDataSections(data []byte, f *elf.File, stats *RelocStats) {
+func relocateDataSections(data []byte, f *elf.File, kmazarinBase, kmazarinEnd uint64, stats *RelocStats) {
 	// CRITICAL: Include .text to relocate literal pool entries
 	// When Go assembly does MOVD $symbol(SB), the assembler generates a PC-relative
 	// load from a literal pool embedded in .text. These literal values must be relocated.

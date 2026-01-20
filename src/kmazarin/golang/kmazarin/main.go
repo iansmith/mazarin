@@ -887,13 +887,8 @@ func simpleMain() {
 	// (DTB is at 0x40000000 in Cardinal's memory region)
 	testDeviceDiscovery()
 
-	console.KPrintln("[Main] Skipping VirtIO GPU init (crashes, needs debugging)...")
-
 	// Initialize VirtIO GPU for display output
-	// DISABLED: GPU init crashes - needs investigation
-	// initVirtIOGPU()
-
-	console.KPrintln("[Main] VirtIO GPU initialization complete or skipped")
+	initVirtIOGPU()
 
 	// CRITICAL: Enable IRQs at CPU AFTER GIC is initialized (matches Cardinal's order)
 	// This unmasks IRQs at the CPU (clears DAIF.I bit)
