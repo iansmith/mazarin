@@ -1,3 +1,5 @@
+//go:build arm64
+
 package ds
 
 // StaticAllocator implements a simple ID allocator using a StaticStack.
