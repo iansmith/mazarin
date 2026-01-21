@@ -377,6 +377,8 @@ in registers, second expects stack). The tail-call stub pattern avoids this.
 
 **Always** use explicit push: `git push origin <branch-name>`
 
+**docs/ directory**: The `docs/` directory is gitignored and managed outside of git. Do not attempt to commit files in `docs/`. Use the `design/` directory for design documents that should be tracked in git.
+
 ## Philosophy
 
 Cardinal = GRUB + minimal Linux shim. Once kmazarin runs with full Go runtime, it's the real kernel.
