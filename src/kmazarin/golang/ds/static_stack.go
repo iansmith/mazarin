@@ -1,3 +1,5 @@
+//go:build arm64
+
 package ds
 
 // StaticStack implements a fixed-capacity stack backed by a static array.
@@ -11,9 +13,10 @@ package ds
 // - top == capacity-1 means full
 // - Valid elements: Data[0..top]
 type StaticStack struct {
-	Data     []int16 // Backing array (must be provided by caller)
-	top      int     // Index of top element (-1 = empty)
-	capacity int     // Max capacity (length of Data)
+	Data     []int16  // Backing array (must be provided by caller)
+	top      int      // Index of top element (-1 = empty)
+	capacity int      // Max capacity (length of Data)
+	Lock     Spinlock // Protects all fields for concurrent access
 }
 
 // NewStaticStack creates a new stack with the given backing array.
@@ -31,7 +34,10 @@ func NewStaticStack(data []int16) *StaticStack {
 //
 //go:nosplit
 func (s *StaticStack) Push(val int16) {
-	if s.IsFull() {
+	s.Lock.Lock()
+	defer s.Lock.Unlock()
+
+	if s.top == s.capacity-1 { // IsFull check inlined to avoid nested lock
 		panic("StaticStack.Push: stack is full")
 	}
 	s.top++
@@ -43,7 +49,10 @@ func (s *StaticStack) Push(val int16) {
 //
 //go:nosplit
 func (s *StaticStack) Pop() int16 {
-	if s.IsEmpty() {
+	s.Lock.Lock()
+	defer s.Lock.Unlock()
+
+	if s.top == -1 { // IsEmpty check inlined to avoid nested lock
 		panic("StaticStack.Pop: stack is empty")
 	}
 	val := s.Data[s.top]
@@ -56,7 +65,10 @@ func (s *StaticStack) Pop() int16 {
 //
 //go:nosplit
 func (s *StaticStack) Peek() int16 {
-	if s.IsEmpty() {
+	s.Lock.Lock()
+	defer s.Lock.Unlock()
+
+	if s.top == -1 { // IsEmpty check inlined to avoid nested lock
 		panic("StaticStack.Peek: stack is empty")
 	}
 	return s.Data[s.top]
@@ -66,6 +78,9 @@ func (s *StaticStack) Peek() int16 {
 //
 //go:nosplit
 func (s *StaticStack) IsEmpty() bool {
+	s.Lock.Lock()
+	defer s.Lock.Unlock()
+
 	return s.top == -1
 }
 
@@ -73,6 +88,9 @@ func (s *StaticStack) IsEmpty() bool {
 //
 //go:nosplit
 func (s *StaticStack) IsFull() bool {
+	s.Lock.Lock()
+	defer s.Lock.Unlock()
+
 	return s.top == s.capacity-1
 }
 
@@ -80,6 +98,9 @@ func (s *StaticStack) IsFull() bool {
 //
 //go:nosplit
 func (s *StaticStack) Size() int {
+	s.Lock.Lock()
+	defer s.Lock.Unlock()
+
 	return s.top + 1
 }
 
@@ -87,5 +108,8 @@ func (s *StaticStack) Size() int {
 //
 //go:nosplit
 func (s *StaticStack) Capacity() int {
+	s.Lock.Lock()
+	defer s.Lock.Unlock()
+
 	return s.capacity
 }
