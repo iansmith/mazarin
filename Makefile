@@ -403,6 +403,26 @@ $(HELLOWORLD_BINARY): $(HELLOWORLD_ALL_SRC) $(USERSPACE_OVERLAY) $(PRIEST_BINARY
 # Build priest (includes Go version check)
 priest: check-go-version $(PRIEST_BINARY)
 
+# Priest2 - goroutine scheduling test program (prints 1s and 2s)
+# Similar to priest but just for testing scheduling between userspace programs
+PRIEST2_SRC = $(FLOCK_BASE)/cmd/priest2
+PRIEST2_BINARY = $(BUILD_DIR)/priest2.elf
+PRIEST2_ALL_SRC = $(wildcard $(PRIEST2_SRC)/*.go) \
+                  $(wildcard $(MAZARIN_BASE)/sys/*.go)
+
+$(PRIEST2_BINARY): $(PRIEST2_ALL_SRC) $(USERSPACE_OVERLAY) | $(BUILD_DIR)
+	@echo "Building priest2 (scheduling test program)..."
+	@cd $(PRIEST2_SRC) && \
+		CGO_ENABLED=0 \
+		GOTOOLCHAIN=local \
+		GOARCH=$(GOARCH) \
+		GOOS=$(GOOS) \
+		$(GO) build -overlay=$(abspath $(USERSPACE_OVERLAY)) $(GCFLAGS) -o $(abspath $@) .
+	@echo "Priest2 built at $@ ($$(ls -lh $@ | awk '{print $$5}'))"
+
+# Build priest2 (includes Go version check)
+priest2: check-go-version $(PRIEST2_BINARY)
+
 # Build helloworld (includes Go version check)
 helloworld: check-go-version $(USERSPACE_OVERLAY) $(PRIEST_BINARY) $(HELLOWORLD_BINARY)
 
@@ -478,9 +498,9 @@ helloworld-maz: check-go-version $(HELLOWORLD_MAZ_BINARY)
 
 DISK_IMAGE = $(BUILD_DIR)/disk.img
 
-$(DISK_IMAGE): $(PRIEST_BINARY) $(HELLOWORLD_MAZ_BINARY) $(TOOL_MKFAT32) | $(BUILD_DIR)
+$(DISK_IMAGE): $(PRIEST_BINARY) $(PRIEST2_BINARY) $(HELLOWORLD_MAZ_BINARY) $(TOOL_MKFAT32) | $(BUILD_DIR)
 	@echo "Creating FAT32 disk image..."
-	@$(TOOL_MKFAT32) -o $@ $(PRIEST_BINARY) $(HELLOWORLD_MAZ_BINARY)
+	@$(TOOL_MKFAT32) -o $@ $(PRIEST_BINARY) $(PRIEST2_BINARY) $(HELLOWORLD_MAZ_BINARY)
 	@echo "Disk image created at $@ ($$(ls -lh $@ | awk '{print $$5}'))"
 
 # Build disk image (includes flock programs)
@@ -503,4 +523,4 @@ clean:
 	@echo "Cleaned."
 
 # Phony targets
-.PHONY: all clean cardinal kmazarin priest helloworld helloworld-thin helloworld-maz thin-overlay disk test host-tools
+.PHONY: all clean cardinal kmazarin priest priest2 helloworld helloworld-thin helloworld-maz thin-overlay disk test host-tools

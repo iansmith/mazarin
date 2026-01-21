@@ -45,6 +45,9 @@ var (
 	ReadyForAsyncPreempt    uint32 // 1 when ready for async preemption
 )
 
+// Debug: Timer IRQ counter for tracking IRQ delivery issues
+var TimerIRQCount uint64
+
 // Per-goroutine tick tracking for async preemption fallback.
 // Indexed by hash of g pointer. When a goroutine doesn't yield
 // cooperatively after 10 ticks (100ms), we force async preemption.

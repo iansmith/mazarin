@@ -64,6 +64,156 @@ rearm_timer:
 	WORD	$0xD51BE322
 
 	// ========================================================================
+	// DEBUG: Increment and check timer IRQ counter
+	// ========================================================================
+	// TEST: Put counter back at kirq.TimerIRQCount to see if cycling returns
+	// Load current count
+	MOVD	·TimerIRQCount(SB), R0
+	ADD	$1, R0
+	MOVD	R0, ·TimerIRQCount(SB)
+	// Memory barrier to ensure store completes
+	DSB	$15  // DSB SY - full system barrier
+
+	// ========================================================================
+	// DEBUG: Check AsyncPreemptWrapperAddr for corruption
+	// ========================================================================
+	// This address (0x439d7bc0) was where TimerIRQCount used to be.
+	// Check if something is writing to it unexpectedly.
+	MOVD	·AsyncPreemptWrapperAddr(SB), R6
+	// Expected value should be non-zero (set during init) and stable
+	// If count > 100 and value is suspicious, output warning
+	CMP	$100, R0
+	BLT	skip_wrapper_check
+	// Check if wrapper addr looks corrupted (e.g., small value like counter would be)
+	// A valid function address should be > 0x43800000
+	MOVD	$0x43800000, R7
+	CMP	R7, R6
+	BHS	skip_wrapper_check  // Value >= 0x43800000, looks valid
+	// Wrapper addr is suspiciously low! Output '!' and the value
+	MOVD	$0x09000000, R2  // UART base
+	MOVD	$'!', R3
+	MOVB	R3, (R2)
+	MOVD	$'W', R3
+	MOVB	R3, (R2)
+	MOVD	$'=', R3
+	MOVB	R3, (R2)
+	// Output low 12 bits of R6 as 3 hex digits
+	MOVD	R6, R4
+	LSR	$8, R4, R3
+	AND	$0xF, R3
+	CMP	$10, R3
+	BLT	wrapper_digit1
+	ADD	$('A'-10), R3
+	B	wrapper_out1
+wrapper_digit1:
+	ADD	$'0', R3
+wrapper_out1:
+	MOVB	R3, (R2)
+	MOVD	R6, R4
+	LSR	$4, R4, R3
+	AND	$0xF, R3
+	CMP	$10, R3
+	BLT	wrapper_digit2
+	ADD	$('A'-10), R3
+	B	wrapper_out2
+wrapper_digit2:
+	ADD	$'0', R3
+wrapper_out2:
+	MOVB	R3, (R2)
+	MOVD	R6, R3
+	AND	$0xF, R3
+	CMP	$10, R3
+	BLT	wrapper_digit3
+	ADD	$('A'-10), R3
+	B	wrapper_out3
+wrapper_digit3:
+	ADD	$'0', R3
+wrapper_out3:
+	MOVB	R3, (R2)
+	MOVD	$' ', R3
+	MOVB	R3, (R2)
+skip_wrapper_check:
+
+	// Check for milestone counts and output breadcrumbs
+	// Count 640: Output '#'
+	MOVD	$640, R1
+	CMP	R0, R1
+	BNE	check_644
+	MOVD	$0x09000000, R2  // UART base
+	MOVD	$'#', R3
+	MOVB	R3, (R2)
+	MOVD	$'6', R3
+	MOVB	R3, (R2)
+	MOVD	$'4', R3
+	MOVB	R3, (R2)
+	MOVD	$'0', R3
+	MOVB	R3, (R2)
+	MOVD	$' ', R3
+	MOVB	R3, (R2)
+
+check_644:
+	// Count 644: Output '@' and RE-READ counter to verify
+	MOVD	$644, R1
+	CMP	R0, R1
+	BNE	check_650
+	MOVD	$0x09000000, R2  // UART base
+	MOVD	$'@', R3
+	MOVB	R3, (R2)
+	// DEBUG: Re-read the counter from memory to see if it's really 644
+	MOVD	·TimerIRQCount(SB), R5  // Re-load counter
+	MOVD	$'[', R3
+	MOVB	R3, (R2)
+	// Output R0 (what we stored) low nibble
+	MOVD	R0, R4
+	AND	$0xF, R4
+	ADD	$'0', R4
+	MOVB	R4, (R2)
+	MOVD	$':', R3
+	MOVB	R3, (R2)
+	// Output R5 (what we read back) low nibble
+	MOVD	R5, R4
+	AND	$0xF, R4
+	ADD	$'0', R4
+	MOVB	R4, (R2)
+	MOVD	$']', R3
+	MOVB	R3, (R2)
+
+check_650:
+	// Count 650: Output '$'
+	MOVD	$650, R1
+	CMP	R0, R1
+	BNE	check_655
+	MOVD	$0x09000000, R2  // UART base
+	MOVD	$'$', R3
+	MOVB	R3, (R2)
+	MOVD	$'6', R3
+	MOVB	R3, (R2)
+	MOVD	$'5', R3
+	MOVB	R3, (R2)
+	MOVD	$'0', R3
+	MOVB	R3, (R2)
+	MOVD	$' ', R3
+	MOVB	R3, (R2)
+
+check_655:
+	// Count 655: Output '!' (should never wrap past 654)
+	MOVD	$655, R1
+	CMP	R0, R1
+	BNE	continue_normal
+	MOVD	$0x09000000, R2  // UART base
+	MOVD	$'!', R3
+	MOVB	R3, (R2)
+	MOVD	$'6', R3
+	MOVB	R3, (R2)
+	MOVD	$'5', R3
+	MOVB	R3, (R2)
+	MOVD	$'5', R3
+	MOVB	R3, (R2)
+	MOVD	$' ', R3
+	MOVB	R3, (R2)
+
+continue_normal:
+	// ========================================================================
 	// Step 2: Check if preemption offsets are initialized
 	// ========================================================================
 	MOVW	·PreemptOffsetsValid(SB), R0  // uint32 - use MOVW not MOVD

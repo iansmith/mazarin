@@ -72,9 +72,10 @@ func run() error {
 	fmt.Println("=== Building ===")
 
 	// Build make command with GO override if specified
-	args := []string{"cardinal"}
+	// Build cardinal (which includes kmazarin) and disk image
+	args := []string{"cardinal", "disk"}
 	if os.Getenv("GO") != "" {
-		args = []string{"GO=" + goPath, "cardinal"}
+		args = []string{"GO=" + goPath, "cardinal", "disk"}
 	}
 
 	cmd := exec.Command("make", args...)

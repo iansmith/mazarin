@@ -728,12 +728,31 @@ irq_exception_handler:
 	// Store IAR value for later EOIR write
 	MOVD	R0, R19  // Save full IAR value in R19
 
+	// DEBUG: Output 'H' breadcrumb after count 640 to show we entered IRQ handler
+	MOVD	kmazarin∕kirq·TimerIRQCount(SB), R10
+	CMP	$640, R10
+	BLT	skip_handler_breadcrumb
+	MOVD	$UART_BASE, R11
+	MOVD	$'H', R12
+	MOVB	R12, (R11)
+skip_handler_breadcrumb:
+
 	// Mask to get interrupt ID (bits 0-9, max 1020 for GICv2)
 	AND	$0x3FF, R0  // R0 = IRQ number (0-1019)
 
 	// Check if this is the timer IRQ (27)
 	CMP	$27, R0
 	BNE	irq_not_timer
+
+	// DEBUG: Output 'I' breadcrumb to show IRQ 27 was delivered
+	// Check if count >= 640 to reduce noise
+	MOVD	kmazarin∕kirq·TimerIRQCount(SB), R10
+	CMP	$640, R10
+	BLT	skip_irq_breadcrumb
+	MOVD	$UART_BASE, R11
+	MOVD	$'I', R12
+	MOVB	R12, (R11)
+skip_irq_breadcrumb:
 
 	// ========================================================================
 	// Timer IRQ (27) - Call pure assembly handler
@@ -951,6 +970,41 @@ irq_not_timer:
 	// bottom-half processor will call the registered handler in safe Go context.
 	//
 	// This is the same pattern used for UART RX/TX and timer deadlines.
+
+	// DEBUG: If timer count >= 640, output non-timer IRQ number to see what we're getting
+	MOVD	kmazarin∕kirq·TimerIRQCount(SB), R10
+	CMP	$640, R10
+	BLT	skip_nontimer_debug
+	// Output '!' to show non-timer IRQ
+	MOVD	$UART_BASE, R11
+	MOVD	$'!', R12
+	MOVB	R12, (R11)
+	// Output IRQ number as 2 hex digits
+	MOVD	R0, R13  // Save R0
+	LSR	$4, R0, R12
+	AND	$0xF, R12
+	CMP	$10, R12
+	BLT	nontimer_digit1
+	ADD	$('A'-10), R12
+	B	nontimer_char1
+nontimer_digit1:
+	ADD	$'0', R12
+nontimer_char1:
+	MOVB	R12, (R11)
+	MOVD	R13, R12  // Restore
+	AND	$0xF, R12
+	CMP	$10, R12
+	BLT	nontimer_digit2
+	ADD	$('A'-10), R12
+	B	nontimer_char2
+nontimer_digit2:
+	ADD	$'0', R12
+nontimer_char2:
+	MOVB	R12, (R11)
+	MOVD	$' ', R12
+	MOVB	R12, (R11)
+	MOVD	R13, R0  // Restore R0
+skip_nontimer_debug:
 
 	// Check if IRQ number is in valid range (0-1019)
 	CMP	$1020, R0

@@ -1,36 +1,43 @@
 
 package ksyscall
 
-import "kmazarin/console"
+import (
+	"kmazarin/console"
+	_ "unsafe" // Required for go:linkname
+)
 
 // haltForever loops forever using WFI (implemented in assembly)
 func haltForever()
 
+// ThreadExit is provided by main package via go:linkname.
+// Marks current thread as exited and switches to next ready thread.
+// Returns context pointer of next thread, or 0 if no threads available.
+//
+//go:linkname ThreadExit main.ThreadExit
+func ThreadExit() uintptr
+
 // SyscallExit implements the exit(2) syscall (syscall 93)
-// Gracefully halts the CPU when a process exits.
+// Gracefully exits the current thread and switches to another.
 //
 //go:nosplit
 func SyscallExit(status, _, _, _, _, _ uint64) int64 {
-	// Breadcrumb output even if console isn't initialized
-	console.Breadcrumb('E')
-	console.Breadcrumb('X')
-	console.Breadcrumb('I')
-	console.Breadcrumb('T')
-	console.Breadcrumb(':')
-	console.KWriteString("\r\n=== EXIT CALLED ===\r\nStatus: ")
+	// Breadcrumb output
+	console.Breadcrumb('e')
+	console.Breadcrumb('x')
+	console.Breadcrumb('i')
+	console.Breadcrumb('t')
 
-	// Print status as decimal
-	hexChars := "0123456789ABCDEF"
-	tens := (status / 10) % 10
-	ones := status % 10
-	if tens > 0 {
-		console.KWriteByte(hexChars[tens])
+	// Exit current thread and switch to next ready thread
+	nextCtx := ThreadExit()
+	if nextCtx == 0 {
+		// No more threads - halt system
+		console.KWriteString("\r\n=== NO THREADS REMAIN, HALTING ===\r\n")
+		haltForever()
 	}
-	console.KWriteByte(hexChars[ones])
-	console.KWriteString("\r\n=== PROCESS EXITED, HALTING ===\r\n")
 
-	haltForever()
-	return 0 // unreachable
+	// Tell syscall dispatcher to switch to next thread
+	SetSyscallSwitchTarget(nextCtx)
+	return 0 // Value ignored, context switch will occur
 }
 
 // SyscallExitGroup implements the exit_group(2) syscall (syscall 94)

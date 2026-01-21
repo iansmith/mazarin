@@ -103,8 +103,8 @@ func main() {
 
 	fmt.Println("[priest] Ready to handle syscalls from userspace programs")
 
-	// Try to load helloworld.elf
-	fmt.Println("[priest] Loading /helloworld.elf...")
+	// Try to load priest2.elf (goroutine scheduling test: prints 1s and 2s)
+	fmt.Println("[priest] Loading /priest2.elf...")
 
 	// Get address of PriestSyscallEntry as uintptr
 	entryAddr := uintptr(unsafe.Pointer(&priestSyscallEntryAddr))
@@ -112,9 +112,9 @@ func main() {
 	// Allocate ProgramControl on the stack (writable memory)
 	var pc sys.ProgramControl
 
-	err = sys.Run("/helloworld.elf", entryAddr, &pc)
+	err = sys.Run("/priest2.elf", entryAddr, &pc)
 	if err != nil {
-		fmt.Printf("[priest] Failed to load helloworld.elf: %v\n", err)
+		fmt.Printf("[priest] Failed to load priest2.elf: %v\n", err)
 		fmt.Println("[priest] Entering busy loop printing 3s...")
 		busyLoop3s()
 		return

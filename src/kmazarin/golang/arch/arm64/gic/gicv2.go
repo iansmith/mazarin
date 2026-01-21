@@ -157,6 +157,15 @@ func (g *GICv2) initHardware() {
 		ipri8 = (ipri8 & 0xFFFF00FF) | 0x00008000  // Set byte 1 (IRQ 33) to 0x80
 		g.writeDistReg(0x420, ipri8)
 
+		// CRITICAL: Configure timer IRQ (27) as EDGE-TRIGGERED
+		// ARM Generic Timer generates edge interrupts, not level. Using level-triggered
+		// configuration causes the GIC to malfunction after ~600 interrupts.
+		// GICD_ICFGR1 (offset 0xC04) covers IRQs 16-31, 2 bits per IRQ
+		// IRQ 27 = bits [23:22], 0b10 = edge-triggered
+		icfg1 := g.readDistReg(0xC04)
+		icfg1 = (icfg1 & 0xFF3FFFFF) | (0x2 << 22)  // Set bits [23:22] = 0b10 (edge)
+		g.writeDistReg(0xC04, icfg1)
+
 		return
 	}
 
@@ -215,6 +224,15 @@ func (g *GICv2) initHardware() {
 	for i := uintptr(0); i < 64; i++ {
 		g.writeDistReg(0xC00+(i*4), 0x00000000) // GICD_ICFGR - all level-triggered
 	}
+
+	// CRITICAL: Configure timer IRQ (27) as EDGE-TRIGGERED
+	// ARM Generic Timer generates edge interrupts, not level. Using level-triggered
+	// configuration causes the GIC to malfunction after ~600 interrupts.
+	// GICD_ICFGR1 (offset 0xC04) covers IRQs 16-31, 2 bits per IRQ
+	// IRQ 27 = bits [23:22], 0b10 = edge-triggered
+	icfg1 := g.readDistReg(0xC04)
+	icfg1 = (icfg1 & 0xFF3FFFFF) | (0x2 << 22)  // Set bits [23:22] = 0b10 (edge)
+	g.writeDistReg(0xC04, icfg1)
 
 	// Enable distributor for Group 0 only (matches Cardinal)
 	// Bit 0 = Enable Group 0

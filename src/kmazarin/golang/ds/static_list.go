@@ -88,6 +88,19 @@ func (l *StaticList[T]) Pluck(index int) *T {
 	return &l.Data[index]
 }
 
+// Release marks the slot at the given index as free.
+// Does nothing if index is invalid or already free.
+func (l *StaticList[T]) Release(index int) {
+	if index < 0 || index >= len(l.InUse) {
+		return
+	}
+	if !l.InUse[index] {
+		return // Already free
+	}
+	l.InUse[index] = false
+	l.count--
+}
+
 // Size returns count of in-use elements.
 // Implements Sizer interface.
 func (l *StaticList[T]) Size() int {

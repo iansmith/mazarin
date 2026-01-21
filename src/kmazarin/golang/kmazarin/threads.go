@@ -40,11 +40,12 @@ const (
 	ThreadReady        = 2 // Runnable, waiting to be scheduled
 	ThreadBlockedFutex = 3 // Blocked on futex_wait
 	ThreadSleeping     = 4 // Blocked on nanosleep
+	ThreadExited       = 5 // Thread has exited (being cleaned up)
 )
 
 // MaxThreads is the maximum number of threads supported
 // Using fixed array to avoid heap allocation during early boot
-const MaxThreads = 64
+const MaxThreads = 512
 
 // ThreadContext holds saved CPU state for a thread
 type ThreadContext struct {
@@ -394,29 +395,40 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int16 {
 // The thread slot can be reused (TID = slot index will be reused automatically).
 //
 //go:nosplit
-//go:linkname ThreadExit kmazarin/ksyscall.ThreadExit
-func ThreadExit(tid int16) {
-	// BEGIN CRITICAL SECTION - protect thread state modification
+func ThreadExit() uintptr {
+	if currentThreadIdx < 0 {
+		return 0 // No current thread
+	}
+
+	// BEGIN CRITICAL SECTION
 	savedDAIF := SaveAndDisableIRQs()
 
-	// Find thread by TID (TID = slot index)
-	t := threadList.FindById(int32(tid))
-	if t == nil {
+	// Get current thread
+	currentTID := threads[currentThreadIdx].TID
+	t := threadList.FindById(int32(currentTID))
+	if t != nil {
+		// Mark as exited
+		t.State = ThreadExited
+		// Try to pluck from ready queue (may not be there)
+		readyQueue.Pluck(currentTID)
+	}
+
+	// Release thread slot
+	threadList.Release(int(currentTID))
+
+	// Find next ready thread
+	next := threadFindReadyIdx()
+	if next == nil {
 		RestoreIRQs(savedDAIF)
-		return // Thread not found
+		return 0 // No threads remain
 	}
 
-	// Mark thread as free
-	t.State = ThreadFree
-	t.TID = 0
+	// Mark next thread as running
+	next.State = ThreadRunning
+	currentThreadIdx = int32(next.TID)
 
-	// Mark slot as free (TID is the slot index)
-	if tid >= 0 && int(tid) < MaxThreads {
-		threadListInUse[tid] = false
-	}
-
-	// END CRITICAL SECTION
 	RestoreIRQs(savedDAIF)
+	return uintptr(unsafe.Pointer(&next.Context))
 }
 
 // threadToIdx converts a Thread pointer to its index in the threads array.
