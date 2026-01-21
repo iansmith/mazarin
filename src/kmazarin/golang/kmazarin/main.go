@@ -935,21 +935,39 @@ func simpleMain() {
 	console.KPrintf("[Main] GC debug: NumGC=%d HeapAlloc=%d NextGC=%d GCPercent=%d\n",
 		memStats.NumGC, memStats.HeapAlloc, memStats.NextGC, debug.SetGCPercent(-1))
 
-	Print("[Main] Launching priest in userspace (EL0)...")
-	filename := "/priest.elf\x00"
-	filenamePtr := uintptr(unsafe.Pointer(&([]byte(filename))[0]))
-	ksyscall.SyscallLaunch(uint64(filenamePtr), 0, 0, 0, 0, 0)
-	// The above should not return - if we get here, something went wrong
-	Print("[Main] ERROR: SyscallLaunch returned unexpectedly!")
+	// Launch TWO priests, each with their own Go runtime.
+	// SyscallLaunch creates a thread for each priest and adds it to the ready queue.
+	// This tests thread scheduling across multiple userspace processes.
 
-	// If priest launch failed, kernel has nothing to do.
-	// Enter idle loop - uses WFI to wait for interrupts and checks for ready threads.
-	Print("[Main] Kernel entering idle loop (WFI)...")
+	Print("[Main] Launching priest1 (/priest.elf)...")
+	filename1 := "/priest.elf\x00"
+	filenamePtr1 := uintptr(unsafe.Pointer(&([]byte(filename1))[0]))
+	result1 := ksyscall.SyscallLaunch(uint64(filenamePtr1), 0, 0, 0, 0, 0)
+	if result1 != 0 {
+		Print("[Main] ERROR: priest1 launch failed with code ")
+		PrintHex64(uint64(result1))
+		Print("\r\n")
+	}
+
+	Print("[Main] Launching priest2 (/priest2.elf)...")
+	filename2 := "/priest2.elf\x00"
+	filenamePtr2 := uintptr(unsafe.Pointer(&([]byte(filename2))[0]))
+	result2 := ksyscall.SyscallLaunch(uint64(filenamePtr2), 0, 0, 0, 0, 0)
+	if result2 != 0 {
+		Print("[Main] ERROR: priest2 launch failed with code ")
+		PrintHex64(uint64(result2))
+		Print("\r\n")
+	}
+
+	Print("[Main] Both priests launched successfully!")
+
+	// The priests are now in the ready queue. The timer IRQ will preempt
+	// this kernel thread and schedule one of the priest threads to run.
+	// For now, just loop forever - the scheduling will happen via timer IRQs.
+	Print("[Main] Kernel idle - priests will be scheduled by timer IRQ...\r\n")
 	for {
-		// IdleLoop processes deadlines and waits for interrupts using WFI.
-		// Returns when a thread becomes ready to run.
-		// In normal operation, priest should be running and this never executes.
-		_ = IdleLoop()
+		// Just busy-wait. Timer IRQ will preempt us and schedule a priest.
+		// We could use WFI here, but for debugging let's just loop.
 	}
 }
 

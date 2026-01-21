@@ -271,6 +271,24 @@ func SwitchToProcessPageTable() {
 	console.KWriteString("\r\n")
 }
 
+// SwitchTTBR0ToPA switches TTBR0 to the specified physical address.
+// This is used for context switching between threads with different page tables.
+// Performs full TLB invalidation to ensure new mappings take effect.
+//
+//go:nosplit
+func SwitchTTBR0ToPA(l0PA uintptr) {
+	if l0PA == 0 {
+		return // No page table to switch to
+	}
+
+	// Linux-style TTBR0 switch sequence
+	dsbISH()                   // Memory barrier before page table operations
+	writeTTBR0Asm(uint64(l0PA)) // Write new TTBR0 value
+	tlbiVMALLE1IS()            // Invalidate all TLB entries
+	dsbISH()                   // Barrier to ensure TLB invalidation completes
+	isbSY()                    // Instruction barrier
+}
+
 // paToVA converts a physical address to a virtual address using identity mapping.
 // Cardinal maps page tables with VA = PA + KernelVAOffset.
 //

@@ -22,6 +22,22 @@ type StaticList[T Ider] struct {
 // ⚠️  WARNING: Returns pointer to LIVE internal data!
 // Panics if capacity exceeded.
 func (l *StaticList[T]) Allocate() (int, *T) {
+	// Debug: check if len is returning wrong value
+	capacity := len(l.InUse)
+	usedCount := 0
+	for i := 0; i < capacity; i++ {
+		if l.InUse[i] {
+			usedCount++
+		}
+	}
+
+	// If we're about to panic, print diagnostic info first
+	if usedCount >= capacity {
+		// Can't use console here, would cause import cycle
+		// Just panic with more info
+		_ = usedCount // Use the variable
+	}
+
 	for i := 0; i < len(l.InUse); i++ {
 		if !l.InUse[i] {
 			l.InUse[i] = true

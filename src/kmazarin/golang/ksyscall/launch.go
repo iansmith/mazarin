@@ -468,15 +468,22 @@ func SyscallLaunch(filenamePtr, _, _, _, _, _ uint64) int64 {
 	}
 	console.KWriteString("\r\n")
 
-	// CRITICAL: Enable timer IRQ before jumping to userspace
-	// This ensures preemption works for the priest running at EL0
+	// CRITICAL: Enable timer IRQ before starting userspace threads
+	// This ensures preemption works for priests running at EL0
 	EnableTimerIRQ()
 	console.KWriteString("[Launch] Timer IRQ enabled for userspace preemption\r\n")
 
-	// Jump to userspace (this does not return)
-	jumpToUserspace(proc.EntryPoint, proc.StackTop)
+	// Create a new thread for this process instead of jumping directly
+	// The thread will be added to the ready queue and scheduled by the kernel
+	tid := CreateUserspaceThread(proc.EntryPoint, proc.StackTop, processL0PA)
 
-	// Should never reach here
+	console.KWriteString("[Launch] Created thread TID=")
+	console.KPrintHex64(uint64(tid))
+	console.KWriteString(" for ")
+	console.KWriteString(filename)
+	console.KWriteString("\r\n")
+
+	// Return to caller - the new thread will be scheduled later
 	return 0
 }
 
@@ -912,6 +919,12 @@ func jumpToUserspace(entryPoint, stackPtr uint64)
 //
 //go:linkname EnableTimerIRQ main.EnableTimerIRQ
 func EnableTimerIRQ()
+
+// CreateUserspaceThread is provided by main package via go:linkname
+// Allocates a new thread for a userspace process and adds it to the ready queue
+//
+//go:linkname CreateUserspaceThread main.CreateUserspaceThread
+func CreateUserspaceThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr) int16
 
 // Helper functions for reading little-endian values
 func readU16LE(b []byte) uint16 {
