@@ -34,14 +34,17 @@ var timerFrequencyHz uint64 = 62500000 // Default 62.5 MHz for QEMU
 // when handling syscalls from userspace (which has a different g).
 var kmazarinG0Addr uint64
 
-// Thread states
+// ThreadState represents the state of a thread
+type ThreadState int8
+
+// Thread states enumeration
 const (
-	ThreadFree         = 0 // Slot available
-	ThreadRunning      = 1 // Currently executing
-	ThreadReady        = 2 // Runnable, waiting to be scheduled
-	ThreadBlockedFutex = 3 // Blocked on futex_wait
-	ThreadSleeping     = 4 // Blocked on nanosleep
-	ThreadExited       = 5 // Thread has exited (being cleaned up)
+	ThreadFree         ThreadState = 0 // Slot available
+	ThreadRunning      ThreadState = 1 // Currently executing
+	ThreadReady        ThreadState = 2 // Runnable, waiting to be scheduled
+	ThreadBlockedFutex ThreadState = 3 // Blocked on futex_wait
+	ThreadSleeping     ThreadState = 4 // Blocked on nanosleep
+	ThreadExited       ThreadState = 5 // Thread has exited (being cleaned up)
 )
 
 // MaxPriests is the maximum number of priest processes (userspace programs)
@@ -70,13 +73,13 @@ type PriestId int16
 
 // Thread represents a single thread (corresponds to a Go M)
 type Thread struct {
-	State         int32    // ThreadRunning, ThreadReady, etc.
-	TID           ThreadId // Unique thread ID from threadIdAllocator (0-31)
-	FutexAddr     uint64   // Address being waited on (for ThreadBlockedFutex)
-	MPtr          uint64   // Pointer to Go M struct
-	GPtr          uint64   // Pointer to Go g struct (g0 for this M)
-	EntryFunc     uint64   // Entry function (mstart)
-	PageTableL0PA uintptr  // Physical address of L0 page table (0 = use kernel's)
+	State         ThreadState // ThreadRunning, ThreadReady, etc.
+	TID           ThreadId    // Unique thread ID from threadIdAllocator (0-31)
+	FutexAddr     uint64      // Address being waited on (for ThreadBlockedFutex)
+	MPtr          uint64      // Pointer to Go M struct
+	GPtr          uint64      // Pointer to Go g struct (g0 for this M)
+	EntryFunc     uint64      // Entry function (mstart)
+	PageTableL0PA uintptr     // Physical address of L0 page table (0 = use kernel's)
 	Context       ThreadContext
 
 	// Preemption tracking
@@ -96,12 +99,12 @@ func (t Thread) Id() int32 {
 // Backing arrays - statically allocated, zero-initialized
 var threadListData [MaxThreads]Thread    // Stores Thread VALUES (not pointers)
 var threadListInUse [MaxThreads]bool     // false = available (zero value)
-var readyQueueData [256]ThreadId         // Stores TIDs (unique thread IDs)
-var readyQueueInUse [256]bool            // Tracks holes in ready queue
-var blockedQueueData [256]ThreadId       // Stores TIDs (unique thread IDs)
-var blockedQueueInUse [256]bool          // Tracks holes in blocked queue
-var sleepingQueueData [256]ThreadId      // Stores TIDs (unique thread IDs)
-var sleepingQueueInUse [256]bool         // Tracks holes in sleeping queue
+var readyQueueData [MaxThreads]ThreadId  // Stores TIDs (unique thread IDs)
+var readyQueueInUse [MaxThreads]bool     // Tracks holes in ready queue
+var blockedQueueData [MaxThreads]ThreadId // Stores TIDs (unique thread IDs)
+var blockedQueueInUse [MaxThreads]bool   // Tracks holes in blocked queue
+var sleepingQueueData [MaxThreads]ThreadId // Stores TIDs (unique thread IDs)
+var sleepingQueueInUse [MaxThreads]bool  // Tracks holes in sleeping queue
 
 // ID allocator backing arrays - statically allocated
 var threadIdStackData [MaxThreads]ThreadId // Backing array for thread ID allocator
