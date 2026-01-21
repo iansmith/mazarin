@@ -19,18 +19,20 @@ type StaticList[T Ider] struct {
 }
 
 // Allocate returns pointer to next free slot and marks it in use.
+// Returns (slot_index, element_pointer).
+// The caller should set element.TID = slot_index for proper ID tracking.
 // ⚠️  WARNING: Returns pointer to LIVE internal data!
 // Panics if capacity exceeded.
-func (l *StaticList[T]) Allocate() *T {
+func (l *StaticList[T]) Allocate() (int, *T) {
 	for i := 0; i < len(l.InUse); i++ {
 		if !l.InUse[i] {
 			l.InUse[i] = true
 			l.count++
-			return &l.Data[i]
+			return i, &l.Data[i]
 		}
 	}
 	console.KernelPanic("StaticList exhausted: no free slots available")
-	return nil // Unreachable, but keeps compiler happy
+	return -1, nil // Unreachable, but keeps compiler happy
 }
 
 // Contains returns true if list contains element with given ID.

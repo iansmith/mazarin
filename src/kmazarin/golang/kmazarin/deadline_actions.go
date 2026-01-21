@@ -1,19 +1,19 @@
 
 package main
 
-import "kmazarin/util"
+import "kmazarin/golang/util"
 
 // WakeThreadAction is an Action that wakes a sleeping thread.
-// It stores the thread index (not a pointer) since we use a fixed array.
+// It stores the thread ID (TID = slot index) for stable identification.
 type WakeThreadAction struct {
-	threadIdx int32
+	tid int16
 }
 
-// NewWakeThreadAction creates a new WakeThreadAction for the given thread index.
+// NewWakeThreadAction creates a new WakeThreadAction for the given thread ID.
 //
 //go:nosplit
-func NewWakeThreadAction(threadIdx int32) *WakeThreadAction {
-	return &WakeThreadAction{threadIdx: threadIdx}
+func NewWakeThreadAction(tid int16) *WakeThreadAction {
+	return &WakeThreadAction{tid: tid}
 }
 
 // Run implements the util.Action interface.
@@ -21,18 +21,22 @@ func NewWakeThreadAction(threadIdx int32) *WakeThreadAction {
 //
 //go:nosplit
 func (a *WakeThreadAction) Run() {
-	if a.threadIdx < 0 || a.threadIdx >= MaxThreads {
-		return
-	}
 	// Protect state modification from concurrent access
 	savedDAIF := SaveAndDisableIRQs()
-	if threads[a.threadIdx].State == ThreadSleeping {
-		threads[a.threadIdx].State = ThreadReady
-		// Add to ready queue so it can be found efficiently
-		if readyQueue != nil && threads[a.threadIdx].readyNode == nil {
-			threads[a.threadIdx].readyNode = readyQueue.PushBack(&threads[a.threadIdx])
-		}
+
+	// Find thread by TID
+	t := threadList.FindById(a.tid)
+	if t == nil {
+		RestoreIRQs(savedDAIF)
+		return // Thread not found (may have exited)
 	}
+
+	if t.State == ThreadSleeping {
+		t.State = ThreadReady
+		// Add to ready queue
+		readyQueue.Push(a.tid)
+	}
+
 	RestoreIRQs(savedDAIF)
 }
 

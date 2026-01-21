@@ -1,59 +1,66 @@
 package ds
 
-import "kmazarin/golang/console"
-
 // StaticQueue is a FIFO queue with fixed capacity using circular buffer.
-// Push adds to back, Pop removes from front.
+// Supports Pluck() to remove elements from the middle (creates holes).
+// Push adds to back, Pop removes from front (skipping holes).
 // Panics (via KernelPanic) on overflow or underflow.
 //
-// ZERO VALUE IS READY TO USE with backing array:
+// ZERO VALUE IS READY TO USE with backing arrays:
 //
-//	var queueData [256]int32
-//	var queue = StaticQueue[int32]{Data: queueData[:]}
-type StaticQueue[T any] struct {
-	Data []T // Slice backed by static array (public for zero-value init)
-	head int // Index of front element
-	tail int // Index of next slot to fill
-	size int // Current number of elements
+//	var queueData [256]int16
+//	var queueInUse [256]bool
+//	var queue = StaticQueue[int16]{Data: queueData[:], InUse: queueInUse[:]}
+type StaticQueue[T comparable] struct {
+	Data  []T    // Slice backed by static array (public for zero-value init)
+	InUse []bool // Slice backed by static array (public for zero-value init)
+	buf   StaticRingBuf[T]
+}
+
+// ensureInit initializes the internal ring buffer if needed
+func (q *StaticQueue[T]) ensureInit() {
+	if q.buf.Data == nil {
+		q.buf.Data = q.Data
+		q.buf.InUse = q.InUse
+	}
 }
 
 // Push adds value to the back of the queue.
 // Panics if the queue is full.
 func (q *StaticQueue[T]) Push(value T) {
-	if q.size >= len(q.Data) {
-		console.KernelPanic("StaticQueue overflow: capacity exceeded")
-	}
-	q.Data[q.tail] = value
-	q.tail = (q.tail + 1) % len(q.Data)
-	q.size++
+	q.ensureInit()
+	q.buf.Push(value)
 }
 
-// Pop removes and returns the front element.
+// Pop removes and returns the front element, skipping holes.
 // Panics if the queue is empty.
 func (q *StaticQueue[T]) Pop() T {
-	if q.size == 0 {
-		console.KernelPanic("StaticQueue underflow: pop from empty queue")
-	}
-	value := q.Data[q.head]
-	q.head = (q.head + 1) % len(q.Data)
-	q.size--
-	return value
+	q.ensureInit()
+	return q.buf.Pop()
 }
 
-// Size returns the current number of elements in the queue.
+// Pluck finds and removes an element from the queue by value.
+// Returns true if found and removed, false otherwise.
+// Creates a "hole" in the queue which is skipped by Pop.
+func (q *StaticQueue[T]) Pluck(value T) bool {
+	q.ensureInit()
+	return q.buf.Pluck(value)
+}
+
+// Size returns the current number of elements in the queue (not including holes).
 // Implements Sizer interface.
 func (q *StaticQueue[T]) Size() int {
-	return q.size
+	q.ensureInit()
+	return q.buf.Size()
 }
 
 // IsEmpty returns true if the queue has no elements.
 func (q *StaticQueue[T]) IsEmpty() bool {
-	return q.size == 0
+	q.ensureInit()
+	return q.buf.IsEmpty()
 }
 
 // Clear removes all elements from the queue.
 func (q *StaticQueue[T]) Clear() {
-	q.head = 0
-	q.tail = 0
-	q.size = 0
+	q.ensureInit()
+	q.buf.Clear()
 }

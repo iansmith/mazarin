@@ -8,7 +8,8 @@ import (
 
 // CloneThread is provided by main package via go:linkname.
 // Creates a new thread with proper context for Go's clone wrapper.
-func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int32
+// Returns TID (int16 = slot index, used as ASID for VM).
+func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int16
 
 // GetSyscallELR is provided by main package via go:linkname.
 // Returns the ELR_EL1 (return address) for the current syscall.

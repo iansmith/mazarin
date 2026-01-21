@@ -8,6 +8,7 @@ import (
 	"kmazarin/fs/fat32"
 	"kmazarin/kmem"
 	"unsafe"
+	_ "unsafe" // for go:linkname
 )
 
 // Custom auxv types for Mazzy-specific values.
@@ -467,6 +468,11 @@ func SyscallLaunch(filenamePtr, _, _, _, _, _ uint64) int64 {
 	}
 	console.KWriteString("\r\n")
 
+	// CRITICAL: Enable timer IRQ before jumping to userspace
+	// This ensures preemption works for the priest running at EL0
+	EnableTimerIRQ()
+	console.KWriteString("[Launch] Timer IRQ enabled for userspace preemption\r\n")
+
 	// Jump to userspace (this does not return)
 	jumpToUserspace(proc.EntryPoint, proc.StackTop)
 
@@ -900,6 +906,12 @@ func writeStackU64(stackBase, stackTop uint64, kernelVA uintptr, addr uint64, va
 // jumpToUserspace performs the transition from kernel (EL1) to userspace (EL0)
 // This is implemented in assembly
 func jumpToUserspace(entryPoint, stackPtr uint64)
+
+// EnableTimerIRQ is provided by main package via go:linkname
+// Enables the timer IRQ for preemption before jumping to userspace
+//
+//go:linkname EnableTimerIRQ main.EnableTimerIRQ
+func EnableTimerIRQ()
 
 // Helper functions for reading little-endian values
 func readU16LE(b []byte) uint16 {
