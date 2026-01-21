@@ -1,3 +1,5 @@
+//go:build arm64
+
 package ds
 
 // Orderer interface for elements that can be ordered by a uint64 value.
@@ -35,6 +37,7 @@ type StaticOrderedList[T Orderer] struct {
 	InUse []bool    // Slice backed by static array (public, starts false = available)
 	Order SortOrder // Sort order (Ascending or Descending)
 	count int       // Current number of in-use elements
+	Lock  Spinlock  // Protects all fields for concurrent access
 }
 
 // Allocate returns pointer to next free slot, marks it in use, and re-sorts the list.
@@ -44,6 +47,9 @@ type StaticOrderedList[T Orderer] struct {
 // ⚠️  WARNING: After initializing the element, caller MUST call Sort() to maintain order!
 // Panics if capacity exceeded.
 func (l *StaticOrderedList[T]) Allocate() (int, *T) {
+	l.Lock.Lock()
+	defer l.Lock.Unlock()
+
 	capacity := len(l.InUse)
 
 	for i := 0; i < capacity; i++ {
@@ -62,6 +68,9 @@ func (l *StaticOrderedList[T]) Allocate() (int, *T) {
 // Uses insertion sort for in-place sorting with minimal allocations.
 // Only sorts the in-use elements.
 func (l *StaticOrderedList[T]) Sort() {
+	l.Lock.Lock()
+	defer l.Lock.Unlock()
+
 	if l.count <= 1 {
 		return // Nothing to sort
 	}
@@ -113,6 +122,9 @@ func (l *StaticOrderedList[T]) Sort() {
 
 // Contains returns true if list contains element with given ID.
 func (l *StaticOrderedList[T]) Contains(id int32) bool {
+	l.Lock.Lock()
+	defer l.Lock.Unlock()
+
 	for i := 0; i < len(l.InUse); i++ {
 		if l.InUse[i] && l.Data[i].Id() == id {
 			return true
@@ -125,6 +137,9 @@ func (l *StaticOrderedList[T]) Contains(id int32) bool {
 // ⚠️  WARNING: Returns pointer to LIVE internal data!
 // Implements Finder[T] interface.
 func (l *StaticOrderedList[T]) FindById(id int32) *T {
+	l.Lock.Lock()
+	defer l.Lock.Unlock()
+
 	for i := 0; i < len(l.InUse); i++ {
 		if l.InUse[i] && l.Data[i].Id() == id {
 			return &l.Data[i]
@@ -143,6 +158,9 @@ func (l *StaticOrderedList[T]) ElementFor(id int32) *T {
 // ⚠️  WARNING: Returns pointer to LIVE internal data!
 // ⚠️  NOTE: Index is the position in the array, NOT the sorted order!
 func (l *StaticOrderedList[T]) Nth(index int) *T {
+	l.Lock.Lock()
+	defer l.Lock.Unlock()
+
 	if index < 0 || index >= len(l.InUse) {
 		return nil
 	}
@@ -157,6 +175,9 @@ func (l *StaticOrderedList[T]) Nth(index int) *T {
 // Returns nil if index is out of bounds or there aren't that many in-use elements.
 // ⚠️  WARNING: This is O(n) - scans from the beginning to find the Nth in-use element.
 func (l *StaticOrderedList[T]) NthSorted(index int) *T {
+	l.Lock.Lock()
+	defer l.Lock.Unlock()
+
 	if index < 0 {
 		return nil
 	}
@@ -184,6 +205,9 @@ func (l *StaticOrderedList[T]) First() *T {
 // ⚠️  WARNING: Returns pointer to LIVE internal data that will be reused!
 // Caller should copy any needed data before the slot is reallocated.
 func (l *StaticOrderedList[T]) PopFirst() *T {
+	l.Lock.Lock()
+	defer l.Lock.Unlock()
+
 	for i := 0; i < len(l.InUse); i++ {
 		if l.InUse[i] {
 			l.InUse[i] = false
@@ -198,6 +222,9 @@ func (l *StaticOrderedList[T]) PopFirst() *T {
 // ⚠️  WARNING: Returns pointer to LIVE internal data that will be reused!
 // Returns nil if index invalid or not in use.
 func (l *StaticOrderedList[T]) Pluck(index int) *T {
+	l.Lock.Lock()
+	defer l.Lock.Unlock()
+
 	if index < 0 || index >= len(l.InUse) {
 		return nil
 	}
@@ -212,6 +239,9 @@ func (l *StaticOrderedList[T]) Pluck(index int) *T {
 // Release marks the slot at the given index as free.
 // Does nothing if index is invalid or already free.
 func (l *StaticOrderedList[T]) Release(index int) {
+	l.Lock.Lock()
+	defer l.Lock.Unlock()
+
 	if index < 0 || index >= len(l.InUse) {
 		return
 	}
@@ -225,10 +255,16 @@ func (l *StaticOrderedList[T]) Release(index int) {
 // Size returns count of in-use elements.
 // Implements Sizer interface.
 func (l *StaticOrderedList[T]) Size() int {
+	l.Lock.Lock()
+	defer l.Lock.Unlock()
+
 	return l.count
 }
 
 // IsEmpty returns true if the list has no in-use elements.
 func (l *StaticOrderedList[T]) IsEmpty() bool {
+	l.Lock.Lock()
+	defer l.Lock.Unlock()
+
 	return l.count == 0
 }
