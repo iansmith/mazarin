@@ -1,3 +1,5 @@
+//go:build arm64
+
 package ds
 
 // StaticList is a fixed-capacity list that STORES ELEMENTS BY VALUE.
@@ -11,9 +13,10 @@ package ds
 //	var inUseData [512]bool
 //	var list = StaticList[Thread]{Data: listData[:], InUse: inUseData[:]}
 type StaticList[T Ider] struct {
-	Data  []T    // Slice backed by static array - STORES VALUES
-	InUse []bool // Slice backed by static array (public, starts false = available)
-	count int    // Current number of in-use elements
+	Data  []T      // Slice backed by static array - STORES VALUES
+	InUse []bool   // Slice backed by static array (public, starts false = available)
+	count int      // Current number of in-use elements
+	Lock  Spinlock // Protects all fields for concurrent access
 }
 
 // Allocate returns pointer to next free slot and marks it in use.
@@ -22,6 +25,9 @@ type StaticList[T Ider] struct {
 // ⚠️  WARNING: Returns pointer to LIVE internal data!
 // Panics if capacity exceeded.
 func (l *StaticList[T]) Allocate() (int, *T) {
+	l.Lock.Lock()
+	defer l.Lock.Unlock()
+
 	// Debug: check if len is returning wrong value
 	capacity := len(l.InUse)
 	usedCount := 0
@@ -46,11 +52,13 @@ func (l *StaticList[T]) Allocate() (int, *T) {
 		}
 	}
 	panic("StaticList exhausted: no free slots available")
-	return -1, nil // Unreachable, but keeps compiler happy
 }
 
 // Contains returns true if list contains element with given ID.
 func (l *StaticList[T]) Contains(id int32) bool {
+	l.Lock.Lock()
+	defer l.Lock.Unlock()
+
 	for i := 0; i < len(l.InUse); i++ {
 		if l.InUse[i] && l.Data[i].Id() == id {
 			return true
@@ -63,6 +71,9 @@ func (l *StaticList[T]) Contains(id int32) bool {
 // ⚠️  WARNING: Returns pointer to LIVE internal data!
 // Implements Finder[T] interface.
 func (l *StaticList[T]) FindById(id int32) *T {
+	l.Lock.Lock()
+	defer l.Lock.Unlock()
+
 	for i := 0; i < len(l.InUse); i++ {
 		if l.InUse[i] && l.Data[i].Id() == id {
 			return &l.Data[i]
@@ -80,6 +91,9 @@ func (l *StaticList[T]) ElementFor(id int32) *T {
 // Nth returns pointer to element at index position, or nil if not in use.
 // ⚠️  WARNING: Returns pointer to LIVE internal data!
 func (l *StaticList[T]) Nth(index int) *T {
+	l.Lock.Lock()
+	defer l.Lock.Unlock()
+
 	if index < 0 || index >= len(l.InUse) {
 		return nil
 	}
@@ -93,6 +107,9 @@ func (l *StaticList[T]) Nth(index int) *T {
 // ⚠️  WARNING: Returns pointer to LIVE internal data that will be reused!
 // Returns nil if index invalid or not in use.
 func (l *StaticList[T]) Pluck(index int) *T {
+	l.Lock.Lock()
+	defer l.Lock.Unlock()
+
 	if index < 0 || index >= len(l.InUse) {
 		return nil
 	}
@@ -107,6 +124,9 @@ func (l *StaticList[T]) Pluck(index int) *T {
 // Release marks the slot at the given index as free.
 // Does nothing if index is invalid or already free.
 func (l *StaticList[T]) Release(index int) {
+	l.Lock.Lock()
+	defer l.Lock.Unlock()
+
 	if index < 0 || index >= len(l.InUse) {
 		return
 	}
@@ -120,5 +140,8 @@ func (l *StaticList[T]) Release(index int) {
 // Size returns count of in-use elements.
 // Implements Sizer interface.
 func (l *StaticList[T]) Size() int {
+	l.Lock.Lock()
+	defer l.Lock.Unlock()
+
 	return l.count
 }
