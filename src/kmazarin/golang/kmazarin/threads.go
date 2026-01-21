@@ -44,9 +44,12 @@ const (
 	ThreadExited       = 5 // Thread has exited (being cleaned up)
 )
 
+// MaxPriests is the maximum number of priest processes (userspace programs)
+const MaxPriests = 4
+
 // MaxThreads is the maximum number of threads supported
-// Using fixed array to avoid heap allocation during early boot
-const MaxThreads = 512
+// Each priest can have multiple threads (8 threads per priest)
+const MaxThreads = 8 * MaxPriests // 32 threads total
 
 // ThreadContext holds saved CPU state for a thread
 type ThreadContext struct {
@@ -94,6 +97,9 @@ var blockedQueueInUse [256]bool          // Tracks holes in blocked queue
 var sleepingQueueData [256]int16         // Stores TIDs (slot indices)
 var sleepingQueueInUse [256]bool         // Tracks holes in sleeping queue
 
+// ID allocator backing arrays - statically allocated
+var threadIdStackData [MaxThreads]int16 // Backing array for thread ID allocator
+
 // Data structures - will be initialized in InitThreads()
 // DO NOT initialize slices here - Go's initialization order causes them to be length 0!
 var threadList ds.StaticList[Thread] // StaticList[Thread] stores Thread VALUES
@@ -103,6 +109,9 @@ var readyQueue ds.StaticQueue[int16]
 var blockedQueue ds.StaticQueue[int16]
 
 var sleepingQueue ds.StaticQueue[int16]
+
+// ID allocators - initialized in InitIdAllocators()
+var threadIdAllocator *ds.StaticAllocator // Manages unique thread IDs (0..MaxThreads-1)
 
 // ========== Thread State ==========
 
@@ -213,6 +222,17 @@ func SetSyscallSwitchTarget(target uintptr) {
 	syscallSwitchTarget = target
 }
 
+// InitIdAllocators initializes the ID allocators for thread IDs.
+// Must be called before any threads are created.
+//
+//go:nosplit
+func InitIdAllocators() {
+	// Initialize thread ID allocator
+	threadIdAllocator = ds.NewStaticAllocator(MaxThreads)
+	threadIdAllocator.stack.Data = threadIdStackData[:]
+	threadIdAllocator.Init() // Seeds with IDs 0..(MaxThreads-1)
+}
+
 // InitThreads initializes the thread management system
 // Creates M0's thread as the current running thread
 //
@@ -221,6 +241,16 @@ func SetSyscallSwitchTarget(target uintptr) {
 func InitThreads() {
 	if threadsInitialized {
 		return
+	}
+
+	// Initialize ID allocators first
+	InitIdAllocators()
+
+	// CRITICAL VERIFICATION: The first thread ID must be 0 (for the kernel's initial thread)
+	// If this is not 0, the ID allocator initialization is broken.
+	firstThreadId := threadIdAllocator.Acquire()
+	if firstThreadId != 0 {
+		panic("FATAL: First thread ID is not 0")
 	}
 
 	// CRITICAL: Initialize data structure slices from backing arrays
@@ -254,7 +284,7 @@ func InitThreads() {
 
 	// Set up thread 0 via the returned pointer
 	t0.State = ThreadRunning
-	t0.TID = 0
+	t0.TID = int16(firstThreadId) // Use the acquired ID (verified to be 0)
 	t0.StartTick = globalTickCounter
 
 	currentThreadIdx = 0
