@@ -2,18 +2,24 @@
 
 package ds
 
+// StackElement is a type constraint for elements that can be stored in StaticStack.
+// Supports small integer types commonly used for IDs and indices.
+type StackElement interface {
+	~byte | ~int8 | ~uint16 | ~int16
+}
+
 // StaticStack implements a fixed-capacity stack backed by a static array.
-// The backing array (Data) must be provided by the caller.
+// The backing array must be provided to the constructor.
 //
 // This is used by StaticAllocator for ID management, where the stack
-// holds available IDs (int16 values).
+// holds available IDs.
 //
 // Invariants:
 // - top == -1 means empty
 // - top == capacity-1 means full
 // - Valid elements: Data[0..top]
-type StaticStack struct {
-	Data     []int16  // Backing array (must be provided by caller)
+type StaticStack[T StackElement] struct {
+	Data     []T      // Backing array (provided at construction)
 	top      int      // Index of top element (-1 = empty)
 	capacity int      // Max capacity (length of Data)
 	Lock     Spinlock // Protects all fields for concurrent access
@@ -21,8 +27,8 @@ type StaticStack struct {
 
 // NewStaticStack creates a new stack with the given backing array.
 // The stack starts empty (top = -1).
-func NewStaticStack(data []int16) *StaticStack {
-	return &StaticStack{
+func NewStaticStack[T StackElement](data []T) *StaticStack[T] {
+	return &StaticStack[T]{
 		Data:     data,
 		top:      -1,
 		capacity: len(data),
@@ -33,7 +39,7 @@ func NewStaticStack(data []int16) *StaticStack {
 // Panics if the stack is full.
 //
 //go:nosplit
-func (s *StaticStack) Push(val int16) {
+func (s *StaticStack[T]) Push(val T) {
 	s.Lock.Lock()
 	defer s.Lock.Unlock()
 
@@ -48,7 +54,7 @@ func (s *StaticStack) Push(val int16) {
 // Panics if the stack is empty.
 //
 //go:nosplit
-func (s *StaticStack) Pop() int16 {
+func (s *StaticStack[T]) Pop() T {
 	s.Lock.Lock()
 	defer s.Lock.Unlock()
 
@@ -64,7 +70,7 @@ func (s *StaticStack) Pop() int16 {
 // Panics if the stack is empty.
 //
 //go:nosplit
-func (s *StaticStack) Peek() int16 {
+func (s *StaticStack[T]) Peek() T {
 	s.Lock.Lock()
 	defer s.Lock.Unlock()
 
@@ -77,7 +83,7 @@ func (s *StaticStack) Peek() int16 {
 // IsEmpty returns true if the stack has no elements.
 //
 //go:nosplit
-func (s *StaticStack) IsEmpty() bool {
+func (s *StaticStack[T]) IsEmpty() bool {
 	s.Lock.Lock()
 	defer s.Lock.Unlock()
 
@@ -87,7 +93,7 @@ func (s *StaticStack) IsEmpty() bool {
 // IsFull returns true if the stack is at capacity.
 //
 //go:nosplit
-func (s *StaticStack) IsFull() bool {
+func (s *StaticStack[T]) IsFull() bool {
 	s.Lock.Lock()
 	defer s.Lock.Unlock()
 
@@ -97,7 +103,7 @@ func (s *StaticStack) IsFull() bool {
 // Size returns the number of elements currently in the stack.
 //
 //go:nosplit
-func (s *StaticStack) Size() int {
+func (s *StaticStack[T]) Size() int {
 	s.Lock.Lock()
 	defer s.Lock.Unlock()
 
@@ -107,7 +113,7 @@ func (s *StaticStack) Size() int {
 // Capacity returns the maximum number of elements the stack can hold.
 //
 //go:nosplit
-func (s *StaticStack) Capacity() int {
+func (s *StaticStack[T]) Capacity() int {
 	s.Lock.Lock()
 	defer s.Lock.Unlock()
 

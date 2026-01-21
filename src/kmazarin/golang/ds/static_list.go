@@ -145,3 +145,17 @@ func (l *StaticList[T]) Size() int {
 
 	return l.count
 }
+
+// IndexOf returns the array index of the element with the given ID.
+// Returns -1 if not found or ID doesn't match any in-use element.
+func (l *StaticList[T]) IndexOf(id int32) int {
+	l.Lock.Lock()
+	defer l.Lock.Unlock()
+
+	for i := 0; i < len(l.InUse); i++ {
+		if l.InUse[i] && l.Data[i].Id() == id {
+			return i
+		}
+	}
+	return -1
+}

@@ -62,16 +62,22 @@ type ThreadContext struct {
 	SPSR uint64 // Processor state (SPSR_EL1)
 }
 
+// ThreadId is a unique thread identifier (0-31)
+type ThreadId int16
+
+// PriestId is a unique priest (userspace process) identifier (0-3)
+type PriestId int16
+
 // Thread represents a single thread (corresponds to a Go M)
 type Thread struct {
-	State        int32   // ThreadRunning, ThreadReady, etc.
-	TID          int16   // Thread ID = slot index (used as ASID for VM)
-	FutexAddr    uint64  // Address being waited on (for ThreadBlockedFutex)
-	MPtr         uint64  // Pointer to Go M struct
-	GPtr         uint64  // Pointer to Go g struct (g0 for this M)
-	EntryFunc    uint64  // Entry function (mstart)
-	PageTableL0PA uintptr // Physical address of L0 page table (0 = use kernel's)
-	Context      ThreadContext
+	State         int32    // ThreadRunning, ThreadReady, etc.
+	TID           ThreadId // Unique thread ID from threadIdAllocator (0-31)
+	FutexAddr     uint64   // Address being waited on (for ThreadBlockedFutex)
+	MPtr          uint64   // Pointer to Go M struct
+	GPtr          uint64   // Pointer to Go g struct (g0 for this M)
+	EntryFunc     uint64   // Entry function (mstart)
+	PageTableL0PA uintptr  // Physical address of L0 page table (0 = use kernel's)
+	Context       ThreadContext
 
 	// Preemption tracking
 	LastSeenG      uint64 // g pointer seen at last timer tick
@@ -80,7 +86,7 @@ type Thread struct {
 }
 
 // Id implements the ds.Ider interface
-// Returns the TID which is the slot index in the thread list
+// Returns the TID (unique thread ID), NOT the slot index
 func (t Thread) Id() int32 {
 	return int32(t.TID)
 }
@@ -90,28 +96,28 @@ func (t Thread) Id() int32 {
 // Backing arrays - statically allocated, zero-initialized
 var threadListData [MaxThreads]Thread    // Stores Thread VALUES (not pointers)
 var threadListInUse [MaxThreads]bool     // false = available (zero value)
-var readyQueueData [256]int16            // Stores TIDs (slot indices)
+var readyQueueData [256]ThreadId         // Stores TIDs (unique thread IDs)
 var readyQueueInUse [256]bool            // Tracks holes in ready queue
-var blockedQueueData [256]int16          // Stores TIDs (slot indices)
+var blockedQueueData [256]ThreadId       // Stores TIDs (unique thread IDs)
 var blockedQueueInUse [256]bool          // Tracks holes in blocked queue
-var sleepingQueueData [256]int16         // Stores TIDs (slot indices)
+var sleepingQueueData [256]ThreadId      // Stores TIDs (unique thread IDs)
 var sleepingQueueInUse [256]bool         // Tracks holes in sleeping queue
 
 // ID allocator backing arrays - statically allocated
-var threadIdStackData [MaxThreads]int16 // Backing array for thread ID allocator
+var threadIdStackData [MaxThreads]ThreadId // Backing array for thread ID allocator
 
 // Data structures - will be initialized in InitThreads()
 // DO NOT initialize slices here - Go's initialization order causes them to be length 0!
 var threadList ds.StaticList[Thread] // StaticList[Thread] stores Thread VALUES
 
-var readyQueue ds.StaticQueue[int16]
+var readyQueue ds.StaticQueue[ThreadId]
 
-var blockedQueue ds.StaticQueue[int16]
+var blockedQueue ds.StaticQueue[ThreadId]
 
-var sleepingQueue ds.StaticQueue[int16]
+var sleepingQueue ds.StaticQueue[ThreadId]
 
 // ID allocators - initialized in InitIdAllocators()
-var threadIdAllocator *ds.StaticAllocator // Manages unique thread IDs (0..MaxThreads-1)
+var threadIdAllocator *ds.StaticAllocator[ThreadId] // Manages unique thread IDs (0..MaxThreads-1)
 
 // ========== Thread State ==========
 
@@ -227,9 +233,8 @@ func SetSyscallSwitchTarget(target uintptr) {
 //
 //go:nosplit
 func InitIdAllocators() {
-	// Initialize thread ID allocator
-	threadIdAllocator = ds.NewStaticAllocator(MaxThreads)
-	threadIdAllocator.stack.Data = threadIdStackData[:]
+	// Initialize thread ID allocator with backing array
+	threadIdAllocator = ds.NewStaticAllocator(threadIdStackData[:])
 	threadIdAllocator.Init() // Seeds with IDs 0..(MaxThreads-1)
 }
 
@@ -277,14 +282,12 @@ func InitThreads() {
 
 	// Allocate thread 0 for M0 (the main thread) using StaticList API
 	// This marks slot 0 as in use in threadListInUse
-	slotIdx, t0 := threadList.Allocate()
-	if slotIdx != 0 {
-		panic("Expected thread 0 for M0")
-	}
+	// We expect the first allocation to be slot 0
+	_, t0 := threadList.Allocate()
 
 	// Set up thread 0 via the returned pointer
 	t0.State = ThreadRunning
-	t0.TID = int16(firstThreadId) // Use the acquired ID (verified to be 0)
+	t0.TID = firstThreadId // Use the acquired ID (verified to be 0)
 	t0.StartTick = globalTickCounter
 
 	currentThreadIdx = 0
@@ -419,12 +422,13 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int16 {
 
 	// Allocate thread slot from static list (panics if exhausted)
 	// Returns (slot_index, *Thread)
-	// TID = slot index (used as ASID for VM)
-	slotIdx, t := threadList.Allocate()
-	tid := int16(slotIdx)
+	_, t := threadList.Allocate()
+
+	// Acquire unique thread ID from allocator
+	tid := threadIdAllocator.Acquire()
 
 	// Fill in thread context (via pointer)
-	t.TID = tid
+	t.TID = tid // Unique ID from allocator
 	t.State = ThreadReady
 	t.FutexAddr = 0
 	t.MPtr = mp
@@ -462,7 +466,7 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int16 {
 }
 
 // ThreadExit marks a thread as exited and releases its slot.
-// The thread slot can be reused (TID = slot index will be reused automatically).
+// Releases both the unique TID and the slot index for reuse.
 //
 //go:nosplit
 func ThreadExit() uintptr {
@@ -481,6 +485,9 @@ func ThreadExit() uintptr {
 		// Try to pluck from ready queue (may not be there)
 		readyQueue.Pluck(t.TID)
 
+		// Release unique thread ID back to allocator
+		threadIdAllocator.Release(t.TID)
+
 		// Release thread slot
 		threadList.Release(int(currentThreadIdx))
 	}
@@ -494,7 +501,8 @@ func ThreadExit() uintptr {
 
 	// Mark next thread as running
 	next.State = ThreadRunning
-	currentThreadIdx = int32(next.TID)
+	// Find the slot index for the next thread
+	currentThreadIdx = int32(threadList.IndexOf(int32(next.TID)))
 
 	RestoreIRQs(savedDAIF)
 	return uintptr(unsafe.Pointer(&next.Context))
@@ -512,11 +520,13 @@ func CreateUserspaceThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr) i
 	savedDAIF := SaveAndDisableIRQs()
 
 	// Allocate thread slot from static list (panics if exhausted)
-	slotIdx, t := threadList.Allocate()
-	tid := int16(slotIdx)
+	_, t := threadList.Allocate()
+
+	// Acquire unique thread ID from allocator
+	tid := threadIdAllocator.Acquire()
 
 	// Fill in thread state
-	t.TID = tid
+	t.TID = tid // Unique ID from allocator
 	t.State = ThreadReady
 	t.PageTableL0PA = pageTableL0PA
 	t.StartTick = globalTickCounter
