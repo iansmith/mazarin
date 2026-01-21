@@ -1,0 +1,95 @@
+package ds
+
+import "kmazarin/golang/console"
+
+// StaticList is a fixed-capacity list that STORES ELEMENTS BY VALUE.
+// Elements must implement Ider interface for ID-based lookup.
+// Uses boolean array to track which slots are in use.
+// Methods return pointers (*T) to the stored values for read/write access.
+//
+// ZERO VALUE IS READY TO USE with backing arrays:
+//
+//	var listData [512]Thread       // Stores Thread VALUES
+//	var inUseData [512]bool
+//	var list = StaticList[Thread]{Data: listData[:], InUse: inUseData[:]}
+type StaticList[T Ider] struct {
+	Data  []T    // Slice backed by static array - STORES VALUES
+	InUse []bool // Slice backed by static array (public, starts false = available)
+	count int    // Current number of in-use elements
+}
+
+// Allocate returns pointer to next free slot and marks it in use.
+// ⚠️  WARNING: Returns pointer to LIVE internal data!
+// Panics if capacity exceeded.
+func (l *StaticList[T]) Allocate() *T {
+	for i := 0; i < len(l.InUse); i++ {
+		if !l.InUse[i] {
+			l.InUse[i] = true
+			l.count++
+			return &l.Data[i]
+		}
+	}
+	console.KernelPanic("StaticList exhausted: no free slots available")
+	return nil // Unreachable, but keeps compiler happy
+}
+
+// Contains returns true if list contains element with given ID.
+func (l *StaticList[T]) Contains(id int32) bool {
+	for i := 0; i < len(l.InUse); i++ {
+		if l.InUse[i] && l.Data[i].Id() == id {
+			return true
+		}
+	}
+	return false
+}
+
+// FindById returns pointer to element with matching ID, or nil if not found.
+// ⚠️  WARNING: Returns pointer to LIVE internal data!
+// Implements Finder[T] interface.
+func (l *StaticList[T]) FindById(id int32) *T {
+	for i := 0; i < len(l.InUse); i++ {
+		if l.InUse[i] && l.Data[i].Id() == id {
+			return &l.Data[i]
+		}
+	}
+	return nil
+}
+
+// ElementFor is an alias for FindById.
+// ⚠️  WARNING: Returns pointer to LIVE internal data!
+func (l *StaticList[T]) ElementFor(id int32) *T {
+	return l.FindById(id)
+}
+
+// Nth returns pointer to element at index position, or nil if not in use.
+// ⚠️  WARNING: Returns pointer to LIVE internal data!
+func (l *StaticList[T]) Nth(index int) *T {
+	if index < 0 || index >= len(l.InUse) {
+		return nil
+	}
+	if !l.InUse[index] {
+		return nil
+	}
+	return &l.Data[index]
+}
+
+// Pluck returns pointer to element at index AND marks slot as free.
+// ⚠️  WARNING: Returns pointer to LIVE internal data that will be reused!
+// Returns nil if index invalid or not in use.
+func (l *StaticList[T]) Pluck(index int) *T {
+	if index < 0 || index >= len(l.InUse) {
+		return nil
+	}
+	if !l.InUse[index] {
+		return nil
+	}
+	l.InUse[index] = false
+	l.count--
+	return &l.Data[index]
+}
+
+// Size returns count of in-use elements.
+// Implements Sizer interface.
+func (l *StaticList[T]) Size() int {
+	return l.count
+}
