@@ -2,10 +2,10 @@
 package main
 
 import (
-	"kmazarin/golang/console"
-	"kmazarin/golang/ds"
-	"kmazarin/golang/kirq"
-	"kmazarin/golang/util"
+	"kmazarin/console"
+	"kmazarin/ds"
+	"kmazarin/kirq"
+	"kmazarin/util"
 	"unsafe"
 )
 
@@ -75,7 +75,7 @@ type Thread struct {
 
 // Id implements the ds.Ider interface
 // Returns the TID which is the slot index in the thread list
-func (t *Thread) Id() int32 {
+func (t Thread) Id() int32 {
 	return int32(t.TID)
 }
 
@@ -155,7 +155,7 @@ var threadsInitialized bool = false
 // deadlineQueue holds TimerDeadlines sorted by deadline time (ascending).
 // Used for nanosleep and other timed wakeups.
 // nil until InitDeadlineQueue is called.
-var deadlineQueue *util.OrderedList[*util.TimerDeadline]
+var deadlineQueue *ds.OrderedList[*util.TimerDeadline]
 
 // setSyscallELRInternal is called by assembly via ABI stub to store the current ELR
 //
@@ -266,7 +266,7 @@ func InitThreads() {
 //go:noinline
 func InitDeadlineQueue() {
 	if deadlineQueue == nil {
-		deadlineQueue = util.NewOrderedList[*util.TimerDeadline](true) // ascending order
+		deadlineQueue = ds.NewOrderedList[*util.TimerDeadline](true) // ascending order
 	}
 }
 
@@ -446,45 +446,46 @@ func threadToIdx(t *Thread) int32 {
 //
 //go:nosplit
 func threadFindReadyIdx() *Thread {
-	if readyQueue.IsEmpty() {
-		return nil
-	}
-
-	// Pop next thread ID (FIFO order)
-	tid := readyQueue.Pop() // Panics if empty (should never happen due to IsEmpty check)
-
-	// Get thread pointer - points to Thread VALUE in threadListData
-	t := threadList.FindById(tid)
-	if t == nil {
-		console.KernelPanic("readyQueue contains invalid TID")
-		return nil // Unreachable
-	}
-
-	// Validate thread state
-	if t.State != ThreadReady {
-		// Schedule problem: Thread in ready queue but not in Ready state
-		console.KPrintf("Schedule problem: Thread %d in ready queue but state=%d\n",
-			tid, t.State)
-
-		// Move to correct queue based on actual state
-		switch t.State {
-		case ThreadBlockedFutex:
-			blockedQueue.Push(tid)
-		case ThreadSleeping:
-			sleepingQueue.Push(tid)
-		case ThreadRunning:
-			// Already running? Put back in ready queue
-			readyQueue.Push(tid)
-		default:
-			console.KernelPanic("Thread in ready queue with invalid state")
+	// Loop instead of recursion to avoid stack overflow in nosplit context
+	for {
+		if readyQueue.IsEmpty() {
+			return nil
 		}
 
-		// Try again (recursive)
-		return threadFindReadyIdx()
-	}
+		// Pop next thread ID (FIFO order)
+		tid := readyQueue.Pop() // Panics if empty (should never happen due to IsEmpty check)
 
-	// Thread is valid and ready
-	return t
+		// Get thread pointer - points to Thread VALUE in threadListData
+		t := threadList.FindById(int32(tid))
+		if t == nil {
+			panic("readyQueue contains invalid TID")
+			return nil // Unreachable
+		}
+
+		// Validate thread state
+		if t.State != ThreadReady {
+			// Schedule problem: Thread in ready queue but not in Ready state
+			// Debug output removed to keep function nosplit-safe
+			// Move to correct queue based on actual state
+			switch t.State {
+			case ThreadBlockedFutex:
+				blockedQueue.Push(tid)
+			case ThreadSleeping:
+				sleepingQueue.Push(tid)
+			case ThreadRunning:
+				// Already running? Put back in ready queue
+				readyQueue.Push(tid)
+			default:
+				panic("Thread in ready queue with invalid state")
+			}
+
+			// Continue loop to try next thread
+			continue
+		}
+
+		// Thread is valid and ready
+		return t
+	}
 }
 
 // ThreadFindReady finds the next READY thread

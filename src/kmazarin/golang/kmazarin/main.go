@@ -248,6 +248,11 @@ func uartPutHex32Direct(val uint32) {
 // Runtime readiness flag - set to true once we verify runtime is fully initialized
 var runtimeReady = false
 
+// DebugTimerCount is a debug counter for tracking timer IRQs.
+// Placed in main package to test if the kirq.TimerIRQCount location has mapping issues.
+// This variable is written from timer IRQ handler assembly.
+var DebugTimerCount uint64
+
 // readyForAsyncPreempt controls whether timer IRQs should trigger async preemption.
 // Set to 0 initially, then 1 in main() after Go runtime is fully initialized.
 // This prevents asyncPreempt crashes during runtime.doInit1 (package init phase).
@@ -386,10 +391,10 @@ func testRuntimeReadiness() bool {
 		return false
 	}
 	for i := 0; i < 4; i++ {
-		threadSlice[i].TID = int32(100 + i)
+		threadSlice[i].TID = int16(100 + i)
 	}
 	for i := 0; i < 4; i++ {
-		if threadSlice[i].TID != int32(100+i) {
+		if threadSlice[i].TID != int16(100+i) {
 			return false
 		}
 	}
@@ -871,7 +876,7 @@ func simpleMain() {
 		Print("[Main] GC disabled")
 
 		InitDeadlineQueue()
-		InitReadyQueue()
+		// Note: readyQueue uses static allocation with zero value - no init needed
 	} else {
 		Print("[Main] Runtime not ready - continuing with direct UART")
 	}
@@ -937,54 +942,14 @@ func simpleMain() {
 	// The above should not return - if we get here, something went wrong
 	Print("[Main] ERROR: SyscallLaunch returned unexpectedly!")
 
-	// Launch second goroutine for preemption test
-	Print("[Main] Starting preemption test...")
-	go simpleGoroutine2(nil)
-
-	// Infinite busy-wait loop, printing '1' periodically
-	// NO calls to Gosched() - relies purely on timer-based preemption
-	counter := uint64(0)
-	printCount := uint64(0)
-
+	// If priest launch failed, kernel has nothing to do.
+	// Enter idle loop - uses WFI to wait for interrupts and checks for ready threads.
+	Print("[Main] Kernel entering idle loop (WFI)...")
 	for {
-		counter++
-		// Every 100000 iterations, print our marker
-		if counter%100000 == 0 {
-			printCount++
-			if printCount%72 == 0 {
-				// Emit newline every 72 prints
-				console.KPrintf("\n")
-			} else {
-				// Print '1' to show g1 is running
-				console.KPrintf("1")
-			}
-			// NO checkPreemption() call - pure busy-wait!
-		}
-	}
-}
-
-// simpleGoroutine2 is the second goroutine for the preemption test
-// Pure busy-wait with NO cooperative yielding
-func simpleGoroutine2(ch chan string) {
-	// Infinite busy-wait loop to test timer-based preemption
-	// NO calls to Gosched() - the timer interrupt must forcibly preempt us
-	counter := uint64(0)
-	printCount := uint64(0)
-
-	for {
-		counter++
-		// Every 100000 iterations, print our marker
-		if counter%100000 == 0 {
-			printCount++
-			if printCount%72 == 0 {
-				// Emit newline every 72 prints
-				console.KPrintf("\n")
-			} else {
-				// Print '2' to show g2 is running
-				console.KPrintf("2")
-			}
-			// NO checkPreemption() call - pure busy-wait!
-		}
+		// IdleLoop processes deadlines and waits for interrupts using WFI.
+		// Returns when a thread becomes ready to run.
+		// In normal operation, priest should be running and this never executes.
+		_ = IdleLoop()
 	}
 }
 

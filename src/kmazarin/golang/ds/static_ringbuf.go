@@ -1,7 +1,5 @@
 package ds
 
-import "kmazarin/golang/console"
-
 // StaticRingBuf is a circular buffer with fixed capacity that supports "holes" (plucked elements).
 // Uses InUse markers to track which slots contain valid data vs holes.
 //
@@ -22,7 +20,7 @@ type StaticRingBuf[T comparable] struct {
 // Panics if the buffer is full.
 func (rb *StaticRingBuf[T]) Push(value T) {
 	if rb.count >= len(rb.Data) {
-		console.KernelPanic("StaticRingBuf overflow: capacity exceeded")
+		panic("StaticRingBuf overflow: capacity exceeded")
 	}
 
 	// Find next free slot from tail
@@ -34,7 +32,7 @@ func (rb *StaticRingBuf[T]) Push(value T) {
 	}
 
 	if attempts >= len(rb.Data) {
-		console.KernelPanic("StaticRingBuf overflow: no free slots")
+		panic("StaticRingBuf overflow: no free slots")
 	}
 
 	rb.Data[rb.tail] = value
@@ -47,7 +45,7 @@ func (rb *StaticRingBuf[T]) Push(value T) {
 // Panics if the buffer is empty.
 func (rb *StaticRingBuf[T]) Pop() T {
 	if rb.count == 0 {
-		console.KernelPanic("StaticRingBuf underflow: pop from empty buffer")
+		panic("StaticRingBuf underflow: pop from empty buffer")
 	}
 
 	// Skip holes to find next valid element
@@ -58,7 +56,7 @@ func (rb *StaticRingBuf[T]) Pop() T {
 	}
 
 	if attempts >= len(rb.Data) || !rb.InUse[rb.head] {
-		console.KernelPanic("StaticRingBuf corruption: count > 0 but no valid elements")
+		panic("StaticRingBuf corruption: count > 0 but no valid elements")
 	}
 
 	value := rb.Data[rb.head]

@@ -1,7 +1,5 @@
 package ds
 
-import "kmazarin/golang/console"
-
 // StaticList is a fixed-capacity list that STORES ELEMENTS BY VALUE.
 // Elements must implement Ider interface for ID-based lookup.
 // Uses boolean array to track which slots are in use.
@@ -31,7 +29,7 @@ func (l *StaticList[T]) Allocate() (int, *T) {
 			return i, &l.Data[i]
 		}
 	}
-	console.KernelPanic("StaticList exhausted: no free slots available")
+	panic("StaticList exhausted: no free slots available")
 	return -1, nil // Unreachable, but keeps compiler happy
 }
 

@@ -1,7 +1,7 @@
 
 package main
 
-import "kmazarin/golang/util"
+import "kmazarin/util"
 
 // WakeThreadAction is an Action that wakes a sleeping thread.
 // It stores the thread ID (TID = slot index) for stable identification.
@@ -25,7 +25,7 @@ func (a *WakeThreadAction) Run() {
 	savedDAIF := SaveAndDisableIRQs()
 
 	// Find thread by TID
-	t := threadList.FindById(a.tid)
+	t := threadList.FindById(int32(a.tid))
 	if t == nil {
 		RestoreIRQs(savedDAIF)
 		return // Thread not found (may have exited)
