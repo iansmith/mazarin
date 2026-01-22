@@ -15,10 +15,10 @@ import (
 
 // schedulerTestEnv holds test environment state for cleanup
 type schedulerTestEnv struct {
-	origThreadList       ds.StaticOrderedList[Thread, ThreadId]
-	origReadyQueue       ds.StaticFIFO[ThreadId]
-	origBlockedQueue     ds.StaticFIFO[ThreadId]
-	origSleepingQueue    ds.StaticFIFO[ThreadId]
+	origThreadList       ds.StaticList[*Thread, Thread]
+	origReadyQueue       ds.StaticQueue[ThreadId]
+	origBlockedQueue     ds.StaticQueue[ThreadId]
+	origSleepingQueue    ds.StaticQueue[ThreadId]
 	origCurrentThreadIdx int32
 	origCurrentThread    unsafe.Pointer
 	origTimerFreq        uint64
@@ -141,10 +141,10 @@ func TestSingleThreadNoPreemption(t *testing.T) {
 	t.Logf("  Elapsed: %d ticks (threshold ~6.25M)", currentTime-threadA.StartTick)
 
 	// Call preemption check
-	result := checkThreadPreemptionInternal(sf, 0)
+	result := checkThreadPreemptionImpl(sf, 0)
 
 	// Verify: No switch should occur (only one thread, and it's running)
-	// Note: checkThreadPreemptionInternal is called AFTER NeedsThreadPreempt is set,
+	// Note: checkThreadPreemptionImpl is called AFTER NeedsThreadPreempt is set,
 	// so it will try to preempt regardless of time. But with no other ready threads,
 	// it should return 0 and keep current thread running.
 
@@ -184,7 +184,7 @@ func TestSingleThreadExhaustedNoOthers(t *testing.T) {
 	t.Log("Scenario: Thread A exhausted timeslice, but no other threads exist")
 	t.Logf("  Elapsed: %d ticks (threshold ~6.25M)", currentTime-threadA.StartTick)
 
-	result := checkThreadPreemptionInternal(sf, 0)
+	result := checkThreadPreemptionImpl(sf, 0)
 
 	// Should return 0 (no switch possible) and thread continues
 	if result != 0 {
@@ -223,7 +223,7 @@ func TestPreemptionWithReadyThread(t *testing.T) {
 
 	t.Log("Scenario: Thread A exhausted, Thread B ready -> switch to B")
 
-	result := checkThreadPreemptionInternal(sf, 0)
+	result := checkThreadPreemptionImpl(sf, 0)
 
 	if result == 0 {
 		t.Error("Expected context switch, got 0")
@@ -271,7 +271,7 @@ func TestThreadExitSwitchToReady(t *testing.T) {
 
 	t.Log("Scenario: Thread A exits, Thread B ready -> switch to B")
 
-	result := ThreadExit(sf)
+	result := threadExitImpl(sf)
 
 	if result == 0 {
 		t.Error("Expected switch to B, got 0")
@@ -308,7 +308,7 @@ func TestThreadExitNoOthers(t *testing.T) {
 
 	t.Log("Scenario: Thread A exits, no other threads -> return 0 (halt)")
 
-	result := ThreadExit(sf)
+	result := threadExitImpl(sf)
 
 	if result != 0 {
 		t.Errorf("Expected 0 (no threads), got 0x%x", result)
@@ -341,7 +341,7 @@ func TestFutexBlockSwitchToReady(t *testing.T) {
 	t.Log("Scenario: Thread A blocks on futex, Thread B ready -> switch to B")
 
 	futexAddr := uint64(0x12345678)
-	result := ThreadBlockFutex(sf, futexAddr)
+	result := threadBlockFutexImpl(sf, futexAddr)
 
 	if result == 0 {
 		t.Error("Expected switch to B, got 0")
@@ -386,7 +386,7 @@ func TestFutexWakeBecomesReady(t *testing.T) {
 
 	t.Log("Scenario: Thread B blocked on futex, wake it -> becomes ready")
 
-	woken := ThreadWakeFutex(sf, 0x12345678, 1)
+	woken := threadWakeFutexImpl(sf, 0x12345678, 1)
 
 	if woken != 1 {
 		t.Errorf("Expected 1 thread woken, got %d", woken)
@@ -437,7 +437,7 @@ func TestFutexWakeOne(t *testing.T) {
 
 	t.Log("Scenario: 3 threads blocked on futex, wake 1 -> only 1 becomes ready")
 
-	woken := ThreadWakeFutex(sf, futexAddr, 1)
+	woken := threadWakeFutexImpl(sf, futexAddr, 1)
 
 	if woken != 1 {
 		t.Errorf("Expected 1 thread woken, got %d", woken)
@@ -490,7 +490,7 @@ func TestFutexWakeAll(t *testing.T) {
 	t.Log("Scenario: 3 threads blocked on futex, wake all")
 
 	// Wake with maxWake = 100 (more than blocked)
-	woken := ThreadWakeFutex(sf, futexAddr, 100)
+	woken := threadWakeFutexImpl(sf, futexAddr, 100)
 
 	if woken != 3 {
 		t.Errorf("Expected 3 threads woken, got %d", woken)
@@ -572,7 +572,7 @@ func TestNestedPreemptBlockReturn(t *testing.T) {
 
 	// Step 1: Preempt A to B
 	t.Log("Step 1: Preempt A")
-	result1 := checkThreadPreemptionInternal(sf, 0)
+	result1 := checkThreadPreemptionImpl(sf, 0)
 	if result1 == 0 {
 		t.Fatal("Expected switch to B")
 	}
@@ -589,7 +589,7 @@ func TestNestedPreemptBlockReturn(t *testing.T) {
 	// Step 2: B blocks on futex
 	t.Log("Step 2: B blocks on futex")
 	futexAddr := uint64(0xDEADBEEF)
-	result2 := ThreadBlockFutex(sf, futexAddr)
+	result2 := threadBlockFutexImpl(sf, futexAddr)
 	if result2 == 0 {
 		t.Fatal("Expected switch back to A")
 	}

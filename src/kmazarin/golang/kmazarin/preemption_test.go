@@ -104,7 +104,7 @@ func TestSimplePreemption(t *testing.T) {
 	t.Logf("  Elapsed ticks: %d (threshold=%d)", currentTime-threadStartTime, preemptThresholdTicks)
 
 	// Call the preemption check directly
-	contextPtr := checkThreadPreemptionInternal(&testFunc, 0)
+	contextPtr := checkThreadPreemptionImpl(&testFunc, 0)
 
 	t.Logf("After preemption check:")
 	t.Logf("  Context switch returned: 0x%x (non-zero = switch occurred)", contextPtr)
