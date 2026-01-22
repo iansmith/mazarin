@@ -1084,6 +1084,34 @@ func threadFindReadyIdx() *Thread {
 	}
 }
 
+// threadFindReadyPreferDifferentPriest finds next ready thread, preferring a different priest.
+// Used for timer preemption to promote fairness across priests.
+// Falls back to any ready thread if only same-priest threads available.
+//
+//go:nosplit
+func threadFindReadyPreferDifferentPriest(currentPID PriestId) *Thread {
+	// First pass: find thread from DIFFERENT priest (scan without popping)
+	for i := 0; i < len(readyQueue.Data); i++ {
+		if !readyQueue.InUse[i] {
+			continue
+		}
+
+		tid := readyQueue.Data[i]
+		t := threadList.FindByIdAll(int32(tid))
+		if t == nil || t.State != ThreadReady {
+			continue // Skip invalid or stale entries
+		}
+
+		if t.PID != currentPID {
+			readyQueue.Pluck(tid)
+			return t
+		}
+	}
+
+	// Fallback: any ready thread
+	return threadFindReadyIdx()
+}
+
 // ThreadFindReady finds the next READY thread
 // Returns CONTEXT POINTER of ready thread, or 0 (nil) if none found
 //
