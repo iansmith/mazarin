@@ -1,0 +1,109 @@
+//go:build test_stubs
+
+package main
+
+// Stub implementations for test builds to avoid assembly link errors.
+// These functions are implemented in assembly and need stubs when assembly is excluded.
+// Signatures must match asm_decl.go exactly.
+
+//go:nosplit
+func GetExceptionVectorBase() uintptr { return 0 }
+
+//go:nosplit
+func ExceptionVectorTable() {}
+
+//go:nosplit
+func SetVBAR(addr uintptr) {}
+
+//go:nosplit
+func ReadVBAR() uintptr { return 0 }
+
+//go:nosplit
+func EnableIRQs() {}
+
+//go:nosplit
+func DisableIRQs() {}
+
+//go:nosplit
+func SaveAndDisableIRQs() uint64 { return 0 }
+
+//go:nosplit
+func RestoreIRQs(savedDAIF uint64) {}
+
+//go:nosplit
+func getAuxval(tag uint64) uint64 { return 0 }
+
+//go:nosplit
+func EnableGIC() {}
+
+//go:nosplit
+func DisableTimerHardware() {}
+
+//go:nosplit
+func RearmTimerNow() {}
+
+//go:nosplit
+func ReadCntvCtlEl0() uint64 { return 0 }
+
+//go:nosplit
+func ReadCntvTvalEl0() uint64 { return 0 }
+
+//go:nosplit
+func ReadCntvctEl0() uint64 { return 1000 }
+
+//go:nosplit
+func ReadCntfrqEl0() uint64 { return 62500000 }
+
+//go:nosplit
+func ReadDAIF() uint64 { return 0 }
+
+//go:nosplit
+func GetGRegister() uint64 { return 0 }
+
+//go:nosplit
+func GetPC() uint64 { return 0 }
+
+//go:nosplit
+func asyncPreemptWrapper() {}
+
+//go:nosplit
+func getAsyncPreemptWrapperAddr() uintptr { return 0 }
+
+//go:nosplit
+func HandlePageFaultAsm(faultAddr uint64) uint64 { return 0 }
+
+//go:nosplit
+func HandleUserPageFaultAsm(faultAddr uint64) uint64 { return 0 }
+
+//go:nosplit
+func GetSyscallSwitchTarget() int64 { return -1 }
+
+//go:nosplit
+func DoContextSwitch(framePtr uint64, targetIdx int32) uint64 { return 0 }
+
+//go:nosplit
+func SetSyscallELR(elr uint64) {}
+
+//go:nosplit
+func SetSyscallSPSR(spsr uint64) {}
+
+//go:nosplit
+func CheckThreadPreemption(framePtr uint64) uint64 { return 0 }
+
+// Additional stubs for functions called from Go code
+
+func IRQDispatch() {}
+func SyscallDispatch() {}
+func TimerIRQHandler() {}
+
+// System control
+func WaitForInterrupt() {}
+func Exit() {}
+
+// MMU and TLB
+func invalidateTLB() {}
+func readTTBR0() uint64 { return 0 }
+
+// Barriers
+func dsb() {}
+func isb() {}

@@ -1,4 +1,6 @@
 
+//go:build !test_stubs
+
 package ksyscall
 
 import _ "unsafe" // for go:linkname

@@ -1,20 +1,8 @@
-
 package ksyscall
 
 import (
 	"kmazarin/console"
-	_ "unsafe" // Required for go:linkname
 )
-
-// haltForever loops forever using WFI (implemented in assembly)
-func haltForever()
-
-// ThreadExit is provided by main package via go:linkname.
-// Marks current thread as exited and switches to next ready thread.
-// Returns context pointer of next thread, or 0 if no threads available.
-//
-//go:linkname ThreadExit main.ThreadExit
-func ThreadExit() uintptr
 
 // SyscallExit implements the exit(2) syscall (syscall 93)
 // Gracefully exits the current thread and switches to another.

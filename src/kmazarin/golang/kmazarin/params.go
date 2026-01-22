@@ -69,7 +69,7 @@ func PrintParams() {
 	for key, value := range paramBuffer {
 		fmt.Printf("%s = %s\r\n", key, value)
 	}
-	fmt.Println("=== End Parameters ===\r\n")
+	fmt.Println("=== End Parameters ===")
 }
 
 // readAuxv walks the auxiliary vector on the stack to find our custom entries.

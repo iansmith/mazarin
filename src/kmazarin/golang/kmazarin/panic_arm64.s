@@ -1,3 +1,5 @@
+//go:build !test_stubs
+
 
 #include "textflag.h"
 

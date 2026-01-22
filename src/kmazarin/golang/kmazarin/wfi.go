@@ -1,3 +1,4 @@
+//go:build !test_stubs
 
 package main
 

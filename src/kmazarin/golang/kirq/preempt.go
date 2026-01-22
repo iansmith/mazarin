@@ -9,7 +9,6 @@ package kirq
 
 import (
 	"sync/atomic"
-	_ "unsafe" // for go:linkname
 )
 
 // PreemptOffsets mirrors runtime.PreemptOffsets for go:linkname access.
@@ -66,15 +65,17 @@ const (
 	ThreadSize            = 336 // Size of Thread struct (includes readyNode)
 )
 
-// AsyncPreemptThreshold is the number of timer ticks before forcing
+// GoroutinePreemptIntervals is the number of 10ms intervals before forcing
 // async preemption on a goroutine that hasn't yielded.
-// At 10ms per tick, 5 ticks = 50ms max runtime without yield.
-const AsyncPreemptThreshold uint64 = 5
+// 5 intervals = 50ms max runtime without yield.
+// Exported for assembly access.
+var GoroutinePreemptIntervals uint64 = 5
 
-// ThreadPreemptThreshold is the number of timer ticks before forcing
+// ThreadPreemptIntervals is the number of 10ms intervals before forcing
 // a thread preemption (context switch to another thread).
-// This is 2x the goroutine preemption threshold: 10 ticks = 100ms.
-const ThreadPreemptThreshold uint64 = 10
+// 20 intervals = 200ms - gives goroutines time to work.
+// Exported for assembly access.
+var ThreadPreemptIntervals uint64 = 20
 
 // NeedsAsyncPreempt is set by assembly when a goroutine has exceeded
 // the preemption threshold and needs async preemption injection.
@@ -89,17 +90,6 @@ var NeedsThreadPreempt uint32
 // System timer frequency in Hz - read from CNTFRQ_EL0 at init.
 // Exported for use by other packages and assembly.
 var SystemTimerFrequency uint64
-
-// getPreemptOffsets accesses runtime.GetPreemptOffsets via linkname.
-// This function is defined in runtime-patches/preempt_kernel.go.
-//
-//go:linkname getPreemptOffsets runtime.GetPreemptOffsets
-func getPreemptOffsets() preemptOffsetsType
-
-// TimerIRQHandlerAsm is the pure assembly timer IRQ handler.
-// Implemented in preempt_arm64.s. Does NOT call any Go functions.
-// Sets g.preempt and g.stackguard0 directly for cooperative preemption.
-func TimerIRQHandlerAsm()
 
 // InitPreemption initializes the preemption subsystem.
 // Must be called after Go runtime is fully initialized.

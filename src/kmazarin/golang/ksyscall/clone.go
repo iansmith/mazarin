@@ -1,23 +1,9 @@
-
 package ksyscall
 
 import (
 	"kmazarin/console"
 	"unsafe"
 )
-
-// CloneThread is provided by main package via go:linkname.
-// Creates a new thread with proper context for Go's clone wrapper.
-// Returns TID (int16 = slot index, used as ASID for VM).
-func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int16
-
-// GetSyscallELR is provided by main package via go:linkname.
-// Returns the ELR_EL1 (return address) for the current syscall.
-func GetSyscallELR() uint64
-
-// GetSyscallSPSR is provided by main package via go:linkname.
-// Returns the SPSR_EL1 (processor state) for the current syscall.
-func GetSyscallSPSR() uint64
 
 // SyscallClone implements the clone(2) syscall
 // Go's runtime pushes mp, gp, fn onto the new stack before calling clone.
@@ -31,6 +17,7 @@ func GetSyscallSPSR() uint64
 //
 // Note: No //go:nosplit because CloneThread allocates memory for thread nodes.
 func SyscallClone(flags, stack, ptid, tls, ctid, _ uint64) int64 {
+	console.Breadcrumb('@') // Entry marker for SyscallClone
 	console.KWriteString("\r\n[Clone] stack=")
 	console.KPrintHex64(stack)
 	console.KWriteString(" flags=")
@@ -96,7 +83,10 @@ func SyscallClone(flags, stack, ptid, tls, ctid, _ uint64) int64 {
 	}
 
 	// Return TID to parent
-	// Child thread is now in READY state and will be scheduled later
-	console.KWriteString("[Clone] returning TID to parent\r\n")
+	// CRITICAL: CloneThread has called SetSyscallSwitchTarget, so after this
+	// syscall returns, the assembly will switch to the NEW thread (B).
+	// The parent (A) will be saved to ready queue and will return from clone()
+	// with this TID when it's eventually scheduled.
+	console.KWriteString("[Clone] B will run, A goes to ready queue\r\n")
 	return int64(tid)
 }

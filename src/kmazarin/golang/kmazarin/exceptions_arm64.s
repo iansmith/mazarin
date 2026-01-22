@@ -1,3 +1,5 @@
+//go:build !test_stubs
+
 
 // exceptions_arm64.s - Kmazarin exception handlers (Go/Plan9 assembly)
 //
@@ -875,11 +877,16 @@ timer_no_thread_preempt:
 	MOVW	kmazarin∕kirq·ReadyForAsyncPreempt(SB), R10
 	CBZ	R10, timer_no_preempt_not_ready
 
-	// Get asyncPreemptWrapper address from global variable (set by Go init)
-	// We use our own wrapper because runtime.asyncPreempt has a stack management bug
-	// (allocates 0x1f0 but deallocates 0x200, causing 16-byte stack leak per preemption).
-	// Our wrapper properly saves ALL registers with matched stack allocation/deallocation.
-	MOVD	kmazarin∕kirq·AsyncPreemptWrapperAddr(SB), R10
+	// UNIFIED ASYNCPREEMPT: Use per-thread asyncPreempt address
+	// This supports both kmazarin goroutines and priest goroutines:
+	// - Kmazarin threads: AsyncPreemptAddr = kmazarin's asyncPreemptWrapper
+	// - Priest threads: AsyncPreemptAddr = priest's registered asyncPreempt
+	//
+	// Get current thread's AsyncPreemptAddr (offset 352 in Thread struct)
+	// Thread struct layout: after GoroutineElapsed (offset 344), AsyncPreemptAddr is at 352
+	MOVD	main·CurrentThread(SB), R10  // R10 = *Thread
+	CBZ	R10, timer_no_preempt  // No current thread
+	MOVD	352(R10), R10  // R10 = thread.AsyncPreemptAddr
 
 	// CRITICAL: Check if asyncPreempt address is zero (not yet initialized)
 	// Skip preemption if address is not set
@@ -931,6 +938,10 @@ timer_no_preempt_not_ready:
 	MOVD	$'R', R11
 	MOVB	R11, (R10)
 	B	timer_no_preempt
+
+// timer_no_preempt_userspace: REMOVED
+// Unified asyncPreempt injection now handles both kmazarin and priest threads
+// by using the per-thread AsyncPreemptAddr field.
 
 timer_no_preempt_wrapper_misaligned:
 	// DEBUG: Wrapper misaligned

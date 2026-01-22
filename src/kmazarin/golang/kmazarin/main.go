@@ -100,6 +100,9 @@ func init() {
 	// MUST happen before any clone syscalls!
 	InitThreads()
 
+	// Initialize soft IRQ subsystem (static allocation, no heap needed)
+	InitSoftIRQ()
+
 	// Initialize critical early devices (UART, GIC, Timer, RNG)
 	EarlyInit()
 
@@ -111,7 +114,13 @@ func init() {
 	// Store asyncPreemptWrapper address for IRQ handler to read.
 	// This must be done before EnableIRQs() since the timer IRQ handler
 	// needs this address to inject async preemption.
-	kirq.SetAsyncPreemptWrapperAddr(getAsyncPreemptWrapperAddr())
+	asyncPreemptAddr := getAsyncPreemptWrapperAddr()
+	kirq.SetAsyncPreemptWrapperAddr(asyncPreemptAddr)
+
+	// Also set the asyncPreempt address in all existing kernel threads.
+	// This allows the exception handler to use per-thread asyncPreempt addresses,
+	// enabling a unified approach for kmazarin and priest goroutine preemption.
+	SetKmazarinAsyncPreemptAddr(uint64(asyncPreemptAddr))
 
 	// NOTE: OLD UART initialization disabled - now using PL011 device driver
 	// kirq.InitUART()
@@ -158,91 +167,6 @@ func uartPutsDirect(s string) {
 //go:nosplit
 func uartPutcDirectForKmem(c byte) {
 	Breadcrumb(c)
-}
-
-// getRuntimeConfigForKmem provides runtime config to kmem package via linkname
-//go:linkname getRuntimeConfigForKmem kmazarin/kmem.getRuntimeConfig
-//go:nosplit
-func getRuntimeConfigForKmem() interface{} {
-	return GetRuntimeConfig()
-}
-
-// getAsyncPreemptAddrForKirq provides asyncPreempt address to kirq package via linkname
-//go:linkname getAsyncPreemptAddrForKirq kmazarin/kirq.getAsyncPreemptAddr
-//go:nosplit
-func getAsyncPreemptAddrForKirq() uintptr {
-	return GetAsyncPreemptAddr()
-}
-
-// getReadyForAsyncPreemptAddrForKirq provides readyForAsyncPreempt flag address to kirq package via linkname
-//go:linkname getReadyForAsyncPreemptAddrForKirq kmazarin/kirq.getReadyForAsyncPreemptAddr
-//go:nosplit
-func getReadyForAsyncPreemptAddrForKirq() uintptr {
-	return GetReadyForAsyncPreemptAddr()
-}
-
-// processDeadlinesForKirq provides deadline processing to kirq package via linkname
-//go:linkname processDeadlinesForKirq kmazarin/kirq.processDeadlines
-//go:nosplit
-func processDeadlinesForKirq() {
-	ProcessDeadlines()
-}
-
-// breadcrumbStringForKirq provides direct UART output to kirq package via linkname
-// This is used for panic messages to avoid console recursion
-//go:linkname breadcrumbStringForKirq kmazarin/kirq.breadcrumbString
-//go:nosplit
-func breadcrumbStringForKirq(s string) {
-	BreadcrumbString(s)
-}
-
-// breadcrumbHexForKirq writes a 64-bit hex value directly to UART for kirq package
-//go:linkname breadcrumbHexForKirq kmazarin/kirq.breadcrumbHex
-//go:nosplit
-func breadcrumbHexForKirq(val uint64) {
-	hexChars := "0123456789ABCDEF"
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (val >> i) & 0xF
-		Breadcrumb(hexChars[nibble])
-	}
-}
-
-// getRuntimeConfigForKsyscall provides runtime config to ksyscall package via linkname
-//go:linkname getRuntimeConfigForKsyscall kmazarin/ksyscall.getRuntimeConfig
-//go:nosplit
-func getRuntimeConfigForKsyscall() interface{} {
-	return GetRuntimeConfig()
-}
-
-// uartPutHex64Direct writes a 64-bit hex value to UART
-// Used by ksyscall, kthread, and kmem packages via linkname
-//go:linkname uartPutHex64Direct kmazarin/ksyscall.uartPutHex64Direct
-//go:linkname uartPutHex64DirectForKmem kmazarin/kmem.uartPutHex64Direct
-//go:nosplit
-func uartPutHex64Direct(val uint64) {
-	hexChars := "0123456789ABCDEF"
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (val >> i) & 0xF
-		uartPutc(hexChars[nibble])
-	}
-}
-
-// Alias for kmem package linkname
-//go:nosplit
-func uartPutHex64DirectForKmem(val uint64) {
-	uartPutHex64Direct(val)
-}
-
-// uartPutHex32Direct writes a 32-bit hex value to UART
-// Used by ksyscall and kthread packages via linkname
-//go:linkname uartPutHex32Direct kmazarin/ksyscall.uartPutHex32Direct
-//go:nosplit
-func uartPutHex32Direct(val uint32) {
-	hexChars := "0123456789ABCDEF"
-	for i := 28; i >= 0; i -= 4 {
-		nibble := (val >> i) & 0xF
-		uartPutc(hexChars[nibble])
-	}
 }
 
 // Runtime readiness flag - set to true once we verify runtime is fully initialized
@@ -391,10 +315,10 @@ func testRuntimeReadiness() bool {
 		return false
 	}
 	for i := 0; i < 4; i++ {
-		threadSlice[i].TID = int16(100 + i)
+		threadSlice[i].TID = ThreadId(100 + i)
 	}
 	for i := 0; i < 4; i++ {
-		if threadSlice[i].TID != int16(100+i) {
+		if threadSlice[i].TID != ThreadId(100+i) {
 			return false
 		}
 	}
@@ -856,6 +780,26 @@ func testKPrintHex() {
 	console.KPrintln("[HexTest] === Test Complete ===")
 }
 
+// busyLoop4s prints '4' in a tight loop to test kernel goroutine scheduling.
+// This runs as a separate goroutine in kmazarin alongside the main goroutine.
+func busyLoop4s() {
+	counter := uint64(0)
+	printCount := uint64(0)
+
+	for {
+		counter++
+		// Every 100000 iterations, print our marker
+		if counter%100000 == 0 {
+			printCount++
+			if printCount%72 == 0 {
+				console.KWriteString("\n")
+			} else {
+				console.KWriteString("4")
+			}
+		}
+	}
+}
+
 // simpleMain is the entry point for our simple goroutine/channel test
 // This will be run by the scheduler as the main goroutine
 func simpleMain() {
@@ -877,6 +821,14 @@ func simpleMain() {
 
 		InitDeadlineQueue()
 		// Note: readyQueue uses static allocation with zero value - no init needed
+
+		// Initialize soft IRQ dispatcher
+		// TEMPORARILY DISABLED: The dispatcher blocks the kernel thread when it
+		// calls ThreadBlockSoftIRQ, which stops everything. It should be started
+		// as a separate kernel thread, not a goroutine on M0.
+		InitSoftIRQDispatcher()
+		// go SoftIRQDispatcher()
+		Print("[Main] Soft IRQ dispatcher initialized (goroutine disabled)")
 	} else {
 		Print("[Main] Runtime not ready - continuing with direct UART")
 	}
@@ -961,13 +913,28 @@ func simpleMain() {
 
 	Print("[Main] Both priests launched successfully!")
 
-	// The priests are now in the ready queue. The timer IRQ will preempt
-	// this kernel thread and schedule one of the priest threads to run.
-	// For now, just loop forever - the scheduling will happen via timer IRQs.
+	// Launch a kernel goroutine that prints 4s to test kernel-side goroutine scheduling
+	Print("[Main] Launching kernel goroutine (prints 4s)...")
+	go busyLoop4s()
+
+	// Re-enable IRQs and timer for priest scheduling
+	EnableIRQs()
+	EnableTimerIRQ()
+
+	// Debug: Print DAIF to verify IRQs are enabled
+	daif := ReadDAIF()
+	console.KPrintf("[Main] DAIF before idle: 0x%x (I=0x80 clear means IRQs enabled)\n", daif)
+
 	Print("[Main] Kernel idle - priests will be scheduled by timer IRQ...\r\n")
+
+	// Debug: Add periodic breadcrumb to show we're still in the loop
+	loopCount := uint64(0)
 	for {
+		loopCount++
+		if loopCount%100000000 == 0 {
+			Breadcrumb('.')
+		}
 		// Just busy-wait. Timer IRQ will preempt us and schedule a priest.
-		// We could use WFI here, but for debugging let's just loop.
 	}
 }
 

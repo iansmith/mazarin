@@ -274,25 +274,22 @@ g_in_kernel:
 	BNE	timer_return  // GC scanning, skip preemption
 
 	// ========================================================================
-	// Step 6: Set g.preempt = true
+	// Steps 6-7 REMOVED: No longer manipulate g.preempt or g.stackguard0
 	// ========================================================================
-	MOVD	·PreemptPreemptOffset(SB), R5
-	ADD	R4, R5  // R5 = &g.preempt
-	MOVD	$1, R6
-	MOVB	R6, (R5)  // g.preempt = true
+	// We now use asyncPreempt injection (modifying ELR) instead of the
+	// cooperative preemption path. This provides a unified approach for
+	// both kmazarin and priest goroutines:
+	// 1. Timer tracks elapsed time and sets NeedsAsyncPreempt flag
+	// 2. Exception return path modifies ELR to inject asyncPreempt
+	// 3. asyncPreempt saves state and calls the Go scheduler
+	//
+	// Benefits:
+	// - Kernel doesn't need to touch Go runtime g struct
+	// - Same mechanism works for kmazarin and priests
+	// - Cleaner separation between kernel and Go runtime
 
 	// ========================================================================
-	// Step 7: Set g.stackguard0 = stackPreempt
-	// ========================================================================
-	// This is the key operation - it poisons the stack guard so the next
-	// function call triggers the preemption path in morestack.
-	MOVD	·PreemptStackGuard0Offset(SB), R5
-	ADD	R4, R5  // R5 = &g.stackguard0
-	MOVD	·PreemptStackPreemptValue(SB), R6  // R6 = stackPreempt poison value
-	MOVD	R6, (R5)  // g.stackguard0 = stackPreempt
-
-	// ========================================================================
-	// Step 8: Check for g change and track preemption time
+	// Step 6: Check for g change and track preemption time
 	// ========================================================================
 	// R4 = current g pointer (validated above)
 
@@ -311,27 +308,43 @@ thread_not_nil:
 
 	// ========================================================================
 	// G changed! Go runtime switched goroutines internally.
-	// Reset: store current g as LastSeenG
+	// Reset GoroutineStart to current time (new goroutine, fresh deadline).
 	// But DON'T reset StartTick - we still want to track total thread time
 	// for OS-level preemption of priests waiting in ready queue.
 	// ========================================================================
 	MOVD	R4, 312(R7)  // currentThread.LastSeenG = current g
 
-	// Don't reset StartTick - continue tracking total thread elapsed time
-	// Fall through to same_goroutine to check thread preemption threshold
-	B	same_goroutine
+	// Reset GoroutineStart for the new goroutine
+	// Read current counter: MRS X8, CNTVCT_EL0
+	WORD	$0xD53BE048
+	MOVD	R8, 328(R7)  // currentThread.GoroutineStart = current tick
+
+	// Fall through to check thread preemption (new goroutine gets fresh timer)
+	B	check_thread_preempt_only
 
 same_goroutine:
-	// Same g - check elapsed time
-	// Load StartTick: offset 320
+	// Same g - check both goroutine and thread elapsed time
+	// Thread struct offsets:
+	//   LastSeenG: 312
+	//   StartTick: 320
+	//   GoroutineStart: 328
+
+	// Load StartTick for thread preemption check
 	MOVD	320(R7), R8  // R8 = currentThread.StartTick
 	CBZ	R8, init_start_tick  // Not initialized yet
 
 	// Read current counter: MRS X9, CNTVCT_EL0
 	WORD	$0xD53BE049
 
-	// Calculate elapsed ticks
-	SUB	R8, R9, R9  // R9 = current - start = elapsed
+	// Calculate thread elapsed ticks (for thread preemption)
+	SUB	R8, R9, R5  // R5 = current - StartTick = thread elapsed
+
+	// Load GoroutineStart for goroutine preemption check
+	MOVD	328(R7), R8  // R8 = currentThread.GoroutineStart
+	CBZ	R8, init_goroutine_start  // Not initialized yet
+
+	// Calculate goroutine elapsed ticks (for goroutine preemption)
+	SUB	R8, R9, R6  // R6 = current - GoroutineStart = goroutine elapsed
 
 	// Convert to timer intervals (divide by ticks per 10ms)
 	// ticks_per_10ms = freq / 100
@@ -340,33 +353,56 @@ same_goroutine:
 	UDIV	R10, R8, R8  // R8 = ticks per 10ms
 	CBZ	R8, timer_return  // Avoid divide by zero
 
-	UDIV	R8, R9, R9  // R9 = elapsed intervals (10ms units)
+	// R5 = thread elapsed ticks, R6 = goroutine elapsed ticks
+	UDIV	R8, R6, R6  // R6 = goroutine elapsed intervals (10ms units)
 
-	// Check against goroutine preemption threshold (5 intervals = 50ms)
-	CMP	$5, R9
+	// Check against goroutine preemption threshold (configurable)
+	// GoroutinePreemptIntervals = 5 intervals = 50ms default
+	MOVD	·GoroutinePreemptIntervals(SB), R9
+	CMP	R9, R6
 	BLT	check_thread_preempt  // Under goroutine threshold, check thread threshold
 
-	// Elapsed >= goroutine threshold: signal async preemption needed
-	MOVW	$1, R8
-	MOVW	R8, ·NeedsAsyncPreempt(SB)
+	// Goroutine elapsed >= threshold: signal async preemption needed
+	MOVW	$1, R9
+	MOVW	R9, ·NeedsAsyncPreempt(SB)
 
 check_thread_preempt:
-	// Check against thread preemption threshold (1 interval = 10ms)
-	// Reduced from 10 intervals (100ms) to allow priests to be scheduled sooner
-	// R9 still contains elapsed intervals
-	CMP	$1, R9
+	// Convert thread elapsed to intervals
+	UDIV	R8, R5, R5  // R5 = thread elapsed intervals (10ms units)
+
+check_thread_preempt_only:
+	// Check against thread preemption threshold (configurable)
+	// ThreadPreemptIntervals = 20 intervals = 200ms default
+	// Give goroutines time to work before OS-level thread preemption
+	MOVD	·ThreadPreemptIntervals(SB), R9
+	CMP	R9, R5
 	BLT	timer_return  // Under thread threshold, done
 
-	// Elapsed >= thread threshold: signal thread preemption needed
-	MOVW	$1, R8
-	MOVW	R8, ·NeedsThreadPreempt(SB)
+	// Thread elapsed >= threshold: signal thread preemption needed
+	MOVW	$1, R9
+	MOVW	R9, ·NeedsThreadPreempt(SB)
 	B	timer_return
 
+init_goroutine_start:
+	// GoroutineStart not initialized - initialize it and skip goroutine check
+	// R9 still contains current counter
+	MOVD	R9, 328(R7)  // currentThread.GoroutineStart = current tick
+	// Fall through to check thread preemption only
+
+	// Convert thread elapsed to intervals
+	MOVD	·SystemTimerFrequency(SB), R8
+	MOVD	$100, R10
+	UDIV	R10, R8, R8  // R8 = ticks per 10ms
+	CBZ	R8, timer_return  // Avoid divide by zero
+	UDIV	R8, R5, R5  // R5 = thread elapsed intervals
+	B	check_thread_preempt_only
+
 init_start_tick:
-	// Initialize StartTick and LastSeenG for this thread
+	// Initialize StartTick, GoroutineStart, and LastSeenG for this thread
 	// Read current counter: MRS X8, CNTVCT_EL0
 	WORD	$0xD53BE048
 	MOVD	R8, 320(R7)  // currentThread.StartTick = current tick
+	MOVD	R8, 328(R7)  // currentThread.GoroutineStart = current tick
 	MOVD	R4, 312(R7)  // currentThread.LastSeenG = current g
 	// Fall through to timer_return
 	B	timer_return
@@ -402,9 +438,24 @@ g_in_userspace:
 
 	UDIV	R8, R9, R9  // R9 = elapsed intervals (10ms units)
 
-	// Check against thread preemption threshold (1 interval = 10ms)
-	// For userspace threads, we only care about OS-level thread preemption
-	CMP	$1, R9
+	// For userspace threads (priests), we can't track individual goroutines
+	// because their g pointer is in userspace memory. Instead, we inject
+	// asyncPreempt periodically to let the priest's Go runtime reschedule.
+	//
+	// Check against goroutine preemption threshold (configurable)
+	MOVD	·GoroutinePreemptIntervals(SB), R10
+	CMP	R10, R9
+	BLT	userspace_check_thread  // Under goroutine threshold, check thread
+
+	// Elapsed >= goroutine threshold: signal async preemption needed
+	// This will inject the priest's registered asyncPreempt (if registered)
+	MOVW	$1, R8
+	MOVW	R8, ·NeedsAsyncPreempt(SB)
+
+userspace_check_thread:
+	// Check against thread preemption threshold (configurable)
+	MOVD	·ThreadPreemptIntervals(SB), R10
+	CMP	R10, R9
 	BLT	timer_return  // Under threshold, done
 
 	// Elapsed >= threshold: signal thread preemption needed
@@ -413,10 +464,12 @@ g_in_userspace:
 	B	timer_return
 
 userspace_init_tick:
-	// Initialize StartTick for userspace thread
+	// Initialize StartTick and GoroutineStart for userspace thread
+	// (We use GoroutineStart for periodic asyncPreempt injection)
 	// Read current counter: MRS X8, CNTVCT_EL0
 	WORD	$0xD53BE048
 	MOVD	R8, 320(R7)  // currentThread.StartTick = current tick
+	MOVD	R8, 328(R7)  // currentThread.GoroutineStart = current tick
 	B	timer_return
 
 timer_return:

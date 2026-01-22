@@ -1,3 +1,5 @@
+//go:build !test_stubs
+
 // abi_stubs_arm64.s - ABI0 entry points for functions called from assembly
 //
 // When assembly in this package calls main·functionName, Go expects ABI0 entry

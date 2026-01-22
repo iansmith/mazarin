@@ -6,12 +6,6 @@ import (
 	"unsafe"
 )
 
-//go:linkname threadFindReadyForYield main.ThreadFindReady
-func threadFindReadyForYield() uintptr
-
-//go:linkname setSyscallSwitchTargetForYield main.SetSyscallSwitchTarget
-func setSyscallSwitchTargetForYield(target uintptr)
-
 // ============================================================================
 // Simple stub syscalls that return constants or success
 // ============================================================================
@@ -66,11 +60,14 @@ func SyscallSchedSetaffinity(_, _, _, _, _, _ uint64) int64 {
 }
 
 // SyscallPrctl performs process control operations
-// Return -EINVAL so setVMAName marks it unsupported
+// Return success for PR_SET_VMA (0x53564D41) and other operations
+// to avoid confusing the Go runtime
 //
 //go:nosplit
-func SyscallPrctl(_, _, _, _, _, _ uint64) int64 {
-	return -22 // -EINVAL
+func SyscallPrctl(option, _, _, _, _, _ uint64) int64 {
+	// PR_SET_VMA = 0x53564D41 is used by Go runtime to name memory regions
+	// We don't implement it but should return success
+	return 0 // Success (stub)
 }
 
 // SyscallMprotect changes memory protection

@@ -1,3 +1,4 @@
+//go:build !test_stubs
 
 package main
 
@@ -6,12 +7,6 @@ import (
 	"kmazarin/device"
 	"unsafe"
 )
-
-// Assembly functions (defined in runtime_arm64.s)
-func readTTBR0() uint64
-func dsb()
-func isb()
-func invalidateTLB()
 
 // unmapCardinal unmaps Cardinal's memory region at the L1 level.
 //

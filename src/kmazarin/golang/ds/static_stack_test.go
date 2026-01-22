@@ -5,7 +5,7 @@ import "testing"
 // TestStackPushPop tests basic push and pop operations
 func TestStackPushPop(t *testing.T) {
 	data := make([]int16, 5)
-	s := NewStaticStack(data)
+	var s StaticStack[int16]; s.Init(data)
 
 	// Initially empty
 	if !s.IsEmpty() {
@@ -55,7 +55,7 @@ func TestStackPushPop(t *testing.T) {
 // TestStackCapacity tests capacity limits
 func TestStackCapacity(t *testing.T) {
 	data := make([]int16, 3)
-	s := NewStaticStack(data)
+	var s StaticStack[int16]; s.Init(data)
 
 	if s.Capacity() != 3 {
 		t.Errorf("capacity should be 3, got %d", s.Capacity())
@@ -77,7 +77,7 @@ func TestStackCapacity(t *testing.T) {
 // TestStackPanicOnEmpty tests that Pop and Peek panic when empty
 func TestStackPanicOnEmpty(t *testing.T) {
 	data := make([]int16, 5)
-	s := NewStaticStack(data)
+	var s StaticStack[int16]; s.Init(data)
 
 	// Test Pop on empty
 	defer func() {
@@ -91,7 +91,7 @@ func TestStackPanicOnEmpty(t *testing.T) {
 // TestStackPanicOnEmptyPeek tests that Peek panics when empty
 func TestStackPanicOnEmptyPeek(t *testing.T) {
 	data := make([]int16, 5)
-	s := NewStaticStack(data)
+	var s StaticStack[int16]; s.Init(data)
 
 	defer func() {
 		if r := recover(); r == nil {
@@ -104,7 +104,7 @@ func TestStackPanicOnEmptyPeek(t *testing.T) {
 // TestStackPanicOnFull tests that Push panics when full
 func TestStackPanicOnFull(t *testing.T) {
 	data := make([]int16, 2)
-	s := NewStaticStack(data)
+	var s StaticStack[int16]; s.Init(data)
 
 	s.Push(1)
 	s.Push(2)
@@ -120,7 +120,7 @@ func TestStackPanicOnFull(t *testing.T) {
 // TestStackPeek tests Peek without removing
 func TestStackPeek(t *testing.T) {
 	data := make([]int16, 5)
-	s := NewStaticStack(data)
+	var s StaticStack[int16]; s.Init(data)
 
 	s.Push(42)
 	s.Push(99)
@@ -158,7 +158,7 @@ func TestStackPeek(t *testing.T) {
 // TestStackMultipleCycles tests push/pop cycles
 func TestStackMultipleCycles(t *testing.T) {
 	data := make([]int16, 4)
-	s := NewStaticStack(data)
+	var s StaticStack[int16]; s.Init(data)
 
 	// Cycle 1
 	s.Push(1)
@@ -194,7 +194,7 @@ func TestStackMultipleCycles(t *testing.T) {
 // TestStackZeroValues tests handling of zero values
 func TestStackZeroValues(t *testing.T) {
 	data := make([]int16, 3)
-	s := NewStaticStack(data)
+	var s StaticStack[int16]; s.Init(data)
 
 	s.Push(0)
 	s.Push(-1)

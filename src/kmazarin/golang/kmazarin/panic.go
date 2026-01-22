@@ -1,10 +1,6 @@
 
 package main
 
-// Exit hangs the system in an infinite loop
-// Implemented in panic_arm64.s
-func Exit()
-
 // KernelPanic prints an error message directly to console and hangs the system
 // This is used when something goes critically wrong and we cannot continue
 // Uses console abstraction which provides spinlock protection

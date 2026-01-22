@@ -6,10 +6,11 @@ import (
 	"kmazarin/device"
 )
 
-// TestDeviceDiscovery tests the DTB-based device discovery system
+// ManualDeviceDiscovery tests the DTB-based device discovery system
 // This is a temporary test function to verify DTB parsing and device matching
 // without disrupting the current boot sequence
-func TestDeviceDiscovery() {
+// (Renamed to avoid test runner - not a proper test)
+func ManualDeviceDiscovery() {
 	fmt.Println("\n[DeviceTest] === Testing DTB Device Discovery ===")
 
 	// Register all device drivers
@@ -22,11 +23,11 @@ func TestDeviceDiscovery() {
 		return
 	}
 
-	dtbAddr := cfg.DTBAddress
+	dtbAddr := cfg.DtbVirtAddr
 	fmt.Printf("[DeviceTest] DTB address: 0x%X\n", dtbAddr)
 
 	// Parse DTB and discover devices
-	err := device.InitFromDTB(dtbAddr)
+	err := device.InitFromDTB(uintptr(dtbAddr))
 	if err != nil {
 		fmt.Printf("[DeviceTest] ERROR: %v\n", err)
 		return
@@ -55,5 +56,5 @@ func TestDeviceDiscovery() {
 		fmt.Printf("  - BlockDevice: %s\n", blk.Name())
 	}
 
-	fmt.Println("[DeviceTest] === Test Complete ===\n")
+	fmt.Println("[DeviceTest] === Test Complete ===")
 }

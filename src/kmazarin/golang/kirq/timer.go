@@ -1,30 +1,9 @@
-
 package kirq
 
 import (
 	"sync/atomic"
 	"unsafe"
 )
-
-// getAsyncPreemptAddr is provided by main package via go:linkname.
-// Returns the address of runtime.asyncPreempt from RuntimeConfig,
-// populated by Cardinal at boot time.
-func getAsyncPreemptAddr() uintptr
-
-// getReadyForAsyncPreemptAddr is provided by main package via go:linkname.
-// Returns the address of the readyForAsyncPreempt flag in kmazarin,
-// which controls whether timer IRQs should trigger async preemption.
-func getReadyForAsyncPreemptAddr() uintptr
-
-// processDeadlines is NO LONGER CALLED from timer IRQ context.
-// Instead, the timer IRQ handler sets deadlinePending flag,
-// and the deadline bottom half processor calls ProcessDeadlines
-// in safe Go goroutine context.
-//
-// This linkname is kept for reference but is no longer used.
-//
-//go:linkname processDeadlines main.ProcessDeadlines
-func processDeadlines()
 
 // timerFrequency caches the counter frequency (read once at initialization)
 // Default to 62.5MHz for safety if not initialized
@@ -183,17 +162,6 @@ func rearmTimer(ticks int32) {
 	// Assembly: MSR CNTV_TVAL_EL0, R0
 	asm_rearmTimer(uint64(val))
 }
-
-// asm_rearmTimer is implemented in timer_arm64.s
-func asm_rearmTimer(ticks uint64)
-
-// asm_readCntfrqEl0 is implemented in timer_arm64.s
-// Reads CNTFRQ_EL0 (Counter Frequency Register) and returns the timer frequency in Hz
-func asm_readCntfrqEl0() uint32
-
-// asm_readCntvctEl0 is implemented in timer_arm64.s
-// Reads CNTVCT_EL0 (Counter Value Register) and returns the current counter value
-func asm_readCntvctEl0() uint64
 
 // GetTimerFrequency returns the cached timer frequency in Hz
 // Used by syscall handlers that need to convert counter values to time

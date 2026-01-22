@@ -1,17 +1,4 @@
-
 package kirq
-
-import (
-	_ "unsafe" // Required for //go:linkname directives
-)
-
-// breadcrumbString is provided by main package via linkname
-// Used for direct UART output to avoid console recursion in panic paths
-func breadcrumbString(s string)
-
-// breadcrumbHex is provided by main package via linkname
-// Writes a 64-bit hex value directly to UART
-func breadcrumbHex(val uint64)
 
 // PreemptInfo contains call injection information for async preemption
 // Returned by IRQ handlers that want to trigger preemption

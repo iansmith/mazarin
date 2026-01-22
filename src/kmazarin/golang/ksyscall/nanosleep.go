@@ -1,22 +1,9 @@
-
 package ksyscall
 
 import (
 	"kmazarin/kirq"
 	"unsafe"
 )
-
-// GetCurrentThread is provided by main package via go:linkname.
-// Returns the current thread index.
-func GetCurrentThread() uintptr
-
-// AddDeadline is provided by main package via go:linkname.
-// Adds a deadline to the queue. Returns false if queue not initialized.
-func AddDeadline(deadline uint64, threadIdx int32) bool
-
-// ThreadBlockSleep is provided by main package via go:linkname.
-// Marks the current thread as sleeping and returns the next ready thread index.
-func ThreadBlockSleep() uintptr
 
 // SyscallNanosleep implements the nanosleep(2) syscall
 // Sleeps for the requested duration using the deadline queue.
@@ -37,8 +24,9 @@ func SyscallNanosleep(req, rem, _, _, _, _ uint64) int64 {
 	seconds := ts[0]
 	nanoseconds := ts[1]
 
-	// Get current thread index
-	currentIdx := int32(GetCurrentThread())
+	// Get current thread TID (not index!)
+	// AddDeadline uses WakeThreadAction which calls FindById, so it needs the TID
+	currentTID := int32(GetCurrentThreadTID())
 
 	// Get timer frequency
 	frequency := uint64(kirq.GetTimerFrequency())
@@ -67,7 +55,7 @@ func SyscallNanosleep(req, rem, _, _, _, _ uint64) int64 {
 	deadline := currentTick + ticks
 
 	// Try to add to deadline queue
-	added := AddDeadline(deadline, currentIdx)
+	added := AddDeadline(deadline, currentTID)
 	if !added {
 		// Deadline queue not initialized - fall back to yield
 		nextThread := ThreadFindReady()

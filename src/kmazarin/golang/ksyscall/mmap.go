@@ -84,9 +84,6 @@ func SetUserspaceActive() {
 	atomic.StoreUint32(&userspaceActive, 1)
 }
 
-// getRuntimeConfig is provided by main package via go:linkname.
-func getRuntimeConfig() interface{}
-
 // Linux mmap flags
 const (
 	_MAP_FIXED = 0x10

@@ -1,3 +1,4 @@
+//go:build !test_stubs
 // abi_stubs_arm64.s - ABI0 entry points for ksyscall functions
 //
 // TODO: This is a WORKAROUND for function pointer calls via the syscall table.

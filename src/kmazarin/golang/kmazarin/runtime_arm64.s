@@ -1,3 +1,5 @@
+//go:build !test_stubs
+
 
 // runtime_arm64.s - Runtime support functions for kmazarin
 

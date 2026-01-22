@@ -55,7 +55,7 @@ var (
 // ============================================================================
 
 var (
-	deadlinePending uint32 // Flag: deadlines need processing
+	DeadlinePending uint32 // Flag: deadlines need processing
 )
 
 // ============================================================================
@@ -128,7 +128,7 @@ func eventPoller() {
 		}
 
 		// Check deadline flag
-		if atomic.SwapUint32(&deadlinePending, 0) == 1 {
+		if atomic.SwapUint32(&DeadlinePending, 0) == 1 {
 			select {
 			case deadlineEventChan <- struct{}{}:
 			default:

@@ -1,80 +1,89 @@
+//go:build arm64
+
 package ds
 
-// StaticRingBuf is a circular buffer with fixed capacity that supports "holes" (plucked elements).
-// Uses InUse markers to track which slots contain valid data vs holes.
+// StaticRingBuf is a low-level circular buffer for small comparable types.
+// Supports "holes" (plucked elements) for efficient removal from middle.
+// Uses InUse markers to track valid slots vs holes.
+//
+// This is an internal primitive. Use StaticQueue for the public API.
 //
 // ZERO VALUE IS READY TO USE with backing arrays:
 //
 //	var bufData [256]int16
 //	var bufInUse [256]bool
-//	var buf = StaticRingBuf[int16]{Data: bufData[:], InUse: bufInUse[:]}
-type StaticRingBuf[T comparable] struct {
-	Data  []T    // Slice backed by static array
-	InUse []bool // Slice backed by static array (true = slot has valid data)
+//	var buf = staticRingBuf[int16]{data: bufData[:], inUse: bufInUse[:]}
+type staticRingBuf[T comparable] struct {
+	data  []T    // Slice backed by static array (internal)
+	inUse []bool // Slice backed by static array (internal)
 	head  int    // Index of front element
 	tail  int    // Index of next slot to fill
 	count int    // Number of in-use elements (not including holes)
 }
 
-// Push adds value to the back of the buffer.
+// push adds value to the back of the buffer.
 // Panics if the buffer is full.
-func (rb *StaticRingBuf[T]) Push(value T) {
-	if rb.count >= len(rb.Data) {
-		panic("StaticRingBuf overflow: capacity exceeded")
+//
+//go:nosplit
+func (rb *staticRingBuf[T]) push(value T) {
+	if rb.count >= len(rb.data) {
+		panic("staticRingBuf overflow: capacity exceeded")
 	}
 
 	// Find next free slot from tail
-	// We need to skip holes and find an unused slot
 	attempts := 0
-	for rb.InUse[rb.tail] && attempts < len(rb.Data) {
-		rb.tail = (rb.tail + 1) % len(rb.Data)
+	for rb.inUse[rb.tail] && attempts < len(rb.data) {
+		rb.tail = (rb.tail + 1) % len(rb.data)
 		attempts++
 	}
 
-	if attempts >= len(rb.Data) {
-		panic("StaticRingBuf overflow: no free slots")
+	if attempts >= len(rb.data) {
+		panic("staticRingBuf overflow: no free slots")
 	}
 
-	rb.Data[rb.tail] = value
-	rb.InUse[rb.tail] = true
-	rb.tail = (rb.tail + 1) % len(rb.Data)
+	rb.data[rb.tail] = value
+	rb.inUse[rb.tail] = true
+	rb.tail = (rb.tail + 1) % len(rb.data)
 	rb.count++
 }
 
-// Pop removes and returns the front element, skipping holes.
+// pop removes and returns the front element, skipping holes.
 // Panics if the buffer is empty.
-func (rb *StaticRingBuf[T]) Pop() T {
+//
+//go:nosplit
+func (rb *staticRingBuf[T]) pop() T {
 	if rb.count == 0 {
-		panic("StaticRingBuf underflow: pop from empty buffer")
+		panic("staticRingBuf underflow: pop from empty buffer")
 	}
 
 	// Skip holes to find next valid element
 	attempts := 0
-	for !rb.InUse[rb.head] && attempts < len(rb.Data) {
-		rb.head = (rb.head + 1) % len(rb.Data)
+	for !rb.inUse[rb.head] && attempts < len(rb.data) {
+		rb.head = (rb.head + 1) % len(rb.data)
 		attempts++
 	}
 
-	if attempts >= len(rb.Data) || !rb.InUse[rb.head] {
-		panic("StaticRingBuf corruption: count > 0 but no valid elements")
+	if attempts >= len(rb.data) || !rb.inUse[rb.head] {
+		panic("staticRingBuf corruption: count > 0 but no valid elements")
 	}
 
-	value := rb.Data[rb.head]
-	rb.InUse[rb.head] = false
-	rb.head = (rb.head + 1) % len(rb.Data)
+	value := rb.data[rb.head]
+	rb.inUse[rb.head] = false
+	rb.head = (rb.head + 1) % len(rb.data)
 	rb.count--
 	return value
 }
 
-// Pluck finds an element by value, marks it as not in use (creating a hole), and returns true.
+// pluck finds an element by value, marks it as not in use (creating a hole), and returns true.
 // Returns false if element is not found.
-// This allows removing an element from the middle of the queue (e.g., when blocking a thread).
-func (rb *StaticRingBuf[T]) Pluck(value T) bool {
+//
+//go:nosplit
+func (rb *staticRingBuf[T]) pluck(value T) bool {
 	// Scan entire buffer looking for matching value
-	for i := 0; i < len(rb.Data); i++ {
-		if rb.InUse[i] && rb.Data[i] == value {
+	for i := 0; i < len(rb.data); i++ {
+		if rb.inUse[i] && rb.data[i] == value {
 			// Found it - mark as hole
-			rb.InUse[i] = false
+			rb.inUse[i] = false
 			rb.count--
 			return true
 		}
@@ -82,22 +91,39 @@ func (rb *StaticRingBuf[T]) Pluck(value T) bool {
 	return false
 }
 
-// Size returns the number of in-use elements (not including holes).
-// Implements Sizer interface.
-func (rb *StaticRingBuf[T]) Size() int {
+// size returns the number of in-use elements (not including holes).
+//
+//go:nosplit
+func (rb *staticRingBuf[T]) size() int {
 	return rb.count
 }
 
-// IsEmpty returns true if there are no in-use elements.
-func (rb *StaticRingBuf[T]) IsEmpty() bool {
+// isEmpty returns true if there are no in-use elements.
+//
+//go:nosplit
+func (rb *staticRingBuf[T]) isEmpty() bool {
 	return rb.count == 0
 }
 
-// Clear removes all elements and resets head/tail pointers.
-func (rb *StaticRingBuf[T]) Clear() {
-	for i := 0; i < len(rb.InUse); i++ {
-		rb.InUse[i] = false
+// clear removes all elements and resets head/tail pointers.
+//
+//go:nosplit
+func (rb *staticRingBuf[T]) clear() {
+	for i := 0; i < len(rb.inUse); i++ {
+		rb.inUse[i] = false
 	}
+	rb.head = 0
+	rb.tail = 0
+	rb.count = 0
+}
+
+// init initializes the ring buffer with backing arrays.
+// This is called by higher-level structures to set up the arrays.
+//
+//go:nosplit
+func (rb *staticRingBuf[T]) init(data []T, inUse []bool) {
+	rb.data = data
+	rb.inUse = inUse
 	rb.head = 0
 	rb.tail = 0
 	rb.count = 0

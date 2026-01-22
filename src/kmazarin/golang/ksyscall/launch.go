@@ -1,3 +1,4 @@
+
 // launch.go - Launch syscall implementation for loading and starting priests
 package ksyscall
 
@@ -8,7 +9,6 @@ import (
 	"kmazarin/fs/fat32"
 	"kmazarin/kmem"
 	"unsafe"
-	_ "unsafe" // for go:linkname
 )
 
 // Custom auxv types for Mazzy-specific values.
@@ -71,11 +71,44 @@ type elf64Phdr struct {
 	Align  uint64
 }
 
+// ELF64 section header
+type elf64Shdr struct {
+	Name      uint32
+	Type      uint32
+	Flags     uint64
+	Addr      uint64
+	Offset    uint64
+	Size      uint64
+	Link      uint32
+	Info      uint32
+	Addralign uint64
+	Entsize   uint64
+}
+
+// ELF64 symbol table entry
+type elf64Sym struct {
+	Name  uint32
+	Info  uint8
+	Other uint8
+	Shndx uint16
+	Value uint64
+	Size  uint64
+}
+
+// Section header types
+const (
+	SHT_NULL     = 0  // Inactive
+	SHT_SYMTAB   = 2  // Symbol table
+	SHT_STRTAB   = 3  // String table
+	SHT_DYNSYM   = 11 // Dynamic symbol table
+)
+
 // Process represents a loaded userspace process
 type Process struct {
-	EntryPoint uint64
-	StackTop   uint64
-	StackBase  uint64
+	EntryPoint       uint64
+	StackTop         uint64
+	StackBase        uint64
+	AsyncPreemptAddr uint64 // Address of runtime.asyncPreempt (0 if not found)
 }
 
 // currentProcess holds the currently loaded process (if any)
@@ -475,12 +508,15 @@ func SyscallLaunch(filenamePtr, _, _, _, _, _ uint64) int64 {
 
 	// Create a new thread for this process instead of jumping directly
 	// The thread will be added to the ready queue and scheduled by the kernel
-	tid := CreateUserspaceThread(proc.EntryPoint, proc.StackTop, processL0PA)
+	// Pass the asyncPreempt address extracted from ELF symbols
+	tid := CreateUserspaceThread(proc.EntryPoint, proc.StackTop, processL0PA, proc.AsyncPreemptAddr)
 
 	console.KWriteString("[Launch] Created thread TID=")
 	console.KPrintHex64(uint64(tid))
 	console.KWriteString(" for ")
 	console.KWriteString(filename)
+	console.KWriteString(" asyncPreempt=")
+	console.KPrintHex64(proc.AsyncPreemptAddr)
 	console.KWriteString("\r\n")
 
 	// Return to caller - the new thread will be scheduled later
@@ -621,10 +657,26 @@ func loadELF(data []byte, filename string) (*Process, error) {
 	}
 	console.KWriteString("(expect: e1 0a 00 f0 21 80 26 91 = ADRP x1,180000; ADD x1,x1,#0x9a0)\r\n")
 
+	// Find runtime.asyncPreempt symbol address for async preemption injection
+	// Note: Go 1.25+ uses .abi0 suffix for ABI0-compatible symbols
+	asyncPreemptAddr := findSymbolAddress(data, &hdr, "runtime.asyncPreempt.abi0")
+	if asyncPreemptAddr == 0 {
+		// Try without suffix (older Go versions)
+		asyncPreemptAddr = findSymbolAddress(data, &hdr, "runtime.asyncPreempt")
+	}
+	if asyncPreemptAddr != 0 {
+		console.KWriteString("[ELF] Found runtime.asyncPreempt at ")
+		console.KPrintHex64(asyncPreemptAddr)
+		console.KWriteString("\r\n")
+	} else {
+		console.KWriteString("[ELF] WARNING: runtime.asyncPreempt not found in symbol table\r\n")
+	}
+
 	return &Process{
-		EntryPoint: hdr.Entry,
-		StackTop:   stackTop,
-		StackBase:  stackBase,
+		EntryPoint:       hdr.Entry,
+		StackTop:         stackTop,
+		StackBase:        stackBase,
+		AsyncPreemptAddr: asyncPreemptAddr,
 	}, nil
 }
 
@@ -665,6 +717,122 @@ func parseProgramHeader(data []byte) elf64Phdr {
 		Memsz:  readU64LE(data[40:48]),
 		Align:  readU64LE(data[48:56]),
 	}
+}
+
+// parseSectionHeader extracts section header from raw bytes
+func parseSectionHeader(data []byte) elf64Shdr {
+	return elf64Shdr{
+		Name:      readU32LE(data[0:4]),
+		Type:      readU32LE(data[4:8]),
+		Flags:     readU64LE(data[8:16]),
+		Addr:      readU64LE(data[16:24]),
+		Offset:    readU64LE(data[24:32]),
+		Size:      readU64LE(data[32:40]),
+		Link:      readU32LE(data[40:44]),
+		Info:      readU32LE(data[44:48]),
+		Addralign: readU64LE(data[48:56]),
+		Entsize:   readU64LE(data[56:64]),
+	}
+}
+
+// parseSymbol extracts a symbol table entry from raw bytes
+func parseSymbol(data []byte) elf64Sym {
+	return elf64Sym{
+		Name:  readU32LE(data[0:4]),
+		Info:  data[4],
+		Other: data[5],
+		Shndx: readU16LE(data[6:8]),
+		Value: readU64LE(data[8:16]),
+		Size:  readU64LE(data[16:24]),
+	}
+}
+
+// findSymbolAddress searches for a symbol by name and returns its address.
+// Returns 0 if not found.
+func findSymbolAddress(elfData []byte, hdr *elf64Header, symbolName string) uint64 {
+	if hdr.Shnum == 0 || hdr.Shoff == 0 {
+		return 0 // No section headers
+	}
+
+	// Find the symbol table and its associated string table
+	var symtab *elf64Shdr
+	var strtab *elf64Shdr
+
+	for i := uint16(0); i < hdr.Shnum; i++ {
+		shdrOffset := hdr.Shoff + uint64(i)*uint64(hdr.Shentsize)
+		if shdrOffset+uint64(hdr.Shentsize) > uint64(len(elfData)) {
+			continue
+		}
+
+		shdr := parseSectionHeader(elfData[shdrOffset:])
+
+		if shdr.Type == SHT_SYMTAB {
+			// Found symbol table - copy to heap so we can reference it
+			symtabCopy := shdr
+			symtab = &symtabCopy
+		}
+	}
+
+	if symtab == nil {
+		return 0 // No symbol table found
+	}
+
+	// Get the associated string table (symtab.Link points to it)
+	if symtab.Link >= uint32(hdr.Shnum) {
+		return 0 // Invalid string table index
+	}
+
+	strtabOffset := hdr.Shoff + uint64(symtab.Link)*uint64(hdr.Shentsize)
+	if strtabOffset+uint64(hdr.Shentsize) > uint64(len(elfData)) {
+		return 0
+	}
+	strtabHdr := parseSectionHeader(elfData[strtabOffset:])
+	strtab = &strtabHdr
+
+	// Validate string table bounds
+	if strtab.Offset+strtab.Size > uint64(len(elfData)) {
+		return 0
+	}
+	strtabData := elfData[strtab.Offset : strtab.Offset+strtab.Size]
+
+	// Validate symbol table bounds
+	if symtab.Offset+symtab.Size > uint64(len(elfData)) {
+		return 0
+	}
+	symtabData := elfData[symtab.Offset : symtab.Offset+symtab.Size]
+
+	// Iterate through symbols
+	symSize := uint64(24) // sizeof(elf64Sym)
+	numSyms := symtab.Size / symSize
+
+	for i := uint64(0); i < numSyms; i++ {
+		symOffset := i * symSize
+		if symOffset+symSize > uint64(len(symtabData)) {
+			break
+		}
+
+		sym := parseSymbol(symtabData[symOffset:])
+
+		// Get symbol name from string table
+		if sym.Name >= uint32(len(strtabData)) {
+			continue
+		}
+
+		// Find the null-terminated string
+		nameStart := sym.Name
+		nameEnd := nameStart
+		for nameEnd < uint32(len(strtabData)) && strtabData[nameEnd] != 0 {
+			nameEnd++
+		}
+
+		name := string(strtabData[nameStart:nameEnd])
+
+		if name == symbolName {
+			return sym.Value
+		}
+	}
+
+	return 0 // Symbol not found
 }
 
 // loadSegment loads a single ELF segment into memory
@@ -910,22 +1078,6 @@ func writeStackU64(stackBase, stackTop uint64, kernelVA uintptr, addr uint64, va
 	}
 }
 
-// jumpToUserspace performs the transition from kernel (EL1) to userspace (EL0)
-// This is implemented in assembly
-func jumpToUserspace(entryPoint, stackPtr uint64)
-
-// EnableTimerIRQ is provided by main package via go:linkname
-// Enables the timer IRQ for preemption before jumping to userspace
-//
-//go:linkname EnableTimerIRQ main.EnableTimerIRQ
-func EnableTimerIRQ()
-
-// CreateUserspaceThread is provided by main package via go:linkname
-// Allocates a new thread for a userspace process and adds it to the ready queue
-//
-//go:linkname CreateUserspaceThread main.CreateUserspaceThread
-func CreateUserspaceThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr) int16
-
 // Helper functions for reading little-endian values
 func readU16LE(b []byte) uint16 {
 	return uint16(b[0]) | uint16(b[1])<<8
@@ -945,10 +1097,6 @@ func readU64LE(b []byte) uint64 {
 func uintptrToPtr(p uintptr) *byte {
 	return (*byte)(unsafePointer(p))
 }
-
-// unsafePointer is a helper to convert uintptr to pointer
-//go:linkname unsafePointer runtime.noescape
-func unsafePointer(p uintptr) *byte
 
 // elfError represents an ELF parsing error
 type elfError struct {
