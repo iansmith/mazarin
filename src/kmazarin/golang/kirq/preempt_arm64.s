@@ -1,4 +1,6 @@
 
+//go:build !test_stubs
+
 #include "textflag.h"
 
 // TimerIRQHandlerAsm is the pure assembly timer IRQ handler.
@@ -237,11 +239,14 @@ g_not_nil:
 	// Step 4: Validate g pointer
 	// ========================================================================
 	// Check that g is in kernel memory range (high 16 bits == 0xFFFF)
+	// For userspace threads, g points to userspace memory - we skip the
+	// Go runtime preemption (g.preempt, g.stackguard0) but still track
+	// OS-level thread preemption time.
 	LSR	$48, R4, R5
 	MOVD	$0xFFFF, R6
 	CMP	R5, R6
 	BEQ	g_in_kernel
-	B	timer_return  // g not in kernel memory
+	B	g_in_userspace  // g in userspace - skip Go runtime preemption, check thread preemption
 g_in_kernel:
 
 	// ========================================================================
@@ -292,7 +297,7 @@ g_in_kernel:
 	// R4 = current g pointer (validated above)
 
 	// Load currentThread pointer directly (no index calculation needed)
-	MOVD	main·currentThread(SB), R7  // *Thread
+	MOVD	main·CurrentThread(SB), R7  // *Thread
 	CBNZ	R7, thread_not_nil
 	B	timer_return  // currentThread is nil
 thread_not_nil:
@@ -306,15 +311,15 @@ thread_not_nil:
 
 	// ========================================================================
 	// G changed! Go runtime switched goroutines internally.
-	// Reset: store current g as LastSeenG, store current tick as StartTick
+	// Reset: store current g as LastSeenG
+	// But DON'T reset StartTick - we still want to track total thread time
+	// for OS-level preemption of priests waiting in ready queue.
 	// ========================================================================
 	MOVD	R4, 312(R7)  // currentThread.LastSeenG = current g
 
-	// Read current counter: MRS X8, CNTVCT_EL0
-	WORD	$0xD53BE048
-	MOVD	R8, 320(R7)  // currentThread.StartTick = current tick
-
-	B	timer_return  // No preemption needed, just reset
+	// Don't reset StartTick - continue tracking total thread elapsed time
+	// Fall through to same_goroutine to check thread preemption threshold
+	B	same_goroutine
 
 same_goroutine:
 	// Same g - check elapsed time
@@ -346,9 +351,10 @@ same_goroutine:
 	MOVW	R8, ·NeedsAsyncPreempt(SB)
 
 check_thread_preempt:
-	// Check against thread preemption threshold (10 intervals = 100ms)
+	// Check against thread preemption threshold (1 interval = 10ms)
+	// Reduced from 10 intervals (100ms) to allow priests to be scheduled sooner
 	// R9 still contains elapsed intervals
-	CMP	$10, R9
+	CMP	$1, R9
 	BLT	timer_return  // Under thread threshold, done
 
 	// Elapsed >= thread threshold: signal thread preemption needed
@@ -363,11 +369,60 @@ init_start_tick:
 	MOVD	R8, 320(R7)  // currentThread.StartTick = current tick
 	MOVD	R4, 312(R7)  // currentThread.LastSeenG = current g
 	// Fall through to timer_return
+	B	timer_return
+
+// ========================================================================
+// Userspace thread preemption path
+// ========================================================================
+// When a userspace thread is running, its g pointer is in low memory.
+// We skip the Go runtime preemption (g.preempt, g.stackguard0) because:
+// 1. We can't safely access userspace memory from IRQ context
+// 2. Userspace threads have their own Go runtime that handles cooperative preemption
+// But we still need OS-level thread preemption so other priests get scheduled.
+g_in_userspace:
+	// Load currentThread pointer directly
+	MOVD	main·CurrentThread(SB), R7  // *Thread
+	CBZ	R7, timer_return  // currentThread is nil
+
+	// Load StartTick: offset 320
+	MOVD	320(R7), R8  // R8 = currentThread.StartTick
+	CBZ	R8, userspace_init_tick  // Not initialized yet
+
+	// Read current counter: MRS X9, CNTVCT_EL0
+	WORD	$0xD53BE049
+
+	// Calculate elapsed ticks
+	SUB	R8, R9, R9  // R9 = current - start = elapsed
+
+	// Convert to timer intervals (divide by ticks per 10ms)
+	MOVD	·SystemTimerFrequency(SB), R8
+	MOVD	$100, R10
+	UDIV	R10, R8, R8  // R8 = ticks per 10ms
+	CBZ	R8, timer_return  // Avoid divide by zero
+
+	UDIV	R8, R9, R9  // R9 = elapsed intervals (10ms units)
+
+	// Check against thread preemption threshold (1 interval = 10ms)
+	// For userspace threads, we only care about OS-level thread preemption
+	CMP	$1, R9
+	BLT	timer_return  // Under threshold, done
+
+	// Elapsed >= threshold: signal thread preemption needed
+	MOVW	$1, R8
+	MOVW	R8, ·NeedsThreadPreempt(SB)
+	B	timer_return
+
+userspace_init_tick:
+	// Initialize StartTick for userspace thread
+	// Read current counter: MRS X8, CNTVCT_EL0
+	WORD	$0xD53BE048
+	MOVD	R8, 320(R7)  // currentThread.StartTick = current tick
+	B	timer_return
 
 timer_return:
 	// Set deadline flag to trigger bottom half processing
 	// This allows deadline queue processing to happen in safe Go context
 	// instead of from IRQ context
 	MOVW	$1, R8
-	MOVW	R8, main·deadlinePending(SB)
+	MOVW	R8, main·DeadlinePending(SB)
 	RET

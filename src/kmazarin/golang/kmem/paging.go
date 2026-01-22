@@ -271,22 +271,60 @@ func SwitchToProcessPageTable() {
 	console.KWriteString("\r\n")
 }
 
-// SwitchTTBR0ToPA switches TTBR0 to the specified physical address.
+// SwitchTTBR0ToPA switches TTBR0 to the specified physical address with ASID=0.
+// DEPRECATED: Use SwitchTTBR0WithASID for proper ASID handling.
 // This is used for context switching between threads with different page tables.
 // Performs full TLB invalidation to ensure new mappings take effect.
+// CRITICAL: Also updates processL0PA so page fault handlers use the correct page table.
 //
 //go:nosplit
 func SwitchTTBR0ToPA(l0PA uintptr) {
+	SwitchTTBR0WithASID(l0PA, 0)
+}
+
+// SwitchTTBR0WithASID switches TTBR0 to the specified physical address with ASID.
+// ASID (Address Space Identifier) allows TLB entries from different processes to
+// coexist, avoiding full TLB flush on every context switch.
+//
+// On ARM64, TTBR0 format is:
+//   Bits [63:48]: ASID (16-bit)
+//   Bits [47:1]:  Physical address of page table
+//   Bit [0]:      CnP (Common not Private) - we use 0
+//
+// CRITICAL: Also updates processL0PA so page fault handlers use the correct page table.
+//
+//go:nosplit
+func SwitchTTBR0WithASID(l0PA uintptr, asid uint16) {
 	if l0PA == 0 {
 		return // No page table to switch to
 	}
 
+	// CRITICAL: Update processL0PA BEFORE switching hardware TTBR0.
+	// This ensures page fault handlers (which use processL0PA) will update
+	// the correct page table for the currently running thread.
+	processL0PA = l0PA
+
+	// Encode ASID in upper 16 bits of TTBR0
+	// PA must be in bits [47:1], ASID in bits [63:48]
+	ttbr0Val := (uint64(asid) << 48) | uint64(l0PA)
+
 	// Linux-style TTBR0 switch sequence
-	dsbISH()                   // Memory barrier before page table operations
-	writeTTBR0Asm(uint64(l0PA)) // Write new TTBR0 value
-	tlbiVMALLE1IS()            // Invalidate all TLB entries
-	dsbISH()                   // Barrier to ensure TLB invalidation completes
-	isbSY()                    // Instruction barrier
+	dsbISH()                // Memory barrier before page table operations
+	writeTTBR0Asm(ttbr0Val) // Write new TTBR0 value with ASID
+
+	// With ASID properly set, we do NOT need to flush TLB on context switch!
+	// TLB entries are tagged with their ASID, so entries from different processes
+	// can coexist in the TLB. The hardware automatically ignores entries with
+	// non-matching ASIDs.
+	//
+	// TLB flush is only needed when:
+	// 1. A page mapping changes (flush that specific VA+ASID)
+	// 2. ASID is recycled (we only have MaxPriests=4, so unlikely)
+	//
+	// NOTE: TTBR1 (kernel) does not use ASID - it's shared by all processes.
+
+	dsbISH() // Barrier to ensure TTBR0 write completes
+	isbSY()  // Instruction barrier for new translations to take effect
 }
 
 // paToVA converts a physical address to a virtual address using identity mapping.

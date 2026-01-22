@@ -7,6 +7,7 @@ import (
 	"kmazarin/kirq"
 	"kmazarin/kmem"
 	"kmazarin/util"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -39,12 +40,13 @@ type ThreadState int8
 
 // Thread states enumeration
 const (
-	ThreadFree         ThreadState = 0 // Slot available
-	ThreadRunning      ThreadState = 1 // Currently executing
-	ThreadReady        ThreadState = 2 // Runnable, waiting to be scheduled
-	ThreadBlockedFutex ThreadState = 3 // Blocked on futex_wait
-	ThreadSleeping     ThreadState = 4 // Blocked on nanosleep
-	ThreadExited       ThreadState = 5 // Thread has exited (being cleaned up)
+	ThreadFree            ThreadState = 0 // Slot available
+	ThreadRunning         ThreadState = 1 // Currently executing
+	ThreadReady           ThreadState = 2 // Runnable, waiting to be scheduled
+	ThreadBlockedFutex    ThreadState = 3 // Blocked on futex_wait
+	ThreadSleeping        ThreadState = 4 // Blocked on nanosleep
+	ThreadExited          ThreadState = 5 // Thread has exited (being cleaned up)
+	ThreadBlockedSoftIRQ  ThreadState = 6 // Blocked waiting for soft IRQ
 )
 
 // MaxPriests is the maximum number of priest processes (userspace programs)
@@ -75,6 +77,7 @@ type PriestId int16
 type Thread struct {
 	State         ThreadState // ThreadRunning, ThreadReady, etc.
 	TID           ThreadId    // Unique thread ID from threadIdAllocator (0-31)
+	PID           PriestId    // Priest (process) ID for ASID (-1 = kernel thread)
 	FutexAddr     uint64      // Address being waited on (for ThreadBlockedFutex)
 	MPtr          uint64      // Pointer to Go M struct
 	GPtr          uint64      // Pointer to Go g struct (g0 for this M)
@@ -90,7 +93,9 @@ type Thread struct {
 
 // Id implements the ds.Ider interface
 // Returns the TID (unique thread ID), NOT the slot index
-func (t Thread) Id() int32 {
+// Id returns the thread's ID as int32.
+// Uses pointer receiver to avoid copying the entire Thread struct (368 bytes).
+func (t *Thread) Id() int32 {
 	return int32(t.TID)
 }
 
@@ -108,10 +113,11 @@ var sleepingQueueInUse [MaxThreads]bool  // Tracks holes in sleeping queue
 
 // ID allocator backing arrays - statically allocated
 var threadIdStackData [MaxThreads]ThreadId // Backing array for thread ID allocator
+var priestIdStackData [MaxPriests]PriestId // Backing array for priest ID allocator
 
 // Data structures - will be initialized in InitThreads()
 // DO NOT initialize slices here - Go's initialization order causes them to be length 0!
-var threadList ds.StaticList[Thread] // StaticList[Thread] stores Thread VALUES
+var threadList ds.StaticList[*Thread, Thread] // StaticList stores Thread VALUES, returns pointers
 
 var readyQueue ds.StaticQueue[ThreadId]
 
@@ -120,17 +126,32 @@ var blockedQueue ds.StaticQueue[ThreadId]
 var sleepingQueue ds.StaticQueue[ThreadId]
 
 // ID allocators - initialized in InitIdAllocators()
-var threadIdAllocator *ds.StaticAllocator[ThreadId] // Manages unique thread IDs (0..MaxThreads-1)
+var threadIdAllocator ds.StaticAllocator[ThreadId] // Manages unique thread IDs (0..MaxThreads-1)
+var priestIdAllocator ds.StaticAllocator[PriestId] // Manages unique priest IDs (0..MaxPriests-1)
+
+// ========== Scheduler Lock ==========
+
+// schedulerLock protects ALL scheduler structures:
+// - threadList, readyQueue, blockedQueue, sleepingQueue
+// - threadIdAllocator, priestIdAllocator
+// - CurrentThreadIdx, CurrentThread
+// - All thread state transitions
+//
+// LOCK DISCIPLINE: This single lock prevents nested locking deadlocks.
+// All scheduler operations must acquire this lock, never individual structure locks.
+var schedulerLock ds.Spinlock
 
 // ========== Thread State ==========
 
 // Current thread index (-1 = none)
-var currentThreadIdx int32 = -1
+var CurrentThreadIdx int32 = -1
 
-// Current thread pointer (nil = none)
-// This is maintained alongside currentThreadIdx for assembly access.
-// Assembly can read this pointer directly instead of calculating from index.
-var currentThread *Thread = nil
+// CurrentThread is the current thread pointer (nil = none)
+// Uses unsafe.Pointer to avoid GC write barriers in exception context.
+// MUST use atomic.LoadPointer/StorePointer for all accesses.
+// Direct assignments like "CurrentThread = x" will trigger write barriers!
+// Exported for access from assembly (kirq package timer handler).
+var CurrentThread unsafe.Pointer // Points to *Thread
 
 // Global tick counter (incremented by timer)
 var globalTickCounter uint64 = 0
@@ -181,7 +202,6 @@ func setSyscallSPSRInternal(spsr uint64) {
 // Called by clone to get the child's return address
 //
 //go:noinline
-//go:linkname GetSyscallELR kmazarin/ksyscall.GetSyscallELR
 func GetSyscallELR() uint64 {
 	return syscallELR
 }
@@ -190,7 +210,6 @@ func GetSyscallELR() uint64 {
 // Called by clone to get the child's processor state
 //
 //go:noinline
-//go:linkname GetSyscallSPSR kmazarin/ksyscall.GetSyscallSPSR
 func GetSyscallSPSR() uint64 {
 	return syscallSPSR
 }
@@ -231,14 +250,16 @@ func SetSyscallSwitchTarget(target uintptr) {
 	syscallSwitchTarget = target
 }
 
-// InitIdAllocators initializes the ID allocators for thread IDs.
+// InitIdAllocators initializes the ID allocators for thread IDs and priest IDs.
 // Must be called before any threads are created.
 //
 //go:nosplit
 func InitIdAllocators() {
-	// Initialize thread ID allocator with backing array
-	threadIdAllocator = ds.NewStaticAllocator(threadIdStackData[:])
-	threadIdAllocator.Init() // Seeds with IDs 0..(MaxThreads-1)
+	// Initialize thread ID allocator with backing array (initializes and seeds with IDs 0..MaxThreads-1)
+	threadIdAllocator.Init(threadIdStackData[:])
+
+	// Initialize priest ID allocator with backing array (initializes and seeds with IDs 0..MaxPriests-1)
+	priestIdAllocator.Init(priestIdStackData[:])
 }
 
 // InitThreads initializes the thread management system
@@ -251,6 +272,10 @@ func InitThreads() {
 		return
 	}
 
+	// Initialize spinlock timing based on detected timer frequency
+	// This must happen before any spinlocks are used (including in ID allocators)
+	ds.InitSpinlockTiming(timerFrequencyHz)
+
 	// Initialize ID allocators first
 	InitIdAllocators()
 
@@ -259,6 +284,14 @@ func InitThreads() {
 	firstThreadId := threadIdAllocator.Acquire()
 	if firstThreadId != 0 {
 		panic("FATAL: First thread ID is not 0")
+	}
+
+	// CRITICAL VERIFICATION: The first priest ID must be 0 (for the kernel's initial priest)
+	// This will become important with ASID and preemptible kernel threads.
+	// If this is not 0, the ID allocator initialization is broken.
+	firstPriestId := priestIdAllocator.Acquire()
+	if firstPriestId != 0 {
+		panic("FATAL: First priest ID is not 0")
 	}
 
 	// CRITICAL: Initialize data structure slices from backing arrays
@@ -291,10 +324,11 @@ func InitThreads() {
 	// Set up thread 0 via the returned pointer
 	t0.State = ThreadRunning
 	t0.TID = firstThreadId // Use the acquired ID (verified to be 0)
+	t0.PID = -1            // Kernel thread, no ASID needed (PageTableL0PA = 0)
 	t0.StartTick = globalTickCounter
 
-	currentThreadIdx = 0
-	currentThread = t0
+	CurrentThreadIdx = 0
+	atomic.StorePointer(&CurrentThread, unsafe.Pointer(t0))
 	threadsInitialized = true
 }
 
@@ -313,12 +347,19 @@ func InitDeadlineQueue() {
 //
 //go:nosplit
 //go:noinline
-//go:linkname AddDeadline kmazarin/ksyscall.AddDeadline
 func AddDeadline(deadline uint64, tid int16) bool {
 	if deadlineQueue == nil {
 		return false
 	}
-	action := NewWakeThreadAction(tid)
+	// Debug: show TID being added
+	Breadcrumb('[')
+	Breadcrumb('A')
+	Breadcrumb('d')
+	Breadcrumb(':')
+	Breadcrumb('0' + byte((tid/10)%10))
+	Breadcrumb('0' + byte(tid%10))
+	Breadcrumb(']')
+	action := NewWakeThreadAction(ThreadId(tid))
 	td := util.NewTimerDeadline(deadline, action)
 	deadlineQueue.Insert(td)
 	return true
@@ -344,19 +385,26 @@ func ProcessDeadlines() {
 // It processes deadlines and uses WFI to wait for the next interrupt.
 // Returns a pointer to a ready thread when one becomes available.
 //
-// CRITICAL: ProcessDeadlines and threadFindReadyIdx are protected by IRQ masking
-// because this loop runs OUTSIDE exception context. The timer handler also calls
-// ProcessDeadlines, so without protection we'd have re-entrant corruption.
+// CRITICAL: ProcessDeadlines and threadFindReadyIdx are protected by both DAIF
+// and schedulerLock because this loop runs OUTSIDE exception context. The timer
+// handler also calls ProcessDeadlines, so without protection we'd have re-entrant corruption.
 //
 //go:nosplit
-func IdleLoop() *Thread {
+func IdleLoop(sf *SchedulerFunc) *Thread {
 	for {
-		// Disable IRQs while checking deadlines and ready queue
-		// This prevents timer IRQ from re-entering ProcessDeadlines
-		savedDAIF := SaveAndDisableIRQs()
+		// Disable interrupts and acquire scheduler lock
+		savedDAIF := sf.DisableAndSaveDAIF()
+		schedulerLock.Lock()
+
 		ProcessDeadlines()
 		ready := threadFindReadyIdx()
-		RestoreIRQs(savedDAIF)
+
+		if sf.StateCheck != nil {
+			sf.StateCheck("idle-loop-check")
+		}
+
+		schedulerLock.Unlock()
+		sf.EnableAndRestoreDAIF(savedDAIF)
 
 		if ready != nil {
 			return ready
@@ -368,14 +416,12 @@ func IdleLoop() *Thread {
 // CloneThread creates a new thread for Go runtime's clone syscall.
 // Uses static allocation - NO heap allocation.
 //
-// CRITICAL SECTION: Modifies threadList, nextTID, readyQueue. Although currently
-// only called from SVC context (hardware IRQ masked), we explicitly disable IRQs
-// as defensive programming.
+// CRITICAL SECTION: Modifies threadList, nextTID, readyQueue. Protected by both
+// DAIF and schedulerLock for multi-core safety.
 //
 //go:nosplit
 //go:noinline
-//go:linkname CloneThread kmazarin/ksyscall.CloneThread
-func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int16 {
+func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) int16 {
 	// Breadcrumb at entry
 	Breadcrumb('~')
 
@@ -419,9 +465,25 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int16 {
 		Breadcrumb('?')  // Unexpected
 	}
 
+	// DEBUG: Print fn value using breadcrumbs
+	Breadcrumb('f')
+	Breadcrumb('n')
+	Breadcrumb('=')
+	for i := 60; i >= 0; i -= 4 {
+		nibble := (fn >> i) & 0xF
+		Breadcrumb(hexChars[nibble])
+	}
+	Breadcrumb(' ')
+
 	// BEGIN CRITICAL SECTION - protect thread allocation and state
 	Breadcrumb(']')
-	savedDAIF := SaveAndDisableIRQs()
+	var savedDAIF uint64
+	if sf != nil {
+		savedDAIF = sf.DisableAndSaveDAIF()
+	} else {
+		savedDAIF = SaveAndDisableIRQs()
+	}
+	schedulerLock.Lock()
 
 	// Allocate thread slot from static list (panics if exhausted)
 	// Returns (slot_index, *Thread)
@@ -432,40 +494,78 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int16 {
 
 	// Fill in thread context (via pointer)
 	t.TID = tid // Unique ID from allocator
-	t.State = ThreadReady
+	// CRITICAL: Set state to Running, NOT Ready!
+	// This thread will run immediately via SetSyscallSwitchTarget.
+	// DoContextSwitch will handle putting the parent (A) on ready queue.
+	t.State = ThreadRunning
 	t.FutexAddr = 0
 	t.MPtr = mp
 	t.GPtr = gp
 	t.EntryFunc = fn
-	t.StartTick = globalTickCounter
+	if sf != nil {
+		t.StartTick = sf.CurrentTime(0)
+	} else {
+		t.StartTick = ds.CurrentTime(0)
+	}
 	t.LastSeenG = gp
 	t.PreemptElapsed = 0 // Fresh thread, no elapsed time yet
 
-	// Add to ready queue (stores TID, not pointer)
-	readyQueue.Push(tid) // Panics if readyQueue exhausted
+	// CRITICAL: Inherit page table AND priest ID from parent thread!
+	// Without this, cloned threads have PageTableL0PA=0 and won't
+	// get TTBR0 switched when scheduled, causing page faults.
+	// PID (priest ID) is used as ASID for TLB tagging.
+	if CurrentThreadIdx >= 0 {
+		parent := threadList.Nth(int(CurrentThreadIdx))
+		if parent != nil {
+			t.PageTableL0PA = parent.PageTableL0PA
+			t.PID = parent.PID
+		}
+	}
+
+	// DO NOT add to ready queue - this thread runs immediately!
+	// The parent thread (A) will be added to ready queue by DoContextSwitch.
+
+	// Set up initial context for cloned thread (B)
+	// CRITICAL: B starts at entry function 'fn', NOT at returnAddr!
+	// This is pthread_create semantics, not fork semantics.
+	// Go runtime expects the new thread to start at the entry function.
+	t.Context.X[0] = 0     // First argument to fn (or could be used for return value)
+	t.Context.SP = stack   // New stack
+	t.Context.ELR = fn     // START at entry function, not "return from clone"
+	t.Context.SPSR = spsr  // Same processor state as parent
+	t.Context.X[28] = gp   // g register valid immediately
+
+	if sf != nil && sf.StateCheck != nil {
+		sf.StateCheck("clone-thread-created")
+	}
 
 	// END CRITICAL SECTION
-	RestoreIRQs(savedDAIF)
+	schedulerLock.Unlock()
+	if sf != nil {
+		sf.EnableAndRestoreDAIF(savedDAIF)
+	} else {
+		RestoreIRQs(savedDAIF)
+	}
 
-	// Set up initial context for cloned thread
-	t.Context.X[0] = 0         // Clone returns 0 to child
-	t.Context.SP = stack       // New stack
-	t.Context.ELR = returnAddr // Return to instruction after SVC
-	t.Context.SPSR = spsr      // Same processor state as parent
-	t.Context.X[28] = gp       // g register valid immediately
-
-	// NOTE: The parent process already wrote mp, gp, fn to the stack before
-	// calling clone. We don't need to write them again here - doing so would
-	// fail if PAN (Privileged Access Never) is enabled since we can't write
-	// to userspace memory from kernel mode.
+	// CRITICAL: Tell the syscall return path to switch to this new thread!
+	// After SyscallDispatch returns, assembly will:
+	// 1. Call GetSyscallSwitchTarget() - returns B's context pointer
+	// 2. Call DoContextSwitch(framePtr, B's context):
+	//    - Saves A's context from exception frame (including X0 = this TID)
+	//    - Marks A as Ready, adds A to ready queue
+	//    - Sets CurrentThread = B
+	// 3. Copy B's context to exception frame
+	// 4. ERET to B (starts at fn with new stack)
 	//
-	// The values are already on the stack at:
-	//   stack-8:  mp
-	//   stack-16: gp
-	//   stack-24: fn
-	//   stack-32: marker (1234)
+	// This ensures B runs immediately and A gets fair CPU scheduling.
+	SetSyscallSwitchTarget(uintptr(unsafe.Pointer(&t.Context)))
 
-	return tid
+	Breadcrumb('B') // B for "switching to B"
+
+	// Return TID - this becomes A's return value when A eventually runs.
+	// The exception frame's X0 will be set to this value, then saved to A's
+	// context when DoContextSwitch runs.
+	return int16(tid)
 }
 
 // ThreadExit marks a thread as exited and releases its slot.
@@ -473,15 +573,23 @@ func CloneThread(stack, returnAddr, spsr, mp, gp, fn uint64) int16 {
 //
 //go:nosplit
 func ThreadExit() uintptr {
-	if currentThreadIdx < 0 {
+	return threadExitImpl(&NormalSchedulerFunc)
+}
+
+// threadExitImpl is the internal implementation with sf for testing
+//
+//go:nosplit
+func threadExitImpl(sf *SchedulerFunc) uintptr {
+	if CurrentThreadIdx < 0 {
 		return 0 // No current thread
 	}
 
 	// BEGIN CRITICAL SECTION
-	savedDAIF := SaveAndDisableIRQs()
+	savedDAIF := sf.DisableAndSaveDAIF()
+	schedulerLock.Lock()
 
 	// Get current thread using StaticList API
-	t := threadList.Nth(int(currentThreadIdx))
+	t := threadList.Nth(int(CurrentThreadIdx))
 	if t != nil {
 		// Mark as exited
 		t.State = ThreadExited
@@ -492,22 +600,32 @@ func ThreadExit() uintptr {
 		threadIdAllocator.Release(t.TID)
 
 		// Release thread slot
-		threadList.Release(int(currentThreadIdx))
+		threadList.Release(int(CurrentThreadIdx))
 	}
 
 	// Find next ready thread
 	next := threadFindReadyIdx()
 	if next == nil {
-		RestoreIRQs(savedDAIF)
+		if sf.StateCheck != nil {
+			sf.StateCheck("thread-exit-no-next")
+		}
+		schedulerLock.Unlock()
+		sf.EnableAndRestoreDAIF(savedDAIF)
 		return 0 // No threads remain
 	}
 
 	// Mark next thread as running
 	next.State = ThreadRunning
+	next.StartTick = sf.CurrentTime(0)
 	// Find the slot index for the next thread
-	currentThreadIdx = int32(threadList.IndexOf(int32(next.TID)))
+	CurrentThreadIdx = int32(threadList.IndexOf(int32(next.TID)))
 
-	RestoreIRQs(savedDAIF)
+	if sf.StateCheck != nil {
+		sf.StateCheck("thread-exit-switch")
+	}
+
+	schedulerLock.Unlock()
+	sf.EnableAndRestoreDAIF(savedDAIF)
 	return uintptr(unsafe.Pointer(&next.Context))
 }
 
@@ -515,12 +633,23 @@ func ThreadExit() uintptr {
 // entryPoint: the PC to start executing at (ELR_EL1)
 // stackPtr: the user stack pointer (SP_EL0)
 // pageTableL0PA: physical address of the process's L0 page table
+// priestId: the priest (process) ID, used as ASID for TLB tagging
 // Returns the TID (thread ID) of the new thread.
 //
 //go:nosplit
 func CreateUserspaceThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr) int16 {
+	// Acquire a priest ID for this new userspace process
+	priestId := priestIdAllocator.Acquire()
+	return createUserspaceThreadImpl(&NormalSchedulerFunc, entryPoint, stackPtr, pageTableL0PA, priestId)
+}
+
+// createUserspaceThreadImpl is the internal implementation with sf for testing
+//
+//go:nosplit
+func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, pageTableL0PA uintptr, priestId PriestId) int16 {
 	// BEGIN CRITICAL SECTION - protect thread allocation and state
-	savedDAIF := SaveAndDisableIRQs()
+	savedDAIF := sf.DisableAndSaveDAIF()
+	schedulerLock.Lock()
 
 	// Allocate thread slot from static list (panics if exhausted)
 	_, t := threadList.Allocate()
@@ -530,9 +659,10 @@ func CreateUserspaceThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr) i
 
 	// Fill in thread state
 	t.TID = tid // Unique ID from allocator
+	t.PID = priestId // Priest (process) ID for ASID
 	t.State = ThreadReady
 	t.PageTableL0PA = pageTableL0PA
-	t.StartTick = globalTickCounter
+	t.StartTick = sf.CurrentTime(0)
 	t.PreemptElapsed = 0
 	t.FutexAddr = 0
 	t.MPtr = 0
@@ -552,10 +682,15 @@ func CreateUserspaceThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr) i
 	// Add to ready queue
 	readyQueue.Push(tid)
 
-	// END CRITICAL SECTION
-	RestoreIRQs(savedDAIF)
+	if sf.StateCheck != nil {
+		sf.StateCheck("create-userspace-thread-complete")
+	}
 
-	return tid
+	// END CRITICAL SECTION
+	schedulerLock.Unlock()
+	sf.EnableAndRestoreDAIF(savedDAIF)
+
+	return int16(tid)
 }
 
 // threadToIdx converts a Thread pointer to its index in the threads array.
@@ -566,14 +701,18 @@ func threadToIdx(t *Thread) int32 {
 	if t == nil {
 		return -1
 	}
-	base := uintptr(unsafe.Pointer(&threadListData[0]))
+	// Use threadList.Data slice which may point to test data or global threadListData
+	if len(threadList.Data) == 0 {
+		return -1
+	}
+	base := uintptr(unsafe.Pointer(&threadList.Data[0]))
 	ptr := uintptr(unsafe.Pointer(t))
 	if ptr < base {
 		return -1
 	}
 	offset := ptr - base
-	idx := int32(offset / unsafe.Sizeof(threadListData[0]))
-	if idx < 0 || idx >= MaxThreads {
+	idx := int32(offset / unsafe.Sizeof(threadList.Data[0]))
+	if idx < 0 || idx >= int32(len(threadList.Data)) {
 		return -1
 	}
 	return idx
@@ -594,7 +733,7 @@ func threadFindReadyIdx() *Thread {
 		// Pop next thread ID (FIFO order)
 		tid := readyQueue.Pop() // Panics if empty (should never happen due to IsEmpty check)
 
-		// Get thread pointer - points to Thread VALUE in threadListData
+		// Get thread pointer - FindById uses pointer receiver now, no copy
 		t := threadList.FindById(int32(tid))
 		if t == nil {
 			panic("readyQueue contains invalid TID")
@@ -654,17 +793,26 @@ func ThreadFindReady() uintptr {
 //
 //go:nosplit
 func ThreadBlockFutex(futexAddr uint64) uintptr {
-	if currentThreadIdx < 0 {
+	return threadBlockFutexImpl(&NormalSchedulerFunc, futexAddr)
+}
+
+// threadBlockFutexImpl is the internal implementation with sf for testing
+//
+//go:nosplit
+func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64) uintptr {
+	if CurrentThreadIdx < 0 {
 		return 0
 	}
 
 	// BEGIN CRITICAL SECTION - protect thread state modification
-	savedDAIF := SaveAndDisableIRQs()
+	savedDAIF := sf.DisableAndSaveDAIF()
+	schedulerLock.Lock()
 
 	// Get current thread using StaticList API
-	t := threadList.Nth(int(currentThreadIdx))
+	t := threadList.Nth(int(CurrentThreadIdx))
 	if t == nil {
-		RestoreIRQs(savedDAIF)
+		schedulerLock.Unlock()
+		sf.EnableAndRestoreDAIF(savedDAIF)
 		return 0
 	}
 
@@ -678,7 +826,11 @@ func ThreadBlockFutex(futexAddr uint64) uintptr {
 		// No ready thread - put current thread back in ready queue and don't block
 		// This will be handled by timer interrupts eventually
 		readyQueue.Push(t.TID)
-		RestoreIRQs(savedDAIF)
+		if sf.StateCheck != nil {
+			sf.StateCheck("futex-block-no-next")
+		}
+		schedulerLock.Unlock()
+		sf.EnableAndRestoreDAIF(savedDAIF)
 		return 0
 	}
 
@@ -689,8 +841,13 @@ func ThreadBlockFutex(futexAddr uint64) uintptr {
 	// Add current thread to blocked queue
 	blockedQueue.Push(t.TID)
 
+	if sf.StateCheck != nil {
+		sf.StateCheck("futex-block-complete")
+	}
+
 	// END CRITICAL SECTION
-	RestoreIRQs(savedDAIF)
+	schedulerLock.Unlock()
+	sf.EnableAndRestoreDAIF(savedDAIF)
 
 	// Return context pointer (not index) - allows switching to thread 0
 	return uintptr(unsafe.Pointer(&next.Context))
@@ -698,17 +855,26 @@ func ThreadBlockFutex(futexAddr uint64) uintptr {
 
 // ThreadWakeFutex wakes threads blocked on the given futex address
 // Returns number of threads woken
+// Signature matches ksyscall linkname declaration (int32 args for ABI compatibility)
 //
 //go:nosplit
-func ThreadWakeFutex(futexAddr uint64, maxWake int16) int16 {
-	// BEGIN CRITICAL SECTION - protect thread state modifications
-	savedDAIF := SaveAndDisableIRQs()
+func ThreadWakeFutex(futexAddr uint64, maxWake int32) int32 {
+	return threadWakeFutexImpl(&NormalSchedulerFunc, futexAddr, int16(maxWake))
+}
 
-	woken := int16(0)
+// threadWakeFutexImpl is the internal implementation with sf for testing
+//
+//go:nosplit
+func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int32 {
+	// BEGIN CRITICAL SECTION - protect thread state modifications
+	savedDAIF := sf.DisableAndSaveDAIF()
+	schedulerLock.Lock()
+
+	woken := int32(0)
 	queueSize := blockedQueue.Size()
 
 	// Scan blocked queue
-	for i := 0; i < queueSize && woken < maxWake; i++ {
+	for i := 0; i < queueSize && woken < int32(maxWake); i++ {
 		tid := blockedQueue.Pop()
 		t := threadList.FindById(int32(tid))
 
@@ -730,8 +896,13 @@ func ThreadWakeFutex(futexAddr uint64, maxWake int16) int16 {
 		}
 	}
 
+	if sf.StateCheck != nil {
+		sf.StateCheck("futex-wake-complete")
+	}
+
 	// END CRITICAL SECTION
-	RestoreIRQs(savedDAIF)
+	schedulerLock.Unlock()
+	sf.EnableAndRestoreDAIF(savedDAIF)
 
 	return woken
 }
@@ -746,19 +917,20 @@ func ThreadWakeFutex(futexAddr uint64, maxWake int16) int16 {
 // Thread index 0 is valid and would return a non-zero context pointer.
 //
 //go:nosplit
-//go:linkname ThreadBlockSleep kmazarin/ksyscall.ThreadBlockSleep
-func ThreadBlockSleep() uintptr {
-	if currentThreadIdx < 0 {
+func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
+	if CurrentThreadIdx < 0 {
 		return 0
 	}
 
 	// BEGIN CRITICAL SECTION - protect thread state modification
-	savedDAIF := SaveAndDisableIRQs()
+	savedDAIF := sf.DisableAndSaveDAIF()
+	schedulerLock.Lock()
 
 	// Get current thread using StaticList API
-	t := threadList.Nth(int(currentThreadIdx))
+	t := threadList.Nth(int(CurrentThreadIdx))
 	if t == nil {
-		RestoreIRQs(savedDAIF)
+		schedulerLock.Unlock()
+		sf.EnableAndRestoreDAIF(savedDAIF)
 		return 0
 	}
 
@@ -771,7 +943,11 @@ func ThreadBlockSleep() uintptr {
 	if next == nil {
 		// No ready thread - put current thread back in ready queue and don't sleep
 		readyQueue.Push(t.TID)
-		RestoreIRQs(savedDAIF)
+		if sf.StateCheck != nil {
+			sf.StateCheck("sleep-block-no-next")
+		}
+		schedulerLock.Unlock()
+		sf.EnableAndRestoreDAIF(savedDAIF)
 		return 0
 	}
 
@@ -781,8 +957,13 @@ func ThreadBlockSleep() uintptr {
 	// Add current thread to sleeping queue
 	sleepingQueue.Push(t.TID)
 
+	if sf.StateCheck != nil {
+		sf.StateCheck("sleep-block-complete")
+	}
+
 	// END CRITICAL SECTION
-	RestoreIRQs(savedDAIF)
+	schedulerLock.Unlock()
+	sf.EnableAndRestoreDAIF(savedDAIF)
 
 	// Return context pointer (not index) - allows switching to thread 0
 	return uintptr(unsafe.Pointer(&next.Context))
@@ -795,27 +976,34 @@ func ThreadBlockSleep() uintptr {
 // defensively in case this is ever called directly.
 //
 //go:nosplit
-func ThreadWakeSleeper(tidParam uintptr) {
+func ThreadWakeSleeper(sf *SchedulerFunc, tidParam uintptr) {
 	tid := int16(tidParam)
 
 	// BEGIN CRITICAL SECTION - protect thread state modification
-	savedDAIF := SaveAndDisableIRQs()
+	savedDAIF := sf.DisableAndSaveDAIF()
+	schedulerLock.Lock()
 
 	// Find thread by TID (TID = slot index)
 	t := threadList.FindById(int32(tid))
 	if t == nil {
-		RestoreIRQs(savedDAIF)
+		schedulerLock.Unlock()
+		sf.EnableAndRestoreDAIF(savedDAIF)
 		return
 	}
 
 	if t.State == ThreadSleeping {
 		t.State = ThreadReady
 		// Add to ready queue
-		readyQueue.Push(tid)
+		readyQueue.Push(ThreadId(tid))
+	}
+
+	if sf.StateCheck != nil {
+		sf.StateCheck("wake-sleeper-complete")
 	}
 
 	// END CRITICAL SECTION
-	RestoreIRQs(savedDAIF)
+	schedulerLock.Unlock()
+	sf.EnableAndRestoreDAIF(savedDAIF)
 }
 
 // ThreadIncrementTick increments the global tick counter
@@ -829,12 +1017,26 @@ func ThreadIncrementTick() {
 // GetCurrentThread returns the current thread index as uintptr
 //
 //go:nosplit
-//go:linkname GetCurrentThread kmazarin/ksyscall.GetCurrentThread
 func GetCurrentThread() uintptr {
-	if currentThreadIdx < 0 {
+	if CurrentThreadIdx < 0 {
 		return 0
 	}
-	return uintptr(currentThreadIdx)
+	return uintptr(CurrentThreadIdx)
+}
+
+// GetCurrentThreadTID returns the TID of the current thread.
+// Returns -1 if no thread is running.
+//
+//go:nosplit
+func GetCurrentThreadTID() ThreadId {
+	if CurrentThreadIdx < 0 {
+		return -1
+	}
+	t := threadList.Nth(int(CurrentThreadIdx))
+	if t == nil {
+		return -1
+	}
+	return t.TID
 }
 
 // GetGlobalTickCounter returns the global tick counter
@@ -844,7 +1046,16 @@ func GetGlobalTickCounter() uint64 {
 	return globalTickCounter
 }
 
-// checkThreadPreemptionInternal checks if the current thread should be preempted
+// checkThreadPreemptionInternal is the wrapper called from assembly.
+// Takes only framePtr and uses NormalSchedulerFunc internally.
+//
+//go:nosplit
+//go:noinline
+func checkThreadPreemptionInternal(framePtr uint64) uint64 {
+	return checkThreadPreemptionImpl(&NormalSchedulerFunc, framePtr)
+}
+
+// checkThreadPreemptionImpl checks if the current thread should be preempted
 // and performs the context switch if needed.
 // Called from timer IRQ handler via ABI stub when NeedsThreadPreempt is set.
 //
@@ -856,30 +1067,32 @@ func GetGlobalTickCounter() uint64 {
 //
 //go:nosplit
 //go:noinline
-func checkThreadPreemptionInternal(framePtr uint64) uint64 {
+func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	Breadcrumb('T') // Thread preemption check
 	Breadcrumb('[')
 
-	if currentThreadIdx < 0 {
+	if CurrentThreadIdx < 0 {
 		Breadcrumb('-')
 		Breadcrumb(']')
 		return 0
 	}
 
-	Breadcrumb('0' + byte(currentThreadIdx))
+	Breadcrumb('0' + byte(CurrentThreadIdx))
 	Breadcrumb('>')
 
 	// BEGIN CRITICAL SECTION - protect thread state modifications
-	savedDAIF := SaveAndDisableIRQs()
+	savedDAIF := sf.DisableAndSaveDAIF()
+	schedulerLock.Lock()
 
 	// Save current thread's context from exception frame
 	SaveContextFromFrame(uintptr(framePtr))
 
 	// Mark current thread as ready (preempted) and add to back of ready queue
-	oldIdx := currentThreadIdx
+	oldIdx := CurrentThreadIdx
 	oldThread := threadList.Nth(int(oldIdx))
 	if oldThread == nil {
-		RestoreIRQs(savedDAIF)
+		schedulerLock.Unlock()
+		sf.EnableAndRestoreDAIF(savedDAIF)
 		Breadcrumb('N')
 		Breadcrumb(']')
 		return 0
@@ -899,8 +1112,12 @@ func checkThreadPreemptionInternal(framePtr uint64) uint64 {
 		// This is a bit awkward with the queue-based system
 		// For now, just leave it there and continue running
 		oldThread.State = ThreadRunning
-		oldThread.StartTick = globalTickCounter
-		RestoreIRQs(savedDAIF)
+		oldThread.StartTick = sf.CurrentTime(0)
+		if sf.StateCheck != nil {
+			sf.StateCheck("preempt-no-next")
+		}
+		schedulerLock.Unlock()
+		sf.EnableAndRestoreDAIF(savedDAIF)
 		Breadcrumb('S') // Same thread (no other available)
 		Breadcrumb(']')
 		return 0
@@ -908,15 +1125,28 @@ func checkThreadPreemptionInternal(framePtr uint64) uint64 {
 
 	// Switch to new thread
 	nextIdx := threadToIdx(next)
-	currentThreadIdx = nextIdx
-	currentThread = next
+	CurrentThreadIdx = nextIdx
+	atomic.StorePointer(&CurrentThread, unsafe.Pointer(next))
 	next.State = ThreadRunning
-	next.StartTick = globalTickCounter
+	next.StartTick = sf.CurrentTime(0)
 	next.LastSeenG = next.Context.X[28] // Use saved g
 	next.PreemptElapsed = 0             // Fresh time slice
 
+	// CRITICAL: Switch TTBR0 if switching to a userspace thread with different page table
+	// Without this, userspace threads run with wrong page table and crash!
+	// Use the thread's PID as the ASID for TLB tagging - this allows TLB entries
+	// from different processes to coexist without requiring flushes on every switch.
+	if next.PageTableL0PA != 0 && next.PageTableL0PA != oldThread.PageTableL0PA {
+		kmem.SwitchTTBR0WithASID(next.PageTableL0PA, uint16(next.PID))
+	}
+
+	if sf.StateCheck != nil {
+		sf.StateCheck("preempt-switch-complete")
+	}
+
 	// END CRITICAL SECTION
-	RestoreIRQs(savedDAIF)
+	schedulerLock.Unlock()
+	sf.EnableAndRestoreDAIF(savedDAIF)
 
 	Breadcrumb('0' + byte(nextIdx)) // Print new thread index
 	return uint64(uintptr(unsafe.Pointer(&next.Context)))
@@ -937,12 +1167,17 @@ const (
 //go:nosplit
 //go:noinline
 func SaveContextFromFrame(framePtr uintptr) {
-	if currentThreadIdx < 0 {
+	if CurrentThreadIdx < 0 {
 		return
 	}
 
-	t := threadList.Nth(int(currentThreadIdx))
+	t := threadList.Nth(int(CurrentThreadIdx))
 	if t == nil {
+		return
+	}
+
+	// Handle nil frame (can happen in tests)
+	if framePtr == 0 {
 		return
 	}
 	frame := (*[40]uint64)(unsafe.Pointer(framePtr))
@@ -960,6 +1195,7 @@ func SaveContextFromFrame(framePtr uintptr) {
 }
 
 // doContextSwitchABI0 is the ABI0 entry point for context switching
+// Called from assembly via DoContextSwitch stub with 2 arguments.
 // targetPtr is actually a pointer to ThreadContext (returned by getSyscallSwitchTargetInternal)
 //
 //go:nosplit
@@ -985,28 +1221,32 @@ func doContextSwitchABI0(framePtr uint64, targetPtr uint64) uint64 {
 	}
 	Breadcrumb('0' + byte(targetIdx))
 
-	ctx := doContextSwitchImpl(uintptr(framePtr), targetIdx)
+	// Use NormalSchedulerFunc for production calls from assembly
+	ctx := doContextSwitchImpl(&NormalSchedulerFunc, uintptr(framePtr), targetIdx)
 	return uint64(uintptr(unsafe.Pointer(ctx)))
 }
 
 // doContextSwitchImpl performs a context switch from current thread to target
 //
-// CRITICAL SECTION: This function modifies currentThread/currentThreadIdx and
-// thread state. Although currently only called from SVC context (where IRQs are
-// hardware-masked), we explicitly disable IRQs as defensive programming.
+// CRITICAL SECTION: This function modifies CurrentThread/CurrentThreadIdx and
+// thread state. Protected by both DAIF and schedulerLock.
 //
 //go:nosplit
 //go:noinline
-func doContextSwitchImpl(framePtr uintptr, targetIdx int32) *ThreadContext {
+func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *ThreadContext {
 	// Save current thread's context
 	SaveContextFromFrame(framePtr)
 
 	// BEGIN CRITICAL SECTION - protect thread state modifications
-	savedDAIF := SaveAndDisableIRQs()
+	savedDAIF := sf.DisableAndSaveDAIF()
+	schedulerLock.Lock()
 
-	oldIdx := currentThreadIdx
-	currentThreadIdx = targetIdx
-	currentThread = threadList.Nth(int(targetIdx))
+	oldIdx := CurrentThreadIdx
+	CurrentThreadIdx = targetIdx
+	atomic.StorePointer(&CurrentThread, unsafe.Pointer(threadList.Nth(int(targetIdx))))
+
+	// Get current time for preemption tracking
+	currentTime := sf.CurrentTime(0)
 
 	// Target thread is now running (it was already popped from ready queue
 	// by the caller, so no need to remove it here)
@@ -1017,7 +1257,7 @@ func doContextSwitchImpl(framePtr uintptr, targetIdx int32) *ThreadContext {
 		oldThread := threadList.Nth(int(oldIdx))
 		if oldThread != nil && oldThread.State == ThreadRunning {
 			// Save elapsed time so we can restore it when this thread resumes
-			oldThread.PreemptElapsed = globalTickCounter - oldThread.StartTick
+			oldThread.PreemptElapsed = currentTime - oldThread.StartTick
 			oldThread.State = ThreadReady
 			// Add old thread to ready queue
 			readyQueue.Push(oldThread.TID)
@@ -1027,15 +1267,15 @@ func doContextSwitchImpl(framePtr uintptr, targetIdx int32) *ThreadContext {
 	// New thread becomes running
 	newThread := threadList.Nth(int(targetIdx))
 	if newThread == nil {
-		RestoreIRQs(savedDAIF)
+		schedulerLock.Unlock()
+		sf.EnableAndRestoreDAIF(savedDAIF)
 		return nil
 	}
-
 	newThread.State = ThreadRunning
 	// Restore StartTick from saved elapsed time so preemption tracking
 	// continues from where it left off. This ensures goroutines don't get
 	// unlimited time by repeatedly triggering context switches.
-	newThread.StartTick = globalTickCounter - newThread.PreemptElapsed
+	newThread.StartTick = currentTime - newThread.PreemptElapsed
 	// Use saved x28 (g register) from context, NOT GPtr (g0).
 	// This preserves the goroutine that was running when the thread was
 	// preempted, allowing async preemption tracking to work correctly
@@ -1044,18 +1284,37 @@ func doContextSwitchImpl(framePtr uintptr, targetIdx int32) *ThreadContext {
 
 	// Switch TTBR0 if the new thread has a different page table
 	// This is needed when switching between different userspace processes (priests)
+	// Use the thread's PID as the ASID for TLB tagging.
 	oldThread := threadList.Nth(int(oldIdx))
 	oldPageTable := uintptr(0)
 	if oldThread != nil {
 		oldPageTable = oldThread.PageTableL0PA
 	}
 	if newThread.PageTableL0PA != 0 && newThread.PageTableL0PA != oldPageTable {
-		// Switch to the new thread's page table
-		kmem.SwitchTTBR0ToPA(newThread.PageTableL0PA)
+		// Switch to the new thread's page table with ASID = PID
+		kmem.SwitchTTBR0WithASID(newThread.PageTableL0PA, uint16(newThread.PID))
+	}
+
+	if sf.StateCheck != nil {
+		sf.StateCheck("context-switch-complete")
 	}
 
 	// END CRITICAL SECTION
-	RestoreIRQs(savedDAIF)
+	schedulerLock.Unlock()
+	sf.EnableAndRestoreDAIF(savedDAIF)
+
+	// DEBUG: Print ELR value before returning
+	Breadcrumb('E')
+	Breadcrumb('L')
+	Breadcrumb('R')
+	Breadcrumb('=')
+	hexChars := "0123456789ABCDEF"
+	elr := newThread.Context.ELR
+	for i := 60; i >= 0; i -= 4 {
+		nibble := (elr >> i) & 0xF
+		Breadcrumb(hexChars[nibble])
+	}
+	Breadcrumb(' ')
 
 	return &newThread.Context
 }
@@ -1094,11 +1353,11 @@ func SaveCurrentThreadContext(
 	x24, x25, x26, x27, x28, x29, x30 uint64,
 	sp, elr, spsr uint64,
 ) {
-	if currentThreadIdx < 0 {
+	if CurrentThreadIdx < 0 {
 		return
 	}
 
-	t := threadList.Nth(int(currentThreadIdx))
+	t := threadList.Nth(int(CurrentThreadIdx))
 	if t == nil {
 		return
 	}
