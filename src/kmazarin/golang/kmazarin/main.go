@@ -809,6 +809,9 @@ func simpleMain() {
 	if testRuntimeReadiness() {
 		Print("[Main] Runtime ready")
 
+		// Run scheduler tests
+		ManualSchedulerTest()
+
 		// CRITICAL: Disable automatic GC.
 		// We cannot call runtime.GC() because it triggers taggedPointerPack errors -
 		// the Go runtime's tagged pointer code assumes 49-bit addresses but our
