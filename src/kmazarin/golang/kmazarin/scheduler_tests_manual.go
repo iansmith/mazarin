@@ -67,6 +67,7 @@ func testPriestPreferenceDifferent() bool {
 	threadList.InUse = testThreadListInUse[:]
 	readyQueue.Data = testReadyQueueData[:]
 	readyQueue.InUse = testReadyQueueInUse[:]
+	readyQueue.Clear() // Reset queue state
 
 	// Create Thread B (PID=1, ready)
 	threadList.Data[0] = Thread{
@@ -128,6 +129,7 @@ func testPriestPreferenceFallback() bool {
 	threadList.InUse = testThreadListInUse[:]
 	readyQueue.Data = testReadyQueueData[:]
 	readyQueue.InUse = testReadyQueueInUse[:]
+	readyQueue.Clear() // Reset queue state
 
 	// Create Thread B (PID=1, ready)
 	threadList.Data[0] = Thread{
@@ -185,6 +187,7 @@ func testPriestPreferenceEmpty() bool {
 	threadList.InUse = testThreadListInUse[:]
 	readyQueue.Data = testReadyQueueData[:]
 	readyQueue.InUse = testReadyQueueInUse[:]
+	readyQueue.Clear() // Reset queue state
 
 	// Don't add any threads (empty queue)
 
