@@ -9,6 +9,17 @@ Cardinal bootloader + Kmazarin Go kernel for ARM64.
 
 [![Windows (No POSIX Shell)](https://github.com/iansmith/mazarin/actions/workflows/windows-test.yml/badge.svg)](https://github.com/iansmith/mazarin/actions/workflows/windows-test.yml)
 
+## Prerequisites
+
+Tools you need for this quick start:
+
+* **Go compiler** version 1.24 or later
+* **QEMU** version 10.2 or later (`qemu-system-aarch64`)
+
+This will build and run on any system that has both of those tools. If you are running on a machine that is not ARM64, then QEMU will be emulating the ARM64 architecture which can be slow.
+
+The first time you build the software it will be slow as some Go packages need to be downloaded.
+
 ## Build
 
 Set environment variables and build with Task:
@@ -16,14 +27,14 @@ Set environment variables and build with Task:
 ```bash
 # Set environment (adjust paths for your system)
 export GOTOOLCHAIN=auto
-export GO=/path/to/go1.25.5
+export GO=/path/to/go
 export QEMU=/path/to/qemu-system-aarch64
 
 # Build everything
 go tool task all
 ```
 
-> **Note:** Requires Go 1.25.5+ and QEMU 10.2+
+> **Note:** Requires Go 1.24+ and QEMU 10.2+
 
 ## Run
 
