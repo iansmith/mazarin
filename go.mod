@@ -116,6 +116,7 @@ tool (
 	mazzy/cmd/go-stopproc
 	mazzy/cmd/go-rm
 	mazzy/cmd/go-sleep
+	mazzy/cmd/go-start
 	mazzy/cmd/go-tail
 	mazzy/cmd/go-test
 	mazzy/cmd/go-tr

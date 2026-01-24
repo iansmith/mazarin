@@ -321,7 +321,7 @@ tasks:
       - '{{.GO}} tool go-sleep 0.3'
       - 'echo ""'
       - 'echo "=== Serial Output (last 50 lines) ==="'
-      - '{{.GO}} tool safe-serial-read || echo "(no output)"'
+      - '{{.GO}} tool safe-serial-read'
       - 'echo ""'
       - 'echo "Log file: {{.LOG_FILE}}"'
 
@@ -331,34 +331,17 @@ tasks:
     vars:
       LOG_FILE: /tmp/cardinal-serial.log
     cmds:
-      - |
-        {{.QEMU}} \
-          -M virt,virtualization=off \
-          -cpu cortex-a72 \
-          -m 8G \
-          -kernel {{.CARDINAL_ELF}} \
-          -nodefaults \
-          -device virtio-gpu-pci \
-          -object rng-random,id=rng0,filename=/dev/urandom \
-          -device virtio-rng-device,rng=rng0 \
-          -display none \
-          -serial file:{{.LOG_FILE}} \
-          -monitor tcp:127.0.0.1:4444,server,nowait \
-          -semihosting \
-          -no-reboot \
-          -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 \
-          -device virtio-blk-device,drive=disk0 \
-          &
-        echo "QEMU started in background"
-        echo "Monitor: tcp:127.0.0.1:4444"
-        echo "Log file: {{.LOG_FILE}}"
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display none -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -no-reboot -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0'
+      - '{{.GO}} tool go-echo "QEMU started in background"'
+      - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4444"'
+      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
 
   qemu-console:
     desc: "Send command to QEMU monitor (CMD='info registers' or other QEMU command)"
     vars:
       CMD: '{{.CMD | default "info registers"}}'
     cmds:
-      - 'echo "{{.CMD}}" | {{.GO}} tool go-nc 127.0.0.1 4444'
+      - '{{.GO}} tool go-nc -c "{{.CMD}}" 127.0.0.1 4444'
 
   show:
     desc: "Show serial output using safe-serial-read with pagination"
@@ -369,7 +352,8 @@ tasks:
     desc: Stop all running QEMU instances
     cmds:
       # Send quit command to QEMU monitor if it's listening
-      - 'echo "quit" | {{.GO}} tool go-nc -w 1s 127.0.0.1 4444 || true'
+      - cmd: '{{.GO}} tool go-nc -w 1s -c quit 127.0.0.1 4444'
+        ignore_error: true
       - '{{.GO}} tool go-sleep 0.5'
 
   # ===========================================================================
