@@ -1,0 +1,48 @@
+name: Windows Build Test
+
+on:
+  push:
+    branches: [main, feature/*]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install Task
+        run: go install github.com/go-task/task/v3/cmd/task@latest
+
+      - name: Build Go tools
+        run: |
+          go build ./cmd/go-cat
+          go build ./cmd/go-echo
+          go build ./cmd/go-env
+          go build ./cmd/go-filesize
+          go build ./cmd/go-ls
+          go build ./cmd/go-mkdir
+          go build ./cmd/go-mv
+          go build ./cmd/go-nc
+          go build ./cmd/go-rm
+          go build ./cmd/go-sleep
+          go build ./cmd/go-start
+          go build ./cmd/go-stopproc
+          go build ./cmd/go-tail
+          go build ./cmd/go-tr
+          go build ./cmd/go-wc
+          go build ./cmd/check-version
+          go build ./cmd/gen-overlay
+          go build ./cmd/incbin2goasm
+
+      - name: Verify Taskfile syntax
+        run: task --list
+
+      - name: Dry run build task
+        run: task --dry all
