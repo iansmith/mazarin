@@ -44,3 +44,7 @@ go tool task show
 ```
 
 Output is written to `/tmp/cardinal-serial.log`.
+
+## What You'll See
+
+When you run Mazzy, QEMU opens a graphical window. The kernel initializes the VirtIO GPU and displays an image in the center of the screen. This demonstrates the graphics subsystem working with the Go kernel running on bare metal ARM64.
