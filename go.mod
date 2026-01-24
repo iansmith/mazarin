@@ -11,6 +11,8 @@ require (
 
 // Tool directives - these can be run with "go tool <name>"
 tool (
+	mazzy/cmd/block-serial-bash-hook
+	mazzy/cmd/block-serial-read-hook
 	mazzy/cmd/build
 	mazzy/cmd/compute-linker-values
 	mazzy/cmd/fix-go-elf
