@@ -1,0 +1,490 @@
+# Taskfile for mazzy - Go Native Toolchain Build
+# Builds bare-metal ARM64 kernel (Cardinal + Kmazarin) and flock userspace programs
+#
+# Usage:
+#   task              # Build cardinal and kmazarin (default)
+#   task cardinal     # Build cardinal bootloader
+#   task kmazarin     # Build kmazarin kernel
+#   task priest       # Build priest syscall router
+#   task disk         # Create FAT32 disk image
+#   task clean        # Remove build artifacts
+#
+# Environment:
+#   GO=/path/to/go                        # Go compiler (>= 1.24)
+#   QEMU=/path/to/qemu-system-aarch64     # QEMU (>= 10.2)
+#   GOTOOLCHAIN=auto                      # Required
+#   DEBUG=1                               # Optional: disable optimizations
+
+version: '3'
+
+vars:
+  # Resolve GO: use env var, or find via which, or fail
+  GO:
+    sh: |
+      if [ -n "$GO" ]; then
+        echo "$GO"
+      else
+        GO_PATH=$(which go 2>/dev/null)
+        if [ -z "$GO_PATH" ]; then
+          echo "ERROR_NO_GO"
+          exit 0
+        fi
+        echo "WARNING: No environment variable GO found, defaulting to $GO_PATH" >&2
+        echo "$GO_PATH"
+      fi
+
+  # Resolve QEMU: use env var, or find via which, or fail
+  QEMU:
+    sh: |
+      if [ -n "$QEMU" ]; then
+        echo "$QEMU"
+      else
+        QEMU_PATH=$(which qemu-system-aarch64 2>/dev/null)
+        if [ -z "$QEMU_PATH" ]; then
+          echo "ERROR_NO_QEMU"
+          exit 0
+        fi
+        echo "WARNING: No environment variable QEMU found, defaulting to $QEMU_PATH" >&2
+        echo "$QEMU_PATH"
+      fi
+
+  # Build configuration (prefixed to avoid conflicts with Go env vars)
+  TARGET_GOARCH: arm64
+  TARGET_GOOS: linux
+  BUILD_DIR: build
+
+  # Debug build: disable optimizations and inlining
+  # Usage: DEBUG=1 task cardinal
+  GCFLAGS:
+    sh: |
+      if [ "$DEBUG" = "1" ]; then
+        echo '-gcflags=all=-N -l'
+      else
+        echo ''
+      fi
+
+  # Output files
+  CARDINAL_ELF: '{{.BUILD_DIR}}/cardinal.elf'
+  KMAZARIN_ELF: '{{.BUILD_DIR}}/kmazarin.elf'
+  KMAZARIN_OVERLAY_JSON: '{{.BUILD_DIR}}/kmazarin-overlay.json'
+  USERSPACE_OVERLAY_JSON: '{{.BUILD_DIR}}/userspace-overlay.json'
+  THIN_OVERLAY_JSON: '{{.BUILD_DIR}}/thin-overlay.json'
+  PRIEST_ELF: '{{.BUILD_DIR}}/priest.elf'
+  PRIEST2_ELF: '{{.BUILD_DIR}}/priest2.elf'
+  HELLOWORLD_ELF: '{{.BUILD_DIR}}/helloworld.elf'
+  HELLOWORLD_THIN_ELF: '{{.BUILD_DIR}}/helloworld-thin.elf'
+  HELLOWORLD_MAZ: '{{.BUILD_DIR}}/helloworld.maz'
+  DISK_IMAGE: '{{.BUILD_DIR}}/disk.img'
+
+  # Generated embedded data
+  KMAZARIN_DATA_ASM: cardinal/asm/dev/kmazarin_data_arm64.s
+  BOOT_IMAGE_DATA_ASM: cardinal/asm/dev/boot_mazarin_data_arm64.s
+
+  # Source files
+  BOOT_IMAGE_BIN: assets/boot-mazarin.bin
+
+  # Runtime patches directory
+  RUNTIME_PATCHES_DIR: runtime-patches
+  USERSPACE_OVERLAY_DIR: mazarin/overlay/userspace
+
+tasks:
+  # ===========================================================================
+  # Environment and Version Checks
+  # ===========================================================================
+
+  check-env:
+    desc: Verify GO, QEMU, GOTOOLCHAIN, and tool versions
+    preconditions:
+      - sh: '[ "{{.GO}}" != "ERROR_NO_GO" ]'
+        msg: |
+          GO not set and 'which go' failed.
+          Please set GO=/path/to/go
+      - sh: '[ "{{.QEMU}}" != "ERROR_NO_QEMU" ]'
+        msg: |
+          QEMU not set and 'which qemu-system-aarch64' failed.
+          Please set QEMU=/path/to/qemu-system-aarch64
+      - sh: '[ "$GOTOOLCHAIN" = "auto" ]'
+        msg: |
+          GOTOOLCHAIN must be 'auto'.
+          Run: export GOTOOLCHAIN=auto
+    cmds:
+      # Check Go version >= 1.24
+      - |
+        GO_VERSION=$({{.GO}} version | grep -oE 'go[0-9]+\.[0-9]+' | head -1 | sed 's/go//')
+        MAJOR=$(echo $GO_VERSION | cut -d. -f1)
+        MINOR=$(echo $GO_VERSION | cut -d. -f2)
+        if [ "$MAJOR" -lt 1 ] || ([ "$MAJOR" -eq 1 ] && [ "$MINOR" -lt 24 ]); then
+          echo "ERROR: Go >= 1.24 required, found go$GO_VERSION"
+          exit 1
+        fi
+        echo "Go: $GO_VERSION ({{.GO}})"
+
+      # Check QEMU version >= 10.2
+      - |
+        QEMU_VERSION=$({{.QEMU}} --version | grep -oE '[0-9]+\.[0-9]+' | head -1)
+        MAJOR=$(echo $QEMU_VERSION | cut -d. -f1)
+        MINOR=$(echo $QEMU_VERSION | cut -d. -f2)
+        if [ "$MAJOR" -lt 10 ] || ([ "$MAJOR" -eq 10 ] && [ "$MINOR" -lt 2 ]); then
+          echo "ERROR: QEMU >= 10.2 required, found $QEMU_VERSION"
+          exit 1
+        fi
+        echo "QEMU: $QEMU_VERSION ({{.QEMU}})"
+
+      - echo "GOTOOLCHAIN=auto"
+      - echo "Environment check passed"
+    silent: true
+
+  # ===========================================================================
+  # Build Directory
+  # ===========================================================================
+
+  build-dir:
+    desc: Create build directory
+    cmds:
+      - mkdir -p {{.BUILD_DIR}}
+    status:
+      - test -d {{.BUILD_DIR}}
+
+  # ===========================================================================
+  # Overlay Generation
+  # ===========================================================================
+
+  kmazarin-overlay:
+    desc: Generate runtime overlay JSON for kmazarin
+    deps: [build-dir]
+    sources:
+      - '{{.RUNTIME_PATCHES_DIR}}/cgo_mmap.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/malloc.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/mcache.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/os_linux_arm64.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/preempt.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/tagptr_64bit.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/syscall/syscall_linux.go'
+    generates:
+      - '{{.KMAZARIN_OVERLAY_JSON}}'
+    cmds:
+      - |
+        GOROOT=$({{.GO}} env GOROOT)
+        cat > {{.KMAZARIN_OVERLAY_JSON}} << 'OVERLAY_EOF'
+        {"Replace":{
+        OVERLAY_EOF
+        echo "\"$GOROOT/src/runtime/cgo_mmap.go\":\"{{.ROOT_DIR}}/{{.RUNTIME_PATCHES_DIR}}/cgo_mmap.go\"," >> {{.KMAZARIN_OVERLAY_JSON}}
+        echo "\"$GOROOT/src/runtime/malloc.go\":\"{{.ROOT_DIR}}/{{.RUNTIME_PATCHES_DIR}}/malloc.go\"," >> {{.KMAZARIN_OVERLAY_JSON}}
+        echo "\"$GOROOT/src/runtime/mcache.go\":\"{{.ROOT_DIR}}/{{.RUNTIME_PATCHES_DIR}}/mcache.go\"," >> {{.KMAZARIN_OVERLAY_JSON}}
+        echo "\"$GOROOT/src/runtime/os_linux_arm64.go\":\"{{.ROOT_DIR}}/{{.RUNTIME_PATCHES_DIR}}/os_linux_arm64.go\"," >> {{.KMAZARIN_OVERLAY_JSON}}
+        echo "\"$GOROOT/src/runtime/preempt.go\":\"{{.ROOT_DIR}}/{{.RUNTIME_PATCHES_DIR}}/preempt.go\"," >> {{.KMAZARIN_OVERLAY_JSON}}
+        echo "\"$GOROOT/src/runtime/tagptr_64bit.go\":\"{{.ROOT_DIR}}/{{.RUNTIME_PATCHES_DIR}}/tagptr_64bit.go\"," >> {{.KMAZARIN_OVERLAY_JSON}}
+        echo "\"$GOROOT/src/syscall/syscall_linux.go\":\"{{.ROOT_DIR}}/{{.RUNTIME_PATCHES_DIR}}/syscall/syscall_linux.go\"" >> {{.KMAZARIN_OVERLAY_JSON}}
+        echo "}}" >> {{.KMAZARIN_OVERLAY_JSON}}
+        echo "Generated {{.KMAZARIN_OVERLAY_JSON}}"
+
+  userspace-overlay:
+    desc: Generate runtime overlay JSON for userspace programs
+    deps: [build-dir]
+    sources:
+      - '{{.USERSPACE_OVERLAY_DIR}}/syscall_linux.go'
+      - '{{.USERSPACE_OVERLAY_DIR}}/asm_linux_arm64.s'
+      - '{{.USERSPACE_OVERLAY_DIR}}/runtime/cgo_mmap.go'
+      - '{{.USERSPACE_OVERLAY_DIR}}/runtime/lock_spinbit.go'
+    generates:
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    cmds:
+      - |
+        GOROOT=$({{.GO}} env GOROOT)
+        cat > {{.USERSPACE_OVERLAY_JSON}} << 'OVERLAY_EOF'
+        {"Replace":{
+        OVERLAY_EOF
+        echo "\"$GOROOT/src/syscall/syscall_linux.go\":\"{{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_DIR}}/syscall_linux.go\"," >> {{.USERSPACE_OVERLAY_JSON}}
+        echo "\"$GOROOT/src/syscall/asm_linux_arm64.s\":\"{{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_DIR}}/asm_linux_arm64.s\"," >> {{.USERSPACE_OVERLAY_JSON}}
+        echo "\"$GOROOT/src/runtime/cgo_mmap.go\":\"{{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_DIR}}/runtime/cgo_mmap.go\"," >> {{.USERSPACE_OVERLAY_JSON}}
+        echo "\"$GOROOT/src/runtime/lock_spinbit.go\":\"{{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_DIR}}/runtime/lock_spinbit.go\"" >> {{.USERSPACE_OVERLAY_JSON}}
+        echo "}}" >> {{.USERSPACE_OVERLAY_JSON}}
+        echo "Generated {{.USERSPACE_OVERLAY_JSON}}"
+
+  thin-overlay:
+    desc: Generate thin client overlay via AST stub generator
+    deps: [build-dir]
+    generates:
+      - '{{.THIN_OVERLAY_JSON}}'
+      - '{{.BUILD_DIR}}/thin-stubs.manifest'
+    cmds:
+      - |
+        GOROOT=$({{.GO}} env GOROOT)
+        {{.GO}} tool gen-ast-stubs \
+          -runtime=$GOROOT/src/runtime \
+          -output={{.BUILD_DIR}}/thin-overlay/runtime \
+          -overlay={{.THIN_OVERLAY_JSON}} \
+          -manifest={{.BUILD_DIR}}/thin-stubs.manifest
+        echo "Generated {{.THIN_OVERLAY_JSON}}"
+
+  # ===========================================================================
+  # Embedded Data Generation
+  # ===========================================================================
+
+  embed-kmazarin:
+    desc: Generate assembly with embedded kmazarin binary
+    deps: [kmazarin]
+    sources:
+      - '{{.KMAZARIN_ELF}}'
+    generates:
+      - '{{.KMAZARIN_DATA_ASM}}'
+    cmds:
+      - |
+        {{.GO}} tool incbin2goasm -sym kmazarin_binary -global {{.KMAZARIN_ELF}} > {{.KMAZARIN_DATA_ASM}}
+        LINES=$(wc -l < {{.KMAZARIN_DATA_ASM}} | tr -d ' ')
+        echo "Generated {{.KMAZARIN_DATA_ASM}} ($LINES lines)"
+
+  embed-boot-image:
+    desc: Generate assembly with embedded boot image
+    deps: [build-dir]
+    sources:
+      - '{{.BOOT_IMAGE_BIN}}'
+    generates:
+      - '{{.BOOT_IMAGE_DATA_ASM}}'
+    cmds:
+      - |
+        {{.GO}} tool incbin2goasm -sym _binary_boot_mazarin_bin -global {{.BOOT_IMAGE_BIN}} > {{.BOOT_IMAGE_DATA_ASM}}
+        LINES=$(wc -l < {{.BOOT_IMAGE_DATA_ASM}} | tr -d ' ')
+        echo "Generated {{.BOOT_IMAGE_DATA_ASM}} ($LINES lines)"
+
+  # ===========================================================================
+  # Kmazarin Kernel Build
+  # ===========================================================================
+
+  kmazarin:
+    desc: Build kmazarin kernel
+    deps: [check-env, kmazarin-overlay]
+    sources:
+      - 'kmazarin/**/*.go'
+      - 'kmazarin/**/*.s'
+      - 'shared/**/*.go'
+      - '{{.KMAZARIN_OVERLAY_JSON}}'
+    generates:
+      - '{{.KMAZARIN_ELF}}'
+    vars:
+      KMAZARIN_LOAD_ADDR:
+        sh: '{{.GO}} tool print-kmazarin-addr'
+    cmds:
+      - echo "Building kmazarin kernel (static Go binary at {{.KMAZARIN_LOAD_ADDR}})..."
+      - |
+        CGO_ENABLED=0 \
+        GOARCH={{.TARGET_GOARCH}} \
+        GOOS={{.TARGET_GOOS}} \
+        {{.GO}} build \
+          -overlay={{.ROOT_DIR}}/{{.KMAZARIN_OVERLAY_JSON}} \
+          {{.GCFLAGS}} \
+          -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" \
+          -o {{.KMAZARIN_ELF}} \
+          ./kmazarin/kmazarin
+      - echo "Fixing kmazarin ELF for QEMU compatibility..."
+      - '{{.GO}} tool fix-go-elf {{.KMAZARIN_ELF}}'
+      - echo "Relocating kmazarin to high memory (0xFFFFFFFF41800000)..."
+      - '{{.GO}} tool relocate-kmazarin {{.KMAZARIN_ELF}} {{.KMAZARIN_ELF}}.tmp'
+      - mv {{.KMAZARIN_ELF}}.tmp {{.KMAZARIN_ELF}}
+      - echo "Kmazarin kernel built at {{.KMAZARIN_ELF}}"
+
+  # ===========================================================================
+  # Cardinal Bootloader Build
+  # ===========================================================================
+
+  cardinal:
+    desc: Build cardinal bootloader
+    deps: [check-env, embed-kmazarin, embed-boot-image]
+    sources:
+      - 'cardinal/**/*.go'
+      - 'cardinal/**/*.s'
+      - '{{.KMAZARIN_DATA_ASM}}'
+      - '{{.BOOT_IMAGE_DATA_ASM}}'
+      - '{{.KMAZARIN_ELF}}'
+    generates:
+      - '{{.CARDINAL_ELF}}'
+    cmds:
+      - echo "Building cardinal with Go native toolchain..."
+      - |
+        CGO_ENABLED=0 \
+        GOARCH={{.TARGET_GOARCH}} \
+        GOOS={{.TARGET_GOOS}} \
+        {{.GO}} build \
+          {{.GCFLAGS}} \
+          -ldflags="-checklinkname=0 -T 0x40100000" \
+          -o {{.CARDINAL_ELF}} \
+          ./cardinal/main
+      - echo "Patching entry point to _cardinal_boot..."
+      - '{{.GO}} tool patch-entry {{.CARDINAL_ELF}} _cardinal_boot'
+      - echo "Patching linker values..."
+      - '{{.GO}} tool compute-linker-values -patch -kmazarin {{.KMAZARIN_ELF}} {{.CARDINAL_ELF}}'
+      - echo "Fixing ELF for QEMU compatibility..."
+      - '{{.GO}} tool fix-go-elf {{.CARDINAL_ELF}}'
+      - echo "Cardinal ready at {{.CARDINAL_ELF}}"
+
+  # ===========================================================================
+  # Flock Userspace Programs
+  # ===========================================================================
+
+  priest:
+    desc: Build priest syscall router
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.PRIEST_ELF}}'
+    cmds:
+      - echo "Building priest (syscall router with overlay)..."
+      - |
+        CGO_ENABLED=0 \
+        GOARCH={{.TARGET_GOARCH}} \
+        GOOS={{.TARGET_GOOS}} \
+        {{.GO}} build \
+          -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} \
+          {{.GCFLAGS}} \
+          -o {{.PRIEST_ELF}} \
+          ./flock/cmd/priest
+      - echo "Priest built at {{.PRIEST_ELF}}"
+
+  priest2:
+    desc: Build priest2 scheduling test program
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.PRIEST2_ELF}}'
+    cmds:
+      - echo "Building priest2 (scheduling test program)..."
+      - |
+        CGO_ENABLED=0 \
+        GOARCH={{.TARGET_GOARCH}} \
+        GOOS={{.TARGET_GOOS}} \
+        {{.GO}} build \
+          -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} \
+          {{.GCFLAGS}} \
+          -o {{.PRIEST2_ELF}} \
+          ./flock/cmd/priest2
+      - echo "Priest2 built at {{.PRIEST2_ELF}}"
+
+  helloworld:
+    desc: Build helloworld test program
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.HELLOWORLD_ELF}}'
+    cmds:
+      - echo "Building helloworld (userspace program)..."
+      - |
+        CGO_ENABLED=0 \
+        GOARCH={{.TARGET_GOARCH}} \
+        GOOS={{.TARGET_GOOS}} \
+        {{.GO}} build \
+          -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} \
+          {{.GCFLAGS}} \
+          -o {{.HELLOWORLD_ELF}} \
+          ./flock/cmd/helloworld
+      - |
+        SIZE=$(ls -lh {{.HELLOWORLD_ELF}} | awk '{print $5}')
+        echo "Helloworld built at {{.HELLOWORLD_ELF}} ($SIZE)"
+
+  helloworld-thin:
+    desc: Build helloworld with thin client overlay (minimal runtime)
+    deps: [check-env, thin-overlay]
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - '{{.THIN_OVERLAY_JSON}}'
+    generates:
+      - '{{.HELLOWORLD_THIN_ELF}}'
+    cmds:
+      - echo "Building helloworld-thin (minimal runtime stubs)..."
+      - |
+        CGO_ENABLED=0 \
+        GOARCH={{.TARGET_GOARCH}} \
+        GOOS={{.TARGET_GOOS}} \
+        {{.GO}} build \
+          -overlay={{.ROOT_DIR}}/{{.THIN_OVERLAY_JSON}} \
+          {{.GCFLAGS}} \
+          -o {{.HELLOWORLD_THIN_ELF}} \
+          ./flock/cmd/helloworld
+      - |
+        SIZE=$(ls -lh {{.HELLOWORLD_THIN_ELF}} | awk '{print $5}')
+        echo "Helloworld-thin built at {{.HELLOWORLD_THIN_ELF}} ($SIZE)"
+
+  helloworld-maz:
+    desc: Build helloworld.maz (direct SVC, no overlay)
+    deps: [check-env, build-dir]
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+    generates:
+      - '{{.HELLOWORLD_MAZ}}'
+    cmds:
+      - echo "Building helloworld.maz (direct SVC, no overlay)..."
+      - |
+        CGO_ENABLED=0 \
+        GOARCH={{.TARGET_GOARCH}} \
+        GOOS={{.TARGET_GOOS}} \
+        {{.GO}} build \
+          {{.GCFLAGS}} \
+          -o {{.HELLOWORLD_MAZ}} \
+          ./flock/cmd/helloworld
+      - |
+        SIZE=$(ls -lh {{.HELLOWORLD_MAZ}} | awk '{print $5}')
+        echo "Helloworld.maz built at {{.HELLOWORLD_MAZ}} ($SIZE)"
+
+  # ===========================================================================
+  # Disk Image
+  # ===========================================================================
+
+  disk:
+    desc: Create FAT32 disk image with flock binaries
+    deps: [priest, priest2, helloworld-maz]
+    sources:
+      - '{{.PRIEST_ELF}}'
+      - '{{.PRIEST2_ELF}}'
+      - '{{.HELLOWORLD_MAZ}}'
+    generates:
+      - '{{.DISK_IMAGE}}'
+    cmds:
+      - echo "Creating FAT32 disk image..."
+      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.PRIEST_ELF}} {{.PRIEST2_ELF}} {{.HELLOWORLD_MAZ}}'
+      - |
+        SIZE=$(ls -lh {{.DISK_IMAGE}} | awk '{print $5}')
+        echo "Disk image created at {{.DISK_IMAGE}} ($SIZE)"
+
+  # ===========================================================================
+  # Utility Tasks
+  # ===========================================================================
+
+  test:
+    desc: Run Go tests
+    deps: [check-env]
+    cmds:
+      - echo "Running tests..."
+      - '{{.GO}} test -v ./cardinal/bitfield'
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - echo "Cleaning build artifacts..."
+      - rm -rf {{.BUILD_DIR}}
+      - rm -f {{.KMAZARIN_DATA_ASM}}
+      - rm -f {{.BOOT_IMAGE_DATA_ASM}}
+      - echo "Cleaned."
+
+  # ===========================================================================
+  # Default Target
+  # ===========================================================================
+
+  all:
+    desc: Build cardinal and kmazarin (default)
+    deps: [cardinal]
+
+  default:
+    deps: [all]
