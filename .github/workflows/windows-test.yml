@@ -1,4 +1,4 @@
-name: Windows Build Test
+name: Windows (No POSIX Shell)
 
 on:
   push:
@@ -7,7 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  build:
+  windows-build:
+    name: Build & Verify on Windows
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,3 +47,15 @@ jobs:
 
       - name: Dry run build task
         run: task --dry all
+
+      - name: Summary
+        run: |
+          echo "## Windows Build Results" >> $env:GITHUB_STEP_SUMMARY
+          echo "" >> $env:GITHUB_STEP_SUMMARY
+          echo "All Go tools built successfully on Windows without POSIX shell." >> $env:GITHUB_STEP_SUMMARY
+          echo "" >> $env:GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $env:GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $env:GITHUB_STEP_SUMMARY
+          echo "| Go tools compile | Passed |" >> $env:GITHUB_STEP_SUMMARY
+          echo "| Taskfile parses | Passed |" >> $env:GITHUB_STEP_SUMMARY
+          echo "| Dry run succeeds | Passed |" >> $env:GITHUB_STEP_SUMMARY
