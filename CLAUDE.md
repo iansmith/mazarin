@@ -92,40 +92,38 @@ This project uses a single Go module (`mazzy`). Build is managed by Taskfile (`T
 - `mazarin/` - Shared userspace libraries
 - `shared/` - Shared packages
 
-**Build with task (installed as go tool):**
+**Task is installed as a Go tool. Run it with `$GO tool task`:**
+
 ```bash
+# Build
 $GO tool task              # Build cardinal (default)
-$GO tool task cardinal     # Build cardinal bootloader
-$GO tool task kmazarin     # Build kmazarin kernel
-$GO tool task priest       # Build priest syscall router
-$GO tool task disk         # Create FAT32 disk image
 $GO tool task clean        # Remove build artifacts
 $GO tool task --list       # Show all available tasks
+
+# Run and Debug
+$GO tool task run          # Build and run QEMU (5s timeout)
+$GO tool task run TIMEOUT=30   # Run with 30s timeout
+$GO tool task run TIMEOUT=     # Run without timeout
+$GO tool task show         # View serial output (safe reader + pager)
+$GO tool task stop         # Stop all QEMU instances
+$GO tool task qemu-console # Query QEMU monitor (info registers)
 ```
 
-**Other tools (via `go tool`):**
-- `go tool run` - Start QEMU with built kernel
-- `go tool stop` - Stop running QEMU instances
-- `go tool safe-serial-read` - Safely read serial log (handles infinite loops)
+See `TASK.md` for comprehensive documentation and examples.
 
 ### Complete Development Workflow
 
-**On this system (with Homebrew paths):**
 ```bash
 # 1. Set environment (once per session)
 export GOTOOLCHAIN=auto
 export GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go
 export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 
-# 2. Stop any running QEMU
-$GO tool stop
+# 2. Build and run
+$GO tool task run          # Builds everything, runs QEMU for 5s
 
-# 3. Clean and build
-$GO tool task clean
-$GO tool task
-
-# 4. Run
-$GO tool run 5
+# 3. View output
+$GO tool task show         # View serial log with pager
 ```
 
 Output is written to `/tmp/cardinal-serial.log`.
@@ -151,17 +149,15 @@ Output is written to `/tmp/cardinal-serial.log`.
 
 ### QEMU Monitor Access
 
-The `$GO tool run` script starts QEMU with a TCP monitor on port 4444.
+QEMU runs with a TCP monitor on port 4444. Use the `qemu-console` task:
 
-**Query QEMU monitor:**
 ```bash
-# Using netcat
-echo "info registers" | nc 127.0.0.1 4444
+$GO tool task qemu-console                        # info registers (default)
+$GO tool task qemu-console CMD='x/10i 0x40100000' # disassemble
+$GO tool task qemu-console CMD='info mtree'       # memory map
 ```
 
-**Key monitor commands:**
-- `info registers` - Show CPU registers
-- `x/20i 0xADDRESS` - Disassemble at address (use literal address, not `$pc`)
+Or use netcat directly: `echo "info registers" | nc 127.0.0.1 4444`
 
 ## Binary Utilities (Cross-compilation)
 
