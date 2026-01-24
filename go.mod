@@ -98,18 +98,22 @@ tool (
 	mazzy/cmd/block-serial-bash-hook
 	mazzy/cmd/block-serial-read-hook
 	mazzy/cmd/build
+	mazzy/cmd/check-version
 	mazzy/cmd/compute-linker-values
 	mazzy/cmd/fix-go-elf
 	mazzy/cmd/gen-ast-stubs
+	mazzy/cmd/gen-overlay
 	mazzy/cmd/gen-test-stubs
 	mazzy/cmd/go-cat
 	mazzy/cmd/go-echo
+	mazzy/cmd/go-env
+	mazzy/cmd/go-filesize
 	mazzy/cmd/go-kill
 	mazzy/cmd/go-ls
 	mazzy/cmd/go-mkdir
 	mazzy/cmd/go-mv
 	mazzy/cmd/go-nc
-	mazzy/cmd/go-pkill
+	mazzy/cmd/go-stopproc
 	mazzy/cmd/go-rm
 	mazzy/cmd/go-sleep
 	mazzy/cmd/go-tail

@@ -1,31 +1,72 @@
 // safe-serial-read reads /tmp/cardinal-serial.log safely, detecting and
 // truncating infinite loops that could crash tools or freeze terminals.
+//
+// Usage:
+//
+//	go tool safe-serial-read [-p] [file] [maxbytes]
+//
+// Flags:
+//
+//	-p    Paginate output (24 lines per page, press Enter to continue)
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strconv"
+	"strings"
 )
 
 func main() {
+	paginate := flag.Bool("p", false, "paginate output (24 lines per page)")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: safe-serial-read [-p] [file] [maxbytes]\n")
+		fmt.Fprintf(os.Stderr, "Safely read serial log files.\n\n")
+		flag.PrintDefaults()
+	}
+	flag.Parse()
+
 	filepath := "/tmp/cardinal-serial.log"
 	maxBytes := 100000
 
-	if len(os.Args) > 1 {
-		filepath = os.Args[1]
+	args := flag.Args()
+	if len(args) > 0 {
+		filepath = args[0]
 	}
-	if len(os.Args) > 2 {
-		if n, err := strconv.Atoi(os.Args[2]); err == nil {
+	if len(args) > 1 {
+		if n, err := strconv.Atoi(args[1]); err == nil {
 			maxBytes = n
 		}
 	}
 
 	content := safeRead(filepath, maxBytes)
 	if content != "" {
-		fmt.Print(content)
+		if *paginate {
+			paginateOutput(content, 24)
+		} else {
+			fmt.Print(content)
+		}
+	}
+}
+
+// paginateOutput prints content with pagination
+func paginateOutput(content string, linesPerPage int) {
+	lines := strings.Split(content, "\n")
+	reader := bufio.NewReader(os.Stdin)
+
+	for i := 0; i < len(lines); i++ {
+		fmt.Println(lines[i])
+		if (i+1)%linesPerPage == 0 && i < len(lines)-1 {
+			fmt.Fprintf(os.Stderr, "-- Press Enter for more, q to quit --")
+			input, _ := reader.ReadString('\n')
+			if strings.TrimSpace(input) == "q" {
+				return
+			}
+		}
 	}
 }
 

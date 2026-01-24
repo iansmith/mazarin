@@ -1,4 +1,4 @@
-# Taskfile for mazzy - Go Native Toolchain Build
+# Taskfile for mazzy - Go Native Toolchain Build (Shell-Free)
 # Builds bare-metal ARM64 kernel (Cardinal + Kmazarin) and flock userspace programs
 #
 # Usage:
@@ -18,35 +18,10 @@
 version: '3'
 
 vars:
-  # Resolve GO: use env var, or find via which, or fail
-  GO:
-    sh: |
-      if [ -n "$GO" ]; then
-        echo "$GO"
-      else
-        GO_PATH=$(which go 2>/dev/null)
-        if [ -z "$GO_PATH" ]; then
-          echo "ERROR_NO_GO"
-          exit 0
-        fi
-        echo "WARNING: No environment variable GO found, defaulting to $GO_PATH" >&2
-        echo "$GO_PATH"
-      fi
-
-  # Resolve QEMU: use env var, or find via which, or fail
-  QEMU:
-    sh: |
-      if [ -n "$QEMU" ]; then
-        echo "$QEMU"
-      else
-        QEMU_PATH=$(which qemu-system-aarch64 2>/dev/null)
-        if [ -z "$QEMU_PATH" ]; then
-          echo "ERROR_NO_QEMU"
-          exit 0
-        fi
-        echo "WARNING: No environment variable QEMU found, defaulting to $QEMU_PATH" >&2
-        echo "$QEMU_PATH"
-      fi
+  # Environment variables (shell-free using Go templates)
+  GO: '{{env "GO" | default "go"}}'
+  QEMU: '{{env "QEMU" | default "qemu-system-aarch64"}}'
+  DEBUG: '{{env "DEBUG" | default ""}}'
 
   # Build configuration (prefixed to avoid conflicts with Go env vars)
   TARGET_GOARCH: arm64
@@ -55,13 +30,7 @@ vars:
 
   # Debug build: disable optimizations and inlining
   # Usage: DEBUG=1 task cardinal
-  GCFLAGS:
-    sh: |
-      if [ "$DEBUG" = "1" ]; then
-        echo '-gcflags=all=-N -l'
-      else
-        echo ''
-      fi
+  GCFLAGS: '{{if eq .DEBUG "1"}}-gcflags=all=-N -l{{end}}'
 
   # Output files
   CARDINAL_ELF: '{{.BUILD_DIR}}/cardinal.elf'
@@ -94,43 +63,13 @@ tasks:
 
   check-env:
     desc: Verify GO, QEMU, GOTOOLCHAIN, and tool versions
-    preconditions:
-      - sh: '[ "{{.GO}}" != "ERROR_NO_GO" ]'
-        msg: |
-          GO not set and 'which go' failed.
-          Please set GO=/path/to/go
-      - sh: '[ "{{.QEMU}}" != "ERROR_NO_QEMU" ]'
-        msg: |
-          QEMU not set and 'which qemu-system-aarch64' failed.
-          Please set QEMU=/path/to/qemu-system-aarch64
-      - sh: '[ "$GOTOOLCHAIN" = "auto" ]'
-        msg: |
-          GOTOOLCHAIN must be 'auto'.
-          Run: export GOTOOLCHAIN=auto
     cmds:
+      # Check GOTOOLCHAIN
+      - '{{.GO}} tool go-env -check GOTOOLCHAIN=auto -msg "GOTOOLCHAIN must be ''auto''. Run: export GOTOOLCHAIN=auto"'
       # Check Go version >= 1.24
-      - |
-        GO_VERSION=$({{.GO}} version | grep -oE 'go[0-9]+\.[0-9]+' | head -1 | sed 's/go//')
-        MAJOR=$(echo $GO_VERSION | cut -d. -f1)
-        MINOR=$(echo $GO_VERSION | cut -d. -f2)
-        if [ "$MAJOR" -lt 1 ] || ([ "$MAJOR" -eq 1 ] && [ "$MINOR" -lt 24 ]); then
-          echo "ERROR: Go >= 1.24 required, found go$GO_VERSION"
-          exit 1
-        fi
-        echo "Go: $GO_VERSION ({{.GO}})"
-
+      - '{{.GO}} tool check-version -go {{.GO}} -min 1.24'
       # Check QEMU version >= 10.2
-      - |
-        QEMU_VERSION=$({{.QEMU}} --version | grep -oE '[0-9]+\.[0-9]+' | head -1)
-        MAJOR=$(echo $QEMU_VERSION | cut -d. -f1)
-        MINOR=$(echo $QEMU_VERSION | cut -d. -f2)
-        if [ "$MAJOR" -lt 10 ] || ([ "$MAJOR" -eq 10 ] && [ "$MINOR" -lt 2 ]); then
-          echo "ERROR: QEMU >= 10.2 required, found $QEMU_VERSION"
-          exit 1
-        fi
-        echo "QEMU: $QEMU_VERSION ({{.QEMU}})"
-
-      - echo "GOTOOLCHAIN=auto"
+      - '{{.GO}} tool check-version -qemu {{.QEMU}} -min 10.2'
       - echo "Environment check passed"
     silent: true
 
@@ -141,9 +80,9 @@ tasks:
   build-dir:
     desc: Create build directory
     cmds:
-      - mkdir -p {{.BUILD_DIR}}
+      - '{{.GO}} tool go-mkdir {{.BUILD_DIR}}'
     status:
-      - test -d {{.BUILD_DIR}}
+      - '{{.GO}} tool go-test -d {{.BUILD_DIR}}'
 
   # ===========================================================================
   # Overlay Generation
@@ -163,20 +102,7 @@ tasks:
     generates:
       - '{{.KMAZARIN_OVERLAY_JSON}}'
     cmds:
-      - |
-        GOROOT=$({{.GO}} env GOROOT)
-        cat > {{.KMAZARIN_OVERLAY_JSON}} << 'OVERLAY_EOF'
-        {"Replace":{
-        OVERLAY_EOF
-        echo "\"$GOROOT/src/runtime/cgo_mmap.go\":\"{{.ROOT_DIR}}/{{.RUNTIME_PATCHES_DIR}}/cgo_mmap.go\"," >> {{.KMAZARIN_OVERLAY_JSON}}
-        echo "\"$GOROOT/src/runtime/malloc.go\":\"{{.ROOT_DIR}}/{{.RUNTIME_PATCHES_DIR}}/malloc.go\"," >> {{.KMAZARIN_OVERLAY_JSON}}
-        echo "\"$GOROOT/src/runtime/mcache.go\":\"{{.ROOT_DIR}}/{{.RUNTIME_PATCHES_DIR}}/mcache.go\"," >> {{.KMAZARIN_OVERLAY_JSON}}
-        echo "\"$GOROOT/src/runtime/os_linux_arm64.go\":\"{{.ROOT_DIR}}/{{.RUNTIME_PATCHES_DIR}}/os_linux_arm64.go\"," >> {{.KMAZARIN_OVERLAY_JSON}}
-        echo "\"$GOROOT/src/runtime/preempt.go\":\"{{.ROOT_DIR}}/{{.RUNTIME_PATCHES_DIR}}/preempt.go\"," >> {{.KMAZARIN_OVERLAY_JSON}}
-        echo "\"$GOROOT/src/runtime/tagptr_64bit.go\":\"{{.ROOT_DIR}}/{{.RUNTIME_PATCHES_DIR}}/tagptr_64bit.go\"," >> {{.KMAZARIN_OVERLAY_JSON}}
-        echo "\"$GOROOT/src/syscall/syscall_linux.go\":\"{{.ROOT_DIR}}/{{.RUNTIME_PATCHES_DIR}}/syscall/syscall_linux.go\"" >> {{.KMAZARIN_OVERLAY_JSON}}
-        echo "}}" >> {{.KMAZARIN_OVERLAY_JSON}}
-        echo "Generated {{.KMAZARIN_OVERLAY_JSON}}"
+      - '{{.GO}} tool gen-overlay -type kmazarin -patches {{.RUNTIME_PATCHES_DIR}} -o {{.KMAZARIN_OVERLAY_JSON}}'
 
   userspace-overlay:
     desc: Generate runtime overlay JSON for userspace programs
@@ -189,17 +115,7 @@ tasks:
     generates:
       - '{{.USERSPACE_OVERLAY_JSON}}'
     cmds:
-      - |
-        GOROOT=$({{.GO}} env GOROOT)
-        cat > {{.USERSPACE_OVERLAY_JSON}} << 'OVERLAY_EOF'
-        {"Replace":{
-        OVERLAY_EOF
-        echo "\"$GOROOT/src/syscall/syscall_linux.go\":\"{{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_DIR}}/syscall_linux.go\"," >> {{.USERSPACE_OVERLAY_JSON}}
-        echo "\"$GOROOT/src/syscall/asm_linux_arm64.s\":\"{{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_DIR}}/asm_linux_arm64.s\"," >> {{.USERSPACE_OVERLAY_JSON}}
-        echo "\"$GOROOT/src/runtime/cgo_mmap.go\":\"{{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_DIR}}/runtime/cgo_mmap.go\"," >> {{.USERSPACE_OVERLAY_JSON}}
-        echo "\"$GOROOT/src/runtime/lock_spinbit.go\":\"{{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_DIR}}/runtime/lock_spinbit.go\"" >> {{.USERSPACE_OVERLAY_JSON}}
-        echo "}}" >> {{.USERSPACE_OVERLAY_JSON}}
-        echo "Generated {{.USERSPACE_OVERLAY_JSON}}"
+      - '{{.GO}} tool gen-overlay -type userspace -patches {{.USERSPACE_OVERLAY_DIR}} -o {{.USERSPACE_OVERLAY_JSON}}'
 
   thin-overlay:
     desc: Generate thin client overlay via AST stub generator
@@ -207,15 +123,12 @@ tasks:
     generates:
       - '{{.THIN_OVERLAY_JSON}}'
       - '{{.BUILD_DIR}}/thin-stubs.manifest'
+    vars:
+      GOROOT:
+        sh: '{{.GO}} env GOROOT'
     cmds:
-      - |
-        GOROOT=$({{.GO}} env GOROOT)
-        {{.GO}} tool gen-ast-stubs \
-          -runtime=$GOROOT/src/runtime \
-          -output={{.BUILD_DIR}}/thin-overlay/runtime \
-          -overlay={{.THIN_OVERLAY_JSON}} \
-          -manifest={{.BUILD_DIR}}/thin-stubs.manifest
-        echo "Generated {{.THIN_OVERLAY_JSON}}"
+      - '{{.GO}} tool gen-ast-stubs -runtime={{.GOROOT}}/src/runtime -output={{.BUILD_DIR}}/thin-overlay/runtime -overlay={{.THIN_OVERLAY_JSON}} -manifest={{.BUILD_DIR}}/thin-stubs.manifest'
+      - echo "Generated {{.THIN_OVERLAY_JSON}}"
 
   # ===========================================================================
   # Embedded Data Generation
@@ -229,10 +142,7 @@ tasks:
     generates:
       - '{{.KMAZARIN_DATA_ASM}}'
     cmds:
-      - |
-        {{.GO}} tool incbin2goasm -sym kmazarin_binary -global {{.KMAZARIN_ELF}} > {{.KMAZARIN_DATA_ASM}}
-        LINES=$(wc -l < {{.KMAZARIN_DATA_ASM}} | tr -d ' ')
-        echo "Generated {{.KMAZARIN_DATA_ASM}} ($LINES lines)"
+      - '{{.GO}} tool incbin2goasm -sym kmazarin_binary -global -o {{.KMAZARIN_DATA_ASM}} {{.KMAZARIN_ELF}}'
 
   embed-boot-image:
     desc: Generate assembly with embedded boot image
@@ -242,10 +152,7 @@ tasks:
     generates:
       - '{{.BOOT_IMAGE_DATA_ASM}}'
     cmds:
-      - |
-        {{.GO}} tool incbin2goasm -sym _binary_boot_mazarin_bin -global {{.BOOT_IMAGE_BIN}} > {{.BOOT_IMAGE_DATA_ASM}}
-        LINES=$(wc -l < {{.BOOT_IMAGE_DATA_ASM}} | tr -d ' ')
-        echo "Generated {{.BOOT_IMAGE_DATA_ASM}} ($LINES lines)"
+      - '{{.GO}} tool incbin2goasm -sym _binary_boot_mazarin_bin -global -o {{.BOOT_IMAGE_DATA_ASM}} {{.BOOT_IMAGE_BIN}}'
 
   # ===========================================================================
   # Kmazarin Kernel Build
@@ -271,7 +178,7 @@ tasks:
       - '{{.GO}} tool fix-go-elf {{.KMAZARIN_ELF}}'
       - echo "Relocating kmazarin to high memory (0xFFFFFFFF41800000)..."
       - '{{.GO}} tool relocate-kmazarin {{.KMAZARIN_ELF}} {{.KMAZARIN_ELF}}.tmp'
-      - mv {{.KMAZARIN_ELF}}.tmp {{.KMAZARIN_ELF}}
+      - '{{.GO}} tool go-mv {{.KMAZARIN_ELF}}.tmp {{.KMAZARIN_ELF}}'
       - echo "Kmazarin kernel built at {{.KMAZARIN_ELF}}"
 
   # ===========================================================================
@@ -316,15 +223,7 @@ tasks:
       - '{{.PRIEST_ELF}}'
     cmds:
       - echo "Building priest (syscall router with overlay)..."
-      - |
-        CGO_ENABLED=0 \
-        GOARCH={{.TARGET_GOARCH}} \
-        GOOS={{.TARGET_GOOS}} \
-        {{.GO}} build \
-          -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} \
-          {{.GCFLAGS}} \
-          -o {{.PRIEST_ELF}} \
-          ./flock/cmd/priest
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.PRIEST_ELF}} ./flock/cmd/priest'
       - echo "Priest built at {{.PRIEST_ELF}}"
 
   priest2:
@@ -339,15 +238,7 @@ tasks:
       - '{{.PRIEST2_ELF}}'
     cmds:
       - echo "Building priest2 (scheduling test program)..."
-      - |
-        CGO_ENABLED=0 \
-        GOARCH={{.TARGET_GOARCH}} \
-        GOOS={{.TARGET_GOOS}} \
-        {{.GO}} build \
-          -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} \
-          {{.GCFLAGS}} \
-          -o {{.PRIEST2_ELF}} \
-          ./flock/cmd/priest2
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.PRIEST2_ELF}} ./flock/cmd/priest2'
       - echo "Priest2 built at {{.PRIEST2_ELF}}"
 
   helloworld:
@@ -362,18 +253,8 @@ tasks:
       - '{{.HELLOWORLD_ELF}}'
     cmds:
       - echo "Building helloworld (userspace program)..."
-      - |
-        CGO_ENABLED=0 \
-        GOARCH={{.TARGET_GOARCH}} \
-        GOOS={{.TARGET_GOOS}} \
-        {{.GO}} build \
-          -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} \
-          {{.GCFLAGS}} \
-          -o {{.HELLOWORLD_ELF}} \
-          ./flock/cmd/helloworld
-      - |
-        SIZE=$(ls -lh {{.HELLOWORLD_ELF}} | awk '{print $5}')
-        echo "Helloworld built at {{.HELLOWORLD_ELF}} ($SIZE)"
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.HELLOWORLD_ELF}} ./flock/cmd/helloworld'
+      - echo "Helloworld built at {{.HELLOWORLD_ELF}}"
 
   helloworld-thin:
     desc: Build helloworld with thin client overlay (minimal runtime)
@@ -386,18 +267,8 @@ tasks:
       - '{{.HELLOWORLD_THIN_ELF}}'
     cmds:
       - echo "Building helloworld-thin (minimal runtime stubs)..."
-      - |
-        CGO_ENABLED=0 \
-        GOARCH={{.TARGET_GOARCH}} \
-        GOOS={{.TARGET_GOOS}} \
-        {{.GO}} build \
-          -overlay={{.ROOT_DIR}}/{{.THIN_OVERLAY_JSON}} \
-          {{.GCFLAGS}} \
-          -o {{.HELLOWORLD_THIN_ELF}} \
-          ./flock/cmd/helloworld
-      - |
-        SIZE=$(ls -lh {{.HELLOWORLD_THIN_ELF}} | awk '{print $5}')
-        echo "Helloworld-thin built at {{.HELLOWORLD_THIN_ELF}} ($SIZE)"
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.THIN_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.HELLOWORLD_THIN_ELF}} ./flock/cmd/helloworld'
+      - echo "Helloworld-thin built at {{.HELLOWORLD_THIN_ELF}}"
 
   helloworld-maz:
     desc: Build helloworld.maz (direct SVC, no overlay)
@@ -409,17 +280,8 @@ tasks:
       - '{{.HELLOWORLD_MAZ}}'
     cmds:
       - echo "Building helloworld.maz (direct SVC, no overlay)..."
-      - |
-        CGO_ENABLED=0 \
-        GOARCH={{.TARGET_GOARCH}} \
-        GOOS={{.TARGET_GOOS}} \
-        {{.GO}} build \
-          {{.GCFLAGS}} \
-          -o {{.HELLOWORLD_MAZ}} \
-          ./flock/cmd/helloworld
-      - |
-        SIZE=$(ls -lh {{.HELLOWORLD_MAZ}} | awk '{print $5}')
-        echo "Helloworld.maz built at {{.HELLOWORLD_MAZ}} ($SIZE)"
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build {{.GCFLAGS}} -o {{.HELLOWORLD_MAZ}} ./flock/cmd/helloworld'
+      - echo "Helloworld.maz built at {{.HELLOWORLD_MAZ}}"
 
   # ===========================================================================
   # Disk Image
@@ -437,106 +299,78 @@ tasks:
     cmds:
       - echo "Creating FAT32 disk image..."
       - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.PRIEST_ELF}} {{.PRIEST2_ELF}} {{.HELLOWORLD_MAZ}}'
-      - |
-        SIZE=$(ls -lh {{.DISK_IMAGE}} | awk '{print $5}')
-        echo "Disk image created at {{.DISK_IMAGE}} ($SIZE)"
+      - echo "Disk image created at {{.DISK_IMAGE}}"
 
   # ===========================================================================
   # Run and Stop
   # ===========================================================================
 
   run:
-    desc: "Run QEMU with cardinal/kmazarin (TIMEOUT=N for timeout in seconds, empty=no timeout)"
+    desc: "Run QEMU with cardinal/kmazarin (TIMEOUT=N for timeout in seconds, 0=no timeout)"
     deps: [disk, cardinal]
     vars:
       TIMEOUT: '{{.TIMEOUT | default "5"}}'
       LOG_FILE: /tmp/cardinal-serial.log
     cmds:
       - task: stop
-      - rm -f {{.LOG_FILE}}
+      - '{{.GO}} tool go-rm {{.LOG_FILE}}'
+      - echo "Starting QEMU (timeout {{.TIMEOUT}}s)..."
+      - task: run-qemu-background
+      - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
+      - task: stop
+      - '{{.GO}} tool go-sleep 0.3'
+      - 'echo ""'
+      - 'echo "=== Serial Output (last 50 lines) ==="'
+      - '{{.GO}} tool safe-serial-read || echo "(no output)"'
+      - 'echo ""'
+      - 'echo "Log file: {{.LOG_FILE}}"'
+
+  run-qemu-background:
+    desc: Start QEMU in background (internal task)
+    internal: true
+    vars:
+      LOG_FILE: /tmp/cardinal-serial.log
+    cmds:
       - |
-        if [ -z "{{.TIMEOUT}}" ] || [ "{{.TIMEOUT}}" = "" ]; then
-          echo "Starting QEMU (no timeout, use 'task stop' to stop)..."
-          {{.QEMU}} \
-            -M virt,virtualization=off \
-            -cpu cortex-a72 \
-            -m 8G \
-            -kernel {{.CARDINAL_ELF}} \
-            -nodefaults \
-            -device virtio-gpu-pci \
-            -object rng-random,id=rng0,filename=/dev/urandom \
-            -device virtio-rng-device,rng=rng0 \
-            -display none \
-            -serial file:{{.LOG_FILE}} \
-            -monitor tcp:127.0.0.1:4444,server,nowait \
-            -semihosting \
-            -no-reboot \
-            -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 \
-            -device virtio-blk-device,drive=disk0
-        else
-          echo "Starting QEMU (timeout {{.TIMEOUT}}s)..."
-          # Start QEMU in background
-          {{.QEMU}} \
-            -M virt,virtualization=off \
-            -cpu cortex-a72 \
-            -m 8G \
-            -kernel {{.CARDINAL_ELF}} \
-            -nodefaults \
-            -device virtio-gpu-pci \
-            -object rng-random,id=rng0,filename=/dev/urandom \
-            -device virtio-rng-device,rng=rng0 \
-            -display none \
-            -serial file:{{.LOG_FILE}} \
-            -monitor tcp:127.0.0.1:4444,server,nowait \
-            -semihosting \
-            -no-reboot \
-            -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 \
-            -device virtio-blk-device,drive=disk0 \
-            &
-          QEMU_PID=$!
-          echo "QEMU PID: $QEMU_PID"
-          echo "Monitor: tcp:127.0.0.1:4444"
-          echo "Log file: {{.LOG_FILE}}"
-
-          # Wait for timeout then kill
-          sleep {{.TIMEOUT}}
-          kill $QEMU_PID 2>/dev/null || true
-          wait $QEMU_PID 2>/dev/null
-          EXIT_CODE=$?
-          # Exit codes 143 (SIGTERM) and 137 (SIGKILL) are expected when we kill the process
-          if [ $EXIT_CODE -ne 0 ] && [ $EXIT_CODE -ne 143 ] && [ $EXIT_CODE -ne 137 ]; then
-            echo "QEMU exited unexpectedly with code $EXIT_CODE"
-          fi
-
-          echo ""
-          echo "=== Serial Output (last 50 lines) ==="
-          tail -50 {{.LOG_FILE}} 2>/dev/null | tr -d '\000-\010\013-\037\177-\377' || echo "(no output)"
-          echo ""
-          if [ -f {{.LOG_FILE}} ]; then
-            SIZE=$(ls -lh {{.LOG_FILE}} | awk '{print $5}')
-            echo "Log file: {{.LOG_FILE}} ($SIZE)"
-          fi
-        fi
-        # Always exit successfully - timeout is expected behavior
-        exit 0
+        {{.QEMU}} \
+          -M virt,virtualization=off \
+          -cpu cortex-a72 \
+          -m 8G \
+          -kernel {{.CARDINAL_ELF}} \
+          -nodefaults \
+          -device virtio-gpu-pci \
+          -object rng-random,id=rng0,filename=/dev/urandom \
+          -device virtio-rng-device,rng=rng0 \
+          -display none \
+          -serial file:{{.LOG_FILE}} \
+          -monitor tcp:127.0.0.1:4444,server,nowait \
+          -semihosting \
+          -no-reboot \
+          -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 \
+          -device virtio-blk-device,drive=disk0 \
+          &
+        echo "QEMU started in background"
+        echo "Monitor: tcp:127.0.0.1:4444"
+        echo "Log file: {{.LOG_FILE}}"
 
   qemu-console:
     desc: "Send command to QEMU monitor (CMD='info registers' or other QEMU command)"
     vars:
       CMD: '{{.CMD | default "info registers"}}'
     cmds:
-      - echo "{{.CMD}}" | nc 127.0.0.1 4444
+      - 'echo "{{.CMD}}" | {{.GO}} tool go-nc 127.0.0.1 4444'
 
   show:
-    desc: "Show serial output using safe-serial-read (piped through $PAGER or more)"
+    desc: "Show serial output using safe-serial-read with pagination"
     cmds:
-      - '{{.GO}} tool safe-serial-read | ${PAGER:-more}'
+      - '{{.GO}} tool safe-serial-read -p'
 
   stop:
     desc: Stop all running QEMU instances
     cmds:
-      - pkill -f qemu-system-aarch64 2>/dev/null || true
-      - sleep 0.3
+      # Send quit command to QEMU monitor if it's listening
+      - 'echo "quit" | {{.GO}} tool go-nc -w 1s 127.0.0.1 4444 || true'
+      - '{{.GO}} tool go-sleep 0.5'
 
   # ===========================================================================
   # Utility Tasks
@@ -553,9 +387,9 @@ tasks:
     desc: Remove build artifacts
     cmds:
       - echo "Cleaning build artifacts..."
-      - rm -rf {{.BUILD_DIR}}
-      - rm -f {{.KMAZARIN_DATA_ASM}}
-      - rm -f {{.BOOT_IMAGE_DATA_ASM}}
+      - '{{.GO}} tool go-rm -r {{.BUILD_DIR}}'
+      - '{{.GO}} tool go-rm {{.KMAZARIN_DATA_ASM}}'
+      - '{{.GO}} tool go-rm {{.BOOT_IMAGE_DATA_ASM}}'
       - echo "Cleaned."
 
   # ===========================================================================
