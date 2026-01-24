@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"os"
 
-	"cardinal/constants"
+	"mazzy/cardinal/constants"
 )
 
 func main() {

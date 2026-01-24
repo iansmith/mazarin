@@ -3,7 +3,7 @@
 // This tool prints the kmazarin load address computed from the memory layout
 // constants defined in cardinal/constants package.
 //
-// Used by: tools/kmazarin-entry.sh (replaces parsing linker.ld)
+// This replaces the old tools/kmazarin-entry.sh script.
 //
 // Usage:
 //   go run tools/print-kmazarin-addr.go
