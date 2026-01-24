@@ -102,6 +102,11 @@ tool (
 	mazzy/cmd/fix-go-elf
 	mazzy/cmd/gen-ast-stubs
 	mazzy/cmd/gen-test-stubs
+	mazzy/cmd/go-cat
+	mazzy/cmd/go-echo
+	mazzy/cmd/go-mkdir
+	mazzy/cmd/go-mv
+	mazzy/cmd/go-rm
 	mazzy/cmd/incbin2goasm
 	mazzy/cmd/mkfat32
 	mazzy/cmd/patch-entry

@@ -266,16 +266,7 @@ tasks:
         sh: '{{.GO}} tool print-kmazarin-addr'
     cmds:
       - echo "Building kmazarin kernel (static Go binary at {{.KMAZARIN_LOAD_ADDR}})..."
-      - |
-        CGO_ENABLED=0 \
-        GOARCH={{.TARGET_GOARCH}} \
-        GOOS={{.TARGET_GOOS}} \
-        {{.GO}} build \
-          -overlay={{.ROOT_DIR}}/{{.KMAZARIN_OVERLAY_JSON}} \
-          {{.GCFLAGS}} \
-          -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" \
-          -o {{.KMAZARIN_ELF}} \
-          ./kmazarin/kmazarin
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.KMAZARIN_OVERLAY_JSON}} {{.GCFLAGS}} -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" -o {{.KMAZARIN_ELF}} ./kmazarin/kmazarin'
       - echo "Fixing kmazarin ELF for QEMU compatibility..."
       - '{{.GO}} tool fix-go-elf {{.KMAZARIN_ELF}}'
       - echo "Relocating kmazarin to high memory (0xFFFFFFFF41800000)..."
@@ -299,16 +290,8 @@ tasks:
     generates:
       - '{{.CARDINAL_ELF}}'
     cmds:
-      - echo "Building cardinal with Go native toolchain..."
-      - |
-        CGO_ENABLED=0 \
-        GOARCH={{.TARGET_GOARCH}} \
-        GOOS={{.TARGET_GOOS}} \
-        {{.GO}} build \
-          {{.GCFLAGS}} \
-          -ldflags="-checklinkname=0 -T 0x40100000" \
-          -o {{.CARDINAL_ELF}} \
-          ./cardinal/main
+      - echo "Building cardinal bootloader..."
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build {{.GCFLAGS}} -ldflags="-checklinkname=0 -T 0x40100000" -o {{.CARDINAL_ELF}} ./cardinal/main'
       - echo "Patching entry point to _cardinal_boot..."
       - '{{.GO}} tool patch-entry {{.CARDINAL_ELF}} _cardinal_boot'
       - echo "Patching linker values..."
