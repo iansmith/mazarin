@@ -466,7 +466,7 @@ tasks:
     desc: "Run QEMU with cardinal/kmazarin (TIMEOUT=N for timeout in seconds, empty=no timeout)"
     deps: [disk, cardinal]
     vars:
-      TIMEOUT: '{{.TIMEOUT | default "15"}}'
+      TIMEOUT: '{{.TIMEOUT | default "5"}}'
       LOG_FILE: /tmp/cardinal-serial.log
     cmds:
       - task: stop
@@ -518,7 +518,12 @@ tasks:
           # Wait for timeout then kill
           sleep {{.TIMEOUT}}
           kill $QEMU_PID 2>/dev/null || true
-          wait $QEMU_PID 2>/dev/null || true
+          wait $QEMU_PID 2>/dev/null
+          EXIT_CODE=$?
+          # Exit codes 143 (SIGTERM) and 137 (SIGKILL) are expected when we kill the process
+          if [ $EXIT_CODE -ne 0 ] && [ $EXIT_CODE -ne 143 ] && [ $EXIT_CODE -ne 137 ]; then
+            echo "QEMU exited unexpectedly with code $EXIT_CODE"
+          fi
 
           echo ""
           echo "=== Serial Output (last 50 lines) ==="
@@ -529,6 +534,8 @@ tasks:
             echo "Log file: {{.LOG_FILE}} ($SIZE)"
           fi
         fi
+        # Always exit successfully - timeout is expected behavior
+        exit 0
 
   qemu-console:
     desc: "Send command to QEMU monitor (CMD='info registers' or other QEMU command)"
@@ -536,6 +543,11 @@ tasks:
       CMD: '{{.CMD | default "info registers"}}'
     cmds:
       - echo "{{.CMD}}" | nc 127.0.0.1 4444
+
+  show:
+    desc: "Show serial output using safe-serial-read (piped through $PAGER or more)"
+    cmds:
+      - '{{.GO}} tool safe-serial-read | ${PAGER:-more}'
 
   stop:
     desc: Stop all running QEMU instances
