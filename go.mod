@@ -104,9 +104,18 @@ tool (
 	mazzy/cmd/gen-test-stubs
 	mazzy/cmd/go-cat
 	mazzy/cmd/go-echo
+	mazzy/cmd/go-kill
+	mazzy/cmd/go-ls
 	mazzy/cmd/go-mkdir
 	mazzy/cmd/go-mv
+	mazzy/cmd/go-nc
+	mazzy/cmd/go-pkill
 	mazzy/cmd/go-rm
+	mazzy/cmd/go-sleep
+	mazzy/cmd/go-tail
+	mazzy/cmd/go-test
+	mazzy/cmd/go-tr
+	mazzy/cmd/go-wc
 	mazzy/cmd/incbin2goasm
 	mazzy/cmd/mkfat32
 	mazzy/cmd/patch-entry
