@@ -2,7 +2,7 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/*]  # TODO: remove feature/* after testing
     paths:
       - 'site/**'
       - '.github/workflows/pages.yml'
