@@ -59,6 +59,8 @@ func GetPreemptOffsets() struct {
 	StackPreemptValue uintptr
 	GRunning          uint32
 	GScan             uint32
+	GMOffset          uintptr // Offset of g.m from g pointer
+	MG0Offset         uintptr // Offset of m.g0 from m pointer (always 0)
 } {
 	var g runtimeG
 	return struct {
@@ -70,6 +72,8 @@ func GetPreemptOffsets() struct {
 		StackPreemptValue uintptr
 		GRunning          uint32
 		GScan             uint32
+		GMOffset          uintptr
+		MG0Offset         uintptr
 	}{
 		StackGuard0Offset: unsafe.Offsetof(g.stackguard0),
 		PreemptOffset:     unsafe.Offsetof(g.preempt),
@@ -77,7 +81,9 @@ func GetPreemptOffsets() struct {
 		StackLoOffset:     unsafe.Offsetof(g.stack.lo),
 		StackHiOffset:     unsafe.Offsetof(g.stack.hi),
 		StackPreemptValue: stackPreempt,
-		GRunning:          2,    // _Grunning constant
+		GRunning:          2,      // _Grunning constant
 		GScan:             0x1000, // _Gscan mask
+		GMOffset:          unsafe.Offsetof(g.m),
+		MG0Offset:         0, // m.g0 is first field in m struct
 	}
 }

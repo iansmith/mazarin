@@ -183,16 +183,30 @@ func GetProcessL0PA() uintptr {
 // SwitchToProcessPageTable switches TTBR0 to the process's page table.
 // This should be called before ERET to userspace.
 // It performs a full TLB invalidation to ensure the new mappings take effect.
+// DEPRECATED: Use SwitchToProcessPageTableWithL0 for race-safety during priest loading.
 //
 //go:nosplit
 func SwitchToProcessPageTable() {
-	if processL0PA == 0 {
-		console.KWriteString("[kmem] WARNING: SwitchToProcessPageTable with no process PT!\r\n")
+	SwitchToProcessPageTableWithL0(processL0PA)
+}
+
+// SwitchToProcessPageTableWithL0 switches TTBR0 to the specified L0 page table.
+// This should be called before ERET to userspace.
+// Using an explicit l0PA parameter is safe during priest loading when context
+// switches could otherwise corrupt the global processL0PA.
+//
+//go:nosplit
+func SwitchToProcessPageTableWithL0(l0PA uintptr) {
+	if l0PA == 0 {
+		console.KWriteString("[kmem] WARNING: SwitchToProcessPageTableWithL0 with no PT!\r\n")
 		return
 	}
 
+	// Update global processL0PA so page fault handlers use the correct page table
+	processL0PA = l0PA
+
 	console.KWriteString("[kmem] Switching TTBR0 to process PT: ")
-	console.KPrintHex64(uint64(processL0PA))
+	console.KPrintHex64(uint64(l0PA))
 	console.KWriteString("\r\n")
 
 	// DEBUG: Verify process page table has correct mapping BEFORE switch
@@ -220,7 +234,7 @@ func SwitchToProcessPageTable() {
 	dsbISH()
 
 	// 2. Write new TTBR0 value (ASID=0, just the physical address)
-	writeTTBR0Asm(uint64(processL0PA))
+	writeTTBR0Asm(uint64(l0PA))
 
 	// 3. Invalidate all TLB entries (Inner Shareable for multi-core safety)
 	//    This must be AFTER the TTBR0 write so we invalidate entries
@@ -237,7 +251,7 @@ func SwitchToProcessPageTable() {
 	hwTTBR0 := readTTBR0EL1()
 	console.KWriteString("[kmem] TTBR0 after switch: ")
 	console.KPrintHex64(uint64(hwTTBR0))
-	if hwTTBR0 != processL0PA {
+	if hwTTBR0 != l0PA {
 		console.KWriteString(" *** MISMATCH! ***")
 	}
 	console.KWriteString("\r\n")
@@ -1422,9 +1436,21 @@ func MapUserPageWithPA(va uintptr, elfFlags uint32) (uintptr, error) {
 // mapUserPage maps a VA to PA with user-accessible permissions.
 // Uses the process-specific TTBR0 L0 table if one has been created,
 // otherwise falls back to the inherited TTBR0 from Cardinal.
+// NOT safe if context switches can occur - use mapUserPageWithL0 instead.
 //
 //go:nosplit
 func mapUserPage(va, pa uintptr, elfFlags uint32) bool {
+	return mapUserPageWithL0(va, pa, elfFlags, 0) // 0 = use global processL0PA
+}
+
+// mapUserPageWithL0 maps a VA to PA with user-accessible permissions,
+// using an explicit L0 page table PA. This is safe to use when context
+// switches may occur.
+//
+// If l0PAParam is 0, uses the global processL0PA.
+//
+//go:nosplit
+func mapUserPageWithL0(va, pa uintptr, elfFlags uint32, l0PAParam uintptr) bool {
 	// Extract indices
 	l0Idx := (va >> L0Shift) & 0x1FF
 	l1Idx := (va >> L1Shift) & 0x1FF
@@ -1436,8 +1462,11 @@ func mapUserPage(va, pa uintptr, elfFlags uint32) bool {
 		return false // User pages must be in low memory
 	}
 
-	// Use process-specific L0 if available, otherwise fallback to inherited
-	l0PA := processL0PA
+	// Use explicit L0 if provided, otherwise use global processL0PA
+	l0PA := l0PAParam
+	if l0PA == 0 {
+		l0PA = processL0PA
+	}
 	if l0PA == 0 {
 		l0PA = ttbr0L0PA
 	}
@@ -2100,6 +2129,8 @@ func ReadUserUint64(va uintptr) (uint64, bool) {
 
 // AllocAndMapUserPage allocates, maps, and zeros a userspace page in one operation.
 // This is the SINGLE unified mechanism for issuing pages to userspace.
+// Uses the global processL0PA - NOT safe if context switches can occur!
+// For loading code that may be interrupted, use AllocAndMapUserPageWithL0 instead.
 //
 // The function:
 //  1. Allocates a physical frame from the USERSPACE frame pool
@@ -2114,6 +2145,19 @@ func ReadUserUint64(va uintptr) (uint64, bool) {
 // CRITICAL: This ensures all userspace pages are zeroed before use.
 // This prevents information leakage and ensures the Go runtime sees clean memory.
 func AllocAndMapUserPage(userVA uintptr, elfFlags uint32) (framePA uintptr, scratchVA uintptr) {
+	return AllocAndMapUserPageWithL0(userVA, elfFlags, 0) // 0 = use global processL0PA
+}
+
+// AllocAndMapUserPageWithL0 allocates, maps, and zeros a userspace page using
+// an explicit L0 page table PA. This is safe to use when context switches may
+// occur, as it doesn't rely on the global processL0PA.
+//
+// If l0PA is 0, falls back to the global processL0PA.
+//
+// Returns:
+//   - framePA: the physical address of the allocated frame (for later scratch remapping)
+//   - scratchVA: the kernel scratch VA for immediate data copying (may be remapped later)
+func AllocAndMapUserPageWithL0(userVA uintptr, elfFlags uint32, l0PA uintptr) (framePA uintptr, scratchVA uintptr) {
 	// Lazy initialization
 	if !pagingInitialized {
 		InitPaging()
@@ -2126,8 +2170,8 @@ func AllocAndMapUserPage(userVA uintptr, elfFlags uint32) (framePA uintptr, scra
 		return 0, 0
 	}
 
-	// Step 2: Map the frame to userspace VA
-	if !mapUserPage(userVA, framePA, elfFlags) {
+	// Step 2: Map the frame to userspace VA using explicit page table
+	if !mapUserPageWithL0(userVA, framePA, elfFlags, l0PA) {
 		uartPuts("[kmem] AllocAndMapUserPage: user map failed\r\n")
 		return 0, 0
 	}

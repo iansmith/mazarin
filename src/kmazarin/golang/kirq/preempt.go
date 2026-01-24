@@ -23,6 +23,8 @@ type preemptOffsetsType struct {
 	StackPreemptValue uintptr
 	GRunning          uint32
 	GScan             uint32
+	GMOffset          uintptr // Offset of g.m from g pointer
+	MG0Offset         uintptr // Offset of m.g0 from m pointer (always 0)
 }
 
 // Global preemption offsets - set by InitPreemption(), read by assembly.
@@ -37,6 +39,8 @@ var (
 	PreemptGRunning          uint32  // _Grunning constant (2)
 	PreemptGScan             uint32  // _Gscan bit mask (0x1000)
 	PreemptOffsetsValid      uint32  // 1 when offsets have been initialized
+	PreemptGMOffset          uintptr // Offset of g.m from g pointer
+	PreemptMG0Offset         uintptr // Offset of m.g0 from m pointer (always 0)
 
 	// Async preemption addresses - set by SetAsyncPreemptAddr, read by assembly
 	AsyncPreemptAddr        uint64 // Address of runtime.asyncPreempt
@@ -69,13 +73,40 @@ const (
 // async preemption on a goroutine that hasn't yielded.
 // 5 intervals = 50ms max runtime without yield.
 // Exported for assembly access.
+// DEPRECATED: Use GoroutinePreemptTicks instead for deadline-based preemption.
 var GoroutinePreemptIntervals uint64 = 5
 
 // ThreadPreemptIntervals is the number of 10ms intervals before forcing
 // a thread preemption (context switch to another thread).
 // 20 intervals = 200ms - gives goroutines time to work.
 // Exported for assembly access.
+// DEPRECATED: Use ThreadPreemptTicks instead for deadline-based preemption.
 var ThreadPreemptIntervals uint64 = 20
+
+// GoroutinePreemptTicks is the number of raw timer ticks before forcing
+// async preemption on a goroutine. At 62.5MHz: 50ms = 3,125,000 ticks.
+// Set by InitPreemptThresholds() based on actual timer frequency.
+// Exported for assembly access.
+var GoroutinePreemptTicks uint64 = 3125000
+
+// ThreadPreemptTicks is the number of raw timer ticks before forcing
+// a thread preemption. At 62.5MHz: 200ms = 12,500,000 ticks.
+// Set by InitPreemptThresholds() based on actual timer frequency.
+// Exported for assembly access.
+var ThreadPreemptTicks uint64 = 12500000
+
+// InitPreemptThresholds calculates preemption thresholds based on timer frequency.
+// Call this after SystemTimerFrequency is set.
+func InitPreemptThresholds() {
+	freq := SystemTimerFrequency
+	if freq == 0 {
+		freq = 62500000 // Default QEMU frequency
+	}
+	// GoroutinePreemptTicks = 50ms worth of ticks
+	GoroutinePreemptTicks = freq / 20 // freq * 0.05 = freq / 20
+	// ThreadPreemptTicks = 200ms worth of ticks
+	ThreadPreemptTicks = freq / 5 // freq * 0.2 = freq / 5
+}
 
 // NeedsAsyncPreempt is set by assembly when a goroutine has exceeded
 // the preemption threshold and needs async preemption injection.
@@ -110,12 +141,17 @@ func InitPreemption() {
 	PreemptStackPreemptValue = offsets.StackPreemptValue
 	PreemptGRunning = offsets.GRunning
 	PreemptGScan = offsets.GScan
+	PreemptGMOffset = offsets.GMOffset
+	PreemptMG0Offset = offsets.MG0Offset
 
 	// Read system timer frequency
 	SystemTimerFrequency = uint64(asm_readCntfrqEl0())
 	if SystemTimerFrequency == 0 {
 		SystemTimerFrequency = 62500000 // Default for QEMU virt
 	}
+
+	// Initialize deadline-based preemption thresholds based on timer frequency
+	InitPreemptThresholds()
 
 	// Memory barrier to ensure all stores are visible before setting valid flag
 	atomic.StoreUint32(&PreemptOffsetsValid, 1)

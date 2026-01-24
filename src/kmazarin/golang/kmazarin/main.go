@@ -96,6 +96,9 @@ func init() {
 	g0StructAddr := GetG0StructAddr()
 	_ = g0StructAddr // Suppress unused warning
 
+	// Initialize preemption thresholds BEFORE threads, so deadlines use correct values
+	kirq.InitPreemptThresholds()
+
 	// Initialize thread table - M0 is thread 0
 	// MUST happen before any clone syscalls!
 	InitThreads()
@@ -890,7 +893,7 @@ func simpleMain() {
 	console.KPrintf("[Main] GC debug: NumGC=%d HeapAlloc=%d NextGC=%d GCPercent=%d\n",
 		memStats.NumGC, memStats.HeapAlloc, memStats.NextGC, debug.SetGCPercent(-1))
 
-	// Launch TWO priests, each with their own Go runtime.
+	// Launch TWO priests sequentially.
 	// SyscallLaunch creates a thread for each priest and adds it to the ready queue.
 	// This tests thread scheduling across multiple userspace processes.
 

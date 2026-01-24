@@ -223,7 +223,11 @@ func SyscallLaunch(filenamePtr, _, _, _, _, _ uint64) int64 {
 	}
 
 	// Parse and load ELF (now using the fresh process page table)
-	proc, err := loadELF(elfData, filename)
+	// CRITICAL: Pass processL0PA explicitly to prevent race conditions!
+	// Without this, context switches during ELF loading could cause the
+	// global processL0PA to be overwritten, loading ELF data into the
+	// WRONG page table.
+	proc, err := loadELF(elfData, filename, processL0PA)
 	if err != nil {
 		console.KWriteString("[Launch] ERROR: Failed to load ELF: ")
 		console.KWriteString(err.Error())
@@ -468,7 +472,9 @@ func SyscallLaunch(filenamePtr, _, _, _, _, _ uint64) int64 {
 
 	// CRITICAL: Switch TTBR0 to the process-specific page table before ERET.
 	// This ensures priest runs with a clean address space, not Cardinal's leftover mappings.
-	kmem.SwitchToProcessPageTable()
+	// Use explicit l0PA to prevent race conditions with context switches that corrupt
+	// the global processL0PA.
+	kmem.SwitchToProcessPageTableWithL0(processL0PA)
 
 	// FINAL VERIFICATION: Read from the PHYSICAL ADDRESS directly via scratch mapping
 	// to confirm the data is absolutely correct at the moment before ERET
@@ -525,7 +531,10 @@ func SyscallLaunch(filenamePtr, _, _, _, _, _ uint64) int64 {
 
 // loadELF parses an ELF file and loads it into memory
 // filename is passed through to setupUserStack for argv[0]
-func loadELF(data []byte, filename string) (*Process, error) {
+// l0PA is the physical address of the L0 page table to use for mapping.
+// CRITICAL: This must be passed explicitly to prevent race conditions with
+// context switches that would otherwise corrupt the global processL0PA.
+func loadELF(data []byte, filename string, l0PA uintptr) (*Process, error) {
 	if len(data) < 64 {
 		return nil, &elfError{"file too small for ELF header"}
 	}
@@ -574,7 +583,7 @@ func loadELF(data []byte, filename string) (*Process, error) {
 		console.KWriteString("\r\n")
 
 		// Load this segment into memory
-		if err := loadSegment(data, &phdr); err != nil {
+		if err := loadSegment(data, &phdr, l0PA); err != nil {
 			return nil, err
 		}
 	}
@@ -590,7 +599,7 @@ func loadELF(data []byte, filename string) (*Process, error) {
 	console.KPrintHex64(stackBase)
 	console.KWriteString("\r\n")
 
-	if err := allocateUserStack(stackBase, stackSize); err != nil {
+	if err := allocateUserStack(stackBase, stackSize, l0PA); err != nil {
 		return nil, err
 	}
 
@@ -838,10 +847,11 @@ func findSymbolAddress(elfData []byte, hdr *elf64Header, symbolName string) uint
 // loadSegment loads a single ELF segment into memory
 // Uses kernel scratch mapping to copy data since kernel can't directly access
 // userspace pages (PAN/permission restrictions on ARM64).
+// l0PA is the explicit L0 page table PA to use for mapping.
 //
-// IMPORTANT: Uses AllocAndMapUserPage which zeros all pages before use.
+// IMPORTANT: Uses AllocAndMapUserPageWithL0 which zeros all pages before use.
 // This ensures any padding within pages is zero, not garbage data.
-func loadSegment(elfData []byte, phdr *elf64Phdr) error {
+func loadSegment(elfData []byte, phdr *elf64Phdr, l0PA uintptr) error {
 	if phdr.Memsz == 0 {
 		return nil
 	}
@@ -854,17 +864,17 @@ func loadSegment(elfData []byte, phdr *elf64Phdr) error {
 	numPages := (endPage - startPage) / pageSize
 
 	// Track physical addresses for each page so we can remap scratch VA later
-	// AllocAndMapUserPage returns (framePA, scratchVA)
+	// AllocAndMapUserPageWithL0 returns (framePA, scratchVA)
 	pagePAs := make([]uintptr, numPages)
 
 	// Allocate, map, and ZERO pages for userspace
 	for page := uint64(0); page < numPages; page++ {
 		pageVA := startPage + page*pageSize
 
-		// AllocAndMapUserPage allocates from userspace pool, maps to user VA,
-		// maps to kernel scratch VA, and zeros the page using DC ZVA.
-		// Returns the framePA for later scratch remapping.
-		framePA, _ := kmem.AllocAndMapUserPage(uintptr(pageVA), phdr.Flags)
+		// AllocAndMapUserPageWithL0 allocates from userspace pool, maps to user VA
+		// using the explicit l0PA, maps to kernel scratch VA, and zeros the page.
+		// Using explicit l0PA prevents race conditions with context switches.
+		framePA, _ := kmem.AllocAndMapUserPageWithL0(uintptr(pageVA), phdr.Flags, l0PA)
 		if framePA == 0 {
 			return &elfError{"failed to alloc/map/zero user page"}
 		}
@@ -924,16 +934,18 @@ func loadSegment(elfData []byte, phdr *elf64Phdr) error {
 }
 
 // allocateUserStack allocates pages for the user stack
-// Uses AllocAndMapUserPage which zeroes pages via DC ZVA
-func allocateUserStack(base, size uint64) error {
+// l0PA is the explicit L0 page table PA to use for mapping.
+// Uses AllocAndMapUserPageWithL0 which zeroes pages via DC ZVA
+func allocateUserStack(base, size uint64, l0PA uintptr) error {
 	pageSize := uint64(4096)
 	numPages := size / pageSize
 
 	for page := uint64(0); page < numPages; page++ {
 		pageVA := base + page*pageSize
 		// Stack is RW (no execute)
-		// AllocAndMapUserPage allocates, maps, and zeros the page using DC ZVA
-		framePA, scratchVA := kmem.AllocAndMapUserPage(uintptr(pageVA), PF_R|PF_W)
+		// AllocAndMapUserPageWithL0 allocates, maps, and zeros the page using DC ZVA
+		// Using explicit l0PA prevents race conditions with context switches.
+		framePA, scratchVA := kmem.AllocAndMapUserPageWithL0(uintptr(pageVA), PF_R|PF_W, l0PA)
 		if framePA == 0 {
 			return &elfError{"failed to alloc/map/zero stack page"}
 		}

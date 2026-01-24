@@ -6,7 +6,6 @@ package main
 
 import (
 	"fmt"
-	"unsafe"
 
 	"mazarin/sys"
 )
@@ -67,6 +66,26 @@ func busyLoop3s() {
 	}
 }
 
+// busyLoop5s prints '5' in a tight loop - spawned goroutine in priest
+// to test goroutine preemption within priest (like priest2's busyLoop2).
+func busyLoop5s() {
+	counter := uint64(0)
+	printCount := uint64(0)
+
+	for {
+		counter++
+		// Every 100000 iterations, print our marker
+		if counter%100000 == 0 {
+			printCount++
+			if printCount%72 == 0 {
+				fmt.Print("\n")
+			} else {
+				fmt.Print("5")
+			}
+		}
+	}
+}
+
 func main() {
 	// =====================================================
 	// USERSPACE ENTRY POINT
@@ -103,33 +122,9 @@ func main() {
 
 	fmt.Println("[priest] Ready to handle syscalls from userspace programs")
 
-	// Try to load priest2.elf (goroutine scheduling test: prints 1s and 2s)
-	fmt.Println("[priest] Loading /priest2.elf...")
-
-	// Get address of PriestSyscallEntry as uintptr
-	entryAddr := uintptr(unsafe.Pointer(&priestSyscallEntryAddr))
-
-	// Allocate ProgramControl on the stack (writable memory)
-	var pc sys.ProgramControl
-
-	err = sys.Run("/priest2.elf", entryAddr, &pc)
-	if err != nil {
-		fmt.Printf("[priest] Failed to load priest2.elf: %v\n", err)
-		fmt.Println("[priest] Entering busy loop printing 3s...")
-		busyLoop3s()
-		return
-	}
-
-	fmt.Printf("[priest] Loaded program %d at 0x%x, entry=0x%x\n",
-		pc.ProgramID, pc.LoadAddress, pc.EntryPoint)
-
-	// Convert entry point to function pointer and call it
-	type entryFunc func()
-	entry := *(*entryFunc)(unsafe.Pointer(&pc.EntryPoint))
-
-	fmt.Println("[priest] Calling program entry point...")
-	entry() // Calls main.MazarinMain() → main.main()
-
-	fmt.Println("[priest] Program returned, entering busy loop printing 3s...")
+	// Spawn goroutine that prints 5s, then run busy loop printing 3s
+	// (priest2 is launched separately by kmazarin, not loaded by priest)
+	fmt.Println("[priest] Entering busy loops printing 3s and 5s...")
+	go busyLoop5s()
 	busyLoop3s()
 }

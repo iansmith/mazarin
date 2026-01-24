@@ -3,6 +3,10 @@
 
 #include "textflag.h"
 
+// UART base for debug output (high-memory mapped)
+// Must match the kernel virtual address mapping for PL011 UART
+#define UART_BASE 0xFFFFFFFF09000000
+
 // TimerIRQHandlerAsm is the pure assembly timer IRQ handler.
 // Called from exceptions_arm64.s when IRQ 27 (timer) is detected.
 //
@@ -92,7 +96,7 @@ rearm_timer:
 	CMP	R7, R6
 	BHS	skip_wrapper_check  // Value >= 0x43800000, looks valid
 	// Wrapper addr is suspiciously low! Output '!' and the value
-	MOVD	$0x09000000, R2  // UART base
+	MOVD	$UART_BASE, R2
 	MOVD	$'!', R3
 	MOVB	R3, (R2)
 	MOVD	$'W', R3
@@ -141,7 +145,7 @@ skip_wrapper_check:
 	MOVD	$640, R1
 	CMP	R0, R1
 	BNE	check_644
-	MOVD	$0x09000000, R2  // UART base
+	MOVD	$UART_BASE, R2
 	MOVD	$'#', R3
 	MOVB	R3, (R2)
 	MOVD	$'6', R3
@@ -158,7 +162,7 @@ check_644:
 	MOVD	$644, R1
 	CMP	R0, R1
 	BNE	check_650
-	MOVD	$0x09000000, R2  // UART base
+	MOVD	$UART_BASE, R2
 	MOVD	$'@', R3
 	MOVB	R3, (R2)
 	// DEBUG: Re-read the counter from memory to see if it's really 644
@@ -185,7 +189,7 @@ check_650:
 	MOVD	$650, R1
 	CMP	R0, R1
 	BNE	check_655
-	MOVD	$0x09000000, R2  // UART base
+	MOVD	$UART_BASE, R2
 	MOVD	$'$', R3
 	MOVB	R3, (R2)
 	MOVD	$'6', R3
@@ -202,7 +206,7 @@ check_655:
 	MOVD	$655, R1
 	CMP	R0, R1
 	BNE	continue_normal
-	MOVD	$0x09000000, R2  // UART base
+	MOVD	$UART_BASE, R2
 	MOVD	$'!', R3
 	MOVB	R3, (R2)
 	MOVD	$'6', R3
@@ -299,8 +303,27 @@ g_in_kernel:
 	B	timer_return  // currentThread is nil
 thread_not_nil:
 
-	// Load LastSeenG: offset 312
-	MOVD	312(R7), R8  // R8 = currentThread.LastSeenG
+	// ========================================================================
+	// DEADLINE-BASED PREEMPTION (no division in hot path)
+	// Thread struct offsets (must match Go code - verified by checkThreadOffsets):
+	//   LastSeenG: 320
+	//   StartTick: 328
+	//   GoroutineStart: 336
+	//   ThreadPreemptDeadline: 344
+	//   GoroutinePreemptDeadline: 352
+	// ========================================================================
+
+	// Read current counter FIRST before any debug output
+	// MRS X9, CNTVCT_EL0
+	WORD	$0xD53BE049
+
+	// DEBUG: Mark that we reached deadline check
+	MOVD	$UART_BASE, R8  // Use high-memory mapped UART
+	MOVW	$'@', R10
+	MOVB	R10, (R8)
+
+	// Load LastSeenG: offset 320
+	MOVD	320(R7), R8  // R8 = currentThread.LastSeenG
 
 	// Compare with current g (R4)
 	CMP	R4, R8
@@ -308,107 +331,172 @@ thread_not_nil:
 
 	// ========================================================================
 	// G changed! Go runtime switched goroutines internally.
-	// Reset GoroutineStart to current time (new goroutine, fresh deadline).
-	// But DON'T reset StartTick - we still want to track total thread time
-	// for OS-level preemption of priests waiting in ready queue.
+	// Reset GoroutinePreemptDeadline for the new goroutine.
+	// But DON'T reset ThreadPreemptDeadline - we still want to track total
+	// thread time for OS-level preemption of priests waiting in ready queue.
 	// ========================================================================
-	MOVD	R4, 312(R7)  // currentThread.LastSeenG = current g
+	MOVD	R4, 320(R7)  // currentThread.LastSeenG = current g
 
-	// Reset GoroutineStart for the new goroutine
-	// Read current counter: MRS X8, CNTVCT_EL0
-	WORD	$0xD53BE048
-	MOVD	R8, 328(R7)  // currentThread.GoroutineStart = current tick
+	// Reset GoroutineStart and deadline for the new goroutine
+	MOVD	R9, 336(R7)  // currentThread.GoroutineStart = current tick
+	MOVD	·GoroutinePreemptTicks(SB), R8
+	ADD	R9, R8, R8  // R8 = current + threshold = new deadline
+	MOVD	R8, 352(R7)  // currentThread.GoroutinePreemptDeadline = new deadline
 
-	// Fall through to check thread preemption (new goroutine gets fresh timer)
-	B	check_thread_preempt_only
+	// Fall through to check thread preemption only
+	B	check_thread_deadline
 
 same_goroutine:
-	// Same g - check both goroutine and thread elapsed time
-	// Thread struct offsets:
-	//   LastSeenG: 312
-	//   StartTick: 320
-	//   GoroutineStart: 328
+	// Same g - check both goroutine and thread deadlines
+	// R9 = current counter
 
-	// Load StartTick for thread preemption check
-	MOVD	320(R7), R8  // R8 = currentThread.StartTick
-	CBZ	R8, init_start_tick  // Not initialized yet
+	// Check if deadlines are initialized (StartTick != 0)
+	MOVD	328(R7), R8  // R8 = currentThread.StartTick
+	CBZ	R8, init_deadlines  // Not initialized yet
 
-	// Read current counter: MRS X9, CNTVCT_EL0
-	WORD	$0xD53BE049
+	// Check goroutine deadline: if current >= deadline, signal preemption
+	// NOTE: Go ARM64 CMP is swapped: CMP Rn, Rm computes Rm - Rn
+	MOVD	352(R7), R8  // R8 = GoroutinePreemptDeadline
+	CMP	R8, R9  // Computes R9 - R8 = current - deadline
+	BLT	check_thread_deadline  // if current < deadline (negative result), skip
 
-	// Calculate thread elapsed ticks (for thread preemption)
-	SUB	R8, R9, R5  // R5 = current - StartTick = thread elapsed
+	// Current >= goroutine deadline: signal async preemption needed
+	MOVW	$1, R8
+	MOVW	R8, ·NeedsAsyncPreempt(SB)
 
-	// Load GoroutineStart for goroutine preemption check
-	MOVD	328(R7), R8  // R8 = currentThread.GoroutineStart
-	CBZ	R8, init_goroutine_start  // Not initialized yet
+check_thread_deadline:
+	// Check thread deadline: if current >= deadline, signal preemption
+	// NOTE: Go ARM64 CMP is swapped: CMP Rn, Rm computes Rm - Rn
+	MOVD	344(R7), R8  // R8 = ThreadPreemptDeadline
 
-	// Calculate goroutine elapsed ticks (for goroutine preemption)
-	SUB	R8, R9, R6  // R6 = current - GoroutineStart = goroutine elapsed
+	// DEBUG: Every 20 ticks, print thread deadline status
+	// Format: {C:xx D:xx} where C=current/1M, D=deadline/1M
+	MOVD	·TimerIRQCount(SB), R10
+	MOVD	$20, R11
+	UDIV	R11, R10, R12  // R12 = count / 20
+	MUL	R11, R12, R12   // R12 = (count/20)*20
+	CMP	R10, R12
+	BNE	skip_deadline_debug
 
-	// Convert to timer intervals (divide by ticks per 10ms)
-	// ticks_per_10ms = freq / 100
-	MOVD	·SystemTimerFrequency(SB), R8
-	MOVD	$100, R10
-	UDIV	R10, R8, R8  // R8 = ticks per 10ms
-	CBZ	R8, timer_return  // Avoid divide by zero
+	// Print deadline debug: {P<pid> C<current_M> D<deadline_M>}
+	MOVD	$UART_BASE, R10
+	MOVW	$'{', R11
+	MOVB	R11, (R10)
+	MOVW	$'P', R11
+	MOVB	R11, (R10)
 
-	// R5 = thread elapsed ticks, R6 = goroutine elapsed ticks
-	UDIV	R8, R6, R6  // R6 = goroutine elapsed intervals (10ms units)
+	// Print current thread PID (offset 8 in Thread struct)
+	MOVW	8(R7), R11  // R11 = thread.PID (uint32 at offset 8)
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	pid_digit
+	ADD	$('A'-10), R11
+	B	pid_out
+pid_digit:
+	ADD	$'0', R11
+pid_out:
+	MOVB	R11, (R10)
 
-	// Check against goroutine preemption threshold (configurable)
-	// GoroutinePreemptIntervals = 5 intervals = 50ms default
-	MOVD	·GoroutinePreemptIntervals(SB), R9
-	CMP	R9, R6
-	BLT	check_thread_preempt  // Under goroutine threshold, check thread threshold
+	MOVW	$' ', R11
+	MOVB	R11, (R10)
+	MOVW	$'C', R11
+	MOVB	R11, (R10)
 
-	// Goroutine elapsed >= threshold: signal async preemption needed
-	MOVW	$1, R9
-	MOVW	R9, ·NeedsAsyncPreempt(SB)
+	// Print current time / 1M (roughly ms at 1MHz or ticks/1000000)
+	MOVD	$1000000, R11
+	UDIV	R11, R9, R12  // R12 = current / 1M
+	// Print 2 hex digits of R12
+	LSR	$4, R12, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLT	cur_digit1
+	ADD	$('A'-10), R13
+	B	cur_out1
+cur_digit1:
+	ADD	$'0', R13
+cur_out1:
+	MOVB	R13, (R10)
+	AND	$0xF, R12
+	CMP	$10, R12
+	BLT	cur_digit2
+	ADD	$('A'-10), R12
+	B	cur_out2
+cur_digit2:
+	ADD	$'0', R12
+cur_out2:
+	MOVB	R12, (R10)
 
-check_thread_preempt:
-	// Convert thread elapsed to intervals
-	UDIV	R8, R5, R5  // R5 = thread elapsed intervals (10ms units)
+	MOVW	$' ', R11
+	MOVB	R11, (R10)
+	MOVW	$'D', R11
+	MOVB	R11, (R10)
 
-check_thread_preempt_only:
-	// Check against thread preemption threshold (configurable)
-	// ThreadPreemptIntervals = 20 intervals = 200ms default
-	// Give goroutines time to work before OS-level thread preemption
-	MOVD	·ThreadPreemptIntervals(SB), R9
-	CMP	R9, R5
-	BLT	timer_return  // Under thread threshold, done
+	// Print deadline / 1M
+	MOVD	$1000000, R11
+	UDIV	R11, R8, R12  // R12 = deadline / 1M
+	LSR	$4, R12, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLT	dl_digit1
+	ADD	$('A'-10), R13
+	B	dl_out1
+dl_digit1:
+	ADD	$'0', R13
+dl_out1:
+	MOVB	R13, (R10)
+	AND	$0xF, R12
+	CMP	$10, R12
+	BLT	dl_digit2
+	ADD	$('A'-10), R12
+	B	dl_out2
+dl_digit2:
+	ADD	$'0', R12
+dl_out2:
+	MOVB	R12, (R10)
 
-	// Thread elapsed >= threshold: signal thread preemption needed
-	MOVW	$1, R9
-	MOVW	R9, ·NeedsThreadPreempt(SB)
+	MOVW	$'}', R11
+	MOVB	R11, (R10)
+
+skip_deadline_debug:
+	// Re-load deadline since we clobbered R8
+	MOVD	344(R7), R8  // R8 = ThreadPreemptDeadline
+
+	CMP	R8, R9  // Computes R9 - R8 = current - deadline
+	BLT	timer_return  // if current < deadline (negative), no preemption
+	// Current >= thread deadline - fall through to signal preemption
+
+thread_deadline_exceeded:
+	// Current >= thread deadline: print '#' debug marker and signal preemption
+	MOVD	$UART_BASE, R10
+	MOVW	$'#', R11
+	MOVB	R11, (R10)
+	MOVW	$1, R8
+	MOVW	R8, ·NeedsThreadPreempt(SB)
 	B	timer_return
 
-init_goroutine_start:
-	// GoroutineStart not initialized - initialize it and skip goroutine check
-	// R9 still contains current counter
-	MOVD	R9, 328(R7)  // currentThread.GoroutineStart = current tick
-	// Fall through to check thread preemption only
+init_deadlines:
+	// DEBUG: Mark that we're initializing deadlines
+	MOVD	$UART_BASE, R10
+	MOVW	$'I', R11
+	MOVB	R11, (R10)
+	// Deadlines not initialized - initialize them
+	// R9 = current counter
+	MOVD	R9, 328(R7)  // currentThread.StartTick = current tick
+	MOVD	R9, 336(R7)  // currentThread.GoroutineStart = current tick
+	MOVD	R4, 320(R7)  // currentThread.LastSeenG = current g
 
-	// Convert thread elapsed to intervals
-	MOVD	·SystemTimerFrequency(SB), R8
-	MOVD	$100, R10
-	UDIV	R10, R8, R8  // R8 = ticks per 10ms
-	CBZ	R8, timer_return  // Avoid divide by zero
-	UDIV	R8, R5, R5  // R5 = thread elapsed intervals
-	B	check_thread_preempt_only
+	// Set deadlines: current + threshold
+	MOVD	·ThreadPreemptTicks(SB), R8
+	ADD	R9, R8, R8
+	MOVD	R8, 344(R7)  // ThreadPreemptDeadline = current + threshold
 
-init_start_tick:
-	// Initialize StartTick, GoroutineStart, and LastSeenG for this thread
-	// Read current counter: MRS X8, CNTVCT_EL0
-	WORD	$0xD53BE048
-	MOVD	R8, 320(R7)  // currentThread.StartTick = current tick
-	MOVD	R8, 328(R7)  // currentThread.GoroutineStart = current tick
-	MOVD	R4, 312(R7)  // currentThread.LastSeenG = current g
-	// Fall through to timer_return
+	MOVD	·GoroutinePreemptTicks(SB), R8
+	ADD	R9, R8, R8
+	MOVD	R8, 352(R7)  // GoroutinePreemptDeadline = current + threshold
 	B	timer_return
 
 // ========================================================================
-// Userspace thread preemption path
+// Userspace thread preemption path (DEADLINE-BASED)
 // ========================================================================
 // When a userspace thread is running, its g pointer is in low memory.
 // We skip the Go runtime preemption (g.preempt, g.stackguard0) because:
@@ -416,60 +504,82 @@ init_start_tick:
 // 2. Userspace threads have their own Go runtime that handles cooperative preemption
 // But we still need OS-level thread preemption so other priests get scheduled.
 g_in_userspace:
+	// DEBUG: Print 'U' to show we're in userspace path
+	MOVD	$UART_BASE, R10
+	MOVW	$'U', R11
+	MOVB	R11, (R10)
+
 	// Load currentThread pointer directly
 	MOVD	main·CurrentThread(SB), R7  // *Thread
 	CBZ	R7, timer_return  // currentThread is nil
 
-	// Load StartTick: offset 320
-	MOVD	320(R7), R8  // R8 = currentThread.StartTick
-	CBZ	R8, userspace_init_tick  // Not initialized yet
-
 	// Read current counter: MRS X9, CNTVCT_EL0
 	WORD	$0xD53BE049
 
-	// Calculate elapsed ticks
-	SUB	R8, R9, R9  // R9 = current - start = elapsed
+	// Load ThreadPreemptDeadline: offset 344
+	MOVD	344(R7), R8  // R8 = currentThread.ThreadPreemptDeadline
+	CBZ	R8, userspace_init_deadlines  // Not initialized yet
 
-	// Convert to timer intervals (divide by ticks per 10ms)
-	MOVD	·SystemTimerFrequency(SB), R8
-	MOVD	$100, R10
-	UDIV	R10, R8, R8  // R8 = ticks per 10ms
-	CBZ	R8, timer_return  // Avoid divide by zero
+	// ========================================================================
+	// Track g changes for userspace threads too!
+	// We CAN compare the g pointer value (R4) to detect goroutine switches.
+	// We just can't DEREFERENCE it (to check g.atomicstatus) from IRQ context.
+	// When g changes, reset the goroutine deadline to give the new g fair time.
+	// ========================================================================
+	MOVD	320(R7), R8  // R8 = currentThread.LastSeenG
+	CMP	R4, R8
+	BEQ	userspace_same_goroutine
 
-	UDIV	R8, R9, R9  // R9 = elapsed intervals (10ms units)
+	// G changed! Reset GoroutinePreemptDeadline for the new goroutine.
+	MOVD	R4, 320(R7)  // currentThread.LastSeenG = current g
+	MOVD	R9, 336(R7)  // currentThread.GoroutineStart = current tick
+	MOVD	·GoroutinePreemptTicks(SB), R8
+	ADD	R9, R8, R8  // R8 = current + threshold = new deadline
+	MOVD	R8, 352(R7)  // currentThread.GoroutinePreemptDeadline = new deadline
+	B	userspace_check_thread_deadline  // Skip goroutine preemption check for new g
 
-	// For userspace threads (priests), we can't track individual goroutines
-	// because their g pointer is in userspace memory. Instead, we inject
-	// asyncPreempt periodically to let the priest's Go runtime reschedule.
-	//
-	// Check against goroutine preemption threshold (configurable)
-	MOVD	·GoroutinePreemptIntervals(SB), R10
-	CMP	R10, R9
-	BLT	userspace_check_thread  // Under goroutine threshold, check thread
+userspace_same_goroutine:
+	// Same g - check goroutine deadline
+	// Check goroutine deadline: if current >= deadline, signal preemption
+	// NOTE: Go ARM64 CMP is swapped: CMP Rn, Rm computes Rm - Rn
+	MOVD	352(R7), R8  // R8 = GoroutinePreemptDeadline
+	CMP	R8, R9  // Computes R9 - R8 = current - deadline
+	BLT	userspace_check_thread_deadline  // if current < deadline (negative), skip
 
-	// Elapsed >= goroutine threshold: signal async preemption needed
+	// Current >= goroutine deadline: signal async preemption needed
 	// This will inject the priest's registered asyncPreempt (if registered)
 	MOVW	$1, R8
 	MOVW	R8, ·NeedsAsyncPreempt(SB)
 
-userspace_check_thread:
-	// Check against thread preemption threshold (configurable)
-	MOVD	·ThreadPreemptIntervals(SB), R10
-	CMP	R10, R9
-	BLT	timer_return  // Under threshold, done
+userspace_check_thread_deadline:
+	// Check thread deadline: if current >= deadline, signal preemption
+	// NOTE: Go ARM64 CMP is swapped: CMP Rn, Rm computes Rm - Rn
+	MOVD	344(R7), R8  // R8 = ThreadPreemptDeadline
+	CMP	R8, R9  // Computes R9 - R8 = current - deadline
+	BLT	timer_return  // if current < deadline (negative), no preemption
 
-	// Elapsed >= threshold: signal thread preemption needed
+	// Current >= thread deadline: print '#' and signal preemption needed
+	MOVD	$UART_BASE, R10
+	MOVW	$'#', R11
+	MOVB	R11, (R10)
 	MOVW	$1, R8
 	MOVW	R8, ·NeedsThreadPreempt(SB)
 	B	timer_return
 
-userspace_init_tick:
-	// Initialize StartTick and GoroutineStart for userspace thread
-	// (We use GoroutineStart for periodic asyncPreempt injection)
-	// Read current counter: MRS X8, CNTVCT_EL0
-	WORD	$0xD53BE048
-	MOVD	R8, 320(R7)  // currentThread.StartTick = current tick
-	MOVD	R8, 328(R7)  // currentThread.GoroutineStart = current tick
+userspace_init_deadlines:
+	// Initialize deadlines for userspace thread
+	// R9 = current counter
+	MOVD	R9, 328(R7)  // currentThread.StartTick = current tick
+	MOVD	R9, 336(R7)  // currentThread.GoroutineStart = current tick
+
+	// Set deadlines: current + threshold
+	MOVD	·ThreadPreemptTicks(SB), R8
+	ADD	R9, R8, R8
+	MOVD	R8, 344(R7)  // ThreadPreemptDeadline = current + threshold
+
+	MOVD	·GoroutinePreemptTicks(SB), R8
+	ADD	R9, R8, R8
+	MOVD	R8, 352(R7)  // GoroutinePreemptDeadline = current + threshold
 	B	timer_return
 
 timer_return:

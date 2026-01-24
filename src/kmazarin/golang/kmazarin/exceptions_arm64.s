@@ -877,16 +877,42 @@ timer_no_thread_preempt:
 	MOVW	kmazarin∕kirq·ReadyForAsyncPreempt(SB), R10
 	CBZ	R10, timer_no_preempt_not_ready
 
+	// ========================================================================
+	// CRITICAL: Check if running on g0 (scheduler goroutine)
+	// ========================================================================
+	// Never inject async preemption on g0 - the Go runtime will crash with
+	// "mcall called on m->g0 stack" if we try to preempt the scheduler.
+	// g0 is the scheduler goroutine for each M (machine/OS thread).
+	//
+	// Get current g from X28 (saved at exception entry)
+	WORD	$0xAA1C03EA  // mov x10, x28 (current g)
+	CBZ	R10, timer_no_preempt  // No g, skip
+
+	// Load g.m offset and get m pointer
+	MOVD	kmazarin∕kirq·PreemptGMOffset(SB), R11
+	ADD	R10, R11, R11  // R11 = &g.m
+	MOVD	(R11), R11     // R11 = g.m (m pointer)
+	CBZ	R11, timer_no_preempt  // No m, skip
+
+	// Load m.g0 (offset 0 in m struct)
+	MOVD	(R11), R12     // R12 = m.g0
+
+	// Compare current g with m.g0
+	CMP	R10, R12
+	BEQ	timer_no_preempt_on_g0  // If g == m.g0, skip preemption
+
 	// UNIFIED ASYNCPREEMPT: Use per-thread asyncPreempt address
 	// This supports both kmazarin goroutines and priest goroutines:
 	// - Kmazarin threads: AsyncPreemptAddr = kmazarin's asyncPreemptWrapper
 	// - Priest threads: AsyncPreemptAddr = priest's registered asyncPreempt
 	//
-	// Get current thread's AsyncPreemptAddr (offset 352 in Thread struct)
-	// Thread struct layout: after GoroutineElapsed (offset 344), AsyncPreemptAddr is at 352
+	// Get current thread's AsyncPreemptAddr using runtime-verified offset
+	// (ThreadAsyncPreemptAddrOffset is checked against unsafe.Offsetof at init)
 	MOVD	main·CurrentThread(SB), R10  // R10 = *Thread
 	CBZ	R10, timer_no_preempt  // No current thread
-	MOVD	352(R10), R10  // R10 = thread.AsyncPreemptAddr
+	MOVD	main·ThreadAsyncPreemptAddrOffset(SB), R11  // R11 = offset (verified at init)
+	ADD	R11, R10, R11  // R11 = &thread.AsyncPreemptAddr
+	MOVD	(R11), R10  // R10 = thread.AsyncPreemptAddr
 
 	// CRITICAL: Check if asyncPreempt address is zero (not yet initialized)
 	// Skip preemption if address is not set
@@ -913,6 +939,15 @@ timer_no_thread_preempt:
 	MOVW	$0, R12
 	MOVW	R12, kmazarin∕kirq·NeedsAsyncPreempt(SB)
 
+	// DEBUG: Async preemption being injected - print "^A^"
+	MOVD	$(UART_BASE), R12
+	MOVD	$'^', R13
+	MOVB	R13, (R12)
+	MOVD	$'A', R13
+	MOVB	R13, (R12)
+	MOVD	$'^', R13
+	MOVB	R13, (R12)
+
 	// Set up preemption return values
 	// R20 = NewELR (asyncPreempt address)
 	// R21 = NewSP (adjusted downward to make room for asyncPreempt's frame)
@@ -933,10 +968,21 @@ timer_no_preempt_no_flag:
 	B	timer_no_preempt
 
 timer_no_preempt_not_ready:
-	// DEBUG: Runtime not ready
+	// DEBUG: Runtime not ready - print "!R!"
 	MOVD	$(UART_BASE), R10
+	MOVD	$'!', R11
+	MOVB	R11, (R10)
 	MOVD	$'R', R11
 	MOVB	R11, (R10)
+	MOVD	$'!', R11
+	MOVB	R11, (R10)
+	B	timer_no_preempt
+
+timer_no_preempt_on_g0:
+	// Running on g0 (scheduler) - skip async preemption
+	// Just clear the flag and return - scheduler will handle it
+	MOVW	$0, R10
+	MOVW	R10, kmazarin∕kirq·NeedsAsyncPreempt(SB)
 	B	timer_no_preempt
 
 // timer_no_preempt_userspace: REMOVED
@@ -944,16 +990,24 @@ timer_no_preempt_not_ready:
 // by using the per-thread AsyncPreemptAddr field.
 
 timer_no_preempt_wrapper_misaligned:
-	// DEBUG: Wrapper misaligned
+	// DEBUG: Wrapper misaligned - print "!W!"
 	MOVD	$(UART_BASE), R10
+	MOVD	$'!', R11
+	MOVB	R11, (R10)
 	MOVD	$'W', R11
+	MOVB	R11, (R10)
+	MOVD	$'!', R11
 	MOVB	R11, (R10)
 	B	timer_no_preempt
 
 timer_no_preempt_elr_misaligned:
-	// DEBUG: ELR misaligned
+	// DEBUG: ELR misaligned - print "!E!" to distinguish from other 'E's
 	MOVD	$(UART_BASE), R10
+	MOVD	$'!', R11
+	MOVB	R11, (R10)
 	MOVD	$'E', R11
+	MOVB	R11, (R10)
+	MOVD	$'!', R11
 	MOVB	R11, (R10)
 	B	timer_no_preempt
 
@@ -1577,6 +1631,16 @@ TEXT ·asyncPreemptWrapper(SB), NOSPLIT|NOFRAME, $0
 	// Call asyncPreempt2
 	// R28 (g) is still valid (not saved, not modified)
 	BL	runtime·asyncPreempt2(SB)
+
+	// CRITICAL FIX: Re-enable IRQs after asyncPreempt2 returns
+	// The Go runtime scheduler disables IRQs during scheduling and doesn't
+	// re-enable them before returning. Without this fix, timer IRQs stop
+	// being delivered after the first async preemption, causing priests
+	// to never be scheduled.
+	// Use MSR DAIFClr, #2 to clear the I bit (enable IRQs).
+	// Encoding: 0xD50342FF (same as EnableIRQs)
+	WORD	$0xD50342FF  // MSR DAIFClr, #2 (clear I bit, enable IRQs)
+	ISB	$15
 
 	// Restore FP registers D0-D31 from [SP+240]
 	WORD	$0x6d4f87e0  // ldp d0, d1, [sp, #240]

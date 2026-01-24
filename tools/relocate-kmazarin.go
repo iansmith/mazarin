@@ -30,6 +30,18 @@ func main() {
 	}
 	fmt.Printf("Read %d bytes from %s\n", len(data), os.Args[1])
 
+	// Check if already relocated by looking at entry point
+	entry := binary.LittleEndian.Uint64(data[0x18:0x20])
+	if entry >= highMemOffset {
+		fmt.Printf("ELF already relocated (entry=0x%X), copying unchanged\n", entry)
+		// Copy input to output unchanged
+		if err := os.WriteFile(os.Args[2], data, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to write output: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Open ELF for parsing
 	f, err := elf.Open(os.Args[1])
 	if err != nil {
