@@ -459,6 +459,91 @@ tasks:
         echo "Disk image created at {{.DISK_IMAGE}} ($SIZE)"
 
   # ===========================================================================
+  # Run and Stop
+  # ===========================================================================
+
+  run:
+    desc: "Run QEMU with cardinal/kmazarin (TIMEOUT=N for timeout in seconds, empty=no timeout)"
+    deps: [disk, cardinal]
+    vars:
+      TIMEOUT: '{{.TIMEOUT | default "15"}}'
+      LOG_FILE: /tmp/cardinal-serial.log
+    cmds:
+      - task: stop
+      - rm -f {{.LOG_FILE}}
+      - |
+        if [ -z "{{.TIMEOUT}}" ] || [ "{{.TIMEOUT}}" = "" ]; then
+          echo "Starting QEMU (no timeout, use 'task stop' to stop)..."
+          {{.QEMU}} \
+            -M virt,virtualization=off \
+            -cpu cortex-a72 \
+            -m 8G \
+            -kernel {{.CARDINAL_ELF}} \
+            -nodefaults \
+            -device virtio-gpu-pci \
+            -object rng-random,id=rng0,filename=/dev/urandom \
+            -device virtio-rng-device,rng=rng0 \
+            -display none \
+            -serial file:{{.LOG_FILE}} \
+            -monitor tcp:127.0.0.1:4444,server,nowait \
+            -semihosting \
+            -no-reboot \
+            -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 \
+            -device virtio-blk-device,drive=disk0
+        else
+          echo "Starting QEMU (timeout {{.TIMEOUT}}s)..."
+          # Start QEMU in background
+          {{.QEMU}} \
+            -M virt,virtualization=off \
+            -cpu cortex-a72 \
+            -m 8G \
+            -kernel {{.CARDINAL_ELF}} \
+            -nodefaults \
+            -device virtio-gpu-pci \
+            -object rng-random,id=rng0,filename=/dev/urandom \
+            -device virtio-rng-device,rng=rng0 \
+            -display none \
+            -serial file:{{.LOG_FILE}} \
+            -monitor tcp:127.0.0.1:4444,server,nowait \
+            -semihosting \
+            -no-reboot \
+            -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 \
+            -device virtio-blk-device,drive=disk0 \
+            &
+          QEMU_PID=$!
+          echo "QEMU PID: $QEMU_PID"
+          echo "Monitor: tcp:127.0.0.1:4444"
+          echo "Log file: {{.LOG_FILE}}"
+
+          # Wait for timeout then kill
+          sleep {{.TIMEOUT}}
+          kill $QEMU_PID 2>/dev/null || true
+          wait $QEMU_PID 2>/dev/null || true
+
+          echo ""
+          echo "=== Serial Output (last 50 lines) ==="
+          tail -50 {{.LOG_FILE}} 2>/dev/null | tr -d '\000-\010\013-\037\177-\377' || echo "(no output)"
+          echo ""
+          if [ -f {{.LOG_FILE}} ]; then
+            SIZE=$(ls -lh {{.LOG_FILE}} | awk '{print $5}')
+            echo "Log file: {{.LOG_FILE}} ($SIZE)"
+          fi
+        fi
+
+  qemu-console:
+    desc: "Send command to QEMU monitor (CMD='info registers' or other QEMU command)"
+    vars:
+      CMD: '{{.CMD | default "info registers"}}'
+    cmds:
+      - echo "{{.CMD}}" | nc 127.0.0.1 4444
+
+  stop:
+    desc: Stop all running QEMU instances
+    cmds:
+      - pkill -f qemu-system-aarch64 2>/dev/null || true
+      - sleep 0.3
+
+  # ===========================================================================
   # Utility Tasks
   # ===========================================================================
 
