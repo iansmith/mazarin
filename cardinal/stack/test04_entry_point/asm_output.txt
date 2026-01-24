@@ -1,0 +1,939 @@
+# command-line-arguments
+main.main STEXT size=816 args=0x0 locals=0xf8 funcid=0x0 align=0x0
+	0x0000 00000 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	TEXT	main.main(SB), ABIInternal, $256-0
+	0x0000 00000 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	MOVD	16(g), R16
+	0x0004 00004 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	PCDATA	$0, $-2
+	0x0004 00004 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	SUB	$128, RSP, R17
+	0x0008 00008 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	CMP	R16, R17
+	0x000c 00012 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	BLS	804
+	0x0010 00016 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	PCDATA	$0, $-1
+	0x0010 00016 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	SUB	$256, RSP, R20
+	0x0014 00020 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	STP	(R29, R30), -8(R20)
+	0x0018 00024 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	PCDATA	$0, $-2
+	0x0018 00024 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	MOVD	R20, RSP
+	0x001c 00028 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	PCDATA	$0, $-1
+	0x001c 00028 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	SUB	$8, RSP, R29
+	0x0020 00032 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	FUNCDATA	$0, gclocals·NL1fmQxTaE165lC0D8tWVg==(SB)
+	0x0020 00032 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	FUNCDATA	$1, gclocals·vbenghHRXtPUrt2RNtf1fg==(SB)
+	0x0020 00032 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	FUNCDATA	$2, main.main.stkobj(SB)
+	0x0020 00032 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	PCDATA	$0, $-3
+	0x0020 00032 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x0028 00040 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x0028 00040 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:10)	HINT	$0
+	0x002c 00044 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x0034 00052 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."=== Command-Line Arguments ===\n"(SB), R2
+	0x003c 00060 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$31, R3
+	0x0040 00064 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	ZR, R4
+	0x0044 00068 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	ZR, R5
+	0x0048 00072 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x004c 00076 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$1, $0
+	0x004c 00076 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x0050 00080 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-4
+	0x0050 00080 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:11)	MOVD	os.Args+8(SB), R0
+	0x0058 00088 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:11)	PCDATA	$0, $-1
+	0x0058 00088 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:11)	STP	(ZR, ZR), main..autotmp_70-24(SP)
+	0x005c 00092 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:11)	PCDATA	$1, $1
+	0x005c 00092 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:11)	CALL	runtime.convT64(SB)
+	0x0060 00096 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:11)	MOVD	$type:int(SB), R7
+	0x0068 00104 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:11)	STP	(R7, R0), main..autotmp_70-24(SP)
+	0x006c 00108 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:11)	PCDATA	$0, $-3
+	0x006c 00108 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x0074 00116 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x0074 00116 (<unknown line number>)	NOP
+	0x0074 00116 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x007c 00124 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."len(os.Args) = %d\n"(SB), R2
+	0x0084 00132 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$18, R3
+	0x0088 00136 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$main..autotmp_70-24(SP), R4
+	0x008c 00140 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$1, R5
+	0x0090 00144 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x0094 00148 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$1, $0
+	0x0094 00148 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x0098 00152 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-4
+	0x0098 00152 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:12)	LDP	os.Args(SB), (R7, R8)
+	0x00a4 00164 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:12)	PCDATA	$0, $-1
+	0x00a4 00164 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:12)	MOVD	R8, main..autotmp_151-136(SP)
+	0x00a8 00168 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:12)	MOVD	ZR, R0
+	0x00ac 00172 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:12)	JMP	308
+	0x00b0 00176 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:12)	MOVD	R0, main.i-160(SP)
+	0x00b4 00180 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:12)	MOVD	R7, main..autotmp_152-8(SP)
+	0x00b8 00184 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:12)	LDP	(R7), (R1, R2)
+	0x00bc 00188 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:12)	MOVD	R2, main.arg.len-144(SP)
+	0x00c0 00192 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:12)	MOVD	R1, main.arg.ptr-112(SP)
+	0x00c4 00196 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:13)	STP	(ZR, ZR), main..autotmp_77-56(SP)
+	0x00c8 00200 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:13)	STP	(ZR, ZR), main..autotmp_77-40(SP)
+	0x00cc 00204 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:13)	PCDATA	$1, $2
+	0x00cc 00204 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:13)	CALL	runtime.convT64(SB)
+	0x00d0 00208 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:13)	MOVD	$type:int(SB), R1
+	0x00d8 00216 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:13)	STP	(R1, R0), main..autotmp_77-56(SP)
+	0x00dc 00220 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:13)	MOVD	main.arg.ptr-112(SP), R0
+	0x00e0 00224 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:13)	MOVD	main.arg.len-144(SP), R1
+	0x00e4 00228 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:13)	PCDATA	$1, $3
+	0x00e4 00228 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:13)	CALL	runtime.convTstring(SB)
+	0x00e8 00232 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:13)	MOVD	$type:string(SB), R1
+	0x00f0 00240 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:13)	STP	(R1, R0), main..autotmp_77-40(SP)
+	0x00f4 00244 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:13)	PCDATA	$0, $-3
+	0x00f4 00244 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x00fc 00252 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x00fc 00252 (<unknown line number>)	NOP
+	0x00fc 00252 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x0104 00260 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."os.Args[%d] = %q\n"(SB), R2
+	0x010c 00268 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$17, R3
+	0x0110 00272 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$main..autotmp_77-56(SP), R4
+	0x0114 00276 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$2, R5
+	0x0118 00280 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x011c 00284 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$1, $4
+	0x011c 00284 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x0120 00288 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:12)	MOVD	main..autotmp_152-8(SP), R1
+	0x0124 00292 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:12)	ADD	$16, R1, R7
+	0x0128 00296 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:12)	MOVD	main.i-160(SP), R1
+	0x012c 00300 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:12)	ADD	$1, R1, R0
+	0x0130 00304 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:12)	MOVD	main..autotmp_151-136(SP), R8
+	0x0134 00308 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:12)	CMP	R8, R0
+	0x0138 00312 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:12)	BLT	176
+	0x013c 00316 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:12)	PCDATA	$0, $-4
+	0x013c 00316 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x0144 00324 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x0144 00324 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:17)	HINT	$0
+	0x0148 00328 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x0150 00336 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."\n=== Environment Variables ===\n"(SB), R2
+	0x0158 00344 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$31, R3
+	0x015c 00348 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	ZR, R4
+	0x0160 00352 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	ZR, R5
+	0x0164 00356 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x0168 00360 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$1, $0
+	0x0168 00360 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x016c 00364 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:18)	HINT	$0
+	0x0170 00368 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/env.go:140)	CALL	syscall.Environ(SB)
+	0x0174 00372 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/env.go:140)	MOVD	R0, main.~r0.ptr-128(SP)
+	0x0178 00376 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/os/env.go:140)	MOVD	R1, main.~r0.len-176(SP)
+	0x017c 00380 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:19)	STP	(ZR, ZR), main..autotmp_81-72(SP)
+	0x0180 00384 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:19)	MOVD	R1, R0
+	0x0184 00388 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:19)	PCDATA	$1, $5
+	0x0184 00388 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:19)	CALL	runtime.convT64(SB)
+	0x0188 00392 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:19)	MOVD	$type:int(SB), R7
+	0x0190 00400 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:19)	STP	(R7, R0), main..autotmp_81-72(SP)
+	0x0194 00404 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:19)	PCDATA	$0, $-3
+	0x0194 00404 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x019c 00412 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x019c 00412 (<unknown line number>)	NOP
+	0x019c 00412 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x01a4 00420 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."len(os.Environ()) = %d\n"(SB), R2
+	0x01ac 00428 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$23, R3
+	0x01b0 00432 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$main..autotmp_81-72(SP), R4
+	0x01b4 00436 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$1, R5
+	0x01b8 00440 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x01bc 00444 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$1, $6
+	0x01bc 00444 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x01c0 00448 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:20)	MOVD	main.~r0.ptr-128(SP), R7
+	0x01c4 00452 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:20)	MOVD	ZR, R0
+	0x01c8 00456 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:20)	JMP	588
+	0x01cc 00460 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:20)	MOVD	R0, main.i-168(SP)
+	0x01d0 00464 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:20)	MOVD	R7, main..autotmp_152-8(SP)
+	0x01d4 00468 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:20)	LDP	(R7), (R1, R2)
+	0x01d8 00472 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:20)	MOVD	R2, main.e.len-152(SP)
+	0x01dc 00476 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:20)	MOVD	R1, main.e.ptr-120(SP)
+	0x01e0 00480 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:21)	STP	(ZR, ZR), main..autotmp_88-104(SP)
+	0x01e4 00484 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:21)	STP	(ZR, ZR), main..autotmp_88-88(SP)
+	0x01e8 00488 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:21)	PCDATA	$1, $7
+	0x01e8 00488 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:21)	CALL	runtime.convT64(SB)
+	0x01ec 00492 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:21)	MOVD	$type:int(SB), R1
+	0x01f4 00500 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:21)	STP	(R1, R0), main..autotmp_88-104(SP)
+	0x01f8 00504 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:21)	MOVD	main.e.ptr-120(SP), R0
+	0x01fc 00508 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:21)	MOVD	main.e.len-152(SP), R1
+	0x0200 00512 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:21)	PCDATA	$1, $8
+	0x0200 00512 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:21)	CALL	runtime.convTstring(SB)
+	0x0204 00516 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:21)	MOVD	$type:string(SB), R1
+	0x020c 00524 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:21)	STP	(R1, R0), main..autotmp_88-88(SP)
+	0x0210 00528 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:21)	PCDATA	$0, $-4
+	0x0210 00528 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x0218 00536 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x0218 00536 (<unknown line number>)	NOP
+	0x0218 00536 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x0220 00544 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."env[%d] = %q\n"(SB), R2
+	0x0228 00552 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$13, R3
+	0x022c 00556 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$main..autotmp_88-104(SP), R4
+	0x0230 00560 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$2, R5
+	0x0234 00564 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x0238 00568 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$1, $4
+	0x0238 00568 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x023c 00572 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:20)	MOVD	main..autotmp_152-8(SP), R1
+	0x0240 00576 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:20)	ADD	$16, R1, R7
+	0x0244 00580 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:20)	MOVD	main.i-168(SP), R1
+	0x0248 00584 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:20)	ADD	$1, R1, R0
+	0x024c 00588 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:20)	MOVD	main.~r0.len-176(SP), R8
+	0x0250 00592 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:20)	CMP	R0, R8
+	0x0254 00596 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:20)	BGT	460
+	0x0258 00600 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:20)	PCDATA	$0, $-3
+	0x0258 00600 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x0260 00608 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x0260 00608 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:25)	HINT	$0
+	0x0264 00612 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x026c 00620 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."\n=== Note ===\n"(SB), R2
+	0x0274 00628 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$14, R3
+	0x0278 00632 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	ZR, R4
+	0x027c 00636 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	ZR, R5
+	0x0280 00640 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x0284 00644 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$1, $0
+	0x0284 00644 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x0288 00648 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-4
+	0x0288 00648 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x0290 00656 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x0290 00656 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:26)	HINT	$0
+	0x0294 00660 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x029c 00668 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."The auxiliary vector (auxv) is not directly accessible from Go,\n"(SB), R2
+	0x02a4 00676 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$64, R3
+	0x02a8 00680 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	ZR, R4
+	0x02ac 00684 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	ZR, R5
+	0x02b0 00688 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x02b4 00692 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x02b8 00696 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-3
+	0x02b8 00696 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x02c0 00704 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x02c0 00704 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:27)	HINT	$0
+	0x02c4 00708 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x02cc 00716 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."but it's passed on the stack after envp. The Go runtime reads it\n"(SB), R2
+	0x02d4 00724 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$65, R3
+	0x02d8 00728 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	ZR, R4
+	0x02dc 00732 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	ZR, R5
+	0x02e0 00736 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x02e4 00740 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x02e8 00744 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-4
+	0x02e8 00744 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	os.Stdout(SB), R1
+	0x02f0 00752 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	PCDATA	$0, $-1
+	0x02f0 00752 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:28)	HINT	$0
+	0x02f4 00756 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:itab.*os.File,io.Writer(SB), R0
+	0x02fc 00764 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$go:string."during initialization to get AT_PAGESZ, AT_RANDOM, etc.\n"(SB), R2
+	0x0304 00772 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	$56, R3
+	0x0308 00776 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	ZR, R4
+	0x030c 00780 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	ZR, R5
+	0x0310 00784 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	MOVD	R5, R6
+	0x0314 00788 (/opt/homebrew/Cellar/go/1.25.5/libexec/src/fmt/print.go:233)	CALL	fmt.Fprintf(SB)
+	0x0318 00792 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:29)	LDP	-8(RSP), (R29, R30)
+	0x031c 00796 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:29)	ADD	$256, RSP
+	0x0320 00800 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:29)	RET	(R30)
+	0x0324 00804 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:29)	NOP
+	0x0324 00804 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	PCDATA	$1, $-1
+	0x0324 00804 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	PCDATA	$0, $-2
+	0x0324 00804 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	MOVD	R30, R3
+	0x0328 00808 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	CALL	runtime.morestack_noctxt(SB)
+	0x032c 00812 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	PCDATA	$0, $-1
+	0x032c 00812 (/Users/iansmith/mazzy/src/mazboot/golang/stack/test04_entry_point/main.go:8)	JMP	0
+	0x0000 90 0b 40 f9 f1 03 02 d1 3f 02 10 eb c9 18 00 54  ..@.....?......T
+	0x0010 f4 03 04 d1 9d fa 3f a9 9f 02 00 91 fd 23 00 d1  ......?......#..
+	0x0020 1b 00 00 90 61 03 40 f9 1f 20 03 d5 00 00 00 90  ....a.@.. ......
+	0x0030 00 00 00 91 02 00 00 90 42 00 00 91 e3 13 40 b2  ........B.....@.
+	0x0040 e4 03 1f aa e5 03 1f aa e6 03 05 aa 00 00 00 94  ................
+	0x0050 1b 00 00 90 60 03 40 f9 ff 7f 0e a9 00 00 00 94  ....`.@.........
+	0x0060 07 00 00 90 e7 00 00 91 e7 03 0e a9 1b 00 00 90  ................
+	0x0070 61 03 40 f9 00 00 00 90 00 00 00 91 02 00 00 90  a.@.............
+	0x0080 42 00 00 91 43 02 80 d2 e4 83 03 91 e5 03 40 b2  B...C.........@.
+	0x0090 e6 03 05 aa 00 00 00 94 1b 00 00 90 7b 03 00 91  ............{...
+	0x00a0 67 23 40 a9 e8 3b 00 f9 e0 03 1f aa 22 00 00 14  g#@..;......"...
+	0x00b0 e0 2f 00 f9 e7 7b 00 f9 e1 08 40 a9 e2 37 00 f9  ./...{....@..7..
+	0x00c0 e1 47 00 f9 ff 7f 0c a9 ff 7f 0d a9 00 00 00 94  .G..............
+	0x00d0 01 00 00 90 21 00 00 91 e1 03 0c a9 e0 47 40 f9  ....!........G@.
+	0x00e0 e1 37 40 f9 00 00 00 94 01 00 00 90 21 00 00 91  .7@.........!...
+	0x00f0 e1 03 0d a9 1b 00 00 90 61 03 40 f9 00 00 00 90  ........a.@.....
+	0x0100 00 00 00 91 02 00 00 90 42 00 00 91 23 02 80 d2  ........B...#...
+	0x0110 e4 03 03 91 e5 03 7f b2 e6 03 05 aa 00 00 00 94  ................
+	0x0120 e1 7b 40 f9 27 40 00 91 e1 2f 40 f9 20 04 00 91  .{@.'@.../@. ...
+	0x0130 e8 3b 40 f9 1f 00 08 eb cb fb ff 54 1b 00 00 90  .;@........T....
+	0x0140 61 03 40 f9 1f 20 03 d5 00 00 00 90 00 00 00 91  a.@.. ..........
+	0x0150 02 00 00 90 42 00 00 91 e3 13 40 b2 e4 03 1f aa  ....B.....@.....
+	0x0160 e5 03 1f aa e6 03 05 aa 00 00 00 94 1f 20 03 d5  ............. ..
+	0x0170 00 00 00 94 e0 3f 00 f9 e1 27 00 f9 ff 7f 0b a9  .....?...'......
+	0x0180 e0 03 01 aa 00 00 00 94 07 00 00 90 e7 00 00 91  ................
+	0x0190 e7 03 0b a9 1b 00 00 90 61 03 40 f9 00 00 00 90  ........a.@.....
+	0x01a0 00 00 00 91 02 00 00 90 42 00 00 91 e3 02 80 d2  ........B.......
+	0x01b0 e4 c3 02 91 e5 03 40 b2 e6 03 05 aa 00 00 00 94  ......@.........
+	0x01c0 e7 3f 40 f9 e0 03 1f aa 21 00 00 14 e0 2b 00 f9  .?@.....!....+..
+	0x01d0 e7 7b 00 f9 e1 08 40 a9 e2 33 00 f9 e1 43 00 f9  .{....@..3...C..
+	0x01e0 ff 7f 09 a9 ff 7f 0a a9 00 00 00 94 01 00 00 90  ................
+	0x01f0 21 00 00 91 e1 03 09 a9 e0 43 40 f9 e1 33 40 f9  !........C@..3@.
+	0x0200 00 00 00 94 01 00 00 90 21 00 00 91 e1 03 0a a9  ........!.......
+	0x0210 1b 00 00 90 61 03 40 f9 00 00 00 90 00 00 00 91  ....a.@.........
+	0x0220 02 00 00 90 42 00 00 91 a3 01 80 d2 e4 43 02 91  ....B........C..
+	0x0230 e5 03 7f b2 e6 03 05 aa 00 00 00 94 e1 7b 40 f9  .............{@.
+	0x0240 27 40 00 91 e1 2b 40 f9 20 04 00 91 e8 27 40 f9  '@...+@. ....'@.
+	0x0250 1f 01 00 eb cc fb ff 54 1b 00 00 90 61 03 40 f9  .......T....a.@.
+	0x0260 1f 20 03 d5 00 00 00 90 00 00 00 91 02 00 00 90  . ..............
+	0x0270 42 00 00 91 e3 0b 7f b2 e4 03 1f aa e5 03 1f aa  B...............
+	0x0280 e6 03 05 aa 00 00 00 94 1b 00 00 90 61 03 40 f9  ............a.@.
+	0x0290 1f 20 03 d5 00 00 00 90 00 00 00 91 02 00 00 90  . ..............
+	0x02a0 42 00 00 91 e3 03 7a b2 e4 03 1f aa e5 03 1f aa  B.....z.........
+	0x02b0 e6 03 05 aa 00 00 00 94 1b 00 00 90 61 03 40 f9  ............a.@.
+	0x02c0 1f 20 03 d5 00 00 00 90 00 00 00 91 02 00 00 90  . ..............
+	0x02d0 42 00 00 91 23 08 80 d2 e4 03 1f aa e5 03 1f aa  B...#...........
+	0x02e0 e6 03 05 aa 00 00 00 94 1b 00 00 90 61 03 40 f9  ............a.@.
+	0x02f0 1f 20 03 d5 00 00 00 90 00 00 00 91 02 00 00 90  . ..............
+	0x0300 42 00 00 91 e3 0b 7d b2 e4 03 1f aa e5 03 1f aa  B.....}.........
+	0x0310 e6 03 05 aa 00 00 00 94 fd fb 7f a9 ff 03 04 91  ................
+	0x0320 c0 03 5f d6 e3 03 1e aa 00 00 00 94 35 ff ff 17  .._.........5...
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:int+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:int+0
+	rel 0+0 t=R_USEIFACE type:string+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:int+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:int+0
+	rel 0+0 t=R_USEIFACE type:string+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 0+0 t=R_USEIFACE type:*os.File+0
+	rel 32+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 44+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 52+8 t=R_ADDRARM64 go:string."=== Command-Line Arguments ===\n"+0
+	rel 76+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 80+8 t=R_ARM64_PCREL_LDST64 os.Args+8
+	rel 92+4 t=R_CALLARM64 runtime.convT64+0
+	rel 96+8 t=R_ADDRARM64 type:int+0
+	rel 108+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 116+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 124+8 t=R_ADDRARM64 go:string."len(os.Args) = %d\n"+0
+	rel 148+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 152+8 t=R_ADDRARM64 os.Args+0
+	rel 204+4 t=R_CALLARM64 runtime.convT64+0
+	rel 208+8 t=R_ADDRARM64 type:int+0
+	rel 228+4 t=R_CALLARM64 runtime.convTstring+0
+	rel 232+8 t=R_ADDRARM64 type:string+0
+	rel 244+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 252+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 260+8 t=R_ADDRARM64 go:string."os.Args[%d] = %q\n"+0
+	rel 284+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 316+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 328+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 336+8 t=R_ADDRARM64 go:string."\n=== Environment Variables ===\n"+0
+	rel 360+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 368+4 t=R_CALLARM64 syscall.Environ+0
+	rel 388+4 t=R_CALLARM64 runtime.convT64+0
+	rel 392+8 t=R_ADDRARM64 type:int+0
+	rel 404+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 412+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 420+8 t=R_ADDRARM64 go:string."len(os.Environ()) = %d\n"+0
+	rel 444+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 488+4 t=R_CALLARM64 runtime.convT64+0
+	rel 492+8 t=R_ADDRARM64 type:int+0
+	rel 512+4 t=R_CALLARM64 runtime.convTstring+0
+	rel 516+8 t=R_ADDRARM64 type:string+0
+	rel 528+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 536+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 544+8 t=R_ADDRARM64 go:string."env[%d] = %q\n"+0
+	rel 568+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 600+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 612+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 620+8 t=R_ADDRARM64 go:string."\n=== Note ===\n"+0
+	rel 644+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 648+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 660+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 668+8 t=R_ADDRARM64 go:string."The auxiliary vector (auxv) is not directly accessible from Go,\n"+0
+	rel 692+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 696+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 708+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 716+8 t=R_ADDRARM64 go:string."but it's passed on the stack after envp. The Go runtime reads it\n"+0
+	rel 740+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 744+8 t=R_ARM64_PCREL_LDST64 os.Stdout+0
+	rel 756+8 t=R_ADDRARM64 go:itab.*os.File,io.Writer+0
+	rel 764+8 t=R_ADDRARM64 go:string."during initialization to get AT_PAGESZ, AT_RANDOM, etc.\n"+0
+	rel 788+4 t=R_CALLARM64 fmt.Fprintf+0
+	rel 808+4 t=R_CALLARM64 runtime.morestack_noctxt+0
+type:.eq.sync/atomic.Pointer[os.dirInfo] STEXT dupok size=32 args=0x10 locals=0x0 funcid=0x0 align=0x0 leaf
+	0x0000 00000 (<autogenerated>:1)	TEXT	type:.eq.sync/atomic.Pointer[os.dirInfo](SB), DUPOK|LEAF|NOFRAME|ABIInternal, $0-16
+	0x0000 00000 (<autogenerated>:1)	FUNCDATA	$0, gclocals·TswRR9Pia9Wsluv5u1sUnA==(SB)
+	0x0000 00000 (<autogenerated>:1)	FUNCDATA	$1, gclocals·J26BEvPExEQhJvjp9E8Whg==(SB)
+	0x0000 00000 (<autogenerated>:1)	FUNCDATA	$5, type:.eq.sync/atomic.Pointer[os.dirInfo].arginfo1(SB)
+	0x0000 00000 (<autogenerated>:1)	FUNCDATA	$6, type:.eq.sync/atomic.Pointer[os.dirInfo].argliveinfo(SB)
+	0x0000 00000 (<autogenerated>:1)	PCDATA	$3, $1
+	0x0000 00000 (<autogenerated>:1)	MOVD	(R1), R1
+	0x0004 00004 (<autogenerated>:1)	MOVD	(R0), R2
+	0x0008 00008 (<autogenerated>:1)	CMP	R2, R1
+	0x000c 00012 (<autogenerated>:1)	CSET	EQ, R0
+	0x0010 00016 (<autogenerated>:1)	RET	(R30)
+	0x0000 21 00 40 f9 02 00 40 f9 3f 00 02 eb e0 17 9f 9a  !.@...@.?.......
+	0x0010 c0 03 5f d6 00 00 00 00 00 00 00 00 00 00 00 00  .._.............
+type:.eq.[2]interface {} STEXT dupok size=176 args=0x10 locals=0x28 funcid=0x0 align=0x0
+	0x0000 00000 (<autogenerated>:1)	TEXT	type:.eq.[2]interface {}(SB), DUPOK|ABIInternal, $48-16
+	0x0000 00000 (<autogenerated>:1)	MOVD	16(g), R16
+	0x0004 00004 (<autogenerated>:1)	PCDATA	$0, $-2
+	0x0004 00004 (<autogenerated>:1)	CMP	R16, RSP
+	0x0008 00008 (<autogenerated>:1)	BLS	144
+	0x000c 00012 (<autogenerated>:1)	PCDATA	$0, $-1
+	0x000c 00012 (<autogenerated>:1)	MOVD.W	R30, -48(RSP)
+	0x0010 00016 (<autogenerated>:1)	MOVD	R29, -8(RSP)
+	0x0014 00020 (<autogenerated>:1)	SUB	$8, RSP, R29
+	0x0018 00024 (<autogenerated>:1)	FUNCDATA	$0, gclocals·TswRR9Pia9Wsluv5u1sUnA==(SB)
+	0x0018 00024 (<autogenerated>:1)	FUNCDATA	$1, gclocals·J26BEvPExEQhJvjp9E8Whg==(SB)
+	0x0018 00024 (<autogenerated>:1)	FUNCDATA	$5, type:.eq.[2]interface {}.arginfo1(SB)
+	0x0018 00024 (<autogenerated>:1)	FUNCDATA	$6, type:.eq.[2]interface {}.argliveinfo(SB)
+	0x0018 00024 (<autogenerated>:1)	PCDATA	$3, $1
+	0x0018 00024 (<autogenerated>:1)	MOVD	R0, main.p(FP)
+	0x001c 00028 (<autogenerated>:1)	MOVD	R1, main.q+8(FP)
+	0x0020 00032 (<autogenerated>:1)	PCDATA	$3, $-1
+	0x0020 00032 (<autogenerated>:1)	MOVD	ZR, R2
+	0x0024 00036 (<autogenerated>:1)	JMP	52
+	0x0028 00040 (<autogenerated>:1)	ADD	$1, R3, R2
+	0x002c 00044 (<autogenerated>:1)	MOVD	main.p(FP), R0
+	0x0030 00048 (<autogenerated>:1)	MOVD	main.q+8(FP), R1
+	0x0034 00052 (<autogenerated>:1)	CMP	$2, R2
+	0x0038 00056 (<autogenerated>:1)	BGE	128
+	0x003c 00060 (<autogenerated>:1)	LSL	$4, R2, R3
+	0x0040 00064 (<autogenerated>:1)	MOVD	(R0)(R3), R4
+	0x0044 00068 (<autogenerated>:1)	MOVD	(R1)(R3), R3
+	0x0048 00072 (<autogenerated>:1)	ADD	R2<<4, R1, R5
+	0x004c 00076 (<autogenerated>:1)	ADD	R2<<4, R0, R6
+	0x0050 00080 (<autogenerated>:1)	CMP	R4, R3
+	0x0054 00084 (<autogenerated>:1)	BNE	124
+	0x0058 00088 (<autogenerated>:1)	MOVD	R2, main..autotmp_6-8(SP)
+	0x005c 00092 (<autogenerated>:1)	MOVD	8(R6), R1
+	0x0060 00096 (<autogenerated>:1)	MOVD	8(R5), R2
+	0x0064 00100 (<autogenerated>:1)	MOVD	R4, R0
+	0x0068 00104 (<autogenerated>:1)	PCDATA	$1, $0
+	0x0068 00104 (<autogenerated>:1)	CALL	runtime.efaceeq(SB)
+	0x006c 00108 (<autogenerated>:1)	MOVD	main..autotmp_6-8(SP), R3
+	0x0070 00112 (<autogenerated>:1)	CMP	$2, R3
+	0x0074 00116 (<autogenerated>:1)	TBNZ	$0, R0, 40
+	0x0078 00120 (<autogenerated>:1)	JMP	128
+	0x007c 00124 (<autogenerated>:1)	CMP	$2, R2
+	0x0080 00128 (<autogenerated>:1)	CSET	GE, R0
+	0x0084 00132 (<autogenerated>:1)	MOVD	-8(RSP), R29
+	0x0088 00136 (<autogenerated>:1)	MOVD.P	48(RSP), R30
+	0x008c 00140 (<autogenerated>:1)	RET	(R30)
+	0x0090 00144 (<autogenerated>:1)	NOP
+	0x0090 00144 (<autogenerated>:1)	PCDATA	$1, $-1
+	0x0090 00144 (<autogenerated>:1)	PCDATA	$0, $-2
+	0x0090 00144 (<autogenerated>:1)	STP	(R0, R1), 8(RSP)
+	0x0094 00148 (<autogenerated>:1)	MOVD	R30, R3
+	0x0098 00152 (<autogenerated>:1)	CALL	runtime.morestack_noctxt(SB)
+	0x009c 00156 (<autogenerated>:1)	PCDATA	$0, $-1
+	0x009c 00156 (<autogenerated>:1)	LDP	8(RSP), (R0, R1)
+	0x00a0 00160 (<autogenerated>:1)	JMP	0
+	0x0000 90 0b 40 f9 ff 63 30 eb 49 04 00 54 fe 0f 1d f8  ..@..c0.I..T....
+	0x0010 fd 83 1f f8 fd 23 00 d1 e0 1f 00 f9 e1 23 00 f9  .....#.......#..
+	0x0020 e2 03 1f aa 04 00 00 14 62 04 00 91 e0 1f 40 f9  ........b.....@.
+	0x0030 e1 23 40 f9 5f 08 00 f1 4a 02 00 54 43 ec 7c d3  .#@._...J..TC.|.
+	0x0040 04 68 63 f8 23 68 63 f8 25 10 02 8b 06 10 02 8b  .hc.#hc.%.......
+	0x0050 7f 00 04 eb 41 01 00 54 e2 13 00 f9 c1 04 40 f9  ....A..T......@.
+	0x0060 a2 04 40 f9 e0 03 04 aa 00 00 00 94 e3 13 40 f9  ..@...........@.
+	0x0070 7f 08 00 f1 a0 fd 07 37 02 00 00 14 5f 08 00 f1  .......7...._...
+	0x0080 e0 b7 9f 9a fd 83 5f f8 fe 07 43 f8 c0 03 5f d6  ......_...C..._.
+	0x0090 e0 87 00 a9 e3 03 1e aa 00 00 00 94 e0 87 40 a9  ..............@.
+	0x00a0 d8 ff ff 17 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	rel 104+4 t=R_CALLARM64 runtime.efaceeq+0
+	rel 152+4 t=R_CALLARM64 runtime.morestack_noctxt+0
+go:cuinfo.producer.main SDWARFCUINFO dupok size=0
+	0x0000 72 65 67 61 62 69                                regabi
+go:cuinfo.packagename.main SDWARFCUINFO dupok size=0
+	0x0000 6d 61 69 6e                                      main
+go:info.fmt.Printf$abstract SDWARFABSFCN dupok size=56
+	0x0000 05 66 6d 74 2e 50 72 69 6e 74 66 00 01 e8 01 01  .fmt.Printf.....
+	0x0010 22 66 6f 72 6d 61 74 00 00 00 00 00 00 22 61 00  "format......"a.
+	0x0020 00 00 00 00 00 22 6e 00 01 00 00 00 00 22 65 72  ....."n......"er
+	0x0030 72 00 01 00 00 00 00 00                          r.......
+	rel 0+0 t=R_USETYPE type:[]interface {}+0
+	rel 0+0 t=R_USETYPE type:error+0
+	rel 0+0 t=R_USETYPE type:int+0
+	rel 0+0 t=R_USETYPE type:string+0
+	rel 25+4 t=R_DWARFSECREF go:info.string+0
+	rel 33+4 t=R_DWARFSECREF go:info.[]interface {}+0
+	rel 41+4 t=R_DWARFSECREF go:info.int+0
+	rel 51+4 t=R_DWARFSECREF go:info.error+0
+go:itab.*os.File,io.Writer SRODATA dupok size=32
+	0x0000 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0010 5a dd 11 9f 00 00 00 00 00 00 00 00 00 00 00 00  Z...............
+	rel 0+8 t=R_ADDR type:io.Writer+0
+	rel 8+8 t=R_ADDR type:*os.File+0
+	rel 24+8 t=RelocType(-32767) os.(*File).Write+0
+sync/atomic..dict.Pointer[os.dirInfo] SRODATA dupok size=128
+	0x0000 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0010 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0040 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0050 00 00 00 00 00 00 00 00                          ........
+	rel 0+0 t=R_USEIFACE type:*os.dirInfo+0
+	rel 0+0 t=R_USEIFACE type:*os.dirInfo+0
+	rel 0+0 t=R_USEIFACE type:*os.dirInfo+0
+	rel 0+0 t=R_USEIFACE type:*os.dirInfo+0
+	rel 0+0 t=R_USEIFACE type:*os.dirInfo+0
+	rel 0+0 t=R_USEIFACE type:*os.dirInfo+0
+	rel 0+0 t=R_USEIFACE type:unsafe.Pointer+0
+	rel 0+0 t=R_USEIFACE type:*sync/atomic.Pointer[os.dirInfo]+0
+	rel 0+8 t=R_ADDR type:*sync/atomic.Pointer[os.dirInfo]+0
+	rel 0+0 t=R_USEIFACE type:*os.dirInfo+0
+	rel 0+0 t=R_USEIFACE type:unsafe.Pointer+0
+	rel 0+0 t=R_USEIFACE type:*sync/atomic.Pointer[os.dirInfo]+0
+	rel 0+0 t=R_USEIFACE type:*sync/atomic.Pointer[os.dirInfo]+0
+	rel 0+0 t=R_USEIFACE type:unsafe.Pointer+0
+	rel 0+0 t=R_USEIFACE type:*os.dirInfo+0
+	rel 0+0 t=R_USEIFACE type:*os.dirInfo+0
+	rel 0+0 t=R_USEIFACE type:*os.dirInfo+0
+	rel 0+0 t=R_USEIFACE type:*os.dirInfo+0
+	rel 0+0 t=R_USEIFACE type:unsafe.Pointer+0
+	rel 0+0 t=R_USEIFACE type:*sync/atomic.Pointer[os.dirInfo]+0
+	rel 0+0 t=R_USEIFACE type:unsafe.Pointer+0
+	rel 0+0 t=R_USEIFACE type:*os.dirInfo+0
+	rel 8+8 t=R_ADDR type:*os.dirInfo+0
+	rel 16+8 t=R_ADDR type:*os.dirInfo+0
+	rel 24+8 t=R_ADDR type:*sync/atomic.Pointer[os.dirInfo]+0
+	rel 32+8 t=R_ADDR type:*os.dirInfo+0
+	rel 40+8 t=R_ADDR type:*sync/atomic.Pointer[os.dirInfo]+0
+	rel 48+8 t=R_ADDR type:*os.dirInfo+0
+	rel 56+8 t=R_ADDR type:*os.dirInfo+0
+	rel 64+8 t=R_ADDR type:*os.dirInfo+0
+	rel 72+8 t=R_ADDR type:*sync/atomic.Pointer[os.dirInfo]+0
+	rel 80+8 t=R_ADDR type:*os.dirInfo+0
+go:info.os.Environ$abstract SDWARFABSFCN dupok size=17
+	0x0000 05 6f 73 2e 45 6e 76 69 72 6f 6e 00 01 8b 01 01  .os.Environ.....
+	0x0010 00                                               .
+	rel 0+0 t=R_USETYPE type:[]string+0
+main..inittask SNOPTRDATA size=8
+	0x0000 00 00 00 00 00 00 00 00                          ........
+	rel 0+0 t=R_INITORDER fmt..inittask+0
+	rel 0+0 t=R_INITORDER os..inittask+0
+runtime.memequal64·f SRODATA dupok size=8
+	0x0000 00 00 00 00 00 00 00 00                          ........
+	rel 0+8 t=R_ADDR runtime.memequal64+0
+runtime.gcbits.0100000000000000 SRODATA dupok size=8
+	0x0000 01 00 00 00 00 00 00 00                          ........
+type:.namedata.*atomic.Pointer[os.dirInfo]. SRODATA dupok size=29
+	0x0000 01 1b 2a 61 74 6f 6d 69 63 2e 50 6f 69 6e 74 65  ..*atomic.Pointe
+	0x0010 72 5b 6f 73 2e 64 69 72 49 6e 66 6f 5d           r[os.dirInfo]
+type:.eqfunc.sync/atomic.Pointer[os.dirInfo] SRODATA dupok size=8
+	0x0000 00 00 00 00 00 00 00 00                          ........
+	rel 0+8 t=R_ADDR type:.eq.sync/atomic.Pointer[os.dirInfo]+0
+runtime.memequal0·f SRODATA dupok size=8
+	0x0000 00 00 00 00 00 00 00 00                          ........
+	rel 0+8 t=R_ADDR runtime.memequal0+0
+type:.namedata.*[0]*os.dirInfo- SRODATA dupok size=17
+	0x0000 00 0f 2a 5b 30 5d 2a 6f 73 2e 64 69 72 49 6e 66  ..*[0]*os.dirInf
+	0x0010 6f                                               o
+type:*[0]*os.dirInfo SRODATA dupok size=56
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 c6 f5 15 5e 08 08 08 36 00 00 00 00 00 00 00 00  ...^...6........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 00 00 00 00 00 00                          ........
+	rel 24+8 t=R_ADDR runtime.memequal64·f+0
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*[0]*os.dirInfo-+0
+	rel 48+8 t=R_ADDR type:[0]*os.dirInfo+0
+runtime.gcbits. SRODATA dupok size=0
+type:.namedata.*[]*os.dirInfo- SRODATA dupok size=16
+	0x0000 00 0e 2a 5b 5d 2a 6f 73 2e 64 69 72 49 6e 66 6f  ..*[]*os.dirInfo
+type:*[]*os.dirInfo SRODATA dupok size=56
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 31 20 d4 91 08 08 08 36 00 00 00 00 00 00 00 00  1 .....6........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 00 00 00 00 00 00                          ........
+	rel 24+8 t=R_ADDR runtime.memequal64·f+0
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*[]*os.dirInfo-+0
+	rel 48+8 t=R_ADDR type:[]*os.dirInfo+0
+type:[]*os.dirInfo SRODATA dupok size=56
+	0x0000 18 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 16 88 ec 4e 02 08 08 17 00 00 00 00 00 00 00 00  ...N............
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 00 00 00 00 00 00                          ........
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*[]*os.dirInfo-+0
+	rel 44+4 t=RelocType(-32763) type:*[]*os.dirInfo+0
+	rel 48+8 t=R_ADDR type:*os.dirInfo+0
+type:[0]*os.dirInfo SRODATA dupok size=72
+	0x0000 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0010 e5 7f 16 86 0a 08 08 11 00 00 00 00 00 00 00 00  ................
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0040 00 00 00 00 00 00 00 00                          ........
+	rel 24+8 t=R_ADDR runtime.memequal0·f+0
+	rel 32+8 t=R_ADDR runtime.gcbits.+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*[0]*os.dirInfo-+0
+	rel 44+4 t=RelocType(-32763) type:*[0]*os.dirInfo+0
+	rel 48+8 t=R_ADDR type:*os.dirInfo+0
+	rel 56+8 t=R_ADDR type:[]*os.dirInfo+0
+type:.importpath.sync/atomic. SRODATA dupok size=13
+	0x0000 00 0b 73 79 6e 63 2f 61 74 6f 6d 69 63           ..sync/atomic
+type:.namedata._- SRODATA dupok size=3
+	0x0000 00 01 5f                                         .._
+type:.namedata.v- SRODATA dupok size=3
+	0x0000 00 01 76                                         ..v
+type:sync/atomic.Pointer[os.dirInfo] SRODATA dupok size=168
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 76 96 ce c2 07 08 08 19 00 00 00 00 00 00 00 00  v...............
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0040 03 00 00 00 00 00 00 00 03 00 00 00 00 00 00 00  ................
+	0x0050 00 00 00 00 00 00 00 00 58 00 00 00 00 00 00 00  ........X.......
+	0x0060 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0070 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0080 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0090 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x00a0 00 00 00 00 00 00 00 00                          ........
+	rel 24+8 t=R_ADDR type:.eqfunc.sync/atomic.Pointer[os.dirInfo]+0
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*atomic.Pointer[os.dirInfo].+0
+	rel 44+4 t=R_ADDROFF type:*sync/atomic.Pointer[os.dirInfo]+0
+	rel 48+8 t=R_ADDR type:.importpath.sync/atomic.+0
+	rel 56+8 t=R_ADDR type:sync/atomic.Pointer[os.dirInfo]+96
+	rel 80+4 t=R_ADDROFF type:.importpath.sync/atomic.+0
+	rel 96+8 t=R_ADDR type:.namedata._-+0
+	rel 104+8 t=R_ADDR type:[0]*os.dirInfo+0
+	rel 120+8 t=R_ADDR type:.namedata._-+0
+	rel 128+8 t=R_ADDR type:sync/atomic.noCopy+0
+	rel 144+8 t=R_ADDR type:.namedata.v-+0
+	rel 152+8 t=R_ADDR type:unsafe.Pointer+0
+type:.namedata.*func(*atomic.Pointer[os.dirInfo], *os.dirInfo, *os.dirInfo) bool- SRODATA dupok size=67
+	0x0000 00 41 2a 66 75 6e 63 28 2a 61 74 6f 6d 69 63 2e  .A*func(*atomic.
+	0x0010 50 6f 69 6e 74 65 72 5b 6f 73 2e 64 69 72 49 6e  Pointer[os.dirIn
+	0x0020 66 6f 5d 2c 20 2a 6f 73 2e 64 69 72 49 6e 66 6f  fo], *os.dirInfo
+	0x0030 2c 20 2a 6f 73 2e 64 69 72 49 6e 66 6f 29 20 62  , *os.dirInfo) b
+	0x0040 6f 6f 6c                                         ool
+type:*func(*sync/atomic.Pointer[os.dirInfo], *os.dirInfo, *os.dirInfo) bool SRODATA dupok size=56
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 63 f7 3f 53 08 08 08 36 00 00 00 00 00 00 00 00  c.?S...6........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 00 00 00 00 00 00                          ........
+	rel 24+8 t=R_ADDR runtime.memequal64·f+0
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*func(*atomic.Pointer[os.dirInfo], *os.dirInfo, *os.dirInfo) bool-+0
+	rel 48+8 t=R_ADDR type:func(*sync/atomic.Pointer[os.dirInfo], *os.dirInfo, *os.dirInfo) bool+0
+type:func(*sync/atomic.Pointer[os.dirInfo], *os.dirInfo, *os.dirInfo) bool SRODATA dupok size=88
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 0d ef 9d 1e 02 08 08 33 00 00 00 00 00 00 00 00  .......3........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 03 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0040 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0050 00 00 00 00 00 00 00 00                          ........
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*func(*atomic.Pointer[os.dirInfo], *os.dirInfo, *os.dirInfo) bool-+0
+	rel 44+4 t=RelocType(-32763) type:*func(*sync/atomic.Pointer[os.dirInfo], *os.dirInfo, *os.dirInfo) bool+0
+	rel 56+8 t=R_ADDR type:*sync/atomic.Pointer[os.dirInfo]+0
+	rel 64+8 t=R_ADDR type:*os.dirInfo+0
+	rel 72+8 t=R_ADDR type:*os.dirInfo+0
+	rel 80+8 t=R_ADDR type:bool+0
+type:.namedata.*func(*atomic.Pointer[os.dirInfo]) *os.dirInfo- SRODATA dupok size=48
+	0x0000 00 2e 2a 66 75 6e 63 28 2a 61 74 6f 6d 69 63 2e  ..*func(*atomic.
+	0x0010 50 6f 69 6e 74 65 72 5b 6f 73 2e 64 69 72 49 6e  Pointer[os.dirIn
+	0x0020 66 6f 5d 29 20 2a 6f 73 2e 64 69 72 49 6e 66 6f  fo]) *os.dirInfo
+type:*func(*sync/atomic.Pointer[os.dirInfo]) *os.dirInfo SRODATA dupok size=56
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 8f e0 37 8d 08 08 08 36 00 00 00 00 00 00 00 00  ..7....6........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 00 00 00 00 00 00                          ........
+	rel 24+8 t=R_ADDR runtime.memequal64·f+0
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*func(*atomic.Pointer[os.dirInfo]) *os.dirInfo-+0
+	rel 48+8 t=R_ADDR type:func(*sync/atomic.Pointer[os.dirInfo]) *os.dirInfo+0
+type:func(*sync/atomic.Pointer[os.dirInfo]) *os.dirInfo SRODATA dupok size=72
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 8b 71 55 2f 02 08 08 33 00 00 00 00 00 00 00 00  .qU/...3........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 01 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0040 00 00 00 00 00 00 00 00                          ........
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*func(*atomic.Pointer[os.dirInfo]) *os.dirInfo-+0
+	rel 44+4 t=RelocType(-32763) type:*func(*sync/atomic.Pointer[os.dirInfo]) *os.dirInfo+0
+	rel 56+8 t=R_ADDR type:*sync/atomic.Pointer[os.dirInfo]+0
+	rel 64+8 t=R_ADDR type:*os.dirInfo+0
+type:.namedata.*func(*atomic.Pointer[os.dirInfo], *os.dirInfo)- SRODATA dupok size=49
+	0x0000 00 2f 2a 66 75 6e 63 28 2a 61 74 6f 6d 69 63 2e  ./*func(*atomic.
+	0x0010 50 6f 69 6e 74 65 72 5b 6f 73 2e 64 69 72 49 6e  Pointer[os.dirIn
+	0x0020 66 6f 5d 2c 20 2a 6f 73 2e 64 69 72 49 6e 66 6f  fo], *os.dirInfo
+	0x0030 29                                               )
+type:*func(*sync/atomic.Pointer[os.dirInfo], *os.dirInfo) SRODATA dupok size=56
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 24 d7 fc 04 08 08 08 36 00 00 00 00 00 00 00 00  $......6........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 00 00 00 00 00 00                          ........
+	rel 24+8 t=R_ADDR runtime.memequal64·f+0
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*func(*atomic.Pointer[os.dirInfo], *os.dirInfo)-+0
+	rel 48+8 t=R_ADDR type:func(*sync/atomic.Pointer[os.dirInfo], *os.dirInfo)+0
+type:func(*sync/atomic.Pointer[os.dirInfo], *os.dirInfo) SRODATA dupok size=72
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 15 40 b9 e6 02 08 08 33 00 00 00 00 00 00 00 00  .@.....3........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0040 00 00 00 00 00 00 00 00                          ........
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*func(*atomic.Pointer[os.dirInfo], *os.dirInfo)-+0
+	rel 44+4 t=RelocType(-32763) type:*func(*sync/atomic.Pointer[os.dirInfo], *os.dirInfo)+0
+	rel 56+8 t=R_ADDR type:*sync/atomic.Pointer[os.dirInfo]+0
+	rel 64+8 t=R_ADDR type:*os.dirInfo+0
+type:.namedata.*func(*atomic.Pointer[os.dirInfo], *os.dirInfo) *os.dirInfo- SRODATA dupok size=61
+	0x0000 00 3b 2a 66 75 6e 63 28 2a 61 74 6f 6d 69 63 2e  .;*func(*atomic.
+	0x0010 50 6f 69 6e 74 65 72 5b 6f 73 2e 64 69 72 49 6e  Pointer[os.dirIn
+	0x0020 66 6f 5d 2c 20 2a 6f 73 2e 64 69 72 49 6e 66 6f  fo], *os.dirInfo
+	0x0030 29 20 2a 6f 73 2e 64 69 72 49 6e 66 6f           ) *os.dirInfo
+type:*func(*sync/atomic.Pointer[os.dirInfo], *os.dirInfo) *os.dirInfo SRODATA dupok size=56
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 85 38 9f c2 08 08 08 36 00 00 00 00 00 00 00 00  .8.....6........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 00 00 00 00 00 00                          ........
+	rel 24+8 t=R_ADDR runtime.memequal64·f+0
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*func(*atomic.Pointer[os.dirInfo], *os.dirInfo) *os.dirInfo-+0
+	rel 48+8 t=R_ADDR type:func(*sync/atomic.Pointer[os.dirInfo], *os.dirInfo) *os.dirInfo+0
+type:func(*sync/atomic.Pointer[os.dirInfo], *os.dirInfo) *os.dirInfo SRODATA dupok size=80
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 bc 5a d7 8b 02 08 08 33 00 00 00 00 00 00 00 00  .Z.....3........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 02 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0040 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*func(*atomic.Pointer[os.dirInfo], *os.dirInfo) *os.dirInfo-+0
+	rel 44+4 t=RelocType(-32763) type:*func(*sync/atomic.Pointer[os.dirInfo], *os.dirInfo) *os.dirInfo+0
+	rel 56+8 t=R_ADDR type:*sync/atomic.Pointer[os.dirInfo]+0
+	rel 64+8 t=R_ADDR type:*os.dirInfo+0
+	rel 72+8 t=R_ADDR type:*os.dirInfo+0
+type:.namedata.CompareAndSwap. SRODATA dupok size=16
+	0x0000 01 0e 43 6f 6d 70 61 72 65 41 6e 64 53 77 61 70  ..CompareAndSwap
+type:.namedata.*func(*os.dirInfo, *os.dirInfo) bool- SRODATA dupok size=38
+	0x0000 00 24 2a 66 75 6e 63 28 2a 6f 73 2e 64 69 72 49  .$*func(*os.dirI
+	0x0010 6e 66 6f 2c 20 2a 6f 73 2e 64 69 72 49 6e 66 6f  nfo, *os.dirInfo
+	0x0020 29 20 62 6f 6f 6c                                ) bool
+type:*func(*os.dirInfo, *os.dirInfo) bool SRODATA dupok size=56
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 6e e3 84 62 08 08 08 36 00 00 00 00 00 00 00 00  n..b...6........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 00 00 00 00 00 00                          ........
+	rel 24+8 t=R_ADDR runtime.memequal64·f+0
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*func(*os.dirInfo, *os.dirInfo) bool-+0
+	rel 48+8 t=R_ADDR type:func(*os.dirInfo, *os.dirInfo) bool+0
+type:func(*os.dirInfo, *os.dirInfo) bool SRODATA dupok size=80
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 34 91 69 09 02 08 08 33 00 00 00 00 00 00 00 00  4.i....3........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 02 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0040 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*func(*os.dirInfo, *os.dirInfo) bool-+0
+	rel 44+4 t=RelocType(-32763) type:*func(*os.dirInfo, *os.dirInfo) bool+0
+	rel 56+8 t=R_ADDR type:*os.dirInfo+0
+	rel 64+8 t=R_ADDR type:*os.dirInfo+0
+	rel 72+8 t=R_ADDR type:bool+0
+type:.namedata.Load. SRODATA dupok size=6
+	0x0000 01 04 4c 6f 61 64                                ..Load
+type:.namedata.*func() *os.dirInfo- SRODATA dupok size=21
+	0x0000 00 13 2a 66 75 6e 63 28 29 20 2a 6f 73 2e 64 69  ..*func() *os.di
+	0x0010 72 49 6e 66 6f                                   rInfo
+type:*func() *os.dirInfo SRODATA dupok size=56
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 15 2c f0 60 08 08 08 36 00 00 00 00 00 00 00 00  .,.`...6........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 00 00 00 00 00 00                          ........
+	rel 24+8 t=R_ADDR runtime.memequal64·f+0
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*func() *os.dirInfo-+0
+	rel 48+8 t=R_ADDR type:func() *os.dirInfo+0
+type:func() *os.dirInfo SRODATA dupok size=64
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 77 f3 44 c5 02 08 08 33 00 00 00 00 00 00 00 00  w.D....3........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*func() *os.dirInfo-+0
+	rel 44+4 t=RelocType(-32763) type:*func() *os.dirInfo+0
+	rel 56+8 t=R_ADDR type:*os.dirInfo+0
+type:.namedata.Store. SRODATA dupok size=7
+	0x0000 01 05 53 74 6f 72 65                             ..Store
+type:.namedata.*func(*os.dirInfo)- SRODATA dupok size=20
+	0x0000 00 12 2a 66 75 6e 63 28 2a 6f 73 2e 64 69 72 49  ..*func(*os.dirI
+	0x0010 6e 66 6f 29                                      nfo)
+type:*func(*os.dirInfo) SRODATA dupok size=56
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 0f cf df a8 08 08 08 36 00 00 00 00 00 00 00 00  .......6........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 00 00 00 00 00 00                          ........
+	rel 24+8 t=R_ADDR runtime.memequal64·f+0
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*func(*os.dirInfo)-+0
+	rel 48+8 t=R_ADDR type:func(*os.dirInfo)+0
+type:func(*os.dirInfo) SRODATA dupok size=64
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 53 20 6a a6 02 08 08 33 00 00 00 00 00 00 00 00  S j....3........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*func(*os.dirInfo)-+0
+	rel 44+4 t=RelocType(-32763) type:*func(*os.dirInfo)+0
+	rel 56+8 t=R_ADDR type:*os.dirInfo+0
+type:.namedata.Swap. SRODATA dupok size=6
+	0x0000 01 04 53 77 61 70                                ..Swap
+type:.namedata.*func(*os.dirInfo) *os.dirInfo- SRODATA dupok size=32
+	0x0000 00 1e 2a 66 75 6e 63 28 2a 6f 73 2e 64 69 72 49  ..*func(*os.dirI
+	0x0010 6e 66 6f 29 20 2a 6f 73 2e 64 69 72 49 6e 66 6f  nfo) *os.dirInfo
+type:*func(*os.dirInfo) *os.dirInfo SRODATA dupok size=56
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 9c b0 1f 37 08 08 08 36 00 00 00 00 00 00 00 00  ...7...6........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 00 00 00 00 00 00                          ........
+	rel 24+8 t=R_ADDR runtime.memequal64·f+0
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*func(*os.dirInfo) *os.dirInfo-+0
+	rel 48+8 t=R_ADDR type:func(*os.dirInfo) *os.dirInfo+0
+type:func(*os.dirInfo) *os.dirInfo SRODATA dupok size=72
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 7a 7b f7 6a 02 08 08 33 00 00 00 00 00 00 00 00  z{.j...3........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 01 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0040 00 00 00 00 00 00 00 00                          ........
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*func(*os.dirInfo) *os.dirInfo-+0
+	rel 44+4 t=RelocType(-32763) type:*func(*os.dirInfo) *os.dirInfo+0
+	rel 56+8 t=R_ADDR type:*os.dirInfo+0
+	rel 64+8 t=R_ADDR type:*os.dirInfo+0
+type:*sync/atomic.Pointer[os.dirInfo] SRODATA dupok size=136
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 ae ff d9 e9 09 08 08 36 00 00 00 00 00 00 00 00  .......6........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 00 00 00 00 00 00 00 00 00 00 04 00 04 00  ................
+	0x0040 10 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0050 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0060 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0070 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0080 00 00 00 00 00 00 00 00                          ........
+	rel 24+8 t=R_ADDR runtime.memequal64·f+0
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*atomic.Pointer[os.dirInfo].+0
+	rel 48+8 t=R_ADDR type:sync/atomic.Pointer[os.dirInfo]+0
+	rel 56+4 t=R_ADDROFF type:.importpath.sync/atomic.+0
+	rel 72+4 t=R_ADDROFF type:.namedata.CompareAndSwap.+0
+	rel 76+4 t=R_METHODOFF type:func(*os.dirInfo, *os.dirInfo) bool+0
+	rel 80+4 t=R_METHODOFF sync/atomic.(*Pointer[os.dirInfo]).CompareAndSwap+0
+	rel 84+4 t=R_METHODOFF sync/atomic.(*Pointer[os.dirInfo]).CompareAndSwap+0
+	rel 88+4 t=R_ADDROFF type:.namedata.Load.+0
+	rel 92+4 t=R_METHODOFF type:func() *os.dirInfo+0
+	rel 96+4 t=R_METHODOFF sync/atomic.(*Pointer[os.dirInfo]).Load+0
+	rel 100+4 t=R_METHODOFF sync/atomic.(*Pointer[os.dirInfo]).Load+0
+	rel 104+4 t=R_ADDROFF type:.namedata.Store.+0
+	rel 108+4 t=R_METHODOFF type:func(*os.dirInfo)+0
+	rel 112+4 t=R_METHODOFF sync/atomic.(*Pointer[os.dirInfo]).Store+0
+	rel 116+4 t=R_METHODOFF sync/atomic.(*Pointer[os.dirInfo]).Store+0
+	rel 120+4 t=R_ADDROFF type:.namedata.Swap.+0
+	rel 124+4 t=R_METHODOFF type:func(*os.dirInfo) *os.dirInfo+0
+	rel 128+4 t=R_METHODOFF sync/atomic.(*Pointer[os.dirInfo]).Swap+0
+	rel 132+4 t=R_METHODOFF sync/atomic.(*Pointer[os.dirInfo]).Swap+0
+go:string."=== Command-Line Arguments ===\n" SRODATA dupok size=31
+	0x0000 3d 3d 3d 20 43 6f 6d 6d 61 6e 64 2d 4c 69 6e 65  === Command-Line
+	0x0010 20 41 72 67 75 6d 65 6e 74 73 20 3d 3d 3d 0a      Arguments ===.
+go:string."len(os.Args) = %d\n" SRODATA dupok size=18
+	0x0000 6c 65 6e 28 6f 73 2e 41 72 67 73 29 20 3d 20 25  len(os.Args) = %
+	0x0010 64 0a                                            d.
+go:string."os.Args[%d] = %q\n" SRODATA dupok size=17
+	0x0000 6f 73 2e 41 72 67 73 5b 25 64 5d 20 3d 20 25 71  os.Args[%d] = %q
+	0x0010 0a                                               .
+go:string."\n=== Environment Variables ===\n" SRODATA dupok size=31
+	0x0000 0a 3d 3d 3d 20 45 6e 76 69 72 6f 6e 6d 65 6e 74  .=== Environment
+	0x0010 20 56 61 72 69 61 62 6c 65 73 20 3d 3d 3d 0a      Variables ===.
+go:string."len(os.Environ()) = %d\n" SRODATA dupok size=23
+	0x0000 6c 65 6e 28 6f 73 2e 45 6e 76 69 72 6f 6e 28 29  len(os.Environ()
+	0x0010 29 20 3d 20 25 64 0a                             ) = %d.
+go:string."env[%d] = %q\n" SRODATA dupok size=13
+	0x0000 65 6e 76 5b 25 64 5d 20 3d 20 25 71 0a           env[%d] = %q.
+go:string."\n=== Note ===\n" SRODATA dupok size=14
+	0x0000 0a 3d 3d 3d 20 4e 6f 74 65 20 3d 3d 3d 0a        .=== Note ===.
+go:string."The auxiliary vector (auxv) is not directly accessible from Go,\n" SRODATA dupok size=64
+	0x0000 54 68 65 20 61 75 78 69 6c 69 61 72 79 20 76 65  The auxiliary ve
+	0x0010 63 74 6f 72 20 28 61 75 78 76 29 20 69 73 20 6e  ctor (auxv) is n
+	0x0020 6f 74 20 64 69 72 65 63 74 6c 79 20 61 63 63 65  ot directly acce
+	0x0030 73 73 69 62 6c 65 20 66 72 6f 6d 20 47 6f 2c 0a  ssible from Go,.
+go:string."but it's passed on the stack after envp. The Go runtime reads it\n" SRODATA dupok size=65
+	0x0000 62 75 74 20 69 74 27 73 20 70 61 73 73 65 64 20  but it's passed 
+	0x0010 6f 6e 20 74 68 65 20 73 74 61 63 6b 20 61 66 74  on the stack aft
+	0x0020 65 72 20 65 6e 76 70 2e 20 54 68 65 20 47 6f 20  er envp. The Go 
+	0x0030 72 75 6e 74 69 6d 65 20 72 65 61 64 73 20 69 74  runtime reads it
+	0x0040 0a                                               .
+go:string."during initialization to get AT_PAGESZ, AT_RANDOM, etc.\n" SRODATA dupok size=56
+	0x0000 64 75 72 69 6e 67 20 69 6e 69 74 69 61 6c 69 7a  during initializ
+	0x0010 61 74 69 6f 6e 20 74 6f 20 67 65 74 20 41 54 5f  ation to get AT_
+	0x0020 50 41 47 45 53 5a 2c 20 41 54 5f 52 41 4e 44 4f  PAGESZ, AT_RANDO
+	0x0030 4d 2c 20 65 74 63 2e 0a                          M, etc..
+runtime.nilinterequal·f SRODATA dupok size=8
+	0x0000 00 00 00 00 00 00 00 00                          ........
+	rel 0+8 t=R_ADDR runtime.nilinterequal+0
+type:.namedata.*[1]interface {}- SRODATA dupok size=18
+	0x0000 00 10 2a 5b 31 5d 69 6e 74 65 72 66 61 63 65 20  ..*[1]interface 
+	0x0010 7b 7d                                            {}
+type:*[1]interface {} SRODATA dupok size=56
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 a8 f1 a8 c9 08 08 08 36 00 00 00 00 00 00 00 00  .......6........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 00 00 00 00 00 00                          ........
+	rel 24+8 t=R_ADDR runtime.memequal64·f+0
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*[1]interface {}-+0
+	rel 48+8 t=R_ADDR type:[1]interface {}+0
+runtime.gcbits.0200000000000000 SRODATA dupok size=8
+	0x0000 02 00 00 00 00 00 00 00                          ........
+type:[1]interface {} SRODATA dupok size=72
+	0x0000 10 00 00 00 00 00 00 00 10 00 00 00 00 00 00 00  ................
+	0x0010 6e df 95 c2 02 08 08 11 00 00 00 00 00 00 00 00  n...............
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0040 01 00 00 00 00 00 00 00                          ........
+	rel 24+8 t=R_ADDR runtime.nilinterequal·f+0
+	rel 32+8 t=R_ADDR runtime.gcbits.0200000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*[1]interface {}-+0
+	rel 44+4 t=RelocType(-32763) type:*[1]interface {}+0
+	rel 48+8 t=R_ADDR type:interface {}+0
+	rel 56+8 t=R_ADDR type:[]interface {}+0
+type:.eqfunc.[2]interface {} SRODATA dupok size=8
+	0x0000 00 00 00 00 00 00 00 00                          ........
+	rel 0+8 t=R_ADDR type:.eq.[2]interface {}+0
+type:.namedata.*[2]interface {}- SRODATA dupok size=18
+	0x0000 00 10 2a 5b 32 5d 69 6e 74 65 72 66 61 63 65 20  ..*[2]interface 
+	0x0010 7b 7d                                            {}
+type:*[2]interface {} SRODATA dupok size=56
+	0x0000 08 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00  ................
+	0x0010 53 23 94 ff 08 08 08 36 00 00 00 00 00 00 00 00  S#.....6........
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 00 00 00 00 00 00                          ........
+	rel 24+8 t=R_ADDR runtime.memequal64·f+0
+	rel 32+8 t=R_ADDR runtime.gcbits.0100000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*[2]interface {}-+0
+	rel 48+8 t=R_ADDR type:[2]interface {}+0
+runtime.gcbits.0a00000000000000 SRODATA dupok size=8
+	0x0000 0a 00 00 00 00 00 00 00                          ........
+type:[2]interface {} SRODATA dupok size=72
+	0x0000 20 00 00 00 00 00 00 00 20 00 00 00 00 00 00 00   ....... .......
+	0x0010 0a 0c 4b 4b 02 08 08 11 00 00 00 00 00 00 00 00  ..KK............
+	0x0020 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0030 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+	0x0040 02 00 00 00 00 00 00 00                          ........
+	rel 24+8 t=R_ADDR type:.eqfunc.[2]interface {}+0
+	rel 32+8 t=R_ADDR runtime.gcbits.0a00000000000000+0
+	rel 40+4 t=R_ADDROFF type:.namedata.*[2]interface {}-+0
+	rel 44+4 t=RelocType(-32763) type:*[2]interface {}+0
+	rel 48+8 t=R_ADDR type:interface {}+0
+	rel 56+8 t=R_ADDR type:[]interface {}+0
+gclocals·NL1fmQxTaE165lC0D8tWVg== SRODATA dupok size=8
+	0x0000 09 00 00 00 00 00 00 00                          ........
+gclocals·vbenghHRXtPUrt2RNtf1fg== SRODATA dupok size=26
+	0x0000 09 00 00 00 10 00 00 00 00 00 00 40 04 94 00 94  ...........@....
+	0x0010 00 80 01 01 01 00 52 80 50 80                    ......R.P.
+main.main.stkobj SRODATA static size=72
+	0x0000 04 00 00 00 00 00 00 00 98 ff ff ff 20 00 00 00  ............ ...
+	0x0010 20 00 00 00 00 00 00 00 b8 ff ff ff 10 00 00 00   ...............
+	0x0020 10 00 00 00 00 00 00 00 c8 ff ff ff 20 00 00 00  ............ ...
+	0x0030 20 00 00 00 00 00 00 00 e8 ff ff ff 10 00 00 00   ...............
+	0x0040 10 00 00 00 00 00 00 00                          ........
+	rel 20+4 t=R_ADDROFF runtime.gcbits.0a00000000000000+0
+	rel 36+4 t=R_ADDROFF runtime.gcbits.0200000000000000+0
+	rel 52+4 t=R_ADDROFF runtime.gcbits.0a00000000000000+0
+	rel 68+4 t=R_ADDROFF runtime.gcbits.0200000000000000+0
+gclocals·TswRR9Pia9Wsluv5u1sUnA== SRODATA dupok size=10
+	0x0000 02 00 00 00 02 00 00 00 03 00                    ..........
+gclocals·J26BEvPExEQhJvjp9E8Whg== SRODATA dupok size=8
+	0x0000 02 00 00 00 00 00 00 00                          ........
+type:.eq.sync/atomic.Pointer[os.dirInfo].arginfo1 SRODATA static dupok size=3
+	0x0000 08 08 ff                                         ...
+type:.eq.sync/atomic.Pointer[os.dirInfo].argliveinfo SRODATA static dupok size=2
+	0x0000 00 00                                            ..
+type:.eq.[2]interface {}.arginfo1 SRODATA static dupok size=3
+	0x0000 08 08 ff                                         ...
+type:.eq.[2]interface {}.argliveinfo SRODATA static dupok size=2
+	0x0000 00 00                                            ..

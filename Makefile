@@ -41,7 +41,6 @@ check-go-version:
 
 # Runtime overlay for kmazarin - patches malloc.go for high-memory heap support
 # The overlay JSON is generated dynamically based on GOROOT
-KMAZARIN_OVERLAY = $(BUILD_DIR)/kmazarin-overlay.json
 RUNTIME_PATCHES_DIR = runtime-patches
 
 # Debug build: disable optimizations and inlining for better GDB debugging
@@ -57,52 +56,17 @@ endif
 # We NEVER use CGO in this project. All Go builds must explicitly set CGO_ENABLED=0
 # to ensure static binaries without C dependencies for our bare-metal environment.
 
-# Source directory
-CARDINAL_SRC = src/cardinal
-
-# Go package locations
-GO_PACKAGE_DIR = $(CARDINAL_SRC)/golang/main
-ASM_PACKAGE_DIR = $(CARDINAL_SRC)/golang/asm
-
-# Go source files (all files in golang/main and golang/asm packages)
-GO_SRC = $(wildcard $(GO_PACKAGE_DIR)/*.go)
-GO_NATIVE_SRC = $(wildcard $(GO_PACKAGE_DIR)/*.go) \
-                $(wildcard $(ASM_PACKAGE_DIR)/*.go) \
-                $(wildcard $(ASM_PACKAGE_DIR)/arch/arm64/*.go) \
-                $(wildcard $(ASM_PACKAGE_DIR)/arch/arm64/*.s) \
-                $(wildcard $(ASM_PACKAGE_DIR)/dev/*.go) \
-                $(wildcard $(ASM_PACKAGE_DIR)/dev/*.s) \
-                $(wildcard $(ASM_PACKAGE_DIR)/kernel/*.go) \
-                $(wildcard $(ASM_PACKAGE_DIR)/kernel/*.s)
-
 # Build output directory structure
 BUILD_DIR = build
 
 # Output files
 CARDINAL_BINARY = $(BUILD_DIR)/cardinal.elf
-
-# Kmazarin source and binary
-KMAZARIN_SRC = src/kmazarin/golang/kmazarin
 KMAZARIN_BINARY = $(BUILD_DIR)/kmazarin.elf
+KMAZARIN_OVERLAY = $(BUILD_DIR)/kmazarin-overlay.json
 
-# Host tools directory (compiled binaries for local system, not target)
-# All tools are built with host GOOS/GOARCH, not linux/arm64
-TOOLS_BIN_DIR = $(BUILD_DIR)/tools
-
-# Tool binaries (compiled from tools/*.go)
-TOOL_PATCH_ENTRY = $(TOOLS_BIN_DIR)/patch-entry
-TOOL_COMPUTE_LINKER = $(TOOLS_BIN_DIR)/compute-linker-values
-TOOL_INCBIN2GOASM = $(TOOLS_BIN_DIR)/incbin2goasm
-TOOL_FIX_GO_ELF = $(TOOLS_BIN_DIR)/fix-go-elf
-TOOL_PRINT_KMAZARIN_ADDR = $(TOOLS_BIN_DIR)/print-kmazarin-addr
-TOOL_RELOCATE_KMAZARIN = $(TOOLS_BIN_DIR)/relocate-kmazarin
-TOOL_BUILD = $(TOOLS_BIN_DIR)/build
-TOOL_RUN = $(TOOLS_BIN_DIR)/run
-TOOL_STOP = $(TOOLS_BIN_DIR)/stop
-
-# Generated embedded data
-KMAZARIN_DATA_ASM = $(ASM_PACKAGE_DIR)/dev/kmazarin_data_arm64.s
-BOOT_IMAGE_DATA_ASM = $(ASM_PACKAGE_DIR)/dev/boot_mazarin_data_arm64.s
+# Generated embedded data (relative to project root)
+KMAZARIN_DATA_ASM = cardinal/asm/dev/kmazarin_data_arm64.s
+BOOT_IMAGE_DATA_ASM = cardinal/asm/dev/boot_mazarin_data_arm64.s
 
 # Boot image source
 BOOT_IMAGE_BIN = assets/boot-mazarin.bin
@@ -116,15 +80,15 @@ $(BUILD_DIR):
 # =========================================
 # Generate Go assembly with embedded kmazarin binary
 
-$(KMAZARIN_DATA_ASM): $(KMAZARIN_BINARY) $(TOOL_INCBIN2GOASM)
+$(KMAZARIN_DATA_ASM): $(KMAZARIN_BINARY)
 	@echo "Generating embedded kmazarin data..."
-	@$(TOOL_INCBIN2GOASM) -sym kmazarin_binary -global $< > $@
+	@GOTOOLCHAIN=local $(GO) tool incbin2goasm -sym kmazarin_binary -global $< > $@
 	@echo "Generated $(KMAZARIN_DATA_ASM) ($$(wc -l < $@ | tr -d ' ') lines)"
 
 # Generate embedded boot image data
-$(BOOT_IMAGE_DATA_ASM): $(BOOT_IMAGE_BIN) $(TOOL_INCBIN2GOASM)
+$(BOOT_IMAGE_DATA_ASM): $(BOOT_IMAGE_BIN)
 	@echo "Generating embedded boot image data..."
-	@$(TOOL_INCBIN2GOASM) -sym _binary_boot_mazarin_bin -global $< > $@
+	@GOTOOLCHAIN=local $(GO) tool incbin2goasm -sym _binary_boot_mazarin_bin -global $< > $@
 	@echo "Generated $(BOOT_IMAGE_DATA_ASM) ($$(wc -l < $@ | tr -d ' ') lines)"
 
 # =========================================
@@ -136,24 +100,23 @@ $(BOOT_IMAGE_DATA_ASM): $(BOOT_IMAGE_BIN) $(TOOL_INCBIN2GOASM)
 # cardinal-elf: PHONY target that always runs Go build
 # Go's build cache makes this fast when nothing has changed
 .PHONY: cardinal-elf
-cardinal-elf: $(TOOL_PATCH_ENTRY) $(TOOL_COMPUTE_LINKER) $(TOOL_FIX_GO_ELF) | $(BUILD_DIR)
+cardinal-elf: | $(BUILD_DIR)
 	@echo "Building cardinal with Go native toolchain..."
-	@cd $(CARDINAL_SRC)/golang && \
-		CGO_ENABLED=0 \
+	@CGO_ENABLED=0 \
 		GOTOOLCHAIN=local \
 		GOARCH=$(GOARCH) \
 		GOOS=$(GOOS) \
 		$(GO) build \
-				$(GCFLAGS) \
+			$(GCFLAGS) \
 			-ldflags="-checklinkname=0 -T 0x40100000" \
-			-o $(abspath $(CARDINAL_BINARY)) \
-			./main
+			-o $(CARDINAL_BINARY) \
+			./cardinal/main
 	@echo "Patching entry point to _cardinal_boot..."
-	@$(TOOL_PATCH_ENTRY) $(CARDINAL_BINARY) _cardinal_boot
+	@GOTOOLCHAIN=local $(GO) tool patch-entry $(CARDINAL_BINARY) _cardinal_boot
 	@echo "Patching linker values..."
-	@$(TOOL_COMPUTE_LINKER) -patch -kmazarin $(KMAZARIN_BINARY) $(CARDINAL_BINARY)
+	@GOTOOLCHAIN=local $(GO) tool compute-linker-values -patch -kmazarin $(KMAZARIN_BINARY) $(CARDINAL_BINARY)
 	@echo "Fixing ELF for QEMU compatibility..."
-	@$(TOOL_FIX_GO_ELF) $(CARDINAL_BINARY)
+	@GOTOOLCHAIN=local $(GO) tool fix-go-elf $(CARDINAL_BINARY)
 	@echo "cardinal ready at $(CARDINAL_BINARY)"
 
 # =========================================
@@ -170,36 +133,6 @@ cardinal-elf: $(TOOL_PATCH_ENTRY) $(TOOL_COMPUTE_LINKER) $(TOOL_FIX_GO_ELF) | $(
 #    - PC-relative instructions (ADRP) work unchanged (relative distances preserved)
 #    - Takes ~0.7ms, ~15k relocations
 # =========================================
-
-# Kmazarin package directories (main + all sub-packages)
-KMAZARIN_BASE = src/kmazarin/golang
-KMAZARIN_KMEM_SRC = $(KMAZARIN_BASE)/kmem
-KMAZARIN_KSYSCALL_SRC = $(KMAZARIN_BASE)/ksyscall
-KMAZARIN_KIRQ_SRC = $(KMAZARIN_BASE)/kirq
-KMAZARIN_KTHREAD_SRC = $(KMAZARIN_BASE)/kthread
-KMAZARIN_DEVICE_SRC = $(KMAZARIN_BASE)/device
-KMAZARIN_DTB_SRC = $(KMAZARIN_BASE)/dtb
-KMAZARIN_UART_SRC = $(KMAZARIN_BASE)/uart
-KMAZARIN_CONSOLE_SRC = $(KMAZARIN_BASE)/console
-KMAZARIN_DEVICEAPI_SRC = $(KMAZARIN_BASE)/deviceapi
-KMAZARIN_GIC_SRC = $(KMAZARIN_BASE)/arch/arm64/gic
-KMAZARIN_VIRTIO_SRC = $(KMAZARIN_BASE)/virtio
-KMAZARIN_RTC_SRC = $(KMAZARIN_BASE)/rtc
-
-# All kmazarin Go/assembly sources
-KMAZARIN_ALL_SRC = $(wildcard $(KMAZARIN_SRC)/*.go) $(wildcard $(KMAZARIN_SRC)/*.s) \
-                   $(wildcard $(KMAZARIN_KMEM_SRC)/*.go) $(wildcard $(KMAZARIN_KMEM_SRC)/*.s) \
-                   $(wildcard $(KMAZARIN_KSYSCALL_SRC)/*.go) $(wildcard $(KMAZARIN_KSYSCALL_SRC)/*.s) \
-                   $(wildcard $(KMAZARIN_KIRQ_SRC)/*.go) $(wildcard $(KMAZARIN_KIRQ_SRC)/*.s) \
-                   $(wildcard $(KMAZARIN_KTHREAD_SRC)/*.go) $(wildcard $(KMAZARIN_KTHREAD_SRC)/*.s) \
-                   $(wildcard $(KMAZARIN_DEVICE_SRC)/*.go) $(wildcard $(KMAZARIN_DEVICE_SRC)/*.s) \
-                   $(wildcard $(KMAZARIN_DTB_SRC)/*.go) $(wildcard $(KMAZARIN_DTB_SRC)/*.s) \
-                   $(wildcard $(KMAZARIN_UART_SRC)/*.go) $(wildcard $(KMAZARIN_UART_SRC)/*.s) \
-                   $(wildcard $(KMAZARIN_CONSOLE_SRC)/*.go) $(wildcard $(KMAZARIN_CONSOLE_SRC)/*.s) \
-                   $(wildcard $(KMAZARIN_DEVICEAPI_SRC)/*.go) $(wildcard $(KMAZARIN_DEVICEAPI_SRC)/*.s) \
-                   $(wildcard $(KMAZARIN_GIC_SRC)/*.go) $(wildcard $(KMAZARIN_GIC_SRC)/*.s) \
-                   $(wildcard $(KMAZARIN_VIRTIO_SRC)/*.go) $(wildcard $(KMAZARIN_VIRTIO_SRC)/*.s) \
-                   $(wildcard $(KMAZARIN_RTC_SRC)/*.go) $(wildcard $(KMAZARIN_RTC_SRC)/*.s)
 
 # Runtime patch files for overlay
 RUNTIME_PATCH_CGO_MMAP = $(RUNTIME_PATCHES_DIR)/cgo_mmap.go
@@ -237,90 +170,23 @@ $(KMAZARIN_OVERLAY): $(RUNTIME_PATCH_CGO_MMAP) $(RUNTIME_PATCH_MALLOC) $(RUNTIME
 # kmazarin-elf: PHONY target that always runs Go build
 # Go's build cache makes this fast when nothing has changed
 .PHONY: kmazarin-elf
-kmazarin-elf: $(KMAZARIN_OVERLAY) $(TOOL_PRINT_KMAZARIN_ADDR) $(TOOL_FIX_GO_ELF) $(TOOL_RELOCATE_KMAZARIN) | $(BUILD_DIR)
-	$(eval KMAZARIN_LOAD_ADDR := $(shell $(TOOL_PRINT_KMAZARIN_ADDR)))
+kmazarin-elf: $(KMAZARIN_OVERLAY) | $(BUILD_DIR)
+	$(eval KMAZARIN_LOAD_ADDR := $(shell GOTOOLCHAIN=local $(GO) tool print-kmazarin-addr))
 	@echo "Building kmazarin kernel (static Go binary at $(KMAZARIN_LOAD_ADDR))..."
-	@cd $(KMAZARIN_SRC) && \
-		CGO_ENABLED=0 \
+	@CGO_ENABLED=0 \
 		GOTOOLCHAIN=local \
 		GOARCH=$(GOARCH) \
 		GOOS=$(GOOS) \
-		$(GO) build -overlay=$(abspath $(KMAZARIN_OVERLAY)) $(GCFLAGS) -ldflags="-T $(KMAZARIN_LOAD_ADDR)" -o $(abspath $(KMAZARIN_BINARY)) .
+		$(GO) build -overlay=$(abspath $(KMAZARIN_OVERLAY)) $(GCFLAGS) \
+			-ldflags="-checklinkname=0 -T $(KMAZARIN_LOAD_ADDR)" \
+			-o $(KMAZARIN_BINARY) \
+			./kmazarin/kmazarin
 	@echo "Fixing kmazarin ELF for QEMU compatibility..."
-	@$(TOOL_FIX_GO_ELF) $(KMAZARIN_BINARY)
+	@GOTOOLCHAIN=local $(GO) tool fix-go-elf $(KMAZARIN_BINARY)
 	@echo "Relocating kmazarin to high memory (0xFFFFFFFF41800000)..."
-	@$(TOOL_RELOCATE_KMAZARIN) $(KMAZARIN_BINARY) $(KMAZARIN_BINARY).tmp
+	@GOTOOLCHAIN=local $(GO) tool relocate-kmazarin $(KMAZARIN_BINARY) $(KMAZARIN_BINARY).tmp
 	@mv $(KMAZARIN_BINARY).tmp $(KMAZARIN_BINARY)
 	@echo "Kmazarin kernel built and relocated at $(KMAZARIN_BINARY)"
-
-# =========================================
-# Host Tools (for local system)
-# =========================================
-# These tools run on the build host, not the target.
-# Built with GOWORK=off to avoid go.work version requirements.
-# IMPORTANT: No GOOS/GOARCH set - uses host defaults.
-
-$(TOOLS_BIN_DIR):
-	@mkdir -p $@
-
-# Build-time tools
-$(TOOL_PATCH_ENTRY): tools/patch-entry.go | $(TOOLS_BIN_DIR)
-	@echo "Building $@..."
-	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
-
-# This tool imports cardinal/constants, so must be built from cardinal module
-$(TOOL_COMPUTE_LINKER): $(CARDINAL_SRC)/tools/compute-linker-values.go $(CARDINAL_SRC)/golang/constants/layout.go | $(TOOLS_BIN_DIR)
-	@echo "Building $@..."
-	@cd $(CARDINAL_SRC)/golang && GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $(abspath $@) ../tools/compute-linker-values.go
-
-$(TOOL_INCBIN2GOASM): tools/incbin2goasm.go | $(TOOLS_BIN_DIR)
-	@echo "Building $@..."
-	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
-
-$(TOOL_FIX_GO_ELF): tools/fix-go-elf.go | $(TOOLS_BIN_DIR)
-	@echo "Building $@..."
-	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
-
-# This tool imports cardinal/constants, so must be built from cardinal module
-$(TOOL_PRINT_KMAZARIN_ADDR): $(CARDINAL_SRC)/tools/print-kmazarin-addr.go $(CARDINAL_SRC)/golang/constants/layout.go | $(TOOLS_BIN_DIR)
-	@echo "Building $@..."
-	@cd $(CARDINAL_SRC)/golang && GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $(abspath $@) ../tools/print-kmazarin-addr.go
-
-$(TOOL_RELOCATE_KMAZARIN): tools/relocate-kmazarin.go | $(TOOLS_BIN_DIR)
-	@echo "Building $@..."
-	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
-
-# User-facing tools
-$(TOOL_BUILD): tools/cmd-build.go | $(TOOLS_BIN_DIR)
-	@echo "Building $@..."
-	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
-
-$(TOOL_RUN): tools/cmd-run.go | $(TOOLS_BIN_DIR)
-	@echo "Building $@..."
-	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
-
-$(TOOL_STOP): tools/cmd-stop.go | $(TOOLS_BIN_DIR)
-	@echo "Building $@..."
-	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
-
-# Thin client overlay tool
-TOOL_GEN_AST_STUBS = $(TOOLS_BIN_DIR)/gen-ast-stubs
-
-$(TOOL_GEN_AST_STUBS): tools/gen-ast-stubs.go | $(TOOLS_BIN_DIR)
-	@echo "Building $@..."
-	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
-
-# FAT32 disk image tool
-TOOL_MKFAT32 = $(TOOLS_BIN_DIR)/mkfat32
-
-$(TOOL_MKFAT32): tools/mkfat32.go | $(TOOLS_BIN_DIR)
-	@echo "Building $@..."
-	@GOWORK=off CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -o $@ $<
-
-# Build all host tools
-host-tools: $(TOOL_PATCH_ENTRY) $(TOOL_COMPUTE_LINKER) $(TOOL_INCBIN2GOASM) \
-            $(TOOL_FIX_GO_ELF) $(TOOL_PRINT_KMAZARIN_ADDR) $(TOOL_RELOCATE_KMAZARIN) \
-            $(TOOL_BUILD) $(TOOL_RUN) $(TOOL_STOP) $(TOOL_GEN_AST_STUBS) $(TOOL_MKFAT32)
 
 # =========================================
 # Main Targets
@@ -342,15 +208,12 @@ kmazarin: check-go-version kmazarin-elf
 # Priest: uses real SVC syscalls (no overlay)
 # Normal programs: use userspace overlay (routes syscalls to priest)
 
-FLOCK_BASE = src/flock
-MAZARIN_BASE = src/mazarin
-
 # Userspace overlay - routes syscalls through interceptable function pointer
 # This overlay is used by BOTH priest and userspace programs:
 # - Priest: uses defaultSyscallHandler (real SVC) during bootstrap
 # - Userspace programs: PriestSyscallEntry gets patched to point to priest
 USERSPACE_OVERLAY = $(BUILD_DIR)/userspace-overlay.json
-USERSPACE_OVERLAY_DIR = $(MAZARIN_BASE)/overlay/userspace
+USERSPACE_OVERLAY_DIR = mazarin/overlay/userspace
 USERSPACE_PATCH_SYSCALL = $(USERSPACE_OVERLAY_DIR)/syscall_linux.go
 USERSPACE_PATCH_SYSCALL_ASM = $(USERSPACE_OVERLAY_DIR)/asm_linux_arm64.s
 USERSPACE_PATCH_RUNTIME_MMAP = $(USERSPACE_OVERLAY_DIR)/runtime/cgo_mmap.go
@@ -376,42 +239,38 @@ $(USERSPACE_OVERLAY): $(USERSPACE_PATCH_SYSCALL) $(USERSPACE_PATCH_SYSCALL_ASM) 
 # Priest - syscall router (uses overlay with defaultSyscallHandler for real SVC)
 # The overlay routes runtime mmap through syscall package, allowing interception.
 # PriestSyscallEntry defaults to defaultSyscallHandler which does real SVC.
-PRIEST_SRC = $(FLOCK_BASE)/cmd/priest
 PRIEST_BINARY = $(BUILD_DIR)/priest.elf
-PRIEST_ALL_SRC = $(wildcard $(PRIEST_SRC)/*.go) \
-                 $(wildcard $(MAZARIN_BASE)/sys/*.go)
 
 # priest-elf: PHONY target that always runs Go build
 # Go's build cache makes this fast when nothing has changed
 .PHONY: priest-elf
 priest-elf: $(USERSPACE_OVERLAY) | $(BUILD_DIR)
 	@echo "Building priest (syscall router with overlay)..."
-	@cd $(PRIEST_SRC) && \
-		CGO_ENABLED=0 \
+	@CGO_ENABLED=0 \
 		GOTOOLCHAIN=local \
 		GOARCH=$(GOARCH) \
 		GOOS=$(GOOS) \
-		$(GO) build -overlay=$(abspath $(USERSPACE_OVERLAY)) $(GCFLAGS) -o $(abspath $(PRIEST_BINARY)) .
+		$(GO) build -overlay=$(abspath $(USERSPACE_OVERLAY)) $(GCFLAGS) \
+			-o $(PRIEST_BINARY) \
+			./flock/cmd/priest
 	@echo "Priest built at $(PRIEST_BINARY)"
 
 # Helloworld - test program (uses userspace overlay for syscall routing)
 # Note: Thin client support (reduced binary size) will be added via AST-based stubs
-HELLOWORLD_SRC = $(FLOCK_BASE)/cmd/helloworld
 HELLOWORLD_BINARY = $(BUILD_DIR)/helloworld.elf
-HELLOWORLD_ALL_SRC = $(wildcard $(HELLOWORLD_SRC)/*.go) \
-                     $(wildcard $(MAZARIN_BASE)/sys/*.go)
 
 # helloworld-elf: PHONY target that always runs Go build
 # Go's build cache makes this fast when nothing has changed
 .PHONY: helloworld-elf
 helloworld-elf: $(USERSPACE_OVERLAY) | $(BUILD_DIR)
 	@echo "Building helloworld (userspace program)..."
-	@cd $(HELLOWORLD_SRC) && \
-		CGO_ENABLED=0 \
+	@CGO_ENABLED=0 \
 		GOTOOLCHAIN=local \
 		GOARCH=$(GOARCH) \
 		GOOS=$(GOOS) \
-		$(GO) build -overlay=$(abspath $(USERSPACE_OVERLAY)) $(GCFLAGS) -o $(abspath $(HELLOWORLD_BINARY)) .
+		$(GO) build -overlay=$(abspath $(USERSPACE_OVERLAY)) $(GCFLAGS) \
+			-o $(HELLOWORLD_BINARY) \
+			./flock/cmd/helloworld
 	@echo "Helloworld built at $(HELLOWORLD_BINARY) ($$(ls -lh $(HELLOWORLD_BINARY) | awk '{print $$5}'))"
 
 # Build priest (includes Go version check)
@@ -419,22 +278,20 @@ priest: check-go-version priest-elf
 
 # Priest2 - goroutine scheduling test program (prints 1s and 2s)
 # Similar to priest but just for testing scheduling between userspace programs
-PRIEST2_SRC = $(FLOCK_BASE)/cmd/priest2
 PRIEST2_BINARY = $(BUILD_DIR)/priest2.elf
-PRIEST2_ALL_SRC = $(wildcard $(PRIEST2_SRC)/*.go) \
-                  $(wildcard $(MAZARIN_BASE)/sys/*.go)
 
 # priest2-elf: PHONY target that always runs Go build
 # Go's build cache makes this fast when nothing has changed
 .PHONY: priest2-elf
 priest2-elf: $(USERSPACE_OVERLAY) | $(BUILD_DIR)
 	@echo "Building priest2 (scheduling test program)..."
-	@cd $(PRIEST2_SRC) && \
-		CGO_ENABLED=0 \
+	@CGO_ENABLED=0 \
 		GOTOOLCHAIN=local \
 		GOARCH=$(GOARCH) \
 		GOOS=$(GOOS) \
-		$(GO) build -overlay=$(abspath $(USERSPACE_OVERLAY)) $(GCFLAGS) -o $(abspath $(PRIEST2_BINARY)) .
+		$(GO) build -overlay=$(abspath $(USERSPACE_OVERLAY)) $(GCFLAGS) \
+			-o $(PRIEST2_BINARY) \
+			./flock/cmd/priest2
 	@echo "Priest2 built at $(PRIEST2_BINARY) ($$(ls -lh $(PRIEST2_BINARY) | awk '{print $$5}'))"
 
 # Build priest2 (includes Go version check)
@@ -456,10 +313,10 @@ THIN_MANIFEST = $(BUILD_DIR)/thin-stubs.manifest
 
 # Generate thin overlay from Go runtime source files
 # Parses all runtime/*.go files and replaces function bodies with `for {}`
-$(THIN_OVERLAY_JSON): $(TOOL_GEN_AST_STUBS) | $(BUILD_DIR)
+$(THIN_OVERLAY_JSON): | $(BUILD_DIR)
 	@echo "Generating thin client overlay..."
 	@GOROOT=$$(GOTOOLCHAIN=local $(GO) env GOROOT) && \
-		$(TOOL_GEN_AST_STUBS) \
+		GOTOOLCHAIN=local $(GO) tool gen-ast-stubs \
 			-runtime=$$GOROOT/src/runtime \
 			-output=$(THIN_OVERLAY_DIR) \
 			-overlay=$(THIN_OVERLAY_JSON) \
@@ -474,12 +331,13 @@ HELLOWORLD_THIN_BINARY = $(BUILD_DIR)/helloworld-thin.elf
 .PHONY: helloworld-thin-elf
 helloworld-thin-elf: $(THIN_OVERLAY_JSON) | $(BUILD_DIR)
 	@echo "Building helloworld-thin (minimal runtime stubs)..."
-	@cd $(HELLOWORLD_SRC) && \
-		CGO_ENABLED=0 \
+	@CGO_ENABLED=0 \
 		GOTOOLCHAIN=local \
 		GOARCH=$(GOARCH) \
 		GOOS=$(GOOS) \
-		$(GO) build -overlay=$(abspath $(THIN_OVERLAY_JSON)) $(GCFLAGS) -o $(abspath $(HELLOWORLD_THIN_BINARY)) .
+		$(GO) build -overlay=$(abspath $(THIN_OVERLAY_JSON)) $(GCFLAGS) \
+			-o $(HELLOWORLD_THIN_BINARY) \
+			./flock/cmd/helloworld
 	@echo "Helloworld-thin built at $(HELLOWORLD_THIN_BINARY) ($$(ls -lh $(HELLOWORLD_THIN_BINARY) | awk '{print $$5}'))"
 
 # Build helloworld-thin (includes Go version check)
@@ -501,12 +359,13 @@ HELLOWORLD_MAZ_BINARY = $(BUILD_DIR)/helloworld.maz
 .PHONY: helloworld-maz-elf
 helloworld-maz-elf: | $(BUILD_DIR)
 	@echo "Building helloworld.maz (direct SVC, no overlay)..."
-	@cd $(HELLOWORLD_SRC) && \
-		CGO_ENABLED=0 \
+	@CGO_ENABLED=0 \
 		GOTOOLCHAIN=local \
 		GOARCH=$(GOARCH) \
 		GOOS=$(GOOS) \
-		$(GO) build $(GCFLAGS) -o $(abspath $(HELLOWORLD_MAZ_BINARY)) .
+		$(GO) build $(GCFLAGS) \
+			-o $(HELLOWORLD_MAZ_BINARY) \
+			./flock/cmd/helloworld
 	@echo "Helloworld.maz built at $(HELLOWORLD_MAZ_BINARY) ($$(ls -lh $(HELLOWORLD_MAZ_BINARY) | awk '{print $$5}'))"
 
 # Build helloworld.maz (includes Go version check)
@@ -522,9 +381,9 @@ DISK_IMAGE = $(BUILD_DIR)/disk.img
 
 # disk-image: PHONY target that always rebuilds the disk image after ELF builds
 .PHONY: disk-image
-disk-image: priest-elf priest2-elf helloworld-maz-elf $(TOOL_MKFAT32) | $(BUILD_DIR)
+disk-image: priest-elf priest2-elf helloworld-maz-elf | $(BUILD_DIR)
 	@echo "Creating FAT32 disk image..."
-	@$(TOOL_MKFAT32) -o $(DISK_IMAGE) $(PRIEST_BINARY) $(PRIEST2_BINARY) $(HELLOWORLD_MAZ_BINARY)
+	@GOTOOLCHAIN=local $(GO) tool mkfat32 -o $(DISK_IMAGE) $(PRIEST_BINARY) $(PRIEST2_BINARY) $(HELLOWORLD_MAZ_BINARY)
 	@echo "Disk image created at $(DISK_IMAGE) ($$(ls -lh $(DISK_IMAGE) | awk '{print $$5}'))"
 
 # Build disk image (includes flock programs)
@@ -536,7 +395,7 @@ all: cardinal kmazarin
 # Test target - run Go tests
 test: check-go-version
 	@echo "Running tests..."
-	@cd $(CARDINAL_SRC)/golang && GOTOOLCHAIN=local $(GO) test -v ./bitfield
+	@GOTOOLCHAIN=local $(GO) test -v ./cardinal/bitfield
 
 # Clean build artifacts
 clean:
@@ -548,5 +407,5 @@ clean:
 
 # Phony targets
 # All *-elf targets are PHONY to ensure Go build always runs (Go handles caching)
-.PHONY: all clean cardinal kmazarin priest priest2 helloworld helloworld-thin helloworld-maz thin-overlay disk test host-tools
+.PHONY: all clean cardinal kmazarin priest priest2 helloworld helloworld-thin helloworld-maz thin-overlay disk test
 .PHONY: cardinal-elf kmazarin-elf priest-elf priest2-elf helloworld-elf helloworld-thin-elf helloworld-maz-elf disk-image

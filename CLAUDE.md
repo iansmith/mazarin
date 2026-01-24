@@ -13,7 +13,7 @@ This file frequently contains:
 
 **ALWAYS use the safe reader:**
 ```bash
-python3 tools/safe-serial-read.py
+go tool safe-serial-read
 ```
 
 This is enforced by hooks in `.claude/settings.local.json` but read this anyway.
@@ -37,15 +37,15 @@ export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 **Usage (inline or after export):**
 ```bash
 # Build (all variables)
-GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build
+GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go go tool build
 
 # Run
-QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 build/tools/run 5
+QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 go tool run 5
 
 # Or export once and use throughout session:
 export GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
-build/tools/build clean
-build/tools/run 5
+go tool build clean
+go tool run 5
 ```
 
 ## Overview
@@ -81,7 +81,7 @@ If Go 1.25.5 is not in your PATH, you have three options:
 **On this system (Homebrew installation):**
 ```bash
 # Always set GOTOOLCHAIN=auto along with GO:
-GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build
+GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go go tool build
 GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go make cardinal
 ```
 
@@ -92,65 +92,45 @@ GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go make cardinal
 If qemu-system-aarch64 is not in your PATH, you can:
 
 1. Install it and add to PATH
-2. Override per-command: `QEMU=/path/to/qemu-system-aarch64 build/tools/run`
+2. Override per-command: `QEMU=/path/to/qemu-system-aarch64 go tool run`
 
 **On this system (Homebrew installation):**
 ```bash
-QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 build/tools/run
+QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 go tool run
 ```
 
 ## Build & Run
 
-### Host Tools
+### Project Structure (Single Module)
 
-All build and run tools are Go programs compiled for the host system (not the target arm64).
+This project uses a single Go module (`mazzy`). All tools are registered in `go.mod` and can be run with `go tool <name>`:
 
 **Source locations:**
-- `tools/*.go` - Standalone tools (fix-go-elf, relocate-kmazarin, incbin2goasm, patch-entry, cmd-build, cmd-run, cmd-stop)
-- `src/cardinal/tools/*.go` - Tools that import cardinal packages (compute-linker-values, print-kmazarin-addr)
+- `cmd/` - Build tools (used via `go tool <name>`)
+- `cardinal/` - Cardinal kernel (bootloader/OS shim)
+- `kmazarin/` - Kmazarin kernel (Go kernel)
+- `flock/` - Userspace programs (priest, helloworld, etc.)
+- `mazarin/` - Shared userspace libraries
+- `shared/` - Shared packages
 
-**Binary output:** `build/tools/` (created by `make host-tools`)
-
-**First time setup:** Build the host tools:
-```bash
-# On this system (Homebrew):
-GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go make host-tools
-
-# Generic:
-GOTOOLCHAIN=auto make GO=/path/to/go1.25.5 host-tools
-```
-
-**Then use the tools:**
-```bash
-# On this system (Homebrew) - always set GOTOOLCHAIN=auto with GO:
-GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build
-GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build clean
-QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 build/tools/run 5
-build/tools/stop  # Stop doesn't need environment variables
-
-# Generic (if tools are in PATH):
-GOTOOLCHAIN=auto build/tools/build          # Build cardinal and kmazarin
-GOTOOLCHAIN=auto build/tools/build clean    # Clean build
-build/tools/run            # Start QEMU (waits 3s, shows last 500 chars)
-build/tools/run 10         # Start QEMU with 10s wait
-build/tools/stop           # Stop any running QEMU instances
-
-# Or using make directly:
-GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go make cardinal
-```
+**Available tools (via `go tool`):**
+- `go tool build` - Build cardinal and kmazarin
+- `go tool run` - Start QEMU with built kernel
+- `go tool stop` - Stop running QEMU instances
+- `go tool safe-serial-read` - Safely read serial log (handles infinite loops)
 
 ### Complete Development Workflow
 
 **On this system (with Homebrew paths):**
 ```bash
 # 1. Stop any running QEMU
-build/tools/stop
+go tool stop
 
 # 2. Build (always set GOTOOLCHAIN=auto with GO)
-GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go build/tools/build clean
+GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go go tool build clean
 
 # 3. Run
-QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 build/tools/run 5
+QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64 go tool run 5
 ```
 
 **Or export once for the session:**
@@ -159,21 +139,16 @@ export GOTOOLCHAIN=auto
 export GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go
 export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 
-build/tools/stop
-build/tools/build clean
-build/tools/run 5
+go tool stop
+go tool build clean
+go tool run 5
 ```
 
-**Generic workflow (if tools are in PATH):**
+**Using make:**
 ```bash
-# 1. Stop any running QEMU
-build/tools/stop
-
-# 2. Build (always set GOTOOLCHAIN=auto)
-GOTOOLCHAIN=auto build/tools/build clean    # or just: GOTOOLCHAIN=auto build/tools/build
-
-# 3. Run
-build/tools/run 5          # Wait 5 seconds before showing output
+GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go make cardinal
+GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go make kmazarin
+GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go make priest
 ```
 
 Output is written to `/tmp/cardinal-serial.log`.
@@ -185,16 +160,13 @@ Output is written to `/tmp/cardinal-serial.log`.
 - NEVER: `cat /tmp/cardinal-serial.log` or Read the raw file directly
 - ALWAYS: Use the safe reader tools:
   ```bash
-  # Check if the file is safe to read
-  build/tools/check-serial-safe
-
   # Safely view the log (handles long lines + control chars)
-  build/tools/safe-serial-read
+  go tool safe-serial-read
 
   # Or manually filter (only safe for reasonable line lengths):
   tail -f /tmp/cardinal-serial.log | tr -d '\000-\010\013-\037\177-\377'
   ```
-- The `build/tools/run` script automatically applies safe filtering
+- The `go tool run` script automatically applies safe filtering
 
 **CRITICAL: QEMU Output Buffering**
 - NO: `| tee`, `| tail`, `> file`, `< /dev/null` piped to QEMU - causes buffering issues
@@ -202,7 +174,7 @@ Output is written to `/tmp/cardinal-serial.log`.
 
 ### QEMU Monitor Access
 
-The build/tools/run script starts QEMU with a TCP monitor on port 4444.
+The go tool run script starts QEMU with a TCP monitor on port 4444.
 
 **Query QEMU monitor:**
 ```bash
@@ -359,7 +331,7 @@ in registers, second expects stack). The tail-call stub pattern avoids this.
 
 ## Current Status
 
-### ✅ Working
+### Working
 - Cardinal boots, MMU, UART
 - ELF loader handles Go's negative offsets
 - Kmazarin loads and starts executing
@@ -370,7 +342,7 @@ in registers, second expects stack). The tail-call stub pattern avoids this.
 - Page allocation and mapping
 - Stack setup (argc/argv/envp/auxv)
 
-### 🔄 In Progress
+### In Progress
 - Full Go runtime initialization in kmazarin
 
 ## Git Practices

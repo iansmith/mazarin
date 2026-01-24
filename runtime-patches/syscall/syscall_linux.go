@@ -19,7 +19,7 @@ import (
 )
 
 // Kmazarin syscall overlay: RawSyscall6 calls dispatcher directly
-//go:linkname ksyscallDispatch kmazarin/ksyscall.DispatchFromOverlay
+//go:linkname ksyscallDispatch mazzy/kmazarin/ksyscall.DispatchFromOverlay
 func ksyscallDispatch(num, a1, a2, a3, a4, a5, a6 uintptr) int64
 
 // Pull in entersyscall/exitsyscall for Syscall/Syscall6.

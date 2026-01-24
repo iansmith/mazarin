@@ -1,0 +1,212 @@
+//go:build ignore
+// +build ignore
+
+// Tool to discover which Go symbols need to be globalized (strengthened) before linking.
+// Scans assembly files for .extern main.* declarations and bl main.* calls to determine
+// which Go functions are called from assembly and need --globalize-symbol treatment.
+//
+// Usage: go run generate-globalize-symbols.go -asm <asm_dir> -o <output_file>
+//
+// Output: One symbol per line, formatted as "main.FunctionName" for use with objcopy
+
+package main
+
+import (
+	"flag"
+	"fmt"
+	"io/ioutil"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+)
+
+func main() {
+	var outputFile string
+	var asmDir string
+	var goasmDir string
+	flag.StringVar(&outputFile, "o", "", "Output file path (required)")
+	flag.StringVar(&asmDir, "asm", "asm/aarch64", "GNU assembly source directory")
+	flag.StringVar(&goasmDir, "goasm", "", "Go/Plan9 assembly source directory (optional)")
+	flag.Parse()
+
+	if outputFile == "" {
+		fmt.Fprintf(os.Stderr, "Error: -o flag is required\n")
+		fmt.Fprintf(os.Stderr, "Usage: %s -o <output_file> [-asm <asm_dir>] [-goasm <goasm_dir>]\n", os.Args[0])
+		os.Exit(1)
+	}
+
+	// Find all Go functions called from assembly
+	symbols := findGoFunctionsCalledFromAssembly(asmDir)
+
+	// Also scan Go assembly files if specified
+	if goasmDir != "" {
+		goasmSymbols := findRuntimeSymbolsInGoAsm(goasmDir)
+		symbols = append(symbols, goasmSymbols...)
+	}
+
+	// Sort for consistent output
+	sort.Strings(symbols)
+
+	// Write to file, one symbol per line
+	content := strings.Join(symbols, "\n") + "\n"
+	if err := ioutil.WriteFile(outputFile, []byte(content), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing to %s: %v\n", outputFile, err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Found %d symbol(s) that need globalizing:\n", len(symbols))
+	for _, sym := range symbols {
+		fmt.Printf("  %s\n", sym)
+	}
+}
+
+// findGoFunctionsCalledFromAssembly finds Go functions called from assembly
+// Returns list of symbols in format "package.FunctionName" for objcopy --globalize-symbol
+// Supports both main.* and runtime.* symbols
+func findGoFunctionsCalledFromAssembly(asmDir string) []string {
+	var symbols []string
+
+	// Patterns for main.* symbols (support dots for ABI suffixes like .abi0)
+	externMainRe := regexp.MustCompile(`\.extern\s+main\.([a-zA-Z_][a-zA-Z0-9_.]*[a-zA-Z0-9_])`)
+	blMainRe := regexp.MustCompile(`bl\s+main\.([a-zA-Z_][a-zA-Z0-9_.]*[a-zA-Z0-9_])`)
+
+	// Patterns for runtime.* symbols (used via ldr =runtime.symbol or bl runtime.symbol)
+	// Support dots for ABI suffixes like runtime.mstart.abi0
+	ldrRuntimeRe := regexp.MustCompile(`ldr\s+\w+,\s*=runtime\.([a-zA-Z_][a-zA-Z0-9_.]*[a-zA-Z0-9_])`)
+	externRuntimeRe := regexp.MustCompile(`\.extern\s+runtime\.([a-zA-Z_][a-zA-Z0-9_.]*[a-zA-Z0-9_])`)
+	blRuntimeRe := regexp.MustCompile(`bl\s+runtime\.([a-zA-Z_][a-zA-Z0-9_.]*[a-zA-Z0-9_])`)
+
+	seen := make(map[string]bool)
+
+	filepath.Walk(asmDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || !strings.HasSuffix(path, ".s") {
+			return nil
+		}
+
+		content, err := ioutil.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+
+		lines := strings.Split(string(content), "\n")
+		for _, line := range lines {
+			// Skip comment-only lines (they might contain example code)
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "//") && !strings.Contains(trimmed, ".extern") {
+				continue
+			}
+
+			// Check for .extern main.* declarations
+			matches := externMainRe.FindStringSubmatch(line)
+			if len(matches) > 1 && !seen["main."+matches[1]] {
+				symbols = append(symbols, "main."+matches[1])
+				seen["main."+matches[1]] = true
+			}
+
+			// Check for bl main.* calls (but skip if it's in a comment)
+			if !strings.HasPrefix(strings.TrimSpace(line), "//") {
+				matches = blMainRe.FindStringSubmatch(line)
+				if len(matches) > 1 && !seen["main."+matches[1]] {
+					symbols = append(symbols, "main."+matches[1])
+					seen["main."+matches[1]] = true
+				}
+
+				// Check for ldr =runtime.* references (symbols loaded via linker)
+				matches = ldrRuntimeRe.FindStringSubmatch(line)
+				if len(matches) > 1 && !seen["runtime."+matches[1]] {
+					symbols = append(symbols, "runtime."+matches[1])
+					seen["runtime."+matches[1]] = true
+				}
+
+				// Check for bl runtime.* calls (direct calls to runtime functions)
+				matches = blRuntimeRe.FindStringSubmatch(line)
+				if len(matches) > 1 && !seen["runtime."+matches[1]] {
+					symbols = append(symbols, "runtime."+matches[1])
+					seen["runtime."+matches[1]] = true
+				}
+			}
+
+			// Check for .extern runtime.* declarations (outside of comments)
+			if !strings.HasPrefix(strings.TrimSpace(line), "//") || strings.Contains(trimmed, ".extern runtime") {
+				matches := externRuntimeRe.FindStringSubmatch(line)
+				if len(matches) > 1 && !seen["runtime."+matches[1]] {
+					symbols = append(symbols, "runtime."+matches[1])
+					seen["runtime."+matches[1]] = true
+				}
+			}
+		}
+
+		return nil
+	})
+
+	return symbols
+}
+
+// findRuntimeSymbolsInGoAsm scans Go/Plan9 assembly files for runtime and main symbol references
+// These use syntax like: MOVD $runtime·physPageSize(SB), R0 or CALL main·KernelMain(SB)
+func findRuntimeSymbolsInGoAsm(goasmDir string) []string {
+	var symbols []string
+
+	// Pattern for runtime.* symbols in Go assembly: runtime·symbolname(SB)
+	// The · is the Unicode middle dot character, common in Go assembly
+	// Also support .abi0 suffixes like runtime·mstart·abi0(SB)
+	runtimeSymbolRe := regexp.MustCompile(`runtime[·.]([a-zA-Z_][a-zA-Z0-9_·.]*[a-zA-Z0-9_])\(SB\)`)
+
+	// Pattern for main.* symbols in Go assembly: main·FunctionName(SB)
+	mainSymbolRe := regexp.MustCompile(`main[·.]([a-zA-Z_][a-zA-Z0-9_]*)\(SB\)`)
+
+	seen := make(map[string]bool)
+
+	filepath.Walk(goasmDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || !strings.HasSuffix(path, ".s") {
+			return nil
+		}
+
+		content, err := ioutil.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+
+		lines := strings.Split(string(content), "\n")
+		for _, line := range lines {
+			// Skip comment-only lines
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "//") {
+				continue
+			}
+
+			// Check for runtime.* symbol references
+			matches := runtimeSymbolRe.FindAllStringSubmatch(line, -1)
+			for _, match := range matches {
+				if len(match) > 1 {
+					// Convert middle dots to regular dots for the output symbol name
+					symName := strings.ReplaceAll(match[1], "·", ".")
+					sym := "runtime." + symName
+					if !seen[sym] {
+						symbols = append(symbols, sym)
+						seen[sym] = true
+					}
+				}
+			}
+
+			// Check for main.* symbol references
+			matches = mainSymbolRe.FindAllStringSubmatch(line, -1)
+			for _, match := range matches {
+				if len(match) > 1 {
+					sym := "main." + match[1]
+					if !seen[sym] {
+						symbols = append(symbols, sym)
+						seen[sym] = true
+					}
+				}
+			}
+		}
+
+		return nil
+	})
+
+	return symbols
+}
+
