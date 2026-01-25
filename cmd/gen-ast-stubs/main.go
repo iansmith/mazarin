@@ -67,6 +67,15 @@ func main() {
 	var processedFiles []string
 
 	for _, path := range files {
+		// Skip assembly files - they can't be parsed by go/parser
+		if strings.HasSuffix(path, ".s") {
+			if *flagVerbose {
+				rel, _ := filepath.Rel(*flagRuntimeDir, path)
+				fmt.Printf("  %s: skipped (assembly)\n", rel)
+			}
+			continue
+		}
+
 		result, err := transformFile(path)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error transforming %s: %v\n", path, err)
@@ -113,17 +122,28 @@ func main() {
 	fmt.Printf("Overlay written to: %s\n", *flagOverlayOut)
 }
 
-// findSourceFiles returns all .go files for linux/arm64
+// findSourceFiles returns all .go and .s files for the target platform
+// Platform is determined by build tags in the filename
 func findSourceFiles(runtimeDir string) ([]string, error) {
 	var files []string
+
+	// Determine target platform from flags
+	goos := os.Getenv("TARGET_GOOS")
+	if goos == "" {
+		goos = "linux" // Default
+	}
+	goarch := os.Getenv("TARGET_GOARCH")
+	if goarch == "" {
+		goarch = "arm64" // Default
+	}
 
 	err := filepath.Walk(runtimeDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return err
 		}
 
-		// Only .go files
-		if !strings.HasSuffix(path, ".go") {
+		// Only .go and .s files
+		if !strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, ".s") {
 			return nil
 		}
 
@@ -134,16 +154,36 @@ func findSourceFiles(runtimeDir string) ([]string, error) {
 
 		base := filepath.Base(path)
 
-		// Skip wrong platforms (keep linux, skip others)
-		if containsAny(base, "_windows", "_darwin", "_plan9", "_js", "_wasm",
-			"_freebsd", "_openbsd", "_netbsd", "_dragonfly", "_solaris", "_aix") {
-			return nil
-		}
+		// Platform filtering based on TARGET_GOOS and TARGET_GOARCH
+		if goos == "windows" && goarch == "amd64" {
+			// For windows/amd64: skip non-windows, non-amd64 files
+			// Keep: *_windows.go, *_windows_amd64.go, *_amd64.go, generic files
+			// Skip: *_linux.go, *_darwin.go, *_arm64.go, *_386.go, etc.
 
-		// Skip wrong architectures (keep arm64, skip others)
-		if containsAny(base, "_amd64", "_386", "_arm.", "_mips", "_ppc64",
-			"_riscv64", "_s390x", "_wasm", "_loong64") {
-			return nil
+			// Skip other OS files
+			if containsAny(base, "_linux", "_darwin", "_plan9", "_js", "_wasm",
+				"_freebsd", "_openbsd", "_netbsd", "_dragonfly", "_solaris", "_aix") {
+				return nil
+			}
+
+			// Skip wrong architectures (keep amd64, skip others)
+			if containsAny(base, "_386", "_arm64", "_arm.", "_mips", "_ppc64",
+				"_riscv64", "_s390x", "_loong64") {
+				return nil
+			}
+		} else {
+			// For linux/arm64: original behavior
+			// Skip wrong platforms (keep linux, skip others)
+			if containsAny(base, "_windows", "_darwin", "_plan9", "_js", "_wasm",
+				"_freebsd", "_openbsd", "_netbsd", "_dragonfly", "_solaris", "_aix") {
+				return nil
+			}
+
+			// Skip wrong architectures (keep arm64, skip others)
+			if containsAny(base, "_amd64", "_386", "_arm.", "_mips", "_ppc64",
+				"_riscv64", "_s390x", "_wasm", "_loong64") {
+				return nil
+			}
 		}
 
 		files = append(files, path)

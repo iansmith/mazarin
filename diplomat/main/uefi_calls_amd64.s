@@ -1,26 +1,28 @@
-// diplomat/asm/x64/uefi_calls.s
+// diplomat/main/uefi_calls_amd64.s
 // UEFI call wrappers using Microsoft x64 calling convention
 //
+// This file works with GOOS=linux GOARCH=amd64 builds.
+//
 // Microsoft x64 ABI (used by UEFI on x86_64):
-//   - Arguments: RCX, RDX, R8, R9, then stack (right-to-left)
+//   - Arguments: RCX, RDX, R8, R9, then stack
 //   - Return value: RAX
 //   - Caller saves: RAX, RCX, RDX, R8, R9, R10, R11
 //   - Callee saves: RBX, RBP, RDI, RSI, R12-R15
 //   - Stack: 16-byte aligned before CALL, shadow space (32 bytes) required
 //
-// Go's System V ABI on x86_64:
+// Go System V ABI on x86_64 (GOOS=linux):
 //   - Arguments: on stack at offset(FP)
-//   - Return value: stored on stack
-//   - We must translate between the two conventions
+//   - Return value: stored on stack (if any)
+//   - We translate from Go's stack-based args to MS x64 register-based args
 
 #include "textflag.h"
 
 // func ueficall_OutputString(conout *EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL, char uint16)
 //
-// This function calls the UEFI OutputString method, which has the signature:
+// Calls UEFI OutputString method with Microsoft x64 calling convention:
 //   EFI_STATUS OutputString(
-//       IN EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This,
-//       IN CHAR16 *String
+//       IN EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This,  // RCX
+//       IN CHAR16 *String                          // RDX
 //   );
 //
 // Go passes arguments on stack:
@@ -36,7 +38,7 @@ TEXT ·ueficall_OutputString(SB), NOSPLIT, $48-16
 	MOVQ conout+0(FP), CX
 
 	// Create UCS-2 string on stack: {char, 0}
-	// Place it in the upper part of our frame, after shadow space
+	// Place it after shadow space
 	MOVW char+8(FP), AX      // Load the uint16 character
 	MOVW AX, 32(SP)          // Store character at SP+32
 	MOVW $0, 34(SP)          // Store null terminator at SP+34
@@ -49,14 +51,11 @@ TEXT ·ueficall_OutputString(SB), NOSPLIT, $48-16
 	// (offset 0 is Reset, offset 8 is OutputString)
 	MOVQ 8(CX), AX
 
-	// The stack is already 16-byte aligned (Go guarantees this)
-	// Shadow space (32 bytes) is already allocated in our $48 frame
-
 	// Call the UEFI function
 	// Note: UEFI functions may trash RCX, RDX, R8-R11
 	CALL AX
 
 	// Return value (EFI_STATUS) is in RAX
-	// Go doesn't expect a return value for this function, so we ignore it
+	// We ignore it for this function
 
 	RET

@@ -310,63 +310,53 @@ tasks:
   # Diplomat - x86_64 UEFI Bootloader
   # ===========================================================================
 
-  diplomat-overlay:
-    desc: Generate runtime overlay JSON for diplomat (UEFI/Windows stubs)
+  elf2pe:
+    desc: Build the ELF to PE converter
     deps: [build-dir]
     sources:
-      - '{{.RUNTIME_PATCHES_DIR}}/diplomat/os_windows.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/diplomat/syscall_windows.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/diplomat/sys_windows_amd64.s'
+      - 'cmd/elf2pe/*.go'
     generates:
-      - '{{.BUILD_DIR}}/diplomat-overlay.json'
+      - '{{.BUILD_DIR}}/elf2pe'
     cmds:
-      - '{{.GO}} tool gen-overlay -type diplomat -patches {{.RUNTIME_PATCHES_DIR}}/diplomat -o {{.BUILD_DIR}}/diplomat-overlay.json'
-
-  pe-fixup:
-    desc: Build the PE header fixup tool
-    deps: [build-dir]
-    sources:
-      - 'cmd/pe-fixup/*.go'
-    generates:
-      - '{{.BUILD_DIR}}/pe-fixup'
-    cmds:
-      - '{{.GO}} build -o {{.BUILD_DIR}}/pe-fixup ./cmd/pe-fixup'
+      - '{{.GO}} build -o {{.BUILD_DIR}}/elf2pe ./cmd/elf2pe'
 
   diplomat:
     desc: Build diplomat UEFI bootloader for x86_64
-    deps: [check-env, build-dir, pe-fixup, diplomat-overlay]
+    deps: [check-env, build-dir, elf2pe]
     sources:
       - 'diplomat/**/*.go'
       - 'diplomat/**/*.s'
       - 'shared/**/*.go'
-      - '{{.BUILD_DIR}}/diplomat-overlay.json'
     generates:
       - '{{.DIPLOMAT_EFI}}'
     cmds:
-      - echo "Building diplomat for x86_64 UEFI..."
-      # Step 1: Build as Windows PE with runtime overlays (produces PE/COFF format)
-      - CGO_ENABLED=0 GOOS=windows GOARCH=amd64 {{.GO}} build -overlay={{.BUILD_DIR}}/diplomat-overlay.json -ldflags="-checklinkname=0" -o {{.DIPLOMAT_EXE}} ./diplomat/main
-      # Step 2: Fix PE header for UEFI (subsystem 3 → 10)
-      - '{{.BUILD_DIR}}/pe-fixup {{.DIPLOMAT_EXE}} {{.DIPLOMAT_EFI}}'
+      - echo "Building diplomat for x86_64 UEFI (via Linux/amd64)..."
+      # Step 1: Build as Linux ELF (no DLL dependencies!)
+      - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 {{.GO}} build -ldflags="-checklinkname=0" -o {{.BUILD_DIR}}/diplomat.elf ./diplomat/main
+      # Step 2: Convert ELF to PE format for UEFI
+      - '{{.BUILD_DIR}}/elf2pe {{.BUILD_DIR}}/diplomat.elf {{.DIPLOMAT_EFI}}'
       - echo "Diplomat EFI ready at {{.DIPLOMAT_EFI}}"
+
+  mkesp:
+    desc: Build the ESP image creator
+    deps: [build-dir]
+    sources:
+      - 'cmd/mkesp/*.go'
+    generates:
+      - '{{.BUILD_DIR}}/mkesp'
+    cmds:
+      - '{{.GO}} build -o {{.BUILD_DIR}}/mkesp ./cmd/mkesp'
 
   esp:
     desc: Create EFI System Partition image for diplomat testing
-    deps: [diplomat]
+    deps: [diplomat, mkesp]
     sources:
       - '{{.DIPLOMAT_EFI}}'
     generates:
       - '{{.ESP_IMAGE}}'
     cmds:
       - echo "Creating ESP image..."
-      # Create 100MB FAT32 image
-      - dd if=/dev/zero of={{.ESP_IMAGE}} bs=1M count=100 2>/dev/null
-      - mkfs.vfat -F 32 {{.ESP_IMAGE}}
-      # Create EFI directory structure
-      - mmd -i {{.ESP_IMAGE}} ::/EFI
-      - mmd -i {{.ESP_IMAGE}} ::/EFI/BOOT
-      # Copy diplomat as BOOTX64.EFI (default x86_64 UEFI bootloader)
-      - mcopy -i {{.ESP_IMAGE}} {{.DIPLOMAT_EFI}} ::/EFI/BOOT/BOOTX64.EFI
+      - '{{.BUILD_DIR}}/mkesp -bootloader {{.DIPLOMAT_EFI}} -o {{.ESP_IMAGE}} -size 260'
       - echo "ESP created at {{.ESP_IMAGE}}"
 
   run-diplomat:
@@ -385,7 +375,7 @@ tasks:
       - '{{.GO}} tool go-sleep 0.3'
       - 'echo ""'
       - 'echo "=== Diplomat Serial Output ==="'
-      - '{{.GO}} tool safe-serial-read -f {{.LOG_FILE}}'
+      - '{{.GO}} tool safe-serial-read {{.LOG_FILE}}'
       - 'echo ""'
       - 'echo "Log file: {{.LOG_FILE}}"'
 
@@ -394,8 +384,9 @@ tasks:
     internal: true
     vars:
       LOG_FILE: /tmp/diplomat-serial.log
+      QEMU_X86: /opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-x86_64
     cmds:
-      - '{{.GO}} tool go-start qemu-system-x86_64 -machine q35 -cpu qemu64 -m 8G -bios /opt/homebrew/share/qemu/edk2-x86_64-code.fd -drive file={{.ESP_IMAGE}},format=raw,if=virtio -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4445,server,nowait -display none -no-reboot'
+      - '{{.GO}} tool go-start {{.QEMU_X86}} -machine q35 -cpu qemu64 -m 8G -bios /opt/homebrew/share/qemu/edk2-x86_64-code.fd -drive file={{.ESP_IMAGE}},format=raw,if=virtio -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4445,server,nowait -display none -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (x86_64) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4445"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
