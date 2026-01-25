@@ -45,6 +45,11 @@ vars:
   HELLOWORLD_MAZ: '{{.BUILD_DIR}}/helloworld.maz'
   DISK_IMAGE: '{{.BUILD_DIR}}/disk.img'
 
+  # Diplomat (x86_64 UEFI bootloader) output files
+  DIPLOMAT_EXE: '{{.BUILD_DIR}}/diplomat.exe'
+  DIPLOMAT_EFI: '{{.BUILD_DIR}}/diplomat.efi'
+  ESP_IMAGE: '{{.BUILD_DIR}}/esp.img'
+
   # Generated embedded data
   KMAZARIN_DATA_ASM: cardinal/asm/dev/kmazarin_data_arm64.s
   BOOT_IMAGE_DATA_ASM: cardinal/asm/dev/boot_mazarin_data_arm64.s
@@ -300,6 +305,107 @@ tasks:
       - echo "Creating FAT32 disk image..."
       - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.PRIEST_ELF}} {{.PRIEST2_ELF}} {{.HELLOWORLD_MAZ}}'
       - echo "Disk image created at {{.DISK_IMAGE}}"
+
+  # ===========================================================================
+  # Diplomat - x86_64 UEFI Bootloader
+  # ===========================================================================
+
+  diplomat-overlay:
+    desc: Generate runtime overlay JSON for diplomat (UEFI/Windows stubs)
+    deps: [build-dir]
+    sources:
+      - '{{.RUNTIME_PATCHES_DIR}}/diplomat/os_windows.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/diplomat/syscall_windows.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/diplomat/sys_windows_amd64.s'
+    generates:
+      - '{{.BUILD_DIR}}/diplomat-overlay.json'
+    cmds:
+      - '{{.GO}} tool gen-overlay -type diplomat -patches {{.RUNTIME_PATCHES_DIR}}/diplomat -o {{.BUILD_DIR}}/diplomat-overlay.json'
+
+  pe-fixup:
+    desc: Build the PE header fixup tool
+    deps: [build-dir]
+    sources:
+      - 'cmd/pe-fixup/*.go'
+    generates:
+      - '{{.BUILD_DIR}}/pe-fixup'
+    cmds:
+      - '{{.GO}} build -o {{.BUILD_DIR}}/pe-fixup ./cmd/pe-fixup'
+
+  diplomat:
+    desc: Build diplomat UEFI bootloader for x86_64
+    deps: [check-env, build-dir, pe-fixup, diplomat-overlay]
+    sources:
+      - 'diplomat/**/*.go'
+      - 'diplomat/**/*.s'
+      - 'shared/**/*.go'
+      - '{{.BUILD_DIR}}/diplomat-overlay.json'
+    generates:
+      - '{{.DIPLOMAT_EFI}}'
+    cmds:
+      - echo "Building diplomat for x86_64 UEFI..."
+      # Step 1: Build as Windows PE with runtime overlays (produces PE/COFF format)
+      - CGO_ENABLED=0 GOOS=windows GOARCH=amd64 {{.GO}} build -overlay={{.BUILD_DIR}}/diplomat-overlay.json -ldflags="-checklinkname=0" -o {{.DIPLOMAT_EXE}} ./diplomat/main
+      # Step 2: Fix PE header for UEFI (subsystem 3 → 10)
+      - '{{.BUILD_DIR}}/pe-fixup {{.DIPLOMAT_EXE}} {{.DIPLOMAT_EFI}}'
+      - echo "Diplomat EFI ready at {{.DIPLOMAT_EFI}}"
+
+  esp:
+    desc: Create EFI System Partition image for diplomat testing
+    deps: [diplomat]
+    sources:
+      - '{{.DIPLOMAT_EFI}}'
+    generates:
+      - '{{.ESP_IMAGE}}'
+    cmds:
+      - echo "Creating ESP image..."
+      # Create 100MB FAT32 image
+      - dd if=/dev/zero of={{.ESP_IMAGE}} bs=1M count=100 2>/dev/null
+      - mkfs.vfat -F 32 {{.ESP_IMAGE}}
+      # Create EFI directory structure
+      - mmd -i {{.ESP_IMAGE}} ::/EFI
+      - mmd -i {{.ESP_IMAGE}} ::/EFI/BOOT
+      # Copy diplomat as BOOTX64.EFI (default x86_64 UEFI bootloader)
+      - mcopy -i {{.ESP_IMAGE}} {{.DIPLOMAT_EFI}} ::/EFI/BOOT/BOOTX64.EFI
+      - echo "ESP created at {{.ESP_IMAGE}}"
+
+  run-diplomat:
+    desc: "Run diplomat in QEMU with OVMF (TIMEOUT=N for timeout, default=5s)"
+    deps: [esp]
+    vars:
+      TIMEOUT: '{{.TIMEOUT | default "5"}}'
+      LOG_FILE: /tmp/diplomat-serial.log
+    cmds:
+      - task: stop-diplomat
+      - '{{.GO}} tool go-rm {{.LOG_FILE}}'
+      - echo "Starting diplomat in QEMU (timeout {{.TIMEOUT}}s)..."
+      - task: run-diplomat-background
+      - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
+      - task: stop-diplomat
+      - '{{.GO}} tool go-sleep 0.3'
+      - 'echo ""'
+      - 'echo "=== Diplomat Serial Output ==="'
+      - '{{.GO}} tool safe-serial-read -f {{.LOG_FILE}}'
+      - 'echo ""'
+      - 'echo "Log file: {{.LOG_FILE}}"'
+
+  run-diplomat-background:
+    desc: Start QEMU with diplomat in background (internal task)
+    internal: true
+    vars:
+      LOG_FILE: /tmp/diplomat-serial.log
+    cmds:
+      - '{{.GO}} tool go-start qemu-system-x86_64 -machine q35 -cpu qemu64 -m 8G -bios /opt/homebrew/share/qemu/edk2-x86_64-code.fd -drive file={{.ESP_IMAGE}},format=raw,if=virtio -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4445,server,nowait -display none -no-reboot'
+      - '{{.GO}} tool go-echo "QEMU (x86_64) started in background"'
+      - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4445"'
+      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
+
+  stop-diplomat:
+    desc: Stop diplomat QEMU instance
+    cmds:
+      - cmd: '{{.GO}} tool go-nc -w 1s -c quit 127.0.0.1 4445'
+        ignore_error: true
+      - '{{.GO}} tool go-sleep 0.5'
 
   # ===========================================================================
   # Run and Stop
