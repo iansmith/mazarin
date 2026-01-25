@@ -244,13 +244,13 @@ func writeDirectory(image []byte, dir *dirEntry, dataStart int, cluster uint32) 
 
 	// Write "." entry (this directory)
 	if cluster != 2 {
-		writeShortEntry(image[offset:], ".", attrDirectory, cluster)
+		writeShortEntry(image[offset:], ".", attrDirectory, cluster, 0)
 		offset += 32
 	}
 
 	// Write ".." entry (parent directory)
 	if cluster != 2 {
-		writeShortEntry(image[offset:], "..", attrDirectory, 0) // 0 means root
+		writeShortEntry(image[offset:], "..", attrDirectory, 0, 0) // 0 means root
 		offset += 32
 	}
 
@@ -258,12 +258,15 @@ func writeDirectory(image []byte, dir *dirEntry, dataStart int, cluster uint32) 
 	for _, child := range dir.children {
 		name := strings.ToUpper(child.name)
 		var attrs uint8 = attrArchive
+		fileSize := uint32(0)
 		if child.isDirectory {
 			attrs = attrDirectory
+		} else {
+			fileSize = uint32(len(child.data))
 		}
 
 		// Simple 8.3 name handling
-		writeShortEntry(image[offset:], name, attrs, child.cluster)
+		writeShortEntry(image[offset:], name, attrs, child.cluster, fileSize)
 		offset += 32
 
 		// Write file data
@@ -296,7 +299,7 @@ func writeFileData(image []byte, data []byte, dataStart int, startCluster uint32
 	}
 }
 
-func writeShortEntry(entry []byte, name string, attrs uint8, startCluster uint32) {
+func writeShortEntry(entry []byte, name string, attrs uint8, startCluster, fileSize uint32) {
 	// Parse name into base and ext
 	base := name
 	ext := ""
@@ -346,7 +349,7 @@ func writeShortEntry(entry []byte, name string, attrs uint8, startCluster uint32
 	binary.LittleEndian.PutUint16(entry[26:], uint16(startCluster))     // Low word
 
 	// File size
-	binary.LittleEndian.PutUint32(entry[28:], 0) // 0 for directories
+	binary.LittleEndian.PutUint32(entry[28:], fileSize)
 }
 
 func writeBootSector(image []byte, totalSectors, fatSectors uint32) {
