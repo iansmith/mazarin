@@ -307,10 +307,6 @@ sync_exception_handler:
 	MOVD	·kmazarinG0Addr(SB), R10
 	CBZ	R10, skip_g_switch_el1  // Skip if not initialized
 	WORD	$0xaa0a03fc  // mov x28, x10
-	// DEBUG: Print 'L' to show we switched g in EL1 path
-	MOVD	$UART_BASE, R11
-	MOVD	$'L', R12
-	MOVB	R12, (R11)
 skip_g_switch_el1:
 
 	// SVC: First save ELR and SPSR so clone can get child's return address and state
@@ -790,11 +786,6 @@ skip_irq_breadcrumb:
 	MOVW	$0, R10
 	MOVW	R10, mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB)
 
-	// Print 'T' to show thread preemption check
-	MOVD	$UART_BASE, R11
-	MOVD	$'T', R12
-	MOVB	R12, (R11)
-
 	// CRITICAL: Switch to kmazarin's g before calling Go code
 	// The timer may have interrupted userspace (priest) which has a different g
 	MOVD	·kmazarinG0Addr(SB), R10
@@ -878,6 +869,19 @@ timer_no_thread_preempt:
 	CBZ	R10, timer_no_preempt_not_ready
 
 	// ========================================================================
+	// CRITICAL: Only inject asyncPreempt if we came from EL0 (userspace)
+	// ========================================================================
+	// When a syscall (SVC) is in progress and a timer IRQ fires:
+	// - The goroutine is in _Gsyscall state (atomicstatus=3)
+	// - Injecting asyncPreempt would cause "bad g status" panic
+	// - SPSR.M[3:0] tells us which EL we came from:
+	//   0b0000 (0) = EL0t, 0b0100 (4) = EL1t, 0b0101 (5) = EL1h
+	// Only inject if M[3:0] == 0 (came from EL0)
+	MOVD	EXC_FRAME_ELR_SPSR+8(RSP), R10  // R10 = SPSR
+	AND	$0xF, R10  // R10 = M[3:0] bits
+	CBNZ	R10, timer_no_preempt_in_kernel  // If not EL0, skip
+
+	// ========================================================================
 	// CRITICAL: Check if running on g0 (scheduler goroutine)
 	// ========================================================================
 	// Never inject async preemption on g0 - the Go runtime will crash with
@@ -900,6 +904,34 @@ timer_no_thread_preempt:
 	// Compare current g with m.g0
 	CMP	R10, R12
 	BEQ	timer_no_preempt_on_g0  // If g == m.g0, skip preemption
+
+	// ========================================================================
+	// CRITICAL: Check g.atomicstatus == _Grunning before preemption
+	// ========================================================================
+	// The Go runtime sets g.atomicstatus = _Gsyscall BEFORE the actual SVC
+	// instruction, while still in userspace. If we preempt at that moment,
+	// SPSR shows EL0 (passes the EL check), but asyncPreempt will fail with
+	// "bad g status" because the goroutine is marked as _Gsyscall.
+	//
+	// R10 still contains the g pointer from the g0 check above.
+	// We need to reload it since R10 was used for other purposes.
+	WORD	$0xAA1C03E4  // mov x4, x28 (current g into R4)
+
+	// Load g.atomicstatus offset
+	MOVD	mazzy∕kmazarin∕kirq·PreemptGStatusOffset(SB), R5
+	ADD	R4, R5  // R5 = &g.atomicstatus
+
+	// Load status (32-bit atomic)
+	MOVW	(R5), R6  // R6 = g.atomicstatus
+
+	// Mask off _Gscan bit (0x1000) when comparing
+	MOVW	mazzy∕kmazarin∕kirq·PreemptGScan(SB), R7
+	BIC	R7, R6, R8  // R8 = status & ~_Gscan
+
+	// Compare with _Grunning (must be exactly running, not syscall/waiting/etc)
+	MOVW	mazzy∕kmazarin∕kirq·PreemptGRunning(SB), R7
+	CMP	R8, R7
+	BNE	timer_no_preempt_wrong_status  // Not running, skip preemption
 
 	// UNIFIED ASYNCPREEMPT: Use per-thread asyncPreempt address
 	// This supports both kmazarin goroutines and priest goroutines:
@@ -981,6 +1013,21 @@ timer_no_preempt_not_ready:
 timer_no_preempt_on_g0:
 	// Running on g0 (scheduler) - skip async preemption
 	// Just clear the flag and return - scheduler will handle it
+	MOVW	$0, R10
+	MOVW	R10, mazzy∕kmazarin∕kirq·NeedsAsyncPreempt(SB)
+	B	timer_no_preempt
+
+timer_no_preempt_in_kernel:
+	// Timer fired while in EL1 (kernel) - likely handling a syscall
+	// Clear the flag - we'll try again next tick when thread returns to EL0
+	MOVW	$0, R10
+	MOVW	R10, mazzy∕kmazarin∕kirq·NeedsAsyncPreempt(SB)
+	B	timer_no_preempt
+
+timer_no_preempt_wrong_status:
+	// Goroutine is not in _Grunning state (likely _Gsyscall)
+	// This happens when Go runtime sets g.atomicstatus = _Gsyscall in userspace
+	// just BEFORE the actual SVC instruction. Skip asyncPreempt injection.
 	MOVW	$0, R10
 	MOVW	R10, mazzy∕kmazarin∕kirq·NeedsAsyncPreempt(SB)
 	B	timer_no_preempt
@@ -1236,10 +1283,10 @@ el0_sync_handler:
 	CMP	$0x15, R10
 	BNE	el0_check_data_abort
 
-	// Print 'U' to show we're handling userspace syscall
-	MOVD	$UART_BASE, R12
-	MOVD	$'U', R11
-	MOVB	R11, (R12)
+	// NOTE: 'U' debug print disabled to test if it affects timing fairness
+	// MOVD	$UART_BASE, R12
+	// MOVD	$'U', R11
+	// MOVB	R11, (R12)
 
 	// CRITICAL: Switch to kmazarin's g before calling any Go code!
 	// x28 currently contains userspace's g (e.g., priest's g), but the syscall
@@ -1252,10 +1299,10 @@ el0_sync_handler:
 	// Set x28 to this value (x28 is Go's g register)
 	WORD	$0xaa0a03fc  // mov x28, x10
 skip_g_switch_el0:
-	// DEBUG: Print 'K' to show we're in userspace syscall path
-	MOVD	$UART_BASE, R11
-	MOVD	$'K', R12
-	MOVB	R12, (R11)
+	// NOTE: 'K' debug print disabled to test if it affects timing fairness
+	// MOVD	$UART_BASE, R11
+	// MOVD	$'K', R12
+	// MOVB	R12, (R11)
 
 	// SVC from userspace - first save ELR and SPSR for clone
 	// Without this, clone would use stale values from a previous EL1 syscall!
