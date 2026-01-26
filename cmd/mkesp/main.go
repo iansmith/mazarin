@@ -102,6 +102,13 @@ func main() {
 
 	root.children = append(root.children, efiDir)
 
+	// Add startup.nsh for automatic boot
+	startupScript := &dirEntry{
+		name: "startup.nsh",
+		data: []byte("FS0:\\EFI\\BOOT\\BOOTX64.EFI\r\n"),
+	}
+	root.children = append(root.children, startupScript)
+
 	// Create ESP image
 	if err := createESP(*outputFile, root, *sizeMB); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

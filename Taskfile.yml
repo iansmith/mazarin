@@ -407,7 +407,7 @@ tasks:
       LOG_FILE: /tmp/diplomat-serial.log
       QEMU_X86: /opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-x86_64
     cmds:
-      - '{{.GO}} tool go-start {{.QEMU_X86}} -machine q35 -cpu qemu64 -m 8G -bios /opt/homebrew/share/qemu/edk2-x86_64-code.fd -drive file={{.ESP_IMAGE}},format=raw,if=virtio -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4445,server,nowait -display none -no-reboot'
+      - '{{.GO}} tool go-start {{.QEMU_X86}} -machine q35 -cpu qemu64 -m 8G -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/share/qemu/edk2-i386-code.fd -drive file={{.ESP_IMAGE}},format=raw,if=ide -boot c -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4445,server,nowait -display none -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (x86_64) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4445"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
