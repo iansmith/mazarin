@@ -2,7 +2,7 @@
 package fat32
 
 import (
-	"mazzy/kmazarin/deviceapi"
+	"mazzy/shared/blockdev"
 )
 
 // FAT32 special cluster values
@@ -37,7 +37,7 @@ var (
 
 // FileSystem represents a mounted FAT32 filesystem
 type FileSystem struct {
-	device       deviceapi.BlockDevice
+	device       blockdev.BlockDevice
 	bytesPerSec  uint16
 	secPerClus   uint8
 	rsvdSecCnt   uint16
@@ -53,7 +53,7 @@ type FileSystem struct {
 }
 
 // Mount mounts a FAT32 filesystem on the given block device
-func Mount(device deviceapi.BlockDevice) (*FileSystem, error) {
+func Mount(device blockdev.BlockDevice) (*FileSystem, error) {
 	if device.BlockSize() != 512 {
 		return nil, &FAT32Error{"only 512-byte sectors supported"}
 	}

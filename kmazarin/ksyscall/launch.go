@@ -6,8 +6,8 @@ import (
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/device/virtio/gpu"
-	"mazzy/kmazarin/fs/fat32"
 	"mazzy/kmazarin/kmem"
+	"mazzy/shared/fs/fat32"
 	"unsafe"
 )
 

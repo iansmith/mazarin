@@ -3,7 +3,7 @@ package ksyscall
 import (
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
-	"mazzy/kmazarin/fs/fat32"
+	"mazzy/shared/fs/fat32"
 )
 
 // SyscallRun loads a .maz program into the calling priest's address space.
