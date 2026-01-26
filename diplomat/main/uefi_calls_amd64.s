@@ -127,3 +127,83 @@ TEXT ·uefiCallFreePages(SB), NOSPLIT, $32-32
 	// Return EFI_STATUS (in RAX)
 	MOVQ AX, ret+24(FP)
 	RET
+
+// func uefiCallBlockIORead(protocol uintptr, mediaId uint32, lba, bufferSize, buffer, funcPtr uintptr) EFI_STATUS
+//
+// Calls UEFI EFI_BLOCK_IO_PROTOCOL.ReadBlocks with Microsoft x64 calling convention:
+//   EFI_STATUS ReadBlocks(
+//       IN EFI_BLOCK_IO_PROTOCOL *This,  // RCX
+//       IN UINT32 MediaId,               // RDX (uint32, zero-extended)
+//       IN EFI_LBA LBA,                  // R8  (uint64)
+//       IN UINTN BufferSize,             // R9  (uint64)
+//       OUT VOID *Buffer                 // Stack at 32(RSP) after shadow space
+//   );
+//
+// Go arguments on stack (ABI0):
+//   protocol+0(FP)   - 8 bytes (uintptr)
+//   mediaId+8(FP)    - 4 bytes (uint32), padded to 8
+//   lba+16(FP)       - 8 bytes (uint64)
+//   bufferSize+24(FP)- 8 bytes (uint64)
+//   buffer+32(FP)    - 8 bytes (uintptr)
+//   funcPtr+40(FP)   - 8 bytes (uintptr)
+//   ret+48(FP)       - 8 bytes (EFI_STATUS)
+TEXT ·uefiCallBlockIORead(SB), NOSPLIT, $48-56
+	// Stack frame: 48 bytes (32 shadow + 8 for 5th arg + 8 alignment)
+
+	// Load arguments into MS x64 ABI registers
+	MOVQ protocol+0(FP), CX     // RCX = This (protocol pointer)
+	MOVL mediaId+8(FP), DX      // RDX = MediaId (uint32, zero-extended)
+	MOVQ lba+16(FP), R8         // R8 = LBA
+	MOVQ bufferSize+24(FP), R9  // R9 = BufferSize
+
+	// 5th argument goes on stack after 32-byte shadow space
+	MOVQ buffer+32(FP), AX
+	MOVQ AX, 32(SP)             // Buffer at RSP+32
+
+	// Load function pointer and call
+	MOVQ funcPtr+40(FP), AX
+	CALL AX
+
+	// Return EFI_STATUS
+	MOVQ AX, ret+48(FP)
+	RET
+
+// func uefiCallBlockIOWrite(protocol uintptr, mediaId uint32, lba, bufferSize, buffer, funcPtr uintptr) EFI_STATUS
+//
+// Calls UEFI EFI_BLOCK_IO_PROTOCOL.WriteBlocks with Microsoft x64 calling convention:
+//   EFI_STATUS WriteBlocks(
+//       IN EFI_BLOCK_IO_PROTOCOL *This,  // RCX
+//       IN UINT32 MediaId,               // RDX (uint32, zero-extended)
+//       IN EFI_LBA LBA,                  // R8  (uint64)
+//       IN UINTN BufferSize,             // R9  (uint64)
+//       IN VOID *Buffer                  // Stack at 32(RSP) after shadow space
+//   );
+//
+// Go arguments on stack (ABI0):
+//   protocol+0(FP)   - 8 bytes (uintptr)
+//   mediaId+8(FP)    - 4 bytes (uint32), padded to 8
+//   lba+16(FP)       - 8 bytes (uint64)
+//   bufferSize+24(FP)- 8 bytes (uint64)
+//   buffer+32(FP)    - 8 bytes (uintptr)
+//   funcPtr+40(FP)   - 8 bytes (uintptr)
+//   ret+48(FP)       - 8 bytes (EFI_STATUS)
+TEXT ·uefiCallBlockIOWrite(SB), NOSPLIT, $48-56
+	// Stack frame: 48 bytes (32 shadow + 8 for 5th arg + 8 alignment)
+
+	// Load arguments into MS x64 ABI registers
+	MOVQ protocol+0(FP), CX     // RCX = This (protocol pointer)
+	MOVL mediaId+8(FP), DX      // RDX = MediaId (uint32, zero-extended)
+	MOVQ lba+16(FP), R8         // R8 = LBA
+	MOVQ bufferSize+24(FP), R9  // R9 = BufferSize
+
+	// 5th argument goes on stack after 32-byte shadow space
+	MOVQ buffer+32(FP), AX
+	MOVQ AX, 32(SP)             // Buffer at RSP+32
+
+	// Load function pointer and call
+	MOVQ funcPtr+40(FP), AX
+	CALL AX
+
+	// Return EFI_STATUS
+	MOVQ AX, ret+48(FP)
+	RET
