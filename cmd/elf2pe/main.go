@@ -109,6 +109,14 @@ func convertELFtoPE(inputPath, outputPath string) error {
 	fmt.Printf("  Type: ELF64 x86-64\n")
 	fmt.Printf("  Entry: 0x%x\n", elfFile.Entry)
 
+	// Look for efi_main symbol to use as PE entry point (for UEFI applications)
+	// If found, this overrides the ELF entry point
+	efiMainAddr := findSymbolAddress(elfFile, "efi_main")
+	if efiMainAddr != 0 {
+		fmt.Printf("  Found efi_main: 0x%x (using as PE entry point)\n", efiMainAddr)
+		elfFile.Entry = efiMainAddr
+	}
+
 	// Extract sections from ELF
 	peSections, err := extractELFSections(elfFile)
 	if err != nil {
@@ -137,6 +145,35 @@ func convertELFtoPE(inputPath, outputPath string) error {
 	fmt.Printf("  Size: %d bytes\n", len(peData))
 
 	return nil
+}
+
+// findSymbolAddress searches for a symbol by name and returns its address.
+// Returns 0 if the symbol is not found.
+func findSymbolAddress(elfFile *elf.File, symbolName string) uint64 {
+	// Get symbols from both .symtab and .dynsym sections
+	symbols, err := elfFile.Symbols()
+	if err != nil {
+		// If we can't read symbols, just return 0
+		return 0
+	}
+
+	for _, sym := range symbols {
+		if sym.Name == symbolName {
+			return sym.Value
+		}
+	}
+
+	// Also check dynamic symbols
+	dynSymbols, err := elfFile.DynamicSymbols()
+	if err == nil {
+		for _, sym := range dynSymbols {
+			if sym.Name == symbolName {
+				return sym.Value
+			}
+		}
+	}
+
+	return 0
 }
 
 // extractELFSections reads ELF sections and converts them to PE sections

@@ -184,25 +184,36 @@ const (
 	MaxAllocateType    = 3
 )
 
-// Global system table - set by efi_main
+// Global system table - set by efi_main assembly entry point
 var systemTable *EFI_SYSTEM_TABLE
 var imageHandle EFI_HANDLE
 
-// main is required by the Go runtime
-// For Windows PE/UEFI, the Go runtime doesn't actually call this
-// The UEFI firmware calls efi_main directly
+// efi_main is implemented in entry_amd64.s
+// This declaration prevents dead code elimination
+func efi_main()
+
+// Keep efi_main from being eliminated by referencing it
+// This variable is never actually used, but forces the linker to keep efi_main
+var _ = efi_main
+
+// main is called by the Go runtime after initialization.
+// The assembly entry point (efi_main in entry_amd64.s) saves UEFI parameters,
+// sets up fake argc/argv, and jumps to _rt0_amd64_linux to initialize the runtime.
+// Once initialized, the runtime calls main(), which calls DiplomatEntry().
 func main() {
-	// This should never be reached in a UEFI environment
-	// UEFI firmware calls efi_main directly
+	DiplomatEntry()
 }
 
-// efi_main is the entry point called by UEFI firmware
-// It receives the image handle and system table
+// DiplomatEntry is called by the assembly shim after UEFI parameters are saved.
+// The assembly entry point (entry_amd64.s) saves ImageHandle and SystemTable
+// to globals, then calls this function.
 //
-//go:export efi_main
-func efi_main(imgHandle EFI_HANDLE, st *EFI_SYSTEM_TABLE) EFI_STATUS {
-	imageHandle = imgHandle
-	systemTable = st
+//go:nosplit
+func DiplomatEntry() {
+	// imageHandle and systemTable already set by assembly entry point
+
+	// Early debug: try to print something ASAP
+	printString("=== DIPLOMAT START ===\r\n")
 
 	// Initialize memory span tracking for mmap
 	// This must happen before Go runtime tries to allocate heap
@@ -233,8 +244,6 @@ func efi_main(imgHandle EFI_HANDLE, st *EFI_SYSTEM_TABLE) EFI_STATUS {
 	// Next phases: FAT32 filesystem, ELF loading, kmazarin launch
 	for {
 	}
-
-	return EFI_SUCCESS
 }
 
 // printString outputs a string to the UEFI console
