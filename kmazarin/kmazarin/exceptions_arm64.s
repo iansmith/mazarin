@@ -315,6 +315,17 @@ skip_g_switch_el1:
 	GO_CALL_1_0(·SetSyscallELR, R0)        // SetSyscallELR(elr)
 	GO_CALL_1_0(·SetSyscallSPSR, R1)       // SetSyscallSPSR(spsr)
 
+	// Clear InCloneSetup flag for current thread (if set)
+	// This marks the clone child as having completed its setup phase.
+	// After this, async preempt is safe because fn/gp/mp have been read from stack.
+	MOVD	main·CurrentThread(SB), R10
+	CBZ	R10, el1_skip_clear_clone_setup
+	MOVD	main·ThreadInCloneSetupOffset(SB), R11
+	ADD	R11, R10, R11
+	MOVW	$0, R12
+	MOVW	R12, (R11)  // thread.InCloneSetup = 0
+el1_skip_clear_clone_setup:
+
 	// Now call syscall dispatcher using ABI0 calling convention
 	// Load arguments from exception frame first (before adjusting RSP)
 	LDP	EXC_FRAME_X8(RSP), (R0, R1)        // R0 = syscall num (X8), R1 = X9
@@ -391,6 +402,38 @@ skip_g_switch_el1:
 
 	// Copy ELR and SPSR (256, 264 in ThreadContext)
 	LDP	256(R21), (R0, R1)
+	// DEBUG: Print ELR low bits before storing
+	MOVD	R0, R10   // Save ELR in R10
+	MOVD	R1, R11   // Save SPSR in R11
+	MOVD	$UART_BASE, R12
+	MOVD	$'E', R13
+	MOVB	R13, (R12)
+	MOVD	$'L', R13
+	MOVB	R13, (R12)
+	MOVD	$'R', R13
+	MOVB	R13, (R12)
+	MOVD	$'=', R13
+	MOVB	R13, (R12)
+	// Print R10 (ELR) full 16 nibbles
+	MOVD	R10, R14
+	MOVD	$16, R15
+print_elr_ctxsw:
+	LSR	$60, R14, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLT	print_elr_ctxsw_d
+	ADD	$('A'-10), R13
+	B	print_elr_ctxsw_c
+print_elr_ctxsw_d:
+	ADD	$'0', R13
+print_elr_ctxsw_c:
+	MOVB	R13, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, print_elr_ctxsw
+	// Reload ELR/SPSR
+	MOVD	R10, R0
+	MOVD	R11, R1
 	STP	(R0, R1), EXC_FRAME_ELR_SPSR(RSP)
 
 	B	sync_return
@@ -615,12 +658,18 @@ data_abort_hang:
 sync_return:
 	// Restore SP_EL0
 	MOVD	EXC_FRAME_SP_EL0(RSP), R10
-	MSR	R10, SP_EL0
+	// MSR SP_EL0, X10 - use WORD to avoid assembler issues
+	WORD	$0xD518410A
 
 	// Restore ELR and SPSR
 	LDP	EXC_FRAME_ELR_SPSR(RSP), (R10, R11)
-	MSR	R10, ELR_EL1
-	MSR	R11, SPSR_EL1
+	// CRITICAL: Force IRQs enabled in SPSR by clearing DAIF.I bit (bit 7 = 0x80)
+	// This ensures IRQs are enabled after ERET, preventing stuck-disabled-IRQ chains
+	BIC	$0x80, R11, R11
+	// MSR ELR_EL1, X10 - use WORD to avoid assembler issues
+	WORD	$0xD518402A
+	// MSR SPSR_EL1, X11 - use WORD to avoid assembler issues
+	WORD	$0xD518400B
 
 	// Restore X28-X30 (R28 is g, use raw instruction)
 	// ldr x28, [sp, #224]
@@ -644,6 +693,37 @@ sync_return:
 	LDP	EXC_FRAME_X8+112(RSP), (R22, R23)
 	LDP	EXC_FRAME_X8+128(RSP), (R24, R25)
 	LDP	EXC_FRAME_X8+144(RSP), (R26, R27)
+
+	// DEBUG: Print ELR_EL1 and SPSR_EL1 right before ERET
+	// Print "F=" prefix for ELR
+	MOVD	$UART_BASE, R0
+	MOVD	$'F', R1
+	MOVB	R1, (R0)
+	MOVD	$'=', R1
+	MOVB	R1, (R0)
+	// MRS ELR_EL1, X2 - read back what we wrote
+	WORD	$0xD5384022	// mrs x2, elr_el1
+	// Print 16 hex nibbles of ELR_EL1
+	MOVD	$16, R3
+	MOVD	R2, R4		// Copy to R4 for shifting
+print_final_elr:
+	LSR	$60, R4, R5	// Get top nibble
+	CMP	$10, R5
+	BLT	print_final_elr_digit
+	ADD	$('A'-10), R5
+	B	print_final_elr_out
+print_final_elr_digit:
+	ADD	$'0', R5
+print_final_elr_out:
+	MOVB	R5, (R0)
+	LSL	$4, R4		// Shift left for next nibble
+	SUB	$1, R3
+	CBNZ	R3, print_final_elr
+	// Print newline
+	MOVD	$'\r', R1
+	MOVB	R1, (R0)
+	MOVD	$'\n', R1
+	MOVB	R1, (R0)
 
 	// Restore X0-X7
 	LDP	EXC_FRAME_X0(RSP), (R0, R1)
@@ -718,6 +798,11 @@ irq_exception_handler:
 	MRS	SP_EL0, R10
 	MOVD	R10, EXC_FRAME_SP_EL0(RSP)
 
+	// DEBUG: Output '!' to show we entered IRQ handler at all
+	MOVD	$UART_BASE, R11
+	MOVD	$'!', R12
+	MOVB	R12, (R11)
+
 	// Read interrupt number from GIC CPU interface
 	// IAR = GICC_BASE + 0x0C
 	MOVD	$(GIC_CPU_BASE + GICC_IAR), R10
@@ -726,9 +811,9 @@ irq_exception_handler:
 	// Store IAR value for later EOIR write
 	MOVD	R0, R19  // Save full IAR value in R19
 
-	// DEBUG: Output 'H' breadcrumb after count 640 to show we entered IRQ handler
+	// DEBUG: Output 'H' breadcrumb after count 5 to show we entered IRQ handler
 	MOVD	mazzy∕kmazarin∕kirq·TimerIRQCount(SB), R10
-	CMP	$640, R10
+	CMP	$5, R10
 	BLT	skip_handler_breadcrumb
 	MOVD	$UART_BASE, R11
 	MOVD	$'H', R12
@@ -743,9 +828,9 @@ skip_handler_breadcrumb:
 	BNE	irq_not_timer
 
 	// DEBUG: Output 'I' breadcrumb to show IRQ 27 was delivered
-	// Check if count >= 640 to reduce noise
+	// Check if count >= 5 to reduce noise
 	MOVD	mazzy∕kmazarin∕kirq·TimerIRQCount(SB), R10
-	CMP	$640, R10
+	CMP	$5, R10
 	BLT	skip_irq_breadcrumb
 	MOVD	$UART_BASE, R11
 	MOVD	$'I', R12
@@ -780,6 +865,20 @@ skip_irq_breadcrumb:
 	// ========================================================================
 	// Check NeedsThreadPreempt flag set by TimerIRQHandlerAsm
 	MOVW	mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB), R10
+
+	// DEBUG: Print NeedsThreadPreempt value after first 10 timer IRQs
+	// This will show 'N' followed by '0' or '1' indicating the flag value
+	MOVD	mazzy∕kmazarin∕kirq·TimerIRQCount(SB), R11
+	CMP	$10, R11
+	BLT	skip_needspreempt_debug
+	MOVD	$UART_BASE, R11
+	MOVD	$'N', R12
+	MOVB	R12, (R11)
+	// Print value as hex digit ('0' or '1')
+	ADD	$'0', R10, R12
+	MOVB	R12, (R11)
+skip_needspreempt_debug:
+
 	CBZ	R10, timer_no_thread_preempt
 
 	// Clear NeedsThreadPreempt flag
@@ -852,6 +951,40 @@ skip_irq_breadcrumb:
 	LDP	256(R21), (R0, R1)
 	STP	(R0, R1), EXC_FRAME_ELR_SPSR(RSP)
 
+	// DEBUG: Print ELR being used for context switch
+	// Save R0-R3 temporarily
+	SUB	$32, RSP
+	STP	(R2, R3), 0(RSP)
+	STP	(R4, R5), 16(RSP)
+	// R0 already has ELR, save it to R4
+	MOVD	R0, R4
+	// Print "S="
+	MOVD	$UART_BASE, R2
+	MOVD	$'S', R3
+	MOVB	R3, (R2)
+	MOVD	$'=', R3
+	MOVB	R3, (R2)
+	// Print last 4 hex digits of ELR (lower 16 bits)
+	MOVD	$4, R5  // 4 hex digits
+print_switch_elr:
+	LSR	$12, R4, R3
+	AND	$0xF, R3
+	CMP	$10, R3
+	BLT	print_switch_elr_digit
+	ADD	$('A'-10), R3
+	B	print_switch_elr_char
+print_switch_elr_digit:
+	ADD	$'0', R3
+print_switch_elr_char:
+	MOVB	R3, (R2)
+	LSL	$4, R4
+	SUB	$1, R5
+	CBNZ	R5, print_switch_elr
+	// Restore R2-R5
+	LDP	0(RSP), (R2, R3)
+	LDP	16(RSP), (R4, R5)
+	ADD	$32, RSP
+
 	// Skip async preemption - we already switched threads
 	B	timer_no_preempt
 
@@ -888,10 +1021,25 @@ timer_no_thread_preempt:
 	// "mcall called on m->g0 stack" if we try to preempt the scheduler.
 	// g0 is the scheduler goroutine for each M (machine/OS thread).
 	//
-	// Get current g from X28 (saved at exception entry)
-	WORD	$0xAA1C03EA  // mov x10, x28 (current g)
+	// IMPORTANT: We must use the ORIGINAL g from the exception frame, not R28!
+	// R28 was switched to kmazarin's g0 after calling TimerIRQHandlerAsm.
+	// The original userspace g is saved in the exception frame at EXC_FRAME_X28.
+
+	MOVD	EXC_FRAME_X28(RSP), R10  // R10 = original g (from exception frame)
 	CBZ	R10, timer_no_preempt  // No g, skip
 
+	// For the g0 check, we need to check if the ORIGINAL g is m.g0.
+	// But we need to be careful: the original g might be a userspace g pointer,
+	// which we can't safely dereference from kernel context without proper checks.
+	//
+	// First, check if g is in kernel memory (high 16 bits == 0xFFFF)
+	// If it's in userspace memory, it's definitely not kmazarin's g0
+	LSR	$48, R10, R11
+	MOVD	$0xFFFF, R12
+	CMP	R11, R12
+	BNE	timer_g0_check_done  // g in userspace, definitely not g0
+
+	// g is in kernel memory - check if it's g0
 	// Load g.m offset and get m pointer
 	MOVD	mazzy∕kmazarin∕kirq·PreemptGMOffset(SB), R11
 	ADD	R10, R11, R11  // R11 = &g.m
@@ -905,6 +1053,7 @@ timer_no_thread_preempt:
 	CMP	R10, R12
 	BEQ	timer_no_preempt_on_g0  // If g == m.g0, skip preemption
 
+timer_g0_check_done:
 	// ========================================================================
 	// CRITICAL: Check g.atomicstatus == _Grunning before preemption
 	// ========================================================================
@@ -913,15 +1062,18 @@ timer_no_thread_preempt:
 	// SPSR shows EL0 (passes the EL check), but asyncPreempt will fail with
 	// "bad g status" because the goroutine is marked as _Gsyscall.
 	//
-	// R10 still contains the g pointer from the g0 check above.
-	// We need to reload it since R10 was used for other purposes.
-	WORD	$0xAA1C03E4  // mov x4, x28 (current g into R4)
+	// IMPORTANT: We must use the ORIGINAL g from the exception frame, not R28!
+	// R28 was switched to kmazarin's g0 for calling Go code (line ~793).
+	// The original userspace g is saved in the exception frame at EXC_FRAME_X28.
+	MOVD	EXC_FRAME_X28(RSP), R4  // R4 = original g (from userspace)
 
 	// Load g.atomicstatus offset
 	MOVD	mazzy∕kmazarin∕kirq·PreemptGStatusOffset(SB), R5
 	ADD	R4, R5  // R5 = &g.atomicstatus
 
 	// Load status (32-bit atomic)
+	// Note: Using regular load - userspace memory should be accessible from EL1
+	// since PAN is not enabled in our configuration
 	MOVW	(R5), R6  // R6 = g.atomicstatus
 
 	// Mask off _Gscan bit (0x1000) when comparing
@@ -933,16 +1085,49 @@ timer_no_thread_preempt:
 	CMP	R8, R7
 	BNE	timer_no_preempt_wrong_status  // Not running, skip preemption
 
+	// ========================================================================
+	// CRITICAL: Check m.locks == 0 before preemption
+	// ========================================================================
+	// The Go runtime's canPreemptM() checks mp.locks == 0.
+	// If the goroutine is holding locks (e.g., during fmt.Print which uses
+	// mutexes), calling asyncPreempt will trigger "schedule: holding locks".
+	//
+	// R4 still contains the g pointer from above.
+	// Load g.m to get the m pointer
+	MOVD	mazzy∕kmazarin∕kirq·PreemptGMOffset(SB), R5
+	ADD	R4, R5  // R5 = &g.m
+	MOVD	(R5), R6  // R6 = g.m (pointer to m struct)
+	CBZ	R6, timer_no_preempt  // If m is nil, skip
+
+	// Load m.locks
+	MOVD	mazzy∕kmazarin∕kirq·PreemptMLocksOffset(SB), R7
+	ADD	R6, R7  // R7 = &m.locks
+	MOVW	(R7), R8  // R8 = m.locks (int32)
+
+	// If m.locks != 0, skip preemption (goroutine is holding locks)
+	CBNZ	R8, timer_no_preempt_holding_locks
+
 	// UNIFIED ASYNCPREEMPT: Use per-thread asyncPreempt address
 	// This supports both kmazarin goroutines and priest goroutines:
 	// - Kmazarin threads: AsyncPreemptAddr = kmazarin's asyncPreemptWrapper
 	// - Priest threads: AsyncPreemptAddr = priest's registered asyncPreempt
 	//
 	// Get current thread's AsyncPreemptAddr using runtime-verified offset
-	// (ThreadAsyncPreemptAddrOffset is checked against unsafe.Offsetof at init)
+	// (ThreadAsyncPreemptAddrOffset is computed via unsafe.Offsetof at init)
 	MOVD	main·CurrentThread(SB), R10  // R10 = *Thread
 	CBZ	R10, timer_no_preempt  // No current thread
-	MOVD	main·ThreadAsyncPreemptAddrOffset(SB), R11  // R11 = offset (verified at init)
+
+	// CRITICAL: Check InCloneSetup flag - skip async preempt for clone children
+	// Clone children have fn/gp/mp stored on stack that would be overwritten by
+	// the async preempt LR/R29 push. Flag is cleared on first syscall.
+	MOVD	main·ThreadInCloneSetupOffset(SB), R11  // R11 = InCloneSetup offset
+	ADD	R11, R10, R11  // R11 = &thread.InCloneSetup
+	MOVW	(R11), R12  // R12 = InCloneSetup (uint32)
+	CBNZ	R12, timer_no_preempt_in_clone_setup
+
+	// Re-load CurrentThread since R10 was used for offset calculation
+	MOVD	main·CurrentThread(SB), R10  // R10 = *Thread
+	MOVD	main·ThreadAsyncPreemptAddrOffset(SB), R11  // R11 = AsyncPreemptAddr offset
 	ADD	R11, R10, R11  // R11 = &thread.AsyncPreemptAddr
 	MOVD	(R11), R10  // R10 = thread.AsyncPreemptAddr
 
@@ -971,26 +1156,86 @@ timer_no_thread_preempt:
 	MOVW	$0, R12
 	MOVW	R12, mazzy∕kmazarin∕kirq·NeedsAsyncPreempt(SB)
 
-	// DEBUG: Async preemption being injected - print "^A^"
-	MOVD	$(UART_BASE), R12
-	MOVD	$'^', R13
-	MOVB	R13, (R12)
-	MOVD	$'A', R13
-	MOVB	R13, (R12)
-	MOVD	$'^', R13
-	MOVB	R13, (R12)
+	// ========================================================================
+	// PUSH ORIGINAL LR AND R29 TO USER STACK (like Go runtime's pushCall)
+	// ========================================================================
+	// Go's asyncPreempt expects the stack to be set up like pushCall() does:
+	//   (SP+0) = original LR (so asyncPreempt can restore it before returning)
+	//   (SP+8) = original R29 (frame pointer for debugger compatibility)
+	//
+	// When asyncPreempt finishes, it does:
+	//   MOVD 496(RSP), R30  // Restore original LR from (SP+496) after its frame
+	//   MOVD (RSP), R27     // Load interrupted PC for return
+	//   RET (R27)           // Return to interrupted instruction
+	//
+	// Without this, asyncPreempt reads garbage for the original LR, causing
+	// corruption when the interrupted function eventually returns.
+
+	// R10 = asyncPreempt address (from earlier)
+	// R11 = original ELR (interrupted PC, from earlier)
+
+	// Get original LR (X30) and R29 from exception frame
+	MOVD	EXC_FRAME_X28+16(RSP), R12      // R12 = original LR (X30)
+	MOVD	EXC_FRAME_X28+8(RSP), R13       // R13 = original R29 (frame pointer)
+
+	// DEBUG: Print original LR value we're about to store
+	// Save R0-R3 on stack temporarily
+	SUB	$32, RSP
+	STP	(R0, R1), 0(RSP)
+	STP	(R2, R3), 16(RSP)
+	// Print "[LR:"
+	MOVD	$UART_BASE, R0
+	MOVD	$'[', R1
+	MOVB	R1, (R0)
+	MOVD	$'L', R1
+	MOVB	R1, (R0)
+	MOVD	$'R', R1
+	MOVB	R1, (R0)
+	MOVD	$':', R1
+	MOVB	R1, (R0)
+	// Print R12 (original LR) as 16 hex digits
+	MOVD	R12, R2
+	MOVD	$16, R3
+print_orig_lr:
+	LSR	$60, R2, R1
+	CMP	$10, R1
+	BLT	print_orig_lr_digit
+	ADD	$('A'-10), R1
+	B	print_orig_lr_out
+print_orig_lr_digit:
+	ADD	$'0', R1
+print_orig_lr_out:
+	MOVB	R1, (R0)
+	LSL	$4, R2
+	SUB	$1, R3
+	CBNZ	R3, print_orig_lr
+	// Print "]"
+	MOVD	$']', R1
+	MOVB	R1, (R0)
+	// Restore R0-R3
+	LDP	0(RSP), (R0, R1)
+	LDP	16(RSP), (R2, R3)
+	ADD	$32, RSP
+
+	// Get user SP and decrease by 16 (like pushCall does)
+	MOVD	EXC_FRAME_SP_EL0(RSP), R14      // R14 = original user SP
+	SUB	$16, R14                        // R14 = new SP (allocate 16 bytes)
+
+	// Store original LR and R29 to user stack using STTR (unprivileged store)
+	// This works even if PAN (Privileged Access Never) is enabled
+	// STTR X12, [X14, #0]  - Store original LR at new_sp
+	// STTR X13, [X14, #8]  - Store original R29 at new_sp+8
+	WORD	$0xF80009CC                     // sttr x12, [x14]
+	WORD	$0xF80089CD                     // sttr x13, [x14, #8]
 
 	// Set up preemption return values
 	// R20 = NewELR (asyncPreempt address)
-	// R21 = NewSP (adjusted downward to make room for asyncPreempt's frame)
-	// R22 = NewLR (original ELR, so asyncPreempt can return)
+	// R21 = NewSP (decreased by 16 for the pushCall-style frame)
+	// R22 = NewLR (original ELR, so asyncPreempt knows where to return)
 	// R23 = DoPreempt (1 = true)
 	MOVD	R10, R20                        // NewELR = asyncPreemptAddr
-	MOVD	EXC_FRAME_SP_EL0(RSP), R21      // Load original SP
-	// Don't adjust SP - asyncPreempt manages its own stack frame.
-	// In signal-based preemption, asyncPreempt runs with the goroutine's
-	// original SP and allocates/deallocates its own frame.
-	MOVD	R11, R22                        // NewLR = original ELR
+	MOVD	R14, R21                        // NewSP = adjusted SP (decreased by 16)
+	MOVD	R11, R22                        // NewLR = original ELR (interrupted PC)
 	MOVD	$1, R23                         // DoPreempt = true
 
 	B	irq_write_eoir
@@ -1028,6 +1273,22 @@ timer_no_preempt_wrong_status:
 	// Goroutine is not in _Grunning state (likely _Gsyscall)
 	// This happens when Go runtime sets g.atomicstatus = _Gsyscall in userspace
 	// just BEFORE the actual SVC instruction. Skip asyncPreempt injection.
+	MOVW	$0, R10
+	MOVW	R10, mazzy∕kmazarin∕kirq·NeedsAsyncPreempt(SB)
+	B	timer_no_preempt
+
+timer_no_preempt_holding_locks:
+	// Goroutine is holding locks (m.locks != 0)
+	// Preempting now would cause "schedule: holding locks" panic.
+	// Skip and try again next tick.
+	MOVW	$0, R10
+	MOVW	R10, mazzy∕kmazarin∕kirq·NeedsAsyncPreempt(SB)
+	B	timer_no_preempt
+
+timer_no_preempt_in_clone_setup:
+	// Thread is a clone child still reading fn/gp/mp from stack.
+	// Async preempt would overwrite these values with LR/R29.
+	// Clear flag and skip - InCloneSetup will be cleared on first syscall.
 	MOVW	$0, R10
 	MOVW	R10, mazzy∕kmazarin∕kirq·NeedsAsyncPreempt(SB)
 	B	timer_no_preempt
@@ -1187,6 +1448,9 @@ irq_return:
 
 	// Restore ELR and SPSR
 	LDP	EXC_FRAME_ELR_SPSR(RSP), (R10, R11)
+	// CRITICAL: Force IRQs enabled in SPSR by clearing DAIF.I bit (bit 7 = 0x80)
+	// This ensures IRQs are enabled after ERET, preventing stuck-disabled-IRQ chains
+	BIC	$0x80, R11, R11
 	MSR	R10, ELR_EL1
 	MSR	R11, SPSR_EL1
 
@@ -1310,6 +1574,17 @@ skip_g_switch_el0:
 	GO_CALL_1_0(·SetSyscallELR, R0)        // SetSyscallELR(elr)
 	GO_CALL_1_0(·SetSyscallSPSR, R1)       // SetSyscallSPSR(spsr)
 
+	// Clear InCloneSetup flag for current thread (if set)
+	// This marks the clone child as having completed its setup phase.
+	// After this, async preempt is safe because fn/gp/mp have been read from stack.
+	MOVD	main·CurrentThread(SB), R10
+	CBZ	R10, el0_skip_clear_clone_setup
+	MOVD	main·ThreadInCloneSetupOffset(SB), R11
+	ADD	R11, R10, R11
+	MOVW	$0, R12
+	MOVW	R12, (R11)  // thread.InCloneSetup = 0
+el0_skip_clear_clone_setup:
+
 	// Now dispatch syscall
 	// Load arguments from exception frame
 	LDP	EXC_FRAME_X8(RSP), (R0, R1)        // R0 = syscall num (X8)
@@ -1385,6 +1660,60 @@ skip_g_switch_el0:
 
 	// Copy ELR and SPSR (256, 264 in ThreadContext)
 	LDP	256(R21), (R0, R1)
+
+	// DEBUG: Print ELR low byte before storing
+	MOVD	R0, R10   // Save ELR temporarily
+	MOVD	R1, R11   // Save SPSR temporarily
+	MOVD	$UART_BASE, R12
+	MOVD	$'E', R13
+	MOVB	R13, (R12)
+	MOVD	$'=', R13
+	MOVB	R13, (R12)
+	// Print R10 (ELR) low 4 nibbles
+	LSR	$12, R10, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLT	el0_elr_d1
+	ADD	$('A'-10), R13
+	B	el0_elr_c1
+el0_elr_d1:
+	ADD	$'0', R13
+el0_elr_c1:
+	MOVB	R13, (R12)
+	LSR	$8, R10, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLT	el0_elr_d2
+	ADD	$('A'-10), R13
+	B	el0_elr_c2
+el0_elr_d2:
+	ADD	$'0', R13
+el0_elr_c2:
+	MOVB	R13, (R12)
+	LSR	$4, R10, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLT	el0_elr_d3
+	ADD	$('A'-10), R13
+	B	el0_elr_c3
+el0_elr_d3:
+	ADD	$'0', R13
+el0_elr_c3:
+	MOVB	R13, (R12)
+	AND	$0xF, R10, R13
+	CMP	$10, R13
+	BLT	el0_elr_d4
+	ADD	$('A'-10), R13
+	B	el0_elr_c4
+el0_elr_d4:
+	ADD	$'0', R13
+el0_elr_c4:
+	MOVB	R13, (R12)
+
+	// Restore and store
+	MOVD	R10, R0   // Restore ELR (original was clobbered by shifts)
+	// Actually we shifted R10, need to reload from ThreadContext
+	LDP	256(R21), (R0, R1)
 	STP	(R0, R1), EXC_FRAME_ELR_SPSR(RSP)
 
 	B	el0_return
@@ -1426,7 +1755,64 @@ el0_data_abort_unhandled:
 
 el0_not_svc:
 	// Non-SVC exception from userspace - print error and halt
+	// DEBUG: Print ELR from exception frame (saved at entry, not corrupted by nested calls)
 	MOVD	$UART_BASE, R12
+	MOVD	$'[', R11
+	MOVB	R11, (R12)
+	MOVD	$'F', R11
+	MOVB	R11, (R12)
+	MOVD	$'R', R11
+	MOVB	R11, (R12)
+	MOVD	$'M', R11
+	MOVB	R11, (R12)
+	MOVD	$':', R11
+	MOVB	R11, (R12)
+	// Also print ESR from frame for full diagnosis
+	MOVD	$'E', R11
+	MOVB	R11, (R12)
+	MOVD	$'S', R11
+	MOVB	R11, (R12)
+	MOVD	$'R', R11
+	MOVB	R11, (R12)
+	MOVD	$'=', R11
+	MOVB	R11, (R12)
+	MOVD	EXC_FRAME_FAR_ESR+8(RSP), R14  // ESR from exception frame
+	MOVD	$8, R15  // 8 hex digits for ESR
+print_real_esr:
+	LSR	$28, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_real_esr_d
+	ADD	$('A'-10), R11
+	B	print_real_esr_c
+print_real_esr_d:
+	ADD	$'0', R11
+print_real_esr_c:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, print_real_esr
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+	// Now print ELR from exception frame (saved at entry)
+	MOVD	EXC_FRAME_ELR_SPSR(RSP), R14
+	MOVD	$16, R15
+print_real_elr:
+	LSR	$60, R14, R11
+	CMP	$10, R11
+	BLT	print_real_elr_d
+	ADD	$('A'-10), R11
+	B	print_real_elr_c
+print_real_elr_d:
+	ADD	$'0', R11
+print_real_elr_c:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, print_real_elr
+	MOVD	$']', R11
+	MOVB	R11, (R12)
+	// End DEBUG
 	MOVD	$'U', R11
 	MOVB	R11, (R12)
 	MOVD	$'E', R11
