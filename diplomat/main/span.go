@@ -52,7 +52,9 @@ type spanEntry struct {
 const maxSpans = 64 // Diplomat needs fewer spans than Cardinal (no device regions)
 
 // Global span tracker - used by mmap implementation
-var globalSpanTracker Span = &simpleSpan{}
+// Note: Using concrete type to avoid interface method dispatch issues early in boot
+var globalSpanTracker Span = &globalSpanTrackerImpl
+var globalSpanTrackerImpl simpleSpan
 
 // NewSimpleSpan creates a new simpleSpan tracker.
 func NewSimpleSpan() Span {

@@ -141,19 +141,20 @@ type EFI_BOOT_SERVICES struct {
 
 // EFI_SYSTEM_TABLE - Main system table passed to bootloader
 type EFI_SYSTEM_TABLE struct {
-	Hdr                  EFI_TABLE_HEADER
-	FirmwareVendor       *uint16
-	FirmwareRevision     uint32
-	ConsoleInHandle      EFI_HANDLE
-	ConIn                uintptr
-	ConsoleOutHandle     EFI_HANDLE
-	ConOut               *EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL
-	StandardErrorHandle  EFI_HANDLE
-	StdErr               *EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL
-	RuntimeServices      uintptr
-	BootServices         *EFI_BOOT_SERVICES
-	NumberOfTableEntries uintptr
-	ConfigurationTable   uintptr
+	Hdr                  EFI_TABLE_HEADER  // +0 (24 bytes)
+	FirmwareVendor       *uint16            // +24 (8 bytes)
+	FirmwareRevision     uint32             // +32 (4 bytes)
+	_                    uint32             // +36 (4 bytes padding for alignment)
+	ConsoleInHandle      EFI_HANDLE         // +40 (8 bytes)
+	ConIn                uintptr            // +48 (8 bytes)
+	ConsoleOutHandle     EFI_HANDLE         // +56 (8 bytes)
+	ConOut               *EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL  // +64 (8 bytes)
+	StandardErrorHandle  EFI_HANDLE         // +72 (8 bytes)
+	StdErr               *EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL  // +80 (8 bytes)
+	RuntimeServices      uintptr            // +88 (8 bytes)
+	BootServices         *EFI_BOOT_SERVICES // +96 (8 bytes)
+	NumberOfTableEntries uintptr            // +104 (8 bytes)
+	ConfigurationTable   uintptr            // +112 (8 bytes)
 }
 
 // EFI Memory Types
@@ -184,27 +185,33 @@ const (
 	MaxAllocateType    = 3
 )
 
-// Global system table - set by efi_main assembly entry point
+// Global system table - set by assembly entry point (efi_main in entry_amd64.s)
 var systemTable *EFI_SYSTEM_TABLE
 var imageHandle EFI_HANDLE
 
-// efi_main is implemented in entry_amd64.s
-// This declaration prevents dead code elimination
-func efi_main()
+// TLS block for storing g pointer (required by Go .abi0 wrappers)
+// The .abi0 wrappers load g from %fs:-0x8, so we need:
+//   - TLS block with g0 address at offset 0
+//   - FS segment base set to tlsBlock address
+var tlsBlock [256]byte
 
-// Keep efi_main from being eliminated by referencing it
-// This variable is never actually used, but forces the linker to keep efi_main
-var _ = efi_main
-
-// main is called by the Go runtime after initialization.
-// The assembly entry point (efi_main in entry_amd64.s) saves UEFI parameters,
-// sets up fake argc/argv, and jumps to _rt0_amd64_linux to initialize the runtime.
-// Once initialized, the runtime calls main(), which calls DiplomatEntry().
+// main is required by Go linker but never executes
+// The actual entry point is _minimal_uefi_test in minimal_test_amd64.s
+// This function calls referenced functions to keep them from being optimized away
 func main() {
+	// This never executes - _minimal_uefi_test is the PE entry point
+	// We call functions here to prevent dead code elimination
 	DiplomatEntry()
+
+	// Keep assembly functions alive
+	ueficall_OutputString(nil, 0)
+	_minimal_uefi_test() // Keep the minimal test entry point symbol alive
+	_efi_main_asm()      // Keep the full entry point symbol alive
+
+	for {}
 }
 
-// DiplomatEntry is called by the assembly shim after UEFI parameters are saved.
+// DiplomatEntry is called by assembly efi_main() after g0/m0 initialization.
 // The assembly entry point (entry_amd64.s) saves ImageHandle and SystemTable
 // to globals, then calls this function.
 //
@@ -276,3 +283,16 @@ func printChar(c uint16) {
 // ueficall_OutputString is implemented in assembly (uefi_calls.s)
 // It calls the UEFI OutputString function using the MS x64 calling convention
 func ueficall_OutputString(conout *EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL, char uint16)
+
+// setupTLS is implemented in assembly (tls_amd64.s)
+// It sets the FS segment base for TLS support
+func setupTLS(tlsAddr uintptr)
+
+// _minimal_uefi_test is a pure assembly entry point (no .abi0 wrapper needed)
+// We declare it here so Go doesn't eliminate it as dead code
+// The declaration has no body - it's implemented in minimal_test_amd64.s
+func _minimal_uefi_test()
+
+// _efi_main_asm is the full UEFI entry point with Go runtime initialization
+// Implemented in entry_amd64.s - sets up g0/m0 and calls DiplomatEntry
+func _efi_main_asm()

@@ -224,5 +224,6 @@ func DiplomatBrk(addr uintptr) int64 {
 func InitializeSpans() bool {
 	// Pre-register the bump allocator region
 	// This is a 2GB region starting at 4GB
-	return globalSpanTracker.Register(bumpRegionStart, bumpRegionEnd)
+	// Note: Call concrete type method directly to avoid interface dispatch early in boot
+	return globalSpanTrackerImpl.Register(bumpRegionStart, bumpRegionEnd)
 }

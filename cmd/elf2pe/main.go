@@ -109,12 +109,28 @@ func convertELFtoPE(inputPath, outputPath string) error {
 	fmt.Printf("  Type: ELF64 x86-64\n")
 	fmt.Printf("  Entry: 0x%x\n", elfFile.Entry)
 
-	// Look for efi_main symbol to use as PE entry point (for UEFI applications)
-	// If found, this overrides the ELF entry point
-	efiMainAddr := findSymbolAddress(elfFile, "efi_main")
+	// For UEFI applications, look for entry points in order of preference.
+	// Try both with and without .abi0 suffix (Go generates wrappers when declared).
+	entrySymbols := []string{
+		"main._efi_main_asm",
+		"main._efi_main_asm.abi0",
+		"main._minimal_uefi_test",
+		"main._minimal_uefi_test.abi0",
+	}
+	var efiMainAddr uint64
+	var foundSym string
+	for _, sym := range entrySymbols {
+		efiMainAddr = findSymbolAddress(elfFile, sym)
+		if efiMainAddr != 0 {
+			foundSym = sym
+			break
+		}
+	}
 	if efiMainAddr != 0 {
-		fmt.Printf("  Found efi_main: 0x%x (using as PE entry point)\n", efiMainAddr)
+		fmt.Printf("  Found %s: 0x%x (using as PE entry point)\n", foundSym, efiMainAddr)
 		elfFile.Entry = efiMainAddr
+	} else {
+		fmt.Printf("  WARNING: No UEFI entry point found!\n")
 	}
 
 	// Extract sections from ELF
@@ -173,6 +189,91 @@ func findSymbolAddress(elfFile *elf.File, symbolName string) uint64 {
 		}
 	}
 
+	return 0
+}
+
+// findUEFIEntryPoint finds the UEFI entry point (efi_main) via binary analysis.
+// Strategy:
+//   1. Find main.DiplomatEntry symbol (this exports)
+//   2. Scan backwards in .text to find a CALL instruction targeting DiplomatEntry
+//   3. The function containing that CALL is efi_main
+//   4. Return its address as the entry point
+func findUEFIEntryPoint(elfFile *elf.File) uint64 {
+	// Find main.DiplomatEntry symbol
+	diplomatEntryAddr := findSymbolAddress(elfFile, "main.DiplomatEntry")
+	if diplomatEntryAddr == 0 {
+		// Not a diplomat binary, use default entry
+		return 0
+	}
+
+	// Get .text section
+	textSection := elfFile.Section(".text")
+	if textSection == nil {
+		return 0
+	}
+
+	textData, err := textSection.Data()
+	if err != nil {
+		return 0
+	}
+
+	textStart := textSection.Addr
+	textEnd := textStart + textSection.Size
+
+	// Calculate where DiplomatEntry is within .text
+	if diplomatEntryAddr < textStart || diplomatEntryAddr >= textEnd {
+		return 0
+	}
+
+	diplomatEntryOffset := diplomatEntryAddr - textStart
+
+	// Scan backwards from DiplomatEntry looking for a CALL instruction
+	// that targets it. X86_64 CALL: E8 [4-byte relative offset]
+	// Search backwards up to 256 bytes (reasonable function size)
+	searchStart := int(diplomatEntryOffset) - 256
+	if searchStart < 0 {
+		searchStart = 0
+	}
+
+	for i := int(diplomatEntryOffset) - 5; i >= searchStart; i-- {
+		// Check if this looks like a CALL instruction (E8)
+		if textData[i] != 0xE8 {
+			continue
+		}
+
+		// Extract the 4-byte relative offset
+		offset := int32(textData[i+1]) |
+			int32(textData[i+2])<<8 |
+			int32(textData[i+3])<<16 |
+			int32(textData[i+4])<<24
+
+		// Calculate absolute target address
+		// CALL at offset i, next instruction at i+5
+		callAddr := textStart + uint64(i)
+		nextInstr := callAddr + 5
+		targetAddr := uint64(int64(nextInstr) + int64(offset))
+
+		// Check if this CALL targets DiplomatEntry
+		if targetAddr == diplomatEntryAddr {
+			// Found the CALL! Now find the function start.
+			// efi_main is small (< 32 bytes), so scan backwards for function boundary.
+			// Look for a RET (C3) or start of section.
+			funcStart := i
+			for funcStart > 0 && (i-funcStart) < 32 {
+				// Check for RET instruction - previous function ends here
+				if textData[funcStart-1] == 0xC3 {
+					// Function starts right after the RET
+					break
+				}
+				funcStart--
+			}
+
+			efiMainAddr := textStart + uint64(funcStart)
+			return efiMainAddr
+		}
+	}
+
+	// Couldn't find efi_main, use default
 	return 0
 }
 
