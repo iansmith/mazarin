@@ -33,7 +33,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Types:\n")
 		fmt.Fprintf(os.Stderr, "  kmazarin   - Kernel runtime patches\n")
 		fmt.Fprintf(os.Stderr, "  userspace  - Userspace runtime patches\n")
-		fmt.Fprintf(os.Stderr, "  diplomat   - UEFI bootloader runtime patches (Windows→UEFI)\n\n")
+		fmt.Fprintf(os.Stderr, "  diplomat        - UEFI bootloader runtime patches (Windows→UEFI, deprecated)\n")
+		fmt.Fprintf(os.Stderr, "  diplomat-linux  - UEFI bootloader runtime patches (Linux→UEFI)\n\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -68,6 +69,8 @@ func main() {
 		err = buildUserspaceOverlay(&overlay, goroot, absPatchesDir)
 	case "diplomat":
 		err = buildDiplomatOverlay(&overlay, goroot, absPatchesDir)
+	case "diplomat-linux":
+		err = buildDiplomatLinuxOverlay(&overlay, goroot, absPatchesDir)
 	default:
 		fmt.Fprintf(os.Stderr, "gen-overlay: unknown type: %s\n", *overlayType)
 		os.Exit(1)
@@ -168,6 +171,25 @@ func buildDiplomatOverlay(overlay *Overlay, goroot, patchesDir string) error {
 		"runtime/syscall_windows.go":    "syscall_windows.go",
 		"runtime/sys_windows_amd64.s":   "sys_windows_amd64.s",
 		"runtime/mem_windows.go":        "mem_windows.go",
+	}
+
+	for goFile, patchFile := range patches {
+		src := filepath.Join(goroot, "src", goFile)
+		dst := filepath.Join(patchesDir, patchFile)
+		if _, err := os.Stat(dst); err != nil {
+			return fmt.Errorf("patch file not found: %s", dst)
+		}
+		overlay.Replace[src] = dst
+	}
+
+	return nil
+}
+
+func buildDiplomatLinuxOverlay(overlay *Overlay, goroot, patchesDir string) error {
+	// Diplomat patches for Linux runtime to make it UEFI-compatible
+	// We're building with GOOS=linux GOARCH=amd64, so we patch Linux syscalls
+	patches := map[string]string{
+		"runtime/sys_linux_amd64.s": "sys_linux_amd64.s",
 	}
 
 	for goFile, patchFile := range patches {

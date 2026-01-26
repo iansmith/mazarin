@@ -68,6 +68,77 @@ type EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL struct {
 	Mode              uintptr
 }
 
+// EFI_BOOT_SERVICES - Boot time services
+type EFI_BOOT_SERVICES struct {
+	Hdr EFI_TABLE_HEADER
+
+	// Task Priority Services (4 functions)
+	RaiseTPL  uintptr
+	RestoreTPL uintptr
+
+	// Memory Services (9 functions)
+	AllocatePages   uintptr
+	FreePages       uintptr
+	GetMemoryMap    uintptr
+	AllocatePool    uintptr
+	FreePool        uintptr
+
+	// Event & Timer Services (6 functions)
+	CreateEvent          uintptr
+	SetTimer             uintptr
+	WaitForEvent         uintptr
+	SignalEvent          uintptr
+	CloseEvent           uintptr
+	CheckEvent           uintptr
+
+	// Protocol Handler Services (9 functions)
+	InstallProtocolInterface    uintptr
+	ReinstallProtocolInterface  uintptr
+	UninstallProtocolInterface  uintptr
+	HandleProtocol              uintptr
+	Reserved                    uintptr
+	RegisterProtocolNotify      uintptr
+	LocateHandle                uintptr
+	LocateDevicePath            uintptr
+	InstallConfigurationTable   uintptr
+
+	// Image Services (5 functions)
+	LoadImage                   uintptr
+	StartImage                  uintptr
+	Exit                        uintptr
+	UnloadImage                 uintptr
+	ExitBootServices            uintptr
+
+	// Miscellaneous Services (10 functions)
+	GetNextMonotonicCount       uintptr
+	Stall                       uintptr
+	SetWatchdogTimer            uintptr
+
+	// DriverSupport Services (3 functions)
+	ConnectController           uintptr
+	DisconnectController        uintptr
+
+	// Open and Close Protocol Services (5 functions)
+	OpenProtocol                uintptr
+	CloseProtocol               uintptr
+	OpenProtocolInformation     uintptr
+
+	// Library Services (4 functions)
+	ProtocolsPerHandle          uintptr
+	LocateHandleBuffer          uintptr
+	LocateProtocol              uintptr
+	InstallMultipleProtocolInterfaces   uintptr
+	UninstallMultipleProtocolInterfaces uintptr
+
+	// 32-bit CRC Services
+	CalculateCrc32              uintptr
+
+	// Miscellaneous Services (continuation)
+	CopyMem                     uintptr
+	SetMem                      uintptr
+	CreateEventEx               uintptr
+}
+
 // EFI_SYSTEM_TABLE - Main system table passed to bootloader
 type EFI_SYSTEM_TABLE struct {
 	Hdr                  EFI_TABLE_HEADER
@@ -80,10 +151,38 @@ type EFI_SYSTEM_TABLE struct {
 	StandardErrorHandle  EFI_HANDLE
 	StdErr               *EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL
 	RuntimeServices      uintptr
-	BootServices         uintptr
+	BootServices         *EFI_BOOT_SERVICES
 	NumberOfTableEntries uintptr
 	ConfigurationTable   uintptr
 }
+
+// EFI Memory Types
+const (
+	EfiReservedMemoryType      = 0
+	EfiLoaderCode              = 1
+	EfiLoaderData              = 2
+	EfiBootServicesCode        = 3
+	EfiBootServicesData        = 4
+	EfiRuntimeServicesCode     = 5
+	EfiRuntimeServicesData     = 6
+	EfiConventionalMemory      = 7
+	EfiUnusableMemory          = 8
+	EfiACPIReclaimMemory       = 9
+	EfiACPIMemoryNVS           = 10
+	EfiMemoryMappedIO          = 11
+	EfiMemoryMappedIOPortSpace = 12
+	EfiPalCode                 = 13
+	EfiPersistentMemory        = 14
+	EfiMaxMemoryType           = 15
+)
+
+// EFI Allocate Type
+const (
+	AllocateAnyPages   = 0
+	AllocateMaxAddress = 1
+	AllocateAddress    = 2
+	MaxAllocateType    = 3
+)
 
 // Global system table - set by efi_main
 var systemTable *EFI_SYSTEM_TABLE
@@ -105,15 +204,33 @@ func efi_main(imgHandle EFI_HANDLE, st *EFI_SYSTEM_TABLE) EFI_STATUS {
 	imageHandle = imgHandle
 	systemTable = st
 
+	// Initialize memory span tracking for mmap
+	// This must happen before Go runtime tries to allocate heap
+	if !InitializeSpans() {
+		printString("FATAL: Failed to initialize memory spans\r\n")
+		for {}
+	}
+
 	// Print hello message via UEFI ConOut
 	printString("Diplomat UEFI Bootloader\r\n")
-	printString("Hello from Diplomat!\r\n")
-	printString("Phase 0: Toolchain Validation\r\n")
+	printString("Memory spans initialized\r\n")
+	printString("Phase 1: Go Runtime + mmap working\r\n")
 	printString("\r\n")
-	printString("Success! Go->PE->UEFI build chain working.\r\n")
 
-	// Hang (for Phase 0 testing)
-	// In later phases, this will load and launch kmazarin
+	// Test that we can allocate
+	printString("Testing Go heap allocation...\r\n")
+
+	// Try to allocate a simple slice - this will test mmap
+	testSlice := make([]byte, 1024)
+	if len(testSlice) == 1024 {
+		printString("Heap allocation successful!\r\n")
+	}
+
+	printString("\r\n")
+	printString("Next: Implement FAT32/ELF loading\r\n")
+
+	// Hang (for now)
+	// Next phases: FAT32 filesystem, ELF loading, kmazarin launch
 	for {
 	}
 

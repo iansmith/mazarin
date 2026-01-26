@@ -59,3 +59,71 @@ TEXT ·ueficall_OutputString(SB), NOSPLIT, $48-16
 	// We ignore it for this function
 
 	RET
+
+// func uefiCallAllocatePages(funcPtr uintptr, allocType uint32, memoryType uint32, pages uint64, memory *uint64) EFI_STATUS
+//
+// Calls UEFI AllocatePages with Microsoft x64 calling convention:
+//   EFI_STATUS AllocatePages(
+//       IN EFI_ALLOCATE_TYPE Type,        // RCX (uint32)
+//       IN EFI_MEMORY_TYPE MemoryType,    // RDX (uint32)
+//       IN UINTN Pages,                   // R8  (uint64)
+//       IN OUT EFI_PHYSICAL_ADDRESS *Memory  // R9 (pointer)
+//   );
+//
+// Go arguments on stack:
+//   funcPtr+0(FP)    - 8 bytes
+//   allocType+8(FP)  - 4 bytes (uint32)
+//   memoryType+12(FP) - 4 bytes (uint32)
+//   pages+16(FP)     - 8 bytes (uint64)
+//   memory+24(FP)    - 8 bytes (pointer)
+//   ret+32(FP)       - 8 bytes (EFI_STATUS return value)
+TEXT ·uefiCallAllocatePages(SB), NOSPLIT, $32-40
+	// Stack frame: 32 bytes for shadow space
+	// Args: 5 parameters = 40 bytes
+
+	// Load arguments into MS x64 ABI registers
+	MOVL allocType+8(FP), CX    // RCX = allocType (uint32)
+	MOVL memoryType+12(FP), DX  // RDX = memoryType (uint32)
+	MOVQ pages+16(FP), R8       // R8 = pages (uint64)
+	MOVQ memory+24(FP), R9      // R9 = memory pointer
+
+	// Load function pointer
+	MOVQ funcPtr+0(FP), AX
+
+	// Call UEFI function
+	CALL AX
+
+	// Return EFI_STATUS (in RAX)
+	MOVQ AX, ret+32(FP)
+	RET
+
+// func uefiCallFreePages(funcPtr uintptr, memory uint64, pages uint64) EFI_STATUS
+//
+// Calls UEFI FreePages with Microsoft x64 calling convention:
+//   EFI_STATUS FreePages(
+//       IN EFI_PHYSICAL_ADDRESS Memory,   // RCX (uint64)
+//       IN UINTN Pages                    // RDX (uint64)
+//   );
+//
+// Go arguments on stack:
+//   funcPtr+0(FP) - 8 bytes
+//   memory+8(FP)  - 8 bytes (uint64)
+//   pages+16(FP)  - 8 bytes (uint64)
+//   ret+24(FP)    - 8 bytes (EFI_STATUS return value)
+TEXT ·uefiCallFreePages(SB), NOSPLIT, $32-32
+	// Stack frame: 32 bytes for shadow space
+	// Args: 3 parameters = 32 bytes
+
+	// Load arguments into MS x64 ABI registers
+	MOVQ memory+8(FP), CX   // RCX = memory (uint64)
+	MOVQ pages+16(FP), DX   // RDX = pages (uint64)
+
+	// Load function pointer
+	MOVQ funcPtr+0(FP), AX
+
+	// Call UEFI function
+	CALL AX
+
+	// Return EFI_STATUS (in RAX)
+	MOVQ AX, ret+24(FP)
+	RET
