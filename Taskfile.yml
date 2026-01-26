@@ -310,6 +310,16 @@ tasks:
   # Diplomat - x86_64 UEFI Bootloader
   # ===========================================================================
 
+  gen-overlay:
+    desc: Build the overlay JSON generator tool
+    deps: [build-dir]
+    sources:
+      - 'cmd/gen-overlay/*.go'
+    generates:
+      - '{{.BUILD_DIR}}/gen-overlay'
+    cmds:
+      - '{{.GO}} build -o {{.BUILD_DIR}}/gen-overlay ./cmd/gen-overlay'
+
   elf2pe:
     desc: Build the ELF to PE converter
     deps: [build-dir]

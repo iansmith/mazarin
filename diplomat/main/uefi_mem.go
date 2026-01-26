@@ -5,8 +5,6 @@
 
 package main
 
-import "unsafe"
-
 // UEFIAllocatePages allocates pages via UEFI Boot Services
 // Returns the allocated physical address or 0 on failure
 //

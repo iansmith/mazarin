@@ -5,8 +5,6 @@
 
 package main
 
-import "unsafe"
-
 // mmap constants (from Linux)
 const (
 	MAP_FIXED     = 0x10
