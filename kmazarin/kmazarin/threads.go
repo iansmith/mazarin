@@ -542,6 +542,15 @@ func ProcessDeadlines() {
 //
 //go:nosplit
 func IdleLoop(sf *SchedulerFunc) *Thread {
+	console.Breadcrumb('L') // Debug: IdleLoop entered
+	// Debug: Just print the queue size and first popped TID to reduce noise
+	console.Breadcrumb('#')
+	qcount := readyQueue.Size()
+	if qcount < 10 {
+		console.Breadcrumb(byte('0' + qcount))
+	} else {
+		console.Breadcrumb('?')
+	}
 	for {
 		// Disable interrupts and acquire scheduler lock
 		savedDAIF := sf.DisableAndSaveDAIF()
@@ -583,20 +592,62 @@ func StartFirstThread() uint64 {
 //go:nosplit
 //go:noinline
 func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
+	console.Breadcrumb('S') // Debug: startFirstThreadImpl entered
 	// Wait for a ready thread
 	thread := IdleLoop(sf)
+	console.Breadcrumb('I') // Debug: IdleLoop returned
 	if thread == nil {
 		// This should never happen - IdleLoop blocks until a thread is ready
 		return 0
 	}
 
+	// CRITICAL: Skip kernel threads (PID=0) and find a priest thread (PID>0)
+	// Kernel goroutines may have been preempted into the ready queue before
+	// timer was disabled. We need to re-queue them and find a priest thread.
+	for thread.PID == 0 {
+		console.Breadcrumb('k') // Debug: skipping kernel thread
+		// Put kernel thread back in ready queue
+		savedDAIF := sf.DisableAndSaveDAIF()
+		schedulerLock.Lock()
+		thread.State = ThreadReady
+		readyQueue.PushNoDuplicate(thread.TID)
+		schedulerLock.Unlock()
+		sf.EnableAndRestoreDAIF(savedDAIF)
+
+		// Try to find another thread
+		thread = IdleLoop(sf)
+		if thread == nil {
+			return 0
+		}
+	}
+	console.Breadcrumb('1') // Debug: found priest thread
+
 	// BEGIN CRITICAL SECTION - protect thread state modifications
 	savedDAIF := sf.DisableAndSaveDAIF()
+	console.Breadcrumb('2') // Debug: DAIF saved
 	schedulerLock.Lock()
+	console.Breadcrumb('3') // Debug: lock acquired
 
 	// Set up current thread
 	idx := threadToIdx(thread)
 	CurrentThreadIdx = idx
+	// Debug: Check what thread we're about to store
+	console.Breadcrumb('[')
+	// Print TID as single hex digit
+	tid := int(thread.TID)
+	if tid < 10 {
+		console.Breadcrumb(byte('0' + tid))
+	} else if tid < 16 {
+		console.Breadcrumb(byte('A' + tid - 10))
+	} else {
+		console.Breadcrumb('?')
+	}
+	console.Breadcrumb(']')
+	if thread.PID == 0 {
+		console.Breadcrumb('k') // thread is kernel
+	} else {
+		console.Breadcrumb('p') // thread is priest
+	}
 	atomic.StorePointer(&CurrentThread, unsafe.Pointer(thread))
 	thread.State = ThreadRunning
 
@@ -612,12 +663,40 @@ func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
 	thread.TicksStartedRunning = currentTime
 
 	// Switch TTBR0 to the thread's page table
+	console.Breadcrumb('4') // Debug: before TTBR0 switch
 	if thread.PageTableL0PA != 0 {
 		kmem.SwitchTTBR0WithASID(thread.PageTableL0PA, uint16(thread.PID))
+		// Note: TLB flush not needed due to ASID tagging
 	}
+	console.Breadcrumb('5') // Debug: after TTBR0 switch
+
+	// DEBUG: Verify X[28] is 0 for userspace thread (priest)
+	console.Breadcrumb('6') // Debug: before PID check
+	if thread.PID > 0 && thread.Context.X[28] != 0 {
+		console.Breadcrumb('E') // Debug: X[28] error case
+		// TEMPORARILY DISABLED - KPrintf might cause crash
+		// console.KPrintf("[StartFirstThread] ERROR: PID=%d X[28]=0x%x (should be 0)\n", thread.PID, thread.Context.X[28])
+	}
+	console.Breadcrumb('7') // Debug: after PID check
+	// TEMPORARILY DISABLED - KPrintf seems to cause the crash
+	// console.KPrintf("[StartFirstThread] TID=%d PID=%d X28=0x%x SP=0x%x ELR=0x%x\n",
+	// 	thread.TID, thread.PID, thread.Context.X[28], thread.Context.SP, thread.Context.ELR)
+	console.Breadcrumb('8') // Debug: after KPrintf (now skipped)
 
 	// END CRITICAL SECTION
 	schedulerLock.Unlock()
+	console.Breadcrumb('9') // Debug: after unlock
+
+	// Debug: Verify CurrentThread is set correctly
+	ct := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	if ct == nil {
+		console.Breadcrumb('N') // Debug: CurrentThread is nil!
+	} else if ct.PID == 0 {
+		console.Breadcrumb('K') // Debug: CurrentThread is kernel thread!
+	} else {
+		console.Breadcrumb('P') // Debug: CurrentThread is priest thread (good!)
+	}
+
 	// Don't restore DAIF - the ERET will set SPSR which controls IRQ state
 	_ = savedDAIF
 
@@ -828,7 +907,9 @@ func threadExitImpl(sf *SchedulerFunc) uintptr {
 	next.GoroutinePreemptDeadline = currentTick + kirq.GoroutinePreemptTicks
 	next.TicksStartedRunning = currentTick
 	// Find the slot index for the next thread
-	CurrentThreadIdx = int32(threadList.IndexOf(int32(next.TID)))
+	// CRITICAL: Use threadToIdx (pointer-based) not IndexOf (TID-based)
+	// IndexOf skips reserved slots, so it returns -1 for kernel threads!
+	CurrentThreadIdx = threadToIdx(next)
 
 	if sf.StateCheck != nil {
 		sf.StateCheck("thread-exit-switch")
@@ -1399,6 +1480,19 @@ func GetCurrentThreadTID() ThreadId {
 		return -1
 	}
 	return t.TID
+}
+
+// getCurrentThreadPIDForSpan returns the current thread's PID for span group lookup.
+// This is called via linkname from ksyscall.GetCurrentSpanGroup().
+// Returns 0 (kernel PID) if no thread is running (early init).
+//
+//go:nosplit
+func getCurrentThreadPIDForSpan() int16 {
+	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	if t == nil {
+		return 0 // Fallback to kernel span group
+	}
+	return int16(t.PID)
 }
 
 // GetGlobalTickCounter returns the global tick counter
