@@ -1,7 +1,6 @@
 package ksyscall
 
 import (
-	"mazzy/kmazarin/console"
 	"sync/atomic"
 	"unsafe"
 )
@@ -65,11 +64,6 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 		if nextThread != 0 {
 			// Successfully blocked - context switch to next thread
 			atomic.AddUint64(&FutexWaitBlocked, 1)
-			console.Breadcrumb('[')
-			console.Breadcrumb('F')
-			console.Breadcrumb('U')
-			console.Breadcrumb('T')
-			console.Breadcrumb(']')
 			SetSyscallSwitchTarget(nextThread)
 			// Return 0 - when we're woken up later, we'll return success
 			return 0

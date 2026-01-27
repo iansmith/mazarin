@@ -597,25 +597,10 @@ func printTimerDebug() {
 
 // EnableTimerIRQ enables the timer IRQ (27) using the GIC device driver.
 func EnableTimerIRQ() {
-	console.Breadcrumb('T')
-	console.Breadcrumb('E')
-	console.Breadcrumb('N')
-
-	// Debug: Check DAIF state
-	daif := ReadDAIF()
-	if (daif & 0x80) != 0 {
-		console.Breadcrumb('D') // DAIF.I is set (IRQs disabled at CPU!)
-	} else {
-		console.Breadcrumb('d') // DAIF.I is clear (IRQs enabled at CPU)
-	}
-
 	if gic, ok := device.GetInterruptController(); ok {
-		console.Breadcrumb('+')
 		gic.EnableIRQ(27)
 		// Start the timer hardware
 		RearmTimerNow()
-	} else {
-		console.Breadcrumb('-')
 	}
 }
 
@@ -942,28 +927,10 @@ func simpleMain() {
 
 	// Idle loop - print stats and tick distribution periodically
 	loopCount := uint64(0)
-	lastTickPrintIRQ := uint64(0)
-	const tickPrintInterval = 500 // Print tick distribution every 500 timer IRQs (~5 seconds at 100Hz)
-
+	// Idle loop - kernel waits here while priests run
 	for {
 		loopCount++
-		// Every ~100M iterations, print stats
-		if loopCount%100000000 == 0 {
-			waitCalls, blocked, eagain, wakeCalls := ksyscall.PrintFutexStats()
-			console.KPrintf("\n[Futex] wait=%d blocked=%d eagain=%d wake=%d\n",
-				waitCalls, blocked, eagain, wakeCalls)
-			console.KPrintf("[Stats] KernelYields=%d NeedsThreadPreempt=%d TimerIRQs=%d\n",
-				kirq.KernelYieldCount, kirq.NeedsThreadPreempt, kirq.TimerIRQCount)
-			console.KPrintf("[UserspacePreempt] path=%d coop=%d gchange=%d\n",
-				kirq.UserspacePathCount, kirq.UserspaceCoopPreemptCount, kirq.UserspaceGChangedCount)
-		}
-
-		// Print tick distribution every ~5 seconds (based on timer IRQ count)
-		currentIRQ := kirq.TimerIRQCount
-		if currentIRQ-lastTickPrintIRQ >= tickPrintInterval {
-			PrintTickDistribution()
-			lastTickPrintIRQ = currentIRQ
-		}
+		_ = loopCount // suppress unused warning
 	}
 }
 

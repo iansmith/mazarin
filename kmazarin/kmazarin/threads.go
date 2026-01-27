@@ -11,15 +11,6 @@ import (
 	"unsafe"
 )
 
-// debugPrint writes a single character for debugging.
-// Safe to call from any context including nosplit functions.
-// Uses direct UART breadcrumb to avoid stack growth.
-//
-//go:nosplit
-func debugPrint(c byte) {
-	Breadcrumb(c)
-}
-
 // Syscall return codes for assembly
 const (
 	SyscallReturnNormal = 0 // Return normally with value in x0
@@ -343,21 +334,6 @@ func getSyscallSwitchTargetInternal() uint64 {
 		syscallSwitchTarget = 0 // Reset for next syscall
 	}
 
-	// DEBUG: Print when target is non-zero
-	if target != 0 {
-		Breadcrumb('[')
-		Breadcrumb('G')
-		Breadcrumb('E')
-		Breadcrumb('T')
-		Breadcrumb('=')
-		hexChars := "0123456789ABCDEF"
-		for i := 60; i >= 0; i -= 4 {
-			nibble := (uint64(target) >> i) & 0xF
-			Breadcrumb(hexChars[nibble])
-		}
-		Breadcrumb(']')
-	}
-
 	// Return context pointer directly (0 means no switch)
 	return uint64(target)
 }
@@ -370,28 +346,6 @@ func getSyscallSwitchTargetInternal() uint64 {
 //
 //go:noinline
 func SetSyscallSwitchTarget(target uintptr) {
-	// DEBUG: Print source of SET call
-	Breadcrumb('[')
-	Breadcrumb('S')
-	Breadcrumb('S')
-	Breadcrumb('T')
-	Breadcrumb(']')
-
-	// DEBUG: Print when setting target
-	if target != 0 {
-		Breadcrumb('[')
-		Breadcrumb('S')
-		Breadcrumb('E')
-		Breadcrumb('T')
-		Breadcrumb('=')
-		hexChars := "0123456789ABCDEF"
-		for i := 60; i >= 0; i -= 4 {
-			nibble := (uint64(target) >> i) & 0xF
-			Breadcrumb(hexChars[nibble])
-		}
-		Breadcrumb(']')
-	}
-
 	// Store to current thread's SyscallSwitch field
 	// 0 unambiguously means "no switch" and non-zero is valid target
 	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
@@ -961,22 +915,6 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	t.PID = priestId // Priest (process) ID for ASID
 	t.State = ThreadReady // Not running yet - deadlines set when scheduled
 	t.PageTableL0PA = pageTableL0PA
-
-	// DEBUG: Print when setting L0PA for new thread
-	Breadcrumb('[')
-	Breadcrumb('L')
-	hexDigit := byte(priestId & 0xF)
-	if hexDigit < 10 {
-		Breadcrumb('0' + hexDigit)
-	} else {
-		Breadcrumb('A' + hexDigit - 10)
-	}
-	if pageTableL0PA == 0 {
-		Breadcrumb('0')
-	} else {
-		Breadcrumb('X')
-	}
-	Breadcrumb(']')
 	t.StartTick = 0              // Set when scheduled
 	t.GoroutineStart = 0         // Set when scheduled
 	t.ThreadPreemptDeadline = 0  // Set when scheduled
@@ -1138,20 +1076,6 @@ func ThreadFindReady() uintptr {
 	if t == nil {
 		return 0
 	}
-
-	// DEBUG: Print when finding ready thread
-	Breadcrumb('[')
-	Breadcrumb('F')
-	Breadcrumb('R')
-	Breadcrumb(':')
-	hexChars := "0123456789ABCDEF"
-	Breadcrumb(hexChars[(uint64(t.TID)>>4)&0xF])
-	Breadcrumb(hexChars[uint64(t.TID)&0xF])
-	Breadcrumb('/')
-	Breadcrumb('P')
-	Breadcrumb(hexChars[uint64(t.PID)&0xF])
-	Breadcrumb(']')
-
 	return uintptr(unsafe.Pointer(&t.Context))
 }
 
@@ -1342,25 +1266,6 @@ func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
 	schedulerLock.Unlock()
 	sf.EnableAndRestoreDAIF(savedDAIF)
 
-	// DEBUG: Print thread and ELR being returned
-	Breadcrumb('[')
-	Breadcrumb('T')
-	Breadcrumb('B')
-	Breadcrumb('S')
-	hexChars := "0123456789ABCDEF"
-	Breadcrumb(':')
-	Breadcrumb(hexChars[(uint64(next.TID)>>4)&0xF])
-	Breadcrumb(hexChars[uint64(next.TID)&0xF])
-	Breadcrumb(' ')
-	Breadcrumb('E')
-	Breadcrumb('=')
-	nextElr := next.Context.ELR
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (nextElr >> i) & 0xF
-		Breadcrumb(hexChars[nibble])
-	}
-	Breadcrumb(']')
-
 	// Return context pointer (not index) - allows switching to thread 0
 	return uintptr(unsafe.Pointer(&next.Context))
 }
@@ -1465,13 +1370,6 @@ func checkThreadPreemptionInternal(framePtr uint64) uint64 {
 //go:nosplit
 //go:noinline
 func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
-	// DEBUG: Mark entry to this function
-	Breadcrumb('{')
-	Breadcrumb('P')
-	Breadcrumb('R')
-	Breadcrumb('E')
-	Breadcrumb('}')
-
 	if CurrentThreadIdx < 0 {
 		return 0
 	}
@@ -1479,18 +1377,6 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	// BEGIN CRITICAL SECTION - protect thread state modifications
 	savedDAIF := sf.DisableAndSaveDAIF()
 	schedulerLock.Lock()
-
-	// DEBUG: Print CurrentThreadIdx before save
-	hexChars := "0123456789ABCDEF"
-	Breadcrumb('[')
-	Breadcrumb('S')
-	Breadcrumb('A')
-	Breadcrumb('V')
-	Breadcrumb('E')
-	Breadcrumb(':')
-	Breadcrumb(hexChars[(CurrentThreadIdx>>4)&0xF])
-	Breadcrumb(hexChars[CurrentThreadIdx&0xF])
-	Breadcrumb(']')
 
 	// Save current thread's context from exception frame
 	SaveContextFromFrame(uintptr(framePtr))
@@ -1522,27 +1408,6 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 
 	// Find next ready thread
 	next := threadFindReadyIdx()
-
-	// DEBUG: Print next thread info if found
-	if next != nil {
-		Breadcrumb('[')
-		Breadcrumb('N')
-		Breadcrumb('X')
-		Breadcrumb('T')
-		Breadcrumb(':')
-		nextTid := uint64(next.TID)
-		Breadcrumb(hexChars[(nextTid>>4)&0xF])
-		Breadcrumb(hexChars[nextTid&0xF])
-		Breadcrumb(' ')
-		Breadcrumb('E')
-		Breadcrumb('=')
-		nextElr := next.Context.ELR
-		for i := 60; i >= 0; i -= 4 {
-			nibble := (nextElr >> i) & 0xF
-			Breadcrumb(hexChars[nibble])
-		}
-		Breadcrumb(']')
-	}
 
 	if next == nil {
 		// No other ready thread - continue with current thread
@@ -1579,35 +1444,8 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	// Without this, userspace threads run with wrong page table and crash!
 	// Use the thread's PID as the ASID for TLB tagging - this allows TLB entries
 	// from different processes to coexist without requiring flushes on every switch.
-	//
-	// DEBUG: Print PID on every switch where L0PA is non-zero
-	if next.PageTableL0PA != 0 {
-		hexDigit := byte(next.PID & 0xF)
-		if hexDigit < 10 {
-			Breadcrumb('0' + hexDigit)
-		} else {
-			Breadcrumb('A' + hexDigit - 10)
-		}
-		// Only actually switch if page table is different
-		if next.PageTableL0PA != oldThread.PageTableL0PA {
-			Breadcrumb('!')
-			kmem.SwitchTTBR0WithASID(next.PageTableL0PA, uint16(next.PID))
-		}
-	} else if next.PID > 0 {
-		// DEBUG: Priest thread has no page table - this is a bug!
-		Breadcrumb('?')
-		Breadcrumb('L')
-		Breadcrumb('0')
-	}
-
-	// DEBUG: Print marker if new thread has no page table (shouldn't happen for priests)
-	if next.PageTableL0PA == 0 && next.PID > 0 {
-		Breadcrumb('!')
-		Breadcrumb('L')
-		Breadcrumb('0')
-		Breadcrumb('=')
-		Breadcrumb('0')
-		Breadcrumb('!')
+	if next.PageTableL0PA != 0 && next.PageTableL0PA != oldThread.PageTableL0PA {
+		kmem.SwitchTTBR0WithASID(next.PageTableL0PA, uint16(next.PID))
 	}
 
 	if sf.StateCheck != nil {
@@ -1623,81 +1461,7 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	// The assembly will restore interrupt state via ERET with new SPSR.
 	_ = savedDAIF // Keep compiler happy
 
-	// DEBUG: Print runtime accounting before context switch
-	// Format: \nT<old_tid>/P<old_pid>:<old_total> T<new_tid>/P<new_pid>:<new_total>\n
-	// Note: hexChars already declared at start of function
-	Breadcrumb('\n')
-
-	// Old thread info: T<tid>/P<pid>:<total>
-	oldTid := uint64(oldThread.TID)
-	oldPid := uint64(oldThread.PID)
-	oldTotal := oldThread.TotalTicksRunning
-	Breadcrumb('T')
-	Breadcrumb(hexChars[(oldTid>>4)&0xF])
-	Breadcrumb(hexChars[oldTid&0xF])
-	Breadcrumb('/')
-	Breadcrumb('P')
-	Breadcrumb(hexChars[oldPid&0xF])
-	Breadcrumb(':')
-	// Print total in hex, skip leading zeros
-	started := false
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (oldTotal >> i) & 0xF
-		if nibble != 0 || started || i == 0 {
-			Breadcrumb(hexChars[nibble])
-			started = true
-		}
-	}
-
-	Breadcrumb(' ')
-
-	// New thread info: T<tid>/P<pid>:<total>
-	newTid := uint64(next.TID)
-	newPid := uint64(next.PID)
-	newTotal := next.TotalTicksRunning
-	Breadcrumb('T')
-	Breadcrumb(hexChars[(newTid>>4)&0xF])
-	Breadcrumb(hexChars[newTid&0xF])
-	Breadcrumb('/')
-	Breadcrumb('P')
-	Breadcrumb(hexChars[newPid&0xF])
-	Breadcrumb(':')
-	// Print total in hex, skip leading zeros
-	started = false
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (newTotal >> i) & 0xF
-		if nibble != 0 || started || i == 0 {
-			Breadcrumb(hexChars[nibble])
-			started = true
-		}
-	}
-	Breadcrumb('\n')
-
-	// DEBUG: Print context pointer and ELR before returning
-	ctxPtr := uint64(uintptr(unsafe.Pointer(&next.Context)))
-	Breadcrumb('[')
-	Breadcrumb('C')
-	Breadcrumb('T')
-	Breadcrumb('X')
-	Breadcrumb('=')
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (ctxPtr >> i) & 0xF
-		Breadcrumb(hexChars[nibble])
-	}
-	Breadcrumb(' ')
-	Breadcrumb('E')
-	Breadcrumb('L')
-	Breadcrumb('R')
-	Breadcrumb('=')
-	elrVal := next.Context.ELR
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (elrVal >> i) & 0xF
-		Breadcrumb(hexChars[nibble])
-	}
-	Breadcrumb(']')
-	Breadcrumb('\n')
-
-	return ctxPtr
+	return uint64(uintptr(unsafe.Pointer(&next.Context)))
 }
 
 // Exception frame offsets (must match exceptions.s)
@@ -1779,9 +1543,6 @@ func doContextSwitchABI0(framePtr uint64, targetPtr uint64) uint64 {
 //go:nosplit
 //go:noinline
 func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *ThreadContext {
-	// DEBUG: Minimal entry marker (stack space is limited)
-	Breadcrumb('e')
-
 	// Save current thread's context
 	SaveContextFromFrame(framePtr)
 
@@ -1864,19 +1625,9 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	if oldThread != nil {
 		oldPageTable = oldThread.PageTableL0PA
 	}
-	// DEBUG: Print PID on every switch where L0PA is non-zero
-	if newThread.PageTableL0PA != 0 {
-		hexDigit := byte(newThread.PID & 0xF)
-		if hexDigit < 10 {
-			Breadcrumb('0' + hexDigit)
-		} else {
-			Breadcrumb('A' + hexDigit - 10)
-		}
-		// Only actually switch if page table is different
-		if newThread.PageTableL0PA != oldPageTable {
-			Breadcrumb('!')
-			kmem.SwitchTTBR0WithASID(newThread.PageTableL0PA, uint16(newThread.PID))
-		}
+	// Switch TTBR0 if page table is different
+	if newThread.PageTableL0PA != 0 && newThread.PageTableL0PA != oldPageTable {
+		kmem.SwitchTTBR0WithASID(newThread.PageTableL0PA, uint16(newThread.PID))
 	}
 
 	if sf.StateCheck != nil {
@@ -1891,74 +1642,6 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	// exception frame into the NEW thread's context, corrupting it.
 	// The assembly will restore interrupt state via ERET with new SPSR.
 	_ = savedDAIF // Keep compiler happy
-
-	// DEBUG: Print runtime accounting before context switch
-	// Format: \nT<old_tid>/P<old_pid>:<old_total> T<new_tid>/P<new_pid>:<new_total>\n
-	hexChars := "0123456789ABCDEF"
-	Breadcrumb('\n')
-
-	// Old thread info: T<tid>/P<pid>:<total>
-	oldTid := uint64(0)
-	oldPid := uint64(0)
-	oldTotal := uint64(0)
-	if oldIdx >= 0 {
-		oldThreadForDebug := threadList.Get(int(oldIdx))
-		if oldThreadForDebug != nil {
-			oldTid = uint64(oldThreadForDebug.TID)
-			oldPid = uint64(oldThreadForDebug.PID)
-			oldTotal = oldThreadForDebug.TotalTicksRunning
-		}
-	}
-	Breadcrumb('T')
-	Breadcrumb(hexChars[(oldTid>>4)&0xF])
-	Breadcrumb(hexChars[oldTid&0xF])
-	Breadcrumb('/')
-	Breadcrumb('P')
-	Breadcrumb(hexChars[oldPid&0xF])
-	Breadcrumb(':')
-	// Print total in hex, skip leading zeros
-	started := false
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (oldTotal >> i) & 0xF
-		if nibble != 0 || started || i == 0 {
-			Breadcrumb(hexChars[nibble])
-			started = true
-		}
-	}
-
-	Breadcrumb(' ')
-
-	// New thread info: T<tid>/P<pid>:<total>
-	newTid := uint64(newThread.TID)
-	newPid := uint64(newThread.PID)
-	newTotal := newThread.TotalTicksRunning
-	Breadcrumb('T')
-	Breadcrumb(hexChars[(newTid>>4)&0xF])
-	Breadcrumb(hexChars[newTid&0xF])
-	Breadcrumb('/')
-	Breadcrumb('P')
-	Breadcrumb(hexChars[newPid&0xF])
-	Breadcrumb(':')
-	// Print total in hex, skip leading zeros
-	started = false
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (newTotal >> i) & 0xF
-		if nibble != 0 || started || i == 0 {
-			Breadcrumb(hexChars[nibble])
-			started = true
-		}
-	}
-	Breadcrumb('\n')
-
-	// DEBUG: Print SP low bits at exit (check for corruption)
-	// Just print S=XXXX for the low 16 bits of SP
-	Breadcrumb('S')
-	Breadcrumb('=')
-	exitSp := newThread.Context.SP
-	Breadcrumb(hexChars[(exitSp>>12)&0xF])
-	Breadcrumb(hexChars[(exitSp>>8)&0xF])
-	Breadcrumb(hexChars[(exitSp>>4)&0xF])
-	Breadcrumb(hexChars[exitSp&0xF])
 
 	return &newThread.Context
 }
