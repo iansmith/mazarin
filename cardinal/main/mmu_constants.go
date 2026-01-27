@@ -253,8 +253,9 @@ func initComputedMemoryLayout() {
 	const ttbr1RegionSize = 0x10000 // 64KB
 	computedPTPoolStart = computedTTBR1RegionVA + ttbr1RegionSize
 
-	// PT pool is 512KB (128 pages)
-	const ptPoolSize = 0x80000 // 512KB
+	// PT pool is 4MB (1024 pages)
+	// Increased from 512KB to support multiple userspace processes with goroutines
+	const ptPoolSize = 0x400000 // 4MB
 	computedPTPoolEnd = computedPTPoolStart + ptPoolSize
 }
 

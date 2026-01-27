@@ -2,7 +2,6 @@
 package ksyscall
 
 import (
-	"mazzy/kmazarin/console"
 	"sync/atomic"
 	"unsafe"
 )
@@ -100,9 +99,6 @@ const (
 //
 //go:nosplit
 func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
-	// Ultra-early breadcrumb (works before console is initialized)
-	console.Breadcrumb('M')
-
 	// Suppress unused warnings
 	_ = prot
 	_ = fd
@@ -123,16 +119,6 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 	isUserspace := atomic.LoadUint32(&userspaceActive) != 0
 	isMapFixed := (flags & _MAP_FIXED) != 0
 
-	// Log userspace mmap calls
-	if isUserspace {
-		console.KWriteString("[MMAP] US addr=")
-		console.KPrintHex64(addr)
-		console.KWriteString(" len=")
-		console.KPrintHex64(alignedLength)
-		console.KWriteString(" flags=")
-		console.KPrintHex64(flags)
-	}
-
 	// Handle MAP_FIXED: must return the exact address or fail
 	// MAP_FIXED can overwrite existing mappings (dangerous but that's the semantics)
 	if isMapFixed && addr != 0 {
@@ -140,7 +126,6 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 			// Remove any existing spans that overlap, then add new span
 			removeSpan(addr, alignedLength)
 			if !addSpan(addr, alignedLength) {
-				console.KWriteString(" -> ENOMEM (no span slots)\r\n")
 				return -12 // ENOMEM
 			}
 			result = addr
@@ -152,15 +137,9 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 			if addr >= heapStart && addr+alignedLength <= heapEnd {
 				result = addr
 			} else {
-				if isUserspace {
-					console.KWriteString(" -> ENOMEM (out of range)\r\n")
-				}
 				return -12 // ENOMEM - can't honor MAP_FIXED at this address
 			}
 		} else {
-			if isUserspace {
-				console.KWriteString(" -> ENOMEM (invalid addr)\r\n")
-			}
 			return -12 // ENOMEM - can't honor MAP_FIXED at this address
 		}
 	} else if isUserspace && addr < 0x0000800000000000 {
@@ -195,13 +174,6 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 	} else {
 		// Kernel request (before userspace or high memory hint)
 		result = kernelBumpAlloc(alignedLength)
-	}
-
-	// Log result
-	if isUserspace {
-		console.KWriteString(" -> ")
-		console.KPrintHex64(result)
-		console.KWriteString("\r\n")
 	}
 
 	// Return result (or error)
@@ -241,37 +213,15 @@ func userBumpAlloc(size uint64) uint64 {
 		// If so, return 0 (ENOMEM) - the low memory region is large enough
 		// that this shouldn't happen in practice
 		if findSpanOverlapEnd(currentPtr, aligned) != 0 {
-			console.KWriteString("[BUMP] FAIL: overlaps span\r\n")
 			return 0 // ENOMEM - allocation conflicts with reserved span
 		}
 
-		// DEBUG: Print allocation attempt
-		console.KWriteString("[BUMP] cur=")
-		console.KPrintHex64(currentPtr)
-		console.KWriteString(" size=")
-		console.KPrintHex64(aligned)
-		console.KWriteString(" next=")
-		console.KPrintHex64(nextPtr)
-		console.KWriteString(" end=")
-		console.KPrintHex64(userMmapEnd)
-		console.KWriteString("\r\n")
-
 		// Check for wrap-around AND exceeding end
 		if nextPtr < currentPtr || nextPtr > userMmapEnd {
-			console.KWriteString("[BUMP] FAIL: ")
-			if nextPtr < currentPtr {
-				console.KWriteString("wrap-around")
-			} else {
-				console.KWriteString("exceeds end")
-			}
-			console.KWriteString("\r\n")
 			return 0 // Out of VA space
 		}
 
 		if atomic.CompareAndSwapUint64(&userBumpPointer, currentPtr, nextPtr) {
-			console.KWriteString("[BUMP] OK -> ")
-			console.KPrintHex64(currentPtr)
-			console.KWriteString("\r\n")
 			return currentPtr
 		}
 	}

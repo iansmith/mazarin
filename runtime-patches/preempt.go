@@ -480,6 +480,11 @@ type PreemptOffsets struct {
 	StackPreemptValue uintptr // stackPreempt poison value
 	GRunning          uint32  // _Grunning status constant
 	GScan             uint32  // _Gscan bit mask
+
+	// Additional offsets for async preemption safety checks
+	GMOffset     uintptr // g.m - pointer to m struct
+	MG0Offset    uintptr // m.g0 - g0 goroutine (always offset 0)
+	MLocksOffset uintptr // m.locks - lock count (must be 0 for safe preemption)
 }
 
 // GetPreemptOffsets returns the struct field offsets needed for preemption.
@@ -494,6 +499,7 @@ type PreemptOffsets struct {
 func GetPreemptOffsets() PreemptOffsets {
 	var gInstance g
 	var stackInstance stack
+	var mInstance m
 
 	return PreemptOffsets{
 		// g struct offsets - computed at compile time
@@ -509,5 +515,10 @@ func GetPreemptOffsets() PreemptOffsets {
 		StackPreemptValue: stackPreempt,
 		GRunning:          _Grunning,
 		GScan:             _Gscan,
+
+		// Additional offsets for async preemption safety checks
+		GMOffset:     unsafe.Offsetof(gInstance.m),
+		MG0Offset:    unsafe.Offsetof(mInstance.g0),
+		MLocksOffset: unsafe.Offsetof(mInstance.locks),
 	}
 }

@@ -6,6 +6,22 @@ import (
 	"unsafe"
 )
 
+// Futex call statistics for debugging fairness
+var (
+	FutexWaitCalls    uint64 // Total FUTEX_WAIT calls
+	FutexWaitBlocked  uint64 // Calls that blocked thread (switched to another)
+	FutexWaitEagain   uint64 // Calls that returned EAGAIN (same thread continues)
+	FutexWakeCalls    uint64 // Total FUTEX_WAKE calls
+)
+
+// PrintFutexStats prints futex statistics for debugging
+func PrintFutexStats() (waitCalls, blocked, eagain, wakeCalls uint64) {
+	return atomic.LoadUint64(&FutexWaitCalls),
+		atomic.LoadUint64(&FutexWaitBlocked),
+		atomic.LoadUint64(&FutexWaitEagain),
+		atomic.LoadUint64(&FutexWakeCalls)
+}
+
 // TODO(ABI0): This file uses the tail-call stub workaround for SyscallFutex.
 // We should investigate why the compiler-generated ABI0 wrapper doesn't work
 // correctly when called via function pointer from the dispatch table, and fix
@@ -30,12 +46,15 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 
 	switch opMasked {
 	case FutexWait:
+		atomic.AddUint64(&FutexWaitCalls, 1)
+
 		// FUTEX_WAIT: Block until value changes or we're woken
 		// Check if value matches expected (spurious wakeup check)
 		uaddrPtr := (*uint32)(unsafe.Pointer(uintptr(uaddr)))
 		currentVal := atomic.LoadUint32(uaddrPtr)
 
 		if currentVal != uint32(val) {
+			atomic.AddUint64(&FutexWaitEagain, 1)
 			return -11 // -EAGAIN: value already changed
 		}
 
@@ -45,29 +64,26 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 
 		if nextThread != 0 {
 			// Successfully blocked - context switch to next thread
+			atomic.AddUint64(&FutexWaitBlocked, 1)
+			console.Breadcrumb('[')
+			console.Breadcrumb('F')
+			console.Breadcrumb('U')
+			console.Breadcrumb('T')
+			console.Breadcrumb(']')
 			SetSyscallSwitchTarget(nextThread)
 			// Return 0 - when we're woken up later, we'll return success
 			return 0
 		}
 
 		// No ready thread to switch to - we couldn't actually block
-		// DEBUG: Print 'W' to show we're entering idle wait
-		console.KWriteByte('W')
-
-		// Enter idle loop waiting for interrupt (timer will fire and may wake threads)
-		// WFI - Wait For Interrupt: puts CPU in low-power state until interrupt
-		waitForInterrupt()
-
-		// After WFI, check if someone woke us (value changed or wake signal)
-		currentVal = atomic.LoadUint32(uaddrPtr)
-		if currentVal != uint32(val) {
-			return 0 // Value changed - treat as woken
-		}
-
-		// Value still matches - retry
+		// Return EAGAIN to let Go's runtime handle internal goroutine scheduling
+		// This is important for fairness: the thread continues and Go can
+		// switch to another runnable goroutine within the same thread.
+		atomic.AddUint64(&FutexWaitEagain, 1)
 		return -11 // -EAGAIN
 
 	case FutexWake:
+		atomic.AddUint64(&FutexWakeCalls, 1)
 		// FUTEX_WAKE: Wake up to 'val' threads waiting on this address
 		woken := ThreadWakeFutex(uaddr, int32(val))
 		return int64(woken)

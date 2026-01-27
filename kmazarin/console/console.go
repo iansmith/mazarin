@@ -180,6 +180,71 @@ func Breadcrumb(b byte) {
 	c.Breadcrumb(b)
 }
 
+// BreadcrumbNoSplit writes a single byte directly to UART hardware via MMIO.
+// This function bypasses the console abstraction entirely, calling the internal
+// breadcrumb() function directly.
+//
+// USE THIS FUNCTION WHEN:
+// - You're in scheduler/timer/preemption code (nosplit context)
+// - Adding debug output causes "nosplit stack overflow" errors
+// - You need the smallest possible stack footprint
+//
+// The regular Breadcrumb() function calls Get() which has a type assertion,
+// and the Go compiler's nosplit analysis includes the panic path from that
+// type assertion, causing stack overflow in tight nosplit call chains.
+//
+// This function has zero function calls with panic paths, making it safe
+// for the deepest nosplit contexts.
+//
+//go:nosplit
+func BreadcrumbNoSplit(b byte) {
+	breadcrumb(b)
+}
+
+// BreadcrumbHex8NoSplit writes a single hex digit (0-15) directly to UART.
+// For use in nosplit contexts. Does NOT print "0x" prefix.
+//
+//go:nosplit
+func BreadcrumbHex8NoSplit(val uint8) {
+	const hexChars = "0123456789ABCDEF"
+	breadcrumb(hexChars[val>>4])
+	breadcrumb(hexChars[val&0xF])
+}
+
+// BreadcrumbHex16NoSplit writes a 16-bit value as 4 hex digits.
+// For use in nosplit contexts. Does NOT print "0x" prefix.
+//
+//go:nosplit
+func BreadcrumbHex16NoSplit(val uint16) {
+	const hexChars = "0123456789ABCDEF"
+	breadcrumb(hexChars[(val>>12)&0xF])
+	breadcrumb(hexChars[(val>>8)&0xF])
+	breadcrumb(hexChars[(val>>4)&0xF])
+	breadcrumb(hexChars[val&0xF])
+}
+
+// BreadcrumbHex32NoSplit writes a 32-bit value as 8 hex digits.
+// For use in nosplit contexts. Does NOT print "0x" prefix.
+//
+//go:nosplit
+func BreadcrumbHex32NoSplit(val uint32) {
+	const hexChars = "0123456789ABCDEF"
+	for i := 28; i >= 0; i -= 4 {
+		breadcrumb(hexChars[(val>>i)&0xF])
+	}
+}
+
+// BreadcrumbHex64NoSplit writes a 64-bit value as 16 hex digits.
+// For use in nosplit contexts. Does NOT print "0x" prefix.
+//
+//go:nosplit
+func BreadcrumbHex64NoSplit(val uint64) {
+	const hexChars = "0123456789ABCDEF"
+	for i := 60; i >= 0; i -= 4 {
+		breadcrumb(hexChars[(val>>i)&0xF])
+	}
+}
+
 // breadcrumb writes a byte directly to UART MMIO.
 // Implementation is in breadcrumb_asm.go (real hardware) or breadcrumb_stubs.go (test builds).
 

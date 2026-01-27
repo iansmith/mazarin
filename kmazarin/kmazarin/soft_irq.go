@@ -179,9 +179,8 @@ func softIRQEnqueue(bundle SoftIRQBundle) {
 		}
 	}
 
-	// Queue full - drop (breadcrumb for debugging)
+	// Queue full - drop
 	schedulerLock.Unlock()
-	Breadcrumb('!')
 }
 
 // GetPendingSoftIRQ drains one item from overflow queue.

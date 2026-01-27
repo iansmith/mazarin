@@ -21,22 +21,12 @@ func NewWakeThreadAction(tid ThreadId) *WakeThreadAction {
 //
 //go:nosplit
 func (a *WakeThreadAction) Run() {
-	// Debug: show TID being woken
-	Breadcrumb('[')
-	Breadcrumb('W')
-	Breadcrumb('k')
-	Breadcrumb(':')
-	Breadcrumb('0' + byte((a.tid/10)%10))
-	Breadcrumb('0' + byte(a.tid%10))
-
 	// Protect state modification from concurrent access
 	savedDAIF := SaveAndDisableIRQs()
 
 	// Find thread by TID - use FindByIdAll to include kernel threads
 	t := threadList.FindByIdAll(int32(a.tid))
 	if t == nil {
-		Breadcrumb('?') // Thread not found
-		Breadcrumb(']')
 		RestoreIRQs(savedDAIF)
 		return // Thread not found (may have exited)
 	}
@@ -45,11 +35,7 @@ func (a *WakeThreadAction) Run() {
 		t.State = ThreadReady
 		// Add to ready queue
 		readyQueue.Push(a.tid)
-		Breadcrumb('!') // Successfully woken
-	} else {
-		Breadcrumb('x') // Not sleeping
 	}
-	Breadcrumb(']')
 
 	RestoreIRQs(savedDAIF)
 }

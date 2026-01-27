@@ -60,80 +60,6 @@ var syscallTable = [512]SyscallHandler{
 //go:nosplit
 //go:noinline
 func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
-	// Ultra-early breadcrumb that works before console is initialized
-	// Print syscall indicator
-	switch syscallNum {
-	case 94: // exit_group
-		console.Breadcrumb('X')
-	case 222: // mmap
-		console.Breadcrumb('M')
-	case 220: // clone
-		console.Breadcrumb('C')
-	case 98: // futex
-		console.Breadcrumb('F')
-	case 96: // set_tid_address
-		console.Breadcrumb('T')
-	case 123: // sched_getaffinity
-		console.Breadcrumb('A')
-	case 135: // rt_sigprocmask
-		console.Breadcrumb('S')
-	case 134: // rt_sigaction
-		console.Breadcrumb('s')
-	case 172: // getpid
-		console.Breadcrumb('P')
-	case 178: // gettid
-		console.Breadcrumb('t')
-	case 113: // clock_gettime
-		console.Breadcrumb('G')
-	case 56: // openat
-		console.Breadcrumb('O')
-	case 57: // close
-		console.Breadcrumb('c')
-	case 63: // read
-		console.Breadcrumb('R')
-	case 64: // write
-		console.Breadcrumb('W')
-	default:
-		console.Breadcrumb('?')
-	}
-
-	// CORRUPTION DETECTOR: DISABLED - was checking wrong address (userspace instead of kernel)
-	// The original check was reading from userspace address 0x180C28 via ReadUserByte,
-	// but SizeToSizeClass128 is in kernel space, not userspace.
-	// TODO: Implement proper kernel memory corruption detection if needed.
-
-	// Debug: print syscall number with first arg (skip write syscalls to reduce noise)
-	if syscallNum != 64 { // skip write (0x40)
-		console.KWriteString("S")
-		console.KPrintHex64(syscallNum)
-		console.KWriteString("(")
-		console.KPrintHex64(arg0)
-		console.KWriteString(") ")
-	}
-
-	// Extra debug for mmap (syscall 222 = 0xDE)
-	// Print all 6 arguments and result to debug the 0,0 issue
-	if syscallNum == 222 {
-		console.KWriteString("\r\n[MMAP] ")
-		if atomic.LoadUint32(&userspaceActive) != 0 {
-			console.KWriteString("US ")
-		} else {
-			console.KWriteString("K ")
-		}
-		console.KWriteString("addr=")
-		printHexDigits(arg0)
-		console.KWriteString(" len=")
-		printHexDigits(arg1)
-		console.KWriteString(" flags=")
-		printHexDigits(arg3)
-		// Call the handler and print result
-		result := SyscallMmap(arg0, arg1, arg2, arg3, arg4, arg5)
-		console.KWriteString(" -> ")
-		printHexDigits(uint64(result))
-		console.KWriteString("\r\n")
-		return result
-	}
-
 	// Check for Mazzy syscalls first (1000+)
 	if syscallNum >= MazzySyscallBase {
 		return dispatchMazzySyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5)
@@ -262,17 +188,6 @@ func earlyMmap(addr, length, prot, flags uint64) int64 {
 	}
 }
 
-// printHexDigits prints 16 hex digits for a uint64 value
-// Uses only KWriteByte to avoid any allocation
-//
-//go:nosplit
-func printHexDigits(v uint64) {
-	const hexChars = "0123456789ABCDEF"
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (v >> uint(i)) & 0xF
-		console.KWriteByte(hexChars[nibble])
-	}
-}
 
 // syscallPanic handles syscall-specific panics with the syscall number
 // Uses console abstraction which provides spinlock protection

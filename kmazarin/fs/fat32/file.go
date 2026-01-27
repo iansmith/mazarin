@@ -1,5 +1,7 @@
 package fat32
 
+import "mazzy/kmazarin/console"
+
 // File represents an open file on a FAT32 filesystem
 type File struct {
 	fs           *FileSystem
@@ -145,21 +147,27 @@ func (f *File) Read(buf []byte) (int, error) {
 
 // ReadAll reads the entire file contents
 func (f *File) ReadAll() ([]byte, error) {
+	console.KPrintf("[ReadAll] start size=%d\r\n", f.entry.Size)
 	if f.entry.IsDir {
 		return nil, ErrNotFile
 	}
 
 	// Seek to beginning
+	console.KWriteString("[ReadAll] seeking\r\n")
 	if err := f.Seek(0); err != nil {
 		return nil, err
 	}
 
 	// Allocate buffer for entire file
+	console.KPrintf("[ReadAll] allocating %d bytes\r\n", f.entry.Size)
 	result := make([]byte, f.entry.Size)
+	console.KWriteString("[ReadAll] calling Read\r\n")
 	n, err := f.Read(result)
+	console.KPrintf("[ReadAll] Read returned n=%d\r\n", n)
 	if err != nil && err != ErrEndOfFile {
 		return nil, err
 	}
+	console.KWriteString("[ReadAll] done\r\n")
 	return result[:n], nil
 }
 

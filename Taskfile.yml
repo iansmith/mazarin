@@ -38,8 +38,16 @@ vars:
   KMAZARIN_OVERLAY_JSON: '{{.BUILD_DIR}}/kmazarin-overlay.json'
   USERSPACE_OVERLAY_JSON: '{{.BUILD_DIR}}/userspace-overlay.json'
   THIN_OVERLAY_JSON: '{{.BUILD_DIR}}/thin-overlay.json'
-  PRIEST_ELF: '{{.BUILD_DIR}}/priest.elf'
+  PRIESTSIEVE_ELF: '{{.BUILD_DIR}}/priestsieve.elf'
   PRIEST2_ELF: '{{.BUILD_DIR}}/priest2.elf'
+  PRIEST3_ELF: '{{.BUILD_DIR}}/priest3.elf'
+  SIEVETEST_ELF: '{{.BUILD_DIR}}/sievetest.elf'
+  SIEVE3_ELF: '{{.BUILD_DIR}}/sieve3.elf'
+  SIEVE5_ELF: '{{.BUILD_DIR}}/sieve5.elf'
+  SIEVE6_ELF: '{{.BUILD_DIR}}/sieve6.elf'
+  SIEVE7_ELF: '{{.BUILD_DIR}}/sieve7.elf'
+  SIEVE8_ELF: '{{.BUILD_DIR}}/sieve8.elf'
+  SIEVE9_ELF: '{{.BUILD_DIR}}/sieve9.elf'
   HELLOWORLD_ELF: '{{.BUILD_DIR}}/helloworld.elf'
   HELLOWORLD_THIN_ELF: '{{.BUILD_DIR}}/helloworld-thin.elf'
   HELLOWORLD_MAZ: '{{.BUILD_DIR}}/helloworld.maz'
@@ -211,8 +219,8 @@ tasks:
   # Flock Userspace Programs
   # ===========================================================================
 
-  priest:
-    desc: Build priest syscall router
+  priestsieve:
+    desc: Build priestsieve prime sieve test program
     deps: [check-env, userspace-overlay]
     sources:
       - 'flock/**/*.go'
@@ -220,11 +228,11 @@ tasks:
       - 'mazarin/**/*.go'
       - '{{.USERSPACE_OVERLAY_JSON}}'
     generates:
-      - '{{.PRIEST_ELF}}'
+      - '{{.PRIESTSIEVE_ELF}}'
     cmds:
-      - echo "Building priest (syscall router with overlay)..."
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.PRIEST_ELF}} ./flock/cmd/priest'
-      - echo "Priest built at {{.PRIEST_ELF}}"
+      - echo "Building priestsieve (prime sieve test with overlay)..."
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.PRIESTSIEVE_ELF}} ./flock/cmd/priestsieve'
+      - echo "Priestsieve built at {{.PRIESTSIEVE_ELF}}"
 
   priest2:
     desc: Build priest2 scheduling test program
@@ -240,6 +248,119 @@ tasks:
       - echo "Building priest2 (scheduling test program)..."
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.PRIEST2_ELF}} ./flock/cmd/priest2'
       - echo "Priest2 built at {{.PRIEST2_ELF}}"
+
+  priest3:
+    desc: Build priest3 scheduling test program (prints 4s, 6s, 7s)
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.PRIEST3_ELF}}'
+    cmds:
+      - echo "Building priest3 (scheduling test program)..."
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.PRIEST3_ELF}} ./flock/cmd/priest3'
+      - echo "Priest3 built at {{.PRIEST3_ELF}}"
+
+  sievetest:
+    desc: Build sievetest (simple prime sieve for multi-priest testing)
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/cmd/sievetest/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.SIEVETEST_ELF}}'
+    cmds:
+      - echo "Building sievetest..."
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVETEST_ELF}} ./flock/cmd/sievetest'
+      - echo "Sievetest built at {{.SIEVETEST_ELF}}"
+
+  sieve3:
+    desc: Build sieve3 (single-threaded prime sieve, worker 3)
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/cmd/sieve3/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.SIEVE3_ELF}}'
+    cmds:
+      - echo "Building sieve3..."
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVE3_ELF}} ./flock/cmd/sieve3'
+      - echo "Sieve3 built at {{.SIEVE3_ELF}}"
+
+  sieve5:
+    desc: Build sieve5 (single-threaded prime sieve, worker 5)
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/cmd/sieve5/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.SIEVE5_ELF}}'
+    cmds:
+      - echo "Building sieve5..."
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVE5_ELF}} ./flock/cmd/sieve5'
+      - echo "Sieve5 built at {{.SIEVE5_ELF}}"
+
+  sieve6:
+    desc: Build sieve6 (single-threaded prime sieve, worker 6)
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/cmd/sieve6/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.SIEVE6_ELF}}'
+    cmds:
+      - echo "Building sieve6..."
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVE6_ELF}} ./flock/cmd/sieve6'
+      - echo "Sieve6 built at {{.SIEVE6_ELF}}"
+
+  sieve7:
+    desc: Build sieve7 (single-threaded prime sieve, worker 7)
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/cmd/sieve7/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.SIEVE7_ELF}}'
+    cmds:
+      - echo "Building sieve7..."
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVE7_ELF}} ./flock/cmd/sieve7'
+      - echo "Sieve7 built at {{.SIEVE7_ELF}}"
+
+  sieve8:
+    desc: Build sieve8 (single-threaded prime sieve, worker 8)
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/cmd/sieve8/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.SIEVE8_ELF}}'
+    cmds:
+      - echo "Building sieve8..."
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVE8_ELF}} ./flock/cmd/sieve8'
+      - echo "Sieve8 built at {{.SIEVE8_ELF}}"
+
+  sieve9:
+    desc: Build sieve9 (single-threaded prime sieve, worker 9)
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/cmd/sieve9/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.SIEVE9_ELF}}'
+    cmds:
+      - echo "Building sieve9..."
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVE9_ELF}} ./flock/cmd/sieve9'
+      - echo "Sieve9 built at {{.SIEVE9_ELF}}"
 
   helloworld:
     desc: Build helloworld test program
@@ -289,16 +410,24 @@ tasks:
 
   disk:
     desc: Create FAT32 disk image with flock binaries
-    deps: [priest, priest2, helloworld-maz]
+    deps: [priestsieve, priest2, priest3, sievetest, sieve3, sieve5, sieve6, sieve7, sieve8, sieve9, helloworld-maz]
     sources:
-      - '{{.PRIEST_ELF}}'
+      - '{{.PRIESTSIEVE_ELF}}'
       - '{{.PRIEST2_ELF}}'
+      - '{{.PRIEST3_ELF}}'
+      - '{{.SIEVETEST_ELF}}'
+      - '{{.SIEVE3_ELF}}'
+      - '{{.SIEVE5_ELF}}'
+      - '{{.SIEVE6_ELF}}'
+      - '{{.SIEVE7_ELF}}'
+      - '{{.SIEVE8_ELF}}'
+      - '{{.SIEVE9_ELF}}'
       - '{{.HELLOWORLD_MAZ}}'
     generates:
       - '{{.DISK_IMAGE}}'
     cmds:
       - echo "Creating FAT32 disk image..."
-      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.PRIEST_ELF}} {{.PRIEST2_ELF}} {{.HELLOWORLD_MAZ}}'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.PRIESTSIEVE_ELF}} {{.PRIEST2_ELF}} {{.PRIEST3_ELF}} {{.SIEVETEST_ELF}} {{.SIEVE3_ELF}} {{.SIEVE5_ELF}} {{.SIEVE6_ELF}} {{.SIEVE7_ELF}} {{.SIEVE8_ELF}} {{.SIEVE9_ELF}} {{.HELLOWORLD_MAZ}}'
       - echo "Disk image created at {{.DISK_IMAGE}}"
 
   # ===========================================================================

@@ -1,61 +1,82 @@
 ---
 layout: default
-title: Quick Start
+title: mazarin, an introduction
+author: iansmith
 ---
 
-# Mazzy Quick Start
+[I just want to run the code](quickstart.md)
 
-Cardinal bootloader + Kmazarin Go kernel for ARM64.
 
-[![Windows (No POSIX Shell)](https://github.com/iansmith/mazarin/actions/workflows/windows-test.yml/badge.svg)](https://github.com/iansmith/mazarin/actions/workflows/windows-test.yml)
+# mazarin, what this is
+mazarin is a go-centric and indeed go-only operating system.  (mazarin is not 
+capitalized.)  In the future mazarin may 
+support languages like Javascript or Python for which interpreters written in go
+are available. Similarly, programs in Webassembly format may be supported for some
+compiled languages as there are Webassembly virtual machines written in go.
+Support for languages other than go is possible, but not a priority.
 
-## Prerequisites
+# mazarin, what this not
+mazarin is not unix. mazarin does not argue that everything should be a file--it
+argues that everything is part of the UI. mazarin is not byte streams which work 
+by read/write/open/close and file descriptors. If that is what you want, I suggest 
+you try Linux; it is quite good.  mazarin may 
+offer some compatibility with Linux in an effort to accelerate support for features
+that are important to mazarin, but the compatibilty is not the goal.
 
-Tools you need for this quick start:
+# mazarin, what this is
+mazarin's model is that everything is part of the UI.  The UI is not only
+the most important thing in mazarin, but it is nearly the _only_ thing.  The UI
+of mazarin does not offer the programming model of any existing window system.
 
-* **Go compiler** version 1.24 or later
-* **QEMU** version 10.2 or later (`qemu-system-aarch64`)
+# mazarin, what this is
+As of Jan 26 (77b4f83), the following features are supported with respect to the operating
+system proper and all are a written in go or go's assembly variant:
 
-This will build and run on any system that has both of those tools. If you are running on a machine that is not ARM64, then QEMU will be emulating the ARM64 architecture which can be slow.
+* bootloading
+* kernel
+* userspace programs with protection from each other and the kernel
+* multiple threads, curently 3 per go userspace program since that is the go runtime behavior
+* simple, fair scheduling of threads including kernel threads
+* multiple go routines in a userspace program
+* fair scheduling of goroutines within a userspace program
+* primitive support for lightweight go programs called mazs (plural)
 
-The first time you build the software it will be slow as some Go packages need to be downloaded.
+## No C
+mazarin does no use C code at all--nor cgo.  go or go assembly is used in
+the build and boot processes.
+All the tools for building mazarin are written in go.  The boot process uses bootloaders 
+written in go for x86_64 and arm64.  If you want to get _pedantic_, you could argue that the code
+before the bootloaders--such as firmware on x86_64 and DTB construction on arm64--
+is written in C, but this is far from mazarin's concern.  
 
-## Build
+I come to bury C, not to praise it. I harbor no ill-will towards C code, it can
+be highly useful and, with a strong linter, fairly clean and straightforward.  I have
+partly built Mazarin to show you dont _need_ C anymore.  The world has changed
+a great deal since C's debut in the 1970s.
 
-Set environment variables and build with Task:
+# mazarin, what this is
+mazarin runs on bare metal and has a go-centric programming model. It is not just
+that the code is written go, it is that it does not offer the c/unix programming
+model.  Most of programming model is focused on channels and goroutines.  mazarin
+runs on paravirtualized hardware via a hypervisor but a middle-term goal is to
+run on a Raspberry Pi W zero version 2.
 
-```bash
-# Set environment (adjust paths for your system)
-export GOTOOLCHAIN=auto
-export GO=/path/to/go
-export QEMU=/path/to/qemu-system-aarch64
+# mazarin, what this is not
+mazarin is not optimized.  Linux has been being optimized for the last
+25 years and that continues today.  Linux's performance is truly astonishing--but 
+performance is not currently an area of focus for mazarin.
 
-# Build everything
-go tool task all
-```
+# mazarin, what this is and what this is not
+mazarin was written by AI.  I have written precisely zero lines of code in
+this repository.  I have written some of the documentation, such as this file,
+because what it communicates is too important to allow an AI to write it. (This
+may be human pride at work.) You may have concerns that the AI may have put code with
+intended or unintended security flaws in mazarin. You are wise to have have such
+concerns. I would recommend that you only run this code under a hypervisor that
+you have confidence in.
 
-> **Note:** Requires Go 1.24+ and QEMU 10.2+
+> Honey, look! I vibecoded an operating system!
 
-## Run
+## Technical Reports
 
-Start QEMU with the built kernel:
-
-```bash
-# Run with 5 second timeout (shows output then stops)
-go tool task run TIMEOUT=5
-
-# Run indefinitely (use 'task stop' to stop)
-go tool task run TIMEOUT=0
-
-# Stop QEMU
-go tool task stop
-
-# View serial output
-go tool task show
-```
-
-Output is written to `/tmp/cardinal-serial.log`.
-
-## What You'll See
-
-When you run Mazzy, QEMU opens a graphical window. The kernel initializes the VirtIO GPU and displays an image in the center of the screen. This demonstrates the graphics subsystem working with the Go kernel running on bare metal ARM64.
+- [PriestSieve Fairness Analysis](priestsieve-fairness-analysis.html) - Analysis of goroutine scheduling fairness using a prime number sieve benchmark

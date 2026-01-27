@@ -62,6 +62,9 @@ func (d *BlockDriver) Init(node *dtb.Node) (deviceapi.Closable, error) {
 
 	// Map MMIO region before accessing hardware
 	if err := kmem.MapDeviceMMIO(reg.Address, reg.Size); err != nil {
+		console.KWriteString("[VirtIO Block] MapDeviceMMIO failed: ")
+		console.KWriteString(err.Error())
+		console.KWriteString("\r\n")
 		return nil, err
 	}
 
@@ -73,11 +76,21 @@ func (d *BlockDriver) Init(node *dtb.Node) (deviceapi.Closable, error) {
 		irq:      irq,
 	}
 
+	// DEBUG: Print mapping addresses
+	console.KWriteString("[VirtIO Block] Mapped phys=")
+	console.KPrintHex64(uint64(reg.Address))
+	console.KWriteString(" to kernel=")
+	console.KPrintHex64(uint64(transport.baseAddr))
+	console.KWriteString("\r\n")
+
+	// DEBUG: Check Magic register first (should be 0x74726976 = "virt")
+	magic := transport.ReadReg(MagicValue)
+	console.KWriteString("[VirtIO Block] Magic=")
+	console.KPrintHex64(uint64(magic))
+
 	// Check if this is a block device
 	deviceID := transport.ReadDeviceType()
-	console.KWriteString("[VirtIO Block] Checking device at ")
-	console.KPrintHex64(uint64(reg.Address))
-	console.KWriteString(" type=")
+	console.KWriteString(" DeviceID=")
 	console.KPrintHex64(uint64(deviceID))
 	console.KWriteString("\r\n")
 	if deviceID != DeviceIDBlock {

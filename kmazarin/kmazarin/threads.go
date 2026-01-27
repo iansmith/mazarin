@@ -50,7 +50,7 @@ const (
 )
 
 // MaxPriests is the maximum number of priest processes (userspace programs)
-const MaxPriests = 16
+const MaxPriests = 32
 
 // MaxThreads is the maximum number of threads supported
 // Increased from 24 to 64 to support multiple priests with goroutines
@@ -122,6 +122,12 @@ type Thread struct {
 
 	// Clone child protection - skip async preempt until clone setup completes
 	InCloneSetup uint32 // 1 = thread is in clone setup (reading fn/gp/mp from stack), 0 = normal
+
+	// Per-thread syscall state - prevents race condition when timer IRQ preempts mid-syscall
+	// and another thread makes a syscall that overwrites global state.
+	SyscallELR    uint64  // ELR for this thread's current syscall (return address)
+	SyscallSPSR   uint64  // SPSR for this thread's current syscall (processor state)
+	SyscallSwitch uintptr // Context switch target for clone (0 = no switch, else ptr to ThreadContext)
 }
 
 // Thread struct field offsets for assembly access.
@@ -231,19 +237,22 @@ var globalTickCounter uint64 = 0
 const ThreadPreemptionThreshold = 10 // 100ms
 
 // Syscall context switch signaling
-// Set by syscall handlers (futex, nanosleep) when they need to block
-// Checked by assembly after DispatchSyscall returns
+// Primary storage is per-thread (Thread.SyscallSwitch) to prevent race conditions
+// when timer IRQ preempts mid-syscall. Global is fallback during early boot before
+// CurrentThread is set up.
 // 0 = no switch, non-zero = pointer to ThreadContext to switch to
 var syscallSwitchTarget uintptr = 0
 
 // syscallELR stores the ELR_EL1 for the current syscall
-// Set by assembly before calling DispatchSyscall
-// Used by clone to get the proper return address for child threads
+// Primary storage is per-thread (Thread.SyscallELR) to prevent race conditions
+// when timer IRQ preempts mid-syscall. Global is fallback during early boot before
+// CurrentThread is set up.
 var syscallELR uint64 = 0
 
 // syscallSPSR stores the SPSR_EL1 for the current syscall
-// Set by assembly before calling DispatchSyscall
-// Used by clone to get the proper processor state for child threads
+// Primary storage is per-thread (Thread.SyscallSPSR) to prevent race conditions
+// when timer IRQ preempts mid-syscall. Global is fallback during early boot before
+// CurrentThread is set up.
 var syscallSPSR uint64 = 0
 
 // threadsInitialized tracks if InitThreads has been called
@@ -255,43 +264,84 @@ var threadsInitialized bool = false
 var deadlineQueue *ds.OrderedList[*util.TimerDeadline]
 
 // setSyscallELRInternal is called by assembly via ABI stub to store the current ELR
+// Stores to the current thread's SyscallELR field to prevent race conditions.
+// Falls back to global variable during early boot when CurrentThread is not yet set up.
 //
 //go:noinline
 func setSyscallELRInternal(elr uint64) {
-	syscallELR = elr
+	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	if t != nil {
+		t.SyscallELR = elr
+	} else {
+		// Early boot: no threads yet, use global
+		syscallELR = elr
+	}
 }
 
 // setSyscallSPSRInternal is called by assembly via ABI stub to store the current SPSR
+// Stores to the current thread's SyscallSPSR field to prevent race conditions.
+// Falls back to global variable during early boot when CurrentThread is not yet set up.
 //
 //go:noinline
 func setSyscallSPSRInternal(spsr uint64) {
-	syscallSPSR = spsr
+	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	if t != nil {
+		t.SyscallSPSR = spsr
+	} else {
+		// Early boot: no threads yet, use global
+		syscallSPSR = spsr
+	}
 }
 
 // GetSyscallELR returns the ELR for the current syscall
-// Called by clone to get the child's return address
+// Called by clone to get the child's return address.
+// Reads from the current thread's SyscallELR field to prevent race conditions.
+// Falls back to global variable during early boot when CurrentThread is not yet set up.
 //
 //go:noinline
 func GetSyscallELR() uint64 {
+	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	if t != nil {
+		return t.SyscallELR
+	}
+	// Early boot: no threads yet, use global
 	return syscallELR
 }
 
 // GetSyscallSPSR returns the SPSR for the current syscall
-// Called by clone to get the child's processor state
+// Called by clone to get the child's processor state.
+// Reads from the current thread's SyscallSPSR field to prevent race conditions.
+// Falls back to global variable during early boot when CurrentThread is not yet set up.
 //
 //go:noinline
 func GetSyscallSPSR() uint64 {
+	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	if t != nil {
+		return t.SyscallSPSR
+	}
+	// Early boot: no threads yet, use global
 	return syscallSPSR
 }
 
 // getSyscallSwitchTargetInternal returns the switch target and resets it
 // Called from assembly via ABI stub after syscall dispatch
-// Returns uint64: context pointer to switch to, or 0 for no switch
+// Returns uint64: context pointer to switch to, or 0 for no switch.
+// Reads from the current thread's SyscallSwitch field to prevent race conditions.
+// Falls back to global variable during early boot when CurrentThread is not yet set up.
 //
 //go:noinline
 func getSyscallSwitchTargetInternal() uint64 {
-	target := syscallSwitchTarget
-	syscallSwitchTarget = 0 // Reset for next syscall
+	var target uintptr
+
+	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	if t != nil {
+		target = t.SyscallSwitch
+		t.SyscallSwitch = 0 // Reset for next syscall
+	} else {
+		// Early boot: no threads yet, use global
+		target = syscallSwitchTarget
+		syscallSwitchTarget = 0 // Reset for next syscall
+	}
 
 	// DEBUG: Print when target is non-zero
 	if target != 0 {
@@ -314,7 +364,9 @@ func getSyscallSwitchTargetInternal() uint64 {
 
 // SetSyscallSwitchTarget sets the context pointer to switch to
 // Called by syscall handlers that need to block
-// target is a ThreadContext pointer, or 0 for no switch
+// target is a ThreadContext pointer, or 0 for no switch.
+// Stores to the current thread's SyscallSwitch field to prevent race conditions.
+// Falls back to global variable during early boot when CurrentThread is not yet set up.
 //
 //go:noinline
 func SetSyscallSwitchTarget(target uintptr) {
@@ -340,10 +392,15 @@ func SetSyscallSwitchTarget(target uintptr) {
 		Breadcrumb(']')
 	}
 
-	// Store context pointer directly
-	// ThreadBlockFutex/ThreadBlockSleep now return context pointers,
-	// so 0 unambiguously means "no switch" and non-zero is valid target
-	syscallSwitchTarget = target
+	// Store to current thread's SyscallSwitch field
+	// 0 unambiguously means "no switch" and non-zero is valid target
+	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	if t != nil {
+		t.SyscallSwitch = target
+	} else {
+		// Early boot: no threads yet, use global
+		syscallSwitchTarget = target
+	}
 }
 
 // InitIdAllocators initializes the ID allocators for thread IDs and priest IDs.
@@ -463,6 +520,16 @@ func InitThreads() {
 	t0.GoroutineElapsed = 0
 	t0.TicksStartedRunning = currentTick // Initialize runtime accounting
 	t0.TotalTicksRunning = 0
+
+	// CRITICAL: Copy global syscall state to t0 before setting CurrentThread.
+	// If SetSyscallELR/SPSR were called before InitThreads (CurrentThread was nil),
+	// they stored to globals. After we set CurrentThread = t0, GetSyscallELR/SPSR
+	// will read from t0's fields. Without this copy, t0's fields would be 0,
+	// causing the clone child to ERET with SPSR.M=0 (EL0) instead of EL1!
+	t0.SyscallELR = syscallELR
+	t0.SyscallSPSR = syscallSPSR
+	t0.SyscallSwitch = syscallSwitchTarget
+
 	threadList.ReservedSet(0)
 
 	CurrentThreadIdx = 0
@@ -660,15 +727,6 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 	// DAIF.I is bit 7 (0x80) in PSTATE/SPSR.
 	t.Context.SPSR = spsr & ^uint64(0x80)  // Same processor state but with IRQs enabled
 	t.Context.X[28] = gp       // g register (also loaded from stack by clone.abi0)
-
-	// DEBUG: Print child context
-	console.KWriteString("[CHILD-CTX] SP=")
-	console.KPrintHex64(t.Context.SP)
-	console.KWriteString(" ELR=")
-	console.KPrintHex64(t.Context.ELR)
-	console.KWriteString(" X28=")
-	console.KPrintHex64(t.Context.X[28])
-	console.KWriteString("\r\n")
 
 	if sf != nil && sf.StateCheck != nil {
 		sf.StateCheck("clone-thread-created")

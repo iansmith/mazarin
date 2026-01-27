@@ -106,6 +106,9 @@ func init() {
 	// Initialize soft IRQ subsystem (static allocation, no heap needed)
 	InitSoftIRQ()
 
+	// Initialize channel subsystem for kernel-to-priest async messaging
+	InitChannels()
+
 	// Initialize critical early devices (UART, GIC, Timer, RNG)
 	EarlyInit()
 
@@ -594,10 +597,25 @@ func printTimerDebug() {
 
 // EnableTimerIRQ enables the timer IRQ (27) using the GIC device driver.
 func EnableTimerIRQ() {
+	console.Breadcrumb('T')
+	console.Breadcrumb('E')
+	console.Breadcrumb('N')
+
+	// Debug: Check DAIF state
+	daif := ReadDAIF()
+	if (daif & 0x80) != 0 {
+		console.Breadcrumb('D') // DAIF.I is set (IRQs disabled at CPU!)
+	} else {
+		console.Breadcrumb('d') // DAIF.I is clear (IRQs enabled at CPU)
+	}
+
 	if gic, ok := device.GetInterruptController(); ok {
+		console.Breadcrumb('+')
 		gic.EnableIRQ(27)
 		// Start the timer hardware
 		RearmTimerNow()
+	} else {
+		console.Breadcrumb('-')
 	}
 }
 
@@ -795,13 +813,17 @@ func busyLoop4s() {
 		if counter%100000 == 0 {
 			printCount++
 			if printCount%72 == 0 {
-				console.KWriteString("\n")
+				fmt.Println("")
 			} else {
-				console.KWriteString("4")
+				// Use fmt.Print instead of console.KWriteString to go through
+				// Go's runtime mutexes - this makes scheduling fair with priests
+				// who also use fmt.Print and block on the same mutexes.
+				fmt.Print("4")
 			}
 		}
 	}
 }
+
 
 // simpleMain is the entry point for our simple goroutine/channel test
 // This will be run by the scheduler as the main goroutine
@@ -875,53 +897,38 @@ func simpleMain() {
 	Print("[Main] Timer IRQ disabled for priest launch")
 
 	// =========================================================================
-	// USERSPACE TEST: Launch priest in EL0
+	// USERSPACE TEST: Launch 6 sieve workers as separate threads
 	// =========================================================================
-	// This tests the full userspace transition:
-	//   1. Load priest.elf from FAT32 disk
-	//   2. Parse ELF and map segments with user permissions
-	//   3. Allocate user stack
-	//   4. ERET to EL0 to run priest
-	//   5. Priest makes SVC syscalls back to kernel
+	// This tests kernel thread scheduling fairness:
+	//   1. Load 6 separate sieve programs (sieve3-9) from FAT32 disk
+	//   2. Each runs as a separate OS thread (not goroutines)
+	//   3. Kernel scheduler distributes CPU time among them
+	//   4. Each prints primes as "ID:prime" (e.g., "3:20011")
 	//
-	// Note: This call does NOT return - priest runs in EL0 indefinitely.
-	// Comment out to skip userspace test and run goroutine preemption test.
+	// To switch back to goroutine test, comment out below and launch priestsieve.elf
 
-	// DEBUG: Print GC stats before launching priest
+	// DEBUG: Print GC stats before launching sievetest
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 	console.KPrintf("[Main] GC debug: NumGC=%d HeapAlloc=%d NextGC=%d GCPercent=%d\n",
 		memStats.NumGC, memStats.HeapAlloc, memStats.NextGC, debug.SetGCPercent(-1))
 
-	// Launch TWO priests sequentially.
-	// SyscallLaunch creates a thread for each priest and adds it to the ready queue.
-	// This tests thread scheduling across multiple userspace processes.
-
-	Print("[Main] Launching priest1 (/priest.elf)...")
-	filename1 := "/priest.elf\x00"
-	filenamePtr1 := uintptr(unsafe.Pointer(&([]byte(filename1))[0]))
-	result1 := ksyscall.SyscallLaunch(uint64(filenamePtr1), 0, 0, 0, 0, 0)
-	if result1 != 0 {
-		Print("[Main] ERROR: priest1 launch failed with code ")
-		PrintHex64(uint64(result1))
-		Print("\r\n")
+	// Launch sievetest multiple times to test multi-priest thread scheduling.
+	// Each launch creates a new priest with its own address space.
+	const numPriests = 2
+	Print("[Main] Launching sievetest 2 times (multi-priest thread test)...\r\n")
+	filename := "/sievetest.elf\x00"
+	filenamePtr := uintptr(unsafe.Pointer(&([]byte(filename))[0]))
+	for i := 0; i < numPriests; i++ {
+		result := ksyscall.SyscallLaunch(uint64(filenamePtr), 0, 0, 0, 0, 0)
+		if result != 0 {
+			console.KPrintf("[Main] ERROR: sievetest launch %d failed with code %d\n", i, result)
+		} else {
+			console.KPrintf("[Main] Launched sievetest instance %d\n", i)
+		}
 	}
 
-	Print("[Main] Launching priest2 (/priest2.elf)...")
-	filename2 := "/priest2.elf\x00"
-	filenamePtr2 := uintptr(unsafe.Pointer(&([]byte(filename2))[0]))
-	result2 := ksyscall.SyscallLaunch(uint64(filenamePtr2), 0, 0, 0, 0, 0)
-	if result2 != 0 {
-		Print("[Main] ERROR: priest2 launch failed with code ")
-		PrintHex64(uint64(result2))
-		Print("\r\n")
-	}
-
-	Print("[Main] Both priests launched successfully!")
-
-	// Launch a kernel goroutine that prints 4s to test kernel-side goroutine scheduling
-	Print("[Main] Launching kernel goroutine (prints 4s)...")
-	go busyLoop4s()
+	Print("[Main] 2 sievetest instances launched - testing thread scheduling fairness")
 
 	// Re-enable IRQs and timer for priest scheduling
 	EnableIRQs()
@@ -933,14 +940,30 @@ func simpleMain() {
 
 	Print("[Main] Kernel idle - priests will be scheduled by timer IRQ...\r\n")
 
-	// Debug: Add periodic breadcrumb to show we're still in the loop
+	// Idle loop - print stats and tick distribution periodically
 	loopCount := uint64(0)
+	lastTickPrintIRQ := uint64(0)
+	const tickPrintInterval = 500 // Print tick distribution every 500 timer IRQs (~5 seconds at 100Hz)
+
 	for {
 		loopCount++
+		// Every ~100M iterations, print stats
 		if loopCount%100000000 == 0 {
-			Breadcrumb('.')
+			waitCalls, blocked, eagain, wakeCalls := ksyscall.PrintFutexStats()
+			console.KPrintf("\n[Futex] wait=%d blocked=%d eagain=%d wake=%d\n",
+				waitCalls, blocked, eagain, wakeCalls)
+			console.KPrintf("[Stats] KernelYields=%d NeedsThreadPreempt=%d TimerIRQs=%d\n",
+				kirq.KernelYieldCount, kirq.NeedsThreadPreempt, kirq.TimerIRQCount)
+			console.KPrintf("[UserspacePreempt] path=%d coop=%d gchange=%d\n",
+				kirq.UserspacePathCount, kirq.UserspaceCoopPreemptCount, kirq.UserspaceGChangedCount)
 		}
-		// Just busy-wait. Timer IRQ will preempt us and schedule a priest.
+
+		// Print tick distribution every ~5 seconds (based on timer IRQ count)
+		currentIRQ := kirq.TimerIRQCount
+		if currentIRQ-lastTickPrintIRQ >= tickPrintInterval {
+			PrintTickDistribution()
+			lastTickPrintIRQ = currentIRQ
+		}
 	}
 }
 

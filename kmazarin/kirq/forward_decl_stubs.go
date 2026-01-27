@@ -18,3 +18,4 @@ func processDeadlines() {}
 func asm_rearmTimer(ticks uint64) {}
 func asm_readCntfrqEl0() (uint32) { return 0 }
 func asm_readCntvctEl0() (uint64) { return 0 }
+func asmYieldSVC() {}

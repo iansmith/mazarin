@@ -311,9 +311,11 @@ skip_g_switch_el1:
 
 	// SVC: First save ELR and SPSR so clone can get child's return address and state
 	// ELR and SPSR are already in the exception frame from earlier save
-	LDP	EXC_FRAME_ELR_SPSR(RSP), (R0, R1)  // Load ELR and SPSR from frame
-	GO_CALL_1_0(·SetSyscallELR, R0)        // SetSyscallELR(elr)
-	GO_CALL_1_0(·SetSyscallSPSR, R1)       // SetSyscallSPSR(spsr)
+	// CRITICAL: R0-R17 are caller-saved and will be clobbered by function calls!
+	// We must save SPSR to a callee-saved register (R19) before calling SetSyscallELR.
+	LDP	EXC_FRAME_ELR_SPSR(RSP), (R0, R19)  // Load ELR into R0, SPSR into R19 (callee-saved)
+	GO_CALL_1_0(·SetSyscallELR, R0)         // SetSyscallELR(elr) - may clobber R0-R17
+	GO_CALL_1_0(·SetSyscallSPSR, R19)       // SetSyscallSPSR(spsr) - R19 preserved
 
 	// Clear InCloneSetup flag for current thread (if set)
 	// This marks the clone child as having completed its setup phase.
@@ -481,6 +483,23 @@ not_svc_second_digit:
 not_svc_second:
 	MOVB	R10, (R12)
 
+	// Print " EL=" to show current exception level
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+	MOVD	$'E', R11
+	MOVB	R11, (R12)
+	MOVD	$'L', R11
+	MOVB	R11, (R12)
+	MOVD	$'=', R11
+	MOVB	R11, (R12)
+
+	// Read CurrentEL register
+	MRS	CurrentEL, R11
+	LSR	$2, R11, R11   // EL is in bits [3:2]
+	AND	$0x3, R11
+	ADD	$'0', R11
+	MOVB	R11, (R12)
+
 	// Check if this is PC alignment fault (EC=0x22) or instruction abort (EC=0x21) or unknown (EC=0x00)
 	CMP	$0x22, R20
 	BEQ	print_faulting_pc
@@ -557,6 +576,23 @@ data_abort_unhandled:
 	MOVB	R11, (R10)
 	MOVD	$'L', R11
 	MOVB	R11, (R10)
+
+	// Print " EL="
+	MOVD	$' ', R11
+	MOVB	R11, (R10)
+	MOVD	$'E', R11
+	MOVB	R11, (R10)
+	MOVD	$'L', R11
+	MOVB	R11, (R10)
+	MOVD	$'=', R11
+	MOVB	R11, (R10)
+
+	// Read CurrentEL register and print the exception level
+	MRS	CurrentEL, R12
+	LSR	$2, R12, R12   // EL is in bits [3:2]
+	AND	$0x3, R12
+	ADD	$'0', R12
+	MOVB	R12, (R10)
 
 	// Print " FAR="
 	MOVD	$' ', R11
@@ -1570,9 +1606,11 @@ skip_g_switch_el0:
 
 	// SVC from userspace - first save ELR and SPSR for clone
 	// Without this, clone would use stale values from a previous EL1 syscall!
-	LDP	EXC_FRAME_ELR_SPSR(RSP), (R0, R1)  // Load ELR and SPSR from frame
-	GO_CALL_1_0(·SetSyscallELR, R0)        // SetSyscallELR(elr)
-	GO_CALL_1_0(·SetSyscallSPSR, R1)       // SetSyscallSPSR(spsr)
+	// CRITICAL: R0-R17 are caller-saved and will be clobbered by function calls!
+	// We must save SPSR to a callee-saved register (R19) before calling SetSyscallELR.
+	LDP	EXC_FRAME_ELR_SPSR(RSP), (R0, R19)  // Load ELR into R0, SPSR into R19 (callee-saved)
+	GO_CALL_1_0(·SetSyscallELR, R0)          // SetSyscallELR(elr) - may clobber R0-R17
+	GO_CALL_1_0(·SetSyscallSPSR, R19)        // SetSyscallSPSR(spsr) - R19 preserved
 
 	// Clear InCloneSetup flag for current thread (if set)
 	// This marks the clone child as having completed its setup phase.

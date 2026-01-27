@@ -19,11 +19,10 @@ func SyscallGetpid(_, _, _, _, _, _ uint64) int64 {
 }
 
 // SyscallGettid returns the thread ID
-// Always return 1 (main thread)
 //
 //go:nosplit
 func SyscallGettid(_, _, _, _, _, _ uint64) int64 {
-	return 1
+	return int64(GetCurrentThreadTID())
 }
 
 // SyscallSchedYield yields the processor to another ready thread
@@ -176,11 +175,24 @@ func SyscallRead(_, _, _, _, _, _ uint64) int64 {
 }
 
 // SyscallOpenat opens a file
-// Return fake fd (5) for now
+// Return -ENOENT for /proc and /sys paths (cgroup, etc.)
+// This prevents the Go runtime from looping forever trying to read cgroup info
 //
 //go:nosplit
-func SyscallOpenat(_, _, _, _, _, _ uint64) int64 {
-	return 5 // Fake fd
+func SyscallOpenat(dirfd, pathname, flags, mode, _, _ uint64) int64 {
+	// Check first byte of pathname to detect /proc, /sys, /dev paths
+	// These don't exist in our minimal kernel environment
+	if pathname != 0 {
+		firstByte := *(*byte)(unsafe.Pointer(uintptr(pathname)))
+		if firstByte == '/' {
+			secondByte := *(*byte)(unsafe.Pointer(uintptr(pathname + 1)))
+			if secondByte == 'p' || secondByte == 's' || secondByte == 'd' {
+				// Likely /proc, /sys, or /dev - return ENOENT
+				return -2 // ENOENT
+			}
+		}
+	}
+	return 5 // Fake fd for other files
 }
 
 // ============================================================================

@@ -172,8 +172,8 @@ const (
 	// automatically adjust when the memory layout changes (e.g., framebuffer size).
 
 	// Size constants (fixed)
-	KernelTTBR1RegionSize = 0x10000  // 64KB (16 page tables max)
-	KernelPTPoolSize      = 0x80000  // 512KB (128 pages)
+	KernelTTBR1RegionSize = 0x10000   // 64KB (16 page tables max)
+	KernelPTPoolSize      = 0x400000  // 4MB (1024 pages) - supports multiple userspace processes
 
 	// TTBR1 page table region - Cardinal's TTBR1 L0/L1/L2 tables mapped here
 	// so kmazarin can modify them for demand paging.

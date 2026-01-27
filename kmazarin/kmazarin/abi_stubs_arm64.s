@@ -53,15 +53,39 @@ TEXT ·HandleUserPageFaultAsm(SB), $0-16
 // Go signature: func GetSyscallSwitchTarget() uint64
 // ABI0: 0 args + 1 return (8 bytes) = 8 bytes
 // Returns thread node pointer as uint64, 0 = no switch needed
-TEXT ·GetSyscallSwitchTarget(SB), NOSPLIT, $0-8
-	JMP	·getSyscallSwitchTargetInternal(SB)
+//
+// CRITICAL: Cannot use JMP tail-call for functions with return values!
+// The .abi0 wrapper writes returns relative to its entry SP, but our caller
+// reads from a different offset. Must use CALL and copy return value.
+TEXT ·GetSyscallSwitchTarget(SB), NOSPLIT, $16-8
+	// Frame: 16 bytes local (for internal's return) + 8 bytes for our return
+	// Call internal - it will write return to 8(SP) relative to its entry
+	CALL	·getSyscallSwitchTargetInternal(SB)
+	// Internal wrote return to 8(SP) where SP is our frame
+	// Load it and store to our return slot
+	MOVD	8(RSP), R0
+	MOVD	R0, ret+0(FP)
+	RET
 
 // DoContextSwitch saves current context and returns new context pointer
 // Go signature: func DoContextSwitch(framePtr uint64, targetPtr uint64) uint64
 // ABI0: 2 args (16 bytes) + 1 return (8 bytes) = 24 bytes
 // targetPtr is thread node pointer (not index)
-TEXT ·DoContextSwitch(SB), NOSPLIT, $0-24
-	JMP	·doContextSwitchABI0(SB)
+//
+// CRITICAL: Cannot use JMP tail-call for functions with return values!
+TEXT ·DoContextSwitch(SB), NOSPLIT, $32-24
+	// Load args from our caller's frame
+	MOVD	framePtr+0(FP), R0
+	MOVD	targetPtr+8(FP), R1
+	// Store to our local frame for internal call
+	MOVD	R0, 8(RSP)
+	MOVD	R1, 16(RSP)
+	// Call internal
+	CALL	·doContextSwitchABI0(SB)
+	// Load return from internal's return slot and store to ours
+	MOVD	24(RSP), R0
+	MOVD	R0, ret+16(FP)
+	RET
 
 // SetSyscallELR stores the ELR for current syscall
 // Go signature: func SetSyscallELR(elr uint64)

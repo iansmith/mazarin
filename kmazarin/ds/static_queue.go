@@ -24,10 +24,52 @@ type StaticQueue[T comparable] struct {
 }
 
 // Push adds value to the back of the queue.
-// Panics if the queue is full.
+// Panics if the queue is full or if value already exists (duplicate).
 //
 //go:nosplit
 func (q *StaticQueue[T]) Push(value T) {
+	if q.count >= len(q.Data) {
+		panic("StaticQueue overflow: capacity exceeded")
+	}
+
+	// Check for duplicates - panic if already in queue
+	for i := 0; i < len(q.Data); i++ {
+		if q.InUse[i] && q.Data[i] == value {
+			panic("StaticQueue duplicate: value already in queue")
+		}
+	}
+
+	// Find next free slot from tail
+	attempts := 0
+	for q.InUse[q.tail] && attempts < len(q.Data) {
+		q.tail = (q.tail + 1) % len(q.Data)
+		attempts++
+	}
+
+	if attempts >= len(q.Data) {
+		panic("StaticQueue overflow: no free slots")
+	}
+
+	q.Data[q.tail] = value
+	q.InUse[q.tail] = true
+	q.tail = (q.tail + 1) % len(q.Data)
+	q.count++
+}
+
+// PushNoDuplicate adds value to the back of the queue, but only if not already present.
+// Returns true if value was added, false if it was already in the queue.
+// Panics only if the queue is full and value is not a duplicate.
+//
+//go:nosplit
+func (q *StaticQueue[T]) PushNoDuplicate(value T) bool {
+	// Check for duplicates first
+	for i := 0; i < len(q.Data); i++ {
+		if q.InUse[i] && q.Data[i] == value {
+			// Already in queue - silently ignore
+			return false
+		}
+	}
+
 	if q.count >= len(q.Data) {
 		panic("StaticQueue overflow: capacity exceeded")
 	}
@@ -47,6 +89,7 @@ func (q *StaticQueue[T]) Push(value T) {
 	q.InUse[q.tail] = true
 	q.tail = (q.tail + 1) % len(q.Data)
 	q.count++
+	return true
 }
 
 // Pop removes and returns the front element, skipping holes.

@@ -69,156 +69,11 @@ rearm_timer:
 	MOVD	$1, R2
 	WORD	$0xD51BE322
 
-	// ========================================================================
-	// DEBUG: Increment and check timer IRQ counter
-	// ========================================================================
-	// TEST: Put counter back at kirq.TimerIRQCount to see if cycling returns
-	// Load current count
+	// Increment timer IRQ counter
 	MOVD	·TimerIRQCount(SB), R0
 	ADD	$1, R0
 	MOVD	R0, ·TimerIRQCount(SB)
-	// Memory barrier to ensure store completes
-	DSB	$15  // DSB SY - full system barrier
-
-	// ========================================================================
-	// DEBUG: Check AsyncPreemptWrapperAddr for corruption
-	// ========================================================================
-	// This address (0x439d7bc0) was where TimerIRQCount used to be.
-	// Check if something is writing to it unexpectedly.
-	MOVD	·AsyncPreemptWrapperAddr(SB), R6
-	// Expected value should be non-zero (set during init) and stable
-	// If count > 100 and value is suspicious, output warning
-	CMP	$100, R0
-	BLT	skip_wrapper_check
-	// Check if wrapper addr looks corrupted (e.g., small value like counter would be)
-	// A valid function address should be > 0x43800000
-	MOVD	$0x43800000, R7
-	CMP	R7, R6
-	BHS	skip_wrapper_check  // Value >= 0x43800000, looks valid
-	// Wrapper addr is suspiciously low! Output '!' and the value
-	MOVD	$UART_BASE, R2
-	MOVD	$'!', R3
-	MOVB	R3, (R2)
-	MOVD	$'W', R3
-	MOVB	R3, (R2)
-	MOVD	$'=', R3
-	MOVB	R3, (R2)
-	// Output low 12 bits of R6 as 3 hex digits
-	MOVD	R6, R4
-	LSR	$8, R4, R3
-	AND	$0xF, R3
-	CMP	$10, R3
-	BLT	wrapper_digit1
-	ADD	$('A'-10), R3
-	B	wrapper_out1
-wrapper_digit1:
-	ADD	$'0', R3
-wrapper_out1:
-	MOVB	R3, (R2)
-	MOVD	R6, R4
-	LSR	$4, R4, R3
-	AND	$0xF, R3
-	CMP	$10, R3
-	BLT	wrapper_digit2
-	ADD	$('A'-10), R3
-	B	wrapper_out2
-wrapper_digit2:
-	ADD	$'0', R3
-wrapper_out2:
-	MOVB	R3, (R2)
-	MOVD	R6, R3
-	AND	$0xF, R3
-	CMP	$10, R3
-	BLT	wrapper_digit3
-	ADD	$('A'-10), R3
-	B	wrapper_out3
-wrapper_digit3:
-	ADD	$'0', R3
-wrapper_out3:
-	MOVB	R3, (R2)
-	MOVD	$' ', R3
-	MOVB	R3, (R2)
-skip_wrapper_check:
-
-	// Check for milestone counts and output breadcrumbs
-	// Count 640: Output '#'
-	MOVD	$640, R1
-	CMP	R0, R1
-	BNE	check_644
-	MOVD	$UART_BASE, R2
-	MOVD	$'#', R3
-	MOVB	R3, (R2)
-	MOVD	$'6', R3
-	MOVB	R3, (R2)
-	MOVD	$'4', R3
-	MOVB	R3, (R2)
-	MOVD	$'0', R3
-	MOVB	R3, (R2)
-	MOVD	$' ', R3
-	MOVB	R3, (R2)
-
-check_644:
-	// Count 644: Output '@' and RE-READ counter to verify
-	MOVD	$644, R1
-	CMP	R0, R1
-	BNE	check_650
-	MOVD	$UART_BASE, R2
-	MOVD	$'@', R3
-	MOVB	R3, (R2)
-	// DEBUG: Re-read the counter from memory to see if it's really 644
-	MOVD	·TimerIRQCount(SB), R5  // Re-load counter
-	MOVD	$'[', R3
-	MOVB	R3, (R2)
-	// Output R0 (what we stored) low nibble
-	MOVD	R0, R4
-	AND	$0xF, R4
-	ADD	$'0', R4
-	MOVB	R4, (R2)
-	MOVD	$':', R3
-	MOVB	R3, (R2)
-	// Output R5 (what we read back) low nibble
-	MOVD	R5, R4
-	AND	$0xF, R4
-	ADD	$'0', R4
-	MOVB	R4, (R2)
-	MOVD	$']', R3
-	MOVB	R3, (R2)
-
-check_650:
-	// Count 650: Output '$'
-	MOVD	$650, R1
-	CMP	R0, R1
-	BNE	check_655
-	MOVD	$UART_BASE, R2
-	MOVD	$'$', R3
-	MOVB	R3, (R2)
-	MOVD	$'6', R3
-	MOVB	R3, (R2)
-	MOVD	$'5', R3
-	MOVB	R3, (R2)
-	MOVD	$'0', R3
-	MOVB	R3, (R2)
-	MOVD	$' ', R3
-	MOVB	R3, (R2)
-
-check_655:
-	// Count 655: Output '!' (should never wrap past 654)
-	MOVD	$655, R1
-	CMP	R0, R1
-	BNE	continue_normal
-	MOVD	$UART_BASE, R2
-	MOVD	$'!', R3
-	MOVB	R3, (R2)
-	MOVD	$'6', R3
-	MOVB	R3, (R2)
-	MOVD	$'5', R3
-	MOVB	R3, (R2)
-	MOVD	$'5', R3
-	MOVB	R3, (R2)
-	MOVD	$' ', R3
-	MOVB	R3, (R2)
-
-continue_normal:
+	DSB	$15  // DSB SY - ensure store completes
 	// ========================================================================
 	// Step 2: Check if preemption offsets are initialized
 	// ========================================================================
@@ -313,14 +168,9 @@ thread_not_nil:
 	//   GoroutinePreemptDeadline: 352
 	// ========================================================================
 
-	// Read current counter FIRST before any debug output
+	// Read current counter
 	// MRS X9, CNTVCT_EL0
 	WORD	$0xD53BE049
-
-	// DEBUG: Mark that we reached deadline check
-	MOVD	$UART_BASE, R8  // Use high-memory mapped UART
-	MOVW	$'@', R10
-	MOVB	R10, (R8)
 
 	// Load LastSeenG: offset 320
 	MOVD	320(R7), R8  // R8 = currentThread.LastSeenG
@@ -369,116 +219,17 @@ check_thread_deadline:
 	// NOTE: Go ARM64 CMP is swapped: CMP Rn, Rm computes Rm - Rn
 	MOVD	344(R7), R8  // R8 = ThreadPreemptDeadline
 
-	// DEBUG: Every 20 ticks, print thread deadline status
-	// Format: {C:xx D:xx} where C=current/1M, D=deadline/1M
-	MOVD	·TimerIRQCount(SB), R10
-	MOVD	$20, R11
-	UDIV	R11, R10, R12  // R12 = count / 20
-	MUL	R11, R12, R12   // R12 = (count/20)*20
-	CMP	R10, R12
-	BNE	skip_deadline_debug
-
-	// Print deadline debug: {P<pid> C<current_M> D<deadline_M>}
-	MOVD	$UART_BASE, R10
-	MOVW	$'{', R11
-	MOVB	R11, (R10)
-	MOVW	$'P', R11
-	MOVB	R11, (R10)
-
-	// Print current thread PID (offset 8 in Thread struct)
-	MOVW	8(R7), R11  // R11 = thread.PID (uint32 at offset 8)
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	pid_digit
-	ADD	$('A'-10), R11
-	B	pid_out
-pid_digit:
-	ADD	$'0', R11
-pid_out:
-	MOVB	R11, (R10)
-
-	MOVW	$' ', R11
-	MOVB	R11, (R10)
-	MOVW	$'C', R11
-	MOVB	R11, (R10)
-
-	// Print current time / 1M (roughly ms at 1MHz or ticks/1000000)
-	MOVD	$1000000, R11
-	UDIV	R11, R9, R12  // R12 = current / 1M
-	// Print 2 hex digits of R12
-	LSR	$4, R12, R13
-	AND	$0xF, R13
-	CMP	$10, R13
-	BLT	cur_digit1
-	ADD	$('A'-10), R13
-	B	cur_out1
-cur_digit1:
-	ADD	$'0', R13
-cur_out1:
-	MOVB	R13, (R10)
-	AND	$0xF, R12
-	CMP	$10, R12
-	BLT	cur_digit2
-	ADD	$('A'-10), R12
-	B	cur_out2
-cur_digit2:
-	ADD	$'0', R12
-cur_out2:
-	MOVB	R12, (R10)
-
-	MOVW	$' ', R11
-	MOVB	R11, (R10)
-	MOVW	$'D', R11
-	MOVB	R11, (R10)
-
-	// Print deadline / 1M
-	MOVD	$1000000, R11
-	UDIV	R11, R8, R12  // R12 = deadline / 1M
-	LSR	$4, R12, R13
-	AND	$0xF, R13
-	CMP	$10, R13
-	BLT	dl_digit1
-	ADD	$('A'-10), R13
-	B	dl_out1
-dl_digit1:
-	ADD	$'0', R13
-dl_out1:
-	MOVB	R13, (R10)
-	AND	$0xF, R12
-	CMP	$10, R12
-	BLT	dl_digit2
-	ADD	$('A'-10), R12
-	B	dl_out2
-dl_digit2:
-	ADD	$'0', R12
-dl_out2:
-	MOVB	R12, (R10)
-
-	MOVW	$'}', R11
-	MOVB	R11, (R10)
-
-skip_deadline_debug:
-	// Re-load deadline since we clobbered R8
-	MOVD	344(R7), R8  // R8 = ThreadPreemptDeadline
-
 	CMP	R8, R9  // Computes R9 - R8 = current - deadline
 	BLT	timer_return  // if current < deadline (negative), no preemption
 	// Current >= thread deadline - fall through to signal preemption
 
 thread_deadline_exceeded:
-	// Current >= thread deadline: print '#' debug marker and signal preemption
-	MOVD	$UART_BASE, R10
-	MOVW	$'#', R11
-	MOVB	R11, (R10)
+	// Current >= thread deadline: signal preemption
 	MOVW	$1, R8
 	MOVW	R8, ·NeedsThreadPreempt(SB)
 	B	timer_return
 
 init_deadlines:
-	// DEBUG: Mark that we're initializing deadlines
-	MOVD	$UART_BASE, R10
-	MOVW	$'I', R11
-	MOVB	R11, (R10)
 	// Deadlines not initialized - initialize them
 	// R9 = current counter
 	MOVD	R9, 328(R7)  // currentThread.StartTick = current tick
@@ -504,10 +255,10 @@ init_deadlines:
 // 2. Userspace threads have their own Go runtime that handles cooperative preemption
 // But we still need OS-level thread preemption so other priests get scheduled.
 g_in_userspace:
-	// DEBUG: Print 'U' to show we're in userspace path
-	MOVD	$UART_BASE, R10
-	MOVW	$'U', R11
-	MOVB	R11, (R10)
+	// Increment userspace path counter
+	MOVD	·UserspacePathCount(SB), R0
+	ADD	$1, R0
+	MOVD	R0, ·UserspacePathCount(SB)
 
 	// Load currentThread pointer directly
 	MOVD	main·CurrentThread(SB), R7  // *Thread
@@ -531,6 +282,11 @@ g_in_userspace:
 	BEQ	userspace_same_goroutine
 
 	// G changed! Reset GoroutinePreemptDeadline for the new goroutine.
+	// Increment g-changed counter
+	MOVD	·UserspaceGChangedCount(SB), R8
+	ADD	$1, R8
+	MOVD	R8, ·UserspaceGChangedCount(SB)
+
 	MOVD	R4, 320(R7)  // currentThread.LastSeenG = current g
 	MOVD	R9, 336(R7)  // currentThread.GoroutineStart = current tick
 	MOVD	·GoroutinePreemptTicks(SB), R8
@@ -540,7 +296,6 @@ g_in_userspace:
 
 userspace_same_goroutine:
 	// Same g - check goroutine deadline
-	// Check goroutine deadline: if current >= deadline, signal preemption
 	// NOTE: Go ARM64 CMP is swapped: CMP Rn, Rm computes Rm - Rn
 	MOVD	352(R7), R8  // R8 = GoroutinePreemptDeadline
 	CMP	R8, R9  // Computes R9 - R8 = current - deadline
@@ -551,6 +306,41 @@ userspace_same_goroutine:
 	MOVW	$1, R8
 	MOVW	R8, ·NeedsAsyncPreempt(SB)
 
+	// Increment cooperative preemption counter
+	MOVD	·UserspaceCoopPreemptCount(SB), R8
+	ADD	$1, R8
+	MOVD	R8, ·UserspaceCoopPreemptCount(SB)
+
+	// ========================================================================
+	// COOPERATIVE PREEMPTION: Set g.preempt = true and g.stackguard0 = stackPreempt
+	// ========================================================================
+	// Since the timer often fires during syscalls (SPSR shows EL1), async preemption
+	// injection is skipped. To ensure preemption, we also enable cooperative
+	// preemption by setting g.preempt and g.stackguard0 in the userspace g struct.
+	//
+	// The priest's Go runtime will check g.stackguard0 on function entry. If it
+	// equals stackPreempt, the runtime yields to let other goroutines run.
+	//
+	// R4 = userspace g pointer (from earlier in this function)
+	//
+	// Use STTR (unprivileged store) to write to userspace memory.
+	// STTR performs the store with EL0 permissions.
+
+	// Set g.preempt = true (1)
+	MOVD	·PreemptPreemptOffset(SB), R5
+	ADD	R4, R5, R5  // R5 = &g.preempt
+	MOVD	$1, R6
+	// STTR X6, [X5] - unprivileged store of 1 to g.preempt
+	// Encoding: size=11 (8-byte), opc=00, imm9=0, Rn=5, Rt=6
+	WORD	$0xF80008A6  // sttr x6, [x5]
+
+	// Set g.stackguard0 = stackPreempt
+	MOVD	·PreemptStackGuard0Offset(SB), R5
+	ADD	R4, R5, R5  // R5 = &g.stackguard0
+	MOVD	·PreemptStackPreemptValue(SB), R6  // R6 = stackPreempt poison value
+	// STTR X6, [X5] - unprivileged store of stackPreempt to g.stackguard0
+	WORD	$0xF80008A6  // sttr x6, [x5]
+
 userspace_check_thread_deadline:
 	// Check thread deadline: if current >= deadline, signal preemption
 	// NOTE: Go ARM64 CMP is swapped: CMP Rn, Rm computes Rm - Rn
@@ -558,10 +348,7 @@ userspace_check_thread_deadline:
 	CMP	R8, R9  // Computes R9 - R8 = current - deadline
 	BLT	timer_return  // if current < deadline (negative), no preemption
 
-	// Current >= thread deadline: print '#' and signal preemption needed
-	MOVD	$UART_BASE, R10
-	MOVW	$'#', R11
-	MOVB	R11, (R10)
+	// Current >= thread deadline: signal preemption needed
 	MOVW	$1, R8
 	MOVW	R8, ·NeedsThreadPreempt(SB)
 	B	timer_return

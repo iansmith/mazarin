@@ -9,17 +9,10 @@ import (
 //
 //go:nosplit
 func SyscallExit(status, _, _, _, _, _ uint64) int64 {
-	// Breadcrumb output
-	console.Breadcrumb('e')
-	console.Breadcrumb('x')
-	console.Breadcrumb('i')
-	console.Breadcrumb('t')
-
 	// Exit current thread and switch to next ready thread
 	nextCtx := ThreadExit()
 	if nextCtx == 0 {
 		// No more threads - halt system
-		console.KWriteString("\r\n=== NO THREADS REMAIN, HALTING ===\r\n")
 		haltForever()
 	}
 
@@ -33,23 +26,9 @@ func SyscallExit(status, _, _, _, _, _ uint64) int64 {
 //
 //go:nosplit
 func SyscallExitGroup(status, _, _, _, _, _ uint64) int64 {
-	// Breadcrumb output even if console isn't initialized
-	console.Breadcrumb('X')
-	console.Breadcrumb('G')
-	console.Breadcrumb('R')
-	console.Breadcrumb('P')
-	console.Breadcrumb(':')
-	console.KWriteString("\r\n=== EXIT GROUP CALLED ===\r\nStatus: ")
-
-	// Print status as decimal
-	hexChars := "0123456789ABCDEF"
-	tens := (status / 10) % 10
-	ones := status % 10
-	if tens > 0 {
-		console.KWriteByte(hexChars[tens])
-	}
-	console.KWriteByte(hexChars[ones])
-	console.KWriteString("\r\n=== PROCESS EXITED, HALTING ===\r\n")
+	console.KWriteString("\r\n=== EXIT GROUP, status: ")
+	console.KPrintHex64(status)
+	console.KWriteString(" ===\r\n")
 
 	haltForever()
 	return 0 // unreachable

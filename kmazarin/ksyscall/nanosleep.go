@@ -1,6 +1,7 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/kirq"
 	"unsafe"
 )
@@ -68,6 +69,11 @@ func SyscallNanosleep(req, rem, _, _, _, _ uint64) int64 {
 	// Mark current thread as sleeping and find next thread
 	nextThread := ThreadBlockSleep()
 	if nextThread != 0 {
+		console.Breadcrumb('[')
+		console.Breadcrumb('S')
+		console.Breadcrumb('L')
+		console.Breadcrumb('P')
+		console.Breadcrumb(']')
 		SetSyscallSwitchTarget(nextThread)
 	}
 	// else: No ready threads - will enter idle loop on return

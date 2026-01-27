@@ -29,6 +29,9 @@ Notes and observations about working with AI assistants on this codebase.
   in a given package(s) and then rewrite them to be different. This implies looking for 
   dead variables, dead types, and unused imports.
 
+* Tried to use sonnet to make a plan and then I had opus evaluate the problem and it
+was polite but basically pointed out all the mistakes in the plan and a major bit
+of surgery was needed.
 
 ---
 

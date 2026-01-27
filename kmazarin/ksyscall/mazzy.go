@@ -18,7 +18,7 @@ const (
 	SysReap                = MazzySyscallBase + 5 // 0x1005 - Reap terminated program
 	SysDebugPrint          = MazzySyscallBase + 6 // 0x1006 - Debug print arguments
 	SysGetFramebuffer      = MazzySyscallBase + 7 // 0x1007 - Get framebuffer info
-	SysWaitSoftIRQ         = MazzySyscallBase + 8 // 0x1008 - Wait for soft IRQ
+	SysWaitKernelAsync     = MazzySyscallBase + 8 // 0x1008 - Wait for kernel async message
 	SysRegisterAsyncPreempt = MazzySyscallBase + 9 // 0x1009 - Register asyncPreempt address for goroutine preemption
 )
 
@@ -33,27 +33,34 @@ var mazzySyscallTable = [64]SyscallHandler{
 	5: nil,                         // Reap = 0x1005 (not yet implemented)
 	6: SyscallDebugPrint,           // DebugPrint = 0x1006
 	7: SyscallGetFramebuffer,       // GetFramebuffer = 0x1007
-	8: SyscallWaitSoftIRQ,          // WaitSoftIRQ = 0x1008
+	8: SyscallWaitKernelAsync,      // WaitKernelAsync = 0x1008
 	9: SyscallRegisterAsyncPreempt, // RegisterAsyncPreempt = 0x1009
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.
 // arg0 = marker/id, arg1-arg5 = values to print
+// Special case: if v1-v5 are all 0 and marker < 256, print marker as a character
 //
 //go:nosplit
 func SyscallDebugPrint(marker, v1, v2, v3, v4, v5 uint64) int64 {
+	// Special case: single character output (no lock overhead)
+	if v1 == 0 && v2 == 0 && v3 == 0 && v4 == 0 && v5 == 0 && marker < 256 {
+		console.Breadcrumb(byte(marker))
+		return 0
+	}
+	// Full debug print
 	console.KWriteString("\r\n[DBG ")
-	printHexDigits(marker)
+	console.KPrintHex64(marker)
 	console.KWriteString("] ")
-	printHexDigits(v1)
+	console.KPrintHex64(v1)
 	console.KWriteString(" ")
-	printHexDigits(v2)
+	console.KPrintHex64(v2)
 	console.KWriteString(" ")
-	printHexDigits(v3)
+	console.KPrintHex64(v3)
 	console.KWriteString(" ")
-	printHexDigits(v4)
+	console.KPrintHex64(v4)
 	console.KWriteString(" ")
-	printHexDigits(v5)
+	console.KPrintHex64(v5)
 	console.KWriteString("\r\n")
 	return 0
 }

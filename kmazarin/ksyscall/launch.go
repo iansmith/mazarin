@@ -5,20 +5,9 @@ package ksyscall
 import (
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
-	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/fs/fat32"
 	"mazzy/kmazarin/kmem"
 	"unsafe"
-)
-
-// Custom auxv types for Mazzy-specific values.
-// Start at 512 to avoid conflicts with Linux auxv types (0-50).
-// These must match mazarin/priest.AuxvType values.
-const (
-	AT_MAZZY_FB_ADDR   = 512 // Framebuffer virtual address in priest space
-	AT_MAZZY_FB_WIDTH  = 513 // Framebuffer width in pixels
-	AT_MAZZY_FB_HEIGHT = 514 // Framebuffer height in pixels
-	AT_MAZZY_FB_PITCH  = 515 // Framebuffer pitch (bytes per row)
 )
 
 // ELF constants
@@ -140,87 +129,60 @@ func SyscallLaunch(filenamePtr, _, _, _, _, _ uint64) int64 {
 	// Read filename from kernel memory (TTBR1 high addresses)
 	filename := readKernelString(uintptr(filenamePtr))
 	if filename == "" {
-		console.KWriteString("[Launch] ERROR: Invalid filename pointer\r\n")
 		return -14 // EFAULT
 	}
 
-	console.KWriteString("\r\n[Launch] Loading ")
+	console.KWriteString("[Launch] ")
 	console.KWriteString(filename)
 	console.KWriteString("\r\n")
 
+	console.KWriteString("[Launch] Getting block device...\r\n")
 	// Get block device
 	blk, ok := device.GetBlockDevice()
 	if !ok {
-		console.KWriteString("[Launch] ERROR: No block device found\r\n")
 		return -1
 	}
 
+	console.KWriteString("[Launch] Mounting FAT32...\r\n")
 	// Mount FAT32 filesystem
 	fs, err := fat32.Mount(blk)
 	if err != nil {
-		console.KWriteString("[Launch] ERROR: Failed to mount filesystem: ")
-		console.KWriteString(err.Error())
-		console.KWriteString("\r\n")
 		return -2
 	}
 
+	console.KWriteString("[Launch] Opening file...\r\n")
 	// Open the ELF file
 	file, err := fs.Open(filename)
 	if err != nil {
-		console.KWriteString("[Launch] ERROR: Failed to open file: ")
-		console.KWriteString(err.Error())
-		console.KWriteString("\r\n")
 		return -3
 	}
 	defer file.Close()
 
+	console.KWriteString("[Launch] Reading file...\r\n")
 	// Read entire file
 	elfData, err := file.ReadAll()
 	if err != nil {
-		console.KWriteString("[Launch] ERROR: Failed to read file: ")
-		console.KWriteString(err.Error())
-		console.KWriteString("\r\n")
 		return -4
 	}
+	console.KWriteString("[Launch] File read complete\r\n")
 
-	console.KWriteString("[Launch] Read ")
-	console.KPrintHex64(uint64(len(elfData)))
-	console.KWriteString(" bytes\r\n")
-
-	// DEBUG: Check raw ELF data at SizeClassToSize offset (0x170A00)
-	// This verifies the FAT32 read is correct
-	console.KWriteString("[Launch] ELF[0x170A00..0x170A10]: ")
-	if len(elfData) > 0x170A10 {
-		for i := 0; i < 16; i++ {
-			console.KPrintHex64(uint64(elfData[0x170A00+i]))
-			console.KWriteString(" ")
-		}
-	} else {
-		console.KWriteString("(offset beyond file size)")
-	}
-	console.KWriteString("\r\n")
-
+	console.KWriteString("[Launch] Creating page table...\r\n")
 	// Create a FRESH page table for this process.
 	// This avoids inheriting any leftover mappings from Cardinal's TTBR0
 	// which could cause conflicts or cache coherency issues.
 	processL0PA := kmem.CreateProcessPageTable()
 	if processL0PA == 0 {
-		console.KWriteString("[Launch] ERROR: Failed to create process page table\r\n")
 		return -6
 	}
 	_ = processL0PA // Suppress unused variable warning (value stored in kmem global)
 
 	// Map the framebuffer into priest address space for UI rendering
 	if !kmem.MapUserFramebuffer() {
-		console.KWriteString("[Launch] ERROR: Failed to map framebuffer to userspace\r\n")
 		return -7
 	}
 
 	// Register the framebuffer as a span to prevent mmap collisions
-	if !addSpan(UserFramebufferVA, UserFramebufferSize) {
-		console.KWriteString("[Launch] WARNING: Failed to register framebuffer span\r\n")
-		// Not fatal - continue anyway
-	}
+	addSpan(UserFramebufferVA, UserFramebufferSize)
 
 	// Parse and load ELF (now using the fresh process page table)
 	// CRITICAL: Pass processL0PA explicitly to prevent race conditions!
@@ -229,300 +191,46 @@ func SyscallLaunch(filenamePtr, _, _, _, _, _ uint64) int64 {
 	// WRONG page table.
 	proc, err := loadELF(elfData, filename, processL0PA)
 	if err != nil {
-		console.KWriteString("[Launch] ERROR: Failed to load ELF: ")
-		console.KWriteString(err.Error())
-		console.KWriteString("\r\n")
 		return -5
 	}
 
 	// Store process info
 	currentProcess = proc
 
-	console.KWriteString("[Launch] Entry point: ")
-	console.KPrintHex64(proc.EntryPoint)
-	console.KWriteString("\r\n")
-
-	// Verify entry point code was loaded correctly
-	// Expected at 0x82fa0: e0 03 40 f9 e1 23 00 91 (ldr x0,[sp]; add x1,sp,#8)
-	console.KWriteString("[Launch] Code@0x82fa0: ")
-	for i := uintptr(0); i < 8; i++ {
-		b, ok := kmem.ReadUserByte(0x82fa0 + i)
-		if ok {
-			console.KPrintHex64(uint64(b))
-			console.KWriteString(" ")
-		}
-	}
-	console.KWriteString("(expect: e0 03 40 f9 e1 23 00 91)\r\n")
-
-	console.KWriteString("[Launch] Stack: ")
-	console.KPrintHex64(proc.StackBase)
-	console.KWriteString(" - ")
-	console.KPrintHex64(proc.StackTop)
-	console.KWriteString("\r\n")
-
-	console.KWriteString("[Launch] Jumping to userspace...\r\n")
-
 	// Final I-cache invalidation before userspace - ensure all loaded code is visible
 	kmem.InvalidateAllICache()
-
-	// DEBUG: Verify TTBR0 matches our internal tracking
-	hwTTBR0 := kmem.ReadHWTTBR0()
-	swTTBR0 := kmem.GetTTBR0L0PA()
-	console.KWriteString("[Launch] TTBR0 HW=")
-	console.KPrintHex64(uint64(hwTTBR0))
-	console.KWriteString(" SW=")
-	console.KPrintHex64(uint64(swTTBR0))
-	if hwTTBR0 != swTTBR0 {
-		console.KWriteString(" *** MISMATCH! ***")
-	}
-	console.KWriteString("\r\n")
-
-	// Verify mPaddedSizeclass is still correct
-	const mPaddedAddr = uintptr(0x180BC8)
-	// Walk the page table to get the PA
-	pa := kmem.WalkUserPageTable(mPaddedAddr)
-	console.KWriteString("[Launch] VA ")
-	console.KPrintHex64(uint64(mPaddedAddr))
-	console.KWriteString(" -> PA ")
-	console.KPrintHex64(uint64(pa))
-
-	console.KWriteString("\r\n")
-
-	// Read bytes around mPaddedSizeclass to verify data layout
-	console.KWriteString("[Launch] mPadded@180BC0: ")
-	for i := uintptr(0); i < 16; i++ {
-		if b, ok := kmem.ReadUserByte(0x180BC0 + i); ok {
-			console.KPrintHex64(uint64(b))
-			console.KWriteString(" ")
-		}
-	}
-	console.KWriteString("\r\n")
-
-	// Verify SizeClassToSize array at 0x180A00 (from nm build/priest.elf)
-	// It's uint16 array, so read 2 bytes per entry
-	// Print indices 0-15 to catch any corruption at index 8
-	console.KWriteString("[Launch] SizeClassToSize[0..15] @0x180A00:\r\n")
-	for i := uint64(0); i < 16; i++ {
-		addr := uintptr(0x180A00 + i*2)
-		lo, ok1 := kmem.ReadUserByte(addr)
-		hi, ok2 := kmem.ReadUserByte(addr + 1)
-		if ok1 && ok2 {
-			val := uint16(lo) | (uint16(hi) << 8)
-			console.KWriteString("  [")
-			console.KPrintHex64(i)
-			console.KWriteString("] = ")
-			console.KPrintHex64(uint64(val))
-			console.KWriteString(" (")
-			// Print decimal for clarity
-			if val < 1000 {
-				console.KPrintHex64(uint64(val))
-			}
-			console.KWriteString(")\r\n")
-		}
-	}
-
-	// Verify SizeClassToSize[8] specifically - the error says sizeclass 8 gets 8 bytes
-	// But SizeClassToSize[8] should be 96!
-	console.KWriteString("[Launch] SizeClassToSize[8]@0x180A10 (scratch): ")
-	lo, ok1 := kmem.ReadUserByte(0x180A10)
-	hi, ok2 := kmem.ReadUserByte(0x180A11)
-	if ok1 && ok2 {
-		val := uint16(lo) | (uint16(hi) << 8)
-		console.KPrintHex64(uint64(val))
-	}
-	console.KWriteString(" (expect: 0x60 = 96)\r\n")
-
-	// Check SizeToSizeClass8 at 0x180960 (first 16 bytes)
-	console.KWriteString("[Launch] SizeToSizeClass8[0..15]@0x180960: ")
-	for i := uintptr(0); i < 16; i++ {
-		b, ok := kmem.ReadUserByte(0x180960 + i)
-		if ok {
-			console.KPrintHex64(uint64(b))
-			console.KWriteString(" ")
-		}
-	}
-	console.KWriteString("\r\n")
-
-	// Check SizeToSizeClass128 at 0x180C20 - this is what lockVerifyMSize reads!
-	// The runtime does: ldrb w0, [x27, #3112] where x27 = 0x180000, so it reads 0x180C28
-	console.KWriteString("[Launch] SizeToSizeClass128[0..15]@0x180C20: ")
-	for i := uintptr(0); i < 16; i++ {
-		b, ok := kmem.ReadUserByte(0x180C20 + i)
-		if ok {
-			console.KPrintHex64(uint64(b))
-			console.KWriteString(" ")
-		}
-	}
-	console.KWriteString("\r\n")
-
-	// Specifically check the byte at 0x180C28 (index 8 into SizeToSizeClass128)
-	console.KWriteString("[Launch] SizeToSizeClass128[8]@0x180C28 (scratch): ")
-	if b, ok := kmem.ReadUserByte(0x180C28); ok {
-		console.KPrintHex64(uint64(b))
-	}
-	console.KWriteString(" (expect: 0x26=38 decimal)\r\n")
-
-	// Verify the ADRP instruction at 0x21DE8 (in lockVerifyMSize @ 0x21DD0)
-	// Expected: f0000afb (ADRP x27, 180000) at 0x21DE8
-	// Then:     3970a360 (ldrb w0, [x27, #3112]) at 0x21DEC
-	console.KWriteString("[Launch] lockVerifyMSize@21DD0 instructions:\r\n")
-	console.KWriteString("  @21DE8 (ADRP): ")
-	for i := uintptr(0); i < 4; i++ {
-		if b, ok := kmem.ReadUserByte(0x21DE8 + i); ok {
-			console.KPrintHex64(uint64(b))
-			console.KWriteString(" ")
-		}
-	}
-	console.KWriteString("(expect: fb 0a 00 f0)\r\n")
-	console.KWriteString("  @21DEC (LDRB): ")
-	for i := uintptr(0); i < 4; i++ {
-		if b, ok := kmem.ReadUserByte(0x21DEC + i); ok {
-			console.KPrintHex64(uint64(b))
-			console.KWriteString(" ")
-		}
-	}
-	console.KWriteString("(expect: 60 a3 70 39)\r\n")
-
-	// DEBUG: Print raw L3 PTE for VA 0x180000 (data segment page)
-	console.KWriteString("[Launch] L3 PTE for VA 0x180000: ")
-	l3pte := kmem.GetUserL3PTE(0x180000)
-	console.KPrintHex64(l3pte)
-	ptePA := l3pte & 0x0000FFFFFFFFF000
-	console.KWriteString(" (PA=")
-	console.KPrintHex64(ptePA)
-	console.KWriteString(")\r\n")
-
-	// CRITICAL DEBUG: Read from physical memory directly via QEMU
-	// If the L3 PTE PA is correct, the data should be there
-	console.KWriteString("[Launch] Reading SizeClassToSize[0..3] directly from PA ")
-	console.KPrintHex64(ptePA + 0xA00)
-	console.KWriteString(":\r\n")
-	// Read via kernel scratch mapping
-	scratchVA := kmem.MapPAToKernelScratch(uintptr(ptePA))
-	if scratchVA != 0 {
-		console.KWriteString("  via scratch: ")
-		for i := uintptr(0); i < 8; i++ {
-			b := *(*byte)(unsafe.Pointer(scratchVA + 0xA00 + i))
-			console.KPrintHex64(uint64(b))
-			console.KWriteString(" ")
-		}
-		console.KWriteString("\r\n")
-	}
-
-	// Also check L3 PTE for VA 0x1809A0 (SizeClassToSize) - should be same page
-	console.KWriteString("[Launch] L3 PTE for VA 0x1809A0: ")
-	l3pte2 := kmem.GetUserL3PTE(0x1809A0)
-	console.KPrintHex64(l3pte2)
-	console.KWriteString(" (should match above since same 4KB page)\r\n")
 
 	// Enable userspace mmap allocator before jumping to userspace
 	SetUserspaceActive()
 
-	// CRITICAL: Final cache and TLB maintenance before userspace jump
+	// Final cache and TLB maintenance before userspace jump
 	// This ensures all written data is visible to userspace instruction fetch and data access
-	console.KWriteString("[Launch] Final cache/TLB sync before ERET...\r\n")
 	kmem.FinalUserspaceSync()
 
-	// POST-SYNC VERIFICATION: Re-read data after FinalUserspaceSync to confirm it's visible
-	console.KWriteString("[Launch] POST-SYNC verification of SizeClassToSize:\r\n")
-	// Get a fresh scratch mapping
-	postPA := kmem.WalkUserPageTable(0x180000)
-	console.KWriteString("  PA for VA 0x180000: ")
-	console.KPrintHex64(uint64(postPA))
-	console.KWriteString("\r\n")
-
-	postScratch := kmem.MapPAToKernelScratch(postPA &^ 0xFFF)
-	if postScratch != 0 {
-		console.KWriteString("  SizeClassToSize[0..7] via fresh scratch: ")
-		for i := uintptr(0); i < 16; i++ {
-			b := *(*byte)(unsafe.Pointer(postScratch + 0xA00 + i))
-			console.KPrintHex64(uint64(b))
-			console.KWriteString(" ")
-		}
-		console.KWriteString("\r\n")
-
-		// Specifically check index 8 (at offset 16-17)
-		lo := *(*byte)(unsafe.Pointer(postScratch + 0xA10))
-		hi := *(*byte)(unsafe.Pointer(postScratch + 0xA11))
-		val := uint16(lo) | uint16(hi)<<8
-		console.KWriteString("  SizeClassToSize[8] = ")
-		console.KPrintHex64(uint64(val))
-		console.KWriteString(" (expect 96=0x60)\r\n")
-
-		// CRITICAL: Check SizeClassToSize[38] - THIS IS WHAT PRIEST READS WRONG!
-		// SizeClassToSize[38] is at offset 38*2 = 76 = 0x4C from base 0xA00
-		// So at scratch offset 0xA4C
-		lo38 := *(*byte)(unsafe.Pointer(postScratch + 0xA4C))
-		hi38 := *(*byte)(unsafe.Pointer(postScratch + 0xA4D))
-		val38 := uint16(lo38) | uint16(hi38)<<8
-		console.KWriteString("  SizeClassToSize[38]@0x180A4C = ")
-		console.KPrintHex64(uint64(val38))
-		console.KWriteString(" (expect 2048=0x800) lo=")
-		console.KPrintHex64(uint64(lo38))
-		console.KWriteString(" hi=")
-		console.KPrintHex64(uint64(hi38))
-		console.KWriteString("\r\n")
-
-		// Check SizeToSizeClass128[8]
-		sc128 := *(*byte)(unsafe.Pointer(postScratch + 0xC28))
-		console.KWriteString("  SizeToSizeClass128[8] = ")
-		console.KPrintHex64(uint64(sc128))
-		console.KWriteString(" (expect 38=0x26)\r\n")
-	}
-
-	// CRITICAL: Switch TTBR0 to the process-specific page table before ERET.
-	// This ensures priest runs with a clean address space, not Cardinal's leftover mappings.
-	// Use explicit l0PA to prevent race conditions with context switches that corrupt
-	// the global processL0PA.
-	kmem.SwitchToProcessPageTableWithL0(processL0PA)
-
-	// FINAL VERIFICATION: Read from the PHYSICAL ADDRESS directly via scratch mapping
-	// to confirm the data is absolutely correct at the moment before ERET
-	console.KWriteString("[Launch] FINAL physical memory check at PA 0x4513AC28:\r\n")
-	finalPA := kmem.WalkUserPageTable(0x180C28)
-	console.KWriteString("  VA 0x180C28 -> PA ")
-	console.KPrintHex64(uint64(finalPA))
-	if finalPA != 0 {
-		finalScratch := kmem.MapPAToKernelScratch(finalPA &^ 0xFFF)
-		if finalScratch != 0 {
-			finalVal := *(*byte)(unsafe.Pointer(finalScratch + (finalPA & 0xFFF)))
-			console.KWriteString(" value=")
-			console.KPrintHex64(uint64(finalVal))
-			console.KWriteString(" (MUST be 0x26=38)")
-		}
-	}
-	console.KWriteString("\r\n")
-
-	// Also verify a few surrounding bytes
-	console.KWriteString("  Surrounding bytes at PA: ")
-	if finalPA != 0 {
-		finalScratch := kmem.MapPAToKernelScratch(finalPA &^ 0xFFF)
-		if finalScratch != 0 {
-			for i := uintptr(0); i < 16; i++ {
-				b := *(*byte)(unsafe.Pointer(finalScratch + (finalPA&^0xFFF&0xFFF) + 0xC20 + i))
-				console.KPrintHex64(uint64(b))
-				console.KWriteString(" ")
-			}
-		}
-	}
-	console.KWriteString("\r\n")
-
-	// CRITICAL: Enable timer IRQ before starting userspace threads
-	// This ensures preemption works for priests running at EL0
-	EnableTimerIRQ()
-	console.KWriteString("[Launch] Timer IRQ enabled for userspace preemption\r\n")
+	// NOTE: We do NOT switch TTBR0 here or enable timer IRQ.
+	// The kernel runs using TTBR1, so TTBR0 switching is not needed during launch.
+	// The context switch code will switch TTBR0 when this thread is scheduled.
+	// Timer IRQ should be enabled by the caller after all launches complete,
+	// to avoid race conditions where timer fires mid-launch and causes
+	// context switches that corrupt global page table state.
 
 	// Create a new thread for this process instead of jumping directly
 	// The thread will be added to the ready queue and scheduled by the kernel
 	// Pass the asyncPreempt address extracted from ELF symbols
+
+	// DEBUG: Print stack pointer before creating thread
+	console.KWriteString("[Launch] Entry=")
+	console.KPrintHex64(proc.EntryPoint)
+	console.KWriteString(" Stack=")
+	console.KPrintHex64(proc.StackTop)
+	console.KWriteString("\r\n")
+
 	tid := CreateUserspaceThread(proc.EntryPoint, proc.StackTop, processL0PA, proc.AsyncPreemptAddr)
 
-	console.KWriteString("[Launch] Created thread TID=")
+	console.KWriteString("[Launch] TID=")
 	console.KPrintHex64(uint64(tid))
-	console.KWriteString(" for ")
+	console.KWriteString(" ")
 	console.KWriteString(filename)
-	console.KWriteString(" asyncPreempt=")
-	console.KPrintHex64(proc.AsyncPreemptAddr)
 	console.KWriteString("\r\n")
 
 	// Return to caller - the new thread will be scheduled later
@@ -535,7 +243,12 @@ func SyscallLaunch(filenamePtr, _, _, _, _, _ uint64) int64 {
 // CRITICAL: This must be passed explicitly to prevent race conditions with
 // context switches that would otherwise corrupt the global processL0PA.
 func loadELF(data []byte, filename string, l0PA uintptr) (*Process, error) {
+	console.KWriteString("[loadELF] start l0PA=0x")
+	console.KPrintHex64(uint64(l0PA))
+	console.KWriteString("\r\n")
+
 	if len(data) < 64 {
+		console.KWriteString("[loadELF] file too small\r\n")
 		return nil, &elfError{"file too small for ELF header"}
 	}
 
@@ -544,24 +257,25 @@ func loadELF(data []byte, filename string, l0PA uintptr) (*Process, error) {
 
 	// Validate ELF magic
 	if hdr.Magic != ELF_MAGIC {
+		console.KWriteString("[loadELF] bad magic\r\n")
 		return nil, &elfError{"invalid ELF magic"}
 	}
 
 	// Validate architecture
 	if hdr.Class != ELF_CLASS64 || hdr.Machine != ELF_MACHINE_AARCH64 {
+		console.KWriteString("[loadELF] not ARM64\r\n")
 		return nil, &elfError{"not an ARM64 ELF"}
 	}
 
-	console.KWriteString("[ELF] Valid ARM64 ELF64, entry=")
-	console.KPrintHex64(hdr.Entry)
-	console.KWriteString(", phnum=")
+	console.KWriteString("[loadELF] loading ")
 	console.KPrintHex64(uint64(hdr.Phnum))
-	console.KWriteString("\r\n")
+	console.KWriteString(" segments\r\n")
 
 	// Process program headers and load segments
 	for i := uint16(0); i < hdr.Phnum; i++ {
 		phdrOffset := hdr.Phoff + uint64(i)*uint64(hdr.Phentsize)
 		if phdrOffset+uint64(hdr.Phentsize) > uint64(len(data)) {
+			console.KWriteString("[loadELF] phdr out of bounds\r\n")
 			return nil, &elfError{"program header out of bounds"}
 		}
 
@@ -572,21 +286,20 @@ func loadELF(data []byte, filename string, l0PA uintptr) (*Process, error) {
 			continue
 		}
 
-		console.KWriteString("[ELF] LOAD segment: vaddr=")
+		console.KWriteString("[loadELF] seg ")
+		console.KPrintHex64(uint64(i))
+		console.KWriteString(" vaddr=0x")
 		console.KPrintHex64(phdr.Vaddr)
-		console.KWriteString(" memsz=")
-		console.KPrintHex64(phdr.Memsz)
-		console.KWriteString(" filesz=")
-		console.KPrintHex64(phdr.Filesz)
-		console.KWriteString(" flags=")
-		console.KPrintHex64(uint64(phdr.Flags))
 		console.KWriteString("\r\n")
 
 		// Load this segment into memory
 		if err := loadSegment(data, &phdr, l0PA); err != nil {
+			console.KWriteString("[loadELF] loadSegment failed\r\n")
 			return nil, err
 		}
 	}
+
+	console.KWriteString("[loadELF] segments done, allocating stack\r\n")
 
 	// Allocate a user stack (64KB at a fixed location for now)
 	// Stack grows downward from high addresses to low addresses.
@@ -595,76 +308,23 @@ func loadELF(data []byte, filename string, l0PA uintptr) (*Process, error) {
 	stackBase := uint64(0x00007FFF00000000)
 	stackSize := uint64(64 * 1024) // 64KB
 
-	console.KWriteString("[ELF] Allocating user stack at ")
-	console.KPrintHex64(stackBase)
-	console.KWriteString("\r\n")
-
 	if err := allocateUserStack(stackBase, stackSize, l0PA); err != nil {
+		console.KWriteString("[loadELF] allocateUserStack failed\r\n")
 		return nil, err
 	}
+
+	console.KWriteString("[loadELF] stack allocated, setting up\r\n")
 
 	// Set up the stack with argc, argv, envp, and auxv
 	// This returns the final SP value pointing to argc on the stack
-	stackTop, err := setupUserStack(stackBase, stackSize, filename)
+	// Pass l0PA to ensure we look up pages in the correct page table
+	stackTop, err := setupUserStack(stackBase, stackSize, filename, l0PA)
 	if err != nil {
+		console.KWriteString("[loadELF] setupUserStack failed\r\n")
 		return nil, err
 	}
 
-	console.KWriteString("[ELF] Stack setup complete, SP=")
-	console.KPrintHex64(stackTop)
-	console.KWriteString("\r\n")
-
-	// Debug: verify first few bytes at key addresses
-	// For helloworld.maz: class_to_size @ 0x1809A0, mPaddedSizeclass @ 0x180BC8
-	console.KWriteString("[ELF] class_to_size[0..3] at 0x1809A0: ")
-	for i := uint64(0); i < 8; i++ {
-		b, _ := kmem.ReadUserByte(uintptr(0x1809A0 + i))
-		console.KPrintHex64(uint64(b))
-		console.KWriteString(" ")
-	}
-	console.KWriteString("\r\n")
-
-	console.KWriteString("[ELF] mPaddedSizeclass at 0x180BC8 (scratch): ")
-	mps, _ := kmem.ReadUserByte(uintptr(0x180BC8))
-	console.KPrintHex64(uint64(mps))
-	console.KWriteString("\r\n")
-
-	// Also verify class_to_size[38] at 0x1809EC
-	console.KWriteString("[ELF] class_to_size[38] at 0x1809EC (scratch): ")
-	lo, _ := kmem.ReadUserByte(uintptr(0x1809EC))
-	hi, _ := kmem.ReadUserByte(uintptr(0x1809ED))
-	console.KPrintHex64(uint64(lo) | (uint64(hi) << 8))
-	console.KWriteString("\r\n")
-
-	// Check ADRP instruction at 0x21d68 - should encode target 0x180000
-	// Expected bytes: fb 0a 00 f0 (ADRP x27, 180000)
-	console.KWriteString("[ELF] ADRP at 0x21d68: ")
-	for i := uint64(0); i < 4; i++ {
-		b, _ := kmem.ReadUserByte(uintptr(0x21d68 + i))
-		console.KPrintHex64(uint64(b))
-		console.KWriteString(" ")
-	}
-	console.KWriteString("(expect: fb 0a 00 f0)\r\n")
-
-	// Check ldrb instruction at 0x21d6c - loads mPaddedSizeclass from [x27, #3016]
-	// Expected bytes: 60 23 6f 39 (ldrb w0, [x27, #3016])
-	console.KWriteString("[ELF] LDRB at 0x21d6c: ")
-	for i := uint64(0); i < 4; i++ {
-		b, _ := kmem.ReadUserByte(uintptr(0x21d6c + i))
-		console.KPrintHex64(uint64(b))
-		console.KWriteString(" ")
-	}
-	console.KWriteString("(expect: 60 23 6f 39, reads from x27+3016=x27+0xBC8)\r\n")
-
-	// Check class_to_size table address calculation at 0x21d7c-0x21d83
-	// ADRP x1, 180000 then ADD x1, x1, #0x9a0
-	console.KWriteString("[ELF] class_to_size calc at 0x21d7c: ")
-	for i := uint64(0); i < 8; i++ {
-		b, _ := kmem.ReadUserByte(uintptr(0x21d7c + i))
-		console.KPrintHex64(uint64(b))
-		console.KWriteString(" ")
-	}
-	console.KWriteString("(expect: e1 0a 00 f0 21 80 26 91 = ADRP x1,180000; ADD x1,x1,#0x9a0)\r\n")
+	console.KWriteString("[loadELF] stack setup complete\r\n")
 
 	// Find runtime.asyncPreempt symbol address for async preemption injection
 	// Note: Go 1.25+ uses .abi0 suffix for ABI0-compatible symbols
@@ -672,13 +332,6 @@ func loadELF(data []byte, filename string, l0PA uintptr) (*Process, error) {
 	if asyncPreemptAddr == 0 {
 		// Try without suffix (older Go versions)
 		asyncPreemptAddr = findSymbolAddress(data, &hdr, "runtime.asyncPreempt")
-	}
-	if asyncPreemptAddr != 0 {
-		console.KWriteString("[ELF] Found runtime.asyncPreempt at ")
-		console.KPrintHex64(asyncPreemptAddr)
-		console.KWriteString("\r\n")
-	} else {
-		console.KWriteString("[ELF] WARNING: runtime.asyncPreempt not found in symbol table\r\n")
 	}
 
 	return &Process{
@@ -863,6 +516,10 @@ func loadSegment(elfData []byte, phdr *elf64Phdr, l0PA uintptr) error {
 	endPage := (endAddr + pageSize - 1) &^ (pageSize - 1)
 	numPages := (endPage - startPage) / pageSize
 
+	console.KWriteString("[loadSeg] ")
+	console.KPrintHex64(numPages)
+	console.KWriteString(" pages\r\n")
+
 	// Track physical addresses for each page so we can remap scratch VA later
 	// AllocAndMapUserPageWithL0 returns (framePA, scratchVA)
 	pagePAs := make([]uintptr, numPages)
@@ -876,6 +533,11 @@ func loadSegment(elfData []byte, phdr *elf64Phdr, l0PA uintptr) error {
 		// Using explicit l0PA prevents race conditions with context switches.
 		framePA, _ := kmem.AllocAndMapUserPageWithL0(uintptr(pageVA), phdr.Flags, l0PA)
 		if framePA == 0 {
+			console.KWriteString("[loadSeg] alloc failed at page ")
+			console.KPrintHex64(page)
+			console.KWriteString(" va=0x")
+			console.KPrintHex64(pageVA)
+			console.KWriteString("\r\n")
 			return &elfError{"failed to alloc/map/zero user page"}
 		}
 		pagePAs[page] = framePA
@@ -960,23 +622,22 @@ func allocateUserStack(base, size uint64, l0PA uintptr) error {
 // setupUserStack sets up the initial stack for a userspace program.
 // Returns the adjusted stack pointer.
 //
-// Stack layout (from high to low addresses):
-//   [random bytes - 16 bytes for AT_RANDOM]
-//   [program name string - null terminated]
-//   [padding for 16-byte alignment]
-//   [auxv entries - type/value pairs ending with AT_NULL]
-//   [NULL - end of envp]
-//   [NULL - end of argv]
-//   [argv[0] - pointer to program name]
-//   [argc = 1]
-//   <- SP points here
-func setupUserStack(stackBase, stackSize uint64, filename string) (uint64, error) {
+// Minimal stack layout for Go rt0 (from low to high addresses):
+//   SP+0:  argc = 0
+//   SP+8:  NULL (end of argv, since argc=0)
+//   SP+16: NULL (end of envp)
+//   SP+24: AT_PAGESZ (auxv type)
+//   SP+32: 4096 (auxv value)
+//   SP+40: AT_NULL (auxv terminator)
+//   SP+48: 0
+func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr) (uint64, error) {
 	pageSize := uint64(4096)
 	stackTop := stackBase + stackSize
 
 	// Get the physical address of the top stack page
+	// Use the explicit L0PA to look up in the correct page table (not TTBR0 which hasn't been switched yet)
 	topPageVA := (stackTop - 1) &^ (pageSize - 1) // Round down to page boundary
-	topPA := kmem.WalkUserPageTable(uintptr(topPageVA))
+	topPA := kmem.WalkUserPageTableWithL0(uintptr(topPageVA), l0PA)
 	if topPA == 0 {
 		return 0, &elfError{"stack page not mapped"}
 	}
@@ -987,65 +648,23 @@ func setupUserStack(stackBase, stackSize uint64, filename string) (uint64, error
 		return 0, &elfError{"failed to map stack to kernel scratch"}
 	}
 
-	// Start writing from the top of the stack
-	sp := stackTop
+	// Minimal stack layout: argc=0, argv=NULL, envp=NULL, auxv={AT_PAGESZ, AT_NULL}
+	// Total: 8 bytes * 7 = 56 bytes, aligned to 16 = 64 bytes
+	totalSize := uint64(64)
 
-	// 1. Write 16 random bytes at the top (for AT_RANDOM)
-	sp -= 16
-	randomAddr := sp
-	// Just use zeros for now (not cryptographically secure, but works for testing)
-	for i := uint64(0); i < 16; i++ {
-		writeStackByte(stackBase, stackTop, kernelVA, sp+i, 0)
-	}
+	// SP will be near the top of the stack, 16-byte aligned
+	sp := (stackTop - totalSize) &^ 15
 
-	// 2. Write the program name string
-	nameBytes := []byte(filename)
-	nameLen := uint64(len(nameBytes)) + 1 // +1 for null terminator
-	sp -= nameLen
-	nameAddr := sp
-	for i := 0; i < len(nameBytes); i++ {
-		writeStackByte(stackBase, stackTop, kernelVA, sp+uint64(i), nameBytes[i])
-	}
-	writeStackByte(stackBase, stackTop, kernelVA, sp+uint64(len(nameBytes)), 0) // null terminator
+	console.KPrintf("[setupUserStack] stackBase=0x%x stackTop=0x%x sp=0x%x\n", stackBase, stackTop, sp)
 
-	// 3. Align SP to 16 bytes
-	sp = sp &^ 15
-
-	// 4. Build auxv, envp, argv, argc from top down
-	// We'll calculate the positions and write them
-
-	// auxv entries (Go runtime needs these, plus Mazzy-specific framebuffer info)
-	auxvEntries := [][2]uint64{
-		{6, pageSize},                            // AT_PAGESZ = 6
-		{25, randomAddr},                         // AT_RANDOM = 25 (pointer to 16 random bytes)
-		{AT_MAZZY_FB_ADDR, UserFramebufferVA},    // Framebuffer VA in priest space
-		{AT_MAZZY_FB_WIDTH, uint64(gpu.GetWidth())},   // Framebuffer width
-		{AT_MAZZY_FB_HEIGHT, uint64(gpu.GetHeight())}, // Framebuffer height
-		{AT_MAZZY_FB_PITCH, uint64(gpu.GetWidth() * 4)}, // Pitch = width * 4 bytes per pixel
-		{0, 0},                                   // AT_NULL = 0 (terminator)
-	}
-
-	// Calculate total size needed:
-	// argc (8) + argv[0] (8) + NULL (8) + NULL (8) + auxv entries
-	numAuxv := uint64(len(auxvEntries))
-	totalSize := 8 + 8 + 8 + 8 + (numAuxv * 16) // argc + argv[0] + argv NULL + envp NULL + auxv
-
-	// Make sure we have 16-byte alignment after adding everything
-	sp -= totalSize
-	sp = sp &^ 15
-
-	// Now write the stack contents from low address (SP) to high
+	// Write the minimal stack layout
 	offset := uint64(0)
 
-	// argc = 1
-	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, 1)
+	// argc = 0
+	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, 0)
 	offset += 8
 
-	// argv[0] = pointer to program name
-	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, nameAddr)
-	offset += 8
-
-	// NULL (end of argv)
+	// NULL (end of argv, since argc=0)
 	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, 0)
 	offset += 8
 
@@ -1053,16 +672,26 @@ func setupUserStack(stackBase, stackSize uint64, filename string) (uint64, error
 	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, 0)
 	offset += 8
 
-	// auxv entries
-	for _, entry := range auxvEntries {
-		writeStackU64(stackBase, stackTop, kernelVA, sp+offset, entry[0])
-		offset += 8
-		writeStackU64(stackBase, stackTop, kernelVA, sp+offset, entry[1])
-		offset += 8
-	}
+	// AT_PAGESZ = 6
+	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, 6)
+	offset += 8
+
+	// page size value = 4096
+	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, pageSize)
+	offset += 8
+
+	// AT_NULL = 0 (auxv terminator)
+	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, 0)
+	offset += 8
+
+	// 0 (auxv terminator value)
+	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, 0)
+	offset += 8
 
 	// Clean cache for the stack page we wrote to
 	kmem.CleanPageCache(kernelVA)
+
+	console.KPrintf("[setupUserStack] Wrote %d bytes, returning sp=0x%x\n", offset, sp)
 
 	return sp, nil
 }

@@ -25,6 +25,7 @@ type preemptOffsetsType struct {
 	GScan             uint32
 	GMOffset          uintptr // Offset of g.m from g pointer
 	MG0Offset         uintptr // Offset of m.g0 from m pointer (always 0)
+	MLocksOffset      uintptr // Offset of m.locks from m pointer
 }
 
 // Global preemption offsets - set by InitPreemption(), read by assembly.
@@ -41,6 +42,7 @@ var (
 	PreemptOffsetsValid      uint32  // 1 when offsets have been initialized
 	PreemptGMOffset          uintptr // Offset of g.m from g pointer
 	PreemptMG0Offset         uintptr // Offset of m.g0 from m pointer (always 0)
+	PreemptMLocksOffset      uintptr // Offset of m.locks from m pointer
 
 	// Async preemption addresses - set by SetAsyncPreemptAddr, read by assembly
 	AsyncPreemptAddr        uint64 // Address of runtime.asyncPreempt
@@ -118,6 +120,11 @@ var NeedsAsyncPreempt uint32
 // Checked by exception handler after TimerIRQHandlerAsm returns.
 var NeedsThreadPreempt uint32
 
+// Debug counters for userspace preemption path
+var UserspacePathCount uint64       // How often we enter userspace path
+var UserspaceCoopPreemptCount uint64 // How often we set cooperative preemption
+var UserspaceGChangedCount uint64   // How often g changed (goroutine switch detected)
+
 // System timer frequency in Hz - read from CNTFRQ_EL0 at init.
 // Exported for use by other packages and assembly.
 var SystemTimerFrequency uint64
@@ -143,6 +150,7 @@ func InitPreemption() {
 	PreemptGScan = offsets.GScan
 	PreemptGMOffset = offsets.GMOffset
 	PreemptMG0Offset = offsets.MG0Offset
+	PreemptMLocksOffset = offsets.MLocksOffset
 
 	// Read system timer frequency
 	SystemTimerFrequency = uint64(asm_readCntfrqEl0())
@@ -224,3 +232,56 @@ func IncrementPreemptTicks(gptr uintptr) uint32 {
 func GetTimerTicksFor10ms() uint64 {
 	return (SystemTimerFrequency * 10) / 1000
 }
+
+// KernelYieldCount tracks how many times the kernel voluntarily yielded
+// due to preemption checks in direct function calls.
+var KernelYieldCount uint64
+
+// KernelWriteCount counts writes for yielding decisions
+var kernelWriteCount uint64
+
+// KernelYieldInterval controls how often the kernel yields (every N writes)
+// Setting this to match priest behavior: priests do many syscalls per timeslice,
+// and each syscall gives a chance to yield. We simulate similar behavior.
+const KernelYieldInterval = 100
+
+// CheckAndYieldPreemption simulates what would happen if kernel direct function
+// calls also checked for preemption (like userspace syscalls do).
+//
+// This yields every KernelYieldInterval writes to give other threads a chance
+// to run. This simulates the behavior of priests, which can be preempted on
+// every syscall return if another thread is waiting.
+//
+// Returns true if we yielded, false otherwise.
+//
+//go:nosplit
+func CheckAndYieldPreemption() bool {
+	// TEMPORARILY DISABLED: SVC yield causes crashes
+	// The crash is E:20 (instruction abort) with ELR=0, suggesting
+	// corrupted return address during context switch.
+	return false
+
+	// Increment write counter
+	count := atomic.AddUint64(&kernelWriteCount, 1)
+
+	// Only yield every N writes
+	if count%KernelYieldInterval != 0 {
+		return false
+	}
+
+	// Track yield count for debugging
+	atomic.AddUint64(&KernelYieldCount, 1)
+
+	// Issue SVC #124 (sched_yield) to trigger a voluntary yield
+	// This will go through the exception handler which will:
+	// 1. Call SyscallSchedYield
+	// 2. If another thread is ready, switch to it
+	// 3. If no other thread ready, return immediately
+	asmYieldSVC()
+
+	return true
+}
+
+// asmYieldSVC is implemented in preempt_yield_arm64.s
+// Issues SVC #124 (sched_yield syscall) to trigger a voluntary yield.
+func asmYieldSVC()
