@@ -470,6 +470,7 @@ type PreemptOffsets struct {
 	// Offsets into g struct
 	StackGuard0Offset uintptr // g.stackguard0 - poison this to trigger preemption
 	PreemptOffset     uintptr // g.preempt - set to true
+	PreemptStopOffset uintptr // g.preemptStop - set to true for safe async preemption
 	GStatusOffset     uintptr // g.atomicstatus - check for _Grunning
 
 	// Offsets into g.stack (stack struct at offset 0 in g)
@@ -505,6 +506,7 @@ func GetPreemptOffsets() PreemptOffsets {
 		// g struct offsets - computed at compile time
 		StackGuard0Offset: unsafe.Offsetof(gInstance.stackguard0),
 		PreemptOffset:     unsafe.Offsetof(gInstance.preempt),
+		PreemptStopOffset: unsafe.Offsetof(gInstance.preemptStop),
 		GStatusOffset:     unsafe.Offsetof(gInstance.atomicstatus),
 
 		// stack struct offsets (stack is at offset 0 in g)

@@ -3,6 +3,7 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/kirq"
 	"sync/atomic"
 )
 
@@ -60,26 +61,72 @@ var syscallTable = [512]SyscallHandler{
 //go:nosplit
 //go:noinline
 func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
+	// Record entry time for kernel time accounting
+	entryTick := kirq.ReadCounterValue()
+
+	var result int64
+
 	// Check for Mazzy syscalls first (1000+)
 	if syscallNum >= MazzySyscallBase {
-		return dispatchMazzySyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5)
-	}
-
-	// Check if syscall number is in range for Linux syscalls
-	if syscallNum >= 512 {
+		result = dispatchMazzySyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5)
+	} else if syscallNum >= 512 {
 		syscallPanic("Invalid syscall number", syscallNum)
 		return -1 // unreachable
+	} else {
+		// Get handler from table
+		handler := syscallTable[syscallNum]
+		if handler == nil {
+			syscallPanic("Syscall not implemented", syscallNum)
+			return -1 // unreachable
+		}
+		// Call the handler
+		result = handler(arg0, arg1, arg2, arg3, arg4, arg5)
 	}
 
-	// Get handler from table
-	handler := syscallTable[syscallNum]
-	if handler == nil {
-		syscallPanic("Syscall not implemented", syscallNum)
-		return -1 // unreachable
+	// Record exit time and accumulate kernel time
+	exitTick := kirq.ReadCounterValue()
+	kirq.AddKernelSyscallTicks(exitTick - entryTick)
+
+	// Print stats every 2000 syscalls
+	count := atomic.LoadUint64(&kirq.SyscallCount)
+	if count > 0 && count%2000 == 0 {
+		printKernelTimeStats()
 	}
 
-	// Call the handler
-	return handler(arg0, arg1, arg2, arg3, arg4, arg5)
+	return result
+}
+
+// printKernelTimeStats prints kernel time accounting stats
+func printKernelTimeStats() {
+	timerTicks, syscallTicks, ctxSwitchTicks, totalKernelTicks := kirq.GetKernelTimeStats()
+	elapsedTicks := kirq.GetElapsedTicks()
+	syscallCount := atomic.LoadUint64(&kirq.SyscallCount)
+	timerIRQs := atomic.LoadUint64(&kirq.TimerIRQCount)
+	freq := kirq.SystemTimerFrequency
+	if freq == 0 {
+		freq = 62500000 // default
+	}
+
+	// Convert ticks to microseconds: ticks * 1000000 / freq
+	syscallUs := syscallTicks * 1000000 / freq
+	totalUs := totalKernelTicks * 1000000 / freq
+	elapsedUs := elapsedTicks * 1000000 / freq
+	elapsedMs := elapsedUs / 1000
+
+	// Calculate percentages using floating point to avoid integer division truncation
+	kernelPct := 0.0
+	userPct := 0.0
+	if elapsedUs > 0 {
+		kernelPct = float64(totalUs) * 100.0 / float64(elapsedUs)
+		userPct = 100.0 - kernelPct
+	}
+
+	console.KPrintf("\n[KernelTime] syscalls=%d irqs=%d elapsed=%dms\n",
+		syscallCount, timerIRQs, elapsedMs)
+	console.KPrintf("[KernelTime] syscall=%dus kernel=%dus (%.2f%% kernel, %.2f%% user)\n",
+		syscallUs, totalUs, kernelPct, userPct)
+	_ = timerTicks     // suppress unused warning
+	_ = ctxSwitchTicks // suppress unused warning
 }
 
 // dispatchMazzySyscall handles Mazzy-specific syscalls (1000+)

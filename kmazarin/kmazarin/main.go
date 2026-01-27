@@ -898,22 +898,19 @@ func simpleMain() {
 	console.KPrintf("[Main] GC debug: NumGC=%d HeapAlloc=%d NextGC=%d GCPercent=%d\n",
 		memStats.NumGC, memStats.HeapAlloc, memStats.NextGC, debug.SetGCPercent(-1))
 
-	// Launch sievetest multiple times to test multi-priest thread scheduling.
-	// Each launch creates a new priest with its own address space.
-	const numPriests = 2
-	Print("[Main] Launching sievetest 2 times (multi-priest thread test)...\r\n")
-	filename := "/sievetest.elf\x00"
+	// Launch priestsieve - single priest with multiple goroutines (GOMAXPROCS=1)
+	// This tests goroutine-level preemption within a single priest.
+	Print("[Main] Launching priestsieve.elf (single priest, 6 goroutines)...\r\n")
+	filename := "/priestsieve.elf\x00"
 	filenamePtr := uintptr(unsafe.Pointer(&([]byte(filename))[0]))
-	for i := 0; i < numPriests; i++ {
-		result := ksyscall.SyscallLaunch(uint64(filenamePtr), 0, 0, 0, 0, 0)
-		if result != 0 {
-			console.KPrintf("[Main] ERROR: sievetest launch %d failed with code %d\n", i, result)
-		} else {
-			console.KPrintf("[Main] Launched sievetest instance %d\n", i)
-		}
+	result := ksyscall.SyscallLaunch(uint64(filenamePtr), 0, 0, 0, 0, 0)
+	if result != 0 {
+		console.KPrintf("[Main] ERROR: priestsieve launch failed with code %d\n", result)
+	} else {
+		console.KPrintf("[Main] Launched priestsieve successfully\n")
 	}
 
-	Print("[Main] 2 sievetest instances launched - testing thread scheduling fairness")
+	Print("[Main] priestsieve launched - testing goroutine scheduling")
 
 	// Re-enable IRQs and timer for priest scheduling
 	EnableIRQs()
@@ -923,14 +920,19 @@ func simpleMain() {
 	daif := ReadDAIF()
 	console.KPrintf("[Main] DAIF before idle: 0x%x (I=0x80 clear means IRQs enabled)\n", daif)
 
-	Print("[Main] Kernel idle - priests will be scheduled by timer IRQ...\r\n")
+	Print("[Main] Starting first thread from ready queue...\r\n")
 
-	// Idle loop - print stats and tick distribution periodically
-	loopCount := uint64(0)
-	// Idle loop - kernel waits here while priests run
+	// Start kernel time accounting for performance measurements
+	kirq.StartKernelTimeAccounting()
+
+	// Start the first thread - this function never returns!
+	// It waits for a ready thread, then switches to it via ERET.
+	// The timer IRQ will preempt threads and allow others to run.
+	RunFirstThread()
+
+	// Should never reach here
+	Print("[Main] ERROR: RunFirstThread returned!\r\n")
 	for {
-		loopCount++
-		_ = loopCount // suppress unused warning
 	}
 }
 

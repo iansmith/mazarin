@@ -564,6 +564,66 @@ func IdleLoop(sf *SchedulerFunc) *Thread {
 	}
 }
 
+// StartFirstThread waits for and starts the first ready thread.
+// This is called from the kernel main when there are threads in the ready queue
+// but no current thread is running. It uses IdleLoop to wait for a ready thread,
+// then sets up CurrentThread/CurrentThreadIdx and returns the context pointer.
+//
+// Returns pointer to ThreadContext for assembly to load and ERET to.
+// Never returns 0 - blocks until a thread is ready.
+//
+//go:nosplit
+//go:noinline
+func StartFirstThread() uint64 {
+	return startFirstThreadImpl(&NormalSchedulerFunc)
+}
+
+// startFirstThreadImpl is the internal implementation that can use test schedulers.
+//
+//go:nosplit
+//go:noinline
+func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
+	// Wait for a ready thread
+	thread := IdleLoop(sf)
+	if thread == nil {
+		// This should never happen - IdleLoop blocks until a thread is ready
+		return 0
+	}
+
+	// BEGIN CRITICAL SECTION - protect thread state modifications
+	savedDAIF := sf.DisableAndSaveDAIF()
+	schedulerLock.Lock()
+
+	// Set up current thread
+	idx := threadToIdx(thread)
+	CurrentThreadIdx = idx
+	atomic.StorePointer(&CurrentThread, unsafe.Pointer(thread))
+	thread.State = ThreadRunning
+
+	// Initialize preemption tracking
+	currentTime := sf.CurrentTime(0)
+	thread.StartTick = currentTime
+	thread.GoroutineStart = currentTime
+	thread.ThreadPreemptDeadline = currentTime + kirq.ThreadPreemptTicks
+	thread.GoroutinePreemptDeadline = currentTime + kirq.GoroutinePreemptTicks
+	thread.LastSeenG = thread.Context.X[28] // Use saved g
+	thread.PreemptElapsed = 0
+	thread.GoroutineElapsed = 0
+	thread.TicksStartedRunning = currentTime
+
+	// Switch TTBR0 to the thread's page table
+	if thread.PageTableL0PA != 0 {
+		kmem.SwitchTTBR0WithASID(thread.PageTableL0PA, uint16(thread.PID))
+	}
+
+	// END CRITICAL SECTION
+	schedulerLock.Unlock()
+	// Don't restore DAIF - the ERET will set SPSR which controls IRQ state
+	_ = savedDAIF
+
+	return uint64(uintptr(unsafe.Pointer(&thread.Context)))
+}
+
 // CloneThread creates a new thread for Go runtime's clone syscall.
 // Uses static allocation - NO heap allocation.
 //

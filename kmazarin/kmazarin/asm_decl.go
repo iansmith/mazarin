@@ -131,3 +131,10 @@ func SetSyscallSPSR(spsr uint64)
 // Called from timer IRQ handler after NeedsThreadPreempt is set.
 //go:nosplit
 func CheckThreadPreemption(framePtr uint64) uint64
+
+// RunFirstThread starts the first thread from the ready queue.
+// Waits for a thread to become ready, then switches to it via ERET.
+// This function never returns - it transitions to userspace.
+// Called from kernel main after launching threads.
+//go:nosplit
+func RunFirstThread()

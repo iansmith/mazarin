@@ -105,3 +105,76 @@ TEXT ·SetSyscallSPSR(SB), NOSPLIT, $0-8
 // Returns pointer to new ThreadContext if switch happened, 0 otherwise
 TEXT ·CheckThreadPreemption(SB), NOSPLIT, $0-16
 	JMP	·checkThreadPreemptionInternal(SB)
+
+// RunFirstThread starts the first thread from the ready queue.
+// This function never returns - it transitions to userspace via ERET.
+// Go signature: func RunFirstThread()
+// ThreadContext layout: X[31]*8=248 bytes, SP(8), ELR(8), SPSR(8) = 272 bytes
+TEXT ·RunFirstThread(SB), NOSPLIT|NOFRAME, $0-0
+	// Call StartFirstThread to get context pointer
+	// Uses Go ABI internally, returns result in R0
+	SUB	$16, RSP  // Allocate space for call (16-byte aligned)
+	CALL	·StartFirstThread(SB)
+	MOVD	8(RSP), R20  // R20 = context pointer (returned in first return slot)
+	ADD	$16, RSP  // Clean up call frame
+
+	// R20 = pointer to ThreadContext
+	// Load ELR_EL1 (offset 256)
+	MOVD	256(R20), R0
+	MSR	R0, ELR_EL1
+
+	// Load SPSR_EL1 (offset 264)
+	MOVD	264(R20), R0
+	MSR	R0, SPSR_EL1
+
+	// Switch to EL1h mode to safely set SP_EL0
+	MOVD	$1, R0
+	MSR	R0, SPSel  // SPSel=1 means use SP_EL1
+
+	// Load SP_EL0 (offset 248)
+	MOVD	248(R20), R0
+	MSR	R0, SP_EL0
+
+	// Load all general purpose registers from ThreadContext
+	// X[0-30] at offsets 0-240
+	LDP	0(R20), (R0, R1)
+	LDP	16(R20), (R2, R3)
+	LDP	32(R20), (R4, R5)
+	LDP	48(R20), (R6, R7)
+	LDP	64(R20), (R8, R9)
+	LDP	80(R20), (R10, R11)
+	LDP	96(R20), (R12, R13)
+	LDP	112(R20), (R14, R15)
+	LDP	128(R20), (R16, R17)
+	// Skip R18 (platform register)
+	LDP	152(R20), (R19, R21)  // R19 and R21 (skip R20 which we're using)
+	LDP	176(R20), (R22, R23)
+	LDP	192(R20), (R24, R25)
+	LDP	208(R20), (R26, R27)
+	// Load X28 (g register)
+	MOVD	224(R20), R0  // Temporarily use R0
+	WORD	$0xAA0003FC  // MOV X28, X0 (can't use R28 directly)
+	// Load X29 (FP) and X30 (LR)
+	LDP	232(R20), (R29, R30)
+
+	// Now load the R20 value from context (we were using it as pointer)
+	// Load it last since we were using R20 as our context pointer
+	MOVD	160(R20), R20  // Finally load the actual X20 value
+
+	// TLB invalidation before ERET (following Linux kernel pattern)
+	WORD	$0xD508871F  // TLBI VMALLE1
+	DSB	$15  // DSB SY
+	WORD	$0xD508877F  // TLBI VALE1, XZR
+	DSB	$11  // DSB NSH
+	ISB	$15  // ISB
+
+	// Transition to userspace
+	ERET
+
+	// Speculation barrier after ERET
+	DSB	$15
+	ISB	$15
+
+	// Should never reach here
+run_first_thread_hang:
+	B	run_first_thread_hang

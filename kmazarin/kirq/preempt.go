@@ -17,6 +17,7 @@ import (
 type preemptOffsetsType struct {
 	StackGuard0Offset uintptr
 	PreemptOffset     uintptr
+	PreemptStopOffset uintptr // Offset of g.preemptStop from g pointer
 	GStatusOffset     uintptr
 	StackLoOffset     uintptr
 	StackHiOffset     uintptr
@@ -33,6 +34,7 @@ type preemptOffsetsType struct {
 var (
 	PreemptStackGuard0Offset uintptr // Offset of g.stackguard0 from g pointer
 	PreemptPreemptOffset     uintptr // Offset of g.preempt from g pointer
+	PreemptPreemptStopOffset uintptr // Offset of g.preemptStop from g pointer
 	PreemptGStatusOffset     uintptr // Offset of g.atomicstatus from g pointer
 	PreemptStackLoOffset     uintptr // Offset of stack.lo (always 0)
 	PreemptStackHiOffset     uintptr // Offset of stack.hi (always 8)
@@ -125,6 +127,68 @@ var UserspacePathCount uint64       // How often we enter userspace path
 var UserspaceCoopPreemptCount uint64 // How often we set cooperative preemption
 var UserspaceGChangedCount uint64   // How often g changed (goroutine switch detected)
 
+// Kernel time accounting - measures time spent in kernel mode
+// All values are in timer ticks (use SystemTimerFrequency to convert to seconds)
+var KernelTimerIRQTicks uint64      // Total ticks spent in timer IRQ handler
+var KernelSyscallTicks uint64       // Total ticks spent in syscall handlers
+var KernelContextSwitchTicks uint64 // Total ticks spent in context switches
+var SyscallCount uint64             // Total number of syscalls
+var ContextSwitchCount uint64       // Total number of context switches
+var KernelStartTick uint64          // Counter value at start of measurement
+
+// AddKernelTimerTicks adds ticks spent in timer IRQ handler (called from Go)
+//
+//go:nosplit
+func AddKernelTimerTicks(ticks uint64) {
+	atomic.AddUint64(&KernelTimerIRQTicks, ticks)
+}
+
+// AddKernelSyscallTicks adds ticks spent in syscall handler (called from Go)
+//
+//go:nosplit
+func AddKernelSyscallTicks(ticks uint64) {
+	atomic.AddUint64(&KernelSyscallTicks, ticks)
+	atomic.AddUint64(&SyscallCount, 1)
+}
+
+// AddKernelContextSwitchTicks adds ticks spent in context switch (called from Go)
+//
+//go:nosplit
+func AddKernelContextSwitchTicks(ticks uint64) {
+	atomic.AddUint64(&KernelContextSwitchTicks, ticks)
+	atomic.AddUint64(&ContextSwitchCount, 1)
+}
+
+// GetKernelTimeStats returns kernel time statistics
+// Returns: timerTicks, syscallTicks, contextSwitchTicks, totalKernelTicks
+//
+//go:nosplit
+func GetKernelTimeStats() (timerTicks, syscallTicks, contextSwitchTicks, totalKernelTicks uint64) {
+	timerTicks = atomic.LoadUint64(&KernelTimerIRQTicks)
+	syscallTicks = atomic.LoadUint64(&KernelSyscallTicks)
+	contextSwitchTicks = atomic.LoadUint64(&KernelContextSwitchTicks)
+	totalKernelTicks = timerTicks + syscallTicks + contextSwitchTicks
+	return
+}
+
+// StartKernelTimeAccounting initializes the start tick for elapsed time calculation
+//
+//go:nosplit
+func StartKernelTimeAccounting() {
+	atomic.StoreUint64(&KernelStartTick, ReadCounterValue())
+}
+
+// GetElapsedTicks returns the elapsed ticks since StartKernelTimeAccounting was called
+//
+//go:nosplit
+func GetElapsedTicks() uint64 {
+	start := atomic.LoadUint64(&KernelStartTick)
+	if start == 0 {
+		return 0
+	}
+	return ReadCounterValue() - start
+}
+
 // System timer frequency in Hz - read from CNTFRQ_EL0 at init.
 // Exported for use by other packages and assembly.
 var SystemTimerFrequency uint64
@@ -142,6 +206,7 @@ func InitPreemption() {
 	// Store in globals for assembly access
 	PreemptStackGuard0Offset = offsets.StackGuard0Offset
 	PreemptPreemptOffset = offsets.PreemptOffset
+	PreemptPreemptStopOffset = offsets.PreemptStopOffset
 	PreemptGStatusOffset = offsets.GStatusOffset
 	PreemptStackLoOffset = offsets.StackLoOffset
 	PreemptStackHiOffset = offsets.StackHiOffset

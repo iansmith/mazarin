@@ -90,6 +90,9 @@ func SetSyscallSPSR(spsr uint64) {}
 //go:nosplit
 func CheckThreadPreemption(framePtr uint64) uint64 { return 0 }
 
+//go:nosplit
+func RunFirstThread() {}
+
 // Additional stubs for functions called from Go code
 
 func IRQDispatch() {}
