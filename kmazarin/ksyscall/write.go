@@ -21,6 +21,11 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 		return 0
 	}
 
+	// Validate user buffer address - reject NULL and kernel addresses
+	if !isValidUserAddr(bufPtr) {
+		return -14 // EFAULT
+	}
+
 	buf := unsafe.Pointer(uintptr(bufPtr))
 
 	for i := uint64(0); i < count; i++ {

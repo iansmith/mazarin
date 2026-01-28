@@ -1,7 +1,10 @@
 
 package ksyscall
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+	_ "unsafe" // Required for go:linkname
+)
 
 // ============================================================================
 // Span - represents a single VA reservation
@@ -253,16 +256,32 @@ func (g *lockedSpanGroup) FindOverlapEnd(start, length uint64) uint64 {
 }
 
 // ============================================================================
-// Global span group for current single-priest implementation
+// Per-process span groups
 // ============================================================================
-// TODO: Move this to per-process when process struct is implemented.
 
-var currentSpanGroup lockedSpanGroup
+// MaxPriests must match the value in main package threads.go
+const maxPriests = 32
+
+// priestSpanGroups holds span groups for each priest, indexed by PID.
+// PID 0 is reserved for the kernel (not used for mmap tracking).
+var priestSpanGroups [maxPriests]lockedSpanGroup
 
 // GetCurrentSpanGroup returns the span group for the current process.
-// Currently returns the global span group; will be per-process later.
+// Uses the current thread's PID to look up the correct span group.
+// Falls back to PID 0's group if no current thread (early init).
 //
 //go:nosplit
 func GetCurrentSpanGroup() *lockedSpanGroup {
-	return &currentSpanGroup
+	// Get the current thread's PID via linkname
+	pid := getCurrentThreadPIDForSpan()
+	if pid < 0 || pid >= maxPriests {
+		pid = 0 // Fallback to kernel group for safety
+	}
+	return &priestSpanGroups[pid]
 }
+
+// getCurrentThreadPIDForSpan gets the current thread's PID for span lookup.
+// This is a linkname to main.getCurrentThreadPIDForSpan.
+//
+//go:linkname getCurrentThreadPIDForSpan main.getCurrentThreadPIDForSpan
+func getCurrentThreadPIDForSpan() int16

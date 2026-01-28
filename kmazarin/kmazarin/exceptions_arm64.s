@@ -1338,6 +1338,166 @@ el0_sync_handler:
 	// We're already using SP_EL1 when taking exception from EL0
 	// (ARM64 automatically switches to SP_EL1 for EL1 handlers)
 
+	// DEBUG: Print ESR and EC immediately at entry BEFORE saving anything
+	// This tells us what the hardware reports, before any code can corrupt it.
+	// Save R10-R14 on stack temporarily for debug output
+	STP	(R10, R11), -32(RSP)
+	STP	(R12, R13), -16(RSP)
+
+	// Read ESR_EL1 immediately
+	MRS	ESR_EL1, R10
+
+	// Extract EC (bits 31:26)
+	LSR	$26, R10, R11
+	AND	$0x3F, R11
+
+	// Print '<' unconditionally to show we entered el0_sync_handler
+	// Then only print EC details if NOT SVC
+	MOVD	$UART_BASE, R12
+	MOVD	$'<', R13
+	MOVB	R13, (R12)
+
+	// Only print debug if EC is NOT 0x15 (SVC) - avoid flooding with syscall debug
+	CMP	$0x15, R11
+	BEQ	el0_skip_entry_debug
+
+	// Print "[EC=" to show early EC
+	MOVD	$UART_BASE, R12
+	MOVD	$'[', R13
+	MOVB	R13, (R12)
+	MOVD	$'E', R13
+	MOVB	R13, (R12)
+	MOVD	$'C', R13
+	MOVB	R13, (R12)
+	MOVD	$'=', R13
+	MOVB	R13, (R12)
+
+	// Print EC as 2 hex digits (R11 has EC)
+	LSR	$4, R11, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLT	el0_entry_ec_d1
+	ADD	$('A'-10), R13
+	B	el0_entry_ec_c1
+el0_entry_ec_d1:
+	ADD	$'0', R13
+el0_entry_ec_c1:
+	MOVB	R13, (R12)
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	el0_entry_ec_d2
+	ADD	$('A'-10), R11
+	B	el0_entry_ec_c2
+el0_entry_ec_d2:
+	ADD	$'0', R11
+el0_entry_ec_c2:
+	MOVB	R11, (R12)
+
+	// Print " FAR="
+	MOVD	$' ', R13
+	MOVB	R13, (R12)
+	MOVD	$'F', R13
+	MOVB	R13, (R12)
+	MOVD	$'A', R13
+	MOVB	R13, (R12)
+	MOVD	$'R', R13
+	MOVB	R13, (R12)
+	MOVD	$'=', R13
+	MOVB	R13, (R12)
+
+	// Read and print FAR_EL1 (16 hex digits)
+	MRS	FAR_EL1, R14
+	MOVD	$16, R11
+el0_entry_far_loop:
+	LSR	$60, R14, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLT	el0_entry_far_d
+	ADD	$('A'-10), R13
+	B	el0_entry_far_c
+el0_entry_far_d:
+	ADD	$'0', R13
+el0_entry_far_c:
+	MOVB	R13, (R12)
+	LSL	$4, R14
+	SUB	$1, R11
+	CBNZ	R11, el0_entry_far_loop
+
+	// Print " ELR="
+	MOVD	$' ', R13
+	MOVB	R13, (R12)
+	MOVD	$'E', R13
+	MOVB	R13, (R12)
+	MOVD	$'L', R13
+	MOVB	R13, (R12)
+	MOVD	$'R', R13
+	MOVB	R13, (R12)
+	MOVD	$'=', R13
+	MOVB	R13, (R12)
+
+	// Read and print ELR_EL1 (16 hex digits)
+	MRS	ELR_EL1, R14
+	MOVD	$16, R11
+el0_entry_elr_loop:
+	LSR	$60, R14, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLT	el0_entry_elr_d
+	ADD	$('A'-10), R13
+	B	el0_entry_elr_c
+el0_entry_elr_d:
+	ADD	$'0', R13
+el0_entry_elr_c:
+	MOVB	R13, (R12)
+	LSL	$4, R14
+	SUB	$1, R11
+	CBNZ	R11, el0_entry_elr_loop
+
+	// Print " TTBR0="
+	MOVD	$' ', R13
+	MOVB	R13, (R12)
+	MOVD	$'T', R13
+	MOVB	R13, (R12)
+	MOVD	$'0', R13
+	MOVB	R13, (R12)
+	MOVD	$'=', R13
+	MOVB	R13, (R12)
+
+	// Read and print TTBR0_EL1 (16 hex digits)
+	MRS	TTBR0_EL1, R14
+	MOVD	$16, R11
+el0_entry_ttbr0_loop:
+	LSR	$60, R14, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLT	el0_entry_ttbr0_d
+	ADD	$('A'-10), R13
+	B	el0_entry_ttbr0_c
+el0_entry_ttbr0_d:
+	ADD	$'0', R13
+el0_entry_ttbr0_c:
+	MOVB	R13, (R12)
+	LSL	$4, R14
+	SUB	$1, R11
+	CBNZ	R11, el0_entry_ttbr0_loop
+
+	// Print "]"
+	MOVD	$']', R13
+	MOVB	R13, (R12)
+
+	// Branch past the skip_entry_debug label
+	B	el0_after_entry_debug
+
+el0_skip_entry_debug:
+	// Print '>' to show we skipped debug (EC was 0x15 SVC)
+	MOVD	$'>', R13
+	MOVB	R13, (R12)
+el0_after_entry_debug:
+	// Restore R10-R14
+	LDP	-32(RSP), (R10, R11)
+	LDP	-16(RSP), (R12, R13)
+	// END DEBUG
+
 	// Allocate exception frame
 	SUB	$EXC_FRAME_SIZE, RSP
 
@@ -1757,6 +1917,36 @@ el0_elr_char:
 	LSL	$4, R14
 	SUB	$1, R15
 	CBNZ	R15, el0_print_elr_loop
+
+	// Print " x28="
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+	MOVD	$'x', R11
+	MOVB	R11, (R12)
+	MOVD	$'2', R11
+	MOVB	R11, (R12)
+	MOVD	$'8', R11
+	MOVB	R11, (R12)
+	MOVD	$'=', R11
+	MOVB	R11, (R12)
+
+	// Print x28 from saved context (16 hex digits)
+	MOVD	EXC_FRAME_X28(RSP), R14
+	MOVD	$16, R15
+el0_print_x28_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	el0_x28_digit
+	ADD	$('A'-10), R11
+	B	el0_x28_char
+el0_x28_digit:
+	ADD	$'0', R11
+el0_x28_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, el0_print_x28_loop
 
 	MOVD	$'\r', R11
 	MOVB	R11, (R12)

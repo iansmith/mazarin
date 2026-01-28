@@ -486,6 +486,110 @@ tasks:
       - '{{.GO}} tool go-sleep 0.5'
 
   # ===========================================================================
+  # Debug Run Tasks
+  # ===========================================================================
+
+  run-debug:
+    desc: "Run QEMU with instruction/CPU tracing (DEBUG_OPTS for extra -d flags)"
+    deps: [disk, cardinal]
+    vars:
+      TIMEOUT: '{{.TIMEOUT | default "5"}}'
+      LOG_FILE: /tmp/cardinal-serial.log
+      DEBUG_LOG: /tmp/qemu-debug.log
+      DEBUG_OPTS: '{{.DEBUG_OPTS | default "exec,cpu,int,nochain"}}'
+    cmds:
+      - task: stop
+      - '{{.GO}} tool go-rm {{.LOG_FILE}}'
+      - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
+      - 'echo "Starting QEMU with debug tracing..."'
+      - 'echo "Debug options: {{.DEBUG_OPTS}}"'
+      - 'echo "Debug log: {{.DEBUG_LOG}}"'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display none -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -no-reboot -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
+      - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
+      - task: stop
+      - '{{.GO}} tool go-sleep 0.3'
+      - 'echo ""'
+      - 'echo "=== Serial Output (last 50 lines) ==="'
+      - '{{.GO}} tool safe-serial-read'
+      - 'echo ""'
+      - 'echo "Serial log: {{.LOG_FILE}}"'
+      - 'echo "Debug log:  {{.DEBUG_LOG}}"'
+      - 'echo ""'
+      - 'echo "View debug log tail: tail -100 {{.DEBUG_LOG}}"'
+
+  run-debug-int:
+    desc: "Run QEMU with interrupt/exception tracing only (lightweight)"
+    deps: [disk, cardinal]
+    vars:
+      TIMEOUT: '{{.TIMEOUT | default "10"}}'
+      LOG_FILE: /tmp/cardinal-serial.log
+      DEBUG_LOG: /tmp/qemu-debug.log
+      DEBUG_OPTS: 'int,guest_errors'
+    cmds:
+      - task: stop
+      - '{{.GO}} tool go-rm {{.LOG_FILE}}'
+      - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
+      - 'echo "Starting QEMU with interrupt/exception tracing..."'
+      - 'echo "Debug options: {{.DEBUG_OPTS}}"'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display none -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -no-reboot -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
+      - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
+      - task: stop
+      - '{{.GO}} tool go-sleep 0.3'
+      - '{{.GO}} tool safe-serial-read'
+      - 'echo ""'
+      - 'echo "Serial log: {{.LOG_FILE}}"'
+      - 'echo "Debug log:  {{.DEBUG_LOG}}"'
+
+  run-debug-mmu:
+    desc: "Run QEMU with MMU/paging tracing"
+    deps: [disk, cardinal]
+    vars:
+      TIMEOUT: '{{.TIMEOUT | default "5"}}'
+      LOG_FILE: /tmp/cardinal-serial.log
+      DEBUG_LOG: /tmp/qemu-debug.log
+      DEBUG_OPTS: 'mmu,int,guest_errors'
+    cmds:
+      - task: stop
+      - '{{.GO}} tool go-rm {{.LOG_FILE}}'
+      - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
+      - 'echo "Starting QEMU with MMU tracing..."'
+      - 'echo "Debug options: {{.DEBUG_OPTS}}"'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display none -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -no-reboot -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
+      - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
+      - task: stop
+      - '{{.GO}} tool go-sleep 0.3'
+      - 'echo "Serial log: {{.LOG_FILE}}"'
+      - 'echo "Debug log:  {{.DEBUG_LOG}}"'
+
+  run-debug-full:
+    desc: "Run QEMU with full tracing (very verbose)"
+    deps: [disk, cardinal]
+    vars:
+      TIMEOUT: '{{.TIMEOUT | default "5"}}'
+      LOG_FILE: /tmp/cardinal-serial.log
+      DEBUG_LOG: /tmp/qemu-debug.log
+      DEBUG_OPTS: 'exec,cpu,int,mmu,guest_errors,nochain'
+    cmds:
+      - task: stop
+      - '{{.GO}} tool go-rm {{.LOG_FILE}}'
+      - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
+      - 'echo "Starting QEMU with FULL tracing (very verbose)..."'
+      - 'echo "Debug options: {{.DEBUG_OPTS}}"'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display none -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -no-reboot -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
+      - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
+      - task: stop
+      - '{{.GO}} tool go-sleep 0.3'
+      - 'echo "Serial log: {{.LOG_FILE}}"'
+      - 'echo "Debug log:  {{.DEBUG_LOG}}"'
+
+  show-debug:
+    desc: "Show last N lines of debug log (N=100 default)"
+    vars:
+      N: '{{.N | default "100"}}'
+    cmds:
+      - 'tail -{{.N}} /tmp/qemu-debug.log'
+
+  # ===========================================================================
   # Utility Tasks
   # ===========================================================================
 

@@ -19,6 +19,11 @@ func SyscallNanosleep(req, rem, _, _, _, _ uint64) int64 {
 		return 0 // No-op if no request
 	}
 
+	// Validate user buffer address - reject NULL and kernel addresses
+	if !isValidUserAddr(req) {
+		return -14 // EFAULT
+	}
+
 	// Read the timespec structure
 	ts := (*[2]int64)(unsafe.Pointer(uintptr(req)))
 	seconds := ts[0]

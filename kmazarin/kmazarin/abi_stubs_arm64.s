@@ -111,6 +111,11 @@ TEXT ·CheckThreadPreemption(SB), NOSPLIT, $0-16
 // Go signature: func RunFirstThread()
 // ThreadContext layout: X[31]*8=248 bytes, SP(8), ELR(8), SPSR(8) = 272 bytes
 TEXT ·RunFirstThread(SB), NOSPLIT|NOFRAME, $0-0
+	// Debug: print 'R' to show we entered RunFirstThread
+	MOVD	$0xFFFFFFFF09000000, R10
+	MOVD	$'R', R11
+	MOVB	R11, (R10)
+
 	// Call StartFirstThread to get context pointer
 	// Uses Go ABI internally, returns result in R0
 	SUB	$16, RSP  // Allocate space for call (16-byte aligned)
@@ -118,10 +123,36 @@ TEXT ·RunFirstThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOVD	8(RSP), R20  // R20 = context pointer (returned in first return slot)
 	ADD	$16, RSP  // Clean up call frame
 
+	// Debug: print 'X' to show StartFirstThread returned
+	MOVD	$0xFFFFFFFF09000000, R10
+	MOVD	$'X', R11
+	MOVB	R11, (R10)
+
+	// Debug: print context pointer high bits
+	MOVD	$'[', R11
+	MOVB	R11, (R10)
+	LSR	$60, R20, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	ctx_ptr_digit
+	ADD	$('A'-10), R11
+	B	ctx_ptr_print
+ctx_ptr_digit:
+	ADD	$'0', R11
+ctx_ptr_print:
+	MOVB	R11, (R10)
+	MOVD	$']', R11
+	MOVB	R11, (R10)
+
 	// R20 = pointer to ThreadContext
 	// Load ELR_EL1 (offset 256)
 	MOVD	256(R20), R0
 	MSR	R0, ELR_EL1
+
+	// Debug: print 'E' to show ELR loaded
+	MOVD	$0xFFFFFFFF09000000, R10
+	MOVD	$'e', R11
+	MOVB	R11, (R10)
 
 	// Load SPSR_EL1 (offset 264)
 	MOVD	264(R20), R0
@@ -135,9 +166,161 @@ TEXT ·RunFirstThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOVD	248(R20), R0
 	MSR	R0, SP_EL0
 
+	// Debug: print SP value (8 hex digits = 32 bits) after loading
+	// This distinguishes 0x7fff0000ffc0 (high 32 bits = 0x00007fff) from
+	// 0x0000000000000030 (high 32 bits = 0x00000000)
+	MOVD	$0xFFFFFFFF09000000, R10
+	MOVD	$'S', R11
+	MOVB	R11, (R10)
+	MOVD	$'[', R11
+	MOVB	R11, (R10)
+	// R0 still has SP value - print 8 nibbles (high 32 bits)
+	MOVD	R0, R14  // Save SP value
+	MOVD	$8, R13  // Counter
+sp_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	sp_digit
+	ADD	$('A'-10), R11
+	B	sp_print
+sp_digit:
+	ADD	$'0', R11
+sp_print:
+	MOVB	R11, (R10)
+	LSL	$4, R14
+	SUB	$1, R13
+	CBNZ	R13, sp_loop
+	MOVD	$']', R11
+	MOVB	R11, (R10)
+
+	// Debug output BEFORE loading GPRs (so we don't corrupt registers)
+	// Print 'Z' and X28 value from context
+	MOVD	$0xFFFFFFFF09000000, R10
+	MOVD	$'Z', R11
+	MOVB	R11, (R10)
+	MOVD	$'[', R11
+	MOVB	R11, (R10)
+	MOVD	224(R20), R14  // X28 value from context (offset 28*8)
+	LSR	$60, R14, R11  // High nibble
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	x28_digit1
+	ADD	$('A'-10), R11
+	B	x28_print1
+x28_digit1:
+	ADD	$'0', R11
+x28_print1:
+	MOVB	R11, (R10)
+	LSR	$56, R14, R11  // Second nibble
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	x28_digit2
+	ADD	$('A'-10), R11
+	B	x28_print2
+x28_digit2:
+	ADD	$'0', R11
+x28_print2:
+	MOVB	R11, (R10)
+	MOVD	$']', R11
+	MOVB	R11, (R10)
+	MOVD	$'!', R11
+	MOVB	R11, (R10)
+
+	// I-cache and TLB invalidation BEFORE loading GPRs
+	// CRITICAL: Invalidate entire I-cache to ensure no stale instruction fetch
+	// IC IALLU = 0xD508751F (Invalidate All to PoU, Inner Shareable)
+	WORD	$0xD508751F  // IC IALLU
+	DSB	$15  // DSB SY - ensure I-cache invalidation completes
+	// Now invalidate TLB
+	WORD	$0xD508871F  // TLBI VMALLE1
+	DSB	$15  // DSB SY
+	WORD	$0xD508877F  // TLBI VALE1, XZR
+	DSB	$11  // DSB NSH
+	ISB	$15  // ISB
+
+	// DEBUG: Print ELR_EL1 and SPSR_EL1 right before loading GPRs
+	// This shows exactly what we're about to ERET to
+	MOVD	$0xFFFFFFFF09000000, R10
+	MOVD	$'@', R11
+	MOVB	R11, (R10)
+	// Print ELR_EL1 (4 hex digits, low 16 bits)
+	MRS	ELR_EL1, R14
+	LSR	$12, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	rft_elr_d1
+	ADD	$('A'-10), R11
+	B	rft_elr_c1
+rft_elr_d1:
+	ADD	$'0', R11
+rft_elr_c1:
+	MOVB	R11, (R10)
+	LSR	$8, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	rft_elr_d2
+	ADD	$('A'-10), R11
+	B	rft_elr_c2
+rft_elr_d2:
+	ADD	$'0', R11
+rft_elr_c2:
+	MOVB	R11, (R10)
+	LSR	$4, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	rft_elr_d3
+	ADD	$('A'-10), R11
+	B	rft_elr_c3
+rft_elr_d3:
+	ADD	$'0', R11
+rft_elr_c3:
+	MOVB	R11, (R10)
+	AND	$0xF, R14, R11
+	CMP	$10, R11
+	BLT	rft_elr_d4
+	ADD	$('A'-10), R11
+	B	rft_elr_c4
+rft_elr_d4:
+	ADD	$'0', R11
+rft_elr_c4:
+	MOVB	R11, (R10)
+	// Print SPSR_EL1 (2 hex digits)
+	MOVD	$'/', R11
+	MOVB	R11, (R10)
+	MRS	SPSR_EL1, R14
+	LSR	$4, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	rft_spsr_d1
+	ADD	$('A'-10), R11
+	B	rft_spsr_c1
+rft_spsr_d1:
+	ADD	$'0', R11
+rft_spsr_c1:
+	MOVB	R11, (R10)
+	AND	$0xF, R14, R11
+	CMP	$10, R11
+	BLT	rft_spsr_d2
+	ADD	$('A'-10), R11
+	B	rft_spsr_c2
+rft_spsr_d2:
+	ADD	$'0', R11
+rft_spsr_c2:
+	MOVB	R11, (R10)
+	MOVD	$'@', R11
+	MOVB	R11, (R10)
+	// END DEBUG
+
 	// Load all general purpose registers from ThreadContext
 	// X[0-30] at offsets 0-240
-	LDP	0(R20), (R0, R1)
+	// IMPORTANT: Load X28 first using R0 as temp, then reload R0 at the end
+
+	// Load X28 (g register) using R0 as temporary
+	MOVD	224(R20), R0
+	WORD	$0xAA0003FC  // MOV X28, X0 (can't use R28 directly in Go asm)
+
+	// Load other GPRs (skip R0, R1 for now - will reload after X28 transfer)
 	LDP	16(R20), (R2, R3)
 	LDP	32(R20), (R4, R5)
 	LDP	48(R20), (R6, R7)
@@ -146,29 +329,30 @@ TEXT ·RunFirstThread(SB), NOSPLIT|NOFRAME, $0-0
 	LDP	96(R20), (R12, R13)
 	LDP	112(R20), (R14, R15)
 	LDP	128(R20), (R16, R17)
-	// Skip R18 (platform register)
-	LDP	152(R20), (R19, R21)  // R19 and R21 (skip R20 which we're using)
+	// Skip R18 (platform register) at offset 144
+	// Skip R20 (at offset 160, loaded last since it's our context pointer)
+	// Load X[19] individually from offset 152
+	MOVD	152(R20), R19
+	// Load X[21] individually from offset 168
+	MOVD	168(R20), R21
 	LDP	176(R20), (R22, R23)
 	LDP	192(R20), (R24, R25)
 	LDP	208(R20), (R26, R27)
-	// Load X28 (g register)
-	MOVD	224(R20), R0  // Temporarily use R0
-	WORD	$0xAA0003FC  // MOV X28, X0 (can't use R28 directly)
 	// Load X29 (FP) and X30 (LR)
 	LDP	232(R20), (R29, R30)
 
-	// Now load the R20 value from context (we were using it as pointer)
-	// Load it last since we were using R20 as our context pointer
-	MOVD	160(R20), R20  // Finally load the actual X20 value
+	// CRITICAL: Reload R0 and R1 (R0 was corrupted when used as X28 temp)
+	// Must do this while R20 still points to context
+	LDP	0(R20), (R0, R1)
 
-	// TLB invalidation before ERET (following Linux kernel pattern)
-	WORD	$0xD508871F  // TLBI VMALLE1
-	DSB	$15  // DSB SY
-	WORD	$0xD508877F  // TLBI VALE1, XZR
-	DSB	$11  // DSB NSH
-	ISB	$15  // ISB
+	// Load R20 LAST (we were using it as context pointer)
+	MOVD	160(R20), R20
 
-	// Transition to userspace
+	// Synchronization barriers before ERET
+	DSB	$15  // Data Synchronization Barrier - ensure all memory ops complete
+	ISB	$15  // Instruction Synchronization Barrier - flush pipeline
+
+	// Transition to userspace - NO DEBUG OUTPUT HERE (would corrupt registers)
 	ERET
 
 	// Speculation barrier after ERET

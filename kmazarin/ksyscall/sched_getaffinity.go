@@ -12,8 +12,11 @@ import (
 //
 //go:nosplit
 func SyscallSchedGetaffinity(pid, cpusetsize, mask, _, _, _ uint64) int64 {
-	// Debug: print the mask address to see where we're writing
-	console.KWriteString("[sched_getaffinity] mask=")
+	// Debug: print the mask address and current PID to understand who's calling
+	currentPID := getCurrentThreadPIDForSpan()
+	console.KWriteString("[sched_getaffinity] PID=")
+	console.KPrintHex64(uint64(currentPID))
+	console.KWriteString(" mask=")
 	console.KPrintHex64(mask)
 	console.KWriteString("\r\n")
 
@@ -22,10 +25,14 @@ func SyscallSchedGetaffinity(pid, cpusetsize, mask, _, _, _ uint64) int64 {
 		return -22 // EINVAL
 	}
 
-	// Set bit 0 (CPU 0 available)
-	if mask != 0 {
-		*(*uint64)(unsafe.Pointer(uintptr(mask))) = 0x1
+	// Validate user buffer address - reject NULL and kernel addresses
+	if !isValidUserAddr(mask) {
+		console.KWriteString("[sched_getaffinity] EFAULT: invalid mask addr\r\n")
+		return -14 // EFAULT
 	}
+
+	// Set bit 0 (CPU 0 available)
+	*(*uint64)(unsafe.Pointer(uintptr(mask))) = 0x1
 
 	return 8 // Return size of mask in bytes
 }

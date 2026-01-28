@@ -7,6 +7,40 @@ import (
 )
 
 // ============================================================================
+// User Buffer Address Validation
+// ============================================================================
+
+// isValidUserAddr checks if an address is a valid buffer address for the current context.
+// For kernel threads (PID 0): accepts both kernel and userspace addresses (only rejects NULL)
+// For userspace threads (priests): rejects NULL and kernel addresses
+// This prevents userspace from tricking the kernel into writing to kernel memory,
+// while allowing kmazarin's own syscalls (which use kernel addresses) to work.
+//
+//go:nosplit
+func isValidUserAddr(addr uint64) bool {
+	// Reject NULL
+	if addr == 0 {
+		return false
+	}
+
+	// Get current thread's PID to determine if we're in kernel or userspace context
+	pid := getCurrentThreadPIDForSpan() // Returns 0 for kernel, >0 for priests
+
+	// For kernel threads (PID 0), allow kernel addresses
+	// The Go runtime running in kmazarin uses kernel addresses (0xFFFF...)
+	if pid == 0 {
+		return true // Kernel context - any non-NULL address is valid
+	}
+
+	// For userspace (priest) threads, reject kernel addresses
+	// Kernel addresses have the upper 16 bits set (TTBR1 space)
+	if (addr & 0xFFFF000000000000) != 0 {
+		return false
+	}
+	return true
+}
+
+// ============================================================================
 // Simple stub syscalls that return constants or success
 // ============================================================================
 
@@ -243,7 +277,8 @@ func SyscallTgkill(_, _, _, _, _, _ uint64) int64 {
 func SyscallClockGettime(clockid, timespecPtr, _, _, _, _ uint64) int64 {
 	_ = clockid // Ignore clock ID for now
 
-	if timespecPtr == 0 {
+	// Validate user buffer address - reject NULL and kernel addresses
+	if !isValidUserAddr(timespecPtr) {
 		return -14 // EFAULT - invalid pointer
 	}
 
@@ -281,6 +316,10 @@ func SyscallClockGettime(clockid, timespecPtr, _, _, _, _ uint64) int64 {
 func SyscallGetrandom(bufPtr, count, _, _, _, _ uint64) int64 {
 	if count == 0 {
 		return 0
+	}
+	// Validate user buffer address - reject NULL and kernel addresses
+	if !isValidUserAddr(bufPtr) {
+		return -14 // EFAULT
 	}
 	buf := unsafe.Pointer(uintptr(bufPtr))
 	// Fill with simple pattern (not actually random)

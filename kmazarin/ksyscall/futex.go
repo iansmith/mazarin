@@ -40,6 +40,11 @@ const (
 //go:nosplit
 //go:noinline
 func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
+	// Validate user address - reject NULL and kernel addresses
+	if !isValidUserAddr(uaddr) {
+		return -14 // EFAULT
+	}
+
 	// Mask off the private flag
 	opMasked := int32(op) & 0x7F
 

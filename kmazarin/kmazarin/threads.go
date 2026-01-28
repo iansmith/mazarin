@@ -631,16 +631,21 @@ func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
 	// Set up current thread
 	idx := threadToIdx(thread)
 	CurrentThreadIdx = idx
-	// Debug: Check what thread we're about to store
+	// Debug: Check what thread we're about to store - print full TID
 	console.Breadcrumb('[')
-	// Print TID as single hex digit
+	// Print TID as 2 hex digits
 	tid := int(thread.TID)
-	if tid < 10 {
-		console.Breadcrumb(byte('0' + tid))
-	} else if tid < 16 {
-		console.Breadcrumb(byte('A' + tid - 10))
+	hiNibble := (tid >> 4) & 0xF
+	loNibble := tid & 0xF
+	if hiNibble < 10 {
+		console.Breadcrumb(byte('0' + hiNibble))
 	} else {
-		console.Breadcrumb('?')
+		console.Breadcrumb(byte('A' + hiNibble - 10))
+	}
+	if loNibble < 10 {
+		console.Breadcrumb(byte('0' + loNibble))
+	} else {
+		console.Breadcrumb(byte('A' + loNibble - 10))
 	}
 	console.Breadcrumb(']')
 	if thread.PID == 0 {
@@ -664,11 +669,38 @@ func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
 
 	// Switch TTBR0 to the thread's page table
 	console.Breadcrumb('4') // Debug: before TTBR0 switch
+	// DEBUG: Print L0PA being used (4 hex digits to show 0x44XXX)
+	console.Breadcrumb('{')
+	l0pa := thread.PageTableL0PA
+	// Print bits 19:16 (X in 0x4401X)
+	for shift := 20; shift >= 12; shift -= 4 {
+		nibble := (l0pa >> shift) & 0xF
+		if nibble < 10 {
+			console.Breadcrumb(byte('0' + nibble))
+		} else {
+			console.Breadcrumb(byte('A' + nibble - 10))
+		}
+	}
+	console.Breadcrumb('}')
 	if thread.PageTableL0PA != 0 {
 		kmem.SwitchTTBR0WithASID(thread.PageTableL0PA, uint16(thread.PID))
 		// Note: TLB flush not needed due to ASID tagging
 	}
 	console.Breadcrumb('5') // Debug: after TTBR0 switch
+
+	// DEBUG: Print PID as hex digit to identify which priest is starting
+	console.Breadcrumb('(')
+	pid := int(thread.PID)
+	if pid < 10 {
+		console.Breadcrumb(byte('0' + pid))
+	} else if pid < 16 {
+		console.Breadcrumb(byte('A' + pid - 10))
+	} else if pid < 36 {
+		console.Breadcrumb(byte('A' + pid - 10))
+	} else {
+		console.Breadcrumb('?')
+	}
+	console.Breadcrumb(')')
 
 	// DEBUG: Verify X[28] is 0 for userspace thread (priest)
 	console.Breadcrumb('6') // Debug: before PID check
@@ -695,6 +727,23 @@ func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
 		console.Breadcrumb('K') // Debug: CurrentThread is kernel thread!
 	} else {
 		console.Breadcrumb('P') // Debug: CurrentThread is priest thread (good!)
+		// DEBUG: Verify physical memory at crash address contains correct instruction
+		pa, ok := kmem.TranslateUserVA(0x5ea60)
+		if ok {
+			// Map the physical page to kernel scratch to read the bytes
+			pagePA := uintptr(pa) &^ 0xFFF // page-align the PA
+			scratchVA := kmem.MapPAToKernelScratch(pagePA)
+			if scratchVA != 0 {
+				offset := uintptr(pa) & 0xFFF // offset within page
+				insn := *(*uint32)(unsafe.Pointer(scratchVA + offset))
+				console.KPrintf("[StartFirstThread] Insn@0x5ea60: PA=0x%x raw=0x%x (expect 0xf9400b90)\n",
+					pa, uint64(insn))
+			} else {
+				console.KPrintf("[StartFirstThread] 0x5ea60 scratch map FAILED\n")
+			}
+		} else {
+			console.KPrintf("[StartFirstThread] 0x5ea60 translation FAILED PAR=0x%x\n", pa)
+		}
 	}
 
 	// Don't restore DAIF - the ERET will set SPSR which controls IRQ state
@@ -1088,8 +1137,8 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	t.Context.ELR = entryPoint  // Entry point (program counter)
 	t.Context.SPSR = 0          // SPSR for EL0: M[3:0]=0000 (EL0t), M[4]=0 (AArch64)
 
-	// DEBUG: Verify SP was set correctly
-	console.KPrintf("[CreateThread] TID=%d SP=0x%x ELR=0x%x\n", tid, t.Context.SP, t.Context.ELR)
+	// DEBUG: Verify SP and L0PA were set correctly
+	console.KPrintf("[CreateThread] TID=%d PID=%d SP=0x%x ELR=0x%x L0PA=0x%x\n", tid, priestId, t.Context.SP, t.Context.ELR, t.PageTableL0PA)
 
 	// Add to ready queue (Pluck first just in case TID was reused)
 	readyQueue.Pluck(tid)
@@ -1146,11 +1195,24 @@ func threadFindReadyIdx() *Thread {
 		// Pop next thread ID (FIFO order)
 		tid := readyQueue.Pop() // Panics if empty (should never happen due to IsEmpty check)
 
+		// DEBUG: Print what TID we popped from the queue
+		console.Breadcrumb('Q')
+		console.Breadcrumb(byte('0' + (int(tid)>>4)&0xF))
+		console.Breadcrumb(byte('0' + int(tid)&0xF))
+
 		// Get thread pointer - FindByIdAll searches ALL slots including reserved kernel threads
 		t := threadList.FindByIdAll(int32(tid))
 		if t == nil {
 			panic("readyQueue contains invalid TID")
 			return nil // Unreachable
+		}
+
+		// DEBUG: Verify found thread's TID matches what we searched for
+		if t.TID != tid {
+			console.Breadcrumb('!')
+			console.Breadcrumb(byte('0' + (int(t.TID)>>4)&0xF))
+			console.Breadcrumb(byte('0' + int(t.TID)&0xF))
+			// Mismatch! This indicates thread data corruption
 		}
 
 		// Validate thread state
