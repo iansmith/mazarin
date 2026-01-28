@@ -102,8 +102,12 @@ func AllocatePagesForMmap(addr uintptr, size uintptr, fixed bool) (uintptr, bool
 
 // uefiCallAllocatePages is implemented in assembly (uefi_calls.s)
 // Calls UEFI AllocatePages using MS x64 calling convention
+//
+//go:noescape
 func uefiCallAllocatePages(funcPtr uintptr, allocType uint32, memoryType uint32, pages uint64, memory *uint64) EFI_STATUS
 
 // uefiCallFreePages is implemented in assembly (uefi_calls.s)
 // Calls UEFI FreePages using MS x64 calling convention
+//
+//go:noescape
 func uefiCallFreePages(funcPtr uintptr, memory uint64, pages uint64) EFI_STATUS

@@ -1,5 +1,6 @@
 // diplomat/main/elf_loader.go
 // ELF64 loader for loading kmazarin kernel
+// Parses ELF manually to avoid Go heap allocations (Go runtime heap not available)
 package main
 
 import (
@@ -7,150 +8,175 @@ import (
 	"unsafe"
 )
 
-// ELF64 header constants
-const (
-	ELF_MAGIC      = 0x464C457F // "\x7FELF"
-	ELFCLASS64     = 2
-	ELFDATA2LSB    = 1 // Little endian
-	EM_X86_64      = 62
-	PT_LOAD        = 1
-	PT_NULL        = 0
-	PF_X           = 1 // Executable
-	PF_W           = 2 // Writable
-	PF_R           = 4 // Readable
-)
-
-// ELF64 header structure (64 bytes)
-type Elf64Ehdr struct {
-	Ident     [16]byte // Magic number and other info
-	Type      uint16   // Object file type
-	Machine   uint16   // Architecture
-	Version   uint32   // Object file version
-	Entry     uint64   // Entry point virtual address
-	Phoff     uint64   // Program header table file offset
-	Shoff     uint64   // Section header table file offset
-	Flags     uint32   // Processor-specific flags
-	Ehsize    uint16   // ELF header size
-	Phentsize uint16   // Program header table entry size
-	Phnum     uint16   // Program header table entry count
-	Shentsize uint16   // Section header table entry size
-	Shnum     uint16   // Section header table entry count
-	Shstrndx  uint16   // Section header string table index
-}
-
-// ELF64 program header structure (56 bytes)
-type Elf64Phdr struct {
-	Type   uint32 // Segment type
-	Flags  uint32 // Segment flags
-	Offset uint64 // Segment file offset
-	Vaddr  uint64 // Segment virtual address
-	Paddr  uint64 // Segment physical address
-	Filesz uint64 // Segment size in file
-	Memsz  uint64 // Segment size in memory
-	Align  uint64 // Segment alignment
-}
-
 // LoadedKernel contains information about the loaded kernel
 type LoadedKernel struct {
-	Entry       uint64   // Entry point address
-	LowestAddr  uint64   // Lowest loaded address
-	HighestAddr uint64   // Highest loaded address (exclusive)
+	Entry       uint64 // Entry point virtual address
+	LowestVirt  uint64 // Lowest virtual address (from ELF LOAD segments)
+	HighestVirt uint64 // Highest virtual address (exclusive)
+	PhysBase    uint64 // Physical base address where kernel was loaded
 }
 
 // Global buffer for file reading (avoid allocation)
 var elfReadBuf [4096]byte
 
-// LoadKernel loads an ELF kernel from the filesystem into memory
-func LoadKernel(fs *fat32.FileSystem, path string) (*LoadedKernel, error) {
-	// Find the kernel file
-	file, err := findFile(fs, path)
+// ELF64 header constants
+const (
+	elfMagic       = 0x464C457F // "\x7FELF"
+	elfClass64     = 2
+	elfDataLSB     = 1
+	elfTypeExec    = 2
+	elfTypeDyn     = 3
+	elfMachineX64  = 0x3E
+	elfPTLoad      = 1
+	elfEhdrSize    = 64 // ELF64 header size
+	elfPhdrSize    = 56 // ELF64 program header size
+)
+
+// elf64Ehdr is the ELF64 file header (64 bytes)
+type elf64Ehdr struct {
+	Ident     [16]byte
+	Type      uint16
+	Machine   uint16
+	Version   uint32
+	Entry     uint64
+	Phoff     uint64 // Program header table offset
+	Shoff     uint64
+	Flags     uint32
+	Ehsize    uint16
+	Phentsize uint16
+	Phnum     uint16
+	Shentsize uint16
+	Shnum     uint16
+	Shstrndx  uint16
+}
+
+// elf64Phdr is the ELF64 program header (56 bytes)
+type elf64Phdr struct {
+	Type   uint32
+	Flags  uint32
+	Offset uint64
+	Vaddr  uint64
+	Paddr  uint64
+	Filesz uint64
+	Memsz  uint64
+	Align  uint64
+}
+
+// LoadKernel loads an ELF kernel from the filesystem into physical memory.
+func LoadKernel(fsys *fat32.FileSystem, path string) (*LoadedKernel, error) {
+	debugPortOut('a')
+	file, err := findFile(fsys, path)
+	debugPortOut('b')
 	if err != nil {
 		return nil, err
 	}
+	debugPortOut('c')
+	printString("Kernel file found\r\n")
 
 	// Read ELF header
-	n, err := readFileAt(fs, file, 0, elfReadBuf[:64])
-	if err != nil || n < 64 {
+	var ehdr elf64Ehdr
+	n, err := readFileAt(fsys, file, 0, (*[elfEhdrSize]byte)(unsafe.Pointer(&ehdr))[:])
+	if err != nil || n < elfEhdrSize {
 		return nil, &blockDevError{"failed to read ELF header"}
 	}
+	debugPortOut('d')
 
-	// Parse ELF header
-	ehdr := (*Elf64Ehdr)(unsafe.Pointer(&elfReadBuf[0]))
-
-	// Validate magic
-	magic := uint32(ehdr.Ident[0]) | uint32(ehdr.Ident[1])<<8 | uint32(ehdr.Ident[2])<<16 | uint32(ehdr.Ident[3])<<24
-	if magic != ELF_MAGIC {
-		return nil, &blockDevError{"invalid ELF magic"}
+	// Validate ELF
+	magic := *(*uint32)(unsafe.Pointer(&ehdr.Ident[0]))
+	if magic != elfMagic {
+		return nil, &blockDevError{"not an ELF file"}
 	}
-
-	// Validate class (64-bit)
-	if ehdr.Ident[4] != ELFCLASS64 {
-		return nil, &blockDevError{"not ELF64"}
+	if ehdr.Ident[4] != elfClass64 || ehdr.Ident[5] != elfDataLSB {
+		return nil, &blockDevError{"not ELF64 little-endian"}
 	}
-
-	// Validate endianness (little)
-	if ehdr.Ident[5] != ELFDATA2LSB {
-		return nil, &blockDevError{"not little endian"}
-	}
-
-	// Validate machine (x86_64)
-	if ehdr.Machine != EM_X86_64 {
+	if ehdr.Machine != elfMachineX64 {
 		return nil, &blockDevError{"not x86_64"}
 	}
+	debugPortOut('e')
 
-	// Save header values BEFORE we reuse elfReadBuf for program headers
-	// (elfReadBuf is used for both, so ehdr gets overwritten on each phdr read)
-	entryPoint := ehdr.Entry
-	phoff := ehdr.Phoff
-	phentsize := uint64(ehdr.Phentsize)
-	phnum := ehdr.Phnum
+	printString("ELF: entry=")
+	printHex(ehdr.Entry)
+	printString(" phdrs=")
+	printHex(uint64(ehdr.Phnum))
+	printString("\r\n")
 
-	// Load program headers and segments - use bump allocator
-	result := dNew[LoadedKernel]()
-	if result == nil {
-		return nil, &blockDevError{"allocation failed"}
+	// Read program headers
+	if ehdr.Phnum > 32 {
+		return nil, &blockDevError{"too many program headers"}
 	}
-	result.Entry = entryPoint
-	result.LowestAddr = 0xFFFFFFFFFFFFFFFF
-	result.HighestAddr = 0
+	var phdrs [32]elf64Phdr
+	phdrBytes := int(ehdr.Phnum) * elfPhdrSize
+	n, err = readFileAt(fsys, file, ehdr.Phoff, (*[32 * elfPhdrSize]byte)(unsafe.Pointer(&phdrs[0]))[:phdrBytes])
+	if err != nil || n < phdrBytes {
+		return nil, &blockDevError{"failed to read program headers"}
+	}
+	debugPortOut('f')
 
-	for i := uint16(0); i < phnum; i++ {
-		phdrOffset := phoff + uint64(i)*phentsize
-
-		// Read program header
-		n, err := readFileAt(fs, file, phdrOffset, elfReadBuf[:56])
-		if err != nil || n < 56 {
-			return nil, &blockDevError{"failed to read program header"}
-		}
-
-		phdr := (*Elf64Phdr)(unsafe.Pointer(&elfReadBuf[0]))
-
-		// Skip non-LOAD segments
-		if phdr.Type != PT_LOAD || phdr.Memsz == 0 {
+	// Pass 1: Find virtual address range
+	lowestVirt := uint64(0xFFFFFFFFFFFFFFFF)
+	highestVirt := uint64(0)
+	for i := uint16(0); i < ehdr.Phnum; i++ {
+		ph := &phdrs[i]
+		if ph.Type != elfPTLoad || ph.Memsz == 0 {
 			continue
 		}
-
-		// Track memory range
-		if phdr.Vaddr < result.LowestAddr {
-			result.LowestAddr = phdr.Vaddr
+		if ph.Vaddr < lowestVirt {
+			lowestVirt = ph.Vaddr
 		}
-		endAddr := phdr.Vaddr + phdr.Memsz
-		if endAddr > result.HighestAddr {
-			result.HighestAddr = endAddr
+		end := ph.Vaddr + ph.Memsz
+		if end > highestVirt {
+			highestVirt = end
 		}
+	}
+	if lowestVirt >= highestVirt {
+		return nil, &blockDevError{"no LOAD segments"}
+	}
+	debugPortOut('g')
 
-		// Zero the memory region first (for .bss)
-		zeroMemory(phdr.Vaddr, phdr.Memsz)
+	printString("ELF: virt=")
+	printHex(lowestVirt)
+	printString("-")
+	printHex(highestVirt)
+	printString("\r\n")
 
-		// Copy file data to memory
-		if phdr.Filesz > 0 {
-			err = copySegmentToMemory(fs, file, phdr.Offset, phdr.Vaddr, phdr.Filesz)
+	// Allocate physical memory
+	physPages := uint64(DefaultKernelMemSize) / PageSize
+	physBase, err := allocatePhysPages(physPages)
+	if err != nil {
+		return nil, err
+	}
+	debugPortOut('h')
+
+	// Zero the physical region
+	zeroMemory(physBase, DefaultKernelMemSize)
+	debugPortOut('i')
+
+	// Pass 2: Load segments
+	for i := uint16(0); i < ehdr.Phnum; i++ {
+		ph := &phdrs[i]
+		if ph.Type != elfPTLoad || ph.Memsz == 0 {
+			continue
+		}
+		physDest := physBase + (ph.Vaddr - lowestVirt)
+		if ph.Filesz > 0 {
+			err = copySegmentToMemory(fsys, file, ph.Offset, physDest, ph.Filesz)
 			if err != nil {
 				return nil, err
 			}
 		}
 	}
+	debugPortOut('j')
 
+	result := dNew[LoadedKernel]()
+	if result == nil {
+		return nil, &blockDevError{"allocation failed"}
+	}
+	result.Entry = ehdr.Entry
+	result.LowestVirt = lowestVirt
+	result.HighestVirt = highestVirt
+	result.PhysBase = physBase
+
+	printString("Kernel loaded OK\r\n")
 	return result, nil
 }
 

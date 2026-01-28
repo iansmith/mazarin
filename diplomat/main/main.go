@@ -230,6 +230,7 @@ func DiplomatEntry() {
 	// imageHandle and systemTable already set by assembly entry point
 
 	printString("Diplomat UEFI Bootloader\r\n")
+	printString("DBG: before InitializeSpans\r\n")
 
 	// Initialize memory span tracking for mmap
 	if !InitializeSpans() {
@@ -238,8 +239,12 @@ func DiplomatEntry() {
 		}
 	}
 
+	printString("DBG: spans OK\r\n")
+
 	// Get block device for boot partition
+	debugPortOut('G')
 	blockDev, err := GetBootDeviceBlockIO()
+	debugPortOut('R')
 	if err != nil {
 		printString("ERROR: block device: ")
 		printString(err.Error())
@@ -249,7 +254,10 @@ func DiplomatEntry() {
 	}
 
 	// Mount FAT32 filesystem
+	debugPortOut('M')
+	printString("Mounting FAT32...\r\n")
 	fs, err := fat32Mount(blockDev)
+	debugPortOut('N')
 	if err != nil {
 		printString("ERROR: FAT32 mount: ")
 		printString(err.Error())
@@ -257,8 +265,11 @@ func DiplomatEntry() {
 		for {
 		}
 	}
+	debugPortOut('O')
+	printString("FAT32 mounted OK\r\n")
 
-	// Load the kernel
+	// Load the kernel into physical memory
+	debugPortOut('L')
 	kernel, err := LoadKernel(fs, "/EFI/Linux/kmazarin.elf")
 	if err != nil {
 		printString("ERROR: kernel load: ")
@@ -268,10 +279,34 @@ func DiplomatEntry() {
 		}
 	}
 
-	printString("Loaded kernel, jumping to entry\r\n")
-	JumpToKernel(kernel.Entry)
+	printString("Kernel loaded: virt=")
+	printHex(kernel.LowestVirt)
+	printString("-")
+	printHex(kernel.HighestVirt)
+	printString(" phys=")
+	printHex(kernel.PhysBase)
+	printString(" entry=")
+	printHex(kernel.Entry)
+	printString("\r\n")
 
-	// JumpToKernel doesn't return, but Go requires this
+	// Build page tables mapping virtual → physical
+	pts, err := BuildPageTables(kernel.LowestVirt, kernel.PhysBase, DefaultKernelMemSize)
+	if err != nil {
+		printString("ERROR: page tables: ")
+		printString(err.Error())
+		printString("\r\n")
+		for {
+		}
+	}
+
+	printString("Page tables built, PML4=")
+	printHex(pts.PML4)
+	printString("\r\n")
+
+	printString("Switching CR3 and jumping to kernel\r\n")
+	JumpToKernelWithCR3(pts.PML4, kernel.Entry)
+
+	// Does not return
 	for {
 	}
 }
@@ -305,7 +340,12 @@ func printChar(c uint16) {
 
 // ueficall_OutputString is implemented in assembly (uefi_calls.s)
 // It calls the UEFI OutputString function using the MS x64 calling convention
+//
+//go:noescape
 func ueficall_OutputString(conout *EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL, char uint16)
+
+// debugPortOut writes a byte to QEMU debug port 0xE9 (implemented in assembly)
+func debugPortOut(c byte)
 
 // setupTLS is implemented in assembly (tls_amd64.s)
 // It sets the FS segment base for TLS support

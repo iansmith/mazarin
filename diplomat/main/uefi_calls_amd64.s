@@ -28,7 +28,7 @@
 // Go passes arguments on stack:
 //   conout at 0(FP)  - 8 bytes (pointer)
 //   char at 8(FP)    - 2 bytes (uint16), but Go aligns to 8 bytes
-TEXT ·ueficall_OutputString(SB), NOSPLIT, $48-16
+TEXT ·ueficall_OutputString(SB), NOSPLIT, $56-16
 	// Stack frame: 48 bytes
 	//   - 32 bytes: shadow space (required by MS x64 ABI)
 	//   - 16 bytes: space for our UCS-2 string (char + null terminator + padding)
@@ -77,8 +77,8 @@ TEXT ·ueficall_OutputString(SB), NOSPLIT, $48-16
 //   pages+16(FP)     - 8 bytes (uint64)
 //   memory+24(FP)    - 8 bytes (pointer)
 //   ret+32(FP)       - 8 bytes (EFI_STATUS return value)
-TEXT ·uefiCallAllocatePages(SB), NOSPLIT, $32-40
-	// Stack frame: 32 bytes for shadow space
+TEXT ·uefiCallAllocatePages(SB), NOSPLIT, $40-40
+	// Stack frame: 40 bytes (32 shadow + 8 BP save by Go)
 	// Args: 5 parameters = 40 bytes
 
 	// Load arguments into MS x64 ABI registers
@@ -110,8 +110,8 @@ TEXT ·uefiCallAllocatePages(SB), NOSPLIT, $32-40
 //   memory+8(FP)  - 8 bytes (uint64)
 //   pages+16(FP)  - 8 bytes (uint64)
 //   ret+24(FP)    - 8 bytes (EFI_STATUS return value)
-TEXT ·uefiCallFreePages(SB), NOSPLIT, $32-32
-	// Stack frame: 32 bytes for shadow space
+TEXT ·uefiCallFreePages(SB), NOSPLIT, $40-32
+	// Stack frame: 40 bytes (32 shadow + 8 BP save by Go)
 	// Args: 3 parameters = 32 bytes
 
 	// Load arguments into MS x64 ABI registers
@@ -147,8 +147,8 @@ TEXT ·uefiCallFreePages(SB), NOSPLIT, $32-32
 //   buffer+32(FP)    - 8 bytes (uintptr)
 //   funcPtr+40(FP)   - 8 bytes (uintptr)
 //   ret+48(FP)       - 8 bytes (EFI_STATUS)
-TEXT ·uefiCallBlockIORead(SB), NOSPLIT, $48-56
-	// Stack frame: 48 bytes (32 shadow + 8 for 5th arg + 8 alignment)
+TEXT ·uefiCallBlockIORead(SB), NOSPLIT, $56-56
+	// Stack frame: 56 bytes (32 shadow + 8 for 5th arg + 8 BP save + 8 alignment)
 
 	// Load arguments into MS x64 ABI registers
 	MOVQ protocol+0(FP), CX     // RCX = This (protocol pointer)
@@ -187,8 +187,8 @@ TEXT ·uefiCallBlockIORead(SB), NOSPLIT, $48-56
 //   buffer+32(FP)    - 8 bytes (uintptr)
 //   funcPtr+40(FP)   - 8 bytes (uintptr)
 //   ret+48(FP)       - 8 bytes (EFI_STATUS)
-TEXT ·uefiCallBlockIOWrite(SB), NOSPLIT, $48-56
-	// Stack frame: 48 bytes (32 shadow + 8 for 5th arg + 8 alignment)
+TEXT ·uefiCallBlockIOWrite(SB), NOSPLIT, $56-56
+	// Stack frame: 56 bytes (32 shadow + 8 for 5th arg + 8 BP save + 8 alignment)
 
 	// Load arguments into MS x64 ABI registers
 	MOVQ protocol+0(FP), CX     // RCX = This (protocol pointer)
@@ -223,17 +223,40 @@ TEXT ·uefiCallBlockIOWrite(SB), NOSPLIT, $48-56
 //   iface+16(FP)   - 8 bytes (uintptr)
 //   funcPtr+24(FP) - 8 bytes (uintptr)
 //   ret+32(FP)     - 8 bytes (EFI_STATUS)
-TEXT ·uefiHandleProtocol(SB), NOSPLIT, $32-40
-	// Stack frame: 32 bytes for shadow space
+TEXT ·uefiHandleProtocol(SB), NOSPLIT, $40-40
+	// Stack frame: 40 bytes
+	// Go inserts PUSHQ BP (8 bytes), leaving 32 bytes for shadow space
+	// Frame size 40 mod 16 == 8, so RSP is 16-aligned at CALL point:
+	//   SP = original - 8(ret) - 8(BP) - 32(locals) = original - 48 = 0 mod 16
+
+	// DEBUG: 'H' = entering HandleProtocol wrapper (AX/DX free before arg load)
+	MOVB $'H', AL
+	MOVW $0xE9, DX
+	OUTB
 
 	// Load arguments into MS x64 ABI registers
 	MOVQ handle+0(FP), CX       // RCX = Handle
 	MOVQ protocol+8(FP), DX     // RDX = Protocol GUID pointer
 	MOVQ iface+16(FP), R8       // R8 = Interface output pointer
+	MOVQ funcPtr+24(FP), AX     // AX = function pointer
 
-	// Load function pointer and call
-	MOVQ funcPtr+24(FP), AX
+	// DEBUG: 'I' = about to CALL (use R9 as scratch, not needed by HandleProtocol)
+	MOVQ AX, R9                 // Save func ptr
+	MOVQ DX, R10                // Save protocol ptr
+	MOVB $'I', AL
+	MOVW $0xE9, DX
+	OUTB
+	MOVQ R9, AX                 // Restore func ptr
+	MOVQ R10, DX                // Restore protocol ptr
+
 	CALL AX
+
+	// DEBUG: 'J' = returned from CALL (save return value)
+	MOVQ AX, R9                 // Save EFI_STATUS
+	MOVB $'J', AL
+	MOVW $0xE9, DX
+	OUTB
+	MOVQ R9, AX                 // Restore EFI_STATUS
 
 	// Return EFI_STATUS
 	MOVQ AX, ret+32(FP)
@@ -273,3 +296,38 @@ TEXT ·jumpToEntry(SB), NOSPLIT, $0-8
 
 	// Jump to entry point (no return)
 	JMP AX
+
+// func jumpToKernelWithCR3(pml4Phys, virtEntry uint64)
+//
+// Switches CR3 to new page tables and jumps to kernel at virtual entry point.
+// Identity mapping for low memory must be present in the new page tables
+// so this code can continue executing after the CR3 switch.
+// Does not return.
+TEXT ·jumpToKernelWithCR3(SB), NOSPLIT, $0-16
+	MOVQ pml4Phys+0(FP), AX
+	MOVQ virtEntry+8(FP), BX
+
+	// Load new page tables into CR3
+	// This immediately switches the virtual-to-physical mapping.
+	// Because we include identity mapping for low memory in the new tables,
+	// this code (running at low physical addresses) continues to work.
+	MOVQ AX, CR3
+
+	// Clear registers for clean state (except BX which has entry)
+	XORQ AX, AX
+	XORQ CX, CX
+	XORQ DX, DX
+	XORQ SI, SI
+	XORQ DI, DI
+	XORQ BP, BP
+	XORQ R8, R8
+	XORQ R9, R9
+	XORQ R10, R10
+	XORQ R11, R11
+	XORQ R12, R12
+	XORQ R13, R13
+	XORQ R14, R14
+	XORQ R15, R15
+
+	// Jump to kernel virtual entry point (no return)
+	JMP BX

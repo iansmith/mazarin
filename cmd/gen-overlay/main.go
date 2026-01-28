@@ -195,6 +195,8 @@ func buildDiplomatLinuxOverlay(overlay *Overlay, goroot, patchesDir string) erro
 	patches := map[string]string{
 		"syscall/syscall_linux.go":     "syscall_linux.go",
 		"runtime/sys_linux_amd64.s":    "sys_linux_amd64.s",
+		"debug/elf/file.go":            "elf_file.go",
+		"debug/elf/reader.go":          "elf_reader.go",
 	}
 
 	for goFile, patchFile := range patches {

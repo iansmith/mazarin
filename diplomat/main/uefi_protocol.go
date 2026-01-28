@@ -69,6 +69,8 @@ func GetBootDeviceBlockIO() (*UEFIBlockDevice, error) {
 
 	bs := systemTable.BootServices
 
+	debugPortOut('1')
+
 	// Get LoadedImage protocol for our image
 	var loadedImage uintptr
 	status := uefiHandleProtocol(
@@ -77,15 +79,19 @@ func GetBootDeviceBlockIO() (*UEFIBlockDevice, error) {
 		uintptr(unsafe.Pointer(&loadedImage)),
 		bs.HandleProtocol,
 	)
+	debugPortOut('2')
 	if status != EFI_SUCCESS {
 		return nil, &blockDevError{"failed to get LoadedImage protocol"}
 	}
+	debugPortOut('3')
 
 	// Get the device handle we were loaded from
 	deviceHandle := *(*uintptr)(unsafe.Pointer(loadedImage + LoadedImageDeviceHandle))
+	debugPortOut('4')
 	if deviceHandle == 0 {
 		return nil, &blockDevError{"no device handle in LoadedImage"}
 	}
+	debugPortOut('5')
 
 	// Get Block I/O protocol from the device
 	var blockIO uintptr
@@ -95,11 +101,20 @@ func GetBootDeviceBlockIO() (*UEFIBlockDevice, error) {
 		uintptr(unsafe.Pointer(&blockIO)),
 		bs.HandleProtocol,
 	)
+	debugPortOut('6')
 	if status != EFI_SUCCESS {
 		return nil, &blockDevError{"failed to get BlockIO protocol"}
 	}
+	debugPortOut('7')
 
-	return NewUEFIBlockDevice(blockIO)
+	dev, err := NewUEFIBlockDevice(blockIO)
+	debugPortOut('8')
+	if err != nil {
+		return nil, err
+	}
+	debugPortOut('9')
+	printString("Block device ready\r\n")
+	return dev, nil
 }
 
 // uefiHandleProtocol is implemented in assembly
@@ -110,4 +125,5 @@ func GetBootDeviceBlockIO() (*UEFIBlockDevice, error) {
 //     IN EFI_GUID *Protocol,          // RDX
 //     OUT VOID **Interface            // R8
 // );
+//go:noescape
 func uefiHandleProtocol(handle, protocol, iface, funcPtr uintptr) EFI_STATUS
