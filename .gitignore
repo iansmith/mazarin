@@ -40,6 +40,7 @@ cardinal/stack/test02_asm_bridge/test02_asm_bridge
 # Compiled binaries that might appear in source dirs
 kmazarin/kmazarin/kmazarin
 kmazarin/ds/ds.test
+/main
 
 # Old directories (should be removed)
 src/
