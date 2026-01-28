@@ -138,6 +138,11 @@ func init() {
 	// NOTE: IRQs are NOT enabled yet - GIC must be initialized first (in main)
 	Print("[Init] Initialization complete")
 
+	// Transition from bump allocator to buddy allocator
+	// All early boot allocations used the bump allocator; now switch to buddy
+	// for proper allocation/deallocation support
+	kmem.TransitionToBuddy()
+
 	// Print unified pool stats to verify initialization
 	kmem.PrintPoolStats()
 }

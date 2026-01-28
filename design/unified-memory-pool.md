@@ -1,295 +1,316 @@
-# Unified Memory Pool Design
+# Memory Management Design
 
 ## Overview
 
-Kmazarin uses a **unified memory pool** that serves all page allocation needs from a single bump allocator. This replaces the original design which had four separate pools (kernel frame pool, kernel PT pool, userspace frame pool, userspace PT pool).
+Kmazarin uses a three-layer memory management system:
 
-## Architecture
+1. **Linear map** (Cardinal): Maps all physical RAM into kernel VA space using 2MB L2 block descriptors, so any physical address can be accessed via `VA = PA + KernelVAOffset` without faulting.
 
-### Single Pool, Multiple Accounting Categories
+2. **Buddy allocator** (kmazarin): Manages physical pages in power-of-two blocks (orders 0-11, 4KB to 8MB). Supports both allocation and deallocation with buddy merging.
+
+3. **Page tracking** (kmazarin): Top-half/bottom-half system records metadata about every page allocation for debugging and memory accounting.
+
+A bump allocator handles the earliest boot allocations before the buddy allocator is initialized.
+
+## Physical Memory Layout
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    UNIFIED MEMORY POOL                              │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│   Physical Memory Layout (8GB RAM example):                         │
-│                                                                     │
-│   0x40000000  ┌──────────────────────────────────────────────────┐ │
-│               │  DTB (1 MB)                                      │ │
-│   0x40100000  ├──────────────────────────────────────────────────┤ │
-│               │  Cardinal (15 MB)                                │ │
-│   0x41000000  ├──────────────────────────────────────────────────┤ │
-│               │  VirtIO GPU Framebuffer (32 MB)                  │ │
-│   0x43000000  ├──────────────────────────────────────────────────┤ │
-│               │  Page Tables (8 MB)                              │ │
-│   0x43800000  ├──────────────────────────────────────────────────┤ │
-│               │  Kmazarin ELF (~2.2 MB)                          │ │
-│   ~0x43A00000 ├──────────────────────────────────────────────────┤ │
-│               │                                                  │ │
-│               │  UNIFIED POOL                                    │ │
-│               │  (bump allocator, ~8GB)                          │ │
-│               │                                                  │ │
-│               │  ┌─ Pre-mapped Bootstrap Region (32 MB) ───────┐ │ │
-│               │  │  Pages 0-8191 mapped at boot by Cardinal    │ │ │
-│               │  │  Used for kernel heap + PT allocations      │ │ │
-│               │  └─────────────────────────────────────────────┘ │ │
-│               │                                                  │ │
-│               │  Remaining pages: demand-paged as needed         │ │
-│               │                                                  │ │
-│   0x240000000 └──────────────────────────────────────────────────┘ │
-│               (End of 8GB RAM)                                     │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+0x40000000  ┌──────────────────────────────────────┐
+            │  DTB (1 MB)                          │
+0x40100000  ├──────────────────────────────────────┤
+            │  Cardinal (15 MB)                    │
+0x41000000  ├──────────────────────────────────────┤
+            │  VirtIO GPU Framebuffer (32 MB)      │
+0x43000000  ├──────────────────────────────────────┤
+            │  Page Tables (8 MB)                  │
+0x43800000  ├──────────────────────────────────────┤
+            │  Kmazarin ELF (~2.2 MB)              │
+~0x43A00000 ├──────────────────────────────────────┤
+            │                                      │
+            │  UNIFIED POOL                        │
+            │  (buddy allocator, capped at 4GB)    │
+            │                                      │
+            │  First ~76 pages: bump-allocated     │
+            │  during early boot before buddy init │
+            │                                      │
+            │  Remaining: managed by buddy         │
+            │  allocator (orders 0-11)             │
+            │                                      │
+0x100000000 └──────────────────────────────────────┘
+            (4GB cap due to KernelVAOffset wrap)
 ```
 
-### Page Type Accounting
+## Linear Map (Cardinal)
 
-All allocations come from the same pool but are tracked by purpose:
+Cardinal creates a full linear map of physical RAM at boot using 2MB L2 block descriptors in TTBR1 page tables. This means any physical address can be accessed as:
 
-| PageType | Description | Example Uses |
-|----------|-------------|--------------|
-| `PageKernelHeap` | Kernel heap allocations | Go runtime heap, ELF file buffers |
-| `PageKernelPT` | Kernel page table pages | L0/L1/L2/L3 tables for kernel mappings |
-| `PageUser` | Userspace data pages | Process code, data, bss, stack |
-| `PageUserPT` | Userspace page table pages | Per-process page tables |
+```
+VA = PA + KernelVAOffset    (KernelVAOffset = 0xFFFFFFFF00000000)
+```
 
-### Why Unified?
-
-The original four-pool design required:
-1. Pre-calculating pool sizes at boot
-2. Complex RuntimeConfig with multiple start/end addresses
-3. Potential waste if one pool exhausted while another had space
-
-The unified design:
-1. Single bump allocator - simple and fast
-2. No pool sizing decisions
-3. All memory available to whoever needs it
-4. Accounting tracks usage for debugging
-
-## Implementation
-
-### Core Data Structure
+### Implementation
 
 ```go
-// kmazarin/kmem/unified_pool.go
+// cardinal/main/mmu_mapping.go
 
-type UnifiedPagePool struct {
-    // Bump allocator state
-    next        uintptr // Next page to allocate (PA)
-    end         uintptr // End of pool (exclusive, PA)
-    initialNext uintptr // Initial value for stats
-
-    // Accounting by type
-    kernelHeapPages uint64
-    kernelPTPages   uint64
-    userPages       uint64
-    userPTPages     uint64
-
-    // Soft limit for kernel allocations
-    kernelSoftLimit uint64  // Default: 16384 pages (64MB)
-
-    // Protection
-    lock        Spinlock
-    initialized uint32
+func createLinearMap(ramStart, ramEnd uintptr) {
+    // For each 2MB chunk of physical RAM:
+    //   Create L2 block descriptor in TTBR1 page tables
+    //   Skip regions already mapped with 4KB pages (stacks, MMIO)
 }
 ```
 
-### Allocation API
+Block descriptors differ from table descriptors in bit[1]:
+- Block: `bits[1:0] = 01` (valid + block) - maps 2MB directly
+- Table: `bits[1:0] = 11` (valid + table) - points to L3 table
 
-```go
-// AllocPage allocates a single page from the unified pool.
-// The pageType parameter is used for accounting only.
-// Returns physical address, or 0 if pool exhausted.
-func AllocPage(pageType PageType) uintptr
+### Page Table Overhead
+
+| RAM Size | L2 Entries | L2 Tables | Total PT Pages |
+|----------|------------|-----------|----------------|
+| 512 MB   | 256        | 1         | 3 (12 KB)      |
+| 8 GB     | 4096       | 8         | 10 (40 KB)     |
+
+### 4GB Address Limitation
+
+`KernelVAOffset = 0xFFFFFFFF00000000` causes wraparound for PAs >= 0x100000000 (4GB). For example:
+
+```
+PA 0x100000000 + 0xFFFFFFFF00000000 = 0x10000000000000000 → wraps to 0x0
 ```
 
-Key characteristics:
-- **Returns physical address** - caller must handle VA mapping
-- **Page is NOT zeroed** - caller zeros if needed
-- **Thread-safe** via spinlock
-- **Soft limit warning** for kernel allocations (doesn't fail, just warns)
+Since this is kernel-only memory management, the buddy allocator caps its pool at the 4GB boundary. This provides ~3GB of managed memory, which is sufficient for the kernel's 64MB budget.
 
-### The Bootstrap Problem
+## Buddy Allocator
 
-When `allocPTPage()` allocates a page table page, it needs to:
-1. Get a physical page from the pool
-2. Zero the page before use
-3. Return the page's virtual address
+### Design
 
-But to zero the page, we need to access it via VA. And that VA might not be mapped yet!
+Orders 0-11 give allocation sizes from 4KB (1 page) to 8MB (2048 pages):
 
-**Solution: Pre-mapped Bootstrap Region**
+| Order | Pages | Size   |
+|-------|-------|--------|
+| 0     | 1     | 4 KB   |
+| 1     | 2     | 8 KB   |
+| 2     | 4     | 16 KB  |
+| 3     | 8     | 32 KB  |
+| 4     | 16    | 64 KB  |
+| 5     | 32    | 128 KB |
+| 6     | 64    | 256 KB |
+| 7     | 128   | 512 KB |
+| 8     | 256   | 1 MB   |
+| 9     | 512   | 2 MB   |
+| 10    | 1024  | 4 MB   |
+| 11    | 2048  | 8 MB   |
 
-Cardinal pre-maps the first N pages of the unified pool before jumping to kmazarin:
+Free lists are **intrusive**: the first 8 bytes of each free block store a pointer to the next free block (physical address). This works because free pages are already mapped via the linear map.
+
+### API
 
 ```go
-// cardinal/main/kernel.go
+// kmazarin/kmem/buddy.go
 
-func premapUnifiedPoolBootstrap() {
-    const bootstrapPages = 8192 // 32MB pre-mapped
+func BuddyAlloc(order int) uintptr    // Allocate 2^order pages, returns PA
+func BuddyFree(pa uintptr, order int) // Free block, merge with buddy if possible
+func AllocBuffer(size uint64) *BuddyBuffer  // Allocate contiguous buffer for file I/O
+func FreeBuffer(buf *BuddyBuffer)           // Return buffer to allocator
+```
 
-    for i := 0; i < bootstrapPages; i++ {
-        pa := unifiedPoolStart + i*PAGE_SIZE
-        va := pa + KernelVAOffset
-        mapKernelPage(va, pa, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-    }
+### Allocation
+
+1. Find smallest available order >= requested
+2. Remove block from free list
+3. Split down to requested order (upper halves become free buddies)
+
+### Deallocation
+
+1. Compute buddy address: `buddyPA = pa ^ (PageSize << order)`
+2. If buddy is free, remove it and merge (repeat at higher order)
+3. Insert merged block into free list
+
+### Bootstrap Transition
+
+Early boot uses a bump allocator (`unified_pool.go`). After the system is stable, `TransitionToBuddy()` initializes the buddy allocator with all remaining pages, marking bump-allocated pages as used.
+
+```go
+// Called during kmazarin init
+kmem.TransitionToBuddy()
+```
+
+After transition, `AllocPage()` delegates to `BuddyAlloc(0)`.
+
+### 64MB Kernel Budget
+
+The buddy allocator warns on every allocation that pushes total kernel memory (bootstrap + buddy-allocated) over 64MB (16384 pages):
+
+```
+[kmem] WARNING: kernel memory exceeds 64MB (0x4001 pages, bootstrap=0x4C buddy=0x3FB5)
+```
+
+## Page Tracking (Top-Half / Bottom-Half)
+
+### Architecture
+
+```
+Page Fault Handler          Event Poller          Page Tracking
+(nosplit, exception stack)  (goroutine)           Bottom Half
+                                                   (goroutine)
+        │                        │                      │
+        │ QueueDeferredRecord()  │                      │
+        ├───────────────────────>│                      │
+        │  (lock-free ring buf)  │                      │
+        │                        │ PageTrackingPending  │
+        │                        ├─────────────────────>│
+        │                        │  (channel signal)    │
+        │                        │                      │ ProcessDeferredRecords()
+        │                        │                      │ → TrackPage()
+        │                        │                      │   (static array insert)
+```
+
+### Data Structures
+
+**DeferredPageRecord** (queued by top-half, nosplit-safe):
+```go
+type DeferredPageRecord struct {
+    PA       uintptr
+    VA       uintptr
+    Type     PageAllocType  // KernelHeap, KernelPT, User, UserPT, FileBuffer
+    PriestID int16
+    ThreadID int16
+    Order    uint8
 }
 ```
 
-This ensures the first 8192 pages (~32MB) can be accessed immediately after allocation.
+**PageAllocInfo** (stored by bottom-half in static array):
+```go
+type PageAllocInfo struct {
+    PA       uintptr
+    VA       uintptr
+    Type     PageAllocType
+    PriestID int16
+    ThreadID int16
+    Order    uint8
+}
 
-### Memory Budget Calculation
-
-For loading N userspace processes, approximate page requirements:
-
-| Category | Pages per Process | Notes |
-|----------|-------------------|-------|
-| ELF file buffer | ~565 | `ReadAll()` into kernel heap (NOT freed!) |
-| User frame pages | ~423 | Process code/data/bss/stack |
-| Page table pages | ~29 | L0+L1+L2+L3 per process |
-| **Total per process** | **~1017** | |
-
-Plus initial kernel overhead: ~97 pages
-
-**Example: 4 processes**
-```
-Bootstrap requirement = 97 + (4 × 1017) = 4165 pages (~16 MB)
+var pageTracker [32768]PageAllocInfo  // ~768KB, covers up to 128MB
 ```
 
-The 8192 page (32MB) bootstrap provides ~2x headroom.
+### What Gets Tracked
 
-## GC and Memory Reclamation
+- `HandlePageFault`: kernel heap pages (demand-paged)
+- `HandleUserPageFault`: userspace pages (demand-paged)
+- `allocPTPage`: page table pages (kernel and user)
 
-### Current State: GC Disabled
+## File Loading with Buddy Allocator
 
-Go's garbage collector is currently disabled in kmazarin:
+ELF files are loaded into buddy-allocated buffers instead of the Go heap:
 
 ```go
-// kmazarin/kmazarin/main.go
-debug.SetGCPercent(-1)
+// ksyscall/launch.go
+
+elfBuf := kmem.AllocBuffer(fileSize)  // Contiguous buddy allocation
+defer kmem.FreeBuffer(elfBuf)         // Returned to buddy after ELF processing
+
+elfData := elfBuf.Bytes()             // []byte slice via linear map
+file.Read(elfData)                    // Read directly into buddy pages
 ```
 
-**Reason:** Go runtime's tagged pointer code (`runtime/tagptr_64bit.go`) assumes 49-bit virtual addresses. Kmazarin uses full 64-bit TTBR1 addresses (`0xFFFFFFFF...`), causing GC to produce "bad sweepgen in refill" errors.
+Benefits:
+- Buffer is contiguous physical memory accessible via linear map
+- `FreeBuffer` returns pages to buddy allocator (merges with buddies)
+- No Go heap pressure or GC involvement
+- Each ~2.2MB priest ELF uses an order-10 (4MB) block, freed immediately
 
-### Implications
+## walkPageTable and L2 Block Descriptors
 
-Without GC:
-- Kernel heap allocations are never freed
-- ELF file buffers (~565 pages each) accumulate
-- Memory usage only grows
-- Bootstrap region must be sized for peak usage
-
-### Future Fix
-
-To enable GC, patch Go's `runtime/tagptr_64bit.go` to handle TTBR1 kernel addresses. This would allow:
-- Automatic ELF buffer reclamation after process load
-- Reduced bootstrap region requirement
-- Normal Go memory management
-
-## Virtual Address Mapping
-
-### Kernel VA Offset
-
-Physical addresses are converted to kernel virtual addresses by adding a fixed offset:
-
-```
-KernelVAOffset = 0xFFFFFFFF00000000
-
-Physical 0x44242000 → Kernel VA 0xFFFFFFFF44242000
-```
-
-### Page Table Page Access
-
-When `allocPTPage()` allocates a new page table page:
+`walkPageTable()` in `paging.go` must handle both L2 block descriptors (from the linear map) and L2 table pointers (from 4KB page mappings):
 
 ```go
-func allocPTPage() uintptr {
-    pa := AllocPage(PageKernelPT)
+// Check if L2 entry is a block descriptor (2MB) or table pointer
+if (l2Entry & 0x2) == 0 {
+    // Block descriptor - extract PA directly
+    blockPA := uintptr(l2Entry & PTE_ADDR_MASK)
+    pageOffset := va & ((1 << L2Shift) - 1)
+    return blockPA | pageOffset
+}
+
+// Table pointer - walk to L3
+l3PA := uintptr(l2Entry & PTE_ADDR_MASK)
+// ... continue walk
+```
+
+This is critical because `allocPTPage()` allocates from the buddy pool (linear map range), then `mapPage()` calls `walkPageTable()` to translate those VAs. Without the block descriptor check, the walker would misinterpret 2MB block entries as L3 table pointers.
+
+## Memory Overhead
+
+| Structure                | Size     |
+|--------------------------|----------|
+| BuddyAllocator           | ~250 B   |
+| PageAllocInfo array (32K) | ~768 KB  |
+| DeferredPageRecord queue  | ~32 KB   |
+| Linear map page tables    | ~40 KB   |
+| **Total**                 | **~840 KB** |
+
+## Cardinal PTE Creation Sequence
+
+Cardinal creates TTBR1 (kernel) page table entries in two phases, both using direct high-memory mapping (no low-memory staging).
+
+### Phase 1: MMU Init (`mmu_init.go`)
+
+`initMMU()` creates the initial kernel address space:
+
+1. **`initKernelPageTables()`** (line ~392): Allocates TTBR1 L0 and L1 tables, links L1 into L0[511]
+2. **`setupKernelStacks()`**: Maps g0 stack and exception stack via `mapKernelPage()` (4KB pages)
+3. **`setupEarlyKernelMMIO()`**: Maps UART via `mapKernelPage()`
+4. **`enableMMU()`**: Writes TTBR1_EL1, enables MMU
+
+### Phase 2: Kmazarin Loading (`kernel.go`)
+
+`loadAndRunKmazarin()` maps kmazarin and creates the linear map:
+
+1. **Segment mapping** (line ~1437): For each ELF LOAD segment, allocates physical frames via `allocKFrame()` and maps them directly to kmazarin's high-memory VAs via `mapKernelPage()`. No low-memory staging—ELF VAs (0xFFFFFFFF41800000+) are used as-is since bit 63 = 1 means TTBR1.
+
+2. **Linear map** (line ~1623): Calls `createLinearMap()` which iterates physical RAM in 2MB chunks, creating L2 block descriptors (bit[1]=0) at each L2 entry. Skips regions already mapped with 4KB pages (kmazarin segments, stacks, MMIO).
+
+3. **Jump to kmazarin**: After mapping, populates runtime config and enters the kernel.
+
+### `createLinearMap()` (`mmu_mapping.go:72`)
+
+```go
+for pa := ramStart; pa < ramEnd; pa += BLOCK_SIZE_2MB {
     va := pa + KernelVAOffset
-
-    // Zero the page (requires VA to be mapped!)
-    ptr := (*[512]uint64)(unsafe.Pointer(va))
-    for i := 0; i < 512; i++ {
-        ptr[i] = 0
-    }
-
-    return va
+    // Extract L0[511] → L1[idx] → L2[idx]
+    // Allocate L1/L2 tables as needed
+    // Create block descriptor: PA | VALID | BLOCK | AF | NORMAL | RW | XN | ISH
+    // Skip if L2 entry already valid (preserves 4KB mappings)
 }
 ```
 
-This works because:
-1. Pool pages are allocated sequentially (bump allocator)
-2. First 8192 pages are pre-mapped by Cardinal
-3. As long as total PT allocations stay under 8192 pages, no fault occurs
+### `createBlockEntry()` (`mmu_mapping.go:47`)
 
-### User Page Mapping
-
-User pages are mapped into TTBR0 space (low addresses) with appropriate permissions:
-
-```go
-func mapUserPage(va, pa uintptr, elfFlags uint32) bool {
-    // Walk TTBR0 page tables
-    // Create L3 entry with EL0-accessible permissions
-    // VA is in range 0x0000000000000000 - 0x0000FFFFFFFFFFFF
-}
 ```
-
-## RuntimeConfig Integration
-
-Cardinal populates `RuntimeConfig` with pool information:
-
-```go
-type RuntimeConfig struct {
-    // ... other fields ...
-
-    // Frame pool (unified pool physical boundaries)
-    FramePoolStart uint64
-    FramePoolEnd   uint64
-
-    // Legacy fields (still populated for compatibility)
-    KernelPTPoolStart       uint64
-    KernelPTPoolEnd         uint64
-    UserspaceFramePoolStart uint64
-    UserspaceFramePoolEnd   uint64
-    UserspacePTPoolStart    uint64
-    UserspacePTPoolEnd      uint64
-}
-```
-
-The unified pool initializer checks for explicit unified pool fields first, then falls back to computing from legacy fields.
-
-## Pool Statistics
-
-Runtime statistics are available for debugging:
-
-```go
-stats := kmem.GetPoolStats()
-// stats.TotalPages      - Total pages in pool
-// stats.AllocatedPages  - Pages allocated so far
-// stats.RemainingPages  - Pages still available
-// stats.KernelHeapPages - Pages used for kernel heap
-// stats.KernelPTPages   - Pages used for kernel page tables
-// stats.UserPages       - Pages used for userspace
-// stats.UserPTPages     - Pages used for userspace page tables
-```
-
-Example output from boot:
-```
-[kmem] Pool stats:
-  Total:       0x00000000001FBD8E pages  (8112 MB)
-  Allocated:   0x0000000000000061 pages  (388 KB)
-  Remaining:   0x00000000001FBD2D pages
-  Kernel heap: 0x0000000000000056 pages
-  Kernel PT:   0x000000000000000B pages
-  User:        0x0000000000000000 pages
-  User PT:     0x0000000000000000 pages
+Block descriptor bits:
+  [1:0]  = 01  (valid + block, NOT table)
+  [4:2]  = AttrIdx (normal cacheable)
+  [7:6]  = AP (RW at EL1)
+  [9:8]  = SH (inner shareable)
+  [10]   = AF (access flag)
+  [53]   = PXN (privileged execute-never)
+  [54]   = UXN (unprivileged execute-never)
+  [47:21] = PA[47:21] (2MB-aligned physical address)
 ```
 
 ## Related Files
 
-- `kmazarin/kmem/unified_pool.go` - Pool implementation
-- `kmazarin/kmem/paging.go` - Page table management, `allocPTPage()`
-- `cardinal/main/kernel.go` - `premapUnifiedPoolBootstrap()`
-- `cardinal/constants/layout.go` - Memory layout constants
-- `kmazarin/kmazarin/runtime_config.go` - RuntimeConfig structure
+| File | Purpose |
+|------|---------|
+| `cardinal/main/mmu_init.go` | TTBR1 L0/L1 allocation, `mapKernelPage()`, MMU enable |
+| `cardinal/main/mmu_mapping.go` | Linear map creation with 2MB blocks |
+| `cardinal/main/mmu_constants.go` | PTE flag definitions |
+| `cardinal/main/kernel.go` | Kmazarin segment mapping, linear map call |
+| `kmazarin/kmem/buddy.go` | Buddy allocator, buffer allocation |
+| `kmazarin/kmem/unified_pool.go` | Bump allocator (early boot), transition to buddy |
+| `kmazarin/kmem/page_tracker.go` | PageAllocInfo tracking, memory stats |
+| `kmazarin/kmem/deferred.go` | Lock-free queue for top-half to bottom-half |
+| `kmazarin/kmem/paging.go` | Page fault handlers, walkPageTable |
+| `kmazarin/kmazarin/bottom_half.go` | Event poller, page tracking goroutine |
+| `kmazarin/ksyscall/launch.go` | ELF loading with buddy buffers |

@@ -5,6 +5,7 @@ import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/kirq"
+	"mazzy/kmazarin/kmem"
 	"runtime"
 	"sync/atomic"
 )
@@ -78,9 +79,10 @@ var irqIARValues [1020]uint32
 // ============================================================================
 
 var (
-	uartRxEventChan    = make(chan struct{}, 1) // Buffered to avoid blocking poller
-	uartTxEventChan    = make(chan struct{}, 1)
-	deadlineEventChan  = make(chan struct{}, 1)
+	uartRxEventChan       = make(chan struct{}, 1) // Buffered to avoid blocking poller
+	uartTxEventChan       = make(chan struct{}, 1)
+	deadlineEventChan     = make(chan struct{}, 1)
+	pageTrackingEventChan = make(chan struct{}, 1)
 )
 
 // ============================================================================
@@ -131,6 +133,14 @@ func eventPoller() {
 		if atomic.SwapUint32(&DeadlinePending, 0) == 1 {
 			select {
 			case deadlineEventChan <- struct{}{}:
+			default:
+			}
+		}
+
+		// Check page tracking flag
+		if atomic.SwapUint32(&kmem.PageTrackingPending, 0) == 1 {
+			select {
+			case pageTrackingEventChan <- struct{}{}:
 			default:
 			}
 		}
@@ -254,6 +264,18 @@ func deadlineBottomHalf() {
 }
 
 // ============================================================================
+// Page Tracking Bottom Half
+// ============================================================================
+
+// pageTrackingBottomHalf drains the deferred page record queue and
+// inserts entries into the page tracker. Runs in normal Go context.
+func pageTrackingBottomHalf() {
+	for range pageTrackingEventChan {
+		kmem.ProcessDeferredRecords()
+	}
+}
+
+// ============================================================================
 // Breadcrumb Debug Output (Safe from ANY context, including IRQ handlers)
 // ============================================================================
 
@@ -302,6 +324,8 @@ func StartBottomHalfProcessors() {
 	go uartTxBottomHalf()
 	Print("[BottomHalf] Starting deadline processor...")
 	go deadlineBottomHalf()
+	Print("[BottomHalf] Starting page tracking processor...")
+	go pageTrackingBottomHalf()
 	Print("[BottomHalf] All goroutines launched")
 
 	Print("[BottomHalf] About to finish...")

@@ -10,11 +10,17 @@ Notes and observations about working with AI assistants on this codebase.
 
 * **Using plans is critical for money saving** - Planning before implementation reduces wasted tokens on wrong approaches.
 
+* environment management becomes a documentation task (claude.md or similar) 
+rather than needing to be implemented. My scheme of not putting much of anything
+in my PATH and then having a per-project "link farm" that is specific to the 
+project is unecessary.
+
 * **Using todos is great for being specific about which things in what order** - Keeps both the AI and human aligned on progress and next steps.
 
 * **Git worktrees tradeoffs** - Git worktrees are probably not as valuable if you are building things yourself because they are equivalent to commits on the "main" branch if you are the only person using the worktrees. However, the AI is good at untangling worktree blunders like having 5 worktrees with uncommitted changes from the same source commit.
 
 * **Incremental changes with working code** - Incrementally changing something while keeping the code working is easier because the cost of "dead work" such as building transpilers and shims is close to zero. Example: the transition of the assembly code from GCC assembly to Plan9/Go assembly.
+
 
 
 * ** Go has no readonly enforcement of its values other than the language and
@@ -32,6 +38,10 @@ Notes and observations about working with AI assistants on this codebase.
 * Tried to use sonnet to make a plan and then I had opus evaluate the problem and it
 was polite but basically pointed out all the mistakes in the plan and a major bit
 of surgery was needed.
+
+* I just got a "You caught me" when the AI was not doing the testing sufficiently
+    well. It had omitted testing the real code path but rather had just tested
+    the logic of the new code created.
 
 ---
 

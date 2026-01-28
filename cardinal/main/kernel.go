@@ -623,6 +623,14 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	// that exceed the nosplit stack budget available before MMU is enabled.
 	detectAndComputeMemoryRegions()
 
+	// NOTE: Linear map creation is deferred to after kmazarin is loaded.
+	// This is because:
+	// 1. Kmazarin region needs fine-grained 4KB page mappings with different
+	//    permissions (code=RX, data=RW, etc.)
+	// 2. 2MB blocks can't provide this granularity
+	// 3. So we only create the linear map for the unified pool region (after kmazarin)
+	// See the call to createLinearMap() in loadAndRunKmazarin() after kmazarin is mapped.
+
 	// Pre-register fixed memory spans
 	preRegisterFixedSpans()
 
@@ -1612,9 +1620,23 @@ func loadAndRunKmazarin() {
 		for {}
 	}
 
-	// Pre-map unified pool bootstrap region for kmazarin's initial PT allocation
-	// This must happen after kmazarin is loaded so we know where the pool starts
-	premapUnifiedPoolBootstrap()
+	// Create linear map for the unified pool region using 2MB block descriptors.
+	// This ensures any PA from the buddy allocator has a valid kernel VA without faulting.
+	// We only map from the pool start to RAM end - kmazarin region is already mapped
+	// with 4KB pages above (with proper code/data permissions).
+	//
+	// The unified pool starts after kmazarin's loaded pages.
+	// Align DOWN to 2MB boundary to ensure the pool start is covered.
+	// createLinearMap() will skip L2 entries that are already in use (e.g., kmazarin pages).
+	physAlloc := getKFrameAllocator()
+	unifiedPoolStart := physAlloc.next &^ 0x1FFFFF // Align DOWN to 2MB
+	ramEnd := uintptr(detectedRAMBase + detectedRAMSize)
+
+	createLinearMap(unifiedPoolStart, ramEnd)
+
+	// NOTE: premapUnifiedPoolBootstrap() is no longer needed!
+	// The linear map creates 2MB block mappings that cover all physical memory.
+	// Any PA can now be accessed via VA = PA + KernelVAOffset without faulting.
 
 	// CRITICAL: Populate RuntimeConfig in StartupParams buffer FIRST
 	// This must happen before jumping to kmazarin, so config is available immediately

@@ -16,10 +16,14 @@ const (
 	PageKernelPT                   // Kernel page table pages
 	PageUser                       // Userspace data pages
 	PageUserPT                     // Userspace page table pages
+	PageFileBuffer                 // Streaming file buffer pages
 )
 
 // Default soft limit for kernel memory: 16384 pages = 64MB
 const DefaultKernelSoftLimit = 16384
+
+// MaxFreePages is the maximum number of pages that can be held in the free list
+const MaxFreePages = 4096
 
 // UnifiedPagePool is a single bump allocator serving all page allocations.
 // Thread-safe via spinlock protection.
@@ -107,13 +111,20 @@ func InitUnifiedPool() {
 }
 
 // AllocPage allocates a single page from the unified pool.
+// If the buddy allocator is initialized, delegates to it.
+// Otherwise falls back to the bump allocator (used during early boot).
 // The pageType parameter is used for accounting and soft limit checks.
 // Returns the physical address of the page, or 0 if the pool is exhausted.
 // The page is NOT zeroed - caller must zero if needed.
 //
 //go:nosplit
 func AllocPage(pageType PageType) uintptr {
-	// Ensure pool is initialized
+	// Use buddy allocator if available
+	if atomic.LoadUint32(&buddyAlloc.initialized) != 0 {
+		return BuddyAlloc(0)
+	}
+
+	// Ensure bump pool is initialized
 	if atomic.LoadUint32(&globalPool.initialized) == 0 {
 		InitUnifiedPool()
 	}
@@ -127,35 +138,50 @@ func AllocPage(pageType PageType) uintptr {
 		return 0
 	}
 
-	// Soft limit warning for kernel allocations
-	if pageType == PageKernelHeap || pageType == PageKernelPT {
-		totalKernel := globalPool.kernelHeapPages + globalPool.kernelPTPages
-		if totalKernel >= globalPool.kernelSoftLimit {
-			// Just warn, don't fail - allow debugging
-			uartPuts("[kmem] WARN: Kernel soft limit (")
-			uartPutHex64(globalPool.kernelSoftLimit)
-			uartPuts(" pages) exceeded\r\n")
-		}
-	}
-
 	// Bump allocate
 	pa := globalPool.next
 	globalPool.next += PageSize
 
-	// Update accounting
-	switch pageType {
-	case PageKernelHeap:
-		globalPool.kernelHeapPages++
-	case PageKernelPT:
-		globalPool.kernelPTPages++
-	case PageUser:
-		globalPool.userPages++
-	case PageUserPT:
-		globalPool.userPTPages++
-	}
-
 	globalPool.lock.Unlock()
 	return pa
+}
+
+// GetBumpAllocatedPages returns the number of pages allocated by the bump allocator.
+//
+//go:nosplit
+func GetBumpAllocatedPages() uint64 {
+	if atomic.LoadUint32(&globalPool.initialized) == 0 {
+		return 0
+	}
+	return uint64(globalPool.next-globalPool.initialNext) / PageSize
+}
+
+// TransitionToBuddy initializes the buddy allocator using the unified pool's range,
+// with pages already bump-allocated marked as used.
+// Call this after early boot when the system is stable enough for the buddy allocator.
+//
+//go:nosplit
+func TransitionToBuddy() {
+	if atomic.LoadUint32(&buddyAlloc.initialized) != 0 {
+		return
+	}
+	if atomic.LoadUint32(&globalPool.initialized) == 0 {
+		InitUnifiedPool()
+	}
+
+	cfg := getRuntimeConfigTyped()
+	bootstrapPages := GetBumpAllocatedPages()
+
+	uartPuts("[kmem] Transitioning to buddy allocator (")
+	uartPutHex64(bootstrapPages)
+	uartPuts(" pages already allocated)\r\n")
+
+	InitBuddyAllocator(
+		globalPool.initialNext,
+		globalPool.end,
+		uintptr(cfg.KernelVAOffset),
+		bootstrapPages,
+	)
 }
 
 // PoolStats contains accounting information about the unified pool.

@@ -375,6 +375,16 @@ func allocPTPage() uintptr {
 		ptr[i] = 0
 	}
 
+	// Queue deferred record for bottom-half page tracking
+	QueueDeferredRecord(DeferredPageRecord{
+		PA:       pa,
+		VA:       va,
+		Type:     PageAllocKernelPT,
+		PriestID: -1,
+		ThreadID: -1,
+		Order:    0,
+	})
+
 	return va
 }
 
@@ -428,7 +438,16 @@ func walkPageTable(va uintptr) uintptr {
 		return 0
 	}
 
-	// L3 table
+	// Check if L2 entry is a block descriptor (2MB) or table pointer
+	// Block: bits[1:0] = 01, Table: bits[1:0] = 11
+	if (l2Entry & 0x2) == 0 {
+		// L2 block descriptor (2MB) - extract PA from block address + page offset
+		blockPA := uintptr(l2Entry & PTE_ADDR_MASK)
+		pageOffset := va & ((1 << L2Shift) - 1) // offset within 2MB block
+		return blockPA | pageOffset
+	}
+
+	// L3 table (L2 is a table pointer)
 	l3PA := uintptr(l2Entry & PTE_ADDR_MASK)
 	l3VA := l3PA + uintptr(cfg.KernelVAOffset)
 	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
@@ -573,6 +592,16 @@ func HandlePageFault(faultAddr uintptr) bool {
 	debugPrint('S') // DEBUG: skipping zero, returning success
 	_ = pageAddr // suppress unused warning
 
+	// Queue deferred record for bottom-half page tracking
+	QueueDeferredRecord(DeferredPageRecord{
+		PA:       frame,
+		VA:       pageAddr,
+		Type:     PageAllocKernelHeap,
+		PriestID: -1,
+		ThreadID: -1,
+		Order:    0,
+	})
+
 	return true
 }
 
@@ -676,6 +705,16 @@ func HandleUserPageFault(faultAddr uintptr) bool {
 
 	// 4. ISB to synchronize the instruction stream
 	isbSY()
+
+	// Queue deferred record for bottom-half page tracking
+	QueueDeferredRecord(DeferredPageRecord{
+		PA:       framePA,
+		VA:       pageAddr,
+		Type:     PageAllocUser,
+		PriestID: -1, // TODO: get current priest ID
+		ThreadID: -1, // TODO: get current thread ID
+		Order:    0,
+	})
 
 	return true
 }

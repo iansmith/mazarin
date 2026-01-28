@@ -159,12 +159,27 @@ func SyscallLaunch(filenamePtr, _, _, _, _, _ uint64) int64 {
 	defer file.Close()
 
 	console.KWriteString("[Launch] Reading file...\r\n")
-	// Read entire file
-	elfData, err := file.ReadAll()
-	if err != nil {
+	// Allocate a buddy buffer for the file contents
+	fileSize := uint64(file.Size())
+	elfBuf := kmem.AllocBuffer(fileSize)
+	if elfBuf == nil {
+		console.KWriteString("[Launch] Failed to allocate file buffer\r\n")
 		return -4
 	}
-	console.KWriteString("[Launch] File read complete\r\n")
+	defer kmem.FreeBuffer(elfBuf)
+
+	// Read entire file into the buddy-allocated buffer
+	elfData := elfBuf.Bytes()
+	n, err := file.Read(elfData)
+	if err != nil && n == 0 {
+		return -4
+	}
+	elfData = elfData[:n]
+	console.KWriteString("[Launch] File read complete (")
+	console.KPrintHex64(uint64(n))
+	console.KWriteString(" bytes into buddy buffer order ")
+	console.KPrintHex64(uint64(elfBuf.Order))
+	console.KWriteString(")\r\n")
 
 	console.KWriteString("[Launch] Creating page table...\r\n")
 

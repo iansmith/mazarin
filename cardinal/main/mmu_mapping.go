@@ -35,6 +35,128 @@ func createTableEntry(nextTable uintptr) uint64 {
 	return entry
 }
 
+// createBlockEntry creates a 2MB block descriptor for L2 level
+// addr: Physical address (must be 2MB aligned)
+// attrs: Memory attributes (PTE_ATTR_NORMAL or PTE_ATTR_DEVICE)
+// ap: Access permissions (PTE_AP_RW_EL1, etc.)
+// exec: Execute permissions (PTE_EXEC_ALLOW or PTE_EXEC_NEVER)
+//
+// Block descriptors have bits[1:0] = 0b01 (valid + block, not table)
+// This is different from table descriptors which have bits[1:0] = 0b11
+//
+//go:nosplit
+func createBlockEntry(addr uintptr, attrs uint64, ap uint64, exec uint64) uint64 {
+	// Block descriptor: bit[0]=1 (valid), bit[1]=0 (block, not table)
+	// For L2: output address in bits[47:21], must be 2MB aligned
+	const PTE_BLOCK = 0 // bit[1] = 0 for block descriptor
+	entry := uint64(addr) | PTE_VALID | PTE_BLOCK | PTE_AF | attrs | ap | exec | PTE_SH_INNER
+	return entry
+}
+
+// createLinearMap creates a full linear map of physical RAM using 2MB L2 block descriptors.
+// This maps all of physical memory into kernel VA space (TTBR1) so that any physical
+// address can be accessed via VA = PA + KernelVAOffset without faulting.
+//
+// Parameters:
+//   ramStart: Physical start address of RAM (must be 2MB aligned)
+//   ramEnd: Physical end address of RAM (exclusive)
+//
+// The linear map uses 2MB blocks at L2 level for efficiency:
+//   - 512MB RAM = 256 L2 entries = 1 L2 table
+//   - 8GB RAM = 4096 L2 entries = 8 L2 tables
+//   - 64GB RAM = 32768 L2 entries = 64 L2 tables
+//
+// This function allocates L1 and L2 tables as needed using allocatePageTable().
+// L0 table must already exist (kernelPageTableL0).
+//
+func createLinearMap(ramStart, ramEnd uintptr) {
+	const (
+		BLOCK_SIZE_2MB = 0x200000              // 2MB
+		KernelVAOffset = uintptr(0xFFFFFFFF00000000)
+	)
+
+	// Validate alignment
+	if (ramStart & (BLOCK_SIZE_2MB - 1)) != 0 {
+		uartPutsDirect("createLinearMap: ramStart not 2MB aligned\r\n")
+		return
+	}
+
+	// Round up ramEnd to 2MB boundary
+	ramEndAligned := (ramEnd + BLOCK_SIZE_2MB - 1) &^ (BLOCK_SIZE_2MB - 1)
+
+	numBlocks := (ramEndAligned - ramStart) / BLOCK_SIZE_2MB
+	uartPutsDirect("Creating linear map: ")
+	uartPutHex64Direct(uint64(ramStart))
+	uartPutsDirect(" - ")
+	uartPutHex64Direct(uint64(ramEndAligned))
+	uartPutsDirect(" (")
+	uartPutUint32(uint32(numBlocks))
+	uartPutsDirect(" x 2MB blocks)\r\n")
+
+	// Map each 2MB block
+	for pa := ramStart; pa < ramEndAligned; pa += BLOCK_SIZE_2MB {
+		// Calculate kernel VA for this physical address
+		va := pa + KernelVAOffset
+
+		// Extract page table indices
+		va64 := uint64(va)
+		l0Idx := uint16((va64 >> 39) & 0x1FF)
+		l1Idx := uint16((va64 >> 30) & 0x1FF)
+		l2Idx := uint16((va64 >> 21) & 0x1FF)
+
+		// Get L0 entry (kernel L0 table should exist)
+		l0EntryAddr := kernelPageTableL0 + uintptr(l0Idx)*PTE_SIZE
+		l0Entry := (*uint64)(unsafe.Pointer(l0EntryAddr))
+
+		// Ensure L1 table exists for this L0 entry
+		if (*l0Entry & PTE_VALID) == 0 {
+			l1Table := allocatePageTable()
+			if l1Table == 0 {
+				uartPutsDirect("createLinearMap: failed to allocate L1 table\r\n")
+				return
+			}
+			*l0Entry = createTableEntry(l1Table)
+		}
+
+		// Get L1 table address
+		l1Table := uintptr(*l0Entry & PTE_ADDR_MASK)
+		l1EntryAddr := l1Table + uintptr(l1Idx)*PTE_SIZE
+		l1Entry := (*uint64)(unsafe.Pointer(l1EntryAddr))
+
+		// Ensure L2 table exists for this L1 entry
+		if (*l1Entry & PTE_VALID) == 0 {
+			l2Table := allocatePageTable()
+			if l2Table == 0 {
+				uartPutsDirect("createLinearMap: failed to allocate L2 table\r\n")
+				return
+			}
+			*l1Entry = createTableEntry(l2Table)
+		}
+
+		// Get L2 table address
+		l2Table := uintptr(*l1Entry & PTE_ADDR_MASK)
+		l2EntryAddr := l2Table + uintptr(l2Idx)*PTE_SIZE
+		l2Entry := (*uint64)(unsafe.Pointer(l2EntryAddr))
+
+		// Check if L2 entry is already in use (either as block or table pointer)
+		// If so, skip it to preserve existing 4KB page mappings (e.g., for stacks, MMIO)
+		if (*l2Entry & PTE_VALID) != 0 {
+			continue // Skip - already mapped (4KB pages from earlier boot)
+		}
+
+		// Create 2MB block descriptor
+		// Map as Normal memory, RW at EL1, no execute (data pages)
+		*l2Entry = createBlockEntry(pa, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	}
+
+	// Ensure all page table writes are visible
+	asm.Dsb()
+	asm.InvalidateTlbAll()
+	asm.Isb()
+
+	uartPutsDirect("Linear map created successfully\r\n")
+}
+
 // mapPage maps a single 4KB page
 // va: Virtual address (must be 4KB aligned)
 // pa: Physical address (must be 4KB aligned)
