@@ -681,7 +681,7 @@ func abortBoot(message string) {
 // Called after kmazarin is loaded so we know where the unified pool starts.
 func premapUnifiedPoolBootstrap() {
 	const KernelVAOffset = uintptr(0xFFFFFFFF00000000)
-	const bootstrapPages = 512 // 2MB of pre-mapped memory for PT bootstrap
+	const bootstrapPages = 8192 // 32MB of pre-mapped memory for PT bootstrap and multiple process creation
 	const PAGE_SIZE = uintptr(0x1000)
 
 	// Unified pool starts at next page-aligned address after current allocations
