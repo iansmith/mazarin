@@ -674,6 +674,37 @@ func abortBoot(message string) {
 // NOTE: parseEmbeddedKmazarin() was removed - it was dead code that was only
 // called from the old goroutine-based startup path (simpleMain)
 
+// premapUnifiedPoolBootstrap pre-maps a portion of the unified pool region
+// to high memory (VA = PA + KernelVAOffset). This allows kmazarin to allocate
+// and access initial page table pages before it can demand-page the rest.
+//
+// Called after kmazarin is loaded so we know where the unified pool starts.
+func premapUnifiedPoolBootstrap() {
+	const KernelVAOffset = uintptr(0xFFFFFFFF00000000)
+	const bootstrapPages = 512 // 2MB of pre-mapped memory for PT bootstrap
+	const PAGE_SIZE = uintptr(0x1000)
+
+	// Unified pool starts at next page-aligned address after current allocations
+	physAlloc := getKFrameAllocator()
+	unifiedPoolStart := (physAlloc.next + PAGE_SIZE - 1) &^ (PAGE_SIZE - 1)
+
+	uartPutsDirect("Pre-mapping unified pool bootstrap: ")
+	uartPutHex64Direct(uint64(unifiedPoolStart))
+	uartPutsDirect(" (")
+	uartPutUint32(bootstrapPages)
+	uartPutsDirect(" pages)\r\n")
+
+	for i := uintptr(0); i < bootstrapPages; i++ {
+		pa := unifiedPoolStart + i*PAGE_SIZE
+		mapKernelPage(pa+KernelVAOffset, pa, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
+	}
+
+	// Ensure mappings are visible
+	asm.Dsb()
+	asm.InvalidateTlbAll()
+	asm.Isb()
+}
+
 // populateRuntimeConfig populates the RuntimeConfig structure at the beginning
 // of the StartupParams buffer. This provides kmazarin with immediate access to
 // all runtime configuration before the Go runtime initializes.
@@ -742,6 +773,9 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 		UserspaceFramePoolEnd   uint64 // End PA of userspace frame pool
 		UserspacePTPoolStart    uint64 // Start PA of userspace page table pool
 		UserspacePTPoolEnd      uint64 // End PA of userspace page table pool
+		// Unified page pool (replaces separate kernel/user pools)
+		UnifiedPoolStart uint64 // PA of unified pool start
+		UnifiedPoolEnd   uint64 // PA of unified pool end (RAM end - stacks)
 	}
 
 	config := (*RuntimeConfig)(unsafe.Pointer(kmazarinStartupParamsVA))
@@ -760,35 +794,40 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 	config.KmazarinPhysAddr = uint64(constants.KmazarinLoadAddr)
 	config.KmazarinSize = uint64(kmazarinAllocatedBytes)
 
-	// Frame pool - compute end to match exactly the 64MB kernel limit
-	// Formula: 64MB - kmazarinSize - overhead = max heap bytes
-	// Overhead = TTBR1 region (64KB) + PT pool (512KB) = 576KB
-	const kmazarinTotalLimit = 64 * 1024 * 1024 // 64MB
-	const overheadBytes = 0x90000               // TTBR1 region + PT pool
+	// ==========================================================================
+	// UNIFIED PAGE POOL SETUP
+	// ==========================================================================
+	// The unified pool starts right after kmazarin's loaded pages and extends
+	// to the end of RAM minus the stack reservation. All page allocations
+	// (kernel heap, kernel PT, user data, user PT) come from this single pool.
+	// Accounting tracks allocation types; soft limits warn on kernel overuse.
 
-	framePoolStart := uint64(physAlloc.next)
+	// Unified pool starts at next page-aligned address after kmazarin
+	unifiedPoolStart := (uint64(physAlloc.next) + 0xFFF) &^ 0xFFF
 
-	// Calculate maximum heap bytes available within 64MB limit
-	usedByStatic := uint64(kmazarinAllocatedBytes) + overheadBytes
-	if usedByStatic >= kmazarinTotalLimit {
-		// Should never happen - kmazarin binary + overhead exceeds 64MB
-		uartPutsDirect("ERROR: kmazarin static regions exceed 64MB limit\r\n")
-		config.FramePoolStart = framePoolStart
-		config.FramePoolEnd = framePoolStart // No heap available
-	} else {
-		maxHeapBytes := kmazarinTotalLimit - usedByStatic
-		// Round down to page boundary
-		maxHeapBytes = maxHeapBytes &^ 0xFFF
-		framePoolEnd := framePoolStart + maxHeapBytes
+	// Stack reservation at end of RAM:
+	// - g0 stack: 64KB below RAM end
+	// - Exception stack: 128KB below g0 stack
+	// Total: 192KB (0x30000) reserved
+	const stackReservation = 0x30000 // 192KB for stacks
+	ramEnd := detectedRAMBase + detectedRAMSize
+	unifiedPoolEnd := ramEnd - stackReservation
+	// Page-align the end
+	unifiedPoolEnd = unifiedPoolEnd &^ 0xFFF
 
-		// Don't exceed the physical frame allocator's limit
-		if framePoolEnd > uint64(physAlloc.end) {
-			framePoolEnd = uint64(physAlloc.end)
-		}
+	uartPutsDirect("Unified pool: ")
+	uartPutHex64Direct(unifiedPoolStart)
+	uartPutsDirect(" - ")
+	uartPutHex64Direct(unifiedPoolEnd)
+	uartPutsDirect(" (")
+	poolSizeMB := (unifiedPoolEnd - unifiedPoolStart) / (1024 * 1024)
+	uartPutUint32(uint32(poolSizeMB))
+	uartPutsDirect(" MB)\r\n")
 
-		config.FramePoolStart = framePoolStart
-		config.FramePoolEnd = framePoolEnd
-	}
+	// Legacy frame pool fields for backward compatibility
+	// These overlap with the unified pool - kmazarin will use unified pool
+	config.FramePoolStart = unifiedPoolStart
+	config.FramePoolEnd = unifiedPoolEnd
 
 	// MMIO devices (already in high memory)
 	config.KernelUartBase = uint64(constants.KernelUartBase)
@@ -841,10 +880,17 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 	// Memory region layout from DTB detection (populated by detectAndComputeMemoryRegions)
 	config.TotalRAMSize = detectedRAMSize
 	config.RAMBaseAddr = detectedRAMBase
-	config.UserspaceFramePoolStart = userspaceFramePoolStart
-	config.UserspaceFramePoolEnd = userspaceFramePoolEnd
-	config.UserspacePTPoolStart = userspacePTPoolStart
-	config.UserspacePTPoolEnd = userspacePTPoolEnd
+
+	// Legacy userspace pool fields - set to unified pool values for backward compatibility
+	// These are deprecated; kmazarin should use UnifiedPoolStart/End instead
+	config.UserspaceFramePoolStart = unifiedPoolStart
+	config.UserspaceFramePoolEnd = unifiedPoolEnd
+	config.UserspacePTPoolStart = unifiedPoolStart
+	config.UserspacePTPoolEnd = unifiedPoolEnd
+
+	// NEW: Unified pool replaces all separate pools
+	config.UnifiedPoolStart = unifiedPoolStart
+	config.UnifiedPoolEnd = unifiedPoolEnd
 
 	// Ensure writes complete
 	asm.Dsb()
@@ -1565,6 +1611,10 @@ func loadAndRunKmazarin() {
 		// Failed to register - hang
 		for {}
 	}
+
+	// Pre-map unified pool bootstrap region for kmazarin's initial PT allocation
+	// This must happen after kmazarin is loaded so we know where the pool starts
+	premapUnifiedPoolBootstrap()
 
 	// CRITICAL: Populate RuntimeConfig in StartupParams buffer FIRST
 	// This must happen before jumping to kmazarin, so config is available immediately

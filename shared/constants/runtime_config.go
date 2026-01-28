@@ -77,6 +77,10 @@ type RuntimeConfig struct {
 	UserspaceFramePoolEnd   uint64 // End PA of userspace frame pool
 	UserspacePTPoolStart    uint64 // Start PA of userspace page table pool
 	UserspacePTPoolEnd      uint64 // End PA of userspace page table pool
+
+	// Unified page pool (replaces separate kernel/user pools)
+	UnifiedPoolStart uint64 // PA of unified pool start
+	UnifiedPoolEnd   uint64 // PA of unified pool end (RAM end - stacks)
 }
 
 // RuntimeConfigMagic is the expected magic value for a valid RuntimeConfig

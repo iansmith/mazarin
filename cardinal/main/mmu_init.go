@@ -502,18 +502,9 @@ func setupKernelDemandPaging() {
 	// avoiding the corruption bug where hardcoded offsets overlapped with mheap_.
 	initComputedMemoryLayout()
 
-	// Pre-allocate and map the PT Pool region for kmazarin's demand paging
-	// Uses dynamically computed values instead of hardcoded constants
-	ptPoolPages := (computedPTPoolEnd - computedPTPoolStart) / PAGE_SIZE
-	for i := uintptr(0); i < ptPoolPages; i++ {
-		physFrame := allocKFrame()
-		if physFrame == 0 {
-			kernelPanic("setupKernelDemandPaging: Out of physical frames for PT pool")
-		}
-		bzero4K(unsafe.Pointer(physFrame), PAGE_SIZE)
-		mapKernelPage(computedPTPoolStart+i*PAGE_SIZE, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-		mapKernelPage(physFrame+KernelVAOffset, physFrame, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-	}
+	// NOTE: The unified pool bootstrap region is now pre-mapped in
+	// premapUnifiedPoolBootstrap() which is called after kmazarin is loaded.
+	// This ensures we know the correct pool start address.
 
 	// Ensure all mappings are visible
 	asm.Dsb()

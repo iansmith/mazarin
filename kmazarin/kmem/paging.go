@@ -68,6 +68,11 @@ const (
 	// Shareability
 	PTE_SH_INNER = 3 << 8 // Inner shareable
 
+	// Non-global flag - CRITICAL for ASID-based address space separation!
+	// nG=1 means this entry is process-specific and uses ASID for TLB matching.
+	// nG=0 (global) means entry is shared across all ASIDs - WRONG for userspace!
+	PTE_NG = 1 << 11 // Non-global (must be set for userspace pages with ASIDs)
+
 	// Execute permission
 	PTE_EXEC_NEVER = (1 << 53) | (1 << 54) // PXN + UXN
 
@@ -84,18 +89,20 @@ const (
 // that look like physical addresses or kernel VAs.
 var (
 	pagingInitialized bool
-	ptPoolInitialized bool
 	ttbr1L0PA         uintptr // Physical address of TTBR1 L0 table (lazy init)
 	ttbr0L0PA         uintptr // Physical address of TTBR0 L0 table (Cardinal's original)
-	processL0PA       uintptr // Physical address of current process's TTBR0 L0 table
-	ttbr1L1PA         uintptr // Physical address of TTBR1 L1 table (lazy init)
-	ptPoolNext        uintptr // Next page in PT pool (lazy init)
+	// NOTE: processL0PA global removed - use readTTBR0EL1() to get current L0PA
+	ttbr1L1PA uintptr // Physical address of TTBR1 L1 table (lazy init)
+	// NOTE: ptPoolNext removed - PT allocation now uses unified pool
 
 	// Cache for allocated page table VAs
 	// Since we can't compute VA from PA (Cardinal doesn't map all RAM),
 	// we need to track the VAs of page tables we allocate.
 	// Key: PA of page table, Value: VA of page table
-	ptVACache     [64]ptVACacheEntry // Simple fixed-size cache
+	// CRITICAL: If this fills up, page table lookups will fail because
+	// PT pool pages are NOT identity-mapped - paToVA fallback won't work!
+	// 512 entries should support 6-8 priests comfortably.
+	ptVACache     [512]ptVACacheEntry // Simple fixed-size cache
 	ptVACacheSize int
 )
 
@@ -112,9 +119,10 @@ func InitPaging() {
 	cfg := getRuntimeConfigTyped()
 	ttbr1L0PA = uintptr(cfg.TTBR1L0Phys)
 	ttbr0L0PA = uintptr(cfg.TTBR0L0Phys)
-	ptPoolNext = uintptr(cfg.KernelPTPoolStart)
-	ptPoolInitialized = true
 	pagingInitialized = true
+
+	// Initialize the unified pool for PT allocation
+	InitUnifiedPool()
 
 	// L1 PA will be discovered by lazy init when needed (read from L0 entry)
 }
@@ -128,6 +136,31 @@ func GetTTBR0L0PA() uintptr {
 		InitPaging()
 	}
 	return ttbr0L0PA
+}
+
+// ReadCurrentTTBR0 reads the current TTBR0_EL1 register value.
+// Returns the raw register value including ASID in upper bits.
+// Use (result & 0x0000FFFFFFFFFFFF) to extract just the L0PA.
+//
+//go:nosplit
+func ReadCurrentTTBR0() uint64 {
+	return uint64(readTTBR0EL1())
+}
+
+// TranslateUserVA uses hardware address translation (AT S1E0R) to translate
+// a userspace VA to PA as if accessed from EL0. This verifies the MMU configuration.
+// Returns (PA, success). If translation fails, PA contains fault info.
+//
+//go:nosplit
+func TranslateUserVA(va uintptr) (uint64, bool) {
+	par := atS1E0R(va)
+	if par&1 != 0 {
+		// Translation failed - bit 0 = 1
+		return par, false
+	}
+	// Success - extract PA from PAR
+	pa := (par & 0x0000FFFFFFFFF000) | (uint64(va) & 0xFFF)
+	return pa, true
 }
 
 // CreateProcessPageTable allocates a fresh L0 page table for a userspace process.
@@ -158,43 +191,28 @@ func CreateProcessPageTable() uintptr {
 	// Cache the PA -> VA mapping
 	cachePTVA(l0PA, l0VA)
 
-	// Set this as the current process's page table
-	processL0PA = l0PA
+	// NOTE: We no longer set a global processL0PA here.
+	// The caller must store this L0PA in the Thread struct and use
+	// SwitchTTBR0WithASID() to activate it when switching to this process.
 
 	return l0PA
 }
 
-// GetProcessL0PA returns the current process's L0 physical address.
-// Returns 0 if no process page table has been created yet.
-//
-//go:nosplit
-func GetProcessL0PA() uintptr {
-	return processL0PA
-}
-
-// SwitchToProcessPageTable switches TTBR0 to the process's page table.
-// This should be called before ERET to userspace.
-// It performs a full TLB invalidation to ensure the new mappings take effect.
-// DEPRECATED: Use SwitchToProcessPageTableWithL0 for race-safety during priest loading.
-//
-//go:nosplit
-func SwitchToProcessPageTable() {
-	SwitchToProcessPageTableWithL0(processL0PA)
-}
+// NOTE: GetProcessL0PA() and SwitchToProcessPageTable() were removed.
+// They used a global processL0PA which caused race conditions with multiple priests.
+// Use SwitchToProcessPageTableWithL0() or SwitchTTBR0WithASID() with explicit L0PA.
+// For reading the current L0PA, use readTTBR0EL1() and mask out the ASID.
 
 // SwitchToProcessPageTableWithL0 switches TTBR0 to the specified L0 page table.
 // This should be called before ERET to userspace.
-// Using an explicit l0PA parameter is safe during priest loading when context
-// switches could otherwise corrupt the global processL0PA.
+// Using an explicit l0PA parameter avoids race conditions with multiple processes.
+// Page fault handlers now read from TTBR0_EL1 directly instead of a global.
 //
 //go:nosplit
 func SwitchToProcessPageTableWithL0(l0PA uintptr) {
 	if l0PA == 0 {
 		return
 	}
-
-	// Update global processL0PA so page fault handlers use the correct page table
-	processL0PA = l0PA
 
 	// Linux-style TTBR0 switch sequence (from Linux context.c)
 
@@ -237,18 +255,14 @@ func SwitchTTBR0ToPA(l0PA uintptr) {
 //   Bits [47:1]:  Physical address of page table
 //   Bit [0]:      CnP (Common not Private) - we use 0
 //
-// CRITICAL: Also updates processL0PA so page fault handlers use the correct page table.
+// Page fault handlers read TTBR0_EL1 directly to get the current L0PA,
+// so no global state update is needed here.
 //
 //go:nosplit
 func SwitchTTBR0WithASID(l0PA uintptr, asid uint16) {
 	if l0PA == 0 {
 		return // No page table to switch to
 	}
-
-	// CRITICAL: Update processL0PA BEFORE switching hardware TTBR0.
-	// This ensures page fault handlers (which use processL0PA) will update
-	// the correct page table for the currently running thread.
-	processL0PA = l0PA
 
 	// Encode ASID in upper 16 bits of TTBR0
 	// PA must be in bits [47:1], ASID in bits [63:48]
@@ -258,19 +272,12 @@ func SwitchTTBR0WithASID(l0PA uintptr, asid uint16) {
 	dsbISH()                // Memory barrier before page table operations
 	writeTTBR0Asm(ttbr0Val) // Write new TTBR0 value with ASID
 
-	// With ASID properly set, we do NOT need to flush TLB on context switch!
-	// TLB entries are tagged with their ASID, so entries from different processes
-	// can coexist in the TLB. The hardware automatically ignores entries with
-	// non-matching ASIDs.
-	//
-	// TLB flush is only needed when:
-	// 1. A page mapping changes (flush that specific VA+ASID)
-	// 2. ASID is recycled (we only have MaxPriests=4, so unlikely)
-	//
-	// NOTE: TTBR1 (kernel) does not use ASID - it's shared by all processes.
+	// DEBUG: Force TLB flush to diagnose ASID issues
+	// This should not be necessary with correct ASID handling, but helps diagnose
+	tlbiVMALLE1IS() // Invalidate all TLB entries
 
-	dsbISH() // Barrier to ensure TTBR0 write completes
-	isbSY()  // Instruction barrier for new translations to take effect
+	dsbISH() // Barrier to ensure TTBR0 write and TLB flush complete
+	isbSY()  // Instruction barrier to ensure new translations take effect
 }
 
 // paToVA converts a physical address to a virtual address using identity mapping.
@@ -289,6 +296,9 @@ func cachePTVA(pa, va uintptr) {
 	if ptVACacheSize < len(ptVACache) {
 		ptVACache[ptVACacheSize] = ptVACacheEntry{pa: pa, va: va}
 		ptVACacheSize++
+	} else {
+		// CACHE FULL - this could cause issues!
+		uartPuts("[kmem] WARN: ptVACache FULL!\r\n")
 	}
 }
 
@@ -303,6 +313,13 @@ func lookupPTVA(pa uintptr) uintptr {
 		}
 	}
 	return 0
+}
+
+// GetPTVACacheStats returns the current ptVACache usage stats.
+//
+//go:nosplit
+func GetPTVACacheStats() (used, capacity int) {
+	return ptVACacheSize, len(ptVACache)
 }
 
 // paToVAOrCache converts a PA to VA, checking the cache first for PT pool pages.
@@ -325,34 +342,40 @@ func vaToPa(va uintptr) uintptr {
 	return va - uintptr(cfg.KernelVAOffset)
 }
 
-// allocPTPage allocates a page from the PT pool for a new L2 or L3 table.
-// Returns the VA of the allocated page (already mapped by Cardinal).
+// GetPTPoolStats returns the current PT pool allocation state.
+// Now uses the unified pool accounting for kernel PT pages.
+//
+//go:nosplit
+func GetPTPoolStats() (allocatedPages, totalPages uint64, nextVA, endVA uintptr) {
+	stats := GetPoolStats()
+	// Return kernel PT pages from unified pool accounting
+	// Total and remaining are from the entire pool
+	return stats.KernelPTPages, stats.TotalPages, 0, 0
+}
+
+// allocPTPage allocates a page from the unified pool for a new L2 or L3 table.
+// Returns the VA of the allocated page (mapped via kernel VA offset).
 //
 //go:nosplit
 func allocPTPage() uintptr {
-	// Lazy initialization from runtime config
-	if !ptPoolInitialized {
-		cfg := getRuntimeConfigTyped()
-		ptPoolNext = uintptr(cfg.KernelPTPoolStart)
-		ptPoolInitialized = true
-	}
-
-	cfg := getRuntimeConfigTyped()
-	if ptPoolNext >= uintptr(cfg.KernelPTPoolEnd) {
+	// Allocate from unified pool (tracks as kernel PT page)
+	pa := AllocPage(PageKernelPT)
+	if pa == 0 {
 		uartPuts("[kmem] PT OOM!\r\n")
 		return 0
 	}
 
-	page := ptPoolNext
-	ptPoolNext += PageSize
+	// Convert PA to VA using kernel VA offset
+	cfg := getRuntimeConfigTyped()
+	va := pa + uintptr(cfg.KernelVAOffset)
 
 	// Zero the page
-	ptr := (*[512]uint64)(unsafe.Pointer(page))
+	ptr := (*[512]uint64)(unsafe.Pointer(va))
 	for i := 0; i < 512; i++ {
 		ptr[i] = 0
 	}
 
-	return page
+	return va
 }
 
 // WalkPageTable translates a VA to PA by walking the page tables.
@@ -1076,6 +1099,30 @@ func Bzero4K(ptr uintptr) {
 	bzero4KAsm(ptr)
 }
 
+// TlbiVMALLE1 invalidates all TLB entries for EL1&0 translation regime.
+// Exported wrapper for use from other packages.
+//
+//go:nosplit
+func TlbiVMALLE1() {
+	tlbiVMALLE1()
+}
+
+// DsbISH performs a DSB Inner Shareable barrier.
+// Exported wrapper for use from other packages.
+//
+//go:nosplit
+func DsbISH() {
+	dsbISH()
+}
+
+// IsbSY performs an ISB barrier.
+// Exported wrapper for use from other packages.
+//
+//go:nosplit
+func IsbSY() {
+	isbSY()
+}
+
 // zeroPageSlow zeros a 4KB page using regular stores.
 // This is slower than Bzero4K but more reliable for debugging.
 //
@@ -1478,8 +1525,11 @@ func mapUserPageWithL0(va, pa uintptr, elfFlags uint32, l0PAParam uintptr) bool 
 
 	// Build PTE value for user page
 	// Base: valid, page descriptor, access flag, normal memory, inner shareable
+	// CRITICAL: PTE_NG (non-global) is required for userspace pages when using ASIDs!
+	// Without nG=1, the TLB entry would be global and match any ASID, causing
+	// conflicts when multiple processes map the same VA to different PAs.
 	pteValue := uint64(pa) | PTE_VALID | PTE_TABLE | PTE_AF |
-		PTE_ATTR_NORMAL | PTE_SH_INNER
+		PTE_ATTR_NORMAL | PTE_SH_INNER | PTE_NG
 
 	// Set access permissions based on ELF flags
 	if (elfFlags & ELF_PF_W) != 0 {
@@ -1539,10 +1589,13 @@ func MapUserDevicePage(va, pa uintptr) bool {
 		return false // User pages must be in low memory
 	}
 
-	// Use process-specific L0 if available, otherwise fallback to inherited
-	l0PA := processL0PA
+	// CRITICAL: Get the current process's L0PA from TTBR0_EL1, NOT from a global.
+	// Globals can be stale when multiple processes are running.
+	// TTBR0 format: bits [63:48] = ASID, bits [47:1] = PA, bit [0] = CnP
+	ttbr0 := readTTBR0EL1()
+	l0PA := uintptr(ttbr0 & 0x0000FFFFFFFFFFFF) // Mask out ASID
 	if l0PA == 0 {
-		l0PA = ttbr0L0PA
+		l0PA = ttbr0L0PA // Fallback to Cardinal's original page table
 	}
 
 	// Get L0 table VA
@@ -1650,8 +1703,9 @@ func MapUserDevicePage(va, pa uintptr) bool {
 	}
 
 	// Device memory: non-cacheable, RW for user and kernel, no execute
+	// PTE_NG required for userspace pages with ASIDs
 	pteValue := uint64(pa) | PTE_VALID | PTE_TABLE | PTE_AF |
-		PTE_ATTR_DEVICE | PTE_AP_RW_ALL | PTE_EXEC_NEVER
+		PTE_ATTR_DEVICE | PTE_AP_RW_ALL | PTE_EXEC_NEVER | PTE_NG
 
 	*l3Entry = pteValue
 
@@ -1704,6 +1758,64 @@ const KernelScratchVA = 0xFFFFFFFF42260000
 
 var kernelScratchMapped bool
 var kernelScratchCurrentPA uintptr
+
+// DEBUG: Watchpoint mechanism to track when a specific PA gets corrupted.
+// Set WatchPA to a page-aligned PA after the first priest's page 0x5e000 is allocated.
+// Call CheckWatchPA(label) at various points to see when the data changes.
+var WatchPA uintptr           // Page-aligned PA to watch (0 = disabled)
+var WatchExpected uint32 = 0xf9400b90 // Expected value at WatchPA + 0xa60
+
+// CheckWatchPA reads the uint32 at WatchPA+0xa60 and prints if it differs from expected.
+func CheckWatchPA(label string) {
+	if WatchPA == 0 {
+		return
+	}
+	scratchVA := MapPAToKernelScratch(WatchPA)
+	if scratchVA == 0 {
+		return
+	}
+	val := *(*uint32)(unsafe.Pointer(scratchVA + 0xa60))
+	if val != WatchExpected {
+		console.KWriteString("[WATCH] CORRUPTED at ")
+		console.KWriteString(label)
+		console.KWriteString(": PA=0x")
+		console.KPrintHex64(uint64(WatchPA))
+		console.KWriteString("+0xa60 = 0x")
+		console.KPrintHex64(uint64(val))
+		console.KWriteString(" (expected 0x")
+		console.KPrintHex64(uint64(WatchExpected))
+		console.KWriteString(")\r\n")
+	} else {
+		console.KWriteString("[WATCH] OK at ")
+		console.KWriteString(label)
+		console.KWriteString("\r\n")
+	}
+}
+
+// PrintPoolRanges prints the memory pool ranges for debugging overlap issues.
+func PrintPoolRanges() {
+	cfg := getRuntimeConfigTyped()
+	console.KWriteString("[POOLS] KernelPTPool:    0x")
+	console.KPrintHex64(cfg.KernelPTPoolStart)
+	console.KWriteString(" - 0x")
+	console.KPrintHex64(cfg.KernelPTPoolEnd)
+	console.KWriteString("\r\n")
+	console.KWriteString("[POOLS] KernelFramePool: 0x")
+	console.KPrintHex64(cfg.FramePoolStart)
+	console.KWriteString(" - 0x")
+	console.KPrintHex64(cfg.FramePoolEnd)
+	console.KWriteString("\r\n")
+	console.KWriteString("[POOLS] UserFramePool:   0x")
+	console.KPrintHex64(cfg.UserspaceFramePoolStart)
+	console.KWriteString(" - 0x")
+	console.KPrintHex64(cfg.UserspaceFramePoolEnd)
+	console.KWriteString("\r\n")
+	console.KWriteString("[POOLS] UserPTPool:      0x")
+	console.KPrintHex64(cfg.UserspacePTPoolStart)
+	console.KWriteString(" - 0x")
+	console.KPrintHex64(cfg.UserspacePTPoolEnd)
+	console.KWriteString("\r\n")
+}
 
 // MapPAToKernelScratch maps a physical address to the kernel scratch VA.
 // Returns the kernel VA where the PA can be accessed for reading/writing.
@@ -1823,6 +1935,101 @@ func WalkUserPageTableWithL0(va uintptr, l0PAParam uintptr) uintptr {
 	// Extract PA from L3 entry and add page offset
 	pa := uintptr(l3Entry & PTE_ADDR_MASK)
 	return pa | (va & (PageSize - 1))
+}
+
+// DumpUserPTEWithL0 walks the page table for a userspace VA and prints each level's entry.
+// Used for debugging page table issues.
+//
+//go:nosplit
+func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
+	// Userspace addresses must have bit 55 = 0
+	if (va>>55)&1 != 0 {
+		uartPuts("[DumpPTE] VA has bit55=1 (kernel addr)\r\n")
+		return
+	}
+
+	// Extract indices
+	l0Idx := (va >> L0Shift) & 0x1FF
+	l1Idx := (va >> L1Shift) & 0x1FF
+	l2Idx := (va >> L2Shift) & 0x1FF
+	l3Idx := (va >> L3Shift) & 0x1FF
+
+	console.KPrintf("[DumpPTE] VA=0x%x L0PA=0x%x indices=[%d,%d,%d,%d]\n",
+		va, l0PAParam, l0Idx, l1Idx, l2Idx, l3Idx)
+
+	// Use explicit L0 if provided
+	l0PA := l0PAParam
+	if l0PA == 0 {
+		ttbr0 := readTTBR0EL1()
+		l0PA = uintptr(ttbr0 & 0x0000FFFFFFFFFFFF)
+	}
+	l0VA := paToVAOrCache(l0PA)
+	if l0VA == 0 {
+		uartPuts("[DumpPTE] Failed to get L0 VA from cache\r\n")
+		return
+	}
+
+	// L0 entry
+	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
+	console.KPrintf("[DumpPTE] L0[%d]=0x%016x (VA=0x%x)\n", l0Idx, l0Entry, l0VA+l0Idx*8)
+	if (l0Entry & PTE_VALID) == 0 {
+		uartPuts("[DumpPTE] L0 entry INVALID\r\n")
+		return
+	}
+
+	// L1 table
+	l1PA := uintptr(l0Entry & PTE_ADDR_MASK)
+	l1VA := paToVAOrCache(l1PA)
+	if l1VA == 0 {
+		console.KPrintf("[DumpPTE] Failed to get L1 VA from cache (L1PA=0x%x)\n", l1PA)
+		return
+	}
+	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
+	console.KPrintf("[DumpPTE] L1[%d]=0x%016x (PA=0x%x VA=0x%x)\n", l1Idx, l1Entry, l1PA, l1VA+l1Idx*8)
+	if (l1Entry & PTE_VALID) == 0 {
+		uartPuts("[DumpPTE] L1 entry INVALID\r\n")
+		return
+	}
+
+	// L2 table
+	l2PA := uintptr(l1Entry & PTE_ADDR_MASK)
+	l2VA := paToVAOrCache(l2PA)
+	if l2VA == 0 {
+		console.KPrintf("[DumpPTE] Failed to get L2 VA from cache (L2PA=0x%x)\n", l2PA)
+		return
+	}
+	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
+	console.KPrintf("[DumpPTE] L2[%d]=0x%016x (PA=0x%x VA=0x%x)\n", l2Idx, l2Entry, l2PA, l2VA+l2Idx*8)
+	if (l2Entry & PTE_VALID) == 0 {
+		uartPuts("[DumpPTE] L2 entry INVALID\r\n")
+		return
+	}
+
+	// L3 table
+	l3PA := uintptr(l2Entry & PTE_ADDR_MASK)
+	l3VA := paToVAOrCache(l3PA)
+	if l3VA == 0 {
+		console.KPrintf("[DumpPTE] Failed to get L3 VA from cache (L3PA=0x%x)\n", l3PA)
+		return
+	}
+	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
+	console.KPrintf("[DumpPTE] L3[%d]=0x%016x (PA=0x%x VA=0x%x)\n", l3Idx, l3Entry, l3PA, l3VA+l3Idx*8)
+	if (l3Entry & PTE_VALID) == 0 {
+		uartPuts("[DumpPTE] L3 entry INVALID\r\n")
+		return
+	}
+
+	// Decode PTE attributes
+	pa := l3Entry & PTE_ADDR_MASK
+	ap := (l3Entry >> 6) & 0x3
+	sh := (l3Entry >> 8) & 0x3
+	attr := (l3Entry >> 2) & 0x7
+	af := (l3Entry >> 10) & 0x1
+	uxn := (l3Entry >> 54) & 0x1
+	pxn := (l3Entry >> 53) & 0x1
+
+	console.KPrintf("[DumpPTE] PA=0x%x AP=%d SH=%d ATTR=%d AF=%d UXN=%d PXN=%d\n",
+		pa, ap, sh, attr, af, uxn, pxn)
 }
 
 // UnmapUserPage removes the mapping for a userspace page.

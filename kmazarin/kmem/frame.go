@@ -5,7 +5,6 @@ package kmem
 
 import (
 	"mazzy/kmazarin/console"
-	"sync/atomic"
 	"unsafe"
 )
 
@@ -18,116 +17,36 @@ const KmazarinTotalLimit = 64 * 1024 * 1024 // 64 MB
 
 // Frame pool boundaries are retrieved from runtime configuration (auxv).
 // NO hardcoded addresses - everything comes from Cardinal at runtime.
-
-// frameAllocatorState tracks the kernel frame pool allocation state
-type frameAllocatorState struct {
-	nextFrame uintptr // Next physical frame to allocate
-	endFrame  uintptr // End of frame pool (exclusive)
-	allocated uint64  // Number of frames allocated
-}
-
-// frameAllocator is the global kernel frame allocator
-// NOTE: nextFrame/endFrame are lazy-initialized from runtime config (auxv).
-var frameAllocator frameAllocatorState
-
-// initialized tracks whether the frame allocator has been initialized
-// Uses atomic operations to prevent races during lazy initialization
-var initialized uint32
+//
+// NOTE: The frame allocator now uses the unified page pool (unified_pool.go).
+// The old separate kernel/user pools are deprecated.
 
 // getRuntimeConfig is provided by main package via go:linkname.
 func getRuntimeConfig() interface{}
 
-// InitFrameAllocator initializes the kernel frame allocator.
+// InitFrameAllocator initializes the unified page pool.
 // This should be called once during kmazarin startup.
 // Frame pool boundaries come from Cardinal via RuntimeConfig.
 //
 //go:nosplit
 func InitFrameAllocator() {
-	// Get runtime config (pre-populated by Cardinal)
-	cfg := getRuntimeConfigTyped()
-
-	frameAllocator.nextFrame = uintptr(cfg.FramePoolStart)
-	frameAllocator.endFrame = uintptr(cfg.FramePoolEnd)
-	frameAllocator.allocated = 0
-	atomic.StoreUint32(&initialized, 1)
-
-	_ = cfg.FramePoolEnd - cfg.FramePoolStart // Pool size calculated but not printed
+	// Initialize the unified pool which replaces the old separate pools
+	InitUnifiedPool()
 }
 
-// AllocKernelFrame allocates a single physical frame from the kernel frame pool.
+// AllocKernelFrame allocates a single physical frame from the unified pool.
 // Returns the physical address of the frame, or 0 if the pool is exhausted.
 // The frame is NOT zeroed - caller should use Bzero4K after mapping if needed.
-// Thread-safe: uses atomic operations for concurrent allocation.
+// Thread-safe via the unified pool's spinlock.
 //
-// CRITICAL: This function enforces the 64MB total kernel memory limit.
-// If allocation would exceed the limit, it panics with "kernel memory exhausted".
+// The unified pool enforces a soft limit on kernel memory (default 64MB).
+// Exceeding the soft limit generates a warning but does not fail allocation.
 //
 // For userspace allocations, use AllocUserFrame() instead.
 //
 //go:nosplit
 func AllocKernelFrame() uintptr {
-	// Lazy initialization from runtime config (atomic check)
-	if atomic.LoadUint32(&initialized) == 0 {
-		// Use compare-and-swap to ensure only one thread initializes
-		if atomic.CompareAndSwapUint32(&initialized, 0, 1) {
-			cfg := getRuntimeConfigTyped()
-			atomic.StoreUintptr(&frameAllocator.nextFrame, uintptr(cfg.FramePoolStart))
-			atomic.StoreUintptr(&frameAllocator.endFrame, uintptr(cfg.FramePoolEnd))
-			atomic.StoreUint64(&frameAllocator.allocated, 0)
-		} else {
-			// Another thread won the race, wait for it to complete initialization
-			for atomic.LoadUint32(&initialized) == 0 {
-				// Spin wait
-			}
-		}
-	}
-
-	// Check 64MB limit BEFORE allocating
-	// Total kernel memory = KmazarinSize (static) + overhead + (allocated+1)*PageSize
-	// Overhead = TTBR1 region (64KB) + PT pool (512KB) = 576KB = 0x90000
-	cfg := getRuntimeConfigTyped()
-	const overheadBytes = 0x90000 // TTBR1 region + PT pool
-	currentAllocated := atomic.LoadUint64(&frameAllocator.allocated)
-	totalAfterAlloc := cfg.KmazarinSize + overheadBytes + (currentAllocated+1)*PageSize
-
-	if totalAfterAlloc > KmazarinTotalLimit {
-		uartPuts("\r\n*** KERNEL PANIC: kernel memory exhausted (64MB limit) ***\r\n")
-		uartPuts("  KmazarinSize: ")
-		uartPutHex64(cfg.KmazarinSize)
-		uartPuts("\r\n  Overhead: ")
-		uartPutHex64(overheadBytes)
-		uartPuts("\r\n  Heap frames: ")
-		uartPutHex64(currentAllocated)
-		uartPuts("\r\n  Total: ")
-		uartPutHex64(totalAfterAlloc)
-		uartPuts(" > 64MB (")
-		uartPutHex64(KmazarinTotalLimit)
-		uartPuts(")\r\n")
-		// Infinite loop to halt
-		for {
-		}
-	}
-
-	// Atomically allocate a frame
-	for {
-		currentNext := atomic.LoadUintptr(&frameAllocator.nextFrame)
-		endFrame := atomic.LoadUintptr(&frameAllocator.endFrame)
-
-		if currentNext >= endFrame {
-			uartPuts("\r\n*** KERNEL PANIC: frame pool exhausted ***\r\n")
-			// Infinite loop to halt
-			for {
-			}
-		}
-
-		newNext := currentNext + PageSize
-		if atomic.CompareAndSwapUintptr(&frameAllocator.nextFrame, currentNext, newNext) {
-			// Successfully allocated frame
-			atomic.AddUint64(&frameAllocator.allocated, 1)
-			return currentNext
-		}
-		// CAS failed, another thread allocated, retry
-	}
+	return AllocPage(PageKernelHeap)
 }
 
 // ZeroFrame zeros a physical frame at the given address.
@@ -148,14 +67,13 @@ func ZeroFrame(physAddr uintptr) {
 }
 
 // GetFrameStats returns the current frame allocator statistics.
+// Returns kernel heap pages as "allocated" for backwards compatibility.
 //
 //go:nosplit
 func GetFrameStats() (allocated, remaining uint64) {
-	cfg := getRuntimeConfigTyped()
-	poolSize := cfg.FramePoolEnd - cfg.FramePoolStart
-	allocated = frameAllocator.allocated
-	totalFrames := uint64(poolSize / PageSize)
-	remaining = totalFrames - allocated
+	stats := GetPoolStats()
+	allocated = stats.KernelHeapPages
+	remaining = stats.RemainingPages
 	return
 }
 
@@ -163,107 +81,36 @@ func GetFrameStats() (allocated, remaining uint64) {
 // Userspace Frame Allocator
 // =============================================================================
 //
-// Separate frame allocator for userspace pages. This keeps userspace memory
-// completely separate from kernel memory for security and resource management.
-
-// userFrameAllocator tracks the userspace frame pool allocation state
-var userFrameAllocator frameAllocatorState
-
-// userInitialized tracks whether the userspace frame allocator has been initialized
-var userInitialized uint32
+// Userspace pages are now allocated from the unified pool (unified_pool.go).
+// The accounting tracks user vs kernel allocations separately.
 
 // InitUserFrameAllocator initializes the userspace frame allocator.
-// This should be called once during kmazarin startup after kernel frame allocator.
-// Frame pool boundaries come from Cardinal via RuntimeConfig.
+// This is a no-op now since the unified pool handles all allocations.
+// Kept for backwards compatibility with existing initialization code.
 //
 //go:nosplit
 func InitUserFrameAllocator() {
-	cfg := getRuntimeConfigTyped()
-
-	// Check if userspace frame pool is configured
-	if cfg.UserspaceFramePoolStart == 0 || cfg.UserspaceFramePoolEnd == 0 {
-		uartPuts("[kmem] WARNING: Userspace frame pool not configured\r\n")
-		return
-	}
-
-	userFrameAllocator.nextFrame = uintptr(cfg.UserspaceFramePoolStart)
-	userFrameAllocator.endFrame = uintptr(cfg.UserspaceFramePoolEnd)
-	userFrameAllocator.allocated = 0
-	atomic.StoreUint32(&userInitialized, 1)
-
-	poolSize := cfg.UserspaceFramePoolEnd - cfg.UserspaceFramePoolStart
-	uartPuts("[kmem] Userspace frame pool: ")
-	uartPutHex64(cfg.UserspaceFramePoolStart)
-	uartPuts(" - ")
-	uartPutHex64(cfg.UserspaceFramePoolEnd)
-	uartPuts(" (")
-	uartPutHex64(poolSize / (1024 * 1024))
-	uartPuts(" MB)\r\n")
+	// Unified pool is initialized by InitFrameAllocator or lazily
+	InitUnifiedPool()
 }
 
-// AllocUserFrame allocates a single physical frame from the userspace frame pool.
+// AllocUserFrame allocates a single physical frame from the unified pool.
 // Returns the physical address of the frame, or 0 if the pool is exhausted.
 // The frame is NOT zeroed - caller should zero it if needed.
-// Thread-safe: uses atomic operations for concurrent allocation.
+// Thread-safe via the unified pool's spinlock.
 //
 //go:nosplit
 func AllocUserFrame() uintptr {
-	// Lazy initialization from runtime config (atomic check)
-	if atomic.LoadUint32(&userInitialized) == 0 {
-		// Use compare-and-swap to ensure only one thread initializes
-		if atomic.CompareAndSwapUint32(&userInitialized, 0, 1) {
-			cfg := getRuntimeConfigTyped()
-			if cfg.UserspaceFramePoolStart == 0 || cfg.UserspaceFramePoolEnd == 0 {
-				// Not configured - fall back to kernel pool (temporary)
-				uartPuts("[kmem] WARN: Using kernel pool for userspace (legacy mode)\r\n")
-				atomic.StoreUint32(&userInitialized, 2) // Mark as not available
-				return AllocKernelFrame() // Fall back to kernel allocator
-			}
-			atomic.StoreUintptr(&userFrameAllocator.nextFrame, uintptr(cfg.UserspaceFramePoolStart))
-			atomic.StoreUintptr(&userFrameAllocator.endFrame, uintptr(cfg.UserspaceFramePoolEnd))
-			atomic.StoreUint64(&userFrameAllocator.allocated, 0)
-		} else {
-			// Another thread won the race, wait for it to complete initialization
-			for atomic.LoadUint32(&userInitialized) == 0 {
-				// Spin wait
-			}
-		}
-	}
-
-	// Check if userspace pool is not available (flag=2 means not configured)
-	if atomic.LoadUint32(&userInitialized) == 2 {
-		return AllocKernelFrame() // Fall back to kernel allocator
-	}
-
-	// Atomically allocate a frame from userspace pool
-	for {
-		currentNext := atomic.LoadUintptr(&userFrameAllocator.nextFrame)
-		endFrame := atomic.LoadUintptr(&userFrameAllocator.endFrame)
-
-		if currentNext >= endFrame {
-			uartPuts("[kmem] Userspace OOM!\r\n")
-			return 0
-		}
-
-		newNext := currentNext + PageSize
-		if atomic.CompareAndSwapUintptr(&userFrameAllocator.nextFrame, currentNext, newNext) {
-			// Successfully allocated frame
-			atomic.AddUint64(&userFrameAllocator.allocated, 1)
-			return currentNext
-		}
-		// CAS failed, another thread allocated, retry
-	}
+	return AllocPage(PageUser)
 }
 
 // GetUserFrameStats returns the current userspace frame allocator statistics.
 //
 //go:nosplit
 func GetUserFrameStats() (allocated, remaining uint64) {
-	cfg := getRuntimeConfigTyped()
-	poolSize := cfg.UserspaceFramePoolEnd - cfg.UserspaceFramePoolStart
-	allocated = userFrameAllocator.allocated
-	totalFrames := uint64(poolSize / PageSize)
-	remaining = totalFrames - allocated
+	stats := GetPoolStats()
+	allocated = stats.UserPages
+	remaining = stats.RemainingPages
 	return
 }
 
@@ -311,6 +158,9 @@ type runtimeConfigStruct struct {
 	UserspaceFramePoolEnd   uint64
 	UserspacePTPoolStart    uint64
 	UserspacePTPoolEnd      uint64
+	// Unified page pool (replaces separate kernel/user pools)
+	UnifiedPoolStart uint64
+	UnifiedPoolEnd   uint64
 }
 
 // getRuntimeConfigTyped returns the runtime config with proper type.

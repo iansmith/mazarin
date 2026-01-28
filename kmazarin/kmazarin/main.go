@@ -137,6 +137,9 @@ func init() {
 
 	// NOTE: IRQs are NOT enabled yet - GIC must be initialized first (in main)
 	Print("[Init] Initialization complete")
+
+	// Print unified pool stats to verify initialization
+	kmem.PrintPoolStats()
 }
 
 // uartPutc writes a single character to UART.
@@ -898,19 +901,28 @@ func simpleMain() {
 	console.KPrintf("[Main] GC debug: NumGC=%d HeapAlloc=%d NextGC=%d GCPercent=%d\n",
 		memStats.NumGC, memStats.HeapAlloc, memStats.NextGC, debug.SetGCPercent(-1))
 
-	// Launch priestsieve - single priest with multiple goroutines (GOMAXPROCS=1)
-	// This tests goroutine-level preemption within a single priest.
-	Print("[Main] Launching priestsieve.elf (single priest, 6 goroutines)...\r\n")
+	// Launch 6 copies of priestsieve to stress-test thread scheduling.
+	// Each priest has 5 worker goroutines + main goroutine (6 total per priest).
+	// Total: 6 priests * 6 goroutines = 36 goroutines across 6 threads.
+	Print("[Main] Launching 4 priests...\r\n")
+
 	filename := "/priestsieve.elf\x00"
 	filenamePtr := uintptr(unsafe.Pointer(&([]byte(filename))[0]))
-	result := ksyscall.SyscallLaunch(uint64(filenamePtr), 0, 0, 0, 0, 0)
-	if result != 0 {
-		console.KPrintf("[Main] ERROR: priestsieve launch failed with code %d\n", result)
-	} else {
-		console.KPrintf("[Main] Launched priestsieve successfully\n")
+
+	for i := 0; i < 4; i++ { // Testing: 4 priests
+		result := ksyscall.SyscallLaunch(uint64(filenamePtr), 0, 0, 0, 0, 0)
+		if result != 0 {
+			console.KPrintf("[Main] ERROR: priestsieve #%d launch failed with code %d\n", i+1, result)
+		} else {
+			console.KPrintf("[Main] Launched priestsieve #%d successfully\n", i+1)
+		}
 	}
 
-	Print("[Main] priestsieve launched - testing goroutine scheduling")
+	// Diagnostic: Show resource usage after launching priests
+	ptUsed, ptCap := kmem.GetPTVACacheStats()
+	console.KPrintf("[Main] ptVACache: %d/%d entries used\n", ptUsed, ptCap)
+
+	Print("[Main] priest(s) launched - testing thread scheduling")
 
 	// Re-enable IRQs and timer for priest scheduling
 	EnableIRQs()
@@ -921,6 +933,20 @@ func simpleMain() {
 	console.KPrintf("[Main] DAIF before idle: 0x%x (I=0x80 clear means IRQs enabled)\n", daif)
 
 	Print("[Main] Starting first thread from ready queue...\r\n")
+
+	// DEBUG: Check watchpoint before final sync
+	kmem.CheckWatchPA("main-before-FinalUserspaceSync")
+
+	// CRITICAL: Full cache and TLB sync after loading all priests.
+	// Each priest is loaded at the same user VA range (0x80000+), and per-VA
+	// cache invalidation during loading may leave stale entries from earlier loads.
+	// FinalUserspaceSync is the nuclear option: TLB, D-cache, and I-cache all invalidated.
+	kmem.FinalUserspaceSync()
+
+	// DEBUG: Check watchpoint after final sync
+	kmem.CheckWatchPA("main-after-FinalUserspaceSync")
+
+	Print("[Main] Full cache/TLB sync after loading all priests\r\n")
 
 	// Start kernel time accounting for performance measurements
 	kirq.StartKernelTimeAccounting()
