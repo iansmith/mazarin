@@ -304,7 +304,7 @@ func TestTestClock(t *testing.T) {
 	clock.CurrentTime(0)
 }
 
-// TestPriestPreference_DifferentPriest verifies that threadFindReadyPreferDifferentPriest
+// TestPriestPreference_DifferentPriest verifies that findReadyThreadPreferDifferentPriest
 // selects a thread from a different priest when available.
 //
 // Scenario:
@@ -314,7 +314,7 @@ func TestTestClock(t *testing.T) {
 //   - Ready queue order: [B, C]
 //
 // Expected Result:
-//   - threadFindReadyPreferDifferentPriest(1) returns Thread C (different priest preferred)
+//   - findReadyThreadPreferDifferentPriest(1) returns Thread C (different priest preferred)
 //   - Thread C is removed from ready queue
 //   - Thread B remains in ready queue
 func TestPriestPreference_DifferentPriest(t *testing.T) {
@@ -363,9 +363,9 @@ func TestPriestPreference_DifferentPriest(t *testing.T) {
 	t.Logf("  Thread C (TID=20): PID=2, state=%d", threadList.Data[1].State)
 	t.Logf("  Ready queue: [%d, %d]", readyQueue.Data[0], readyQueue.Data[1])
 
-	// Call threadFindReadyPreferDifferentPriest with currentPID=1
+	// Call findReadyThreadPreferDifferentPriest with currentPID=1
 	// Should select Thread C (PID=2) even though B is first
-	selected := threadFindReadyPreferDifferentPriest(PriestId(1))
+	selected := findReadyThreadPreferDifferentPriest(PriestId(1))
 
 	// Verify Thread C was selected
 	if selected == nil {
@@ -393,7 +393,7 @@ func TestPriestPreference_DifferentPriest(t *testing.T) {
 	t.Logf("  Ready queue slot 1 (Thread C): in_use=%v", readyQueue.InUse[1])
 }
 
-// TestPriestPreference_FallbackSamePriest verifies that threadFindReadyPreferDifferentPriest
+// TestPriestPreference_FallbackSamePriest verifies that findReadyThreadPreferDifferentPriest
 // falls back to a same-priest thread when no different-priest threads are available.
 //
 // Scenario:
@@ -404,7 +404,7 @@ func TestPriestPreference_DifferentPriest(t *testing.T) {
 //   - Ready queue order: [B, C]
 //
 // Expected Result:
-//   - threadFindReadyPreferDifferentPriest(1) returns Thread B (FIFO fallback)
+//   - findReadyThreadPreferDifferentPriest(1) returns Thread B (FIFO fallback)
 //   - Thread B is removed from ready queue
 func TestPriestPreference_FallbackSamePriest(t *testing.T) {
 	// Save original state
@@ -452,9 +452,9 @@ func TestPriestPreference_FallbackSamePriest(t *testing.T) {
 	t.Logf("  Thread C (TID=20): PID=1, state=%d", threadList.Data[1].State)
 	t.Logf("  Ready queue: [%d, %d]", readyQueue.Data[0], readyQueue.Data[1])
 
-	// Call threadFindReadyPreferDifferentPriest with currentPID=1
+	// Call findReadyThreadPreferDifferentPriest with currentPID=1
 	// Should fall back to FIFO (Thread B) since all are same priest
-	selected := threadFindReadyPreferDifferentPriest(PriestId(1))
+	selected := findReadyThreadPreferDifferentPriest(PriestId(1))
 
 	// Verify Thread B was selected (FIFO fallback)
 	if selected == nil {
@@ -491,7 +491,7 @@ func TestPriestPreference_FallbackSamePriest(t *testing.T) {
 //   - Ready queue order: [B, C]
 //
 // Expected Result:
-//   - threadFindReadyPreferDifferentPriest(0) returns Thread C (different priest preferred)
+//   - findReadyThreadPreferDifferentPriest(0) returns Thread C (different priest preferred)
 //   - Thread C is removed from ready queue
 //   - Thread B remains in ready queue
 func TestPriestPreference_KernelThreads(t *testing.T) {
@@ -540,9 +540,9 @@ func TestPriestPreference_KernelThreads(t *testing.T) {
 	t.Logf("  Userspace Thread C (TID=15): PID=1, state=%d", threadList.Data[1].State)
 	t.Logf("  Ready queue: [%d, %d]", readyQueue.Data[0], readyQueue.Data[1])
 
-	// Call threadFindReadyPreferDifferentPriest with currentPID=0 (kernel)
+	// Call findReadyThreadPreferDifferentPriest with currentPID=0 (kernel)
 	// Should select Thread C (PID=1) even though B is first
-	selected := threadFindReadyPreferDifferentPriest(PriestId(0))
+	selected := findReadyThreadPreferDifferentPriest(PriestId(0))
 
 	// Verify Thread C was selected
 	if selected == nil {
@@ -569,7 +569,7 @@ func TestPriestPreference_KernelThreads(t *testing.T) {
 	t.Logf("  Ready queue slot 1 (Userspace C): in_use=%v", readyQueue.InUse[1])
 }
 
-// TestPriestPreference_EmptyQueue verifies that threadFindReadyPreferDifferentPriest
+// TestPriestPreference_EmptyQueue verifies that findReadyThreadPreferDifferentPriest
 // returns nil when the ready queue is empty.
 //
 // Expected Result:
@@ -599,8 +599,8 @@ func TestPriestPreference_EmptyQueue(t *testing.T) {
 
 	t.Logf("Ready queue is empty")
 
-	// Call threadFindReadyPreferDifferentPriest
-	selected := threadFindReadyPreferDifferentPriest(PriestId(1))
+	// Call findReadyThreadPreferDifferentPriest
+	selected := findReadyThreadPreferDifferentPriest(PriestId(1))
 
 	// Verify nil was returned
 	if selected != nil {
@@ -610,7 +610,7 @@ func TestPriestPreference_EmptyQueue(t *testing.T) {
 	t.Logf("Correctly returned nil")
 }
 
-// TestPriestPreference_StaleEntries verifies that threadFindReadyPreferDifferentPriest
+// TestPriestPreference_StaleEntries verifies that findReadyThreadPreferDifferentPriest
 // correctly handles and skips stale entries in the ready queue.
 //
 // Scenario:
@@ -667,9 +667,9 @@ func TestPriestPreference_StaleEntries(t *testing.T) {
 	t.Logf("  Thread B (TID=20): PID=2, state=%d (READY)", threadList.Data[1].State)
 	t.Logf("  Ready queue: [%d, %d]", readyQueue.Data[0], readyQueue.Data[1])
 
-	// Call threadFindReadyPreferDifferentPriest with currentPID=1
+	// Call findReadyThreadPreferDifferentPriest with currentPID=1
 	// Should skip stale Thread A and select Thread B
-	selected := threadFindReadyPreferDifferentPriest(PriestId(1))
+	selected := findReadyThreadPreferDifferentPriest(PriestId(1))
 
 	// Verify Thread B was selected (skipped stale A)
 	if selected == nil {
@@ -693,7 +693,7 @@ func TestPriestPreference_StaleEntries(t *testing.T) {
 	t.Logf("  Ready queue slot 1 (valid B): in_use=%v", readyQueue.InUse[1])
 }
 
-// TestPriestPreference_MultipleChoices verifies that threadFindReadyPreferDifferentPriest
+// TestPriestPreference_MultipleChoices verifies that findReadyThreadPreferDifferentPriest
 // selects the FIRST different-priest thread when multiple options are available.
 //
 // Scenario:
@@ -761,9 +761,9 @@ func TestPriestPreference_MultipleChoices(t *testing.T) {
 	t.Logf("  Thread D (TID=30): PID=3")
 	t.Logf("  Ready queue: [%d, %d, %d]", readyQueue.Data[0], readyQueue.Data[1], readyQueue.Data[2])
 
-	// Call threadFindReadyPreferDifferentPriest with currentPID=1
+	// Call findReadyThreadPreferDifferentPriest with currentPID=1
 	// Should select Thread C (first different-priest in scan order)
-	selected := threadFindReadyPreferDifferentPriest(PriestId(1))
+	selected := findReadyThreadPreferDifferentPriest(PriestId(1))
 
 	// Verify Thread C was selected (first different priest encountered)
 	if selected == nil {
@@ -789,4 +789,224 @@ func TestPriestPreference_MultipleChoices(t *testing.T) {
 
 	t.Logf("After selection:")
 	t.Logf("  Selected: TID=%d, PID=%d", selected.TID, selected.PID)
+}
+
+// TestPriestPreference_PreemptionFairness verifies that repeated preemption
+// rotates between different priests rather than monopolizing one.
+//
+// Scenario:
+//   - 4 priests, 3 threads each (12 threads total)
+//   - Simulate repeated calls to findReadyThreadPreferDifferentPriest
+//   - Verify rotation across priests
+func TestPriestPreference_PreemptionFairness(t *testing.T) {
+	// Save original state
+	origThreadList := threadList
+	origReadyQueue := readyQueue
+
+	defer func() {
+		threadList = origThreadList
+		readyQueue = origReadyQueue
+	}()
+
+	// Setup backing arrays for test
+	var testThreadListData [MaxThreads]Thread
+	var testThreadListInUse [MaxThreads]bool
+	var testReadyQueueData [MaxThreads]ThreadId
+	var testReadyQueueInUse [MaxThreads]bool
+
+	threadList.Data = testThreadListData[:]
+	threadList.InUse = testThreadListInUse[:]
+	readyQueue.Data = testReadyQueueData[:]
+	readyQueue.InUse = testReadyQueueInUse[:]
+
+	// Create 4 priests, 3 threads each
+	idx := 0
+	for pid := PriestId(1); pid <= 4; pid++ {
+		for j := 0; j < 3; j++ {
+			tid := ThreadId(int(pid)*10 + j)
+			threadList.Data[idx] = Thread{
+				TID:   tid,
+				State: ThreadReady,
+				PID:   pid,
+			}
+			threadList.InUse[idx] = true
+			readyQueue.Push(tid)
+			idx++
+		}
+	}
+
+	t.Log("Scenario: 4 priests x 3 threads, simulate repeated preemption selections")
+
+	// Track which priests are selected consecutively
+	lastPID := PriestId(1) // Simulate priest 1 was running
+	consecutiveSame := 0
+	maxConsecutiveSame := 0
+
+	for i := 0; i < 8; i++ {
+		selected := findReadyThreadPreferDifferentPriest(lastPID)
+		if selected == nil {
+			t.Fatalf("Iteration %d: got nil, expected thread", i)
+		}
+
+		if selected.PID == lastPID {
+			consecutiveSame++
+		} else {
+			consecutiveSame = 0
+		}
+		if consecutiveSame > maxConsecutiveSame {
+			maxConsecutiveSame = consecutiveSame
+		}
+
+		t.Logf("  Iteration %d: current PID=%d, selected TID=%d PID=%d",
+			i, lastPID, selected.TID, selected.PID)
+
+		// The selected thread should NOT be from the same priest as current
+		// (when threads from other priests are available)
+		if i < 6 && selected.PID == lastPID {
+			t.Errorf("Iteration %d: selected same priest %d when others available",
+				i, lastPID)
+		}
+
+		// Put selected thread back in ready queue for next iteration
+		selected.State = ThreadReady
+		readyQueue.PushNoDuplicate(selected.TID)
+		lastPID = selected.PID
+	}
+
+	t.Logf("Max consecutive same-priest selections: %d", maxConsecutiveSame)
+}
+
+// TestPriestTickAccounting verifies that priest-level tick accounting
+// works correctly across thread switches.
+func TestPriestTickAccounting(t *testing.T) {
+	// Save original state
+	origThreadList := threadList
+	origReadyQueue := readyQueue
+	origPriestList := priestList
+	origCurrentThreadIdx := CurrentThreadIdx
+	origCurrentThread := atomic.LoadPointer(&CurrentThread)
+	origTimerFreq := timerFrequencyHz
+	origSpinBackoff := ds.SpinBackoffTicks
+
+	defer func() {
+		threadList = origThreadList
+		readyQueue = origReadyQueue
+		priestList = origPriestList
+		CurrentThreadIdx = origCurrentThreadIdx
+		atomic.StorePointer(&CurrentThread, origCurrentThread)
+		timerFrequencyHz = origTimerFreq
+		ds.SpinBackoffTicks = origSpinBackoff
+	}()
+
+	// Initialize test environment
+	timerFrequencyHz = 62500000
+	ds.InitSpinlockTiming(timerFrequencyHz)
+
+	// Setup thread list
+	var testThreadListData [MaxThreads]Thread
+	var testThreadListInUse [MaxThreads]bool
+	var testReadyQueueData [MaxThreads]ThreadId
+	var testReadyQueueInUse [MaxThreads]bool
+
+	threadList.Data = testThreadListData[:]
+	threadList.InUse = testThreadListInUse[:]
+	readyQueue.Data = testReadyQueueData[:]
+	readyQueue.InUse = testReadyQueueInUse[:]
+
+	// Setup priest list
+	var testPriestListData [MaxPriests]Priest
+	var testPriestListInUse [MaxPriests]bool
+	priestList.Data = testPriestListData[:]
+	priestList.InUse = testPriestListInUse[:]
+
+	// Create priest 1 (index 0)
+	priestList.Data[0] = Priest{PID: PriestId(1)}
+	priestList.InUse[0] = true
+
+	// Create priest 2 (index 1)
+	priestList.Data[1] = Priest{PID: PriestId(2)}
+	priestList.InUse[1] = true
+
+	// Create thread A (priest 1, running)
+	threadList.Data[0] = Thread{
+		TID:                ThreadId(10),
+		State:              ThreadRunning,
+		PID:                PriestId(1),
+		PriestIdx:          0, // index into priestList
+		StartTick:          1000,
+		TicksStartedRunning: 1000,
+	}
+	threadList.InUse[0] = true
+	CurrentThreadIdx = 0
+	atomic.StorePointer(&CurrentThread, unsafe.Pointer(&threadList.Data[0]))
+
+	// Create thread B (priest 2, ready)
+	threadList.Data[1] = Thread{
+		TID:       ThreadId(20),
+		State:     ThreadReady,
+		PID:       PriestId(2),
+		PriestIdx: 1,
+	}
+	threadList.InUse[1] = true
+	readyQueue.Push(ThreadId(20))
+
+	// Create thread C (priest 1, ready) - same priest as A
+	threadList.Data[2] = Thread{
+		TID:       ThreadId(11),
+		State:     ThreadReady,
+		PID:       PriestId(1),
+		PriestIdx: 0,
+	}
+	threadList.InUse[2] = true
+	readyQueue.Push(ThreadId(11))
+
+	// Start priest 1's clock
+	priestList.Data[0].TicksStartedRunning = 1000
+
+	// Simulate preemption at time=2000 (1000 ticks elapsed for priest 1)
+	daifPair := &DAIFPair{}
+	testClock := NewTestClock([]uint64{2000}) // currentTime = 2000
+	sf := &SchedulerFunc{
+		CurrentTime:          testClock.CurrentTime,
+		DisableAndSaveDAIF:   daifPair.DisableAndSaveDAIF,
+		EnableAndRestoreDAIF: daifPair.EnableAndRestoreDAIF,
+		StateCheck: func(checkpoint string) {
+			t.Logf("StateCheck: %s", checkpoint)
+		},
+	}
+
+	result := checkThreadPreemptionImpl(sf, 0)
+	if result == 0 {
+		t.Fatal("Expected context switch, got 0")
+	}
+
+	// Verify priest 1's total ticks were accumulated
+	if priestList.Data[0].TotalTicksRunning != 1000 {
+		t.Errorf("Priest 1 TotalTicksRunning: expected 1000, got %d",
+			priestList.Data[0].TotalTicksRunning)
+	}
+
+	// Verify priest 1's clock was stopped (switched to different priest)
+	if priestList.Data[0].TicksStartedRunning != 0 {
+		t.Errorf("Priest 1 TicksStartedRunning should be 0 after switch to different priest, got %d",
+			priestList.Data[0].TicksStartedRunning)
+	}
+
+	// Verify priest 2's clock was started
+	if priestList.Data[1].TicksStartedRunning != 2000 {
+		t.Errorf("Priest 2 TicksStartedRunning should be 2000, got %d",
+			priestList.Data[1].TicksStartedRunning)
+	}
+
+	// Verify the selected thread is from priest 2 (prefer different priest)
+	current := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	if current.PID != PriestId(2) {
+		t.Errorf("Expected switch to priest 2, got priest %d", current.PID)
+	}
+
+	if !daifPair.Balanced() {
+		t.Errorf("Unbalanced DAIF calls: %d", daifPair.daifCalls)
+	}
+
+	t.Log("PASS: Priest-level tick accounting works correctly")
 }

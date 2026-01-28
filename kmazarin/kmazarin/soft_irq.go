@@ -242,7 +242,7 @@ func ThreadBlockSoftIRQ(sf *SchedulerFunc, bundlePtr uint64) uintptr {
 	}
 
 	// Find next thread BEFORE blocking
-	next := threadFindReadyIdx()
+	next := findReadyThread()
 	if next == nil {
 		schedulerLock.Unlock()
 		sf.EnableAndRestoreDAIF(savedDAIF)

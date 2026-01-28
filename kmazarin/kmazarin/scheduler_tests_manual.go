@@ -11,7 +11,7 @@ func ManualSchedulerTest() {
 	failed := 0
 
 	// Test 1: Different Priest Preference
-	fmt.Println("\n[Test 1] threadFindReadyPreferDifferentPriest - Different Priest Available")
+	fmt.Println("\n[Test 1] findReadyThreadPreferDifferentPriest - Different Priest Available")
 	if testPriestPreferenceDifferent() {
 		fmt.Println("  ✓ PASS")
 		passed++
@@ -21,7 +21,7 @@ func ManualSchedulerTest() {
 	}
 
 	// Test 2: Same Priest Fallback
-	fmt.Println("\n[Test 2] threadFindReadyPreferDifferentPriest - Same Priest Fallback")
+	fmt.Println("\n[Test 2] findReadyThreadPreferDifferentPriest - Same Priest Fallback")
 	if testPriestPreferenceFallback() {
 		fmt.Println("  ✓ PASS")
 		passed++
@@ -31,7 +31,7 @@ func ManualSchedulerTest() {
 	}
 
 	// Test 3: Empty Queue
-	fmt.Println("\n[Test 3] threadFindReadyPreferDifferentPriest - Empty Queue")
+	fmt.Println("\n[Test 3] findReadyThreadPreferDifferentPriest - Empty Queue")
 	if testPriestPreferenceEmpty() {
 		fmt.Println("  ✓ PASS")
 		passed++
@@ -90,7 +90,7 @@ func testPriestPreferenceDifferent() bool {
 	readyQueue.Push(ThreadId(20)) // Thread C
 
 	// Call with currentPID=1, should select Thread C (PID=2)
-	selected := threadFindReadyPreferDifferentPriest(PriestId(1))
+	selected := findReadyThreadPreferDifferentPriest(PriestId(1))
 
 	// Verify
 	if selected == nil {
@@ -152,7 +152,7 @@ func testPriestPreferenceFallback() bool {
 	readyQueue.Push(ThreadId(20))
 
 	// Call with currentPID=1, should fall back to FIFO (Thread B)
-	selected := threadFindReadyPreferDifferentPriest(PriestId(1))
+	selected := findReadyThreadPreferDifferentPriest(PriestId(1))
 
 	// Verify
 	if selected == nil {
@@ -192,7 +192,7 @@ func testPriestPreferenceEmpty() bool {
 	// Don't add any threads (empty queue)
 
 	// Call should return nil
-	selected := threadFindReadyPreferDifferentPriest(PriestId(1))
+	selected := findReadyThreadPreferDifferentPriest(PriestId(1))
 
 	// Verify
 	if selected != nil {

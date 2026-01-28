@@ -61,6 +61,10 @@ const ReservedKernelPriests = 1
 type Priest struct {
 	PID              PriestId // Unique priest identifier
 	AsyncPreemptAddr uint64   // Address of this priest's runtime.asyncPreempt function
+
+	// Per-priest tick accounting — all thread ticks roll up here
+	TotalTicksRunning   uint64 // Cumulative ticks across all threads of this priest
+	TicksStartedRunning uint64 // When current thread of this priest started (0 = none running)
 }
 
 // Id implements the ds.Ider interface for Priest
@@ -113,6 +117,13 @@ type Thread struct {
 
 	// Clone child protection - skip async preempt until clone setup completes
 	InCloneSetup uint32 // 1 = thread is in clone setup (reading fn/gp/mp from stack), 0 = normal
+
+	// WARNING: PriestIdx is a priest LIST INDEX (not a PID). Used ONLY by time-critical
+	// code paths (timer IRQ top-half, preemption checks) that need O(1) access to
+	// the priest's tick accounting without a PID→Priest lookup. This index is set
+	// once at thread creation and never changes. Do NOT use for general priest
+	// lookups — use GetPriestByPID(t.PID) instead.
+	PriestIdx int16
 
 	// Per-thread syscall state - prevents race condition when timer IRQ preempts mid-syscall
 	// and another thread makes a syscall that overwrites global state.
@@ -536,7 +547,7 @@ func ProcessDeadlines() {
 // It processes deadlines and uses WFI to wait for the next interrupt.
 // Returns a pointer to a ready thread when one becomes available.
 //
-// CRITICAL: ProcessDeadlines and threadFindReadyIdx are protected by both DAIF
+// CRITICAL: ProcessDeadlines and findReadyThread are protected by both DAIF
 // and schedulerLock because this loop runs OUTSIDE exception context. The timer
 // handler also calls ProcessDeadlines, so without protection we'd have re-entrant corruption.
 //
@@ -557,7 +568,7 @@ func IdleLoop(sf *SchedulerFunc) *Thread {
 		schedulerLock.Lock()
 
 		ProcessDeadlines()
-		ready := threadFindReadyIdx()
+		ready := findReadyThread()
 
 		if sf.StateCheck != nil {
 			sf.StateCheck("idle-loop-check")
@@ -936,8 +947,12 @@ func threadExitImpl(sf *SchedulerFunc) uintptr {
 		threadList.Release(int(CurrentThreadIdx))
 	}
 
-	// Find next ready thread
-	next := threadFindReadyIdx()
+	// Find next ready thread, preferring a different priest for fairness
+	exitingPID := PriestId(-1)
+	if t != nil {
+		exitingPID = t.PID
+	}
+	next := findReadyThreadPreferDifferentPriest(exitingPID)
 	if next == nil {
 		if sf.StateCheck != nil {
 			sf.StateCheck("thread-exit-no-next")
@@ -1119,13 +1134,21 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	t.EntryFunc = 0
 	t.LastSeenG = 0
 
-	// Copy asyncPreemptAddr from the Priest struct
+	// Copy asyncPreemptAddr from the Priest struct and set PriestIdx for O(1) access
 	// The Priest gets this from ELF symbol lookup during process creation
 	priest := priestList.FindById(int32(priestId))
 	if priest != nil {
 		t.AsyncPreemptAddr = priest.AsyncPreemptAddr
 	} else {
 		t.AsyncPreemptAddr = 0
+	}
+	// Set PriestIdx for O(1) priest lookup in timer handler
+	t.PriestIdx = -1 // Default: no priest
+	for pi := 0; pi < len(priestList.Data); pi++ {
+		if priestList.InUse[pi] && priestList.Data[pi].PID == priestId {
+			t.PriestIdx = int16(pi)
+			break
+		}
 	}
 
 	// Set up initial context for userspace execution
@@ -1180,12 +1203,12 @@ func threadToIdx(t *Thread) int32 {
 	return idx
 }
 
-// threadFindReadyIdx finds the next READY thread using FIFO scheduling
+// findReadyThread finds the next READY thread using FIFO scheduling
 // Returns thread pointer, or nil if none found
 // Internal function - use ThreadFindReady for external API
 //
 //go:nosplit
-func threadFindReadyIdx() *Thread {
+func findReadyThread() *Thread {
 	// Loop instead of recursion to avoid stack overflow in nosplit context
 	for {
 		if readyQueue.IsEmpty() {
@@ -1239,12 +1262,12 @@ func threadFindReadyIdx() *Thread {
 	}
 }
 
-// threadFindReadyPreferDifferentPriest finds next ready thread, preferring a different priest.
+// findReadyThreadPreferDifferentPriest finds next ready thread, preferring a different priest.
 // Used for timer preemption to promote fairness across priests.
 // Falls back to any ready thread if only same-priest threads available.
 //
 //go:nosplit
-func threadFindReadyPreferDifferentPriest(currentPID PriestId) *Thread {
+func findReadyThreadPreferDifferentPriest(currentPID PriestId) *Thread {
 	// First pass: find thread from DIFFERENT priest (scan without popping)
 	for i := 0; i < len(readyQueue.Data); i++ {
 		if !readyQueue.InUse[i] {
@@ -1264,7 +1287,7 @@ func threadFindReadyPreferDifferentPriest(currentPID PriestId) *Thread {
 	}
 
 	// Fallback: any ready thread
-	return threadFindReadyIdx()
+	return findReadyThread()
 }
 
 // ThreadFindReady finds the next READY thread
@@ -1275,7 +1298,7 @@ func threadFindReadyPreferDifferentPriest(currentPID PriestId) *Thread {
 //
 //go:nosplit
 func ThreadFindReady() uintptr {
-	t := threadFindReadyIdx()
+	t := findReadyThread()
 	if t == nil {
 		return 0
 	}
@@ -1322,7 +1345,8 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64) uintptr {
 	readyQueue.Pluck(t.TID)
 
 	// Find next ready thread FIRST - don't block if no one to switch to
-	next := threadFindReadyIdx()
+	// Prefer a different priest for fairness
+	next := findReadyThreadPreferDifferentPriest(t.PID)
 	if next == nil {
 		// No ready thread - can't block, thread continues running
 		// Timer IRQ will handle preemption when other threads become ready
@@ -1442,7 +1466,8 @@ func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
 	readyQueue.Pluck(t.TID)
 
 	// Find next ready thread FIRST - don't sleep if no one to switch to
-	next := threadFindReadyIdx()
+	// Prefer a different priest for fairness
+	next := findReadyThreadPreferDifferentPriest(t.PID)
 	if next == nil {
 		// No ready thread - can't sleep, thread continues running
 		// Timer IRQ will handle preemption when other threads become ready
@@ -1622,8 +1647,8 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	}
 	oldThread.TicksStartedRunning = 0 // Mark as not running
 
-	// Find next ready thread
-	next := threadFindReadyIdx()
+	// Find next ready thread, preferring a different priest for fairness
+	next := findReadyThreadPreferDifferentPriest(oldThread.PID)
 
 	if next == nil {
 		// No other ready thread - continue with current thread
@@ -1640,6 +1665,27 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		schedulerLock.Unlock()
 		sf.EnableAndRestoreDAIF(savedDAIF)
 		return 0
+	}
+
+	// Priest-level tick accounting
+	// Stop old priest's clock
+	if oldThread.PriestIdx >= 0 {
+		oldPriest := priestList.Get(int(oldThread.PriestIdx))
+		if oldPriest != nil && oldPriest.TicksStartedRunning != 0 {
+			oldPriest.TotalTicksRunning += currentTime - oldPriest.TicksStartedRunning
+			// Only clear priest clock if switching to a DIFFERENT priest
+			if next.PID != oldThread.PID {
+				oldPriest.TicksStartedRunning = 0
+			}
+		}
+	}
+
+	// Start new priest's clock (only if different priest)
+	if next.PriestIdx >= 0 && next.PID != oldThread.PID {
+		newPriest := priestList.Get(int(next.PriestIdx))
+		if newPriest != nil {
+			newPriest.TicksStartedRunning = currentTime
+		}
 	}
 
 	// Switch to new thread
@@ -1799,6 +1845,25 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 		}
 	}
 
+	// Priest-level tick accounting for context switches
+	// Determine old priest PID to compare with new thread
+	oldPID := PriestId(-1)
+	if oldIdx >= 0 {
+		oldThread := threadList.Get(int(oldIdx))
+		if oldThread != nil {
+			oldPID = oldThread.PID
+			// Stop old priest's clock if switching to a different priest
+			newThread := threadList.Get(int(targetIdx))
+			if newThread != nil && newThread.PID != oldPID && oldThread.PriestIdx >= 0 {
+				oldPriest := priestList.Get(int(oldThread.PriestIdx))
+				if oldPriest != nil && oldPriest.TicksStartedRunning != 0 {
+					oldPriest.TotalTicksRunning += currentTime - oldPriest.TicksStartedRunning
+					oldPriest.TicksStartedRunning = 0
+				}
+			}
+		}
+	}
+
 	// New thread becomes running
 	newThread := threadList.Get(int(targetIdx)) // Get() for reserved slots
 	if newThread == nil {
@@ -1832,6 +1897,14 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 
 	// Mark when this thread started running for runtime accounting
 	newThread.TicksStartedRunning = currentTime
+
+	// Start new priest's clock if switching to a different priest
+	if newThread.PID != oldPID && newThread.PriestIdx >= 0 {
+		newPriest := priestList.Get(int(newThread.PriestIdx))
+		if newPriest != nil {
+			newPriest.TicksStartedRunning = currentTime
+		}
+	}
 
 	// Switch TTBR0 if the new thread has a different page table
 	// This is needed when switching between different userspace processes (priests)
@@ -1998,6 +2071,35 @@ func PrintTickDistribution() {
 
 			console.KPrintf("  T%02d P%02d [%s] ticks=%d (%d%%)\n",
 				t.TID, t.PID, stateStr, ticks, pct)
+		}
+	}
+	console.KPrint("================================\n")
+
+	// Per-priest tick distribution
+	console.KPrint("\n=== Priest Tick Distribution ===\n")
+	var priestTotalTicks uint64
+	for i := 0; i < MaxPriests; i++ {
+		if priestListInUse[i] {
+			p := &priestListData[i]
+			ticks := p.TotalTicksRunning
+			if p.TicksStartedRunning != 0 {
+				ticks += kirq.TimerIRQCount - p.TicksStartedRunning
+			}
+			priestTotalTicks += ticks
+		}
+	}
+	for i := 0; i < MaxPriests; i++ {
+		if priestListInUse[i] {
+			p := &priestListData[i]
+			ticks := p.TotalTicksRunning
+			if p.TicksStartedRunning != 0 {
+				ticks += kirq.TimerIRQCount - p.TicksStartedRunning
+			}
+			var pct uint64
+			if priestTotalTicks > 0 {
+				pct = (ticks * 100) / priestTotalTicks
+			}
+			console.KPrintf("  P%02d ticks=%d (%d%%)\n", p.PID, ticks, pct)
 		}
 	}
 	console.KPrint("================================\n")
