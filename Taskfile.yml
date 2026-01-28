@@ -11,7 +11,9 @@
 #
 # Environment:
 #   GO=/path/to/go                        # Go compiler (>= 1.24)
-#   QEMU=/path/to/qemu-system-aarch64     # QEMU (>= 10.2)
+#   QEMU=/path/to/qemu-system-aarch64     # QEMU ARM64 (>= 10.2)
+#   QEMU_AMD64=/path/to/qemu-system-x86_64  # QEMU x86_64 for diplomat
+#   OVMF=/path/to/edk2-x86_64-code.fd     # OVMF firmware for diplomat
 #   GOTOOLCHAIN=auto                      # Required
 #   DEBUG=1                               # Optional: disable optimizations
 
@@ -21,6 +23,8 @@ vars:
   # Environment variables (shell-free using Go templates)
   GO: '{{env "GO" | default "go"}}'
   QEMU: '{{env "QEMU" | default "qemu-system-aarch64"}}'
+  QEMU_AMD64: '{{env "QEMU_AMD64" | default "qemu-system-x86_64"}}'
+  OVMF: '{{env "OVMF" | default ""}}'
   DEBUG: '{{env "DEBUG" | default ""}}'
 
   # Build configuration (prefixed to avoid conflicts with Go env vars)
@@ -368,16 +372,33 @@ tasks:
     cmds:
       - '{{.GO}} build -o {{.BUILD_DIR}}/mkesp ./cmd/mkesp'
 
+  mktestkernel:
+    desc: Build the test kernel generator tool
+    deps: [build-dir]
+    sources:
+      - 'cmd/mktestkernel/**/*.go'
+    generates:
+      - '{{.BUILD_DIR}}/mktestkernel'
+    cmds:
+      - '{{.GO}} build -o {{.BUILD_DIR}}/mktestkernel ./cmd/mktestkernel'
+
+  testkernel:
+    desc: Build minimal test kernel for diplomat ELF loader testing
+    deps: [build-dir, mktestkernel]
+    cmds:
+      - '{{.BUILD_DIR}}/mktestkernel -o {{.BUILD_DIR}}/testkernel.elf -m "hello, mazarin\r\n"'
+
   esp:
     desc: Create EFI System Partition image for diplomat testing
-    deps: [diplomat, mkesp]
+    deps: [diplomat, mkesp, testkernel]
     sources:
       - '{{.DIPLOMAT_EFI}}'
+      - '{{.BUILD_DIR}}/testkernel.elf'
     generates:
       - '{{.ESP_IMAGE}}'
     cmds:
       - echo "Creating ESP image..."
-      - '{{.BUILD_DIR}}/mkesp -bootloader {{.DIPLOMAT_EFI}} -o {{.ESP_IMAGE}} -size 260'
+      - '{{.BUILD_DIR}}/mkesp -bootloader {{.DIPLOMAT_EFI}} -kernel {{.BUILD_DIR}}/testkernel.elf -o {{.ESP_IMAGE}} -size 260'
       - echo "ESP created at {{.ESP_IMAGE}}"
 
   run-diplomat:
@@ -405,9 +426,8 @@ tasks:
     internal: true
     vars:
       LOG_FILE: /tmp/diplomat-serial.log
-      QEMU_X86: /opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-x86_64
     cmds:
-      - '{{.GO}} tool go-start {{.QEMU_X86}} -machine q35 -cpu qemu64 -m 8G -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/share/qemu/edk2-i386-code.fd -drive file={{.ESP_IMAGE}},format=raw,if=ide -boot c -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4445,server,nowait -display none -no-reboot'
+      - '{{.GO}} tool go-start {{.QEMU_AMD64}} -machine q35,accel=tcg -cpu max -m 8G -drive if=pflash,format=raw,readonly=on,file={{.OVMF}} -drive file={{.ESP_IMAGE}},format=raw,if=ide -boot c -serial file:{{.LOG_FILE}} -debugcon file:/tmp/diplomat-debug.log -monitor tcp:127.0.0.1:4445,server,nowait -display none -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (x86_64) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4445"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'

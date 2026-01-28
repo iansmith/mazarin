@@ -187,12 +187,14 @@ func buildDiplomatOverlay(overlay *Overlay, goroot, patchesDir string) error {
 
 func buildDiplomatLinuxOverlay(overlay *Overlay, goroot, patchesDir string) error {
 	// Diplomat patches for Linux runtime to make it UEFI-compatible.
-	// Minimal change: Only patch syscall routing to centralize all syscalls
-	// through a single dispatcher in diplomat/main.
+	// We're building with GOOS=linux GOARCH=amd64, so we patch the Linux syscall/runtime.
 	//
-	// We're building with GOOS=linux GOARCH=amd64, so we patch the Linux syscall package.
+	// Critical patches:
+	// - syscall_linux.go: Centralize syscall routing
+	// - sys_linux_amd64.s: Stub out all syscall instructions (write1, exit, futex, etc.)
 	patches := map[string]string{
-		"syscall/syscall_linux.go": "syscall_linux.go",
+		"syscall/syscall_linux.go":     "syscall_linux.go",
+		"runtime/sys_linux_amd64.s":    "sys_linux_amd64.s",
 	}
 
 	for goFile, patchFile := range patches {

@@ -33,6 +33,11 @@ TEXT main·_minimal_uefi_test(SB), NOSPLIT|NOFRAME, $0
 	//   RCX = ImageHandle
 	//   RDX = SystemTable pointer
 
+	// MARKER: Write a distinctive value to our marker variable to prove we executed
+	// This is checkable from QEMU monitor even if debug port doesn't work
+	MOVQ $0xDEADBEEFCAFEBABE, AX
+	MOVQ AX, main·executionMarker(SB)
+
 	// Save SystemTable immediately (before we clobber DX for debug)
 	MOVQ DX, R8         // R8 = SystemTable (temporary save)
 

@@ -1,6 +1,12 @@
 // diplomat/main/main.go - Minimal UEFI bootloader entry point
 package main
 
+import (
+	"mazzy/shared/blockdev"
+	"mazzy/shared/fs/fat32"
+	"unsafe"
+)
+
 // EFI Basic Types
 type EFI_HANDLE uintptr
 type EFI_STATUS uintptr
@@ -195,6 +201,10 @@ var imageHandle EFI_HANDLE
 //   - FS segment base set to tlsBlock address
 var tlsBlock [256]byte
 
+// executionMarker is set by assembly entry point to prove code executed
+// Check from QEMU monitor: x/1gx &main.executionMarker
+var executionMarker uint64
+
 // main is required by Go linker but never executes
 // The actual entry point is _minimal_uefi_test in minimal_test_amd64.s
 // This function calls referenced functions to keep them from being optimized away
@@ -219,36 +229,49 @@ func main() {
 func DiplomatEntry() {
 	// imageHandle and systemTable already set by assembly entry point
 
-	// Early debug: try to print something ASAP
-	printString("=== DIPLOMAT START ===\r\n")
+	printString("Diplomat UEFI Bootloader\r\n")
 
 	// Initialize memory span tracking for mmap
-	// This must happen before Go runtime tries to allocate heap
 	if !InitializeSpans() {
 		printString("FATAL: Failed to initialize memory spans\r\n")
-		for {}
+		for {
+		}
 	}
 
-	// Print hello message via UEFI ConOut
-	printString("Diplomat UEFI Bootloader\r\n")
-	printString("Memory spans initialized\r\n")
-	printString("Phase 1: Go Runtime + mmap working\r\n")
-	printString("\r\n")
-
-	// Test that we can allocate
-	printString("Testing Go heap allocation...\r\n")
-
-	// Try to allocate a simple slice - this will test mmap
-	testSlice := make([]byte, 1024)
-	if len(testSlice) == 1024 {
-		printString("Heap allocation successful!\r\n")
+	// Get block device for boot partition
+	blockDev, err := GetBootDeviceBlockIO()
+	if err != nil {
+		printString("ERROR: block device: ")
+		printString(err.Error())
+		printString("\r\n")
+		for {
+		}
 	}
 
-	printString("\r\n")
-	printString("Next: Implement FAT32/ELF loading\r\n")
+	// Mount FAT32 filesystem
+	fs, err := fat32Mount(blockDev)
+	if err != nil {
+		printString("ERROR: FAT32 mount: ")
+		printString(err.Error())
+		printString("\r\n")
+		for {
+		}
+	}
 
-	// Hang (for now)
-	// Next phases: FAT32 filesystem, ELF loading, kmazarin launch
+	// Load the kernel
+	kernel, err := LoadKernel(fs, "/EFI/Linux/kmazarin.elf")
+	if err != nil {
+		printString("ERROR: kernel load: ")
+		printString(err.Error())
+		printString("\r\n")
+		for {
+		}
+	}
+
+	printString("Loaded kernel, jumping to entry\r\n")
+	JumpToKernel(kernel.Entry)
+
+	// JumpToKernel doesn't return, but Go requires this
 	for {
 	}
 }
@@ -296,3 +319,30 @@ func _minimal_uefi_test()
 // _efi_main_asm is the full UEFI entry point with Go runtime initialization
 // Implemented in entry_amd64.s - sets up g0/m0 and calls DiplomatEntry
 func _efi_main_asm()
+
+// diplomatAllocator is the FAT32 allocator callback that uses our bump allocator
+func diplomatAllocator(size uintptr) unsafe.Pointer {
+	return dMalloc(size)
+}
+
+// fat32Mount mounts FAT32 using diplomat's bump allocator (no Go runtime heap)
+//
+//go:noinline
+func fat32Mount(dev blockdev.BlockDevice) (*fat32.FileSystem, error) {
+	return fat32.MountWith(dev, diplomatAllocator)
+}
+
+// printHex prints a uint64 as hex
+func printHex(val uint64) {
+	hexChars := "0123456789ABCDEF"
+	printString("0x")
+	// Print at least one digit
+	started := false
+	for i := 60; i >= 0; i -= 4 {
+		digit := (val >> uint(i)) & 0xF
+		if digit != 0 || started || i == 0 {
+			printChar(uint16(hexChars[digit]))
+			started = true
+		}
+	}
+}

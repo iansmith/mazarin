@@ -280,76 +280,131 @@ func findUEFIEntryPoint(elfFile *elf.File) uint64 {
 // extractELFSections reads ELF sections and converts them to PE sections
 func extractELFSections(elfFile *elf.File) ([]*PESection, error) {
 	var peSections []*PESection
-	virtualAddr := uint32(0x1000) // Start after PE headers
 
-	// Map to track which ELF sections we've processed
-	processed := make(map[string]bool)
+	// Go generates multiple data sections that need to be merged:
+	// - .data and .noptrdata -> merged into PE .data
+	// - .bss and .noptrbss -> merged into PE .bss (uninitialized)
+	// - .rodata -> PE .rodata
+	// - .text -> PE .text
+	//
+	// CRITICAL: We must preserve the ELF virtual addresses because Go uses
+	// PC-relative addressing compiled against those addresses. The PE RVA
+	// (Relative Virtual Address) must equal (ELF addr - IMAGE_BASE).
 
-	// Process sections in order: .text, .rodata, .data, .bss
-	sectionOrder := []string{".text", ".rodata", ".data", ".bss"}
+	// Helper to collect and merge ELF sections
+	type sectionGroup struct {
+		peName   string
+		elfNames []string
+		chars    uint32
+		isBSS    bool // true for uninitialized data
+	}
 
-	for _, name := range sectionOrder {
-		elfSec := elfFile.Section(name)
-		if elfSec == nil {
-			continue
+	// Go also generates runtime metadata sections that must be included:
+	// - .typelink, .itablink, .gosymtab, .gopclntab -> merge with .rodata (read-only)
+	// - .go.buildinfo, .go.fipsinfo -> merge with .data (writable)
+	// These are critical for the Go runtime (GC, stack unwinding, interface dispatch).
+	groups := []sectionGroup{
+		{".text", []string{".text"}, IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ, false},
+		{".rodata", []string{".rodata", ".typelink", ".itablink", ".gosymtab", ".gopclntab"}, IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ, false},
+		{".data", []string{".go.buildinfo", ".go.fipsinfo", ".noptrdata", ".data"}, IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE, false},
+		{".bss", []string{".bss", ".noptrbss"}, IMAGE_SCN_CNT_UNINITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE, true},
+	}
+
+	for _, group := range groups {
+		var combinedData []byte
+		var totalVirtualSize uint64
+
+		// Collect all ELF sections for this group, sorted by address
+		type secInfo struct {
+			sec  *elf.Section
+			addr uint64
 		}
+		var sections []secInfo
 
-		if processed[name] {
-			continue
-		}
-		processed[name] = true
-
-		// Determine PE characteristics based on ELF section
-		var characteristics uint32
-		switch name {
-		case ".text":
-			characteristics = IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ
-		case ".rodata":
-			characteristics = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ
-		case ".data":
-			characteristics = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE
-		case ".bss":
-			characteristics = IMAGE_SCN_CNT_UNINITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE
-		default:
-			// Skip other sections
-			continue
-		}
-
-		// Read section data (if not .bss)
-		var data []byte
-		if elfSec.Type != elf.SHT_NOBITS {
-			var err error
-			data, err = elfSec.Data()
-			if err != nil {
-				return nil, fmt.Errorf("failed to read section %s: %w", name, err)
+		for _, elfName := range group.elfNames {
+			elfSec := elfFile.Section(elfName)
+			if elfSec != nil && elfSec.Size > 0 {
+				sections = append(sections, secInfo{elfSec, elfSec.Addr})
 			}
 		}
 
-		virtualSize := uint32(elfSec.Size)
-		rawSize := uint32(len(data))
+		if len(sections) == 0 {
+			continue
+		}
+
+		// Sort by address
+		for i := 0; i < len(sections)-1; i++ {
+			for j := i + 1; j < len(sections); j++ {
+				if sections[j].addr < sections[i].addr {
+					sections[i], sections[j] = sections[j], sections[i]
+				}
+			}
+		}
+
+		// Calculate virtual size spanning all sections
+		firstAddr := sections[0].addr
+		lastSec := sections[len(sections)-1]
+		totalVirtualSize = (lastSec.addr - firstAddr) + lastSec.sec.Size
+
+		// PE virtual address must match ELF address (minus IMAGE_BASE)
+		// This is critical because Go compiles with PC-relative addressing
+		peVirtualAddr := uint32(firstAddr - IMAGE_BASE)
+
+		// For initialized sections, read and merge data
+		if !group.isBSS {
+			combinedData = make([]byte, totalVirtualSize)
+			for _, si := range sections {
+				offset := si.addr - firstAddr
+				data, err := si.sec.Data()
+				if err != nil {
+					return nil, fmt.Errorf("failed to read section %s: %w", si.sec.Name, err)
+				}
+				copy(combinedData[offset:], data)
+			}
+		}
+
+		virtualSize := uint32(totalVirtualSize)
+		rawSize := uint32(len(combinedData))
 
 		// Align raw size to file alignment
 		rawSize = alignTo(rawSize, FILE_ALIGNMENT)
 
 		// Pad data to raw size
-		if len(data) < int(rawSize) {
-			data = append(data, make([]byte, int(rawSize)-len(data))...)
+		if len(combinedData) < int(rawSize) {
+			combinedData = append(combinedData, make([]byte, int(rawSize)-len(combinedData))...)
 		}
 
 		peSec := &PESection{
-			Name:            name,
+			Name:            group.peName,
 			VirtualSize:     virtualSize,
-			VirtualAddress:  virtualAddr,
+			VirtualAddress:  peVirtualAddr,
 			RawSize:         rawSize,
-			Characteristics: characteristics,
-			Data:            data,
+			Characteristics: group.chars,
+			Data:            combinedData,
 		}
 
 		peSections = append(peSections, peSec)
-
-		// Advance virtual address (aligned to section alignment)
-		virtualAddr += alignTo(virtualSize, SECTION_ALIGNMENT)
 	}
+
+	// Add an empty .reloc section - UEFI requires this for loading
+	// Even if empty, the section must exist for the PE to load correctly
+	// Place it after the last section
+	var relocVA uint32
+	if len(peSections) > 0 {
+		lastSec := peSections[len(peSections)-1]
+		relocVA = alignTo(lastSec.VirtualAddress+lastSec.VirtualSize, SECTION_ALIGNMENT)
+	} else {
+		relocVA = SECTION_ALIGNMENT
+	}
+	relocData := make([]byte, FILE_ALIGNMENT) // Minimal aligned size
+	peSections = append(peSections, &PESection{
+		Name:            ".reloc",
+		VirtualSize:     uint32(len(relocData)),
+		VirtualAddress:  relocVA,
+		RawSize:         uint32(len(relocData)),
+		Characteristics: IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | 0x01000000, // DISCARDABLE
+		Data:            relocData,
+	})
 
 	return peSections, nil
 }
@@ -450,7 +505,15 @@ func createPEFile(elfFile *elf.File, sections []*PESection) ([]byte, error) {
 	binary.LittleEndian.PutUint32(optHeader[108:112], 16)                      // NumberOfRvaAndSizes
 
 	// Data directories (16 entries * 8 bytes = 128 bytes)
-	// All zeros for minimal UEFI application
+	// Find and set BaseReloc data directory (index 5)
+	for _, sec := range sections {
+		if sec.Name == ".reloc" {
+			// BaseReloc directory entry is at offset 112 + 5*8 = 152
+			binary.LittleEndian.PutUint32(optHeader[152:156], sec.VirtualAddress)  // RVA
+			binary.LittleEndian.PutUint32(optHeader[156:160], sec.VirtualSize)     // Size
+			break
+		}
+	}
 
 	buf = append(buf, optHeader...)
 

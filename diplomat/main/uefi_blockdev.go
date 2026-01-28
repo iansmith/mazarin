@@ -44,12 +44,13 @@ type UEFIBlockDevice struct {
 	mediaId   uint32
 }
 
+// globalBlockDev avoids heap allocation in UEFI environment
+var globalBlockDev UEFIBlockDevice
+
 // Ensure UEFIBlockDevice implements blockdev.BlockDevice
 var _ blockdev.BlockDevice = (*UEFIBlockDevice)(nil)
 
 // NewUEFIBlockDevice creates a new block device wrapper from a UEFI Block I/O protocol
-//
-//go:nosplit
 func NewUEFIBlockDevice(protocol uintptr) (*UEFIBlockDevice, error) {
 	if protocol == 0 {
 		return nil, &blockDevError{"nil protocol pointer"}
@@ -66,13 +67,12 @@ func NewUEFIBlockDevice(protocol uintptr) (*UEFIBlockDevice, error) {
 	lastBlock := *(*uint64)(unsafe.Pointer(media + MediaLastBlock))
 	mediaId := *(*uint32)(unsafe.Pointer(media + MediaMediaId))
 
-	return &UEFIBlockDevice{
-		protocol:  protocol,
-		media:     media,
-		blockSize: blockSize,
-		numBlocks: lastBlock + 1, // LastBlock is 0-indexed
-		mediaId:   mediaId,
-	}, nil
+	globalBlockDev.protocol = protocol
+	globalBlockDev.media = media
+	globalBlockDev.blockSize = blockSize
+	globalBlockDev.numBlocks = lastBlock + 1 // LastBlock is 0-indexed
+	globalBlockDev.mediaId = mediaId
+	return &globalBlockDev, nil
 }
 
 // Name returns the device name
@@ -86,8 +86,6 @@ func (d *UEFIBlockDevice) Close() error {
 }
 
 // ReadBlock reads a single block at the given LBA
-//
-//go:nosplit
 func (d *UEFIBlockDevice) ReadBlock(lba uint64, buf []byte) error {
 	if uint64(len(buf)) < d.blockSize {
 		return &blockDevError{"buffer too small"}
@@ -116,8 +114,6 @@ func (d *UEFIBlockDevice) ReadBlock(lba uint64, buf []byte) error {
 }
 
 // WriteBlock writes a single block at the given LBA
-//
-//go:nosplit
 func (d *UEFIBlockDevice) WriteBlock(lba uint64, buf []byte) error {
 	if uint64(len(buf)) < d.blockSize {
 		return &blockDevError{"buffer too small"}

@@ -207,3 +207,69 @@ TEXT ·uefiCallBlockIOWrite(SB), NOSPLIT, $48-56
 	// Return EFI_STATUS
 	MOVQ AX, ret+48(FP)
 	RET
+
+// func uefiHandleProtocol(handle, protocol, iface, funcPtr uintptr) EFI_STATUS
+//
+// Calls EFI_BOOT_SERVICES.HandleProtocol with Microsoft x64 calling convention:
+//   EFI_STATUS HandleProtocol(
+//       IN EFI_HANDLE Handle,           // RCX
+//       IN EFI_GUID *Protocol,          // RDX
+//       OUT VOID **Interface            // R8
+//   );
+//
+// Go arguments on stack (ABI0):
+//   handle+0(FP)   - 8 bytes (uintptr)
+//   protocol+8(FP) - 8 bytes (uintptr)
+//   iface+16(FP)   - 8 bytes (uintptr)
+//   funcPtr+24(FP) - 8 bytes (uintptr)
+//   ret+32(FP)     - 8 bytes (EFI_STATUS)
+TEXT ·uefiHandleProtocol(SB), NOSPLIT, $32-40
+	// Stack frame: 32 bytes for shadow space
+
+	// Load arguments into MS x64 ABI registers
+	MOVQ handle+0(FP), CX       // RCX = Handle
+	MOVQ protocol+8(FP), DX     // RDX = Protocol GUID pointer
+	MOVQ iface+16(FP), R8       // R8 = Interface output pointer
+
+	// Load function pointer and call
+	MOVQ funcPtr+24(FP), AX
+	CALL AX
+
+	// Return EFI_STATUS
+	MOVQ AX, ret+32(FP)
+	RET
+
+// func debugPortOut(c byte)
+//
+// Writes a byte to QEMU debug port 0xE9
+TEXT ·debugPortOut(SB), NOSPLIT, $0-1
+	MOVB c+0(FP), AL
+	MOVW $0xE9, DX
+	OUTB
+	RET
+
+// func jumpToEntry(entry uint64)
+//
+// Jumps to a kernel entry point. Does not return.
+// The entry point is called with no arguments in a clean state.
+TEXT ·jumpToEntry(SB), NOSPLIT, $0-8
+	MOVQ entry+0(FP), AX
+
+	// Clear registers for clean state
+	XORQ BX, BX
+	XORQ CX, CX
+	XORQ DX, DX
+	XORQ SI, SI
+	XORQ DI, DI
+	XORQ BP, BP
+	XORQ R8, R8
+	XORQ R9, R9
+	XORQ R10, R10
+	XORQ R11, R11
+	XORQ R12, R12
+	XORQ R13, R13
+	XORQ R14, R14
+	XORQ R15, R15
+
+	// Jump to entry point (no return)
+	JMP AX

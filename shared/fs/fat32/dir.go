@@ -59,7 +59,7 @@ func (fs *FileSystem) ReadDir(cluster uint32) ([]DirEntry, error) {
 	currentCluster := cluster
 	for {
 		// Read cluster
-		if err := fs.readCluster(currentCluster, buf); err != nil {
+		if err := fs.ReadCluster(currentCluster, buf); err != nil {
 			return nil, err
 		}
 
@@ -139,14 +139,14 @@ func (fs *FileSystem) ReadDir(cluster uint32) ([]DirEntry, error) {
 		}
 
 		// Get next cluster in chain
-		nextCluster, err := fs.readFATEntry(currentCluster)
+		nextCluster, err := fs.ReadFATEntry(currentCluster)
 		if err != nil {
 			return nil, err
 		}
-		if isEOF(nextCluster) {
+		if IsEOF(nextCluster) {
 			break
 		}
-		if isBad(nextCluster) {
+		if IsBad(nextCluster) {
 			return nil, ErrBadCluster
 		}
 		currentCluster = nextCluster
