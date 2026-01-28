@@ -139,12 +139,15 @@ func LoadKernel(fsys *fat32.FileSystem, path string) (*LoadedKernel, error) {
 	printHex(highestVirt)
 	printString("\r\n")
 
-	// Allocate physical memory
-	physPages := uint64(DefaultKernelMemSize) / PageSize
-	physBase, err := allocatePhysPages(physPages)
+	// Allocate physical memory (extra 2MB for alignment)
+	allocSize := uint64(DefaultKernelMemSize) + Page2MBSize
+	physPages := allocSize / PageSize
+	rawPhys, err := allocatePhysPages(physPages)
 	if err != nil {
 		return nil, err
 	}
+	// Align up to 2MB boundary for 2MB page table entries
+	physBase := (rawPhys + Page2MBSize - 1) &^ (Page2MBSize - 1)
 	debugPortOut('h')
 
 	// Zero the physical region

@@ -72,9 +72,8 @@ func BuildPageTables(virtBase, physBase, size uint64) (*PageTableSet, error) {
 
 	// Allocate page tables from UEFI
 	// We need: 1 PML4 + 1 PDPT + 1 PD (for kernel mapping)
-	//        + 1 PDPT + 1 PD (for identity mapping of low memory)
-	// For simplicity, allocate 5 pages
-	numTablePages := uint64(5)
+	//        + 1 PDPT (for identity mapping using 1GB pages)
+	numTablePages := uint64(4)
 	tablesPhys, err := allocatePhysPages(numTablePages)
 	if err != nil {
 		return nil, err
@@ -87,20 +86,17 @@ func BuildPageTables(virtBase, physBase, size uint64) (*PageTableSet, error) {
 	// Page 0: PML4
 	// Page 1: PDPT for kernel (high addresses)
 	// Page 2: PD for kernel
-	// Page 3: PDPT for identity (low addresses)
-	// Page 4: PD for identity
+	// Page 3: PDPT for identity (low addresses, 1GB pages)
 	pml4Phys := tablesPhys
 	pdptKernelPhys := tablesPhys + PageSize
 	pdKernelPhys := tablesPhys + 2*PageSize
 	pdptIdentPhys := tablesPhys + 3*PageSize
-	pdIdentPhys := tablesPhys + 4*PageSize
 
 	// Get pointers to tables
 	pml4 := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(pml4Phys)))
 	pdptKernel := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(pdptKernelPhys)))
 	pdKernel := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(pdKernelPhys)))
 	pdptIdent := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(pdptIdentPhys)))
-	pdIdent := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(pdIdentPhys)))
 
 	// Calculate indices for kernel virtual address
 	kernelPML4Idx := pml4Index(virtBase)
@@ -125,14 +121,11 @@ func BuildPageTables(virtBase, physBase, size uint64) (*PageTableSet, error) {
 	}
 
 	// Set up identity mapping for low memory (so diplomat code keeps working)
-	// Map first 1GB using 2MB pages (512 entries)
+	// Use 1GB pages (PTE_PS in PDPT entries) to map first 8GB
+	// This covers UEFI firmware (~2GB), diplomat code, and allocated memory
 	pml4[0] = pdptIdentPhys | PTE_PRESENT | PTE_WRITABLE
-	pdptIdent[0] = pdIdentPhys | PTE_PRESENT | PTE_WRITABLE
-
-	// Identity map first 1GB (512 * 2MB pages)
-	for i := uint64(0); i < ENTRIES_PER_TABLE; i++ {
-		physAddr := i * Page2MBSize
-		pdIdent[i] = physAddr | PTE_PRESENT | PTE_WRITABLE | PTE_PS
+	for i := uint64(0); i < 8; i++ {
+		pdptIdent[i] = (i * 1024 * 1024 * 1024) | PTE_PRESENT | PTE_WRITABLE | PTE_PS
 	}
 
 	result := dNew[PageTableSet]()
