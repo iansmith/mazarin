@@ -1,126 +1,162 @@
-# PriestSieve Fairness Analysis
+# PriestSieve Scheduler Fairness Analysis
 
-This report analyzes goroutine scheduling fairness in the Mazzy kernel using the `priestsieve` test program. The program spawns 6 worker goroutines that cooperatively find prime numbers using the Sieve of Eratosthenes algorithm, all sharing a single OS thread (`GOMAXPROCS=1`).
+## Overview
+
+This report measures CPU scheduling fairness in the Mazzy kernel by running
+multiple identical workloads and comparing how much CPU time each receives.
+The kernel tracks timer ticks (at 62.5 MHz) per thread and per priest, then
+dumps raw counters at shutdown.  A postprocessing step converts these to
+human-readable tables and computes fairness metrics.
+
+## What is a Priest (Process)?
+
+In Mazzy's terminology, a **priest** is a userspace process.  Each priest is
+a separate ELF binary loaded from a FAT32 disk image by the kernel.  Priests
+run at EL0 (unprivileged) and make system calls via SVC to request kernel
+services.  A priest can spawn multiple kernel-level threads; the kernel
+schedules all threads from all priests on a single CPU core using
+timer-driven preemption.
+
+## The PriestSieve Workload
+
+Each priest runs the [`priestsieve`](priestsieve-source.md) program, which:
+
+1. Sets `GOMAXPROCS=1` so all goroutines share a single CPU
+2. Spawns a producer goroutine that feeds candidate odd numbers into a
+   buffered channel, starting at 20,001 and incrementing by 2
+3. Spawns 5 worker goroutines plus the main goroutine as a 6th worker
+4. Each worker pulls a candidate number N from the channel and tests
+   whether N is prime by running the Sieve of Eratosthenes up to N —
+   allocating a boolean array of N+1 elements and marking composites
+5. When a worker finds a prime, it prints `"id:prime\n"` to standard
+   output via `fmt.Printf`, which triggers an SVC system call to the
+   kernel's `write()` handler
+
+The starting value of 20,001 is chosen deliberately.  To test whether
+candidate N is prime, the sieve must allocate and iterate over an array of
+N+1 booleans.  With candidates in the 20,000+ range, each primality test
+involves tens of thousands of loop iterations in pure userspace computation.
+This gives the kernel's timer interrupt ample opportunity to preempt the
+running thread mid-computation.  Smaller candidates (e.g., under 1,000)
+would complete too quickly, spending most of their time in system calls
+rather than in preemptible userspace code.
+
+The workload is a mix of computation and I/O: workers spend most of their
+time in the sieve's inner loops (userspace), but each prime discovery
+triggers a `write()` system call to output the result on the serial port.
+The kernel must handle these SVC traps, write to the UART, and return to
+userspace — all of which is interleaved with timer-driven preemption.
+Channel operations (`candidates <- n` and `<-candidates`) also produce
+system calls when goroutines block and unblock.
+
+Each priest instance creates 3 kernel threads (the Go runtime's m0, the
+sysmon thread, and the main execution thread).  The vast majority of ticks
+accumulate on the main execution thread.
 
 ## Test Configuration
 
-- **Workers**: 6 goroutines (IDs 3, 5, 6, 7, 8, 9)
-- **GOMAXPROCS**: 1 (all goroutines share one OS thread)
-- **Channel**: Buffered (size 10) for work distribution
-- **Duration**: 15 seconds per test
-- **Variable**: Starting candidate number (5K, 10K, 20K)
+| Parameter | Value |
+|-----------|-------|
+| Priests (processes) | 6 worker priests + 1 kernel (P00) |
+| Threads per priest | 3 (Go runtime overhead) |
+| Total threads | 21 |
+| Timer frequency | 62,500,000 Hz |
+| Run duration | 60 seconds |
+| Platform | QEMU virt, cortex-a72, 1 CPU core |
 
-## Comparative Results
+## Results
 
-| Metric | 5K Start | 10K Start | 20K Start |
-|--------|----------|-----------|-----------|
-| Primes found | 918 | 1,959 | 2,649 |
-| Userspace hits | 4.2% | 17.1% | 47.2% |
-| Coop preempts | 4 | 20 | 57 |
-| G-changes | 16 | 62 | 172 |
-| Context switches | 7 | 39 | 103 |
-| Jain's Index | 0.852 | 0.955 | 0.975 |
-| Avg run length | 131.1 | 50.2 | 25.7 |
+### Per-Thread (Process) Tick Distribution
 
-## Metric Explanations
+| Thread | Priest (Process) | Ticks | Seconds |
+|-------:|-----------------:|--------------------:|--------:|
+| 0 | 0 | 1,170,563 | 0.019 |
+| 1 | 0 | 0 | 0.000 |
+| 2 | 0 | 0 | 0.000 |
+| 60 | 2 | 620,345,561 | 9.926 |
+| 15 | 2 | 639,185 | 0.010 |
+| 40 | 2 | 55,376 | 0.001 |
+| 62 | 14 | 631,240,998 | 10.100 |
+| 42 | 14 | 443,309 | 0.007 |
+| 27 | 14 | 49,313 | 0.001 |
+| 55 | 18 | 621,988,691 | 9.952 |
+| 9 | 18 | 393,813 | 0.006 |
+| 13 | 18 | 52,938 | 0.001 |
+| 49 | 20 | 632,012,127 | 10.112 |
+| 51 | 20 | 246,501 | 0.004 |
+| 59 | 20 | 50,625 | 0.001 |
+| 53 | 26 | 618,146,376 | 9.890 |
+| 41 | 26 | 388,249 | 0.006 |
+| 25 | 26 | 56,500 | 0.001 |
+| 30 | 30 | 622,289,563 | 9.957 |
+| 46 | 30 | 571,624 | 0.009 |
+| 28 | 30 | 58,938 | 0.001 |
+| **SUM** | | **3,750,200,250** | **60.003** |
 
-### Primes Found
+### Per-Priest (Process) Summary
 
-The total number of prime numbers discovered during the 15-second test. Larger starting numbers require more computation per candidate (the sieve must check divisibility up to √n), so fewer primes are found per unit time. However, this also means more time spent in actual userspace computation rather than syscalls.
+| Priest (Process) | Ticks | Seconds | Share |
+|-----------------:|--------------------:|--------:|------:|
+| 20 | 632,309,253 | 10.117 | 16.87% |
+| 14 | 631,733,620 | 10.108 | 16.85% |
+| 30 | 622,920,125 | 9.967 | 16.62% |
+| 18 | 622,435,442 | 9.959 | 16.60% |
+| 2 | 621,040,122 | 9.937 | 16.57% |
+| 26 | 618,591,125 | 9.897 | 16.50% |
+| **Workers** | **3,749,029,687** | **59.984** | |
+| Kernel (P00) | 1,170,563 | 0.019 | |
+| **TOTAL** | **3,750,200,250** | **60.003** | |
 
-### Userspace Hits (% of Timer IRQs)
+### Kernel Friction
 
-The percentage of timer interrupts that caught the CPU executing userspace code (EL0) rather than kernel code (EL1). This is critical because:
+"Friction" measures how much wall-clock time the kernel consumed for its own
+overhead (scheduling, exception handling, syscall dispatch) versus time
+spent running user workloads.
 
-- **Goroutine preemption only works in userspace** - the kernel cannot safely inject preemption while handling syscalls
-- **Higher percentages indicate more computation time** - the sieve is doing real work rather than making syscalls
-- **The Sieve of Eratosthenes is syscall-heavy** - it allocates a boolean array (`make([]bool, n+1)`) and prints results (`fmt.Printf`)
+| Metric | Value |
+|--------|------:|
+| Wall clock | 60.000 s |
+| Worker time | 59.984 s |
+| Kernel (P00) time | 0.019 s |
+| Accounted total | 60.003 s |
+| Unaccounted | -0.003 s |
+| Kernel fraction | 0.031% |
+| Unaccounted fraction | -0.005% |
 
-At 5K, only 4.2% of timer IRQs catch userspace code - the sieve runs so fast that goroutines spend 95%+ of their time in syscalls. At 20K, 47.2% of IRQs catch userspace, providing many more preemption opportunities.
-
-### Cooperative Preempts
-
-The number of times the kernel successfully set cooperative preemption flags (`g.preempt = true` and `g.stackguard0 = stackPreempt`) on a userspace goroutine. When these flags are set, the Go runtime will yield at the next function call.
-
-This counter only increments when:
-1. Timer IRQ fires while in userspace
-2. The goroutine has exceeded its time quantum (50ms)
-3. The kernel successfully writes to the goroutine's `g` struct
-
-### G-changes (Goroutine Changes)
-
-The number of times the kernel's timer handler detected that the currently running goroutine changed since the last timer tick. This indicates the Go runtime internally switched goroutines, which happens when:
-
-- A goroutine blocks on a channel operation
-- A goroutine makes a syscall and another becomes runnable
-- Cooperative preemption triggers a yield
-
-Higher g-change counts indicate more active goroutine scheduling.
-
-### Context Switches
-
-The number of times execution switched from one worker to another (counted by consecutive runs of primes from the same worker). This measures actual work distribution granularity:
-
-- **7 switches at 5K** means workers ran very long stretches uninterrupted
-- **103 switches at 20K** means work was distributed in smaller chunks
+The accounted total slightly exceeds the wall clock (by 0.003s) because the
+shutdown check fires a few ticks past the 60-second threshold.  The kernel
+itself consumed only 0.031% of CPU time — effectively zero overhead for
+scheduling 6 processes with 21 total threads on a single core.
 
 ### Jain's Fairness Index
 
-A standard metric for measuring fairness in resource allocation, defined as:
+Jain's fairness index measures how evenly a resource is distributed:
 
 ```
 J = (Σxi)² / (n × Σxi²)
 ```
 
-Where `xi` is the number of primes found by worker `i` and `n` is the number of workers.
+where xi is the tick count for worker priest i and n = 6.
 
-- **J = 1.0**: Perfect fairness (all workers got equal work)
-- **J = 1/n**: Complete unfairness (one worker got everything)
+| Metric | Value |
+|--------|------:|
+| n | 6 |
+| **Jain index** | **0.999929** |
 
-| Value | Interpretation |
-|-------|----------------|
-| ≥ 0.95 | Excellent - near-perfect fairness |
-| ≥ 0.85 | Good - reasonably fair |
-| ≥ 0.70 | Moderate - some imbalance |
-| < 0.70 | Poor - significant unfairness |
+A value of 1.0 indicates perfect fairness (all workers received identical
+CPU time).  The measured value of 0.999929 shows near-perfect fairness
+across all 6 worker priests over the 60-second run.  The spread between
+the most-scheduled priest (10.117s) and the least-scheduled (9.897s) is
+only 0.22 seconds, or about 2.2% relative difference.
 
-### Average Run Length
+## Conclusions
 
-The mean number of consecutive primes a worker finds before another worker gets scheduled. Lower values indicate more frequent context switching and finer-grained work distribution:
-
-- **131.1 at 5K**: Workers ran for long stretches (poor preemption)
-- **25.7 at 20K**: Workers switched frequently (good preemption)
-
-## Analysis
-
-### Why Larger Numbers Improve Fairness
-
-The Sieve of Eratosthenes for number `n` requires:
-1. Allocating a boolean array of size `n+1` (syscall)
-2. Iterating through the array marking composites (userspace computation)
-3. Printing the result if prime (syscall)
-
-For small `n`, steps 1 and 3 dominate - the program spends most time in kernel mode handling syscalls. The kernel cannot preempt goroutines during syscalls, so whichever goroutine happens to be running keeps getting scheduled.
-
-For larger `n`, step 2 dominates - the inner loops of the sieve run longer in pure userspace. This gives the timer interrupt more opportunities to catch and preempt the running goroutine.
-
-### The 20K Sweet Spot
-
-At 20K starting candidates:
-- **47.2% userspace time** provides ample preemption opportunities
-- **Jain's Index of 0.975** indicates near-perfect fairness
-- **2,649 primes found** shows good throughput
-- **25.7 average run length** means fine-grained scheduling
-
-Going higher (e.g., 100K+) would increase userspace time further but dramatically reduce throughput as each sieve operation becomes very expensive.
-
-## Conclusion
-
-The priestsieve benchmark demonstrates that Mazzy's goroutine preemption mechanism works correctly when goroutines spend sufficient time in userspace computation. The key findings:
-
-1. **Preemption requires userspace time** - syscall-heavy workloads cannot be fairly preempted
-2. **Cooperative preemption is effective** - setting `g.stackguard0` successfully triggers Go runtime yields
-3. **Fairness scales with computation intensity** - Jain's Index improved from 0.852 to 0.975 as userspace time increased
-4. **The buffered channel helps** - decoupling producer/consumer timing improves work distribution
-
-For realistic workloads with meaningful computation (not just I/O), Mazzy achieves excellent scheduling fairness across goroutines sharing a single OS thread.
+1. **Near-perfect fairness**: Jain index of 0.9999 across 6 concurrent
+   processes running identical compute-bound workloads.
+2. **Negligible kernel overhead**: The kernel consumed 0.031% of total CPU
+   time for scheduling, exception handling, and syscall dispatch.
+3. **Accurate accounting**: The sum of all per-thread ticks matches the
+   wall-clock duration to within 3 milliseconds.
+4. **Consistent per-priest structure**: Each priest creates exactly 3 kernel
+   threads, with >99.9% of ticks on the main execution thread and minimal
+   overhead on the Go runtime's auxiliary threads.

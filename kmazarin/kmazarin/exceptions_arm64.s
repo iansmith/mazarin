@@ -771,6 +771,8 @@ irq_exception_handler:
 	// It also sets NeedsAsyncPreempt if threshold exceeded.
 	CALL	mazzy∕kmazarin∕kirq·TimerIRQHandlerAsm(SB)
 
+	// (timer tick breadcrumb removed for performance)
+
 	// ========================================================================
 	// CRITICAL: Write GICC_EOIR for timer IRQ IMMEDIATELY after handler
 	// ========================================================================
@@ -805,6 +807,8 @@ skip_deadline_processing:
 	MOVW	mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB), R10
 	CBZ	R10, timer_no_thread_preempt
 
+	// (preempt flag breadcrumb removed for performance)
+
 	// Clear NeedsThreadPreempt flag
 	MOVW	$0, R10
 	MOVW	R10, mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB)
@@ -824,7 +828,11 @@ g0_addr_ok:
 	MOVD	R0, R21                        // R21 = new context pointer (or 0)
 
 	// Check if context switch happened
-	CBZ	R21, timer_no_thread_preempt
+	CBNZ	R21, timer_switch_ok
+
+	B	timer_no_thread_preempt
+
+timer_switch_ok:
 
 	// Context switch happened - copy new ThreadContext to exception frame
 	// ThreadContext layout: X[31]*8=248 bytes, SP(8), ELR(8), SPSR(8) = 272 bytes total
@@ -1176,41 +1184,6 @@ irq_not_timer:
 	//
 	// This is the same pattern used for UART RX/TX and timer deadlines.
 
-	// DEBUG: If timer count >= 640, output non-timer IRQ number to see what we're getting
-	MOVD	mazzy∕kmazarin∕kirq·TimerIRQCount(SB), R10
-	CMP	$640, R10
-	BLT	skip_nontimer_debug
-	// Output '!' to show non-timer IRQ
-	MOVD	$UART_BASE, R11
-	MOVD	$'!', R12
-	MOVB	R12, (R11)
-	// Output IRQ number as 2 hex digits
-	MOVD	R0, R13  // Save R0
-	LSR	$4, R0, R12
-	AND	$0xF, R12
-	CMP	$10, R12
-	BLT	nontimer_digit1
-	ADD	$('A'-10), R12
-	B	nontimer_char1
-nontimer_digit1:
-	ADD	$'0', R12
-nontimer_char1:
-	MOVB	R12, (R11)
-	MOVD	R13, R12  // Restore
-	AND	$0xF, R12
-	CMP	$10, R12
-	BLT	nontimer_digit2
-	ADD	$('A'-10), R12
-	B	nontimer_char2
-nontimer_digit2:
-	ADD	$'0', R12
-nontimer_char2:
-	MOVB	R12, (R11)
-	MOVD	$' ', R12
-	MOVB	R12, (R11)
-	MOVD	R13, R0  // Restore R0
-skip_nontimer_debug:
-
 	// Check if IRQ number is in valid range (0-1019)
 	CMP	$1020, R0
 	BGE	irq_invalid
@@ -1495,59 +1468,6 @@ el0_skip_clear_clone_setup:
 	// Copy ELR and SPSR (256, 264 in ThreadContext)
 	LDP	256(R21), (R0, R1)
 
-	// DEBUG: Print ELR low byte before storing
-	MOVD	R0, R10   // Save ELR temporarily
-	MOVD	R1, R11   // Save SPSR temporarily
-	MOVD	$UART_BASE, R12
-	MOVD	$'E', R13
-	MOVB	R13, (R12)
-	MOVD	$'=', R13
-	MOVB	R13, (R12)
-	// Print R10 (ELR) low 4 nibbles
-	LSR	$12, R10, R13
-	AND	$0xF, R13
-	CMP	$10, R13
-	BLT	el0_elr_d1
-	ADD	$('A'-10), R13
-	B	el0_elr_c1
-el0_elr_d1:
-	ADD	$'0', R13
-el0_elr_c1:
-	MOVB	R13, (R12)
-	LSR	$8, R10, R13
-	AND	$0xF, R13
-	CMP	$10, R13
-	BLT	el0_elr_d2
-	ADD	$('A'-10), R13
-	B	el0_elr_c2
-el0_elr_d2:
-	ADD	$'0', R13
-el0_elr_c2:
-	MOVB	R13, (R12)
-	LSR	$4, R10, R13
-	AND	$0xF, R13
-	CMP	$10, R13
-	BLT	el0_elr_d3
-	ADD	$('A'-10), R13
-	B	el0_elr_c3
-el0_elr_d3:
-	ADD	$'0', R13
-el0_elr_c3:
-	MOVB	R13, (R12)
-	AND	$0xF, R10, R13
-	CMP	$10, R13
-	BLT	el0_elr_d4
-	ADD	$('A'-10), R13
-	B	el0_elr_c4
-el0_elr_d4:
-	ADD	$'0', R13
-el0_elr_c4:
-	MOVB	R13, (R12)
-
-	// Restore and store
-	MOVD	R10, R0   // Restore ELR (original was clobbered by shifts)
-	// Actually we shifted R10, need to reload from ThreadContext
-	LDP	256(R21), (R0, R1)
 	STP	(R0, R1), EXC_FRAME_ELR_SPSR(RSP)
 
 	B	el0_return

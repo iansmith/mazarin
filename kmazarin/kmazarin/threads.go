@@ -56,6 +56,47 @@ const ReservedKernelThreads = 8
 // Slot 0 is for the kernel's "priest" entry (PID 0, used for kernel threads).
 const ReservedKernelPriests = 1
 
+// startingTicksProgram is the CNTVCT_EL0 value when all priests are launched.
+// Zero means not yet set — skip all timed-shutdown accounting.
+var startingTicksProgram uint64
+
+// shutdownTicksThreshold is 15 seconds in raw counter ticks.
+// Set once startingTicksProgram is established (needs SystemTimerFrequency).
+var shutdownTicksThreshold uint64
+
+
+// ResetTickAccounting zeroes all thread and priest tick accumulators and sets
+// TicksStartedRunning to startTime for any currently-running thread/priest.
+// MUST be called with IRQs disabled (no timer preemption during reset).
+//
+//go:nosplit
+func ResetTickAccounting(startTime uint64) {
+	for i := 0; i < MaxThreads; i++ {
+		if threadListInUse[i] {
+			threadListData[i].TotalTicksRunning = 0
+			if threadListData[i].State == ThreadRunning {
+				threadListData[i].TicksStartedRunning = startTime
+			} else {
+				threadListData[i].TicksStartedRunning = 0
+			}
+		}
+	}
+	for i := 0; i < MaxPriests; i++ {
+		if priestListInUse[i] {
+			priestListData[i].TotalTicksRunning = 0
+			priestListData[i].TicksStartedRunning = 0
+		}
+	}
+	// The currently running priest needs its clock started
+	ct := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	if ct != nil && ct.PriestIdx >= 0 {
+		p := &priestListData[ct.PriestIdx]
+		if priestListInUse[ct.PriestIdx] {
+			p.TicksStartedRunning = startTime
+		}
+	}
+}
+
 // Priest represents a userspace process that runs Go code.
 // Each priest has its own address space, Go runtime, and asyncPreempt function.
 type Priest struct {
@@ -658,16 +699,31 @@ func IdleLoop(sf *SchedulerFunc) *Thread {
 //go:nosplit
 //go:noinline
 func KernelIdleLoop() {
+	// (idle loop entry - breadcrumbs removed for performance)
 	for {
+		// Process deadlines with IRQs disabled (critical section)
 		savedDAIF := SaveAndDisableIRQs()
 		schedulerLock.Lock()
-
 		ProcessDeadlines()
 		processStaticDeadlinesSchedLockHeld()
+		hasReady := readyQueue.Size() > 0
 
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
 
+		if hasReady {
+			// A thread is ready - yield to it.
+			// YieldToReadyThread saves thread 0's context, enqueues it,
+			// and ERETSs to the next ready thread. Thread 0 resumes here
+			// when it's scheduled back via timer preemption.
+			YieldToReadyThread()
+			// Resumed from preemption — loop back to process deadlines
+			continue
+		}
+
+		// No ready threads — wait for an interrupt (timer tick, etc.)
+		// IRQs MUST be enabled for WFI so the timer interrupt can fire
+		EnableIRQs()
 		WaitForInterrupt()
 	}
 }
@@ -718,6 +774,23 @@ func SaveThread0AndYield() uint64 {
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
 		return 0
+	}
+
+	// Priest-level tick accounting: stop old priest, start new priest
+	if next.PID != t0.PID {
+		if t0.PriestIdx >= 0 {
+			oldPriest := priestList.Get(int(t0.PriestIdx))
+			if oldPriest != nil && oldPriest.TicksStartedRunning != 0 {
+				oldPriest.TotalTicksRunning += currentTime - oldPriest.TicksStartedRunning
+				oldPriest.TicksStartedRunning = 0
+			}
+		}
+		if next.PriestIdx >= 0 {
+			newPriest := priestList.Get(int(next.PriestIdx))
+			if newPriest != nil {
+				newPriest.TicksStartedRunning = currentTime
+			}
+		}
 	}
 
 	// Switch current thread to the new one
@@ -1348,22 +1421,18 @@ func findReadyThreadSchedLockHeld() *Thread {
 //
 //go:nosplit
 func findReadyThreadPreferDifferentPriestSchedLockHeld(currentPID PriestId) *Thread {
-	// First pass: find thread from DIFFERENT priest (scan without popping)
-	for i := 0; i < len(readyQueue.Data); i++ {
-		if !readyQueue.InUse[i] {
-			continue
+	// First pass: find thread from DIFFERENT priest in FIFO order (head → tail)
+	idx := readyQueue.Head()
+	for seen := 0; seen < len(readyQueue.Data); seen++ {
+		if readyQueue.InUse[idx] {
+			tid := readyQueue.Data[idx]
+			t := threadList.FindByIdAll(int32(tid))
+			if t != nil && t.State == ThreadReady && t.PID != currentPID {
+				readyQueue.PluckAt(idx)
+				return t
+			}
 		}
-
-		tid := readyQueue.Data[i]
-		t := threadList.FindByIdAll(int32(tid))
-		if t == nil || t.State != ThreadReady {
-			continue // Skip invalid or stale entries
-		}
-
-		if t.PID != currentPID {
-			readyQueue.Pluck(tid)
-			return t
-		}
+		idx = (idx + 1) % len(readyQueue.Data)
 	}
 
 	// Fallback: any ready thread
@@ -1672,6 +1741,7 @@ func GetGlobalTickCounter() uint64 {
 //
 //go:nosplit
 //go:noinline
+//go:nosplit
 func checkThreadPreemptionInternal(framePtr uint64) uint64 {
 	return checkThreadPreemptionImpl(&NormalSchedulerFunc, framePtr)
 }
@@ -1689,6 +1759,17 @@ func checkThreadPreemptionInternal(framePtr uint64) uint64 {
 //go:nosplit
 //go:noinline
 func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
+	// (preemption check breadcrumbs removed for performance)
+
+	// Timed shutdown: after shutdownTicksThreshold raw ticks, print stats and exit
+	if startingTicksProgram != 0 {
+		now := kirq.ReadCounterValue()
+		if now-startingTicksProgram >= shutdownTicksThreshold {
+			printTickDistributionNoSplit(now)
+			Exit()
+		}
+	}
+
 	if CurrentThreadIdx < 0 {
 		return 0
 	}
@@ -1768,6 +1849,7 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 
 	// Switch to new thread
 	nextIdx := threadToIdx(next)
+	// (preemption switch breadcrumbs removed for performance)
 	CurrentThreadIdx = nextIdx
 	atomic.StorePointer(&CurrentThread, unsafe.Pointer(next))
 	next.State = ThreadRunning
@@ -1883,6 +1965,17 @@ func doContextSwitchABI0(framePtr uint64, targetPtr uint64) uint64 {
 //go:nosplit
 //go:noinline
 func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *ThreadContext {
+	// Timed shutdown: after shutdownTicksThreshold raw ticks, print stats and exit
+	if startingTicksProgram != 0 {
+		now := kirq.ReadCounterValue()
+		if now-startingTicksProgram >= shutdownTicksThreshold {
+			printTickDistributionNoSplit(now)
+			Exit()
+		}
+	}
+
+	// (SVC context switch breadcrumbs removed for performance)
+
 	// Save current thread's context
 	SaveContextFromFrame(framePtr)
 
@@ -1900,27 +1993,31 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	// Target thread is now running (it was already popped from ready queue
 	// by the caller, so no need to remove it here)
 
-	// Save preemption tracking state for old thread before switching
-	// This preserves how long the current goroutine has been running
+	// Save preemption tracking state for old thread before switching.
+	// Runtime tick accounting is updated unconditionally (regardless of state)
+	// because the caller may have already changed the state (e.g., futex sets
+	// ThreadBlockedFutex before calling context switch). If we only update when
+	// ThreadRunning, blocked threads keep a stale TicksStartedRunning and the
+	// print function adds phantom time.
 	if oldIdx >= 0 {
 		oldThread := threadList.Get(int(oldIdx)) // Get() for reserved slots
-		if oldThread != nil && oldThread.State == ThreadRunning {
-			// Save elapsed time so we can restore it when this thread resumes
-			oldThread.PreemptElapsed = currentTime - oldThread.StartTick
-			oldThread.GoroutineElapsed = currentTime - oldThread.GoroutineStart
-
-			// Update runtime accounting - add elapsed ticks to total
-			// Only if TicksStartedRunning is non-zero (avoids huge value on first run)
+		if oldThread != nil {
+			// Always accumulate ticks and clear TicksStartedRunning
 			if oldThread.TicksStartedRunning != 0 {
 				oldThread.TotalTicksRunning += currentTime - oldThread.TicksStartedRunning
 			}
 			oldThread.TicksStartedRunning = 0 // Mark as not running
 
-			oldThread.State = ThreadReady
-			// Pluck first in case oldThread is already in queue
-			readyQueue.Pluck(oldThread.TID)
-			enqueueReadySchedLockHeld(oldThread)
+			if oldThread.State == ThreadRunning {
+				// Save elapsed time so we can restore it when this thread resumes
+				oldThread.PreemptElapsed = currentTime - oldThread.StartTick
+				oldThread.GoroutineElapsed = currentTime - oldThread.GoroutineStart
 
+				oldThread.State = ThreadReady
+				// Pluck first in case oldThread is already in queue
+				readyQueue.Pluck(oldThread.TID)
+				enqueueReadySchedLockHeld(oldThread)
+			}
 		}
 	}
 
@@ -1950,6 +2047,7 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 		sf.EnableAndRestoreDAIF(savedDAIF)
 		return nil
 	}
+	// (SVC switch breadcrumbs removed for performance)
 	newThread.State = ThreadRunning
 	// Restore StartTick from saved elapsed time so preemption tracking
 	// continues from where it left off. This ensures goroutines don't get
@@ -2092,6 +2190,94 @@ func SaveCurrentThreadContext(
 	t.Context.SPSR = spsr
 }
 
+// printTickDistributionNoSplit prints tick distribution using only nosplit
+// console functions. Called from checkThreadPreemptionImpl/doContextSwitchImpl at shutdown.
+// now is the current CNTVCT_EL0 value.
+//
+//go:nosplit
+func printTickDistributionNoSplit(now uint64) {
+	freq := kirq.SystemTimerFrequency
+
+	// "\n===TICKS===\n"
+	console.BreadcrumbStringNoSplit("\n===TICKS===\n")
+
+	for i := 0; i < MaxThreads; i++ {
+		if threadListInUse[i] {
+			t := &threadListData[i]
+			ticks := t.TotalTicksRunning
+			if t.TicksStartedRunning != 0 {
+				if now < t.TicksStartedRunning {
+					console.BreadcrumbNoSplit('%') // Bogus: current time < started time
+				} else {
+					ticks += now - t.TicksStartedRunning
+				}
+			} else if t.State == ThreadRunning {
+				console.BreadcrumbNoSplit('%') // Bogus: running but no start time
+			}
+			// "T<TID> P<PID> <hex> <secs>s\n"
+			console.BreadcrumbNoSplit('T')
+			console.BreadcrumbHex8NoSplit(byte(t.TID))
+			console.BreadcrumbNoSplit(' ')
+			console.BreadcrumbNoSplit('P')
+			console.BreadcrumbHex8NoSplit(byte(t.PID))
+			console.BreadcrumbNoSplit(' ')
+			console.BreadcrumbHex64NoSplit(ticks)
+			console.BreadcrumbNoSplit(' ')
+			if freq > 0 {
+				console.BreadcrumbDecimalNoSplit(ticks / freq)
+			} else {
+				console.BreadcrumbNoSplit('?')
+			}
+			console.BreadcrumbNoSplit('s')
+			console.BreadcrumbNoSplit('\n')
+		}
+	}
+
+	// "===PRIEST===\n"
+	console.BreadcrumbStringNoSplit("===PRIEST===\n")
+
+	for i := 0; i < MaxPriests; i++ {
+		if priestListInUse[i] {
+			p := &priestListData[i]
+			ticks := p.TotalTicksRunning
+			if p.TicksStartedRunning != 0 {
+				if now < p.TicksStartedRunning {
+					console.BreadcrumbNoSplit('%')
+				} else {
+					ticks += now - p.TicksStartedRunning
+				}
+			}
+			// "P<PID> <hex> <secs>s\n"
+			console.BreadcrumbNoSplit('P')
+			console.BreadcrumbHex8NoSplit(byte(p.PID))
+			console.BreadcrumbNoSplit(' ')
+			console.BreadcrumbHex64NoSplit(ticks)
+			console.BreadcrumbNoSplit(' ')
+			if freq > 0 {
+				console.BreadcrumbDecimalNoSplit(ticks / freq)
+			} else {
+				console.BreadcrumbNoSplit('?')
+			}
+			console.BreadcrumbNoSplit('s')
+			console.BreadcrumbNoSplit('\n')
+		}
+	}
+
+	// "===TOTAL===\n"
+	console.BreadcrumbStringNoSplit("===TOTAL===\n")
+	if startingTicksProgram != 0 && now >= startingTicksProgram && freq > 0 {
+		console.BreadcrumbDecimalNoSplit((now - startingTicksProgram) / freq)
+	} else {
+		console.BreadcrumbNoSplit('?')
+	}
+	console.BreadcrumbStringNoSplit("s\n")
+
+	// Brief spin for UART FIFO drain (main flush is in Exit() assembly)
+	for i := uint64(0); i < 10000000; i++ {
+		_ = i
+	}
+}
+
 // PrintTickDistribution prints the tick distribution for all active threads.
 // Shows TID, PID, and TotalTicksRunning for each thread.
 func PrintTickDistribution() {
@@ -2107,7 +2293,7 @@ func PrintTickDistribution() {
 			// For running thread, add current runtime to total
 			ticks := t.TotalTicksRunning
 			if t.TicksStartedRunning != 0 && t.State == ThreadRunning {
-				ticks += kirq.TimerIRQCount - t.TicksStartedRunning
+				ticks += kirq.ReadCounterValue() - t.TicksStartedRunning
 			}
 			totalTicks += ticks
 			activeCount++
@@ -2123,7 +2309,7 @@ func PrintTickDistribution() {
 			// For running thread, add current runtime to total
 			ticks := t.TotalTicksRunning
 			if t.TicksStartedRunning != 0 && t.State == ThreadRunning {
-				ticks += kirq.TimerIRQCount - t.TicksStartedRunning
+				ticks += kirq.ReadCounterValue() - t.TicksStartedRunning
 			}
 
 			// Calculate percentage (avoid division by zero)

@@ -2,6 +2,7 @@ package dtb
 
 import (
 	"errors"
+	"mazzy/kmazarin/console"
 	"unsafe"
 )
 
@@ -30,30 +31,38 @@ type Tree struct {
 
 // Parse parses a Device Tree Blob and returns a Tree
 func Parse(dtbAddr uintptr) (*Tree, error) {
+	console.Breadcrumb('1')
 	header := NewDTBHeader(dtbAddr)
 
+	console.Breadcrumb('2')
 	// Validate DTB magic
 	if !header.Validate() {
 		return nil, ErrInvalidDTB
 	}
 
+	console.Breadcrumb('3')
 	tree := &Tree{
 		dtbAddr: dtbAddr,
 		nodes:   make([]*Node, 0, 32),
 	}
 
+	console.Breadcrumb('4')
 	// Walk the DTB and collect nodes
 	Walk(dtbAddr, func(dtbNode *DTBNode) {
+		console.Breadcrumb('c')
 		node := convertNode(dtbNode)
 		tree.nodes = append(tree.nodes, node)
 	})
 
+	console.Breadcrumb('5')
 	return tree, nil
 }
 
 // Walk calls the function for each node in the tree
 func (t *Tree) Walk(fn func(*Node) error) error {
+	console.BreadcrumbHex8NoSplit(byte(len(t.nodes)))
 	for _, node := range t.nodes {
+		console.Breadcrumb('.')
 		if err := fn(node); err != nil {
 			return err
 		}

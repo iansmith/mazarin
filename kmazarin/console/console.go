@@ -245,6 +245,68 @@ func BreadcrumbHex64NoSplit(val uint64) {
 	}
 }
 
+// BreadcrumbDecimalNoSplit prints a uint64 as decimal digits directly to UART.
+// Uses a fixed small buffer to minimize stack usage in nosplit contexts.
+//
+//go:nosplit
+func BreadcrumbDecimalNoSplit(val uint64) {
+	// For values we expect (0-15 seconds), this is plenty.
+	// Max uint64 is 20 digits; we use fixed iteration to avoid variable-size stack.
+	if val == 0 {
+		breadcrumb('0')
+		return
+	}
+	// Extract digits in reverse, then print forward.
+	// Use 5 fixed slots (handles up to 99999 — more than enough for seconds).
+	var d0, d1, d2, d3, d4 byte
+	n := 0
+	d0 = byte(val%10) + '0'
+	val /= 10
+	n = 1
+	if val > 0 {
+		d1 = byte(val%10) + '0'
+		val /= 10
+		n = 2
+	}
+	if val > 0 {
+		d2 = byte(val%10) + '0'
+		val /= 10
+		n = 3
+	}
+	if val > 0 {
+		d3 = byte(val%10) + '0'
+		val /= 10
+		n = 4
+	}
+	if val > 0 {
+		d4 = byte(val%10) + '0'
+		n = 5
+	}
+	if n >= 5 {
+		breadcrumb(d4)
+	}
+	if n >= 4 {
+		breadcrumb(d3)
+	}
+	if n >= 3 {
+		breadcrumb(d2)
+	}
+	if n >= 2 {
+		breadcrumb(d1)
+	}
+	breadcrumb(d0)
+}
+
+// BreadcrumbStringNoSplit writes a string directly to UART via MMIO.
+// For use in nosplit contexts where even BreadcrumbNoSplit per-char is fine.
+//
+//go:nosplit
+func BreadcrumbStringNoSplit(s string) {
+	for i := 0; i < len(s); i++ {
+		breadcrumb(s[i])
+	}
+}
+
 // breadcrumb writes a byte directly to UART MMIO.
 // Implementation is in breadcrumb_asm.go (real hardware) or breadcrumb_stubs.go (test builds).
 

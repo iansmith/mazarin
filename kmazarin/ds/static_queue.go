@@ -164,6 +164,23 @@ func (q *StaticQueue[T]) Clear() {
 	q.count = 0
 }
 
+// Head returns the current head index of the circular buffer.
+// Used for FIFO-order iteration from external code.
+//
+//go:nosplit
+func (q *StaticQueue[T]) Head() int {
+	return q.head
+}
+
+// PluckAt removes the element at a specific buffer index.
+// The caller must verify InUse[idx] is true before calling.
+//
+//go:nosplit
+func (q *StaticQueue[T]) PluckAt(idx int) {
+	q.InUse[idx] = false
+	q.count--
+}
+
 // PushHeadNoDuplicate adds value to the front of the queue, but only if not already present.
 // Returns true if value was added, false if it was already in the queue.
 //

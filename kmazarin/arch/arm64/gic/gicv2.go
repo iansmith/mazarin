@@ -94,6 +94,7 @@ func (g *GICv2) RegisterHandler(irq uint32, handler func()) {
 	}
 }
 
+//go:nosplit
 func (g *GICv2) EnableIRQ(irq uint32) {
 	reg := uintptr(irq / 32)
 	bit := irq % 32
@@ -101,6 +102,7 @@ func (g *GICv2) EnableIRQ(irq uint32) {
 	g.writeDistReg(offset, 1<<bit)
 }
 
+//go:nosplit
 func (g *GICv2) DisableIRQ(irq uint32) {
 	reg := uintptr(irq / 32)
 	bit := irq % 32

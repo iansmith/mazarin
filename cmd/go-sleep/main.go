@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
 	"time"
 )
@@ -41,10 +42,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	if duration == 0 {
+		// Sleep forever (block until killed via signal)
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt)
+		<-sig
+		return
+	}
 	time.Sleep(duration)
 }
 
 func parseDuration(s string) (time.Duration, error) {
+	// Bare unit suffix with no number (e.g., "s" from empty TIMEOUT= expansion)
+	// means wait forever (duration 0).
+	if s == "s" || s == "ms" || s == "us" || s == "ns" || s == "" {
+		return 0, nil
+	}
+
 	// Try parsing as Go duration first (e.g., "1s", "100ms")
 	if d, err := time.ParseDuration(s); err == nil {
 		return d, nil

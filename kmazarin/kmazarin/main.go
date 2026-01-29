@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	arm64gic "mazzy/kmazarin/arch/arm64/gic"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/device/virtio/gpu"
@@ -343,14 +344,13 @@ func testRuntimeReadiness() bool {
 // DisableTimerIRQ disables BOTH the timer hardware and its IRQ at the GIC.
 // This is necessary because disabling just the IRQ masks delivery but doesn't
 // stop the timer from generating interrupt requests.
+// DisableTimerIRQ disables the timer IRQ using the cached GIC pointer.
+//
+//go:nosplit
 func DisableTimerIRQ() {
-	// CRITICAL: Disable the timer hardware FIRST
-	// This stops the timer from generating interrupt requests
 	DisableTimerHardware()
-
-	// Then disable the IRQ at the GIC to mask any pending requests
-	if gic, ok := device.GetInterruptController(); ok {
-		gic.DisableIRQ(27)
+	if cachedGIC != nil {
+		cachedGIC.DisableIRQ(27)
 	}
 }
 
@@ -604,11 +604,33 @@ func printTimerDebug() {
 }
 
 // EnableTimerIRQ enables the timer IRQ (27) using the GIC device driver.
-func EnableTimerIRQ() {
+//
+// cachedGIC holds a direct reference to the GIC, avoiding interface dispatch
+// (which can trigger morestack) in hot paths like timer enable/disable.
+var cachedGIC *arm64gic.GICv2
+
+// initCachedGIC must be called once during boot after device discovery.
+func initCachedGIC() {
 	if gic, ok := device.GetInterruptController(); ok {
-		gic.EnableIRQ(27)
-		// Start the timer hardware
+		if g, ok := gic.(*arm64gic.GICv2); ok {
+			cachedGIC = g
+		}
+	}
+}
+
+// EnableTimerIRQ enables the timer IRQ (27) using the cached GIC pointer.
+//
+//go:nosplit
+func EnableTimerIRQ() {
+	if cachedGIC != nil {
+		// CRITICAL: Rearm timer BEFORE enabling GIC IRQ.
+		// IRQ 27 is edge-triggered. If the timer line is already asserted
+		// (ISTATUS=1 from a previous expiration) when we enable the GIC,
+		// there's no rising edge and the GIC never generates the interrupt.
+		// Rearming first clears ISTATUS (line goes low), then after the GIC
+		// enable, the next expiration creates a proper rising edge.
 		RearmTimerNow()
+		cachedGIC.EnableIRQ(27)
 	}
 }
 
@@ -636,8 +658,10 @@ func testDeviceDiscovery() {
 	// Register all device drivers BEFORE discovering devices
 	device.RegisterAllDrivers()
 
-	// Parse DTB and discover devices (silent - no printing inside)
+	// Parse DTB and discover devices
+	console.KPrintln("[DeviceTest] Calling InitFromDTB...")
 	err := device.InitFromDTB(dtbAddr)
+	console.KPrintln("[DeviceTest] InitFromDTB returned")
 	if err != nil {
 		console.KWriteString("[DeviceTest] ERROR: ")
 		console.KPrintln(err.Error())
@@ -865,6 +889,9 @@ func simpleMain() {
 	// (DTB is at 0x40000000 in Cardinal's memory region)
 	testDeviceDiscovery()
 
+	// Cache GIC pointer for nosplit-safe timer IRQ enable/disable
+	initCachedGIC()
+
 	// Initialize VirtIO GPU for display output
 	initVirtIOGPU()
 
@@ -900,63 +927,42 @@ func simpleMain() {
 	//
 	// To switch back to goroutine test, comment out below and launch priestsieve.elf
 
-	// DEBUG: Print GC stats before launching sievetest
-	var memStats runtime.MemStats
-	runtime.ReadMemStats(&memStats)
-	console.KPrintf("[Main] GC debug: NumGC=%d HeapAlloc=%d NextGC=%d GCPercent=%d\n",
-		memStats.NumGC, memStats.HeapAlloc, memStats.NextGC, debug.SetGCPercent(-1))
+	// DEBUG: ReadMemStats disabled - hangs in bare-metal (triggers STW GC)
 
 	// Launch 6 copies of priestsieve to stress-test thread scheduling.
 	// Each priest has 5 worker goroutines + main goroutine (6 total per priest).
 	// Total: 6 priests * 6 goroutines = 36 goroutines across 6 threads.
-	Print("[Main] Launching 4 priests...\r\n")
+	// (priest launch breadcrumbs removed for performance)
 
 	filename := "/priestsieve.elf\x00"
 	filenamePtr := uintptr(unsafe.Pointer(&([]byte(filename))[0]))
 
-	for i := 0; i < 2; i++ { // Testing: 2 priests (was 4)
+	for i := 0; i < 6; i++ {
 		result := ksyscall.SyscallLaunch(uint64(filenamePtr), 0, 0, 0, 0, 0)
 		if result != 0 {
-			console.KPrintf("[Main] ERROR: priestsieve #%d launch failed with code %d\n", i+1, result)
 			continue
 		}
-		console.KPrintf("[Main] Launched priestsieve #%d successfully\n", i+1)
 
-		// Full cache/TLB sync before yielding to this priest.
-		// Each priest is loaded at the same user VA range (0x80000+), so stale
-		// cache entries from earlier loads must be flushed.
+		// Full cache/TLB sync for this priest.
 		kmem.FinalUserspaceSync()
-
-		// Re-enable IRQs and timer so the priest can run and be preempted
-		EnableIRQs()
-		EnableTimerIRQ()
-
-		// Yield: save thread 0's context, put it on the ready queue,
-		// and ERET to the newly launched priest. Thread 0 is NOT lost —
-		// when the timer preempts the priest, thread 0 gets scheduled
-		// back and resumes here to launch the next priest.
-		console.KPrintf("[Main] Yielding to priest #%d\n", i+1)
-		YieldToReadyThread()
-
-		// Thread 0 has been scheduled back — continue launching
-		console.KPrintf("[Main] Thread 0 resumed after priest #%d\n", i+1)
-
-		// Disable timer during next launch to avoid interference
-		DisableTimerIRQ()
 	}
-
-	// Diagnostic: Show resource usage after launching priests
-	ptUsed, ptCap := kmem.GetPTVACacheStats()
-	console.KPrintf("[Main] ptVACache: %d/%d entries used\n", ptUsed, ptCap)
-
-	Print("[Main] All priests launched\r\n")
 
 	// Re-enable IRQs and timer for ongoing scheduling
 	EnableIRQs()
 	EnableTimerIRQ()
 
+	// Timer and IRQs verified working at this point
+
 	// Start kernel time accounting for performance measurements
 	kirq.StartKernelTimeAccounting()
+
+	// Start program clock for timed shutdown (15 seconds in raw counter ticks).
+	// Disable IRQs briefly so no timer preemption during reset.
+	savedDAIF := SaveAndDisableIRQs()
+	startingTicksProgram = kirq.ReadCounterValue()
+	shutdownTicksThreshold = kirq.SystemTimerFrequency * 60
+	ResetTickAccounting(startingTicksProgram)
+	RestoreIRQs(savedDAIF)
 
 	// Enter the kernel idle loop. Thread 0 (m0/g0) stays alive as a normal
 	// scheduled thread. Priest threads are already running. The timer IRQ
@@ -964,7 +970,7 @@ func simpleMain() {
 	//
 	// This preserves thread 0 for the Go runtime — m0 continues to exist
 	// and can run goroutines (sysmon, GC, etc.) when scheduled back.
-	Print("[Main] Entering kernel idle loop\r\n")
+	// (idle loop entry breadcrumb removed for performance)
 	KernelIdleLoop()
 
 	// Should never reach here

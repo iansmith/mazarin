@@ -9,27 +9,12 @@ import (
 )
 
 // printDebug prints a debug string directly to console
-func printDebug(s string) {
-	console.KWriteString(s)
-}
+// DISABLED: console.KWriteString hangs in InitFromDTB context
+func printDebug(_ string) {}
 
 // printDebugInt prints an integer
-func printDebugInt(n int) {
-	if n == 0 {
-		console.KWriteByte('0')
-		return
-	}
-	var buf [20]byte
-	i := len(buf) - 1
-	for n > 0 {
-		buf[i] = byte('0' + n%10)
-		n /= 10
-		i--
-	}
-	for i++; i < len(buf); i++ {
-		console.KWriteByte(buf[i])
-	}
-}
+// DISABLED: same issue as printDebug
+func printDebugInt(_ int) {}
 
 // Device storage by type - use typed interface values for type safety
 var (
@@ -73,7 +58,7 @@ func registerDriver(driver Discoverable) {
 	for _, compatible := range driver.Compatible() {
 		driverRegistry[compatible] = append(driverRegistry[compatible], driver)
 		if compatible == "virtio,mmio" {
-			printDebug("[DTB] Registered virtio,mmio driver\r\n")
+			_ = ("[DTB] Registered virtio,mmio driver\r\n")
 		}
 	}
 }
@@ -82,12 +67,16 @@ func registerDriver(driver Discoverable) {
 // This function is silent - no output until a console device is available.
 // Returns error if DTB parsing fails or a critical device initialization fails.
 func InitFromDTB(dtbAddr uintptr) error {
+	console.Breadcrumb('X')
 	tree, err := dtb.Parse(dtbAddr)
+	console.Breadcrumb('Y')
+	_ = ("[DTB] After Parse\r\n")
 	if err != nil {
 		return fmt.Errorf("parse DTB: %w", err)
 	}
 
 	// Walk device tree and initialize devices
+	console.Breadcrumb('W')
 	return tree.Walk(func(node *dtb.Node) error {
 		return initNodeDevice(node)
 	})
@@ -96,6 +85,7 @@ func InitFromDTB(dtbAddr uintptr) error {
 // initNodeDevice tries to initialize a device for the given DTB node.
 // It tries each compatible string and each matching driver until one succeeds.
 func initNodeDevice(node *dtb.Node) error {
+	console.Breadcrumb('n')
 	// Try to match compatible strings (in order of preference)
 	for _, compatible := range node.Compatible {
 		drivers, ok := driverRegistry[compatible]
@@ -105,38 +95,38 @@ func initNodeDevice(node *dtb.Node) error {
 
 		// Debug: print compatible string being tried
 		if compatible == "virtio,mmio" {
-			printDebug("[DTB] Trying virtio,mmio node: " + node.Name)
-			printDebug(" (")
-			printDebugInt(len(drivers))
-			printDebug(" drivers)\r\n")
+			_ = ("[DTB] Trying virtio,mmio node: " + node.Name)
+			_ = (" (")
+			_ = (len(drivers))
+			_ = (" drivers)\r\n")
 		}
 
 		// Try each driver that matches this compatible string
 		for i, driver := range drivers {
 			if compatible == "virtio,mmio" {
-				printDebug("  [DTB] Trying driver ")
-				printDebugInt(i)
-				printDebug("\r\n")
+				_ = ("  [DTB] Trying driver ")
+				_ = (i)
+				_ = ("\r\n")
 			}
 			// Check if driver can handle this specific node (DTB-only checks)
 			if !driver.Probe(node) {
 				if compatible == "virtio,mmio" {
-					printDebug("  [DTB] Probe returned false\r\n")
+					_ = ("  [DTB] Probe returned false\r\n")
 				}
 				continue
 			}
 
 			if compatible == "virtio,mmio" {
-				printDebug("  [DTB] Probe passed, calling Init\r\n")
+				_ = ("  [DTB] Probe passed, calling Init\r\n")
 			}
 
 			// Try to initialize - driver may return ErrNotMyDevice
 			dev, err := driver.Init(node)
 			if err != nil {
 				if compatible == "virtio,mmio" {
-					printDebug("  [DTB] Init returned error: ")
-					printDebug(err.Error())
-					printDebug("\r\n")
+					_ = ("  [DTB] Init returned error: ")
+					_ = (err.Error())
+					_ = ("\r\n")
 				}
 				if errors.Is(err, deviceapi.ErrNotMyDevice) {
 					// Not this driver's device type, try next driver
