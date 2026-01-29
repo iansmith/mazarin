@@ -530,7 +530,10 @@ data_abort:
 	CMP	$0, R0
 	BEQ	data_abort_unhandled
 
-	// Fault handled successfully - return to faulting instruction
+	// Fault handled successfully - print '<' marker and return to faulting instruction
+	MOVD	$UART_BASE, R10
+	MOVD	$'<', R11
+	MOVB	R11, (R10)
 	B	sync_return
 
 data_abort_unhandled:
@@ -621,36 +624,6 @@ print_elr_char_da:
 	LSL	$4, R12
 	SUB	$1, R13
 	CBNZ	R13, print_elr_data_abort
-
-	// Print " x28="
-	MOVD	$' ', R11
-	MOVB	R11, (R10)
-	MOVD	$'x', R11
-	MOVB	R11, (R10)
-	MOVD	$'2', R11
-	MOVB	R11, (R10)
-	MOVD	$'8', R11
-	MOVB	R11, (R10)
-	MOVD	$'=', R11
-	MOVB	R11, (R10)
-
-	// Read x28 from saved context (at [sp, #224])
-	MOVD	EXC_FRAME_X28(RSP), R12
-	MOVD	$16, R13		// Counter for 16 hex digits
-print_x28_data_abort:
-	LSR	$60, R12, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	print_x28_digit_da
-	ADD	$('A'-10), R11
-	B	print_x28_char_da
-print_x28_digit_da:
-	ADD	$'0', R11
-print_x28_char_da:
-	MOVB	R11, (R10)
-	LSL	$4, R12
-	SUB	$1, R13
-	CBNZ	R13, print_x28_data_abort
 
 	MOVD	$'\r', R11
 	MOVB	R11, (R10)
@@ -798,15 +771,6 @@ irq_exception_handler:
 	// It also sets NeedsAsyncPreempt if threshold exceeded.
 	CALL	mazzy∕kmazarin∕kirq·TimerIRQHandlerAsm(SB)
 
-	// DEBUG: Print '.' every 128 timer IRQs to verify timer is firing
-	MOVD	mazzy∕kmazarin∕kirq·TimerIRQCount(SB), R10
-	AND	$127, R10
-	CBNZ	R10, skip_timer_debug
-	MOVD	$UART_BASE, R11
-	MOVD	$'.', R12
-	MOVB	R12, (R11)
-skip_timer_debug:
-
 	// ========================================================================
 	// CRITICAL: Write GICC_EOIR for timer IRQ IMMEDIATELY after handler
 	// ========================================================================
@@ -815,6 +779,7 @@ skip_timer_debug:
 	// and no new timer interrupts can be delivered, breaking preemption.
 	//
 	// R19 contains the full IAR value saved at the start of the IRQ handler.
+
 	MOVD	$(GIC_CPU_BASE + GICC_EOIR), R10
 	MOVW	R19, (R10)  // Write IAR value to EOIR
 
@@ -840,11 +805,6 @@ skip_deadline_processing:
 	MOVW	mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB), R10
 	CBZ	R10, timer_no_thread_preempt
 
-	// DEBUG: Print 'W' when NeedsThreadPreempt is set
-	MOVD	$UART_BASE, R11
-	MOVD	$'W', R12
-	MOVB	R12, (R11)
-
 	// Clear NeedsThreadPreempt flag
 	MOVW	$0, R10
 	MOVW	R10, mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB)
@@ -853,10 +813,6 @@ skip_deadline_processing:
 	// The timer may have interrupted userspace (priest) which has a different g
 	MOVD	·kmazarinG0Addr(SB), R10
 	CBNZ	R10, g0_addr_ok
-	// DEBUG: Print '0' when kmazarinG0Addr is zero (this blocks all preemption!)
-	MOVD	$UART_BASE, R11
-	MOVD	$'0', R12
-	MOVB	R12, (R11)
 	B	timer_no_thread_preempt  // Skip if not initialized
 g0_addr_ok:
 	WORD	$0xaa0a03fc  // mov x28, x10
@@ -1372,166 +1328,6 @@ irq_return:
 el0_sync_handler:
 	// We're already using SP_EL1 when taking exception from EL0
 	// (ARM64 automatically switches to SP_EL1 for EL1 handlers)
-
-	// DEBUG: Print ESR and EC immediately at entry BEFORE saving anything
-	// This tells us what the hardware reports, before any code can corrupt it.
-	// Save R10-R14 on stack temporarily for debug output
-	STP	(R10, R11), -32(RSP)
-	STP	(R12, R13), -16(RSP)
-
-	// Read ESR_EL1 immediately
-	MRS	ESR_EL1, R10
-
-	// Extract EC (bits 31:26)
-	LSR	$26, R10, R11
-	AND	$0x3F, R11
-
-	// Print '<' unconditionally to show we entered el0_sync_handler
-	// Then only print EC details if NOT SVC
-	MOVD	$UART_BASE, R12
-	MOVD	$'<', R13
-	MOVB	R13, (R12)
-
-	// Only print debug if EC is NOT 0x15 (SVC) - avoid flooding with syscall debug
-	CMP	$0x15, R11
-	BEQ	el0_skip_entry_debug
-
-	// Print "[EC=" to show early EC
-	MOVD	$UART_BASE, R12
-	MOVD	$'[', R13
-	MOVB	R13, (R12)
-	MOVD	$'E', R13
-	MOVB	R13, (R12)
-	MOVD	$'C', R13
-	MOVB	R13, (R12)
-	MOVD	$'=', R13
-	MOVB	R13, (R12)
-
-	// Print EC as 2 hex digits (R11 has EC)
-	LSR	$4, R11, R13
-	AND	$0xF, R13
-	CMP	$10, R13
-	BLT	el0_entry_ec_d1
-	ADD	$('A'-10), R13
-	B	el0_entry_ec_c1
-el0_entry_ec_d1:
-	ADD	$'0', R13
-el0_entry_ec_c1:
-	MOVB	R13, (R12)
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	el0_entry_ec_d2
-	ADD	$('A'-10), R11
-	B	el0_entry_ec_c2
-el0_entry_ec_d2:
-	ADD	$'0', R11
-el0_entry_ec_c2:
-	MOVB	R11, (R12)
-
-	// Print " FAR="
-	MOVD	$' ', R13
-	MOVB	R13, (R12)
-	MOVD	$'F', R13
-	MOVB	R13, (R12)
-	MOVD	$'A', R13
-	MOVB	R13, (R12)
-	MOVD	$'R', R13
-	MOVB	R13, (R12)
-	MOVD	$'=', R13
-	MOVB	R13, (R12)
-
-	// Read and print FAR_EL1 (16 hex digits)
-	MRS	FAR_EL1, R14
-	MOVD	$16, R11
-el0_entry_far_loop:
-	LSR	$60, R14, R13
-	AND	$0xF, R13
-	CMP	$10, R13
-	BLT	el0_entry_far_d
-	ADD	$('A'-10), R13
-	B	el0_entry_far_c
-el0_entry_far_d:
-	ADD	$'0', R13
-el0_entry_far_c:
-	MOVB	R13, (R12)
-	LSL	$4, R14
-	SUB	$1, R11
-	CBNZ	R11, el0_entry_far_loop
-
-	// Print " ELR="
-	MOVD	$' ', R13
-	MOVB	R13, (R12)
-	MOVD	$'E', R13
-	MOVB	R13, (R12)
-	MOVD	$'L', R13
-	MOVB	R13, (R12)
-	MOVD	$'R', R13
-	MOVB	R13, (R12)
-	MOVD	$'=', R13
-	MOVB	R13, (R12)
-
-	// Read and print ELR_EL1 (16 hex digits)
-	MRS	ELR_EL1, R14
-	MOVD	$16, R11
-el0_entry_elr_loop:
-	LSR	$60, R14, R13
-	AND	$0xF, R13
-	CMP	$10, R13
-	BLT	el0_entry_elr_d
-	ADD	$('A'-10), R13
-	B	el0_entry_elr_c
-el0_entry_elr_d:
-	ADD	$'0', R13
-el0_entry_elr_c:
-	MOVB	R13, (R12)
-	LSL	$4, R14
-	SUB	$1, R11
-	CBNZ	R11, el0_entry_elr_loop
-
-	// Print " TTBR0="
-	MOVD	$' ', R13
-	MOVB	R13, (R12)
-	MOVD	$'T', R13
-	MOVB	R13, (R12)
-	MOVD	$'0', R13
-	MOVB	R13, (R12)
-	MOVD	$'=', R13
-	MOVB	R13, (R12)
-
-	// Read and print TTBR0_EL1 (16 hex digits)
-	MRS	TTBR0_EL1, R14
-	MOVD	$16, R11
-el0_entry_ttbr0_loop:
-	LSR	$60, R14, R13
-	AND	$0xF, R13
-	CMP	$10, R13
-	BLT	el0_entry_ttbr0_d
-	ADD	$('A'-10), R13
-	B	el0_entry_ttbr0_c
-el0_entry_ttbr0_d:
-	ADD	$'0', R13
-el0_entry_ttbr0_c:
-	MOVB	R13, (R12)
-	LSL	$4, R14
-	SUB	$1, R11
-	CBNZ	R11, el0_entry_ttbr0_loop
-
-	// Print "]"
-	MOVD	$']', R13
-	MOVB	R13, (R12)
-
-	// Branch past the skip_entry_debug label
-	B	el0_after_entry_debug
-
-el0_skip_entry_debug:
-	// Print '>' to show we skipped debug (EC was 0x15 SVC)
-	MOVD	$'>', R13
-	MOVB	R13, (R12)
-el0_after_entry_debug:
-	// Restore R10-R14
-	LDP	-32(RSP), (R10, R11)
-	LDP	-16(RSP), (R12, R13)
-	// END DEBUG
 
 	// Allocate exception frame
 	SUB	$EXC_FRAME_SIZE, RSP

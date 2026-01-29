@@ -1,7 +1,6 @@
 package ksyscall
 
 import (
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/kirq"
 	"sync/atomic"
 	"unsafe"
@@ -53,15 +52,6 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 	switch opMasked {
 	case FutexWait:
 		atomic.AddUint64(&FutexWaitCalls, 1)
-
-		// DEBUG: show futex wait with timeout info
-		console.Breadcrumb('F')
-		console.Breadcrumb('X')
-		if timeout != 0 {
-			console.Breadcrumb('T')
-		} else {
-			console.Breadcrumb('N')
-		}
 
 		// FUTEX_WAIT: Block until value changes or we're woken
 		// Check if value matches expected (spurious wakeup check)

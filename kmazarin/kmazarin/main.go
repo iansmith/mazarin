@@ -918,51 +918,57 @@ func simpleMain() {
 		result := ksyscall.SyscallLaunch(uint64(filenamePtr), 0, 0, 0, 0, 0)
 		if result != 0 {
 			console.KPrintf("[Main] ERROR: priestsieve #%d launch failed with code %d\n", i+1, result)
-		} else {
-			console.KPrintf("[Main] Launched priestsieve #%d successfully\n", i+1)
+			continue
 		}
+		console.KPrintf("[Main] Launched priestsieve #%d successfully\n", i+1)
+
+		// Full cache/TLB sync before yielding to this priest.
+		// Each priest is loaded at the same user VA range (0x80000+), so stale
+		// cache entries from earlier loads must be flushed.
+		kmem.FinalUserspaceSync()
+
+		// Re-enable IRQs and timer so the priest can run and be preempted
+		EnableIRQs()
+		EnableTimerIRQ()
+
+		// Yield: save thread 0's context, put it on the ready queue,
+		// and ERET to the newly launched priest. Thread 0 is NOT lost —
+		// when the timer preempts the priest, thread 0 gets scheduled
+		// back and resumes here to launch the next priest.
+		console.KPrintf("[Main] Yielding to priest #%d\n", i+1)
+		YieldToReadyThread()
+
+		// Thread 0 has been scheduled back — continue launching
+		console.KPrintf("[Main] Thread 0 resumed after priest #%d\n", i+1)
+
+		// Disable timer during next launch to avoid interference
+		DisableTimerIRQ()
 	}
 
 	// Diagnostic: Show resource usage after launching priests
 	ptUsed, ptCap := kmem.GetPTVACacheStats()
 	console.KPrintf("[Main] ptVACache: %d/%d entries used\n", ptUsed, ptCap)
 
-	Print("[Main] priest(s) launched - testing thread scheduling")
+	Print("[Main] All priests launched\r\n")
 
-	// Re-enable IRQs and timer for priest scheduling
+	// Re-enable IRQs and timer for ongoing scheduling
 	EnableIRQs()
 	EnableTimerIRQ()
-
-	// Debug: Print DAIF to verify IRQs are enabled
-	daif := ReadDAIF()
-	console.KPrintf("[Main] DAIF before idle: 0x%x (I=0x80 clear means IRQs enabled)\n", daif)
-
-	Print("[Main] Starting first thread from ready queue...\r\n")
-
-	// DEBUG: Check watchpoint before final sync
-	kmem.CheckWatchPA("main-before-FinalUserspaceSync")
-
-	// CRITICAL: Full cache and TLB sync after loading all priests.
-	// Each priest is loaded at the same user VA range (0x80000+), and per-VA
-	// cache invalidation during loading may leave stale entries from earlier loads.
-	// FinalUserspaceSync is the nuclear option: TLB, D-cache, and I-cache all invalidated.
-	kmem.FinalUserspaceSync()
-
-	// DEBUG: Check watchpoint after final sync
-	kmem.CheckWatchPA("main-after-FinalUserspaceSync")
-
-	Print("[Main] Full cache/TLB sync after loading all priests\r\n")
 
 	// Start kernel time accounting for performance measurements
 	kirq.StartKernelTimeAccounting()
 
-	// Start the first thread - this function never returns!
-	// It waits for a ready thread, then switches to it via ERET.
-	// The timer IRQ will preempt threads and allow others to run.
-	RunFirstThread()
+	// Enter the kernel idle loop. Thread 0 (m0/g0) stays alive as a normal
+	// scheduled thread. Priest threads are already running. The timer IRQ
+	// preempts thread 0 and context-switches to priest threads naturally.
+	//
+	// This preserves thread 0 for the Go runtime — m0 continues to exist
+	// and can run goroutines (sysmon, GC, etc.) when scheduled back.
+	Print("[Main] Entering kernel idle loop\r\n")
+	KernelIdleLoop()
 
 	// Should never reach here
-	Print("[Main] ERROR: RunFirstThread returned!\r\n")
+	Print("[Main] ERROR: KernelIdleLoop returned!\r\n")
 	for {
 	}
 }

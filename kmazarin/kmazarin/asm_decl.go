@@ -138,3 +138,11 @@ func CheckThreadPreemption(framePtr uint64) uint64
 // Called from kernel main after launching threads.
 //go:nosplit
 func RunFirstThread()
+
+// YieldToReadyThread saves thread 0's full register state into its ThreadContext,
+// puts thread 0 on the ready queue, and ERETs to the next ready thread.
+// When thread 0 is scheduled back via timer preemption, execution resumes
+// at the instruction after the call to YieldToReadyThread.
+// If no other thread is available, returns without yielding.
+//go:nosplit
+func YieldToReadyThread()

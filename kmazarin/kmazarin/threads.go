@@ -136,6 +136,7 @@ type Thread struct {
 // These are computed from unsafe.Offsetof() in initThreadOffsets() and MUST be
 // initialized before any assembly code reads them (before timer IRQ is enabled).
 var (
+	ThreadContextOffset           uintptr // Offset of Context field within Thread struct
 	ThreadLastSeenGOffset         uintptr
 	ThreadStartTickOffset         uintptr
 	ThreadGoroutineStartOffset    uintptr
@@ -151,6 +152,7 @@ var (
 //go:nosplit
 func initThreadOffsets() {
 	var t Thread
+	ThreadContextOffset = unsafe.Offsetof(t.Context)
 	ThreadLastSeenGOffset = unsafe.Offsetof(t.LastSeenG)
 	ThreadStartTickOffset = unsafe.Offsetof(t.StartTick)
 	ThreadGoroutineStartOffset = unsafe.Offsetof(t.GoroutineStart)
@@ -619,15 +621,6 @@ func ProcessDeadlinesTopHalf() {
 //
 //go:nosplit
 func IdleLoop(sf *SchedulerFunc) *Thread {
-	console.Breadcrumb('L') // Debug: IdleLoop entered
-	// Debug: Just print the queue size and first popped TID to reduce noise
-	console.Breadcrumb('#')
-	qcount := readyQueue.Size()
-	if qcount < 10 {
-		console.Breadcrumb(byte('0' + qcount))
-	} else {
-		console.Breadcrumb('?')
-	}
 	for {
 		// Disable interrupts and acquire scheduler lock
 		savedDAIF := sf.DisableAndSaveDAIF()
@@ -651,6 +644,108 @@ func IdleLoop(sf *SchedulerFunc) *Thread {
 	}
 }
 
+// KernelIdleLoop is the permanent idle loop for kernel thread 0 (m0/g0).
+// Called from main() after all setup is complete and priest threads are on the
+// ready queue. This function never returns.
+//
+// Thread 0 stays alive as a normal scheduled thread. The timer IRQ preempts it
+// and context-switches to priest threads on the ready queue. When thread 0 gets
+// scheduled back, it resumes here — processing deadlines and waiting for the
+// next interrupt.
+//
+// LOCK DISCIPLINE: save DAIF → mask IRQs → acquire lock → process → release → restore → WFI
+//
+//go:nosplit
+//go:noinline
+func KernelIdleLoop() {
+	for {
+		savedDAIF := SaveAndDisableIRQs()
+		schedulerLock.Lock()
+
+		ProcessDeadlines()
+		processStaticDeadlinesSchedLockHeld()
+
+		schedulerLock.Unlock()
+		RestoreIRQs(savedDAIF)
+
+		WaitForInterrupt()
+	}
+}
+
+// SaveThread0AndYield saves thread 0 (the current kernel thread) to the ready
+// queue and picks the next ready thread to run. Called from YieldToReadyThread
+// assembly after it has saved all registers into thread 0's ThreadContext.
+//
+// Returns the context pointer of the next thread (for ERET), or 0 if no thread
+// is available (caller should just return normally).
+//
+// The assembly sets thread 0's ELR to its return address and SPSR to EL1t (0x4),
+// so when thread 0 is scheduled back via timer preemption, it resumes at the
+// instruction after the YieldToReadyThread call.
+//
+//go:nosplit
+//go:noinline
+func SaveThread0AndYield() uint64 {
+	savedDAIF := SaveAndDisableIRQs()
+	schedulerLock.Lock()
+
+	t0 := threadList.Get(int(CurrentThreadIdx))
+	if t0 == nil {
+		schedulerLock.Unlock()
+		RestoreIRQs(savedDAIF)
+		return 0
+	}
+
+	// Put thread 0 on ready queue
+	t0.State = ThreadReady
+	readyQueue.Pluck(t0.TID)
+	enqueueReadySchedLockHeld(t0)
+
+	// Update tick accounting for thread 0
+	currentTime := kirq.ReadCounterValue()
+	if t0.TicksStartedRunning != 0 {
+		t0.TotalTicksRunning += currentTime - t0.TicksStartedRunning
+	}
+	t0.TicksStartedRunning = 0
+
+	// Find next ready thread (prefer a priest, not kernel)
+	next := findReadyThreadPreferDifferentPriestSchedLockHeld(t0.PID)
+	if next == nil {
+		// No thread available — undo the save
+		readyQueue.Pluck(t0.TID)
+		t0.State = ThreadRunning
+		t0.TicksStartedRunning = currentTime
+		schedulerLock.Unlock()
+		RestoreIRQs(savedDAIF)
+		return 0
+	}
+
+	// Switch current thread to the new one
+	nextIdx := threadToIdx(next)
+	CurrentThreadIdx = nextIdx
+	atomic.StorePointer(&CurrentThread, unsafe.Pointer(next))
+	next.State = ThreadRunning
+	next.StartTick = currentTime
+	next.GoroutineStart = currentTime
+	next.ThreadPreemptDeadline = currentTime + kirq.ThreadPreemptTicks
+	next.GoroutinePreemptDeadline = currentTime + kirq.GoroutinePreemptTicks
+	next.LastSeenG = next.Context.X[28]
+	next.PreemptElapsed = 0
+	next.GoroutineElapsed = 0
+	next.TicksStartedRunning = currentTime
+
+	// Switch TTBR0 if needed for userspace thread
+	if next.PageTableL0PA != 0 && next.PageTableL0PA != t0.PageTableL0PA {
+		kmem.SwitchTTBR0WithASID(next.PageTableL0PA, uint16(next.PID))
+	}
+
+	schedulerLock.Unlock()
+	// Don't restore DAIF — ERET will restore from SPSR
+	_ = savedDAIF
+
+	return uint64(uintptr(unsafe.Pointer(&next.Context)))
+}
+
 // StartFirstThread waits for and starts the first ready thread.
 // This is called from the kernel main when there are threads in the ready queue
 // but no current thread is running. It uses IdleLoop to wait for a ready thread,
@@ -670,10 +765,8 @@ func StartFirstThread() uint64 {
 //go:nosplit
 //go:noinline
 func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
-	console.Breadcrumb('S') // Debug: startFirstThreadImpl entered
 	// Wait for a ready thread
 	thread := IdleLoop(sf)
-	console.Breadcrumb('I') // Debug: IdleLoop returned
 	if thread == nil {
 		// This should never happen - IdleLoop blocks until a thread is ready
 		return 0
@@ -683,7 +776,6 @@ func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
 	// Kernel goroutines may have been preempted into the ready queue before
 	// timer was disabled. We need to re-queue them and find a priest thread.
 	for thread.PID == 0 {
-		console.Breadcrumb('k') // Debug: skipping kernel thread
 		// Put kernel thread back at the BACK of the ready queue (not front!)
 		// StartFirstThread needs a priest thread to ERET to userspace.
 		// If we used enqueueReadySchedLockHeld here, kernel threads would go
@@ -701,39 +793,13 @@ func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
 			return 0
 		}
 	}
-	console.Breadcrumb('1') // Debug: found priest thread
-
 	// BEGIN CRITICAL SECTION - protect thread state modifications
 	savedDAIF := sf.DisableAndSaveDAIF()
-	console.Breadcrumb('2') // Debug: DAIF saved
 	schedulerLock.Lock()
-	console.Breadcrumb('3') // Debug: lock acquired
 
 	// Set up current thread
 	idx := threadToIdx(thread)
 	CurrentThreadIdx = idx
-	// Debug: Check what thread we're about to store - print full TID
-	console.Breadcrumb('[')
-	// Print TID as 2 hex digits
-	tid := int(thread.TID)
-	hiNibble := (tid >> 4) & 0xF
-	loNibble := tid & 0xF
-	if hiNibble < 10 {
-		console.Breadcrumb(byte('0' + hiNibble))
-	} else {
-		console.Breadcrumb(byte('A' + hiNibble - 10))
-	}
-	if loNibble < 10 {
-		console.Breadcrumb(byte('0' + loNibble))
-	} else {
-		console.Breadcrumb(byte('A' + loNibble - 10))
-	}
-	console.Breadcrumb(']')
-	if thread.PID == 0 {
-		console.Breadcrumb('k') // thread is kernel
-	} else {
-		console.Breadcrumb('p') // thread is priest
-	}
 	atomic.StorePointer(&CurrentThread, unsafe.Pointer(thread))
 	thread.State = ThreadRunning
 
@@ -749,83 +815,12 @@ func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
 	thread.TicksStartedRunning = currentTime
 
 	// Switch TTBR0 to the thread's page table
-	console.Breadcrumb('4') // Debug: before TTBR0 switch
-	// DEBUG: Print L0PA being used (4 hex digits to show 0x44XXX)
-	console.Breadcrumb('{')
-	l0pa := thread.PageTableL0PA
-	// Print bits 19:16 (X in 0x4401X)
-	for shift := 20; shift >= 12; shift -= 4 {
-		nibble := (l0pa >> shift) & 0xF
-		if nibble < 10 {
-			console.Breadcrumb(byte('0' + nibble))
-		} else {
-			console.Breadcrumb(byte('A' + nibble - 10))
-		}
-	}
-	console.Breadcrumb('}')
 	if thread.PageTableL0PA != 0 {
 		kmem.SwitchTTBR0WithASID(thread.PageTableL0PA, uint16(thread.PID))
 		// Note: TLB flush not needed due to ASID tagging
 	}
-	console.Breadcrumb('5') // Debug: after TTBR0 switch
-
-	// DEBUG: Print PID as hex digit to identify which priest is starting
-	console.Breadcrumb('(')
-	pid := int(thread.PID)
-	if pid < 10 {
-		console.Breadcrumb(byte('0' + pid))
-	} else if pid < 16 {
-		console.Breadcrumb(byte('A' + pid - 10))
-	} else if pid < 36 {
-		console.Breadcrumb(byte('A' + pid - 10))
-	} else {
-		console.Breadcrumb('?')
-	}
-	console.Breadcrumb(')')
-
-	// DEBUG: Verify X[28] is 0 for userspace thread (priest)
-	console.Breadcrumb('6') // Debug: before PID check
-	if thread.PID > 0 && thread.Context.X[28] != 0 {
-		console.Breadcrumb('E') // Debug: X[28] error case
-		// TEMPORARILY DISABLED - KPrintf might cause crash
-		// console.KPrintf("[StartFirstThread] ERROR: PID=%d X[28]=0x%x (should be 0)\n", thread.PID, thread.Context.X[28])
-	}
-	console.Breadcrumb('7') // Debug: after PID check
-	// TEMPORARILY DISABLED - KPrintf seems to cause the crash
-	// console.KPrintf("[StartFirstThread] TID=%d PID=%d X28=0x%x SP=0x%x ELR=0x%x\n",
-	// 	thread.TID, thread.PID, thread.Context.X[28], thread.Context.SP, thread.Context.ELR)
-	console.Breadcrumb('8') // Debug: after KPrintf (now skipped)
-
 	// END CRITICAL SECTION
 	schedulerLock.Unlock()
-	console.Breadcrumb('9') // Debug: after unlock
-
-	// Debug: Verify CurrentThread is set correctly
-	ct := (*Thread)(atomic.LoadPointer(&CurrentThread))
-	if ct == nil {
-		console.Breadcrumb('N') // Debug: CurrentThread is nil!
-	} else if ct.PID == 0 {
-		console.Breadcrumb('K') // Debug: CurrentThread is kernel thread!
-	} else {
-		console.Breadcrumb('P') // Debug: CurrentThread is priest thread (good!)
-		// DEBUG: Verify physical memory at crash address contains correct instruction
-		pa, ok := kmem.TranslateUserVA(0x5ea60)
-		if ok {
-			// Map the physical page to kernel scratch to read the bytes
-			pagePA := uintptr(pa) &^ 0xFFF // page-align the PA
-			scratchVA := kmem.MapPAToKernelScratch(pagePA)
-			if scratchVA != 0 {
-				offset := uintptr(pa) & 0xFFF // offset within page
-				insn := *(*uint32)(unsafe.Pointer(scratchVA + offset))
-				console.KPrintf("[StartFirstThread] Insn@0x5ea60: PA=0x%x raw=0x%x (expect 0xf9400b90)\n",
-					pa, uint64(insn))
-			} else {
-				console.KPrintf("[StartFirstThread] 0x5ea60 scratch map FAILED\n")
-			}
-		} else {
-			console.KPrintf("[StartFirstThread] 0x5ea60 translation FAILED PAR=0x%x\n", pa)
-		}
-	}
 
 	// Don't restore DAIF - the ERET will set SPSR which controls IRQ state
 	_ = savedDAIF
@@ -932,22 +927,6 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 		t.PriestIdx = parent.PriestIdx
 	}
 
-	// DEBUG: show clone with PID and TID
-	console.Breadcrumb('C')
-	console.Breadcrumb('L')
-	clPByte := byte(t.PID & 0xFF)
-	if clPByte < 10 {
-		console.Breadcrumb(byte('0' + clPByte))
-	} else {
-		console.Breadcrumb(byte('A' + clPByte - 10))
-	}
-	clTByte := byte(t.TID & 0xFF)
-	if clTByte < 10 {
-		console.Breadcrumb(byte('0' + clTByte))
-	} else {
-		console.Breadcrumb(byte('A' + clTByte - 10))
-	}
-
 	// DO NOT add to ready queue - this thread runs immediately!
 	// The parent thread (A) will be added to ready queue by DoContextSwitch.
 
@@ -1022,22 +1001,6 @@ func threadExitImpl(sf *SchedulerFunc) uintptr {
 	// Get current thread using StaticList API
 	t := threadList.Get(int(CurrentThreadIdx))
 	if t != nil {
-		// DEBUG: show thread exit with PID and TID
-		console.Breadcrumb('T')
-		console.Breadcrumb('X')
-		xpByte := byte(t.PID & 0xFF)
-		if xpByte < 10 {
-			console.Breadcrumb(byte('0' + xpByte))
-		} else {
-			console.Breadcrumb(byte('A' + xpByte - 10))
-		}
-		xtByte := byte(t.TID & 0xFF)
-		if xtByte < 10 {
-			console.Breadcrumb(byte('0' + xtByte))
-		} else {
-			console.Breadcrumb(byte('A' + xtByte - 10))
-		}
-
 		// Mark as exited
 		t.State = ThreadExited
 		// Try to pluck from ready queue (may not be there)
@@ -1096,15 +1059,7 @@ func threadExitImpl(sf *SchedulerFunc) uintptr {
 //
 //go:nosplit
 func CreateUserspaceThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr, asyncPreemptAddr uint64) int16 {
-	// Acquire a priest ID for this new userspace process
-	priestId := priestIdAllocator.Acquire()
-
-	// Allocate and initialize a priest entry
-	_, p := priestList.Allocate()
-	p.PID = priestId
-	p.AsyncPreemptAddr = asyncPreemptAddr // Set from ELF symbol lookup
-
-	return createUserspaceThreadImpl(&NormalSchedulerFunc, entryPoint, stackPtr, pageTableL0PA, priestId)
+	return createUserspaceThreadImpl(&NormalSchedulerFunc, entryPoint, stackPtr, pageTableL0PA, asyncPreemptAddr)
 }
 
 // GetPriestByPID finds a priest by its PID.
@@ -1207,10 +1162,17 @@ func RegisterAsyncPreemptAddr(asyncPreemptAddr uint64) int64 {
 // createUserspaceThreadImpl is the internal implementation with sf for testing
 //
 //go:nosplit
-func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, pageTableL0PA uintptr, priestId PriestId) int16 {
-	// BEGIN CRITICAL SECTION - protect thread allocation and state
+func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, pageTableL0PA uintptr, asyncPreemptAddr uint64) int16 {
+	// BEGIN CRITICAL SECTION - protect all scheduling data structures:
+	// priestIdAllocator, priestList, threadList, readyQueue
 	savedDAIF := sf.DisableAndSaveDAIF()
 	schedulerLock.Lock()
+
+	// Allocate priest ID and priest entry inside the critical section
+	priestId := priestIdAllocator.Acquire()
+	_, p := priestList.Allocate()
+	p.PID = priestId
+	p.AsyncPreemptAddr = asyncPreemptAddr
 
 	// Allocate thread slot from static list (panics if exhausted)
 	_, t := threadList.Allocate()
@@ -1349,24 +1311,11 @@ func findReadyThreadSchedLockHeld() *Thread {
 		// Pop next thread ID (FIFO order)
 		tid := readyQueue.Pop() // Panics if empty (should never happen due to IsEmpty check)
 
-		// DEBUG: Print what TID we popped from the queue
-		console.Breadcrumb('Q')
-		console.Breadcrumb(byte('0' + (int(tid)>>4)&0xF))
-		console.Breadcrumb(byte('0' + int(tid)&0xF))
-
 		// Get thread pointer - FindByIdAll searches ALL slots including reserved kernel threads
 		t := threadList.FindByIdAll(int32(tid))
 		if t == nil {
 			panic("readyQueue contains invalid TID")
 			return nil // Unreachable
-		}
-
-		// DEBUG: Verify found thread's TID matches what we searched for
-		if t.TID != tid {
-			console.Breadcrumb('!')
-			console.Breadcrumb(byte('0' + (int(t.TID)>>4)&0xF))
-			console.Breadcrumb(byte('0' + int(t.TID)&0xF))
-			// Mismatch! This indicates thread data corruption
 		}
 
 		// Validate thread state
@@ -1399,25 +1348,6 @@ func findReadyThreadSchedLockHeld() *Thread {
 //
 //go:nosplit
 func findReadyThreadPreferDifferentPriestSchedLockHeld(currentPID PriestId) *Thread {
-	// DEBUG: show ready queue size and deadline queue size
-	console.Breadcrumb('S')
-	rqSize := readyQueue.Size()
-	if rqSize < 10 {
-		console.Breadcrumb(byte('0' + rqSize))
-	} else {
-		console.Breadcrumb(byte('A' + rqSize - 10))
-	}
-	console.Breadcrumb('D')
-	dqSize := 0
-	if deadlineQueue != nil {
-		dqSize = deadlineQueue.Size()
-	}
-	if dqSize < 10 {
-		console.Breadcrumb(byte('0' + dqSize))
-	} else {
-		console.Breadcrumb(byte('A' + dqSize - 10))
-	}
-
 	// First pass: find thread from DIFFERENT priest (scan without popping)
 	for i := 0; i < len(readyQueue.Data); i++ {
 		if !readyQueue.InUse[i] {
@@ -1432,14 +1362,6 @@ func findReadyThreadPreferDifferentPriestSchedLockHeld(currentPID PriestId) *Thr
 
 		if t.PID != currentPID {
 			readyQueue.Pluck(tid)
-			// DEBUG: show which PID was picked
-			console.Breadcrumb('>')
-			pickP := byte(t.PID & 0xFF)
-			if pickP < 10 {
-				console.Breadcrumb(byte('0' + pickP))
-			} else {
-				console.Breadcrumb(byte('A' + pickP - 10))
-			}
 			return t
 		}
 	}
@@ -1507,16 +1429,6 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64) uintptr {
 	next := findReadyThreadPreferDifferentPriestSchedLockHeld(t.PID)
 	if next == nil {
 		// No ready thread - can't block, thread continues running
-		// DEBUG: show futex can't block
-		console.Breadcrumb('F')
-		console.Breadcrumb('N')
-		fnPByte := byte(t.PID & 0xFF)
-		if fnPByte < 10 {
-			console.Breadcrumb(byte('0' + fnPByte))
-		} else {
-			console.Breadcrumb(byte('A' + fnPByte - 10))
-		}
-
 		if sf.StateCheck != nil {
 			sf.StateCheck("futex-block-no-next")
 		}
@@ -1528,22 +1440,6 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64) uintptr {
 	// Found a ready thread - now safe to mark current as blocked
 	t.State = ThreadBlockedFutex
 	t.FutexAddr = futexAddr
-
-	// DEBUG: show futex block with PID
-	console.Breadcrumb('F')
-	console.Breadcrumb('B')
-	pidByte := byte(t.PID & 0xFF)
-	if pidByte < 10 {
-		console.Breadcrumb(byte('0' + pidByte))
-	} else {
-		console.Breadcrumb(byte('A' + pidByte - 10))
-	}
-	tidByte := byte(t.TID & 0xFF)
-	if tidByte < 10 {
-		console.Breadcrumb(byte('0' + tidByte))
-	} else {
-		console.Breadcrumb(byte('A' + tidByte - 10))
-	}
 
 	// Add current thread to blocked queue
 	blockedQueue.PushNoDuplicate(t.TID)
@@ -1592,16 +1488,6 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 		}
 
 		if t.FutexAddr == futexAddr {
-			// DEBUG: show futex wake with PID
-			console.Breadcrumb('F')
-			console.Breadcrumb('W')
-			wpByte := byte(t.PID & 0xFF)
-			if wpByte < 10 {
-				console.Breadcrumb(byte('0' + wpByte))
-			} else {
-				console.Breadcrumb(byte('A' + wpByte - 10))
-			}
-
 			// Move to ready
 			t.State = ThreadReady
 			t.FutexAddr = 0
@@ -1880,22 +1766,6 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		}
 	}
 
-	// DEBUG: Show preemption switch: old PID -> new PID
-	console.Breadcrumb('P')
-	oldPByte := byte(oldThread.PID & 0xFF)
-	if oldPByte < 10 {
-		console.Breadcrumb(byte('0' + oldPByte))
-	} else {
-		console.Breadcrumb(byte('A' + oldPByte - 10))
-	}
-	console.Breadcrumb('>')
-	newPByte := byte(next.PID & 0xFF)
-	if newPByte < 10 {
-		console.Breadcrumb(byte('0' + newPByte))
-	} else {
-		console.Breadcrumb(byte('A' + newPByte - 10))
-	}
-
 	// Switch to new thread
 	nextIdx := threadToIdx(next)
 	CurrentThreadIdx = nextIdx
@@ -2051,31 +1921,6 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 			readyQueue.Pluck(oldThread.TID)
 			enqueueReadySchedLockHeld(oldThread)
 
-			// DEBUG: Show old thread queued with TID and PID
-			console.Breadcrumb('D')
-			console.Breadcrumb('Q')
-			pidByte := byte(oldThread.PID & 0xFF)
-			if pidByte < 10 {
-				console.Breadcrumb(byte('0' + pidByte))
-			} else {
-				console.Breadcrumb(byte('A' + pidByte - 10))
-			}
-			tidByte := byte(oldThread.TID & 0xFF)
-			if tidByte < 10 {
-				console.Breadcrumb(byte('0' + tidByte))
-			} else {
-				console.Breadcrumb(byte('A' + tidByte - 10))
-			}
-		} else if oldIdx >= 0 {
-			oldThread2 := threadList.Get(int(oldIdx))
-			// DEBUG: Show old thread NOT queued (wrong state)
-			console.Breadcrumb('D')
-			console.Breadcrumb('X')
-			if oldThread2 != nil {
-				console.Breadcrumb(byte('0' + byte(oldThread2.State)))
-			} else {
-				console.Breadcrumb('N')
-			}
 		}
 	}
 

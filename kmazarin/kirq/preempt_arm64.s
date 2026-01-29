@@ -160,20 +160,18 @@ thread_not_nil:
 
 	// ========================================================================
 	// DEADLINE-BASED PREEMPTION (no division in hot path)
-	// Thread struct offsets (must match Go code - verified by checkThreadOffsets):
-	//   LastSeenG: 320
-	//   StartTick: 328
-	//   GoroutineStart: 336
-	//   ThreadPreemptDeadline: 344
-	//   GoroutinePreemptDeadline: 352
+	// Thread struct offsets loaded from main·Thread*Offset variables
+	// computed via unsafe.Offsetof() in initThreadOffsets().
 	// ========================================================================
 
 	// Read current counter
 	// MRS X9, CNTVCT_EL0
 	WORD	$0xD53BE049
 
-	// Load LastSeenG: offset 320
-	MOVD	320(R7), R8  // R8 = currentThread.LastSeenG
+	// Load LastSeenG
+	MOVD	main·ThreadLastSeenGOffset(SB), R5
+	ADD	R7, R5  // R5 = &currentThread.LastSeenG
+	MOVD	(R5), R8  // R8 = currentThread.LastSeenG
 
 	// Compare with current g (R4)
 	CMP	R4, R8
@@ -185,13 +183,17 @@ thread_not_nil:
 	// But DON'T reset ThreadPreemptDeadline - we still want to track total
 	// thread time for OS-level preemption of priests waiting in ready queue.
 	// ========================================================================
-	MOVD	R4, 320(R7)  // currentThread.LastSeenG = current g
+	MOVD	R4, (R5)  // currentThread.LastSeenG = current g (R5 still valid)
 
 	// Reset GoroutineStart and deadline for the new goroutine
-	MOVD	R9, 336(R7)  // currentThread.GoroutineStart = current tick
+	MOVD	main·ThreadGoroutineStartOffset(SB), R5
+	ADD	R7, R5
+	MOVD	R9, (R5)  // currentThread.GoroutineStart = current tick
 	MOVD	·GoroutinePreemptTicks(SB), R8
 	ADD	R9, R8, R8  // R8 = current + threshold = new deadline
-	MOVD	R8, 352(R7)  // currentThread.GoroutinePreemptDeadline = new deadline
+	MOVD	main·ThreadGoroutineDeadlineOffset(SB), R5
+	ADD	R7, R5
+	MOVD	R8, (R5)  // currentThread.GoroutinePreemptDeadline = new deadline
 
 	// Fall through to check thread preemption only
 	B	check_thread_deadline
@@ -201,12 +203,16 @@ same_goroutine:
 	// R9 = current counter
 
 	// Check if deadlines are initialized (StartTick != 0)
-	MOVD	328(R7), R8  // R8 = currentThread.StartTick
+	MOVD	main·ThreadStartTickOffset(SB), R5
+	ADD	R7, R5
+	MOVD	(R5), R8  // R8 = currentThread.StartTick
 	CBZ	R8, init_deadlines  // Not initialized yet
 
 	// Check goroutine deadline: if current >= deadline, signal preemption
 	// NOTE: Go ARM64 CMP is swapped: CMP Rn, Rm computes Rm - Rn
-	MOVD	352(R7), R8  // R8 = GoroutinePreemptDeadline
+	MOVD	main·ThreadGoroutineDeadlineOffset(SB), R5
+	ADD	R7, R5
+	MOVD	(R5), R8  // R8 = GoroutinePreemptDeadline
 	CMP	R8, R9  // Computes R9 - R8 = current - deadline
 	BLT	check_thread_deadline  // if current < deadline (negative result), skip
 
@@ -217,7 +223,9 @@ same_goroutine:
 check_thread_deadline:
 	// Check thread deadline: if current >= deadline, signal preemption
 	// NOTE: Go ARM64 CMP is swapped: CMP Rn, Rm computes Rm - Rn
-	MOVD	344(R7), R8  // R8 = ThreadPreemptDeadline
+	MOVD	main·ThreadPreemptDeadlineOffset(SB), R5
+	ADD	R7, R5
+	MOVD	(R5), R8  // R8 = ThreadPreemptDeadline
 
 	CMP	R8, R9  // Computes R9 - R8 = current - deadline
 	BLT	timer_return  // if current < deadline (negative), no preemption
@@ -232,18 +240,28 @@ thread_deadline_exceeded:
 init_deadlines:
 	// Deadlines not initialized - initialize them
 	// R9 = current counter
-	MOVD	R9, 328(R7)  // currentThread.StartTick = current tick
-	MOVD	R9, 336(R7)  // currentThread.GoroutineStart = current tick
-	MOVD	R4, 320(R7)  // currentThread.LastSeenG = current g
+	MOVD	main·ThreadStartTickOffset(SB), R5
+	ADD	R7, R5
+	MOVD	R9, (R5)  // currentThread.StartTick = current tick
+	MOVD	main·ThreadGoroutineStartOffset(SB), R5
+	ADD	R7, R5
+	MOVD	R9, (R5)  // currentThread.GoroutineStart = current tick
+	MOVD	main·ThreadLastSeenGOffset(SB), R5
+	ADD	R7, R5
+	MOVD	R4, (R5)  // currentThread.LastSeenG = current g
 
 	// Set deadlines: current + threshold
 	MOVD	·ThreadPreemptTicks(SB), R8
 	ADD	R9, R8, R8
-	MOVD	R8, 344(R7)  // ThreadPreemptDeadline = current + threshold
+	MOVD	main·ThreadPreemptDeadlineOffset(SB), R5
+	ADD	R7, R5
+	MOVD	R8, (R5)  // ThreadPreemptDeadline = current + threshold
 
 	MOVD	·GoroutinePreemptTicks(SB), R8
 	ADD	R9, R8, R8
-	MOVD	R8, 352(R7)  // GoroutinePreemptDeadline = current + threshold
+	MOVD	main·ThreadGoroutineDeadlineOffset(SB), R5
+	ADD	R7, R5
+	MOVD	R8, (R5)  // GoroutinePreemptDeadline = current + threshold
 	B	timer_return
 
 // ========================================================================
@@ -267,8 +285,10 @@ g_in_userspace:
 	// Read current counter: MRS X9, CNTVCT_EL0
 	WORD	$0xD53BE049
 
-	// Load ThreadPreemptDeadline: offset 344
-	MOVD	344(R7), R8  // R8 = currentThread.ThreadPreemptDeadline
+	// Load ThreadPreemptDeadline
+	MOVD	main·ThreadPreemptDeadlineOffset(SB), R5
+	ADD	R7, R5
+	MOVD	(R5), R8  // R8 = currentThread.ThreadPreemptDeadline
 	CBZ	R8, userspace_init_deadlines  // Not initialized yet
 
 	// ========================================================================
@@ -277,7 +297,9 @@ g_in_userspace:
 	// We just can't DEREFERENCE it (to check g.atomicstatus) from IRQ context.
 	// When g changes, reset the goroutine deadline to give the new g fair time.
 	// ========================================================================
-	MOVD	320(R7), R8  // R8 = currentThread.LastSeenG
+	MOVD	main·ThreadLastSeenGOffset(SB), R5
+	ADD	R7, R5
+	MOVD	(R5), R8  // R8 = currentThread.LastSeenG
 	CMP	R4, R8
 	BEQ	userspace_same_goroutine
 
@@ -287,17 +309,25 @@ g_in_userspace:
 	ADD	$1, R8
 	MOVD	R8, ·UserspaceGChangedCount(SB)
 
-	MOVD	R4, 320(R7)  // currentThread.LastSeenG = current g
-	MOVD	R9, 336(R7)  // currentThread.GoroutineStart = current tick
+	MOVD	main·ThreadLastSeenGOffset(SB), R5
+	ADD	R7, R5
+	MOVD	R4, (R5)  // currentThread.LastSeenG = current g
+	MOVD	main·ThreadGoroutineStartOffset(SB), R5
+	ADD	R7, R5
+	MOVD	R9, (R5)  // currentThread.GoroutineStart = current tick
 	MOVD	·GoroutinePreemptTicks(SB), R8
 	ADD	R9, R8, R8  // R8 = current + threshold = new deadline
-	MOVD	R8, 352(R7)  // currentThread.GoroutinePreemptDeadline = new deadline
+	MOVD	main·ThreadGoroutineDeadlineOffset(SB), R5
+	ADD	R7, R5
+	MOVD	R8, (R5)  // currentThread.GoroutinePreemptDeadline = new deadline
 	B	userspace_check_thread_deadline  // Skip goroutine preemption check for new g
 
 userspace_same_goroutine:
 	// Same g - check goroutine deadline
 	// NOTE: Go ARM64 CMP is swapped: CMP Rn, Rm computes Rm - Rn
-	MOVD	352(R7), R8  // R8 = GoroutinePreemptDeadline
+	MOVD	main·ThreadGoroutineDeadlineOffset(SB), R5
+	ADD	R7, R5
+	MOVD	(R5), R8  // R8 = GoroutinePreemptDeadline
 	CMP	R8, R9  // Computes R9 - R8 = current - deadline
 	BLT	userspace_check_thread_deadline  // if current < deadline (negative), skip
 
@@ -344,26 +374,14 @@ userspace_same_goroutine:
 userspace_check_thread_deadline:
 	// Check thread deadline: if current >= deadline, signal preemption
 	// NOTE: Go ARM64 CMP is swapped: CMP Rn, Rm computes Rm - Rn
-	MOVD	344(R7), R8  // R8 = ThreadPreemptDeadline
-
-	// DEBUG: Print '+' every 128 userspace checks to show we reach this point
-	MOVD	·UserspacePathCount(SB), R5
-	AND	$127, R5
-	CBNZ	R5, skip_userspace_deadline_debug
-	MOVD	$UART_BASE, R5
-	MOVD	$'+', R6
-	MOVB	R6, (R5)
-skip_userspace_deadline_debug:
+	MOVD	main·ThreadPreemptDeadlineOffset(SB), R5
+	ADD	R7, R5
+	MOVD	(R5), R8  // R8 = ThreadPreemptDeadline
 
 	CMP	R8, R9  // Computes R9 - R8 = current - deadline
 	BLT	timer_return  // if current < deadline (negative), no preemption
 
 	// Current >= thread deadline: signal preemption needed
-	// DEBUG: Print '!' when preemption is triggered
-	MOVD	$UART_BASE, R5
-	MOVD	$'!', R6
-	MOVB	R6, (R5)
-
 	MOVW	$1, R8
 	MOVW	R8, ·NeedsThreadPreempt(SB)
 	B	timer_return
@@ -371,17 +389,25 @@ skip_userspace_deadline_debug:
 userspace_init_deadlines:
 	// Initialize deadlines for userspace thread
 	// R9 = current counter
-	MOVD	R9, 328(R7)  // currentThread.StartTick = current tick
-	MOVD	R9, 336(R7)  // currentThread.GoroutineStart = current tick
+	MOVD	main·ThreadStartTickOffset(SB), R5
+	ADD	R7, R5
+	MOVD	R9, (R5)  // currentThread.StartTick = current tick
+	MOVD	main·ThreadGoroutineStartOffset(SB), R5
+	ADD	R7, R5
+	MOVD	R9, (R5)  // currentThread.GoroutineStart = current tick
 
 	// Set deadlines: current + threshold
 	MOVD	·ThreadPreemptTicks(SB), R8
 	ADD	R9, R8, R8
-	MOVD	R8, 344(R7)  // ThreadPreemptDeadline = current + threshold
+	MOVD	main·ThreadPreemptDeadlineOffset(SB), R5
+	ADD	R7, R5
+	MOVD	R8, (R5)  // ThreadPreemptDeadline = current + threshold
 
 	MOVD	·GoroutinePreemptTicks(SB), R8
 	ADD	R9, R8, R8
-	MOVD	R8, 352(R7)  // GoroutinePreemptDeadline = current + threshold
+	MOVD	main·ThreadGoroutineDeadlineOffset(SB), R5
+	ADD	R7, R5
+	MOVD	R8, (R5)  // GoroutinePreemptDeadline = current + threshold
 	B	timer_return
 
 timer_return:

@@ -93,6 +93,9 @@ func CheckThreadPreemption(framePtr uint64) uint64 { return 0 }
 //go:nosplit
 func RunFirstThread() {}
 
+//go:nosplit
+func YieldToReadyThread() {}
+
 // Additional stubs for functions called from Go code
 
 func IRQDispatch() {}
