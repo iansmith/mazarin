@@ -798,6 +798,15 @@ irq_exception_handler:
 	// It also sets NeedsAsyncPreempt if threshold exceeded.
 	CALL	mazzy∕kmazarin∕kirq·TimerIRQHandlerAsm(SB)
 
+	// DEBUG: Print '.' every 128 timer IRQs to verify timer is firing
+	MOVD	mazzy∕kmazarin∕kirq·TimerIRQCount(SB), R10
+	AND	$127, R10
+	CBNZ	R10, skip_timer_debug
+	MOVD	$UART_BASE, R11
+	MOVD	$'.', R12
+	MOVB	R12, (R11)
+skip_timer_debug:
+
 	// ========================================================================
 	// CRITICAL: Write GICC_EOIR for timer IRQ IMMEDIATELY after handler
 	// ========================================================================
@@ -810,11 +819,31 @@ irq_exception_handler:
 	MOVW	R19, (R10)  // Write IAR value to EOIR
 
 	// ========================================================================
+	// Process deadline queue in top-half context
+	// ========================================================================
+	// CRITICAL: Must run ProcessDeadlines HERE (not in bottom half) because
+	// bottom half goroutines run on kernel threads that may be blocked on futex.
+	// If all kernel threads are blocked, the bottom half never runs, and timed
+	// futex waits / nanosleep deadlines never fire — starving the kernel.
+	// ProcessDeadlines moves expired threads to the ready queue so they can
+	// be picked by the next scheduling decision.
+	MOVD	·kmazarinG0Addr(SB), R10
+	CBZ	R10, skip_deadline_processing  // g0 not ready yet
+	WORD	$0xaa0a03fc  // mov x28, x10 — set g to kmazarin g0
+	CALL	·ProcessDeadlinesTopHalf(SB)
+skip_deadline_processing:
+
+	// ========================================================================
 	// Thread preemption check - switch to another thread if threshold exceeded
 	// ========================================================================
 	// Check NeedsThreadPreempt flag set by TimerIRQHandlerAsm
 	MOVW	mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB), R10
 	CBZ	R10, timer_no_thread_preempt
+
+	// DEBUG: Print 'W' when NeedsThreadPreempt is set
+	MOVD	$UART_BASE, R11
+	MOVD	$'W', R12
+	MOVB	R12, (R11)
 
 	// Clear NeedsThreadPreempt flag
 	MOVW	$0, R10
@@ -823,7 +852,13 @@ irq_exception_handler:
 	// CRITICAL: Switch to kmazarin's g before calling Go code
 	// The timer may have interrupted userspace (priest) which has a different g
 	MOVD	·kmazarinG0Addr(SB), R10
-	CBZ	R10, timer_no_thread_preempt  // Skip if not initialized
+	CBNZ	R10, g0_addr_ok
+	// DEBUG: Print '0' when kmazarinG0Addr is zero (this blocks all preemption!)
+	MOVD	$UART_BASE, R11
+	MOVD	$'0', R12
+	MOVB	R12, (R11)
+	B	timer_no_thread_preempt  // Skip if not initialized
+g0_addr_ok:
 	WORD	$0xaa0a03fc  // mov x28, x10
 
 	// Call CheckThreadPreemption(framePtr) to check and perform switch

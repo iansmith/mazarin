@@ -27,6 +27,8 @@ func GetCurrentThreadTID() int16 { return 0 }
 
 func AddDeadline(deadline uint64, tid int32) bool { return true }
 
+func AddDeadlineStatic(deadline uint64, tid int32) {}
+
 func ThreadBlockSleep() uintptr { return 0 }
 
 // ============================================================================

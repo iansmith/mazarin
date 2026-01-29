@@ -33,8 +33,14 @@ func (a *WakeThreadAction) Run() {
 
 	if t.State == ThreadSleeping {
 		t.State = ThreadReady
-		// Add to ready queue
-		readyQueue.Push(a.tid)
+		sleepingQueue.Pluck(a.tid)
+		readyQueue.PushNoDuplicate(a.tid)
+	} else if t.State == ThreadBlockedFutex {
+		// Futex wait with timeout expired — wake the thread
+		t.State = ThreadReady
+		t.FutexAddr = 0
+		blockedQueue.Pluck(a.tid)
+		readyQueue.PushNoDuplicate(a.tid)
 	}
 
 	RestoreIRQs(savedDAIF)

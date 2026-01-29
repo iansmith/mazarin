@@ -237,8 +237,9 @@ func TestQueuePushHeadAfterPluck(t *testing.T) {
 		t.Errorf("size should be 4, got %d", q.Size())
 	}
 
-	// Pop order should be: 99, 1, 3, 4
-	expected := []int16{99, 1, 3, 4}
+	// Pop order: 99 at new head (slot 1), then forward: 3 (slot 2), 4 (slot 3), 1 (slot 0)
+	// The old head element (1 at slot 0) wraps to the end because PushHead set head=1
+	expected := []int16{99, 3, 4, 1}
 	for _, exp := range expected {
 		val := q.Pop()
 		if val != exp {
@@ -276,4 +277,57 @@ func TestQueuePanicOnPushFull(t *testing.T) {
 		}
 	}()
 	q.Push(3)
+}
+
+// TestQueuePushHeadNoDuplicate tests front insertion with dedup
+func TestQueuePushHeadNoDuplicate(t *testing.T) {
+	data := make([]int16, 5)
+	inUse := make([]bool, 5)
+	q := StaticQueue[int16]{Data: data, InUse: inUse}
+
+	// Push some values to back
+	q.Push(10)
+	q.Push(20)
+
+	// PushHeadNoDuplicate inserts at front
+	added := q.PushHeadNoDuplicate(5)
+	if !added {
+		t.Error("expected value to be added")
+	}
+	if q.Size() != 3 {
+		t.Errorf("expected size 3, got %d", q.Size())
+	}
+
+	// Pop should return 5 first (front), then 10, then 20
+	val := q.Pop()
+	if val != 5 {
+		t.Errorf("expected 5 (front), got %d", val)
+	}
+	val = q.Pop()
+	if val != 10 {
+		t.Errorf("expected 10, got %d", val)
+	}
+	val = q.Pop()
+	if val != 20 {
+		t.Errorf("expected 20, got %d", val)
+	}
+}
+
+// TestQueuePushHeadNoDuplicate_Duplicate tests that duplicates are rejected
+func TestQueuePushHeadNoDuplicate_Duplicate(t *testing.T) {
+	data := make([]int16, 5)
+	inUse := make([]bool, 5)
+	q := StaticQueue[int16]{Data: data, InUse: inUse}
+
+	q.Push(10)
+	q.Push(20)
+
+	// Try to push a duplicate to front
+	added := q.PushHeadNoDuplicate(10)
+	if added {
+		t.Error("duplicate should not be added")
+	}
+	if q.Size() != 2 {
+		t.Errorf("expected size 2, got %d", q.Size())
+	}
 }

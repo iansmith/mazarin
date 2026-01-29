@@ -151,7 +151,7 @@ func softIRQWakeDispatcher(bundle SoftIRQBundle) {
 	t.State = ThreadReady
 	t.FutexAddr = 0
 	atomic.StoreUint32(&softIRQDispatcherBlocked, 0)
-	readyQueue.PushHead(softIRQDispatcherTID) // Priority insertion!
+	enqueueReadySchedLockHeld(t)
 
 	schedulerLock.Unlock()
 }
@@ -242,7 +242,7 @@ func ThreadBlockSoftIRQ(sf *SchedulerFunc, bundlePtr uint64) uintptr {
 	}
 
 	// Find next thread BEFORE blocking
-	next := findReadyThread()
+	next := findReadyThreadSchedLockHeld()
 	if next == nil {
 		schedulerLock.Unlock()
 		sf.EnableAndRestoreDAIF(savedDAIF)

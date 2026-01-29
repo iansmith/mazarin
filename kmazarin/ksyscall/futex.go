@@ -1,6 +1,8 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/kirq"
 	"sync/atomic"
 	"unsafe"
 )
@@ -52,6 +54,15 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 	case FutexWait:
 		atomic.AddUint64(&FutexWaitCalls, 1)
 
+		// DEBUG: show futex wait with timeout info
+		console.Breadcrumb('F')
+		console.Breadcrumb('X')
+		if timeout != 0 {
+			console.Breadcrumb('T')
+		} else {
+			console.Breadcrumb('N')
+		}
+
 		// FUTEX_WAIT: Block until value changes or we're woken
 		// Check if value matches expected (spurious wakeup check)
 		uaddrPtr := (*uint32)(unsafe.Pointer(uintptr(uaddr)))
@@ -60,6 +71,33 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 		if currentVal != uint32(val) {
 			atomic.AddUint64(&FutexWaitEagain, 1)
 			return -11 // -EAGAIN: value already changed
+		}
+
+		// If timeout is non-zero, add a deadline so the thread wakes up
+		// even if no explicit futex_wake arrives. The Go runtime uses timed
+		// futex waits for sysmon and other periodic wakeups.
+		if timeout != 0 {
+			// timeout is a pointer to struct timespec {int64 tv_sec, int64 tv_nsec}
+			ts := (*[2]int64)(unsafe.Pointer(uintptr(timeout)))
+			seconds := ts[0]
+			nanoseconds := ts[1]
+
+			frequency := uint64(kirq.GetTimerFrequency())
+			var ticks uint64
+			if seconds > 0 {
+				ticks = uint64(seconds) * frequency
+			}
+			if nanoseconds > 0 {
+				ticks += (uint64(nanoseconds) * frequency) / 1000000000
+			}
+			if ticks == 0 {
+				ticks = 1 // At least 1 tick so deadline fires on next check
+			}
+
+			currentTick := kirq.ReadCounterValue()
+			deadline := currentTick + ticks
+			currentTID := int32(GetCurrentThreadTID())
+			AddDeadlineStatic(deadline, currentTID)
 		}
 
 		// Try to find another thread to run and block current thread

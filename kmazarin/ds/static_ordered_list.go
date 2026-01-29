@@ -24,6 +24,16 @@ type StaticOrderedList struct {
 	size    int      // Current number of elements
 }
 
+// Init initializes a StaticOrderedList with the provided backing arrays.
+// Both slices must have the same length. The list starts empty.
+//
+//go:nosplit
+func (l *StaticOrderedList) Init(data []int16, orderBy []uint64) {
+	l.data = data
+	l.orderBy = orderBy
+	l.size = 0
+}
+
 // Insert adds a thread with its deadline, maintaining sorted order by deadline.
 // Slides existing elements to make room (O(n) operation).
 // Panics if the list is full.

@@ -164,6 +164,41 @@ func (q *StaticQueue[T]) Clear() {
 	q.count = 0
 }
 
+// PushHeadNoDuplicate adds value to the front of the queue, but only if not already present.
+// Returns true if value was added, false if it was already in the queue.
+//
+// MULTICORE SAFETY: Caller must hold external lock (schedulerLock).
+//
+//go:nosplit
+func (q *StaticQueue[T]) PushHeadNoDuplicate(value T) bool {
+	for i := 0; i < len(q.Data); i++ {
+		if q.InUse[i] && q.Data[i] == value {
+			return false
+		}
+	}
+
+	if q.count >= len(q.Data) {
+		panic("StaticQueue overflow: capacity exceeded")
+	}
+
+	newHead := (q.head - 1 + len(q.Data)) % len(q.Data)
+	attempts := 0
+	for q.InUse[newHead] && attempts < len(q.Data) {
+		newHead = (newHead - 1 + len(q.Data)) % len(q.Data)
+		attempts++
+	}
+
+	if attempts >= len(q.Data) {
+		panic("StaticQueue overflow: no free slots for PushHeadNoDuplicate")
+	}
+
+	q.Data[newHead] = value
+	q.InUse[newHead] = true
+	q.head = newHead
+	q.count++
+	return true
+}
+
 // PushHead adds value to the FRONT of the queue (priority insertion).
 // Used for soft IRQ dispatcher to get immediate scheduling.
 // Panics if the queue is full.

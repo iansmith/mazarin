@@ -345,10 +345,25 @@ userspace_check_thread_deadline:
 	// Check thread deadline: if current >= deadline, signal preemption
 	// NOTE: Go ARM64 CMP is swapped: CMP Rn, Rm computes Rm - Rn
 	MOVD	344(R7), R8  // R8 = ThreadPreemptDeadline
+
+	// DEBUG: Print '+' every 128 userspace checks to show we reach this point
+	MOVD	·UserspacePathCount(SB), R5
+	AND	$127, R5
+	CBNZ	R5, skip_userspace_deadline_debug
+	MOVD	$UART_BASE, R5
+	MOVD	$'+', R6
+	MOVB	R6, (R5)
+skip_userspace_deadline_debug:
+
 	CMP	R8, R9  // Computes R9 - R8 = current - deadline
 	BLT	timer_return  // if current < deadline (negative), no preemption
 
 	// Current >= thread deadline: signal preemption needed
+	// DEBUG: Print '!' when preemption is triggered
+	MOVD	$UART_BASE, R5
+	MOVD	$'!', R6
+	MOVB	R6, (R5)
+
 	MOVW	$1, R8
 	MOVW	R8, ·NeedsThreadPreempt(SB)
 	B	timer_return
@@ -370,9 +385,10 @@ userspace_init_deadlines:
 	B	timer_return
 
 timer_return:
-	// Set deadline flag to trigger bottom half processing
-	// This allows deadline queue processing to happen in safe Go context
-	// instead of from IRQ context
-	MOVW	$1, R8
-	MOVW	R8, main·DeadlinePending(SB)
+	// NOTE: DeadlinePending flag disabled — ProcessDeadlines is now called
+	// directly from the timer exception top-half in exceptions_arm64.s,
+	// before the thread preemption check. This ensures deadlines fire even
+	// when kernel threads are blocked on futex.
+	// MOVW	$1, R8
+	// MOVW	R8, main·DeadlinePending(SB)
 	RET

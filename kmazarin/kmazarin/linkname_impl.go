@@ -134,6 +134,14 @@ func addDeadlineForKsyscall(deadline uint64, threadIdx int32) bool {
 	return AddDeadline(deadline, int16(threadIdx))
 }
 
+// AddDeadlineStatic wrapper — uses the static (nosplit-safe) deadline queue
+//
+//go:linkname addDeadlineStaticForKsyscall mazzy/kmazarin/ksyscall.AddDeadlineStatic
+//go:nosplit
+func addDeadlineStaticForKsyscall(deadline uint64, tid int32) {
+	AddDeadlineStatic(deadline, int16(tid))
+}
+
 // CloneThread wrapper
 // Note: signature mismatch - main has extra sf *SchedulerFunc param
 // We pass nil and let CloneThread use direct function calls internally.

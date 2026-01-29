@@ -182,8 +182,18 @@ func CreateProcessPageTable() uintptr {
 		return 0
 	}
 
-	// Get the physical address of the new L0 table
-	l0PA := walkPageTable(l0VA)
+	// Get the physical address using simple linear map arithmetic.
+	// walkPageTable() has issues with 2MB block descriptors in the linear map,
+	// but since allocPTPage() uses VA = PA + KernelVAOffset, the reverse is trivial.
+	l0PA := vaToPa(l0VA)
+
+	// DEBUG: trace VA→PA conversion
+	uartPuts("[CreatePT] l0VA=")
+	uartPutHex64(uint64(l0VA))
+	uartPuts(" l0PA=")
+	uartPutHex64(uint64(l0PA))
+	uartPuts("\r\n")
+
 	if l0PA == 0 {
 		return 0
 	}

@@ -18,6 +18,10 @@ func GetCurrentThreadTID() int16
 // Note: tid parameter is the thread TID (not index), used by WakeThreadAction.
 func AddDeadline(deadline uint64, tid int32) bool
 
+// AddDeadlineStatic is provided by main package via go:linkname.
+// Adds a deadline to the static (nosplit-safe) deadline queue.
+func AddDeadlineStatic(deadline uint64, tid int32)
+
 // ThreadBlockSleep is provided by main package via go:linkname.
 // Marks the current thread as sleeping and returns the next ready thread index.
 func ThreadBlockSleep() uintptr

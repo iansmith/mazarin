@@ -59,16 +59,8 @@ func SyscallNanosleep(req, rem, _, _, _, _ uint64) int64 {
 	currentTick := kirq.ReadCounterValue()
 	deadline := currentTick + ticks
 
-	// Try to add to deadline queue
-	added := AddDeadline(deadline, currentTID)
-	if !added {
-		// Deadline queue not initialized - fall back to yield
-		nextThread := ThreadFindReady()
-		if nextThread != 0 {
-			SetSyscallSwitchTarget(nextThread)
-		}
-		return 0
-	}
+	// Add to static deadline queue (always available, initialized in InitThreads)
+	AddDeadlineStatic(deadline, currentTID)
 
 	// Mark current thread as sleeping and find next thread
 	nextThread := ThreadBlockSleep()

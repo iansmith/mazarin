@@ -914,7 +914,7 @@ func simpleMain() {
 	filename := "/priestsieve.elf\x00"
 	filenamePtr := uintptr(unsafe.Pointer(&([]byte(filename))[0]))
 
-	for i := 0; i < 4; i++ { // Testing: 4 priests
+	for i := 0; i < 2; i++ { // Testing: 2 priests (was 4)
 		result := ksyscall.SyscallLaunch(uint64(filenamePtr), 0, 0, 0, 0, 0)
 		if result != 0 {
 			console.KPrintf("[Main] ERROR: priestsieve #%d launch failed with code %d\n", i+1, result)
