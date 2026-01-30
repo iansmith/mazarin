@@ -938,7 +938,7 @@ func simpleMain() {
 	filenamePtr := uintptr(unsafe.Pointer(&([]byte(filename))[0]))
 
 	for i := 0; i < 6; i++ {
-		result := ksyscall.SyscallLaunch(uint64(filenamePtr), 0, 0, 0, 0, 0)
+		result := ksyscall.SyscallLaunch(uint64(filenamePtr), uint64(i), 0, 0, 0, 0)
 		if result != 0 {
 			continue
 		}

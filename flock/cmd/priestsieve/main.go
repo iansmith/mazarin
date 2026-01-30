@@ -6,7 +6,10 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"runtime"
+	"strconv"
+	"sync/atomic"
 
 	"mazzy/mazarin/sys"
 )
@@ -15,6 +18,14 @@ import (
 // The producer pushes odd numbers, workers pull and test for primality.
 // Buffered channel (size 10) for fairer distribution among workers.
 var candidates = make(chan uint64, 10)
+
+// priestNumber is this priest's index, read from os.Args[1]
+var priestNumber int
+
+// attemptCounts tracks how many candidates each worker goroutine has received.
+// Indexed by worker ID (0-9). Accessed atomically since workers and producer
+// run on different goroutines.
+var attemptCounts [10]atomic.Uint64
 
 // PriestSyscallEntry is the entry point for syscalls from other programs.
 // This function's address is patched into userspace programs at load time.
@@ -110,9 +121,11 @@ func isPrimeSieve(n uint64) bool {
 // primeWorker is a generic worker that reads candidates and prints "id:prime"
 func primeWorker(id int) {
 	for n := range candidates {
+		attemptCounts[id].Add(1)
 		if isPrimeSieve(n) {
 			fmt.Printf("%d:%d\n", id, n)
 		}
+		runtime.Gosched()
 	}
 }
 
@@ -120,13 +133,34 @@ func primeWorker(id int) {
 // Starting at a larger number means the sieve takes longer, giving more compute time
 // in userspace rather than syscalls, which helps test preemption.
 // 20K provides good balance between computation time and throughput.
+// Every 10 candidates sent, it prints per-goroutine attempt counts.
 func candidateProducer() {
+	sent := uint64(0)
+	workerIDs := []int{3, 5, 6, 7, 8, 9}
 	for n := uint64(20001); ; n += 2 {
 		candidates <- n
+		sent++
+		if sent%10 == 0 {
+			for _, id := range workerIDs {
+				fmt.Printf("ATTEMPTS, %d, %d, %d\n", priestNumber, id, attemptCounts[id].Load())
+			}
+		}
 	}
 }
 
 func main() {
+	// Read priest number from argv
+	if len(os.Args) > 1 {
+		var err error
+		priestNumber, err = strconv.Atoi(os.Args[1])
+		if err != nil {
+			priestNumber = -1
+		}
+	} else {
+		priestNumber = -1
+	}
+	fmt.Printf("[priestsieve] priest=%d os.Args=%v\n", priestNumber, os.Args)
+
 	// Set GOMAXPROCS to ensure goroutine scheduling works
 	oldProcs := runtime.GOMAXPROCS(1)
 	fmt.Printf("[priestsieve] GOMAXPROCS: was %d, now %d\n", oldProcs, runtime.GOMAXPROCS(0))

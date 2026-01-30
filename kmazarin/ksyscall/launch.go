@@ -125,7 +125,8 @@ func readKernelString(ptr uintptr) string {
 
 // SyscallLaunch loads and launches a priest from an ELF file
 // arg0: filename pointer (null-terminated string in kernel memory)
-func SyscallLaunch(filenamePtr, _, _, _, _, _ uint64) int64 {
+// arg1: priest number (passed as argv[1] to the program)
+func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 	// Read filename from kernel memory (TTBR1 high addresses)
 	filename := readKernelString(uintptr(filenamePtr))
 	if filename == "" {
@@ -224,7 +225,7 @@ func SyscallLaunch(filenamePtr, _, _, _, _, _ uint64) int64 {
 	// Without this, context switches during ELF loading could cause the
 	// global processL0PA to be overwritten, loading ELF data into the
 	// WRONG page table.
-	proc, err := loadELF(elfData, filename, processL0PA)
+	proc, err := loadELF(elfData, filename, processL0PA, priestNum)
 	if err != nil {
 		return -5
 	}
@@ -288,7 +289,7 @@ func SyscallLaunch(filenamePtr, _, _, _, _, _ uint64) int64 {
 // l0PA is the physical address of the L0 page table to use for mapping.
 // CRITICAL: This must be passed explicitly to prevent race conditions with
 // context switches that would otherwise corrupt the global processL0PA.
-func loadELF(data []byte, filename string, l0PA uintptr) (*Process, error) {
+func loadELF(data []byte, filename string, l0PA uintptr, priestNum uint64) (*Process, error) {
 	console.KWriteString("[loadELF] start l0PA=0x")
 	console.KPrintHex64(uint64(l0PA))
 	console.KWriteString("\r\n")
@@ -370,7 +371,7 @@ func loadELF(data []byte, filename string, l0PA uintptr) (*Process, error) {
 	// Set up the stack with argc, argv, envp, and auxv
 	// This returns the final SP value pointing to argc on the stack
 	// Pass l0PA to ensure we look up pages in the correct page table
-	stackTop, err := setupUserStack(stackBase, stackSize, filename, l0PA)
+	stackTop, err := setupUserStack(stackBase, stackSize, filename, l0PA, priestNum)
 	if err != nil {
 		console.KWriteString("[loadELF] setupUserStack failed\r\n")
 		return nil, err
@@ -722,21 +723,25 @@ func allocateUserStack(base, size uint64, l0PA uintptr) error {
 // setupUserStack sets up the initial stack for a userspace program.
 // Returns the adjusted stack pointer.
 //
-// Minimal stack layout for Go rt0 (from low to high addresses):
-//   SP+0:  argc = 0
-//   SP+8:  NULL (end of argv, since argc=0)
-//   SP+16: NULL (end of envp)
-//   SP+24: AT_PAGESZ (auxv type)
-//   SP+32: 4096 (auxv value)
-//   SP+40: AT_NULL (auxv terminator)
-//   SP+48: 0
-func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr) (uint64, error) {
+// Stack layout for Go rt0 (from low to high addresses):
+//
+//	SP+0:   argc = 2
+//	SP+8:   argv[0] → pointer to filename string
+//	SP+16:  argv[1] → pointer to priest number string
+//	SP+24:  NULL (end of argv)
+//	SP+32:  NULL (end of envp)
+//	SP+40:  AT_PAGESZ (6)
+//	SP+48:  4096
+//	SP+56:  AT_NULL (0)
+//	SP+64:  0
+//	SP+72:  filename string data (null-terminated)
+//	SP+72+len(filename)+1: priest number string data (null-terminated)
+func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, priestNum uint64) (uint64, error) {
 	pageSize := uint64(4096)
 	stackTop := stackBase + stackSize
 
 	// Get the physical address of the top stack page
-	// Use the explicit L0PA to look up in the correct page table (not TTBR0 which hasn't been switched yet)
-	topPageVA := (stackTop - 1) &^ (pageSize - 1) // Round down to page boundary
+	topPageVA := (stackTop - 1) &^ (pageSize - 1)
 	topPA := kmem.WalkUserPageTableWithL0(uintptr(topPageVA), l0PA)
 	if topPA == 0 {
 		return 0, &elfError{"stack page not mapped"}
@@ -748,23 +753,50 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr) 
 		return 0, &elfError{"failed to map stack to kernel scratch"}
 	}
 
-	// Minimal stack layout: argc=0, argv=NULL, envp=NULL, auxv={AT_PAGESZ, AT_NULL}
-	// Total: 8 bytes * 7 = 56 bytes, aligned to 16 = 64 bytes
-	totalSize := uint64(64)
+	// Convert priest number to string (single digit 0-9 for now)
+	priestStr := "0"
+	if priestNum < 10 {
+		buf := []byte{'0' + byte(priestNum), 0}
+		priestStr = string(buf[:1])
+	}
+
+	// Calculate string data sizes (including null terminators)
+	// Remove leading '/' from filename for argv[0] display, but keep full path
+	filenameLen := uint64(len(filename)) + 1 // +1 for null terminator
+	priestStrLen := uint64(len(priestStr)) + 1
+
+	// Layout: 9 uint64s (pointers/values) + string data, 16-byte aligned
+	pointerAreaSize := uint64(9 * 8) // argc + argv[0] + argv[1] + NULL + NULL + auxv(4)
+	stringDataSize := filenameLen + priestStrLen
+	totalSize := pointerAreaSize + stringDataSize
+	totalSize = (totalSize + 15) &^ 15 // 16-byte align
 
 	// SP will be near the top of the stack, 16-byte aligned
 	sp := (stackTop - totalSize) &^ 15
 
+	// String data starts after the pointer area
+	stringBase := sp + pointerAreaSize
+	argv0Addr := stringBase
+	argv1Addr := stringBase + filenameLen
+
 	console.KPrintf("[setupUserStack] stackBase=0x%x stackTop=0x%x sp=0x%x\n", stackBase, stackTop, sp)
 
-	// Write the minimal stack layout
+	// Write the stack layout
 	offset := uint64(0)
 
-	// argc = 0
-	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, 0)
+	// argc = 2
+	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, 2)
 	offset += 8
 
-	// NULL (end of argv, since argc=0)
+	// argv[0] → pointer to filename string
+	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, argv0Addr)
+	offset += 8
+
+	// argv[1] → pointer to priest number string
+	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, argv1Addr)
+	offset += 8
+
+	// NULL (end of argv)
 	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, 0)
 	offset += 8
 
@@ -788,10 +820,22 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr) 
 	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, 0)
 	offset += 8
 
+	// Write filename string data (null-terminated)
+	for i := 0; i < len(filename); i++ {
+		writeStackByte(stackBase, stackTop, kernelVA, argv0Addr+uint64(i), filename[i])
+	}
+	writeStackByte(stackBase, stackTop, kernelVA, argv0Addr+uint64(len(filename)), 0)
+
+	// Write priest number string data (null-terminated)
+	for i := 0; i < len(priestStr); i++ {
+		writeStackByte(stackBase, stackTop, kernelVA, argv1Addr+uint64(i), priestStr[i])
+	}
+	writeStackByte(stackBase, stackTop, kernelVA, argv1Addr+uint64(len(priestStr)), 0)
+
 	// Clean cache for the stack page we wrote to
 	kmem.CleanPageCache(kernelVA)
 
-	console.KPrintf("[setupUserStack] Wrote %d bytes, returning sp=0x%x\n", offset, sp)
+	console.KPrintf("[setupUserStack] argc=2 argv0=%q argv1=%q sp=0x%x\n", filename, priestStr, sp)
 
 	return sp, nil
 }
