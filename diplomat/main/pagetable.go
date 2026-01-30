@@ -284,19 +284,23 @@ func disableWriteProtect()
 // enableWriteProtect sets CR0.WP to enforce write protection
 func enableWriteProtect()
 
+// physAddrResult is a global to avoid heap allocation for the UEFI out-parameter.
+var physAddrResult uint64
+
 // allocatePhysPages allocates physical pages from UEFI boot services
+//
 //go:nosplit
 func allocatePhysPages(numPages uint64) (uint64, error) {
 	debugPortOut('P')
-	var physAddr uint64
+	physAddrResult = 0
 	debugPortOut('Q')
-	status := plat.AllocatePages(AllocateAnyPages, EfiLoaderData, numPages, &physAddr)
+	status := plat.AllocatePages(AllocateAnyPages, EfiLoaderData, numPages, &physAddrResult)
 	debugPortOut('S')
 	if status != EFI_SUCCESS {
 		return 0, &blockDevError{"AllocatePages failed"}
 	}
 	debugPortOut('T')
-	return physAddr, nil
+	return physAddrResult, nil
 }
 
 // JumpToKernelWithCR3 switches to new page tables and jumps to kernel entry.
