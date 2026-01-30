@@ -80,7 +80,7 @@ func BuildPageTables(virtBase, physBase, size uint64) (*PageTableSet, error) {
 	}
 
 	// Zero all page table memory
-	zeroMemory(tablesPhys, numTablePages*PageSize)
+	plat.ZeroMemory(tablesPhys, numTablePages*PageSize)
 
 	// Layout:
 	// Page 0: PML4
@@ -163,7 +163,7 @@ func buildPageTablesManual(virtBase, physBase, size uint64) (*PageTableSet, erro
 	tablesPhys := physBase + size - numTablePages*PageSize
 
 	// Zero all page table memory
-	zeroMemory(tablesPhys, numTablePages*PageSize)
+	plat.ZeroMemory(tablesPhys, numTablePages*PageSize)
 
 	pml4Phys := tablesPhys
 	pdptKernelPhys := tablesPhys + PageSize
@@ -219,7 +219,7 @@ func addKernelMappingToCurrentPT(virtBase, physBase, size uint64) error {
 	numPages := size / Page2MBSize
 
 	// Read current CR3
-	currentCR3 := readCR3()
+	currentCR3 := plat.ReadCR3()
 	pml4Phys := currentCR3 &^ 0xFFF // mask off flags
 
 	pml4 := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(pml4Phys)))
@@ -234,21 +234,21 @@ func addKernelMappingToCurrentPT(virtBase, physBase, size uint64) error {
 	pdPhys := physBase + size - 1*PageSize
 
 	// Zero the new pages
-	zeroMemory(pdptPhys, PageSize)
-	zeroMemory(pdPhys, PageSize)
+	plat.ZeroMemory(pdptPhys, PageSize)
+	plat.ZeroMemory(pdPhys, PageSize)
 
 	pdpt := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(pdptPhys)))
 	pd := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(pdPhys)))
 
 	// UEFI write-protects its PML4 page. Temporarily disable CR0.WP
 	// so we can add our entry.
-	disableWriteProtect()
+	plat.DisableWriteProtect()
 
 	// Set PML4 entry to point to our new PDPT
 	pml4[kernelPML4Idx] = pdptPhys | PTE_PRESENT | PTE_WRITABLE
 
 	// Re-enable write protection
-	enableWriteProtect()
+	plat.EnableWriteProtect()
 
 	// Set PDPT entry to point to our PD
 	pdpt[kernelPDPTIdx] = pdPhys | PTE_PRESENT | PTE_WRITABLE
@@ -267,7 +267,7 @@ func addKernelMappingToCurrentPT(virtBase, physBase, size uint64) error {
 	}
 
 	// Flush TLB by reloading CR3
-	writeCR3(currentCR3)
+	plat.WriteCR3(currentCR3)
 
 	return nil
 }
@@ -290,7 +290,7 @@ func allocatePhysPages(numPages uint64) (uint64, error) {
 	debugPortOut('P')
 	var physAddr uint64
 	debugPortOut('Q')
-	status := UEFIAllocatePages(AllocateAnyPages, EfiLoaderData, numPages, &physAddr)
+	status := plat.AllocatePages(AllocateAnyPages, EfiLoaderData, numPages, &physAddr)
 	debugPortOut('S')
 	if status != EFI_SUCCESS {
 		return 0, &blockDevError{"AllocatePages failed"}

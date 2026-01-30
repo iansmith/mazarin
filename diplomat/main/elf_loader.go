@@ -151,7 +151,7 @@ func LoadKernel(fsys *fat32.FileSystem, path string) (*LoadedKernel, error) {
 	debugPortOut('h')
 
 	// Zero the physical region
-	zeroMemory(physBase, DefaultKernelMemSize)
+	plat.ZeroMemory(physBase, DefaultKernelMemSize)
 	debugPortOut('i')
 
 	// Pass 2: Load segments

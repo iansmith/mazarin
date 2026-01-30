@@ -27,7 +27,7 @@ func DiplomatWrite(fd int32, buf unsafe.Pointer, count uint64) int64 {
 
 	// Write each character via UEFI ConOut
 	for _, b := range bytes {
-		printChar(uint16(b))
+		plat.PrintChar(uint16(b))
 	}
 
 	return int64(count) // Return bytes written

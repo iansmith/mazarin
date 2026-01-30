@@ -195,6 +195,11 @@ const (
 var systemTable *EFI_SYSTEM_TABLE
 var imageHandle EFI_HANDLE
 
+// Active function pointer tables — initialized in DiplomatEntry
+var plat PlatformOps
+var boot BootSequence
+var syscalls SyscallTable
+
 // TLS block for storing g pointer (required by Go .abi0 wrappers)
 // The .abi0 wrappers load g from %fs:-0x8, so we need:
 //   - TLS block with g0 address at offset 0
@@ -229,11 +234,16 @@ func main() {
 func DiplomatEntry() {
 	// imageHandle and systemTable already set by assembly entry point
 
+	// Initialize function pointer tables
+	plat = defaultPlatform
+	boot = defaultBootSequence
+	syscalls = defaultSyscalls
+
 	printString("Diplomat UEFI Bootloader\r\n")
 	printString("DBG: before InitializeSpans\r\n")
 
 	// Initialize memory span tracking for mmap
-	if !InitializeSpans() {
+	if !boot.InitSpans() {
 		printString("FATAL: Failed to initialize memory spans\r\n")
 		for {
 		}
@@ -242,9 +252,9 @@ func DiplomatEntry() {
 	printString("DBG: spans OK\r\n")
 
 	// Get block device for boot partition
-	debugPortOut('G')
-	blockDev, err := GetBootDeviceBlockIO()
-	debugPortOut('R')
+	plat.DebugPortOut('G')
+	blockDev, err := boot.GetBlockDevice()
+	plat.DebugPortOut('R')
 	if err != nil {
 		printString("ERROR: block device: ")
 		printString(err.Error())
@@ -254,10 +264,10 @@ func DiplomatEntry() {
 	}
 
 	// Mount FAT32 filesystem
-	debugPortOut('M')
+	plat.DebugPortOut('M')
 	printString("Mounting FAT32...\r\n")
-	fs, err := fat32Mount(blockDev)
-	debugPortOut('N')
+	fs, err := boot.MountFilesystem(blockDev)
+	plat.DebugPortOut('N')
 	if err != nil {
 		printString("ERROR: FAT32 mount: ")
 		printString(err.Error())
@@ -265,12 +275,12 @@ func DiplomatEntry() {
 		for {
 		}
 	}
-	debugPortOut('O')
+	plat.DebugPortOut('O')
 	printString("FAT32 mounted OK\r\n")
 
 	// Load the kernel into physical memory
-	debugPortOut('L')
-	kernel, err := LoadKernel(fs, "/EFI/Linux/kmazarin.elf")
+	plat.DebugPortOut('L')
+	kernel, err := boot.LoadKernel(fs, "/EFI/Linux/kmazarin.elf")
 	if err != nil {
 		printString("ERROR: kernel load: ")
 		printString(err.Error())
@@ -290,11 +300,8 @@ func DiplomatEntry() {
 	printString("\r\n")
 
 	// Add kernel mapping to UEFI's existing page tables.
-	// Building separate page tables fails because UEFI corrupts them.
-	// Instead, read the current CR3 and graft our kernel mapping into
-	// UEFI's page table hierarchy.
 	printString("Adding kernel mapping to UEFI page tables...\r\n")
-	err = addKernelMappingToCurrentPT(kernel.LowestVirt, kernel.PhysBase, DefaultKernelMemSize)
+	err = boot.MapKernel(kernel.LowestVirt, kernel.PhysBase, DefaultKernelMemSize)
 	if err != nil {
 		printString("ERROR: ")
 		printString(err.Error())
@@ -303,8 +310,7 @@ func DiplomatEntry() {
 		}
 	}
 	printString("Kernel mapped, jumping...\r\n")
-	// Jump using the current CR3 — just jump directly, no CR3 switch needed
-	JumpToKernel(kernel.Entry)
+	boot.JumpToKernel(kernel.Entry)
 
 	// Does not return
 	for {
@@ -321,7 +327,11 @@ func printString(s string) {
 	for _, r := range s {
 		// For ASCII, direct conversion works
 		// For full Unicode support, we'd need proper UTF-16 encoding
-		printChar(uint16(r))
+		if plat.PrintChar != nil {
+			plat.PrintChar(uint16(r))
+		} else {
+			printChar(uint16(r))
+		}
 	}
 }
 

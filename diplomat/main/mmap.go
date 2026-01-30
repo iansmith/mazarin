@@ -107,7 +107,7 @@ func DiplomatMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32
 		}
 
 		// Try to allocate via UEFI (if Boot Services available)
-		allocAddr, ok := AllocatePagesForMmap(addr, uintptr(roundedLength), true)
+		allocAddr, ok := plat.AllocatePagesForMmap(addr, uintptr(roundedLength), true)
 		if !ok {
 			// UEFI allocation failed
 			return -ENOMEM
@@ -141,7 +141,7 @@ func DiplomatMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32
 
 			if freeAddr != 0 {
 				// Try to allocate via UEFI at hint address
-				allocAddr, ok := AllocatePagesForMmap(freeAddr, uintptr(roundedLength), false)
+				allocAddr, ok := plat.AllocatePagesForMmap(freeAddr, uintptr(roundedLength), false)
 				if ok {
 					// Register and return
 					if !globalSpanTracker.Register(allocAddr, allocAddr+uintptr(roundedLength)) {
@@ -160,7 +160,7 @@ useBumpAllocator:
 	// ========================================================================
 
 	// Try UEFI allocation without hint
-	allocAddr, ok := AllocatePagesForMmap(0, uintptr(roundedLength), false)
+	allocAddr, ok := plat.AllocatePagesForMmap(0, uintptr(roundedLength), false)
 	if ok {
 		// UEFI allocation succeeded
 		if !globalSpanTracker.Register(allocAddr, allocAddr+uintptr(roundedLength)) {

@@ -98,7 +98,7 @@ func (d *UEFIBlockDevice) ReadBlock(lba uint64, buf []byte) error {
 	}
 
 	// Call ReadBlocks(This, MediaId, LBA, BufferSize, Buffer)
-	status := uefiCallBlockIORead(
+	status := plat.BlockIORead(
 		d.protocol,
 		d.mediaId,
 		lba,
@@ -126,7 +126,7 @@ func (d *UEFIBlockDevice) WriteBlock(lba uint64, buf []byte) error {
 	}
 
 	// Call WriteBlocks(This, MediaId, LBA, BufferSize, Buffer)
-	status := uefiCallBlockIOWrite(
+	status := plat.BlockIOWrite(
 		d.protocol,
 		d.mediaId,
 		lba,
