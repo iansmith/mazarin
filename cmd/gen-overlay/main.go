@@ -32,7 +32,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Generate Go overlay JSON for patched runtime files.\n\n")
 		fmt.Fprintf(os.Stderr, "Types:\n")
 		fmt.Fprintf(os.Stderr, "  kmazarin   - Kernel runtime patches\n")
-		fmt.Fprintf(os.Stderr, "  userspace  - Userspace runtime patches\n\n")
+		fmt.Fprintf(os.Stderr, "  userspace  - Userspace runtime patches\n")
+		fmt.Fprintf(os.Stderr, "  cardinal-linux  - Cardinal bootloader runtime patches (Linux ARM64→bare metal)\n")
+		fmt.Fprintf(os.Stderr, "  diplomat        - UEFI bootloader runtime patches (Windows→UEFI, deprecated)\n")
+		fmt.Fprintf(os.Stderr, "  diplomat-linux  - UEFI bootloader runtime patches (Linux→UEFI)\n\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -65,6 +68,12 @@ func main() {
 		err = buildKmazarinOverlay(&overlay, goroot, absPatchesDir)
 	case "userspace":
 		err = buildUserspaceOverlay(&overlay, goroot, absPatchesDir)
+	case "diplomat":
+		err = buildDiplomatOverlay(&overlay, goroot, absPatchesDir)
+	case "cardinal-linux":
+		err = buildCardinalLinuxOverlay(&overlay, goroot, absPatchesDir)
+	case "diplomat-linux":
+		err = buildDiplomatLinuxOverlay(&overlay, goroot, absPatchesDir)
 	default:
 		fmt.Fprintf(os.Stderr, "gen-overlay: unknown type: %s\n", *overlayType)
 		os.Exit(1)
@@ -143,6 +152,75 @@ func buildUserspaceOverlay(overlay *Overlay, goroot, patchesDir string) error {
 		"syscall/asm_linux_arm64.s":   "asm_linux_arm64.s",
 		"runtime/cgo_mmap.go":         "runtime/cgo_mmap.go",
 		"runtime/lock_spinbit.go":     "runtime/lock_spinbit.go",
+	}
+
+	for goFile, patchFile := range patches {
+		src := filepath.Join(goroot, "src", goFile)
+		dst := filepath.Join(patchesDir, patchFile)
+		if _, err := os.Stat(dst); err != nil {
+			return fmt.Errorf("patch file not found: %s", dst)
+		}
+		overlay.Replace[src] = dst
+	}
+
+	return nil
+}
+
+func buildCardinalLinuxOverlay(overlay *Overlay, goroot, patchesDir string) error {
+	// Cardinal patches for Linux ARM64 runtime to make it bare-metal compatible.
+	// We're building with GOOS=linux GOARCH=arm64, so we patch the Linux syscall/runtime.
+	patches := map[string]string{
+		"syscall/syscall_linux.go":    "syscall_linux.go",
+		"runtime/sys_linux_arm64.s":   "sys_linux_arm64.s",
+		"runtime/mbitmap.go":          "mbitmap.go",
+	}
+
+	for goFile, patchFile := range patches {
+		src := filepath.Join(goroot, "src", goFile)
+		dst := filepath.Join(patchesDir, patchFile)
+		if _, err := os.Stat(dst); err != nil {
+			return fmt.Errorf("patch file not found: %s", dst)
+		}
+		overlay.Replace[src] = dst
+	}
+
+	return nil
+}
+
+func buildDiplomatOverlay(overlay *Overlay, goroot, patchesDir string) error {
+	// Diplomat patches for Windows runtime to make it UEFI-compatible
+	// These replace Windows-specific runtime files with UEFI stubs
+	patches := map[string]string{
+		"runtime/os_windows.go":         "os_windows.go",
+		"runtime/syscall_windows.go":    "syscall_windows.go",
+		"runtime/sys_windows_amd64.s":   "sys_windows_amd64.s",
+		"runtime/mem_windows.go":        "mem_windows.go",
+	}
+
+	for goFile, patchFile := range patches {
+		src := filepath.Join(goroot, "src", goFile)
+		dst := filepath.Join(patchesDir, patchFile)
+		if _, err := os.Stat(dst); err != nil {
+			return fmt.Errorf("patch file not found: %s", dst)
+		}
+		overlay.Replace[src] = dst
+	}
+
+	return nil
+}
+
+func buildDiplomatLinuxOverlay(overlay *Overlay, goroot, patchesDir string) error {
+	// Diplomat patches for Linux runtime to make it UEFI-compatible.
+	// We're building with GOOS=linux GOARCH=amd64, so we patch the Linux syscall/runtime.
+	//
+	// Critical patches:
+	// - syscall_linux.go: Centralize syscall routing
+	// - sys_linux_amd64.s: Stub out all syscall instructions (write1, exit, futex, etc.)
+	patches := map[string]string{
+		"syscall/syscall_linux.go":     "syscall_linux.go",
+		"runtime/sys_linux_amd64.s":    "sys_linux_amd64.s",
+		"debug/elf/file.go":            "elf_file.go",
+		"debug/elf/reader.go":          "elf_reader.go",
 	}
 
 	for goFile, patchFile := range patches {

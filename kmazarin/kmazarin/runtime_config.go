@@ -2,102 +2,54 @@
 package main
 
 import (
+	"mazzy/kmazarin/dtb"
+	"mazzy/shared/constants"
 	"unsafe"
 )
 
-// RuntimeConfig holds configuration values pre-populated by Cardinal.
-// Cardinal writes this structure to StartupParams before jumping to kmazarin,
-// so all values are immediately available without parsing or computation.
+// RuntimeConfig holds the minimal configuration from Cardinal.
+// Only 2 fields: DtbPhysAddr and KmazarinSize.
+// All other values are derived from constants, CPU registers, or DTB.
 //
-// CRITICAL: This structure layout MUST match shared/constants.RuntimeConfig exactly.
+// CRITICAL: Layout MUST match shared/constants.RuntimeConfig exactly.
 type RuntimeConfig struct {
-	// Magic marker to detect valid initialization (0x4B4D5A52 = "KMZR")
-	Magic   uint32
-	Version uint32
-
-	// Memory layout parameters from Cardinal
-	DtbPhysAddr       uint64 // Physical address of DTB
-	DtbSize           uint64 // Size of DTB
-	DtbVirtAddr       uint64 // High-memory virtual address of DTB
-	KmazarinPhysAddr  uint64 // Physical base of kmazarin binary
-	KmazarinSize      uint64 // Size of kmazarin binary
-	FramePoolStart    uint64 // Physical frame pool start
-	FramePoolEnd      uint64 // Physical frame pool end
-	KernelUartBase    uint64 // High-memory UART VA (0xFFFFFFFF09000000)
-	KernelGicBase     uint64 // High-memory GIC VA
-	TTBR1L0Phys       uint64 // Physical address of TTBR1 L0 (kernel space)
-	TTBR0L0Phys       uint64 // Physical address of TTBR0 L0 (user space for heap)
-	StartupParamsAddr uint64 // Address of StartupParams buffer
-
-	// Derived values (computed by Cardinal)
-	KernelVAOffset    uint64 // Kernel VA offset (0xFFFFFFFF00000000)
-	KernelPTPoolStart uint64 // PT pool start VA
-	KernelPTPoolEnd   uint64 // PT pool end VA
-	KernelHeapStart   uint64 // Heap start VA
-	KernelHeapEnd     uint64 // Heap end VA
-
-	// Standard values
-	PageSize uint64 // Page size (4096)
-	HWCap    uint64 // ARM64 hardware capabilities
-
-	// Stack boundaries (high-memory kernel stacks)
-	G0StackBottom        uint64 // Bottom of g0 stack (SP_EL0)
-	G0StackTop           uint64 // Top of g0 stack (SP_EL0)
-	G0StackSize          uint64 // Size of g0 stack
-	ExceptionStackBottom uint64 // Bottom of exception stack (SP_EL1)
-	ExceptionStackTop    uint64 // Top of exception stack (SP_EL1)
-	ExceptionStackSize   uint64 // Exception stack size
-
-	// Goroutine struct copy (for unmapping Cardinal's low memory)
-	G0StructAddr uint64 // High-memory address where g0 struct should be copied
-
-	// Preemption support
-	AsyncPreemptAddr     uint64 // High-memory address of runtime.asyncPreempt function
-	ReadyForAsyncPreempt uint64 // Address of readyForAsyncPreempt flag
-
-	// VirtIO GPU framebuffer information
-	FramebufferPhysAddr uint64 // Physical address of VirtIO GPU framebuffer
-	FramebufferSize     uint64 // Size of framebuffer in bytes
-
-	// Boot image information (embedded mazarin image)
-	BootImagePhysAddr uint64 // Physical address of boot image data
-	BootImageSize     uint64 // Size of boot image in bytes
-
-	// Total RAM and memory region layout (from DTB detection)
-	// Memory formula: Total RAM >= 256MB
-	//   Kernel Region: 64MB (fixed)
-	//   Page Table Pool: (Total RAM - 64MB) / 513
-	//   Userspace Frame Pool: Total RAM - 64MB - PT Pool
-	TotalRAMSize            uint64 // Total RAM size detected from DTB
-	RAMBaseAddr             uint64 // Base physical address of RAM (typically 0x40000000)
-	UserspaceFramePoolStart uint64 // Start PA of userspace frame pool
-	UserspaceFramePoolEnd   uint64 // End PA of userspace frame pool
-	UserspacePTPoolStart    uint64 // Start PA of userspace page table pool
-	UserspacePTPoolEnd      uint64 // End PA of userspace page table pool
-}
-
-// getRuntimeConfigFromStartupParams reads the RuntimeConfig from StartupParams.
-// This is called during package-level variable initialization, which happens
-// BEFORE the Go runtime starts (and before it makes any syscalls).
-//
-//go:nosplit
-func getRuntimeConfigFromStartupParams() RuntimeConfig {
-	// Read the RuntimeConfig that Cardinal wrote to StartupParams[0]
-	// StartupParams is a BSS global, so its address is known at link time
-	configPtr := (*RuntimeConfig)(unsafe.Pointer(&StartupParams[RuntimeConfigOffset]))
-
-	// Return a copy
-	return *configPtr
+	DtbPhysAddr    uint64
+	KmazarinSize   uint64
+	FramePoolStart uint64
+	FramePoolEnd   uint64
 }
 
 // runtimeConfig is the global configuration, lazily initialized on first access.
-// CRITICAL: Cannot use package-level initialization because mmap is called DURING runtime
-// initialization (in mallocinit), BEFORE package init functions run!
 var runtimeConfig RuntimeConfig
 var runtimeConfigInitialized bool
 
+// Derived values cached after first computation
+var (
+	derivedInitialized bool
+
+	// From DTB
+	derivedRAMBase             uint64
+	derivedRAMSize             uint64
+	derivedUserspaceFramePoolStart uint64
+	derivedUserspaceFramePoolEnd   uint64
+	derivedUserspacePTPoolStart    uint64
+	derivedUserspacePTPoolEnd      uint64
+
+	// Computed from KmazarinSize
+	derivedPTPoolStart uint64
+	derivedPTPoolEnd   uint64
+)
+
+// getRuntimeConfigFromStartupParams reads the RuntimeConfig from StartupParams.
+//
+//go:nosplit
+func getRuntimeConfigFromStartupParams() RuntimeConfig {
+	configPtr := (*RuntimeConfig)(unsafe.Pointer(&StartupParams[RuntimeConfigOffset]))
+	return *configPtr
+}
+
 // GetRuntimeConfig returns the global runtime configuration.
-// Lazy-initializes on first call, which happens before any mmap syscalls.
+// Lazy-initializes on first call.
 //
 //go:nosplit
 func GetRuntimeConfig() *RuntimeConfig {
@@ -108,36 +60,246 @@ func GetRuntimeConfig() *RuntimeConfig {
 	return &runtimeConfig
 }
 
-// GetUartBase returns the UART base address from runtime config.
-// This reads directly from StartupParams to avoid any dependency on
-// package initialization order.
+// initDerivedValues computes all derived memory layout values from the
+// minimal RuntimeConfig + constants + DTB. Called lazily on first access.
+//
+//go:nosplit
+func initDerivedValues() {
+	if derivedInitialized {
+		return
+	}
+
+	cfg := GetRuntimeConfig()
+
+	// Compute PT pool from KmazarinSize + KernelTextBase
+	kmazarinEndVA := uint64(constants.KernelTextBase) + cfg.KmazarinSize
+	// Page-align up
+	alignedEnd := (kmazarinEndVA + 0xFFF) &^ 0xFFF
+	// TTBR1 region (64KB) then PT pool (512KB)
+	ttbr1RegionStart := alignedEnd
+	_ = ttbr1RegionStart // TTBR1 region mapped by cardinal
+	derivedPTPoolStart = alignedEnd + uint64(constants.KernelTTBR1RegionSize)
+	derivedPTPoolEnd = derivedPTPoolStart + uint64(constants.KernelPTPoolSize)
+
+	// DTB-derived values (RAM base/size, userspace pools)
+	// DTB is at physical address, which is mapped via TTBR1 identity mapping
+	dtbVirtAddr := cfg.DtbPhysAddr + uint64(constants.KernelMMIOOffset)
+	ramBase, ramSize, ok := dtb.GetMemoryInfo(uintptr(dtbVirtAddr))
+	if ok {
+		derivedRAMBase = uint64(ramBase)
+		derivedRAMSize = ramSize
+
+		// Compute userspace memory regions (same formula as cardinal)
+		userspaceTotal := ramSize - uint64(constants.KernelMemoryBudget)
+		ptPoolSize := userspaceTotal / 513
+		ptPoolSize = (ptPoolSize + 0xFFF) &^ 0xFFF
+
+		kernelEnd := uint64(ramBase) + uint64(constants.KernelMemoryBudget)
+		derivedUserspacePTPoolStart = kernelEnd
+		derivedUserspacePTPoolEnd = kernelEnd + ptPoolSize
+		derivedUserspaceFramePoolStart = derivedUserspacePTPoolEnd
+		derivedUserspaceFramePoolEnd = uint64(ramBase) + ramSize
+	}
+
+	derivedInitialized = true
+}
+
+// GetUartBase returns the UART base address (constant).
 //
 //go:nosplit
 func GetUartBase() uintptr {
-	// Read directly from StartupParams to avoid initialization order issues
-	configPtr := (*RuntimeConfig)(unsafe.Pointer(&StartupParams[RuntimeConfigOffset]))
-	return uintptr(configPtr.KernelUartBase)
+	return uintptr(constants.KernelUartBase)
 }
 
-// GetAsyncPreemptAddr returns the address of runtime.asyncPreempt from RuntimeConfig.
-// This is used by the timer interrupt handler to inject preemption calls.
-// Returns 0 if not set (preemption disabled).
+// GetAsyncPreemptAddr returns the address of the asyncPreemptWrapper.
+// This is kmazarin's own assembly function, accessed via getAsyncPreemptWrapperAddr().
 //
 //go:nosplit
 func GetAsyncPreemptAddr() uintptr {
-	configPtr := (*RuntimeConfig)(unsafe.Pointer(&StartupParams[RuntimeConfigOffset]))
-	return uintptr(configPtr.AsyncPreemptAddr)
+	return getAsyncPreemptWrapperAddr()
 }
 
 // GetReadyForAsyncPreemptAddr returns the address of the readyForAsyncPreempt flag.
-// The IRQ handler checks this flag before calling asyncPreempt.
+// This is a kmazarin global, so we return its address directly.
 //
 //go:nosplit
 func GetReadyForAsyncPreemptAddr() uintptr {
-	configPtr := (*RuntimeConfig)(unsafe.Pointer(&StartupParams[RuntimeConfigOffset]))
-	return uintptr(configPtr.ReadyForAsyncPreempt)
+	return uintptr(unsafe.Pointer(&readyForAsyncPreempt))
 }
 
-// NOTE: GetG0StructAddr is defined in startup.go since it returns the actual
-// address of the G0Struct buffer in kmazarin's BSS. The RuntimeConfig.G0StructAddr
-// field contains the same value (set by Cardinal), but startup.go is the source of truth.
+// GetDtbPhysAddr returns the DTB physical address from RuntimeConfig.
+//
+//go:nosplit
+func GetDtbPhysAddr() uint64 {
+	return GetRuntimeConfig().DtbPhysAddr
+}
+
+// GetKmazarinSize returns the kmazarin binary size from RuntimeConfig.
+//
+//go:nosplit
+func GetKmazarinSize() uint64 {
+	return GetRuntimeConfig().KmazarinSize
+}
+
+// GetPTPoolStart returns the computed PT pool start VA.
+//
+//go:nosplit
+func GetPTPoolStart() uint64 {
+	initDerivedValues()
+	return derivedPTPoolStart
+}
+
+// GetPTPoolEnd returns the computed PT pool end VA.
+//
+//go:nosplit
+func GetPTPoolEnd() uint64 {
+	initDerivedValues()
+	return derivedPTPoolEnd
+}
+
+// GetFramePoolStart returns the kernel frame pool start PA from RuntimeConfig.
+//
+//go:nosplit
+func GetFramePoolStart() uint64 {
+	return GetRuntimeConfig().FramePoolStart
+}
+
+// GetFramePoolEnd returns the kernel frame pool end PA from RuntimeConfig.
+//
+//go:nosplit
+func GetFramePoolEnd() uint64 {
+	return GetRuntimeConfig().FramePoolEnd
+}
+
+// GetTotalRAMSize returns the total RAM size from DTB.
+//
+//go:nosplit
+func GetTotalRAMSize() uint64 {
+	initDerivedValues()
+	return derivedRAMSize
+}
+
+// GetRAMBaseAddr returns the RAM base physical address from DTB.
+//
+//go:nosplit
+func GetRAMBaseAddr() uint64 {
+	initDerivedValues()
+	return derivedRAMBase
+}
+
+// GetUserspaceFramePoolStart returns the userspace frame pool start PA.
+//
+//go:nosplit
+func GetUserspaceFramePoolStart() uint64 {
+	initDerivedValues()
+	return derivedUserspaceFramePoolStart
+}
+
+// GetUserspaceFramePoolEnd returns the userspace frame pool end PA.
+//
+//go:nosplit
+func GetUserspaceFramePoolEnd() uint64 {
+	initDerivedValues()
+	return derivedUserspaceFramePoolEnd
+}
+
+// GetUserspacePTPoolStart returns the userspace PT pool start PA.
+//
+//go:nosplit
+func GetUserspacePTPoolStart() uint64 {
+	initDerivedValues()
+	return derivedUserspacePTPoolStart
+}
+
+// GetUserspacePTPoolEnd returns the userspace PT pool end PA.
+//
+//go:nosplit
+func GetUserspacePTPoolEnd() uint64 {
+	initDerivedValues()
+	return derivedUserspacePTPoolEnd
+}
+
+// fullConfig is the expanded view of all memory layout values needed by
+// kmem and ksyscall packages. This is returned via the getRuntimeConfig()
+// linkname interface to maintain compatibility with those packages' local
+// runtimeConfigStruct types.
+type fullConfig struct {
+	KernelVAOffset          uint64
+	KmazarinSize            uint64
+	KmazarinPhysAddr        uint64
+	FramePoolStart          uint64
+	FramePoolEnd            uint64
+	KernelPTPoolStart       uint64
+	KernelPTPoolEnd         uint64
+	KernelHeapStart         uint64
+	KernelHeapEnd           uint64
+	G0StackBottom           uint64
+	G0StackTop              uint64
+	G0StackSize             uint64
+	ExceptionStackBottom    uint64
+	ExceptionStackTop       uint64
+	ExceptionStackSize      uint64
+	FramebufferPhysAddr     uint64
+	FramebufferSize         uint64
+	BootImagePhysAddr       uint64
+	BootImageSize           uint64
+	TotalRAMSize            uint64
+	RAMBaseAddr             uint64
+	UserspaceFramePoolStart uint64
+	UserspaceFramePoolEnd   uint64
+	UserspacePTPoolStart    uint64
+	UserspacePTPoolEnd      uint64
+	DtbPhysAddr             uint64
+}
+
+var cachedFullConfig fullConfig
+var fullConfigInitialized bool
+
+// getFullConfig returns a pointer to the fully-populated config struct
+// for use by kmem and ksyscall packages.
+//
+//go:nosplit
+func getFullConfig() *fullConfig {
+	if fullConfigInitialized {
+		return &cachedFullConfig
+	}
+	populateFullConfig()
+	return &cachedFullConfig
+}
+
+// populateFullConfig fills the global cachedFullConfig struct.
+// Separated from getFullConfig to minimize stack frame in the nosplit chain.
+//
+//go:nosplit
+func populateFullConfig() {
+	initDerivedValues()
+
+	cfg := GetRuntimeConfig()
+
+	cachedFullConfig.KernelVAOffset = uint64(constants.KernelMMIOOffset)
+	cachedFullConfig.KmazarinSize = cfg.KmazarinSize
+	cachedFullConfig.KmazarinPhysAddr = uint64(constants.KmazarinLoadAddr)
+	cachedFullConfig.FramePoolStart = cfg.FramePoolStart
+	cachedFullConfig.FramePoolEnd = cfg.FramePoolEnd
+	cachedFullConfig.KernelPTPoolStart = derivedPTPoolStart
+	cachedFullConfig.KernelPTPoolEnd = derivedPTPoolEnd
+	cachedFullConfig.KernelHeapStart = uint64(constants.KernelHeapStart)
+	cachedFullConfig.KernelHeapEnd = uint64(constants.KernelHeapEnd)
+	cachedFullConfig.G0StackBottom = uint64(constants.KernelG0StackBottom)
+	cachedFullConfig.G0StackTop = uint64(constants.KernelG0StackTop)
+	cachedFullConfig.G0StackSize = uint64(constants.KernelG0StackSize)
+	cachedFullConfig.ExceptionStackBottom = uint64(constants.KernelExcStackBottom)
+	cachedFullConfig.ExceptionStackTop = uint64(constants.KernelExcStackTop)
+	cachedFullConfig.ExceptionStackSize = uint64(constants.KernelExcStackSize)
+	cachedFullConfig.FramebufferPhysAddr = uint64(constants.FramebufferPhysAddr)
+	cachedFullConfig.FramebufferSize = uint64(constants.FramebufferSize)
+	cachedFullConfig.TotalRAMSize = derivedRAMSize
+	cachedFullConfig.RAMBaseAddr = derivedRAMBase
+	cachedFullConfig.UserspaceFramePoolStart = derivedUserspaceFramePoolStart
+	cachedFullConfig.UserspaceFramePoolEnd = derivedUserspaceFramePoolEnd
+	cachedFullConfig.UserspacePTPoolStart = derivedUserspacePTPoolStart
+	cachedFullConfig.UserspacePTPoolEnd = derivedUserspacePTPoolEnd
+	cachedFullConfig.DtbPhysAddr = cfg.DtbPhysAddr
+
+	fullConfigInitialized = true
+}

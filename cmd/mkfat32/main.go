@@ -354,6 +354,8 @@ func make83Name(name string) [11]byte {
 
 func fits83(name string) bool {
 	// Check if name fits in 8.3 format
+	// Uppercase the name since 8.3 names are stored uppercase
+	name = strings.ToUpper(name)
 	ext := ""
 	base := name
 	if dot := strings.LastIndex(name, "."); dot >= 0 {
@@ -365,7 +367,7 @@ func fits83(name string) bool {
 		return false
 	}
 
-	// Check for invalid characters
+	// Check for invalid characters (already uppercased)
 	for i := 0; i < len(base); i++ {
 		if !isValid83Char(base[i]) {
 			return false
@@ -375,12 +377,6 @@ func fits83(name string) bool {
 		if !isValid83Char(ext[i]) {
 			return false
 		}
-	}
-
-	// Check for lowercase (8.3 is uppercase only)
-	upper := strings.ToUpper(name)
-	if upper != name {
-		return false
 	}
 
 	return true

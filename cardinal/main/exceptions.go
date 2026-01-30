@@ -374,128 +374,15 @@ func extractISS(esr uint64) uint32 {
 // Note: We now get the exception vector address via get_exception_vectors_addr()
 // instead of using a linker symbol, to avoid linker symbol resolution issues
 
-// HandleSyscall handles Linux syscalls by returning fake responses
-// This is called from assembly when an SVC instruction is executed
-// syscallNum is the Linux syscall number (in x8)
-// Returns the fake syscall result
+// HandleSyscall is a legacy stub kept for ABI compatibility with generate-main-calls.
+// The actual kmazarin syscall dispatch is in syscall.go:SyscallDispatch.
+// Cardinal's own runtime syscalls go through syscall_dispatcher.go:CardinalSyscallDispatch.
 //
 //go:nosplit
 //go:noinline
 func HandleSyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) uint64 {
-	switch syscallNum {
-	case 64: // write
-		// write(fd, buf, count) - pretend we wrote all bytes
-		return arg2 // return count
-
-	case 63: // read
-		// read(fd, buf, count) - return 0 (EOF)
-		return 0
-
-	case 56: // openat
-		// openat(dirfd, path, flags, mode) - return -ENOENT
-		return ^uint64(1) // -2 (ENOENT)
-
-	case 57: // close
-		// close(fd) - return success
-		return 0
-
-	case 93, 94: // exit, exit_group
-		// Use semihosting to gracefully exit QEMU
-		asm.QemuExit()
-		// If semihosting doesn't work, hang
-		for {
-		}
-
-	case 98: // futex
-		// futex - return success (common in Go runtime)
-		return 0
-
-	case 99: // nanosleep
-		// nanosleep - return success (slept)
-		return 0
-
-	case 131: // tgkill
-		// tgkill - used for signals, return success
-		return 0
-
-	case 220: // clone (used by Go runtime)
-		// clone - return -EAGAIN (can't create new thread)
-		return ^uint64(10) // -11 (EAGAIN)
-
-	case 222: // mmap
-		// mmap(addr, length, prot, flags, fd, offset)
-		// arg0 = addr (hint or fixed), arg1 = length, arg2 = prot, arg3 = flags
-		addrHint := uintptr(arg0)
-		length := uintptr(arg1)
-		flags := arg3
-
-		// Align length to page size (4KB)
-		const pageSize = 4096
-		alignedLength := (length + pageSize - 1) &^ (pageSize - 1)
-
-		// Check for MAP_FIXED (0x10) - must allocate at exact address
-		const MAP_FIXED = 0x10
-		var result uintptr
-
-		if (flags & MAP_FIXED) != 0 && addrHint != 0 {
-			// MAP_FIXED: MUST allocate at the exact requested address
-			// The Go runtime uses this for its arena allocations
-			result = addrHint
-			// Note: We rely on demand paging to handle these addresses
-		} else {
-			// No MAP_FIXED: use bump allocator
-			// Check if we have enough space
-			if mmapNext+alignedLength > mmapEnd {
-				return ^uint64(11) // -12 (ENOMEM)
-			}
-			result = mmapNext
-			mmapNext += alignedLength
-		}
-
-		// CRITICAL: Check if allocation overlaps with critical regions
-		const romEnd = uintptr(0x8000000)          // End of ROM region
-		const pageTableStart = uintptr(0x5E000000) // Start of page tables
-		if result < romEnd {
-			uartPutsDirect("\r\n!MMAP IN ROM: 0x")
-			uartPutHex64Direct(uint64(result))
-			uartPutsDirect("\r\n")
-			for {} // Hang
-		}
-		if result >= pageTableStart && result < mmapBase {
-			uartPutsDirect("\r\n!MMAP IN PAGE TABLES: 0x")
-			uartPutHex64Direct(uint64(result))
-			uartPutsDirect("\r\n")
-			for {} // Hang
-		}
-
-		return uint64(result)
-
-	case 226: // mprotect
-		// mprotect - return success
-		return 0
-
-	case 233: // madvise
-		// madvise - give advice about memory usage
-		// Arguments: arg0=addr, arg1=length, arg2=advice
-		// Common advice values: MADV_DONTNEED=4, MADV_FREE=8
-		// For now, just accept all advice and return success
-		return 0
-
-	case 261: // prlimit64
-		// prlimit64 - return success but don't actually do anything
-		return 0
-
-	case 278: // getrandom
-		// getrandom - return 0 bytes (can't provide random)
-		return 0
-
-	default:
-		// Unknown syscall - print warning and return -ENOSYS
-		uartPutsDirect("SYSCALL UNKNOWN: ")
-		uartPutHex64Direct(syscallNum)
-		uartPutsDirect("\r\n")
-		return ^uint64(37) // -38 (ENOSYS)
-	}
+	uartPutsDirect("BUG: HandleSyscall called (should be dead code)\r\n")
+	return ^uint64(37) // -ENOSYS
 }
 
 // ============================================================================

@@ -652,9 +652,6 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	// DISABLED: Don't initialize timer - kmazarin will do it
 	// timerInit()
 
-	// Initialize thread table (M0 as thread 0 for syscall handling)
-	InitThreads()
-
 	// Load and run kmazarin (never returns)
 	loadAndRunKmazarin()
 

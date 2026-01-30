@@ -50,6 +50,12 @@ const (
 	// Total memory limit for kmazarin (binary + heap combined)
 	KmazarinTotalLimit = 512 * 1024 * 1024 // 512MB
 
+	// Kernel memory budget: fixed allocation for kernel region
+	KernelMemoryBudget = 64 * 1024 * 1024 // 64MB
+
+	// Minimum RAM required
+	MinRAMRequired = 256 * 1024 * 1024 // 256MB
+
 	// Stack sizes - MUST match cardinal/golang/constants/layout.go
 	// These were doubled from 16KB/8KB to debug potential stack overflow issues
 	KernelG0StackSize  = 0x8000 // 32KB - g0 stack for normal kernel execution
@@ -83,6 +89,35 @@ const (
 	// Range: 0xFFFFFFFF5F000000 - 0xFFFFFFFF5F004000 (16KB)
 	KernelExcStackBottom = KernelG0StackTop
 	KernelExcStackTop    = KernelExcStackBottom + KernelExcStackSize
+)
+
+// ============================================================================
+// Kernel Text and PT Pool Layout
+// ============================================================================
+// These are used by kmazarin to compute its own memory layout.
+
+const (
+	// KernelTextBase is the high-memory VA where kmazarin code starts.
+	// Computed from KernelMMIOOffset + KmazarinLoadAddr.
+	// KmazarinLoadAddr is defined in shared/constants/layout.go.
+	KernelTextBase = KernelMMIOOffset + KmazarinLoadAddr // 0xFFFFFFFF42000000
+
+	// TTBR1 page table region and PT pool sizes (fixed policy decisions)
+	KernelTTBR1RegionSize = 0x10000 // 64KB (16 page tables max)
+	KernelPTPoolSize      = 0x80000 // 512KB (128 pages)
+)
+
+// ============================================================================
+// Kernel Heap Virtual Address Space
+// ============================================================================
+// Demand-paged heap for kmazarin. Go runtime reserves large contiguous VA
+// regions for arena metadata. VA space is free - only accessed pages consume
+// physical frames.
+
+const (
+	KernelHeapStart = 0xFFFF000100000000 // Start in TTBR1 space
+	KernelHeapEnd   = 0xFFFF100000000000 // End of heap VA space (16TB range)
+	KernelHeapSize  = KernelHeapEnd - KernelHeapStart
 )
 
 // ============================================================================

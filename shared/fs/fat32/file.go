@@ -101,10 +101,10 @@ func (f *File) Read(buf []byte) (int, error) {
 	for len(buf) > 0 && f.pos < uint64(f.entry.Size) {
 		// Load current cluster if needed
 		if !f.clusterValid {
-			if f.currentClus == 0 || isEOF(f.currentClus) {
+			if f.currentClus == 0 || IsEOF(f.currentClus) {
 				return totalRead, ErrEndOfFile
 			}
-			if err := f.fs.readCluster(f.currentClus, f.clusterBuf); err != nil {
+			if err := f.fs.ReadCluster(f.currentClus, f.clusterBuf); err != nil {
 				return totalRead, err
 			}
 			f.clusterValid = true
@@ -132,7 +132,7 @@ func (f *File) Read(buf []byte) (int, error) {
 
 		// Check if we need to move to next cluster
 		if f.clusOffset >= uint32(bytesPerClus) {
-			nextCluster, err := f.fs.readFATEntry(f.currentClus)
+			nextCluster, err := f.fs.ReadFATEntry(f.currentClus)
 			if err != nil {
 				return totalRead, err
 			}
@@ -185,14 +185,14 @@ func (f *File) Seek(offset uint64) error {
 	// Traverse FAT chain to find the cluster
 	f.currentClus = f.entry.Cluster
 	for i := uint64(0); i < clusterIndex; i++ {
-		if f.currentClus == 0 || isEOF(f.currentClus) {
+		if f.currentClus == 0 || IsEOF(f.currentClus) {
 			return ErrEndOfFile
 		}
-		nextCluster, err := f.fs.readFATEntry(f.currentClus)
+		nextCluster, err := f.fs.ReadFATEntry(f.currentClus)
 		if err != nil {
 			return err
 		}
-		if isBad(nextCluster) {
+		if IsBad(nextCluster) {
 			return ErrBadCluster
 		}
 		f.currentClus = nextCluster

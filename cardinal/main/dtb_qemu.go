@@ -45,6 +45,7 @@ var (
 	dtbNameDeviceType    = [...]byte{'d', 'e', 'v', 'i', 'c', 'e', '_', 't', 'y', 'p', 'e'}
 	dtbCompatPciHostEcam = [...]byte{'p', 'c', 'i', '-', 'h', 'o', 's', 't', '-', 'e', 'c', 'a', 'm', '-', 'g', 'e', 'n', 'e', 'r', 'i', 'c'}
 	dtbDeviceTypeMemory  = [...]byte{'m', 'e', 'm', 'o', 'r', 'y'}
+	dtbCompatVirtioMmio  = [...]byte{'v', 'i', 'r', 't', 'i', 'o', ',', 'm', 'm', 'i', 'o'}
 )
 
 // dumpBytesHex prints up to max bytes from p as hex (for debugging only)
@@ -121,6 +122,10 @@ func dtbCompatContains(data *byte, n uint32, needle *byte, needleLen int) bool {
 
 func dtbCompatHasPciHostEcamGeneric(data *byte, n uint32) bool {
 	return dtbCompatContains(data, n, &dtbCompatPciHostEcam[0], len(dtbCompatPciHostEcam))
+}
+
+func dtbCompatHasVirtioMmio(data *byte, n uint32) bool {
+	return dtbCompatContains(data, n, &dtbCompatVirtioMmio[0], len(dtbCompatVirtioMmio))
 }
 
 // dtbPtr is set early from KernelMain(atags) when QEMU passes a DTB pointer
@@ -363,4 +368,118 @@ func tryDTBMemory(dtbBase uintptr) (base uintptr, size uintptr, ok bool) {
 		}
 	}
 	return 0, 0, false
+}
+
+// VirtIOMMIODevice holds info about a discovered VirtIO MMIO device.
+type VirtIOMMIODevice struct {
+	Base uintptr
+	Size uintptr
+}
+
+// maxVirtIODevices is the maximum number of VirtIO MMIO devices we track.
+const maxVirtIODevices = 32
+
+// getVirtIOMMIOFromDTB scans the DTB for VirtIO MMIO devices.
+// Returns the number of devices found and fills the devices array.
+func getVirtIOMMIOFromDTB(devices *[maxVirtIODevices]VirtIOMMIODevice) int {
+	count := 0
+	if dtbPtr != 0 {
+		count = tryDTBVirtIO(dtbPtr, devices)
+		if count > 0 {
+			return count
+		}
+	}
+	dtbBootAddr := getLinkerSymbol("__dtb_boot_addr")
+	return tryDTBVirtIO(dtbBootAddr, devices)
+}
+
+// tryDTBVirtIO scans a DTB for VirtIO MMIO nodes and returns their addresses.
+func tryDTBVirtIO(dtbBase uintptr, devices *[maxVirtIODevices]VirtIOMMIODevice) int {
+	hdr := (*byte)(unsafe.Pointer(dtbBase))
+	magic := be32(hdr)
+	if magic != fdtMagic {
+		return 0
+	}
+
+	offStruct := be32((*byte)(unsafe.Pointer(dtbBase + 8)))
+	offStrings := be32((*byte)(unsafe.Pointer(dtbBase + 12)))
+	pStruct := dtbBase + uintptr(offStruct)
+	pStrings := dtbBase + uintptr(offStrings)
+
+	var compatMatch [32]bool
+	var haveReg [32]bool
+	var regAddr [32]uintptr
+	var regSize [32]uintptr
+	depth := -1
+	count := 0
+
+	p := pStruct
+	for iter := 0; iter < 200000; iter++ {
+		tag := be32((*byte)(unsafe.Pointer(p)))
+		p += 4
+		switch tag {
+		case fdtBeginNode:
+			depth++
+			if depth >= len(compatMatch) {
+				return count
+			}
+			compatMatch[depth] = false
+			haveReg[depth] = false
+			for {
+				b := *(*byte)(unsafe.Pointer(p))
+				p++
+				if b == 0 {
+					break
+				}
+			}
+			for (p & 3) != 0 {
+				p++
+			}
+		case fdtEndNode:
+			if depth >= 0 && compatMatch[depth] && haveReg[depth] && count < maxVirtIODevices {
+				devices[count].Base = regAddr[depth]
+				devices[count].Size = regSize[depth]
+				count++
+			}
+			depth--
+			if depth < -1 {
+				return count
+			}
+		case fdtProp:
+			plen := be32((*byte)(unsafe.Pointer(p)))
+			nameOff := be32((*byte)(unsafe.Pointer(p + 4)))
+			p += 8
+			namePtr := (*byte)(unsafe.Pointer(pStrings + uintptr(nameOff)))
+			val := (*byte)(unsafe.Pointer(p))
+
+			if depth >= 0 {
+				if dtbNameIsCompatible(namePtr) {
+					if dtbCompatHasVirtioMmio(val, plen) {
+						compatMatch[depth] = true
+					}
+				}
+
+				if dtbNameIsReg(namePtr) && plen >= 16 {
+					addr := be64(val)
+					sz := be64((*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(val)) + 8)))
+					if sz > 0 {
+						regAddr[depth] = uintptr(addr)
+						regSize[depth] = uintptr(sz)
+						haveReg[depth] = true
+					}
+				}
+			}
+
+			p += uintptr(plen)
+			for (p & 3) != 0 {
+				p++
+			}
+		case fdtNop:
+		case fdtEnd:
+			return count
+		default:
+			return count
+		}
+	}
+	return count
 }

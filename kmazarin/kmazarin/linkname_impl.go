@@ -13,7 +13,7 @@ import _ "unsafe" // for go:linkname
 //go:linkname getRuntimeConfigForKmem mazzy/kmazarin/kmem.getRuntimeConfig
 //go:nosplit
 func getRuntimeConfigForKmem() interface{} {
-	return GetRuntimeConfig()
+	return getFullConfig()
 }
 
 // getAsyncPreemptAddrForKirq provides asyncPreempt address to kirq package via linkname
@@ -66,7 +66,7 @@ func breadcrumbHexForKirq(val uint64) {
 //go:linkname getRuntimeConfigForKsyscall mazzy/kmazarin/ksyscall.getRuntimeConfig
 //go:nosplit
 func getRuntimeConfigForKsyscall() interface{} {
-	return GetRuntimeConfig()
+	return getFullConfig()
 }
 
 // uartPutHex64Direct writes a 64-bit hex value to UART

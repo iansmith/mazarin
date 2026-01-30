@@ -11,7 +11,9 @@
 #
 # Environment:
 #   GO=/path/to/go                        # Go compiler (>= 1.24)
-#   QEMU=/path/to/qemu-system-aarch64     # QEMU (>= 10.2)
+#   QEMU=/path/to/qemu-system-aarch64     # QEMU ARM64 (>= 10.2)
+#   QEMU_AMD64=/path/to/qemu-system-x86_64  # QEMU x86_64 for diplomat
+#   OVMF=/path/to/edk2-x86_64-code.fd     # OVMF firmware for diplomat
 #   GOTOOLCHAIN=auto                      # Required
 #   DEBUG=1                               # Optional: disable optimizations
 
@@ -21,6 +23,8 @@ vars:
   # Environment variables (shell-free using Go templates)
   GO: '{{env "GO" | default "go"}}'
   QEMU: '{{env "QEMU" | default "qemu-system-aarch64"}}'
+  QEMU_AMD64: '{{env "QEMU_AMD64" | default "qemu-system-x86_64"}}'
+  OVMF: '{{env "OVMF" | default ""}}'
   DEBUG: '{{env "DEBUG" | default ""}}'
 
   # Build configuration (prefixed to avoid conflicts with Go env vars)
@@ -53,6 +57,11 @@ vars:
   HELLOWORLD_MAZ: '{{.BUILD_DIR}}/helloworld.maz'
   DISK_IMAGE: '{{.BUILD_DIR}}/disk.img'
 
+  # Diplomat (x86_64 UEFI bootloader) output files
+  DIPLOMAT_EXE: '{{.BUILD_DIR}}/diplomat.exe'
+  DIPLOMAT_EFI: '{{.BUILD_DIR}}/diplomat.efi'
+  ESP_IMAGE: '{{.BUILD_DIR}}/esp.img'
+
   # Generated embedded data
   KMAZARIN_DATA_ASM: cardinal/asm/dev/kmazarin_data_arm64.s
   BOOT_IMAGE_DATA_ASM: cardinal/asm/dev/boot_mazarin_data_arm64.s
@@ -70,6 +79,7 @@ tasks:
   # ===========================================================================
 
   check-env:
+    run: once
     desc: Verify GO, QEMU, GOTOOLCHAIN, and tool versions
     cmds:
       # Check GOTOOLCHAIN
@@ -86,6 +96,7 @@ tasks:
   # ===========================================================================
 
   build-dir:
+    run: once
     desc: Create build directory
     cmds:
       - '{{.GO}} tool go-mkdir {{.BUILD_DIR}}'
@@ -97,6 +108,7 @@ tasks:
   # ===========================================================================
 
   kmazarin-overlay:
+    run: once
     desc: Generate runtime overlay JSON for kmazarin
     deps: [build-dir]
     sources:
@@ -113,6 +125,7 @@ tasks:
       - '{{.GO}} tool gen-overlay -type kmazarin -patches {{.RUNTIME_PATCHES_DIR}} -o {{.KMAZARIN_OVERLAY_JSON}}'
 
   userspace-overlay:
+    run: once
     desc: Generate runtime overlay JSON for userspace programs
     deps: [build-dir]
     sources:
@@ -143,6 +156,7 @@ tasks:
   # ===========================================================================
 
   embed-kmazarin:
+    run: once
     desc: Generate assembly with embedded kmazarin binary
     deps: [kmazarin]
     sources:
@@ -153,6 +167,7 @@ tasks:
       - '{{.GO}} tool incbin2goasm -sym kmazarin_binary -global -o {{.KMAZARIN_DATA_ASM}} {{.KMAZARIN_ELF}}'
 
   embed-boot-image:
+    run: once
     desc: Generate assembly with embedded boot image
     deps: [build-dir]
     sources:
@@ -168,6 +183,7 @@ tasks:
 
   kmazarin:
     desc: Build kmazarin kernel
+    run: once
     deps: [check-env, kmazarin-overlay]
     sources:
       - 'kmazarin/**/*.go'
@@ -194,19 +210,21 @@ tasks:
   # ===========================================================================
 
   cardinal:
+    run: once
     desc: Build cardinal bootloader
-    deps: [check-env, embed-kmazarin, embed-boot-image]
+    deps: [check-env, embed-kmazarin, embed-boot-image, cardinal-linux-overlay]
     sources:
       - 'cardinal/**/*.go'
       - 'cardinal/**/*.s'
       - '{{.KMAZARIN_DATA_ASM}}'
       - '{{.BOOT_IMAGE_DATA_ASM}}'
       - '{{.KMAZARIN_ELF}}'
+      - '{{.BUILD_DIR}}/cardinal-linux-overlay.json'
     generates:
       - '{{.CARDINAL_ELF}}'
     cmds:
       - echo "Building cardinal bootloader..."
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build {{.GCFLAGS}} -ldflags="-checklinkname=0 -T 0x40100000" -o {{.CARDINAL_ELF}} ./cardinal/main'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build {{.GCFLAGS}} -ldflags="-checklinkname=0 -T 0x40100000" -overlay={{.BUILD_DIR}}/cardinal-linux-overlay.json -o {{.CARDINAL_ELF}} ./cardinal/main'
       - echo "Patching entry point to _cardinal_boot..."
       - '{{.GO}} tool patch-entry {{.CARDINAL_ELF}} _cardinal_boot'
       - echo "Patching linker values..."
@@ -409,8 +427,8 @@ tasks:
   # ===========================================================================
 
   disk:
-    desc: Create FAT32 disk image with flock binaries
-    deps: [priestsieve, priest2, priest3, sievetest, sieve3, sieve5, sieve6, sieve7, sieve8, sieve9, helloworld-maz]
+    desc: Create FAT32 disk image with flock binaries and kmazarin kernel
+    deps: [priestsieve, priest2, priest3, sievetest, sieve3, sieve5, sieve6, sieve7, sieve8, sieve9, helloworld-maz, kmazarin]
     sources:
       - '{{.PRIESTSIEVE_ELF}}'
       - '{{.PRIEST2_ELF}}'
@@ -423,12 +441,154 @@ tasks:
       - '{{.SIEVE8_ELF}}'
       - '{{.SIEVE9_ELF}}'
       - '{{.HELLOWORLD_MAZ}}'
+      - '{{.KMAZARIN_ELF}}'
     generates:
       - '{{.DISK_IMAGE}}'
     cmds:
       - echo "Creating FAT32 disk image..."
-      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.PRIESTSIEVE_ELF}} {{.PRIEST2_ELF}} {{.PRIEST3_ELF}} {{.SIEVETEST_ELF}} {{.SIEVE3_ELF}} {{.SIEVE5_ELF}} {{.SIEVE6_ELF}} {{.SIEVE7_ELF}} {{.SIEVE8_ELF}} {{.SIEVE9_ELF}} {{.HELLOWORLD_MAZ}}'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.PRIESTSIEVE_ELF}} {{.PRIEST2_ELF}} {{.PRIEST3_ELF}} {{.SIEVETEST_ELF}} {{.SIEVE3_ELF}} {{.SIEVE5_ELF}} {{.SIEVE6_ELF}} {{.SIEVE7_ELF}} {{.SIEVE8_ELF}} {{.SIEVE9_ELF}} {{.HELLOWORLD_MAZ}} {{.KMAZARIN_ELF}}'
       - echo "Disk image created at {{.DISK_IMAGE}}"
+
+  # ===========================================================================
+  # Diplomat - x86_64 UEFI Bootloader
+  # ===========================================================================
+
+  gen-overlay:
+    run: once
+    desc: Build the overlay JSON generator tool
+    deps: [build-dir]
+    sources:
+      - 'cmd/gen-overlay/*.go'
+    generates:
+      - '{{.BUILD_DIR}}/gen-overlay'
+    cmds:
+      - '{{.GO}} build -o {{.BUILD_DIR}}/gen-overlay ./cmd/gen-overlay'
+
+  elf2pe:
+    desc: Build the ELF to PE converter
+    deps: [build-dir]
+    sources:
+      - 'cmd/elf2pe/*.go'
+    generates:
+      - '{{.BUILD_DIR}}/elf2pe'
+    cmds:
+      - '{{.GO}} build -o {{.BUILD_DIR}}/elf2pe ./cmd/elf2pe'
+
+  cardinal-linux-overlay:
+    run: once
+    desc: Generate overlay JSON for cardinal runtime patches (Linux ARM64→bare metal)
+    deps: [gen-overlay]
+    sources:
+      - 'runtime-patches/cardinal-linux/**/*'
+    generates:
+      - '{{.BUILD_DIR}}/cardinal-linux-overlay.json'
+    cmds:
+      - '{{.BUILD_DIR}}/gen-overlay -type cardinal-linux -patches runtime-patches/cardinal-linux -o {{.BUILD_DIR}}/cardinal-linux-overlay.json'
+
+  diplomat-linux-overlay:
+    desc: Generate overlay JSON for diplomat runtime patches (Linux→UEFI)
+    deps: [gen-overlay]
+    sources:
+      - 'runtime-patches/diplomat-linux/**/*'
+    generates:
+      - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
+    cmds:
+      - '{{.BUILD_DIR}}/gen-overlay -type diplomat-linux -patches runtime-patches/diplomat-linux -o {{.BUILD_DIR}}/diplomat-linux-overlay.json'
+
+  diplomat:
+    desc: Build diplomat UEFI bootloader for x86_64
+    deps: [check-env, build-dir, elf2pe, diplomat-linux-overlay]
+    sources:
+      - 'diplomat/**/*.go'
+      - 'diplomat/**/*.s'
+      - 'shared/**/*.go'
+      - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
+    generates:
+      - '{{.DIPLOMAT_EFI}}'
+    cmds:
+      - echo "Building diplomat for x86_64 UEFI (via Linux/amd64)..."
+      # Step 1: Build as Linux ELF with runtime patches
+      - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 {{.GO}} build -ldflags="-checklinkname=0" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.BUILD_DIR}}/diplomat.elf ./diplomat/main
+      # Step 2: Convert ELF to PE format for UEFI
+      - '{{.BUILD_DIR}}/elf2pe {{.BUILD_DIR}}/diplomat.elf {{.DIPLOMAT_EFI}}'
+      - echo "Diplomat EFI ready at {{.DIPLOMAT_EFI}}"
+
+  mkesp:
+    desc: Build the ESP image creator
+    deps: [build-dir]
+    sources:
+      - 'cmd/mkesp/*.go'
+    generates:
+      - '{{.BUILD_DIR}}/mkesp'
+    cmds:
+      - '{{.GO}} build -o {{.BUILD_DIR}}/mkesp ./cmd/mkesp'
+
+  mktestkernel:
+    desc: Build the test kernel generator tool
+    deps: [build-dir]
+    sources:
+      - 'cmd/mktestkernel/**/*.go'
+    generates:
+      - '{{.BUILD_DIR}}/mktestkernel'
+    cmds:
+      - '{{.GO}} build -o {{.BUILD_DIR}}/mktestkernel ./cmd/mktestkernel'
+
+  testkernel:
+    desc: Build minimal test kernel for diplomat ELF loader testing
+    deps: [build-dir, mktestkernel]
+    cmds:
+      - '{{.BUILD_DIR}}/mktestkernel -o {{.BUILD_DIR}}/testkernel.elf -addr 0xFFFFFFFF00200000 -m "hello, mazarin\r\n"'
+
+  esp:
+    desc: Create EFI System Partition image for diplomat testing
+    deps: [diplomat, mkesp, testkernel]
+    sources:
+      - '{{.DIPLOMAT_EFI}}'
+      - '{{.BUILD_DIR}}/testkernel.elf'
+    generates:
+      - '{{.ESP_IMAGE}}'
+    cmds:
+      - echo "Creating ESP image..."
+      - '{{.BUILD_DIR}}/mkesp -bootloader {{.DIPLOMAT_EFI}} -kernel {{.BUILD_DIR}}/testkernel.elf -o {{.ESP_IMAGE}} -size 260'
+      - echo "ESP created at {{.ESP_IMAGE}}"
+
+  run-diplomat:
+    desc: "Run diplomat in QEMU with OVMF (TIMEOUT=N for timeout, default=5s)"
+    deps: [esp]
+    vars:
+      TIMEOUT: '{{.TIMEOUT | default "5"}}'
+      LOG_FILE: /tmp/diplomat-serial.log
+    cmds:
+      - task: stop-diplomat
+      - '{{.GO}} tool go-rm {{.LOG_FILE}}'
+      - echo "Starting diplomat in QEMU (timeout {{.TIMEOUT}}s)..."
+      - task: run-diplomat-background
+      - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
+      - task: stop-diplomat
+      - '{{.GO}} tool go-sleep 0.3'
+      - 'echo ""'
+      - 'echo "=== Diplomat Serial Output ==="'
+      - '{{.GO}} tool safe-serial-read {{.LOG_FILE}}'
+      - 'echo ""'
+      - 'echo "Log file: {{.LOG_FILE}}"'
+
+  run-diplomat-background:
+    desc: Start QEMU with diplomat in background (internal task)
+    internal: true
+    vars:
+      LOG_FILE: /tmp/diplomat-serial.log
+    cmds:
+      - '{{.GO}} tool go-start {{.QEMU_AMD64}} -machine q35,accel=tcg -cpu max -m 8G -drive if=pflash,format=raw,readonly=on,file={{.OVMF}} -drive file={{.ESP_IMAGE}},format=raw,if=ide -boot c -serial file:{{.LOG_FILE}} -debugcon file:/tmp/diplomat-debug.log -monitor tcp:127.0.0.1:4445,server,nowait -display none -no-reboot'
+      - '{{.GO}} tool go-echo "QEMU (x86_64) started in background"'
+      - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4445"'
+      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
+
+  stop-diplomat:
+    desc: Stop diplomat QEMU instance
+    cmds:
+      - cmd: '{{.GO}} tool go-nc -w 1s -c quit 127.0.0.1 4445'
+        ignore_error: true
+      - '{{.GO}} tool go-sleep 0.5'
 
   # ===========================================================================
   # Run and Stop

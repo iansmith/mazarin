@@ -754,10 +754,13 @@ func initVirtIOGPU() {
 	console.KPrintln("[VirtIO GPU] Display ready")
 
 	// Render boot image if available
-	config := GetRuntimeConfig()
-	if config.BootImagePhysAddr != 0 && config.BootImageSize > 0 {
-		console.KPrintf("[VirtIO GPU] Boot image at 0x%x, size %d\n", config.BootImagePhysAddr, config.BootImageSize)
-		if gpu.RenderBootImage(uintptr(config.BootImagePhysAddr), config.BootImageSize) {
+	// Boot image info was previously in RuntimeConfig but has been removed.
+	// Boot image is now disabled (address = 0).
+	bootImagePhysAddr := uint64(0)
+	bootImageSize := uint64(0)
+	if bootImagePhysAddr != 0 && bootImageSize > 0 {
+		console.KPrintf("[VirtIO GPU] Boot image at 0x%x, size %d\n", bootImagePhysAddr, bootImageSize)
+		if gpu.RenderBootImage(uintptr(bootImagePhysAddr), bootImageSize) {
 			// Transfer and flush the rendered image to display
 			gpu.UpdateDisplay(0, 0, gpu.GetWidth(), gpu.GetHeight())
 			console.KPrintln("[VirtIO GPU] Boot image displayed")
