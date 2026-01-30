@@ -9,13 +9,10 @@ import (
 )
 
 // Shared type aliases for use throughout cardinal
-type SyscallTable = bootloader.SyscallTable
 type LoadedKernel = bootloader.LoadedKernel
 
 // Active function pointer tables
 var plat bootloader.PlatformOps
-var boot bootloader.BootSequence
-var syscallTable SyscallTable
 
 // initDefaultPlatform populates the function pointer tables with
 // cardinal's ARM64 bare-metal implementations.
@@ -44,17 +41,6 @@ func initDefaultPlatform() {
 		GetBlockDevice:   nil, // Set later after VirtIO init
 	}
 
-	syscallTable = SyscallTable{
-		Mmap:    SyscallMmap,
-		Munmap:  SyscallMunmap,
-		Madvise: SyscallMadvise,
-		Brk:     SyscallBrk,
-		Write:   cardinalSyscallWrite,
-		Read:    cardinalSyscallRead,
-		Open:    cardinalSyscallOpen,
-		Close:   cardinalSyscallClose,
-		Futex:   SyscallFutex,
-	}
 }
 
 // Adapter functions that bridge cardinal's existing signatures to shared types.
@@ -136,25 +122,6 @@ func cardinalAllocAndMap(virt uint64, flags uint64) (uint64, error) {
 
 func cardinalFlushTLB(virt uint64) {
 	asm.InvalidateTlbVa(uintptr(virt))
-}
-
-// Syscall adapter functions — bridge cardinal's existing handlers to shared signatures.
-
-func cardinalSyscallWrite(fd int32, buf unsafe.Pointer, count uint64) int64 {
-	return SyscallWrite(fd, buf, count)
-}
-
-func cardinalSyscallRead(fd int32, buf unsafe.Pointer, count uint64) int64 {
-	return SyscallRead(fd, buf, count)
-}
-
-func cardinalSyscallOpen(path unsafe.Pointer, flags, mode int32) int64 {
-	// Cardinal uses SyscallOpenat with AT_FDCWD (-100) as dirfd
-	return SyscallOpenat(-100, path, flags, mode)
-}
-
-func cardinalSyscallClose(fd int32) int64 {
-	return SyscallClose(fd)
 }
 
 // cardinalGetBlockDevice discovers and initializes the VirtIO block device.

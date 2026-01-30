@@ -18,7 +18,7 @@ const (
 	_SYS_sched_getaffinity = 123
 	_SYS_exit_group        = 94
 	_SYS_futex             = 98
-	_SYS_set_tid_address   = 218 // ARM64 doesn't have this; using generic
+	_SYS_set_tid_address   = 218
 	_SYS_clock_gettime     = 113
 	_SYS_gettid            = 178
 	_SYS_getpid            = 172
@@ -32,121 +32,89 @@ const (
 )
 
 // cardinalSyscallBreadcrumb tracks whether any syscall has been dispatched.
-// If cardinal is truly avoiding the Go runtime, this should never be set.
+// Cardinal should not be using the Go runtime, so this should never fire.
 var cardinalSyscallBreadcrumb uint64
 
-// CardinalSyscallDispatch is the central syscall router for cardinal.
-// All syscalls from cardinal's own Go runtime are routed through here
-// via the runtime overlay that patches RawSyscall6.
-// Returns result on success (>= 0) or -errno on error.
+// CardinalSyscallDispatch handles syscalls from cardinal's own Go runtime
+// (via the runtime overlay that patches RawSyscall6).
+// Cardinal doesn't use the Go runtime, so these should never be called.
+// All handlers are simple stubs.
 //
 //go:nosplit
 func CardinalSyscallDispatch(num, a1, a2, a3, a4, a5, a6 uintptr) int64 {
-	// Breadcrumb: record that a syscall was made.
-	// If we are intentionally not using the Go runtime, seeing this
-	// output means something unexpected is issuing syscalls.
 	if cardinalSyscallBreadcrumb == 0 {
-		uartPutsDirect("!!! CARDINAL SYSCALL BREADCRUMB: first syscall dispatched !!!\r\n")
+		uartPutsDirect("\r\n")
+		uartPutsDirect("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\r\n")
+		uartPutsDirect("!!! CARDINAL SYSCALL BREADCRUMB                         !!!\r\n")
+		uartPutsDirect("!!! Cardinal's Go runtime is issuing syscalls!           !!!\r\n")
+		uartPutsDirect("!!! This should NOT happen — cardinal does not use the   !!!\r\n")
+		uartPutsDirect("!!! Go runtime. If you see this, something is wrong.    !!!\r\n")
+		uartPutsDirect("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\r\n")
+		uartPutsDirect("  syscall number: ")
+		uartPutHex64Direct(uint64(num))
+		uartPutsDirect("\r\n")
 	}
 	cardinalSyscallBreadcrumb++
 
 	switch num {
 	case _SYS_mmap:
-		return syscallTable.Mmap(a1, uint64(a2), int32(a3), int32(a4), int32(a5), int64(a6))
-
-	case _SYS_munmap:
-		return syscallTable.Munmap(a1, uint64(a2))
-
-	case _SYS_madvise:
-		return syscallTable.Madvise(a1, uint64(a2), int32(a3))
-
+		return -12 // -ENOMEM
+	case _SYS_munmap, _SYS_madvise, _SYS_mprotect:
+		return 0
 	case _SYS_brk:
-		return syscallTable.Brk(a1)
-
+		return 0
 	case _SYS_futex:
-		return syscallTable.Futex(unsafe.Pointer(a1), int32(a2), uint32(a3),
-			unsafe.Pointer(a4), unsafe.Pointer(a5), uint32(a6))
-
+		return 0
 	case _SYS_write:
-		return syscallTable.Write(int32(a1), unsafe.Pointer(a2), uint64(a3))
-
+		// Write to UART for fd 1 (stdout) or 2 (stderr)
+		fd := int32(a1)
+		if fd == 1 || fd == 2 {
+			buf := unsafe.Pointer(a2)
+			count := uint64(a3)
+			for i := uint64(0); i < count; i++ {
+				uartPutc(*(*byte)(unsafe.Pointer(uintptr(buf) + uintptr(i))))
+			}
+			return int64(count)
+		}
+		return -9 // -EBADF
 	case _SYS_read:
-		return syscallTable.Read(int32(a1), unsafe.Pointer(a2), uint64(a3))
-
+		return 0 // EOF
 	case _SYS_openat:
-		return syscallTable.Open(unsafe.Pointer(a2), int32(a3), int32(a4))
-
+		return -2 // -ENOENT
 	case _SYS_close:
-		return syscallTable.Close(int32(a1))
-
-	case _SYS_mprotect:
-		// No-op on bare metal — all memory is RWX
 		return 0
-
-	case _SYS_rt_sigaction:
-		// No signal support on bare metal
+	case _SYS_rt_sigaction, _SYS_rt_sigprocmask:
 		return 0
-
-	case _SYS_rt_sigprocmask:
-		// No signal support
-		return 0
-
 	case _SYS_sched_getaffinity:
-		// Report 1 CPU
 		if a2 >= 8 && a3 != 0 {
 			*(*uint64)(unsafe.Pointer(a3)) = 1
 			return 8
 		}
 		return -22 // -EINVAL
-
-	case _SYS_set_tid_address:
-		return 1 // fake TID
-
-	case _SYS_gettid:
+	case _SYS_set_tid_address, _SYS_gettid, _SYS_getpid:
 		return 1
-
-	case _SYS_getpid:
-		return 1
-
 	case _SYS_clock_gettime:
 		if a2 != 0 {
-			*(*uint64)(unsafe.Pointer(a2)) = 0     // tv_sec
-			*(*uint64)(unsafe.Pointer(a2 + 8)) = 0 // tv_nsec
+			*(*uint64)(unsafe.Pointer(a2)) = 0
+			*(*uint64)(unsafe.Pointer(a2 + 8)) = 0
 			return 0
 		}
 		return -14 // -EFAULT
-
 	case _SYS_clone:
-		// Single-threaded bare metal — no thread creation
 		return -38 // -ENOSYS
-
-	case _SYS_nanosleep:
-		// Busy-wait approximation — just return success
+	case _SYS_nanosleep, _SYS_sched_yield, _SYS_tgkill:
 		return 0
-
-	case _SYS_sched_yield:
-		return 0
-
-	case _SYS_tgkill:
-		return 0
-
 	case _SYS_prlimit64:
-		// Return success with a large limit
 		if a4 != 0 {
-			// old rlimit: set rlim_cur and rlim_max to large values
-			*(*uint64)(unsafe.Pointer(a4)) = 1024 * 1024     // rlim_cur
-			*(*uint64)(unsafe.Pointer(a4 + 8)) = 1024 * 1024 // rlim_max
+			*(*uint64)(unsafe.Pointer(a4)) = 1024 * 1024
+			*(*uint64)(unsafe.Pointer(a4 + 8)) = 1024 * 1024
 		}
 		return 0
-
 	case _SYS_getrandom:
-		// Fill buffer with zeros (no entropy source)
 		return int64(a2)
-
 	case _SYS_exit, _SYS_exit_group:
 		for {
 		}
-
 	default:
 		return -38 // -ENOSYS
 	}
