@@ -386,7 +386,7 @@ tasks:
     desc: Build minimal test kernel for diplomat ELF loader testing
     deps: [build-dir, mktestkernel]
     cmds:
-      - '{{.BUILD_DIR}}/mktestkernel -o {{.BUILD_DIR}}/testkernel.elf -m "hello, mazarin\r\n"'
+      - '{{.BUILD_DIR}}/mktestkernel -o {{.BUILD_DIR}}/testkernel.elf -addr 0xFFFFFFFF00200000 -m "hello, mazarin\r\n"'
 
   esp:
     desc: Create EFI System Partition image for diplomat testing

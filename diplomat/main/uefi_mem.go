@@ -5,6 +5,8 @@
 
 package main
 
+import "unsafe"
+
 // UEFIAllocatePages allocates pages via UEFI Boot Services
 // Returns the allocated physical address or 0 on failure
 //
@@ -99,6 +101,55 @@ func AllocatePagesForMmap(addr uintptr, size uintptr, fixed bool) (uintptr, bool
 
 	return uintptr(memory), true
 }
+
+// memMapBuf is a global buffer for GetMemoryMap (avoids blowing nosplit stack limit)
+var memMapBuf [16384]byte
+
+// UEFIExitBootServices calls ExitBootServices to terminate UEFI boot services.
+// After this call, boot services memory may be reclaimed and no boot service
+// functions may be called. GetMemoryMap must be called first to obtain the map key.
+//
+//go:nosplit
+func UEFIExitBootServices() EFI_STATUS {
+	if systemTable == nil || systemTable.BootServices == nil {
+		return EFI_NOT_READY
+	}
+
+	bs := systemTable.BootServices
+
+	var mapSize, mapKey, descSize, descVer uint64
+
+	// Get the memory map to obtain the map key
+	mapSize = uint64(len(memMapBuf))
+	status := uefiCallGetMemoryMap(bs.GetMemoryMap,
+		&mapSize, (*uint64)(unsafe.Pointer(&memMapBuf[0])), &mapKey, &descSize, &descVer)
+	if status != EFI_SUCCESS {
+		return status
+	}
+
+	// Call ExitBootServices with the map key
+	status = uefiCallExitBootServices(bs.ExitBootServices,
+		uintptr(imageHandle), mapKey)
+	if status != EFI_SUCCESS {
+		// If it fails, the map key may have changed. Retry once.
+		mapSize = uint64(len(memMapBuf))
+		status = uefiCallGetMemoryMap(bs.GetMemoryMap,
+			&mapSize, (*uint64)(unsafe.Pointer(&memMapBuf[0])), &mapKey, &descSize, &descVer)
+		if status != EFI_SUCCESS {
+			return status
+		}
+		status = uefiCallExitBootServices(bs.ExitBootServices,
+			uintptr(imageHandle), mapKey)
+	}
+
+	return status
+}
+
+//go:noescape
+func uefiCallGetMemoryMap(funcPtr uintptr, mapSize *uint64, mapBuf *uint64, mapKey, descSize, descVer *uint64) EFI_STATUS
+
+//go:noescape
+func uefiCallExitBootServices(funcPtr uintptr, imageHandle uintptr, mapKey uint64) EFI_STATUS
 
 // uefiCallAllocatePages is implemented in assembly (uefi_calls.s)
 // Calls UEFI AllocatePages using MS x64 calling convention

@@ -271,6 +271,83 @@ TEXT ·debugPortOut(SB), NOSPLIT, $0-1
 	OUTB
 	RET
 
+// func uefiCallGetMemoryMap(funcPtr uintptr, mapSize, mapBuf, mapKey, descSize, descVer *uint64) EFI_STATUS
+//
+// Calls UEFI GetMemoryMap with Microsoft x64 calling convention:
+//   EFI_STATUS GetMemoryMap(
+//       IN OUT UINTN *MemoryMapSize,             // RCX
+//       OUT EFI_MEMORY_DESCRIPTOR *MemoryMap,     // RDX
+//       OUT UINTN *MapKey,                        // R8
+//       OUT UINTN *DescriptorSize,                // R9
+//       OUT UINT32 *DescriptorVersion             // Stack at 32(RSP)
+//   );
+TEXT ·uefiCallGetMemoryMap(SB), NOSPLIT, $56-56
+	// Load arguments into MS x64 ABI registers
+	MOVQ mapSize+8(FP), CX      // RCX = MemoryMapSize pointer
+	MOVQ mapBuf+16(FP), DX      // RDX = MemoryMap buffer
+	MOVQ mapKey+24(FP), R8      // R8 = MapKey pointer
+	MOVQ descSize+32(FP), R9    // R9 = DescriptorSize pointer
+
+	// 5th argument goes on stack after 32-byte shadow space
+	MOVQ descVer+40(FP), AX
+	MOVQ AX, 32(SP)
+
+	// Load function pointer and call
+	MOVQ funcPtr+0(FP), AX
+	CALL AX
+
+	// Return EFI_STATUS
+	MOVQ AX, ret+48(FP)
+	RET
+
+// func uefiCallExitBootServices(funcPtr uintptr, imageHandle uintptr, mapKey uint64) EFI_STATUS
+//
+// Calls UEFI ExitBootServices with Microsoft x64 calling convention:
+//   EFI_STATUS ExitBootServices(
+//       IN EFI_HANDLE ImageHandle,   // RCX
+//       IN UINTN MapKey              // RDX
+//   );
+TEXT ·uefiCallExitBootServices(SB), NOSPLIT, $40-32
+	// Load arguments into MS x64 ABI registers
+	MOVQ imageHandle+8(FP), CX  // RCX = ImageHandle
+	MOVQ mapKey+16(FP), DX      // RDX = MapKey
+
+	// Load function pointer and call
+	MOVQ funcPtr+0(FP), AX
+	CALL AX
+
+	// Return EFI_STATUS
+	MOVQ AX, ret+24(FP)
+	RET
+
+// func readCR3() uint64
+TEXT ·readCR3(SB), NOSPLIT, $0-8
+	MOVQ CR3, AX
+	MOVQ AX, ret+0(FP)
+	RET
+
+// func writeCR3(val uint64)
+TEXT ·writeCR3(SB), NOSPLIT, $0-8
+	MOVQ val+0(FP), AX
+	MOVQ AX, CR3
+	RET
+
+// func disableWriteProtect()
+// Clears CR0.WP (bit 16) to allow supervisor writes to read-only pages
+TEXT ·disableWriteProtect(SB), NOSPLIT, $0-0
+	MOVQ CR0, AX
+	ANDQ $~(1<<16), AX
+	MOVQ AX, CR0
+	RET
+
+// func enableWriteProtect()
+// Sets CR0.WP (bit 16) to enforce write protection
+TEXT ·enableWriteProtect(SB), NOSPLIT, $0-0
+	MOVQ CR0, AX
+	ORQ $(1<<16), AX
+	MOVQ AX, CR0
+	RET
+
 // func jumpToEntry(entry uint64)
 //
 // Jumps to a kernel entry point. Does not return.

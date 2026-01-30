@@ -289,22 +289,22 @@ func DiplomatEntry() {
 	printHex(kernel.Entry)
 	printString("\r\n")
 
-	// Build page tables mapping virtual → physical
-	pts, err := BuildPageTables(kernel.LowestVirt, kernel.PhysBase, DefaultKernelMemSize)
+	// Add kernel mapping to UEFI's existing page tables.
+	// Building separate page tables fails because UEFI corrupts them.
+	// Instead, read the current CR3 and graft our kernel mapping into
+	// UEFI's page table hierarchy.
+	printString("Adding kernel mapping to UEFI page tables...\r\n")
+	err = addKernelMappingToCurrentPT(kernel.LowestVirt, kernel.PhysBase, DefaultKernelMemSize)
 	if err != nil {
-		printString("ERROR: page tables: ")
+		printString("ERROR: ")
 		printString(err.Error())
 		printString("\r\n")
 		for {
 		}
 	}
-
-	printString("Page tables built, PML4=")
-	printHex(pts.PML4)
-	printString("\r\n")
-
-	printString("Switching CR3 and jumping to kernel\r\n")
-	JumpToKernelWithCR3(pts.PML4, kernel.Entry)
+	printString("Kernel mapped, jumping...\r\n")
+	// Jump using the current CR3 — just jump directly, no CR3 switch needed
+	JumpToKernel(kernel.Entry)
 
 	// Does not return
 	for {
