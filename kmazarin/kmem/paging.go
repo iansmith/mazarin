@@ -105,13 +105,15 @@ type ptVACacheEntry struct {
 }
 
 // InitPaging initializes the paging subsystem.
-// All values come from runtime configuration (auxv from Cardinal).
+// TTBR values come from CPU registers; PT pool from computed config.
 //
 //go:nosplit
 func InitPaging() {
+	// Read TTBR values directly from CPU registers
+	ttbr1L0PA = readTTBR1EL1()
+	ttbr0L0PA = readTTBR0EL1()
+	// PT pool start comes from computed config
 	cfg := getRuntimeConfigTyped()
-	ttbr1L0PA = uintptr(cfg.TTBR1L0Phys)
-	ttbr0L0PA = uintptr(cfg.TTBR0L0Phys)
 	ptPoolNext = uintptr(cfg.KernelPTPoolStart)
 	ptPoolInitialized = true
 	pagingInitialized = true

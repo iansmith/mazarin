@@ -93,6 +93,8 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 		console.Breadcrumb('R')
 	case 64: // write
 		console.Breadcrumb('W')
+	case 167: // sysinfo
+		console.Breadcrumb('I')
 	default:
 		console.Breadcrumb('?')
 	}

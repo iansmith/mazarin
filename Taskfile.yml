@@ -71,6 +71,7 @@ tasks:
   # ===========================================================================
 
   check-env:
+    run: once
     desc: Verify GO, QEMU, GOTOOLCHAIN, and tool versions
     cmds:
       # Check GOTOOLCHAIN
@@ -87,6 +88,7 @@ tasks:
   # ===========================================================================
 
   build-dir:
+    run: once
     desc: Create build directory
     cmds:
       - '{{.GO}} tool go-mkdir {{.BUILD_DIR}}'
@@ -98,6 +100,7 @@ tasks:
   # ===========================================================================
 
   kmazarin-overlay:
+    run: once
     desc: Generate runtime overlay JSON for kmazarin
     deps: [build-dir]
     sources:
@@ -114,6 +117,7 @@ tasks:
       - '{{.GO}} tool gen-overlay -type kmazarin -patches {{.RUNTIME_PATCHES_DIR}} -o {{.KMAZARIN_OVERLAY_JSON}}'
 
   userspace-overlay:
+    run: once
     desc: Generate runtime overlay JSON for userspace programs
     deps: [build-dir]
     sources:
@@ -144,6 +148,7 @@ tasks:
   # ===========================================================================
 
   embed-kmazarin:
+    run: once
     desc: Generate assembly with embedded kmazarin binary
     deps: [kmazarin]
     sources:
@@ -154,6 +159,7 @@ tasks:
       - '{{.GO}} tool incbin2goasm -sym kmazarin_binary -global -o {{.KMAZARIN_DATA_ASM}} {{.KMAZARIN_ELF}}'
 
   embed-boot-image:
+    run: once
     desc: Generate assembly with embedded boot image
     deps: [build-dir]
     sources:
@@ -169,6 +175,7 @@ tasks:
 
   kmazarin:
     desc: Build kmazarin kernel
+    run: once
     deps: [check-env, kmazarin-overlay]
     sources:
       - 'kmazarin/**/*.go'
@@ -195,6 +202,7 @@ tasks:
   # ===========================================================================
 
   cardinal:
+    run: once
     desc: Build cardinal bootloader
     deps: [check-env, embed-kmazarin, embed-boot-image, cardinal-linux-overlay]
     sources:
@@ -317,6 +325,7 @@ tasks:
   # ===========================================================================
 
   gen-overlay:
+    run: once
     desc: Build the overlay JSON generator tool
     deps: [build-dir]
     sources:
@@ -337,6 +346,7 @@ tasks:
       - '{{.GO}} build -o {{.BUILD_DIR}}/elf2pe ./cmd/elf2pe'
 
   cardinal-linux-overlay:
+    run: once
     desc: Generate overlay JSON for cardinal runtime patches (Linux ARM64→bare metal)
     deps: [gen-overlay]
     sources:

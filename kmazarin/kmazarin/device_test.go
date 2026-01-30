@@ -4,6 +4,7 @@ package main
 import (
 	"fmt"
 	"mazzy/kmazarin/device"
+	"mazzy/shared/constants"
 )
 
 // ManualDeviceDiscovery tests the DTB-based device discovery system
@@ -23,7 +24,8 @@ func ManualDeviceDiscovery() {
 		return
 	}
 
-	dtbAddr := cfg.DtbVirtAddr
+	// Compute DTB virtual address: physical + KernelMMIOOffset
+	dtbAddr := cfg.DtbPhysAddr + uint64(constants.KernelMMIOOffset)
 	fmt.Printf("[DeviceTest] DTB address: 0x%X\n", dtbAddr)
 
 	// Parse DTB and discover devices

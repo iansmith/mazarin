@@ -656,171 +656,43 @@ func abortBoot(message string) {
 //
 //go:nosplit
 func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
-	// Get frame pool info
-	physAlloc := getKFrameAllocator()
-
-	// Use computed values from layout.go (not hardcoded)
-	const KernelVAOffset = uint64(0xFFFFFFFF00000000)
-
-	// PT pool addresses are dynamically computed from LinkerKmazarinSize
-	// by initComputedMemoryLayout() called during MMU setup.
-	// This ensures they're placed AFTER kmazarin's static regions.
-	ptPoolStart := uint64(computedPTPoolStart)
-	ptPoolEnd := uint64(computedPTPoolEnd)
-
-	// Use TTBR1 (kernel-space) addresses for heap - high memory
-	// This tests whether we can make Go work with high-memory addresses
-	// by patching the arena index checks in the Go runtime.
-	heapStart := uint64(constants.KernelHeapStart) // High memory: 0xFFFFFFFF41A00000
-	heapEnd := uint64(constants.KernelHeapEnd)     // High memory: 0xFFFFFFFF45800000
-
-	// Cast StartupParams buffer to RuntimeConfig struct
-	// Note: We're using shared/constants.RuntimeConfig structure
+	// RuntimeConfig: DtbPhysAddr, KmazarinSize, and frame pool bounds.
+	// Kmazarin derives all other values from constants, CPU registers, and DTB.
 	type RuntimeConfig struct {
-		Magic                uint32
-		Version              uint32
-		DtbPhysAddr          uint64
-		DtbSize              uint64
-		DtbVirtAddr          uint64
-		KmazarinPhysAddr     uint64
-		KmazarinSize         uint64
-		FramePoolStart       uint64
-		FramePoolEnd         uint64
-		KernelUartBase       uint64
-		KernelGicBase        uint64
-		TTBR1L0Phys          uint64
-		TTBR0L0Phys          uint64
-		StartupParamsAddr    uint64
-		KernelVAOffset       uint64
-		KernelPTPoolStart    uint64
-		KernelPTPoolEnd      uint64
-		KernelHeapStart      uint64
-		KernelHeapEnd        uint64
-		PageSize             uint64
-		HWCap                uint64
-		G0StackBottom        uint64
-		G0StackTop           uint64
-		G0StackSize          uint64
-		ExceptionStackBottom uint64
-		ExceptionStackTop    uint64
-		ExceptionStackSize   uint64
-		G0StructAddr         uint64 // High-memory address for g0 struct copy
-		AsyncPreemptAddr     uint64 // High-memory address of runtime.asyncPreempt
-		ReadyForAsyncPreempt uint64 // Address of readyForAsyncPreempt flag
-		FramebufferPhysAddr  uint64 // Physical address of VirtIO GPU framebuffer
-		FramebufferSize      uint64 // Size of framebuffer in bytes
-		BootImagePhysAddr    uint64 // Physical address of boot image data
-		BootImageSize        uint64 // Size of boot image in bytes
-		// New memory region fields
-		TotalRAMSize            uint64 // Total RAM size from DTB
-		RAMBaseAddr             uint64 // Base physical address of RAM
-		UserspaceFramePoolStart uint64 // Start PA of userspace frame pool
-		UserspaceFramePoolEnd   uint64 // End PA of userspace frame pool
-		UserspacePTPoolStart    uint64 // Start PA of userspace page table pool
-		UserspacePTPoolEnd      uint64 // End PA of userspace page table pool
+		DtbPhysAddr    uint64
+		KmazarinSize   uint64
+		FramePoolStart uint64
+		FramePoolEnd   uint64
 	}
 
 	config := (*RuntimeConfig)(unsafe.Pointer(kmazarinStartupParamsVA))
 
-	// Populate the struct
-	config.Magic = 0x4B4D5A52 // "KMZR"
-	config.Version = 1
+	// DTB physical address (only bootloader knows where QEMU placed it)
+	config.DtbPhysAddr = uint64(asm.GetDtbBootAddr())
 
-	// DTB information
-	dtbPhys := uint64(asm.GetDtbBootAddr())
-	config.DtbPhysAddr = dtbPhys
-	config.DtbSize = uint64(asm.GetDtbSize())
-	config.DtbVirtAddr = dtbPhys + KernelVAOffset // Compute DTB VA from physical
+	// Kmazarin binary size (cardinal loaded the ELF and computed this)
+	config.KmazarinSize = LinkerKmazarinSize
 
-	// Kmazarin binary information
-	config.KmazarinPhysAddr = uint64(constants.KmazarinLoadAddr)
-	config.KmazarinSize = uint64(kmazarinAllocatedBytes)
-
-	// Frame pool - compute end to match exactly the 64MB kernel limit
-	// Formula: 64MB - kmazarinSize - overhead = max heap bytes
-	// Overhead = TTBR1 region (64KB) + PT pool (512KB) = 576KB
-	const kmazarinTotalLimit = 64 * 1024 * 1024 // 64MB
-	const overheadBytes = 0x90000               // TTBR1 region + PT pool
-
+	// Frame pool: physical frames for kmazarin's kernel heap.
+	// Depends on cardinal's frame allocator state after loading kmazarin.
+	physAlloc := getKFrameAllocator()
 	framePoolStart := uint64(physAlloc.next)
-
-	// Calculate maximum heap bytes available within 64MB limit
+	const kmazarinTotalLimit = 64 * 1024 * 1024
+	const overheadBytes = 0x90000 // TTBR1 region (64KB) + PT pool (512KB)
 	usedByStatic := uint64(kmazarinAllocatedBytes) + overheadBytes
-	if usedByStatic >= kmazarinTotalLimit {
-		// Should never happen - kmazarin binary + overhead exceeds 64MB
-		uartPutsDirect("ERROR: kmazarin static regions exceed 64MB limit\r\n")
-		config.FramePoolStart = framePoolStart
-		config.FramePoolEnd = framePoolStart // No heap available
-	} else {
+	if usedByStatic < kmazarinTotalLimit {
 		maxHeapBytes := kmazarinTotalLimit - usedByStatic
-		// Round down to page boundary
 		maxHeapBytes = maxHeapBytes &^ 0xFFF
 		framePoolEnd := framePoolStart + maxHeapBytes
-
-		// Don't exceed the physical frame allocator's limit
 		if framePoolEnd > uint64(physAlloc.end) {
 			framePoolEnd = uint64(physAlloc.end)
 		}
-
 		config.FramePoolStart = framePoolStart
 		config.FramePoolEnd = framePoolEnd
+	} else {
+		config.FramePoolStart = framePoolStart
+		config.FramePoolEnd = framePoolStart
 	}
-
-	// MMIO devices (already in high memory)
-	config.KernelUartBase = uint64(constants.KernelUartBase)
-	config.KernelGicBase = uint64(constants.KernelGicBase)
-
-	// Page tables
-	config.TTBR1L0Phys = uint64(ttbr1L0PA)
-	config.TTBR0L0Phys = uint64(pageTableL0)
-	config.StartupParamsAddr = uint64(kmazarinStartupParamsVA)
-
-	// Memory layout
-	config.KernelVAOffset = KernelVAOffset
-	config.KernelPTPoolStart = ptPoolStart
-	config.KernelPTPoolEnd = ptPoolEnd
-	config.KernelHeapStart = heapStart
-	config.KernelHeapEnd = heapEnd
-
-	// Standard values
-	config.PageSize = 4096
-	config.HWCap = 0x2 // HWCAP_ASIMD
-
-	// CRITICAL: Pass KERNEL high-memory stack addresses (NOT Cardinal bootstrap stacks)
-	// All values computed from constants, not hardcoded
-	config.G0StackBottom = uint64(constants.KernelG0StackBottom)
-	config.G0StackTop = uint64(constants.KernelG0StackTop)
-	config.G0StackSize = uint64(constants.KernelG0StackSize)
-	config.ExceptionStackBottom = uint64(constants.KernelExcStackBottom)
-	config.ExceptionStackTop = uint64(constants.KernelExcStackTop)
-	config.ExceptionStackSize = uint64(constants.KernelExcStackSize)
-
-	// G0 struct address (for copying g struct to kmazarin high memory)
-	config.G0StructAddr = uint64(LinkerKmazarinG0Struct)
-
-	// AsyncPreempt address (for timer-based preemption in kmazarin)
-	config.AsyncPreemptAddr = uint64(LinkerKmazarinAsyncPreempt)
-
-	// ReadyForAsyncPreempt flag address (kmazarin checks this before preempting)
-	config.ReadyForAsyncPreempt = uint64(LinkerKmazarinReadyForPreempt)
-
-	// VirtIO GPU framebuffer information
-	config.FramebufferPhysAddr = uint64(constants.FramebufferPhysAddr)
-	config.FramebufferSize = uint64(constants.FramebufferSize)
-
-	// Boot image information (embedded mazarin image)
-	imageStart := asm.ImageDataStart()
-	imageEnd := asm.ImageDataEnd()
-	config.BootImagePhysAddr = uint64(imageStart)
-	config.BootImageSize = uint64(imageEnd - imageStart)
-
-	// Memory region layout from DTB detection (populated by detectAndComputeMemoryRegions)
-	config.TotalRAMSize = detectedRAMSize
-	config.RAMBaseAddr = detectedRAMBase
-	config.UserspaceFramePoolStart = userspaceFramePoolStart
-	config.UserspaceFramePoolEnd = userspaceFramePoolEnd
-	config.UserspacePTPoolStart = userspacePTPoolStart
-	config.UserspacePTPoolEnd = userspacePTPoolEnd
 
 	// Ensure writes complete
 	asm.Dsb()

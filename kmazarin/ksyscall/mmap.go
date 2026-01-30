@@ -329,38 +329,35 @@ func kernelBumpAlloc(size uint64) uint64 {
 	}
 }
 
-// runtimeConfigStruct is a local copy of RuntimeConfig to avoid circular imports.
-// Must match the layout in shared/constants/runtime_config.go exactly.
+// runtimeConfigStruct is the full config view returned by main package.
+// Layout MUST match main.fullConfig exactly.
 type runtimeConfigStruct struct {
-	Magic                uint32
-	Version              uint32
-	DtbPhysAddr          uint64
-	DtbSize              uint64
-	DtbVirtAddr          uint64 // High-memory virtual address of DTB
-	KmazarinPhysAddr     uint64
-	KmazarinSize         uint64
-	FramePoolStart       uint64
-	FramePoolEnd         uint64
-	KernelUartBase       uint64
-	KernelGicBase        uint64
-	TTBR1L0Phys          uint64
-	TTBR0L0Phys          uint64
-	StartupParamsAddr    uint64
-	KernelVAOffset       uint64
-	KernelPTPoolStart    uint64
-	KernelPTPoolEnd      uint64
-	KernelHeapStart      uint64
-	KernelHeapEnd        uint64
-	PageSize             uint64
-	HWCap                uint64
-	G0StackBottom        uint64
-	G0StackTop           uint64
-	G0StackSize          uint64 // Size of g0 stack
-	ExceptionStackBottom uint64 // Bottom of exception stack
-	ExceptionStackTop    uint64
-	ExceptionStackSize   uint64
-	G0StructAddr         uint64 // High-memory address where g0 struct should be copied
-	AsyncPreemptAddr     uint64 // High-memory address of runtime.asyncPreempt function
+	KernelVAOffset          uint64
+	KmazarinSize            uint64
+	KmazarinPhysAddr        uint64
+	FramePoolStart          uint64
+	FramePoolEnd            uint64
+	KernelPTPoolStart       uint64
+	KernelPTPoolEnd         uint64
+	KernelHeapStart         uint64
+	KernelHeapEnd           uint64
+	G0StackBottom           uint64
+	G0StackTop              uint64
+	G0StackSize             uint64
+	ExceptionStackBottom    uint64
+	ExceptionStackTop       uint64
+	ExceptionStackSize      uint64
+	FramebufferPhysAddr     uint64
+	FramebufferSize         uint64
+	BootImagePhysAddr       uint64
+	BootImageSize           uint64
+	TotalRAMSize            uint64
+	RAMBaseAddr             uint64
+	UserspaceFramePoolStart uint64
+	UserspaceFramePoolEnd   uint64
+	UserspacePTPoolStart    uint64
+	UserspacePTPoolEnd      uint64
+	DtbPhysAddr             uint64
 }
 
 // getRuntimeConfigTyped returns the runtime config with proper type.

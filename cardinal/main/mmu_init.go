@@ -497,6 +497,13 @@ func setupKernelDemandPaging() {
 		mapKernelPage(pa+KernelVAOffset, pa, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 	}
 
+	// Map DTB region to kernel high memory so kmazarin can parse it
+	dtbStart := asm.GetDtbBootAddr()
+	dtbSz := asm.GetDtbSize()
+	for pa := dtbStart; pa < dtbStart+dtbSz; pa += PAGE_SIZE {
+		mapKernelPage(pa+KernelVAOffset, pa, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
+	}
+
 	// Compute memory layout from LinkerKmazarinSize (derived from kmazarin.elf at build time)
 	// This ensures TTBR1 region and PT pool are placed AFTER kmazarin's static regions,
 	// avoiding the corruption bug where hardcoded offsets overlapped with mheap_.

@@ -5,6 +5,7 @@ package main
 import (
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
+	"mazzy/shared/constants"
 	"unsafe"
 )
 
@@ -27,16 +28,14 @@ import (
 //
 //go:nosplit
 func unmapCardinal() {
-	cfg := GetRuntimeConfig()
-	if cfg == nil {
-		KernelPanic("unmapCardinal: RuntimeConfig not available")
-	}
+	// KernelVAOffset is a constant - no need to read from RuntimeConfig
+	vaOffset := uint64(constants.KernelMMIOOffset)
 
 	// Read TTBR0_EL1 to get L0 page table physical address
 	ttbr0Phys := readTTBR0()
 
 	// Convert to high-memory virtual address (page tables mapped via TTBR1)
-	l0VA := uintptr(ttbr0Phys + cfg.KernelVAOffset)
+	l0VA := uintptr(ttbr0Phys + vaOffset)
 
 	// Read L0[0] to get L1 table address
 	l0Table := (*[512]uint64)(unsafe.Pointer(l0VA))
@@ -49,7 +48,7 @@ func unmapCardinal() {
 
 	// Extract L1 table physical address (bits 47:12)
 	l1Phys := l0Entry0 & 0x0000FFFFFFFFF000
-	l1VA := uintptr(l1Phys + cfg.KernelVAOffset)
+	l1VA := uintptr(l1Phys + vaOffset)
 
 	// Zero L1 entries 1-2 (covers 0x40000000 - 0xBFFFFFFF)
 	// This unmaps Cardinal (0x40100000) and page tables (0x41000000)
