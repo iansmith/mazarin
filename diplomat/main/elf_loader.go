@@ -8,13 +8,7 @@ import (
 	"unsafe"
 )
 
-// LoadedKernel contains information about the loaded kernel
-type LoadedKernel struct {
-	Entry       uint64 // Entry point virtual address
-	LowestVirt  uint64 // Lowest virtual address (from ELF LOAD segments)
-	HighestVirt uint64 // Highest virtual address (exclusive)
-	PhysBase    uint64 // Physical base address where kernel was loaded
-}
+// LoadedKernel is bootloader.LoadedKernel (re-exported via type alias in platform.go)
 
 // Global buffer for file reading (avoid allocation)
 var elfReadBuf [4096]byte

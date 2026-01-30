@@ -83,9 +83,6 @@ func timerPreemptInternal() {
 	uartBase := asm.GetUartBase()
 	asm.MmioWrite(uartBase, uint32('.')) // Print '.' for each timer interrupt
 
-	// Signal the monitor channels (GC, scavenger, schedtrace)
-	timerSignalMonitors()
-
 	// Signal the simple test channel (for backwards compatibility)
 	if simpleSignalChan != nil {
 		simpleSignalChan.send()
@@ -110,9 +107,6 @@ func timerPreemptInternal() {
 //go:nosplit
 //go:noinline
 func timerSignal() {
-	// Signal the monitor channels (GC, scavenger, schedtrace)
-	timerSignalMonitors()
-
 	// Signal the simple test channel (for backwards compatibility)
 	if simpleSignalChan != nil {
 		simpleSignalChan.send()

@@ -21,12 +21,31 @@ const (
 	SYS_gettid           = 186
 )
 
+// diplomatSyscallBreadcrumb tracks whether any syscall has been dispatched.
+var diplomatSyscallBreadcrumb uint64
+
+// diplomatPrintBreadcrumb prints the breadcrumb message char by char (nosplit-safe).
+//
+//go:nosplit
+func diplomatPrintBreadcrumb() {
+	msg := "!!! DIPLOMAT SYSCALL BREADCRUMB: first syscall dispatched !!!\r\n"
+	for i := 0; i < len(msg); i++ {
+		printChar(uint16(msg[i]))
+	}
+}
+
 // DiplomatSyscallDispatch is the central syscall router for diplomat.
 // All syscalls from the Go runtime are routed through here.
 // Returns result on success (>= 0) or -errno on error.
 //
 //go:nosplit
 func DiplomatSyscallDispatch(num, a1, a2, a3, a4, a5, a6 uintptr) int64 {
+	// Breadcrumb: record that a syscall was made.
+	if diplomatSyscallBreadcrumb == 0 {
+		diplomatPrintBreadcrumb()
+	}
+	diplomatSyscallBreadcrumb++
+
 	switch num {
 	case SYS_mmap:
 		// mmap(addr uintptr, length uint64, prot int32, flags int32, fd int32, offset int64) int64

@@ -629,30 +629,9 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	// Post-MMU device initialization
 	initDeviceTree()
 
-	// DISABLED: Let kmazarin initialize GIC from scratch
-	// gicInit()
-	// asm.EnableIrqs()
-
-	// Call runtime.args with minimal argv/auxv structure
-	result := asm.CallRuntimeArgs()
-	if result != 0 {
-		uartPutsDirect("ERROR: runtime.args failed\r\n")
-		for {
-		}
-	}
-
-	// DISABLED: Don't initialize timer - kmazarin will do it
-	// timerInit()
-
-	// Initialize thread table (M0 as thread 0 for syscall handling)
-	InitThreads()
-
-	// Load and run kmazarin (never returns)
-	loadAndRunKmazarin()
-
-	// Should never return - if we get here, something went very wrong
-	print("FATAL: loadAndRunKmazarin returned unexpectedly\r\n")
-	asm.SemihostingExit()
+	// Boot sequence: load and run kmazarin via function pointer tables
+	// (initialized in Phase 5: platform_arm64.go)
+	cardinalBoot()
 }
 
 // abortBoot aborts the boot process with a fatal error message
@@ -661,10 +640,10 @@ func kernelMainInternal(r0, r1, atags uint32) {
 //
 //go:nosplit
 func abortBoot(message string) {
-	print("FATAL: ")
-	print(message)
-	print("\r\n")
-	print("Aborting boot process...\r\n")
+	uartPutsDirect("FATAL: ")
+	uartPutsDirect(message)
+	uartPutsDirect("\r\n")
+	uartPutsDirect("Aborting boot process...\r\n")
 	asm.QemuExit()
 	for {
 		// Hang forever

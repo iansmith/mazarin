@@ -196,18 +196,19 @@ tasks:
 
   cardinal:
     desc: Build cardinal bootloader
-    deps: [check-env, embed-kmazarin, embed-boot-image]
+    deps: [check-env, embed-kmazarin, embed-boot-image, cardinal-linux-overlay]
     sources:
       - 'cardinal/**/*.go'
       - 'cardinal/**/*.s'
       - '{{.KMAZARIN_DATA_ASM}}'
       - '{{.BOOT_IMAGE_DATA_ASM}}'
       - '{{.KMAZARIN_ELF}}'
+      - '{{.BUILD_DIR}}/cardinal-linux-overlay.json'
     generates:
       - '{{.CARDINAL_ELF}}'
     cmds:
       - echo "Building cardinal bootloader..."
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build {{.GCFLAGS}} -ldflags="-checklinkname=0 -T 0x40100000" -o {{.CARDINAL_ELF}} ./cardinal/main'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build {{.GCFLAGS}} -ldflags="-checklinkname=0 -T 0x40100000" -overlay={{.BUILD_DIR}}/cardinal-linux-overlay.json -o {{.CARDINAL_ELF}} ./cardinal/main'
       - echo "Patching entry point to _cardinal_boot..."
       - '{{.GO}} tool patch-entry {{.CARDINAL_ELF}} _cardinal_boot'
       - echo "Patching linker values..."
@@ -297,17 +298,18 @@ tasks:
   # ===========================================================================
 
   disk:
-    desc: Create FAT32 disk image with flock binaries
-    deps: [priest, priest2, helloworld-maz]
+    desc: Create FAT32 disk image with flock binaries and kmazarin kernel
+    deps: [priest, priest2, helloworld-maz, kmazarin]
     sources:
       - '{{.PRIEST_ELF}}'
       - '{{.PRIEST2_ELF}}'
       - '{{.HELLOWORLD_MAZ}}'
+      - '{{.KMAZARIN_ELF}}'
     generates:
       - '{{.DISK_IMAGE}}'
     cmds:
       - echo "Creating FAT32 disk image..."
-      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.PRIEST_ELF}} {{.PRIEST2_ELF}} {{.HELLOWORLD_MAZ}}'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.PRIEST_ELF}} {{.PRIEST2_ELF}} {{.HELLOWORLD_MAZ}} {{.KMAZARIN_ELF}}'
       - echo "Disk image created at {{.DISK_IMAGE}}"
 
   # ===========================================================================
@@ -333,6 +335,16 @@ tasks:
       - '{{.BUILD_DIR}}/elf2pe'
     cmds:
       - '{{.GO}} build -o {{.BUILD_DIR}}/elf2pe ./cmd/elf2pe'
+
+  cardinal-linux-overlay:
+    desc: Generate overlay JSON for cardinal runtime patches (Linux ARM64→bare metal)
+    deps: [gen-overlay]
+    sources:
+      - 'runtime-patches/cardinal-linux/**/*'
+    generates:
+      - '{{.BUILD_DIR}}/cardinal-linux-overlay.json'
+    cmds:
+      - '{{.BUILD_DIR}}/gen-overlay -type cardinal-linux -patches runtime-patches/cardinal-linux -o {{.BUILD_DIR}}/cardinal-linux-overlay.json'
 
   diplomat-linux-overlay:
     desc: Generate overlay JSON for diplomat runtime patches (Linux→UEFI)

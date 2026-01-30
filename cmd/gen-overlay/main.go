@@ -33,6 +33,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Types:\n")
 		fmt.Fprintf(os.Stderr, "  kmazarin   - Kernel runtime patches\n")
 		fmt.Fprintf(os.Stderr, "  userspace  - Userspace runtime patches\n")
+		fmt.Fprintf(os.Stderr, "  cardinal-linux  - Cardinal bootloader runtime patches (Linux ARM64→bare metal)\n")
 		fmt.Fprintf(os.Stderr, "  diplomat        - UEFI bootloader runtime patches (Windows→UEFI, deprecated)\n")
 		fmt.Fprintf(os.Stderr, "  diplomat-linux  - UEFI bootloader runtime patches (Linux→UEFI)\n\n")
 		flag.PrintDefaults()
@@ -69,6 +70,8 @@ func main() {
 		err = buildUserspaceOverlay(&overlay, goroot, absPatchesDir)
 	case "diplomat":
 		err = buildDiplomatOverlay(&overlay, goroot, absPatchesDir)
+	case "cardinal-linux":
+		err = buildCardinalLinuxOverlay(&overlay, goroot, absPatchesDir)
 	case "diplomat-linux":
 		err = buildDiplomatLinuxOverlay(&overlay, goroot, absPatchesDir)
 	default:
@@ -149,6 +152,27 @@ func buildUserspaceOverlay(overlay *Overlay, goroot, patchesDir string) error {
 		"syscall/asm_linux_arm64.s":   "asm_linux_arm64.s",
 		"runtime/cgo_mmap.go":         "runtime/cgo_mmap.go",
 		"runtime/lock_spinbit.go":     "runtime/lock_spinbit.go",
+	}
+
+	for goFile, patchFile := range patches {
+		src := filepath.Join(goroot, "src", goFile)
+		dst := filepath.Join(patchesDir, patchFile)
+		if _, err := os.Stat(dst); err != nil {
+			return fmt.Errorf("patch file not found: %s", dst)
+		}
+		overlay.Replace[src] = dst
+	}
+
+	return nil
+}
+
+func buildCardinalLinuxOverlay(overlay *Overlay, goroot, patchesDir string) error {
+	// Cardinal patches for Linux ARM64 runtime to make it bare-metal compatible.
+	// We're building with GOOS=linux GOARCH=arm64, so we patch the Linux syscall/runtime.
+	patches := map[string]string{
+		"syscall/syscall_linux.go":    "syscall_linux.go",
+		"runtime/sys_linux_arm64.s":   "sys_linux_arm64.s",
+		"runtime/mbitmap.go":          "mbitmap.go",
 	}
 
 	for goFile, patchFile := range patches {
