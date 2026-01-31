@@ -14,6 +14,7 @@ import (
 	"go/printer"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -36,18 +37,37 @@ type TransformResult struct {
 }
 
 var (
-	flagRuntimeDir = flag.String("runtime", "", "Path to Go runtime source directory ($GOROOT/src/runtime)")
-	flagOutputDir  = flag.String("output", "", "Output directory for stub files")
-	flagOverlayOut = flag.String("overlay", "", "Output path for overlay JSON")
-	flagManifest   = flag.String("manifest", "", "Output path for stub manifest")
-	flagVerbose    = flag.Bool("v", false, "Verbose output")
+	flagRuntimeDir    = flag.String("runtime", "", "Path to Go runtime source directory ($GOROOT/src/runtime)")
+	flagOutputDir     = flag.String("output", "", "Output directory for stub files")
+	flagOverlayOut    = flag.String("overlay", "", "Output path for overlay JSON")
+	flagManifest      = flag.String("manifest", "", "Output path for stub manifest")
+	flagVerbose       = flag.Bool("v", false, "Verbose output")
+	flagGo            = flag.String("go", "", "Path to Go binary (used with -runtime-from-go)")
+	flagRuntimeFromGo = flag.Bool("runtime-from-go", false, "Discover runtime dir via 'go env GOROOT' using the -go binary")
 )
 
 func main() {
 	flag.Parse()
 
+	// If -runtime-from-go is set, discover runtime dir from the Go binary
+	if *flagRuntimeFromGo {
+		if *flagGo == "" {
+			fmt.Fprintf(os.Stderr, "Error: -runtime-from-go requires -go=<path-to-go-binary>\n")
+			os.Exit(1)
+		}
+		out, err := exec.Command(*flagGo, "env", "GOROOT").Output()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error running '%s env GOROOT': %v\n", *flagGo, err)
+			os.Exit(1)
+		}
+		goroot := strings.TrimSpace(string(out))
+		runtimeDir := filepath.Join(goroot, "src", "runtime")
+		flagRuntimeDir = &runtimeDir
+	}
+
 	if *flagRuntimeDir == "" || *flagOutputDir == "" || *flagOverlayOut == "" {
 		fmt.Fprintf(os.Stderr, "Usage: %s -runtime=<dir> -output=<dir> -overlay=<file.json> [-manifest=<file>] [-v]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "   or: %s -go=<path> -runtime-from-go -output=<dir> -overlay=<file.json> [-manifest=<file>] [-v]\n", os.Args[0])
 		os.Exit(1)
 	}
 

@@ -32,6 +32,10 @@ vars:
   TARGET_GOOS: linux
   BUILD_DIR: build
 
+  # Kmazarin load address - must match cardinal/constants.KmazarinLoadAddr
+  # If the constant changes, check-env will fail with a clear error message.
+  KMAZARIN_LOAD_ADDR: "0x43800000"
+
   # Debug build: disable optimizations and inlining
   # Usage: DEBUG=1 task cardinal
   GCFLAGS: '{{if eq .DEBUG "1"}}-gcflags=all=-N -l{{end}}'
@@ -81,7 +85,9 @@ tasks:
       - '{{.GO}} tool check-version -go {{.GO}} -min 1.24'
       # Check QEMU version >= 10.2
       - '{{.GO}} tool check-version -qemu {{.QEMU}} -min 10.2'
-      - echo "Environment check passed"
+      # Verify KMAZARIN_LOAD_ADDR matches the constant
+      - '{{.GO}} tool print-kmazarin-addr -check {{.KMAZARIN_LOAD_ADDR}}'
+      - '{{.GO}} tool go-echo "Environment check passed"'
     silent: true
 
   # ===========================================================================
@@ -137,12 +143,9 @@ tasks:
     generates:
       - '{{.THIN_OVERLAY_JSON}}'
       - '{{.BUILD_DIR}}/thin-stubs.manifest'
-    vars:
-      GOROOT:
-        sh: '{{.GO}} env GOROOT'
     cmds:
-      - '{{.GO}} tool gen-ast-stubs -runtime={{.GOROOT}}/src/runtime -output={{.BUILD_DIR}}/thin-overlay/runtime -overlay={{.THIN_OVERLAY_JSON}} -manifest={{.BUILD_DIR}}/thin-stubs.manifest'
-      - echo "Generated {{.THIN_OVERLAY_JSON}}"
+      - '{{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -output={{.BUILD_DIR}}/thin-overlay/runtime -overlay={{.THIN_OVERLAY_JSON}} -manifest={{.BUILD_DIR}}/thin-stubs.manifest'
+      - '{{.GO}} tool go-echo "Generated {{.THIN_OVERLAY_JSON}}"'
 
   # ===========================================================================
   # Boot Image Conversion
@@ -174,18 +177,15 @@ tasks:
       - '{{.KMAZARIN_OVERLAY_JSON}}'
     generates:
       - '{{.KMAZARIN_ELF}}'
-    vars:
-      KMAZARIN_LOAD_ADDR:
-        sh: '{{.GO}} tool print-kmazarin-addr'
     cmds:
-      - echo "Building kmazarin kernel (static Go binary at {{.KMAZARIN_LOAD_ADDR}})..."
+      - '{{.GO}} tool go-echo "Building kmazarin kernel (static Go binary at {{.KMAZARIN_LOAD_ADDR}})..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.KMAZARIN_OVERLAY_JSON}} {{.GCFLAGS}} -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" -o {{.KMAZARIN_ELF}} ./kmazarin/kmazarin'
-      - echo "Fixing kmazarin ELF for QEMU compatibility..."
+      - '{{.GO}} tool go-echo "Fixing kmazarin ELF for QEMU compatibility..."'
       - '{{.GO}} tool fix-go-elf {{.KMAZARIN_ELF}}'
-      - echo "Relocating kmazarin to high memory (0xFFFFFFFF41800000)..."
+      - '{{.GO}} tool go-echo "Relocating kmazarin to high memory (0xFFFFFFFF41800000)..."'
       - '{{.GO}} tool relocate-kmazarin {{.KMAZARIN_ELF}} {{.KMAZARIN_ELF}}.tmp'
       - '{{.GO}} tool go-mv {{.KMAZARIN_ELF}}.tmp {{.KMAZARIN_ELF}}'
-      - echo "Kmazarin kernel built at {{.KMAZARIN_ELF}}"
+      - '{{.GO}} tool go-echo "Kmazarin kernel built at {{.KMAZARIN_ELF}}"'
 
   # ===========================================================================
   # Cardinal Bootloader Build
@@ -203,15 +203,15 @@ tasks:
     generates:
       - '{{.CARDINAL_ELF}}'
     cmds:
-      - echo "Building cardinal bootloader..."
+      - '{{.GO}} tool go-echo "Building cardinal bootloader..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build {{.GCFLAGS}} -ldflags="-checklinkname=0 -T 0x40100000" -overlay={{.BUILD_DIR}}/cardinal-linux-overlay.json -o {{.CARDINAL_ELF}} ./cardinal/main'
-      - echo "Patching entry point to _cardinal_boot..."
+      - '{{.GO}} tool go-echo "Patching entry point to _cardinal_boot..."'
       - '{{.GO}} tool patch-entry {{.CARDINAL_ELF}} _cardinal_boot'
-      - echo "Patching linker values..."
+      - '{{.GO}} tool go-echo "Patching linker values..."'
       - '{{.GO}} tool compute-linker-values -patch -kmazarin {{.KMAZARIN_ELF}} {{.CARDINAL_ELF}}'
-      - echo "Fixing ELF for QEMU compatibility..."
+      - '{{.GO}} tool go-echo "Fixing ELF for QEMU compatibility..."'
       - '{{.GO}} tool fix-go-elf {{.CARDINAL_ELF}}'
-      - echo "Cardinal ready at {{.CARDINAL_ELF}}"
+      - '{{.GO}} tool go-echo "Cardinal ready at {{.CARDINAL_ELF}}"'
 
   # ===========================================================================
   # Flock Userspace Programs
@@ -228,9 +228,9 @@ tasks:
     generates:
       - '{{.PRIESTSIEVE_ELF}}'
     cmds:
-      - echo "Building priestsieve (prime sieve test with overlay)..."
+      - '{{.GO}} tool go-echo "Building priestsieve (prime sieve test with overlay)..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.PRIESTSIEVE_ELF}} ./flock/cmd/priestsieve'
-      - echo "Priestsieve built at {{.PRIESTSIEVE_ELF}}"
+      - '{{.GO}} tool go-echo "Priestsieve built at {{.PRIESTSIEVE_ELF}}"'
 
   priest2:
     desc: Build priest2 scheduling test program
@@ -243,9 +243,9 @@ tasks:
     generates:
       - '{{.PRIEST2_ELF}}'
     cmds:
-      - echo "Building priest2 (scheduling test program)..."
+      - '{{.GO}} tool go-echo "Building priest2 (scheduling test program)..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.PRIEST2_ELF}} ./flock/cmd/priest2'
-      - echo "Priest2 built at {{.PRIEST2_ELF}}"
+      - '{{.GO}} tool go-echo "Priest2 built at {{.PRIEST2_ELF}}"'
 
   priest3:
     desc: Build priest3 scheduling test program (prints 4s, 6s, 7s)
@@ -258,9 +258,9 @@ tasks:
     generates:
       - '{{.PRIEST3_ELF}}'
     cmds:
-      - echo "Building priest3 (scheduling test program)..."
+      - '{{.GO}} tool go-echo "Building priest3 (scheduling test program)..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.PRIEST3_ELF}} ./flock/cmd/priest3'
-      - echo "Priest3 built at {{.PRIEST3_ELF}}"
+      - '{{.GO}} tool go-echo "Priest3 built at {{.PRIEST3_ELF}}"'
 
   sievetest:
     desc: Build sievetest (simple prime sieve for multi-priest testing)
@@ -272,9 +272,9 @@ tasks:
     generates:
       - '{{.SIEVETEST_ELF}}'
     cmds:
-      - echo "Building sievetest..."
+      - '{{.GO}} tool go-echo "Building sievetest..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVETEST_ELF}} ./flock/cmd/sievetest'
-      - echo "Sievetest built at {{.SIEVETEST_ELF}}"
+      - '{{.GO}} tool go-echo "Sievetest built at {{.SIEVETEST_ELF}}"'
 
   sieve3:
     desc: Build sieve3 (single-threaded prime sieve, worker 3)
@@ -286,9 +286,9 @@ tasks:
     generates:
       - '{{.SIEVE3_ELF}}'
     cmds:
-      - echo "Building sieve3..."
+      - '{{.GO}} tool go-echo "Building sieve3..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVE3_ELF}} ./flock/cmd/sieve3'
-      - echo "Sieve3 built at {{.SIEVE3_ELF}}"
+      - '{{.GO}} tool go-echo "Sieve3 built at {{.SIEVE3_ELF}}"'
 
   sieve5:
     desc: Build sieve5 (single-threaded prime sieve, worker 5)
@@ -300,9 +300,9 @@ tasks:
     generates:
       - '{{.SIEVE5_ELF}}'
     cmds:
-      - echo "Building sieve5..."
+      - '{{.GO}} tool go-echo "Building sieve5..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVE5_ELF}} ./flock/cmd/sieve5'
-      - echo "Sieve5 built at {{.SIEVE5_ELF}}"
+      - '{{.GO}} tool go-echo "Sieve5 built at {{.SIEVE5_ELF}}"'
 
   sieve6:
     desc: Build sieve6 (single-threaded prime sieve, worker 6)
@@ -314,9 +314,9 @@ tasks:
     generates:
       - '{{.SIEVE6_ELF}}'
     cmds:
-      - echo "Building sieve6..."
+      - '{{.GO}} tool go-echo "Building sieve6..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVE6_ELF}} ./flock/cmd/sieve6'
-      - echo "Sieve6 built at {{.SIEVE6_ELF}}"
+      - '{{.GO}} tool go-echo "Sieve6 built at {{.SIEVE6_ELF}}"'
 
   sieve7:
     desc: Build sieve7 (single-threaded prime sieve, worker 7)
@@ -328,9 +328,9 @@ tasks:
     generates:
       - '{{.SIEVE7_ELF}}'
     cmds:
-      - echo "Building sieve7..."
+      - '{{.GO}} tool go-echo "Building sieve7..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVE7_ELF}} ./flock/cmd/sieve7'
-      - echo "Sieve7 built at {{.SIEVE7_ELF}}"
+      - '{{.GO}} tool go-echo "Sieve7 built at {{.SIEVE7_ELF}}"'
 
   sieve8:
     desc: Build sieve8 (single-threaded prime sieve, worker 8)
@@ -342,9 +342,9 @@ tasks:
     generates:
       - '{{.SIEVE8_ELF}}'
     cmds:
-      - echo "Building sieve8..."
+      - '{{.GO}} tool go-echo "Building sieve8..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVE8_ELF}} ./flock/cmd/sieve8'
-      - echo "Sieve8 built at {{.SIEVE8_ELF}}"
+      - '{{.GO}} tool go-echo "Sieve8 built at {{.SIEVE8_ELF}}"'
 
   sieve9:
     desc: Build sieve9 (single-threaded prime sieve, worker 9)
@@ -356,9 +356,9 @@ tasks:
     generates:
       - '{{.SIEVE9_ELF}}'
     cmds:
-      - echo "Building sieve9..."
+      - '{{.GO}} tool go-echo "Building sieve9..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVE9_ELF}} ./flock/cmd/sieve9'
-      - echo "Sieve9 built at {{.SIEVE9_ELF}}"
+      - '{{.GO}} tool go-echo "Sieve9 built at {{.SIEVE9_ELF}}"'
 
   helloworld:
     desc: Build helloworld test program
@@ -371,9 +371,9 @@ tasks:
     generates:
       - '{{.HELLOWORLD_ELF}}'
     cmds:
-      - echo "Building helloworld (userspace program)..."
+      - '{{.GO}} tool go-echo "Building helloworld (userspace program)..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.HELLOWORLD_ELF}} ./flock/cmd/helloworld'
-      - echo "Helloworld built at {{.HELLOWORLD_ELF}}"
+      - '{{.GO}} tool go-echo "Helloworld built at {{.HELLOWORLD_ELF}}"'
 
   helloworld-thin:
     desc: Build helloworld with thin client overlay (minimal runtime)
@@ -385,9 +385,9 @@ tasks:
     generates:
       - '{{.HELLOWORLD_THIN_ELF}}'
     cmds:
-      - echo "Building helloworld-thin (minimal runtime stubs)..."
+      - '{{.GO}} tool go-echo "Building helloworld-thin (minimal runtime stubs)..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.THIN_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.HELLOWORLD_THIN_ELF}} ./flock/cmd/helloworld'
-      - echo "Helloworld-thin built at {{.HELLOWORLD_THIN_ELF}}"
+      - '{{.GO}} tool go-echo "Helloworld-thin built at {{.HELLOWORLD_THIN_ELF}}"'
 
   helloworld-maz:
     desc: Build helloworld.maz (direct SVC, no overlay)
@@ -398,9 +398,9 @@ tasks:
     generates:
       - '{{.HELLOWORLD_MAZ}}'
     cmds:
-      - echo "Building helloworld.maz (direct SVC, no overlay)..."
+      - '{{.GO}} tool go-echo "Building helloworld.maz (direct SVC, no overlay)..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build {{.GCFLAGS}} -o {{.HELLOWORLD_MAZ}} ./flock/cmd/helloworld'
-      - echo "Helloworld.maz built at {{.HELLOWORLD_MAZ}}"
+      - '{{.GO}} tool go-echo "Helloworld.maz built at {{.HELLOWORLD_MAZ}}"'
 
   # ===========================================================================
   # Disk Image
@@ -426,9 +426,9 @@ tasks:
     generates:
       - '{{.DISK_IMAGE}}'
     cmds:
-      - echo "Creating FAT32 disk image..."
+      - '{{.GO}} tool go-echo "Creating FAT32 disk image..."'
       - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.PRIESTSIEVE_ELF}} {{.PRIEST2_ELF}} {{.PRIEST3_ELF}} {{.SIEVETEST_ELF}} {{.SIEVE3_ELF}} {{.SIEVE5_ELF}} {{.SIEVE6_ELF}} {{.SIEVE7_ELF}} {{.SIEVE8_ELF}} {{.SIEVE9_ELF}} {{.HELLOWORLD_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin'
-      - echo "Disk image created at {{.DISK_IMAGE}}"
+      - '{{.GO}} tool go-echo "Disk image created at {{.DISK_IMAGE}}"'
 
   # ===========================================================================
   # Diplomat - x86_64 UEFI Bootloader
@@ -487,12 +487,12 @@ tasks:
     generates:
       - '{{.DIPLOMAT_EFI}}'
     cmds:
-      - echo "Building diplomat for x86_64 UEFI (via Linux/amd64)..."
+      - '{{.GO}} tool go-echo "Building diplomat for x86_64 UEFI (via Linux/amd64)..."'
       # Step 1: Build as Linux ELF with runtime patches
-      - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 {{.GO}} build -ldflags="-checklinkname=0" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.BUILD_DIR}}/diplomat.elf ./diplomat/main
+      - 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 {{.GO}} build -ldflags="-checklinkname=0" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.BUILD_DIR}}/diplomat.elf ./diplomat/main'
       # Step 2: Convert ELF to PE format for UEFI
       - '{{.BUILD_DIR}}/elf2pe {{.BUILD_DIR}}/diplomat.elf {{.DIPLOMAT_EFI}}'
-      - echo "Diplomat EFI ready at {{.DIPLOMAT_EFI}}"
+      - '{{.GO}} tool go-echo "Diplomat EFI ready at {{.DIPLOMAT_EFI}}"'
 
   mkesp:
     desc: Build the ESP image creator
@@ -529,9 +529,9 @@ tasks:
     generates:
       - '{{.ESP_IMAGE}}'
     cmds:
-      - echo "Creating ESP image..."
+      - '{{.GO}} tool go-echo "Creating ESP image..."'
       - '{{.BUILD_DIR}}/mkesp -bootloader {{.DIPLOMAT_EFI}} -kernel {{.BUILD_DIR}}/testkernel.elf -o {{.ESP_IMAGE}} -size 260'
-      - echo "ESP created at {{.ESP_IMAGE}}"
+      - '{{.GO}} tool go-echo "ESP created at {{.ESP_IMAGE}}"'
 
   run-diplomat:
     desc: "Run diplomat in QEMU with OVMF (TIMEOUT=N for timeout, default=5s)"
@@ -542,16 +542,16 @@ tasks:
     cmds:
       - task: stop-diplomat
       - '{{.GO}} tool go-rm {{.LOG_FILE}}'
-      - echo "Starting diplomat in QEMU (timeout {{.TIMEOUT}}s)..."
+      - '{{.GO}} tool go-echo "Starting diplomat in QEMU (timeout {{.TIMEOUT}}s)..."'
       - task: run-diplomat-background
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop-diplomat
       - '{{.GO}} tool go-sleep 0.3'
-      - 'echo ""'
-      - 'echo "=== Diplomat Serial Output ==="'
+      - '{{.GO}} tool go-echo'
+      - '{{.GO}} tool go-echo "=== Diplomat Serial Output ==="'
       - '{{.GO}} tool safe-serial-read {{.LOG_FILE}}'
-      - 'echo ""'
-      - 'echo "Log file: {{.LOG_FILE}}"'
+      - '{{.GO}} tool go-echo'
+      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
 
   run-diplomat-background:
     desc: Start QEMU with diplomat in background (internal task)
@@ -584,16 +584,16 @@ tasks:
     cmds:
       - task: stop
       - '{{.GO}} tool go-rm {{.LOG_FILE}}'
-      - echo "Starting QEMU (timeout {{.TIMEOUT}}s)..."
+      - '{{.GO}} tool go-echo "Starting QEMU (timeout {{.TIMEOUT}}s)..."'
       - task: run-qemu-background
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop
       - '{{.GO}} tool go-sleep 0.3'
-      - 'echo ""'
-      - 'echo "=== Serial Output (last 50 lines) ==="'
+      - '{{.GO}} tool go-echo'
+      - '{{.GO}} tool go-echo "=== Serial Output (last 50 lines) ==="'
       - '{{.GO}} tool safe-serial-read'
-      - 'echo ""'
-      - 'echo "Log file: {{.LOG_FILE}}"'
+      - '{{.GO}} tool go-echo'
+      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
 
   run-qemu-background:
     desc: Start QEMU in background (internal task)
@@ -642,21 +642,21 @@ tasks:
       - task: stop
       - '{{.GO}} tool go-rm {{.LOG_FILE}}'
       - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
-      - 'echo "Starting QEMU with debug tracing..."'
-      - 'echo "Debug options: {{.DEBUG_OPTS}}"'
-      - 'echo "Debug log: {{.DEBUG_LOG}}"'
+      - '{{.GO}} tool go-echo "Starting QEMU with debug tracing..."'
+      - '{{.GO}} tool go-echo "Debug options: {{.DEBUG_OPTS}}"'
+      - '{{.GO}} tool go-echo "Debug log: {{.DEBUG_LOG}}"'
       - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display cocoa -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop
       - '{{.GO}} tool go-sleep 0.3'
-      - 'echo ""'
-      - 'echo "=== Serial Output (last 50 lines) ==="'
+      - '{{.GO}} tool go-echo'
+      - '{{.GO}} tool go-echo "=== Serial Output (last 50 lines) ==="'
       - '{{.GO}} tool safe-serial-read'
-      - 'echo ""'
-      - 'echo "Serial log: {{.LOG_FILE}}"'
-      - 'echo "Debug log:  {{.DEBUG_LOG}}"'
-      - 'echo ""'
-      - 'echo "View debug log tail: tail -100 {{.DEBUG_LOG}}"'
+      - '{{.GO}} tool go-echo'
+      - '{{.GO}} tool go-echo "Serial log: {{.LOG_FILE}}"'
+      - '{{.GO}} tool go-echo "Debug log:  {{.DEBUG_LOG}}"'
+      - '{{.GO}} tool go-echo'
+      - '{{.GO}} tool go-echo "View debug log tail: task show-debug"'
 
   run-debug-int:
     desc: "Run QEMU with interrupt/exception tracing only (lightweight)"
@@ -670,16 +670,16 @@ tasks:
       - task: stop
       - '{{.GO}} tool go-rm {{.LOG_FILE}}'
       - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
-      - 'echo "Starting QEMU with interrupt/exception tracing..."'
-      - 'echo "Debug options: {{.DEBUG_OPTS}}"'
+      - '{{.GO}} tool go-echo "Starting QEMU with interrupt/exception tracing..."'
+      - '{{.GO}} tool go-echo "Debug options: {{.DEBUG_OPTS}}"'
       - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display cocoa -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop
       - '{{.GO}} tool go-sleep 0.3'
       - '{{.GO}} tool safe-serial-read'
-      - 'echo ""'
-      - 'echo "Serial log: {{.LOG_FILE}}"'
-      - 'echo "Debug log:  {{.DEBUG_LOG}}"'
+      - '{{.GO}} tool go-echo'
+      - '{{.GO}} tool go-echo "Serial log: {{.LOG_FILE}}"'
+      - '{{.GO}} tool go-echo "Debug log:  {{.DEBUG_LOG}}"'
 
   run-debug-mmu:
     desc: "Run QEMU with MMU/paging tracing"
@@ -693,14 +693,14 @@ tasks:
       - task: stop
       - '{{.GO}} tool go-rm {{.LOG_FILE}}'
       - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
-      - 'echo "Starting QEMU with MMU tracing..."'
-      - 'echo "Debug options: {{.DEBUG_OPTS}}"'
+      - '{{.GO}} tool go-echo "Starting QEMU with MMU tracing..."'
+      - '{{.GO}} tool go-echo "Debug options: {{.DEBUG_OPTS}}"'
       - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display cocoa -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop
       - '{{.GO}} tool go-sleep 0.3'
-      - 'echo "Serial log: {{.LOG_FILE}}"'
-      - 'echo "Debug log:  {{.DEBUG_LOG}}"'
+      - '{{.GO}} tool go-echo "Serial log: {{.LOG_FILE}}"'
+      - '{{.GO}} tool go-echo "Debug log:  {{.DEBUG_LOG}}"'
 
   run-debug-full:
     desc: "Run QEMU with full tracing (very verbose)"
@@ -714,21 +714,21 @@ tasks:
       - task: stop
       - '{{.GO}} tool go-rm {{.LOG_FILE}}'
       - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
-      - 'echo "Starting QEMU with FULL tracing (very verbose)..."'
-      - 'echo "Debug options: {{.DEBUG_OPTS}}"'
+      - '{{.GO}} tool go-echo "Starting QEMU with FULL tracing (very verbose)..."'
+      - '{{.GO}} tool go-echo "Debug options: {{.DEBUG_OPTS}}"'
       - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display cocoa -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop
       - '{{.GO}} tool go-sleep 0.3'
-      - 'echo "Serial log: {{.LOG_FILE}}"'
-      - 'echo "Debug log:  {{.DEBUG_LOG}}"'
+      - '{{.GO}} tool go-echo "Serial log: {{.LOG_FILE}}"'
+      - '{{.GO}} tool go-echo "Debug log:  {{.DEBUG_LOG}}"'
 
   show-debug:
     desc: "Show last N lines of debug log (N=100 default)"
     vars:
       N: '{{.N | default "100"}}'
     cmds:
-      - 'tail -{{.N}} /tmp/qemu-debug.log'
+      - '{{.GO}} tool go-tail -n {{.N}} /tmp/qemu-debug.log'
 
   # ===========================================================================
   # Utility Tasks
@@ -738,15 +738,15 @@ tasks:
     desc: Run Go tests
     deps: [check-env]
     cmds:
-      - echo "Running tests..."
+      - '{{.GO}} tool go-echo "Running tests..."'
       - '{{.GO}} test -v ./cardinal/bitfield'
 
   clean:
     desc: Remove build artifacts
     cmds:
-      - echo "Cleaning build artifacts..."
+      - '{{.GO}} tool go-echo "Cleaning build artifacts..."'
       - '{{.GO}} tool go-rm -r {{.BUILD_DIR}}'
-      - echo "Cleaned."
+      - '{{.GO}} tool go-echo "Cleaned."'
 
   # ===========================================================================
   # Default Target
