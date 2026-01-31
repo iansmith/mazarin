@@ -40,6 +40,15 @@ var (
 	derivedPTPoolEnd   uint64
 )
 
+// getStartupConfigValue reads a uint64 directly from the RuntimeConfig in StartupParams
+// at the given byte offset. This is a lightweight nosplit-safe alternative to
+// getRuntimeConfigTyped() which avoids the deep fullConfig→DTB parsing chain.
+//
+//go:nosplit
+func getStartupConfigValue(byteOffset uintptr) uint64 {
+	return *(*uint64)(unsafe.Pointer(uintptr(unsafe.Pointer(&StartupParams[RuntimeConfigOffset])) + byteOffset))
+}
+
 // getRuntimeConfigFromStartupParams reads the RuntimeConfig from StartupParams.
 //
 //go:nosplit
@@ -69,10 +78,13 @@ func initDerivedValues() {
 		return
 	}
 
-	cfg := GetRuntimeConfig()
+	// Read values directly from startup params at correct offsets
+	// (main.RuntimeConfig struct doesn't include Magic/Version, so offsets are wrong)
+	kmazarinSize := getStartupConfigValue(40)    // KmazarinSize
+	dtbPhysAddr := getStartupConfigValue(8)      // DtbPhysAddr
 
 	// Compute PT pool from KmazarinSize + KernelTextBase
-	kmazarinEndVA := uint64(constants.KernelTextBase) + cfg.KmazarinSize
+	kmazarinEndVA := uint64(constants.KernelTextBase) + kmazarinSize
 	// Page-align up
 	alignedEnd := (kmazarinEndVA + 0xFFF) &^ 0xFFF
 	// TTBR1 region (64KB) then PT pool (512KB)
@@ -83,7 +95,7 @@ func initDerivedValues() {
 
 	// DTB-derived values (RAM base/size, userspace pools)
 	// DTB is at physical address, which is mapped via TTBR1 identity mapping
-	dtbVirtAddr := cfg.DtbPhysAddr + uint64(constants.KernelMMIOOffset)
+	dtbVirtAddr := dtbPhysAddr + uint64(constants.KernelMMIOOffset)
 	ramBase, ramSize, ok := dtb.GetMemoryInfo(uintptr(dtbVirtAddr))
 	if ok {
 		derivedRAMBase = uint64(ramBase)
@@ -131,14 +143,14 @@ func GetReadyForAsyncPreemptAddr() uintptr {
 //
 //go:nosplit
 func GetDtbPhysAddr() uint64 {
-	return GetRuntimeConfig().DtbPhysAddr
+	return getStartupConfigValue(8) // DtbPhysAddr
 }
 
 // GetKmazarinSize returns the kmazarin binary size from RuntimeConfig.
 //
 //go:nosplit
 func GetKmazarinSize() uint64 {
-	return GetRuntimeConfig().KmazarinSize
+	return getStartupConfigValue(40) // KmazarinSize
 }
 
 // GetPTPoolStart returns the computed PT pool start VA.
@@ -161,14 +173,14 @@ func GetPTPoolEnd() uint64 {
 //
 //go:nosplit
 func GetFramePoolStart() uint64 {
-	return GetRuntimeConfig().FramePoolStart
+	return getStartupConfigValue(48) // FramePoolStart
 }
 
 // GetFramePoolEnd returns the kernel frame pool end PA from RuntimeConfig.
 //
 //go:nosplit
 func GetFramePoolEnd() uint64 {
-	return GetRuntimeConfig().FramePoolEnd
+	return getStartupConfigValue(56) // FramePoolEnd
 }
 
 // GetTotalRAMSize returns the total RAM size from DTB.
@@ -274,13 +286,13 @@ func getFullConfig() *fullConfig {
 func populateFullConfig() {
 	initDerivedValues()
 
-	cfg := GetRuntimeConfig()
-
+	// Read values directly from startup params at correct offsets
+	// (main.RuntimeConfig struct is misaligned - missing Magic/Version fields)
 	cachedFullConfig.KernelVAOffset = uint64(constants.KernelMMIOOffset)
-	cachedFullConfig.KmazarinSize = cfg.KmazarinSize
+	cachedFullConfig.KmazarinSize = getStartupConfigValue(40)     // KmazarinSize
 	cachedFullConfig.KmazarinPhysAddr = uint64(constants.KmazarinLoadAddr)
-	cachedFullConfig.FramePoolStart = cfg.FramePoolStart
-	cachedFullConfig.FramePoolEnd = cfg.FramePoolEnd
+	cachedFullConfig.FramePoolStart = getStartupConfigValue(48)   // FramePoolStart
+	cachedFullConfig.FramePoolEnd = getStartupConfigValue(56)     // FramePoolEnd
 	cachedFullConfig.KernelPTPoolStart = derivedPTPoolStart
 	cachedFullConfig.KernelPTPoolEnd = derivedPTPoolEnd
 	cachedFullConfig.KernelHeapStart = uint64(constants.KernelHeapStart)
@@ -299,7 +311,7 @@ func populateFullConfig() {
 	cachedFullConfig.UserspaceFramePoolEnd = derivedUserspaceFramePoolEnd
 	cachedFullConfig.UserspacePTPoolStart = derivedUserspacePTPoolStart
 	cachedFullConfig.UserspacePTPoolEnd = derivedUserspacePTPoolEnd
-	cachedFullConfig.DtbPhysAddr = cfg.DtbPhysAddr
+	cachedFullConfig.DtbPhysAddr = getStartupConfigValue(8) // DtbPhysAddr
 
 	fullConfigInitialized = true
 }

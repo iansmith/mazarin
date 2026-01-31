@@ -77,16 +77,17 @@ const (
 
 const (
 	// Base address for kernel stacks in high memory
-	// Physical 0x5EFF8000 -> Virtual 0xFFFFFFFF5EFF8000
-	KernelStacksVirtBase = 0xFFFFFFFF5EFF8000
+	// Placed in the gap between PT identity map end (0x43800000) and
+	// linear map start (~0x44200000) to avoid creating gaps in the linear map.
+	KernelStacksVirtBase = 0xFFFFFFFF43E00000
 
 	// g0 stack - used for normal kernel execution in EL1t mode (SP_EL0)
-	// Range: 0xFFFFFFFF5EFF8000 - 0xFFFFFFFF5F000000 (32KB)
+	// Range: 0xFFFFFFFF43E00000 - 0xFFFFFFFF43E08000 (32KB)
 	KernelG0StackBottom = KernelStacksVirtBase
 	KernelG0StackTop    = KernelG0StackBottom + KernelG0StackSize
 
 	// Exception stack - used for exception handlers in EL1h mode (SP_EL1)
-	// Range: 0xFFFFFFFF5F000000 - 0xFFFFFFFF5F004000 (16KB)
+	// Range: 0xFFFFFFFF43E08000 - 0xFFFFFFFF43E0C000 (16KB)
 	KernelExcStackBottom = KernelG0StackTop
 	KernelExcStackTop    = KernelExcStackBottom + KernelExcStackSize
 )

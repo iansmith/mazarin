@@ -24,6 +24,11 @@ const KmazarinTotalLimit = 64 * 1024 * 1024 // 64 MB
 // getRuntimeConfig is provided by main package via go:linkname.
 func getRuntimeConfig() interface{}
 
+// getStartupConfigValue reads a uint64 directly from StartupParams at the given
+// byte offset. Provided by main package via go:linkname. This is a lightweight
+// nosplit-safe alternative to getRuntimeConfigTyped() for use in nosplit chains.
+func getStartupConfigValue(byteOffset uintptr) uint64
+
 // InitFrameAllocator initializes the unified page pool.
 // This should be called once during kmazarin startup.
 // Frame pool boundaries come from Cardinal via RuntimeConfig.

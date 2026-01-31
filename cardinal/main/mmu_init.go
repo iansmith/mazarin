@@ -422,12 +422,12 @@ func initKernelPageTables() {
 //
 //go:nosplit
 func setupKernelStacks() {
-	// High-memory kernel stack addresses
+	// High-memory kernel stack addresses (from constants - single source of truth)
 	const (
-		KernelG0StackTop   = uintptr(0xFFFFFFFF5F000000)
-		KernelG0StackSize  = uintptr(0x8000) // 32KB
-		KernelExcStackTop  = uintptr(0xFFFFFFFF5F004000)
-		KernelExcStackSize = uintptr(0x4000) // 16KB
+		KernelG0StackTop   = uintptr(constants.KernelG0StackTop)
+		KernelG0StackSize  = uintptr(constants.KernelG0StackSize)
+		KernelExcStackTop  = uintptr(constants.KernelExcStackTop)
+		KernelExcStackSize = uintptr(constants.KernelExcStackSize)
 	)
 	KernelG0StackBottom := KernelG0StackTop - KernelG0StackSize
 	const g0StackPages = uintptr(KernelG0StackSize / PAGE_SIZE)

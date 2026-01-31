@@ -81,19 +81,24 @@ const (
 	KernelG0StackSize  = 0x8000 // 32 KB (doubled from 16KB)
 	KernelExcStackSize = 0x4000 // 16 KB (doubled from 8KB)
 
-	// Physical base address for kernel stacks region
-	// Placed at offset from RAM start, chosen to avoid conflicts with:
-	// - DTB (1MB), Cardinal (15MB), Page Tables (8MB), Kmazarin (up to 64MB)
-	// This gives us ~480MB from RAM start = plenty of safety margin
+	// Physical base address for Cardinal's bootstrap stacks (low memory, TTBR0)
+	// These are used before MMU is enabled, so they must be in valid physical RAM.
 	KernelStacksPhysOffset = 0x1EFF8000                              // ~494MB from RAM start
 	KernelStacksPhysBase   = BootAddress + KernelStacksPhysOffset    // 0x5EFF8000
-	KernelStacksVirtBase   = KernelVAOffset + KernelStacksPhysBase   // 0xFFFFFFFF5EFF8000
 
 	// Low-memory stacks (Cardinal bootstrap, TTBR0) - computed from base
 	G0StackBottom      = KernelStacksPhysBase                        // Bottom of g0 stack
 	G0StackTop         = G0StackBottom + KernelG0StackSize           // Top of g0 stack (SP_EL0)
 	ExceptionStackTop  = G0StackTop + KernelExcStackSize             // Top of exception stack (SP_EL1)
 	ExceptionStackSize = KernelExcStackSize                          // Exception stack size
+
+	// High-memory kernel stack virtual addresses (TTBR1)
+	// These must NOT fall within any 2MB block covered by createLinearMap(),
+	// otherwise the 4KB page table entries create a gap in the linear map.
+	// The linear map covers PA from unifiedPoolStart (~0x44200000) to ramEnd.
+	// We place stacks in the gap between the PT identity map end (0x43800000)
+	// and the linear map start, using L1=509 (same as kmazarin text).
+	KernelStacksVirtBase = KernelVAOffset + 0x43E00000               // 0xFFFFFFFF43E00000
 
 	// High-memory stacks (Kmazarin kernel, TTBR1) - computed from virtual base
 	KernelG0StackBottom  = KernelStacksVirtBase                      // Bottom of kernel g0 stack
@@ -265,15 +270,15 @@ func MemoryLayoutSummary() string {
   Framebuffer:     32 MB (VirtIO GPU, after Cardinal)
   Page Tables:     8 MB (TTBR0, after Framebuffer)
   Kmazarin:        ~8MB max (after Page Tables, physical)
-  g0 Stack:        32 KB (SP_EL0, computed from KernelStacksPhysBase)
-  Exception Stack: 16 KB (SP_EL1, computed from G0StackTop)
+  g0 Stack:        32 KB (SP_EL0, physical, computed from KernelStacksPhysBase)
+  Exception Stack: 16 KB (SP_EL1, physical, computed from G0StackTop)
 
 Kmazarin Kernel Layout (High Memory, TTBR1):
   DTB:             1 MB (read-only, computed: DtbPhysAddr + KernelVAOffset)
   Kernel Text:     ~8 MB max (computed: KmazarinLoadAddr + KernelVAOffset)
   Kernel Heap:     Demand-paged (KernelHeapStart to KernelHeapEnd)
-  g0 Stack:        32 KB (KernelStacksVirtBase to KernelG0StackTop)
-  Exception Stack: 16 KB (KernelG0StackTop to KernelExcStackTop)
+  g0 Stack:        32 KB (0xFFFFFFFF43E00000, between PT map and linear map)
+  Exception Stack: 16 KB (0xFFFFFFFF43E08000, between PT map and linear map)
   Page Tables:     Identity-mapped via setupKernelPageTables()
 
 MMIO Devices (Physical, fixed by QEMU virt machine):

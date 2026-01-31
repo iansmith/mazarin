@@ -105,6 +105,25 @@ func (l *StaticOrderedList) PopIfLess(currentTime uint64) (int16, uint64) {
 	return threadId, deadline
 }
 
+// Remove removes the first entry matching threadId from the list.
+// Returns true if an entry was removed, false if not found.
+//
+//go:nosplit
+func (l *StaticOrderedList) Remove(threadId int16) bool {
+	for i := 0; i < l.size; i++ {
+		if l.data[i] == threadId {
+			// Slide elements left to fill the gap
+			for j := i; j < l.size-1; j++ {
+				l.data[j] = l.data[j+1]
+				l.orderBy[j] = l.orderBy[j+1]
+			}
+			l.size--
+			return true
+		}
+	}
+	return false
+}
+
 // Size returns the current number of elements in the list.
 //
 //go:nosplit

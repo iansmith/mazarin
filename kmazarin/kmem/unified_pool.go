@@ -6,7 +6,10 @@
 
 package kmem
 
-import "sync/atomic"
+import (
+	"mazzy/shared/constants"
+	"sync/atomic"
+)
 
 // PageType identifies the purpose of a page allocation for accounting.
 type PageType uint8
@@ -60,33 +63,20 @@ func InitUnifiedPool() {
 		return
 	}
 
-	cfg := getRuntimeConfigTyped()
+	// Read pool boundaries directly from startup params to avoid the deep
+	// fullConfig→DTB parsing chain that exceeds nosplit stack budget.
+	// Offsets match shared/constants.RuntimeConfig field positions.
+	unifiedStart := getStartupConfigValue(312) // UnifiedPoolStart
+	unifiedEnd := getStartupConfigValue(320)   // UnifiedPoolEnd
 
-	// Use the new unified pool fields if set, otherwise fall back to
-	// computing from the legacy fields for backward compatibility
 	var poolStart, poolEnd uint64
-	if cfg.UnifiedPoolStart != 0 && cfg.UnifiedPoolEnd != 0 {
-		poolStart = cfg.UnifiedPoolStart
-		poolEnd = cfg.UnifiedPoolEnd
+	if unifiedStart != 0 && unifiedEnd != 0 {
+		poolStart = unifiedStart
+		poolEnd = unifiedEnd
 	} else {
-		// Fallback: use legacy pool boundaries
-		// Start from whichever pool starts first
-		poolStart = cfg.FramePoolStart
-		if cfg.UserspaceFramePoolStart > 0 && cfg.UserspaceFramePoolStart < poolStart {
-			poolStart = cfg.UserspaceFramePoolStart
-		}
-		if cfg.UserspacePTPoolStart > 0 && cfg.UserspacePTPoolStart < poolStart {
-			poolStart = cfg.UserspacePTPoolStart
-		}
-
-		// End at the highest pool end
-		poolEnd = cfg.FramePoolEnd
-		if cfg.UserspaceFramePoolEnd > poolEnd {
-			poolEnd = cfg.UserspaceFramePoolEnd
-		}
-		if cfg.UserspacePTPoolEnd > poolEnd {
-			poolEnd = cfg.UserspacePTPoolEnd
-		}
+		// Fallback: use legacy frame pool boundaries
+		poolStart = getStartupConfigValue(48) // FramePoolStart
+		poolEnd = getStartupConfigValue(56)   // FramePoolEnd
 	}
 
 	globalPool.next = uintptr(poolStart)
@@ -169,7 +159,6 @@ func TransitionToBuddy() {
 		InitUnifiedPool()
 	}
 
-	cfg := getRuntimeConfigTyped()
 	bootstrapPages := GetBumpAllocatedPages()
 
 	uartPuts("[kmem] Transitioning to buddy allocator (")
@@ -179,7 +168,7 @@ func TransitionToBuddy() {
 	InitBuddyAllocator(
 		globalPool.initialNext,
 		globalPool.end,
-		uintptr(cfg.KernelVAOffset),
+		constants.KernelMMIOOffset,
 		bootstrapPages,
 	)
 }

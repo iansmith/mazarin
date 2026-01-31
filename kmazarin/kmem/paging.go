@@ -3,6 +3,7 @@ package kmem
 
 import (
 	"mazzy/kmazarin/console"
+	"mazzy/shared/constants"
 	"unsafe"
 )
 
@@ -111,14 +112,24 @@ type ptVACacheEntry struct {
 	va uintptr
 }
 
+// getKmazarinSize returns the kmazarin binary size from startup params.
+// Uses direct startup params access to avoid the deep fullConfig chain.
+//
+//go:nosplit
+func getKmazarinSize() uint64 {
+	return getStartupConfigValue(40) // KmazarinSize offset in RuntimeConfig
+}
+
 // InitPaging initializes the paging subsystem.
 // All values come from runtime configuration (auxv from Cardinal).
 //
 //go:nosplit
 func InitPaging() {
-	cfg := getRuntimeConfigTyped()
-	ttbr1L0PA = uintptr(cfg.TTBR1L0Phys)
-	ttbr0L0PA = uintptr(cfg.TTBR0L0Phys)
+	// Read TTBR values directly from startup params to avoid the deep
+	// fullConfig→DTB parsing chain that exceeds nosplit stack budget.
+	// Offsets match shared/constants.RuntimeConfig field positions.
+	ttbr1L0PA = uintptr(getStartupConfigValue(80)) // TTBR1L0Phys
+	ttbr0L0PA = uintptr(getStartupConfigValue(88)) // TTBR0L0Phys
 	pagingInitialized = true
 
 	// Initialize the unified pool for PT allocation
@@ -295,8 +306,7 @@ func SwitchTTBR0WithASID(l0PA uintptr, asid uint16) {
 //
 //go:nosplit
 func paToVA(pa uintptr) uintptr {
-	cfg := getRuntimeConfigTyped()
-	return pa + uintptr(cfg.KernelVAOffset)
+	return pa + constants.KernelMMIOOffset
 }
 
 // cachePTVA stores a PA -> VA mapping for an allocated page table.
@@ -348,8 +358,7 @@ func paToVAOrCache(pa uintptr) uintptr {
 //
 //go:nosplit
 func vaToPa(va uintptr) uintptr {
-	cfg := getRuntimeConfigTyped()
-	return va - uintptr(cfg.KernelVAOffset)
+	return va - constants.KernelMMIOOffset
 }
 
 // GetPTPoolStats returns the current PT pool allocation state.
@@ -375,9 +384,8 @@ func allocPTPage() uintptr {
 		return 0
 	}
 
-	// Convert PA to VA using kernel VA offset
-	cfg := getRuntimeConfigTyped()
-	va := pa + uintptr(cfg.KernelVAOffset)
+	// Convert PA to VA using kernel VA offset (use constant to avoid deep config chain)
+	va := pa + constants.KernelMMIOOffset
 
 	// Zero the page
 	ptr := (*[512]uint64)(unsafe.Pointer(va))
@@ -422,11 +430,9 @@ func walkPageTable(va uintptr) uintptr {
 	l2Idx := (va >> L2Shift) & 0x1FF
 	l3Idx := (va >> L3Shift) & 0x1FF
 
-	cfg := getRuntimeConfigTyped()
-
 	// L0 table
 	l0PA := ttbr1L0PA
-	l0VA := l0PA + uintptr(cfg.KernelVAOffset)
+	l0VA := l0PA + constants.KernelMMIOOffset
 	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
 	if (l0Entry & PTE_VALID) == 0 {
 		return 0
@@ -434,7 +440,7 @@ func walkPageTable(va uintptr) uintptr {
 
 	// L1 table
 	l1PA := uintptr(l0Entry & PTE_ADDR_MASK)
-	l1VA := l1PA + uintptr(cfg.KernelVAOffset)
+	l1VA := l1PA + constants.KernelMMIOOffset
 	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
 	if (l1Entry & PTE_VALID) == 0 {
 		return 0
@@ -442,7 +448,7 @@ func walkPageTable(va uintptr) uintptr {
 
 	// L2 table
 	l2PA := uintptr(l1Entry & PTE_ADDR_MASK)
-	l2VA := l2PA + uintptr(cfg.KernelVAOffset)
+	l2VA := l2PA + constants.KernelMMIOOffset
 	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
 	if (l2Entry & PTE_VALID) == 0 {
 		return 0
@@ -459,7 +465,7 @@ func walkPageTable(va uintptr) uintptr {
 
 	// L3 table (L2 is a table pointer)
 	l3PA := uintptr(l2Entry & PTE_ADDR_MASK)
-	l3VA := l3PA + uintptr(cfg.KernelVAOffset)
+	l3VA := l3PA + constants.KernelMMIOOffset
 	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
 	if (l3Entry & PTE_VALID) == 0 {
 		return 0
@@ -495,25 +501,20 @@ func HandlePageFault(faultAddr uintptr) bool {
 	debugPrint('5') // DEBUG: After init
 
 	// Check if fault is in manageable range
-	// Accept faults from kmazarin VA start to heap end
-	cfg := getRuntimeConfigTyped()
-	debugPrint('6') // DEBUG: Got config
-
-	// Calculate ranges for kmazarin binary and heap
-	kmazarinVAStart := uintptr(cfg.KmazarinPhysAddr + cfg.KernelVAOffset)
-	kmazarinVAEnd := kmazarinVAStart + uintptr(cfg.KmazarinSize)
-	heapStart := uintptr(cfg.KernelHeapStart)
-	heapEnd := uintptr(cfg.KernelHeapEnd)
+	// Use constants directly to avoid deep config chain in nosplit context
+	kmazarinVAStart := uintptr(constants.KernelTextBase)
+	kmazarinVAEnd := kmazarinVAStart + uintptr(getKmazarinSize())
+	heapStart := uintptr(constants.KernelHeapStart)
+	heapEnd := uintptr(constants.KernelHeapEnd)
 	debugPrint('7') // DEBUG: Calculated ranges
 
 	debugPrint('8') // DEBUG: Before stack checks
 
 	// Check if fault is in stack regions (should be pre-mapped by Cardinal!)
-	g0StackBottom := uintptr(cfg.G0StackBottom)
-	g0StackTop := uintptr(cfg.G0StackTop)
-	excStackTop := uintptr(cfg.ExceptionStackTop)
-	excStackSize := uintptr(cfg.ExceptionStackSize)
-	excStackBottom := excStackTop - excStackSize
+	g0StackBottom := uintptr(constants.KernelG0StackBottom)
+	g0StackTop := uintptr(constants.KernelG0StackTop)
+	excStackBottom := uintptr(constants.KernelExcStackBottom)
+	excStackTop := uintptr(constants.KernelExcStackTop)
 
 	debugPrint('9') // DEBUG: Stack vars calculated
 
@@ -1223,8 +1224,6 @@ func MapDeviceMMIO(physAddr uintptr, size uint64) error {
 		InitPaging()
 	}
 
-	cfg := getRuntimeConfigTyped()
-
 	// Calculate number of pages needed (round up)
 	if size == 0 {
 		size = PageSize // Default to one page if size not specified
@@ -1234,7 +1233,7 @@ func MapDeviceMMIO(physAddr uintptr, size uint64) error {
 	// Map all pages in the region
 	for i := uint64(0); i < numPages; i++ {
 		pagePhys := (physAddr &^ (PageSize - 1)) + uintptr(i*PageSize)
-		pageVA := pagePhys + uintptr(cfg.KernelVAOffset)
+		pageVA := pagePhys + constants.KernelMMIOOffset
 
 		if !mapDevicePage(pageVA, pagePhys) {
 			return &MappingError{addr: physAddr + uintptr(i*PageSize), msg: "failed to map device page"}

@@ -17,15 +17,8 @@ func ManualDeviceDiscovery() {
 	// Register all device drivers
 	device.RegisterAllDrivers()
 
-	// Get DTB address from runtime config
-	cfg := GetRuntimeConfig()
-	if cfg == nil {
-		fmt.Println("[DeviceTest] ERROR: RuntimeConfig not available")
-		return
-	}
-
-	// Compute DTB virtual address: physical + KernelMMIOOffset
-	dtbAddr := cfg.DtbPhysAddr + uint64(constants.KernelMMIOOffset)
+	// Get DTB address from startup params (correct offset)
+	dtbAddr := GetDtbPhysAddr() + uint64(constants.KernelMMIOOffset)
 	fmt.Printf("[DeviceTest] DTB address: 0x%X\n", dtbAddr)
 
 	// Parse DTB and discover devices

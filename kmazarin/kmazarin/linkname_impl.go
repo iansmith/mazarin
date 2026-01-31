@@ -134,6 +134,15 @@ func addDeadlineForKsyscall(deadline uint64, threadIdx int32) bool {
 	return AddDeadline(deadline, int16(threadIdx))
 }
 
+// getStartupConfigValue reads a uint64 from the RuntimeConfig in StartupParams
+// at the given byte offset. This avoids the deep fullConfig chain for nosplit callers.
+//
+//go:linkname getStartupConfigValueForKmem mazzy/kmazarin/kmem.getStartupConfigValue
+//go:nosplit
+func getStartupConfigValueForKmem(byteOffset uintptr) uint64 {
+	return getStartupConfigValue(byteOffset)
+}
+
 // AddDeadlineStatic wrapper — uses the static (nosplit-safe) deadline queue
 //
 //go:linkname addDeadlineStaticForKsyscall mazzy/kmazarin/ksyscall.AddDeadlineStatic
