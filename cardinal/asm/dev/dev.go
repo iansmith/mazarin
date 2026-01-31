@@ -138,24 +138,3 @@ func JumpToNull()
 //go:nosplit
 func BreadcrumbExit(c byte)
 
-// Image data accessors (global symbols)
-
-//go:linkname ImageDataStart imageDataStart
-//go:nosplit
-func ImageDataStart() uintptr
-
-//go:linkname ImageDataEnd imageDataEnd
-//go:nosplit
-func ImageDataEnd() uintptr
-
-// Kmazarin binary accessors (package-local assembly functions)
-
-//go:nosplit
-func kmazarinBinaryStart() uintptr
-
-//go:nosplit
-func kmazarinBinaryEnd() uintptr
-
-// Exported wrappers
-func KmazarinBinaryStart() uintptr { return kmazarinBinaryStart() }
-func KmazarinBinaryEnd() uintptr   { return kmazarinBinaryEnd() }

@@ -75,11 +75,10 @@ func getLinkerSymbol(name string) uintptr {
 	case "__bochs_display_size":
 		return asm.GetBochsDisplaySize()
 	case "__kmazarin_start":
-		// Use the embedded binary data, not the load address
-		return asm.KmazarinBinaryStart()
+		// Kmazarin is loaded from disk, not embedded - use the load address
+		return asm.GetKmazarinLoadAddr()
 	case "__kmazarin_size":
-		// Calculate size from embedded binary start/end
-		return asm.KmazarinBinaryEnd() - asm.KmazarinBinaryStart()
+		return asm.GetKmazarinSize()
 	default:
 		// Unknown symbol - return 0 (caller should check)
 		return 0

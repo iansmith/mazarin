@@ -196,8 +196,16 @@ func cardinalMountFilesystem(dev blockdev.BlockDevice) (*fat32.FileSystem, error
 	return fs, nil
 }
 
-// cardinalPrepareKernel populates RuntimeConfig and sets up the startup environment.
+// cardinalPrepareKernel creates the linear map and populates RuntimeConfig.
 func cardinalPrepareKernel(kernel *LoadedKernel) error {
+	// Create linear map for the unified pool region using 2MB block descriptors.
+	// This ensures any PA from the buddy allocator has a valid kernel VA.
+	// Must happen after kmazarin is loaded (its pages are already mapped with 4KB granularity).
+	physAlloc := getKFrameAllocator()
+	unifiedPoolStart := physAlloc.next &^ 0x1FFFFF // Align DOWN to 2MB
+	ramEnd := uintptr(detectedRAMBase + detectedRAMSize)
+	createLinearMap(unifiedPoolStart, ramEnd)
+
 	// Get kmazarin's StartupParams address from linker symbol
 	kmazarinStartupParamsVA := uintptr(LinkerKmazarinStartupParams)
 

@@ -119,10 +119,6 @@ var (
 	QemuExit              = dev.QemuExit
 	SemihostingExit       = dev.SemihostingExit
 	JumpToNull            = dev.JumpToNull
-	ImageDataStart        = dev.ImageDataStart
-	ImageDataEnd          = dev.ImageDataEnd
-	KmazarinBinaryStart   = dev.KmazarinBinaryStart
-	KmazarinBinaryEnd     = dev.KmazarinBinaryEnd
 )
 
 // Re-export arm64 package functions

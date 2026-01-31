@@ -62,13 +62,6 @@ vars:
   DIPLOMAT_EFI: '{{.BUILD_DIR}}/diplomat.efi'
   ESP_IMAGE: '{{.BUILD_DIR}}/esp.img'
 
-  # Generated embedded data
-  KMAZARIN_DATA_ASM: cardinal/asm/dev/kmazarin_data_arm64.s
-  BOOT_IMAGE_DATA_ASM: cardinal/asm/dev/boot_mazarin_data_arm64.s
-
-  # Source files
-  BOOT_IMAGE_BIN: assets/boot-mazarin.bin
-
   # Runtime patches directory
   RUNTIME_PATCHES_DIR: runtime-patches
   USERSPACE_OVERLAY_DIR: mazarin/overlay/userspace
@@ -152,30 +145,19 @@ tasks:
       - echo "Generated {{.THIN_OVERLAY_JSON}}"
 
   # ===========================================================================
-  # Embedded Data Generation
+  # Boot Image Conversion
   # ===========================================================================
 
-  embed-kmazarin:
+  convert-boot-image:
     run: once
-    desc: Generate assembly with embedded kmazarin binary
-    deps: [kmazarin]
-    sources:
-      - '{{.KMAZARIN_ELF}}'
-    generates:
-      - '{{.KMAZARIN_DATA_ASM}}'
-    cmds:
-      - '{{.GO}} tool incbin2goasm -sym kmazarin_binary -global -o {{.KMAZARIN_DATA_ASM}} {{.KMAZARIN_ELF}}'
-
-  embed-boot-image:
-    run: once
-    desc: Generate assembly with embedded boot image
+    desc: Copy boot image binary for disk
     deps: [build-dir]
     sources:
-      - '{{.BOOT_IMAGE_BIN}}'
+      - assets/boot-mazarin.bin
     generates:
-      - '{{.BOOT_IMAGE_DATA_ASM}}'
+      - '{{.BUILD_DIR}}/boot-image.bin'
     cmds:
-      - '{{.GO}} tool incbin2goasm -sym _binary_boot_mazarin_bin -global -o {{.BOOT_IMAGE_DATA_ASM}} {{.BOOT_IMAGE_BIN}}'
+      - '{{.GO}} tool go-cat -o {{.BUILD_DIR}}/boot-image.bin assets/boot-mazarin.bin'
 
   # ===========================================================================
   # Kmazarin Kernel Build
@@ -212,12 +194,10 @@ tasks:
   cardinal:
     run: once
     desc: Build cardinal bootloader
-    deps: [check-env, embed-kmazarin, embed-boot-image, cardinal-linux-overlay]
+    deps: [check-env, kmazarin, cardinal-linux-overlay]
     sources:
       - 'cardinal/**/*.go'
       - 'cardinal/**/*.s'
-      - '{{.KMAZARIN_DATA_ASM}}'
-      - '{{.BOOT_IMAGE_DATA_ASM}}'
       - '{{.KMAZARIN_ELF}}'
       - '{{.BUILD_DIR}}/cardinal-linux-overlay.json'
     generates:
@@ -428,7 +408,7 @@ tasks:
 
   disk:
     desc: Create FAT32 disk image with flock binaries and kmazarin kernel
-    deps: [priestsieve, priest2, priest3, sievetest, sieve3, sieve5, sieve6, sieve7, sieve8, sieve9, helloworld-maz, kmazarin]
+    deps: [priestsieve, priest2, priest3, sievetest, sieve3, sieve5, sieve6, sieve7, sieve8, sieve9, helloworld-maz, kmazarin, convert-boot-image]
     sources:
       - '{{.PRIESTSIEVE_ELF}}'
       - '{{.PRIEST2_ELF}}'
@@ -442,11 +422,12 @@ tasks:
       - '{{.SIEVE9_ELF}}'
       - '{{.HELLOWORLD_MAZ}}'
       - '{{.KMAZARIN_ELF}}'
+      - '{{.BUILD_DIR}}/boot-image.bin'
     generates:
       - '{{.DISK_IMAGE}}'
     cmds:
       - echo "Creating FAT32 disk image..."
-      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.PRIESTSIEVE_ELF}} {{.PRIEST2_ELF}} {{.PRIEST3_ELF}} {{.SIEVETEST_ELF}} {{.SIEVE3_ELF}} {{.SIEVE5_ELF}} {{.SIEVE6_ELF}} {{.SIEVE7_ELF}} {{.SIEVE8_ELF}} {{.SIEVE9_ELF}} {{.HELLOWORLD_MAZ}} {{.KMAZARIN_ELF}}'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.PRIESTSIEVE_ELF}} {{.PRIEST2_ELF}} {{.PRIEST3_ELF}} {{.SIEVETEST_ELF}} {{.SIEVE3_ELF}} {{.SIEVE5_ELF}} {{.SIEVE6_ELF}} {{.SIEVE7_ELF}} {{.SIEVE8_ELF}} {{.SIEVE9_ELF}} {{.HELLOWORLD_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - echo "Disk image created at {{.DISK_IMAGE}}"
 
   # ===========================================================================
@@ -620,7 +601,7 @@ tasks:
     vars:
       LOG_FILE: /tmp/cardinal-serial.log
     cmds:
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display none -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display cocoa -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0'
       - '{{.GO}} tool go-echo "QEMU started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4444"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
@@ -664,7 +645,7 @@ tasks:
       - 'echo "Starting QEMU with debug tracing..."'
       - 'echo "Debug options: {{.DEBUG_OPTS}}"'
       - 'echo "Debug log: {{.DEBUG_LOG}}"'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display none -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display cocoa -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop
       - '{{.GO}} tool go-sleep 0.3'
@@ -691,7 +672,7 @@ tasks:
       - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
       - 'echo "Starting QEMU with interrupt/exception tracing..."'
       - 'echo "Debug options: {{.DEBUG_OPTS}}"'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display none -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display cocoa -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop
       - '{{.GO}} tool go-sleep 0.3'
@@ -714,7 +695,7 @@ tasks:
       - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
       - 'echo "Starting QEMU with MMU tracing..."'
       - 'echo "Debug options: {{.DEBUG_OPTS}}"'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display none -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display cocoa -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop
       - '{{.GO}} tool go-sleep 0.3'
@@ -735,7 +716,7 @@ tasks:
       - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
       - 'echo "Starting QEMU with FULL tracing (very verbose)..."'
       - 'echo "Debug options: {{.DEBUG_OPTS}}"'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display none -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display cocoa -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop
       - '{{.GO}} tool go-sleep 0.3'
@@ -765,8 +746,6 @@ tasks:
     cmds:
       - echo "Cleaning build artifacts..."
       - '{{.GO}} tool go-rm -r {{.BUILD_DIR}}'
-      - '{{.GO}} tool go-rm {{.KMAZARIN_DATA_ASM}}'
-      - '{{.GO}} tool go-rm {{.BOOT_IMAGE_DATA_ASM}}'
       - echo "Cleaned."
 
   # ===========================================================================

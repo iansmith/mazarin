@@ -6,6 +6,7 @@ import (
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/device/virtio/gpu"
+	"mazzy/shared/fs/fat32"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/ksyscall"
@@ -746,20 +747,43 @@ func initVirtIOGPU() {
 
 	console.KPrintln("[VirtIO GPU] Display ready")
 
-	// Render boot image if available
-	// Boot image info was previously in RuntimeConfig but has been removed.
-	// Boot image is now disabled (address = 0).
-	bootImagePhysAddr := uint64(0)
-	bootImageSize := uint64(0)
-	if bootImagePhysAddr != 0 && bootImageSize > 0 {
-		console.KPrintf("[VirtIO GPU] Boot image at 0x%x, size %d\n", bootImagePhysAddr, bootImageSize)
-		if gpu.RenderBootImage(uintptr(bootImagePhysAddr), bootImageSize) {
-			// Transfer and flush the rendered image to display
-			gpu.UpdateDisplay(0, 0, gpu.GetWidth(), gpu.GetHeight())
-			console.KPrintln("[VirtIO GPU] Boot image displayed")
-		}
+	// Load and render boot image from disk
+	blk, ok := device.GetBlockDevice()
+	if !ok {
+		console.KPrintln("[VirtIO GPU] No block device, skipping boot image")
 	} else {
-		console.KPrintln("[VirtIO GPU] No boot image available")
+		fs, err := fat32.Mount(blk)
+		if err != nil {
+			console.KPrintf("[VirtIO GPU] FAT32 mount failed: %v\n", err)
+		} else {
+			file, err := fs.Open("/boot-image.bin")
+			if err != nil {
+				console.KPrintf("[VirtIO GPU] boot-image.bin not found: %v\n", err)
+			} else {
+				fileSize := file.Size()
+
+				// Use buddy allocator for contiguous physical memory (avoids demand paging issues)
+				buf := kmem.AllocBuffer(uint64(fileSize))
+				if buf == nil {
+					console.KPrintln("[VirtIO GPU] Failed to allocate buffer for boot image")
+				} else {
+					data := buf.Bytes()
+					n, err := file.Read(data)
+					file.Close()
+					if err != nil && n == 0 {
+						console.KPrintf("[VirtIO GPU] Failed to read boot-image.bin: %v\n", err)
+						kmem.FreeBuffer(buf)
+					} else {
+						console.KPrintf("[VirtIO GPU] Boot image loaded from disk, %d bytes\n", n)
+						if gpu.RenderBootImage(uintptr(unsafe.Pointer(&data[0])), uint64(n)) {
+							gpu.UpdateDisplay(0, 0, gpu.GetWidth(), gpu.GetHeight())
+							console.KPrintln("[VirtIO GPU] Boot image displayed")
+						}
+						kmem.FreeBuffer(buf)
+					}
+				}
+			}
+		}
 	}
 }
 

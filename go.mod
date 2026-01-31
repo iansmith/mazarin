@@ -121,6 +121,7 @@ tool (
 	mazzy/cmd/go-test
 	mazzy/cmd/go-tr
 	mazzy/cmd/go-wc
+	mazzy/cmd/imageconvert
 	mazzy/cmd/incbin2goasm
 	mazzy/cmd/mkfat32
 	mazzy/cmd/patch-entry

@@ -652,11 +652,11 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	// DISABLED: Don't initialize timer - kmazarin will do it
 	// timerInit()
 
-	// Load and run kmazarin (never returns)
-	loadAndRunKmazarin()
+	// Load kmazarin from disk and run it (never returns)
+	cardinalBoot()
 
 	// Should never return - if we get here, something went very wrong
-	print("FATAL: loadAndRunKmazarin returned unexpectedly\r\n")
+	print("FATAL: cardinalBoot returned unexpectedly\r\n")
 	asm.SemihostingExit()
 }
 
@@ -876,11 +876,9 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 	config.FramebufferPhysAddr = uint64(constants.FramebufferPhysAddr)
 	config.FramebufferSize = uint64(constants.FramebufferSize)
 
-	// Boot image information (embedded mazarin image)
-	imageStart := asm.ImageDataStart()
-	imageEnd := asm.ImageDataEnd()
-	config.BootImagePhysAddr = uint64(imageStart)
-	config.BootImageSize = uint64(imageEnd - imageStart)
+	// Boot image is loaded from disk by kmazarin, no longer embedded in cardinal
+	config.BootImagePhysAddr = 0
+	config.BootImageSize = 0
 
 	// Memory region layout from DTB detection (populated by detectAndComputeMemoryRegions)
 	config.TotalRAMSize = detectedRAMSize
