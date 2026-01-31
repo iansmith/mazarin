@@ -60,7 +60,7 @@ const ReservedKernelPriests = 1
 // Zero means not yet set — skip all timed-shutdown accounting.
 var startingTicksProgram uint64
 
-// shutdownTicksThreshold is 15 seconds in raw counter ticks.
+// shutdownTicksThreshold is 60 seconds in raw counter ticks.
 // Set once startingTicksProgram is established (needs SystemTimerFrequency).
 var shutdownTicksThreshold uint64
 
@@ -600,6 +600,10 @@ func ProcessDeadlines() {
 func AddDeadlineStatic(deadline uint64, tid int16) {
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
+	// Remove any existing deadline for this thread to prevent duplicates.
+	// A thread can accumulate multiple entries if woken by futex before its
+	// previous deadline fires, then calls nanosleep/futex_wait again.
+	staticDeadlineQueue.Remove(tid)
 	staticDeadlineQueue.Insert(tid, deadline)
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
@@ -1762,10 +1766,15 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	// (preemption check breadcrumbs removed for performance)
 
 	// Timed shutdown: after shutdownTicksThreshold raw ticks, print stats and exit
-	if startingTicksProgram != 0 {
+	if startingTicksProgram != 0 && shutdownTicksThreshold != 0 {
 		now := kirq.ReadCounterValue()
 		if now-startingTicksProgram >= shutdownTicksThreshold {
+			// Clear threshold to prevent re-entrant Exit() calls
+			// (Exit re-enables IRQs briefly for WFI, which can re-enter this path)
+			shutdownTicksThreshold = 0
+			console.BreadcrumbNoSplit('!')
 			printTickDistributionNoSplit(now)
+			console.BreadcrumbNoSplit('@')
 			Exit()
 		}
 	}
@@ -1966,9 +1975,10 @@ func doContextSwitchABI0(framePtr uint64, targetPtr uint64) uint64 {
 //go:noinline
 func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *ThreadContext {
 	// Timed shutdown: after shutdownTicksThreshold raw ticks, print stats and exit
-	if startingTicksProgram != 0 {
+	if startingTicksProgram != 0 && shutdownTicksThreshold != 0 {
 		now := kirq.ReadCounterValue()
 		if now-startingTicksProgram >= shutdownTicksThreshold {
+			shutdownTicksThreshold = 0
 			printTickDistributionNoSplit(now)
 			Exit()
 		}

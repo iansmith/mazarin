@@ -49,10 +49,7 @@ func timerIRQHandlerInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64)
 // that tail-calls handlePageFaultInternal. This is the actual implementation.
 // Returns 1 if the fault was handled successfully, 0 otherwise.
 //
-// Note: We don't use nosplit here because HandlePageFault needs a full call chain.
-// The exception handler runs on SP_EL1 (exception stack) which has 16KB available.
-//
-//go:noinline
+//go:nosplit
 func handlePageFaultInternal(faultAddr uint64) uint64 {
 	if kmem.HandlePageFault(uintptr(faultAddr)) {
 		return 1
@@ -642,17 +639,13 @@ func testDeviceDiscovery() {
 
 	// NOTE: Drivers are already registered in EarlyInit()
 
-	// Get DTB address from runtime config
-	cfg := GetRuntimeConfig()
-	if cfg == nil {
-		console.KPrintln("[DeviceTest] ERROR: RuntimeConfig not available")
-		return
-	}
+	// Get DTB address from startup params (correct offset)
+	dtbPhysAddr := GetDtbPhysAddr()
 
 	// Use physical address - DTB is in low memory which is still mapped
-	dtbAddr := uintptr(cfg.DtbPhysAddr)
+	dtbAddr := uintptr(dtbPhysAddr)
 	console.KWriteString("[DeviceTest] DTB physical address: ")
-	console.KPrintHex64(cfg.DtbPhysAddr)
+	console.KPrintHex64(dtbPhysAddr)
 	console.KPrintln("")
 
 	// Register all device drivers BEFORE discovering devices

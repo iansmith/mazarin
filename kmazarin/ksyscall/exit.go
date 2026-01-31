@@ -30,8 +30,13 @@ func SyscallExitGroup(status, _, _, _, _, _ uint64) int64 {
 	console.KPrintHex64(status)
 	console.KWriteString(" ===\r\n")
 
-	haltForever()
-	return 0 // unreachable
+	// For now, treat same as exit (single-threaded priests)
+	nextCtx := ThreadExit()
+	if nextCtx == 0 {
+		haltForever()
+	}
+	SetSyscallSwitchTarget(nextCtx)
+	return 0
 }
 
 // SyscallMazzyExit implements the Mazzy SysExit syscall (0x1004)
