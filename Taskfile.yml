@@ -32,6 +32,9 @@ vars:
   TARGET_GOOS: linux
   BUILD_DIR: build
 
+  # QEMU display: cocoa on macOS, sdl everywhere else
+  DISPLAY: '{{if eq OS "darwin"}}cocoa{{else}}sdl{{end}}'
+
   # Kmazarin load address - must match cardinal/constants.KmazarinLoadAddr
   # If the constant changes, check-env will fail with a clear error message.
   KMAZARIN_LOAD_ADDR: "0x43800000"
@@ -601,7 +604,7 @@ tasks:
     vars:
       LOG_FILE: /tmp/cardinal-serial.log
     cmds:
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display cocoa -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0'
       - '{{.GO}} tool go-echo "QEMU started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4444"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
@@ -645,7 +648,7 @@ tasks:
       - '{{.GO}} tool go-echo "Starting QEMU with debug tracing..."'
       - '{{.GO}} tool go-echo "Debug options: {{.DEBUG_OPTS}}"'
       - '{{.GO}} tool go-echo "Debug log: {{.DEBUG_LOG}}"'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display cocoa -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop
       - '{{.GO}} tool go-sleep 0.3'
@@ -672,7 +675,7 @@ tasks:
       - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
       - '{{.GO}} tool go-echo "Starting QEMU with interrupt/exception tracing..."'
       - '{{.GO}} tool go-echo "Debug options: {{.DEBUG_OPTS}}"'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display cocoa -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop
       - '{{.GO}} tool go-sleep 0.3'
@@ -695,7 +698,7 @@ tasks:
       - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
       - '{{.GO}} tool go-echo "Starting QEMU with MMU tracing..."'
       - '{{.GO}} tool go-echo "Debug options: {{.DEBUG_OPTS}}"'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display cocoa -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop
       - '{{.GO}} tool go-sleep 0.3'
@@ -716,7 +719,7 @@ tasks:
       - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
       - '{{.GO}} tool go-echo "Starting QEMU with FULL tracing (very verbose)..."'
       - '{{.GO}} tool go-echo "Debug options: {{.DEBUG_OPTS}}"'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display cocoa -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop
       - '{{.GO}} tool go-sleep 0.3'
