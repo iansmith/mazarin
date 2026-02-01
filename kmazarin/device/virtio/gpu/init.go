@@ -38,8 +38,8 @@ func Init() bool {
 		return false
 	}
 
-	// Fill screen with midnight blue background
-	fillScreen(0xFF191970) // Midnight blue in BGRA format
+	// Fill screen with powder gray background (neumorphic surface)
+	fillScreen(0xFFE0E0E6) // RGB(224,224,230) in BGRA: B=230,G=224,R=224
 
 	// Initial transfer and flush to make display visible
 	virtioGPUTransferToHost(0, 0, 1920, 1080)
@@ -167,8 +167,8 @@ func RenderBootImage(imageAddr uintptr, imageSize uint64) bool {
 	fadeStart := float32(0.70)
 	fadeEnd := float32(1.0)
 
-	// Background color: midnight blue (BGRA format)
-	const bgColor uint32 = 0xFF191970
+	// Background color: powder gray (BGRA format)
+	const bgColor uint32 = 0xFFE0E0E6
 	bgB := uint8(bgColor & 0xFF)         // 0x70 = 112
 	bgG := uint8((bgColor >> 8) & 0xFF)  // 0x19 = 25
 	bgR := uint8((bgColor >> 16) & 0xFF) // 0x19 = 25

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"math"
+	"time"
 	"unsafe"
 
 	gg "github.com/fogleman/gg"
@@ -25,8 +27,13 @@ var fontData []byte
 
 const (
 	LineSpacing = 2
-	pad         = 8
+	pad         = 120
 	textPad     = 8 // inner padding from rect edge to text
+
+	// Neumorphic card dimensions
+	cardBorderSide = 16 // left/right/bottom border width
+	cardBorderTop  = 40 // title bar height
+	shadowSize     = 12 // shadow offset in pixels
 )
 
 // console holds the state for the text console display.
@@ -38,10 +45,14 @@ type console struct {
 	charW    int
 	charH    int
 	lineH    int // charH + LineSpacing
-	rectX    int
+	rectX    int // content area (dark gray)
 	rectY    int
 	rectW    int
 	rectH    int // adjusted to be multiple of lineH
+	cardX    int // card outer bounds
+	cardY    int
+	cardW    int
+	cardH    int
 	maxLines int
 	lines    []string
 
@@ -127,15 +138,22 @@ func main() {
 	ascent := metrics.Ascent.Ceil()
 	lineH := charH + LineSpacing
 
-	// Compute rect dimensions: top-left quarter minus padding, height rounded down to lineH multiple
+	// Compute content area from desired text dimensions
 	w := int(fb.Width)
 	h := int(fb.Height)
+	_, _ = w, h
+	maxLines := 35
+	maxCols := 120
+	rectW := maxCols*charW + 2*textPad
+	rectH := maxLines * lineH
 	rectX := pad
 	rectY := pad
-	rectW := w/2 - 2*pad
-	rawRectH := h/2 - 2*pad
-	maxLines := rawRectH / lineH
-	rectH := maxLines * lineH
+
+	// Card wraps outside the content area
+	cardX := rectX - cardBorderSide
+	cardY := rectY - cardBorderTop
+	cardW := rectW + 2*cardBorderSide
+	cardH := cardBorderTop + rectH + cardBorderSide
 
 	fmt.Printf("[stdio] Font: %dx%d px, lineH=%d, rect=%dx%d, maxLines=%d\n",
 		charW, charH, lineH, rectW, rectH, maxLines)
@@ -152,17 +170,34 @@ func main() {
 		rectY:    rectY,
 		rectW:    rectW,
 		rectH:    rectH,
+		cardX:    cardX,
+		cardY:    cardY,
+		cardW:    cardW,
+		cardH:    cardH,
 		maxLines: maxLines,
 		lines:    []string{""},
 		dirtyMin: -1,
 		dirtyMax: -1,
 	}
 
-	// Initial draw: copy fb, paint rect, flush
+	// Initial draw: copy fb (already powder gray from kernel), paint card, flush
 	copyFramebufferToGG(con.dc, fb)
-	con.drawBackground()
-	flushRegionToFramebuffer(con.dc, fb, con.rectX, con.rectY, con.rectW, con.rectH)
-	sys.FlushFramebuffer(uint32(con.rectX), uint32(con.rectY), uint32(con.rectW), uint32(con.rectH))
+	con.drawCard()
+	con.drawContentArea()
+	// Flush card region plus shadow margin
+	margin := 40 + 4 // 4*sigma for SDF shadow region
+	flushX := cardX - margin
+	flushY := cardY - margin
+	flushW := cardW + 2*margin
+	flushH := cardH + 2*margin
+	if flushX < 0 {
+		flushX = 0
+	}
+	if flushY < 0 {
+		flushY = 0
+	}
+	flushRegionToFramebuffer(con.dc, fb, flushX, flushY, flushW, flushH)
+	sys.FlushFramebuffer(uint32(flushX), uint32(flushY), uint32(flushW), uint32(flushH))
 	fmt.Println("[stdio] Console rectangle rendered")
 
 	// --- Enter serial event loop ---
@@ -173,9 +208,274 @@ func main() {
 	select {}
 }
 
-// drawBackground paints the dark gray rectangle.
-func (c *console) drawBackground() {
-	c.dc.SetColor(color.RGBA{R: 50, G: 50, B: 50, A: 255})
+// Neumorphic palette — light gray surface, same color for bg and elements.
+var (
+	nBase    = color.RGBA{224, 224, 230, 255} // light warm gray surface
+	nContent = color.RGBA{40, 42, 48, 255}    // content well (dark neutral gray)
+	nTitle   = color.RGBA{100, 100, 110, 255} // title text
+	nText    = color.RGBA{200, 205, 215, 255} // content text
+)
+
+// gaussLUT is a precomputed lookup table for exp(-d²/(2σ²)) * amplitude.
+// Indexed by dist in 0.1px increments up to 4σ.
+type gaussLUT struct {
+	table []float64
+	step  float64 // distance per table entry (0.1)
+	max   float64 // max distance in table
+}
+
+func newGaussLUT(sigma, amplitude float64) *gaussLUT {
+	step := 0.1
+	maxDist := sigma * 4
+	n := int(maxDist/step) + 2
+	table := make([]float64, n)
+	twoSigma2 := 2 * sigma * sigma
+	for i := range table {
+		d := float64(i) * step
+		table[i] = amplitude * math.Exp(-(d*d)/twoSigma2)
+	}
+	return &gaussLUT{table: table, step: step, max: maxDist}
+}
+
+func (g *gaussLUT) lookup(dist float64) float64 {
+	if dist <= 0 || dist >= g.max {
+		return 0
+	}
+	idx := dist / g.step
+	i := int(idx)
+	if i >= len(g.table)-1 {
+		return 0
+	}
+	// Linear interpolation between table entries
+	frac := idx - float64(i)
+	return g.table[i]*(1-frac) + g.table[i+1]*frac
+}
+
+// roundedRectSDFWithGrad returns both the signed distance and the
+// analytical gradient direction (gx, gy) for a rounded rectangle.
+// This avoids 3 SDF evaluations per pixel (was using central differences).
+func roundedRectSDFWithGrad(px, py, rx, ry, rw, rh, r float64) (dist, gx, gy float64) {
+	cx := rx + rw/2
+	cy := ry + rh/2
+	// Fold into first quadrant
+	dx := math.Abs(px-cx) - rw/2 + r
+	dy := math.Abs(py-cy) - rh/2 + r
+
+	if dx > 0 && dy > 0 {
+		// Corner region
+		glen := math.Sqrt(dx*dx + dy*dy)
+		dist = glen - r
+		if glen < 1e-6 {
+			return dist, 0, 0
+		}
+		// Gradient in folded space
+		gx = dx / glen
+		gy = dy / glen
+	} else if dx > dy {
+		// Horizontal edge
+		dist = dx - r
+		gx = 1
+		gy = 0
+	} else {
+		// Vertical edge
+		dist = dy - r
+		gx = 0
+		gy = 1
+	}
+
+	// Unfold gradient: flip sign based on which quadrant the point is in
+	if px < cx {
+		gx = -gx
+	}
+	if py < cy {
+		gy = -gy
+	}
+	return
+}
+
+// Light direction constant: (-1,-1)/sqrt(2)
+const lightInv = 1.0 / 1.4142135623730951
+
+// sdfShadow computes the neumorphic shadow delta for a single pixel
+// relative to a rounded rectangle using a precomputed gaussian LUT
+// and analytical gradient.
+func sdfShadowLUT(px, py, rx, ry, rw, rh, radius float64, lut *gaussLUT) float64 {
+	dist, gx, gy := roundedRectSDFWithGrad(px, py, rx, ry, rw, rh, radius)
+	if dist <= 0 {
+		return 0
+	}
+
+	gauss := lut.lookup(dist)
+	if gauss == 0 {
+		return 0
+	}
+
+	dot := gx*(-lightInv) + gy*(-lightInv)
+	return gauss * dot
+}
+
+// circleSdfShadowLUT is the same but for a circle, with LUT.
+func circleSdfShadowLUT(px, py, cx, cy, r float64, lut *gaussLUT) float64 {
+	dx := px - cx
+	dy := py - cy
+	glen := math.Sqrt(dx*dx + dy*dy)
+	dist := glen - r
+	if dist <= 0 {
+		return 0
+	}
+
+	gauss := lut.lookup(dist)
+	if gauss == 0 {
+		return 0
+	}
+
+	if glen < 1e-6 {
+		return 0
+	}
+	dot := (dx/glen)*(-lightInv) + (dy/glen)*(-lightInv)
+	return gauss * dot
+}
+
+// roundedRectSDF returns the signed distance from point (px,py) to a
+// rounded rectangle defined by top-left (rx,ry), size (rw,rh), corner radius r.
+// Negative = inside, positive = outside.
+func roundedRectSDF(px, py, rx, ry, rw, rh, r float64) float64 {
+	// Transform to center-relative coordinates
+	cx := rx + rw/2
+	cy := ry + rh/2
+	dx := math.Abs(px-cx) - rw/2 + r
+	dy := math.Abs(py-cy) - rh/2 + r
+	outside := math.Sqrt(math.Max(dx, 0)*math.Max(dx, 0)+math.Max(dy, 0)*math.Max(dy, 0)) - r
+	inside := math.Min(math.Max(dx, dy), 0) - r
+	if outside > 0 {
+		return outside
+	}
+	return inside
+}
+
+// drawCard paints the neumorphic card frame using per-pixel SDF shadows.
+// No blur pass needed — shadow intensity is computed analytically from
+// the signed distance field with gaussian falloff and directional lighting.
+func (c *console) drawCard() {
+	cx := float64(c.cardX)
+	cy := float64(c.cardY)
+	cw := float64(c.cardW)
+	ch := float64(c.cardH)
+	radius := 12.0
+	sigma := 10.0
+	amplitude := 15.0
+	cardLUT := newGaussLUT(sigma, amplitude)
+
+	im := c.dc.Image().(*image.RGBA)
+	bounds := im.Bounds()
+
+	// Shadow region: 4*sigma beyond card edges
+	margin := int(math.Ceil(sigma * 4))
+	sx := c.cardX - margin
+	sy := c.cardY - margin
+	ex := c.cardX + c.cardW + margin
+	ey := c.cardY + c.cardH + margin
+	if sx < bounds.Min.X { sx = bounds.Min.X }
+	if sy < bounds.Min.Y { sy = bounds.Min.Y }
+	if ex > bounds.Max.X { ex = bounds.Max.X }
+	if ey > bounds.Max.Y { ey = bounds.Max.Y }
+
+	// Per-pixel SDF shadow for the card
+	t0 := time.Now()
+	bgR := float64(nBase.R)
+	bgG := float64(nBase.G)
+	bgB := float64(nBase.B)
+	for py := sy; py < ey; py++ {
+		for px := sx; px < ex; px++ {
+			delta := sdfShadowLUT(float64(px)+0.5, float64(py)+0.5,
+				cx, cy, cw, ch, radius, cardLUT)
+			if delta == 0 {
+				continue
+			}
+			off := py*im.Stride + px*4
+			r := bgR + delta
+			g := bgG + delta
+			b := bgB + delta
+			if r < 0 { r = 0 } else if r > 255 { r = 255 }
+			if g < 0 { g = 0 } else if g > 255 { g = 255 }
+			if b < 0 { b = 0 } else if b > 255 { b = 255 }
+			im.Pix[off+0] = uint8(r)
+			im.Pix[off+1] = uint8(g)
+			im.Pix[off+2] = uint8(b)
+			im.Pix[off+3] = 255
+		}
+	}
+
+	fmt.Printf("[stdio] Card shadow: %v\n", time.Since(t0))
+
+	// Card body on top
+	c.dc.SetColor(nBase)
+	c.dc.DrawRoundedRectangle(cx, cy, cw, ch, radius)
+	c.dc.Fill()
+
+	// Title text
+	c.dc.SetFontFace(c.face)
+	c.dc.SetColor(nTitle)
+	titleY := cy + float64(cardBorderTop)/2 + float64(c.ascent)/2
+	c.dc.DrawString("Serial Console", cx+float64(cardBorderSide)+float64(textPad), titleY)
+
+	// Neumorphic button in upper-right of title bar (SDF shadow)
+	btnR := float64(cardBorderTop-8) / 2
+	btnCx := cx + cw - float64(cardBorderSide) - float64(textPad) - btnR
+	btnCy := cy + float64(cardBorderTop)/2
+	btnSigma := 5.0
+	btnAmp := 12.0
+	btnLUT := newGaussLUT(btnSigma, btnAmp)
+
+	// Per-pixel SDF shadow for the button circle
+	t1 := time.Now()
+	bMargin := int(math.Ceil(btnSigma * 4))
+	bsx := int(btnCx-btnR) - bMargin
+	bsy := int(btnCy-btnR) - bMargin
+	bex := int(btnCx+btnR) + bMargin
+	bey := int(btnCy+btnR) + bMargin
+	if bsx < bounds.Min.X { bsx = bounds.Min.X }
+	if bsy < bounds.Min.Y { bsy = bounds.Min.Y }
+	if bex > bounds.Max.X { bex = bounds.Max.X }
+	if bey > bounds.Max.Y { bey = bounds.Max.Y }
+
+	for py := bsy; py < bey; py++ {
+		for px := bsx; px < bex; px++ {
+			delta := circleSdfShadowLUT(float64(px)+0.5, float64(py)+0.5,
+				btnCx, btnCy, btnR, btnLUT)
+			if delta == 0 {
+				continue
+			}
+			off := py*im.Stride + px*4
+			// Read current pixel (card body is already drawn)
+			cr := float64(im.Pix[off+0]) + delta
+			cg := float64(im.Pix[off+1]) + delta
+			cb := float64(im.Pix[off+2]) + delta
+			if cr < 0 { cr = 0 } else if cr > 255 { cr = 255 }
+			if cg < 0 { cg = 0 } else if cg > 255 { cg = 255 }
+			if cb < 0 { cb = 0 } else if cb > 255 { cb = 255 }
+			im.Pix[off+0] = uint8(cr)
+			im.Pix[off+1] = uint8(cg)
+			im.Pix[off+2] = uint8(cb)
+		}
+	}
+
+	fmt.Printf("[stdio] Button shadow: %v\n", time.Since(t1))
+
+	// Button body
+	c.dc.SetColor(nBase)
+	c.dc.DrawCircle(btnCx, btnCy, btnR)
+	c.dc.Fill()
+
+	// Button label — small dot
+	c.dc.SetColor(nTitle)
+	c.dc.DrawCircle(btnCx, btnCy, 3)
+	c.dc.Fill()
+}
+
+// drawContentArea fills the content well with the darker content color.
+func (c *console) drawContentArea() {
+	c.dc.SetColor(nContent)
 	c.dc.DrawRectangle(float64(c.rectX), float64(c.rectY), float64(c.rectW), float64(c.rectH))
 	c.dc.Fill()
 }
@@ -189,7 +489,7 @@ func (c *console) redrawLine(lineIdx int) {
 	lineY := c.rectY + lineIdx*c.lineH
 
 	// Clear this line's background
-	c.dc.SetColor(color.RGBA{R: 50, G: 50, B: 50, A: 255})
+	c.dc.SetColor(nContent)
 	c.dc.DrawRectangle(float64(c.rectX), float64(lineY), float64(c.rectW), float64(c.lineH))
 	c.dc.Fill()
 
@@ -197,7 +497,7 @@ func (c *console) redrawLine(lineIdx int) {
 	text := c.lines[lineIdx]
 	if len(text) > 0 {
 		c.dc.SetFontFace(c.face)
-		c.dc.SetColor(color.RGBA{R: 200, G: 200, B: 200, A: 255})
+		c.dc.SetColor(nText)
 		textX := float64(c.rectX + textPad)
 		textY := float64(lineY) + float64(c.ascent)
 		c.dc.DrawString(text, textX, textY)

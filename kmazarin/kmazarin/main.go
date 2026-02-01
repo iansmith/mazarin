@@ -750,7 +750,8 @@ func initVirtIOGPU() {
 
 	console.KPrintln("[VirtIO GPU] Display ready")
 
-	// Load and render boot image from disk
+	// Boot image disabled temporarily to evaluate neumorphic shadows
+	if false {
 	blk, ok := device.GetBlockDevice()
 	if !ok {
 		console.KPrintln("[VirtIO GPU] No block device, skipping boot image")
@@ -788,6 +789,7 @@ func initVirtIOGPU() {
 			}
 		}
 	}
+	} // end if false
 }
 
 // initVirtIOInputDevices discovers VirtIO input devices and wires their

@@ -26,10 +26,11 @@ const (
 	AnsiBrightWhite   uint32 = 0x00FFFFFF // Pure white
 
 	// Background Colors
-	MidnightBlue uint32 = 0x00191B70 // RGB(25, 27, 112) - midnight blue background
+	MidnightBlue uint32 = 0x00191B70 // RGB(25, 27, 112) - midnight blue (legacy)
+	PowderGray   uint32 = 0x00E0E0E6 // RGB(224, 224, 230) - neumorphic surface
 
 	// Default Framebuffer Colors
-	FramebufferBackgroundColor uint32 = MidnightBlue     // Midnight blue background
+	FramebufferBackgroundColor uint32 = PowderGray       // Neumorphic powder gray background
 	FramebufferTextColor       uint32 = AnsiBrightGreen  // Bright green text
 	FramebufferErrorColor      uint32 = AnsiBrightRed    // Bright red for errors
 	FramebufferWarningColor    uint32 = AnsiBrightYellow // Bright yellow for warnings

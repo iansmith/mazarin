@@ -41,6 +41,10 @@ system proper and all are a written in go or go's assembly variant:
 * fair scheduling of goroutines within a userspace program
 * primitive support for lightweight go programs called mazs (plural)
 
+![Serial console with neumorphic card frame](console-serial.png)
+
+*GUI work is underway.*
+
 ## No C
 mazarin does no use C code at all--nor cgo.  go or go assembly is used in
 the build and boot processes.
