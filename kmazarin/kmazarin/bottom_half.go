@@ -6,6 +6,7 @@ import (
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
+	"mazzy/shared/hid"
 	"runtime"
 	"sync/atomic"
 )
@@ -82,25 +83,42 @@ var topHalfIRQNum uint64
 var topHalfKbd topHalfDev
 var topHalfMouse topHalfDev
 
-type topHalfDev struct {
-	irqNum      uint32
-	usedVA      uintptr // VA of VirtQUsed (Device-mapped)
-	evtBufVA    uintptr // VA of EventBuffers array (Device-mapped)
-	availVA     uintptr // VA of VirtQAvailable (Device-mapped)
-	descVA      uintptr // VA of descriptor table (Device-mapped)
-	notifyAddr  uintptr // VA of notify register (Device-mapped MMIO)
-	evtBufPA    uintptr // PA of EventBuffers (for descriptor addr field)
-	lastUsedIdx uint16
-	queueSize   uint16
-	nextAvailIdx uint16
+// softIRQRingSize must be a power of 2 for mask-based indexing.
+const softIRQRingSize = 64
+
+// softIRQRing is an SPSC ring buffer for delivering HID events from
+// the nosplit top-half (producer) to the syscall drain path (consumer).
+type softIRQRing struct {
+	events [softIRQRingSize]hid.HIDEvent
+	head   uint32 // atomic: consumer (syscall side)
+	tail   uint32 // atomic: producer (top-half)
 }
+
+type topHalfDev struct {
+	irqNum       uint32
+	usedVA       uintptr // VA of VirtQUsed (Device-mapped)
+	evtBufVA     uintptr // VA of EventBuffers array (Device-mapped)
+	availVA      uintptr // VA of VirtQAvailable (Device-mapped)
+	descVA       uintptr // VA of descriptor table (Device-mapped)
+	notifyAddr   uintptr // VA of notify register (Device-mapped MMIO)
+	evtBufPA     uintptr // PA of EventBuffers (for descriptor addr field)
+	lastUsedIdx  uint16
+	queueSize    uint16
+	nextAvailIdx uint16
+	ring         *softIRQRing
+}
+
+var topHalfKbdRing softIRQRing
+var topHalfMouseRing softIRQRing
 
 // SetTopHalfDev is called during input init to register device pointers
 // for the nosplit top-half path.
 func SetTopHalfDev(irqNum uint32, usedVA, evtBufVA, availVA, descVA, notifyAddr, evtBufPA uintptr, queueSize, initAvailIdx uint16, isMouse bool) {
 	dev := &topHalfKbd
+	ring := &topHalfKbdRing
 	if isMouse {
 		dev = &topHalfMouse
+		ring = &topHalfMouseRing
 	}
 	dev.irqNum = irqNum
 	dev.usedVA = usedVA
@@ -112,11 +130,45 @@ func SetTopHalfDev(irqNum uint32, usedVA, evtBufVA, availVA, descVA, notifyAddr,
 	dev.lastUsedIdx = 0
 	dev.queueSize = queueSize
 	dev.nextAvailIdx = initAvailIdx
+	dev.ring = ring
+}
+
+// ringPush adds one HIDEvent to the ring buffer.
+// Returns false if ring is full (overflow — event dropped).
+//
+//go:nosplit
+func ringPush(r *softIRQRing, ev hid.HIDEvent) bool {
+	tail := atomic.LoadUint32(&r.tail)
+	head := atomic.LoadUint32(&r.head)
+	if tail-head >= softIRQRingSize {
+		return false // full
+	}
+	r.events[tail&(softIRQRingSize-1)] = ev
+	atomic.StoreUint32(&r.tail, tail+1)
+	return true
+}
+
+// RingDrain copies up to max events from the ring into buf.
+// Returns the number of events drained.
+func RingDrain(r *softIRQRing, buf []hid.HIDEvent, max int) int {
+	n := 0
+	for n < max {
+		head := atomic.LoadUint32(&r.head)
+		tail := atomic.LoadUint32(&r.tail)
+		if head == tail {
+			break
+		}
+		buf[n] = r.events[head&(softIRQRingSize-1)]
+		atomic.StoreUint32(&r.head, head+1)
+		n++
+	}
+	return n
 }
 
 // NonTimerIRQTopHalf is called directly from the assembly exception handler
 // (on the exception stack with g set to kmazarin g0) for non-timer IRQs.
-// Reads the virtqueue used ring and prints key events via UART breadcrumbs.
+// Reads the virtqueue used ring, pushes HIDEvents into the per-device
+// softIRQRing, and wakes any blocked slot consumer.
 // All functions called must be nosplit and non-allocating.
 //
 //go:nosplit
@@ -124,7 +176,6 @@ func SetTopHalfDev(irqNum uint32, usedVA, evtBufVA, availVA, descVA, notifyAddr,
 func NonTimerIRQTopHalf() {
 	irqNum := uint32(topHalfIRQNum)
 
-	// Find the matching device
 	var dev *topHalfDev
 	if irqNum == topHalfKbd.irqNum && topHalfKbd.usedVA != 0 {
 		dev = &topHalfKbd
@@ -135,90 +186,52 @@ func NonTimerIRQTopHalf() {
 		return
 	}
 
-	// Read Used.Idx via MMIO (offset 2 in VirtQUsed)
 	usedIdx := asm.MmioRead16(dev.usedVA + 2)
-
-	// Diagnostic: print used/last as "!U<used>L<last>\n"
-	console.Breadcrumb('!')
-	console.Breadcrumb('U')
-	breadcrumbDec16(usedIdx)
-	console.Breadcrumb('L')
-	breadcrumbDec16(dev.lastUsedIdx)
-	console.Breadcrumb('\r')
-	console.Breadcrumb('\n')
-
-	console.Breadcrumb('Z')
-
-	drained := false
+	pushed := false
 
 	for dev.lastUsedIdx != usedIdx {
-		console.Breadcrumb('L') // loop iteration
-		// Ring entry index
 		ringIdx := dev.lastUsedIdx % dev.queueSize
-		// Used ring entry: offset 4 + ringIdx*8, first uint32 is descriptor ID
 		entryAddr := dev.usedVA + 4 + uintptr(ringIdx)*8
 		descIdx := asm.MmioRead32(entryAddr)
 
 		if descIdx < uint32(dev.queueSize) {
-			console.Breadcrumb('D') // desc valid
-			// Read event: evtBufVA + descIdx * 8
-			// VirtIOInputEvent: type u16, code u16, value u32
 			evtAddr := dev.evtBufVA + uintptr(descIdx)*8
 			evtType := asm.MmioRead16(evtAddr)
 			evtCode := asm.MmioRead16(evtAddr + 2)
 			evtValue := asm.MmioRead32(evtAddr + 4)
 
-			if evtType == 1 { // EV_KEY
-				console.Breadcrumb('K')
-				console.Breadcrumb(':')
-				breadcrumbDec16(evtCode)
-				if evtValue == 1 {
-					console.Breadcrumb('D')
-				} else if evtValue == 0 {
-					console.Breadcrumb('U')
-				} else {
-					console.Breadcrumb('R')
-				}
-				console.Breadcrumb('\r')
-				console.Breadcrumb('\n')
+			ev := hid.HIDEvent{Type: evtType, Code: evtCode, Value: evtValue}
+			if !ringPush(dev.ring, ev) {
+				console.Breadcrumb('X') // overflow
 			}
+			pushed = true
 
-			// Repost buffer
+			// Repost buffer to device
 			descAddr := dev.descVA + uintptr(descIdx)*16
 			bufPA := uint64(dev.evtBufPA) + uint64(descIdx)*8
-			console.Breadcrumb('1')
 			asm.MmioWrite32(descAddr, uint32(bufPA))
-			console.Breadcrumb('2')
 			asm.MmioWrite32(descAddr+4, uint32(bufPA>>32))
-			console.Breadcrumb('3')
 			asm.MmioWrite32(descAddr+8, 8)
-			console.Breadcrumb('4')
 			asm.MmioWrite16(descAddr+12, 2)
-			console.Breadcrumb('5')
 			asm.MmioWrite16(descAddr+14, 0xFFFF)
-			console.Breadcrumb('6')
 			availRingIdx := dev.nextAvailIdx % dev.queueSize
 			asm.MmioWrite16(dev.availVA+4+uintptr(availRingIdx)*2, uint16(descIdx))
-			console.Breadcrumb('7')
 			dev.nextAvailIdx++
-			drained = true
 		}
 
 		dev.lastUsedIdx++
 	}
 
-	if drained {
-		// DSB to ensure descriptor/avail ring writes are visible
+	if pushed {
 		asm.Dsb()
-		// Update available ring idx
 		asm.MmioWrite16(dev.availVA+2, dev.nextAvailIdx)
-		// DSB before notify
 		asm.Dsb()
-		// Kick the device
 		asm.MmioWrite16(dev.notifyAddr, 0)
-		// DSB + readback to ensure notify completes
 		asm.Dsb()
 		_ = asm.MmioRead16(dev.notifyAddr)
+
+		// Wake any thread blocked on a slot for this IRQ
+		WakeSlotForIRQ(irqNum)
 	}
 }
 

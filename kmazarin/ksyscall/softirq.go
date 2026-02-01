@@ -1,19 +1,15 @@
 package ksyscall
 
 import (
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/kmem"
 	"mazzy/shared/hid"
-	"sync/atomic"
 	"unsafe"
 )
-
-var waitSoftIRQCallCount uint32
 
 // SyscallWaitSoftIRQ blocks the current thread until soft IRQ events arrive on a slot.
 // arg0 = slot number (0-31)
 // arg1 = pointer to SoftIRQReturn struct in userspace memory
-// Returns: number of events (>0), or negative errno on error.
+// Returns: number of events (>0), 0 (woke from block, retry), or negative errno.
 //
 //go:noinline
 func SyscallWaitSoftIRQ(slotNum, bufPtr, _, _, _, _ uint64) int64 {
@@ -26,25 +22,26 @@ func SyscallWaitSoftIRQ(slotNum, bufPtr, _, _, _, _ uint64) int64 {
 
 	slot := int32(slotNum)
 
-	// Try draining events first (non-blocking fast path)
+	// Fast path: drain ring buffer
 	var events [hid.MaxHIDEvents]hid.HIDEvent
 	n := DrainSoftIRQSlotEvents(slot, events[:], hid.MaxHIDEvents)
 
-	cnt := atomic.AddUint32(&waitSoftIRQCallCount, 1)
-	if cnt <= 10 {
-		console.KPrintf("[WaitSoftIRQ] slot=%d call#%d drained=%d\n", slotNum, cnt, n)
-	}
 	if n > 0 {
-		// Write results to userspace
-		if err := writeSoftIRQReturn(bufPtr, events[:n], n); err != 0 {
+		intKind := GetSlotInterruptKind(slot)
+		if err := writeSoftIRQReturn(bufPtr, events[:n], n, intKind); err != 0 {
 			return err
 		}
 		return int64(n)
 	}
 
-	// No events available — return EAGAIN so userspace can retry
-	// (The eventPoller goroutine may not be running, so blocking would deadlock)
-	return -11 // EAGAIN
+	// Slow path: block thread until IRQ wakes us
+	nextCtx := BlockOnSlot(slot)
+	if nextCtx == 0 {
+		return -11 // EAGAIN (can't block, no other threads)
+	}
+
+	SetSyscallSwitchTarget(nextCtx)
+	return 0 // will retry after wake
 }
 
 // SyscallRegisterSoftIRQ registers an IRQ on a soft IRQ slot for the current priest.
@@ -105,7 +102,7 @@ func SyscallQueryInputDevices(bufPtr, _, _, _, _, _ uint64) int64 {
 
 // writeSoftIRQReturn writes a SoftIRQReturn struct to userspace memory.
 // Returns 0 on success, negative errno on failure.
-func writeSoftIRQReturn(bufPtr uint64, events []hid.HIDEvent, count int) int64 {
+func writeSoftIRQReturn(bufPtr uint64, events []hid.HIDEvent, count int, intKind hid.InterruptType) int64 {
 	// Ensure user page is mapped
 	if kmem.WalkUserPageTable(uintptr(bufPtr)) == 0 {
 		if !kmem.HandleUserPageFault(uintptr(bufPtr)) {
@@ -125,6 +122,7 @@ func writeSoftIRQReturn(bufPtr uint64, events []hid.HIDEvent, count int) int64 {
 	}
 
 	dst := (*hid.SoftIRQReturn)(unsafe.Pointer(scratchVA + uintptr(pageOffset)))
+	dst.Interrupt = intKind
 	dst.Length = uint32(count)
 	for i := 0; i < count && i < hid.MaxHIDEvents; i++ {
 		dst.Events[i] = events[i]

@@ -7,47 +7,55 @@ import (
 	"mazzy/kmazarin/device/virtio/input"
 	"mazzy/shared/hid"
 	"sync/atomic"
+	"unsafe"
 )
 
 // ============================================================================
 // Soft IRQ Slot System
 // ============================================================================
 //
-// Maps (IRQ number, priest ID) → slot number → device.
-// Userspace registers slots, and the kernel drains events from the
-// corresponding VirtIO input device when the slot is polled.
+// Maps InterruptType → slot → ring buffer → blocked thread.
+// Userspace registers slots via RegisterSoftIRQ. The top-half pushes events
+// into per-device ring buffers. The WaitSoftIRQ syscall drains from the ring,
+// blocking if empty.
 
 const maxSoftIRQSlots = 32
 
 // softIRQSlot represents one registered soft IRQ slot.
 type softIRQSlot struct {
-	active   uint32 // atomic: 1 = active
-	irqNum   uint32
-	priestID int16
-	devIdx   int // index into input.AllDevices()
+	active      uint32         // atomic: 1 = active
+	irqNum      uint32
+	priestID    int16
+	devIdx      int            // index into input.AllDevices()
+	intKind     hid.InterruptType // KeyboardInterrupt or MouseInterrupt
+	blockedTID  ThreadId       // TID of thread blocked on this slot (-1 = none)
+	ring        *softIRQRing   // pointer to per-device ring buffer
 }
 
-var softIRQSlots [maxSoftIRQSlots]softIRQSlot
+// Ider implementation for StaticList compatibility.
+// The slot's ID is its index, stored externally.
+func (s *softIRQSlot) Id() int32 { return int32(s.irqNum) }
+
+var softIRQSlotData [maxSoftIRQSlots]softIRQSlot
+var softIRQSlotInUse [maxSoftIRQSlots]bool
 
 // irqToSlot maps IRQ numbers to slot indices for fast lookup from IRQ context.
 var irqToSlot [256]int32 // -1 = no mapping
+
+// SoftIRQSlotFire is called from the input device IRQ handler (via softIRQFireFunc).
+// With the ring buffer architecture, this is a no-op — events are pushed directly
+// by NonTimerIRQTopHalf and wake happens via WakeSlotForIRQ.
+//
+//go:nosplit
+func SoftIRQSlotFire(irqNum uint32) {}
 
 func init() {
 	for i := range irqToSlot {
 		irqToSlot[i] = -1
 	}
-}
-
-// SoftIRQSlotFire is called from the input device IRQ handler (via softIRQFireFunc).
-// It marks the slot as having pending events.
-//
-//go:nosplit
-func SoftIRQSlotFire(irqNum uint32) {
-	if irqNum >= 256 {
-		return
+	for i := range softIRQSlotData {
+		softIRQSlotData[i].blockedTID = -1
 	}
-	// Nothing extra needed — PendingEvents on the device is already incremented
-	// by HandleIRQ. The slot just maps IRQ→device for DrainSoftIRQSlotEvents.
 }
 
 // RegisterSoftIRQSlotKsyscall registers an IRQ on a soft IRQ slot for a priest.
@@ -59,10 +67,16 @@ func RegisterSoftIRQSlotKsyscall(irqNum uint32, slotNum int32, priestID int16) i
 
 	// Find which device has this IRQ
 	devIdx := -1
+	var intKind hid.InterruptType
 	devices := input.AllDevices()
 	for i, dev := range devices {
 		if dev != nil && dev.IRQNum == irqNum {
 			devIdx = i
+			if dev.DevType == hid.DeviceTypeMouse {
+				intKind = hid.MouseInterrupt
+			} else {
+				intKind = hid.KeyboardInterrupt
+			}
 			break
 		}
 	}
@@ -71,42 +85,134 @@ func RegisterSoftIRQSlotKsyscall(irqNum uint32, slotNum int32, priestID int16) i
 		return -19 // ENODEV
 	}
 
-	slot := &softIRQSlots[slotNum]
+	// Determine which ring buffer to use
+	var ring *softIRQRing
+	if intKind == hid.MouseInterrupt {
+		ring = &topHalfMouseRing
+	} else {
+		ring = &topHalfKbdRing
+	}
+
+	slot := &softIRQSlotData[slotNum]
 	slot.irqNum = irqNum
 	slot.priestID = priestID
 	slot.devIdx = devIdx
+	slot.intKind = intKind
+	slot.ring = ring
+	slot.blockedTID = -1
 	atomic.StoreUint32(&slot.active, 1)
+	softIRQSlotInUse[slotNum] = true
 
 	if irqNum < 256 {
 		irqToSlot[irqNum] = slotNum
 	}
 
-	console.KPrintf("[SoftIRQSlot] Registered slot %d: IRQ=%d priest=%d dev=%d\n",
-		slotNum, irqNum, priestID, devIdx)
+	console.KPrintf("[SoftIRQSlot] Registered slot %d: IRQ=%d priest=%d dev=%d kind=%d\n",
+		slotNum, irqNum, priestID, devIdx, intKind)
 	return 0
 }
 
-// DrainSoftIRQSlotEvents drains events from the device associated with a slot.
+// WakeSlotForIRQ is called from the nosplit top-half after pushing events.
+// If a thread is blocked on a slot for this IRQ, wake it with priority.
+//
+//go:nosplit
+func WakeSlotForIRQ(irqNum uint32) {
+	if irqNum >= 256 {
+		return
+	}
+	slotIdx := atomic.LoadInt32(&irqToSlot[irqNum])
+	if slotIdx < 0 || slotIdx >= maxSoftIRQSlots {
+		return
+	}
+	slot := &softIRQSlotData[slotIdx]
+	tid := slot.blockedTID
+	if tid < 0 {
+		return // no blocked thread, events stay in ring
+	}
+
+	schedulerLock.Lock()
+
+	// Re-check after acquiring lock
+	tid = slot.blockedTID
+	if tid < 0 {
+		schedulerLock.Unlock()
+		return
+	}
+
+	t := threadList.FindByIdAll(int32(tid))
+	if t == nil || t.State != ThreadBlockedSoftIRQ {
+		slot.blockedTID = -1
+		schedulerLock.Unlock()
+		return
+	}
+
+	t.State = ThreadReady
+	slot.blockedTID = -1
+	enqueueReadySchedLockHeld(t)
+
+	schedulerLock.Unlock()
+}
+
+// BlockOnSlot blocks the current thread waiting for events on the given slot.
+// Returns the context pointer of the next thread to switch to, or 0.
+// Called from the syscall handler (normal Go context).
+//
+//go:nosplit
+func BlockOnSlot(slotNum int32) uintptr {
+	if CurrentThreadIdx < 0 {
+		return 0
+	}
+
+	savedDAIF := NormalSchedulerFunc.DisableAndSaveDAIF()
+	schedulerLock.Lock()
+
+	t := threadList.Get(int(CurrentThreadIdx))
+	if t == nil {
+		schedulerLock.Unlock()
+		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
+		return 0
+	}
+
+	next := findReadyThreadSchedLockHeld()
+	if next == nil {
+		schedulerLock.Unlock()
+		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
+		return 0
+	}
+
+	// Commit: block current thread, record in slot
+	t.State = ThreadBlockedSoftIRQ
+	softIRQSlotData[slotNum].blockedTID = t.TID
+
+	schedulerLock.Unlock()
+	NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
+
+	return uintptr(unsafe.Pointer(&next.Context))
+}
+
+// DrainSoftIRQSlotEvents drains events from the ring buffer associated with a slot.
 // Called from ksyscall via linkname.
 func DrainSoftIRQSlotEvents(slotNum int32, buf []hid.HIDEvent, max int) int {
 	if slotNum < 0 || slotNum >= maxSoftIRQSlots {
 		return 0
 	}
-	slot := &softIRQSlots[slotNum]
+	slot := &softIRQSlotData[slotNum]
 	if atomic.LoadUint32(&slot.active) == 0 {
 		return 0
 	}
-
-	devices := input.AllDevices()
-	if slot.devIdx >= len(devices) {
-		return 0
-	}
-	dev := devices[slot.devIdx]
-	if dev == nil {
+	if slot.ring == nil {
 		return 0
 	}
 
-	return dev.DrainEvents(buf, max)
+	return RingDrain(slot.ring, buf, max)
+}
+
+// GetSlotInterruptKind returns the InterruptType for a given slot.
+func GetSlotInterruptKind(slotNum int32) hid.InterruptType {
+	if slotNum < 0 || slotNum >= maxSoftIRQSlots {
+		return 0
+	}
+	return softIRQSlotData[slotNum].intKind
 }
 
 // QueryInputDevicesKernel fills device info from discovered input devices.
@@ -121,9 +227,14 @@ func QueryInputDevicesKernel(infos []hid.InputDeviceInfo, max int) int {
 		if dev == nil {
 			continue
 		}
+		kind := hid.KeyboardInterrupt
+		if dev.DevType == hid.DeviceTypeMouse {
+			kind = hid.MouseInterrupt
+		}
 		infos[n] = hid.InputDeviceInfo{
-			IRQNum:     dev.IRQNum,
-			DeviceType: dev.DevType,
+			IRQNum:        dev.IRQNum,
+			DeviceType:    dev.DevType,
+			InterruptKind: kind,
 		}
 		n++
 	}

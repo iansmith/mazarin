@@ -59,6 +59,7 @@ vars:
   SIEVE7_ELF: '{{.BUILD_DIR}}/sieve7.elf'
   SIEVE8_ELF: '{{.BUILD_DIR}}/sieve8.elf'
   SIEVE9_ELF: '{{.BUILD_DIR}}/sieve9.elf'
+  DAPOPE_ELF: '{{.BUILD_DIR}}/dapope.elf'
   HELLOWORLD_ELF: '{{.BUILD_DIR}}/helloworld.elf'
   HELLOWORLD_THIN_ELF: '{{.BUILD_DIR}}/helloworld-thin.elf'
   HELLOWORLD_MAZ: '{{.BUILD_DIR}}/helloworld.maz'
@@ -234,6 +235,21 @@ tasks:
       - '{{.GO}} tool go-echo "Building priestsieve (prime sieve test with overlay)..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.PRIESTSIEVE_ELF}} ./flock/cmd/priestsieve'
       - '{{.GO}} tool go-echo "Priestsieve built at {{.PRIESTSIEVE_ELF}}"'
+
+  dapope:
+    desc: Build dapope input event handler priest
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.DAPOPE_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building dapope (input event handler with overlay)..."'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DAPOPE_ELF}} ./flock/cmd/dapope'
+      - '{{.GO}} tool go-echo "Dapope built at {{.DAPOPE_ELF}}"'
 
   priest2:
     desc: Build priest2 scheduling test program
@@ -411,9 +427,10 @@ tasks:
 
   disk:
     desc: Create FAT32 disk image with flock binaries and kmazarin kernel
-    deps: [priestsieve, priest2, priest3, sievetest, sieve3, sieve5, sieve6, sieve7, sieve8, sieve9, helloworld-maz, kmazarin, convert-boot-image]
+    deps: [priestsieve, dapope, priest2, priest3, sievetest, sieve3, sieve5, sieve6, sieve7, sieve8, sieve9, helloworld-maz, kmazarin, convert-boot-image]
     sources:
       - '{{.PRIESTSIEVE_ELF}}'
+      - '{{.DAPOPE_ELF}}'
       - '{{.PRIEST2_ELF}}'
       - '{{.PRIEST3_ELF}}'
       - '{{.SIEVETEST_ELF}}'
@@ -430,7 +447,7 @@ tasks:
       - '{{.DISK_IMAGE}}'
     cmds:
       - '{{.GO}} tool go-echo "Creating FAT32 disk image..."'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.PRIESTSIEVE_ELF}} {{.PRIEST2_ELF}} {{.PRIEST3_ELF}} {{.SIEVETEST_ELF}} {{.SIEVE3_ELF}} {{.SIEVE5_ELF}} {{.SIEVE6_ELF}} {{.SIEVE7_ELF}} {{.SIEVE8_ELF}} {{.SIEVE9_ELF}} {{.HELLOWORLD_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.PRIESTSIEVE_ELF}} {{.DAPOPE_ELF}} {{.PRIEST2_ELF}} {{.PRIEST3_ELF}} {{.SIEVETEST_ELF}} {{.SIEVE3_ELF}} {{.SIEVE5_ELF}} {{.SIEVE6_ELF}} {{.SIEVE7_ELF}} {{.SIEVE8_ELF}} {{.SIEVE9_ELF}} {{.HELLOWORLD_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "Disk image created at {{.DISK_IMAGE}}"'
 
   # ===========================================================================

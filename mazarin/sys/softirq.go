@@ -3,6 +3,7 @@ package sys
 import (
 	"errors"
 	"mazzy/shared/hid"
+	"syscall"
 	"unsafe"
 )
 
@@ -13,21 +14,18 @@ const (
 )
 
 // WaitSoftIRQ blocks until soft IRQ events arrive on the given slot.
+// Uses Syscall6 (not RawSyscall) so the Go runtime knows the M is blocked,
+// allowing other goroutines to run on a new M.
 // Returns the number of events written to buf, or an error.
-// On return, buf.Length contains the count and buf.Events[:buf.Length] are valid.
 func WaitSoftIRQ(slot int, buf *hid.SoftIRQReturn) (int, error) {
 	for {
-		// Use RawSyscall to avoid runtime scheduler overhead.
-		// TODO: Switch to Syscall6 when we have proper blocking.
-		r1, _, errno := RawSyscall(sysWaitSoftIRQ,
+		r1, _, errno := syscall.Syscall6(sysWaitSoftIRQ,
 			uintptr(slot),
 			uintptr(unsafe.Pointer(buf)),
 			0, 0, 0, 0)
 
 		if errno != 0 {
 			if errno == 11 { // EAGAIN
-				// Yield CPU to avoid tight spin
-				RawSyscall(124, 0, 0, 0, 0, 0, 0) // sched_yield
 				continue
 			}
 			return 0, errors.New("WaitSoftIRQ failed")

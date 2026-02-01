@@ -1,6 +1,9 @@
 // dapope is a userspace priest that receives keyboard and mouse events
 // via the soft IRQ mechanism. It discovers available input devices,
 // registers for their IRQs, and blocks waiting for HID events.
+//
+// Each device gets its own goroutine that blocks on WaitSoftIRQ (via Syscall6),
+// allowing the Go runtime to hand off the M and run other goroutines.
 package main
 
 import (
@@ -181,54 +184,15 @@ func main() {
 		}
 	}
 
-	// Poll both devices in a single goroutine (no userspace goroutine scheduler needed)
-	var kbdBuf, mouseBuf hid.SoftIRQReturn
-	for {
-		if kbdSlot >= 0 {
-			n, err := sys.TryWaitSoftIRQ(kbdSlot, &kbdBuf)
-			if err != nil {
-				fmt.Printf("[dapope:kbd] error: %v\n", err)
-			}
-			for i := 0; i < n; i++ {
-				ev := kbdBuf.Events[i]
-				if ev.Type == EV_KEY {
-					action := "pressed"
-					if ev.Value == 0 {
-						action = "released"
-					} else if ev.Value == 2 {
-						action = "repeat"
-					}
-					fmt.Printf("[dapope:kbd] %s %s\n", keyName(ev.Code), action)
-				}
-			}
-		}
-		if mouseSlot >= 0 {
-			n, err := sys.TryWaitSoftIRQ(mouseSlot, &mouseBuf)
-			if err != nil {
-				fmt.Printf("[dapope:mouse] error: %v\n", err)
-			}
-			for i := 0; i < n; i++ {
-				ev := mouseBuf.Events[i]
-				switch ev.Type {
-				case EV_REL:
-					switch ev.Code {
-					case REL_X:
-						fmt.Printf("[dapope:mouse] X %+d\n", int32(ev.Value))
-					case REL_Y:
-						fmt.Printf("[dapope:mouse] Y %+d\n", int32(ev.Value))
-					case REL_WHEEL:
-						fmt.Printf("[dapope:mouse] wheel %+d\n", int32(ev.Value))
-					}
-				case EV_KEY:
-					action := "pressed"
-					if ev.Value == 0 {
-						action = "released"
-					}
-					fmt.Printf("[dapope:mouse] %s %s\n", buttonName(ev.Code), action)
-				}
-			}
-		}
-		// Yield to avoid tight spin
-		sys.RawSyscall(124, 0, 0, 0, 0, 0, 0) // sched_yield
+	// Launch goroutines that block on WaitSoftIRQ (via Syscall6).
+	// The Go runtime M-handoff allows both to block independently.
+	if kbdSlot >= 0 {
+		go keyboardLoop(kbdSlot)
 	}
+	if mouseSlot >= 0 {
+		go mouseLoop(mouseSlot)
+	}
+
+	// Block main goroutine forever
+	select {}
 }

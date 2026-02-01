@@ -1200,18 +1200,8 @@ irq_not_timer:
 	MOVD	·kmazarinG0Addr(SB), R10
 	CBZ	R10, irq_skip_dispatch  // g0 not ready yet
 
-	// Breadcrumb 'G' = g0 found, about to CALL
-	MOVD	$UART_BASE, R11
-	MOVD	$'G', R12
-	MOVW	R12, (R11)
-
 	WORD	$0xaa0a03fc  // mov x28, x10 — set g to kmazarin g0
 	CALL	·NonTimerIRQTopHalf(SB)
-
-	// Breadcrumb 'R' = returned from CALL
-	MOVD	$UART_BASE, R11
-	MOVD	$'R', R12
-	MOVW	R12, (R11)
 
 irq_skip_dispatch:
 

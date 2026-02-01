@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"mazzy/kmazarin/asm"
 	arm64gic "mazzy/kmazarin/arch/arm64/gic"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
@@ -827,8 +826,10 @@ func initVirtIOInputDevices() {
 			cachedGIC.SetIRQEdgeTriggered(localIRQ)
 			// Set priority to 0xA0 (lower than timer at 0x00, higher than nothing)
 			cachedGIC.SetIRQPriority(localIRQ, 0xA0)
+			// Route to CPU 0 (required — bulk SPI init may not cover MSI-X IRQs)
+			cachedGIC.SetIRQTarget(localIRQ, 0x01)
 			cachedGIC.EnableIRQ(localIRQ)
-			console.KPrintf("[VirtIO Input] Enabled GIC IRQ %d\n", localIRQ)
+			console.KPrintf("[VirtIO Input] Enabled GIC IRQ %d (target=CPU0)\n", localIRQ)
 		}
 	}
 
@@ -878,29 +879,6 @@ func initVirtIOInputDevices() {
 		}
 	}
 
-	// Initial drain: during InitVirtIOInput, the queue kick causes the device
-	// to consume all available buffers asynchronously. We must wait for the
-	// device to finish writing the used ring, then drain to reclaim buffers.
-	for _, dev := range devices {
-		if dev == nil {
-			continue
-		}
-		// Poll used.idx via MMIO read (bypasses CPU cache) until device finishes
-		usedVA := uintptr(unsafe.Pointer(dev.EventQueue.Used))
-		for i := 0; i < 100000; i++ {
-			idx := asm.MmioRead16(usedVA + 2) // offset 2 = used.idx (after flags)
-			if idx > 0 {
-				console.KPrintf("[VirtIO Input] irq=%d: device used %d buffers (polled %d iterations)\n",
-					dev.IRQNum, idx, i)
-				break
-			}
-			runtime.Gosched()
-		}
-		dev.HandleIRQ()
-		vq := &dev.EventQueue
-		console.KPrintf("[VirtIO Input] post-drain: irq=%d avail.idx=%d used.idx=%d numfree=%d\n",
-			dev.IRQNum, vq.Available.Idx, vq.Used.Idx, vq.NumFree)
-	}
 }
 
 // testKPrintHex tests the KPrintHex() method with various value types
@@ -1068,22 +1046,15 @@ func simpleMain() {
 
 	// DEBUG: ReadMemStats disabled - hangs in bare-metal (triggers STW GC)
 
-	// Launch 6 copies of priestsieve to stress-test thread scheduling.
-	// Each priest has 5 worker goroutines + main goroutine (6 total per priest).
-	// Total: 6 priests * 6 goroutines = 36 goroutines across 6 threads.
-	// (priest launch breadcrumbs removed for performance)
-
-	filename := "/priestsieve.elf\x00"
-	filenamePtr := uintptr(unsafe.Pointer(&([]byte(filename))[0]))
-
-	for i := 0; i < 6; i++ {
-		result := ksyscall.SyscallLaunch(uint64(filenamePtr), uint64(i), 0, 0, 0, 0)
-		if result != 0 {
-			continue
-		}
-
-		// Full cache/TLB sync for this priest.
+	// Launch dapope (input event handler priest)
+	dapopeName := "/dapope.elf\x00"
+	dapopePtr := uintptr(unsafe.Pointer(&([]byte(dapopeName))[0]))
+	result := ksyscall.SyscallLaunch(uint64(dapopePtr), 0, 0, 0, 0, 0)
+	if result == 0 {
 		kmem.FinalUserspaceSync()
+		Print("[main] dapope launched")
+	} else {
+		Print("[main] dapope launch failed")
 	}
 
 	// Re-enable IRQs and timer for ongoing scheduling

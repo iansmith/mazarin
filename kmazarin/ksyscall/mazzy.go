@@ -19,7 +19,10 @@ const (
 	SysDebugPrint          = MazzySyscallBase + 6 // 0x1006 - Debug print arguments
 	SysGetFramebuffer      = MazzySyscallBase + 7 // 0x1007 - Get framebuffer info
 	SysWaitKernelAsync     = MazzySyscallBase + 8 // 0x1008 - Wait for kernel async message
-	SysRegisterAsyncPreempt = MazzySyscallBase + 9 // 0x1009 - Register asyncPreempt address for goroutine preemption
+	SysRegisterAsyncPreempt = MazzySyscallBase + 9  // 0x1009 - Register asyncPreempt address for goroutine preemption
+	SysWaitSoftIRQ          = MazzySyscallBase + 10 // 0x100A - Wait for soft IRQ events on a slot
+	SysRegisterSoftIRQ      = MazzySyscallBase + 11 // 0x100B - Register an IRQ on a soft IRQ slot
+	SysQueryInputDevices    = MazzySyscallBase + 12 // 0x100C - Query available input devices
 )
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
@@ -34,7 +37,10 @@ var mazzySyscallTable = [64]SyscallHandler{
 	6: SyscallDebugPrint,           // DebugPrint = 0x1006
 	7: SyscallGetFramebuffer,       // GetFramebuffer = 0x1007
 	8: SyscallWaitKernelAsync,      // WaitKernelAsync = 0x1008
-	9: SyscallRegisterAsyncPreempt, // RegisterAsyncPreempt = 0x1009
+	9:  SyscallRegisterAsyncPreempt, // RegisterAsyncPreempt = 0x1009
+	10: SyscallWaitSoftIRQ,          // WaitSoftIRQ = 0x100A
+	11: SyscallRegisterSoftIRQ,      // RegisterSoftIRQ = 0x100B
+	12: SyscallQueryInputDevices,    // QueryInputDevices = 0x100C
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.

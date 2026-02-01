@@ -39,3 +39,14 @@ func DrainSoftIRQSlotEvents(slotNum int32, buf []hid.HIDEvent, max int) int
 //
 //go:linkname QueryInputDevicesKernel main.QueryInputDevicesKernel
 func QueryInputDevicesKernel(infos []hid.InputDeviceInfo, max int) int
+
+// BlockOnSlot blocks current thread on a soft IRQ slot.
+// Returns context pointer of next thread, or 0.
+//
+//go:linkname BlockOnSlot main.BlockOnSlot
+func BlockOnSlot(slotNum int32) uintptr
+
+// GetSlotInterruptKind returns the InterruptType for a slot.
+//
+//go:linkname GetSlotInterruptKind main.GetSlotInterruptKind
+func GetSlotInterruptKind(slotNum int32) hid.InterruptType

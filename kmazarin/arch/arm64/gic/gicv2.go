@@ -108,9 +108,13 @@ func (g *GICv2) EnableIRQ(irq uint32) {
 //
 //go:nosplit
 func (g *GICv2) SetIRQTarget(irq uint32, cpuMask uint8) {
-	// GICD_ITARGETSR: 1 byte per IRQ, byte-accessible
-	offset := uintptr(0x800) + uintptr(irq)
-	asm.MmioWrite8(g.distBase+offset, cpuMask)
+	// GICD_ITARGETSR: 4 IRQs per 32-bit register, use read-modify-write
+	regOffset := uintptr(0x800) + uintptr(irq/4)*4
+	bytePos := irq % 4
+	shift := bytePos * 8
+	val := g.readDistReg(regOffset)
+	val = (val &^ (0xFF << shift)) | (uint32(cpuMask) << shift)
+	g.writeDistReg(regOffset, val)
 }
 
 // SetIRQPriority sets the priority for an IRQ.
@@ -210,9 +214,9 @@ func (g *GICv2) initHardware() {
 
 		// Route all SPIs to CPU 0. Cardinal/QEMU leaves ITARGETSR at 0
 		// for SPIs (IRQ 32+), so MSI-X interrupts never reach the CPU.
-		// Use byte writes — QEMU GICv2 may require byte-sized access for ITARGETSR.
-		for irq := uintptr(32); irq < 288; irq++ {
-			asm.MmioWrite8(g.distBase+0x800+irq, 0x01)
+		// Use 32-bit writes (4 IRQs per register) for reliable MMIO access.
+		for i := uintptr(8); i < 72; i++ { // registers 8-71 cover IRQs 32-287
+			g.writeDistReg(0x800+i*4, 0x01010101)
 		}
 		console.KPrintf("[GIC] Reconfig done (Group 0, SPIs routed to CPU 0)\n")
 

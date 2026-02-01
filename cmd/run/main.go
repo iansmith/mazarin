@@ -108,6 +108,8 @@ func run() error {
 		"-kernel", kernelPath,
 		"-nodefaults",
 		"-device", "virtio-gpu-pci",
+		"-device", "virtio-keyboard-pci",
+		"-device", "virtio-mouse-pci",
 		"-object", "rng-random,id=rng0,filename=/dev/urandom",
 		"-device", "virtio-rng-device,rng=rng0",
 		"-display", displayBackend,
