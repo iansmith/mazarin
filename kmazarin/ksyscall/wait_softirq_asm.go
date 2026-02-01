@@ -2,7 +2,10 @@
 
 package ksyscall
 
-import _ "unsafe" // for go:linkname
+import (
+	"mazzy/shared/hid"
+	_ "unsafe" // for go:linkname
+)
 
 // Forward declarations for soft IRQ functions provided via go:linkname.
 
@@ -21,3 +24,18 @@ func RegisterSoftIRQDispatcher() int64
 //
 //go:linkname GetPendingSoftIRQ main.GetPendingSoftIRQ
 func GetPendingSoftIRQ(bundlePtr uint64) bool
+
+// RegisterSoftIRQSlotKsyscall registers an IRQ on a soft IRQ slot for a priest.
+//
+//go:linkname RegisterSoftIRQSlotKsyscall main.RegisterSoftIRQSlotKsyscall
+func RegisterSoftIRQSlotKsyscall(irqNum uint32, slotNum int32, priestID int16) int64
+
+// DrainSoftIRQSlotEvents drains events from a soft IRQ slot.
+//
+//go:linkname DrainSoftIRQSlotEvents main.DrainSoftIRQSlotEvents
+func DrainSoftIRQSlotEvents(slotNum int32, buf []hid.HIDEvent, max int) int
+
+// QueryInputDevicesKernel fills device info from discovered input devices.
+//
+//go:linkname QueryInputDevicesKernel main.QueryInputDevicesKernel
+func QueryInputDevicesKernel(infos []hid.InputDeviceInfo, max int) int

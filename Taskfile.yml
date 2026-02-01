@@ -756,8 +756,8 @@ tasks:
   # ===========================================================================
 
   all:
-    desc: Build cardinal and kmazarin (default)
-    deps: [cardinal]
+    desc: Build cardinal, kmazarin, and disk image (default)
+    deps: [cardinal, disk]
 
   default:
     deps: [all]

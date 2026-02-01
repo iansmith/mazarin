@@ -165,18 +165,13 @@ func writeGICCEOIR(iarValue uint32) {
 // This runs in safe Go context (event poller goroutine).
 //
 func dispatchIRQ(irqNum uint32) {
-	// Read IAR value saved by exception handler
-	iarValue := atomic.LoadUint32(&irqIARValues[irqNum])
-
 	// Call kirq.DispatchIRQ with dummy values for framePtr, elr, spEl0
 	// (these aren't needed for simple handlers like UART)
 	kirq.DispatchIRQ(uint64(irqNum), 0, 0, 0)
 
-	// CRITICAL: Write GICC_EOIR AFTER handler completes
-	// For level-triggered interrupts (like UART TX), the handler must clear
-	// the interrupt condition (e.g., drain TX buffer, disable TX interrupt)
-	// BEFORE we write EOIR. Otherwise, the GIC immediately re-fires the IRQ.
-	writeGICCEOIR(iarValue)
+	// NOTE: EOIR is written in the assembly top-half (exceptions_arm64.s)
+	// immediately after setting the pending flag. This ensures the GIC
+	// unblocks for the next interrupt without waiting for the bottom-half.
 }
 
 // ============================================================================
@@ -310,25 +305,10 @@ func BreadcrumbString(s string) {
 // Must be called during initialization, BEFORE enabling interrupts.
 //
 func StartBottomHalfProcessors() {
-	Print("[BottomHalf] Starting event poller and processors...")
-
-	Print("[BottomHalf] Starting event poller...")
-	// Start event poller
 	go eventPoller()
-	Print("[BottomHalf] Event poller started")
-
-	Print("[BottomHalf] Starting RX processor...")
-	// Start bottom half processors
 	go uartRxBottomHalf()
-	Print("[BottomHalf] Starting TX processor...")
 	go uartTxBottomHalf()
-	Print("[BottomHalf] Starting deadline processor...")
 	go deadlineBottomHalf()
-	Print("[BottomHalf] Starting page tracking processor...")
 	go pageTrackingBottomHalf()
-	Print("[BottomHalf] All goroutines launched")
-
-	Print("[BottomHalf] About to finish...")
-
-	Print("[BottomHalf] Finished!")
+	Print("[BottomHalf] Started event poller + 4 processors")
 }

@@ -1335,6 +1335,7 @@ func mapDevicePage(va, pa uintptr) bool {
 
 	var l3VA uintptr
 	if (*l2Entry & PTE_VALID) == 0 {
+		// No L2 entry — allocate a fresh L3 table
 		l3VA = allocPTPage()
 		if l3VA == 0 {
 			return false
@@ -1347,7 +1348,46 @@ func mapDevicePage(va, pa uintptr) bool {
 		*l2Entry = uint64(l3PA) | PTE_VALID | PTE_TABLE
 		dcCIVAC(uintptr(unsafe.Pointer(l2Entry)))
 		dsbSY()
+	} else if (*l2Entry & 0x2) == 0 {
+		// L2 is a 2MB block descriptor — must split into 512 L3 page entries.
+		// Extract the block's base PA and attributes.
+		blockPA := uintptr(*l2Entry & PTE_ADDR_MASK)
+		blockAttrs := *l2Entry & ^uint64(PTE_ADDR_MASK) // preserve attribute bits
+
+		// Allocate an L3 page table page
+		l3VA = allocPTPage()
+		if l3VA == 0 {
+			return false
+		}
+		l3PA := walkPageTable(l3VA)
+		if l3PA == 0 {
+			return false
+		}
+		cachePTVA(l3PA, l3VA)
+
+		// Fill all 512 L3 entries replicating the block mapping at 4KB granularity.
+		// L3 page descriptors use bit[1]=1 (PTE_TABLE) unlike L2 blocks.
+		for i := uintptr(0); i < 512; i++ {
+			entryPA := blockPA + i*PageSize
+			// Use block attrs but set bit 1 for L3 page descriptor
+			l3E := (uint64(entryPA) & PTE_ADDR_MASK) | (blockAttrs | PTE_TABLE)
+			*(*uint64)(unsafe.Pointer(l3VA + i*8)) = l3E
+		}
+
+		// Overwrite L2 from block → table pointer
+		*l2Entry = uint64(l3PA) | PTE_VALID | PTE_TABLE
+		dcCIVAC(uintptr(unsafe.Pointer(l2Entry)))
+		// Flush all L3 entries
+		for i := uintptr(0); i < 512; i++ {
+			dcCIVAC(l3VA + i*8)
+		}
+		dsbSY()
+		// Invalidate entire TLB — the 2MB block covered many pages
+		tlbiVMALLE1IS()
+		dsbSY()
+		isbSY()
 	} else {
+		// L2 is already a table pointer — look up L3 table
 		l3PA := uintptr(*l2Entry & PTE_ADDR_MASK)
 		l3VA = paToVAOrCache(l3PA)
 		if l3VA == 0 {
@@ -1355,17 +1395,16 @@ func mapDevicePage(va, pa uintptr) bool {
 		}
 	}
 
-	// Write L3 entry with DEVICE attributes (not NORMAL)
+	// Write L3 entry with DEVICE attributes (not NORMAL).
+	// Overwrite even if already mapped — the existing mapping may have
+	// Normal-Cacheable attributes from the linear map / demand paging.
 	l3Entry := (*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
 
-	// Check if already mapped
 	if (*l3Entry & PTE_VALID) != 0 {
-		// Already mapped - verify it points to same PA
 		existingPA := uintptr(*l3Entry & PTE_ADDR_MASK)
-		if existingPA == pa {
-			return true // Already correctly mapped
+		if existingPA != pa {
+			return false // PA conflict
 		}
-		return false // Conflict!
 	}
 
 	// Device memory: non-cacheable, non-gathering, non-reordering

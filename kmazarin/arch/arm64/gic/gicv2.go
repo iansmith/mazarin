@@ -3,6 +3,7 @@ package gic
 
 import (
 	"mazzy/kmazarin/asm"
+	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/deviceapi"
 	"mazzy/kmazarin/dtb"
 	"mazzy/kmazarin/kirq"
@@ -102,6 +103,37 @@ func (g *GICv2) EnableIRQ(irq uint32) {
 	g.writeDistReg(offset, 1<<bit)
 }
 
+// SetIRQTarget sets the CPU target mask for an IRQ.
+// For GICv2, target is a bitmask of CPUs (bit 0 = CPU 0).
+//
+//go:nosplit
+func (g *GICv2) SetIRQTarget(irq uint32, cpuMask uint8) {
+	// GICD_ITARGETSR: 1 byte per IRQ, byte-accessible
+	offset := uintptr(0x800) + uintptr(irq)
+	asm.MmioWrite8(g.distBase+offset, cpuMask)
+}
+
+// SetIRQPriority sets the priority for an IRQ.
+// Lower values = higher priority. Timer uses 0x00, default is 0xA0.
+//
+//go:nosplit
+func (g *GICv2) SetIRQEdgeTriggered(irq uint32) {
+	// GICD_ICFGR: 2 bits per IRQ, bit[1] = 1 means edge-triggered
+	reg := uintptr(irq / 16)
+	shift := (irq % 16) * 2
+	offset := uintptr(0xC00) + reg*4
+	val := g.readDistReg(offset)
+	val |= (0x2 << shift) // Set bit[1] for edge-triggered
+	g.writeDistReg(offset, val)
+}
+
+//go:nosplit
+func (g *GICv2) SetIRQPriority(irq uint32, priority uint8) {
+	// GICD_IPRIORITYR: 1 byte per IRQ, byte-accessible
+	offset := GICD_IPRIORITYR + uintptr(irq)
+	asm.MmioWrite8(g.distBase+offset, priority)
+}
+
 //go:nosplit
 func (g *GICv2) DisableIRQ(irq uint32) {
 	reg := uintptr(irq / 32)
@@ -112,6 +144,35 @@ func (g *GICv2) DisableIRQ(irq uint32) {
 	// Clear any pending interrupts for this IRQ
 	// GICD_ICPENDR (0x280) is write-1-to-clear
 	g.writeDistReg(0x280+(reg*4), 1<<bit)
+}
+
+// DumpIRQState prints the GIC configuration for a specific IRQ for debugging.
+func (g *GICv2) DumpIRQState(irq uint32) {
+	reg := uintptr(irq / 32)
+	bit := irq % 32
+
+	isenabler := g.readDistReg(GICD_ISENABLER + reg*4)
+	enabled := (isenabler >> bit) & 1
+
+	igroupr := g.readDistReg(0x080 + reg*4)
+	group := (igroupr >> bit) & 1
+
+	itargets := g.readDistReg(0x800 + uintptr(irq/4)*4)
+	target := (itargets >> ((irq % 4) * 8)) & 0xFF
+
+	ipriority := g.readDistReg(GICD_IPRIORITYR + uintptr(irq/4)*4)
+	priority := (ipriority >> ((irq % 4) * 8)) & 0xFF
+
+	icfgr := g.readDistReg(0xC00 + uintptr(irq/16)*4)
+	cfg := (icfgr >> ((irq % 16) * 2)) & 0x3
+
+	ispendr := g.readDistReg(0x200 + reg*4)
+	pending := (ispendr >> bit) & 1
+
+	// Also read target byte directly
+	tgtByte := asm.MmioRead8(g.distBase + 0x800 + uintptr(irq))
+	console.KPrintf("[GIC] IRQ %d: en=%d grp=%d tgt=0x%x(byte=0x%x) pri=0x%x cfg=%d pend=%d\n",
+		irq, enabled, group, target, uint32(tgtByte), priority, cfg, pending)
 }
 
 // Hardware initialization
@@ -126,16 +187,19 @@ func (g *GICv2) initHardware() {
 	// FIX: Reconfigure GIC for Non-Secure EL1 by moving all interrupts to Group 1.
 	gicdCtrl := g.readDistReg(GICD_CTLR)
 	if gicdCtrl != 0 {
+		// Diagnostic: read ITARGETSR as left by Cardinal (before any changes)
+		readbackUART := g.readDistReg(0x800 + 8*4) // IRQ 32-35
+		readback112 := g.readDistReg(0x800 + 28*4)  // IRQ 112-115
+		grp3 := g.readDistReg(0x080 + 3*4)           // IGROUPR3 (IRQs 96-127)
+		console.KPrintf("[GIC] Before reconfig: ITARGETS UART=0x%x IRQ112=0x%x IGROUPR3=0x%x CTLR=0x%x\n",
+			readbackUART, readback112, grp3, gicdCtrl)
+
 		// CRITICAL: Move all interrupts to Group 1 (Non-Secure)
-		// GICv2 spec: Group 0 = Secure, Group 1 = Non-Secure
-		// In Non-Secure EL1, we can ONLY receive Group 1 interrupts
-		// Set GICD_IGROUPRn bits to 1 for all interrupts
 		for i := uintptr(0); i < 32; i++ {
 			g.writeDistReg(0x080+(i*4), 0xFFFFFFFF) // GICD_IGROUPR
 		}
 
 		// Enable both Group 0 and Group 1 in distributor
-		// Bit 0 = EnableGrp0, Bit 1 = EnableGrp1
 		g.writeDistReg(GICD_CTLR, 0x03)
 
 		// Enable both Group 0 and Group 1 in CPU interface

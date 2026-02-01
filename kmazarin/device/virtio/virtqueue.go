@@ -75,6 +75,9 @@ type VirtQueue struct {
 	DescAlloc      unsafe.Pointer  // Allocated memory for descriptor table
 	AvailableAlloc unsafe.Pointer  // Allocated memory for available ring
 	UsedAlloc      unsafe.Pointer  // Allocated memory for used ring
+	DescPA         uint64          // Physical address of descriptor table (for DMA)
+	AvailPA        uint64          // Physical address of available ring (for DMA)
+	UsedPA         uint64          // Physical address of used ring (for DMA)
 }
 
 // virtqueueSize calculates the total size needed for a virtqueue
@@ -197,6 +200,95 @@ func VirtqueueInit(vq *VirtQueue, queueSize uint16) bool {
 	vq.LastUsedIdx = 0
 
 	return true
+}
+
+// VirtqueueInitDMA initializes a virtqueue using DMA-safe allocations.
+// Similar to VirtqueueInit but records physical addresses for each region
+// and uses page-table walks to populate the PA fields.
+// Returns true on success, false on failure.
+func VirtqueueInitDMA(vq *VirtQueue, queueSize uint16) bool {
+	if !VirtqueueInit(vq, queueSize) {
+		return false
+	}
+	// Record physical addresses via page table walk
+	vq.DescPA = VirtqueueGetPhysicalAddr(vq.DescTable)
+	vq.AvailPA = VirtqueueGetPhysicalAddr(unsafe.Pointer(vq.Available))
+	vq.UsedPA = VirtqueueGetPhysicalAddr(unsafe.Pointer(vq.Used))
+	return true
+}
+
+// VirtqueueInitOnDMAPage initializes a virtqueue using a pre-allocated DMA page.
+// The caller provides both the physical address and virtual address of the page,
+// plus an offset within the page. All structures (desc, avail, used) are placed
+// at known offsets from that base. This avoids the Go heap and page table walks
+// entirely — the PA is known because we allocated it, and the VA is known because
+// we mapped it ourselves with device memory attributes.
+//
+// Layout within the page starting at baseOffset:
+//   [0]                          Descriptor table (queueSize * 16 bytes)
+//   [descSize, 2-aligned]        Available ring (6 + queueSize*2 bytes)
+//   [descSize+availSize, 4-aligned] Used ring (6 + queueSize*8 bytes)
+//
+// Returns the offset past the end of this queue's structures (for chaining
+// multiple queues on one page), or 0 on failure.
+func VirtqueueInitOnDMAPage(vq *VirtQueue, queueSize uint16, pagePA, pageVA uintptr, baseOffset uintptr) uintptr {
+	if queueSize == 0 || (queueSize&(queueSize-1)) != 0 {
+		return 0
+	}
+
+	descStride := unsafe.Sizeof(VirtQDesc{}) // 16
+	descSize := uintptr(queueSize) * descStride
+	availSize := uintptr(2 + 2 + int(queueSize)*2 + 2) // flags+idx+ring+used_event
+	usedElemSize := unsafe.Sizeof(VirtQUsedElem{})      // 8
+	usedSize := uintptr(2 + 2 + int(queueSize)*int(usedElemSize) + 2)
+
+	// Align offsets
+	descOff := (baseOffset + 15) &^ 15 // 16-byte aligned
+	availOff := descOff + descSize
+	availOff = (availOff + 1) &^ 1 // 2-byte aligned
+	usedOff := availOff + availSize
+	usedOff = (usedOff + 3) &^ 3 // 4-byte aligned
+	endOff := usedOff + usedSize
+
+	if endOff > 4096 {
+		return 0 // doesn't fit on page
+	}
+
+	vq.QueueSize = queueSize
+	vq.DescTable = unsafe.Pointer(pageVA + descOff)
+	vq.Available = CastToPointer[VirtQAvailable](pageVA + availOff)
+	vq.Used = CastToPointer[VirtQUsed](pageVA + usedOff)
+
+	// PAs are trivially known — same offset from page base
+	vq.DescPA = uint64(pagePA + descOff)
+	vq.AvailPA = uint64(pagePA + availOff)
+	vq.UsedPA = uint64(pagePA + usedOff)
+
+	// No separate allocations to track
+	vq.DescAlloc = nil
+	vq.AvailableAlloc = nil
+	vq.UsedAlloc = nil
+
+	// Zero everything (page was zeroed but be safe)
+	Bzero4K(vq.DescTable, uint32(descSize))
+	Bzero4K(unsafe.Pointer(vq.Available), uint32(availSize))
+	Bzero4K(unsafe.Pointer(vq.Used), uint32(usedSize))
+
+	// Initialize free descriptor chain
+	vq.FreeHead = 0
+	vq.NumFree = queueSize
+	for i := uint16(0); i < queueSize-1; i++ {
+		d := CastToPointer[VirtQDesc](PointerToUintptr(vq.DescTable) + uintptr(i)*descStride)
+		d.Next = i + 1
+	}
+	last := CastToPointer[VirtQDesc](PointerToUintptr(vq.DescTable) + uintptr(queueSize-1)*descStride)
+	last.Next = 0xFFFF
+
+	vq.Available.Idx = 0
+	vq.Used.Idx = 0
+	vq.LastUsedIdx = 0
+
+	return endOff
 }
 
 // VirtqueueInitLegacy initializes a virtqueue for legacy VirtIO MMIO (version 1)

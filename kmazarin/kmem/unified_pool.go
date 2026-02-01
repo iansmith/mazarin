@@ -20,6 +20,7 @@ const (
 	PageUser                       // Userspace data pages
 	PageUserPT                     // Userspace page table pages
 	PageFileBuffer                 // Streaming file buffer pages
+	PageDriver                     // Driver DMA pages (non-cacheable)
 )
 
 // Default soft limit for kernel memory: 16384 pages = 64MB

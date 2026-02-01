@@ -2,10 +2,12 @@ package main
 
 import (
 	"fmt"
+	"mazzy/kmazarin/asm"
 	arm64gic "mazzy/kmazarin/arch/arm64/gic"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/device/virtio/gpu"
+	"mazzy/kmazarin/device/virtio/input"
 	"mazzy/shared/fs/fat32"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
@@ -787,6 +789,100 @@ func initVirtIOGPU() {
 	}
 }
 
+// initVirtIOInputDevices discovers VirtIO input devices and wires their
+// MSI-X interrupts into the GIC so keypresses generate IRQs.
+func initVirtIOInputDevices() {
+	console.KPrintln("")
+	console.KPrintln("[VirtIO Input] === Initializing Input Devices ===")
+
+	input.InitVirtIOInput()
+
+	// Wire each input device's MSI-X IRQ into the GIC
+	devices := input.AllDevices()
+	if len(devices) == 0 {
+		console.KPrintln("[VirtIO Input] No input devices found")
+		return
+	}
+
+	for _, dev := range devices {
+		if dev == nil {
+			continue
+		}
+		irqNum := dev.IRQNum
+		if irqNum == 0 {
+			continue
+		}
+
+		// Register the input dispatch handler in both GIC and kirq tables
+		input.RegisterIRQDevice(irqNum, dev)
+		if cachedGIC != nil {
+			// Capture irqNum for closure (Go 1.22+ loop var semantics make this safe,
+			// but be explicit for clarity)
+			localIRQ := irqNum
+			// Register handler: when this IRQ fires, dispatch to input driver
+			cachedGIC.RegisterHandler(localIRQ, func() {
+				input.DispatchIRQ(uint64(localIRQ))
+			})
+			// MSI-X interrupts are edge-triggered (message write = edge event)
+			cachedGIC.SetIRQEdgeTriggered(localIRQ)
+			// Set priority to 0xA0 (lower than timer at 0x00, higher than nothing)
+			cachedGIC.SetIRQPriority(localIRQ, 0xA0)
+			cachedGIC.EnableIRQ(localIRQ)
+			console.KPrintf("[VirtIO Input] Enabled GIC IRQ %d\n", localIRQ)
+		}
+	}
+
+	// Wire soft IRQ slot fire callback for future userspace event delivery
+	input.SetSoftIRQFireFunc(SoftIRQSlotFire)
+
+	console.KPrintf("[VirtIO Input] %d device(s) wired to GIC\n", len(devices))
+
+	// Dump GIC state for debugging interrupt delivery
+	if cachedGIC != nil {
+		for _, dev := range devices {
+			if dev == nil {
+				continue
+			}
+			irq := dev.IRQNum
+			cachedGIC.DumpIRQState(irq)
+		}
+
+		// Inline: check used ring right now (before any keypresses)
+		for _, d := range devices {
+			if d == nil {
+				continue
+			}
+			vq := &d.EventQueue
+			console.KPrintf("[DIAG] irq=%d avail.idx=%d used.idx=%d numfree=%d\n",
+				d.IRQNum, vq.Available.Idx, vq.Used.Idx, vq.NumFree)
+		}
+	}
+
+	// Initial drain: during InitVirtIOInput, the queue kick causes the device
+	// to consume all available buffers asynchronously. We must wait for the
+	// device to finish writing the used ring, then drain to reclaim buffers.
+	for _, dev := range devices {
+		if dev == nil {
+			continue
+		}
+		// Poll used.idx via MMIO read (bypasses CPU cache) until device finishes
+		usedVA := uintptr(unsafe.Pointer(dev.EventQueue.Used))
+		for i := 0; i < 100000; i++ {
+			idx := asm.MmioRead16(usedVA + 2) // offset 2 = used.idx (after flags)
+			if idx > 0 {
+				console.KPrintf("[VirtIO Input] irq=%d: device used %d buffers (polled %d iterations)\n",
+					dev.IRQNum, idx, i)
+				break
+			}
+			runtime.Gosched()
+		}
+		dev.HandleIRQ()
+		vq := &dev.EventQueue
+		console.KPrintf("[VirtIO Input] post-drain: irq=%d avail.idx=%d used.idx=%d numfree=%d\n",
+			dev.IRQNum, vq.Available.Idx, vq.Used.Idx, vq.NumFree)
+	}
+}
+
 // testKPrintHex tests the KPrintHex() method with various value types
 func testKPrintHex() {
 	console.KPrintln("")
@@ -915,6 +1011,9 @@ func simpleMain() {
 	// Initialize VirtIO GPU for display output
 	initVirtIOGPU()
 
+	// Initialize VirtIO Input devices (keyboard, mouse)
+	initVirtIOInputDevices()
+
 	// CRITICAL: Enable IRQs at CPU AFTER GIC is initialized (matches Cardinal's order)
 	// This unmasks IRQs at the CPU (clears DAIF.I bit)
 	EnableIRQs()
@@ -980,7 +1079,7 @@ func simpleMain() {
 	// Disable IRQs briefly so no timer preemption during reset.
 	savedDAIF := SaveAndDisableIRQs()
 	startingTicksProgram = kirq.ReadCounterValue()
-	shutdownTicksThreshold = kirq.SystemTimerFrequency * 60
+	shutdownTicksThreshold = kirq.SystemTimerFrequency * 300
 	ResetTickAccounting(startingTicksProgram)
 	RestoreIRQs(savedDAIF)
 

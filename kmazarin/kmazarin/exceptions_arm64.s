@@ -1176,20 +1176,18 @@ irq_not_timer:
 	// ========================================================================
 	// Non-timer IRQs - Set pending flag for bottom-half processing
 	// ========================================================================
-	// R0 contains the masked IRQ number
-	//
-	// We can't call Go code from IRQ context (wrong stack, wrong g, etc.)
-	// Instead, set a flag that the event poller will check, then the
-	// bottom-half processor will call the registered handler in safe Go context.
-	//
-	// This is the same pattern used for UART RX/TX and timer deadlines.
+	// R0 contains the masked IRQ number, R19 contains IAR value
+
+	// Breadcrumb: write 'I' to UART to prove we reached the IRQ handler
+	MOVD	$0xFFFFFFFF09000000, R10
+	MOVD	$'I', R12
+	MOVW	R12, (R10)
 
 	// Check if IRQ number is in valid range (0-1019)
 	CMP	$1020, R0
 	BGE	irq_invalid
 
 	// Set pending flag: irqPendingFlags[irqNum] = 1
-	// Calculate address: &irqPendingFlags[0] + (irqNum * 4)
 	MOVD	$·irqPendingFlags(SB), R10
 	MOVD	$4, R11           // sizeof(uint32)
 	MUL	R11, R0, R11      // R11 = irqNum * 4
@@ -1202,6 +1200,12 @@ irq_not_timer:
 	// R11 still contains irqNum * 4
 	ADD	R11, R10          // R10 = &irqIARValues[irqNum]
 	MOVW	R19, (R10)        // Store IAR value (R19 saved earlier)
+
+	// Write EOIR immediately for non-timer IRQs.
+	// Without this, the GIC won't deliver any more interrupts at this
+	// priority level until EOIR is written (even for edge-triggered).
+	MOVD	$(GIC_CPU_BASE + GICC_EOIR), R10
+	MOVW	R19, (R10)        // Write IAR value to EOIR
 
 	// Non-timer IRQs don't trigger preemption (only timer does)
 	MOVD	$0, R20
