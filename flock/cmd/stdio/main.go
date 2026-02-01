@@ -5,10 +5,12 @@
 package main
 
 import (
+	"bytes"
 	_ "embed"
 	"fmt"
 	"image"
 	"image/color"
+	_ "image/png"
 	"math"
 	"time"
 	"unsafe"
@@ -24,6 +26,11 @@ import (
 
 //go:embed AtkinsonHyperlegibleMono-Regular.otf
 var fontData []byte
+
+//go:embed lamp.png
+var lampData []byte
+
+const lampFrames = 5
 
 const (
 	LineSpacing = 2
@@ -60,6 +67,15 @@ type console struct {
 	// -1 means nothing dirty.
 	dirtyMin int
 	dirtyMax int
+
+	// Lamp throbber: 7 brightness variants, cycled on heartbeat
+	lampFrames [lampFrames]*image.RGBA
+	lampX      int // screen position
+	lampY      int
+	lampW      int
+	lampH      int
+	lampIdx    int // current frame index
+	lampDir    int // +1 or -1 for throbbing direction
 }
 
 func (c *console) markDirty(lineIdx int) {
@@ -199,6 +215,11 @@ func main() {
 	flushRegionToFramebuffer(con.dc, fb, flushX, flushY, flushW, flushH)
 	sys.FlushFramebuffer(uint32(flushX), uint32(flushY), uint32(flushW), uint32(flushH))
 	fmt.Println("[stdio] Console rectangle rendered")
+
+	// --- Initialize lamp throbber ---
+	con.initLamp()
+	con.blitLampDirect() // draw initial frame
+	go con.lampLoop()
 
 	// --- Enter serial event loop ---
 	if serialSlot >= 0 {
@@ -503,6 +524,103 @@ func (c *console) redrawLine(lineIdx int) {
 		c.dc.DrawString(text, textX, textY)
 	}
 }
+
+// initLamp decodes the embedded lamp PNG and generates brightness variants.
+// Factors go from dim to bright: 0.3, 0.5, 0.7, 0.85, 1.0, 1.15, 1.3
+func (c *console) initLamp() {
+	baseImg, _, err := image.Decode(bytes.NewReader(lampData))
+	if err != nil {
+		fmt.Printf("[stdio] lamp decode error: %v\n", err)
+		return
+	}
+	bounds := baseImg.Bounds()
+	c.lampW = bounds.Dx()
+	c.lampH = bounds.Dy()
+
+	// Position: below the card, right-aligned with card
+	c.lampX = c.cardX + c.cardW - c.lampW
+	c.lampY = c.cardY + c.cardH + 20
+
+	factors := [lampFrames]float64{0.3, 0.55, 0.8, 1.05, 1.3}
+	for i, f := range factors {
+		frame := image.NewRGBA(bounds)
+		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+			for x := bounds.Min.X; x < bounds.Max.X; x++ {
+				r, g, b, a := baseImg.At(x, y).RGBA()
+				// Scale brightness, clamp to 255
+				nr := clamp8(float64(r>>8) * f)
+				ng := clamp8(float64(g>>8) * f)
+				nb := clamp8(float64(b>>8) * f)
+				frame.SetRGBA(x, y, color.RGBA{nr, ng, nb, uint8(a >> 8)})
+			}
+		}
+		c.lampFrames[i] = frame
+	}
+	c.lampIdx = 0
+	c.lampDir = 1
+}
+
+func clamp8(v float64) uint8 {
+	if v > 255 {
+		return 255
+	}
+	if v < 0 {
+		return 0
+	}
+	return uint8(v)
+}
+
+// blitLampDirect writes a lamp frame directly to the framebuffer (RGBA→BGRA),
+// bypassing the gg context entirely. Safe to call from a separate goroutine.
+func (c *console) blitLampDirect() {
+	if c.lampFrames[0] == nil {
+		return
+	}
+	frame := c.lampFrames[c.lampIdx]
+	fbW := int(c.fb.Width)
+	fbH := int(c.fb.Height)
+	pitch := int(c.fb.Pitch)
+	dst := unsafe.Slice((*uint8)(unsafe.Pointer(c.fb.Addr)), pitch*fbH)
+
+	for y := 0; y < c.lampH; y++ {
+		dy := c.lampY + y
+		if dy < 0 || dy >= fbH {
+			continue
+		}
+		for x := 0; x < c.lampW; x++ {
+			dx := c.lampX + x
+			if dx < 0 || dx >= fbW {
+				continue
+			}
+			soff := y*frame.Stride + x*4
+			doff := dy*pitch + dx*4
+			// RGBA → BGRA
+			dst[doff+0] = frame.Pix[soff+2] // B
+			dst[doff+1] = frame.Pix[soff+1] // G
+			dst[doff+2] = frame.Pix[soff+0] // R
+			dst[doff+3] = 0x00
+		}
+	}
+	sys.FlushFramebuffer(uint32(c.lampX), uint32(c.lampY), uint32(c.lampW), uint32(c.lampH))
+}
+
+// lampLoop runs in its own goroutine, throbbing the lamp as fast as possible.
+// Writes directly to framebuffer — no shared state with the serial loop.
+func (c *console) lampLoop() {
+	for {
+		time.Sleep(1) // 1 nanosecond — shortest possible
+		c.lampIdx += c.lampDir
+		if c.lampIdx >= lampFrames-1 {
+			c.lampIdx = lampFrames - 1
+			c.lampDir = -1
+		} else if c.lampIdx <= 0 {
+			c.lampIdx = 0
+			c.lampDir = 1
+		}
+		c.blitLampDirect()
+	}
+}
+
 
 // flushDirty redraws all dirty lines into the gg context, copies the
 // affected pixel region to the framebuffer, and tells the kernel to
