@@ -187,50 +187,34 @@ func (g *GICv2) initHardware() {
 	// FIX: Reconfigure GIC for Non-Secure EL1 by moving all interrupts to Group 1.
 	gicdCtrl := g.readDistReg(GICD_CTLR)
 	if gicdCtrl != 0 {
-		// Diagnostic: read ITARGETSR as left by Cardinal (before any changes)
-		readbackUART := g.readDistReg(0x800 + 8*4) // IRQ 32-35
-		readback112 := g.readDistReg(0x800 + 28*4)  // IRQ 112-115
-		grp3 := g.readDistReg(0x080 + 3*4)           // IGROUPR3 (IRQs 96-127)
-		console.KPrintf("[GIC] Before reconfig: ITARGETS UART=0x%x IRQ112=0x%x IGROUPR3=0x%x CTLR=0x%x\n",
-			readbackUART, readback112, grp3, gicdCtrl)
+		// Keep all interrupts in Group 0. QEMU virt runs without TrustZone
+		// (no secure=on), so there's no Non-Secure distinction. Group 0
+		// interrupts are delivered via IRQ to EL1 and GICC_IAR works normally.
+		// Moving to Group 1 breaks ITARGETSR (becomes RAZ/WI for Group 1
+		// in QEMU's GICv2 without security extensions).
 
-		// CRITICAL: Move all interrupts to Group 1 (Non-Secure)
-		for i := uintptr(0); i < 32; i++ {
-			g.writeDistReg(0x080+(i*4), 0xFFFFFFFF) // GICD_IGROUPR
-		}
-
-		// Enable both Group 0 and Group 1 in distributor
-		g.writeDistReg(GICD_CTLR, 0x03)
-
-		// Enable both Group 0 and Group 1 in CPU interface
-		// Bit 0 = EnableGrp0, Bit 1 = EnableGrp1, Bit 2 = AckCtl
-		// AckCtl=1 allows GICC_IAR to acknowledge both Group 0 and Group 1 interrupts
-		// (otherwise GICC_IAR only acknowledges Group 0, and GICC_AIAR is needed for Group 1)
-		g.writeCPUReg(GICC_CTLR, 0x07) // 0x07 = EnableGrp0 | EnableGrp1 | AckCtl
-
-		// CRITICAL: Set timer IRQ (27) to HIGHEST priority (0x00)
-		// This ensures timer can preempt other interrupts (like UART at 0x80)
-		// Without this, if UART IRQ is active, timer can't preempt and we deadlock!
-		// IRQ 27 is in GICD_IPRIORITYR6 (offset 0x418), byte 3
-		// Other interrupts default to 0xA0, set UART (33) to 0x80
+		// Set timer IRQ (27) to HIGHEST priority (0x00)
 		ipri6 := g.readDistReg(0x418)  // GICD_IPRIORITYR6 (IRQ 24-27)
-		ipri6 = (ipri6 & 0x00FFFFFF) | 0x00000000  // Set byte 3 (IRQ 27) to 0x00
+		ipri6 = (ipri6 & 0x00FFFFFF) | 0x00000000
 		g.writeDistReg(0x418, ipri6)
 
-		// Set UART IRQ 33 to medium priority (0x80) - lower than timer
-		// IRQ 33 is in GICD_IPRIORITYR8 (offset 0x420), byte 1
+		// Set UART IRQ 33 to medium priority (0x80)
 		ipri8 := g.readDistReg(0x420)  // GICD_IPRIORITYR8 (IRQ 32-35)
-		ipri8 = (ipri8 & 0xFFFF00FF) | 0x00008000  // Set byte 1 (IRQ 33) to 0x80
+		ipri8 = (ipri8 & 0xFFFF00FF) | 0x00008000
 		g.writeDistReg(0x420, ipri8)
 
-		// CRITICAL: Configure timer IRQ (27) as EDGE-TRIGGERED
-		// ARM Generic Timer generates edge interrupts, not level. Using level-triggered
-		// configuration causes the GIC to malfunction after ~600 interrupts.
-		// GICD_ICFGR1 (offset 0xC04) covers IRQs 16-31, 2 bits per IRQ
-		// IRQ 27 = bits [23:22], 0b10 = edge-triggered
+		// Configure timer IRQ (27) as EDGE-TRIGGERED
 		icfg1 := g.readDistReg(0xC04)
-		icfg1 = (icfg1 & 0xFF3FFFFF) | (0x2 << 22)  // Set bits [23:22] = 0b10 (edge)
+		icfg1 = (icfg1 & 0xFF3FFFFF) | (0x2 << 22)
 		g.writeDistReg(0xC04, icfg1)
+
+		// Route all SPIs to CPU 0. Cardinal/QEMU leaves ITARGETSR at 0
+		// for SPIs (IRQ 32+), so MSI-X interrupts never reach the CPU.
+		// Use byte writes — QEMU GICv2 may require byte-sized access for ITARGETSR.
+		for irq := uintptr(32); irq < 288; irq++ {
+			asm.MmioWrite8(g.distBase+0x800+irq, 0x01)
+		}
+		console.KPrintf("[GIC] Reconfig done (Group 0, SPIs routed to CPU 0)\n")
 
 		return
 	}

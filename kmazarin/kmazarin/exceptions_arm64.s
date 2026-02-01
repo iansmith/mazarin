@@ -1178,34 +1178,42 @@ irq_not_timer:
 	// ========================================================================
 	// R0 contains the masked IRQ number, R19 contains IAR value
 
-	// Breadcrumb: write 'I' to UART to prove we reached the IRQ handler
-	MOVD	$0xFFFFFFFF09000000, R10
-	MOVD	$'I', R12
-	MOVW	R12, (R10)
+	// Write EOIR immediately so GIC can deliver the next interrupt.
+	MOVD	$(GIC_CPU_BASE + GICC_EOIR), R10
+	MOVW	R19, (R10)
 
 	// Check if IRQ number is in valid range (0-1019)
 	CMP	$1020, R0
 	BGE	irq_invalid
 
-	// Set pending flag: irqPendingFlags[irqNum] = 1
+	// Set pending flag for bottom-half (legacy path)
 	MOVD	$·irqPendingFlags(SB), R10
-	MOVD	$4, R11           // sizeof(uint32)
-	MUL	R11, R0, R11      // R11 = irqNum * 4
-	ADD	R11, R10          // R10 = &irqPendingFlags[irqNum]
+	MOVD	$4, R11
+	MUL	R11, R0, R11
+	ADD	R11, R10
 	MOVD	$1, R12
-	MOVW	R12, (R10)        // Store 1 to flag
+	MOVW	R12, (R10)
 
-	// Store IAR value: irqIARValues[irqNum] = IAR (for EOIR write in bottom-half)
-	MOVD	$·irqIARValues(SB), R10
-	// R11 still contains irqNum * 4
-	ADD	R11, R10          // R10 = &irqIARValues[irqNum]
-	MOVW	R19, (R10)        // Store IAR value (R19 saved earlier)
+	// Call Go top-half handler directly with kmazarin g0 context.
+	// Store IRQ number in global before calling (ABI0 — no register args).
+	MOVD	R0, ·topHalfIRQNum(SB)
+	MOVD	·kmazarinG0Addr(SB), R10
+	CBZ	R10, irq_skip_dispatch  // g0 not ready yet
 
-	// Write EOIR immediately for non-timer IRQs.
-	// Without this, the GIC won't deliver any more interrupts at this
-	// priority level until EOIR is written (even for edge-triggered).
-	MOVD	$(GIC_CPU_BASE + GICC_EOIR), R10
-	MOVW	R19, (R10)        // Write IAR value to EOIR
+	// Breadcrumb 'G' = g0 found, about to CALL
+	MOVD	$UART_BASE, R11
+	MOVD	$'G', R12
+	MOVW	R12, (R11)
+
+	WORD	$0xaa0a03fc  // mov x28, x10 — set g to kmazarin g0
+	CALL	·NonTimerIRQTopHalf(SB)
+
+	// Breadcrumb 'R' = returned from CALL
+	MOVD	$UART_BASE, R11
+	MOVD	$'R', R12
+	MOVW	R12, (R11)
+
+irq_skip_dispatch:
 
 	// Non-timer IRQs don't trigger preemption (only timer does)
 	MOVD	$0, R20

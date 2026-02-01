@@ -835,6 +835,26 @@ func initVirtIOInputDevices() {
 	// Wire soft IRQ slot fire callback for future userspace event delivery
 	input.SetSoftIRQFireFunc(SoftIRQSlotFire)
 
+	// Register devices with the nosplit top-half handler so it can read
+	// events directly from the DMA-mapped used ring without Go allocation.
+	for _, dev := range devices {
+		if dev == nil {
+			continue
+		}
+		isMouse := dev.DevType == 2 // hid.DeviceTypeMouse
+		vq := &dev.EventQueue
+		usedVA := uintptr(unsafe.Pointer(vq.Used))
+		evtBufVA := uintptr(unsafe.Pointer(&dev.EventBuffers[0]))
+		availVA := uintptr(unsafe.Pointer(vq.Available))
+		descVA := uintptr(vq.DescTable)
+		notifyAddr := dev.NotifyBase +
+			uintptr(dev.EventQueueNotifyOff)*uintptr(dev.NotifyConfig.NotifyOffMultiplier)
+		evtBufPA := dev.EventBuffersPA
+		initAvailIdx := vq.Available.Idx
+		SetTopHalfDev(dev.IRQNum, usedVA, evtBufVA, availVA, descVA,
+			notifyAddr, evtBufPA, vq.QueueSize, initAvailIdx, isMouse)
+	}
+
 	console.KPrintf("[VirtIO Input] %d device(s) wired to GIC\n", len(devices))
 
 	// Dump GIC state for debugging interrupt delivery

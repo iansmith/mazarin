@@ -74,6 +74,187 @@ var irqPendingFlags [1020]uint32
 // Set by assembly IRQ handler alongside irqPendingFlags
 var irqIARValues [1020]uint32
 
+// topHalfIRQNum is set by the assembly IRQ handler before calling NonTimerIRQTopHalf.
+var topHalfIRQNum uint64
+
+// topHalfKbd and topHalfMouse hold the pointers needed to read events
+// in the nosplit top-half. Set during input device init.
+var topHalfKbd topHalfDev
+var topHalfMouse topHalfDev
+
+type topHalfDev struct {
+	irqNum      uint32
+	usedVA      uintptr // VA of VirtQUsed (Device-mapped)
+	evtBufVA    uintptr // VA of EventBuffers array (Device-mapped)
+	availVA     uintptr // VA of VirtQAvailable (Device-mapped)
+	descVA      uintptr // VA of descriptor table (Device-mapped)
+	notifyAddr  uintptr // VA of notify register (Device-mapped MMIO)
+	evtBufPA    uintptr // PA of EventBuffers (for descriptor addr field)
+	lastUsedIdx uint16
+	queueSize   uint16
+	nextAvailIdx uint16
+}
+
+// SetTopHalfDev is called during input init to register device pointers
+// for the nosplit top-half path.
+func SetTopHalfDev(irqNum uint32, usedVA, evtBufVA, availVA, descVA, notifyAddr, evtBufPA uintptr, queueSize, initAvailIdx uint16, isMouse bool) {
+	dev := &topHalfKbd
+	if isMouse {
+		dev = &topHalfMouse
+	}
+	dev.irqNum = irqNum
+	dev.usedVA = usedVA
+	dev.evtBufVA = evtBufVA
+	dev.availVA = availVA
+	dev.descVA = descVA
+	dev.notifyAddr = notifyAddr
+	dev.evtBufPA = evtBufPA
+	dev.lastUsedIdx = 0
+	dev.queueSize = queueSize
+	dev.nextAvailIdx = initAvailIdx
+}
+
+// NonTimerIRQTopHalf is called directly from the assembly exception handler
+// (on the exception stack with g set to kmazarin g0) for non-timer IRQs.
+// Reads the virtqueue used ring and prints key events via UART breadcrumbs.
+// All functions called must be nosplit and non-allocating.
+//
+//go:nosplit
+//go:noinline
+func NonTimerIRQTopHalf() {
+	irqNum := uint32(topHalfIRQNum)
+
+	// Find the matching device
+	var dev *topHalfDev
+	if irqNum == topHalfKbd.irqNum && topHalfKbd.usedVA != 0 {
+		dev = &topHalfKbd
+	} else if irqNum == topHalfMouse.irqNum && topHalfMouse.usedVA != 0 {
+		dev = &topHalfMouse
+	}
+	if dev == nil {
+		return
+	}
+
+	// Read Used.Idx via MMIO (offset 2 in VirtQUsed)
+	usedIdx := asm.MmioRead16(dev.usedVA + 2)
+
+	// Diagnostic: print used/last as "!U<used>L<last>\n"
+	console.Breadcrumb('!')
+	console.Breadcrumb('U')
+	breadcrumbDec16(usedIdx)
+	console.Breadcrumb('L')
+	breadcrumbDec16(dev.lastUsedIdx)
+	console.Breadcrumb('\r')
+	console.Breadcrumb('\n')
+
+	console.Breadcrumb('Z')
+
+	drained := false
+
+	for dev.lastUsedIdx != usedIdx {
+		console.Breadcrumb('L') // loop iteration
+		// Ring entry index
+		ringIdx := dev.lastUsedIdx % dev.queueSize
+		// Used ring entry: offset 4 + ringIdx*8, first uint32 is descriptor ID
+		entryAddr := dev.usedVA + 4 + uintptr(ringIdx)*8
+		descIdx := asm.MmioRead32(entryAddr)
+
+		if descIdx < uint32(dev.queueSize) {
+			console.Breadcrumb('D') // desc valid
+			// Read event: evtBufVA + descIdx * 8
+			// VirtIOInputEvent: type u16, code u16, value u32
+			evtAddr := dev.evtBufVA + uintptr(descIdx)*8
+			evtType := asm.MmioRead16(evtAddr)
+			evtCode := asm.MmioRead16(evtAddr + 2)
+			evtValue := asm.MmioRead32(evtAddr + 4)
+
+			if evtType == 1 { // EV_KEY
+				console.Breadcrumb('K')
+				console.Breadcrumb(':')
+				breadcrumbDec16(evtCode)
+				if evtValue == 1 {
+					console.Breadcrumb('D')
+				} else if evtValue == 0 {
+					console.Breadcrumb('U')
+				} else {
+					console.Breadcrumb('R')
+				}
+				console.Breadcrumb('\r')
+				console.Breadcrumb('\n')
+			}
+
+			// Repost buffer
+			descAddr := dev.descVA + uintptr(descIdx)*16
+			bufPA := uint64(dev.evtBufPA) + uint64(descIdx)*8
+			console.Breadcrumb('1')
+			asm.MmioWrite32(descAddr, uint32(bufPA))
+			console.Breadcrumb('2')
+			asm.MmioWrite32(descAddr+4, uint32(bufPA>>32))
+			console.Breadcrumb('3')
+			asm.MmioWrite32(descAddr+8, 8)
+			console.Breadcrumb('4')
+			asm.MmioWrite16(descAddr+12, 2)
+			console.Breadcrumb('5')
+			asm.MmioWrite16(descAddr+14, 0xFFFF)
+			console.Breadcrumb('6')
+			availRingIdx := dev.nextAvailIdx % dev.queueSize
+			asm.MmioWrite16(dev.availVA+4+uintptr(availRingIdx)*2, uint16(descIdx))
+			console.Breadcrumb('7')
+			dev.nextAvailIdx++
+			drained = true
+		}
+
+		dev.lastUsedIdx++
+	}
+
+	if drained {
+		// DSB to ensure descriptor/avail ring writes are visible
+		asm.Dsb()
+		// Update available ring idx
+		asm.MmioWrite16(dev.availVA+2, dev.nextAvailIdx)
+		// DSB before notify
+		asm.Dsb()
+		// Kick the device
+		asm.MmioWrite16(dev.notifyAddr, 0)
+		// DSB + readback to ensure notify completes
+		asm.Dsb()
+		_ = asm.MmioRead16(dev.notifyAddr)
+	}
+}
+
+// breadcrumbHex32 prints a uint32 as hex digits via UART breadcrumbs.
+//
+//go:nosplit
+func breadcrumbHex32(v uint32) {
+	const hex = "0123456789abcdef"
+	for i := 28; i >= 0; i -= 4 {
+		console.Breadcrumb(hex[(v>>uint(i))&0xf])
+	}
+}
+
+// breadcrumbDec16 prints a uint16 as decimal digits via UART breadcrumbs.
+//
+//go:nosplit
+func breadcrumbDec16(v uint16) {
+	if v == 0 {
+		console.Breadcrumb('0')
+		return
+	}
+	// Max uint16 is 65535 = 5 digits
+	var buf [5]byte
+	n := 0
+	for v > 0 {
+		buf[n] = byte('0' + v%10)
+		v /= 10
+		n++
+	}
+	// Print in reverse (most significant first)
+	for n > 0 {
+		n--
+		console.Breadcrumb(buf[n])
+	}
+}
+
 // ============================================================================
 // Event Channels
 // ============================================================================

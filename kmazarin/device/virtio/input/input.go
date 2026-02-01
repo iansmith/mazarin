@@ -732,14 +732,15 @@ func configureMSIX(bus, slot, funcNum uint8) uint32 {
 	enableAndMask := uint32(msgCtrl) | (1 << 15) | (1 << 14) // enable + function mask
 	pci.ConfigWrite32(bus, slot, funcNum, msixCapPtr, low16|(enableAndMask<<16))
 
-	// Program all table entries to point to GICv2m doorbell
-	// MSI-X table entries contain PHYSICAL addresses (device DMA writes to them)
+	// Program all table entries to point to GICv2m doorbell.
+	// MSI-X data must contain the SPI number (not the GIC IRQ number).
+	// The GICv2m SETSPI register maps SPI N → GIC IRQ N+32 internally.
 	doorbellAddr := uint64(GICV2M_PHYS + GICV2M_SETSPI)
 	for i := uint32(0); i < uint32(tableSize); i++ {
 		entryAddr := tableBase + uintptr(i*MSIX_ENTRY_SIZE)
 		asm.MmioWrite32(entryAddr+MSIX_ENTRY_ADDR_LO, uint32(doorbellAddr))
 		asm.MmioWrite32(entryAddr+MSIX_ENTRY_ADDR_HI, uint32(doorbellAddr>>32))
-		asm.MmioWrite32(entryAddr+MSIX_ENTRY_DATA, gicIRQ)
+		asm.MmioWrite32(entryAddr+MSIX_ENTRY_DATA, gicIRQ) // GICv2m expects SPI+32
 		asm.MmioWrite32(entryAddr+MSIX_ENTRY_CONTROL, 0) // Unmask
 	}
 
