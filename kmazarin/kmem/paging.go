@@ -1810,10 +1810,10 @@ func MapUserDevicePage(va, pa uintptr) bool {
 // This maps FramebufferSize bytes from FramebufferPhysAddr to UserFramebufferVA.
 // Returns true on success.
 func MapUserFramebuffer() bool {
-	// Get framebuffer info from RuntimeConfig (set by Cardinal)
-	cfg := getRuntimeConfigTyped()
-	framebufferPA := uintptr(cfg.FramebufferPhysAddr)
-	framebufferSize := uintptr(cfg.FramebufferSize)
+	// Use constants directly — the RuntimeConfig struct layouts between
+	// packages are mismatched, so reading through the interface gives wrong values.
+	framebufferPA := uintptr(constants.FramebufferPhysAddr)
+	framebufferSize := uintptr(constants.FramebufferSize)
 
 	// Fixed userspace VA for framebuffer (matches ksyscall.UserFramebufferVA)
 	const framebufferVA = 0x00007FFE00000000
@@ -1828,7 +1828,6 @@ func MapUserFramebuffer() bool {
 			return false
 		}
 	}
-
 	return true
 }
 

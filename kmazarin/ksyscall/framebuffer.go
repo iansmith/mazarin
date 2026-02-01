@@ -6,6 +6,15 @@ import (
 	"unsafe"
 )
 
+// SyscallFlushFramebuffer transfers and flushes a region of the framebuffer to the display.
+// arg0 = x, arg1 = y, arg2 = width, arg3 = height (in framebuffer pixel coordinates)
+//
+//go:nosplit
+func SyscallFlushFramebuffer(x, y, width, height, _, _ uint64) int64 {
+	gpu.UpdateDisplay(uint32(x), uint32(y), uint32(width), uint32(height))
+	return 0
+}
+
 // FramebufferInfo matches the layout expected by userspace (mazarin/sys.FramebufferInfo)
 type FramebufferInfo struct {
 	Addr   uint64 // Virtual address of framebuffer in priest space
@@ -38,6 +47,13 @@ func SyscallGetFramebuffer(fbInfoPtr, _, _, _, _, _ uint64) int64 {
 		Width:  width,
 		Height: height,
 		Pitch:  width * 4, // 4 bytes per pixel (BGRA)
+	}
+
+	// Ensure user page is mapped (demand-page if needed)
+	if kmem.WalkUserPageTable(uintptr(fbInfoPtr)) == 0 {
+		if !kmem.HandleUserPageFault(uintptr(fbInfoPtr)) {
+			return -14 // EFAULT - can't map
+		}
 	}
 
 	// Copy to userspace via scratch mapping

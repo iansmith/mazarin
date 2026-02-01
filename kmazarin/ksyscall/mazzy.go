@@ -23,6 +23,7 @@ const (
 	SysWaitSoftIRQ          = MazzySyscallBase + 10 // 0x100A - Wait for soft IRQ events on a slot
 	SysRegisterSoftIRQ      = MazzySyscallBase + 11 // 0x100B - Register an IRQ on a soft IRQ slot
 	SysQueryInputDevices    = MazzySyscallBase + 12 // 0x100C - Query available input devices
+	SysFlushFramebuffer     = MazzySyscallBase + 13 // 0x100D - Flush framebuffer region to display
 )
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
@@ -41,6 +42,7 @@ var mazzySyscallTable = [64]SyscallHandler{
 	10: SyscallWaitSoftIRQ,          // WaitSoftIRQ = 0x100A
 	11: SyscallRegisterSoftIRQ,      // RegisterSoftIRQ = 0x100B
 	12: SyscallQueryInputDevices,    // QueryInputDevices = 0x100C
+	13: SyscallFlushFramebuffer,    // FlushFramebuffer = 0x100D
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.

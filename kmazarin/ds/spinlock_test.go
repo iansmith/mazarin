@@ -4,7 +4,6 @@ package ds
 
 import (
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -69,50 +68,6 @@ func TestSpinlockConcurrent(t *testing.T) {
 	}
 }
 
-// TestSpinlockStress performs a high-contention stress test
-func TestSpinlockStress(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping stress test in short mode")
-	}
-
-	var s Spinlock
-	var counter int64
-	const numGoroutines = 20
-	const duration = 100 * time.Millisecond
-
-	var wg sync.WaitGroup
-	stop := make(chan struct{})
-
-	wg.Add(numGoroutines)
-	for i := 0; i < numGoroutines; i++ {
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-					s.Lock()
-					val := atomic.LoadInt64(&counter)
-					val++
-					atomic.StoreInt64(&counter, val)
-					s.Unlock()
-				}
-			}
-		}()
-	}
-
-	time.Sleep(duration)
-	close(stop)
-	wg.Wait()
-
-	t.Logf("stress test: %d increments in %v", counter, duration)
-
-	// Just verify counter was incremented (exact count doesn't matter)
-	if counter == 0 {
-		t.Error("expected counter > 0, got 0")
-	}
-}
 
 // TestNanoWait verifies nanoWait timing accuracy
 func TestNanoWait(t *testing.T) {

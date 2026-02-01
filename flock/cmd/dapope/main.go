@@ -8,6 +8,8 @@ package main
 
 import (
 	"fmt"
+	"mazzy/flock/cmd/dapope/cursorgen"
+	"mazzy/mazarin/gui/core"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/hid"
 )
@@ -105,9 +107,10 @@ func keyboardLoop(slot int) {
 	}
 }
 
-func mouseLoop(slot int) {
+func mouseLoop(slot int, stack core.CursorStack, images core.CursorImageMap, renderer *cursorRenderer) {
 	fmt.Printf("[dapope] mouse goroutine started on slot %d\n", slot)
 	var buf hid.SoftIRQReturn
+	var dx, dy int
 	for {
 		n, err := sys.WaitSoftIRQ(slot, &buf)
 		if err != nil {
@@ -120,13 +123,11 @@ func mouseLoop(slot int) {
 			case EV_REL:
 				switch ev.Code {
 				case REL_X:
-					fmt.Printf("[dapope:mouse] X %+d\n", int32(ev.Value))
+					dx += int(int32(ev.Value))
 				case REL_Y:
-					fmt.Printf("[dapope:mouse] Y %+d\n", int32(ev.Value))
+					dy += int(int32(ev.Value))
 				case REL_WHEEL:
 					fmt.Printf("[dapope:mouse] wheel %+d\n", int32(ev.Value))
-				default:
-					fmt.Printf("[dapope:mouse] REL code=%d val=%d\n", ev.Code, ev.Value)
 				}
 			case EV_KEY:
 				action := "pressed"
@@ -135,10 +136,12 @@ func mouseLoop(slot int) {
 				}
 				fmt.Printf("[dapope:mouse] %s %s\n", buttonName(ev.Code), action)
 			case EV_SYN:
-				// ignore
-			default:
-				fmt.Printf("[dapope:mouse] type=%d code=%d value=%d\n",
-					ev.Type, ev.Code, ev.Value)
+				if dx != 0 || dy != 0 {
+					// evdev REL_Y is screen-top-positive; negate for quadrant-1
+					stack.Move(dx, -dy)
+					renderer.Draw(stack, images)
+					dx, dy = 0, 0
+				}
 			}
 		}
 	}
@@ -184,13 +187,35 @@ func main() {
 		}
 	}
 
+	cursorImages := NewCursorImageDefault()
+	cursorStack := NewCursorStackDefault()
+
+	// Set up framebuffer and cursor rendering
+	fb, err := sys.GetFramebuffer()
+	if err != nil {
+		fmt.Printf("[dapope] GetFramebuffer failed: %v\n", err)
+		return
+	}
+	fmt.Printf("[dapope] Framebuffer: %dx%d pitch=%d addr=0x%x\n",
+		fb.Width, fb.Height, fb.Pitch, fb.Addr)
+
+	// Generate arrow cursor and register it
+	arrowImg := cursorgen.GenerateArrowCursor()
+	arrowCursor := cursorImages.CursorImageAdd(arrowImg)
+	cursorStack.Bottom(arrowCursor)
+	cursorStack.SetPosition(960, 540)
+
+	renderer := newCursorRenderer(fb)
+	renderer.Draw(cursorStack, cursorImages)
+	fmt.Println("[dapope] Cursor rendered at center")
+
 	// Launch goroutines that block on WaitSoftIRQ (via Syscall6).
 	// The Go runtime M-handoff allows both to block independently.
 	if kbdSlot >= 0 {
 		go keyboardLoop(kbdSlot)
 	}
 	if mouseSlot >= 0 {
-		go mouseLoop(mouseSlot)
+		go mouseLoop(mouseSlot, cursorStack, cursorImages, renderer)
 	}
 
 	// Block main goroutine forever

@@ -5,6 +5,7 @@ import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio"
+	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/pci"
 	"mazzy/shared/constants"
 	"unsafe"
@@ -335,6 +336,9 @@ func findVirtIOGPU() bool {
 
 					barBase := uintptr(bar & 0xFFFFFFF0)
 
+					// Map BAR MMIO into kernel high-memory (TTBR1)
+					kmem.MapDeviceMMIO(barBase, 0x10000)
+
 					virtioGPUDevice.Bus = bus
 					virtioGPUDevice.Slot = slot
 					virtioGPUDevice.Func = funcNum
@@ -342,13 +346,16 @@ func findVirtIOGPU() bool {
 					virtioGPUDevice.NotifyConfig = notify
 					virtioGPUDevice.ISRConfig = isr
 					virtioGPUDevice.DeviceConfig = device
-					virtioGPUDevice.CommonConfigBase = barBase + uintptr(common.OffsetInBar)
+					virtioGPUDevice.CommonConfigBase = barBase + constants.KernelMMIOOffset + uintptr(common.OffsetInBar)
 
 					// Calculate notify base
 					notifyBarOffset := 0x10 + notify.Bar*4
 					notifyBar := pci.ConfigRead32(bus, slot, funcNum, uint8(notifyBarOffset))
 					notifyBarBase := uintptr(notifyBar & 0xFFFFFFF0)
-					virtioGPUDevice.NotifyBase = notifyBarBase + uintptr(notify.OffsetInBar)
+					if notifyBarBase != barBase {
+						kmem.MapDeviceMMIO(notifyBarBase, 0x10000)
+					}
+					virtioGPUDevice.NotifyBase = notifyBarBase + constants.KernelMMIOOffset + uintptr(notify.OffsetInBar)
 
 					return true
 				}

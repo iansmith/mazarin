@@ -20,7 +20,8 @@ const (
 	sysDebugPrint           = 0x1006 // Debug print arguments
 	sysGetFramebuffer       = 0x1007 // Get framebuffer info
 	sysWaitKernelAsync      = 0x1008 // Wait for kernel async message
-	sysRegisterAsyncPreempt = 0x1009 // Register asyncPreempt address for goroutine preemption
+	sysRegisterAsyncPreempt  = 0x1009 // Register asyncPreempt address for goroutine preemption
+	sysFlushFramebuffer      = 0x100D // Flush framebuffer region to display
 )
 
 // asyncPreempt is the runtime's async preemption function.

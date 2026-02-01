@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"syscall"
 	"unsafe"
-
-	merror "mazzy/mazarin/error"
 )
 
 // FramebufferInfo contains information about the framebuffer.
@@ -23,15 +21,33 @@ type FramebufferInfo struct {
 func GetFramebuffer() (*FramebufferInfo, error) {
 	var fb FramebufferInfo
 
-	result, _, _ := syscall.RawSyscall6(
+	_, _, errno := syscall.RawSyscall6(
 		sysGetFramebuffer,
 		uintptr(unsafe.Pointer(&fb)),
 		0, 0, 0, 0, 0,
 	)
 
-	if merror.IsError(uint64(result)) {
-		return nil, fmt.Errorf("GetFramebuffer failed: %s", merror.String(uint64(result)))
+	if errno != 0 {
+		return nil, fmt.Errorf("GetFramebuffer failed: errno %d", errno)
 	}
 
 	return &fb, nil
+}
+
+// FlushFramebuffer tells the kernel to transfer and flush a region of
+// the framebuffer to the display. Without this, writes to the framebuffer
+// backing memory are not visible on screen.
+func FlushFramebuffer(x, y, width, height uint32) error {
+	_, _, errno := syscall.RawSyscall6(
+		sysFlushFramebuffer,
+		uintptr(x),
+		uintptr(y),
+		uintptr(width),
+		uintptr(height),
+		0, 0,
+	)
+	if errno != 0 {
+		return fmt.Errorf("FlushFramebuffer failed: errno %d", errno)
+	}
+	return nil
 }
