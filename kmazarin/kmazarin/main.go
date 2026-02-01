@@ -720,8 +720,10 @@ func testDeviceDiscovery() {
 		// Switch to interrupt-driven PL011 console
 		if bs, ok := device.GetByteStream(); ok {
 			// Type assert to *uart.PL011 to access AsConsole()
-			if _, ok := bs.(*uart.PL011); ok {
+			if pl011, ok := bs.(*uart.PL011); ok {
 				console.KPrintln("[DeviceTest] PL011 available but keeping polling console for stability")
+				// Set up UART soft IRQ hook for userspace serial RX
+				SetupUartSoftIRQ(pl011.IRQ())
 				// DISABLED: Switching to interrupt-driven console causes crash
 				// console.Set(pl011.AsConsole())
 				// console.KPrintln("[DeviceTest] Now using PL011 interrupt-driven console!")

@@ -80,17 +80,24 @@ func RegisterSoftIRQSlotKsyscall(irqNum uint32, slotNum int32, priestID int16) i
 			break
 		}
 	}
-	if devIdx < 0 {
-		console.KPrintf("[SoftIRQSlot] No device found for IRQ %d\n", irqNum)
-		return -19 // ENODEV
-	}
-
-	// Determine which ring buffer to use
 	var ring *softIRQRing
-	if intKind == hid.MouseInterrupt {
-		ring = &topHalfMouseRing
+	if devIdx < 0 {
+		// Not an input device — check if it's the UART
+		if irqNum == uartIRQNum && uartIRQNum != 0 {
+			intKind = hid.SerialInterrupt
+			ring = &topHalfUartRing
+			devIdx = 0 // dummy
+		} else {
+			console.KPrintf("[SoftIRQSlot] No device found for IRQ %d\n", irqNum)
+			return -19 // ENODEV
+		}
 	} else {
-		ring = &topHalfKbdRing
+		// Determine which ring buffer to use for input devices
+		if intKind == hid.MouseInterrupt {
+			ring = &topHalfMouseRing
+		} else {
+			ring = &topHalfKbdRing
+		}
 	}
 
 	slot := &softIRQSlotData[slotNum]
@@ -109,6 +116,15 @@ func RegisterSoftIRQSlotKsyscall(irqNum uint32, slotNum int32, priestID int16) i
 
 	console.KPrintf("[SoftIRQSlot] Registered slot %d: IRQ=%d priest=%d dev=%d kind=%d\n",
 		slotNum, irqNum, priestID, devIdx, intKind)
+
+	// When a userspace priest registers on the UART serial slot,
+	// switch the kernel console to push through the soft IRQ ring
+	// so the priest receives kernel output.
+	if intKind == hid.SerialInterrupt && !IsSoftIRQConsoleActive() {
+		console.KPrintf("[SoftIRQSlot] Switching kernel console to soft IRQ ring\n")
+		EnableSoftIRQConsole()
+	}
+
 	return 0
 }
 
@@ -235,6 +251,15 @@ func QueryInputDevicesKernel(infos []hid.InputDeviceInfo, max int) int {
 			IRQNum:        dev.IRQNum,
 			DeviceType:    dev.DevType,
 			InterruptKind: kind,
+		}
+		n++
+	}
+	// Also report the UART as a serial device
+	if uartIRQNum != 0 && n < max && n < len(infos) {
+		infos[n] = hid.InputDeviceInfo{
+			IRQNum:        uartIRQNum,
+			DeviceType:    hid.DeviceTypeSerial,
+			InterruptKind: hid.SerialInterrupt,
 		}
 		n++
 	}

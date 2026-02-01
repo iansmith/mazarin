@@ -110,6 +110,11 @@ type topHalfDev struct {
 
 var topHalfKbdRing softIRQRing
 var topHalfMouseRing softIRQRing
+var topHalfUartRing softIRQRing
+
+// uartIRQNum is set during device init so the event poller can wake
+// the soft IRQ slot after UART dispatch.
+var uartIRQNum uint32
 
 // SetTopHalfDev is called during input init to register device pointers
 // for the nosplit top-half path.
@@ -175,6 +180,12 @@ func RingDrain(r *softIRQRing, buf []hid.HIDEvent, max int) int {
 //go:noinline
 func NonTimerIRQTopHalf() {
 	irqNum := uint32(topHalfIRQNum)
+
+	// UART RX: drain PL011 FIFO directly via MMIO, push bytes to ring
+	if irqNum == uartIRQNum && uartIRQNum != 0 {
+		uartTopHalf(irqNum)
+		return
+	}
 
 	var dev *topHalfDev
 	if irqNum == topHalfKbd.irqNum && topHalfKbd.usedVA != 0 {
@@ -338,6 +349,13 @@ func eventPoller() {
 			default:
 			}
 		}
+
+		// Flush any pending console ring data to userspace.
+		// Nosplit KWriteByte/KWriteString pushes to the ring but can't
+		// call WakeSlotForIRQ. The event poller does it on their behalf.
+		if softIRQConsole != nil {
+			softIRQConsole.CheckPendingWake()
+		}
 	}
 }
 
@@ -489,6 +507,60 @@ func BreadcrumbString(s string) {
 	for i := 0; i < len(s); i++ {
 		console.Breadcrumb(s[i])
 	}
+}
+
+// ============================================================================
+// UART Top-Half (nosplit, runs from assembly IRQ handler context)
+// ============================================================================
+
+// PL011 register offsets for direct MMIO access in the top-half.
+const (
+	pl011DR   = 0x000 // Data register
+	pl011FR   = 0x018 // Flag register
+	pl011MIS  = 0x040 // Masked interrupt status
+	pl011ICR  = 0x044 // Interrupt clear register
+	pl011RXFE = 1 << 4 // RX FIFO empty flag
+	pl011IRQRX = 1 << 4 // RX interrupt bit
+)
+
+// uartTopHalf drains the PL011 RX FIFO directly via MMIO, pushes each
+// byte into topHalfUartRing as an HIDEvent, clears the interrupt, and
+// wakes any blocked userspace slot. Runs in nosplit assembly IRQ context.
+//
+//go:nosplit
+func uartTopHalf(irqNum uint32) {
+	base := uintptr(UartBase)
+
+	// Check masked interrupt status — only handle RX
+	status := asm.MmioRead32(base + pl011MIS)
+	if status&pl011IRQRX == 0 {
+		return
+	}
+
+	pushed := false
+	for asm.MmioRead32(base+pl011FR)&pl011RXFE == 0 {
+		data := asm.MmioRead32(base + pl011DR)
+		ev := hid.HIDEvent{Type: 0, Code: 0, Value: data & 0xFF}
+		if ringPush(&topHalfUartRing, ev) {
+			pushed = true
+		} else {
+			console.Breadcrumb('X') // overflow
+		}
+	}
+
+	// Clear the RX interrupt
+	asm.MmioWrite32(base+pl011ICR, status)
+
+	if pushed {
+		WakeSlotForIRQ(irqNum)
+	}
+}
+
+// SetupUartSoftIRQ records the UART IRQ number so NonTimerIRQTopHalf
+// can recognize it and drain the PL011 FIFO directly.
+func SetupUartSoftIRQ(irqNum uint32) {
+	uartIRQNum = irqNum
+	console.KPrintf("[BottomHalf] UART top-half registered for IRQ %d\n", irqNum)
 }
 
 // ============================================================================

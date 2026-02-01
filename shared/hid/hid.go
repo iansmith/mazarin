@@ -88,4 +88,5 @@ type InputDeviceInfo struct {
 const (
 	DeviceTypeKeyboard = 1
 	DeviceTypeMouse    = 2
+	DeviceTypeSerial   = 3
 )

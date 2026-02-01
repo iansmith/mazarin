@@ -100,6 +100,11 @@ type PL011 struct {
 	rxLock   uint32                         // Spinlock for RX buffer access
 }
 
+// IRQ returns the IRQ number for this UART.
+func (u *PL011) IRQ() uint32 {
+	return u.irq
+}
+
 // Closable implementation
 func (u *PL011) Name() string {
 	return u.name

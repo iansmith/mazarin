@@ -147,6 +147,27 @@ func mouseLoop(slot int, stack core.CursorStack, images core.CursorImageMap, ren
 	}
 }
 
+func serialLoop(slot int) {
+	fmt.Printf("[dapope] serial goroutine started on slot %d\n", slot)
+	var buf hid.SoftIRQReturn
+	for {
+		n, err := sys.WaitSoftIRQ(slot, &buf)
+		if err != nil {
+			fmt.Printf("[dapope:serial] WaitSoftIRQ error: %v\n", err)
+			continue
+		}
+		for i := 0; i < n; i++ {
+			ev := buf.Events[i]
+			// Each byte is packed as HIDEvent{Type:0, Code:0, Value:byte}
+			if ev.Value < 128 {
+				fmt.Printf("[dapope:serial] rx: '%c' (0x%02x)\n", ev.Value, ev.Value)
+			} else {
+				fmt.Printf("[dapope:serial] rx: 0x%02x\n", ev.Value)
+			}
+		}
+	}
+}
+
 func main() {
 	sys.RegisterAsyncPreempt()
 
@@ -167,10 +188,13 @@ func main() {
 
 	kbdSlot := -1
 	mouseSlot := -1
+	serialSlot := -1
 	for i, dev := range devices {
 		typeName := "keyboard"
 		if dev.DeviceType == hid.DeviceTypeMouse {
 			typeName = "mouse"
+		} else if dev.DeviceType == hid.DeviceTypeSerial {
+			typeName = "serial"
 		}
 
 		if err := sys.RegisterSoftIRQ(dev.IRQNum, i); err != nil {
@@ -182,6 +206,8 @@ func main() {
 
 		if dev.DeviceType == hid.DeviceTypeMouse {
 			mouseSlot = i
+		} else if dev.DeviceType == hid.DeviceTypeSerial {
+			serialSlot = i
 		} else {
 			kbdSlot = i
 		}
@@ -216,6 +242,10 @@ func main() {
 	}
 	if mouseSlot >= 0 {
 		go mouseLoop(mouseSlot, cursorStack, cursorImages, renderer)
+	}
+
+	if serialSlot >= 0 {
+		go serialLoop(serialSlot)
 	}
 
 	// Block main goroutine forever
