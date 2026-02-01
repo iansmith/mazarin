@@ -678,5 +678,4 @@ func virtioGPUFlush(x, y, width, height uint32) {
 		console.KPrintf("[VirtIO GPU] FLUSH failed (0x%04x)\n", respType)
 		return
 	}
-	console.KPrintln("[VirtIO GPU] FLUSH succeeded")
 }

@@ -700,11 +700,15 @@ func IdleLoop(sf *SchedulerFunc) *Thread {
 //
 // LOCK DISCIPLINE: save DAIF → mask IRQs → acquire lock → process → release → restore → WFI
 //
-//go:nosplit
+// kernelStartTick records the counter value when the idle loop begins.
+var kernelStartTick uint64
+
 //go:noinline
 func KernelIdleLoop() {
-	// (idle loop entry - breadcrumbs removed for performance)
+	kernelStartTick = kirq.ReadCounterValue()
+	idleIter := uint64(0)
 	for {
+		idleIter++
 		// Process deadlines with IRQs disabled (critical section)
 		savedDAIF := SaveAndDisableIRQs()
 		schedulerLock.Lock()
@@ -714,6 +718,25 @@ func KernelIdleLoop() {
 
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
+
+		if idleIter%400000 == 0 {
+			elapsed := kirq.ReadCounterValue() - kernelStartTick
+			centisec := (elapsed * 100) / timerFrequencyHz
+			totalSec := centisec / 100
+			frac := centisec % 100
+			if totalSec >= 3600 {
+				h := totalSec / 3600
+				m := (totalSec % 3600) / 60
+				s := totalSec % 60
+				console.KPrintf("[idle] uptime %dh%02dm%02d.%02ds ready=%v\n", h, m, s, frac, hasReady)
+			} else if totalSec >= 60 {
+				m := totalSec / 60
+				s := totalSec % 60
+				console.KPrintf("[idle] uptime %dm%02d.%02ds ready=%v\n", m, s, frac, hasReady)
+			} else {
+				console.KPrintf("[idle] uptime %02d.%02ds ready=%v\n", totalSec, frac, hasReady)
+			}
+		}
 
 		if hasReady {
 			// A thread is ready - yield to it.

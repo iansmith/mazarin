@@ -2,8 +2,14 @@
 package gpu
 
 import (
+	"mazzy/kmazarin/ds"
 	"unsafe"
 )
+
+// gpuLock protects all GPU command queue operations. Without this,
+// concurrent FlushFramebuffer syscalls from different priests corrupt
+// the virtio ring and hang the GPU.
+var gpuLock uint32
 
 // Init initializes the VirtIO GPU device
 // This function:
@@ -54,11 +60,51 @@ func Flush(x, y, width, height uint32) {
 	virtioGPUFlush(x, y, width, height)
 }
 
-// UpdateDisplay transfers and flushes a region of the framebuffer
-// This is a convenience function that combines TransferToHost and Flush
+// UpdateDisplay transfers and flushes a region of the framebuffer.
+// Safe to call concurrently from multiple priests — serialized by gpuLock.
+//
+//go:nosplit
 func UpdateDisplay(x, y, width, height uint32) {
+	savedDAIF := saveAndDisableIRQs()
+	lockGPU()
 	virtioGPUTransferToHost(x, y, width, height)
 	virtioGPUFlush(x, y, width, height)
+	unlockGPU()
+	restoreIRQs(savedDAIF)
+}
+
+// saveAndDisableIRQs masks all interrupts and returns the previous DAIF value.
+//
+//go:nosplit
+func saveAndDisableIRQs() uint64
+
+// restoreIRQs restores DAIF to a previously saved value.
+//
+//go:nosplit
+func restoreIRQs(daif uint64)
+
+// lockGPU spins until the GPU command lock is acquired.
+// No attempt limit — GPU commands always complete (internal timeout).
+// REQUIRES: IRQs disabled (caller must call saveAndDisableIRQs first)
+// to prevent timer preemption while holding the lock.
+//
+//go:nosplit
+func lockGPU() {
+	for {
+		if ds.CompareAndSwapUint32(&gpuLock, 0, 1) != 0 {
+			return
+		}
+		// Brief spin delay
+		for i := 0; i < 100; i++ {
+		}
+	}
+}
+
+// unlockGPU releases the GPU command lock.
+//
+//go:nosplit
+func unlockGPU() {
+	ds.StoreUint32(&gpuLock, 0)
 }
 
 // RenderBootImage renders the boot image to the framebuffer

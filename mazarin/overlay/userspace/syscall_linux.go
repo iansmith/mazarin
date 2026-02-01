@@ -46,10 +46,6 @@ var mazzyMmapHandler func(addr uintptr, n uintptr, prot, flags, fd int32, off ui
 //
 //go:nosplit
 func mmapViaPriestSyscallEntry(addr uintptr, n uintptr, prot, flags, fd int32, off uint32) (uintptr, int) {
-	// Debug: print arguments BEFORE the mmap syscall
-	// marker 0xAABB = mmap entry, then addr, n, prot, flags, fd
-	defaultSyscallHandler(_SYS_debugPrint, 0xAABB, addr, n, uintptr(prot), uintptr(flags), uintptr(fd))
-
 	result := PriestSyscallEntry(_SYS_mmap, addr, n, uintptr(prot), uintptr(flags), uintptr(fd), uintptr(off))
 	if int64(result) < 0 {
 		return 0, int(-result)

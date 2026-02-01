@@ -253,7 +253,7 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 
 	// Save X28 (g register) - can't use R28 in Go asm, use MRS/encode
 	// x28 is the g pointer; we need to read it
-	WORD	$0xF9007280  // STR X28, [X20, #224]  (offset 28*8=224)
+	WORD	$0xF900729C  // STR X28, [X20, #224]  (offset 28*8=224)
 
 	// Save X29 (FP) and X30 (LR)
 	STP	(R29, R30), 232(R20)

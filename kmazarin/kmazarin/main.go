@@ -1059,6 +1059,17 @@ func simpleMain() {
 		Print("[main] dapope launch failed")
 	}
 
+	// Launch stdio (console priest — serial port + display)
+	stdioName := "/stdio.elf\x00"
+	stdioPtr := uintptr(unsafe.Pointer(&([]byte(stdioName))[0]))
+	result = ksyscall.SyscallLaunch(uint64(stdioPtr), 0, 0, 0, 0, 0)
+	if result == 0 {
+		kmem.FinalUserspaceSync()
+		Print("[main] stdio launched")
+	} else {
+		Print("[main] stdio launch failed")
+	}
+
 	// Re-enable IRQs and timer for ongoing scheduling
 	EnableIRQs()
 	EnableTimerIRQ()

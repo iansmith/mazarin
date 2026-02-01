@@ -146,12 +146,18 @@ func WakeSlotForIRQ(irqNum uint32) {
 		return // no blocked thread, events stay in ring
 	}
 
+	// CRITICAL: Disable IRQs before acquiring schedulerLock.
+	// Without this, a timer interrupt can fire while we hold the lock,
+	// and the timer handler's checkThreadPreemptionImpl will try to
+	// acquire the same lock — deadlock.
+	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 
 	// Re-check after acquiring lock
 	tid = slot.blockedTID
 	if tid < 0 {
 		schedulerLock.Unlock()
+		RestoreIRQs(savedDAIF)
 		return
 	}
 
@@ -159,6 +165,7 @@ func WakeSlotForIRQ(irqNum uint32) {
 	if t == nil || t.State != ThreadBlockedSoftIRQ {
 		slot.blockedTID = -1
 		schedulerLock.Unlock()
+		RestoreIRQs(savedDAIF)
 		return
 	}
 
@@ -167,6 +174,7 @@ func WakeSlotForIRQ(irqNum uint32) {
 	enqueueReadySchedLockHeld(t)
 
 	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
 }
 
 // BlockOnSlot blocks the current thread waiting for events on the given slot.
