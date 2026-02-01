@@ -36,17 +36,22 @@ export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 
 **Usage (inline or after export):**
 ```bash
-# Build (using task - installed as go tool)
+# Build everything (cardinal + kmazarin + disk image)
 $GO tool task
 
-# Run
-$GO tool run 5
+# Build and run QEMU (5s default timeout)
+$GO tool task run
+
+# Run with custom timeout
+$GO tool task run TIMEOUT=30
+
+# Run with no timeout (interactive — stop with: $GO tool task stop)
+$GO tool task run TIMEOUT=
 
 # Or export once and use throughout session:
 export GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 $GO tool task clean
-$GO tool task
-$GO tool run 5
+$GO tool task run TIMEOUT=10
 ```
 
 ## Overview
@@ -96,20 +101,20 @@ This project uses a single Go module (`mazzy`). Build is managed by Taskfile (`T
 
 ```bash
 # Build
-$GO tool task              # Build cardinal (default)
+$GO tool task              # Build cardinal + kmazarin + disk (default)
 $GO tool task clean        # Remove build artifacts
 $GO tool task --list       # Show all available tasks
 
 # Run and Debug
 $GO tool task run          # Build and run QEMU (5s timeout)
 $GO tool task run TIMEOUT=30   # Run with 30s timeout
-$GO tool task run TIMEOUT=     # Run without timeout
+$GO tool task run TIMEOUT=     # Run without timeout (interactive)
 $GO tool task show         # View serial output (safe reader + pager)
-$GO tool task stop         # Stop all QEMU instances
+$GO tool task stop         # Stop QEMU (quit via TCP monitor)
 $GO tool task qemu-console # Query QEMU monitor (info registers)
 ```
 
-See `TASK.md` for comprehensive documentation and examples.
+All build and run operations go through `$GO tool task`. See `design/TASK.md` for comprehensive documentation.
 
 ### Complete Development Workflow
 
@@ -120,10 +125,14 @@ export GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go
 export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 
 # 2. Build and run
-$GO tool task run          # Builds everything, runs QEMU for 5s
+$GO tool task run              # Builds everything, runs QEMU for 5s
+$GO tool task run TIMEOUT=30   # 30 second run
+$GO tool task run TIMEOUT=     # No timeout (interactive)
 
-# 3. View output
-$GO tool task show         # View serial log with pager
+# 3. View output / interact
+$GO tool task show             # View serial log with pager
+$GO tool task qemu-console     # Query QEMU monitor (info registers)
+$GO tool task stop             # Stop QEMU (sends quit via TCP monitor)
 ```
 
 Output is written to `/tmp/cardinal-serial.log`.
@@ -141,7 +150,7 @@ Output is written to `/tmp/cardinal-serial.log`.
   # Or manually filter (only safe for reasonable line lengths):
   tail -f /tmp/cardinal-serial.log | tr -d '\000-\010\013-\037\177-\377'
   ```
-- The `$GO tool run` script automatically applies safe filtering
+- The `$GO tool task run` command displays filtered output after the timeout
 
 **CRITICAL: QEMU Output Buffering**
 - NO: `| tee`, `| tail`, `> file`, `< /dev/null` piped to QEMU - causes buffering issues

@@ -4,7 +4,7 @@ title: mazarin, an introduction
 author: iansmith
 ---
 
-[I just want to run the code](quickstart.md)
+[Quick Start: build and run mazarin](quickstart.md)
 
 
 # mazarin, what this is

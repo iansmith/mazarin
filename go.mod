@@ -97,7 +97,6 @@ tool (
 	github.com/go-task/task/v3/cmd/task
 	mazzy/cmd/block-serial-bash-hook
 	mazzy/cmd/block-serial-read-hook
-	mazzy/cmd/build
 	mazzy/cmd/check-version
 	mazzy/cmd/compute-linker-values
 	mazzy/cmd/fix-go-elf
@@ -127,8 +126,6 @@ tool (
 	mazzy/cmd/patch-entry
 	mazzy/cmd/print-kmazarin-addr
 	mazzy/cmd/relocate-kmazarin
-	mazzy/cmd/run
 	mazzy/cmd/safe-serial-read
-	mazzy/cmd/stop
 	mazzy/cmd/verify-linker-values
 )
