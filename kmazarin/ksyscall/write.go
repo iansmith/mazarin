@@ -36,8 +36,14 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 			console.Breadcrumb('\r')
 		}
 
-		// Use Breadcrumb instead of KWriteByte to ensure output even before
-		// console is initialized (Breadcrumb has hardcoded UART address)
+		// SyscallWrite handles BOTH userspace priest output AND the kernel's
+		// own fmt.Println (via DispatchFromOverlay). Using Breadcrumb (direct
+		// MMIO) is correct here because:
+		// 1. Userspace priests must not write into the ring buffer — the stdio
+		//    priest consumes that ring, so it would deadlock on its own output.
+		// 2. Kernel fmt.Println output that should go through the ring already
+		//    uses console.KPrintf / console.KWriteByte directly.
+		// 3. Breadcrumb works before console is initialized.
 		console.Breadcrumb(c)
 	}
 
