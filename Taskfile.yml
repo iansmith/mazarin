@@ -621,8 +621,17 @@ tasks:
     cmds:
       - task: stop
       - '{{.GO}} tool go-rm {{.LOG_FILE}}'
-      - '{{.GO}} tool go-echo "Starting QEMU (timeout {{.TIMEOUT}}s)..."'
       - task: run-qemu-background
+      - task: '{{if eq .TIMEOUT "0"}}run-indefinite{{else}}run-timed{{end}}'
+        vars:
+          TIMEOUT: '{{.TIMEOUT}}'
+          LOG_FILE: '{{.LOG_FILE}}'
+
+  run-timed:
+    desc: "Run QEMU with a timeout (internal)"
+    internal: true
+    cmds:
+      - '{{.GO}} tool go-echo "Starting QEMU (timeout {{.TIMEOUT}}s)..."'
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop
       - '{{.GO}} tool go-sleep 0.3'
@@ -630,6 +639,13 @@ tasks:
       - '{{.GO}} tool go-echo "=== Serial Output (last 50 lines) ==="'
       - '{{.GO}} tool safe-serial-read'
       - '{{.GO}} tool go-echo'
+      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
+
+  run-indefinite:
+    desc: "Run QEMU indefinitely (internal)"
+    internal: true
+    cmds:
+      - '{{.GO}} tool go-echo "QEMU running indefinitely. Use $GO tool task stop to stop."'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
 
   run-qemu-background:

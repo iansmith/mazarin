@@ -244,8 +244,10 @@ func main() {
 	cursorStack.SetPosition(960, 540)
 
 	renderer := newCursorRenderer(fb)
-	renderer.Draw(cursorStack, cursorImages)
-	fmt.Println("[dapope] Cursor rendered at center")
+	// Don't draw cursor yet — the framebuffer background hasn't been
+	// painted by other priests (stdio). The first mouse event will
+	// trigger the initial draw, capturing the correct backing store.
+	fmt.Println("[dapope] Cursor ready (deferred until first mouse event)")
 
 	// Launch goroutines that block on WaitSoftIRQ (via Syscall6).
 	// The Go runtime M-handoff allows both to block independently.

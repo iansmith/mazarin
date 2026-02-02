@@ -42,6 +42,13 @@ kmazarin/kmazarin/kmazarin
 kmazarin/ds/ds.test
 /main
 
+# Font files
+fonts/
+
+# Userspace binaries (built by task)
+dapope
+stdio
+
 # Old directories (should be removed)
 src/
 flash/

@@ -54,10 +54,16 @@ func (r *cursorRenderer) Draw(stack core.CursorStack, images core.CursorImageMap
 		return
 	}
 
+	// Remember old position for flushing the erased region.
+	oldX, oldY := r.lastX, r.lastY
+	hadOld := r.rendered
+
+	// Erase old cursor at its OLD position (no flush yet).
 	if r.rendered {
-		r.eraseLocked()
+		r.eraseLockedNoFlush()
 	}
 
+	// Get new cursor position.
 	cx, cy := stack.Position()
 	r.lastX = cx
 	r.lastY = cy
@@ -97,21 +103,27 @@ func (r *cursorRenderer) Draw(stack core.CursorStack, images core.CursorImageMap
 	}
 	r.rendered = true
 
-	// Flush the affected region to make it visible on screen.
-	// Compute the bounding box in framebuffer coords.
-	// Screen top-left of cursor: (cx - hotspotX, cy + hotspotY)
-	// Screen bottom-right: (cx - hotspotX + imgW - 1, cy + hotspotY - imgH + 1)
-	// FB Y is flipped: fbY = (height-1) - screenY
+	// Flush old region (where background was restored).
+	if hadOld {
+		r.flushCursorRegion(oldX, oldY, cursorSize, cursorSize)
+	}
+
+	// Flush new region (where cursor was drawn).
+	r.flushCursorRegion(cx, cy, imgW, imgH)
+}
+
+// flushCursorRegion flushes a cursor-sized region around screen position (cx, cy).
+func (r *cursorRenderer) flushCursorRegion(cx, cy, w, h int) {
 	flushX := cx - hotspotX
 	if flushX < 0 {
 		flushX = 0
 	}
-	flushY := (r.height - 1) - (cy + hotspotY) // top row in FB coords (lowest screenY maps to highest fbY)
+	flushY := (r.height - 1) - (cy + hotspotY)
 	if flushY < 0 {
 		flushY = 0
 	}
-	flushW := imgW
-	flushH := imgH
+	flushW := w
+	flushH := h
 	if flushX+flushW > r.width {
 		flushW = r.width - flushX
 	}
@@ -129,7 +141,10 @@ func (r *cursorRenderer) Erase() {
 	r.eraseLocked()
 }
 
-func (r *cursorRenderer) eraseLocked() {
+// eraseLockedNoFlush restores the saved background at the OLD cursor position
+// (r.lastX, r.lastY). Does NOT flush — caller is responsible for flushing
+// both the old and new regions.
+func (r *cursorRenderer) eraseLockedNoFlush() {
 	if !r.rendered {
 		return
 	}
@@ -151,25 +166,13 @@ func (r *cursorRenderer) eraseLocked() {
 		}
 	}
 	r.rendered = false
+}
 
-	// Flush the erased region
-	flushX := cx - hotspotX
-	if flushX < 0 {
-		flushX = 0
+func (r *cursorRenderer) eraseLocked() {
+	if !r.rendered {
+		return
 	}
-	flushY := (r.height - 1) - (cy + hotspotY)
-	if flushY < 0 {
-		flushY = 0
-	}
-	flushW := cursorSize
-	flushH := cursorSize
-	if flushX+flushW > r.width {
-		flushW = r.width - flushX
-	}
-	if flushY+flushH > r.height {
-		flushH = r.height - flushY
-	}
-	if flushW > 0 && flushH > 0 {
-		sys.FlushFramebuffer(uint32(flushX), uint32(flushY), uint32(flushW), uint32(flushH))
-	}
+	cx, cy := r.lastX, r.lastY
+	r.eraseLockedNoFlush()
+	r.flushCursorRegion(cx, cy, cursorSize, cursorSize)
 }
