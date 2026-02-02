@@ -108,8 +108,6 @@ func RegisterSoftIRQDispatcher() int64 { return 0 }
 
 func GetPendingSoftIRQ(bundlePtr uint64) bool { return false }
 
-func RecordTimerSlot(tid int32, slotNum int32) {}
-
 // ============================================================================
 // From register_async_preempt_asm.go
 // ============================================================================

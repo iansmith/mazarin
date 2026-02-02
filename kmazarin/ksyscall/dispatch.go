@@ -5,6 +5,7 @@ import (
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/kirq"
 	"sync/atomic"
+	_ "unsafe" // for go:linkname
 )
 
 // SyscallHandler is the type for all syscall handler functions
@@ -87,11 +88,11 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 	exitTick := kirq.ReadCounterValue()
 	kirq.AddKernelSyscallTicks(exitTick - entryTick)
 
-	// Print stats every 2000 syscalls
-	count := atomic.LoadUint64(&kirq.SyscallCount)
-	if count > 0 && count%2000 == 0 {
-		printKernelTimeStats()
-	}
+	// Stats printing disabled for now — use clock display to verify liveness
+	// count := atomic.LoadUint64(&kirq.SyscallCount)
+	// if count > 0 && count%2000 == 0 {
+	// 	printKernelTimeStats()
+	// }
 
 	return result
 }
@@ -125,9 +126,13 @@ func printKernelTimeStats() {
 		syscallCount, timerIRQs, elapsedMs)
 	console.KPrintf("[KernelTime] syscall=%dus kernel=%dus (%.2f%% kernel, %.2f%% user)\n",
 		syscallUs, totalUs, kernelPct, userPct)
+	printThreadStateSummary()
 	_ = timerTicks     // suppress unused warning
 	_ = ctxSwitchTicks // suppress unused warning
 }
+
+//go:linkname printThreadStateSummary main.PrintThreadStateSummary
+func printThreadStateSummary()
 
 // dispatchMazzySyscall handles Mazzy-specific syscalls (1000+)
 //

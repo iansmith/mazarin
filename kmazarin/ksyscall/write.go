@@ -6,9 +6,17 @@ import (
 	"unsafe"
 )
 
-// SyscallWrite implements the write(2) syscall
-// For now, we only support stdout/stderr (fd 1 and 2) which write to UART
-// Uses console abstraction which provides spinlock protection
+// SyscallWrite implements the write(2) syscall.
+// For now, we only support stdout/stderr (fd 1 and 2).
+//
+// Routing logic:
+//   - If the caller is the stdio priest (UART ring owner), use Breadcrumb
+//     (direct MMIO) to avoid deadlock — the stdio priest consumes the ring,
+//     so writing into it would block on itself.
+//   - If the caller is any other priest, use KWriteByte to push through the
+//     ring buffer so the stdio priest can display it.
+//   - If no priest owns the UART slot yet (early boot, kernel fmt.Println),
+//     use Breadcrumb as fallback.
 //
 //go:nosplit
 func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
@@ -26,26 +34,55 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 		return -14 // EFAULT
 	}
 
+	// Determine output path: ring buffer vs direct MMIO
+	// The stdio priest (UART ring owner) must use Breadcrumb to avoid deadlock.
+	// All other priests go through KWriteByte → ring → stdio displays it.
+	useRing := false
+	ownerPID := getUartSlotPriestID()
+	if ownerPID >= 0 {
+		callerPID := getCurrentThreadPID()
+		if callerPID != ownerPID {
+			useRing = true
+		}
+	}
+
 	buf := unsafe.Pointer(uintptr(bufPtr))
 
-	for i := uint64(0); i < count; i++ {
-		c := *(*byte)(unsafe.Pointer(uintptr(buf) + uintptr(i)))
-
-		// Auto-convert LF to CRLF for proper terminal display
-		if c == '\n' {
-			console.Breadcrumb('\r')
+	if useRing {
+		for i := uint64(0); i < count; i++ {
+			c := *(*byte)(unsafe.Pointer(uintptr(buf) + uintptr(i)))
+			if c == '\n' {
+				pushByteToUartRing('\r')
+			}
+			pushByteToUartRing(c)
 		}
-
-		// SyscallWrite handles BOTH userspace priest output AND the kernel's
-		// own fmt.Println (via DispatchFromOverlay). Using Breadcrumb (direct
-		// MMIO) is correct here because:
-		// 1. Userspace priests must not write into the ring buffer — the stdio
-		//    priest consumes that ring, so it would deadlock on its own output.
-		// 2. Kernel fmt.Println output that should go through the ring already
-		//    uses console.KPrintf / console.KWriteByte directly.
-		// 3. Breadcrumb works before console is initialized.
-		console.Breadcrumb(c)
+		flushUartRingWake()
+	} else {
+		for i := uint64(0); i < count; i++ {
+			c := *(*byte)(unsafe.Pointer(uintptr(buf) + uintptr(i)))
+			if c == '\n' {
+				console.Breadcrumb('\r')
+			}
+			console.Breadcrumb(c)
+		}
 	}
 
 	return int64(count)
 }
+
+// getUartSlotPriestID returns the priest ID that owns the UART serial slot.
+// Returns -1 if no priest has registered.
+//
+//go:nosplit
+//go:linkname getUartSlotPriestID main.GetUartSlotPriestID
+func getUartSlotPriestID() int16
+
+// pushByteToUartRing pushes a byte directly into the UART ring buffer.
+//
+//go:linkname pushByteToUartRing main.PushByteToUartRing
+func pushByteToUartRing(b byte)
+
+// flushUartRingWake wakes the UART slot consumer after pushing bytes.
+//
+//go:linkname flushUartRingWake main.FlushUartRingWake
+func flushUartRingWake()

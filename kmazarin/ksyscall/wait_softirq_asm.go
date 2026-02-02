@@ -51,7 +51,3 @@ func BlockOnSlot(slotNum int32) uintptr
 //go:linkname GetSlotInterruptKind main.GetSlotInterruptKind
 func GetSlotInterruptKind(slotNum int32) hid.InterruptType
 
-// RecordTimerSlot records the timer slot for a given TID.
-//
-//go:linkname RecordTimerSlot main.RecordTimerSlot
-func RecordTimerSlot(tid int32, slotNum int32)

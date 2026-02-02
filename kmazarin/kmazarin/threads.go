@@ -626,18 +626,20 @@ func processStaticDeadlinesSchedLockHeld() {
 		if tid == -1 {
 			break // No more expired deadlines
 		}
+		// Timer deadlines are encoded as negative slot IDs: -(slot+2).
+		// Decode and push events to the slot, waking whatever thread is blocked.
+		if tid <= -2 {
+			sec, nsec := ktime.GetTime()
+			PushTimerEventAndWake(sec, nsec)
+			continue
+		}
+
 		// Find the thread by TID and wake it
 		t := threadList.FindByIdAll(int32(tid))
 		if t == nil {
 			continue // Thread exited
 		}
-		if t.State == ThreadBlockedSoftIRQ && tid >= 0 && tid < MaxThreads && timerSlotForTID[tid] >= 0 {
-			// Timer deadline expired for a thread blocked on a timer slot.
-			// Push time events to the ring and wake via slot mechanism.
-			sec, nsec := ktime.GetTime()
-			PushTimerEventAndWake(sec, nsec)
-			timerSlotForTID[tid] = -1
-		} else if t.State == ThreadBlockedFutex {
+		if t.State == ThreadBlockedFutex {
 			t.State = ThreadReady
 			t.FutexAddr = 0
 			blockedQueue.Pluck(ThreadId(tid))
@@ -2357,6 +2359,8 @@ func PrintTickDistribution() {
 	}
 	console.KPrint("================================\n")
 
+	PrintThreadStateSummary()
+
 	// Per-priest tick distribution
 	console.KPrint("\n=== Priest Tick Distribution ===\n")
 	var priestTotalTicks uint64
@@ -2385,4 +2389,29 @@ func PrintTickDistribution() {
 		}
 	}
 	console.KPrint("================================\n")
+}
+
+// PrintThreadStateSummary prints a compact one-line summary of thread states.
+func PrintThreadStateSummary() {
+	var run, rdy, ftx, irq, slp, total int
+	for i := 0; i < MaxThreads; i++ {
+		if threadListInUse[i] {
+			total++
+			switch threadListData[i].State {
+			case ThreadRunning:
+				run++
+			case ThreadReady:
+				rdy++
+			case ThreadBlockedFutex:
+				ftx++
+			case ThreadBlockedSoftIRQ:
+				irq++
+			case ThreadSleeping:
+				slp++
+			}
+		}
+	}
+	avail := threadIdAllocator.Available()
+	console.KPrintf("[Threads] total=%d run=%d rdy=%d ftx=%d irq=%d slp=%d free=%d\n",
+		total, run, rdy, ftx, irq, slp, avail)
 }

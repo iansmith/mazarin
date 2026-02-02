@@ -53,10 +53,14 @@ var mazzySyscallTable = [64]SyscallHandler{
 //
 //go:nosplit
 func SyscallDebugPrint(marker, v1, v2, v3, v4, v5 uint64) int64 {
-	// Special case: single character output (direct MMIO — same rationale as
-	// SyscallWrite: userspace callers must not feed back into the ring buffer)
+	// Special case: single character output — use same routing as SyscallWrite.
 	if v1 == 0 && v2 == 0 && v3 == 0 && v4 == 0 && v5 == 0 && marker < 256 {
-		console.Breadcrumb(byte(marker))
+		ownerPID := getUartSlotPriestID()
+		if ownerPID >= 0 && getCurrentThreadPID() != ownerPID {
+			console.KWriteByte(byte(marker))
+		} else {
+			console.Breadcrumb(byte(marker))
+		}
 		return 0
 	}
 	// Full debug print

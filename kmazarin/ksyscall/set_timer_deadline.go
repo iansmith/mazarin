@@ -40,10 +40,11 @@ func SyscallSetTimerDeadline(slotNum, deadlineSec, deadlineNsec, _, _, _ uint64)
 
 	tickDeadline := currentTick + deltaTicks
 
-	// Record which slot this timer belongs to, and add deadline
-	currentTID := int32(GetCurrentThreadTID())
-	RecordTimerSlot(currentTID, int32(slotNum))
-	AddDeadlineStatic(tickDeadline, currentTID)
+	// Encode the slot number as a negative ID to distinguish timer deadlines
+	// from thread-based deadlines (futex, nanosleep). Slot N → -(N+2) to
+	// avoid collision with the -1 sentinel used by PopIfLess.
+	encodedSlot := -int32(slotNum) - 2
+	AddDeadlineStatic(tickDeadline, encodedSlot)
 
 	return 0
 }

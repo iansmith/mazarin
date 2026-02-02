@@ -208,6 +208,18 @@ func BlockOnSlot(slotNum int32) uintptr {
 		return 0
 	}
 
+	// If another thread was previously blocked on this slot (orphaned by
+	// Go runtime M migration), unblock it so its thread slot is reclaimed.
+	// The Go runtime will exit the old M once it sees the goroutine moved.
+	prevTID := softIRQSlotData[slotNum].blockedTID
+	if prevTID >= 0 {
+		prev := threadList.FindByIdAll(int32(prevTID))
+		if prev != nil && prev.State == ThreadBlockedSoftIRQ {
+			prev.State = ThreadReady
+			enqueueReadySchedLockHeld(prev)
+		}
+	}
+
 	// Commit: block current thread, record in slot
 	t.State = ThreadBlockedSoftIRQ
 	softIRQSlotData[slotNum].blockedTID = t.TID
@@ -235,26 +247,6 @@ func DrainSoftIRQSlotEvents(slotNum int32, buf []hid.HIDEvent, max int) int {
 	return RingDrain(slot.ring, buf, max)
 }
 
-// timerSlotForTID maps thread TIDs to their timer slot number.
-// Set by SysSetTimerDeadline, read by processStaticDeadlinesSchedLockHeld.
-// -1 means no timer slot registered.
-var timerSlotForTID [MaxThreads]int32
-
-func init() {
-	for i := range timerSlotForTID {
-		timerSlotForTID[i] = -1
-	}
-}
-
-// RecordTimerSlot records the timer slot for a given TID.
-// Called from ksyscall via linkname.
-//
-//go:nosplit
-func RecordTimerSlot(tid int32, slotNum int32) {
-	if tid >= 0 && tid < MaxThreads {
-		timerSlotForTID[tid] = slotNum
-	}
-}
 
 // PushTimerEventAndWake pushes time events into the timer ring and wakes the slot.
 // Called from processStaticDeadlinesSchedLockHeld when a timer deadline expires.
@@ -289,6 +281,24 @@ func PushTimerEventAndWake(sec, nsec uint64) {
 	t.State = ThreadReady
 	slot.blockedTID = -1
 	enqueueReadySchedLockHeld(t)
+}
+
+// GetUartSlotPriestID returns the priest ID that owns the UART serial slot.
+// Returns -1 if no priest has registered on the UART slot.
+//
+//go:nosplit
+func GetUartSlotPriestID() int16 {
+	if uartIRQNum == 0 || uartIRQNum >= 256 {
+		return -1
+	}
+	slotIdx := irqToSlot[uartIRQNum]
+	if slotIdx < 0 || slotIdx >= maxSoftIRQSlots {
+		return -1
+	}
+	if atomic.LoadUint32(&softIRQSlotData[slotIdx].active) == 0 {
+		return -1
+	}
+	return softIRQSlotData[slotIdx].priestID
 }
 
 // GetSlotInterruptKind returns the InterruptType for a given slot.

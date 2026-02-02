@@ -131,6 +131,22 @@ func (c *SoftIRQConsole) CheckPendingWake() {
 	}
 }
 
+// PushByteToUartRing pushes a single byte directly into the UART soft IRQ ring
+// and immediately wakes any blocked consumer. This is used by SyscallWrite for
+// non-stdio priest output that needs to appear on the stdio display.
+// Unlike KWriteByte (which defers wake to the event poller), this wakes immediately.
+func PushByteToUartRing(b byte) {
+	ev := hid.HIDEvent{Type: 0, Code: 0, Value: uint32(b)}
+	ringPush(&topHalfUartRing, ev)
+}
+
+// FlushUartRingWake wakes the UART slot consumer after a batch of pushes.
+func FlushUartRingWake() {
+	if uartIRQNum != 0 {
+		WakeSlotForIRQ(uartIRQNum)
+	}
+}
+
 // softIRQConsole is the global instance, set by EnableSoftIRQConsole.
 var softIRQConsole *SoftIRQConsole
 

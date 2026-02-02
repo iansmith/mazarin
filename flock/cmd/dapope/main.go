@@ -88,20 +88,15 @@ func keyboardLoop(slot int) {
 		}
 		for i := 0; i < n; i++ {
 			ev := buf.Events[i]
-			switch ev.Type {
-			case EV_KEY:
-				action := "pressed"
-				if ev.Value == 0 {
-					action = "released"
-				} else if ev.Value == 2 {
-					action = "repeat"
+			if ev.Type == EV_KEY && ev.Value == 1 {
+				switch ev.Code {
+				case 28: // ENTER
+					fmt.Println()
+				case 57: // SPACE
+					fmt.Print(" ")
+				default:
+					fmt.Print(keyName(ev.Code))
 				}
-				fmt.Printf("[dapope:kbd] %s %s\n", keyName(ev.Code), action)
-			case EV_SYN:
-				// ignore
-			default:
-				fmt.Printf("[dapope:kbd] type=%d code=%d value=%d\n",
-					ev.Type, ev.Code, ev.Value)
 			}
 		}
 	}
@@ -150,6 +145,7 @@ func mouseLoop(slot int, stack core.CursorStack, images core.CursorImageMap, ren
 func timerLoop(clock *clockRenderer, slot int) {
 	fmt.Printf("[dapope:timer] timer goroutine started on slot %d\n", slot)
 	var buf hid.SoftIRQReturn
+	tick := 0
 	for {
 		ts, err := sys.GetTime()
 		if err != nil {
@@ -172,6 +168,7 @@ func timerLoop(clock *clockRenderer, slot int) {
 			sec |= uint64(buf.Events[2].Value) << 32
 		}
 		clock.Update(sys.TimeSpec{Seconds: sec, Nanoseconds: nsec})
+		tick++
 	}
 }
 
@@ -268,6 +265,7 @@ func main() {
 		}
 		go timerLoop(clock, timerSlot)
 	}
+
 
 	// Block main goroutine forever
 	select {}
