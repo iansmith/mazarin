@@ -6,6 +6,7 @@ import (
 	"mazzy/kmazarin/ds"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/ktime"
 	"mazzy/kmazarin/util"
 	"sync/atomic"
 	"unsafe"
@@ -630,7 +631,13 @@ func processStaticDeadlinesSchedLockHeld() {
 		if t == nil {
 			continue // Thread exited
 		}
-		if t.State == ThreadBlockedFutex {
+		if t.State == ThreadBlockedSoftIRQ && tid >= 0 && tid < MaxThreads && timerSlotForTID[tid] >= 0 {
+			// Timer deadline expired for a thread blocked on a timer slot.
+			// Push time events to the ring and wake via slot mechanism.
+			sec, nsec := ktime.GetTime()
+			PushTimerEventAndWake(sec, nsec)
+			timerSlotForTID[tid] = -1
+		} else if t.State == ThreadBlockedFutex {
 			t.State = ThreadReady
 			t.FutexAddr = 0
 			blockedQueue.Pluck(ThreadId(tid))

@@ -111,6 +111,7 @@ type topHalfDev struct {
 var topHalfKbdRing softIRQRing
 var topHalfMouseRing softIRQRing
 var topHalfUartRing softIRQRing
+var topHalfTimerRing softIRQRing
 
 // uartIRQNum is set during device init so the event poller can wake
 // the soft IRQ slot after UART dispatch.

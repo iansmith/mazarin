@@ -147,6 +147,34 @@ func mouseLoop(slot int, stack core.CursorStack, images core.CursorImageMap, ren
 	}
 }
 
+func timerLoop(clock *clockRenderer, slot int) {
+	fmt.Printf("[dapope:timer] timer goroutine started on slot %d\n", slot)
+	var buf hid.SoftIRQReturn
+	for {
+		ts, err := sys.GetTime()
+		if err != nil {
+			fmt.Printf("[dapope:timer] GetTime error: %v\n", err)
+			return
+		}
+		// Set deadline 1 second from now
+		if err := sys.SetTimerDeadline(slot, ts.Seconds+1, ts.Nanoseconds); err != nil {
+			fmt.Printf("[dapope:timer] SetTimerDeadline error: %v\n", err)
+			continue
+		}
+		n, err := sys.WaitSoftIRQ(slot, &buf)
+		if err != nil || n == 0 {
+			continue
+		}
+		// Extract time from events: [0]=sec low, [1]=nsec, [2]=sec high
+		sec := uint64(buf.Events[0].Value)
+		nsec := uint64(buf.Events[1].Value)
+		if n >= 3 {
+			sec |= uint64(buf.Events[2].Value) << 32
+		}
+		clock.Update(sys.TimeSpec{Seconds: sec, Nanoseconds: nsec})
+	}
+}
+
 func main() {
 	sys.RegisterAsyncPreempt()
 
@@ -167,6 +195,7 @@ func main() {
 
 	kbdSlot := -1
 	mouseSlot := -1
+	timerSlot := -1
 	for i, dev := range devices {
 		// Skip serial devices — handled by stdio priest
 		if dev.DeviceType == hid.DeviceTypeSerial {
@@ -176,6 +205,8 @@ func main() {
 		typeName := "keyboard"
 		if dev.DeviceType == hid.DeviceTypeMouse {
 			typeName = "mouse"
+		} else if dev.DeviceType == hid.DeviceTypeTimer {
+			typeName = "timer"
 		}
 
 		if err := sys.RegisterSoftIRQ(dev.IRQNum, i); err != nil {
@@ -187,6 +218,8 @@ func main() {
 
 		if dev.DeviceType == hid.DeviceTypeMouse {
 			mouseSlot = i
+		} else if dev.DeviceType == hid.DeviceTypeTimer {
+			timerSlot = i
 		} else {
 			kbdSlot = i
 		}
@@ -223,6 +256,16 @@ func main() {
 		go mouseLoop(mouseSlot, cursorStack, cursorImages, renderer)
 	}
 
+
+	// Launch periodic timer goroutine with clock display
+	clock := newClockRenderer(fb)
+	if clock != nil && timerSlot >= 0 {
+		// Render initial time immediately
+		if ts, err := sys.GetTime(); err == nil {
+			clock.Update(ts)
+		}
+		go timerLoop(clock, timerSlot)
+	}
 
 	// Block main goroutine forever
 	select {}

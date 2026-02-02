@@ -22,6 +22,7 @@ const (
 	sysWaitKernelAsync      = 0x1008 // Wait for kernel async message
 	sysRegisterAsyncPreempt  = 0x1009 // Register asyncPreempt address for goroutine preemption
 	sysFlushFramebuffer      = 0x100D // Flush framebuffer region to display
+	sysSetTimerDeadline      = 0x100E // Set timer deadline on soft IRQ slot
 )
 
 // asyncPreempt is the runtime's async preemption function.

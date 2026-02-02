@@ -82,10 +82,14 @@ func RegisterSoftIRQSlotKsyscall(irqNum uint32, slotNum int32, priestID int16) i
 	}
 	var ring *softIRQRing
 	if devIdx < 0 {
-		// Not an input device — check if it's the UART
+		// Not an input device — check if it's the UART or timer
 		if irqNum == uartIRQNum && uartIRQNum != 0 {
 			intKind = hid.SerialInterrupt
 			ring = &topHalfUartRing
+			devIdx = 0 // dummy
+		} else if irqNum == hid.TimerVirtualIRQ {
+			intKind = hid.TimerInterrupt
+			ring = &topHalfTimerRing
 			devIdx = 0 // dummy
 		} else {
 			console.KPrintf("[SoftIRQSlot] No device found for IRQ %d\n", irqNum)
@@ -231,6 +235,62 @@ func DrainSoftIRQSlotEvents(slotNum int32, buf []hid.HIDEvent, max int) int {
 	return RingDrain(slot.ring, buf, max)
 }
 
+// timerSlotForTID maps thread TIDs to their timer slot number.
+// Set by SysSetTimerDeadline, read by processStaticDeadlinesSchedLockHeld.
+// -1 means no timer slot registered.
+var timerSlotForTID [MaxThreads]int32
+
+func init() {
+	for i := range timerSlotForTID {
+		timerSlotForTID[i] = -1
+	}
+}
+
+// RecordTimerSlot records the timer slot for a given TID.
+// Called from ksyscall via linkname.
+//
+//go:nosplit
+func RecordTimerSlot(tid int32, slotNum int32) {
+	if tid >= 0 && tid < MaxThreads {
+		timerSlotForTID[tid] = slotNum
+	}
+}
+
+// PushTimerEventAndWake pushes time events into the timer ring and wakes the slot.
+// Called from processStaticDeadlinesSchedLockHeld when a timer deadline expires.
+// REQUIRES: schedulerLock held, IRQs masked.
+//
+//go:nosplit
+func PushTimerEventAndWake(sec, nsec uint64) {
+	// Push 3 events: seconds low, nanoseconds, seconds high
+	ev0 := hid.HIDEvent{Type: 0, Code: 0, Value: uint32(sec)}
+	ev1 := hid.HIDEvent{Type: 0, Code: 1, Value: uint32(nsec)}
+	ev2 := hid.HIDEvent{Type: 0, Code: 2, Value: uint32(sec >> 32)}
+	ringPush(&topHalfTimerRing, ev0)
+	ringPush(&topHalfTimerRing, ev1)
+	ringPush(&topHalfTimerRing, ev2)
+
+	// Wake the slot — but we already hold schedulerLock, so inline the wake logic
+	irqNum := hid.TimerVirtualIRQ
+	slotIdx := irqToSlot[irqNum]
+	if slotIdx < 0 || slotIdx >= maxSoftIRQSlots {
+		return
+	}
+	slot := &softIRQSlotData[slotIdx]
+	tid := slot.blockedTID
+	if tid < 0 {
+		return
+	}
+	t := threadList.FindByIdAll(int32(tid))
+	if t == nil || t.State != ThreadBlockedSoftIRQ {
+		slot.blockedTID = -1
+		return
+	}
+	t.State = ThreadReady
+	slot.blockedTID = -1
+	enqueueReadySchedLockHeld(t)
+}
+
 // GetSlotInterruptKind returns the InterruptType for a given slot.
 func GetSlotInterruptKind(slotNum int32) hid.InterruptType {
 	if slotNum < 0 || slotNum >= maxSoftIRQSlots {
@@ -268,6 +328,15 @@ func QueryInputDevicesKernel(infos []hid.InputDeviceInfo, max int) int {
 			IRQNum:        uartIRQNum,
 			DeviceType:    hid.DeviceTypeSerial,
 			InterruptKind: hid.SerialInterrupt,
+		}
+		n++
+	}
+	// Report the timer as a virtual device
+	if n < max && n < len(infos) {
+		infos[n] = hid.InputDeviceInfo{
+			IRQNum:        hid.TimerVirtualIRQ,
+			DeviceType:    hid.DeviceTypeTimer,
+			InterruptKind: hid.TimerInterrupt,
 		}
 		n++
 	}

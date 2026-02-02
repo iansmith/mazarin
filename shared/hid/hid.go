@@ -11,6 +11,7 @@ const (
 	MouseInterrupt    InterruptType = 2
 	DiskInterrupt     InterruptType = 3
 	SerialInterrupt   InterruptType = 4
+	TimerInterrupt    InterruptType = 5
 )
 
 // InterruptTypeOf extracts the type discriminator (lower 32 bits).
@@ -89,4 +90,9 @@ const (
 	DeviceTypeKeyboard = 1
 	DeviceTypeMouse    = 2
 	DeviceTypeSerial   = 3
+	DeviceTypeTimer    = 4
 )
+
+// TimerVirtualIRQ is the virtual IRQ number for the kernel timer device.
+// Well above real device IRQs, within the 256-entry irqToSlot array.
+const TimerVirtualIRQ uint32 = 200

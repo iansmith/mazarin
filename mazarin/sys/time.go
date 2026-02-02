@@ -30,6 +30,23 @@ func GetTime() (TimeSpec, error) {
 	return ts, nil
 }
 
+// SetTimerDeadline sets a timer deadline on a soft IRQ slot.
+// When the deadline expires, the kernel pushes time events to the slot's ring
+// and wakes the thread blocked on WaitSoftIRQ for that slot.
+// This is non-blocking — the caller should block via WaitSoftIRQ separately.
+func SetTimerDeadline(slot int, deadlineSec, deadlineNsec uint64) error {
+	r1, _, errno := RawSyscall(sysSetTimerDeadline,
+		uintptr(slot), uintptr(deadlineSec), uintptr(deadlineNsec),
+		0, 0, 0)
+	if errno != 0 {
+		return errno
+	}
+	if int64(r1) < 0 {
+		return syscall.Errno(-int64(r1))
+	}
+	return nil
+}
+
 // RawSyscall makes a raw syscall with 6 arguments.
 // This is used by priest to forward Mazzy syscalls to the kernel.
 func RawSyscall(num, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, errno syscall.Errno) {
