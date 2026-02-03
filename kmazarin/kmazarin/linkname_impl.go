@@ -2,7 +2,10 @@
 
 package main
 
-import _ "unsafe" // for go:linkname
+import (
+	"sync/atomic"
+	_ "unsafe" // for go:linkname
+)
 
 // This file contains go:linkname implementations that provide functions to
 // other packages (kirq, ksyscall, kmem). These are excluded during test builds
@@ -170,12 +173,12 @@ func threadBlockSleepForKsyscall() uintptr {
 	return ThreadBlockSleep(&NormalSchedulerFunc)
 }
 
-// GetCurrentThread wrapper
+// GetCurrentThread wrapper - returns pointer to current thread
 //
 //go:linkname getCurrentThreadForKsyscall mazzy/kmazarin/ksyscall.GetCurrentThread
 //go:nosplit
 func getCurrentThreadForKsyscall() uintptr {
-	return GetCurrentThread()
+	return uintptr(atomic.LoadPointer(&CurrentThread))
 }
 
 // GetCurrentThreadTID wrapper
@@ -184,4 +187,36 @@ func getCurrentThreadForKsyscall() uintptr {
 //go:nosplit
 func getCurrentThreadTIDForKsyscall() int16 {
 	return int16(GetCurrentThreadTID())
+}
+
+// ============================================================================
+// Per-CPU Accessors for kirq package
+// ============================================================================
+
+// GetPerCPUNeedsAsyncPreempt returns the per-CPU NeedsAsyncPreempt value.
+// This is used by kirq.ProcessTimerIRQ to check if preemption is needed.
+//
+//go:linkname getPerCPUNeedsAsyncPreempt mazzy/kmazarin/kirq.getPerCPUNeedsAsyncPreempt
+//go:nosplit
+func getPerCPUNeedsAsyncPreempt() uint32 {
+	return GetPerCPU().NeedsAsyncPreempt
+}
+
+// SetPerCPUNeedsAsyncPreempt sets the per-CPU NeedsAsyncPreempt value.
+// This is used by kirq to clear the flag after processing.
+//
+//go:linkname setPerCPUNeedsAsyncPreempt mazzy/kmazarin/kirq.setPerCPUNeedsAsyncPreempt
+//go:nosplit
+func setPerCPUNeedsAsyncPreempt(val uint32) {
+	GetPerCPU().NeedsAsyncPreempt = val
+}
+
+// SyncGlobalNeedsAsyncPreemptToPerCPU copies the global NeedsAsyncPreempt
+// value to the per-CPU struct. Called from timer handler to ensure per-CPU
+// is up to date after assembly sets the global.
+//
+//go:linkname syncGlobalNeedsAsyncPreemptToPerCPU mazzy/kmazarin/kirq.syncGlobalNeedsAsyncPreemptToPerCPU
+//go:nosplit
+func syncGlobalNeedsAsyncPreemptToPerCPU(globalVal uint32) {
+	GetPerCPU().NeedsAsyncPreempt = globalVal
 }

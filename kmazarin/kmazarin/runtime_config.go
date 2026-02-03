@@ -231,6 +231,19 @@ func GetUserspacePTPoolEnd() uint64 {
 	return derivedUserspacePTPoolEnd
 }
 
+// GetCPUCount returns the number of CPUs from RuntimeConfig.
+// Returns 1 if the value is not set (for backward compatibility).
+//
+//go:nosplit
+func GetCPUCount() uint64 {
+	// CPUCount is at offset 328 in RuntimeConfig (after UnifiedPoolEnd)
+	count := getStartupConfigValue(328)
+	if count == 0 {
+		return 1 // Default to 1 CPU if not set
+	}
+	return count
+}
+
 // fullConfig is the expanded view of all memory layout values needed by
 // kmem and ksyscall packages. This is returned via the getRuntimeConfig()
 // linkname interface to maintain compatibility with those packages' local

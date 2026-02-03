@@ -9,6 +9,7 @@ package kirq
 
 import (
 	"sync/atomic"
+	_ "unsafe" // For go:linkname
 )
 
 // PreemptOffsets mirrors runtime.PreemptOffsets for go:linkname access.
@@ -61,17 +62,11 @@ var TimerIRQCount uint64
 var preemptTickCounts [1024]uint32
 
 // Thread struct offsets for assembly access.
-// These match the Thread struct layout in threads.go.
-// Computed from struct layout:
-//   State(4) + TID(4) + FutexAddr(8) + MPtr(8) + GPtr(8) + EntryFunc(8) = 40
-//   Context: X[31]*8 + SP(8) + ELR(8) + SPSR(8) = 272
-//   LastSeenG at offset 40+272=312, StartTick at offset 320
-//   readyNode (pointer) at offset 328, total size 336
-const (
-	ThreadLastSeenGOffset = 312 // Offset of Thread.LastSeenG
-	ThreadStartTickOffset = 320 // Offset of Thread.StartTick
-	ThreadSize            = 336 // Size of Thread struct (includes readyNode)
-)
+// IMPORTANT: These are computed dynamically via unsafe.Offsetof() in
+// main.initThreadOffsets() and stored in main.ThreadLastSeenGOffset,
+// main.ThreadStartTickOffset, etc. Assembly loads these at runtime.
+//
+// DO NOT use hardcoded offsets - struct layout may change!
 
 // GoroutinePreemptIntervals is the number of 10ms intervals before forcing
 // async preemption on a goroutine that hasn't yielded.
@@ -350,3 +345,25 @@ func CheckAndYieldPreemption() bool {
 // asmYieldSVC is implemented in preempt_yield_arm64.s
 // Issues SVC #124 (sched_yield syscall) to trigger a voluntary yield.
 func asmYieldSVC()
+
+// ============================================================================
+// Per-CPU Accessors (implemented in main package via linkname)
+// ============================================================================
+
+// getPerCPUNeedsAsyncPreempt returns the per-CPU NeedsAsyncPreempt value.
+// Implemented in main/linkname_impl.go.
+//
+//go:linkname getPerCPUNeedsAsyncPreempt
+func getPerCPUNeedsAsyncPreempt() uint32
+
+// setPerCPUNeedsAsyncPreempt sets the per-CPU NeedsAsyncPreempt value.
+// Implemented in main/linkname_impl.go.
+//
+//go:linkname setPerCPUNeedsAsyncPreempt
+func setPerCPUNeedsAsyncPreempt(val uint32)
+
+// syncGlobalNeedsAsyncPreemptToPerCPU copies the global to per-CPU.
+// Implemented in main/linkname_impl.go.
+//
+//go:linkname syncGlobalNeedsAsyncPreemptToPerCPU
+func syncGlobalNeedsAsyncPreemptToPerCPU(globalVal uint32)

@@ -730,6 +730,8 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 		// Unified page pool (replaces separate kernel/user pools)
 		UnifiedPoolStart uint64 // PA of unified pool start
 		UnifiedPoolEnd   uint64 // PA of unified pool end (RAM end - stacks)
+		// SMP configuration
+		CPUCount uint64 // Number of CPUs (typically 4 for QEMU virt)
 	}
 
 	config := (*RuntimeConfig)(unsafe.Pointer(kmazarinStartupParamsVA))
@@ -836,6 +838,10 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 	// NEW: Unified pool replaces all separate pools
 	config.UnifiedPoolStart = unifiedPoolStart
 	config.UnifiedPoolEnd = unifiedPoolEnd
+
+	// SMP configuration - QEMU virt defaults to 4 CPUs
+	// TODO: Detect from DTB or MPIDR if needed
+	config.CPUCount = 4
 
 	// Ensure writes complete
 	asm.Dsb()

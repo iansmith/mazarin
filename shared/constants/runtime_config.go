@@ -81,6 +81,9 @@ type RuntimeConfig struct {
 	// Unified page pool (replaces separate kernel/user pools)
 	UnifiedPoolStart uint64 // PA of unified pool start
 	UnifiedPoolEnd   uint64 // PA of unified pool end (RAM end - stacks)
+
+	// SMP configuration
+	CPUCount uint64 // Number of CPUs detected (1-8, typically 4 for QEMU virt)
 }
 
 // RuntimeConfigMagic is the expected magic value for a valid RuntimeConfig

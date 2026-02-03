@@ -180,7 +180,9 @@ func RingDrain(r *softIRQRing, buf []hid.HIDEvent, max int) int {
 //go:nosplit
 //go:noinline
 func NonTimerIRQTopHalf() {
+	// Read IRQ number from global (set by assembly) and copy to per-CPU
 	irqNum := uint32(topHalfIRQNum)
+	GetPerCPU().TopHalfIRQNum = uint64(irqNum)
 
 	// UART RX: drain PL011 FIFO directly via MMIO, push bytes to ring
 	if irqNum == uartIRQNum && uartIRQNum != 0 {

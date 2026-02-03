@@ -45,7 +45,7 @@ const (
 const MaxPriests = 32
 
 // MaxThreads is the maximum number of threads supported
-const MaxThreads = 16
+const MaxThreads = 512
 
 // threadArraySize is the fixed backing array size. Using a value larger than
 // MaxThreads avoids .noptrbss layout changes when MaxThreads is tuned, which
@@ -111,6 +111,9 @@ type Priest struct {
 	// Per-priest tick accounting — all thread ticks roll up here
 	TotalTicksRunning   uint64 // Cumulative ticks across all threads of this priest
 	TicksStartedRunning uint64 // When current thread of this priest started (0 = none running)
+
+	// Thread tracking for priest cleanup
+	ThreadCount int32 // Number of live threads belonging to this priest
 }
 
 // Id implements the ds.Ider interface for Priest
@@ -265,7 +268,7 @@ var priestIdAllocator ds.StaticAllocator[PriestId] // Manages unique priest IDs 
 // schedulerLock protects ALL scheduler structures:
 // - threadList, readyQueue, blockedQueue, sleepingQueue
 // - threadIdAllocator, priestIdAllocator
-// - CurrentThreadIdx, CurrentThread
+// - CurrentThread (via atomic operations)
 // - All thread state transitions
 //
 // LOCK DISCIPLINE: This single lock prevents nested locking deadlocks.
@@ -273,9 +276,6 @@ var priestIdAllocator ds.StaticAllocator[PriestId] // Manages unique priest IDs 
 var schedulerLock ds.Spinlock
 
 // ========== Thread State ==========
-
-// Current thread index (-1 = none)
-var CurrentThreadIdx int32 = -1
 
 // CurrentThread is the current thread pointer (nil = none)
 // Uses unsafe.Pointer to avoid GC write barriers in exception context.
@@ -477,6 +477,10 @@ func InitThreads() {
 	// Compute assembly-accessible offsets from struct layout
 	initThreadOffsets()
 
+	// Initialize per-CPU data structures for SMP safety
+	InitPerCPU()
+	initPerCPUOffsets()
+
 	// Initialize spinlock timing based on detected timer frequency
 	// This must happen before any spinlocks are used (including in ID allocators)
 	ds.InitSpinlockTiming(timerFrequencyHz)
@@ -527,7 +531,7 @@ func InitThreads() {
 	// This thread represents the initial execution context and gets scheduled
 	t0 := threadList.ReservedGet(0)
 	t0.State = ThreadRunning
-	t0.TID = firstThreadId // Should be 0
+	t0.TID = firstThreadId              // Should be 0
 	t0.PID = 0             // Belongs to kernel priest (slot 0)
 	t0.PageTableL0PA = 0   // Kernel uses TTBR1, no TTBR0 page table
 	currentTick := ds.CurrentTime(0)
@@ -551,8 +555,8 @@ func InitThreads() {
 
 	threadList.ReservedSet(0)
 
-	CurrentThreadIdx = 0
-	atomic.StorePointer(&CurrentThread, unsafe.Pointer(t0))
+	// Use SetCurrentThreadGlobal to update both per-CPU and global CurrentThread
+	SetCurrentThreadGlobal(t0)
 	threadsInitialized = true
 }
 
@@ -762,7 +766,7 @@ func SaveThread0AndYield() uint64 {
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 
-	t0 := threadList.Get(int(CurrentThreadIdx))
+	t0 := (*Thread)(atomic.LoadPointer(&CurrentThread))
 	if t0 == nil {
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
@@ -810,10 +814,8 @@ func SaveThread0AndYield() uint64 {
 		}
 	}
 
-	// Switch current thread to the new one
-	nextIdx := threadToIdx(next)
-	CurrentThreadIdx = nextIdx
-	atomic.StorePointer(&CurrentThread, unsafe.Pointer(next))
+	// Switch current thread to the new one (updates both per-CPU and global)
+	SetCurrentThreadGlobal(next)
 	next.State = ThreadRunning
 	next.StartTick = currentTime
 	next.GoroutineStart = currentTime
@@ -839,7 +841,7 @@ func SaveThread0AndYield() uint64 {
 // StartFirstThread waits for and starts the first ready thread.
 // This is called from the kernel main when there are threads in the ready queue
 // but no current thread is running. It uses IdleLoop to wait for a ready thread,
-// then sets up CurrentThread/CurrentThreadIdx and returns the context pointer.
+// then sets up CurrentThread and returns the context pointer.
 //
 // Returns pointer to ThreadContext for assembly to load and ERET to.
 // Never returns 0 - blocks until a thread is ready.
@@ -887,10 +889,8 @@ func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
 	savedDAIF := sf.DisableAndSaveDAIF()
 	schedulerLock.Lock()
 
-	// Set up current thread
-	idx := threadToIdx(thread)
-	CurrentThreadIdx = idx
-	atomic.StorePointer(&CurrentThread, unsafe.Pointer(thread))
+	// Set up current thread (updates both per-CPU and global)
+	SetCurrentThreadGlobal(thread)
 	thread.State = ThreadRunning
 
 	// Initialize preemption tracking
@@ -942,10 +942,7 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 	schedulerLock.Lock()
 
 	// First, get the parent thread to determine if this is a kernel or userspace thread
-	var parent *Thread
-	if CurrentThreadIdx >= 0 {
-		parent = threadList.Get(int(CurrentThreadIdx))
-	}
+	parent := (*Thread)(atomic.LoadPointer(&CurrentThread))
 
 	// Determine if this is a kernel thread (parent PID == 0, the kernel priest)
 	isKernel := parent != nil && parent.PID == 0
@@ -969,15 +966,10 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 		threadList.ReservedSet(int(tid))
 	} else {
 		// Userspace threads use normal allocation (shuffled IDs).
-		// If slots are scarce, reap a futex-blocked thread first.
-		// The Go runtime parks idle Ms via futex_wait and never exits them,
-		// so they accumulate and exhaust the fixed-size thread pool.
-		// Reaping is safe: when the runtime later tries futex_wake on the
-		// reaped M's note, it gets 0 woken and creates a fresh M.
-		const reapThreshold = 4 // reap when fewer than 4 slots remain
-		if threadIdAllocator.Available() < reapThreshold {
-			reapOneFutexThreadSchedLockHeld()
-		}
+		// The Go runtime parks idle Ms via futex_wait; they accumulate but
+		// are reused when work becomes available. We do NOT reap them because
+		// the runtime expects parked M's to stay alive - it doesn't check
+		// futex_wake return values and would have inconsistent scheduler state.
 		tid = threadIdAllocator.Acquire()
 		_, t = threadList.Allocate()
 	}
@@ -1024,6 +1016,14 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 		t.PID = parent.PID
 		t.AsyncPreemptAddr = parent.AsyncPreemptAddr
 		t.PriestIdx = parent.PriestIdx
+
+		// Increment priest's thread count for userspace threads (PID > 0)
+		if parent.PID > 0 && parent.PriestIdx >= 0 {
+			priest := &priestListData[parent.PriestIdx]
+			if priestListInUse[parent.PriestIdx] {
+				priest.ThreadCount++
+			}
+		}
 	}
 
 	// DO NOT add to ready queue - this thread runs immediately!
@@ -1089,7 +1089,8 @@ func ThreadExit() uintptr {
 //
 //go:nosplit
 func threadExitImpl(sf *SchedulerFunc) uintptr {
-	if CurrentThreadIdx < 0 {
+	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	if t == nil {
 		return 0 // No current thread
 	}
 
@@ -1097,26 +1098,29 @@ func threadExitImpl(sf *SchedulerFunc) uintptr {
 	savedDAIF := sf.DisableAndSaveDAIF()
 	schedulerLock.Lock()
 
-	// Get current thread using StaticList API
-	t := threadList.Get(int(CurrentThreadIdx))
-	if t != nil {
-		// Mark as exited
-		t.State = ThreadExited
-		// Try to pluck from ready queue (may not be there)
-		readyQueue.Pluck(t.TID)
+	// Mark as exited
+	t.State = ThreadExited
+	// Try to pluck from ready queue (may not be there)
+	readyQueue.Pluck(t.TID)
 
-		// Release unique thread ID back to allocator
-		threadIdAllocator.Release(t.TID)
+	// Release unique thread ID back to allocator
+	threadIdAllocator.Release(t.TID)
 
-		// Release thread slot
-		threadList.Release(int(CurrentThreadIdx))
+	// Release thread slot
+	threadList.Release(int(threadToIdx(t)))
+
+	// Decrement priest thread count and release priest if this was the last thread
+	exitingPID := t.PID
+	if t.PID > 0 && t.PriestIdx >= 0 && priestListInUse[t.PriestIdx] {
+		priest := &priestListData[t.PriestIdx]
+		priest.ThreadCount--
+		if priest.ThreadCount <= 0 {
+			// Last thread of this priest - release the priest
+			releasePriestSchedLockHeld(t.PriestIdx, exitingPID)
+		}
 	}
 
 	// Find next ready thread, preferring a different priest for fairness
-	exitingPID := PriestId(-1)
-	if t != nil {
-		exitingPID = t.PID
-	}
 	next := findReadyThreadPreferDifferentPriestSchedLockHeld(exitingPID)
 	if next == nil {
 		if sf.StateCheck != nil {
@@ -1135,10 +1139,8 @@ func threadExitImpl(sf *SchedulerFunc) uintptr {
 	next.ThreadPreemptDeadline = currentTick + kirq.ThreadPreemptTicks
 	next.GoroutinePreemptDeadline = currentTick + kirq.GoroutinePreemptTicks
 	next.TicksStartedRunning = currentTick
-	// Find the slot index for the next thread
-	// CRITICAL: Use threadToIdx (pointer-based) not IndexOf (TID-based)
-	// IndexOf skips reserved slots, so it returns -1 for kernel threads!
-	CurrentThreadIdx = threadToIdx(next)
+	// Update both per-CPU and global CurrentThread
+	SetCurrentThreadGlobal(next)
 
 	if sf.StateCheck != nil {
 		sf.StateCheck("thread-exit-switch")
@@ -1147,6 +1149,35 @@ func threadExitImpl(sf *SchedulerFunc) uintptr {
 	schedulerLock.Unlock()
 	sf.EnableAndRestoreDAIF(savedDAIF)
 	return uintptr(unsafe.Pointer(&next.Context))
+}
+
+// releasePriestSchedLockHeld releases a priest when its last thread exits.
+// MUST be called with schedulerLock held.
+// Performs TLB shootdown for the ASID before releasing the priest ID,
+// enabling aggressive ASID reuse to expose bugs.
+//
+//go:nosplit
+func releasePriestSchedLockHeld(priestIdx int16, pid PriestId) {
+	if priestIdx < 0 || !priestListInUse[priestIdx] {
+		return // Invalid or already released
+	}
+
+	// CRITICAL: TLB shootdown before releasing the ASID.
+	// When this ASID is reused by a new priest, we must ensure no stale
+	// TLB entries remain that could cause incorrect address translations.
+	// TLBI ASIDE1IS broadcasts to all CPUs in the inner shareable domain.
+	kmem.TlbiASIDE1IS(uint16(pid))
+
+	// Release the priest slot
+	priestListInUse[priestIdx] = false
+
+	// Zero the priest struct for security (prevent info leaks)
+	priestListData[priestIdx] = Priest{}
+
+	// Release the priest ID back to the allocator for immediate reuse.
+	// Because StaticAllocator uses LIFO (stack), this ID will be the next
+	// one allocated, enabling aggressive reuse to find bugs.
+	priestIdAllocator.Release(pid)
 }
 
 // CreateUserspaceThread allocates a new thread for a userspace process (like a priest).
@@ -1211,13 +1242,7 @@ func RegisterAsyncPreemptAddr(asyncPreemptAddr uint64) int64 {
 	schedulerLock.Lock()
 
 	// Get current thread
-	if CurrentThreadIdx < 0 {
-		schedulerLock.Unlock()
-		RestoreIRQs(savedDAIF)
-		return -2 // ENOENT
-	}
-
-	t := threadList.Get(int(CurrentThreadIdx))
+	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
 	if t == nil {
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
@@ -1272,6 +1297,7 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	_, p := priestList.Allocate()
 	p.PID = priestId
 	p.AsyncPreemptAddr = asyncPreemptAddr
+	p.ThreadCount = 1 // This priest starts with one thread
 
 	// Allocate thread slot from static list (panics if exhausted)
 	_, t := threadList.Allocate()
@@ -1433,6 +1459,7 @@ func findReadyThreadSchedLockHeld() *Thread {
 			continue
 		}
 
+
 		// Thread is valid and ready
 		return t
 	}
@@ -1505,7 +1532,8 @@ func ThreadBlockFutex(futexAddr uint64, expectedVal uint32) uintptr {
 //
 //go:nosplit
 func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint32) uintptr {
-	if CurrentThreadIdx < 0 {
+	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	if t == nil {
 		return 0
 	}
 
@@ -1521,14 +1549,6 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 		if sf.StateCheck != nil {
 			sf.StateCheck("futex-block-value-changed")
 		}
-		schedulerLock.Unlock()
-		sf.EnableAndRestoreDAIF(savedDAIF)
-		return 0
-	}
-
-	// Get current thread using StaticList API
-	t := threadList.Get(int(CurrentThreadIdx))
-	if t == nil {
 		schedulerLock.Unlock()
 		sf.EnableAndRestoreDAIF(savedDAIF)
 		return 0
@@ -1637,21 +1657,14 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 //
 //go:nosplit
 func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
-	if CurrentThreadIdx < 0 {
+	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	if t == nil {
 		return 0
 	}
 
 	// BEGIN CRITICAL SECTION - protect thread state modification
 	savedDAIF := sf.DisableAndSaveDAIF()
 	schedulerLock.Lock()
-
-	// Get current thread using StaticList API
-	t := threadList.Get(int(CurrentThreadIdx))
-	if t == nil {
-		schedulerLock.Unlock()
-		sf.EnableAndRestoreDAIF(savedDAIF)
-		return 0
-	}
 
 	// Pluck current thread from ready queue if it's there
 	// (It might not be if it was already running and not re-queued)
@@ -1736,25 +1749,12 @@ func ThreadIncrementTick() {
 	globalTickCounter++
 }
 
-// GetCurrentThread returns the current thread index as uintptr
-//
-//go:nosplit
-func GetCurrentThread() uintptr {
-	if CurrentThreadIdx < 0 {
-		return 0
-	}
-	return uintptr(CurrentThreadIdx)
-}
-
 // GetCurrentThreadTID returns the TID of the current thread.
 // Returns -1 if no thread is running.
 //
 //go:nosplit
 func GetCurrentThreadTID() ThreadId {
-	if CurrentThreadIdx < 0 {
-		return -1
-	}
-	t := threadList.Get(int(CurrentThreadIdx))
+	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
 	if t == nil {
 		return -1
 	}
@@ -1818,7 +1818,8 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		}
 	}
 
-	if CurrentThreadIdx < 0 {
+	oldThread := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	if oldThread == nil {
 		return 0
 	}
 
@@ -1828,15 +1829,6 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 
 	// Save current thread's context from exception frame
 	SaveContextFromFrame(uintptr(framePtr))
-
-	// Mark current thread as ready (preempted) and add to back of ready queue
-	oldIdx := CurrentThreadIdx
-	oldThread := threadList.Get(int(oldIdx))
-	if oldThread == nil {
-		schedulerLock.Unlock()
-		sf.EnableAndRestoreDAIF(savedDAIF)
-		return 0
-	}
 
 	oldThread.State = ThreadReady
 	// Pluck first in case oldThread is already in queue from a previous preemption
@@ -1895,11 +1887,8 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		}
 	}
 
-	// Switch to new thread
-	nextIdx := threadToIdx(next)
-	// (preemption switch breadcrumbs removed for performance)
-	CurrentThreadIdx = nextIdx
-	atomic.StorePointer(&CurrentThread, unsafe.Pointer(next))
+	// Switch to new thread (updates both per-CPU and global)
+	SetCurrentThreadGlobal(next)
 	next.State = ThreadRunning
 	next.StartTick = currentTime
 	next.GoroutineStart = currentTime
@@ -1925,7 +1914,7 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	// END CRITICAL SECTION
 	schedulerLock.Unlock()
 	// CRITICAL: Do NOT restore DAIF here!
-	// CurrentThreadIdx now points to the NEW thread. If we enable interrupts
+	// CurrentThread now points to the NEW thread. If we enable interrupts
 	// and a timer IRQ fires, SaveContextFromFrame would save the KERNEL's
 	// exception frame into the NEW thread's context, corrupting it.
 	// The assembly will restore interrupt state via ERET with new SPSR.
@@ -1949,11 +1938,7 @@ const (
 //go:nosplit
 //go:noinline
 func SaveContextFromFrame(framePtr uintptr) {
-	if CurrentThreadIdx < 0 {
-		return
-	}
-
-	t := threadList.Get(int(CurrentThreadIdx))
+	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
 	if t == nil {
 		return
 	}
@@ -2007,8 +1992,8 @@ func doContextSwitchABI0(framePtr uint64, targetPtr uint64) uint64 {
 
 // doContextSwitchImpl performs a context switch from current thread to target
 //
-// CRITICAL SECTION: This function modifies CurrentThread/CurrentThreadIdx and
-// thread state. Protected by both DAIF and schedulerLock.
+// CRITICAL SECTION: This function modifies CurrentThread and thread state.
+// Protected by both DAIF and schedulerLock.
 //
 //go:nosplit
 //go:noinline
@@ -2032,9 +2017,10 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	savedDAIF := sf.DisableAndSaveDAIF()
 	schedulerLock.Lock()
 
-	oldIdx := CurrentThreadIdx
-	CurrentThreadIdx = targetIdx
-	atomic.StorePointer(&CurrentThread, unsafe.Pointer(threadList.Get(int(targetIdx)))) // Get() for reserved slots
+	oldThread := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	newThread := threadList.Get(int(targetIdx)) // Get() for reserved slots
+	// Update both per-CPU and global CurrentThread
+	SetCurrentThreadGlobal(newThread)
 
 	// Get current time for preemption tracking
 	currentTime := sf.CurrentTime(0)
@@ -2048,49 +2034,38 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	// ThreadBlockedFutex before calling context switch). If we only update when
 	// ThreadRunning, blocked threads keep a stale TicksStartedRunning and the
 	// print function adds phantom time.
-	if oldIdx >= 0 {
-		oldThread := threadList.Get(int(oldIdx)) // Get() for reserved slots
-		if oldThread != nil {
-			// Always accumulate ticks and clear TicksStartedRunning
-			if oldThread.TicksStartedRunning != 0 {
-				oldThread.TotalTicksRunning += currentTime - oldThread.TicksStartedRunning
-			}
-			oldThread.TicksStartedRunning = 0 // Mark as not running
-
-			if oldThread.State == ThreadRunning {
-				// Save elapsed time so we can restore it when this thread resumes
-				oldThread.PreemptElapsed = currentTime - oldThread.StartTick
-				oldThread.GoroutineElapsed = currentTime - oldThread.GoroutineStart
-
-				oldThread.State = ThreadReady
-				// Pluck first in case oldThread is already in queue
-				readyQueue.Pluck(oldThread.TID)
-				enqueueReadySchedLockHeld(oldThread)
-			}
-		}
-	}
-
-	// Priest-level tick accounting for context switches
-	// Determine old priest PID to compare with new thread
 	oldPID := PriestId(-1)
-	if oldIdx >= 0 {
-		oldThread := threadList.Get(int(oldIdx))
-		if oldThread != nil {
-			oldPID = oldThread.PID
-			// Stop old priest's clock if switching to a different priest
-			newThread := threadList.Get(int(targetIdx))
-			if newThread != nil && newThread.PID != oldPID && oldThread.PriestIdx >= 0 {
-				oldPriest := priestList.Get(int(oldThread.PriestIdx))
-				if oldPriest != nil && oldPriest.TicksStartedRunning != 0 {
-					oldPriest.TotalTicksRunning += currentTime - oldPriest.TicksStartedRunning
-					oldPriest.TicksStartedRunning = 0
-				}
+	if oldThread != nil {
+		oldPID = oldThread.PID
+
+		// Always accumulate ticks and clear TicksStartedRunning
+		if oldThread.TicksStartedRunning != 0 {
+			oldThread.TotalTicksRunning += currentTime - oldThread.TicksStartedRunning
+		}
+		oldThread.TicksStartedRunning = 0 // Mark as not running
+
+		if oldThread.State == ThreadRunning {
+			// Save elapsed time so we can restore it when this thread resumes
+			oldThread.PreemptElapsed = currentTime - oldThread.StartTick
+			oldThread.GoroutineElapsed = currentTime - oldThread.GoroutineStart
+
+			oldThread.State = ThreadReady
+					// Pluck first in case oldThread is already in queue
+			readyQueue.Pluck(oldThread.TID)
+			enqueueReadySchedLockHeld(oldThread)
+		}
+
+		// Priest-level tick accounting: stop old priest's clock if switching to a different priest
+		if newThread != nil && newThread.PID != oldPID && oldThread.PriestIdx >= 0 {
+			oldPriest := priestList.Get(int(oldThread.PriestIdx))
+			if oldPriest != nil && oldPriest.TicksStartedRunning != 0 {
+				oldPriest.TotalTicksRunning += currentTime - oldPriest.TicksStartedRunning
+				oldPriest.TicksStartedRunning = 0
 			}
 		}
 	}
 
 	// New thread becomes running
-	newThread := threadList.Get(int(targetIdx)) // Get() for reserved slots
 	if newThread == nil {
 		schedulerLock.Unlock()
 		sf.EnableAndRestoreDAIF(savedDAIF)
@@ -2135,7 +2110,6 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	// Switch TTBR0 if the new thread has a different page table
 	// This is needed when switching between different userspace processes (priests)
 	// Use the thread's PID as the ASID for TLB tagging.
-	oldThread := threadList.Get(int(oldIdx)) // Get() for reserved slots
 	oldPageTable := uintptr(0)
 	if oldThread != nil {
 		oldPageTable = oldThread.PageTableL0PA
@@ -2152,7 +2126,7 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	// END CRITICAL SECTION
 	schedulerLock.Unlock()
 	// CRITICAL: Do NOT restore DAIF here!
-	// CurrentThreadIdx now points to the NEW thread. If we enable interrupts
+	// CurrentThread now points to the NEW thread. If we enable interrupts
 	// and a timer IRQ fires, SaveContextFromFrame would save the KERNEL's
 	// exception frame into the NEW thread's context, corrupting it.
 	// The assembly will restore interrupt state via ERET with new SPSR.
@@ -2195,11 +2169,7 @@ func SaveCurrentThreadContext(
 	x24, x25, x26, x27, x28, x29, x30 uint64,
 	sp, elr, spsr uint64,
 ) {
-	if CurrentThreadIdx < 0 {
-		return
-	}
-
-	t := threadList.Get(int(CurrentThreadIdx))
+	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
 	if t == nil {
 		return
 	}
@@ -2419,32 +2389,6 @@ func PrintTickDistribution() {
 		}
 	}
 	console.KPrint("================================\n")
-}
-
-// reapOneFutexThreadSchedLockHeld finds one ThreadBlockedFutex thread and
-// forcibly releases its slot and TID. This reclaims thread slots from Go
-// runtime Ms that parked via futex_wait and will never exit on their own.
-// REQUIRES: schedulerLock held.
-//
-//go:nosplit
-func reapOneFutexThreadSchedLockHeld() {
-	for i := 0; i < MaxThreads; i++ {
-		if threadListInUse[i] && threadListData[i].State == ThreadBlockedFutex {
-			t := &threadListData[i]
-			t.State = ThreadExited
-			t.FutexAddr = 0
-			// CRITICAL: Clear TID BEFORE releasing, to prevent FindByIdAll from
-			// finding this reaped thread when a new thread reuses the same TID.
-			// Otherwise the new thread's futex operations fail because FindByIdAll
-			// returns the stale reaped thread instead.
-			oldTID := t.TID
-			t.TID = -1 // Mark as invalid
-			blockedQueue.Pluck(oldTID)
-			threadIdAllocator.Release(oldTID)
-			threadList.Release(i)
-			return
-		}
-	}
 }
 
 // PrintThreadStateSummary prints a compact one-line summary of thread states.

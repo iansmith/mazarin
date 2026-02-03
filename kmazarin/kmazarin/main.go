@@ -903,6 +903,12 @@ func simpleMain() {
 	// Start kernel time accounting for performance measurements
 	kirq.StartKernelTimeAccounting()
 
+	// SMP: Wake secondary CPUs
+	// For now, disabled until SMP scheduling is fully tested
+	// Uncomment the following line to enable SMP boot:
+	// StartSecondaryCPUs()
+	_ = StartSecondaryCPUs // Silence unused warning
+
 	// Start program clock for timed shutdown (15 seconds in raw counter ticks).
 	// Disable IRQs briefly so no timer preemption during reset.
 	savedDAIF := SaveAndDisableIRQs()

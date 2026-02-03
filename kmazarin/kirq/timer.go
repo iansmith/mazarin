@@ -119,7 +119,12 @@ func TimerIRQHandlerCanPreempt(irqNum uint64, framePtr uintptr, elr, spEl0 uint6
 	// Check if assembly handler requested async preemption
 	// NeedsAsyncPreempt is set by TimerIRQHandlerAsm when the same goroutine
 	// has been running for too long (threshold exceeded)
+	//
+	// For SMP safety: Assembly writes to the global, we copy it to per-CPU here.
+	// This ensures each CPU sees its own preemption state.
 	needsPreempt := atomic.LoadUint32(&NeedsAsyncPreempt)
+	syncGlobalNeedsAsyncPreemptToPerCPU(needsPreempt)
+
 	if needsPreempt == 0 {
 		// Threshold not exceeded - skip async preemption
 		// (cooperative preemption via g.stackguard0 is still active)
@@ -131,8 +136,9 @@ func TimerIRQHandlerCanPreempt(irqNum uint64, framePtr uintptr, elr, spEl0 uint6
 		}
 	}
 
-	// Clear the flag now that we've read it
+	// Clear the flag now that we've read it (both global and per-CPU)
 	atomic.StoreUint32(&NeedsAsyncPreempt, 0)
+	setPerCPUNeedsAsyncPreempt(0)
 
 	// Preemption needed! Inject call to runtime.asyncPreempt
 	// This will cause the interrupted code to call asyncPreempt when it returns
