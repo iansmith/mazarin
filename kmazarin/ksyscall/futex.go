@@ -91,8 +91,9 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 		}
 
 		// Try to find another thread to run and block current thread
-		// ThreadBlockFutex only marks us blocked if there's a thread to switch to
-		nextThread := ThreadBlockFutex(uaddr)
+		// ThreadBlockFutex re-checks the value under lock to prevent missed wakeup race.
+		// It only marks us blocked if value still matches and there's a thread to switch to.
+		nextThread := ThreadBlockFutex(uaddr, uint32(val))
 
 		if nextThread != 0 {
 			// Successfully blocked - context switch to next thread
@@ -102,8 +103,8 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 			return 0
 		}
 
-		// No ready thread to switch to - we couldn't actually block
-		// Return EAGAIN to let Go's runtime handle internal goroutine scheduling
+		// Either no ready thread to switch to, OR the value changed (wake happened).
+		// Return EAGAIN to let Go's runtime handle internal goroutine scheduling.
 		// This is important for fairness: the thread continues and Go can
 		// switch to another runnable goroutine within the same thread.
 		atomic.AddUint64(&FutexWaitEagain, 1)

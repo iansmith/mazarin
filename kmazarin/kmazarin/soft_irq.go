@@ -121,17 +121,23 @@ func softIRQFire(irqNum uint32, dataPtr uintptr) {
 // softIRQWakeDispatcher wakes the blocked dispatcher with priority scheduling.
 //
 // MULTICORE SAFETY:
+// - IRQs disabled to prevent same-core deadlock
 // - schedulerLock serializes all scheduler state modifications
 // - Double-check softIRQDispatcherBlocked after lock acquisition
 // - PushHead gives dispatcher priority over other ready threads
 //
+// Note: Usually called from IRQ context where DAIF is already disabled,
+// but we disable explicitly for safety and to allow other call paths.
+//
 //go:nosplit
 func softIRQWakeDispatcher(bundle SoftIRQBundle) {
+	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 
 	// Double-check (another core may have woken it)
 	if atomic.LoadUint32(&softIRQDispatcherBlocked) != 1 {
 		schedulerLock.Unlock()
+		RestoreIRQs(savedDAIF)
 		softIRQEnqueue(bundle)
 		return
 	}
@@ -139,6 +145,7 @@ func softIRQWakeDispatcher(bundle SoftIRQBundle) {
 	t := threadList.FindByIdAll(int32(softIRQDispatcherTID)) // FindByIdAll to include kernel threads
 	if t == nil || t.State != ThreadBlockedSoftIRQ {
 		schedulerLock.Unlock()
+		RestoreIRQs(savedDAIF)
 		softIRQEnqueue(bundle)
 		return
 	}
@@ -154,6 +161,7 @@ func softIRQWakeDispatcher(bundle SoftIRQBundle) {
 	enqueueReadySchedLockHeld(t)
 
 	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
 }
 
 // ============================================================================
@@ -162,10 +170,16 @@ func softIRQWakeDispatcher(bundle SoftIRQBundle) {
 
 // softIRQEnqueue adds bundle to overflow queue when dispatcher is busy.
 //
-// MULTICORE SAFETY: schedulerLock protects overflow queue.
+// MULTICORE SAFETY:
+// - IRQs disabled to prevent same-core deadlock
+// - schedulerLock protects overflow queue
+//
+// Note: Usually called from IRQ context where DAIF is already disabled,
+// but we disable explicitly for safety.
 //
 //go:nosplit
 func softIRQEnqueue(bundle SoftIRQBundle) {
+	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 
 	// Find a free slot in the data array
@@ -175,23 +189,29 @@ func softIRQEnqueue(bundle SoftIRQBundle) {
 			softIRQOverflowInUse[i] = true
 			softIRQOverflowQueue.Push(i)
 			schedulerLock.Unlock()
+			RestoreIRQs(savedDAIF)
 			return
 		}
 	}
 
 	// Queue full - drop
 	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
 }
 
 // GetPendingSoftIRQ drains one item from overflow queue.
 // Returns true if bundle was available.
 //
+// Called from syscall context - must disable IRQs before taking lock.
+//
 //go:nosplit
 func GetPendingSoftIRQ(bundlePtr uint64) bool {
+	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 
 	if softIRQOverflowQueue.IsEmpty() {
 		schedulerLock.Unlock()
+		RestoreIRQs(savedDAIF)
 		return false
 	}
 
@@ -203,6 +223,7 @@ func GetPendingSoftIRQ(bundlePtr uint64) bool {
 	*destPtr = bundle
 
 	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
 	return true
 }
 
@@ -267,13 +288,17 @@ func ThreadBlockSoftIRQ(sf *SchedulerFunc, bundlePtr uint64) uintptr {
 // RegisterSoftIRQDispatcher registers current thread as the dispatcher.
 // Only one thread can be the dispatcher.
 //
+// Called from syscall context - must disable IRQs before taking lock.
+//
 //go:nosplit
 func RegisterSoftIRQDispatcher() int64 {
+	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 
 	t := threadList.Get(int(CurrentThreadIdx))
 	if t == nil {
 		schedulerLock.Unlock()
+		RestoreIRQs(savedDAIF)
 		return -22 // -EINVAL
 	}
 	currentTID := t.TID
@@ -281,15 +306,18 @@ func RegisterSoftIRQDispatcher() int64 {
 	if softIRQDispatcherTID == -1 {
 		softIRQDispatcherTID = currentTID
 		schedulerLock.Unlock()
+		RestoreIRQs(savedDAIF)
 		return 0
 	}
 
 	if softIRQDispatcherTID == currentTID {
 		schedulerLock.Unlock()
+		RestoreIRQs(savedDAIF)
 		return 0 // Already registered
 	}
 
 	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
 	return -22 // -EINVAL: another dispatcher exists
 }
 

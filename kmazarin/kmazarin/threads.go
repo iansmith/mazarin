@@ -47,9 +47,9 @@ const MaxPriests = 32
 // MaxThreads is the maximum number of threads supported
 const MaxThreads = 16
 
-// threadArraySize is the fixed backing array size. Kept constant to avoid
-// changing .noptrbss layout when MaxThreads changes (workaround for ADRP-
-// related crash during Go runtime stack scanning).
+// threadArraySize is the fixed backing array size. Using a value larger than
+// MaxThreads avoids .noptrbss layout changes when MaxThreads is tuned, which
+// reduces churn in the ELF binary layout.
 const threadArraySize = 1024
 
 // ReservedKernelThreads is the number of thread slots reserved for kernel threads.
@@ -1487,15 +1487,24 @@ func ThreadFindReady() uintptr {
 // NOTE: Returns context pointer (not index) so 0 unambiguously means "no switch".
 // Thread index 0 is valid and would return a non-zero context pointer.
 //
+// CRITICAL: The expectedVal parameter is used to re-check the futex value under
+// the scheduler lock. This prevents the classic futex missed-wakeup race where:
+//   1. Thread A checks value, sees it matches expected
+//   2. Thread B wakes the futex (but A isn't blocked yet)
+//   3. Thread A marks itself blocked (will never be woken)
+//
+// By re-checking under the lock, we ensure the check and block are atomic.
+// Returns 0 if value changed (caller should return EAGAIN).
+//
 //go:nosplit
-func ThreadBlockFutex(futexAddr uint64) uintptr {
-	return threadBlockFutexImpl(&NormalSchedulerFunc, futexAddr)
+func ThreadBlockFutex(futexAddr uint64, expectedVal uint32) uintptr {
+	return threadBlockFutexImpl(&NormalSchedulerFunc, futexAddr, expectedVal)
 }
 
 // threadBlockFutexImpl is the internal implementation with sf for testing
 //
 //go:nosplit
-func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64) uintptr {
+func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint32) uintptr {
 	if CurrentThreadIdx < 0 {
 		return 0
 	}
@@ -1503,6 +1512,19 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64) uintptr {
 	// BEGIN CRITICAL SECTION - protect thread state modification
 	savedDAIF := sf.DisableAndSaveDAIF()
 	schedulerLock.Lock()
+
+	// Re-check the futex value under the lock to prevent missed wakeup race.
+	// If the value changed since the caller checked, a wake may have occurred.
+	currentVal := *(*uint32)(unsafe.Pointer(uintptr(futexAddr)))
+	if currentVal != expectedVal {
+		// Value changed - a wake likely happened, don't block
+		if sf.StateCheck != nil {
+			sf.StateCheck("futex-block-value-changed")
+		}
+		schedulerLock.Unlock()
+		sf.EnableAndRestoreDAIF(savedDAIF)
+		return 0
+	}
 
 	// Get current thread using StaticList API
 	t := threadList.Get(int(CurrentThreadIdx))
@@ -2411,8 +2433,14 @@ func reapOneFutexThreadSchedLockHeld() {
 			t := &threadListData[i]
 			t.State = ThreadExited
 			t.FutexAddr = 0
-			blockedQueue.Pluck(t.TID)
-			threadIdAllocator.Release(t.TID)
+			// CRITICAL: Clear TID BEFORE releasing, to prevent FindByIdAll from
+			// finding this reaped thread when a new thread reuses the same TID.
+			// Otherwise the new thread's futex operations fail because FindByIdAll
+			// returns the stale reaped thread instead.
+			oldTID := t.TID
+			t.TID = -1 // Mark as invalid
+			blockedQueue.Pluck(oldTID)
+			threadIdAllocator.Release(oldTID)
 			threadList.Release(i)
 			return
 		}

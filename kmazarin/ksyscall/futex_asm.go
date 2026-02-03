@@ -11,7 +11,7 @@ import _ "unsafe" // for go:linkname
 // Note: Functions return uintptr (thread node pointer, 0 = none)
 
 //go:linkname ThreadBlockFutex main.ThreadBlockFutex
-func ThreadBlockFutex(futexAddr uint64) uintptr
+func ThreadBlockFutex(futexAddr uint64, expectedVal uint32) uintptr
 
 //go:linkname ThreadWakeFutex main.ThreadWakeFutex
 func ThreadWakeFutex(futexAddr uint64, maxWake int32) int32

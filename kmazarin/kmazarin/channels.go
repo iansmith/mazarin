@@ -127,12 +127,14 @@ func InitChannels() {
 //
 //go:nosplit
 func AllocateChannel(ownerPID PriestId, bundleSize int) ChannelId {
+	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 
 	// Allocate from static list
 	_, ch := channelList.Allocate()
 	if ch == nil {
 		schedulerLock.Unlock()
+		RestoreIRQs(savedDAIF)
 		return -1
 	}
 
@@ -146,6 +148,7 @@ func AllocateChannel(ownerPID PriestId, bundleSize int) ChannelId {
 	ch.Counterpart = -1
 
 	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
 	return chanId
 }
 
@@ -184,11 +187,13 @@ func QueueKernelAsync(pid PriestId, bundle KernelAsyncBundle) bool {
 		return false
 	}
 
+	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 
 	if priestHasPendingMessage[pid] {
 		// Already have a pending message - can't queue another
 		schedulerLock.Unlock()
+		RestoreIRQs(savedDAIF)
 		return false
 	}
 
@@ -196,6 +201,7 @@ func QueueKernelAsync(pid PriestId, bundle KernelAsyncBundle) bool {
 	priestHasPendingMessage[pid] = true
 
 	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
 	return true
 }
 
@@ -208,10 +214,12 @@ func DequeueKernelAsync(pid PriestId) (KernelAsyncBundle, bool) {
 		return KernelAsyncBundle{}, false
 	}
 
+	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 
 	if !priestHasPendingMessage[pid] {
 		schedulerLock.Unlock()
+		RestoreIRQs(savedDAIF)
 		return KernelAsyncBundle{}, false
 	}
 
@@ -219,6 +227,7 @@ func DequeueKernelAsync(pid PriestId) (KernelAsyncBundle, bool) {
 	priestHasPendingMessage[pid] = false
 
 	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
 	return bundle, true
 }
 
