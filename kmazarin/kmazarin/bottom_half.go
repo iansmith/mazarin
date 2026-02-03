@@ -561,7 +561,6 @@ func uartTopHalf(irqNum uint32) {
 // can recognize it and drain the PL011 FIFO directly.
 func SetupUartSoftIRQ(irqNum uint32) {
 	uartIRQNum = irqNum
-	console.KPrintf("[BottomHalf] UART top-half registered for IRQ %d\n", irqNum)
 }
 
 // ============================================================================
@@ -577,5 +576,4 @@ func StartBottomHalfProcessors() {
 	go uartTxBottomHalf()
 	go deadlineBottomHalf()
 	go pageTrackingBottomHalf()
-	Print("[BottomHalf] Started event poller + 4 processors")
 }

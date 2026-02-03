@@ -13,17 +13,14 @@ import (
 //
 // NOTE: Not nosplit - called from KernelMain which allows stack growth
 func initMMU() bool {
-	uartPutsDirect("1")
 	// Initialize cache line size for optimized bzero
 	initCacheLineSize()
-	uartPutsDirect("2")
 
 	// CRITICAL: Call assembly helpers directly instead of getLinkerSymbol()
 	// because getLinkerSymbol() uses string comparisons that access .rodata
 	// which isn't mapped yet when initMMU() is called!
 	pageTableBase := asm.GetPageTablesStartAddr()
 	pageTableEnd := asm.GetPageTablesEndAddr()
-	uartPutsDirect("3")
 
 	// Calculate PAGE_TABLE_SIZE from the difference
 	PAGE_TABLE_SIZE = pageTableEnd - pageTableBase
@@ -31,13 +28,11 @@ func initMMU() bool {
 	// Allocate page table memory
 	pageTableL0 = pageTableBase
 	pageTableL1 = pageTableBase + TABLE_SIZE
-	uartPutsDirect("4")
 
 	// Initialize the bump allocator after the pre-allocated L0 + L1 tables
 	ptAlloc := getPageTableAllocator()
 	ptAlloc.base = pageTableBase
 	ptAlloc.offset = TABLE_SIZE * 2
-	uartPutsDirect("5")
 
 	// Verify page table base is 4KB aligned
 	if pageTableL0&0xFFF != 0 {
@@ -46,67 +41,53 @@ func initMMU() bool {
 
 	// Zero out page tables (L0 + L1, each 4KB = 8KB total)
 	bzero4K(unsafe.Pointer(pageTableL0), TABLE_SIZE)
-	uartPutsDirect("6")
 	bzero4K(unsafe.Pointer(pageTableL1), TABLE_SIZE)
-	uartPutsDirect("7")
 
 	// Set up L0 table to point to L1 table for identity mapping
 	l0Entry0 := (*uint64)(unsafe.Pointer(pageTableL0 + 0*PTE_SIZE))
 	*l0Entry0 = createTableEntry(pageTableL1)
-	uartPutsDirect("8")
 
 	// Map low memory regions with correct permissions
 	// CRITICAL: Call assembly helpers directly instead of getLinkerSymbol()
 	// because getLinkerSymbol() uses string comparisons that access .rodata!
 	rodataStart := asm.GetRodataStartAddr()
 	rodataEnd := asm.GetRodataEndAddr()
-	uartPutsDirect("9")
 	if rodataStart != 0 && rodataEnd != 0 {
 		mapRegionInitMMU(rodataStart, rodataEnd, rodataStart, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
 	}
-	uartPutsDirect("a")
 
 	// Get section boundaries from linker symbols
 	textStart := asm.GetTextStartAddr()
 	dataStart := asm.GetDataStartAddr()
 	endAddr := asm.GetEndAddr()
-	uartPutsDirect(" txt=")
-	uartPutHex64Direct(uint64(textStart))
-	uartPutsDirect("-")
-	uartPutHex64Direct(uint64(rodataStart))
-	uartPutsDirect(" ")
 
 	// Map everything before .rodata as read-only (boot code, text)
 	if textStart > 0 && rodataStart > 0 && textStart < rodataStart {
 		mapRegionInitMMU(textStart, rodataStart, textStart, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_ALLOW)
 	}
-	uartPutsDirect("c")
 
 	// Map everything after .rodata up to data section as read-only
 	if rodataEnd > 0 && dataStart > 0 && rodataEnd < dataStart {
 		mapRegionInitMMU(rodataEnd, dataStart, rodataEnd, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
 	}
-	uartPutsDirect("d")
 
 	// Map data+BSS sections as read-write
 	bssEnd := asm.GetBssEndAddr()
 	if dataStart > 0 && bssEnd > 0 {
 		mapRegionInitMMU(dataStart, bssEnd, dataStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 	}
-	uartPutsDirect("e")
 
 	// Map remainder after BSS up to end of kernel image as read-only
 	if bssEnd > 0 && endAddr > 0 && bssEnd < endAddr {
 		mapRegionInitMMU(bssEnd, endAddr, bssEnd, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
 	}
-	uartPutsDirect("f")
 
 	// Initialize MMIO devices array
 	mmioDevices[0] = MMIODevice{start: asm.GetGicBase(), size: asm.GetGicSize(), attr: PTE_ATTR_DEVICE, ap: PTE_AP_RW_EL1}
 	mmioDevices[1] = MMIODevice{start: asm.GetUartBase(), size: asm.GetUartSize(), attr: PTE_ATTR_DEVICE, ap: PTE_AP_RW_EL1}
 	mmioDevices[2] = MMIODevice{start: asm.GetFwcfgBase(), size: asm.GetFwcfgSize(), attr: PTE_ATTR_DEVICE, ap: PTE_AP_RW_EL1}
 	mmioDevices[3] = MMIODevice{start: asm.GetBochsDisplayBase(), size: 0, attr: PTE_ATTR_DEVICE, ap: PTE_AP_RW_EL1}
-	uartPutsDirect("g")
+
 	mmioDeviceCount = 4
 
 	// Map all MMIO devices
@@ -116,40 +97,40 @@ func initMMU() bool {
 			mapRegionInitMMU(dev.start, dev.start+dev.size, dev.start, dev.attr, dev.ap, PTE_EXEC_NEVER)
 		}
 	}
-	uartPutsDirect("h")
+
 
 	// Map DTB region
 	dtbStart := asm.GetDtbBootAddr()
 	dtbEnd := dtbStart + asm.GetDtbSize()
 	mapRegionInitMMU(dtbStart, dtbEnd, dtbStart, PTE_ATTR_NORMAL, PTE_AP_RO_EL1, PTE_EXEC_NEVER)
-	uartPutsDirect("i")
+
 
 	// Map PCI ECAM (lowmem, full 16MB window)
 	ecamBase := uintptr(0x3F000000)
 	ecamSize := uintptr(0x01000000) // 16MB - full ECAM window
 	mapRegionInitMMU(ecamBase, ecamBase+ecamSize, ecamBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-	uartPutsDirect("j")
+
 
 	// Map highmem PCI ECAM (needed for VirtIO GPU device enumeration)
 	// QEMU virt places high-memory PCI ECAM at 0x4010000000 (256MB region)
 	ecamHighBase := uintptr(0x4010000000)
 	ecamHighSize := uintptr(0x10000000) // 256MB
 	mapRegionInitMMU(ecamHighBase, ecamHighBase+ecamHighSize, ecamHighBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-	uartPutsDirect("k")
+
 
 	// Map PCI MMIO region (for device BARs)
 	// QEMU virt provides MMIO window at 0x10000000-0x3EFFFFFF (~750MB)
 	pciMmioBase := uintptr(0x10000000)
 	pciMmioSize := uintptr(0x2EFF0000) // ~750MB
 	mapRegionInitMMU(pciMmioBase, pciMmioBase+pciMmioSize, pciMmioBase, PTE_ATTR_DEVICE, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-	uartPutsDirect("l")
+
 
 	// SKIP PCI BAR region (240MB) - will map on-demand if needed
 
 	// Get page table region boundaries from linker.ld
 	// Note: pageTableEnd already declared earlier in function
 	pageTableEnd = asm.GetPageTablesEndAddr()
-	uartPutsDirect("m")
+
 
 	// Map kernel RAM (after cardinal image to framebuffer) - heap
 	// CRITICAL: Start mapping AFTER our kernel image (endAddr) to avoid overlap
@@ -160,23 +141,15 @@ func initMMU() bool {
 	if ramStart < framebufferStart {
 		mapRegionInitMMU(ramStart, framebufferStart, ramStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
 	}
-	uartPutsDirect("n")
+
 
 	// Map VirtIO GPU framebuffer region (32 MB, read-write, Normal memory)
 	// Region: 0x41000000 - 0x43000000
 	framebufferEnd := uintptr(constants.FramebufferEnd)
 	mapRegionInitMMU(framebufferStart, framebufferEnd, framebufferStart, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-	uartPutsDirect("o")
 
 	// Map page table region as CACHEABLE (ARM64's PTW is cache-coherent)
-	uartPutsDirect("P")
-	uartPutsDirect(" pt=")
-	uartPutHex64Direct(uint64(pageTableBase))
-	uartPutsDirect("-")
-	uartPutHex64Direct(uint64(pageTableEnd))
-	uartPutsDirect(" ")
 	mapRegionInitMMU(pageTableBase, pageTableEnd, pageTableBase, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-	uartPutsDirect("Q")
 
 	// NOTE: Exception vectors are now embedded in .text section at their final location
 	// They no longer need a separate RAM mapping at 0x41100000 (which would conflict
@@ -210,7 +183,6 @@ func initMMU() bool {
 	//   ↓ g0 stack (STACK_SIZE_G0_CARDINAL = 64KB)
 	//   0x5EFF0000 (g0 stack bottom)
 
-	uartPutsDirect("R")
 	// Compute exception stack addresses from STACK_BASE
 	exceptionStackTop := uintptr(STACK_BASE)
 	exceptionStackBottom := exceptionStackTop - uintptr(STACK_SIZE_EXCEPTION_EL1)
@@ -218,55 +190,55 @@ func initMMU() bool {
 	// Compute g0 stack addresses (grows downward from exception stack bottom)
 	g0StackTop := exceptionStackBottom
 	g0StackBottom := g0StackTop - uintptr(STACK_SIZE_G0_CARDINAL)
-	uartPutsDirect("S")
+
 
 	// Map g0 stack (SP_EL0) - boot.s must set SP_EL0 to g0StackTop
 	mapRegionInitMMU(g0StackBottom, g0StackTop, g0StackBottom, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-	uartPutsDirect("T")
+
 
 	// Map exception stack (SP_EL1) - boot.s must set SP_EL1 to exceptionStackTop
 	mapRegionInitMMU(exceptionStackBottom, exceptionStackTop, exceptionStackBottom, PTE_ATTR_NORMAL, PTE_AP_RW_EL1, PTE_EXEC_NEVER)
-	uartPutsDirect("U")
+
 
 	// Initialize physical frame allocator
 	initKFrameAllocator()
-	uartPutsDirect("V")
+
 
 	// Clean data cache for page tables before enabling MMU
 	pageTableSize := pageTableEnd - pageTableBase
 	for offset := uintptr(0); offset < pageTableSize; offset += 64 {
 		asm.CleanDataCacheVA(pageTableBase + offset)
 	}
-	uartPutsDirect("W")
+
 
 	// Flush TLB to ensure all mappings are visible
 	asm.Dsb()
 	asm.InvalidateTlbAll()
 	asm.Isb()
-	uartPutsDirect("X")
+
 
 	// Initialize kernel page tables (TTBR1) for high-memory kernel
 	initKernelPageTables()
-	uartPutsDirect("Y")
+
 
 	// Set up high-memory kernel stacks in TTBR1
 	setupKernelStacks()
-	uartPutsDirect("Z")
+
 
 	// Map essential early MMIO devices to high memory in TTBR1
 	setupEarlyKernelMMIO()
-	uartPutsDirect("[")
+
 
 	// Set up demand paging infrastructure for kmazarin
 	setupKernelDemandPaging()
-	uartPutsDirect("]")
+
 
 	// Check if we ran out of page table space
 	_, remaining := getPageTableAllocatorStats()
 	if remaining == 0 {
 		kernelPanic("initMMU: out of page table space")
 	}
-	uartPutsDirect("^")
+
 
 	return true
 }

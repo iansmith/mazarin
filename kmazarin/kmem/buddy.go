@@ -68,9 +68,6 @@ func InitBuddyAllocator(poolStart, poolEnd, kernelVAOffset uintptr, bootstrapPag
 	// when KernelVAOffset = 0xFFFFFFFF00000000
 	const maxPA = uintptr(0x100000000)
 	if end > maxPA {
-		uartPuts("[kmem] Buddy: capping pool at 4GB boundary (was ")
-		uartPutHex64(uint64(end))
-		uartPuts(")\r\n")
 		end = maxPA
 	}
 
@@ -97,17 +94,6 @@ func InitBuddyAllocator(poolStart, poolEnd, kernelVAOffset uintptr, bootstrapPag
 
 	atomic.StoreUint32(&buddyAlloc.initialized, 1)
 
-	// Print stats
-	uartPuts("[kmem] Buddy allocator: ")
-	uartPutHex64(uint64(start))
-	uartPuts(" - ")
-	uartPutHex64(uint64(end))
-	uartPuts(" (")
-	uartPutHex64(buddyAlloc.totalPages)
-	uartPuts(" pages, ")
-	uartPutHex64(bootstrapPages)
-	uartPuts(" bootstrap)\r\n")
-	PrintBuddyStats()
 }
 
 // buddyAddRange adds a contiguous physical range [start, end) to the free lists.

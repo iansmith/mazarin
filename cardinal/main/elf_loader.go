@@ -31,19 +31,10 @@ type SimpleFile struct {
 
 // cardinalLoadKernel loads the kmazarin ELF from disk.
 func cardinalLoadKernel(fsys *fat32.FileSystem, path string) (*LoadedKernel, error) {
-	uartPutsDirect("Loading kernel from disk...\r\n")
-	uartPutsDirect("  Finding file: ")
-	uartPutsDirect(path)
-	uartPutsDirect("\r\n")
-
 	file, err := findFile(fsys, path)
 	if err != nil {
-		uartPutsDirect("  File not found!\r\n")
 		return nil, err
 	}
-	uartPutsDirect("  File found, size=")
-	uartPutHex64Direct(uint64(file.Size))
-	uartPutsDirect("\r\n")
 
 	// Read entire ELF into memory using physical pages
 	elfSize := uint64(file.Size)
@@ -104,22 +95,12 @@ func cardinalLoadKernel(fsys *fat32.FileSystem, path string) (*LoadedKernel, err
 		cluster = next
 	}
 
-	uartPutsDirect("ELF loaded into RAM, parsing headers...\r\n")
-
 	// Parse ELF headers using shared parser
 	var segBuf [bootloader.MaxLoadSegments]bootloader.LoadSegment
 	kernel, nsegs, err := bootloader.ParseELFHeaders(elfData, &segBuf)
 	if err != nil {
 		return nil, err
 	}
-
-	uartPutsDirect("ELF: entry=")
-	uartPutHex64Direct(kernel.Entry)
-	uartPutsDirect(" virt=")
-	uartPutHex64Direct(kernel.LowestVirt)
-	uartPutsDirect("-")
-	uartPutHex64Direct(kernel.HighestVirt)
-	uartPutsDirect("\r\n")
 
 	// Load each segment: allocate physical frames per-page, map into TTBR1, copy data.
 	// This matches the old loadAndRunKmazarin pattern — no need for contiguous physical region.
@@ -263,7 +244,6 @@ func cardinalLoadKernel(fsys *fat32.FileSystem, path string) (*LoadedKernel, err
 	*result = kernel
 	result.PhysBase = 0 // per-segment allocation, no single physBase
 
-	uartPutsDirect("Kernel loaded OK\r\n")
 	return result, nil
 }
 

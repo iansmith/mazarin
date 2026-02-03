@@ -244,8 +244,6 @@ func (dev *VirtIOInputDevice) setupQueue(queueIndex uint16, vq *virtio.VirtQueue
 	_ = availPhys
 	_ = usedPhys
 
-	console.KPrintf("[VirtIO Input] queue%d: desc=0x%x avail=0x%x used=0x%x\n",
-		queueIndex, descPhys, availPhys, usedPhys)
 	dev.writeCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_LOW, uint32(descPhys))
 	dev.writeCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_HIGH, uint32(descPhys>>32))
 	dev.writeCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_AVAIL_LOW, uint32(availPhys))
@@ -300,14 +298,6 @@ func (dev *VirtIOInputDevice) populateEventQueue() {
 	asm.CleanDCacheRange(virtio.PointerToUintptr(unsafe.Pointer(vq.Available)), availSize)
 	asm.DmaWmb()
 
-	// Dump first descriptor for DMA address verification
-	if vq.QueueSize > 0 && vq.DescTable != nil {
-		desc0 := (*virtio.VirtQDesc)(vq.DescTable)
-		console.KPrintf("[VirtIO Input] desc[0]: addr=0x%x len=%d flags=0x%x\n",
-			desc0.Addr, desc0.Len, desc0.Flags)
-	}
-	console.KPrintf("[VirtIO Input] eventq populated: %d buffers, %d free\n",
-		vq.Available.Idx, vq.NumFree)
 }
 
 // notifyEventQueue notifies the device that new buffers are available.
@@ -584,8 +574,6 @@ func initDevice(dev *VirtIOInputDevice) bool {
 		console.KPrintln("[VirtIO Input] ERROR: Failed to alloc DMA page")
 		return false
 	}
-	console.KPrintf("[VirtIO Input] DMA page: PA=0x%x VA=0x%x\n", dmaPA, dmaVA)
-
 	// Place virtqueue structures on the DMA page starting at offset 0
 	endOff := virtio.VirtqueueInitOnDMAPage(&dev.EventQueue, queueSize, dmaPA, dmaVA, 0)
 	if endOff == 0 {
@@ -602,9 +590,6 @@ func initDevice(dev *VirtIOInputDevice) bool {
 	}
 	dev.EventBuffers = (*[NumEventBuffers]VirtIOInputEvent)(unsafe.Pointer(dmaVA + eventBufOff))
 	dev.EventBuffersPA = dmaPA + eventBufOff
-
-	console.KPrintf("[VirtIO Input] DMA layout: vq=[0..%d) events=[%d..%d) total=%d/4096\n",
-		endOff, eventBufOff, eventBufOff+eventBufSize, eventBufOff+eventBufSize)
 
 	if !dev.setupQueue(0, &dev.EventQueue) {
 		console.KPrintln("[VirtIO Input] ERROR: Failed to setup event queue")
@@ -635,8 +620,7 @@ func initDevice(dev *VirtIOInputDevice) bool {
 	dev.populateEventQueue()
 	notifyAddr := dev.NotifyBase +
 		uintptr(dev.EventQueueNotifyOff)*uintptr(dev.NotifyConfig.NotifyOffMultiplier)
-	console.KPrintf("[VirtIO Input] notify addr=0x%x (base=0x%x off=%d mult=%d)\n",
-		notifyAddr, dev.NotifyBase, dev.EventQueueNotifyOff, dev.NotifyConfig.NotifyOffMultiplier)
+	_ = notifyAddr
 	dev.notifyEventQueue()
 
 	return true
@@ -652,9 +636,8 @@ func initGICv2mSPIBase() {
 	gicv2mBase = 0xFFFFFFFF00000000 + GICV2M_PHYS
 	typer := asm.MmioRead32(gicv2mBase + GICV2M_TYPER)
 	spiBase := (typer >> 16) & 0x3FF
-	spiCount := typer & 0x3FF
+	_ = typer & 0x3FF // spiCount
 	nextMSIXSPI = spiBase
-	console.KPrintf("[VirtIO Input] GICv2m: SPI base=%d count=%d\n", spiBase, spiCount)
 }
 
 // allocateMSIXSPI allocates the next available GICv2m SPI number.
@@ -763,15 +746,16 @@ func configureMSIX(bus, slot, funcNum uint8) uint32 {
 	funcMasked := (finalCtrl & (1 << 14)) != 0
 	readAddr := asm.MmioRead32(tableBase + MSIX_ENTRY_ADDR_LO)
 	readDataFinal := asm.MmioRead32(tableBase + MSIX_ENTRY_DATA)
-	console.KPrintf("[VirtIO Input] MSI-X configured: SPI=%d GIC IRQ=%d en=%v fmask=%v addr=0x%x data=%d\n",
-		spi, gicIRQ, msixEnabled, funcMasked, readAddr, readDataFinal)
+	_ = msixEnabled
+	_ = funcMasked
+	_ = readAddr
+	_ = readDataFinal
 	return gicIRQ
 }
 
 // InitVirtIOInput discovers and initializes all VirtIO Input PCI devices.
 // Should be called during kernel init after PCI ECAM is available.
 func InitVirtIOInput() {
-	console.KPrintln("[VirtIO Input] Scanning PCI bus for input devices...")
 	initGICv2mSPIBase()
 
 	for bus := uint8(0); bus < 1; bus++ {
@@ -876,8 +860,8 @@ func InitVirtIOInput() {
 				if dev.DevType == hid.DeviceTypeMouse {
 					typeName = "mouse"
 				}
-				console.KPrintf("[VirtIO Input] %s (%s) IRQ=%d MSI-X SPI=%d\n",
-				typeName, name, dev.IRQNum, dev.IRQNum-GIC_SPI_OFFSET)
+				_ = name
+			_ = typeName
 
 				// Assign to global slots
 				if dev.DevType == hid.DeviceTypeKeyboard && KeyboardDevice == nil {
@@ -890,7 +874,6 @@ func InitVirtIOInput() {
 		}
 	}
 
-	console.KPrintf("[VirtIO Input] Found %d input device(s)\n", len(allDevices))
 }
 
 // PollAllDevices checks the Used ring of all input devices for pending events.

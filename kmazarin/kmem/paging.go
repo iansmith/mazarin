@@ -198,13 +198,6 @@ func CreateProcessPageTable() uintptr {
 	// but since allocPTPage() uses VA = PA + KernelVAOffset, the reverse is trivial.
 	l0PA := vaToPa(l0VA)
 
-	// DEBUG: trace VA→PA conversion
-	uartPuts("[CreatePT] l0VA=")
-	uartPutHex64(uint64(l0VA))
-	uartPuts(" l0PA=")
-	uartPutHex64(uint64(l0PA))
-	uartPuts("\r\n")
-
 	if l0PA == 0 {
 		return 0
 	}
@@ -1846,38 +1839,6 @@ var kernelScratchMapped bool
 var kernelScratchCurrentPA uintptr
 
 // DEBUG: Watchpoint mechanism to track when a specific PA gets corrupted.
-// Set WatchPA to a page-aligned PA after the first priest's page 0x5e000 is allocated.
-// Call CheckWatchPA(label) at various points to see when the data changes.
-var WatchPA uintptr           // Page-aligned PA to watch (0 = disabled)
-var WatchExpected uint32 = 0xf9400b90 // Expected value at WatchPA + 0xa60
-
-// CheckWatchPA reads the uint32 at WatchPA+0xa60 and prints if it differs from expected.
-func CheckWatchPA(label string) {
-	if WatchPA == 0 {
-		return
-	}
-	scratchVA := MapPAToKernelScratch(WatchPA)
-	if scratchVA == 0 {
-		return
-	}
-	val := *(*uint32)(unsafe.Pointer(scratchVA + 0xa60))
-	if val != WatchExpected {
-		console.KWriteString("[WATCH] CORRUPTED at ")
-		console.KWriteString(label)
-		console.KWriteString(": PA=0x")
-		console.KPrintHex64(uint64(WatchPA))
-		console.KWriteString("+0xa60 = 0x")
-		console.KPrintHex64(uint64(val))
-		console.KWriteString(" (expected 0x")
-		console.KPrintHex64(uint64(WatchExpected))
-		console.KWriteString(")\r\n")
-	} else {
-		console.KWriteString("[WATCH] OK at ")
-		console.KWriteString(label)
-		console.KWriteString("\r\n")
-	}
-}
-
 // PrintPoolRanges prints the memory pool ranges for debugging overlap issues.
 func PrintPoolRanges() {
 	cfg := getRuntimeConfigTyped()

@@ -34,6 +34,20 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 		return -14 // EFAULT
 	}
 
+	// Stderr (fd=2) always goes direct to MMIO for crash safety —
+	// runtime.throw() writes here and we need it visible even during faults.
+	if fd == 2 {
+		buf := unsafe.Pointer(uintptr(bufPtr))
+		for i := uint64(0); i < count; i++ {
+			c := *(*byte)(unsafe.Pointer(uintptr(buf) + uintptr(i)))
+			if c == '\n' {
+				console.Breadcrumb('\r')
+			}
+			console.Breadcrumb(c)
+		}
+		return int64(count)
+	}
+
 	// Determine output path: ring buffer vs direct MMIO
 	// The stdio priest (UART ring owner) must use Breadcrumb to avoid deadlock.
 	// All other priests go through KWriteByte → ring → stdio displays it.

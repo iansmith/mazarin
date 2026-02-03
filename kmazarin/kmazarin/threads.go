@@ -45,8 +45,12 @@ const (
 const MaxPriests = 32
 
 // MaxThreads is the maximum number of threads supported
-// Increased from 24 to 64 to support multiple priests with goroutines
-const MaxThreads = 64
+const MaxThreads = 16
+
+// threadArraySize is the fixed backing array size. Kept constant to avoid
+// changing .noptrbss layout when MaxThreads changes (workaround for ADRP-
+// related crash during Go runtime stack scanning).
+const threadArraySize = 1024
 
 // ReservedKernelThreads is the number of thread slots reserved for kernel threads.
 // These slots (0 to ReservedKernelThreads-1) are for kernel use only.
@@ -215,24 +219,24 @@ func (t *Thread) Id() int32 {
 // ========== Static Allocation Data Structures ==========
 
 // Backing arrays - statically allocated, zero-initialized
-var threadListData [MaxThreads]Thread    // Stores Thread VALUES (not pointers)
-var threadListInUse [MaxThreads]bool     // false = available (zero value)
+var threadListData [threadArraySize]Thread    // Stores Thread VALUES (not pointers)
+var threadListInUse [threadArraySize]bool     // false = available (zero value)
 var priestListData [MaxPriests]Priest    // Stores Priest VALUES (not pointers)
 var priestListInUse [MaxPriests]bool     // false = available (zero value)
-var readyQueueData [MaxThreads]ThreadId  // Stores TIDs (unique thread IDs)
-var readyQueueInUse [MaxThreads]bool     // Tracks holes in ready queue
-var blockedQueueData [MaxThreads]ThreadId // Stores TIDs (unique thread IDs)
-var blockedQueueInUse [MaxThreads]bool   // Tracks holes in blocked queue
-var sleepingQueueData [MaxThreads]ThreadId // Stores TIDs (unique thread IDs)
-var sleepingQueueInUse [MaxThreads]bool  // Tracks holes in sleeping queue
+var readyQueueData [threadArraySize]ThreadId  // Stores TIDs (unique thread IDs)
+var readyQueueInUse [threadArraySize]bool     // Tracks holes in ready queue
+var blockedQueueData [threadArraySize]ThreadId // Stores TIDs (unique thread IDs)
+var blockedQueueInUse [threadArraySize]bool   // Tracks holes in blocked queue
+var sleepingQueueData [threadArraySize]ThreadId // Stores TIDs (unique thread IDs)
+var sleepingQueueInUse [threadArraySize]bool  // Tracks holes in sleeping queue
 
 // Static deadline queue backing arrays - used by timer top-half (nosplit path)
-var staticDeadlineData [MaxThreads]int16
-var staticDeadlineOrderBy [MaxThreads]uint64
+var staticDeadlineData [threadArraySize]int16
+var staticDeadlineOrderBy [threadArraySize]uint64
 var staticDeadlineQueue ds.StaticOrderedList
 
 // ID allocator backing arrays - statically allocated
-var threadIdStackData [MaxThreads]ThreadId // Backing array for thread ID allocator
+var threadIdStackData [threadArraySize]ThreadId // Backing array for thread ID allocator
 var priestIdStackData [MaxPriests]PriestId // Backing array for priest ID allocator
 
 // nextKernelThreadId is a counter for allocating kernel thread IDs (0 to ReservedKernelThreads-1).
@@ -964,7 +968,16 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 		}
 		threadList.ReservedSet(int(tid))
 	} else {
-		// Userspace threads use normal allocation (shuffled IDs)
+		// Userspace threads use normal allocation (shuffled IDs).
+		// If slots are scarce, reap a futex-blocked thread first.
+		// The Go runtime parks idle Ms via futex_wait and never exits them,
+		// so they accumulate and exhaust the fixed-size thread pool.
+		// Reaping is safe: when the runtime later tries futex_wake on the
+		// reaped M's note, it gets 0 woken and creates a fresh M.
+		const reapThreshold = 4 // reap when fewer than 4 slots remain
+		if threadIdAllocator.Available() < reapThreshold {
+			reapOneFutexThreadSchedLockHeld()
+		}
 		tid = threadIdAllocator.Acquire()
 		_, t = threadList.Allocate()
 	}
@@ -1310,9 +1323,6 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	t.Context.SP = stackPtr    // User stack pointer (SP_EL0)
 	t.Context.ELR = entryPoint  // Entry point (program counter)
 	t.Context.SPSR = 0          // SPSR for EL0: M[3:0]=0000 (EL0t), M[4]=0 (AArch64)
-
-	// DEBUG: Verify SP and L0PA were set correctly
-	console.KPrintf("[CreateThread] TID=%d PID=%d SP=0x%x ELR=0x%x L0PA=0x%x\n", tid, priestId, t.Context.SP, t.Context.ELR, t.PageTableL0PA)
 
 	// Add to ready queue (Pluck first just in case TID was reused)
 	readyQueue.Pluck(tid)
@@ -1781,9 +1791,7 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 			// Clear threshold to prevent re-entrant Exit() calls
 			// (Exit re-enables IRQs briefly for WFI, which can re-enter this path)
 			shutdownTicksThreshold = 0
-			console.BreadcrumbNoSplit('!')
 			printTickDistributionNoSplit(now)
-			console.BreadcrumbNoSplit('@')
 			Exit()
 		}
 	}
@@ -2389,6 +2397,26 @@ func PrintTickDistribution() {
 		}
 	}
 	console.KPrint("================================\n")
+}
+
+// reapOneFutexThreadSchedLockHeld finds one ThreadBlockedFutex thread and
+// forcibly releases its slot and TID. This reclaims thread slots from Go
+// runtime Ms that parked via futex_wait and will never exit on their own.
+// REQUIRES: schedulerLock held.
+//
+//go:nosplit
+func reapOneFutexThreadSchedLockHeld() {
+	for i := 0; i < MaxThreads; i++ {
+		if threadListInUse[i] && threadListData[i].State == ThreadBlockedFutex {
+			t := &threadListData[i]
+			t.State = ThreadExited
+			t.FutexAddr = 0
+			blockedQueue.Pluck(t.TID)
+			threadIdAllocator.Release(t.TID)
+			threadList.Release(i)
+			return
+		}
+	}
 }
 
 // PrintThreadStateSummary prints a compact one-line summary of thread states.

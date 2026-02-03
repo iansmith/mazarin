@@ -63,19 +63,12 @@ func SyscallDebugPrint(marker, v1, v2, v3, v4, v5 uint64) int64 {
 		}
 		return 0
 	}
-	// Full debug print
-	console.KWriteString("\r\n[DBG ")
-	console.KPrintHex64(marker)
-	console.KWriteString("] ")
-	console.KPrintHex64(v1)
-	console.KWriteString(" ")
-	console.KPrintHex64(v2)
-	console.KWriteString(" ")
-	console.KPrintHex64(v3)
-	console.KWriteString(" ")
-	console.KPrintHex64(v4)
-	console.KWriteString(" ")
-	console.KPrintHex64(v5)
-	console.KWriteString("\r\n")
+	// Full debug print — disabled during investigation
+	_ = marker
+	_ = v1
+	_ = v2
+	_ = v3
+	_ = v4
+	_ = v5
 	return 0
 }

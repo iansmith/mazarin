@@ -130,10 +130,6 @@ func cardinalGetBlockDevice() (blockdev.BlockDevice, error) {
 	var devices [maxVirtIODevices]VirtIOMMIODevice
 	count := getVirtIOMMIOFromDTB(&devices)
 
-	uartPutsDirect("VirtIO MMIO devices found: ")
-	uartPutHex64Direct(uint64(count))
-	uartPutsDirect("\r\n")
-
 	if count == 0 {
 		return nil, &cardinalBootError{"no VirtIO MMIO devices in DTB"}
 	}
@@ -142,11 +138,6 @@ func cardinalGetBlockDevice() (blockdev.BlockDevice, error) {
 	for i := 0; i < count; i++ {
 		base := devices[i].Base
 		size := devices[i].Size
-
-		uartPutsDirect("  Probing VirtIO @ ")
-		uartPutHex64Direct(uint64(base))
-		uartPutsDirect(" size=")
-		uartPutHex64Direct(uint64(size))
 
 		// Ensure the MMIO region is identity-mapped
 		numPages := (size + 0xFFF) >> 12
@@ -158,23 +149,11 @@ func cardinalGetBlockDevice() (blockdev.BlockDevice, error) {
 		asm.Isb()
 
 		// Check device ID before full init
-		devID := bootloader.MmioRead32Pub(base, 0x008)
-		version := bootloader.MmioRead32Pub(base, 0x004)
-		uartPutsDirect(" devid=")
-		uartPutHex64Direct(uint64(devID))
-		uartPutsDirect(" ver=")
-		uartPutHex64Direct(uint64(version))
-
 		// Try to init as block device
 		dev, err := bootloader.InitVirtIOBlock(base)
 		if err != nil {
-			uartPutsDirect(" (not block)\r\n")
 			continue
 		}
-
-		uartPutsDirect(" -> block, cap=")
-		uartPutHex64Direct(dev.NumBlocks())
-		uartPutsDirect(" blocks\r\n")
 		return dev, nil
 	}
 
@@ -183,12 +162,10 @@ func cardinalGetBlockDevice() (blockdev.BlockDevice, error) {
 
 // cardinalMountFilesystem mounts a FAT32 filesystem using the bump allocator.
 func cardinalMountFilesystem(dev blockdev.BlockDevice) (*fat32.FileSystem, error) {
-	uartPutsDirect("  Allocating FileSystem...\r\n")
 	fs := cNew[fat32.FileSystem]()
 	if fs == nil {
 		return nil, &cardinalBootError{"alloc failed"}
 	}
-	uartPutsDirect("  FS allocated, mounting...\r\n")
 	err := fat32.MountInto(fs, dev, cMallocAllocator)
 	if err != nil {
 		return nil, err
@@ -227,12 +204,10 @@ func cardinalJumpToKernel(kernel *LoadedKernel) {
 	}
 
 	// Disable timer and IRQs before jumping
-	uartPutsDirect("Disabling timer and IRQs...\r\n")
 	timer_write_ctl(0)
 	gicDisableInterrupt(timer_irq_id())
 	asm.DisableIrqs()
 
-	uartPutsDirect("Jumping to kmazarin\r\n")
 	jumpToKmazarin(uintptr(kernel.Entry), argc, argv, stackPointer)
 
 	// Should never reach here
@@ -243,19 +218,13 @@ func cardinalJumpToKernel(kernel *LoadedKernel) {
 // Called from kernelMainInternal after hardware init and MMU setup.
 func cardinalBoot() {
 	initDefaultPlatform()
-	uartPutsDirect("Cardinal boot sequence starting\r\n")
-
 	// 1. Discover block device
 	dev, err := cardinalGetBlockDevice()
 	if err != nil {
 		cardinalFatal("block device discovery failed")
 	}
 
-	// 2. Test block read using global buffer
-	uartPutsDirect("Testing block read...\r\n")
-	uartPutsDirect("  testBuf @ ")
-	uartPutHex64Direct(uint64(uintptr(unsafe.Pointer(&cardinalTestBuf[0]))))
-	uartPutsDirect("\r\n")
+	// 2. Test block read
 	blkErr := dev.ReadBlock(0, cardinalTestBuf[:])
 	if blkErr != nil {
 		if blkErr == bootloader.ErrVirtIOTimeout {
@@ -266,19 +235,12 @@ func cardinalBoot() {
 			cardinalFatal("block read unknown error")
 		}
 	}
-	uartPutsDirect("Block 0 read OK, sig=")
-	uartPutHex64Direct(uint64(cardinalTestBuf[510]))
-	uartPutsDirect(" ")
-	uartPutHex64Direct(uint64(cardinalTestBuf[511]))
-	uartPutsDirect("\r\n")
 
 	// Mount FAT32 filesystem
-	uartPutsDirect("Mounting FAT32 filesystem...\r\n")
 	fsys, err := cardinalMountFilesystem(dev)
 	if err != nil {
 		cardinalFatal("FAT32 mount failed")
 	}
-	uartPutsDirect("FAT32 mounted\r\n")
 
 	// 3. Load kmazarin kernel from disk
 	kernel, err := cardinalLoadKernel(fsys, "/KMAZARIN.ELF")

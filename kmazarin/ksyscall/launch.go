@@ -102,6 +102,7 @@ type Process struct {
 
 // currentProcess holds the currently loaded process (if any)
 var currentProcess *Process
+var poolRangesPrinted bool
 
 // readKernelString reads a null-terminated string from kernel memory (direct access)
 // This is for reading strings passed from kernel code (high addresses, TTBR1)
@@ -136,22 +137,18 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 	console.KWriteString("[Launch] ")
 	console.KWriteString(filename)
 	console.KWriteString("\r\n")
-
-	console.KWriteString("[Launch] Getting block device...\r\n")
 	// Get block device
 	blk, ok := device.GetBlockDevice()
 	if !ok {
 		return -1
 	}
 
-	console.KWriteString("[Launch] Mounting FAT32...\r\n")
 	// Mount FAT32 filesystem
 	fs, err := fat32.Mount(blk)
 	if err != nil {
 		return -2
 	}
 
-	console.KWriteString("[Launch] Opening file...\r\n")
 	// Open the ELF file
 	file, err := fs.Open(filename)
 	if err != nil {
@@ -159,12 +156,10 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 	}
 	defer file.Close()
 
-	console.KWriteString("[Launch] Reading file...\r\n")
 	// Allocate a buddy buffer for the file contents
 	fileSize := uint64(file.Size())
 	elfBuf := kmem.AllocBuffer(fileSize)
 	if elfBuf == nil {
-		console.KWriteString("[Launch] Failed to allocate file buffer\r\n")
 		return -4
 	}
 	defer kmem.FreeBuffer(elfBuf)
@@ -176,20 +171,6 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 		return -4
 	}
 	elfData = elfData[:n]
-	console.KWriteString("[Launch] File read complete (")
-	console.KPrintHex64(uint64(n))
-	console.KWriteString(" bytes into buddy buffer order ")
-	console.KPrintHex64(uint64(elfBuf.Order))
-	console.KWriteString(")\r\n")
-
-	console.KWriteString("[Launch] Creating page table...\r\n")
-
-	// DEBUG: Print pool ranges once (first launch) and check watchpoint
-	if kmem.WatchPA == 0 {
-		kmem.PrintPoolRanges()
-	} else {
-		kmem.CheckWatchPA("before-CreateProcessPageTable")
-	}
 
 	// Create a FRESH page table for this process.
 	// This avoids inheriting any leftover mappings from Cardinal's TTBR0
@@ -198,9 +179,6 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 	if processL0PA == 0 {
 		return -6
 	}
-
-	// DEBUG: Check watchpoint after creating page table
-	kmem.CheckWatchPA("after-CreateProcessPageTable")
 
 	// CRITICAL: Switch TTBR0 to the new process page table BEFORE loading the ELF.
 	// This ensures IC IVAU (instruction cache invalidate by VA) works correctly!
@@ -233,14 +211,8 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 	// Store process info
 	currentProcess = proc
 
-	// DEBUG: Check watchpoint after ELF loading
-	kmem.CheckWatchPA("after-loadELF")
-
 	// Final I-cache invalidation before userspace - ensure all loaded code is visible
 	kmem.InvalidateAllICache()
-
-	// DEBUG: Check watchpoint after I-cache invalidation
-	kmem.CheckWatchPA("after-InvalidateAllICache")
 
 	// Enable userspace mmap allocator before jumping to userspace
 	SetUserspaceActive()
@@ -248,9 +220,6 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 	// Final cache and TLB maintenance before userspace jump
 	// This ensures all written data is visible to userspace instruction fetch and data access
 	kmem.FinalUserspaceSync()
-
-	// DEBUG: Check watchpoint after FinalUserspaceSync
-	kmem.CheckWatchPA("after-FinalUserspaceSync")
 
 	// NOTE: We do NOT switch TTBR0 here or enable timer IRQ.
 	// The kernel runs using TTBR1, so TTBR0 switching is not needed during launch.
@@ -263,22 +232,8 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 	// The thread will be added to the ready queue and scheduled by the kernel
 	// Pass the asyncPreempt address extracted from ELF symbols
 
-	// DEBUG: Print stack pointer before creating thread
-	console.KWriteString("[Launch] Entry=")
-	console.KPrintHex64(proc.EntryPoint)
-	console.KWriteString(" Stack=")
-	console.KPrintHex64(proc.StackTop)
-	console.KWriteString("\r\n")
-
 	tid := CreateUserspaceThread(proc.EntryPoint, proc.StackTop, processL0PA, proc.AsyncPreemptAddr)
-
-	console.KWriteString("[Launch] TID=")
-	console.KPrintHex64(uint64(tid))
-	console.KWriteString(" L0PA=")
-	console.KPrintHex64(uint64(processL0PA))
-	console.KWriteString(" ")
-	console.KWriteString(filename)
-	console.KWriteString("\r\n")
+	_ = tid
 
 	// Return to caller - the new thread will be scheduled later
 	return 0
@@ -290,66 +245,33 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 // CRITICAL: This must be passed explicitly to prevent race conditions with
 // context switches that would otherwise corrupt the global processL0PA.
 func loadELF(data []byte, filename string, l0PA uintptr, priestNum uint64) (*Process, error) {
-	console.KWriteString("[loadELF] start l0PA=0x")
-	console.KPrintHex64(uint64(l0PA))
-	console.KWriteString("\r\n")
-
 	if len(data) < 64 {
-		console.KWriteString("[loadELF] file too small\r\n")
 		return nil, &elfError{"file too small for ELF header"}
 	}
 
 	// Parse ELF header
 	hdr := parseELFHeader(data)
 
-	// Validate ELF magic
 	if hdr.Magic != ELF_MAGIC {
-		console.KWriteString("[loadELF] bad magic\r\n")
 		return nil, &elfError{"invalid ELF magic"}
 	}
-
-	// Validate architecture
 	if hdr.Class != ELF_CLASS64 || hdr.Machine != ELF_MACHINE_AARCH64 {
-		console.KWriteString("[loadELF] not ARM64\r\n")
 		return nil, &elfError{"not an ARM64 ELF"}
 	}
 
-	console.KWriteString("[loadELF] loading ")
-	console.KPrintHex64(uint64(hdr.Phnum))
-	console.KWriteString(" segments\r\n")
-
-	// Process program headers and load segments
 	for i := uint16(0); i < hdr.Phnum; i++ {
 		phdrOffset := hdr.Phoff + uint64(i)*uint64(hdr.Phentsize)
 		if phdrOffset+uint64(hdr.Phentsize) > uint64(len(data)) {
-			console.KWriteString("[loadELF] phdr out of bounds\r\n")
 			return nil, &elfError{"program header out of bounds"}
 		}
-
 		phdr := parseProgramHeader(data[phdrOffset:])
-
-		// Only process LOAD segments
 		if phdr.Type != PT_LOAD {
 			continue
 		}
-
-		console.KWriteString("[loadELF] seg ")
-		console.KPrintHex64(uint64(i))
-		console.KWriteString(" vaddr=0x")
-		console.KPrintHex64(phdr.Vaddr)
-		console.KWriteString("\r\n")
-
-		// Load this segment into memory
 		if err := loadSegment(data, &phdr, l0PA); err != nil {
-			console.KWriteString("[loadELF] loadSegment failed\r\n")
 			return nil, err
 		}
-
-		// DEBUG: Check watchpoint after each segment load
-		kmem.CheckWatchPA("after-loadSegment")
 	}
-
-	console.KWriteString("[loadELF] segments done, allocating stack\r\n")
 
 	// Allocate a user stack (64KB at a fixed location for now)
 	// Stack grows downward from high addresses to low addresses.
@@ -359,28 +281,13 @@ func loadELF(data []byte, filename string, l0PA uintptr, priestNum uint64) (*Pro
 	stackSize := uint64(64 * 1024) // 64KB
 
 	if err := allocateUserStack(stackBase, stackSize, l0PA); err != nil {
-		console.KWriteString("[loadELF] allocateUserStack failed\r\n")
 		return nil, err
 	}
 
-	// DEBUG: Check watchpoint after stack allocation
-	kmem.CheckWatchPA("after-allocateUserStack")
-
-	console.KWriteString("[loadELF] stack allocated, setting up\r\n")
-
-	// Set up the stack with argc, argv, envp, and auxv
-	// This returns the final SP value pointing to argc on the stack
-	// Pass l0PA to ensure we look up pages in the correct page table
 	stackTop, err := setupUserStack(stackBase, stackSize, filename, l0PA, priestNum)
 	if err != nil {
-		console.KWriteString("[loadELF] setupUserStack failed\r\n")
 		return nil, err
 	}
-
-	// DEBUG: Check watchpoint after stack setup
-	kmem.CheckWatchPA("after-setupUserStack")
-
-	console.KWriteString("[loadELF] stack setup complete\r\n")
 
 	// Find runtime.asyncPreempt symbol address for async preemption injection
 	// Note: Go 1.25+ uses .abi0 suffix for ABI0-compatible symbols
@@ -572,20 +479,7 @@ func loadSegment(elfData []byte, phdr *elf64Phdr, l0PA uintptr) error {
 	endPage := (endAddr + pageSize - 1) &^ (pageSize - 1)
 	numPages := (endPage - startPage) / pageSize
 
-	// DEBUG: Print segment info including flags
 	isExecutable := (phdr.Flags & PF_X) != 0
-	console.KWriteString("[loadSeg] ")
-	console.KPrintHex64(numPages)
-	console.KWriteString(" pages, flags=")
-	console.KPrintHex64(uint64(phdr.Flags))
-	if isExecutable {
-		console.KWriteString(" (EXEC)")
-	}
-	console.KWriteString(" range=0x")
-	console.KPrintHex64(startPage)
-	console.KWriteString("-0x")
-	console.KPrintHex64(endPage)
-	console.KWriteString("\r\n")
 
 	// Track physical addresses for each page so we can remap scratch VA later
 	// AllocAndMapUserPageWithL0 returns (framePA, scratchVA)
@@ -600,31 +494,10 @@ func loadSegment(elfData []byte, phdr *elf64Phdr, l0PA uintptr) error {
 		// Using explicit l0PA prevents race conditions with context switches.
 		framePA, _ := kmem.AllocAndMapUserPageWithL0(uintptr(pageVA), phdr.Flags, l0PA)
 		if framePA == 0 {
-			console.KWriteString("[loadSeg] alloc failed at page ")
-			console.KPrintHex64(page)
-			console.KWriteString(" va=0x")
-			console.KPrintHex64(pageVA)
-			console.KWriteString("\r\n")
 			return &elfError{"failed to alloc/map/zero user page"}
 		}
 		pagePAs[page] = framePA
 
-		// DEBUG: Print when mapping page 0x5e000 (contains crash address 0x5ea60)
-		if pageVA == 0x5e000 {
-			console.KWriteString("[loadSeg] *** MAPPED PAGE 0x5E000 *** PA=0x")
-			console.KPrintHex64(uint64(framePA))
-			console.KWriteString(" flags=")
-			console.KPrintHex64(uint64(phdr.Flags))
-			console.KWriteString("\r\n")
-			// Dump the PTE for this page
-			kmem.DumpUserPTEWithL0(uintptr(pageVA), l0PA)
-
-			// DEBUG: Set watchpoint on first priest's page 0x5e000
-			if kmem.WatchPA == 0 {
-				kmem.WatchPA = framePA
-				console.KPrintf("[WATCH] Armed watchpoint on PA=0x%x (page 0x5e000)\n", uint64(framePA))
-			}
-		}
 	}
 
 	// Copy file data to memory via kernel scratch mapping
@@ -657,20 +530,6 @@ func loadSegment(elfData []byte, phdr *elf64Phdr, l0PA uintptr) error {
 	// BSS (memsz > filesz) is automatically zeroed by AllocAndMapUserPage
 	// No explicit zeroing needed - DC ZVA already cleared the pages
 
-	// DEBUG: Verify page 0x5e000 data after copy, BEFORE cache sync
-	if isExecutable && startPage <= 0x5e000 && 0x5e000 < endPage {
-		pageIdx := (uint64(0x5e000) - startPage) / pageSize
-		kernelVA := kmem.MapPAToKernelScratch(pagePAs[pageIdx])
-		if kernelVA != 0 {
-			insn := *(*uint32)(unsafe.Pointer(kernelVA + 0xa60))
-			console.KPrintf("[loadSeg] VERIFY after copy: page 0x5e000 PA=0x%x insn@0xa60=0x%x (expect 0xf9400b90)\n",
-				uint64(pagePAs[pageIdx]), uint64(insn))
-		}
-	}
-
-	// DEBUG: Check watchpoint before cache sync
-	kmem.CheckWatchPA("before-cache-sync")
-
 	// Clean the data cache for all pages we wrote to.
 	// This ensures the data is visible to userspace when it reads via TTBR0.
 	// Without this, userspace may see stale/garbage data due to cache coherency.
@@ -689,9 +548,6 @@ func loadSegment(elfData []byte, phdr *elf64Phdr, l0PA uintptr) error {
 			}
 		}
 	}
-
-	// DEBUG: Check watchpoint after cache sync
-	kmem.CheckWatchPA("after-cache-sync")
 
 	return nil
 }
@@ -779,8 +635,6 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 	argv0Addr := stringBase
 	argv1Addr := stringBase + filenameLen
 
-	console.KPrintf("[setupUserStack] stackBase=0x%x stackTop=0x%x sp=0x%x\n", stackBase, stackTop, sp)
-
 	// Write the stack layout
 	offset := uint64(0)
 
@@ -834,8 +688,6 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 
 	// Clean cache for the stack page we wrote to
 	kmem.CleanPageCache(kernelVA)
-
-	console.KPrintf("[setupUserStack] argc=2 argv0=%q argv1=%q sp=0x%x\n", filename, priestStr, sp)
 
 	return sp, nil
 }

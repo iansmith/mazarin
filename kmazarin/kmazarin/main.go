@@ -136,15 +136,11 @@ func init() {
 	StartBottomHalfProcessors()
 
 	// NOTE: IRQs are NOT enabled yet - GIC must be initialized first (in main)
-	Print("[Init] Initialization complete")
-
 	// Transition from bump allocator to buddy allocator
 	// All early boot allocations used the bump allocator; now switch to buddy
 	// for proper allocation/deallocation support
 	kmem.TransitionToBuddy()
 
-	// Print unified pool stats to verify initialization
-	kmem.PrintPoolStats()
 }
 
 // uartPutc writes a single character to UART.
@@ -637,8 +633,6 @@ func EnableTimerIRQ() {
 // This is a temporary test function to verify DTB parsing and device matching
 func testDeviceDiscovery() {
 	console.KPrintln("")
-	console.KPrintln("[DeviceTest] === Testing DTB Device Discovery ===")
-
 	// NOTE: Drivers are already registered in EarlyInit()
 
 	// Get DTB address from startup params (correct offset)
@@ -646,109 +640,43 @@ func testDeviceDiscovery() {
 
 	// Use physical address - DTB is in low memory which is still mapped
 	dtbAddr := uintptr(dtbPhysAddr)
-	console.KWriteString("[DeviceTest] DTB physical address: ")
-	console.KPrintHex64(dtbPhysAddr)
-	console.KPrintln("")
 
 	// Register all device drivers BEFORE discovering devices
 	device.RegisterAllDrivers()
 
 	// Parse DTB and discover devices
-	console.KPrintln("[DeviceTest] Calling InitFromDTB...")
 	err := device.InitFromDTB(dtbAddr)
-	console.KPrintln("[DeviceTest] InitFromDTB returned")
 	if err != nil {
 		console.KWriteString("[DeviceTest] ERROR: ")
 		console.KPrintln(err.Error())
 		return
 	}
 
-	// Show what was discovered
-	console.KPrintln("")
-	console.KPrintln("[DeviceTest] Discovered devices:")
-
-	// Check for byte streams (UART)
-	if uart, ok := device.GetByteStream(); ok {
-		console.KWriteString("  - ByteStream: ")
-		console.KPrintln(uart.Name())
-	}
-
-	// Check for interrupt controller (GIC)
-	if gic, ok := device.GetInterruptController(); ok {
-		console.KWriteString("  - InterruptController: ")
-		console.KPrintln(gic.Name())
-	}
-
-	// Check for random source (VirtIO RNG)
-	if rng, ok := device.GetRandomSource(); ok {
-		console.KWriteString("  - RandomSource: ")
-		console.KPrintln(rng.Name())
-	}
-
-	// Check for clock (RTC)
+	// Initialize kernel time subsystem (reads RTC once, caches for tick-based derivation)
 	if clk, ok := device.GetClock(); ok {
-		console.KWriteString("  - Clock: ")
-		console.KPrintln(clk.Name())
-
-		// Initialize kernel time subsystem (reads RTC once, caches for tick-based derivation)
-		if ktime.Init() {
-			console.KPrintln("  - ktime: initialized (RTC cached)")
-		} else {
-			console.KPrintln("  - ktime: ERROR: initialization failed")
-		}
-	}
-
-	// Check for block devices
-	if blk, ok := device.GetBlockDevice(); ok {
-		console.KWriteString("  - BlockDevice: ")
-		console.KPrintln(blk.Name())
+		_ = clk
+		ktime.Init()
 	}
 
 	// Wire up interrupts now that GIC is discovered
-	console.KPrintln("")
-	console.KPrintln("[DeviceTest] Wiring interrupts...")
 	if err := device.WireInterrupts(); err != nil {
 		console.KWriteString("[DeviceTest] ERROR wiring interrupts: ")
 		console.KPrintln(err.Error())
 	} else {
-		console.KPrintln("[DeviceTest] Interrupts wired successfully")
-
-		// NOTE: Timer IRQ remains enabled to allow goroutine preemption.
-		// The event poller needs to run to dispatch UART interrupts.
-		console.KPrintln("[DeviceTest] Timer IRQ remains enabled for scheduler preemption")
-
-		// Switch to interrupt-driven PL011 console
+		// Set up UART soft IRQ hook for userspace serial RX
 		if bs, ok := device.GetByteStream(); ok {
-			// Type assert to *uart.PL011 to access AsConsole()
 			if pl011, ok := bs.(*uart.PL011); ok {
-				console.KPrintln("[DeviceTest] PL011 available but keeping polling console for stability")
-				// Set up UART soft IRQ hook for userspace serial RX
 				SetupUartSoftIRQ(pl011.IRQ())
-				// DISABLED: Switching to interrupt-driven console causes crash
-				// console.Set(pl011.AsConsole())
-				// console.KPrintln("[DeviceTest] Now using PL011 interrupt-driven console!")
 			}
 		}
 	}
-
-	console.KPrintln("[DeviceTest] === Test Complete ===")
-
-	// Test KPrintHex() with various types
-	testKPrintHex()
 }
 
 // initVirtIOGPU initializes the VirtIO GPU device for display output
 func initVirtIOGPU() {
-	console.KPrintln("")
-	console.KPrintln("[VirtIO GPU] === Initializing Display ===")
-
 	if !gpu.Init() {
-		console.KPrintln("[VirtIO GPU] ERROR: Initialization failed")
-		console.KPrintln("[VirtIO GPU] Continuing without display")
 		return
 	}
-
-	console.KPrintln("[VirtIO GPU] Display ready")
 
 	// Boot image disabled temporarily to evaluate neumorphic shadows
 	if false {
@@ -795,15 +723,11 @@ func initVirtIOGPU() {
 // initVirtIOInputDevices discovers VirtIO input devices and wires their
 // MSI-X interrupts into the GIC so keypresses generate IRQs.
 func initVirtIOInputDevices() {
-	console.KPrintln("")
-	console.KPrintln("[VirtIO Input] === Initializing Input Devices ===")
-
 	input.InitVirtIOInput()
 
 	// Wire each input device's MSI-X IRQ into the GIC
 	devices := input.AllDevices()
 	if len(devices) == 0 {
-		console.KPrintln("[VirtIO Input] No input devices found")
 		return
 	}
 
@@ -833,7 +757,6 @@ func initVirtIOInputDevices() {
 			// Route to CPU 0 (required — bulk SPI init may not cover MSI-X IRQs)
 			cachedGIC.SetIRQTarget(localIRQ, 0x01)
 			cachedGIC.EnableIRQ(localIRQ)
-			console.KPrintf("[VirtIO Input] Enabled GIC IRQ %d (target=CPU0)\n", localIRQ)
 		}
 	}
 
@@ -860,81 +783,8 @@ func initVirtIOInputDevices() {
 			notifyAddr, evtBufPA, vq.QueueSize, initAvailIdx, isMouse)
 	}
 
-	console.KPrintf("[VirtIO Input] %d device(s) wired to GIC\n", len(devices))
-
-	// Dump GIC state for debugging interrupt delivery
-	if cachedGIC != nil {
-		for _, dev := range devices {
-			if dev == nil {
-				continue
-			}
-			irq := dev.IRQNum
-			cachedGIC.DumpIRQState(irq)
-		}
-
-		// Inline: check used ring right now (before any keypresses)
-		for _, d := range devices {
-			if d == nil {
-				continue
-			}
-			vq := &d.EventQueue
-			console.KPrintf("[DIAG] irq=%d avail.idx=%d used.idx=%d numfree=%d\n",
-				d.IRQNum, vq.Available.Idx, vq.Used.Idx, vq.NumFree)
-		}
-	}
-
 }
 
-// testKPrintHex tests the KPrintHex() method with various value types
-func testKPrintHex() {
-	console.KPrintln("")
-	console.KPrintln("[HexTest] === Testing KPrintHex() ===")
-
-	// Test uint8
-	var u8 uint8 = 0xAB
-	console.KWriteString("[HexTest] uint8(0xAB): ")
-	console.KPrintHex(u8)
-	console.KPrintln("")
-
-	// Test uint16
-	var u16 uint16 = 0x1234
-	console.KWriteString("[HexTest] uint16(0x1234): ")
-	console.KPrintHex(u16)
-	console.KPrintln("")
-
-	// Test uint32
-	var u32 uint32 = 0x12345678
-	console.KWriteString("[HexTest] uint32(0x12345678): ")
-	console.KPrintHex(u32)
-	console.KPrintln("")
-
-	// Test uint64
-	var u64 uint64 = 0x123456789ABCDEF0
-	console.KWriteString("[HexTest] uint64(0x123456789ABCDEF0): ")
-	console.KPrintHex(u64)
-	console.KPrintln("")
-
-	// Test uintptr
-	var uptr uintptr = 0xFFFFFFFF41800000
-	console.KWriteString("[HexTest] uintptr(0xFFFFFFFF41800000): ")
-	console.KPrintHex(uptr)
-	console.KPrintln("")
-
-	// Test pointer
-	testVar := uint32(42)
-	testPtr := &testVar
-	console.KWriteString("[HexTest] pointer(&testVar): ")
-	console.KPrintHex(testPtr)
-	console.KPrintln("")
-
-	// Test string (should print "not hex value")
-	testStr := "hello"
-	console.KWriteString("[HexTest] string(\"hello\"): ")
-	console.KPrintHex(testStr)
-	console.KPrintln("")
-
-	console.KPrintln("[HexTest] === Test Complete ===")
-}
 
 // busyLoop4s prints '4' in a tight loop to test kernel goroutine scheduling.
 // This runs as a separate goroutine in kmazarin alongside the main goroutine.
@@ -969,29 +819,9 @@ func simpleMain() {
 	if testRuntimeReadiness() {
 		Print("[Main] Runtime ready")
 
-		// Run scheduler tests
-		ManualSchedulerTest()
-
-		// CRITICAL: Disable automatic GC.
-		// We cannot call runtime.GC() because it triggers taggedPointerPack errors -
-		// the Go runtime's tagged pointer code assumes 49-bit addresses but our
-		// kernel uses full 64-bit TTBR1 addresses (0xFFFF...).
-		// The "bad sweepgen in refill" error occurs when GC state becomes inconsistent.
-		// For now, we disable GC entirely to avoid both issues.
-		// TODO: Patch tagptr_64bit.go to handle TTBR1 addresses, then we can enable GC.
 		debug.SetGCPercent(-1)
-		Print("[Main] GC disabled")
-
 		InitDeadlineQueue()
-		// Note: readyQueue uses static allocation with zero value - no init needed
-
-		// Initialize soft IRQ dispatcher
-		// TEMPORARILY DISABLED: The dispatcher blocks the kernel thread when it
-		// calls ThreadBlockSoftIRQ, which stops everything. It should be started
-		// as a separate kernel thread, not a goroutine on M0.
 		InitSoftIRQDispatcher()
-		// go SoftIRQDispatcher()
-		Print("[Main] Soft IRQ dispatcher initialized (goroutine disabled)")
 	} else {
 		Print("[Main] Runtime not ready - continuing with direct UART")
 	}
@@ -1019,23 +849,15 @@ func simpleMain() {
 	// CRITICAL: Enable IRQs at CPU AFTER GIC is initialized (matches Cardinal's order)
 	// This unmasks IRQs at the CPU (clears DAIF.I bit)
 	EnableIRQs()
-	Print("[Main] IRQs enabled at CPU")
-
-	// NOW enable timer IRQ for async preemption (after GIC is initialized)
 	EnableTimerIRQ()
 
 	asyncPreemptAddr := GetAsyncPreemptAddr()
 	kirq.SetAsyncPreemptAddr(asyncPreemptAddr)
 	readyForAsyncPreempt.Store(1)
 	kirq.SetReadyForAsyncPreempt()
-	Print("[Main] Async preemption enabled")
 
-	// Unmap Cardinal at L1 level - zeros L1[1-2] (1-3GB) while preserving L1[0] for MMIO and L1[256+] for heap
 	unmapCardinal()
-
-	// Temporarily disable timer IRQ during priest launch to avoid interrupt interference
 	DisableTimerIRQ()
-	Print("[Main] Timer IRQ disabled for priest launch")
 
 	// =========================================================================
 	// USERSPACE TEST: Launch 6 sieve workers as separate threads

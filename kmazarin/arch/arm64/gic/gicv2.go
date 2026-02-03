@@ -218,8 +218,6 @@ func (g *GICv2) initHardware() {
 		for i := uintptr(8); i < 72; i++ { // registers 8-71 cover IRQs 32-287
 			g.writeDistReg(0x800+i*4, 0x01010101)
 		}
-		console.KPrintf("[GIC] Reconfig done (Group 0, SPIs routed to CPU 0)\n")
-
 		return
 	}
 

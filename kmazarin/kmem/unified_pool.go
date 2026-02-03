@@ -87,18 +87,6 @@ func InitUnifiedPool() {
 
 	atomic.StoreUint32(&globalPool.initialized, 1)
 
-	// Print pool info
-	poolSize := poolEnd - poolStart
-	poolPages := poolSize / PageSize
-	uartPuts("[kmem] Unified pool: ")
-	uartPutHex64(poolStart)
-	uartPuts(" - ")
-	uartPutHex64(poolEnd)
-	uartPuts(" (")
-	uartPutHex64(poolSize / (1024 * 1024))
-	uartPuts(" MB, ")
-	uartPutHex64(poolPages)
-	uartPuts(" pages)\r\n")
 }
 
 // AllocPage allocates a single page from the unified pool.
@@ -161,10 +149,6 @@ func TransitionToBuddy() {
 	}
 
 	bootstrapPages := GetBumpAllocatedPages()
-
-	uartPuts("[kmem] Transitioning to buddy allocator (")
-	uartPutHex64(bootstrapPages)
-	uartPuts(" pages already allocated)\r\n")
 
 	InitBuddyAllocator(
 		globalPool.initialNext,

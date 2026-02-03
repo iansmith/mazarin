@@ -1,6 +1,7 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/console"
 	"unsafe"
 )
 
@@ -16,6 +17,7 @@ import (
 //
 // Note: No //go:nosplit because CloneThread allocates memory for thread nodes.
 func SyscallClone(flags, stack, ptid, tls, ctid, _ uint64) int64 {
+	console.Breadcrumb('#')
 	// Extract mp, gp, fn from the stack (same as Cardinal)
 	// Go writes values at negative offsets from the original stack pointer,
 	// then does SUB $32, but the syscall apparently receives the PRE-SUB stack.

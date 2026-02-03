@@ -76,23 +76,8 @@ func (d *BlockDriver) Init(node *dtb.Node) (deviceapi.Closable, error) {
 		irq:      irq,
 	}
 
-	// DEBUG: Print mapping addresses
-	console.KWriteString("[VirtIO Block] Mapped phys=")
-	console.KPrintHex64(uint64(reg.Address))
-	console.KWriteString(" to kernel=")
-	console.KPrintHex64(uint64(transport.baseAddr))
-	console.KWriteString("\r\n")
-
-	// DEBUG: Check Magic register first (should be 0x74726976 = "virt")
-	magic := transport.ReadReg(MagicValue)
-	console.KWriteString("[VirtIO Block] Magic=")
-	console.KPrintHex64(uint64(magic))
-
 	// Check if this is a block device
 	deviceID := transport.ReadDeviceType()
-	console.KWriteString(" DeviceID=")
-	console.KPrintHex64(uint64(deviceID))
-	console.KWriteString("\r\n")
 	if deviceID != DeviceIDBlock {
 		return nil, deviceapi.ErrNotMyDevice
 	}
@@ -141,16 +126,9 @@ func (b *BlockDevice) NumBlocks() uint64 {
 
 // init performs VirtIO initialization sequence
 func (b *BlockDevice) init() error {
-	console.KWriteString("[VirtIO Block] Initializing device...\r\n")
-
 	// Check MMIO magic and version
 	magic := b.transport.ReadReg(MagicValue)
 	version := b.transport.ReadReg(Version)
-	console.KWriteString("[VirtIO Block] Magic=")
-	console.KPrintHex64(uint64(magic))
-	console.KWriteString(" Version=")
-	console.KPrintHex64(uint64(version))
-	console.KWriteString("\r\n")
 
 	if magic != 0x74726976 {
 		return &VirtIOError{"bad magic value"}
@@ -177,24 +155,16 @@ func (b *BlockDevice) init() error {
 	if version == 1 {
 		// Legacy VirtIO MMIO - no feature selectors, just bits 0-31
 		devFeatures := b.transport.ReadReg(DeviceFeatures)
-		console.KWriteString("[VirtIO Block] Device features (legacy): ")
-		console.KPrintHex64(uint64(devFeatures))
-		console.KWriteString("\r\n")
+		_ = devFeatures
 
 		// Accept no special features for basic block
 		b.transport.WriteReg(DriverFeatures, 0)
 	} else {
 		// Modern VirtIO MMIO (version 2)
 		b.transport.WriteReg(DeviceFeaturesSel, 0)
-		devFeatures0 := b.transport.ReadReg(DeviceFeatures)
+		_ = b.transport.ReadReg(DeviceFeatures) // read and discard features lo
 		b.transport.WriteReg(DeviceFeaturesSel, 1)
 		devFeatures1 := b.transport.ReadReg(DeviceFeatures)
-
-		console.KWriteString("[VirtIO Block] Device features: lo=")
-		console.KPrintHex64(uint64(devFeatures0))
-		console.KWriteString(" hi=")
-		console.KPrintHex64(uint64(devFeatures1))
-		console.KWriteString("\r\n")
 
 		// Accept VIRTIO_F_VERSION_1 (bit 32 = bit 0 in high word) if offered
 		drvFeatures1 := uint32(0)
@@ -245,12 +215,6 @@ func (b *BlockDevice) init() error {
 		queuePhys := device_virtio.VirtqueueGetPhysicalAddr(b.vq.DescTable)
 		pfn := uint32(queuePhys >> 12)
 
-		console.KWriteString("[VirtIO Block] Legacy queue PFN=")
-		console.KPrintHex64(uint64(pfn))
-		console.KWriteString(" (phys=")
-		console.KPrintHex64(queuePhys)
-		console.KWriteString(")\r\n")
-
 		b.transport.WriteReg(QueueAlign, 4096)
 		b.transport.WriteReg(QueuePFN, pfn)
 	} else {
@@ -263,14 +227,6 @@ func (b *BlockDevice) init() error {
 		descPhys := device_virtio.VirtqueueGetPhysicalAddr(b.vq.DescTable)
 		availPhys := device_virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(b.vq.Available))
 		usedPhys := device_virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(b.vq.Used))
-
-		console.KWriteString("[VirtIO Block] Queue desc=")
-		console.KPrintHex64(uint64(descPhys))
-		console.KWriteString(" avail=")
-		console.KPrintHex64(uint64(availPhys))
-		console.KWriteString(" used=")
-		console.KPrintHex64(uint64(usedPhys))
-		console.KWriteString("\r\n")
 
 		b.transport.WriteReg(QueueDescLow, uint32(descPhys))
 		b.transport.WriteReg(QueueDescHigh, uint32(descPhys>>32))
@@ -285,10 +241,6 @@ func (b *BlockDevice) init() error {
 
 	// 8. Set DRIVER_OK status
 	b.transport.AddStatus(StatusDriverOK)
-
-	console.KWriteString("[VirtIO Block] Device status after init: ")
-	console.KPrintHex64(uint64(b.transport.GetStatus()))
-	console.KWriteString("\r\n")
 
 	// 9. Read capacity from config space
 	capLow := b.transport.ReadReg(Config + BlockConfigCapacity)

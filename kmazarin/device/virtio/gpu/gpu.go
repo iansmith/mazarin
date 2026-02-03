@@ -526,8 +526,6 @@ func virtioGPUGetDisplayInfo() bool {
 	// Response buffer (header + display info)
 	var resp [384]byte // VirtIOGPUCtrlHdr (24 bytes) + display info (360 bytes max)
 
-	console.KPrintf("[VirtIO GPU] Sending GET_DISPLAY_INFO (type=0x%x)\n", cmd.Type)
-
 	respType := virtioGPUSendCommand(
 		unsafe.Pointer(&cmd),
 		uint32(unsafe.Sizeof(cmd)),
@@ -615,7 +613,6 @@ func virtioGPUSetupFramebuffer(width, height uint32) bool {
 		return false
 	}
 
-	console.KPrintf("[VirtIO GPU] Framebuffer ready (%dx%d @ 32bpp)\n", width, height)
 	return true
 }
 

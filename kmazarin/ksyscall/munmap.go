@@ -2,7 +2,6 @@
 package ksyscall
 
 import (
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/kmem"
 )
 
@@ -12,14 +11,7 @@ import (
 //
 //go:nosplit
 func SyscallMunmap(addr, length, _, _, _, _ uint64) int64 {
-	// Log munmap calls for debugging
-	console.KWriteString("[MUNMAP] addr=")
-	console.KPrintHex64(addr)
-	console.KWriteString(" len=")
-	console.KPrintHex64(length)
-
 	if length == 0 {
-		console.KWriteString(" (zero length)\r\n")
 		return 0 // Nothing to unmap
 	}
 
@@ -45,11 +37,7 @@ func SyscallMunmap(addr, length, _, _, _, _ uint64) int64 {
 		}
 	}
 
-	console.KWriteString(" unmapped=")
-	console.KPrintHex64(unmappedCount)
-	console.KWriteString("/")
-	console.KPrintHex64(alignedLength / pageSize)
-	console.KWriteString("\r\n")
+	_ = unmappedCount
 
 	return 0
 }

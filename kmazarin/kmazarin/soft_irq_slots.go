@@ -118,14 +118,10 @@ func RegisterSoftIRQSlotKsyscall(irqNum uint32, slotNum int32, priestID int16) i
 		irqToSlot[irqNum] = slotNum
 	}
 
-	console.KPrintf("[SoftIRQSlot] Registered slot %d: IRQ=%d priest=%d dev=%d kind=%d\n",
-		slotNum, irqNum, priestID, devIdx, intKind)
-
 	// When a userspace priest registers on the UART serial slot,
 	// switch the kernel console to push through the soft IRQ ring
 	// so the priest receives kernel output.
 	if intKind == hid.SerialInterrupt && !IsSoftIRQConsoleActive() {
-		console.KPrintf("[SoftIRQSlot] Switching kernel console to soft IRQ ring\n")
 		EnableSoftIRQConsole()
 	}
 

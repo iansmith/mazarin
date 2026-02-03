@@ -22,15 +22,22 @@ func SyscallExit(status, _, _, _, _, _ uint64) int64 {
 }
 
 // SyscallExitGroup implements the exit_group(2) syscall (syscall 94)
-// Same as exit for a single-threaded kernel.
+//
+// If this is the kernel (PID 0), exit_group means the Go runtime called
+// throw() — this is a fatal kernel error. Halt immediately rather than
+// silently switching threads and masking the real problem.
 //
 //go:nosplit
 func SyscallExitGroup(status, _, _, _, _, _ uint64) int64 {
-	console.KWriteString("\r\n=== EXIT GROUP, status: ")
-	console.KPrintHex64(status)
-	console.KWriteString(" ===\r\n")
+	pid := getCurrentThreadPIDForSpan()
+	if pid == 0 {
+		// Kernel exit_group — this is a fatal error (runtime.throw).
+		// Halt instead of tearing down kernel threads.
+		console.KWriteString("KERNEL EXIT GROUP — halting\r\n")
+		haltForever()
+	}
 
-	// For now, treat same as exit (single-threaded priests)
+	// Userspace priest exit — tear down thread
 	nextCtx := ThreadExit()
 	if nextCtx == 0 {
 		haltForever()

@@ -84,15 +84,6 @@ func createLinearMap(ramStart, ramEnd uintptr) {
 	// Round up ramEnd to 2MB boundary
 	ramEndAligned := (ramEnd + BLOCK_SIZE_2MB - 1) &^ (BLOCK_SIZE_2MB - 1)
 
-	numBlocks := (ramEndAligned - ramStart) / BLOCK_SIZE_2MB
-	uartPutsDirect("Creating linear map: ")
-	uartPutHex64Direct(uint64(ramStart))
-	uartPutsDirect(" - ")
-	uartPutHex64Direct(uint64(ramEndAligned))
-	uartPutsDirect(" (")
-	uartPutUint32(uint32(numBlocks))
-	uartPutsDirect(" x 2MB blocks)\r\n")
-
 	// Map each 2MB block
 	for pa := ramStart; pa < ramEndAligned; pa += BLOCK_SIZE_2MB {
 		// Calculate kernel VA for this physical address
@@ -154,7 +145,6 @@ func createLinearMap(ramStart, ramEnd uintptr) {
 	asm.InvalidateTlbAll()
 	asm.Isb()
 
-	uartPutsDirect("Linear map created successfully\r\n")
 }
 
 // mapPage maps a single 4KB page

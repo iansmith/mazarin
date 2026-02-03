@@ -172,17 +172,6 @@ func detectAndComputeMemoryRegions() {
 	detectedRAMBase = uint64(base)
 	detectedRAMSize = uint64(size)
 
-	// Print detected RAM
-	uartPutsDirect("RAM detected: base=")
-	uartPutHex32(uint32(base >> 32))
-	uartPutHex32(uint32(base))
-	uartPutsDirect(" size=")
-	uartPutHex32(uint32(size >> 32))
-	uartPutHex32(uint32(size))
-	uartPutsDirect(" (")
-	uartPutUint32(uint32(size / (1024 * 1024)))
-	uartPutsDirect(" MB)\r\n")
-
 	// Panic if RAM < 256MB
 	if size < MinRAMRequired {
 		uartPutsDirect("FATAL: Insufficient RAM. Minimum required: 256 MB, detected: ")
@@ -206,7 +195,7 @@ func detectAndComputeMemoryRegions() {
 	ptPoolSize = (ptPoolSize + 0xFFF) &^ 0xFFF
 
 	// Userspace frame pool = remaining after kernel and PT pool
-	framePoolSize := userspaceTotal - ptPoolSize
+	_ = userspaceTotal - ptPoolSize // framePoolSize (computed but not printed)
 
 	// Memory layout (all relative to RAM base):
 	// [RAM Base + 0] ... [RAM Base + 64MB) = Kernel region
@@ -219,35 +208,6 @@ func detectAndComputeMemoryRegions() {
 	userspaceFramePoolStart = userspacePTPoolEnd
 	userspaceFramePoolEnd = uint64(base) + uint64(size)
 
-	// Print computed regions
-	uartPutsDirect("Memory regions:\r\n")
-	uartPutsDirect("  Kernel:     ")
-	uartPutHex32(uint32(base >> 32))
-	uartPutHex32(uint32(base))
-	uartPutsDirect(" - ")
-	uartPutHex32(uint32(kernelEnd >> 32))
-	uartPutHex32(uint32(kernelEnd))
-	uartPutsDirect(" (64 MB)\r\n")
-
-	uartPutsDirect("  PT Pool:    ")
-	uartPutHex32(uint32(userspacePTPoolStart >> 32))
-	uartPutHex32(uint32(userspacePTPoolStart))
-	uartPutsDirect(" - ")
-	uartPutHex32(uint32(userspacePTPoolEnd >> 32))
-	uartPutHex32(uint32(userspacePTPoolEnd))
-	uartPutsDirect(" (")
-	uartPutUint32(uint32(ptPoolSize / (1024 * 1024)))
-	uartPutsDirect(" MB)\r\n")
-
-	uartPutsDirect("  Frame Pool: ")
-	uartPutHex32(uint32(userspaceFramePoolStart >> 32))
-	uartPutHex32(uint32(userspaceFramePoolStart))
-	uartPutsDirect(" - ")
-	uartPutHex32(uint32(userspaceFramePoolEnd >> 32))
-	uartPutHex32(uint32(userspaceFramePoolEnd))
-	uartPutsDirect(" (")
-	uartPutUint32(uint32(framePoolSize / (1024 * 1024)))
-	uartPutsDirect(" MB)\r\n")
 }
 
 // Peripheral base address for Raspberry Pi 4
@@ -573,7 +533,6 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	// Initialize UART first for early debugging
 	uartInit()
 	uartPuts("Cardinal\n")
-	uartPutsDirect("A")
 
 	// NOTE: Memory detection moved to after MMU init to avoid nosplit stack limits
 	// The DTB parsing uses large local arrays that exceed nosplit stack budget.
@@ -581,22 +540,18 @@ func kernelMainInternal(r0, r1, atags uint32) {
 	// Check SCTLR_EL1 for alignment check bit
 	sctlr := asm.ReadSctlrEl1()
 	alignCheck := (sctlr & 2) != 0 // Bit 1: A - Alignment Check Enable
-	uartPutsDirect("B")
 
 	// Disable alignment check if enabled (required for Go runtime)
 	if alignCheck {
 		asm.DisableAlignmentCheck()
 	}
-	uartPutsDirect("C")
 
 	// Initialize minimal runtime structures for write barrier
 	initRuntimeStubs()
-	uartPutsDirect("D")
 
 	// Set up exception vectors BEFORE enabling MMU
 	exceptionVectorAddr := asm.GetExceptionVectorsAddr()
 	asm.SetVbarEl1ToAddr(exceptionVectorAddr)
-	uartPutsDirect("E")
 
 	// Initialize MMU (required before heap - enables Normal memory for unaligned access)
 	if !initMMU() {
@@ -692,12 +647,6 @@ func premapUnifiedPoolBootstrap() {
 	// Unified pool starts at next page-aligned address after current allocations
 	physAlloc := getKFrameAllocator()
 	unifiedPoolStart := (physAlloc.next + PAGE_SIZE - 1) &^ (PAGE_SIZE - 1)
-
-	uartPutsDirect("Pre-mapping unified pool bootstrap: ")
-	uartPutHex64Direct(uint64(unifiedPoolStart))
-	uartPutsDirect(" (")
-	uartPutUint32(bootstrapPages)
-	uartPutsDirect(" pages)\r\n")
 
 	for i := uintptr(0); i < bootstrapPages; i++ {
 		pa := unifiedPoolStart + i*PAGE_SIZE
@@ -820,14 +769,7 @@ func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
 	// Page-align the end
 	unifiedPoolEnd = unifiedPoolEnd &^ 0xFFF
 
-	uartPutsDirect("Unified pool: ")
-	uartPutHex64Direct(unifiedPoolStart)
-	uartPutsDirect(" - ")
-	uartPutHex64Direct(unifiedPoolEnd)
-	uartPutsDirect(" (")
-	poolSizeMB := (unifiedPoolEnd - unifiedPoolStart) / (1024 * 1024)
-	uartPutUint32(uint32(poolSizeMB))
-	uartPutsDirect(" MB)\r\n")
+
 
 	// Legacy frame pool fields for backward compatibility
 	// These overlap with the unified pool - kmazarin will use unified pool
@@ -947,10 +889,11 @@ func setupKmazarinStartupEnv(kmazarinStartupParamsVA uintptr) (stackPointer uint
 	// Set up the structure as an array of uint64 values
 	data := (*[256]uint64)(unsafe.Pointer(structStart))
 
-	// Auxv entries use indices 4-13 (starting at byte 32, ending at byte 104)
+	// Auxv entries use indices 5-18 (starting at byte 40)
 	// After auxv, we place strings and random data:
 	// - Program name string at byte offset 256 (index 32)
-	// - Random bytes at byte offset 272 (index 34)
+	// - Random bytes at byte offset 272 (index 34) (16 bytes)
+	// - "GOGC=off" string at byte offset 288 (index 36)
 
 	// Program name string at offset 256 (byte offset, 8-byte aligned)
 	progName := (*[16]byte)(unsafe.Pointer(structStart + 256))
@@ -968,43 +911,63 @@ func setupKmazarinStartupEnv(kmazarinStartupParamsVA uintptr) (stackPointer uint
 	randomBytesAddr := structStart + 272
 	getRandomBytes(unsafe.Pointer(randomBytesAddr), 16)
 
+	// "GOGC=off" string at offset 288 (after random bytes)
+	gogcStr := (*[16]byte)(unsafe.Pointer(structStart + 288))
+	gogcStr[0] = 'G'
+	gogcStr[1] = 'O'
+	gogcStr[2] = 'G'
+	gogcStr[3] = 'C'
+	gogcStr[4] = '='
+	gogcStr[5] = 'o'
+	gogcStr[6] = 'f'
+	gogcStr[7] = 'f'
+	gogcStr[8] = 0
+
+	// "GODEBUG=asyncpreemptoff=1" string at offset 304
+	godebugStr := (*[32]byte)(unsafe.Pointer(structStart + 304))
+	copy(godebugStr[:], "GODEBUG=asyncpreemptoff=1\x00")
+
 	// argc = 1
 	data[0] = 1
 	// argv[0] = pointer to program name (at offset 256)
 	data[1] = uint64(structStart + 256)
 	// argv[1] = NULL (end of argv)
 	data[2] = 0
-	// envp[0] = NULL (empty environment)
-	data[3] = 0
+	// envp[0] = pointer to "GOGC=off" string (at offset 288)
+	data[3] = uint64(structStart + 288)
+	// envp[1] = pointer to "GODEBUG=asyncpreemptoff=1" (at offset 304)
+	data[4] = uint64(structStart + 304)
+	// envp[2] = NULL (end of envp)
+	data[5] = 0
 
-	// Auxiliary vector starts at offset 32 (index 4)
+	// Auxiliary vector starts at index 6 (after envp NULL terminator)
 	// AT_PAGESZ = 6: Physical page size
-	data[4] = 6
-	data[5] = 4096
+	data[6] = 6
+	data[7] = 4096
 	// AT_RANDOM = 25: pointer to 16 bytes of random data
-	data[6] = 25
-	data[7] = uint64(randomBytesAddr)
+	data[8] = 25
+	data[9] = uint64(randomBytesAddr)
 	// AT_SECURE = 23: secure mode flag (0 = not secure)
-	data[8] = 23
-	data[9] = 0
+	data[10] = 23
+	data[11] = 0
 	// AT_HWCAP = 16: ARM64 hardware capability bits
 	// Go runtime uses this via archauxv() -> cpu.HWCap for feature detection
 	// Provide basic ASIMD/NEON capability (bit 1) which is mandatory on AArch64
-	data[10] = 16
-	data[11] = 0x2 // HWCAP_ASIMD - Advanced SIMD (NEON)
+	data[12] = 16
+	data[13] = 0x2 // HWCAP_ASIMD - Advanced SIMD (NEON)
 
 	// AT_KMAZARIN_HEAP_START/END: Kernel heap VA bounds
 	// These are parsed by the runtime overlay BEFORE first mmap call,
 	// allowing dynamic heap sizing based on kmazarin binary size.
 	// The heap starts after kmazarin's static regions and extends to the limit.
-	data[12] = constants.AT_KMAZARIN_HEAP_START
-	data[13] = uint64(constants.KernelHeapStart)
-	data[14] = constants.AT_KMAZARIN_HEAP_END
-	data[15] = uint64(constants.KernelHeapEnd)
+	data[14] = constants.AT_KMAZARIN_HEAP_START
+	data[15] = uint64(constants.KernelHeapStart)
+	data[16] = constants.AT_KMAZARIN_HEAP_END
+	data[17] = uint64(constants.KernelHeapEnd)
 
 	// AT_NULL = 0 (terminator)
-	data[16] = 0
-	data[17] = 0
+	data[18] = 0
+	data[19] = 0
 
 	// ========================================================================
 	// Return stack pointer - structure is already on kernel g0 stack
@@ -1658,7 +1621,6 @@ func loadAndRunKmazarin() {
 	// Kmazarin will re-enable them after installing its handlers
 	asm.DisableIrqs()
 
-	uartPuts("Jumping To kmazarin\n")
 	jumpToKmazarin(entryAddr, argc, argv, stackPointer)
 
 	// Should never reach here
