@@ -3,7 +3,7 @@ package device
 import (
 	"errors"
 	"fmt"
-	"mazzy/kmazarin/console"
+
 	"mazzy/kmazarin/deviceapi"
 	"mazzy/kmazarin/dtb"
 )
@@ -67,16 +67,12 @@ func registerDriver(driver Discoverable) {
 // This function is silent - no output until a console device is available.
 // Returns error if DTB parsing fails or a critical device initialization fails.
 func InitFromDTB(dtbAddr uintptr) error {
-	console.Breadcrumb('X')
 	tree, err := dtb.Parse(dtbAddr)
-	console.Breadcrumb('Y')
-	_ = ("[DTB] After Parse\r\n")
 	if err != nil {
 		return fmt.Errorf("parse DTB: %w", err)
 	}
 
 	// Walk device tree and initialize devices
-	console.Breadcrumb('W')
 	return tree.Walk(func(node *dtb.Node) error {
 		return initNodeDevice(node)
 	})
@@ -85,7 +81,6 @@ func InitFromDTB(dtbAddr uintptr) error {
 // initNodeDevice tries to initialize a device for the given DTB node.
 // It tries each compatible string and each matching driver until one succeeds.
 func initNodeDevice(node *dtb.Node) error {
-	console.Breadcrumb('n')
 	// Try to match compatible strings (in order of preference)
 	for _, compatible := range node.Compatible {
 		drivers, ok := driverRegistry[compatible]

@@ -50,16 +50,6 @@ type mcentral struct {
 
 // Initialize a single central free list.
 func (c *mcentral) init(spc spanClass) {
-	// KMAZARIN DEBUG: Print when init is called for key spanclasses
-	const uartBase = uintptr(0xFFFFFFFF09000000)
-	if spc == 0 || spc == 40 || spc == 136 { // First, test index, last
-		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('I')
-		hexChars := "0123456789ABCDEF"
-		spcVal := uint8(spc)
-		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(hexChars[(spcVal>>4)&0xF])
-		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(hexChars[spcVal&0xF])
-	}
-
 	c.spanclass = spc
 	lockInit(&c.partial[0].spineLock, lockRankSpanSetSpine)
 	lockInit(&c.partial[1].spineLock, lockRankSpanSetSpine)
@@ -265,35 +255,8 @@ func (c *mcentral) grow() *mspan {
 	sizeclass := c.spanclass.sizeclass()
 	npages := uintptr(gc.SizeClassToNPages[sizeclass])
 
-	// KMAZARIN DEBUG: Detect spanclass=0 / npages=0 issue
-	const uartBase = uintptr(0xFFFFFFFF09000000)
+	// Guard against spanclass=0 / npages=0 (would cause sysMap(0,0))
 	if npages == 0 {
-		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('G') // grow with npages=0
-		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('0')
-		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(':')
-		// Print spanclass and sizeclass
-		hexChars := "0123456789ABCDEF"
-		sc := uint8(c.spanclass)
-		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(hexChars[(sc>>4)&0xF])
-		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(hexChars[sc&0xF])
-		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('/')
-		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(hexChars[(sizeclass>>4)&0xF])
-		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(hexChars[sizeclass&0xF])
-		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('\r')
-		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('\n')
-
-		// Print mcentral address to help debug if it's corrupted
-		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('c')
-		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('=')
-		cAddr := uint64(uintptr(unsafe.Pointer(c)))
-		for i := 60; i >= 0; i -= 4 {
-			nibble := (cAddr >> i) & 0xF
-			*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32(hexChars[nibble])
-		}
-		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('\r')
-		*(*uint32)(noescape(unsafe.Pointer(uartBase))) = uint32('\n')
-
-		// For now, return nil rather than crashing - this is better than sysMap(0,0)
 		return nil
 	}
 

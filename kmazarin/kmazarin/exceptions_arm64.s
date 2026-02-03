@@ -530,10 +530,7 @@ data_abort:
 	CMP	$0, R0
 	BEQ	data_abort_unhandled
 
-	// Fault handled successfully - print '<' marker and return to faulting instruction
-	MOVD	$UART_BASE, R10
-	MOVD	$'<', R11
-	MOVB	R11, (R10)
+	// Fault handled successfully - return to faulting instruction
 	B	sync_return
 
 data_abort_unhandled:
@@ -625,10 +622,179 @@ print_elr_char_da:
 	SUB	$1, R13
 	CBNZ	R13, print_elr_data_abort
 
+	// Print extra debug: X0 from exception frame (unwinder ptr) and key fields
 	MOVD	$'\r', R11
 	MOVB	R11, (R10)
 	MOVD	$'\n', R11
 	MOVB	R11, (R10)
+
+	// Load saved X0 from exception frame
+	MOVD	EXC_FRAME_X0(RSP), R14
+
+	// Print "X0="
+	MOVD	$'X', R11; MOVB	R11, (R10)
+	MOVD	$'0', R11; MOVB	R11, (R10)
+	MOVD	$'=', R11; MOVB	R11, (R10)
+	MOVD	R14, R12
+	MOVD	$16, R13
+print_x0_da:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_x0_digit_da
+	ADD	$('A'-10), R11
+	B	print_x0_char_da
+print_x0_digit_da:
+	ADD	$'0', R11
+print_x0_char_da:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_x0_da
+
+	// If X0 looks valid (high kernel addr), print [X0+16] (unwinder.frame.pc) and [X0+40] (sp)
+	// Check if X0 > 0xFFFFFFFF40000000
+	MOVD	$0xFFFFFFFF40000000, R15
+	CMP	R15, R14
+	BLO	skip_unwinder_dump
+
+	// Print " PC="
+	MOVD	$' ', R11; MOVB	R11, (R10)
+	MOVD	$'P', R11; MOVB	R11, (R10)
+	MOVD	$'C', R11; MOVB	R11, (R10)
+	MOVD	$'=', R11; MOVB	R11, (R10)
+	MOVD	16(R14), R12     // frame.pc
+	MOVD	$16, R13
+print_pc_da:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_pc_digit_da
+	ADD	$('A'-10), R11
+	B	print_pc_char_da
+print_pc_digit_da:
+	ADD	$'0', R11
+print_pc_char_da:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_pc_da
+
+	// Print " SP="
+	MOVD	$' ', R11; MOVB	R11, (R10)
+	MOVD	$'S', R11; MOVB	R11, (R10)
+	MOVD	$'P', R11; MOVB	R11, (R10)
+	MOVD	$'=', R11; MOVB	R11, (R10)
+	MOVD	40(R14), R12     // frame.sp
+	MOVD	$16, R13
+print_sp_da:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_sp_digit_da
+	ADD	$('A'-10), R11
+	B	print_sp_char_da
+print_sp_digit_da:
+	ADD	$'0', R11
+print_sp_char_da:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_sp_da
+
+	// Print " G="
+	MOVD	$' ', R11; MOVB	R11, (R10)
+	MOVD	$'G', R11; MOVB	R11, (R10)
+	MOVD	$'=', R11; MOVB	R11, (R10)
+	MOVD	72(R14), R12     // unwinder.g
+	MOVD	$16, R13
+print_g_da:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_g_digit_da
+	ADD	$('A'-10), R11
+	B	print_g_char_da
+print_g_digit_da:
+	ADD	$'0', R11
+print_g_char_da:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_g_da
+
+	// Print " SP0="
+	MOVD	$' ', R11; MOVB	R11, (R10)
+	MOVD	$'S', R11; MOVB	R11, (R10)
+	MOVD	$'P', R11; MOVB	R11, (R10)
+	MOVD	$'0', R11; MOVB	R11, (R10)
+	MOVD	$'=', R11; MOVB	R11, (R10)
+	MOVD	EXC_FRAME_SP_EL0(RSP), R12   // SP_EL0 at exception time
+	MOVD	$16, R13
+print_sp0_da:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_sp0_digit_da
+	ADD	$('A'-10), R11
+	B	print_sp0_char_da
+print_sp0_digit_da:
+	ADD	$'0', R11
+print_sp0_char_da:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_sp0_da
+
+	// Print " LR="
+	MOVD	$' ', R11; MOVB	R11, (R10)
+	MOVD	$'L', R11; MOVB	R11, (R10)
+	MOVD	$'R', R11; MOVB	R11, (R10)
+	MOVD	$'=', R11; MOVB	R11, (R10)
+	MOVD	(EXC_FRAME_X29_X30+8)(RSP), R12   // X30 = LR at exception time
+	MOVD	$16, R13
+print_lr_da:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_lr_digit_da
+	ADD	$('A'-10), R11
+	B	print_lr_char_da
+print_lr_digit_da:
+	ADD	$'0', R11
+print_lr_char_da:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_lr_da
+
+	// Print " R28=" (g register)
+	MOVD	$' ', R11; MOVB	R11, (R10)
+	MOVD	$'R', R11; MOVB	R11, (R10)
+	MOVD	$'2', R11; MOVB	R11, (R10)
+	MOVD	$'8', R11; MOVB	R11, (R10)
+	MOVD	$'=', R11; MOVB	R11, (R10)
+	MOVD	EXC_FRAME_X28(RSP), R12   // R28 = g register at exception time
+	MOVD	$16, R13
+print_r28_da:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_r28_digit_da
+	ADD	$('A'-10), R11
+	B	print_r28_char_da
+print_r28_digit_da:
+	ADD	$'0', R11
+print_r28_char_da:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_r28_da
+
+	MOVD	$'\r', R11; MOVB	R11, (R10)
+	MOVD	$'\n', R11; MOVB	R11, (R10)
+
+skip_unwinder_dump:
 data_abort_hang:
 	B	data_abort_hang
 
@@ -796,8 +962,21 @@ irq_exception_handler:
 	// be picked by the next scheduling decision.
 	MOVD	·kmazarinG0Addr(SB), R10
 	CBZ	R10, skip_deadline_processing  // g0 not ready yet
+
+	// Set m.curg = g0 so Go runtime sees getg() == m.curg (avoids "defer on system stack").
+	MOVD	48(R10), R11           // R11 = g0.m = m0
+	CBZ	R11, skip_curg_set
+	MOVD	0xB8(R11), R19         // R19 = saved m0.curg
+	MOVD	R11, R20               // R20 = saved m0 pointer
+	MOVD	R10, 0xB8(R11)         // m0.curg = g0
+skip_curg_set:
+
 	WORD	$0xaa0a03fc  // mov x28, x10 — set g to kmazarin g0
 	CALL	·ProcessDeadlinesTopHalf(SB)
+
+	// Restore m0.curg
+	CBZ	R20, skip_deadline_processing
+	MOVD	R19, 0xB8(R20)         // m0.curg = saved value
 skip_deadline_processing:
 
 	// ========================================================================
@@ -819,12 +998,25 @@ skip_deadline_processing:
 	CBNZ	R10, g0_addr_ok
 	B	timer_no_thread_preempt  // Skip if not initialized
 g0_addr_ok:
+	// Set m.curg = g0 (same fix as ProcessDeadlinesTopHalf)
+	// R19/R20 may hold values from ProcessDeadlinesTopHalf but that section
+	// already restored them, so re-save here.
+	MOVD	48(R10), R11           // R11 = g0.m = m0
+	CBZ	R11, timer_no_thread_preempt
+	MOVD	0xB8(R11), R19         // R19 = saved m0.curg
+	MOVD	R11, R20               // R20 = saved m0 ptr
+	MOVD	R10, 0xB8(R11)         // m0.curg = g0
+
 	WORD	$0xaa0a03fc  // mov x28, x10
 
 	// Call CheckThreadPreemption(framePtr) to check and perform switch
 	// func CheckThreadPreemption(framePtr uint64) uint64
 	MOVD	RSP, R0                        // R0 = framePtr (exception frame)
 	GO_CALL_1_1(·CheckThreadPreemption, R0)
+
+	// Restore m0.curg
+	MOVD	R19, 0xB8(R20)         // m0.curg = saved value
+
 	MOVD	R0, R21                        // R21 = new context pointer (or 0)
 
 	// Check if context switch happened
@@ -1200,8 +1392,20 @@ irq_not_timer:
 	MOVD	·kmazarinG0Addr(SB), R10
 	CBZ	R10, irq_skip_dispatch  // g0 not ready yet
 
+	// Set m.curg = g0 (same fix as timer IRQ handler)
+	MOVD	48(R10), R11           // R11 = g0.m = m0
+	CBZ	R11, irq_skip_curg_set
+	MOVD	0xB8(R11), R19         // R19 = saved m0.curg
+	MOVD	R11, R20               // R20 = saved m0 ptr
+	MOVD	R10, 0xB8(R11)         // m0.curg = g0
+irq_skip_curg_set:
+
 	WORD	$0xaa0a03fc  // mov x28, x10 — set g to kmazarin g0
 	CALL	·NonTimerIRQTopHalf(SB)
+
+	// Restore m0.curg
+	CBZ	R20, irq_skip_dispatch
+	MOVD	R19, 0xB8(R20)         // m0.curg = saved value
 
 irq_skip_dispatch:
 

@@ -266,7 +266,6 @@ func initMMU() bool {
 //
 //go:nosplit
 func enableMMU() bool {
-	uartPutsDirect("(0")
 	if pageTableL0 == 0 {
 		return false
 	}
@@ -275,7 +274,6 @@ func enableMMU() bool {
 	// Step 1: TLB invalidate FIRST (ARM TF does this before any register setup)
 	// =========================================================================
 	asm.InvalidateTlbAll()
-	uartPutsDirect("1")
 
 	// =========================================================================
 	// Step 2: Configure MAIR_EL1
@@ -287,7 +285,6 @@ func enableMMU() bool {
 		(uint64(0x00) << 8) |  // Attr1: Device
 		(uint64(0x44) << 16)   // Attr2: Normal non-cacheable
 	asm.WriteMairEl1(mairValue)
-	uartPutsDirect("2")
 
 	// =========================================================================
 	// Step 3: Configure TCR_EL1 (with TTBR1 enabled for high-memory kernel)
@@ -311,7 +308,6 @@ func enableMMU() bool {
 
 	tcrValue |= 2 << 32  // IPS = 2 (40-bit PA space)
 	asm.WriteTcrEl1(tcrValue)
-	uartPutsDirect("3")
 
 	// =========================================================================
 	// Step 4: Configure TTBR0_EL1 and TTBR1_EL1
@@ -323,12 +319,10 @@ func enableMMU() bool {
 
 	asm.WriteTtbr0El1(uint64(pageTableL0))
 	asm.WriteTtbr1El1(uint64(kernelPageTableL0))
-	uartPutsDirect("4")
 
 	// DSB ISH + ISB - critical synchronization before enabling MMU
 	asm.DsbIsh()
 	asm.Isb()
-	uartPutsDirect("5")
 
 	// Read/modify/write SCTLR_EL1 to enable MMU
 	sctlr := asm.ReadSctlrEl1()
@@ -336,13 +330,10 @@ func enableMMU() bool {
 	sctlr &^= 1 << 2  // C = 0 (data cache DISABLED initially)
 	sctlr &^= 1 << 12 // I = 0 (instruction cache DISABLED initially)
 	sctlr &^= 1 << 24 // E0E = 0 (EL0 is little-endian) - CRITICAL for userspace!
-	uartPutsDirect("6")
 	asm.WriteSctlrEl1(sctlr)
-	uartPutsDirect("7")
 
 	// Single ISB after SCTLR (per ARM TF reference)
 	asm.Isb()
-	uartPutsDirect("8)")
 
 	return true
 }

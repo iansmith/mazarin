@@ -86,25 +86,10 @@ TEXT write_sctlr_el1(SB), NOSPLIT, $16-8
 	DSB	$15
 	ISB	$15
 
-	// DEBUG: Write '<' to UART before MMU enable
-	MOVD	$0x09000000, R1
-	MOVD	$'<', R2
-	MOVB	R2, (R1)
-
 	// Segment 3: Write SCTLR_EL1
 	MSR	R0, SCTLR_EL1
 
-	// DEBUG: Write '=' after MSR, before ISB
-	MOVD	$0x09000000, R1
-	MOVD	$'=', R2
-	MOVB	R2, (R1)
-
 	ISB	$15
-
-	// DEBUG: Write '>' to UART after ISB
-	MOVD	$0x09000000, R1
-	MOVD	$'>', R2
-	MOVB	R2, (R1)
 
 	// Segment 4: Post-MMU invalidation
 	// Invalidate caches after MMU enable
