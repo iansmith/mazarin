@@ -248,11 +248,45 @@ func relocateTextSection(data []byte, f *elf.File, kmazarinBase, kmazarinEnd uin
 	}
 }
 
+// relocateGopclntabTextStart relocates the single absolute pointer in .gopclntab:
+// pcHeader.textStart at offset 24 (Go 1.18+ arm64 layout:
+// magic:4 + pad1:1 + pad2:1 + minLC:1 + ptrSize:1 + nfunc:8 + nfiles:8 = 24).
+// All other values in .gopclntab are offsets, not pointers.
+func relocateGopclntabTextStart(data []byte, f *elf.File, kmazarinBase, kmazarinEnd uint64, stats *RelocStats) {
+	sect := f.Section(".gopclntab")
+	if sect == nil {
+		return
+	}
+	const textStartOffset = 24 // offset of pcHeader.textStart on 64-bit
+	if sect.Size < textStartOffset+8 {
+		return
+	}
+	off := sect.Offset + textStartOffset
+	ptr := binary.LittleEndian.Uint64(data[off : off+8])
+	if ptr >= kmazarinBase && ptr < kmazarinEnd {
+		newPtr := ptr + highMemOffset
+		binary.LittleEndian.PutUint64(data[off:off+8], newPtr)
+		fmt.Printf("  .gopclntab: pcHeader.textStart 0x%X -> 0x%X\n", ptr, newPtr)
+		stats.DataPointers++
+	}
+}
+
 func relocateDataSections(data []byte, f *elf.File, kmazarinBase, kmazarinEnd uint64, stats *RelocStats) {
 	// CRITICAL: Include .text to relocate literal pool entries
 	// When Go assembly does MOVD $symbol(SB), the assembler generates a PC-relative
 	// load from a literal pool embedded in .text. These literal values must be relocated.
-	sections := []string{".text", ".data", ".rodata", ".noptrdata", ".go.buildinfo", ".gopclntab", ".typelink", ".itablink"}
+	//
+	// NOTE: .bss and .noptrbss are NOBITS (no file data) — they are zero-initialized
+	// at runtime and contain no pointers in the ELF file.
+	sections := []string{".text", ".data", ".rodata", ".noptrdata", ".go.buildinfo", ".typelink", ".itablink"}
+
+	// .gopclntab is NOT blindly pointer-scanned. In Go 1.18+, it uses offsets
+	// (not absolute addresses) for everything except pcHeader.textStart. Blind
+	// scanning produces false positives that corrupt the runtime metadata,
+	// causing crashes during stack scanning. The severity is layout-dependent:
+	// different .text layouts produce different offset values in gopclntab,
+	// so different builds hit different false positives.
+	relocateGopclntabTextStart(data, f, kmazarinBase, kmazarinEnd, stats)
 
 	for _, name := range sections {
 		sect := f.Section(name)
@@ -263,15 +297,23 @@ func relocateDataSections(data []byte, f *elf.File, kmazarinBase, kmazarinEnd ui
 		sectData := data[sect.Offset : sect.Offset+sect.Size]
 
 		// Scan for 8-byte aligned pointers
+		sectionRelocCount := 0
 		for i := uint64(0); i < sect.Size-7; i += 8 {
 			ptr := binary.LittleEndian.Uint64(sectData[i : i+8])
 
 			// Check if this looks like a kmazarin pointer
 			if ptr >= kmazarinBase && ptr < kmazarinEnd {
+				if os.Getenv("RELOC_VERBOSE") != "" {
+					fmt.Printf("    [%s+0x%X] VA=0x%X ptr=0x%X\n", name, i, sect.Addr+i, ptr)
+				}
 				newPtr := ptr + highMemOffset
 				binary.LittleEndian.PutUint64(sectData[i:i+8], newPtr)
 				stats.DataPointers++
+				sectionRelocCount++
 			}
+		}
+		if sectionRelocCount > 0 {
+			fmt.Printf("  %s: %d pointer relocations\n", name, sectionRelocCount)
 		}
 	}
 }
