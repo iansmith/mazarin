@@ -19,6 +19,70 @@ const (
 	SyscallReturnBlock  = 2 // Block current thread, switch to thread in x1
 )
 
+// ============================================================================
+// SMP Debug Output - Shows per-CPU scheduling activity
+// ============================================================================
+//
+// Output format (compact to minimize nosplit stack usage):
+//   R<cpu><tid><pid>  - Thread TID runs on CPU with priest PID
+//   S<cpu><tid><from> - CPU stole TID from CPU <from>
+//   I<cpu><irq>       - CPU received IRQ number
+//
+// Example output:
+//   R0 08 01  - CPU 0 running thread 0x08, priest 0x01
+//   S1 0A 0   - CPU 1 stole thread 0x0A from CPU 0
+//   I0 001B   - CPU 0 received IRQ 0x1B
+
+// SMPDebugEnabled controls verbose SMP debug output.
+// Set to true to see per-CPU scheduling, work stealing, and IRQ handling.
+const SMPDebugEnabled = false
+
+// smpDebugPrintRun prints "R<cpu><tid><pid>" when a thread starts running.
+// Uses Breadcrumb for minimal overhead.
+func smpDebugPrintRun(cpuID uint64, tid ThreadId, pid PriestId) {
+	if !SMPDebugEnabled {
+		return
+	}
+	console.Breadcrumb('R')
+	console.Breadcrumb('0' + byte(cpuID))
+	console.Breadcrumb(' ')
+	console.BreadcrumbHex8NoSplit(uint8(tid))
+	console.Breadcrumb(' ')
+	console.BreadcrumbHex8NoSplit(uint8(pid))
+	console.Breadcrumb('\r')
+	console.Breadcrumb('\n')
+}
+
+// smpDebugPrintSteal prints "S<cpu><tid><from>" when work is stolen.
+// Uses Breadcrumb for minimal overhead.
+func smpDebugPrintSteal(thisCPU uint64, tid ThreadId, victimCPU uint64) {
+	if !SMPDebugEnabled {
+		return
+	}
+	console.Breadcrumb('S')
+	console.Breadcrumb('0' + byte(thisCPU))
+	console.Breadcrumb(' ')
+	console.BreadcrumbHex8NoSplit(uint8(tid))
+	console.Breadcrumb(' ')
+	console.Breadcrumb('0' + byte(victimCPU))
+	console.Breadcrumb('\r')
+	console.Breadcrumb('\n')
+}
+
+// smpDebugPrintIRQ prints "I<cpu><irq>" when an IRQ fires.
+// Uses Breadcrumb for minimal overhead.
+func smpDebugPrintIRQ(cpuID uint64, irqNum uint32) {
+	if !SMPDebugEnabled {
+		return
+	}
+	console.Breadcrumb('I')
+	console.Breadcrumb('0' + byte(cpuID))
+	console.Breadcrumb(' ')
+	console.BreadcrumbHex16NoSplit(uint16(irqNum))
+	console.Breadcrumb('\r')
+	console.Breadcrumb('\n')
+}
+
 // Timer frequency (set from timer init)
 var timerFrequencyHz uint64 = 62500000 // Default 62.5 MHz for QEMU
 
@@ -173,6 +237,16 @@ type Thread struct {
 	// once at thread creation and never changes. Do NOT use for general priest
 	// lookups — use GetPriestByPID(t.PID) instead.
 	PriestIdx int16
+
+	// HomeCPU is the preferred CPU for this thread (soft affinity).
+	// Threads wake to their HomeCPU's local queue for cache locality.
+	// Set when thread is created, updated when stolen by another CPU.
+	// -1 = no affinity (use current CPU), 0-7 = specific CPU ID.
+	HomeCPU int8
+
+	// StolenFromCPU tracks the CPU this thread was stolen from (for debug output).
+	// Set by work stealing, cleared after debug print. -1 = not stolen.
+	StolenFromCPU int8
 
 	// Per-thread syscall state - prevents race condition when timer IRQ preempts mid-syscall
 	// and another thread makes a syscall that overwrites global state.
@@ -553,6 +627,10 @@ func InitThreads() {
 	t0.SyscallSPSR = syscallSPSR
 	t0.SyscallSwitch = syscallSwitchTarget
 
+	// Thread 0 runs on CPU 0 (boot CPU)
+	t0.HomeCPU = 0
+	t0.StolenFromCPU = -1
+
 	threadList.ReservedSet(0)
 
 	// Use SetCurrentThreadGlobal to update both per-CPU and global CurrentThread
@@ -725,7 +803,7 @@ func KernelIdleLoop() {
 		schedulerLock.Lock()
 		ProcessDeadlines()
 		processStaticDeadlinesSchedLockHeld()
-		hasReady := readyQueue.Size() > 0
+		hasReady := hasAnyReadyThreads()
 
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
@@ -775,7 +853,7 @@ func SaveThread0AndYield() uint64 {
 
 	// Put thread 0 on ready queue
 	t0.State = ThreadReady
-	readyQueue.Pluck(t0.TID)
+	pluckFromAllQueues(t0.TID)
 	enqueueReadySchedLockHeld(t0)
 
 	// Update tick accounting for thread 0
@@ -789,7 +867,7 @@ func SaveThread0AndYield() uint64 {
 	next := findReadyThreadPreferDifferentPriestSchedLockHeld(t0.PID)
 	if next == nil {
 		// No thread available — undo the save
-		readyQueue.Pluck(t0.TID)
+		pluckFromAllQueues(t0.TID)
 		t0.State = ThreadRunning
 		t0.TicksStartedRunning = currentTime
 		schedulerLock.Unlock()
@@ -831,9 +909,22 @@ func SaveThread0AndYield() uint64 {
 		kmem.SwitchTTBR0WithASID(next.PageTableL0PA, uint16(next.PID))
 	}
 
+	// Save info for debug output (before unlock to ensure we have valid data)
+	debugCPU := GetCPUID()
+	debugTID := next.TID
+	debugPID := next.PID
+	debugStolenFrom := next.StolenFromCPU
+	next.StolenFromCPU = -1 // Clear after reading
+
 	schedulerLock.Unlock()
 	// Don't restore DAIF — ERET will restore from SPSR
 	_ = savedDAIF
+
+	// Debug output after lock release (safe to call non-nosplit functions)
+	if debugStolenFrom >= 0 {
+		smpDebugPrintSteal(debugCPU, debugTID, uint64(debugStolenFrom))
+	}
+	smpDebugPrintRun(debugCPU, debugTID, debugPID)
 
 	return uint64(uintptr(unsafe.Pointer(&next.Context)))
 }
@@ -870,12 +961,13 @@ func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
 	for thread.PID == 0 {
 		// Put kernel thread back at the BACK of the ready queue (not front!)
 		// StartFirstThread needs a priest thread to ERET to userspace.
-		// If we used enqueueReadySchedLockHeld here, kernel threads would go
-		// to the front and we'd pick them again immediately — infinite loop.
+		// Use direct per-CPU push to avoid priority front-insertion for PID=0.
 		savedDAIF := sf.DisableAndSaveDAIF()
 		schedulerLock.Lock()
 		thread.State = ThreadReady
-		readyQueue.PushNoDuplicate(thread.TID)
+		// Enqueue to current CPU's queue at the back
+		perCPU := GetPerCPU()
+		perCPU.LocalReadyQueue.PushNoDuplicate(thread.TID)
 		schedulerLock.Unlock()
 		sf.EnableAndRestoreDAIF(savedDAIF)
 
@@ -1026,6 +1118,11 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 		}
 	}
 
+	// Set HomeCPU to current CPU for cache locality.
+	// Cloned threads will prefer to run on the CPU that created them.
+	t.HomeCPU = int8(GetCPUID())
+	t.StolenFromCPU = -1
+
 	// DO NOT add to ready queue - this thread runs immediately!
 	// The parent thread (A) will be added to ready queue by DoContextSwitch.
 
@@ -1101,7 +1198,7 @@ func threadExitImpl(sf *SchedulerFunc) uintptr {
 	// Mark as exited
 	t.State = ThreadExited
 	// Try to pluck from ready queue (may not be there)
-	readyQueue.Pluck(t.TID)
+	pluckFromAllQueues(t.TID)
 
 	// Release unique thread ID back to allocator
 	threadIdAllocator.Release(t.TID)
@@ -1142,12 +1239,26 @@ func threadExitImpl(sf *SchedulerFunc) uintptr {
 	// Update both per-CPU and global CurrentThread
 	SetCurrentThreadGlobal(next)
 
+	// Save info for debug output (before unlock)
+	debugCPU := GetCPUID()
+	debugTID := next.TID
+	debugPID := next.PID
+	debugStolenFrom := next.StolenFromCPU
+	next.StolenFromCPU = -1
+
 	if sf.StateCheck != nil {
 		sf.StateCheck("thread-exit-switch")
 	}
 
 	schedulerLock.Unlock()
 	sf.EnableAndRestoreDAIF(savedDAIF)
+
+	// Debug output after lock release
+	if debugStolenFrom >= 0 {
+		smpDebugPrintSteal(debugCPU, debugTID, uint64(debugStolenFrom))
+	}
+	smpDebugPrintRun(debugCPU, debugTID, debugPID)
+
 	return uintptr(unsafe.Pointer(&next.Context))
 }
 
@@ -1350,8 +1461,12 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	t.Context.ELR = entryPoint  // Entry point (program counter)
 	t.Context.SPSR = 0          // SPSR for EL0: M[3:0]=0000 (EL0t), M[4]=0 (AArch64)
 
+	// Set HomeCPU to current CPU for cache locality
+	t.HomeCPU = int8(GetCPUID())
+	t.StolenFromCPU = -1
+
 	// Add to ready queue (Pluck first just in case TID was reused)
-	readyQueue.Pluck(tid)
+	pluckFromAllQueues(tid)
 	enqueueReadySchedLockHeld(t)
 
 	if sf.StateCheck != nil {
@@ -1391,16 +1506,55 @@ func threadToIdx(t *Thread) int32 {
 }
 
 // enqueueReadySchedLockHeld pushes a thread onto the ready queue.
+// Uses per-CPU queues: thread goes to its HomeCPU's local queue.
 // Kernel threads (PID == 0) go to the FRONT for priority scheduling;
 // all other threads go to the BACK (FIFO).
 // REQUIRES: schedulerLock held.
 //
 //go:nosplit
 func enqueueReadySchedLockHeld(t *Thread) {
+	enqueueReadyToHomeCPU(t)
+}
+
+// enqueueReadyToHomeCPU adds thread to its HomeCPU's local queue.
+// Falls back to current CPU if HomeCPU is invalid.
+// REQUIRES: schedulerLock held (protects all per-CPU queues).
+//
+//go:nosplit
+func enqueueReadyToHomeCPU(t *Thread) {
+	targetCPU := t.HomeCPU
+	cpuCount := int8(GetCPUCount())
+
+	// Fall back to current CPU if HomeCPU is invalid
+	if targetCPU < 0 || targetCPU >= cpuCount {
+		targetCPU = int8(GetCPUID())
+	}
+
+	perCPU := GetPerCPUByID(uint64(targetCPU))
+
+	// Kernel threads (PID=0) still get priority (front of queue)
 	if t.PID == 0 {
-		readyQueue.PushHeadNoDuplicate(t.TID)
+		perCPU.LocalReadyQueue.PushHeadNoDuplicate(t.TID)
 	} else {
-		readyQueue.PushNoDuplicate(t.TID)
+		perCPU.LocalReadyQueue.PushNoDuplicate(t.TID)
+	}
+}
+
+// enqueueReadyToCurrentCPU adds thread to current CPU's local queue.
+// Used when no HomeCPU affinity is desired (e.g., newly created threads).
+// REQUIRES: schedulerLock held.
+//
+//go:nosplit
+func enqueueReadyToCurrentCPU(t *Thread) {
+	cpuID := GetCPUID()
+	t.HomeCPU = int8(cpuID) // Set affinity to current CPU
+
+	perCPU := GetPerCPU()
+
+	if t.PID == 0 {
+		perCPU.LocalReadyQueue.PushHeadNoDuplicate(t.TID)
+	} else {
+		perCPU.LocalReadyQueue.PushNoDuplicate(t.TID)
 	}
 }
 
@@ -1411,82 +1565,172 @@ func enqueueReadySchedLockHeld(t *Thread) {
 //go:nosplit
 func enqueueReadyByTIDSchedLockHeld(tid ThreadId) {
 	t := threadList.FindByIdAll(int32(tid))
-	if t != nil && t.PID == 0 {
-		readyQueue.PushHeadNoDuplicate(tid)
-	} else {
-		readyQueue.PushNoDuplicate(tid)
+	if t != nil {
+		enqueueReadyToHomeCPU(t)
 	}
 }
 
-// findReadyThread finds the next READY thread using FIFO scheduling
-// Returns thread pointer, or nil if none found
-// Internal function - use ThreadFindReady for external API
+// pluckFromAllQueues removes a thread from any per-CPU ready queue.
+// Searches all CPU queues since the thread could be on any of them.
+// REQUIRES: schedulerLock held (protects all per-CPU queues).
+//
+//go:nosplit
+func pluckFromAllQueues(tid ThreadId) {
+	cpuCount := GetCPUCount()
+	for i := uint64(0); i < cpuCount; i++ {
+		perCPU := GetPerCPUByID(i)
+		perCPU.LocalReadyQueue.Pluck(tid)
+	}
+}
+
+// hasAnyReadyThreads checks if any per-CPU queue has ready threads.
+// Used by idle loop to check if work is available.
+// REQUIRES: schedulerLock held (protects all per-CPU queues).
+//
+//go:nosplit
+func hasAnyReadyThreads() bool {
+	cpuCount := GetCPUCount()
+	for i := uint64(0); i < cpuCount; i++ {
+		perCPU := GetPerCPUByID(i)
+		if !perCPU.LocalReadyQueue.IsEmpty() {
+			return true
+		}
+	}
+	return false
+}
+
+// ============================================================================
+// Work Stealing Functions
+// ============================================================================
+
+// findReadyThreadWithStealing checks local queue first, then steals from others.
+// This is the main entry point for finding a ready thread with SMP support.
+// REQUIRES: schedulerLock held (protects all per-CPU queues).
+//
+//go:nosplit
+func findReadyThreadWithStealing() *Thread {
+	myPerCPU := GetPerCPU()
+
+	// 1. Check local queue first (cache-friendly path)
+	for !myPerCPU.LocalReadyQueue.IsEmpty() {
+		tid := myPerCPU.LocalReadyQueue.Pop()
+
+		t := threadList.FindByIdAll(int32(tid))
+		if t != nil && t.State == ThreadReady {
+			return t
+		}
+		// Thread not valid - try next in local queue
+	}
+
+	// 2. Local queue empty - try work stealing from other CPUs
+	return stealWorkFromOtherCPUs()
+}
+
+// stealWorkFromOtherCPUs tries to steal a thread from another CPU's queue.
+// Round-robins through other CPUs, stealing from the back (oldest thread).
+// Updates stolen thread's HomeCPU to the current CPU.
+// REQUIRES: schedulerLock held (protects all per-CPU queues).
+//
+//go:nosplit
+func stealWorkFromOtherCPUs() *Thread {
+	myID := GetCPUID()
+	cpuCount := GetCPUCount()
+
+	// Round-robin through other CPUs
+	for i := uint64(1); i < cpuCount; i++ {
+		targetCPU := (myID + i) % cpuCount
+		victim := GetPerCPUByID(targetCPU)
+
+		// Only steal if victim has more than 1 thread (leave them at least one)
+		if victim.LocalReadyQueue.Size() > 1 {
+			// Steal from BACK (oldest = likely cache-cold anyway)
+			tid := victim.LocalReadyQueue.PopBack()
+
+			t := threadList.FindByIdAll(int32(tid))
+			if t != nil && t.State == ThreadReady {
+				// Update HomeCPU to current CPU (new affinity)
+				t.HomeCPU = int8(myID)
+				// Mark that this thread was stolen (for debug output after lock release)
+				t.StolenFromCPU = int8(targetCPU)
+				return t
+			}
+			// Thread became invalid - continue trying other CPUs
+		}
+	}
+
+	return nil
+}
+
+// findReadyThreadSchedLockHeld finds the next READY thread using per-CPU queues with work stealing.
+// Checks local queue first, then steals from other CPUs.
+// Returns thread pointer, or nil if none found.
+// Internal function - use ThreadFindReady for external API.
 //
 //go:nosplit
 func findReadyThreadSchedLockHeld() *Thread {
-	// Loop instead of recursion to avoid stack overflow in nosplit context
-	for {
-		if readyQueue.IsEmpty() {
-			return nil
-		}
-
-		// Pop next thread ID (FIFO order)
-		tid := readyQueue.Pop() // Panics if empty (should never happen due to IsEmpty check)
-
-		// Get thread pointer - FindByIdAll searches ALL slots including reserved kernel threads
-		t := threadList.FindByIdAll(int32(tid))
-		if t == nil {
-			panic("readyQueue contains invalid TID")
-			return nil // Unreachable
-		}
-
-		// Validate thread state
-		if t.State != ThreadReady {
-			// Schedule problem: Thread in ready queue but not in Ready state
-			// Move to correct queue based on actual state
-			switch t.State {
-			case ThreadBlockedFutex:
-				blockedQueue.PushNoDuplicate(tid)
-			case ThreadSleeping:
-				sleepingQueue.PushNoDuplicate(tid)
-			case ThreadRunning:
-				// Already running - skip without pushing back (avoids duplicates)
-			default:
-				panic("Thread in ready queue with invalid state")
-			}
-
-			// Continue loop to try next thread
-			continue
-		}
-
-
-		// Thread is valid and ready
-		return t
-	}
+	return findReadyThreadWithStealing()
 }
 
 // findReadyThreadPreferDifferentPriestSchedLockHeld finds next ready thread, preferring a different priest.
 // Used for timer preemption to promote fairness across priests.
 // Falls back to any ready thread if only same-priest threads available.
+// Uses per-CPU queues with work stealing.
+// REQUIRES: schedulerLock held (protects all per-CPU queues).
 //
 //go:nosplit
 func findReadyThreadPreferDifferentPriestSchedLockHeld(currentPID PriestId) *Thread {
-	// First pass: find thread from DIFFERENT priest in FIFO order (head → tail)
-	idx := readyQueue.Head()
-	for seen := 0; seen < len(readyQueue.Data); seen++ {
-		if readyQueue.InUse[idx] {
-			tid := readyQueue.Data[idx]
+	myPerCPU := GetPerCPU()
+	myID := GetCPUID()
+	cpuCount := GetCPUCount()
+
+	// First pass: look for a different priest in local queue
+	q := &myPerCPU.LocalReadyQueue
+	idx := q.Head()
+	for seen := 0; seen < len(q.Data); seen++ {
+		if q.InUse[idx] {
+			tid := q.Data[idx]
 			t := threadList.FindByIdAll(int32(tid))
 			if t != nil && t.State == ThreadReady && t.PID != currentPID {
-				readyQueue.PluckAt(idx)
+				q.PluckAt(idx)
 				return t
 			}
 		}
-		idx = (idx + 1) % len(readyQueue.Data)
+		idx = (idx + 1) % len(q.Data)
 	}
 
-	// Fallback: any ready thread
-	return findReadyThreadSchedLockHeld()
+	// Second pass: look for a different priest on other CPUs (steal)
+	for i := uint64(1); i < cpuCount; i++ {
+		targetCPU := (myID + i) % cpuCount
+		victim := GetPerCPUByID(targetCPU)
+
+		vq := &victim.LocalReadyQueue
+		vidx := vq.Head()
+		for vseen := 0; vseen < len(vq.Data); vseen++ {
+			if vq.InUse[vidx] {
+				tid := vq.Data[vidx]
+				t := threadList.FindByIdAll(int32(tid))
+				if t != nil && t.State == ThreadReady && t.PID != currentPID {
+					vq.PluckAt(vidx)
+					t.HomeCPU = int8(myID) // Update affinity
+					return t
+				}
+			}
+			vidx = (vidx + 1) % len(vq.Data)
+		}
+	}
+
+	// Fallback: any ready thread from local queue
+	for !myPerCPU.LocalReadyQueue.IsEmpty() {
+		tid := myPerCPU.LocalReadyQueue.Pop()
+
+		t := threadList.FindByIdAll(int32(tid))
+		if t != nil && t.State == ThreadReady {
+			return t
+		}
+	}
+
+	// Final fallback: steal anything
+	return stealWorkFromOtherCPUs()
 }
 
 // ThreadFindReady finds the next READY thread
@@ -1556,7 +1800,7 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 
 	// Pluck current thread from ready queue if it's there
 	// (It might not be if it was already running and not re-queued)
-	readyQueue.Pluck(t.TID)
+	pluckFromAllQueues(t.TID)
 
 	// Find next ready thread FIRST - don't block if no one to switch to
 	// Prefer a different priest for fairness
@@ -1626,7 +1870,7 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 			t.State = ThreadReady
 			t.FutexAddr = 0
 			// Pluck first to prevent duplicates
-			readyQueue.Pluck(tid)
+			pluckFromAllQueues(tid)
 			enqueueReadySchedLockHeld(t)
 			woken++
 		} else {
@@ -1668,7 +1912,7 @@ func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
 
 	// Pluck current thread from ready queue if it's there
 	// (It might not be if it was already running and not re-queued)
-	readyQueue.Pluck(t.TID)
+	pluckFromAllQueues(t.TID)
 
 	// Find next ready thread FIRST - don't sleep if no one to switch to
 	// Prefer a different priest for fairness
@@ -1676,7 +1920,7 @@ func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
 	if next == nil {
 		// No ready thread - can't sleep, thread continues running
 		// Timer IRQ will handle preemption when other threads become ready
-		// DON'T push to readyQueue - thread is still Running, not Ready
+		// DON'T push to per-CPU queue - thread is still Running, not Ready
 		if sf.StateCheck != nil {
 			sf.StateCheck("sleep-block-no-next")
 		}
@@ -1728,7 +1972,7 @@ func ThreadWakeSleeper(sf *SchedulerFunc, tidParam uintptr) {
 	if t.State == ThreadSleeping {
 		t.State = ThreadReady
 		// Pluck first to prevent duplicates
-		readyQueue.Pluck(ThreadId(tid))
+		pluckFromAllQueues(ThreadId(tid))
 		enqueueReadySchedLockHeld(t)
 	}
 
@@ -1832,7 +2076,7 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 
 	oldThread.State = ThreadReady
 	// Pluck first in case oldThread is already in queue from a previous preemption
-	readyQueue.Pluck(oldThread.TID)
+	pluckFromAllQueues(oldThread.TID)
 	enqueueReadySchedLockHeld(oldThread)
 
 	// Reset preemption tracking for the preempted thread
@@ -1852,7 +2096,7 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	if next == nil {
 		// No other ready thread - continue with current thread
 		// Remove it from ready queue since we're continuing to run it
-		readyQueue.Pluck(oldThread.TID)
+		pluckFromAllQueues(oldThread.TID)
 		oldThread.State = ThreadRunning
 		oldThread.StartTick = currentTime
 		oldThread.ThreadPreemptDeadline = currentTime + kirq.ThreadPreemptTicks
@@ -1906,6 +2150,10 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	if next.PageTableL0PA != 0 && next.PageTableL0PA != oldThread.PageTableL0PA {
 		kmem.SwitchTTBR0WithASID(next.PageTableL0PA, uint16(next.PID))
 	}
+
+	// Note: No debug output in preemption path - too deep in nosplit call chain.
+	// Debug output happens in other scheduler paths (futex wake, thread exit).
+	next.StolenFromCPU = -1 // Clear stolen flag (no debug print possible here)
 
 	if sf.StateCheck != nil {
 		sf.StateCheck("preempt-switch-complete")
@@ -2051,7 +2299,7 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 
 			oldThread.State = ThreadReady
 					// Pluck first in case oldThread is already in queue
-			readyQueue.Pluck(oldThread.TID)
+			pluckFromAllQueues(oldThread.TID)
 			enqueueReadySchedLockHeld(oldThread)
 		}
 

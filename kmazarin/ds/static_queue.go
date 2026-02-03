@@ -216,6 +216,37 @@ func (q *StaticQueue[T]) PushHeadNoDuplicate(value T) bool {
 	return true
 }
 
+// PopBack removes and returns the back element (for work stealing).
+// Stealing from the back preserves FIFO order for the victim queue's normal operations.
+// Panics if the queue is empty.
+//
+// MULTICORE SAFETY: Caller must hold external lock (schedulerLock or LocalLock).
+//
+//go:nosplit
+func (q *StaticQueue[T]) PopBack() T {
+	if q.count == 0 {
+		panic("StaticQueue underflow: popback from empty queue")
+	}
+
+	// Find the last valid element by scanning backward from tail
+	// tail points to the next slot to fill, so last valid is before it
+	idx := (q.tail - 1 + len(q.Data)) % len(q.Data)
+	attempts := 0
+	for !q.InUse[idx] && attempts < len(q.Data) {
+		idx = (idx - 1 + len(q.Data)) % len(q.Data)
+		attempts++
+	}
+
+	if attempts >= len(q.Data) || !q.InUse[idx] {
+		panic("StaticQueue corruption: count > 0 but no valid elements in PopBack")
+	}
+
+	value := q.Data[idx]
+	q.InUse[idx] = false
+	q.count--
+	return value
+}
+
 // PushHead adds value to the FRONT of the queue (priority insertion).
 // Used for soft IRQ dispatcher to get immediate scheduling.
 // Panics if the queue is full.

@@ -241,14 +241,10 @@ func GetPendingSoftIRQ(bundlePtr uint64) bool {
 //
 //go:nosplit
 func ThreadBlockSoftIRQ(sf *SchedulerFunc, bundlePtr uint64) uintptr {
-	if CurrentThreadIdx < 0 {
-		return 0
-	}
-
 	savedDAIF := sf.DisableAndSaveDAIF()
 	schedulerLock.Lock()
 
-	t := threadList.Get(int(CurrentThreadIdx))
+	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
 	if t == nil {
 		schedulerLock.Unlock()
 		sf.EnableAndRestoreDAIF(savedDAIF)
@@ -295,7 +291,7 @@ func RegisterSoftIRQDispatcher() int64 {
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 
-	t := threadList.Get(int(CurrentThreadIdx))
+	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
 	if t == nil {
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"mazzy/kmazarin/ds"
 	"mazzy/kmazarin/kmem"
 	"mazzy/shared/constants"
 	"sync/atomic"
@@ -26,8 +27,7 @@ import (
 //   cpu.SetCurrentThread(newThread)
 
 // MaxCPUs is the maximum number of CPU cores supported.
-// QEMU virt machine defaults to 4 cores maximum.
-const MaxCPUs = 8
+const MaxCPUs = 16
 
 // Stack sizes for each CPU
 const (
@@ -87,9 +87,13 @@ type PerCPU struct {
 	// Set to 1 when the CPU finishes its initialization sequence.
 	Online uint32
 
-	// Padding to ensure each PerCPU struct is cache-line aligned (64 bytes)
-	// to prevent false sharing between cores.
-	_padding [4]byte
+	// LocalReadyQueue is this CPU's ready queue for per-CPU scheduling.
+	// Protected by LocalLock (finer-grained than schedulerLock).
+	LocalReadyQueue ds.StaticQueue[ThreadId]
+
+	// LocalLock protects LocalReadyQueue only.
+	// Lock ordering: schedulerLock → LocalLock (never reverse)
+	LocalLock ds.Spinlock
 }
 
 // perCPUData is the array of per-CPU data structures.
@@ -98,6 +102,13 @@ var perCPUData [MaxCPUs]PerCPU
 
 // perCPUInitialized tracks whether InitPerCPU has been called.
 var perCPUInitialized bool = false
+
+// Per-CPU ready queue backing storage (statically allocated)
+// Each CPU has its own queue with capacity for 64 threads.
+const perCPUQueueCapacity = 64
+
+var perCPUReadyQueueData [MaxCPUs][perCPUQueueCapacity]ThreadId
+var perCPUReadyQueueInUse [MaxCPUs][perCPUQueueCapacity]bool
 
 // readMPIDRAsm reads the MPIDR_EL1 register (implemented in assembly).
 // Returns the full 64-bit MPIDR_EL1 value.
@@ -114,7 +125,7 @@ func getPerCPUPtrAsm() uintptr
 //
 //go:nosplit
 func InitPerCPU() {
-	// Zero all per-CPU structures
+	// Zero all per-CPU structures and initialize local ready queues
 	for i := 0; i < MaxCPUs; i++ {
 		perCPUData[i].currentThread = nil
 		perCPUData[i].TopHalfIRQNum = 0
@@ -126,6 +137,11 @@ func InitPerCPU() {
 		perCPUData[i].ExceptionStackTop = 0
 		perCPUData[i].ExceptionStackBottom = 0
 		perCPUData[i].Online = 0
+
+		// Initialize per-CPU ready queue with backing arrays
+		perCPUData[i].LocalReadyQueue.Data = perCPUReadyQueueData[i][:]
+		perCPUData[i].LocalReadyQueue.InUse = perCPUReadyQueueInUse[i][:]
+		perCPUData[i].LocalReadyQueue.Clear()
 	}
 
 	// CPU 0 uses the kernel stacks from constants (already mapped during boot)

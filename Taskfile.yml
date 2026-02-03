@@ -122,6 +122,8 @@ tasks:
       - '{{.RUNTIME_PATCHES_DIR}}/os_linux_arm64.go'
       - '{{.RUNTIME_PATCHES_DIR}}/preempt.go'
       - '{{.RUNTIME_PATCHES_DIR}}/tagptr_64bit.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/traceback.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/panic.go'
       - '{{.RUNTIME_PATCHES_DIR}}/syscall/syscall_linux.go'
     generates:
       - '{{.KMAZARIN_OVERLAY_JSON}}'
@@ -188,6 +190,7 @@ tasks:
       - '{{.GO}} tool go-echo "Fixing kmazarin ELF for QEMU compatibility..."'
       - '{{.GO}} tool fix-go-elf {{.KMAZARIN_ELF}}'
       - '{{.GO}} tool go-echo "Relocating kmazarin to high memory (0xFFFFFFFF41800000)..."'
+      - 'cp {{.KMAZARIN_ELF}} {{.KMAZARIN_ELF}}.prereloc'
       - '{{.GO}} tool relocate-kmazarin {{.KMAZARIN_ELF}} {{.KMAZARIN_ELF}}.tmp'
       - '{{.GO}} tool go-mv {{.KMAZARIN_ELF}}.tmp {{.KMAZARIN_ELF}}'
       - '{{.GO}} tool go-echo "Kmazarin kernel built at {{.KMAZARIN_ELF}}"'
@@ -613,15 +616,19 @@ tasks:
   # ===========================================================================
 
   run:
-    desc: "Run QEMU with cardinal/kmazarin (TIMEOUT=N for timeout in seconds, 0=no timeout)"
+    desc: "Run QEMU with cardinal/kmazarin (TIMEOUT=N for timeout, SMP=N for CPU count)"
     deps: [disk, cardinal]
     vars:
       TIMEOUT: '{{.TIMEOUT | default "5"}}'
+      SMP: '{{.SMP | default "4"}}'
       LOG_FILE: /tmp/cardinal-serial.log
     cmds:
       - task: stop
       - '{{.GO}} tool go-rm {{.LOG_FILE}}'
       - task: run-qemu-background
+        vars:
+          SMP: '{{.SMP}}'
+          LOG_FILE: '{{.LOG_FILE}}'
       - task: '{{if eq .TIMEOUT "0"}}run-indefinite{{else}}run-timed{{end}}'
         vars:
           TIMEOUT: '{{.TIMEOUT}}'
@@ -653,9 +660,10 @@ tasks:
     internal: true
     vars:
       LOG_FILE: /tmp/cardinal-serial.log
+      SMP: '{{.SMP | default "4"}}'
     cmds:
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0'
-      - '{{.GO}} tool go-echo "QEMU started in background"'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -smp {{.SMP}} -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0'
+      - '{{.GO}} tool go-echo "QEMU started in background ({{.SMP}} CPUs)"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4444"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
 
@@ -684,10 +692,11 @@ tasks:
   # ===========================================================================
 
   run-debug:
-    desc: "Run QEMU with instruction/CPU tracing (DEBUG_OPTS for extra -d flags)"
+    desc: "Run QEMU with instruction/CPU tracing (DEBUG_OPTS for extra -d flags, SMP=N for CPUs)"
     deps: [disk, cardinal]
     vars:
       TIMEOUT: '{{.TIMEOUT | default "5"}}'
+      SMP: '{{.SMP | default "4"}}'
       LOG_FILE: /tmp/cardinal-serial.log
       DEBUG_LOG: /tmp/qemu-debug.log
       DEBUG_OPTS: '{{.DEBUG_OPTS | default "exec,cpu,int,nochain"}}'
@@ -695,10 +704,10 @@ tasks:
       - task: stop
       - '{{.GO}} tool go-rm {{.LOG_FILE}}'
       - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
-      - '{{.GO}} tool go-echo "Starting QEMU with debug tracing..."'
+      - '{{.GO}} tool go-echo "Starting QEMU with debug tracing ({{.SMP}} CPUs)..."'
       - '{{.GO}} tool go-echo "Debug options: {{.DEBUG_OPTS}}"'
       - '{{.GO}} tool go-echo "Debug log: {{.DEBUG_LOG}}"'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -smp {{.SMP}} -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop
       - '{{.GO}} tool go-sleep 0.3'
@@ -712,10 +721,11 @@ tasks:
       - '{{.GO}} tool go-echo "View debug log tail: task show-debug"'
 
   run-debug-int:
-    desc: "Run QEMU with interrupt/exception tracing only (lightweight)"
+    desc: "Run QEMU with interrupt/exception tracing only (lightweight, SMP=N for CPUs)"
     deps: [disk, cardinal]
     vars:
       TIMEOUT: '{{.TIMEOUT | default "10"}}'
+      SMP: '{{.SMP | default "4"}}'
       LOG_FILE: /tmp/cardinal-serial.log
       DEBUG_LOG: /tmp/qemu-debug.log
       DEBUG_OPTS: 'int,guest_errors'
@@ -723,9 +733,9 @@ tasks:
       - task: stop
       - '{{.GO}} tool go-rm {{.LOG_FILE}}'
       - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
-      - '{{.GO}} tool go-echo "Starting QEMU with interrupt/exception tracing..."'
+      - '{{.GO}} tool go-echo "Starting QEMU with interrupt/exception tracing ({{.SMP}} CPUs)..."'
       - '{{.GO}} tool go-echo "Debug options: {{.DEBUG_OPTS}}"'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -smp {{.SMP}} -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop
       - '{{.GO}} tool go-sleep 0.3'
@@ -735,10 +745,11 @@ tasks:
       - '{{.GO}} tool go-echo "Debug log:  {{.DEBUG_LOG}}"'
 
   run-debug-mmu:
-    desc: "Run QEMU with MMU/paging tracing"
+    desc: "Run QEMU with MMU/paging tracing (SMP=N for CPUs)"
     deps: [disk, cardinal]
     vars:
       TIMEOUT: '{{.TIMEOUT | default "5"}}'
+      SMP: '{{.SMP | default "4"}}'
       LOG_FILE: /tmp/cardinal-serial.log
       DEBUG_LOG: /tmp/qemu-debug.log
       DEBUG_OPTS: 'mmu,int,guest_errors'
@@ -746,9 +757,9 @@ tasks:
       - task: stop
       - '{{.GO}} tool go-rm {{.LOG_FILE}}'
       - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
-      - '{{.GO}} tool go-echo "Starting QEMU with MMU tracing..."'
+      - '{{.GO}} tool go-echo "Starting QEMU with MMU tracing ({{.SMP}} CPUs)..."'
       - '{{.GO}} tool go-echo "Debug options: {{.DEBUG_OPTS}}"'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -smp {{.SMP}} -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop
       - '{{.GO}} tool go-sleep 0.3'
@@ -756,10 +767,11 @@ tasks:
       - '{{.GO}} tool go-echo "Debug log:  {{.DEBUG_LOG}}"'
 
   run-debug-full:
-    desc: "Run QEMU with full tracing (very verbose)"
+    desc: "Run QEMU with full tracing (very verbose, SMP=N for CPUs)"
     deps: [disk, cardinal]
     vars:
       TIMEOUT: '{{.TIMEOUT | default "5"}}'
+      SMP: '{{.SMP | default "4"}}'
       LOG_FILE: /tmp/cardinal-serial.log
       DEBUG_LOG: /tmp/qemu-debug.log
       DEBUG_OPTS: 'exec,cpu,int,mmu,guest_errors,nochain'
@@ -767,9 +779,9 @@ tasks:
       - task: stop
       - '{{.GO}} tool go-rm {{.LOG_FILE}}'
       - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
-      - '{{.GO}} tool go-echo "Starting QEMU with FULL tracing (very verbose)..."'
+      - '{{.GO}} tool go-echo "Starting QEMU with FULL tracing ({{.SMP}} CPUs, very verbose)..."'
       - '{{.GO}} tool go-echo "Debug options: {{.DEBUG_OPTS}}"'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -smp {{.SMP}} -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop
       - '{{.GO}} tool go-sleep 0.3'
