@@ -1,6 +1,14 @@
+//go:build amd64
+
 // diplomat/main/platform_amd64.go - x86_64/UEFI default platform instances
 
 package main
+
+// uefiHandleProtocol is implemented in uefi_calls_amd64.s
+// Calls EFI_BOOT_SERVICES.HandleProtocol using MS x64 ABI
+//
+//go:noescape
+func uefiHandleProtocol(handle, protocol, iface, funcPtr uintptr) EFI_STATUS
 
 var defaultPlatform = PlatformOps{
 	PrintChar:            printChar,

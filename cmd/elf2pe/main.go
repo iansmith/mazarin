@@ -1,12 +1,16 @@
 // elf2pe converts an ELF executable to PE format for UEFI
 //
-// This tool takes a GOOS=linux GOARCH=amd64 ELF binary and converts it
+// This tool takes a GOOS=linux GOARCH={amd64,arm64} ELF binary and converts it
 // to a UEFI-compatible PE/COFF executable. The machine code is identical -
 // only the file format wrapper changes.
 //
 // Usage:
 //
 //	elf2pe input.elf output.efi
+//
+// Supported architectures:
+//   - x86_64 (amd64) -> PE32+ with IMAGE_FILE_MACHINE_AMD64
+//   - aarch64 (arm64) -> PE32+ with IMAGE_FILE_MACHINE_ARM64
 //
 // The tool:
 //   - Reads ELF sections (.text, .rodata, .data, .bss)
@@ -28,6 +32,7 @@ const (
 
 	// PE Machine types
 	IMAGE_FILE_MACHINE_AMD64 = 0x8664
+	IMAGE_FILE_MACHINE_ARM64 = 0xAA64
 
 	// PE Section characteristics
 	IMAGE_SCN_CNT_CODE               = 0x00000020
@@ -77,7 +82,7 @@ type PESection struct {
 func main() {
 	if len(os.Args) != 3 {
 		fmt.Fprintf(os.Stderr, "Usage: %s <input.elf> <output.efi>\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "\nConverts a Linux/amd64 ELF executable to UEFI PE format.\n")
+		fmt.Fprintf(os.Stderr, "\nConverts a Linux ELF executable (amd64 or arm64) to UEFI PE format.\n")
 		os.Exit(1)
 	}
 
@@ -100,23 +105,39 @@ func convertELFtoPE(inputPath, outputPath string) error {
 	}
 	defer elfFile.Close()
 
-	// Verify it's AMD64
-	if elfFile.Machine != elf.EM_X86_64 {
-		return fmt.Errorf("ELF file is not x86_64 (machine type: %v)", elfFile.Machine)
+	// Determine PE machine type based on ELF machine
+	var peMachine uint16
+	var archName string
+	var entrySymbols []string
+
+	switch elfFile.Machine {
+	case elf.EM_X86_64:
+		peMachine = IMAGE_FILE_MACHINE_AMD64
+		archName = "x86-64"
+		// x86_64 entry point symbols
+		entrySymbols = []string{
+			"main._efi_main_asm",
+			"main._efi_main_asm.abi0",
+			"main._minimal_uefi_test",
+			"main._minimal_uefi_test.abi0",
+		}
+	case elf.EM_AARCH64:
+		peMachine = IMAGE_FILE_MACHINE_ARM64
+		archName = "aarch64"
+		// ARM64 entry point symbols
+		entrySymbols = []string{
+			"main._efi_main_arm64",
+			"main._efi_main_arm64.abi0",
+			"main._minimal_uefi_test_arm64",
+			"main._minimal_uefi_test_arm64.abi0",
+		}
+	default:
+		return fmt.Errorf("unsupported ELF machine type: %v (only x86_64 and aarch64 are supported)", elfFile.Machine)
 	}
 
 	fmt.Printf("Input: %s\n", inputPath)
-	fmt.Printf("  Type: ELF64 x86-64\n")
+	fmt.Printf("  Type: ELF64 %s\n", archName)
 	fmt.Printf("  Entry: 0x%x\n", elfFile.Entry)
-
-	// For UEFI applications, look for entry points in order of preference.
-	// Try both with and without .abi0 suffix (Go generates wrappers when declared).
-	entrySymbols := []string{
-		"main._efi_main_asm",
-		"main._efi_main_asm.abi0",
-		"main._minimal_uefi_test",
-		"main._minimal_uefi_test.abi0",
-	}
 	var efiMainAddr uint64
 	var foundSym string
 	for _, sym := range entrySymbols {
@@ -146,7 +167,7 @@ func convertELFtoPE(inputPath, outputPath string) error {
 	}
 
 	// Create PE file
-	peData, err := createPEFile(elfFile, peSections)
+	peData, err := createPEFile(elfFile, peSections, peMachine)
 	if err != nil {
 		return fmt.Errorf("failed to create PE file: %w", err)
 	}
@@ -410,7 +431,7 @@ func extractELFSections(elfFile *elf.File) ([]*PESection, error) {
 }
 
 // createPEFile builds the complete PE file
-func createPEFile(elfFile *elf.File, sections []*PESection) ([]byte, error) {
+func createPEFile(elfFile *elf.File, sections []*PESection, machineType uint16) ([]byte, error) {
 	buf := make([]byte, 0, 1024*1024) // Pre-allocate 1MB
 
 	// DOS Header
@@ -422,7 +443,7 @@ func createPEFile(elfFile *elf.File, sections []*PESection) ([]byte, error) {
 
 	// COFF Header (20 bytes)
 	coffHeader := make([]byte, 20)
-	binary.LittleEndian.PutUint16(coffHeader[0:2], IMAGE_FILE_MACHINE_AMD64)   // Machine
+	binary.LittleEndian.PutUint16(coffHeader[0:2], machineType)                // Machine
 	binary.LittleEndian.PutUint16(coffHeader[2:4], uint16(len(sections)))      // NumberOfSections
 	binary.LittleEndian.PutUint32(coffHeader[4:8], 0)                          // TimeDateStamp
 	binary.LittleEndian.PutUint32(coffHeader[8:12], 0)                         // PointerToSymbolTable

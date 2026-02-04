@@ -113,13 +113,6 @@ func GetBootDeviceBlockIO() (*UEFIBlockDevice, error) {
 	return dev, nil
 }
 
-// uefiHandleProtocol is implemented in assembly
-// Calls EFI_BOOT_SERVICES.HandleProtocol using MS x64 ABI
-//
-// EFI_STATUS HandleProtocol(
-//     IN EFI_HANDLE Handle,           // RCX
-//     IN EFI_GUID *Protocol,          // RDX
-//     OUT VOID **Interface            // R8
-// );
-//go:noescape
-func uefiHandleProtocol(handle, protocol, iface, funcPtr uintptr) EFI_STATUS
+// uefiHandleProtocol is declared per-architecture:
+// - platform_amd64.go: 4 params (handle, protocol, iface, funcPtr)
+// - platform_arm64.go: 3 params (handle, protocol, iface)

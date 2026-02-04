@@ -1,7 +1,11 @@
-// diplomat/main/uefi_mem.go - UEFI memory allocation wrappers
+// diplomat/main/uefi_mem_amd64.go - UEFI memory allocation wrappers (x86_64)
 //
 // Provides Go wrappers around UEFI Boot Services memory functions.
 // Used by mmap to allocate actual physical memory.
+//
+// NOTE: This file is x86_64-specific because the assembly helpers
+// (uefiCall*) take function pointers as explicit parameters.
+// ARM64 uses a different pattern in uefi_mem_arm64.go.
 
 package main
 

@@ -534,6 +534,24 @@ tasks:
       - '{{.BUILD_DIR}}/elf2pe {{.BUILD_DIR}}/diplomat.elf {{.DIPLOMAT_EFI}}'
       - '{{.GO}} tool go-echo "Diplomat EFI ready at {{.DIPLOMAT_EFI}}"'
 
+  diplomat-arm64:
+    desc: Build diplomat UEFI bootloader for ARM64
+    deps: [check-env, build-dir, elf2pe, diplomat-linux-overlay]
+    sources:
+      - 'diplomat/**/*.go'
+      - 'diplomat/**/*.s'
+      - 'shared/**/*.go'
+      - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
+    generates:
+      - '{{.BUILD_DIR}}/diplomat-arm64.efi'
+    cmds:
+      - '{{.GO}} tool go-echo "Building diplomat for ARM64 UEFI (via Linux/arm64)..."'
+      # Step 1: Build as Linux ELF with runtime patches
+      - 'CGO_ENABLED=0 GOOS=linux GOARCH=arm64 {{.GO}} build -ldflags="-checklinkname=0" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.BUILD_DIR}}/diplomat-arm64.elf ./diplomat/main'
+      # Step 2: Convert ELF to PE format for UEFI
+      - '{{.BUILD_DIR}}/elf2pe {{.BUILD_DIR}}/diplomat-arm64.elf {{.BUILD_DIR}}/diplomat-arm64.efi'
+      - '{{.GO}} tool go-echo "Diplomat ARM64 EFI ready at {{.BUILD_DIR}}/diplomat-arm64.efi"'
+
   mkesp:
     desc: Build the ESP image creator
     deps: [build-dir]

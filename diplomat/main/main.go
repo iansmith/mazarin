@@ -211,17 +211,19 @@ var tlsBlock [256]byte
 var executionMarker uint64
 
 // main is required by Go linker but never executes
-// The actual entry point is _minimal_uefi_test in minimal_test_amd64.s
+// The actual entry point is architecture-specific assembly.
 // This function calls referenced functions to keep them from being optimized away
 func main() {
-	// This never executes - _minimal_uefi_test is the PE entry point
+	// This never executes - assembly entry point is the PE entry point
 	// We call functions here to prevent dead code elimination
 	DiplomatEntry()
 
 	// Keep assembly functions alive
 	ueficall_OutputString(nil, 0)
-	_minimal_uefi_test() // Keep the minimal test entry point symbol alive
-	_efi_main_asm()      // Keep the full entry point symbol alive
+
+	// Keep architecture-specific entry points alive
+	// (implemented in main_amd64.go / main_arm64.go)
+	keepAlive()
 
 	for {}
 }
@@ -360,15 +362,6 @@ func debugPortOut(c byte)
 // setupTLS is implemented in assembly (tls_amd64.s)
 // It sets the FS segment base for TLS support
 func setupTLS(tlsAddr uintptr)
-
-// _minimal_uefi_test is a pure assembly entry point (no .abi0 wrapper needed)
-// We declare it here so Go doesn't eliminate it as dead code
-// The declaration has no body - it's implemented in minimal_test_amd64.s
-func _minimal_uefi_test()
-
-// _efi_main_asm is the full UEFI entry point with Go runtime initialization
-// Implemented in entry_amd64.s - sets up g0/m0 and calls DiplomatEntry
-func _efi_main_asm()
 
 // diplomatAllocator is the FAT32 allocator callback that uses our bump allocator
 func diplomatAllocator(size uintptr) unsafe.Pointer {

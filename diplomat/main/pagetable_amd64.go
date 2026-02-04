@@ -1,4 +1,4 @@
-// diplomat/main/pagetable.go
+// diplomat/main/pagetable_amd64.go
 // x86_64 4-level page table implementation for mapping high virtual addresses
 package main
 

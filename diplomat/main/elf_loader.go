@@ -20,8 +20,9 @@ const (
 	elfDataLSB     = 1
 	elfTypeExec    = 2
 	elfTypeDyn     = 3
-	elfMachineX64  = 0x3E
-	elfPTLoad      = 1
+	elfMachineX64    = 0x3E
+	elfMachineARM64 = 0xB7
+	elfPTLoad        = 1
 	elfEhdrSize    = 64 // ELF64 header size
 	elfPhdrSize    = 56 // ELF64 program header size
 )
@@ -83,8 +84,8 @@ func LoadKernel(fsys *fat32.FileSystem, path string) (*LoadedKernel, error) {
 	if ehdr.Ident[4] != elfClass64 || ehdr.Ident[5] != elfDataLSB {
 		return nil, &blockDevError{"not ELF64 little-endian"}
 	}
-	if ehdr.Machine != elfMachineX64 {
-		return nil, &blockDevError{"not x86_64"}
+	if ehdr.Machine != elfMachineExpected {
+		return nil, &blockDevError{"ELF machine type mismatch"}
 	}
 	debugPortOut('e')
 
