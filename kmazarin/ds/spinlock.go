@@ -1,5 +1,3 @@
-//go:build arm64
-
 package ds
 
 // Spinlock implements a simple spinlock with calibrated backoff.
