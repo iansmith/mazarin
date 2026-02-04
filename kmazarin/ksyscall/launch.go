@@ -621,9 +621,14 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 	filenameLen := uint64(len(filename)) + 1 // +1 for null terminator
 	priestStrLen := uint64(len(priestStr)) + 1
 
-	// Layout: 9 uint64s (pointers/values) + string data, 16-byte aligned
-	pointerAreaSize := uint64(9 * 8) // argc + argv[0] + argv[1] + NULL + NULL + auxv(4)
-	stringDataSize := filenameLen + priestStrLen
+	// Environment variable for GC debugging
+	godebugStr := "GODEBUG=gctrace=1"
+	godebugLen := uint64(len(godebugStr)) + 1
+
+	// Layout: 10 uint64s (pointers/values) + string data, 16-byte aligned
+	// argc + argv[0] + argv[1] + NULL(argv) + envp[0] + NULL(envp) + auxv(4)
+	pointerAreaSize := uint64(10 * 8)
+	stringDataSize := filenameLen + priestStrLen + godebugLen
 	totalSize := pointerAreaSize + stringDataSize
 	totalSize = (totalSize + 15) &^ 15 // 16-byte align
 
@@ -634,6 +639,7 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 	stringBase := sp + pointerAreaSize
 	argv0Addr := stringBase
 	argv1Addr := stringBase + filenameLen
+	godebugAddr := stringBase + filenameLen + priestStrLen
 
 	// Write the stack layout
 	offset := uint64(0)
@@ -652,6 +658,10 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 
 	// NULL (end of argv)
 	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, 0)
+	offset += 8
+
+	// envp[0] → pointer to GODEBUG string
+	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, godebugAddr)
 	offset += 8
 
 	// NULL (end of envp)
@@ -685,6 +695,12 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 		writeStackByte(stackBase, stackTop, kernelVA, argv1Addr+uint64(i), priestStr[i])
 	}
 	writeStackByte(stackBase, stackTop, kernelVA, argv1Addr+uint64(len(priestStr)), 0)
+
+	// Write GODEBUG environment variable string data (null-terminated)
+	for i := 0; i < len(godebugStr); i++ {
+		writeStackByte(stackBase, stackTop, kernelVA, godebugAddr+uint64(i), godebugStr[i])
+	}
+	writeStackByte(stackBase, stackTop, kernelVA, godebugAddr+uint64(len(godebugStr)), 0)
 
 	// Clean cache for the stack page we wrote to
 	kmem.CleanPageCache(kernelVA)

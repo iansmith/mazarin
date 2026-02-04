@@ -54,13 +54,9 @@ var (
 	ReadyForAsyncPreempt    uint32 // 1 when ready for async preemption
 )
 
-// Debug: Timer IRQ counter for tracking IRQ delivery issues
+// TimerIRQCount is incremented by assembly on each timer IRQ.
+// Used by the scheduler for time accounting.
 var TimerIRQCount uint64
-
-// Per-goroutine tick tracking for async preemption fallback.
-// Indexed by hash of g pointer. When a goroutine doesn't yield
-// cooperatively after 10 ticks (100ms), we force async preemption.
-var preemptTickCounts [1024]uint32
 
 // Thread struct offsets for assembly access.
 // IMPORTANT: These are computed dynamically via unsafe.Offsetof() in
@@ -68,20 +64,6 @@ var preemptTickCounts [1024]uint32
 // main.ThreadStartTickOffset, etc. Assembly loads these at runtime.
 //
 // DO NOT use hardcoded offsets - struct layout may change!
-
-// GoroutinePreemptIntervals is the number of 10ms intervals before forcing
-// async preemption on a goroutine that hasn't yielded.
-// 5 intervals = 50ms max runtime without yield.
-// Exported for assembly access.
-// DEPRECATED: Use GoroutinePreemptTicks instead for deadline-based preemption.
-var GoroutinePreemptIntervals uint64 = 5
-
-// ThreadPreemptIntervals is the number of 10ms intervals before forcing
-// a thread preemption (context switch to another thread).
-// 20 intervals = 200ms - gives goroutines time to work.
-// Exported for assembly access.
-// DEPRECATED: Use ThreadPreemptTicks instead for deadline-based preemption.
-var ThreadPreemptIntervals uint64 = 20
 
 // GoroutinePreemptTicks is the number of raw timer ticks before forcing
 // async preemption on a goroutine. At 62.5MHz: 50ms = 3,125,000 ticks.
@@ -117,11 +99,6 @@ var NeedsAsyncPreempt uint32
 // the thread preemption threshold and should be switched out.
 // Checked by exception handler after TimerIRQHandlerAsm returns.
 var NeedsThreadPreempt uint32
-
-// Debug counters for userspace preemption path
-var UserspacePathCount uint64       // How often we enter userspace path
-var UserspaceCoopPreemptCount uint64 // How often we set cooperative preemption
-var UserspaceGChangedCount uint64   // How often g changed (goroutine switch detected)
 
 // Kernel time accounting - measures time spent in kernel mode
 // All values are in timer ticks (use SystemTimerFrequency to convert to seconds)
@@ -256,34 +233,6 @@ func SetReadyForAsyncPreempt() {
 func GetPreemptOffsetDebug() (stackguard0, preempt, status, stackPreempt uintptr, gRunning, gScan uint32) {
 	return PreemptStackGuard0Offset, PreemptPreemptOffset, PreemptGStatusOffset,
 		PreemptStackPreemptValue, PreemptGRunning, PreemptGScan
-}
-
-// gHash returns a hash index for a g pointer (0-1023).
-// Used to index into preemptTickCounts array.
-//
-//go:nosplit
-func gHash(gptr uintptr) uint32 {
-	// Simple hash: shift right by 8 (since g structs are large, ~500 bytes)
-	// and mask to get index in range [0, 1023]
-	return uint32((gptr >> 8) & 0x3FF)
-}
-
-// ResetPreemptTicks resets the tick counter for a goroutine.
-// Called when a goroutine yields cooperatively (e.g., from scheduler).
-//
-//go:nosplit
-func ResetPreemptTicks(gptr uintptr) {
-	idx := gHash(gptr)
-	atomic.StoreUint32(&preemptTickCounts[idx], 0)
-}
-
-// IncrementPreemptTicks increments the tick counter for a goroutine.
-// Returns the new tick count. Called from assembly timer handler.
-//
-//go:nosplit
-func IncrementPreemptTicks(gptr uintptr) uint32 {
-	idx := gHash(gptr)
-	return atomic.AddUint32(&preemptTickCounts[idx], 1)
 }
 
 // GetTimerTicksFor10ms returns the number of timer ticks for 10ms interval.

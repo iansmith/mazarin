@@ -255,7 +255,6 @@ func main() {
 		go mouseLoop(mouseSlot, cursorStack, cursorImages, renderer)
 	}
 
-
 	// Launch periodic timer goroutine with clock display
 	clock := newClockRenderer(fb)
 	if clock != nil && timerSlot >= 0 {
@@ -265,7 +264,6 @@ func main() {
 		}
 		go timerLoop(clock, timerSlot)
 	}
-
 
 	// Block main goroutine forever
 	select {}

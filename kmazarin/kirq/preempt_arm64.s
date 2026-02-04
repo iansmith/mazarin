@@ -133,21 +133,6 @@ g_in_kernel:
 	BNE	timer_return  // GC scanning, skip preemption
 
 	// ========================================================================
-	// Steps 6-7 REMOVED: No longer manipulate g.preempt or g.stackguard0
-	// ========================================================================
-	// We now use asyncPreempt injection (modifying ELR) instead of the
-	// cooperative preemption path. This provides a unified approach for
-	// both kmazarin and priest goroutines:
-	// 1. Timer tracks elapsed time and sets NeedsAsyncPreempt flag
-	// 2. Exception return path modifies ELR to inject asyncPreempt
-	// 3. asyncPreempt saves state and calls the Go scheduler
-	//
-	// Benefits:
-	// - Kernel doesn't need to touch Go runtime g struct
-	// - Same mechanism works for kmazarin and priests
-	// - Cleaner separation between kernel and Go runtime
-
-	// ========================================================================
 	// Step 6: Check for g change and track preemption time
 	// ========================================================================
 	// R4 = current g pointer (validated above)
@@ -273,11 +258,6 @@ init_deadlines:
 // 2. Userspace threads have their own Go runtime that handles cooperative preemption
 // But we still need OS-level thread preemption so other priests get scheduled.
 g_in_userspace:
-	// Increment userspace path counter
-	MOVD	·UserspacePathCount(SB), R0
-	ADD	$1, R0
-	MOVD	R0, ·UserspacePathCount(SB)
-
 	// Load currentThread pointer directly
 	MOVD	main·CurrentThread(SB), R7  // *Thread
 	CBZ	R7, timer_return  // currentThread is nil
@@ -304,11 +284,6 @@ g_in_userspace:
 	BEQ	userspace_same_goroutine
 
 	// G changed! Reset GoroutinePreemptDeadline for the new goroutine.
-	// Increment g-changed counter
-	MOVD	·UserspaceGChangedCount(SB), R8
-	ADD	$1, R8
-	MOVD	R8, ·UserspaceGChangedCount(SB)
-
 	MOVD	main·ThreadLastSeenGOffset(SB), R5
 	ADD	R7, R5
 	MOVD	R4, (R5)  // currentThread.LastSeenG = current g
@@ -336,11 +311,6 @@ userspace_same_goroutine:
 	MOVW	$1, R8
 	MOVW	R8, ·NeedsAsyncPreempt(SB)
 
-	// Increment cooperative preemption counter
-	MOVD	·UserspaceCoopPreemptCount(SB), R8
-	ADD	$1, R8
-	MOVD	R8, ·UserspaceCoopPreemptCount(SB)
-
 	// ========================================================================
 	// COOPERATIVE PREEMPTION: Set g.preempt = true and g.stackguard0 = stackPreempt
 	// ========================================================================
@@ -348,20 +318,36 @@ userspace_same_goroutine:
 	// injection is skipped. To ensure preemption, we also enable cooperative
 	// preemption by setting g.preempt and g.stackguard0 in the userspace g struct.
 	//
-	// The priest's Go runtime will check g.stackguard0 on function entry. If it
-	// equals stackPreempt, the runtime yields to let other goroutines run.
+	// CRITICAL: Only do this for goroutines with atomicstatus == _Grunning.
+	// This filters out g0 (which has status _Gidle=0) and goroutines in syscalls
+	// (_Gsyscall=3). g0's stackguard0 must NEVER be poisoned — the Go runtime
+	// will crash with "morestack on g0" because g0's stack is fixed-size.
+	//
+	// We use regular MOVD (not LDTR) because PAN is not enabled in our
+	// configuration, matching the approach in exceptions_arm64.s line ~1169.
 	//
 	// R4 = userspace g pointer (from earlier in this function)
-	//
-	// Use STTR (unprivileged store) to write to userspace memory.
-	// STTR performs the store with EL0 permissions.
 
+	// Load g.atomicstatus
+	MOVD	·PreemptGStatusOffset(SB), R5
+	ADD	R4, R5  // R5 = &g.atomicstatus
+	MOVW	(R5), R6  // R6 = g.atomicstatus (32-bit)
+
+	// Mask off _Gscan bit (0x1000)
+	MOVW	·PreemptGScan(SB), R8
+	BIC	R8, R6, R6  // R6 = status & ~_Gscan
+
+	// Only proceed if status == _Grunning (2)
+	MOVW	·PreemptGRunning(SB), R8
+	CMP	R6, R8
+	BNE	userspace_check_thread_deadline  // Not running (g0, syscall, etc.) — skip
+
+	// Safe to poison — this is a running user goroutine, not g0
 	// Set g.preempt = true (1)
 	MOVD	·PreemptPreemptOffset(SB), R5
 	ADD	R4, R5, R5  // R5 = &g.preempt
 	MOVD	$1, R6
 	// STTR X6, [X5] - unprivileged store of 1 to g.preempt
-	// Encoding: size=11 (8-byte), opc=00, imm9=0, Rn=5, Rt=6
 	WORD	$0xF80008A6  // sttr x6, [x5]
 
 	// Set g.stackguard0 = stackPreempt
@@ -370,6 +356,16 @@ userspace_same_goroutine:
 	MOVD	·PreemptStackPreemptValue(SB), R6  // R6 = stackPreempt poison value
 	// STTR X6, [X5] - unprivileged store of stackPreempt to g.stackguard0
 	WORD	$0xF80008A6  // sttr x6, [x5]
+
+	// Reset goroutine deadline to prevent starvation.
+	// Without this, if the goroutine yields and gets rescheduled (same g pointer),
+	// the timer would immediately preempt it again because the old deadline is
+	// still in the past. This gives the goroutine a fresh time slice.
+	MOVD	·GoroutinePreemptTicks(SB), R8
+	ADD	R9, R8, R8  // R8 = current tick + threshold
+	MOVD	main·ThreadGoroutineDeadlineOffset(SB), R5
+	ADD	R7, R5
+	MOVD	R8, (R5)  // GoroutinePreemptDeadline = new deadline
 
 userspace_check_thread_deadline:
 	// Check thread deadline: if current >= deadline, signal preemption
