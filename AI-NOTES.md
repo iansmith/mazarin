@@ -43,6 +43,55 @@ of surgery was needed.
     well. It had omitted testing the real code path but rather had just tested
     the logic of the new code created.
 
+* Feb 3, night: claude code taught me how to create agents in git worktrees that could
+work autonoumously and were allowed to do anything in there worktree.  the first "port"
+to x86_64 and risc-v was about 100 lines of assembly in arm64.
+
+* Same day, in afternoon, I asked it twice to look for multicore problems with the
+current kernel... I implemnted all the suggestions (both responses) ... the kernel
+worked on the 8 core but didn't on 8+ beacuse on 8+ cores you need the 
+GICv3 not the GICv2+ (less than 8) and I had no driver for it.
+
+Line counts for the kernel and UEFI bootloader at this day ```python
+ Here are the line counts:
+
+  Kmazarin kernel (ARM64):
+  ┌──────────────────┬────────┐
+  │                  │ Lines  │
+  ├──────────────────┼────────┤
+  │ Go source        │ 25,727 │
+  ├──────────────────┼────────┤
+  │ Go assembly (.s) │ 4,459  │
+  ├──────────────────┼────────┤
+  │ Tests            │ 5,581  │
+  ├──────────────────┼────────┤
+  │ Total (non-test) │ 30,186 │
+  └──────────────────┴────────┘
+  Cardinal bootloader (ARM64, bare-metal):
+  ┌──────────────────┬────────┐
+  │                  │ Lines  │
+  ├──────────────────┼────────┤
+  │ Go source        │ 17,440 │
+  ├──────────────────┼────────┤
+  │ Go assembly (.s) │ 6,734  │
+  ├──────────────────┼────────┤
+  │ Total            │ 24,174 │
+  └──────────────────┴────────┘
+  Diplomat bootloader (UEFI, amd64 + arm64):
+  ┌──────────────────┬───────┐
+  │                  │ Lines │
+  ├──────────────────┼───────┤
+  │ Go source        │ 3,278 │
+  ├──────────────────┼───────┤
+  │ Go assembly (.s) │ 1,166 │
+  ├──────────────────┼───────┤
+  │ Total            │ 4,444 │
+  └──────────────────┴───────┘
+
+  
+```
+ Cardinal is surprisingly large — almost as big as the kernel itself. That's the cost of bare-metal: it has to set up MMU, page
+   tables, exception vectors, UART, device tree parsing, etc. Diplomat (UEFI) gets all that from firmware, hence 5x smaller.
 ---
 
 ## Technical Patterns: Setting Read-Only Memory Protection on .rodata
