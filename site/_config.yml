@@ -1,3 +1,3 @@
 theme: jekyll-theme-slate
-title: Mazzy
-description: Cardinal bootloader + Kmazarin Go kernel for ARM64
+title: Mazarin
+description: All-Go Operating System For ARM64
