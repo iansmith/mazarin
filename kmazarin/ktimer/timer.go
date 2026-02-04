@@ -50,6 +50,15 @@ func Rearm(ticks uint64) {
 	PlatformRearmTimer(ticks)
 }
 
+// Disable stops the timer hardware from generating interrupts.
+// This is used when the kernel needs to halt timer interrupts temporarily
+// (e.g., before launching userspace threads).
+//
+//go:nosplit
+func Disable() {
+	PlatformDisableTimer()
+}
+
 // IRQNum returns the IRQ number for the timer interrupt.
 // This varies by architecture and interrupt controller:
 //

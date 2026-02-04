@@ -218,6 +218,13 @@ func (g *GICv2) initHardware() {
 		for i := uintptr(8); i < 72; i++ { // registers 8-71 cover IRQs 32-287
 			g.writeDistReg(0x800+i*4, 0x01010101)
 		}
+
+		// CRITICAL: Ensure PMR allows all priorities.
+		// Cardinal may leave PMR at a restrictive value, which silently
+		// filters SPIs configured with priority > PMR (e.g. 0xA0).
+		// The timer (priority 0x00) still passes, hiding this bug.
+		g.writeCPUReg(GICC_PMR, 0xFF)
+
 		return
 	}
 

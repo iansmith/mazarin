@@ -210,6 +210,18 @@ type InterruptController interface {
 
 	// DisableIRQ disables the given IRQ.
 	DisableIRQ(irq uint32)
+
+	// SetIRQPriority sets the priority for the given IRQ.
+	// Lower values = higher priority. The exact meaning is platform-specific.
+	SetIRQPriority(irq uint32, priority uint8)
+
+	// SetIRQTarget routes the IRQ to the specified CPU(s).
+	// cpuMask is a bitmask of target CPUs (e.g., 0x01 = CPU 0).
+	SetIRQTarget(irq uint32, cpuMask uint8)
+
+	// SetIRQEdgeTriggered configures the IRQ as edge-triggered
+	// (as opposed to level-triggered). Used for MSI-X and similar interrupts.
+	SetIRQEdgeTriggered(irq uint32)
 }
 
 // InterruptUser is implemented by devices that use interrupts.

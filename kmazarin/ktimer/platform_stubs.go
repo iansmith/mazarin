@@ -6,6 +6,7 @@ package ktimer
 // Used when building with -tags test_stubs to allow unit testing
 // without real hardware.
 
+func PlatformDisableTimer()        {}
 func PlatformTimerInit() uint32    { return 0 }
 func PlatformReadCounter() uint64  { return 0 }
 func PlatformRearmTimer(ticks uint64) {}

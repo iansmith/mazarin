@@ -12,6 +12,10 @@ package ktimer
 
 const platformTimerIRQ = 5
 
+// PlatformDisableTimer clears the supervisor timer interrupt enable bit in SIE.
+// Implemented in platform_riscv64.s.
+func PlatformDisableTimer()
+
 // PlatformTimerIRQ returns the supervisor timer interrupt number (cause 5).
 //
 //go:nosplit

@@ -2,8 +2,9 @@
 
 package main
 
-// Assembly function declarations
-// Implementations are in exceptions_arm64.s and runtime_arm64.s
+// Assembly function declarations — architecture-neutral.
+// Each function has a per-architecture assembly implementation.
+// ARM64-specific declarations are in asm_decl_arm64.go.
 
 //go:nosplit
 func GetExceptionVectorBase() uintptr
@@ -23,49 +24,16 @@ func EnableIRQs()
 //go:nosplit
 func DisableIRQs()
 
-// SaveAndDisableIRQs saves the current DAIF state and disables IRQs.
-// Returns the saved DAIF value which should be passed to RestoreIRQs.
+// SaveAndDisableIRQs saves the current interrupt state and disables IRQs.
+// Returns the saved state which should be passed to RestoreIRQs.
 // This allows nested disable/restore pairs.
 //go:nosplit
 func SaveAndDisableIRQs() uint64
 
-// RestoreIRQs restores the DAIF register to a previously saved state.
+// RestoreIRQs restores the interrupt state to a previously saved value.
 // Use with SaveAndDisableIRQs for nested critical sections.
 //go:nosplit
 func RestoreIRQs(savedDAIF uint64)
-
-//go:nosplit
-func getAuxval(tag uint64) uint64
-
-//go:nosplit
-func EnableGIC()
-
-// DisableTimerIRQ and EnableTimerIRQ are now implemented in main.go using the GIC device driver
-// instead of direct assembly register access. This ensures consistent address mapping.
-
-// DisableTimerHardware disables the ARM timer hardware (CNTV_CTL_EL0)
-// This stops the timer from generating interrupt requests
-//go:nosplit
-func DisableTimerHardware()
-
-//go:nosplit
-func RearmTimerNow()
-
-// Timer register read functions for debugging
-//go:nosplit
-func ReadCntvCtlEl0() uint64
-
-//go:nosplit
-func ReadCntvTvalEl0() uint64
-
-//go:nosplit
-func ReadCntvctEl0() uint64
-
-//go:nosplit
-func ReadCntfrqEl0() uint64
-
-//go:nosplit
-func ReadDAIF() uint64
 
 //go:nosplit
 func GetGRegister() uint64
@@ -75,7 +43,6 @@ func GetPC() uint64
 
 // asyncPreemptWrapper is the wrapper that saves g around asyncPreempt calls.
 // Used by the IRQ handler for safe async preemption.
-// Defined in exceptions_arm64.s
 //go:nosplit
 func asyncPreemptWrapper()
 
@@ -83,20 +50,19 @@ func asyncPreemptWrapper()
 // This function exists because loading function addresses directly in assembly
 // may not work correctly with Go's ABI system. By calling this Go function,
 // we let the Go toolchain handle the ABI0 symbol resolution properly.
-// Defined in exceptions_arm64.s
 //go:nosplit
 func getAsyncPreemptWrapperAddr() uintptr
 
 // HandlePageFaultAsm is the ABI0 entry point for the page fault handler.
-// Called from data_abort in exceptions_arm64.s
-// Takes faultAddr as argument, returns bool (1=handled, 0=not handled)
+// Called from exception handler assembly.
+// Takes faultAddr as argument, returns bool (1=handled, 0=not handled).
 //go:nosplit
 func HandlePageFaultAsm(faultAddr uint64) uint64
 
 // HandleUserPageFaultAsm is the ABI0 entry point for userspace page fault handler.
-// Called from el0_sync_handler for data aborts from EL0 (userspace programs).
+// Called from exception handler for page faults from userspace.
 // Handles demand paging for mmap'd regions.
-// Takes faultAddr as argument, returns bool (1=handled, 0=not handled)
+// Takes faultAddr as argument, returns bool (1=handled, 0=not handled).
 //go:nosplit
 func HandleUserPageFaultAsm(faultAddr uint64) uint64
 
@@ -114,12 +80,12 @@ func GetSyscallSwitchTarget() int64
 //go:nosplit
 func DoContextSwitch(framePtr uint64, targetIdx int32) uint64
 
-// SetSyscallELR stores the ELR_EL1 for the current syscall.
+// SetSyscallELR stores the return address for the current syscall.
 // Called by assembly before DispatchSyscall so clone can get the proper return address.
 //go:nosplit
 func SetSyscallELR(elr uint64)
 
-// SetSyscallSPSR stores the SPSR_EL1 for the current syscall.
+// SetSyscallSPSR stores the processor state for the current syscall.
 // Called by assembly before DispatchSyscall so clone can get the proper processor state.
 //go:nosplit
 func SetSyscallSPSR(spsr uint64)
@@ -133,14 +99,14 @@ func SetSyscallSPSR(spsr uint64)
 func CheckThreadPreemption(framePtr uint64) uint64
 
 // RunFirstThread starts the first thread from the ready queue.
-// Waits for a thread to become ready, then switches to it via ERET.
+// Waits for a thread to become ready, then switches to it via ERET/IRET/SRET.
 // This function never returns - it transitions to userspace.
 // Called from kernel main after launching threads.
 //go:nosplit
 func RunFirstThread()
 
 // YieldToReadyThread saves thread 0's full register state into its ThreadContext,
-// puts thread 0 on the ready queue, and ERETs to the next ready thread.
+// puts thread 0 on the ready queue, and returns to the next ready thread.
 // When thread 0 is scheduled back via timer preemption, execution resumes
 // at the instruction after the call to YieldToReadyThread.
 // If no other thread is available, returns without yielding.

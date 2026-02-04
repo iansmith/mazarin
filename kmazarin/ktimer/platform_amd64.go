@@ -11,6 +11,10 @@ package ktimer
 
 const platformTimerIRQ = 0x20
 
+// PlatformDisableTimer stops the LAPIC timer from generating interrupts.
+// Implemented in platform_amd64.s.
+func PlatformDisableTimer()
+
 // PlatformTimerIRQ returns the LAPIC timer vector number.
 //
 //go:nosplit

@@ -1,3 +1,5 @@
+//go:build arm64 && !test_stubs
+
 package main
 
 import "unsafe"

@@ -186,16 +186,7 @@ func (p *Priest) Id() int32 {
 	return int32(p.PID)
 }
 
-// ThreadContext holds saved CPU state for a thread
-type ThreadContext struct {
-	// General purpose registers x0-x30
-	X [31]uint64
-
-	// Special registers
-	SP   uint64 // SP_EL0
-	ELR  uint64 // Return address (ELR_EL1)
-	SPSR uint64 // Processor state (SPSR_EL1)
-}
+// ThreadContext is defined in thread_context_<arch>.go (per-architecture).
 
 // ThreadId is a unique thread identifier (0-31)
 type ThreadId int16
@@ -900,7 +891,7 @@ func SaveThread0AndYield() uint64 {
 	next.GoroutineStart = currentTime
 	next.ThreadPreemptDeadline = currentTime + kirq.ThreadPreemptTicks
 	next.GoroutinePreemptDeadline = currentTime + kirq.GoroutinePreemptTicks
-	next.LastSeenG = next.Context.X[28]
+	next.LastSeenG = next.Context.GetGRegister()
 	next.PreemptElapsed = 0
 	next.GoroutineElapsed = 0
 	next.TicksStartedRunning = currentTime
@@ -992,7 +983,7 @@ func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
 	thread.GoroutineStart = currentTime
 	thread.ThreadPreemptDeadline = currentTime + kirq.ThreadPreemptTicks
 	thread.GoroutinePreemptDeadline = currentTime + kirq.GoroutinePreemptTicks
-	thread.LastSeenG = thread.Context.X[28] // Use saved g
+	thread.LastSeenG = thread.Context.GetGRegister() // Use saved g
 	thread.PreemptElapsed = 0
 	thread.GoroutineElapsed = 0
 	thread.TicksStartedRunning = currentTime
@@ -1135,14 +1126,7 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 	//   - SP = new stack (with fn/gp/mp already pushed by parent)
 	// clone.abi0 then loads fn/gp/mp from stack and calls the entry function.
 	// Setting ELR = fn directly SKIPS this setup code, causing crashes!
-	t.Context.X[0] = 0         // Child returns with TID = 0
-	t.Context.SP = stack       // New stack (fn/gp/mp already on stack from parent)
-	t.Context.ELR = returnAddr // Return INTO clone.abi0 (after SVC instruction)
-	// Copy processor state from parent BUT clear DAIF.I bit to ensure IRQs enabled
-	// This prevents a chain of context switches where IRQs stay permanently disabled.
-	// DAIF.I is bit 7 (0x80) in PSTATE/SPSR.
-	t.Context.SPSR = spsr & ^uint64(0x80)  // Same processor state but with IRQs enabled
-	t.Context.X[28] = gp       // g register (also loaded from stack by clone.abi0)
+	t.Context.SetupForCloneChild(stack, returnAddr, gp, spsr)
 
 	if sf != nil && sf.StateCheck != nil {
 		sf.StateCheck("clone-thread-created")
@@ -1454,13 +1438,7 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	}
 
 	// Set up initial context for userspace execution
-	// All general-purpose registers start at 0
-	for i := 0; i < 31; i++ {
-		t.Context.X[i] = 0
-	}
-	t.Context.SP = stackPtr    // User stack pointer (SP_EL0)
-	t.Context.ELR = entryPoint  // Entry point (program counter)
-	t.Context.SPSR = 0          // SPSR for EL0: M[3:0]=0000 (EL0t), M[4]=0 (AArch64)
+	t.Context.SetupForUserspace(entryPoint, stackPtr)
 
 	// Set HomeCPU to current CPU for cache locality
 	t.HomeCPU = int8(GetCPUID())
@@ -2237,62 +2215,8 @@ const (
 	excFrameSPSR   = 264 // SPSR_EL1
 )
 
-// SaveContextFromFrame saves the current thread's context from an exception frame
-//
-//go:nosplit
-//go:noinline
-func SaveContextFromFrame(framePtr uintptr) {
-	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
-	if t == nil {
-		return
-	}
-
-	// Handle nil frame (can happen in tests)
-	if framePtr == 0 {
-		return
-	}
-	frame := (*[40]uint64)(unsafe.Pointer(framePtr))
-
-	for i := 0; i < 28; i++ {
-		t.Context.X[i] = frame[i]
-	}
-
-	t.Context.X[28] = frame[28]
-	t.Context.X[29] = frame[29]
-	t.Context.X[30] = frame[30]
-	t.Context.SP = frame[36]
-	t.Context.ELR = frame[32]
-	t.Context.SPSR = frame[33]
-}
-
-// doContextSwitchABI0 is the ABI0 entry point for context switching
-// Called from assembly via DoContextSwitch stub with 2 arguments.
-// targetPtr is actually a pointer to ThreadContext (returned by getSyscallSwitchTargetInternal)
-//
-//go:nosplit
-//go:noinline
-func doContextSwitchABI0(framePtr uint64, targetPtr uint64) uint64 {
-	// Find which thread owns this context
-	targetCtx := (*ThreadContext)(unsafe.Pointer(uintptr(targetPtr)))
-
-	// Find the thread index by matching context pointer
-	// Use StaticList.Data slice which points to threadListData
-	targetIdx := int32(-1)
-	for i := int32(0); i < MaxThreads; i++ {
-		if &threadList.Data[i].Context == targetCtx {
-			targetIdx = i
-			break
-		}
-	}
-
-	if targetIdx < 0 {
-		return 0
-	}
-
-	// Use NormalSchedulerFunc for production calls from assembly
-	ctx := doContextSwitchImpl(&NormalSchedulerFunc, uintptr(framePtr), targetIdx)
-	return uint64(uintptr(unsafe.Pointer(ctx)))
-}
+// SaveContextFromFrame is defined in save_context_<arch>.go (per-architecture).
+// doContextSwitchABI0 is defined in save_context_<arch>.go (per-architecture).
 
 // doContextSwitchImpl performs a context switch from current thread to target
 //
@@ -2398,7 +2322,7 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	// This preserves the goroutine that was running when the thread was
 	// preempted, allowing async preemption tracking to work correctly
 	// when we resume this thread.
-	newThread.LastSeenG = newThread.Context.X[28]
+	newThread.LastSeenG = newThread.Context.GetGRegister()
 
 	// Mark when this thread started running for runtime accounting
 	newThread.TicksStartedRunning = currentTime
@@ -2463,55 +2387,7 @@ func GetThread(idx uintptr) *Thread {
 	return threadList.Get(int(idx))
 }
 
-// SaveCurrentThreadContext saves the current thread's context
-//
-//go:nosplit
-func SaveCurrentThreadContext(
-	x0, x1, x2, x3, x4, x5, x6, x7 uint64,
-	x8, x9, x10, x11, x12, x13, x14, x15 uint64,
-	x16, x17, x18, x19, x20, x21, x22, x23 uint64,
-	x24, x25, x26, x27, x28, x29, x30 uint64,
-	sp, elr, spsr uint64,
-) {
-	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
-	if t == nil {
-		return
-	}
-	t.Context.X[0] = x0
-	t.Context.X[1] = x1
-	t.Context.X[2] = x2
-	t.Context.X[3] = x3
-	t.Context.X[4] = x4
-	t.Context.X[5] = x5
-	t.Context.X[6] = x6
-	t.Context.X[7] = x7
-	t.Context.X[8] = x8
-	t.Context.X[9] = x9
-	t.Context.X[10] = x10
-	t.Context.X[11] = x11
-	t.Context.X[12] = x12
-	t.Context.X[13] = x13
-	t.Context.X[14] = x14
-	t.Context.X[15] = x15
-	t.Context.X[16] = x16
-	t.Context.X[17] = x17
-	t.Context.X[18] = x18
-	t.Context.X[19] = x19
-	t.Context.X[20] = x20
-	t.Context.X[21] = x21
-	t.Context.X[22] = x22
-	t.Context.X[23] = x23
-	t.Context.X[24] = x24
-	t.Context.X[25] = x25
-	t.Context.X[26] = x26
-	t.Context.X[27] = x27
-	t.Context.X[28] = x28
-	t.Context.X[29] = x29
-	t.Context.X[30] = x30
-	t.Context.SP = sp
-	t.Context.ELR = elr
-	t.Context.SPSR = spsr
-}
+// SaveCurrentThreadContext is defined in save_context_<arch>.go (per-architecture).
 
 // printTickDistributionNoSplit prints tick distribution using only nosplit
 // console functions. Called from checkThreadPreemptionImpl/doContextSwitchImpl at shutdown.

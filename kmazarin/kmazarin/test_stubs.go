@@ -2,9 +2,9 @@
 
 package main
 
-// Stub implementations for test builds to avoid assembly link errors.
+// Stub implementations for test builds — architecture-neutral.
 // These functions are implemented in assembly and need stubs when assembly is excluded.
-// Signatures must match asm_decl.go exactly.
+// ARM64-specific stubs are in test_stubs_arm64.go.
 
 //go:nosplit
 func GetExceptionVectorBase() uintptr { return 0 }
@@ -29,33 +29,6 @@ func SaveAndDisableIRQs() uint64 { return 0 }
 
 //go:nosplit
 func RestoreIRQs(savedDAIF uint64) {}
-
-//go:nosplit
-func getAuxval(tag uint64) uint64 { return 0 }
-
-//go:nosplit
-func EnableGIC() {}
-
-//go:nosplit
-func DisableTimerHardware() {}
-
-//go:nosplit
-func RearmTimerNow() {}
-
-//go:nosplit
-func ReadCntvCtlEl0() uint64 { return 0 }
-
-//go:nosplit
-func ReadCntvTvalEl0() uint64 { return 0 }
-
-//go:nosplit
-func ReadCntvctEl0() uint64 { return 1000 }
-
-//go:nosplit
-func ReadCntfrqEl0() uint64 { return 62500000 }
-
-//go:nosplit
-func ReadDAIF() uint64 { return 0 }
 
 //go:nosplit
 func GetGRegister() uint64 { return 0 }
@@ -97,18 +70,17 @@ func RunFirstThread() {}
 func YieldToReadyThread() {}
 
 // Additional stubs for functions called from Go code
-
-func IRQDispatch() {}
-func SyscallDispatch() {}
-func TimerIRQHandler() {}
+func IRQDispatch()       {}
+func SyscallDispatch()   {}
+func TimerIRQHandler()   {}
 
 // System control
 func WaitForInterrupt() {}
-func Exit() {}
+func Exit()             {}
 
 // MMU and TLB
-func invalidateTLB() {}
-func readTTBR0() uint64 { return 0 }
+func invalidateTLB()       {}
+func readTTBR0() uint64    { return 0 }
 
 // Barriers
 func dsb() {}

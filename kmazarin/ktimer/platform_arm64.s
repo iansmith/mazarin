@@ -2,6 +2,17 @@
 
 #include "textflag.h"
 
+// PlatformDisableTimer disables the ARM virtual timer hardware.
+// func PlatformDisableTimer()
+TEXT ·PlatformDisableTimer(SB), NOSPLIT, $0
+	// Disable timer: CNTV_CTL_EL0 = 0 (disable bit clear)
+	MOVD	$0, R0
+	// MSR CNTV_CTL_EL0, X0
+	// CNTV_CTL_EL0 = S3_3_C14_C3_1 (op0=3, op1=3, CRn=14, CRm=3, op2=1)
+	WORD	$0xD51BE320
+	ISB	$15
+	RET
+
 // PlatformRearmTimer sets the virtual timer using absolute compare value.
 // func PlatformRearmTimer(ticks uint64)
 TEXT ·PlatformRearmTimer(SB), NOSPLIT, $0-8

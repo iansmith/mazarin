@@ -2,9 +2,9 @@ package main
 
 import (
 	"fmt"
-	arm64gic "mazzy/kmazarin/arch/arm64/gic"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
+	"mazzy/kmazarin/deviceapi"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/device/virtio/input"
 	"mazzy/shared/fs/fat32"
@@ -12,6 +12,7 @@ import (
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/ksyscall"
 	"mazzy/kmazarin/ktime"
+	"mazzy/kmazarin/ktimer"
 	"mazzy/kmazarin/uart"
 	_ "os"     // Keep to maintain BSS size
 	"runtime"
@@ -314,8 +315,8 @@ func testRuntimeReadiness() bool {
 	}
 	thread.State = ThreadReady
 	thread.TID = 999
-	thread.Context.X[0] = 0xDEADBEEF
-	if thread.State != ThreadReady || thread.TID != 999 || thread.Context.X[0] != 0xDEADBEEF {
+	thread.Context.SetReturnValue(0xDEADBEEF)
+	if thread.State != ThreadReady || thread.TID != 999 || thread.Context.GetReturnValue() != 0xDEADBEEF {
 		return false
 	}
 
@@ -336,296 +337,40 @@ func testRuntimeReadiness() bool {
 	return true
 }
 
-// DisableTimerIRQ disables BOTH the timer hardware and its IRQ at the GIC.
+// DisableTimerIRQ disables BOTH the timer hardware and its IRQ at the interrupt controller.
 // This is necessary because disabling just the IRQ masks delivery but doesn't
 // stop the timer from generating interrupt requests.
-// DisableTimerIRQ disables the timer IRQ using the cached GIC pointer.
-//
-//go:nosplit
 func DisableTimerIRQ() {
-	DisableTimerHardware()
-	if cachedGIC != nil {
-		cachedGIC.DisableIRQ(27)
+	ktimer.Disable()
+	if cachedIC != nil {
+		cachedIC.DisableIRQ(ktimer.IRQNum())
 	}
 }
 
-// printHex32 prints a 32-bit hex value directly to UART
-//go:nosplit
-func printHex32(uartBase uintptr, val uint32) {
-	hexChars := "0123456789ABCDEF"
-	for i := 28; i >= 0; i -= 4 {
-		nibble := (val >> i) & 0xF
-		*(*uint32)(unsafe.Pointer(uartBase)) = uint32(hexChars[nibble])
+// printTimerDebug is defined in debug_arm64.go (ARM64-specific).
+
+// cachedIC holds a reference to the interrupt controller for timer enable/disable.
+// Set once during boot after device discovery.
+var cachedIC deviceapi.InterruptController
+
+// initCachedIC must be called once during boot after device discovery.
+func initCachedIC() {
+	if ic, ok := device.GetInterruptController(); ok {
+		cachedIC = ic
 	}
 }
 
-// printTimerDebug prints comprehensive timer and GIC debug info
-func printTimerDebug() {
-	const uartBaseAddr = uintptr(0xFFFFFFFF09000000)
-	const gicDist = 0x08000000
-
-	// Print header
-	str := "\r\n=== TIMER DEBUG ===\r\n"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-
-	// Read timer registers
-	ctl := ReadCntvCtlEl0()
-	tval := ReadCntvTvalEl0()
-	cval := ReadCntvctEl0()
-	freq := ReadCntfrqEl0()
-	daif := ReadDAIF()
-
-	// Print CNTV_CTL_EL0
-	str = "CNTV_CTL_EL0: 0x"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	printHex32(uartBaseAddr, uint32(ctl))
-	str = " (enable="
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	*(*uint32)(unsafe.Pointer(uartBaseAddr)) = '0' + uint32(ctl&1)
-	str = " mask="
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	*(*uint32)(unsafe.Pointer(uartBaseAddr)) = '0' + uint32((ctl>>1)&1)
-	str = " status="
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	*(*uint32)(unsafe.Pointer(uartBaseAddr)) = '0' + uint32((ctl>>2)&1)
-	str = ")\r\n"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-
-	// Print CNTV_TVAL_EL0 (signed!)
-	str = "CNTV_TVAL_EL0: "
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	if (tval & 0x80000000) != 0 {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = '-'
-		printHex32(uartBaseAddr, uint32(-int32(tval)))
-	} else {
-		printHex32(uartBaseAddr, uint32(tval))
-	}
-	*(*uint32)(unsafe.Pointer(uartBaseAddr)) = '\r'
-	*(*uint32)(unsafe.Pointer(uartBaseAddr)) = '\n'
-
-	// Print CNTVCT_EL0
-	str = "CNTVCT_EL0: 0x"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	printHex(cval)
-	*(*uint32)(unsafe.Pointer(uartBaseAddr)) = '\r'
-	*(*uint32)(unsafe.Pointer(uartBaseAddr)) = '\n'
-
-	// Print CNTFRQ_EL0
-	str = "CNTFRQ_EL0: "
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	printHex32(uartBaseAddr, uint32(freq))
-	str = " Hz\r\n"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-
-	// Print DAIF
-	str = "DAIF: 0x"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	printHex32(uartBaseAddr, uint32(daif))
-	str = " (I="
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	*(*uint32)(unsafe.Pointer(uartBaseAddr)) = '0' + uint32((daif>>7)&1)
-	str = ")\r\n"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-
-	// Read GIC registers for IRQ 27
-	// GICD_ISENABLER0 (0x08000100) - bit 27 should be 1
-	isenabler := *(*uint32)(unsafe.Pointer(uintptr(gicDist + 0x100)))
-	str = "GICD_ISENABLER0: 0x"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	printHex32(uartBaseAddr, isenabler)
-	str = " (bit27="
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	*(*uint32)(unsafe.Pointer(uartBaseAddr)) = '0' + uint32((isenabler>>27)&1)
-	str = ")\r\n"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-
-	// GICD_ISPENDR0 (0x08000200) - bit 27 shows if interrupt is pending
-	ispendr := *(*uint32)(unsafe.Pointer(uintptr(gicDist + 0x200)))
-	str = "GICD_ISPENDR0: 0x"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	printHex32(uartBaseAddr, ispendr)
-	str = " (bit27="
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	*(*uint32)(unsafe.Pointer(uartBaseAddr)) = '0' + uint32((ispendr>>27)&1)
-	str = ")\r\n"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-
-	// GICD_ISACTIVER0 (0x08000300) - bit 27 shows if interrupt is active
-	isactiver := *(*uint32)(unsafe.Pointer(uintptr(gicDist + 0x300)))
-	str = "GICD_ISACTIVER0: 0x"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	printHex32(uartBaseAddr, isactiver)
-	str = " (bit27="
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	*(*uint32)(unsafe.Pointer(uartBaseAddr)) = '0' + uint32((isactiver>>27)&1)
-	str = ")\r\n"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-
-	// Check IRQ 27 priority (GICD_IPRIORITYR6 byte 3)
-	// IRQ 27 = priority register 27/4 = 6, byte offset 27%4 = 3
-	ipriority6 := *(*uint32)(unsafe.Pointer(uintptr(gicDist + 0x400 + 24))) // Register 6 (0x418)
-	str = "GICD_IPRIORITYR6: 0x"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	printHex32(uartBaseAddr, ipriority6)
-	str = " (IRQ27 pri="
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	priority27 := (ipriority6 >> 24) & 0xFF
-	printHex32(uartBaseAddr, priority27)
-	str = ")\r\n"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-
-	// Check IRQ 27 target (GICD_ITARGETSR6 byte 3)
-	// IRQ 27 = target register 27/4 = 6, byte offset 27%4 = 3
-	itargets6 := *(*uint32)(unsafe.Pointer(uintptr(gicDist + 0x800 + 24))) // Register 6 (0x818)
-	str = "GICD_ITARGETSR6: 0x"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	printHex32(uartBaseAddr, itargets6)
-	str = " (IRQ27 cpu="
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	target27 := (itargets6 >> 24) & 0xFF
-	printHex32(uartBaseAddr, target27)
-	str = ")\r\n"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-
-	// Check GIC CPU interface priority mask
-	const gicCpu = 0x08010000
-	giccPmr := *(*uint32)(unsafe.Pointer(uintptr(gicCpu + 0x004)))
-	str = "GICC_PMR: 0x"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	printHex32(uartBaseAddr, giccPmr)
-	*(*uint32)(unsafe.Pointer(uartBaseAddr)) = '\r'
-	*(*uint32)(unsafe.Pointer(uartBaseAddr)) = '\n'
-
-	// Check GICD_CTLR (distributor control)
-	gicdCtlr := *(*uint32)(unsafe.Pointer(uintptr(gicDist + 0x000)))
-	str = "GICD_CTLR: 0x"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	printHex32(uartBaseAddr, gicdCtlr)
-	*(*uint32)(unsafe.Pointer(uartBaseAddr)) = '\r'
-	*(*uint32)(unsafe.Pointer(uartBaseAddr)) = '\n'
-
-	// Check GICC_CTLR (CPU interface control)
-	giccCtlr := *(*uint32)(unsafe.Pointer(uintptr(gicCpu + 0x000)))
-	str = "GICC_CTLR: 0x"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	printHex32(uartBaseAddr, giccCtlr)
-	*(*uint32)(unsafe.Pointer(uartBaseAddr)) = '\r'
-	*(*uint32)(unsafe.Pointer(uartBaseAddr)) = '\n'
-
-	// Check GICD_IGROUPR0 (interrupt group register - Group 0 vs Group 1)
-	// IRQ 27 is bit 27 of IGROUPR0
-	igroupr0 := *(*uint32)(unsafe.Pointer(uintptr(gicDist + 0x080)))
-	str = "GICD_IGROUPR0: 0x"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	printHex32(uartBaseAddr, igroupr0)
-	str = " (IRQ27 grp="
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-	*(*uint32)(unsafe.Pointer(uartBaseAddr)) = '0' + uint32((igroupr0>>27)&1)
-	str = ")\r\n"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-
-	str = "==================\r\n"
-	for i := 0; i < len(str); i++ {
-		*(*uint32)(unsafe.Pointer(uartBaseAddr)) = uint32(str[i])
-	}
-}
-
-// EnableTimerIRQ enables the timer IRQ (27) using the GIC device driver.
-//
-// cachedGIC holds a direct reference to the GIC, avoiding interface dispatch
-// (which can trigger morestack) in hot paths like timer enable/disable.
-var cachedGIC *arm64gic.GICv2
-
-// initCachedGIC must be called once during boot after device discovery.
-func initCachedGIC() {
-	if gic, ok := device.GetInterruptController(); ok {
-		if g, ok := gic.(*arm64gic.GICv2); ok {
-			cachedGIC = g
-		}
-	}
-}
-
-// EnableTimerIRQ enables the timer IRQ (27) using the cached GIC pointer.
-//
-//go:nosplit
+// EnableTimerIRQ enables the timer IRQ using the cached interrupt controller.
 func EnableTimerIRQ() {
-	if cachedGIC != nil {
-		// CRITICAL: Rearm timer BEFORE enabling GIC IRQ.
-		// IRQ 27 is edge-triggered. If the timer line is already asserted
-		// (ISTATUS=1 from a previous expiration) when we enable the GIC,
-		// there's no rising edge and the GIC never generates the interrupt.
-		// Rearming first clears ISTATUS (line goes low), then after the GIC
-		// enable, the next expiration creates a proper rising edge.
-		RearmTimerNow()
-		cachedGIC.EnableIRQ(27)
+	if cachedIC != nil {
+		// CRITICAL: Rearm timer BEFORE enabling the IRQ at the controller.
+		// On ARM64, IRQ 27 is edge-triggered. If the timer line is already
+		// asserted (ISTATUS=1 from a previous expiration) when we enable
+		// the controller, there's no rising edge and the interrupt never fires.
+		// Rearming first clears the pending state, then after the enable,
+		// the next expiration creates a proper edge.
+		ktimer.Rearm(kirq.GetTimerTicksFor10ms())
+		cachedIC.EnableIRQ(ktimer.IRQNum())
 	}
 }
 
@@ -742,21 +487,21 @@ func initVirtIOInputDevices() {
 
 		// Register the input dispatch handler in both GIC and kirq tables
 		input.RegisterIRQDevice(irqNum, dev)
-		if cachedGIC != nil {
+		if cachedIC != nil {
 			// Capture irqNum for closure (Go 1.22+ loop var semantics make this safe,
 			// but be explicit for clarity)
 			localIRQ := irqNum
 			// Register handler: when this IRQ fires, dispatch to input driver
-			cachedGIC.RegisterHandler(localIRQ, func() {
+			cachedIC.RegisterHandler(localIRQ, func() {
 				input.DispatchIRQ(uint64(localIRQ))
 			})
 			// MSI-X interrupts are edge-triggered (message write = edge event)
-			cachedGIC.SetIRQEdgeTriggered(localIRQ)
+			cachedIC.SetIRQEdgeTriggered(localIRQ)
 			// Set priority to 0xA0 (lower than timer at 0x00, higher than nothing)
-			cachedGIC.SetIRQPriority(localIRQ, 0xA0)
+			cachedIC.SetIRQPriority(localIRQ, 0xA0)
 			// Route to CPU 0 (required — bulk SPI init may not cover MSI-X IRQs)
-			cachedGIC.SetIRQTarget(localIRQ, 0x01)
-			cachedGIC.EnableIRQ(localIRQ)
+			cachedIC.SetIRQTarget(localIRQ, 0x01)
+			cachedIC.EnableIRQ(localIRQ)
 		}
 	}
 
@@ -838,7 +583,7 @@ func simpleMain() {
 	testDeviceDiscovery()
 
 	// Cache GIC pointer for nosplit-safe timer IRQ enable/disable
-	initCachedGIC()
+	initCachedIC()
 
 	// Initialize VirtIO GPU for display output
 	initVirtIOGPU()

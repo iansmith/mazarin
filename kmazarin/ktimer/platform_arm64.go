@@ -12,6 +12,11 @@ package ktimer
 
 const platformTimerIRQ = 27
 
+// PlatformDisableTimer disables the ARM virtual timer hardware (CNTV_CTL_EL0).
+// Stops the timer from generating interrupt requests.
+// Implemented in platform_arm64.s.
+func PlatformDisableTimer()
+
 // PlatformTimerIRQ returns the GICv2 virtual timer PPI number.
 //
 //go:nosplit
