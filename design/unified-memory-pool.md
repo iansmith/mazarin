@@ -4,7 +4,7 @@
 
 Kmazarin uses a three-layer memory management system:
 
-1. **Linear map** (Cardinal): Maps all physical RAM into kernel VA space using 2MB L2 block descriptors, so any physical address can be accessed via `VA = PA + KernelVAOffset` without faulting.
+1. **Linear map** (bootloader): Maps all physical RAM into kernel VA space using large-page descriptors, so any physical address can be accessed via `VA = PA + KernelVAOffset` without faulting.
 
 2. **Buddy allocator** (kmazarin): Manages physical pages in power-of-two blocks (orders 0-11, 4KB to 8MB). Supports both allocation and deallocation with buddy merging.
 
@@ -12,76 +12,7 @@ Kmazarin uses a three-layer memory management system:
 
 A bump allocator handles the earliest boot allocations before the buddy allocator is initialized.
 
-## Physical Memory Layout
-
-```
-0x40000000  ┌──────────────────────────────────────┐
-            │  DTB (1 MB)                          │
-0x40100000  ├──────────────────────────────────────┤
-            │  Cardinal (15 MB)                    │
-0x41000000  ├──────────────────────────────────────┤
-            │  VirtIO GPU Framebuffer (32 MB)      │
-0x43000000  ├──────────────────────────────────────┤
-            │  Page Tables (8 MB)                  │
-0x43800000  ├──────────────────────────────────────┤
-            │  Kmazarin ELF (~2.2 MB)              │
-~0x43A00000 ├──────────────────────────────────────┤
-            │                                      │
-            │  UNIFIED POOL                        │
-            │  (buddy allocator, capped at 4GB)    │
-            │                                      │
-            │  First ~76 pages: bump-allocated     │
-            │  during early boot before buddy init │
-            │                                      │
-            │  Remaining: managed by buddy         │
-            │  allocator (orders 0-11)             │
-            │                                      │
-0x100000000 └──────────────────────────────────────┘
-            (4GB cap due to KernelVAOffset wrap)
-```
-
-## Linear Map (Cardinal)
-
-Cardinal creates a full linear map of physical RAM at boot using 2MB L2 block descriptors in TTBR1 page tables. This means any physical address can be accessed as:
-
-```
-VA = PA + KernelVAOffset    (KernelVAOffset = 0xFFFFFFFF00000000)
-```
-
-### Implementation
-
-```go
-// cardinal/main/mmu_mapping.go
-
-func createLinearMap(ramStart, ramEnd uintptr) {
-    // For each 2MB chunk of physical RAM:
-    //   Create L2 block descriptor in TTBR1 page tables
-    //   Skip regions already mapped with 4KB pages (stacks, MMIO)
-}
-```
-
-Block descriptors differ from table descriptors in bit[1]:
-- Block: `bits[1:0] = 01` (valid + block) - maps 2MB directly
-- Table: `bits[1:0] = 11` (valid + table) - points to L3 table
-
-### Page Table Overhead
-
-| RAM Size | L2 Entries | L2 Tables | Total PT Pages |
-|----------|------------|-----------|----------------|
-| 512 MB   | 256        | 1         | 3 (12 KB)      |
-| 8 GB     | 4096       | 8         | 10 (40 KB)     |
-
-### 4GB Address Limitation
-
-`KernelVAOffset = 0xFFFFFFFF00000000` causes wraparound for PAs >= 0x100000000 (4GB). For example:
-
-```
-PA 0x100000000 + 0xFFFFFFFF00000000 = 0x10000000000000000 → wraps to 0x0
-```
-
-Since this is kernel-only memory management, the buddy allocator caps its pool at the 4GB boundary. This provides ~3GB of managed memory, which is sufficient for the kernel's 64MB budget.
-
-## Buddy Allocator
+## Architecture-Neutral: Buddy Allocator
 
 ### Design
 
@@ -146,7 +77,7 @@ The buddy allocator warns on every allocation that pushes total kernel memory (b
 [kmem] WARNING: kernel memory exceeds 64MB (0x4001 pages, bootstrap=0x4C buddy=0x3FB5)
 ```
 
-## Page Tracking (Top-Half / Bottom-Half)
+## Architecture-Neutral: Page Tracking (Top-Half / Bottom-Half)
 
 ### Architecture
 
@@ -154,16 +85,16 @@ The buddy allocator warns on every allocation that pushes total kernel memory (b
 Page Fault Handler          Event Poller          Page Tracking
 (nosplit, exception stack)  (goroutine)           Bottom Half
                                                    (goroutine)
-        │                        │                      │
-        │ QueueDeferredRecord()  │                      │
-        ├───────────────────────>│                      │
-        │  (lock-free ring buf)  │                      │
-        │                        │ PageTrackingPending  │
-        │                        ├─────────────────────>│
-        │                        │  (channel signal)    │
-        │                        │                      │ ProcessDeferredRecords()
-        │                        │                      │ → TrackPage()
-        │                        │                      │   (static array insert)
+        |                        |                      |
+        | QueueDeferredRecord()  |                      |
+        |----------------------->|                      |
+        |  (lock-free ring buf)  |                      |
+        |                        | PageTrackingPending  |
+        |                        |--------------------->|
+        |                        |  (channel signal)    |
+        |                        |                      | ProcessDeferredRecords()
+        |                        |                      | -> TrackPage()
+        |                        |                      |   (static array insert)
 ```
 
 ### Data Structures
@@ -200,7 +131,7 @@ var pageTracker [32768]PageAllocInfo  // ~768KB, covers up to 128MB
 - `HandleUserPageFault`: userspace pages (demand-paged)
 - `allocPTPage`: page table pages (kernel and user)
 
-## File Loading with Buddy Allocator
+## Architecture-Neutral: File Loading with Buddy Allocator
 
 ELF files are loaded into buddy-allocated buffers instead of the Go heap:
 
@@ -220,27 +151,7 @@ Benefits:
 - No Go heap pressure or GC involvement
 - Each ~2.2MB priest ELF uses an order-10 (4MB) block, freed immediately
 
-## walkPageTable and L2 Block Descriptors
-
-`walkPageTable()` in `paging.go` must handle both L2 block descriptors (from the linear map) and L2 table pointers (from 4KB page mappings):
-
-```go
-// Check if L2 entry is a block descriptor (2MB) or table pointer
-if (l2Entry & 0x2) == 0 {
-    // Block descriptor - extract PA directly
-    blockPA := uintptr(l2Entry & PTE_ADDR_MASK)
-    pageOffset := va & ((1 << L2Shift) - 1)
-    return blockPA | pageOffset
-}
-
-// Table pointer - walk to L3
-l3PA := uintptr(l2Entry & PTE_ADDR_MASK)
-// ... continue walk
-```
-
-This is critical because `allocPTPage()` allocates from the buddy pool (linear map range), then `mapPage()` calls `walkPageTable()` to translate those VAs. Without the block descriptor check, the walker would misinterpret 2MB block entries as L3 table pointers.
-
-## Memory Overhead
+## Architecture-Neutral: Memory Overhead
 
 | Structure                | Size     |
 |--------------------------|----------|
@@ -250,42 +161,137 @@ This is critical because `allocPTPage()` allocates from the buddy pool (linear m
 | Linear map page tables    | ~40 KB   |
 | **Total**                 | **~840 KB** |
 
-## Cardinal PTE Creation Sequence
+## Linear Map Concept
 
-Cardinal creates TTBR1 (kernel) page table entries in two phases, both using direct high-memory mapping (no low-memory staging).
+Every platform maps all physical RAM into kernel VA space using large-page descriptors:
 
-### Phase 1: MMU Init (`mmu_init.go`)
+```
+VA = PA + KernelVAOffset
+```
+
+The offset value is platform-specific, but the concept is universal. This enables:
+- Intrusive free lists in the buddy allocator (free pages can be written to directly)
+- Direct access to any physical address from kernel code
+- No need for temporary mappings during memory management
+
+## Per-Architecture: Physical Memory Layout
+
+### ARM64 (QEMU virt)
+
+```
+0x40000000  +--------------------------------------+
+            |  DTB (1 MB)                          |
+0x40100000  +--------------------------------------+
+            |  Cardinal (15 MB)                    |
+0x41000000  +--------------------------------------+
+            |  VirtIO GPU Framebuffer (32 MB)      |
+0x43000000  +--------------------------------------+
+            |  Page Tables (8 MB)                  |
+0x43800000  +--------------------------------------+
+            |  Kmazarin ELF (~2.2 MB)              |
+~0x43A00000 +--------------------------------------+
+            |                                      |
+            |  UNIFIED POOL                        |
+            |  (buddy allocator, capped at 4GB)    |
+            |                                      |
+            |  First ~76 pages: bump-allocated     |
+            |  during early boot before buddy init |
+            |                                      |
+            |  Remaining: managed by buddy         |
+            |  allocator (orders 0-11)             |
+            |                                      |
+0x100000000 +--------------------------------------+
+            (4GB cap due to KernelVAOffset wrap)
+```
+
+- `KernelVAOffset = 0xFFFFFFFF00000000`
+- 4GB wraparound limitation: `PA 0x100000000 + 0xFFFFFFFF00000000 = 0x10000000000000000` wraps to 0x0
+- Buddy allocator caps its pool at the 4GB boundary (~3GB managed memory)
+
+### x86_64 (QEMU)
+
+*(placeholder: RAM at 0x0, ISA hole at 640K-1M, different layout TBD)*
+
+### RISC-V (QEMU virt)
+
+*(placeholder: RAM at 0x80000000, layout TBD)*
+
+## Per-Architecture: Page Table Format
+
+### ARM64
+
+4-level page tables: L0 / L1 / L2 / L3, kernel uses TTBR1_EL1.
+
+Block descriptors (bit[1]=0) vs table descriptors (bit[1]=1):
+- Block: `bits[1:0] = 01` (valid + block) - maps 2MB directly at L2, 1GB at L1
+- Table: `bits[1:0] = 11` (valid + table) - points to next-level table
+
+PTE bits:
+- `[4:2]` AttrIdx - memory type (normal cacheable, device, etc.)
+- `[7:6]` AP - access permissions (RW/RO at EL1)
+- `[9:8]` SH - shareability (inner shareable for SMP)
+- `[10]` AF - access flag
+- `[53]` PXN - privileged execute-never
+- `[54]` UXN - unprivileged execute-never
+
+`walkPageTable()` must handle both L2 block descriptors (from linear map) and L2 table pointers (from 4KB page mappings):
+
+```go
+if (l2Entry & 0x2) == 0 {
+    // Block descriptor - extract PA directly
+    blockPA := uintptr(l2Entry & PTE_ADDR_MASK)
+    pageOffset := va & ((1 << L2Shift) - 1)
+    return blockPA | pageOffset
+}
+// Table pointer - walk to L3
+```
+
+### x86_64
+
+*(placeholder: 4-level PML4/PDP/PD/PT, CR3, 2MB large pages, PTE bits P/R/W/U/S/PS/NX)*
+
+### RISC-V
+
+*(placeholder: Sv48 4-level, satp CSR, megapages, PTE bits V/R/W/X/U/G/A/D)*
+
+## Per-Architecture: Bootloader PTE Creation
+
+### ARM64 (Cardinal)
+
+Cardinal creates TTBR1 (kernel) page table entries in two phases, both using direct high-memory mapping.
+
+**Phase 1: MMU Init (`mmu_init.go`)**
 
 `initMMU()` creates the initial kernel address space:
 
-1. **`initKernelPageTables()`** (line ~392): Allocates TTBR1 L0 and L1 tables, links L1 into L0[511]
+1. **`initKernelPageTables()`**: Allocates TTBR1 L0 and L1 tables, links L1 into L0[511]
 2. **`setupKernelStacks()`**: Maps g0 stack and exception stack via `mapKernelPage()` (4KB pages)
 3. **`setupEarlyKernelMMIO()`**: Maps UART via `mapKernelPage()`
 4. **`enableMMU()`**: Writes TTBR1_EL1, enables MMU
 
-### Phase 2: Kmazarin Loading (`kernel.go`)
+**Phase 2: Kmazarin Loading (`kernel.go`)**
 
 `loadAndRunKmazarin()` maps kmazarin and creates the linear map:
 
-1. **Segment mapping** (line ~1437): For each ELF LOAD segment, allocates physical frames via `allocKFrame()` and maps them directly to kmazarin's high-memory VAs via `mapKernelPage()`. No low-memory staging—ELF VAs (0xFFFFFFFF41800000+) are used as-is since bit 63 = 1 means TTBR1.
+1. **Segment mapping**: For each ELF LOAD segment, allocates physical frames via `allocKFrame()` and maps them directly to kmazarin's high-memory VAs via `mapKernelPage()`.
 
-2. **Linear map** (line ~1623): Calls `createLinearMap()` which iterates physical RAM in 2MB chunks, creating L2 block descriptors (bit[1]=0) at each L2 entry. Skips regions already mapped with 4KB pages (kmazarin segments, stacks, MMIO).
+2. **Linear map**: Calls `createLinearMap()` which iterates physical RAM in 2MB chunks, creating L2 block descriptors at each L2 entry. Skips regions already mapped with 4KB pages.
 
 3. **Jump to kmazarin**: After mapping, populates runtime config and enters the kernel.
 
-### `createLinearMap()` (`mmu_mapping.go:72`)
+**`createLinearMap()` (`mmu_mapping.go`)**
 
 ```go
 for pa := ramStart; pa < ramEnd; pa += BLOCK_SIZE_2MB {
     va := pa + KernelVAOffset
-    // Extract L0[511] → L1[idx] → L2[idx]
+    // Extract L0[511] -> L1[idx] -> L2[idx]
     // Allocate L1/L2 tables as needed
     // Create block descriptor: PA | VALID | BLOCK | AF | NORMAL | RW | XN | ISH
     // Skip if L2 entry already valid (preserves 4KB mappings)
 }
 ```
 
-### `createBlockEntry()` (`mmu_mapping.go:47`)
+**`createBlockEntry()` (`mmu_mapping.go`)**
 
 ```
 Block descriptor bits:
@@ -299,7 +305,28 @@ Block descriptor bits:
   [47:21] = PA[47:21] (2MB-aligned physical address)
 ```
 
+### x86_64 (Diplomat)
+
+*(placeholder: UEFI identity map -> kernel page tables, CR3 switch)*
+
+### RISC-V
+
+*(placeholder: SBI/OpenSBI setup -> kernel page tables, satp write)*
+
 ## Related Files
+
+### Architecture-Neutral
+
+| File | Purpose |
+|------|---------|
+| `kmazarin/kmem/buddy.go` | Buddy allocator, buffer allocation |
+| `kmazarin/kmem/unified_pool.go` | Bump allocator (early boot), transition to buddy |
+| `kmazarin/kmem/page_tracker.go` | PageAllocInfo tracking, memory stats |
+| `kmazarin/kmem/deferred.go` | Lock-free queue for top-half to bottom-half |
+| `kmazarin/kmazarin/bottom_half.go` | Event poller, page tracking goroutine |
+| `kmazarin/ksyscall/launch.go` | ELF loading with buddy buffers |
+
+### ARM64
 
 | File | Purpose |
 |------|---------|
@@ -307,10 +334,12 @@ Block descriptor bits:
 | `cardinal/main/mmu_mapping.go` | Linear map creation with 2MB blocks |
 | `cardinal/main/mmu_constants.go` | PTE flag definitions |
 | `cardinal/main/kernel.go` | Kmazarin segment mapping, linear map call |
-| `kmazarin/kmem/buddy.go` | Buddy allocator, buffer allocation |
-| `kmazarin/kmem/unified_pool.go` | Bump allocator (early boot), transition to buddy |
-| `kmazarin/kmem/page_tracker.go` | PageAllocInfo tracking, memory stats |
-| `kmazarin/kmem/deferred.go` | Lock-free queue for top-half to bottom-half |
 | `kmazarin/kmem/paging.go` | Page fault handlers, walkPageTable |
-| `kmazarin/kmazarin/bottom_half.go` | Event poller, page tracking goroutine |
-| `kmazarin/ksyscall/launch.go` | ELF loading with buddy buffers |
+
+### x86_64
+
+*(TBD)*
+
+### RISC-V
+
+*(TBD)*

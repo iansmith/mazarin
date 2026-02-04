@@ -1,10 +1,8 @@
-//go:build arm64
-
 // Package main provides SMP (Symmetric Multi-Processing) boot support.
 //
 // This file coordinates the boot sequence for secondary CPUs:
 // 1. Allocate per-CPU stacks
-// 2. Wake each secondary CPU via PSCI CPU_ON
+// 2. Wake each secondary CPU via platform-specific mechanism
 // 3. Wait for each CPU to signal it's online
 
 package main
@@ -13,7 +11,7 @@ import (
 	"sync/atomic"
 )
 
-// Assembly function declarations
+// Assembly function declarations (per-architecture)
 func secondaryCPUEntry()
 func getSecondaryCPUEntryAddr() uintptr
 
@@ -47,16 +45,9 @@ func StartSecondaryCPUs() int {
 	printHex64(uint64(entryPoint))
 	print("\n")
 
-	// Check PSCI version
-	major, minor := GetPsciVersion()
-	print("[SMP] PSCI version: ")
-	print(uint64String(uint64(major)))
-	print(".")
-	print(uint64String(uint64(minor)))
-	print("\n")
-
-	if major == 0 && minor == 0 {
-		print("[SMP] PSCI not available, cannot start secondary CPUs\n")
+	// Check if SMP wake mechanism is available
+	if !platformSMPAvailable() {
+		print("[SMP] Platform SMP wake mechanism not available\n")
 		return 0
 	}
 
@@ -68,16 +59,16 @@ func StartSecondaryCPUs() int {
 		print(uint64String(cpuID))
 		print("... ")
 
-		// Call PSCI CPU_ON
-		// context_id = cpuID (passed to entry point in X0)
-		result := WakeCPU(cpuID, entryPoint, cpuID)
+		// Wake via platform-specific mechanism
+		// context_id = cpuID (passed to entry point)
+		result := platformWakeCPU(cpuID, entryPoint, cpuID)
 
-		if result == PsciSuccess {
+		if result == 0 {
 			print("OK\n")
 			successCount++
 		} else {
 			print("FAILED (")
-			print(PsciErrorString(result))
+			print(platformWakeErrorString(result))
 			print(")\n")
 		}
 	}

@@ -1,10 +1,9 @@
-//go:build arm64
+//go:build arm64 && !test_stubs
 
-// Package main provides PSCI (Power State Coordination Interface) support
-// for SMP CPU management.
+// ARM64 SMP support using PSCI (Power State Coordination Interface).
 //
-// PSCI is the ARM standard for power management across cores. This file
-// provides the Go interface to PSCI for waking secondary CPUs.
+// PSCI is the ARM standard for power management across cores. On QEMU virt
+// machine, PSCI is invoked via HVC at EL2.
 
 package main
 
@@ -124,4 +123,39 @@ func PsciErrorString(code int64) string {
 	default:
 		return "unknown error"
 	}
+}
+
+// ============================================================================
+// Platform SMP interface implementation for ARM64
+// ============================================================================
+
+// platformSMPAvailable returns true if the platform can wake secondary CPUs.
+// On ARM64, this checks for PSCI support.
+//
+//go:nosplit
+func platformSMPAvailable() bool {
+	major, minor := GetPsciVersion()
+	if major == 0 && minor == 0 {
+		return false
+	}
+	print("[SMP] PSCI version: ")
+	print(uint64String(uint64(major)))
+	print(".")
+	print(uint64String(uint64(minor)))
+	print("\n")
+	return true
+}
+
+// platformWakeCPU wakes a secondary CPU using the platform-specific mechanism.
+// On ARM64, this uses PSCI CPU_ON.
+// Returns 0 on success, non-zero error code on failure.
+//
+//go:nosplit
+func platformWakeCPU(cpuID uint64, entryPoint uintptr, contextID uint64) int64 {
+	return WakeCPU(cpuID, entryPoint, contextID)
+}
+
+// platformWakeErrorString returns a human-readable string for a wake error code.
+func platformWakeErrorString(code int64) string {
+	return PsciErrorString(code)
 }

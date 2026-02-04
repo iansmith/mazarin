@@ -34,3 +34,17 @@ func getPerCPUPtrAsm() uintptr {
 func SetTestCPUID(cpuID uint64) {
 	testCPUID = cpuID
 }
+
+// platformCPU0Stacks returns test stub stack addresses for CPU 0.
+//
+//go:nosplit
+func platformCPU0Stacks() (g0Top, g0Bottom, excTop, excBottom uint64) {
+	return 0xFFFF_0000, 0xFFFE_0000, 0xFFFD_0000, 0xFFFC_0000
+}
+
+// platformKernelVAOffset returns a test stub VA offset.
+//
+//go:nosplit
+func platformKernelVAOffset() uint64 {
+	return 0xFFFFFFFF00000000
+}

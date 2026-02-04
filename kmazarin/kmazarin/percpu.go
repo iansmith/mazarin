@@ -1,11 +1,8 @@
-//go:build arm64
-
 package main
 
 import (
 	"mazzy/kmazarin/ds"
 	"mazzy/kmazarin/kmem"
-	"mazzy/shared/constants"
 	"sync/atomic"
 	"unsafe"
 )
@@ -18,8 +15,8 @@ import (
 // its own copy of certain variables to prevent race conditions. This file
 // provides the infrastructure for per-CPU data access.
 //
-// The per-CPU data is indexed by the CPU ID extracted from MPIDR_EL1 register
-// (Aff0 field, bits 7:0), which gives the core number within a cluster.
+// The per-CPU data is indexed by a logical CPU ID obtained from
+// platform-specific assembly (getCPUIDAsm).
 //
 // Access Pattern:
 //   cpu := GetPerCPU()
@@ -97,7 +94,7 @@ type PerCPU struct {
 }
 
 // perCPUData is the array of per-CPU data structures.
-// Indexed by CPU ID (MPIDR_EL1 Aff0 field).
+// Indexed by logical CPU ID from getCPUIDAsm().
 var perCPUData [MaxCPUs]PerCPU
 
 // perCPUInitialized tracks whether InitPerCPU has been called.
@@ -109,10 +106,6 @@ const perCPUQueueCapacity = 64
 
 var perCPUReadyQueueData [MaxCPUs][perCPUQueueCapacity]ThreadId
 var perCPUReadyQueueInUse [MaxCPUs][perCPUQueueCapacity]bool
-
-// readMPIDRAsm reads the MPIDR_EL1 register (implemented in assembly).
-// Returns the full 64-bit MPIDR_EL1 value.
-func readMPIDRAsm() uint64
 
 // getCPUIDAsm returns the CPU ID directly from assembly (fast path).
 func getCPUIDAsm() uint64
@@ -144,11 +137,12 @@ func InitPerCPU() {
 		perCPUData[i].LocalReadyQueue.Clear()
 	}
 
-	// CPU 0 uses the kernel stacks from constants (already mapped during boot)
-	perCPUData[0].G0StackTop = uint64(constants.KernelG0StackTop)
-	perCPUData[0].G0StackBottom = uint64(constants.KernelG0StackBottom)
-	perCPUData[0].ExceptionStackTop = uint64(constants.KernelExcStackTop)
-	perCPUData[0].ExceptionStackBottom = uint64(constants.KernelExcStackBottom)
+	// CPU 0 uses the kernel stacks from platform-specific constants (already mapped during boot)
+	g0Top, g0Bottom, excTop, excBottom := platformCPU0Stacks()
+	perCPUData[0].G0StackTop = g0Top
+	perCPUData[0].G0StackBottom = g0Bottom
+	perCPUData[0].ExceptionStackTop = excTop
+	perCPUData[0].ExceptionStackBottom = excBottom
 	perCPUData[0].Online = 1 // CPU 0 is already online
 
 	perCPUInitialized = true
@@ -163,7 +157,7 @@ func AllocSecondaryCPUStacks(cpuCount uint64) bool {
 	}
 
 	// Calculate VA offset for converting PA to VA
-	const kernelVAOffset = uint64(constants.KernelMMIOOffset)
+	kernelVAOffset := platformKernelVAOffset()
 
 	for cpuID := uint64(1); cpuID < cpuCount; cpuID++ {
 		// Allocate g0 stack (64KB = 16 pages)
@@ -222,13 +216,11 @@ func allocContiguousPages(numPages int) uintptr {
 }
 
 // GetCPUID returns the current CPU's ID (0 to MaxCPUs-1).
-// Reads the MPIDR_EL1 register and extracts the Aff0 field.
+// Uses the platform-specific getCPUIDAsm() to read the CPU ID register.
 //
 //go:nosplit
 func GetCPUID() uint64 {
-	mpidr := readMPIDRAsm()
-	// Aff0 is in bits 7:0, gives core ID within cluster
-	return mpidr & 0xFF
+	return getCPUIDAsm()
 }
 
 // GetPerCPU returns a pointer to the current CPU's per-CPU data structure.
