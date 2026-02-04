@@ -15,7 +15,5 @@ func getPreemptOffsets() preemptOffsetsType { return preemptOffsetsType{} }
 func getAsyncPreemptAddr() (uintptr) { return 0 }
 func getReadyForAsyncPreemptAddr() (uintptr) { return 0 }
 func processDeadlines() {}
-func asm_rearmTimer(ticks uint64) {}
-func asm_readCntfrqEl0() (uint32) { return 0 }
-func asm_readCntvctEl0() (uint64) { return 0 }
+// Timer assembly stubs moved to ktimer/platform_stubs.go
 func asmYieldSVC() {}

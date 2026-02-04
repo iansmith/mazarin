@@ -8,6 +8,7 @@
 package kirq
 
 import (
+	"mazzy/kmazarin/ktimer"
 	"sync/atomic"
 	_ "unsafe" // For go:linkname
 )
@@ -212,8 +213,8 @@ func InitPreemption() {
 	PreemptMG0Offset = offsets.MG0Offset
 	PreemptMLocksOffset = offsets.MLocksOffset
 
-	// Read system timer frequency
-	SystemTimerFrequency = uint64(asm_readCntfrqEl0())
+	// Read system timer frequency via ktimer
+	SystemTimerFrequency = uint64(ktimer.Frequency())
 	if SystemTimerFrequency == 0 {
 		SystemTimerFrequency = 62500000 // Default for QEMU virt
 	}
