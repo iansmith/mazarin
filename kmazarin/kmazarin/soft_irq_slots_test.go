@@ -106,12 +106,11 @@ func TestRingDrainPartial(t *testing.T) {
 
 // softIRQTestEnv saves and restores global state for softIRQ tests.
 type softIRQTestEnv struct {
-	origThreadList       ds.StaticList[*Thread, Thread]
-	origReadyQueue       ds.StaticQueue[ThreadId]
-	origBlockedQueue     ds.StaticQueue[ThreadId]
-	origSleepingQueue    ds.StaticQueue[ThreadId]
-	origCurrentThreadIdx int32
-	origCurrentThread    unsafe.Pointer
+	origThreadList    ds.StaticList[*Thread, Thread]
+	origReadyQueue    ds.StaticQueue[ThreadId]
+	origBlockedQueue  ds.StaticQueue[ThreadId]
+	origSleepingQueue ds.StaticQueue[ThreadId]
+	origCurrentThread unsafe.Pointer
 	origTimerFreq        uint64
 	origSpinBackoff      uint64
 	origSwitchTarget     uintptr
@@ -131,18 +130,17 @@ type softIRQTestEnv struct {
 
 func newSoftIRQTestEnv() *softIRQTestEnv {
 	env := &softIRQTestEnv{
-		origThreadList:       threadList,
-		origReadyQueue:       readyQueue,
-		origBlockedQueue:     blockedQueue,
-		origSleepingQueue:    sleepingQueue,
-		origCurrentThreadIdx: CurrentThreadIdx,
-		origCurrentThread:    atomic.LoadPointer(&CurrentThread),
-		origTimerFreq:        timerFrequencyHz,
-		origSpinBackoff:      ds.SpinBackoffTicks,
-		origSwitchTarget:     syscallSwitchTarget,
-		origSlotData:         softIRQSlotData,
-		origSlotInUse:        softIRQSlotInUse,
-		origIrqToSlot:        irqToSlot,
+		origThreadList:    threadList,
+		origReadyQueue:    readyQueue,
+		origBlockedQueue:  blockedQueue,
+		origSleepingQueue: sleepingQueue,
+		origCurrentThread: atomic.LoadPointer(&CurrentThread),
+		origTimerFreq:     timerFrequencyHz,
+		origSpinBackoff:   ds.SpinBackoffTicks,
+		origSwitchTarget:  syscallSwitchTarget,
+		origSlotData:      softIRQSlotData,
+		origSlotInUse:     softIRQSlotInUse,
+		origIrqToSlot:     irqToSlot,
 	}
 
 	timerFrequencyHz = 62500000
@@ -157,7 +155,6 @@ func newSoftIRQTestEnv() *softIRQTestEnv {
 	sleepingQueue.Data = env.sleepingQueueData[:]
 	sleepingQueue.InUse = env.sleepingQueueInUse[:]
 
-	CurrentThreadIdx = -1
 	atomic.StorePointer(&CurrentThread, nil)
 	syscallSwitchTarget = 0
 
@@ -180,7 +177,6 @@ func (env *softIRQTestEnv) restore() {
 	readyQueue = env.origReadyQueue
 	blockedQueue = env.origBlockedQueue
 	sleepingQueue = env.origSleepingQueue
-	CurrentThreadIdx = env.origCurrentThreadIdx
 	atomic.StorePointer(&CurrentThread, env.origCurrentThread)
 	timerFrequencyHz = env.origTimerFreq
 	ds.SpinBackoffTicks = env.origSpinBackoff
@@ -200,7 +196,6 @@ func (env *softIRQTestEnv) createThread(idx int, tid ThreadId, state ThreadState
 }
 
 func (env *softIRQTestEnv) setCurrentThread(idx int) {
-	CurrentThreadIdx = int32(idx)
 	atomic.StorePointer(&CurrentThread, unsafe.Pointer(&env.threadListData[idx]))
 }
 

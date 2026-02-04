@@ -8,9 +8,6 @@ import (
 	_ "unsafe" // for go:linkname
 )
 
-//go:linkname currentThreadIdx main.CurrentThreadIdx
-var currentThreadIdx int32
-
 // SyscallHandler is the type for all syscall handler functions
 // Takes 6 arguments (x0-x5) and returns a result (x0)
 type SyscallHandler func(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64

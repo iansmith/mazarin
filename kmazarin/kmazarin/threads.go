@@ -2,6 +2,7 @@
 package main
 
 import (
+	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/ds"
 	"mazzy/kmazarin/kirq"
@@ -2037,6 +2038,58 @@ func checkThreadPreemptionInternal(framePtr uint64) uint64 {
 
 // checkThreadPreemptionImpl checks if the current thread should be preempted
 // and performs the context switch if needed.
+// tryPickupWorkIdleCPU is called when an idle CPU (no CurrentThread) receives a timer interrupt.
+// It checks if there's work available on the local queue (or steals from other CPUs) and
+// starts running the first available thread.
+// Returns: context pointer to switch to, or 0 if no work available.
+//
+// CRITICAL for SMP: Secondary CPUs start idle and enter WFI. When timer interrupts wake them,
+// they need this function to pick up work that may have been enqueued to their local queues.
+//
+//go:nosplit
+func tryPickupWorkIdleCPU(sf *SchedulerFunc) uint64 {
+	savedDAIF := sf.DisableAndSaveDAIF()
+	schedulerLock.Lock()
+
+	// Try to find work (local queue first, then steal)
+	next := findReadyThreadWithStealing()
+	if next == nil {
+		schedulerLock.Unlock()
+		sf.EnableAndRestoreDAIF(savedDAIF)
+		return 0 // No work, return to idle (WFI)
+	}
+
+	// Found work! Set up this thread to run on this CPU
+	pluckFromAllQueues(next.TID)
+	next.State = ThreadRunning
+	next.HomeCPU = int8(GetCPUID()) // Bind to this CPU
+
+	currentTime := sf.CurrentTime(0)
+	next.StartTick = currentTime
+	next.ThreadPreemptDeadline = currentTime + kirq.ThreadPreemptTicks
+	next.GoroutinePreemptDeadline = currentTime + kirq.GoroutinePreemptTicks
+	next.TicksStartedRunning = currentTime
+
+	// Start priest clock if needed
+	if next.PriestIdx >= 0 {
+		priest := priestList.Get(int(next.PriestIdx))
+		if priest != nil && priest.TicksStartedRunning == 0 {
+			priest.TicksStartedRunning = currentTime
+		}
+	}
+
+	// Set as current thread
+	atomic.StorePointer(&CurrentThread, unsafe.Pointer(next))
+
+	// Memory barrier to ensure visibility to other CPUs
+	asm.Dsb()
+
+	schedulerLock.Unlock()
+	sf.EnableAndRestoreDAIF(savedDAIF)
+
+	return uint64(uintptr(unsafe.Pointer(&next.Context)))
+}
+
 // Called from timer IRQ handler via ABI stub when NeedsThreadPreempt is set.
 //
 // framePtr: pointer to exception frame with saved registers
@@ -2064,7 +2117,10 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 
 	oldThread := (*Thread)(atomic.LoadPointer(&CurrentThread))
 	if oldThread == nil {
-		return 0
+		// Idle CPU (no current thread) - check if there's work to pick up
+		// This is critical for SMP: secondary CPUs start idle and need to
+		// pick up work from their local queues when timer interrupts wake them.
+		return tryPickupWorkIdleCPU(sf)
 	}
 
 	// BEGIN CRITICAL SECTION - protect thread state modifications

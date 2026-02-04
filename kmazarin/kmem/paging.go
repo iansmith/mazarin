@@ -1132,6 +1132,7 @@ func dcZVAAsm(addr uintptr)
 func bzero4KAsm(ptr uintptr)
 func writeTTBR0Asm(val uint64)
 func atS1E0R(va uintptr) uint64 // Hardware address translation EL0 read
+func tlbiASIDE1ISAsm(asid uint16) // Invalidate TLB by ASID (inner shareable)
 
 // Bzero4K zeros a 4KB page using DC ZVA for maximum performance.
 // ptr must be a valid virtual address that is page-aligned.
@@ -1148,6 +1149,19 @@ func Bzero4K(ptr uintptr) {
 //go:nosplit
 func TlbiVMALLE1() {
 	tlbiVMALLE1()
+}
+
+// TlbiASIDE1IS invalidates all TLB entries for a specific ASID (inner shareable).
+// This broadcasts the invalidation to all CPUs in the inner shareable domain.
+// Used for aggressive ASID reuse: when a priest exits and its ASID will be
+// reused by a new priest, all old TLB entries must be invalidated first.
+//
+//go:nosplit
+func TlbiASIDE1IS(asid uint16) {
+	dsbISH()              // Ensure all prior memory ops complete
+	tlbiASIDE1ISAsm(asid) // Invalidate TLB entries for this ASID
+	dsbISH()              // Ensure TLBI completes
+	isbSY()               // Synchronize instruction stream
 }
 
 // DsbISH performs a DSB Inner Shareable barrier.

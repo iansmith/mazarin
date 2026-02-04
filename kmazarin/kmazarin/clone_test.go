@@ -15,7 +15,6 @@ func TestCloneImmediateSwitch(t *testing.T) {
 	// Save original state
 	origThreadList := threadList
 	origReadyQueue := readyQueue
-	origCurrentThreadIdx := CurrentThreadIdx
 	origCurrentThread := atomic.LoadPointer(&CurrentThread)
 	origTimerFreq := timerFrequencyHz
 	origSpinBackoff := ds.SpinBackoffTicks
@@ -25,7 +24,6 @@ func TestCloneImmediateSwitch(t *testing.T) {
 		// Restore original state
 		threadList = origThreadList
 		readyQueue = origReadyQueue
-		CurrentThreadIdx = origCurrentThreadIdx
 		atomic.StorePointer(&CurrentThread, origCurrentThread)
 		timerFrequencyHz = origTimerFreq
 		ds.SpinBackoffTicks = origSpinBackoff
@@ -53,7 +51,6 @@ func TestCloneImmediateSwitch(t *testing.T) {
 		State: ThreadRunning,
 	}
 	threadList.InUse[0] = true
-	CurrentThreadIdx = 0
 	atomic.StorePointer(&CurrentThread, unsafe.Pointer(&threadList.Data[0]))
 
 	// Create test helpers
@@ -162,8 +159,9 @@ func TestCloneImmediateSwitch(t *testing.T) {
 
 	// TEST 6: Parent (A) should still be current thread at this point
 	// (DoContextSwitch hasn't run yet - that happens in assembly after syscall returns)
-	if CurrentThreadIdx != 0 {
-		t.Errorf("CurrentThreadIdx should still be 0 (parent), got %d", CurrentThreadIdx)
+	currThread := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	if currThread != &threadList.Data[0] {
+		t.Errorf("CurrentThread should still be parent (index 0)")
 	} else {
 		t.Log("PASS: CurrentThread is still parent (A) - DoContextSwitch runs later in assembly")
 	}
@@ -192,7 +190,6 @@ func TestCloneParentEventuallyRuns(t *testing.T) {
 	// Save original state
 	origThreadList := threadList
 	origReadyQueue := readyQueue
-	origCurrentThreadIdx := CurrentThreadIdx
 	origCurrentThread := atomic.LoadPointer(&CurrentThread)
 	origTimerFreq := timerFrequencyHz
 	origSpinBackoff := ds.SpinBackoffTicks
@@ -201,7 +198,6 @@ func TestCloneParentEventuallyRuns(t *testing.T) {
 	defer func() {
 		threadList = origThreadList
 		readyQueue = origReadyQueue
-		CurrentThreadIdx = origCurrentThreadIdx
 		atomic.StorePointer(&CurrentThread, origCurrentThread)
 		timerFrequencyHz = origTimerFreq
 		ds.SpinBackoffTicks = origSpinBackoff
@@ -229,7 +225,6 @@ func TestCloneParentEventuallyRuns(t *testing.T) {
 		State: ThreadRunning,
 	}
 	threadList.InUse[0] = true
-	CurrentThreadIdx = 0
 	atomic.StorePointer(&CurrentThread, unsafe.Pointer(&threadList.Data[0]))
 
 	daifPair := &DAIFPair{}
@@ -291,11 +286,12 @@ func TestCloneParentEventuallyRuns(t *testing.T) {
 		t.Log("PASS: CurrentThread is now the child")
 	}
 
-	// TEST 2: CurrentThreadIdx should be child's index
-	if CurrentThreadIdx != childIdx {
-		t.Errorf("CurrentThreadIdx should be %d, got %d", childIdx, CurrentThreadIdx)
+	// TEST 2: Current thread index should be child's index
+	currentIdx := threadToIdx(currentPtr)
+	if currentIdx != childIdx {
+		t.Errorf("Current thread index should be %d, got %d", childIdx, currentIdx)
 	} else {
-		t.Log("PASS: CurrentThreadIdx is correct")
+		t.Log("PASS: Current thread index is correct")
 	}
 
 	// TEST 3: Parent should now be in ready queue

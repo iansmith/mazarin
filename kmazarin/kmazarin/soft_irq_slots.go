@@ -3,6 +3,7 @@
 package main
 
 import (
+	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio/input"
 	"mazzy/shared/hid"
@@ -172,6 +173,7 @@ func WakeSlotForIRQ(irqNum uint32) {
 	t.State = ThreadReady
 	slot.blockedTID = -1
 	enqueueReadySchedLockHeld(t)
+	asm.Dsb() // Memory barrier to ensure enqueue is visible to other CPUs
 
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
@@ -183,14 +185,10 @@ func WakeSlotForIRQ(irqNum uint32) {
 //
 //go:nosplit
 func BlockOnSlot(slotNum int32) uintptr {
-	if CurrentThreadIdx < 0 {
-		return 0
-	}
-
 	savedDAIF := NormalSchedulerFunc.DisableAndSaveDAIF()
 	schedulerLock.Lock()
 
-	t := threadList.Get(int(CurrentThreadIdx))
+	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
 	if t == nil {
 		schedulerLock.Unlock()
 		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
@@ -213,6 +211,7 @@ func BlockOnSlot(slotNum int32) uintptr {
 		if prev != nil && prev.State == ThreadBlockedSoftIRQ {
 			prev.State = ThreadReady
 			enqueueReadySchedLockHeld(prev)
+			asm.Dsb() // Memory barrier to ensure enqueue is visible
 		}
 	}
 
@@ -277,6 +276,7 @@ func PushTimerEventAndWake(sec, nsec uint64) {
 	t.State = ThreadReady
 	slot.blockedTID = -1
 	enqueueReadySchedLockHeld(t)
+	asm.Dsb() // Memory barrier to ensure enqueue is visible
 }
 
 // GetUartSlotPriestID returns the priest ID that owns the UART serial slot.

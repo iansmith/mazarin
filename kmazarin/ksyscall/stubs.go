@@ -4,7 +4,14 @@ package ksyscall
 import (
 	"mazzy/kmazarin/kirq"
 	"unsafe"
+
+	_ "unsafe" // for go:linkname
 )
+
+// getCPUCountForAffinity returns the number of CPUs configured
+//
+//go:linkname getCPUCountForAffinity main.GetCPUCount
+func getCPUCountForAffinity() uint64
 
 // ============================================================================
 // User Buffer Address Validation
@@ -85,11 +92,50 @@ func SyscallSigaltstack(_, _, _, _, _, _ uint64) int64 {
 }
 
 // SyscallSchedSetaffinity sets CPU affinity
-// We only have one CPU, return success
+// In SMP configuration, we accept any valid CPU mask
+// The Go scheduler manages actual CPU assignment
 //
 //go:nosplit
-func SyscallSchedSetaffinity(_, _, _, _, _, _ uint64) int64 {
-	return 0 // Success
+func SyscallSchedSetaffinity(pid, cpusetsize, mask, _, _, _ uint64) int64 {
+	// We don't enforce CPU pinning - Go's scheduler handles CPU assignment
+	// Just validate the mask isn't requesting non-existent CPUs
+
+	if cpusetsize < 8 {
+		return -22 // EINVAL
+	}
+
+	// Validate user buffer address
+	if !isValidUserAddr(mask) {
+		return -14 // EFAULT
+	}
+
+	// Read the requested mask
+	requestedMask := *(*uint64)(unsafe.Pointer(uintptr(mask)))
+
+	// Get actual CPU count
+	cpuCount := getCPUCountForAffinity()
+	if cpuCount == 0 {
+		cpuCount = 1
+	}
+	if cpuCount > 64 {
+		cpuCount = 64
+	}
+
+	// Build valid CPU mask
+	var validMask uint64
+	if cpuCount == 64 {
+		validMask = ^uint64(0)
+	} else {
+		validMask = (uint64(1) << cpuCount) - 1
+	}
+
+	// Mask must have at least one valid CPU
+	effectiveMask := requestedMask & validMask
+	if effectiveMask == 0 {
+		return -22 // EINVAL - no valid CPUs in mask
+	}
+
+	return 0 // Success (we accept but don't enforce CPU pinning)
 }
 
 // SyscallPrctl performs process control operations

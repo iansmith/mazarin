@@ -123,6 +123,8 @@ func buildKmazarinOverlay(overlay *Overlay, goroot, patchesDir string) error {
 		"runtime/os_linux_arm64.go": "os_linux_arm64.go",
 		"runtime/preempt.go":        "preempt.go",
 		"runtime/tagptr_64bit.go":   "tagptr_64bit.go",
+		// "runtime/traceback.go":      "traceback.go",
+		// "runtime/panic.go":          "panic.go",
 	}
 
 	for goFile, patchFile := range runtimePatches {

@@ -8,8 +8,10 @@
 // 2. Sets up stacks (SP_EL1 and SP_EL0) from per-CPU data
 // 3. Installs exception vectors
 // 4. Enables FPU
-// 5. Marks itself as online
-// 6. Enters idle loop waiting for work
+// 5. Disables alignment checking
+// 6. Initializes GIC CPU Interface (GICC) - CRITICAL for proper IRQ delivery
+// 7. Marks itself as online
+// 8. Enters idle loop waiting for work
 
 #include "textflag.h"
 
@@ -99,7 +101,38 @@ TEXT ·secondaryCPUEntry(SB), NOSPLIT|NOFRAME, $0
 	ISB	$15
 
 	// ========================================
-	// Step 7: Mark CPU as online
+	// Step 7: Initialize GIC CPU Interface (GICC)
+	// ========================================
+	// CRITICAL: Each CPU has its own banked GICC registers that must be
+	// initialized before enabling IRQs. Without this, the CPU cannot
+	// properly acknowledge or mask interrupts, which can break the
+	// entire GIC subsystem.
+	//
+	// GICC registers (at high-memory address 0xFFFFFFFF08010000):
+	//   GICC_CTLR (0x000) = 0x01: Enable Group 0 interrupts
+	//   GICC_PMR  (0x004) = 0xFF: Allow all priority levels
+	//   GICC_BPR  (0x008) = 0x00: Binary point (matches CPU 0)
+	//
+	MOVD	$0xFFFFFFFF08010000, R4	// R4 = GICC base (high memory)
+
+	// Set priority mask to allow all interrupts (GICC_PMR)
+	MOVW	$0xFF, R1
+	MOVW	R1, 4(R4)		// GICC_PMR = 0xFF
+
+	// Set binary point (GICC_BPR)
+	MOVW	$0, R1
+	MOVW	R1, 8(R4)		// GICC_BPR = 0
+
+	// Enable CPU interface for Group 0 (GICC_CTLR)
+	MOVW	$1, R1
+	MOVW	R1, (R4)		// GICC_CTLR = 0x01
+
+	// Barrier to ensure GICC writes complete before enabling IRQs
+	DSB	$15
+	ISB	$15
+
+	// ========================================
+	// Step 8: Mark CPU as online
 	// ========================================
 	// Calculate address of Online field (offset 64 from R20)
 	ADD	$64, R20, R3		// R3 = address of Online field
@@ -107,7 +140,7 @@ TEXT ·secondaryCPUEntry(SB), NOSPLIT|NOFRAME, $0
 	STLRW	R1, (R3)		// Store with release semantics to Online field
 
 	// ========================================
-	// Step 8: Enable interrupts and enter idle loop
+	// Step 9: Enable interrupts and enter idle loop
 	// ========================================
 	// Enable IRQs
 	MSR	$0x2, DAIFClr		// Clear I bit to enable IRQs

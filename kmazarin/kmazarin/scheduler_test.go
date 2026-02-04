@@ -91,7 +91,6 @@ func TestThreadPreemption(t *testing.T) {
 	// Save original state
 	origThreadList := threadList
 	origReadyQueue := readyQueue
-	origCurrentThreadIdx := CurrentThreadIdx
 	origCurrentThread := atomic.LoadPointer(&CurrentThread)
 	origTimerFreq := timerFrequencyHz
 	origSpinBackoff := ds.SpinBackoffTicks
@@ -100,7 +99,6 @@ func TestThreadPreemption(t *testing.T) {
 		// Restore original state
 		threadList = origThreadList
 		readyQueue = origReadyQueue
-		CurrentThreadIdx = origCurrentThreadIdx
 		atomic.StorePointer(&CurrentThread, origCurrentThread)
 		timerFrequencyHz = origTimerFreq
 		ds.SpinBackoffTicks = origSpinBackoff
@@ -137,7 +135,6 @@ func TestThreadPreemption(t *testing.T) {
 		GPtr:           0x3000,
 	}
 	threadList.InUse[0] = true
-	CurrentThreadIdx = 0
 	atomic.StorePointer(&CurrentThread, unsafe.Pointer(&threadList.Data[0]))
 
 	// Create Thread 32 (on ready queue)
@@ -198,8 +195,8 @@ func TestThreadPreemption(t *testing.T) {
 	if CurrentThreadPtr.TID != ThreadId(32) {
 		t.Errorf("Current thread should be 32, got %d", CurrentThreadPtr.TID)
 	}
-	if CurrentThreadIdx != 1 {
-		t.Errorf("Current thread index should be 1, got %d", CurrentThreadIdx)
+	if threadToIdx(CurrentThreadPtr) != 1 {
+		t.Errorf("Current thread index should be 1, got %d", threadToIdx(CurrentThreadPtr))
 	}
 
 	// Verify Thread 14 is now on ready queue
@@ -883,7 +880,6 @@ func TestPriestTickAccounting(t *testing.T) {
 	origThreadList := threadList
 	origReadyQueue := readyQueue
 	origPriestList := priestList
-	origCurrentThreadIdx := CurrentThreadIdx
 	origCurrentThread := atomic.LoadPointer(&CurrentThread)
 	origTimerFreq := timerFrequencyHz
 	origSpinBackoff := ds.SpinBackoffTicks
@@ -892,7 +888,6 @@ func TestPriestTickAccounting(t *testing.T) {
 		threadList = origThreadList
 		readyQueue = origReadyQueue
 		priestList = origPriestList
-		CurrentThreadIdx = origCurrentThreadIdx
 		atomic.StorePointer(&CurrentThread, origCurrentThread)
 		timerFrequencyHz = origTimerFreq
 		ds.SpinBackoffTicks = origSpinBackoff
@@ -937,7 +932,6 @@ func TestPriestTickAccounting(t *testing.T) {
 		TicksStartedRunning: 1000,
 	}
 	threadList.InUse[0] = true
-	CurrentThreadIdx = 0
 	atomic.StorePointer(&CurrentThread, unsafe.Pointer(&threadList.Data[0]))
 
 	// Create thread B (priest 2, ready)

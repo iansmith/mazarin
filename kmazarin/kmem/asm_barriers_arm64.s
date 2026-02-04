@@ -35,6 +35,19 @@ TEXT ·tlbiVMALLE1IS(SB), NOSPLIT, $0-0
 	WORD	$0xD5088318
 	RET
 
+// tlbiASIDE1ISAsm - Invalidate TLB entries by ASID Inner Shareable
+// Invalidates all TLB entries matching the given ASID across all CPUs.
+// This is used for aggressive ASID reuse - when a priest exits and its
+// ASID is about to be reused, we must invalidate all old TLB entries.
+// TLBI ASIDE1IS, Xt where Xt[63:48] = ASID
+// Encoding: TLBI ASIDE1IS = 0xD5088720 | (Rt << 0) where Rt is the register
+// For X0: 0xD5088720
+TEXT ·tlbiASIDE1ISAsm(SB), NOSPLIT, $0-8
+	MOVD	asid+0(FP), R0
+	LSL	$48, R0, R0		// ASID goes in bits [63:48]
+	WORD	$0xD5088720		// TLBI ASIDE1IS, X0
+	RET
+
 // dsbISH - Data Synchronization Barrier Inner Shareable
 // Ensures all prior memory accesses complete in the inner shareable domain
 // DSB ISH = 0xD5033B9F

@@ -15,12 +15,11 @@ import (
 
 // schedulerTestEnv holds test environment state for cleanup
 type schedulerTestEnv struct {
-	origThreadList       ds.StaticList[*Thread, Thread]
-	origReadyQueue       ds.StaticQueue[ThreadId]
-	origBlockedQueue     ds.StaticQueue[ThreadId]
-	origSleepingQueue    ds.StaticQueue[ThreadId]
-	origCurrentThreadIdx int32
-	origCurrentThread    unsafe.Pointer
+	origThreadList    ds.StaticList[*Thread, Thread]
+	origReadyQueue    ds.StaticQueue[ThreadId]
+	origBlockedQueue  ds.StaticQueue[ThreadId]
+	origSleepingQueue ds.StaticQueue[ThreadId]
+	origCurrentThread unsafe.Pointer
 	origTimerFreq        uint64
 	origSpinBackoff      uint64
 	origSwitchTarget     uintptr
@@ -38,15 +37,14 @@ type schedulerTestEnv struct {
 
 func newSchedulerTestEnv() *schedulerTestEnv {
 	env := &schedulerTestEnv{
-		origThreadList:       threadList,
-		origReadyQueue:       readyQueue,
-		origBlockedQueue:     blockedQueue,
-		origSleepingQueue:    sleepingQueue,
-		origCurrentThreadIdx: CurrentThreadIdx,
-		origCurrentThread:    atomic.LoadPointer(&CurrentThread),
-		origTimerFreq:        timerFrequencyHz,
-		origSpinBackoff:      ds.SpinBackoffTicks,
-		origSwitchTarget:     syscallSwitchTarget,
+		origThreadList:    threadList,
+		origReadyQueue:    readyQueue,
+		origBlockedQueue:  blockedQueue,
+		origSleepingQueue: sleepingQueue,
+		origCurrentThread: atomic.LoadPointer(&CurrentThread),
+		origTimerFreq:     timerFrequencyHz,
+		origSpinBackoff:   ds.SpinBackoffTicks,
+		origSwitchTarget:  syscallSwitchTarget,
 	}
 
 	// Initialize test structures
@@ -62,7 +60,6 @@ func newSchedulerTestEnv() *schedulerTestEnv {
 	sleepingQueue.Data = env.sleepingQueueData[:]
 	sleepingQueue.InUse = env.sleepingQueueInUse[:]
 
-	CurrentThreadIdx = -1
 	atomic.StorePointer(&CurrentThread, nil)
 	syscallSwitchTarget = 0
 
@@ -74,7 +71,6 @@ func (env *schedulerTestEnv) restore() {
 	readyQueue = env.origReadyQueue
 	blockedQueue = env.origBlockedQueue
 	sleepingQueue = env.origSleepingQueue
-	CurrentThreadIdx = env.origCurrentThreadIdx
 	atomic.StorePointer(&CurrentThread, env.origCurrentThread)
 	timerFrequencyHz = env.origTimerFreq
 	ds.SpinBackoffTicks = env.origSpinBackoff
@@ -91,7 +87,6 @@ func (env *schedulerTestEnv) createThread(idx int, tid ThreadId, state ThreadSta
 }
 
 func (env *schedulerTestEnv) setCurrentThread(idx int) {
-	CurrentThreadIdx = int32(idx)
 	atomic.StorePointer(&CurrentThread, unsafe.Pointer(&env.threadListData[idx]))
 }
 
@@ -152,8 +147,9 @@ func TestSingleThreadNoPreemption(t *testing.T) {
 		t.Errorf("Expected no switch (result=0), got 0x%x", result)
 	}
 
-	if CurrentThreadIdx != 0 {
-		t.Errorf("CurrentThreadIdx should still be 0, got %d", CurrentThreadIdx)
+	currThread := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	if currThread != threadA {
+		t.Errorf("CurrentThread should still be threadA")
 	}
 
 	if threadA.State != ThreadRunning {
@@ -341,7 +337,7 @@ func TestFutexBlockSwitchToReady(t *testing.T) {
 	t.Log("Scenario: Thread A blocks on futex, Thread B ready -> switch to B")
 
 	futexAddr := uint64(0x12345678)
-	result := threadBlockFutexImpl(sf, futexAddr)
+	result := threadBlockFutexImpl(sf, futexAddr, 0)
 
 	if result == 0 {
 		t.Error("Expected switch to B, got 0")
@@ -589,7 +585,7 @@ func TestNestedPreemptBlockReturn(t *testing.T) {
 	// Step 2: B blocks on futex
 	t.Log("Step 2: B blocks on futex")
 	futexAddr := uint64(0xDEADBEEF)
-	result2 := threadBlockFutexImpl(sf, futexAddr)
+	result2 := threadBlockFutexImpl(sf, futexAddr, 0)
 	if result2 == 0 {
 		t.Fatal("Expected switch back to A")
 	}

@@ -14,7 +14,6 @@ func TestSimplePreemption(t *testing.T) {
 	// Save original state
 	origThreadList := threadList
 	origReadyQueue := readyQueue
-	origCurrentThreadIdx := CurrentThreadIdx
 	origCurrentThread := atomic.LoadPointer(&CurrentThread)
 	origTimerFreq := timerFrequencyHz
 	origSpinBackoff := ds.SpinBackoffTicks
@@ -23,7 +22,6 @@ func TestSimplePreemption(t *testing.T) {
 		// Restore original state
 		threadList = origThreadList
 		readyQueue = origReadyQueue
-		CurrentThreadIdx = origCurrentThreadIdx
 		atomic.StorePointer(&CurrentThread, origCurrentThread)
 		timerFrequencyHz = origTimerFreq
 		ds.SpinBackoffTicks = origSpinBackoff
@@ -60,7 +58,6 @@ func TestSimplePreemption(t *testing.T) {
 		GPtr:           0x3000,
 	}
 	threadList.InUse[0] = true
-	CurrentThreadIdx = 0
 	atomic.StorePointer(&CurrentThread, unsafe.Pointer(&threadList.Data[0]))
 
 	// Create Thread 32 (on ready queue)
