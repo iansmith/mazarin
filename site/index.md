@@ -4,7 +4,9 @@ title: mazarin, an introduction
 author: iansmith
 ---
 
-[Quick Start: build and run mazarin](quickstart.md)
+## [News (last updated Feb 4)](news.md)
+
+## [Quick Start: build and run mazarin](quickstart.md)
 
 
 # mazarin, what this is
@@ -27,23 +29,6 @@ that are important to mazarin, but the compatibilty is not the goal.
 mazarin's model is that everything is part of the UI.  The UI is not only
 the most important thing in mazarin, but it is nearly the _only_ thing.  The UI
 of mazarin does not offer the programming model of any existing window system.
-
-# mazarin, what this is
-As of Jan 26 (77b4f83), the following features are supported with respect to the operating
-system proper and all are a written in go or go's assembly variant:
-
-* bootloading
-* kernel
-* userspace programs with protection from each other and the kernel
-* multiple threads, curently 3 per go userspace program since that is the go runtime behavior
-* simple, fair scheduling of threads including kernel threads
-* multiple go routines in a userspace program
-* fair scheduling of goroutines within a userspace program
-* primitive support for lightweight go programs called mazs (plural)
-
-![Serial console with neumorphic card frame](console-serial.png)
-
-*GUI work is underway.*
 
 ## No C
 mazarin does no use C code at all--nor cgo.  go or go assembly is used in
