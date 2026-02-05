@@ -9,10 +9,11 @@ import (
 // FramebufferInfo contains information about the framebuffer.
 // This is filled by the kernel during GetFramebuffer syscall.
 type FramebufferInfo struct {
-	Addr   uintptr // Virtual address of framebuffer in priest space
-	Width  uint32  // Width in pixels
-	Height uint32  // Height in pixels
-	Pitch  uint32  // Bytes per row (typically Width * 4 for BGRA)
+	Addr           uintptr // Virtual address of framebuffer in priest space
+	Width          uint32  // Width in pixels
+	Height         uint32  // Display height in pixels (visible area)
+	ResourceHeight uint32  // Total resource height (may be > Height for scrolling)
+	Pitch          uint32  // Bytes per row (typically Width * 4 for BGRA)
 }
 
 // GetFramebuffer retrieves framebuffer information from the kernel.
@@ -48,6 +49,22 @@ func FlushFramebuffer(x, y, width, height uint32) error {
 	)
 	if errno != 0 {
 		return fmt.Errorf("FlushFramebuffer failed: errno %d", errno)
+	}
+	return nil
+}
+
+// SetScanoutOffset changes the visible region's Y offset in the framebuffer.
+// This enables hardware-accelerated scrolling by changing which portion of a
+// larger backing buffer is displayed, rather than copying pixels.
+// yOffset: vertical offset in pixels from the top of the resource
+func SetScanoutOffset(yOffset uint32) error {
+	r1, _, errno := syscall.RawSyscall6(
+		sysSetScanoutOffset,
+		uintptr(yOffset),
+		0, 0, 0, 0, 0,
+	)
+	if errno != 0 || r1 < 0 {
+		return fmt.Errorf("SetScanoutOffset failed: errno %d", errno)
 	}
 	return nil
 }

@@ -33,8 +33,12 @@ func Init() bool {
 		return false
 	}
 
-	// Setup framebuffer (1920x1080 @ 32bpp)
-	if !virtioGPUSetupFramebuffer(1920, 1080) {
+	// Setup framebuffer (1920x1080 display @ 32bpp)
+	// Resource is 2x display height to enable hardware scrolling via SET_SCANOUT offset
+	const displayWidth = 1920
+	const displayHeight = 1080
+	const resourceHeight = displayHeight * 2 // 2160 for scrolling buffer
+	if !virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight) {
 		return false
 	}
 
@@ -71,6 +75,20 @@ func UpdateDisplay(x, y, width, height uint32) {
 	virtioGPUFlush(x, y, width, height)
 	unlockGPU()
 	restoreIRQs(savedDAIF)
+}
+
+// SetScanoutOffset changes the visible region's Y offset in the framebuffer.
+// This enables hardware-accelerated scrolling without copying pixels.
+// Safe to call concurrently — serialized by gpuLock.
+//
+//go:nosplit
+func SetScanoutOffset(yOffset uint32) bool {
+	savedDAIF := saveAndDisableIRQs()
+	lockGPU()
+	ok := virtioGPUSetScanoutOffset(yOffset)
+	unlockGPU()
+	restoreIRQs(savedDAIF)
+	return ok
 }
 
 // saveAndDisableIRQs masks all interrupts and returns the previous DAIF value.
@@ -305,7 +323,13 @@ func GetWidth() uint32 {
 	return virtioGPUDevice.Width
 }
 
-// GetHeight returns the framebuffer height in pixels
+// GetHeight returns the display height in pixels (visible area)
 func GetHeight() uint32 {
 	return virtioGPUDevice.Height
+}
+
+// GetResourceHeight returns the total resource height in pixels.
+// This may be larger than the display height for scrolling support.
+func GetResourceHeight() uint32 {
+	return virtioGPUDevice.ResourceHeight
 }

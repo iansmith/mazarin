@@ -54,13 +54,13 @@ type console struct {
 	cardW    int
 	cardH    int
 	maxLines int
+	maxCols  int // max characters per line
 	lines    []string
 
 	// Dirty tracking: min/max line indices that need redraw.
 	// -1 means nothing dirty.
 	dirtyMin int
 	dirtyMax int
-
 }
 
 func (c *console) markDirty(lineIdx int) {
@@ -164,6 +164,7 @@ func main() {
 		cardW:    cardW,
 		cardH:    cardH,
 		maxLines: maxLines,
+		maxCols:  maxCols,
 		lines:    []string{""},
 		dirtyMin: -1,
 		dirtyMax: -1,
@@ -540,12 +541,13 @@ func (c *console) handleChar(ch byte) {
 		if len(c.lines) < c.maxLines {
 			c.lines = append(c.lines, "")
 		} else {
-			// Scroll: drop first line, append empty line at end
-			copy(c.lines, c.lines[1:])
-			c.lines[c.maxLines-1] = ""
-			// All lines need redraw after scroll
-			c.markDirty(0)
-			c.markDirty(c.maxLines - 1)
+			// Before scrolling, flush any dirty lines to ensure pixels match lines[]
+			// This is the "lock" - we can't scroll until current state is rendered
+			if c.dirtyMin >= 0 {
+				c.flushDirty()
+			}
+			// Now scroll with consistent state
+			c.scroll()
 		}
 		return
 	}
@@ -553,8 +555,46 @@ func (c *console) handleChar(ch byte) {
 	if lineIdx < 0 || lineIdx >= c.maxLines {
 		return
 	}
+	// Clamp line length to prevent overflow panic in text rendering
+	if len(c.lines[lineIdx]) >= c.maxCols {
+		return
+	}
 	c.lines[lineIdx] += string(ch)
 	c.markDirty(lineIdx)
+}
+
+// scroll shifts lines and pixels, then flushes the entire content area.
+// REQUIRES: no dirty lines (caller must flush first)
+func (c *console) scroll() {
+	// Shift line content
+	copy(c.lines, c.lines[1:])
+	c.lines[c.maxLines-1] = ""
+
+	// Shift pixels in gg image (content area only, row by row)
+	im, ok := c.dc.Image().(*image.RGBA)
+	if !ok {
+		return
+	}
+
+	srcStartY := c.rectY + c.lineH
+	dstStartY := c.rectY
+	copyH := (c.maxLines - 1) * c.lineH
+	contentStartX := c.rectX * 4
+	contentBytes := c.rectW * 4
+
+	for y := 0; y < copyH; y++ {
+		srcRowStart := (srcStartY+y)*im.Stride + contentStartX
+		dstRowStart := (dstStartY+y)*im.Stride + contentStartX
+		copy(im.Pix[dstRowStart:dstRowStart+contentBytes],
+			im.Pix[srcRowStart:srcRowStart+contentBytes])
+	}
+
+	// Clear and render the last line (now empty)
+	c.redrawLine(c.maxLines - 1)
+
+	// Transfer and flush entire content area (pixels shifted)
+	flushRegionToFramebuffer(c.dc, c.fb, c.rectX, c.rectY, c.rectW, c.rectH)
+	sys.FlushFramebuffer(uint32(c.rectX), uint32(c.rectY), uint32(c.rectW), uint32(c.rectH))
 }
 
 func fixedToInt(f fixed.Int26_6) int {

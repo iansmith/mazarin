@@ -159,8 +159,9 @@ type VirtIOGPUDevice struct {
 	ResourceID            uint32           // Current resource ID
 	Framebuffer      unsafe.Pointer       // Framebuffer memory
 	FramebufferSize  uint32               // Framebuffer size in bytes
-	Width            uint32               // Framebuffer width in pixels
-	Height           uint32               // Framebuffer height in pixels
+	Width            uint32               // Display width in pixels
+	Height           uint32               // Display height in pixels (visible area)
+	ResourceHeight   uint32               // Total resource height (may be > Height for scrolling)
 	Pitch            uint32               // Bytes per row
 }
 
@@ -535,12 +536,15 @@ func virtioGPUGetDisplayInfo() bool {
 	return respType == VIRTIO_GPU_RESP_OK_DISPLAY_INFO
 }
 
-// virtioGPUSetupFramebuffer sets up the framebuffer using VirtIO GPU
+// virtioGPUSetupFramebuffer sets up the framebuffer using VirtIO GPU.
+// displayWidth/displayHeight: the visible display dimensions
+// resourceHeight: total height of the GPU resource (>= displayHeight for scrolling)
 // Returns true on success, false on failure
 //
-func virtioGPUSetupFramebuffer(width, height uint32) bool {
+func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint32) bool {
 	// Use dedicated framebuffer region at fixed address
-	fbSize := width * height * 4 // 4 bytes per pixel (BGRA8888)
+	// Resource can be taller than display to enable hardware scrolling
+	fbSize := displayWidth * resourceHeight * 4 // 4 bytes per pixel (BGRA8888)
 
 	if fbSize > virtioGPUFramebufferSize {
 		console.KPrintln("[VirtIO GPU] ERROR: Framebuffer size too large")
@@ -553,17 +557,18 @@ func virtioGPUSetupFramebuffer(width, height uint32) bool {
 
 	virtioGPUDevice.Framebuffer = fbMem
 	virtioGPUDevice.FramebufferSize = fbSize
-	virtioGPUDevice.Width = width
-	virtioGPUDevice.Height = height
-	virtioGPUDevice.Pitch = width * 4
+	virtioGPUDevice.Width = displayWidth
+	virtioGPUDevice.Height = displayHeight
+	virtioGPUDevice.ResourceHeight = resourceHeight
+	virtioGPUDevice.Pitch = displayWidth * 4
 
-	// Step 1: Create 2D resource
+	// Step 1: Create 2D resource (may be taller than display for scrolling)
 	var createCmd VirtIOGPUResourceCreate2D
 	createCmd.Hdr.Type = VIRTIO_GPU_CMD_RESOURCE_CREATE_2D
 	createCmd.ResourceID = virtioGPUDevice.ResourceID
 	createCmd.Format = VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM
-	createCmd.Width = width
-	createCmd.Height = height
+	createCmd.Width = displayWidth
+	createCmd.Height = resourceHeight
 
 	var createResp VirtIOGPUCtrlHdr
 
@@ -598,11 +603,11 @@ func virtioGPUSetupFramebuffer(width, height uint32) bool {
 		return false
 	}
 
-	// Step 3: Set scanout
+	// Step 3: Set scanout (display the top displayHeight pixels of the resource)
 	var scanoutCmd VirtIOGPUSetScanout
 	scanoutCmd.Hdr.Type = VIRTIO_GPU_CMD_SET_SCANOUT
-	scanoutCmd.Rect.Width = width
-	scanoutCmd.Rect.Height = height
+	scanoutCmd.Rect.Width = displayWidth
+	scanoutCmd.Rect.Height = displayHeight
 	scanoutCmd.ScanoutID = 0
 	scanoutCmd.ResourceID = virtioGPUDevice.ResourceID
 
@@ -649,6 +654,27 @@ func virtioGPUTransferToHost(x, y, width, height uint32) {
 		// Silently fail - don't spam UART
 		return
 	}
+}
+
+// virtioGPUSetScanoutOffset changes the visible region of the framebuffer.
+// This enables hardware-accelerated scrolling by changing which portion of a
+// larger backing buffer is displayed, rather than copying pixels.
+// yOffset: vertical offset in pixels from the top of the resource
+//
+//go:nosplit
+func virtioGPUSetScanoutOffset(yOffset uint32) bool {
+	var scanoutCmd VirtIOGPUSetScanout
+	scanoutCmd.Hdr.Type = VIRTIO_GPU_CMD_SET_SCANOUT
+	scanoutCmd.Rect.X = 0
+	scanoutCmd.Rect.Y = yOffset
+	scanoutCmd.Rect.Width = virtioGPUDevice.Width
+	scanoutCmd.Rect.Height = virtioGPUDevice.Height
+	scanoutCmd.ScanoutID = 0
+	scanoutCmd.ResourceID = virtioGPUDevice.ResourceID
+
+	var scanoutResp VirtIOGPUCtrlHdr
+	respType := virtioGPUSendCommand(unsafe.Pointer(&scanoutCmd), uint32(unsafe.Sizeof(scanoutCmd)), unsafe.Pointer(&scanoutResp), uint32(unsafe.Sizeof(scanoutResp)))
+	return respType == VIRTIO_GPU_RESP_OK_NODATA
 }
 
 // virtioGPUFlush flushes a region of the framebuffer to the display

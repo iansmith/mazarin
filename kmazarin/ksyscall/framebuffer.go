@@ -1,6 +1,7 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
 	"unsafe"
@@ -11,16 +12,27 @@ import (
 //
 //go:nosplit
 func SyscallFlushFramebuffer(x, y, width, height, _, _ uint64) int64 {
+	// Diagnostic: track stdio (UART slot owner) FlushFramebuffer calls
+	isStdio := false
+	ownerPID := getUartSlotPriestID()
+	if ownerPID >= 0 && getCurrentThreadPID() == ownerPID {
+		isStdio = true
+		console.Breadcrumb('f') // stdio FlushFramebuffer entry
+	}
 	gpu.UpdateDisplay(uint32(x), uint32(y), uint32(width), uint32(height))
+	if isStdio {
+		console.Breadcrumb('g') // stdio FlushFramebuffer completed
+	}
 	return 0
 }
 
 // FramebufferInfo matches the layout expected by userspace (mazarin/sys.FramebufferInfo)
 type FramebufferInfo struct {
-	Addr   uint64 // Virtual address of framebuffer in priest space
-	Width  uint32 // Width in pixels
-	Height uint32 // Height in pixels
-	Pitch  uint32 // Bytes per row
+	Addr           uint64 // Virtual address of framebuffer in priest space
+	Width          uint32 // Width in pixels
+	Height         uint32 // Display height in pixels (visible area)
+	ResourceHeight uint32 // Total resource height (may be > Height for scrolling)
+	Pitch          uint32 // Bytes per row
 }
 
 // SyscallGetFramebuffer fills in framebuffer info for userspace.
@@ -41,12 +53,16 @@ func SyscallGetFramebuffer(fbInfoPtr, _, _, _, _, _ uint64) int64 {
 		return -19 // ENODEV - no such device
 	}
 
+	// Get resource height (may be > display height for scrolling)
+	resourceHeight := gpu.GetResourceHeight()
+
 	// Create the info struct
 	info := FramebufferInfo{
-		Addr:   UserFramebufferVA,
-		Width:  width,
-		Height: height,
-		Pitch:  width * 4, // 4 bytes per pixel (BGRA)
+		Addr:           UserFramebufferVA,
+		Width:          width,
+		Height:         height,
+		ResourceHeight: resourceHeight,
+		Pitch:          width * 4, // 4 bytes per pixel (BGRA)
 	}
 
 	// Ensure user page is mapped (demand-page if needed)
@@ -74,4 +90,18 @@ func SyscallGetFramebuffer(fbInfoPtr, _, _, _, _, _ uint64) int64 {
 	*dst = info
 
 	return 0
+}
+
+// SyscallSetScanoutOffset changes the visible region's Y offset in the framebuffer.
+// This enables hardware-accelerated scrolling by changing which portion of a
+// larger backing buffer is displayed, rather than copying pixels.
+// arg0 = yOffset (vertical offset in pixels from the top of the resource)
+// Returns 0 on success, -1 on failure
+//
+//go:nosplit
+func SyscallSetScanoutOffset(yOffset, _, _, _, _, _ uint64) int64 {
+	if gpu.SetScanoutOffset(uint32(yOffset)) {
+		return 0
+	}
+	return -1
 }

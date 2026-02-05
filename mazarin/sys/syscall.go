@@ -23,6 +23,7 @@ const (
 	sysRegisterAsyncPreempt  = 0x1009 // Register asyncPreempt address for goroutine preemption
 	sysFlushFramebuffer      = 0x100D // Flush framebuffer region to display
 	sysSetTimerDeadline      = 0x100E // Set timer deadline on soft IRQ slot
+	sysSetScanoutOffset      = 0x100F // Set scanout Y offset for hardware scrolling
 )
 
 // asyncPreempt is the runtime's async preemption function.

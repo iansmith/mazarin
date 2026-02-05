@@ -25,6 +25,7 @@ const (
 	SysQueryInputDevices    = MazzySyscallBase + 12 // 0x100C - Query available input devices
 	SysFlushFramebuffer     = MazzySyscallBase + 13 // 0x100D - Flush framebuffer region to display
 	SysSetTimerDeadline     = MazzySyscallBase + 14 // 0x100E - Set timer deadline on soft IRQ slot
+	SysSetScanoutOffset     = MazzySyscallBase + 15 // 0x100F - Set scanout Y offset for hardware scrolling
 )
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
@@ -45,6 +46,7 @@ var mazzySyscallTable = [64]SyscallHandler{
 	12: SyscallQueryInputDevices,    // QueryInputDevices = 0x100C
 	13: SyscallFlushFramebuffer,    // FlushFramebuffer = 0x100D
 	14: SyscallSetTimerDeadline,    // SetTimerDeadline = 0x100E
+	15: SyscallSetScanoutOffset,    // SetScanoutOffset = 0x100F
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.
