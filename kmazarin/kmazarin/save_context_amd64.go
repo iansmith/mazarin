@@ -3,7 +3,6 @@
 package main
 
 import (
-	"sync/atomic"
 	"unsafe"
 )
 
@@ -18,7 +17,7 @@ import (
 //go:nosplit
 //go:noinline
 func SaveContextFromFrame(framePtr uintptr) {
-	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	t := GetCurrentThread()
 	if t == nil {
 		return
 	}
@@ -84,7 +83,7 @@ func SaveCurrentThreadContext(
 	r8, r9, r10, r11, r12, r13, r14, r15 uint64,
 	rip, rflags, rsp uint64,
 ) {
-	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	t := GetCurrentThread()
 	if t == nil {
 		return
 	}

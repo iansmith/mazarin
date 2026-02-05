@@ -193,8 +193,10 @@ func NonTimerIRQTopHalf() {
 	var dev *topHalfDev
 	if irqNum == topHalfKbd.irqNum && topHalfKbd.usedVA != 0 {
 		dev = &topHalfKbd
+		console.Breadcrumb('K') // diagnostic: keyboard IRQ received
 	} else if irqNum == topHalfMouse.irqNum && topHalfMouse.usedVA != 0 {
 		dev = &topHalfMouse
+		console.Breadcrumb('M') // diagnostic: mouse IRQ received
 	}
 	if dev == nil {
 		return

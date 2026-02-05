@@ -9,7 +9,6 @@ import (
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/ktime"
 	"mazzy/kmazarin/util"
-	"sync/atomic"
 	"unsafe"
 )
 
@@ -158,7 +157,7 @@ func ResetTickAccounting(startTime uint64) {
 		}
 	}
 	// The currently running priest needs its clock started
-	ct := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	ct := GetCurrentThread()
 	if ct != nil && ct.PriestIdx >= 0 {
 		p := &priestListData[ct.PriestIdx]
 		if priestListInUse[ct.PriestIdx] {
@@ -390,7 +389,7 @@ var deadlineQueue *ds.OrderedList[*util.TimerDeadline]
 //
 //go:noinline
 func setSyscallELRInternal(elr uint64) {
-	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	t := GetCurrentThread()
 	if t != nil {
 		t.SyscallELR = elr
 	} else {
@@ -405,7 +404,7 @@ func setSyscallELRInternal(elr uint64) {
 //
 //go:noinline
 func setSyscallSPSRInternal(spsr uint64) {
-	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	t := GetCurrentThread()
 	if t != nil {
 		t.SyscallSPSR = spsr
 	} else {
@@ -421,7 +420,7 @@ func setSyscallSPSRInternal(spsr uint64) {
 //
 //go:noinline
 func GetSyscallELR() uint64 {
-	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	t := GetCurrentThread()
 	if t != nil {
 		return t.SyscallELR
 	}
@@ -436,7 +435,7 @@ func GetSyscallELR() uint64 {
 //
 //go:noinline
 func GetSyscallSPSR() uint64 {
-	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	t := GetCurrentThread()
 	if t != nil {
 		return t.SyscallSPSR
 	}
@@ -454,7 +453,7 @@ func GetSyscallSPSR() uint64 {
 func getSyscallSwitchTargetInternal() uint64 {
 	var target uintptr
 
-	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	t := GetCurrentThread()
 	if t != nil {
 		target = t.SyscallSwitch
 		t.SyscallSwitch = 0 // Reset for next syscall
@@ -478,7 +477,7 @@ func getSyscallSwitchTargetInternal() uint64 {
 func SetSyscallSwitchTarget(target uintptr) {
 	// Store to current thread's SyscallSwitch field
 	// 0 unambiguously means "no switch" and non-zero is valid target
-	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	t := GetCurrentThread()
 	if t != nil {
 		t.SyscallSwitch = target
 	} else {
@@ -836,7 +835,7 @@ func SaveThread0AndYield() uint64 {
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 
-	t0 := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	t0 := GetCurrentThread()
 	if t0 == nil {
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
@@ -1026,7 +1025,7 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 	schedulerLock.Lock()
 
 	// First, get the parent thread to determine if this is a kernel or userspace thread
-	parent := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	parent := GetCurrentThread()
 
 	// Determine if this is a kernel thread (parent PID == 0, the kernel priest)
 	isKernel := parent != nil && parent.PID == 0
@@ -1171,7 +1170,7 @@ func ThreadExit() uintptr {
 //
 //go:nosplit
 func threadExitImpl(sf *SchedulerFunc) uintptr {
-	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	t := GetCurrentThread()
 	if t == nil {
 		return 0 // No current thread
 	}
@@ -1338,7 +1337,7 @@ func RegisterAsyncPreemptAddr(asyncPreemptAddr uint64) int64 {
 	schedulerLock.Lock()
 
 	// Get current thread
-	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	t := GetCurrentThread()
 	if t == nil {
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
@@ -1755,7 +1754,7 @@ func ThreadBlockFutex(futexAddr uint64, expectedVal uint32) uintptr {
 //
 //go:nosplit
 func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint32) uintptr {
-	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	t := GetCurrentThread()
 	if t == nil {
 		return 0
 	}
@@ -1880,7 +1879,7 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 //
 //go:nosplit
 func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
-	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	t := GetCurrentThread()
 	if t == nil {
 		return 0
 	}
@@ -1977,7 +1976,7 @@ func ThreadIncrementTick() {
 //
 //go:nosplit
 func GetCurrentThreadTID() ThreadId {
-	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	t := GetCurrentThread()
 	if t == nil {
 		return -1
 	}
@@ -1990,7 +1989,7 @@ func GetCurrentThreadTID() ThreadId {
 //
 //go:nosplit
 func getCurrentThreadPIDForSpan() int16 {
-	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	t := GetCurrentThread()
 	if t == nil {
 		return 0 // Fallback to kernel span group
 	}
@@ -2056,8 +2055,8 @@ func tryPickupWorkIdleCPU(sf *SchedulerFunc) uint64 {
 		}
 	}
 
-	// Set as current thread
-	atomic.StorePointer(&CurrentThread, unsafe.Pointer(next))
+	// Set as current thread (updates both per-CPU and global)
+	SetCurrentThreadGlobal(next)
 
 	// Memory barrier to ensure visibility to other CPUs
 	asm.Dsb()
@@ -2093,7 +2092,7 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		}
 	}
 
-	oldThread := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	oldThread := GetCurrentThread()
 	if oldThread == nil {
 		// Idle CPU (no current thread) - check if there's work to pick up
 		// This is critical for SMP: secondary CPUs start idle and need to
@@ -2245,7 +2244,7 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	savedDAIF := sf.DisableAndSaveDAIF()
 	schedulerLock.Lock()
 
-	oldThread := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	oldThread := GetCurrentThread()
 	newThread := threadList.Get(int(targetIdx)) // Get() for reserved slots
 	// Update both per-CPU and global CurrentThread
 	SetCurrentThreadGlobal(newThread)

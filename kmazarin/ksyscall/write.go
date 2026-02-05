@@ -71,6 +71,7 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 			pushByteToUartRing(c)
 		}
 		flushUartRingWake()
+		console.Breadcrumb('w') // diagnostic: ring write completed
 	} else {
 		for i := uint64(0); i < count; i++ {
 			c := *(*byte)(unsafe.Pointer(uintptr(buf) + uintptr(i)))

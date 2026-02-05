@@ -244,7 +244,7 @@ func ThreadBlockSoftIRQ(sf *SchedulerFunc, bundlePtr uint64) uintptr {
 	savedDAIF := sf.DisableAndSaveDAIF()
 	schedulerLock.Lock()
 
-	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	t := GetCurrentThread()
 	if t == nil {
 		schedulerLock.Unlock()
 		sf.EnableAndRestoreDAIF(savedDAIF)
@@ -291,7 +291,7 @@ func RegisterSoftIRQDispatcher() int64 {
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 
-	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	t := GetCurrentThread()
 	if t == nil {
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)

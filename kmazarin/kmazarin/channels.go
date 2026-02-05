@@ -4,7 +4,6 @@ package main
 
 import (
 	"mazzy/kmazarin/ds"
-	"sync/atomic"
 	"unsafe"
 )
 
@@ -252,7 +251,7 @@ func HasPendingKernelAsync(pid PriestId) bool {
 //go:nosplit
 //go:noinline
 func getCurrentThreadPIDWrapper() int16 {
-	t := (*Thread)(atomic.LoadPointer(&CurrentThread))
+	t := GetCurrentThread()
 	if t == nil {
 		return -1
 	}

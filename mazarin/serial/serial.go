@@ -64,6 +64,7 @@ func serialLoop() {
 		if waitErr != nil || n == 0 {
 			continue
 		}
+		sys.RawWrite(2, 'P') // diagnostic: serialLoop pushing bytes (no P release)
 		for i := 0; i < n; i++ {
 			b := byte(buf.Events[i].Value)
 			select {

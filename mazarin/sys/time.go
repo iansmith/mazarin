@@ -52,3 +52,12 @@ func SetTimerDeadline(slot int, deadlineSec, deadlineNsec uint64) error {
 func RawSyscall(num, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, errno syscall.Errno) {
 	return syscall.RawSyscall6(num, a1, a2, a3, a4, a5, a6)
 }
+
+// RawWrite writes a single byte to the given fd using RawSyscall (no P release).
+// Used for diagnostic markers that must not disturb Go runtime scheduling.
+var rawWriteBuf [1]byte
+
+func RawWrite(fd int, b byte) {
+	rawWriteBuf[0] = b
+	syscall.RawSyscall6(64, uintptr(fd), uintptr(unsafe.Pointer(&rawWriteBuf[0])), 1, 0, 0, 0)
+}

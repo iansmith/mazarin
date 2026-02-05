@@ -3,8 +3,7 @@
 package main
 
 import (
-	"sync/atomic"
-	_ "unsafe" // for go:linkname
+	"unsafe" // for go:linkname and unsafe.Pointer
 )
 
 // This file contains go:linkname implementations that provide functions to
@@ -178,7 +177,7 @@ func threadBlockSleepForKsyscall() uintptr {
 //go:linkname getCurrentThreadForKsyscall mazzy/kmazarin/ksyscall.GetCurrentThread
 //go:nosplit
 func getCurrentThreadForKsyscall() uintptr {
-	return uintptr(atomic.LoadPointer(&CurrentThread))
+	return uintptr(unsafe.Pointer(GetCurrentThread()))
 }
 
 // GetCurrentThreadTID wrapper

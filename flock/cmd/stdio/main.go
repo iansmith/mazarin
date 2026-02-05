@@ -61,6 +61,7 @@ type console struct {
 	// -1 means nothing dirty.
 	dirtyMin int
 	dirtyMax int
+
 }
 
 func (c *console) markDirty(lineIdx int) {
@@ -570,7 +571,7 @@ func (c *console) scroll() {
 	copy(c.lines, c.lines[1:])
 	c.lines[c.maxLines-1] = ""
 
-	// Shift pixels in gg image (content area only, row by row)
+	// Shift pixels in gg buffer
 	im, ok := c.dc.Image().(*image.RGBA)
 	if !ok {
 		return
@@ -589,10 +590,7 @@ func (c *console) scroll() {
 			im.Pix[srcRowStart:srcRowStart+contentBytes])
 	}
 
-	// Clear and render the last line (now empty)
 	c.redrawLine(c.maxLines - 1)
-
-	// Transfer and flush entire content area (pixels shifted)
 	flushRegionToFramebuffer(c.dc, c.fb, c.rectX, c.rectY, c.rectW, c.rectH)
 	sys.FlushFramebuffer(uint32(c.rectX), uint32(c.rectY), uint32(c.rectW), uint32(c.rectH))
 }
@@ -699,3 +697,4 @@ func flushRegionToFramebuffer(dc *gg.Context, fb *sys.FramebufferInfo, rx, ry, r
 		}
 	}
 }
+
