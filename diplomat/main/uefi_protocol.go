@@ -64,7 +64,7 @@ const (
 // GetBootDeviceBlockIO returns the Block I/O protocol for the device we booted from
 func GetBootDeviceBlockIO() (*UEFIBlockDevice, error) {
 	if systemTable == nil || systemTable.BootServices == nil {
-		return nil, &blockDevError{"boot services not available"}
+		return nil, &errBootServicesNotAvailable
 	}
 
 	plat.DebugPortOut('1')
@@ -78,7 +78,7 @@ func GetBootDeviceBlockIO() (*UEFIBlockDevice, error) {
 	)
 	plat.DebugPortOut('2')
 	if status != EFI_SUCCESS {
-		return nil, &blockDevError{"failed to get LoadedImage protocol"}
+		return nil, &errLoadedImageProtocol
 	}
 	plat.DebugPortOut('3')
 
@@ -86,7 +86,7 @@ func GetBootDeviceBlockIO() (*UEFIBlockDevice, error) {
 	deviceHandle := *(*uintptr)(unsafe.Pointer(loadedImage + LoadedImageDeviceHandle))
 	plat.DebugPortOut('4')
 	if deviceHandle == 0 {
-		return nil, &blockDevError{"no device handle in LoadedImage"}
+		return nil, &errNoDeviceHandle
 	}
 	plat.DebugPortOut('5')
 
@@ -99,7 +99,7 @@ func GetBootDeviceBlockIO() (*UEFIBlockDevice, error) {
 	)
 	plat.DebugPortOut('6')
 	if status != EFI_SUCCESS {
-		return nil, &blockDevError{"failed to get BlockIO protocol"}
+		return nil, &errBlockIOProtocol
 	}
 	plat.DebugPortOut('7')
 

@@ -1,9 +1,9 @@
 // mkesp creates an EFI System Partition (ESP) image with the standard directory structure.
 //
-// Usage: mkesp -o esp.img -bootloader diplomat.efi [-kernel kmazarin.elf]
+// Usage: mkesp -o esp.img -bootloader diplomat.efi [-kernel kmazarin.elf] [-arch x64|aa64]
 //
 // Creates a FAT32 image with:
-//   /EFI/BOOT/BOOTX64.EFI  (bootloader - diplomat.efi)
+//   /EFI/BOOT/BOOTxx.EFI   (bootloader - arch selects BOOTX64.EFI or BOOTAA64.EFI)
 //   /EFI/Linux/kmazarin.elf (optional kernel)
 //
 // This tool shares FAT32 creation logic with mkfat32 but adds directory support.
@@ -56,13 +56,25 @@ type dirEntry struct {
 
 func main() {
 	outputFile := flag.String("o", "esp.img", "Output ESP image file")
-	bootloader := flag.String("bootloader", "", "Path to bootloader (will be BOOTX64.EFI)")
+	bootloader := flag.String("bootloader", "", "Path to bootloader EFI binary")
 	kernel := flag.String("kernel", "", "Path to kernel (optional, will be kmazarin.elf)")
+	arch := flag.String("arch", "x64", "EFI architecture: x64 (BOOTX64.EFI) or aa64 (BOOTAA64.EFI)")
 	sizeMB := flag.Int("size", 100, "Image size in MB")
 	flag.Parse()
 
 	if *bootloader == "" {
-		fmt.Fprintf(os.Stderr, "Usage: %s -bootloader <path> [-kernel <path>] [-o output.img] [-size MB]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s -bootloader <path> [-kernel <path>] [-arch x64|aa64] [-o output.img] [-size MB]\n", os.Args[0])
+		os.Exit(1)
+	}
+
+	var efiName string
+	switch strings.ToLower(*arch) {
+	case "x64":
+		efiName = "BOOTX64.EFI"
+	case "aa64":
+		efiName = "BOOTAA64.EFI"
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown arch %q: must be x64 or aa64\n", *arch)
 		os.Exit(1)
 	}
 
@@ -89,8 +101,8 @@ func main() {
 	bootDir := &dirEntry{name: "BOOT", isDirectory: true}
 	linuxDir := &dirEntry{name: "Linux", isDirectory: true}
 
-	bootx64 := &dirEntry{name: "BOOTX64.EFI", data: bootloaderData}
-	bootDir.children = append(bootDir.children, bootx64)
+	bootEfi := &dirEntry{name: efiName, data: bootloaderData}
+	bootDir.children = append(bootDir.children, bootEfi)
 
 	efiDir.children = append(efiDir.children, bootDir)
 
@@ -105,7 +117,7 @@ func main() {
 	// Add startup.nsh for automatic boot
 	startupScript := &dirEntry{
 		name: "startup.nsh",
-		data: []byte("FS0:\\EFI\\BOOT\\BOOTX64.EFI\r\n"),
+		data: []byte("FS0:\\EFI\\BOOT\\" + efiName + "\r\n"),
 	}
 	root.children = append(root.children, startupScript)
 
@@ -117,7 +129,7 @@ func main() {
 
 	fmt.Printf("Created ESP image: %s\n", *outputFile)
 	fmt.Printf("  Size: %d MB\n", *sizeMB)
-	fmt.Printf("  /EFI/BOOT/BOOTX64.EFI (%d bytes)\n", len(bootloaderData))
+	fmt.Printf("  /EFI/BOOT/%s (%d bytes)\n", efiName, len(bootloaderData))
 	if len(kernelData) > 0 {
 		fmt.Printf("  /EFI/Linux/kmazarin.elf (%d bytes)\n", len(kernelData))
 	}

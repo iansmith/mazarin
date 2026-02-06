@@ -636,14 +636,15 @@ tasks:
 
   esp-arm64:
     desc: Create EFI System Partition image for ARM64 diplomat
-    deps: [diplomat-arm64, mkesp]
+    deps: [diplomat-arm64, mkesp, kmazarin]
     sources:
       - '{{.DIPLOMAT_ARM64_EFI}}'
+      - '{{.KMAZARIN_ELF}}'
     generates:
       - '{{.ESP_ARM64_IMAGE}}'
     cmds:
       - '{{.GO}} tool go-echo "Creating ARM64 ESP image..."'
-      - '{{.BUILD_DIR}}/mkesp -arch aa64 -bootloader {{.DIPLOMAT_ARM64_EFI}} -o {{.ESP_ARM64_IMAGE}} -size 260'
+      - '{{.BUILD_DIR}}/mkesp -arch aa64 -bootloader {{.DIPLOMAT_ARM64_EFI}} -kernel {{.KMAZARIN_ELF}} -o {{.ESP_ARM64_IMAGE}} -size 260'
       - '{{.GO}} tool go-echo "ESP (ARM64) created at {{.ESP_ARM64_IMAGE}}"'
 
   run-diplomat-arm64:

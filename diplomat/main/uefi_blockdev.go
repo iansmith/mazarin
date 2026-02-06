@@ -53,13 +53,13 @@ var _ blockdev.BlockDevice = (*UEFIBlockDevice)(nil)
 // NewUEFIBlockDevice creates a new block device wrapper from a UEFI Block I/O protocol
 func NewUEFIBlockDevice(protocol uintptr) (*UEFIBlockDevice, error) {
 	if protocol == 0 {
-		return nil, &blockDevError{"nil protocol pointer"}
+		return nil, &errNilProtocol
 	}
 
 	// Read Media pointer from protocol
 	media := *(*uintptr)(unsafe.Pointer(protocol + BlockIOMedia))
 	if media == 0 {
-		return nil, &blockDevError{"nil media pointer"}
+		return nil, &errNilMedia
 	}
 
 	// Read block size and last block from media
@@ -88,13 +88,13 @@ func (d *UEFIBlockDevice) Close() error {
 // ReadBlock reads a single block at the given LBA
 func (d *UEFIBlockDevice) ReadBlock(lba uint64, buf []byte) error {
 	if uint64(len(buf)) < d.blockSize {
-		return &blockDevError{"buffer too small"}
+		return &errBufferTooSmall
 	}
 
 	// Get ReadBlocks function pointer
 	readBlocks := *(*uintptr)(unsafe.Pointer(d.protocol + BlockIOReadBlocks))
 	if readBlocks == 0 {
-		return &blockDevError{"ReadBlocks not available"}
+		return &errReadBlocksNotAvailable
 	}
 
 	// Call ReadBlocks(This, MediaId, LBA, BufferSize, Buffer)
@@ -108,7 +108,7 @@ func (d *UEFIBlockDevice) ReadBlock(lba uint64, buf []byte) error {
 	)
 
 	if status != 0 {
-		return &blockDevError{"ReadBlocks failed"}
+		return &errReadBlocksFailed
 	}
 	return nil
 }
@@ -116,13 +116,13 @@ func (d *UEFIBlockDevice) ReadBlock(lba uint64, buf []byte) error {
 // WriteBlock writes a single block at the given LBA
 func (d *UEFIBlockDevice) WriteBlock(lba uint64, buf []byte) error {
 	if uint64(len(buf)) < d.blockSize {
-		return &blockDevError{"buffer too small"}
+		return &errBufferTooSmall
 	}
 
 	// Get WriteBlocks function pointer
 	writeBlocks := *(*uintptr)(unsafe.Pointer(d.protocol + BlockIOWriteBlocks))
 	if writeBlocks == 0 {
-		return &blockDevError{"WriteBlocks not available"}
+		return &errWriteBlocksNotAvailable
 	}
 
 	// Call WriteBlocks(This, MediaId, LBA, BufferSize, Buffer)
@@ -136,7 +136,7 @@ func (d *UEFIBlockDevice) WriteBlock(lba uint64, buf []byte) error {
 	)
 
 	if status != 0 {
-		return &blockDevError{"WriteBlocks failed"}
+		return &errWriteBlocksFailed
 	}
 	return nil
 }
@@ -151,14 +151,64 @@ func (d *UEFIBlockDevice) NumBlocks() uint64 {
 	return d.numBlocks
 }
 
-// blockDevError represents a block device error
+// blockDevError represents a block device error.
+// All instances MUST be pre-allocated as package-level variables
+// to avoid Go heap allocation (diplomat has no Go runtime heap).
 type blockDevError struct {
 	msg string
 }
 
 func (e *blockDevError) Error() string {
-	return "blockdev: " + e.msg
+	return e.msg
 }
+
+// Pre-allocated errors for uefi_blockdev.go
+var (
+	errNilProtocol             = blockDevError{"blockdev: nil protocol pointer"}
+	errNilMedia                = blockDevError{"blockdev: nil media pointer"}
+	errBufferTooSmall          = blockDevError{"blockdev: buffer too small"}
+	errReadBlocksNotAvailable  = blockDevError{"blockdev: ReadBlocks not available"}
+	errReadBlocksFailed        = blockDevError{"blockdev: ReadBlocks failed"}
+	errWriteBlocksNotAvailable = blockDevError{"blockdev: WriteBlocks not available"}
+	errWriteBlocksFailed       = blockDevError{"blockdev: WriteBlocks failed"}
+)
+
+// Pre-allocated errors for uefi_protocol.go
+var (
+	errBootServicesNotAvailable = blockDevError{"blockdev: boot services not available"}
+	errLoadedImageProtocol      = blockDevError{"blockdev: failed to get LoadedImage protocol"}
+	errNoDeviceHandle           = blockDevError{"blockdev: no device handle in LoadedImage"}
+	errBlockIOProtocol          = blockDevError{"blockdev: failed to get BlockIO protocol"}
+)
+
+// Pre-allocated errors for elf_loader.go
+var (
+	errFailedReadELFHeader      = blockDevError{"blockdev: failed to read ELF header"}
+	errNotAnELF                 = blockDevError{"blockdev: not an ELF file"}
+	errNotELF64LE               = blockDevError{"blockdev: not ELF64 little-endian"}
+	errMachineTypeMismatch      = blockDevError{"blockdev: ELF machine type mismatch"}
+	errTooManyProgramHeaders    = blockDevError{"blockdev: too many program headers"}
+	errFailedReadProgramHeaders = blockDevError{"blockdev: failed to read program headers"}
+	errNoLOADSegments           = blockDevError{"blockdev: no LOAD segments"}
+	errAllocationFailed         = blockDevError{"blockdev: allocation failed"}
+	errEFINotDir                = blockDevError{"blockdev: EFI is not a directory"}
+	errLinuxNotDir              = blockDevError{"blockdev: Linux is not a directory"}
+	errDNewSimpleFileFailed     = blockDevError{"blockdev: dNew SimpleFile failed"}
+	errFileNotFound             = blockDevError{"blockdev: file not found"}
+)
+
+// Pre-allocated errors for fat32_walk.go
+var (
+	errClusterTooLarge    = blockDevError{"blockdev: cluster size too large"}
+	errInvalidClusterChain = blockDevError{"blockdev: invalid cluster chain"}
+)
+
+// Pre-allocated errors for pagetable_arm64.go / pagetable_amd64.go
+var (
+	errKernelMappingSpans     = blockDevError{"blockdev: kernel mapping spans multiple entries"}
+	errFailedAllocPageTableSet = blockDevError{"blockdev: failed to allocate PageTableSet"}
+	errAllocatePagesFailed    = blockDevError{"blockdev: AllocatePages failed"}
+)
 
 // uefiCallBlockIORead is implemented in assembly (uefi_calls_amd64.s)
 // Calls EFI_BLOCK_IO_PROTOCOL.ReadBlocks using MS x64 ABI

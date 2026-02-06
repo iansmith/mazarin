@@ -27,7 +27,7 @@ var (
 func WalkDir(fs *fat32.FileSystem, cluster uint32, callback func(*SimpleDirEntry) bool) error {
 	bytesPerClus := fs.BytesPerCluster()
 	if bytesPerClus > uint32(len(dirClusterBuf)) {
-		return &blockDevError{"cluster size too large"}
+		return &errClusterTooLarge
 	}
 
 	currentCluster := cluster
@@ -109,7 +109,7 @@ func WalkDir(fs *fat32.FileSystem, cluster uint32, callback func(*SimpleDirEntry
 			return nil
 		}
 		if nextCluster < 2 {
-			return &blockDevError{"invalid cluster chain"}
+			return &errInvalidClusterChain
 		}
 		currentCluster = nextCluster
 	}

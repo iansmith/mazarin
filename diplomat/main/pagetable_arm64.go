@@ -147,7 +147,7 @@ func BuildPageTables(virtBase, physBase, size uint64) (*PageTableSet, error) {
 		l2Idx := kernelL2Idx + i
 		if l2Idx >= ENTRIES_PER_TABLE {
 			// Would overflow into next L1 entry - not handled for simplicity
-			return nil, &blockDevError{"kernel mapping spans multiple L1 entries"}
+			return nil, &errKernelMappingSpans
 		}
 		physAddr := l2PhysBase + i*Page2MBSize
 		l2Kernel[l2Idx] = physAddr | ATTR_NORMAL_RW | DESC_BLOCK
@@ -163,7 +163,7 @@ func BuildPageTables(virtBase, physBase, size uint64) (*PageTableSet, error) {
 
 	result := dNew[PageTableSet]()
 	if result == nil {
-		return nil, &blockDevError{"failed to allocate PageTableSet"}
+		return nil, &errFailedAllocPageTableSet
 	}
 	result.L0 = l0Phys
 	result.PhysBase = physBase
@@ -213,7 +213,7 @@ func buildPageTablesManual(virtBase, physBase, size uint64) (*PageTableSet, erro
 	for i := uint64(0); i < numPages; i++ {
 		l2Idx := kernelL2Idx + i
 		if l2Idx >= ENTRIES_PER_TABLE {
-			return nil, &blockDevError{"kernel mapping spans multiple L1 entries"}
+			return nil, &errKernelMappingSpans
 		}
 		physAddr := l2PhysBase + i*Page2MBSize
 		l2Kernel[l2Idx] = physAddr | ATTR_NORMAL_RW | DESC_BLOCK
@@ -277,7 +277,7 @@ func addKernelMappingToCurrentPT(virtBase, physBase, size uint64) error {
 	for i := uint64(0); i < numPages; i++ {
 		l2Idx := kernelL2Idx + i
 		if l2Idx >= ENTRIES_PER_TABLE {
-			return &blockDevError{"kernel mapping spans multiple L1 entries"}
+			return &errKernelMappingSpans
 		}
 		physAddr := l2PhysBase + i*Page2MBSize
 		l2[l2Idx] = physAddr | ATTR_NORMAL_RW | DESC_BLOCK
@@ -335,7 +335,7 @@ func allocatePhysPages(numPages uint64) (uint64, error) {
 	status := plat.AllocatePages(AllocateAnyPages, EfiLoaderData, numPages, &physAddrResult)
 	debugPortOut('S')
 	if status != EFI_SUCCESS {
-		return 0, &blockDevError{"AllocatePages failed"}
+		return 0, &errAllocatePagesFailed
 	}
 	debugPortOut('T')
 	return physAddrResult, nil

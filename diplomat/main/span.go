@@ -56,9 +56,10 @@ const maxSpans = 64 // Diplomat needs fewer spans than Cardinal (no device regio
 var globalSpanTracker Span = &globalSpanTrackerImpl
 var globalSpanTrackerImpl simpleSpan
 
-// NewSimpleSpan creates a new simpleSpan tracker.
+// NewSimpleSpan returns the global span tracker.
+// Uses a pre-allocated global to avoid heap allocation.
 func NewSimpleSpan() Span {
-	return &simpleSpan{nextFree: 0}
+	return &globalSpanTrackerImpl
 }
 
 // Register implements Span.Register

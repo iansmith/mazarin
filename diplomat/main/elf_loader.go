@@ -72,20 +72,20 @@ func LoadKernel(fsys *fat32.FileSystem, path string) (*LoadedKernel, error) {
 	var ehdr elf64Ehdr
 	n, err := readFileAt(fsys, file, 0, (*[elfEhdrSize]byte)(unsafe.Pointer(&ehdr))[:])
 	if err != nil || n < elfEhdrSize {
-		return nil, &blockDevError{"failed to read ELF header"}
+		return nil, &errFailedReadELFHeader
 	}
 	debugPortOut('d')
 
 	// Validate ELF
 	magic := *(*uint32)(unsafe.Pointer(&ehdr.Ident[0]))
 	if magic != elfMagic {
-		return nil, &blockDevError{"not an ELF file"}
+		return nil, &errNotAnELF
 	}
 	if ehdr.Ident[4] != elfClass64 || ehdr.Ident[5] != elfDataLSB {
-		return nil, &blockDevError{"not ELF64 little-endian"}
+		return nil, &errNotELF64LE
 	}
 	if ehdr.Machine != elfMachineExpected {
-		return nil, &blockDevError{"ELF machine type mismatch"}
+		return nil, &errMachineTypeMismatch
 	}
 	debugPortOut('e')
 
@@ -97,13 +97,13 @@ func LoadKernel(fsys *fat32.FileSystem, path string) (*LoadedKernel, error) {
 
 	// Read program headers
 	if ehdr.Phnum > 32 {
-		return nil, &blockDevError{"too many program headers"}
+		return nil, &errTooManyProgramHeaders
 	}
 	var phdrs [32]elf64Phdr
 	phdrBytes := int(ehdr.Phnum) * elfPhdrSize
 	n, err = readFileAt(fsys, file, ehdr.Phoff, (*[32 * elfPhdrSize]byte)(unsafe.Pointer(&phdrs[0]))[:phdrBytes])
 	if err != nil || n < phdrBytes {
-		return nil, &blockDevError{"failed to read program headers"}
+		return nil, &errFailedReadProgramHeaders
 	}
 	debugPortOut('f')
 
@@ -124,7 +124,7 @@ func LoadKernel(fsys *fat32.FileSystem, path string) (*LoadedKernel, error) {
 		}
 	}
 	if lowestVirt >= highestVirt {
-		return nil, &blockDevError{"no LOAD segments"}
+		return nil, &errNoLOADSegments
 	}
 	debugPortOut('g')
 
@@ -167,7 +167,7 @@ func LoadKernel(fsys *fat32.FileSystem, path string) (*LoadedKernel, error) {
 
 	result := dNew[LoadedKernel]()
 	if result == nil {
-		return nil, &blockDevError{"allocation failed"}
+		return nil, &errAllocationFailed
 	}
 	result.Entry = ehdr.Entry
 	result.LowestVirt = lowestVirt
@@ -190,7 +190,7 @@ func findFile(fs *fat32.FileSystem, path string) (*SimpleFile, error) {
 		return nil, err
 	}
 	if !entry.IsDir {
-		return nil, &blockDevError{"EFI is not a directory"}
+		return nil, &errEFINotDir
 	}
 	cluster = entry.Cluster
 
@@ -200,7 +200,7 @@ func findFile(fs *fat32.FileSystem, path string) (*SimpleFile, error) {
 		return nil, err
 	}
 	if !entry.IsDir {
-		return nil, &blockDevError{"Linux is not a directory"}
+		return nil, &errLinuxNotDir
 	}
 	cluster = entry.Cluster
 
@@ -213,7 +213,7 @@ func findFile(fs *fat32.FileSystem, path string) (*SimpleFile, error) {
 	// Use bump allocator - Go heap allocation crashes in UEFI
 	sf := dNew[SimpleFile]()
 	if sf == nil {
-		return nil, &blockDevError{"dNew SimpleFile failed"}
+		return nil, &errDNewSimpleFileFailed
 	}
 	sf.Cluster = entry.Cluster
 	sf.Size = entry.Size
@@ -248,7 +248,7 @@ func findInDir(fs *fat32.FileSystem, cluster uint32, name string) (*SimpleDirEnt
 		return nil, err
 	}
 	if found == nil {
-		return nil, &blockDevError{"file not found"}
+		return nil, &errFileNotFound
 	}
 	return found, nil
 }

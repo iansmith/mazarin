@@ -120,7 +120,7 @@ func BuildPageTables(virtBase, physBase, size uint64) (*PageTableSet, error) {
 		pdIdx := kernelPDIdx + i
 		if pdIdx >= ENTRIES_PER_TABLE {
 			// Would overflow into next PDPT entry - not handled for simplicity
-			return nil, &blockDevError{"kernel mapping spans multiple PDPT entries"}
+			return nil, &errKernelMappingSpans
 		}
 		physAddr := pdPhysBase + i*Page2MBSize
 		pdKernel[pdIdx] = physAddr | PTE_PRESENT | PTE_WRITABLE | PTE_PS
@@ -136,7 +136,7 @@ func BuildPageTables(virtBase, physBase, size uint64) (*PageTableSet, error) {
 
 	result := dNew[PageTableSet]()
 	if result == nil {
-		return nil, &blockDevError{"failed to allocate PageTableSet"}
+		return nil, &errFailedAllocPageTableSet
 	}
 	result.PML4 = pml4Phys
 	result.PhysBase = physBase
@@ -193,7 +193,7 @@ func buildPageTablesManual(virtBase, physBase, size uint64) (*PageTableSet, erro
 	for i := uint64(0); i < numPages; i++ {
 		pdIdx := kernelPDIdx + i
 		if pdIdx >= ENTRIES_PER_TABLE {
-			return nil, &blockDevError{"kernel mapping spans multiple PDPT entries"}
+			return nil, &errKernelMappingSpans
 		}
 		physAddr := pdPhysBase + i*Page2MBSize
 		pdKernel[pdIdx] = physAddr | PTE_PRESENT | PTE_WRITABLE | PTE_PS
@@ -260,7 +260,7 @@ func addKernelMappingToCurrentPT(virtBase, physBase, size uint64) error {
 	for i := uint64(0); i < numPages; i++ {
 		pdIdx := kernelPDIdx + i
 		if pdIdx >= ENTRIES_PER_TABLE {
-			return &blockDevError{"kernel mapping spans multiple PDPT entries"}
+			return &errKernelMappingSpans
 		}
 		physAddr := pdPhysBase + i*Page2MBSize
 		pd[pdIdx] = physAddr | PTE_PRESENT | PTE_WRITABLE | PTE_PS
@@ -297,7 +297,7 @@ func allocatePhysPages(numPages uint64) (uint64, error) {
 	status := plat.AllocatePages(AllocateAnyPages, EfiLoaderData, numPages, &physAddrResult)
 	debugPortOut('S')
 	if status != EFI_SUCCESS {
-		return 0, &blockDevError{"AllocatePages failed"}
+		return 0, &errAllocatePagesFailed
 	}
 	debugPortOut('T')
 	return physAddrResult, nil
