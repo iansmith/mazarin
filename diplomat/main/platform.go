@@ -59,6 +59,14 @@ type BootSequence struct {
 	LoadKernel      func(fs *fat32.FileSystem, path string) (*LoadedKernel, error)
 	MapKernel       func(virtBase, physBase, size uint64) error
 	JumpToKernel    func(entry uint64)
+
+	// New boot phases for full kernel environment setup
+	ReadConfig         func(fs *fat32.FileSystem) (*KmazarinConfig, error)
+	QueryHardware      func(config *KmazarinConfig) (*HardwareInfo, error)
+	PrepareKernelVM    func(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, error)
+	InstallFaultHandler func(vm *KernelVM) error
+	BuildStartupEnv    func(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel) (uint64, error)
+	JumpToKernelWithEnv func(entry, stackPtr, excStackTop, vbar uint64)
 }
 
 // SyscallTable is bootloader.SyscallTable (re-exported via type alias above)

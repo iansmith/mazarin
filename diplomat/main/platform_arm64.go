@@ -28,6 +28,14 @@ var defaultBootSequence = BootSequence{
 	LoadKernel:      LoadKernel,
 	MapKernel:       addKernelMappingToCurrentPT,
 	JumpToKernel:    func(entry uint64) { jumpToEntry(entry) },
+
+	// New boot phases
+	ReadConfig:         ReadConfig,
+	QueryHardware:      QueryHardware,
+	PrepareKernelVM:    PrepareKernelVM,
+	InstallFaultHandler: InstallFaultHandler,
+	BuildStartupEnv:    BuildStartupEnv,
+	JumpToKernelWithEnv: jumpToKmazarinWithStack,
 }
 
 var defaultSyscalls = SyscallTable{
@@ -78,6 +86,10 @@ func uefiBlockIOWriteWrapper(protocol uintptr, mediaId uint32, lba, bufferSize u
 	_ = funcPtr // ARM64 reads funcPtr from protocol structure
 	return uefiBlockIOWrite(protocol, mediaId, lba, bufferSize, buffer)
 }
+
+// jumpToKmazarinWithStack sets up stacks, installs kmazarin's VBAR, and jumps.
+// Implemented in pagetable_arm64.s
+func jumpToKmazarinWithStack(entry, g0StackPtr, excStackTop, vbar uint64)
 
 // ARM64 UEFI call helpers - implemented in uefi_calls_arm64.s
 

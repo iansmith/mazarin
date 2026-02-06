@@ -72,6 +72,7 @@ func mmap(addr unsafe.Pointer, n uintptr, prot, flags, fd int32, off uint32) (un
 
 	// Sanity check: if auxv wasn't parsed, heap bounds will be 0
 	if heapStart == 0 || heapEnd == 0 {
+		*(*byte)(unsafe.Pointer(uintptr(0xFFFFFFFF09000000))) = '!'
 		return nil, 12 // ENOMEM
 	}
 

@@ -25,6 +25,15 @@ const (
 	elfPTLoad        = 1
 	elfEhdrSize    = 64 // ELF64 header size
 	elfPhdrSize    = 56 // ELF64 program header size
+	elfShdrSize    = 64 // ELF64 section header size
+	elfSymSize     = 24 // ELF64 symbol table entry size
+
+	// Section header types
+	elfSHT_SYMTAB = 2  // Symbol table
+	elfSHT_STRTAB = 3  // String table
+
+	// Symbol binding/type
+	elfSTT_FUNC = 2
 )
 
 // elf64Ehdr is the ELF64 file header (64 bytes)
@@ -57,6 +66,30 @@ type elf64Phdr struct {
 	Align  uint64
 }
 
+// elf64Shdr is the ELF64 section header (64 bytes)
+type elf64Shdr struct {
+	Name      uint32
+	Type      uint32
+	Flags     uint64
+	Addr      uint64
+	Offset    uint64
+	Size      uint64
+	Link      uint32 // For SYMTAB: index of associated STRTAB section
+	Info      uint32
+	Addralign uint64
+	Entsize   uint64
+}
+
+// elf64Sym is the ELF64 symbol table entry (24 bytes)
+type elf64Sym struct {
+	Name  uint32 // Index into string table
+	Info  byte   // Type and binding
+	Other byte
+	Shndx uint16
+	Value uint64
+	Size  uint64
+}
+
 // LoadKernel loads an ELF kernel from the filesystem into physical memory.
 func LoadKernel(fsys *fat32.FileSystem, path string) (*LoadedKernel, error) {
 	debugPortOut('a')
@@ -67,6 +100,9 @@ func LoadKernel(fsys *fat32.FileSystem, path string) (*LoadedKernel, error) {
 	}
 	debugPortOut('c')
 	printString("Kernel file found\r\n")
+
+	// Build cluster map for O(1) random access (critical for symbol table scanning)
+	buildClusterMap(fsys, file)
 
 	// Read ELF header
 	var ehdr elf64Ehdr
@@ -135,6 +171,7 @@ func LoadKernel(fsys *fat32.FileSystem, path string) (*LoadedKernel, error) {
 	printString("\r\n")
 
 	// Allocate physical memory (extra 2MB for alignment)
+	printString("ELF: allocating memory...\r\n")
 	allocSize := uint64(DefaultKernelMemSize) + Page2MBSize
 	physPages := allocSize / PageSize
 	rawPhys, err := allocatePhysPages(physPages)
@@ -146,21 +183,41 @@ func LoadKernel(fsys *fat32.FileSystem, path string) (*LoadedKernel, error) {
 	debugPortOut('h')
 
 	// Zero the physical region
+	printString("ELF: zeroing ")
+	printHex(DefaultKernelMemSize)
+	printString(" @ ")
+	printHex(physBase)
+	printString("\r\n")
 	plat.ZeroMemory(physBase, DefaultKernelMemSize)
 	debugPortOut('i')
 
 	// Pass 2: Load segments
+	printString("ELF: loading segments\r\n")
 	for i := uint16(0); i < ehdr.Phnum; i++ {
 		ph := &phdrs[i]
 		if ph.Type != elfPTLoad || ph.Memsz == 0 {
 			continue
 		}
 		physDest := physBase + (ph.Vaddr - lowestVirt)
+		printString("  seg[")
+		printHex(uint64(i))
+		printString("] off=")
+		printHex(ph.Offset)
+		printString(" dest=")
+		printHex(physDest)
+		printString(" fsz=")
+		printHex(ph.Filesz)
+		printString(" msz=")
+		printHex(ph.Memsz)
+		printString("\r\n")
 		if ph.Filesz > 0 {
 			err = copySegmentToMemory(fsys, file, ph.Offset, physDest, ph.Filesz)
 			if err != nil {
 				return nil, err
 			}
+			printString("  seg[")
+			printHex(uint64(i))
+			printString("] done\r\n")
 		}
 	}
 	debugPortOut('j')
@@ -173,6 +230,9 @@ func LoadKernel(fsys *fat32.FileSystem, path string) (*LoadedKernel, error) {
 	result.LowestVirt = lowestVirt
 	result.HighestVirt = highestVirt
 	result.PhysBase = physBase
+
+	// Extract important symbols from the ELF symbol table
+	extractSymbols(fsys, file, &ehdr, result)
 
 	printString("Kernel loaded OK\r\n")
 	return result, nil
@@ -222,8 +282,36 @@ func findFile(fs *fat32.FileSystem, path string) (*SimpleFile, error) {
 
 // SimpleFile represents a file for reading
 type SimpleFile struct {
-	Cluster uint32
-	Size    uint32
+	Cluster    uint32
+	Size       uint32
+	HasMap     bool   // true if clusterMap is populated
+	MapLen     uint32 // number of entries in cluster map
+}
+
+// clusterMap caches the FAT32 cluster chain for a file.
+// Supports files up to 1024 clusters (4MB with 4KB clusters).
+var clusterMap [1024]uint32
+
+// buildClusterMap walks the FAT32 cluster chain once and stores all cluster
+// numbers, enabling O(1) random access to any part of the file.
+func buildClusterMap(fs *fat32.FileSystem, file *SimpleFile) {
+	bytesPerClus := uint64(fs.BytesPerCluster())
+	numClusters := (uint64(file.Size) + bytesPerClus - 1) / bytesPerClus
+	if numClusters > uint64(len(clusterMap)) {
+		return // file too large for our map
+	}
+
+	cluster := file.Cluster
+	for i := uint64(0); i < numClusters && cluster >= 2 && !fat32.IsEOF(cluster); i++ {
+		clusterMap[i] = cluster
+		file.MapLen = uint32(i + 1)
+		next, err := fs.ReadFATEntry(cluster)
+		if err != nil {
+			return
+		}
+		cluster = next
+	}
+	file.HasMap = true
 }
 
 // findInDir finds an entry in a directory by name (case-insensitive)
@@ -282,19 +370,25 @@ func readFileAt(fs *fat32.FileSystem, file *SimpleFile, offset uint64, buf []byt
 	}
 
 	bytesPerClus := uint64(fs.BytesPerCluster())
-	cluster := file.Cluster
-	clusterOffset := offset / bytesPerClus
+	clusterIdx := offset / bytesPerClus
 
-	// Skip to the right cluster
-	for i := uint64(0); i < clusterOffset; i++ {
-		next, err := fs.ReadFATEntry(cluster)
-		if err != nil {
-			return 0, err
+	var cluster uint32
+	if file.HasMap && uint32(clusterIdx) < file.MapLen {
+		// O(1) indexed access via cached cluster map
+		cluster = clusterMap[clusterIdx]
+	} else {
+		// Fallback: walk the chain from the beginning
+		cluster = file.Cluster
+		for i := uint64(0); i < clusterIdx; i++ {
+			next, err := fs.ReadFATEntry(cluster)
+			if err != nil {
+				return 0, err
+			}
+			if fat32.IsEOF(next) {
+				return 0, nil
+			}
+			cluster = next
 		}
-		if fat32.IsEOF(next) {
-			return 0, nil
-		}
-		cluster = next
 	}
 
 	// Read data
@@ -324,13 +418,18 @@ func readFileAt(fs *fat32.FileSystem, file *SimpleFile, offset uint64, buf []byt
 		totalRead += toCopy
 		remaining -= toCopy
 		inClusterOffset = 0
+		clusterIdx++
 
 		// Next cluster
-		next, err := fs.ReadFATEntry(cluster)
-		if err != nil {
-			return totalRead, err
+		if file.HasMap && uint32(clusterIdx) < file.MapLen {
+			cluster = clusterMap[clusterIdx]
+		} else {
+			next, err := fs.ReadFATEntry(cluster)
+			if err != nil {
+				return totalRead, err
+			}
+			cluster = next
 		}
-		cluster = next
 	}
 
 	return totalRead, nil
@@ -389,3 +488,177 @@ func JumpToKernel(entry uint64) {
 
 // jumpToEntry is implemented in assembly
 func jumpToEntry(entry uint64)
+
+// Symbols we want to extract from kmazarin's ELF.
+// Initialized explicitly byte-by-byte to avoid depending on Go init() running.
+// "main.ExceptionVectorTable"
+var wantedSymbols [1][32]byte
+
+func initWantedSymbols() {
+	s := "main.ExceptionVectorTable"
+	for i := 0; i < len(s); i++ {
+		wantedSymbols[0][i] = s[i]
+	}
+}
+
+// symNameBuf is a reusable buffer for reading symbol names from the string table.
+var symNameBuf [128]byte
+
+// shdrBuf holds section headers read from the ELF.
+var shdrBuf [64]elf64Shdr
+
+// extractSymbols reads the ELF section headers to find .symtab and .strtab,
+// then scans for specific symbols needed by diplomat (e.g., ExceptionVectorTable).
+func extractSymbols(fsys *fat32.FileSystem, file *SimpleFile, ehdr *elf64Ehdr, kernel *LoadedKernel) {
+	initWantedSymbols()
+
+	if ehdr.Shoff == 0 || ehdr.Shnum == 0 {
+		printString("ELF: no section headers\r\n")
+		return
+	}
+	if ehdr.Shnum > 64 {
+		printString("ELF: too many sections\r\n")
+		return
+	}
+
+	// Read section headers
+	shdrBytes := int(ehdr.Shnum) * elfShdrSize
+	n, err := readFileAt(fsys, file, ehdr.Shoff, (*[64 * elfShdrSize]byte)(unsafe.Pointer(&shdrBuf[0]))[:shdrBytes])
+	if err != nil || n < shdrBytes {
+		printString("ELF: failed to read section headers\r\n")
+		return
+	}
+
+	// Find .symtab section
+	var symtab *elf64Shdr
+	for i := uint16(0); i < ehdr.Shnum; i++ {
+		if shdrBuf[i].Type == elfSHT_SYMTAB {
+			symtab = &shdrBuf[i]
+			break
+		}
+	}
+	if symtab == nil {
+		printString("ELF: no .symtab\r\n")
+		return
+	}
+
+	// The .symtab's Link field points to its associated .strtab section
+	if symtab.Link >= uint32(ehdr.Shnum) {
+		printString("ELF: bad strtab link\r\n")
+		return
+	}
+	strtab := &shdrBuf[symtab.Link]
+
+	// Scan symbol table entries for wanted symbols
+	numSyms := symtab.Size / uint64(elfSymSize)
+	found := 0
+
+	printString("ELF: symtab at off=")
+	printHex(symtab.Offset)
+	printString(" ")
+	printHex(numSyms)
+	printString(" syms, strtab at off=")
+	printHex(strtab.Offset)
+	printString("\r\n")
+
+	// Read symbols in chunks using elfReadBuf (4096 bytes = 170 symbols per chunk)
+	symsPerChunk := uint64(len(elfReadBuf)) / uint64(elfSymSize)
+
+	for offset := uint64(0); offset < numSyms && found < len(wantedSymbols); offset += symsPerChunk {
+		remaining := numSyms - offset
+		if remaining > symsPerChunk {
+			remaining = symsPerChunk
+		}
+		readSize := int(remaining * uint64(elfSymSize))
+		fileOff := symtab.Offset + offset*uint64(elfSymSize)
+
+		n, err := readFileAt(fsys, file, fileOff, elfReadBuf[:readSize])
+		if err != nil || n < readSize {
+			break
+		}
+
+		// Process each symbol in this chunk
+		for i := uint64(0); i < remaining; i++ {
+			sym := (*elf64Sym)(unsafe.Pointer(&elfReadBuf[i*uint64(elfSymSize)]))
+			if sym.Name == 0 || sym.Value == 0 {
+				continue
+			}
+
+			// Read symbol name from string table
+			nameOff := strtab.Offset + uint64(sym.Name)
+			nn, err := readFileAt(fsys, file, nameOff, symNameBuf[:])
+			if err != nil || nn == 0 {
+				continue
+			}
+
+			// Check against wanted symbols
+			for w := 0; w < len(wantedSymbols); w++ {
+				if matchSymName(symNameBuf[:], wantedSymbols[w]) {
+					// Found it — store in kernel.Symbols
+					if kernel.NumSymbols < len(kernel.Symbols) {
+						ks := &kernel.Symbols[kernel.NumSymbols]
+						for j := 0; j < 64 && wantedSymbols[w][j] != 0; j++ {
+							ks.Name[j] = wantedSymbols[w][j]
+						}
+						ks.Value = sym.Value
+						kernel.NumSymbols++
+						found++
+
+						printString("ELF: found ")
+						printSymName(wantedSymbols[w][:])
+						printString(" = ")
+						printHex(sym.Value)
+						printString("\r\n")
+					}
+				}
+			}
+		}
+	}
+}
+
+// matchSymName checks if the name read from the string table matches a wanted name.
+// The strtab name may have a ".abi0" suffix that we ignore.
+func matchSymName(strtabName []byte, wanted [32]byte) bool {
+	// Find length of wanted name
+	wantLen := 0
+	for wantLen < 32 && wanted[wantLen] != 0 {
+		wantLen++
+	}
+	if wantLen == 0 {
+		return false
+	}
+
+	// Compare first wantLen bytes
+	for i := 0; i < wantLen; i++ {
+		if i >= len(strtabName) || strtabName[i] != wanted[i] {
+			return false
+		}
+	}
+
+	// After the wanted name, must be NUL or ".abi0" suffix
+	if wantLen < len(strtabName) {
+		next := strtabName[wantLen]
+		if next == 0 {
+			return true
+		}
+		// Check for ".abi0" suffix
+		if next == '.' && wantLen+5 <= len(strtabName) {
+			return strtabName[wantLen+1] == 'a' &&
+				strtabName[wantLen+2] == 'b' &&
+				strtabName[wantLen+3] == 'i' &&
+				strtabName[wantLen+4] == '0'
+		}
+		return false
+	}
+	return true
+}
+
+// printSymName prints a symbol name (null-terminated byte array)
+func printSymName(name []byte) {
+	for _, b := range name {
+		if b == 0 {
+			break
+		}
+		printChar(uint16(b))
+	}
+}

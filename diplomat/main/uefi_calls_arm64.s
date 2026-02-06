@@ -127,6 +127,38 @@ TEXT ·uefiBlockIOWrite(SB), NOSPLIT, $0-48
 	MOVD	R0, ret+40(FP)
 	RET
 
+// uefiLocateProtocol calls UEFI BootServices->LocateProtocol
+// Go: func uefiLocateProtocol(protocol, registration, iface uintptr) EFI_STATUS
+// UEFI: EFI_STATUS LocateProtocol(EFI_GUID *Protocol, VOID *Registration, VOID **Interface)
+TEXT ·uefiLocateProtocol(SB), NOSPLIT, $0-32
+	MOVD	protocol+0(FP), R0	// Protocol GUID
+	MOVD	registration+8(FP), R1	// Registration (NULL)
+	MOVD	iface+16(FP), R2	// Interface (out pointer)
+
+	// Get BootServices->LocateProtocol (offset 320)
+	MOVD	main·systemTable(SB), R4
+	MOVD	96(R4), R4		// BootServices
+	MOVD	320(R4), R4		// LocateProtocol
+	CALL	(R4)
+
+	MOVD	R0, ret+24(FP)
+	RET
+
+// uefiMPGetNumberOfProcessors calls mpProtocol->GetNumberOfProcessors
+// Go: func uefiMPGetNumberOfProcessors(protocol, numProcs, numEnabled uintptr) EFI_STATUS
+// UEFI: EFI_STATUS GetNumberOfProcessors(THIS, UINTN *NumProcs, UINTN *NumEnabled)
+TEXT ·uefiMPGetNumberOfProcessors(SB), NOSPLIT, $0-32
+	MOVD	protocol+0(FP), R0	// This
+	MOVD	numProcs+8(FP), R1	// NumProcessors (out)
+	MOVD	numEnabled+16(FP), R2	// NumEnabledProcessors (out)
+
+	// GetNumberOfProcessors is at offset 8 in the protocol
+	MOVD	8(R0), R3
+	CALL	(R3)
+
+	MOVD	R0, ret+24(FP)
+	RET
+
 // uefiExitBootServices calls UEFI BootServices->ExitBootServices
 // Go: func uefiExitBootServices(imageHandle uintptr, mapKey uintptr) EFI_STATUS
 // UEFI: EFI_STATUS ExitBootServices(EFI_HANDLE ImageHandle, UINTN MapKey)

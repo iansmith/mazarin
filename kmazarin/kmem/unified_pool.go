@@ -64,11 +64,43 @@ func InitUnifiedPool() {
 		return
 	}
 
-	// Read pool boundaries directly from startup params to avoid the deep
-	// fullConfig→DTB parsing chain that exceeds nosplit stack budget.
-	// Offsets match shared/constants.RuntimeConfig field positions.
-	unifiedStart := getStartupConfigValue(312) // UnifiedPoolStart
-	unifiedEnd := getStartupConfigValue(320)   // UnifiedPoolEnd
+	// Read pool boundaries from auxv-backed vars (set by archauxv during runtime init).
+	unifiedStart := uint64(kmazarinUnifiedPoolStart)
+	unifiedEnd := uint64(kmazarinUnifiedPoolEnd)
+
+	// DEBUG: print auxv values to UART
+	rawUART('U')
+	rawUART('S')
+	rawUART('=')
+	hexC := "0123456789ABCDEF"
+	for i := 60; i >= 0; i -= 4 {
+		rawUART(hexC[(unifiedStart>>uint(i))&0xF])
+	}
+	rawUART(' ')
+	rawUART('U')
+	rawUART('E')
+	rawUART('=')
+	for i := 60; i >= 0; i -= 4 {
+		rawUART(hexC[(unifiedEnd>>uint(i))&0xF])
+	}
+	rawUART(' ')
+	rawUART('F')
+	rawUART('S')
+	rawUART('=')
+	fs := uint64(kmazarinFramePoolStart)
+	for i := 60; i >= 0; i -= 4 {
+		rawUART(hexC[(fs>>uint(i))&0xF])
+	}
+	rawUART(' ')
+	rawUART('F')
+	rawUART('E')
+	rawUART('=')
+	fe := uint64(kmazarinFramePoolEnd)
+	for i := 60; i >= 0; i -= 4 {
+		rawUART(hexC[(fe>>uint(i))&0xF])
+	}
+	rawUART('\r')
+	rawUART('\n')
 
 	var poolStart, poolEnd uint64
 	if unifiedStart != 0 && unifiedEnd != 0 {
@@ -76,8 +108,8 @@ func InitUnifiedPool() {
 		poolEnd = unifiedEnd
 	} else {
 		// Fallback: use legacy frame pool boundaries
-		poolStart = getStartupConfigValue(48) // FramePoolStart
-		poolEnd = getStartupConfigValue(56)   // FramePoolEnd
+		poolStart = uint64(kmazarinFramePoolStart)
+		poolEnd = uint64(kmazarinFramePoolEnd)
 	}
 
 	globalPool.next = uintptr(poolStart)

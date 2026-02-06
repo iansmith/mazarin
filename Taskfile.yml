@@ -126,6 +126,7 @@ tasks:
       - '{{.RUNTIME_PATCHES_DIR}}/mcache.go'
       - '{{.RUNTIME_PATCHES_DIR}}/os_linux_arm64.go'
       - '{{.RUNTIME_PATCHES_DIR}}/preempt.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/sys_linux_arm64.s'
       - '{{.RUNTIME_PATCHES_DIR}}/tagptr_64bit.go'
       - '{{.RUNTIME_PATCHES_DIR}}/traceback.go'
       - '{{.RUNTIME_PATCHES_DIR}}/panic.go'
@@ -640,11 +641,12 @@ tasks:
     sources:
       - '{{.DIPLOMAT_ARM64_EFI}}'
       - '{{.KMAZARIN_ELF}}'
+      - kmazarin.toml
     generates:
       - '{{.ESP_ARM64_IMAGE}}'
     cmds:
       - '{{.GO}} tool go-echo "Creating ARM64 ESP image..."'
-      - '{{.BUILD_DIR}}/mkesp -arch aa64 -bootloader {{.DIPLOMAT_ARM64_EFI}} -kernel {{.KMAZARIN_ELF}} -o {{.ESP_ARM64_IMAGE}} -size 260'
+      - '{{.BUILD_DIR}}/mkesp -arch aa64 -bootloader {{.DIPLOMAT_ARM64_EFI}} -kernel {{.KMAZARIN_ELF}} -config kmazarin.toml -o {{.ESP_ARM64_IMAGE}} -size 260'
       - '{{.GO}} tool go-echo "ESP (ARM64) created at {{.ESP_ARM64_IMAGE}}"'
 
   run-diplomat-arm64:
@@ -676,7 +678,7 @@ tasks:
       FW_VARS_TEMPLATE: '{{if ne .OVMF_ARM64 ""}}{{dir .OVMF_ARM64}}/edk2-arm-vars.fd{{else}}{{dir .QEMU}}/../share/qemu/edk2-arm-vars.fd{{end}}'
     cmds:
       - '{{.GO}} tool go-cp {{.FW_VARS_TEMPLATE}} {{.BUILD_DIR}}/edk2-arm-vars.fd'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt -cpu cortex-a72 -m 8G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt -cpu cortex-a72 -m 2G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (ARM64 UEFI) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4446"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'

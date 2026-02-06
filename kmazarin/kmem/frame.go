@@ -24,10 +24,29 @@ const KmazarinTotalLimit = 64 * 1024 * 1024 // 64 MB
 // getRuntimeConfig is provided by main package via go:linkname.
 func getRuntimeConfig() interface{}
 
-// getStartupConfigValue reads a uint64 directly from StartupParams at the given
-// byte offset. Provided by main package via go:linkname. This is a lightweight
-// nosplit-safe alternative to getRuntimeConfigTyped() for use in nosplit chains.
-func getStartupConfigValue(byteOffset uintptr) uint64
+// Auxv-backed config values, set by archauxv() during runtime init.
+// These replace the old getStartupConfigValue() which read from StartupParams.
+
+//go:linkname kmazarinTTBR1L0Phys runtime.kmazarinTTBR1L0Phys
+var kmazarinTTBR1L0Phys uintptr
+
+//go:linkname kmazarinTTBR0L0Phys runtime.kmazarinTTBR0L0Phys
+var kmazarinTTBR0L0Phys uintptr
+
+//go:linkname kmazarinFramePoolStart runtime.kmazarinFramePoolStart
+var kmazarinFramePoolStart uintptr
+
+//go:linkname kmazarinFramePoolEnd runtime.kmazarinFramePoolEnd
+var kmazarinFramePoolEnd uintptr
+
+//go:linkname kmazarinUnifiedPoolStart runtime.kmazarinUnifiedPoolStart
+var kmazarinUnifiedPoolStart uintptr
+
+//go:linkname kmazarinUnifiedPoolEnd runtime.kmazarinUnifiedPoolEnd
+var kmazarinUnifiedPoolEnd uintptr
+
+//go:linkname kmazarinKmazarinSize runtime.kmazarinKmazarinSize
+var kmazarinKmazarinSize uintptr
 
 // InitFrameAllocator initializes the unified page pool.
 // This should be called once during kmazarin startup.

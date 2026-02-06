@@ -58,6 +58,7 @@ func main() {
 	outputFile := flag.String("o", "esp.img", "Output ESP image file")
 	bootloader := flag.String("bootloader", "", "Path to bootloader EFI binary")
 	kernel := flag.String("kernel", "", "Path to kernel (optional, will be kmazarin.elf)")
+	config := flag.String("config", "", "Path to config file (optional, will be kmazarin.toml)")
 	arch := flag.String("arch", "x64", "EFI architecture: x64 (BOOTX64.EFI) or aa64 (BOOTAA64.EFI)")
 	sizeMB := flag.Int("size", 100, "Image size in MB")
 	flag.Parse()
@@ -95,6 +96,16 @@ func main() {
 		}
 	}
 
+	// Read config if provided
+	var configData []byte
+	if *config != "" {
+		configData, err = os.ReadFile(*config)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading config: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	// Create directory structure
 	root := &dirEntry{name: "/", isDirectory: true}
 	efiDir := &dirEntry{name: "EFI", isDirectory: true}
@@ -106,9 +117,15 @@ func main() {
 
 	efiDir.children = append(efiDir.children, bootDir)
 
-	if len(kernelData) > 0 {
-		kernelFile := &dirEntry{name: "kmazarin.elf", data: kernelData}
-		linuxDir.children = append(linuxDir.children, kernelFile)
+	if len(kernelData) > 0 || len(configData) > 0 {
+		if len(kernelData) > 0 {
+			kernelFile := &dirEntry{name: "kmazarin.elf", data: kernelData}
+			linuxDir.children = append(linuxDir.children, kernelFile)
+		}
+		if len(configData) > 0 {
+			configFile := &dirEntry{name: "KMAZARIN.TOM", data: configData}
+			linuxDir.children = append(linuxDir.children, configFile)
+		}
 		efiDir.children = append(efiDir.children, linuxDir)
 	}
 
@@ -132,6 +149,9 @@ func main() {
 	fmt.Printf("  /EFI/BOOT/%s (%d bytes)\n", efiName, len(bootloaderData))
 	if len(kernelData) > 0 {
 		fmt.Printf("  /EFI/Linux/kmazarin.elf (%d bytes)\n", len(kernelData))
+	}
+	if len(configData) > 0 {
+		fmt.Printf("  /EFI/Linux/kmazarin.toml (%d bytes)\n", len(configData))
 	}
 }
 

@@ -19,23 +19,35 @@ func isAddressInSpan(addr uint64) bool
 // Set to false for production, true for debugging
 const debugPaging = false
 
+// rawUART writes a single byte directly to the UART at the high-memory address.
+// Works even before console initialization.
+//
+//go:nosplit
+func rawUART(c byte) {
+	*(*byte)(unsafe.Pointer(uintptr(constants.KernelUartBase))) = c
+}
+
 // debugPrint conditionally outputs a character if debugging is enabled
-// Uses console abstraction which provides spinlock protection
+// Uses direct UART for early boot when console isn't initialized.
 //
 //go:nosplit
 func debugPrint(c byte) {
 	if debugPaging {
-		console.KWriteByte(c)
+		rawUART(c)
 	}
 }
 
 // debugPrintHex conditionally outputs a hex value if debugging is enabled
-// Uses console abstraction which provides spinlock protection
+// Uses direct UART for early boot.
 //
 //go:nosplit
 func debugPrintHex(val uint64) {
 	if debugPaging {
-		console.KPrintHex64(val)
+		hexChars := "0123456789ABCDEF"
+		for i := 60; i >= 0; i -= 4 {
+			nibble := (val >> uint(i)) & 0xF
+			rawUART(hexChars[nibble])
+		}
 	}
 }
 
@@ -89,9 +101,12 @@ const (
 // The relocation script would corrupt compile-time initialized values
 // that look like physical addresses or kernel VAs.
 var (
-	pagingInitialized bool
-	ttbr1L0PA         uintptr // Physical address of TTBR1 L0 table (lazy init)
-	ttbr0L0PA         uintptr // Physical address of TTBR0 L0 table (Cardinal's original)
+	pagingInitialized  bool
+	ttbr1L0PA          uintptr // Physical address of TTBR1 L0 table (lazy init)
+	ttbr0L0PA          uintptr // Physical address of TTBR0 L0 table (Cardinal's original)
+	pfSuccessCount     uint64  // Successful page fault handling counter
+	pfLastFaultAddr    uintptr // Last faulting address (to detect repeated faults)
+	pfRepeatCount      uint64  // Counter for repeated faults at same page
 	// NOTE: processL0PA global removed - use readTTBR0EL1() to get current L0PA
 	ttbr1L1PA uintptr // Physical address of TTBR1 L1 table (lazy init)
 	// NOTE: ptPoolNext removed - PT allocation now uses unified pool
@@ -112,24 +127,20 @@ type ptVACacheEntry struct {
 	va uintptr
 }
 
-// getKmazarinSize returns the kmazarin binary size from startup params.
-// Uses direct startup params access to avoid the deep fullConfig chain.
+// getKmazarinSize returns the kmazarin binary size from auxv.
 //
 //go:nosplit
 func getKmazarinSize() uint64 {
-	return getStartupConfigValue(40) // KmazarinSize offset in RuntimeConfig
+	return uint64(kmazarinKmazarinSize)
 }
 
 // InitPaging initializes the paging subsystem.
-// All values come from runtime configuration (auxv from Cardinal).
+// All values come from runtime configuration (auxv from bootloader).
 //
 //go:nosplit
 func InitPaging() {
-	// Read TTBR values directly from startup params to avoid the deep
-	// fullConfig→DTB parsing chain that exceeds nosplit stack budget.
-	// Offsets match shared/constants.RuntimeConfig field positions.
-	ttbr1L0PA = uintptr(getStartupConfigValue(80)) // TTBR1L0Phys
-	ttbr0L0PA = uintptr(getStartupConfigValue(88)) // TTBR0L0Phys
+	ttbr1L0PA = kmazarinTTBR1L0Phys
+	ttbr0L0PA = kmazarinTTBR0L0Phys
 	pagingInitialized = true
 
 	// Initialize the unified pool for PT allocation
@@ -554,12 +565,56 @@ func HandlePageFault(faultAddr uintptr) bool {
 	pageAddr := faultAddr &^ (PageSize - 1)
 	debugPrint('d') // DEBUG: aligned
 
+	// Track repeated faults at the same page
+	if pageAddr == pfLastFaultAddr {
+		pfRepeatCount++
+	} else {
+		pfLastFaultAddr = pageAddr
+		pfRepeatCount = 0
+	}
+
 	// Allocate a physical frame
 	frame := AllocKernelFrame()
 	if frame == 0 {
-		// DEBUG: A = Alloc failed
-		debugPrint('A')
-		debugPrint('!')
+		// Always print alloc failure diagnostics (direct UART)
+		hexChars := "0123456789ABCDEF"
+		rawUART('O')
+		rawUART('O')
+		rawUART('M')
+		rawUART(' ')
+		rawUART('s')
+		rawUART('u')
+		rawUART('c')
+		rawUART('=')
+		for i := 60; i >= 0; i -= 4 {
+			rawUART(hexChars[(pfSuccessCount>>uint(i))&0xF])
+		}
+		rawUART(' ')
+		rawUART('r')
+		rawUART('p')
+		rawUART('t')
+		rawUART('=')
+		for i := 60; i >= 0; i -= 4 {
+			rawUART(hexChars[(pfRepeatCount>>uint(i))&0xF])
+		}
+		rawUART(' ')
+		rawUART('v')
+		rawUART('a')
+		rawUART('=')
+		fa := uint64(faultAddr)
+		for i := 60; i >= 0; i -= 4 {
+			rawUART(hexChars[(fa>>uint(i))&0xF])
+		}
+		rawUART(' ')
+		rawUART('b')
+		rawUART('p')
+		rawUART('=')
+		bp := GetBumpAllocatedPages()
+		for i := 60; i >= 0; i -= 4 {
+			rawUART(hexChars[(bp>>uint(i))&0xF])
+		}
+		rawUART('\r')
+		rawUART('\n')
 		return false
 	}
 
@@ -595,6 +650,9 @@ func HandlePageFault(faultAddr uintptr) bool {
 	// The Go runtime will access the page and we'll see if it works
 	debugPrint('S') // DEBUG: skipping zero, returning success
 	_ = pageAddr // suppress unused warning
+
+	// Track success
+	pfSuccessCount++
 
 	// Queue deferred record for bottom-half page tracking
 	QueueDeferredRecord(DeferredPageRecord{
@@ -745,10 +803,12 @@ func mapPage(va, pa uintptr) bool {
 	debugPrintHex(uint64(l3Idx))
 	debugPrint(']')
 
-	// Determine which translation table to use based on VA bit 55
-	// Bit 55 = 0 -> TTBR0 (user space), Bit 55 = 1 -> TTBR1 (kernel space)
+	// Determine which translation table to use based on VA bit 63.
+	// Bit 63 = 0 -> TTBR0 (user space), Bit 63 = 1 -> TTBR1 (kernel space)
+	// NOTE: Cannot use bit 55 — heap addresses like 0xFFFF000100000000
+	// have bit 63 = 0 despite being TTBR1 addresses (bits [63:48] = 0xFFFF).
 	var l0PA uintptr
-	if (va>>55)&1 == 0 {
+	if (va>>63)&1 == 0 {
 		// TTBR0 (user space / heap)
 		debugPrint('T')
 		debugPrint('0')
@@ -1271,8 +1331,8 @@ func mapDevicePage(va, pa uintptr) bool {
 	l2Idx := (va >> L2Shift) & 0x1FF
 	l3Idx := (va >> L3Shift) & 0x1FF
 
-	// Use TTBR1 for kernel high memory (bit 55 = 1)
-	if (va>>55)&1 == 0 {
+	// Use TTBR1 for kernel high memory (bit 63 = 1)
+	if (va>>63)&1 == 0 {
 		return false // Device MMIO must be in kernel space
 	}
 	l0PA := ttbr1L0PA
@@ -1502,8 +1562,8 @@ func mapUserPageWithL0(va, pa uintptr, elfFlags uint32, l0PAParam uintptr) bool 
 	l2Idx := (va >> L2Shift) & 0x1FF
 	l3Idx := (va >> L3Shift) & 0x1FF
 
-	// Use TTBR0 for userspace (bit 55 = 0)
-	if (va>>55)&1 != 0 {
+	// Use TTBR0 for userspace (bit 63 = 0)
+	if (va>>63)&1 != 0 {
 		return false // User pages must be in low memory
 	}
 
@@ -1678,8 +1738,8 @@ func MapUserDevicePage(va, pa uintptr) bool {
 	l2Idx := (va >> L2Shift) & 0x1FF
 	l3Idx := (va >> L3Shift) & 0x1FF
 
-	// Use TTBR0 for userspace (bit 55 = 0)
-	if (va>>55)&1 != 0 {
+	// Use TTBR0 for userspace (bit 63 = 0)
+	if (va>>63)&1 != 0 {
 		return false // User pages must be in low memory
 	}
 
@@ -1927,8 +1987,8 @@ func WalkUserPageTableWithL0(va uintptr, l0PAParam uintptr) uintptr {
 		InitPaging()
 	}
 
-	// Userspace addresses must have bit 55 = 0
-	if (va>>55)&1 != 0 {
+	// Userspace addresses must have bit 63 = 0
+	if (va>>63)&1 != 0 {
 		return 0
 	}
 
@@ -2003,9 +2063,9 @@ func WalkUserPageTableWithL0(va uintptr, l0PAParam uintptr) uintptr {
 //
 //go:nosplit
 func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
-	// Userspace addresses must have bit 55 = 0
-	if (va>>55)&1 != 0 {
-		uartPuts("[DumpPTE] VA has bit55=1 (kernel addr)\r\n")
+	// Userspace addresses must have bit 63 = 0
+	if (va>>63)&1 != 0 {
+		uartPuts("[DumpPTE] VA has bit63=1 (kernel addr)\r\n")
 		return
 	}
 
@@ -2105,8 +2165,8 @@ func UnmapUserPage(va uintptr) uintptr {
 		InitPaging()
 	}
 
-	// Userspace addresses must have bit 55 = 0
-	if (va>>55)&1 != 0 {
+	// Userspace addresses must have bit 63 = 0
+	if (va>>63)&1 != 0 {
 		return 0
 	}
 
@@ -2196,7 +2256,7 @@ func GetUserL3PTE(va uintptr) uint64 {
 	if !pagingInitialized {
 		InitPaging()
 	}
-	if (va>>55)&1 != 0 {
+	if (va>>63)&1 != 0 {
 		return 0
 	}
 	l0Idx := (va >> L0Shift) & 0x1FF
@@ -2419,8 +2479,8 @@ func mapKernelScratchPage(va, pa uintptr) bool {
 	l2Idx := (va >> L2Shift) & 0x1FF
 	l3Idx := (va >> L3Shift) & 0x1FF
 
-	// Use TTBR1 for kernel space (bit 55 = 1)
-	if (va>>55)&1 == 0 {
+	// Use TTBR1 for kernel space (bit 63 = 1)
+	if (va>>63)&1 == 0 {
 		return false // Scratch must be in kernel high memory
 	}
 	l0PA := ttbr1L0PA

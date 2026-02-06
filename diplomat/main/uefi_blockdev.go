@@ -205,9 +205,10 @@ var (
 
 // Pre-allocated errors for pagetable_arm64.go / pagetable_amd64.go
 var (
-	errKernelMappingSpans     = blockDevError{"blockdev: kernel mapping spans multiple entries"}
+	errKernelMappingSpans      = blockDevError{"blockdev: kernel mapping spans multiple entries"}
 	errFailedAllocPageTableSet = blockDevError{"blockdev: failed to allocate PageTableSet"}
-	errAllocatePagesFailed    = blockDevError{"blockdev: AllocatePages failed"}
+	errAllocatePagesFailed     = blockDevError{"blockdev: AllocatePages failed"}
+	errUpperMappingFailed      = blockDevError{"blockdev: upper kernel mapping setup failed"}
 )
 
 // uefiCallBlockIORead is implemented in assembly (uefi_calls_amd64.s)

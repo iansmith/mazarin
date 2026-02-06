@@ -301,22 +301,114 @@ func DiplomatEntry() {
 	printHex(kernel.Entry)
 	printString("\r\n")
 
-	// Add kernel mapping to UEFI's existing page tables.
-	printString("Adding kernel mapping to UEFI page tables...\r\n")
-	err = boot.MapKernel(kernel.LowestVirt, kernel.PhysBase, DefaultKernelMemSize)
+	// Phase 4: Read configuration
+	config, err := boot.ReadConfig(fs)
 	if err != nil {
-		printString("ERROR: ")
+		printString("ERROR: config: ")
 		printString(err.Error())
 		printString("\r\n")
 		for {
 		}
 	}
-	printString("Kernel mapped, jumping...\r\n")
-	boot.JumpToKernel(kernel.Entry)
+	printString("Config: cpus=")
+	printHex(config.MinCPUs)
+	printString("-")
+	printHex(config.MaxCPUs)
+	printString(" ram=")
+	printHex(config.MinRAMMB)
+	printString("-")
+	printHex(config.MaxRAMMB)
+	printString("MB\r\n")
+
+	// Phase 5: Query hardware
+	hw, err := boot.QueryHardware(config)
+	if err != nil {
+		printString("ERROR: hardware: ")
+		printString(err.Error())
+		printString("\r\n")
+		for {
+		}
+	}
+	printString("Hardware: ")
+	printHex(hw.CPUCount)
+	printString(" CPUs, ")
+	printHex(hw.RAMSize / (1024 * 1024))
+	printString("MB RAM @ ")
+	printHex(hw.RAMBase)
+	printString("\r\n")
+
+	// Phase 7: Prepare kernel VM (TTBR1, linear map, stacks, page pool)
+	printString("Preparing kernel VM...\r\n")
+	vm, err := boot.PrepareKernelVM(hw, kernel)
+	if err != nil {
+		printString("ERROR: kernelvm: ")
+		printString(err.Error())
+		printString("\r\n")
+		for {
+		}
+	}
+
+	// Phase 8: Skip diplomat's demand paging handler — kmazarin's exception
+	// handler handles both data aborts (demand paging) and SVC (clone for
+	// thread creation). We install kmazarin's VBAR_EL1 at jump time.
+	// (InstallFaultHandler is no longer needed.)
+
+	// Phase 9: Build startup environment (auxv on g0 stack)
+	printString("DBG: about to build startup env\r\n")
+	stackPtr, err := boot.BuildStartupEnv(vm, hw, kernel)
+	if err != nil {
+		printString("ERROR: startup env: ")
+		printString(err.Error())
+		printString("\r\n")
+		for {
+		}
+	}
+
+	// Look up kmazarin's ExceptionVectorTable symbol for VBAR_EL1.
+	// The relocator (relocate-kmazarin) updates ELF header/code/data but NOT
+	// the symbol table. So the symbol value is still at the pre-relocation VA.
+	// Add the relocation delta (high 32 bits of LowestVirt) to get the real VA.
+	excVecAddr := findKernelSymbol(kernel, "main.ExceptionVectorTable")
+	if excVecAddr == 0 {
+		printString("ERROR: ExceptionVectorTable symbol not found\r\n")
+		for {
+		}
+	}
+	relocDelta := kernel.LowestVirt - (kernel.LowestVirt & 0x00000000FFFFFFFF)
+	excVecAddr += relocDelta
+	printString("VBAR: kmazarin ExceptionVectorTable = ")
+	printHex(excVecAddr)
+	printString("\r\n")
+
+	// Phase 10: Jump to kernel with proper stack setup and kmazarin's VBAR.
+	// Kmazarin's exception handler handles:
+	//   - Data aborts (demand paging for heap at 0xFFFF000100000000+)
+	//   - SVC (clone for thread creation via SyscallClone)
+	printString("Jumping to kmazarin...\r\n")
+	boot.JumpToKernelWithEnv(kernel.Entry, stackPtr, vm.ExcStackTopVA, excVecAddr)
 
 	// Does not return
 	for {
 	}
+}
+
+// findKernelSymbol looks up a symbol by name in the loaded kernel's symbol table.
+// Returns the symbol's value (ELF VA) or 0 if not found.
+func findKernelSymbol(kernel *LoadedKernel, name string) uint64 {
+	for i := 0; i < kernel.NumSymbols; i++ {
+		ks := &kernel.Symbols[i]
+		match := true
+		for j := 0; j < len(name); j++ {
+			if j >= 64 || ks.Name[j] != name[j] {
+				match = false
+				break
+			}
+		}
+		if match && (len(name) >= 64 || ks.Name[len(name)] == 0) {
+			return ks.Value
+		}
+	}
+	return 0
 }
 
 // printString outputs a string to the UEFI console

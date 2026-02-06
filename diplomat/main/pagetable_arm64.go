@@ -33,8 +33,8 @@ const (
 	DESC_PAGE    = 0b11 // Page descriptor (L3)
 
 	// Lower attributes (bits 11:2)
-	ATTR_IDX_NORMAL = (0 << 2)  // MAIR index 0 = normal memory
-	ATTR_IDX_DEVICE = (1 << 2)  // MAIR index 1 = device memory
+	ATTR_IDX_NORMAL = (3 << 2)  // MAIR index 3 = Normal Write-Back (EDK2: 0xFF)
+	ATTR_IDX_DEVICE = (1 << 2)  // MAIR index 1 = Device-nGnRnE (cardinal-compatible)
 	ATTR_NS         = (1 << 5)  // Non-secure
 	ATTR_AP_RW_EL1  = (0 << 6)  // EL1 read/write, EL0 no access
 	ATTR_AP_RW_ALL  = (1 << 6)  // EL1 and EL0 read/write
@@ -232,9 +232,14 @@ func buildPageTablesManual(virtBase, physBase, size uint64) (*PageTableSet, erro
 }
 
 // addKernelMappingToCurrentPT grafts kernel mappings into the current (UEFI) page tables.
-// It reads TTBR0_EL1 to find the active L0, allocates new L1/L2 pages, and adds
-// entries to map virtBase → physBase using 2MB blocks.
+// For lower canonical addresses (< 0xFFFF000000000000), it modifies TTBR0_EL1's L0 table.
+// For upper canonical addresses (>= 0xFFFF000000000000), it creates a new TTBR1 page table
+// and configures TCR_EL1 to enable TTBR1 translations.
 func addKernelMappingToCurrentPT(virtBase, physBase, size uint64) error {
+	if virtBase >= 0xFFFF000000000000 {
+		return addUpperKernelMapping(virtBase, physBase, size)
+	}
+
 	size = (size + Page2MBSize - 1) &^ (Page2MBSize - 1)
 	numPages := size / Page2MBSize
 
@@ -295,11 +300,121 @@ func addKernelMappingToCurrentPT(virtBase, physBase, size uint64) error {
 	return nil
 }
 
+// addUpperKernelMapping creates a fresh TTBR1 page table hierarchy and maps
+// the kernel at an upper canonical virtual address (>= 0xFFFF000000000000).
+// UEFI firmware typically has EPD1=1 (TTBR1 disabled), so we must create the
+// page tables from scratch and configure TCR_EL1 to enable TTBR1 translations.
+func addUpperKernelMapping(virtBase, physBase, size uint64) error {
+	size = (size + Page2MBSize - 1) &^ (Page2MBSize - 1)
+	numPages := size / Page2MBSize
+
+	// Allocate 3 pages (L0, L1, L2) at the end of the kernel physical region.
+	// These are placed just before where TTBR0's L1/L2 would go, so we use
+	// the last 3 pages of the kernel region.
+	l0Phys := physBase + size - 3*PageSize
+	l1Phys := physBase + size - 2*PageSize
+	l2Phys := physBase + size - 1*PageSize
+
+	// Zero all page table memory
+	plat.ZeroMemory(l0Phys, 3*PageSize)
+
+	l0 := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(l0Phys)))
+	l1 := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(l1Phys)))
+	l2 := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(l2Phys)))
+
+	// For TTBR1, the hardware ignores the top bits and uses the VA-space-relative
+	// index. With T1SZ=16 (48-bit VA), the L0 index is extracted from bits [47:39]
+	// of the virtual address. For 0xFFFFFFFF43800000:
+	//   bits [47:39] = 0x1FF = 511
+	kernelL0Idx := l0Index(virtBase)
+	kernelL1Idx := l1Index(virtBase)
+	kernelL2Idx := l2Index(virtBase)
+
+	// Set L0 → L1 → L2 chain
+	l0[kernelL0Idx] = l1Phys | DESC_TABLE
+	l1[kernelL1Idx] = l2Phys | DESC_TABLE
+
+	// Map 2MB blocks in L2
+	virtOffset := virtBase & (Page2MBSize - 1)
+	l2PhysBase := physBase - virtOffset
+
+	for i := uint64(0); i < numPages; i++ {
+		l2Idx := kernelL2Idx + i
+		if l2Idx >= ENTRIES_PER_TABLE {
+			return &errKernelMappingSpans
+		}
+		physAddr := l2PhysBase + i*Page2MBSize
+		l2[l2Idx] = physAddr | ATTR_NORMAL_RW | DESC_BLOCK
+	}
+
+	// Configure TCR_EL1 to enable TTBR1 translations
+	configureUpperTranslation()
+
+	// Set TTBR1_EL1 to point to our new L0 table
+	writeTTBR1(l0Phys)
+
+	// Invalidate TLB and synchronize
+	tlbiVmalle1()
+	dsb()
+	isb()
+
+	return nil
+}
+
+// configureUpperTranslation configures the TTBR1-related fields of TCR_EL1.
+// UEFI typically sets EPD1=1 (disable TTBR1 walks). We need to:
+//   - Set T1SZ=16 (48-bit VA space for TTBR1)
+//   - Clear EPD1 (enable TTBR1 translation walks)
+//   - Set TG1=10 (4KB granule for TTBR1)
+//   - Set SH1=11 (inner shareable)
+//   - Set ORGN1=01, IRGN1=01 (write-back cacheable)
+func configureUpperTranslation() {
+	tcr := readTCR()
+
+	// Clear all TTBR1-related fields:
+	// T1SZ  [21:16] - VA size for TTBR1
+	// EPD1  [23]    - TTBR1 disable
+	// IRGN1 [25:24] - Inner cacheability for TTBR1
+	// ORGN1 [27:26] - Outer cacheability for TTBR1
+	// SH1   [29:28] - Shareability for TTBR1
+	// TG1   [31:30] - Granule size for TTBR1
+	clearMask := uint64(0xFFFF_FFFF_FFFF_FFFF)
+	clearMask &^= (0x3F << 16) // T1SZ[21:16]
+	clearMask &^= (1 << 23)    // EPD1[23]
+	clearMask &^= (3 << 24)    // IRGN1[25:24]
+	clearMask &^= (3 << 26)    // ORGN1[27:26]
+	clearMask &^= (3 << 28)    // SH1[29:28]
+	clearMask &^= (3 << 30)    // TG1[31:30]
+	tcr &= clearMask
+
+	// Set TTBR1 fields:
+	tcr |= (16 << 16)  // T1SZ = 16 → 48-bit VA
+	tcr |= (0 << 23)   // EPD1 = 0  → enable TTBR1 walks
+	tcr |= (1 << 24)   // IRGN1 = 01 → inner write-back, read-allocate, write-allocate
+	tcr |= (1 << 26)   // ORGN1 = 01 → outer write-back, read-allocate, write-allocate
+	tcr |= (3 << 28)   // SH1 = 11  → inner shareable
+	tcr |= (2 << 30)   // TG1 = 10  → 4KB granule
+
+	writeTCR(tcr)
+}
+
 // readTTBR0 reads the TTBR0_EL1 register (page table base for EL0/EL1)
 func readTTBR0() uint64
 
 // writeTTBR0 writes to TTBR0_EL1 (flushes TLB)
 func writeTTBR0(val uint64)
+
+// readTTBR1 reads the TTBR1_EL1 register (page table base for upper VA range)
+func readTTBR1() uint64
+
+// writeTTBR1 writes to TTBR1_EL1 with DSB+ISB barriers
+func writeTTBR1(val uint64)
+
+// readTCR reads TCR_EL1 (Translation Control Register)
+func readTCR() uint64
+
+// writeTCR writes to TCR_EL1 with ISB barrier
+func writeTCR(val uint64)
 
 // tlbiVmalle1 invalidates all TLB entries for EL1 (TLBI VMALLE1)
 func tlbiVmalle1()

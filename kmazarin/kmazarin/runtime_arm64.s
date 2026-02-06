@@ -11,9 +11,8 @@
 // func getAuxval(tag uint64) uint64
 //
 // DEPRECATED: This function is not used. All boot information is now passed
-// via RuntimeConfig structure in StartupParams, which provides computed values
-// instead of hardcoded addresses. RuntimeConfig includes DtbVirtAddr and other
-// fields that replace custom auxv entries.
+// via auxv entries (parsed by archauxv during runtime init). The auxv-backed
+// variables in runtime replace the old StartupParams/RuntimeConfig approach.
 //
 // Keeping this stub for now in case it's needed in the future, but it returns
 // 0 for all tags since RuntimeConfig is the proper way to access boot info.

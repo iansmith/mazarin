@@ -1,0 +1,4 @@
+min_cpus = 1
+max_cpus = 8
+min_ram_mb = 256
+max_ram_mb = 16384

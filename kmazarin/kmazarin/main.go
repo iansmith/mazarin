@@ -383,6 +383,11 @@ func testDeviceDiscovery() {
 	// Get DTB address from startup params (correct offset)
 	dtbPhysAddr := GetDtbPhysAddr()
 
+	if dtbPhysAddr == 0 {
+		console.KPrintln("[DeviceTest] No DTB available (UEFI ACPI mode?) - skipping device discovery")
+		return
+	}
+
 	// Use physical address - DTB is in low memory which is still mapped
 	dtbAddr := uintptr(dtbPhysAddr)
 
