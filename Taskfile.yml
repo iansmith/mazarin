@@ -71,6 +71,11 @@ vars:
   DIPLOMAT_EFI: '{{.BUILD_DIR}}/diplomat.efi'
   ESP_IMAGE: '{{.BUILD_DIR}}/esp.img'
 
+  # Diplomat ARM64 UEFI
+  DIPLOMAT_ARM64_EFI: '{{.BUILD_DIR}}/diplomat-arm64.efi'
+  ESP_ARM64_IMAGE: '{{.BUILD_DIR}}/esp-arm64.img'
+  OVMF_ARM64: '{{env "OVMF_ARM64" | default ""}}'
+
   # Runtime patches directory
   RUNTIME_PATCHES_DIR: runtime-patches
   USERSPACE_OVERLAY_DIR: mazarin/overlay/userspace
@@ -626,6 +631,59 @@ tasks:
     desc: Stop diplomat QEMU instance
     cmds:
       - cmd: '{{.GO}} tool go-nc -w 1s -c quit 127.0.0.1 4445'
+        ignore_error: true
+      - '{{.GO}} tool go-sleep 0.5'
+
+  esp-arm64:
+    desc: Create EFI System Partition image for ARM64 diplomat
+    deps: [diplomat-arm64, mkesp]
+    sources:
+      - '{{.DIPLOMAT_ARM64_EFI}}'
+    generates:
+      - '{{.ESP_ARM64_IMAGE}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Creating ARM64 ESP image..."'
+      - '{{.BUILD_DIR}}/mkesp -arch aa64 -bootloader {{.DIPLOMAT_ARM64_EFI}} -o {{.ESP_ARM64_IMAGE}} -size 260'
+      - '{{.GO}} tool go-echo "ESP (ARM64) created at {{.ESP_ARM64_IMAGE}}"'
+
+  run-diplomat-arm64:
+    desc: "Run diplomat ARM64 in QEMU with UEFI firmware (TIMEOUT=N for timeout, default=5s)"
+    deps: [esp-arm64]
+    vars:
+      TIMEOUT: '{{.TIMEOUT | default "5"}}'
+      LOG_FILE: /tmp/diplomat-arm64-serial.log
+    cmds:
+      - task: stop-diplomat-arm64
+      - '{{.GO}} tool go-rm {{.LOG_FILE}}'
+      - '{{.GO}} tool go-echo "Starting diplomat ARM64 in QEMU (timeout {{.TIMEOUT}}s)..."'
+      - task: run-diplomat-arm64-background
+      - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
+      - task: stop-diplomat-arm64
+      - '{{.GO}} tool go-sleep 0.3'
+      - '{{.GO}} tool go-echo'
+      - '{{.GO}} tool go-echo "=== Diplomat ARM64 Serial Output ==="'
+      - '{{.GO}} tool safe-serial-read {{.LOG_FILE}}'
+      - '{{.GO}} tool go-echo'
+      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
+
+  run-diplomat-arm64-background:
+    desc: Start QEMU with ARM64 diplomat in background (internal task)
+    internal: true
+    vars:
+      LOG_FILE: /tmp/diplomat-arm64-serial.log
+      FW_CODE: '{{if ne .OVMF_ARM64 ""}}{{.OVMF_ARM64}}{{else}}{{dir .QEMU}}/../share/qemu/edk2-aarch64-code.fd{{end}}'
+      FW_VARS_TEMPLATE: '{{if ne .OVMF_ARM64 ""}}{{dir .OVMF_ARM64}}/edk2-arm-vars.fd{{else}}{{dir .QEMU}}/../share/qemu/edk2-arm-vars.fd{{end}}'
+    cmds:
+      - '{{.GO}} tool go-cp {{.FW_VARS_TEMPLATE}} {{.BUILD_DIR}}/edk2-arm-vars.fd'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt -cpu cortex-a72 -m 8G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot'
+      - '{{.GO}} tool go-echo "QEMU (ARM64 UEFI) started in background"'
+      - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4446"'
+      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
+
+  stop-diplomat-arm64:
+    desc: Stop ARM64 diplomat QEMU instance
+    cmds:
+      - cmd: '{{.GO}} tool go-nc -w 1s -c quit 127.0.0.1 4446'
         ignore_error: true
       - '{{.GO}} tool go-sleep 0.5'
 

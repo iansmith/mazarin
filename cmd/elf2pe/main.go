@@ -45,9 +45,6 @@ const (
 	// PE Optional Header magic
 	PE32PLUS_MAGIC = 0x20b // PE32+ (64-bit)
 
-	// Image base for UEFI applications
-	IMAGE_BASE = 0x400000
-
 	// Section alignment
 	SECTION_ALIGNMENT = 0x1000 // 4KB
 	FILE_ALIGNMENT    = 0x200  // 512 bytes
@@ -154,8 +151,12 @@ func convertELFtoPE(inputPath, outputPath string) error {
 		fmt.Printf("  WARNING: No UEFI entry point found!\n")
 	}
 
+	// Compute image base from ELF section layout
+	imageBase := computeImageBase(elfFile)
+	fmt.Printf("  ImageBase: 0x%x\n", imageBase)
+
 	// Extract sections from ELF
-	peSections, err := extractELFSections(elfFile)
+	peSections, err := extractELFSections(elfFile, imageBase)
 	if err != nil {
 		return fmt.Errorf("failed to extract ELF sections: %w", err)
 	}
@@ -167,7 +168,7 @@ func convertELFtoPE(inputPath, outputPath string) error {
 	}
 
 	// Create PE file
-	peData, err := createPEFile(elfFile, peSections, peMachine)
+	peData, err := createPEFile(elfFile, peSections, peMachine, imageBase)
 	if err != nil {
 		return fmt.Errorf("failed to create PE file: %w", err)
 	}
@@ -298,8 +299,36 @@ func findUEFIEntryPoint(elfFile *elf.File) uint64 {
 	return 0
 }
 
+// computeImageBase determines the PE image base from the ELF's section layout.
+// It finds the minimum virtual address across all sections we care about and
+// aligns it down to 64KB (standard PE section alignment for image base).
+// This avoids the hardcoded IMAGE_BASE=0x400000 which causes unsigned underflow
+// on ARM64 where Go places sections starting at 0x10000.
+func computeImageBase(elfFile *elf.File) uint64 {
+	sectionNames := []string{
+		".text", ".rodata", ".typelink", ".itablink", ".gosymtab", ".gopclntab",
+		".go.buildinfo", ".go.fipsinfo", ".noptrdata", ".data", ".bss", ".noptrbss",
+	}
+
+	var minAddr uint64 = ^uint64(0) // max uint64
+	for _, name := range sectionNames {
+		sec := elfFile.Section(name)
+		if sec != nil && sec.Size > 0 && sec.Addr < minAddr {
+			minAddr = sec.Addr
+		}
+	}
+
+	if minAddr == ^uint64(0) {
+		// Fallback if no sections found
+		return 0x400000
+	}
+
+	// Align down to 64KB boundary (0x10000)
+	return minAddr &^ 0xFFFF
+}
+
 // extractELFSections reads ELF sections and converts them to PE sections
-func extractELFSections(elfFile *elf.File) ([]*PESection, error) {
+func extractELFSections(elfFile *elf.File, imageBase uint64) ([]*PESection, error) {
 	var peSections []*PESection
 
 	// Go generates multiple data sections that need to be merged:
@@ -369,7 +398,7 @@ func extractELFSections(elfFile *elf.File) ([]*PESection, error) {
 
 		// PE virtual address must match ELF address (minus IMAGE_BASE)
 		// This is critical because Go compiles with PC-relative addressing
-		peVirtualAddr := uint32(firstAddr - IMAGE_BASE)
+		peVirtualAddr := uint32(firstAddr - imageBase)
 
 		// For initialized sections, read and merge data
 		if !group.isBSS {
@@ -407,9 +436,13 @@ func extractELFSections(elfFile *elf.File) ([]*PESection, error) {
 		peSections = append(peSections, peSec)
 	}
 
-	// Add an empty .reloc section - UEFI requires this for loading
-	// Even if empty, the section must exist for the PE to load correctly
-	// Place it after the last section
+	// Generate base relocations by scanning data sections for absolute pointers.
+	// Go's linker hardlinks absolute addresses (function pointers, itabs, type
+	// metadata) into .rodata and .data. UEFI loads PE images at arbitrary
+	// addresses, so these pointers must be adjusted via base relocations.
+	relocData := generateBaseRelocations(peSections, imageBase)
+
+	// Place .reloc after the last section
 	var relocVA uint32
 	if len(peSections) > 0 {
 		lastSec := peSections[len(peSections)-1]
@@ -417,12 +450,16 @@ func extractELFSections(elfFile *elf.File) ([]*PESection, error) {
 	} else {
 		relocVA = SECTION_ALIGNMENT
 	}
-	relocData := make([]byte, FILE_ALIGNMENT) // Minimal aligned size
+	relocVirtualSize := uint32(len(relocData)) // Exact size of relocation blocks
+	relocRawSize := alignTo(relocVirtualSize, FILE_ALIGNMENT)
+	if len(relocData) < int(relocRawSize) {
+		relocData = append(relocData, make([]byte, int(relocRawSize)-len(relocData))...)
+	}
 	peSections = append(peSections, &PESection{
 		Name:            ".reloc",
-		VirtualSize:     uint32(len(relocData)),
+		VirtualSize:     relocVirtualSize, // Must be exact — EDK2 rejects SizeOfBlock==0 in padding
 		VirtualAddress:  relocVA,
-		RawSize:         uint32(len(relocData)),
+		RawSize:         relocRawSize,
 		Characteristics: IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | 0x01000000, // DISCARDABLE
 		Data:            relocData,
 	})
@@ -430,8 +467,104 @@ func extractELFSections(elfFile *elf.File) ([]*PESection, error) {
 	return peSections, nil
 }
 
+// generateBaseRelocations scans data sections for absolute pointers and generates
+// PE base relocation entries. Go's internal linker resolves all relocations at
+// link time, embedding absolute virtual addresses in data sections (itabs, type
+// metadata, function tables, pclntab). When UEFI loads the PE at a different
+// address, these pointers must be adjusted.
+//
+// Strategy: any 8-byte aligned value in .rodata or .data that falls within the
+// ELF's virtual address range [imageBase, imageBase+sizeOfImage) is treated as
+// an absolute pointer needing relocation. False positive rate is negligible
+// because this is a narrow 64-bit range (upper bytes must be zero).
+func generateBaseRelocations(sections []*PESection, imageBase uint64) []byte {
+	// Determine the image's VA range for pointer detection
+	var maxVA uint64
+	for _, sec := range sections {
+		end := uint64(sec.VirtualAddress) + uint64(sec.VirtualSize)
+		if end > maxVA {
+			maxVA = end
+		}
+	}
+	// Absolute address range: [imageBase, imageBase + maxVA)
+	minAbsAddr := imageBase
+	maxAbsAddr := imageBase + maxVA
+
+	// Collect RVAs of all absolute pointers in data sections
+	var relocRVAs []uint32
+	for _, sec := range sections {
+		// Only scan initialized data sections, not code or BSS
+		if sec.Name == ".text" || sec.Name == ".bss" || sec.Name == ".reloc" {
+			continue
+		}
+		for off := 0; off+8 <= len(sec.Data); off += 8 {
+			val := binary.LittleEndian.Uint64(sec.Data[off : off+8])
+			if val >= minAbsAddr && val < maxAbsAddr {
+				relocRVAs = append(relocRVAs, sec.VirtualAddress+uint32(off))
+			}
+		}
+	}
+
+	fmt.Printf("  Relocations: %d absolute pointers found in data sections\n", len(relocRVAs))
+
+	if len(relocRVAs) == 0 {
+		// Return minimal valid reloc section (empty block)
+		return make([]byte, FILE_ALIGNMENT)
+	}
+
+	// Generate PE base relocation blocks, grouped by 4KB page.
+	// Each block: { uint32 PageRVA, uint32 BlockSize, uint16[] entries }
+	// Entry format: type(4 bits) | offset(12 bits)
+	// Type 10 = IMAGE_REL_BASED_DIR64 (64-bit pointer)
+	const relocTypeDIR64 = 10
+
+	var result []byte
+	blockStart := 0
+	for blockStart < len(relocRVAs) {
+		pageRVA := relocRVAs[blockStart] &^ 0xFFF // 4KB page
+		blockEnd := blockStart
+
+		// Collect all entries on this page
+		for blockEnd < len(relocRVAs) && (relocRVAs[blockEnd]&^0xFFF) == pageRVA {
+			blockEnd++
+		}
+
+		numEntries := blockEnd - blockStart
+		// Pad to even number of entries (block size must be 4-byte aligned)
+		padded := numEntries
+		if padded%2 != 0 {
+			padded++
+		}
+		blockSize := uint32(8 + padded*2) // 8-byte header + 2 bytes per entry
+
+		// Write block header
+		var hdr [8]byte
+		binary.LittleEndian.PutUint32(hdr[0:4], pageRVA)
+		binary.LittleEndian.PutUint32(hdr[4:8], blockSize)
+		result = append(result, hdr[:]...)
+
+		// Write entries
+		for i := blockStart; i < blockEnd; i++ {
+			offset := relocRVAs[i] & 0xFFF
+			entry := uint16(relocTypeDIR64<<12) | uint16(offset)
+			var buf [2]byte
+			binary.LittleEndian.PutUint16(buf[:], entry)
+			result = append(result, buf[:]...)
+		}
+
+		// Padding entry (type 0 = IMAGE_REL_BASED_ABSOLUTE = no-op)
+		if numEntries%2 != 0 {
+			result = append(result, 0, 0)
+		}
+
+		blockStart = blockEnd
+	}
+
+	return result
+}
+
 // createPEFile builds the complete PE file
-func createPEFile(elfFile *elf.File, sections []*PESection, machineType uint16) ([]byte, error) {
+func createPEFile(elfFile *elf.File, sections []*PESection, machineType uint16, imageBase uint64) ([]byte, error) {
 	buf := make([]byte, 0, 1024*1024) // Pre-allocate 1MB
 
 	// DOS Header
@@ -484,12 +617,12 @@ func createPEFile(elfFile *elf.File, sections []*PESection, machineType uint16) 
 	binary.LittleEndian.PutUint32(optHeader[12:16], sizeOfUninitializedData)   // SizeOfUninitializedData
 
 	// Entry point: use ELF entry point offset from image base
-	entryRVA := uint32(elfFile.Entry - IMAGE_BASE)
+	entryRVA := uint32(elfFile.Entry - imageBase)
 	binary.LittleEndian.PutUint32(optHeader[16:20], entryRVA)                  // AddressOfEntryPoint
 	binary.LittleEndian.PutUint32(optHeader[20:24], baseOfCode)                // BaseOfCode
 
 	// NT additional fields (PE32+)
-	binary.LittleEndian.PutUint64(optHeader[24:32], IMAGE_BASE)                // ImageBase
+	binary.LittleEndian.PutUint64(optHeader[24:32], imageBase)                  // ImageBase
 	binary.LittleEndian.PutUint32(optHeader[32:36], SECTION_ALIGNMENT)         // SectionAlignment
 	binary.LittleEndian.PutUint32(optHeader[36:40], FILE_ALIGNMENT)            // FileAlignment
 	binary.LittleEndian.PutUint16(optHeader[40:42], 0)                         // MajorOperatingSystemVersion
@@ -526,10 +659,11 @@ func createPEFile(elfFile *elf.File, sections []*PESection, machineType uint16) 
 	binary.LittleEndian.PutUint32(optHeader[108:112], 16)                      // NumberOfRvaAndSizes
 
 	// Data directories (16 entries * 8 bytes = 128 bytes)
-	// Find and set BaseReloc data directory (index 5)
+	// BaseReloc data directory (index 5): point at .reloc section with its
+	// actual data size. The .reloc section contains PE base relocations
+	// generated by scanning Go's data sections for absolute pointers.
 	for _, sec := range sections {
 		if sec.Name == ".reloc" {
-			// BaseReloc directory entry is at offset 112 + 5*8 = 152
 			binary.LittleEndian.PutUint32(optHeader[152:156], sec.VirtualAddress)  // RVA
 			binary.LittleEndian.PutUint32(optHeader[156:160], sec.VirtualSize)     // Size
 			break
