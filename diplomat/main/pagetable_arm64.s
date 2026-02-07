@@ -295,3 +295,21 @@ TEXT ·readCNTVCT(SB), NOSPLIT, $0-8
 	MRS	CNTVCT_EL0, R0
 	MOVD	R0, ret+0(FP)
 	RET
+
+// readIdAA64ISAR0 reads ID_AA64ISAR0_EL1 (instruction set attribute register).
+// Used to detect crypto/atomics extensions for AT_HWCAP.
+// Go: func readIdAA64ISAR0() uint64
+TEXT ·readIdAA64ISAR0(SB), NOSPLIT, $0-8
+	// MRS ID_AA64ISAR0_EL1, X0 = 0xD5380600
+	WORD	$0xD5380600
+	MOVD	R0, ret+0(FP)
+	RET
+
+// readIdAA64PFR0 reads ID_AA64PFR0_EL1 (processor feature register).
+// Used to detect FP/ASIMD for AT_HWCAP.
+// Go: func readIdAA64PFR0() uint64
+TEXT ·readIdAA64PFR0(SB), NOSPLIT, $0-8
+	// MRS ID_AA64PFR0_EL1, X0 = 0xD5380400
+	WORD	$0xD5380400
+	MOVD	R0, ret+0(FP)
+	RET

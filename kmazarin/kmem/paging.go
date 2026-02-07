@@ -1909,9 +1909,6 @@ func MapUserFramebuffer() bool {
 // Located after the PT pool region, safely before the Go heap.
 const KernelScratchVA = 0xFFFFFFFF42260000
 
-var kernelScratchMapped bool
-var kernelScratchCurrentPA uintptr
-
 // DEBUG: Watchpoint mechanism to track when a specific PA gets corrupted.
 // PrintPoolRanges prints the memory pool ranges for debugging overlap issues.
 func PrintPoolRanges() {
@@ -1938,33 +1935,14 @@ func PrintPoolRanges() {
 	console.KWriteString("\r\n")
 }
 
-// MapPAToKernelScratch maps a physical address to the kernel scratch VA.
-// Returns the kernel VA where the PA can be accessed for reading/writing.
-// The mapping is temporary - calling this again with a different PA will
-// remap the scratch VA.
+// MapPAToKernelScratch returns a kernel VA for accessing a physical address.
+// Uses the linear map directly (PA + KernelMMIOOffset) which covers all
+// physical RAM via 2MB block descriptors set up by diplomat.
 //
 // CRITICAL: This is NOT thread-safe. Only use during single-threaded boot
 // for ELF loading, before the Go scheduler starts multiple goroutines.
 func MapPAToKernelScratch(pa uintptr) uintptr {
-	// If already mapped to this PA, just return
-	if kernelScratchMapped && kernelScratchCurrentPA == pa {
-		return KernelScratchVA
-	}
-
-	// Lazy initialization
-	if !pagingInitialized {
-		InitPaging()
-	}
-
-	// Map the PA to kernel scratch VA using TTBR1 page tables
-	if !mapKernelScratchPage(KernelScratchVA, pa) {
-		return 0
-	}
-
-	kernelScratchMapped = true
-	kernelScratchCurrentPA = pa
-
-	return KernelScratchVA
+	return pa + constants.KernelMMIOOffset
 }
 
 // WalkUserPageTable translates a userspace VA to PA by walking TTBR0 page tables.

@@ -114,9 +114,9 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel) (uint
 	data[i+1] = 0
 	i += 2
 
-	// AT_HWCAP = 16: ASIMD capability
+	// AT_HWCAP = 16: CPU capabilities (dynamic from ID registers)
 	data[i] = 16 // AT_HWCAP
-	data[i+1] = 0x2 // HWCAP_ASIMD
+	data[i+1] = computeHWCAP()
 	i += 2
 
 	// Custom AT_* entries
@@ -175,8 +175,12 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel) (uint
 	data[i+1] = vm.UnifiedPoolEnd
 	i += 2
 
-	// AT_DTB_PHYS - Device Tree Blob physical address from UEFI config table
+	// AT_DTB_PHYS - Device Tree Blob physical address
+	// Try UEFI config table first, fall back to synthesized DTB
 	dtbAddr := findDTBFromUEFI()
+	if dtbAddr == 0 {
+		dtbAddr = buildSyntheticDTB(hw)
+	}
 	if dtbAddr != 0 {
 		data[i] = 0x1000 // AT_DTB_PHYS
 		data[i+1] = dtbAddr

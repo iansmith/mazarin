@@ -104,6 +104,7 @@ tool (
 	mazzy/cmd/gen-overlay
 	mazzy/cmd/gen-test-stubs
 	mazzy/cmd/go-cat
+	mazzy/cmd/go-cp
 	mazzy/cmd/go-echo
 	mazzy/cmd/go-env
 	mazzy/cmd/go-filesize

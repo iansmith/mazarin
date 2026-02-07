@@ -147,6 +147,60 @@ TEXT ·RunFirstThread(SB), NOSPLIT|NOFRAME, $0-0
 	DSB	$11  // DSB NSH
 	ISB	$15  // ISB
 
+	// DEBUG: Print TTBR0 value before ERET (using R0-R3 as scratch, will reload later)
+	MOVD	$0xFFFFFFFF09000000, R2  // UART base (kernel-mapped VA)
+	MOVD	$'T', R3
+	MOVB	R3, (R2)
+	MOVD	$'0', R3
+	MOVB	R3, (R2)
+	MOVD	$'=', R3
+	MOVB	R3, (R2)
+	// Read TTBR0_EL1
+	MRS	TTBR0_EL1, R1
+	MOVD	$16, R3  // 16 hex digits
+rft_print_ttbr0:
+	LSR	$60, R1, R0
+	AND	$0xF, R0
+	CMP	$10, R0
+	BLT	rft_ttbr0_d
+	ADD	$('A'-10), R0
+	B	rft_ttbr0_c
+rft_ttbr0_d:
+	ADD	$'0', R0
+rft_ttbr0_c:
+	MOVB	R0, (R2)
+	LSL	$4, R1
+	SUB	$1, R3
+	CBNZ	R3, rft_print_ttbr0
+	// Print ELR
+	MOVD	$' ', R3
+	MOVB	R3, (R2)
+	MOVD	$'E', R3
+	MOVB	R3, (R2)
+	MOVD	$'=', R3
+	MOVB	R3, (R2)
+	MRS	ELR_EL1, R1
+	MOVD	$16, R3
+rft_print_elr:
+	LSR	$60, R1, R0
+	AND	$0xF, R0
+	CMP	$10, R0
+	BLT	rft_elr_d
+	ADD	$('A'-10), R0
+	B	rft_elr_c
+rft_elr_d:
+	ADD	$'0', R0
+rft_elr_c:
+	MOVB	R0, (R2)
+	LSL	$4, R1
+	SUB	$1, R3
+	CBNZ	R3, rft_print_elr
+	MOVD	$'\r', R3
+	MOVB	R3, (R2)
+	MOVD	$'\n', R3
+	MOVB	R3, (R2)
+	// END DEBUG
+
 	// Load all general purpose registers from ThreadContext
 	// X[0-30] at offsets 0-240
 	// IMPORTANT: Load X28 first using R0 as temp, then reload R0 at the end

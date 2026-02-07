@@ -406,6 +406,18 @@ el1_skip_clear_clone_setup:
 	LDP	256(R21), (R0, R1)
 	STP	(R0, R1), EXC_FRAME_ELR_SPSR(RSP)
 
+	// DEBUG: Print marker showing SVC context switch to userspace
+	// Check if new SPSR is EL0 (bits [3:0] == 0)
+	MOVD	EXC_FRAME_ELR_SPSR+8(RSP), R0
+	AND	$0xF, R0
+	CBNZ	R0, svc_switch_not_el0
+	MOVD	$UART_BASE, R2
+	MOVD	$'S', R3
+	MOVB	R3, (R2)
+	MOVD	$'c', R3
+	MOVB	R3, (R2)
+svc_switch_not_el0:
+
 	B	sync_return
 
 syscall_no_switch:
@@ -1077,6 +1089,18 @@ timer_switch_ok:
 	LDP	256(R21), (R0, R1)
 	STP	(R0, R1), EXC_FRAME_ELR_SPSR(RSP)
 
+	// DEBUG: Print marker showing timer context switch to userspace
+	// Check if new SPSR is EL0 (bits [3:0] == 0)
+	MOVD	EXC_FRAME_ELR_SPSR+8(RSP), R0
+	AND	$0xF, R0
+	CBNZ	R0, timer_switch_not_el0
+	MOVD	$UART_BASE, R2
+	MOVD	$'T', R3
+	MOVB	R3, (R2)
+	MOVD	$'c', R3
+	MOVB	R3, (R2)
+timer_switch_not_el0:
+
 	// Skip async preemption - we already switched threads
 	B	timer_no_preempt
 
@@ -1558,10 +1582,30 @@ el0_sync_handler:
 	CMP	$0x15, R10
 	BNE	el0_check_data_abort
 
-	// NOTE: 'U' debug print disabled to test if it affects timing fairness
-	// MOVD	$UART_BASE, R12
-	// MOVD	$'U', R11
-	// MOVB	R11, (R12)
+	// DEBUG: Print syscall number as 2 hex digits (from X8 in exception frame)
+	MOVD	$UART_BASE, R12
+	MOVD	EXC_FRAME_X8(RSP), R14   // X8 = syscall number
+	// Print high nibble of low byte
+	LSR	$4, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	el0_svc_dig_hi
+	ADD	$('a'-10), R11
+	B	el0_svc_chr_hi
+el0_svc_dig_hi:
+	ADD	$'0', R11
+el0_svc_chr_hi:
+	MOVB	R11, (R12)
+	// Print low nibble
+	AND	$0xF, R14, R11
+	CMP	$10, R11
+	BLT	el0_svc_dig_lo
+	ADD	$('a'-10), R11
+	B	el0_svc_chr_lo
+el0_svc_dig_lo:
+	ADD	$'0', R11
+el0_svc_chr_lo:
+	MOVB	R11, (R12)
 
 	// CRITICAL: Switch to kmazarin's g before calling any Go code!
 	// x28 currently contains userspace's g (e.g., priest's g), but the syscall
@@ -1683,9 +1727,19 @@ el0_no_switch:
 	B	el0_return
 
 el0_check_data_abort:
+	// Check if this is Instruction Abort from lower EL (EC = 0x20)
+	CMP	$0x20, R10
+	BEQ	el0_handle_page_fault
+
 	// Check if this is Data Abort from lower EL (EC = 0x24)
 	CMP	$0x24, R10
 	BNE	el0_not_svc
+
+el0_handle_page_fault:
+	// DEBUG: Print 'P' for page fault from EL0
+	MOVD	$UART_BASE, R12
+	MOVD	$'P', R11
+	MOVB	R11, (R12)
 
 	// CRITICAL: Switch to kmazarin's g before calling Go code (same as SVC case)
 	// Only switch if kmazarinG0Addr is non-zero (initialized).
@@ -1905,6 +1959,398 @@ el0_x28_char:
 	SUB	$1, R15
 	CBNZ	R15, el0_print_x28_loop
 
+	// Print " SPSR="
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+	MOVD	$'S', R11
+	MOVB	R11, (R12)
+	MOVD	$'P', R11
+	MOVB	R11, (R12)
+	MOVD	$'S', R11
+	MOVB	R11, (R12)
+	MOVD	$'R', R11
+	MOVB	R11, (R12)
+	MOVD	$'=', R11
+	MOVB	R11, (R12)
+
+	// Print SPSR from exception frame (16 hex digits)
+	MOVD	EXC_FRAME_ELR_SPSR+8(RSP), R14
+	MOVD	$16, R15
+el0_print_spsr_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	el0_spsr_digit
+	ADD	$('A'-10), R11
+	B	el0_spsr_char
+el0_spsr_digit:
+	ADD	$'0', R11
+el0_spsr_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, el0_print_spsr_loop
+
+	// Print " SP0="
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+	MOVD	$'S', R11
+	MOVB	R11, (R12)
+	MOVD	$'P', R11
+	MOVB	R11, (R12)
+	MOVD	$'0', R11
+	MOVB	R11, (R12)
+	MOVD	$'=', R11
+	MOVB	R11, (R12)
+
+	// Print SP_EL0 from exception frame (16 hex digits)
+	MOVD	EXC_FRAME_SP_EL0(RSP), R14
+	MOVD	$16, R15
+el0_print_sp0_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	el0_sp0_digit
+	ADD	$('A'-10), R11
+	B	el0_sp0_char
+el0_sp0_digit:
+	ADD	$'0', R11
+el0_sp0_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, el0_print_sp0_loop
+
+	// Print " T0=" (TTBR0_EL1)
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+	MOVD	$'T', R11
+	MOVB	R11, (R12)
+	MOVD	$'0', R11
+	MOVB	R11, (R12)
+	MOVD	$'=', R11
+	MOVB	R11, (R12)
+	MRS	TTBR0_EL1, R14
+	MOVD	$16, R15
+el0_print_ttbr0_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	el0_ttbr0_digit
+	ADD	$('A'-10), R11
+	B	el0_ttbr0_char
+el0_ttbr0_digit:
+	ADD	$'0', R11
+el0_ttbr0_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, el0_print_ttbr0_loop
+
+	// Print " TC=" (TCR_EL1)
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+	MOVD	$'T', R11
+	MOVB	R11, (R12)
+	MOVD	$'C', R11
+	MOVB	R11, (R12)
+	MOVD	$'=', R11
+	MOVB	R11, (R12)
+	MRS	TCR_EL1, R14
+	MOVD	$16, R15
+el0_print_tcr_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	el0_tcr_digit
+	ADD	$('A'-10), R11
+	B	el0_tcr_char
+el0_tcr_digit:
+	ADD	$'0', R11
+el0_tcr_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, el0_print_tcr_loop
+
+	MOVD	$'\r', R11
+	MOVB	R11, (R12)
+	MOVD	$'\n', R11
+	MOVB	R11, (R12)
+
+	// AT S1E0R translation check on faulting address
+	MOVD	EXC_FRAME_ELR_SPSR(RSP), R14  // R14 = faulting VA
+	// AT S1E0R, X14 = address translation, stage 1, EL0, read
+	// Encoding: SYS #0, C7, C8, #2, X14 = 0xD508784E
+	// op1=000, CRn=0111, CRm=1000, op2=010, Rt=01110
+	WORD	$0xD508784E  // AT S1E0R, X14
+	ISB	$15
+	MRS	PAR_EL1, R14
+	// Print "AR=" (AT Result)
+	MOVD	$'A', R11
+	MOVB	R11, (R12)
+	MOVD	$'R', R11
+	MOVB	R11, (R12)
+	MOVD	$'=', R11
+	MOVB	R11, (R12)
+	MOVD	$16, R15
+el0_print_par_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	el0_par_digit
+	ADD	$('A'-10), R11
+	B	el0_par_char
+el0_par_digit:
+	ADD	$'0', R11
+el0_par_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, el0_print_par_loop
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+
+	// Page table walk for faulting VA 0x82F80
+	// With T0SZ=20, 4KB granule: L0[0] -> L1[0] -> L2[0] -> L3[0x82]
+	// KernelMMIOOffset = 0xFFFFFFFF00000000 to convert PA->VA
+
+	// Get TTBR0 PA (mask out ASID in bits [63:48])
+	MRS	TTBR0_EL1, R13
+	AND	$0x0000FFFFFFFFFFFF, R13  // R13 = L0 table PA
+
+	// Convert L0 PA to kernel VA
+	MOVD	$0xFFFFFFFF00000000, R16
+	ADD	R16, R13, R17  // R17 = L0 table VA
+
+	// Print "PT:" then L0[0]
+	MOVD	$'P', R11
+	MOVB	R11, (R12)
+	MOVD	$'T', R11
+	MOVB	R11, (R12)
+	MOVD	$':', R11
+	MOVB	R11, (R12)
+
+	// Read L0[0] (index 0 for VA 0x82F80, bits [43:39]=0)
+	MOVD	(R17), R14  // R14 = L0 entry
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+	MOVD	$'L', R11
+	MOVB	R11, (R12)
+	MOVD	$'0', R11
+	MOVB	R11, (R12)
+	MOVD	$'=', R11
+	MOVB	R11, (R12)
+	MOVD	R14, R8  // save L0 entry
+	MOVD	$16, R15
+el0_pt_l0_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	el0_pt_l0_d
+	ADD	$('A'-10), R11
+	B	el0_pt_l0_c
+el0_pt_l0_d:
+	ADD	$'0', R11
+el0_pt_l0_c:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, el0_pt_l0_loop
+
+	// Check L0 valid (bit 0)
+	TST	$1, R8
+	BEQ	el0_pt_invalid
+
+	// Extract L1 table PA from L0 entry (bits [47:12])
+	AND	$0x0000FFFFFFFFF000, R8, R17
+	ADD	R16, R17  // R17 = L1 table VA
+
+	// Read L1[0] (index 0 for VA 0x82F80, bits [38:30]=0)
+	MOVD	(R17), R14  // R14 = L1 entry
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+	MOVD	$'L', R11
+	MOVB	R11, (R12)
+	MOVD	$'1', R11
+	MOVB	R11, (R12)
+	MOVD	$'=', R11
+	MOVB	R11, (R12)
+	MOVD	R14, R8  // save L1 entry
+	MOVD	$16, R15
+el0_pt_l1_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	el0_pt_l1_d
+	ADD	$('A'-10), R11
+	B	el0_pt_l1_c
+el0_pt_l1_d:
+	ADD	$'0', R11
+el0_pt_l1_c:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, el0_pt_l1_loop
+
+	// Check L1 valid
+	TST	$1, R8
+	BEQ	el0_pt_invalid
+
+	// Extract L2 table PA from L1 entry
+	AND	$0x0000FFFFFFFFF000, R8, R17
+	ADD	R16, R17  // R17 = L2 table VA
+
+	// Read L2[0] (index 0 for VA 0x82F80, bits [29:21]=0)
+	MOVD	(R17), R14  // R14 = L2 entry
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+	MOVD	$'L', R11
+	MOVB	R11, (R12)
+	MOVD	$'2', R11
+	MOVB	R11, (R12)
+	MOVD	$'=', R11
+	MOVB	R11, (R12)
+	MOVD	R14, R8  // save L2 entry
+	MOVD	$16, R15
+el0_pt_l2_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	el0_pt_l2_d
+	ADD	$('A'-10), R11
+	B	el0_pt_l2_c
+el0_pt_l2_d:
+	ADD	$'0', R11
+el0_pt_l2_c:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, el0_pt_l2_loop
+
+	// Check L2 valid
+	TST	$1, R8
+	BEQ	el0_pt_invalid
+
+	// Check if L2 is a block descriptor (bit 1 = 0) or table (bit 1 = 1)
+	TST	$2, R8
+	BEQ	el0_pt_block  // 2MB block, stop here
+
+	// Extract L3 table PA from L2 entry
+	AND	$0x0000FFFFFFFFF000, R8, R17
+	ADD	R16, R17  // R17 = L3 table VA
+
+	// Read L3[0x82] (index for VA 0x82F80, bits [20:12]=0x82)
+	// Offset = 0x82 * 8 = 0x410
+	MOVD	0x410(R17), R14  // R14 = L3 entry
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+	MOVD	$'L', R11
+	MOVB	R11, (R12)
+	MOVD	$'3', R11
+	MOVB	R11, (R12)
+	MOVD	$'=', R11
+	MOVB	R11, (R12)
+	MOVD	R14, R8  // save L3 entry for instruction read below
+	MOVD	$16, R15
+el0_pt_l3_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	el0_pt_l3_d
+	ADD	$('A'-10), R11
+	B	el0_pt_l3_c
+el0_pt_l3_d:
+	ADD	$'0', R11
+el0_pt_l3_c:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, el0_pt_l3_loop
+
+	// Read instruction word at ELR via kernel linear map
+	// R8 = L3 PTE, extract PA from bits [47:12]
+	AND	$0x0000FFFFFFFFF000, R8, R17
+	// Add page offset from ELR: offset = ELR & 0xFFF
+	MOVD	EXC_FRAME_ELR_SPSR(RSP), R14
+	AND	$0xFFF, R14
+	ADD	R14, R17  // R17 = full PA of instruction
+	// Convert to kernel VA via linear map
+	MOVD	$0xFFFFFFFF00000000, R16
+	ADD	R16, R17  // R17 = kernel VA of instruction
+	// Read 32-bit instruction word
+	WORD	$0xB940022E  // LDR W14, [X17] (32-bit zero-extended load)
+	// Print " IW=" + 8 hex digits
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+	MOVD	$'I', R11
+	MOVB	R11, (R12)
+	MOVD	$'W', R11
+	MOVB	R11, (R12)
+	MOVD	$'=', R11
+	MOVB	R11, (R12)
+	MOVD	$8, R15
+el0_iw_loop:
+	LSR	$28, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	el0_iw_d
+	ADD	$('A'-10), R11
+	B	el0_iw_c
+el0_iw_d:
+	ADD	$'0', R11
+el0_iw_c:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, el0_iw_loop
+
+	// Print SCTLR_EL1
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+	MOVD	$'S', R11
+	MOVB	R11, (R12)
+	MOVD	$'C', R11
+	MOVB	R11, (R12)
+	MOVD	$'=', R11
+	MOVB	R11, (R12)
+	MRS	SCTLR_EL1, R14
+	MOVD	$16, R15
+el0_sc_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	el0_sc_d
+	ADD	$('A'-10), R11
+	B	el0_sc_c
+el0_sc_d:
+	ADD	$'0', R11
+el0_sc_c:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, el0_sc_loop
+
+	B	el0_pt_done
+
+el0_pt_block:
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+	MOVD	$'B', R11
+	MOVB	R11, (R12)
+	MOVD	$'K', R11
+	MOVB	R11, (R12)
+	B	el0_pt_done
+
+el0_pt_invalid:
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+	MOVD	$'I', R11
+	MOVB	R11, (R12)
+	MOVD	$'V', R11
+	MOVB	R11, (R12)
+
+el0_pt_done:
 	MOVD	$'\r', R11
 	MOVB	R11, (R12)
 	MOVD	$'\n', R11

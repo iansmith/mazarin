@@ -530,7 +530,7 @@ func initVirtIOInputDevices() {
 		evtBufPA := dev.EventBuffersPA
 		initAvailIdx := vq.Available.Idx
 		SetTopHalfDev(dev.IRQNum, usedVA, evtBufVA, availVA, descVA,
-			notifyAddr, evtBufPA, vq.QueueSize, initAvailIdx, isMouse)
+			notifyAddr, evtBufPA, vq.QueueSize, initAvailIdx, isMouse, &vq.LastUsedIdx)
 	}
 
 }

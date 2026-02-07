@@ -222,6 +222,13 @@ type Thread struct {
 	// Clone child protection - skip async preempt until clone setup completes
 	InCloneSetup uint32 // 1 = thread is in clone setup (reading fn/gp/mp from stack), 0 = normal
 
+	// CloneNeedsParentRegs: when set, DoContextSwitch copies the parent's full
+	// register state to this thread's Context before returning. This ensures the
+	// clone child inherits all registers (X1-X27, X29, X30) from the parent,
+	// with only X0, X28, SP, and SPSR overridden for clone semantics.
+	// Set in CloneThread, cleared in doContextSwitchImpl after the copy.
+	CloneNeedsParentRegs uint32
+
 	// WARNING: PriestIdx is a priest LIST INDEX (not a PID). Used ONLY by time-critical
 	// code paths (timer IRQ top-half, preemption checks) that need O(1) access to
 	// the priest's tick accounting without a PID→Priest lookup. This index is set
@@ -995,6 +1002,22 @@ func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
 	// END CRITICAL SECTION
 	schedulerLock.Unlock()
 
+	// DEBUG: Print thread details before ERET
+	console.KPrintf("[StartFirst] TID=%d PID=%d ELR=0x%x SP=0x%x SPSR=0x%x L0PA=0x%x\n",
+		thread.TID, thread.PID, thread.Context.ELR, thread.Context.SP, thread.Context.SPSR, thread.PageTableL0PA)
+
+	// DEBUG: Verify stack page is mapped by walking the page table
+	stackAddr := uintptr(thread.Context.SP)
+	stackPA := kmem.WalkUserPageTableWithL0(stackAddr, thread.PageTableL0PA)
+	console.KPrintf("[StartFirst] StackWalk: VA=0x%x PA=0x%x\n", stackAddr, stackPA)
+
+	// DEBUG: Read L0[255] directly via linear map
+	const koff = uintptr(0xFFFFFFFF00000000)
+	l0VA := thread.PageTableL0PA + koff
+	l0e255 := *(*uint64)(unsafe.Pointer(l0VA + 255*8))
+	l0e0 := *(*uint64)(unsafe.Pointer(l0VA + 0*8))
+	console.KPrintf("[StartFirst] L0[0]=0x%x L0[255]=0x%x\n", l0e0, l0e255)
+
 	// Don't restore DAIF - the ERET will set SPSR which controls IRQ state
 	_ = savedDAIF
 
@@ -1126,6 +1149,12 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 	// clone.abi0 then loads fn/gp/mp from stack and calls the entry function.
 	// Setting ELR = fn directly SKIPS this setup code, causing crashes!
 	t.Context.SetupForCloneChild(stack, returnAddr, gp, spsr)
+
+	// Signal that doContextSwitchImpl should copy the parent's full register
+	// state to this child. SetupForCloneChild only sets X0, X28, SP, ELR, SPSR;
+	// the remaining registers (X1-X27, X29, X30) must come from the parent's
+	// exception frame, which is saved by SaveContextFromFrame in doContextSwitchImpl.
+	t.CloneNeedsParentRegs = 1
 
 	if sf != nil && sf.StateCheck != nil {
 		sf.StateCheck("clone-thread-created")
@@ -2246,6 +2275,28 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 
 	oldThread := GetCurrentThread()
 	newThread := threadList.Get(int(targetIdx)) // Get() for reserved slots
+
+	// Clone child register inheritance: copy parent's full register state to the
+	// clone child, preserving only the clone-specific overrides (X0=0, X28=new g,
+	// SP=new stack, SPSR with IRQs enabled). Without this, the child starts with
+	// all registers zeroed except those 5 fields, causing crashes when clone.abi0
+	// child code uses inherited callee-saved registers (e.g., X20 for memclr).
+	if newThread != nil && newThread.CloneNeedsParentRegs != 0 && oldThread != nil {
+		// Save the clone-specific overrides that SetupForCloneChild already set
+		childX0 := newThread.Context.X[0]     // 0 (child TID)
+		childSP := newThread.Context.SP       // new stack
+		childGReg := newThread.Context.X[28]  // new g pointer
+		childSPSR := newThread.Context.SPSR   // parent SPSR with IRQs enabled
+		// Copy ALL registers from parent (just saved by SaveContextFromFrame)
+		newThread.Context = oldThread.Context
+		// Restore clone-specific overrides
+		newThread.Context.X[0] = childX0
+		newThread.Context.SP = childSP
+		newThread.Context.X[28] = childGReg
+		newThread.Context.SPSR = childSPSR
+		newThread.CloneNeedsParentRegs = 0
+	}
+
 	// Update both per-CPU and global CurrentThread
 	SetCurrentThreadGlobal(newThread)
 

@@ -361,31 +361,33 @@ func addUpperKernelMapping(virtBase, physBase, size uint64) error {
 	return nil
 }
 
-// configureUpperTranslation configures the TTBR1-related fields of TCR_EL1.
-// UEFI typically sets EPD1=1 (disable TTBR1 walks). We need to:
-//   - Set T1SZ=16 (48-bit VA space for TTBR1)
+// configureUpperTranslation configures TCR_EL1 for both TTBR0 and TTBR1.
+// UEFI typically sets EPD1=1 (disable TTBR1 walks) and T0SZ to a value
+// that may not support full 48-bit user VAs. We configure:
+//
+// TTBR0 (lower/user):
+//   - T0SZ=16 (48-bit VA space) — required for stack at 0x7FFF...
+//
+// TTBR1 (upper/kernel):
+//   - T1SZ=16 (48-bit VA space)
 //   - Clear EPD1 (enable TTBR1 translation walks)
-//   - Set TG1=10 (4KB granule for TTBR1)
-//   - Set SH1=11 (inner shareable)
-//   - Set ORGN1=01, IRGN1=01 (write-back cacheable)
+//   - TG1=10 (4KB granule), SH1=11, ORGN1/IRGN1=01 (write-back cacheable)
 func configureUpperTranslation() {
 	tcr := readTCR()
 
-	// Clear all TTBR1-related fields:
-	// T1SZ  [21:16] - VA size for TTBR1
-	// EPD1  [23]    - TTBR1 disable
-	// IRGN1 [25:24] - Inner cacheability for TTBR1
-	// ORGN1 [27:26] - Outer cacheability for TTBR1
-	// SH1   [29:28] - Shareability for TTBR1
-	// TG1   [31:30] - Granule size for TTBR1
+	// Clear TTBR0 T0SZ field and TTBR1-related fields:
 	clearMask := uint64(0xFFFF_FFFF_FFFF_FFFF)
-	clearMask &^= (0x3F << 16) // T1SZ[21:16]
-	clearMask &^= (1 << 23)    // EPD1[23]
-	clearMask &^= (3 << 24)    // IRGN1[25:24]
-	clearMask &^= (3 << 26)    // ORGN1[27:26]
-	clearMask &^= (3 << 28)    // SH1[29:28]
-	clearMask &^= (3 << 30)    // TG1[31:30]
+	clearMask &^= 0x3F          // T0SZ[5:0]
+	clearMask &^= (0x3F << 16)  // T1SZ[21:16]
+	clearMask &^= (1 << 23)     // EPD1[23]
+	clearMask &^= (3 << 24)     // IRGN1[25:24]
+	clearMask &^= (3 << 26)     // ORGN1[27:26]
+	clearMask &^= (3 << 28)     // SH1[29:28]
+	clearMask &^= (3 << 30)     // TG1[31:30]
 	tcr &= clearMask
+
+	// Set TTBR0 fields:
+	tcr |= 16                   // T0SZ = 16 → 48-bit user VA
 
 	// Set TTBR1 fields:
 	tcr |= (16 << 16)  // T1SZ = 16 → 48-bit VA
@@ -445,9 +447,11 @@ var physAddrResult uint64
 //go:nosplit
 func allocatePhysPages(numPages uint64) (uint64, error) {
 	debugPortOut('P')
-	physAddrResult = 0
+	// Use AllocateMaxAddress to constrain UEFI to addresses below 4GB,
+	// which is the limit of the linear map (linearMapMaxPA).
+	physAddrResult = linearMapMaxPA - 1
 	debugPortOut('Q')
-	status := plat.AllocatePages(AllocateAnyPages, EfiLoaderData, numPages, &physAddrResult)
+	status := plat.AllocatePages(AllocateMaxAddress, EfiLoaderData, numPages, &physAddrResult)
 	debugPortOut('S')
 	if status != EFI_SUCCESS {
 		return 0, &errAllocatePagesFailed

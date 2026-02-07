@@ -791,19 +791,14 @@ func InitVirtIOInput() {
 					continue
 				}
 
-				// Read and program BAR for common config
-				barOffset := uint8(0x10 + common.Bar*4)
-				bar := pci.ConfigRead32(bus, slot, funcNum, barOffset)
-				if (bar & 0xFFFFFFF0) == 0 {
+				// Read and program BAR for common config (handles 64-bit BARs)
+				barBasePA := pci.ReadBAR64(bus, slot, funcNum, common.Bar)
+				if barBasePA == 0 || barBasePA >= 0x100000000 {
 					// Program BAR - use different addresses to avoid conflicts with GPU
-					pciAddr := uint32(0x10200000) + uint32(len(allDevices))*0x10000
-					pci.ConfigWrite32(bus, slot, funcNum, barOffset, pciAddr)
-					if (bar & 0x6) == 0x4 { // 64-bit BAR
-						pci.ConfigWrite32(bus, slot, funcNum, barOffset+4, 0)
-					}
-					bar = pci.ConfigRead32(bus, slot, funcNum, barOffset)
+					pciAddr := uintptr(0x10200000) + uintptr(len(allDevices))*0x10000
+					pci.WriteBAR64(bus, slot, funcNum, common.Bar, pciAddr)
+					barBasePA = pci.ReadBAR64(bus, slot, funcNum, common.Bar)
 				}
-				barBasePA := uintptr(bar & 0xFFFFFFF0)
 				// Map PCI BAR into TTBR1 kernel space so we don't rely on TTBR0
 				kmem.MapDeviceMMIO(barBasePA, 0x10000) // Map 64KB for the BAR range
 				barBase := barBasePA + constants.KernelMMIOOffset
@@ -820,32 +815,31 @@ func InitVirtIOInput() {
 					NotifyConfig:     notify,
 				}
 
-				// Notify BAR
-				notifyBarOffset := uint8(0x10 + notify.Bar*4)
-				notifyBar := pci.ConfigRead32(bus, slot, funcNum, notifyBarOffset)
-				if notifyBar == bar {
+				// Notify BAR (handles 64-bit BARs)
+				notifyBarPA := pci.ReadBAR64(bus, slot, funcNum, notify.Bar)
+				if notifyBarPA >= 0x100000000 {
+					// Reprogram if above 4GB — but only if different from common BAR
+					// (same BAR would have been reprogrammed already)
+					notifyBarPA = barBasePA // Assume same BAR
+				}
+				if notifyBarPA == barBasePA {
 					// Same BAR, reuse barBase
 					dev.NotifyBase = barBase + uintptr(notify.OffsetInBar)
 				} else {
-					notifyBarPA := uintptr(notifyBar & 0xFFFFFFF0)
 					kmem.MapDeviceMMIO(notifyBarPA, 0x10000)
 					dev.NotifyBase = notifyBarPA + constants.KernelMMIOOffset + uintptr(notify.OffsetInBar)
 				}
 
-				// ISR BAR
+				// ISR BAR (handles 64-bit BARs)
 				if isr.Offset != 0 {
-					isrBarOffset := uint8(0x10 + isr.Bar*4)
-					isrBar := pci.ConfigRead32(bus, slot, funcNum, isrBarOffset)
-					isrBarPA := uintptr(isrBar & 0xFFFFFFF0)
+					isrBarPA := pci.ReadBAR64(bus, slot, funcNum, isr.Bar)
 					kmem.MapDeviceMMIO(isrBarPA, 0x10000)
 					dev.ISRBase = isrBarPA + constants.KernelMMIOOffset + uintptr(isr.OffsetInBar)
 				}
 
-				// Device config BAR
+				// Device config BAR (handles 64-bit BARs)
 				if deviceCfg.Offset != 0 {
-					devCfgBarOffset := uint8(0x10 + deviceCfg.Bar*4)
-					devCfgBar := pci.ConfigRead32(bus, slot, funcNum, devCfgBarOffset)
-					devCfgBarPA := uintptr(devCfgBar & 0xFFFFFFF0)
+					devCfgBarPA := pci.ReadBAR64(bus, slot, funcNum, deviceCfg.Bar)
 					kmem.MapDeviceMMIO(devCfgBarPA, 0x10000)
 					dev.DeviceConfigBase = devCfgBarPA + constants.KernelMMIOOffset + uintptr(deviceCfg.OffsetInBar)
 				}

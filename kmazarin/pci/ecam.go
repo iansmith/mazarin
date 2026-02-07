@@ -163,6 +163,46 @@ func ConfigRead32Lowmem(bus, slot, funcNum, offset uint8) uint32 {
 	return asm.MmioRead(configAddr)
 }
 
+// ReadBAR64 reads a PCI BAR, handling both 32-bit and 64-bit BARs.
+// For 64-bit BARs (type indicator bits [2:1] == 0b10), reads both the low
+// and high 32-bit registers to construct the full physical address.
+// Returns the base address with type/prefetchable bits masked off.
+//
+//go:nosplit
+func ReadBAR64(bus, slot, funcNum, barIndex uint8) uintptr {
+	barOffset := 0x10 + barIndex*4
+	barLow := ConfigRead32(bus, slot, funcNum, barOffset)
+
+	addr := uintptr(barLow & 0xFFFFFFF0)
+
+	// Check if 64-bit BAR (type bits [2:1] == 0b10)
+	if (barLow & 0x6) == 0x4 {
+		barHigh := ConfigRead32(bus, slot, funcNum, barOffset+4)
+		addr |= uintptr(barHigh) << 32
+	}
+
+	return addr
+}
+
+// WriteBAR64 writes a PCI BAR address, handling both 32-bit and 64-bit BARs.
+// For 64-bit BARs, writes both low and high 32-bit registers.
+//
+//go:nosplit
+func WriteBAR64(bus, slot, funcNum, barIndex uint8, addr uintptr) {
+	barOffset := 0x10 + barIndex*4
+
+	// Read current BAR to check type
+	barLow := ConfigRead32(bus, slot, funcNum, barOffset)
+	typeBits := barLow & 0xF // preserve type/prefetch bits
+
+	ConfigWrite32(bus, slot, funcNum, barOffset, uint32(addr)|typeBits)
+
+	// Write high 32 bits if 64-bit BAR
+	if (barLow & 0x6) == 0x4 {
+		ConfigWrite32(bus, slot, funcNum, barOffset+4, uint32(addr>>32))
+	}
+}
+
 // findBochsDisplay finds the bochs-display PCI device and returns its BAR0 address
 //
 //go:nosplit

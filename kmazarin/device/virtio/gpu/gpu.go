@@ -306,6 +306,8 @@ func findVirtIOGPU() bool {
 
 				// Check if this is VirtIO GPU
 				if vendorID == pci.VIRTIO_VENDOR_ID && deviceID == pci.VIRTIO_GPU_DEVICE_ID {
+					console.KPrintf("[VirtIO GPU] Found at bus=%d slot=%d func=%d\n", bus, slot, funcNum)
+
 					// Enable device
 					cmd := pci.ConfigRead32(bus, slot, funcNum, pci.PCI_COMMAND)
 					cmd |= 0x7 // Enable I/O, memory, bus master
@@ -314,28 +316,23 @@ func findVirtIOGPU() bool {
 					// Find VirtIO capabilities
 					var common, notify, isr, device pci.VirtIOCapabilityInfo
 					if !pci.FindVirtIOCapabilities(bus, slot, funcNum, &common, &notify, &isr, &device) {
+						console.KPrintln("[VirtIO GPU] ERROR: VirtIO capabilities not found")
 						return false
 					}
+					console.KPrintf("[VirtIO GPU] Common: BAR%d off=0x%x\n", common.Bar, common.OffsetInBar)
 
-					// Read BAR for common config
-					barOffset := 0x10 + common.Bar*4 // BAR0 = 0x10, BAR1 = 0x14, etc.
-					bar := pci.ConfigRead32(bus, slot, funcNum, uint8(barOffset))
+					// Read BAR for common config (handles 64-bit BARs)
+					barBase := pci.ReadBAR64(bus, slot, funcNum, common.Bar)
+					console.KPrintf("[VirtIO GPU] BAR%d addr=0x%x\n", common.Bar, barBase)
 
-					// Check if BAR needs programming (base address is 0)
-					if (bar & 0xFFFFFFF0) == 0 {
-						// Program BAR to use PCI MMIO space at 0x10000000
-						const PCI_MMIO_BASE = uint32(0x10000000)
-						pci.ConfigWrite32(bus, slot, funcNum, uint8(barOffset), PCI_MMIO_BASE)
-
-						// If it's a 64-bit BAR, also program the high 32 bits
-						if (bar & 0x6) == 0x4 {
-							pci.ConfigWrite32(bus, slot, funcNum, uint8(barOffset+4), 0)
-						}
-
-						bar = pci.ConfigRead32(bus, slot, funcNum, uint8(barOffset))
+					// If BAR is zero OR above 4GB (can't map via KernelMMIOOffset),
+					// reprogram to the 32-bit PCI MMIO window
+					if barBase == 0 || barBase >= 0x100000000 {
+						const PCI_MMIO_BASE = uintptr(0x10000000)
+						pci.WriteBAR64(bus, slot, funcNum, common.Bar, PCI_MMIO_BASE)
+						barBase = pci.ReadBAR64(bus, slot, funcNum, common.Bar)
+						console.KPrintf("[VirtIO GPU] BAR%d reprogrammed=0x%x\n", common.Bar, barBase)
 					}
-
-					barBase := uintptr(bar & 0xFFFFFFF0)
 
 					// Map BAR MMIO into kernel high-memory (TTBR1)
 					kmem.MapDeviceMMIO(barBase, 0x10000)
@@ -348,11 +345,14 @@ func findVirtIOGPU() bool {
 					virtioGPUDevice.ISRConfig = isr
 					virtioGPUDevice.DeviceConfig = device
 					virtioGPUDevice.CommonConfigBase = barBase + constants.KernelMMIOOffset + uintptr(common.OffsetInBar)
+					console.KPrintf("[VirtIO GPU] CommonConfigBase=0x%x\n", virtioGPUDevice.CommonConfigBase)
 
-					// Calculate notify base
-					notifyBarOffset := 0x10 + notify.Bar*4
-					notifyBar := pci.ConfigRead32(bus, slot, funcNum, uint8(notifyBarOffset))
-					notifyBarBase := uintptr(notifyBar & 0xFFFFFFF0)
+					// Calculate notify base (handles 64-bit BARs)
+					notifyBarBase := pci.ReadBAR64(bus, slot, funcNum, notify.Bar)
+					if notifyBarBase == 0 || notifyBarBase >= 0x100000000 {
+						pci.WriteBAR64(bus, slot, funcNum, notify.Bar, 0x10010000)
+						notifyBarBase = pci.ReadBAR64(bus, slot, funcNum, notify.Bar)
+					}
 					if notifyBarBase != barBase {
 						kmem.MapDeviceMMIO(notifyBarBase, 0x10000)
 					}
@@ -377,13 +377,19 @@ func virtioGPUInit() bool {
 
 	// Acknowledge and indicate driver present
 	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE)
-	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER)
+	statusAfterAck := virtioPCIGetDeviceStatus()
+	console.KPrintf("[VirtIO GPU] After ACK: status=0x%x\n", statusAfterAck)
 
-	// Feature negotiation - read device features (not used, just for completeness)
+	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER)
+	statusAfterDrv := virtioPCIGetDeviceStatus()
+	console.KPrintf("[VirtIO GPU] After DRIVER: status=0x%x\n", statusAfterDrv)
+
+	// Feature negotiation - read device features
 	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE_SELECT, 0)
-	_ = virtioPCIReadCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE)
+	devFeats0 := virtioPCIReadCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE)
 	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE_SELECT, 1)
-	_ = virtioPCIReadCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE)
+	devFeats1 := virtioPCIReadCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE)
+	console.KPrintf("[VirtIO GPU] Device features: page0=0x%x page1=0x%x\n", devFeats0, devFeats1)
 
 	// Accept VIRTIO_F_VERSION_1 (bit 32)
 	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE_SELECT, 0)
@@ -396,6 +402,7 @@ func virtioGPUInit() bool {
 
 	// Verify FEATURES_OK is still set
 	status := virtioPCIGetDeviceStatus()
+	console.KPrintf("[VirtIO GPU] After FEATURES_OK: status=0x%x\n", status)
 	if (status & VIRTIO_STATUS_FEATURES_OK) == 0 {
 		console.KPrintln("[VirtIO GPU] ERROR: Device rejected features")
 		return false

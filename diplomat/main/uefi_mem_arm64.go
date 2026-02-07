@@ -85,9 +85,9 @@ func AllocatePagesForMmap(addr uintptr, size uintptr, fixed bool) (uintptr, bool
 		// Hint failed - fall through to any pages
 	}
 
-	// Allocate any pages
-	memory = 0
-	allocType = AllocateAnyPages
+	// Allocate below 4GB to stay within the linear map
+	memory = linearMapMaxPA - 1
+	allocType = AllocateMaxAddress
 	status = UEFIAllocatePages(allocType, EfiLoaderData, pages, &memory)
 
 	if status != EFI_SUCCESS {

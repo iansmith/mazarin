@@ -651,7 +651,7 @@ tasks:
 
   run-diplomat-arm64:
     desc: "Run diplomat ARM64 in QEMU with UEFI firmware (TIMEOUT=N for timeout, default=5s)"
-    deps: [esp-arm64]
+    deps: [esp-arm64, disk]
     vars:
       TIMEOUT: '{{.TIMEOUT | default "5"}}'
       LOG_FILE: /tmp/diplomat-arm64-serial.log
@@ -678,7 +678,7 @@ tasks:
       FW_VARS_TEMPLATE: '{{if ne .OVMF_ARM64 ""}}{{dir .OVMF_ARM64}}/edk2-arm-vars.fd{{else}}{{dir .QEMU}}/../share/qemu/edk2-arm-vars.fd{{end}}'
     cmds:
       - '{{.GO}} tool go-cp {{.FW_VARS_TEMPLATE}} {{.BUILD_DIR}}/edk2-arm-vars.fd'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt -cpu cortex-a72 -m 2G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt -cpu cortex-a72 -m 2G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-device,drive=flock0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (ARM64 UEFI) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4446"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'

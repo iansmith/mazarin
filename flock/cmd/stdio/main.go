@@ -34,7 +34,160 @@ const (
 	cardBorderSide = 16 // left/right/bottom border width
 	cardBorderTop  = 40 // title bar height
 	shadowSize     = 12 // shadow offset in pixels
+
+	// Glyph cache sizing
+	glyphCacheLen = 512 // number of cache slots
+	glyphKeyMin   = 3   // minimum word length to cache
+	glyphKeyMax   = 12  // maximum word length to cache
 )
+
+// glyphCacheEntry holds a pre-rendered word as raw RGBA pixels.
+type glyphCacheEntry struct {
+	word   string // cached word (empty = unused slot)
+	pixW   int    // pixel width = len(word) * charW
+	pixH   int    // pixel height = charH
+	pixels []byte // RGBA pixel data, pre-allocated to max size
+	hits   int    // access count for LFU eviction
+}
+
+// glyphCache holds pre-rendered single-character glyph strips and a
+// fully-associative word cache built by composing those glyphs.
+// Single-char glyphs are the fallback; the word cache avoids repeated
+// per-character blits for frequently seen words.
+type glyphCache struct {
+	glyphs  [95][]byte // printable ASCII 32-126, each charW*charH*4 RGBA bytes
+	entries [glyphCacheLen]glyphCacheEntry
+	charW   int
+	charH   int
+}
+
+// token represents a segment of a line for cache-aware rendering.
+type token struct {
+	text      string
+	col       int  // starting column index in the line
+	cacheable bool // true if alphanumeric word in [glyphKeyMin, glyphKeyMax]
+}
+
+func isAlnum(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+// newGlyphCache pre-renders all printable ASCII characters into single-char
+// pixel strips using DrawString on a temporary gg context, then pre-allocates
+// all word cache entry buffers. No font rendering happens after init.
+func newGlyphCache(charW, charH, ascent int, face font.Face) *glyphCache {
+	gc := &glyphCache{charW: charW, charH: charH}
+
+	// Pre-render each printable ASCII character (32-126)
+	tmpDc := gg.NewContext(charW, charH)
+	tmpDc.SetFontFace(face)
+	tmpIm := tmpDc.Image().(*image.RGBA)
+	rowBytes := charW * 4
+
+	for ch := byte(32); ch <= 126; ch++ {
+		// Clear to content background
+		tmpDc.SetColor(nContent)
+		tmpDc.DrawRectangle(0, 0, float64(charW), float64(charH))
+		tmpDc.Fill()
+
+		// Draw character at baseline
+		tmpDc.SetFontFace(face)
+		tmpDc.SetColor(nText)
+		tmpDc.DrawString(string(ch), 0, float64(ascent))
+
+		// Capture pixel strip
+		buf := make([]byte, charW*charH*4)
+		for y := 0; y < charH; y++ {
+			srcOff := y * tmpIm.Stride
+			dstOff := y * rowBytes
+			copy(buf[dstOff:dstOff+rowBytes], tmpIm.Pix[srcOff:srcOff+rowBytes])
+		}
+		gc.glyphs[ch-32] = buf
+	}
+
+	// Pre-allocate word cache entry buffers
+	maxBuf := glyphKeyMax * charW * charH * 4
+	for i := range gc.entries {
+		gc.entries[i].pixels = make([]byte, maxBuf)
+	}
+	return gc
+}
+
+// lookup scans for word in the cache. On hit, increments hits and returns the entry.
+func (gc *glyphCache) lookup(word string) (*glyphCacheEntry, bool) {
+	for i := range gc.entries {
+		if gc.entries[i].word == word {
+			gc.entries[i].hits++
+			return &gc.entries[i], true
+		}
+	}
+	return nil, false
+}
+
+// compose evicts the least-frequently-used cache entry and builds the word's
+// pixel strip by horizontally concatenating single-char glyphs from the
+// glyph buffer. No font rendering involved.
+func (gc *glyphCache) compose(word string) *glyphCacheEntry {
+	minIdx := 0
+	minHits := gc.entries[0].hits
+	minLen := len(gc.entries[0].word)
+	for i := 1; i < glyphCacheLen; i++ {
+		h := gc.entries[i].hits
+		if h < minHits || (h == minHits && len(gc.entries[i].word) < minLen) {
+			minHits = h
+			minLen = len(gc.entries[i].word)
+			minIdx = i
+			if minHits == 0 {
+				break
+			}
+		}
+	}
+
+	e := &gc.entries[minIdx]
+	e.word = word
+	e.pixW = len(word) * gc.charW
+	e.pixH = gc.charH
+	e.hits = 1
+
+	charBytes := gc.charW * 4
+	for i := 0; i < len(word); i++ {
+		ch := word[i]
+		if ch < 32 || ch > 126 {
+			continue
+		}
+		glyph := gc.glyphs[ch-32]
+		dstCol := i * charBytes
+		for y := 0; y < gc.charH; y++ {
+			srcOff := y * charBytes
+			dstOff := y*e.pixW*4 + dstCol
+			copy(e.pixels[dstOff:dstOff+charBytes], glyph[srcOff:srcOff+charBytes])
+		}
+	}
+	return e
+}
+
+// blit copies a multi-char cache entry's pixels into the gg image.
+func (gc *glyphCache) blit(e *glyphCacheEntry, im *image.RGBA, px, py int) {
+	for y := 0; y < e.pixH; y++ {
+		srcOff := y * e.pixW * 4
+		dstOff := (py+y)*im.Stride + px*4
+		copy(im.Pix[dstOff:dstOff+e.pixW*4], e.pixels[srcOff:srcOff+e.pixW*4])
+	}
+}
+
+// blitChar copies a single pre-rendered character glyph into the gg image.
+func (gc *glyphCache) blitChar(ch byte, im *image.RGBA, px, py int) {
+	if ch < 32 || ch > 126 {
+		return
+	}
+	glyph := gc.glyphs[ch-32]
+	charBytes := gc.charW * 4
+	for y := 0; y < gc.charH; y++ {
+		srcOff := y * charBytes
+		dstOff := (py+y)*im.Stride + px*4
+		copy(im.Pix[dstOff:dstOff+charBytes], glyph[srcOff:srcOff+charBytes])
+	}
+}
 
 // console holds the state for the text console display.
 type console struct {
@@ -57,6 +210,10 @@ type console struct {
 	maxCols  int // max characters per line
 	lines    []string
 
+	// Glyph cache for repeated word rendering
+	gc     *glyphCache
+	tokBuf []token
+
 	// Dirty tracking: min/max line indices that need redraw.
 	// -1 means nothing dirty.
 	dirtyMin int
@@ -76,6 +233,31 @@ func (c *console) markDirty(lineIdx int) {
 func (c *console) clearDirty() {
 	c.dirtyMin = -1
 	c.dirtyMax = -1
+}
+
+// tokenizeLine splits a line into alternating word/non-word segments.
+// Words are contiguous [a-zA-Z0-9]; cacheable if length in [glyphKeyMin, glyphKeyMax].
+func (c *console) tokenizeLine(text string) []token {
+	c.tokBuf = c.tokBuf[:0]
+	i := 0
+	for i < len(text) {
+		if isAlnum(text[i]) {
+			start := i
+			for i < len(text) && isAlnum(text[i]) {
+				i++
+			}
+			word := text[start:i]
+			cacheable := len(word) >= glyphKeyMin && len(word) <= glyphKeyMax
+			c.tokBuf = append(c.tokBuf, token{text: word, col: start, cacheable: cacheable})
+		} else {
+			start := i
+			for i < len(text) && !isAlnum(text[i]) {
+				i++
+			}
+			c.tokBuf = append(c.tokBuf, token{text: text[start:i], col: start, cacheable: false})
+		}
+	}
+	return c.tokBuf
 }
 
 func main() {
@@ -167,6 +349,8 @@ func main() {
 		maxLines: maxLines,
 		maxCols:  maxCols,
 		lines:    []string{""},
+		gc:       newGlyphCache(charW, charH, ascent, face),
+		tokBuf:   make([]token, 0, 64),
 		dirtyMin: -1,
 		dirtyMax: -1,
 	}
@@ -481,6 +665,8 @@ func (c *console) drawContentArea() {
 }
 
 // redrawLine repaints one line in the gg context (no flush).
+// All rendering is pixel copies from pre-rendered glyph buffers —
+// no font rendering (DrawString) happens here.
 func (c *console) redrawLine(lineIdx int) {
 	if lineIdx < 0 || lineIdx >= c.maxLines || lineIdx >= len(c.lines) {
 		return
@@ -493,14 +679,31 @@ func (c *console) redrawLine(lineIdx int) {
 	c.dc.DrawRectangle(float64(c.rectX), float64(lineY), float64(c.rectW), float64(c.lineH))
 	c.dc.Fill()
 
-	// Draw the text
 	text := c.lines[lineIdx]
-	if len(text) > 0 {
-		c.dc.SetFontFace(c.face)
-		c.dc.SetColor(nText)
-		textX := float64(c.rectX + textPad)
-		textY := float64(lineY) + float64(c.ascent)
-		c.dc.DrawString(text, textX, textY)
+	if len(text) == 0 {
+		return
+	}
+
+	im := c.dc.Image().(*image.RGBA)
+	baseX := c.rectX + textPad
+
+	tokens := c.tokenizeLine(text)
+	for _, tok := range tokens {
+		pixX := baseX + tok.col*c.charW
+
+		if tok.cacheable {
+			if entry, hit := c.gc.lookup(tok.text); hit {
+				c.gc.blit(entry, im, pixX, lineY)
+			} else {
+				entry := c.gc.compose(tok.text)
+				c.gc.blit(entry, im, pixX, lineY)
+			}
+		} else {
+			// Fallback: blit individual chars from glyph buffer
+			for i := 0; i < len(tok.text); i++ {
+				c.gc.blitChar(tok.text[i], im, pixX+i*c.charW, lineY)
+			}
+		}
 	}
 }
 

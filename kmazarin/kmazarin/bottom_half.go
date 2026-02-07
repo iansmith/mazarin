@@ -95,17 +95,18 @@ type softIRQRing struct {
 }
 
 type topHalfDev struct {
-	irqNum       uint32
-	usedVA       uintptr // VA of VirtQUsed (Device-mapped)
-	evtBufVA     uintptr // VA of EventBuffers array (Device-mapped)
-	availVA      uintptr // VA of VirtQAvailable (Device-mapped)
-	descVA       uintptr // VA of descriptor table (Device-mapped)
-	notifyAddr   uintptr // VA of notify register (Device-mapped MMIO)
-	evtBufPA     uintptr // PA of EventBuffers (for descriptor addr field)
-	lastUsedIdx  uint16
-	queueSize    uint16
-	nextAvailIdx uint16
-	ring         *softIRQRing
+	irqNum           uint32
+	usedVA           uintptr // VA of VirtQUsed (Device-mapped)
+	evtBufVA         uintptr // VA of EventBuffers array (Device-mapped)
+	availVA          uintptr // VA of VirtQAvailable (Device-mapped)
+	descVA           uintptr // VA of descriptor table (Device-mapped)
+	notifyAddr       uintptr // VA of notify register (Device-mapped MMIO)
+	evtBufPA         uintptr // PA of EventBuffers (for descriptor addr field)
+	lastUsedIdx      uint16
+	queueSize        uint16
+	nextAvailIdx     uint16
+	ring             *softIRQRing
+	lastUsedIdxSync  *uint16 // points to VirtQueue.LastUsedIdx to prevent double-drain
 }
 
 var topHalfKbdRing softIRQRing
@@ -119,7 +120,7 @@ var uartIRQNum uint32
 
 // SetTopHalfDev is called during input init to register device pointers
 // for the nosplit top-half path.
-func SetTopHalfDev(irqNum uint32, usedVA, evtBufVA, availVA, descVA, notifyAddr, evtBufPA uintptr, queueSize, initAvailIdx uint16, isMouse bool) {
+func SetTopHalfDev(irqNum uint32, usedVA, evtBufVA, availVA, descVA, notifyAddr, evtBufPA uintptr, queueSize, initAvailIdx uint16, isMouse bool, lastUsedIdxSync *uint16) {
 	dev := &topHalfKbd
 	ring := &topHalfKbdRing
 	if isMouse {
@@ -137,6 +138,7 @@ func SetTopHalfDev(irqNum uint32, usedVA, evtBufVA, availVA, descVA, notifyAddr,
 	dev.queueSize = queueSize
 	dev.nextAvailIdx = initAvailIdx
 	dev.ring = ring
+	dev.lastUsedIdxSync = lastUsedIdxSync
 }
 
 // ringPush adds one HIDEvent to the ring buffer.
@@ -238,6 +240,12 @@ func NonTimerIRQTopHalf() {
 		dev.lastUsedIdx++
 	}
 
+	// Sync VirtQueue.LastUsedIdx so DrainEvents (called later by eventPoller)
+	// sees nothing to drain. This prevents double-drain and descriptor leak.
+	if dev.lastUsedIdxSync != nil {
+		*dev.lastUsedIdxSync = dev.lastUsedIdx
+	}
+
 	if pushed {
 		asm.Dsb()
 		asm.MmioWrite16(dev.availVA+2, dev.nextAvailIdx)
@@ -314,7 +322,7 @@ func eventPoller() {
 		runtime.Gosched()
 
 		// Check generic IRQ pending flags
-		// Scan the entire array and call registered handlers
+		// Scan the entire array and call registered handlers.
 		for irqNum := uint32(0); irqNum < 1020; irqNum++ {
 			if atomic.SwapUint32(&irqPendingFlags[irqNum], 0) == 1 {
 				// IRQ fired - call registered handler in safe Go context

@@ -172,6 +172,13 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 	}
 	elfData = elfData[:n]
 
+	// DEBUG: Check file read completeness
+	console.KWriteString("[Load] Read 0x")
+	console.KPrintHex64(uint64(n))
+	console.KWriteString(" of 0x")
+	console.KPrintHex64(fileSize)
+	console.KWriteString(" bytes\r\n")
+
 	// Create a FRESH page table for this process.
 	// This avoids inheriting any leftover mappings from Cardinal's TTBR0
 	// which could cause conflicts or cache coherency issues.
@@ -530,6 +537,33 @@ func loadSegment(elfData []byte, phdr *elf64Phdr, l0PA uintptr) error {
 	// BSS (memsz > filesz) is automatically zeroed by AllocAndMapUserPage
 	// No explicit zeroing needed - DC ZVA already cleared the pages
 
+	// DEBUG: Verify copy via linear map (bypass scratch VA entirely)
+	// Linear map: kernel VA = PA + 0xFFFFFFFF00000000
+	if isExecutable && numPages > 0 && phdr.Filesz > 0 {
+		const koff = uintptr(0xFFFFFFFF00000000)
+		// Read first word of page 0 via linear map
+		lmVA0 := pagePAs[0] + koff
+		w0 := *(*uint32)(unsafe.Pointer(lmVA0))
+		// Read first word of page 0 via scratch (for comparison)
+		sVA0 := kmem.MapPAToKernelScratch(pagePAs[0])
+		ws0 := *(*uint32)(unsafe.Pointer(sVA0))
+		console.KWriteString("[V] P0 LM=0x")
+		console.KPrintHex64(uint64(w0))
+		console.KWriteString(" SC=0x")
+		console.KPrintHex64(uint64(ws0))
+		console.KWriteString(" PA=0x")
+		console.KPrintHex64(uint64(pagePAs[0]))
+		if numPages > 0x72 {
+			lmVA72 := pagePAs[0x72] + koff + 0xF80
+			w72 := *(*uint32)(unsafe.Pointer(lmVA72))
+			console.KWriteString(" E LM=0x")
+			console.KPrintHex64(uint64(w72))
+			console.KWriteString(" PA=0x")
+			console.KPrintHex64(uint64(pagePAs[0x72]))
+		}
+		console.KWriteString("\r\n")
+	}
+
 	// Clean the data cache for all pages we wrote to.
 	// This ensures the data is visible to userspace when it reads via TTBR0.
 	// Without this, userspace may see stale/garbage data due to cache coherency.
@@ -546,6 +580,17 @@ func loadSegment(elfData []byte, phdr *elf64Phdr, l0PA uintptr) error {
 				// For non-executable pages, just clean the data cache
 				kmem.CleanPageCache(kernelVA)
 			}
+		}
+	}
+
+	// DEBUG: Verify after cache sync
+	if isExecutable && numPages > 0x72 {
+		vVA := kmem.MapPAToKernelScratch(pagePAs[0x72])
+		if vVA != 0 {
+			w := *(*uint32)(unsafe.Pointer(vVA + 0xF80))
+			console.KWriteString("[V] AfterSync PE=0x")
+			console.KPrintHex64(uint64(w))
+			console.KWriteString("\r\n")
 		}
 	}
 
