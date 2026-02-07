@@ -58,6 +58,11 @@ func (ctx *ThreadContext) SetSP(v uint64) { ctx.SP = v }
 //go:nosplit
 func (ctx *ThreadContext) GetProcessorState() uint64 { return ctx.SPSR }
 
+// SetProcessorState sets the saved processor state (SPSR_EL1 on ARM64).
+//
+//go:nosplit
+func (ctx *ThreadContext) SetProcessorState(v uint64) { ctx.SPSR = v }
+
 // SetupForUserspace initializes the context for a new userspace thread.
 //
 //go:nosplit

@@ -460,6 +460,12 @@ func allocatePhysPages(numPages uint64) (uint64, error) {
 	return physAddrResult, nil
 }
 
+// readBootPageTableBase returns the current UEFI page table root address.
+// On ARM64, this is TTBR0_EL1 masked to the address field.
+func readBootPageTableBase() uint64 {
+	return readTTBR0() & DESC_ADDR_MASK
+}
+
 // JumpToKernelWithTTBR0 switches to new page tables and jumps to kernel entry.
 // This is the point of no return - diplomat code runs via identity mapping.
 func JumpToKernelWithTTBR0(l0Phys, virtEntry uint64) {

@@ -320,6 +320,54 @@ TEXT ·uefiCallExitBootServices(SB), NOSPLIT, $40-32
 	MOVQ AX, ret+24(FP)
 	RET
 
+// func uefiCallLocateProtocol(funcPtr, protocol, registration, iface uintptr) EFI_STATUS
+//
+// Calls UEFI LocateProtocol with Microsoft x64 calling convention:
+//   EFI_STATUS LocateProtocol(
+//       IN EFI_GUID *Protocol,      // RCX
+//       IN VOID *Registration,      // RDX
+//       OUT VOID **Interface        // R8
+//   );
+TEXT ·uefiCallLocateProtocol(SB), NOSPLIT, $40-40
+	MOVQ protocol+8(FP), CX      // RCX = Protocol GUID
+	MOVQ registration+16(FP), DX  // RDX = Registration (NULL)
+	MOVQ iface+24(FP), R8        // R8 = Interface (out pointer)
+
+	MOVQ funcPtr+0(FP), AX
+	CALL AX
+
+	MOVQ AX, ret+32(FP)
+	RET
+
+// func uefiCallMPGetNumberOfProcessors(funcPtr, protocol, numProcs, numEnabled uintptr) EFI_STATUS
+//
+// Calls MP Services GetNumberOfProcessors with Microsoft x64 calling convention:
+//   EFI_STATUS GetNumberOfProcessors(
+//       IN EFI_MP_SERVICES_PROTOCOL *This,  // RCX
+//       OUT UINTN *NumberOfProcessors,      // RDX
+//       OUT UINTN *NumberOfEnabledProcessors // R8
+//   );
+TEXT ·uefiCallMPGetNumberOfProcessors(SB), NOSPLIT, $40-40
+	MOVQ protocol+8(FP), CX     // RCX = This
+	MOVQ numProcs+16(FP), DX    // RDX = NumberOfProcessors (out)
+	MOVQ numEnabled+24(FP), R8  // R8 = NumberOfEnabledProcessors (out)
+
+	MOVQ funcPtr+0(FP), AX
+	CALL AX
+
+	MOVQ AX, ret+32(FP)
+	RET
+
+// func readTimerCounter() uint64
+// Reads TSC (Time Stamp Counter) via RDTSC.
+// Returns EDX:EAX as a 64-bit value.
+TEXT ·readTimerCounter(SB), NOSPLIT, $0-8
+	RDTSC
+	SHLQ $32, DX
+	ORQ DX, AX
+	MOVQ AX, ret+0(FP)
+	RET
+
 // func readCR3() uint64
 TEXT ·readCR3(SB), NOSPLIT, $0-8
 	MOVQ CR3, AX
@@ -408,3 +456,52 @@ TEXT ·jumpToKernelWithCR3(SB), NOSPLIT, $0-16
 
 	// Jump to kernel virtual entry point (no return)
 	JMP BX
+
+// func jumpToKmazarinWithStack(entry, g0StackPtr, excStackTop, idtBase uint64)
+//
+// Sets up RSP to point to g0 stack (with argc/argv/auxv), loads kmazarin's
+// IDT if provided, disables interrupts, and jumps to the kernel entry point.
+// Does not return.
+//
+// entry:       kernel entry point (virtual address)
+// g0StackPtr:  RSP value pointing to argc on g0 stack (VA)
+// excStackTop: exception stack top (VA) — saved for kmazarin's TSS setup
+// idtBase:     kmazarin's IDT base address, or 0 if not yet available
+TEXT ·jumpToKmazarinWithStack(SB), NOSPLIT, $0-32
+	MOVQ entry+0(FP), AX
+	MOVQ g0StackPtr+8(FP), BX     // new RSP
+	MOVQ excStackTop+16(FP), CX   // exception stack (for future TSS)
+	MOVQ idtBase+24(FP), DX       // IDT base (0 = skip LIDT)
+
+	// Disable interrupts — UEFI timer interrupts could fire during
+	// kmazarin init and hit an uninitialized IDT
+	CLI
+
+	// Switch RSP to g0 stack (pointing to argc/argv/auxv)
+	MOVQ BX, SP
+
+	// If idtBase != 0, load kmazarin's IDT.
+	// For now, kmazarin sets up its own IDT, so this is typically 0.
+	TESTQ DX, DX
+	JZ skip_lidt
+	// Future: LIDT with kmazarin's IDT descriptor
+skip_lidt:
+
+	// Clear registers for clean state
+	XORQ BX, BX
+	XORQ CX, CX
+	XORQ DX, DX
+	XORQ SI, SI
+	XORQ DI, DI
+	XORQ BP, BP
+	XORQ R8, R8
+	XORQ R9, R9
+	XORQ R10, R10
+	XORQ R11, R11
+	XORQ R12, R12
+	XORQ R13, R13
+	XORQ R14, R14
+	XORQ R15, R15
+
+	// Jump to kmazarin entry point (_rt0_amd64_linux)
+	JMP AX

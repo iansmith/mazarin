@@ -142,14 +142,14 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel) (uint
 	data[i+1] = vm.HeapPagePoolEnd
 	i += 2
 
-	// AT_TTBR1_L0_PHYS
+	// AT_TTBR1_L0_PHYS (kernel page table root: TTBR1 L0 on ARM64, PML4 on x86)
 	data[i] = 0x1008 // AT_TTBR1_L0_PHYS
-	data[i+1] = vm.TTBR1L0Phys
+	data[i+1] = kernelPageTablePhys(vm)
 	i += 2
 
-	// AT_TTBR0_L0_PHYS (current UEFI TTBR0)
+	// AT_TTBR0_L0_PHYS (current UEFI page table root: TTBR0 on ARM64, CR3 on x86)
 	data[i] = 0x1013 // AT_TTBR0_L0_PHYS
-	data[i+1] = readTTBR0() & DESC_ADDR_MASK
+	data[i+1] = readBootPageTableBase()
 	i += 2
 
 	// AT_CPU_COUNT
@@ -262,10 +262,10 @@ func findDTBFromUEFI() uint64 {
 }
 
 // getTimerBasedRandom fills a memory region with pseudorandom bytes
-// derived from the ARM generic timer.
+// derived from a platform timer (ARM64: CNTVCT, x86_64: RDTSC).
 func getTimerBasedRandom(physAddr uint64) {
 	ptr := (*[16]byte)(unsafe.Pointer(uintptr(physAddr)))
-	val := readCNTVCT()
+	val := readTimerCounter()
 	// Mix the timer value into 16 bytes
 	for i := 0; i < 16; i++ {
 		val = val*6364136223846793005 + 1442695040888963407 // LCG
@@ -273,5 +273,18 @@ func getTimerBasedRandom(physAddr uint64) {
 	}
 }
 
-// readCNTVCT reads the virtual counter register
-func readCNTVCT() uint64
+// readTimerCounter reads a platform counter for pseudorandom seed.
+// ARM64: CNTVCT_EL0 (in pagetable_arm64.s)
+// x86_64: RDTSC (in uefi_calls_amd64.s)
+func readTimerCounter() uint64
+
+// readBootPageTableBase returns the physical address of the current
+// UEFI page table root, masked to the address field.
+// ARM64: TTBR0_EL1 & mask (in pagetable_arm64.go)
+// x86_64: CR3 & mask (in pagetable_amd64.go)
+// NOTE: This is a Go function, not assembly — declared in arch-specific .go files.
+
+// kernelPageTablePhys returns the kernel page table root physical address
+// from the KernelVM struct.
+// ARM64: vm.TTBR1L0Phys, x86_64: vm.PML4Phys
+// Implemented in arch-specific files.

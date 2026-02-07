@@ -8,6 +8,17 @@
 #define LAPIC_LVT_TIMER     0x320
 #define TSC_DEADLINE_MODE   0x00040020  // Bit 18=1 (TSC-Deadline) + vector 0x20
 
+// PlatformDisableTimer masks the LAPIC timer to stop generating interrupts.
+// func PlatformDisableTimer()
+TEXT ·PlatformDisableTimer(SB), NOSPLIT, $0-0
+	// Read current LVT Timer register
+	MOVQ	$LAPIC_BASE, AX
+	MOVL	LAPIC_LVT_TIMER(AX), BX
+	// Set bit 16 (masked) to disable interrupts
+	ORL	$0x10000, BX
+	MOVL	BX, LAPIC_LVT_TIMER(AX)
+	RET
+
 // PlatformRearmTimer sets the TSC deadline for the next timer interrupt.
 // func PlatformRearmTimer(ticks uint64)
 TEXT ·PlatformRearmTimer(SB), NOSPLIT, $0-8

@@ -76,6 +76,10 @@ vars:
   ESP_ARM64_IMAGE: '{{.BUILD_DIR}}/esp-arm64.img'
   OVMF_ARM64: '{{env "OVMF_ARM64" | default ""}}'
 
+  # Kmazarin AMD64 (for diplomat x86_64 boot)
+  KMAZARIN_AMD64_ELF: '{{.BUILD_DIR}}/kmazarin-amd64.elf'
+  KMAZARIN_AMD64_OVERLAY_JSON: '{{.BUILD_DIR}}/kmazarin-amd64-overlay.json'
+
   # Runtime patches directory
   RUNTIME_PATCHES_DIR: runtime-patches
   USERSPACE_OVERLAY_DIR: mazarin/overlay/userspace
@@ -135,6 +139,24 @@ tasks:
       - '{{.KMAZARIN_OVERLAY_JSON}}'
     cmds:
       - '{{.GO}} tool gen-overlay -type kmazarin -patches {{.RUNTIME_PATCHES_DIR}} -o {{.KMAZARIN_OVERLAY_JSON}}'
+
+  kmazarin-amd64-overlay:
+    run: once
+    desc: Generate runtime overlay JSON for kmazarin (x86_64)
+    deps: [build-dir]
+    sources:
+      - '{{.RUNTIME_PATCHES_DIR}}/cgo_mmap.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/malloc.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/mcache.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/os_linux_noauxv.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/preempt.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/sys_linux_amd64.s'
+      - '{{.RUNTIME_PATCHES_DIR}}/tagptr_64bit.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/syscall/syscall_linux.go'
+    generates:
+      - '{{.KMAZARIN_AMD64_OVERLAY_JSON}}'
+    cmds:
+      - '{{.GO}} tool gen-overlay -type kmazarin-amd64 -patches {{.RUNTIME_PATCHES_DIR}} -o {{.KMAZARIN_AMD64_OVERLAY_JSON}}'
 
   userspace-overlay:
     run: once
@@ -200,6 +222,24 @@ tasks:
       - '{{.GO}} tool relocate-kmazarin {{.KMAZARIN_ELF}} {{.KMAZARIN_ELF}}.tmp'
       - '{{.GO}} tool go-mv {{.KMAZARIN_ELF}}.tmp {{.KMAZARIN_ELF}}'
       - '{{.GO}} tool go-echo "Kmazarin kernel built at {{.KMAZARIN_ELF}}"'
+
+  kmazarin-amd64:
+    desc: Build kmazarin kernel for x86_64
+    run: once
+    deps: [check-env, kmazarin-amd64-overlay]
+    sources:
+      - 'kmazarin/**/*.go'
+      - 'kmazarin/**/*.s'
+      - 'shared/**/*.go'
+      - '{{.KMAZARIN_AMD64_OVERLAY_JSON}}'
+    generates:
+      - '{{.KMAZARIN_AMD64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building kmazarin kernel for x86_64 (static Go binary at {{.KMAZARIN_LOAD_ADDR}})..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.KMAZARIN_AMD64_OVERLAY_JSON}} {{.GCFLAGS}} -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" -o {{.KMAZARIN_AMD64_ELF}} ./kmazarin/kmazarin'
+      - '{{.GO}} tool go-echo "Fixing kmazarin-amd64 ELF headers..."'
+      - '{{.GO}} tool fix-go-elf {{.KMAZARIN_AMD64_ELF}}'
+      - '{{.GO}} tool go-echo "Kmazarin AMD64 kernel built at {{.KMAZARIN_AMD64_ELF}} (NOTE: not relocated to high memory yet)"'
 
   # ===========================================================================
   # Cardinal Bootloader Build
@@ -597,6 +637,52 @@ tasks:
       - '{{.BUILD_DIR}}/mkesp -bootloader {{.DIPLOMAT_EFI}} -kernel {{.BUILD_DIR}}/testkernel.elf -o {{.ESP_IMAGE}} -size 260'
       - '{{.GO}} tool go-echo "ESP created at {{.ESP_IMAGE}}"'
 
+  esp-kmazarin:
+    desc: Create EFI System Partition image for x86_64 diplomat with real kmazarin
+    deps: [diplomat, mkesp, kmazarin-amd64]
+    sources:
+      - '{{.DIPLOMAT_EFI}}'
+      - '{{.KMAZARIN_AMD64_ELF}}'
+      - kmazarin.toml
+    generates:
+      - '{{.BUILD_DIR}}/esp-kmazarin.img'
+    cmds:
+      - '{{.GO}} tool go-echo "Creating x86_64 ESP image with kmazarin..."'
+      - '{{.BUILD_DIR}}/mkesp -bootloader {{.DIPLOMAT_EFI}} -kernel {{.KMAZARIN_AMD64_ELF}} -config kmazarin.toml -o {{.BUILD_DIR}}/esp-kmazarin.img -size 260'
+      - '{{.GO}} tool go-echo "ESP (x86_64 + kmazarin) created at {{.BUILD_DIR}}/esp-kmazarin.img"'
+
+  run-diplomat-kmazarin:
+    desc: "Run x86_64 diplomat with real kmazarin in QEMU (TIMEOUT=N for timeout, default=5s)"
+    deps: [esp-kmazarin]
+    vars:
+      TIMEOUT: '{{.TIMEOUT | default "5"}}'
+      LOG_FILE: /tmp/diplomat-serial.log
+    cmds:
+      - task: stop-diplomat
+      - '{{.GO}} tool go-rm {{.LOG_FILE}}'
+      - '{{.GO}} tool go-echo "Starting diplomat x86_64 + kmazarin in QEMU (timeout {{.TIMEOUT}}s)..."'
+      - task: run-diplomat-kmazarin-background
+      - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
+      - task: stop-diplomat
+      - '{{.GO}} tool go-sleep 0.3'
+      - '{{.GO}} tool go-echo'
+      - '{{.GO}} tool go-echo "=== Diplomat x86_64 + Kmazarin Serial Output ==="'
+      - '{{.GO}} tool safe-serial-read {{.LOG_FILE}}'
+      - '{{.GO}} tool go-echo'
+      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
+
+  run-diplomat-kmazarin-background:
+    desc: Start QEMU with diplomat + kmazarin in background (internal task)
+    internal: true
+    vars:
+      LOG_FILE: /tmp/diplomat-serial.log
+      FW_CODE: '{{if ne .OVMF ""}}{{.OVMF}}{{else}}{{dir .QEMU_AMD64}}/../share/qemu/edk2-x86_64-code.fd{{end}}'
+    cmds:
+      - '{{.GO}} tool go-start {{.QEMU_AMD64}} -machine q35,accel=tcg -cpu max -m 8G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive file={{.BUILD_DIR}}/esp-kmazarin.img,format=raw,if=ide -boot c -serial file:{{.LOG_FILE}} -debugcon file:/tmp/diplomat-debug.log -monitor tcp:127.0.0.1:4445,server,nowait -display none -no-reboot'
+      - '{{.GO}} tool go-echo "QEMU (x86_64 + kmazarin) started in background"'
+      - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4445"'
+      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
+
   run-diplomat:
     desc: "Run diplomat in QEMU with OVMF (TIMEOUT=N for timeout, default=5s)"
     deps: [esp]
@@ -622,8 +708,9 @@ tasks:
     internal: true
     vars:
       LOG_FILE: /tmp/diplomat-serial.log
+      FW_CODE: '{{if ne .OVMF ""}}{{.OVMF}}{{else}}{{dir .QEMU_AMD64}}/../share/qemu/edk2-x86_64-code.fd{{end}}'
     cmds:
-      - '{{.GO}} tool go-start {{.QEMU_AMD64}} -machine q35,accel=tcg -cpu max -m 8G -drive if=pflash,format=raw,readonly=on,file={{.OVMF}} -drive file={{.ESP_IMAGE}},format=raw,if=ide -boot c -serial file:{{.LOG_FILE}} -debugcon file:/tmp/diplomat-debug.log -monitor tcp:127.0.0.1:4445,server,nowait -display none -no-reboot'
+      - '{{.GO}} tool go-start {{.QEMU_AMD64}} -machine q35,accel=tcg -cpu max -m 8G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive file={{.ESP_IMAGE}},format=raw,if=ide -boot c -serial file:{{.LOG_FILE}} -debugcon file:/tmp/diplomat-debug.log -monitor tcp:127.0.0.1:4445,server,nowait -display none -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (x86_64) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4445"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'

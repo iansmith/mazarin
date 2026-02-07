@@ -247,12 +247,16 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOVQ	CR3, AX
 	MOVQ	AX, CR3
 
-	// Build IRETQ frame
-	PUSHQ	$0			// SS
-	PUSHQ	136(R12)		// RSP
-	PUSHQ	128(R12)		// RFLAGS
-	PUSHQ	$0x08			// CS
-	PUSHQ	120(R12)		// RIP
+	// Build IRETQ frame manually (avoid PUSH to keep assembler happy)
+	SUBQ	$40, SP
+	MOVQ	$0, 32(SP)		// SS
+	MOVQ	136(R12), AX
+	MOVQ	AX, 24(SP)		// RSP
+	MOVQ	128(R12), AX
+	MOVQ	AX, 16(SP)		// RFLAGS
+	MOVQ	$0x08, 8(SP)		// CS
+	MOVQ	120(R12), AX
+	MOVQ	AX, 0(SP)		// RIP
 
 	// Load all GPRs
 	MOVQ	0(R12), AX

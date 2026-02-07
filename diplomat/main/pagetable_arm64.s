@@ -288,10 +288,10 @@ TEXT ·jumpToKmazarinWithStack(SB), NOSPLIT, $0-32
 	// Jump to kmazarin entry point (_rt0_arm64_linux)
 	JMP	(R0)
 
-// readCNTVCT reads the ARM generic timer virtual counter.
+// readTimerCounter reads the ARM generic timer virtual counter.
 // Used for pseudorandom seed generation.
-// Go: func readCNTVCT() uint64
-TEXT ·readCNTVCT(SB), NOSPLIT, $0-8
+// Go: func readTimerCounter() uint64
+TEXT ·readTimerCounter(SB), NOSPLIT, $0-8
 	MRS	CNTVCT_EL0, R0
 	MOVD	R0, ret+0(FP)
 	RET

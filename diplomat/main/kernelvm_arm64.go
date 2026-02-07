@@ -94,6 +94,12 @@ func allocatePTPage() uint64 {
 	return page
 }
 
+// kernelPageTablePhys returns the kernel page table root physical address.
+// On ARM64, this is the TTBR1 L0 table.
+func kernelPageTablePhys(vm *KernelVM) uint64 {
+	return vm.TTBR1L0Phys
+}
+
 // PrepareKernelVM creates TTBR1 page tables with linear map, stacks, and page pool.
 func PrepareKernelVM(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, error) {
 	vm := dNew[KernelVM]()

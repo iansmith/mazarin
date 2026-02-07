@@ -1003,11 +1003,11 @@ func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
 	schedulerLock.Unlock()
 
 	// DEBUG: Print thread details before ERET
-	console.KPrintf("[StartFirst] TID=%d PID=%d ELR=0x%x SP=0x%x SPSR=0x%x L0PA=0x%x\n",
-		thread.TID, thread.PID, thread.Context.ELR, thread.Context.SP, thread.Context.SPSR, thread.PageTableL0PA)
+	console.KPrintf("[StartFirst] TID=%d PID=%d PC=0x%x SP=0x%x PState=0x%x L0PA=0x%x\n",
+		thread.TID, thread.PID, thread.Context.GetPC(), thread.Context.GetSP(), thread.Context.GetProcessorState(), thread.PageTableL0PA)
 
 	// DEBUG: Verify stack page is mapped by walking the page table
-	stackAddr := uintptr(thread.Context.SP)
+	stackAddr := uintptr(thread.Context.GetSP())
 	stackPA := kmem.WalkUserPageTableWithL0(stackAddr, thread.PageTableL0PA)
 	console.KPrintf("[StartFirst] StackWalk: VA=0x%x PA=0x%x\n", stackAddr, stackPA)
 
@@ -2200,7 +2200,7 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	next.GoroutineStart = currentTime
 	next.ThreadPreemptDeadline = currentTime + kirq.ThreadPreemptTicks
 	next.GoroutinePreemptDeadline = currentTime + kirq.GoroutinePreemptTicks
-	next.LastSeenG = next.Context.X[28] // Use saved g
+	next.LastSeenG = next.Context.GetGRegister() // Use saved g
 	next.PreemptElapsed = 0             // Fresh time slice
 	next.GoroutineElapsed = 0           // Fresh goroutine time slice
 	next.TicksStartedRunning = currentTime // Mark when started running for accounting
@@ -2283,17 +2283,17 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	// child code uses inherited callee-saved registers (e.g., X20 for memclr).
 	if newThread != nil && newThread.CloneNeedsParentRegs != 0 && oldThread != nil {
 		// Save the clone-specific overrides that SetupForCloneChild already set
-		childX0 := newThread.Context.X[0]     // 0 (child TID)
-		childSP := newThread.Context.SP       // new stack
-		childGReg := newThread.Context.X[28]  // new g pointer
-		childSPSR := newThread.Context.SPSR   // parent SPSR with IRQs enabled
+		childRetVal := newThread.Context.GetReturnValue() // 0 (child TID)
+		childSP := newThread.Context.GetSP()              // new stack
+		childGReg := newThread.Context.GetGRegister()     // new g pointer
+		childPState := newThread.Context.GetProcessorState() // parent state with IRQs enabled
 		// Copy ALL registers from parent (just saved by SaveContextFromFrame)
 		newThread.Context = oldThread.Context
 		// Restore clone-specific overrides
-		newThread.Context.X[0] = childX0
-		newThread.Context.SP = childSP
-		newThread.Context.X[28] = childGReg
-		newThread.Context.SPSR = childSPSR
+		newThread.Context.SetReturnValue(childRetVal)
+		newThread.Context.SetSP(childSP)
+		newThread.Context.SetGRegister(childGReg)
+		newThread.Context.SetProcessorState(childPState)
 		newThread.CloneNeedsParentRegs = 0
 	}
 

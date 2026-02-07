@@ -91,6 +91,11 @@ func (ctx *ThreadContext) SetSP(v uint64) { ctx.RSP = v }
 //go:nosplit
 func (ctx *ThreadContext) GetProcessorState() uint64 { return ctx.RFLAGS }
 
+// SetProcessorState sets the saved processor state (RFLAGS on x86_64).
+//
+//go:nosplit
+func (ctx *ThreadContext) SetProcessorState(v uint64) { ctx.RFLAGS = v }
+
 // SetupForUserspace initializes the context for a new userspace thread.
 //
 //go:nosplit

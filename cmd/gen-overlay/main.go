@@ -24,14 +24,15 @@ type Overlay struct {
 }
 
 func main() {
-	overlayType := flag.String("type", "", "overlay type: kmazarin, userspace")
+	overlayType := flag.String("type", "", "overlay type: kmazarin, kmazarin-amd64, userspace")
 	patchesDir := flag.String("patches", "", "directory containing patch files")
 	output := flag.String("o", "", "output JSON file")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: gen-overlay -type TYPE -patches DIR -o OUTPUT\n")
 		fmt.Fprintf(os.Stderr, "Generate Go overlay JSON for patched runtime files.\n\n")
 		fmt.Fprintf(os.Stderr, "Types:\n")
-		fmt.Fprintf(os.Stderr, "  kmazarin   - Kernel runtime patches\n")
+		fmt.Fprintf(os.Stderr, "  kmazarin        - Kernel runtime patches (ARM64)\n")
+		fmt.Fprintf(os.Stderr, "  kmazarin-amd64  - Kernel runtime patches (x86_64)\n")
 		fmt.Fprintf(os.Stderr, "  userspace  - Userspace runtime patches\n")
 		fmt.Fprintf(os.Stderr, "  cardinal-linux  - Cardinal bootloader runtime patches (Linux ARM64→bare metal)\n")
 		fmt.Fprintf(os.Stderr, "  diplomat        - UEFI bootloader runtime patches (Windows→UEFI, deprecated)\n")
@@ -66,6 +67,8 @@ func main() {
 	switch *overlayType {
 	case "kmazarin":
 		err = buildKmazarinOverlay(&overlay, goroot, absPatchesDir)
+	case "kmazarin-amd64":
+		err = buildKmazarinAMD64Overlay(&overlay, goroot, absPatchesDir)
 	case "userspace":
 		err = buildUserspaceOverlay(&overlay, goroot, absPatchesDir)
 	case "diplomat":
@@ -126,6 +129,39 @@ func buildKmazarinOverlay(overlay *Overlay, goroot, patchesDir string) error {
 		"runtime/tagptr_64bit.go":    "tagptr_64bit.go",
 		// "runtime/traceback.go":      "traceback.go",
 		// "runtime/panic.go":          "panic.go",
+	}
+
+	for goFile, patchFile := range runtimePatches {
+		src := filepath.Join(goroot, "src", goFile)
+		dst := filepath.Join(patchesDir, patchFile)
+		if _, err := os.Stat(dst); err != nil {
+			return fmt.Errorf("patch file not found: %s", dst)
+		}
+		overlay.Replace[src] = dst
+	}
+
+	// Syscall patch
+	syscallSrc := filepath.Join(goroot, "src", "syscall/syscall_linux.go")
+	syscallDst := filepath.Join(patchesDir, "syscall/syscall_linux.go")
+	if _, err := os.Stat(syscallDst); err != nil {
+		return fmt.Errorf("patch file not found: %s", syscallDst)
+	}
+	overlay.Replace[syscallSrc] = syscallDst
+
+	return nil
+}
+
+func buildKmazarinAMD64Overlay(overlay *Overlay, goroot, patchesDir string) error {
+	// Kmazarin patches for x86_64 runtime — same arch-independent patches as ARM64,
+	// but with amd64-specific os_linux and sys_linux files.
+	runtimePatches := map[string]string{
+		"runtime/cgo_mmap.go":        "cgo_mmap.go",
+		"runtime/malloc.go":          "malloc.go",
+		"runtime/mcache.go":          "mcache.go",
+		"runtime/os_linux_noauxv.go": "os_linux_noauxv.go",
+		"runtime/preempt.go":         "preempt.go",
+		"runtime/sys_linux_amd64.s":  "sys_linux_amd64.s",
+		"runtime/tagptr_64bit.go":    "tagptr_64bit.go",
 	}
 
 	for goFile, patchFile := range runtimePatches {

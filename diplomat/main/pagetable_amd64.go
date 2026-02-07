@@ -303,6 +303,12 @@ func allocatePhysPages(numPages uint64) (uint64, error) {
 	return physAddrResult, nil
 }
 
+// readBootPageTableBase returns the current UEFI page table root address.
+// On x86_64, this is CR3 masked to the address field.
+func readBootPageTableBase() uint64 {
+	return readCR3() & PTE_ADDR_MASK
+}
+
 // JumpToKernelWithCR3 switches to new page tables and jumps to kernel entry.
 // This is the point of no return - diplomat code runs via identity mapping.
 func JumpToKernelWithCR3(pml4Phys, virtEntry uint64) {

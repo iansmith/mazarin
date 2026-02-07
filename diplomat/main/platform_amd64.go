@@ -34,6 +34,14 @@ var defaultBootSequence = BootSequence{
 	LoadKernel:      LoadKernel,
 	MapKernel:       addKernelMappingToCurrentPT,
 	JumpToKernel:    func(entry uint64) { jumpToEntry(entry) },
+
+	// New boot phases (matching ARM64 flow)
+	ReadConfig:          ReadConfig,
+	QueryHardware:       QueryHardware,
+	PrepareKernelVM:     PrepareKernelVM,
+	InstallFaultHandler: InstallFaultHandler,
+	BuildStartupEnv:     BuildStartupEnv,
+	JumpToKernelWithEnv: jumpToKmazarinWithStack,
 }
 
 var defaultSyscalls = SyscallTable{
@@ -47,6 +55,10 @@ var defaultSyscalls = SyscallTable{
 	Close:   DiplomatClose,
 	Futex:   DiplomatFutex,
 }
+
+// jumpToKmazarinWithStack sets up RSP, optionally loads IDT, and jumps to kernel.
+// Implemented in uefi_calls_amd64.s
+func jumpToKmazarinWithStack(entry, g0StackPtr, excStackTop, idtBase uint64)
 
 // defaultHandleProtocol wraps uefiHandleProtocol to match the PlatformOps signature.
 // The raw assembly function takes an extra funcPtr parameter; this wrapper
