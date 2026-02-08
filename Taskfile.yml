@@ -24,6 +24,7 @@ vars:
   GO: '{{env "GO" | default "go"}}'
   QEMU: '{{env "QEMU" | default "qemu-system-aarch64"}}'
   QEMU_AMD64: '{{env "QEMU_AMD64" | default "qemu-system-x86_64"}}'
+  QEMU_RISCV64: '{{env "QEMU_RISCV64" | default "qemu-system-riscv64"}}'
   OVMF: '{{env "OVMF" | default ""}}'
   DEBUG: '{{env "DEBUG" | default ""}}'
 
@@ -76,9 +77,18 @@ vars:
   ESP_ARM64_IMAGE: '{{.BUILD_DIR}}/esp-arm64.img'
   OVMF_ARM64: '{{env "OVMF_ARM64" | default ""}}'
 
+  # Diplomat RISC-V 64-bit UEFI
+  DIPLOMAT_RISCV64_EFI: '{{.BUILD_DIR}}/diplomat-riscv64.efi'
+  ESP_RISCV64_IMAGE: '{{.BUILD_DIR}}/esp-riscv64.img'
+  OVMF_RISCV64: '{{env "OVMF_RISCV64" | default ""}}'
+
   # Kmazarin AMD64 (for diplomat x86_64 boot)
   KMAZARIN_AMD64_ELF: '{{.BUILD_DIR}}/kmazarin-amd64.elf'
   KMAZARIN_AMD64_OVERLAY_JSON: '{{.BUILD_DIR}}/kmazarin-amd64-overlay.json'
+
+  # Kmazarin RISC-V 64-bit (for diplomat riscv64 boot)
+  KMAZARIN_RISCV64_ELF: '{{.BUILD_DIR}}/kmazarin-riscv64.elf'
+  KMAZARIN_RISCV64_OVERLAY_JSON: '{{.BUILD_DIR}}/kmazarin-riscv64-overlay.json'
 
   # Runtime patches directory
   RUNTIME_PATCHES_DIR: runtime-patches
@@ -157,6 +167,24 @@ tasks:
       - '{{.KMAZARIN_AMD64_OVERLAY_JSON}}'
     cmds:
       - '{{.GO}} tool gen-overlay -type kmazarin-amd64 -patches {{.RUNTIME_PATCHES_DIR}} -o {{.KMAZARIN_AMD64_OVERLAY_JSON}}'
+
+  kmazarin-riscv64-overlay:
+    run: once
+    desc: Generate runtime overlay JSON for kmazarin (RISC-V 64-bit)
+    deps: [build-dir]
+    sources:
+      - '{{.RUNTIME_PATCHES_DIR}}/cgo_mmap.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/malloc.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/mcache.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/os_linux_noauxv.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/preempt.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/sys_linux_riscv64.s'
+      - '{{.RUNTIME_PATCHES_DIR}}/tagptr_64bit.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/syscall/syscall_linux.go'
+    generates:
+      - '{{.KMAZARIN_RISCV64_OVERLAY_JSON}}'
+    cmds:
+      - '{{.GO}} tool gen-overlay -type kmazarin-riscv64 -patches {{.RUNTIME_PATCHES_DIR}} -o {{.KMAZARIN_RISCV64_OVERLAY_JSON}}'
 
   userspace-overlay:
     run: once
@@ -240,6 +268,24 @@ tasks:
       - '{{.GO}} tool go-echo "Fixing kmazarin-amd64 ELF headers..."'
       - '{{.GO}} tool fix-go-elf {{.KMAZARIN_AMD64_ELF}}'
       - '{{.GO}} tool go-echo "Kmazarin AMD64 kernel built at {{.KMAZARIN_AMD64_ELF}} (NOTE: not relocated to high memory yet)"'
+
+  kmazarin-riscv64:
+    desc: Build kmazarin kernel for RISC-V 64-bit
+    run: once
+    deps: [check-env, kmazarin-riscv64-overlay]
+    sources:
+      - 'kmazarin/**/*.go'
+      - 'kmazarin/**/*.s'
+      - 'shared/**/*.go'
+      - '{{.KMAZARIN_RISCV64_OVERLAY_JSON}}'
+    generates:
+      - '{{.KMAZARIN_RISCV64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building kmazarin kernel for RISC-V 64-bit (static Go binary at {{.KMAZARIN_LOAD_ADDR}})..."'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.KMAZARIN_RISCV64_OVERLAY_JSON}} {{.GCFLAGS}} -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" -o {{.KMAZARIN_RISCV64_ELF}} ./kmazarin/kmazarin'
+      - '{{.GO}} tool go-echo "Fixing kmazarin-riscv64 ELF headers..."'
+      - '{{.GO}} tool fix-go-elf {{.KMAZARIN_RISCV64_ELF}}'
+      - '{{.GO}} tool go-echo "Kmazarin RISC-V 64-bit kernel built at {{.KMAZARIN_RISCV64_ELF}}"'
 
   # ===========================================================================
   # Cardinal Bootloader Build
@@ -598,6 +644,24 @@ tasks:
       - '{{.BUILD_DIR}}/elf2pe {{.BUILD_DIR}}/diplomat-arm64.elf {{.BUILD_DIR}}/diplomat-arm64.efi'
       - '{{.GO}} tool go-echo "Diplomat ARM64 EFI ready at {{.BUILD_DIR}}/diplomat-arm64.efi"'
 
+  diplomat-riscv64:
+    desc: Build diplomat UEFI bootloader for RISC-V 64-bit
+    deps: [check-env, build-dir, elf2pe, diplomat-linux-overlay]
+    sources:
+      - 'diplomat/**/*.go'
+      - 'diplomat/**/*.s'
+      - 'shared/**/*.go'
+      - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
+    generates:
+      - '{{.DIPLOMAT_RISCV64_EFI}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building diplomat for RISC-V 64-bit UEFI (via Linux/riscv64)..."'
+      # Step 1: Build as Linux ELF with runtime patches
+      - 'CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 {{.GO}} build -ldflags="-checklinkname=0" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.BUILD_DIR}}/diplomat-riscv64.elf ./diplomat/main'
+      # Step 2: Convert ELF to PE format for UEFI
+      - '{{.BUILD_DIR}}/elf2pe {{.BUILD_DIR}}/diplomat-riscv64.elf {{.DIPLOMAT_RISCV64_EFI}}'
+      - '{{.GO}} tool go-echo "Diplomat RISC-V 64-bit EFI ready at {{.DIPLOMAT_RISCV64_EFI}}"'
+
   mkesp:
     desc: Build the ESP image creator
     deps: [build-dir]
@@ -774,6 +838,61 @@ tasks:
     desc: Stop ARM64 diplomat QEMU instance
     cmds:
       - cmd: '{{.GO}} tool go-nc -w 1s -c quit 127.0.0.1 4446'
+        ignore_error: true
+      - '{{.GO}} tool go-sleep 0.5'
+
+  esp-riscv64:
+    desc: Create EFI System Partition image for RISC-V 64-bit diplomat
+    deps: [diplomat-riscv64, mkesp, kmazarin-riscv64]
+    sources:
+      - '{{.DIPLOMAT_RISCV64_EFI}}'
+      - '{{.KMAZARIN_RISCV64_ELF}}'
+      - kmazarin.toml
+    generates:
+      - '{{.ESP_RISCV64_IMAGE}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Creating RISC-V 64-bit ESP image..."'
+      - '{{.BUILD_DIR}}/mkesp -arch riscv64 -bootloader {{.DIPLOMAT_RISCV64_EFI}} -kernel {{.KMAZARIN_RISCV64_ELF}} -config kmazarin.toml -o {{.ESP_RISCV64_IMAGE}} -size 260'
+      - '{{.GO}} tool go-echo "ESP (RISC-V 64-bit) created at {{.ESP_RISCV64_IMAGE}}"'
+
+  run-diplomat-riscv64:
+    desc: "Run diplomat RISC-V 64-bit in QEMU with UEFI firmware (TIMEOUT=N for timeout, default=5s)"
+    deps: [esp-riscv64, disk]
+    vars:
+      TIMEOUT: '{{.TIMEOUT | default "5"}}'
+      LOG_FILE: /tmp/diplomat-riscv64-serial.log
+    cmds:
+      - task: stop-diplomat-riscv64
+      - '{{.GO}} tool go-rm {{.LOG_FILE}}'
+      - '{{.GO}} tool go-echo "Starting diplomat RISC-V 64-bit in QEMU (timeout {{.TIMEOUT}}s)..."'
+      - task: run-diplomat-riscv64-background
+      - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
+      - task: stop-diplomat-riscv64
+      - '{{.GO}} tool go-sleep 0.3'
+      - '{{.GO}} tool go-echo'
+      - '{{.GO}} tool go-echo "=== Diplomat RISC-V 64-bit Serial Output ==="'
+      - '{{.GO}} tool safe-serial-read {{.LOG_FILE}}'
+      - '{{.GO}} tool go-echo'
+      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
+
+  run-diplomat-riscv64-background:
+    desc: Start QEMU with RISC-V 64-bit diplomat in background (internal task)
+    internal: true
+    vars:
+      LOG_FILE: /tmp/diplomat-riscv64-serial.log
+      FW_CODE: '{{if ne .OVMF_RISCV64 ""}}{{.OVMF_RISCV64}}{{else}}{{dir .QEMU_RISCV64}}/../share/qemu/edk2-riscv-code.fd{{end}}'
+      FW_VARS_TEMPLATE: '{{if ne .OVMF_RISCV64 ""}}{{dir .OVMF_RISCV64}}/edk2-riscv-vars.fd{{else}}{{dir .QEMU_RISCV64}}/../share/qemu/edk2-riscv-vars.fd{{end}}'
+    cmds:
+      - '{{.GO}} tool go-cp {{.FW_VARS_TEMPLATE}} {{.BUILD_DIR}}/edk2-riscv-vars.fd'
+      - '{{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -cpu rv64 -m 2G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-riscv-vars.fd -drive file={{.ESP_RISCV64_IMAGE}},format=raw,if=virtio -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-device,drive=flock0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot'
+      - '{{.GO}} tool go-echo "QEMU (RISC-V 64-bit UEFI) started in background"'
+      - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4447"'
+      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
+
+  stop-diplomat-riscv64:
+    desc: Stop RISC-V 64-bit diplomat QEMU instance
+    cmds:
+      - cmd: '{{.GO}} tool go-nc -w 1s -c quit 127.0.0.1 4447'
         ignore_error: true
       - '{{.GO}} tool go-sleep 0.5'
 

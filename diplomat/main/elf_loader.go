@@ -20,9 +20,10 @@ const (
 	elfDataLSB     = 1
 	elfTypeExec    = 2
 	elfTypeDyn     = 3
-	elfMachineX64    = 0x3E
-	elfMachineARM64 = 0xB7
-	elfPTLoad        = 1
+	elfMachineX64     = 0x3E
+	elfMachineARM64   = 0xB7
+	elfMachineRISCV64 = 0xF3
+	elfPTLoad         = 1
 	elfEhdrSize    = 64 // ELF64 header size
 	elfPhdrSize    = 56 // ELF64 program header size
 	elfShdrSize    = 64 // ELF64 section header size

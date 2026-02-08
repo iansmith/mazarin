@@ -31,8 +31,9 @@ const (
 	IMAGE_SUBSYSTEM_EFI_APPLICATION = 10
 
 	// PE Machine types
-	IMAGE_FILE_MACHINE_AMD64 = 0x8664
-	IMAGE_FILE_MACHINE_ARM64 = 0xAA64
+	IMAGE_FILE_MACHINE_AMD64  = 0x8664
+	IMAGE_FILE_MACHINE_ARM64  = 0xAA64
+	IMAGE_FILE_MACHINE_RISCV64 = 0x5064
 
 	// PE Section characteristics
 	IMAGE_SCN_CNT_CODE               = 0x00000020
@@ -128,8 +129,18 @@ func convertELFtoPE(inputPath, outputPath string) error {
 			"main._minimal_uefi_test_arm64",
 			"main._minimal_uefi_test_arm64.abi0",
 		}
+	case elf.EM_RISCV:
+		peMachine = IMAGE_FILE_MACHINE_RISCV64
+		archName = "riscv64"
+		// RISC-V entry point symbols
+		entrySymbols = []string{
+			"main._efi_main_riscv64",
+			"main._efi_main_riscv64.abi0",
+			"main._minimal_uefi_test_riscv64",
+			"main._minimal_uefi_test_riscv64.abi0",
+		}
 	default:
-		return fmt.Errorf("unsupported ELF machine type: %v (only x86_64 and aarch64 are supported)", elfFile.Machine)
+		return fmt.Errorf("unsupported ELF machine type: %v (only x86_64, aarch64, and riscv64 are supported)", elfFile.Machine)
 	}
 
 	fmt.Printf("Input: %s\n", inputPath)
