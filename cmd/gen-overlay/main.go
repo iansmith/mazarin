@@ -155,13 +155,14 @@ func buildKmazarinAMD64Overlay(overlay *Overlay, goroot, patchesDir string) erro
 	// Kmazarin patches for x86_64 runtime — same arch-independent patches as ARM64,
 	// but with amd64-specific os_linux and sys_linux files.
 	runtimePatches := map[string]string{
-		"runtime/cgo_mmap.go":        "cgo_mmap.go",
-		"runtime/malloc.go":          "malloc.go",
-		"runtime/mcache.go":          "mcache.go",
-		"runtime/os_linux_noauxv.go": "os_linux_noauxv.go",
-		"runtime/preempt.go":         "preempt.go",
-		"runtime/sys_linux_amd64.s":  "sys_linux_amd64.s",
-		"runtime/tagptr_64bit.go":    "tagptr_64bit.go",
+		"runtime/cgo_mmap.go":                          "cgo_mmap.go",
+		"runtime/malloc.go":                            "malloc.go",
+		"runtime/mcache.go":                            "mcache.go",
+		"runtime/os_linux_noauxv.go":                   "os_linux_noauxv.go",
+		"runtime/preempt.go":                           "preempt.go",
+		"runtime/sys_linux_amd64.s":                    "sys_linux_amd64.s",
+		"runtime/tagptr_64bit.go":                      "tagptr_64bit.go",
+		"internal/runtime/syscall/asm_linux_amd64.s":   "asm_linux_amd64.s",
 	}
 
 	for goFile, patchFile := range runtimePatches {

@@ -394,6 +394,7 @@ var deadlineQueue *ds.OrderedList[*util.TimerDeadline]
 // Stores to the current thread's SyscallELR field to prevent race conditions.
 // Falls back to global variable during early boot when CurrentThread is not yet set up.
 //
+//go:nosplit
 //go:noinline
 func setSyscallELRInternal(elr uint64) {
 	t := GetCurrentThread()
@@ -409,6 +410,7 @@ func setSyscallELRInternal(elr uint64) {
 // Stores to the current thread's SyscallSPSR field to prevent race conditions.
 // Falls back to global variable during early boot when CurrentThread is not yet set up.
 //
+//go:nosplit
 //go:noinline
 func setSyscallSPSRInternal(spsr uint64) {
 	t := GetCurrentThread()
@@ -456,6 +458,7 @@ func GetSyscallSPSR() uint64 {
 // Reads from the current thread's SyscallSwitch field to prevent race conditions.
 // Falls back to global variable during early boot when CurrentThread is not yet set up.
 //
+//go:nosplit
 //go:noinline
 func getSyscallSwitchTargetInternal() uint64 {
 	var target uintptr

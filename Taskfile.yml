@@ -678,7 +678,7 @@ tasks:
       LOG_FILE: /tmp/diplomat-serial.log
       FW_CODE: '{{if ne .OVMF ""}}{{.OVMF}}{{else}}{{dir .QEMU_AMD64}}/../share/qemu/edk2-x86_64-code.fd{{end}}'
     cmds:
-      - '{{.GO}} tool go-start {{.QEMU_AMD64}} -machine q35,accel=tcg -cpu max -m 8G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive file={{.BUILD_DIR}}/esp-kmazarin.img,format=raw,if=ide -boot c -serial file:{{.LOG_FILE}} -debugcon file:/tmp/diplomat-debug.log -monitor tcp:127.0.0.1:4445,server,nowait -display none -no-reboot'
+      - '{{.GO}} tool go-start {{.QEMU_AMD64}} -machine q35,accel=tcg -cpu max -m 8G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive file={{.BUILD_DIR}}/esp-kmazarin.img,format=raw,if=ide -boot c -serial file:{{.LOG_FILE}} -debugcon file:/tmp/diplomat-debug.log -monitor tcp:127.0.0.1:4445,server,nowait -device virtio-vga -display cocoa'
       - '{{.GO}} tool go-echo "QEMU (x86_64 + kmazarin) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4445"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'

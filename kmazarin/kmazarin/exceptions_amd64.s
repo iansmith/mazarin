@@ -24,6 +24,10 @@
 //   SP+144: RFLAGS (pushed by CPU)
 //   SP+152: RSP (pushed by CPU)
 //   SP+160: SS (pushed by CPU)
+//
+// x86_64 CALL convention: CALL pushes 8-byte return address onto stack.
+// Therefore, when calling a Go function, place args at 0(SP), 8(SP), 16(SP)...
+// CALL shifts them to 8(callee_SP), 16(callee_SP)... where the callee expects them.
 
 #include "textflag.h"
 
@@ -34,25 +38,105 @@
 // Macro-like ISR entries for exceptions without error codes
 // We manually push $0 as the error code
 
+// Vector 0: Divide Error (#DE) - no error code
+TEXT ·isr0(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	$0		// Dummy error code
+	MOVQ	$0, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
+// Vector 6: Invalid Opcode (#UD) - no error code
+TEXT ·isr6(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	$0		// Dummy error code
+	MOVQ	$6, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
+// Vector 8: Double Fault (#DF) - CPU pushes error code (always 0)
+TEXT ·isr8(SB), NOSPLIT|NOFRAME, $0
+	// Error code already pushed by CPU
+	MOVQ	$8, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
+// Vector 13: General Protection (#GP) - CPU pushes error code
+TEXT ·isr13(SB), NOSPLIT|NOFRAME, $0
+	// Error code already pushed by CPU
+	MOVQ	$13, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
 // Vector 14: Page Fault (#PF) - CPU pushes error code
 TEXT ·isr14(SB), NOSPLIT|NOFRAME, $0
 	// Error code already pushed by CPU
+	MOVQ	$14, ·currentVector(SB)
 	JMP	common_exception_entry(SB)
 
 // Vector 48 (0x30): LAPIC Timer IRQ
 TEXT ·isr48(SB), NOSPLIT|NOFRAME, $0
 	PUSHQ	$0		// Dummy error code
+	MOVQ	$48, ·currentVector(SB)
 	JMP	common_exception_entry(SB)
 
 // Vector 128 (0x80): Syscall via INT $0x80
 TEXT ·isr128(SB), NOSPLIT|NOFRAME, $0
 	PUSHQ	$0		// Dummy error code
+	MOVQ	$128, ·currentVector(SB)
 	JMP	common_exception_entry(SB)
 
 // Vector 255 (0xFF): Spurious interrupt
 TEXT ·isr255(SB), NOSPLIT|NOFRAME, $0
 	PUSHQ	$0
+	MOVQ	$255, ·currentVector(SB)
 	JMP	common_exception_entry(SB)
+
+// ============================================================================
+// ISR Address Getters - return raw code addresses for IDT population
+// ============================================================================
+
+// func getISR0Addr() uintptr
+TEXT ·getISR0Addr(SB), NOSPLIT, $0-8
+	LEAQ	·isr0(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
+// func getISR6Addr() uintptr
+TEXT ·getISR6Addr(SB), NOSPLIT, $0-8
+	LEAQ	·isr6(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
+// func getISR8Addr() uintptr
+TEXT ·getISR8Addr(SB), NOSPLIT, $0-8
+	LEAQ	·isr8(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
+// func getISR13Addr() uintptr
+TEXT ·getISR13Addr(SB), NOSPLIT, $0-8
+	LEAQ	·isr13(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
+// func getISR14Addr() uintptr
+TEXT ·getISR14Addr(SB), NOSPLIT, $0-8
+	LEAQ	·isr14(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
+// func getISR48Addr() uintptr
+TEXT ·getISR48Addr(SB), NOSPLIT, $0-8
+	LEAQ	·isr48(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
+// func getISR128Addr() uintptr
+TEXT ·getISR128Addr(SB), NOSPLIT, $0-8
+	LEAQ	·isr128(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
+// func getISR255Addr() uintptr
+TEXT ·getISR255Addr(SB), NOSPLIT, $0-8
+	LEAQ	·isr255(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
 
 // ============================================================================
 // Common Exception Entry - saves all GPRs and dispatches
@@ -102,87 +186,230 @@ handle_syscall:
 	// syscall number is in RAX (from the INT $0x80 convention)
 	// args in RDI, RSI, RDX, R10, R8, R9
 
+	// DEBUG: breadcrumb 's' for syscall entry
+	MOVW	$0x3F8, DX
+	MOVB	$'s', AX
+	OUTB
+
 	// Save ELR (RIP) and SPSR (RFLAGS) for clone
+	// SetSyscallELR(val uint64) — 1 arg, no return
 	MOVQ	128(SP), AX		// RIP from frame
 	SUBQ	$16, SP
-	MOVQ	AX, 8(SP)
+	MOVQ	AX, 0(SP)		// arg at 0(SP): after CALL → 8(callee_SP)
+
+	// DEBUG: breadcrumb 'a' before CALL SetSyscallELR
+	PUSHQ	AX
+	PUSHQ	DX
+	MOVW	$0x3F8, DX
+	MOVB	$'a', AX
+	OUTB
+	POPQ	DX
+	POPQ	AX
+
 	CALL	·SetSyscallELR(SB)
 	ADDQ	$16, SP
 
+	// DEBUG: breadcrumb '1' after SetSyscallELR
+	MOVW	$0x3F8, DX
+	MOVB	$'1', AX
+	OUTB
+
+	// SetSyscallSPSR(val uint64) — 1 arg, no return
 	MOVQ	144(SP), AX		// RFLAGS from frame
 	SUBQ	$16, SP
-	MOVQ	AX, 8(SP)
+	MOVQ	AX, 0(SP)		// arg at 0(SP)
 	CALL	·SetSyscallSPSR(SB)
 	ADDQ	$16, SP
 
-	// Dispatch syscall: SyscallDispatch(num, a0, a1, a2, a3, a4, a5)
+	// DEBUG: breadcrumb '2' after SetSyscallSPSR
+	MOVW	$0x3F8, DX
+	MOVB	$'2', AX
+	OUTB
+
+	// Dispatch syscall: SyscallDispatch(num, a0, a1, a2, a3, a4, a5) int64
+	// 7 args + 1 return = 64 bytes
 	// Read syscall number from saved RAX in frame
 	MOVQ	0(SP), AX		// syscall num from saved RAX
-	SUBQ	$72, SP			// 7 args + 1 return = 64 bytes, aligned
-	MOVQ	AX, 8(SP)		// syscallNum
-	MOVQ	40+72(SP), AX		// RDI from frame (arg0) [40 + frame adjustment]
+	SUBQ	$64, SP			// 7 args (56) + 1 return (8) = 64 bytes
+	MOVQ	AX, 0(SP)		// syscallNum at 0(SP)
+	MOVQ	40+64(SP), AX		// RDI from frame (arg0)
+	MOVQ	AX, 8(SP)
+	MOVQ	32+64(SP), AX		// RSI (arg1)
 	MOVQ	AX, 16(SP)
-	MOVQ	32+72(SP), AX		// RSI (arg1)
+	MOVQ	24+64(SP), AX		// RDX (arg2)
 	MOVQ	AX, 24(SP)
-	MOVQ	24+72(SP), AX		// RDX (arg2)
+	MOVQ	72+64(SP), AX		// R10 (arg3)
 	MOVQ	AX, 32(SP)
-	MOVQ	72+72(SP), AX		// R10 (arg3)
+	MOVQ	56+64(SP), AX		// R8 (arg4)
 	MOVQ	AX, 40(SP)
-	MOVQ	56+72(SP), AX		// R8 (arg4)
+	MOVQ	64+64(SP), AX		// R9 (arg5)
 	MOVQ	AX, 48(SP)
-	MOVQ	64+72(SP), AX		// R9 (arg5)
-	MOVQ	AX, 56(SP)
+
+	// DEBUG: breadcrumb '3' before SyscallDispatch call
+	PUSHQ	DX
+	MOVW	$0x3F8, DX
+	MOVB	$'3', AX
+	OUTB
+	POPQ	DX
+
 	CALL	·SyscallDispatch(SB)
-	MOVQ	64(SP), AX		// return value
-	ADDQ	$72, SP
+	MOVQ	56(SP), AX		// return value at 56(SP)
+	ADDQ	$64, SP
 
 	// Store return value in saved RAX slot
 	MOVQ	AX, 0(SP)
 
+	// DEBUG: breadcrumb 'r' for syscall dispatch returned
+	MOVW	$0x3F8, DX
+	MOVB	$'r', AX
+	OUTB
+
 	// Check if context switch needed
+	// GetSyscallSwitchTarget() uintptr — no args, 1 return
 	SUBQ	$16, SP
 	CALL	·GetSyscallSwitchTarget(SB)
-	MOVQ	8(SP), AX		// target pointer or -1
+	MOVQ	0(SP), AX		// return value at 0(SP)
 	ADDQ	$16, SP
 
 	CMPQ	AX, $0
 	JLE	exception_return	// No switch needed (0 or -1)
 
+	// DEBUG: breadcrumb 'C' for context switch
+	PUSHQ	AX
+	MOVW	$0x3F8, DX
+	MOVB	$'C', AX
+	OUTB
+	POPQ	AX
+
 	// Context switch needed
+	// DoContextSwitch(framePtr, targetPtr uintptr) uintptr — 2 args, 1 return
 	MOVQ	SP, DI			// frame pointer
 	SUBQ	$32, SP
-	MOVQ	DI, 8(SP)		// framePtr
-	MOVQ	AX, 16(SP)		// targetPtr
+	MOVQ	DI, 0(SP)		// framePtr at 0(SP)
+	MOVQ	AX, 8(SP)		// targetPtr at 8(SP)
 	CALL	·DoContextSwitch(SB)
-	MOVQ	24(SP), R12		// new context pointer
+	MOVQ	16(SP), R12		// new context pointer at 16(SP)
 	ADDQ	$32, SP
+
+	// DEBUG: breadcrumb 'X' for DoContextSwitch returned
+	PUSHQ	AX
+	MOVW	$0x3F8, DX
+	MOVB	$'X', AX
+	OUTB
+	POPQ	AX
 
 	TESTQ	R12, R12
 	JZ	exception_return
+
+	// DEBUG: print new context values before loading
+	MOVW	$0x3F8, DX
+	MOVB	$'L', AX
+	OUTB
+	// Print RIP (first 4 hex digits)
+	MOVQ	120(R12), R11		// new RIP
+	MOVB	$':', AX
+	OUTB
+	MOVQ	R11, AX
+	SHRQ	$28, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	lrip1
+	ADDQ	$('A'-'0'-10), AX
+lrip1:
+	OUTB
+	MOVQ	R11, AX
+	SHRQ	$24, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	lrip2
+	ADDQ	$('A'-'0'-10), AX
+lrip2:
+	OUTB
+	MOVQ	R11, AX
+	SHRQ	$20, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	lrip3
+	ADDQ	$('A'-'0'-10), AX
+lrip3:
+	OUTB
+	MOVQ	R11, AX
+	SHRQ	$16, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	lrip4
+	ADDQ	$('A'-'0'-10), AX
+lrip4:
+	OUTB
+	MOVQ	R11, AX
+	SHRQ	$12, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	lrip5
+	ADDQ	$('A'-'0'-10), AX
+lrip5:
+	OUTB
+	MOVQ	R11, AX
+	SHRQ	$8, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	lrip6
+	ADDQ	$('A'-'0'-10), AX
+lrip6:
+	OUTB
+	MOVQ	R11, AX
+	SHRQ	$4, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	lrip7
+	ADDQ	$('A'-'0'-10), AX
+lrip7:
+	OUTB
+	MOVQ	R11, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	lrip8
+	ADDQ	$('A'-'0'-10), AX
+lrip8:
+	OUTB
+	MOVB	$'\n', AX
+	OUTB
 
 	// Load new context and IRETQ
 	JMP	load_context_and_iretq
 
 handle_page_fault:
+	// DEBUG: breadcrumb 'p' for page fault
+	MOVW	$0x3F8, DX
+	MOVB	$'p', AX
+	OUTB
 	// Read CR2 for fault address
 	MOVQ	CR2, AX
 
-	// Call HandlePageFaultAsm(faultAddr) -> handled
-	SUBQ	$24, SP
-	MOVQ	AX, 8(SP)
+	// Call HandlePageFaultAsm(faultAddr uint64) bool — 1 arg, 1 return
+	SUBQ	$16, SP
+	MOVQ	AX, 0(SP)		// faultAddr at 0(SP)
 	CALL	·HandlePageFaultAsm(SB)
-	MOVQ	16(SP), AX		// handled?
-	ADDQ	$24, SP
+	MOVQ	8(SP), AX		// handled at 8(SP)
+	ADDQ	$16, SP
 
 	// If not handled, try userspace handler
 	TESTQ	AX, AX
 	JNZ	exception_return
 
 	MOVQ	CR2, AX
-	SUBQ	$24, SP
-	MOVQ	AX, 8(SP)
+	SUBQ	$16, SP
+	MOVQ	AX, 0(SP)		// faultAddr at 0(SP)
 	CALL	·HandleUserPageFaultAsm(SB)
-	ADDQ	$24, SP
+	ADDQ	$16, SP
 
 	JMP	exception_return
 
@@ -191,43 +418,75 @@ handle_timer_irq:
 	MOVQ	$(0xFEE00000 + 0xFFFFFFFF00000000), AX
 	MOVL	$0, 0xB0(AX)		// LAPIC_EOI = 0
 
-	// Call timer IRQ handler (assembly preempt handler)
-	// For now, dispatch via Go
+	// Call timer IRQ handler
+	// TimerIRQHandler(irqNum, framePtr, elr, spEl0 uint64) — 4 args, no return used
 	MOVQ	$48, AX			// IRQ number
 	MOVQ	SP, BX			// frame pointer
-	SUBQ	$72, SP
-	MOVQ	AX, 8(SP)		// irqNum
-	MOVQ	BX, 16(SP)		// framePtr
-	MOVQ	128+72(SP), AX		// RIP (ELR equivalent)
-	MOVQ	AX, 24(SP)
-	MOVQ	152+72(SP), AX		// RSP (SP_EL0 equivalent)
-	MOVQ	AX, 32(SP)
+	SUBQ	$32, SP
+	MOVQ	AX, 0(SP)		// irqNum at 0(SP)
+	MOVQ	BX, 8(SP)		// framePtr at 8(SP)
+	MOVQ	128+32(SP), AX		// RIP (ELR equivalent)
+	MOVQ	AX, 16(SP)		// elr at 16(SP)
+	MOVQ	152+32(SP), AX		// RSP (SP_EL0 equivalent)
+	MOVQ	AX, 24(SP)		// spEl0 at 24(SP)
 	CALL	·TimerIRQHandler(SB)
-	ADDQ	$72, SP
+	ADDQ	$32, SP
 
 	// Check thread preemption
-	SUBQ	$24, SP
+	// CheckThreadPreemption(framePtr uintptr) uintptr — 1 arg, 1 return
+	SUBQ	$16, SP
 	MOVQ	SP, AX
-	ADDQ	$24, AX			// frame pointer
-	MOVQ	AX, 8(SP)
+	ADDQ	$16, AX			// frame pointer = old SP
+	MOVQ	AX, 0(SP)		// framePtr at 0(SP)
 	CALL	·CheckThreadPreemption(SB)
-	MOVQ	16(SP), R12		// new context or 0
-	ADDQ	$24, SP
+	MOVQ	8(SP), R12		// new context at 8(SP)
+	ADDQ	$16, SP
 
 	TESTQ	R12, R12
 	JZ	exception_return
 	JMP	load_context_and_iretq
 
 handle_generic_irq:
-	// Send EOI and return
+	// Print '!' + 2-digit hex vector number for diagnostic
+	MOVW	$0x3F8, DX
+	MOVB	$'!', AX
+	OUTB
+	MOVQ	SI, AX			// vector number (in SI from earlier)
+	SHRQ	$4, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	gvec1
+	ADDQ	$('A'-'0'-10), AX
+gvec1:
+	OUTB
+	MOVQ	SI, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	gvec2
+	ADDQ	$('A'-'0'-10), AX
+gvec2:
+	OUTB
+	// For fault vectors (0-31), halt — can't safely return
+	CMPQ	SI, $32
+	JB	generic_halt
+	// For IRQs (32+), send EOI and return
 	MOVQ	$(0xFEE00000 + 0xFFFFFFFF00000000), AX
 	MOVL	$0, 0xB0(AX)		// LAPIC_EOI = 0
 	JMP	exception_return
+generic_halt:
+	HLT
+	JMP	generic_halt
 
 // ============================================================================
 // Exception return - restore GPRs and IRETQ
 // ============================================================================
 exception_return:
+	// DEBUG: breadcrumb 'i' for IRETQ return
+	MOVW	$0x3F8, DX
+	MOVB	$'i', AX
+	OUTB
 	POPQ	AX
 	POPQ	BX
 	POPQ	CX
@@ -259,6 +518,18 @@ load_context_and_iretq:
 	MOVQ	CR3, AX
 	MOVQ	AX, CR3
 
+	// Sync TLS: write the new thread's g register to the TLS slot.
+	// Without this, systemstack() and other ABI0 runtime assembly reads
+	// the stale g from TLS (e.g. left by a clone child), causing the parent
+	// to use the wrong m/curg/stack and crash.
+	// TLS layout on Linux amd64: g is at FS_BASE - 8 (i.e. FS:-8).
+	MOVL	$0xC0000100, CX		// MSR_FS_BASE
+	RDMSR				// EAX=low32, EDX=high32
+	SHLQ	$32, DX
+	ORQ	DX, AX			// RAX = FS_BASE
+	MOVQ	104(R12), DX		// DX = new g (context.R14)
+	MOVQ	DX, -8(AX)		// Write g to TLS slot
+
 	// Use the context's RSP to build the IRETQ frame
 	// We need a scratch stack. Use exception stack from PerCPU.
 	// For now, just build on current stack after adjusting.
@@ -266,16 +537,20 @@ load_context_and_iretq:
 	// Clear the frame and build fresh IRETQ frame
 	MOVQ	136(R12), AX		// new RSP
 	MOVQ	128(R12), BX		// new RFLAGS
+	// Clear IF (bit 9) — keep interrupts disabled until LAPIC/IDT are fully configured
+	MOVQ	$0x200, CX
+	NOTQ	CX
+	ANDQ	CX, BX
 	MOVQ	120(R12), CX		// new RIP
 
 	// Find a safe SP location (below current frame)
 	LEAQ	-48(SP), SP		// Make room
 
 	// Build IRETQ frame
-	MOVQ	$0, 32(SP)		// SS
+	MOVQ	$0x30, 32(SP)		// SS (UEFI data segment)
 	MOVQ	AX, 24(SP)		// RSP
 	MOVQ	BX, 16(SP)		// RFLAGS
-	MOVQ	$0x08, 8(SP)		// CS
+	MOVQ	$0x38, 8(SP)		// CS (UEFI 64-bit code segment)
 	MOVQ	CX, 0(SP)		// RIP
 
 	// Load GPRs from context
@@ -296,6 +571,30 @@ load_context_and_iretq:
 	MOVQ	88(R12), R12		// Load R12 last
 
 	IRETQ
+
+// ============================================================================
+// ISR Ignore - default handler for unhandled interrupts
+// ============================================================================
+// isrIgnore is a minimal handler that just returns from the interrupt.
+// Used for all interrupt vectors that don't have specific handlers.
+// Simply ignores the interrupt and returns to the interrupted code.
+TEXT ·isrIgnore(SB), NOSPLIT|NOFRAME, $0
+	// Don't push error code - some vectors don't have one
+	// Just return immediately via IRETQ
+	IRETQ
+
+// getISRIgnoreAddr returns the address of the ignore handler
+TEXT ·getISRIgnoreAddr(SB), NOSPLIT, $0-8
+	LEAQ	·isrIgnore(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
+// ReadCS returns the current CS (Code Segment) selector value.
+// This is needed to populate IDT entries with the correct segment selector.
+TEXT ·ReadCS(SB), NOSPLIT, $0-2
+	MOVW	CS, AX		// Read CS into AX (16-bit value)
+	MOVW	AX, ret+0(FP)	// Return as uint16
+	RET
 
 // ============================================================================
 // Global state for vector number passing

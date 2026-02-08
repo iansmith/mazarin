@@ -84,71 +84,17 @@ const (
 	VBE_DISPI_NOCLEARMEM  = 0x80
 )
 
-// pciEcamBase is the PCI ECAM base address
-// For AArch64 virt machine with highmem (default): 0x4010000000
-// For AArch64 virt machine without highmem: 0x3F000000
-//
-// NOTE: Our MMU maps both lowmem (0x3F000000-0x40000000) and highmem (0x4010000000+) ECAM windows.
-// QEMU virt defaults to highmem=on, which places ECAM at 0x4010000000.
-// TEMPORARY: Use lowmem ECAM for testing (highmem mapping may have issues with 64-bit addresses).
-//
-// This variable has an initializer, so Go places it in .noptrdata.
-// The linker script places .noptrdata in RAM (writable) at 0x40100000.
-var pciEcamBase uintptr = 0x4010000000  // High-memory ECAM (from device tree)
+// pciEcamBase is the PCI ECAM base address (arch-specific, see ecam_arm64.go / ecam_amd64.go)
 
 // pciFirstAccess tracks if this is the first PCI config space access (for debugging)
 var pciFirstAccess bool = true
 
-// ConfigRead32 reads a 32-bit value from PCI configuration space
-//
-// IMPORTANT: We use a local variable `ecamBase := pciEcamBase` instead of
-// accessing the global directly. This is required because Go's compiler may
-// optimize away reloads of global variables across function calls, which
-// causes incorrect values to be used when the global is modified between
-// initialization and first use. The local variable forces a fresh load from
-// memory on each function call.
-//
-//go:nosplit
-func ConfigRead32(bus, slot, funcNum, offset uint8) uint32 {
-	// Load global into local variable - forces memory reload each call
-	ecamBase := pciEcamBase
+// GetEcamBase returns the PCI ECAM base address for debugging
+func GetEcamBase() uintptr { return pciEcamBase }
 
-	if ecamBase == 0 {
-		return 0xFFFFFFFF
-	}
-
-	configAddr := ecamBase +
-		uintptr(bus)<<20 +
-		uintptr(slot)<<15 +
-		uintptr(funcNum)<<12 +
-		uintptr(offset&0xFC)
-
-	// Validate address range
-	isLowmem := configAddr >= 0x3F000000 && configAddr < 0x40000000
-	isHighmem := configAddr >= 0x4010000000
-	if !isLowmem && !isHighmem {
-		return 0xFFFFFFFF
-	}
-
-	pciFirstAccess = false
-
-	// Use asm.MmioRead - now fixed to work with high-memory addresses
-	value := asm.MmioRead(configAddr)
-
-	return value
-}
-
-// ConfigWrite32 writes a 32-bit value to PCI configuration space
-//
-//go:nosplit
-func ConfigWrite32(bus, slot, funcNum, offset uint8, value uint32) {
-	configAddr := pciEcamBase +
-		uintptr(bus)<<20 +
-		uintptr(slot)<<15 +
-		uintptr(funcNum)<<12 +
-		uintptr(offset&0xFC)
-	asm.MmioWrite(configAddr, value)
-}
+// ConfigRead32 and ConfigWrite32 are arch-specific:
+// - ARM64: ECAM MMIO access (ecam_arm64.go)
+// - x86_64: I/O port CF8/CFC access (ecam_amd64.go)
 
 // ConfigRead32Lowmem reads using lowmem ECAM address (for testing)
 //

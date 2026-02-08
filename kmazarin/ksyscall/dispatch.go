@@ -4,6 +4,7 @@ package ksyscall
 import (
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/kirq"
+	"mazzy/shared/constants"
 	"sync/atomic"
 	_ "unsafe" // for go:linkname
 )
@@ -62,6 +63,10 @@ var syscallTable = [512]SyscallHandler{
 //go:nosplit
 //go:noinline
 func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
+	// Translate syscall number: on x86_64, converts from x86_64 Linux numbers
+	// to ARM64 Linux numbers used by the dispatch table. Identity on ARM64.
+	syscallNum = translateSyscallNum(syscallNum)
+
 	// Record entry time for kernel time accounting
 	entryTick := kirq.ReadCounterValue()
 
@@ -153,11 +158,11 @@ func dispatchMazzySyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 
 	return handler(arg0, arg1, arg2, arg3, arg4, arg5)
 }
 
-// Early-boot heap allocator constants (hardcoded to avoid runtime config dependency)
-// These must match layout.go values exactly.
+// Early-boot heap allocator uses arch-specific addresses from shared/constants.
+// These are canonical on both ARM64 (TTBR1) and x86_64 (48-bit paging).
 const (
-	earlyHeapStart = 0xFFFF000100000000 // KernelHeapStart from layout.go
-	earlyHeapEnd   = 0xFFFF100000000000 // KernelHeapEnd from layout.go
+	earlyHeapStart = constants.KernelHeapStart
+	earlyHeapEnd   = constants.KernelHeapEnd
 )
 
 // earlyBumpPointer is the early-boot allocator for mmap calls during Go runtime init.

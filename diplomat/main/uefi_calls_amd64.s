@@ -459,33 +459,34 @@ TEXT ·jumpToKernelWithCR3(SB), NOSPLIT, $0-16
 
 // func jumpToKmazarinWithStack(entry, g0StackPtr, excStackTop, idtBase uint64)
 //
-// Sets up RSP to point to g0 stack (with argc/argv/auxv), loads kmazarin's
-// IDT if provided, disables interrupts, and jumps to the kernel entry point.
-// Does not return.
+// Sets up RSP to point to g0 stack (with argc/argv/auxv), installs diplomat's
+// demand-paging IDT (prepared by InstallFaultHandler), disables interrupts,
+// and jumps to the kernel entry point. Does not return.
 //
 // entry:       kernel entry point (virtual address)
 // g0StackPtr:  RSP value pointing to argc on g0 stack (VA)
 // excStackTop: exception stack top (VA) — saved for kmazarin's TSS setup
-// idtBase:     kmazarin's IDT base address, or 0 if not yet available
+// idtBase:     kmazarin's ExceptionVectorTable address (unused on x86_64 currently)
 TEXT ·jumpToKmazarinWithStack(SB), NOSPLIT, $0-32
 	MOVQ entry+0(FP), AX
 	MOVQ g0StackPtr+8(FP), BX     // new RSP
 	MOVQ excStackTop+16(FP), CX   // exception stack (for future TSS)
-	MOVQ idtBase+24(FP), DX       // IDT base (0 = skip LIDT)
 
 	// Disable interrupts — UEFI timer interrupts could fire during
-	// kmazarin init and hit an uninitialized IDT
+	// kmazarin init and hit our minimal IDT (which only handles #PF).
+	// Must CLI before LIDT to prevent UEFI timer from hitting our IDT.
 	CLI
+
+	// Install diplomat's demand-paging IDT.
+	// This IDT was prepared by InstallFaultHandler() but NOT loaded then,
+	// because UEFI calls after that point would STI and let UEFI timer
+	// interrupts hit our minimal IDT (which only has a #PF handler).
+	// Now that we've CLI'd, it's safe to switch IDTs.
+	LEAQ	·idtrDescriptor(SB), SI
+	BYTE	$0x0F; BYTE $0x01; BYTE $0x1E	// LIDT [RSI]
 
 	// Switch RSP to g0 stack (pointing to argc/argv/auxv)
 	MOVQ BX, SP
-
-	// If idtBase != 0, load kmazarin's IDT.
-	// For now, kmazarin sets up its own IDT, so this is typically 0.
-	TESTQ DX, DX
-	JZ skip_lidt
-	// Future: LIDT with kmazarin's IDT descriptor
-skip_lidt:
 
 	// Clear registers for clean state
 	XORQ BX, BX

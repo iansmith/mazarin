@@ -35,25 +35,35 @@ TEXT ·HandleUserPageFaultAsm(SB), $0-16
 	JMP	·handleUserPageFaultInternal(SB)
 
 // GetSyscallSwitchTarget - must use CALL (has return value)
+// x86_64: CALL pushes return addr, so return value lands at 0(SP) not 8(SP)
 TEXT ·GetSyscallSwitchTarget(SB), NOSPLIT, $16-8
 	CALL	·getSyscallSwitchTargetInternal(SB)
-	MOVQ	8(SP), AX
+	MOVQ	0(SP), AX
 	MOVQ	AX, ret+0(FP)
 	RET
 
 // DoContextSwitch - must use CALL (has return value)
+// x86_64: CALL pushes return addr, so args at 0(SP), 8(SP); return at 16(SP)
 TEXT ·DoContextSwitch(SB), NOSPLIT, $32-24
 	MOVQ	framePtr+0(FP), AX
 	MOVQ	targetPtr+8(FP), BX
-	MOVQ	AX, 8(SP)
-	MOVQ	BX, 16(SP)
+	MOVQ	AX, 0(SP)
+	MOVQ	BX, 8(SP)
 	CALL	·doContextSwitchABI0(SB)
-	MOVQ	24(SP), AX
+	MOVQ	16(SP), AX
 	MOVQ	AX, ret+16(FP)
 	RET
 
 // SetSyscallELR tail-call stub
 TEXT ·SetSyscallELR(SB), NOSPLIT, $0-8
+	// DEBUG: breadcrumb 'e' inside SetSyscallELR stub
+	PUSHQ	AX
+	PUSHQ	DX
+	MOVW	$0x3F8, DX
+	MOVB	$'e', AX
+	OUTB
+	POPQ	DX
+	POPQ	AX
 	JMP	·setSyscallELRInternal(SB)
 
 // SetSyscallSPSR tail-call stub
@@ -68,14 +78,20 @@ TEXT ·CheckThreadPreemption(SB), NOSPLIT, $0-16
 // Exception vector table setup
 // ============================================================================
 
-// GetExceptionVectorBase returns the address of the IDT setup routine.
+// GetExceptionVectorBase builds the IDT and returns the IDTR descriptor address.
+// On x86_64, we build a real IDT with interrupt gate entries, then return
+// the address of the IDTR descriptor (10 bytes: limit + base) for LIDT.
+// Uses tail-call to getExceptionVectorBaseInternal which does the real work.
+//
+// NOTE: The LEAQ of ExceptionVectorTable is a dead reference to keep the symbol
+// in the ELF — diplomat resolves it at load time.
 TEXT ·GetExceptionVectorBase(SB), NOSPLIT, $0-8
-	LEAQ	·ExceptionVectorTable(SB), AX
-	MOVQ	AX, ret+0(FP)
-	RET
+	LEAQ	·ExceptionVectorTable(SB), AX	// keep symbol alive for diplomat
+	JMP	·getExceptionVectorBaseInternal(SB)
 
-// ExceptionVectorTable is a placeholder for the IDT.
-// On x86_64, the actual IDT is built by Go code in SetupIDT().
+// ExceptionVectorTable is a marker symbol for diplomat's ELF symbol lookup.
+// On x86_64, the actual IDT is built dynamically by BuildIDT().
+// This stub exists solely so diplomat can find the symbol in kmazarin's ELF.
 TEXT ·ExceptionVectorTable(SB), NOSPLIT|NOFRAME, $0-0
 	RET
 
@@ -147,9 +163,10 @@ TEXT ·getAsyncPreemptWrapperAddr(SB), NOSPLIT, $0-8
 // ============================================================================
 TEXT ·RunFirstThread(SB), NOSPLIT|NOFRAME, $0-0
 	// Call StartFirstThread to get ThreadContext pointer
+	// x86_64: CALL pushes return addr, so return value at 0(SP)
 	SUBQ	$16, SP
 	CALL	·StartFirstThread(SB)
-	MOVQ	8(SP), R12		// R12 = ThreadContext pointer
+	MOVQ	0(SP), R12		// R12 = ThreadContext pointer
 	ADDQ	$16, SP
 
 	// Flush TLB before switching
@@ -157,10 +174,10 @@ TEXT ·RunFirstThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOVQ	AX, CR3
 
 	// Build IRETQ frame: SS, RSP, RFLAGS, CS, RIP (push in reverse order)
-	PUSHQ	$0			// SS
+	PUSHQ	$0x30			// SS (UEFI data segment)
 	PUSHQ	136(R12)		// RSP from context
 	PUSHQ	128(R12)		// RFLAGS from context
-	PUSHQ	$0x08			// CS (kernel code segment)
+	PUSHQ	$0x38			// CS (UEFI 64-bit code segment)
 	PUSHQ	120(R12)		// RIP from context
 
 	// Load all GPRs from ThreadContext
@@ -234,9 +251,10 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOVQ	AX, 136(R12)		// RSP
 
 	// Call SaveThread0AndYield() to get next thread's context
+	// x86_64: CALL pushes return addr, so return value at 0(SP)
 	SUBQ	$16, SP
 	CALL	·SaveThread0AndYield(SB)
-	MOVQ	8(SP), R12		// R12 = new context pointer (or 0)
+	MOVQ	0(SP), R12		// R12 = new context pointer (or 0)
 	ADDQ	$16, SP
 
 	TESTQ	R12, R12
@@ -249,12 +267,12 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 
 	// Build IRETQ frame manually (avoid PUSH to keep assembler happy)
 	SUBQ	$40, SP
-	MOVQ	$0, 32(SP)		// SS
+	MOVQ	$0x30, 32(SP)		// SS (UEFI data segment)
 	MOVQ	136(R12), AX
 	MOVQ	AX, 24(SP)		// RSP
 	MOVQ	128(R12), AX
 	MOVQ	AX, 16(SP)		// RFLAGS
-	MOVQ	$0x08, 8(SP)		// CS
+	MOVQ	$0x38, 8(SP)		// CS (UEFI 64-bit code segment)
 	MOVQ	120(R12), AX
 	MOVQ	AX, 0(SP)		// RIP
 

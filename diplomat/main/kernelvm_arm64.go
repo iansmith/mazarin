@@ -532,6 +532,11 @@ func InstallFaultHandler(vm *KernelVM) error {
 	return nil
 }
 
+// updateIDTWithKmazarinISRs is a no-op on ARM64.
+// ARM64 uses VBAR_EL1 which is installed at jump time with kmazarin's
+// ExceptionVectorTable address. No separate IDT update needed.
+func updateIDTWithKmazarinISRs(kernel *LoadedKernel, relocDelta uint64) {}
+
 // buildExceptionVectors fills a 4KB-aligned page with exception vector stubs.
 // Entry 0 (offset 0x000): B diplomatSyncEL1t
 // Entry 4 (offset 0x200): B diplomatSyncEL1h

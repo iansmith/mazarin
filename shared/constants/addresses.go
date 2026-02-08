@@ -114,12 +114,13 @@ const (
 // Demand-paged heap for kmazarin. Go runtime reserves large contiguous VA
 // regions for arena metadata. VA space is free - only accessed pages consume
 // physical frames.
-
-const (
-	KernelHeapStart = 0xFFFF000100000000 // Start in TTBR1 space
-	KernelHeapEnd   = 0xFFFF100000000000 // End of heap VA space (16TB range)
-	KernelHeapSize  = KernelHeapEnd - KernelHeapStart
-)
+//
+// Heap addresses are arch-specific:
+// - ARM64: 0xFFFF000100000000 (TTBR1 space, valid VA)
+// - x86_64: 0xFFFF800100000000 (canonical negative half, required for 48-bit paging)
+//
+// See addresses_arm64.go and addresses_amd64.go for arch-specific values.
+// KernelHeapSize is computed from them.
 
 // ============================================================================
 // Notes on Link-Time Computed Values

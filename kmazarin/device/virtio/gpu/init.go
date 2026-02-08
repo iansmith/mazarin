@@ -2,6 +2,7 @@
 package gpu
 
 import (
+	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/ds"
 	"unsafe"
 )
@@ -43,11 +44,22 @@ func Init() bool {
 	}
 
 	// Fill screen with powder gray background (neumorphic surface)
+	console.KPrintln("[VirtIO GPU] Filling screen...")
 	fillScreen(0xFFE0E0E6) // RGB(224,224,230) in BGRA: B=230,G=224,R=224
 
+	// Verify write worked
+	fb := virtioGPUDevice.Framebuffer
+	firstPixel := *(*uint32)(fb)
+	console.KPrintf("[VirtIO GPU] First pixel value: 0x%08X (expected 0xFFE0E0E6)\n", firstPixel)
+
 	// Initial transfer and flush to make display visible
+	console.KPrintln("[VirtIO GPU] About to transfer initial framebuffer (1920x1080)...")
 	virtioGPUTransferToHost(0, 0, 1920, 1080)
+	console.KPrintln("[VirtIO GPU] Transfer done")
+	console.KPrintln("[VirtIO GPU] About to flush (1920x1080)...")
 	virtioGPUFlush(0, 0, 1920, 1080)
+	console.KPrintln("[VirtIO GPU] Flush done")
+	console.KPrintln("[VirtIO GPU] === All GPU commands completed, display should now be active ===")
 
 	return true
 }

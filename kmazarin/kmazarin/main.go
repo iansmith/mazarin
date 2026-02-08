@@ -25,7 +25,9 @@ import (
 // SyscallDispatch is defined in abi_stubs_arm64.s as an ABI0 entry point
 // that tail-calls syscallDispatchInternal. This is the actual implementation.
 //
-// Removed //go:nosplit - not needed (page fault handler proves this)
+// Called from exception handler - nosplit required because SP may be on a foreign
+// stack (e.g., clone child stack) where Go's stack check would fail.
+//go:nosplit
 //go:noinline
 func syscallDispatchInternal(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	return ksyscall.DispatchSyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5)
@@ -34,7 +36,9 @@ func syscallDispatchInternal(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5 uint
 // IRQDispatch is defined in abi_stubs_arm64.s as an ABI0 entry point
 // that tail-calls irqDispatchInternal. This is the actual implementation.
 //
-// Removed //go:nosplit - not needed (page fault handler proves this)
+// Called from exception handler - nosplit required because SP may be on a foreign
+// stack (e.g., clone child stack) where Go's stack check would fail.
+//go:nosplit
 //go:noinline
 func irqDispatchInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool) {
 	info := kirq.DispatchIRQ(irqNum, framePtr, elr, spEl0)
@@ -42,6 +46,7 @@ func irqDispatchInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (ne
 }
 
 // timerIRQHandlerInternal is called directly from exception handler for timer IRQs
+//go:nosplit
 //go:noinline
 func timerIRQHandlerInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool) {
 	info := kirq.TimerIRQHandlerCanPreempt(irqNum, framePtr, elr, spEl0)
@@ -64,6 +69,7 @@ func handlePageFaultInternal(faultAddr uint64) uint64 {
 // that tail-calls handleUserPageFaultInternal. This handles page faults from EL0.
 // Returns 1 if the fault was handled successfully, 0 otherwise.
 //
+//go:nosplit
 //go:noinline
 func handleUserPageFaultInternal(faultAddr uint64) uint64 {
 	if kmem.HandleUserPageFault(uintptr(faultAddr)) {
@@ -385,6 +391,7 @@ func testDeviceDiscovery() {
 
 	if dtbPhysAddr == 0 {
 		console.KPrintln("[DeviceTest] No DTB available (UEFI ACPI mode?) - skipping device discovery")
+		console.KPrintln("[DeviceTest] About to return from testDeviceDiscovery")
 		return
 	}
 
@@ -576,6 +583,15 @@ func simpleMain() {
 		Print("[Main] Runtime not ready - continuing with direct UART")
 	}
 
+	// Initialize VirtIO GPU BEFORE switching exception vectors.
+	// On x86_64, kmazarin's HandlePageFault uses ARM64 PTE format and can't
+	// handle demand paging. By doing GPU init here, heap allocations in
+	// VirtqueueInit trigger diplomat's page fault handler instead.
+	// On ARM64, this is also safe — GPU init uses polling (no IRQs needed).
+	console.KPrintln("[Main] About to init VirtIO GPU...")
+	initVirtIOGPU()
+	console.KPrintln("[Main] VirtIO GPU init done")
+
 	// CRITICAL: Set VBAR_EL1 to point to kmazarin's exception vector table
 	// Cardinal's VBAR_EL1 points to its own vectors at low memory (0x401xxxxx).
 	// We must update VBAR_EL1 to use kmazarin's vectors at high memory.
@@ -587,19 +603,23 @@ func simpleMain() {
 	// (DTB is at 0x40000000 in Cardinal's memory region)
 	testDeviceDiscovery()
 
+	console.KPrintln("[Main] About to initCachedIC")
 	// Cache GIC pointer for nosplit-safe timer IRQ enable/disable
 	initCachedIC()
+	console.KPrintln("[Main] initCachedIC done")
 
-	// Initialize VirtIO GPU for display output
-	initVirtIOGPU()
-
+	console.KPrintln("[Main] About to initVirtIOInputDevices")
 	// Initialize VirtIO Input devices (keyboard, mouse)
 	initVirtIOInputDevices()
+	console.KPrintln("[Main] initVirtIOInputDevices done")
 
+	console.KPrintln("[Main] About to EnableIRQs")
 	// CRITICAL: Enable IRQs at CPU AFTER GIC is initialized (matches Cardinal's order)
 	// This unmasks IRQs at the CPU (clears DAIF.I bit)
 	EnableIRQs()
+	console.KPrintln("[Main] EnableIRQs done")
 	EnableTimerIRQ()
+	console.KPrintln("[Main] EnableTimerIRQ done")
 
 	asyncPreemptAddr := GetAsyncPreemptAddr()
 	kirq.SetAsyncPreemptAddr(asyncPreemptAddr)
@@ -647,6 +667,7 @@ func simpleMain() {
 	// Re-enable IRQs and timer for ongoing scheduling
 	EnableIRQs()
 	EnableTimerIRQ()
+	console.KPrintln("[Main] Second EnableIRQs done")
 
 	// Timer and IRQs verified working at this point
 

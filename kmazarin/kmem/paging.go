@@ -418,67 +418,14 @@ func allocPTPage() uintptr {
 //
 //go:nosplit
 func WalkPageTable(va uintptr) uintptr {
+	if !pagingInitialized {
+		InitPaging()
+	}
 	return walkPageTable(va)
 }
 
 // walkPageTable translates a VA to PA by walking the page tables.
-// This works even for non-identity-mapped addresses.
-// CRITICAL: This is needed because the PT pool VAs are NOT identity-mapped!
-// They were mapped by cardinal to different PAs.
-//
-//go:nosplit
-func walkPageTable(va uintptr) uintptr {
-	// Extract indices
-	l0Idx := (va >> L0Shift) & 0x1FF
-	l1Idx := (va >> L1Shift) & 0x1FF
-	l2Idx := (va >> L2Shift) & 0x1FF
-	l3Idx := (va >> L3Shift) & 0x1FF
-
-	// L0 table
-	l0PA := ttbr1L0PA
-	l0VA := l0PA + constants.KernelMMIOOffset
-	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
-	if (l0Entry & PTE_VALID) == 0 {
-		return 0
-	}
-
-	// L1 table
-	l1PA := uintptr(l0Entry & PTE_ADDR_MASK)
-	l1VA := l1PA + constants.KernelMMIOOffset
-	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
-	if (l1Entry & PTE_VALID) == 0 {
-		return 0
-	}
-
-	// L2 table
-	l2PA := uintptr(l1Entry & PTE_ADDR_MASK)
-	l2VA := l2PA + constants.KernelMMIOOffset
-	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
-	if (l2Entry & PTE_VALID) == 0 {
-		return 0
-	}
-
-	// Check if L2 entry is a block descriptor (2MB) or table pointer
-	// Block: bits[1:0] = 01, Table: bits[1:0] = 11
-	if (l2Entry & 0x2) == 0 {
-		// L2 block descriptor (2MB) - extract PA from block address + page offset
-		blockPA := uintptr(l2Entry & PTE_ADDR_MASK)
-		pageOffset := va & ((1 << L2Shift) - 1) // offset within 2MB block
-		return blockPA | pageOffset
-	}
-
-	// L3 table (L2 is a table pointer)
-	l3PA := uintptr(l2Entry & PTE_ADDR_MASK)
-	l3VA := l3PA + constants.KernelMMIOOffset
-	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
-	if (l3Entry & PTE_VALID) == 0 {
-		return 0
-	}
-
-	// Extract PA and add page offset
-	pa := uintptr(l3Entry & PTE_ADDR_MASK)
-	return pa | (va & (PageSize - 1))
-}
+// Architecture-specific: see paging_arm64.go and paging_amd64.go
 
 // HandlePageFault handles a page fault at the given virtual address.
 // Returns true if the fault was handled successfully, false otherwise.
@@ -803,25 +750,11 @@ func mapPage(va, pa uintptr) bool {
 	debugPrintHex(uint64(l3Idx))
 	debugPrint(']')
 
-	// Determine which translation table to use based on VA bit 63.
-	// Bit 63 = 0 -> TTBR0 (user space), Bit 63 = 1 -> TTBR1 (kernel space)
-	// NOTE: Cannot use bit 55 — heap addresses like 0xFFFF000100000000
-	// have bit 63 = 0 despite being TTBR1 addresses (bits [63:48] = 0xFFFF).
-	var l0PA uintptr
-	if (va>>63)&1 == 0 {
-		// TTBR0 (user space / heap)
-		debugPrint('T')
-		debugPrint('0')
-		l0PA = ttbr0L0PA
-		debugPrint('{')
-		debugPrintHex(uint64(l0PA))
-		debugPrint('}')
-	} else {
-		// TTBR1 (kernel space)
-		debugPrint('T')
-		debugPrint('1')
-		l0PA = ttbr1L0PA
-	}
+	// Select root page table (arch-specific: ARM64 checks bit 63 for TTBR0/TTBR1,
+	// x86_64 always uses the single PML4 from CR3).
+	l0PA := selectRootPageTable(va)
+	debugPrint('T')
+	debugPrintHex(uint64(l0PA))
 
 	// Get L0 table VA
 	l0VA := paToVA(l0PA)
@@ -875,8 +808,8 @@ func mapPage(va, pa uintptr) bool {
 		// Cache the VA for this PA so we can find it later
 		cachePTVA(l1PA, l1VA)
 
-		// Link new L1 table into L0
-		*l0Entry = uint64(l1PA) | PTE_VALID | PTE_TABLE
+		// Link new L1 table into L0 (arch-specific PTE format)
+		*l0Entry = makeTablePTE(l1PA)
 
 		// Cache clean and barriers for L0 update
 		dcCIVAC(uintptr(unsafe.Pointer(l0Entry)))
@@ -926,8 +859,8 @@ func mapPage(va, pa uintptr) bool {
 		// Cache the VA for this PA
 		cachePTVA(l2PA, l2VA)
 
-		// Link new L2 table into L1
-		*l1Entry = uint64(l2PA) | PTE_VALID | PTE_TABLE
+		// Link new L2 table into L1 (arch-specific PTE format)
+		*l1Entry = makeTablePTE(l2PA)
 	} else {
 		l2PA := uintptr(*l1Entry & PTE_ADDR_MASK)
 		l2VA = paToVAOrCache(l2PA)
@@ -979,8 +912,8 @@ func mapPage(va, pa uintptr) bool {
 		// Cache the VA for this PA
 		cachePTVA(l3PA, l3VA)
 
-		// Link new L3 table into L2
-		*l2Entry = uint64(l3PA) | PTE_VALID | PTE_TABLE
+		// Link new L3 table into L2 (arch-specific PTE format)
+		*l2Entry = makeTablePTE(l3PA)
 
 		// DEBUG: Print new L2 entry value
 		debugPrint('L')
@@ -996,7 +929,7 @@ func mapPage(va, pa uintptr) bool {
 
 		// Verify L2 entry readback
 		readback := *l2Entry
-		if readback != uint64(l3PA)|PTE_VALID|PTE_TABLE {
+		if readback != makeTablePTE(l3PA) {
 			debugPrint('V')
 			debugPrint('!')
 			debugPrintHex(readback)
@@ -1013,10 +946,9 @@ func mapPage(va, pa uintptr) bool {
 		}
 	}
 
-	// Write L3 entry
+	// Write L3 entry (arch-specific PTE format)
 	l3Entry := (*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
-	pteValue := uint64(pa) | PTE_VALID | PTE_TABLE | PTE_AF |
-		PTE_ATTR_NORMAL | PTE_AP_RW_EL1 | PTE_SH_INNER | PTE_EXEC_NEVER
+	pteValue := makeKernelPagePTE(pa)
 	*l3Entry = pteValue
 
 	// DEBUG: Print L3 entry details
@@ -1285,30 +1217,7 @@ func ReadHWTTBR0() uintptr {
 //	// Now can access via reg.Address + KernelVAOffset
 //
 // Returns nil on success, error on failure.
-func MapDeviceMMIO(physAddr uintptr, size uint64) error {
-	// Lazy initialization
-	if !pagingInitialized {
-		InitPaging()
-	}
-
-	// Calculate number of pages needed (round up)
-	if size == 0 {
-		size = PageSize // Default to one page if size not specified
-	}
-	numPages := (size + PageSize - 1) / PageSize
-
-	// Map all pages in the region
-	for i := uint64(0); i < numPages; i++ {
-		pagePhys := (physAddr &^ (PageSize - 1)) + uintptr(i*PageSize)
-		pageVA := pagePhys + constants.KernelMMIOOffset
-
-		if !mapDevicePage(pageVA, pagePhys) {
-			return &MappingError{addr: physAddr + uintptr(i*PageSize), msg: "failed to map device page"}
-		}
-	}
-
-	return nil
-}
+// MapDeviceMMIO is arch-specific — see paging_arm64.go and paging_amd64.go
 
 // MappingError represents a page mapping failure
 type MappingError struct {

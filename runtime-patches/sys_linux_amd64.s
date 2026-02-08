@@ -125,6 +125,10 @@ TEXT runtime·pipe2(SB),NOSPLIT,$0-20
 // block forever if another thread is on the ready queue.
 // Using sched_yield lets the scheduler run queued threads.
 TEXT runtime·usleep(SB),NOSPLIT,$0-4
+	// DEBUG: breadcrumb 'u' for usleep entry
+	MOVW	COM1_PORT, DX
+	MOVB	$'u', AX
+	OUTB
 	MOVL	$SYS_sched_yield, AX
 	INT	$0x80
 	RET
@@ -351,6 +355,14 @@ TEXT runtime·clone(SB),NOSPLIT|NOFRAME,$0
 	// In parent, return.
 	CMPQ	AX, $0
 	JEQ	clone_child
+	// DEBUG: breadcrumb 'P' for parent return from clone
+	PUSHQ	AX
+	PUSHQ	DX
+	MOVW	COM1_PORT, DX
+	MOVB	$'P', AX
+	OUTB
+	POPQ	DX
+	POPQ	AX
 	MOVL	AX, ret+40(FP)
 	RET
 
@@ -365,13 +377,25 @@ clone_child:
 	INT	$3		// crash
 
 clone_good:
+	// CRITICAL: Load fn/gp/mp from stack BEFORE gettid syscall!
+	// On x86_64, INT $0x80 pushes SS/RSP/RFLAGS/CS/RIP (40 bytes) starting
+	// from SP, which overwrites the parent-stored data at -8(SP) to -40(SP).
+	// These register values survive across INT $0x80 because the exception
+	// handler saves and restores all GPRs.
+	MOVQ	-24(SP), R12	// fn
+	MOVQ	-16(SP), R9	// g
+	MOVQ	-8(SP), R13	// m
+
+	// Move SP below the stored data so INT $0x80 frame doesn't overwrite it
+	// (not strictly needed since we already loaded the values, but cleaner)
+	SUBQ	$48, SP
+
 	// Initialize m->procid to Linux tid
 	MOVL	$SYS_gettid, AX
 	INT	$0x80
 
-	MOVQ	-24(SP), R12	// fn
-	MOVQ	-16(SP), R9	// g
-	MOVQ	-8(SP), R13	// m
+	// Restore SP (gettid IRETQ restores to pre-INT value = SI-48, then we fix)
+	ADDQ	$48, SP
 
 	CMPQ	R13, $0		// m
 	JEQ	clone_nog
@@ -387,6 +411,14 @@ clone_good:
 	MOVQ	R9, R14		// set g register
 
 clone_nog:
+	// DEBUG: breadcrumb 'M' for mstart call
+	PUSHQ	AX
+	PUSHQ	DX
+	MOVW	COM1_PORT, DX
+	MOVB	$'M', AX
+	OUTB
+	POPQ	DX
+	POPQ	AX
 	// Call fn. This is the PC of an ABI0 function.
 	CALL	R12
 
@@ -400,9 +432,10 @@ clone_nog:
 TEXT runtime·sigaltstack(SB),NOSPLIT,$0
 	RET
 
-// settls - set FS base for TLS using WRMSR (bare-metal, no arch_prctl)
+// settls - set tls base to DI using WRMSR (bare-metal, no arch_prctl)
+// Called from rt0_go with the TLS base address in DI (NOT on the stack).
+// This matches the standard Go runtime convention: "set tls base to DI".
 TEXT runtime·settls(SB),NOSPLIT,$32
-	MOVQ	base+0(FP), DI
 	ADDQ	$8, DI		// ELF wants to use -8(FS)
 	MOVQ	DI, AX
 	MOVQ	DI, DX

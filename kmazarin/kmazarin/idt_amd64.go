@@ -1,0 +1,137 @@
+//go:build amd64 && !test_stubs
+
+package main
+
+import "unsafe"
+
+// IDT Entry (Interrupt Gate Descriptor) layout - 16 bytes:
+//   Bytes 0-1:   offset[15:0]   (handler addr low)
+//   Bytes 2-3:   segment selector (0x08 = kernel CS)
+//   Byte  4:     IST (0 = no stack switch)
+//   Byte  5:     type/attributes (0x8E = present, DPL=0, 64-bit interrupt gate)
+//   Bytes 6-7:   offset[31:16]  (handler addr mid)
+//   Bytes 8-11:  offset[63:32]  (handler addr high)
+//   Bytes 12-15: reserved (0)
+
+const (
+	idtEntries = 256
+	idtSize    = idtEntries * 16 // 4096 bytes
+)
+
+// idtTable is the Interrupt Descriptor Table (256 entries, 4096 bytes).
+var idtTable [idtSize]byte
+
+// idtrDescriptor is the 10-byte IDTR structure: [limit:16][base:64].
+// Passed to LIDT instruction via SetVBAR.
+var idtrDescriptor [10]byte
+
+// ISR address getters defined in exceptions_amd64.s
+// These return the raw code address of each ISR entry point via LEAQ.
+func getISR0Addr() uintptr
+func getISR6Addr() uintptr
+func getISR8Addr() uintptr
+func getISR13Addr() uintptr
+func getISRIgnoreAddr() uintptr
+func getISR14Addr() uintptr
+func getISR48Addr() uintptr
+func getISR128Addr() uintptr
+func getISR255Addr() uintptr
+
+// ReadCS returns the current CS (Code Segment) selector value.
+// Defined in exceptions_amd64.s.
+func ReadCS() uint16
+
+// setIDTEntry populates a single IDT entry.
+//
+//go:nosplit
+func setIDTEntry(vector int, handler uintptr, cs uint16) {
+	offset := vector * 16
+	addr := uint64(handler)
+
+	// offset[15:0]
+	idtTable[offset+0] = byte(addr)
+	idtTable[offset+1] = byte(addr >> 8)
+
+	// segment selector (from current CS register)
+	idtTable[offset+2] = byte(cs)
+	idtTable[offset+3] = byte(cs >> 8)
+
+	// IST = 0
+	idtTable[offset+4] = 0x00
+
+	// type/attributes = 0x8E (present, DPL=0, 64-bit interrupt gate)
+	idtTable[offset+5] = 0x8E
+
+	// offset[31:16]
+	idtTable[offset+6] = byte(addr >> 16)
+	idtTable[offset+7] = byte(addr >> 24)
+
+	// offset[63:32]
+	idtTable[offset+8] = byte(addr >> 32)
+	idtTable[offset+9] = byte(addr >> 40)
+	idtTable[offset+10] = byte(addr >> 48)
+	idtTable[offset+11] = byte(addr >> 56)
+
+	// reserved
+	idtTable[offset+12] = 0
+	idtTable[offset+13] = 0
+	idtTable[offset+14] = 0
+	idtTable[offset+15] = 0
+}
+
+// BuildIDT populates the IDT with entries for the exception/interrupt vectors
+// we handle, and builds the IDTR descriptor.
+//
+//go:nosplit
+func BuildIDT() {
+	// Read the current CS register value - UEFI sets CS=0x38, not 0x08
+	cs := ReadCS()
+
+	// Set all 256 entries to a default ignore handler first (prevents triple fault)
+	defaultHandler := getISRIgnoreAddr()
+	for i := 0; i < 256; i++ {
+		setIDTEntry(i, defaultHandler, cs)
+	}
+
+	// Then set up entries for the vectors we specifically handle
+	setIDTEntry(0, getISR0Addr(), cs)     // Divide error (#DE)
+	setIDTEntry(6, getISR6Addr(), cs)     // Invalid opcode (#UD)
+	setIDTEntry(8, getISR8Addr(), cs)     // Double fault (#DF)
+	setIDTEntry(13, getISR13Addr(), cs)   // General protection (#GP)
+	setIDTEntry(14, getISR14Addr(), cs)   // Page fault (#PF)
+	setIDTEntry(48, getISR48Addr(), cs)   // LAPIC timer (vector 0x30)
+	setIDTEntry(128, getISR128Addr(), cs) // Syscall via INT $0x80
+	setIDTEntry(255, getISR255Addr(), cs) // Spurious interrupt
+
+	// Build IDTR descriptor: [limit:16][base:64]
+	limit := uint16(idtSize - 1) // 4095
+	base := uint64(uintptr(unsafe.Pointer(&idtTable[0])))
+
+	idtrDescriptor[0] = byte(limit)
+	idtrDescriptor[1] = byte(limit >> 8)
+	idtrDescriptor[2] = byte(base)
+	idtrDescriptor[3] = byte(base >> 8)
+	idtrDescriptor[4] = byte(base >> 16)
+	idtrDescriptor[5] = byte(base >> 24)
+	idtrDescriptor[6] = byte(base >> 32)
+	idtrDescriptor[7] = byte(base >> 40)
+	idtrDescriptor[8] = byte(base >> 48)
+	idtrDescriptor[9] = byte(base >> 56)
+}
+
+// GetIDTRAddr returns the address of the IDTR descriptor.
+//
+//go:nosplit
+func GetIDTRAddr() uintptr {
+	return uintptr(unsafe.Pointer(&idtrDescriptor[0]))
+}
+
+// getExceptionVectorBaseInternal builds the IDT and returns the IDTR address.
+// Called via tail-call from GetExceptionVectorBase assembly stub.
+//
+//go:nosplit
+func getExceptionVectorBaseInternal() uintptr {
+	BuildIDT()
+	return GetIDTRAddr()
+}
+

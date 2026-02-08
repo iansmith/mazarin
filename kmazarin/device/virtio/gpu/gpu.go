@@ -237,8 +237,7 @@ func virtioPCISetupQueue(queueIndex uint16, vq *virtio.VirtQueue) bool {
 	// We can't safely clamp after VirtqueueInit because NumFree and the free list
 	// are already sized for the original queue size
 	if vq.QueueSize > maxQueueSize {
-		console.KPrintf("[VirtIO GPU] Queue size %d exceeds device max %d\n",
-			vq.QueueSize, maxQueueSize)
+		console.KPrintln("[VirtIO GPU] ERROR: Queue size exceeds device max")
 		return false
 	}
 
@@ -274,15 +273,33 @@ func virtioPCISetupQueue(queueIndex uint16, vq *virtio.VirtQueue) bool {
 //
 //go:nosplit
 func findVirtIOGPU() bool {
-	// Debug output commented out
-
+	console.KPrintln("[VirtIO GPU] Scanning PCI bus...")
 
 	// Scan PCI bus
 	for bus := uint8(0); bus < 1; bus++ {
 		for slot := uint8(0); slot < 32; slot++ {
-			for funcNum := uint8(0); funcNum < 8; funcNum++ {
-				// Read vendor/device ID
-				fullReg := pci.ConfigRead32(bus, slot, funcNum, pci.PCI_VENDOR_ID)
+			// Read func 0 first to check if device exists and if multi-function
+			fullReg0 := pci.ConfigRead32(bus, slot, 0, pci.PCI_VENDOR_ID)
+			vendorID0 := fullReg0 & 0xFFFF
+			if vendorID0 == 0xFFFF || vendorID0 == 0 {
+				continue // No device at this slot
+			}
+
+			// Check multi-function bit in header type register
+			headerType := pci.ConfigRead32(bus, slot, 0, 0x0C)
+			isMultiFunc := (headerType>>16)&0x80 != 0
+			maxFunc := uint8(1)
+			if isMultiFunc {
+				maxFunc = 8
+			}
+
+			for funcNum := uint8(0); funcNum < maxFunc; funcNum++ {
+				var fullReg uint32
+				if funcNum == 0 {
+					fullReg = fullReg0 // Already read above
+				} else {
+					fullReg = pci.ConfigRead32(bus, slot, funcNum, pci.PCI_VENDOR_ID)
+				}
 				vendorID := fullReg & 0xFFFF
 				deviceID := (fullReg >> 16) & 0xFFFF
 
@@ -291,22 +308,9 @@ func findVirtIOGPU() bool {
 					continue
 				}
 
-				// Debug: show all found devices
-				// uartPutsDirect("VirtIO GPU: Found device - bus=")
-				// uartPutHex8Direct(bus)
-				// uartPutsDirect(" slot=")
-				// uartPutHex8Direct(slot)
-				// uartPutsDirect(" func=")
-				// uartPutHex8Direct(funcNum)
-				// uartPutsDirect(" vendor=")
-				// uartPutHex16Direct(uint16(vendorID))
-				// uartPutsDirect(" device=")
-				// uartPutHex16Direct(uint16(deviceID))
-				// Debug output commented out
-
 				// Check if this is VirtIO GPU
 				if vendorID == pci.VIRTIO_VENDOR_ID && deviceID == pci.VIRTIO_GPU_DEVICE_ID {
-					console.KPrintf("[VirtIO GPU] Found at bus=%d slot=%d func=%d\n", bus, slot, funcNum)
+					console.KPrintln("[VirtIO GPU] Found device")
 
 					// Enable device
 					cmd := pci.ConfigRead32(bus, slot, funcNum, pci.PCI_COMMAND)
@@ -319,19 +323,14 @@ func findVirtIOGPU() bool {
 						console.KPrintln("[VirtIO GPU] ERROR: VirtIO capabilities not found")
 						return false
 					}
-					console.KPrintf("[VirtIO GPU] Common: BAR%d off=0x%x\n", common.Bar, common.OffsetInBar)
-
 					// Read BAR for common config (handles 64-bit BARs)
 					barBase := pci.ReadBAR64(bus, slot, funcNum, common.Bar)
-					console.KPrintf("[VirtIO GPU] BAR%d addr=0x%x\n", common.Bar, barBase)
 
 					// If BAR is zero OR above 4GB (can't map via KernelMMIOOffset),
 					// reprogram to the 32-bit PCI MMIO window
 					if barBase == 0 || barBase >= 0x100000000 {
-						const PCI_MMIO_BASE = uintptr(0x10000000)
-						pci.WriteBAR64(bus, slot, funcNum, common.Bar, PCI_MMIO_BASE)
+						pci.WriteBAR64(bus, slot, funcNum, common.Bar, pci.PCI_MMIO_BASE)
 						barBase = pci.ReadBAR64(bus, slot, funcNum, common.Bar)
-						console.KPrintf("[VirtIO GPU] BAR%d reprogrammed=0x%x\n", common.Bar, barBase)
 					}
 
 					// Map BAR MMIO into kernel high-memory (TTBR1)
@@ -345,12 +344,11 @@ func findVirtIOGPU() bool {
 					virtioGPUDevice.ISRConfig = isr
 					virtioGPUDevice.DeviceConfig = device
 					virtioGPUDevice.CommonConfigBase = barBase + constants.KernelMMIOOffset + uintptr(common.OffsetInBar)
-					console.KPrintf("[VirtIO GPU] CommonConfigBase=0x%x\n", virtioGPUDevice.CommonConfigBase)
 
 					// Calculate notify base (handles 64-bit BARs)
 					notifyBarBase := pci.ReadBAR64(bus, slot, funcNum, notify.Bar)
 					if notifyBarBase == 0 || notifyBarBase >= 0x100000000 {
-						pci.WriteBAR64(bus, slot, funcNum, notify.Bar, 0x10010000)
+						pci.WriteBAR64(bus, slot, funcNum, notify.Bar, pci.PCI_MMIO_BASE+0x10000)
 						notifyBarBase = pci.ReadBAR64(bus, slot, funcNum, notify.Bar)
 					}
 					if notifyBarBase != barBase {
@@ -377,19 +375,14 @@ func virtioGPUInit() bool {
 
 	// Acknowledge and indicate driver present
 	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE)
-	statusAfterAck := virtioPCIGetDeviceStatus()
-	console.KPrintf("[VirtIO GPU] After ACK: status=0x%x\n", statusAfterAck)
 
 	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER)
-	statusAfterDrv := virtioPCIGetDeviceStatus()
-	console.KPrintf("[VirtIO GPU] After DRIVER: status=0x%x\n", statusAfterDrv)
 
 	// Feature negotiation - read device features
 	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE_SELECT, 0)
-	devFeats0 := virtioPCIReadCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE)
+	virtioPCIReadCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE)
 	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE_SELECT, 1)
-	devFeats1 := virtioPCIReadCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE)
-	console.KPrintf("[VirtIO GPU] Device features: page0=0x%x page1=0x%x\n", devFeats0, devFeats1)
+	virtioPCIReadCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE)
 
 	// Accept VIRTIO_F_VERSION_1 (bit 32)
 	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE_SELECT, 0)
@@ -402,7 +395,6 @@ func virtioGPUInit() bool {
 
 	// Verify FEATURES_OK is still set
 	status := virtioPCIGetDeviceStatus()
-	console.KPrintf("[VirtIO GPU] After FEATURES_OK: status=0x%x\n", status)
 	if (status & VIRTIO_STATUS_FEATURES_OK) == 0 {
 		console.KPrintln("[VirtIO GPU] ERROR: Device rejected features")
 		return false
@@ -558,8 +550,9 @@ func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint3
 		return false
 	}
 
-	// Zero framebuffer
-	fbMem := unsafe.Pointer(uintptr(virtioGPUFramebufferAddr))
+	// Zero framebuffer (use linear map VA for CPU access)
+	fbVA := uintptr(virtioGPUFramebufferAddr) + constants.KernelMMIOOffset
+	fbMem := unsafe.Pointer(fbVA)
 	virtio.Bzero4K(fbMem, fbSize)
 
 	virtioGPUDevice.Framebuffer = fbMem
@@ -580,6 +573,7 @@ func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint3
 	var createResp VirtIOGPUCtrlHdr
 
 	respType := virtioGPUSendCommand(unsafe.Pointer(&createCmd), uint32(unsafe.Sizeof(createCmd)), unsafe.Pointer(&createResp), uint32(unsafe.Sizeof(createResp)))
+	console.KPrintf("[VirtIO GPU] CREATE_2D response: 0x%04X\n", respType)
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
 		console.KPrintf("[VirtIO GPU] ERROR: CREATE_2D failed (0x%04x)\n", respType)
 		return false
@@ -605,6 +599,7 @@ func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint3
 
 	var attachResp VirtIOGPUCtrlHdr
 	respType = virtioGPUSendCommand(attachCmdBuf, attachCmdSize, unsafe.Pointer(&attachResp), uint32(unsafe.Sizeof(attachResp)))
+	console.KPrintf("[VirtIO GPU] ATTACH_BACKING response: 0x%04X (PA=0x%X len=0x%X)\n", respType, memEntryPtr.Addr, memEntryPtr.Len)
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
 		console.KPrintf("[VirtIO GPU] ERROR: ATTACH_BACKING failed (0x%04x)\n", respType)
 		return false
@@ -620,10 +615,20 @@ func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint3
 
 	var scanoutResp VirtIOGPUCtrlHdr
 	respType = virtioGPUSendCommand(unsafe.Pointer(&scanoutCmd), uint32(unsafe.Sizeof(scanoutCmd)), unsafe.Pointer(&scanoutResp), uint32(unsafe.Sizeof(scanoutResp)))
+	console.KPrintf("[VirtIO GPU] SET_SCANOUT response: 0x%04X (expected 0x1100=OK_NODATA)\n", respType)
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
 		console.KPrintf("[VirtIO GPU] ERROR: SET_SCANOUT failed (0x%04x)\n", respType)
 		return false
 	}
+
+	// Print framebuffer details
+	console.KPrintf("[VirtIO GPU] Framebuffer: %dx%d (resource: %dx%d)\n",
+		displayWidth, displayHeight, displayWidth, resourceHeight)
+	console.KPrintf("[VirtIO GPU] FB physical addr: 0x%X size: 0x%X pitch: 0x%X\n",
+		virtioGPUFramebufferAddr, fbSize, virtioGPUDevice.Pitch)
+	console.KPrintf("[VirtIO GPU] Scanout: ID=%d Rect=(%d,%d,%dx%d) ResourceID=%d\n",
+		scanoutCmd.ScanoutID, scanoutCmd.Rect.X, scanoutCmd.Rect.Y,
+		scanoutCmd.Rect.Width, scanoutCmd.Rect.Height, scanoutCmd.ResourceID)
 
 	return true
 }
@@ -705,7 +710,9 @@ func virtioGPUFlush(x, y, width, height uint32) {
 	var flushResp VirtIOGPUCtrlHdr
 	respType := virtioGPUSendCommand(unsafe.Pointer(&flushCmd), uint32(unsafe.Sizeof(flushCmd)), unsafe.Pointer(&flushResp), uint32(unsafe.Sizeof(flushResp)))
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
-		console.KPrintf("[VirtIO GPU] FLUSH failed (0x%04x)\n", respType)
+		console.KWriteString("[VirtIO GPU] FLUSH failed: ")
+		console.KPrintHex64(uint64(respType))
+		console.KWriteByte('\n')
 		return
 	}
 }

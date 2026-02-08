@@ -30,8 +30,11 @@ const (
 	KernelExcStackTop    = KernelExcStackBottom + KernelExcStackSize
 
 	// Heap VA range (same as ARM64)
-	KernelHeapStart = 0xFFFF000100000000
-	KernelHeapEnd   = 0xFFFF100000000000
+	// x86_64 heap must be in canonical address range (bit 47 must match bits 48-63).
+	// ARM64 uses 0xFFFF000100000000 (TTBR1 space) but that's non-canonical on x86_64
+	// with 48-bit paging. Use the negative canonical half instead.
+	KernelHeapStart = 0xFFFF800100000000
+	KernelHeapEnd   = 0xFFFF900000000000
 
 	// MMIO physical addresses (x86_64 QEMU q35)
 	mmioLAPICBase  = 0xFEE00000
@@ -60,6 +63,17 @@ type KernelVM struct {
 	// Unified pool (remaining physical memory for kmazarin's allocator)
 	UnifiedPoolStart uint64
 	UnifiedPoolEnd   uint64
+}
+
+// demandPagePool is global state for the assembly page fault handler.
+// Layout must match the offsets used in exc_vectors_amd64.s.
+var demandPagePool struct {
+	current   uint64 // +0:  Next available page (bump pointer)
+	end       uint64 // +8:  End of page pool
+	ptCurrent uint64 // +16: Next available PT page
+	ptEnd     uint64 // +24: End of PT pool
+	pml4Phys  uint64 // +32: PML4 physical address (for page table walks)
+	pgCount   uint64 // +40: Page fault counter
 }
 
 // ptPageAllocator tracks page table page allocation from UEFI pool.
@@ -167,13 +181,15 @@ func PrepareKernelVM(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, error) 
 	pml4Phys := currentCR3 & PTE_ADDR_MASK
 	vm.PML4Phys = pml4Phys
 
-	// We need to add entries to the UEFI PML4 for kernel high-memory mappings.
-	// UEFI write-protects its PML4 page, so we temporarily disable CR0.WP.
+	// Disable write protection for ALL mapping operations.
+	// UEFI write-protects its page table pages (PML4, PDPT, PD).
+	// We need WP disabled for creating new entries, splitting 2MB pages, etc.
+	plat.DisableWriteProtect()
 
 	// Step 6: Map stacks with 4KB pages
 	mapStacks(pml4Phys, vm)
 
-	// Step 7: Map kmazarin code at its virtual addresses
+	// Step 7: Map kmazarin code at its virtual addresses (4KB pages)
 	mapKernelCode(pml4Phys, kernel)
 
 	// Step 7b: Create linear map of physical RAM using 2MB pages
@@ -181,6 +197,8 @@ func PrepareKernelVM(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, error) 
 
 	// Step 8: Map MMIO regions (LAPIC, IOAPIC)
 	mapMMIO(pml4Phys)
+
+	plat.EnableWriteProtect()
 
 	// Flush TLB by reloading CR3
 	plat.WriteCR3(currentCR3)
@@ -194,8 +212,8 @@ func PrepareKernelVM(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, error) 
 
 // ensurePDPT ensures a PDPT exists at pml4[idx], creating one if needed.
 // Returns the physical address of the PDPT.
-// disableWP controls whether CR0.WP is toggled (needed for UEFI-owned PML4).
-func ensurePDPT(pml4 *[ENTRIES_PER_TABLE]uint64, idx uint64, disableWP bool) uint64 {
+// Caller must ensure CR0.WP is disabled (needed for UEFI-owned PML4).
+func ensurePDPT(pml4 *[ENTRIES_PER_TABLE]uint64, idx uint64) uint64 {
 	if pml4[idx]&PTE_PRESENT != 0 {
 		return pml4[idx] & PTE_ADDR_MASK
 	}
@@ -203,13 +221,7 @@ func ensurePDPT(pml4 *[ENTRIES_PER_TABLE]uint64, idx uint64, disableWP bool) uin
 	if pdptPhys == 0 {
 		return 0
 	}
-	if disableWP {
-		plat.DisableWriteProtect()
-	}
 	pml4[idx] = pdptPhys | PTE_PRESENT | PTE_WRITABLE
-	if disableWP {
-		plat.EnableWriteProtect()
-	}
 	return pdptPhys
 }
 
@@ -275,7 +287,7 @@ func mapPage4K(pml4Phys, va, pa, flags uint64) {
 	idx2 := pdIndex(va)
 	idx1 := ptIndex(va)
 
-	pdptPhys := ensurePDPT(pml4, idx4, true)
+	pdptPhys := ensurePDPT(pml4, idx4)
 	if pdptPhys == 0 {
 		return
 	}
@@ -348,7 +360,7 @@ func createLinearMap(pml4Phys, ramStart, ramEnd uint64) {
 		idx3 := pdptIndex(va)
 		idx2 := pdIndex(va)
 
-		pdptPhys := ensurePDPT(pml4, idx4, true)
+		pdptPhys := ensurePDPT(pml4, idx4)
 		if pdptPhys == 0 {
 			printString("LinearMap: PDPT alloc failed\r\n")
 			return
@@ -377,50 +389,42 @@ func createLinearMap(pml4Phys, ramStart, ramEnd uint64) {
 	printString(" 2MB pages\r\n")
 }
 
-// mapKernelCode maps kmazarin's code/data at its expected virtual addresses.
+// mapKernelCode maps kmazarin's code/data at its expected virtual addresses
+// using 4KB pages.
+//
+// On x86_64, the kernel ELF's VA range (e.g. 0x437FF000-0x43B4F600) falls
+// within the UEFI identity-map range. The UEFI identity map maps those VAs
+// to the wrong physical addresses (VA == PA), but the kernel was loaded to
+// a different physical address (e.g. PA 0x77E00000).
+//
+// We use 4KB pages (not 2MB) because the kernel VA's intra-2MB offset
+// doesn't match the physical address's intra-2MB offset (LowestVirt is at
+// offset 0x1FF000 within its 2MB page, but PhysBase is 2MB-aligned). 2MB
+// pages require the VA and PA offsets to match.
+//
+// UEFI's existing 2MB PD entries for this VA range are split into 4KB PT
+// entries by ensurePT, then the relevant PT entries are overwritten.
 func mapKernelCode(pml4Phys uint64, kernel *LoadedKernel) {
-	const blockSize2MB = 0x200000
+	virtStart := kernel.LowestVirt &^ (PageSize - 1)
+	virtEnd := (kernel.HighestVirt + PageSize - 1) &^ (PageSize - 1)
+	physStart := kernel.PhysBase
 
-	virtStart := kernel.LowestVirt &^ (blockSize2MB - 1)
-	virtEnd := (kernel.HighestVirt + blockSize2MB - 1) &^ (blockSize2MB - 1)
-	physStart := kernel.PhysBase - (kernel.LowestVirt - virtStart)
+	flags := uint64(PTE_PRESENT | PTE_WRITABLE)
 
-	pml4 := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(pml4Phys)))
+	pagesCreated := uint64(0)
 
-	blocksCreated := uint64(0)
-
-	for offset := uint64(0); virtStart+offset < virtEnd; offset += blockSize2MB {
+	// Caller must ensure CR0.WP is disabled — we modify UEFI-owned
+	// page tables and split UEFI's 2MB PD entries into 4KB pages.
+	for offset := uint64(0); offset < virtEnd-virtStart; offset += PageSize {
 		va := virtStart + offset
 		pa := physStart + offset
-
-		idx4 := pml4Index(va)
-		idx3 := pdptIndex(va)
-		idx2 := pdIndex(va)
-
-		pdptPhys := ensurePDPT(pml4, idx4, true)
-		if pdptPhys == 0 {
-			return
-		}
-		pdpt := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(pdptPhys)))
-
-		pdPhys := ensurePD(pdpt, idx3)
-		if pdPhys == 0 {
-			return
-		}
-		pd := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(pdPhys)))
-
-		// Skip if already mapped
-		if pd[idx2]&PTE_PRESENT != 0 {
-			continue
-		}
-
-		pd[idx2] = pa | PTE_PRESENT | PTE_WRITABLE | PTE_PS
-		blocksCreated++
+		mapPage4K(pml4Phys, va, pa, flags)
+		pagesCreated++
 	}
 
 	printString("KernelMap: ")
-	printHex(blocksCreated)
-	printString(" 2MB pages at VA ")
+	printHex(pagesCreated)
+	printString(" 4KB pages at VA ")
 	printHex(virtStart)
 	printString(" -> PA ")
 	printHex(physStart)
@@ -445,11 +449,172 @@ func kernelPageTablePhys(vm *KernelVM) uint64 {
 	return vm.PML4Phys
 }
 
-// InstallFaultHandler is a no-op on x86_64 for now.
-// On ARM64, this sets up VBAR_EL1 with a demand paging handler.
-// On x86_64, kmazarin installs its own IDT.
+// getDiplomatPFHandlerAddr returns the address of the page fault handler.
+// Defined in exc_vectors_amd64.s.
+func getDiplomatPFHandlerAddr() uint64
+
+// getDiplomatSyscallHandlerAddr returns the address of the INT $0x80 stub handler.
+// Defined in exc_vectors_amd64.s.
+func getDiplomatSyscallHandlerAddr() uint64
+
+// installIDT loads an IDT using LIDT.
+// Defined in exc_vectors_amd64.s.
+func installIDT(idtrAddr uint64)
+
+// readCSSelector returns the current CS segment selector value.
+// Defined in exc_vectors_amd64.s.
+func readCSSelector() uint16
+
+// disableInterrupts clears the IF flag (CLI).
+// Defined in exc_vectors_amd64.s.
+func disableInterrupts()
+
+// idtTable is the Interrupt Descriptor Table for diplomat (256 entries, 4096 bytes).
+var idtTable [256 * 16]byte
+
+// idtrDescriptor is the 10-byte IDTR structure: [limit:16][base:64].
+var idtrDescriptor [10]byte
+
+// InstallFaultHandler builds a minimal IDT with a #PF handler for demand paging.
+// This allows kmazarin's Go runtime to generate page faults during init for
+// heap allocations, which are handled by mapping pages from the pre-allocated pool.
 func InstallFaultHandler(vm *KernelVM) error {
+	// Set up global state for the assembly fault handler
+	demandPagePool.current = vm.HeapPagePoolBase
+	demandPagePool.end = vm.HeapPagePoolEnd
+	// PT pages for page table allocation during demand paging
+	demandPagePool.ptCurrent = vm.HeapPagePoolEnd
+	demandPagePool.ptEnd = vm.HeapPagePoolEnd + ptExtraPages*PageSize
+	demandPagePool.pml4Phys = vm.PML4Phys
+
+	// Zero the IDT
+	for i := range idtTable {
+		idtTable[i] = 0
+	}
+
+	// Get the page fault handler address and current CS selector
+	handlerAddr := getDiplomatPFHandlerAddr()
+	cs := readCSSelector()
+
+	// Set up IDT entry for vector 14 (#PF)
+	setDiplomatIDTEntry(14, handlerAddr, cs)
+
+	// Set up IDT entry for vector 128 (INT $0x80) — syscall stub
+	// During Go runtime init, Syscall6 uses INT $0x80 (via overlay).
+	// This stub returns 0 for all syscalls (prctl, epoll_wait, etc.).
+	syscallAddr := getDiplomatSyscallHandlerAddr()
+	setDiplomatIDTEntry(128, syscallAddr, cs)
+
+	// Build IDTR descriptor: [limit:16][base:64]
+	limit := uint16(len(idtTable) - 1)
+	base := uint64(uintptr(unsafe.Pointer(&idtTable[0])))
+
+	idtrDescriptor[0] = byte(limit)
+	idtrDescriptor[1] = byte(limit >> 8)
+	idtrDescriptor[2] = byte(base)
+	idtrDescriptor[3] = byte(base >> 8)
+	idtrDescriptor[4] = byte(base >> 16)
+	idtrDescriptor[5] = byte(base >> 24)
+	idtrDescriptor[6] = byte(base >> 32)
+	idtrDescriptor[7] = byte(base >> 40)
+	idtrDescriptor[8] = byte(base >> 48)
+	idtrDescriptor[9] = byte(base >> 56)
+
+	printString("Fault handler: IDT at ")
+	printHex(base)
+	printString(" pool=")
+	printHex(vm.HeapPagePoolBase)
+	printString("-")
+	printHex(vm.HeapPagePoolEnd)
+	printString("\r\n")
+
+	// NOTE: We do NOT install the IDT here. UEFI has timer interrupts active
+	// and our IDT only handles #PF. If we LIDT now, any subsequent UEFI call
+	// (printString, BuildStartupEnv) may re-enable interrupts (STI internally),
+	// and the UEFI timer would hit a non-present IDT entry → triple fault.
+	//
+	// The IDT is installed in jumpToKmazarinWithStack, right after CLI,
+	// just before jumping to kmazarin.
+
 	return nil
+}
+
+
+// setDiplomatIDTEntry populates a single IDT entry with the given CS selector.
+func setDiplomatIDTEntry(vector int, handler uint64, cs uint16) {
+	offset := vector * 16
+
+	// offset[15:0]
+	idtTable[offset+0] = byte(handler)
+	idtTable[offset+1] = byte(handler >> 8)
+
+	// segment selector (from current UEFI GDT)
+	idtTable[offset+2] = byte(cs)
+	idtTable[offset+3] = byte(cs >> 8)
+
+	// IST = 0
+	idtTable[offset+4] = 0x00
+
+	// type/attributes = 0x8E (present, DPL=0, 64-bit interrupt gate)
+	idtTable[offset+5] = 0x8E
+
+	// offset[31:16]
+	idtTable[offset+6] = byte(handler >> 16)
+	idtTable[offset+7] = byte(handler >> 24)
+
+	// offset[63:32]
+	idtTable[offset+8] = byte(handler >> 32)
+	idtTable[offset+9] = byte(handler >> 40)
+	idtTable[offset+10] = byte(handler >> 48)
+	idtTable[offset+11] = byte(handler >> 56)
+
+	// reserved
+	idtTable[offset+12] = 0
+	idtTable[offset+13] = 0
+	idtTable[offset+14] = 0
+	idtTable[offset+15] = 0
+}
+
+// updateIDTWithKmazarinISRs replaces diplomat's stub syscall handler with
+// kmazarin's real ISR entry points. This mirrors the ARM64 approach where
+// cardinal installs kmazarin's VBAR before jumping to kmazarin, so all
+// syscalls during Go runtime init go through kmazarin's real dispatch.
+//
+// IDT[14] (#PF) is kept as diplomat's assembly demand-paging handler because
+// kmazarin's page fault handler calls Go functions that may not be ready
+// during very early boot. IDT[128] (INT $0x80) is switched to kmazarin's
+// isr128 so clone/futex/sched_yield work through real dispatch.
+func updateIDTWithKmazarinISRs(kernel *LoadedKernel, relocDelta uint64) {
+	cs := readCSSelector()
+	printString("IDT CS selector: ")
+	printHex(uint64(cs))
+	printString("\r\n")
+
+	// Resolve and install kmazarin's syscall handler (critical for clone/futex)
+	isr128Addr := findKernelSymbol(kernel, "main.isr128")
+	if isr128Addr != 0 {
+		isr128Addr += relocDelta
+		setDiplomatIDTEntry(128, isr128Addr, cs)
+		printString("IDT[128]: kmazarin isr128 = ")
+		printHex(isr128Addr)
+		printString("\r\n")
+	} else {
+		printString("WARN: main.isr128 not found, using diplomat stub\r\n")
+	}
+
+	// Install timer IRQ handler (needed once timer is enabled)
+	isr48Addr := findKernelSymbol(kernel, "main.isr48")
+	if isr48Addr != 0 {
+		isr48Addr += relocDelta
+		setDiplomatIDTEntry(48, isr48Addr, cs)
+	}
+
+	// Install spurious IRQ handler
+	isr255Addr := findKernelSymbol(kernel, "main.isr255")
+	if isr255Addr != 0 {
+		isr255Addr += relocDelta
+		setDiplomatIDTEntry(255, isr255Addr, cs)
+	}
 }
 
 // Pre-allocated errors

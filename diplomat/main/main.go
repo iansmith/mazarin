@@ -348,10 +348,17 @@ func DiplomatEntry() {
 		}
 	}
 
-	// Phase 8: Skip diplomat's demand paging handler — kmazarin's exception
-	// handler handles both data aborts (demand paging) and SVC (clone for
-	// thread creation). We install kmazarin's VBAR_EL1 at jump time.
-	// (InstallFaultHandler is no longer needed.)
+	// Phase 8: Install demand paging fault handler.
+	// On ARM64, kmazarin's VBAR is set at jump time so this is a no-op.
+	// On x86_64, we install an IDT with a #PF handler because kmazarin's Go
+	// runtime generates page faults during init (before kmazarin can set its own IDT).
+	if err := boot.InstallFaultHandler(vm); err != nil {
+		printString("ERROR: fault handler: ")
+		printString(err.Error())
+		printString("\r\n")
+		for {
+		}
+	}
 
 	// Phase 9: Build startup environment (auxv on g0 stack)
 	printString("DBG: about to build startup env\r\n")
@@ -379,6 +386,12 @@ func DiplomatEntry() {
 	printString("VBAR: kmazarin ExceptionVectorTable = ")
 	printHex(excVecAddr)
 	printString("\r\n")
+
+	// Update diplomat's IDT with kmazarin's real ISR entry points.
+	// On x86_64: replaces diplomat's stub syscall handler (IDT[128]) with
+	// kmazarin's isr128 so clone/futex/sched_yield go through real dispatch.
+	// On ARM64: no-op (VBAR handles this).
+	updateIDTWithKmazarinISRs(kernel, relocDelta)
 
 	// Phase 10: Jump to kernel with proper stack setup and kmazarin's VBAR.
 	// Kmazarin's exception handler handles:

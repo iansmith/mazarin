@@ -1,4 +1,4 @@
-//go:build !test_stubs
+//go:build arm64 && !test_stubs
 
 package main
 

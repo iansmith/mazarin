@@ -4,9 +4,11 @@
 
 // MSR and LAPIC constants
 #define IA32_TSC_DEADLINE   0x6E0
-#define LAPIC_BASE          0xFEE00000
+#define LAPIC_PHYS_BASE     0xFEE00000
+#define KERNEL_MMIO_OFFSET  0xFFFFFFFF00000000
+#define LAPIC_BASE          (LAPIC_PHYS_BASE + KERNEL_MMIO_OFFSET)
 #define LAPIC_LVT_TIMER     0x320
-#define TSC_DEADLINE_MODE   0x00040020  // Bit 18=1 (TSC-Deadline) + vector 0x20
+#define TSC_DEADLINE_MODE   0x00040030  // Bit 18=1 (TSC-Deadline) + vector 0x30
 
 // PlatformDisableTimer masks the LAPIC timer to stop generating interrupts.
 // func PlatformDisableTimer()
@@ -49,9 +51,9 @@ TEXT ·PlatformRearmTimer(SB), NOSPLIT, $0-8
 // func PlatformTimerInit() uint32
 TEXT ·PlatformTimerInit(SB), NOSPLIT, $0-4
 	// Write to LAPIC LVT Timer Register to enable TSC-Deadline mode
-	// LAPIC base: 0xFEE00000 (identity-mapped by bootloader)
+	// LAPIC mapped at high VA via KERNEL_MMIO_OFFSET
 	// LVT Timer offset: 0x320
-	// Value: 0x00040020 (TSC-Deadline mode + vector 0x20)
+	// Value: 0x00040030 (TSC-Deadline mode + vector 0x30)
 	MOVQ	$LAPIC_BASE, AX
 	MOVL	$TSC_DEADLINE_MODE, BX
 	MOVL	BX, LAPIC_LVT_TIMER(AX)
