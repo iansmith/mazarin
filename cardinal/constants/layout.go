@@ -250,9 +250,17 @@ const (
 	AT_FRAMEBUFFER_PHYS = 0x100A // Physical address of VirtIO GPU framebuffer
 	AT_FRAMEBUFFER_SIZE = 0x100B // Size of framebuffer in bytes
 
+	// New constants for diplomat/cardinal (unified memory pool and system info)
+	AT_CPU_COUNT          = 0x100C // Number of CPUs
+	AT_RAM_BASE           = 0x100D // Physical RAM base address
+	AT_RAM_SIZE           = 0x100E // Total RAM size
+	AT_UNIFIED_POOL_START = 0x100F // Unified pool start PA
+	AT_TTBR0_L0_PHYS      = 0x1013 // TTBR0 L0 physical address
+
 	// Kernel heap bounds - parsed by runtime overlay before first mmap
 	AT_KMAZARIN_HEAP_START = 0x1010 // Start of kernel heap VA space
 	AT_KMAZARIN_HEAP_END   = 0x1011 // End of kernel heap VA space
+	AT_UNIFIED_POOL_END    = 0x1012 // Unified pool end PA
 )
 
 // ============================================================================

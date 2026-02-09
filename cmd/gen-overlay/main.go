@@ -225,6 +225,7 @@ func buildUserspaceOverlay(overlay *Overlay, goroot, patchesDir string) error {
 	patches := map[string]string{
 		"syscall/syscall_linux.go":    "syscall_linux.go",
 		"syscall/asm_linux_arm64.s":   "asm_linux_arm64.s",
+		"syscall/asm_linux_amd64.s":   "asm_linux_amd64.s",
 		"runtime/cgo_mmap.go":         "runtime/cgo_mmap.go",
 		"runtime/lock_spinbit.go":     "runtime/lock_spinbit.go",
 	}

@@ -183,21 +183,13 @@ func cardinalPrepareKernel(kernel *LoadedKernel) error {
 	ramEnd := uintptr(detectedRAMBase + detectedRAMSize)
 	createLinearMap(unifiedPoolStart, ramEnd)
 
-	// Get kmazarin's StartupParams address from linker symbol
-	kmazarinStartupParamsVA := uintptr(LinkerKmazarinStartupParams)
-
-	// Populate RuntimeConfig
-	populateRuntimeConfig(kmazarinStartupParamsVA, kernelPageTableL0)
-
 	return nil
 }
 
 // cardinalJumpToKernel sets up the startup environment and jumps to kmazarin.
 func cardinalJumpToKernel(kernel *LoadedKernel) {
-	kmazarinStartupParamsVA := uintptr(LinkerKmazarinStartupParams)
-
-	// Set up argc/argv/envp/auxv structure
-	stackPointer, argc, argv := setupKmazarinStartupEnv(kmazarinStartupParamsVA)
+	// Set up argc/argv/envp/auxv structure with all boot information
+	stackPointer, argc, argv := setupKmazarinStartupEnv(kernelPageTableL0, pageTableL0)
 	if stackPointer == 0 || argv == 0 {
 		uartPutsDirect("ERROR: Environment setup failed!\r\n")
 		return

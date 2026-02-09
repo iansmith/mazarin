@@ -92,7 +92,7 @@ var (
 	// NOTE: Use constants.KmazarinLoadAddr directly instead of a redundant LinkerKmazarinStart variable
 	LinkerKmazarinSize              uint64 = 1 // __kmazarin_size (still patched - used before ELF parsing)
 	LinkerKmazarinExceptionVector   uint64 = 1 // Parsed at runtime from kmazarin.elf
-	LinkerKmazarinStartupParams     uint64 = 1 // Parsed at runtime from kmazarin.elf
+	// LinkerKmazarinStartupParams  - REMOVED: No longer used, info passed via auxv entries
 	LinkerKmazarinG0Struct          uint64 = 1 // Parsed at runtime from kmazarin.elf
 	LinkerKmazarinAsyncPreempt      uint64 = 1 // Parsed at runtime from kmazarin.elf
 	LinkerKmazarinReadyForPreempt   uint64 = 1 // Parsed at runtime from kmazarin.elf
@@ -123,7 +123,7 @@ func init() {
 		LinkerBochsDisplayBase + LinkerBochsDisplaySize +
 		LinkerPciBarBase + LinkerPciBarSize +
 		LinkerKmazarinSize + LinkerKmazarinExceptionVector +
-		LinkerKmazarinStartupParams + LinkerKmazarinG0Struct + LinkerKmazarinAsyncPreempt +
+		LinkerKmazarinG0Struct + LinkerKmazarinAsyncPreempt +
 		LinkerKmazarinReadyForPreempt + LinkerKmazarinRuntimeG0 +
 		DataTestMagic[0] + DataTestMagic[1] + DataTestMagic[2] + DataTestMagic[3] +
 		DataTestMagic[4] + DataTestMagic[5] + DataTestMagic[6] + DataTestMagic[7]

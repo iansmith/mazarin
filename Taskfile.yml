@@ -67,6 +67,11 @@ vars:
   HELLOWORLD_MAZ: '{{.BUILD_DIR}}/helloworld.maz'
   DISK_IMAGE: '{{.BUILD_DIR}}/disk.img'
 
+  # AMD64 userspace programs (for diplomat x86_64)
+  DAPOPE_AMD64_ELF: '{{.BUILD_DIR}}/dapope-amd64.elf'
+  STDIO_AMD64_ELF: '{{.BUILD_DIR}}/stdio-amd64.elf'
+  DISK_AMD64_IMAGE: '{{.BUILD_DIR}}/disk-amd64.img'
+
   # Diplomat (x86_64 UEFI bootloader) output files
   DIPLOMAT_EXE: '{{.BUILD_DIR}}/diplomat.exe'
   DIPLOMAT_EFI: '{{.BUILD_DIR}}/diplomat.efi'
@@ -362,6 +367,36 @@ tasks:
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.STDIO_ELF}} ./flock/cmd/stdio'
       - '{{.GO}} tool go-echo "Stdio built at {{.STDIO_ELF}}"'
 
+  dapope-amd64:
+    desc: Build dapope input event handler priest for AMD64
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.DAPOPE_AMD64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building dapope for AMD64..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DAPOPE_AMD64_ELF}} ./flock/cmd/dapope'
+      - '{{.GO}} tool go-echo "Dapope AMD64 built at {{.DAPOPE_AMD64_ELF}}"'
+
+  stdio-amd64:
+    desc: Build stdio console priest for AMD64
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.STDIO_AMD64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building stdio for AMD64..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.STDIO_AMD64_ELF}} ./flock/cmd/stdio'
+      - '{{.GO}} tool go-echo "Stdio AMD64 built at {{.STDIO_AMD64_ELF}}"'
+
   priest2:
     desc: Build priest2 scheduling test program
     deps: [check-env, userspace-overlay]
@@ -562,6 +597,23 @@ tasks:
       - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.PRIESTSIEVE_ELF}} {{.DAPOPE_ELF}} {{.STDIO_ELF}} {{.PRIEST2_ELF}} {{.PRIEST3_ELF}} {{.SIEVETEST_ELF}} {{.SIEVE3_ELF}} {{.SIEVE5_ELF}} {{.SIEVE6_ELF}} {{.SIEVE7_ELF}} {{.SIEVE8_ELF}} {{.SIEVE9_ELF}} {{.HELLOWORLD_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "Disk image created at {{.DISK_IMAGE}}"'
 
+  disk-amd64:
+    desc: Create FAT32 disk image with AMD64 flock binaries and kmazarin kernel
+    deps: [dapope-amd64, stdio-amd64, kmazarin-amd64, convert-boot-image]
+    sources:
+      - '{{.DAPOPE_AMD64_ELF}}'
+      - '{{.STDIO_AMD64_ELF}}'
+      - '{{.KMAZARIN_AMD64_ELF}}'
+      - '{{.BUILD_DIR}}/boot-image.bin'
+    generates:
+      - '{{.DISK_AMD64_IMAGE}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Creating FAT32 disk image for AMD64..."'
+      - '{{.GO}} tool go-cp {{.DAPOPE_AMD64_ELF}} {{.BUILD_DIR}}/dapope.elf'
+      - '{{.GO}} tool go-cp {{.STDIO_AMD64_ELF}} {{.BUILD_DIR}}/stdio.elf'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_AMD64_IMAGE}} {{.BUILD_DIR}}/dapope.elf {{.BUILD_DIR}}/stdio.elf {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool go-echo "AMD64 disk image created at {{.DISK_AMD64_IMAGE}}"'
+
   # ===========================================================================
   # Diplomat - x86_64 UEFI Bootloader
   # ===========================================================================
@@ -717,7 +769,7 @@ tasks:
 
   run-diplomat-kmazarin:
     desc: "Run x86_64 diplomat with real kmazarin in QEMU (TIMEOUT=N for timeout, default=5s)"
-    deps: [esp-kmazarin]
+    deps: [esp-kmazarin, disk-amd64]
     vars:
       TIMEOUT: '{{.TIMEOUT | default "5"}}'
       LOG_FILE: /tmp/diplomat-serial.log
@@ -742,7 +794,7 @@ tasks:
       LOG_FILE: /tmp/diplomat-serial.log
       FW_CODE: '{{if ne .OVMF ""}}{{.OVMF}}{{else}}{{dir .QEMU_AMD64}}/../share/qemu/edk2-x86_64-code.fd{{end}}'
     cmds:
-      - '{{.GO}} tool go-start {{.QEMU_AMD64}} -machine q35,accel=tcg -cpu max -m 8G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive file={{.BUILD_DIR}}/esp-kmazarin.img,format=raw,if=ide -boot c -serial file:{{.LOG_FILE}} -debugcon file:/tmp/diplomat-debug.log -monitor tcp:127.0.0.1:4445,server,nowait -device virtio-vga -display cocoa'
+      - '{{.GO}} tool go-start {{.QEMU_AMD64}} -machine q35,accel=tcg -cpu max -m 8G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive file={{.BUILD_DIR}}/esp-kmazarin.img,format=raw,if=ide -drive file={{.BUILD_DIR}}/disk-amd64.img,format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0,bus=pcie.0,addr=0x10 -boot c -serial file:{{.LOG_FILE}} -debugcon file:/tmp/diplomat-debug.log -monitor tcp:127.0.0.1:4445,server,nowait -device virtio-vga -display cocoa'
       - '{{.GO}} tool go-echo "QEMU (x86_64 + kmazarin) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4445"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
@@ -893,6 +945,49 @@ tasks:
     desc: Stop RISC-V 64-bit diplomat QEMU instance
     cmds:
       - cmd: '{{.GO}} tool go-nc -w 1s -c quit 127.0.0.1 4447'
+        ignore_error: true
+      - '{{.GO}} tool go-sleep 0.5'
+
+  # ===========================================================================
+  # Direct Kernel Boot (RISC-V) - Bypass UEFI
+  # ===========================================================================
+
+  run-direct-riscv64:
+    desc: "Run RISC-V kmazarin directly with OpenSBI (no UEFI, TIMEOUT=N for timeout, default=5s)"
+    deps: [kmazarin-riscv64, disk]
+    vars:
+      TIMEOUT: '{{.TIMEOUT | default "5"}}'
+      LOG_FILE: /tmp/kmazarin-riscv64-serial.log
+    cmds:
+      - task: stop-direct-riscv64
+      - '{{.GO}} tool go-rm {{.LOG_FILE}}'
+      - '{{.GO}} tool go-echo "Starting RISC-V kmazarin with direct kernel boot (timeout {{.TIMEOUT}}s)..."'
+      - task: run-direct-riscv64-background
+      - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
+      - task: stop-direct-riscv64
+      - '{{.GO}} tool go-sleep 0.3'
+      - '{{.GO}} tool go-echo'
+      - '{{.GO}} tool go-echo "=== RISC-V Kmazarin Serial Output ==="'
+      - '{{.GO}} tool safe-serial-read {{.LOG_FILE}}'
+      - '{{.GO}} tool go-echo'
+      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
+
+  run-direct-riscv64-background:
+    desc: Start QEMU with direct RISC-V kernel boot in background (internal task)
+    internal: true
+    vars:
+      LOG_FILE: /tmp/kmazarin-riscv64-serial.log
+      OPENSBI: '{{dir .QEMU_RISCV64}}/../share/qemu/opensbi-riscv64-generic-fw_dynamic.bin'
+    cmds:
+      - '{{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -cpu rv64 -m 2G -bios {{.OPENSBI}} -kernel {{.KMAZARIN_RISCV64_ELF}} -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-device,drive=flock0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4448,server,nowait -display {{.DISPLAY}} -no-reboot'
+      - '{{.GO}} tool go-echo "QEMU (RISC-V direct kernel boot) started in background"'
+      - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4448"'
+      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
+
+  stop-direct-riscv64:
+    desc: Stop RISC-V direct kernel boot QEMU instance
+    cmds:
+      - cmd: '{{.GO}} tool go-nc -w 1s -c quit 127.0.0.1 4448'
         ignore_error: true
       - '{{.GO}} tool go-sleep 0.5'
 

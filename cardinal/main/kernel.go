@@ -659,232 +659,23 @@ func premapUnifiedPoolBootstrap() {
 	asm.Isb()
 }
 
-// populateRuntimeConfig populates the RuntimeConfig structure at the beginning
-// of the StartupParams buffer. This provides kmazarin with immediate access to
-// all runtime configuration before the Go runtime initializes.
-//
-//go:nosplit
-func populateRuntimeConfig(kmazarinStartupParamsVA uintptr, ttbr1L0PA uintptr) {
-	// Get frame pool info
-	physAlloc := getKFrameAllocator()
-
-	// Use computed values from layout.go (not hardcoded)
-	const KernelVAOffset = uint64(0xFFFFFFFF00000000)
-
-	// PT pool addresses are dynamically computed from LinkerKmazarinSize
-	// by initComputedMemoryLayout() called during MMU setup.
-	// This ensures they're placed AFTER kmazarin's static regions.
-	ptPoolStart := uint64(computedPTPoolStart)
-	ptPoolEnd := uint64(computedPTPoolEnd)
-
-	// Use TTBR1 (kernel-space) addresses for heap - high memory
-	// This tests whether we can make Go work with high-memory addresses
-	// by patching the arena index checks in the Go runtime.
-	heapStart := uint64(constants.KernelHeapStart) // High memory: 0xFFFFFFFF41A00000
-	heapEnd := uint64(constants.KernelHeapEnd)     // High memory: 0xFFFFFFFF45800000
-
-	// Cast StartupParams buffer to RuntimeConfig struct
-	// Note: We're using shared/constants.RuntimeConfig structure
-	type RuntimeConfig struct {
-		Magic                uint32
-		Version              uint32
-		DtbPhysAddr          uint64
-		DtbSize              uint64
-		DtbVirtAddr          uint64
-		KmazarinPhysAddr     uint64
-		KmazarinSize         uint64
-		FramePoolStart       uint64
-		FramePoolEnd         uint64
-		KernelUartBase       uint64
-		KernelGicBase        uint64
-		TTBR1L0Phys          uint64
-		TTBR0L0Phys          uint64
-		StartupParamsAddr    uint64
-		KernelVAOffset       uint64
-		KernelPTPoolStart    uint64
-		KernelPTPoolEnd      uint64
-		KernelHeapStart      uint64
-		KernelHeapEnd        uint64
-		PageSize             uint64
-		HWCap                uint64
-		G0StackBottom        uint64
-		G0StackTop           uint64
-		G0StackSize          uint64
-		ExceptionStackBottom uint64
-		ExceptionStackTop    uint64
-		ExceptionStackSize   uint64
-		G0StructAddr         uint64 // High-memory address for g0 struct copy
-		AsyncPreemptAddr     uint64 // High-memory address of runtime.asyncPreempt
-		ReadyForAsyncPreempt uint64 // Address of readyForAsyncPreempt flag
-		FramebufferPhysAddr  uint64 // Physical address of VirtIO GPU framebuffer
-		FramebufferSize      uint64 // Size of framebuffer in bytes
-		BootImagePhysAddr    uint64 // Physical address of boot image data
-		BootImageSize        uint64 // Size of boot image in bytes
-		// New memory region fields
-		TotalRAMSize            uint64 // Total RAM size from DTB
-		RAMBaseAddr             uint64 // Base physical address of RAM
-		UserspaceFramePoolStart uint64 // Start PA of userspace frame pool
-		UserspaceFramePoolEnd   uint64 // End PA of userspace frame pool
-		UserspacePTPoolStart    uint64 // Start PA of userspace page table pool
-		UserspacePTPoolEnd      uint64 // End PA of userspace page table pool
-		// Unified page pool (replaces separate kernel/user pools)
-		UnifiedPoolStart uint64 // PA of unified pool start
-		UnifiedPoolEnd   uint64 // PA of unified pool end (RAM end - stacks)
-		// SMP configuration
-		CPUCount uint64 // Number of CPUs (typically 4 for QEMU virt)
-	}
-
-	config := (*RuntimeConfig)(unsafe.Pointer(kmazarinStartupParamsVA))
-
-	// Populate the struct
-	config.Magic = 0x4B4D5A52 // "KMZR"
-	config.Version = 1
-
-	// DTB information
-	dtbPhys := uint64(asm.GetDtbBootAddr())
-	config.DtbPhysAddr = dtbPhys
-	config.DtbSize = uint64(asm.GetDtbSize())
-	config.DtbVirtAddr = dtbPhys + KernelVAOffset // Compute DTB VA from physical
-
-	// Kmazarin binary information
-	config.KmazarinPhysAddr = uint64(constants.KmazarinLoadAddr)
-	config.KmazarinSize = uint64(kmazarinAllocatedBytes)
-
-	// ==========================================================================
-	// UNIFIED PAGE POOL SETUP
-	// ==========================================================================
-	// The unified pool starts right after kmazarin's loaded pages and extends
-	// to the end of RAM minus the stack reservation. All page allocations
-	// (kernel heap, kernel PT, user data, user PT) come from this single pool.
-	// Accounting tracks allocation types; soft limits warn on kernel overuse.
-
-	// Unified pool starts at next page-aligned address after kmazarin
-	unifiedPoolStart := (uint64(physAlloc.next) + 0xFFF) &^ 0xFFF
-
-	// Stack reservation at end of RAM:
-	// - g0 stack: 64KB below RAM end
-	// - Exception stack: 128KB below g0 stack
-	// Total: 192KB (0x30000) reserved
-	const stackReservation = 0x30000 // 192KB for stacks
-	ramEnd := detectedRAMBase + detectedRAMSize
-	unifiedPoolEnd := ramEnd - stackReservation
-	// Page-align the end
-	unifiedPoolEnd = unifiedPoolEnd &^ 0xFFF
-
-
-
-	// Legacy frame pool fields for backward compatibility
-	// These overlap with the unified pool - kmazarin will use unified pool
-	config.FramePoolStart = unifiedPoolStart
-	config.FramePoolEnd = unifiedPoolEnd
-
-	// MMIO devices (already in high memory)
-	config.KernelUartBase = uint64(constants.KernelUartBase)
-	config.KernelGicBase = uint64(constants.KernelGicBase)
-
-	// Page tables
-	config.TTBR1L0Phys = uint64(ttbr1L0PA)
-	config.TTBR0L0Phys = uint64(pageTableL0)
-	config.StartupParamsAddr = uint64(kmazarinStartupParamsVA)
-
-	// Memory layout
-	config.KernelVAOffset = KernelVAOffset
-	config.KernelPTPoolStart = ptPoolStart
-	config.KernelPTPoolEnd = ptPoolEnd
-	config.KernelHeapStart = heapStart
-	config.KernelHeapEnd = heapEnd
-
-	// Standard values
-	config.PageSize = 4096
-	config.HWCap = 0x2 // HWCAP_ASIMD
-
-	// CRITICAL: Pass KERNEL high-memory stack addresses (NOT Cardinal bootstrap stacks)
-	// All values computed from constants, not hardcoded
-	config.G0StackBottom = uint64(constants.KernelG0StackBottom)
-	config.G0StackTop = uint64(constants.KernelG0StackTop)
-	config.G0StackSize = uint64(constants.KernelG0StackSize)
-	config.ExceptionStackBottom = uint64(constants.KernelExcStackBottom)
-	config.ExceptionStackTop = uint64(constants.KernelExcStackTop)
-	config.ExceptionStackSize = uint64(constants.KernelExcStackSize)
-
-	// G0 struct address (for copying g struct to kmazarin high memory)
-	config.G0StructAddr = uint64(LinkerKmazarinG0Struct)
-
-	// AsyncPreempt address (for timer-based preemption in kmazarin)
-	config.AsyncPreemptAddr = uint64(LinkerKmazarinAsyncPreempt)
-
-	// ReadyForAsyncPreempt flag address (kmazarin checks this before preempting)
-	config.ReadyForAsyncPreempt = uint64(LinkerKmazarinReadyForPreempt)
-
-	// VirtIO GPU framebuffer information
-	config.FramebufferPhysAddr = uint64(constants.FramebufferPhysAddr)
-	config.FramebufferSize = uint64(constants.FramebufferSize)
-
-	// Boot image is loaded from disk by kmazarin, no longer embedded in cardinal
-	config.BootImagePhysAddr = 0
-	config.BootImageSize = 0
-
-	// Memory region layout from DTB detection (populated by detectAndComputeMemoryRegions)
-	config.TotalRAMSize = detectedRAMSize
-	config.RAMBaseAddr = detectedRAMBase
-
-	// Legacy userspace pool fields - set to unified pool values for backward compatibility
-	// These are deprecated; kmazarin should use UnifiedPoolStart/End instead
-	config.UserspaceFramePoolStart = unifiedPoolStart
-	config.UserspaceFramePoolEnd = unifiedPoolEnd
-	config.UserspacePTPoolStart = unifiedPoolStart
-	config.UserspacePTPoolEnd = unifiedPoolEnd
-
-	// NEW: Unified pool replaces all separate pools
-	config.UnifiedPoolStart = unifiedPoolStart
-	config.UnifiedPoolEnd = unifiedPoolEnd
-
-	// SMP configuration - QEMU virt defaults to 4 CPUs
-	// TODO: Detect from DTB or MPIDR if needed
-	config.CPUCount = 4
-
-	// Ensure writes complete
-	asm.Dsb()
-}
-
 // setupKmazarinStartupEnv sets up the argc/argv/envp/auxv structure that the Go runtime expects
 // Returns: (stackPointer, argc, argv)
 //   - stackPointer: pointer to the start of the structure (for SP register)
 //   - argc: argument count (for R0 register)
 //   - argv: pointer to argv array (for R1 register)
 //
-// The structure layout in memory (byte offsets):
-//   [0]   = argc (int64, value: 1)
-//   [8]   = argv[0] (pointer to program name string at offset 256)
-//   [16]  = NULL (end of argv)
-//   [24]  = NULL (end of envp, empty environment)
-//   [32]  = auxv[0].tag (AT_PAGESZ = 6)
-//   [40]  = auxv[0].value (4096)
-//   [48]  = auxv[1].tag (AT_RANDOM = 25)
-//   [56]  = auxv[1].value (pointer to random bytes at offset 272)
-//   [64]  = auxv[2].tag (AT_SECURE = 23)
-//   [72]  = auxv[2].value (0)
-//   [80]  = auxv[3].tag (AT_HWCAP = 16)
-//   [88]  = auxv[3].value (HWCAP_ASIMD = 0x2)
-//   [96]  = auxv[4].tag (AT_NULL = 0)
-//   [104] = auxv[4].value (0)
-//   [256] = program name string "kmazarin\0"
-//   [272] = random bytes (16 bytes, 128 bits)
-//
-// This matches the Linux kernel's ELF loader behavior.
-//
-// NOTE: All Cardinal boot information (DTB, frame pools, UART, GIC, TTBR1, etc.)
-// is passed via RuntimeConfig structure at the beginning of StartupParams buffer,
-// eliminating the need for custom AT_* auxv entries. RuntimeConfig is the single
-// source of truth.
+// All Cardinal boot information (DTB, frame pools, UART, GIC, TTBR1, etc.)
+// is passed via custom AT_* auxv entries, which are parsed by the runtime overlay
+// in kmazarin before the Go runtime completes initialization.
 //
 //go:nosplit
-func setupKmazarinStartupEnv(kmazarinStartupParamsVA uintptr) (stackPointer uintptr, argc uint64, argv uintptr) {
+func setupKmazarinStartupEnv(ttbr1L0PA, ttbr0L0PA uintptr) (stackPointer uintptr, argc uint64, argv uintptr) {
 	// CRITICAL: Place argc/argv/envp/auxv at the TOP of the kernel g0 stack (high memory)
 	// The kernel g0 stack is already mapped by setupKernelStacks() using computed addresses
 	// from constants. We place the parameters near the top, leaving room for stack growth.
 	kernelG0StackTop := uintptr(constants.KernelG0StackTop)
-	const paramSize = 0x200  // 512 bytes for argc/argv/envp/auxv structure
+	const paramSize = 0x400  // 1KB for argc/argv/envp/auxv structure (more auxv entries now)
 
 	// Place structure 512 bytes below stack top
 	structStart := kernelG0StackTop - paramSize
@@ -947,33 +738,93 @@ func setupKmazarinStartupEnv(kmazarinStartupParamsVA uintptr) (stackPointer uint
 	data[5] = 0
 
 	// Auxiliary vector starts at index 6 (after envp NULL terminator)
-	// AT_PAGESZ = 6: Physical page size
-	data[6] = 6
-	data[7] = 4096
-	// AT_RANDOM = 25: pointer to 16 bytes of random data
-	data[8] = 25
-	data[9] = uint64(randomBytesAddr)
-	// AT_SECURE = 23: secure mode flag (0 = not secure)
-	data[10] = 23
-	data[11] = 0
-	// AT_HWCAP = 16: ARM64 hardware capability bits
-	// Go runtime uses this via archauxv() -> cpu.HWCap for feature detection
-	// Provide basic ASIMD/NEON capability (bit 1) which is mandatory on AArch64
-	data[12] = 16
-	data[13] = 0x2 // HWCAP_ASIMD - Advanced SIMD (NEON)
+	idx := 6
 
-	// AT_KMAZARIN_HEAP_START/END: Kernel heap VA bounds
-	// These are parsed by the runtime overlay BEFORE first mmap call,
-	// allowing dynamic heap sizing based on kmazarin binary size.
-	// The heap starts after kmazarin's static regions and extends to the limit.
-	data[14] = constants.AT_KMAZARIN_HEAP_START
-	data[15] = uint64(constants.KernelHeapStart)
-	data[16] = constants.AT_KMAZARIN_HEAP_END
-	data[17] = uint64(constants.KernelHeapEnd)
+	// Standard auxv entries
+	data[idx] = 6     // AT_PAGESZ
+	data[idx+1] = 4096
+	idx += 2
 
-	// AT_NULL = 0 (terminator)
-	data[18] = 0
-	data[19] = 0
+	data[idx] = 25    // AT_RANDOM
+	data[idx+1] = uint64(randomBytesAddr)
+	idx += 2
+
+	data[idx] = 23    // AT_SECURE
+	data[idx+1] = 0
+	idx += 2
+
+	data[idx] = 16    // AT_HWCAP
+	data[idx+1] = 0x2 // HWCAP_ASIMD
+	idx += 2
+
+	// Kernel heap bounds (parsed by runtime overlay before first mmap)
+	data[idx] = constants.AT_KMAZARIN_HEAP_START
+	data[idx+1] = uint64(constants.KernelHeapStart)
+	idx += 2
+
+	data[idx] = constants.AT_KMAZARIN_HEAP_END
+	data[idx+1] = uint64(constants.KernelHeapEnd)
+	idx += 2
+
+	// Page table addresses
+	data[idx] = constants.AT_TTBR1_L0_PHYS
+	data[idx+1] = uint64(ttbr1L0PA)
+	idx += 2
+
+	data[idx] = constants.AT_TTBR0_L0_PHYS
+	data[idx+1] = uint64(ttbr0L0PA)
+	idx += 2
+
+	// Unified memory pool (all physical pages from kmazarin end to RAM end minus stacks)
+	physAlloc := getKFrameAllocator()
+	unifiedPoolStart := (uint64(physAlloc.next) + 0xFFF) &^ 0xFFF
+	const stackReservation = 0x30000 // 192KB for stacks
+	ramEnd := detectedRAMBase + detectedRAMSize
+	unifiedPoolEnd := (ramEnd - stackReservation) &^ 0xFFF
+
+	data[idx] = constants.AT_UNIFIED_POOL_START
+	data[idx+1] = unifiedPoolStart
+	idx += 2
+
+	data[idx] = constants.AT_UNIFIED_POOL_END
+	data[idx+1] = unifiedPoolEnd
+	idx += 2
+
+	// Legacy frame pool (same as unified pool for backward compatibility)
+	data[idx] = constants.AT_FRAME_POOL_START
+	data[idx+1] = unifiedPoolStart
+	idx += 2
+
+	data[idx] = constants.AT_FRAME_POOL_END
+	data[idx+1] = unifiedPoolEnd
+	idx += 2
+
+	// Kmazarin binary size
+	data[idx] = constants.AT_KMAZARIN_SIZE
+	data[idx+1] = uint64(kmazarinAllocatedBytes)
+	idx += 2
+
+	// DTB information
+	data[idx] = constants.AT_DTB_PHYS
+	data[idx+1] = uint64(asm.GetDtbBootAddr())
+	idx += 2
+
+	// System configuration
+	data[idx] = constants.AT_CPU_COUNT
+	data[idx+1] = 4 // QEMU virt defaults to 4 CPUs
+	idx += 2
+
+	data[idx] = constants.AT_RAM_BASE
+	data[idx+1] = detectedRAMBase
+	idx += 2
+
+	data[idx] = constants.AT_RAM_SIZE
+	data[idx+1] = detectedRAMSize
+	idx += 2
+
+	// AT_NULL terminator
+	data[idx] = 0
+	data[idx+1] = 0
 
 	// ========================================================================
 	// Return stack pointer - structure is already on kernel g0 stack
@@ -1206,8 +1057,6 @@ func parseKmazarinElfSymbols(elfData []byte) uint64 {
 		// Match symbols - convert to high-memory addresses
 		if matchSymbol("main.ExceptionVectorTable") || matchSymbol("main.ExceptionVectorTable.abi0") {
 			LinkerKmazarinExceptionVector = highMemValue
-		} else if matchSymbol("main.StartupParams") {
-			LinkerKmazarinStartupParams = highMemValue
 		} else if matchSymbol("main.G0Struct") {
 			LinkerKmazarinG0Struct = highMemValue
 		} else if matchSymbol("runtime.asyncPreempt") || matchSymbol("runtime.asyncPreempt.abi0") {
@@ -1299,11 +1148,6 @@ func loadAndRunKmazarin() {
 
 	// Track min/max VAs for page fault handler registration
 	var minVA, maxVA uintptr
-
-	// Get kmazarin's StartupParams address from linker symbol
-	// This is where Cardinal will copy argc/argv/envp/auxv before jumping
-	// The address is extracted from kmazarin.elf symbol table at build time
-	kmazarinStartupParamsVA := uintptr(LinkerKmazarinStartupParams)
 
 	// Process each program header
 	for i := uint16(0); i < phnum; i++ {
@@ -1602,12 +1446,8 @@ func loadAndRunKmazarin() {
 	// The linear map creates 2MB block mappings that cover all physical memory.
 	// Any PA can now be accessed via VA = PA + KernelVAOffset without faulting.
 
-	// CRITICAL: Populate RuntimeConfig in StartupParams buffer FIRST
-	// This must happen before jumping to kmazarin, so config is available immediately
-	populateRuntimeConfig(kmazarinStartupParamsVA, kernelPageTableL0)
-
-	// Set up argc/argv/envp/auxv structure on g0 stack
-	stackPointer, argc, argv := setupKmazarinStartupEnv(kmazarinStartupParamsVA)
+	// Set up argc/argv/envp/auxv structure on g0 stack with all boot information
+	stackPointer, argc, argv := setupKmazarinStartupEnv(kernelPageTableL0, pageTableL0)
 	if stackPointer == 0 || argv == 0 {
 		uartPutsDirect("ERROR: Environment setup failed!\r\n")
 		return
