@@ -1,18 +1,24 @@
 # Taskfile for mazzy - Go Native Toolchain Build (Shell-Free)
-# Builds bare-metal ARM64 kernel (Cardinal + Kmazarin) and flock userspace programs
+# Builds diplomat UEFI bootloader + kmazarin kernel for ARM64, x86_64, and RISC-V
 #
 # Usage:
-#   task              # Build cardinal and kmazarin (default)
-#   task cardinal     # Build cardinal bootloader
-#   task kmazarin     # Build kmazarin kernel
-#   task priest       # Build priest syscall router
-#   task disk         # Create FAT32 disk image
-#   task clean        # Remove build artifacts
+#   task                          # Build diplomat + kmazarin for ARM64 (default)
+#   task run                      # Build and run ARM64 diplomat+kmazarin in QEMU
+#   task run-amd64                # Build and run x86_64 diplomat+kmazarin in QEMU
+#   task run-diplomat-riscv64     # Build and run RISC-V diplomat+kmazarin in QEMU
+#   task kmazarin                 # Build kmazarin kernel (ARM64)
+#   task kmazarin-amd64           # Build kmazarin kernel (x86_64)
+#   task kmazarin-riscv64         # Build kmazarin kernel (RISC-V)
+#   task disk                     # Create FAT32 disk image (ARM64 userspace)
+#   task disk-amd64               # Create FAT32 disk image (x86_64 userspace)
+#   task disk-riscv64             # Create FAT32 disk image (RISC-V userspace)
+#   task clean                    # Remove build artifacts
 #
 # Environment:
 #   GO=/path/to/go                        # Go compiler (>= 1.24)
 #   QEMU=/path/to/qemu-system-aarch64     # QEMU ARM64 (>= 10.2)
 #   QEMU_AMD64=/path/to/qemu-system-x86_64  # QEMU x86_64 for diplomat
+#   QEMU_RISCV64=/path/to/qemu-system-riscv64  # QEMU RISC-V for diplomat
 #   OVMF=/path/to/edk2-x86_64-code.fd     # OVMF firmware for diplomat
 #   GOTOOLCHAIN=auto                      # Required
 #   DEBUG=1                               # Optional: disable optimizations
@@ -36,16 +42,15 @@ vars:
   # QEMU display: cocoa on macOS, sdl everywhere else
   DISPLAY: '{{if eq OS "darwin"}}cocoa{{else}}sdl{{end}}'
 
-  # Kmazarin load address - must match cardinal/constants.KmazarinLoadAddr
+  # Kmazarin load address - must match shared/constants.KmazarinLoadAddr
   # If the constant changes, check-env will fail with a clear error message.
   KMAZARIN_LOAD_ADDR: "0x43800000"
 
   # Debug build: disable optimizations and inlining
-  # Usage: DEBUG=1 task cardinal
+  # Usage: DEBUG=1 task kmazarin
   GCFLAGS: '{{if eq .DEBUG "1"}}-gcflags=all=-N -l{{end}}'
 
   # Output files
-  CARDINAL_ELF: '{{.BUILD_DIR}}/cardinal.elf'
   KMAZARIN_ELF: '{{.BUILD_DIR}}/kmazarin.elf'
   KMAZARIN_OVERLAY_JSON: '{{.BUILD_DIR}}/kmazarin-overlay.json'
   USERSPACE_OVERLAY_JSON: '{{.BUILD_DIR}}/userspace-overlay.json'
@@ -72,6 +77,11 @@ vars:
   STDIO_AMD64_ELF: '{{.BUILD_DIR}}/stdio-amd64.elf'
   DISK_AMD64_IMAGE: '{{.BUILD_DIR}}/disk-amd64.img'
 
+  # RISC-V 64-bit userspace programs (for diplomat riscv64)
+  DAPOPE_RISCV64_ELF: '{{.BUILD_DIR}}/dapope-riscv64.elf'
+  STDIO_RISCV64_ELF: '{{.BUILD_DIR}}/stdio-riscv64.elf'
+  DISK_RISCV64_IMAGE: '{{.BUILD_DIR}}/disk-riscv64.img'
+
   # Diplomat (x86_64 UEFI bootloader) output files
   DIPLOMAT_EXE: '{{.BUILD_DIR}}/diplomat.exe'
   DIPLOMAT_EFI: '{{.BUILD_DIR}}/diplomat.efi'
@@ -82,10 +92,8 @@ vars:
   ESP_ARM64_IMAGE: '{{.BUILD_DIR}}/esp-arm64.img'
   OVMF_ARM64: '{{env "OVMF_ARM64" | default ""}}'
 
-  # Diplomat RISC-V 64-bit UEFI
-  DIPLOMAT_RISCV64_EFI: '{{.BUILD_DIR}}/diplomat-riscv64.efi'
-  ESP_RISCV64_IMAGE: '{{.BUILD_DIR}}/esp-riscv64.img'
-  OVMF_RISCV64: '{{env "OVMF_RISCV64" | default ""}}'
+  # Diplomat RISC-V 64-bit (ELF, loaded via -kernel — UEFI firmware broken on RISC-V)
+  DIPLOMAT_RISCV64_ELF: '{{.BUILD_DIR}}/diplomat-riscv64.elf'
 
   # Kmazarin AMD64 (for diplomat x86_64 boot)
   KMAZARIN_AMD64_ELF: '{{.BUILD_DIR}}/kmazarin-amd64.elf'
@@ -293,32 +301,6 @@ tasks:
       - '{{.GO}} tool go-echo "Kmazarin RISC-V 64-bit kernel built at {{.KMAZARIN_RISCV64_ELF}}"'
 
   # ===========================================================================
-  # Cardinal Bootloader Build
-  # ===========================================================================
-
-  cardinal:
-    run: once
-    desc: Build cardinal bootloader
-    deps: [check-env, kmazarin, cardinal-linux-overlay]
-    sources:
-      - 'cardinal/**/*.go'
-      - 'cardinal/**/*.s'
-      - '{{.KMAZARIN_ELF}}'
-      - '{{.BUILD_DIR}}/cardinal-linux-overlay.json'
-    generates:
-      - '{{.CARDINAL_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building cardinal bootloader..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build {{.GCFLAGS}} -ldflags="-checklinkname=0 -T 0x40100000" -overlay={{.BUILD_DIR}}/cardinal-linux-overlay.json -o {{.CARDINAL_ELF}} ./cardinal/main'
-      - '{{.GO}} tool go-echo "Patching entry point to _cardinal_boot..."'
-      - '{{.GO}} tool patch-entry {{.CARDINAL_ELF}} _cardinal_boot'
-      - '{{.GO}} tool go-echo "Patching linker values..."'
-      - '{{.GO}} tool compute-linker-values -patch -kmazarin {{.KMAZARIN_ELF}} {{.CARDINAL_ELF}}'
-      - '{{.GO}} tool go-echo "Fixing ELF for QEMU compatibility..."'
-      - '{{.GO}} tool fix-go-elf {{.CARDINAL_ELF}}'
-      - '{{.GO}} tool go-echo "Cardinal ready at {{.CARDINAL_ELF}}"'
-
-  # ===========================================================================
   # Flock Userspace Programs
   # ===========================================================================
 
@@ -396,6 +378,36 @@ tasks:
       - '{{.GO}} tool go-echo "Building stdio for AMD64..."'
       - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.STDIO_AMD64_ELF}} ./flock/cmd/stdio'
       - '{{.GO}} tool go-echo "Stdio AMD64 built at {{.STDIO_AMD64_ELF}}"'
+
+  dapope-riscv64:
+    desc: Build dapope input event handler priest for RISC-V 64-bit
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.DAPOPE_RISCV64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building dapope for RISC-V 64-bit..."'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DAPOPE_RISCV64_ELF}} ./flock/cmd/dapope'
+      - '{{.GO}} tool go-echo "Dapope RISC-V 64-bit built at {{.DAPOPE_RISCV64_ELF}}"'
+
+  stdio-riscv64:
+    desc: Build stdio console priest for RISC-V 64-bit
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.STDIO_RISCV64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building stdio for RISC-V 64-bit..."'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.STDIO_RISCV64_ELF}} ./flock/cmd/stdio'
+      - '{{.GO}} tool go-echo "Stdio RISC-V 64-bit built at {{.STDIO_RISCV64_ELF}}"'
 
   priest2:
     desc: Build priest2 scheduling test program
@@ -609,10 +621,30 @@ tasks:
       - '{{.DISK_AMD64_IMAGE}}'
     cmds:
       - '{{.GO}} tool go-echo "Creating FAT32 disk image for AMD64..."'
-      - '{{.GO}} tool go-cp {{.DAPOPE_AMD64_ELF}} {{.BUILD_DIR}}/dapope.elf'
-      - '{{.GO}} tool go-cp {{.STDIO_AMD64_ELF}} {{.BUILD_DIR}}/stdio.elf'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_AMD64_IMAGE}} {{.BUILD_DIR}}/dapope.elf {{.BUILD_DIR}}/stdio.elf {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      # Stage amd64 ELFs in a subdirectory so we don't overwrite ARM64 build/dapope.elf
+      - '{{.GO}} tool go-mkdir {{.BUILD_DIR}}/disk-staging-amd64'
+      - '{{.GO}} tool go-cp {{.DAPOPE_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf'
+      - '{{.GO}} tool go-cp {{.STDIO_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_AMD64_IMAGE}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "AMD64 disk image created at {{.DISK_AMD64_IMAGE}}"'
+
+  disk-riscv64:
+    desc: Create FAT32 disk image with RISC-V 64-bit flock binaries and kmazarin kernel
+    deps: [dapope-riscv64, stdio-riscv64, kmazarin-riscv64, convert-boot-image]
+    sources:
+      - '{{.DAPOPE_RISCV64_ELF}}'
+      - '{{.STDIO_RISCV64_ELF}}'
+      - '{{.KMAZARIN_RISCV64_ELF}}'
+      - '{{.BUILD_DIR}}/boot-image.bin'
+    generates:
+      - '{{.DISK_RISCV64_IMAGE}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Creating FAT32 disk image for RISC-V 64-bit..."'
+      - '{{.GO}} tool go-mkdir {{.BUILD_DIR}}/disk-staging-riscv64'
+      - '{{.GO}} tool go-cp {{.DAPOPE_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/dapope.elf'
+      - '{{.GO}} tool go-cp {{.STDIO_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/stdio.elf'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_RISCV64_IMAGE}} {{.BUILD_DIR}}/disk-staging-riscv64/dapope.elf {{.BUILD_DIR}}/disk-staging-riscv64/stdio.elf {{.KMAZARIN_RISCV64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool go-echo "RISC-V 64-bit disk image created at {{.DISK_RISCV64_IMAGE}}"'
 
   # ===========================================================================
   # Diplomat - x86_64 UEFI Bootloader
@@ -638,17 +670,6 @@ tasks:
       - '{{.BUILD_DIR}}/elf2pe'
     cmds:
       - '{{.GO}} build -o {{.BUILD_DIR}}/elf2pe ./cmd/elf2pe'
-
-  cardinal-linux-overlay:
-    run: once
-    desc: Generate overlay JSON for cardinal runtime patches (Linux ARM64→bare metal)
-    deps: [gen-overlay]
-    sources:
-      - 'runtime-patches/cardinal-linux/**/*'
-    generates:
-      - '{{.BUILD_DIR}}/cardinal-linux-overlay.json'
-    cmds:
-      - '{{.BUILD_DIR}}/gen-overlay -type cardinal-linux -patches runtime-patches/cardinal-linux -o {{.BUILD_DIR}}/cardinal-linux-overlay.json'
 
   diplomat-linux-overlay:
     desc: Generate overlay JSON for diplomat runtime patches (Linux→UEFI)
@@ -697,22 +718,21 @@ tasks:
       - '{{.GO}} tool go-echo "Diplomat ARM64 EFI ready at {{.BUILD_DIR}}/diplomat-arm64.efi"'
 
   diplomat-riscv64:
-    desc: Build diplomat UEFI bootloader for RISC-V 64-bit
-    deps: [check-env, build-dir, elf2pe, diplomat-linux-overlay]
+    desc: Build diplomat for RISC-V 64-bit (ELF, loaded via QEMU -kernel)
+    deps: [check-env, build-dir, diplomat-linux-overlay]
     sources:
       - 'diplomat/**/*.go'
       - 'diplomat/**/*.s'
       - 'shared/**/*.go'
       - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
     generates:
-      - '{{.DIPLOMAT_RISCV64_EFI}}'
+      - '{{.DIPLOMAT_RISCV64_ELF}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building diplomat for RISC-V 64-bit UEFI (via Linux/riscv64)..."'
-      # Step 1: Build as Linux ELF with runtime patches
-      - 'CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 {{.GO}} build -ldflags="-checklinkname=0" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.BUILD_DIR}}/diplomat-riscv64.elf ./diplomat/main'
-      # Step 2: Convert ELF to PE format for UEFI
-      - '{{.BUILD_DIR}}/elf2pe {{.BUILD_DIR}}/diplomat-riscv64.elf {{.DIPLOMAT_RISCV64_EFI}}'
-      - '{{.GO}} tool go-echo "Diplomat RISC-V 64-bit EFI ready at {{.DIPLOMAT_RISCV64_EFI}}"'
+      - '{{.GO}} tool go-echo "Building diplomat for RISC-V 64-bit (ELF for -kernel loading)..."'
+      # Build as Linux ELF with runtime patches — no elf2pe conversion needed.
+      # UEFI firmware is broken on RISC-V, so we load via QEMU -kernel + OpenSBI.
+      - 'CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 {{.GO}} build -ldflags="-checklinkname=0" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.DIPLOMAT_RISCV64_ELF}} ./diplomat/main'
+      - '{{.GO}} tool go-echo "Diplomat RISC-V 64-bit ELF ready at {{.DIPLOMAT_RISCV64_ELF}}"'
 
   mkesp:
     desc: Build the ESP image creator
@@ -794,7 +814,7 @@ tasks:
       LOG_FILE: /tmp/diplomat-serial.log
       FW_CODE: '{{if ne .OVMF ""}}{{.OVMF}}{{else}}{{dir .QEMU_AMD64}}/../share/qemu/edk2-x86_64-code.fd{{end}}'
     cmds:
-      - '{{.GO}} tool go-start {{.QEMU_AMD64}} -machine q35,accel=tcg -cpu max -m 8G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive file={{.BUILD_DIR}}/esp-kmazarin.img,format=raw,if=ide -drive file={{.BUILD_DIR}}/disk-amd64.img,format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0,bus=pcie.0,addr=0x10 -boot c -serial file:{{.LOG_FILE}} -debugcon file:/tmp/diplomat-debug.log -monitor tcp:127.0.0.1:4445,server,nowait -device virtio-vga -display cocoa'
+      - '{{.GO}} tool go-start {{.QEMU_AMD64}} -machine q35,accel=tcg -cpu max -m 8G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive file={{.BUILD_DIR}}/esp-kmazarin.img,format=raw,if=ide -drive file={{.BUILD_DIR}}/disk-amd64.img,format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0,bus=pcie.0,addr=0x10 -boot c -serial file:{{.LOG_FILE}} -debugcon file:/tmp/diplomat-debug.log -monitor tcp:127.0.0.1:4445,server,nowait -device virtio-vga -device virtio-keyboard-pci -device virtio-mouse-pci -display cocoa'
       - '{{.GO}} tool go-echo "QEMU (x86_64 + kmazarin) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4445"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
@@ -881,7 +901,7 @@ tasks:
       FW_VARS_TEMPLATE: '{{if ne .OVMF_ARM64 ""}}{{dir .OVMF_ARM64}}/edk2-arm-vars.fd{{else}}{{dir .QEMU}}/../share/qemu/edk2-arm-vars.fd{{end}}'
     cmds:
       - '{{.GO}} tool go-cp {{.FW_VARS_TEMPLATE}} {{.BUILD_DIR}}/edk2-arm-vars.fd'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt -cpu cortex-a72 -m 2G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-device,drive=flock0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt -cpu cortex-a72 -m 2G -rtc base=utc,clock=host -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-pci,drive=flock0,bus=pcie.0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (ARM64 UEFI) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4446"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
@@ -893,30 +913,16 @@ tasks:
         ignore_error: true
       - '{{.GO}} tool go-sleep 0.5'
 
-  esp-riscv64:
-    desc: Create EFI System Partition image for RISC-V 64-bit diplomat
-    deps: [diplomat-riscv64, mkesp, kmazarin-riscv64]
-    sources:
-      - '{{.DIPLOMAT_RISCV64_EFI}}'
-      - '{{.KMAZARIN_RISCV64_ELF}}'
-      - kmazarin.toml
-    generates:
-      - '{{.ESP_RISCV64_IMAGE}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Creating RISC-V 64-bit ESP image..."'
-      - '{{.BUILD_DIR}}/mkesp -arch riscv64 -bootloader {{.DIPLOMAT_RISCV64_EFI}} -kernel {{.KMAZARIN_RISCV64_ELF}} -config kmazarin.toml -o {{.ESP_RISCV64_IMAGE}} -size 260'
-      - '{{.GO}} tool go-echo "ESP (RISC-V 64-bit) created at {{.ESP_RISCV64_IMAGE}}"'
-
   run-diplomat-riscv64:
-    desc: "Run diplomat RISC-V 64-bit in QEMU with UEFI firmware (TIMEOUT=N for timeout, default=5s)"
-    deps: [esp-riscv64, disk]
+    desc: "Run RISC-V diplomat+kmazarin in QEMU via OpenSBI -kernel (TIMEOUT=N for timeout, default=5s)"
+    deps: [diplomat-riscv64, disk-riscv64]
     vars:
       TIMEOUT: '{{.TIMEOUT | default "5"}}'
       LOG_FILE: /tmp/diplomat-riscv64-serial.log
     cmds:
       - task: stop-diplomat-riscv64
       - '{{.GO}} tool go-rm {{.LOG_FILE}}'
-      - '{{.GO}} tool go-echo "Starting diplomat RISC-V 64-bit in QEMU (timeout {{.TIMEOUT}}s)..."'
+      - '{{.GO}} tool go-echo "Starting RISC-V diplomat+kmazarin in QEMU (timeout {{.TIMEOUT}}s)..."'
       - task: run-diplomat-riscv64-background
       - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
       - task: stop-diplomat-riscv64
@@ -928,21 +934,20 @@ tasks:
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
 
   run-diplomat-riscv64-background:
-    desc: Start QEMU with RISC-V 64-bit diplomat in background (internal task)
+    desc: Start QEMU with RISC-V diplomat via OpenSBI -kernel in background (internal task)
     internal: true
     vars:
       LOG_FILE: /tmp/diplomat-riscv64-serial.log
-      FW_CODE: '{{if ne .OVMF_RISCV64 ""}}{{.OVMF_RISCV64}}{{else}}{{dir .QEMU_RISCV64}}/../share/qemu/edk2-riscv-code.fd{{end}}'
-      FW_VARS_TEMPLATE: '{{if ne .OVMF_RISCV64 ""}}{{dir .OVMF_RISCV64}}/edk2-riscv-vars.fd{{else}}{{dir .QEMU_RISCV64}}/../share/qemu/edk2-riscv-vars.fd{{end}}'
     cmds:
-      - '{{.GO}} tool go-cp {{.FW_VARS_TEMPLATE}} {{.BUILD_DIR}}/edk2-riscv-vars.fd'
-      - '{{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -cpu rv64 -m 2G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-riscv-vars.fd -drive file={{.ESP_RISCV64_IMAGE}},format=raw,if=virtio -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-device,drive=flock0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot'
-      - '{{.GO}} tool go-echo "QEMU (RISC-V 64-bit UEFI) started in background"'
+      # No UEFI firmware — QEMU uses built-in OpenSBI when -kernel is specified.
+      # OpenSBI loads diplomat ELF into S-mode. Diplomat reads kmazarin from disk.
+      - '{{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m 2G -rtc base=utc,clock=host -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot'
+      - '{{.GO}} tool go-echo "QEMU (RISC-V diplomat+kmazarin via OpenSBI) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4447"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
 
   stop-diplomat-riscv64:
-    desc: Stop RISC-V 64-bit diplomat QEMU instance
+    desc: Stop RISC-V diplomat QEMU instance
     cmds:
       - cmd: '{{.GO}} tool go-nc -w 1s -c quit 127.0.0.1 4447'
         ignore_error: true
@@ -979,7 +984,7 @@ tasks:
       LOG_FILE: /tmp/kmazarin-riscv64-serial.log
       OPENSBI: '{{dir .QEMU_RISCV64}}/../share/qemu/opensbi-riscv64-generic-fw_dynamic.bin'
     cmds:
-      - '{{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -cpu rv64 -m 2G -bios {{.OPENSBI}} -kernel {{.KMAZARIN_RISCV64_ELF}} -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-device,drive=flock0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4448,server,nowait -display {{.DISPLAY}} -no-reboot'
+      - '{{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -cpu rv64 -m 2G -bios {{.OPENSBI}} -kernel {{.KMAZARIN_RISCV64_ELF}} -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-pci,drive=flock0,bus=pcie.0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4448,server,nowait -display {{.DISPLAY}} -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (RISC-V direct kernel boot) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4448"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
@@ -992,60 +997,29 @@ tasks:
       - '{{.GO}} tool go-sleep 0.5'
 
   # ===========================================================================
-  # Run and Stop
+  # Run and Stop (diplomat-based)
   # ===========================================================================
 
   run:
-    desc: "Run QEMU with cardinal/kmazarin (TIMEOUT=N for timeout, SMP=N for CPU count)"
-    deps: [disk, cardinal]
-    vars:
-      TIMEOUT: '{{.TIMEOUT | default "5"}}'
-      SMP: '{{.SMP | default "4"}}'
-      LOG_FILE: /tmp/cardinal-serial.log
+    desc: "Run ARM64 diplomat+kmazarin in QEMU (shorthand for run-diplomat-arm64)"
     cmds:
-      - task: stop
-      - '{{.GO}} tool go-rm {{.LOG_FILE}}'
-      - task: run-qemu-background
+      - task: run-diplomat-arm64
         vars:
-          SMP: '{{.SMP}}'
-          LOG_FILE: '{{.LOG_FILE}}'
-      - task: '{{if eq .TIMEOUT "0"}}run-indefinite{{else}}run-timed{{end}}'
+          TIMEOUT: '{{.TIMEOUT | default "5"}}'
+
+  run-amd64:
+    desc: "Run x86_64 diplomat+kmazarin in QEMU (shorthand for run-diplomat-kmazarin)"
+    cmds:
+      - task: run-diplomat-kmazarin
         vars:
-          TIMEOUT: '{{.TIMEOUT}}'
-          LOG_FILE: '{{.LOG_FILE}}'
+          TIMEOUT: '{{.TIMEOUT | default "5"}}'
 
-  run-timed:
-    desc: "Run QEMU with a timeout (internal)"
-    internal: true
+  run-riscv64:
+    desc: "Run RISC-V diplomat+kmazarin in QEMU (shorthand for run-diplomat-riscv64)"
     cmds:
-      - '{{.GO}} tool go-echo "Starting QEMU (timeout {{.TIMEOUT}}s)..."'
-      - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
-      - task: stop
-      - '{{.GO}} tool go-sleep 0.3'
-      - '{{.GO}} tool go-echo'
-      - '{{.GO}} tool go-echo "=== Serial Output (last 50 lines) ==="'
-      - '{{.GO}} tool safe-serial-read'
-      - '{{.GO}} tool go-echo'
-      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
-
-  run-indefinite:
-    desc: "Run QEMU indefinitely (internal)"
-    internal: true
-    cmds:
-      - '{{.GO}} tool go-echo "QEMU running indefinitely. Use $GO tool task stop to stop."'
-      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
-
-  run-qemu-background:
-    desc: Start QEMU in background (internal task)
-    internal: true
-    vars:
-      LOG_FILE: /tmp/cardinal-serial.log
-      SMP: '{{.SMP | default "4"}}'
-    cmds:
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -smp {{.SMP}} -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0'
-      - '{{.GO}} tool go-echo "QEMU started in background ({{.SMP}} CPUs)"'
-      - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4444"'
-      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
+      - task: run-diplomat-riscv64
+        vars:
+          TIMEOUT: '{{.TIMEOUT | default "5"}}'
 
   qemu-console:
     desc: "Send command to QEMU monitor (CMD='info registers' or other QEMU command)"
@@ -1067,107 +1041,6 @@ tasks:
         ignore_error: true
       - '{{.GO}} tool go-sleep 0.5'
 
-  # ===========================================================================
-  # Debug Run Tasks
-  # ===========================================================================
-
-  run-debug:
-    desc: "Run QEMU with instruction/CPU tracing (DEBUG_OPTS for extra -d flags, SMP=N for CPUs)"
-    deps: [disk, cardinal]
-    vars:
-      TIMEOUT: '{{.TIMEOUT | default "5"}}'
-      SMP: '{{.SMP | default "4"}}'
-      LOG_FILE: /tmp/cardinal-serial.log
-      DEBUG_LOG: /tmp/qemu-debug.log
-      DEBUG_OPTS: '{{.DEBUG_OPTS | default "exec,cpu,int,nochain"}}'
-    cmds:
-      - task: stop
-      - '{{.GO}} tool go-rm {{.LOG_FILE}}'
-      - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
-      - '{{.GO}} tool go-echo "Starting QEMU with debug tracing ({{.SMP}} CPUs)..."'
-      - '{{.GO}} tool go-echo "Debug options: {{.DEBUG_OPTS}}"'
-      - '{{.GO}} tool go-echo "Debug log: {{.DEBUG_LOG}}"'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -smp {{.SMP}} -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
-      - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
-      - task: stop
-      - '{{.GO}} tool go-sleep 0.3'
-      - '{{.GO}} tool go-echo'
-      - '{{.GO}} tool go-echo "=== Serial Output (last 50 lines) ==="'
-      - '{{.GO}} tool safe-serial-read'
-      - '{{.GO}} tool go-echo'
-      - '{{.GO}} tool go-echo "Serial log: {{.LOG_FILE}}"'
-      - '{{.GO}} tool go-echo "Debug log:  {{.DEBUG_LOG}}"'
-      - '{{.GO}} tool go-echo'
-      - '{{.GO}} tool go-echo "View debug log tail: task show-debug"'
-
-  run-debug-int:
-    desc: "Run QEMU with interrupt/exception tracing only (lightweight, SMP=N for CPUs)"
-    deps: [disk, cardinal]
-    vars:
-      TIMEOUT: '{{.TIMEOUT | default "10"}}'
-      SMP: '{{.SMP | default "4"}}'
-      LOG_FILE: /tmp/cardinal-serial.log
-      DEBUG_LOG: /tmp/qemu-debug.log
-      DEBUG_OPTS: 'int,guest_errors'
-    cmds:
-      - task: stop
-      - '{{.GO}} tool go-rm {{.LOG_FILE}}'
-      - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
-      - '{{.GO}} tool go-echo "Starting QEMU with interrupt/exception tracing ({{.SMP}} CPUs)..."'
-      - '{{.GO}} tool go-echo "Debug options: {{.DEBUG_OPTS}}"'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -smp {{.SMP}} -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
-      - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
-      - task: stop
-      - '{{.GO}} tool go-sleep 0.3'
-      - '{{.GO}} tool safe-serial-read'
-      - '{{.GO}} tool go-echo'
-      - '{{.GO}} tool go-echo "Serial log: {{.LOG_FILE}}"'
-      - '{{.GO}} tool go-echo "Debug log:  {{.DEBUG_LOG}}"'
-
-  run-debug-mmu:
-    desc: "Run QEMU with MMU/paging tracing (SMP=N for CPUs)"
-    deps: [disk, cardinal]
-    vars:
-      TIMEOUT: '{{.TIMEOUT | default "5"}}'
-      SMP: '{{.SMP | default "4"}}'
-      LOG_FILE: /tmp/cardinal-serial.log
-      DEBUG_LOG: /tmp/qemu-debug.log
-      DEBUG_OPTS: 'mmu,int,guest_errors'
-    cmds:
-      - task: stop
-      - '{{.GO}} tool go-rm {{.LOG_FILE}}'
-      - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
-      - '{{.GO}} tool go-echo "Starting QEMU with MMU tracing ({{.SMP}} CPUs)..."'
-      - '{{.GO}} tool go-echo "Debug options: {{.DEBUG_OPTS}}"'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -smp {{.SMP}} -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
-      - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
-      - task: stop
-      - '{{.GO}} tool go-sleep 0.3'
-      - '{{.GO}} tool go-echo "Serial log: {{.LOG_FILE}}"'
-      - '{{.GO}} tool go-echo "Debug log:  {{.DEBUG_LOG}}"'
-
-  run-debug-full:
-    desc: "Run QEMU with full tracing (very verbose, SMP=N for CPUs)"
-    deps: [disk, cardinal]
-    vars:
-      TIMEOUT: '{{.TIMEOUT | default "5"}}'
-      SMP: '{{.SMP | default "4"}}'
-      LOG_FILE: /tmp/cardinal-serial.log
-      DEBUG_LOG: /tmp/qemu-debug.log
-      DEBUG_OPTS: 'exec,cpu,int,mmu,guest_errors,nochain'
-    cmds:
-      - task: stop
-      - '{{.GO}} tool go-rm {{.LOG_FILE}}'
-      - '{{.GO}} tool go-rm {{.DEBUG_LOG}}'
-      - '{{.GO}} tool go-echo "Starting QEMU with FULL tracing ({{.SMP}} CPUs, very verbose)..."'
-      - '{{.GO}} tool go-echo "Debug options: {{.DEBUG_OPTS}}"'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt,virtualization=off -cpu cortex-a72 -smp {{.SMP}} -m 8G -kernel {{.CARDINAL_ELF}} -nodefaults -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-device,rng=rng0 -display {{.DISPLAY}} -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4444,server,nowait -semihosting -drive file={{.DISK_IMAGE}},if=none,format=raw,readonly=on,id=disk0 -device virtio-blk-device,drive=disk0 -d {{.DEBUG_OPTS}} -D {{.DEBUG_LOG}}'
-      - '{{.GO}} tool go-sleep {{.TIMEOUT}}s'
-      - task: stop
-      - '{{.GO}} tool go-sleep 0.3'
-      - '{{.GO}} tool go-echo "Serial log: {{.LOG_FILE}}"'
-      - '{{.GO}} tool go-echo "Debug log:  {{.DEBUG_LOG}}"'
-
   show-debug:
     desc: "Show last N lines of debug log (N=100 default)"
     vars:
@@ -1184,7 +1057,7 @@ tasks:
     deps: [check-env]
     cmds:
       - '{{.GO}} tool go-echo "Running tests..."'
-      - '{{.GO}} test -v ./cardinal/bitfield'
+      - '{{.GO}} test -v ./shared/...'
 
   clean:
     desc: Remove build artifacts
@@ -1198,8 +1071,9 @@ tasks:
   # ===========================================================================
 
   all:
-    desc: Build cardinal, kmazarin, and disk image (default)
-    deps: [cardinal, disk]
+    desc: Build diplomat + kmazarin for x86_64 and ARM64
+    deps: [esp-kmazarin, esp-arm64]
 
   default:
-    deps: [all]
+    desc: Build diplomat + kmazarin for ARM64 (default target)
+    deps: [esp-arm64, disk]
