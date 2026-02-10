@@ -115,8 +115,9 @@ const (
 // nextMSIXSPI tracks the next available GICv2m SPI for MSI-X allocation
 var nextMSIXSPI uint32
 
-// nextMSIXBarAddr tracks the next PCI MMIO address for unassigned MSI-X table BARs
-var nextMSIXBarAddr = uint32(0x10220000)
+// nextMSIXBarAddr tracks the next PCI MMIO address for unassigned MSI-X table BARs.
+// Uses PCI_MMIO_BASE+0x80000 to avoid conflicts with common/notify BARs.
+var nextMSIXBarAddr = uint32(pci.PCI_MMIO_BASE + 0x80000)
 
 // NumEventBuffers is the number of pre-allocated event buffers per device.
 const NumEventBuffers = 32
@@ -677,28 +678,21 @@ func configureMSIX(bus, slot, funcNum uint8) uint32 {
 	tableBIR := tableOffsetBIR & 0x7            // BAR index
 	tableOffset := tableOffsetBIR & ^uint32(0x7) // Offset within BAR
 
-	// Read the BAR address; program it if unassigned
+	// Always reprogram the MSI-X table BAR to a unique address from our pool.
+	// UEFI-assigned addresses can collide with BARs reprogrammed by other drivers
+	// (e.g., keyboard BAR4 reprogrammed to 0x10040000 overlaps mouse's UEFI BAR1 at 0x10041000).
 	barOffset := uint8(0x10 + tableBIR*4)
 	barAddr := pci.ConfigRead32(bus, slot, funcNum, barOffset)
+	is64bit := barAddr&0x6 == 0x4
 
-	if (barAddr & 0xFFFFFFF0) == 0 {
-		// BAR not assigned — program it with a unique MMIO address
-		pciAddr := nextMSIXBarAddr
-		nextMSIXBarAddr += 0x1000
-		pci.ConfigWrite32(bus, slot, funcNum, barOffset, pciAddr)
-		if barAddr&0x6 == 0x4 { // 64-bit BAR
-			pci.ConfigWrite32(bus, slot, funcNum, barOffset+4, 0)
-		}
-		barAddr = pci.ConfigRead32(bus, slot, funcNum, barOffset)
+	pciAddr := nextMSIXBarAddr
+	nextMSIXBarAddr += 0x1000
+	pci.ConfigWrite32(bus, slot, funcNum, barOffset, pciAddr)
+	if is64bit {
+		pci.ConfigWrite32(bus, slot, funcNum, barOffset+4, 0) // Clear high 32 bits
 	}
-
+	barAddr = pci.ConfigRead32(bus, slot, funcNum, barOffset)
 	barBasePA := uintptr(barAddr & 0xFFFFFFF0)
-
-	// Check if 64-bit BAR
-	if barAddr&0x6 == 0x4 {
-		barHigh := pci.ConfigRead32(bus, slot, funcNum, barOffset+4)
-		barBasePA = uintptr(uint64(barHigh)<<32 | uint64(barAddr&0xFFFFFFF0))
-	}
 
 	// Map MSI-X BAR into TTBR1 kernel space
 	kmem.MapDeviceMMIO(barBasePA, 0x1000)
@@ -726,6 +720,7 @@ func configureMSIX(bus, slot, funcNum uint8) uint32 {
 		asm.MmioWrite32(entryAddr+MSIX_ENTRY_DATA, gicIRQ) // GICv2m expects SPI+32
 		asm.MmioWrite32(entryAddr+MSIX_ENTRY_CONTROL, 0) // Unmask
 	}
+	asm.Dsb()
 
 	// Readback MSI-X table entry 0 to verify programming
 	readData := asm.MmioRead32(tableBase + MSIX_ENTRY_DATA)
@@ -756,7 +751,7 @@ func configureMSIX(bus, slot, funcNum uint8) uint32 {
 // InitVirtIOInput discovers and initializes all VirtIO Input PCI devices.
 // Should be called during kernel init after PCI ECAM is available.
 func InitVirtIOInput() {
-	initGICv2mSPIBase()
+	platformInitInterrupts()
 
 	for bus := uint8(0); bus < 1; bus++ {
 		for slot := uint8(0); slot < 32; slot++ {
@@ -781,8 +776,8 @@ func InitVirtIOInput() {
 				cmd &^= (1 << 10) // Clear Interrupt Disable
 				pci.ConfigWrite32(bus, slot, funcNum, pci.PCI_COMMAND, cmd)
 
-				// Configure MSI-X to route interrupts through GICv2m
-				msixIRQ := configureMSIX(bus, slot, funcNum)
+				// Configure interrupts (platform-specific: MSI-X on ARM64, polling on x86_64)
+				irq := platformConfigureDeviceIRQ(bus, slot, funcNum)
 
 				// Find VirtIO capabilities
 				var common, notify, isr, deviceCfg pci.VirtIOCapabilityInfo
@@ -794,8 +789,8 @@ func InitVirtIOInput() {
 				// Read and program BAR for common config (handles 64-bit BARs)
 				barBasePA := pci.ReadBAR64(bus, slot, funcNum, common.Bar)
 				if barBasePA == 0 || barBasePA >= 0x100000000 {
-					// Program BAR - use different addresses to avoid conflicts with GPU
-					pciAddr := uintptr(0x10200000) + uintptr(len(allDevices))*0x10000
+					// Program BAR to PCI MMIO window, offset to avoid GPU/Block conflicts
+					pciAddr := pci.PCI_MMIO_BASE + 0x40000 + uintptr(len(allDevices))*0x10000
 					pci.WriteBAR64(bus, slot, funcNum, common.Bar, pciAddr)
 					barBasePA = pci.ReadBAR64(bus, slot, funcNum, common.Bar)
 				}
@@ -803,8 +798,8 @@ func InitVirtIOInput() {
 				kmem.MapDeviceMMIO(barBasePA, 0x10000) // Map 64KB for the BAR range
 				barBase := barBasePA + constants.KernelMMIOOffset
 
-				// Use MSI-X IRQ (already configured above)
-				irqNum := msixIRQ
+				// Use platform-configured IRQ (MSI-X on ARM64, 0 for polling on x86_64)
+				irqNum := irq
 
 				dev := &VirtIOInputDevice{
 					Bus:              bus,

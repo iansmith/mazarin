@@ -5,6 +5,47 @@ import (
 	"unsafe"
 )
 
+// ARM64 Page Table Entry bits
+const (
+	PTE_VALID = 1 << 0  // Entry is valid
+	PTE_TABLE = 1 << 1  // Entry points to next-level table (or is L3 page)
+	PTE_AF    = 1 << 10 // Access flag
+
+	// Memory attributes (MAIR index)
+	PTE_ATTR_NORMAL = 0 << 2 // Normal cacheable (MAIR[0])
+	PTE_ATTR_DEVICE = 1 << 2 // Device-nGnRnE (MAIR[1])
+
+	// Access permissions (AP[2:1] field)
+	PTE_AP_RW_EL1 = 0 << 6 // Read-write at EL1, no EL0 access (AP=00)
+	PTE_AP_RW_ALL = 1 << 6 // Read-write at EL1 and EL0 (AP=01)
+	PTE_AP_RO_EL1 = 2 << 6 // Read-only at EL1, no EL0 access (AP=10)
+	PTE_AP_RO_ALL = 3 << 6 // Read-only at EL1 and EL0 (AP=11)
+
+	// Execute permission for user pages
+	PTE_UXN = 1 << 54 // User execute never
+	PTE_PXN = 1 << 53 // Privileged execute never
+
+	// Shareability
+	PTE_SH_INNER = 3 << 8 // Inner shareable
+
+	// Non-global flag - CRITICAL for ASID-based address space separation!
+	// nG=1 means this entry is process-specific and uses ASID for TLB matching.
+	// nG=0 (global) means entry is shared across all ASIDs - WRONG for userspace!
+	PTE_NG = 1 << 11 // Non-global (must be set for userspace pages with ASIDs)
+
+	// Execute permission
+	PTE_EXEC_NEVER = (1 << 53) | (1 << 54) // PXN + UXN
+)
+
+// initProcessL0 performs arch-specific initialization of a new process L0 page table.
+// ARM64: no-op. TTBR0 is a separate register from TTBR1, so a fresh empty L0 is fine
+// for user space — kernel mappings live in TTBR1 and are unaffected.
+//
+//go:nosplit
+func initProcessL0(l0VA uintptr) {
+	// Nothing to do on ARM64
+}
+
 // selectRootPageTable returns the root page table PA for the given VA.
 // ARM64 uses bit 63 to select between TTBR0 (user space) and TTBR1 (kernel space).
 //
@@ -33,6 +74,86 @@ func makeKernelPagePTE(pa uintptr) uint64 {
 		PTE_ATTR_NORMAL | PTE_AP_RW_EL1 | PTE_SH_INNER | PTE_EXEC_NEVER
 }
 
+// makeUserTablePTE creates an intermediate page table entry for user-accessible pages.
+// ARM64: Same as kernel table PTE (Valid + Table). Permission bits are on leaf entries only.
+//
+//go:nosplit
+func makeUserTablePTE(nextLevelPA uintptr) uint64 {
+	return uint64(nextLevelPA) | PTE_VALID | PTE_TABLE
+}
+
+// makeUserPagePTE creates a leaf PTE for a userspace code/data page.
+// Permissions are derived from ELF flags (PF_R, PF_W, PF_X).
+// ARM64: Valid + L3 page + AF + Normal memory + Inner Shareable + Non-Global + AP/UXN/PXN from flags.
+//
+//go:nosplit
+func makeUserPagePTE(pa uintptr, elfFlags uint32) uint64 {
+	pte := uint64(pa) | PTE_VALID | PTE_TABLE | PTE_AF |
+		PTE_ATTR_NORMAL | PTE_SH_INNER | PTE_NG
+
+	if (elfFlags & ELF_PF_W) != 0 {
+		pte |= PTE_AP_RW_ALL
+	} else {
+		pte |= PTE_AP_RO_ALL
+	}
+
+	if (elfFlags & ELF_PF_X) == 0 {
+		pte |= PTE_UXN
+	}
+	// Always set PXN — kernel should not execute user code
+	pte |= PTE_PXN
+
+	return pte
+}
+
+// makeUserDevicePTE creates a leaf PTE for a userspace MMIO page (e.g. framebuffer).
+// ARM64: Device memory, RW for EL1+EL0, no execute, non-global.
+//
+//go:nosplit
+func makeUserDevicePTE(pa uintptr) uint64 {
+	return uint64(pa) | PTE_VALID | PTE_TABLE | PTE_AF |
+		PTE_ATTR_DEVICE | PTE_AP_RW_ALL | PTE_EXEC_NEVER | PTE_NG
+}
+
+// makeKernelDevicePTE creates a leaf PTE for kernel-only MMIO pages.
+// ARM64: Device memory, RW for EL1 only, no execute.
+//
+//go:nosplit
+func makeKernelDevicePTE(pa uintptr) uint64 {
+	return uint64(pa) | PTE_VALID | PTE_TABLE | PTE_AF |
+		PTE_ATTR_DEVICE | PTE_AP_RW_EL1 | PTE_EXEC_NEVER
+}
+
+// makeFileBufferPTE creates a leaf PTE for kernel file buffer pages.
+// ARM64: Same as kernel page PTE (normal memory, RW EL1, no execute).
+//
+//go:nosplit
+func makeFileBufferPTE(pa uintptr) uint64 {
+	return makeKernelPagePTE(pa)
+}
+
+// makeKernelScratchPTE creates a leaf PTE for kernel scratch mapping pages.
+// ARM64: Same as kernel page PTE (normal memory, RW EL1, no execute, inner shareable).
+//
+//go:nosplit
+func makeKernelScratchPTE(pa uintptr) uint64 {
+	return makeKernelPagePTE(pa)
+}
+
+// pteIsValid returns true if the PTE is valid/present.
+//
+//go:nosplit
+func pteIsValid(entry uint64) bool {
+	return (entry & PTE_VALID) != 0
+}
+
+// pteExtractPA extracts the physical address from a PTE.
+//
+//go:nosplit
+func pteExtractPA(entry uint64) uintptr {
+	return uintptr(entry & PTE_ADDR_MASK)
+}
+
 // MapDeviceMMIO maps a physical address range as device MMIO memory
 // in the kernel's TTBR1 page tables with non-cacheable attributes.
 func MapDeviceMMIO(physAddr uintptr, size uint64) error {
@@ -58,6 +179,160 @@ func MapDeviceMMIO(physAddr uintptr, size uint64) error {
 	}
 
 	return nil
+}
+
+// mapDevicePage maps a VA to PA with device memory attributes.
+// ARM64: walks the 4-level page table, splits 2MB blocks if needed,
+// and installs an L3 entry with Device-nGnRnE attributes.
+//
+//go:nosplit
+func mapDevicePage(va, pa uintptr) bool {
+	// Extract indices
+	l0Idx := (va >> L0Shift) & 0x1FF
+	l1Idx := (va >> L1Shift) & 0x1FF
+	l2Idx := (va >> L2Shift) & 0x1FF
+	l3Idx := (va >> L3Shift) & 0x1FF
+
+	// Use TTBR1 for kernel high memory (bit 63 = 1)
+	if (va>>63)&1 == 0 {
+		return false // Device MMIO must be in kernel space
+	}
+	l0PA := ttbr1L0PA
+
+	// Get L0 table VA
+	l0VA := paToVA(l0PA)
+	if l0VA == 0 {
+		return false
+	}
+
+	// Read L0 entry
+	l0Entry := (*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
+
+	var l1VA uintptr
+	if (*l0Entry & PTE_VALID) == 0 {
+		l1VA = allocPTPage()
+		if l1VA == 0 {
+			return false
+		}
+		l1PA := walkPageTable(l1VA)
+		if l1PA == 0 {
+			return false
+		}
+		cachePTVA(l1PA, l1VA)
+		*l0Entry = uint64(l1PA) | PTE_VALID | PTE_TABLE
+		dcCIVAC(uintptr(unsafe.Pointer(l0Entry)))
+		dsbSY()
+		tlbiVAE1IS(0)
+		dsbSY()
+		isbSY()
+	} else {
+		l1PA := uintptr(*l0Entry & PTE_ADDR_MASK)
+		l1VA = paToVAOrCache(l1PA)
+	}
+	if l1VA == 0 {
+		return false
+	}
+
+	// Read L1 entry
+	l1Entry := (*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
+
+	var l2VA uintptr
+	if (*l1Entry & PTE_VALID) == 0 {
+		l2VA = allocPTPage()
+		if l2VA == 0 {
+			return false
+		}
+		l2PA := walkPageTable(l2VA)
+		if l2PA == 0 {
+			return false
+		}
+		cachePTVA(l2PA, l2VA)
+		*l1Entry = uint64(l2PA) | PTE_VALID | PTE_TABLE
+		dcCIVAC(uintptr(unsafe.Pointer(l1Entry)))
+		dsbSY()
+	} else {
+		l2PA := uintptr(*l1Entry & PTE_ADDR_MASK)
+		l2VA = paToVAOrCache(l2PA)
+		if l2VA == 0 {
+			return false
+		}
+	}
+
+	// Read L2 entry
+	l2Entry := (*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
+
+	var l3VA uintptr
+	if (*l2Entry & PTE_VALID) == 0 {
+		l3VA = allocPTPage()
+		if l3VA == 0 {
+			return false
+		}
+		l3PA := walkPageTable(l3VA)
+		if l3PA == 0 {
+			return false
+		}
+		cachePTVA(l3PA, l3VA)
+		*l2Entry = uint64(l3PA) | PTE_VALID | PTE_TABLE
+		dcCIVAC(uintptr(unsafe.Pointer(l2Entry)))
+		dsbSY()
+	} else if (*l2Entry & 0x2) == 0 {
+		// L2 is a 2MB block descriptor — must split into 512 L3 page entries.
+		blockPA := uintptr(*l2Entry & PTE_ADDR_MASK)
+		blockAttrs := *l2Entry & ^uint64(PTE_ADDR_MASK)
+
+		l3VA = allocPTPage()
+		if l3VA == 0 {
+			return false
+		}
+		l3PA := walkPageTable(l3VA)
+		if l3PA == 0 {
+			return false
+		}
+		cachePTVA(l3PA, l3VA)
+
+		for i := uintptr(0); i < 512; i++ {
+			entryPA := blockPA + i*PageSize
+			l3E := (uint64(entryPA) & PTE_ADDR_MASK) | (blockAttrs | PTE_TABLE)
+			*(*uint64)(unsafe.Pointer(l3VA + i*8)) = l3E
+		}
+
+		*l2Entry = uint64(l3PA) | PTE_VALID | PTE_TABLE
+		dcCIVAC(uintptr(unsafe.Pointer(l2Entry)))
+		for i := uintptr(0); i < 512; i++ {
+			dcCIVAC(l3VA + i*8)
+		}
+		dsbSY()
+		tlbiVMALLE1IS()
+		dsbSY()
+		isbSY()
+	} else {
+		l3PA := uintptr(*l2Entry & PTE_ADDR_MASK)
+		l3VA = paToVAOrCache(l3PA)
+		if l3VA == 0 {
+			return false
+		}
+	}
+
+	// Write L3 entry with DEVICE attributes
+	l3Entry := (*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
+
+	if (*l3Entry & PTE_VALID) != 0 {
+		existingPA := uintptr(*l3Entry & PTE_ADDR_MASK)
+		if existingPA != pa {
+			return false
+		}
+	}
+
+	pteValue := makeKernelDevicePTE(pa)
+	*l3Entry = pteValue
+
+	dcCIVAC(uintptr(unsafe.Pointer(l3Entry)))
+	dsbSY()
+	tlbiVAE1IS(va)
+	dsbSY()
+	isbSY()
+
+	return true
 }
 
 // walkPageTable translates a VA to PA by walking the ARM64 page tables.

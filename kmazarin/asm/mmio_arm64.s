@@ -103,7 +103,7 @@ loop_clean:
 	WORD	$0xD50B7A20		// DC CVAC, X0 - Clean cache line by VA to PoC (sys #3, c7, c10, #1, x0)
 	ADD	R2, R0			// Move to next cache line
 	CMP	R0, R1
-	BLO	loop_clean		// Continue if R0 < R1
+	BHI	loop_clean		// Continue while end > current (Plan 9: CMP R0,R1 → ARM CMP X1,X0)
 
 	DSB	$15			// Ensure clean completes (DSB SY)
 	RET
@@ -120,7 +120,7 @@ loop_inval:
 	WORD	$0xD5087620		// DC IVAC, X0 - Invalidate cache line by VA (sys #0, c7, c6, #1, x0)
 	ADD	R2, R0			// Move to next cache line
 	CMP	R0, R1
-	BLO	loop_inval		// Continue if R0 < R1
+	BHI	loop_inval		// Continue while end > current (Plan 9: CMP R0,R1 → ARM CMP X1,X0)
 
 	DSB	$15			// Ensure invalidate completes (DSB SY)
 	RET

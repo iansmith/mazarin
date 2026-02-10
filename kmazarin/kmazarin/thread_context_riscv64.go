@@ -66,6 +66,11 @@ func (ctx *ThreadContext) SetSP(v uint64) { ctx.X[2] = v }
 //go:nosplit
 func (ctx *ThreadContext) GetProcessorState() uint64 { return ctx.SSTATUS }
 
+// SetProcessorState sets the saved processor state (SSTATUS on RISC-V).
+//
+//go:nosplit
+func (ctx *ThreadContext) SetProcessorState(v uint64) { ctx.SSTATUS = v }
+
 // SetupForUserspace initializes the context for a new userspace thread.
 //
 //go:nosplit

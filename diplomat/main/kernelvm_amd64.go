@@ -43,9 +43,9 @@ const (
 	mmioIOAPICSize = 0x00001000
 
 	// Page table pool sizing
-	ptPoolPages       = 64   // 64 pages (256KB) for page table hierarchy
-	heapPagePoolPages = 256  // 256 pages (1MB) for demand paging
-	ptExtraPages      = 64   // Extra PT pages for demand paging handler
+	ptPoolPages       = 64    // 64 pages (256KB) for page table hierarchy
+	heapPagePoolPages = 4096  // 4096 pages (16MB) for demand paging
+	ptExtraPages      = 256   // Extra PT pages for demand paging handler
 )
 
 // KernelVM holds the kernel virtual memory configuration.

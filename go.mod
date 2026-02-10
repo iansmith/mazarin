@@ -98,7 +98,6 @@ tool (
 	mazzy/cmd/block-serial-bash-hook
 	mazzy/cmd/block-serial-read-hook
 	mazzy/cmd/check-version
-	mazzy/cmd/compute-linker-values
 	mazzy/cmd/fix-go-elf
 	mazzy/cmd/gen-ast-stubs
 	mazzy/cmd/gen-overlay
@@ -128,5 +127,4 @@ tool (
 	mazzy/cmd/print-kmazarin-addr
 	mazzy/cmd/relocate-kmazarin
 	mazzy/cmd/safe-serial-read
-	mazzy/cmd/verify-linker-values
 )

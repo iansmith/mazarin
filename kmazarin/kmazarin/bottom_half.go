@@ -4,6 +4,7 @@ package main
 import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/device/virtio/input"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
 	"mazzy/shared/hid"
@@ -329,6 +330,11 @@ func eventPoller() {
 				dispatchIRQ(irqNum)
 			}
 		}
+
+		// Poll VirtIO input devices for events (needed on x86_64/RISC-V
+		// where MSI-X is not configured; harmless on ARM64 where IRQ
+		// handler already drains the used ring).
+		input.PollAllDevices()
 
 		// Check UART RX flag (legacy - will be replaced by generic dispatch)
 		if atomic.SwapUint32(&uartRxPending, 0) == 1 {

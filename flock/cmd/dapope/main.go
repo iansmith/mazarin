@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"mazzy/flock/cmd/dapope/cursorgen"
 	"mazzy/mazarin/gui/core"
+	"mazzy/mazarin/input"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/hid"
 )
@@ -80,6 +81,7 @@ func buttonName(code uint16) string {
 func keyboardLoop(slot int) {
 	fmt.Printf("[dapope] keyboard goroutine started on slot %d\n", slot)
 	var buf hid.SoftIRQReturn
+	var km input.Keymap
 	for {
 		n, err := sys.WaitSoftIRQ(slot, &buf)
 		if err != nil {
@@ -88,15 +90,26 @@ func keyboardLoop(slot int) {
 		}
 		for i := 0; i < n; i++ {
 			ev := buf.Events[i]
-			if ev.Type == EV_KEY && ev.Value == 1 {
-				switch ev.Code {
-				case 28: // ENTER
-					fmt.Println()
-				case 57: // SPACE
-					fmt.Print(" ")
-				default:
-					fmt.Print(keyName(ev.Code))
-				}
+			if ev.Type != EV_KEY {
+				continue
+			}
+			ke := input.KeyEvent{
+				Code:    ev.Code,
+				Pressed: ev.Value != 0,
+				Repeat:  ev.Value == 2,
+			}
+			ch, action := km.Feed(ke)
+			if !ke.Pressed {
+				continue
+			}
+			if ch != 0 {
+				fmt.Print(string(ch))
+			} else if action == "enter" {
+				fmt.Println()
+			} else if action == "backspace" {
+				fmt.Print("\b \b")
+			} else if action == "tab" {
+				fmt.Print("\t")
 			}
 		}
 	}

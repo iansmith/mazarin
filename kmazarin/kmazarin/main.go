@@ -5,6 +5,7 @@ import (
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/deviceapi"
+	"mazzy/kmazarin/device/virtio/block"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/device/virtio/input"
 	"mazzy/shared/fs/fat32"
@@ -588,9 +589,27 @@ func simpleMain() {
 	// handle demand paging. By doing GPU init here, heap allocations in
 	// VirtqueueInit trigger diplomat's page fault handler instead.
 	// On ARM64, this is also safe — GPU init uses polling (no IRQs needed).
-	console.KPrintln("[Main] About to init VirtIO GPU...")
 	initVirtIOGPU()
 	console.KPrintln("[Main] VirtIO GPU init done")
+
+	// Initialize VirtIO block device (also safe to do before VBAR switch)
+	console.KPrintln("[Main] About to init VirtIO Block...")
+	if block.Init() {
+		console.KPrintln("[Main] VirtIO Block init done")
+		// Quick verification: check PA translation and block reads
+		blk, blkOk := device.GetBlockDevice()
+		if blkOk {
+			testBuf := make([]byte, 512)
+			if err := blk.ReadBlock(0, testBuf); err != nil {
+				console.KPrintln("[BlockTest] Sector 0 read FAILED")
+			} else {
+				console.KPrintf("[BlockTest] Sector 0: sig=0x%02X%02X OEM=%c%c%c%c%c\n",
+					testBuf[511], testBuf[510], testBuf[3], testBuf[4], testBuf[5], testBuf[6], testBuf[7])
+			}
+		}
+	} else {
+		console.KPrintln("[Main] VirtIO Block init failed (no device found?)")
+	}
 
 	// CRITICAL: Set VBAR_EL1 to point to kmazarin's exception vector table
 	// Cardinal's VBAR_EL1 points to its own vectors at low memory (0x401xxxxx).
@@ -650,7 +669,7 @@ func simpleMain() {
 		kmem.FinalUserspaceSync()
 		Print("[main] dapope launched")
 	} else {
-		Print("[main] dapope launch failed")
+		console.KPrintf("[main] dapope launch failed (error %d)\n", result)
 	}
 
 	// Launch stdio (console priest — serial port + display)
@@ -661,7 +680,7 @@ func simpleMain() {
 		kmem.FinalUserspaceSync()
 		Print("[main] stdio launched")
 	} else {
-		Print("[main] stdio launch failed")
+		console.KPrintf("[main] stdio launch failed (error %d)\n", result)
 	}
 
 	// Re-enable IRQs and timer for ongoing scheduling

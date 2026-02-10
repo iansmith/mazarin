@@ -118,9 +118,12 @@ TEXT ·bzero4KAsm(SB), NOSPLIT, $0-8
 	RET
 
 // writeTTBR0Asm - Write page table base register
-// x86_64: Write CR3
+// x86_64: Write CR3. Mask off ASID bits [63:48] which are used by
+// ARM64 TTBR0 but must be zero in x86_64 CR3 (no PCID).
 TEXT ·writeTTBR0Asm(SB), NOSPLIT, $0-8
 	MOVQ	val+0(FP), AX
+	MOVQ	$0x0000FFFFFFFFFFFF, CX
+	ANDQ	CX, AX			// Strip ASID from high bits
 	MOVQ	AX, CR3
 	RET
 

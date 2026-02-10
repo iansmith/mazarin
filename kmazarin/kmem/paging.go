@@ -51,45 +51,16 @@ func debugPrintHex(val uint64) {
 	}
 }
 
-// Page table constants for ARM64 4KB granule
+// Page table level shift constants (shared across all architectures).
+// For 4KB granule / Sv39: 4-level (ARM64/x86_64) or 3-level (RISC-V) tables.
 const (
-	// Page table indices - 48-bit VA, 4KB pages, 4-level tables
 	L0Shift = 39
 	L1Shift = 30
 	L2Shift = 21
 	L3Shift = 12
 
-	// Page Table Entry bits
-	PTE_VALID = 1 << 0  // Entry is valid
-	PTE_TABLE = 1 << 1  // Entry points to next-level table (or is L3 page)
-	PTE_AF    = 1 << 10 // Access flag
-
-	// Memory attributes (MAIR index)
-	PTE_ATTR_NORMAL = 0 << 2 // Normal cacheable (MAIR[0])
-	PTE_ATTR_DEVICE = 1 << 2 // Device-nGnRnE (MAIR[1])
-
-	// Access permissions (AP[2:1] field)
-	PTE_AP_RW_EL1    = 0 << 6 // Read-write at EL1, no EL0 access (AP=00)
-	PTE_AP_RW_ALL    = 1 << 6 // Read-write at EL1 and EL0 (AP=01)
-	PTE_AP_RO_EL1    = 2 << 6 // Read-only at EL1, no EL0 access (AP=10)
-	PTE_AP_RO_ALL    = 3 << 6 // Read-only at EL1 and EL0 (AP=11)
-
-	// Execute permission for user pages
-	PTE_UXN = 1 << 54 // User execute never
-	PTE_PXN = 1 << 53 // Privileged execute never
-
-	// Shareability
-	PTE_SH_INNER = 3 << 8 // Inner shareable
-
-	// Non-global flag - CRITICAL for ASID-based address space separation!
-	// nG=1 means this entry is process-specific and uses ASID for TLB matching.
-	// nG=0 (global) means entry is shared across all ASIDs - WRONG for userspace!
-	PTE_NG = 1 << 11 // Non-global (must be set for userspace pages with ASIDs)
-
-	// Execute permission
-	PTE_EXEC_NEVER = (1 << 53) | (1 << 54) // PXN + UXN
-
-	// Address mask for PTEs (bits 47:12)
+	// Address mask for PTEs (bits 47:12) — shared across ARM64 and x86_64.
+	// RISC-V uses PPN encoding but this mask is still useful for PA extraction.
 	PTE_ADDR_MASK = 0x0000FFFFFFFFF000
 )
 
@@ -212,6 +183,11 @@ func CreateProcessPageTable() uintptr {
 	if l0PA == 0 {
 		return 0
 	}
+
+	// Arch-specific initialization: on x86_64/RISC-V, copies kernel PML4/root
+	// entries so the process page table retains kernel mappings when CR3/SATP is
+	// switched. On ARM64, this is a no-op (TTBR0/TTBR1 are separate).
+	initProcessL0(l0VA)
 
 	// Cache the PA -> VA mapping
 	cachePTVA(l0PA, l0VA)
@@ -782,7 +758,7 @@ func mapPage(va, pa uintptr) bool {
 
 	var l1VA uintptr
 
-	if (*l0Entry & PTE_VALID) == 0 {
+	if !pteIsValid(*l0Entry) {
 		// Need to allocate L1 table (new for expanded VA space support)
 		debugPrint('L')
 		debugPrint('1')
@@ -819,7 +795,7 @@ func mapPage(va, pa uintptr) bool {
 		isbSY()
 	} else {
 		// Get existing L1 table VA - check cache first for PT pool pages
-		l1PA := uintptr(*l0Entry & PTE_ADDR_MASK)
+		l1PA := pteExtractPA(*l0Entry)
 		l1VA = paToVAOrCache(l1PA)
 	}
 	if l1VA == 0 {
@@ -839,7 +815,7 @@ func mapPage(va, pa uintptr) bool {
 
 	var l2VA uintptr
 
-	if (*l1Entry & PTE_VALID) == 0 {
+	if !pteIsValid(*l1Entry) {
 		// Need to allocate L2 table
 		l2VA = allocPTPage()
 		if l2VA == 0 {
@@ -862,7 +838,7 @@ func mapPage(va, pa uintptr) bool {
 		// Link new L2 table into L1 (arch-specific PTE format)
 		*l1Entry = makeTablePTE(l2PA)
 	} else {
-		l2PA := uintptr(*l1Entry & PTE_ADDR_MASK)
+		l2PA := pteExtractPA(*l1Entry)
 		l2VA = paToVAOrCache(l2PA)
 		if l2VA == 0 {
 			debugPrint('4')
@@ -882,7 +858,7 @@ func mapPage(va, pa uintptr) bool {
 
 	var l3VA uintptr
 
-	if (*l2Entry & PTE_VALID) == 0 {
+	if !pteIsValid(*l2Entry) {
 		debugPrint('N') // DEBUG: New L3 table needed
 		// Need to allocate L3 table
 		l3VA = allocPTPage()
@@ -937,7 +913,7 @@ func mapPage(va, pa uintptr) bool {
 		}
 		debugPrint('V') // DEBUG: Verified L2
 	} else {
-		l3PA := uintptr(*l2Entry & PTE_ADDR_MASK)
+		l3PA := pteExtractPA(*l2Entry)
 		l3VA = paToVAOrCache(l3PA)
 		if l3VA == 0 {
 			debugPrint('6')
@@ -1229,174 +1205,7 @@ func (e *MappingError) Error() string {
 	return e.msg
 }
 
-// mapDevicePage maps a VA to PA with device memory attributes.
-// Similar to mapPage but uses PTE_ATTR_DEVICE instead of PTE_ATTR_NORMAL.
-//
-//go:nosplit
-func mapDevicePage(va, pa uintptr) bool {
-	// Extract indices
-	l0Idx := (va >> L0Shift) & 0x1FF
-	l1Idx := (va >> L1Shift) & 0x1FF
-	l2Idx := (va >> L2Shift) & 0x1FF
-	l3Idx := (va >> L3Shift) & 0x1FF
-
-	// Use TTBR1 for kernel high memory (bit 63 = 1)
-	if (va>>63)&1 == 0 {
-		return false // Device MMIO must be in kernel space
-	}
-	l0PA := ttbr1L0PA
-
-	// Get L0 table VA
-	l0VA := paToVA(l0PA)
-	if l0VA == 0 {
-		return false
-	}
-
-	// Read L0 entry
-	l0Entry := (*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
-
-	var l1VA uintptr
-	if (*l0Entry & PTE_VALID) == 0 {
-		// Need to allocate L1 table
-		l1VA = allocPTPage()
-		if l1VA == 0 {
-			return false
-		}
-		l1PA := walkPageTable(l1VA)
-		if l1PA == 0 {
-			return false
-		}
-		cachePTVA(l1PA, l1VA)
-		*l0Entry = uint64(l1PA) | PTE_VALID | PTE_TABLE
-		dcCIVAC(uintptr(unsafe.Pointer(l0Entry)))
-		dsbSY()
-		tlbiVAE1IS(0)
-		dsbSY()
-		isbSY()
-	} else {
-		l1PA := uintptr(*l0Entry & PTE_ADDR_MASK)
-		l1VA = paToVAOrCache(l1PA)
-	}
-	if l1VA == 0 {
-		return false
-	}
-
-	// Read L1 entry
-	l1Entry := (*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
-
-	var l2VA uintptr
-	if (*l1Entry & PTE_VALID) == 0 {
-		l2VA = allocPTPage()
-		if l2VA == 0 {
-			return false
-		}
-		l2PA := walkPageTable(l2VA)
-		if l2PA == 0 {
-			return false
-		}
-		cachePTVA(l2PA, l2VA)
-		*l1Entry = uint64(l2PA) | PTE_VALID | PTE_TABLE
-		dcCIVAC(uintptr(unsafe.Pointer(l1Entry)))
-		dsbSY()
-	} else {
-		l2PA := uintptr(*l1Entry & PTE_ADDR_MASK)
-		l2VA = paToVAOrCache(l2PA)
-		if l2VA == 0 {
-			return false
-		}
-	}
-
-	// Read L2 entry
-	l2Entry := (*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
-
-	var l3VA uintptr
-	if (*l2Entry & PTE_VALID) == 0 {
-		// No L2 entry — allocate a fresh L3 table
-		l3VA = allocPTPage()
-		if l3VA == 0 {
-			return false
-		}
-		l3PA := walkPageTable(l3VA)
-		if l3PA == 0 {
-			return false
-		}
-		cachePTVA(l3PA, l3VA)
-		*l2Entry = uint64(l3PA) | PTE_VALID | PTE_TABLE
-		dcCIVAC(uintptr(unsafe.Pointer(l2Entry)))
-		dsbSY()
-	} else if (*l2Entry & 0x2) == 0 {
-		// L2 is a 2MB block descriptor — must split into 512 L3 page entries.
-		// Extract the block's base PA and attributes.
-		blockPA := uintptr(*l2Entry & PTE_ADDR_MASK)
-		blockAttrs := *l2Entry & ^uint64(PTE_ADDR_MASK) // preserve attribute bits
-
-		// Allocate an L3 page table page
-		l3VA = allocPTPage()
-		if l3VA == 0 {
-			return false
-		}
-		l3PA := walkPageTable(l3VA)
-		if l3PA == 0 {
-			return false
-		}
-		cachePTVA(l3PA, l3VA)
-
-		// Fill all 512 L3 entries replicating the block mapping at 4KB granularity.
-		// L3 page descriptors use bit[1]=1 (PTE_TABLE) unlike L2 blocks.
-		for i := uintptr(0); i < 512; i++ {
-			entryPA := blockPA + i*PageSize
-			// Use block attrs but set bit 1 for L3 page descriptor
-			l3E := (uint64(entryPA) & PTE_ADDR_MASK) | (blockAttrs | PTE_TABLE)
-			*(*uint64)(unsafe.Pointer(l3VA + i*8)) = l3E
-		}
-
-		// Overwrite L2 from block → table pointer
-		*l2Entry = uint64(l3PA) | PTE_VALID | PTE_TABLE
-		dcCIVAC(uintptr(unsafe.Pointer(l2Entry)))
-		// Flush all L3 entries
-		for i := uintptr(0); i < 512; i++ {
-			dcCIVAC(l3VA + i*8)
-		}
-		dsbSY()
-		// Invalidate entire TLB — the 2MB block covered many pages
-		tlbiVMALLE1IS()
-		dsbSY()
-		isbSY()
-	} else {
-		// L2 is already a table pointer — look up L3 table
-		l3PA := uintptr(*l2Entry & PTE_ADDR_MASK)
-		l3VA = paToVAOrCache(l3PA)
-		if l3VA == 0 {
-			return false
-		}
-	}
-
-	// Write L3 entry with DEVICE attributes (not NORMAL).
-	// Overwrite even if already mapped — the existing mapping may have
-	// Normal-Cacheable attributes from the linear map / demand paging.
-	l3Entry := (*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
-
-	if (*l3Entry & PTE_VALID) != 0 {
-		existingPA := uintptr(*l3Entry & PTE_ADDR_MASK)
-		if existingPA != pa {
-			return false // PA conflict
-		}
-	}
-
-	// Device memory: non-cacheable, non-gathering, non-reordering
-	pteValue := uint64(pa) | PTE_VALID | PTE_TABLE | PTE_AF |
-		PTE_ATTR_DEVICE | PTE_AP_RW_EL1 | PTE_EXEC_NEVER
-	*l3Entry = pteValue
-
-	// Clean cache and invalidate TLB
-	dcCIVAC(uintptr(unsafe.Pointer(l3Entry)))
-	dsbSY()
-	tlbiVAE1IS(va)
-	dsbSY()
-	isbSY()
-
-	return true
-}
+// mapDevicePage is arch-specific: see paging_arm64.go, paging_amd64.go, paging_riscv64.go.
 
 // ELF permission flags (from ksyscall/launch.go)
 const (
@@ -1498,7 +1307,7 @@ func mapUserPageWithL0(va, pa uintptr, elfFlags uint32, l0PAParam uintptr) bool 
 	l0Entry := (*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
 
 	var l1VA uintptr
-	if (*l0Entry & PTE_VALID) == 0 {
+	if !pteIsValid(*l0Entry) {
 		// Need to allocate L1 table
 		l1VA = allocPTPage()
 		if l1VA == 0 {
@@ -1509,14 +1318,14 @@ func mapUserPageWithL0(va, pa uintptr, elfFlags uint32, l0PAParam uintptr) bool 
 			return false
 		}
 		cachePTVA(l1PA, l1VA)
-		*l0Entry = uint64(l1PA) | PTE_VALID | PTE_TABLE
+		*l0Entry = makeUserTablePTE(l1PA)
 		dcCIVAC(uintptr(unsafe.Pointer(l0Entry)))
 		dsbSY()
 		tlbiVAE1IS(0)
 		dsbSY()
 		isbSY()
 	} else {
-		l1PA := uintptr(*l0Entry & PTE_ADDR_MASK)
+		l1PA := pteExtractPA(*l0Entry)
 		l1VA = paToVAOrCache(l1PA)
 	}
 	if l1VA == 0 {
@@ -1527,7 +1336,7 @@ func mapUserPageWithL0(va, pa uintptr, elfFlags uint32, l0PAParam uintptr) bool 
 	l1Entry := (*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
 
 	var l2VA uintptr
-	if (*l1Entry & PTE_VALID) == 0 {
+	if !pteIsValid(*l1Entry) {
 		l2VA = allocPTPage()
 		if l2VA == 0 {
 			return false
@@ -1537,11 +1346,11 @@ func mapUserPageWithL0(va, pa uintptr, elfFlags uint32, l0PAParam uintptr) bool 
 			return false
 		}
 		cachePTVA(l2PA, l2VA)
-		*l1Entry = uint64(l2PA) | PTE_VALID | PTE_TABLE
+		*l1Entry = makeUserTablePTE(l2PA)
 		dcCIVAC(uintptr(unsafe.Pointer(l1Entry)))
 		dsbSY()
 	} else {
-		l2PA := uintptr(*l1Entry & PTE_ADDR_MASK)
+		l2PA := pteExtractPA(*l1Entry)
 		l2VA = paToVAOrCache(l2PA)
 		if l2VA == 0 {
 			return false
@@ -1552,7 +1361,7 @@ func mapUserPageWithL0(va, pa uintptr, elfFlags uint32, l0PAParam uintptr) bool 
 	l2Entry := (*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
 
 	var l3VA uintptr
-	if (*l2Entry & PTE_VALID) == 0 {
+	if !pteIsValid(*l2Entry) {
 		l3VA = allocPTPage()
 		if l3VA == 0 {
 			return false
@@ -1562,54 +1371,31 @@ func mapUserPageWithL0(va, pa uintptr, elfFlags uint32, l0PAParam uintptr) bool 
 			return false
 		}
 		cachePTVA(l3PA, l3VA)
-		*l2Entry = uint64(l3PA) | PTE_VALID | PTE_TABLE
+		*l2Entry = makeUserTablePTE(l3PA)
 		dcCIVAC(uintptr(unsafe.Pointer(l2Entry)))
 		dsbSY()
 	} else {
-		l3PA := uintptr(*l2Entry & PTE_ADDR_MASK)
+		l3PA := pteExtractPA(*l2Entry)
 		l3VA = paToVAOrCache(l3PA)
 		if l3VA == 0 {
 			return false
 		}
 	}
 
-	// Write L3 entry with USER permissions
+	// Write L3 entry with USER permissions (arch-specific)
 	l3Entry := (*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
 
 	// Check if already mapped
-	if (*l3Entry & PTE_VALID) != 0 {
+	if pteIsValid(*l3Entry) {
 		// Already mapped - check if same PA
-		existingPA := uintptr(*l3Entry & PTE_ADDR_MASK)
+		existingPA := pteExtractPA(*l3Entry)
 		if existingPA == pa {
 			return true // Already correctly mapped
 		}
 		return false // Conflict!
 	}
 
-	// Build PTE value for user page
-	// Base: valid, page descriptor, access flag, normal memory, inner shareable
-	// CRITICAL: PTE_NG (non-global) is required for userspace pages when using ASIDs!
-	// Without nG=1, the TLB entry would be global and match any ASID, causing
-	// conflicts when multiple processes map the same VA to different PAs.
-	pteValue := uint64(pa) | PTE_VALID | PTE_TABLE | PTE_AF |
-		PTE_ATTR_NORMAL | PTE_SH_INNER | PTE_NG
-
-	// Set access permissions based on ELF flags
-	if (elfFlags & ELF_PF_W) != 0 {
-		// Writable - use RW for both EL1 and EL0
-		pteValue |= PTE_AP_RW_ALL
-	} else {
-		// Read-only
-		pteValue |= PTE_AP_RO_ALL
-	}
-
-	// Set execute permissions
-	if (elfFlags & ELF_PF_X) == 0 {
-		// Not executable - set UXN (user execute never)
-		pteValue |= PTE_UXN
-	}
-	// Always set PXN - kernel should not execute user code
-	pteValue |= PTE_PXN
+	pteValue := makeUserPagePTE(pa, elfFlags)
 
 	*l3Entry = pteValue
 
@@ -1671,7 +1457,7 @@ func MapUserDevicePage(va, pa uintptr) bool {
 	l0Entry := (*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
 
 	var l1VA uintptr
-	if (*l0Entry & PTE_VALID) == 0 {
+	if !pteIsValid(*l0Entry) {
 		// Need to allocate L1 table
 		l1VA = allocPTPage()
 		if l1VA == 0 {
@@ -1682,14 +1468,14 @@ func MapUserDevicePage(va, pa uintptr) bool {
 			return false
 		}
 		cachePTVA(l1PA, l1VA)
-		*l0Entry = uint64(l1PA) | PTE_VALID | PTE_TABLE
+		*l0Entry = makeUserTablePTE(l1PA)
 		dcCIVAC(uintptr(unsafe.Pointer(l0Entry)))
 		dsbSY()
 		tlbiVAE1IS(0)
 		dsbSY()
 		isbSY()
 	} else {
-		l1PA := uintptr(*l0Entry & PTE_ADDR_MASK)
+		l1PA := pteExtractPA(*l0Entry)
 		l1VA = paToVAOrCache(l1PA)
 	}
 	if l1VA == 0 {
@@ -1700,7 +1486,7 @@ func MapUserDevicePage(va, pa uintptr) bool {
 	l1Entry := (*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
 
 	var l2VA uintptr
-	if (*l1Entry & PTE_VALID) == 0 {
+	if !pteIsValid(*l1Entry) {
 		l2VA = allocPTPage()
 		if l2VA == 0 {
 			return false
@@ -1710,14 +1496,14 @@ func MapUserDevicePage(va, pa uintptr) bool {
 			return false
 		}
 		cachePTVA(l2PA, l2VA)
-		*l1Entry = uint64(l2PA) | PTE_VALID | PTE_TABLE
+		*l1Entry = makeUserTablePTE(l2PA)
 		dcCIVAC(uintptr(unsafe.Pointer(l1Entry)))
 		dsbSY()
 		tlbiVAE1IS(0)
 		dsbSY()
 		isbSY()
 	} else {
-		l2PA := uintptr(*l1Entry & PTE_ADDR_MASK)
+		l2PA := pteExtractPA(*l1Entry)
 		l2VA = paToVAOrCache(l2PA)
 	}
 	if l2VA == 0 {
@@ -1728,7 +1514,7 @@ func MapUserDevicePage(va, pa uintptr) bool {
 	l2Entry := (*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
 
 	var l3VA uintptr
-	if (*l2Entry & PTE_VALID) == 0 {
+	if !pteIsValid(*l2Entry) {
 		l3VA = allocPTPage()
 		if l3VA == 0 {
 			return false
@@ -1738,37 +1524,34 @@ func MapUserDevicePage(va, pa uintptr) bool {
 			return false
 		}
 		cachePTVA(l3PA, l3VA)
-		*l2Entry = uint64(l3PA) | PTE_VALID | PTE_TABLE
+		*l2Entry = makeUserTablePTE(l3PA)
 		dcCIVAC(uintptr(unsafe.Pointer(l2Entry)))
 		dsbSY()
 		tlbiVAE1IS(0)
 		dsbSY()
 		isbSY()
 	} else {
-		l3PA := uintptr(*l2Entry & PTE_ADDR_MASK)
+		l3PA := pteExtractPA(*l2Entry)
 		l3VA = paToVAOrCache(l3PA)
 	}
 	if l3VA == 0 {
 		return false
 	}
 
-	// Write L3 entry with device attributes
+	// Write L3 entry with device attributes (arch-specific)
 	l3Entry := (*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
 
 	// Check if already mapped
-	if (*l3Entry & PTE_VALID) != 0 {
+	if pteIsValid(*l3Entry) {
 		// Already mapped - verify it points to same PA
-		existingPA := uintptr(*l3Entry & PTE_ADDR_MASK)
+		existingPA := pteExtractPA(*l3Entry)
 		if existingPA == pa {
 			return true // Already correctly mapped
 		}
 		return false // Conflict!
 	}
 
-	// Device memory: non-cacheable, RW for user and kernel, no execute
-	// PTE_NG required for userspace pages with ASIDs
-	pteValue := uint64(pa) | PTE_VALID | PTE_TABLE | PTE_AF |
-		PTE_ATTR_DEVICE | PTE_AP_RW_ALL | PTE_EXEC_NEVER | PTE_NG
+	pteValue := makeUserDevicePTE(pa)
 
 	*l3Entry = pteValue
 
@@ -1903,45 +1686,45 @@ func WalkUserPageTableWithL0(va uintptr, l0PAParam uintptr) uintptr {
 
 	// L0 entry
 	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
-	if (l0Entry & PTE_VALID) == 0 {
+	if !pteIsValid(l0Entry) {
 		return 0
 	}
 
 	// L1 table
-	l1PA := uintptr(l0Entry & PTE_ADDR_MASK)
+	l1PA := pteExtractPA(l0Entry)
 	l1VA := paToVAOrCache(l1PA)
 	if l1VA == 0 {
 		return 0
 	}
 	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
-	if (l1Entry & PTE_VALID) == 0 {
+	if !pteIsValid(l1Entry) {
 		return 0
 	}
 
 	// L2 table
-	l2PA := uintptr(l1Entry & PTE_ADDR_MASK)
+	l2PA := pteExtractPA(l1Entry)
 	l2VA := paToVAOrCache(l2PA)
 	if l2VA == 0 {
 		return 0
 	}
 	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
-	if (l2Entry & PTE_VALID) == 0 {
+	if !pteIsValid(l2Entry) {
 		return 0
 	}
 
 	// L3 table
-	l3PA := uintptr(l2Entry & PTE_ADDR_MASK)
+	l3PA := pteExtractPA(l2Entry)
 	l3VA := paToVAOrCache(l3PA)
 	if l3VA == 0 {
 		return 0
 	}
 	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
-	if (l3Entry & PTE_VALID) == 0 {
+	if !pteIsValid(l3Entry) {
 		return 0
 	}
 
 	// Extract PA from L3 entry and add page offset
-	pa := uintptr(l3Entry & PTE_ADDR_MASK)
+	pa := pteExtractPA(l3Entry)
 	return pa | (va & (PageSize - 1))
 }
 
@@ -1980,13 +1763,13 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 	// L0 entry
 	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
 	console.KPrintf("[DumpPTE] L0[%d]=0x%016x (VA=0x%x)\n", l0Idx, l0Entry, l0VA+l0Idx*8)
-	if (l0Entry & PTE_VALID) == 0 {
+	if !pteIsValid(l0Entry) {
 		uartPuts("[DumpPTE] L0 entry INVALID\r\n")
 		return
 	}
 
 	// L1 table
-	l1PA := uintptr(l0Entry & PTE_ADDR_MASK)
+	l1PA := pteExtractPA(l0Entry)
 	l1VA := paToVAOrCache(l1PA)
 	if l1VA == 0 {
 		console.KPrintf("[DumpPTE] Failed to get L1 VA from cache (L1PA=0x%x)\n", l1PA)
@@ -1994,13 +1777,13 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 	}
 	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
 	console.KPrintf("[DumpPTE] L1[%d]=0x%016x (PA=0x%x VA=0x%x)\n", l1Idx, l1Entry, l1PA, l1VA+l1Idx*8)
-	if (l1Entry & PTE_VALID) == 0 {
+	if !pteIsValid(l1Entry) {
 		uartPuts("[DumpPTE] L1 entry INVALID\r\n")
 		return
 	}
 
 	// L2 table
-	l2PA := uintptr(l1Entry & PTE_ADDR_MASK)
+	l2PA := pteExtractPA(l1Entry)
 	l2VA := paToVAOrCache(l2PA)
 	if l2VA == 0 {
 		console.KPrintf("[DumpPTE] Failed to get L2 VA from cache (L2PA=0x%x)\n", l2PA)
@@ -2008,13 +1791,13 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 	}
 	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
 	console.KPrintf("[DumpPTE] L2[%d]=0x%016x (PA=0x%x VA=0x%x)\n", l2Idx, l2Entry, l2PA, l2VA+l2Idx*8)
-	if (l2Entry & PTE_VALID) == 0 {
+	if !pteIsValid(l2Entry) {
 		uartPuts("[DumpPTE] L2 entry INVALID\r\n")
 		return
 	}
 
 	// L3 table
-	l3PA := uintptr(l2Entry & PTE_ADDR_MASK)
+	l3PA := pteExtractPA(l2Entry)
 	l3VA := paToVAOrCache(l3PA)
 	if l3VA == 0 {
 		console.KPrintf("[DumpPTE] Failed to get L3 VA from cache (L3PA=0x%x)\n", l3PA)
@@ -2022,13 +1805,14 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 	}
 	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
 	console.KPrintf("[DumpPTE] L3[%d]=0x%016x (PA=0x%x VA=0x%x)\n", l3Idx, l3Entry, l3PA, l3VA+l3Idx*8)
-	if (l3Entry & PTE_VALID) == 0 {
+	if !pteIsValid(l3Entry) {
 		uartPuts("[DumpPTE] L3 entry INVALID\r\n")
 		return
 	}
 
-	// Decode PTE attributes
-	pa := l3Entry & PTE_ADDR_MASK
+	// Decode PTE attributes (ARM64-specific bit positions)
+	// TODO: Make arch-specific when needed for x86_64/RISC-V debugging
+	pa := uint64(pteExtractPA(l3Entry))
 	ap := (l3Entry >> 6) & 0x3
 	sh := (l3Entry >> 8) & 0x3
 	attr := (l3Entry >> 2) & 0x7
@@ -2081,46 +1865,46 @@ func UnmapUserPage(va uintptr) uintptr {
 
 	// L0 entry
 	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
-	if (l0Entry & PTE_VALID) == 0 {
+	if !pteIsValid(l0Entry) {
 		return 0 // Not mapped
 	}
 
 	// L1 table
-	l1PA := uintptr(l0Entry & PTE_ADDR_MASK)
+	l1PA := pteExtractPA(l0Entry)
 	l1VA := paToVAOrCache(l1PA)
 	if l1VA == 0 {
 		return 0
 	}
 	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
-	if (l1Entry & PTE_VALID) == 0 {
+	if !pteIsValid(l1Entry) {
 		return 0 // Not mapped
 	}
 
 	// L2 table
-	l2PA := uintptr(l1Entry & PTE_ADDR_MASK)
+	l2PA := pteExtractPA(l1Entry)
 	l2VA := paToVAOrCache(l2PA)
 	if l2VA == 0 {
 		return 0
 	}
 	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
-	if (l2Entry & PTE_VALID) == 0 {
+	if !pteIsValid(l2Entry) {
 		return 0 // Not mapped
 	}
 
 	// L3 table
-	l3PA := uintptr(l2Entry & PTE_ADDR_MASK)
+	l3PA := pteExtractPA(l2Entry)
 	l3VA := paToVAOrCache(l3PA)
 	if l3VA == 0 {
 		return 0
 	}
 	l3EntryPtr := (*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
 	l3Entry := *l3EntryPtr
-	if (l3Entry & PTE_VALID) == 0 {
+	if !pteIsValid(l3Entry) {
 		return 0 // Not mapped
 	}
 
 	// Get PA before clearing
-	pa := uintptr(l3Entry & PTE_ADDR_MASK)
+	pa := pteExtractPA(l3Entry)
 
 	// Clear the L3 entry (unmap the page)
 	*l3EntryPtr = 0
@@ -2164,28 +1948,28 @@ func GetUserL3PTE(va uintptr) uint64 {
 		return 0
 	}
 	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
-	if (l0Entry & PTE_VALID) == 0 {
+	if !pteIsValid(l0Entry) {
 		return 0
 	}
-	l1PA := uintptr(l0Entry & PTE_ADDR_MASK)
+	l1PA := pteExtractPA(l0Entry)
 	l1VA := paToVAOrCache(l1PA)
 	if l1VA == 0 {
 		return 0
 	}
 	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
-	if (l1Entry & PTE_VALID) == 0 {
+	if !pteIsValid(l1Entry) {
 		return 0
 	}
-	l2PA := uintptr(l1Entry & PTE_ADDR_MASK)
+	l2PA := pteExtractPA(l1Entry)
 	l2VA := paToVAOrCache(l2PA)
 	if l2VA == 0 {
 		return 0
 	}
 	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
-	if (l2Entry & PTE_VALID) == 0 {
+	if !pteIsValid(l2Entry) {
 		return 0
 	}
-	l3PA := uintptr(l2Entry & PTE_ADDR_MASK)
+	l3PA := pteExtractPA(l2Entry)
 	l3VA := paToVAOrCache(l3PA)
 	if l3VA == 0 {
 		return 0
@@ -2382,7 +2166,7 @@ func mapKernelScratchPage(va, pa uintptr) bool {
 	l0Entry := (*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
 
 	var l1VA uintptr
-	if (*l0Entry & PTE_VALID) == 0 {
+	if !pteIsValid(*l0Entry) {
 		// Need to allocate L1 table
 		l1VA = allocPTPage()
 		if l1VA == 0 {
@@ -2393,14 +2177,14 @@ func mapKernelScratchPage(va, pa uintptr) bool {
 			return false
 		}
 		cachePTVA(l1PA, l1VA)
-		*l0Entry = uint64(l1PA) | PTE_VALID | PTE_TABLE
+		*l0Entry = makeTablePTE(l1PA)
 		dcCIVAC(uintptr(unsafe.Pointer(l0Entry)))
 		dsbSY()
 		tlbiVAE1IS(0)
 		dsbSY()
 		isbSY()
 	} else {
-		l1PA := uintptr(*l0Entry & PTE_ADDR_MASK)
+		l1PA := pteExtractPA(*l0Entry)
 		l1VA = paToVAOrCache(l1PA)
 	}
 	if l1VA == 0 {
@@ -2411,7 +2195,7 @@ func mapKernelScratchPage(va, pa uintptr) bool {
 	l1Entry := (*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
 
 	var l2VA uintptr
-	if (*l1Entry & PTE_VALID) == 0 {
+	if !pteIsValid(*l1Entry) {
 		l2VA = allocPTPage()
 		if l2VA == 0 {
 			return false
@@ -2421,11 +2205,11 @@ func mapKernelScratchPage(va, pa uintptr) bool {
 			return false
 		}
 		cachePTVA(l2PA, l2VA)
-		*l1Entry = uint64(l2PA) | PTE_VALID | PTE_TABLE
+		*l1Entry = makeTablePTE(l2PA)
 		dcCIVAC(uintptr(unsafe.Pointer(l1Entry)))
 		dsbSY()
 	} else {
-		l2PA := uintptr(*l1Entry & PTE_ADDR_MASK)
+		l2PA := pteExtractPA(*l1Entry)
 		l2VA = paToVAOrCache(l2PA)
 		if l2VA == 0 {
 			return false
@@ -2436,7 +2220,7 @@ func mapKernelScratchPage(va, pa uintptr) bool {
 	l2Entry := (*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
 
 	var l3VA uintptr
-	if (*l2Entry & PTE_VALID) == 0 {
+	if !pteIsValid(*l2Entry) {
 		l3VA = allocPTPage()
 		if l3VA == 0 {
 			return false
@@ -2446,23 +2230,21 @@ func mapKernelScratchPage(va, pa uintptr) bool {
 			return false
 		}
 		cachePTVA(l3PA, l3VA)
-		*l2Entry = uint64(l3PA) | PTE_VALID | PTE_TABLE
+		*l2Entry = makeTablePTE(l3PA)
 		dcCIVAC(uintptr(unsafe.Pointer(l2Entry)))
 		dsbSY()
 	} else {
-		l3PA := uintptr(*l2Entry & PTE_ADDR_MASK)
+		l3PA := pteExtractPA(*l2Entry)
 		l3VA = paToVAOrCache(l3PA)
 		if l3VA == 0 {
 			return false
 		}
 	}
 
-	// Write L3 entry with kernel RW permissions
+	// Write L3 entry with kernel scratch permissions (arch-specific)
 	l3Entry := (*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
 
-	// Build PTE for kernel-only RW access (normal memory, inner shareable)
-	pteValue := uint64(pa) | PTE_VALID | PTE_TABLE | PTE_AF |
-		PTE_ATTR_NORMAL | PTE_AP_RW_EL1 | PTE_SH_INNER | PTE_EXEC_NEVER
+	pteValue := makeKernelScratchPTE(pa)
 
 	*l3Entry = pteValue
 

@@ -487,7 +487,7 @@ func virtioGPUSendCommand(cmdBuf unsafe.Pointer, cmdSize uint32, respBuf unsafe.
 	}
 
 	if waited >= maxWait {
-		console.KPrintln("[VirtIO GPU] ERROR: Timeout waiting for response")
+		console.KPrintln("[VirtIO GPU] ERROR: Command timeout")
 		return 0xFFFF
 	}
 
@@ -504,7 +504,8 @@ func virtioGPUSendCommand(cmdBuf unsafe.Pointer, cmdSize uint32, respBuf unsafe.
 	// Free descriptor chain
 	virtio.VirtqueueFreeDescChain(vq, uint16(usedDescIdx))
 
-	// DMA read barrier before reading response buffer
+	// Invalidate D-cache for response buffer before reading DMA-written data
+	asm.InvalidateDCacheRange(uintptr(respBuf), uintptr(respSize))
 	asm.DmaRmb()
 
 	// Read response type from response buffer

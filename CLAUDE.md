@@ -3,17 +3,17 @@
 ---
 ## STOP - READ THIS FIRST (Claude Code Safety)
 
-**DO NOT READ `/tmp/cardinal-serial.log` DIRECTLY!**
+**DO NOT READ serial log files (`/tmp/diplomat-serial.log`, `/tmp/diplomat-arm64-serial.log`, etc.) DIRECTLY!**
 
-This file frequently contains:
+These files frequently contain:
 - Lines with MILLIONS of characters (infinite loop output)
 - Terminal control sequences that freeze tools
 
-**Using Read tool or cat/head/tail on this file WILL HANG YOUR SESSION.**
+**Using Read tool or cat/head/tail on these files WILL HANG YOUR SESSION.**
 
 **ALWAYS use the safe reader:**
 ```bash
-$GO tool safe-serial-read
+$GO tool safe-serial-read /tmp/diplomat-serial.log
 ```
 
 This is enforced by hooks in `.claude/settings.local.json` but read this anyway.
@@ -36,17 +36,17 @@ export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 
 **Usage (inline or after export):**
 ```bash
-# Build everything (cardinal + kmazarin + disk image)
+# Build diplomat + kmazarin for x86_64 and ARM64
 $GO tool task
 
-# Build and run QEMU (5s default timeout)
+# Build and run x86_64 diplomat+kmazarin in QEMU (5s default timeout)
 $GO tool task run
+
+# Run ARM64 diplomat+kmazarin
+$GO tool task run-diplomat-arm64
 
 # Run with custom timeout
 $GO tool task run TIMEOUT=30
-
-# Run with no timeout (interactive — stop with: $GO tool task stop)
-$GO tool task run TIMEOUT=
 
 # Or export once and use throughout session:
 export GOTOOLCHAIN=auto GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
@@ -56,9 +56,10 @@ $GO tool task run TIMEOUT=10
 
 ## Overview
 
-**Cardinal** (bootloader/OS shim) + **Kmazarin** (Go kernel)
-- Cardinal: Minimal OS providing syscalls/environment for Go runtime to start
+**Diplomat** (UEFI bootloader) + **Kmazarin** (Go kernel)
+- Diplomat: Multi-arch UEFI application that loads kmazarin ELF, sets up page tables, and jumps to kernel
 - Kmazarin: Unmodified Go binary - full OS kernel with Go runtime
+- Supported architectures: ARM64, x86_64 (RISC-V deferred pending UEFI firmware)
 
 ## Prerequisites
 
@@ -91,8 +92,8 @@ This project uses a single Go module (`mazzy`). Build is managed by Taskfile (`T
 
 **Source locations:**
 - `cmd/` - Build tools (used via `go tool <name>`)
-- `cardinal/` - Cardinal kernel (bootloader/OS shim)
-- `kmazarin/` - Kmazarin kernel (Go kernel)
+- `diplomat/` - Diplomat UEFI bootloader (multi-arch: ARM64, x86_64, RISC-V)
+- `kmazarin/` - Kmazarin kernel (Go kernel, multi-arch)
 - `flock/` - Userspace programs (priest, helloworld, etc.)
 - `mazarin/` - Shared userspace libraries
 - `shared/` - Shared packages
@@ -101,17 +102,18 @@ This project uses a single Go module (`mazzy`). Build is managed by Taskfile (`T
 
 ```bash
 # Build
-$GO tool task              # Build cardinal + kmazarin + disk (default)
-$GO tool task clean        # Remove build artifacts
-$GO tool task --list       # Show all available tasks
+$GO tool task                    # Build diplomat + kmazarin for x86_64 and ARM64
+$GO tool task kmazarin           # Build kmazarin kernel (ARM64 only)
+$GO tool task kmazarin-amd64     # Build kmazarin kernel (x86_64 only)
+$GO tool task clean              # Remove build artifacts
+$GO tool task --list             # Show all available tasks
 
-# Run and Debug
-$GO tool task run          # Build and run QEMU (5s timeout)
-$GO tool task run TIMEOUT=30   # Run with 30s timeout
-$GO tool task run TIMEOUT=     # Run without timeout (interactive)
-$GO tool task show         # View serial output (safe reader + pager)
-$GO tool task stop         # Stop QEMU (quit via TCP monitor)
-$GO tool task qemu-console # Query QEMU monitor (info registers)
+# Run (diplomat-based UEFI boot)
+$GO tool task run                      # x86_64 diplomat+kmazarin (5s timeout)
+$GO tool task run TIMEOUT=30           # x86_64 with 30s timeout
+$GO tool task run-diplomat-arm64       # ARM64 diplomat+kmazarin (5s timeout)
+$GO tool task stop-diplomat            # Stop x86_64 QEMU
+$GO tool task stop-diplomat-arm64      # Stop ARM64 QEMU
 ```
 
 All build and run operations go through `$GO tool task`. See `design/TASK.md` for comprehensive documentation.
@@ -124,31 +126,31 @@ export GOTOOLCHAIN=auto
 export GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go
 export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 
-# 2. Build and run
-$GO tool task run              # Builds everything, runs QEMU for 5s
+# 2. Build and run (x86_64)
+$GO tool task run              # Builds diplomat+kmazarin, runs QEMU for 5s
 $GO tool task run TIMEOUT=30   # 30 second run
-$GO tool task run TIMEOUT=     # No timeout (interactive)
 
-# 3. View output / interact
-$GO tool task show             # View serial log with pager
-$GO tool task qemu-console     # Query QEMU monitor (info registers)
-$GO tool task stop             # Stop QEMU (sends quit via TCP monitor)
+# 3. Build and run (ARM64)
+$GO tool task run-diplomat-arm64 TIMEOUT=10
+
+# 4. View output / interact
+$GO tool safe-serial-read /tmp/diplomat-serial.log         # x86_64 log
+$GO tool safe-serial-read /tmp/diplomat-arm64-serial.log   # ARM64 log
+$GO tool task stop-diplomat            # Stop x86_64 QEMU (port 4445)
+$GO tool task stop-diplomat-arm64      # Stop ARM64 QEMU (port 4446)
 ```
 
-Output is written to `/tmp/cardinal-serial.log`.
+Output is written to `/tmp/diplomat-serial.log` (x86_64) or `/tmp/diplomat-arm64-serial.log` (ARM64).
 
 **CRITICAL: Serial Log Safety**
 - The serial log can contain:
   - Terminal control sequences that freeze your terminal
   - Ridiculously long lines (millions of characters) that crash tools
-- NEVER: `cat /tmp/cardinal-serial.log` or Read the raw file directly
+- NEVER: `cat /tmp/diplomat-serial.log` or Read the raw file directly
 - ALWAYS: Use the safe reader tools:
   ```bash
   # Safely view the log (handles long lines + control chars)
-  $GO tool safe-serial-read
-
-  # Or manually filter (only safe for reasonable line lengths):
-  tail -f /tmp/cardinal-serial.log | tr -d '\000-\010\013-\037\177-\377'
+  $GO tool safe-serial-read /tmp/diplomat-serial.log
   ```
 - The `$GO tool task run` command displays filtered output after the timeout
 
@@ -158,15 +160,17 @@ Output is written to `/tmp/cardinal-serial.log`.
 
 ### QEMU Monitor Access
 
-QEMU runs with a TCP monitor on port 4444. Use the `qemu-console` task:
+QEMU runs with TCP monitors on different ports per architecture:
+- **x86_64**: port 4445
+- **ARM64**: port 4446
 
 ```bash
-$GO tool task qemu-console                        # info registers (default)
-$GO tool task qemu-console CMD='x/10i 0x40100000' # disassemble
-$GO tool task qemu-console CMD='info mtree'       # memory map
-```
+# x86_64 diplomat+kmazarin
+echo "info registers" | nc 127.0.0.1 4445
 
-Or use netcat directly: `echo "info registers" | nc 127.0.0.1 4444`
+# ARM64 diplomat+kmazarin
+echo "info registers" | nc 127.0.0.1 4446
+```
 
 ## Binary Utilities (Cross-compilation)
 
@@ -224,18 +228,12 @@ Go's `-T 0x41800000` creates:
 - Zero-fill 64KB header region
 - Copy .text from file offset 0x1000
 
-## Memory Layout (1GB RAM @ 0x40000000)
+## Memory Layout
 
-```
-0x40100000-0x401E2000   Cardinal .text (RO+X)
-0x401E2000-0x40567000   Cardinal .rodata (RO)
-0x40567000-0x405FE000   Cardinal .data (RW)
-0x405FE000-0x406C8000   Cardinal .bss (RW)
-0x41000000-0x41800000   Page Tables (8MB, RW)
-0x41800000-~0x41A00000  Kmazarin ELF (RO+X)
-0x5EFF0000-0x5F000000   g0 Stack / SP_EL0 (64KB, RW)
-0x5F000000-0x5F020000   Exception Stack / SP_EL1 (128KB, RW)
-```
+Memory layout is managed by diplomat UEFI bootloader and varies by architecture.
+Diplomat allocates pages via UEFI, sets up page tables, and passes memory map info
+to kmazarin via auxv entries (AT_FRAME_POOL_START, AT_UNIFIED_POOL_START, etc.).
+See `shared/constants/auxv.go` for the full list of boot parameters.
 
 ## ARM64 Dual-Stack Architecture
 
@@ -313,19 +311,22 @@ in registers, second expects stack). The tail-call stub pattern avoids this.
 
 ## Current Status
 
-### Working
-- Cardinal boots, MMU, UART
-- ELF loader handles Go's negative offsets
-- Kmazarin loads and starts executing
-- Exception handling (SVC syscalls, data abort page faults)
-- Syscall dispatch (clone, mmap, futex, etc.)
-- Demand paging for kmazarin memory
-- Thread creation and context switches
-- Page allocation and mapping
-- Stack setup (argc/argv/envp/auxv)
+### x86_64 (diplomat + kmazarin) - FULLY WORKING
+- Diplomat UEFI boots, loads kmazarin ELF, jumps to kernel
+- Interrupts enabled (APIC timer, IDT with correct CS selector)
+- Two clone threads (sysmon + templateThread) created successfully
+- VirtIO GPU display fully working (1920x1080 framebuffer)
+- VirtIO PCI block driver implemented (needs testing with disk)
 
-### In Progress
-- Full Go runtime initialization in kmazarin
+### ARM64 (diplomat + kmazarin) - IN PROGRESS
+- Diplomat UEFI builds and loads kmazarin
+- Kmazarin kernel fully working (syscalls, threading, demand paging)
+- VirtIO PCI block driver ready (shared code with x86_64)
+- Diplomat ARM64 UEFI boot path needs completion
+
+### RISC-V - DEFERRED
+- Diplomat and kmazarin build for RISC-V
+- UEFI firmware availability TBD
 
 ## Git Practices
 
@@ -335,4 +336,4 @@ in registers, second expects stack). The tail-call stub pattern avoids this.
 
 ## Philosophy
 
-Cardinal = GRUB + minimal Linux shim. Once kmazarin runs with full Go runtime, it's the real kernel.
+Diplomat = GRUB/UEFI loader. Kmazarin = the real kernel (full Go runtime, multi-arch).

@@ -391,12 +391,30 @@ func VirtqueueCleanup(vq *VirtQueue) {
 	vq.UsedAlloc = nil
 }
 
+// touchSink prevents the compiler from optimizing away the page touch.
+var touchSink byte
+
+// touchDemandPage forces a read from ptr, ensuring the underlying page is
+// faulted in by the demand paging handler before the page table is walked.
+//
+//go:nosplit
+//go:noinline
+func touchDemandPage(ptr unsafe.Pointer) {
+	touchSink = *(*byte)(ptr)
+}
+
 // VirtqueueGetPhysicalAddr returns the physical address of a virtqueue structure
 // Uses page table walk to get the actual physical address mapping.
 //
 //go:nosplit
 func VirtqueueGetPhysicalAddr(ptr unsafe.Pointer) uint64 {
 	vaddr := PointerToUintptr(ptr)
+
+	// Force the page to be faulted in before walking the page table.
+	// Go's heap uses demand paging — mmap returns VA ranges without mapping
+	// physical pages. The PTE is created on first access (page fault).
+	// Without this touch, WalkPageTable would find PT entry = 0 and return PA = 0.
+	touchDemandPage(ptr)
 
 	// Walk page tables to get actual physical address
 	// This is required because Go heap memory is demand-paged and mapped
@@ -486,12 +504,20 @@ func VirtqueueAddToAvailable(vq *VirtQueue, descIdx uint16) bool {
 // virtqueueHasUsed checks if there are used descriptors to process
 //
 //go:nosplit
+//go:noinline
 func VirtqueueHasUsed(vq *VirtQueue) bool {
-	// Memory barrier to ensure we read the latest used index
-	asm.Dsb()
+	// Invalidate D-cache for Used ring header so we read device's DMA writes from RAM.
+	// On ARM64 (non-cache-coherent DMA), without this the CPU reads stale cached Used.Idx.
+	// No-op on x86_64 and RISC-V (cache-coherent platforms).
+	usedVA := PointerToUintptr(unsafe.Pointer(vq.Used))
+	asm.InvalidateDCacheRange(usedVA, 4) // flags(2) + idx(2)
 
-	// Check if device has written new used entries
-	return vq.Used.Idx != vq.LastUsedIdx
+	// DMA read barrier - ensures device writes are ordered before our read
+	asm.DmaRmb()
+
+	// Read Used.Idx via volatile MMIO read to prevent compiler caching
+	usedIdx := asm.MmioRead16(usedVA + 2) // offset 2: past Flags field
+	return usedIdx != vq.LastUsedIdx
 }
 
 // virtqueueGetUsed retrieves the next used descriptor
@@ -503,9 +529,11 @@ func VirtqueueGetUsed(vq *VirtQueue) (descIdx uint32, len uint32) {
 		return 0xFFFF, 0
 	}
 
-	// Get used element
+	// Get used element — invalidate D-cache for element before reading DMA-written data
 	usedIdx := vq.LastUsedIdx % vq.QueueSize
 	usedElem := VirtqueueGetUsedElement(vq, usedIdx)
+	asm.InvalidateDCacheRange(PointerToUintptr(unsafe.Pointer(usedElem)), unsafe.Sizeof(VirtQUsedElem{}))
+	asm.DmaRmb()
 
 	descIdx = usedElem.ID
 	len = usedElem.Len

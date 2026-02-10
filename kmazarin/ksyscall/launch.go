@@ -15,8 +15,6 @@ const (
 	ELF_MAGIC      = 0x464C457F // "\x7FELF"
 	ELF_CLASS64    = 2
 	ELF_DATA2LSB   = 1          // Little-endian
-	ELF_MACHINE_AARCH64 = 0xB7  // ARM64
-
 	PT_LOAD = 1 // Loadable segment
 
 	PF_X = 1 // Executable
@@ -140,18 +138,21 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 	// Get block device
 	blk, ok := device.GetBlockDevice()
 	if !ok {
+		console.KPrintln("[Launch] ERROR: No block device found")
 		return -1
 	}
 
 	// Mount FAT32 filesystem
 	fs, err := fat32.Mount(blk)
 	if err != nil {
+		console.KPrintf("[Launch] ERROR: FAT32 mount failed: %v\n", err)
 		return -2
 	}
 
 	// Open the ELF file
 	file, err := fs.Open(filename)
 	if err != nil {
+		console.KPrintf("[Launch] ERROR: File open failed: %v\n", err)
 		return -3
 	}
 	defer file.Close()
@@ -171,13 +172,6 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 		return -4
 	}
 	elfData = elfData[:n]
-
-	// DEBUG: Check file read completeness
-	console.KWriteString("[Load] Read 0x")
-	console.KPrintHex64(uint64(n))
-	console.KWriteString(" of 0x")
-	console.KPrintHex64(fileSize)
-	console.KWriteString(" bytes\r\n")
 
 	// Create a FRESH page table for this process.
 	// This avoids inheriting any leftover mappings from Cardinal's TTBR0
@@ -212,6 +206,7 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 	// WRONG page table.
 	proc, err := loadELF(elfData, filename, processL0PA, priestNum)
 	if err != nil {
+		console.KPrintf("[Launch] loadELF FAILED: %v\n", err)
 		return -5
 	}
 
@@ -262,8 +257,8 @@ func loadELF(data []byte, filename string, l0PA uintptr, priestNum uint64) (*Pro
 	if hdr.Magic != ELF_MAGIC {
 		return nil, &elfError{"invalid ELF magic"}
 	}
-	if hdr.Class != ELF_CLASS64 || hdr.Machine != ELF_MACHINE_AARCH64 {
-		return nil, &elfError{"not an ARM64 ELF"}
+	if hdr.Class != ELF_CLASS64 || hdr.Machine != elfExpectedMachine {
+		return nil, &elfError{"ELF machine type mismatch"}
 	}
 
 	for i := uint16(0); i < hdr.Phnum; i++ {

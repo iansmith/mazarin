@@ -40,7 +40,7 @@ TEXT ·trapEntry(SB), NOSPLIT|NOFRAME, $0
 	MOV	X1, 0(X2)
 	// x2 (original sp) is in sscratch - save later
 	MOV	X3, 16(X2)		// gp
-	MOV	X4, 24(X2)		// tp
+	MOV	TP, 24(X2)		// tp
 	MOV	X5, 32(X2)		// t0
 	MOV	X6, 40(X2)		// t1
 	MOV	X7, 48(X2)		// t2
@@ -63,7 +63,7 @@ TEXT ·trapEntry(SB), NOSPLIT|NOFRAME, $0
 	MOV	X24, 184(X2)		// s8
 	MOV	X25, 192(X2)		// s9
 	MOV	X26, 200(X2)		// s10
-	MOV	X27, 208(X2)		// s11 (g)
+	MOV	g, 208(X2)		// s11 (g)
 	MOV	X28, 216(X2)		// t3
 	MOV	X29, 224(X2)		// t4
 	MOV	X30, 232(X2)		// t5
@@ -255,8 +255,9 @@ handle_timer_interrupt:
 	JMP	load_context_and_sret
 
 handle_external_interrupt:
-	// Dispatch to PLIC handler
-	CALL	·DispatchNonTimerIRQ(SB)
+	// Dispatch to top-half handler (sets pending flags and queues bottom-half)
+	// TODO: Read PLIC claim register to get IRQ number, store in topHalfIRQNum
+	// For now, just return - we'll implement PLIC support later
 	JMP	trap_return
 
 // ============================================================================
@@ -277,7 +278,7 @@ trap_return:
 	MOV	0(X2), X1		// ra
 	// Skip x2 (sp) - restore last via sscratch
 	MOV	16(X2), X3
-	MOV	24(X2), X4
+	MOV	24(X2), TP
 	MOV	32(X2), X5
 	MOV	40(X2), X6
 	MOV	48(X2), X7
@@ -300,7 +301,7 @@ trap_return:
 	MOV	184(X2), X24
 	MOV	192(X2), X25
 	MOV	200(X2), X26
-	MOV	208(X2), X27		// g
+	MOV	208(X2), g		// g
 	MOV	216(X2), X28
 	MOV	224(X2), X29
 	MOV	232(X2), X30
@@ -344,7 +345,7 @@ load_context_and_sret:
 	// Load GPRs from new context
 	MOV	8(S2), X1		// ra
 	MOV	24(S2), X3
-	MOV	32(S2), X4
+	MOV	32(X18), TP
 	MOV	40(S2), X5
 	MOV	48(S2), X6
 	MOV	56(S2), X7
@@ -366,7 +367,7 @@ load_context_and_sret:
 	MOV	184(S2), X24
 	MOV	192(S2), X25
 	MOV	200(S2), X26
-	MOV	208(S2), X27		// g
+	MOV	208(X18), g		// g
 	MOV	216(S2), X28
 	MOV	224(S2), X29
 	MOV	232(S2), X30

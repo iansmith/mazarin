@@ -35,3 +35,19 @@ TEXT ·PlatformReadCounter(SB), NOSPLIT, $0-8
 	WORD	$0xC0102573
 	MOV	A0, ret+0(FP)
 	RET
+
+// PlatformDisableTimer clears the STIE bit (bit 5) in SIE CSR.
+// This disables supervisor timer interrupts.
+// func PlatformDisableTimer()
+TEXT ·PlatformDisableTimer(SB), NOSPLIT, $0-0
+	// CSRCI sie, 0x20 (clear STIE bit 5)
+	// SIE CSR = 0x104, clear bit 5 (STIE)
+	// CSRCI encoding: csr[11:0] | uimm[4:0] | 111 | rd[4:0] | 1110011
+	// csr=0x104, uimm=0x20>>5=1 (bit position), funct3=0x7, rd=0
+	// Actually CSRCI uses immediate as bitmask, not bit position
+	// CSRC sie, 0x20 via register:
+	MOV	$0x20, A0  // STIE bit mask
+	// CSRC sie, A0 (clear bits in SIE where A0 has 1s)
+	// Encoding: 0x10453073
+	WORD	$0x10453073
+	RET

@@ -5,6 +5,13 @@
 // When UEFI doesn't provide a DTB (ACPI mode, which is QEMU's default),
 // this builds a valid FDT blob from known QEMU virt hardware layout.
 // Kmazarin's DTB parser consumes it identically to a firmware-provided DTB.
+//
+// Only devices that kmazarin discovers via DTB are listed here:
+//   - GIC (interrupt controller) — used by kmazarin/arch/arm64/gic
+//   - PL011 UART (serial console) — used by kmazarin/uart
+//
+// VirtIO devices (block, GPU, input, RNG) are PCI-based and discovered
+// by kmazarin via PCI bus scan, not DTB.
 
 package main
 
@@ -40,8 +47,8 @@ func buildSyntheticDTB(hw *HardwareInfo) uint64 {
 	b.BeginNodeAddr("intc", 0x8000000)
 	b.PropString("compatible", "arm,cortex-a15-gic")
 	b.PropRegMulti([][2]uint64{
-		{0x8000000, 0x10000},  // GICD
-		{0x8010000, 0x10000},  // GICC
+		{0x8000000, 0x10000}, // GICD
+		{0x8010000, 0x10000}, // GICC
 	})
 	b.PropU32("#interrupt-cells", 3)
 	b.PropEmpty("interrupt-controller")
@@ -55,17 +62,13 @@ func buildSyntheticDTB(hw *HardwareInfo) uint64 {
 	b.PropInterrupt(0, 1, 4) // SPI 1, level-triggered
 	b.EndNode()
 
-	// VirtIO MMIO devices
-	// QEMU virt: 32 slots starting at 0xa000000, stride 0x200
-	// SPI 16+N (IRQ 48+N), edge-triggered
-	for n := uint32(0); n < 32; n++ {
-		addr := uint64(0xa000000) + uint64(n)*0x200
-		b.BeginNodeAddr("virtio_mmio", addr)
-		b.PropString("compatible", "virtio,mmio")
-		b.PropRegEntry(addr, 0x200)
-		b.PropInterrupt(0, 16+n, 1) // SPI 16+N, edge-triggered
-		b.EndNode()
-	}
+	// PL031 RTC
+	// QEMU virt: RTC @ 0x9010000, SPI 2 (IRQ 34)
+	b.BeginNodeAddr("pl031", 0x9010000)
+	b.PropString("compatible", "arm,pl031")
+	b.PropRegEntry(0x9010000, 0x1000)
+	b.PropInterrupt(0, 2, 4) // SPI 2, level-triggered
+	b.EndNode()
 
 	// Close root node
 	b.EndNode()

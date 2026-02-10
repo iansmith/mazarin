@@ -310,3 +310,19 @@ TEXT runtime·getrandom(SB),NOSPLIT,$0-28
 // sigreturn - not implemented
 TEXT runtime·sigreturn(SB),NOSPLIT|NOFRAME,$0-0
 	RET
+
+// gettid - return 1
+TEXT runtime·gettid(SB),NOSPLIT,$0-4
+	MOV	$1, A0
+	MOVW	A0, ret+0(FP)
+	RET
+
+// getpid - return 1
+TEXT runtime·getpid(SB),NOSPLIT|NOFRAME,$0-8
+	MOV	$1, A0
+	MOV	A0, ret+0(FP)
+	RET
+
+// tgkill - no-op
+TEXT runtime·tgkill(SB),NOSPLIT,$0-24
+	RET

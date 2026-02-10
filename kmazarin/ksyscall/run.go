@@ -77,7 +77,7 @@ func SyscallRun(filenamePtr, priestSyscallAddr, programControlPtr, _, _, _ uint6
 		return int64(encodeError(majorBadArg, minorInvalidELF))
 	}
 
-	if hdr.Class != ELF_CLASS64 || hdr.Machine != ELF_MACHINE_AARCH64 {
+	if hdr.Class != ELF_CLASS64 || hdr.Machine != elfExpectedMachine {
 		return int64(encodeError(majorBadArg, minorWrongArch))
 	}
 

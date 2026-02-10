@@ -4,7 +4,10 @@
 //
 // When UEFI doesn't provide a DTB (ACPI mode, which is default on x86),
 // this builds a minimal FDT blob describing the QEMU Q35 hardware layout.
-// Kmazarin's DTB parser consumes it to discover block devices and other hardware.
+//
+// On x86_64, most device discovery happens via PCI bus scan in kmazarin
+// (VirtIO block, GPU, input, RNG) or hardcoded addresses (APIC, I/O ports).
+// The DTB only provides memory layout information.
 
 package main
 
@@ -33,19 +36,6 @@ func buildSyntheticDTB(hw *HardwareInfo) uint64 {
 	b.BeginNodeAddr("memory", hw.RAMBase)
 	b.PropString("device_type", "memory")
 	b.PropRegEntry(hw.RAMBase, hw.RAMSize)
-	b.EndNode()
-
-	// QEMU Q35 has IDE/SATA drives on the AHCI controller
-	// We have two IDE drives: esp-kmazarin.img (boot) and disk-amd64.img (data)
-	// The second drive (disk-amd64.img) is what we want for userspace programs
-	// On QEMU Q35, SATA drives appear as /dev/sd* in Linux
-
-	// SATA disk 0 (ESP boot disk) - skip this one
-	// SATA disk 1 (data disk with dapope/stdio)
-	b.BeginNodeAddr("sata-disk", 1)
-	b.PropString("compatible", "ata,disk")
-	b.PropString("device_type", "block")
-	b.PropU32("drive-index", 1) // Second IDE drive
 	b.EndNode()
 
 	// Close root node

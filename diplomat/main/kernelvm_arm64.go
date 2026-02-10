@@ -203,12 +203,17 @@ func PrepareKernelVM(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, error) 
 	// (the linear map maps VA=PA+offset, but kmazarin is at a different PA)
 	mapKernelCode(l0Phys, kernel)
 
-	// Step 7b: Create linear map of physical RAM using 2MB blocks
-	// Skips entries already set by mapKernelCode above
-	createDiplomatLinearMap(l0Phys, hw.RAMBase, hw.RAMBase+hw.RAMSize)
-
-	// Step 8: Map MMIO regions with device memory attributes
+	// Step 7b: Map MMIO regions with device memory attributes (nGnRnE)
+	// Must come BEFORE the linear map so that createDiplomatLinearMap skips
+	// MMIO entries (it preserves existing valid entries). Without this ordering,
+	// MMIO regions would be mapped as Normal Write-Back cacheable by the linear
+	// map, causing MMIO writes (e.g. VirtIO notify) to be buffered instead of
+	// reaching the device immediately.
 	mapMMIO(l0Phys)
+
+	// Step 7c: Create linear map of physical RAM using 2MB blocks
+	// Skips entries already set by mapKernelCode and mapMMIO above
+	createDiplomatLinearMap(l0Phys, hw.RAMBase, hw.RAMBase+hw.RAMSize)
 
 	// Step 9: Configure TCR_EL1 and write TTBR1
 	configureUpperTranslation()

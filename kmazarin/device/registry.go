@@ -3,7 +3,6 @@ package device
 import (
 	"mazzy/kmazarin/rtc"
 	"mazzy/kmazarin/uart"
-	"mazzy/kmazarin/virtio"
 )
 
 // ArchIndependentDrivers contains device drivers that work on any architecture.
@@ -13,6 +12,9 @@ import (
 // 1. Import the driver's package
 // 2. Add &DriverType{} to this list
 // 3. The driver will be automatically registered and matched against DTB
+//
+// Note: VirtIO devices (block, GPU, input, RNG) are PCI-based and initialized
+// directly from main.go via their respective Init() functions, not through DTB.
 var ArchIndependentDrivers = []Discoverable{
 	// UART devices (pure MMIO)
 	&uart.PL011Driver{},
@@ -20,21 +22,4 @@ var ArchIndependentDrivers = []Discoverable{
 
 	// RTC devices (pure MMIO)
 	&rtc.PL031Driver{},
-
-	// VirtIO devices (MMIO-based, arch-independent)
-	&virtio.RNGDriver{},
-	&virtio.BlockDriver{},
-	// &virtio.RTCDriver{},  // Not yet implemented
-	// &virtio.InputDriver{},
-	// &virtio.NetDriver{},
-
-	// GPIO devices - will be added
-	// &gpio.BCM2835Driver{},
-
-	// Block devices - will be added
-	// &block.AHCIDriver{},
-
-	// Display devices - will be added
-	// &display.SimpleFBDriver{},
-	// &display.BochsVGADriver{},
 }

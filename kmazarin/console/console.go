@@ -66,7 +66,10 @@ func Get() Console {
 		return nil
 	}
 
-	wrapper := v.(*consoleWrapper)
+	wrapper, ok := v.(*consoleWrapper)
+	if !ok {
+		return nil
+	}
 	return wrapper.impl
 }
 

@@ -32,6 +32,8 @@ type KeyEvent struct {
 	Code    uint16 // Raw evdev keycode for programmatic use
 	Pressed bool   // true = press/repeat, false = release
 	Repeat  bool   // true = auto-repeat (held down)
+	Char    rune   // Translated character (0 if non-printable/modifier)
+	Action  string // Named action ("enter", "backspace", etc.) or ""
 }
 
 // MouseEvent represents one frame of mouse input (delivered on EV_SYN).
@@ -139,6 +141,7 @@ func Mouse() (<-chan MouseEvent, error) {
 
 func keyboardLoop() {
 	var buf hid.SoftIRQReturn
+	var km Keymap
 	for {
 		n, err := sys.WaitSoftIRQ(kbdSlot, &buf)
 		if err != nil || n == 0 {
@@ -155,6 +158,7 @@ func keyboardLoop() {
 				Pressed: ev.Value != 0,
 				Repeat:  ev.Value == 2,
 			}
+			ke.Char, ke.Action = km.Feed(ke)
 			select {
 			case kbdCh <- ke:
 			default:

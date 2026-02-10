@@ -30,8 +30,23 @@ TEXT ·getDiplomatSyncEL1hAddr(SB), NOSPLIT, $0-8
 	RET
 
 // setVBAR sets VBAR_EL1 to the given address.
+// Disables the GIC distributor and masks all DAIF exceptions before
+// switching VBAR. UEFI's timer interrupts are active, and UEFI's ConOut
+// may internally re-enable PSTATE.I. Without GIC disabled, a timer IRQ
+// hitting our bare-ERET handler (no GIC EOI) loops forever.
 // Go: func setVBAR(addr uint64)
 TEXT ·setVBAR(SB), NOSPLIT, $0-8
+	// MSR DAIFSet, #0xF — mask Debug, SError, IRQ, FIQ
+	WORD	$0xD5034FDF
+	ISB	$15
+	// Disable GIC distributor — write 0 to GICD_CTLR at 0x08000000
+	// This prevents any interrupt from reaching the CPU, even if
+	// UEFI re-enables PSTATE.I during ConOut calls.
+	MOVD	$0x08000000, R1
+	MOVW	ZR, (R1)
+	DSB	$15
+	ISB	$15
+	// Set VBAR_EL1
 	MOVD	addr+0(FP), R0
 	MSR	R0, VBAR_EL1
 	ISB	$15

@@ -311,3 +311,9 @@ func WireInterrupts() error {
 	return nil
 }
 
+// RegisterBlockDevice registers a block device that was discovered outside of DTB.
+// Used for PCI devices that don't appear in the device tree.
+func RegisterBlockDevice(dev BlockDevice) {
+	blockDevices = append(blockDevices, dev)
+}
+

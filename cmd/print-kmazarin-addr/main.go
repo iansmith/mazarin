@@ -15,7 +15,7 @@ import (
 	"os"
 	"strings"
 
-	"mazzy/cardinal/constants"
+	"mazzy/shared/constants"
 )
 
 var flagCheck = flag.String("check", "", "Verify that the constant matches this hex address (exit 1 if mismatch)")

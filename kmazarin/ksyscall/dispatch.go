@@ -248,8 +248,6 @@ func earlyMmap(addr, length, prot, flags uint64) int64 {
 
 // syscallPanic handles syscall-specific panics with the syscall number
 // Uses console abstraction which provides spinlock protection
-//
-//go:nosplit
 func syscallPanic(msg string, syscallNum uint64) {
 	console.KWriteString("\r\n*** KERNEL PANIC ***\r\n")
 	console.KWriteString(msg)
