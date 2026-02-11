@@ -812,6 +812,7 @@ tasks:
     vars:
       TIMEOUT: '{{.TIMEOUT | default "5"}}'
       LOG_FILE: /tmp/diplomat-serial.log
+      CPU_LOG_FILE: /tmp/qemu-cpu.log
     cmds:
       - task: stop-diplomat
       - '{{.GO}} tool go-rm {{.LOG_FILE}}'
@@ -824,19 +825,26 @@ tasks:
       - '{{.GO}} tool go-echo "=== Diplomat x86_64 + Kmazarin Serial Output ==="'
       - '{{.GO}} tool safe-serial-read {{.LOG_FILE}}'
       - '{{.GO}} tool go-echo'
-      - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
+      - '{{.GO}} tool go-echo "Log files:"'
+      - '{{.GO}} tool go-echo "  Serial:   {{.LOG_FILE}}"'
+      - '{{.GO}} tool go-echo "  CPU log:  {{.CPU_LOG_FILE}}"'
+      - '{{.GO}} tool go-echo'
+      - '{{.GO}} tool go-echo "To view CPU log: tail -100 {{.CPU_LOG_FILE}}"'
 
   run-diplomat-kmazarin-background:
     desc: Start QEMU with diplomat + kmazarin in background (internal task)
     internal: true
     vars:
       LOG_FILE: /tmp/diplomat-serial.log
+      CPU_LOG_FILE: /tmp/qemu-cpu.log
       FW_CODE: '{{if ne .OVMF ""}}{{.OVMF}}{{else}}{{dir .QEMU_AMD64}}/../share/qemu/edk2-x86_64-code.fd{{end}}'
     cmds:
-      - '{{.GO}} tool go-start {{.QEMU_AMD64}} -machine q35,accel=tcg -cpu max -m 8G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive file={{.BUILD_DIR}}/esp-kmazarin.img,format=raw,if=ide -drive file={{.BUILD_DIR}}/disk-amd64.img,format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0,bus=pcie.0,addr=0x10 -boot c -serial file:{{.LOG_FILE}} -debugcon file:/tmp/diplomat-debug.log -monitor tcp:127.0.0.1:4445,server,nowait -device virtio-vga -device virtio-keyboard-pci -device virtio-mouse-pci -display cocoa'
-      - '{{.GO}} tool go-echo "QEMU (x86_64 + kmazarin) started in background"'
+      - '{{.GO}} tool go-rm {{.CPU_LOG_FILE}}'
+      - '{{.GO}} tool go-start {{.QEMU_AMD64}} -machine q35,accel=tcg -cpu max -m 8G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive file={{.BUILD_DIR}}/esp-kmazarin.img,format=raw,if=ide -drive file={{.BUILD_DIR}}/disk-amd64.img,format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0,bus=pcie.0,addr=0x10 -boot c -serial file:{{.LOG_FILE}} -debugcon file:/tmp/diplomat-debug.log -monitor tcp:127.0.0.1:4445,server,nowait -device virtio-vga -device virtio-keyboard-pci -device virtio-mouse-pci -display cocoa -d int,guest_errors -D {{.CPU_LOG_FILE}}'
+      - '{{.GO}} tool go-echo "QEMU (x86_64 + kmazarin) started in background with CPU logging"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4445"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
+      - '{{.GO}} tool go-echo "CPU log: {{.CPU_LOG_FILE}}"'
 
   run-diplomat:
     desc: "Run diplomat in QEMU with OVMF (TIMEOUT=N for timeout, default=5s)"

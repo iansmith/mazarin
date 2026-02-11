@@ -279,7 +279,7 @@ func splitLargePage(pd *[ENTRIES_PER_TABLE]uint64, idx uint64) uint64 {
 }
 
 // mapPage4K maps a single 4KB page in the page tables.
-func mapPage4K(pml4Phys, va, pa, flags uint64) {
+func mapPage4K(pml4Phys, va, pa, flags uint64) bool {
 	pml4 := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(pml4Phys)))
 
 	idx4 := pml4Index(va)
@@ -289,23 +289,27 @@ func mapPage4K(pml4Phys, va, pa, flags uint64) {
 
 	pdptPhys := ensurePDPT(pml4, idx4)
 	if pdptPhys == 0 {
-		return
+		printString("    FAILED: ensurePDPT\r\n")
+		return false
 	}
 	pdpt := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(pdptPhys)))
 
 	pdPhys := ensurePD(pdpt, idx3)
 	if pdPhys == 0 {
-		return
+		printString("    FAILED: ensurePD\r\n")
+		return false
 	}
 	pd := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(pdPhys)))
 
 	ptPhys := ensurePT(pd, idx2)
 	if ptPhys == 0 {
-		return
+		printString("    FAILED: ensurePT\r\n")
+		return false
 	}
 	pt := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(ptPhys)))
 
 	pt[idx1] = pa | flags | PTE_PRESENT
+	return true
 }
 
 // mapStacks maps g0 and exception stacks using 4KB page entries.
@@ -314,19 +318,101 @@ func mapStacks(pml4Phys uint64, vm *KernelVM) {
 
 	// Map g0 stack pages
 	g0Pages := KernelG0StackSize / PageSize
+	printString("Mapping g0 stack: ")
+	printHex(uint64(g0Pages))
+	printString(" pages\r\n")
 	for i := uint64(0); i < uint64(g0Pages); i++ {
 		va := KernelG0StackBottom + i*PageSize
 		pa := vm.G0StackPhys + i*PageSize
-		mapPage4K(pml4Phys, va, pa, flags)
+		printString("  VA ")
+		printHex(va)
+		printString(" -> PA ")
+		printHex(pa)
+		printString("\r\n")
+		if !mapPage4K(pml4Phys, va, pa, flags) {
+			printString("  MAPPING FAILED!\r\n")
+			for {}
+		}
 	}
 
 	// Map exception stack pages
 	excPages := KernelExcStackSize / PageSize
+	printString("Mapping exc stack: ")
+	printHex(uint64(excPages))
+	printString(" pages\r\n")
 	for i := uint64(0); i < uint64(excPages); i++ {
 		va := KernelExcStackBottom + i*PageSize
 		pa := vm.ExcStackPhys + i*PageSize
-		mapPage4K(pml4Phys, va, pa, flags)
+		if !mapPage4K(pml4Phys, va, pa, flags) {
+			printString("  MAPPING FAILED!\r\n")
+			for {}
+		}
 	}
+	printString("Stack mapping complete\r\n")
+
+	// VERIFICATION: Read back the PTE for the critical stack page
+	verifyVA := uint64(0xFFFFFFFF43E07D00)
+	printString("Verifying mapping for VA ")
+	printHex(verifyVA)
+	printString("\r\n")
+
+	pml4 := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(pml4Phys)))
+	idx4 := pml4Index(verifyVA)
+	idx3 := pdptIndex(verifyVA)
+	idx2 := pdIndex(verifyVA)
+	idx1 := ptIndex(verifyVA)
+
+	printString("  PML4[")
+	printHex(idx4)
+	printString("] = ")
+	printHex(pml4[idx4])
+	printString("\r\n")
+
+	if pml4[idx4]&PTE_PRESENT == 0 {
+		printString("  ERROR: PML4 entry not present!\r\n")
+		for {}
+	}
+
+	pdptPhys := pml4[idx4] & PTE_ADDR_MASK
+	pdpt := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(pdptPhys)))
+	printString("  PDPT[")
+	printHex(idx3)
+	printString("] = ")
+	printHex(pdpt[idx3])
+	printString("\r\n")
+
+	if pdpt[idx3]&PTE_PRESENT == 0 {
+		printString("  ERROR: PDPT entry not present!\r\n")
+		for {}
+	}
+
+	pdPhys := pdpt[idx3] & PTE_ADDR_MASK
+	pd := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(pdPhys)))
+	printString("  PD[")
+	printHex(idx2)
+	printString("] = ")
+	printHex(pd[idx2])
+	printString("\r\n")
+
+	if pd[idx2]&PTE_PRESENT == 0 {
+		printString("  ERROR: PD entry not present!\r\n")
+		for {}
+	}
+
+	ptPhys := pd[idx2] & PTE_ADDR_MASK
+	pt := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(ptPhys)))
+	printString("  PT[")
+	printHex(idx1)
+	printString("] = ")
+	printHex(pt[idx1])
+	printString("\r\n")
+
+	if pt[idx1]&PTE_PRESENT == 0 {
+		printString("  ERROR: PT entry not present!\r\n")
+		for {}
+	}
+
+	printString("  Stack page VERIFIED mapped\r\n")
 }
 
 // linearMapMaxPA is the maximum physical address that can be linearly mapped.
@@ -418,7 +504,12 @@ func mapKernelCode(pml4Phys uint64, kernel *LoadedKernel) {
 	for offset := uint64(0); offset < virtEnd-virtStart; offset += PageSize {
 		va := virtStart + offset
 		pa := physStart + offset
-		mapPage4K(pml4Phys, va, pa, flags)
+		if !mapPage4K(pml4Phys, va, pa, flags) {
+			printString("KernelMap FAILED at VA ")
+			printHex(va)
+			printString("\r\n")
+			for {}
+		}
 		pagesCreated++
 	}
 
@@ -442,6 +533,8 @@ func mapMMIO(pml4Phys uint64) {
 
 	// IOAPIC: PA 0xFEC00000 → VA KernelVAOffset + 0xFEC00000
 	mapPage4K(pml4Phys, KernelVAOffset+mmioIOAPICBase, mmioIOAPICBase, flags)
+
+	printString("MMIO mapping complete\r\n")
 }
 
 // kernelPageTablePhys returns the kernel page table root physical address.

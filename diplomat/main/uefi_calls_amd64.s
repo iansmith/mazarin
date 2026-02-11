@@ -492,6 +492,11 @@ TEXT ·jumpToKmazarinWithStack(SB), NOSPLIT, $0-32
 	//   0x20: Ring 3 data (64-bit, present, DPL=3, writable)
 	//   0x28: TSS (will be filled in Step 2)
 
+	// DEBUG: Entering jumpToKmazarinWithStack
+	MOVB	$'1', AL
+	MOVW	$0xE9, DX
+	OUTB
+
 	LEAQ	·newGDTBuffer(SB), R9	// R9 = GDT base
 	LEAQ	·gdtrDesc(SB), DI	// DI = GDTR descriptor address
 
@@ -594,27 +599,51 @@ zero_tss_done:
 	// ================================================================
 	// Step 3: Load new GDT (limit=0x37 covers through TSS at 0x28-0x37)
 	// ================================================================
+	// DEBUG: Before LGDT
+	MOVB	$'2', AL
+	MOVW	$0xE9, DX
+	OUTB
+
 	MOVW	$0x0037, 0(DI)		// limit = 0x37 (gdtrDesc[0:1])
 	MOVQ	R9, 2(DI)		// base = newGDTBuffer (gdtrDesc[2:9])
 	BYTE	$0x0F; BYTE $0x01; BYTE $0x17	// LGDT [RDI]
+
+	// DEBUG: After LGDT, before LTR
+	MOVB	$'3', AL
+	MOVW	$0xE9, DX
+	OUTB
 
 	// Load Task Register with TSS selector 0x28
 	MOVW	$0x0028, AX
 	BYTE	$0x0F; BYTE $0x00; BYTE $0xD8	// LTR AX
 
+	// DEBUG: After LTR
+	MOVB	$'L', AL
+	MOVW	$0xE9, DX
+	OUTB
+
 	// ================================================================
 	// Step 4: Reload CS from UEFI's 0x38 to our new 0x08
 	// ================================================================
+	// DEBUG: Before far return
+	MOVB	$'F', AL
+	MOVW	$0xE9, DX
+	OUTB
 	// Use far return to atomically reload CS and jump to next instruction
 	// Calculate RIP of next instruction using CALL trick
 	BYTE	$0xE8; BYTE $0x00; BYTE $0x00; BYTE $0x00; BYTE $0x00  // CALL $+5 (push RIP+5)
 	POPQ	AX			// AX = RIP of instruction after CALL
-	ADDQ	$9, AX			// Skip 9 bytes: ADDQ(4) + PUSHQ(2) + PUSHQ(1) + RETFQ(2)
+	ADDQ	$10, AX			// Skip 10 bytes: POPQ(1) + ADDQ(4) + PUSHQ(2) + PUSHQ(1) + RETFQ(2) = 10
 	PUSHQ	$0x08			// New CS selector (2 bytes) - goes to [RSP], will be at [RSP+8] after next push
 	PUSHQ	AX			// Return address (cs_reloaded) (1 byte) - goes to [RSP]
 	BYTE	$0x48; BYTE $0xCB	// RETFQ (far return) (2 bytes) - pops RIP from [RSP], CS from [RSP+8]
 
 cs_reloaded:
+	// DEBUG: After far return, CS reloaded
+	MOVB	$'4', AL
+	MOVW	$0xE9, DX
+	OUTB
+
 	// Now running with CS=0x08. Reload data segment registers.
 	MOVW	$0x10, AX		// Ring 0 data selector
 	MOVW	AX, DS
@@ -627,6 +656,10 @@ cs_reloaded:
 	// ================================================================
 	// Step 5: Configure SYSCALL MSRs
 	// ================================================================
+	// DEBUG: Before SYSCALL setup
+	MOVB	$'5', AL
+	MOVW	$0xE9, DX
+	OUTB
 
 	// 5a. Enable SYSCALL in EFER (set SCE bit 0)
 	MOVL	$0xC0000080, CX		// MSR_EFER
@@ -668,11 +701,26 @@ cs_reloaded:
 	// ================================================================
 	// Step 6: Install diplomat's demand-paging IDT and jump to kmazarin
 	// ================================================================
+	// DEBUG: Before LIDT
+	MOVB	$'6', AL
+	MOVW	$0xE9, DX
+	OUTB
+
 	LEAQ	·idtrDescriptor(SB), SI
 	BYTE	$0x0F; BYTE $0x01; BYTE $0x1E	// LIDT [RSI]
 
+	// DEBUG: After LIDT
+	MOVB	$'7', AL
+	MOVW	$0xE9, DX
+	OUTB
+
 	// Switch RSP to g0 stack (pointing to argc/argv/auxv)
 	MOVQ	R13, SP
+
+	// DEBUG: Output 'J' before jump
+	MOVQ	$0xE9, DX
+	MOVQ	$'J', AX
+	OUTB
 
 	// Clear registers for clean state
 	XORQ	BX, BX
@@ -685,7 +733,13 @@ cs_reloaded:
 	XORQ	R9, R9
 	XORQ	R10, R10
 	XORQ	R11, R11
-	MOVQ	R12, AX			// entry point
+	// DEBUG: Output 'K' right before jump (use R10, not AL which holds entry point!)
+	MOVQ	$'K', R10
+	MOVW	$0xE9, DX
+	MOVB	R10, AL
+	OUTB
+
+	MOVQ	R12, AX			// entry point (load AFTER debug output)
 	XORQ	R12, R12
 	XORQ	R13, R13
 	XORQ	R14, R14
