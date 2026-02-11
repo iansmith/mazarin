@@ -1,8 +1,9 @@
+//go:build linux && riscv64
+
 // DIPLOMAT OVERLAY: Custom entry point for RISC-V diplomat (OpenSBI boot)
 //
-// This file provides the _rt0_riscv64_linux entry point that OpenSBI jumps to.
-// It sets up Sv48 page tables, enables MMU, initializes g0/TLS, then calls
-// main.DiplomatEntry.
+// This file REPLACES runtime/rt0_linux_riscv64.s
+// QEMU jumps to load address, so _rt0_riscv64_linux must be first in .text
 
 #include "textflag.h"
 
