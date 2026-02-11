@@ -43,10 +43,11 @@ func SaveContextFromFrame(framePtr uintptr) {
 	t.Context.R15 = frame[14]
 	// frame[15] = error code, not saved to ThreadContext
 	t.Context.RIP = frame[16]
-	// frame[17] = CS, not saved
+	t.Context.CS = frame[17]
 	t.Context.RFLAGS = frame[18]
 	t.Context.RSP = frame[19]
-	// frame[20] = SS, not saved
+	t.Context.SS = frame[20]
+	t.Context.FSBase = readMSR(0xC0000100) // Save FS_BASE MSR for TLS per-thread
 }
 
 // doContextSwitchABI0 is the ABI0 entry point for context switching.
@@ -105,4 +106,5 @@ func SaveCurrentThreadContext(
 	t.Context.RIP = rip
 	t.Context.RFLAGS = rflags
 	t.Context.RSP = rsp
+	t.Context.FSBase = readMSR(0xC0000100) // Save FS_BASE MSR for TLS per-thread
 }

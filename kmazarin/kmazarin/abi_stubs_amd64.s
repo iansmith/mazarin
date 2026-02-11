@@ -10,7 +10,7 @@
 // ThreadContext layout:
 //   0=RAX 8=RBX 16=RCX 24=RDX 32=RSI 40=RDI 48=RBP
 //   56=R8 64=R9 72=R10 80=R11 88=R12 96=R13 104=R14(g) 112=R15
-//   120=RIP 128=RFLAGS 136=RSP
+//   120=RIP 128=RFLAGS 136=RSP 144=FSBase
 
 #include "textflag.h"
 
@@ -179,6 +179,24 @@ TEXT ·RunFirstThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOVQ	CR3, AX
 	MOVQ	AX, CR3
 
+	// Restore FS_BASE from context (per-thread TLS base)
+	MOVQ	144(R12), AX		// FSBase
+	TESTQ	AX, AX
+	JZ	run_skip_fsbase
+	MOVQ	AX, DX
+	SHRQ	$32, DX
+	MOVL	$0xC0000100, CX		// MSR_FS_BASE
+	WRMSR
+run_skip_fsbase:
+
+	// Sync TLS: write g to FS_BASE - 8
+	MOVL	$0xC0000100, CX		// MSR_FS_BASE
+	RDMSR
+	SHLQ	$32, DX
+	ORQ	DX, AX			// RAX = FS_BASE
+	MOVQ	104(R12), DX		// new g (R14)
+	MOVQ	DX, -8(AX)		// Write g to TLS slot
+
 	// Build IRETQ frame: SS, RSP, RFLAGS, CS, RIP (push in reverse order)
 	PUSHQ	$0x30			// SS (UEFI data segment)
 	PUSHQ	136(R12)		// RSP from context
@@ -256,6 +274,13 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	LEAQ	8(SP), AX
 	MOVQ	AX, 136(R12)		// RSP
 
+	// Save FS_BASE MSR (per-thread TLS base)
+	MOVL	$0xC0000100, CX		// MSR_FS_BASE
+	RDMSR				// EAX=low32, EDX=high32
+	SHLQ	$32, DX
+	ORQ	DX, AX
+	MOVQ	AX, 144(R12)		// FSBase
+
 	// Call SaveThread0AndYield() to get next thread's context
 	// x86_64: CALL pushes return addr, so return value at 0(SP)
 	SUBQ	$16, SP
@@ -270,6 +295,24 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	// Flush TLB
 	MOVQ	CR3, AX
 	MOVQ	AX, CR3
+
+	// Restore FS_BASE from context (per-thread TLS base)
+	MOVQ	144(R12), AX		// FSBase
+	TESTQ	AX, AX
+	JZ	yield_skip_fsbase
+	MOVQ	AX, DX
+	SHRQ	$32, DX
+	MOVL	$0xC0000100, CX		// MSR_FS_BASE
+	WRMSR
+yield_skip_fsbase:
+
+	// Sync TLS: write g to FS_BASE - 8
+	MOVL	$0xC0000100, CX		// MSR_FS_BASE
+	RDMSR
+	SHLQ	$32, DX
+	ORQ	DX, AX			// RAX = FS_BASE
+	MOVQ	104(R12), DX		// new g (R14)
+	MOVQ	DX, -8(AX)		// Write g to TLS slot
 
 	// Build IRETQ frame manually (avoid PUSH to keep assembler happy)
 	SUBQ	$40, SP

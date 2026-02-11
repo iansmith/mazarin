@@ -5,9 +5,8 @@
 // Kmazarin runs on bare metal with no underlying OS, so all "syscalls"
 // are routed through kmazarin's IDT handler via INT $0x80.
 //
-// IMPORTANT: Syscall numbers here use the ARM64 Linux convention, matching
-// kmazarin's dispatch table (ksyscall/dispatch.go). The dispatch table uses
-// ARM64 numbers as the canonical internal convention on all architectures.
+// Syscall numbers here use native x86_64 Linux numbers. INT $0x80 delivers
+// them to kmazarin's exception handler, which translates via SysID dispatch.
 //
 // Key differences from ARM64 kmazarin overlay:
 // - Uses OUTB to COM1 (port 0x3F8) instead of MMIO UART
@@ -23,14 +22,14 @@
 
 #define COM1_PORT $0x3F8
 
-// Syscall numbers — ARM64 Linux convention (kmazarin's internal standard).
-// These match the dispatch table in kmazarin/ksyscall/dispatch.go.
-#define SYS_exit         93
-#define SYS_exit_group   94
-#define SYS_futex        98
-#define SYS_sched_yield  124
-#define SYS_gettid       178
-#define SYS_clone        220
+// Syscall numbers — native x86_64 Linux convention.
+// INT $0x80 delivers these to kmazarin's dispatcher which translates to SysID.
+#define SYS_exit         60
+#define SYS_exit_group   231
+#define SYS_futex        202
+#define SYS_sched_yield  24
+#define SYS_gettid       186
+#define SYS_clone        56
 
 // kmazarinUART - write a byte to COM1 via port I/O
 // func kmazarinUART(c byte)

@@ -16,7 +16,7 @@ import (
 //
 // Physical memory is only used when pages are actually faulted in.
 const (
-	userMmapStart = 0x00400000         // 4MB - above ELF load region
+	userMmapStart = 0x10000000         // 256MB - above ELF VA range (Go binaries < 100MB)
 	userMmapEnd   = 0x0000700000000000 // 112TB - plenty of VA space
 )
 

@@ -747,6 +747,9 @@ func simpleMain() {
 	vectorAddr := GetExceptionVectorBase()
 	SetVBAR(vectorAddr)
 
+	// Configure SYSCALL MSRs for userspace (x86_64 only; no-op on ARM64)
+	SetupSyscallMSRs()
+
 	// Test DTB-based device discovery BEFORE unmapping Cardinal
 	// (DTB is at 0x40000000 in Cardinal's memory region)
 	testDeviceDiscovery()

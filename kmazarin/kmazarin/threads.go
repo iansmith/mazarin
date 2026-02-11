@@ -92,6 +92,12 @@ var timerFrequencyHz uint64 = 62500000 // Default 62.5 MHz for QEMU
 // when handling syscalls from userspace (which has a different g).
 var kmazarinG0Addr uint64
 
+// excStackTopForSyscall is the kernel exception stack top address.
+// Used by the SYSCALL entry handler to switch from the user stack to a
+// valid kernel stack. SYSCALL (unlike INT) does NOT switch stacks via TSS,
+// so we must do it manually.
+var excStackTopForSyscall uint64
+
 // ThreadState represents the state of a thread
 type ThreadState int8
 
@@ -586,6 +592,10 @@ func InitThreads() {
 	// at this point (early init runs on g0/m0).
 	// This is used by the exception handler when handling userspace syscalls.
 	kmazarinG0Addr = GetGRegister()
+
+	// Save the exception stack top for SYSCALL entry stack switch.
+	_, _, excTop, _ := platformCPU0Stacks()
+	excStackTopForSyscall = excTop
 
 	// Initialize all thread DATA to free state (direct access OK during init)
 	for i := 0; i < MaxThreads; i++ {
@@ -2314,7 +2324,15 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 		// Restore clone-specific overrides
 		newThread.Context.SetReturnValue(childRetVal)
 		newThread.Context.SetSP(childSP)
-		newThread.Context.SetGRegister(childGReg)
+		// Only override g register if it was explicitly provided (non-zero).
+		// For the kernel overlay (INT $0x80), gp is passed as a syscall arg.
+		// For userspace SYSCALL (x86_64), gp is NOT in the syscall args — the
+		// Go runtime loads R14=gp before SYSCALL, and it survives in the parent's
+		// saved register state. Keeping the parent's R14 gives the child the
+		// correct goroutine pointer.
+		if childGReg != 0 {
+			newThread.Context.SetGRegister(childGReg)
+		}
 		newThread.Context.SetProcessorState(childPState)
 		newThread.CloneNeedsParentRegs = 0
 	}
@@ -2421,6 +2439,26 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 
 	if sf.StateCheck != nil {
 		sf.StateCheck("context-switch-complete")
+	}
+
+	// DEBUG: Detect suspicious RSP values (< 16MB = likely ELF/rodata corruption)
+	newRSP := newThread.Context.GetSP()
+	if newRSP != 0 && newRSP < 0x1000000 {
+		console.KWriteString("\r\n[CTX] BAD RSP! tid=")
+		console.KPrintHex64(uint64(newThread.TID))
+		console.KWriteString(" RSP=")
+		console.KPrintHex64(newRSP)
+		console.KWriteString(" RIP=")
+		console.KPrintHex64(newThread.Context.GetPC())
+		console.KWriteString(" R14=")
+		console.KPrintHex64(newThread.Context.GetGRegister())
+		if oldThread != nil {
+			console.KWriteString(" oldTid=")
+			console.KPrintHex64(uint64(oldThread.TID))
+			console.KWriteString(" oldRSP=")
+			console.KPrintHex64(oldThread.Context.GetSP())
+		}
+		console.KWriteString("\r\n")
 	}
 
 	// END CRITICAL SECTION

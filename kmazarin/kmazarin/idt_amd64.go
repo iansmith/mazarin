@@ -101,6 +101,9 @@ func BuildIDT() {
 	setIDTEntry(14, getISR14Addr(), cs)   // Page fault (#PF)
 	setIDTEntry(48, getISR48Addr(), cs)   // LAPIC timer (vector 0x30)
 	setIDTEntry(128, getISR128Addr(), cs) // Syscall via INT $0x80
+	// Set DPL=3 for vector 128 so userspace (Ring 3) can use INT $0x80.
+	// type/attributes byte: 0xEE = Present(1), DPL=3(11), 0, type=1110 (64-bit interrupt gate)
+	idtTable[128*16+5] = 0xEE
 	setIDTEntry(255, getISR255Addr(), cs) // Spurious interrupt
 
 	// Build IDTR descriptor: [limit:16][base:64]

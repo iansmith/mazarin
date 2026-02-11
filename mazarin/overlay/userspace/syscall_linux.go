@@ -29,8 +29,8 @@ var PriestSyscallEntry func(num, a1, a2, a3, a4, a5, a6 uintptr) int64 = default
 // Implemented in asm_linux_arm64.s
 func defaultSyscallHandler(num, a1, a2, a3, a4, a5, a6 uintptr) int64
 
-// SYS_mmap is the Linux syscall number for mmap on arm64
-const _SYS_mmap = 222
+// _SYS_mmap uses the arch-specific SYS_MMAP from zsysnum_linux_*.go.
+const _SYS_mmap = SYS_MMAP
 
 // SYS_debugPrint is Mazzy's debug print syscall (0x1006)
 const _SYS_debugPrint = 0x1006

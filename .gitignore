@@ -52,6 +52,7 @@ stdio
 # Standalone tool binaries
 elf2pe
 relocate-kmazarin
+go-start
 
 # Old directories (should be removed)
 src/
