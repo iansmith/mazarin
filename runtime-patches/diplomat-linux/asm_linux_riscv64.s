@@ -43,6 +43,15 @@
 
 // _rt0_riscv64_linux is the ELF entry point called by OpenSBI.
 TEXT _rt0_riscv64_linux(SB),NOSPLIT|NOFRAME,$0
+	// ---- IMMEDIATE: Print '!' to verify entry (no wait, multiple times) ----
+	MOV	$UART_BASE, T0
+	MOV	$'!', T1
+	MOVB	T1, (T0)
+	MOVB	T1, (T0)
+	MOVB	T1, (T0)
+	MOVB	T1, (T0)
+	MOVB	T1, (T0)
+
 	// Save OpenSBI parameters
 	MOV	A0, S0		// S0 = hart ID
 	MOV	A1, S1		// S1 = FDT physical address
