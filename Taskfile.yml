@@ -1062,6 +1062,13 @@ tasks:
         vars:
           TIMEOUT: '{{.TIMEOUT | default "5"}}'
 
+  run-x86_64:
+    desc: "Run x86_64 diplomat+kmazarin in QEMU (alias for run-amd64)"
+    cmds:
+      - task: run-diplomat-kmazarin
+        vars:
+          TIMEOUT: '{{.TIMEOUT | default "5"}}'
+
   run-riscv64:
     desc: "Run RISC-V diplomat+kmazarin in QEMU (shorthand for run-diplomat-riscv64)"
     cmds:
