@@ -655,6 +655,16 @@ cs_reloaded:
 	XORL	DX, DX
 	WRMSR
 
+	// 5e. Initialize FS_BASE for Go TLS (kmazarin expects g at FS_BASE-8)
+	// Allocate initial TLS buffer (16 bytes: 8 for alignment + 8 for g pointer)
+	LEAQ	·initialTLSBuf(SB), R10
+	ADDQ	$16, R10		// Point to end of buffer (FS_BASE)
+	MOVL	$0xC0000100, CX		// MSR_FS_BASE
+	MOVQ	R10, AX
+	MOVQ	R10, DX
+	SHRQ	$32, DX			// EDX=high32, EAX=low32
+	WRMSR
+
 	// ================================================================
 	// Step 6: Install diplomat's demand-paging IDT and jump to kmazarin
 	// ================================================================
@@ -687,4 +697,5 @@ cs_reloaded:
 // diplomat data sections for GDT/TSS setup
 GLOBL	·newGDTBuffer(SB), NOPTR, $512
 GLOBL	·gdtrDesc(SB), NOPTR, $10
+GLOBL	·initialTLSBuf(SB), NOPTR, $16	// Initial TLS buffer for FS_BASE
 GLOBL	·tssBuffer(SB), NOPTR, $128
