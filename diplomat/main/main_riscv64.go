@@ -7,17 +7,12 @@ package main
 // elfMachineExpected is the ELF machine type diplomat expects when loading a kernel.
 const elfMachineExpected = elfMachineRISCV64
 
-// _efi_main_riscv64 is the full UEFI entry point for RISC-V 64-bit
-// Implemented in entry_riscv64.s - sets up g0/m0 and calls DiplomatEntry
-func _efi_main_riscv64()
+// kernelFilePath is the path to the kernel on the FAT32 disk.
+// On RISC-V, files are in the root directory (no /EFI/Linux/ UEFI structure).
+const kernelFilePath = "KMAZARIN.ELF"
 
-// _minimal_uefi_test_riscv64 is a minimal test entry point for RISC-V 64-bit
-// Implemented in entry_riscv64.s
-func _minimal_uefi_test_riscv64()
-
-// keepAlive keeps RISC-V-specific entry points from being optimized away
-// Called from main()
+// keepAlive is called from main() to prevent the linker from removing symbols.
+// On RISC-V with OpenSBI boot, there are no UEFI entry points to keep alive.
 func keepAlive() {
-	_efi_main_riscv64()
-	_minimal_uefi_test_riscv64()
+	// Nothing to keep alive on RISC-V
 }

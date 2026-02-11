@@ -731,7 +731,7 @@ tasks:
       - '{{.GO}} tool go-echo "Building diplomat for RISC-V 64-bit (ELF for -kernel loading)..."'
       # Build as Linux ELF with runtime patches — no elf2pe conversion needed.
       # UEFI firmware is broken on RISC-V, so we load via QEMU -kernel + OpenSBI.
-      - 'CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 {{.GO}} build -ldflags="-checklinkname=0" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.DIPLOMAT_RISCV64_ELF}} ./diplomat/main'
+      - 'CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 {{.GO}} build -ldflags="-checklinkname=0 -T 0x80200000" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.DIPLOMAT_RISCV64_ELF}} ./diplomat/main'
       - '{{.GO}} tool go-echo "Diplomat RISC-V 64-bit ELF ready at {{.DIPLOMAT_RISCV64_ELF}}"'
 
   mkesp:
