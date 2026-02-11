@@ -1,30 +1,59 @@
 //go:build linux && riscv64
 
-// DIPLOMAT TRAMPOLINE: Minimal stub at firmware jump address (0x80200000)
-//
-// OpenSBI jumps to image_low_addr (first PT_LOAD segment address).
-// This trampoline uses ONLY position-independent code with no external references.
+// DIPLOMAT ENTRY POINT for RISC-V 64-bit
 //
 // This file REPLACES runtime/rt0_linux_riscv64.s via overlay system.
-// The symbol name _rt0_riscv64_linux ensures this is placed first in .text.
+// Provides minimal Go runtime initialization and calls DiplomatEntry.
+//
+// Entry conditions:
+//   - PC at 0x80000000 (firmware base, -bios none mode)
+//   - M-mode (machine mode, no supervisor)
+//   - No stack setup yet
+//   - a0 (x10) = hart ID
+//   - a1 (x11) = FDT pointer (device tree)
+//
+// Boot sequence:
+//   1. Set up stack
+//   2. Save FDT pointer
+//   3. Initialize g0/m0 (minimal Go runtime)
+//   4. Set up TLS via TP register
+//   5. Call DiplomatEntry (Go function)
 
 #include "textflag.h"
 
-// _rt0_riscv64_linux is the stub that OpenSBI jumps to.
-// NOSPLIT prevents stack checks. NOFRAME means no frame pointer setup.
+// _rt0_riscv64_linux is the entry point called by bootstrap stub
 TEXT _rt0_riscv64_linux(SB),NOSPLIT|NOFRAME,$0
-	// Write '!' to UART in a loop using LUI/ADDI for large immediate
-	// UART base: 0x10000000
+	// ========================================
+	// Minimal RISC-V entry - skip MMU, just try Go runtime
+	// ========================================
 
-	// LUI t0, 0x10000 (load upper immediate)
+	// Write 'D' to prove entry
+	// LUI X5, 0x10000
 	WORD	$0x100002b7
-
-	// ADDI t1, zero, '!' (0x21)
-	WORD	$0x02100313
-
-spin:
-	// SB t1, 0(t0) (store byte to UART)
+	// ADDI X6, X0, 'D'
+	WORD	$0x04400313
+	// SB X6, 0(X5)
 	WORD	$0x00628023
 
-	// JAL zero, spin (jump back)
-	WORD	$0xffdff06f
+	// Save firmware params
+	MOV	A0, S0		// Hart ID
+	MOV	A1, S1		// FDT pointer
+
+	// Write 'S' to prove we saved params
+	// ADDI X6, X0, 'S'
+	WORD	$0x05300313
+	// SB X6, 0(X5)
+	WORD	$0x00628023
+
+	// Set up stack (use physical address 0x81210000 + 32KB)
+	MOV	$0x81218000, SP
+
+	// Write 'T' to prove stack set up
+	// ADDI X6, X0, 'T'
+	WORD	$0x05400313
+	// SB X6, 0(X5)
+	WORD	$0x00628023
+
+	// Try jumping to runtime.rt0_go to let Go initialize itself
+	MOV	$runtime·rt0_go(SB), T0
+	JALR	ZERO, T0

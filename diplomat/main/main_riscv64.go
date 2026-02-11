@@ -7,7 +7,7 @@ package main
 // Forward declarations of assembly entry points
 // Using underscore prefix like AMD64 to prevent dead code elimination
 func _diplomatBootstrap()  // Pure assembly bootstrap (no Go runtime, just UART loop)
-func _diplomatRealEntry()  // Full entry with MMU setup (not used yet)
+func diplomatEntry()        // Full entry with MMU setup (in entry_riscv64.s)
 
 // elfMachineExpected is the ELF machine type diplomat expects when loading a kernel.
 const elfMachineExpected = elfMachineRISCV64
@@ -16,10 +16,18 @@ const elfMachineExpected = elfMachineRISCV64
 // On RISC-V, files are in the root directory (no /EFI/Linux/ UEFI structure).
 const kernelFilePath = "KMAZARIN.ELF"
 
+// Early boot parameters passed by firmware
+var bootHartID uint64  // Hart (hardware thread) ID from a0
+var fdtPointer uint64  // FDT (Flattened Device Tree) pointer from a1
+
+// bootStack provides a small stack for early initialization (64KB)
+// Stack grows down, so entry point sets SP to bootStack + 65536
+var bootStack [65536]byte
+
 // keepAlive is called from main() to prevent the linker from removing symbols.
 // These functions are never actually executed (main() never runs), but must exist
 // in the binary for fix-go-elf to patch the entry point.
 func keepAlive() {
 	_diplomatBootstrap()
-	_diplomatRealEntry()
+	diplomatEntry()
 }
