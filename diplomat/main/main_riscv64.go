@@ -4,6 +4,11 @@
 
 package main
 
+// Forward declarations of assembly entry points
+// Using underscore prefix like AMD64 to prevent dead code elimination
+func _diplomatBootstrap()  // Pure assembly bootstrap (no Go runtime, just UART loop)
+func _diplomatRealEntry()  // Full entry with MMU setup (not used yet)
+
 // elfMachineExpected is the ELF machine type diplomat expects when loading a kernel.
 const elfMachineExpected = elfMachineRISCV64
 
@@ -12,7 +17,9 @@ const elfMachineExpected = elfMachineRISCV64
 const kernelFilePath = "KMAZARIN.ELF"
 
 // keepAlive is called from main() to prevent the linker from removing symbols.
-// On RISC-V with OpenSBI boot, there are no UEFI entry points to keep alive.
+// These functions are never actually executed (main() never runs), but must exist
+// in the binary for fix-go-elf to patch the entry point.
 func keepAlive() {
-	// Nothing to keep alive on RISC-V
+	_diplomatBootstrap()
+	_diplomatRealEntry()
 }

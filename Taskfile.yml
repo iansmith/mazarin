@@ -731,7 +731,7 @@ tasks:
       - '{{.GO}} tool go-echo "Building diplomat for RISC-V 64-bit (ELF for -kernel loading)..."'
       # Build as Linux ELF with runtime patches — no elf2pe conversion needed.
       # UEFI firmware is broken on RISC-V, so we load via QEMU -kernel + OpenSBI.
-      - 'CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 {{.GO}} build -ldflags="-checklinkname=0 -T 0x80200000" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.DIPLOMAT_RISCV64_ELF}} ./diplomat/main'
+      - 'CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 {{.GO}} build -ldflags="-checklinkname=0" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.DIPLOMAT_RISCV64_ELF}} ./diplomat/main'
       - '{{.GO}} tool go-echo "Patching entry point to _rt0_riscv64_linux..."'
       - '{{.GO}} tool patch-entry {{.DIPLOMAT_RISCV64_ELF}} _rt0_riscv64_linux'
       - '{{.GO}} tool go-echo "Fixing ELF for QEMU compatibility..."'
@@ -917,6 +917,11 @@ tasks:
         ignore_error: true
       - '{{.GO}} tool go-sleep 0.5'
 
+  run-riscv:
+    desc: "Run RISC-V diplomat+kmazarin (alias for run-diplomat-riscv64)"
+    cmds:
+      - task: run-diplomat-riscv64
+
   run-diplomat-riscv64:
     desc: "Run RISC-V diplomat+kmazarin in QEMU via OpenSBI -kernel (TIMEOUT=N for timeout, default=5s)"
     deps: [diplomat-riscv64, disk-riscv64]
@@ -943,9 +948,9 @@ tasks:
     vars:
       LOG_FILE: /tmp/diplomat-riscv64-serial.log
     cmds:
-      # No UEFI firmware — QEMU uses built-in OpenSBI when -kernel is specified.
-      # OpenSBI loads diplomat ELF into S-mode. Diplomat reads kmazarin from disk.
-      - '{{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m 2G -rtc base=utc,clock=host -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot'
+      # Use -bios none to run diplomat as firmware (not kernel under OpenSBI).
+      # Diplomat loads at 0x80000000 and runs directly without OpenSBI.
+      - '{{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m 2G -rtc base=utc,clock=host -bios none -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (RISC-V diplomat+kmazarin via OpenSBI) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4447"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'

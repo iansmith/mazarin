@@ -1,9 +1,9 @@
 //go:build linux && riscv64
 
-// DIPLOMAT OVERLAY: Custom entry point for RISC-V diplomat (OpenSBI boot)
+// DIPLOMAT REAL ENTRY: Main entry point for RISC-V diplomat
 //
-// This file REPLACES runtime/rt0_linux_riscv64.s
-// QEMU jumps to load address, so _rt0_riscv64_linux must be first in .text
+// Called by trampoline_riscv64.s which receives OpenSBI parameters.
+// OpenSBI parameters already saved in S0 (hart ID) and S1 (FDT address).
 
 #include "textflag.h"
 
@@ -42,21 +42,8 @@
 #define g_stackguard0 16
 #define g_stackguard1 24
 
-// _rt0_riscv64_linux is the ELF entry point called by OpenSBI.
-TEXT _rt0_riscv64_linux(SB),NOSPLIT|NOFRAME,$0
-	// ---- IMMEDIATE: Print '!' to verify entry (no wait, multiple times) ----
-	MOV	$UART_BASE, T0
-	MOV	$'!', T1
-	MOVB	T1, (T0)
-	MOVB	T1, (T0)
-	MOVB	T1, (T0)
-	MOVB	T1, (T0)
-	MOVB	T1, (T0)
-
-	// Save OpenSBI parameters
-	MOV	A0, S0		// S0 = hart ID
-	MOV	A1, S1		// S1 = FDT physical address
-
+// diplomatRealEntry is called by the trampoline with OpenSBI params in S0/S1.
+TEXT ·diplomatRealEntry(SB),NOSPLIT|NOFRAME,$0
 	// ---- Print 'D' to UART ----
 	MOV	$UART_BASE, T0
 uart_wait_1:

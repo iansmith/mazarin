@@ -287,14 +287,16 @@ func buildDiplomatOverlay(overlay *Overlay, goroot, patchesDir string) error {
 
 func buildDiplomatLinuxOverlay(overlay *Overlay, goroot, patchesDir string) error {
 	// Diplomat patches for Linux runtime to make it UEFI-compatible.
-	// We're building with GOOS=linux GOARCH=amd64, so we patch the Linux syscall/runtime.
+	// We're building with GOOS=linux GOARCH={amd64,riscv64}, so we patch the Linux syscall/runtime.
 	//
 	// Critical patches:
 	// - syscall_linux.go: Centralize syscall routing
-	// - sys_linux_amd64.s: Stub out all syscall instructions (write1, exit, futex, etc.)
+	// - sys_linux_amd64.s: Stub out all syscall instructions (write1, exit, futex, etc.) for x86_64
+	// - rt0_linux_riscv64.s: Trampoline entry point for RISC-V OpenSBI boot
 	patches := map[string]string{
 		"syscall/syscall_linux.go":     "syscall_linux.go",
 		"runtime/sys_linux_amd64.s":    "sys_linux_amd64.s",
+		"runtime/rt0_linux_riscv64.s":  "trampoline_riscv64.s",
 		"debug/elf/file.go":            "elf_file.go",
 		"debug/elf/reader.go":          "elf_reader.go",
 	}
@@ -303,7 +305,8 @@ func buildDiplomatLinuxOverlay(overlay *Overlay, goroot, patchesDir string) erro
 		src := filepath.Join(goroot, "src", goFile)
 		dst := filepath.Join(patchesDir, patchFile)
 		if _, err := os.Stat(dst); err != nil {
-			return fmt.Errorf("patch file not found: %s", dst)
+			// Skip missing files (e.g., arch-specific files for other archs)
+			continue
 		}
 		overlay.Replace[src] = dst
 	}
