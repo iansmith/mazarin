@@ -459,50 +459,232 @@ TEXT ·jumpToKernelWithCR3(SB), NOSPLIT, $0-16
 
 // func jumpToKmazarinWithStack(entry, g0StackPtr, excStackTop, idtBase uint64)
 //
-// Sets up RSP to point to g0 stack (with argc/argv/auxv), installs diplomat's
-// demand-paging IDT (prepared by InstallFaultHandler), disables interrupts,
-// and jumps to the kernel entry point. Does not return.
+// Sets up extended GDT (Ring 0 + Ring 3 + TSS), configures SYSCALL MSRs,
+// installs diplomat's demand-paging IDT, switches RSP, and jumps to kernel.
+// Does not return.
 //
 // entry:       kernel entry point (virtual address)
 // g0StackPtr:  RSP value pointing to argc on g0 stack (VA)
-// excStackTop: exception stack top (VA) — saved for kmazarin's TSS setup
-// idtBase:     kmazarin's ExceptionVectorTable address (unused on x86_64 currently)
+// excStackTop: exception stack top (VA) — used for TSS RSP0
+// idtBase:     kmazarin's ExceptionVectorTable address (unused on x86_64)
 TEXT ·jumpToKmazarinWithStack(SB), NOSPLIT, $0-32
-	MOVQ entry+0(FP), AX
-	MOVQ g0StackPtr+8(FP), BX     // new RSP
-	MOVQ excStackTop+16(FP), CX   // exception stack (for future TSS)
+	MOVQ	entry+0(FP), AX
+	MOVQ	g0StackPtr+8(FP), BX	// new RSP (saved for later)
+	MOVQ	excStackTop+16(FP), CX	// exception stack top for TSS RSP0
+
+	// Save entry, g0StackPtr, excStackTop in callee-saved registers
+	MOVQ	AX, R12			// entry
+	MOVQ	BX, R13			// g0StackPtr
+	MOVQ	CX, R14			// excStackTop
 
 	// Disable interrupts — UEFI timer interrupts could fire during
-	// kmazarin init and hit our minimal IDT (which only handles #PF).
-	// Must CLI before LIDT to prevent UEFI timer from hitting our IDT.
+	// kmazarin init and hit our minimal IDT.
 	CLI
 
-	// Install diplomat's demand-paging IDT.
-	// This IDT was prepared by InstallFaultHandler() but NOT loaded then,
-	// because UEFI calls after that point would STI and let UEFI timer
-	// interrupts hit our minimal IDT (which only has a #PF handler).
-	// Now that we've CLI'd, it's safe to switch IDTs.
+	// ================================================================
+	// Step 1: Create fresh GDT with standard layout
+	// ================================================================
+	// Standard x86_64 GDT layout:
+	//   0x00: Null descriptor
+	//   0x08: Ring 0 code (64-bit, present, DPL=0, executable, readable)
+	//   0x10: Ring 0 data (64-bit, present, DPL=0, writable)
+	//   0x18: Ring 3 code (64-bit, present, DPL=3, executable, readable)
+	//   0x20: Ring 3 data (64-bit, present, DPL=3, writable)
+	//   0x28: TSS (will be filled in Step 2)
+
+	LEAQ	·newGDTBuffer(SB), R9	// R9 = GDT base
+	LEAQ	·gdtrDesc(SB), DI	// DI = GDTR descriptor address
+
+	// Zero the entire GDT buffer first
+	MOVQ	$0, R10
+zero_gdt_loop:
+	CMPQ	R10, $512
+	JGE	zero_gdt_done
+	MOVB	$0, 0(R9)(R10*1)
+	INCQ	R10
+	JMP	zero_gdt_loop
+zero_gdt_done:
+
+	// 0x00: Null descriptor (already zeroed)
+
+	// 0x08: Ring 0 code descriptor
+	// Limit=0xFFFFF, base=0, access=0x9A (P=1,DPL=0,S=1,Type=0xA=ExecRead),
+	// flags=0xA (G=1,L=1,limit[19:16]=0xF)
+	// As uint64: 0x00AF9A000000FFFF
+	MOVQ	$0x00AF9A000000FFFF, R10
+	MOVQ	R10, 0x08(R9)
+
+	// 0x10: Ring 0 data descriptor
+	// Limit=0xFFFFF, base=0, access=0x92 (P=1,DPL=0,S=1,Type=0x2=RW),
+	// flags=0xC (G=1,DB=1,limit[19:16]=0xF)
+	// As uint64: 0x00CF92000000FFFF
+	MOVQ	$0x00CF92000000FFFF, R10
+	MOVQ	R10, 0x10(R9)
+
+	// 0x18: Ring 3 code descriptor
+	// Limit=0xFFFFF, base=0, access=0xFA (P=1,DPL=3,S=1,Type=0xA=ExecRead),
+	// flags=0xA (G=1,L=1,limit[19:16]=0xF)
+	// As uint64: 0x00AFFA000000FFFF
+	MOVQ	$0x00AFFA000000FFFF, R10
+	MOVQ	R10, 0x18(R9)
+
+	// 0x20: Ring 3 data descriptor
+	// Limit=0xFFFFF, base=0, access=0xF2 (P=1,DPL=3,S=1,Type=0x2=RW),
+	// flags=0xC (G=1,DB=1,limit[19:16]=0xF)
+	// As uint64: 0x00CFF2000000FFFF
+	MOVQ	$0x00CFF2000000FFFF, R10
+	MOVQ	R10, 0x20(R9)
+
+	// ================================================================
+	// Step 2: Build TSS at 0x28 (16-byte system descriptor in 64-bit mode)
+	// ================================================================
+
+	// Zero the tssBuffer (128 bytes)
+	LEAQ	·tssBuffer(SB), R15
+	MOVQ	$0, R10
+zero_tss_loop:
+	CMPQ	R10, $128
+	JGE	zero_tss_done
+	MOVB	$0, 0(R15)(R10*1)
+	INCQ	R10
+	JMP	zero_tss_loop
+zero_tss_done:
+
+	// Write RSP0 = excStackTop (R14) at TSS offset 4-11
+	MOVQ	R14, 4(R15)
+
+	// Write IOPB offset = 104 at TSS offset 102-103
+	MOVW	$104, 102(R15)
+
+	// Build TSS descriptor at GDT offset 0x28
+	// TSS base = address of tssBuffer (R15)
+	// TSS limit = 103 (104 bytes - 1)
+	MOVQ	R15, R10		// R10 = TSS base address
+
+	// Bytes 0-1: limit[15:0] = 103 = 0x0067
+	MOVW	$0x0067, 0x28(R9)
+
+	// Bytes 2-3: base[15:0]
+	MOVW	R10, 0x2A(R9)
+
+	// Byte 4: base[23:16]
+	MOVQ	R10, R11
+	SHRQ	$16, R11
+	MOVB	R11, 0x2C(R9)
+
+	// Byte 5: access = 0x89 (Present, DPL=0, type=9 = available 64-bit TSS)
+	MOVB	$0x89, 0x2D(R9)
+
+	// Byte 6: flags[3:0] | limit[19:16] = 0x00 (limit fits in 16 bits)
+	MOVB	$0x00, 0x2E(R9)
+
+	// Byte 7: base[31:24]
+	MOVQ	R10, R11
+	SHRQ	$24, R11
+	MOVB	R11, 0x2F(R9)
+
+	// Bytes 8-11: base[63:32]
+	MOVQ	R10, R11
+	SHRQ	$32, R11
+	MOVL	R11, 0x30(R9)
+
+	// Bytes 12-15: reserved = 0
+	MOVL	$0, 0x34(R9)
+
+	// ================================================================
+	// Step 3: Load new GDT (limit=0x37 covers through TSS at 0x28-0x37)
+	// ================================================================
+	MOVW	$0x0037, 0(DI)		// limit = 0x37 (gdtrDesc[0:1])
+	MOVQ	R9, 2(DI)		// base = newGDTBuffer (gdtrDesc[2:9])
+	BYTE	$0x0F; BYTE $0x01; BYTE $0x17	// LGDT [RDI]
+
+	// Load Task Register with TSS selector 0x28
+	MOVW	$0x0028, AX
+	BYTE	$0x0F; BYTE $0x00; BYTE $0xD8	// LTR AX
+
+	// ================================================================
+	// Step 4: Reload CS from UEFI's 0x38 to our new 0x08
+	// ================================================================
+	// Use far return to atomically reload CS and jump to next instruction
+	// Calculate RIP of next instruction using CALL trick
+	BYTE	$0xE8; BYTE $0x00; BYTE $0x00; BYTE $0x00; BYTE $0x00  // CALL $+5 (push RIP+5)
+	POPQ	AX			// AX = RIP of instruction after CALL
+	ADDQ	$9, AX			// Skip 9 bytes: ADDQ(4) + PUSHQ(2) + PUSHQ(1) + RETFQ(2)
+	PUSHQ	$0x08			// New CS selector (2 bytes) - goes to [RSP], will be at [RSP+8] after next push
+	PUSHQ	AX			// Return address (cs_reloaded) (1 byte) - goes to [RSP]
+	BYTE	$0x48; BYTE $0xCB	// RETFQ (far return) (2 bytes) - pops RIP from [RSP], CS from [RSP+8]
+
+cs_reloaded:
+	// Now running with CS=0x08. Reload data segment registers.
+	MOVW	$0x10, AX		// Ring 0 data selector
+	MOVW	AX, DS
+	MOVW	AX, ES
+	MOVW	AX, SS
+	XORW	AX, AX
+	MOVW	AX, FS			// Zero out FS (kmazarin sets FS_BASE via MSR)
+	MOVW	AX, GS			// Zero out GS
+
+	// ================================================================
+	// Step 5: Configure SYSCALL MSRs
+	// ================================================================
+
+	// 5a. Enable SYSCALL in EFER (set SCE bit 0)
+	MOVL	$0xC0000080, CX		// MSR_EFER
+	RDMSR
+	ORL	$1, AX			// Set SCE bit
+	WRMSR
+
+	// 5b. Set STAR: SYSCALL CS = 0x08 in bits [47:32]
+	//     SYSRET base = 0x18 in bits [63:48] (not used, we use IRETQ)
+	MOVL	$0xC0000081, CX		// MSR_STAR
+	MOVL	$0, AX			// Low 32 bits = 0 (32-bit SYSCALL EIP, unused)
+	MOVL	$0x00180008, DX		// High 32 bits: [31:16]=0x18 (SYSRET base), [15:0]=0x08 (SYSCALL CS)
+	WRMSR
+
+	// 5c. Set LSTAR = kmazarin's syscallEntry address
+	MOVL	$0xC0000082, CX		// MSR_LSTAR
+	MOVQ	·kmazarinSyscallEntry(SB), R10
+	MOVQ	R10, AX
+	MOVQ	R10, DX
+	SHRQ	$32, DX			// EDX=high32, EAX=low32
+	WRMSR
+
+	// 5d. Set FMASK = 0x200 (clear IF on SYSCALL entry)
+	MOVL	$0xC0000084, CX		// MSR_FMASK
+	MOVL	$0x200, AX
+	XORL	DX, DX
+	WRMSR
+
+	// ================================================================
+	// Step 6: Install diplomat's demand-paging IDT and jump to kmazarin
+	// ================================================================
 	LEAQ	·idtrDescriptor(SB), SI
 	BYTE	$0x0F; BYTE $0x01; BYTE $0x1E	// LIDT [RSI]
 
 	// Switch RSP to g0 stack (pointing to argc/argv/auxv)
-	MOVQ BX, SP
+	MOVQ	R13, SP
 
 	// Clear registers for clean state
-	XORQ BX, BX
-	XORQ CX, CX
-	XORQ DX, DX
-	XORQ SI, SI
-	XORQ DI, DI
-	XORQ BP, BP
-	XORQ R8, R8
-	XORQ R9, R9
-	XORQ R10, R10
-	XORQ R11, R11
-	XORQ R12, R12
-	XORQ R13, R13
-	XORQ R14, R14
-	XORQ R15, R15
+	XORQ	BX, BX
+	XORQ	CX, CX
+	XORQ	DX, DX
+	XORQ	SI, SI
+	XORQ	DI, DI
+	XORQ	BP, BP
+	XORQ	R8, R8
+	XORQ	R9, R9
+	XORQ	R10, R10
+	XORQ	R11, R11
+	MOVQ	R12, AX			// entry point
+	XORQ	R12, R12
+	XORQ	R13, R13
+	XORQ	R14, R14
+	XORQ	R15, R15
 
 	// Jump to kmazarin entry point (_rt0_amd64_linux)
-	JMP AX
+	JMP	AX
+
+// diplomat data sections for GDT/TSS setup
+GLOBL	·newGDTBuffer(SB), NOPTR, $512
+GLOBL	·gdtrDesc(SB), NOPTR, $10
+GLOBL	·tssBuffer(SB), NOPTR, $128

@@ -25,6 +25,9 @@ package main
 //	120     RIP
 //	128     RFLAGS
 //	136     RSP
+//	144     FSBase (x86_64 FS_BASE MSR)
+//	152     CS (code segment selector for IRETQ)
+//	160     SS (stack segment selector for IRETQ)
 type ThreadContext struct {
 	RAX    uint64
 	RBX    uint64
@@ -44,6 +47,9 @@ type ThreadContext struct {
 	RIP    uint64 // Instruction pointer
 	RFLAGS uint64 // Processor flags
 	RSP    uint64 // Stack pointer
+	FSBase uint64 // x86_64 FS_BASE MSR value (per-thread TLS base)
+	CS     uint64 // Code segment selector for IRETQ (Ring 0: 0x08, Ring 3: 0x1B)
+	SS     uint64 // Stack segment selector for IRETQ (Ring 0: 0x10, Ring 3: 0x23)
 }
 
 // GetGRegister returns the g register (R14 on x86_64).
@@ -96,6 +102,12 @@ func (ctx *ThreadContext) GetProcessorState() uint64 { return ctx.RFLAGS }
 //go:nosplit
 func (ctx *ThreadContext) SetProcessorState(v uint64) { ctx.RFLAGS = v }
 
+// Ring 3 segment selectors (standard GDT layout with RPL=3)
+const (
+	userCS = 0x1B // GDT offset 0x18 | RPL=3 (Ring 3 code)
+	userSS = 0x23 // GDT offset 0x20 | RPL=3 (Ring 3 data)
+)
+
 // SetupForUserspace initializes the context for a new userspace thread.
 //
 //go:nosplit
@@ -104,11 +116,21 @@ func (ctx *ThreadContext) SetupForUserspace(entryPoint, stackPtr uint64) {
 	ctx.RSP = stackPtr
 	ctx.RIP = entryPoint
 	ctx.RFLAGS = 0x202 // IF=1 (interrupts enabled), bit 1 always set
+	ctx.CS = userCS
+	ctx.SS = userSS
 }
+
+// Ring 0 segment selectors (standard GDT layout)
+const (
+	kernelCS = 0x08 // GDT offset 0x08 (Ring 0 code)
+	kernelSS = 0x10 // GDT offset 0x10 (Ring 0 data)
+)
 
 // SetupForCloneChild initializes the context for a clone child thread.
 // Clears RAX (child returns 0), sets stack/return address, enables IRQs,
-// and sets the g register.
+// and sets the g register. CS/SS are set to Ring 0 (kernel clones);
+// CloneNeedsParentRegs copy in doContextSwitchImpl will override with
+// parent's CS/SS for userspace clones.
 //
 //go:nosplit
 func (ctx *ThreadContext) SetupForCloneChild(stack, returnAddr, gReg, parentState uint64) {
@@ -117,4 +139,6 @@ func (ctx *ThreadContext) SetupForCloneChild(stack, returnAddr, gReg, parentStat
 	ctx.RIP = returnAddr            // Return address
 	ctx.RFLAGS = parentState | 0x200 // Same state but with IF set (interrupts enabled)
 	ctx.R14 = gReg                  // g register
+	ctx.CS = kernelCS               // Kernel code segment (overridden by CloneNeedsParentRegs)
+	ctx.SS = kernelSS               // Kernel data segment (overridden by CloneNeedsParentRegs)
 }

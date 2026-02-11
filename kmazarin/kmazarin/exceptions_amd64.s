@@ -174,6 +174,8 @@ TEXT common_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	// Determine exception type and dispatch
 	CMPQ	SI, $128		// INT 0x80 = syscall?
 	JE	handle_syscall
+	CMPQ	SI, $129		// SYSCALL instruction (x86_64 userspace)
+	JE	handle_syscall
 	CMPQ	SI, $14			// #PF = page fault?
 	JE	handle_page_fault
 	CMPQ	SI, $48			// 0x30 = timer IRQ?
@@ -192,6 +194,26 @@ handle_syscall:
 	MOVB	$'s', AX
 	OUTB
 
+	// For SYSCALL from userspace (vector 129), switch to kernel g0.
+	// The user's R14 is already saved in the frame by common_exception_entry.
+	// We need kmazarin's g0 for all Go function calls (ABIInternal uses R14,
+	// ABI0 wrappers read g from TLS at FS_BASE-8).
+	// This matches ARM64's pattern: every exception handler switches X28 to
+	// kmazarinG0Addr before calling any Go code.
+	CMPQ	·currentVector(SB), $129
+	JNE	syscall_skip_g_setup
+
+	// Write kernel g to TLS slot (FS_BASE - 8)
+	MOVL	$0xC0000100, CX		// MSR_FS_BASE
+	RDMSR				// EAX=low32, EDX=high32
+	SHLQ	$32, DX
+	ORQ	DX, AX			// RAX = FS_BASE
+	MOVQ	·kmazarinG0Addr(SB), DX
+	MOVQ	DX, -8(AX)		// Write kernel g to TLS slot
+	// Set R14 to kernel g for ABIInternal calls
+	MOVQ	DX, R14
+
+syscall_skip_g_setup:
 	// Save ELR (RIP) and SPSR (RFLAGS) for clone
 	// DEBUG: breadcrumb 'a' before SetSyscallELR
 	MOVW	$0x3F8, DX
@@ -349,11 +371,27 @@ lrip8:
 	// Load new context and IRETQ
 	JMP	load_context_and_iretq
 
+syscall_no_switch:
+	// TLS restoration now handled generically in exception_return.
+	JMP	exception_return
+
 handle_page_fault:
 	// DEBUG: breadcrumb 'p' for page fault
 	MOVW	$0x3F8, DX
 	MOVB	$'p', AX
 	OUTB
+
+	// CRITICAL: Set kernel g0 for Go code (same as syscall handler).
+	// Without this, page faults from userspace run Go code with the user's g,
+	// causing incorrect behavior (wrong stack bounds, wrong goroutine state).
+	MOVL	$0xC0000100, CX		// MSR_FS_BASE
+	RDMSR				// EAX=low32, EDX=high32
+	SHLQ	$32, DX
+	ORQ	DX, AX			// RAX = FS_BASE
+	MOVQ	·kmazarinG0Addr(SB), DX
+	MOVQ	DX, -8(AX)		// Write kernel g to TLS slot
+	MOVQ	DX, R14			// Set R14 to kernel g for ABIInternal calls
+
 	// Read CR2 for fault address
 	MOVQ	CR2, R13		// save in callee-saved R13
 
@@ -366,9 +404,71 @@ handle_page_fault:
 	// R13 still has fault address (callee-saved, preserved across GO_CALL)
 	GO_CALL_1_1(·HandleUserPageFaultAsm, R13)
 
+	TESTQ	AX, AX
+	JNZ	exception_return
+
+	// Neither handler resolved the fault. Print CR2 and RIP for debugging.
+	// Format: "F:" + hex_fault_addr + "@" + hex_rip + newline
+	MOVW	$0x3F8, DX
+	MOVB	$'F', AX
+	OUTB
+	MOVB	$':', AX
+	OUTB
+	MOVQ	CR2, R15		// save fault addr in R15 (will be restored from frame)
+
+	// Print 16 hex nibbles of R15 (fault addr)
+	MOVQ	$60, CX			// start shift = 60 (nibble 15)
+pf_hex_loop:
+	MOVQ	R15, AX
+	SHRQ	CX, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	pf_hex_ok
+	ADDQ	$('A'-'0'-10), AX
+pf_hex_ok:
+	MOVW	$0x3F8, DX
+	OUTB
+	SUBQ	$4, CX
+	JGE	pf_hex_loop
+
+	MOVW	$0x3F8, DX
+	MOVB	$'@', AX
+	OUTB
+
+	// Print RIP from exception frame (offset 128 = 16*8)
+	MOVQ	128(SP), R15
+	MOVQ	$60, CX
+pf_rip_loop:
+	MOVQ	R15, AX
+	SHRQ	CX, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	pf_rip_ok
+	ADDQ	$('A'-'0'-10), AX
+pf_rip_ok:
+	MOVW	$0x3F8, DX
+	OUTB
+	SUBQ	$4, CX
+	JGE	pf_rip_loop
+
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX
+	OUTB
+
 	JMP	exception_return
 
 handle_timer_irq:
+	// CRITICAL: Set kernel g0 for Go code (timer IRQs can preempt userspace).
+	MOVL	$0xC0000100, CX		// MSR_FS_BASE
+	RDMSR				// EAX=low32, EDX=high32
+	SHLQ	$32, DX
+	ORQ	DX, AX			// RAX = FS_BASE
+	MOVQ	·kmazarinG0Addr(SB), DX
+	MOVQ	DX, -8(AX)		// Write kernel g to TLS slot
+	MOVQ	DX, R14			// Set R14 to kernel g for ABIInternal calls
+
 	// Send EOI to LAPIC first
 	MOVQ	$(0xFEE00000 + 0xFFFFFFFF00000000), AX
 	MOVL	$0, 0xB0(AX)		// LAPIC_EOI = 0
@@ -413,13 +513,191 @@ gvec1:
 	ADDQ	$('A'-'0'-10), AX
 gvec2:
 	OUTB
-	// For fault vectors (0-31), halt — can't safely return
+	// For fault vectors (0-31), print diagnostic info then halt
 	CMPQ	SI, $32
-	JB	generic_halt
+	JB	generic_fault_diag
 	// For IRQs (32+), send EOI and return
 	MOVQ	$(0xFEE00000 + 0xFFFFFFFF00000000), AX
 	MOVL	$0, 0xB0(AX)		// LAPIC_EOI = 0
 	JMP	exception_return
+
+generic_fault_diag:
+	// Print error code (at 120(SP)) and faulting RIP (at 128(SP))
+	MOVW	$0x3F8, DX
+	MOVB	$'E', AX
+	OUTB
+	MOVB	$'=', AX
+	OUTB
+	// Print error code as 8 hex digits
+	MOVQ	120(SP), R11
+	MOVQ	R11, AX; SHRQ $28, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB fe0; ADDQ $('A'-'0'-10), AX
+fe0:	OUTB
+	MOVQ	R11, AX; SHRQ $24, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB fe1; ADDQ $('A'-'0'-10), AX
+fe1:	OUTB
+	MOVQ	R11, AX; SHRQ $20, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB fe2; ADDQ $('A'-'0'-10), AX
+fe2:	OUTB
+	MOVQ	R11, AX; SHRQ $16, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB fe3; ADDQ $('A'-'0'-10), AX
+fe3:	OUTB
+	MOVQ	R11, AX; SHRQ $12, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB fe4; ADDQ $('A'-'0'-10), AX
+fe4:	OUTB
+	MOVQ	R11, AX; SHRQ $8, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB fe5; ADDQ $('A'-'0'-10), AX
+fe5:	OUTB
+	MOVQ	R11, AX; SHRQ $4, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB fe6; ADDQ $('A'-'0'-10), AX
+fe6:	OUTB
+	MOVQ	R11, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB fe7; ADDQ $('A'-'0'-10), AX
+fe7:	OUTB
+	// Print faulting RIP
+	MOVB	$'@', AX
+	MOVW	$0x3F8, DX
+	OUTB
+	// Print full 8-byte RIP from 128(SP)
+	MOVQ	128(SP), R11
+	// Nibble 15 (bits 60-63)
+	MOVQ	R11, AX
+	SHRQ	$60, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	frip0
+	ADDQ	$('A'-'0'-10), AX
+frip0:	OUTB
+	// Nibble 14 (bits 56-59)
+	MOVQ	R11, AX
+	SHRQ	$56, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	frip1
+	ADDQ	$('A'-'0'-10), AX
+frip1:	OUTB
+	// Nibble 13
+	MOVQ	R11, AX
+	SHRQ	$52, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	frip2
+	ADDQ	$('A'-'0'-10), AX
+frip2:	OUTB
+	// Nibble 12
+	MOVQ	R11, AX
+	SHRQ	$48, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	frip3
+	ADDQ	$('A'-'0'-10), AX
+frip3:	OUTB
+	// Nibble 11
+	MOVQ	R11, AX
+	SHRQ	$44, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	frip4
+	ADDQ	$('A'-'0'-10), AX
+frip4:	OUTB
+	// Nibble 10
+	MOVQ	R11, AX
+	SHRQ	$40, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	frip5
+	ADDQ	$('A'-'0'-10), AX
+frip5:	OUTB
+	// Nibble 9
+	MOVQ	R11, AX
+	SHRQ	$36, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	frip6
+	ADDQ	$('A'-'0'-10), AX
+frip6:	OUTB
+	// Nibble 8
+	MOVQ	R11, AX
+	SHRQ	$32, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	frip7
+	ADDQ	$('A'-'0'-10), AX
+frip7:	OUTB
+	// Nibble 7
+	MOVQ	R11, AX
+	SHRQ	$28, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	frip8
+	ADDQ	$('A'-'0'-10), AX
+frip8:	OUTB
+	// Nibble 6
+	MOVQ	R11, AX
+	SHRQ	$24, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	frip9
+	ADDQ	$('A'-'0'-10), AX
+frip9:	OUTB
+	// Nibble 5
+	MOVQ	R11, AX
+	SHRQ	$20, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	fripA
+	ADDQ	$('A'-'0'-10), AX
+fripA:	OUTB
+	// Nibble 4
+	MOVQ	R11, AX
+	SHRQ	$16, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	fripB
+	ADDQ	$('A'-'0'-10), AX
+fripB:	OUTB
+	// Nibble 3
+	MOVQ	R11, AX
+	SHRQ	$12, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	fripC
+	ADDQ	$('A'-'0'-10), AX
+fripC:	OUTB
+	// Nibble 2
+	MOVQ	R11, AX
+	SHRQ	$8, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	fripD
+	ADDQ	$('A'-'0'-10), AX
+fripD:	OUTB
+	// Nibble 1
+	MOVQ	R11, AX
+	SHRQ	$4, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	fripE
+	ADDQ	$('A'-'0'-10), AX
+fripE:	OUTB
+	// Nibble 0
+	MOVQ	R11, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	fripF
+	ADDQ	$('A'-'0'-10), AX
+fripF:	OUTB
+	MOVB	$'\n', AX
+	OUTB
+
 generic_halt:
 	HLT
 	JMP	generic_halt
@@ -428,6 +706,18 @@ generic_halt:
 // Exception return - restore GPRs and IRETQ
 // ============================================================================
 exception_return:
+	// Restore TLS: write saved R14 (g) to TLS slot (FS_BASE - 8) before returning.
+	// This undoes the kernel g0 written by page fault / timer IRQ / syscall handlers.
+	// For kernel exceptions: saved R14 = kernel g0, so this is a no-op.
+	// For user exceptions: saved R14 = user g, so user TLS is correctly restored.
+	// Uses AX, CX, DX as scratch — all will be restored by the POPs below.
+	MOVL	$0xC0000100, CX		// MSR_FS_BASE
+	RDMSR				// EAX=low32, EDX=high32
+	SHLQ	$32, DX
+	ORQ	DX, AX			// RAX = FS_BASE
+	MOVQ	104(SP), DX		// R14 from saved GPR frame (offset 13*8)
+	MOVQ	DX, -8(AX)		// Write g to TLS slot
+
 	// DEBUG: breadcrumb 'i' for IRETQ return
 	MOVW	$0x3F8, DX
 	MOVB	$'i', AX
@@ -463,11 +753,22 @@ load_context_and_iretq:
 	MOVQ	CR3, AX
 	MOVQ	AX, CR3
 
+	// Restore FS_BASE from context (per-thread TLS base).
+	// Without this, userspace threads that called arch_prctl(ARCH_SET_FS)
+	// would resume with the wrong FS_BASE, causing TLS reads to return
+	// garbage and crashing the Go runtime.
+	MOVQ	144(R12), AX		// FSBase from ThreadContext
+	TESTQ	AX, AX
+	JZ	skip_fsbase_restore
+	MOVQ	AX, DX
+	SHRQ	$32, DX
+	MOVL	$0xC0000100, CX		// MSR_FS_BASE
+	WRMSR				// Restore FS_BASE
+skip_fsbase_restore:
+
 	// Sync TLS: write the new thread's g register to the TLS slot.
-	// Without this, systemstack() and other ABI0 runtime assembly reads
-	// the stale g from TLS (e.g. left by a clone child), causing the parent
-	// to use the wrong m/curg/stack and crash.
 	// TLS layout on Linux amd64: g is at FS_BASE - 8 (i.e. FS:-8).
+	// FS_BASE was just restored above (or left unchanged if FSBase==0).
 	MOVL	$0xC0000100, CX		// MSR_FS_BASE
 	RDMSR				// EAX=low32, EDX=high32
 	SHLQ	$32, DX
@@ -482,7 +783,10 @@ load_context_and_iretq:
 	// Clear the frame and build fresh IRETQ frame
 	MOVQ	136(R12), AX		// new RSP
 	MOVQ	128(R12), BX		// new RFLAGS
-	// Clear IF (bit 9) — keep interrupts disabled until LAPIC/IDT are fully configured
+	// Clear IF (bit 9) — we're in an exception handler, interrupts will be
+	// re-enabled by exception_return's IRETQ when normal execution resumes.
+	// Without this, an immediate timer IRQ after IRETQ can cause re-entrancy
+	// before the thread has executed even one instruction.
 	MOVQ	$0x200, CX
 	NOTQ	CX
 	ANDQ	CX, BX
@@ -491,11 +795,13 @@ load_context_and_iretq:
 	// Find a safe SP location (below current frame)
 	LEAQ	-48(SP), SP		// Make room
 
-	// Build IRETQ frame
-	MOVQ	$0x30, 32(SP)		// SS (UEFI data segment)
+	// Build IRETQ frame with CS/SS from ThreadContext
+	MOVQ	160(R12), R13		// SS from context (offset 20*8)
+	MOVQ	R13, 32(SP)		// SS in IRETQ frame
 	MOVQ	AX, 24(SP)		// RSP
 	MOVQ	BX, 16(SP)		// RFLAGS
-	MOVQ	$0x38, 8(SP)		// CS (UEFI 64-bit code segment)
+	MOVQ	152(R12), R13		// CS from context (offset 19*8)
+	MOVQ	R13, 8(SP)		// CS in IRETQ frame
 	MOVQ	CX, 0(SP)		// RIP
 
 	// Load GPRs from context
@@ -548,3 +854,45 @@ TEXT ·ReadCS(SB), NOSPLIT, $0-2
 // Set by ISR stubs before jumping to common handler.
 // This is per-CPU safe because interrupts are disabled during handling.
 GLOBL	·currentVector(SB), NOPTR, $8
+
+// ============================================================================
+// SYSCALL Entry - entered via x86_64 SYSCALL instruction from Ring 3
+// ============================================================================
+// SYSCALL sets: RCX=return RIP, R11=RFLAGS, clears IF via FMASK.
+// We build a fake exception frame compatible with common_exception_entry,
+// then route through the same handler as INT $0x80 with vector=129 for
+// syscall number translation (x86_64→ARM64).
+//
+// Ring 0 kernel code never reaches here — it uses INT $0x80 via the
+// asm_linux_amd64.s overlay. This handler is exclusively for Ring 3 userspace.
+//
+// Not using SYSRET for return — IRETQ handles all cases safely.
+TEXT ·syscallEntry(SB), NOSPLIT|NOFRAME, $0
+	// Save RCX (return RIP) and R11 (RFLAGS) to scratch space.
+	// SYSCALL clobbers these: RCX=return RIP, R11=RFLAGS.
+	MOVQ	CX, ·syscallScratchRCX(SB)
+	MOVQ	R11, ·syscallScratchR11(SB)
+
+	// Switch to kernel exception stack
+	MOVQ	SP, ·syscallScratchRSP(SB)
+	MOVQ	·excStackTopForSyscall(SB), SP
+
+	// Build fake exception frame with Ring 3 selectors
+	PUSHQ	$0x23				// SS (Ring 3 data: GDT 0x20 | RPL=3)
+	PUSHQ	·syscallScratchRSP(SB)		// RSP (user's original)
+	MOVQ	·syscallScratchR11(SB), CX
+	PUSHQ	CX				// RFLAGS (saved by CPU in R11)
+	PUSHQ	$0x1B				// CS (Ring 3 code: GDT 0x18 | RPL=3)
+	MOVQ	·syscallScratchRCX(SB), CX
+	PUSHQ	CX				// RIP (saved by CPU in RCX)
+	PUSHQ	$0				// Error code (none)
+
+	// Restore R11 to original RFLAGS value for GPR save in common_exception_entry
+	MOVQ	·syscallScratchR11(SB), R11
+	MOVQ	$129, ·currentVector(SB)	// 129 = SYSCALL (vs 128 = INT $0x80)
+	JMP	common_exception_entry(SB)
+
+// Scratch space for SYSCALL entry (per-CPU safe: interrupts disabled by FMASK)
+GLOBL	·syscallScratchRCX(SB), NOPTR, $8
+GLOBL	·syscallScratchR11(SB), NOPTR, $8
+GLOBL	·syscallScratchRSP(SB), NOPTR, $8

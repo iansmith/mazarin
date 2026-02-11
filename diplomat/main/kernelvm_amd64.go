@@ -492,9 +492,13 @@ func InstallFaultHandler(vm *KernelVM) error {
 		idtTable[i] = 0
 	}
 
-	// Get the page fault handler address and current CS selector
+	// Use standard Ring 0 code selector (0x08) for IDT entries.
+	// Note: We're still running with UEFI's CS at this point, but the IDT
+	// is only installed AFTER jumpToKmazarinWithStack reloads CS to 0x08.
+	const cs = 0x08
+
+	// Get the page fault handler address
 	handlerAddr := getDiplomatPFHandlerAddr()
-	cs := readCSSelector()
 
 	// Set up IDT entry for vector 14 (#PF)
 	setDiplomatIDTEntry(14, handlerAddr, cs)
@@ -575,6 +579,11 @@ func setDiplomatIDTEntry(vector int, handler uint64, cs uint16) {
 	idtTable[offset+15] = 0
 }
 
+// kmazarinSyscallEntry holds the resolved address of kmazarin's syscallEntry
+// function. Set by updateIDTWithKmazarinISRs, read by jumpToKmazarinWithStack
+// assembly to configure LSTAR MSR before jumping to kmazarin.
+var kmazarinSyscallEntry uint64
+
 // updateIDTWithKmazarinISRs replaces diplomat's stub syscall handler with
 // kmazarin's real ISR entry points. This mirrors the ARM64 approach where
 // cardinal installs kmazarin's VBAR before jumping to kmazarin, so all
@@ -584,8 +593,11 @@ func setDiplomatIDTEntry(vector int, handler uint64, cs uint16) {
 // kmazarin's page fault handler calls Go functions that may not be ready
 // during very early boot. IDT[128] (INT $0x80) is switched to kmazarin's
 // isr128 so clone/futex/sched_yield work through real dispatch.
+//
+// Also resolves kmazarin's syscallEntry for SYSCALL MSR setup.
 func updateIDTWithKmazarinISRs(kernel *LoadedKernel, relocDelta uint64) {
-	cs := readCSSelector()
+	// Use standard Ring 0 code selector (0x08) for all IDT entries
+	const cs = 0x08
 	printString("IDT CS selector: ")
 	printHex(uint64(cs))
 	printString("\r\n")
@@ -614,6 +626,18 @@ func updateIDTWithKmazarinISRs(kernel *LoadedKernel, relocDelta uint64) {
 	if isr255Addr != 0 {
 		isr255Addr += relocDelta
 		setDiplomatIDTEntry(255, isr255Addr, cs)
+	}
+
+	// Resolve kmazarin's SYSCALL entry point for LSTAR MSR
+	syscallAddr := findKernelSymbol(kernel, "main.syscallEntry")
+	if syscallAddr != 0 {
+		syscallAddr += relocDelta
+		kmazarinSyscallEntry = syscallAddr
+		printString("SYSCALL entry: ")
+		printHex(syscallAddr)
+		printString("\r\n")
+	} else {
+		printString("WARN: main.syscallEntry not found\r\n")
 	}
 }
 
