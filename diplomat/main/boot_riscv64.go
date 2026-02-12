@@ -14,6 +14,9 @@ import (
 	_ "mazzy/shared/fs/fat32" // Will be used in Task #3
 )
 
+// Assembly functions (defined in memory_barrier_riscv64.s)
+func memoryBarrier()
+
 // ============================================================================
 // QEMU virt Platform Constants
 // ============================================================================
@@ -112,6 +115,18 @@ const (
 	VIRTIO_MMIO_MAX_DEVICES = 8
 )
 
+// VirtIO block device feature bits (for feature negotiation)
+const (
+	VIRTIO_BLK_F_SIZE_MAX  = 1  // Maximum size of any single segment
+	VIRTIO_BLK_F_SEG_MAX   = 2  // Maximum number of segments
+	VIRTIO_BLK_F_GEOMETRY  = 4  // Disk-style geometry
+	VIRTIO_BLK_F_RO        = 5  // Device is read-only
+	VIRTIO_BLK_F_BLK_SIZE  = 6  // Block size of disk
+	VIRTIO_BLK_F_FLUSH     = 9  // Cache flush command support
+	VIRTIO_BLK_F_TOPOLOGY  = 10 // Device exports topology information
+	VIRTIO_F_VERSION_1     = 32 // VirtIO 1.0 compliance (NOT for MMIO v1!)
+)
+
 // VirtIO MMIO register offsets (VirtIO spec 1.0)
 const (
 	VIRTIO_MMIO_MAGIC_VALUE         = 0x000 // 0x74726976 ('virt')
@@ -125,18 +140,25 @@ const (
 	VIRTIO_MMIO_QUEUE_SEL           = 0x030
 	VIRTIO_MMIO_QUEUE_NUM_MAX       = 0x034
 	VIRTIO_MMIO_QUEUE_NUM           = 0x038
-	VIRTIO_MMIO_QUEUE_READY         = 0x044
+	VIRTIO_MMIO_QUEUE_ALIGN         = 0x03c // Version 1 only
+	VIRTIO_MMIO_QUEUE_PFN           = 0x040 // Version 1 only (Page Frame Number)
+	VIRTIO_MMIO_QUEUE_READY         = 0x044 // Version 2 only
 	VIRTIO_MMIO_QUEUE_NOTIFY        = 0x050
 	VIRTIO_MMIO_INTERRUPT_STATUS    = 0x060
 	VIRTIO_MMIO_INTERRUPT_ACK       = 0x064
 	VIRTIO_MMIO_STATUS              = 0x070
-	VIRTIO_MMIO_QUEUE_DESC_LOW      = 0x080
-	VIRTIO_MMIO_QUEUE_DESC_HIGH     = 0x084
-	VIRTIO_MMIO_QUEUE_AVAIL_LOW     = 0x090
-	VIRTIO_MMIO_QUEUE_AVAIL_HIGH    = 0x094
-	VIRTIO_MMIO_QUEUE_USED_LOW      = 0x0A0
-	VIRTIO_MMIO_QUEUE_USED_HIGH     = 0x0A4
+	VIRTIO_MMIO_QUEUE_DESC_LOW      = 0x080 // Version 2 only
+	VIRTIO_MMIO_QUEUE_DESC_HIGH     = 0x084 // Version 2 only
+	VIRTIO_MMIO_QUEUE_AVAIL_LOW     = 0x090 // Version 2 only
+	VIRTIO_MMIO_QUEUE_AVAIL_HIGH    = 0x094 // Version 2 only
+	VIRTIO_MMIO_QUEUE_USED_LOW      = 0x0A0 // Version 2 only
+	VIRTIO_MMIO_QUEUE_USED_HIGH     = 0x0A4 // Version 2 only
 	VIRTIO_MMIO_CONFIG              = 0x100
+)
+
+// VirtIO MMIO queue layout constants
+const (
+	VIRTIO_MMIO_PAGE_SHIFT = 12 // 4KB pages for QUEUE_PFN
 )
 
 // VirtIO device status bits
@@ -155,6 +177,7 @@ const (
 
 // Global VirtIO MMIO block device state (avoid heap allocation)
 var virtioMMIOBase uintptr
+var virtioMMIOVersion uint32  // MMIO transport version (1 or 2)
 var virtioBlockCapacity uint64
 var virtioBlockSectorSize uint32 = 512
 
@@ -241,6 +264,7 @@ func scanVirtIOMMIO() uintptr {
 			printString("Found VirtIO MMIO block device at ")
 			printHex(uint64(base))
 			printString("\r\n")
+			virtioMMIOVersion = version  // Save MMIO transport version
 			return base
 		}
 	}
@@ -271,17 +295,50 @@ func virtioMMIOHandshake(base uintptr) bool {
 	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS)) =
 		VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER
 
-	// Feature negotiation - accept VIRTIO_F_VERSION_1 (bit 32)
-	printString("Features...")
+	// Feature negotiation
+	printString("Features...\r\n")
+
+	// Read device-offered features
 	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DEVICE_FEATURES_SEL)) = 0
-	_ = *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DEVICE_FEATURES)) // Read low features
+	deviceFeaturesLow := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DEVICE_FEATURES))
 	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DEVICE_FEATURES_SEL)) = 1
-	_ = *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DEVICE_FEATURES)) // Read high features
+	deviceFeaturesHigh := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DEVICE_FEATURES))
+
+	printString("  Device offers: low=")
+	printHex(uint64(deviceFeaturesLow))
+	printString(" high=")
+	printHex(uint64(deviceFeaturesHigh))
+	printString("\r\n")
+
+	// CRITICAL: Feature negotiation depends on MMIO version
+	var driverFeaturesLow uint32
+	var driverFeaturesHigh uint32
+
+	if virtioMMIOVersion == 1 {
+		// MMIO v1 (legacy): Do NOT negotiate VIRTIO_F_VERSION_1
+		// Accept device-offered features to satisfy device requirements
+		printString("  MMIO v1 (legacy) - no VERSION_1 feature\r\n")
+		driverFeaturesLow = deviceFeaturesLow  // Accept all offered features
+		driverFeaturesHigh = 0                  // No high features for legacy
+	} else {
+		// MMIO v2 (modern): MUST negotiate VIRTIO_F_VERSION_1
+		// Modern VirtIO spec requires VERSION_1 for proper operation
+		printString("  MMIO v2 (modern) - negotiating VERSION_1\r\n")
+		// Accept device features AND add VERSION_1
+		driverFeaturesLow = deviceFeaturesLow   // Accept device features
+		driverFeaturesHigh = 1                   // VIRTIO_F_VERSION_1 (bit 32)
+	}
+
+	printString("  Driver accepts: low=")
+	printHex(uint64(driverFeaturesLow))
+	printString(" high=")
+	printHex(uint64(driverFeaturesHigh))
+	printString("\r\n")
 
 	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DRIVER_FEATURES_SEL)) = 0
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DRIVER_FEATURES)) = 0
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DRIVER_FEATURES)) = driverFeaturesLow
 	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DRIVER_FEATURES_SEL)) = 1
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DRIVER_FEATURES)) = 1 // VIRTIO_F_VERSION_1
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DRIVER_FEATURES)) = driverFeaturesHigh
 
 	// Set FEATURES_OK
 	printString("FEATURES_OK...")
@@ -296,7 +353,12 @@ func virtioMMIOHandshake(base uintptr) bool {
 		return false
 	}
 
-	// Set DRIVER_OK
+	// CRITICAL: Setup queues BEFORE setting DRIVER_OK
+	// VirtIO spec requires: FEATURES_OK → queue setup → DRIVER_OK
+	printString("Queues...")
+	initVirtqueueDuringHandshake()
+
+	// Set DRIVER_OK (only after queues are configured!)
 	printString("DRIVER_OK...")
 	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS)) =
 		VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER |
@@ -371,11 +433,18 @@ type virtioBlkReq struct {
 }
 
 // Statically allocated virtqueue (queue size = 16)
+// MUST be 4KB aligned for VirtIO MMIO version 1
+// Since Go doesn't reliably align globals, use a larger buffer and manually align
 var (
-	virtqDescTable [16]virtqDesc
-	virtqAvailRing virtqAvail
-	virtqUsedRing  virtqUsed
-	virtioReq      virtioBlkReq
+	// Large buffer to guarantee we can find a 4KB-aligned region
+	virtqBuffer [8192]byte // 8KB buffer (guarantees 4KB alignment within)
+
+	// Will point to 4KB-aligned regions within virtqBuffer
+	virtqDescTable *[16]virtqDesc
+	virtqAvailRing *virtqAvail
+	virtqUsedRing  *virtqUsed
+
+	virtioReq virtioBlkReq
 
 	virtqInitialized bool
 	lastUsedIdx      uint16
@@ -385,39 +454,62 @@ var (
 // VirtIO Virtqueue Initialization
 // ============================================================================
 
-// initVirtqueue initializes the VirtIO virtqueue for block device.
-// Must be called before any block I/O operations.
-func initVirtqueue() {
-	if virtqInitialized {
-		return
-	}
+// initVirtqueueDuringHandshake does the actual queue initialization.
+// Called from virtioMMIOHandshake() before DRIVER_OK is set.
+func initVirtqueueDuringHandshake() {
+
+	// Find 4KB-aligned address within virtqBuffer
+	bufAddr := uintptr(unsafe.Pointer(&virtqBuffer[0]))
+	alignedAddr := (bufAddr + 4095) & ^uintptr(4095) // Round up to 4KB
+
+	// VirtIO MMIO v1 requires specific layout:
+	// - descriptor_table[Queue Size] (256 bytes for 16 descriptors)
+	// - available_ring (6 + 2×16 = 38 bytes)
+	// - padding to 4KB boundary
+	// - used_ring (6 + 8×16 = 134 bytes)
+
+	descSize := uintptr(16 * 16)  // 16 descriptors × 16 bytes
+	availSize := uintptr(6 + 2*16) // Header + ring entries
+
+	descOffset := alignedAddr - bufAddr
+	virtqDescTable = (*[16]virtqDesc)(unsafe.Pointer(&virtqBuffer[descOffset]))
+
+	availOffset := descOffset + descSize
+	virtqAvailRing = (*virtqAvail)(unsafe.Pointer(&virtqBuffer[availOffset]))
+
+	// Used ring must be 4KB-aligned after avail ring
+	usedBase := alignedAddr + descSize + availSize
+	usedBaseAligned := (usedBase + 4095) & ^uintptr(4095)  // Round up to 4KB
+	usedOffset := usedBaseAligned - bufAddr
+	virtqUsedRing = (*virtqUsed)(unsafe.Pointer(&virtqBuffer[usedOffset]))
 
 	// Clear all structures
 	for i := range virtqDescTable {
 		virtqDescTable[i] = virtqDesc{}
 	}
-	virtqAvailRing = virtqAvail{}
-	virtqUsedRing = virtqUsed{}
+	*virtqAvailRing = virtqAvail{}
+	*virtqUsedRing = virtqUsed{}
 	lastUsedIdx = 0
 
-	// Set up descriptor chain for block reads:
+	// Set up descriptor chain for block reads
+	// Standard 3-descriptor chain per VirtIO block spec:
 	// Desc 0: Request header (device reads)
 	// Desc 1: Data buffer (device writes)
 	// Desc 2: Status byte (device writes)
 
-	// Descriptor 0: Request header
+	// Descriptor 0: Request header (device reads)
 	virtqDescTable[0].addr = uint64(uintptr(unsafe.Pointer(&virtioReq)))
 	virtqDescTable[0].len = 16 // sizeof(type + reserved + sector)
 	virtqDescTable[0].flags = VIRTQ_DESC_F_NEXT
 	virtqDescTable[0].next = 1
 
-	// Descriptor 1: Data buffer
+	// Descriptor 1: Data buffer (device writes)
 	virtqDescTable[1].addr = uint64(uintptr(unsafe.Pointer(&virtioReq.data)))
 	virtqDescTable[1].len = 512
 	virtqDescTable[1].flags = VIRTQ_DESC_F_WRITE | VIRTQ_DESC_F_NEXT
 	virtqDescTable[1].next = 2
 
-	// Descriptor 2: Status byte
+	// Descriptor 2: Status byte (device writes)
 	virtqDescTable[2].addr = uint64(uintptr(unsafe.Pointer(&virtioReq.status)))
 	virtqDescTable[2].len = 1
 	virtqDescTable[2].flags = VIRTQ_DESC_F_WRITE
@@ -430,43 +522,188 @@ func initVirtqueue() {
 	// Select queue 0
 	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_SEL)) = 0
 
+	// Check if queue is already configured
+	existingPFN := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_PFN))
+	if existingPFN != 0 {
+		// Reset queue if already configured (write 0 to QUEUE_PFN)
+		*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_PFN)) = 0
+		memoryBarrier()
+		printString("  Reset existing queue (PFN was ")
+		printHex(uint64(existingPFN))
+		printString(")\r\n")
+	}
+
 	// Check max queue size
 	maxSize := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_NUM_MAX))
+
+	// Determine queue size to use
 	if maxSize < queueSize {
-		printString("ERROR: VirtIO queue too small\r\n")
+		printString("  Queue max: ")
+		printHex(uint64(maxSize))
+		printString(" (wanted ")
+		printHex(uint64(queueSize))
+		printString(")\r\n")
+		queueSize = maxSize
+	} else {
+		printString("  Queue max: ")
+		printHex(uint64(maxSize))
+		printString(" (using ")
+		printHex(uint64(queueSize))
+		printString(")\r\n")
+	}
+
+	// CRITICAL: Write QUEUE_NUM before QUEUE_PFN (triggers virtio_queue_update_rings in QEMU)
+	// This was the missing step that prevented device from activating!
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_NUM)) = queueSize
+	memoryBarrier()
+
+	// Check device status before queue configuration
+	statusBefore := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS))
+	printString("  Device status before queue config: ")
+	printHex(uint64(statusBefore))
+	printString("\r\n")
+
+	// Get descriptor table address (must be 4KB-aligned) and convert to PFN
+	descAddr := uint64(uintptr(unsafe.Pointer(virtqDescTable)))
+	queuePFN := uint32(descAddr >> VIRTIO_MMIO_PAGE_SHIFT)
+
+	// Verify alignment - must be 4KB aligned
+	if (descAddr & 0xFFF) != 0 {
+		printString("ERROR: Queue not 4KB aligned: ")
+		printHex(descAddr)
+		printString("\r\n")
 		for {}
 	}
 
-	// Set queue size
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_NUM)) = queueSize
+	// Queue activation: version 1 vs version 2 use different registers
+	// Version 1: QUEUE_ALIGN + QUEUE_PFN (page frame number)
+	// Version 2: QUEUE_DESC/AVAIL/USED split addresses + QUEUE_READY
 
-	// Set descriptor table address
-	descAddr := uint64(uintptr(unsafe.Pointer(&virtqDescTable[0])))
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_DESC_LOW)) = uint32(descAddr)
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_DESC_HIGH)) = uint32(descAddr >> 32)
+	// For debug output
+	availAddr := uint64(uintptr(unsafe.Pointer(virtqAvailRing)))
+	usedAddr := uint64(uintptr(unsafe.Pointer(virtqUsedRing)))
 
-	// Set available ring address
-	availAddr := uint64(uintptr(unsafe.Pointer(&virtqAvailRing)))
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_AVAIL_LOW)) = uint32(availAddr)
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_AVAIL_HIGH)) = uint32(availAddr >> 32)
+	if virtioMMIOVersion == 1 {
+		// VirtIO MMIO v1 (legacy) queue activation sequence:
+		// 1. QUEUE_SEL (already done above)
+		// 2. QUEUE_NUM (already done above)
+		// 3. QUEUE_ALIGN (set alignment)
+		// 4. QUEUE_PFN (activate queue)
 
-	// Set used ring address
-	usedAddr := uint64(uintptr(unsafe.Pointer(&virtqUsedRing)))
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_USED_LOW)) = uint32(usedAddr)
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_USED_HIGH)) = uint32(usedAddr >> 32)
+		printString("  Using v1 registers (QUEUE_PFN)\r\n")
 
-	// Mark queue as ready
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_READY)) = 1
+		// Step 3: QUEUE_ALIGN (must be AFTER QUEUE_NUM, per Linux driver)
+		*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_ALIGN)) = 4096
+		memoryBarrier()
+
+		// Step 4: Set queue PFN - this activates the queue in version 1
+		*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_PFN)) = queuePFN
+		memoryBarrier()
+
+		// Verify queue was activated
+		queuePFNReadback := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_PFN))
+		if queuePFNReadback == 0 {
+			printString("ERROR: QUEUE_PFN still zero after write\r\n")
+			for {}
+		}
+	} else {
+		// VirtIO MMIO v2 (modern) queue activation sequence:
+		// 1. QUEUE_SEL (already done above)
+		// 2. QUEUE_NUM (already done above)
+		// 3. QUEUE_DESC_LOW/HIGH (descriptor table address)
+		// 4. QUEUE_AVAIL_LOW/HIGH (available ring address)
+		// 5. QUEUE_USED_LOW/HIGH (used ring address)
+		// 6. QUEUE_READY = 1 (activate queue)
+
+		printString("  Using v2 registers (QUEUE_READY)\r\n")
+
+		// Step 3: Set descriptor table address (64-bit split into low/high)
+		*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_DESC_LOW)) = uint32(descAddr & 0xFFFFFFFF)
+		*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_DESC_HIGH)) = uint32(descAddr >> 32)
+		memoryBarrier()
+
+		// Step 4: Set available ring address (64-bit split into low/high)
+		*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_AVAIL_LOW)) = uint32(availAddr & 0xFFFFFFFF)
+		*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_AVAIL_HIGH)) = uint32(availAddr >> 32)
+		memoryBarrier()
+
+		// Step 5: Set used ring address (64-bit split into low/high)
+		*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_USED_LOW)) = uint32(usedAddr & 0xFFFFFFFF)
+		*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_USED_HIGH)) = uint32(usedAddr >> 32)
+		memoryBarrier()
+
+		// Step 6: Activate the queue by setting QUEUE_READY to 1
+		*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_READY)) = 1
+		memoryBarrier()
+
+		// Verify queue was activated
+		queueReady := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_READY))
+		if queueReady == 0 {
+			printString("ERROR: QUEUE_READY still zero after write\r\n")
+			for {}
+		}
+	}
+
+	// Check device status after queue configuration
+	statusAfter := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS))
+	printString("  Device status after queue config: ")
+	printHex(uint64(statusAfter))
+	printString("\r\n")
+
+	// Verify device state after initialization
+	queueSel := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_SEL))
+	deviceStatus := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS))
+	intrStatus := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_INTERRUPT_STATUS))
+
+	// Verify device didn't set FAILED bit
+	if (deviceStatus & VIRTIO_STATUS_FAILED) != 0 {
+		printString("ERROR: Device set FAILED bit during queue init\r\n")
+		for {}
+	}
 
 	virtqInitialized = true
-	printString("VirtIO virtqueue initialized\r\n")
+	printString("VirtIO virtqueue initialized (MMIO v")
+	printHex(uint64(virtioMMIOVersion))
+	printString(")\r\n")
 	printString("  Desc table: ")
 	printHex(descAddr)
 	printString("\r\n  Avail ring: ")
 	printHex(availAddr)
 	printString("\r\n  Used ring:  ")
 	printHex(usedAddr)
+	printString("\r\n  ")
+
+	if virtioMMIOVersion == 1 {
+		// V1: Show QUEUE_PFN
+		queuePFNReadback := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_PFN))
+		printString("QUEUE_PFN=")
+		printHex(uint64(queuePFN))
+		printString(" (readback: ")
+		printHex(uint64(queuePFNReadback))
+		printString(")")
+	} else {
+		// V2: Show QUEUE_READY
+		queueReady := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_READY))
+		printString("QUEUE_READY=")
+		printHex(uint64(queueReady))
+	}
+
+	printString("\r\n  QUEUE_SEL=")
+	printHex(uint64(queueSel))
+	printString(" STATUS=")
+	printHex(uint64(deviceStatus))
+	printString(" INTR=")
+	printHex(uint64(intrStatus))
 	printString("\r\n")
+}
+
+// initVirtqueue initializes the VirtIO virtqueue if not already done.
+// This is a wrapper that prevents re-initialization.
+func initVirtqueue() {
+	if virtqInitialized {
+		return
+	}
+	initVirtqueueDuringHandshake()
 }
 
 // readBlockVirtIO performs a synchronous block read using VirtIO.
@@ -492,6 +729,30 @@ func readBlockVirtIO(lba uint64, buf []byte) {
 	printHex(virtioReq.sector)
 	printString("\r\n")
 
+	// Debug: Print descriptor chain
+	printString("  Desc[0]: addr=")
+	printHex(virtqDescTable[0].addr)
+	printString(" len=")
+	printHex(uint64(virtqDescTable[0].len))
+	printString(" flags=")
+	printHex(uint64(virtqDescTable[0].flags))
+	printString("\r\n  Desc[1]: addr=")
+	printHex(virtqDescTable[1].addr)
+	printString(" len=")
+	printHex(uint64(virtqDescTable[1].len))
+	printString(" flags=")
+	printHex(uint64(virtqDescTable[1].flags))
+	printString("\r\n  Desc[2]: addr=")
+	printHex(virtqDescTable[2].addr)
+	printString(" len=")
+	printHex(uint64(virtqDescTable[2].len))
+	printString(" flags=")
+	printHex(uint64(virtqDescTable[2].flags))
+	printString("\r\n")
+
+	// Memory barrier: ensure request is fully written before updating avail ring
+	memoryBarrier()
+
 	// Add to available ring
 	idx := virtqAvailRing.idx
 	virtqAvailRing.ring[idx%16] = 0 // Use descriptor 0
@@ -503,15 +764,30 @@ func readBlockVirtIO(lba uint64, buf []byte) {
 	printHex(uint64(virtqAvailRing.idx))
 	printString("\r\n")
 
+	// Memory barrier: ensure avail.idx is visible before notifying device
+	memoryBarrier()
+
 	// Notify device
 	base := virtioMMIOBase
 	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_NOTIFY)) = 0 // Queue 0
 
-	printString("  Device notified, polling... (used.idx=")
+	// Memory barrier: ensure notification is sent before polling
+	memoryBarrier()
+
+	// Verify device state immediately after notification
+	postNotifyStatus := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS))
+	postNotifyIntr := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_INTERRUPT_STATUS))
+
+	printString("  Device notified, polling...\r\n")
+	printString("    Before: used.idx=")
 	printHex(uint64(virtqUsedRing.idx))
 	printString(" last=")
 	printHex(uint64(lastUsedIdx))
-	printString(")\r\n")
+	printString("\r\n    Post-notify: STATUS=")
+	printHex(uint64(postNotifyStatus))
+	printString(" INTR=")
+	printHex(uint64(postNotifyIntr))
+	printString("\r\n")
 
 	// Poll for completion
 	timeout := 1000000
@@ -522,10 +798,18 @@ func readBlockVirtIO(lba uint64, buf []byte) {
 		timeout--
 	}
 
+	// Check device state after polling
+	intrStatus := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_INTERRUPT_STATUS))
+	deviceStatus := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS))
+
 	printString("  After poll: used.idx=")
 	printHex(uint64(virtqUsedRing.idx))
 	printString(" timeout=")
 	printHex(uint64(timeout))
+	printString("\r\n  INTR_STATUS=")
+	printHex(uint64(intrStatus))
+	printString(" STATUS=")
+	printHex(uint64(deviceStatus))
 	printString("\r\n")
 
 	if timeout == 0 {
