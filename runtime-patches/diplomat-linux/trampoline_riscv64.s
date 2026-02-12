@@ -28,6 +28,11 @@ TEXT _rt0_riscv64_linux(SB),NOSPLIT|NOFRAME,$0
 	// Same approach as ARM64/x86_64 UEFI entries
 	// ========================================
 
+	// Set up S-mode trap handler FIRST (before anything that might trap)
+	// OpenSBI jumps to us in S-mode, so use stvec instead of mtvec
+	MOV	$runtime·riscvTrapHandler(SB), X30
+	WORD	$0x105F1073		// csrw stvec, X30 (0x105 = stvec)
+
 	// Write 'D' to prove entry
 	// LUI X5, 0x10000 (X5 = UART base)
 	WORD	$0x100002b7
@@ -44,10 +49,10 @@ TEXT _rt0_riscv64_linux(SB),NOSPLIT|NOFRAME,$0
 	WORD	$0x03100313	// ADDI X6, X0, '1'
 	WORD	$0x00628023	// SB X6, 0(X5)
 
-	// Set up stack using LUI+ADDI (0x81218000)
-	// LUI SP, 0x81218
-	WORD	$0x81218137
-	// No ADDI needed since lower 12 bits are 0
+	// Set up stack at 0x81218000
+	// IMPORTANT: LUI sign-extends on RV64! 0x81218000 has bit 31 set,
+	// so LUI would produce 0xFFFFFFFF81218000. Must use Go MOV instead.
+	MOV	$0x81218000, SP
 
 	// Write '2' after stack setup
 	WORD	$0x03200313	// ADDI X6, X0, '2'
@@ -68,27 +73,27 @@ TEXT _rt0_riscv64_linux(SB),NOSPLIT|NOFRAME,$0
 	WORD	$0x03400313	// ADDI X6, X0, '4'
 	WORD	$0x00628023	// SB X6, 0(X5)
 
-	// Set up stack guards for g0
-	// Use X28/X29 (T3/T4) to avoid conflict with X5 (UART base)
-	// Copy SP to X28 and X29 using ADDI instructions
-	WORD	$0x00010e13	// ADDI X28, SP, 0 (x28 = x2 + 0)
-	WORD	$0x00010e93	// ADDI X29, SP, 0 (x29 = x2 + 0)
-	// Load 64KB into X30 and subtract from X29
-	WORD	$0x00010f37	// LUI X30, 0x10 (x30 = 0x10000)
-	WORD	$0x41ee8eb3	// SUB X29, X29, X30 (x29 = x29 - x30)
+	// Set up stack bounds for g0
+	// Stack is 32KB starting at SP, grows down
+	// Calculate stack.lo = SP - 32KB
+	MOV	SP, X28			// X28 = stack.hi (current SP)
+	MOV	$0x8000, X30		// X30 = 32KB
+	SUB	X30, X28, X29		// X29 = stack.lo = SP - 32KB
 
-	// Write '5' after calculating guards
+	// Write '5' after calculating stack bounds
 	WORD	$0x03500313	// ADDI X6, X0, '5'
 	WORD	$0x00628023	// SB X6, 0(X5)
 
-	// g.stackguard0 and g.stackguard1 (offsets 16, 24)
-	// X29 contains stack guard (SP - 64KB), X28 contains SP
-	MOV	X29, 16(g)		// g0.stackguard0
-	MOV	X29, 24(g)		// g0.stackguard1
-
 	// g.stack.lo and g.stack.hi (offsets 0, 8)
-	MOV	X29, 0(g)		// g0.stack.lo
-	MOV	X28, 8(g)		// g0.stack.hi
+	MOV	X29, 0(g)		// g0.stack.lo = SP - 32KB
+	MOV	X28, 8(g)		// g0.stack.hi = SP
+
+	// Update stackguard after setting stack bounds (like rt0_go does)
+	// stackguard = stack.lo + stackGuard (928 bytes, use 1024 for safety)
+	MOV	0(g), X30		// Load stack.lo
+	ADD	$1024, X30		// Add stackGuard constant
+	MOV	X30, 16(g)		// g0.stackguard0 = stack.lo + 1024
+	MOV	X30, 24(g)		// g0.stackguard1 = stack.lo + 1024
 
 	// Write '6' after setting stack guards
 	WORD	$0x03600313	// ADDI X6, X0, '6'
@@ -124,8 +129,137 @@ TEXT _rt0_riscv64_linux(SB),NOSPLIT|NOFRAME,$0
 	WORD	$0x04300313	// ADDI X6, X0, 'C'
 	WORD	$0x00628023	// SB X6, 0(X5)
 
-	MOV	$main·DiplomatEntry(SB), X30
+	MOV	$main·diplomatEntryWrapper(SB), X30
+
+	// Write 'J' before JALR
+	WORD	$0x04a00313	// ADDI X6, X0, 'J'
+	WORD	$0x00628023	// SB X6, 0(X5)
+
 	JALR	ZERO, X30
 
-	// Should never return
+	// Write 'R' if we return (should never happen)
+	WORD	$0x05200313	// ADDI X6, X0, 'R'
+	WORD	$0x00628023	// SB X6, 0(X5)
+
+	// Infinite loop
+	WORD	$0xffdff06f		// JAL back to self
+
+// riscvTrapHandler is an S-mode trap handler that prints diagnostic info to UART.
+// Output format: !<scause>:<sepc_hex>
+// Hex nibbles use '0'-'9' for 0-9 and ':'-'?' for A-F (add 0x30 to nibble value).
+TEXT runtime·riscvTrapHandler(SB), NOSPLIT|NOFRAME, $0
+	// Load UART base into X5
+	WORD	$0x100002b7		// LUI X5, 0x10000
+
+	// Print '!' to indicate trap occurred
+	WORD	$0x02100313		// ADDI X6, X0, '!'
+	WORD	$0x00628023		// SB X6, 0(X5)
+
+	// Read scause into X6 (0x142 = scause)
+	WORD	$0x14202373		// csrrs X6, scause, X0
+
+	// Print scause low byte as character (0='0', 1='1', ..., 15='?')
+	AND	$0xFF, X6
+	ADD	$0x30, X6
+	WORD	$0x00628023		// SB X6, 0(X5)
+
+	// Print separator ':'
+	WORD	$0x03a00313		// ADDI X6, X0, ':'
+	WORD	$0x00628023		// SB X6, 0(X5)
+
+	// Read sepc into X6 (0x141 = sepc)
+	WORD	$0x14102373		// csrrs X6, sepc, X0
+
+	// Print mepc as 8 hex nibbles (32 bits, enough for our address space)
+	// Nibble [31:28]
+	SRL	$28, X6, X7
+	AND	$0xF, X7
+	ADD	$0x30, X7
+	WORD	$0x00728023		// SB X7, 0(X5)
+	// Nibble [27:24]
+	SRL	$24, X6, X7
+	AND	$0xF, X7
+	ADD	$0x30, X7
+	WORD	$0x00728023		// SB X7, 0(X5)
+	// Nibble [23:20]
+	SRL	$20, X6, X7
+	AND	$0xF, X7
+	ADD	$0x30, X7
+	WORD	$0x00728023		// SB X7, 0(X5)
+	// Nibble [19:16]
+	SRL	$16, X6, X7
+	AND	$0xF, X7
+	ADD	$0x30, X7
+	WORD	$0x00728023		// SB X7, 0(X5)
+	// Nibble [15:12]
+	SRL	$12, X6, X7
+	AND	$0xF, X7
+	ADD	$0x30, X7
+	WORD	$0x00728023		// SB X7, 0(X5)
+	// Nibble [11:8]
+	SRL	$8, X6, X7
+	AND	$0xF, X7
+	ADD	$0x30, X7
+	WORD	$0x00728023		// SB X7, 0(X5)
+	// Nibble [7:4]
+	SRL	$4, X6, X7
+	AND	$0xF, X7
+	ADD	$0x30, X7
+	WORD	$0x00728023		// SB X7, 0(X5)
+	// Nibble [3:0]
+	MOV	X6, X7
+	AND	$0xF, X7
+	ADD	$0x30, X7
+	WORD	$0x00728023		// SB X7, 0(X5)
+
+	// Print separator ','
+	WORD	$0x02c00313		// ADDI X6, X0, ','
+	WORD	$0x00628023		// SB X6, 0(X5)
+
+	// Read stval into X6 (0x143 = stval)
+	WORD	$0x14302373		// csrrs X6, stval, X0
+
+	// Print mtval as 8 hex nibbles
+	// Nibble [31:28]
+	SRL	$28, X6, X7
+	AND	$0xF, X7
+	ADD	$0x30, X7
+	WORD	$0x00728023		// SB X7, 0(X5)
+	// Nibble [27:24]
+	SRL	$24, X6, X7
+	AND	$0xF, X7
+	ADD	$0x30, X7
+	WORD	$0x00728023		// SB X7, 0(X5)
+	// Nibble [23:20]
+	SRL	$20, X6, X7
+	AND	$0xF, X7
+	ADD	$0x30, X7
+	WORD	$0x00728023		// SB X7, 0(X5)
+	// Nibble [19:16]
+	SRL	$16, X6, X7
+	AND	$0xF, X7
+	ADD	$0x30, X7
+	WORD	$0x00728023		// SB X7, 0(X5)
+	// Nibble [15:12]
+	SRL	$12, X6, X7
+	AND	$0xF, X7
+	ADD	$0x30, X7
+	WORD	$0x00728023		// SB X7, 0(X5)
+	// Nibble [11:8]
+	SRL	$8, X6, X7
+	AND	$0xF, X7
+	ADD	$0x30, X7
+	WORD	$0x00728023		// SB X7, 0(X5)
+	// Nibble [7:4]
+	SRL	$4, X6, X7
+	AND	$0xF, X7
+	ADD	$0x30, X7
+	WORD	$0x00728023		// SB X7, 0(X5)
+	// Nibble [3:0]
+	MOV	X6, X7
+	AND	$0xF, X7
+	ADD	$0x30, X7
+	WORD	$0x00728023		// SB X7, 0(X5)
+
+	// Infinite loop (halt after printing diagnostics)
 	WORD	$0xffdff06f		// JAL back to self

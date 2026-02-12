@@ -646,6 +646,19 @@ tasks:
       - '{{.GO}} tool mkfat32 -o {{.DISK_RISCV64_IMAGE}} {{.BUILD_DIR}}/disk-staging-riscv64/dapope.elf {{.BUILD_DIR}}/disk-staging-riscv64/stdio.elf {{.KMAZARIN_RISCV64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "RISC-V 64-bit disk image created at {{.DISK_RISCV64_IMAGE}}"'
 
+  disk-riscv64-minimal:
+    desc: Create minimal FAT32 disk image for RISC-V 64-bit (kmazarin only, no userspace programs)
+    deps: [kmazarin-riscv64, convert-boot-image]
+    sources:
+      - '{{.KMAZARIN_RISCV64_ELF}}'
+      - '{{.BUILD_DIR}}/boot-image.bin'
+    generates:
+      - '{{.DISK_RISCV64_IMAGE}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Creating minimal FAT32 disk image for RISC-V 64-bit (kmazarin only)..."'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_RISCV64_IMAGE}} {{.KMAZARIN_RISCV64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool go-echo "RISC-V 64-bit minimal disk image created at {{.DISK_RISCV64_IMAGE}}"'
+
   # ===========================================================================
   # Diplomat - x86_64 UEFI Bootloader
   # ===========================================================================
@@ -731,7 +744,8 @@ tasks:
       - '{{.GO}} tool go-echo "Building diplomat for RISC-V 64-bit (ELF for -kernel loading)..."'
       # Build as Linux ELF with runtime patches — no elf2pe conversion needed.
       # UEFI firmware is broken on RISC-V, so we load via QEMU -kernel + OpenSBI.
-      - 'CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 {{.GO}} build -ldflags="-checklinkname=0" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.DIPLOMAT_RISCV64_ELF}} ./diplomat/main'
+      # Link at 0x80200000 (standard RISC-V kernel load address, after OpenSBI)
+      - 'CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 {{.GO}} build -ldflags="-checklinkname=0 -T 0x80200000" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.DIPLOMAT_RISCV64_ELF}} ./diplomat/main'
       - '{{.GO}} tool go-echo "Patching entry point to _rt0_riscv64_linux..."'
       - '{{.GO}} tool patch-entry {{.DIPLOMAT_RISCV64_ELF}} _rt0_riscv64_linux'
       - '{{.GO}} tool go-echo "Fixing ELF for QEMU compatibility..."'
@@ -924,7 +938,7 @@ tasks:
 
   run-diplomat-riscv64:
     desc: "Run RISC-V diplomat+kmazarin in QEMU via OpenSBI -kernel (TIMEOUT=N for timeout, default=5s)"
-    deps: [diplomat-riscv64, disk-riscv64]
+    deps: [diplomat-riscv64, disk-riscv64-minimal]
     vars:
       TIMEOUT: '{{.TIMEOUT | default "5"}}'
       LOG_FILE: /tmp/diplomat-riscv64-serial.log
@@ -948,9 +962,9 @@ tasks:
     vars:
       LOG_FILE: /tmp/diplomat-riscv64-serial.log
     cmds:
-      # Use -bios none to run diplomat as firmware (not kernel under OpenSBI).
-      # Diplomat loads at 0x80000000 and runs directly without OpenSBI.
-      - '{{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m 2G -rtc base=utc,clock=host -bios none -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot'
+      # Use -bios default to load OpenSBI, which then loads diplomat as kernel
+      # OpenSBI jumps to the ELF entry point after initialization
+      - '{{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m 2G -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (RISC-V diplomat+kmazarin via OpenSBI) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4447"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'

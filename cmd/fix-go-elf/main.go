@@ -92,8 +92,11 @@ func fixELF(inputPath, outputPath string) error {
 	var relocOffset uint64
 	relocOffsetSet := false
 	var firstSegmentOffsetDelta int64 // Track p_offset change for entry point adjustment
+	hasNegativeOffset := false
 
-	// For RISC-V: First pass to determine relocation offset from first PT_LOAD
+	// For RISC-V: First pass to check if binary has negative offset (from -T flag)
+	// If it does, the binary is already at the correct address and we should skip
+	// relocation (only handle negative offset fix below)
 	if isRISCV {
 		for i := uint16(0); i < e_phnum; i++ {
 			phOffset := e_phoff + uint64(i)*uint64(e_phentsize)
@@ -102,17 +105,29 @@ func fixELF(inputPath, outputPath string) error {
 			}
 
 			p_type := order.Uint32(data[phOffset : phOffset+4])
+			p_offset := order.Uint64(data[phOffset+8 : phOffset+16])
 			p_vaddr := order.Uint64(data[phOffset+16 : phOffset+24])
 
 			// PT_LOAD = 1
-			if p_type == 1 && !relocOffsetSet {
-				// Calculate offset to relocate first PT_LOAD to 0x80000000
-				// We use -bios none, so diplomat runs as firmware (not kernel under OpenSBI)
-				if p_vaddr < 0x80000000 {
-					relocOffset = uint64(0x80000000) - p_vaddr
-					relocOffsetSet = true
-					fmt.Printf("RISC-V relocation offset: 0x%x\n", relocOffset)
+			if p_type == 1 {
+				// Check for negative offset (wrapped around as large positive)
+				// This indicates the binary was linked with -T flag at the correct address
+				if p_offset > 0x8000000000000000 {
+					hasNegativeOffset = true
+					fmt.Printf("RISC-V binary has negative offset (linked with -T flag at 0x%x), skipping relocation\n", p_vaddr)
 					break
+				}
+
+				// First PT_LOAD without negative offset: determine if we need relocation
+				if !relocOffsetSet && !hasNegativeOffset {
+					// Calculate offset to relocate first PT_LOAD to 0x80000000
+					// We use -bios none, so diplomat runs as firmware (not kernel under OpenSBI)
+					if p_vaddr < 0x80000000 {
+						relocOffset = uint64(0x80000000) - p_vaddr
+						relocOffsetSet = true
+						fmt.Printf("RISC-V relocation offset: 0x%x\n", relocOffset)
+						break
+					}
 				}
 			}
 		}
@@ -139,7 +154,8 @@ func fixELF(inputPath, outputPath string) error {
 		isPTLOAD := (p_type == 1)
 
 		// For RISC-V ELFs: relocate ALL PT_LOAD segments by the same offset
-		if isRISCV && isPTLOAD && relocOffsetSet && p_vaddr < 0x80000000 {
+		// UNLESS the binary has negative offset (linked with -T flag at correct address)
+		if isRISCV && isPTLOAD && relocOffsetSet && !hasNegativeOffset && p_vaddr < 0x80000000 {
 			newVaddr := p_vaddr + relocOffset
 			newPaddr := p_paddr + relocOffset
 
@@ -188,6 +204,7 @@ func fixELF(inputPath, outputPath string) error {
 			newPaddr := p_paddr + adjustment
 			newOffset := uint64(0x1000) // .text section starts at file offset 0x1000
 
+			// Reduce filesz and memsz to remove the zero-fill padding region
 			var newFilesz, newMemsz uint64
 			if p_filesz >= adjustment {
 				newFilesz = p_filesz - adjustment
@@ -198,6 +215,7 @@ func fixELF(inputPath, outputPath string) error {
 
 			fmt.Printf("Fixing segment %d:\n", i)
 			fmt.Printf("  vaddr:  0x%08x -> 0x%08x\n", p_vaddr, newVaddr)
+			fmt.Printf("  paddr:  0x%08x -> 0x%08x\n", p_paddr, newPaddr)
 			fmt.Printf("  offset: 0x%x -> 0x%x\n", p_offset, newOffset)
 			fmt.Printf("  filesz: 0x%x -> 0x%x\n", p_filesz, newFilesz)
 			fmt.Printf("  memsz:  0x%x -> 0x%x\n", p_memsz, newMemsz)
@@ -208,6 +226,9 @@ func fixELF(inputPath, outputPath string) error {
 			order.PutUint64(data[phOffset+24:phOffset+32], newPaddr)
 			order.PutUint64(data[phOffset+32:phOffset+40], newFilesz)
 			order.PutUint64(data[phOffset+40:phOffset+48], newMemsz)
+
+			// Do NOT adjust entry point! The Go linker already placed it at the correct vaddr.
+			// The entry point vaddr (e.g., 0x80053DE0) is in the code region, not the zero-fill region.
 
 			fixed = true
 		}
@@ -237,9 +258,11 @@ func fixELF(inputPath, outputPath string) error {
 	}
 
 	// Inject bootstrap stub for RISC-V (jumps from load address to actual entry)
-	// Bootstrap is placed at the start of first LOAD segment (0x80200000)
+	// Bootstrap is placed at the start of first LOAD segment (0x80000000)
 	// and jumps to the original entry point (trampoline)
-	if isRISCV && e_entry != 0 {
+	// NOTE: Only needed when we relocated segments (relocOffsetSet == true)
+	// If binary was linked with -T 0x80000000, entry point is already correct
+	if isRISCV && relocOffsetSet && e_entry != 0 {
 		if err := injectBootstrapStub(data, order, e_entry); err != nil {
 			return fmt.Errorf("injecting bootstrap stub: %w", err)
 		}
