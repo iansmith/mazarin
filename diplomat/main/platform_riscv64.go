@@ -32,9 +32,9 @@ var defaultBootSequence = BootSequence{
 	JumpToKernel:    func(entry uint64) { jumpToEntry(entry) },
 
 	// New boot phases
-	ReadConfig:          ReadConfigRISCV,   // RISC-V: allocation-free version
-	QueryHardware:       QueryHardware,
-	PrepareKernelVM:     PrepareKernelVM,
+	ReadConfig:          ReadConfigRISCV,       // RISC-V: allocation-free version
+	QueryHardware:       QueryHardwareRISCV,    // RISC-V: hardcoded for QEMU virt
+	PrepareKernelVM:     PrepareKernelVMRISCV,  // RISC-V: bump allocator version
 	InstallFaultHandler: InstallFaultHandler,
 	BuildStartupEnv:     BuildStartupEnv,
 	JumpToKernelWithEnv: jumpToKmazarinWithStack,

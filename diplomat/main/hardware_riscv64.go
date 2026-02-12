@@ -137,6 +137,43 @@ type efiMemoryDescriptor struct {
 	Attribute     uint64
 }
 
+// QueryHardwareRISCV returns hardcoded hardware info for QEMU virt platform.
+// Used for RISC-V direct boot to avoid UEFI allocations during early boot.
+// Returns 1 CPU and 2GB RAM (matching QEMU -m 2G setting).
+func QueryHardwareRISCV(config *KmazarinConfig) (*HardwareInfo, error) {
+	// For RISC-V direct boot on QEMU virt, hardcode the hardware info
+	// QEMU virt with -m 2G: 1 CPU, 2GB RAM @ 0x80000000
+	hw := dNew[HardwareInfo]()
+	if hw == nil {
+		printString("ERROR: Failed to allocate HardwareInfo\r\n")
+		for {}
+	}
+
+	hw.CPUCount = 1
+	hw.RAMBase = 0x80000000  // QEMU virt RISC-V RAM base
+	hw.RAMSize = 2048 * 1024 * 1024  // 2GB (matches QEMU -m 2G)
+
+	// Validate against config (using same logic as QueryHardware)
+	if hw.CPUCount < config.MinCPUs {
+		printString("FATAL: Too few CPUs\r\n")
+		for {}
+	}
+	if hw.CPUCount > config.MaxCPUs {
+		hw.CPUCount = config.MaxCPUs
+	}
+
+	ramMB := hw.RAMSize / (1024 * 1024)
+	if ramMB < config.MinRAMMB {
+		printString("FATAL: Too little RAM\r\n")
+		for {}
+	}
+	if ramMB > config.MaxRAMMB {
+		hw.RAMSize = uint64(config.MaxRAMMB) * 1024 * 1024
+	}
+
+	return hw, nil
+}
+
 // Pre-allocated errors
 var (
 	errHardwareAllocFailed = blockDevError{"hardware: allocation failed"}

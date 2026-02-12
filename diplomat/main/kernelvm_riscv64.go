@@ -82,6 +82,12 @@ type ptPageAllocator struct {
 
 var ptAlloc ptPageAllocator
 
+// RISC-V direct boot bump allocator state
+var riscvBumpAlloc struct {
+	current uint64  // Next allocation address
+	end     uint64  // End of available memory
+}
+
 // allocatePTPage allocates a single page from PT pool
 func allocatePTPage() uint64 {
 	if ptAlloc.offset >= ptAlloc.total {
@@ -92,6 +98,55 @@ func allocatePTPage() uint64 {
 	ptAlloc.offset += PageSize
 	plat.ZeroMemory(page, PageSize)
 	return page
+}
+
+// initBumpAllocatorRISCV initializes the bump allocator for RISC-V direct boot.
+// Starts allocating after the kernel image in physical memory.
+func initBumpAllocatorRISCV(hw *HardwareInfo) {
+	// RISC-V memory layout:
+	// 0x80000000: RAM base
+	// 0x80200000: Diplomat code
+	// 0x90000000: Kernel code (loaded by LoadKernelNoError)
+	// 0x90000000 + 0x4200 pages (67MB) = 0x94200000: End of kernel
+	// Start allocating page tables, stacks, etc. after kernel
+	const kernelPhysBase = 0x90000000
+	const kernelPages = 0x4200  // From LoadKernelNoError
+	const kernelEnd = kernelPhysBase + kernelPages*PageSize
+
+	riscvBumpAlloc.current = kernelEnd
+	riscvBumpAlloc.end = hw.RAMBase + hw.RAMSize  // Use actual RAM size
+
+	printString("Bump allocator: ")
+	printHex(riscvBumpAlloc.current)
+	printString(" - ")
+	printHex(riscvBumpAlloc.end)
+	printString(" (")
+	printHex((riscvBumpAlloc.end - riscvBumpAlloc.current) / (1024*1024))
+	printString("MB available)\r\n")
+}
+
+// allocatePhysPagesRISCV allocates physical pages using bump allocator.
+// For RISC-V direct boot (non-UEFI mode).
+// NOTE: initBumpAllocatorRISCV must be called first to set up the allocator.
+func allocatePhysPagesRISCV(pages uint64) uint64 {
+	size := pages * PageSize
+	if riscvBumpAlloc.current == 0 {
+		printString("FATAL: Bump allocator not initialized\r\n")
+		for {}
+	}
+
+	if riscvBumpAlloc.current+size > riscvBumpAlloc.end {
+		printString("FATAL: Out of physical memory (need ")
+		printHex(pages)
+		printString(" pages, ")
+		printHex((riscvBumpAlloc.end - riscvBumpAlloc.current) / PageSize)
+		printString(" available)\r\n")
+		for {}
+	}
+
+	addr := riscvBumpAlloc.current
+	riscvBumpAlloc.current += size
+	return addr
 }
 
 // kernelPageTablePhys returns the kernel page table root (SATP root)
@@ -251,6 +306,99 @@ func mapPage4KB(l2Root, va, pa, flags uint64) error {
 	// Create leaf PTE
 	l0[l0Idx] = makePTE(pa, flags)
 	return nil
+}
+
+// PrepareKernelVMRISCV creates Sv39 page tables without UEFI allocations.
+// Uses bump allocator for RISC-V direct boot mode.
+func PrepareKernelVMRISCV(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, error) {
+	vm := dNew[KernelVM]()
+	if vm == nil {
+		printString("ERROR: Failed to allocate KernelVM\r\n")
+		for {}
+	}
+
+	// Initialize bump allocator with hardware RAM info
+	initBumpAllocatorRISCV(hw)
+
+	// Allocate page table pool
+	ptPages := allocatePhysPagesRISCV(ptPoolPages)
+	ptAlloc.base = ptPages
+	ptAlloc.offset = 0
+	ptAlloc.total = ptPoolPages * PageSize
+	plat.ZeroMemory(ptPages, ptPoolPages*PageSize)
+
+	printString("PT pool at ")
+	printHex(ptPages)
+	printString("\r\n")
+
+	// Allocate L2 root table
+	l2Root := allocatePTPage()
+	if l2Root == 0 {
+		printString("ERROR: Failed to allocate L2 root\r\n")
+		for {}
+	}
+	vm.SAPTROOTL2Phys = l2Root
+
+	// Create linear map: PA → VA (PA + KernelVAOffset)
+	// Map all physical RAM in 1GB chunks using L2 leaf PTEs
+	for pa := uint64(hw.RAMBase); pa < hw.RAMBase+hw.RAMSize; pa += Page1GBSize {
+		va := pa + KernelVAOffset
+		if err := mapPage1GB(l2Root, va, pa, PTE_LEAF_RWX); err != nil {
+			printString("ERROR: Failed to map 1GB page\r\n")
+			for {}
+		}
+	}
+
+	// Allocate and map g0 stack
+	g0StackPages := uint64((KernelG0StackSize + PageSize - 1) / PageSize)
+	g0StackPhys := allocatePhysPagesRISCV(g0StackPages)
+	vm.G0StackPhys = g0StackPhys
+	vm.G0StackTopVA = KernelG0StackTop
+	plat.ZeroMemory(g0StackPhys, g0StackPages*PageSize)
+
+	if err := mapRange(l2Root, KernelG0StackBottom, g0StackPhys, KernelG0StackSize, PTE_LEAF_RW); err != nil {
+		printString("ERROR: Failed to map g0 stack\r\n")
+		for {}
+	}
+
+	// Allocate and map exception stack
+	excStackPages := uint64((KernelExcStackSize + PageSize - 1) / PageSize)
+	excStackPhys := allocatePhysPagesRISCV(excStackPages)
+	vm.ExcStackPhys = excStackPhys
+	vm.ExcStackTopVA = KernelExcStackTop
+	plat.ZeroMemory(excStackPhys, excStackPages*PageSize)
+
+	if err := mapRange(l2Root, KernelExcStackBottom, excStackPhys, KernelExcStackSize, PTE_LEAF_RW); err != nil {
+		printString("ERROR: Failed to map exception stack\r\n")
+		for {}
+	}
+
+	// Allocate heap page pool
+	heapPoolPhys := allocatePhysPagesRISCV(heapPagePoolPages)
+	vm.HeapPagePoolBase = heapPoolPhys
+	vm.HeapPagePoolEnd = heapPoolPhys + heapPagePoolPages*PageSize
+
+	// Initialize global demand page pool for assembly handler
+	demandPagePool.current = vm.HeapPagePoolBase
+	demandPagePool.end = vm.HeapPagePoolEnd
+	demandPagePool.ptCurrent = ptAlloc.base + ptAlloc.offset
+	demandPagePool.ptEnd = ptAlloc.base + ptAlloc.total
+
+	// Map MMIO regions as device memory
+	mapMMIO := func(pa, size uint64) {
+		va := pa + KernelVAOffset
+		// Use PTE_LEAF_RW for MMIO (no execute)
+		_ = mapRange(l2Root, va, pa, size, PTE_LEAF_RW)
+	}
+	mapMMIO(mmioUartBase, 0x1000)
+	mapMMIO(mmioPlicBase, 0x4000000)
+	mapMMIO(mmioClintBase, 0x10000)
+
+	printString("Kernel VM prepared (Sv39 SATP root at ")
+	printHex(vm.SAPTROOTL2Phys)
+	printString(")\r\n")
+
+	return vm, nil
 }
 
 // InstallFaultHandler installs diplomat's exception handler (stub for compatibility)
