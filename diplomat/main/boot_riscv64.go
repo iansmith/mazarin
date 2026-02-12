@@ -821,6 +821,11 @@ func readBlockVirtIO(lba uint64, buf []byte) {
 		for {}
 	}
 
+	// Acknowledge interrupt by writing to INTERRUPT_STATUS (clears it)
+	// This is CRITICAL - without this, the device won't signal future interrupts
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_INTERRUPT_STATUS)) = 1
+	memoryBarrier()
+
 	// Check status
 	if virtioReq.status != 0 {
 		printString("ERROR: VirtIO block read failed, status=")

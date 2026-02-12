@@ -32,7 +32,7 @@ var defaultBootSequence = BootSequence{
 	JumpToKernel:    func(entry uint64) { jumpToEntry(entry) },
 
 	// New boot phases
-	ReadConfig:          ReadConfig,
+	ReadConfig:          ReadConfigRISCV,   // RISC-V: allocation-free version
 	QueryHardware:       QueryHardware,
 	PrepareKernelVM:     PrepareKernelVM,
 	InstallFaultHandler: InstallFaultHandler,
@@ -198,4 +198,17 @@ func LoadKernelRISCVWrapper(fs *fat32.FileSystem, path string) (*LoadedKernel, e
 	// Call no-error version (will panic on failure instead of returning error)
 	kernel := LoadKernelNoError(fs, path)
 	return kernel, nil
+}
+
+// ReadConfigRISCV returns default config without reading the config file.
+// Used for RISC-V early boot to avoid error interface allocation from file operations.
+// Config file reading is optional - defaults are sufficient for boot.
+func ReadConfigRISCV(fs *fat32.FileSystem) (*KmazarinConfig, error) {
+	printString("Config: using defaults (RISC-V early boot)\r\n")
+	cfg := defaultConfig()
+	if cfg == nil {
+		printString("ERROR: Failed to allocate config\r\n")
+		for {}
+	}
+	return cfg, nil
 }
