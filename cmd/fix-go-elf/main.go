@@ -257,21 +257,31 @@ func fixELF(inputPath, outputPath string) error {
 		return nil
 	}
 
-	// Inject bootstrap stub for RISC-V (jumps from load address to actual entry)
-	// Bootstrap is placed at the start of first LOAD segment (0x80000000)
-	// and jumps to the original entry point (trampoline)
-	// NOTE: Only needed when we relocated segments (relocOffsetSet == true)
-	// If binary was linked with -T 0x80000000, entry point is already correct
-	if isRISCV && relocOffsetSet && e_entry != 0 {
-		if err := injectBootstrapStub(data, order, e_entry); err != nil {
-			return fmt.Errorf("injecting bootstrap stub: %w", err)
+	// For RISC-V with -T flag: inject bootstrap stub at segment start
+	// OpenSBI/QEMU jumps to the beginning of the loaded segment, not the ELF entry point
+	// We need a stub at file offset 0x1000 (segment start) that jumps to the actual entry point
+	if isRISCV && hasNegativeOffset && e_entry != 0 {
+		// Find the first PT_LOAD segment to get its vaddr (where bootstrap should be)
+		var bootstrapAddr uint64
+		for i := uint16(0); i < e_phnum; i++ {
+			phOffset := e_phoff + uint64(i)*uint64(e_phentsize)
+			if phOffset+56 > uint64(len(data)) {
+				continue
+			}
+			p_type := order.Uint32(data[phOffset : phOffset+4])
+			p_vaddr := order.Uint64(data[phOffset+16 : phOffset+24])
+			if p_type == 1 { // PT_LOAD
+				bootstrapAddr = p_vaddr
+				break
+			}
 		}
 
-		// Update e_entry to point to bootstrap, not trampoline
-		// QEMU with -bios none jumps to e_entry (or lowest segment address)
-		bootstrapAddr := uint64(0x80000000)
-		fmt.Printf("Setting entry point to bootstrap: 0x%08x -> 0x%08x\n", e_entry, bootstrapAddr)
-		order.PutUint64(data[24:32], bootstrapAddr)
+		if bootstrapAddr != 0 {
+			if err := injectBootstrapStub(data, order, e_entry); err != nil {
+				return fmt.Errorf("injecting bootstrap stub: %w", err)
+			}
+			fmt.Printf("Bootstrap stub will be placed at segment start: 0x%08x -> 0x%08x\n", bootstrapAddr, e_entry)
+		}
 	}
 
 	// Write the fixed file

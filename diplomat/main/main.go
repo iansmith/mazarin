@@ -231,8 +231,8 @@ func main() {
 // DiplomatEntry is called by assembly efi_main() after g0/m0 initialization.
 // The assembly entry point (entry_amd64.s) saves ImageHandle and SystemTable
 // to globals, then calls this function.
-//
-//go:nosplit
+
+// DiplomatEntry is called by assembly wrapper after g0/m0 initialization.
 func DiplomatEntry() {
 	// imageHandle and systemTable already set by assembly entry point
 
@@ -424,21 +424,26 @@ func findKernelSymbol(kernel *LoadedKernel, name string) uint64 {
 	return 0
 }
 
-// printString outputs a string to the UEFI console
+// printString outputs a string to the console (UEFI or direct UART)
 func printString(s string) {
+	// On RISC-V with -bios none, systemTable is nil but we can still
+	// print via direct UART using plat.PrintChar
+	if plat.PrintChar != nil {
+		// Use platform-specific print (UEFI or direct UART)
+		for _, r := range s {
+			plat.PrintChar(uint16(r))
+		}
+		return
+	}
+
+	// Fallback: UEFI only (when plat not initialized yet)
 	if systemTable == nil || systemTable.ConOut == nil {
 		return
 	}
 
 	// Convert Go string to UCS-2 (UTF-16LE) and print via UEFI
 	for _, r := range s {
-		// For ASCII, direct conversion works
-		// For full Unicode support, we'd need proper UTF-16 encoding
-		if plat.PrintChar != nil {
-			plat.PrintChar(uint16(r))
-		} else {
-			printChar(uint16(r))
-		}
+		printChar(uint16(r))
 	}
 }
 

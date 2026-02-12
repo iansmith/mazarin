@@ -6,8 +6,9 @@ package main
 
 // Forward declarations of assembly entry points
 // Using underscore prefix like AMD64 to prevent dead code elimination
-func _diplomatBootstrap()  // Pure assembly bootstrap (no Go runtime, just UART loop)
-func diplomatEntry()        // Full entry with MMU setup (in entry_riscv64.s)
+func _diplomatBootstrap()     // Pure assembly bootstrap (no Go runtime, just UART loop)
+func diplomatEntry()           // Full entry with MMU setup (in entry_riscv64.s)
+func diplomatEntryWrapper()    // Wrapper that writes debug marker and calls DiplomatEntry
 
 // elfMachineExpected is the ELF machine type diplomat expects when loading a kernel.
 const elfMachineExpected = elfMachineRISCV64
@@ -30,4 +31,12 @@ var bootStack [65536]byte
 func keepAlive() {
 	_diplomatBootstrap()
 	diplomatEntry()
+	diplomatEntryWrapper()
 }
+
+// uartWriteDirect writes a single byte to UART using inline assembly
+// This is RISC-V specific and avoids any Go runtime overhead
+//
+//go:nosplit
+//go:noinline
+func uartWriteDirect(c byte)

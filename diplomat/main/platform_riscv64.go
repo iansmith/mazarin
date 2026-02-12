@@ -5,7 +5,7 @@
 package main
 
 var defaultPlatform = PlatformOps{
-	PrintChar:            printChar,
+	PrintChar:            printCharRISCV,
 	DebugPortOut:         debugPortOut,
 	AllocatePages:        UEFIAllocatePages,
 	FreePages:            UEFIFreePages,
@@ -133,3 +133,19 @@ func readTP() uint64
 
 //go:noescape
 func writeTP(val uint64)
+
+// printCharRISCV prints a character using either UEFI (if available) or direct UART.
+// RISC-V can run in two modes:
+//   - UEFI mode: systemTable is valid, use printChar (UEFI ConOut)
+//   - Direct mode (-bios none): systemTable is nil, use printCharDirect (UART)
+//
+//go:nosplit
+func printCharRISCV(c uint16) {
+	if systemTable != nil && systemTable.ConOut != nil {
+		// UEFI mode: use UEFI ConOut
+		printChar(c)
+	} else {
+		// Direct mode: use direct UART
+		printCharDirect(c)
+	}
+}

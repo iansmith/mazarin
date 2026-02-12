@@ -37,41 +37,71 @@ func injectBootstrapStub(data []byte, order binary.ByteOrder, entryAddr uint64) 
 	// JALR doesn't work in this environment (S-mode restriction or PMP issue)
 	// but JAL works and has ±1MB range, which is sufficient
 
-	// Calculate offset from bootstrap (0x80000000) to entry point
-	// JAL offset is in bytes, stored as signed 21-bit immediate (20-bit after dropping LSB)
-	bootstrapAddr := uint64(0x80000000)
-	offset := int64(entryAddr) - int64(bootstrapAddr)
-
-	// JAL encoding: offset is split across instruction bits
-	// offset[20|10:1|11|19:12] rd opcode
-	// opcode = 0x6f (JAL)
-	// rd = 0 (zero register, discard return address)
-
-	if offset < -1048576 || offset > 1048575 {
-		return fmt.Errorf("entry point too far for JAL: offset=%d bytes (max ±1MB)", offset)
-	}
-
-	// Encode JAL immediate field
-	immBits := uint64(offset & 0x1FFFFF) // 21 bits (but bit 0 must be 0)
-	jal := uint64(0x6f) | // opcode
-		((immBits & 0x100000) << 11) |  // bit[20] -> bit[31]
-		((immBits & 0x7FE) << 20) |     // bits[10:1] -> bits[30:21]
-		((immBits & 0x800) << 9) |      // bit[11] -> bit[20]
-		((immBits & 0xFF000))            // bits[19:12] -> bits[19:12]
+	// For entry points beyond JAL range (±1MB), use AUIPC + JALR
+	// This loads the full 32-bit PC-relative address and jumps to it
+	//
+	// AUIPC t0, %pcrel_hi(entry)   ; Load upper 20 bits of PC-relative offset
+	// JALR zero, t0, %pcrel_lo(entry) ; Add lower 12 bits and jump
+	//
+	// Note: We calculate PC-relative from file offset 0x1000, which maps to
+	// the first PT_LOAD segment vaddr after fixing
 
 	stubOffset := 0x1000
-	stubSize := 4
+	stubSize := 8
 	if stubOffset+stubSize > len(data) {
 		return fmt.Errorf("file too small to inject bootstrap stub")
 	}
 
-	fmt.Printf("Injecting RISC-V bootstrap stub at file offset 0x%x:\n", stubOffset)
-	fmt.Printf("  Bootstrap address: 0x%08x\n", bootstrapAddr)
-	fmt.Printf("  Entry point:       0x%08x\n", entryAddr)
-	fmt.Printf("  JAL offset:        %d bytes (0x%x)\n", offset, offset)
+	// Calculate PC-relative offset from stub to entry point
+	// After ELF fixing, file offset 0x1000 will map to the first PT_LOAD vaddr
+	// We need to find that vaddr to calculate the offset
+	var stubVaddr uint64
+	e_phoff := order.Uint64(data[32:40])
+	e_phentsize := order.Uint16(data[54:56])
+	e_phnum := order.Uint16(data[56:58])
 
-	// Single JAL instruction to jump to entry point
-	order.PutUint32(data[stubOffset:], uint32(jal))
+	for i := uint16(0); i < e_phnum; i++ {
+		phOffset := e_phoff + uint64(i)*uint64(e_phentsize)
+		if phOffset+56 > uint64(len(data)) {
+			continue
+		}
+		p_type := order.Uint32(data[phOffset : phOffset+4])
+		p_vaddr := order.Uint64(data[phOffset+16 : phOffset+24])
+		if p_type == 1 { // PT_LOAD
+			stubVaddr = p_vaddr
+			break
+		}
+	}
+
+	if stubVaddr == 0 {
+		return fmt.Errorf("could not find PT_LOAD segment for bootstrap")
+	}
+
+	offset := int64(entryAddr) - int64(stubVaddr)
+
+	fmt.Printf("Injecting RISC-V bootstrap stub at file offset 0x%x:\n", stubOffset)
+	fmt.Printf("  Bootstrap vaddr:   0x%08x\n", stubVaddr)
+	fmt.Printf("  Entry point:       0x%08x\n", entryAddr)
+	fmt.Printf("  PC-relative offset: %d bytes (0x%x)\n", offset, offset)
+
+	// Split offset into upper 20 bits and lower 12 bits
+	// Note: ADDI sign-extends the 12-bit immediate, so if bit 11 is set, we add 1 to upper
+	lower = uint64(offset & 0xFFF)
+	upper = uint64((offset >> 12) & 0xFFFFF)
+	if lower >= 0x800 {
+		upper += 1
+	}
+
+	// AUIPC t0, upper   (0x17 = AUIPC, rd=5 for t0)
+	// Encoding: imm[31:12] | rd[11:7] | 0010111
+	auipc := uint32((upper << 12) | (5 << 7) | 0x17)
+
+	// JALR zero, t0, lower  (0x67 = JALR, rd=0, rs1=5, funct3=000)
+	// Encoding: imm[11:0] | rs1[19:15] | 000 | rd[11:7] | 1100111
+	jalr := uint32(((lower & 0xFFF) << 20) | (5 << 15) | 0x67)
+
+	order.PutUint32(data[stubOffset:], auipc)
+	order.PutUint32(data[stubOffset+4:], jalr)
 
 	return nil
 }

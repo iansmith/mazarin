@@ -15,9 +15,18 @@ TEXT main·writeTP(SB), NOSPLIT|NOFRAME, $0-8
 	MOV	A0, TP			// TP = A0
 	RET
 
-// debugPortOut is a no-op on RISC-V UEFI
-// (x86_64 uses port 0xE9 for QEMU debug, RISC-V doesn't have this)
+// debugPortOut writes a byte to UART (NS16550A at 0x10000000)
+// RISC-V doesn't have a debug port like x86_64, so we use UART
 // Go: func debugPortOut(c byte)
 TEXT ·debugPortOut(SB), NOSPLIT, $0-1
-	// No-op on RISC-V - use UEFI console for output
+	// Load UART base address (0x10000000) into X5
+	// LUI X5, 0x10000
+	WORD	$0x100002b7
+
+	// Load character from Go stack into X6
+	MOVBU	c+0(FP), X6
+
+	// Write character to UART (SB X6, 0(X5))
+	WORD	$0x00628023
+
 	RET
