@@ -130,6 +130,12 @@ const (
 	VIRTIO_MMIO_INTERRUPT_STATUS    = 0x060
 	VIRTIO_MMIO_INTERRUPT_ACK       = 0x064
 	VIRTIO_MMIO_STATUS              = 0x070
+	VIRTIO_MMIO_QUEUE_DESC_LOW      = 0x080
+	VIRTIO_MMIO_QUEUE_DESC_HIGH     = 0x084
+	VIRTIO_MMIO_QUEUE_AVAIL_LOW     = 0x090
+	VIRTIO_MMIO_QUEUE_AVAIL_HIGH    = 0x094
+	VIRTIO_MMIO_QUEUE_USED_LOW      = 0x0A0
+	VIRTIO_MMIO_QUEUE_USED_HIGH     = 0x0A4
 	VIRTIO_MMIO_CONFIG              = 0x100
 )
 
@@ -308,30 +314,236 @@ func virtioMMIOHandshake(base uintptr) bool {
 }
 
 // ============================================================================
-// VirtIO Block Device Operations (Stubs for now)
+// VirtIO Block Device Operations - Static Virtqueues
 // ============================================================================
 
-// TODO: Implement VirtIO virtqueue setup and block I/O operations
-// This will be needed for Tasks #3-4 (FAT32 mount and kmazarin loading)
+// VirtIO virtqueue constants
+const (
+	VIRTQ_DESC_F_NEXT     = 1
+	VIRTQ_DESC_F_WRITE    = 2
+	VIRTQ_AVAIL_F_NO_INTERRUPT = 1
+)
+
+// VirtIO block request header
+const (
+	VIRTIO_BLK_T_IN  = 0
+	VIRTIO_BLK_T_OUT = 1
+)
+
+// Virtqueue descriptor
+type virtqDesc struct {
+	addr  uint64
+	len   uint32
+	flags uint16
+	next  uint16
+}
+
+// Virtqueue available ring
+type virtqAvail struct {
+	flags uint16
+	idx   uint16
+	ring  [16]uint16 // Queue size = 16
+	// used_event would go here but we don't use it
+}
+
+// Virtqueue used ring element
+type virtqUsedElem struct {
+	id  uint32
+	len uint32
+}
+
+// Virtqueue used ring
+type virtqUsed struct {
+	flags uint16
+	idx   uint16
+	ring  [16]virtqUsedElem
+	// avail_event would go here but we don't use it
+}
+
+// VirtIO block request structure
+type virtioBlkReq struct {
+	reqType   uint32
+	reserved  uint32
+	sector    uint64
+	data      [512]byte
+	status    uint8
+	_padding  [7]uint8 // Align to 8 bytes
+}
+
+// Statically allocated virtqueue (queue size = 16)
+var (
+	virtqDescTable [16]virtqDesc
+	virtqAvailRing virtqAvail
+	virtqUsedRing  virtqUsed
+	virtioReq      virtioBlkReq
+
+	virtqInitialized bool
+	lastUsedIdx      uint16
+)
 
 // ============================================================================
-// RISC-V FAT32 Mount (No Error Interface)
+// VirtIO Virtqueue Initialization
 // ============================================================================
 
-// fat32MountRISCV is a RISC-V-specific wrapper that avoids error interface returns.
-// Error interfaces trigger heap allocation during the interface conversion, which
-// fails during early boot before the runtime is fully initialized.
-//
-// Instead of returning an error, this function handles errors directly by printing
-// and halting.
-//
-//go:noinline
-//go:nosplit
-func fat32MountRISCV(dev interface{}) uintptr {
-	plat.DebugPortOut('X') // entered fat32MountRISCV
-	// Cast dev to blockdev.BlockDevice
-	// We pass it as interface{} to avoid interface conversion in the call
-	// TODO: Call fat32.MountWith directly here
-	plat.DebugPortOut('Y') // exiting
-	return 0 // placeholder
+// initVirtqueue initializes the VirtIO virtqueue for block device.
+// Must be called before any block I/O operations.
+func initVirtqueue() {
+	if virtqInitialized {
+		return
+	}
+
+	// Clear all structures
+	for i := range virtqDescTable {
+		virtqDescTable[i] = virtqDesc{}
+	}
+	virtqAvailRing = virtqAvail{}
+	virtqUsedRing = virtqUsed{}
+	lastUsedIdx = 0
+
+	// Set up descriptor chain for block reads:
+	// Desc 0: Request header (device reads)
+	// Desc 1: Data buffer (device writes)
+	// Desc 2: Status byte (device writes)
+
+	// Descriptor 0: Request header
+	virtqDescTable[0].addr = uint64(uintptr(unsafe.Pointer(&virtioReq)))
+	virtqDescTable[0].len = 16 // sizeof(type + reserved + sector)
+	virtqDescTable[0].flags = VIRTQ_DESC_F_NEXT
+	virtqDescTable[0].next = 1
+
+	// Descriptor 1: Data buffer
+	virtqDescTable[1].addr = uint64(uintptr(unsafe.Pointer(&virtioReq.data)))
+	virtqDescTable[1].len = 512
+	virtqDescTable[1].flags = VIRTQ_DESC_F_WRITE | VIRTQ_DESC_F_NEXT
+	virtqDescTable[1].next = 2
+
+	// Descriptor 2: Status byte
+	virtqDescTable[2].addr = uint64(uintptr(unsafe.Pointer(&virtioReq.status)))
+	virtqDescTable[2].len = 1
+	virtqDescTable[2].flags = VIRTQ_DESC_F_WRITE
+	virtqDescTable[2].next = 0
+
+	// Tell device about our virtqueue
+	base := virtioMMIOBase
+	queueSize := uint32(16)
+
+	// Select queue 0
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_SEL)) = 0
+
+	// Check max queue size
+	maxSize := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_NUM_MAX))
+	if maxSize < queueSize {
+		printString("ERROR: VirtIO queue too small\r\n")
+		for {}
+	}
+
+	// Set queue size
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_NUM)) = queueSize
+
+	// Set descriptor table address
+	descAddr := uint64(uintptr(unsafe.Pointer(&virtqDescTable[0])))
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_DESC_LOW)) = uint32(descAddr)
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_DESC_HIGH)) = uint32(descAddr >> 32)
+
+	// Set available ring address
+	availAddr := uint64(uintptr(unsafe.Pointer(&virtqAvailRing)))
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_AVAIL_LOW)) = uint32(availAddr)
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_AVAIL_HIGH)) = uint32(availAddr >> 32)
+
+	// Set used ring address
+	usedAddr := uint64(uintptr(unsafe.Pointer(&virtqUsedRing)))
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_USED_LOW)) = uint32(usedAddr)
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_USED_HIGH)) = uint32(usedAddr >> 32)
+
+	// Mark queue as ready
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_READY)) = 1
+
+	virtqInitialized = true
+	printString("VirtIO virtqueue initialized\r\n")
+	printString("  Desc table: ")
+	printHex(descAddr)
+	printString("\r\n  Avail ring: ")
+	printHex(availAddr)
+	printString("\r\n  Used ring:  ")
+	printHex(usedAddr)
+	printString("\r\n")
+}
+
+// readBlockVirtIO performs a synchronous block read using VirtIO.
+func readBlockVirtIO(lba uint64, buf []byte) {
+	if !virtqInitialized {
+		initVirtqueue()
+	}
+
+	if len(buf) != 512 {
+		printString("ERROR: VirtIO only supports 512-byte reads\r\n")
+		for {}
+	}
+
+	// Set up request
+	virtioReq.reqType = VIRTIO_BLK_T_IN
+	virtioReq.reserved = 0
+	virtioReq.sector = lba
+	virtioReq.status = 0xFF // Will be overwritten by device
+
+	printString("  Request setup: type=")
+	printHex(uint64(virtioReq.reqType))
+	printString(" sector=")
+	printHex(virtioReq.sector)
+	printString("\r\n")
+
+	// Add to available ring
+	idx := virtqAvailRing.idx
+	virtqAvailRing.ring[idx%16] = 0 // Use descriptor 0
+	virtqAvailRing.idx = idx + 1
+
+	printString("  Avail ring: idx=")
+	printHex(uint64(idx))
+	printString(" -> ")
+	printHex(uint64(virtqAvailRing.idx))
+	printString("\r\n")
+
+	// Notify device
+	base := virtioMMIOBase
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_NOTIFY)) = 0 // Queue 0
+
+	printString("  Device notified, polling... (used.idx=")
+	printHex(uint64(virtqUsedRing.idx))
+	printString(" last=")
+	printHex(uint64(lastUsedIdx))
+	printString(")\r\n")
+
+	// Poll for completion
+	timeout := 1000000
+	for timeout > 0 {
+		if virtqUsedRing.idx != lastUsedIdx {
+			break
+		}
+		timeout--
+	}
+
+	printString("  After poll: used.idx=")
+	printHex(uint64(virtqUsedRing.idx))
+	printString(" timeout=")
+	printHex(uint64(timeout))
+	printString("\r\n")
+
+	if timeout == 0 {
+		printString("ERROR: VirtIO block read timeout\r\n")
+		for {}
+	}
+
+	// Check status
+	if virtioReq.status != 0 {
+		printString("ERROR: VirtIO block read failed, status=")
+		printHex(uint64(virtioReq.status))
+		printString("\r\n")
+		for {}
+	}
+
+	// Copy data to output buffer
+	copy(buf, virtioReq.data[:])
+
+	// Update last used index
+	lastUsedIdx = virtqUsedRing.idx
 }

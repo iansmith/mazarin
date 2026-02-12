@@ -171,17 +171,13 @@ func ReadBlockVirtIO(lba uint64, buf []byte) error {
 // ReadBlockVirtIONoError reads a block without returning an error interface.
 // Used for early boot on RISC-V to avoid allocation issues.
 // Panics/loops on error instead of returning.
-//
-//go:nosplit
 func ReadBlockVirtIONoError(lba uint64, buf []byte) {
 	printString("DEBUG: ReadBlockVirtIONoError called for LBA ")
 	printHex(lba)
 	printString("\r\n")
 
-	// Stub: fill with zeros for now
-	for i := range buf {
-		buf[i] = 0
-	}
+	// Call real VirtIO implementation
+	readBlockVirtIO(lba, buf)
 }
 
 func init() {
