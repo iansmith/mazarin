@@ -22,7 +22,7 @@ var defaultPlatform = PlatformOps{
 }
 
 var defaultBootSequence = BootSequence{
-	InitSpans:       InitializeSpans,
+	InitSpans:       InitSpansRISCV,     // RISC-V: parse FDT + init spans
 	GetBlockDevice:  GetBootDeviceRISCV,  // RISC-V uses VirtIO, not UEFI
 	MountFilesystem: fat32Mount,
 	LoadKernel:      LoadKernel,

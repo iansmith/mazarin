@@ -12,6 +12,86 @@ import (
 	"mazzy/shared/fs/fat32"
 )
 
+// Global FDT info (populated by InitializeFDT)
+var fdtInfo *FDTInfo
+
+// Assembly functions to read firmware parameters from S0/S1 registers
+// (saved by bootstrap stub in inject.go)
+//
+//go:noescape
+func readBootHartID() uint64
+
+//go:noescape
+func readFDTPointer() uint64
+
+// InitializeFDT parses the FDT passed by OpenSBI and initializes global state.
+// This should be called early in DiplomatEntry, before any other initialization.
+//
+//go:nosplit
+func InitializeFDT() bool {
+	printString("DBG: Initializing FDT...\r\n")
+
+	// WORKAROUND: Hardcode FDT address for QEMU virt platform
+	// TODO: Fix bootstrap stub to properly preserve A0/A1 in S0/S1
+	// OpenSBI always passes FDT at 0xFFE00000 on QEMU virt
+	bootHartID = 0
+	fdtPointer = 0xFFE00000
+
+	printString("Hardcoded: hart=")
+	printHex(bootHartID)
+	printString(" fdt=")
+	printHex(fdtPointer)
+	printString("\r\n")
+
+	// Parse FDT
+	info, err := parseFDT(fdtPointer)
+	if err != nil {
+		printString("ERROR: FDT parse failed: ")
+		printString(err.Error())
+		printString("\r\n")
+		return false
+	}
+
+	// Store globally
+	fdtInfo = info
+
+	printString("FDT initialized successfully\r\n")
+	printString("  Hart ID: ")
+	printHex(bootHartID)
+	printString("\r\n")
+	printString("  RAM: 0x")
+	printHex(info.RAMBase)
+	printString(" - 0x")
+	printHex(info.RAMBase + info.RAMSize)
+	printString(" (")
+	printHex(info.RAMSize / (1024 * 1024))
+	printString(" MB)\r\n")
+	printString("  CPUs: ")
+	printHex(uint64(info.CPUCount))
+	printString("\r\n")
+	if info.ISAString != "" {
+		printString("  ISA: ")
+		printString(info.ISAString)
+		printString("\r\n")
+	}
+
+	return true
+}
+
+// InitSpansRISCV wraps InitializeSpans with FDT initialization.
+// This is called from the RISC-V boot sequence instead of InitializeSpans directly.
+//
+//go:nosplit
+func InitSpansRISCV() bool {
+	// Parse FDT first
+	if !InitializeFDT() {
+		return false
+	}
+
+	// Then initialize memory spans (regular path)
+	return InitializeSpans()
+}
+
 // GetBootDeviceRISCV returns a block device for the boot disk.
 // On RISC-V, we don't have UEFI HandleProtocol, so we need to either:
 //   1. Implement VirtIO block device access directly (TODO)

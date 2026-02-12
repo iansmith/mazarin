@@ -41,9 +41,33 @@ TEXT _rt0_riscv64_linux(SB),NOSPLIT|NOFRAME,$0
 	// SB X6, 0(X5)
 	WORD	$0x00628023
 
-	// Save firmware params
-	MOV	A0, S0		// Hart ID
-	MOV	A1, S1		// FDT pointer
+	// DEBUG: Print S1 value right at entry to verify bootstrap preserved it
+	// Print format: 'S' then 4 hex nibbles
+	WORD	$0x05300313	// ADDI X6, X0, 'S'
+	WORD	$0x00628023	// SB X6, 0(X5)
+	SRL	$60, S1, X6
+	AND	$0xF, X6
+	ADD	$0x30, X6
+	WORD	$0x00628023	// SB X6, 0(X5)
+	SRL	$56, S1, X6
+	AND	$0xF, X6
+	ADD	$0x30, X6
+	WORD	$0x00628023	// SB X6, 0(X5)
+	SRL	$52, S1, X6
+	AND	$0xF, X6
+	ADD	$0x30, X6
+	WORD	$0x00628023	// SB X6, 0(X5)
+	SRL	$48, S1, X6
+	AND	$0xF, X6
+	ADD	$0x30, X6
+	WORD	$0x00628023	// SB X6, 0(X5)
+
+	// Firmware params (A0=hart ID, A1=FDT pointer) were saved to S0/S1
+	// by the bootstrap stub (inject.go). Store them in bootStack for Go access.
+	// bootStack[0] = hart ID, bootStack[8] = FDT pointer
+	MOV	$main·bootStack(SB), X30
+	SD	S0, 0(X30)	// bootStack[0] = S0 (hart ID from A0)
+	SD	S1, 8(X30)	// bootStack[8] = S1 (FDT pointer from A1)
 
 	// Write '1' after saving params
 	WORD	$0x03100313	// ADDI X6, X0, '1'
