@@ -494,7 +494,10 @@ func printHex(val uint64) {
 	for i := 60; i >= 0; i -= 4 {
 		digit := (val >> uint(i)) & 0xF
 		if digit != 0 || started || i == 0 {
-			printChar(uint16(hexChars[digit]))
+			// Use plat.PrintChar to support both UEFI and direct UART modes
+			if plat.PrintChar != nil {
+				plat.PrintChar(uint16(hexChars[digit]))
+			}
 			started = true
 		}
 	}

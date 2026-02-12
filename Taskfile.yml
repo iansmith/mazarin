@@ -964,7 +964,9 @@ tasks:
     cmds:
       # Use -bios default to load OpenSBI, which then loads diplomat as kernel
       # OpenSBI jumps to the ELF entry point after initialization
-      - '{{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m 2G -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot'
+      # NOTE: For now, we provide VirtIO MMIO only for diplomat testing.
+      # TODO: Add virtio-blk-pci for kmazarin (will need share-rw=on or separate test)
+      - '{{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m 2G -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-device,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (RISC-V diplomat+kmazarin via OpenSBI) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4447"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
