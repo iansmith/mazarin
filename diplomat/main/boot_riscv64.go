@@ -723,32 +723,33 @@ func readBlockVirtIO(lba uint64, buf []byte) {
 	virtioReq.sector = lba
 	virtioReq.status = 0xFF // Will be overwritten by device
 
-	printString("  Request setup: type=")
-	printHex(uint64(virtioReq.reqType))
-	printString(" sector=")
-	printHex(virtioReq.sector)
-	printString("\r\n")
-
-	// Debug: Print descriptor chain
-	printString("  Desc[0]: addr=")
-	printHex(virtqDescTable[0].addr)
-	printString(" len=")
-	printHex(uint64(virtqDescTable[0].len))
-	printString(" flags=")
-	printHex(uint64(virtqDescTable[0].flags))
-	printString("\r\n  Desc[1]: addr=")
-	printHex(virtqDescTable[1].addr)
-	printString(" len=")
-	printHex(uint64(virtqDescTable[1].len))
-	printString(" flags=")
-	printHex(uint64(virtqDescTable[1].flags))
-	printString("\r\n  Desc[2]: addr=")
-	printHex(virtqDescTable[2].addr)
-	printString(" len=")
-	printHex(uint64(virtqDescTable[2].len))
-	printString(" flags=")
-	printHex(uint64(virtqDescTable[2].flags))
-	printString("\r\n")
+	// Verbose debug output disabled for speed
+	// printString("  Request setup: type=")
+	// printHex(uint64(virtioReq.reqType))
+	// printString(" sector=")
+	// printHex(virtioReq.sector)
+	// printString("\r\n")
+	//
+	// // Debug: Print descriptor chain
+	// printString("  Desc[0]: addr=")
+	// printHex(virtqDescTable[0].addr)
+	// printString(" len=")
+	// printHex(uint64(virtqDescTable[0].len))
+	// printString(" flags=")
+	// printHex(uint64(virtqDescTable[0].flags))
+	// printString("\r\n  Desc[1]: addr=")
+	// printHex(virtqDescTable[1].addr)
+	// printString(" len=")
+	// printHex(uint64(virtqDescTable[1].len))
+	// printString(" flags=")
+	// printHex(uint64(virtqDescTable[1].flags))
+	// printString("\r\n  Desc[2]: addr=")
+	// printHex(virtqDescTable[2].addr)
+	// printString(" len=")
+	// printHex(uint64(virtqDescTable[2].len))
+	// printString(" flags=")
+	// printHex(uint64(virtqDescTable[2].flags))
+	// printString("\r\n")
 
 	// Memory barrier: ensure request is fully written before updating avail ring
 	memoryBarrier()
@@ -758,11 +759,12 @@ func readBlockVirtIO(lba uint64, buf []byte) {
 	virtqAvailRing.ring[idx%16] = 0 // Use descriptor 0
 	virtqAvailRing.idx = idx + 1
 
-	printString("  Avail ring: idx=")
-	printHex(uint64(idx))
-	printString(" -> ")
-	printHex(uint64(virtqAvailRing.idx))
-	printString("\r\n")
+	// Verbose debug output disabled for speed
+	// printString("  Avail ring: idx=")
+	// printHex(uint64(idx))
+	// printString(" -> ")
+	// printHex(uint64(virtqAvailRing.idx))
+	// printString("\r\n")
 
 	// Memory barrier: ensure avail.idx is visible before notifying device
 	memoryBarrier()
@@ -775,19 +777,20 @@ func readBlockVirtIO(lba uint64, buf []byte) {
 	memoryBarrier()
 
 	// Verify device state immediately after notification
-	postNotifyStatus := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS))
-	postNotifyIntr := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_INTERRUPT_STATUS))
-
-	printString("  Device notified, polling...\r\n")
-	printString("    Before: used.idx=")
-	printHex(uint64(virtqUsedRing.idx))
-	printString(" last=")
-	printHex(uint64(lastUsedIdx))
-	printString("\r\n    Post-notify: STATUS=")
-	printHex(uint64(postNotifyStatus))
-	printString(" INTR=")
-	printHex(uint64(postNotifyIntr))
-	printString("\r\n")
+	// Verbose debug output disabled for speed
+	// postNotifyStatus := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS))
+	// postNotifyIntr := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_INTERRUPT_STATUS))
+	//
+	// printString("  Device notified, polling...\r\n")
+	// printString("    Before: used.idx=")
+	// printHex(uint64(virtqUsedRing.idx))
+	// printString(" last=")
+	// printHex(uint64(lastUsedIdx))
+	// printString("\r\n    Post-notify: STATUS=")
+	// printHex(uint64(postNotifyStatus))
+	// printString(" INTR=")
+	// printHex(uint64(postNotifyIntr))
+	// printString("\r\n")
 
 	// Poll for completion
 	timeout := 1000000
@@ -799,18 +802,19 @@ func readBlockVirtIO(lba uint64, buf []byte) {
 	}
 
 	// Check device state after polling
-	intrStatus := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_INTERRUPT_STATUS))
-	deviceStatus := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS))
-
-	printString("  After poll: used.idx=")
-	printHex(uint64(virtqUsedRing.idx))
-	printString(" timeout=")
-	printHex(uint64(timeout))
-	printString("\r\n  INTR_STATUS=")
-	printHex(uint64(intrStatus))
-	printString(" STATUS=")
-	printHex(uint64(deviceStatus))
-	printString("\r\n")
+	// Verbose debug output disabled for speed
+	// intrStatus := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_INTERRUPT_STATUS))
+	// deviceStatus := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS))
+	//
+	// printString("  After poll: used.idx=")
+	// printHex(uint64(virtqUsedRing.idx))
+	// printString(" timeout=")
+	// printHex(uint64(timeout))
+	// printString("\r\n  INTR_STATUS=")
+	// printHex(uint64(intrStatus))
+	// printString(" STATUS=")
+	// printHex(uint64(deviceStatus))
+	// printString("\r\n")
 
 	if timeout == 0 {
 		printString("ERROR: VirtIO block read timeout\r\n")

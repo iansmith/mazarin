@@ -179,6 +179,23 @@ func allocatePhysPages(pages uint64) (uint64, error) {
 	return physAddr, nil
 }
 
+// allocatePhysPagesNoError allocates physical pages without allocating error interfaces.
+// Panics on failure instead of returning errors.
+// For RISC-V direct boot (non-UEFI), uses a simple fixed allocation strategy.
+func allocatePhysPagesNoError(pages uint64) uint64 {
+	// RISC-V direct boot: diplomat is at 0x80200000, allocate kernel at 0x90000000
+	// This gives us ~256MB gap for diplomat and its data structures
+	const kernelPhysBase = 0x90000000
+
+	printString("Allocating ")
+	printHex(pages)
+	printString(" pages at ")
+	printHex(kernelPhysBase)
+	printString("\r\n")
+
+	return kernelPhysBase
+}
+
 // Pre-allocated errors (note: some errors like errAllocationFailed and errKernelMappingSpans
 // are also defined in uefi_blockdev.go, so we don't redefine them here)
 var (

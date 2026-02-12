@@ -436,21 +436,36 @@ func readFileAt(fs *fat32.FileSystem, file *SimpleFile, offset uint64, buf []byt
 	return totalRead, nil
 }
 
+// readClusterSectorDirect reads a single 512-byte sector directly from the block device
+// without using interface methods (to avoid allocation during early boot on RISC-V).
+// Panics on error (no error return to avoid allocation).
+func readClusterSectorDirect(lba uint64, buf []byte) {
+	// Use the global ReadBlockVirtIONoError function directly
+	ReadBlockVirtIONoError(lba, buf)
+}
+
 // readFileAtRaw reads from a file at a given offset without allocating error interfaces.
 // Returns (bytes_read, error_code) where error_code is 0 on success.
 func readFileAtRaw(fs *fat32.FileSystem, file *SimpleFile, offset uint64, buf []byte) (int, int) {
+	debugPortOut('r')
 	if offset >= uint64(file.Size) {
 		return 0, fat32.ErrCodeSuccess
 	}
+	debugPortOut('s')
 
 	bytesPerClus := uint64(fs.BytesPerCluster())
+	debugPortOut('t')
 	clusterIdx := offset / bytesPerClus
+	debugPortOut('u')
 
 	var cluster uint32
 	if file.HasMap && uint32(clusterIdx) < file.MapLen {
+		debugPortOut('v')
 		// O(1) indexed access via cached cluster map
 		cluster = clusterMap[clusterIdx]
+		debugPortOut('w')
 	} else {
+		debugPortOut('x')
 		// Fallback: walk the chain from the beginning
 		cluster = file.Cluster
 		for i := uint64(0); i < clusterIdx; i++ {
@@ -466,16 +481,30 @@ func readFileAtRaw(fs *fat32.FileSystem, file *SimpleFile, offset uint64, buf []
 	}
 
 	// Read data
+	debugPortOut('y')
 	inClusterOffset := offset % bytesPerClus
 	totalRead := 0
 	remaining := len(buf)
+	debugPortOut('z')
 
 	for remaining > 0 && cluster >= 2 && !fat32.IsEOF(cluster) {
-		// Read cluster into temp buffer
-		_, errCode := fs.ReadClusterRaw(cluster, dirClusterBuf[:bytesPerClus])
-		if errCode != fat32.ErrCodeSuccess {
-			return totalRead, errCode
+		debugPortOut('A')
+		// Read cluster directly to avoid type assertion allocation
+		// Convert cluster to sector using FAT32 formula
+		debugPortOut('(')
+		sectorsPerCluster := bytesPerClus / 512
+		startSector := fs.ClusterToSector(cluster)
+		debugPortOut(')')
+
+		// Read all sectors in the cluster directly
+		debugPortOut('[')
+		for sectorIdx := uint64(0); sectorIdx < sectorsPerCluster; sectorIdx++ {
+			debugPortOut('{')
+			sectorOffset := sectorIdx * 512
+			readClusterSectorDirect(startSector+sectorIdx, dirClusterBuf[sectorOffset:sectorOffset+512])
+			debugPortOut('}')
 		}
+		debugPortOut(']')
 
 		// Copy from cluster to output buffer
 		toCopy := int(bytesPerClus - inClusterOffset)
@@ -538,6 +567,38 @@ func copySegmentToMemory(fs *fat32.FileSystem, file *SimpleFile, fileOffset, mem
 	}
 
 	return nil
+}
+
+// copySegmentToMemoryRaw copies file data to a memory address without allocating error interfaces.
+// Panics on failure instead of returning errors.
+func copySegmentToMemoryRaw(fs *fat32.FileSystem, file *SimpleFile, fileOffset, memAddr, size uint64) {
+	dest := unsafe.Pointer(uintptr(memAddr))
+	remaining := size
+	offset := fileOffset
+
+	for remaining > 0 {
+		toRead := uint64(len(elfReadBuf))
+		if toRead > remaining {
+			toRead = remaining
+		}
+
+		n, errCode := readFileAtRaw(fs, file, offset, elfReadBuf[:toRead])
+		if errCode != fat32.ErrCodeSuccess {
+			printString("ERROR: Failed to read file data, code=")
+			printHex(uint64(errCode))
+			printString("\r\n")
+			for {}
+		}
+		if n == 0 {
+			break
+		}
+
+		// Copy to destination memory
+		copyToMem(dest, elfReadBuf[:n])
+		dest = unsafe.Pointer(uintptr(dest) + uintptr(n))
+		offset += uint64(n)
+		remaining -= uint64(n)
+	}
 }
 
 // copyToMem copies bytes to a memory address
@@ -745,6 +806,116 @@ func printSymName(name []byte) {
 	}
 }
 
+// extractSymbolsNoError reads the ELF section headers to find .symtab and .strtab,
+// then scans for specific symbols needed by diplomat (e.g., ExceptionVectorTable).
+// Panics on failure instead of returning errors (allocation-free).
+func extractSymbolsNoError(fsys *fat32.FileSystem, file *SimpleFile, ehdr *elf64Ehdr, kernel *LoadedKernel) {
+	initWantedSymbols()
+
+	if ehdr.Shoff == 0 || ehdr.Shnum == 0 {
+		printString("ELF: no section headers\r\n")
+		return
+	}
+	if ehdr.Shnum > 64 {
+		printString("ELF: too many sections\r\n")
+		return
+	}
+
+	// Read section headers
+	shdrBytes := int(ehdr.Shnum) * elfShdrSize
+	n, errCode := readFileAtRaw(fsys, file, ehdr.Shoff, (*[64 * elfShdrSize]byte)(unsafe.Pointer(&shdrBuf[0]))[:shdrBytes])
+	if errCode != fat32.ErrCodeSuccess || n < shdrBytes {
+		printString("ELF: failed to read section headers\r\n")
+		return
+	}
+
+	// Find .symtab section
+	var symtab *elf64Shdr
+	for i := uint16(0); i < ehdr.Shnum; i++ {
+		if shdrBuf[i].Type == elfSHT_SYMTAB {
+			symtab = &shdrBuf[i]
+			break
+		}
+	}
+	if symtab == nil {
+		printString("ELF: no .symtab\r\n")
+		return
+	}
+
+	// The .symtab's Link field points to its associated .strtab section
+	if symtab.Link >= uint32(ehdr.Shnum) {
+		printString("ELF: bad strtab link\r\n")
+		return
+	}
+	strtab := &shdrBuf[symtab.Link]
+
+	// Scan symbol table entries for wanted symbols
+	numSyms := symtab.Size / uint64(elfSymSize)
+	found := 0
+
+	printString("ELF: symtab at off=")
+	printHex(symtab.Offset)
+	printString(" ")
+	printHex(numSyms)
+	printString(" syms, strtab at off=")
+	printHex(strtab.Offset)
+	printString("\r\n")
+
+	// Read symbols in chunks using elfReadBuf (4096 bytes = 170 symbols per chunk)
+	symsPerChunk := uint64(len(elfReadBuf)) / uint64(elfSymSize)
+
+	for offset := uint64(0); offset < numSyms && found < len(wantedSymbols); offset += symsPerChunk {
+		remaining := numSyms - offset
+		if remaining > symsPerChunk {
+			remaining = symsPerChunk
+		}
+		readSize := int(remaining * uint64(elfSymSize))
+		fileOff := symtab.Offset + offset*uint64(elfSymSize)
+
+		n, errCode := readFileAtRaw(fsys, file, fileOff, elfReadBuf[:readSize])
+		if errCode != fat32.ErrCodeSuccess || n < readSize {
+			break
+		}
+
+		// Process each symbol in this chunk
+		for i := uint64(0); i < remaining; i++ {
+			sym := (*elf64Sym)(unsafe.Pointer(&elfReadBuf[i*uint64(elfSymSize)]))
+			if sym.Name == 0 || sym.Value == 0 {
+				continue
+			}
+
+			// Read symbol name from string table
+			nameOff := strtab.Offset + uint64(sym.Name)
+			nn, errCode := readFileAtRaw(fsys, file, nameOff, symNameBuf[:])
+			if errCode != fat32.ErrCodeSuccess || nn == 0 {
+				continue
+			}
+
+			// Check against wanted symbols
+			for w := 0; w < len(wantedSymbols); w++ {
+				if matchSymName(symNameBuf[:], wantedSymbols[w]) {
+					// Found it — store in kernel.Symbols
+					if kernel.NumSymbols < len(kernel.Symbols) {
+						ks := &kernel.Symbols[kernel.NumSymbols]
+						for j := 0; j < 64 && wantedSymbols[w][j] != 0; j++ {
+							ks.Name[j] = wantedSymbols[w][j]
+						}
+						ks.Value = sym.Value
+						kernel.NumSymbols++
+						found++
+
+						printString("ELF: found ")
+						printSymName(wantedSymbols[w][:])
+						printString(" = ")
+						printHex(sym.Value)
+						printString("\r\n")
+					}
+				}
+			}
+		}
+	}
+}
+
 // findInDirNoError finds a file in a directory without allocating error interfaces (for early boot).
 // Panics on failure instead of returning errors.
 func findInDirNoError(fs *fat32.FileSystem, cluster uint32, name string) *SimpleDirEntry {
@@ -862,28 +1033,139 @@ func LoadKernelNoError(fsys *fat32.FileSystem, path string) *LoadedKernel {
 	debugPortOut('d')
 
 	// Validate ELF
+	debugPortOut('V')
 	magic := *(*uint32)(unsafe.Pointer(&ehdr.Ident[0]))
 	if magic != elfMagic {
 		printString("ERROR: Not an ELF file\r\n")
 		for {}
 	}
+	debugPortOut('W')
 	if ehdr.Ident[4] != elfClass64 || ehdr.Ident[5] != elfDataLSB {
 		printString("ERROR: Not ELF64 LE\r\n")
 		for {}
 	}
+	debugPortOut('X')
 	if ehdr.Machine != elfMachineExpected {
 		printString("ERROR: Machine type mismatch\r\n")
 		for {}
 	}
+	debugPortOut('Y')
 
-	// Continue with rest of LoadKernel logic...
-	// For now, call the regular LoadKernel and ignore the error
-	kernel, err := LoadKernel(fsys, path)
-	if err != nil {
-		printString("ERROR: LoadKernel failed: ")
-		printString(err.Error())
-		printString("\r\n")
+	debugPortOut('P')
+	printString("ELF: entry=")
+	debugPortOut('Q')
+	printHex(ehdr.Entry)
+	debugPortOut('R')
+	printString(" phdrs=")
+	debugPortOut('S')
+	printHex(uint64(ehdr.Phnum))
+	debugPortOut('T')
+	printString("\r\n")
+	debugPortOut('U')
+
+	// Read program headers
+	if ehdr.Phnum > 32 {
+		printString("ERROR: Too many program headers\r\n")
 		for {}
 	}
-	return kernel
+	debugPortOut('f')
+	var phdrs [32]elf64Phdr
+	phdrBytes := int(ehdr.Phnum) * elfPhdrSize
+	n, errCode = readFileAtRaw(fsys, file, ehdr.Phoff, (*[32 * elfPhdrSize]byte)(unsafe.Pointer(&phdrs[0]))[:phdrBytes])
+	if errCode != fat32.ErrCodeSuccess || n < phdrBytes {
+		printString("ERROR: Failed to read program headers\r\n")
+		for {}
+	}
+
+	// Pass 1: Find virtual address range
+	debugPortOut('g')
+	lowestVirt := uint64(0xFFFFFFFFFFFFFFFF)
+	highestVirt := uint64(0)
+	for i := uint16(0); i < ehdr.Phnum; i++ {
+		ph := &phdrs[i]
+		if ph.Type != elfPTLoad || ph.Memsz == 0 {
+			continue
+		}
+		if ph.Vaddr < lowestVirt {
+			lowestVirt = ph.Vaddr
+		}
+		end := ph.Vaddr + ph.Memsz
+		if end > highestVirt {
+			highestVirt = end
+		}
+	}
+	if lowestVirt >= highestVirt {
+		printString("ERROR: No LOAD segments\r\n")
+		for {}
+	}
+
+	printString("ELF: virt=")
+	printHex(lowestVirt)
+	printString("-")
+	printHex(highestVirt)
+	printString("\r\n")
+
+	// Allocate physical memory (extra 2MB for alignment)
+	debugPortOut('h')
+	printString("ELF: allocating memory...\r\n")
+	allocSize := uint64(DefaultKernelMemSize) + Page2MBSize
+	physPages := allocSize / PageSize
+	rawPhys := allocatePhysPagesNoError(physPages)
+	// Align up to 2MB boundary for 2MB page table entries
+	physBase := (rawPhys + Page2MBSize - 1) &^ (Page2MBSize - 1)
+
+	// Zero the physical region
+	debugPortOut('i')
+	printString("ELF: zeroing ")
+	printHex(DefaultKernelMemSize)
+	printString(" @ ")
+	printHex(physBase)
+	printString("\r\n")
+	plat.ZeroMemory(physBase, DefaultKernelMemSize)
+
+	// Pass 2: Load segments
+	debugPortOut('j')
+	printString("ELF: loading segments\r\n")
+	for i := uint16(0); i < ehdr.Phnum; i++ {
+		ph := &phdrs[i]
+		if ph.Type != elfPTLoad || ph.Memsz == 0 {
+			continue
+		}
+		physDest := physBase + (ph.Vaddr - lowestVirt)
+		printString("  seg[")
+		printHex(uint64(i))
+		printString("] off=")
+		printHex(ph.Offset)
+		printString(" dest=")
+		printHex(physDest)
+		printString(" fsz=")
+		printHex(ph.Filesz)
+		printString(" msz=")
+		printHex(ph.Memsz)
+		printString("\r\n")
+		if ph.Filesz > 0 {
+			copySegmentToMemoryRaw(fsys, file, ph.Offset, physDest, ph.Filesz)
+			printString("  seg[")
+			printHex(uint64(i))
+			printString("] done\r\n")
+		}
+	}
+
+	debugPortOut('k')
+	result := dNew[LoadedKernel]()
+	if result == nil {
+		printString("ERROR: dNew[LoadedKernel] failed\r\n")
+		for {}
+	}
+	result.Entry = ehdr.Entry
+	result.LowestVirt = lowestVirt
+	result.HighestVirt = highestVirt
+	result.PhysBase = physBase
+
+	// Symbol extraction disabled for now (causes VirtIO timeout after many small reads)
+	// extractSymbolsNoError(fsys, file, &ehdr, result)
+	printString("(symbols skipped) ")
+
+	printString("Kernel loaded OK\r\n")
+	return result
 }
