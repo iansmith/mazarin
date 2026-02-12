@@ -43,6 +43,54 @@ var (
 	ErrClusterTooLarge = &FAT32Error{"cluster size exceeds buffer"}
 )
 
+// Error codes for *Raw methods (allocation-free error reporting)
+const (
+	ErrCodeSuccess         = 0  // No error
+	ErrCodeNotFAT32        = 1  // Not a FAT32 filesystem
+	ErrCodeInvalidBPB      = 2  // Invalid BPB
+	ErrCodeReadFailed      = 3  // Read failed
+	ErrCodeNotFound        = 4  // File not found
+	ErrCodeNotFile         = 5  // Not a file
+	ErrCodeInvalidPath     = 6  // Invalid path
+	ErrCodeEndOfFile       = 7  // End of file
+	ErrCodeBadCluster      = 8  // Bad cluster
+	ErrCodeInvalidSeek     = 9  // Invalid seek position
+	ErrCodeAllocFailed     = 10 // Allocation failed
+	ErrCodeClusterTooLarge = 11 // Cluster size exceeds buffer
+)
+
+// errorFromCode converts an error code to an error interface.
+func errorFromCode(code int) error {
+	switch code {
+	case ErrCodeSuccess:
+		return nil
+	case ErrCodeNotFAT32:
+		return ErrNotFAT32
+	case ErrCodeInvalidBPB:
+		return ErrInvalidBPB
+	case ErrCodeReadFailed:
+		return ErrReadFailed
+	case ErrCodeNotFound:
+		return ErrNotFound
+	case ErrCodeNotFile:
+		return ErrNotFile
+	case ErrCodeInvalidPath:
+		return ErrInvalidPath
+	case ErrCodeEndOfFile:
+		return ErrEndOfFile
+	case ErrCodeBadCluster:
+		return ErrBadCluster
+	case ErrCodeInvalidSeek:
+		return ErrInvalidSeek
+	case ErrCodeAllocFailed:
+		return ErrAllocFailed
+	case ErrCodeClusterTooLarge:
+		return ErrClusterTooLarge
+	default:
+		return ErrReadFailed // Generic fallback
+	}
+}
+
 // FileSystem represents a mounted FAT32 filesystem.
 // Use pointer receivers exclusively to avoid copies.
 type FileSystem struct {
@@ -227,31 +275,68 @@ func (fs *FileSystem) FATStartSector() uint64 {
 // ReadCluster reads an entire cluster into the buffer.
 // The buffer must be at least BytesPerCluster() bytes.
 func (fs *FileSystem) ReadCluster(cluster uint32, buf []byte) error {
+	_, errCode := fs.ReadClusterRaw(cluster, buf)
+	return errorFromCode(errCode)
+}
+
+// ReadClusterRaw reads a complete cluster without allocating error interfaces.
+// Returns (bytes_read, error_code) where error_code is 0 on success.
+func (fs *FileSystem) ReadClusterRaw(cluster uint32, buf []byte) (int, int) {
 	if uint32(len(buf)) < fs.bytesPerClus {
-		return ErrClusterTooLarge
+		return 0, ErrCodeClusterTooLarge
 	}
 
 	startSector := fs.ClusterToSector(cluster)
+	totalRead := 0
+
 	for i := uint8(0); i < fs.secPerClus; i++ {
 		offset := uint32(i) * 512
-		if err := fs.device.ReadBlock(startSector+uint64(i), buf[offset:offset+512]); err != nil {
-			return ErrReadFailed
+		var n, errCode int
+
+		if raw, ok := fs.device.(blockdev.BlockDeviceRaw); ok {
+			n, errCode = raw.ReadBlockRaw(startSector+uint64(i), buf[offset:offset+512])
+		} else {
+			if err := fs.device.ReadBlock(startSector+uint64(i), buf[offset:offset+512]); err != nil {
+				errCode = ErrCodeReadFailed
+			} else {
+				n = 512
+			}
 		}
+
+		if errCode != 0 {
+			return totalRead, ErrCodeReadFailed
+		}
+		totalRead += n
 	}
-	return nil
+	return totalRead, ErrCodeSuccess
 }
 
 // ReadFATEntry reads the FAT entry for the given cluster.
 // Returns the next cluster in the chain, or a special value (EOF, bad, etc).
 func (fs *FileSystem) ReadFATEntry(cluster uint32) (uint32, error) {
+	entry, errCode := fs.ReadFATEntryRaw(cluster)
+	return entry, errorFromCode(errCode)
+}
+
+// ReadFATEntryRaw reads a FAT entry without allocating error interfaces.
+// Returns (entry_value, error_code) where error_code is 0 on success.
+func (fs *FileSystem) ReadFATEntryRaw(cluster uint32) (uint32, int) {
 	// Each FAT32 entry is 4 bytes
 	fatOffset := cluster * 4
 	fatSector := fs.fatStartSec + uint64(fatOffset/512)
 	fatEntryOffset := fatOffset % 512
 
 	// Read the FAT sector into our buffer
-	if err := fs.device.ReadBlock(fatSector, fs.fatBuffer[:]); err != nil {
-		return 0, ErrReadFailed
+	var errCode int
+	if raw, ok := fs.device.(blockdev.BlockDeviceRaw); ok {
+		_, errCode = raw.ReadBlockRaw(fatSector, fs.fatBuffer[:])
+	} else {
+		if err := fs.device.ReadBlock(fatSector, fs.fatBuffer[:]); err != nil {
+			errCode = ErrCodeReadFailed
+		}
+	}
+	if errCode != 0 {
+		return 0, ErrCodeReadFailed
 	}
 
 	// Read 4-byte entry (little-endian), mask off high 4 bits
@@ -261,7 +346,7 @@ func (fs *FileSystem) ReadFATEntry(cluster uint32) (uint32, error) {
 		(uint32(fs.fatBuffer[fatEntryOffset+3]) << 24)
 	entry &= 0x0FFFFFFF // FAT32 uses only 28 bits
 
-	return entry, nil
+	return entry, ErrCodeSuccess
 }
 
 // IsEOF checks if a FAT entry indicates end of chain

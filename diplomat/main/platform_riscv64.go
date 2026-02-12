@@ -4,6 +4,8 @@
 
 package main
 
+import "mazzy/shared/fs/fat32"
+
 var defaultPlatform = PlatformOps{
 	PrintChar:            printCharRISCV,
 	DebugPortOut:         debugPortOut,
@@ -22,10 +24,10 @@ var defaultPlatform = PlatformOps{
 }
 
 var defaultBootSequence = BootSequence{
-	InitSpans:       InitSpansRISCV,     // RISC-V: parse FDT + init spans
-	GetBlockDevice:  GetBootDeviceRISCV,  // RISC-V uses VirtIO, not UEFI
+	InitSpans:       InitSpansRISCV,       // RISC-V: parse FDT + init spans
+	GetBlockDevice:  GetBootDeviceRISCV,    // RISC-V uses VirtIO, not UEFI
 	MountFilesystem: fat32Mount,
-	LoadKernel:      LoadKernel,
+	LoadKernel:      LoadKernelRISCVWrapper, // RISC-V: no-error version for early boot
 	MapKernel:       addKernelMappingToCurrentPT,
 	JumpToKernel:    func(entry uint64) { jumpToEntry(entry) },
 
@@ -172,16 +174,27 @@ func ReadBlockVirtIO(lba uint64, buf []byte) error {
 // Used for early boot on RISC-V to avoid allocation issues.
 // Panics/loops on error instead of returning.
 func ReadBlockVirtIONoError(lba uint64, buf []byte) {
+	debugPortOut('Z')
 	printString("DEBUG: ReadBlockVirtIONoError called for LBA ")
 	printHex(lba)
 	printString("\r\n")
 
 	// Call real VirtIO implementation
+	debugPortOut('Y')
 	readBlockVirtIO(lba, buf)
+	debugPortOut('X')
 }
 
 func init() {
 	// Initialize RISC-V-specific platform operations
 	plat.ReadBlockVirtIO = ReadBlockVirtIO
 	plat.ReadBlockVirtIONoError = ReadBlockVirtIONoError
+}
+
+// LoadKernelRISCVWrapper wraps LoadKernelNoError to match the BootSequence signature.
+// Used for RISC-V early boot to avoid error interface allocation.
+func LoadKernelRISCVWrapper(fs *fat32.FileSystem, path string) (*LoadedKernel, error) {
+	// Call no-error version (will panic on failure instead of returning error)
+	kernel := LoadKernelNoError(fs, path)
+	return kernel, nil
 }

@@ -296,22 +296,22 @@ var clusterMap [1024]uint32
 // buildClusterMap walks the FAT32 cluster chain once and stores all cluster
 // numbers, enabling O(1) random access to any part of the file.
 func buildClusterMap(fs *fat32.FileSystem, file *SimpleFile) {
+	debugPortOut('M')
 	bytesPerClus := uint64(fs.BytesPerCluster())
 	numClusters := (uint64(file.Size) + bytesPerClus - 1) / bytesPerClus
 	if numClusters > uint64(len(clusterMap)) {
 		return // file too large for our map
 	}
 
+	debugPortOut('L')
 	cluster := file.Cluster
 	for i := uint64(0); i < numClusters && cluster >= 2 && !fat32.IsEOF(cluster); i++ {
 		clusterMap[i] = cluster
 		file.MapLen = uint32(i + 1)
-		next, err := fs.ReadFATEntry(cluster)
-		if err != nil {
-			return
-		}
-		cluster = next
+		// Use readFATEntryDirectNoError to avoid error interface allocation
+		cluster = readFATEntryDirectNoError(fs, cluster)
 	}
+	debugPortOut('N')
 	file.HasMap = true
 }
 
@@ -434,6 +434,80 @@ func readFileAt(fs *fat32.FileSystem, file *SimpleFile, offset uint64, buf []byt
 	}
 
 	return totalRead, nil
+}
+
+// readFileAtRaw reads from a file at a given offset without allocating error interfaces.
+// Returns (bytes_read, error_code) where error_code is 0 on success.
+func readFileAtRaw(fs *fat32.FileSystem, file *SimpleFile, offset uint64, buf []byte) (int, int) {
+	if offset >= uint64(file.Size) {
+		return 0, fat32.ErrCodeSuccess
+	}
+
+	bytesPerClus := uint64(fs.BytesPerCluster())
+	clusterIdx := offset / bytesPerClus
+
+	var cluster uint32
+	if file.HasMap && uint32(clusterIdx) < file.MapLen {
+		// O(1) indexed access via cached cluster map
+		cluster = clusterMap[clusterIdx]
+	} else {
+		// Fallback: walk the chain from the beginning
+		cluster = file.Cluster
+		for i := uint64(0); i < clusterIdx; i++ {
+			next, errCode := fs.ReadFATEntryRaw(cluster)
+			if errCode != fat32.ErrCodeSuccess {
+				return 0, errCode
+			}
+			if fat32.IsEOF(next) {
+				return 0, fat32.ErrCodeSuccess
+			}
+			cluster = next
+		}
+	}
+
+	// Read data
+	inClusterOffset := offset % bytesPerClus
+	totalRead := 0
+	remaining := len(buf)
+
+	for remaining > 0 && cluster >= 2 && !fat32.IsEOF(cluster) {
+		// Read cluster into temp buffer
+		_, errCode := fs.ReadClusterRaw(cluster, dirClusterBuf[:bytesPerClus])
+		if errCode != fat32.ErrCodeSuccess {
+			return totalRead, errCode
+		}
+
+		// Copy from cluster to output buffer
+		toCopy := int(bytesPerClus - inClusterOffset)
+		if toCopy > remaining {
+			toCopy = remaining
+		}
+		if uint64(totalRead)+uint64(toCopy) > uint64(file.Size)-offset {
+			toCopy = int(uint64(file.Size) - offset - uint64(totalRead))
+		}
+		if toCopy <= 0 {
+			break
+		}
+
+		copy(buf[totalRead:], dirClusterBuf[inClusterOffset:inClusterOffset+uint64(toCopy)])
+		totalRead += toCopy
+		remaining -= toCopy
+		inClusterOffset = 0
+		clusterIdx++
+
+		// Next cluster
+		if file.HasMap && uint32(clusterIdx) < file.MapLen {
+			cluster = clusterMap[clusterIdx]
+		} else {
+			next, errCode := fs.ReadFATEntryRaw(cluster)
+			if errCode != fat32.ErrCodeSuccess {
+				return totalRead, errCode
+			}
+			cluster = next
+		}
+	}
+
+	return totalRead, fat32.ErrCodeSuccess
 }
 
 // copySegmentToMemory copies file data to a memory address
@@ -669,4 +743,147 @@ func printSymName(name []byte) {
 		}
 		printChar(uint16(b))
 	}
+}
+
+// findInDirNoError finds a file in a directory without allocating error interfaces (for early boot).
+// Panics on failure instead of returning errors.
+func findInDirNoError(fs *fat32.FileSystem, cluster uint32, name string) *SimpleDirEntry {
+	debugPortOut('1')
+	var found *SimpleDirEntry
+
+	debugPortOut('2')
+	WalkDirNoError(fs, cluster, func(e *SimpleDirEntry) bool {
+		debugPortOut('3')
+		// Compare names (case-insensitive)
+		if matchName(e, name) {
+			// Use bump allocator - Go heap allocation crashes in UEFI
+			found = dNew[SimpleDirEntry]()
+			if found == nil {
+				printString("ERROR: dNew[SimpleDirEntry] failed\r\n")
+				for {}
+			}
+			*found = *e
+			return false // stop walking
+		}
+		return true
+	})
+
+	if found == nil {
+		printString("ERROR: File not found: ")
+		printString(name)
+		printString("\r\n")
+		for {}
+	}
+	return found
+}
+
+// findFileNoError finds a file without allocating error interfaces (for early boot).
+// Panics on failure instead of returning errors.
+func findFileNoError(fs *fat32.FileSystem, path string) *SimpleFile {
+	// Start at root
+	cluster := fs.RootCluster()
+
+	// RISC-V minimal disk has kmazarin-riscv64.elf in root directory
+	// With LFN support, we can search for the full filename
+	// Try root first, then fall back to /EFI/Linux/ path
+	printString("Finding kmazarin-riscv64.elf in root...\r\n")
+	entry := findInDirNoError(fs, cluster, "kmazarin-riscv64.elf")
+
+	if entry == nil {
+		// Not in root, try /EFI/Linux/ path
+		printString("Not in root, trying /EFI/Linux/...\r\n")
+
+		// Find EFI directory
+		entry = findInDirNoError(fs, cluster, "EFI")
+		if entry == nil {
+			printString("ERROR: EFI directory not found\r\n")
+			for {}
+		}
+		if !entry.IsDir {
+			printString("ERROR: EFI is not a directory\r\n")
+			for {}
+		}
+		cluster = entry.Cluster
+
+		// Find Linux directory
+		entry = findInDirNoError(fs, cluster, "LINUX")
+		if entry == nil {
+			printString("ERROR: LINUX directory not found\r\n")
+			for {}
+		}
+		if !entry.IsDir {
+			printString("ERROR: LINUX is not a directory\r\n")
+			for {}
+		}
+		cluster = entry.Cluster
+
+		// Find kmazarin.elf
+		entry = findInDirNoError(fs, cluster, "KMAZARIN.ELF")
+		if entry == nil {
+			printString("ERROR: KMAZARIN.ELF not found in /EFI/Linux/\r\n")
+			for {}
+		}
+	}
+
+	printString("Found KMAZARIN.ELF\r\n")
+
+	// Use bump allocator - Go heap allocation crashes in UEFI
+	sf := dNew[SimpleFile]()
+	if sf == nil {
+		printString("ERROR: dNew[SimpleFile] failed\r\n")
+		for {}
+	}
+	sf.Cluster = entry.Cluster
+	sf.Size = entry.Size
+	return sf
+}
+
+// LoadKernelNoError loads kernel without allocating error interfaces (for RISC-V early boot).
+// Panics on failure instead of returning errors.
+func LoadKernelNoError(fsys *fat32.FileSystem, path string) *LoadedKernel {
+	debugPortOut('a')
+	file := findFileNoError(fsys, path)
+	debugPortOut('b')
+	printString("Kernel file found\r\n")
+
+	debugPortOut('c')
+	// Build cluster map for O(1) random access (critical for symbol table scanning)
+	buildClusterMap(fsys, file)
+	debugPortOut('C')
+
+	// Read ELF header
+	debugPortOut('e')
+	var ehdr elf64Ehdr
+	n, errCode := readFileAtRaw(fsys, file, 0, (*[elfEhdrSize]byte)(unsafe.Pointer(&ehdr))[:])
+	if errCode != fat32.ErrCodeSuccess || n < elfEhdrSize {
+		printString("ERROR: Failed to read ELF header\r\n")
+		for {}
+	}
+	debugPortOut('d')
+
+	// Validate ELF
+	magic := *(*uint32)(unsafe.Pointer(&ehdr.Ident[0]))
+	if magic != elfMagic {
+		printString("ERROR: Not an ELF file\r\n")
+		for {}
+	}
+	if ehdr.Ident[4] != elfClass64 || ehdr.Ident[5] != elfDataLSB {
+		printString("ERROR: Not ELF64 LE\r\n")
+		for {}
+	}
+	if ehdr.Machine != elfMachineExpected {
+		printString("ERROR: Machine type mismatch\r\n")
+		for {}
+	}
+
+	// Continue with rest of LoadKernel logic...
+	// For now, call the regular LoadKernel and ignore the error
+	kernel, err := LoadKernel(fsys, path)
+	if err != nil {
+		printString("ERROR: LoadKernel failed: ")
+		printString(err.Error())
+		printString("\r\n")
+		for {}
+	}
+	return kernel
 }

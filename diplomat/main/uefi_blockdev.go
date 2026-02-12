@@ -47,8 +47,9 @@ type UEFIBlockDevice struct {
 // globalBlockDev avoids heap allocation in UEFI environment
 var globalBlockDev UEFIBlockDevice
 
-// Ensure UEFIBlockDevice implements blockdev.BlockDevice
+// Ensure UEFIBlockDevice implements blockdev.BlockDevice and blockdev.BlockDeviceRaw
 var _ blockdev.BlockDevice = (*UEFIBlockDevice)(nil)
+var _ blockdev.BlockDeviceRaw = (*UEFIBlockDevice)(nil)
 
 // NewUEFIBlockDevice creates a new block device wrapper from a UEFI Block I/O protocol
 func NewUEFIBlockDevice(protocol uintptr) (*UEFIBlockDevice, error) {
@@ -144,6 +145,45 @@ func (d *UEFIBlockDevice) WriteBlock(lba uint64, buf []byte) error {
 		return &errWriteBlocksFailed
 	}
 	return nil
+}
+
+// ReadBlockRaw reads a single block without allocating error interfaces.
+// Returns (bytes_read, error_code) where error_code is 0 on success.
+func (d *UEFIBlockDevice) ReadBlockRaw(lba uint64, buf []byte) (int, int) {
+	if uint64(len(buf)) < d.blockSize {
+		return 0, blockdev.ErrCodeBufferTooSmall
+	}
+
+	// On RISC-V (no UEFI), use VirtIO MMIO directly
+	if d.protocol == 0 {
+		readBlockVirtIO(lba, buf) // Direct call, no error return
+		return int(d.blockSize), blockdev.ErrCodeSuccess
+	}
+
+	// UEFI path - call existing ReadBlock and convert error
+	if err := d.ReadBlock(lba, buf); err != nil {
+		return 0, blockdev.ErrCodeIO
+	}
+	return int(d.blockSize), blockdev.ErrCodeSuccess
+}
+
+// WriteBlockRaw writes a single block without allocating error interfaces.
+// Returns (bytes_written, error_code) where error_code is 0 on success.
+func (d *UEFIBlockDevice) WriteBlockRaw(lba uint64, buf []byte) (int, int) {
+	if uint64(len(buf)) < d.blockSize {
+		return 0, blockdev.ErrCodeBufferTooSmall
+	}
+
+	// On RISC-V (no UEFI), VirtIO write not yet implemented
+	if d.protocol == 0 {
+		return 0, blockdev.ErrCodeIO // TODO: Implement writeBlockVirtIO
+	}
+
+	// UEFI path - call existing WriteBlock and convert error
+	if err := d.WriteBlock(lba, buf); err != nil {
+		return 0, blockdev.ErrCodeIO
+	}
+	return int(d.blockSize), blockdev.ErrCodeSuccess
 }
 
 // BlockSize returns the block size in bytes
