@@ -69,3 +69,13 @@ func defaultHandleProtocol(handle, protocol, iface uintptr) EFI_STATUS {
 	}
 	return uefiHandleProtocol(handle, protocol, iface, systemTable.BootServices.HandleProtocol)
 }
+
+// ReadBlockVirtIO stub - AMD64 uses UEFI BlockIO, not VirtIO MMIO
+func readBlockVirtIOStub(lba uint64, buf []byte) error {
+	panic("ReadBlockVirtIO called on AMD64 - should use UEFI BlockIO")
+}
+
+func init() {
+	// Initialize AMD64-specific platform operations
+	plat.ReadBlockVirtIO = readBlockVirtIOStub
+}

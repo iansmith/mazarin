@@ -91,6 +91,11 @@ func (d *UEFIBlockDevice) ReadBlock(lba uint64, buf []byte) error {
 		return &errBufferTooSmall
 	}
 
+	// On RISC-V (no UEFI), use VirtIO MMIO directly
+	if d.protocol == 0 {
+		return plat.ReadBlockVirtIO(lba, buf)
+	}
+
 	// Get ReadBlocks function pointer
 	readBlocks := *(*uintptr)(unsafe.Pointer(d.protocol + BlockIOReadBlocks))
 	if readBlocks == 0 {

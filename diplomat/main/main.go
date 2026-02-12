@@ -268,15 +268,10 @@ func DiplomatEntry() {
 	// Mount FAT32 filesystem
 	plat.DebugPortOut('M')
 	printString("Mounting FAT32...\r\n")
-	fs, err := boot.MountFilesystem(blockDev)
-	plat.DebugPortOut('N')
-	if err != nil {
-		printString("ERROR: FAT32 mount: ")
-		printString(err.Error())
-		printString("\r\n")
-		for {
-		}
-	}
+	// RISC-V workaround: Call fat32MountOrDie which handles errors internally
+	// to avoid error interface allocation issues during early boot
+	plat.DebugPortOut('X')
+	fs := fat32MountOrDie(blockDev)
 	plat.DebugPortOut('O')
 	printString("FAT32 mounted OK\r\n")
 
@@ -478,11 +473,79 @@ func diplomatAllocator(size uintptr) unsafe.Pointer {
 	return dMalloc(size)
 }
 
+// Global FileSystem for RISC-V to avoid local allocation
+var globalFS fat32.FileSystem
+
+// Global buffer for boot sector read (to avoid touching FileSystem during read)
+var bootSectorBuf [512]byte
+
 // fat32Mount mounts FAT32 using diplomat's bump allocator (no Go runtime heap)
 //
 //go:noinline
 func fat32Mount(dev blockdev.BlockDevice) (*fat32.FileSystem, error) {
+	plat.DebugPortOut('Z') // entered fat32Mount
 	return fat32.MountWith(dev, diplomatAllocator)
+}
+
+// fat32MountOrDie is a RISC-V-specific wrapper that avoids error interface returns.
+// On RISC-V, error interface conversions trigger heap allocation which fails during
+// early boot. This function inlines the mount logic and halts on error instead
+// of returning an error interface.
+//
+//go:noinline
+func fat32MountOrDie(dev blockdev.BlockDevice) *fat32.FileSystem {
+	plat.DebugPortOut('1') // entered fat32MountOrDie
+
+	// Zero the global FS
+	globalFS = fat32.FileSystem{}
+	plat.DebugPortOut('2') // zeroed global
+
+	// Set allocator
+	globalFS.SetAlloc(diplomatAllocator)
+	plat.DebugPortOut('3') // set allocator
+
+	// Initialize in place - we inline the init logic to avoid error interfaces
+	// Check block size
+	if dev.BlockSize() != 512 {
+		printString("ERROR: Only 512-byte sectors supported\r\n")
+		for {
+		}
+	}
+	plat.DebugPortOut('4') // block size OK
+
+	// Read boot sector into separate buffer (avoid touching FileSystem during read)
+	plat.DebugPortOut('5') // about to read boot sector
+
+	// Call ReadBlockVirtIONoError directly - avoid accessing plat struct!
+	ReadBlockVirtIONoError(0, bootSectorBuf[:])
+	plat.DebugPortOut('6') // read completed
+
+	// Check boot signature
+	if bootSectorBuf[510] != 0x55 || bootSectorBuf[511] != 0xAA {
+		printString("ERROR: Invalid boot signature\r\n")
+		for {
+		}
+	}
+	plat.DebugPortOut('7') // signature OK
+
+	// Copy boot sector to FileSystem buffer
+	fat32.CopyBootSector(&globalFS, &bootSectorBuf)
+	plat.DebugPortOut('8') // copied to FS
+
+	// Set device
+	globalFS.SetDevice(dev)
+	plat.DebugPortOut('9') // device set
+
+	// Parse and validate BPB using standalone function
+	if !fat32.ParseBPBStandalone(&globalFS) {
+		printString("ERROR: Invalid FAT32 BPB\r\n")
+		for {
+		}
+	}
+	plat.DebugPortOut('A') // BPB parsed
+
+	plat.DebugPortOut('B') // returning
+	return &globalFS
 }
 
 // printHex prints a uint64 as hex

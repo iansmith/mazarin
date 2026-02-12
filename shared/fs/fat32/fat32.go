@@ -69,12 +69,16 @@ type FileSystem struct {
 // For environments without Go heap (diplomat, cardinal), pass a
 // bump allocator or similar. For normal Go programs, use Mount().
 func MountWith(device blockdev.BlockDevice, alloc Allocator) (*FileSystem, error) {
+	debugOut('A') // entered MountWith
 	if alloc == nil {
 		return nil, &FAT32Error{"allocator cannot be nil"}
 	}
+	debugOut('B') // alloc not nil
 
 	// Allocate FileSystem using the provided allocator
+	debugOut('C') // before allocType
 	fs := allocType[FileSystem](alloc)
+	debugOut('D') // after allocType
 	if fs == nil {
 		return nil, ErrAllocFailed
 	}
@@ -268,4 +272,200 @@ func IsEOF(entry uint32) bool {
 // IsBad checks if a FAT entry indicates a bad cluster
 func IsBad(entry uint32) bool {
 	return entry == FAT32ClusterBad
+}
+
+// ============================================================================
+// RISC-V Early Boot Helpers (no error interface returns)
+// ============================================================================
+
+// SetAlloc sets the allocator for the filesystem.
+func (fs *FileSystem) SetAlloc(alloc Allocator) {
+	fs.alloc = alloc
+}
+
+// SetDevice sets the block device for the filesystem.
+func (fs *FileSystem) SetDevice(dev blockdev.BlockDevice) {
+	fs.device = dev
+}
+
+// FATBuffer returns a pointer to the internal FAT buffer.
+// Used for RISC-V early boot to avoid method calls.
+func (fs *FileSystem) FATBuffer() *[512]byte {
+	return &fs.fatBuffer
+}
+
+// CopyBootSector copies a boot sector buffer into the FileSystem's internal buffer.
+// Used for RISC-V early boot to avoid method calls during ReadBlock.
+func CopyBootSector(fs *FileSystem, buf *[512]byte) {
+	copy(fs.fatBuffer[:], buf[:])
+}
+
+// ReadBootSector reads the boot sector into the internal buffer.
+// Returns false on error (use for early boot to avoid error interfaces).
+func (fs *FileSystem) ReadBootSector() bool {
+	debugOut('B') // ReadBootSector entered
+	if fs.device == nil {
+		return false
+	}
+
+	debugOut('C') // about to read block
+
+	// Try to read boot sector - use blank identifier to avoid capturing error
+	// This MIGHT still trigger allocation, but let's try it
+	_ = fs.device.ReadBlock(0, fs.fatBuffer[:])
+
+	debugOut('D') // read completed
+
+	// Check boot signature to verify read succeeded
+	if fs.fatBuffer[510] != 0x55 || fs.fatBuffer[511] != 0xAA {
+		return false
+	}
+
+	debugOut('E') // signature OK
+	return true
+}
+
+// ParseBPBStandalone is a standalone function that parses the BPB without method calls.
+// Used for RISC-V early boot to avoid allocation issues.
+// Returns false on error.
+func ParseBPBStandalone(fs *FileSystem) bool {
+	debugOut('P') // ParseBPB entered
+
+	// Parse BPB (BIOS Parameter Block)
+	fs.bytesPerSec = uint16(fs.fatBuffer[11]) | (uint16(fs.fatBuffer[12]) << 8)
+	fs.secPerClus = fs.fatBuffer[13]
+	fs.rsvdSecCnt = uint16(fs.fatBuffer[14]) | (uint16(fs.fatBuffer[15]) << 8)
+	fs.numFATs = fs.fatBuffer[16]
+
+	debugOut('Q') // parsed basic fields
+
+	// Check for FAT32 (rootEntCnt must be 0 for FAT32)
+	rootEntCnt := uint16(fs.fatBuffer[17]) | (uint16(fs.fatBuffer[18]) << 8)
+	if rootEntCnt != 0 {
+		return false // Not FAT32
+	}
+
+	debugOut('R') // FAT32 check OK
+
+	// Total sectors (16-bit or 32-bit)
+	totSec16 := uint16(fs.fatBuffer[19]) | (uint16(fs.fatBuffer[20]) << 8)
+	if totSec16 != 0 {
+		fs.totalSectors = uint32(totSec16)
+	} else {
+		fs.totalSectors = uint32(fs.fatBuffer[32]) |
+			(uint32(fs.fatBuffer[33]) << 8) |
+			(uint32(fs.fatBuffer[34]) << 16) |
+			(uint32(fs.fatBuffer[35]) << 24)
+	}
+
+	debugOut('S') // total sectors parsed
+
+	// FAT32 specific fields (offset 36+)
+	fs.fatSize32 = uint32(fs.fatBuffer[36]) |
+		(uint32(fs.fatBuffer[37]) << 8) |
+		(uint32(fs.fatBuffer[38]) << 16) |
+		(uint32(fs.fatBuffer[39]) << 24)
+
+	fs.rootCluster = uint32(fs.fatBuffer[44]) |
+		(uint32(fs.fatBuffer[45]) << 8) |
+		(uint32(fs.fatBuffer[46]) << 16) |
+		(uint32(fs.fatBuffer[47]) << 24)
+
+	debugOut('T') // FAT32 fields parsed
+
+	// Validate
+	if fs.bytesPerSec != 512 {
+		return false
+	}
+	if fs.secPerClus == 0 || (fs.secPerClus&(fs.secPerClus-1)) != 0 {
+		return false // Must be power of 2
+	}
+	if fs.numFATs == 0 {
+		return false
+	}
+	if fs.fatSize32 == 0 {
+		return false
+	}
+
+	debugOut('U') // validation OK
+
+	// Calculate derived values
+	fs.fatStartSec = uint64(fs.rsvdSecCnt)
+	fs.dataStartSec = fs.fatStartSec + uint64(fs.numFATs)*uint64(fs.fatSize32)
+	fs.bytesPerClus = uint32(fs.secPerClus) * uint32(fs.bytesPerSec)
+
+	debugOut('V') // calculations complete
+	return true
+}
+
+// ParseBPB parses and validates the BIOS Parameter Block.
+// Returns false on error (use for early boot to avoid error interfaces).
+func (fs *FileSystem) ParseBPB() bool {
+	debugOut('P') // ParseBPB entered
+
+	// Parse BPB (BIOS Parameter Block)
+	fs.bytesPerSec = uint16(fs.fatBuffer[11]) | (uint16(fs.fatBuffer[12]) << 8)
+	fs.secPerClus = fs.fatBuffer[13]
+	fs.rsvdSecCnt = uint16(fs.fatBuffer[14]) | (uint16(fs.fatBuffer[15]) << 8)
+	fs.numFATs = fs.fatBuffer[16]
+
+	debugOut('Q') // parsed basic fields
+
+	// Check for FAT32 (rootEntCnt must be 0 for FAT32)
+	rootEntCnt := uint16(fs.fatBuffer[17]) | (uint16(fs.fatBuffer[18]) << 8)
+	if rootEntCnt != 0 {
+		return false // Not FAT32
+	}
+
+	debugOut('R') // FAT32 check OK
+
+	// Total sectors (16-bit or 32-bit)
+	totSec16 := uint16(fs.fatBuffer[19]) | (uint16(fs.fatBuffer[20]) << 8)
+	if totSec16 != 0 {
+		fs.totalSectors = uint32(totSec16)
+	} else {
+		fs.totalSectors = uint32(fs.fatBuffer[32]) |
+			(uint32(fs.fatBuffer[33]) << 8) |
+			(uint32(fs.fatBuffer[34]) << 16) |
+			(uint32(fs.fatBuffer[35]) << 24)
+	}
+
+	debugOut('S') // total sectors parsed
+
+	// FAT32 specific fields (offset 36+)
+	fs.fatSize32 = uint32(fs.fatBuffer[36]) |
+		(uint32(fs.fatBuffer[37]) << 8) |
+		(uint32(fs.fatBuffer[38]) << 16) |
+		(uint32(fs.fatBuffer[39]) << 24)
+
+	fs.rootCluster = uint32(fs.fatBuffer[44]) |
+		(uint32(fs.fatBuffer[45]) << 8) |
+		(uint32(fs.fatBuffer[46]) << 16) |
+		(uint32(fs.fatBuffer[47]) << 24)
+
+	debugOut('T') // FAT32 fields parsed
+
+	// Validate
+	if fs.bytesPerSec != 512 {
+		return false
+	}
+	if fs.secPerClus == 0 || (fs.secPerClus&(fs.secPerClus-1)) != 0 {
+		return false // Must be power of 2
+	}
+	if fs.numFATs == 0 {
+		return false
+	}
+	if fs.fatSize32 == 0 {
+		return false
+	}
+
+	debugOut('U') // validation OK
+
+	// Calculate derived values
+	fs.fatStartSec = uint64(fs.rsvdSecCnt)
+	fs.dataStartSec = fs.fatStartSec + uint64(fs.numFATs)*uint64(fs.fatSize32)
+	fs.bytesPerClus = uint32(fs.secPerClus) * uint32(fs.bytesPerSec)
+
+	debugOut('V') // calculations complete
+	return true
 }

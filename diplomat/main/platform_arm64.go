@@ -101,3 +101,13 @@ func uefiBlockIORead(protocol uintptr, mediaId uint32, lba, bufferSize uint64, b
 
 //go:noescape
 func uefiBlockIOWrite(protocol uintptr, mediaId uint32, lba, bufferSize uint64, buffer uintptr) EFI_STATUS
+
+// ReadBlockVirtIO stub - ARM64 uses UEFI BlockIO, not VirtIO MMIO  
+func readBlockVirtIOStub(lba uint64, buf []byte) error {
+	panic("ReadBlockVirtIO called on ARM64 - should use UEFI BlockIO")
+}
+
+func init() {
+	// Initialize ARM64-specific platform operations  
+	plat.ReadBlockVirtIO = readBlockVirtIOStub
+}

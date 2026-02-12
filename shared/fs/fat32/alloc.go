@@ -37,9 +37,13 @@ func DefaultAllocator() Allocator {
 // allocType allocates space for a value of type T using the given allocator.
 // Returns nil if allocation fails.
 func allocType[T any](alloc Allocator) *T {
+	debugOut('E') // entered allocType
 	var zero T
+	debugOut('F') // created zero value
 	size := unsafe.Sizeof(zero)
+	debugOut('G') // got size
 	ptr := alloc(size)
+	debugOut('H') // allocator returned
 	if ptr == nil {
 		return nil
 	}

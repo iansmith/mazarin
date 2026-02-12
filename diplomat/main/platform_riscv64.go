@@ -149,3 +149,43 @@ func printCharRISCV(c uint16) {
 		printCharDirect(c)
 	}
 }
+
+// ReadBlockVirtIO reads a block from VirtIO MMIO device (RISC-V specific)
+//
+//go:nosplit
+func ReadBlockVirtIO(lba uint64, buf []byte) error {
+	// TODO: Implement actual VirtIO virtqueue I/O
+	// For now, return a stub error to see if we get called
+	printString("DEBUG: ReadBlockVirtIO called for LBA ")
+	printHex(lba)
+	printString("\r\n")
+
+	// Stub: fill with zeros for now
+	for i := range buf {
+		buf[i] = 0
+	}
+
+	return nil
+}
+
+// ReadBlockVirtIONoError reads a block without returning an error interface.
+// Used for early boot on RISC-V to avoid allocation issues.
+// Panics/loops on error instead of returning.
+//
+//go:nosplit
+func ReadBlockVirtIONoError(lba uint64, buf []byte) {
+	printString("DEBUG: ReadBlockVirtIONoError called for LBA ")
+	printHex(lba)
+	printString("\r\n")
+
+	// Stub: fill with zeros for now
+	for i := range buf {
+		buf[i] = 0
+	}
+}
+
+func init() {
+	// Initialize RISC-V-specific platform operations
+	plat.ReadBlockVirtIO = ReadBlockVirtIO
+	plat.ReadBlockVirtIONoError = ReadBlockVirtIONoError
+}

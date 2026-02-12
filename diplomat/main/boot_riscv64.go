@@ -313,3 +313,25 @@ func virtioMMIOHandshake(base uintptr) bool {
 
 // TODO: Implement VirtIO virtqueue setup and block I/O operations
 // This will be needed for Tasks #3-4 (FAT32 mount and kmazarin loading)
+
+// ============================================================================
+// RISC-V FAT32 Mount (No Error Interface)
+// ============================================================================
+
+// fat32MountRISCV is a RISC-V-specific wrapper that avoids error interface returns.
+// Error interfaces trigger heap allocation during the interface conversion, which
+// fails during early boot before the runtime is fully initialized.
+//
+// Instead of returning an error, this function handles errors directly by printing
+// and halting.
+//
+//go:noinline
+//go:nosplit
+func fat32MountRISCV(dev interface{}) uintptr {
+	plat.DebugPortOut('X') // entered fat32MountRISCV
+	// Cast dev to blockdev.BlockDevice
+	// We pass it as interface{} to avoid interface conversion in the call
+	// TODO: Call fat32.MountWith directly here
+	plat.DebugPortOut('Y') // exiting
+	return 0 // placeholder
+}

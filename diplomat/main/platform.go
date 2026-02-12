@@ -48,6 +48,10 @@ type PlatformOps struct {
 	// Block I/O
 	BlockIORead  func(protocol uintptr, mediaId uint32, lba, bufferSize uint64, buffer, funcPtr uintptr) EFI_STATUS
 	BlockIOWrite func(protocol uintptr, mediaId uint32, lba, bufferSize uint64, buffer, funcPtr uintptr) EFI_STATUS
+
+	// VirtIO MMIO block I/O (RISC-V bare-metal only)
+	ReadBlockVirtIO       func(lba uint64, buf []byte) error
+	ReadBlockVirtIONoError func(lba uint64, buf []byte) // No error return - for early boot
 }
 
 // BootSequence contains the high-level boot steps.
