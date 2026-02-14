@@ -26,3 +26,10 @@ func RearmTimerNow()
 //
 //go:nosplit
 func DisableTimerHardware()
+
+// DumpInstructionPageFaultAsm is the ABI0 entry point for instruction page fault diagnostics.
+// Called from exception handler when an instruction page fault occurs on a pre-mapped code page.
+// Walks the Sv48 page table and prints each level's PTE to identify the corruption.
+//
+//go:nosplit
+func DumpInstructionPageFaultAsm(faultAddr uint64)

@@ -3,8 +3,10 @@ package pci
 import "mazzy/kmazarin/asm"
 
 // pciEcamBase is the PCI ECAM base address for RISC-V.
-// QEMU virt machine: 0x30000000
-var pciEcamBase uintptr = 0x30000000
+// QEMU virt machine: PA 0x30000000 → VA 0xFFFFFFFF30000000 (linear map).
+// Diplomat sets up SATP with linear map before jumping to kmazarin,
+// so we always use the linear-mapped VA for CPU MMIO access.
+var pciEcamBase uintptr = 0xFFFFFFFF30000000
 
 // PCI_MMIO_BASE is the PCI MMIO window for BAR reprogramming on RISC-V.
 // On QEMU virt, 0x40000000 is the PCI MMIO aperture.

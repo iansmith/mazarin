@@ -16,16 +16,14 @@ func unmapCardinal() {
 }
 
 // EarlyInit initializes the early console and thread management for RISC-V.
-// Uses NS16550 UART at 0x10000000 (QEMU virt machine).
+// Uses NS16550 UART at VA 0xFFFFFFFF10000000 (QEMU virt machine, linear map).
 //
-// CRITICAL: When booting directly (not via diplomat), OpenSBI loads us with
-// SATP=0 (bare mode, no paging). We must use physical addresses until page
-// tables are set up. The UART is at physical address 0x10000000.
+// Diplomat sets up SATP with the linear map before jumping to kmazarin,
+// so we always use the linear-mapped VA, not the physical address.
 func EarlyInit() {
 	// Set up early console using NS16550 UART (MMIO-based)
-	// Use physical address (0x10000000) since paging is not enabled yet.
-	// OpenSBI's PMP allows S-mode access to this range.
-	const uartBase = uintptr(0x10000000)
+	// Use linear-mapped VA (diplomat enables SATP before jumping to us).
+	const uartBase = uintptr(0xFFFFFFFF10000000)
 	earlyConsole := console.NewMMIOUartConsole(uartBase)
 	console.Set(earlyConsole)
 

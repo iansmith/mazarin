@@ -10,4 +10,7 @@ const (
 	KernelHeapStart = 0xFFFF800100000000
 	KernelHeapEnd   = 0xFFFF900000000000 // 1TB range
 	KernelHeapSize  = KernelHeapEnd - KernelHeapStart
+
+	// COM1 serial port - ISA I/O port 0x3F8, MMIO mapped
+	KernelUartBase = KernelMMIOOffset + 0x3F8
 )

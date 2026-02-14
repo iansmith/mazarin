@@ -54,6 +54,15 @@ func timerIRQHandlerInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64)
 	return info.NewELR, info.NewSP, info.NewLR, info.DoPreempt
 }
 
+// dumpInstructionPageFaultInternal is the Go wrapper for DumpInstructionPageFaultAsm.
+// Called from the instruction page fault handler to walk and dump the PTE chain.
+//
+//go:nosplit
+//go:noinline
+func dumpInstructionPageFaultInternal(faultAddr uint64) {
+	kmem.DumpInstructionPageFault(uintptr(faultAddr))
+}
+
 // HandlePageFaultAsm is defined in abi_stubs_arm64.s as an ABI0 entry point
 // that tail-calls handlePageFaultInternal. This is the actual implementation.
 // Returns 1 if the fault was handled successfully, 0 otherwise.
@@ -367,16 +376,20 @@ func initCachedIC() {
 	}
 }
 
-// EnableTimerIRQ enables the timer IRQ using the cached interrupt controller.
+// EnableTimerIRQ enables the timer IRQ.
+// On RISC-V, the timer is controlled directly via SIE CSR (STIE bit),
+// so it works without an interrupt controller. On ARM64/x86, the timer
+// also needs to be enabled at the interrupt controller (GIC/APIC).
 func EnableTimerIRQ() {
+	// CRITICAL: Rearm timer BEFORE enabling the IRQ at the controller.
+	// On ARM64, IRQ 27 is edge-triggered. If the timer line is already
+	// asserted (ISTATUS=1 from a previous expiration) when we enable
+	// the controller, there's no rising edge and the interrupt never fires.
+	// Rearming first clears the pending state, then after the enable,
+	// the next expiration creates a proper edge.
+	// On RISC-V, PlatformRearmTimer also sets the STIE bit in SIE.
+	ktimer.Rearm(kirq.GetTimerTicksFor10ms())
 	if cachedIC != nil {
-		// CRITICAL: Rearm timer BEFORE enabling the IRQ at the controller.
-		// On ARM64, IRQ 27 is edge-triggered. If the timer line is already
-		// asserted (ISTATUS=1 from a previous expiration) when we enable
-		// the controller, there's no rising edge and the interrupt never fires.
-		// Rearming first clears the pending state, then after the enable,
-		// the next expiration creates a proper edge.
-		ktimer.Rearm(kirq.GetTimerTicksFor10ms())
 		cachedIC.EnableIRQ(ktimer.IRQNum())
 	}
 }
@@ -396,8 +409,9 @@ func testDeviceDiscovery() {
 		return
 	}
 
-	// Use physical address - DTB is in low memory which is still mapped
-	dtbAddr := uintptr(dtbPhysAddr)
+	// Convert physical to virtual address (arch-specific: identity on ARM64/x86,
+	// linear map offset on RISC-V where DTB is at PA 0xFFE00000)
+	dtbAddr := dtbVirtAddr(dtbPhysAddr)
 
 	// Register all device drivers BEFORE discovering devices
 	device.RegisterAllDrivers()

@@ -297,7 +297,7 @@ tasks:
       - '{{.GO}} tool go-echo "Building kmazarin kernel for RISC-V 64-bit (static Go binary at {{.KMAZARIN_LOAD_ADDR}})..."'
       - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.KMAZARIN_RISCV64_OVERLAY_JSON}} {{.GCFLAGS}} -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" -o {{.KMAZARIN_RISCV64_ELF}} ./kmazarin/kmazarin'
       - '{{.GO}} tool go-echo "Fixing kmazarin-riscv64 ELF headers..."'
-      - '{{.GO}} tool fix-go-elf {{.KMAZARIN_RISCV64_ELF}}'
+      - '{{.GO}} tool fix-go-elf -no-bootstrap {{.KMAZARIN_RISCV64_ELF}}'
       - '{{.GO}} tool go-echo "Kmazarin RISC-V 64-bit kernel built at {{.KMAZARIN_RISCV64_ELF}}"'
 
   # ===========================================================================
@@ -938,7 +938,7 @@ tasks:
 
   run-diplomat-riscv64:
     desc: "Run RISC-V diplomat+kmazarin in QEMU via OpenSBI -kernel (TIMEOUT=N for timeout, default=5s)"
-    deps: [diplomat-riscv64, disk-riscv64-minimal]
+    deps: [diplomat-riscv64, disk-riscv64]
     vars:
       TIMEOUT: '{{.TIMEOUT | default "5"}}'
       LOG_FILE: /tmp/diplomat-riscv64-serial.log
@@ -962,8 +962,8 @@ tasks:
     vars:
       LOG_FILE: /tmp/diplomat-riscv64-serial.log
       TRACE_FILE: /tmp/diplomat-riscv64-trace.log
-      # VIRTIO_TRANSPORT options: "pci" (default, matches ARM64/x86_64) or "mmio" (legacy)
-      VIRTIO_TRANSPORT: '{{.VIRTIO_TRANSPORT | default "pci"}}'
+      # VIRTIO_TRANSPORT options: "mmio" (default for RISC-V diplomat boot) or "pci"
+      VIRTIO_TRANSPORT: '{{.VIRTIO_TRANSPORT | default "mmio"}}'
     cmds:
       # Use -bios default to load OpenSBI, which then loads diplomat as kernel
       # OpenSBI jumps to the ELF entry point after initialization

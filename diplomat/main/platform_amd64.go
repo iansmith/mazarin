@@ -70,6 +70,21 @@ func defaultHandleProtocol(handle, protocol, iface uintptr) EFI_STATUS {
 	return uefiHandleProtocol(handle, protocol, iface, systemTable.BootServices.HandleProtocol)
 }
 
+// getExceptionHandlerForJump returns the IDT base / exception vector address
+// for the jump to kmazarin. On AMD64, we use main.ExceptionVectorTable.
+func getExceptionHandlerForJump(kernel *LoadedKernel, relocDelta uint64) uint64 {
+	addr := findKernelSymbol(kernel, "main.ExceptionVectorTable")
+	if addr == 0 {
+		printString("ERROR: ExceptionVectorTable symbol not found\r\n")
+		for {}
+	}
+	addr += relocDelta
+	printString("IDT: kmazarin ExceptionVectorTable = ")
+	printHex(addr)
+	printString("\r\n")
+	return addr
+}
+
 // ReadBlockVirtIO stub - AMD64 uses UEFI BlockIO, not VirtIO MMIO
 func readBlockVirtIOStub(lba uint64, buf []byte) error {
 	panic("ReadBlockVirtIO called on AMD64 - should use UEFI BlockIO")
@@ -78,4 +93,24 @@ func readBlockVirtIOStub(lba uint64, buf []byte) error {
 func init() {
 	// Initialize AMD64-specific platform operations
 	plat.ReadBlockVirtIO = readBlockVirtIOStub
+}
+
+// The following stubs satisfy references from non-build-tagged files.
+// On AMD64, these code paths are never reached (UEFI boot uses different functions),
+// but the compiler requires the symbols to exist.
+
+func ReadBlockVirtIONoError(lba uint64, buf []byte) {
+	panic("ReadBlockVirtIONoError called on AMD64")
+}
+
+func readBlockVirtIO(lba uint64, buf []byte) {
+	panic("readBlockVirtIO called on AMD64")
+}
+
+func allocatePhysPagesNoError(pages uint64) uint64 {
+	panic("allocatePhysPagesNoError called on AMD64")
+}
+
+func readBlockVirtIOBulk(lba uint64, buf []byte) {
+	panic("readBlockVirtIOBulk called on AMD64")
 }

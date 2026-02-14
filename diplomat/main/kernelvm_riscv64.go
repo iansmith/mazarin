@@ -2,8 +2,10 @@
 
 // diplomat/main/kernelvm_riscv64.go - Kernel virtual memory setup for RISC-V
 //
-// Creates the kernel virtual memory environment:
+// Creates Sv48 (4-level) kernel virtual memory environment:
 //   - Linear map of physical RAM in high virtual addresses
+//   - Kernel code mapped at ELF VAs
+//   - Identity map for SATP transition trampoline
 //   - g0 + exception stacks at canonical VAs
 //   - Page pool for demand paging
 //   - MMIO device mappings
@@ -21,8 +23,12 @@ const linearMapMaxPA = uint64(0x100000000)
 
 // KernelVM constants matching cardinal-style layout
 const (
-	KernelVAOffset       = 0xFFFFFFFF00000000
-	KernelStacksVirtBase = KernelVAOffset + 0x43E00000 // 0xFFFFFFFF43E00000
+	KernelVAOffset = 0xFFFFFFFF00000000
+	// Stacks must be in an L2 index NOT used by any 1GB leaf entry.
+	// Used L2 indices in L3[0x1FF]: 0x1FC (MMIO 0x00), 0x1FD (MMIO 0x40),
+	// 0x1FE (RAM 0x80), 0x1FF (RAM 0xC0).
+	// We use L2[0x1FA] = VA 0xFFFFFFFE80000000 for stacks.
+	KernelStacksVirtBase = 0xFFFFFFFE80000000
 	KernelG0StackSize    = 0x8000                      // 32KB
 	KernelExcStackSize   = 0x4000                      // 16KB
 	KernelG0StackBottom  = KernelStacksVirtBase
@@ -30,9 +36,10 @@ const (
 	KernelExcStackBottom = KernelG0StackTop
 	KernelExcStackTop    = KernelExcStackBottom + KernelExcStackSize
 
-	// Heap VA range
-	KernelHeapStart = 0xFFFF000100000000
-	KernelHeapEnd   = 0xFFFF100000000000
+	// Heap VA range — must match shared/constants/addresses_riscv64.go
+	// Sv48 canonical kernel space: 0xFFFFFFC000000000 - 0xFFFFFFFFFFFFFFFF
+	KernelHeapStart = 0xFFFFFFC100000000
+	KernelHeapEnd   = 0xFFFFFFD000000000
 
 	// MMIO physical addresses (QEMU virt RISC-V)
 	mmioUartBase  = 0x10000000
@@ -47,7 +54,7 @@ const (
 
 // KernelVM holds kernel virtual memory configuration
 type KernelVM struct {
-	SAPTROOTL2Phys uint64 // L2 (root) physical address for SATP
+	SAPTRootPhys uint64 // L3 (root) physical address for SATP (Sv48)
 
 	G0StackTopVA  uint64 // Top of g0 stack (VA)
 	G0StackPhys   uint64 // Physical address of g0 stack pages
@@ -72,6 +79,11 @@ var demandPagePool struct {
 	pgCount   uint64 // Page fault counter
 	svcCount  uint64 // SVC counter
 }
+
+// kernelSAPTVal holds the SATP value for the kernel page tables.
+// Set by PrepareKernelVMRISCV, read by jumpToKmazarinWithStack (assembly).
+// Sv48: mode=9 (bits 63:60), ASID=0 (bits 59:44), PPN (bits 43:0).
+var kernelSAPTVal uint64
 
 // ptPageAllocator tracks page table allocation
 type ptPageAllocator struct {
@@ -149,12 +161,12 @@ func allocatePhysPagesRISCV(pages uint64) uint64 {
 	return addr
 }
 
-// kernelPageTablePhys returns the kernel page table root (SATP root)
+// kernelPageTablePhys returns the kernel page table root (Sv48 L3 root)
 func kernelPageTablePhys(vm *KernelVM) uint64 {
-	return vm.SAPTROOTL2Phys
+	return vm.SAPTRootPhys
 }
 
-// PrepareKernelVM creates Sv39 page tables with linear map and stacks
+// PrepareKernelVM creates Sv48 page tables with linear map and stacks (UEFI path).
 func PrepareKernelVM(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, error) {
 	vm := dNew[KernelVM]()
 	if vm == nil {
@@ -175,18 +187,18 @@ func PrepareKernelVM(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, error) 
 	printHex(ptPages)
 	printString("\r\n")
 
-	// Allocate L2 root table
-	l2Root := allocatePTPage()
-	if l2Root == 0 {
+	// Allocate L3 root table (Sv48)
+	l3Root := allocatePTPage()
+	if l3Root == 0 {
 		return nil, &errPTAllocFailed
 	}
-	vm.SAPTROOTL2Phys = l2Root
+	vm.SAPTRootPhys = l3Root
 
 	// Create linear map: PA → VA (PA + KernelVAOffset)
 	// Map all physical RAM in 1GB chunks using L2 leaf PTEs
 	for pa := uint64(hw.RAMBase); pa < hw.RAMBase+hw.RAMSize; pa += Page1GBSize {
 		va := pa + KernelVAOffset
-		if err := mapPage1GB(l2Root, va, pa, PTE_LEAF_RWX); err != nil {
+		if err := mapPage1GB(l3Root, va, pa, PTE_LEAF_RWX); err != nil {
 			return nil, err
 		}
 	}
@@ -201,7 +213,7 @@ func PrepareKernelVM(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, error) 
 	vm.G0StackTopVA = KernelG0StackTop
 	plat.ZeroMemory(g0StackPhys, g0StackPages*PageSize)
 
-	if err := mapRange(l2Root, KernelG0StackBottom, g0StackPhys, KernelG0StackSize, PTE_LEAF_RW); err != nil {
+	if err := mapRange(l3Root, KernelG0StackBottom, g0StackPhys, KernelG0StackSize, PTE_LEAF_RW); err != nil {
 		return nil, err
 	}
 
@@ -215,7 +227,7 @@ func PrepareKernelVM(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, error) 
 	vm.ExcStackTopVA = KernelExcStackTop
 	plat.ZeroMemory(excStackPhys, excStackPages*PageSize)
 
-	if err := mapRange(l2Root, KernelExcStackBottom, excStackPhys, KernelExcStackSize, PTE_LEAF_RW); err != nil {
+	if err := mapRange(l3Root, KernelExcStackBottom, excStackPhys, KernelExcStackSize, PTE_LEAF_RW); err != nil {
 		return nil, err
 	}
 
@@ -236,41 +248,82 @@ func PrepareKernelVM(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, error) 
 	// Map MMIO regions as device memory
 	mapMMIO := func(pa, size uint64) {
 		va := pa + KernelVAOffset
-		// Use PTE_LEAF_RW for MMIO (no execute)
-		_ = mapRange(l2Root, va, pa, size, PTE_LEAF_RW)
+		_ = mapRange(l3Root, va, pa, size, PTE_LEAF_RW)
 	}
 	mapMMIO(mmioUartBase, 0x1000)
 	mapMMIO(mmioPlicBase, 0x4000000)
 	mapMMIO(mmioClintBase, 0x10000)
 
-	printString("Kernel VM prepared (Sv39 SATP root at ")
-	printHex(vm.SAPTROOTL2Phys)
+	printString("Kernel VM prepared (Sv48 SATP root at ")
+	printHex(vm.SAPTRootPhys)
 	printString(")\r\n")
 
 	return vm, nil
 }
 
-// mapPage1GB creates a 1GB L2 leaf PTE
-func mapPage1GB(l2Root, va, pa, flags uint64) error {
-	l2 := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(l2Root)))
-	idx := l2Index(va)
-	l2[idx] = makePTE(pa, flags)
+// mapPage1GB creates a 1GB L2 leaf PTE, walking L3→L2
+func mapPage1GB(l3Root, va, pa, flags uint64) error {
+	l3 := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(l3Root)))
+	l3Idx := l3Index(va)
+
+	// Get or create L2 table
+	var l2Phys uint64
+	if l3[l3Idx]&PTE_V == 0 {
+		l2Phys = allocatePTPage()
+		if l2Phys == 0 {
+			return &errPTAllocFailed
+		}
+		l3[l3Idx] = makePTE(l2Phys, PTE_BRANCH)
+	} else {
+		l2Phys = (l3[l3Idx] >> 10) << 12
+	}
+
+	l2 := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(l2Phys)))
+	l2Idx := l2Index(va)
+	l2[l2Idx] = makePTE(pa, flags)
 	return nil
 }
 
 // mapRange maps a range of physical pages to virtual addresses
-func mapRange(l2Root, va, pa, size uint64, flags uint64) error {
+func mapRange(l3Root, va, pa, size uint64, flags uint64) error {
+	pages := size / PageSize
+	printString("  mapRange: ")
+	printHex(pages)
+	printString(" pages\r\n")
 	for offset := uint64(0); offset < size; offset += PageSize {
-		if err := mapPage4KB(l2Root, va+offset, pa+offset, flags); err != nil {
+		if offset == 0 || offset == PageSize {
+			printString("  page ")
+			printHex(offset / PageSize)
+			printString(" VA=")
+			printHex(va + offset)
+			printString("\r\n")
+		}
+		if err := mapPage4KB(l3Root, va+offset, pa+offset, flags); err != nil {
 			return err
 		}
 	}
+	printString("  mapRange done\r\n")
 	return nil
 }
 
-// mapPage4KB maps a 4KB page (requires walking to L0)
-func mapPage4KB(l2Root, va, pa, flags uint64) error {
-	l2 := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(l2Root)))
+// mapPage4KB maps a 4KB page (walks L3→L2→L1→L0)
+func mapPage4KB(l3Root, va, pa, flags uint64) error {
+	l3 := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(l3Root)))
+	l3Idx := l3Index(va)
+
+	// Get or create L2 table
+	var l2Phys uint64
+	if l3[l3Idx]&PTE_V == 0 {
+		l2Phys = allocatePTPage()
+		if l2Phys == 0 {
+			return &errPTAllocFailed
+		}
+		l3[l3Idx] = makePTE(l2Phys, PTE_BRANCH)
+	} else {
+		l2Phys = (l3[l3Idx] >> 10) << 12
+	}
+
+	l2 := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(l2Phys)))
 	l2Idx := l2Index(va)
 
 	// Get or create L1 table
@@ -308,7 +361,7 @@ func mapPage4KB(l2Root, va, pa, flags uint64) error {
 	return nil
 }
 
-// PrepareKernelVMRISCV creates Sv39 page tables without UEFI allocations.
+// PrepareKernelVMRISCV creates Sv48 4-level page tables without UEFI allocations.
 // Uses bump allocator for RISC-V direct boot mode.
 func PrepareKernelVMRISCV(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, error) {
 	vm := dNew[KernelVM]()
@@ -331,22 +384,69 @@ func PrepareKernelVMRISCV(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, er
 	printHex(ptPages)
 	printString("\r\n")
 
-	// Allocate L2 root table
-	l2Root := allocatePTPage()
-	if l2Root == 0 {
-		printString("ERROR: Failed to allocate L2 root\r\n")
+	// Allocate L3 root table (Sv48)
+	l3Root := allocatePTPage()
+	if l3Root == 0 {
+		printString("ERROR: Failed to allocate L3 root\r\n")
 		for {}
 	}
-	vm.SAPTROOTL2Phys = l2Root
+	vm.SAPTRootPhys = l3Root
 
-	// Create linear map: PA → VA (PA + KernelVAOffset)
-	// Map all physical RAM in 1GB chunks using L2 leaf PTEs
+	// --- Linear map: PA → VA (PA + KernelVAOffset) ---
+	// Map all physical RAM in 1GB chunks using L2 leaf PTEs.
+	// mapPage1GB walks L3→L2 to create the L2 leaf entries.
 	for pa := uint64(hw.RAMBase); pa < hw.RAMBase+hw.RAMSize; pa += Page1GBSize {
 		va := pa + KernelVAOffset
-		if err := mapPage1GB(l2Root, va, pa, PTE_LEAF_RWX); err != nil {
+		if err := mapPage1GB(l3Root, va, pa, PTE_LEAF_RWX); err != nil {
 			printString("ERROR: Failed to map 1GB page\r\n")
 			for {}
 		}
+	}
+
+	// --- Map MMIO regions via linear map ---
+	// These are below hw.RAMBase so they need separate 1GB mappings.
+	// Map 0x00000000-0x3FFFFFFF (UART, PLIC, CLINT) at high VA
+	if err := mapPage1GB(l3Root, 0x00000000+KernelVAOffset, 0x00000000, PTE_LEAF_RW); err != nil {
+		printString("ERROR: Failed to map MMIO 0x00\r\n")
+		for {}
+	}
+	// Map 0x40000000-0x7FFFFFFF (PCI MMIO window) at high VA
+	if err := mapPage1GB(l3Root, 0x40000000+KernelVAOffset, 0x40000000, PTE_LEAF_RW); err != nil {
+		printString("ERROR: Failed to map MMIO 0x40\r\n")
+		for {}
+	}
+
+	// --- Map kernel code at ELF VAs ---
+	// Kmazarin ELF VAs (e.g., ~0xFFFFFFFF437F0000) are below the linear map base
+	// (~0xFFFFFFFF80000000). These must be explicitly mapped.
+	kernelSize := kernel.HighestVirt - kernel.LowestVirt
+	kernelSize = (kernelSize + PageSize - 1) &^ (PageSize - 1) // round up
+	printString("Mapping kernel code: VA ")
+	printHex(kernel.LowestVirt)
+	printString(" → PA ")
+	printHex(kernel.PhysBase)
+	printString(" size ")
+	printHex(kernelSize)
+	printString("\r\n")
+	if err := mapRange(l3Root, kernel.LowestVirt, kernel.PhysBase, kernelSize, PTE_LEAF_RWX); err != nil {
+		printString("ERROR: Failed to map kernel code\r\n")
+		for {}
+	}
+
+	// --- Identity map for SATP transition trampoline ---
+	// After writing the new SATP, diplomat's code at VA ~0x80200000 must still
+	// be mapped. Add identity maps so the trampoline can continue executing.
+	// IMPORTANT: Only map ranges that don't conflict with kernel code VAs.
+	// Kmazarin VAs start at 0x43800000, which uses L2 index 1 (same as 0x40000000).
+	// So we skip 0x40000000 to avoid overwriting kernel code L1 branch entries.
+	if err := mapPage1GB(l3Root, 0x00000000, 0x00000000, PTE_LEAF_RW); err != nil {
+		printString("ERROR: Failed identity map 0x00\r\n")
+		for {}
+	}
+	// Skip 0x40000000: L2 index 1 conflicts with kernel code VA 0x43800000
+	if err := mapPage1GB(l3Root, 0x80000000, 0x80000000, PTE_LEAF_RWX); err != nil {
+		printString("ERROR: Failed identity map 0x80\r\n")
+		for {}
 	}
 
 	// Allocate and map g0 stack
@@ -356,7 +456,7 @@ func PrepareKernelVMRISCV(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, er
 	vm.G0StackTopVA = KernelG0StackTop
 	plat.ZeroMemory(g0StackPhys, g0StackPages*PageSize)
 
-	if err := mapRange(l2Root, KernelG0StackBottom, g0StackPhys, KernelG0StackSize, PTE_LEAF_RW); err != nil {
+	if err := mapRange(l3Root, KernelG0StackBottom, g0StackPhys, KernelG0StackSize, PTE_LEAF_RW); err != nil {
 		printString("ERROR: Failed to map g0 stack\r\n")
 		for {}
 	}
@@ -368,7 +468,7 @@ func PrepareKernelVMRISCV(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, er
 	vm.ExcStackTopVA = KernelExcStackTop
 	plat.ZeroMemory(excStackPhys, excStackPages*PageSize)
 
-	if err := mapRange(l2Root, KernelExcStackBottom, excStackPhys, KernelExcStackSize, PTE_LEAF_RW); err != nil {
+	if err := mapRange(l3Root, KernelExcStackBottom, excStackPhys, KernelExcStackSize, PTE_LEAF_RW); err != nil {
 		printString("ERROR: Failed to map exception stack\r\n")
 		for {}
 	}
@@ -384,19 +484,24 @@ func PrepareKernelVMRISCV(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, er
 	demandPagePool.ptCurrent = ptAlloc.base + ptAlloc.offset
 	demandPagePool.ptEnd = ptAlloc.base + ptAlloc.total
 
-	// Map MMIO regions as device memory
-	mapMMIO := func(pa, size uint64) {
-		va := pa + KernelVAOffset
-		// Use PTE_LEAF_RW for MMIO (no execute)
-		_ = mapRange(l2Root, va, pa, size, PTE_LEAF_RW)
-	}
-	mapMMIO(mmioUartBase, 0x1000)
-	mapMMIO(mmioPlicBase, 0x4000000)
-	mapMMIO(mmioClintBase, 0x10000)
+	// Set unified pool: remaining bump allocator memory for kmazarin
+	vm.UnifiedPoolStart = riscvBumpAlloc.current
+	vm.UnifiedPoolEnd = riscvBumpAlloc.end
 
-	printString("Kernel VM prepared (Sv39 SATP root at ")
-	printHex(vm.SAPTROOTL2Phys)
+	// Set the kernel SATP value for jumpToKmazarinWithStack
+	// Sv48 mode = 9 (bits 63:60), ASID = 0, PPN = root >> 12
+	kernelSAPTVal = (uint64(9) << 60) | (vm.SAPTRootPhys >> 12)
+
+	printString("Kernel VM prepared (Sv48 SATP root at ")
+	printHex(vm.SAPTRootPhys)
+	printString(", SATP val=")
+	printHex(kernelSAPTVal)
 	printString(")\r\n")
+	printString("Unified pool: ")
+	printHex(vm.UnifiedPoolStart)
+	printString(" - ")
+	printHex(vm.UnifiedPoolEnd)
+	printString("\r\n")
 
 	return vm, nil
 }

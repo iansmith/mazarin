@@ -366,26 +366,17 @@ func DiplomatEntry() {
 		}
 	}
 
-	// Look up kmazarin's ExceptionVectorTable symbol for VBAR_EL1.
-	// The relocator (relocate-kmazarin) updates ELF header/code/data but NOT
-	// the symbol table. So the symbol value is still at the pre-relocation VA.
-	// Add the relocation delta (high 32 bits of LowestVirt) to get the real VA.
-	excVecAddr := findKernelSymbol(kernel, "main.ExceptionVectorTable")
-	if excVecAddr == 0 {
-		printString("ERROR: ExceptionVectorTable symbol not found\r\n")
-		for {
-		}
-	}
+	// Look up the platform-specific exception handler symbol from the loaded kernel.
+	// ARM64/AMD64: ExceptionVectorTable. RISC-V: trapEntry.
+	// The relocator updates ELF header/code/data but NOT the symbol table,
+	// so add the relocation delta (high 32 bits of LowestVirt) to get the real VA.
 	relocDelta := kernel.LowestVirt - (kernel.LowestVirt & 0x00000000FFFFFFFF)
-	excVecAddr += relocDelta
-	printString("VBAR: kmazarin ExceptionVectorTable = ")
-	printHex(excVecAddr)
-	printString("\r\n")
+	excVecAddr := getExceptionHandlerForJump(kernel, relocDelta)
 
 	// Update diplomat's IDT with kmazarin's real ISR entry points.
 	// On x86_64: replaces diplomat's stub syscall handler (IDT[128]) with
 	// kmazarin's isr128 so clone/futex/sched_yield go through real dispatch.
-	// On ARM64: no-op (VBAR handles this).
+	// On ARM64/RISC-V: no-op.
 	updateIDTWithKmazarinISRs(kernel, relocDelta)
 
 	// Phase 10: Jump to kernel with proper stack setup and kmazarin's VBAR.

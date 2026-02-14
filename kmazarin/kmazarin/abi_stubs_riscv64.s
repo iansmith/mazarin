@@ -24,12 +24,19 @@ TEXT ·IRQDispatch(SB), NOSPLIT, $0-64
 TEXT ·TimerIRQHandler(SB), NOSPLIT, $0-64
 	JMP	·timerIRQHandlerInternal(SB)
 
+// DumpInstructionPageFaultAsm tail-call stub
+// NOSPLIT: called from exception stack for instruction page fault diagnostics
+TEXT ·DumpInstructionPageFaultAsm(SB), NOSPLIT, $0-8
+	JMP	·dumpInstructionPageFaultInternal(SB)
+
 // HandlePageFaultAsm tail-call stub
-TEXT ·HandlePageFaultAsm(SB), $0-16
+// NOSPLIT: called from exception stack, must not trigger stack growth check
+TEXT ·HandlePageFaultAsm(SB), NOSPLIT, $0-16
 	JMP	·handlePageFaultInternal(SB)
 
 // HandleUserPageFaultAsm tail-call stub
-TEXT ·HandleUserPageFaultAsm(SB), $0-16
+// NOSPLIT: called from exception stack, must not trigger stack growth check
+TEXT ·HandleUserPageFaultAsm(SB), NOSPLIT, $0-16
 	JMP	·handleUserPageFaultInternal(SB)
 
 // GetSyscallSwitchTarget - must use CALL (has return value)
@@ -147,42 +154,29 @@ TEXT ·getAsyncPreemptWrapperAddr(SB), NOSPLIT, $0-8
 // ============================================================================
 TEXT ·RunFirstThread(SB), NOSPLIT|NOFRAME, $0-0
 	// Call StartFirstThread to get ThreadContext pointer
-	// Allocate call frame
 	ADD	$-16, X2
 	CALL	·StartFirstThread(SB)
 	MOV	8(X2), X18		// X18 = ThreadContext pointer
 	ADD	$16, X2
 
-	// Load SEPC (offset 256) into sepc CSR
+	// Save exception stack from sscratch into T0 (X5).
+	// We need to preserve it so sscratch points to the exception stack
+	// after SRET, not to the Go stack.
+	WORD	$0x140022F3		// csrr x5(t0), sscratch
+
+	// Load SEPC and SSTATUS into CSRs
 	MOV	256(X18), A0
-	// CSRW sepc, a0
-	WORD	$0x14151073
-
-	// Load SSTATUS (offset 264) into sstatus CSR
+	WORD	$0x14151073		// csrw sepc, a0
 	MOV	264(X18), A0
-	// CSRW sstatus, a0
-	WORD	$0x10051073
+	WORD	$0x10051073		// csrw sstatus, a0
+	WORD	$0x12000073		// sfence.vma
 
-	// TLB flush
-	// SFENCE.VMA zero,zero
-	WORD	$0x12000073
-
-	// Load all GPRs from ThreadContext
-	// X[1]=ra at offset 8
+	// Load all GPRs from context except T0(X5), SP(X2), S2(X18)
 	MOV	8(X18), X1		// ra
-	MOV	16(X18), X2		// sp (WARNING: changes our stack!)
-	// After loading sp, we can't access X18 via stack anymore
-	// But X18 is still valid as a register
-
-	// Actually, we need to load sp LAST since it changes our addressing.
-	// Restore sp from X2 register. Let me reorder.
-
-	// Load all GPRs except sp and X18 (our pointer)
-	MOV	8(X18), X1		// ra
-	// Skip X2 (sp) - load last
+	// Skip X2 (sp) - load near end
 	MOV	24(X18), X3		// gp
 	MOV	32(X18), TP		// tp
-	MOV	40(X18), X5		// t0
+	// Skip X5 (t0) - holds exception stack, reload after sscratch restore
 	MOV	48(X18), X6		// t1
 	MOV	56(X18), X7		// t2
 	MOV	64(X18), X8		// s0
@@ -195,7 +189,7 @@ TEXT ·RunFirstThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOV	120(X18), X15		// a5
 	MOV	128(X18), X16		// a6
 	MOV	136(X18), X17		// a7
-	// Skip X18 (X18) - our pointer
+	// Skip X18 - context pointer
 	MOV	152(X18), X19		// s3
 	MOV	160(X18), X20		// s4
 	MOV	168(X18), X21		// s5
@@ -210,39 +204,17 @@ TEXT ·RunFirstThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOV	240(X18), X30		// t5
 	MOV	248(X18), X31		// t6
 
-	// Load sp (X2) from context - do this after all memory loads
-	// First save X18's target in a temp register we already loaded
-	// Use sscratch to hold the context pointer temporarily
-	// CSRW sscratch, x18
-	WORD	$0x14091073		// csrw sscratch, x18 (x18)
-	// Load X18 from context
-	MOV	144(X18), X18		// Now X18 has its real value
-	// Load sp from sscratch-saved pointer... but we can't anymore
-	// Actually, we need a different approach.
+	// Restore sscratch = exception stack (from T0/X5)
+	WORD	$0x14029073		// csrw sscratch, x5(t0)
 
-	// Let's use a different strategy: load sp from the context using
-	// a temporary register, then load that temp register last.
-	// We already loaded all registers except sp and the temp.
-	// Use sscratch to hold the sp value.
+	// Now reload T0 from context (was used as temp)
+	MOV	40(X18), X5		// t0
 
-	// Undo: reload X18 from context pointer in sscratch
-	// CSRR s2, sscratch
-	WORD	$0x14002973		// csrr s2(x18), sscratch
+	// Load sp directly from context
+	MOV	16(X18), X2		// sp (changes stack, but we don't need it)
 
-	// Save desired sp value to sscratch
-	MOV	16(X18), A0		// A0 = target sp
-	// CSRW sscratch, a0
-	WORD	$0x14051073		// csrw sscratch, a0
-
-	// Reload A0 from context
-	MOV	80(X18), X10		// a0
-
-	// Load X18 from context
+	// Load S2/X18 last (loses context pointer)
 	MOV	144(X18), X18		// s2
-
-	// Now load sp from sscratch
-	// CSRRW sp, sscratch, sp (swap sp and sscratch)
-	WORD	$0x14011173		// csrrw x2, sscratch, x2
 
 	// SRET to thread
 	WORD	$0x10200073		// SRET
@@ -299,8 +271,10 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	// Save SEPC = RA (return address for when thread 0 is scheduled back)
 	MOV	X1, 256(X18)		// sepc = ra
 
-	// Save SSTATUS with SPIE set (enable interrupts on SRET)
-	MOV	$0x20, A0		// SPIE bit
+	// Save SSTATUS with SPP=1 (return to S-mode) and SPIE=1 (enable IRQs on SRET)
+	// SPP (bit 8) = 0x100: SRET returns to S-mode (NOT U-mode!)
+	// SPIE (bit 5) = 0x020: SIE will be set to 1 after SRET
+	MOV	$0x120, A0		// SPP | SPIE
 	MOV	A0, 264(X18)		// sstatus
 
 	// Call SaveThread0AndYield to get next thread's context
@@ -311,56 +285,61 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 
 	BEQ	X18, ZERO, yield_restore_return
 
-	// Load SEPC from new context
+	// Save exception stack from sscratch into T0 (X5).
+	// CRITICAL: sscratch must point to the exception stack after SRET,
+	// not to the Go stack. Without this, the next trap handler would
+	// use the Go stack as exception stack, causing corruption.
+	WORD	$0x140022F3		// csrr x5(t0), sscratch
+
+	// Load SEPC and SSTATUS into CSRs
 	MOV	256(X18), A0
-	// CSRW sepc, a0
-	WORD	$0x14151073
-
-	// Load SSTATUS from new context
+	WORD	$0x14151073		// csrw sepc, a0
 	MOV	264(X18), A0
-	// CSRW sstatus, a0
-	WORD	$0x10051073
+	WORD	$0x10051073		// csrw sstatus, a0
+	WORD	$0x12000073		// sfence.vma
 
-	// TLB flush
-	WORD	$0x12000073		// SFENCE.VMA
-
-	// Load all GPRs (same pattern as RunFirstThread)
+	// Load all GPRs except T0(X5), SP(X2), S2(X18)
 	MOV	8(X18), X1		// ra
-	MOV	24(X18), X3
-	MOV	32(X18), TP
-	MOV	40(X18), X5
-	MOV	48(X18), X6
-	MOV	56(X18), X7
-	MOV	64(X18), X8
-	MOV	72(X18), X9
-	MOV	80(X18), X10
-	MOV	88(X18), X11
-	MOV	96(X18), X12
-	MOV	104(X18), X13
-	MOV	112(X18), X14
-	MOV	120(X18), X15
-	MOV	128(X18), X16
-	MOV	136(X18), X17
-	MOV	152(X18), X19
-	MOV	160(X18), X20
-	MOV	168(X18), X21
-	MOV	176(X18), X22
-	MOV	184(X18), X23
-	MOV	192(X18), X24
-	MOV	200(X18), X25
-	MOV	208(X18), X26
+	MOV	24(X18), X3		// gp
+	MOV	32(X18), TP		// tp
+	// Skip X5 (t0) - holds exception stack
+	MOV	48(X18), X6		// t1
+	MOV	56(X18), X7		// t2
+	MOV	64(X18), X8		// s0
+	MOV	72(X18), X9		// s1
+	MOV	80(X18), X10		// a0
+	MOV	88(X18), X11		// a1
+	MOV	96(X18), X12		// a2
+	MOV	104(X18), X13		// a3
+	MOV	112(X18), X14		// a4
+	MOV	120(X18), X15		// a5
+	MOV	128(X18), X16		// a6
+	MOV	136(X18), X17		// a7
+	MOV	152(X18), X19		// s3
+	MOV	160(X18), X20		// s4
+	MOV	168(X18), X21		// s5
+	MOV	176(X18), X22		// s6
+	MOV	184(X18), X23		// s7
+	MOV	192(X18), X24		// s8
+	MOV	200(X18), X25		// s9
+	MOV	208(X18), X26		// s10
 	MOV	216(X18), g		// g
-	MOV	224(X18), X28
-	MOV	232(X18), X29
-	MOV	240(X18), X30
-	MOV	248(X18), X31
+	MOV	224(X18), X28		// t3
+	MOV	232(X18), X29		// t4
+	MOV	240(X18), X30		// t5
+	MOV	248(X18), X31		// t6
 
-	// Load sp via sscratch swap
-	MOV	16(X18), A0
-	WORD	$0x14051073		// csrw sscratch, a0
-	MOV	80(X18), X10		// reload a0
-	MOV	144(X18), X18		// load s2
-	WORD	$0x14011173		// csrrw x2, sscratch, x2
+	// Restore sscratch = exception stack (from T0/X5)
+	WORD	$0x14029073		// csrw sscratch, x5(t0)
+
+	// Reload T0 from context
+	MOV	40(X18), X5		// t0
+
+	// Load sp directly from context
+	MOV	16(X18), X2		// sp
+
+	// Load S2/X18 last (loses context pointer)
+	MOV	144(X18), X18		// s2
 
 	// SRET to new thread
 	WORD	$0x10200073

@@ -53,6 +53,9 @@ func asyncPreemptWrapper()
 //go:nosplit
 func getAsyncPreemptWrapperAddr() uintptr
 
+// DumpInstructionPageFaultAsm is declared in asm_decl_riscv64.go (RISC-V only).
+// It walks Sv48 page tables and prints PTE chain for instruction page fault diagnostics.
+
 // HandlePageFaultAsm is the ABI0 entry point for the page fault handler.
 // Called from exception handler assembly.
 // Takes faultAddr as argument, returns bool (1=handled, 0=not handled).

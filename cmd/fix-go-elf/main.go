@@ -28,16 +28,35 @@ const (
 	elfDataMSB = 2
 )
 
+var noBootstrap bool
+
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: %s <elf-file> [output-file]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [-no-bootstrap] <elf-file> [output-file]\n", os.Args[0])
 		os.Exit(1)
 	}
 
-	inputPath := os.Args[1]
+	args := os.Args[1:]
+	for len(args) > 0 && args[0][0] == '-' {
+		switch args[0] {
+		case "-no-bootstrap":
+			noBootstrap = true
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown flag: %s\n", args[0])
+			os.Exit(1)
+		}
+		args = args[1:]
+	}
+
+	if len(args) < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: %s [-no-bootstrap] <elf-file> [output-file]\n", os.Args[0])
+		os.Exit(1)
+	}
+
+	inputPath := args[0]
 	outputPath := inputPath
-	if len(os.Args) >= 3 {
-		outputPath = os.Args[2]
+	if len(args) >= 2 {
+		outputPath = args[1]
 	}
 
 	if err := fixELF(inputPath, outputPath); err != nil {
@@ -260,7 +279,11 @@ func fixELF(inputPath, outputPath string) error {
 	// For RISC-V with -T flag: inject bootstrap stub at segment start
 	// OpenSBI/QEMU jumps to the beginning of the loaded segment, not the ELF entry point
 	// We need a stub at file offset 0x1000 (segment start) that jumps to the actual entry point
-	if isRISCV && hasNegativeOffset && e_entry != 0 {
+	//
+	// NOTE: The bootstrap stub OVERWRITES the first function in .text (typically
+	// internal/abi.NoEscape). This is fine for diplomat (never uses Go runtime),
+	// but FATAL for kmazarin (IS the Go runtime). Use -no-bootstrap for kmazarin.
+	if isRISCV && hasNegativeOffset && e_entry != 0 && !noBootstrap {
 		// Find the first PT_LOAD segment to get its vaddr (where bootstrap should be)
 		var bootstrapAddr uint64
 		for i := uint16(0); i < e_phnum; i++ {

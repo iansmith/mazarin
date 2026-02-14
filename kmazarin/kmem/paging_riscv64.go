@@ -25,11 +25,10 @@ const (
 )
 
 // RISC-V Sv48 uses the same 4-level page table structure as ARM64 and x86_64.
-// Index extraction uses the shared L0Shift-L3Shift constants from paging.go:
-//   L3Shift=39 (root, 512GB per entry)
-//   L2Shift=30 (1GB per entry, can be gigapage leaf)
-//   L1Shift=21 (2MB per entry, can be megapage leaf)
-//   L0Shift=12 (4KB per entry, always leaf)
+// NAMING CONVENTION WARNING:
+//   Shared constants (paging.go) use ARM64 naming: L0Shift=39 (root), L3Shift=12 (leaf).
+//   RISC-V convention is opposite: L3=root, L0=leaf.
+//   This file uses RISC-V naming for local vars but hardcoded shift values for clarity.
 
 // initProcessL0 performs arch-specific initialization of a new process root page table.
 // RISC-V Sv48: like x86_64, uses single SATP register for both user and kernel space.
@@ -169,21 +168,25 @@ func MapDeviceMMIO(physAddr uintptr, size uint64) error {
 // walkPageTable translates a VA to PA by walking the RISC-V Sv48 page tables.
 // Uses the SATP root (stored in ttbr1L0PA) as the L3 root.
 //
-// RISC-V Sv48 page table format (4-level, matching ARM64/x86_64):
+// RISC-V Sv48 page table format (4-level):
 //   - L3 (root): bits[47:39] (512GB per entry)
 //   - L2: bits[38:30] (1GB per entry, can be gigapage leaf)
 //   - L1: bits[29:21] (2MB per entry, can be megapage leaf)
 //   - L0: bits[20:12] (4KB per entry, always leaf)
 //
+// IMPORTANT: Uses hardcoded shift values because the shared constants
+// (L0Shift=39, L3Shift=12) use ARM64 naming which is opposite to RISC-V.
+//
 // Leaf detection: If R|W|X bits are set, it's a leaf PTE (not a branch).
 //
 //go:nosplit
 func walkPageTable(va uintptr) uintptr {
-	// Extract indices (same shifts as ARM64/x86_64)
-	l3Idx := (va >> L3Shift) & 0x1FF
-	l2Idx := (va >> L2Shift) & 0x1FF
-	l1Idx := (va >> L1Shift) & 0x1FF
-	l0Idx := (va >> L0Shift) & 0x1FF
+	// Extract indices using hardcoded shifts (RISC-V Sv48)
+	// L3=root(47:39), L2(38:30), L1(29:21), L0=leaf(20:12)
+	l3Idx := (va >> 39) & 0x1FF // Root level (512GB)
+	l2Idx := (va >> 30) & 0x1FF // 1GB level
+	l1Idx := (va >> 21) & 0x1FF // 2MB level
+	l0Idx := (va >> 12) & 0x1FF // 4KB level
 
 	// L3 table (root)
 	l3PA := ttbr1L0PA
@@ -208,7 +211,7 @@ func walkPageTable(va uintptr) uintptr {
 	if (l2Entry & (RV_PTE_R | RV_PTE_W | RV_PTE_X)) != 0 {
 		ppn := (l2Entry >> 10) & 0xFFFFFFFFFFF
 		blockPA := uintptr(ppn << 12)
-		pageOffset := va & ((1 << L2Shift) - 1) // offset within 1GB
+		pageOffset := va & ((1 << 30) - 1) // offset within 1GB
 		return blockPA | pageOffset
 	}
 
@@ -225,7 +228,7 @@ func walkPageTable(va uintptr) uintptr {
 	if (l1Entry & (RV_PTE_R | RV_PTE_W | RV_PTE_X)) != 0 {
 		ppn := (l1Entry >> 10) & 0xFFFFFFFFFFF
 		blockPA := uintptr(ppn << 12)
-		pageOffset := va & ((1 << L1Shift) - 1) // offset within 2MB
+		pageOffset := va & ((1 << 21) - 1) // offset within 2MB
 		return blockPA | pageOffset
 	}
 
@@ -242,4 +245,193 @@ func walkPageTable(va uintptr) uintptr {
 	ppn := (l0Entry >> 10) & 0xFFFFFFFFFFF
 	pa := uintptr(ppn << 12)
 	return pa | (va & (PageSize - 1))
+}
+
+// printHexRaw prints a 64-bit value as 16 hex digits via raw UART.
+//
+//go:nosplit
+func printHexRaw(val uint64) {
+	hexChars := "0123456789ABCDEF"
+	for i := 60; i >= 0; i -= 4 {
+		nibble := (val >> uint(i)) & 0xF
+		rawUART(hexChars[nibble])
+	}
+}
+
+// DumpInstructionPageFault walks the Sv48 page table for the given VA and
+// prints each level's PTE to UART. Called from the instruction page fault
+// handler in exceptions_riscv64.s to diagnose why a pre-mapped code page
+// fails the page table walk after sfence.vma.
+//
+//go:nosplit
+func DumpInstructionPageFault(va uintptr) {
+	// Print SATP register value
+	satp := readTTBR0EL1() // reads SATP on RISC-V
+	rawUART('\r')
+	rawUART('\n')
+	rawUART('S')
+	rawUART('A')
+	rawUART('T')
+	rawUART('P')
+	rawUART('=')
+	printHexRaw(uint64(satp))
+
+	// Print expected root PA (from auxv)
+	rawUART(' ')
+	rawUART('R')
+	rawUART('=')
+	printHexRaw(uint64(ttbr1L0PA))
+	rawUART('\r')
+	rawUART('\n')
+
+	// Extract root PPN from SATP (bits 43:0 = PPN)
+	ppn := uint64(satp) & 0xFFFFFFFFFFF // lower 44 bits
+	rootPA := uintptr(ppn << 12)
+	rootVA := rootPA + constants.KernelMMIOOffset
+
+	// Print decoded root PA
+	rawUART('P')
+	rawUART('A')
+	rawUART('=')
+	printHexRaw(uint64(rootPA))
+	rawUART('\r')
+	rawUART('\n')
+
+	// L3 (root level, bits 47:39)
+	l3Idx := (va >> 39) & 0x1FF
+	l3Entry := *(*uint64)(unsafe.Pointer(rootVA + l3Idx*8))
+	rawUART('L')
+	rawUART('3')
+	rawUART('[')
+	printHexRaw(uint64(l3Idx))
+	rawUART(']')
+	rawUART('=')
+	printHexRaw(l3Entry)
+	rawUART('\r')
+	rawUART('\n')
+
+	if (l3Entry & RV_PTE_V) == 0 {
+		rawUART('!')
+		rawUART('I')
+		rawUART('N')
+		rawUART('V')
+		rawUART('\r')
+		rawUART('\n')
+		return
+	}
+
+	// L2 (bits 38:30)
+	ppn2 := (l3Entry >> 10) & 0xFFFFFFFFFFF
+	l2PA := uintptr(ppn2 << 12)
+	l2VA := l2PA + constants.KernelMMIOOffset
+	l2Idx := (va >> 30) & 0x1FF
+	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
+	rawUART('L')
+	rawUART('2')
+	rawUART('[')
+	printHexRaw(uint64(l2Idx))
+	rawUART(']')
+	rawUART('=')
+	printHexRaw(l2Entry)
+	rawUART('\r')
+	rawUART('\n')
+
+	if (l2Entry & RV_PTE_V) == 0 {
+		rawUART('!')
+		rawUART('I')
+		rawUART('N')
+		rawUART('V')
+		rawUART('\r')
+		rawUART('\n')
+		return
+	}
+	// Check if L2 is a leaf (gigapage)
+	if (l2Entry & (RV_PTE_R | RV_PTE_W | RV_PTE_X)) != 0 {
+		rawUART('G')
+		rawUART('P')
+		rawUART('\r')
+		rawUART('\n')
+		return
+	}
+
+	// L1 (bits 29:21)
+	ppn1 := (l2Entry >> 10) & 0xFFFFFFFFFFF
+	l1PA := uintptr(ppn1 << 12)
+	l1VA := l1PA + constants.KernelMMIOOffset
+	l1Idx := (va >> 21) & 0x1FF
+	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
+	rawUART('L')
+	rawUART('1')
+	rawUART('[')
+	printHexRaw(uint64(l1Idx))
+	rawUART(']')
+	rawUART('=')
+	printHexRaw(l1Entry)
+	rawUART('\r')
+	rawUART('\n')
+
+	if (l1Entry & RV_PTE_V) == 0 {
+		rawUART('!')
+		rawUART('I')
+		rawUART('N')
+		rawUART('V')
+		rawUART('\r')
+		rawUART('\n')
+		return
+	}
+	// Check if L1 is a leaf (megapage)
+	if (l1Entry & (RV_PTE_R | RV_PTE_W | RV_PTE_X)) != 0 {
+		rawUART('M')
+		rawUART('P')
+		if (l1Entry & RV_PTE_X) == 0 {
+			rawUART('!')
+			rawUART('X')
+		}
+		rawUART('\r')
+		rawUART('\n')
+		return
+	}
+
+	// L0 (leaf level, bits 20:12)
+	ppn0 := (l1Entry >> 10) & 0xFFFFFFFFFFF
+	l0PA := uintptr(ppn0 << 12)
+	l0VA := l0PA + constants.KernelMMIOOffset
+	l0Idx := (va >> 12) & 0x1FF
+	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
+	rawUART('L')
+	rawUART('0')
+	rawUART('[')
+	printHexRaw(uint64(l0Idx))
+	rawUART(']')
+	rawUART('=')
+	printHexRaw(l0Entry)
+	rawUART('\r')
+	rawUART('\n')
+
+	if (l0Entry & RV_PTE_V) == 0 {
+		rawUART('!')
+		rawUART('I')
+		rawUART('N')
+		rawUART('V')
+		rawUART('\r')
+		rawUART('\n')
+		return
+	}
+
+	// Report permission bits
+	if (l0Entry & RV_PTE_X) == 0 {
+		rawUART('!')
+		rawUART('X')
+	}
+	if (l0Entry & RV_PTE_R) != 0 {
+		rawUART('R')
+	}
+	if (l0Entry & RV_PTE_W) != 0 {
+		rawUART('W')
+	}
+	if (l0Entry & RV_PTE_X) != 0 {
+		rawUART('X')
+	}
+	rawUART('\r')
+	rawUART('\n')
 }

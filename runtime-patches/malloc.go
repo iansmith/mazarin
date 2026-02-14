@@ -308,9 +308,10 @@ const (
 	// On other platforms, the user address space is contiguous
 	// and starts at 0, so no offset is necessary.
 	//
-	// On linux/arm64 for kmazarin kernel, we use high memory addresses
-	// (TTBR1 space, 0xFFFF...) for the kernel heap, requiring an offset.
-	arenaBaseOffset = 0xffff800000000000*goarch.IsAmd64 + 0x0a00000000000000*goos.IsAix + 0xFFFF000000000000*goos.IsLinux*goarch.IsArm64
+	// On linux/arm64 and linux/riscv64 for kmazarin kernel, we use high memory
+	// addresses (kernel space, 0xFFFF...) for the kernel heap, requiring an offset.
+	// ARM64: TTBR1 space. RISC-V Sv48: canonical kernel addresses (bits 48-63 = 1).
+	arenaBaseOffset = 0xffff800000000000*goarch.IsAmd64 + 0x0a00000000000000*goos.IsAix + 0xFFFF000000000000*goos.IsLinux*goarch.IsArm64 + 0xFFFF000000000000*goos.IsLinux*goarch.IsRiscv64
 	// A typed version of this constant that will make it into DWARF (for viewcore).
 	arenaBaseOffsetUintptr = uintptr(arenaBaseOffset)
 

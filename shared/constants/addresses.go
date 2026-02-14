@@ -31,8 +31,7 @@ const (
 	// MMIO mapping offset - add to physical address to get kernel VA
 	KernelMMIOOffset = 0xFFFFFFFF00000000
 
-	// UART PL011 - physical 0x0900_0000 -> virtual 0xFFFF_FFFF_0900_0000
-	KernelUartBase = KernelMMIOOffset + 0x09000000
+	// KernelUartBase is arch-specific — see addresses_{arm64,amd64,riscv64}.go
 
 	// GIC - physical 0x0800_0000 -> virtual 0xFFFF_FFFF_0800_0000
 	KernelGicBase = KernelMMIOOffset + 0x08000000

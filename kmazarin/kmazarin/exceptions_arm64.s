@@ -9,7 +9,7 @@
 // CRITICAL: Exception vector MUST be 2KB aligned (ARM64 requirement)
 
 #include "textflag.h"
-#include "../../docs/abi/go_abi_macros_arm64.h"
+#include "go_abi_macros_arm64.h"
 
 // UART base for minimal debug output
 // NOTE: Use high-memory UART address since kmazarin runs at high memory

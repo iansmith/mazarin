@@ -132,22 +132,13 @@ func readClusterDirect(fs *fat32.FileSystem, cluster uint32, buf []byte) error {
 // readClusterDirectNoError reads a cluster without returning error (for early boot).
 // Panics on failure instead of allocating error interface.
 func readClusterDirectNoError(fs *fat32.FileSystem, cluster uint32, buf []byte) {
-	debugPortOut('r')
 	startSector := fs.ClusterToSector(cluster)
-	debugPortOut('s')
 	secPerClus := fs.BytesPerCluster() / 512
-	debugPortOut('p')
 
 	for i := uint32(0); i < secPerClus; i++ {
-		debugPortOut('i')
 		offset := i * 512
-		debugPortOut('o')
-		// Use RISC-V specific no-error block read - call directly to avoid write barrier
-		debugPortOut('P')
 		ReadBlockVirtIONoError(startSector+uint64(i), buf[offset:offset+512])
-		debugPortOut('Q')
 	}
-	debugPortOut('d')
 }
 
 // FAT buffer for reading FAT entries

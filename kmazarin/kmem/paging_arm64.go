@@ -392,3 +392,8 @@ func walkPageTable(va uintptr) uintptr {
 	pa := uintptr(l3Entry & PTE_ADDR_MASK)
 	return pa | (va & (PageSize - 1))
 }
+
+// DumpInstructionPageFault is a no-op on ARM64.
+// The RISC-V version walks Sv48 page tables for diagnostic output.
+func DumpInstructionPageFault(va uintptr) {
+}

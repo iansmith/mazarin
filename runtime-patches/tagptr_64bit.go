@@ -81,10 +81,11 @@ func taggedPointerPack(ptr unsafe.Pointer, tag uintptr) taggedPointer {
 // - Kernel addresses (TTBR1): bit 47 = 1, sign extends to 0xFFFF...
 // - ARM64 canonical addresses require bits 48-63 to match bit 47
 func (tp taggedPointer) pointer() unsafe.Pointer {
-	if GOARCH == "amd64" || GOARCH == "arm64" {
+	if GOARCH == "amd64" || GOARCH == "arm64" || GOARCH == "riscv64" {
 		// amd64 systems can place the stack above the VA hole, so we need to sign extend
 		// val before unpacking.
 		// arm64/kmazarin: kernel uses TTBR1 addresses (0xFFFF...) which also need sign extension.
+		// riscv64/kmazarin: Sv48 kernel addresses have bits 48-63 = 1 (sign-extended from bit 47).
 		return unsafe.Pointer(uintptr(int64(tp) >> tagBits << tagAlignBits))
 	}
 	if GOOS == "aix" {

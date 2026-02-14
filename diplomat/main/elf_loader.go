@@ -419,6 +419,10 @@ func readFileAt(fs *fat32.FileSystem, file *SimpleFile, offset uint64, buf []byt
 		totalRead += toCopy
 		remaining -= toCopy
 		inClusterOffset = 0
+
+		if remaining <= 0 {
+			break
+		}
 		clusterIdx++
 
 		// Next cluster
@@ -447,25 +451,18 @@ func readClusterSectorDirect(lba uint64, buf []byte) {
 // readFileAtRaw reads from a file at a given offset without allocating error interfaces.
 // Returns (bytes_read, error_code) where error_code is 0 on success.
 func readFileAtRaw(fs *fat32.FileSystem, file *SimpleFile, offset uint64, buf []byte) (int, int) {
-	debugPortOut('r')
 	if offset >= uint64(file.Size) {
 		return 0, fat32.ErrCodeSuccess
 	}
-	debugPortOut('s')
 
 	bytesPerClus := uint64(fs.BytesPerCluster())
-	debugPortOut('t')
 	clusterIdx := offset / bytesPerClus
-	debugPortOut('u')
 
 	var cluster uint32
 	if file.HasMap && uint32(clusterIdx) < file.MapLen {
-		debugPortOut('v')
 		// O(1) indexed access via cached cluster map
 		cluster = clusterMap[clusterIdx]
-		debugPortOut('w')
 	} else {
-		debugPortOut('x')
 		// Fallback: walk the chain from the beginning
 		cluster = file.Cluster
 		for i := uint64(0); i < clusterIdx; i++ {
@@ -481,30 +478,21 @@ func readFileAtRaw(fs *fat32.FileSystem, file *SimpleFile, offset uint64, buf []
 	}
 
 	// Read data
-	debugPortOut('y')
 	inClusterOffset := offset % bytesPerClus
 	totalRead := 0
 	remaining := len(buf)
-	debugPortOut('z')
 
 	for remaining > 0 && cluster >= 2 && !fat32.IsEOF(cluster) {
-		debugPortOut('A')
 		// Read cluster directly to avoid type assertion allocation
 		// Convert cluster to sector using FAT32 formula
-		debugPortOut('(')
 		sectorsPerCluster := bytesPerClus / 512
 		startSector := fs.ClusterToSector(cluster)
-		debugPortOut(')')
 
 		// Read all sectors in the cluster directly
-		debugPortOut('[')
 		for sectorIdx := uint64(0); sectorIdx < sectorsPerCluster; sectorIdx++ {
-			debugPortOut('{')
 			sectorOffset := sectorIdx * 512
 			readClusterSectorDirect(startSector+sectorIdx, dirClusterBuf[sectorOffset:sectorOffset+512])
-			debugPortOut('}')
 		}
-		debugPortOut(']')
 
 		// Copy from cluster to output buffer
 		toCopy := int(bytesPerClus - inClusterOffset)
@@ -522,6 +510,14 @@ func readFileAtRaw(fs *fat32.FileSystem, file *SimpleFile, offset uint64, buf []
 		totalRead += toCopy
 		remaining -= toCopy
 		inClusterOffset = 0
+
+		// Only fetch next cluster if we still need more data.
+		// Without this check, clusterIdx can exceed file.MapLen,
+		// falling through to fs.ReadFATEntryRaw which does a type
+		// assertion that allocates — crashing during early boot.
+		if remaining <= 0 {
+			break
+		}
 		clusterIdx++
 
 		// Next cluster
@@ -575,6 +571,7 @@ func copySegmentToMemoryRaw(fs *fat32.FileSystem, file *SimpleFile, fileOffset, 
 	dest := unsafe.Pointer(uintptr(memAddr))
 	remaining := size
 	offset := fileOffset
+	chunks := uint64(0)
 
 	for remaining > 0 {
 		toRead := uint64(len(elfReadBuf))
@@ -598,6 +595,11 @@ func copySegmentToMemoryRaw(fs *fat32.FileSystem, file *SimpleFile, fileOffset, 
 		dest = unsafe.Pointer(uintptr(dest) + uintptr(n))
 		offset += uint64(n)
 		remaining -= uint64(n)
+		chunks++
+		// Print a dot every 64 chunks (~256KB) for progress
+		if chunks%64 == 0 {
+			debugPortOut('.')
+		}
 	}
 }
 
@@ -616,6 +618,75 @@ func zeroMemory(addr, size uint64) {
 	}
 }
 
+// readEntireFileToMemoryBulk reads an entire FAT32 file into physical memory
+// using multi-sector VirtIO reads. The destination memory must be identity-mapped.
+// Reads contiguous runs of clusters in bulk for maximum throughput.
+// Returns the number of bytes read.
+func readEntireFileToMemoryBulk(fs *fat32.FileSystem, file *SimpleFile, destAddr uint64) uint64 {
+	sectorsPerCluster := uint64(fs.BytesPerCluster()) / 512
+
+	// Maximum sectors per bulk read (64KB = 128 sectors)
+	const maxBulkSectors = 128
+
+	remaining := uint64(file.Size)
+	dest := destAddr
+	clusterIdx := uint32(0)
+	totalRead := uint64(0)
+	bulkOps := uint64(0)
+
+	for remaining > 0 && clusterIdx < file.MapLen {
+		// Find contiguous run of clusters starting from clusterIdx
+		startCluster := clusterMap[clusterIdx]
+		runLength := uint32(1)
+		for clusterIdx+runLength < file.MapLen &&
+			clusterMap[clusterIdx+runLength] == startCluster+runLength {
+			runLength++
+		}
+
+		// Convert to sectors
+		startSector := fs.ClusterToSector(startCluster)
+		totalSectors := uint64(runLength) * sectorsPerCluster
+
+		// Read contiguous sectors in chunks
+		sectorOffset := uint64(0)
+		for sectorOffset < totalSectors && remaining > 0 {
+			chunk := totalSectors - sectorOffset
+			if chunk > maxBulkSectors {
+				chunk = maxBulkSectors
+			}
+
+			// Don't read past the file
+			bytesThisChunk := chunk * 512
+			if bytesThisChunk > remaining+511 {
+				// Only need enough sectors for remaining data
+				chunk = (remaining + 511) / 512
+				bytesThisChunk = chunk * 512
+			}
+
+			buf := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(dest))), bytesThisChunk)
+			readBlockVirtIOBulk(startSector+sectorOffset, buf)
+			bulkOps++
+
+			actualBytes := bytesThisChunk
+			if actualBytes > remaining {
+				actualBytes = remaining
+			}
+
+			dest += actualBytes
+			remaining -= actualBytes
+			totalRead += actualBytes
+			sectorOffset += chunk
+		}
+
+		clusterIdx += runLength
+	}
+
+	printString("ELF: bulk read complete (")
+	printHex(bulkOps)
+	printString(" VirtIO ops)\r\n")
+	return totalRead
+}
+
 // JumpToKernel transfers control to the loaded kernel
 // This should be called after ExitBootServices
 func JumpToKernel(entry uint64) {
@@ -627,15 +698,16 @@ func jumpToEntry(entry uint64)
 
 // Symbols we want to extract from kmazarin's ELF.
 // Initialized explicitly byte-by-byte to avoid depending on Go init() running.
-var wantedSymbols [5][32]byte
+var wantedSymbols [6][32]byte
 
 func initWantedSymbols() {
-	names := [5]string{
+	names := [6]string{
 		"main.ExceptionVectorTable",
 		"main.isr14",
 		"main.isr48",
 		"main.isr128",
 		"main.isr255",
+		"main.trapEntry", // RISC-V STVEC handler (harmless if not found on other archs)
 	}
 	for w, s := range names {
 		for i := 0; i < len(s); i++ {
@@ -916,6 +988,310 @@ func extractSymbolsNoError(fsys *fat32.FileSystem, file *SimpleFile, ehdr *elf64
 	}
 }
 
+// extractSymbolsFromMemory extracts wanted symbols from an ELF that's already
+// entirely in memory. No disk access needed — everything is read directly from the
+// in-memory buffer. This is used by LoadKernelNoError (RISC-V bulk loading path).
+func extractSymbolsFromMemory(elfBase uint64, elfSize uint64, ehdr *elf64Ehdr, kernel *LoadedKernel) {
+	initWantedSymbols()
+
+	if ehdr.Shoff == 0 || ehdr.Shnum == 0 {
+		printString("ELF: no section headers\r\n")
+		return
+	}
+	if ehdr.Shoff+uint64(ehdr.Shnum)*uint64(elfShdrSize) > elfSize {
+		printString("ELF: section headers past end of file\r\n")
+		return
+	}
+
+	// Read section headers from memory
+	shdrPtr := unsafe.Pointer(uintptr(elfBase) + uintptr(ehdr.Shoff))
+
+	// Find .symtab section
+	var symtab *elf64Shdr
+	for i := uint16(0); i < ehdr.Shnum; i++ {
+		sh := (*elf64Shdr)(unsafe.Pointer(uintptr(shdrPtr) + uintptr(i)*uintptr(elfShdrSize)))
+		if sh.Type == elfSHT_SYMTAB {
+			symtab = sh
+			break
+		}
+	}
+	if symtab == nil {
+		printString("ELF: no .symtab\r\n")
+		return
+	}
+
+	// Get .strtab section (linked from .symtab)
+	if symtab.Link >= uint32(ehdr.Shnum) {
+		printString("ELF: bad strtab link\r\n")
+		return
+	}
+	strtab := (*elf64Shdr)(unsafe.Pointer(uintptr(shdrPtr) + uintptr(symtab.Link)*uintptr(elfShdrSize)))
+
+	numSyms := symtab.Size / uint64(elfSymSize)
+
+	printString("ELF: symtab ")
+	printHex(numSyms)
+	printString(" syms, strtab ")
+	printHex(strtab.Size)
+	printString(" bytes (in-memory)\r\n")
+
+	// Both symtab and strtab are in the in-memory ELF buffer
+	strtabBase := uintptr(elfBase) + uintptr(strtab.Offset)
+	symtabBase := uintptr(elfBase) + uintptr(symtab.Offset)
+
+	// Scan symbol table for wanted symbols
+	found := 0
+	for i := uint64(0); i < numSyms && found < len(wantedSymbols); i++ {
+		sym := (*elf64Sym)(unsafe.Pointer(symtabBase + uintptr(i)*uintptr(elfSymSize)))
+		if sym.Name == 0 || sym.Value == 0 {
+			continue
+		}
+
+		// Read symbol name from in-memory string table
+		nameIdx := uint64(sym.Name)
+		if nameIdx >= strtab.Size {
+			continue
+		}
+		src := unsafe.Pointer(strtabBase + uintptr(nameIdx))
+		maxCopy := strtab.Size - nameIdx
+		if maxCopy > uint64(len(symNameBuf)) {
+			maxCopy = uint64(len(symNameBuf))
+		}
+		for j := uint64(0); j < maxCopy; j++ {
+			symNameBuf[j] = *(*byte)(unsafe.Pointer(uintptr(src) + uintptr(j)))
+			if symNameBuf[j] == 0 {
+				break
+			}
+		}
+
+		// Check against wanted symbols
+		for w := 0; w < len(wantedSymbols); w++ {
+			if matchSymName(symNameBuf[:], wantedSymbols[w]) {
+				if int(kernel.NumSymbols) < len(kernel.Symbols) {
+					ks := &kernel.Symbols[kernel.NumSymbols]
+					for j := 0; j < 64 && wantedSymbols[w][j] != 0; j++ {
+						ks.Name[j] = wantedSymbols[w][j]
+					}
+					ks.Value = sym.Value
+					kernel.NumSymbols++
+					found++
+
+					printString("ELF: found ")
+					printSymName(wantedSymbols[w][:])
+					printString(" = ")
+					printHex(sym.Value)
+					printString("\r\n")
+				}
+			}
+		}
+	}
+
+	if found == 0 {
+		printString("ELF: no wanted symbols found\r\n")
+	}
+}
+
+// strtabMem is a static buffer for bulk-reading the ELF string table.
+// Go binaries typically have strtab sections of 100-300KB.
+// We allocate 256KB statically to avoid needing the bump allocator
+// (which isn't initialized until PrepareKernelVM, after kernel loading).
+var strtabMemBuf [256 * 1024]byte
+var strtabBufSize uint64
+
+// extractSymbolsBulkStrtab reads the ELF symbol table with a bulk string table read.
+// This avoids the per-symbol VirtIO reads that cause timeouts on RISC-V.
+// The entire .strtab section is read into memory first, then symbol names
+// are resolved by in-memory access instead of disk reads.
+func extractSymbolsBulkStrtab(fsys *fat32.FileSystem, file *SimpleFile, ehdr *elf64Ehdr, kernel *LoadedKernel) {
+	initWantedSymbols()
+
+	if ehdr.Shoff == 0 || ehdr.Shnum == 0 {
+		printString("ELF: no section headers\r\n")
+		return
+	}
+	if ehdr.Shnum > 64 {
+		printString("ELF: too many sections\r\n")
+		return
+	}
+
+	// Read section headers
+	shdrBytes := int(ehdr.Shnum) * elfShdrSize
+	n, errCode := readFileAtRaw(fsys, file, ehdr.Shoff, (*[64 * elfShdrSize]byte)(unsafe.Pointer(&shdrBuf[0]))[:shdrBytes])
+	if errCode != fat32.ErrCodeSuccess || n < shdrBytes {
+		printString("ELF: failed to read section headers\r\n")
+		return
+	}
+
+	// Find .symtab section
+	var symtab *elf64Shdr
+	for i := uint16(0); i < ehdr.Shnum; i++ {
+		if shdrBuf[i].Type == elfSHT_SYMTAB {
+			symtab = &shdrBuf[i]
+			break
+		}
+	}
+	if symtab == nil {
+		printString("ELF: no .symtab\r\n")
+		return
+	}
+
+	// The .symtab's Link field points to its associated .strtab section
+	if symtab.Link >= uint32(ehdr.Shnum) {
+		printString("ELF: bad strtab link\r\n")
+		return
+	}
+	strtab := &shdrBuf[symtab.Link]
+
+	numSyms := symtab.Size / uint64(elfSymSize)
+
+	printString("ELF: symtab at off=")
+	printHex(symtab.Offset)
+	printString(" ")
+	printHex(numSyms)
+	printString(" syms, strtab off=")
+	printHex(strtab.Offset)
+	printString(" size=")
+	printHex(strtab.Size)
+	printString("\r\n")
+
+	// Bulk-read the entire string table into memory using static buffer
+	if strtab.Size > uint64(len(strtabMemBuf)) {
+		printString("ELF: strtab too large (")
+		printHex(strtab.Size)
+		printString(" > ")
+		printHex(uint64(len(strtabMemBuf)))
+		printString("), skipping symbols\r\n")
+		return
+	}
+	strtabMem := uintptr(unsafe.Pointer(&strtabMemBuf[0]))
+	strtabBufSize = strtab.Size
+
+	printString("ELF: bulk-reading strtab (")
+	printHex(strtab.Size)
+	printString(" bytes) dest=")
+	printHex(uint64(strtabMem))
+	printString(" fileoff=")
+	printHex(strtab.Offset)
+	printString("\r\n")
+
+	// Read strtab into the static buffer using readFileAtRaw
+	{
+		strtabRemaining := strtab.Size
+		strtabFileOff := strtab.Offset
+		strtabDest := strtabMem
+		chunkNum := uint64(0)
+
+		for strtabRemaining > 0 {
+			toRead := uint64(len(elfReadBuf))
+			if toRead > strtabRemaining {
+				toRead = strtabRemaining
+			}
+
+			debugPortOut('[')
+			n, errCode := readFileAtRaw(fsys, file, strtabFileOff, elfReadBuf[:toRead])
+			debugPortOut(']')
+			if errCode != fat32.ErrCodeSuccess {
+				printString("ERROR: strtab read failed at chunk ")
+				printHex(chunkNum)
+				printString(" code=")
+				printHex(uint64(errCode))
+				printString("\r\n")
+				return
+			}
+			if n == 0 {
+				printString("WARN: strtab read 0 bytes at chunk ")
+				printHex(chunkNum)
+				printString("\r\n")
+				break
+			}
+
+			// Copy to strtab buffer
+			for j := 0; j < n; j++ {
+				strtabMemBuf[uint64(strtabDest-uintptr(unsafe.Pointer(&strtabMemBuf[0])))+uint64(j)] = elfReadBuf[j]
+			}
+			strtabDest += uintptr(n)
+			strtabFileOff += uint64(n)
+			strtabRemaining -= uint64(n)
+			chunkNum++
+			debugPortOut('.')
+		}
+		printString("\r\nELF: strtab read complete (")
+		printHex(chunkNum)
+		printString(" chunks)\r\n")
+	}
+
+	printString("ELF: strtab loaded, scanning symbols...\r\n")
+
+	// Scan symbol table entries for wanted symbols
+	found := 0
+	symsPerChunk := uint64(len(elfReadBuf)) / uint64(elfSymSize)
+
+	for offset := uint64(0); offset < numSyms && found < len(wantedSymbols); offset += symsPerChunk {
+		remaining := numSyms - offset
+		if remaining > symsPerChunk {
+			remaining = symsPerChunk
+		}
+		readSize := int(remaining * uint64(elfSymSize))
+		fileOff := symtab.Offset + offset*uint64(elfSymSize)
+
+		n, errCode := readFileAtRaw(fsys, file, fileOff, elfReadBuf[:readSize])
+		if errCode != fat32.ErrCodeSuccess || n < readSize {
+			break
+		}
+
+		// Process each symbol in this chunk
+		for i := uint64(0); i < remaining; i++ {
+			sym := (*elf64Sym)(unsafe.Pointer(&elfReadBuf[i*uint64(elfSymSize)]))
+			if sym.Name == 0 || sym.Value == 0 {
+				continue
+			}
+
+			// Read symbol name from IN-MEMORY string table (no disk access!)
+			nameIdx := uint64(sym.Name)
+			if nameIdx >= strtabBufSize {
+				continue
+			}
+			// Copy name from strtab memory to symNameBuf
+			src := unsafe.Pointer(uintptr(strtabMem) + uintptr(nameIdx))
+			maxCopy := strtabBufSize - nameIdx
+			if maxCopy > uint64(len(symNameBuf)) {
+				maxCopy = uint64(len(symNameBuf))
+			}
+			for j := uint64(0); j < maxCopy; j++ {
+				symNameBuf[j] = *(*byte)(unsafe.Pointer(uintptr(src) + uintptr(j)))
+				if symNameBuf[j] == 0 {
+					break
+				}
+			}
+
+			// Check against wanted symbols
+			for w := 0; w < len(wantedSymbols); w++ {
+				if matchSymName(symNameBuf[:], wantedSymbols[w]) {
+					if kernel.NumSymbols < len(kernel.Symbols) {
+						ks := &kernel.Symbols[kernel.NumSymbols]
+						for j := 0; j < 64 && wantedSymbols[w][j] != 0; j++ {
+							ks.Name[j] = wantedSymbols[w][j]
+						}
+						ks.Value = sym.Value
+						kernel.NumSymbols++
+						found++
+
+						printString("ELF: found ")
+						printSymName(wantedSymbols[w][:])
+						printString(" = ")
+						printHex(sym.Value)
+						printString("\r\n")
+					}
+				}
+			}
+		}
+	}
+
+	printString("ELF: symbol extraction done (")
+	printHex(uint64(found))
+	printString(" found)\r\n")
+}
+
 // findInDirNoError finds a file in a directory without allocating error interfaces (for early boot).
 // Panics on failure instead of returning errors.
 func findInDirNoError(fs *fat32.FileSystem, cluster uint32, name string) *SimpleDirEntry {
@@ -1010,75 +1386,88 @@ func findFileNoError(fs *fat32.FileSystem, path string) *SimpleFile {
 }
 
 // LoadKernelNoError loads kernel without allocating error interfaces (for RISC-V early boot).
-// Panics on failure instead of returning errors.
+// Reads the entire ELF file into memory using bulk VirtIO reads, then processes
+// everything from the in-memory buffer. This dramatically reduces VirtIO operations
+// (from thousands of 512-byte reads to ~50 bulk reads) and avoids VirtIO timeout issues.
 func LoadKernelNoError(fsys *fat32.FileSystem, path string) *LoadedKernel {
-	debugPortOut('a')
 	file := findFileNoError(fsys, path)
-	debugPortOut('b')
 	printString("Kernel file found\r\n")
 
-	debugPortOut('c')
-	// Build cluster map for O(1) random access (critical for symbol table scanning)
+	// Build cluster map for O(1) random access (needed for bulk reads)
 	buildClusterMap(fsys, file)
-	debugPortOut('C')
 
-	// Read ELF header
-	debugPortOut('e')
-	var ehdr elf64Ehdr
-	n, errCode := readFileAtRaw(fsys, file, 0, (*[elfEhdrSize]byte)(unsafe.Pointer(&ehdr))[:])
-	if errCode != fat32.ErrCodeSuccess || n < elfEhdrSize {
-		printString("ERROR: Failed to read ELF header\r\n")
+	// Allocate physical memory (extra 2MB for alignment)
+	printString("ELF: allocating memory...\r\n")
+	allocSize := uint64(DefaultKernelMemSize) + Page2MBSize
+	physPages := allocSize / PageSize
+	rawPhys := allocatePhysPagesNoError(physPages)
+	// Align up to 2MB boundary for 2MB page table entries
+	physBase := (rawPhys + Page2MBSize - 1) &^ (Page2MBSize - 1)
+
+	// Zero the physical region
+	printString("ELF: zeroing ")
+	printHex(DefaultKernelMemSize)
+	printString(" @ ")
+	printHex(physBase)
+	printString("\r\n")
+	plat.ZeroMemory(physBase, DefaultKernelMemSize)
+
+	// Read entire ELF file into a temporary buffer at physBase + 32MB.
+	// This keeps it well clear of the final segment destinations (< 4MB from physBase).
+	tempBuf := physBase + 32*1024*1024
+	printString("ELF: reading entire file (")
+	printHex(uint64(file.Size))
+	printString(" bytes) to ")
+	printHex(tempBuf)
+	printString("\r\n")
+
+	nRead := readEntireFileToMemoryBulk(fsys, file, tempBuf)
+	if nRead < uint64(file.Size) {
+		printString("ERROR: short read, got ")
+		printHex(nRead)
+		printString(" expected ")
+		printHex(uint64(file.Size))
+		printString("\r\n")
 		for {}
 	}
-	debugPortOut('d')
+
+	// Parse ELF from memory
+	ehdr := (*elf64Ehdr)(unsafe.Pointer(uintptr(tempBuf)))
 
 	// Validate ELF
-	debugPortOut('V')
 	magic := *(*uint32)(unsafe.Pointer(&ehdr.Ident[0]))
 	if magic != elfMagic {
 		printString("ERROR: Not an ELF file\r\n")
 		for {}
 	}
-	debugPortOut('W')
 	if ehdr.Ident[4] != elfClass64 || ehdr.Ident[5] != elfDataLSB {
 		printString("ERROR: Not ELF64 LE\r\n")
 		for {}
 	}
-	debugPortOut('X')
 	if ehdr.Machine != elfMachineExpected {
 		printString("ERROR: Machine type mismatch\r\n")
 		for {}
 	}
-	debugPortOut('Y')
 
-	debugPortOut('P')
 	printString("ELF: entry=")
-	debugPortOut('Q')
 	printHex(ehdr.Entry)
-	debugPortOut('R')
 	printString(" phdrs=")
-	debugPortOut('S')
 	printHex(uint64(ehdr.Phnum))
-	debugPortOut('T')
 	printString("\r\n")
-	debugPortOut('U')
 
-	// Read program headers
+	// Read program headers from memory
 	if ehdr.Phnum > 32 {
 		printString("ERROR: Too many program headers\r\n")
 		for {}
 	}
-	debugPortOut('f')
 	var phdrs [32]elf64Phdr
 	phdrBytes := int(ehdr.Phnum) * elfPhdrSize
-	n, errCode = readFileAtRaw(fsys, file, ehdr.Phoff, (*[32 * elfPhdrSize]byte)(unsafe.Pointer(&phdrs[0]))[:phdrBytes])
-	if errCode != fat32.ErrCodeSuccess || n < phdrBytes {
-		printString("ERROR: Failed to read program headers\r\n")
-		for {}
+	phdrSrc := unsafe.Pointer(uintptr(tempBuf) + uintptr(ehdr.Phoff))
+	for i := 0; i < phdrBytes; i++ {
+		(*[32 * elfPhdrSize]byte)(unsafe.Pointer(&phdrs[0]))[i] = *(*byte)(unsafe.Pointer(uintptr(phdrSrc) + uintptr(i)))
 	}
 
 	// Pass 1: Find virtual address range
-	debugPortOut('g')
 	lowestVirt := uint64(0xFFFFFFFFFFFFFFFF)
 	highestVirt := uint64(0)
 	for i := uint16(0); i < ehdr.Phnum; i++ {
@@ -1105,27 +1494,8 @@ func LoadKernelNoError(fsys *fat32.FileSystem, path string) *LoadedKernel {
 	printHex(highestVirt)
 	printString("\r\n")
 
-	// Allocate physical memory (extra 2MB for alignment)
-	debugPortOut('h')
-	printString("ELF: allocating memory...\r\n")
-	allocSize := uint64(DefaultKernelMemSize) + Page2MBSize
-	physPages := allocSize / PageSize
-	rawPhys := allocatePhysPagesNoError(physPages)
-	// Align up to 2MB boundary for 2MB page table entries
-	physBase := (rawPhys + Page2MBSize - 1) &^ (Page2MBSize - 1)
-
-	// Zero the physical region
-	debugPortOut('i')
-	printString("ELF: zeroing ")
-	printHex(DefaultKernelMemSize)
-	printString(" @ ")
-	printHex(physBase)
-	printString("\r\n")
-	plat.ZeroMemory(physBase, DefaultKernelMemSize)
-
-	// Pass 2: Load segments
-	debugPortOut('j')
-	printString("ELF: loading segments\r\n")
+	// Pass 2: Copy segments from in-memory ELF to final physical addresses
+	printString("ELF: loading segments (from memory)\r\n")
 	for i := uint16(0); i < ehdr.Phnum; i++ {
 		ph := &phdrs[i]
 		if ph.Type != elfPTLoad || ph.Memsz == 0 {
@@ -1144,14 +1514,13 @@ func LoadKernelNoError(fsys *fat32.FileSystem, path string) *LoadedKernel {
 		printHex(ph.Memsz)
 		printString("\r\n")
 		if ph.Filesz > 0 {
-			copySegmentToMemoryRaw(fsys, file, ph.Offset, physDest, ph.Filesz)
-			printString("  seg[")
-			printHex(uint64(i))
-			printString("] done\r\n")
+			// Copy from in-memory ELF buffer to final destination
+			src := unsafe.Pointer(uintptr(tempBuf) + uintptr(ph.Offset))
+			dst := unsafe.Pointer(uintptr(physDest))
+			copyToMem(dst, unsafe.Slice((*byte)(src), ph.Filesz))
 		}
 	}
 
-	debugPortOut('k')
 	result := dNew[LoadedKernel]()
 	if result == nil {
 		printString("ERROR: dNew[LoadedKernel] failed\r\n")
@@ -1162,9 +1531,8 @@ func LoadKernelNoError(fsys *fat32.FileSystem, path string) *LoadedKernel {
 	result.HighestVirt = highestVirt
 	result.PhysBase = physBase
 
-	// Symbol extraction disabled for now (causes VirtIO timeout after many small reads)
-	// extractSymbolsNoError(fsys, file, &ehdr, result)
-	printString("(symbols skipped) ")
+	// Extract symbols from in-memory ELF (no disk access needed)
+	extractSymbolsFromMemory(tempBuf, uint64(file.Size), ehdr, result)
 
 	printString("Kernel loaded OK\r\n")
 	return result

@@ -24,6 +24,12 @@ TEXT ·PlatformRearmTimer(SB), NOSPLIT, $0-8
 	// ECALL instruction encoding: 0x00000073
 	WORD	$0x00000073
 
+	// Enable STIE (bit 5) in SIE CSR so timer interrupt can be delivered.
+	// On RISC-V, the timer interrupt is not routed through the PLIC -
+	// it's controlled directly via the SIE register.
+	MOV	$0x20, A0
+	WORD	$0x10452073  // CSRS sie, a0 (set STIE bit)
+
 	RET
 
 // PlatformReadCounter reads the TIME CSR and returns the counter value.

@@ -11,4 +11,7 @@ const (
 	KernelHeapStart = 0xFFFFFFC100000000 // Start in canonical kernel space
 	KernelHeapEnd   = 0xFFFFFFD000000000 // 60GB range
 	KernelHeapSize  = KernelHeapEnd - KernelHeapStart
+
+	// RISC-V NS16550 UART - physical 0x1000_0000 -> virtual 0xFFFF_FFFF_1000_0000
+	KernelUartBase = KernelMMIOOffset + 0x10000000
 )

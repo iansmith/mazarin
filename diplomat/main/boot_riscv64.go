@@ -840,3 +840,91 @@ func readBlockVirtIO(lba uint64, buf []byte) {
 	// Update last used index
 	lastUsedIdx = virtqUsedRing.idx
 }
+
+// readBlockVirtIOBulk reads multiple consecutive sectors using a single VirtIO request.
+// The buf must be a multiple of 512 bytes. The data is read directly into buf,
+// which must be at a valid physical address (identity-mapped in diplomat's page tables).
+// Maximum read size is limited by the VirtIO spec; typically 128 sectors (64KB) is safe.
+func readBlockVirtIOBulk(lba uint64, buf []byte) {
+	if !virtqInitialized {
+		initVirtqueue()
+	}
+
+	numSectors := len(buf) / 512
+	if numSectors == 0 || len(buf)%512 != 0 {
+		printString("ERROR: VirtIO bulk read requires multiple of 512 bytes\r\n")
+		for {}
+	}
+
+	// Fall back to single-sector reads if only 1 sector
+	if numSectors == 1 {
+		readBlockVirtIO(lba, buf)
+		return
+	}
+
+	// Set up request header
+	virtioReq.reqType = VIRTIO_BLK_T_IN
+	virtioReq.reserved = 0
+	virtioReq.sector = lba
+	virtioReq.status = 0xFF
+
+	// Temporarily modify descriptor 1 to point to the caller's buffer
+	// Save original values
+	origAddr := virtqDescTable[1].addr
+	origLen := virtqDescTable[1].len
+
+	virtqDescTable[1].addr = uint64(uintptr(unsafe.Pointer(&buf[0])))
+	virtqDescTable[1].len = uint32(len(buf))
+
+	// Memory barrier: ensure descriptors are visible before submitting
+	memoryBarrier()
+
+	// Submit request
+	idx := virtqAvailRing.idx
+	virtqAvailRing.ring[idx%16] = 0
+	virtqAvailRing.idx = idx + 1
+
+	memoryBarrier()
+
+	// Notify device
+	base := virtioMMIOBase
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_NOTIFY)) = 0
+
+	memoryBarrier()
+
+	// Poll for completion
+	timeout := 10000000 // Longer timeout for bulk reads
+	for timeout > 0 {
+		if virtqUsedRing.idx != lastUsedIdx {
+			break
+		}
+		timeout--
+	}
+
+	if timeout == 0 {
+		printString("ERROR: VirtIO bulk read timeout, lba=")
+		printHex(lba)
+		printString(" sectors=")
+		printHex(uint64(numSectors))
+		printString("\r\n")
+		for {}
+	}
+
+	// Acknowledge interrupt
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_INTERRUPT_STATUS)) = 1
+	memoryBarrier()
+
+	// Check status
+	if virtioReq.status != 0 {
+		printString("ERROR: VirtIO bulk read failed, status=")
+		printHex(uint64(virtioReq.status))
+		printString("\r\n")
+		for {}
+	}
+
+	// Restore descriptor 1 to original (for single-sector reads)
+	virtqDescTable[1].addr = origAddr
+	virtqDescTable[1].len = origLen
+
+	lastUsedIdx = virtqUsedRing.idx
+}

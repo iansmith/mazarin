@@ -197,13 +197,17 @@ func copyBytes(dst, src unsafe.Pointer, n uintptr) {
 //
 //go:nosplit
 func virtioBlockNotify(queueIndex uint16) {
-	// Calculate notify address using stored queue notify offset
-	// notify_addr = notify_base + (queue_notify_off * notify_off_multiplier)
-	notifyAddr := virtioBlockDevice.NotifyBase +
-		uintptr(virtioBlockDevice.QueueNotifyOff)*uintptr(virtioBlockDevice.NotifyConfig.NotifyOffMultiplier)
-
-	// Write queue index to notify the device
-	*(*uint16)(unsafe.Pointer(notifyAddr)) = queueIndex
+	dev := &virtioBlockDevice
+	if dev.MMIOBase != 0 {
+		// MMIO transport: write queue index to QueueNotify register (offset 0x50)
+		*(*uint32)(unsafe.Pointer(dev.MMIOBase + 0x50)) = uint32(queueIndex)
+	} else {
+		// PCI transport: calculate notify address
+		// notify_addr = notify_base + (queue_notify_off * notify_off_multiplier)
+		notifyAddr := dev.NotifyBase +
+			uintptr(dev.QueueNotifyOff)*uintptr(dev.NotifyConfig.NotifyOffMultiplier)
+		*(*uint16)(unsafe.Pointer(notifyAddr)) = queueIndex
+	}
 
 	// Memory barrier to ensure write completes
 	asm.Dsb()

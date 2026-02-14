@@ -200,6 +200,25 @@ func LoadKernelRISCVWrapper(fs *fat32.FileSystem, path string) (*LoadedKernel, e
 	return kernel, nil
 }
 
+// getExceptionHandlerForJump returns the STVEC address for the jump to kmazarin.
+// On RISC-V, we use main.trapEntry (not ExceptionVectorTable which is ARM64/AMD64).
+func getExceptionHandlerForJump(kernel *LoadedKernel, relocDelta uint64) uint64 {
+	addr := findKernelSymbol(kernel, "main.trapEntry")
+	if addr == 0 {
+		// Fall back to ExceptionVectorTable if trapEntry not found
+		addr = findKernelSymbol(kernel, "main.ExceptionVectorTable")
+	}
+	if addr == 0 {
+		printString("ERROR: neither main.trapEntry nor main.ExceptionVectorTable found\r\n")
+		for {}
+	}
+	addr += relocDelta
+	printString("STVEC: kmazarin trapEntry = ")
+	printHex(addr)
+	printString("\r\n")
+	return addr
+}
+
 // ReadConfigRISCV returns default config without reading the config file.
 // Used for RISC-V early boot to avoid error interface allocation from file operations.
 // Config file reading is optional - defaults are sufficient for boot.

@@ -248,3 +248,8 @@ func walkPageTable(va uintptr) uintptr {
 // PTE_ADDR_MASK_2MB masks out the page offset bits for 2MB pages.
 // x86_64 2MB PDE stores the PA in bits [51:21] (not [51:12] like 4KB PTEs).
 const PTE_ADDR_MASK_2MB = 0x0000FFFFFFFE0000
+
+// DumpInstructionPageFault is a no-op on x86_64.
+// The RISC-V version walks Sv48 page tables for diagnostic output.
+func DumpInstructionPageFault(va uintptr) {
+}

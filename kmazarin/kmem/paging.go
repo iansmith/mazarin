@@ -569,15 +569,17 @@ func HandlePageFault(faultAddr uintptr) bool {
 	isbSY()
 	debugPrint('B') // DEBUG: barriers done
 
-	// SKIP zeroing for now to test if mapping works
-	// The Go runtime will access the page and we'll see if it works
-	debugPrint('S') // DEBUG: skipping zero, returning success
-	_ = pageAddr // suppress unused warning
+	// Zero the page via the just-mapped VA
+	zeroPageSlow(pageAddr)
+	debugPrint('z') // DEBUG: zeroing done
 
+	debugPrint('1') // DEBUG: after zero, before pfSuccessCount++
 	// Track success
 	pfSuccessCount++
+	debugPrint('2') // DEBUG: after pfSuccessCount++
 
 	// Queue deferred record for bottom-half page tracking
+	debugPrint('3') // DEBUG: before QueueDeferredRecord
 	QueueDeferredRecord(DeferredPageRecord{
 		PA:       frame,
 		VA:       pageAddr,
@@ -586,6 +588,7 @@ func HandlePageFault(faultAddr uintptr) bool {
 		ThreadID: -1,
 		Order:    0,
 	})
+	debugPrint('4') // DEBUG: after QueueDeferredRecord
 
 	return true
 }

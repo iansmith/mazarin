@@ -102,12 +102,47 @@ func uefiBlockIORead(protocol uintptr, mediaId uint32, lba, bufferSize uint64, b
 //go:noescape
 func uefiBlockIOWrite(protocol uintptr, mediaId uint32, lba, bufferSize uint64, buffer uintptr) EFI_STATUS
 
-// ReadBlockVirtIO stub - ARM64 uses UEFI BlockIO, not VirtIO MMIO  
+// getExceptionHandlerForJump returns the VBAR_EL1 address for the jump to kmazarin.
+// On ARM64, we use main.ExceptionVectorTable.
+func getExceptionHandlerForJump(kernel *LoadedKernel, relocDelta uint64) uint64 {
+	addr := findKernelSymbol(kernel, "main.ExceptionVectorTable")
+	if addr == 0 {
+		printString("ERROR: ExceptionVectorTable symbol not found\r\n")
+		for {}
+	}
+	addr += relocDelta
+	printString("VBAR: kmazarin ExceptionVectorTable = ")
+	printHex(addr)
+	printString("\r\n")
+	return addr
+}
+
+// ReadBlockVirtIO stub - ARM64 uses UEFI BlockIO, not VirtIO MMIO
 func readBlockVirtIOStub(lba uint64, buf []byte) error {
 	panic("ReadBlockVirtIO called on ARM64 - should use UEFI BlockIO")
 }
 
 func init() {
-	// Initialize ARM64-specific platform operations  
+	// Initialize ARM64-specific platform operations
 	plat.ReadBlockVirtIO = readBlockVirtIOStub
+}
+
+// The following stubs satisfy references from non-build-tagged files.
+// On ARM64, these code paths are never reached (UEFI boot uses different functions),
+// but the compiler requires the symbols to exist.
+
+func ReadBlockVirtIONoError(lba uint64, buf []byte) {
+	panic("ReadBlockVirtIONoError called on ARM64")
+}
+
+func readBlockVirtIO(lba uint64, buf []byte) {
+	panic("readBlockVirtIO called on ARM64")
+}
+
+func allocatePhysPagesNoError(pages uint64) uint64 {
+	panic("allocatePhysPagesNoError called on ARM64")
+}
+
+func readBlockVirtIOBulk(lba uint64, buf []byte) {
+	panic("readBlockVirtIOBulk called on ARM64")
 }

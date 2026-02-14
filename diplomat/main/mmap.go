@@ -52,6 +52,7 @@ var mmapCallCount uint32
 //
 //go:nosplit
 func DiplomatMmap(addr uintptr, length uint64, prot int32, flags int32, fd int32, offset int64) int64 {
+	debugMmapEntry()
 	mmapCallCount++
 
 	// Loop detection - hang if called too many times
@@ -222,6 +223,7 @@ func DiplomatBrk(addr uintptr) int64 {
 //
 //go:nosplit
 func InitializeSpans() bool {
+	debugSpanEntry()
 	// Pre-register the bump allocator region
 	// This is a 2GB region starting at 4GB
 	// Note: Call concrete type method directly to avoid interface dispatch early in boot

@@ -12,6 +12,17 @@ package main
 // QEMU virt platform's devices (RISC-V specific). Returns the physical address
 // of the DTB, or 0 on failure.
 func buildSyntheticDTB(hw *HardwareInfo) uint64 {
+	// On RISC-V, OpenSBI provides a real FDT at a known physical address.
+	// Use it directly — it accurately describes all hardware (PLIC, CLINT,
+	// UART, VirtIO MMIO, PCI controller). No allocation needed.
+	if fdtPointer != 0 {
+		printString("Using OpenSBI FDT at PA ")
+		printHex(fdtPointer)
+		printString("\r\n")
+		return fdtPointer
+	}
+
+	// Fallback: synthesize a DTB (requires UEFI page allocation)
 	// Allocate one 4KB UEFI page for the DTB (below 4GB for linear map)
 	page := linearMapMaxPA - 1
 	status := UEFIAllocatePages(AllocateMaxAddress, EfiLoaderData, 1, &page)

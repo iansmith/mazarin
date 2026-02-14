@@ -192,12 +192,16 @@ func buildKmazarinRISCV64Overlay(overlay *Overlay, goroot, patchesDir string) er
 	// Kmazarin patches for RISC-V 64-bit runtime — same arch-independent patches as ARM64/AMD64,
 	// but with riscv64-specific os_linux and sys_linux files.
 	runtimePatches := map[string]string{
-		"runtime/cgo_mmap.go":        "cgo_mmap.go",
-		"runtime/malloc.go":          "malloc.go",
-		"runtime/mcache.go":          "mcache.go",
-		"runtime/preempt.go":         "preempt.go",
-		"runtime/sys_linux_riscv64.s": "sys_linux_riscv64.s",
-		"runtime/tagptr_64bit.go":    "tagptr_64bit.go",
+		"runtime/cgo_mmap.go":            "cgo_mmap.go",
+		"runtime/mmap.go":                "mmap.go",
+		"runtime/malloc.go":              "malloc.go",
+		"runtime/mcache.go":              "mcache.go",
+		"runtime/os_linux_noauxv.go":     "os_linux_noauxv.go",
+		"runtime/preempt.go":             "preempt.go",
+		"runtime/sys_linux_riscv64.s":    "sys_linux_riscv64.s",
+		"runtime/rt0_linux_riscv64.s":    "rt0_linux_riscv64.s",
+		"runtime/tagptr_64bit.go":        "tagptr_64bit.go",
+		"runtime/fds_unix.go":            "fds_unix.go",
 	}
 
 	for goFile, patchFile := range runtimePatches {

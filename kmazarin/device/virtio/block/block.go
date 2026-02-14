@@ -72,6 +72,9 @@ type VirtIOBlockDevice struct {
 	Capacity      uint64 // Total sectors
 	BlockSizeBytes uint32 // Bytes per sector (typically 512)
 
+	// MMIO transport (RISC-V): non-zero means MMIO mode, zero means PCI mode
+	MMIOBase uintptr
+
 	// DMA-safe I/O buffer: pre-mapped physical memory avoids demand paging issues.
 	// Layout (within one 4KB page):
 	//   [0..15]   VirtIOBlockReq header
@@ -84,25 +87,35 @@ type VirtIOBlockDevice struct {
 // Global device instance
 var virtioBlockDevice VirtIOBlockDevice
 
-// Init initializes the VirtIO block device
-// Returns true on success, false if no device found or initialization failed
+// Init initializes the VirtIO block device.
+// Tries PCI first (works on all architectures), falls back to MMIO (RISC-V).
+// Returns true on success, false if no device found or initialization failed.
 func Init() bool {
-	// Find VirtIO block device on PCI bus
-	if !findVirtIOBlock() {
-		console.KPrintln("[VirtIO Block] No block device found")
-		return false
-	}
-
-	// Initialize device (VirtIO handshake)
-	if !virtioBlockInit() {
-		console.KPrintln("[VirtIO Block] Device initialization failed")
-		return false
-	}
-
-	// Read device configuration
-	if !virtioBlockReadConfig() {
-		console.KPrintln("[VirtIO Block] Failed to read config")
-		return false
+	// Try PCI first (all architectures)
+	if findVirtIOBlock() {
+		// PCI path
+		if !virtioBlockInit() {
+			console.KPrintln("[VirtIO Block] PCI device initialization failed")
+			return false
+		}
+		if !virtioBlockReadConfig() {
+			console.KPrintln("[VirtIO Block] PCI failed to read config")
+			return false
+		}
+	} else {
+		// PCI not found — try MMIO (RISC-V)
+		if !findVirtIOBlockMMIO() {
+			console.KPrintln("[VirtIO Block] No block device found (PCI or MMIO)")
+			return false
+		}
+		if !virtioBlockInitMMIO() {
+			console.KPrintln("[VirtIO Block] MMIO device initialization failed")
+			return false
+		}
+		if !virtioBlockReadConfigMMIO() {
+			console.KPrintln("[VirtIO Block] MMIO failed to read config")
+			return false
+		}
 	}
 
 	// Allocate a DMA-safe page for I/O buffers.

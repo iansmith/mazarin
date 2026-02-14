@@ -1,12 +1,13 @@
 //go:build riscv64
 
 // diplomat/main/pagetable_riscv64.go
-// RISC-V Sv39 3-level page table implementation
+// RISC-V Sv48 4-level page table implementation
 //
-// RISC-V Sv39 page table format (4KB pages, 39-bit VA):
-//   Level 2 (root): 512 entries, each covers 1GB
-//   Level 1: 512 entries, each covers 2MB (can be leaf with large page)
-//   Level 0: 512 entries, each covers 4KB
+// RISC-V Sv48 page table format (4KB pages, 48-bit VA):
+//   Level 3 (root): 512 entries, each covers 512GB
+//   Level 2: 512 entries, each covers 1GB (can be 1GB leaf)
+//   Level 1: 512 entries, each covers 2MB (can be 2MB leaf)
+//   Level 0: 512 entries, each covers 4KB (always leaf)
 //
 // PTE format (64-bit):
 //   Bits 53:10 = PPN (Physical Page Number, PA[55:12])
@@ -29,7 +30,7 @@ import (
 	"unsafe"
 )
 
-// Page table constants for RISC-V Sv39
+// Page table constants for RISC-V Sv48
 const (
 	PageSize    = 4096            // 4KB pages
 	Page2MBSize = 2 * 1024 * 1024 // 2MB large pages (L1 leaf)
@@ -72,7 +73,11 @@ type PageTableSet struct {
 	VirtBase uint64 // Virtual base address (from ELF)
 }
 
-// Virtual address breakdown for index extraction (39-bit VA)
+// Virtual address breakdown for index extraction (48-bit VA, Sv48)
+func l3Index(vaddr uint64) uint64 {
+	return (vaddr >> 39) & 0x1FF
+}
+
 func l2Index(vaddr uint64) uint64 {
 	return (vaddr >> 30) & 0x1FF
 }
@@ -91,7 +96,7 @@ func makePTE(physAddr uint64, flags uint64) uint64 {
 	return (ppn << 10) | flags
 }
 
-// BuildPageTables creates Sv39 page tables mapping virtBase → physBase.
+// BuildPageTables creates Sv48 page tables mapping virtBase → physBase.
 // Uses 2MB leaf PTEs for efficiency when possible.
 func BuildPageTables(virtBase, physBase, size uint64) (*PageTableSet, error) {
 	// Round size up to 2MB boundary
@@ -202,12 +207,12 @@ var (
 	errNotImplemented = blockDevError{"pagetable: not implemented"}
 )
 
-// readBootPageTableBase returns the current UEFI page table root address.
+// readBootPageTableBase returns the current page table root address.
 // On RISC-V, this is SATP register PPN field (bits 43:0) << 12.
 func readBootPageTableBase() uint64 {
 	satp := readSATP()
-	// SATP format (Sv39 mode):
-	// bits 63:60 = mode (8 for Sv39)
+	// SATP format (Sv48 mode):
+	// bits 63:60 = mode (9 for Sv48)
 	// bits 59:44 = ASID
 	// bits 43:0 = PPN (physical page number)
 	ppn := satp & 0x00000FFFFFFFFFFF
