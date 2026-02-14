@@ -1,6 +1,7 @@
 //go:build !test_stubs
 
 // exceptions_riscv64.s - RISC-V trap handler
+#include "go_abi_macros_riscv64.h"
 //
 // Single trap entry point set via stvec CSR.
 // Handles: ecall (syscall), page faults, timer interrupts, external interrupts.
@@ -226,21 +227,16 @@ ecall_dispatch:
 	// CSRW sepc, t0
 	WORD	$0x14129073		// csrw sepc, t0(x5)
 
-	// Save ELR (sepc) for clone
-	ADD	$-16, X2
-	MOV	T0, 8(X2)
-	CALL	·SetSyscallELR(SB)
-	ADD	$16, X2
+	// Save ELR (sepc) for clone — T0 has sepc from above
+	GO_CALL_1_0(·SetSyscallELR, T0)
 
 	// Save SPSR (sstatus) for clone
-	MOV	256(X2), T0		// sstatus from frame
-	ADD	$-16, X2
-	MOV	T0, 8(X2)
-	CALL	·SetSyscallSPSR(SB)
-	ADD	$16, X2
+	MOV	256(X2), S2		// sstatus from frame (callee-saved scratch)
+	GO_CALL_1_0(·SetSyscallSPSR, S2)
 
 	// Dispatch syscall: SyscallDispatch(num, a0, a1, a2, a3, a4, a5)
 	// RISC-V syscall convention: a7=number, a0-a5=args
+	// Load all 7 args from trap frame before macro adjusts SP
 	MOV	128(X2), T0		// a7 from frame = syscall number
 	MOV	72(X2), T1		// a0 from frame
 	MOV	80(X2), T2		// a1
@@ -248,44 +244,26 @@ ecall_dispatch:
 	MOV	96(X2), A4		// a3
 	MOV	104(X2), A5		// a4
 	MOV	112(X2), A6		// a5
-
-	ADD	$-72, X2		// 7 args + 1 return
-	MOV	T0, 8(X2)		// syscallNum
-	MOV	T1, 16(X2)		// arg0
-	MOV	T2, 24(X2)		// arg1
-	MOV	A3, 32(X2)		// arg2
-	MOV	A4, 40(X2)		// arg3
-	MOV	A5, 48(X2)		// arg4
-	MOV	A6, 56(X2)		// arg5
-	CALL	·SyscallDispatch(SB)
-	MOV	64(X2), T0		// return value
-	ADD	$72, X2
-
-	// Store return value in saved a0 slot
-	MOV	T0, 72(X2)		// a0 = return value
+	GO_CALL_7_1(·SyscallDispatch, T0, T1, T2, A3, A4, A5, A6)
+	// T0 = return value
+	MOV	T0, 72(X2)		// Store return value in saved a0 slot
 
 	// Check context switch
-	ADD	$-16, X2
-	CALL	·GetSyscallSwitchTarget(SB)
-	MOV	8(X2), T0		// target or -1
-	ADD	$16, X2
-
+	GO_CALL_0_1(·GetSyscallSwitchTarget)
+	// T0 = target or -1
 	MOV	$0, T1
 	BLE	T0, T1, ecall_no_switch
 
 	// Context switch found - print '>'
+	MOV	T0, S2			// save target in callee-saved S2
 	MOV	$0xFFFFFFFF10000000, X28
 	MOV	$0x3E, X29		// '>'
 	MOVB	X29, (X28)
 
-	// Context switch needed
+	// Context switch: DoContextSwitch(framePtr, targetPtr) uintptr
 	MOV	X2, T1			// frame pointer
-	ADD	$-32, X2
-	MOV	T1, 8(X2)		// framePtr
-	MOV	T0, 16(X2)		// targetPtr
-	CALL	·DoContextSwitch(SB)
-	MOV	24(X2), S2		// new context pointer
-	ADD	$32, X2
+	GO_CALL_2_1(·DoContextSwitch, T1, S2)
+	MOV	T0, S2			// new context pointer
 
 	BEQ	S2, ZERO, trap_return
 	JMP	load_context_and_sret
@@ -393,10 +371,7 @@ pf_ifault_ra_print:
 	BNE	T4, X28, pf_ifault_ra_loop
 
 	// Call DumpInstructionPageFaultAsm to walk and print PTE chain
-	ADD	$-16, X2
-	MOV	X20, 8(X2)			// faultAddr = saved stval
-	CALL	·DumpInstructionPageFaultAsm(SB)
-	ADD	$16, X2
+	GO_CALL_1_0(·DumpInstructionPageFaultAsm, X20)
 
 	// Halt — do NOT try to handle instruction fetch at non-executable page
 pf_ifault_halt:
@@ -405,11 +380,10 @@ pf_ifault_halt:
 
 pf_call_handler:
 	// Call HandlePageFaultAsm(faultAddr)
-	ADD	$-24, X2
-	MOV	T1, 8(X2)
-	CALL	·HandlePageFaultAsm(SB)
-	MOV	16(X2), T0		// handled?
-	ADD	$24, X2
+	// T1 has stval from CSR read above
+	MOV	T1, S2			// save faultAddr in callee-saved S2
+	GO_CALL_1_1(·HandlePageFaultAsm, S2)
+	// T0 = handled?
 
 	BEQ	T0, ZERO, pf_not_handled
 
@@ -746,26 +720,17 @@ handle_timer_interrupt:
 	MOV	$0x54, T4		// 'T'
 	MOVB	T4, (T3)
 	// Dispatch timer IRQ
+	// Load all args from trap frame before macro adjusts SP
 	MOV	$5, T0			// IRQ number
 	MOV	X2, T1			// frame pointer
 	MOV	248(X2), T2		// sepc (ELR equivalent)
 	MOV	8(X2), A3		// original sp
-
-	ADD	$-72, X2
-	MOV	T0, 8(X2)		// irqNum
-	MOV	T1, 16(X2)		// framePtr
-	MOV	T2, 24(X2)		// elr
-	MOV	A3, 32(X2)		// sp
-	CALL	·TimerIRQHandler(SB)
-	ADD	$72, X2
+	GO_CALL_4_0(·TimerIRQHandler, T0, T1, T2, A3)
 
 	// Check thread preemption
-	MOV	X2, T0			// frame pointer
-	ADD	$-24, X2
-	MOV	T0, 8(X2)
-	CALL	·CheckThreadPreemption(SB)
-	MOV	16(X2), S2		// new context or 0
-	ADD	$24, X2
+	MOV	X2, S2			// frame pointer (callee-saved)
+	GO_CALL_1_1(·CheckThreadPreemption, S2)
+	MOV	T0, S2			// new context or 0
 
 	BEQ	S2, ZERO, trap_return
 	JMP	load_context_and_sret

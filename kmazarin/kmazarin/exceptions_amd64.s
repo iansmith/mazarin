@@ -30,6 +30,7 @@
 // CALL shifts them to 8(callee_SP), 16(callee_SP)... where the callee expects them.
 
 #include "textflag.h"
+#include "go_abi_macros_amd64.h"
 
 // ============================================================================
 // ISR Stubs - each pushes a dummy error code (if needed) and vector number
@@ -192,34 +193,20 @@ handle_syscall:
 	OUTB
 
 	// Save ELR (RIP) and SPSR (RFLAGS) for clone
-	// SetSyscallELR(val uint64) — 1 arg, no return
-	MOVQ	128(SP), AX		// RIP from frame
-	SUBQ	$16, SP
-	MOVQ	AX, 0(SP)		// arg at 0(SP): after CALL → 8(callee_SP)
-
-	// DEBUG: breadcrumb 'a' before CALL SetSyscallELR
-	PUSHQ	AX
-	PUSHQ	DX
+	// DEBUG: breadcrumb 'a' before SetSyscallELR
 	MOVW	$0x3F8, DX
 	MOVB	$'a', AX
 	OUTB
-	POPQ	DX
-	POPQ	AX
-
-	CALL	·SetSyscallELR(SB)
-	ADDQ	$16, SP
+	MOVQ	128(SP), R13		// RIP from frame (callee-saved scratch)
+	GO_CALL_1_0(·SetSyscallELR, R13)
 
 	// DEBUG: breadcrumb '1' after SetSyscallELR
 	MOVW	$0x3F8, DX
 	MOVB	$'1', AX
 	OUTB
 
-	// SetSyscallSPSR(val uint64) — 1 arg, no return
-	MOVQ	144(SP), AX		// RFLAGS from frame
-	SUBQ	$16, SP
-	MOVQ	AX, 0(SP)		// arg at 0(SP)
-	CALL	·SetSyscallSPSR(SB)
-	ADDQ	$16, SP
+	MOVQ	144(SP), R13		// RFLAGS from frame
+	GO_CALL_1_0(·SetSyscallSPSR, R13)
 
 	// DEBUG: breadcrumb '2' after SetSyscallSPSR
 	MOVW	$0x3F8, DX
@@ -227,37 +214,23 @@ handle_syscall:
 	OUTB
 
 	// Dispatch syscall: SyscallDispatch(num, a0, a1, a2, a3, a4, a5) int64
-	// 7 args + 1 return = 64 bytes
-	// Read syscall number from saved RAX in frame
-	MOVQ	0(SP), AX		// syscall num from saved RAX
-	SUBQ	$64, SP			// 7 args (56) + 1 return (8) = 64 bytes
-	MOVQ	AX, 0(SP)		// syscallNum at 0(SP)
-	MOVQ	40+64(SP), AX		// RDI from frame (arg0)
-	MOVQ	AX, 8(SP)
-	MOVQ	32+64(SP), AX		// RSI (arg1)
-	MOVQ	AX, 16(SP)
-	MOVQ	24+64(SP), AX		// RDX (arg2)
-	MOVQ	AX, 24(SP)
-	MOVQ	72+64(SP), AX		// R10 (arg3)
-	MOVQ	AX, 32(SP)
-	MOVQ	56+64(SP), AX		// R8 (arg4)
-	MOVQ	AX, 40(SP)
-	MOVQ	64+64(SP), AX		// R9 (arg5)
-	MOVQ	AX, 48(SP)
+	// Load all 7 args from exception frame into registers before macro
+	MOVQ	0(SP), R8		// syscall num (saved RAX)
+	MOVQ	40(SP), R9		// arg0 (saved RDI)
+	MOVQ	32(SP), R10		// arg1 (saved RSI)
+	MOVQ	24(SP), R11		// arg2 (saved RDX)
+	MOVQ	72(SP), BX		// arg3 (saved R10)
+	MOVQ	56(SP), CX		// arg4 (saved R8)
+	MOVQ	64(SP), DI		// arg5 (saved R9)
 
-	// DEBUG: breadcrumb '3' before SyscallDispatch call
-	PUSHQ	DX
+	// DEBUG: breadcrumb '3' before SyscallDispatch
 	MOVW	$0x3F8, DX
 	MOVB	$'3', AX
 	OUTB
-	POPQ	DX
 
-	CALL	·SyscallDispatch(SB)
-	MOVQ	56(SP), AX		// return value at 56(SP)
-	ADDQ	$64, SP
-
-	// Store return value in saved RAX slot
-	MOVQ	AX, 0(SP)
+	GO_CALL_7_1(·SyscallDispatch, R8, R9, R10, R11, BX, CX, DI)
+	// AX = return value
+	MOVQ	AX, 0(SP)		// Store return value in saved RAX slot
 
 	// DEBUG: breadcrumb 'r' for syscall dispatch returned
 	MOVW	$0x3F8, DX
@@ -265,31 +238,21 @@ handle_syscall:
 	OUTB
 
 	// Check if context switch needed
-	// GetSyscallSwitchTarget() uintptr — no args, 1 return
-	SUBQ	$16, SP
-	CALL	·GetSyscallSwitchTarget(SB)
-	MOVQ	0(SP), AX		// return value at 0(SP)
-	ADDQ	$16, SP
-
+	GO_CALL_0_1(·GetSyscallSwitchTarget)
+	// AX = switch target (0 or -1 = no switch)
 	CMPQ	AX, $0
-	JLE	exception_return	// No switch needed (0 or -1)
+	JLE	exception_return
 
 	// DEBUG: breadcrumb 'C' for context switch
-	PUSHQ	AX
+	MOVQ	AX, R12			// save target in callee-saved R12
 	MOVW	$0x3F8, DX
 	MOVB	$'C', AX
 	OUTB
-	POPQ	AX
 
-	// Context switch needed
-	// DoContextSwitch(framePtr, targetPtr uintptr) uintptr — 2 args, 1 return
+	// Context switch: DoContextSwitch(framePtr, targetPtr) uintptr
 	MOVQ	SP, DI			// frame pointer
-	SUBQ	$32, SP
-	MOVQ	DI, 0(SP)		// framePtr at 0(SP)
-	MOVQ	AX, 8(SP)		// targetPtr at 8(SP)
-	CALL	·DoContextSwitch(SB)
-	MOVQ	16(SP), R12		// new context pointer at 16(SP)
-	ADDQ	$32, SP
+	GO_CALL_2_1(·DoContextSwitch, DI, R12)
+	MOVQ	AX, R12			// new context pointer
 
 	// DEBUG: breadcrumb 'X' for DoContextSwitch returned
 	PUSHQ	AX
@@ -392,24 +355,16 @@ handle_page_fault:
 	MOVB	$'p', AX
 	OUTB
 	// Read CR2 for fault address
-	MOVQ	CR2, AX
+	MOVQ	CR2, R13		// save in callee-saved R13
 
-	// Call HandlePageFaultAsm(faultAddr uint64) bool — 1 arg, 1 return
-	SUBQ	$16, SP
-	MOVQ	AX, 0(SP)		// faultAddr at 0(SP)
-	CALL	·HandlePageFaultAsm(SB)
-	MOVQ	8(SP), AX		// handled at 8(SP)
-	ADDQ	$16, SP
-
-	// If not handled, try userspace handler
+	GO_CALL_1_1(·HandlePageFaultAsm, R13)
+	// AX = handled (1) or not (0)
 	TESTQ	AX, AX
 	JNZ	exception_return
 
-	MOVQ	CR2, AX
-	SUBQ	$16, SP
-	MOVQ	AX, 0(SP)		// faultAddr at 0(SP)
-	CALL	·HandleUserPageFaultAsm(SB)
-	ADDQ	$16, SP
+	// Not handled by kernel — try userspace handler
+	// R13 still has fault address (callee-saved, preserved across GO_CALL)
+	GO_CALL_1_1(·HandleUserPageFaultAsm, R13)
 
 	JMP	exception_return
 
@@ -419,28 +374,18 @@ handle_timer_irq:
 	MOVL	$0, 0xB0(AX)		// LAPIC_EOI = 0
 
 	// Call timer IRQ handler
-	// TimerIRQHandler(irqNum, framePtr, elr, spEl0 uint64) — 4 args, no return used
-	MOVQ	$48, AX			// IRQ number
-	MOVQ	SP, BX			// frame pointer
-	SUBQ	$32, SP
-	MOVQ	AX, 0(SP)		// irqNum at 0(SP)
-	MOVQ	BX, 8(SP)		// framePtr at 8(SP)
-	MOVQ	128+32(SP), AX		// RIP (ELR equivalent)
-	MOVQ	AX, 16(SP)		// elr at 16(SP)
-	MOVQ	152+32(SP), AX		// RSP (SP_EL0 equivalent)
-	MOVQ	AX, 24(SP)		// spEl0 at 24(SP)
-	CALL	·TimerIRQHandler(SB)
-	ADDQ	$32, SP
+	// TimerIRQHandler(irqNum, framePtr, elr, spEl0 uint64) — 4 args
+	// Load all args from exception frame before macro adjusts SP
+	MOVQ	$48, R8			// irqNum
+	MOVQ	SP, R9			// framePtr (exception frame base)
+	MOVQ	128(SP), R10		// elr (RIP from frame)
+	MOVQ	152(SP), R11		// spEl0 (RSP from frame)
+	GO_CALL_4_0(·TimerIRQHandler, R8, R9, R10, R11)
 
 	// Check thread preemption
-	// CheckThreadPreemption(framePtr uintptr) uintptr — 1 arg, 1 return
-	SUBQ	$16, SP
-	MOVQ	SP, AX
-	ADDQ	$16, AX			// frame pointer = old SP
-	MOVQ	AX, 0(SP)		// framePtr at 0(SP)
-	CALL	·CheckThreadPreemption(SB)
-	MOVQ	8(SP), R12		// new context at 8(SP)
-	ADDQ	$16, SP
+	MOVQ	SP, R13			// frame pointer (before macro SUB)
+	GO_CALL_1_1(·CheckThreadPreemption, R13)
+	MOVQ	AX, R12			// new context pointer
 
 	TESTQ	R12, R12
 	JZ	exception_return
