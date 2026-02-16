@@ -13,6 +13,18 @@ const (
 	X86_PTE_NX      = uint64(1) << 63 // No Execute
 )
 
+// readCR3 reads the raw CR3 register value.
+// x86_64 CR3 format: [63:12]=PML4 PA, [11:0]=PCID/flags
+func readCR3() uintptr
+
+// readCurrentL0PA reads the current L0 page table PA from CR3.
+// Masks out PCID/flag bits in the lower 12 bits.
+//
+//go:nosplit
+func readCurrentL0PA() uintptr {
+	return readCR3() & PTE_ADDR_MASK
+}
+
 // initProcessL0 performs arch-specific initialization of a new process PML4.
 // x86_64: The kernel PML4 has both kernel and kmazarin code mappings.
 // We must preserve kernel mappings in the new PML4 while giving each process
@@ -63,6 +75,47 @@ func initProcessL0(l0VA uintptr) {
 
 	// Set PML4[0] to point to our new PDPT
 	*(*uint64)(unsafe.Pointer(l0VA)) = uint64(newPdptPA) | X86_PTE_PRESENT | X86_PTE_RW | X86_PTE_USER
+}
+
+// verifyUserspacePriestL0 checks that a priest's page table is valid before switching to it.
+// x86_64: single CR3, so L0[0] must contain kernel mappings (copied by initProcessL0).
+//
+//go:nosplit
+func verifyUserspacePriestL0(l0PA uintptr, asid uint16) {
+	l0VA := l0PA + constants.KernelMMIOOffset
+	e0 := *(*uint64)(unsafe.Pointer(l0VA))
+	if (e0 & X86_PTE_PRESENT) == 0 {
+		rawUARTPuts("\r\n[SWITCH_PT] L0[0] INVALID! l0PA=0x")
+		rawUARTHex64(uint64(l0PA))
+		rawUARTPuts(" ASID=")
+		rawUARTHex64(uint64(asid))
+		rawUARTPuts(" L0[0]=0x")
+		rawUARTHex64(e0)
+		rawUARTPuts("\r\n")
+		for i := uintptr(0); i < 4; i++ {
+			entry := *(*uint64)(unsafe.Pointer(l0VA + i*8))
+			rawUARTPuts("  L0[")
+			rawUARTHex64(uint64(i))
+			rawUARTPuts("]=0x")
+			rawUARTHex64(entry)
+			rawUARTPuts("\r\n")
+		}
+		for {
+		}
+	}
+}
+
+// VerifyCurrentSATPL3E0 is a no-op on x86_64 (no SATP register).
+//
+//go:nosplit
+func VerifyCurrentSATPL3E0() {}
+
+// constructTTBR0Value constructs the CR3 register value for x86_64.
+// CR3 format: [63:12]=PML4 PA, [11:0]=PCID (using lower bits for ASID)
+//
+//go:nosplit
+func constructTTBR0Value(l0PA uintptr, asid uint16) uint64 {
+	return uint64(l0PA) | uint64(asid)
 }
 
 // selectRootPageTable returns the root page table PA for the given VA.

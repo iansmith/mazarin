@@ -92,6 +92,14 @@ func buildSyntheticDTB(hw *HardwareInfo) uint64 {
 	b.PropU32("interrupts", 10)
 	b.EndNode()
 
+	// Goldfish RTC
+	// QEMU virt RISC-V: RTC @ 0x101000, IRQ 11
+	b.BeginNodeAddr("rtc", 0x101000)
+	b.PropString("compatible", "google,goldfish-rtc")
+	b.PropRegEntry(0x101000, 0x1000)
+	b.PropU32("interrupts", 11)
+	b.EndNode()
+
 	// VirtIO MMIO devices
 	// QEMU virt RISC-V: 8 slots starting at 0x10001000, stride 0x1000
 	// Interrupts 1-8

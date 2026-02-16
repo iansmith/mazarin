@@ -2,6 +2,7 @@ package dtb
 
 import (
 	"errors"
+	"runtime"
 	"unsafe"
 )
 
@@ -118,16 +119,26 @@ func convertNode(dtbNode *DTBNode) *Node {
 
 	// Extract interrupts
 	if intr := dtbNode.findProperty("interrupts"); intr != nil {
-		// Format: <type(4) irq-num(4) flags(4)>
-		numEntries := int(intr.valueLen) / 12
-		for i := 0; i < numEntries; i++ {
-			offset := i * 12
-			intrType := swapU32(*(*uint32)(unsafe.Pointer(&intr.value[offset+0])))
-			irqNum := swapU32(*(*uint32)(unsafe.Pointer(&intr.value[offset+4])))
+		if runtime.GOARCH == "riscv64" {
+			// PLIC format: 1 cell (4 bytes) per interrupt, direct IRQ number
+			numEntries := int(intr.valueLen) / 4
+			for i := 0; i < numEntries; i++ {
+				offset := i * 4
+				irqNum := swapU32(*(*uint32)(unsafe.Pointer(&intr.value[offset])))
+				node.Interrupts = append(node.Interrupts, irqNum)
+			}
+		} else {
+			// GIC format: 3 cells (12 bytes) per interrupt: <type irq-num flags>
+			numEntries := int(intr.valueLen) / 12
+			for i := 0; i < numEntries; i++ {
+				offset := i * 12
+				intrType := swapU32(*(*uint32)(unsafe.Pointer(&intr.value[offset+0])))
+				irqNum := swapU32(*(*uint32)(unsafe.Pointer(&intr.value[offset+4])))
 
-			// For GIC SPI (type 0), add 32 to get interrupt ID
-			if intrType == 0 {
-				node.Interrupts = append(node.Interrupts, irqNum+32)
+				// For GIC SPI (type 0), add 32 to get interrupt ID
+				if intrType == 0 {
+					node.Interrupts = append(node.Interrupts, irqNum+32)
+				}
 			}
 		}
 	}

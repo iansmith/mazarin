@@ -274,9 +274,21 @@ func (fs *FileSystem) FATStartSector() uint64 {
 
 // ReadCluster reads an entire cluster into the buffer.
 // The buffer must be at least BytesPerCluster() bytes.
+// Uses fs.device.ReadBlock() directly — no type assertions that would
+// require heap allocation (diplomat doesn't initialize the Go heap).
 func (fs *FileSystem) ReadCluster(cluster uint32, buf []byte) error {
-	_, errCode := fs.ReadClusterRaw(cluster, buf)
-	return errorFromCode(errCode)
+	if uint32(len(buf)) < fs.bytesPerClus {
+		return ErrClusterTooLarge
+	}
+
+	startSector := fs.ClusterToSector(cluster)
+	for i := uint8(0); i < fs.secPerClus; i++ {
+		offset := uint32(i) * 512
+		if err := fs.device.ReadBlock(startSector+uint64(i), buf[offset:offset+512]); err != nil {
+			return ErrReadFailed
+		}
+	}
+	return nil
 }
 
 // ReadClusterRaw reads a complete cluster without allocating error interfaces.
@@ -313,9 +325,27 @@ func (fs *FileSystem) ReadClusterRaw(cluster uint32, buf []byte) (int, int) {
 
 // ReadFATEntry reads the FAT entry for the given cluster.
 // Returns the next cluster in the chain, or a special value (EOF, bad, etc).
+// Uses fs.device.ReadBlock() directly — no type assertions that would
+// require heap allocation (diplomat doesn't initialize the Go heap).
 func (fs *FileSystem) ReadFATEntry(cluster uint32) (uint32, error) {
-	entry, errCode := fs.ReadFATEntryRaw(cluster)
-	return entry, errorFromCode(errCode)
+	// Each FAT32 entry is 4 bytes
+	fatOffset := cluster * 4
+	fatSector := fs.fatStartSec + uint64(fatOffset/512)
+	fatEntryOffset := fatOffset % 512
+
+	// Read the FAT sector into our buffer
+	if err := fs.device.ReadBlock(fatSector, fs.fatBuffer[:]); err != nil {
+		return 0, ErrReadFailed
+	}
+
+	// Read 4-byte entry (little-endian), mask off high 4 bits
+	entry := uint32(fs.fatBuffer[fatEntryOffset]) |
+		(uint32(fs.fatBuffer[fatEntryOffset+1]) << 8) |
+		(uint32(fs.fatBuffer[fatEntryOffset+2]) << 16) |
+		(uint32(fs.fatBuffer[fatEntryOffset+3]) << 24)
+	entry &= 0x0FFFFFFF // FAT32 uses only 28 bits
+
+	return entry, nil
 }
 
 // ReadFATEntryRaw reads a FAT entry without allocating error interfaces.

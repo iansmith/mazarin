@@ -106,6 +106,12 @@ TEXT ·SetSyscallSPSR(SB), NOSPLIT, $0-8
 TEXT ·CheckThreadPreemption(SB), NOSPLIT, $0-16
 	JMP	·checkThreadPreemptionInternal(SB)
 
+// ThreadExitAsm tail-call stub
+// Called from exception handler to kill faulting user thread.
+// Returns pointer to next ThreadContext (0 if no threads left).
+TEXT ·ThreadExitAsm(SB), NOSPLIT, $0-8
+	JMP	·threadExitInternal(SB)
+
 // RunFirstThread starts the first thread from the ready queue.
 // This function never returns - it transitions to userspace via ERET.
 // Go signature: func RunFirstThread()

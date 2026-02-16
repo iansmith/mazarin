@@ -2,7 +2,7 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/kirq"
-	"unsafe"
+	"mazzy/kmazarin/kmem"
 )
 
 // SyscallNanosleep implements the nanosleep(2) syscall
@@ -25,7 +25,10 @@ func SyscallNanosleep(req, rem, _, _, _, _ uint64) int64 {
 	}
 
 	// Read the timespec structure
-	ts := (*[2]int64)(unsafe.Pointer(uintptr(req)))
+	ts, ok := kmem.ReadUserInt64Pair(uintptr(req))
+	if !ok {
+		return -14 // EFAULT
+	}
 	seconds := ts[0]
 	nanoseconds := ts[1]
 

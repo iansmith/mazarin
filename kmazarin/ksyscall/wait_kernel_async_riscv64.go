@@ -1,7 +1,7 @@
 package ksyscall
 
 import (
-	"unsafe"
+	"mazzy/kmazarin/kmem"
 	_ "unsafe" // for go:linkname
 )
 
@@ -48,9 +48,20 @@ func SyscallWaitKernelAsync(bundlePtr, _, _, _, _, _ uint64) int64 {
 		return -11 // EAGAIN - no message pending
 	}
 
-	// Write the bundle to userspace
-	destPtr := (*KernelAsyncBundle)(unsafe.Pointer(uintptr(bundlePtr)))
-	*destPtr = bundle
+	// Write the bundle to userspace field by field via safe accessors
+	base := uintptr(bundlePtr)
+	header := uint64(uint32(bundle.Op)) | (uint64(uint32(bundle.ChannelId)) << 32)
+	if !kmem.WriteUserUint64(base, header) {
+		return -14 // EFAULT
+	}
+	msg01 := uint64(uint32(bundle.Message[0])) | (uint64(uint32(bundle.Message[1])) << 32)
+	if !kmem.WriteUserUint64(base+8, msg01) {
+		return -14 // EFAULT
+	}
+	msg23 := uint64(uint32(bundle.Message[2])) | (uint64(uint32(bundle.Message[3])) << 32)
+	if !kmem.WriteUserUint64(base+16, msg23) {
+		return -14 // EFAULT
+	}
 
 	return 0
 }

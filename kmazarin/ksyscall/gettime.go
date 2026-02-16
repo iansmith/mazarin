@@ -2,8 +2,8 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/ktime"
-	"unsafe"
 )
 
 // MazzyTimeSpec is the structure for GetTime results.
@@ -25,9 +25,12 @@ func SyscallGetTime(timespecPtr, _, _, _, _, _ uint64) int64 {
 
 	seconds, nanoseconds := ktime.GetTime()
 
-	ts := (*MazzyTimeSpec)(unsafe.Pointer(uintptr(timespecPtr)))
-	ts.Seconds = seconds
-	ts.Nanoseconds = nanoseconds
+	if !kmem.WriteUserUint64(uintptr(timespecPtr), seconds) {
+		return -14 // EFAULT
+	}
+	if !kmem.WriteUserUint64(uintptr(timespecPtr+8), nanoseconds) {
+		return -14 // EFAULT
+	}
 
 	return 0
 }

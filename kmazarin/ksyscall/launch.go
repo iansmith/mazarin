@@ -5,6 +5,7 @@ package ksyscall
 import (
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
+	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
 	"mazzy/shared/fs/fat32"
 	"unsafe"
@@ -190,9 +191,12 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 	// does not affect kernel code execution.
 	kmem.SwitchTTBR0WithASID(processL0PA, 0) // ASID=0 for now, will be set properly at thread schedule
 
-	// Map the framebuffer into priest address space for UI rendering
-	// Now using the correct TTBR0 context
-	if !kmem.MapUserFramebuffer() {
+	// Map the framebuffer into priest address space for UI rendering.
+	// Use the GPU's actual framebuffer PA (dynamically allocated), not the
+	// compile-time constant which may not match the actual allocation.
+	fbPA := gpu.GetFramebufferPA()
+	fbSize := uintptr(gpu.GetFramebufferSize())
+	if !kmem.MapUserFramebuffer(fbPA, fbSize) {
 		return -7
 	}
 

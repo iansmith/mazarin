@@ -1,11 +1,22 @@
 package input
 
+import "mazzy/kmazarin/pci"
+
 // platformInitInterrupts is a no-op on RISC-V.
-// VirtIO input uses polling via PollAllDevices() called from the timer handler.
+// PCI INTx interrupts are routed through the PLIC; no MSI-X setup needed.
 func platformInitInterrupts() {}
 
-// platformConfigureDeviceIRQ is a no-op on RISC-V.
-// Returns 0 (no IRQ). Input events are polled from the timer handler.
+// QEMU virt machine routes PCI INTx to PLIC sources 32-35.
+// Swizzle: plic_source = 32 + (slot + pin - 1) % 4
+const PLIC_PCI_INTX_BASE = 32
+
+// platformConfigureDeviceIRQ computes the PLIC source number for a PCI device's
+// INTx interrupt. QEMU's RISC-V virt machine routes PCI INTx pins to PLIC
+// sources 32-35 using the standard swizzle formula.
 func platformConfigureDeviceIRQ(bus, slot, funcNum uint8) uint32 {
-	return 0
+	pin := pci.ConfigRead8(bus, slot, funcNum, PCI_INTERRUPT_PIN)
+	if pin == 0 {
+		return 0 // No interrupt
+	}
+	return PLIC_PCI_INTX_BASE + (uint32(slot)+uint32(pin)-1)%4
 }

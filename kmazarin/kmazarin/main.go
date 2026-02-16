@@ -50,6 +50,8 @@ func irqDispatchInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (ne
 //go:nosplit
 //go:noinline
 func timerIRQHandlerInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) (newELR, newSP, newLR uint64, doPreempt bool) {
+	// RISC-V: Verify process page table integrity on every timer tick
+	kmem.VerifyCurrentSATPL3E0()
 	info := kirq.TimerIRQHandlerCanPreempt(irqNum, framePtr, elr, spEl0)
 	return info.NewELR, info.NewSP, info.NewLR, info.DoPreempt
 }
@@ -198,6 +200,50 @@ func uartPutcDirectForKmem(c byte) {
 
 // Runtime readiness flag - set to true once we verify runtime is fully initialized
 var runtimeReady = false
+
+// safeDTBVirtAddr holds the VA of a safe copy of the FDT.
+// On RISC-V, the FDT at PA 0xFFE00000 is within the buddy allocator's range
+// and gets overwritten by the framebuffer allocation (PA 0xFF000000, ~16MB).
+// Copying the FDT early preserves it for device discovery.
+var safeDTBVirtAddr uintptr
+
+// copyFDTToSafeLocation copies the Device Tree Blob to a buddy-allocated
+// buffer so it survives large physical memory allocations like the framebuffer.
+func copyFDTToSafeLocation() {
+	dtbPhysAddr := GetDtbPhysAddr()
+	if dtbPhysAddr == 0 {
+		return
+	}
+
+	dtbVA := dtbVirtAddr(dtbPhysAddr)
+
+	// Read big-endian FDT header: magic (4 bytes) + totalsize (4 bytes)
+	hdr := (*[8]byte)(unsafe.Pointer(dtbVA))
+	magic := uint32(hdr[0])<<24 | uint32(hdr[1])<<16 | uint32(hdr[2])<<8 | uint32(hdr[3])
+	if magic != 0xd00dfeed {
+		console.KPrintf("[DTB] Bad magic at VA 0x%X: 0x%X\n", dtbVA, magic)
+		return
+	}
+
+	totalSize := uint32(hdr[4])<<24 | uint32(hdr[5])<<16 | uint32(hdr[6])<<8 | uint32(hdr[7])
+	if totalSize == 0 || totalSize > 1<<20 {
+		console.KPrintf("[DTB] Invalid size: %d\n", totalSize)
+		return
+	}
+
+	buf := kmem.AllocBuffer(uint64(totalSize))
+	if buf == nil {
+		console.KPrintf("[DTB] Failed to alloc %d bytes\n", totalSize)
+		return
+	}
+
+	// Copy the FDT data
+	src := unsafe.Slice((*byte)(unsafe.Pointer(dtbVA)), int(totalSize))
+	copy(buf.Bytes(), src)
+
+	safeDTBVirtAddr = buf.VA
+	console.KPrintf("[DTB] Preserved %d bytes (PA 0x%X → VA 0x%X)\n", totalSize, dtbPhysAddr, safeDTBVirtAddr)
+}
 
 // DebugTimerCount is a debug counter for tracking timer IRQs.
 // Placed in main package to test if the kirq.TimerIRQCount location has mapping issues.
@@ -400,18 +446,20 @@ func testDeviceDiscovery() {
 	console.KPrintln("")
 	// NOTE: Drivers are already registered in EarlyInit()
 
-	// Get DTB address from startup params (correct offset)
-	dtbPhysAddr := GetDtbPhysAddr()
-
-	if dtbPhysAddr == 0 {
-		console.KPrintln("[DeviceTest] No DTB available (UEFI ACPI mode?) - skipping device discovery")
-		console.KPrintln("[DeviceTest] About to return from testDeviceDiscovery")
-		return
+	// Use safe FDT copy if available (protects against framebuffer overwrite),
+	// otherwise fall back to the original location.
+	var dtbAddr uintptr
+	if safeDTBVirtAddr != 0 {
+		dtbAddr = safeDTBVirtAddr
+	} else {
+		dtbPhysAddr := GetDtbPhysAddr()
+		if dtbPhysAddr == 0 {
+			console.KPrintln("[DeviceTest] No DTB available (UEFI ACPI mode?) - skipping device discovery")
+			return
+		}
+		dtbAddr = dtbVirtAddr(dtbPhysAddr)
 	}
-
-	// Convert physical to virtual address (arch-specific: identity on ARM64/x86,
-	// linear map offset on RISC-V where DTB is at PA 0xFFE00000)
-	dtbAddr := dtbVirtAddr(dtbPhysAddr)
+	console.KPrintf("[DeviceTest] DTB at VA 0x%X\n", dtbAddr)
 
 	// Register all device drivers BEFORE discovering devices
 	device.RegisterAllDrivers()
@@ -430,7 +478,7 @@ func testDeviceDiscovery() {
 		ktime.Init()
 	}
 
-	// Wire up interrupts now that GIC is discovered
+	// Wire up interrupts now that interrupt controller is discovered
 	if err := device.WireInterrupts(); err != nil {
 		console.KWriteString("[DeviceTest] ERROR wiring interrupts: ")
 		console.KPrintln(err.Error())
@@ -439,8 +487,12 @@ func testDeviceDiscovery() {
 		if bs, ok := device.GetByteStream(); ok {
 			if pl011, ok := bs.(*uart.PL011); ok {
 				SetupUartSoftIRQ(pl011.IRQ())
+			} else if ns16550, ok := bs.(*uart.NS16550); ok {
+				SetupUartSoftIRQ(ns16550.IRQ())
 			}
 		}
+		// Enable external interrupt delivery (PLIC on RISC-V, no-op elsewhere)
+		setupExternalInterrupts()
 	}
 }
 
@@ -514,7 +566,10 @@ func initVirtIOInputDevices() {
 
 		// Register the input dispatch handler in both GIC and kirq tables
 		input.RegisterIRQDevice(irqNum, dev)
-		if cachedIC != nil {
+
+		// Wire hardware interrupt controller for real IRQs.
+		// ARM64 uses MSI-X (GIC SPIs), RISC-V uses PCI INTx (PLIC sources 32-35).
+		if cachedIC != nil && irqNum != 0 {
 			// Capture irqNum for closure (Go 1.22+ loop var semantics make this safe,
 			// but be explicit for clarity)
 			localIRQ := irqNum
@@ -552,7 +607,7 @@ func initVirtIOInputDevices() {
 		evtBufPA := dev.EventBuffersPA
 		initAvailIdx := vq.Available.Idx
 		SetTopHalfDev(dev.IRQNum, usedVA, evtBufVA, availVA, descVA,
-			notifyAddr, evtBufPA, vq.QueueSize, initAvailIdx, isMouse, &vq.LastUsedIdx)
+			notifyAddr, evtBufPA, dev.ISRBase, vq.QueueSize, initAvailIdx, isMouse, &vq.LastUsedIdx)
 	}
 
 }
@@ -584,8 +639,63 @@ func busyLoop4s() {
 
 // simpleMain is the entry point for our simple goroutine/channel test
 // This will be run by the scheduler as the main goroutine
+// verifyCodeIntegrityKmazarin scans near the end of the text segment for zero corruption.
+// Checks BOTH the code VA (through Sv48 mapping) and the physical memory (through linear map)
+// to distinguish page table bugs from actual physical corruption.
+// RISC-V only — addresses are hardcoded for RISC-V's Sv48 page table layout.
+//
+//go:nosplit
+func verifyCodeIntegrityKmazarin(label string) {
+	if runtime.GOARCH != "riscv64" {
+		return
+	}
+	// Use uartPuts directly for reliability
+	uartPuts("[VERIFY_K] ")
+	uartPuts(label)
+	uartPuts(": ")
+
+	// Check via code VA mapping (0x438b5000-0x438b6000)
+	codeVAStart := uintptr(0x438b5000)
+	count := uintptr(0x1000 / 4)
+	codeZeros := 0
+	for i := uintptr(0); i < count; i++ {
+		val := *(*uint32)(unsafe.Pointer(codeVAStart + i*4))
+		if val == 0 {
+			codeZeros++
+		}
+	}
+
+	// Check via linear map (PA = VA - 0x43800000 + 0x90000000 + KernelVAOffset)
+	// PA of 0x438b5000 = 0x90000000 + (0x438b5000 - 0x43800000) = 0x900b5000
+	// Linear map VA = PA + 0xFFFFFFFF00000000 = 0xFFFFFFFF900b5000
+	linVAStart := uintptr(0xFFFFFFFF900b5000)
+	linZeros := 0
+	for i := uintptr(0); i < count; i++ {
+		val := *(*uint32)(unsafe.Pointer(linVAStart + i*4))
+		if val == 0 {
+			linZeros++
+		}
+	}
+
+	uartPuts("code_zeros=")
+	printHex(uint64(codeZeros))
+	uartPuts(" lin_zeros=")
+	printHex(uint64(linZeros))
+	if codeZeros > 64 && linZeros < 64 {
+		uartPuts(" PAGE_TABLE_BUG!")
+	} else if codeZeros > 64 && linZeros > 64 {
+		uartPuts(" PHYS_CORRUPTION!")
+	} else {
+		uartPuts(" OK")
+	}
+	uartPuts("\r\n")
+}
+
 func simpleMain() {
 	Print("[Main] Kmazarin kernel starting...")
+
+	// DEBUG: Check code integrity at kmazarin entry
+	verifyCodeIntegrityKmazarin("at kmazarin entry")
 
 	// Test runtime readiness FIRST (before unmapping Cardinal)
 	if testRuntimeReadiness() {
@@ -597,6 +707,11 @@ func simpleMain() {
 	} else {
 		Print("[Main] Runtime not ready - continuing with direct UART")
 	}
+
+	// Copy FDT to a safe location BEFORE GPU init. On RISC-V, the FDT at
+	// PA 0xFFE00000 is within the buddy allocator's range and gets overwritten
+	// when the framebuffer is allocated at PA 0xFF000000 (~16MB).
+	copyFDTToSafeLocation()
 
 	// Initialize VirtIO GPU BEFORE switching exception vectors.
 	// On x86_64, kmazarin's HandlePageFault uses ARM64 PTE format and can't
@@ -674,6 +789,9 @@ func simpleMain() {
 	// To switch back to goroutine test, comment out below and launch priestsieve.elf
 
 	// DEBUG: ReadMemStats disabled - hangs in bare-metal (triggers STW GC)
+
+	// DEBUG: Check code integrity before launching userspace
+	verifyCodeIntegrityKmazarin("before userspace launch")
 
 	// Launch dapope (input event handler priest)
 	dapopeName := "/dapope.elf\x00"

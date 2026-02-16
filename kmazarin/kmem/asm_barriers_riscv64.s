@@ -61,18 +61,11 @@ TEXT ·isbSYAsm(SB), NOSPLIT, $0
 	WORD	$0x0000100F
 	RET
 
-// readTTBR0EL1 - Read page table base register
-// RISC-V: Read SATP (Supervisor Address Translation and Protection)
-TEXT ·readTTBR0EL1(SB), NOSPLIT, $0-8
+// readSATP - Read SATP register (Supervisor Address Translation and Protection)
+// Returns the raw SATP value: [63:60]=MODE, [59:44]=ASID, [43:0]=PPN
+// Use readCurrentL0PA() in Go code to get the L0 page table PA.
+TEXT ·readSATP(SB), NOSPLIT, $0-8
 	// CSRR A0, satp (satp = 0x180)
-	WORD	$0x18002573
-	MOV	A0, ret+0(FP)
-	RET
-
-// readTTBR1EL1 - Read kernel page table base register
-// RISC-V: Same as readTTBR0EL1 (single SATP for all address spaces)
-TEXT ·readTTBR1EL1(SB), NOSPLIT, $0-8
-	// CSRR A0, satp
 	WORD	$0x18002573
 	MOV	A0, ret+0(FP)
 	RET

@@ -621,8 +621,19 @@ func initDevice(dev *VirtIOInputDevice) bool {
 	dev.populateEventQueue()
 	notifyAddr := dev.NotifyBase +
 		uintptr(dev.EventQueueNotifyOff)*uintptr(dev.NotifyConfig.NotifyOffMultiplier)
-	_ = notifyAddr
 	dev.notifyEventQueue()
+
+	// Diagnostic: verify queue state after init
+	vq := &dev.EventQueue
+	usedVA := virtio.PointerToUintptr(unsafe.Pointer(vq.Used))
+	console.KPrintf("[VirtIO Input %d:%d.%d] Q0: availIdx=%d usedIdx=%d numFree=%d\n",
+		dev.Bus, dev.Slot, dev.Func, vq.Available.Idx, asm.MmioRead16(usedVA+2), vq.NumFree)
+	console.KPrintf("[VirtIO Input %d:%d.%d] notifyBase=0x%x notifyOff=%d mult=%d addr=0x%x\n",
+		dev.Bus, dev.Slot, dev.Func, dev.NotifyBase, dev.EventQueueNotifyOff,
+		dev.NotifyConfig.NotifyOffMultiplier, notifyAddr)
+	console.KPrintf("[VirtIO Input %d:%d.%d] descPA=0x%x availPA=0x%x usedPA=0x%x evtPA=0x%x\n",
+		dev.Bus, dev.Slot, dev.Func,
+		vq.DescPA, vq.AvailPA, vq.UsedPA, dev.EventBuffersPA)
 
 	return true
 }
@@ -761,6 +772,9 @@ func InitVirtIOInput() {
 				deviceID := (fullReg >> 16) & 0xFFFF
 
 				if vendorID == 0xFFFF || vendorID == 0 {
+					if funcNum == 0 && vendorID == 0xFFFF {
+						break // No device at this slot
+					}
 					continue
 				}
 

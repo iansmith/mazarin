@@ -4,6 +4,11 @@
 
 package main
 
+import (
+	"mazzy/shared/blockdev"
+	"mazzy/shared/fs/fat32"
+)
+
 // uefiHandleProtocol is implemented in uefi_calls_amd64.s
 // Calls EFI_BOOT_SERVICES.HandleProtocol using MS x64 ABI
 //
@@ -95,22 +100,66 @@ func init() {
 	plat.ReadBlockVirtIO = readBlockVirtIOStub
 }
 
+// saveTextChecksum is a no-op on AMD64 — only used by RISC-V for verifying
+// code integrity through page table transitions.
+func saveTextChecksum(physBase uint64, textFilesz uint64) {}
+
 // The following stubs satisfy references from non-build-tagged files.
 // On AMD64, these code paths are never reached (UEFI boot uses different functions),
 // but the compiler requires the symbols to exist.
 
+// ReadBlockVirtIONoError reads a block using the UEFI block device on AMD64.
+// Called from shared code (fat32_walk.go, elf_loader.go) that was written for
+// RISC-V's allocation-free boot. On AMD64, delegates to the UEFI block I/O.
 func ReadBlockVirtIONoError(lba uint64, buf []byte) {
-	panic("ReadBlockVirtIONoError called on AMD64")
+	err := globalBlockDev.ReadBlock(lba, buf)
+	if err != nil {
+		printString("FATAL: ReadBlock failed at LBA ")
+		printHex(lba)
+		printString("\r\n")
+		for {
+		}
+	}
 }
 
 func readBlockVirtIO(lba uint64, buf []byte) {
 	panic("readBlockVirtIO called on AMD64")
 }
 
+// allocatePhysPagesNoError allocates physical pages via UEFI AllocatePages on AMD64.
 func allocatePhysPagesNoError(pages uint64) uint64 {
-	panic("allocatePhysPagesNoError called on AMD64")
+	var addr uint64
+	// AllocateAnyPages=0, EfiLoaderData=2
+	status := UEFIAllocatePages(0, 2, pages, &addr)
+	if status != 0 {
+		printString("FATAL: AllocatePages failed\r\n")
+		for {
+		}
+	}
+	return addr
 }
 
+// readBlockVirtIOBulk reads multiple consecutive sectors via UEFI block I/O on AMD64.
 func readBlockVirtIOBulk(lba uint64, buf []byte) {
-	panic("readBlockVirtIOBulk called on AMD64")
+	sectorSize := uint64(512)
+	for offset := uint64(0); offset < uint64(len(buf)); offset += sectorSize {
+		end := offset + sectorSize
+		if end > uint64(len(buf)) {
+			end = uint64(len(buf))
+		}
+		ReadBlockVirtIONoError(lba+offset/sectorSize, buf[offset:end])
+	}
+}
+
+// mountFAT32OrDie uses the normal UEFI-based FAT32 mount path on AMD64.
+func mountFAT32OrDie(dev blockdev.BlockDevice) *fat32.FileSystem {
+	fs, err := fat32Mount(dev)
+	if err != nil {
+		printString("ERROR: FAT32 mount: ")
+		printString(err.Error())
+		printString("\r\n")
+		for {
+		}
+	}
+	return fs
 }

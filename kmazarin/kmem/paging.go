@@ -27,6 +27,29 @@ func rawUART(c byte) {
 	*(*byte)(unsafe.Pointer(uintptr(constants.KernelUartBase))) = c
 }
 
+// rawUARTPuts writes a string directly to UART, nosplit-safe.
+//
+//go:nosplit
+func rawUARTPuts(s string) {
+	for i := 0; i < len(s); i++ {
+		rawUART(s[i])
+	}
+}
+
+// rawUARTHex64 prints a 64-bit value as 16 hex digits via raw UART.
+//
+//go:nosplit
+func rawUARTHex64(val uint64) {
+	for i := 60; i >= 0; i -= 4 {
+		nibble := (val >> uint(i)) & 0xF
+		if nibble < 10 {
+			rawUART(byte('0' + nibble))
+		} else {
+			rawUART(byte('A' + nibble - 10))
+		}
+	}
+}
+
 // debugPrint conditionally outputs a character if debugging is enabled
 // Uses direct UART for early boot when console isn't initialized.
 //
@@ -78,7 +101,7 @@ var (
 	pfSuccessCount     uint64  // Successful page fault handling counter
 	pfLastFaultAddr    uintptr // Last faulting address (to detect repeated faults)
 	pfRepeatCount      uint64  // Counter for repeated faults at same page
-	// NOTE: processL0PA global removed - use readTTBR0EL1() to get current L0PA
+	// NOTE: processL0PA global removed - use readCurrentL0PA() to get current L0PA
 	ttbr1L1PA uintptr // Physical address of TTBR1 L1 table (lazy init)
 	// NOTE: ptPoolNext removed - PT allocation now uses unified pool
 
@@ -131,13 +154,13 @@ func GetTTBR0L0PA() uintptr {
 	return ttbr0L0PA
 }
 
-// ReadCurrentTTBR0 reads the current TTBR0_EL1 register value.
-// Returns the raw register value including ASID in upper bits.
-// Use (result & 0x0000FFFFFFFFFFFF) to extract just the L0PA.
+// ReadCurrentL0PA reads the current page table base register and returns
+// the L0 page table physical address. Arch-specific extraction is handled
+// by readCurrentL0PA() in each paging_{arch}.go.
 //
 //go:nosplit
-func ReadCurrentTTBR0() uint64 {
-	return uint64(readTTBR0EL1())
+func ReadCurrentL0PA() uint64 {
+	return uint64(readCurrentL0PA())
 }
 
 // TranslateUserVA uses hardware address translation (AT S1E0R) to translate
@@ -202,7 +225,7 @@ func CreateProcessPageTable() uintptr {
 // NOTE: GetProcessL0PA() and SwitchToProcessPageTable() were removed.
 // They used a global processL0PA which caused race conditions with multiple priests.
 // Use SwitchToProcessPageTableWithL0() or SwitchTTBR0WithASID() with explicit L0PA.
-// For reading the current L0PA, use readTTBR0EL1() and mask out the ASID.
+// For reading the current L0PA, use readCurrentL0PA().
 
 // SwitchToProcessPageTableWithL0 switches TTBR0 to the specified L0 page table.
 // This should be called before ERET to userspace.
@@ -211,29 +234,7 @@ func CreateProcessPageTable() uintptr {
 //
 //go:nosplit
 func SwitchToProcessPageTableWithL0(l0PA uintptr) {
-	if l0PA == 0 {
-		return
-	}
-
-	// Linux-style TTBR0 switch sequence (from Linux context.c)
-
-	// 1. Full memory barrier before any page table operations
-	//    Ensures all prior memory writes (including PTEs) are visible
-	dsbISH()
-
-	// 2. Write new TTBR0 value (ASID=0, just the physical address)
-	writeTTBR0Asm(uint64(l0PA))
-
-	// 3. Invalidate all TLB entries (Inner Shareable for multi-core safety)
-	//    This must be AFTER the TTBR0 write so we invalidate entries
-	//    for the NEW address space, not the old one
-	tlbiVMALLE1IS()
-
-	// 4. Barrier to ensure TLB invalidation completes
-	dsbISH()
-
-	// 5. Instruction synchronization to clear pipeline
-	isbSY()
+	SwitchTTBR0WithASID(l0PA, 0)
 }
 
 // SwitchTTBR0ToPA switches TTBR0 to the specified physical address with ASID=0.
@@ -247,16 +248,16 @@ func SwitchTTBR0ToPA(l0PA uintptr) {
 	SwitchTTBR0WithASID(l0PA, 0)
 }
 
-// SwitchTTBR0WithASID switches TTBR0 to the specified physical address with ASID.
+// SwitchTTBR0WithASID switches the user-space page table register with ASID.
 // ASID (Address Space Identifier) allows TLB entries from different processes to
 // coexist, avoiding full TLB flush on every context switch.
 //
-// On ARM64, TTBR0 format is:
-//   Bits [63:48]: ASID (16-bit)
-//   Bits [47:1]:  Physical address of page table
-//   Bit [0]:      CnP (Common not Private) - we use 0
+// Register value construction is arch-specific (via constructTTBR0Value):
+//   ARM64 TTBR0: [63:48]=ASID, [47:1]=PA, [0]=CnP
+//   RISC-V SATP: [63:60]=MODE(9=Sv48), [59:44]=ASID, [43:0]=PPN(PA>>12)
+//   x86_64 CR3:  [63:12]=PML4 PA, [11:0]=PCID
 //
-// Page fault handlers read TTBR0_EL1 directly to get the current L0PA,
+// Page fault handlers read TTBR0/SATP/CR3 directly to get the current L0PA,
 // so no global state update is needed here.
 //
 //go:nosplit
@@ -265,20 +266,17 @@ func SwitchTTBR0WithASID(l0PA uintptr, asid uint16) {
 		return // No page table to switch to
 	}
 
-	// Encode ASID in upper 16 bits of TTBR0
-	// PA must be in bits [47:1], ASID in bits [63:48]
-	ttbr0Val := (uint64(asid) << 48) | uint64(l0PA)
+	verifyUserspacePriestL0(l0PA, asid)
 
-	// Linux-style TTBR0 switch sequence
-	dsbISH()                // Memory barrier before page table operations
-	writeTTBR0Asm(ttbr0Val) // Write new TTBR0 value with ASID
+	// Arch-specific register value construction
+	regVal := constructTTBR0Value(l0PA, asid)
 
-	// DEBUG: Force TLB flush to diagnose ASID issues
-	// This should not be necessary with correct ASID handling, but helps diagnose
-	tlbiVMALLE1IS() // Invalidate all TLB entries
-
-	dsbISH() // Barrier to ensure TTBR0 write and TLB flush complete
-	isbSY()  // Instruction barrier to ensure new translations take effect
+	// Memory barrier, write register, flush TLB
+	dsbISH()             // Memory barrier before page table operations
+	writeTTBR0Asm(regVal) // Write new TTBR0/SATP/CR3 value
+	tlbiVMALLE1IS()      // Invalidate all TLB entries
+	dsbISH()             // Barrier to ensure write and TLB flush complete
+	isbSY()              // Instruction barrier for new translations
 }
 
 // paToVA converts a physical address to a virtual address using identity mapping.
@@ -599,6 +597,13 @@ const (
 	userMmapEnd   = 0x0000700000000000   // 112TB - plenty of VA space
 )
 
+// Repeat-fault detector: if the same user VA faults more than repeatFaultMax times,
+// something is broken (mapping not taking effect). Return false to halt.
+var repeatFaultLastAddr uintptr
+var repeatFaultCount int
+
+const repeatFaultMax = 10
+
 // HandleUserPageFault handles a page fault at a userspace virtual address.
 // This is called from the EL0 exception handler for data aborts in userspace.
 // Returns true if the fault was handled successfully, false otherwise.
@@ -611,6 +616,26 @@ const (
 //
 //go:nosplit
 func HandleUserPageFault(faultAddr uintptr) bool {
+	// Repeat-fault detection: halt if same page faults repeatedly
+	faultPage := faultAddr &^ (PageSize - 1)
+	if faultPage == repeatFaultLastAddr {
+		repeatFaultCount++
+		if repeatFaultCount >= repeatFaultMax {
+			rawUARTPuts("[PF] REPEAT FAULT x")
+			rawUARTHex64(uint64(repeatFaultCount))
+			rawUARTPuts(" VA=0x")
+			rawUARTHex64(uint64(faultAddr))
+			rawUARTPuts(" PA=0x")
+			// Walk the page table and show what we find
+			pa := WalkUserPageTable(faultAddr)
+			rawUARTHex64(uint64(pa))
+			rawUARTPuts("\r\n")
+			return false // trigger halt in asm handler
+		}
+	} else {
+		repeatFaultLastAddr = faultPage
+		repeatFaultCount = 1
+	}
 	// Lazy initialization
 	if !pagingInitialized {
 		InitPaging()
@@ -660,12 +685,10 @@ func HandleUserPageFault(faultAddr uintptr) bool {
 	// Use flags that allow EL0 access
 	elfFlags := uint32(ELF_PF_R | ELF_PF_W) // Read + Write
 
-	// CRITICAL: Get the current process's L0PA from TTBR0_EL1, NOT from the global processL0PA.
-	// The global can be stale if multiple processes are running. TTBR0 always contains
-	// the correct page table for the currently executing process.
-	// TTBR0 format: bits [63:48] = ASID, bits [47:1] = PA, bit [0] = CnP
-	ttbr0 := readTTBR0EL1()
-	currentL0PA := uintptr(ttbr0 & 0x0000FFFFFFFFFFFF) // Mask out ASID
+	// CRITICAL: Get the current process's L0PA from the hardware page table register,
+	// NOT from the global processL0PA. The global can be stale if multiple processes
+	// are running. The hardware register always contains the correct page table.
+	currentL0PA := readCurrentL0PA()
 
 	if !mapUserPageWithL0(pageAddr, framePA, elfFlags, currentL0PA) {
 		return false
@@ -1097,8 +1120,9 @@ func dcCIVACAsm(va uintptr)
 func dcCVAUAsm(va uintptr)
 func icIVAUAsm(va uintptr)
 func icIALLUAsm()
-func readTTBR0EL1() uintptr
-func readTTBR1EL1() uintptr
+// readCurrentL0PA is arch-specific: reads the hardware page table base register
+// and returns the L0 page table physical address.
+// See paging_arm64.go, paging_riscv64.go, paging_amd64.go.
 func dcZVAAsm(addr uintptr)
 func bzero4KAsm(ptr uintptr)
 func writeTTBR0Asm(val uint64)
@@ -1156,6 +1180,19 @@ func IsbSY() {
 //
 //go:nosplit
 func zeroPageSlow(ptr uintptr) {
+	// DEBUG: Verify we're not zeroing a kmazarin code page via linear map.
+	// Linear map VA = PA + KernelMMIOOffset. Convert back to PA:
+	pa := ptr - constants.KernelMMIOOffset
+	// Kmazarin code is at PA 0x90000000 - ~0x90400000
+	if pa >= 0x90000000 && pa < 0x90400000 {
+		rawUARTPuts("[ZERO_GUARD] ABORT: zeroing kmazarin code page! PA=0x")
+		rawUARTHex64(uint64(pa))
+		rawUARTPuts(" VA=0x")
+		rawUARTHex64(uint64(ptr))
+		rawUARTPuts("\r\n")
+		for {
+		} // Halt
+	}
 	// Zero 4KB in 8-byte chunks (512 iterations)
 	p := (*[512]uint64)(unsafe.Pointer(ptr))
 	for i := 0; i < 512; i++ {
@@ -1163,9 +1200,9 @@ func zeroPageSlow(ptr uintptr) {
 	}
 }
 
-// WriteTTBR0 writes a new value to TTBR0_EL1.
-// Used for switching between priest page tables.
-// val should be (asid << 48) | l0_physical_address
+// WriteTTBR0 writes a pre-constructed value to the page table register.
+// Callers should use constructTTBR0Value() to build the arch-specific value.
+// Prefer SwitchTTBR0WithASID() which handles barriers and TLB flush.
 //
 //go:nosplit
 func WriteTTBR0(val uint64) {
@@ -1173,12 +1210,12 @@ func WriteTTBR0(val uint64) {
 	isbSY()
 }
 
-// ReadHWTTBR0 reads the actual hardware TTBR0_EL1 register value.
+// ReadHWL0PA reads the current L0 page table PA from the hardware register.
 // This is useful for debugging to verify the page table root matches expected.
 //
 //go:nosplit
-func ReadHWTTBR0() uintptr {
-	return readTTBR0EL1()
+func ReadHWL0PA() uintptr {
+	return readCurrentL0PA()
 }
 
 // MapDeviceMMIO maps a physical MMIO region to the corresponding high-memory
@@ -1288,13 +1325,12 @@ func mapUserPageWithL0(va, pa uintptr, elfFlags uint32, l0PAParam uintptr) bool 
 		return false // User pages must be in low memory
 	}
 
-	// Use explicit L0 if provided, otherwise read from TTBR0_EL1.
+	// Use explicit L0 if provided, otherwise read from hardware page table register.
 	// CRITICAL: Don't use the global processL0PA - it can be stale when multiple
-	// processes are running. TTBR0 always contains the correct page table.
+	// processes are running. The hardware register always has the correct page table.
 	l0PA := l0PAParam
 	if l0PA == 0 {
-		ttbr0 := readTTBR0EL1()
-		l0PA = uintptr(ttbr0 & 0x0000FFFFFFFFFFFF) // Mask out ASID
+		l0PA = readCurrentL0PA()
 	}
 	if l0PA == 0 {
 		l0PA = ttbr0L0PA
@@ -1441,11 +1477,9 @@ func MapUserDevicePage(va, pa uintptr) bool {
 		return false // User pages must be in low memory
 	}
 
-	// CRITICAL: Get the current process's L0PA from TTBR0_EL1, NOT from a global.
-	// Globals can be stale when multiple processes are running.
-	// TTBR0 format: bits [63:48] = ASID, bits [47:1] = PA, bit [0] = CnP
-	ttbr0 := readTTBR0EL1()
-	l0PA := uintptr(ttbr0 & 0x0000FFFFFFFFFFFF) // Mask out ASID
+	// CRITICAL: Get the current process's L0PA from the hardware page table register,
+	// NOT from a global. Globals can be stale when multiple processes are running.
+	l0PA := readCurrentL0PA()
 	if l0PA == 0 {
 		l0PA = ttbr0L0PA // Fallback to Cardinal's original page table
 	}
@@ -1569,13 +1603,13 @@ func MapUserDevicePage(va, pa uintptr) bool {
 }
 
 // MapUserFramebuffer maps the framebuffer physical memory into userspace.
-// This maps FramebufferSize bytes from FramebufferPhysAddr to UserFramebufferVA.
+// framebufferPA is the GPU's actual framebuffer physical address.
+// framebufferSize is the framebuffer size in bytes.
 // Returns true on success.
-func MapUserFramebuffer() bool {
-	// Use constants directly — the RuntimeConfig struct layouts between
-	// packages are mismatched, so reading through the interface gives wrong values.
-	framebufferPA := uintptr(constants.FramebufferPhysAddr)
-	framebufferSize := uintptr(constants.FramebufferSize)
+func MapUserFramebuffer(framebufferPA uintptr, framebufferSize uintptr) bool {
+	if framebufferPA == 0 || framebufferSize == 0 {
+		return false
+	}
 
 	// Fixed userspace VA for framebuffer (matches ksyscall.UserFramebufferVA)
 	const framebufferVA = 0x00007FFE00000000
@@ -1671,13 +1705,12 @@ func WalkUserPageTableWithL0(va uintptr, l0PAParam uintptr) uintptr {
 	l2Idx := (va >> L2Shift) & 0x1FF
 	l3Idx := (va >> L3Shift) & 0x1FF
 
-	// Use explicit L0 if provided, otherwise read from TTBR0_EL1.
+	// Use explicit L0 if provided, otherwise read from hardware page table register.
 	// CRITICAL: Don't use the global processL0PA - it can be stale when multiple
-	// processes are running. TTBR0 always contains the correct page table.
+	// processes are running. The hardware register always has the correct page table.
 	l0PA := l0PAParam
 	if l0PA == 0 {
-		ttbr0 := readTTBR0EL1()
-		l0PA = uintptr(ttbr0 & 0x0000FFFFFFFFFFFF) // Mask out ASID
+		l0PA = readCurrentL0PA()
 	}
 	if l0PA == 0 {
 		l0PA = ttbr0L0PA
@@ -1754,8 +1787,7 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 	// Use explicit L0 if provided
 	l0PA := l0PAParam
 	if l0PA == 0 {
-		ttbr0 := readTTBR0EL1()
-		l0PA = uintptr(ttbr0 & 0x0000FFFFFFFFFFFF)
+		l0PA = readCurrentL0PA()
 	}
 	l0VA := paToVAOrCache(l0PA)
 	if l0VA == 0 {
@@ -1853,11 +1885,10 @@ func UnmapUserPage(va uintptr) uintptr {
 	l2Idx := (pageVA >> L2Shift) & 0x1FF
 	l3Idx := (pageVA >> L3Shift) & 0x1FF
 
-	// CRITICAL: Get the current process's L0PA from TTBR0_EL1, NOT from the global processL0PA.
-	// The global can be stale if multiple processes are running. TTBR0 always contains
-	// the correct page table for the currently executing process.
-	ttbr0 := readTTBR0EL1()
-	l0PA := uintptr(ttbr0 & 0x0000FFFFFFFFFFFF) // Mask out ASID
+	// CRITICAL: Get the current process's L0PA from the hardware page table register,
+	// NOT from the global processL0PA. The global can be stale if multiple processes
+	// are running. The hardware register always has the correct page table.
+	l0PA := readCurrentL0PA()
 	if l0PA == 0 {
 		l0PA = ttbr0L0PA
 	}
@@ -1938,11 +1969,10 @@ func GetUserL3PTE(va uintptr) uint64 {
 	l2Idx := (va >> L2Shift) & 0x1FF
 	l3Idx := (va >> L3Shift) & 0x1FF
 
-	// CRITICAL: Get the current process's L0PA from TTBR0_EL1, NOT from the global processL0PA.
-	// The global can be stale if multiple processes are running. TTBR0 always contains
-	// the correct page table for the currently executing process.
-	ttbr0 := readTTBR0EL1()
-	l0PA := uintptr(ttbr0 & 0x0000FFFFFFFFFFFF) // Mask out ASID
+	// CRITICAL: Get the current process's L0PA from the hardware page table register,
+	// NOT from the global processL0PA. The global can be stale if multiple processes
+	// are running. The hardware register always has the correct page table.
+	l0PA := readCurrentL0PA()
 	if l0PA == 0 {
 		l0PA = ttbr0L0PA
 	}
@@ -1990,56 +2020,258 @@ func ReadUserByteDirect(va uintptr) byte {
 	return *(*byte)(unsafe.Pointer(va))
 }
 
-// ReadUserByte reads a single byte from a userspace virtual address.
-// Uses kernel scratch mapping since kernel can't access userspace directly.
+// ReadUserByte reads a single byte from a virtual address.
+// For kernel addresses, reads directly. For user addresses, walks page tables
+// and reads through the kernel linear map.
 // Returns the byte value and true if successful, 0 and false otherwise.
+//
+//go:nosplit
 func ReadUserByte(va uintptr) (byte, bool) {
-	// Walk userspace page tables to find the physical address
+	if isKernelAddr(va) {
+		return *(*byte)(unsafe.Pointer(va)), true
+	}
 	pa := WalkUserPageTable(va)
 	if pa == 0 {
 		return 0, false
 	}
-
-	// Page-align the PA and calculate offset
 	pagePA := pa &^ (PageSize - 1)
 	pageOffset := pa & (PageSize - 1)
-
-	// Map to kernel scratch VA
 	kernelVA := MapPAToKernelScratch(pagePA)
 	if kernelVA == 0 {
 		return 0, false
 	}
-
-	// Read the byte
 	return *(*byte)(unsafe.Pointer(kernelVA + pageOffset)), true
 }
 
-// ReadUserUint64 reads a 64-bit value from a userspace virtual address.
-// Uses kernel scratch mapping since kernel can't access userspace directly (PAN).
+// ReadUserUint64 reads a 64-bit value from a virtual address.
+// For kernel addresses, reads directly. For user addresses, walks page tables
+// and reads through the kernel linear map.
 // Returns the value and true if successful, 0 and false otherwise.
 //
-// NOTE: This assumes the value doesn't cross a page boundary. If va is within
-// 7 bytes of a page boundary, this could read incorrect data. For stack values
+// NOTE: This assumes the value doesn't cross a page boundary. For stack values
 // which are 8-byte aligned, this should not be an issue.
+//
+//go:nosplit
 func ReadUserUint64(va uintptr) (uint64, bool) {
-	// Walk userspace page tables to find the physical address
+	if isKernelAddr(va) {
+		return *(*uint64)(unsafe.Pointer(va)), true
+	}
 	pa := WalkUserPageTable(va)
 	if pa == 0 {
 		return 0, false
 	}
-
-	// Page-align the PA and calculate offset
 	pagePA := pa &^ (PageSize - 1)
 	pageOffset := pa & (PageSize - 1)
-
-	// Map to kernel scratch VA
 	kernelVA := MapPAToKernelScratch(pagePA)
 	if kernelVA == 0 {
 		return 0, false
 	}
-
-	// Read the uint64
 	return *(*uint64)(unsafe.Pointer(kernelVA + pageOffset)), true
+}
+
+// isKernelAddr returns true if the address is in kernel VA space.
+// On all architectures, kernel addresses have the top 16 bits set (0xFFFFxxxx...).
+// This covers the kmazarin code region, linear map, and heap/stack allocations.
+//
+//go:nosplit
+func isKernelAddr(va uintptr) bool {
+	return va&0xFFFF000000000000 != 0
+}
+
+// ReadUserUint32 reads a 32-bit value from a virtual address.
+// For kernel addresses, reads directly. For user addresses, walks page tables
+// and reads through the kernel linear map.
+// Returns the value and true if successful, 0 and false otherwise.
+//
+//go:nosplit
+func ReadUserUint32(va uintptr) (uint32, bool) {
+	if isKernelAddr(va) {
+		return *(*uint32)(unsafe.Pointer(va)), true
+	}
+	pa := WalkUserPageTable(va)
+	if pa == 0 {
+		return 0, false
+	}
+	pagePA := pa &^ (PageSize - 1)
+	pageOffset := pa & (PageSize - 1)
+	kernelVA := MapPAToKernelScratch(pagePA)
+	if kernelVA == 0 {
+		return 0, false
+	}
+	return *(*uint32)(unsafe.Pointer(kernelVA + pageOffset)), true
+}
+
+// ReadUserInt64Pair reads two consecutive int64 values from a virtual address.
+// For kernel addresses, reads directly. For user addresses, uses page table walk.
+// Used for reading timespec structs {tv_sec, tv_nsec}.
+//
+//go:nosplit
+func ReadUserInt64Pair(va uintptr) ([2]int64, bool) {
+	if isKernelAddr(va) {
+		return *(*[2]int64)(unsafe.Pointer(va)), true
+	}
+	pa := WalkUserPageTable(va)
+	if pa == 0 {
+		return [2]int64{}, false
+	}
+	pagePA := pa &^ (PageSize - 1)
+	pageOffset := pa & (PageSize - 1)
+	kernelVA := MapPAToKernelScratch(pagePA)
+	if kernelVA == 0 {
+		return [2]int64{}, false
+	}
+	return *(*[2]int64)(unsafe.Pointer(kernelVA + pageOffset)), true
+}
+
+// WriteUserByte writes a single byte to a virtual address.
+// For kernel addresses, writes directly. For user addresses, uses page table walk.
+// Returns true if successful, false otherwise.
+//
+//go:nosplit
+func WriteUserByte(va uintptr, val byte) bool {
+	if isKernelAddr(va) {
+		*(*byte)(unsafe.Pointer(va)) = val
+		return true
+	}
+	pa := WalkUserPageTable(va)
+	if pa == 0 {
+		return false
+	}
+	pagePA := pa &^ (PageSize - 1)
+	pageOffset := pa & (PageSize - 1)
+	kernelVA := MapPAToKernelScratch(pagePA)
+	if kernelVA == 0 {
+		return false
+	}
+	*(*byte)(unsafe.Pointer(kernelVA + pageOffset)) = val
+	return true
+}
+
+// WriteUserUint32 writes a 32-bit value to a virtual address.
+// For kernel addresses, writes directly. For user addresses, uses page table walk.
+// Returns true if successful, false otherwise.
+//
+//go:nosplit
+func WriteUserUint32(va uintptr, val uint32) bool {
+	if isKernelAddr(va) {
+		*(*uint32)(unsafe.Pointer(va)) = val
+		return true
+	}
+	pa := WalkUserPageTable(va)
+	if pa == 0 {
+		return false
+	}
+	pagePA := pa &^ (PageSize - 1)
+	pageOffset := pa & (PageSize - 1)
+	kernelVA := MapPAToKernelScratch(pagePA)
+	if kernelVA == 0 {
+		return false
+	}
+	*(*uint32)(unsafe.Pointer(kernelVA + pageOffset)) = val
+	return true
+}
+
+// WriteUserUint64 writes a 64-bit value to a virtual address.
+// For kernel addresses, writes directly. For user addresses, uses page table walk.
+// Returns true if successful, false otherwise.
+//
+//go:nosplit
+func WriteUserUint64(va uintptr, val uint64) bool {
+	if isKernelAddr(va) {
+		*(*uint64)(unsafe.Pointer(va)) = val
+		return true
+	}
+	pa := WalkUserPageTable(va)
+	if pa == 0 {
+		return false
+	}
+	pagePA := pa &^ (PageSize - 1)
+	pageOffset := pa & (PageSize - 1)
+	kernelVA := MapPAToKernelScratch(pagePA)
+	if kernelVA == 0 {
+		return false
+	}
+	*(*uint64)(unsafe.Pointer(kernelVA + pageOffset)) = val
+	return true
+}
+
+// CopyFromUser copies n bytes from a VA into dst.
+// For kernel addresses, copies directly. For user addresses, handles page
+// boundaries by processing one page at a time.
+// Returns true if all bytes were copied, false on any fault.
+//
+//go:nosplit
+func CopyFromUser(dst []byte, userVA uintptr, n int) bool {
+	if isKernelAddr(userVA) {
+		for i := 0; i < n; i++ {
+			dst[i] = *(*byte)(unsafe.Pointer(userVA + uintptr(i)))
+		}
+		return true
+	}
+	copied := 0
+	for copied < n {
+		pa := WalkUserPageTable(userVA + uintptr(copied))
+		if pa == 0 {
+			return false
+		}
+		pagePA := pa &^ (PageSize - 1)
+		pageOffset := pa & (PageSize - 1)
+		kernelVA := MapPAToKernelScratch(pagePA)
+		if kernelVA == 0 {
+			return false
+		}
+		pageRemain := int(PageSize - pageOffset)
+		chunk := n - copied
+		if chunk > pageRemain {
+			chunk = pageRemain
+		}
+		src := kernelVA + pageOffset
+		for i := 0; i < chunk; i++ {
+			dst[copied+i] = *(*byte)(unsafe.Pointer(src + uintptr(i)))
+		}
+		copied += chunk
+	}
+	return true
+}
+
+// CopyToUser copies src bytes to a VA.
+// For kernel addresses, copies directly. For user addresses, handles page
+// boundaries by processing one page at a time.
+// Returns true if all bytes were copied, false on any fault.
+//
+//go:nosplit
+func CopyToUser(userVA uintptr, src []byte) bool {
+	n := len(src)
+	if isKernelAddr(userVA) {
+		for i := 0; i < n; i++ {
+			*(*byte)(unsafe.Pointer(userVA + uintptr(i))) = src[i]
+		}
+		return true
+	}
+	copied := 0
+	for copied < n {
+		pa := WalkUserPageTable(userVA + uintptr(copied))
+		if pa == 0 {
+			return false
+		}
+		pagePA := pa &^ (PageSize - 1)
+		pageOffset := pa & (PageSize - 1)
+		kernelVA := MapPAToKernelScratch(pagePA)
+		if kernelVA == 0 {
+			return false
+		}
+		pageRemain := int(PageSize - pageOffset)
+		chunk := n - copied
+		if chunk > pageRemain {
+			chunk = pageRemain
+		}
+		dst := kernelVA + pageOffset
+		for i := 0; i < chunk; i++ {
+			*(*byte)(unsafe.Pointer(dst + uintptr(i))) = src[copied+i]
+		}
+		copied += chunk
+	}
+	return true
 }
 
 // AllocAndMapUserPage allocates, maps, and zeros a userspace page in one operation.

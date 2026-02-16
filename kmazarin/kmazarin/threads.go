@@ -9,6 +9,7 @@ import (
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/ktime"
 	"mazzy/kmazarin/util"
+	"runtime"
 	"unsafe"
 )
 
@@ -799,6 +800,11 @@ func IdleLoop(sf *SchedulerFunc) *Thread {
 //go:noinline
 func KernelIdleLoop() {
 	for {
+		// Yield to Go goroutines (eventPoller, bottom halves, etc.)
+		// Without this, goroutines started by StartBottomHalfProcessors()
+		// never get CPU time because this loop never triggers Go's scheduler.
+		runtime.Gosched()
+
 		// Process deadlines with IRQs disabled (critical section)
 		savedDAIF := SaveAndDisableIRQs()
 		schedulerLock.Lock()
@@ -808,8 +814,6 @@ func KernelIdleLoop() {
 
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
-
-		// Idle uptime reporting removed — the timer display confirms liveness.
 
 		if hasReady {
 			// A thread is ready - yield to it.
@@ -1276,6 +1280,15 @@ func threadExitImpl(sf *SchedulerFunc) uintptr {
 	smpDebugPrintRun(debugCPU, debugTID, debugPID)
 
 	return uintptr(unsafe.Pointer(&next.Context))
+}
+
+// threadExitInternal is the ABI0-compatible wrapper around threadExitImpl.
+// Called from exception handler assembly via ThreadExitAsm stub.
+// Returns uint64 (pointer to next ThreadContext, or 0 if no threads left).
+//
+//go:nosplit
+func threadExitInternal() uint64 {
+	return uint64(threadExitImpl(&NormalSchedulerFunc))
 }
 
 // releasePriestSchedLockHeld releases a priest when its last thread exits.
@@ -1797,7 +1810,13 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 
 	// Re-check the futex value under the lock to prevent missed wakeup race.
 	// If the value changed since the caller checked, a wake may have occurred.
-	currentVal := *(*uint32)(unsafe.Pointer(uintptr(futexAddr)))
+	// Use safe accessor — direct dereference fails on RISC-V (SUM=0).
+	currentVal, ok := kmem.ReadUserUint32(uintptr(futexAddr))
+	if !ok {
+		schedulerLock.Unlock()
+		sf.EnableAndRestoreDAIF(savedDAIF)
+		return 0
+	}
 	if currentVal != expectedVal {
 		// Value changed - a wake likely happened, don't block
 		if sf.StateCheck != nil {

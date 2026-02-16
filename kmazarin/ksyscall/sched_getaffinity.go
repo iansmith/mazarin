@@ -3,7 +3,7 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/console"
-	"unsafe"
+	"mazzy/kmazarin/kmem"
 
 	_ "unsafe" // for go:linkname
 )
@@ -47,7 +47,10 @@ func SyscallSchedGetaffinity(pid, cpusetsize, mask, _, _, _ uint64) int64 {
 		affinityMask = (uint64(1) << cpuCount) - 1
 	}
 
-	*(*uint64)(unsafe.Pointer(uintptr(mask))) = affinityMask
+	if !kmem.WriteUserUint64(uintptr(mask), affinityMask) {
+		console.KWriteString("[sched_getaffinity] EFAULT: write failed\r\n")
+		return -14 // EFAULT
+	}
 
 	return 8 // Return size of mask in bytes
 }

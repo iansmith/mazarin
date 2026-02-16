@@ -10,6 +10,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"runtime"
 	"time"
 	"unsafe"
 
@@ -330,9 +331,19 @@ func main() {
 	fmt.Printf("[stdio] Font: %dx%d px, lineH=%d, rect=%dx%d, maxLines=%d\n",
 		charW, charH, lineH, rectW, rectH, maxLines)
 
+	t0 := time.Now()
+	dc := gg.NewContext(w, h)
+	fmt.Printf("[stdio] gg.NewContext: %v\n", time.Since(t0))
+
+	t0 = time.Now()
+	gc := newGlyphCache(charW, charH, ascent, face)
+	fmt.Printf("[stdio] newGlyphCache: %v\n", time.Since(t0))
+
+	sys.RawWrite(2, 'Q') // breadcrumb: before console struct
+
 	con := &console{
 		fb:       fb,
-		dc:       gg.NewContext(w, h),
+		dc:       dc,
 		face:     face,
 		ascent:   ascent,
 		charW:    charW,
@@ -349,30 +360,70 @@ func main() {
 		maxLines: maxLines,
 		maxCols:  maxCols,
 		lines:    []string{""},
-		gc:       newGlyphCache(charW, charH, ascent, face),
+		gc:       gc,
 		tokBuf:   make([]token, 0, 64),
 		dirtyMin: -1,
 		dirtyMax: -1,
 	}
 
-	// Initial draw: copy fb (already powder gray from kernel), paint card, flush
-	copyFramebufferToGG(con.dc, fb)
-	con.drawCard()
-	con.drawContentArea()
-	// Flush card region plus shadow margin
-	margin := 40 + 4 // 4*sigma for SDF shadow region
-	flushX := cardX - margin
-	flushY := cardY - margin
-	flushW := cardW + 2*margin
-	flushH := cardH + 2*margin
-	if flushX < 0 {
-		flushX = 0
+	sys.RawWrite(2, '2') // breadcrumb: after console struct, before fill
+
+	// Initial draw
+	t0 = time.Now()
+	if runtime.GOARCH == "riscv64" {
+		// RISC-V: write directly to the MMIO framebuffer. This avoids
+		// demand-paging ~1200 pages of the gg backbuffer (each page
+		// fault costs ~50ms on QEMU TCG). The framebuffer is already
+		// mapped by the kernel — MMIO writes hit device memory directly.
+		pitch := int(fb.Pitch)
+		fbH := int(fb.Height)
+		dstU32 := unsafe.Slice((*uint32)(unsafe.Pointer(fb.Addr)), (pitch*fbH)/4)
+		dstStride32 := pitch / 4
+		bgr := uint32(nContent.B) | uint32(nContent.G)<<8 | uint32(nContent.R)<<16 | 0xFF000000
+		for y := rectY; y < rectY+rectH; y++ {
+			for x := rectX; x < rectX+rectW; x++ {
+				dstU32[y*dstStride32+x] = bgr
+			}
+		}
+		fmt.Printf("[stdio] fillContentArea(direct): %v\n", time.Since(t0))
+
+		t0 = time.Now()
+		sys.FlushFramebuffer(uint32(rectX), uint32(rectY), uint32(rectW), uint32(rectH))
+		fmt.Printf("[stdio] FlushFramebuffer: %v\n", time.Since(t0))
+	} else {
+		copyFramebufferToGG(con.dc, fb)
+		fmt.Printf("[stdio] copyFramebufferToGG: %v\n", time.Since(t0))
+
+		t0 = time.Now()
+		con.drawCard()
+		fmt.Printf("[stdio] drawCard: %v\n", time.Since(t0))
+
+		t0 = time.Now()
+		con.drawContentArea()
+		fmt.Printf("[stdio] drawContentArea: %v\n", time.Since(t0))
+
+		// Flush card region plus shadow margin
+		margin := 40 + 4
+		flushX := cardX - margin
+		flushY := cardY - margin
+		flushW := cardW + 2*margin
+		flushH := cardH + 2*margin
+		if flushX < 0 {
+			flushX = 0
+		}
+		if flushY < 0 {
+			flushY = 0
+		}
+
+		t0 = time.Now()
+		flushRegionToFramebuffer(con.dc, fb, flushX, flushY, flushW, flushH)
+		fmt.Printf("[stdio] flushRegionToFB: %v\n", time.Since(t0))
+
+		t0 = time.Now()
+		sys.FlushFramebuffer(uint32(flushX), uint32(flushY), uint32(flushW), uint32(flushH))
+		fmt.Printf("[stdio] FlushFramebuffer: %v\n", time.Since(t0))
 	}
-	if flushY < 0 {
-		flushY = 0
-	}
-	flushRegionToFramebuffer(con.dc, fb, flushX, flushY, flushW, flushH)
-	sys.FlushFramebuffer(uint32(flushX), uint32(flushY), uint32(flushW), uint32(flushH))
+
 	fmt.Println("[stdio] Console rectangle rendered")
 
 	// --- Enter serial event loop ---
@@ -399,6 +450,41 @@ var (
 	nTitle   = color.RGBA{100, 100, 110, 255} // title text
 	nText    = color.RGBA{200, 205, 215, 255} // content text
 )
+
+// fillRect fills a rectangle in the gg image with a solid color using direct
+// pixel writes. No floating-point math. Used on RISC-V where gg's rasterizer
+// is too slow under QEMU TCG.
+func fillRect(im *image.RGBA, x, y, w, h int, c color.RGBA) {
+	bounds := im.Bounds()
+	if x < bounds.Min.X {
+		w -= bounds.Min.X - x
+		x = bounds.Min.X
+	}
+	if y < bounds.Min.Y {
+		h -= bounds.Min.Y - y
+		y = bounds.Min.Y
+	}
+	if x+w > bounds.Max.X {
+		w = bounds.Max.X - x
+	}
+	if y+h > bounds.Max.Y {
+		h = bounds.Max.Y - y
+	}
+	if w <= 0 || h <= 0 {
+		return
+	}
+	r, g, b, a := c.R, c.G, c.B, c.A
+	for py := y; py < y+h; py++ {
+		off := py*im.Stride + x*4
+		for px := 0; px < w; px++ {
+			im.Pix[off+0] = r
+			im.Pix[off+1] = g
+			im.Pix[off+2] = b
+			im.Pix[off+3] = a
+			off += 4
+		}
+	}
+}
 
 // gaussLUT is a precomputed lookup table for exp(-d²/(2σ²)) * amplitude.
 // Indexed by dist in 0.1px increments up to 4σ.
@@ -541,56 +627,63 @@ func roundedRectSDF(px, py, rx, ry, rw, rh, r float64) float64 {
 // No blur pass needed — shadow intensity is computed analytically from
 // the signed distance field with gaussian falloff and directional lighting.
 func (c *console) drawCard() {
+	if runtime.GOARCH == "riscv64" {
+		return // skip gg rasterizer; background fill provides card frame
+	}
 	cx := float64(c.cardX)
 	cy := float64(c.cardY)
 	cw := float64(c.cardW)
 	ch := float64(c.cardH)
 	radius := 12.0
-	sigma := 10.0
-	amplitude := 15.0
-	cardLUT := newGaussLUT(sigma, amplitude)
 
 	im := c.dc.Image().(*image.RGBA)
 	bounds := im.Bounds()
 
-	// Shadow region: 4*sigma beyond card edges
-	margin := int(math.Ceil(sigma * 4))
-	sx := c.cardX - margin
-	sy := c.cardY - margin
-	ex := c.cardX + c.cardW + margin
-	ey := c.cardY + c.cardH + margin
-	if sx < bounds.Min.X { sx = bounds.Min.X }
-	if sy < bounds.Min.Y { sy = bounds.Min.Y }
-	if ex > bounds.Max.X { ex = bounds.Max.X }
-	if ey > bounds.Max.Y { ey = bounds.Max.Y }
+	// SDF shadow: skip on RISC-V where QEMU TCG FP emulation is too slow
+	// (~1M pixels * sqrt+exp per pixel = minutes on RV64 TCG).
+	if runtime.GOARCH != "riscv64" {
+		sigma := 10.0
+		amplitude := 15.0
+		cardLUT := newGaussLUT(sigma, amplitude)
+		// Shadow region: 4*sigma beyond card edges
+		margin := int(math.Ceil(sigma * 4))
+		sx := c.cardX - margin
+		sy := c.cardY - margin
+		ex := c.cardX + c.cardW + margin
+		ey := c.cardY + c.cardH + margin
+		if sx < bounds.Min.X { sx = bounds.Min.X }
+		if sy < bounds.Min.Y { sy = bounds.Min.Y }
+		if ex > bounds.Max.X { ex = bounds.Max.X }
+		if ey > bounds.Max.Y { ey = bounds.Max.Y }
 
-	// Per-pixel SDF shadow for the card
-	t0 := time.Now()
-	bgR := float64(nBase.R)
-	bgG := float64(nBase.G)
-	bgB := float64(nBase.B)
-	for py := sy; py < ey; py++ {
-		for px := sx; px < ex; px++ {
-			delta := sdfShadowLUT(float64(px)+0.5, float64(py)+0.5,
-				cx, cy, cw, ch, radius, cardLUT)
-			if delta == 0 {
-				continue
+		// Per-pixel SDF shadow for the card
+		t0 := time.Now()
+		bgR := float64(nBase.R)
+		bgG := float64(nBase.G)
+		bgB := float64(nBase.B)
+		for py := sy; py < ey; py++ {
+			for px := sx; px < ex; px++ {
+				delta := sdfShadowLUT(float64(px)+0.5, float64(py)+0.5,
+					cx, cy, cw, ch, radius, cardLUT)
+				if delta == 0 {
+					continue
+				}
+				off := py*im.Stride + px*4
+				r := bgR + delta
+				g := bgG + delta
+				b := bgB + delta
+				if r < 0 { r = 0 } else if r > 255 { r = 255 }
+				if g < 0 { g = 0 } else if g > 255 { g = 255 }
+				if b < 0 { b = 0 } else if b > 255 { b = 255 }
+				im.Pix[off+0] = uint8(r)
+				im.Pix[off+1] = uint8(g)
+				im.Pix[off+2] = uint8(b)
+				im.Pix[off+3] = 255
 			}
-			off := py*im.Stride + px*4
-			r := bgR + delta
-			g := bgG + delta
-			b := bgB + delta
-			if r < 0 { r = 0 } else if r > 255 { r = 255 }
-			if g < 0 { g = 0 } else if g > 255 { g = 255 }
-			if b < 0 { b = 0 } else if b > 255 { b = 255 }
-			im.Pix[off+0] = uint8(r)
-			im.Pix[off+1] = uint8(g)
-			im.Pix[off+2] = uint8(b)
-			im.Pix[off+3] = 255
 		}
-	}
 
-	fmt.Printf("[stdio] Card shadow: %v\n", time.Since(t0))
+		fmt.Printf("[stdio] Card shadow: %v\n", time.Since(t0))
+	}
 
 	// Card body on top
 	c.dc.SetColor(nBase)
@@ -607,44 +700,47 @@ func (c *console) drawCard() {
 	btnR := float64(cardBorderTop-8) / 2
 	btnCx := cx + cw - float64(cardBorderSide) - float64(textPad) - btnR
 	btnCy := cy + float64(cardBorderTop)/2
-	btnSigma := 5.0
-	btnAmp := 12.0
-	btnLUT := newGaussLUT(btnSigma, btnAmp)
 
-	// Per-pixel SDF shadow for the button circle
-	t1 := time.Now()
-	bMargin := int(math.Ceil(btnSigma * 4))
-	bsx := int(btnCx-btnR) - bMargin
-	bsy := int(btnCy-btnR) - bMargin
-	bex := int(btnCx+btnR) + bMargin
-	bey := int(btnCy+btnR) + bMargin
-	if bsx < bounds.Min.X { bsx = bounds.Min.X }
-	if bsy < bounds.Min.Y { bsy = bounds.Min.Y }
-	if bex > bounds.Max.X { bex = bounds.Max.X }
-	if bey > bounds.Max.Y { bey = bounds.Max.Y }
+	if runtime.GOARCH != "riscv64" {
+		btnSigma := 5.0
+		btnAmp := 12.0
+		btnLUT := newGaussLUT(btnSigma, btnAmp)
 
-	for py := bsy; py < bey; py++ {
-		for px := bsx; px < bex; px++ {
-			delta := circleSdfShadowLUT(float64(px)+0.5, float64(py)+0.5,
-				btnCx, btnCy, btnR, btnLUT)
-			if delta == 0 {
-				continue
+		// Per-pixel SDF shadow for the button circle
+		t1 := time.Now()
+		bMargin := int(math.Ceil(btnSigma * 4))
+		bsx := int(btnCx-btnR) - bMargin
+		bsy := int(btnCy-btnR) - bMargin
+		bex := int(btnCx+btnR) + bMargin
+		bey := int(btnCy+btnR) + bMargin
+		if bsx < bounds.Min.X { bsx = bounds.Min.X }
+		if bsy < bounds.Min.Y { bsy = bounds.Min.Y }
+		if bex > bounds.Max.X { bex = bounds.Max.X }
+		if bey > bounds.Max.Y { bey = bounds.Max.Y }
+
+		for py := bsy; py < bey; py++ {
+			for px := bsx; px < bex; px++ {
+				delta := circleSdfShadowLUT(float64(px)+0.5, float64(py)+0.5,
+					btnCx, btnCy, btnR, btnLUT)
+				if delta == 0 {
+					continue
+				}
+				off := py*im.Stride + px*4
+				// Read current pixel (card body is already drawn)
+				cr := float64(im.Pix[off+0]) + delta
+				cg := float64(im.Pix[off+1]) + delta
+				cb := float64(im.Pix[off+2]) + delta
+				if cr < 0 { cr = 0 } else if cr > 255 { cr = 255 }
+				if cg < 0 { cg = 0 } else if cg > 255 { cg = 255 }
+				if cb < 0 { cb = 0 } else if cb > 255 { cb = 255 }
+				im.Pix[off+0] = uint8(cr)
+				im.Pix[off+1] = uint8(cg)
+				im.Pix[off+2] = uint8(cb)
 			}
-			off := py*im.Stride + px*4
-			// Read current pixel (card body is already drawn)
-			cr := float64(im.Pix[off+0]) + delta
-			cg := float64(im.Pix[off+1]) + delta
-			cb := float64(im.Pix[off+2]) + delta
-			if cr < 0 { cr = 0 } else if cr > 255 { cr = 255 }
-			if cg < 0 { cg = 0 } else if cg > 255 { cg = 255 }
-			if cb < 0 { cb = 0 } else if cb > 255 { cb = 255 }
-			im.Pix[off+0] = uint8(cr)
-			im.Pix[off+1] = uint8(cg)
-			im.Pix[off+2] = uint8(cb)
 		}
-	}
 
-	fmt.Printf("[stdio] Button shadow: %v\n", time.Since(t1))
+		fmt.Printf("[stdio] Button shadow: %v\n", time.Since(t1))
+	}
 
 	// Button body
 	c.dc.SetColor(nBase)
@@ -659,6 +755,11 @@ func (c *console) drawCard() {
 
 // drawContentArea fills the content well with the darker content color.
 func (c *console) drawContentArea() {
+	if runtime.GOARCH == "riscv64" {
+		im := c.dc.Image().(*image.RGBA)
+		fillRect(im, c.rectX, c.rectY, c.rectW, c.rectH, nContent)
+		return
+	}
 	c.dc.SetColor(nContent)
 	c.dc.DrawRectangle(float64(c.rectX), float64(c.rectY), float64(c.rectW), float64(c.rectH))
 	c.dc.Fill()
@@ -673,18 +774,21 @@ func (c *console) redrawLine(lineIdx int) {
 	}
 
 	lineY := c.rectY + lineIdx*c.lineH
+	im := c.dc.Image().(*image.RGBA)
 
 	// Clear this line's background
-	c.dc.SetColor(nContent)
-	c.dc.DrawRectangle(float64(c.rectX), float64(lineY), float64(c.rectW), float64(c.lineH))
-	c.dc.Fill()
+	if runtime.GOARCH == "riscv64" {
+		fillRect(im, c.rectX, lineY, c.rectW, c.lineH, nContent)
+	} else {
+		c.dc.SetColor(nContent)
+		c.dc.DrawRectangle(float64(c.rectX), float64(lineY), float64(c.rectW), float64(c.lineH))
+		c.dc.Fill()
+	}
 
 	text := c.lines[lineIdx]
 	if len(text) == 0 {
 		return
 	}
-
-	im := c.dc.Image().(*image.RGBA)
 	baseX := c.rectX + textPad
 
 	tokens := c.tokenizeLine(text)
@@ -880,23 +984,22 @@ func flushRegionToFramebuffer(dc *gg.Context, fb *sys.FramebufferInfo, rx, ry, r
 		return
 	}
 
-	dst := unsafe.Slice((*uint8)(unsafe.Pointer(fb.Addr)), pitch*fbH)
+	// Use 32-bit writes to MMIO framebuffer for better performance
+	// (4x fewer device memory transactions vs byte writes).
+	dstU32 := unsafe.Slice((*uint32)(unsafe.Pointer(fb.Addr)), (pitch*fbH)/4)
+	dstStride32 := pitch / 4
 	srcPix := im.Pix
 	srcStride := im.Stride
 
 	for y := ry; y < ry+rh; y++ {
 		srcRow := srcPix[y*srcStride:]
-		dstRow := dst[y*pitch:]
 		for x := rx; x < rx+rw; x++ {
 			si := x * 4
-			di := x * 4
 			r := srcRow[si+0]
 			g := srcRow[si+1]
 			b := srcRow[si+2]
-			dstRow[di+0] = b
-			dstRow[di+1] = g
-			dstRow[di+2] = r
-			dstRow[di+3] = 0x00
+			// BGRA format: B in low byte, A in high byte (little-endian)
+			dstU32[y*dstStride32+x] = uint32(b) | uint32(g)<<8 | uint32(r)<<16
 		}
 	}
 }

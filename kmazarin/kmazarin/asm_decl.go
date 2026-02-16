@@ -108,6 +108,12 @@ func CheckThreadPreemption(framePtr uint64) uint64
 //go:nosplit
 func RunFirstThread()
 
+// ThreadExitAsm is the ABI0 entry point for killing the current thread.
+// Called from exception handler when an unrecoverable user-mode fault occurs.
+// Returns pointer to next ThreadContext (or 0 if no threads remain).
+//go:nosplit
+func ThreadExitAsm() uint64
+
 // YieldToReadyThread saves thread 0's full register state into its ThreadContext,
 // puts thread 0 on the ready queue, and returns to the next ready thread.
 // When thread 0 is scheduled back via timer preemption, execution resumes

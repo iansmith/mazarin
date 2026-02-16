@@ -30,12 +30,24 @@ TEXT runtime·closefd(SB),NOSPLIT,$0-12
 	MOVW	R0, ret+8(FP)
 	RET
 
-// write1 - CRITICAL: this must not use syscall
-// We need to actually write for panic messages to be visible
-// For now, just return the count as if it succeeded
+// write1 - Write to PL011 UART at 0x09000000 for panic/debug output
+// QEMU virt machine has PL011 UART mapped at PA 0x09000000
 TEXT runtime·write1(SB),NOSPLIT,$0-28
 	// fd at 0(FP), p at 8(FP), n at 16(FP), ret at 20(FP)
-	// Just return n (pretend we wrote everything)
+	MOVD	p+8(FP), R1		// R1 = buffer pointer
+	MOVW	n+16(FP), R2		// R2 = byte count
+	MOVD	$0x09000000, R3		// R3 = PL011 UART data register
+
+	// Write each byte to UART
+	CBZ	R2, write1_done
+write1_loop:
+	MOVBU	(R1), R4		// Load byte from buffer
+	MOVW	R4, (R3)		// Write to UART data register
+	ADD	$1, R1, R1		// Advance buffer pointer
+	SUBW	$1, R2, R2		// Decrement count
+	CBNZ	R2, write1_loop
+
+write1_done:
 	MOVW	n+16(FP), R0
 	MOVW	R0, ret+20(FP)
 	RET

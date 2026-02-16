@@ -2,8 +2,8 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/kirq"
+	"mazzy/kmazarin/kmem"
 	"sync/atomic"
-	"unsafe"
 )
 
 // Futex call statistics for debugging fairness
@@ -55,8 +55,12 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 
 		// FUTEX_WAIT: Block until value changes or we're woken
 		// Check if value matches expected (spurious wakeup check)
-		uaddrPtr := (*uint32)(unsafe.Pointer(uintptr(uaddr)))
-		currentVal := atomic.LoadUint32(uaddrPtr)
+		// Read through kernel linear map (safe for SUM/PAN).
+		// Aligned 32-bit reads are atomic on all supported architectures.
+		currentVal, ok := kmem.ReadUserUint32(uintptr(uaddr))
+		if !ok {
+			return -14 // EFAULT
+		}
 
 		if currentVal != uint32(val) {
 			atomic.AddUint64(&FutexWaitEagain, 1)
@@ -68,7 +72,10 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 		// futex waits for sysmon and other periodic wakeups.
 		if timeout != 0 {
 			// timeout is a pointer to struct timespec {int64 tv_sec, int64 tv_nsec}
-			ts := (*[2]int64)(unsafe.Pointer(uintptr(timeout)))
+			ts, ok := kmem.ReadUserInt64Pair(uintptr(timeout))
+			if !ok {
+				return -14 // EFAULT
+			}
 			seconds := ts[0]
 			nanoseconds := ts[1]
 

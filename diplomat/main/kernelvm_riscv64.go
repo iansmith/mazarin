@@ -114,19 +114,18 @@ func allocatePTPage() uint64 {
 
 // initBumpAllocatorRISCV initializes the bump allocator for RISC-V direct boot.
 // Starts allocating after the kernel image in physical memory.
-func initBumpAllocatorRISCV(hw *HardwareInfo) {
-	// RISC-V memory layout:
-	// 0x80000000: RAM base
-	// 0x80200000: Diplomat code
-	// 0x90000000: Kernel code (loaded by LoadKernelNoError)
-	// 0x90000000 + 0x4200 pages (67MB) = 0x94200000: End of kernel
-	// Start allocating page tables, stacks, etc. after kernel
-	const kernelPhysBase = 0x90000000
-	const kernelPages = 0x4200  // From LoadKernelNoError
-	const kernelEnd = kernelPhysBase + kernelPages*PageSize
+// The start address is derived from the actual loaded kernel size, not hardcoded.
+func initBumpAllocatorRISCV(hw *HardwareInfo, kernel *LoadedKernel) {
+	// Derive kernel end from actual loaded kernel info.
+	// kernel.PhysBase is where the kernel was loaded (set by allocatePhysPagesNoError).
+	// kernel.HighestVirt - kernel.LowestVirt gives the VA range size.
+	// Round up to 2MB boundary to avoid conflicts with temp buffer used during loading.
+	kernelSize := kernel.HighestVirt - kernel.LowestVirt
+	kernelSize = (kernelSize + Page2MBSize - 1) &^ (Page2MBSize - 1)
+	kernelEnd := kernel.PhysBase + kernelSize
 
 	riscvBumpAlloc.current = kernelEnd
-	riscvBumpAlloc.end = hw.RAMBase + hw.RAMSize  // Use actual RAM size
+	riscvBumpAlloc.end = hw.RAMBase + hw.RAMSize
 
 	printString("Bump allocator: ")
 	printHex(riscvBumpAlloc.current)
@@ -370,19 +369,23 @@ func PrepareKernelVMRISCV(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, er
 		for {}
 	}
 
-	// Initialize bump allocator with hardware RAM info
-	initBumpAllocatorRISCV(hw)
+	// Initialize bump allocator after the loaded kernel image
+	initBumpAllocatorRISCV(hw, kernel)
+	verifyCodePhys(kernel.PhysBase, "after bump init")
 
 	// Allocate page table pool
 	ptPages := allocatePhysPagesRISCV(ptPoolPages)
 	ptAlloc.base = ptPages
 	ptAlloc.offset = 0
 	ptAlloc.total = ptPoolPages * PageSize
-	plat.ZeroMemory(ptPages, ptPoolPages*PageSize)
 
 	printString("PT pool at ")
 	printHex(ptPages)
-	printString("\r\n")
+	printString(", zeroing ")
+	printHex(ptPoolPages * PageSize)
+	printString(" bytes\r\n")
+	plat.ZeroMemory(ptPages, ptPoolPages*PageSize)
+	verifyCodePhys(kernel.PhysBase, "after PT zero")
 
 	// Allocate L3 root table (Sv48)
 	l3Root := allocatePTPage()
@@ -415,6 +418,7 @@ func PrepareKernelVMRISCV(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, er
 		printString("ERROR: Failed to map MMIO 0x40\r\n")
 		for {}
 	}
+	verifyCodePhys(kernel.PhysBase, "after linear+MMIO map")
 
 	// --- Map kernel code at ELF VAs ---
 	// Kmazarin ELF VAs (e.g., ~0xFFFFFFFF437F0000) are below the linear map base
@@ -432,6 +436,7 @@ func PrepareKernelVMRISCV(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, er
 		printString("ERROR: Failed to map kernel code\r\n")
 		for {}
 	}
+	verifyCodePhys(kernel.PhysBase, "after kernel map")
 
 	// --- Identity map for SATP transition trampoline ---
 	// After writing the new SATP, diplomat's code at VA ~0x80200000 must still
@@ -448,13 +453,21 @@ func PrepareKernelVMRISCV(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, er
 		printString("ERROR: Failed identity map 0x80\r\n")
 		for {}
 	}
+	verifyCodePhys(kernel.PhysBase, "after identity map")
 
 	// Allocate and map g0 stack
 	g0StackPages := uint64((KernelG0StackSize + PageSize - 1) / PageSize)
 	g0StackPhys := allocatePhysPagesRISCV(g0StackPages)
 	vm.G0StackPhys = g0StackPhys
 	vm.G0StackTopVA = KernelG0StackTop
+
+	printString("g0 stack at PA ")
+	printHex(g0StackPhys)
+	printString(", zeroing ")
+	printHex(g0StackPages * PageSize)
+	printString("\r\n")
 	plat.ZeroMemory(g0StackPhys, g0StackPages*PageSize)
+	verifyCodePhys(kernel.PhysBase, "after g0 stack zero")
 
 	if err := mapRange(l3Root, KernelG0StackBottom, g0StackPhys, KernelG0StackSize, PTE_LEAF_RW); err != nil {
 		printString("ERROR: Failed to map g0 stack\r\n")
@@ -466,7 +479,14 @@ func PrepareKernelVMRISCV(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, er
 	excStackPhys := allocatePhysPagesRISCV(excStackPages)
 	vm.ExcStackPhys = excStackPhys
 	vm.ExcStackTopVA = KernelExcStackTop
+
+	printString("exc stack at PA ")
+	printHex(excStackPhys)
+	printString(", zeroing ")
+	printHex(excStackPages * PageSize)
+	printString("\r\n")
 	plat.ZeroMemory(excStackPhys, excStackPages*PageSize)
+	verifyCodePhys(kernel.PhysBase, "after exc stack zero")
 
 	if err := mapRange(l3Root, KernelExcStackBottom, excStackPhys, KernelExcStackSize, PTE_LEAF_RW); err != nil {
 		printString("ERROR: Failed to map exception stack\r\n")
@@ -503,7 +523,71 @@ func PrepareKernelVMRISCV(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, er
 	printHex(vm.UnifiedPoolEnd)
 	printString("\r\n")
 
+	// DEBUG: Verify code integrity before jump to kmazarin
+	// Check offset 0xb5a74 from physBase (VA 0x438b5a74 = handlePageFaultInternal.abi0)
+	// Text segment is ~0xb6000 bytes. Check last 1KB for corruption.
+	verifyCodePhys(kernel.PhysBase, "before jump")
+
 	return vm, nil
+}
+
+// savedTextChecksum stores the XOR checksum of the last 1KB of the text segment,
+// computed right after ELF loading. Used to detect corruption later.
+var savedTextChecksum uint64
+var savedTextChecksumStart uint64 // offset from physBase where checksum region starts
+var savedTextChecksumLen uint64
+
+// saveTextChecksum computes and saves an XOR checksum of the last 1KB of code starting
+// at physBase. Must be called right after ELF segment copy, before any other operation.
+func saveTextChecksum(physBase uint64, textFilesz uint64) {
+	checkLen := uint64(1024)
+	if textFilesz < checkLen {
+		checkLen = textFilesz
+	}
+	startOff := textFilesz - checkLen
+	savedTextChecksumStart = startOff
+	savedTextChecksumLen = checkLen
+	sum := uint64(0)
+	for j := uint64(0); j < checkLen; j += 8 {
+		val := *(*uint64)(unsafe.Pointer(uintptr(physBase + startOff + j)))
+		sum ^= val
+	}
+	savedTextChecksum = sum
+	printString("TEXT_CHECKSUM: saved=0x")
+	printHex(sum)
+	printString(" range=0x")
+	printHex(startOff)
+	printString("-0x")
+	printHex(startOff + checkLen)
+	printString("\r\n")
+}
+
+// verifyCodePhys compares the current XOR checksum of the text region against
+// the saved checksum from right after ELF loading.
+func verifyCodePhys(physBase uint64, label string) {
+	printString("VERIFY_PHYS[")
+	printString(label)
+	printString("]: ")
+
+	sum := uint64(0)
+	for j := uint64(0); j < savedTextChecksumLen; j += 8 {
+		val := *(*uint64)(unsafe.Pointer(uintptr(physBase + savedTextChecksumStart + j)))
+		sum ^= val
+	}
+	if sum != savedTextChecksum {
+		printString("CORRUPTED! got=0x")
+		printHex(sum)
+		printString(" want=0x")
+		printHex(savedTextChecksum)
+		// Find first mismatching 8-byte word
+		for j := uint64(0); j < savedTextChecksumLen; j += 8 {
+			val := *(*uint64)(unsafe.Pointer(uintptr(physBase + savedTextChecksumStart + j)))
+			_ = val // We'd need to store original values to compare
+		}
+	} else {
+		printString("OK")
+	}
+	printString("\r\n")
 }
 
 // InstallFaultHandler installs diplomat's exception handler (stub for compatibility)

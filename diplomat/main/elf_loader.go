@@ -603,6 +603,58 @@ func copySegmentToMemoryRaw(fs *fat32.FileSystem, file *SimpleFile, fileOffset, 
 	}
 }
 
+// verifyCodeIntegrityRange compares the last N bytes of the text segment
+// between the source (in-memory ELF) and the destination (physical memory).
+// This detects corruption during or after the segment copy.
+func verifyCodeIntegrityRange(physBase, tempBuf, lowestVirt uint64, phdrs *[32]elf64Phdr, phnum uint16, label string) {
+	printString("VERIFY[")
+	printString(label)
+	printString("]: ")
+
+	// Find the executable LOAD segment (text)
+	for i := uint16(0); i < phnum; i++ {
+		ph := &phdrs[i]
+		if ph.Type != elfPTLoad || ph.Filesz == 0 || (ph.Flags&1) == 0 {
+			continue // skip non-exec segments
+		}
+
+		// Compare last 1024 bytes of this segment
+		checkLen := uint64(1024)
+		if ph.Filesz < checkLen {
+			checkLen = ph.Filesz
+		}
+		startOff := ph.Filesz - checkLen
+		segDestBase := physBase + (ph.Vaddr - lowestVirt)
+
+		mismatches := uint64(0)
+		firstMismatchOff := uint64(0)
+		for j := uint64(0); j < checkLen; j += 4 {
+			off := startOff + j
+			destVal := *(*uint32)(unsafe.Pointer(uintptr(segDestBase + off)))
+			srcVal := *(*uint32)(unsafe.Pointer(uintptr(tempBuf + ph.Offset + off)))
+			if destVal != srcVal {
+				if mismatches == 0 {
+					firstMismatchOff = off
+				}
+				mismatches++
+			}
+		}
+
+		if mismatches > 0 {
+			printString("MISMATCH: ")
+			printHex(mismatches)
+			printString(" words differ, first @seg_off=0x")
+			printHex(firstMismatchOff)
+			printString(" seg_filesz=0x")
+			printHex(ph.Filesz)
+		} else {
+			printString("OK (last 1024 bytes match)")
+		}
+		break // only check first exec segment
+	}
+	printString("\r\n")
+}
+
 // copyToMem copies bytes to a memory address
 func copyToMem(dest unsafe.Pointer, src []byte) {
 	for i := 0; i < len(src); i++ {
@@ -1292,18 +1344,13 @@ func extractSymbolsBulkStrtab(fsys *fat32.FileSystem, file *SimpleFile, ehdr *el
 	printString(" found)\r\n")
 }
 
-// findInDirNoError finds a file in a directory without allocating error interfaces (for early boot).
-// Panics on failure instead of returning errors.
-func findInDirNoError(fs *fat32.FileSystem, cluster uint32, name string) *SimpleDirEntry {
-	debugPortOut('1')
+// findInDirSoft finds an entry in a directory without allocating error interfaces.
+// Returns nil if not found (does NOT panic).
+func findInDirSoft(fs *fat32.FileSystem, cluster uint32, name string) *SimpleDirEntry {
 	var found *SimpleDirEntry
 
-	debugPortOut('2')
 	WalkDirNoError(fs, cluster, func(e *SimpleDirEntry) bool {
-		debugPortOut('3')
-		// Compare names (case-insensitive)
 		if matchName(e, name) {
-			// Use bump allocator - Go heap allocation crashes in UEFI
 			found = dNew[SimpleDirEntry]()
 			if found == nil {
 				printString("ERROR: dNew[SimpleDirEntry] failed\r\n")
@@ -1314,6 +1361,16 @@ func findInDirNoError(fs *fat32.FileSystem, cluster uint32, name string) *Simple
 		}
 		return true
 	})
+
+	return found
+}
+
+// findInDirNoError finds a file in a directory without allocating error interfaces (for early boot).
+// Panics on failure instead of returning errors.
+func findInDirNoError(fs *fat32.FileSystem, cluster uint32, name string) *SimpleDirEntry {
+	debugPortOut('1')
+	debugPortOut('2')
+	found := findInDirSoft(fs, cluster, name)
 
 	if found == nil {
 		printString("ERROR: File not found: ")
@@ -1326,55 +1383,32 @@ func findInDirNoError(fs *fat32.FileSystem, cluster uint32, name string) *Simple
 
 // findFileNoError finds a file without allocating error interfaces (for early boot).
 // Panics on failure instead of returning errors.
+// Searches multiple locations: root directory (RISC-V minimal disk) and /EFI/Linux/.
 func findFileNoError(fs *fat32.FileSystem, path string) *SimpleFile {
-	// Start at root
-	cluster := fs.RootCluster()
+	root := fs.RootCluster()
+	var entry *SimpleDirEntry
 
-	// RISC-V minimal disk has kmazarin-riscv64.elf in root directory
-	// With LFN support, we can search for the full filename
-	// Try root first, then fall back to /EFI/Linux/ path
-	printString("Finding kmazarin-riscv64.elf in root...\r\n")
-	entry := findInDirNoError(fs, cluster, "kmazarin-riscv64.elf")
+	// Try RISC-V minimal disk layout: kmazarin-riscv64.elf in root
+	entry = findInDirSoft(fs, root, "kmazarin-riscv64.elf")
 
+	// Try /EFI/Linux/KMAZARIN.ELF (ARM64/AMD64 disk layout)
 	if entry == nil {
-		// Not in root, try /EFI/Linux/ path
-		printString("Not in root, trying /EFI/Linux/...\r\n")
-
-		// Find EFI directory
-		entry = findInDirNoError(fs, cluster, "EFI")
-		if entry == nil {
-			printString("ERROR: EFI directory not found\r\n")
-			for {}
-		}
-		if !entry.IsDir {
-			printString("ERROR: EFI is not a directory\r\n")
-			for {}
-		}
-		cluster = entry.Cluster
-
-		// Find Linux directory
-		entry = findInDirNoError(fs, cluster, "LINUX")
-		if entry == nil {
-			printString("ERROR: LINUX directory not found\r\n")
-			for {}
-		}
-		if !entry.IsDir {
-			printString("ERROR: LINUX is not a directory\r\n")
-			for {}
-		}
-		cluster = entry.Cluster
-
-		// Find kmazarin.elf
-		entry = findInDirNoError(fs, cluster, "KMAZARIN.ELF")
-		if entry == nil {
-			printString("ERROR: KMAZARIN.ELF not found in /EFI/Linux/\r\n")
-			for {}
+		efiDir := findInDirSoft(fs, root, "EFI")
+		if efiDir != nil && efiDir.IsDir {
+			linuxDir := findInDirSoft(fs, efiDir.Cluster, "LINUX")
+			if linuxDir != nil && linuxDir.IsDir {
+				entry = findInDirSoft(fs, linuxDir.Cluster, "KMAZARIN.ELF")
+			}
 		}
 	}
 
-	printString("Found KMAZARIN.ELF\r\n")
+	if entry == nil {
+		printString("ERROR: kernel not found in root or /EFI/Linux/\r\n")
+		for {}
+	}
 
-	// Use bump allocator - Go heap allocation crashes in UEFI
+	printString("Found kernel ELF\r\n")
+
 	sf := dNew[SimpleFile]()
 	if sf == nil {
 		printString("ERROR: dNew[SimpleFile] failed\r\n")
@@ -1521,6 +1555,17 @@ func LoadKernelNoError(fsys *fat32.FileSystem, path string) *LoadedKernel {
 		}
 	}
 
+	// DEBUG: Verify text segment integrity after copy and save checksum for later checks
+	verifyCodeIntegrityRange(physBase, tempBuf, lowestVirt, &phdrs, ehdr.Phnum, "after segment copy")
+	// Save checksum of the text segment for later verification in PrepareKernelVMRISCV
+	for i := uint16(0); i < ehdr.Phnum; i++ {
+		ph := &phdrs[i]
+		if ph.Type == elfPTLoad && ph.Filesz > 0 && (ph.Flags&1) != 0 {
+			saveTextChecksum(physBase+(ph.Vaddr-lowestVirt), ph.Filesz)
+			break
+		}
+	}
+
 	result := dNew[LoadedKernel]()
 	if result == nil {
 		printString("ERROR: dNew[LoadedKernel] failed\r\n")
@@ -1533,6 +1578,9 @@ func LoadKernelNoError(fsys *fat32.FileSystem, path string) *LoadedKernel {
 
 	// Extract symbols from in-memory ELF (no disk access needed)
 	extractSymbolsFromMemory(tempBuf, uint64(file.Size), ehdr, result)
+
+	// DEBUG: Verify again after symbol extraction
+	verifyCodeIntegrityRange(physBase, tempBuf, lowestVirt, &phdrs, ehdr.Phnum, "after symbol extract")
 
 	printString("Kernel loaded OK\r\n")
 	return result

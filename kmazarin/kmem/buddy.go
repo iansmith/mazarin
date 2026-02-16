@@ -16,7 +16,7 @@ import (
 )
 
 // MaxOrder is the number of orders supported (0 through MaxOrder-1).
-const MaxOrder = 12 // Orders 0-11
+const MaxOrder = 13 // Orders 0-12 (4KB to 16MB)
 
 // BuddyAllocator manages physical memory using a buddy system.
 type BuddyAllocator struct {
@@ -131,6 +131,14 @@ func buddyAddRange(start, end uintptr) {
 //
 //go:nosplit
 func buddyInsertFree(pa uintptr, order int) {
+	// DEBUG: Guard against inserting kmazarin code pages into free list
+	if pa >= 0x90000000 && pa < 0x90400000 {
+		rawUARTPuts("[BUDDY_GUARD] ABORT: freeing kmazarin code page! PA=0x")
+		rawUARTHex64(uint64(pa))
+		rawUARTPuts("\r\n")
+		for {
+		}
+	}
 	va := pa + buddyAlloc.kernelVAOffset
 	// Write current head as next pointer
 	*(*uintptr)(unsafe.Pointer(va)) = buddyAlloc.freeList[order]

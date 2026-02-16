@@ -24,23 +24,185 @@ const (
 	RV_PTE_PPN_MASK = 0x3FFFFFFFFFC00
 )
 
+// readSATP reads the raw SATP register value.
+// RISC-V SATP format: [63:60]=MODE(9=Sv48), [59:44]=ASID(16-bit), [43:0]=PPN(PA>>12)
+func readSATP() uintptr
+
+// readCurrentL0PA reads the current L0 page table PA from the SATP register.
+// Extracts PPN (bits 43:0) and shifts left by 12 to get the physical address.
+//
+//go:nosplit
+func readCurrentL0PA() uintptr {
+	satp := readSATP()
+	ppn := uintptr(satp) & 0xFFFFFFFFFFF // bits 43:0
+	return ppn << 12
+}
+
 // RISC-V Sv48 uses the same 4-level page table structure as ARM64 and x86_64.
 // NAMING CONVENTION WARNING:
 //   Shared constants (paging.go) use ARM64 naming: L0Shift=39 (root), L3Shift=12 (leaf).
 //   RISC-V convention is opposite: L3=root, L0=leaf.
 //   This file uses RISC-V naming for local vars but hardcoded shift values for clarity.
 
+// verifyUserspacePriestL0 checks that a priest's page table is valid before switching to it.
+// RISC-V: single SATP, so L0[0] must contain kernel mappings (copied by initProcessL0).
+//
+//go:nosplit
+func verifyUserspacePriestL0(l0PA uintptr, asid uint16) {
+	l0VA := l0PA + constants.KernelMMIOOffset
+	e0 := *(*uint64)(unsafe.Pointer(l0VA))
+	if (e0 & RV_PTE_V) == 0 {
+		rawUARTPuts("\r\n[SWITCH_PT] L0[0] INVALID! l0PA=0x")
+		rawUARTHex64(uint64(l0PA))
+		rawUARTPuts(" ASID=")
+		rawUARTHex64(uint64(asid))
+		rawUARTPuts(" L0[0]=0x")
+		rawUARTHex64(e0)
+		rawUARTPuts("\r\n")
+		for i := uintptr(0); i < 4; i++ {
+			entry := *(*uint64)(unsafe.Pointer(l0VA + i*8))
+			rawUARTPuts("  L0[")
+			rawUARTHex64(uint64(i))
+			rawUARTPuts("]=0x")
+			rawUARTHex64(entry)
+			rawUARTPuts("\r\n")
+		}
+		for {
+		}
+	}
+}
+
 // initProcessL0 performs arch-specific initialization of a new process root page table.
 // RISC-V Sv48: like x86_64, uses single SATP register for both user and kernel space.
-// Must copy kernel entries (upper half of L3 root, indices 256-511) to preserve kernel mappings.
+// Must copy kernel entries to preserve kernel mappings when SATP switches.
+//
+// Layout:
+//   - L3[1-511]: Copied directly from kernel (Go heap at L3[1]=0xC000000000,
+//                kernel upper half at L3[256-511]: linear map, heap, scratch).
+//   - L3[0]: Contains both kmazarin code (L2[1]: VA 0x40000000+) and user code (L2[0]).
+//            We create a NEW L2 table per process that copies kmazarin entries but
+//            leaves L2[0] empty for per-process user-space page tables.
 //
 //go:nosplit
 func initProcessL0(l0VA uintptr) {
 	kernelL0VA := ttbr1L0PA + constants.KernelMMIOOffset
-	src := kernelL0VA + 256*8
-	dst := l0VA + 256*8
-	for i := uintptr(0); i < 256; i++ {
-		*(*uint64)(unsafe.Pointer(dst + i*8)) = *(*uint64)(unsafe.Pointer(src + i*8))
+
+	// Copy L3[1-511] directly (includes Go heap at L3[1], kernel linear map at L3[256+])
+	for i := uintptr(1); i < 512; i++ {
+		*(*uint64)(unsafe.Pointer(l0VA + i*8)) = *(*uint64)(unsafe.Pointer(kernelL0VA + i*8))
+	}
+
+	// For L3[0]: kmazarin code is at VA 0x43800000 → L2 index 1 (0x40000000-0x7FFFFFFF).
+	// User code is at L2[0] (VA 0x00000000-0x3FFFFFFF). Create a new L2 table so each
+	// process has its own user page tables while sharing kmazarin code.
+	kernelL3E0 := *(*uint64)(unsafe.Pointer(kernelL0VA))
+	if (kernelL3E0 & RV_PTE_V) == 0 {
+		return // No L3[0] in kernel — nothing to do
+	}
+
+	// Allocate a new L2 table for this process
+	newL2PA := AllocPage(PageKernelPT)
+	if newL2PA == 0 {
+		return
+	}
+	newL2VA := newL2PA + constants.KernelMMIOOffset
+
+	// Zero the new L2
+	for i := uintptr(0); i < 512; i++ {
+		*(*uint64)(unsafe.Pointer(newL2VA + i*8)) = 0
+	}
+
+	// Copy kmazarin-relevant L2 entries from the kernel's L2.
+	// Kmazarin code is at L2[1] (VA 0x40000000-0x7FFFFFFF).
+	// Copy entries 1+ (kernel code region), leave entry 0 empty (user space).
+	kernelL2PA := pteExtractPA(kernelL3E0)
+	kernelL2VA := kernelL2PA + constants.KernelMMIOOffset
+	for i := uintptr(1); i < 512; i++ {
+		*(*uint64)(unsafe.Pointer(newL2VA + i*8)) = *(*uint64)(unsafe.Pointer(kernelL2VA + i*8))
+	}
+
+	// Set L3[0] to point to the new L2 table
+	pte := makeTablePTE(newL2PA)
+	*(*uint64)(unsafe.Pointer(l0VA)) = pte
+
+	// Verify L3[0] was set correctly by reading it back
+	readBack := *(*uint64)(unsafe.Pointer(l0VA))
+	if readBack != pte {
+		rawUARTPuts("[initProcessL0] MISMATCH! wrote=0x")
+		rawUARTHex64(pte)
+		rawUARTPuts(" read=0x")
+		rawUARTHex64(readBack)
+		rawUARTPuts("\r\n")
+		for {
+		}
+	}
+	if (readBack & RV_PTE_V) == 0 {
+		rawUARTPuts("[initProcessL0] L3[0] INVALID after write!\r\n")
+		for {
+		}
+	}
+
+	// Print diagnostic: L0 PA, L2 PA, L3[0] value
+	rawUARTPuts("[initProcL0] l0PA=0x")
+	rawUARTHex64(uint64(l0VA - constants.KernelMMIOOffset))
+	rawUARTPuts(" newL2=0x")
+	rawUARTHex64(uint64(newL2PA))
+	rawUARTPuts(" L3[0]=0x")
+	rawUARTHex64(readBack)
+	rawUARTPuts("\r\n")
+}
+
+// VerifyCurrentSATPL3E0 checks that L3[0] of the current SATP's root page table
+// is valid. Called from the timer IRQ handler to detect page table corruption.
+// Only checks when ASID != 0 (i.e., in process context, not kernel-only).
+//
+//go:nosplit
+func VerifyCurrentSATPL3E0() {
+	satp := readSATP()
+	// Extract ASID (bits 59:44)
+	asid := (uint64(satp) >> 44) & 0xFFFF
+	if asid == 0 {
+		return // Kernel context, skip check
+	}
+
+	// Extract root PA
+	ppn := uint64(satp) & 0xFFFFFFFFFFF // bits 43:0
+	rootPA := uintptr(ppn << 12)
+	rootVA := rootPA + constants.KernelMMIOOffset
+
+	// Read L3[0]
+	l3e0 := *(*uint64)(unsafe.Pointer(rootVA))
+	if (l3e0 & RV_PTE_V) == 0 {
+		rawUARTPuts("\r\n[PT_CORRUPT] L3[0] INVALID! SATP=0x")
+		rawUARTHex64(uint64(satp))
+		rawUARTPuts(" rootPA=0x")
+		rawUARTHex64(uint64(rootPA))
+		rawUARTPuts(" L3[0]=0x")
+		rawUARTHex64(l3e0)
+		rawUARTPuts(" ASID=")
+		rawUARTHex64(asid)
+		rawUARTPuts("\r\n")
+
+		// Print L3[1] and L3[256] for comparison (should be valid kernel entries)
+		l3e1 := *(*uint64)(unsafe.Pointer(rootVA + 8))
+		l3e256 := *(*uint64)(unsafe.Pointer(rootVA + 256*8))
+		rawUARTPuts(" L3[1]=0x")
+		rawUARTHex64(l3e1)
+		rawUARTPuts(" L3[256]=0x")
+		rawUARTHex64(l3e256)
+		rawUARTPuts("\r\n")
+
+		// Dump first 8 entries of root page table to see full state
+		rawUARTPuts(" L3[0..7]: ")
+		for i := uintptr(0); i < 8; i++ {
+			entry := *(*uint64)(unsafe.Pointer(rootVA + i*8))
+			rawUARTHex64(entry)
+			rawUART(' ')
+		}
+		rawUARTPuts("\r\n")
+
+		for {
+		} // Halt
 	}
 }
 
@@ -147,6 +309,16 @@ func pteIsValid(entry uint64) bool {
 func pteExtractPA(entry uint64) uintptr {
 	ppn := (entry >> 10) & 0xFFFFFFFFFFF
 	return uintptr(ppn << 12)
+}
+
+// constructTTBR0Value constructs the SATP register value for RISC-V Sv48.
+// SATP format: [63:60]=MODE(9=Sv48), [59:44]=ASID(16-bit), [43:0]=PPN(PA>>12)
+//
+//go:nosplit
+func constructTTBR0Value(l0PA uintptr, asid uint16) uint64 {
+	const satpModeSv48 = uint64(9) << 60
+	ppn := uint64(l0PA) >> 12
+	return satpModeSv48 | (uint64(asid) << 44) | ppn
 }
 
 // mapDevicePage is a no-op on RISC-V.
@@ -266,7 +438,7 @@ func printHexRaw(val uint64) {
 //go:nosplit
 func DumpInstructionPageFault(va uintptr) {
 	// Print SATP register value
-	satp := readTTBR0EL1() // reads SATP on RISC-V
+	satp := readSATP()
 	rawUART('\r')
 	rawUART('\n')
 	rawUART('S')

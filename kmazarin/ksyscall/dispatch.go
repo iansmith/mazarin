@@ -76,17 +76,19 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 	if syscallNum >= MazzySyscallBase {
 		result = dispatchMazzySyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5)
 	} else if syscallNum >= 512 {
-		syscallPanic("Invalid syscall number", syscallNum)
-		return -1 // unreachable
+		result = -38 // ENOSYS
 	} else {
 		// Get handler from table
 		handler := syscallTable[syscallNum]
 		if handler == nil {
-			syscallPanic("Syscall not implemented", syscallNum)
-			return -1 // unreachable
+			// Return -ENOSYS for unimplemented syscalls instead of panicking.
+			// This lets userspace programs continue even when they invoke
+			// syscalls the kernel doesn't handle yet (e.g. dup, ioctl).
+			result = -38 // ENOSYS
+		} else {
+			// Call the handler
+			result = handler(arg0, arg1, arg2, arg3, arg4, arg5)
 		}
-		// Call the handler
-		result = handler(arg0, arg1, arg2, arg3, arg4, arg5)
 	}
 
 	// Record exit time and accumulate kernel time

@@ -210,6 +210,10 @@ var tlsBlock [256]byte
 // Check from QEMU monitor: x/1gx &main.executionMarker
 var executionMarker uint64
 
+// uefiReturnAddr saves UEFI's return address so _efi_main_arm64 can
+// call through a TOPFRAME wrapper and still return to UEFI.
+var uefiReturnAddr uintptr
+
 // main is required by Go linker but never executes
 // The actual entry point is architecture-specific assembly.
 // This function calls referenced functions to keep them from being optimized away
@@ -268,10 +272,10 @@ func DiplomatEntry() {
 	// Mount FAT32 filesystem
 	plat.DebugPortOut('M')
 	printString("Mounting FAT32...\r\n")
-	// RISC-V workaround: Call fat32MountOrDie which handles errors internally
-	// to avoid error interface allocation issues during early boot
+	// Platform-specific mount: ARM64/AMD64 use normal error-returning mount,
+	// RISC-V uses allocation-free version to avoid error interfaces during early boot
 	plat.DebugPortOut('X')
-	fs := fat32MountOrDie(blockDev)
+	fs := mountFAT32OrDie(blockDev)
 	plat.DebugPortOut('O')
 	printString("FAT32 mounted OK\r\n")
 

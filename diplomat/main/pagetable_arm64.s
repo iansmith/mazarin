@@ -211,6 +211,13 @@ TEXT ·jumpToKmazarinWithStack(SB), NOSPLIT, $0-32
 	// MSR DAIFSET, #0xF — mask Debug, SError, IRQ, FIQ
 	WORD	$0xD50343DF
 
+	// Enable FP/SIMD: set CPACR_EL1.FPEN (bits 21:20) = 0b11.
+	// UEFI typically sets this, but be explicit so kmazarin can use
+	// floating-point from the first instruction without relying on firmware.
+	MOVD	$(3 << 20), R4
+	MSR	R4, CPACR_EL1
+	ISB	$15
+
 	// Clear SCTLR_EL1 alignment check bits that UEFI sets.
 	// Go's runtime assumes A=0 (no data alignment check) like Linux.
 	// Bit 1 (A) = data alignment check

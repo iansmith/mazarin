@@ -167,9 +167,9 @@ type VirtIOGPUDevice struct {
 
 var virtioGPUDevice VirtIOGPUDevice
 
-// Framebuffer is at fixed physical address 0x41000000 (8 MB)
-// Defined in constants/layout.go
-const virtioGPUFramebufferAddr = constants.FramebufferPhysAddr
+// Framebuffer physical address and size.
+// Dynamically allocated from the bump pool during GPU init.
+var virtioGPUFramebufferAddr uintptr
 const virtioGPUFramebufferSize = constants.FramebufferSize
 
 // Static buffer for attach backing command (small, avoids kmalloc)
@@ -248,7 +248,6 @@ func virtioPCISetupQueue(queueIndex uint16, vq *virtio.VirtQueue) bool {
 	descPhys := virtio.VirtqueueGetPhysicalAddr(vq.DescTable)
 	availPhys := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(vq.Available))
 	usedPhys := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(vq.Used))
-
 	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_LOW, uint32(descPhys))
 	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_HIGH, uint32(descPhys>>32))
 	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_AVAIL_LOW, uint32(availPhys))
@@ -542,7 +541,6 @@ func virtioGPUGetDisplayInfo() bool {
 // Returns true on success, false on failure
 //
 func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint32) bool {
-	// Use dedicated framebuffer region at fixed address
 	// Resource can be taller than display to enable hardware scrolling
 	fbSize := displayWidth * resourceHeight * 4 // 4 bytes per pixel (BGRA8888)
 
@@ -551,8 +549,19 @@ func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint3
 		return false
 	}
 
+	// Allocate framebuffer from the physical page pool.
+	// Must be contiguous for DMA (VirtIO ATTACH_BACKING needs a single PA range).
+	fbPages := (uintptr(fbSize) + kmem.PageSize - 1) / kmem.PageSize
+	virtioGPUFramebufferAddr = kmem.AllocContiguousPages(fbPages)
+	if virtioGPUFramebufferAddr == 0 {
+		console.KPrintln("[VirtIO GPU] ERROR: Failed to allocate framebuffer pages")
+		return false
+	}
+	console.KPrintf("[VirtIO GPU] Allocated framebuffer: PA=0x%X (%d pages)\n",
+		virtioGPUFramebufferAddr, fbPages)
+
 	// Zero framebuffer (use linear map VA for CPU access)
-	fbVA := uintptr(virtioGPUFramebufferAddr) + constants.KernelMMIOOffset
+	fbVA := virtioGPUFramebufferAddr + constants.KernelMMIOOffset
 	fbMem := unsafe.Pointer(fbVA)
 	virtio.Bzero4K(fbMem, fbSize)
 
@@ -590,10 +599,7 @@ func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint3
 	cmdPtr.ResourceID = virtioGPUDevice.ResourceID
 	cmdPtr.NrEntries = 1
 
-	// Add memory entry
-	// Note: fbMem points to the dedicated framebuffer region at a fixed physical address
-	// (virtioGPUFramebufferAddr = 0x41000000), so we use that directly instead of
-	// calling VirtqueueGetPhysicalAddr which expects a kernel virtual address.
+	// Add memory entry — use the dynamically allocated physical address directly.
 	memEntryPtr := virtio.CastToPointer[VirtIOGPUMemEntry](virtio.PointerToUintptr(attachCmdBuf) + unsafe.Sizeof(VirtIOGPUResourceAttachBacking{}))
 	memEntryPtr.Addr = uint64(virtioGPUFramebufferAddr)
 	memEntryPtr.Len = fbSize

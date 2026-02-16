@@ -37,6 +37,21 @@ const (
 	PTE_EXEC_NEVER = (1 << 53) | (1 << 54) // PXN + UXN
 )
 
+// readTTBR0EL1 reads the raw TTBR0_EL1 register value.
+// ARM64 TTBR0 format: [63:48]=ASID, [47:1]=PA, [0]=CnP
+func readTTBR0EL1() uintptr
+
+// readTTBR1EL1 reads the raw TTBR1_EL1 register value.
+func readTTBR1EL1() uintptr
+
+// readCurrentL0PA reads the current user-space L0 page table PA from TTBR0_EL1.
+// Masks out the ASID in the upper 16 bits.
+//
+//go:nosplit
+func readCurrentL0PA() uintptr {
+	return readTTBR0EL1() & 0x0000FFFFFFFFFFFF
+}
+
 // initProcessL0 performs arch-specific initialization of a new process L0 page table.
 // ARM64: no-op. TTBR0 is a separate register from TTBR1, so a fresh empty L0 is fine
 // for user space — kernel mappings live in TTBR1 and are unaffected.
@@ -44,6 +59,26 @@ const (
 //go:nosplit
 func initProcessL0(l0VA uintptr) {
 	// Nothing to do on ARM64
+}
+
+// verifyUserspacePriestL0 checks that a priest's page table is valid before switching to it.
+// ARM64: no-op. User L0 starts empty (kernel lives in TTBR1).
+//
+//go:nosplit
+func verifyUserspacePriestL0(l0PA uintptr, asid uint16) {
+}
+
+// VerifyCurrentSATPL3E0 is a no-op on ARM64 (TTBR0/TTBR1 are separate).
+//
+//go:nosplit
+func VerifyCurrentSATPL3E0() {}
+
+// constructTTBR0Value constructs the TTBR0 register value for ARM64.
+// TTBR0 format: [63:48]=ASID(16-bit), [47:1]=PA, [0]=CnP(0)
+//
+//go:nosplit
+func constructTTBR0Value(l0PA uintptr, asid uint16) uint64 {
+	return (uint64(asid) << 48) | uint64(l0PA)
 }
 
 // selectRootPageTable returns the root page table PA for the given VA.

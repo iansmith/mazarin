@@ -71,9 +71,17 @@ TEXT ·secondaryCPUEntry(SB), NOSPLIT|NOFRAME, $0
 	MOV	$1, A1
 	MOVW	A1, 64(S2)		// Online = 1
 
-	// Step 7: Enable S-mode interrupts (set sstatus.SIE bit)
-	// CSRSI sstatus, 2
-	WORD	$0x10016073		// sstatus.SIE = 1
+	// Step 7: Enable FPU and S-mode interrupts in sstatus.
+	// Set FS (bits 14:13) = 01 (Initial) to allow FP instructions.
+	// Set SIE (bit 1) to enable S-mode interrupts.
+	// Primary hart gets FS from diplomat; secondary harts must set it explicitly.
+	WORD	$0x100024F3		// CSRR S1, sstatus
+	MOV	$0x6000, T0		// Clear FS field (bits 14:13)
+	NOT	T0, T0
+	AND	T0, S1, S1
+	MOV	$0x2002, T0		// FS=01 (bit 13) + SIE (bit 1)
+	OR	T0, S1, S1
+	WORD	$0x10049073		// CSRW sstatus, S1
 
 	// Step 8: WFI loop - wait for interrupt
 secondary_idle_loop:

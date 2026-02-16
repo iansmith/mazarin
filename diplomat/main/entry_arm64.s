@@ -75,14 +75,26 @@ TEXT main·_efi_main_arm64(SB), NOSPLIT|NOFRAME, $0
 	MSR	R0, TPIDR_EL0
 
 	// ========================================
-	// Step 4: Call DiplomatEntry
+	// Step 4: Call DiplomatEntry via TOPFRAME wrapper
 	// ========================================
-	// Now Go functions can run - g register is set, stack guards initialized, TLS set up
-	BL	main·DiplomatEntry(SB)
+	// Now Go functions can run - g register is set, stack guards initialized, TLS set up.
+	// We must save UEFI's return address since BL overwrites LR.
+	MOVD	R30, main·uefiReturnAddr(SB)
+	BL	main·diplomatTopFrame(SB)
 
 	// DiplomatEntry should never return, but if it does,
 	// return EFI_SUCCESS (0) to UEFI
+	MOVD	main·uefiReturnAddr(SB), R30
 	MOVD	$0, R0
+	RET
+
+// diplomatTopFrame is marked TOPFRAME so Go's stack unwinder stops here.
+// Without this, the unwinder walks past _efi_main_arm64 into UEFI's stack
+// and panics on the unrecognized return address.
+TEXT main·diplomatTopFrame(SB), NOSPLIT|TOPFRAME, $8
+	MOVD	R30, (RSP)
+	BL	main·DiplomatEntry(SB)
+	MOVD	(RSP), R30
 	RET
 
 // _minimal_uefi_test_arm64 is a minimal entry point for toolchain validation

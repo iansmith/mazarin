@@ -206,6 +206,7 @@ tasks:
     sources:
       - '{{.USERSPACE_OVERLAY_DIR}}/syscall_linux.go'
       - '{{.USERSPACE_OVERLAY_DIR}}/asm_linux_arm64.s'
+      - '{{.USERSPACE_OVERLAY_DIR}}/asm_linux_riscv64.s'
       - '{{.USERSPACE_OVERLAY_DIR}}/runtime/cgo_mmap.go'
       - '{{.USERSPACE_OVERLAY_DIR}}/runtime/lock_spinbit.go'
     generates:
@@ -962,8 +963,12 @@ tasks:
     vars:
       LOG_FILE: /tmp/diplomat-riscv64-serial.log
       TRACE_FILE: /tmp/diplomat-riscv64-trace.log
+      DEBUG_LOG: /tmp/diplomat-riscv64-debug.log
       # VIRTIO_TRANSPORT options: "mmio" (default for RISC-V diplomat boot) or "pci"
       VIRTIO_TRANSPORT: '{{.VIRTIO_TRANSPORT | default "mmio"}}'
+      # Set SEPARATE_OUTPUT=true for verbose QEMU debug logging (-d int,guest_errors)
+      SEPARATE_OUTPUT: '{{.SEPARATE_OUTPUT | default "false"}}'
+      QEMU_DEBUG_FLAGS: '{{if eq .SEPARATE_OUTPUT "true"}}-d int,guest_errors -D {{.DEBUG_LOG}}{{end}}'
     cmds:
       # Use -bios default to load OpenSBI, which then loads diplomat as kernel
       # OpenSBI jumps to the ELF entry point after initialization
@@ -979,13 +984,14 @@ tasks:
       - '{{.GO}} tool go-rm {{.TRACE_FILE}}'
       - |
         {{if eq .VIRTIO_TRANSPORT "mmio"}}
-        {{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m 2G -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-device,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot -global virtio-mmio.force-legacy=false -trace 'virtio_*' -trace 'virtqueue_*' 2>{{.TRACE_FILE}}
+        {{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m 2G -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-device,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot -global virtio-mmio.force-legacy=false -trace 'virtio_*' -trace 'virtqueue_*' {{.QEMU_DEBUG_FLAGS}} 2>{{.TRACE_FILE}}
         {{else}}
-        {{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m 2G -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot -trace 'virtio_*' -trace 'virtqueue_*' 2>{{.TRACE_FILE}}
+        {{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m 2G -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot -trace 'virtio_*' -trace 'virtqueue_*' {{.QEMU_DEBUG_FLAGS}} 2>{{.TRACE_FILE}}
         {{end}}
       - '{{.GO}} tool go-echo "QEMU (RISC-V diplomat via OpenSBI, VirtIO {{.VIRTIO_TRANSPORT}}) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4447"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
+      - '{{if eq .SEPARATE_OUTPUT "true"}}{{.GO}} tool go-echo "Debug log: {{.DEBUG_LOG}}"{{end}}'
       - '{{.GO}} tool go-echo "Trace file: {{.TRACE_FILE}}"'
 
   stop-diplomat-riscv64:

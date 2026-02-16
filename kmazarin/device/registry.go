@@ -18,8 +18,9 @@ import (
 var ArchIndependentDrivers = []Discoverable{
 	// UART devices (pure MMIO)
 	&uart.PL011Driver{},
-	// &uart.NS16550Driver{},
+	&uart.NS16550Driver{},
 
 	// RTC devices (pure MMIO)
 	&rtc.PL031Driver{},
+	&rtc.GoldfishDriver{},
 }

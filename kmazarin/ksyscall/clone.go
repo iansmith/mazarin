@@ -1,7 +1,7 @@
 package ksyscall
 
 import (
-	"unsafe"
+	"mazzy/kmazarin/kmem"
 )
 
 // SyscallClone implements the clone(2) syscall
@@ -25,12 +25,14 @@ func SyscallClone(flags, stack, ptid, tls, ctid, _ uint64) int64 {
 	//   stack-24: fn (entry function)
 	//   stack-32: saved LR
 	//
-	// WARNING: This direct read may fail due to PAN (Privileged Access Never)!
-	// If kernel can't read userspace memory, these will be garbage values.
-	stackPtr := unsafe.Pointer(uintptr(stack))
-	mp := *(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 8))
-	gp := *(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 16))
-	fn := *(*uint64)(unsafe.Pointer(uintptr(stackPtr) - 24))
+	// Read stack values through safe accessors.
+	// These handle both kernel and user addresses automatically.
+	mp, ok1 := kmem.ReadUserUint64(uintptr(stack - 8))
+	gp, ok2 := kmem.ReadUserUint64(uintptr(stack - 16))
+	fn, ok3 := kmem.ReadUserUint64(uintptr(stack - 24))
+	if !ok1 || !ok2 || !ok3 {
+		return -14 // EFAULT
+	}
 
 	// Get the actual return address (instruction after SVC) for the child
 	// Both parent and child should "return" to the same place,

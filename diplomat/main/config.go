@@ -187,4 +187,17 @@ func matchBytes(a []byte, b string) bool {
 	return true
 }
 
+// ReadConfigDefaults returns default config without reading the config file.
+// Used when the Go heap is not initialized (diplomat doesn't call schedinit/mallocinit)
+// so any code path that does type assertions or interface conversions will crash.
+func ReadConfigDefaults(fs *fat32.FileSystem) (*KmazarinConfig, error) {
+	printString("Config: using defaults\r\n")
+	cfg := defaultConfig()
+	if cfg == nil {
+		printString("ERROR: Failed to allocate config\r\n")
+		for {}
+	}
+	return cfg, nil
+}
+
 var errConfigAllocFailed = blockDevError{"config: allocation failed"}

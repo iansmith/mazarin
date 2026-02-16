@@ -320,6 +320,12 @@ func fillScreen(color uint32) {
 	}
 }
 
+// GetFramebufferPA returns the physical address of the GPU framebuffer.
+// Used by MapUserFramebuffer to map the correct physical pages into userspace.
+func GetFramebufferPA() uintptr {
+	return virtioGPUFramebufferAddr
+}
+
 // GetFramebuffer returns the framebuffer pointer
 func GetFramebuffer() unsafe.Pointer {
 	return virtioGPUDevice.Framebuffer

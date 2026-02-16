@@ -85,9 +85,31 @@ TEXT ·trapEntry(SB), NOSPLIT|NOFRAME, $0
 	WORD	$0x100022F3		// csrr t0, sstatus
 	MOV	X5, 256(X2)		// save sstatus
 
-	// Store exception stack back to sscratch for nested traps
-	// CSRW sscratch, sp
-	WORD	$0x14011073		// csrw sscratch, sp(x2)
+	// Store exception stack pointer to sscratch for nested traps.
+	// CRITICAL: We must reserve space between the outer frame and where
+	// nested trap frames start. GO_CALL macros run Go code on the exception
+	// stack BELOW the outer frame (SyscallDispatch → SyscallWaitSoftIRQ → etc.).
+	// If a nested page fault occurs during Go execution, the nested trap reads
+	// sscratch and allocates its 264-byte frame there. Without reservation,
+	// the nested frame overlaps with the active Go stack frames, corrupting
+	// return addresses and causing instruction page faults at garbage PCs.
+	//
+	// Reserve 4KB (0x1000) for Go stack usage. The exception stack is 16KB,
+	// so this leaves plenty of room for nested trap frames below.
+	MOV	X2, T0
+	ADD	$-2048, T0
+	ADD	$-2048, T0		// T0 = SP - 4096 (reserve 4KB for Go stack)
+	// CSRW sscratch, T0(x5)
+	WORD	$0x14029073		// csrw sscratch, t0
+
+	// CRITICAL: Switch to kmazarin's g before calling any Go code!
+	// X27 (g) currently contains userspace's g, but kernel Go functions
+	// need kmazarin's g for stack growth checks and runtime access.
+	// The user's g is already saved in the trap frame at offset 208.
+	MOV	·kmazarinG0Addr(SB), T1
+	BEQ	T1, ZERO, skip_g_switch
+	MOV	T1, g			// Set g = kmazarin's g0
+skip_g_switch:
 
 	// Read scause to determine trap type
 	// CSRR t0, scause
@@ -438,8 +460,78 @@ pf_ok_ra_print:
 	JMP	trap_return
 
 pf_not_handled:
+	// Kernel handler returned 0 — try user page fault handler,
+	// but ONLY if the trap came from U-mode (SPP=0 in saved sstatus).
+	// If the trap came from S-mode (kernel code), skip user handler.
+	MOV	256(X2), T3		// saved sstatus from trap frame
+	AND	$0x100, T3, T3		// SPP bit (bit 8)
+	BNE	T3, ZERO, pf_really_not_handled	// SPP=1 → S-mode fault, skip
 
-	// Page fault NOT handled by kernel handler.
+	// U-mode fault: S2 still has faultAddr (callee-saved, preserved across GO_CALL)
+	GO_CALL_1_1(·HandleUserPageFaultAsm, S2)
+	BNE	T0, ZERO, pf_user_handled
+
+	JMP	pf_really_not_handled
+
+pf_user_handled:
+	// User page fault handled - print "U<sepc>@<stval>" and return
+	// S2 (x18) still has stval (callee-saved, preserved across GO_CALL)
+	MOV	$0xFFFFFFFF10000000, T3
+	MOV	$0x55, T4		// 'U' = user page fault handled
+	MOVB	T4, (T3)
+
+	// Print sepc lower 32 bits as 8 hex digits
+	MOV	248(X2), T1		// sepc from trap frame
+	MOV	$28, T4
+pf_user_sepc_loop:
+	SRL	T4, T1, T5
+	AND	$0xF, T5
+	MOV	$10, X28
+	BLT	T5, X28, pf_user_sepc_digit
+	ADD	$0x37, T5, T5
+	JMP	pf_user_sepc_print
+pf_user_sepc_digit:
+	ADD	$0x30, T5, T5
+pf_user_sepc_print:
+	MOV	$0xFFFFFFFF10000000, T3
+	MOVB	T5, (T3)
+	ADD	$-4, T4
+	MOV	$-4, X28
+	BNE	T4, X28, pf_user_sepc_loop
+
+	// Print '@' separator then stval lower 32 bits
+	MOV	$0xFFFFFFFF10000000, T3
+	MOV	$0x40, T4		// '@'
+	MOVB	T4, (T3)
+	MOV	S2, T1			// stval (faulting address)
+	MOV	$28, T4
+pf_user_stval_loop:
+	SRL	T4, T1, T5
+	AND	$0xF, T5
+	MOV	$10, X28
+	BLT	T5, X28, pf_user_stval_digit
+	ADD	$0x37, T5, T5
+	JMP	pf_user_stval_print
+pf_user_stval_digit:
+	ADD	$0x30, T5, T5
+pf_user_stval_print:
+	MOV	$0xFFFFFFFF10000000, T3
+	MOVB	T5, (T3)
+	ADD	$-4, T4
+	MOV	$-4, X28
+	BNE	T4, X28, pf_user_stval_loop
+
+	// SFENCE.VMA for the faulting page before returning to user mode.
+	// S2 has the faulting VA — flush its TLB entry to ensure the
+	// newly-mapped page is visible after SRET.
+	// SFENCE.VMA S2(x18), zero
+	WORD	$0x12090073
+
+	JMP	trap_return
+
+pf_really_not_handled:
+
+	// Page fault NOT handled by kernel or user handler.
 	// Print diagnostic: "F@<sepc>/<scause>[<stval>" then halt.
 	// This catches unmapped low-address accesses (identity map removed).
 	MOV	$0xFFFFFFFF10000000, T3
@@ -622,6 +714,11 @@ pf_g_out:
 	BNE	T4, X28, pf_g_loop
 
 	// Print return address chain from goroutine stack
+	// ONLY for kernel faults (SPP=1) — user stack is inaccessible (SUM=0).
+	MOV	256(X2), T5			// saved sstatus from trap frame
+	AND	$0x100, T5, T5			// SPP bit (bit 8)
+	BEQ	T5, ZERO, pf_skip_stack_walk	// SPP=0 → user fault, skip
+
 	// *(SP+0) = sysargs stored RA, *(SP+72) = args stored RA
 	MOV	$0xFFFFFFFF10000000, T3
 	MOV	$0x43, T5			// 'C'
@@ -672,7 +769,22 @@ pf_caller2_out:
 	MOV	$-4, X28
 	BNE	T4, X28, pf_caller2_loop
 
-	// Halt - don't loop back to faulting instruction
+pf_skip_stack_walk:
+
+	// Check if fault came from user mode (SPP bit in saved sstatus)
+	MOV	256(X2), T3			// saved sstatus from trap frame
+	AND	$0x100, T3, T3			// SPP bit (bit 8)
+	BNE	T3, ZERO, pf_unhandled_halt	// Kernel fault → still halt
+
+	// User fault: kill the faulting thread instead of halting the system.
+	// ThreadExitAsm marks thread exited, finds next ready thread,
+	// returns pointer to its ThreadContext (or 0 if no threads left).
+	GO_CALL_0_1(·ThreadExitAsm)
+	BEQ	T0, ZERO, pf_unhandled_halt	// No threads left → halt
+	MOV	T0, S2				// S2 = ThreadContext pointer
+	JMP	load_context_and_sret
+
+	// Halt - kernel fault or no threads remain
 pf_unhandled_halt:
 	WORD	$0x10500073			// wfi
 	JMP	pf_unhandled_halt
@@ -727,6 +839,14 @@ handle_timer_interrupt:
 	MOV	8(X2), A3		// original sp
 	GO_CALL_4_0(·TimerIRQHandler, T0, T1, T2, A3)
 
+	// Process deadline queue in top-half context.
+	// CRITICAL: Must run ProcessDeadlines HERE (not in bottom half) because
+	// bottom half goroutines run on kernel threads that may be blocked on futex.
+	// If all kernel threads are blocked, the bottom half never runs, and timed
+	// futex waits / nanosleep deadlines never fire — starving the kernel.
+	// (Same pattern as ARM64 exceptions_arm64.s:969-987)
+	GO_CALL_0_0(·ProcessDeadlinesTopHalf)
+
 	// Check thread preemption
 	MOV	X2, S2			// frame pointer (callee-saved)
 	GO_CALL_1_1(·CheckThreadPreemption, S2)
@@ -747,14 +867,12 @@ handle_software_interrupt:
 	JMP	trap_return
 
 handle_external_interrupt:
-	// S-mode external interrupt (cause 9)
+	// S-mode external interrupt (cause 9) — PLIC external IRQ
 	MOV	$0xFFFFFFFF10000000, T3
 	MOV	$0x45, T4		// 'E'
 	MOVB	T4, (T3)
-	// Disable SEIE to prevent re-entry until PLIC is implemented
-	MOV	$0x200, T0		// SEIE = bit 9
-	// CSRC sie, t0  = csrrc x0, sie, t0(x5)
-	WORD	$0x1042B073		// csrrc x0, sie, x5
+	// Dispatch via PLIC: claim interrupt, call handler, complete.
+	GO_CALL_0_0(·PLICDispatchIRQ)
 	JMP	trap_return
 
 // ============================================================================

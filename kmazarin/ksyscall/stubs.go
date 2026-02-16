@@ -3,7 +3,7 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/kirq"
-	"unsafe"
+	"mazzy/kmazarin/kmem"
 
 	_ "unsafe" // for go:linkname
 )
@@ -110,7 +110,10 @@ func SyscallSchedSetaffinity(pid, cpusetsize, mask, _, _, _ uint64) int64 {
 	}
 
 	// Read the requested mask
-	requestedMask := *(*uint64)(unsafe.Pointer(uintptr(mask)))
+	requestedMask, ok := kmem.ReadUserUint64(uintptr(mask))
+	if !ok {
+		return -14 // EFAULT
+	}
 
 	// Get actual CPU count
 	cpuCount := getCPUCountForAffinity()
@@ -263,10 +266,10 @@ func SyscallOpenat(dirfd, pathname, flags, mode, _, _ uint64) int64 {
 	// Check first byte of pathname to detect /proc, /sys, /dev paths
 	// These don't exist in our minimal kernel environment
 	if pathname != 0 {
-		firstByte := *(*byte)(unsafe.Pointer(uintptr(pathname)))
-		if firstByte == '/' {
-			secondByte := *(*byte)(unsafe.Pointer(uintptr(pathname + 1)))
-			if secondByte == 'p' || secondByte == 's' || secondByte == 'd' {
+		firstByte, ok := kmem.ReadUserByte(uintptr(pathname))
+		if ok && firstByte == '/' {
+			secondByte, ok2 := kmem.ReadUserByte(uintptr(pathname + 1))
+			if ok2 && (secondByte == 'p' || secondByte == 's' || secondByte == 'd') {
 				// Likely /proc, /sys, or /dev - return ENOENT
 				return -2 // ENOENT
 			}
@@ -343,10 +346,13 @@ func SyscallClockGettime(clockid, timespecPtr, _, _, _, _ uint64) int64 {
 
 	// Write to timespec structure
 	// struct timespec { time_t tv_sec; long tv_nsec; }
-	// Both fields are 8 bytes on 64-bit ARM
-	ptr := (*[2]uint64)(unsafe.Pointer(uintptr(timespecPtr)))
-	ptr[0] = seconds
-	ptr[1] = nanoseconds
+	// Both fields are 8 bytes on 64-bit
+	if !kmem.WriteUserUint64(uintptr(timespecPtr), seconds) {
+		return -14 // EFAULT
+	}
+	if !kmem.WriteUserUint64(uintptr(timespecPtr+8), nanoseconds) {
+		return -14 // EFAULT
+	}
 
 	return 0 // Success
 }
@@ -367,10 +373,24 @@ func SyscallGetrandom(bufPtr, count, _, _, _, _ uint64) int64 {
 	if !isValidUserAddr(bufPtr) {
 		return -14 // EFAULT
 	}
-	buf := unsafe.Pointer(uintptr(bufPtr))
-	// Fill with simple pattern (not actually random)
-	for i := uint64(0); i < count; i++ {
-		*(*byte)(unsafe.Pointer(uintptr(buf) + uintptr(i))) = byte(i & 0xFF)
+	// Build random data in a kernel buffer, then copy to user
+	// Process in chunks to avoid large stack allocations
+	remaining := count
+	offset := uint64(0)
+	for remaining > 0 {
+		var chunk [256]byte
+		n := remaining
+		if n > 256 {
+			n = 256
+		}
+		for i := uint64(0); i < n; i++ {
+			chunk[i] = byte((offset + i) & 0xFF)
+		}
+		if !kmem.CopyToUser(uintptr(bufPtr+offset), chunk[:n]) {
+			return -14 // EFAULT
+		}
+		offset += n
+		remaining -= n
 	}
 	return int64(count)
 }

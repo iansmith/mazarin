@@ -103,6 +103,7 @@ type topHalfDev struct {
 	descVA           uintptr // VA of descriptor table (Device-mapped)
 	notifyAddr       uintptr // VA of notify register (Device-mapped MMIO)
 	evtBufPA         uintptr // PA of EventBuffers (for descriptor addr field)
+	isrBase          uintptr // VA of VirtIO ISR register (read to deassert PCI INTx)
 	lastUsedIdx      uint16
 	queueSize        uint16
 	nextAvailIdx     uint16
@@ -121,7 +122,7 @@ var uartIRQNum uint32
 
 // SetTopHalfDev is called during input init to register device pointers
 // for the nosplit top-half path.
-func SetTopHalfDev(irqNum uint32, usedVA, evtBufVA, availVA, descVA, notifyAddr, evtBufPA uintptr, queueSize, initAvailIdx uint16, isMouse bool, lastUsedIdxSync *uint16) {
+func SetTopHalfDev(irqNum uint32, usedVA, evtBufVA, availVA, descVA, notifyAddr, evtBufPA, isrBase uintptr, queueSize, initAvailIdx uint16, isMouse bool, lastUsedIdxSync *uint16) {
 	dev := &topHalfKbd
 	ring := &topHalfKbdRing
 	if isMouse {
@@ -135,6 +136,7 @@ func SetTopHalfDev(irqNum uint32, usedVA, evtBufVA, availVA, descVA, notifyAddr,
 	dev.descVA = descVA
 	dev.notifyAddr = notifyAddr
 	dev.evtBufPA = evtBufPA
+	dev.isrBase = isrBase
 	dev.lastUsedIdx = 0
 	dev.queueSize = queueSize
 	dev.nextAvailIdx = initAvailIdx
@@ -172,6 +174,91 @@ func RingDrain(r *softIRQRing, buf []hid.HIDEvent, max int) int {
 		n++
 	}
 	return n
+}
+
+// pollInputTopHalf checks both keyboard and mouse VirtIO used rings for
+// pending events, drains them into softIRQ ring buffers, reposts descriptors,
+// and wakes any blocked userspace slot. Called from eventPoller (normal
+// goroutine context). On ARM64 where NonTimerIRQTopHalf already drained the
+// rings, lastUsedIdx == usedIdx so this returns immediately.
+func pollInputTopHalf() {
+	pollOneInputDev(&topHalfKbd)
+	pollOneInputDev(&topHalfMouse)
+}
+
+// pollOneInputDev drains one VirtIO input device's used ring into the
+// associated softIRQ ring buffer. Logic mirrors NonTimerIRQTopHalf but
+// runs in normal goroutine context (no nosplit constraint).
+func pollOneInputDev(dev *topHalfDev) {
+	if dev.usedVA == 0 {
+		return
+	}
+
+	// Sync with DrainEvents (called by HandleIRQ on the interrupt path)
+	// to avoid double-processing the same used ring entries.
+	if dev.lastUsedIdxSync != nil {
+		syncIdx := *dev.lastUsedIdxSync
+		if syncIdx != dev.lastUsedIdx {
+			dev.lastUsedIdx = syncIdx
+		}
+	}
+
+	// RISC-V has no Device memory attribute in page tables, so DMA writes
+	// from the VirtIO device may not be visible without an explicit fence.
+	asm.Dsb()
+	usedIdx := asm.MmioRead16(dev.usedVA + 2)
+
+	pushed := false
+
+	for dev.lastUsedIdx != usedIdx {
+		ringIdx := dev.lastUsedIdx % dev.queueSize
+		entryAddr := dev.usedVA + 4 + uintptr(ringIdx)*8
+		descIdx := asm.MmioRead32(entryAddr)
+
+		if descIdx < uint32(dev.queueSize) {
+			evtAddr := dev.evtBufVA + uintptr(descIdx)*8
+			evtType := asm.MmioRead16(evtAddr)
+			evtCode := asm.MmioRead16(evtAddr + 2)
+			evtValue := asm.MmioRead32(evtAddr + 4)
+
+			ev := hid.HIDEvent{Type: evtType, Code: evtCode, Value: evtValue}
+			if !ringPush(dev.ring, ev) {
+				console.Breadcrumb('X') // overflow
+			}
+			pushed = true
+
+			// Repost buffer to device
+			descAddr := dev.descVA + uintptr(descIdx)*16
+			bufPA := uint64(dev.evtBufPA) + uint64(descIdx)*8
+			asm.MmioWrite32(descAddr, uint32(bufPA))
+			asm.MmioWrite32(descAddr+4, uint32(bufPA>>32))
+			asm.MmioWrite32(descAddr+8, 8)
+			asm.MmioWrite16(descAddr+12, 2)
+			asm.MmioWrite16(descAddr+14, 0xFFFF)
+			availRingIdx := dev.nextAvailIdx % dev.queueSize
+			asm.MmioWrite16(dev.availVA+4+uintptr(availRingIdx)*2, uint16(descIdx))
+			dev.nextAvailIdx++
+		}
+
+		dev.lastUsedIdx++
+	}
+
+	// Sync VirtQueue.LastUsedIdx so DrainEvents (called later by PollAllDevices)
+	// sees nothing to drain. This prevents double-drain and descriptor leak.
+	if dev.lastUsedIdxSync != nil {
+		*dev.lastUsedIdxSync = dev.lastUsedIdx
+	}
+
+	if pushed {
+		asm.Dsb()
+		asm.MmioWrite16(dev.availVA+2, dev.nextAvailIdx)
+		asm.Dsb()
+		asm.MmioWrite16(dev.notifyAddr, 0)
+		asm.Dsb()
+		_ = asm.MmioRead16(dev.notifyAddr)
+
+		WakeSlotForIRQ(dev.irqNum)
+	}
 }
 
 // NonTimerIRQTopHalf is called directly from the assembly exception handler
@@ -318,6 +405,7 @@ var (
 // NOTE: Using busy-loop instead of time.Ticker to avoid timer initialization issues.
 //
 func eventPoller() {
+	console.KPrintf("[eventPoller] started\n")
 	for {
 		// Yield to other goroutines periodically
 		runtime.Gosched()
@@ -331,9 +419,16 @@ func eventPoller() {
 			}
 		}
 
-		// Poll VirtIO input devices for events (needed on x86_64/RISC-V
-		// where MSI-X is not configured; harmless on ARM64 where IRQ
-		// handler already drains the used ring).
+		// Poll VirtIO input devices: drain used rings into softIRQ ring
+		// buffers and wake blocked slots. On ARM64 the IRQ top-half
+		// already drained the rings (via lastUsedIdxSync), so this is
+		// a no-op. On RISC-V/x86_64 where MSI-X is not configured,
+		// this is the primary event delivery path.
+		pollInputTopHalf()
+
+		// Legacy poll path: prints events to console for diagnostics.
+		// Events were already drained by pollInputTopHalf, so HandleIRQ
+		// sees nothing to drain (DrainEvents returns 0).
 		input.PollAllDevices()
 
 		// Check UART RX flag (legacy - will be replaced by generic dispatch)

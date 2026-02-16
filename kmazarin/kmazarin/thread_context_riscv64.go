@@ -78,9 +78,13 @@ func (ctx *ThreadContext) SetupForUserspace(entryPoint, stackPtr uint64) {
 	*ctx = ThreadContext{}
 	ctx.X[2] = stackPtr  // sp
 	ctx.SEPC = entryPoint // return address for SRET
-	// SSTATUS: set SPIE (bit 5) so interrupts are enabled after SRET
-	// SPP (bit 8) = 0 for S-mode (same privilege, no user mode yet)
-	ctx.SSTATUS = 1 << 5
+	// SSTATUS: set SPIE (bit 5) so interrupts are enabled after SRET,
+	// SPP (bit 8) = 0 for U-mode return,
+	// FS (bits 14:13) = 01 (Initial) to enable floating-point instructions.
+	// Without FS enabled, FP instructions trap as illegal instructions (cause 2).
+	// Unlike ARM64 where CPACR_EL1 persists across exception returns,
+	// RISC-V FS is in sstatus which is context-switched on every SRET.
+	ctx.SSTATUS = (1 << 5) | (1 << 13)
 }
 
 // SetupForCloneChild initializes the context for a clone child thread.

@@ -69,6 +69,12 @@ TEXT ·SetSyscallSPSR(SB), NOSPLIT, $0-8
 TEXT ·CheckThreadPreemption(SB), NOSPLIT, $0-16
 	JMP	·checkThreadPreemptionInternal(SB)
 
+// ThreadExitAsm tail-call stub
+// Called from exception handler to kill faulting user thread.
+// Returns pointer to next ThreadContext (0 if no threads left).
+TEXT ·ThreadExitAsm(SB), NOSPLIT, $0-8
+	JMP	·threadExitInternal(SB)
+
 // ============================================================================
 // Exception vector setup
 // ============================================================================
@@ -137,6 +143,19 @@ TEXT ·GetGRegister(SB), NOSPLIT|NOFRAME, $0-8
 TEXT ·GetPC(SB), NOSPLIT, $0-8
 	MOV	RA, A0
 	MOV	A0, ret+0(FP)
+	RET
+
+// PLICDispatchIRQ tail-call stub - ABI0 entry point for PLIC external IRQ dispatch.
+// Called from handle_external_interrupt via GO_CALL_0_0.
+TEXT ·PLICDispatchIRQ(SB), NOSPLIT, $0-0
+	JMP	·plicDispatchIRQInternal(SB)
+
+// EnableSEIE sets SEIE (bit 9) in the SIE CSR to enable
+// S-mode external interrupts from the PLIC.
+TEXT ·EnableSEIE(SB), NOSPLIT|NOFRAME, $0-0
+	MOV	$0x200, A0		// SEIE = bit 9
+	// CSRS sie, a0
+	WORD	$0x10452073		// csrs sie, a0
 	RET
 
 // asyncPreemptWrapper placeholder

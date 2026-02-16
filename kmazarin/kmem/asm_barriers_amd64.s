@@ -54,16 +54,10 @@ TEXT ·isbSYAsm(SB), NOSPLIT, $0
 	LFENCE
 	RET
 
-// readTTBR0EL1 - Read page table base register
-// x86_64: Read CR3
-TEXT ·readTTBR0EL1(SB), NOSPLIT, $0-8
-	MOVQ	CR3, AX
-	MOVQ	AX, ret+0(FP)
-	RET
-
-// readTTBR1EL1 - Read kernel page table base register
-// x86_64: Same as readTTBR0EL1 (single CR3 for both user/kernel)
-TEXT ·readTTBR1EL1(SB), NOSPLIT, $0-8
+// readCR3 - Read CR3 register (page table base)
+// Returns the raw CR3 value: [63:12]=PML4 PA, [11:0]=PCID/flags
+// Use readCurrentL0PA() in Go code to get the L0 page table PA.
+TEXT ·readCR3(SB), NOSPLIT, $0-8
 	MOVQ	CR3, AX
 	MOVQ	AX, ret+0(FP)
 	RET

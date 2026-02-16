@@ -131,8 +131,59 @@ func InitUnifiedPool() {
 //go:nosplit
 func AllocPage(pageType PageType) uintptr {
 	// Use buddy allocator if available
+	var pa uintptr
 	if atomic.LoadUint32(&buddyAlloc.initialized) != 0 {
-		return BuddyAlloc(0)
+		pa = BuddyAlloc(0)
+	} else {
+		// Ensure bump pool is initialized
+		if atomic.LoadUint32(&globalPool.initialized) == 0 {
+			InitUnifiedPool()
+		}
+
+		globalPool.lock.Lock()
+
+		// Check for OOM
+		if globalPool.next >= globalPool.end {
+			globalPool.lock.Unlock()
+			uartPuts("[kmem] Unified pool OOM!\r\n")
+			return 0
+		}
+
+		// Bump allocate
+		pa = globalPool.next
+		globalPool.next += PageSize
+
+		globalPool.lock.Unlock()
+	}
+
+	// DEBUG: Guard against allocating kmazarin code pages
+	if pa >= 0x90000000 && pa < 0x90400000 {
+		rawUARTPuts("[ALLOC_GUARD] ABORT: allocated kmazarin code page! PA=0x")
+		rawUARTHex64(uint64(pa))
+		rawUARTPuts("\r\n")
+		for {
+		}
+	}
+
+	return pa
+}
+
+// AllocContiguousPages allocates a contiguous block of physical pages.
+// If the buddy allocator is initialized, delegates to BuddyAlloc with the
+// appropriate order (smallest power-of-2 >= pages). Otherwise falls back to
+// the bump allocator where contiguity is guaranteed by sequential allocation.
+// Returns the physical address of the first page, or 0 on failure.
+//
+//go:nosplit
+func AllocContiguousPages(pages uintptr) uintptr {
+	// Use buddy allocator if available
+	if atomic.LoadUint32(&buddyAlloc.initialized) != 0 {
+		// Compute order: smallest power of 2 >= pages
+		order := 0
+		for (uintptr(1) << uint(order)) < pages {
+			order++
+		}
+		return BuddyAlloc(order)
 	}
 
 	// Ensure bump pool is initialized
@@ -142,16 +193,15 @@ func AllocPage(pageType PageType) uintptr {
 
 	globalPool.lock.Lock()
 
-	// Check for OOM
-	if globalPool.next >= globalPool.end {
+	size := pages * PageSize
+	if globalPool.next+size > globalPool.end {
 		globalPool.lock.Unlock()
-		uartPuts("[kmem] Unified pool OOM!\r\n")
+		uartPuts("[kmem] Contiguous alloc OOM!\r\n")
 		return 0
 	}
 
-	// Bump allocate
 	pa := globalPool.next
-	globalPool.next += PageSize
+	globalPool.next += size
 
 	globalPool.lock.Unlock()
 	return pa

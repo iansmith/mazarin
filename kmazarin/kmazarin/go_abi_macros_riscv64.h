@@ -16,6 +16,13 @@
 // Preserve any needed values in S-registers (S0-S11) before calling.
 // The macros also temporarily modify X2/SP (restored before return).
 
+// GO_CALL_0_0(fn) - 0 args, 0 returns
+// Frame: 16 bytes (8 reserved + 8 alignment)
+#define GO_CALL_0_0(fn) \
+	ADD	$-16, X2; \
+	CALL	fn(SB); \
+	ADD	$16, X2
+
 // GO_CALL_0_1(fn) - 0 args, 1 return in T0
 // Frame: 16 bytes (8 reserved + 8 return)
 #define GO_CALL_0_1(fn) \

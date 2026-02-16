@@ -4,6 +4,11 @@
 
 package main
 
+import (
+	"mazzy/shared/blockdev"
+	"mazzy/shared/fs/fat32"
+)
+
 var defaultPlatform = PlatformOps{
 	PrintChar:            printChar,
 	DebugPortOut:         debugPortOut,
@@ -127,22 +132,68 @@ func init() {
 	plat.ReadBlockVirtIO = readBlockVirtIOStub
 }
 
+// saveTextChecksum is a no-op on ARM64 — only used by RISC-V for verifying
+// code integrity through page table transitions.
+func saveTextChecksum(physBase uint64, textFilesz uint64) {}
+
 // The following stubs satisfy references from non-build-tagged files.
 // On ARM64, these code paths are never reached (UEFI boot uses different functions),
 // but the compiler requires the symbols to exist.
 
+// ReadBlockVirtIONoError reads a block using the UEFI block device on ARM64.
+// Called from shared code (fat32_walk.go, elf_loader.go) that was written for
+// RISC-V's allocation-free boot. On ARM64, delegates to the UEFI block I/O.
 func ReadBlockVirtIONoError(lba uint64, buf []byte) {
-	panic("ReadBlockVirtIONoError called on ARM64")
+	err := globalBlockDev.ReadBlock(lba, buf)
+	if err != nil {
+		printString("FATAL: ReadBlock failed at LBA ")
+		printHex(lba)
+		printString("\r\n")
+		for {
+		}
+	}
 }
 
 func readBlockVirtIO(lba uint64, buf []byte) {
 	panic("readBlockVirtIO called on ARM64")
 }
 
+// allocatePhysPagesNoError allocates physical pages via UEFI AllocatePages on ARM64.
 func allocatePhysPagesNoError(pages uint64) uint64 {
-	panic("allocatePhysPagesNoError called on ARM64")
+	var addr uint64
+	// AllocateAnyPages=0, EfiLoaderData=2
+	status := UEFIAllocatePages(0, 2, pages, &addr)
+	if status != 0 {
+		printString("FATAL: AllocatePages failed\r\n")
+		for {
+		}
+	}
+	return addr
 }
 
+// readBlockVirtIOBulk reads multiple consecutive sectors via UEFI block I/O on ARM64.
 func readBlockVirtIOBulk(lba uint64, buf []byte) {
-	panic("readBlockVirtIOBulk called on ARM64")
+	// Read sector by sector through UEFI
+	sectorSize := uint64(512)
+	for offset := uint64(0); offset < uint64(len(buf)); offset += sectorSize {
+		end := offset + sectorSize
+		if end > uint64(len(buf)) {
+			end = uint64(len(buf))
+		}
+		ReadBlockVirtIONoError(lba+offset/sectorSize, buf[offset:end])
+	}
+}
+
+// mountFAT32OrDie uses the normal UEFI-based FAT32 mount path on ARM64.
+// The Go runtime is initialized enough for error interfaces and allocations.
+func mountFAT32OrDie(dev blockdev.BlockDevice) *fat32.FileSystem {
+	fs, err := fat32Mount(dev)
+	if err != nil {
+		printString("ERROR: FAT32 mount: ")
+		printString(err.Error())
+		printString("\r\n")
+		for {
+		}
+	}
+	return fs
 }

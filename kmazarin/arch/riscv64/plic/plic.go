@@ -207,6 +207,18 @@ func (p *PLIC) DispatchIRQ() {
 	p.Complete(irq)
 }
 
+// CallHandler calls the registered handler for the given IRQ source.
+// Returns true if a handler was found and called.
+//
+//go:nosplit
+func (p *PLIC) CallHandler(irq uint32) bool {
+	if irq > 0 && irq < PLICMaxSources && p.handlers[irq] != nil {
+		p.handlers[irq]()
+		return true
+	}
+	return false
+}
+
 // initHardware initializes the PLIC for S-mode operation.
 func (p *PLIC) initHardware() {
 	// Disable all interrupt sources (priority = 0)
