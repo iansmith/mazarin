@@ -215,29 +215,6 @@ unknown_stval_print:
 	JMP	trap_return
 
 handle_ecall:
-	// Debug: print syscall number marker
-	MOV	128(X2), X28		// a7 from frame = syscall number
-	MOV	$0xFFFFFFFF10000000, X29
-	MOV	$124, X30		// SYS_sched_yield
-	BNE	X28, X30, ecall_not_yield
-	MOV	$0x79, X28		// 'y'
-	MOVB	X28, (X29)
-	JMP	ecall_dispatch
-ecall_not_yield:
-	MOV	$220, X30		// SYS_clone
-	BNE	X28, X30, ecall_not_clone
-	MOV	$0x6B, X28		// 'k'
-	MOVB	X28, (X29)
-	JMP	ecall_dispatch
-ecall_not_clone:
-	MOV	$98, X30		// SYS_futex
-	BNE	X28, X30, ecall_other
-	MOV	$0x66, X28		// 'f'
-	MOVB	X28, (X29)
-	JMP	ecall_dispatch
-ecall_other:
-	MOV	$0x65, X28		// 'e'
-	MOVB	X28, (X29)
 ecall_dispatch:
 
 	// Syscall dispatch
@@ -276,11 +253,7 @@ ecall_dispatch:
 	MOV	$0, T1
 	BLE	T0, T1, ecall_no_switch
 
-	// Context switch found - print '>'
 	MOV	T0, S2			// save target in callee-saved S2
-	MOV	$0xFFFFFFFF10000000, X28
-	MOV	$0x3E, X29		// '>'
-	MOVB	X29, (X28)
 
 	// Context switch: DoContextSwitch(framePtr, targetPtr) uintptr
 	MOV	X2, T1			// frame pointer
@@ -291,18 +264,9 @@ ecall_dispatch:
 	JMP	load_context_and_sret
 
 ecall_no_switch:
-	// No switch target - print '<'
-	MOV	$0xFFFFFFFF10000000, X28
-	MOV	$0x3C, X29		// '<'
-	MOVB	X29, (X28)
 	JMP	trap_return
 
 handle_page_fault:
-	// Debug marker: 'P' = page fault entry (before any Go code)
-	MOV	$0xFFFFFFFF10000000, X28	// RISC-V NS16550 UART VA
-	MOV	$0x50, X29			// 'P'
-	MOVB	X29, (X28)
-
 	// Read scause to check for instruction page fault
 	// CSRR a3, scause
 	WORD	$0x142029F3		// csrr s3(x19), scause
@@ -408,55 +372,6 @@ pf_call_handler:
 	// T0 = handled?
 
 	BEQ	T0, ZERO, pf_not_handled
-
-	// Page fault was handled - print sepc and RA from trap frame
-	// Format: "S<8hex>R<8hex>" (lower 32 bits of each)
-	MOV	$0xFFFFFFFF10000000, T3
-	MOV	$0x53, T4		// 'S'
-	MOVB	T4, (T3)
-
-	// Print sepc lower 32 bits as 8 hex digits
-	MOV	248(X2), T1		// sepc from trap frame
-	MOV	$28, T4			// start at bit 28 (top nibble of lower 32)
-pf_ok_sepc_loop:
-	SRL	T4, T1, T5
-	AND	$0xF, T5
-	MOV	$10, X28
-	BLT	T5, X28, pf_ok_sepc_digit
-	ADD	$0x37, T5, T5		// A-F
-	JMP	pf_ok_sepc_print
-pf_ok_sepc_digit:
-	ADD	$0x30, T5, T5		// 0-9
-pf_ok_sepc_print:
-	MOV	$0xFFFFFFFF10000000, T3
-	MOVB	T5, (T3)
-	ADD	$-4, T4
-	MOV	$-4, X28
-	BNE	T4, X28, pf_ok_sepc_loop
-
-	// Print 'R' then RA lower 32 bits as 8 hex digits
-	MOV	$0xFFFFFFFF10000000, T3
-	MOV	$0x52, T4		// 'R'
-	MOVB	T4, (T3)
-
-	MOV	0(X2), T1		// RA (X1) from trap frame offset 0
-	MOV	$28, T4
-pf_ok_ra_loop:
-	SRL	T4, T1, T5
-	AND	$0xF, T5
-	MOV	$10, X28
-	BLT	T5, X28, pf_ok_ra_digit
-	ADD	$0x37, T5, T5
-	JMP	pf_ok_ra_print
-pf_ok_ra_digit:
-	ADD	$0x30, T5, T5
-pf_ok_ra_print:
-	MOV	$0xFFFFFFFF10000000, T3
-	MOVB	T5, (T3)
-	ADD	$-4, T4
-	MOV	$-4, X28
-	BNE	T4, X28, pf_ok_ra_loop
-
 	JMP	trap_return
 
 pf_not_handled:
@@ -474,53 +389,6 @@ pf_not_handled:
 	JMP	pf_really_not_handled
 
 pf_user_handled:
-	// User page fault handled - print "U<sepc>@<stval>" and return
-	// S2 (x18) still has stval (callee-saved, preserved across GO_CALL)
-	MOV	$0xFFFFFFFF10000000, T3
-	MOV	$0x55, T4		// 'U' = user page fault handled
-	MOVB	T4, (T3)
-
-	// Print sepc lower 32 bits as 8 hex digits
-	MOV	248(X2), T1		// sepc from trap frame
-	MOV	$28, T4
-pf_user_sepc_loop:
-	SRL	T4, T1, T5
-	AND	$0xF, T5
-	MOV	$10, X28
-	BLT	T5, X28, pf_user_sepc_digit
-	ADD	$0x37, T5, T5
-	JMP	pf_user_sepc_print
-pf_user_sepc_digit:
-	ADD	$0x30, T5, T5
-pf_user_sepc_print:
-	MOV	$0xFFFFFFFF10000000, T3
-	MOVB	T5, (T3)
-	ADD	$-4, T4
-	MOV	$-4, X28
-	BNE	T4, X28, pf_user_sepc_loop
-
-	// Print '@' separator then stval lower 32 bits
-	MOV	$0xFFFFFFFF10000000, T3
-	MOV	$0x40, T4		// '@'
-	MOVB	T4, (T3)
-	MOV	S2, T1			// stval (faulting address)
-	MOV	$28, T4
-pf_user_stval_loop:
-	SRL	T4, T1, T5
-	AND	$0xF, T5
-	MOV	$10, X28
-	BLT	T5, X28, pf_user_stval_digit
-	ADD	$0x37, T5, T5
-	JMP	pf_user_stval_print
-pf_user_stval_digit:
-	ADD	$0x30, T5, T5
-pf_user_stval_print:
-	MOV	$0xFFFFFFFF10000000, T3
-	MOVB	T5, (T3)
-	ADD	$-4, T4
-	MOV	$-4, X28
-	BNE	T4, X28, pf_user_stval_loop
-
 	// SFENCE.VMA for the faulting page before returning to user mode.
 	// S2 has the faulting VA — flush its TLB entry to ensure the
 	// newly-mapped page is visible after SRET.
@@ -828,9 +696,6 @@ unk_irq_print:
 
 handle_timer_interrupt:
 	// S-mode timer interrupt (cause 5)
-	MOV	$0xFFFFFFFF10000000, T3
-	MOV	$0x54, T4		// 'T'
-	MOVB	T4, (T3)
 	// Dispatch timer IRQ
 	// Load all args from trap frame before macro adjusts SP
 	MOV	$5, T0			// IRQ number
@@ -857,9 +722,6 @@ handle_timer_interrupt:
 
 handle_software_interrupt:
 	// S-mode software interrupt (cause 1)
-	MOV	$0xFFFFFFFF10000000, T3
-	MOV	$0x57, T4		// 'W'
-	MOVB	T4, (T3)
 	// Clear SSIP bit (bit 1) in SIP register to acknowledge
 	MOV	$2, T0			// bit 1 = SSIP
 	// CSRC sip, t0  = csrrc x0, sip, t0(x5)
@@ -868,9 +730,6 @@ handle_software_interrupt:
 
 handle_external_interrupt:
 	// S-mode external interrupt (cause 9) — PLIC external IRQ
-	MOV	$0xFFFFFFFF10000000, T3
-	MOV	$0x45, T4		// 'E'
-	MOVB	T4, (T3)
 	// Dispatch via PLIC: claim interrupt, call handler, complete.
 	GO_CALL_0_0(·PLICDispatchIRQ)
 	JMP	trap_return

@@ -144,9 +144,6 @@ func WakeSlotForIRQ(irqNum uint32) {
 	slot := &softIRQSlotData[slotIdx]
 	tid := slot.blockedTID
 	if tid < 0 {
-		if irqNum == uartIRQNum {
-			console.BreadcrumbNoSplit('-') // diagnostic: UART wake missed (no blocked thread)
-		}
 		return // no blocked thread, events stay in ring
 	}
 
@@ -180,9 +177,6 @@ func WakeSlotForIRQ(irqNum uint32) {
 
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
-	if irqNum == uartIRQNum {
-		console.BreadcrumbNoSplit('+') // diagnostic: UART wake succeeded
-	}
 }
 
 // BlockOnSlot blocks the current thread waiting for events on the given slot.
@@ -224,10 +218,6 @@ func BlockOnSlot(slotNum int32) uintptr {
 	// Commit: block current thread, record in slot
 	t.State = ThreadBlockedSoftIRQ
 	softIRQSlotData[slotNum].blockedTID = t.TID
-	if slotNum >= 0 && softIRQSlotData[slotNum].irqNum == uartIRQNum {
-		console.BreadcrumbNoSplit('B') // diagnostic: UART slot blocking
-	}
-
 	schedulerLock.Unlock()
 	NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
 

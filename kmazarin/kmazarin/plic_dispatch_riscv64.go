@@ -90,8 +90,6 @@ func ns16550UartTopHalf(irqNum uint32) {
 		ev := hid.HIDEvent{Type: 0, Code: 0, Value: uint32(data)}
 		if ringPush(&topHalfUartRing, ev) {
 			pushed = true
-		} else {
-			console.Breadcrumb('X') // overflow
 		}
 	}
 

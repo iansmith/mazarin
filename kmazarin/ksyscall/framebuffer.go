@@ -1,7 +1,6 @@
 package ksyscall
 
 import (
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
 	"unsafe"
@@ -12,17 +11,7 @@ import (
 //
 //go:nosplit
 func SyscallFlushFramebuffer(x, y, width, height, _, _ uint64) int64 {
-	// Diagnostic: track stdio (UART slot owner) FlushFramebuffer calls
-	isStdio := false
-	ownerPID := getUartSlotPriestID()
-	if ownerPID >= 0 && getCurrentThreadPID() == ownerPID {
-		isStdio = true
-		console.Breadcrumb('f') // stdio FlushFramebuffer entry
-	}
 	gpu.UpdateDisplay(uint32(x), uint32(y), uint32(width), uint32(height))
-	if isStdio {
-		console.Breadcrumb('g') // stdio FlushFramebuffer completed
-	}
 	return 0
 }
 

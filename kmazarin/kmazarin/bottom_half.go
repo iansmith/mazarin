@@ -222,9 +222,7 @@ func pollOneInputDev(dev *topHalfDev) {
 			evtValue := asm.MmioRead32(evtAddr + 4)
 
 			ev := hid.HIDEvent{Type: evtType, Code: evtCode, Value: evtValue}
-			if !ringPush(dev.ring, ev) {
-				console.Breadcrumb('X') // overflow
-			}
+			ringPush(dev.ring, ev)
 			pushed = true
 
 			// Repost buffer to device
@@ -283,10 +281,8 @@ func NonTimerIRQTopHalf() {
 	var dev *topHalfDev
 	if irqNum == topHalfKbd.irqNum && topHalfKbd.usedVA != 0 {
 		dev = &topHalfKbd
-		console.Breadcrumb('K') // diagnostic: keyboard IRQ received
 	} else if irqNum == topHalfMouse.irqNum && topHalfMouse.usedVA != 0 {
 		dev = &topHalfMouse
-		console.Breadcrumb('M') // diagnostic: mouse IRQ received
 	}
 	if dev == nil {
 		return
@@ -307,9 +303,7 @@ func NonTimerIRQTopHalf() {
 			evtValue := asm.MmioRead32(evtAddr + 4)
 
 			ev := hid.HIDEvent{Type: evtType, Code: evtCode, Value: evtValue}
-			if !ringPush(dev.ring, ev) {
-				console.Breadcrumb('X') // overflow
-			}
+			ringPush(dev.ring, ev)
 			pushed = true
 
 			// Repost buffer to device

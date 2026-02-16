@@ -2,7 +2,6 @@
 package ksyscall
 
 import (
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/kmem"
 	_ "unsafe" // for go:linkname
 )
@@ -71,14 +70,6 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 				}
 				pushByteToUartRing(c)
 			}
-		} else {
-			for i := uint64(0); i < n; i++ {
-				c := chunk[i]
-				if c == '\n' {
-					console.Breadcrumb('\r')
-				}
-				console.Breadcrumb(c)
-			}
 		}
 		offset += n
 		remaining -= n
@@ -86,7 +77,6 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 
 	if useRing {
 		flushUartRingWake()
-		console.Breadcrumb('w') // diagnostic: ring write completed
 	}
 
 	return int64(count)
