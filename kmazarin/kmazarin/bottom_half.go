@@ -4,7 +4,6 @@ package main
 import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
-	"mazzy/kmazarin/device/virtio/input"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
 	"mazzy/shared/hid"
@@ -187,15 +186,21 @@ func pollInputTopHalf() {
 }
 
 // pollOneInputDev drains one VirtIO input device's used ring into the
-// associated softIRQ ring buffer. Logic mirrors NonTimerIRQTopHalf but
-// runs in normal goroutine context (no nosplit constraint).
+// associated softIRQ ring buffer. Only active on x86_64 where input
+// devices have no IRQ (irqNum==0). On ARM64 and RISC-V the assembly
+// IRQ handler calls NonTimerIRQTopHalf directly, making this redundant.
 func pollOneInputDev(dev *topHalfDev) {
 	if dev.usedVA == 0 {
 		return
 	}
+	// On ARM64/RISC-V the interrupt top-half already drains the used ring
+	// and pushes events into the softIRQ ring. Skip polling to avoid any
+	// possibility of racing with the interrupt handler.
+	if dev.irqNum != 0 {
+		return
+	}
 
-	// Sync with DrainEvents (called by HandleIRQ on the interrupt path)
-	// to avoid double-processing the same used ring entries.
+	// Sync with DrainEvents to avoid double-processing the same entries.
 	if dev.lastUsedIdxSync != nil {
 		syncIdx := *dev.lastUsedIdxSync
 		if syncIdx != dev.lastUsedIdx {
@@ -241,8 +246,8 @@ func pollOneInputDev(dev *topHalfDev) {
 		dev.lastUsedIdx++
 	}
 
-	// Sync VirtQueue.LastUsedIdx so DrainEvents (called later by PollAllDevices)
-	// sees nothing to drain. This prevents double-drain and descriptor leak.
+	// Sync VirtQueue.LastUsedIdx so DrainEvents does not re-drain
+	// events we already pushed into the softIRQ ring.
 	if dev.lastUsedIdxSync != nil {
 		*dev.lastUsedIdxSync = dev.lastUsedIdx
 	}
@@ -286,6 +291,11 @@ func NonTimerIRQTopHalf() {
 	}
 	if dev == nil {
 		return
+	}
+
+	// Read ISR to acknowledge interrupt at device level.
+	if dev.isrBase != 0 {
+		_ = asm.MmioRead8(dev.isrBase)
 	}
 
 	usedIdx := asm.MmioRead16(dev.usedVA + 2)
@@ -406,24 +416,25 @@ func eventPoller() {
 
 		// Check generic IRQ pending flags
 		// Scan the entire array and call registered handlers.
+		// Skip IRQs already handled by NonTimerIRQTopHalf (called from
+		// assembly): those events are in softIRQ ring buffers already.
+		// Dispatching them again via kirq would call HandleIRQ/DrainEvents,
+		// stealing events from the hardware used ring before pollInputTopHalf
+		// can deliver them to userspace.
 		for irqNum := uint32(0); irqNum < 1020; irqNum++ {
 			if atomic.SwapUint32(&irqPendingFlags[irqNum], 0) == 1 {
-				// IRQ fired - call registered handler in safe Go context
+				if irqNum == topHalfKbd.irqNum || irqNum == topHalfMouse.irqNum || (irqNum == uartIRQNum && uartIRQNum != 0) {
+					continue
+				}
 				dispatchIRQ(irqNum)
 			}
 		}
 
 		// Poll VirtIO input devices: drain used rings into softIRQ ring
-		// buffers and wake blocked slots. On ARM64 the IRQ top-half
-		// already drained the rings (via lastUsedIdxSync), so this is
-		// a no-op. On RISC-V/x86_64 where MSI-X is not configured,
-		// this is the primary event delivery path.
+		// buffers and wake blocked slots. Works on all architectures:
+		// on ARM64 the IRQ top-half already drained (this is a no-op),
+		// on RISC-V/x86_64 this is the primary polling path.
 		pollInputTopHalf()
-
-		// Legacy poll path: prints events to console for diagnostics.
-		// Events were already drained by pollInputTopHalf, so HandleIRQ
-		// sees nothing to drain (DrainEvents returns 0).
-		input.PollAllDevices()
 
 		// Check UART RX flag (legacy - will be replaced by generic dispatch)
 		if atomic.SwapUint32(&uartRxPending, 0) == 1 {

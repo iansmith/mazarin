@@ -1,7 +1,7 @@
 package input
 
 // platformInitInterrupts is a no-op on x86_64.
-// VirtIO input uses polling via PollAllDevices() called from the timer handler.
+// VirtIO input uses polling via pollInputTopHalf() in the event poller.
 func platformInitInterrupts() {}
 
 // platformConfigureDeviceIRQ is a no-op on x86_64.

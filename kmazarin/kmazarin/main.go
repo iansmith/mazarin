@@ -564,18 +564,16 @@ func initVirtIOInputDevices() {
 			continue
 		}
 
-		// Register the input dispatch handler in both GIC and kirq tables
-		input.RegisterIRQDevice(irqNum, dev)
-
 		// Wire hardware interrupt controller for real IRQs.
 		// ARM64 uses MSI-X (GIC SPIs), RISC-V uses PCI INTx (PLIC sources 32-35).
+		// Event delivery goes through assembly IRQ handler → NonTimerIRQTopHalf
+		// → softIRQ ring, NOT through kirq dispatch. Register a no-op handler
+		// so kirq.DispatchIRQ doesn't panic if called unexpectedly.
 		if cachedIC != nil && irqNum != 0 {
-			// Capture irqNum for closure (Go 1.22+ loop var semantics make this safe,
-			// but be explicit for clarity)
 			localIRQ := irqNum
-			// Register handler: when this IRQ fires, dispatch to input driver
 			cachedIC.RegisterHandler(localIRQ, func() {
-				input.DispatchIRQ(uint64(localIRQ))
+				// No-op: events handled by NonTimerIRQTopHalf via assembly top-half.
+				_ = localIRQ
 			})
 			// MSI-X interrupts are edge-triggered (message write = edge event)
 			cachedIC.SetIRQEdgeTriggered(localIRQ)

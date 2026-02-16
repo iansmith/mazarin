@@ -383,43 +383,16 @@ func (dev *VirtIOInputDevice) DrainEvents(buf []hid.HIDEvent, max int) int {
 // irqCounter tracks total input IRQs received (for debug/test).
 var irqCounter uint32
 
-// HandleIRQ is the interrupt handler for this device.
-// Called from eventPoller goroutine (safe Go context).
-// Drains all used buffers, prints events, re-queues buffers, and kicks device.
-// This is the "do everything in the top half" approach like Linux's virtinput_recv_events.
+// HandleIRQ acknowledges the device interrupt via ISR read.
+// Event draining and console printing are intentionally removed:
+// the nosplit top-half (NonTimerIRQTopHalf / pollOneInputDev) now handles
+// event delivery through per-device softIRQ ring buffers.
+// DrainEvents here would race with the top-half and steal events.
 func (dev *VirtIOInputDevice) HandleIRQ() {
-	// Read ISR status to acknowledge interrupt at the device
 	if dev.ISRBase != 0 {
 		_ = asm.MmioRead8(dev.ISRBase)
 	}
-
 	atomic.AddUint32(&irqCounter, 1)
-
-	// Drain used ring and replenish
-	var buf [NumEventBuffers]hid.HIDEvent
-	n := dev.DrainEvents(buf[:], NumEventBuffers)
-
-	if n > 0 {
-		typeName := "kbd"
-		if dev.DevType == hid.DeviceTypeMouse {
-			typeName = "mouse"
-		}
-		for i := 0; i < n; i++ {
-			evt := &buf[i]
-			evtType := "?"
-			switch evt.Type {
-			case EV_SYN:
-				continue // skip sync events, they're just framing
-			case EV_KEY:
-				evtType = "KEY"
-			case EV_REL:
-				evtType = "REL"
-			case EV_ABS:
-				evtType = "ABS"
-			}
-			console.KPrintf("[%s] %s code=%d val=%d\n", typeName, evtType, evt.Code, evt.Value)
-		}
-	}
 }
 
 // HasPendingEvents returns true if there are events waiting to be drained.

@@ -82,6 +82,9 @@ func keyboardLoop(slot int) {
 	fmt.Printf("[dapope] keyboard goroutine started on slot %d\n", slot)
 	var buf hid.SoftIRQReturn
 	var km input.Keymap
+	// Track per-key held state to suppress repeats. QEMU on macOS sends
+	// repeated EV_KEY value=1 (press) events for auto-repeat, not value=2.
+	var keyHeld [256]bool
 	for {
 		n, err := sys.WaitSoftIRQ(slot, &buf)
 		if err != nil {
@@ -93,15 +96,28 @@ func keyboardLoop(slot int) {
 			if ev.Type != EV_KEY {
 				continue
 			}
+			code := ev.Code
+			if ev.Value == 1 { // press
+				if code < 256 && keyHeld[code] {
+					continue // suppress repeat (already held)
+				}
+				if code < 256 {
+					keyHeld[code] = true
+				}
+			} else if ev.Value == 0 { // release
+				if code < 256 {
+					keyHeld[code] = false
+				}
+				continue // don't generate output for releases
+			} else {
+				continue // skip value=2 (explicit repeat) and other values
+			}
 			ke := input.KeyEvent{
-				Code:    ev.Code,
-				Pressed: ev.Value != 0,
-				Repeat:  ev.Value == 2,
+				Code:    code,
+				Pressed: true,
+				Repeat:  false,
 			}
 			ch, action := km.Feed(ke)
-			if !ke.Pressed {
-				continue
-			}
 			if ch != 0 {
 				fmt.Print(string(ch))
 			} else if action == "enter" {
