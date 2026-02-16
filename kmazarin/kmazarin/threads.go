@@ -2441,26 +2441,6 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 		sf.StateCheck("context-switch-complete")
 	}
 
-	// DEBUG: Detect suspicious RSP values (< 16MB = likely ELF/rodata corruption)
-	newRSP := newThread.Context.GetSP()
-	if newRSP != 0 && newRSP < 0x1000000 {
-		console.KWriteString("\r\n[CTX] BAD RSP! tid=")
-		console.KPrintHex64(uint64(newThread.TID))
-		console.KWriteString(" RSP=")
-		console.KPrintHex64(newRSP)
-		console.KWriteString(" RIP=")
-		console.KPrintHex64(newThread.Context.GetPC())
-		console.KWriteString(" R14=")
-		console.KPrintHex64(newThread.Context.GetGRegister())
-		if oldThread != nil {
-			console.KWriteString(" oldTid=")
-			console.KPrintHex64(uint64(oldThread.TID))
-			console.KWriteString(" oldRSP=")
-			console.KPrintHex64(oldThread.Context.GetSP())
-		}
-		console.KWriteString("\r\n")
-	}
-
 	// END CRITICAL SECTION
 	schedulerLock.Unlock()
 	// CRITICAL: Do NOT restore DAIF here!

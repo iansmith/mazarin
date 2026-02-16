@@ -65,7 +65,7 @@ var syscallTable = [512]SyscallHandler{
 func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	// Translate syscall number: on x86_64, converts from x86_64 Linux numbers
 	// to ARM64 Linux numbers used by the dispatch table. Identity on ARM64.
-	syscallNum = translateSyscallNum(syscallNum)
+	syscallNum = uint64(translateSyscallNum(syscallNum))
 
 	// Record entry time for kernel time accounting
 	entryTick := kirq.ReadCounterValue()
