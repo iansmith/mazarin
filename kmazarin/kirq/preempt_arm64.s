@@ -407,10 +407,4 @@ userspace_init_deadlines:
 	B	timer_return
 
 timer_return:
-	// NOTE: DeadlinePending flag disabled — ProcessDeadlines is now called
-	// directly from the timer exception top-half in exceptions_arm64.s,
-	// before the thread preemption check. This ensures deadlines fire even
-	// when kernel threads are blocked on futex.
-	// MOVW	$1, R8
-	// MOVW	R8, main·DeadlinePending(SB)
 	RET

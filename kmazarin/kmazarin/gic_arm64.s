@@ -38,36 +38,6 @@ TEXT ·EnableGIC(SB), NOSPLIT, $0
 	ISB	$15
 	RET
 
-// DisableTimerIRQ and EnableTimerIRQ are now implemented in main.go using the GIC device driver
-// instead of direct assembly register access. This ensures consistent address mapping.
-// The assembly implementations below are commented out but kept for reference.
-//
-// // DisableTimerIRQ disables IRQ 27 (virtual timer) in the GIC
-// TEXT ·DisableTimerIRQ(SB), NOSPLIT, $0
-// 	// Disable IRQ 27 in GICD_ICENABLER0 (clear-enable register)
-// 	// IRQ 27 is bit 27 in ICENABLER0
-// 	MOVD	$(GICD_BASE + 0x0180), R0  // GICD_ICENABLER0 offset
-//
-// 	// ICENABLER is write-1-to-clear, so we write the bit to disable
-// 	MOVD	$(1 << 27), R1		// R1 = (1 << 27)
-// 	MOVW	R1, (R0)
-//
-// 	ISB	$15
-// 	RET
-//
-// // EnableTimerIRQ enables IRQ 27 (virtual timer) in the GIC
-// TEXT ·EnableTimerIRQ(SB), NOSPLIT, $0
-// 	// Enable IRQ 27 in GICD_ISENABLER0
-// 	// IRQ 27 is bit 27 in ISENABLER0
-// 	MOVD	$(GICD_BASE + GICD_ISENABLER0), R0
-//
-// 	// ISENABLER is write-1-to-set, so we can just write the bit
-// 	MOVD	$(1 << 27), R1		// R1 = (1 << 27)
-// 	MOVW	R1, (R0)
-//
-// 	ISB	$15
-// 	RET
-
 // DisableTimerHardware disables the ARM virtual timer hardware
 // This stops the timer from generating interrupt requests
 TEXT ·DisableTimerHardware(SB), NOSPLIT, $0

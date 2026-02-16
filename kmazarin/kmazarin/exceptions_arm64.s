@@ -406,18 +406,6 @@ el1_skip_clear_clone_setup:
 	LDP	256(R21), (R0, R1)
 	STP	(R0, R1), EXC_FRAME_ELR_SPSR(RSP)
 
-	// DEBUG: Print marker showing SVC context switch to userspace
-	// Check if new SPSR is EL0 (bits [3:0] == 0)
-	MOVD	EXC_FRAME_ELR_SPSR+8(RSP), R0
-	AND	$0xF, R0
-	CBNZ	R0, svc_switch_not_el0
-	MOVD	$UART_BASE, R2
-	MOVD	$'S', R3
-	MOVB	R3, (R2)
-	MOVD	$'c', R3
-	MOVB	R3, (R2)
-svc_switch_not_el0:
-
 	B	sync_return
 
 syscall_no_switch:
@@ -1618,11 +1606,6 @@ el0_svc_chr_lo:
 	// Set x28 to this value (x28 is Go's g register)
 	WORD	$0xaa0a03fc  // mov x28, x10
 skip_g_switch_el0:
-	// NOTE: 'K' debug print disabled to test if it affects timing fairness
-	// MOVD	$UART_BASE, R11
-	// MOVD	$'K', R12
-	// MOVB	R12, (R11)
-
 	// SVC from userspace - first save ELR and SPSR for clone
 	// Without this, clone would use stale values from a previous EL1 syscall!
 	// CRITICAL: R0-R17 are caller-saved and will be clobbered by function calls!

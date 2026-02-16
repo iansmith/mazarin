@@ -159,7 +159,6 @@ func (c *mcache) refill(spc spanClass) {
 		// Also skip if nelems==0 (empty/invalid span).
 		if s.allocCount == 0 || s.nelems == 0 {
 			// Treat as if this was emptymspan - just skip uncaching
-			// print("runtime: skipping uncache of unused span (allocCount=", s.allocCount, " nelems=", s.nelems, ")\n")
 		} else {
 			// Mark this span as no longer cached.
 			// KMAZARIN PATCH: Accept both fresh cached (sweepgen+3) and stale cached (sweepgen+1).

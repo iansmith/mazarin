@@ -81,9 +81,6 @@ func main() {
 	fmt.Println("[sieve5] Starting single-threaded prime sieve")
 	fmt.Printf("[sieve5] GOMAXPROCS=%d\n", runtime.GOMAXPROCS(0))
 
-	// Start async handler goroutine
-	// go asyncHandler()
-
 	// Run sieve starting at 20001, printing primes as "5:prime"
 	for n := uint64(20001); ; n += 2 {
 		if isPrimeSieve(n) {

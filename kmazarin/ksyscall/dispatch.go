@@ -95,12 +95,6 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 	exitTick := kirq.ReadCounterValue()
 	kirq.AddKernelSyscallTicks(exitTick - entryTick)
 
-	// Stats printing disabled for now — use clock display to verify liveness
-	// count := atomic.LoadUint64(&kirq.SyscallCount)
-	// if count > 0 && count%2000 == 0 {
-	// 	printKernelTimeStats()
-	// }
-
 	return result
 }
 

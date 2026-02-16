@@ -8,14 +8,6 @@ import (
 	"mazzy/kmazarin/dtb"
 )
 
-// printDebug prints a debug string directly to console
-// DISABLED: console.KWriteString hangs in InitFromDTB context
-func printDebug(_ string) {}
-
-// printDebugInt prints an integer
-// DISABLED: same issue as printDebug
-func printDebugInt(_ int) {}
-
 // Device storage by type - use typed interface values for type safety
 var (
 	// Map from compatible string to list of drivers that handle it.

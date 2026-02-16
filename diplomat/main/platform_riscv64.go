@@ -177,16 +177,7 @@ func ReadBlockVirtIO(lba uint64, buf []byte) error {
 // Used for early boot on RISC-V to avoid allocation issues.
 // Panics/loops on error instead of returning.
 func ReadBlockVirtIONoError(lba uint64, buf []byte) {
-	// Verbose debug output disabled for speed
-	// debugPortOut('Z')
-	// printString("DEBUG: ReadBlockVirtIONoError called for LBA ")
-	// printHex(lba)
-	// printString("\r\n")
-
-	// Call real VirtIO implementation
-	// debugPortOut('Y')
 	readBlockVirtIO(lba, buf)
-	// debugPortOut('X')
 }
 
 func init() {

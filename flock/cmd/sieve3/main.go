@@ -83,9 +83,6 @@ func main() {
 	fmt.Println("[sieve3] Starting single-threaded prime sieve")
 	fmt.Printf("[sieve3] GOMAXPROCS=%d\n", runtime.GOMAXPROCS(0))
 
-	// DEBUG: Disabled async handler to test if it causes crash
-	// go asyncHandler()
-
 	// Run sieve starting at 20001, printing primes as "3:prime"
 	for n := uint64(20001); ; n += 2 {
 		if isPrimeSieve(n) {

@@ -364,7 +364,6 @@ clone_good:
 	// In child, set up new stack
 	MOVD	R10, g_m(R11)
 	MOVD	R11, g
-	//CALL	runtime·stackcheck(SB)
 
 clone_nog:
 	// Call fn
