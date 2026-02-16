@@ -935,8 +935,8 @@ tasks:
     cmds:
       - '{{.GO}} tool go-rm {{.CPU_LOG_FILE}}'
       - '{{.GO}} tool go-cp {{.FW_VARS_TEMPLATE}} {{.BUILD_DIR}}/edk2-arm-vars.fd'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt -cpu cortex-a72 -m 2G -rtc base=utc,clock=host -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-pci,drive=flock0,bus=pcie.0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot -d int,guest_errors,cpu_reset -D {{.CPU_LOG_FILE}}'
-      - '{{.GO}} tool go-echo "QEMU (ARM64 UEFI) started in background with CPU logging"'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt -cpu cortex-a72 -m 2G -rtc base=utc,clock=host -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-pci,drive=flock0,bus=pcie.0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot'
+      - '{{.GO}} tool go-echo "QEMU (ARM64 UEFI) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4446"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
       - '{{.GO}} tool go-echo "CPU log: {{.CPU_LOG_FILE}}"'
