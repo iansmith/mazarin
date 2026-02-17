@@ -27,11 +27,11 @@ TEXT ·TimerIRQHandler(SB), NOSPLIT, $0-64
 	JMP	·timerIRQHandlerInternal(SB)
 
 // HandlePageFaultAsm tail-call stub
-TEXT ·HandlePageFaultAsm(SB), $0-16
+TEXT ·HandlePageFaultAsm(SB), NOSPLIT, $0-16
 	JMP	·handlePageFaultInternal(SB)
 
 // HandleUserPageFaultAsm tail-call stub
-TEXT ·HandleUserPageFaultAsm(SB), $0-16
+TEXT ·HandleUserPageFaultAsm(SB), NOSPLIT, $0-16
 	JMP	·handleUserPageFaultInternal(SB)
 
 // GetSyscallSwitchTarget - must use CALL (has return value)
@@ -56,19 +56,15 @@ TEXT ·DoContextSwitch(SB), NOSPLIT, $32-24
 
 // SetSyscallELR tail-call stub
 TEXT ·SetSyscallELR(SB), NOSPLIT, $0-8
-	// DEBUG: breadcrumb 'e' inside SetSyscallELR stub
-	PUSHQ	AX
-	PUSHQ	DX
-	MOVW	$0x3F8, DX
-	MOVB	$'e', AX
-	OUTB
-	POPQ	DX
-	POPQ	AX
 	JMP	·setSyscallELRInternal(SB)
 
 // SetSyscallSPSR tail-call stub
 TEXT ·SetSyscallSPSR(SB), NOSPLIT, $0-8
 	JMP	·setSyscallSPSRInternal(SB)
+
+// SetSyscallCloneRegs tail-call stub (3 args: r12, r13, r9)
+TEXT ·SetSyscallCloneRegs(SB), NOSPLIT, $0-24
+	JMP	·setSyscallCloneRegsInternal(SB)
 
 // CheckThreadPreemption tail-call stub
 TEXT ·CheckThreadPreemption(SB), NOSPLIT, $0-16
@@ -198,10 +194,10 @@ run_skip_fsbase:
 	MOVQ	DX, -8(AX)		// Write g to TLS slot
 
 	// Build IRETQ frame: SS, RSP, RFLAGS, CS, RIP (push in reverse order)
-	PUSHQ	$0x30			// SS (UEFI data segment)
+	PUSHQ	160(R12)		// SS from context
 	PUSHQ	136(R12)		// RSP from context
 	PUSHQ	128(R12)		// RFLAGS from context
-	PUSHQ	$0x38			// CS (UEFI 64-bit code segment)
+	PUSHQ	152(R12)		// CS from context
 	PUSHQ	120(R12)		// RIP from context
 
 	// Load all GPRs from ThreadContext
@@ -281,6 +277,10 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	ORQ	DX, AX
 	MOVQ	AX, 144(R12)		// FSBase
 
+	// Save CS/SS — thread 0 is always kernel context
+	MOVQ	$0x08, 152(R12)		// CS = kernelCS
+	MOVQ	$0x10, 160(R12)		// SS = kernelSS
+
 	// Call SaveThread0AndYield() to get next thread's context
 	// x86_64: CALL pushes return addr, so return value at 0(SP)
 	SUBQ	$16, SP
@@ -316,12 +316,14 @@ yield_skip_fsbase:
 
 	// Build IRETQ frame manually (avoid PUSH to keep assembler happy)
 	SUBQ	$40, SP
-	MOVQ	$0x30, 32(SP)		// SS (UEFI data segment)
+	MOVQ	160(R12), AX
+	MOVQ	AX, 32(SP)		// SS from context
 	MOVQ	136(R12), AX
 	MOVQ	AX, 24(SP)		// RSP
 	MOVQ	128(R12), AX
 	MOVQ	AX, 16(SP)		// RFLAGS
-	MOVQ	$0x38, 8(SP)		// CS (UEFI 64-bit code segment)
+	MOVQ	152(R12), AX
+	MOVQ	AX, 8(SP)		// CS from context
 	MOVQ	120(R12), AX
 	MOVQ	AX, 0(SP)		// RIP
 

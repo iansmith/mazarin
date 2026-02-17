@@ -1,12 +1,14 @@
+//go:build arm64 || riscv64
+
 package ksyscall
 
 import (
 	"mazzy/kmazarin/kmem"
 )
 
-// SyscallClone implements the clone(2) syscall
-// Go's runtime pushes mp, gp, fn onto the new stack before calling clone.
-// We extract these values from the stack.
+// SyscallClone implements the clone(2) syscall for ARM64 and RISC-V.
+// On these architectures, Go's runtime pushes mp, gp, fn onto the child stack
+// before calling clone. We extract these values from the stack.
 //
 // Stack layout (positive offsets from passed stack pointer, after Go's SUB $32):
 //   stack+0:  saved LR (Go's clone caller return address, not used by us)

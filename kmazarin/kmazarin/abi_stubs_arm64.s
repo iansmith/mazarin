@@ -37,8 +37,9 @@ TEXT ·TimerIRQHandler(SB), NOSPLIT, $0-64
 // ABI0: 1 arg (8 bytes) + 1 return (8 bytes) = 16 bytes
 // Returns 1 if handled, 0 if not.
 //
-// Note: Not using NOSPLIT because handlePageFaultInternal needs full call chain.
-// We're running on SP_EL1 (exception stack, 16KB) which has plenty of room.
+// ARM64 does not need NOSPLIT here: SP_EL1 (exception stack, 16KB) is above
+// g0.stackguard0, so the stack check passes. NOSPLIT would exceed the 792-byte
+// nosplit chain limit due to ExceptionVectorTable's 352-byte frame.
 TEXT ·HandlePageFaultAsm(SB), $0-16
 	JMP	·handlePageFaultInternal(SB)
 
@@ -98,6 +99,10 @@ TEXT ·SetSyscallELR(SB), NOSPLIT, $0-8
 // ABI0: 1 arg (8 bytes) + 0 return = 8 bytes
 TEXT ·SetSyscallSPSR(SB), NOSPLIT, $0-8
 	JMP	·setSyscallSPSRInternal(SB)
+
+// SetSyscallCloneRegs is a no-op on ARM64 (clone stores on child stack).
+TEXT ·SetSyscallCloneRegs(SB), NOSPLIT, $0-24
+	RET
 
 // CheckThreadPreemption checks if thread preemption is needed and performs switch
 // Go signature: func CheckThreadPreemption(framePtr uint64) uint64

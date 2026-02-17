@@ -126,6 +126,15 @@ const (
 	kernelSS = 0x10 // GDT offset 0x10 (Ring 0 data)
 )
 
+// initThread0Context initializes thread 0's context with valid kernel segment selectors.
+// Without this, CS=0 and SS=0 from zero-initialization would cause #GP on IRETQ.
+//
+//go:nosplit
+func initThread0Context(ctx *ThreadContext) {
+	ctx.CS = kernelCS
+	ctx.SS = kernelSS
+}
+
 // SetupForCloneChild initializes the context for a clone child thread.
 // Clears RAX (child returns 0), sets stack/return address, enables IRQs,
 // and sets the g register. CS/SS are set to Ring 0 (kernel clones);

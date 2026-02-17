@@ -258,6 +258,14 @@ type Thread struct {
 	SyscallELR    uint64  // ELR for this thread's current syscall (return address)
 	SyscallSPSR   uint64  // SPSR for this thread's current syscall (processor state)
 	SyscallSwitch uintptr // Context switch target for clone (0 = no switch, else ptr to ThreadContext)
+
+	// Saved callee-saved registers for clone on AMD64.
+	// The standard Go runtime's clone keeps mp/gp/fn in R13/R9/R12 (callee-saved)
+	// rather than storing them on the child stack (which ARM64 does).
+	// These are saved from the exception frame by the syscall handler.
+	SyscallR12 uint64 // fn (entry function pointer)
+	SyscallR13 uint64 // mp (m pointer)
+	SyscallR9  uint64 // gp (g pointer)
 }
 
 // Thread struct field offsets for assembly access.
@@ -459,6 +467,33 @@ func GetSyscallSPSR() uint64 {
 	return syscallSPSR
 }
 
+// setSyscallCloneRegsInternal saves R12/R13/R9 from the exception frame.
+// On AMD64, the standard Go runtime's clone keeps mp/gp/fn in callee-saved
+// registers instead of storing them on the child stack (like ARM64 does).
+//
+//go:nosplit
+//go:noinline
+func setSyscallCloneRegsInternal(r12, r13, r9 uint64) {
+	t := GetCurrentThread()
+	if t != nil {
+		t.SyscallR12 = r12
+		t.SyscallR13 = r13
+		t.SyscallR9 = r9
+	}
+}
+
+// GetSyscallCloneRegs returns the saved R12/R13/R9 for clone on AMD64.
+// Returns (fn, mp, gp) matching the Go runtime's register assignment.
+//
+//go:noinline
+func GetSyscallCloneRegs() (r12, r13, r9 uint64) {
+	t := GetCurrentThread()
+	if t != nil {
+		return t.SyscallR12, t.SyscallR13, t.SyscallR9
+	}
+	return 0, 0, 0
+}
+
 // getSyscallSwitchTargetInternal returns the switch target and resets it
 // Called from assembly via ABI stub after syscall dispatch
 // Returns uint64: context pointer to switch to, or 0 for no switch.
@@ -616,6 +651,7 @@ func InitThreads() {
 	// Set up thread 0 at reserved slot 0 - the kernel's "entry" thread
 	// This thread represents the initial execution context and gets scheduled
 	t0 := threadList.ReservedGet(0)
+	initThread0Context(&t0.Context)
 	t0.State = ThreadRunning
 	t0.TID = firstThreadId              // Should be 0
 	t0.PID = 0             // Belongs to kernel priest (slot 0)

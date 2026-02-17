@@ -16,3 +16,9 @@ func GetSyscallELR() uint64
 // GetSyscallSPSR is provided by main package via go:linkname.
 // Returns the SPSR_EL1 (processor state) for the current syscall.
 func GetSyscallSPSR() uint64
+
+// GetSyscallCloneRegs is provided by main package via go:linkname.
+// Returns saved R12(fn), R13(mp), R9(gp) from the exception frame.
+// On AMD64, the standard Go runtime's clone keeps these in callee-saved
+// registers instead of storing on the child stack.
+func GetSyscallCloneRegs() (r12, r13, r9 uint64)

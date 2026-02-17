@@ -26,26 +26,41 @@ func readCurrentL0PA() uintptr {
 }
 
 // initProcessL0 performs arch-specific initialization of a new process PML4.
-// x86_64: The kernel PML4 has both kernel and kmazarin code mappings.
-// We must preserve kernel mappings in the new PML4 while giving each process
-// its own user-space page tables.
+// x86_64 has a single CR3 register (no TTBR0/TTBR1 split like ARM64), so
+// both kernel and user mappings share one page table hierarchy.
 //
-// Layout:
-//   - PML4[0]:  Contains PDPT for VA 0-512GB. Kmazarin code is at PDPT[1] (VA 0x40000000+).
-//               User code is at PDPT[0] (VA 0-0x3FFFFFFF). We create a NEW PDPT per process
-//               that copies kmazarin's entries but leaves user entries empty.
-//   - PML4[1-511]: Copied directly (kernel linear map, demand-paged heap, etc.)
+// The 48-bit canonical address space splits into:
+//   - User space:   PML4[0-255]   (VA 0x0000_0000_0000_0000 - 0x0000_7FFF_FFFF_FFFF)
+//   - Kernel space:  PML4[256-511] (VA 0xFFFF_8000_0000_0000 - 0xFFFF_FFFF_FFFF_FFFF)
+//
+// Strategy:
+//   - PML4[256-511]: Copy from kernel PML4 (linear map, kernel heap, stacks).
+//     These entries have no USER bit — supervisor-only, which is correct.
+//   - PML4[0]: Create a per-process PDPT. Copy only PDPT[1] (kmazarin code at
+//     VA 0x40000000+) from the kernel. Leave all other entries empty for user
+//     demand paging (mmap at 0x80000000+, ELF at lower addresses).
+//   - PML4[1-255]: Leave empty. The demand pager (mapUserPageWithL0) will create
+//     entries with USER bit when userspace accesses these VAs (e.g., Go heap at
+//     VA 0xC000000000 = PML4[1]).
+//
+// CRITICAL: Do NOT copy PML4[1-255] from the kernel! UEFI firmware and diplomat
+// create supervisor-only mappings (1GB identity pages, kernel heap entries) in
+// these ranges. Copying them gives the process supervisor-only entries that
+// shadow user demand-paged pages, causing protection-violation page faults.
 //
 //go:nosplit
 func initProcessL0(l0VA uintptr) {
 	kernelL0VA := ttbr1L0PA + constants.KernelMMIOOffset
 
-	// Copy PML4 entries 1-511 directly (kernel-only: linear map, heap, etc.)
-	for i := uintptr(1); i < 512; i++ {
+	// Copy PML4[256-511] from kernel (kernel VA space only).
+	for i := uintptr(256); i < 512; i++ {
 		*(*uint64)(unsafe.Pointer(l0VA + i*8)) = *(*uint64)(unsafe.Pointer(kernelL0VA + i*8))
 	}
 
-	// For PML4 entry 0: create a new PDPT so each process has its own user page tables.
+	// PML4[1-255] are left zeroed (the page was zeroed at allocation).
+	// The demand pager will create entries with USER bit when needed.
+
+	// For PML4[0]: create a new PDPT so each process has its own user page tables.
 	kernelPML4E0 := *(*uint64)(unsafe.Pointer(kernelL0VA))
 	if (kernelPML4E0 & X86_PTE_PRESENT) == 0 {
 		// No PML4[0] entry in kernel — nothing to do
@@ -64,16 +79,13 @@ func initProcessL0(l0VA uintptr) {
 		*(*uint64)(unsafe.Pointer(newPdptVA + i*8)) = 0
 	}
 
-	// Copy kmazarin-relevant PDPT entries from the kernel's PDPT.
-	// Kmazarin code is at VA 0x43800000 → PDPT index 1 (VA 0x40000000-0x7FFFFFFF).
-	// Copy entries 1+ (kernel code region), leave entry 0 empty (user space).
+	// Copy ONLY PDPT[1] (kmazarin code at VA 0x40000000-0x7FFFFFFF).
+	// All other PDPT entries (0, 2+) are left empty for user demand paging.
 	kernelPdptPA := uintptr(kernelPML4E0 & PTE_ADDR_MASK)
 	kernelPdptVA := kernelPdptPA + constants.KernelMMIOOffset
-	for i := uintptr(1); i < 512; i++ {
-		*(*uint64)(unsafe.Pointer(newPdptVA + i*8)) = *(*uint64)(unsafe.Pointer(kernelPdptVA + i*8))
-	}
+	*(*uint64)(unsafe.Pointer(newPdptVA + 1*8)) = *(*uint64)(unsafe.Pointer(kernelPdptVA + 1*8))
 
-	// Set PML4[0] to point to our new PDPT
+	// Set PML4[0] to point to our new PDPT with USER bit
 	*(*uint64)(unsafe.Pointer(l0VA)) = uint64(newPdptPA) | X86_PTE_PRESENT | X86_PTE_RW | X86_PTE_USER
 }
 

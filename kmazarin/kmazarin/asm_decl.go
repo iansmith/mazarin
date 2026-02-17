@@ -93,6 +93,12 @@ func SetSyscallELR(elr uint64)
 //go:nosplit
 func SetSyscallSPSR(spsr uint64)
 
+// SetSyscallCloneRegs saves R12/R13/R9 from the exception frame for clone.
+// On AMD64, the standard Go runtime's clone keeps mp(R13)/gp(R9)/fn(R12) in
+// callee-saved registers instead of storing them on the child stack.
+//go:nosplit
+func SetSyscallCloneRegs(r12, r13, r9 uint64)
+
 // CheckThreadPreemption checks if the current thread should be preempted.
 // If preemption is needed, saves current thread context, switches to next ready thread.
 // framePtr = exception frame pointer containing saved registers

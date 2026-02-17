@@ -50,6 +50,16 @@
 	MOVQ	16(SP), AX; \
 	ADDQ	$32, SP
 
+// GO_CALL_3_0(fn, a0, a1, a2) - 3 args, 0 returns
+// Frame: 32 bytes (24 args + 8 padding for alignment)
+#define GO_CALL_3_0(fn, a0, a1, a2) \
+	SUBQ	$32, SP; \
+	MOVQ	a0, 0(SP); \
+	MOVQ	a1, 8(SP); \
+	MOVQ	a2, 16(SP); \
+	CALL	fn(SB); \
+	ADDQ	$32, SP
+
 // GO_CALL_4_0(fn, a0, a1, a2, a3) - 4 args, 0 returns
 // Frame: 32 bytes (32 args)
 #define GO_CALL_4_0(fn, a0, a1, a2, a3) \

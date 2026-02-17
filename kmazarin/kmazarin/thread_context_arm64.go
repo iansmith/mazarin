@@ -75,6 +75,11 @@ func (ctx *ThreadContext) SetupForUserspace(entryPoint, stackPtr uint64) {
 	ctx.SPSR = 0 // EL0t, AArch64, interrupts unmasked
 }
 
+// initThread0Context is a no-op on ARM64 (no segment selectors needed).
+//
+//go:nosplit
+func initThread0Context(ctx *ThreadContext) {}
+
 // SetupForCloneChild initializes the context for a clone child thread.
 // Clears x0 (child returns 0), sets stack/return address, enables IRQs,
 // and sets the g register.

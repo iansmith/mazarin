@@ -13,48 +13,48 @@ import (
 // Takes 6 arguments (x0-x5) and returns a result (x0)
 type SyscallHandler func(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64
 
-// syscallTable is the dispatch table for all syscalls
-// Indexed by syscall number, nil entries are unimplemented
-// Size 512 to accommodate syscalls up to 278 (getrandom)
-// IMPORTANT: Initialized at package level so it's available before init() runs
-var syscallTable = [512]SyscallHandler{
-	// I/O and file operations
-	0:   SyscallIoSetup,     // io_setup
-	19:  SyscallEventfd,     // eventfd2
-	20:  SyscallEpollCreate, // epoll_create1
-	21:  SyscallEpollCtl,    // epoll_ctl
-	22:  SyscallEpollPwait,  // epoll_pwait
-	25:  SyscallFcntl,       // fcntl
-	56:  SyscallOpenat,      // openat
-	57:  SyscallClose,       // close
-	63:  SyscallRead,        // read
-	64:  SyscallWrite,       // write
-	93:  SyscallExit,        // exit
-	94:  SyscallExitGroup,   // exit_group
-	96:  SyscallSetTidAddress,     // set_tid_address
-	98:  SyscallFutex,              // futex
-	101: SyscallNanosleep,          // nanosleep
-	113: SyscallClockGettime,       // clock_gettime
-	123: SyscallSchedGetaffinity,   // sched_getaffinity
-	124: SyscallSchedYield,         // sched_yield
-	129: SyscallKill,               // kill
-	130: SyscallTkill,              // tkill
-	131: SyscallTgkill,             // tgkill
-	132: SyscallSigaltstack,        // sigaltstack
-	134: SyscallRtSigaction,        // rt_sigaction
-	135: SyscallRtSigprocmask,      // rt_sigprocmask
-	167: SyscallPrctl,              // prctl
-	172: SyscallGetpid,             // getpid
-	178: SyscallGettid,             // gettid
-	204: SyscallSchedSetaffinity,   // sched_setaffinity
-	214: SyscallBrk,                // brk
-	215: SyscallMunmap,             // munmap
-	220: SyscallClone,              // clone
-	222: SyscallMmap,               // mmap
-	226: SyscallMprotect,           // mprotect
-	233: SyscallMadvise,            // madvise
-	261: SyscallPrlimit64,          // prlimit64
-	278: SyscallGetrandom,          // getrandom
+// syscallTable is the dispatch table for all syscalls.
+// Indexed by SysID (platform-independent), nil entries are unimplemented.
+// Each arch's translateSyscallNum() maps native Linux numbers to SysID.
+// IMPORTANT: Initialized at package level so it's available before init() runs.
+var syscallTable = [NumSyscallIDs]SyscallHandler{
+	SysIDIoSetup:          SyscallIoSetup,          // io_setup
+	SysIDEventfd:          SyscallEventfd,          // eventfd2
+	SysIDEpollCreate:      SyscallEpollCreate,      // epoll_create1
+	SysIDEpollCtl:         SyscallEpollCtl,         // epoll_ctl
+	SysIDEpollPwait:       SyscallEpollPwait,       // epoll_pwait
+	SysIDFcntl:            SyscallFcntl,            // fcntl
+	SysIDOpenat:           SyscallOpenat,           // openat
+	SysIDClose:            SyscallClose,            // close
+	SysIDRead:             SyscallRead,             // read
+	SysIDWrite:            SyscallWrite,            // write
+	SysIDExit:             SyscallExit,             // exit
+	SysIDExitGroup:        SyscallExitGroup,        // exit_group
+	SysIDSetTidAddress:    SyscallSetTidAddress,    // set_tid_address
+	SysIDFutex:            SyscallFutex,            // futex
+	SysIDNanosleep:        SyscallNanosleep,        // nanosleep
+	SysIDClockGettime:     SyscallClockGettime,     // clock_gettime
+	SysIDSchedGetaffinity: SyscallSchedGetaffinity, // sched_getaffinity
+	SysIDSchedYield:       SyscallSchedYield,       // sched_yield
+	SysIDKill:             SyscallKill,             // kill
+	SysIDTkill:            SyscallTkill,            // tkill
+	SysIDTgkill:           SyscallTgkill,           // tgkill
+	SysIDSigaltstack:      SyscallSigaltstack,      // sigaltstack
+	SysIDRtSigaction:      SyscallRtSigaction,      // rt_sigaction
+	SysIDRtSigprocmask:    SyscallRtSigprocmask,    // rt_sigprocmask
+	SysIDArchPrctl:        SyscallArchPrctl,        // arch_prctl (x86_64 TLS setup)
+	SysIDPrctl:            SyscallPrctl,            // prctl
+	SysIDGetpid:           SyscallGetpid,           // getpid
+	SysIDGettid:           SyscallGettid,           // gettid
+	SysIDSchedSetaffinity: SyscallSchedSetaffinity, // sched_setaffinity
+	SysIDBrk:              SyscallBrk,              // brk
+	SysIDMunmap:           SyscallMunmap,           // munmap
+	SysIDClone:            SyscallClone,            // clone
+	SysIDMmap:             SyscallMmap,             // mmap
+	SysIDMprotect:         SyscallMprotect,         // mprotect
+	SysIDMadvise:          SyscallMadvise,          // madvise
+	SysIDPrlimit64:        SyscallPrlimit64,        // prlimit64
+	SysIDGetrandom:        SyscallGetrandom,        // getrandom
 }
 
 // DispatchSyscall is called from assembly exception handler
@@ -63,10 +63,6 @@ var syscallTable = [512]SyscallHandler{
 //go:nosplit
 //go:noinline
 func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
-	// NOTE: translateSyscallNum() exists for future use when the dispatch table
-	// is converted to SysID indexing. For now, the table uses native Linux
-	// syscall numbers directly, so no translation is needed.
-
 	// Record entry time for kernel time accounting
 	entryTick := kirq.ReadCounterValue()
 
@@ -75,19 +71,22 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 	// Check for Mazzy syscalls first (1000+)
 	if syscallNum >= MazzySyscallBase {
 		result = dispatchMazzySyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5)
-	} else if syscallNum >= 512 {
-		result = -38 // ENOSYS
 	} else {
-		// Get handler from table
-		handler := syscallTable[syscallNum]
-		if handler == nil {
-			// Return -ENOSYS for unimplemented syscalls instead of panicking.
-			// This lets userspace programs continue even when they invoke
-			// syscalls the kernel doesn't handle yet (e.g. dup, ioctl).
+		// Translate native Linux syscall number to platform-independent SysID
+		sysID := translateSyscallNum(syscallNum)
+		if sysID == SysIDInvalid || sysID >= NumSyscallIDs {
 			result = -38 // ENOSYS
 		} else {
-			// Call the handler
-			result = handler(arg0, arg1, arg2, arg3, arg4, arg5)
+			handler := syscallTable[sysID]
+			if handler == nil {
+				// Return -ENOSYS for unimplemented syscalls instead of panicking.
+				// This lets userspace programs continue even when they invoke
+				// syscalls the kernel doesn't handle yet (e.g. dup, ioctl).
+				result = -38 // ENOSYS
+			} else {
+				// Call the handler
+				result = handler(arg0, arg1, arg2, arg3, arg4, arg5)
+			}
 		}
 	}
 
@@ -180,18 +179,16 @@ var earlyBumpPointer uint64 = earlyHeapStart
 //
 //go:nosplit
 func DispatchFromOverlay(num, a1, a2, a3, a4, a5, a6 uintptr) int64 {
-	// Handle mmap (222) and munmap (215) with early-boot code path
-	// These are the only syscalls called during Go runtime init
+	// Handle mmap and munmap with early-boot code path.
+	// These are the only syscalls called during Go runtime init.
+	// Uses arch-specific constants (nativeSysMmap/nativeSysMunmap)
+	// defined in dispatch_mmap_{arch}.go.
 	switch num {
-	case 222: // mmap
+	case nativeSysMmap:
 		return earlyMmap(uint64(a1), uint64(a2), uint64(a3), uint64(a4))
-	case 215: // munmap
-		// During early boot, we don't actually free memory
-		// Just return success (0)
+	case nativeSysMunmap:
 		return 0
 	default:
-		// For all other syscalls, use the full dispatcher
-		// These should only be called after runtime is fully initialized
 		return DispatchSyscall(uint64(num), uint64(a1), uint64(a2), uint64(a3), uint64(a4), uint64(a5), uint64(a6))
 	}
 }

@@ -124,6 +124,7 @@ func buildKmazarinOverlay(overlay *Overlay, goroot, patchesDir string) error {
 	// Kmazarin patches for runtime
 	runtimePatches := map[string]string{
 		"runtime/cgo_mmap.go":        "cgo_mmap.go",
+		"runtime/fds_unix.go":        "fds_unix.go",
 		"runtime/malloc.go":          "malloc.go",
 		"runtime/mcache.go":          "mcache.go",
 		"runtime/os_linux_arm64.go":  "os_linux_arm64.go",
@@ -159,6 +160,7 @@ func buildKmazarinAMD64Overlay(overlay *Overlay, goroot, patchesDir string) erro
 	// but with amd64-specific os_linux and sys_linux files.
 	runtimePatches := map[string]string{
 		"runtime/cgo_mmap.go":                          "cgo_mmap.go",
+		"runtime/fds_unix.go":                          "fds_unix.go",
 		"runtime/malloc.go":                            "malloc.go",
 		"runtime/mcache.go":                            "mcache.go",
 		"runtime/os_linux_noauxv.go":                   "os_linux_noauxv.go",

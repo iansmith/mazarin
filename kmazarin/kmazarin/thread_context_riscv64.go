@@ -87,6 +87,11 @@ func (ctx *ThreadContext) SetupForUserspace(entryPoint, stackPtr uint64) {
 	ctx.SSTATUS = (1 << 5) | (1 << 13)
 }
 
+// initThread0Context is a no-op on RISC-V (no segment selectors needed).
+//
+//go:nosplit
+func initThread0Context(ctx *ThreadContext) {}
+
 // SetupForCloneChild initializes the context for a clone child thread.
 // Clears a0 (child returns 0), sets stack/return address, enables IRQs,
 // and sets the g register.

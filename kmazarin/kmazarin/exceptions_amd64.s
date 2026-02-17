@@ -189,11 +189,6 @@ handle_syscall:
 	// syscall number is in RAX (from the INT $0x80 convention)
 	// args in RDI, RSI, RDX, R10, R8, R9
 
-	// DEBUG: breadcrumb 's' for syscall entry
-	MOVW	$0x3F8, DX
-	MOVB	$'s', AX
-	OUTB
-
 	// For SYSCALL from userspace (vector 129), switch to kernel g0.
 	// The user's R14 is already saved in the frame by common_exception_entry.
 	// We need kmazarin's g0 for all Go function calls (ABIInternal uses R14,
@@ -215,25 +210,19 @@ handle_syscall:
 
 syscall_skip_g_setup:
 	// Save ELR (RIP) and SPSR (RFLAGS) for clone
-	// DEBUG: breadcrumb 'a' before SetSyscallELR
-	MOVW	$0x3F8, DX
-	MOVB	$'a', AX
-	OUTB
 	MOVQ	128(SP), R13		// RIP from frame (callee-saved scratch)
 	GO_CALL_1_0(·SetSyscallELR, R13)
-
-	// DEBUG: breadcrumb '1' after SetSyscallELR
-	MOVW	$0x3F8, DX
-	MOVB	$'1', AX
-	OUTB
 
 	MOVQ	144(SP), R13		// RFLAGS from frame
 	GO_CALL_1_0(·SetSyscallSPSR, R13)
 
-	// DEBUG: breadcrumb '2' after SetSyscallSPSR
-	MOVW	$0x3F8, DX
-	MOVB	$'2', AX
-	OUTB
+	// Save callee-saved registers for clone on AMD64.
+	// Standard Go runtime's clone keeps mp(R13), gp(R9), fn(R12) in registers
+	// instead of storing on child stack (like ARM64 does).
+	MOVQ	88(SP), R13		// R12 (fn) from frame
+	MOVQ	96(SP), BX		// R13 (mp) from frame
+	MOVQ	64(SP), CX		// R9 (gp) from frame
+	GO_CALL_3_0(·SetSyscallCloneRegs, R13, BX, CX)
 
 	// Dispatch syscall: SyscallDispatch(num, a0, a1, a2, a3, a4, a5) int64
 	// Load all 7 args from exception frame into registers before macro
@@ -245,19 +234,9 @@ syscall_skip_g_setup:
 	MOVQ	56(SP), CX		// arg4 (saved R8)
 	MOVQ	64(SP), DI		// arg5 (saved R9)
 
-	// DEBUG: breadcrumb '3' before SyscallDispatch
-	MOVW	$0x3F8, DX
-	MOVB	$'3', AX
-	OUTB
-
 	GO_CALL_7_1(·SyscallDispatch, R8, R9, R10, R11, BX, CX, DI)
 	// AX = return value
 	MOVQ	AX, 0(SP)		// Store return value in saved RAX slot
-
-	// DEBUG: breadcrumb 'r' for syscall dispatch returned
-	MOVW	$0x3F8, DX
-	MOVB	$'r', AX
-	OUTB
 
 	// Check if context switch needed
 	GO_CALL_0_1(·GetSyscallSwitchTarget)
@@ -265,120 +244,42 @@ syscall_skip_g_setup:
 	CMPQ	AX, $0
 	JLE	exception_return
 
-	// DEBUG: breadcrumb 'C' for context switch
 	MOVQ	AX, R12			// save target in callee-saved R12
-	MOVW	$0x3F8, DX
-	MOVB	$'C', AX
-	OUTB
 
 	// Context switch: DoContextSwitch(framePtr, targetPtr) uintptr
 	MOVQ	SP, DI			// frame pointer
 	GO_CALL_2_1(·DoContextSwitch, DI, R12)
 	MOVQ	AX, R12			// new context pointer
 
-	// DEBUG: breadcrumb 'X' for DoContextSwitch returned
-	PUSHQ	AX
-	MOVW	$0x3F8, DX
-	MOVB	$'X', AX
-	OUTB
-	POPQ	AX
-
 	TESTQ	R12, R12
 	JZ	exception_return
-
-	// DEBUG: print new context values before loading
-	MOVW	$0x3F8, DX
-	MOVB	$'L', AX
-	OUTB
-	// Print RIP (first 4 hex digits)
-	MOVQ	120(R12), R11		// new RIP
-	MOVB	$':', AX
-	OUTB
-	MOVQ	R11, AX
-	SHRQ	$28, AX
-	ANDQ	$0xF, AX
-	ADDQ	$'0', AX
-	CMPB	AX, $('9'+1)
-	JB	lrip1
-	ADDQ	$('A'-'0'-10), AX
-lrip1:
-	OUTB
-	MOVQ	R11, AX
-	SHRQ	$24, AX
-	ANDQ	$0xF, AX
-	ADDQ	$'0', AX
-	CMPB	AX, $('9'+1)
-	JB	lrip2
-	ADDQ	$('A'-'0'-10), AX
-lrip2:
-	OUTB
-	MOVQ	R11, AX
-	SHRQ	$20, AX
-	ANDQ	$0xF, AX
-	ADDQ	$'0', AX
-	CMPB	AX, $('9'+1)
-	JB	lrip3
-	ADDQ	$('A'-'0'-10), AX
-lrip3:
-	OUTB
-	MOVQ	R11, AX
-	SHRQ	$16, AX
-	ANDQ	$0xF, AX
-	ADDQ	$'0', AX
-	CMPB	AX, $('9'+1)
-	JB	lrip4
-	ADDQ	$('A'-'0'-10), AX
-lrip4:
-	OUTB
-	MOVQ	R11, AX
-	SHRQ	$12, AX
-	ANDQ	$0xF, AX
-	ADDQ	$'0', AX
-	CMPB	AX, $('9'+1)
-	JB	lrip5
-	ADDQ	$('A'-'0'-10), AX
-lrip5:
-	OUTB
-	MOVQ	R11, AX
-	SHRQ	$8, AX
-	ANDQ	$0xF, AX
-	ADDQ	$'0', AX
-	CMPB	AX, $('9'+1)
-	JB	lrip6
-	ADDQ	$('A'-'0'-10), AX
-lrip6:
-	OUTB
-	MOVQ	R11, AX
-	SHRQ	$4, AX
-	ANDQ	$0xF, AX
-	ADDQ	$'0', AX
-	CMPB	AX, $('9'+1)
-	JB	lrip7
-	ADDQ	$('A'-'0'-10), AX
-lrip7:
-	OUTB
-	MOVQ	R11, AX
-	ANDQ	$0xF, AX
-	ADDQ	$'0', AX
-	CMPB	AX, $('9'+1)
-	JB	lrip8
-	ADDQ	$('A'-'0'-10), AX
-lrip8:
-	OUTB
-	MOVB	$'\n', AX
-	OUTB
 
 	// Load new context and IRETQ
 	JMP	load_context_and_iretq
 
-syscall_no_switch:
-	// TLS restoration now handled generically in exception_return.
-	JMP	exception_return
-
 handle_page_fault:
-	// DEBUG: breadcrumb 'p' for page fault
+	// DEBUG: breadcrumb 'P' + error code (2 hex digits) = page fault entry
 	MOVW	$0x3F8, DX
-	MOVB	$'p', AX
+	MOVB	$'P', AX
+	OUTB
+	// Print error code (low byte, 2 hex digits) from exception frame at SP+120
+	MOVQ	120(SP), CX		// error code from exception frame
+	MOVQ	CX, AX
+	SHRQ	$4, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	pf_ec_d1
+	ADDQ	$('A'-'0'-10), AX
+pf_ec_d1:
+	OUTB
+	MOVQ	CX, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	pf_ec_d2
+	ADDQ	$('A'-'0'-10), AX
+pf_ec_d2:
 	OUTB
 
 	// CRITICAL: Set kernel g0 for Go code (same as syscall handler).
@@ -395,17 +296,57 @@ handle_page_fault:
 	// Read CR2 for fault address
 	MOVQ	CR2, R13		// save in callee-saved R13
 
+	// DEBUG: print fault address before calling Go handler
+	// Format: "[" + hex16(CR2) + "]"
+	MOVW	$0x3F8, DX
+	MOVB	$'[', AX
+	OUTB
+	MOVQ	$60, CX
+pf_debug_hex:
+	MOVQ	R13, AX
+	SHRQ	CX, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	pf_debug_d
+	ADDQ	$('A'-'0'-10), AX
+pf_debug_d:
+	MOVW	$0x3F8, DX
+	OUTB
+	SUBQ	$4, CX
+	CMPQ	CX, $0
+	JGE	pf_debug_hex
+	MOVW	$0x3F8, DX
+	MOVB	$']', AX
+	OUTB
+
 	GO_CALL_1_1(·HandlePageFaultAsm, R13)
-	// AX = handled (1) or not (0)
+
+	// DEBUG: print result
+	MOVW	$0x3F8, DX
 	TESTQ	AX, AX
-	JNZ	exception_return
+	JZ	pf_not_handled
+	MOVB	$'+', AX		// '+' = handled
+	OUTB
+	JMP	exception_return
+
+pf_not_handled:
+	MOVB	$'-', AX		// '-' = NOT handled by kernel
+	OUTB
 
 	// Not handled by kernel — try userspace handler
 	// R13 still has fault address (callee-saved, preserved across GO_CALL)
 	GO_CALL_1_1(·HandleUserPageFaultAsm, R13)
 
+	// DEBUG: print user handler result
+	MOVW	$0x3F8, DX
 	TESTQ	AX, AX
-	JNZ	exception_return
+	JZ	pf_neither_handled
+	MOVB	$'U', AX		// 'U' = handled by user handler
+	OUTB
+	JMP	exception_return
+
+pf_neither_handled:
 
 	// Neither handler resolved the fault. Print CR2 and RIP for debugging.
 	// Format: "F:" + hex_fault_addr + "@" + hex_rip + newline
@@ -457,7 +398,24 @@ pf_rip_ok:
 	MOVB	$'\n', AX
 	OUTB
 
-	JMP	exception_return
+	// Check if fault came from user mode (CS in exception frame)
+	// Frame layout: 15 GPRs (0-112) + error code (120) + RIP (128) + CS (136)
+	MOVQ	136(SP), AX		// CS from exception frame
+	CMPQ	AX, $0x08		// kernelCS?
+	JE	pf_unhandled_halt	// Kernel fault → halt
+
+	// User fault: kill the faulting thread and switch to the next one.
+	// ThreadExitAsm marks thread exited, finds next ready thread,
+	// returns pointer to its ThreadContext (or 0 if no threads left).
+	GO_CALL_0_1(·ThreadExitAsm)
+	TESTQ	AX, AX
+	JZ	pf_unhandled_halt	// No threads left → halt
+	MOVQ	AX, R12			// R12 = ThreadContext pointer
+	JMP	load_context_and_iretq
+
+pf_unhandled_halt:
+	HLT
+	JMP	pf_unhandled_halt
 
 handle_timer_irq:
 	// CRITICAL: Set kernel g0 for Go code (timer IRQs can preempt userspace).
@@ -718,10 +676,6 @@ exception_return:
 	MOVQ	104(SP), DX		// R14 from saved GPR frame (offset 13*8)
 	MOVQ	DX, -8(AX)		// Write g to TLS slot
 
-	// DEBUG: breadcrumb 'i' for IRETQ return
-	MOVW	$0x3F8, DX
-	MOVB	$'i', AX
-	OUTB
 	POPQ	AX
 	POPQ	BX
 	POPQ	CX
@@ -745,9 +699,46 @@ exception_return:
 // ============================================================================
 // R12 = pointer to ThreadContext
 load_context_and_iretq:
-	// Discard current exception frame
-	// Build new IRETQ frame from context
-	// First, switch to a known good stack (exception stack)
+	// Validate CS from context before building IRETQ frame
+	MOVQ	152(R12), R13		// CS from context
+	CMPQ	R13, $0x08		// kernelCS
+	JE	cs_valid
+	CMPQ	R13, $0x1B		// userCS
+	JE	cs_valid
+	// Invalid CS — print diagnostic "!CS=" + hex value to COM1, then halt
+	MOVW	$0x3F8, DX
+	MOVB	$'!', AX
+	OUTB
+	MOVB	$'C', AX
+	OUTB
+	MOVB	$'S', AX
+	OUTB
+	MOVB	$'=', AX
+	OUTB
+	// Print CS value as 2 hex digits
+	MOVQ	R13, AX
+	SHRQ	$4, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	cs_hex1
+	ADDQ	$('A'-'0'-10), AX
+cs_hex1:
+	OUTB
+	MOVQ	R13, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	cs_hex2
+	ADDQ	$('A'-'0'-10), AX
+cs_hex2:
+	OUTB
+	MOVB	$'\n', AX
+	OUTB
+cs_halt:
+	HLT
+	JMP	cs_halt
+cs_valid:
 
 	// Flush TLB
 	MOVQ	CR3, AX

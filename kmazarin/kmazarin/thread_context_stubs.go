@@ -70,6 +70,11 @@ func (ctx *ThreadContext) SetupForUserspace(entryPoint, stackPtr uint64) {
 	ctx.SPSR = 0
 }
 
+// initThread0Context is a no-op for test stubs.
+//
+//go:nosplit
+func initThread0Context(ctx *ThreadContext) {}
+
 // SetupForCloneChild initializes the context for a clone child thread.
 //
 //go:nosplit

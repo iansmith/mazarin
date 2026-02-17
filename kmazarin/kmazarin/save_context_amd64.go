@@ -107,4 +107,8 @@ func SaveCurrentThreadContext(
 	t.Context.RFLAGS = rflags
 	t.Context.RSP = rsp
 	t.Context.FSBase = readMSR(0xC0000100) // Save FS_BASE MSR for TLS per-thread
+	// SaveCurrentThreadContext is only called from kernel context (INT $0x80 path),
+	// so hardcode kernel segment selectors.
+	t.Context.CS = kernelCS
+	t.Context.SS = kernelSS
 }

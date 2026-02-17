@@ -127,6 +127,14 @@ func getSyscallSPSRForKsyscall() uint64 {
 	return GetSyscallSPSR()
 }
 
+// GetSyscallCloneRegs wrapper - returns saved R12(fn), R13(mp), R9(gp) for AMD64 clone
+//
+//go:linkname getSyscallCloneRegsForKsyscall mazzy/kmazarin/ksyscall.GetSyscallCloneRegs
+//go:noinline
+func getSyscallCloneRegsForKsyscall() (uint64, uint64, uint64) {
+	return GetSyscallCloneRegs()
+}
+
 // AddDeadline wrapper
 // Note: signature mismatch - main uses int16, ksyscall expects int32
 //

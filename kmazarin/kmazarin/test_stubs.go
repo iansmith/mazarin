@@ -61,6 +61,9 @@ func SetSyscallELR(elr uint64) {}
 func SetSyscallSPSR(spsr uint64) {}
 
 //go:nosplit
+func SetSyscallCloneRegs(r12, r13, r9 uint64) {}
+
+//go:nosplit
 func CheckThreadPreemption(framePtr uint64) uint64 { return 0 }
 
 //go:nosplit

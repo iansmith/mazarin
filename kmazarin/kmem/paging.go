@@ -3,6 +3,7 @@ package kmem
 
 import (
 	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"unsafe"
 )
@@ -19,12 +20,13 @@ func isAddressInSpan(addr uint64) bool
 // Set to false for production, true for debugging
 const debugPaging = false
 
-// rawUART writes a single byte directly to the UART at the high-memory address.
+// rawUART writes a single byte directly to the UART hardware.
 // Works even before console initialization.
+// Polls TX ready before writing — safe from any context.
 //
 //go:nosplit
 func rawUART(c byte) {
-	*(*byte)(unsafe.Pointer(uintptr(constants.KernelUartBase))) = c
+	serial.PollWrite(c)
 }
 
 // rawUARTPuts writes a string directly to UART, nosplit-safe.
@@ -591,11 +593,11 @@ func HandlePageFault(faultAddr uintptr) bool {
 	return true
 }
 
-// Userspace mmap region constants (must match ksyscall/mmap.go)
-const (
-	userMmapStart = 0x00400000           // 4MB - above ELF load region
-	userMmapEnd   = 0x0000700000000000   // 112TB - plenty of VA space
-)
+// userMmapStart is arch-specific (see mmap_addr_*.go in this package).
+// Must match ksyscall/mmap_addr_*.go values.
+//
+// userMmapEnd is shared across all arches.
+const userMmapEnd = 0x0000700000000000 // 112TB - plenty of VA space
 
 // Repeat-fault detector: if the same user VA faults more than repeatFaultMax times,
 // something is broken (mapping not taking effect). Return false to halt.
@@ -621,15 +623,14 @@ func HandleUserPageFault(faultAddr uintptr) bool {
 	if faultPage == repeatFaultLastAddr {
 		repeatFaultCount++
 		if repeatFaultCount >= repeatFaultMax {
-			rawUARTPuts("[PF] REPEAT FAULT x")
-			rawUARTHex64(uint64(repeatFaultCount))
-			rawUARTPuts(" VA=0x")
+			rawUARTPuts("[PF] REPEAT VA=0x")
 			rawUARTHex64(uint64(faultAddr))
-			rawUARTPuts(" PA=0x")
-			// Walk the page table and show what we find
-			pa := WalkUserPageTable(faultAddr)
-			rawUARTHex64(uint64(pa))
+			rawUARTPuts(" CR3=0x")
+			l0PA := readCurrentL0PA()
+			rawUARTHex64(uint64(l0PA))
 			rawUARTPuts("\r\n")
+			// Dump raw PTE chain using rawUART (nosplit-safe)
+			dumpUserPTERaw(faultAddr, l0PA)
 			return false // trigger halt in asm handler
 		}
 	} else {
@@ -1766,6 +1767,80 @@ func WalkUserPageTableWithL0(va uintptr, l0PAParam uintptr) uintptr {
 
 // DumpUserPTEWithL0 walks the page table for a userspace VA and prints each level's entry.
 // Used for debugging page table issues.
+// dumpUserPTERaw walks the page table for a userspace VA and prints each level's raw PTE.
+// Uses only rawUART output — safe from nosplit page fault handler context.
+//
+//go:nosplit
+func dumpUserPTERaw(va uintptr, l0PA uintptr) {
+	l0Idx := (va >> L0Shift) & 0x1FF
+	l1Idx := (va >> L1Shift) & 0x1FF
+	l2Idx := (va >> L2Shift) & 0x1FF
+	l3Idx := (va >> L3Shift) & 0x1FF
+
+	l0VA := paToVAOrCache(l0PA)
+	if l0VA == 0 {
+		rawUARTPuts("  L0VA=0!\r\n")
+		return
+	}
+	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
+	rawUARTPuts("  L0[")
+	rawUARTHex64(uint64(l0Idx))
+	rawUARTPuts("]=0x")
+	rawUARTHex64(l0Entry)
+	rawUARTPuts("\r\n")
+	if !pteIsValid(l0Entry) {
+		rawUARTPuts("  L0 NOT PRESENT\r\n")
+		return
+	}
+
+	l1PA := pteExtractPA(l0Entry)
+	l1VA := paToVAOrCache(l1PA)
+	if l1VA == 0 {
+		rawUARTPuts("  L1VA=0!\r\n")
+		return
+	}
+	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
+	rawUARTPuts("  L1[")
+	rawUARTHex64(uint64(l1Idx))
+	rawUARTPuts("]=0x")
+	rawUARTHex64(l1Entry)
+	rawUARTPuts("\r\n")
+	if !pteIsValid(l1Entry) {
+		rawUARTPuts("  L1 NOT PRESENT\r\n")
+		return
+	}
+
+	l2PA := pteExtractPA(l1Entry)
+	l2VA := paToVAOrCache(l2PA)
+	if l2VA == 0 {
+		rawUARTPuts("  L2VA=0!\r\n")
+		return
+	}
+	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
+	rawUARTPuts("  L2[")
+	rawUARTHex64(uint64(l2Idx))
+	rawUARTPuts("]=0x")
+	rawUARTHex64(l2Entry)
+	rawUARTPuts("\r\n")
+	if !pteIsValid(l2Entry) {
+		rawUARTPuts("  L2 NOT PRESENT\r\n")
+		return
+	}
+
+	l3PA := pteExtractPA(l2Entry)
+	l3VA := paToVAOrCache(l3PA)
+	if l3VA == 0 {
+		rawUARTPuts("  L3VA=0!\r\n")
+		return
+	}
+	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
+	rawUARTPuts("  L3[")
+	rawUARTHex64(uint64(l3Idx))
+	rawUARTPuts("]=0x")
+	rawUARTHex64(l3Entry)
+	rawUARTPuts("\r\n")
+}
+
 //
 //go:nosplit
 func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {

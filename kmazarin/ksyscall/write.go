@@ -2,6 +2,7 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/kmem"
 	_ "unsafe" // for go:linkname
 )
@@ -70,6 +71,14 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 				}
 				pushByteToUartRing(c)
 			}
+		}
+		// Always echo to serial for debugging (TODO: remove once stable)
+		for i := uint64(0); i < n; i++ {
+			c := chunk[i]
+			if c == '\n' {
+				console.BreadcrumbNoSplit('\r')
+			}
+			console.BreadcrumbNoSplit(c)
 		}
 		offset += n
 		remaining -= n

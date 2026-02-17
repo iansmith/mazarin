@@ -32,12 +32,35 @@
 // Note that this differs from "standard" ABI convention, which would pass 4th
 // arg in CX, not R10.
 TEXT ·Syscall6<ABIInternal>(SB),NOSPLIT,$0
-	// DEBUG: breadcrumb 'S' for Syscall6 entry
+	// DEBUG: breadcrumb 'S' + 2-digit hex syscall number
 	PUSHQ	AX
 	PUSHQ	DX
+	PUSHQ	CX
 	MOVW	$0x3F8, DX
 	MOVB	$'S', AX
 	OUTB
+	// Print syscall number as 2 hex digits from the saved AX on stack
+	MOVQ	16(SP), CX		// original AX (syscall num)
+	MOVQ	CX, AX
+	SHRQ	$4, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	sn_d1
+	ADDQ	$('A'-'0'-10), AX
+sn_d1:
+	OUTB
+	MOVQ	CX, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	sn_d2
+	ADDQ	$('A'-'0'-10), AX
+sn_d2:
+	OUTB
+	MOVB	$' ', AX
+	OUTB
+	POPQ	CX
 	POPQ	DX
 	POPQ	AX
 	// a6 already in R9.

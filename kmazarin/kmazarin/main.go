@@ -491,6 +491,11 @@ func testDeviceDiscovery() {
 				SetupUartSoftIRQ(ns16550.IRQ())
 			}
 		}
+		// AMD64: register COM1 as UART if no DTB-based UART was found.
+		// Uses polling from eventPoller instead of hardware interrupts.
+		if uartIRQNum == 0 {
+			initCOM1Uart()
+		}
 		// Enable external interrupt delivery (PLIC on RISC-V, no-op elsewhere)
 		setupExternalInterrupts()
 	}

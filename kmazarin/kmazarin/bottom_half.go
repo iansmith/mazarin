@@ -436,6 +436,9 @@ func eventPoller() {
 		// on RISC-V/x86_64 this is the primary polling path.
 		pollInputTopHalf()
 
+		// Poll COM1 UART for incoming data (AMD64 only; no-op on ARM64/RISC-V).
+		pollCOM1Uart()
+
 		// Check UART RX flag (legacy - will be replaced by generic dispatch)
 		if atomic.SwapUint32(&uartRxPending, 0) == 1 {
 			// Non-blocking send - if channel already has a pending event, skip

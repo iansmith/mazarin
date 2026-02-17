@@ -65,6 +65,10 @@ TEXT ·SetSyscallELR(SB), NOSPLIT, $0-8
 TEXT ·SetSyscallSPSR(SB), NOSPLIT, $0-8
 	JMP	·setSyscallSPSRInternal(SB)
 
+// SetSyscallCloneRegs is a no-op on RISC-V (clone stores on child stack).
+TEXT ·SetSyscallCloneRegs(SB), NOSPLIT, $0-24
+	RET
+
 // CheckThreadPreemption tail-call stub
 TEXT ·CheckThreadPreemption(SB), NOSPLIT, $0-16
 	JMP	·checkThreadPreemptionInternal(SB)

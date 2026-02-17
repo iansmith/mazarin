@@ -6,18 +6,16 @@ import (
 	"unsafe"
 )
 
-// Userspace mmap allocates from low-memory range accessible via TTBR0.
+// Userspace mmap allocates from low-memory range accessible via TTBR0 (or equivalent).
 // This is used by priest and other userspace programs.
 //
-// Range: 0x00400000 - 0x0000700000000000 (below the stack)
-// Start at 4MB to leave room for ELF loading below that.
-// End well below the userspace limit (bit 55) to leave room for stack.
-// This gives ~112TB of VA space - plenty for Go runtime arenas.
+// userMmapStart is arch-specific (see mmap_addr_*.go) because on x86_64 the single
+// address space shares PML4[0] with kmazarin code (PDPT[1] = VA 0x40000000-0x7FFFFFFF).
+// ARM64 and RISC-V have separate kernel/user address spaces so no conflict.
 //
 // Physical memory is only used when pages are actually faulted in.
 const (
-	userMmapStart = 0x10000000         // 256MB - above ELF VA range (Go binaries < 100MB)
-	userMmapEnd   = 0x0000700000000000 // 112TB - plenty of VA space
+	userMmapEnd = 0x0000700000000000 // 112TB - plenty of VA space
 )
 
 // Userspace framebuffer mapping constants.

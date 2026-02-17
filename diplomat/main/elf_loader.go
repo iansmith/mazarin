@@ -750,16 +750,17 @@ func jumpToEntry(entry uint64)
 
 // Symbols we want to extract from kmazarin's ELF.
 // Initialized explicitly byte-by-byte to avoid depending on Go init() running.
-var wantedSymbols [6][32]byte
+var wantedSymbols [7][32]byte
 
 func initWantedSymbols() {
-	names := [6]string{
+	names := [7]string{
 		"main.ExceptionVectorTable",
 		"main.isr14",
 		"main.isr48",
 		"main.isr128",
 		"main.isr255",
-		"main.trapEntry", // RISC-V STVEC handler (harmless if not found on other archs)
+		"main.trapEntry",      // RISC-V STVEC handler (harmless if not found on other archs)
+		"main.syscallEntry",   // x86_64 LSTAR target (harmless if not found on other archs)
 	}
 	for w, s := range names {
 		for i := 0; i < len(s); i++ {
