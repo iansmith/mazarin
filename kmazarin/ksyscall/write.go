@@ -11,13 +11,12 @@ import (
 // For now, we only support stdout/stderr (fd 1 and 2).
 //
 // Routing logic:
-//   - If the caller is the stdio priest (UART ring owner), use Breadcrumb
-//     (direct MMIO) to avoid deadlock — the stdio priest consumes the ring,
-//     so writing into it would block on itself.
-//   - If the caller is any other priest, use KWriteByte to push through the
-//     ring buffer so the stdio priest can display it.
-//   - If no priest owns the UART slot yet (early boot, kernel fmt.Println),
-//     use Breadcrumb as fallback.
+//   - If the caller is the stdio priest (UART ring owner), writes are
+//     silently dropped (it cannot push into its own ring without deadlock).
+//   - If the caller is any other priest, bytes are pushed through the
+//     ring buffer so the stdio priest can display them. The fd number
+//     is carried through the ring so stdio can color stderr differently.
+//   - If no priest owns the UART slot yet (early boot), writes are dropped.
 //
 //go:nosplit
 func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
@@ -35,25 +34,30 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 		return -14 // EFAULT
 	}
 
-	// Copy user buffer into kernel memory first, then output.
-	// Process in chunks to avoid large stack allocations.
-	// Determine output path: ring buffer vs direct MMIO
-	// The stdio priest (UART ring owner) must use Breadcrumb to avoid deadlock.
-	// All other priests go through KWriteByte → ring → stdio displays it.
+	// Route to ring buffer for display by the stdio priest.
+	// The stdio priest itself (UART ring owner) cannot use the ring
+	// (it would deadlock consuming its own output).
 	useRing := false
-	if fd == 1 {
-		ownerPID := getUartSlotPriestID()
-		if ownerPID >= 0 {
-			callerPID := getCurrentThreadPID()
-			if callerPID != ownerPID {
-				useRing = true
-			}
+	ownerPID := getUartSlotPriestID()
+	if ownerPID >= 0 {
+		callerPID := getCurrentThreadPID()
+		if callerPID != ownerPID {
+			useRing = true
 		}
 	}
-	// Stderr (fd=2) always goes direct to MMIO for crash safety
+
+	// Diagnostic: breadcrumb for fd=2 writes
+	if fd == 2 {
+		if useRing {
+			console.BreadcrumbNoSplit('E') // stderr via ring
+		} else {
+			console.BreadcrumbNoSplit('e') // stderr dropped (no owner)
+		}
+	}
 
 	remaining := count
 	offset := uint64(0)
+	fdByte := byte(fd)
 	for remaining > 0 {
 		var chunk [256]byte
 		n := remaining
@@ -67,18 +71,10 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 			for i := uint64(0); i < n; i++ {
 				c := chunk[i]
 				if c == '\n' {
-					pushByteToUartRing('\r')
+					pushByteToUartRing(fdByte, '\r')
 				}
-				pushByteToUartRing(c)
+				pushByteToUartRing(fdByte, c)
 			}
-		}
-		// Always echo to serial for debugging (TODO: remove once stable)
-		for i := uint64(0); i < n; i++ {
-			c := chunk[i]
-			if c == '\n' {
-				console.BreadcrumbNoSplit('\r')
-			}
-			console.BreadcrumbNoSplit(c)
 		}
 		offset += n
 		remaining -= n
@@ -98,10 +94,12 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 //go:linkname getUartSlotPriestID main.GetUartSlotPriestID
 func getUartSlotPriestID() int16
 
-// pushByteToUartRing pushes a byte directly into the UART ring buffer.
+// pushByteToUartRing pushes a byte into the UART ring buffer with fd info.
+// The fd is carried in the HIDEvent.Code field so the consumer can
+// distinguish stdout (1) from stderr (2).
 //
 //go:linkname pushByteToUartRing main.PushByteToUartRing
-func pushByteToUartRing(b byte)
+func pushByteToUartRing(fd byte, b byte)
 
 // flushUartRingWake wakes the UART slot consumer after pushing bytes.
 //

@@ -13,6 +13,8 @@ import (
 	"mazzy/mazarin/input"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/hid"
+	"os"
+	"time"
 )
 
 // Linux evdev event types
@@ -293,6 +295,13 @@ func main() {
 		}
 		go timerLoop(clock, timerSlot)
 	}
+
+	// Test stderr rendering — run in a goroutine with a short delay
+	// so the stdio priest has time to register the UART slot.
+	go func() {
+		time.Sleep(2 * time.Second)
+		fmt.Fprintln(os.Stderr, "[dapope] stderr test: this should be dark red")
+	}()
 
 	// Block main goroutine forever
 	select {}

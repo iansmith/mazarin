@@ -28,10 +28,11 @@ func NewSoftIRQConsole() *SoftIRQConsole {
 }
 
 // pushByte pushes a single byte into the UART soft IRQ ring.
+// Kernel console output uses Code=1 (stdout equivalent).
 //
 //go:nosplit
 func (c *SoftIRQConsole) pushByte(b byte) {
-	ev := hid.HIDEvent{Type: 0, Code: 0, Value: uint32(b)}
+	ev := hid.HIDEvent{Type: 0, Code: 1, Value: uint32(b)}
 	if !ringPush(&topHalfUartRing, ev) {
 		// Ring full — drop silently (or breadcrumb overflow marker)
 		return
@@ -131,12 +132,12 @@ func (c *SoftIRQConsole) CheckPendingWake() {
 	}
 }
 
-// PushByteToUartRing pushes a single byte directly into the UART soft IRQ ring
-// and immediately wakes any blocked consumer. This is used by SyscallWrite for
+// PushByteToUartRing pushes a byte into the UART soft IRQ ring with fd info.
+// The fd is carried in the HIDEvent.Code field so the consumer (stdio priest)
+// can distinguish stdout (1) from stderr (2). Called by SyscallWrite for
 // non-stdio priest output that needs to appear on the stdio display.
-// Unlike KWriteByte (which defers wake to the event poller), this wakes immediately.
-func PushByteToUartRing(b byte) {
-	ev := hid.HIDEvent{Type: 0, Code: 0, Value: uint32(b)}
+func PushByteToUartRing(fd byte, b byte) {
+	ev := hid.HIDEvent{Type: 0, Code: uint16(fd), Value: uint32(b)}
 	ringPush(&topHalfUartRing, ev)
 }
 

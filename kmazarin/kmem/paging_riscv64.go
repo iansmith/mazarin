@@ -142,14 +142,6 @@ func initProcessL0(l0VA uintptr) {
 		}
 	}
 
-	// Print diagnostic: L0 PA, L2 PA, L3[0] value
-	rawUARTPuts("[initProcL0] l0PA=0x")
-	rawUARTHex64(uint64(l0VA - constants.KernelMMIOOffset))
-	rawUARTPuts(" newL2=0x")
-	rawUARTHex64(uint64(newL2PA))
-	rawUARTPuts(" L3[0]=0x")
-	rawUARTHex64(readBack)
-	rawUARTPuts("\r\n")
 }
 
 // VerifyCurrentSATPL3E0 checks that L3[0] of the current SATP's root page table

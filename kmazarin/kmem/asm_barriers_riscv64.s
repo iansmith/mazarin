@@ -126,10 +126,6 @@ bzero_loop:
 // writeTTBR0Asm - Write page table base register
 // RISC-V: Write SATP
 TEXT ·writeTTBR0Asm(SB), NOSPLIT, $0-8
-	// DEBUG: Print '!' marker whenever SATP is written
-	MOV	$0xFFFFFFFF10000000, A1
-	MOV	$0x21, A2		// '!'
-	MOVB	A2, (A1)
 	MOV	val+0(FP), A0
 	// CSRW satp, A0 (satp = 0x180)
 	WORD	$0x18051073

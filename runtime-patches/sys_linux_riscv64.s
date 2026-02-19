@@ -71,9 +71,6 @@ TEXT runtime·closefd(SB),NOSPLIT|NOFRAME,$0-12
 TEXT runtime·write1(SB),NOSPLIT|NOFRAME,$0-28
 	// UART VA = 0xFFFFFFFF10000000 (NS16550 via linear map)
 	MOV	$0xFFFFFFFF10000000, T0
-	MOV	$'W', T1
-	MOVB	T1, (T0)
-
 	MOV	p+8(FP), A0		// buffer pointer
 	MOVW	n+16(FP), A1		// byte count
 write1_loop:
@@ -248,31 +245,11 @@ TEXT runtime·clone(SB),NOSPLIT,$0-44
 	MOV	fn+32(FP), T2
 
 	// Store on child stack (negative offsets from stack top)
-	// Debug: '1' before stk-8 store
-	MOV	$0xFFFFFFFF10000000, X28
-	MOV	$0x31, X29		// '1'
-	MOVB	X29, (X28)
 	MOV	T0, -8(A1)		// mp at stk-8
-	// Debug: '2' before stk-16 store
-	MOV	$0xFFFFFFFF10000000, X28
-	MOV	$0x32, X29		// '2'
-	MOVB	X29, (X28)
 	MOV	T1, -16(A1)		// gp at stk-16
-	// Debug: '3' before stk-24 store
-	MOV	$0xFFFFFFFF10000000, X28
-	MOV	$0x33, X29		// '3'
-	MOVB	X29, (X28)
 	MOV	T2, -24(A1)		// fn at stk-24
-	// Debug: '4' before stk-32 store
-	MOV	$0xFFFFFFFF10000000, X28
-	MOV	$0x34, X29		// '4'
-	MOVB	X29, (X28)
 	MOV	$1234, T0
 	MOV	T0, -32(A1)		// magic marker for verification
-	// Debug: '5' before EBREAK
-	MOV	$0xFFFFFFFF10000000, X28
-	MOV	$0x35, X29		// '5'
-	MOVB	X29, (X28)
 
 	MOV	$220, A7		// SYS_clone
 	WORD	$0x00100073		// ebreak → trap handler → SyscallDispatch
@@ -281,11 +258,6 @@ TEXT runtime·clone(SB),NOSPLIT,$0-44
 	BNE	A0, ZERO, clone_parent
 
 	// === Child path ===
-	// Debug: 'c' = clone child entry
-	MOV	$0xFFFFFFFF10000000, X28
-	MOV	$0x63, X29		// 'c'
-	MOVB	X29, (X28)
-
 	// On new stack. Verify magic marker.
 	MOV	-32(X2), T0
 	MOV	$1234, T1
@@ -298,59 +270,10 @@ TEXT runtime·clone(SB),NOSPLIT,$0-44
 	MOV	T0, (T0)		// crash: magic marker mismatch
 
 clone_good:
-	// Debug: 'M' = magic OK
-	MOV	$0xFFFFFFFF10000000, X28
-	MOV	$0x4D, X29		// 'M'
-	MOVB	X29, (X28)
-
 	// Read fn, gp, mp from child stack (negative offsets from SP)
 	MOV	-24(X2), T2		// fn
 	MOV	-16(X2), T1		// gp (g pointer)
 	MOV	-8(X2), T0		// mp (m pointer)
-
-	// Debug: print fn address 'J<16hex>' using T3-T6 (safe, not needed yet)
-	MOV	$0xFFFFFFFF10000000, X28
-	MOV	$0x4A, X29		// 'J'
-	MOVB	X29, (X28)
-	MOV	T2, X30			// copy fn to T5 for printing
-	MOV	$60, X31		// start bit position
-clone_fn_hex:
-	SRL	X31, X30, X29		// shift
-	AND	$0xF, X29
-	MOV	$10, X28
-	BLT	X29, X28, clone_fn_digit
-	ADD	$0x37, X29, X29		// A-F
-	JMP	clone_fn_out
-clone_fn_digit:
-	ADD	$0x30, X29, X29		// 0-9
-clone_fn_out:
-	MOV	$0xFFFFFFFF10000000, X28
-	MOVB	X29, (X28)
-	ADD	$-4, X31
-	MOV	$-4, X28
-	BNE	X31, X28, clone_fn_hex
-
-	// Debug: print SP 's<16hex>'
-	MOV	$0xFFFFFFFF10000000, X28
-	MOV	$0x73, X29		// 's'
-	MOVB	X29, (X28)
-	MOV	X2, X30			// copy SP to T5 for printing
-	MOV	$60, X31		// start bit position
-clone_sp_hex:
-	SRL	X31, X30, X29
-	AND	$0xF, X29
-	MOV	$10, X28
-	BLT	X29, X28, clone_sp_digit
-	ADD	$0x37, X29, X29
-	JMP	clone_sp_out
-clone_sp_digit:
-	ADD	$0x30, X29, X29
-clone_sp_out:
-	MOV	$0xFFFFFFFF10000000, X28
-	MOVB	X29, (X28)
-	ADD	$-4, X31
-	MOV	$-4, X28
-	BNE	X31, X28, clone_sp_hex
 
 	BEQ	T0, ZERO, clone_nog
 	BEQ	T1, ZERO, clone_nog
@@ -369,11 +292,6 @@ clone_sp_out:
 clone_nog:
 	// Save g to TLS
 	CALL	runtime·save_g(SB)
-
-	// Debug: 'F' = about to call fn
-	MOV	$0xFFFFFFFF10000000, X28
-	MOV	$0x46, X29		// 'F'
-	MOVB	X29, (X28)
 
 	// Call fn (entry function, typically mstart). Never returns.
 	JALR	ZERO, T2

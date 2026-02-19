@@ -6,8 +6,8 @@
 // Usage:
 //
 //	ch, _ := serial.Chars()
-//	for b := range ch {
-//	    fmt.Printf("%c", b)
+//	for sb := range ch {
+//	    fmt.Printf("%c", sb.B)
 //	}
 package serial
 
@@ -19,19 +19,27 @@ import (
 	"sync"
 )
 
+// SerialByte carries a byte from the serial ring along with the file
+// descriptor it was written to. Fd=0 for UART RX input, Fd=1 for
+// stdout, Fd=2 for stderr.
+type SerialByte struct {
+	Fd byte
+	B  byte
+}
+
 // Soft IRQ slot — near input's 28/29 and timer's 30, away from dapope's 0-3.
 const serialSlot = 27
 
 var (
 	once sync.Once
 	err  error
-	ch   chan byte
+	ch   chan SerialByte
 )
 
-// Chars returns a receive-only channel of bytes (ASCII characters from UART).
+// Chars returns a receive-only channel of SerialByte (bytes + fd from UART ring).
 // The first call triggers device discovery, slot registration, and a background
 // goroutine. Subsequent calls return the same channel.
-func Chars() (<-chan byte, error) {
+func Chars() (<-chan SerialByte, error) {
 	once.Do(doInit)
 	return ch, err
 }
@@ -49,7 +57,7 @@ func doInit() {
 				err = fmt.Errorf("serial: register slot: %w", regErr)
 				return
 			}
-			ch = make(chan byte, 256)
+			ch = make(chan SerialByte, 256)
 			go serialLoop()
 			return
 		}
@@ -64,15 +72,17 @@ func serialLoop() {
 		if waitErr != nil || n == 0 {
 			continue
 		}
-		sys.RawWrite(2, 'P') // diagnostic: serialLoop pushing bytes (no P release)
 		for i := 0; i < n; i++ {
-			b := byte(buf.Events[i].Value)
+			sb := SerialByte{
+				Fd: byte(buf.Events[i].Code),
+				B:  byte(buf.Events[i].Value),
+			}
 			select {
-			case ch <- b:
+			case ch <- sb:
 			default:
 				// Drop oldest to make room
 				<-ch
-				ch <- b
+				ch <- sb
 			}
 		}
 	}

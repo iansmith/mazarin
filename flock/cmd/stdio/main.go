@@ -56,10 +56,11 @@ type glyphCacheEntry struct {
 // Single-char glyphs are the fallback; the word cache avoids repeated
 // per-character blits for frequently seen words.
 type glyphCache struct {
-	glyphs  [95][]byte // printable ASCII 32-126, each charW*charH*4 RGBA bytes
-	entries [glyphCacheLen]glyphCacheEntry
-	charW   int
-	charH   int
+	glyphs    [95][]byte // printable ASCII 32-126 in nText color
+	glyphsErr [95][]byte // printable ASCII 32-126 in nStderr color (dark red)
+	entries   [glyphCacheLen]glyphCacheEntry
+	charW     int
+	charH     int
 }
 
 // token represents a segment of a line for cache-aware rendering.
@@ -79,32 +80,8 @@ func isAlnum(b byte) bool {
 func newGlyphCache(charW, charH, ascent int, face font.Face) *glyphCache {
 	gc := &glyphCache{charW: charW, charH: charH}
 
-	// Pre-render each printable ASCII character (32-126)
-	tmpDc := gg.NewContext(charW, charH)
-	tmpDc.SetFontFace(face)
-	tmpIm := tmpDc.Image().(*image.RGBA)
-	rowBytes := charW * 4
-
-	for ch := byte(32); ch <= 126; ch++ {
-		// Clear to content background
-		tmpDc.SetColor(nContent)
-		tmpDc.DrawRectangle(0, 0, float64(charW), float64(charH))
-		tmpDc.Fill()
-
-		// Draw character at baseline
-		tmpDc.SetFontFace(face)
-		tmpDc.SetColor(nText)
-		tmpDc.DrawString(string(ch), 0, float64(ascent))
-
-		// Capture pixel strip
-		buf := make([]byte, charW*charH*4)
-		for y := 0; y < charH; y++ {
-			srcOff := y * tmpIm.Stride
-			dstOff := y * rowBytes
-			copy(buf[dstOff:dstOff+rowBytes], tmpIm.Pix[srcOff:srcOff+rowBytes])
-		}
-		gc.glyphs[ch-32] = buf
-	}
+	renderGlyphSet(&gc.glyphs, charW, charH, ascent, face, nText, nContent)
+	renderGlyphSet(&gc.glyphsErr, charW, charH, ascent, face, nStderr, nContent)
 
 	// Pre-allocate word cache entry buffers
 	maxBuf := glyphKeyMax * charW * charH * 4
@@ -112,6 +89,33 @@ func newGlyphCache(charW, charH, ascent int, face font.Face) *glyphCache {
 		gc.entries[i].pixels = make([]byte, maxBuf)
 	}
 	return gc
+}
+
+// renderGlyphSet pre-renders all printable ASCII characters (32-126) into
+// pixel strips with the given text color on the given background color.
+func renderGlyphSet(dst *[95][]byte, charW, charH, ascent int, face font.Face, textColor, bgColor color.RGBA) {
+	tmpDc := gg.NewContext(charW, charH)
+	tmpDc.SetFontFace(face)
+	tmpIm := tmpDc.Image().(*image.RGBA)
+	rowBytes := charW * 4
+
+	for ch := byte(32); ch <= 126; ch++ {
+		tmpDc.SetColor(bgColor)
+		tmpDc.DrawRectangle(0, 0, float64(charW), float64(charH))
+		tmpDc.Fill()
+
+		tmpDc.SetFontFace(face)
+		tmpDc.SetColor(textColor)
+		tmpDc.DrawString(string(ch), 0, float64(ascent))
+
+		buf := make([]byte, charW*charH*4)
+		for y := 0; y < charH; y++ {
+			srcOff := y * tmpIm.Stride
+			dstOff := y * rowBytes
+			copy(buf[dstOff:dstOff+rowBytes], tmpIm.Pix[srcOff:srcOff+rowBytes])
+		}
+		dst[ch-32] = buf
+	}
 }
 
 // lookup scans for word in the cache. On hit, increments hits and returns the entry.
@@ -178,10 +182,16 @@ func (gc *glyphCache) blit(e *glyphCacheEntry, im *image.RGBA, px, py int) {
 
 // blitChar copies a single pre-rendered character glyph into the gg image.
 func (gc *glyphCache) blitChar(ch byte, im *image.RGBA, px, py int) {
+	gc.blitCharFrom(ch, gc.glyphs[:], im, px, py)
+}
+
+// blitCharFrom copies a glyph from the specified glyph set into the gg image.
+// Used to select between normal (glyphs) and stderr (glyphsErr) rendering.
+func (gc *glyphCache) blitCharFrom(ch byte, glyphs [][]byte, im *image.RGBA, px, py int) {
 	if ch < 32 || ch > 126 {
 		return
 	}
-	glyph := gc.glyphs[ch-32]
+	glyph := glyphs[ch-32]
 	charBytes := gc.charW * 4
 	for y := 0; y < gc.charH; y++ {
 		srcOff := y * charBytes
@@ -209,7 +219,7 @@ type console struct {
 	cardH    int
 	maxLines int
 	maxCols  int // max characters per line
-	lines    []string
+	lines    [][]serial.SerialByte
 
 	// Glyph cache for repeated word rendering
 	gc     *glyphCache
@@ -220,6 +230,9 @@ type console struct {
 	dirtyMin int
 	dirtyMax int
 
+	// Last fd seen — used to force a newline when fd changes mid-line
+	// so stdout and stderr appear on separate lines.
+	lastFd byte
 }
 
 func (c *console) markDirty(lineIdx int) {
@@ -359,7 +372,7 @@ func main() {
 		cardH:    cardH,
 		maxLines: maxLines,
 		maxCols:  maxCols,
-		lines:    []string{""},
+		lines:    [][]serial.SerialByte{nil},
 		gc:       gc,
 		tokBuf:   make([]token, 0, 64),
 		dirtyMin: -1,
@@ -427,14 +440,14 @@ func main() {
 	fmt.Println("[stdio] Console rectangle rendered")
 
 	// --- Enter serial event loop ---
-	for b := range serialCh {
-		con.handleChar(b)
+	for sb := range serialCh {
+		con.handleSerialByte(sb)
 		// Drain any additional buffered chars before flushing
 		done := false
 		for !done {
 			select {
-			case b = <-serialCh:
-				con.handleChar(b)
+			case sb = <-serialCh:
+				con.handleSerialByte(sb)
 			default:
 				done = true
 			}
@@ -448,7 +461,8 @@ var (
 	nBase    = color.RGBA{224, 224, 230, 255} // light warm gray surface
 	nContent = color.RGBA{40, 42, 48, 255}    // content well (dark neutral gray)
 	nTitle   = color.RGBA{100, 100, 110, 255} // title text
-	nText    = color.RGBA{200, 205, 215, 255} // content text
+	nText    = color.RGBA{200, 205, 215, 255} // content text (stdout)
+	nStderr  = color.RGBA{200, 80, 80, 255}   // stderr text (dark red)
 )
 
 // fillRect fills a rectangle in the gg image with a solid color using direct
@@ -785,30 +799,62 @@ func (c *console) redrawLine(lineIdx int) {
 		c.dc.Fill()
 	}
 
-	text := c.lines[lineIdx]
-	if len(text) == 0 {
+	line := c.lines[lineIdx]
+	if len(line) == 0 {
 		return
 	}
 	baseX := c.rectX + textPad
 
-	tokens := c.tokenizeLine(text)
-	for _, tok := range tokens {
-		pixX := baseX + tok.col*c.charW
+	// Check if any stderr content in this line
+	hasStderr := false
+	for _, sb := range line {
+		if sb.Fd == 2 {
+			hasStderr = true
+			break
+		}
+	}
 
-		if tok.cacheable {
-			if entry, hit := c.gc.lookup(tok.text); hit {
-				c.gc.blit(entry, im, pixX, lineY)
+	if hasStderr {
+		// Mixed color: per-char rendering with color selection
+		for i, sb := range line {
+			px := baseX + i*c.charW
+			if sb.Fd == 2 {
+				c.gc.blitCharFrom(sb.B, c.gc.glyphsErr[:], im, px, lineY)
 			} else {
-				entry := c.gc.compose(tok.text)
-				c.gc.blit(entry, im, pixX, lineY)
+				c.gc.blitCharFrom(sb.B, c.gc.glyphs[:], im, px, lineY)
 			}
-		} else {
-			// Fallback: blit individual chars from glyph buffer
-			for i := 0; i < len(tok.text); i++ {
-				c.gc.blitChar(tok.text[i], im, pixX+i*c.charW, lineY)
+		}
+	} else {
+		// All normal color: use word cache for performance
+		text := c.lineText(lineIdx)
+		tokens := c.tokenizeLine(text)
+		for _, tok := range tokens {
+			pixX := baseX + tok.col*c.charW
+
+			if tok.cacheable {
+				if entry, hit := c.gc.lookup(tok.text); hit {
+					c.gc.blit(entry, im, pixX, lineY)
+				} else {
+					entry := c.gc.compose(tok.text)
+					c.gc.blit(entry, im, pixX, lineY)
+				}
+			} else {
+				for i := 0; i < len(tok.text); i++ {
+					c.gc.blitChar(tok.text[i], im, pixX+i*c.charW, lineY)
+				}
 			}
 		}
 	}
+}
+
+// lineText extracts the text content from a line of SerialBytes as a string.
+func (c *console) lineText(lineIdx int) string {
+	line := c.lines[lineIdx]
+	buf := make([]byte, len(line))
+	for i, sb := range line {
+		buf[i] = sb.B
+	}
+	return string(buf)
 }
 
 
@@ -839,15 +885,15 @@ func (c *console) flushDirty() {
 	c.clearDirty()
 }
 
-// handleChar processes a single character from serial input.
+// handleSerialByte processes a single SerialByte from the ring.
 // It updates lines and dirty tracking but does NOT flush.
-func (c *console) handleChar(ch byte) {
-	if ch == '\r' {
+func (c *console) handleSerialByte(sb serial.SerialByte) {
+	if sb.B == '\r' {
 		return
 	}
-	if ch == '\n' {
+	if sb.B == '\n' {
 		if len(c.lines) < c.maxLines {
-			c.lines = append(c.lines, "")
+			c.lines = append(c.lines, nil)
 		} else {
 			// Before scrolling, flush any dirty lines to ensure pixels match lines[]
 			// This is the "lock" - we can't scroll until current state is rendered
@@ -863,11 +909,22 @@ func (c *console) handleChar(ch byte) {
 	if lineIdx < 0 || lineIdx >= c.maxLines {
 		return
 	}
+	// Force a newline when fd changes mid-line so stdout and stderr
+	// appear on separate lines instead of interleaving with mixed colors.
+	if c.lastFd != 0 && sb.Fd != c.lastFd && len(c.lines[lineIdx]) > 0 {
+		c.lastFd = sb.Fd
+		c.handleSerialByte(serial.SerialByte{Fd: sb.Fd, B: '\n'})
+		lineIdx = len(c.lines) - 1
+		if lineIdx < 0 || lineIdx >= c.maxLines {
+			return
+		}
+	}
+	c.lastFd = sb.Fd
 	// Clamp line length to prevent overflow panic in text rendering
 	if len(c.lines[lineIdx]) >= c.maxCols {
 		return
 	}
-	c.lines[lineIdx] += string(ch)
+	c.lines[lineIdx] = append(c.lines[lineIdx], sb)
 	c.markDirty(lineIdx)
 }
 
@@ -876,7 +933,7 @@ func (c *console) handleChar(ch byte) {
 func (c *console) scroll() {
 	// Shift line content
 	copy(c.lines, c.lines[1:])
-	c.lines[c.maxLines-1] = ""
+	c.lines[c.maxLines-1] = nil
 
 	// Shift pixels in gg buffer
 	im, ok := c.dc.Image().(*image.RGBA)
