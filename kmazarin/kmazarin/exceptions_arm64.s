@@ -1077,18 +1077,6 @@ timer_switch_ok:
 	LDP	256(R21), (R0, R1)
 	STP	(R0, R1), EXC_FRAME_ELR_SPSR(RSP)
 
-	// DEBUG: Print marker showing timer context switch to userspace
-	// Check if new SPSR is EL0 (bits [3:0] == 0)
-	MOVD	EXC_FRAME_ELR_SPSR+8(RSP), R0
-	AND	$0xF, R0
-	CBNZ	R0, timer_switch_not_el0
-	MOVD	$UART_BASE, R2
-	MOVD	$'T', R3
-	MOVB	R3, (R2)
-	MOVD	$'c', R3
-	MOVB	R3, (R2)
-timer_switch_not_el0:
-
 	// Skip async preemption - we already switched threads
 	B	timer_no_preempt
 
@@ -1570,31 +1558,6 @@ el0_sync_handler:
 	CMP	$0x15, R10
 	BNE	el0_check_data_abort
 
-	// DEBUG: Print syscall number as 2 hex digits (from X8 in exception frame)
-	MOVD	$UART_BASE, R12
-	MOVD	EXC_FRAME_X8(RSP), R14   // X8 = syscall number
-	// Print high nibble of low byte
-	LSR	$4, R14, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	el0_svc_dig_hi
-	ADD	$('a'-10), R11
-	B	el0_svc_chr_hi
-el0_svc_dig_hi:
-	ADD	$'0', R11
-el0_svc_chr_hi:
-	MOVB	R11, (R12)
-	// Print low nibble
-	AND	$0xF, R14, R11
-	CMP	$10, R11
-	BLT	el0_svc_dig_lo
-	ADD	$('a'-10), R11
-	B	el0_svc_chr_lo
-el0_svc_dig_lo:
-	ADD	$'0', R11
-el0_svc_chr_lo:
-	MOVB	R11, (R12)
-
 	// CRITICAL: Switch to kmazarin's g before calling any Go code!
 	// x28 currently contains userspace's g (e.g., priest's g), but the syscall
 	// handlers are compiled into kmazarin's Go runtime and expect kmazarin's g.
@@ -1719,11 +1682,6 @@ el0_check_data_abort:
 	BNE	el0_not_svc
 
 el0_handle_page_fault:
-	// DEBUG: Print 'P' for page fault from EL0
-	MOVD	$UART_BASE, R12
-	MOVD	$'P', R11
-	MOVB	R11, (R12)
-
 	// CRITICAL: Switch to kmazarin's g before calling Go code (same as SVC case)
 	// Only switch if kmazarinG0Addr is non-zero (initialized).
 	MOVD	·kmazarinG0Addr(SB), R10
