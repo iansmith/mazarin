@@ -5,9 +5,3 @@ package main
 // initCOM1Uart is a no-op on ARM64 and RISC-V.
 // These platforms discover UART from the device tree.
 func initCOM1Uart() {}
-
-// pollCOM1Uart is a no-op on ARM64 and RISC-V.
-// These platforms use interrupt-driven UART top-halves.
-//
-//go:nosplit
-func pollCOM1Uart() {}

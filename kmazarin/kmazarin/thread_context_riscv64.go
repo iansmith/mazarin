@@ -71,6 +71,11 @@ func (ctx *ThreadContext) GetProcessorState() uint64 { return ctx.SSTATUS }
 //go:nosplit
 func (ctx *ThreadContext) SetProcessorState(v uint64) { ctx.SSTATUS = v }
 
+// SetCloneTLS is a no-op on RISC-V (no FS_BASE, TLS is handled via TP register).
+//
+//go:nosplit
+func (ctx *ThreadContext) SetCloneTLS(tls uint64) {}
+
 // SetupForUserspace initializes the context for a new userspace thread.
 //
 //go:nosplit
@@ -91,6 +96,14 @@ func (ctx *ThreadContext) SetupForUserspace(entryPoint, stackPtr uint64) {
 //
 //go:nosplit
 func initThread0Context(ctx *ThreadContext) {}
+
+// initThread0PageTable returns the kernel's root page table PA for Thread 0.
+// On RISC-V, initProcessL0 copies L3[1-511] from the kernel page table, so
+// the user page table includes kernel heap entries. Thread 0 can access
+// kernel heap through the user's SATP. Returns 0 to keep existing behavior.
+//
+//go:nosplit
+func initThread0PageTable() uintptr { return 0 }
 
 // SetupForCloneChild initializes the context for a clone child thread.
 // Clears a0 (child returns 0), sets stack/return address, enables IRQs,

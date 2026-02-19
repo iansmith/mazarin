@@ -314,6 +314,12 @@ yield_skip_fsbase:
 	MOVQ	104(R12), DX		// new g (R14)
 	MOVQ	DX, -8(AX)		// Write g to TLS slot
 
+	// Switch to exception stack for IRETQ frame — the g0 stack may contain
+	// saved call frames from preempted threads (e.g., thread 0's CALL to
+	// SaveThread0AndYield). Building the IRETQ frame on the g0 stack can
+	// corrupt those saved return addresses. Safe because IRQs are disabled.
+	MOVQ	·excStackTopForSyscall(SB), SP
+
 	// Build IRETQ frame manually (avoid PUSH to keep assembler happy)
 	SUBQ	$40, SP
 	MOVQ	160(R12), AX
@@ -326,6 +332,48 @@ yield_skip_fsbase:
 	MOVQ	AX, 8(SP)		// CS from context
 	MOVQ	120(R12), AX
 	MOVQ	AX, 0(SP)		// RIP
+
+	// Check for corrupted RIP before IRETQ
+	CMPQ	AX, $0x100000
+	JAE	yr_rip_ok
+	// Bad RIP — print "!YR=" + RIP + " CTX=" + context_ptr then HLT
+	MOVW	$0x3F8, DX
+	MOVB	$'!', AX; OUTB
+	MOVB	$'Y', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	120(R12), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'X', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	R12, R15
+	CALL	pf_print_hex16(SB)
+	// Also print CS and SS from context
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	152(R12), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	136(R12), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+yr_halt:
+	HLT
+	JMP	yr_halt
+yr_rip_ok:
 
 	// Load all GPRs
 	MOVQ	0(R12), AX

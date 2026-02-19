@@ -26,3 +26,4 @@ func RearmTimerNow()
 //
 //go:nosplit
 func DisableTimerHardware()
+

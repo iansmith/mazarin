@@ -639,6 +639,12 @@ func InstallFaultHandler(vm *KernelVM) error {
 
 // setDiplomatIDTEntry populates a single IDT entry with the given CS selector.
 func setDiplomatIDTEntry(vector int, handler uint64, cs uint16) {
+	setDiplomatIDTEntryIST(vector, handler, cs, 0)
+}
+
+// setDiplomatIDTEntryIST populates a single IDT entry with the given IST index.
+// IST=0 means normal stack switching; IST=1-7 selects a TSS IST stack.
+func setDiplomatIDTEntryIST(vector int, handler uint64, cs uint16, ist byte) {
 	offset := vector * 16
 
 	// offset[15:0]
@@ -649,8 +655,8 @@ func setDiplomatIDTEntry(vector int, handler uint64, cs uint16) {
 	idtTable[offset+2] = byte(cs)
 	idtTable[offset+3] = byte(cs >> 8)
 
-	// IST = 0
-	idtTable[offset+4] = 0x00
+	// IST index (0-7)
+	idtTable[offset+4] = ist & 0x7
 
 	// type/attributes = 0x8E (present, DPL=0, 64-bit interrupt gate)
 	idtTable[offset+5] = 0x8E
@@ -707,11 +713,15 @@ func updateIDTWithKmazarinISRs(kernel *LoadedKernel, relocDelta uint64) {
 		printString("WARN: main.isr128 not found, using diplomat stub\r\n")
 	}
 
-	// Install timer IRQ handler (needed once timer is enabled)
+	// Install timer IRQ handler with IST=1. On x86_64, ring 0→ring 0
+	// interrupts push to the current RSP. If the timer fires while kernel
+	// code runs on a small goroutine stack (~8KB), the Go handler code
+	// overflows it → triple fault. IST=1 forces the CPU to use the
+	// dedicated exception stack (matching ARM64's SP_EL1 pattern).
 	isr48Addr := findKernelSymbol(kernel, "main.isr48")
 	if isr48Addr != 0 {
 		isr48Addr += relocDelta
-		setDiplomatIDTEntry(48, isr48Addr, cs)
+		setDiplomatIDTEntryIST(48, isr48Addr, cs, 1)
 	}
 
 	// Install spurious IRQ handler

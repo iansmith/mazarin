@@ -41,3 +41,11 @@ func RxReady() bool
 //
 //go:nosplit
 func ReadRxByte() byte
+
+// EnableRxInterrupt enables the Received Data Available interrupt on COM1
+// by writing 0x01 to the IER register (port 0x3F9). After this, COM1 will
+// assert its IRQ line (ISA IRQ 4 → IOAPIC input 4) when data arrives.
+// Implemented in raw_uart_amd64.s.
+//
+//go:nosplit
+func EnableRxInterrupt()

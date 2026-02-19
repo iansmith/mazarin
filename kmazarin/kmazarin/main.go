@@ -53,6 +53,19 @@ func timerIRQHandlerInternal(irqNum uint64, framePtr uintptr, elr, spEl0 uint64)
 	// RISC-V: Verify process page table integrity on every timer tick
 	kmem.VerifyCurrentSATPL3E0()
 	info := kirq.TimerIRQHandlerCanPreempt(irqNum, framePtr, elr, spEl0)
+
+	// AMD64: Check if the current thread's preemption deadline has expired.
+	// On ARM64/RISC-V, TimerIRQHandlerAsm is called directly from the exception
+	// handler and sets NeedsThreadPreempt. On AMD64, the assembly handler isn't
+	// called from the exception path, so we check the deadline here instead.
+	t := GetCurrentThread()
+	if t != nil {
+		currentTick := kirq.ReadCounterValue()
+		if currentTick >= t.ThreadPreemptDeadline {
+			atomic.StoreUint32(&kirq.NeedsThreadPreempt, 1)
+		}
+	}
+
 	return info.NewELR, info.NewSP, info.NewLR, info.DoPreempt
 }
 
@@ -133,6 +146,7 @@ func init() {
 
 	// Initialize timer, IRQ handlers, and preemption subsystem
 	kirq.InitTimer()
+	console.KPrintf("[Timer] freq=%d Hz\n", ktimer.Frequency())
 	kirq.RegisterHandlers()
 	kirq.InitPreemption()
 
@@ -472,11 +486,9 @@ func testDeviceDiscovery() {
 		return
 	}
 
-	// Initialize kernel time subsystem (reads RTC once, caches for tick-based derivation)
-	if clk, ok := device.GetClock(); ok {
-		_ = clk
-		ktime.Init()
-	}
+	// Initialize kernel time subsystem (reads RTC once, caches for tick-based derivation).
+	// On platforms without an RTC (e.g. AMD64), falls back to uptime mode (base=0).
+	ktime.Init()
 
 	// Wire up interrupts now that interrupt controller is discovered
 	if err := device.WireInterrupts(); err != nil {
@@ -570,23 +582,24 @@ func initVirtIOInputDevices() {
 		}
 
 		// Wire hardware interrupt controller for real IRQs.
-		// ARM64 uses MSI-X (GIC SPIs), RISC-V uses PCI INTx (PLIC sources 32-35).
-		// Event delivery goes through assembly IRQ handler → NonTimerIRQTopHalf
-		// → softIRQ ring, NOT through kirq dispatch. Register a no-op handler
-		// so kirq.DispatchIRQ doesn't panic if called unexpectedly.
+		// ARM64 uses MSI-X (GIC SPIs), RISC-V uses PCI INTx (PLIC sources 32-35),
+		// AMD64 uses MSI-X (LAPIC vectors). On AMD64, MSI-X bypasses the IOAPIC
+		// entirely — the device writes directly to the LAPIC, so we only need
+		// to register a no-op handler with kirq (in case DispatchIRQ is called).
 		if cachedIC != nil && irqNum != 0 {
 			localIRQ := irqNum
 			cachedIC.RegisterHandler(localIRQ, func() {
 				// No-op: events handled by NonTimerIRQTopHalf via assembly top-half.
 				_ = localIRQ
 			})
-			// MSI-X interrupts are edge-triggered (message write = edge event)
-			cachedIC.SetIRQEdgeTriggered(localIRQ)
-			// Set priority to 0xA0 (lower than timer at 0x00, higher than nothing)
-			cachedIC.SetIRQPriority(localIRQ, 0xA0)
-			// Route to CPU 0 (required — bulk SPI init may not cover MSI-X IRQs)
-			cachedIC.SetIRQTarget(localIRQ, 0x01)
-			cachedIC.EnableIRQ(localIRQ)
+			if runtime.GOARCH != "amd64" {
+				// ARM64/RISC-V: configure interrupt controller for this IRQ.
+				// AMD64 MSI-X bypasses IOAPIC, no configuration needed.
+				cachedIC.SetIRQEdgeTriggered(localIRQ)
+				cachedIC.SetIRQPriority(localIRQ, 0xA0)
+				cachedIC.SetIRQTarget(localIRQ, 0x01)
+				cachedIC.EnableIRQ(localIRQ)
+			}
 		}
 	}
 

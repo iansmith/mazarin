@@ -431,13 +431,10 @@ func eventPoller() {
 		}
 
 		// Poll VirtIO input devices: drain used rings into softIRQ ring
-		// buffers and wake blocked slots. Works on all architectures:
-		// on ARM64 the IRQ top-half already drained (this is a no-op),
-		// on RISC-V/x86_64 this is the primary polling path.
+		// buffers and wake blocked slots. On ARM64/RISC-V the IRQ top-half
+		// already drained (this is a no-op). On AMD64 with interrupts
+		// enabled (irqNum != 0) this is also a no-op.
 		pollInputTopHalf()
-
-		// Poll COM1 UART for incoming data (AMD64 only; no-op on ARM64/RISC-V).
-		pollCOM1Uart()
 
 		// Check UART RX flag (legacy - will be replaced by generic dispatch)
 		if atomic.SwapUint32(&uartRxPending, 0) == 1 {
@@ -628,53 +625,6 @@ func Breadcrumb(b byte) {
 func BreadcrumbString(s string) {
 	for i := 0; i < len(s); i++ {
 		console.Breadcrumb(s[i])
-	}
-}
-
-// ============================================================================
-// UART Top-Half (nosplit, runs from assembly IRQ handler context)
-// ============================================================================
-
-// PL011 register offsets for direct MMIO access in the top-half.
-const (
-	pl011DR   = 0x000 // Data register
-	pl011FR   = 0x018 // Flag register
-	pl011MIS  = 0x040 // Masked interrupt status
-	pl011ICR  = 0x044 // Interrupt clear register
-	pl011RXFE = 1 << 4 // RX FIFO empty flag
-	pl011IRQRX = 1 << 4 // RX interrupt bit
-)
-
-// uartTopHalf drains the PL011 RX FIFO directly via MMIO, pushes each
-// byte into topHalfUartRing as an HIDEvent, clears the interrupt, and
-// wakes any blocked userspace slot. Runs in nosplit assembly IRQ context.
-//
-//go:nosplit
-func uartTopHalf(irqNum uint32) {
-	base := uintptr(UartBase)
-
-	// Check masked interrupt status — only handle RX
-	status := asm.MmioRead32(base + pl011MIS)
-	if status&pl011IRQRX == 0 {
-		return
-	}
-
-	pushed := false
-	for asm.MmioRead32(base+pl011FR)&pl011RXFE == 0 {
-		data := asm.MmioRead32(base + pl011DR)
-		ev := hid.HIDEvent{Type: 0, Code: 0, Value: data & 0xFF}
-		if ringPush(&topHalfUartRing, ev) {
-			pushed = true
-		} else {
-			console.Breadcrumb('X') // overflow
-		}
-	}
-
-	// Clear the RX interrupt
-	asm.MmioWrite32(base+pl011ICR, status)
-
-	if pushed {
-		WakeSlotForIRQ(irqNum)
 	}
 }
 

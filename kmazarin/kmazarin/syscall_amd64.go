@@ -73,6 +73,23 @@ func copyGDTToOwnedBuffer() {
 	tssBuffer[9] = byte(rsp0 >> 40)
 	tssBuffer[10] = byte(rsp0 >> 48)
 	tssBuffer[11] = byte(rsp0 >> 56)
+
+	// IST1 at offset 36-43: dedicated stack for timer/device interrupts.
+	// On ARM64/RISC-V, exceptions always switch to SP_EL1/sscratch. On x86_64,
+	// ring 0→ring 0 interrupts push to the current RSP by default. If a timer
+	// fires while a kernel thread runs on its small goroutine stack (~8KB), the
+	// Go handler code overflows that stack → triple fault. IST forces the CPU
+	// to load a dedicated stack for the interrupt, matching the ARM64 pattern.
+	ist1 := excStackTopForSyscall
+	tssBuffer[36] = byte(ist1)
+	tssBuffer[37] = byte(ist1 >> 8)
+	tssBuffer[38] = byte(ist1 >> 16)
+	tssBuffer[39] = byte(ist1 >> 24)
+	tssBuffer[40] = byte(ist1 >> 32)
+	tssBuffer[41] = byte(ist1 >> 40)
+	tssBuffer[42] = byte(ist1 >> 48)
+	tssBuffer[43] = byte(ist1 >> 56)
+
 	// IOPB offset at 102-103: set to TSS size (104) to disable I/O bitmap
 	tssBuffer[102] = 104
 	tssBuffer[103] = 0

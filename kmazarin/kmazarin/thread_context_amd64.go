@@ -2,6 +2,8 @@
 
 package main
 
+import "mazzy/kmazarin/kmem"
+
 // ThreadContext holds saved CPU state for a thread (x86_64).
 //
 // Exception frame layout (pushed by handler, low to high):
@@ -102,6 +104,25 @@ func (ctx *ThreadContext) GetProcessorState() uint64 { return ctx.RFLAGS }
 //go:nosplit
 func (ctx *ThreadContext) SetProcessorState(v uint64) { ctx.RFLAGS = v }
 
+// SetCloneTLS sets FSBase for CLONE_SETTLS support on AMD64.
+// Called during clone child setup to give the child its own FS_BASE,
+// preventing TLS corruption when the child writes g to FS:-8.
+//
+//go:nosplit
+func (ctx *ThreadContext) SetCloneTLS(tls uint64) { ctx.FSBase = tls }
+
+// initThread0PageTable returns the kernel's root page table PA for Thread 0.
+// On x86_64, there is no TTBR0/TTBR1 split — a single CR3 serves both kernel
+// and user. When Thread 0 (kernel) is rescheduled after a user thread, the
+// context switch must restore the kernel's page table, otherwise Thread 0
+// runs with the user's CR3 and kernel heap accesses at 0xC000000000+ (PML4[1])
+// go through user demand-paged entries instead of kernel entries.
+//
+//go:nosplit
+func initThread0PageTable() uintptr {
+	return kmem.GetKernelL0PA()
+}
+
 // Ring 3 segment selectors (standard GDT layout with RPL=3)
 const (
 	userCS = 0x1B // GDT offset 0x18 | RPL=3 (Ring 3 code)
@@ -126,28 +147,40 @@ const (
 	kernelSS = 0x10 // GDT offset 0x10 (Ring 0 data)
 )
 
-// initThread0Context initializes thread 0's context with valid kernel segment selectors.
-// Without this, CS=0 and SS=0 from zero-initialization would cause #GP on IRETQ.
+// initThread0Context initializes thread 0's context with valid kernel segment selectors
+// and captures the current FS_BASE so the TLS sync in load_context_and_iretq writes
+// to the correct TLS slot when Thread 0 is rescheduled.
+// Without CS/SS, zero-initialization would cause #GP on IRETQ.
+// Without FSBase, the TLS sync would use a stale FS_BASE from the previous thread.
 //
 //go:nosplit
 func initThread0Context(ctx *ThreadContext) {
 	ctx.CS = kernelCS
 	ctx.SS = kernelSS
+	// Capture the kernel's FS_BASE so Thread 0's TLS sync writes to the
+	// correct location. Go's runtime.settls already set MSR_FS_BASE during
+	// runtime init (before this init() function runs).
+	ctx.FSBase = readMSR(0xC0000100) // MSR_FS_BASE
 }
 
 // SetupForCloneChild initializes the context for a clone child thread.
-// Clears RAX (child returns 0), sets stack/return address, enables IRQs,
-// and sets the g register. CS/SS are set to Ring 0 (kernel clones);
+// Clears RAX (child returns 0), sets stack/return address, and sets the
+// g register. CS/SS are set to Ring 0 (kernel clones);
 // CloneNeedsParentRegs copy in doContextSwitchImpl will override with
 // parent's CS/SS for userspace clones.
 //
+// RFLAGS is inherited from parentState WITHOUT forcing IF=1. This ensures:
+//   - During Go runtime init (IF=0): children inherit IF=0, avoiding stale
+//     UEFI LAPIC interrupts hitting diplomat's incomplete IDT.
+//   - After EnableIRQs/STI: parents have IF=1, so children inherit IF=1.
+//
 //go:nosplit
 func (ctx *ThreadContext) SetupForCloneChild(stack, returnAddr, gReg, parentState uint64) {
-	ctx.RAX = 0                     // Child returns with TID = 0
-	ctx.RSP = stack                 // New stack
-	ctx.RIP = returnAddr            // Return address
-	ctx.RFLAGS = parentState | 0x200 // Same state but with IF set (interrupts enabled)
-	ctx.R14 = gReg                  // g register
-	ctx.CS = kernelCS               // Kernel code segment (overridden by CloneNeedsParentRegs)
-	ctx.SS = kernelSS               // Kernel data segment (overridden by CloneNeedsParentRegs)
+	ctx.RAX = 0          // Child returns with TID = 0
+	ctx.RSP = stack      // New stack
+	ctx.RIP = returnAddr // Return address
+	ctx.RFLAGS = parentState // Inherit parent's interrupt state (IF=0 during init, IF=1 after EnableIRQs)
+	ctx.R14 = gReg       // g register
+	ctx.CS = kernelCS    // Kernel code segment (overridden by CloneNeedsParentRegs)
+	ctx.SS = kernelSS    // Kernel data segment (overridden by CloneNeedsParentRegs)
 }

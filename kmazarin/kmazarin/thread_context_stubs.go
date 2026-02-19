@@ -75,6 +75,11 @@ func (ctx *ThreadContext) SetupForUserspace(entryPoint, stackPtr uint64) {
 //go:nosplit
 func initThread0Context(ctx *ThreadContext) {}
 
+// initThread0PageTable returns 0 for test stubs.
+//
+//go:nosplit
+func initThread0PageTable() uintptr { return 0 }
+
 // SetupForCloneChild initializes the context for a clone child thread.
 //
 //go:nosplit

@@ -22,3 +22,7 @@ func GetSyscallSPSR() uint64
 // On AMD64, the standard Go runtime's clone keeps these in callee-saved
 // registers instead of storing on the child stack.
 func GetSyscallCloneRegs() (r12, r13, r9 uint64)
+
+// SetSyscallCloneTLS is provided by main package via go:linkname.
+// Stores the CLONE_SETTLS newtls value so the child thread gets its own FS_BASE.
+func SetSyscallCloneTLS(tls uint64)

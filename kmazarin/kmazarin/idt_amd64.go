@@ -28,6 +28,7 @@ var idtrDescriptor [10]byte
 // ISR address getters defined in exceptions_amd64.s
 // These return the raw code address of each ISR entry point via LEAQ.
 func getISR0Addr() uintptr
+func getISR1Addr() uintptr
 func getISR6Addr() uintptr
 func getISR8Addr() uintptr
 func getISR13Addr() uintptr
@@ -37,14 +38,30 @@ func getISR48Addr() uintptr
 func getISR128Addr() uintptr
 func getISR255Addr() uintptr
 
+// deviceISRAddrs holds addresses of ISR stubs for vectors 32-47 (IOAPIC device IRQs).
+// Filled by initDeviceISRTable (assembly) before BuildIDT registers them.
+var deviceISRAddrs [16]uintptr
+
+// initDeviceISRTable fills deviceISRAddrs with the addresses of isrDev32..isrDev47.
+// Defined in exceptions_amd64.s.
+func initDeviceISRTable()
+
 // ReadCS returns the current CS (Code Segment) selector value.
 // Defined in exceptions_amd64.s.
 func ReadCS() uint16
 
-// setIDTEntry populates a single IDT entry.
+// setIDTEntry populates a single IDT entry with IST=0.
 //
 //go:nosplit
 func setIDTEntry(vector int, handler uintptr, cs uint16) {
+	setIDTEntryIST(vector, handler, cs, 0)
+}
+
+// setIDTEntryIST populates a single IDT entry with a specific IST index.
+// IST=0 means use normal stack switching; IST=1-7 selects a TSS IST stack.
+//
+//go:nosplit
+func setIDTEntryIST(vector int, handler uintptr, cs uint16, ist byte) {
 	offset := vector * 16
 	addr := uint64(handler)
 
@@ -56,8 +73,8 @@ func setIDTEntry(vector int, handler uintptr, cs uint16) {
 	idtTable[offset+2] = byte(cs)
 	idtTable[offset+3] = byte(cs >> 8)
 
-	// IST = 0
-	idtTable[offset+4] = 0x00
+	// IST index (0-7)
+	idtTable[offset+4] = ist & 0x7
 
 	// type/attributes = 0x8E (present, DPL=0, 64-bit interrupt gate)
 	idtTable[offset+5] = 0x8E
@@ -95,11 +112,21 @@ func BuildIDT() {
 
 	// Then set up entries for the vectors we specifically handle
 	setIDTEntry(0, getISR0Addr(), cs)     // Divide error (#DE)
+	setIDTEntry(1, getISR1Addr(), cs)     // Debug exception (#DB) — DR0 watchpoint
 	setIDTEntry(6, getISR6Addr(), cs)     // Invalid opcode (#UD)
 	setIDTEntry(8, getISR8Addr(), cs)     // Double fault (#DF)
 	setIDTEntry(13, getISR13Addr(), cs)   // General protection (#GP)
 	setIDTEntry(14, getISR14Addr(), cs)   // Page fault (#PF)
-	setIDTEntry(48, getISR48Addr(), cs)   // LAPIC timer (vector 0x30)
+
+	// IOAPIC device interrupt vectors 32-47 — use IST=1 so interrupts
+	// always use the exception stack, even when preempting kernel code
+	// running on small goroutine stacks.
+	initDeviceISRTable()
+	for i := 0; i < 16; i++ {
+		setIDTEntryIST(32+i, deviceISRAddrs[i], cs, 1)
+	}
+
+	setIDTEntryIST(48, getISR48Addr(), cs, 1) // LAPIC timer — IST=1
 	setIDTEntry(128, getISR128Addr(), cs) // Syscall via INT $0x80
 	// Set DPL=3 for vector 128 so userspace (Ring 3) can use INT $0x80.
 	// type/attributes byte: 0xEE = Present(1), DPL=3(11), 0, type=1110 (64-bit interrupt gate)

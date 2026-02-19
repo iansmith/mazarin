@@ -135,6 +135,14 @@ func getSyscallCloneRegsForKsyscall() (uint64, uint64, uint64) {
 	return GetSyscallCloneRegs()
 }
 
+// SetSyscallCloneTLS wrapper - stores CLONE_SETTLS newtls value for AMD64 clone
+//
+//go:linkname setSyscallCloneTLSForKsyscall mazzy/kmazarin/ksyscall.SetSyscallCloneTLS
+//go:nosplit
+func setSyscallCloneTLSForKsyscall(tls uint64) {
+	SetSyscallCloneTLS(tls)
+}
+
 // AddDeadline wrapper
 // Note: signature mismatch - main uses int16, ksyscall expects int32
 //

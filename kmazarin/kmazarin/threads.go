@@ -266,6 +266,12 @@ type Thread struct {
 	SyscallR12 uint64 // fn (entry function pointer)
 	SyscallR13 uint64 // mp (m pointer)
 	SyscallR9  uint64 // gp (g pointer)
+
+	// CLONE_SETTLS support (AMD64): the newtls value from the clone syscall.
+	// On Linux, CLONE_SETTLS sets the child's FS_BASE from this value.
+	// Without this, the child inherits the parent's FS_BASE and corrupts the
+	// parent's TLS when it writes its g pointer to FS:-8.
+	SyscallCloneTLS uint64
 }
 
 // Thread struct field offsets for assembly access.
@@ -494,6 +500,18 @@ func GetSyscallCloneRegs() (r12, r13, r9 uint64) {
 	return 0, 0, 0
 }
 
+// SetSyscallCloneTLS stores the CLONE_SETTLS newtls value for the current
+// thread's pending clone operation. Called from SyscallClone on AMD64.
+// The value is consumed by doContextSwitchImpl when CloneNeedsParentRegs is set.
+//
+//go:nosplit
+func SetSyscallCloneTLS(tls uint64) {
+	t := GetCurrentThread()
+	if t != nil {
+		t.SyscallCloneTLS = tls
+	}
+}
+
 // getSyscallSwitchTargetInternal returns the switch target and resets it
 // Called from assembly via ABI stub after syscall dispatch
 // Returns uint64: context pointer to switch to, or 0 for no switch.
@@ -655,7 +673,7 @@ func InitThreads() {
 	t0.State = ThreadRunning
 	t0.TID = firstThreadId              // Should be 0
 	t0.PID = 0             // Belongs to kernel priest (slot 0)
-	t0.PageTableL0PA = 0   // Kernel uses TTBR1, no TTBR0 page table
+	t0.PageTableL0PA = initThread0PageTable() // Arch-specific: kernel page table PA
 	currentTick := ds.CurrentTime(0)
 	t0.StartTick = currentTick
 	t0.GoroutineStart = currentTick
@@ -2370,6 +2388,17 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 			newThread.Context.SetGRegister(childGReg)
 		}
 		newThread.Context.SetProcessorState(childPState)
+
+		// CLONE_SETTLS (AMD64): set the child's FS_BASE from the parent's saved
+		// clone TLS value. On Linux, clone with CLONE_SETTLS sets the child's
+		// FS_BASE before it runs, so the child writes its g pointer to its OWN
+		// TLS area (FS:-8), not the parent's. Without this, the child corrupts
+		// the parent's g pointer in TLS, leading to GC crashes (#GP).
+		if oldThread.SyscallCloneTLS != 0 {
+			newThread.Context.SetCloneTLS(oldThread.SyscallCloneTLS)
+			oldThread.SyscallCloneTLS = 0 // consumed
+		}
+
 		newThread.CloneNeedsParentRegs = 0
 	}
 

@@ -556,7 +556,14 @@ zero_tss_loop:
 zero_tss_done:
 
 	// Write RSP0 = excStackTop (R14) at TSS offset 4-11
+	// RSP0 is used for Ring 3 → Ring 0 transitions (INT/exception from userspace).
 	MOVQ	R14, 4(R15)
+
+	// Write IST1 = excStackTop (R14) at TSS offset 36-43
+	// IST1 is used for timer/device interrupts (IDT entries with IST=1).
+	// This ensures timer interrupts always use the exception stack even when
+	// preempting kernel code on small goroutine stacks (matching ARM64's SP_EL1).
+	MOVQ	R14, 36(R15)
 
 	// Write IOPB offset = 104 at TSS offset 102-103
 	MOVW	$104, 102(R15)

@@ -43,6 +43,8 @@ func GetSyscallSPSR() uint64 { return 0 }
 
 func GetSyscallCloneRegs() (r12, r13, r9 uint64) { return 0, 0, 0 }
 
+func SetSyscallCloneTLS(tls uint64) {}
+
 // ============================================================================
 // From exit_asm.go
 // ============================================================================

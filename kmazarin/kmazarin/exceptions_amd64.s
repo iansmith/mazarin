@@ -45,6 +45,21 @@ TEXT ·isr0(SB), NOSPLIT|NOFRAME, $0
 	MOVQ	$0, ·currentVector(SB)
 	JMP	common_exception_entry(SB)
 
+// Vector 1: Debug Exception (#DB) - no error code
+// Minimal handler: clear DR6 and resume.
+TEXT ·isr1(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	AX
+	XORQ	AX, AX
+	MOVQ	AX, DR6
+	POPQ	AX
+	IRETQ
+
+// func getISR1Addr() uintptr
+TEXT ·getISR1Addr(SB), NOSPLIT, $0-8
+	LEAQ	·isr1(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
 // Vector 6: Invalid Opcode (#UD) - no error code
 TEXT ·isr6(SB), NOSPLIT|NOFRAME, $0
 	PUSHQ	$0		// Dummy error code
@@ -86,6 +101,129 @@ TEXT ·isr255(SB), NOSPLIT|NOFRAME, $0
 	PUSHQ	$0
 	MOVQ	$255, ·currentVector(SB)
 	JMP	common_exception_entry(SB)
+
+// ============================================================================
+// Device ISR Stubs - vectors 32-47 (IOAPIC device interrupts)
+// ============================================================================
+// Each stub pushes a dummy error code, sets currentVector, and jumps to
+// common_exception_entry. handle_device_irq dispatches based on the vector.
+
+TEXT ·isrDev32(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	$0
+	MOVQ	$32, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
+TEXT ·isrDev33(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	$0
+	MOVQ	$33, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
+TEXT ·isrDev34(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	$0
+	MOVQ	$34, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
+TEXT ·isrDev35(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	$0
+	MOVQ	$35, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
+TEXT ·isrDev36(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	$0
+	MOVQ	$36, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
+TEXT ·isrDev37(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	$0
+	MOVQ	$37, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
+TEXT ·isrDev38(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	$0
+	MOVQ	$38, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
+TEXT ·isrDev39(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	$0
+	MOVQ	$39, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
+TEXT ·isrDev40(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	$0
+	MOVQ	$40, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
+TEXT ·isrDev41(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	$0
+	MOVQ	$41, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
+TEXT ·isrDev42(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	$0
+	MOVQ	$42, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
+TEXT ·isrDev43(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	$0
+	MOVQ	$43, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
+TEXT ·isrDev44(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	$0
+	MOVQ	$44, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
+TEXT ·isrDev45(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	$0
+	MOVQ	$45, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
+TEXT ·isrDev46(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	$0
+	MOVQ	$46, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
+TEXT ·isrDev47(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	$0
+	MOVQ	$47, ·currentVector(SB)
+	JMP	common_exception_entry(SB)
+
+// initDeviceISRTable fills deviceISRAddrs[0..15] with the addresses of
+// isrDev32..isrDev47 via LEAQ. Called from BuildIDT before registering entries.
+TEXT ·initDeviceISRTable(SB), NOSPLIT, $0
+	LEAQ	·isrDev32(SB), AX
+	MOVQ	AX, ·deviceISRAddrs+0(SB)
+	LEAQ	·isrDev33(SB), AX
+	MOVQ	AX, ·deviceISRAddrs+8(SB)
+	LEAQ	·isrDev34(SB), AX
+	MOVQ	AX, ·deviceISRAddrs+16(SB)
+	LEAQ	·isrDev35(SB), AX
+	MOVQ	AX, ·deviceISRAddrs+24(SB)
+	LEAQ	·isrDev36(SB), AX
+	MOVQ	AX, ·deviceISRAddrs+32(SB)
+	LEAQ	·isrDev37(SB), AX
+	MOVQ	AX, ·deviceISRAddrs+40(SB)
+	LEAQ	·isrDev38(SB), AX
+	MOVQ	AX, ·deviceISRAddrs+48(SB)
+	LEAQ	·isrDev39(SB), AX
+	MOVQ	AX, ·deviceISRAddrs+56(SB)
+	LEAQ	·isrDev40(SB), AX
+	MOVQ	AX, ·deviceISRAddrs+64(SB)
+	LEAQ	·isrDev41(SB), AX
+	MOVQ	AX, ·deviceISRAddrs+72(SB)
+	LEAQ	·isrDev42(SB), AX
+	MOVQ	AX, ·deviceISRAddrs+80(SB)
+	LEAQ	·isrDev43(SB), AX
+	MOVQ	AX, ·deviceISRAddrs+88(SB)
+	LEAQ	·isrDev44(SB), AX
+	MOVQ	AX, ·deviceISRAddrs+96(SB)
+	LEAQ	·isrDev45(SB), AX
+	MOVQ	AX, ·deviceISRAddrs+104(SB)
+	LEAQ	·isrDev46(SB), AX
+	MOVQ	AX, ·deviceISRAddrs+112(SB)
+	LEAQ	·isrDev47(SB), AX
+	MOVQ	AX, ·deviceISRAddrs+120(SB)
+	RET
 
 // ============================================================================
 // ISR Address Getters - return raw code addresses for IDT population
@@ -147,6 +285,27 @@ TEXT ·getISR255Addr(SB), NOSPLIT, $0-8
 // ISR stubs, we use a global to pass the vector number.
 //
 TEXT common_exception_entry(SB), NOSPLIT|NOFRAME, $0
+	// Save XMM registers FIRST — Go code in ALL handlers (PF, timer, syscall)
+	// uses XMM registers. For page faults, the CPU retries the faulting instruction
+	// which may depend on XMM state loaded before the fault. For timer/device IRQs,
+	// the interrupted code may use XMM. Single-CPU so global buffer is safe.
+	MOVOU	X0, ·xmmSaveArea+0(SB)
+	MOVOU	X1, ·xmmSaveArea+16(SB)
+	MOVOU	X2, ·xmmSaveArea+32(SB)
+	MOVOU	X3, ·xmmSaveArea+48(SB)
+	MOVOU	X4, ·xmmSaveArea+64(SB)
+	MOVOU	X5, ·xmmSaveArea+80(SB)
+	MOVOU	X6, ·xmmSaveArea+96(SB)
+	MOVOU	X7, ·xmmSaveArea+112(SB)
+	MOVOU	X8, ·xmmSaveArea+128(SB)
+	MOVOU	X9, ·xmmSaveArea+144(SB)
+	MOVOU	X10, ·xmmSaveArea+160(SB)
+	MOVOU	X11, ·xmmSaveArea+176(SB)
+	MOVOU	X12, ·xmmSaveArea+192(SB)
+	MOVOU	X13, ·xmmSaveArea+208(SB)
+	MOVOU	X14, ·xmmSaveArea+224(SB)
+	MOVOU	X15, ·xmmSaveArea+240(SB)
+
 	// Save all general purpose registers
 	PUSHQ	R15
 	PUSHQ	R14		// g register
@@ -180,7 +339,11 @@ TEXT common_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	JE	handle_page_fault
 	CMPQ	SI, $48			// 0x30 = timer IRQ?
 	JE	handle_timer_irq
-	// Default: dispatch as generic IRQ
+	CMPQ	SI, $32			// vectors 0-31 = CPU exceptions
+	JB	handle_generic_irq
+	CMPQ	SI, $48			// vectors 32-47 = IOAPIC device IRQs
+	JB	handle_device_irq
+	// Default: dispatch as generic IRQ (vectors 49+, except those matched above)
 	JMP	handle_generic_irq
 
 handle_syscall:
@@ -258,29 +421,7 @@ syscall_skip_g_setup:
 	JMP	load_context_and_iretq
 
 handle_page_fault:
-	// DEBUG: breadcrumb 'P' + error code (2 hex digits) = page fault entry
-	MOVW	$0x3F8, DX
-	MOVB	$'P', AX
-	OUTB
-	// Print error code (low byte, 2 hex digits) from exception frame at SP+120
-	MOVQ	120(SP), CX		// error code from exception frame
-	MOVQ	CX, AX
-	SHRQ	$4, AX
-	ANDQ	$0xF, AX
-	ADDQ	$'0', AX
-	CMPB	AX, $('9'+1)
-	JB	pf_ec_d1
-	ADDQ	$('A'-'0'-10), AX
-pf_ec_d1:
-	OUTB
-	MOVQ	CX, AX
-	ANDQ	$0xF, AX
-	ADDQ	$'0', AX
-	CMPB	AX, $('9'+1)
-	JB	pf_ec_d2
-	ADDQ	$('A'-'0'-10), AX
-pf_ec_d2:
-	OUTB
+	// XMM registers already saved at common_exception_entry.
 
 	// CRITICAL: Set kernel g0 for Go code (same as syscall handler).
 	// Without this, page faults from userspace run Go code with the user's g,
@@ -296,55 +437,121 @@ pf_ec_d2:
 	// Read CR2 for fault address
 	MOVQ	CR2, R13		// save in callee-saved R13
 
-	// DEBUG: print fault address before calling Go handler
-	// Format: "[" + hex16(CR2) + "]"
-	MOVW	$0x3F8, DX
-	MOVB	$'[', AX
-	OUTB
-	MOVQ	$60, CX
-pf_debug_hex:
-	MOVQ	R13, AX
-	SHRQ	CX, AX
-	ANDQ	$0xF, AX
-	ADDQ	$'0', AX
-	CMPB	AX, $('9'+1)
-	JB	pf_debug_d
-	ADDQ	$('A'-'0'-10), AX
-pf_debug_d:
-	MOVW	$0x3F8, DX
-	OUTB
-	SUBQ	$4, CX
-	CMPQ	CX, $0
-	JGE	pf_debug_hex
-	MOVW	$0x3F8, DX
-	MOVB	$']', AX
-	OUTB
-
 	GO_CALL_1_1(·HandlePageFaultAsm, R13)
 
-	// DEBUG: print result
-	MOVW	$0x3F8, DX
 	TESTQ	AX, AX
-	JZ	pf_not_handled
-	MOVB	$'+', AX		// '+' = handled
-	OUTB
+	JNZ	pf_restore_xmm_return	// handled by kernel
+
+	// DIAGNOSTIC: If fault is in kernel mode (CS=0x08) AND it's an instruction
+	// fetch (error code bit 4), this is a kernel bug — kernel jumped to a
+	// user-space address. Print "KX=<RIP> CR2=<fault>" and halt.
+	// This catches bogus interface dispatch or corrupted function pointers
+	// before the demand pager maps garbage code pages.
+	MOVQ	136(SP), AX		// CS from exception frame
+	CMPQ	AX, $0x08
+	JNE	try_user_pf_handler
+	MOVQ	120(SP), AX		// error code
+	TESTQ	$0x10, AX		// bit 4 = I/D (instruction fetch)
+	JZ	try_user_pf_handler	// data access: still allow user handler
+
+	// Kernel mode instruction fetch at user-space address — print and halt
+	MOVW	$0x3F8, DX
+	MOVB	$'K', AX; OUTB		// 'KX=' prefix = Kernel eXecute fault
+	MOVB	$'X', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	128(SP), R15		// RIP from exception frame
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'C', AX; OUTB		// 'CR2=' = fault address
+	MOVB	$'R', AX; OUTB
+	MOVB	$'2', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	CR2, R15
+	CALL	pf_print_hex16(SB)
+	// Print G= (go register from exception frame)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'G', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	104(SP), R15		// R14 (g) from exception frame
+	CALL	pf_print_hex16(SB)
+	// Print faulting RSP value
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	152(SP), R15		// faulting RSP
+	CALL	pf_print_hex16(SB)
+	// Print RBP from exception frame
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'B', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	48(SP), R15		// RBP from exception frame
+	CALL	pf_print_hex16(SB)
+	// Print 6 stack words from faulting RSP
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'K', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	152(SP), R12		// faulting RSP (callee-saved)
+	MOVQ	0(R12), R15; CALL pf_print_hex16(SB)
+	MOVW	$0x3F8, DX; MOVB $' ', AX; OUTB
+	MOVQ	8(R12), R15; CALL pf_print_hex16(SB)
+	MOVW	$0x3F8, DX; MOVB $' ', AX; OUTB
+	MOVQ	16(R12), R15; CALL pf_print_hex16(SB)
+	MOVW	$0x3F8, DX; MOVB $' ', AX; OUTB
+	MOVQ	24(R12), R15; CALL pf_print_hex16(SB)
+	MOVW	$0x3F8, DX; MOVB $' ', AX; OUTB
+	MOVQ	32(R12), R15; CALL pf_print_hex16(SB)
+	MOVW	$0x3F8, DX; MOVB $' ', AX; OUTB
+	MOVQ	40(R12), R15; CALL pf_print_hex16(SB)
+	// Print thread 0 context RIP for comparison
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'0', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	// threadListData[0].Context.RIP = threadListData + ThreadContextOffset + 120
+	MOVQ	·ThreadContextOffset(SB), R13
+	LEAQ	·threadListData(SB), R12
+	ADDQ	R13, R12		// R12 = &threadListData[0].Context
+	MOVQ	120(R12), R15		// Context.RIP
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	136(R12), R15		// Context.RSP
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	152(R12), R15		// Context.CS
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	JMP	pf_unhandled_halt
+
+pf_restore_xmm_return:
+	// XMM restore now handled by exception_return (eret_rip_ok)
 	JMP	exception_return
 
-pf_not_handled:
-	MOVB	$'-', AX		// '-' = NOT handled by kernel
-	OUTB
-
+try_user_pf_handler:
 	// Not handled by kernel — try userspace handler
 	// R13 still has fault address (callee-saved, preserved across GO_CALL)
 	GO_CALL_1_1(·HandleUserPageFaultAsm, R13)
 
-	// DEBUG: print user handler result
-	MOVW	$0x3F8, DX
 	TESTQ	AX, AX
-	JZ	pf_neither_handled
-	MOVB	$'U', AX		// 'U' = handled by user handler
-	OUTB
-	JMP	exception_return
+	JNZ	pf_restore_xmm_return	// handled by user handler
 
 pf_neither_handled:
 
@@ -394,10 +601,88 @@ pf_rip_ok:
 	SUBQ	$4, CX
 	JGE	pf_rip_loop
 
+	// Print CS from exception frame as "CS=" + 2 hex digits
 	MOVW	$0x3F8, DX
-	MOVB	$'\n', AX
-	OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	136(SP), R11		// CS from frame
+	MOVQ	R11, AX
+	SHRQ	$4, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	pf_cs1
+	ADDQ	$('A'-'0'-10), AX
+pf_cs1:	OUTB
+	MOVQ	R11, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	pf_cs2
+	ADDQ	$('A'-'0'-10), AX
+pf_cs2:	OUTB
+	MOVB	$'\n', AX; OUTB
 
+	// Check if fault is at RIP < 0x400000 (below ELF base — bogus dispatch)
+	// Print: saved R14(g), RBP, faulting RSP, RA=*RSP, and 4 stack words
+	MOVQ	128(SP), AX		// RIP from exception frame
+	CMPQ	AX, $0x400000
+	JGE	pf_not_rip8
+
+	// Print "G=" then R14 (g pointer) from exception frame
+	MOVW	$0x3F8, DX
+	MOVB	$'G', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	104(SP), R15		// R14 from frame
+	CALL	pf_print_hex16(SB)
+
+	// Print " BP=" then saved RBP
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'B', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	48(SP), R15		// BP from frame
+	CALL	pf_print_hex16(SB)
+
+	// Print " SP=" then faulting RSP
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	152(SP), R15		// RSP from frame
+	CALL	pf_print_hex16(SB)
+
+	// Print "\nSTK=" then 4 words from the faulting stack
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'K', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	152(SP), R12		// R12 = faulting RSP (callee-saved)
+	MOVQ	0(R12), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVQ	8(R12), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVQ	16(R12), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVQ	24(R12), R15
+	CALL	pf_print_hex16(SB)
+
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	JMP	pf_unhandled_halt
+
+pf_not_rip8:
 	// Check if fault came from user mode (CS in exception frame)
 	// Frame layout: 15 GPRs (0-112) + error code (120) + RIP (128) + CS (136)
 	MOVQ	136(SP), AX		// CS from exception frame
@@ -440,7 +725,24 @@ handle_timer_irq:
 	MOVQ	152(SP), R11		// spEl0 (RSP from frame)
 	GO_CALL_4_0(·TimerIRQHandler, R8, R9, R10, R11)
 
-	// Check thread preemption
+	// Process deadline-based wakeups (matching ARM64/RISC-V timer handlers).
+	// Without this, deadline-based goroutine wakeups (nanosleep, timers)
+	// never fire, stalling the scheduler and blocking sysmon.
+	GO_CALL_0_0(·ProcessDeadlinesTopHalf)
+
+	// Check NeedsThreadPreempt flag (matching ARM64 pattern at exceptions_arm64.s:985).
+	// TimerIRQHandler sets this flag (via timerIRQHandlerInternal) when the
+	// current thread's preemption deadline has expired. Without this guard,
+	// every timer tick would unconditionally preempt — causing a hot bounce
+	// loop where the user thread never completes a syscall.
+	MOVL	mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB), AX
+	TESTL	AX, AX
+	JZ	exception_return
+
+	// Clear NeedsThreadPreempt flag
+	MOVL	$0, mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB)
+
+	// Thread preemption needed — save and switch
 	MOVQ	SP, R13			// frame pointer (before macro SUB)
 	GO_CALL_1_1(·CheckThreadPreemption, R13)
 	MOVQ	AX, R12			// new context pointer
@@ -448,6 +750,36 @@ handle_timer_irq:
 	TESTQ	R12, R12
 	JZ	exception_return
 	JMP	load_context_and_iretq
+
+handle_device_irq:
+	// Device interrupt (vectors 32-47, used by MSI-X on AMD64).
+	// Set kernel g0 for Go code.
+	MOVL	$0xC0000100, CX		// MSR_FS_BASE
+	RDMSR				// EAX=low32, EDX=high32
+	SHLQ	$32, DX
+	ORQ	DX, AX			// RAX = FS_BASE
+	MOVQ	·kmazarinG0Addr(SB), DX
+	MOVQ	DX, -8(AX)		// Write kernel g to TLS slot
+	MOVQ	DX, R14			// Set R14 to kernel g for ABIInternal calls
+
+	// Store IOAPIC input number (vector - 32) in topHalfIRQNum.
+	// This matches the convention used by ARM64 (GIC SPI) and RISC-V (PLIC source):
+	// Go code sees the same IRQ number that devices registered with.
+	MOVQ	SI, AX
+	SUBQ	$32, AX
+	MOVQ	AX, ·topHalfIRQNum(SB)
+
+	// Call NonTimerIRQTopHalf to drain device used rings and wake slots.
+	// For level-triggered PCI INTx, this reads the VirtIO ISR register
+	// to deassert the interrupt BEFORE we send EOI.
+	GO_CALL_0_0(·NonTimerIRQTopHalf)
+
+	// Send EOI to LAPIC AFTER source deassert.
+	// For level-triggered interrupts, EOI before deassert causes re-delivery.
+	MOVQ	$(0xFEE00000 + 0xFFFFFFFF00000000), AX
+	MOVL	$0, 0xB0(AX)		// LAPIC_EOI = 0
+
+	JMP	exception_return
 
 handle_generic_irq:
 	// Print '!' + 2-digit hex vector number for diagnostic
@@ -654,7 +986,58 @@ fripE:	OUTB
 	ADDQ	$('A'-'0'-10), AX
 fripF:	OUTB
 	MOVB	$'\n', AX
+	MOVW	$0x3F8, DX
 	OUTB
+
+	// Print RAX from saved GPR frame (offset 0 = RAX)
+	MOVW	$0x3F8, DX
+	MOVB	$'R', AX; OUTB
+	MOVB	$'A', AX; OUTB
+	MOVB	$'X', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	0(SP), R15		// saved RAX
+	CALL	pf_print_hex16(SB)
+	// Print RSP from exception frame (offset 152)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	152(SP), R15		// faulting RSP
+	CALL	pf_print_hex16(SB)
+	// Print CS from exception frame (offset 136)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	136(SP), R15		// CS
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+
+	// Check if fault came from user mode (CS in exception frame)
+	// Frame layout: 15 GPRs (0-112) + error code (120) + RIP (128) + CS (136)
+	MOVQ	136(SP), AX		// CS from exception frame
+	CMPQ	AX, $0x08		// kernelCS?
+	JE	generic_halt		// Kernel fault → halt
+
+	// User fault: set kernel g0, kill the faulting thread, switch to next.
+	MOVL	$0xC0000100, CX		// MSR_FS_BASE
+	RDMSR				// EAX=low32, EDX=high32
+	SHLQ	$32, DX
+	ORQ	DX, AX			// RAX = FS_BASE
+	MOVQ	·kmazarinG0Addr(SB), DX
+	MOVQ	DX, -8(AX)		// Write kernel g to TLS slot
+	MOVQ	DX, R14			// Set R14 to kernel g for ABIInternal calls
+
+	// Kill faulting thread and switch to next
+	GO_CALL_0_1(·ThreadExitAsm)
+	TESTQ	AX, AX
+	JZ	generic_halt		// No threads left → halt
+	MOVQ	AX, R12			// R12 = ThreadContext pointer
+	JMP	load_context_and_iretq
 
 generic_halt:
 	HLT
@@ -692,6 +1075,71 @@ exception_return:
 	POPQ	R14
 	POPQ	R15
 	ADDQ	$8, SP		// Skip error code
+
+	// DEBUG: Check RIP in IRETQ frame before returning
+	// SP now points to [RIP, CS, RFLAGS, RSP, SS]
+	CMPQ	0(SP), $0x100000
+	JAE	eret_rip_ok
+	// Bad RIP — print "!ER=" + RIP + " V=" + vector + "\n"
+	PUSHQ	AX
+	PUSHQ	DX
+	MOVW	$0x3F8, DX
+	MOVB	$'!', AX; OUTB
+	MOVB	$'E', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	// Print RIP (16(SP) because we pushed AX and DX)
+	MOVQ	16(SP), AX
+	// Print 8 hex nibbles (top 32 bits)
+	MOVQ	AX, R11
+	SHRQ	$28, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB er0; ADDQ $('A'-'0'-10), AX
+er0:	MOVW $0x3F8, DX; OUTB
+	MOVQ R11, AX; SHRQ $24, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB er1; ADDQ $('A'-'0'-10), AX
+er1:	MOVW $0x3F8, DX; OUTB
+	MOVQ R11, AX; SHRQ $20, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB er2; ADDQ $('A'-'0'-10), AX
+er2:	MOVW $0x3F8, DX; OUTB
+	MOVQ R11, AX; SHRQ $16, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB er3; ADDQ $('A'-'0'-10), AX
+er3:	MOVW $0x3F8, DX; OUTB
+	MOVQ R11, AX; SHRQ $12, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB er4; ADDQ $('A'-'0'-10), AX
+er4:	MOVW $0x3F8, DX; OUTB
+	MOVQ R11, AX; SHRQ $8, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB er5; ADDQ $('A'-'0'-10), AX
+er5:	MOVW $0x3F8, DX; OUTB
+	MOVQ R11, AX; SHRQ $4, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB er6; ADDQ $('A'-'0'-10), AX
+er6:	MOVW $0x3F8, DX; OUTB
+	MOVQ R11, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB er7; ADDQ $('A'-'0'-10), AX
+er7:	MOVW $0x3F8, DX; OUTB
+	// Print " V=" + vector
+	MOVB $' ', AX; OUTB
+	MOVB $'V', AX; OUTB
+	MOVB $'=', AX; OUTB
+	MOVQ ·currentVector(SB), AX
+	MOVQ AX, R11
+	SHRQ $4, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB ev0; ADDQ $('A'-'0'-10), AX
+ev0:	MOVW $0x3F8, DX; OUTB
+	MOVQ R11, AX; ANDQ $0xF, AX; ADDQ $'0', AX; CMPB AX, $('9'+1); JB ev1; ADDQ $('A'-'0'-10), AX
+ev1:	MOVW $0x3F8, DX; OUTB
+	MOVB $'\n', AX; OUTB
+	POPQ	DX
+	POPQ	AX
+	// Continue to IRETQ — will page fault and diagnostic there will provide more info
+eret_rip_ok:
+	// Restore XMM registers saved at common_exception_entry
+	MOVOU	·xmmSaveArea+0(SB), X0
+	MOVOU	·xmmSaveArea+16(SB), X1
+	MOVOU	·xmmSaveArea+32(SB), X2
+	MOVOU	·xmmSaveArea+48(SB), X3
+	MOVOU	·xmmSaveArea+64(SB), X4
+	MOVOU	·xmmSaveArea+80(SB), X5
+	MOVOU	·xmmSaveArea+96(SB), X6
+	MOVOU	·xmmSaveArea+112(SB), X7
+	MOVOU	·xmmSaveArea+128(SB), X8
+	MOVOU	·xmmSaveArea+144(SB), X9
+	MOVOU	·xmmSaveArea+160(SB), X10
+	MOVOU	·xmmSaveArea+176(SB), X11
+	MOVOU	·xmmSaveArea+192(SB), X12
+	MOVOU	·xmmSaveArea+208(SB), X13
+	MOVOU	·xmmSaveArea+224(SB), X14
+	MOVOU	·xmmSaveArea+240(SB), X15
 	IRETQ
 
 // ============================================================================
@@ -739,7 +1187,6 @@ cs_halt:
 	HLT
 	JMP	cs_halt
 cs_valid:
-
 	// Flush TLB
 	MOVQ	CR3, AX
 	MOVQ	AX, CR3
@@ -748,24 +1195,28 @@ cs_valid:
 	// Without this, userspace threads that called arch_prctl(ARCH_SET_FS)
 	// would resume with the wrong FS_BASE, causing TLS reads to return
 	// garbage and crashing the Go runtime.
+	//
+	// CRITICAL: If FSBase==0 (e.g., kernel Thread 0 before any TLS setup),
+	// skip BOTH the WRMSR and the TLS sync write. Otherwise the TLS sync
+	// reads the stale FS_BASE from the previous thread and writes g to
+	// a user-space address, corrupting user heap data (allgs corruption).
 	MOVQ	144(R12), AX		// FSBase from ThreadContext
 	TESTQ	AX, AX
-	JZ	skip_fsbase_restore
+	JZ	skip_fsbase_and_tls	// FSBase==0 → skip WRMSR AND TLS sync
 	MOVQ	AX, DX
 	SHRQ	$32, DX
 	MOVL	$0xC0000100, CX		// MSR_FS_BASE
 	WRMSR				// Restore FS_BASE
-skip_fsbase_restore:
 
 	// Sync TLS: write the new thread's g register to the TLS slot.
 	// TLS layout on Linux amd64: g is at FS_BASE - 8 (i.e. FS:-8).
-	// FS_BASE was just restored above (or left unchanged if FSBase==0).
 	MOVL	$0xC0000100, CX		// MSR_FS_BASE
 	RDMSR				// EAX=low32, EDX=high32
 	SHLQ	$32, DX
 	ORQ	DX, AX			// RAX = FS_BASE
 	MOVQ	104(R12), DX		// DX = new g (context.R14)
 	MOVQ	DX, -8(AX)		// Write g to TLS slot
+skip_fsbase_and_tls:
 
 	// Use the context's RSP to build the IRETQ frame
 	// We need a scratch stack. Use exception stack from PerCPU.
@@ -773,15 +1224,66 @@ skip_fsbase_restore:
 
 	// Clear the frame and build fresh IRETQ frame
 	MOVQ	136(R12), AX		// new RSP
-	MOVQ	128(R12), BX		// new RFLAGS
-	// Clear IF (bit 9) — we're in an exception handler, interrupts will be
-	// re-enabled by exception_return's IRETQ when normal execution resumes.
-	// Without this, an immediate timer IRQ after IRETQ can cause re-entrancy
-	// before the thread has executed even one instruction.
-	MOVQ	$0x200, CX
-	NOTQ	CX
-	ANDQ	CX, BX
+	MOVQ	128(R12), BX		// new RFLAGS (IF=1 set by Go code in all thread contexts)
 	MOVQ	120(R12), CX		// new RIP
+
+	// DEBUG: Validate RIP before IRETQ — catch null/low pointers
+	CMPQ	CX, $0x100000
+	JAE	rip_ok
+	// RIP < 0x100000 — print "!RIP=" + hex_rip + " CTX=" + hex_R12 + "\n"
+	PUSHQ	CX
+	PUSHQ	R12
+	MOVW	$0x3F8, DX
+	MOVB	$'!', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	// Print CX (RIP) as 16 hex nibbles (must use CX for shift)
+	MOVQ	CX, R15
+	MOVQ	$60, R13
+rip_diag_loop:
+	MOVQ	R15, AX
+	MOVQ	R13, CX
+	SHRQ	CX, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	rip_diag_ok
+	ADDQ	$('A'-'0'-10), AX
+rip_diag_ok:
+	MOVW	$0x3F8, DX; OUTB
+	SUBQ	$4, R13
+	JGE	rip_diag_loop
+	// Print " CTX="
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'T', AX; OUTB
+	MOVB	$'X', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	// Print R12 (context pointer) as 16 hex nibbles
+	MOVQ	R12, R15
+	MOVQ	$60, R13
+ctx_diag_loop:
+	MOVQ	R15, AX
+	MOVQ	R13, CX
+	SHRQ	CX, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	ctx_diag_ok
+	ADDQ	$('A'-'0'-10), AX
+ctx_diag_ok:
+	MOVW	$0x3F8, DX; OUTB
+	SUBQ	$4, R13
+	JGE	ctx_diag_loop
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	POPQ	R12
+	POPQ	CX
+	// Continue with IRETQ anyway (will page fault, but handler will print more info)
+rip_ok:
 
 	// Find a safe SP location (below current frame)
 	LEAQ	-48(SP), SP		// Make room
@@ -794,6 +1296,27 @@ skip_fsbase_restore:
 	MOVQ	152(R12), R13		// CS from context (offset 19*8)
 	MOVQ	R13, 8(SP)		// CS in IRETQ frame
 	MOVQ	CX, 0(SP)		// RIP
+
+	// Restore XMM registers saved at common_exception_entry.
+	// NOTE: This restores the interrupted thread's XMM, not the target thread's.
+	// Proper per-thread XMM state requires extending ThreadContext (future work).
+	// For now, this prevents kernel Go code's XMM garbage from leaking to user code.
+	MOVOU	·xmmSaveArea+0(SB), X0
+	MOVOU	·xmmSaveArea+16(SB), X1
+	MOVOU	·xmmSaveArea+32(SB), X2
+	MOVOU	·xmmSaveArea+48(SB), X3
+	MOVOU	·xmmSaveArea+64(SB), X4
+	MOVOU	·xmmSaveArea+80(SB), X5
+	MOVOU	·xmmSaveArea+96(SB), X6
+	MOVOU	·xmmSaveArea+112(SB), X7
+	MOVOU	·xmmSaveArea+128(SB), X8
+	MOVOU	·xmmSaveArea+144(SB), X9
+	MOVOU	·xmmSaveArea+160(SB), X10
+	MOVOU	·xmmSaveArea+176(SB), X11
+	MOVOU	·xmmSaveArea+192(SB), X12
+	MOVOU	·xmmSaveArea+208(SB), X13
+	MOVOU	·xmmSaveArea+224(SB), X14
+	MOVOU	·xmmSaveArea+240(SB), X15
 
 	// Load GPRs from context
 	MOVQ	0(R12), AX
@@ -846,6 +1369,26 @@ TEXT ·ReadCS(SB), NOSPLIT, $0-2
 // This is per-CPU safe because interrupts are disabled during handling.
 GLOBL	·currentVector(SB), NOPTR, $8
 
+// pf_print_hex16 prints R15 as 16 hex chars to COM1. Clobbers AX, CX, DX, R13.
+TEXT pf_print_hex16(SB), NOSPLIT|NOFRAME, $0
+	MOVQ	$60, CX
+pf_ph_loop:
+	MOVQ	R15, AX
+	MOVQ	CX, R13
+	SHRQ	CX, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	pf_ph_ok
+	ADDQ	$('A'-'0'-10), AX
+pf_ph_ok:
+	MOVW	$0x3F8, DX
+	OUTB
+	MOVQ	R13, CX
+	SUBQ	$4, CX
+	JGE	pf_ph_loop
+	RET
+
 // ============================================================================
 // SYSCALL Entry - entered via x86_64 SYSCALL instruction from Ring 3
 // ============================================================================
@@ -887,3 +1430,7 @@ TEXT ·syscallEntry(SB), NOSPLIT|NOFRAME, $0
 GLOBL	·syscallScratchRCX(SB), NOPTR, $8
 GLOBL	·syscallScratchR11(SB), NOPTR, $8
 GLOBL	·syscallScratchRSP(SB), NOPTR, $8
+
+// XMM save area for page fault handler. 256 bytes = 16 XMM registers × 16 bytes.
+// Single-CPU so a global buffer is safe (no concurrent access).
+GLOBL	·xmmSaveArea(SB), NOPTR, $256

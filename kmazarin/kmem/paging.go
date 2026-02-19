@@ -156,6 +156,20 @@ func GetTTBR0L0PA() uintptr {
 	return ttbr0L0PA
 }
 
+// GetKernelL0PA returns the kernel's root page table physical address.
+// On ARM64 this is the TTBR1 page table; on x86_64 this is the initial CR3
+// (diplomat's PML4); on RISC-V this is the initial SATP root.
+// Used by x86_64 to set Thread 0's PageTableL0PA so the context switch
+// restores the kernel page table instead of leaving the user's CR3 active.
+//
+//go:nosplit
+func GetKernelL0PA() uintptr {
+	if !pagingInitialized {
+		InitPaging()
+	}
+	return ttbr1L0PA
+}
+
 // ReadCurrentL0PA reads the current page table base register and returns
 // the L0 page table physical address. Arch-specific extraction is handled
 // by readCurrentL0PA() in each paging_{arch}.go.
@@ -682,9 +696,12 @@ func HandleUserPageFault(faultAddr uintptr) bool {
 		return false
 	}
 
-	// Map the page with RW permissions for userspace (ELF_PF_R | ELF_PF_W)
-	// Use flags that allow EL0 access
-	elfFlags := uint32(ELF_PF_R | ELF_PF_W) // Read + Write
+	// Map the page with RWX permissions for userspace demand paging.
+	// ELF code pages are pre-mapped by the ELF loader with correct permissions.
+	// Demand-paged pages (stack growth, heap) need RW; adding X is a pragmatic
+	// choice since we don't track segment permissions here. A proper fix would
+	// consult the ELF segment table to determine whether X is needed.
+	elfFlags := uint32(ELF_PF_R | ELF_PF_W | ELF_PF_X)
 
 	// CRITICAL: Get the current process's L0PA from the hardware page table register,
 	// NOT from the global processL0PA. The global can be stale if multiple processes
@@ -717,6 +734,20 @@ func HandleUserPageFault(faultAddr uintptr) bool {
 
 	// 4. ISB to synchronize the instruction stream
 	isbSY()
+
+	// DEBUG: Post-zeroing verification — read back first 8 bytes through the
+	// linear map to confirm the page is actually zero. If not, something is
+	// writing to this PA between zeroing and use.
+	verifyWord := *(*uint64)(unsafe.Pointer(scratchVA))
+	if verifyWord != 0 {
+		rawUARTPuts("[ZERO_VERIFY_FAIL] PA=0x")
+		rawUARTHex64(uint64(framePA))
+		rawUARTPuts(" VA=0x")
+		rawUARTHex64(uint64(pageAddr))
+		rawUARTPuts(" word0=0x")
+		rawUARTHex64(verifyWord)
+		rawUARTPuts("\r\n")
+	}
 
 	// Queue deferred record for bottom-half page tracking
 	QueueDeferredRecord(DeferredPageRecord{

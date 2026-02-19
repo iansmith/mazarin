@@ -222,6 +222,12 @@ type InterruptController interface {
 	// SetIRQEdgeTriggered configures the IRQ as edge-triggered
 	// (as opposed to level-triggered). Used for MSI-X and similar interrupts.
 	SetIRQEdgeTriggered(irq uint32)
+
+	// SetIRQLevelTriggered configures the IRQ as level-triggered, active-low.
+	// Used for PCI INTx interrupts. No-op on platforms where trigger mode
+	// is determined by the source device (PLIC) or where level-triggered
+	// is the default.
+	SetIRQLevelTriggered(irq uint32)
 }
 
 // InterruptUser is implemented by devices that use interrupts.

@@ -23,28 +23,30 @@ var state timeState
 
 // Init reads RTC once and caches it with tick counter.
 // Must be called after device discovery (device.InitFromDTB) completes.
-// Returns true on success, false if no clock device is available.
+// If no clock device is available, falls back to boot time = 0 (uptime mode).
+// Returns true on success (with RTC), false if using fallback.
 func Init() bool {
 	if atomic.LoadUint32(&state.initialized) == 1 {
 		return true
 	}
 
-	clock, ok := device.GetClock()
-	if !ok {
-		return false
-	}
-
 	// Read tick counter FIRST (minimize drift)
 	ticks := kirq.ReadCounterValue()
-	seconds, _ := clock.Now()
 	freq := uint64(kirq.GetTimerFrequency())
+
+	var seconds uint64
+	clock, ok := device.GetClock()
+	if ok {
+		seconds, _ = clock.Now()
+	}
+	// If no clock device, seconds stays 0 → GetTime returns uptime
 
 	state.baseTicks = ticks
 	state.baseSeconds = seconds
 	state.frequency = freq
 	atomic.StoreUint32(&state.initialized, 1)
 
-	return true
+	return ok
 }
 
 // GetTime returns current time derived from RTC + elapsed ticks.

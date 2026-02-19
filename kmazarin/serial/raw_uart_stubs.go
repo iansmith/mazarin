@@ -21,3 +21,8 @@ func RxReady() bool { return false }
 //
 //go:nosplit
 func ReadRxByte() byte { return 0 }
+
+// EnableRxInterrupt is a no-op in test builds.
+//
+//go:nosplit
+func EnableRxInterrupt() {}

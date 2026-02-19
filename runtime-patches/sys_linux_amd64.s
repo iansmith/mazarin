@@ -354,14 +354,6 @@ TEXT runtime·clone(SB),NOSPLIT|NOFRAME,$0
 	// In parent, return.
 	CMPQ	AX, $0
 	JEQ	clone_child
-	// DEBUG: breadcrumb 'P' for parent return from clone
-	PUSHQ	AX
-	PUSHQ	DX
-	MOVW	COM1_PORT, DX
-	MOVB	$'P', AX
-	OUTB
-	POPQ	DX
-	POPQ	AX
 	MOVL	AX, ret+40(FP)
 	RET
 

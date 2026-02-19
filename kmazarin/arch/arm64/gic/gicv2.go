@@ -131,6 +131,12 @@ func (g *GICv2) SetIRQEdgeTriggered(irq uint32) {
 	g.writeDistReg(offset, val)
 }
 
+// SetIRQLevelTriggered is a no-op on GICv2.
+// GIC trigger mode for SPIs is typically configured once during init.
+//
+//go:nosplit
+func (g *GICv2) SetIRQLevelTriggered(_ uint32) {}
+
 //go:nosplit
 func (g *GICv2) SetIRQPriority(irq uint32, priority uint8) {
 	// GICD_IPRIORITYR: 1 byte per IRQ, byte-accessible

@@ -15,6 +15,13 @@
 // Preserve any needed values in callee-saved registers (BX, BP, R12-R15) first.
 // The macros also temporarily modify SP (restored before return).
 
+// GO_CALL_0_0(fn) - 0 args, 0 returns
+// Frame: 16 bytes (padding for 16-byte alignment)
+#define GO_CALL_0_0(fn) \
+	SUBQ	$16, SP; \
+	CALL	fn(SB); \
+	ADDQ	$16, SP
+
 // GO_CALL_0_1(fn) - 0 args, 1 return in AX
 // Frame: 16 bytes (8 return + 8 padding for alignment)
 #define GO_CALL_0_1(fn) \
@@ -61,15 +68,18 @@
 	ADDQ	$32, SP
 
 // GO_CALL_4_0(fn, a0, a1, a2, a3) - 4 args, 0 returns
-// Frame: 32 bytes (32 args)
+// Frame: 64 bytes (32 args + 32 return space for callee safety)
+// Note: some 4-arg functions (e.g. TimerIRQHandler) have return values in their
+// Go signature even though the caller ignores them. We allocate the full 64
+// bytes to prevent the callee's .abi0 wrapper from writing past our frame.
 #define GO_CALL_4_0(fn, a0, a1, a2, a3) \
-	SUBQ	$32, SP; \
+	SUBQ	$64, SP; \
 	MOVQ	a0, 0(SP); \
 	MOVQ	a1, 8(SP); \
 	MOVQ	a2, 16(SP); \
 	MOVQ	a3, 24(SP); \
 	CALL	fn(SB); \
-	ADDQ	$32, SP
+	ADDQ	$64, SP
 
 // GO_CALL_7_1(fn, a0, a1, a2, a3, a4, a5, a6) - 7 args, 1 return in AX
 // Frame: 64 bytes (56 args + 8 return)

@@ -63,6 +63,11 @@ func (ctx *ThreadContext) GetProcessorState() uint64 { return ctx.SPSR }
 //go:nosplit
 func (ctx *ThreadContext) SetProcessorState(v uint64) { ctx.SPSR = v }
 
+// SetCloneTLS is a no-op on ARM64 (no FS_BASE, TLS is handled via TPIDR_EL0).
+//
+//go:nosplit
+func (ctx *ThreadContext) SetCloneTLS(tls uint64) {}
+
 // SetupForUserspace initializes the context for a new userspace thread.
 //
 //go:nosplit
@@ -79,6 +84,13 @@ func (ctx *ThreadContext) SetupForUserspace(entryPoint, stackPtr uint64) {
 //
 //go:nosplit
 func initThread0Context(ctx *ThreadContext) {}
+
+// initThread0PageTable returns the kernel's root page table PA for Thread 0.
+// On ARM64, TTBR1 handles kernel space independently, so Thread 0 doesn't need
+// a specific page table. Returns 0 to indicate "use whatever is in TTBR0".
+//
+//go:nosplit
+func initThread0PageTable() uintptr { return 0 }
 
 // SetupForCloneChild initializes the context for a clone child thread.
 // Clears x0 (child returns 0), sets stack/return address, enables IRQs,

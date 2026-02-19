@@ -171,6 +171,11 @@ func (p *PLIC) SetIRQTarget(_ uint32, _ uint8) {
 //go:nosplit
 func (p *PLIC) SetIRQEdgeTriggered(_ uint32) {}
 
+// SetIRQLevelTriggered is a no-op on PLIC.
+//
+//go:nosplit
+func (p *PLIC) SetIRQLevelTriggered(_ uint32) {}
+
 // Claim reads the highest-priority pending interrupt for this context.
 // Returns 0 if no interrupt is pending.
 //

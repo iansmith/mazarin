@@ -41,3 +41,12 @@ TEXT ·ReadRxByte(SB), NOSPLIT, $0-1
 	INB
 	MOVB	AX, ret+0(FP)
 	RET
+
+// EnableRxInterrupt enables the Received Data Available interrupt on COM1.
+// Writes 0x01 to the IER register (port 0x3F9).
+// func EnableRxInterrupt()
+TEXT ·EnableRxInterrupt(SB), NOSPLIT, $0-0
+	MOVW	$0x3F9, DX	// IER register
+	MOVB	$0x01, AX	// Enable Received Data Available interrupt
+	OUTB
+	RET

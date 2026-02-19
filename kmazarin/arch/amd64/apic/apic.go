@@ -149,31 +149,27 @@ func (a *APIC) DisableIRQ(irq uint32) {
 	a.writeIOAPIC(IOAPIC_REDTBL+irq*2, lo)
 }
 
-// SetIRQPriority sets the vector number for an IRQ.
-// On x86, "priority" maps to the interrupt vector (32-255).
-// Lower vector = lower priority in the APIC priority scheme.
+// SetIRQPriority is a no-op on x86.
+// On the IOAPIC, priority is implicit in the vector number (higher vector class =
+// higher priority). Vectors are assigned as 32+irq during initHardware and must
+// remain in that range for the exception handler's dispatch logic (vectors 32-47
+// route to handle_device_irq). Unlike ARM64's GIC, there is no separate priority
+// register.
 //
 //go:nosplit
 func (a *APIC) SetIRQPriority(irq uint32, priority uint8) {
-	if irq > 23 {
-		return
-	}
-	lo := a.readIOAPIC(IOAPIC_REDTBL + irq*2)
-	lo = (lo & 0xFFFFFF00) | uint32(priority)
-	a.writeIOAPIC(IOAPIC_REDTBL+irq*2, lo)
+	// no-op: vector = 32+irq was set by initHardware
 }
 
-// SetIRQTarget routes the IRQ to the specified CPU.
-// cpuMask is the LAPIC ID of the target CPU (physical destination mode).
+// SetIRQTarget is a no-op on x86 single-core.
+// All IOAPIC entries are routed to LAPIC ID 0 (CPU 0) during initHardware.
+// The ARM64 GIC uses a bitmask (0x01 = CPU 0), but the IOAPIC uses a LAPIC ID
+// in physical destination mode, so the ARM64 value (0x01) would incorrectly
+// target CPU 1 instead of CPU 0.
 //
 //go:nosplit
 func (a *APIC) SetIRQTarget(irq uint32, cpuMask uint8) {
-	if irq > 23 {
-		return
-	}
-	hi := a.readIOAPIC(IOAPIC_REDTBL + irq*2 + 1)
-	hi = (hi & 0x00FFFFFF) | (uint32(cpuMask) << 24)
-	a.writeIOAPIC(IOAPIC_REDTBL+irq*2+1, hi)
+	// no-op: destination = LAPIC ID 0 was set by initHardware
 }
 
 // SetIRQEdgeTriggered configures the IRQ as edge-triggered.
@@ -185,6 +181,20 @@ func (a *APIC) SetIRQEdgeTriggered(irq uint32) {
 	}
 	lo := a.readIOAPIC(IOAPIC_REDTBL + irq*2)
 	lo &^= (1 << 15) // Clear trigger mode bit (0 = edge)
+	a.writeIOAPIC(IOAPIC_REDTBL+irq*2, lo)
+}
+
+// SetIRQLevelTriggered configures the IRQ as level-triggered, active-low.
+// Required for PCI INTx interrupts routed through the IOAPIC.
+//
+//go:nosplit
+func (a *APIC) SetIRQLevelTriggered(irq uint32) {
+	if irq > 23 {
+		return
+	}
+	lo := a.readIOAPIC(IOAPIC_REDTBL + irq*2)
+	lo |= (1 << 15) // Set trigger mode bit (1 = level)
+	lo |= (1 << 13) // Set polarity bit (1 = active-low)
 	a.writeIOAPIC(IOAPIC_REDTBL+irq*2, lo)
 }
 
