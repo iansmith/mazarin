@@ -169,3 +169,20 @@ TEXT ·SpinlockLose(SB), NOSPLIT|NOFRAME, $0-25
 // func NanoWaitStub(ticks uint64)
 TEXT ·NanoWaitStub(SB), NOSPLIT|NOFRAME, $0-8
 	RET                         // Immediate return (no wait)
+
+// spinlockDeadHandler writes "!LOCK" to COM1 and halts.
+// Called when the spinlock fails to acquire after all attempts.
+// Uses direct I/O to avoid any Go runtime dependency.
+//
+// func spinlockDeadHandler()
+TEXT ·spinlockDeadHandler(SB), NOSPLIT|NOFRAME, $0
+	MOVW	$0x3F8, DX
+	MOVB	$'!', AX; OUTB
+	MOVB	$'L', AX; OUTB
+	MOVB	$'O', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'K', AX; OUTB
+	MOVB	$'\n', AX; OUTB
+spinlock_dead_halt:
+	HLT
+	JMP	spinlock_dead_halt

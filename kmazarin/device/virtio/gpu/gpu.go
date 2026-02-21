@@ -437,15 +437,12 @@ func virtioGPUSendCommand(cmdBuf unsafe.Pointer, cmdSize uint32, respBuf unsafe.
 	cmdPhys := virtio.VirtqueueGetPhysicalAddr(cmdBuf)
 	cmdDescIdx := virtio.VirtqueueAddDesc(vq, cmdPhys, cmdSize, 0, 0xFFFF)
 	if cmdDescIdx == 0xFFFF {
-		console.KPrintln("[VirtIO GPU] ERROR: Failed to allocate cmd descriptor")
 		return 0xFFFF
 	}
 
 	respPhys := virtio.VirtqueueGetPhysicalAddr(respBuf)
 	respDescIdx := virtio.VirtqueueAddDesc(vq, respPhys, respSize, virtio.VIRTQ_DESC_F_WRITE, 0xFFFF)
 	if respDescIdx == 0xFFFF {
-		console.KPrintln("[VirtIO GPU] ERROR: Failed to allocate resp descriptor")
-		// Free the already-allocated cmd descriptor to avoid leak
 		virtio.VirtqueueFreeDescChain(vq, cmdDescIdx)
 		return 0xFFFF
 	}
@@ -486,7 +483,6 @@ func virtioGPUSendCommand(cmdBuf unsafe.Pointer, cmdSize uint32, respBuf unsafe.
 	}
 
 	if waited >= maxWait {
-		console.KPrintln("[VirtIO GPU] ERROR: Command timeout")
 		return 0xFFFF
 	}
 
@@ -670,7 +666,6 @@ func virtioGPUTransferToHost(x, y, width, height uint32) {
 	var transferResp VirtIOGPUCtrlHdr
 	respType := virtioGPUSendCommand(unsafe.Pointer(&transferCmd), uint32(unsafe.Sizeof(transferCmd)), unsafe.Pointer(&transferResp), uint32(unsafe.Sizeof(transferResp)))
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
-		// Silently fail - don't spam UART
 		return
 	}
 }
@@ -717,9 +712,6 @@ func virtioGPUFlush(x, y, width, height uint32) {
 	var flushResp VirtIOGPUCtrlHdr
 	respType := virtioGPUSendCommand(unsafe.Pointer(&flushCmd), uint32(unsafe.Sizeof(flushCmd)), unsafe.Pointer(&flushResp), uint32(unsafe.Sizeof(flushResp)))
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
-		console.KWriteString("[VirtIO GPU] FLUSH failed: ")
-		console.KPrintHex64(uint64(respType))
-		console.KWriteByte('\n')
 		return
 	}
 }

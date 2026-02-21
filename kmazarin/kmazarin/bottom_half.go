@@ -84,7 +84,7 @@ var topHalfKbd topHalfDev
 var topHalfMouse topHalfDev
 
 // softIRQRingSize must be a power of 2 for mask-based indexing.
-const softIRQRingSize = 64
+const softIRQRingSize = 256
 
 // softIRQRing is an SPSC ring buffer for delivering HID events from
 // the nosplit top-half (producer) to the syscall drain path (consumer).
@@ -108,6 +108,11 @@ type topHalfDev struct {
 	nextAvailIdx     uint16
 	ring             *softIRQRing
 	lastUsedIdxSync  *uint16 // points to VirtQueue.LastUsedIdx to prevent double-drain
+	// Backpressure: when softIRQ ring is full, we consume used entries but
+	// don't repost their descriptors. The descriptor indices are saved here
+	// so they can be recovered when the ring has space on the next interrupt.
+	leakedDescs      [32]uint16 // descriptor indices consumed but not reposted
+	leakedCount      uint16     // number of valid entries in leakedDescs
 }
 
 var topHalfKbdRing softIRQRing
@@ -186,16 +191,16 @@ func pollInputTopHalf() {
 }
 
 // pollOneInputDev drains one VirtIO input device's used ring into the
-// associated softIRQ ring buffer. Only active on x86_64 where input
-// devices have no IRQ (irqNum==0). On ARM64 and RISC-V the assembly
-// IRQ handler calls NonTimerIRQTopHalf directly, making this redundant.
+// associated softIRQ ring buffer. Only active for polled devices (irqNum==0).
+// For IRQ-driven devices (ARM64, RISC-V, x86_64 with MSI-X), all VirtIO
+// queue mutations happen in NonTimerIRQTopHalf on the exception stack.
+// Touching dev.* from goroutine context would race with the ISR.
 func pollOneInputDev(dev *topHalfDev) {
 	if dev.usedVA == 0 {
 		return
 	}
-	// On ARM64/RISC-V the interrupt top-half already drains the used ring
-	// and pushes events into the softIRQ ring. Skip polling to avoid any
-	// possibility of racing with the interrupt handler.
+	// On ARM64/RISC-V/x86_64-MSI-X the interrupt top-half drains the
+	// used ring. Skip polling to avoid racing with the ISR.
 	if dev.irqNum != 0 {
 		return
 	}
@@ -298,6 +303,35 @@ func NonTimerIRQTopHalf() {
 		_ = asm.MmioRead8(dev.isrBase)
 	}
 
+	// Recover leaked descriptors from a previous overflow: if the softIRQ
+	// ring now has space, repost the descriptors we held back last time.
+	// This runs entirely within the ISR (nosplit) so there's no race.
+	recovered := false
+	if dev.leakedCount > 0 {
+		tail := atomic.LoadUint32(&dev.ring.tail)
+		head := atomic.LoadUint32(&dev.ring.head)
+		avail := softIRQRingSize - (tail - head)
+		if avail > 0 {
+			// Ring has space — repost leaked descriptors so the device
+			// gets its buffers back.
+			for i := uint16(0); i < dev.leakedCount; i++ {
+				descIdx := dev.leakedDescs[i]
+				descAddr := dev.descVA + uintptr(descIdx)*16
+				bufPA := uint64(dev.evtBufPA) + uint64(descIdx)*8
+				asm.MmioWrite32(descAddr, uint32(bufPA))
+				asm.MmioWrite32(descAddr+4, uint32(bufPA>>32))
+				asm.MmioWrite32(descAddr+8, 8)
+				asm.MmioWrite16(descAddr+12, 2)
+				asm.MmioWrite16(descAddr+14, 0xFFFF)
+				availRingIdx := dev.nextAvailIdx % dev.queueSize
+				asm.MmioWrite16(dev.availVA+4+uintptr(availRingIdx)*2, uint16(descIdx))
+				dev.nextAvailIdx++
+			}
+			dev.leakedCount = 0
+			recovered = true
+		}
+	}
+
 	usedIdx := asm.MmioRead16(dev.usedVA + 2)
 	pushed := false
 
@@ -313,7 +347,19 @@ func NonTimerIRQTopHalf() {
 			evtValue := asm.MmioRead32(evtAddr + 4)
 
 			ev := hid.HIDEvent{Type: evtType, Code: evtCode, Value: evtValue}
-			ringPush(dev.ring, ev)
+			if !ringPush(dev.ring, ev) {
+				// Ring full — apply backpressure: consume the used entry
+				// (advance lastUsedIdx) but don't repost the descriptor.
+				// Save the descriptor index so we can recover it later.
+				if dev.leakedCount < 32 {
+					dev.leakedDescs[dev.leakedCount] = uint16(descIdx)
+					dev.leakedCount++
+				}
+				// Continue draining so lastUsedIdx stays in sync.
+				// Events are dropped but the used ring is fully consumed.
+				dev.lastUsedIdx++
+				continue
+			}
 			pushed = true
 
 			// Repost buffer to device
@@ -338,14 +384,16 @@ func NonTimerIRQTopHalf() {
 		*dev.lastUsedIdxSync = dev.lastUsedIdx
 	}
 
-	if pushed {
+	if pushed || recovered {
 		asm.Dsb()
 		asm.MmioWrite16(dev.availVA+2, dev.nextAvailIdx)
 		asm.Dsb()
 		asm.MmioWrite16(dev.notifyAddr, 0)
 		asm.Dsb()
 		_ = asm.MmioRead16(dev.notifyAddr)
+	}
 
+	if pushed || recovered {
 		// Wake any thread blocked on a slot for this IRQ
 		WakeSlotForIRQ(irqNum)
 	}

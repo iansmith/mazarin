@@ -31,7 +31,7 @@ type Spinlock struct {
 }
 
 const (
-	SpinAttempts = 5 // Total CAS attempts before giving up
+	SpinAttempts = 5000 // Total CAS attempts before giving up (increased for TCG emulation)
 )
 
 // SpinBackoffTicks is the number of clock ticks to wait between CAS attempts.
@@ -130,8 +130,9 @@ func (s *Spinlock) Lock() {
 		}
 	}
 
-	// Failed to acquire after all attempts
-	panic("spinlock: failed to acquire after 2μs timeout")
+	// Failed to acquire after all attempts — call dead handler instead of panic.
+	// Panic in nosplit/IRQ context causes triple fault on x86_64.
+	spinlockDeadHandler()
 }
 
 // Unlock releases the spinlock.
@@ -143,6 +144,13 @@ func (s *Spinlock) Lock() {
 func (s *Spinlock) Unlock() {
 	StoreUint32(&s.locked, 0)
 }
+
+// spinlockDeadHandler is called when the spinlock fails to acquire.
+// Writes diagnostic to UART and halts (platform-specific assembly).
+// Using this instead of panic() because panic in nosplit/IRQ context
+// causes triple fault on x86_64 (the Go runtime's panic handler needs
+// a working stack and g, neither of which are available in IRQ context).
+func spinlockDeadHandler()
 
 // Assembly functions implemented in spinlock_arm64.s
 //

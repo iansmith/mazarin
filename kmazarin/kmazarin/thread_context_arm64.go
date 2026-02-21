@@ -63,6 +63,11 @@ func (ctx *ThreadContext) GetProcessorState() uint64 { return ctx.SPSR }
 //go:nosplit
 func (ctx *ThreadContext) SetProcessorState(v uint64) { ctx.SPSR = v }
 
+// FixIRQEnabled clears DAIF.I (bit 7) in saved SPSR to enable interrupts.
+//
+//go:nosplit
+func (ctx *ThreadContext) FixIRQEnabled() { ctx.SPSR &^= 0x80 }
+
 // SetCloneTLS is a no-op on ARM64 (no FS_BASE, TLS is handled via TPIDR_EL0).
 //
 //go:nosplit

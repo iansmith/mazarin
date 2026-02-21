@@ -173,6 +173,37 @@ func ResetTickAccounting(startTime uint64) {
 	}
 }
 
+// FixCloneThreadIFFlags forces interrupts-enabled in saved processor state for
+// all existing threads. Must be called after EnableIRQs() and before
+// KernelIdleLoop.
+//
+// Go runtime creates clone threads (sysmon, templateThread) during init when
+// interrupts are disabled. On AMD64, these threads inherit IF=0 in RFLAGS.
+// When the timer scheduler later picks them, they run without interrupts —
+// if such a thread picks up a non-blocking goroutine (eventPoller), the system
+// freezes permanently because the timer can never preempt it.
+//
+// ARM64 and RISC-V SetupForCloneChild already fix this (ARM64 clears DAIF.I,
+// RISC-V sets SPIE), but we do it here uniformly for safety.
+//
+//go:nosplit
+func FixCloneThreadIFFlags() {
+	savedDAIF := SaveAndDisableIRQs()
+	fixed := 0
+	for i := 0; i < MaxThreads; i++ {
+		if threadListInUse[i] {
+			old := threadListData[i].Context.GetProcessorState()
+			threadListData[i].Context.FixIRQEnabled()
+			new := threadListData[i].Context.GetProcessorState()
+			if old != new {
+				fixed++
+			}
+		}
+	}
+	RestoreIRQs(savedDAIF)
+	console.KPrintf("[FixIF] Fixed %d threads\n", fixed)
+}
+
 // Priest represents a userspace process that runs Go code.
 // Each priest has its own address space, Go runtime, and asyncPreempt function.
 type Priest struct {
@@ -995,6 +1026,14 @@ func SaveThread0AndYield() uint64 {
 	}
 	smpDebugPrintRun(debugCPU, debugTID, debugPID)
 
+	if next.Context.GetPC() == 0 {
+		console.BreadcrumbStringNoSplit("[BUG] Yield RIP=0 TID=")
+		console.BreadcrumbHex64NoSplit(uint64(next.TID))
+		console.BreadcrumbNoSplit('\n')
+		for {
+			WaitForInterrupt()
+		}
+	}
 	return uint64(uintptr(unsafe.Pointer(&next.Context)))
 }
 
@@ -2179,6 +2218,14 @@ func tryPickupWorkIdleCPU(sf *SchedulerFunc) uint64 {
 	schedulerLock.Unlock()
 	sf.EnableAndRestoreDAIF(savedDAIF)
 
+	if next.Context.GetPC() == 0 {
+		console.BreadcrumbStringNoSplit("[BUG] Pickup RIP=0 TID=")
+		console.BreadcrumbHex64NoSplit(uint64(next.TID))
+		console.BreadcrumbNoSplit('\n')
+		for {
+			WaitForInterrupt()
+		}
+	}
 	return uint64(uintptr(unsafe.Pointer(&next.Context)))
 }
 
@@ -2316,6 +2363,14 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	// The assembly will restore interrupt state via ERET with new SPSR.
 	_ = savedDAIF // Keep compiler happy
 
+	if next.Context.GetPC() == 0 {
+		console.BreadcrumbStringNoSplit("[BUG] Preempt RIP=0 TID=")
+		console.BreadcrumbHex64NoSplit(uint64(next.TID))
+		console.BreadcrumbNoSplit('\n')
+		for {
+			WaitForInterrupt()
+		}
+	}
 	return uint64(uintptr(unsafe.Pointer(&next.Context)))
 }
 

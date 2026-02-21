@@ -171,3 +171,16 @@ TEXT ·SpinlockLose(SB), NOSPLIT|NOFRAME, $0-25
 // func NanoWaitStub(ticks uint64)
 TEXT ·NanoWaitStub(SB), NOSPLIT|NOFRAME, $0-8
 	RET                         // Immediate return (no wait)
+
+// spinlockDeadHandler writes diagnostic to NS16550 UART and halts.
+// func spinlockDeadHandler()
+TEXT ·spinlockDeadHandler(SB), NOSPLIT|NOFRAME, $0
+	// Write '!' 'L' to NS16550 UART at 0x10000000
+	MOV	$0x10000000, X5
+	MOV	$'!', X6
+	MOVB	X6, (X5)
+	MOV	$'L', X6
+	MOVB	X6, (X5)
+spinlock_dead_halt_riscv:
+	WORD	$0x10500073		// WFI
+	JMP	spinlock_dead_halt_riscv

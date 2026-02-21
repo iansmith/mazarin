@@ -123,6 +123,11 @@ func initThread0PageTable() uintptr {
 	return kmem.GetKernelL0PA()
 }
 
+// FixIRQEnabled forces IF=1 (bit 9) in saved RFLAGS.
+//
+//go:nosplit
+func (ctx *ThreadContext) FixIRQEnabled() { ctx.RFLAGS |= 0x200 }
+
 // Ring 3 segment selectors (standard GDT layout with RPL=3)
 const (
 	userCS = 0x1B // GDT offset 0x18 | RPL=3 (Ring 3 code)
@@ -169,17 +174,19 @@ func initThread0Context(ctx *ThreadContext) {
 // CloneNeedsParentRegs copy in doContextSwitchImpl will override with
 // parent's CS/SS for userspace clones.
 //
-// RFLAGS is inherited from parentState WITHOUT forcing IF=1. This ensures:
-//   - During Go runtime init (IF=0): children inherit IF=0, avoiding stale
-//     UEFI LAPIC interrupts hitting diplomat's incomplete IDT.
-//   - After EnableIRQs/STI: parents have IF=1, so children inherit IF=1.
+// RFLAGS is inherited from parentState. During Go runtime init (IF=0),
+// children inherit IF=0 to avoid interrupts before the IDT/LAPIC is ready.
+// After EnableIRQs, parents have IF=1, so children inherit IF=1.
+//
+// NOTE: Threads created during init with IF=0 are fixed up by
+// FixCloneThreadIFFlags() which is called after EnableIRQs().
 //
 //go:nosplit
 func (ctx *ThreadContext) SetupForCloneChild(stack, returnAddr, gReg, parentState uint64) {
 	ctx.RAX = 0          // Child returns with TID = 0
 	ctx.RSP = stack      // New stack
 	ctx.RIP = returnAddr // Return address
-	ctx.RFLAGS = parentState // Inherit parent's interrupt state (IF=0 during init, IF=1 after EnableIRQs)
+	ctx.RFLAGS = parentState // Inherit parent's interrupt state
 	ctx.R14 = gReg       // g register
 	ctx.CS = kernelCS    // Kernel code segment (overridden by CloneNeedsParentRegs)
 	ctx.SS = kernelSS    // Kernel data segment (overridden by CloneNeedsParentRegs)

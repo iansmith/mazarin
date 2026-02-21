@@ -1024,6 +1024,11 @@ fripF:	OUTB
 	JE	generic_halt		// Kernel fault → halt
 
 	// User fault: set kernel g0, kill the faulting thread, switch to next.
+	// Print 'X' to COM1 to indicate a user thread was killed.
+	MOVW	$0x3F8, DX
+	MOVB	$'X', AX
+	OUTB
+
 	MOVL	$0xC0000100, CX		// MSR_FS_BASE
 	RDMSR				// EAX=low32, EDX=high32
 	SHLQ	$32, DX
@@ -1040,8 +1045,13 @@ fripF:	OUTB
 	JMP	load_context_and_iretq
 
 generic_halt:
+	// Print 'G' to indicate entering generic HLT loop
+	MOVW	$0x3F8, DX
+	MOVB	$'G', AX
+	OUTB
+generic_halt_loop:
 	HLT
-	JMP	generic_halt
+	JMP	generic_halt_loop
 
 // ============================================================================
 // Exception return - restore GPRs and IRETQ
@@ -1059,6 +1069,26 @@ exception_return:
 	MOVQ	104(SP), DX		// R14 from saved GPR frame (offset 13*8)
 	MOVQ	DX, -8(AX)		// Write g to TLS slot
 
+	// Restore XMM registers saved at common_exception_entry.
+	// Without this, timer/device IRQ handlers clobber XMM via Go's memmove,
+	// corrupting the interrupted code's MOVDQU operations.
+	MOVOU	·xmmSaveArea+0(SB), X0
+	MOVOU	·xmmSaveArea+16(SB), X1
+	MOVOU	·xmmSaveArea+32(SB), X2
+	MOVOU	·xmmSaveArea+48(SB), X3
+	MOVOU	·xmmSaveArea+64(SB), X4
+	MOVOU	·xmmSaveArea+80(SB), X5
+	MOVOU	·xmmSaveArea+96(SB), X6
+	MOVOU	·xmmSaveArea+112(SB), X7
+	MOVOU	·xmmSaveArea+128(SB), X8
+	MOVOU	·xmmSaveArea+144(SB), X9
+	MOVOU	·xmmSaveArea+160(SB), X10
+	MOVOU	·xmmSaveArea+176(SB), X11
+	MOVOU	·xmmSaveArea+192(SB), X12
+	MOVOU	·xmmSaveArea+208(SB), X13
+	MOVOU	·xmmSaveArea+224(SB), X14
+	MOVOU	·xmmSaveArea+240(SB), X15
+
 	POPQ	AX
 	POPQ	BX
 	POPQ	CX
@@ -1075,6 +1105,46 @@ exception_return:
 	POPQ	R14
 	POPQ	R15
 	ADDQ	$8, SP		// Skip error code
+
+	// Check IF=0 in RFLAGS before IRETQ. If returning to user mode (CS=0x1B)
+	// with IF=0, that's always a bug — force IF=1 and print diagnostic.
+	TESTQ	$0x200, 16(SP)		// Check IF in RFLAGS
+	JNZ	eret_if_ok
+	// IF=0 in exception return frame — check if user mode
+	CMPQ	8(SP), $0x1B		// Check CS = user code?
+	JNE	eret_if_ok		// Kernel mode IF=0 is OK (e.g., nested PF in timer)
+	// User mode return with IF=0 — print "!UF R=" + RIP, then force IF=1
+	PUSHQ	AX
+	PUSHQ	DX
+	MOVW	$0x3F8, DX
+	MOVB	$'!', AX; OUTB
+	MOVB	$'U', AX; OUTB
+	MOVB	$'F', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	16(SP), R11		// RIP (offset 0 + 16 for 2 pushes)
+	SHRQ	$16, R11		// print high 48 bits in 12 nibbles (skip low 16 for brevity)
+	MOVQ	$44, R13
+uf_rip_loop:
+	MOVQ	R11, AX
+	MOVQ	R13, CX
+	SHRQ	CX, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	uf_rip_ok
+	ADDQ	$('A'-'0'-10), AX
+uf_rip_ok:
+	MOVW	$0x3F8, DX; OUTB
+	SUBQ	$4, R13
+	JGE	uf_rip_loop
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	POPQ	DX
+	POPQ	AX
+	ORQ	$0x200, 16(SP)		// Force IF=1 for user return
+eret_if_ok:
 
 	// DEBUG: Check RIP in IRETQ frame before returning
 	// SP now points to [RIP, CS, RFLAGS, RSP, SS]
@@ -1184,8 +1254,13 @@ cs_hex2:
 	MOVB	$'\n', AX
 	OUTB
 cs_halt:
+	// Print 'C' to indicate CS validation failure HLT
+	MOVW	$0x3F8, DX
+	MOVB	$'C', AX
+	OUTB
+cs_halt_loop:
 	HLT
-	JMP	cs_halt
+	JMP	cs_halt_loop
 cs_valid:
 	// Flush TLB
 	MOVQ	CR3, AX
@@ -1224,7 +1299,11 @@ skip_fsbase_and_tls:
 
 	// Clear the frame and build fresh IRETQ frame
 	MOVQ	136(R12), AX		// new RSP
-	MOVQ	128(R12), BX		// new RFLAGS (IF=1 set by Go code in all thread contexts)
+	MOVQ	128(R12), BX		// new RFLAGS
+	TESTQ	$0x200, BX		// Check IF bit
+	JNZ	rflags_no_fix		// IF already set
+	ORQ	$0x200, BX		// Force IF=1 — threads must run with interrupts enabled
+rflags_no_fix:
 	MOVQ	120(R12), CX		// new RIP
 
 	// DEBUG: Validate RIP before IRETQ — catch null/low pointers
@@ -1434,3 +1513,6 @@ GLOBL	·syscallScratchRSP(SB), NOPTR, $8
 // XMM save area for page fault handler. 256 bytes = 16 XMM registers × 16 bytes.
 // Single-CPU so a global buffer is safe (no concurrent access).
 GLOBL	·xmmSaveArea(SB), NOPTR, $256
+
+
+

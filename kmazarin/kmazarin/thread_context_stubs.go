@@ -58,6 +58,11 @@ func (ctx *ThreadContext) SetSP(v uint64) { ctx.SP = v }
 //go:nosplit
 func (ctx *ThreadContext) GetProcessorState() uint64 { return ctx.SPSR }
 
+// FixIRQEnabled is a no-op in test stubs.
+//
+//go:nosplit
+func (ctx *ThreadContext) FixIRQEnabled() {}
+
 // SetupForUserspace initializes the context for a new userspace thread.
 //
 //go:nosplit

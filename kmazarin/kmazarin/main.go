@@ -784,6 +784,11 @@ func simpleMain() {
 	// CRITICAL: Enable IRQs at CPU AFTER GIC is initialized (matches Cardinal's order)
 	// This unmasks IRQs at the CPU (clears DAIF.I bit)
 	EnableIRQs()
+	// Fix clone threads created during Go runtime init — they have IF=0 in
+	// their saved RFLAGS because they were cloned before EnableIRQs(). Without
+	// this, those threads run without timer interrupts when scheduled, causing
+	// the system to freeze if they pick up a non-blocking goroutine.
+	FixCloneThreadIFFlags()
 	console.KPrintln("[Main] EnableIRQs done")
 	EnableTimerIRQ()
 	console.KPrintln("[Main] EnableTimerIRQ done")
@@ -857,6 +862,8 @@ func simpleMain() {
 	shutdownTicksThreshold = kirq.SystemTimerFrequency * 300
 	ResetTickAccounting(startingTicksProgram)
 	RestoreIRQs(savedDAIF)
+
+	launchAllgsDiagnostic()
 
 	// Enter the kernel idle loop. Thread 0 (m0/g0) stays alive as a normal
 	// scheduled thread. Priest threads are already running. The timer IRQ

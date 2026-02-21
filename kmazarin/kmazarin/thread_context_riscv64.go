@@ -71,6 +71,11 @@ func (ctx *ThreadContext) GetProcessorState() uint64 { return ctx.SSTATUS }
 //go:nosplit
 func (ctx *ThreadContext) SetProcessorState(v uint64) { ctx.SSTATUS = v }
 
+// FixIRQEnabled sets SPIE (bit 5) in saved SSTATUS to enable interrupts on SRET.
+//
+//go:nosplit
+func (ctx *ThreadContext) FixIRQEnabled() { ctx.SSTATUS |= 1 << 5 }
+
 // SetCloneTLS is a no-op on RISC-V (no FS_BASE, TLS is handled via TP register).
 //
 //go:nosplit
