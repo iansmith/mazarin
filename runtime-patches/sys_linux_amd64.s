@@ -124,10 +124,6 @@ TEXT runtime·pipe2(SB),NOSPLIT,$0-20
 // block forever if another thread is on the ready queue.
 // Using sched_yield lets the scheduler run queued threads.
 TEXT runtime·usleep(SB),NOSPLIT,$0-4
-	// DEBUG: breadcrumb 'u' for usleep entry
-	MOVW	COM1_PORT, DX
-	MOVB	$'u', AX
-	OUTB
 	MOVL	$SYS_sched_yield, AX
 	INT	$0x80
 	RET
@@ -332,21 +328,33 @@ TEXT runtime·clone(SB),NOSPLIT|NOFRAME,$0
 	MOVQ	stk+8(FP), SI
 
 	// Copy mp, gp, fn off parent stack for use by child.
+	// These callee-saved registers survive the INT $0x80 and are inherited
+	// by the child via CloneNeedsParentRegs in the exception handler.
 	MOVQ	mp+16(FP), R13
 	MOVQ	gp+24(FP), R9
 	MOVQ	fn+32(FP), R12
 
-	// Store on child stack
-	MOVQ	R13, -8(SI)
-	MOVQ	R9, -16(SI)
-	MOVQ	R12, -24(SI)
-	MOVQ	$1234, R13
-	MOVQ	R13, -32(SI)
+	// Write canary on child stack for integrity check
+	MOVQ	$1234, -32(SI)
 
 	// Clear unused syscall args
-	MOVQ	$0, DX
-	MOVQ	$0, R10
+	MOVQ	$0, DX		// ptid
+	MOVQ	$0, R10		// ctid
+
+	// Set up newtls for CLONE_SETTLS — the child needs its own FS_BASE
+	// so writing g to FS:-8 goes to the child's m.tls[0], not the parent's.
+	// This matches the standard Go runtime (sys_linux_amd64.s:577-584).
+	CMPQ	R13, $0
+	JEQ	clone_no_tls
+	CMPQ	R9, $0
+	JEQ	clone_no_tls
+	LEAQ	m_tls(R13), R8
+	ADDQ	$8, R8		// R8 = &m.tls[1], so FS:-8 = m.tls[0] (g slot)
+	ORQ	$0x00080000, DI	// add CLONE_SETTLS to flags
+	JMP	clone_do_syscall
+clone_no_tls:
 	MOVQ	$0, R8
+clone_do_syscall:
 
 	MOVL	$SYS_clone, AX
 	INT	$0x80
@@ -361,31 +369,20 @@ clone_child:
 	// In child, on new stack.
 	MOVQ	SI, SP
 
-	// Check canary
-	MOVQ	-32(SP), R10
-	CMPQ	R10, $1234
+	// Check canary — if overwritten, the IRET frame or timer interrupt
+	// clobbered the child stack (see IF=1 fix in load_context_and_iretq).
+	CMPQ	-32(SP), $1234
 	JEQ	clone_good
-	INT	$3		// crash
+	INT	$3		// canary corrupted — crash for debugging
 
 clone_good:
-	// CRITICAL: Load fn/gp/mp from stack BEFORE gettid syscall!
-	// On x86_64, INT $0x80 pushes SS/RSP/RFLAGS/CS/RIP (40 bytes) starting
-	// from SP, which overwrites the parent-stored data at -8(SP) to -40(SP).
-	// These register values survive across INT $0x80 because the exception
-	// handler saves and restores all GPRs.
-	MOVQ	-24(SP), R12	// fn
-	MOVQ	-16(SP), R9	// g
-	MOVQ	-8(SP), R13	// m
-
-	// Move SP below the stored data so INT $0x80 frame doesn't overwrite it
-	// (not strictly needed since we already loaded the values, but cleaner)
-	SUBQ	$48, SP
+	// R12 (fn), R9 (gp), R13 (mp) already have correct values from the parent
+	// via CloneNeedsParentRegs (which copies all parent GPRs to the child context).
 
 	// Initialize m->procid to Linux tid
+	SUBQ	$48, SP
 	MOVL	$SYS_gettid, AX
 	INT	$0x80
-
-	// Restore SP (gettid IRETQ restores to pre-INT value = SI-48, then we fix)
 	ADDQ	$48, SP
 
 	CMPQ	R13, $0		// m
@@ -395,21 +392,13 @@ clone_good:
 
 	MOVQ	AX, m_procid(R13)
 
-	// In child, set up new stack
+	// Set up child TLS: g.m = mp, TLS.g = gp, R14 = gp
 	get_tls(CX)
 	MOVQ	R13, g_m(R9)
 	MOVQ	R9, g(CX)
 	MOVQ	R9, R14		// set g register
 
 clone_nog:
-	// DEBUG: breadcrumb 'M' for mstart call
-	PUSHQ	AX
-	PUSHQ	DX
-	MOVW	COM1_PORT, DX
-	MOVB	$'M', AX
-	OUTB
-	POPQ	DX
-	POPQ	AX
 	// Call fn. This is the PC of an ABI0 function.
 	CALL	R12
 

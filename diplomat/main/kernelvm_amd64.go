@@ -550,6 +550,18 @@ func getDiplomatPFHandlerAddr() uint64
 // Defined in exc_vectors_amd64.s.
 func getDiplomatSyscallHandlerAddr() uint64
 
+// Catch-all exception handlers for debugging.
+// Defined in exc_vectors_amd64.s.
+func getDiplomatExc00Addr() uint64
+func getDiplomatExc03Addr() uint64
+func getDiplomatExc06Addr() uint64
+func getDiplomatExc08Addr() uint64
+func getDiplomatExc0DAddr() uint64
+
+// APIC timer stub handler (vector 32) — EOI + IRETQ.
+// Defined in exc_vectors_amd64.s.
+func getDiplomatTimerStubAddr() uint64
+
 // installIDT loads an IDT using LIDT.
 // Defined in exc_vectors_amd64.s.
 func installIDT(idtrAddr uint64)
@@ -595,6 +607,18 @@ func InstallFaultHandler(vm *KernelVM) error {
 
 	// Set up IDT entry for vector 14 (#PF)
 	setDiplomatIDTEntry(14, handlerAddr, cs)
+
+	// Set up catch-all handlers for common exceptions to diagnose crashes
+	setDiplomatIDTEntry(0, getDiplomatExc00Addr(), cs)   // #DE divide error
+	setDiplomatIDTEntry(3, getDiplomatExc03Addr(), cs)   // #BP breakpoint
+	setDiplomatIDTEntry(6, getDiplomatExc06Addr(), cs)   // #UD invalid opcode
+	setDiplomatIDTEntry(8, getDiplomatExc08Addr(), cs)   // #DF double fault
+	setDiplomatIDTEntry(13, getDiplomatExc0DAddr(), cs)  // #GP general protection
+
+	// APIC timer interrupt — UEFI may have left the APIC timer running.
+	// Vector 32 is the standard APIC timer vector. Handle it with EOI + IRETQ.
+	timerAddr := getDiplomatTimerStubAddr()
+	setDiplomatIDTEntry(32, timerAddr, cs)
 
 	// Set up IDT entry for vector 128 (INT $0x80) — syscall stub
 	// During Go runtime init, Syscall6 uses INT $0x80 (via overlay).

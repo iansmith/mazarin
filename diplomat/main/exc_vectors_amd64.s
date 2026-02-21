@@ -269,11 +269,6 @@ zero_new_page:
 	DECQ	CX
 	JNZ	zero_new_page
 
-	// Heartbeat: write '.' to COM1
-	MOVW	$0x3F8, DX
-	MOVB	$'.', AX
-	OUTB
-
 	// Increment page fault counter
 	LEAQ	·demandPagePool(SB), DI
 	INCQ	40(DI)
@@ -313,6 +308,36 @@ TEXT ·getDiplomatSyscallHandlerAddr(SB), NOSPLIT, $0-8
 	MOVQ	AX, ret+0(FP)
 	RET
 
+// func getDiplomatExc00Addr() uint64
+TEXT ·getDiplomatExc00Addr(SB), NOSPLIT, $0-8
+	LEAQ	diplomatExc00(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
+// func getDiplomatExc03Addr() uint64
+TEXT ·getDiplomatExc03Addr(SB), NOSPLIT, $0-8
+	LEAQ	diplomatExc03(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
+// func getDiplomatExc06Addr() uint64
+TEXT ·getDiplomatExc06Addr(SB), NOSPLIT, $0-8
+	LEAQ	diplomatExc06(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
+// func getDiplomatExc08Addr() uint64
+TEXT ·getDiplomatExc08Addr(SB), NOSPLIT, $0-8
+	LEAQ	diplomatExc08(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
+// func getDiplomatExc0DAddr() uint64
+TEXT ·getDiplomatExc0DAddr(SB), NOSPLIT, $0-8
+	LEAQ	diplomatExc0D(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
 // diplomatSyscallHandler handles INT $0x80 during Go runtime initialization.
 //
 // During early boot, before kmazarin installs its own IDT, the Go runtime
@@ -320,22 +345,23 @@ TEXT ·getDiplomatSyscallHandlerAddr(SB), NOSPLIT, $0-8
 // Most syscalls can be no-ops (prctl, epoll_wait, etc.) but clone MUST return
 // a non-zero value to the parent, otherwise the parent takes the child code path.
 //
-// Syscall numbers use ARM64 Linux convention (kmazarin's internal standard):
-//   SYS_clone = 220 (0xDC)
-//   SYS_exit  = 93
-//   SYS_gettid = 178
+// Syscall numbers use x86_64 Linux convention (matching sys_linux_amd64.s overlay):
+//   SYS_clone = 56
+//   SYS_exit  = 60
+//   SYS_exit_group = 231
+//   SYS_gettid = 186
 //
 // INT $0x80 does NOT push an error code, so the stack on entry is:
 //   [RIP, CS, RFLAGS, RSP, SS]
 TEXT diplomatSyscallHandler(SB), NOSPLIT|NOFRAME, $0
 	// Check for clone syscall — must NOT return 0 (parent thinks it's child)
-	CMPQ	AX, $220	// SYS_clone (ARM64 numbering)
+	CMPQ	AX, $56		// SYS_clone (x86_64)
 	JEQ	syscall_clone
 
 	// Check for exit — halt instead of returning
-	CMPQ	AX, $93		// SYS_exit
+	CMPQ	AX, $60		// SYS_exit (x86_64)
 	JEQ	syscall_exit
-	CMPQ	AX, $94		// SYS_exit_group
+	CMPQ	AX, $231	// SYS_exit_group (x86_64)
 	JEQ	syscall_exit
 
 	// Default: return 0 (success/no-op)
@@ -356,3 +382,330 @@ syscall_exit:
 syscall_exit_loop:
 	HLT
 	JMP	syscall_exit_loop
+
+// diplomatCatchAllHandler handles unhandled exceptions.
+// Since we don't know if an error code was pushed, we can't safely pop it.
+// Instead we just print diagnostic info and halt.
+// The vector number is passed by the stub that jumps here.
+TEXT diplomatCatchAllHandler(SB), NOSPLIT|NOFRAME, $0
+	// Print "!EX=" to COM1
+	MOVW	$0x3F8, DX
+	MOVB	$'!', AX
+	OUTB
+	MOVB	$'E', AX
+	OUTB
+	MOVB	$'X', AX
+	OUTB
+	MOVB	$'=', AX
+	OUTB
+	// R15 has the vector number (set by stub)
+	MOVQ	R15, AX
+	SHRQ	$4, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	ca_d1
+	ADDQ	$('A'-'0'-10), AX
+ca_d1:
+	OUTB
+	MOVQ	R15, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	ca_d2
+	ADDQ	$('A'-'0'-10), AX
+ca_d2:
+	OUTB
+	MOVB	$'\r', AX
+	OUTB
+	MOVB	$'\n', AX
+	OUTB
+ca_halt:
+	HLT
+	JMP	ca_halt
+
+// Stub handlers for specific exception vectors that push the vector number
+// into R15 and then jump to the catch-all handler.
+// Vectors WITHOUT error code: 0,1,2,3,4,5,6,7,9,16,17,18,19
+// Vectors WITH error code: 8,10,11,12,13 (14 is PF, handled separately)
+
+TEXT diplomatExc00(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	R15
+	MOVQ	$0, R15
+	JMP	diplomatCatchAllHandler(SB)
+
+TEXT diplomatExc03(SB), NOSPLIT|NOFRAME, $0
+	// INT $3 does NOT push error code. Stack: [RIP, CS, RFLAGS, RSP, SS]
+	// Print "!BP RIP=XXXXXXXXXXXXXXXX RSP=XXXXXXXXXXXXXXXX\n" then halt.
+	PUSHQ	AX
+	PUSHQ	DX
+	PUSHQ	CX
+	PUSHQ	R13
+	PUSHQ	R15
+
+	MOVW	$0x3F8, DX
+	MOVB	$'!', AX; OUTB
+	MOVB	$'B', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'=', AX; OUTB
+
+	// RIP is at 40(SP) (5 pushes * 8 bytes)
+	MOVQ	40(SP), R13
+	MOVQ	$60, CX
+bp_rip_loop:
+	MOVQ	R13, AX
+	SHRQ	CX, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	bp_rip_d
+	ADDQ	$('A'-'0'-10), AX
+bp_rip_d:
+	MOVW	$0x3F8, DX
+	OUTB
+	SUBQ	$4, CX
+	CMPQ	CX, $-4
+	JNE	bp_rip_loop
+
+	// Print " RSP="
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'=', AX; OUTB
+
+	// RSP is at 64(SP) (5 pushes=40 + RIP=8 + CS=8 + RFLAGS=8)
+	MOVQ	64(SP), R13
+	MOVQ	$60, CX
+bp_rsp_loop:
+	MOVQ	R13, AX
+	SHRQ	CX, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	bp_rsp_d
+	ADDQ	$('A'-'0'-10), AX
+bp_rsp_d:
+	MOVW	$0x3F8, DX
+	OUTB
+	SUBQ	$4, CX
+	CMPQ	CX, $-4
+	JNE	bp_rsp_loop
+
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+
+bp_halt:
+	HLT
+	JMP	bp_halt
+
+TEXT diplomatExc06(SB), NOSPLIT|NOFRAME, $0
+	// #UD (Invalid Opcode) does NOT push error code. Stack: [RIP, CS, RFLAGS, RSP, SS]
+	// Print "!UD RIP=XXXXXXXXXXXXXXXX RSP=XXXXXXXXXXXXXXXX\n" then halt.
+	PUSHQ	AX
+	PUSHQ	DX
+	PUSHQ	CX
+	PUSHQ	R13
+	PUSHQ	R15
+
+	MOVW	$0x3F8, DX
+	MOVB	$'!', AX; OUTB
+	MOVB	$'U', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'=', AX; OUTB
+
+	// RIP is at 40(SP) (5 pushes * 8 bytes)
+	MOVQ	40(SP), R13
+	MOVQ	$60, CX
+ud_rip_loop:
+	MOVQ	R13, AX
+	SHRQ	CX, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	ud_rip_d
+	ADDQ	$('A'-'0'-10), AX
+ud_rip_d:
+	MOVW	$0x3F8, DX
+	OUTB
+	SUBQ	$4, CX
+	CMPQ	CX, $-4
+	JNE	ud_rip_loop
+
+	// Print " RSP="
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'=', AX; OUTB
+
+	// RSP is at 64(SP) (5 pushes=40 + RIP=8 + CS=8 + RFLAGS=8)
+	MOVQ	64(SP), R13
+	MOVQ	$60, CX
+ud_rsp_loop:
+	MOVQ	R13, AX
+	SHRQ	CX, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	ud_rsp_d
+	ADDQ	$('A'-'0'-10), AX
+ud_rsp_d:
+	MOVW	$0x3F8, DX
+	OUTB
+	SUBQ	$4, CX
+	CMPQ	CX, $-4
+	JNE	ud_rsp_loop
+
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+
+ud_halt:
+	HLT
+	JMP	ud_halt
+
+TEXT diplomatExc08(SB), NOSPLIT|NOFRAME, $0
+	// Double fault (has error code, but we just halt)
+	PUSHQ	R15
+	MOVQ	$8, R15
+	JMP	diplomatCatchAllHandler(SB)
+
+// diplomatTimerStub handles APIC timer interrupts (vector 32) during boot.
+// Simply acknowledges the interrupt (EOI) and returns.
+TEXT diplomatTimerStub(SB), NOSPLIT|NOFRAME, $0
+	PUSHQ	AX
+	PUSHQ	DX
+	// Write EOI to local APIC (0xFEE000B0)
+	MOVL	$0, AX
+	MOVQ	$0xFEE000B0, DX
+	MOVL	AX, (DX)
+	POPQ	DX
+	POPQ	AX
+	IRETQ
+
+// func getDiplomatTimerStubAddr() uint64
+TEXT ·getDiplomatTimerStubAddr(SB), NOSPLIT, $0-8
+	LEAQ	diplomatTimerStub(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
+TEXT diplomatExc0D(SB), NOSPLIT|NOFRAME, $0
+	// General Protection Fault (has error code)
+	// Stack on entry: [error_code, RIP, CS, RFLAGS, RSP, SS]
+	// Print "#GP err=XXXX RIP=XXXXXXXXXXXXXXXX" to COM1
+	PUSHQ	AX
+	PUSHQ	DX
+	PUSHQ	CX
+	PUSHQ	R13
+
+	MOVW	$0x3F8, DX
+	MOVB	$'#', AX
+	OUTB
+	MOVB	$'G', AX
+	OUTB
+	MOVB	$'P', AX
+	OUTB
+	MOVB	$' ', AX
+	OUTB
+	MOVB	$'e', AX
+	OUTB
+	MOVB	$'=', AX
+	OUTB
+
+	// Error code is at 32(SP) (4 pushes * 8 bytes each)
+	MOVQ	32(SP), R13
+	// Print error code as 4 hex digits
+	MOVQ	$12, CX
+gp_err_loop:
+	MOVQ	R13, AX
+	SHRQ	CX, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	gp_err_d
+	ADDQ	$('A'-'0'-10), AX
+gp_err_d:
+	OUTB
+	SUBQ	$4, CX
+	CMPQ	CX, $-4
+	JNE	gp_err_loop
+
+	MOVB	$' ', AX
+	OUTB
+	MOVB	$'R', AX
+	OUTB
+	MOVB	$'I', AX
+	OUTB
+	MOVB	$'P', AX
+	OUTB
+	MOVB	$'=', AX
+	OUTB
+
+	// RIP is at 40(SP) (4 pushes + error code)
+	MOVQ	40(SP), R13
+	// Print RIP as 16 hex digits
+	MOVQ	$60, CX
+gp_rip_loop:
+	MOVQ	R13, AX
+	SHRQ	CX, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	gp_rip_d
+	ADDQ	$('A'-'0'-10), AX
+gp_rip_d:
+	OUTB
+	SUBQ	$4, CX
+	CMPQ	CX, $-4
+	JNE	gp_rip_loop
+
+	MOVB	$' ', AX
+	OUTB
+	MOVB	$'C', AX
+	OUTB
+	MOVB	$'S', AX
+	OUTB
+	MOVB	$'=', AX
+	OUTB
+
+	// CS is at 48(SP) (4 pushes + error code + RIP)
+	MOVQ	48(SP), R13
+	// Print CS as 4 hex digits
+	MOVQ	$12, CX
+gp_cs_loop:
+	MOVQ	R13, AX
+	SHRQ	CX, AX
+	ANDQ	$0xF, AX
+	ADDQ	$'0', AX
+	CMPB	AX, $('9'+1)
+	JB	gp_cs_d
+	ADDQ	$('A'-'0'-10), AX
+gp_cs_d:
+	OUTB
+	SUBQ	$4, CX
+	CMPQ	CX, $-4
+	JNE	gp_cs_loop
+
+	MOVB	$'\r', AX
+	OUTB
+	MOVB	$'\n', AX
+	OUTB
+
+	POPQ	R13
+	POPQ	CX
+	POPQ	DX
+	POPQ	AX
+
+gp_halt:
+	HLT
+	JMP	gp_halt

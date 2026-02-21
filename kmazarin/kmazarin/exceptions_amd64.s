@@ -1300,9 +1300,18 @@ skip_fsbase_and_tls:
 	// Clear the frame and build fresh IRETQ frame
 	MOVQ	136(R12), AX		// new RSP
 	MOVQ	128(R12), BX		// new RFLAGS
-	TESTQ	$0x200, BX		// Check IF bit
-	JNZ	rflags_no_fix		// IF already set
-	ORQ	$0x200, BX		// Force IF=1 — threads must run with interrupts enabled
+	// NOTE: Do NOT force IF=1 unconditionally! During early boot (before
+	// EnableIRQs), threads inherit IF=0 from the parent. Forcing IF=1
+	// allows pending APIC timer interrupts to fire immediately after IRETQ,
+	// pushing an IRET frame onto the child stack and overwriting the clone
+	// canary at stk-32 with CS=0x08. Threads created during init with IF=0
+	// are fixed by FixCloneThreadIFFlags() after EnableIRQs().
+	// For userspace threads (CS=0x1B), always force IF=1 — Ring 3 code
+	// must run with interrupts enabled.
+	MOVQ	152(R12), R13		// CS from context
+	CMPQ	R13, $0x1B		// userCS?
+	JNE	rflags_no_fix		// Kernel thread: trust inherited IF state
+	ORQ	$0x200, BX		// User thread: force IF=1
 rflags_no_fix:
 	MOVQ	120(R12), CX		// new RIP
 

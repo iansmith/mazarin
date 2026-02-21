@@ -710,9 +710,6 @@ func verifyCodeIntegrityKmazarin(label string) {
 func simpleMain() {
 	Print("[Main] Kmazarin kernel starting...")
 
-	// DEBUG: Check code integrity at kmazarin entry
-	verifyCodeIntegrityKmazarin("at kmazarin entry")
-
 	// Test runtime readiness FIRST (before unmapping Cardinal)
 	if testRuntimeReadiness() {
 		Print("[Main] Runtime ready")
@@ -813,9 +810,6 @@ func simpleMain() {
 	// To switch back to goroutine test, comment out below and launch priestsieve.elf
 
 	// DEBUG: ReadMemStats disabled - hangs in bare-metal (triggers STW GC)
-
-	// DEBUG: Check code integrity before launching userspace
-	verifyCodeIntegrityKmazarin("before userspace launch")
 
 	// Launch dapope (input event handler priest)
 	dapopeName := "/dapope.elf\x00"
