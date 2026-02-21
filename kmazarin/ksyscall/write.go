@@ -3,7 +3,6 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/kmem"
-	"mazzy/kmazarin/serial"
 	_ "unsafe" // for go:linkname
 )
 
@@ -46,10 +45,6 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 		}
 	}
 
-	// Echo all writes to COM1 for serial visibility (fd 2 gets {} delimiters)
-	if fd == 2 {
-		serial.RawUART('{')
-	}
 	remaining := count
 	offset := uint64(0)
 	fdByte := byte(fd)
@@ -62,10 +57,6 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 		if !kmem.CopyFromUser(chunk[:n], uintptr(bufPtr+offset), int(n)) {
 			return -14 // EFAULT
 		}
-		// Echo to COM1
-		for i := uint64(0); i < n; i++ {
-			serial.RawUART(chunk[i])
-		}
 		if useRing {
 			for i := uint64(0); i < n; i++ {
 				c := chunk[i]
@@ -77,9 +68,6 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 		}
 		offset += n
 		remaining -= n
-	}
-	if fd == 2 {
-		serial.RawUART('}')
 	}
 
 	if useRing {

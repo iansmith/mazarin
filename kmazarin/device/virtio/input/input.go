@@ -162,22 +162,6 @@ func AllDevices() []*VirtIOInputDevice {
 	return allDevices
 }
 
-// DiagCheckUsedRings prints the Used ring state for all devices.
-// Call periodically to check if the device is producing events.
-func DiagCheckUsedRings() {
-	for _, dev := range allDevices {
-		if dev == nil {
-			continue
-		}
-		vq := &dev.EventQueue
-		// Memory barrier to see DMA writes
-		asm.Dsb()
-		asm.DmaRmb()
-		hasUsed := virtio.VirtqueueHasUsed(vq)
-		console.KPrintf("[Diag] dev IRQ=%d hasUsed=%v usedIdx=%d lastUsed=%d availIdx=%d\n",
-			dev.IRQNum, hasUsed, vq.Used.Idx, vq.LastUsedIdx, vq.Available.Idx)
-	}
-}
 
 // readCommonConfig16 reads a 16-bit value from this device's common config.
 //

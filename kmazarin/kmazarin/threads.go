@@ -189,19 +189,12 @@ func ResetTickAccounting(startTime uint64) {
 //go:nosplit
 func FixCloneThreadIFFlags() {
 	savedDAIF := SaveAndDisableIRQs()
-	fixed := 0
 	for i := 0; i < MaxThreads; i++ {
 		if threadListInUse[i] {
-			old := threadListData[i].Context.GetProcessorState()
 			threadListData[i].Context.FixIRQEnabled()
-			new := threadListData[i].Context.GetProcessorState()
-			if old != new {
-				fixed++
-			}
 		}
 	}
 	RestoreIRQs(savedDAIF)
-	console.KPrintf("[FixIF] Fixed %d threads\n", fixed)
 }
 
 // Priest represents a userspace process that runs Go code.

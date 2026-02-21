@@ -160,11 +160,8 @@ func copyGDTToOwnedBuffer() {
 //
 // Must be called after SetVBAR (IDT loaded).
 func SetupSyscallMSRs() {
-	Breadcrumb('W') // DEBUG: entered SetupSyscallMSRs
-
 	// Copy diplomat's GDT to kmazarin-owned buffer, rebuild TSS, reload LGDT+LTR
 	copyGDTToOwnedBuffer()
-	Breadcrumb('G') // DEBUG: GDT copied
 
 	// Validate SYSCALL MSRs are configured by diplomat
 	efer := readMSR(msrEFER)
@@ -192,7 +189,5 @@ func SetupSyscallMSRs() {
 		console.KPrintln("[SYSCALL] WARNING: FMASK not set, configuring")
 		writeMSR(msrFMASK, 0x200)
 	}
-	Breadcrumb('F') // DEBUG: validation done
-
 	console.KPrintln("[SYSCALL] GDT + TSS + MSRs ready (kmazarin-owned)")
 }
