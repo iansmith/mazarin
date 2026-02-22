@@ -51,8 +51,6 @@ var fdtInfo *FDTInfo = &fdtInfoStruct
 // This simplifies diplomat and follows the same pattern as ARM64/x86_64 where
 // diplomat provides minimal platform info and the kernel does full discovery.
 func InitializeFDT() bool {
-	printString("Initializing RISC-V platform (QEMU virt)...\r\n")
-
 	// Hardcoded QEMU virt platform parameters
 	bootHartID = 0
 	fdtPointer = QEMU_VIRT_FDT_ADDR
@@ -65,25 +63,9 @@ func InitializeFDT() bool {
 	fdtInfo.CPUCount = QEMU_VIRT_CPU_COUNT
 	fdtInfo.FDTAddress = fdtPointer
 
-	// Display platform configuration
-	printString("Platform: QEMU virt (RISC-V64)\r\n")
-	printString("  Hart ID:  ")
-	printHex(bootHartID)
-	printString("\r\n")
-	printString("  FDT addr: ")
-	printHex(fdtPointer)
-	printString("\r\n")
-	printString("  RAM:      ")
-	printHex(fdtInfo.RAMBase)
-	printString(" - ")
-	printHex(fdtInfo.RAMBase + fdtInfo.RAMSize - 1)
-	printString(" (")
+	printString("Platform: RISC-V64 QEMU virt, ")
 	printHex(fdtInfo.RAMSize / (1024 * 1024))
-	printString(" MB)\r\n")
-	printString("  CPUs:     ")
-	printHex(uint64(fdtInfo.CPUCount))
-	printString("\r\n")
-	printString("\r\n")
+	printString("MB RAM\r\n")
 
 	return true
 }
@@ -189,7 +171,6 @@ var virtioBlockSectorSize uint32 = 512
 //   - VirtIO PCI (virtio-blk-pci) for kmazarin with full PCI init
 // Kmazarin will need to detect both and provide a common block device interface.
 func GetBootDeviceRISCV() (*UEFIBlockDevice, error) {
-	printString("=== Task #2: VirtIO Block Device (MMIO) ===\r\n")
 
 	// Scan for VirtIO MMIO block device
 	virtioMMIOBase = scanVirtIOMMIO()
@@ -206,7 +187,6 @@ func GetBootDeviceRISCV() (*UEFIBlockDevice, error) {
 	// TODO: Read device capacity from config space
 	// For now, use a placeholder value
 	virtioBlockCapacity = 0xFFFFFFFF // Will be read properly later
-	printString("VirtIO MMIO block device ready\r\n")
 
 	// Wrap in UEFIBlockDevice for compatibility
 	globalBlockDev.protocol = 0 // Not used for VirtIO
@@ -215,7 +195,6 @@ func GetBootDeviceRISCV() (*UEFIBlockDevice, error) {
 	globalBlockDev.numBlocks = virtioBlockCapacity
 	globalBlockDev.mediaId = 0
 
-	printString("=== Task #2 Complete ===\r\n\r\n")
 	return &globalBlockDev, nil
 }
 
@@ -227,8 +206,6 @@ func GetBootDeviceRISCV() (*UEFIBlockDevice, error) {
 // Returns the base address of the first block device found, or 0 if none found.
 //go:nosplit
 func scanVirtIOMMIO() uintptr {
-	printString("Scanning VirtIO MMIO devices...\r\n")
-
 	for i := uint32(0); i < VIRTIO_MMIO_MAX_DEVICES; i++ {
 		base := uintptr(VIRTIO_MMIO_BASE + (i * VIRTIO_MMIO_SIZE))
 
@@ -241,30 +218,19 @@ func scanVirtIOMMIO() uintptr {
 		// Check version (1 or 2)
 		version := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_VERSION))
 		if version != 1 && version != 2 {
-			printString("  Device at ")
-			printHex(uint64(base))
-			printString(" has unsupported version ")
-			printHex(uint64(version))
-			printString("\r\n")
 			continue
 		}
 
 		// Check device type
 		deviceID := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DEVICE_ID))
-		
-		printString("  Device at ")
-		printHex(uint64(base))
-		printString(" type=")
-		printHex(uint64(deviceID))
-		printString(" version=")
-		printHex(uint64(version))
-		printString("\r\n")
 
 		if deviceID == VIRTIO_DEVICE_TYPE_BLOCK {
-			printString("Found VirtIO MMIO block device at ")
+			printString("VirtIO MMIO block at ")
 			printHex(uint64(base))
+			printString(" v")
+			printHex(uint64(version))
 			printString("\r\n")
-			virtioMMIOVersion = version  // Save MMIO transport version
+			virtioMMIOVersion = version
 			return base
 		}
 	}
@@ -280,35 +246,23 @@ func scanVirtIOMMIO() uintptr {
 // virtioMMIOHandshake performs the VirtIO device initialization handshake for MMIO.
 //go:nosplit
 func virtioMMIOHandshake(base uintptr) bool {
-	printString("VirtIO MMIO handshake...\r\n")
-
 	// Reset device
-	printString("  Reset...")
 	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS)) = 0
 
 	// Set ACKNOWLEDGE
-	printString("ACK...")
 	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS)) = VIRTIO_STATUS_ACKNOWLEDGE
 
 	// Set DRIVER
-	printString("DRIVER...")
 	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS)) =
 		VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER
 
 	// Feature negotiation
-	printString("Features...\r\n")
 
 	// Read device-offered features
 	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DEVICE_FEATURES_SEL)) = 0
 	deviceFeaturesLow := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DEVICE_FEATURES))
 	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DEVICE_FEATURES_SEL)) = 1
-	deviceFeaturesHigh := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DEVICE_FEATURES))
-
-	printString("  Device offers: low=")
-	printHex(uint64(deviceFeaturesLow))
-	printString(" high=")
-	printHex(uint64(deviceFeaturesHigh))
-	printString("\r\n")
+	_ = *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DEVICE_FEATURES))
 
 	// CRITICAL: Feature negotiation depends on MMIO version
 	var driverFeaturesLow uint32
@@ -316,24 +270,13 @@ func virtioMMIOHandshake(base uintptr) bool {
 
 	if virtioMMIOVersion == 1 {
 		// MMIO v1 (legacy): Do NOT negotiate VIRTIO_F_VERSION_1
-		// Accept device-offered features to satisfy device requirements
-		printString("  MMIO v1 (legacy) - no VERSION_1 feature\r\n")
-		driverFeaturesLow = deviceFeaturesLow  // Accept all offered features
-		driverFeaturesHigh = 0                  // No high features for legacy
+		driverFeaturesLow = deviceFeaturesLow
+		driverFeaturesHigh = 0
 	} else {
 		// MMIO v2 (modern): MUST negotiate VIRTIO_F_VERSION_1
-		// Modern VirtIO spec requires VERSION_1 for proper operation
-		printString("  MMIO v2 (modern) - negotiating VERSION_1\r\n")
-		// Accept device features AND add VERSION_1
-		driverFeaturesLow = deviceFeaturesLow   // Accept device features
-		driverFeaturesHigh = 1                   // VIRTIO_F_VERSION_1 (bit 32)
+		driverFeaturesLow = deviceFeaturesLow
+		driverFeaturesHigh = 1 // VIRTIO_F_VERSION_1 (bit 32)
 	}
-
-	printString("  Driver accepts: low=")
-	printHex(uint64(driverFeaturesLow))
-	printString(" high=")
-	printHex(uint64(driverFeaturesHigh))
-	printString("\r\n")
 
 	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DRIVER_FEATURES_SEL)) = 0
 	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DRIVER_FEATURES)) = driverFeaturesLow
@@ -341,12 +284,10 @@ func virtioMMIOHandshake(base uintptr) bool {
 	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_DRIVER_FEATURES)) = driverFeaturesHigh
 
 	// Set FEATURES_OK
-	printString("FEATURES_OK...")
 	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS)) =
 		VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK
 
 	// Verify FEATURES_OK
-	printString("Verify...")
 	status := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS))
 	if (status & VIRTIO_STATUS_FEATURES_OK) == 0 {
 		printString("FAILED (features rejected)\r\n")
@@ -355,11 +296,9 @@ func virtioMMIOHandshake(base uintptr) bool {
 
 	// CRITICAL: Setup queues BEFORE setting DRIVER_OK
 	// VirtIO spec requires: FEATURES_OK → queue setup → DRIVER_OK
-	printString("Queues...")
 	initVirtqueueDuringHandshake()
 
 	// Set DRIVER_OK (only after queues are configured!)
-	printString("DRIVER_OK...")
 	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS)) =
 		VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER |
 		VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK
@@ -371,7 +310,6 @@ func virtioMMIOHandshake(base uintptr) bool {
 		return false
 	}
 
-	printString("Complete!\r\n")
 	return true
 }
 
@@ -525,43 +463,22 @@ func initVirtqueueDuringHandshake() {
 	// Check if queue is already configured
 	existingPFN := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_PFN))
 	if existingPFN != 0 {
-		// Reset queue if already configured (write 0 to QUEUE_PFN)
+		// Reset queue if already configured
 		*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_PFN)) = 0
 		memoryBarrier()
-		printString("  Reset existing queue (PFN was ")
-		printHex(uint64(existingPFN))
-		printString(")\r\n")
 	}
 
 	// Check max queue size
 	maxSize := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_NUM_MAX))
 
-	// Determine queue size to use
 	if maxSize < queueSize {
-		printString("  Queue max: ")
-		printHex(uint64(maxSize))
-		printString(" (wanted ")
-		printHex(uint64(queueSize))
-		printString(")\r\n")
 		queueSize = maxSize
-	} else {
-		printString("  Queue max: ")
-		printHex(uint64(maxSize))
-		printString(" (using ")
-		printHex(uint64(queueSize))
-		printString(")\r\n")
 	}
 
 	// CRITICAL: Write QUEUE_NUM before QUEUE_PFN (triggers virtio_queue_update_rings in QEMU)
 	// This was the missing step that prevented device from activating!
 	*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_NUM)) = queueSize
 	memoryBarrier()
-
-	// Check device status before queue configuration
-	statusBefore := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS))
-	printString("  Device status before queue config: ")
-	printHex(uint64(statusBefore))
-	printString("\r\n")
 
 	// Get descriptor table address (must be 4KB-aligned) and convert to PFN
 	descAddr := uint64(uintptr(unsafe.Pointer(virtqDescTable)))
@@ -578,8 +495,6 @@ func initVirtqueueDuringHandshake() {
 	// Queue activation: version 1 vs version 2 use different registers
 	// Version 1: QUEUE_ALIGN + QUEUE_PFN (page frame number)
 	// Version 2: QUEUE_DESC/AVAIL/USED split addresses + QUEUE_READY
-
-	// For debug output
 	availAddr := uint64(uintptr(unsafe.Pointer(virtqAvailRing)))
 	usedAddr := uint64(uintptr(unsafe.Pointer(virtqUsedRing)))
 
@@ -589,8 +504,6 @@ func initVirtqueueDuringHandshake() {
 		// 2. QUEUE_NUM (already done above)
 		// 3. QUEUE_ALIGN (set alignment)
 		// 4. QUEUE_PFN (activate queue)
-
-		printString("  Using v1 registers (QUEUE_PFN)\r\n")
 
 		// Step 3: QUEUE_ALIGN (must be AFTER QUEUE_NUM, per Linux driver)
 		*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_ALIGN)) = 4096
@@ -614,8 +527,6 @@ func initVirtqueueDuringHandshake() {
 		// 4. QUEUE_AVAIL_LOW/HIGH (available ring address)
 		// 5. QUEUE_USED_LOW/HIGH (used ring address)
 		// 6. QUEUE_READY = 1 (activate queue)
-
-		printString("  Using v2 registers (QUEUE_READY)\r\n")
 
 		// Step 3: Set descriptor table address (64-bit split into low/high)
 		*(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_DESC_LOW)) = uint32(descAddr & 0xFFFFFFFF)
@@ -644,57 +555,14 @@ func initVirtqueueDuringHandshake() {
 		}
 	}
 
-	// Check device status after queue configuration
-	statusAfter := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS))
-	printString("  Device status after queue config: ")
-	printHex(uint64(statusAfter))
-	printString("\r\n")
-
-	// Verify device state after initialization
-	queueSel := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_SEL))
-	deviceStatus := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS))
-	intrStatus := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_INTERRUPT_STATUS))
-
 	// Verify device didn't set FAILED bit
+	deviceStatus := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_STATUS))
 	if (deviceStatus & VIRTIO_STATUS_FAILED) != 0 {
 		printString("ERROR: Device set FAILED bit during queue init\r\n")
 		for {}
 	}
 
 	virtqInitialized = true
-	printString("VirtIO virtqueue initialized (MMIO v")
-	printHex(uint64(virtioMMIOVersion))
-	printString(")\r\n")
-	printString("  Desc table: ")
-	printHex(descAddr)
-	printString("\r\n  Avail ring: ")
-	printHex(availAddr)
-	printString("\r\n  Used ring:  ")
-	printHex(usedAddr)
-	printString("\r\n  ")
-
-	if virtioMMIOVersion == 1 {
-		// V1: Show QUEUE_PFN
-		queuePFNReadback := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_PFN))
-		printString("QUEUE_PFN=")
-		printHex(uint64(queuePFN))
-		printString(" (readback: ")
-		printHex(uint64(queuePFNReadback))
-		printString(")")
-	} else {
-		// V2: Show QUEUE_READY
-		queueReady := *(*uint32)(unsafe.Pointer(base + VIRTIO_MMIO_QUEUE_READY))
-		printString("QUEUE_READY=")
-		printHex(uint64(queueReady))
-	}
-
-	printString("\r\n  QUEUE_SEL=")
-	printHex(uint64(queueSel))
-	printString(" STATUS=")
-	printHex(uint64(deviceStatus))
-	printString(" INTR=")
-	printHex(uint64(intrStatus))
-	printString("\r\n")
 }
 
 // initVirtqueue initializes the VirtIO virtqueue if not already done.

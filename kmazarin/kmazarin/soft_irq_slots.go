@@ -133,6 +133,7 @@ func RegisterSoftIRQSlotKsyscall(irqNum uint32, slotNum int32, priestID int16) i
 // If a thread is blocked on a slot for this IRQ, wake it with priority.
 //
 //go:nosplit
+//go:noinline
 func WakeSlotForIRQ(irqNum uint32) {
 	if irqNum >= 256 {
 		return
@@ -184,6 +185,7 @@ func WakeSlotForIRQ(irqNum uint32) {
 // Called from the syscall handler (normal Go context).
 //
 //go:nosplit
+//go:noinline
 func BlockOnSlot(slotNum int32) uintptr {
 	savedDAIF := NormalSchedulerFunc.DisableAndSaveDAIF()
 	schedulerLock.Lock()
@@ -247,6 +249,7 @@ func DrainSoftIRQSlotEvents(slotNum int32, buf []hid.HIDEvent, max int) int {
 // REQUIRES: schedulerLock held, IRQs masked.
 //
 //go:nosplit
+//go:noinline
 func PushTimerEventAndWake(sec, nsec uint64) {
 	// Push 3 events: seconds low, nanoseconds, seconds high
 	ev0 := hid.HIDEvent{Type: 0, Code: 0, Value: uint32(sec)}
@@ -265,17 +268,20 @@ func PushTimerEventAndWake(sec, nsec uint64) {
 	slot := &softIRQSlotData[slotIdx]
 	tid := slot.blockedTID
 	if tid < 0 {
+		console.BreadcrumbNoSplit('n') // not blocked
 		return
 	}
 	t := threadList.FindByIdAll(int32(tid))
 	if t == nil || t.State != ThreadBlockedSoftIRQ {
 		slot.blockedTID = -1
+		console.BreadcrumbNoSplit('?') // wrong state
 		return
 	}
 	t.State = ThreadReady
 	slot.blockedTID = -1
 	enqueueReadySchedLockHeld(t)
 	asm.Dsb() // Memory barrier to ensure enqueue is visible
+	console.BreadcrumbNoSplit('w') // wake succeeded
 }
 
 // GetUartSlotPriestID returns the priest ID that owns the UART serial slot.

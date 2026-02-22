@@ -17,12 +17,20 @@ TEXT ·PlatformRearmTimer(SB), NOSPLIT, $0-8
 	// Calculate absolute deadline: current + ticks
 	ADD	A0, A1, A0  // A0 = current + ticks (deadline)
 
+	// Save deadline for diagnostics before ECALL (A0 gets clobbered)
+	MOV	$·LastRearmDeadline(SB), A2
+	MOV	A0, (A2)
+
 	// Call SBI set_timer (legacy interface)
 	// a7 (X17) = 0 (legacy timer extension)
 	// a0 (X10) = stime_value (already in A0)
 	MOV	$0, A7  // A7 = legacy SBI timer extension ID
 	// ECALL instruction encoding: 0x00000073
 	WORD	$0x00000073
+
+	// Save SBI return code for diagnostics
+	MOV	$·LastRearmRetCode(SB), A2
+	MOV	A0, (A2)
 
 	// Enable STIE (bit 5) in SIE CSR so timer interrupt can be delivered.
 	// On RISC-V, the timer interrupt is not routed through the PLIC -

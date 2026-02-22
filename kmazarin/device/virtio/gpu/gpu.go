@@ -483,6 +483,7 @@ func virtioGPUSendCommand(cmdBuf unsafe.Pointer, cmdSize uint32, respBuf unsafe.
 	}
 
 	if waited >= maxWait {
+		console.BreadcrumbNoSplit('!')
 		return 0xFFFF
 	}
 

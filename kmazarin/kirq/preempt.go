@@ -65,6 +65,12 @@ var TimerIRQCount uint64
 //
 // DO NOT use hardcoded offsets - struct layout may change!
 
+// TimerRearmTicks is the number of raw timer ticks to add when re-arming
+// the timer. At 10MHz: 10ms = 100,000 ticks.
+// Set by InitPreemptThresholds() based on actual timer frequency.
+// Exported for assembly access (used by preempt_riscv64.s).
+var TimerRearmTicks uint64 = 100000
+
 // GoroutinePreemptTicks is the number of raw timer ticks before forcing
 // async preemption on a goroutine. At 62.5MHz: 50ms = 3,125,000 ticks.
 // Set by InitPreemptThresholds() based on actual timer frequency.
@@ -84,6 +90,8 @@ func InitPreemptThresholds() {
 	if freq == 0 {
 		freq = 62500000 // Default QEMU frequency
 	}
+	// TimerRearmTicks = 10ms worth of ticks
+	TimerRearmTicks = freq / 100 // freq * 0.01 = freq / 100
 	// GoroutinePreemptTicks = 50ms worth of ticks
 	GoroutinePreemptTicks = freq / 20 // freq * 0.05 = freq / 20
 	// ThreadPreemptTicks = 200ms worth of ticks

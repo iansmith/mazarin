@@ -92,6 +92,23 @@ var timerFrequencyHz uint64 = 62500000 // Default 62.5 MHz for QEMU
 // when handling syscalls from userspace (which has a different g).
 var kmazarinG0Addr uint64
 
+// timerDiagCount is incremented by the assembly timer handler on each timer
+// interrupt (before any Go code runs). Used to diagnose timer hangs.
+var timerDiagCount uint64
+
+// timerCtxSwitchCount counts timer interrupts that resulted in a context switch.
+var timerCtxSwitchCount uint64
+
+// timerNoSwitchCount counts timer interrupts where no switch happened.
+var timerNoSwitchCount uint64
+
+// timerHandlerDoneCount counts timer interrupts where TimerIRQHandler completed
+// (rearm happened). If this trails timerDiagCount, the Go handler is hanging.
+var timerHandlerDoneCount uint64
+
+// syscallDiagCount counts total syscalls from user threads.
+var syscallDiagCount uint64
+
 // excStackTopForSyscall is the kernel exception stack top address.
 // Used by the SYSCALL entry handler to switch from the user stack to a
 // valid kernel stack. SYSCALL (unlike INT) does NOT switch stacks via TSS,
@@ -805,6 +822,7 @@ func processStaticDeadlinesSchedLockHeld() {
 		// Timer deadlines are encoded as negative slot IDs: -(slot+2).
 		// Decode and push events to the slot, waking whatever thread is blocked.
 		if tid <= -2 {
+			console.BreadcrumbNoSplit('D')
 			sec, nsec := ktime.GetTime()
 			PushTimerEventAndWake(sec, nsec)
 			continue

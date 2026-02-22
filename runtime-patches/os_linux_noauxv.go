@@ -57,12 +57,8 @@ func kmazarinUART(c byte)
 func archauxv(tag, val uintptr) {
 	switch tag {
 	case _AT_KMAZARIN_HEAP_START:
-		kmazarinUART('H')
-		kmazarinUART('S')
 		kmazarinHeapStart = val
 	case _AT_KMAZARIN_HEAP_END:
-		kmazarinUART('H')
-		kmazarinUART('E')
 		kmazarinHeapEnd = val
 	case _AT_TTBR1_L0_PHYS:
 		kmazarinTTBR1L0Phys = val

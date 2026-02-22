@@ -159,12 +159,6 @@ func printCharRISCV(c uint16) {
 //
 //go:nosplit
 func ReadBlockVirtIO(lba uint64, buf []byte) error {
-	// TODO: Implement actual VirtIO virtqueue I/O
-	// For now, return a stub error to see if we get called
-	printString("DEBUG: ReadBlockVirtIO called for LBA ")
-	printHex(lba)
-	printString("\r\n")
-
 	// Stub: fill with zeros for now
 	for i := range buf {
 		buf[i] = 0
@@ -207,9 +201,6 @@ func getExceptionHandlerForJump(kernel *LoadedKernel, relocDelta uint64) uint64 
 		for {}
 	}
 	addr += relocDelta
-	printString("STVEC: kmazarin trapEntry = ")
-	printHex(addr)
-	printString("\r\n")
 	return addr
 }
 

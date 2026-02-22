@@ -8,51 +8,6 @@
 #include "textflag.h"
 
 TEXT _rt0_riscv64_linux(SB),NOSPLIT|NOFRAME,$0
-	// Debug: write 'Z' to UART to detect entry/re-entry
-	MOV	$0xFFFFFFFF10000000, X28
-	MOV	$0x5A, X29	// 'Z'
-	MOVB	X29, (X28)
-	// Print SP: "Z<16hex>"
-	MOV	X2, X30		// copy SP
-	MOV	$60, X31	// bit position
-z_sp_hex:
-	SRL	X31, X30, X29
-	AND	$0xF, X29
-	MOV	$10, X28
-	BLT	X29, X28, z_sp_digit
-	ADD	$0x37, X29, X29	// A-F
-	JMP	z_sp_out
-z_sp_digit:
-	ADD	$0x30, X29, X29	// 0-9
-z_sp_out:
-	MOV	$0xFFFFFFFF10000000, X28
-	MOVB	X29, (X28)
-	ADD	$-4, X31
-	MOV	$-4, X28
-	BNE	X31, X28, z_sp_hex
-
-	// Print RA (X1): "r<16hex>"
-	MOV	$0xFFFFFFFF10000000, X28
-	MOV	$0x72, X29	// 'r'
-	MOVB	X29, (X28)
-	MOV	X1, X30		// copy RA
-	MOV	$60, X31
-z_ra_hex:
-	SRL	X31, X30, X29
-	AND	$0xF, X29
-	MOV	$10, X28
-	BLT	X29, X28, z_ra_digit
-	ADD	$0x37, X29, X29
-	JMP	z_ra_out
-z_ra_digit:
-	ADD	$0x30, X29, X29
-z_ra_out:
-	MOV	$0xFFFFFFFF10000000, X28
-	MOVB	X29, (X28)
-	ADD	$-4, X31
-	MOV	$-4, X28
-	BNE	X31, X28, z_ra_hex
-
 	MOV	0(X2), A0	// argc
 	ADD	$8, X2, A1	// argv
 	JMP	main(SB)
@@ -156,10 +111,5 @@ GLOBL _rt0_riscv64_linux_lib_argv<>(SB),NOPTR, $8
 
 
 TEXT main(SB),NOSPLIT|NOFRAME,$0
-	// Debug: write 'z' to UART
-	MOV	$0xFFFFFFFF10000000, X28
-	MOV	$0x7A, X29	// 'z'
-	MOVB	X29, (X28)
-
 	MOV	$runtime·rt0_go(SB), T0
 	JALR	ZERO, T0

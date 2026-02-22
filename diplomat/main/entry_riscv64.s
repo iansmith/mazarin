@@ -12,11 +12,10 @@
 //
 // This file:
 //   1. Saves A0/A1 to s-registers
-//   2. Prints "D" to UART (proof of life)
-//   3. Sets up diplomat's stack in known RAM
-//   4. Builds Sv48 page tables
-//   5. Enables MMU (csrw satp)
-//   6. Jumps to high-memory Go entry
+//   2. Sets up diplomat's stack in known RAM
+//   3. Builds Sv48 page tables
+//   4. Enables MMU (csrw satp)
+//   5. Jumps to high-memory Go entry
 
 #include "textflag.h"
 
@@ -67,16 +66,7 @@ TEXT ·diplomatEntry(SB), NOSPLIT|NOFRAME, $0
 	MOV	A0, S0		// S0 = hart ID
 	MOV	A1, S1		// S1 = FDT physical address
 
-	// ---- Step 1: Print 'D' to UART (proof of life) ----
-	MOV	$UART_BASE, T0
-uart_wait_1:
-	MOVBU	5(T0), T1	// Read LSR
-	AND	$UART_LSR_THRE, T1
-	BEQ	T1, ZERO, uart_wait_1
-	MOV	$'D', T1
-	MOVB	T1, (T0)	// Write 'D' to THR
-
-	// ---- Step 2: Set up our own stack ----
+	// ---- Step 1: Set up our own stack ----
 	// Use g0 stack top as initial SP (physical address, no MMU yet)
 	MOV	$(G0_STACK_BASE + G0_STACK_SIZE), SP
 
@@ -197,16 +187,7 @@ zero_pt_loop:
 	// sfence.vma (flush TLB)
 	WORD	$0x12000073		// sfence.vma zero, zero
 
-	// ---- Step 6: Print 'P' via high-VA UART (verify MMU works) ----
-	MOV	$0xFFFFFFFF10000000, T0	// UART via linear map
-uart_wait_2:
-	MOVBU	5(T0), T1
-	AND	$UART_LSR_THRE, T1
-	BEQ	T1, ZERO, uart_wait_2
-	MOV	$'P', T1
-	MOVB	T1, (T0)
-
-	// ---- Step 7: Jump to high-memory Go bootstrap ----
+	// ---- Step 5: Jump to high-memory Go bootstrap ----
 	// Convert SP to high VA
 	MOV	$KERNEL_VA_OFFSET, T0
 	ADD	T0, SP, SP

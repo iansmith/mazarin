@@ -34,14 +34,13 @@ func SyscallWaitSoftIRQ(slotNum, bufPtr, _, _, _, _ uint64) int64 {
 		return int64(n)
 	}
 
-	// Slow path: block thread until IRQ wakes us
-	nextCtx := BlockOnSlot(slot)
-	if nextCtx == 0 {
-		return -11 // EAGAIN (can't block, no other threads)
-	}
-
-	SetSyscallSwitchTarget(nextCtx)
-	return 0 // will retry after wake
+	// No events available — return EAGAIN so userspace can yield
+	// to the Go scheduler (runtime.Gosched) and retry.
+	// CRITICAL: Do NOT use BlockOnSlot here. Kernel-level thread
+	// blocking causes Go runtime P-starvation: the woken thread's
+	// exitsyscall() can't acquire the P (held by another goroutine),
+	// so the goroutine parks permanently in the global run queue.
+	return -11 // EAGAIN
 }
 
 // SyscallRegisterSoftIRQ registers an IRQ on a soft IRQ slot for the current priest.

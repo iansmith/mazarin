@@ -44,15 +44,6 @@
 
 // diplomatRealEntry is called by the trampoline with OpenSBI params in S0/S1.
 TEXT ·diplomatRealEntry(SB),NOSPLIT|NOFRAME,$0
-	// ---- Print 'D' to UART ----
-	MOV	$UART_BASE, T0
-uart_wait_1:
-	MOVBU	5(T0), T1
-	AND	$UART_LSR_THRE, T1
-	BEQ	T1, ZERO, uart_wait_1
-	MOV	$'D', T1
-	MOVB	T1, (T0)
-
 	// ---- Set up stack ----
 	MOV	$(G0_STACK_BASE + G0_STACK_SIZE), SP
 
@@ -144,15 +135,6 @@ zero_pt_loop:
 	OR	T0, T1, T0
 	WORD	$0x18029073		// csrw satp, t0
 	WORD	$0x12000073		// sfence.vma
-
-	// ---- Print 'P' via high-VA UART ----
-	MOV	$0xFFFFFFFF10000000, T0
-uart_wait_2:
-	MOVBU	5(T0), T1
-	AND	$UART_LSR_THRE, T1
-	BEQ	T1, ZERO, uart_wait_2
-	MOV	$'P', T1
-	MOVB	T1, (T0)
 
 	// ---- Convert SP to high VA ----
 	MOV	$KERNEL_VA_OFFSET, T0

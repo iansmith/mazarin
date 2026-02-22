@@ -68,40 +68,6 @@ func InitUnifiedPool() {
 	unifiedStart := uint64(kmazarinUnifiedPoolStart)
 	unifiedEnd := uint64(kmazarinUnifiedPoolEnd)
 
-	// DEBUG: print auxv values to UART
-	rawUART('U')
-	rawUART('S')
-	rawUART('=')
-	hexC := "0123456789ABCDEF"
-	for i := 60; i >= 0; i -= 4 {
-		rawUART(hexC[(unifiedStart>>uint(i))&0xF])
-	}
-	rawUART(' ')
-	rawUART('U')
-	rawUART('E')
-	rawUART('=')
-	for i := 60; i >= 0; i -= 4 {
-		rawUART(hexC[(unifiedEnd>>uint(i))&0xF])
-	}
-	rawUART(' ')
-	rawUART('F')
-	rawUART('S')
-	rawUART('=')
-	fs := uint64(kmazarinFramePoolStart)
-	for i := 60; i >= 0; i -= 4 {
-		rawUART(hexC[(fs>>uint(i))&0xF])
-	}
-	rawUART(' ')
-	rawUART('F')
-	rawUART('E')
-	rawUART('=')
-	fe := uint64(kmazarinFramePoolEnd)
-	for i := 60; i >= 0; i -= 4 {
-		rawUART(hexC[(fe>>uint(i))&0xF])
-	}
-	rawUART('\r')
-	rawUART('\n')
-
 	var poolStart, poolEnd uint64
 	if unifiedStart != 0 && unifiedEnd != 0 {
 		poolStart = unifiedStart

@@ -152,6 +152,7 @@ func SetTopHalfDev(irqNum uint32, usedVA, evtBufVA, availVA, descVA, notifyAddr,
 // Returns false if ring is full (overflow — event dropped).
 //
 //go:nosplit
+//go:noinline
 func ringPush(r *softIRQRing, ev hid.HIDEvent) bool {
 	tail := atomic.LoadUint32(&r.tail)
 	head := atomic.LoadUint32(&r.head)
@@ -165,6 +166,8 @@ func ringPush(r *softIRQRing, ev hid.HIDEvent) bool {
 
 // RingDrain copies up to max events from the ring into buf.
 // Returns the number of events drained.
+//
+//go:noinline
 func RingDrain(r *softIRQRing, buf []hid.HIDEvent, max int) int {
 	n := 0
 	for n < max {

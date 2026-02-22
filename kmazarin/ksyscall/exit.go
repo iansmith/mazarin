@@ -37,6 +37,7 @@ func SyscallExitGroup(status, _, _, _, _, _ uint64) int64 {
 		haltForever()
 	}
 
+	// Userspace exit_group
 	// Userspace priest exit — tear down thread
 	nextCtx := ThreadExit()
 	if nextCtx == 0 {

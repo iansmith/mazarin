@@ -3,7 +3,7 @@ package sys
 import (
 	"errors"
 	"mazzy/shared/hid"
-	"syscall"
+	"runtime"
 	"unsafe"
 )
 
@@ -13,26 +13,31 @@ const (
 	sysQueryInputDevices = 0x100C
 )
 
-// WaitSoftIRQ blocks until soft IRQ events arrive on the given slot.
-// Uses Syscall6 (not RawSyscall) so the Go runtime knows the M is blocked,
-// allowing other goroutines to run on a new M.
+// WaitSoftIRQ polls until soft IRQ events arrive on the given slot.
+// Uses RawSyscall (non-blocking) + runtime.Gosched() to yield to the
+// Go scheduler between retries. This avoids kernel-level thread blocking
+// which causes Go runtime P-starvation: when a blocked thread is woken
+// by the kernel, exitsyscall() can't acquire the P (held by another
+// goroutine), so the goroutine parks permanently in the global run queue.
 // Returns the number of events written to buf, or an error.
 func WaitSoftIRQ(slot int, buf *hid.SoftIRQReturn) (int, error) {
 	for {
-		r1, _, errno := syscall.Syscall6(sysWaitSoftIRQ,
+		r1, _, errno := RawSyscall(sysWaitSoftIRQ,
 			uintptr(slot),
 			uintptr(unsafe.Pointer(buf)),
 			0, 0, 0, 0)
 
 		if errno != 0 {
-			if errno == 11 { // EAGAIN
+			if errno == 11 { // EAGAIN — no events yet
+				runtime.Gosched()
 				continue
 			}
 			return 0, errors.New("WaitSoftIRQ failed")
 		}
 
 		if r1 == 0 {
-			// Woke from block, retry to drain events
+			// No events, yield and retry
+			runtime.Gosched()
 			continue
 		}
 

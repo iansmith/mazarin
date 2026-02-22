@@ -1,10 +1,13 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
 	"unsafe"
 )
+
+var flushDiagCount uint32
 
 // SyscallFlushFramebuffer transfers and flushes a region of the framebuffer to the display.
 // arg0 = x, arg1 = y, arg2 = width, arg3 = height (in framebuffer pixel coordinates)
@@ -12,6 +15,10 @@ import (
 //go:nosplit
 func SyscallFlushFramebuffer(x, y, width, height, _, _ uint64) int64 {
 	gpu.UpdateDisplay(uint32(x), uint32(y), uint32(width), uint32(height))
+	flushDiagCount++
+	if flushDiagCount&7 == 0 {
+		console.BreadcrumbNoSplit('F')
+	}
 	return 0
 }
 

@@ -217,6 +217,20 @@ unknown_stval_print:
 handle_ecall:
 ecall_dispatch:
 
+	// ---- DIAGNOSTIC: count syscalls ----
+	MOV	$·syscallDiagCount(SB), T0
+	MOV	(T0), T1
+	ADD	$1, T1
+	MOV	T1, (T0)
+	// Print 'E' every 256th syscall
+	AND	$255, T1, T2
+	BNE	T2, ZERO, ecall_skip_marker
+	MOV	$0xFFFFFFFF10000000, T0
+	MOV	$0x45, T1		// 'E'
+	MOVB	T1, (T0)
+ecall_skip_marker:
+	// ---- END DIAGNOSTIC ----
+
 	// Syscall dispatch
 	// Advance sepc past ECALL instruction (4 bytes)
 	MOV	248(X2), T0		// sepc
@@ -696,13 +710,47 @@ unk_irq_print:
 
 handle_timer_interrupt:
 	// S-mode timer interrupt (cause 5)
-	// Dispatch timer IRQ
+
+	// ---- DIAGNOSTIC: Increment timer IRQ counter and print marker ----
+	// This runs BEFORE any Go code to verify the timer hardware is firing.
+	MOV	$·timerDiagCount(SB), T0
+	MOV	(T0), T1
+	ADD	$1, T1
+	MOV	T1, (T0)
+	// Print 'T' every 64th timer interrupt (~6.4s at 100ms interval)
+	AND	$63, T1, T2
+	BNE	T2, ZERO, timer_skip_marker
+	MOV	$0xFFFFFFFF10000000, T0
+	MOV	$0x54, T1		// 'T'
+	MOVB	T1, (T0)
+timer_skip_marker:
+	// ---- END DIAGNOSTIC ----
+
+	// Call pure assembly preemption handler (g poisoning, deadline tracking).
+	// X2 = trap frame base. Handler saves/restores A0-A5.
+	CALL	mazzy∕kmazarin∕kirq·TimerIRQHandlerAsm(SB)
+
+	// Dispatch timer IRQ (Go handler: SATP verify, deadline processing, re-arm)
 	// Load all args from trap frame before macro adjusts SP
 	MOV	$5, T0			// IRQ number
 	MOV	X2, T1			// frame pointer
 	MOV	248(X2), T2		// sepc (ELR equivalent)
 	MOV	8(X2), A3		// original sp
 	GO_CALL_4_0(·TimerIRQHandler, T0, T1, T2, A3)
+
+	// ---- DIAGNOSTIC: TimerIRQHandler completed (rearm happened) ----
+	MOV	$·timerHandlerDoneCount(SB), T0
+	MOV	(T0), T1
+	ADD	$1, T1
+	MOV	T1, (T0)
+	// Print 'R' (rearm done) every 64th time
+	AND	$63, T1, T2
+	BNE	T2, ZERO, timer_rearm_skip
+	MOV	$0xFFFFFFFF10000000, T0
+	MOV	$0x52, T1		// 'R'
+	MOVB	T1, (T0)
+timer_rearm_skip:
+	// ---- END DIAGNOSTIC ----
 
 	// Process deadline queue in top-half context.
 	// CRITICAL: Must run ProcessDeadlines HERE (not in bottom half) because
@@ -717,8 +765,40 @@ handle_timer_interrupt:
 	GO_CALL_1_1(·CheckThreadPreemption, S2)
 	MOV	T0, S2			// new context or 0
 
-	BEQ	S2, ZERO, trap_return
+	BEQ	S2, ZERO, timer_no_switch
+
+	// ---- DIAGNOSTIC: count context switches ----
+	MOV	$·timerCtxSwitchCount(SB), T0
+	MOV	(T0), T1
+	ADD	$1, T1
+	MOV	T1, (T0)
+	// Print 'S' every 64th context switch
+	AND	$63, T1, T2
+	BNE	T2, ZERO, timer_switch_skip_marker
+	MOV	$0xFFFFFFFF10000000, T0
+	MOV	$0x53, T1		// 'S'
+	MOVB	T1, (T0)
+timer_switch_skip_marker:
+	// ---- END DIAGNOSTIC ----
+
 	JMP	load_context_and_sret
+
+timer_no_switch:
+	// ---- DIAGNOSTIC: count no-switch timer returns ----
+	MOV	$·timerNoSwitchCount(SB), T0
+	MOV	(T0), T1
+	ADD	$1, T1
+	MOV	T1, (T0)
+	// Print 'N' every 64th no-switch return
+	AND	$63, T1, T2
+	BNE	T2, ZERO, timer_no_switch_skip
+	MOV	$0xFFFFFFFF10000000, T0
+	MOV	$0x4E, T1		// 'N'
+	MOVB	T1, (T0)
+timer_no_switch_skip:
+	// ---- END DIAGNOSTIC ----
+
+	JMP	trap_return
 
 handle_software_interrupt:
 	// S-mode software interrupt (cause 1)

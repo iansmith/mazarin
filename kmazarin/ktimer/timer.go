@@ -15,6 +15,14 @@ package ktimer
 // Default to 62.5MHz for safety if not initialized.
 var timerFrequency uint32 = 62500000
 
+// LastRearmDeadline stores the absolute deadline from the most recent
+// PlatformRearmTimer call. Written by assembly, used for hang diagnostics.
+var LastRearmDeadline uint64
+
+// LastRearmRetCode stores the SBI return code (A0) from the most recent
+// set_timer ECALL. 0 = success. Written by assembly.
+var LastRearmRetCode uint64
+
 // Init reads the counter frequency from hardware and caches it.
 // Must be called during early kernel initialization.
 //

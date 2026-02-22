@@ -246,7 +246,6 @@ func DiplomatEntry() {
 	syscalls = defaultSyscalls
 
 	printString("Diplomat UEFI Bootloader\r\n")
-	printString("DBG: before InitializeSpans\r\n")
 
 	// Initialize memory span tracking for mmap
 	if !boot.InitSpans() {
@@ -255,12 +254,8 @@ func DiplomatEntry() {
 		}
 	}
 
-	printString("DBG: spans OK\r\n")
-
 	// Get block device for boot partition
-	plat.DebugPortOut('G')
 	blockDev, err := boot.GetBlockDevice()
-	plat.DebugPortOut('R')
 	if err != nil {
 		printString("ERROR: block device: ")
 		printString(err.Error())
@@ -270,17 +265,13 @@ func DiplomatEntry() {
 	}
 
 	// Mount FAT32 filesystem
-	plat.DebugPortOut('M')
 	printString("Mounting FAT32...\r\n")
 	// Platform-specific mount: ARM64/AMD64 use normal error-returning mount,
 	// RISC-V uses allocation-free version to avoid error interfaces during early boot
-	plat.DebugPortOut('X')
 	fs := mountFAT32OrDie(blockDev)
-	plat.DebugPortOut('O')
 	printString("FAT32 mounted OK\r\n")
 
 	// Load the kernel into physical memory
-	plat.DebugPortOut('L')
 	kernel, err := boot.LoadKernel(fs, "/EFI/Linux/kmazarin.elf")
 	if err != nil {
 		printString("ERROR: kernel load: ")
@@ -360,7 +351,6 @@ func DiplomatEntry() {
 	}
 
 	// Phase 9: Build startup environment (auxv on g0 stack)
-	printString("DBG: about to build startup env\r\n")
 	stackPtr, err := boot.BuildStartupEnv(vm, hw, kernel)
 	if err != nil {
 		printString("ERROR: startup env: ")
