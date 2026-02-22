@@ -730,6 +730,14 @@ handle_timer_irq:
 	// never fire, stalling the scheduler and blocking sysmon.
 	GO_CALL_0_0(·ProcessDeadlinesTopHalf)
 
+	// Skip preemption if the interrupted code was in kernel mode (CS=0x08).
+	// When SyscallWaitSoftIRQ enables interrupts for WFI (STI+HLT), timers
+	// fire during SYSCALL processing. Preempting here is unsafe: the SYSCALL
+	// frame on the shared exception stack would be overwritten when another
+	// thread's SYSCALL runs, corrupting the preempted thread's return state.
+	CMPQ	136(SP), $0x08		// CS from exception frame
+	JE	exception_return	// Kernel mode — never preempt
+
 	// Check NeedsThreadPreempt flag (matching ARM64 pattern at exceptions_arm64.s:985).
 	// TimerIRQHandler sets this flag (via timerIRQHandlerInternal) when the
 	// current thread's preemption deadline has expired. Without this guard,

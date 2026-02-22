@@ -11,5 +11,16 @@ package main
 // - Any other interrupt becomes pending
 // - Spuriously (WFI is a hint, not a guarantee)
 //
-// Implemented in wfi_arm64.s
+// Implemented in wfi_arm64.s / wfi_amd64.s / wfi_riscv64.s
 func WaitForInterrupt()
+
+// EnableIRQsAndWait atomically enables interrupts and halts the CPU until
+// the next interrupt fires. On x86_64 this exploits the STI shadow (the
+// instruction after STI executes with IRQs still masked) to make STI+HLT
+// an atomic pair — the first interrupt that can fire does so during HLT.
+// On ARM64/RISC-V, enables IRQs then executes WFI.
+// After the interrupt handler returns, IRQs are disabled again (CLI on
+// AMD64; ARM64/RISC-V exception return restores the pre-WFI IRQ state).
+//
+// Implemented in wfi_arm64.s / wfi_amd64.s / wfi_riscv64.s
+func EnableIRQsAndWait()

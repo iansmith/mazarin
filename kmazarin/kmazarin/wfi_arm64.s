@@ -24,3 +24,17 @@ TEXT ·WaitForInterrupt(SB), NOSPLIT|NOFRAME, $0-0
 	// Encoded as HINT #1 in Go assembler
 	HINT	$1
 	RET
+
+// EnableIRQsAndWait enables IRQs and halts until the next interrupt.
+// MSR DAIFClr, #2 clears the I bit to enable IRQs, then WFI halts.
+// Exception return restores the caller's original DAIF state.
+// func EnableIRQsAndWait()
+TEXT ·EnableIRQsAndWait(SB), NOSPLIT|NOFRAME, $0-0
+	// MSR DAIFClr, #2 - enable IRQs
+	WORD	$0xD50342FF
+	ISB	$15
+	// WFI
+	HINT	$1
+	// MSR DAIFSet, #2 - re-disable IRQs
+	WORD	$0xD50342DF
+	RET

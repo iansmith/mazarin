@@ -6,10 +6,16 @@ import (
 	"unsafe"
 )
 
-// SyscallWaitSoftIRQ blocks the current thread until soft IRQ events arrive on a slot.
+// SyscallWaitSoftIRQ drains soft IRQ events from a slot's ring buffer.
 // arg0 = slot number (0-31)
 // arg1 = pointer to SoftIRQReturn struct in userspace memory
-// Returns: number of events (>0), 0 (woke from block, retry), or negative errno.
+// Returns: number of events (>0), or -EAGAIN if no events available.
+//
+// NOTE: Kernel-level thread blocking (BlockOnSlot) causes Go runtime
+// P-starvation on all architectures. When a blocked thread is woken,
+// exitsyscall() can't reliably re-acquire the P — all Ms eventually
+// park in stopm() waiting for a P nobody is handing off. Userspace
+// must poll with RawSyscall + Gosched instead.
 //
 //go:noinline
 func SyscallWaitSoftIRQ(slotNum, bufPtr, _, _, _, _ uint64) int64 {
@@ -22,10 +28,10 @@ func SyscallWaitSoftIRQ(slotNum, bufPtr, _, _, _, _ uint64) int64 {
 
 	slot := int32(slotNum)
 
-	// Fast path: drain ring buffer
 	var events [hid.MaxHIDEvents]hid.HIDEvent
-	n := DrainSoftIRQSlotEvents(slot, events[:], hid.MaxHIDEvents)
 
+	// First check: non-blocking drain
+	n := DrainSoftIRQSlotEvents(slot, events[:], hid.MaxHIDEvents)
 	if n > 0 {
 		intKind := GetSlotInterruptKind(slot)
 		if err := writeSoftIRQReturn(bufPtr, events[:n], n, intKind); err != 0 {
@@ -34,13 +40,23 @@ func SyscallWaitSoftIRQ(slotNum, bufPtr, _, _, _, _ uint64) int64 {
 		return int64(n)
 	}
 
-	// No events available — return EAGAIN so userspace can yield
-	// to the Go scheduler (runtime.Gosched) and retry.
-	// CRITICAL: Do NOT use BlockOnSlot here. Kernel-level thread
-	// blocking causes Go runtime P-starvation: the woken thread's
-	// exitsyscall() can't acquire the P (held by another goroutine),
-	// so the goroutine parks permanently in the global run queue.
-	return -11 // EAGAIN
+	// No events — halt CPU until next interrupt, then check once more.
+	// IRQs are disabled during syscall context; enableIRQsAndWait atomically
+	// enables IRQs and halts (STI+HLT on AMD64, DAIFClr+WFI on ARM64,
+	// CSRSI+WFI on RISC-V). IRQs are re-disabled before returning.
+	enableIRQsAndWait()
+
+	// After interrupt: ISR may have pushed events to ring
+	n = DrainSoftIRQSlotEvents(slot, events[:], hid.MaxHIDEvents)
+	if n > 0 {
+		intKind := GetSlotInterruptKind(slot)
+		if err := writeSoftIRQReturn(bufPtr, events[:n], n, intKind); err != 0 {
+			return err
+		}
+		return int64(n)
+	}
+
+	return -11 // EAGAIN — interrupt was for a different slot
 }
 
 // SyscallRegisterSoftIRQ registers an IRQ on a soft IRQ slot for the current priest.

@@ -51,3 +51,10 @@ func BlockOnSlot(slotNum int32) uintptr
 //go:linkname GetSlotInterruptKind main.GetSlotInterruptKind
 func GetSlotInterruptKind(slotNum int32) hid.InterruptType
 
+// enableIRQsAndWait atomically enables interrupts and halts until next interrupt.
+// On AMD64: STI+HLT+CLI (STI shadow makes this atomic).
+// On ARM64: DAIFClr+WFI. On RISC-V: CSRSI+WFI+CSRCI.
+//
+//go:linkname enableIRQsAndWait main.EnableIRQsAndWait
+func enableIRQsAndWait()
+

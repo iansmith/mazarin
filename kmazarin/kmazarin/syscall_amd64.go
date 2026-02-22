@@ -63,7 +63,15 @@ func copyGDTToOwnedBuffer() {
 	for i := range tssBuffer {
 		tssBuffer[i] = 0
 	}
-	// RSP0 at offset 4-11: kernel stack for Ring 3 → Ring 0 transitions
+	// Split exception stack into two halves to prevent IST/SYSCALL collision.
+	// When SyscallWaitSoftIRQ enables interrupts (STI+HLT) during syscall
+	// processing, a timer interrupt via IST would overwrite the SYSCALL frame
+	// if both used the same stack region. Bottom half → SYSCALL/RSP0 entry,
+	// top half → IST1 for timer/device interrupts.
+	//
+	// RSP0 at offset 4-11: kernel stack for Ring 3 → Ring 0 transitions.
+	// Also used by excStackTopForSyscall for SYSCALL instruction entry.
+	excStackTopForSyscall -= 8192 // Bottom half of exception stack
 	rsp0 := excStackTopForSyscall
 	tssBuffer[4] = byte(rsp0)
 	tssBuffer[5] = byte(rsp0 >> 8)
@@ -75,12 +83,11 @@ func copyGDTToOwnedBuffer() {
 	tssBuffer[11] = byte(rsp0 >> 56)
 
 	// IST1 at offset 36-43: dedicated stack for timer/device interrupts.
+	// Uses the TOP half of the exception stack (8KB), separate from SYSCALL.
 	// On ARM64/RISC-V, exceptions always switch to SP_EL1/sscratch. On x86_64,
-	// ring 0→ring 0 interrupts push to the current RSP by default. If a timer
-	// fires while a kernel thread runs on its small goroutine stack (~8KB), the
-	// Go handler code overflows that stack → triple fault. IST forces the CPU
-	// to load a dedicated stack for the interrupt, matching the ARM64 pattern.
-	ist1 := excStackTopForSyscall
+	// ring 0→ring 0 interrupts push to the current RSP by default. IST forces
+	// the CPU to load a dedicated stack for the interrupt.
+	ist1 := excStackTopForSyscall + 8192 // Top half = original excStackTop
 	tssBuffer[36] = byte(ist1)
 	tssBuffer[37] = byte(ist1 >> 8)
 	tssBuffer[38] = byte(ist1 >> 16)

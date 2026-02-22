@@ -982,6 +982,14 @@ skip_deadline_processing:
 	// ========================================================================
 	// Thread preemption check - switch to another thread if threshold exceeded
 	// ========================================================================
+	// Skip preemption if the interrupted code was in kernel mode (EL1).
+	// When SyscallWaitSoftIRQ calls EnableIRQsAndWait, a timer that fires
+	// during kernel-mode WFI must NOT preempt — the outer SVC frame is
+	// still on the exception stack and a context switch would corrupt it.
+	MOVD	(EXC_FRAME_ELR_SPSR+8)(RSP), R10	// R10 = saved SPSR
+	AND	$0x4, R10, R10				// EL1 bit (M[2])
+	CBNZ	R10, timer_no_thread_preempt		// Kernel mode — skip
+
 	// Check NeedsThreadPreempt flag set by TimerIRQHandlerAsm
 	MOVW	mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB), R10
 	CBZ	R10, timer_no_thread_preempt

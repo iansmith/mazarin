@@ -13,13 +13,10 @@ const (
 	sysQueryInputDevices = 0x100C
 )
 
-// WaitSoftIRQ polls until soft IRQ events arrive on the given slot.
-// Uses RawSyscall (non-blocking) + runtime.Gosched() to yield to the
-// Go scheduler between retries. This avoids kernel-level thread blocking
-// which causes Go runtime P-starvation: when a blocked thread is woken
-// by the kernel, exitsyscall() can't acquire the P (held by another
-// goroutine), so the goroutine parks permanently in the global run queue.
-// Returns the number of events written to buf, or an error.
+// WaitSoftIRQ waits for soft IRQ events on the given slot.
+// The kernel halts the CPU (WFI/HLT) when no events are available,
+// so each syscall round-trip takes ~10ms (until next interrupt).
+// A single Gosched between retries suffices to let other goroutines run.
 func WaitSoftIRQ(slot int, buf *hid.SoftIRQReturn) (int, error) {
 	for {
 		r1, _, errno := RawSyscall(sysWaitSoftIRQ,
@@ -28,20 +25,17 @@ func WaitSoftIRQ(slot int, buf *hid.SoftIRQReturn) (int, error) {
 			0, 0, 0, 0)
 
 		if errno != 0 {
-			if errno == 11 { // EAGAIN — no events yet
+			if errno == 11 { // EAGAIN
 				runtime.Gosched()
 				continue
 			}
 			return 0, errors.New("WaitSoftIRQ failed")
 		}
 
-		if r1 == 0 {
-			// No events, yield and retry
-			runtime.Gosched()
-			continue
+		if r1 > 0 {
+			return int(r1), nil
 		}
-
-		return int(r1), nil
+		runtime.Gosched()
 	}
 }
 

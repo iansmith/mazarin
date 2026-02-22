@@ -78,8 +78,9 @@ func SyscallDispatch()   {}
 func TimerIRQHandler()   {}
 
 // System control
-func WaitForInterrupt() {}
-func Exit()             {}
+func WaitForInterrupt()    {}
+func EnableIRQsAndWait()   {}
+func Exit()                {}
 
 // MMU and TLB
 func invalidateTLB()       {}

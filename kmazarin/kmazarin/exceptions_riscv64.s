@@ -760,6 +760,14 @@ timer_rearm_skip:
 	// (Same pattern as ARM64 exceptions_arm64.s:969-987)
 	GO_CALL_0_0(·ProcessDeadlinesTopHalf)
 
+	// Skip preemption if the interrupted code was in kernel mode (SPP=1).
+	// When SyscallWaitSoftIRQ calls EnableIRQsAndWait, a timer that fires
+	// during kernel-mode WFI must NOT preempt — the outer ecall frame is
+	// still on the exception stack and a context switch would corrupt it.
+	MOV	256(X2), T0		// saved sstatus from trap frame
+	AND	$0x100, T0, T0		// SPP bit (bit 8): 1=S-mode, 0=U-mode
+	BNE	T0, ZERO, trap_return	// Kernel mode — never preempt
+
 	// Check thread preemption
 	MOV	X2, S2			// frame pointer (callee-saved)
 	GO_CALL_1_1(·CheckThreadPreemption, S2)
