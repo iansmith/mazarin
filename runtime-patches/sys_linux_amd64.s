@@ -258,8 +258,13 @@ TEXT runtime·sysMunmap(SB),NOSPLIT,$0
 TEXT runtime·callCgoMunmap(SB),NOSPLIT,$16-16
 	RET
 
-// madvise - no-op, return 0
+// madvise - stub, return 0
+// TODO: Implement real madvise (at least MADV_DONTNEED) to let Go scavenger reclaim pages.
 TEXT runtime·madvise(SB),NOSPLIT,$0
+	// Breadcrumb: '!' on COM1 to flag madvise calls
+	MOVB	$0x21, AL		// '!'
+	MOVW	$0x3F8, DX
+	OUTB
 	MOVL	$0, ret+24(FP)
 	RET
 

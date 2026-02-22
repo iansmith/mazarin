@@ -18,6 +18,7 @@ package runtime
 
 import (
 	"internal/runtime/atomic"
+	"internal/runtime/sys"
 	"unsafe"
 )
 
@@ -37,6 +38,7 @@ var _cgo_munmap unsafe.Pointer
 const (
 	_kmazarinPageSize = 4096
 	_kmazarinMapFixed = 0x10 // MAP_FIXED flag
+	_kmazarinProtNone = 0x0  // PROT_NONE
 )
 
 // kmazarinBumpPointer is the early-boot allocator for mmap calls.
@@ -95,15 +97,47 @@ func mmap(addr unsafe.Pointer, n uintptr, prot, flags, fd int32, off uint32) (un
 		// For MAP_FIXED, just return the requested address
 		// The page fault handler will allocate physical pages on demand
 		if addrVal >= heapStart && addrVal+alignedLength <= heapEnd {
-			// Breadcrumb: 'm' addr ':' size ' '
+			// Breadcrumb: 'm' addr ':' size '@' callerPC ' '
 			kmazarinUART('m')
 			kmazarinPrintHex40(addrVal)
+			kmazarinUART(':')
+			kmazarinPrintHex32(uint32(alignedLength))
+			kmazarinUART('@')
+			kmazarinPrintHex40(uint64(sys.GetCallerPC()))
+			kmazarinUART(' ')
+			return addr, 0
+		}
+		return nil, 12 // ENOMEM
+	}
+
+	// PROT_NONE with a hint address: this is sysReserveOS asking to reserve VA
+	// space. Honor the hint if it falls within our heap pool — no physical
+	// backing is needed, the page fault handler allocates frames on demand
+	// when sysMapOS later issues MAP_FIXED within this range.
+	// We don't advance the bump pointer because this is just a VA reservation.
+	if prot == _kmazarinProtNone && addr != nil {
+		hintVal := uint64(uintptr(addr))
+		if hintVal >= heapStart && hintVal+alignedLength <= heapEnd {
+			// Breadcrumb: 'R' hint ':' size ' ' (Reserve honored)
+			kmazarinUART('R')
+			kmazarinPrintHex40(hintVal)
 			kmazarinUART(':')
 			kmazarinPrintHex32(uint32(alignedLength))
 			kmazarinUART(' ')
 			return addr, 0
 		}
-		return nil, 12 // ENOMEM
+		// Hint outside our heap pool — return error so Go's arena planner
+		// moves to the next hint quickly, instead of us wasting bump space
+		// on an address Go will discard (munmap is our no-op).
+		// Once Go exhausts all hints, it calls sysReserve(nil) which
+		// goes to our bump allocator exactly once.
+		// Breadcrumb: 'r' hint ':' size ' ' (Reserve hint rejected)
+		kmazarinUART('r')
+		kmazarinPrintHex40(hintVal)
+		kmazarinUART(':')
+		kmazarinPrintHex32(uint32(alignedLength))
+		kmazarinUART(' ')
+		return nil, 12 // ENOMEM — hint not in our pool
 	}
 
 	// Non-MAP_FIXED: bump allocate from heap
@@ -120,11 +154,13 @@ func mmap(addr unsafe.Pointer, n uintptr, prot, flags, fd int32, off uint32) (un
 
 		// Try to atomically update the bump pointer
 		if kmazarinBumpPointer.CompareAndSwap(currentPtr, nextPtr) {
-			// Breadcrumb: 'M' addr ':' size ' '
+			// Breadcrumb: 'M' addr ':' size '@' callerPC ' '
 			kmazarinUART('M')
 			kmazarinPrintHex40(currentPtr)
 			kmazarinUART(':')
 			kmazarinPrintHex32(uint32(alignedLength))
+			kmazarinUART('@')
+			kmazarinPrintHex40(uint64(sys.GetCallerPC()))
 			kmazarinUART(' ')
 			return unsafe.Pointer(uintptr(currentPtr)), 0
 		}
@@ -167,13 +203,16 @@ func kmazarinPrintHex32(v uint32) {
 	}
 }
 
-// munmap is a no-op during early boot - we don't actually free memory.
+// munmap is a stub — we don't actually free memory yet.
+// TODO: Implement real munmap when we need to reclaim VA/physical pages.
 //
 //go:nosplit
 func munmap(addr unsafe.Pointer, n uintptr) {
-	// No-op: don't free memory during early boot
-	_ = addr
-	_ = n
+	kmazarinUART('~') // breadcrumb: munmap called
+	kmazarinPrintHex40(uint64(uintptr(addr)))
+	kmazarinUART(':')
+	kmazarinPrintHex32(uint32(n))
+	kmazarinUART(' ')
 }
 
 // sysMmap is declared but never called in kmazarin.

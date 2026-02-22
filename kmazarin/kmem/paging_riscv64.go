@@ -78,8 +78,9 @@ func verifyUserspacePriestL0(l0PA uintptr, asid uint16) {
 // Must copy kernel entries to preserve kernel mappings when SATP switches.
 //
 // Layout:
-//   - L3[1-511]: Copied directly from kernel (Go heap at L3[1]=0xC000000000,
-//                kernel upper half at L3[256-511]: linear map, heap, scratch).
+//   - L3[256-511]: Copied from kernel (linear map, kernel heap, stacks, MMIO).
+//   - L3[1-255]: Left zeroed. The demand pager creates entries with User bit
+//     when userspace accesses these VAs (e.g., Go heap at 0xC000000000 = L3[1]).
 //   - L3[0]: Contains both kmazarin code (L2[1]: VA 0x40000000+) and user code (L2[0]).
 //            We create a NEW L2 table per process that copies kmazarin entries but
 //            leaves L2[0] empty for per-process user-space page tables.
@@ -88,8 +89,10 @@ func verifyUserspacePriestL0(l0PA uintptr, asid uint16) {
 func initProcessL0(l0VA uintptr) {
 	kernelL0VA := ttbr1L0PA + constants.KernelMMIOOffset
 
-	// Copy L3[1-511] directly (includes Go heap at L3[1], kernel linear map at L3[256+])
-	for i := uintptr(1); i < 512; i++ {
+	// Copy L3[256-511] from kernel (kernel VA space only).
+	// L3[1-255] are left zeroed (the page was zeroed at allocation).
+	// The demand pager will create entries with User bit when needed.
+	for i := uintptr(256); i < 512; i++ {
 		*(*uint64)(unsafe.Pointer(l0VA + i*8)) = *(*uint64)(unsafe.Pointer(kernelL0VA + i*8))
 	}
 
@@ -176,7 +179,7 @@ func VerifyCurrentSATPL3E0() {
 		serial.RawUARTHex64(asid)
 		serial.RawUARTPuts("\r\n")
 
-		// Print L3[1] and L3[256] for comparison (should be valid kernel entries)
+		// Print L3[1] and L3[256] for diagnosis (L3[1] should be 0, L3[256] should be valid)
 		l3e1 := *(*uint64)(unsafe.Pointer(rootVA + 8))
 		l3e256 := *(*uint64)(unsafe.Pointer(rootVA + 256*8))
 		serial.RawUARTPuts(" L3[1]=0x")
