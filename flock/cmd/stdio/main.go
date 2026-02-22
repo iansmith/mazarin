@@ -404,8 +404,8 @@ func main() {
 		sys.FlushFramebuffer(uint32(rectX), uint32(rectY), uint32(rectW), uint32(rectH))
 		fmt.Printf("[stdio] FlushFramebuffer: %v\n", time.Since(t0))
 	} else {
-		copyFramebufferToGG(con.dc, fb)
-		fmt.Printf("[stdio] copyFramebufferToGG: %v\n", time.Since(t0))
+		fillGGBackbuffer(con.dc, nBase)
+		fmt.Printf("[stdio] fillGGBackbuffer: %v\n", time.Since(t0))
 
 		t0 = time.Now()
 		con.drawCard()
@@ -641,8 +641,8 @@ func roundedRectSDF(px, py, rx, ry, rw, rh, r float64) float64 {
 // No blur pass needed — shadow intensity is computed analytically from
 // the signed distance field with gaussian falloff and directional lighting.
 func (c *console) drawCard() {
-	if runtime.GOARCH == "riscv64" {
-		return // skip gg rasterizer; background fill provides card frame
+	if runtime.GOARCH != "arm64" {
+		return // skip SDF shadows on TCG platforms (AMD64 + RISC-V)
 	}
 	cx := float64(c.cardX)
 	cy := float64(c.cardY)
@@ -769,7 +769,7 @@ func (c *console) drawCard() {
 
 // drawContentArea fills the content well with the darker content color.
 func (c *console) drawContentArea() {
-	if runtime.GOARCH == "riscv64" {
+	if runtime.GOARCH != "arm64" {
 		im := c.dc.Image().(*image.RGBA)
 		fillRect(im, c.rectX, c.rectY, c.rectW, c.rectH, nContent)
 		return
@@ -961,6 +961,31 @@ func (c *console) scroll() {
 
 func fixedToInt(f fixed.Int26_6) int {
 	return f.Ceil()
+}
+
+// fillGGBackbuffer fills the gg *image.RGBA with a solid color. Used instead
+// of copyFramebufferToGG on TCG platforms where reading 8MB from the MMIO
+// framebuffer is prohibitively slow.
+func fillGGBackbuffer(dc *gg.Context, bg color.RGBA) {
+	im, ok := dc.Image().(*image.RGBA)
+	if !ok {
+		return
+	}
+	pix := im.Pix
+	stride := im.Stride
+	w := im.Bounds().Dx()
+	h := im.Bounds().Dy()
+	r, g, b, a := bg.R, bg.G, bg.B, bg.A
+	for y := 0; y < h; y++ {
+		off := y * stride
+		for x := 0; x < w; x++ {
+			pix[off+0] = r
+			pix[off+1] = g
+			pix[off+2] = b
+			pix[off+3] = a
+			off += 4
+		}
+	}
 }
 
 // copyFramebufferToGG reads the BGRA framebuffer into the gg RGBA backbuffer.

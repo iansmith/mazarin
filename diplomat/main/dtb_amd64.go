@@ -38,6 +38,12 @@ func buildSyntheticDTB(hw *HardwareInfo) uint64 {
 	b.PropRegEntry(hw.RAMBase, hw.RAMSize)
 	b.EndNode()
 
+	// CMOS RTC (x86 standard: I/O ports 0x70-0x71)
+	b.BeginNodeAddr("rtc", 0x70)
+	b.PropString("compatible", "x86,cmos-rtc")
+	b.PropRegEntry(0x70, 0x2)
+	b.EndNode()
+
 	// Close root node
 	b.EndNode()
 
