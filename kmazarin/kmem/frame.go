@@ -4,7 +4,6 @@
 package kmem
 
 import (
-	"mazzy/kmazarin/console"
 	"unsafe"
 )
 
@@ -226,18 +225,3 @@ func GetRuntimeConfig() *RuntimeConfig {
 	}
 }
 
-// uartPuts writes a string to console
-// Uses console abstraction which provides spinlock protection
-//
-//go:nosplit
-func uartPuts(s string) {
-	console.KWriteString(s)
-}
-
-// uartPutHex64 writes a 64-bit hex value to console
-// Uses console abstraction which provides spinlock protection
-//
-//go:nosplit
-func uartPutHex64(val uint64) {
-	console.KPrintHex64(val)
-}

@@ -1,7 +1,10 @@
 
 package ksyscall
 
-import "mazzy/kmazarin/console"
+import (
+	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/serial"
+)
 
 // MazzySyscallBase is the starting number for Mazzy-specific syscalls.
 // Uses numbers starting at 0x1000 to avoid Linux's 0-512 range.
@@ -61,7 +64,7 @@ func SyscallDebugPrint(marker, v1, v2, v3, v4, v5 uint64) int64 {
 		if ownerPID >= 0 && getCurrentThreadPID() != ownerPID {
 			console.KWriteByte(byte(marker))
 		} else {
-			console.Breadcrumb(byte(marker))
+			serial.PollWrite(byte(marker))
 		}
 		return 0
 	}

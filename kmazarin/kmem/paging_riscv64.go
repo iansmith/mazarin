@@ -1,6 +1,7 @@
 package kmem
 
 import (
+	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"unsafe"
 )
@@ -52,20 +53,20 @@ func verifyUserspacePriestL0(l0PA uintptr, asid uint16) {
 	l0VA := l0PA + constants.KernelMMIOOffset
 	e0 := *(*uint64)(unsafe.Pointer(l0VA))
 	if (e0 & RV_PTE_V) == 0 {
-		rawUARTPuts("\r\n[SWITCH_PT] L0[0] INVALID! l0PA=0x")
-		rawUARTHex64(uint64(l0PA))
-		rawUARTPuts(" ASID=")
-		rawUARTHex64(uint64(asid))
-		rawUARTPuts(" L0[0]=0x")
-		rawUARTHex64(e0)
-		rawUARTPuts("\r\n")
+		serial.RawUARTPuts("\r\n[SWITCH_PT] L0[0] INVALID! l0PA=0x")
+		serial.RawUARTHex64(uint64(l0PA))
+		serial.RawUARTPuts(" ASID=")
+		serial.RawUARTHex64(uint64(asid))
+		serial.RawUARTPuts(" L0[0]=0x")
+		serial.RawUARTHex64(e0)
+		serial.RawUARTPuts("\r\n")
 		for i := uintptr(0); i < 4; i++ {
 			entry := *(*uint64)(unsafe.Pointer(l0VA + i*8))
-			rawUARTPuts("  L0[")
-			rawUARTHex64(uint64(i))
-			rawUARTPuts("]=0x")
-			rawUARTHex64(entry)
-			rawUARTPuts("\r\n")
+			serial.RawUARTPuts("  L0[")
+			serial.RawUARTHex64(uint64(i))
+			serial.RawUARTPuts("]=0x")
+			serial.RawUARTHex64(entry)
+			serial.RawUARTPuts("\r\n")
 		}
 		for {
 		}
@@ -128,16 +129,16 @@ func initProcessL0(l0VA uintptr) {
 	// Verify L3[0] was set correctly by reading it back
 	readBack := *(*uint64)(unsafe.Pointer(l0VA))
 	if readBack != pte {
-		rawUARTPuts("[initProcessL0] MISMATCH! wrote=0x")
-		rawUARTHex64(pte)
-		rawUARTPuts(" read=0x")
-		rawUARTHex64(readBack)
-		rawUARTPuts("\r\n")
+		serial.RawUARTPuts("[initProcessL0] MISMATCH! wrote=0x")
+		serial.RawUARTHex64(pte)
+		serial.RawUARTPuts(" read=0x")
+		serial.RawUARTHex64(readBack)
+		serial.RawUARTPuts("\r\n")
 		for {
 		}
 	}
 	if (readBack & RV_PTE_V) == 0 {
-		rawUARTPuts("[initProcessL0] L3[0] INVALID after write!\r\n")
+		serial.RawUARTPuts("[initProcessL0] L3[0] INVALID after write!\r\n")
 		for {
 		}
 	}
@@ -165,33 +166,33 @@ func VerifyCurrentSATPL3E0() {
 	// Read L3[0]
 	l3e0 := *(*uint64)(unsafe.Pointer(rootVA))
 	if (l3e0 & RV_PTE_V) == 0 {
-		rawUARTPuts("\r\n[PT_CORRUPT] L3[0] INVALID! SATP=0x")
-		rawUARTHex64(uint64(satp))
-		rawUARTPuts(" rootPA=0x")
-		rawUARTHex64(uint64(rootPA))
-		rawUARTPuts(" L3[0]=0x")
-		rawUARTHex64(l3e0)
-		rawUARTPuts(" ASID=")
-		rawUARTHex64(asid)
-		rawUARTPuts("\r\n")
+		serial.RawUARTPuts("\r\n[PT_CORRUPT] L3[0] INVALID! SATP=0x")
+		serial.RawUARTHex64(uint64(satp))
+		serial.RawUARTPuts(" rootPA=0x")
+		serial.RawUARTHex64(uint64(rootPA))
+		serial.RawUARTPuts(" L3[0]=0x")
+		serial.RawUARTHex64(l3e0)
+		serial.RawUARTPuts(" ASID=")
+		serial.RawUARTHex64(asid)
+		serial.RawUARTPuts("\r\n")
 
 		// Print L3[1] and L3[256] for comparison (should be valid kernel entries)
 		l3e1 := *(*uint64)(unsafe.Pointer(rootVA + 8))
 		l3e256 := *(*uint64)(unsafe.Pointer(rootVA + 256*8))
-		rawUARTPuts(" L3[1]=0x")
-		rawUARTHex64(l3e1)
-		rawUARTPuts(" L3[256]=0x")
-		rawUARTHex64(l3e256)
-		rawUARTPuts("\r\n")
+		serial.RawUARTPuts(" L3[1]=0x")
+		serial.RawUARTHex64(l3e1)
+		serial.RawUARTPuts(" L3[256]=0x")
+		serial.RawUARTHex64(l3e256)
+		serial.RawUARTPuts("\r\n")
 
 		// Dump first 8 entries of root page table to see full state
-		rawUARTPuts(" L3[0..7]: ")
+		serial.RawUARTPuts(" L3[0..7]: ")
 		for i := uintptr(0); i < 8; i++ {
 			entry := *(*uint64)(unsafe.Pointer(rootVA + i*8))
-			rawUARTHex64(entry)
-			rawUART(' ')
+			serial.RawUARTHex64(entry)
+			serial.PollWrite(' ')
 		}
-		rawUARTPuts("\r\n")
+		serial.RawUARTPuts("\r\n")
 
 		for {
 		} // Halt
@@ -418,7 +419,7 @@ func printHexRaw(val uint64) {
 	hexChars := "0123456789ABCDEF"
 	for i := 60; i >= 0; i -= 4 {
 		nibble := (val >> uint(i)) & 0xF
-		rawUART(hexChars[nibble])
+		serial.PollWrite(hexChars[nibble])
 	}
 }
 
@@ -431,22 +432,22 @@ func printHexRaw(val uint64) {
 func DumpInstructionPageFault(va uintptr) {
 	// Print SATP register value
 	satp := readSATP()
-	rawUART('\r')
-	rawUART('\n')
-	rawUART('S')
-	rawUART('A')
-	rawUART('T')
-	rawUART('P')
-	rawUART('=')
+	serial.PollWrite('\r')
+	serial.PollWrite('\n')
+	serial.PollWrite('S')
+	serial.PollWrite('A')
+	serial.PollWrite('T')
+	serial.PollWrite('P')
+	serial.PollWrite('=')
 	printHexRaw(uint64(satp))
 
 	// Print expected root PA (from auxv)
-	rawUART(' ')
-	rawUART('R')
-	rawUART('=')
+	serial.PollWrite(' ')
+	serial.PollWrite('R')
+	serial.PollWrite('=')
 	printHexRaw(uint64(ttbr1L0PA))
-	rawUART('\r')
-	rawUART('\n')
+	serial.PollWrite('\r')
+	serial.PollWrite('\n')
 
 	// Extract root PPN from SATP (bits 43:0 = PPN)
 	ppn := uint64(satp) & 0xFFFFFFFFFFF // lower 44 bits
@@ -454,33 +455,33 @@ func DumpInstructionPageFault(va uintptr) {
 	rootVA := rootPA + constants.KernelMMIOOffset
 
 	// Print decoded root PA
-	rawUART('P')
-	rawUART('A')
-	rawUART('=')
+	serial.PollWrite('P')
+	serial.PollWrite('A')
+	serial.PollWrite('=')
 	printHexRaw(uint64(rootPA))
-	rawUART('\r')
-	rawUART('\n')
+	serial.PollWrite('\r')
+	serial.PollWrite('\n')
 
 	// L3 (root level, bits 47:39)
 	l3Idx := (va >> 39) & 0x1FF
 	l3Entry := *(*uint64)(unsafe.Pointer(rootVA + l3Idx*8))
-	rawUART('L')
-	rawUART('3')
-	rawUART('[')
+	serial.PollWrite('L')
+	serial.PollWrite('3')
+	serial.PollWrite('[')
 	printHexRaw(uint64(l3Idx))
-	rawUART(']')
-	rawUART('=')
+	serial.PollWrite(']')
+	serial.PollWrite('=')
 	printHexRaw(l3Entry)
-	rawUART('\r')
-	rawUART('\n')
+	serial.PollWrite('\r')
+	serial.PollWrite('\n')
 
 	if (l3Entry & RV_PTE_V) == 0 {
-		rawUART('!')
-		rawUART('I')
-		rawUART('N')
-		rawUART('V')
-		rawUART('\r')
-		rawUART('\n')
+		serial.PollWrite('!')
+		serial.PollWrite('I')
+		serial.PollWrite('N')
+		serial.PollWrite('V')
+		serial.PollWrite('\r')
+		serial.PollWrite('\n')
 		return
 	}
 
@@ -490,31 +491,31 @@ func DumpInstructionPageFault(va uintptr) {
 	l2VA := l2PA + constants.KernelMMIOOffset
 	l2Idx := (va >> 30) & 0x1FF
 	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
-	rawUART('L')
-	rawUART('2')
-	rawUART('[')
+	serial.PollWrite('L')
+	serial.PollWrite('2')
+	serial.PollWrite('[')
 	printHexRaw(uint64(l2Idx))
-	rawUART(']')
-	rawUART('=')
+	serial.PollWrite(']')
+	serial.PollWrite('=')
 	printHexRaw(l2Entry)
-	rawUART('\r')
-	rawUART('\n')
+	serial.PollWrite('\r')
+	serial.PollWrite('\n')
 
 	if (l2Entry & RV_PTE_V) == 0 {
-		rawUART('!')
-		rawUART('I')
-		rawUART('N')
-		rawUART('V')
-		rawUART('\r')
-		rawUART('\n')
+		serial.PollWrite('!')
+		serial.PollWrite('I')
+		serial.PollWrite('N')
+		serial.PollWrite('V')
+		serial.PollWrite('\r')
+		serial.PollWrite('\n')
 		return
 	}
 	// Check if L2 is a leaf (gigapage)
 	if (l2Entry & (RV_PTE_R | RV_PTE_W | RV_PTE_X)) != 0 {
-		rawUART('G')
-		rawUART('P')
-		rawUART('\r')
-		rawUART('\n')
+		serial.PollWrite('G')
+		serial.PollWrite('P')
+		serial.PollWrite('\r')
+		serial.PollWrite('\n')
 		return
 	}
 
@@ -524,35 +525,35 @@ func DumpInstructionPageFault(va uintptr) {
 	l1VA := l1PA + constants.KernelMMIOOffset
 	l1Idx := (va >> 21) & 0x1FF
 	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
-	rawUART('L')
-	rawUART('1')
-	rawUART('[')
+	serial.PollWrite('L')
+	serial.PollWrite('1')
+	serial.PollWrite('[')
 	printHexRaw(uint64(l1Idx))
-	rawUART(']')
-	rawUART('=')
+	serial.PollWrite(']')
+	serial.PollWrite('=')
 	printHexRaw(l1Entry)
-	rawUART('\r')
-	rawUART('\n')
+	serial.PollWrite('\r')
+	serial.PollWrite('\n')
 
 	if (l1Entry & RV_PTE_V) == 0 {
-		rawUART('!')
-		rawUART('I')
-		rawUART('N')
-		rawUART('V')
-		rawUART('\r')
-		rawUART('\n')
+		serial.PollWrite('!')
+		serial.PollWrite('I')
+		serial.PollWrite('N')
+		serial.PollWrite('V')
+		serial.PollWrite('\r')
+		serial.PollWrite('\n')
 		return
 	}
 	// Check if L1 is a leaf (megapage)
 	if (l1Entry & (RV_PTE_R | RV_PTE_W | RV_PTE_X)) != 0 {
-		rawUART('M')
-		rawUART('P')
+		serial.PollWrite('M')
+		serial.PollWrite('P')
 		if (l1Entry & RV_PTE_X) == 0 {
-			rawUART('!')
-			rawUART('X')
+			serial.PollWrite('!')
+			serial.PollWrite('X')
 		}
-		rawUART('\r')
-		rawUART('\n')
+		serial.PollWrite('\r')
+		serial.PollWrite('\n')
 		return
 	}
 
@@ -562,40 +563,40 @@ func DumpInstructionPageFault(va uintptr) {
 	l0VA := l0PA + constants.KernelMMIOOffset
 	l0Idx := (va >> 12) & 0x1FF
 	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
-	rawUART('L')
-	rawUART('0')
-	rawUART('[')
+	serial.PollWrite('L')
+	serial.PollWrite('0')
+	serial.PollWrite('[')
 	printHexRaw(uint64(l0Idx))
-	rawUART(']')
-	rawUART('=')
+	serial.PollWrite(']')
+	serial.PollWrite('=')
 	printHexRaw(l0Entry)
-	rawUART('\r')
-	rawUART('\n')
+	serial.PollWrite('\r')
+	serial.PollWrite('\n')
 
 	if (l0Entry & RV_PTE_V) == 0 {
-		rawUART('!')
-		rawUART('I')
-		rawUART('N')
-		rawUART('V')
-		rawUART('\r')
-		rawUART('\n')
+		serial.PollWrite('!')
+		serial.PollWrite('I')
+		serial.PollWrite('N')
+		serial.PollWrite('V')
+		serial.PollWrite('\r')
+		serial.PollWrite('\n')
 		return
 	}
 
 	// Report permission bits
 	if (l0Entry & RV_PTE_X) == 0 {
-		rawUART('!')
-		rawUART('X')
+		serial.PollWrite('!')
+		serial.PollWrite('X')
 	}
 	if (l0Entry & RV_PTE_R) != 0 {
-		rawUART('R')
+		serial.PollWrite('R')
 	}
 	if (l0Entry & RV_PTE_W) != 0 {
-		rawUART('W')
+		serial.PollWrite('W')
 	}
 	if (l0Entry & RV_PTE_X) != 0 {
-		rawUART('X')
+		serial.PollWrite('X')
 	}
-	rawUART('\r')
-	rawUART('\n')
+	serial.PollWrite('\r')
+	serial.PollWrite('\n')
 }

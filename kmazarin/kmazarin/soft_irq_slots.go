@@ -6,6 +6,7 @@ import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio/input"
+	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
 	"sync/atomic"
 	"unsafe"
@@ -268,20 +269,20 @@ func PushTimerEventAndWake(sec, nsec uint64) {
 	slot := &softIRQSlotData[slotIdx]
 	tid := slot.blockedTID
 	if tid < 0 {
-		console.BreadcrumbNoSplit('n') // not blocked
+		serial.PollWrite('n') // not blocked
 		return
 	}
 	t := threadList.FindByIdAll(int32(tid))
 	if t == nil || t.State != ThreadBlockedSoftIRQ {
 		slot.blockedTID = -1
-		console.BreadcrumbNoSplit('?') // wrong state
+		serial.PollWrite('?') // wrong state
 		return
 	}
 	t.State = ThreadReady
 	slot.blockedTID = -1
 	enqueueReadySchedLockHeld(t)
 	asm.Dsb() // Memory barrier to ensure enqueue is visible
-	console.BreadcrumbNoSplit('w') // wake succeeded
+	serial.PollWrite('w') // wake succeeded
 }
 
 // GetUartSlotPriestID returns the priest ID that owns the UART serial slot.

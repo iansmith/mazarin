@@ -13,7 +13,7 @@ type FramebufferInfo struct {
 	Width          uint32  // Width in pixels
 	Height         uint32  // Display height in pixels (visible area)
 	ResourceHeight uint32  // Total resource height (may be > Height for scrolling)
-	Pitch          uint32  // Bytes per row (typically Width * 4 for BGRA)
+	Pitch          uint32  // Bytes per row (typically Width * 4 for RGBA)
 }
 
 // GetFramebuffer retrieves framebuffer information from the kernel.

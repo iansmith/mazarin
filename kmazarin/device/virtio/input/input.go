@@ -806,8 +806,8 @@ func InitVirtIOInput() {
 				if dev.DevType == hid.DeviceTypeMouse {
 					typeName = "mouse"
 				}
-				_ = name
-			_ = typeName
+				console.KPrintf("[VirtIO Input] %s '%s' at %d:%d.%d IRQ=%d ISR=0x%x\n",
+					typeName, name, bus, slot, funcNum, irqNum, dev.ISRBase)
 
 				// Assign to global slots
 				if dev.DevType == hid.DeviceTypeKeyboard && KeyboardDevice == nil {

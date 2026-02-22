@@ -106,14 +106,6 @@ func (c *SoftIRQConsole) KPrintHex(value interface{}) {
 	c.wake()
 }
 
-// Breadcrumb implements console.Console.Breadcrumb
-// Always goes direct to MMIO — never through the ring.
-//
-//go:nosplit
-func (c *SoftIRQConsole) Breadcrumb(b byte) {
-	console.BreadcrumbNoSplit(b)
-}
-
 // wake calls WakeSlotForIRQ and clears the pending flag.
 func (c *SoftIRQConsole) wake() {
 	if uartIRQNum != 0 {

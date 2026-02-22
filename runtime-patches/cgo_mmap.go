@@ -95,6 +95,12 @@ func mmap(addr unsafe.Pointer, n uintptr, prot, flags, fd int32, off uint32) (un
 		// For MAP_FIXED, just return the requested address
 		// The page fault handler will allocate physical pages on demand
 		if addrVal >= heapStart && addrVal+alignedLength <= heapEnd {
+			// Breadcrumb: 'm' addr ':' size ' '
+			kmazarinUART('m')
+			kmazarinPrintHex40(addrVal)
+			kmazarinUART(':')
+			kmazarinPrintHex32(uint32(alignedLength))
+			kmazarinUART(' ')
 			return addr, 0
 		}
 		return nil, 12 // ENOMEM
@@ -114,9 +120,50 @@ func mmap(addr unsafe.Pointer, n uintptr, prot, flags, fd int32, off uint32) (un
 
 		// Try to atomically update the bump pointer
 		if kmazarinBumpPointer.CompareAndSwap(currentPtr, nextPtr) {
+			// Breadcrumb: 'M' addr ':' size ' '
+			kmazarinUART('M')
+			kmazarinPrintHex40(currentPtr)
+			kmazarinUART(':')
+			kmazarinPrintHex32(uint32(alignedLength))
+			kmazarinUART(' ')
 			return unsafe.Pointer(uintptr(currentPtr)), 0
 		}
 		// CAS failed, retry
+	}
+}
+
+// kmazarinPrintHex40 prints the low 40 bits of a uint64 as 10 hex digits via UART.
+// Covers addresses up to 1TB which is sufficient for all heap regions.
+//
+//go:nosplit
+func kmazarinPrintHex40(v uint64) {
+	for i := uint(36); ; i -= 4 {
+		nibble := byte((v >> i) & 0xF)
+		if nibble < 10 {
+			kmazarinUART('0' + nibble)
+		} else {
+			kmazarinUART('A' + nibble - 10)
+		}
+		if i == 0 {
+			break
+		}
+	}
+}
+
+// kmazarinPrintHex32 prints a uint32 as 8 hex digits via UART.
+//
+//go:nosplit
+func kmazarinPrintHex32(v uint32) {
+	for i := uint(28); ; i -= 4 {
+		nibble := byte((v >> i) & 0xF)
+		if nibble < 10 {
+			kmazarinUART('0' + nibble)
+		} else {
+			kmazarinUART('A' + nibble - 10)
+		}
+		if i == 0 {
+			break
+		}
 	}
 }
 

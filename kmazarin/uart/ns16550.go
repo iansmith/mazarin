@@ -252,11 +252,6 @@ func (c *NS16550Console) KPrintHex(value interface{}) {
 	c.uart.WriteString(s)
 }
 
-//go:nosplit
-func (c *NS16550Console) Breadcrumb(b byte) {
-	breadcrumb(b)
-}
-
 // Hardware access — use byte I/O since NS16550 registers are at byte offsets.
 // RISC-V requires naturally aligned accesses; byte offsets 1,2,3,5 are not
 // 32-bit aligned so MmioRead32/MmioWrite32 would cause misaligned faults.

@@ -16,63 +16,39 @@ func getUserMmapAllocEnd() uint64
 //go:linkname isAddressInSpan mazzy/kmazarin/ksyscall.IsAddressInSpan
 func isAddressInSpan(addr uint64) bool
 
+// Import from main package for per-priest page tracking
+//
+//go:linkname getCurrentPriestID main.getCurrentThreadPIDWrapper
+func getCurrentPriestID() int16
+
+//go:linkname getCurrentThreadTID main.GetCurrentThreadTID
+func getCurrentThreadTID() int16
+
 // debugPaging enables verbose page fault debugging output
 // Set to false for production, true for debugging
 const debugPaging = false
 
-// rawUART writes a single byte directly to the UART hardware.
-// Works even before console initialization.
-// Polls TX ready before writing — safe from any context.
-//
-//go:nosplit
-func rawUART(c byte) {
-	serial.PollWrite(c)
-}
+// pfContextPriestID and pfContextThreadID are set at the top of HandlePageFault /
+// HandleUserPageFault so that allocPTPage (deeper in the nosplit chain) can read
+// them without adding function calls to its frame. Single-CPU, so globals are safe.
+var pfContextPriestID int16 = 0 // default: kernel (PID 0)
+var pfContextThreadID int16 = -1
 
-// rawUARTPuts writes a string directly to UART, nosplit-safe.
-//
-//go:nosplit
-func rawUARTPuts(s string) {
-	for i := 0; i < len(s); i++ {
-		rawUART(s[i])
-	}
-}
-
-// rawUARTHex64 prints a 64-bit value as 16 hex digits via raw UART.
-//
-//go:nosplit
-func rawUARTHex64(val uint64) {
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (val >> uint(i)) & 0xF
-		if nibble < 10 {
-			rawUART(byte('0' + nibble))
-		} else {
-			rawUART(byte('A' + nibble - 10))
-		}
-	}
-}
-
-// debugPrint conditionally outputs a character if debugging is enabled
-// Uses direct UART for early boot when console isn't initialized.
+// debugPrint conditionally outputs a character if debugging is enabled.
 //
 //go:nosplit
 func debugPrint(c byte) {
 	if debugPaging {
-		rawUART(c)
+		serial.PollWrite(c)
 	}
 }
 
-// debugPrintHex conditionally outputs a hex value if debugging is enabled
-// Uses direct UART for early boot.
+// debugPrintHex conditionally outputs a hex value if debugging is enabled.
 //
 //go:nosplit
 func debugPrintHex(val uint64) {
 	if debugPaging {
-		hexChars := "0123456789ABCDEF"
-		for i := 60; i >= 0; i -= 4 {
-			nibble := (val >> uint(i)) & 0xF
-			rawUART(hexChars[nibble])
-		}
+		serial.RawUARTHex64(val)
 	}
 }
 
@@ -113,8 +89,8 @@ var (
 	// Key: PA of page table, Value: VA of page table
 	// CRITICAL: If this fills up, page table lookups will fail because
 	// PT pool pages are NOT identity-mapped - paToVA fallback won't work!
-	// 512 entries should support 6-8 priests comfortably.
-	ptVACache     [512]ptVACacheEntry // Simple fixed-size cache
+	// 2048 entries supports many priests with large page tables.
+	ptVACache     [2048]ptVACacheEntry // Simple fixed-size cache
 	ptVACacheSize int
 )
 
@@ -311,8 +287,8 @@ func cachePTVA(pa, va uintptr) {
 		ptVACache[ptVACacheSize] = ptVACacheEntry{pa: pa, va: va}
 		ptVACacheSize++
 	} else {
-		// CACHE FULL - this could cause issues!
-		uartPuts("[kmem] WARN: ptVACache FULL!\r\n")
+		// CACHE FULL - this will cause page table lookup failures!
+		serial.RawUARTPuts("[kmem] WARN: ptVACache FULL!\r\n")
 	}
 }
 
@@ -374,7 +350,7 @@ func allocPTPage() uintptr {
 	// Allocate from unified pool (tracks as kernel PT page)
 	pa := AllocPage(PageKernelPT)
 	if pa == 0 {
-		uartPuts("[kmem] PT OOM!\r\n")
+		serial.RawUARTPuts("[kmem] PT OOM!\r\n")
 		return 0
 	}
 
@@ -387,13 +363,15 @@ func allocPTPage() uintptr {
 		ptr[i] = 0
 	}
 
-	// Queue deferred record for bottom-half page tracking
+	// Queue deferred record for bottom-half page tracking.
+	// Use cached IDs from the current page fault context (set by HandlePageFault
+	// or HandleUserPageFault before calling into page table allocation).
 	QueueDeferredRecord(DeferredPageRecord{
 		PA:       pa,
 		VA:       va,
 		Type:     PageAllocKernelPT,
-		PriestID: -1,
-		ThreadID: -1,
+		PriestID: pfContextPriestID,
+		ThreadID: pfContextThreadID,
 		Order:    0,
 	})
 
@@ -427,6 +405,10 @@ func WalkPageTable(va uintptr) uintptr {
 //
 //go:nosplit
 func HandlePageFault(faultAddr uintptr) bool {
+	// Cache priest/thread IDs for allocPTPage (avoids adding calls to nosplit chain)
+	pfContextPriestID = getCurrentPriestID()
+	pfContextThreadID = getCurrentThreadTID()
+
 	// DEBUG: Print 'G' at absolute entry (before anything else)
 	debugPrint('G')
 	// DEBUG: Breadcrumb H = HandlePageFault entry
@@ -515,43 +497,43 @@ func HandlePageFault(faultAddr uintptr) bool {
 	if frame == 0 {
 		// Always print alloc failure diagnostics (direct UART)
 		hexChars := "0123456789ABCDEF"
-		rawUART('O')
-		rawUART('O')
-		rawUART('M')
-		rawUART(' ')
-		rawUART('s')
-		rawUART('u')
-		rawUART('c')
-		rawUART('=')
+		serial.PollWrite('O')
+		serial.PollWrite('O')
+		serial.PollWrite('M')
+		serial.PollWrite(' ')
+		serial.PollWrite('s')
+		serial.PollWrite('u')
+		serial.PollWrite('c')
+		serial.PollWrite('=')
 		for i := 60; i >= 0; i -= 4 {
-			rawUART(hexChars[(pfSuccessCount>>uint(i))&0xF])
+			serial.PollWrite(hexChars[(pfSuccessCount>>uint(i))&0xF])
 		}
-		rawUART(' ')
-		rawUART('r')
-		rawUART('p')
-		rawUART('t')
-		rawUART('=')
+		serial.PollWrite(' ')
+		serial.PollWrite('r')
+		serial.PollWrite('p')
+		serial.PollWrite('t')
+		serial.PollWrite('=')
 		for i := 60; i >= 0; i -= 4 {
-			rawUART(hexChars[(pfRepeatCount>>uint(i))&0xF])
+			serial.PollWrite(hexChars[(pfRepeatCount>>uint(i))&0xF])
 		}
-		rawUART(' ')
-		rawUART('v')
-		rawUART('a')
-		rawUART('=')
+		serial.PollWrite(' ')
+		serial.PollWrite('v')
+		serial.PollWrite('a')
+		serial.PollWrite('=')
 		fa := uint64(faultAddr)
 		for i := 60; i >= 0; i -= 4 {
-			rawUART(hexChars[(fa>>uint(i))&0xF])
+			serial.PollWrite(hexChars[(fa>>uint(i))&0xF])
 		}
-		rawUART(' ')
-		rawUART('b')
-		rawUART('p')
-		rawUART('=')
+		serial.PollWrite(' ')
+		serial.PollWrite('b')
+		serial.PollWrite('p')
+		serial.PollWrite('=')
 		bp := GetBumpAllocatedPages()
 		for i := 60; i >= 0; i -= 4 {
-			rawUART(hexChars[(bp>>uint(i))&0xF])
+			serial.PollWrite(hexChars[(bp>>uint(i))&0xF])
 		}
-		rawUART('\r')
-		rawUART('\n')
+		serial.PollWrite('\r')
+		serial.PollWrite('\n')
 		return false
 	}
 
@@ -598,8 +580,8 @@ func HandlePageFault(faultAddr uintptr) bool {
 		PA:       frame,
 		VA:       pageAddr,
 		Type:     PageAllocKernelHeap,
-		PriestID: -1,
-		ThreadID: -1,
+		PriestID: getCurrentPriestID(),
+		ThreadID: getCurrentThreadTID(),
 		Order:    0,
 	})
 	debugPrint('4') // DEBUG: after QueueDeferredRecord
@@ -632,17 +614,21 @@ const repeatFaultMax = 10
 //
 //go:nosplit
 func HandleUserPageFault(faultAddr uintptr) bool {
+	// Cache priest/thread IDs for allocPTPage (avoids adding calls to nosplit chain)
+	pfContextPriestID = getCurrentPriestID()
+	pfContextThreadID = getCurrentThreadTID()
+
 	// Repeat-fault detection: halt if same page faults repeatedly
 	faultPage := faultAddr &^ (PageSize - 1)
 	if faultPage == repeatFaultLastAddr {
 		repeatFaultCount++
 		if repeatFaultCount >= repeatFaultMax {
-			rawUARTPuts("[PF] REPEAT VA=0x")
-			rawUARTHex64(uint64(faultAddr))
-			rawUARTPuts(" CR3=0x")
+			serial.RawUARTPuts("[PF] REPEAT VA=0x")
+			serial.RawUARTHex64(uint64(faultAddr))
+			serial.RawUARTPuts(" CR3=0x")
 			l0PA := readCurrentL0PA()
-			rawUARTHex64(uint64(l0PA))
-			rawUARTPuts("\r\n")
+			serial.RawUARTHex64(uint64(l0PA))
+			serial.RawUARTPuts("\r\n")
 			// Dump raw PTE chain using rawUART (nosplit-safe)
 			dumpUserPTERaw(faultAddr, l0PA)
 			return false // trigger halt in asm handler
@@ -740,13 +726,13 @@ func HandleUserPageFault(faultAddr uintptr) bool {
 	// writing to this PA between zeroing and use.
 	verifyWord := *(*uint64)(unsafe.Pointer(scratchVA))
 	if verifyWord != 0 {
-		rawUARTPuts("[ZERO_VERIFY_FAIL] PA=0x")
-		rawUARTHex64(uint64(framePA))
-		rawUARTPuts(" VA=0x")
-		rawUARTHex64(uint64(pageAddr))
-		rawUARTPuts(" word0=0x")
-		rawUARTHex64(verifyWord)
-		rawUARTPuts("\r\n")
+		serial.RawUARTPuts("[ZERO_VERIFY_FAIL] PA=0x")
+		serial.RawUARTHex64(uint64(framePA))
+		serial.RawUARTPuts(" VA=0x")
+		serial.RawUARTHex64(uint64(pageAddr))
+		serial.RawUARTPuts(" word0=0x")
+		serial.RawUARTHex64(verifyWord)
+		serial.RawUARTPuts("\r\n")
 	}
 
 	// Queue deferred record for bottom-half page tracking
@@ -754,8 +740,8 @@ func HandleUserPageFault(faultAddr uintptr) bool {
 		PA:       framePA,
 		VA:       pageAddr,
 		Type:     PageAllocUser,
-		PriestID: -1, // TODO: get current priest ID
-		ThreadID: -1, // TODO: get current thread ID
+		PriestID: getCurrentPriestID(),
+		ThreadID: getCurrentThreadTID(),
 		Order:    0,
 	})
 
@@ -1217,11 +1203,11 @@ func zeroPageSlow(ptr uintptr) {
 	pa := ptr - constants.KernelMMIOOffset
 	// Kmazarin code is at PA 0x90000000 - ~0x90400000
 	if pa >= 0x90000000 && pa < 0x90400000 {
-		rawUARTPuts("[ZERO_GUARD] ABORT: zeroing kmazarin code page! PA=0x")
-		rawUARTHex64(uint64(pa))
-		rawUARTPuts(" VA=0x")
-		rawUARTHex64(uint64(ptr))
-		rawUARTPuts("\r\n")
+		serial.RawUARTPuts("[ZERO_GUARD] ABORT: zeroing kmazarin code page! PA=0x")
+		serial.RawUARTHex64(uint64(pa))
+		serial.RawUARTPuts(" VA=0x")
+		serial.RawUARTHex64(uint64(ptr))
+		serial.RawUARTPuts("\r\n")
 		for {
 		} // Halt
 	}
@@ -1810,66 +1796,66 @@ func dumpUserPTERaw(va uintptr, l0PA uintptr) {
 
 	l0VA := paToVAOrCache(l0PA)
 	if l0VA == 0 {
-		rawUARTPuts("  L0VA=0!\r\n")
+		serial.RawUARTPuts("  L0VA=0!\r\n")
 		return
 	}
 	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
-	rawUARTPuts("  L0[")
-	rawUARTHex64(uint64(l0Idx))
-	rawUARTPuts("]=0x")
-	rawUARTHex64(l0Entry)
-	rawUARTPuts("\r\n")
+	serial.RawUARTPuts("  L0[")
+	serial.RawUARTHex64(uint64(l0Idx))
+	serial.RawUARTPuts("]=0x")
+	serial.RawUARTHex64(l0Entry)
+	serial.RawUARTPuts("\r\n")
 	if !pteIsValid(l0Entry) {
-		rawUARTPuts("  L0 NOT PRESENT\r\n")
+		serial.RawUARTPuts("  L0 NOT PRESENT\r\n")
 		return
 	}
 
 	l1PA := pteExtractPA(l0Entry)
 	l1VA := paToVAOrCache(l1PA)
 	if l1VA == 0 {
-		rawUARTPuts("  L1VA=0!\r\n")
+		serial.RawUARTPuts("  L1VA=0!\r\n")
 		return
 	}
 	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
-	rawUARTPuts("  L1[")
-	rawUARTHex64(uint64(l1Idx))
-	rawUARTPuts("]=0x")
-	rawUARTHex64(l1Entry)
-	rawUARTPuts("\r\n")
+	serial.RawUARTPuts("  L1[")
+	serial.RawUARTHex64(uint64(l1Idx))
+	serial.RawUARTPuts("]=0x")
+	serial.RawUARTHex64(l1Entry)
+	serial.RawUARTPuts("\r\n")
 	if !pteIsValid(l1Entry) {
-		rawUARTPuts("  L1 NOT PRESENT\r\n")
+		serial.RawUARTPuts("  L1 NOT PRESENT\r\n")
 		return
 	}
 
 	l2PA := pteExtractPA(l1Entry)
 	l2VA := paToVAOrCache(l2PA)
 	if l2VA == 0 {
-		rawUARTPuts("  L2VA=0!\r\n")
+		serial.RawUARTPuts("  L2VA=0!\r\n")
 		return
 	}
 	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
-	rawUARTPuts("  L2[")
-	rawUARTHex64(uint64(l2Idx))
-	rawUARTPuts("]=0x")
-	rawUARTHex64(l2Entry)
-	rawUARTPuts("\r\n")
+	serial.RawUARTPuts("  L2[")
+	serial.RawUARTHex64(uint64(l2Idx))
+	serial.RawUARTPuts("]=0x")
+	serial.RawUARTHex64(l2Entry)
+	serial.RawUARTPuts("\r\n")
 	if !pteIsValid(l2Entry) {
-		rawUARTPuts("  L2 NOT PRESENT\r\n")
+		serial.RawUARTPuts("  L2 NOT PRESENT\r\n")
 		return
 	}
 
 	l3PA := pteExtractPA(l2Entry)
 	l3VA := paToVAOrCache(l3PA)
 	if l3VA == 0 {
-		rawUARTPuts("  L3VA=0!\r\n")
+		serial.RawUARTPuts("  L3VA=0!\r\n")
 		return
 	}
 	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
-	rawUARTPuts("  L3[")
-	rawUARTHex64(uint64(l3Idx))
-	rawUARTPuts("]=0x")
-	rawUARTHex64(l3Entry)
-	rawUARTPuts("\r\n")
+	serial.RawUARTPuts("  L3[")
+	serial.RawUARTHex64(uint64(l3Idx))
+	serial.RawUARTPuts("]=0x")
+	serial.RawUARTHex64(l3Entry)
+	serial.RawUARTPuts("\r\n")
 }
 
 //
@@ -1877,7 +1863,7 @@ func dumpUserPTERaw(va uintptr, l0PA uintptr) {
 func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 	// Userspace addresses must have bit 63 = 0
 	if (va>>63)&1 != 0 {
-		uartPuts("[DumpPTE] VA has bit63=1 (kernel addr)\r\n")
+		serial.RawUARTPuts("[DumpPTE] VA has bit63=1 (kernel addr)\r\n")
 		return
 	}
 
@@ -1897,7 +1883,7 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 	}
 	l0VA := paToVAOrCache(l0PA)
 	if l0VA == 0 {
-		uartPuts("[DumpPTE] Failed to get L0 VA from cache\r\n")
+		serial.RawUARTPuts("[DumpPTE] Failed to get L0 VA from cache\r\n")
 		return
 	}
 
@@ -1905,7 +1891,7 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
 	console.KPrintf("[DumpPTE] L0[%d]=0x%016x (VA=0x%x)\n", l0Idx, l0Entry, l0VA+l0Idx*8)
 	if !pteIsValid(l0Entry) {
-		uartPuts("[DumpPTE] L0 entry INVALID\r\n")
+		serial.RawUARTPuts("[DumpPTE] L0 entry INVALID\r\n")
 		return
 	}
 
@@ -1919,7 +1905,7 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
 	console.KPrintf("[DumpPTE] L1[%d]=0x%016x (PA=0x%x VA=0x%x)\n", l1Idx, l1Entry, l1PA, l1VA+l1Idx*8)
 	if !pteIsValid(l1Entry) {
-		uartPuts("[DumpPTE] L1 entry INVALID\r\n")
+		serial.RawUARTPuts("[DumpPTE] L1 entry INVALID\r\n")
 		return
 	}
 
@@ -1933,7 +1919,7 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
 	console.KPrintf("[DumpPTE] L2[%d]=0x%016x (PA=0x%x VA=0x%x)\n", l2Idx, l2Entry, l2PA, l2VA+l2Idx*8)
 	if !pteIsValid(l2Entry) {
-		uartPuts("[DumpPTE] L2 entry INVALID\r\n")
+		serial.RawUARTPuts("[DumpPTE] L2 entry INVALID\r\n")
 		return
 	}
 
@@ -1947,7 +1933,7 @@ func DumpUserPTEWithL0(va uintptr, l0PAParam uintptr) {
 	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
 	console.KPrintf("[DumpPTE] L3[%d]=0x%016x (PA=0x%x VA=0x%x)\n", l3Idx, l3Entry, l3PA, l3VA+l3Idx*8)
 	if !pteIsValid(l3Entry) {
-		uartPuts("[DumpPTE] L3 entry INVALID\r\n")
+		serial.RawUARTPuts("[DumpPTE] L3 entry INVALID\r\n")
 		return
 	}
 
@@ -2419,20 +2405,20 @@ func AllocAndMapUserPageWithL0(userVA uintptr, elfFlags uint32, l0PA uintptr) (f
 	// Step 1: Allocate a physical frame from userspace pool
 	framePA = AllocUserFrame()
 	if framePA == 0 {
-		uartPuts("[kmem] AllocAndMapUserPage: frame alloc failed\r\n")
+		serial.RawUARTPuts("[kmem] AllocAndMapUserPage: frame alloc failed\r\n")
 		return 0, 0
 	}
 
 	// Step 2: Map the frame to userspace VA using explicit page table
 	if !mapUserPageWithL0(userVA, framePA, elfFlags, l0PA) {
-		uartPuts("[kmem] AllocAndMapUserPage: user map failed\r\n")
+		serial.RawUARTPuts("[kmem] AllocAndMapUserPage: user map failed\r\n")
 		return 0, 0
 	}
 
 	// Step 3: Map the frame to kernel scratch VA
 	scratchVA = MapPAToKernelScratch(framePA)
 	if scratchVA == 0 {
-		uartPuts("[kmem] AllocAndMapUserPage: scratch map failed\r\n")
+		serial.RawUARTPuts("[kmem] AllocAndMapUserPage: scratch map failed\r\n")
 		return 0, 0
 	}
 

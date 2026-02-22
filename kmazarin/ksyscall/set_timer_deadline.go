@@ -2,9 +2,9 @@
 package ksyscall
 
 import (
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/ktime"
+	"mazzy/kmazarin/serial"
 )
 
 // SyscallSetTimerDeadline implements Mazzy syscall 0x100E.
@@ -47,6 +47,6 @@ func SyscallSetTimerDeadline(slotNum, deadlineSec, deadlineNsec, _, _, _ uint64)
 	encodedSlot := -int32(slotNum) - 2
 	AddDeadlineStatic(tickDeadline, encodedSlot)
 
-	console.BreadcrumbNoSplit('+')
+	serial.PollWrite('+')
 	return 0
 }

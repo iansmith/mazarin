@@ -7,6 +7,7 @@
 package kmem
 
 import (
+	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"sync/atomic"
 )
@@ -111,7 +112,7 @@ func AllocPage(pageType PageType) uintptr {
 		// Check for OOM
 		if globalPool.next >= globalPool.end {
 			globalPool.lock.Unlock()
-			uartPuts("[kmem] Unified pool OOM!\r\n")
+			serial.RawUARTPuts("[kmem] Unified pool OOM!\r\n")
 			return 0
 		}
 
@@ -124,9 +125,9 @@ func AllocPage(pageType PageType) uintptr {
 
 	// DEBUG: Guard against allocating kmazarin code pages
 	if pa >= 0x90000000 && pa < 0x90400000 {
-		rawUARTPuts("[ALLOC_GUARD] ABORT: allocated kmazarin code page! PA=0x")
-		rawUARTHex64(uint64(pa))
-		rawUARTPuts("\r\n")
+		serial.RawUARTPuts("[ALLOC_GUARD] ABORT: allocated kmazarin code page! PA=0x")
+		serial.RawUARTHex64(uint64(pa))
+		serial.RawUARTPuts("\r\n")
 		for {
 		}
 	}
@@ -162,7 +163,7 @@ func AllocContiguousPages(pages uintptr) uintptr {
 	size := pages * PageSize
 	if globalPool.next+size > globalPool.end {
 		globalPool.lock.Unlock()
-		uartPuts("[kmem] Contiguous alloc OOM!\r\n")
+		serial.RawUARTPuts("[kmem] Contiguous alloc OOM!\r\n")
 		return 0
 	}
 
@@ -261,28 +262,28 @@ func GetPoolStats() PoolStats {
 //go:nosplit
 func PrintPoolStats() {
 	stats := GetPoolStats()
-	uartPuts("[kmem] Pool stats:\r\n")
-	uartPuts("  Total:       ")
-	uartPutHex64(stats.TotalPages)
-	uartPuts(" pages\r\n")
-	uartPuts("  Allocated:   ")
-	uartPutHex64(stats.AllocatedPages)
-	uartPuts(" pages\r\n")
-	uartPuts("  Remaining:   ")
-	uartPutHex64(stats.RemainingPages)
-	uartPuts(" pages\r\n")
-	uartPuts("  Kernel heap: ")
-	uartPutHex64(stats.KernelHeapPages)
-	uartPuts(" pages\r\n")
-	uartPuts("  Kernel PT:   ")
-	uartPutHex64(stats.KernelPTPages)
-	uartPuts(" pages\r\n")
-	uartPuts("  User:        ")
-	uartPutHex64(stats.UserPages)
-	uartPuts(" pages\r\n")
-	uartPuts("  User PT:     ")
-	uartPutHex64(stats.UserPTPages)
-	uartPuts(" pages\r\n")
+	serial.RawUARTPuts("[kmem] Pool stats:\r\n")
+	serial.RawUARTPuts("  Total:       ")
+	serial.RawUARTHex64(stats.TotalPages)
+	serial.RawUARTPuts(" pages\r\n")
+	serial.RawUARTPuts("  Allocated:   ")
+	serial.RawUARTHex64(stats.AllocatedPages)
+	serial.RawUARTPuts(" pages\r\n")
+	serial.RawUARTPuts("  Remaining:   ")
+	serial.RawUARTHex64(stats.RemainingPages)
+	serial.RawUARTPuts(" pages\r\n")
+	serial.RawUARTPuts("  Kernel heap: ")
+	serial.RawUARTHex64(stats.KernelHeapPages)
+	serial.RawUARTPuts(" pages\r\n")
+	serial.RawUARTPuts("  Kernel PT:   ")
+	serial.RawUARTHex64(stats.KernelPTPages)
+	serial.RawUARTPuts(" pages\r\n")
+	serial.RawUARTPuts("  User:        ")
+	serial.RawUARTHex64(stats.UserPages)
+	serial.RawUARTPuts(" pages\r\n")
+	serial.RawUARTPuts("  User PT:     ")
+	serial.RawUARTHex64(stats.UserPTPages)
+	serial.RawUARTPuts(" pages\r\n")
 }
 
 // SetKernelSoftLimit sets the soft limit for kernel allocations (in pages).

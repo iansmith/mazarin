@@ -11,6 +11,7 @@
 package kmem
 
 import (
+	"mazzy/kmazarin/serial"
 	"sync/atomic"
 	"unsafe"
 )
@@ -137,11 +138,12 @@ func buddyAddRange(start, end uintptr) {
 //
 //go:nosplit
 func buddyInsertFree(pa uintptr, order int) {
-	// DEBUG: Guard against inserting kmazarin code pages into free list
+	// Guard against inserting kmazarin code pages into free list.
+	// Uses RawUART (not PollWrite) to avoid nosplit stack overflow on AMD64.
 	if pa >= 0x90000000 && pa < 0x90400000 {
-		rawUARTPuts("[BUDDY_GUARD] ABORT: freeing kmazarin code page! PA=0x")
-		rawUARTHex64(uint64(pa))
-		rawUARTPuts("\r\n")
+		serial.RawUART('!')
+		serial.RawUART('!')
+		serial.RawUART('!')
 		for {
 		}
 	}
@@ -199,9 +201,7 @@ func BuddyAllocTyped(order int, pageType PageType) uintptr {
 	}
 	if availOrder >= MaxOrder {
 		buddyAlloc.lock.Unlock()
-		uartPuts("[kmem] Buddy OOM for order ")
-		uartPutHex64(uint64(order))
-		uartPuts("\r\n")
+		buddyWarnOOM(order)
 		return 0
 	}
 
@@ -240,38 +240,101 @@ func BuddyAllocTyped(order int, pageType PageType) uintptr {
 
 	buddyAlloc.lock.Unlock()
 
-	// Warn on every allocation that keeps kernel memory over 64MB
-	const kernelLimitPages = 16384 // 64MB = 16384 * 4KB
+	// Warn when kernel memory exceeds 64MB.
+	// Print full stats on first crossing, then breadcrumb every 256 pages.
+	const kernelLimitPages = 32768 // 128MB = 32768 * 4KB
 	if kernelTotal > kernelLimitPages {
-		uartPuts("[kmem] WARNING: kernel exceeds 64MB (kern=")
-		uartPutHex64(kernelTotal)
-		uartPuts(" kheap=")
-		uartPutHex64(buddyAlloc.kernelHeapPages)
-		uartPuts(" kpt=")
-		uartPutHex64(buddyAlloc.kernelPTPages)
-		uartPuts(" boot=")
-		uartPutHex64(buddyAlloc.bootstrapPages)
-		uartPuts(" user=")
-		uartPutHex64(buddyAlloc.userPages)
-		uartPuts(" type=")
-		uartPutHex64(uint64(pageType))
-		uartPuts(" pa=")
-		uartPutHex64(uint64(pa))
-		uartPuts(")\r\n")
+		if kernelTotal-1 <= kernelLimitPages || (kernelTotal&0xFF) == 0 {
+			buddyWarnKernelLimit(kernelTotal, pageType, pa)
+		}
 	}
 
 	return pa
 }
 
+// buddyWarnKernelLimit prints the 64MB kernel memory warning via raw UART.
+// buddyWarnOOM prints an OOM warning via raw UART.
+// NOT nosplit — breaks the nosplit chain from exception handlers.
+func buddyWarnOOM(order int) {
+	serial.RawUARTPuts("[kmem] Buddy OOM for order ")
+	serial.RawUARTHex64(uint64(order))
+	serial.RawUARTPuts("\r\n")
+}
+
+// buddyWarnKernelLimit prints the kernel memory limit warning via raw UART.
+// NOT nosplit — this breaks the nosplit chain from exception handlers so
+// the rawUART calls (serial.PollWrite) don't blow the 792-byte nosplit limit.
+// Uses rawUART (serial.PollWrite) so output goes to COM1/serial log,
+// not through console abstraction (which on AMD64 uses MMIO, not I/O ports).
+func buddyWarnKernelLimit(kernelTotal uint64, pageType PageType, pa uintptr) {
+	serial.RawUARTPuts("\r\n[kmem] WARNING: kernel exceeds 128MB (kern=")
+	serial.RawUARTHex64(kernelTotal)
+	serial.RawUARTPuts(" kheap=")
+	serial.RawUARTHex64(buddyAlloc.kernelHeapPages)
+	serial.RawUARTPuts(" kpt=")
+	serial.RawUARTHex64(buddyAlloc.kernelPTPages)
+	serial.RawUARTPuts(" boot=")
+	serial.RawUARTHex64(buddyAlloc.bootstrapPages)
+	serial.RawUARTPuts(" user=")
+	serial.RawUARTHex64(buddyAlloc.userPages)
+	serial.RawUARTPuts(" type=")
+	serial.RawUARTHex64(uint64(pageType))
+	serial.RawUARTPuts(" pa=")
+	serial.RawUARTHex64(uint64(pa))
+	serial.RawUARTPuts(")\r\n")
+
+	// Print per-priest breakdown from page tracker
+	stats := GetMemoryStats()
+	if stats.TotalTracked > 0 {
+		serial.RawUARTPuts("  [tracker] total=")
+		serial.RawUARTHex64(stats.TotalTracked)
+		serial.RawUARTPuts(" kheap=")
+		serial.RawUARTHex64(stats.KernelHeapPages)
+		serial.RawUARTPuts(" kpt=")
+		serial.RawUARTHex64(stats.KernelPTPages)
+		serial.RawUARTPuts(" user=")
+		serial.RawUARTHex64(stats.UserPages)
+		serial.RawUARTPuts("\r\n")
+		// Per-priest: index 0 = kernel (PID 0), 1+ = priests
+		if stats.ByPriest[0] > 0 {
+			serial.RawUARTPuts("  [priest] kernel(0): ")
+			serial.RawUARTHex64(stats.ByPriest[0])
+			serial.RawUARTPuts("\r\n")
+		}
+		for i := 1; i < MaxPriests; i++ {
+			if stats.ByPriest[i] > 0 {
+				serial.RawUARTPuts("  [priest] ")
+				serial.RawUARTHex64(uint64(i))
+				serial.RawUARTPuts(": ")
+				serial.RawUARTHex64(stats.ByPriest[i])
+				serial.RawUARTPuts("\r\n")
+			}
+		}
+	}
+}
+
 // BuddyFree returns a block of 2^order pages starting at pa to the allocator.
+// Counts as PageKernelHeap for per-type accounting. Use BuddyFreeTyped for explicit type.
 // Attempts to merge with the buddy if it is also free.
 // Thread-safe.
 //
 //go:nosplit
 func BuddyFree(pa uintptr, order int) {
+	BuddyFreeTyped(pa, order, PageKernelHeap)
+}
+
+// BuddyFreeTyped returns a block of 2^order pages starting at pa to the allocator,
+// decrementing the correct per-type counter (mirror of BuddyAllocTyped).
+// Attempts to merge with the buddy if it is also free.
+// Thread-safe.
+//
+//go:nosplit
+func BuddyFreeTyped(pa uintptr, order int, pageType PageType) {
 	if order < 0 || order >= MaxOrder {
 		return
 	}
+
+	pagesFreed := uint64(1) << uint(order)
 
 	buddyAlloc.lock.Lock()
 
@@ -300,10 +363,29 @@ func BuddyFree(pa uintptr, order int) {
 
 	buddyInsertFree(pa, order)
 
-	// Track deallocation
-	pagesFreed := uint64(1) << uint(order)
+	// Track deallocation (total)
 	if buddyAlloc.allocatedPages >= pagesFreed {
 		buddyAlloc.allocatedPages -= pagesFreed
+	}
+
+	// Per-type accounting (mirror of BuddyAllocTyped)
+	switch pageType {
+	case PageKernelHeap, PageFileBuffer, PageDriver:
+		if buddyAlloc.kernelHeapPages >= pagesFreed {
+			buddyAlloc.kernelHeapPages -= pagesFreed
+		}
+	case PageKernelPT:
+		if buddyAlloc.kernelPTPages >= pagesFreed {
+			buddyAlloc.kernelPTPages -= pagesFreed
+		}
+	case PageUser:
+		if buddyAlloc.userPages >= pagesFreed {
+			buddyAlloc.userPages -= pagesFreed
+		}
+	case PageUserPT:
+		if buddyAlloc.userPTPages >= pagesFreed {
+			buddyAlloc.userPTPages -= pagesFreed
+		}
 	}
 
 	buddyAlloc.lock.Unlock()
@@ -373,22 +455,22 @@ func GetBuddyStats() BuddyStats {
 //go:nosplit
 func PrintBuddyStats() {
 	stats := GetBuddyStats()
-	uartPuts("[kmem] Buddy stats: ")
-	uartPutHex64(stats.FreePages)
-	uartPuts(" free / ")
-	uartPutHex64(stats.TotalPages)
-	uartPuts(" total pages\r\n")
+	serial.RawUARTPuts("[kmem] Buddy stats: ")
+	serial.RawUARTHex64(stats.FreePages)
+	serial.RawUARTPuts(" free / ")
+	serial.RawUARTHex64(stats.TotalPages)
+	serial.RawUARTPuts(" total pages\r\n")
 	for i := 0; i < MaxOrder; i++ {
 		if stats.FreeByOrder[i] == 0 {
 			continue
 		}
-		uartPuts("  order ")
-		uartPutHex64(uint64(i))
-		uartPuts(": ")
-		uartPutHex64(stats.FreeByOrder[i])
-		uartPuts(" blocks (")
-		uartPutHex64(uint64(PageSize) << uint(i) / 1024)
-		uartPuts(" KB each)\r\n")
+		serial.RawUARTPuts("  order ")
+		serial.RawUARTHex64(uint64(i))
+		serial.RawUARTPuts(": ")
+		serial.RawUARTHex64(stats.FreeByOrder[i])
+		serial.RawUARTPuts(" blocks (")
+		serial.RawUARTHex64(uint64(PageSize) << uint(i) / 1024)
+		serial.RawUARTPuts(" KB each)\r\n")
 	}
 }
 
@@ -407,19 +489,19 @@ func PrintKernelMemSummary() {
 	alloc := buddyAlloc.bootstrapPages + buddyAlloc.allocatedPages
 	buddyAlloc.lock.Unlock()
 
-	uartPuts("\r\n[M] k=")
-	uartPutHex64(boot + kh + kp)
-	uartPuts(" h=")
-	uartPutHex64(kh)
-	uartPuts(" p=")
-	uartPutHex64(kp)
-	uartPuts(" b=")
-	uartPutHex64(boot)
-	uartPuts(" u=")
-	uartPutHex64(up)
-	uartPuts(" a=")
-	uartPutHex64(alloc)
-	uartPuts("\r\n")
+	serial.RawUARTPuts("\r\n[M] k=")
+	serial.RawUARTHex64(boot + kh + kp)
+	serial.RawUARTPuts(" h=")
+	serial.RawUARTHex64(kh)
+	serial.RawUARTPuts(" p=")
+	serial.RawUARTHex64(kp)
+	serial.RawUARTPuts(" b=")
+	serial.RawUARTHex64(boot)
+	serial.RawUARTPuts(" u=")
+	serial.RawUARTHex64(up)
+	serial.RawUARTPuts(" a=")
+	serial.RawUARTHex64(alloc)
+	serial.RawUARTPuts("\r\n")
 }
 
 // OrderForSize returns the smallest buddy order that can hold size bytes.
@@ -438,10 +520,11 @@ func OrderForSize(size uint64) int {
 
 // BuddyBuffer holds metadata about a buddy-allocated buffer so it can be freed.
 type BuddyBuffer struct {
-	PA    uintptr // Physical address of the block
-	VA    uintptr // Virtual address (PA + KernelVAOffset)
-	Order int     // Buddy order used for allocation
-	Size  uint64  // Requested size in bytes
+	PA    uintptr  // Physical address of the block
+	VA    uintptr  // Virtual address (PA + KernelVAOffset)
+	Order int      // Buddy order used for allocation
+	Size  uint64   // Requested size in bytes
+	Type  PageType // Page type for per-type accounting on free
 }
 
 // AllocBuffer allocates a contiguous buffer of at least size bytes from the
@@ -450,13 +533,13 @@ type BuddyBuffer struct {
 func AllocBuffer(size uint64) *BuddyBuffer {
 	order := OrderForSize(size)
 	if order < 0 {
-		uartPuts("[kmem] AllocBuffer: size too large (")
-		uartPutHex64(size)
-		uartPuts(")\r\n")
+		serial.RawUARTPuts("[kmem] AllocBuffer: size too large (")
+		serial.RawUARTHex64(size)
+		serial.RawUARTPuts(")\r\n")
 		return nil
 	}
 
-	pa := BuddyAlloc(order)
+	pa := BuddyAllocTyped(order, PageFileBuffer)
 	if pa == 0 {
 		return nil
 	}
@@ -468,6 +551,7 @@ func AllocBuffer(size uint64) *BuddyBuffer {
 		VA:    va,
 		Order: order,
 		Size:  size,
+		Type:  PageFileBuffer,
 	}
 }
 
@@ -476,7 +560,8 @@ func FreeBuffer(buf *BuddyBuffer) {
 	if buf == nil {
 		return
 	}
-	BuddyFree(buf.PA, buf.Order)
+	BuddyFreeTyped(buf.PA, buf.Order, buf.Type)
+	UntrackPage(buf.PA)
 }
 
 // Bytes returns a []byte slice backed by the buddy-allocated buffer.

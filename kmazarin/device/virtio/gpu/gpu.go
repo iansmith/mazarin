@@ -5,6 +5,7 @@ import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio"
+	"mazzy/kmazarin/serial"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/pci"
 	"mazzy/shared/constants"
@@ -36,11 +37,11 @@ const (
 	VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT  = 0x1204
 )
 
-// VirtIO GPU Pixel Formats
+// VirtIO GPU Pixel Formats (values from VirtIO spec)
 const (
 	VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM = 1
 	VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM = 2
-	VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM = 3
+	VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM = 67
 )
 
 // VirtIO PCI Common Config Register Offsets
@@ -483,7 +484,7 @@ func virtioGPUSendCommand(cmdBuf unsafe.Pointer, cmdSize uint32, respBuf unsafe.
 	}
 
 	if waited >= maxWait {
-		console.BreadcrumbNoSplit('!')
+		serial.PollWrite('!')
 		return 0xFFFF
 	}
 

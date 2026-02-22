@@ -45,7 +45,7 @@ func Init() bool {
 
 	// Fill screen with powder gray background (neumorphic surface)
 	console.KPrintln("[VirtIO GPU] Filling screen...")
-	fillScreen(0xFFE0E0E6) // RGB(224,224,230) in BGRA: B=230,G=224,R=224
+	fillScreen(0xFFE0E0E6) // RGB(224,224,230) in BGRA: B=230,G=224,R=224,A=255
 
 	// Verify write worked
 	fb := virtioGPUDevice.Framebuffer
@@ -199,9 +199,9 @@ func RenderBootImage(imageAddr uintptr, imageSize uint64) bool {
 
 	// Background color: powder gray (BGRA format)
 	const bgColor uint32 = 0xFFE0E0E6
-	bgB := uint8(bgColor & 0xFF)         // 0x70 = 112
-	bgG := uint8((bgColor >> 8) & 0xFF)  // 0x19 = 25
-	bgR := uint8((bgColor >> 16) & 0xFF) // 0x19 = 25
+	bgB := uint8(bgColor & 0xFF)         // B=230
+	bgG := uint8((bgColor >> 8) & 0xFF)  // G=224
+	bgR := uint8((bgColor >> 16) & 0xFF) // R=224
 
 	// Copy pixels to framebuffer (centered) with oval fade and background blending
 	for y := uint32(0); y < imgHeight; y++ {
@@ -236,10 +236,10 @@ func RenderBootImage(imageAddr uintptr, imageSize uint64) bool {
 				alphaMult = (1.0 + cos32(t*3.14159)) / 2.0
 			}
 
-			// Read source pixel (BGRA)
+			// Read source pixel (BGRA from boot-image.bin)
 			srcPixel := *(*uint32)(unsafe.Pointer(srcRow + uintptr(x)*4))
 
-			// Extract source components
+			// Extract source components (BGRA byte order in source file)
 			srcB := uint8(srcPixel & 0xFF)
 			srcG := uint8((srcPixel >> 8) & 0xFF)
 			srcR := uint8((srcPixel >> 16) & 0xFF)
@@ -250,7 +250,7 @@ func RenderBootImage(imageAddr uintptr, imageSize uint64) bool {
 			outG := uint8(float32(srcG)*alphaMult + float32(bgG)*(1.0-alphaMult))
 			outR := uint8(float32(srcR)*alphaMult + float32(bgR)*(1.0-alphaMult))
 
-			// Reassemble pixel (fully opaque)
+			// Reassemble pixel in BGRA format (framebuffer byte order)
 			dstPixel := uint32(outB) | (uint32(outG) << 8) | (uint32(outR) << 16) | 0xFF000000
 
 			// Write to framebuffer

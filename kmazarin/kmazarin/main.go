@@ -106,8 +106,8 @@ func handleUserPageFaultInternal(faultAddr uint64) uint64 {
 // init runs before main - called after Go runtime is fully initialized
 // Set up exception handlers and enable interrupts
 func init() {
-	// NOTE: GC will be disabled and flushed in simpleMain() where runtime is fully ready.
-	// Disabling here is too early and causes hangs.
+	// NOTE: GC percentage will be set in simpleMain() where runtime is fully ready.
+	// Setting here is too early and causes hangs.
 
 	// NOTE: Runtime config is already initialized in runtime_config.go:init()
 	// which runs at package load time, before the Go runtime initializes.
@@ -180,7 +180,7 @@ func init() {
 // This function can be called from normal Go code (preemptible goroutines).
 // It's NOT marked nosplit because it calls into the console package.
 //
-// NOTE: Do not call from IRQ handlers or nosplit contexts - use Breadcrumb() instead.
+// NOTE: Do not call from IRQ handlers or nosplit contexts - use serial.PollWrite() instead.
 //
 func uartPutc(c byte) {
 	console.KWriteByte(c)
@@ -192,24 +192,6 @@ func uartPuts(s string) {
 	for i := 0; i < len(s); i++ {
 		uartPutc(s[i])
 	}
-}
-
-// uartPutsDirect writes a string directly to UART using breadcrumbs.
-// Used by ksyscall and kthread packages via linkname (nosplit contexts).
-// Uses Breadcrumb which is NOT safe for async preemption.
-//go:linkname uartPutsDirect mazzy/kmazarin/ksyscall.uartPutsDirect
-//go:nosplit
-func uartPutsDirect(s string) {
-	BreadcrumbString(s)
-}
-
-// uartPutcDirectForKmem writes a byte directly to UART using breadcrumbs.
-// Used by kmem package via linkname (nosplit context).
-// Uses Breadcrumb which is NOT safe for async preemption.
-//go:linkname uartPutcDirectForKmem mazzy/kmazarin/kmem.uartPutcDirect
-//go:nosplit
-func uartPutcDirectForKmem(c byte) {
-	Breadcrumb(c)
 }
 
 // Runtime readiness flag - set to true once we verify runtime is fully initialized
@@ -714,7 +696,8 @@ func simpleMain() {
 	if testRuntimeReadiness() {
 		Print("[Main] Runtime ready")
 
-		debug.SetGCPercent(-1)
+		debug.SetGCPercent(100)                    // GC at 2x live set (balanced for kernel)
+		debug.SetMemoryLimit(64 * 1024 * 1024)     // 64MB soft heap cap
 		InitDeadlineQueue()
 		InitSoftIRQDispatcher()
 	} else {

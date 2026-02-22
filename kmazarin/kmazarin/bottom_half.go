@@ -6,6 +6,7 @@ import (
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
 	"runtime"
 	"sync/atomic"
@@ -406,33 +407,14 @@ func NonTimerIRQTopHalf() {
 //
 //go:nosplit
 func breadcrumbHex32(v uint32) {
-	const hex = "0123456789abcdef"
-	for i := 28; i >= 0; i -= 4 {
-		console.Breadcrumb(hex[(v>>uint(i))&0xf])
-	}
+	serial.RawUARTHex32(v)
 }
 
 // breadcrumbDec16 prints a uint16 as decimal digits via UART breadcrumbs.
 //
 //go:nosplit
 func breadcrumbDec16(v uint16) {
-	if v == 0 {
-		console.Breadcrumb('0')
-		return
-	}
-	// Max uint16 is 65535 = 5 digits
-	var buf [5]byte
-	n := 0
-	for v > 0 {
-		buf[n] = byte('0' + v%10)
-		v /= 10
-		n++
-	}
-	// Print in reverse (most significant first)
-	for n > 0 {
-		n--
-		console.Breadcrumb(buf[n])
-	}
+	serial.RawUARTDecimal(uint64(v))
 }
 
 // ============================================================================
@@ -666,7 +648,7 @@ func pageTrackingBottomHalf() {
 //
 //go:nosplit
 func Breadcrumb(b byte) {
-	console.Breadcrumb(b)
+	serial.PollWrite(b)
 }
 
 // BreadcrumbString writes a string as breadcrumbs.
@@ -674,9 +656,7 @@ func Breadcrumb(b byte) {
 //
 //go:nosplit
 func BreadcrumbString(s string) {
-	for i := 0; i < len(s); i++ {
-		console.Breadcrumb(s[i])
-	}
+	serial.RawUARTPuts(s)
 }
 
 // BreadcrumbHex writes a 64-bit hex value directly to UART.
@@ -684,18 +664,7 @@ func BreadcrumbString(s string) {
 //
 //go:nosplit
 func BreadcrumbHex(val uint64) {
-	hexChars := "0123456789ABCDEF"
-	// Skip leading zeros but always print at least one digit
-	started := false
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (val >> uint(i)) & 0xF
-		if nibble != 0 {
-			started = true
-		}
-		if started || i == 0 {
-			console.Breadcrumb(hexChars[nibble])
-		}
-	}
+	serial.RawUARTHexCompact(val)
 }
 
 // SetupUartSoftIRQ records the UART IRQ number so NonTimerIRQTopHalf

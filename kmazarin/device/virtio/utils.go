@@ -2,7 +2,6 @@
 package virtio
 
 import (
-	"mazzy/kmazarin/console"
 	"unsafe"
 )
 
@@ -22,51 +21,12 @@ func PointerToUintptr(ptr unsafe.Pointer) uintptr {
 	return uintptr(ptr)
 }
 
-// uartPutsDirect writes a string directly to console
-// Used for debug output during device initialization
-//
-//go:nosplit
-func uartPutsDirect(s string) {
-	console.KWriteString(s)
-}
-
-// uartPutHex8Direct writes an 8-bit hex value
-//
-//go:nosplit
-func uartPutHex8Direct(val uint8) {
-	hexChars := "0123456789ABCDEF"
-	console.KWriteByte(hexChars[val>>4])
-	console.KWriteByte(hexChars[val&0xF])
-}
-
-// uartPutHex16Direct writes a 16-bit hex value
-//
-//go:nosplit
-func uartPutHex16Direct(val uint16) {
-	uartPutHex8Direct(uint8(val >> 8))
-	uartPutHex8Direct(uint8(val))
-}
-
-// uartPutHex32Direct writes a 32-bit hex value
-//
-//go:nosplit
-func uartPutHex32Direct(val uint32) {
-	uartPutHex16Direct(uint16(val >> 16))
-	uartPutHex16Direct(uint16(val))
-}
-
-// uartPutHex64Direct writes a 64-bit hex value
-//
-//go:nosplit
-func uartPutHex64Direct(val uint64) {
-	uartPutHex32Direct(uint32(val >> 32))
-	uartPutHex32Direct(uint32(val))
-}
-
 // kmallocAllocations keeps allocated slices alive to prevent GC collection.
 // When kmalloc returns an unsafe.Pointer to a slice's backing array, the slice
 // header goes out of scope. Without this, the GC could collect the backing array.
-var kmallocAllocations [][]byte
+// Fixed-size array prevents unbounded growth from append's slice doubling.
+var kmallocAllocations [256][]byte
+var kmallocCount int
 
 // kmalloc allocates memory using Go's runtime
 // For kmazarin, we just use make() to allocate a byte slice
@@ -79,9 +39,12 @@ func kmalloc(size uint32) unsafe.Pointer {
 	if len(buf) == 0 {
 		return nil
 	}
-	// Keep slice alive by storing it in a global slice
+	// Keep slice alive by storing it in a fixed-size global array
 	// This prevents GC from collecting the backing array
-	kmallocAllocations = append(kmallocAllocations, buf)
+	if kmallocCount < len(kmallocAllocations) {
+		kmallocAllocations[kmallocCount] = buf
+		kmallocCount++
+	}
 	return unsafe.Pointer(&buf[0])
 }
 

@@ -253,7 +253,7 @@ func HasPendingKernelAsync(pid PriestId) bool {
 func getCurrentThreadPIDWrapper() int16 {
 	t := GetCurrentThread()
 	if t == nil {
-		return -1
+		return 0 // kernel context (no thread) uses PID 0
 	}
 	return int16(t.PID)
 }

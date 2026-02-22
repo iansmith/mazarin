@@ -1,6 +1,7 @@
 package kmem
 
 import (
+	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"unsafe"
 )
@@ -41,7 +42,7 @@ func AllocDriverPage() (pa uintptr, va uintptr) {
 
 	// Map as device memory (non-cacheable), splitting L2 blocks if needed
 	if !mapDevicePage(va, pa) {
-		uartPuts("[kmem] AllocDriverPage: mapDevicePage failed\r\n")
+		serial.RawUARTPuts("[kmem] AllocDriverPage: mapDevicePage failed\r\n")
 		return 0, 0
 	}
 

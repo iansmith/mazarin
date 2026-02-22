@@ -304,18 +304,6 @@ func (c *PL011Console) KPrintHex(value interface{}) {
 	c.uart.WriteString(s)
 }
 
-// Breadcrumb implements console.Console.Breadcrumb
-// Uses the private breadcrumb function from console package via linkname
-//
-//go:nosplit
-func (c *PL011Console) Breadcrumb(b byte) {
-	breadcrumb(b)
-}
-
-// breadcrumb is linked from console package's private breadcrumb function
-//go:linkname breadcrumb mazzy/kmazarin/console.breadcrumb
-func breadcrumb(b byte)
-
 // Hardware access
 //
 //go:nosplit

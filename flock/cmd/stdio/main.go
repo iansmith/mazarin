@@ -17,7 +17,6 @@ import (
 	gg "github.com/fogleman/gg"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/opentype"
-	"golang.org/x/image/math/fixed"
 
 	"mazzy/mazarin/serial"
 	"mazzy/mazarin/sys"
@@ -202,9 +201,10 @@ func (gc *glyphCache) blitCharFrom(ch byte, glyphs [][]byte, im *image.RGBA, px,
 
 // console holds the state for the text console display.
 type console struct {
-	fb       *sys.FramebufferInfo
-	dc       *gg.Context
-	face     font.Face
+	fb   *sys.FramebufferInfo
+	dc   *gg.Context // wraps framebuffer memory — draws go directly to display
+	im   *image.RGBA // = dc.Image().(*image.RGBA) = framebuffer pixels
+	face font.Face
 	ascent   int
 	charW    int
 	charH    int
@@ -292,8 +292,6 @@ func main() {
 		fmt.Printf("[stdio] GetFramebuffer failed: %v\n", err)
 		return
 	}
-	fmt.Printf("[stdio] Framebuffer: %dx%d pitch=%d addr=0x%x\n",
-		fb.Width, fb.Height, fb.Pitch, fb.Addr)
 
 	// --- Parse font ---
 	otFont, err := opentype.Parse(fontData)
@@ -301,7 +299,6 @@ func main() {
 		fmt.Printf("[stdio] font parse error: %v\n", err)
 		return
 	}
-
 	const fontSize = 16.0
 	face, err := opentype.NewFace(otFont, &opentype.FaceOptions{
 		Size:    fontSize,
@@ -312,7 +309,6 @@ func main() {
 		fmt.Printf("[stdio] NewFace error: %v\n", err)
 		return
 	}
-
 	adv, ok := face.GlyphAdvance('M')
 	if !ok {
 		fmt.Println("[stdio] could not measure glyph")
@@ -325,9 +321,6 @@ func main() {
 	lineH := charH + LineSpacing
 
 	// Compute content area from desired text dimensions
-	w := int(fb.Width)
-	h := int(fb.Height)
-	_, _ = w, h
 	maxLines := 35
 	maxCols := 120
 	rectW := maxCols*charW + 2*textPad
@@ -344,19 +337,26 @@ func main() {
 	fmt.Printf("[stdio] Font: %dx%d px, lineH=%d, rect=%dx%d, maxLines=%d\n",
 		charW, charH, lineH, rectW, rectH, maxLines)
 
+	// Create gg context wrapping the framebuffer memory directly.
+	// The GPU uses BGRA format but all colors are pre-swapped via bgraColor(),
+	// so gg's RGBA byte writes produce correct BGRA output.
+	// All drawing goes directly to the framebuffer — no separate backbuffer.
+	// Framebuffer pages are pre-mapped by the kernel, so no demand paging.
 	t0 := time.Now()
-	dc := gg.NewContext(w, h)
-	fmt.Printf("[stdio] gg.NewContext: %v\n", time.Since(t0))
-
-	t0 = time.Now()
-	gc := newGlyphCache(charW, charH, ascent, face)
-	fmt.Printf("[stdio] newGlyphCache: %v\n", time.Since(t0))
-
-	sys.RawWrite(2, 'Q') // breadcrumb: before console struct
+	fbPix := unsafe.Slice((*byte)(unsafe.Pointer(fb.Addr)), int(fb.Pitch)*int(fb.Height))
+	fbImage := &image.RGBA{
+		Pix:    fbPix,
+		Stride: int(fb.Pitch),
+		Rect:   image.Rect(0, 0, int(fb.Width), int(fb.Height)),
+	}
+	dc := gg.NewContextForRGBA(fbImage)
+	dc.SetFontFace(face)
+	fmt.Printf("[stdio] gg.NewContextForRGBA: %v\n", time.Since(t0))
 
 	con := &console{
 		fb:       fb,
 		dc:       dc,
+		im:       fbImage,
 		face:     face,
 		ascent:   ascent,
 		charW:    charW,
@@ -373,49 +373,30 @@ func main() {
 		maxLines: maxLines,
 		maxCols:  maxCols,
 		lines:    [][]serial.SerialByte{nil},
-		gc:       gc,
 		tokBuf:   make([]token, 0, 64),
 		dirtyMin: -1,
 		dirtyMax: -1,
 	}
 
-	sys.RawWrite(2, '2') // breadcrumb: after console struct, before fill
-
-	// Initial draw
+	// Draw card frame (body + title + button) and content area — fast gg ops.
 	t0 = time.Now()
-	if runtime.GOARCH == "riscv64" {
-		// RISC-V: write directly to the MMIO framebuffer. This avoids
-		// demand-paging ~1200 pages of the gg backbuffer (each page
-		// fault costs ~50ms on QEMU TCG). The framebuffer is already
-		// mapped by the kernel — MMIO writes hit device memory directly.
-		pitch := int(fb.Pitch)
-		fbH := int(fb.Height)
-		dstU32 := unsafe.Slice((*uint32)(unsafe.Pointer(fb.Addr)), (pitch*fbH)/4)
-		dstStride32 := pitch / 4
-		bgr := uint32(nContent.B) | uint32(nContent.G)<<8 | uint32(nContent.R)<<16 | 0xFF000000
-		for y := rectY; y < rectY+rectH; y++ {
-			for x := rectX; x < rectX+rectW; x++ {
-				dstU32[y*dstStride32+x] = bgr
-			}
-		}
-		fmt.Printf("[stdio] fillContentArea(direct): %v\n", time.Since(t0))
+	con.drawCardFrame()
+	con.drawContentArea()
+	fmt.Printf("[stdio] drawCardFrame+Content: %v\n", time.Since(t0))
 
+	// Flush immediately so the window is visible before SDF shadows.
+	sys.FlushFramebuffer(uint32(cardX), uint32(cardY), uint32(cardW), uint32(cardH))
+	fmt.Println("[stdio] Console rectangle rendered")
+
+	// SDF shadows are cosmetic and extremely slow on TCG (software FP).
+	// Skip them — the flat neumorphic card looks fine without drop shadows.
+	// On ARM64 with hardware FP, they complete in <1s.
+	if runtime.GOARCH == "arm64" {
 		t0 = time.Now()
-		sys.FlushFramebuffer(uint32(rectX), uint32(rectY), uint32(rectW), uint32(rectH))
-		fmt.Printf("[stdio] FlushFramebuffer: %v\n", time.Since(t0))
-	} else {
-		fillGGBackbuffer(con.dc, nBase)
-		fmt.Printf("[stdio] fillGGBackbuffer: %v\n", time.Since(t0))
+		con.drawCardShadows()
+		fmt.Printf("[stdio] drawCardShadows: %v\n", time.Since(t0))
 
-		t0 = time.Now()
-		con.drawCard()
-		fmt.Printf("[stdio] drawCard: %v\n", time.Since(t0))
-
-		t0 = time.Now()
-		con.drawContentArea()
-		fmt.Printf("[stdio] drawContentArea: %v\n", time.Since(t0))
-
-		// Flush card region plus shadow margin
+		// Flush shadow region (extends beyond card edges).
 		margin := 40 + 4
 		flushX := cardX - margin
 		flushY := cardY - margin
@@ -427,17 +408,14 @@ func main() {
 		if flushY < 0 {
 			flushY = 0
 		}
-
-		t0 = time.Now()
-		flushRegionToFramebuffer(con.dc, fb, flushX, flushY, flushW, flushH)
-		fmt.Printf("[stdio] flushRegionToFB: %v\n", time.Since(t0))
-
-		t0 = time.Now()
 		sys.FlushFramebuffer(uint32(flushX), uint32(flushY), uint32(flushW), uint32(flushH))
-		fmt.Printf("[stdio] FlushFramebuffer: %v\n", time.Since(t0))
 	}
 
-	fmt.Println("[stdio] Console rectangle rendered")
+	// Build glyph cache (190 DrawString calls with small gg contexts).
+	t0 = time.Now()
+	gc := newGlyphCache(charW, charH, ascent, face)
+	fmt.Printf("[stdio] newGlyphCache: %v\n", time.Since(t0))
+	con.gc = gc
 
 	// --- Enter serial event loop ---
 	for sb := range serialCh {
@@ -456,49 +434,23 @@ func main() {
 	}
 }
 
-// Neumorphic palette — light gray surface, same color for bg and elements.
-var (
-	nBase    = color.RGBA{224, 224, 230, 255} // light warm gray surface
-	nContent = color.RGBA{40, 42, 48, 255}    // content well (dark neutral gray)
-	nTitle   = color.RGBA{100, 100, 110, 255} // title text
-	nText    = color.RGBA{200, 205, 215, 255} // content text (stdout)
-	nStderr  = color.RGBA{200, 80, 80, 255}   // stderr text (dark red)
-)
-
-// fillRect fills a rectangle in the gg image with a solid color using direct
-// pixel writes. No floating-point math. Used on RISC-V where gg's rasterizer
-// is too slow under QEMU TCG.
-func fillRect(im *image.RGBA, x, y, w, h int, c color.RGBA) {
-	bounds := im.Bounds()
-	if x < bounds.Min.X {
-		w -= bounds.Min.X - x
-		x = bounds.Min.X
-	}
-	if y < bounds.Min.Y {
-		h -= bounds.Min.Y - y
-		y = bounds.Min.Y
-	}
-	if x+w > bounds.Max.X {
-		w = bounds.Max.X - x
-	}
-	if y+h > bounds.Max.Y {
-		h = bounds.Max.Y - y
-	}
-	if w <= 0 || h <= 0 {
-		return
-	}
-	r, g, b, a := c.R, c.G, c.B, c.A
-	for py := y; py < y+h; py++ {
-		off := py*im.Stride + x*4
-		for px := 0; px < w; px++ {
-			im.Pix[off+0] = r
-			im.Pix[off+1] = g
-			im.Pix[off+2] = b
-			im.Pix[off+3] = a
-			off += 4
-		}
-	}
+// bgraColor creates a color.RGBA with R and B swapped so that when gg
+// writes to image.RGBA (byte order [R,G,B,A]), the GPU's BGRA format
+// reads the channels correctly. Parameters are real display R, G, B, A.
+func bgraColor(r, g, b, a uint8) color.RGBA {
+	return color.RGBA{R: b, G: g, B: r, A: a}
 }
+
+// Neumorphic palette — light gray surface, same color for bg and elements.
+// GPU uses BGRA format (format 1). bgraColor swaps R↔B so that gg's RGBA
+// byte writes produce correct BGRA output for the framebuffer.
+var (
+	nBase    = bgraColor(224, 224, 230, 255) // light warm gray surface
+	nContent = bgraColor(40, 42, 48, 255)    // content well (dark neutral gray)
+	nTitle   = bgraColor(100, 100, 110, 255) // title text
+	nText    = bgraColor(200, 205, 215, 255) // content text (stdout)
+	nStderr  = bgraColor(200, 80, 80, 255)   // stderr text (dark red)
+)
 
 // gaussLUT is a precomputed lookup table for exp(-d²/(2σ²)) * amplitude.
 // Indexed by dist in 0.1px increments up to 4σ.
@@ -640,26 +592,59 @@ func roundedRectSDF(px, py, rx, ry, rw, rh, r float64) float64 {
 // drawCard paints the neumorphic card frame using per-pixel SDF shadows.
 // No blur pass needed — shadow intensity is computed analytically from
 // the signed distance field with gaussian falloff and directional lighting.
-func (c *console) drawCard() {
-	if runtime.GOARCH != "arm64" {
-		return // skip SDF shadows on TCG platforms (AMD64 + RISC-V)
-	}
+// Same code on all platforms — draws directly to the framebuffer.
+// drawCardFrame draws the card body, title, and button (fast gg operations).
+// Does NOT draw SDF shadows — call drawCardShadows() separately for those.
+func (c *console) drawCardFrame() {
 	cx := float64(c.cardX)
 	cy := float64(c.cardY)
 	cw := float64(c.cardW)
 	ch := float64(c.cardH)
 	radius := 12.0
 
-	im := c.dc.Image().(*image.RGBA)
+	// Card body
+	c.dc.SetColor(nBase)
+	c.dc.DrawRoundedRectangle(cx, cy, cw, ch, radius)
+	c.dc.Fill()
+
+	// Title text
+	c.dc.SetFontFace(c.face)
+	c.dc.SetColor(nTitle)
+	titleY := cy + float64(cardBorderTop)/2 + float64(c.ascent)/2
+	c.dc.DrawString("Serial Console", cx+float64(cardBorderSide)+float64(textPad), titleY)
+
+	// Button body
+	btnR := float64(cardBorderTop-8) / 2
+	btnCx := cx + cw - float64(cardBorderSide) - float64(textPad) - btnR
+	btnCy := cy + float64(cardBorderTop)/2
+	c.dc.SetColor(nBase)
+	c.dc.DrawCircle(btnCx, btnCy, btnR)
+	c.dc.Fill()
+
+	// Button label — small dot
+	c.dc.SetColor(nTitle)
+	c.dc.DrawCircle(btnCx, btnCy, 3)
+	c.dc.Fill()
+}
+
+// drawCardShadows draws SDF shadows for the card and button.
+// These only modify pixels OUTSIDE the card body and button circle,
+// so it's safe to call after drawCardFrame + drawContentArea.
+func (c *console) drawCardShadows() {
+	cx := float64(c.cardX)
+	cy := float64(c.cardY)
+	cw := float64(c.cardW)
+	ch := float64(c.cardH)
+	radius := 12.0
+
+	im := c.im
 	bounds := im.Bounds()
 
-	// SDF shadow: skip on RISC-V where QEMU TCG FP emulation is too slow
-	// (~1M pixels * sqrt+exp per pixel = minutes on RV64 TCG).
-	if runtime.GOARCH != "riscv64" {
+	// Card SDF shadow
+	{
 		sigma := 10.0
 		amplitude := 15.0
 		cardLUT := newGaussLUT(sigma, amplitude)
-		// Shadow region: 4*sigma beyond card edges
 		margin := int(math.Ceil(sigma * 4))
 		sx := c.cardX - margin
 		sy := c.cardY - margin
@@ -670,7 +655,6 @@ func (c *console) drawCard() {
 		if ex > bounds.Max.X { ex = bounds.Max.X }
 		if ey > bounds.Max.Y { ey = bounds.Max.Y }
 
-		// Per-pixel SDF shadow for the card
 		t0 := time.Now()
 		bgR := float64(nBase.R)
 		bgG := float64(nBase.G)
@@ -695,32 +679,18 @@ func (c *console) drawCard() {
 				im.Pix[off+3] = 255
 			}
 		}
-
 		fmt.Printf("[stdio] Card shadow: %v\n", time.Since(t0))
 	}
 
-	// Card body on top
-	c.dc.SetColor(nBase)
-	c.dc.DrawRoundedRectangle(cx, cy, cw, ch, radius)
-	c.dc.Fill()
-
-	// Title text
-	c.dc.SetFontFace(c.face)
-	c.dc.SetColor(nTitle)
-	titleY := cy + float64(cardBorderTop)/2 + float64(c.ascent)/2
-	c.dc.DrawString("Serial Console", cx+float64(cardBorderSide)+float64(textPad), titleY)
-
-	// Neumorphic button in upper-right of title bar (SDF shadow)
+	// Button SDF shadow
 	btnR := float64(cardBorderTop-8) / 2
 	btnCx := cx + cw - float64(cardBorderSide) - float64(textPad) - btnR
 	btnCy := cy + float64(cardBorderTop)/2
-
-	if runtime.GOARCH != "riscv64" {
+	{
 		btnSigma := 5.0
 		btnAmp := 12.0
 		btnLUT := newGaussLUT(btnSigma, btnAmp)
 
-		// Per-pixel SDF shadow for the button circle
 		t1 := time.Now()
 		bMargin := int(math.Ceil(btnSigma * 4))
 		bsx := int(btnCx-btnR) - bMargin
@@ -740,7 +710,6 @@ func (c *console) drawCard() {
 					continue
 				}
 				off := py*im.Stride + px*4
-				// Read current pixel (card body is already drawn)
 				cr := float64(im.Pix[off+0]) + delta
 				cg := float64(im.Pix[off+1]) + delta
 				cb := float64(im.Pix[off+2]) + delta
@@ -752,34 +721,18 @@ func (c *console) drawCard() {
 				im.Pix[off+2] = uint8(cb)
 			}
 		}
-
 		fmt.Printf("[stdio] Button shadow: %v\n", time.Since(t1))
 	}
-
-	// Button body
-	c.dc.SetColor(nBase)
-	c.dc.DrawCircle(btnCx, btnCy, btnR)
-	c.dc.Fill()
-
-	// Button label — small dot
-	c.dc.SetColor(nTitle)
-	c.dc.DrawCircle(btnCx, btnCy, 3)
-	c.dc.Fill()
 }
 
 // drawContentArea fills the content well with the darker content color.
 func (c *console) drawContentArea() {
-	if runtime.GOARCH != "arm64" {
-		im := c.dc.Image().(*image.RGBA)
-		fillRect(im, c.rectX, c.rectY, c.rectW, c.rectH, nContent)
-		return
-	}
 	c.dc.SetColor(nContent)
 	c.dc.DrawRectangle(float64(c.rectX), float64(c.rectY), float64(c.rectW), float64(c.rectH))
 	c.dc.Fill()
 }
 
-// redrawLine repaints one line in the gg context (no flush).
+// redrawLine repaints one line in the framebuffer (no flush).
 // All rendering is pixel copies from pre-rendered glyph buffers —
 // no font rendering (DrawString) happens here.
 func (c *console) redrawLine(lineIdx int) {
@@ -788,16 +741,12 @@ func (c *console) redrawLine(lineIdx int) {
 	}
 
 	lineY := c.rectY + lineIdx*c.lineH
-	im := c.dc.Image().(*image.RGBA)
+	im := c.im
 
 	// Clear this line's background
-	if runtime.GOARCH == "riscv64" {
-		fillRect(im, c.rectX, lineY, c.rectW, c.lineH, nContent)
-	} else {
-		c.dc.SetColor(nContent)
-		c.dc.DrawRectangle(float64(c.rectX), float64(lineY), float64(c.rectW), float64(c.lineH))
-		c.dc.Fill()
-	}
+	c.dc.SetColor(nContent)
+	c.dc.DrawRectangle(float64(c.rectX), float64(lineY), float64(c.rectW), float64(c.lineH))
+	c.dc.Fill()
 
 	line := c.lines[lineIdx]
 	if len(line) == 0 {
@@ -858,29 +807,22 @@ func (c *console) lineText(lineIdx int) string {
 }
 
 
-// flushDirty redraws all dirty lines into the gg context, copies the
-// affected pixel region to the framebuffer, and tells the kernel to
-// update the display. Resets dirty state afterwards.
+// flushDirty redraws all dirty lines into the framebuffer and tells the
+// kernel to update the display for the affected region.
 func (c *console) flushDirty() {
 	if c.dirtyMin < 0 {
 		return
 	}
 
-	// Redraw each dirty line into the gg backbuffer
+	// Redraw each dirty line directly into the framebuffer
 	for i := c.dirtyMin; i <= c.dirtyMax; i++ {
 		c.redrawLine(i)
 	}
 
-	// Compute the pixel region covering all dirty lines
+	// Flush only the dirty region to the display
 	y0 := c.rectY + c.dirtyMin*c.lineH
 	y1 := c.rectY + (c.dirtyMax+1)*c.lineH
-	regionH := y1 - y0
-
-	// Copy only the dirty region from gg to framebuffer
-	flushRegionToFramebuffer(c.dc, c.fb, c.rectX, y0, c.rectW, regionH)
-
-	// Tell the kernel to push that region to the display
-	sys.FlushFramebuffer(uint32(c.rectX), uint32(y0), uint32(c.rectW), uint32(regionH))
+	sys.FlushFramebuffer(uint32(c.rectX), uint32(y0), uint32(c.rectW), uint32(y1-y0))
 
 	c.clearDirty()
 }
@@ -935,11 +877,8 @@ func (c *console) scroll() {
 	copy(c.lines, c.lines[1:])
 	c.lines[c.maxLines-1] = nil
 
-	// Shift pixels in gg buffer
-	im, ok := c.dc.Image().(*image.RGBA)
-	if !ok {
-		return
-	}
+	// Shift pixels directly in the framebuffer (regular RAM, not MMIO)
+	im := c.im
 
 	srcStartY := c.rectY + c.lineH
 	dstStartY := c.rectY
@@ -955,134 +894,7 @@ func (c *console) scroll() {
 	}
 
 	c.redrawLine(c.maxLines - 1)
-	flushRegionToFramebuffer(c.dc, c.fb, c.rectX, c.rectY, c.rectW, c.rectH)
 	sys.FlushFramebuffer(uint32(c.rectX), uint32(c.rectY), uint32(c.rectW), uint32(c.rectH))
 }
 
-func fixedToInt(f fixed.Int26_6) int {
-	return f.Ceil()
-}
-
-// fillGGBackbuffer fills the gg *image.RGBA with a solid color. Used instead
-// of copyFramebufferToGG on TCG platforms where reading 8MB from the MMIO
-// framebuffer is prohibitively slow.
-func fillGGBackbuffer(dc *gg.Context, bg color.RGBA) {
-	im, ok := dc.Image().(*image.RGBA)
-	if !ok {
-		return
-	}
-	pix := im.Pix
-	stride := im.Stride
-	w := im.Bounds().Dx()
-	h := im.Bounds().Dy()
-	r, g, b, a := bg.R, bg.G, bg.B, bg.A
-	for y := 0; y < h; y++ {
-		off := y * stride
-		for x := 0; x < w; x++ {
-			pix[off+0] = r
-			pix[off+1] = g
-			pix[off+2] = b
-			pix[off+3] = a
-			off += 4
-		}
-	}
-}
-
-// copyFramebufferToGG reads the BGRA framebuffer into the gg RGBA backbuffer.
-func copyFramebufferToGG(dc *gg.Context, fb *sys.FramebufferInfo) {
-	im, ok := dc.Image().(*image.RGBA)
-	if !ok {
-		return
-	}
-
-	width := int(fb.Width)
-	height := int(fb.Height)
-	pitch := int(fb.Pitch)
-
-	if width > im.Bounds().Dx() {
-		width = im.Bounds().Dx()
-	}
-	if height > im.Bounds().Dy() {
-		height = im.Bounds().Dy()
-	}
-
-	src := unsafe.Slice((*uint8)(unsafe.Pointer(fb.Addr)), pitch*height)
-	dstPix := im.Pix
-	dstStride := im.Stride
-
-	for y := 0; y < height; y++ {
-		srcRow := src[y*pitch:]
-		dstRow := dstPix[y*dstStride:]
-		for x := 0; x < width; x++ {
-			si := x * 4
-			di := x * 4
-			b := srcRow[si+0]
-			g := srcRow[si+1]
-			r := srcRow[si+2]
-			dstRow[di+0] = r
-			dstRow[di+1] = g
-			dstRow[di+2] = b
-			dstRow[di+3] = 0xFF
-		}
-	}
-}
-
-// flushRegionToFramebuffer copies a rectangular region from the gg RGBA
-// backbuffer to the BGRA framebuffer. Only the specified region is touched.
-func flushRegionToFramebuffer(dc *gg.Context, fb *sys.FramebufferInfo, rx, ry, rw, rh int) {
-	im, ok := dc.Image().(*image.RGBA)
-	if !ok {
-		return
-	}
-
-	fbW := int(fb.Width)
-	fbH := int(fb.Height)
-	pitch := int(fb.Pitch)
-
-	// Clamp region to framebuffer and image bounds
-	imW := im.Bounds().Dx()
-	imH := im.Bounds().Dy()
-	if rx < 0 {
-		rw += rx
-		rx = 0
-	}
-	if ry < 0 {
-		rh += ry
-		ry = 0
-	}
-	if rx+rw > fbW {
-		rw = fbW - rx
-	}
-	if rx+rw > imW {
-		rw = imW - rx
-	}
-	if ry+rh > fbH {
-		rh = fbH - ry
-	}
-	if ry+rh > imH {
-		rh = imH - ry
-	}
-	if rw <= 0 || rh <= 0 {
-		return
-	}
-
-	// Use 32-bit writes to MMIO framebuffer for better performance
-	// (4x fewer device memory transactions vs byte writes).
-	dstU32 := unsafe.Slice((*uint32)(unsafe.Pointer(fb.Addr)), (pitch*fbH)/4)
-	dstStride32 := pitch / 4
-	srcPix := im.Pix
-	srcStride := im.Stride
-
-	for y := ry; y < ry+rh; y++ {
-		srcRow := srcPix[y*srcStride:]
-		for x := rx; x < rx+rw; x++ {
-			si := x * 4
-			r := srcRow[si+0]
-			g := srcRow[si+1]
-			b := srcRow[si+2]
-			// BGRA format: B in low byte, A in high byte (little-endian)
-			dstU32[y*dstStride32+x] = uint32(b) | uint32(g)<<8 | uint32(r)<<16
-		}
-	}
-}
 

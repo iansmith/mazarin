@@ -9,6 +9,8 @@
 
 package kmem
 
+import "mazzy/kmazarin/serial"
+
 // PageAllocType identifies the purpose of a page allocation.
 type PageAllocType uint8
 
@@ -49,9 +51,9 @@ func TrackPage(info PageAllocInfo) {
 		trackerCount++
 	} else {
 		trackerLock.Unlock()
-		uartPuts("[kmem] WARN: page tracker full (")
-		uartPutHex64(uint64(MaxTrackedPages))
-		uartPuts(" entries)\r\n")
+		serial.RawUARTPuts("[kmem] WARN: page tracker full (")
+		serial.RawUARTHex64(uint64(MaxTrackedPages))
+		serial.RawUARTPuts(" entries)\r\n")
 		return
 	}
 	trackerLock.Unlock()
@@ -72,6 +74,9 @@ func UntrackPage(pa uintptr) {
 	trackerLock.Unlock()
 }
 
+// MaxPriests is the maximum number of priests (processes) we track.
+const MaxPriests = 16
+
 // MemoryStats summarizes page tracker state by type and owner.
 type MemoryStats struct {
 	KernelHeapPages uint64
@@ -80,9 +85,21 @@ type MemoryStats struct {
 	UserPTPages     uint64
 	FileBufferPages uint64
 	TotalTracked    uint64
+	// Per-priest page counts (index = priestID directly; [0] = kernel)
+	ByPriest [MaxPriests]uint64
 }
 
-// GetMemoryStats scans the tracker and returns per-type counts.
+// priestIndex maps a PriestID to an array index.
+// PID is used directly as index; out-of-range maps to 0 (kernel).
+func priestIndex(pid int16) int {
+	idx := int(pid)
+	if idx < 0 || idx >= MaxPriests {
+		return 0 // treat out-of-range as kernel
+	}
+	return idx
+}
+
+// GetMemoryStats scans the tracker and returns per-type and per-priest counts.
 func GetMemoryStats() MemoryStats {
 	var stats MemoryStats
 	trackerLock.Lock()
@@ -101,30 +118,49 @@ func GetMemoryStats() MemoryStats {
 		case PageAllocFileBuffer:
 			stats.FileBufferPages += pages
 		}
+		idx := priestIndex(pageTracker[i].PriestID)
+		stats.ByPriest[idx] += pages
 	}
 	trackerLock.Unlock()
 	return stats
 }
 
-// PrintMemoryStats prints a summary of tracked page allocations.
+// PrintMemoryStats prints a summary of tracked page allocations to serial.
 func PrintMemoryStats() {
 	stats := GetMemoryStats()
-	uartPuts("[kmem] Page tracker: ")
-	uartPutHex64(stats.TotalTracked)
-	uartPuts(" entries\r\n")
-	uartPuts("  Kernel heap: ")
-	uartPutHex64(stats.KernelHeapPages)
-	uartPuts(" pages\r\n")
-	uartPuts("  Kernel PT:   ")
-	uartPutHex64(stats.KernelPTPages)
-	uartPuts(" pages\r\n")
-	uartPuts("  User:        ")
-	uartPutHex64(stats.UserPages)
-	uartPuts(" pages\r\n")
-	uartPuts("  User PT:     ")
-	uartPutHex64(stats.UserPTPages)
-	uartPuts(" pages\r\n")
-	uartPuts("  File buffer: ")
-	uartPutHex64(stats.FileBufferPages)
-	uartPuts(" pages\r\n")
+	serial.RawUARTPuts("[kmem] Page tracker: ")
+	serial.RawUARTHex64(stats.TotalTracked)
+	serial.RawUARTPuts(" entries\r\n")
+	serial.RawUARTPuts("  Kernel heap: ")
+	serial.RawUARTHex64(stats.KernelHeapPages)
+	serial.RawUARTPuts(" pages\r\n")
+	serial.RawUARTPuts("  Kernel PT:   ")
+	serial.RawUARTHex64(stats.KernelPTPages)
+	serial.RawUARTPuts(" pages\r\n")
+	serial.RawUARTPuts("  User:        ")
+	serial.RawUARTHex64(stats.UserPages)
+	serial.RawUARTPuts(" pages\r\n")
+	serial.RawUARTPuts("  User PT:     ")
+	serial.RawUARTHex64(stats.UserPTPages)
+	serial.RawUARTPuts(" pages\r\n")
+	serial.RawUARTPuts("  File buffer: ")
+	serial.RawUARTHex64(stats.FileBufferPages)
+	serial.RawUARTPuts(" pages\r\n")
+	// Per-priest breakdown
+	serial.RawUARTPuts("  By priest:\r\n")
+	// Index 0 = kernel (PID 0)
+	if stats.ByPriest[0] > 0 {
+		serial.RawUARTPuts("    kernel(0): ")
+		serial.RawUARTHex64(stats.ByPriest[0])
+		serial.RawUARTPuts(" pages\r\n")
+	}
+	for i := 1; i < MaxPriests; i++ {
+		if stats.ByPriest[i] > 0 {
+			serial.RawUARTPuts("    priest ")
+			serial.RawUARTHex64(uint64(i))
+			serial.RawUARTPuts(": ")
+			serial.RawUARTHex64(stats.ByPriest[i])
+			serial.RawUARTPuts(" pages\r\n")
+		}
+	}
 }

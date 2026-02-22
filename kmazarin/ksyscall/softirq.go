@@ -40,23 +40,17 @@ func SyscallWaitSoftIRQ(slotNum, bufPtr, _, _, _, _ uint64) int64 {
 		return int64(n)
 	}
 
-	// No events — halt CPU until next interrupt, then check once more.
-	// IRQs are disabled during syscall context; enableIRQsAndWait atomically
-	// enables IRQs and halts (STI+HLT on AMD64, DAIFClr+WFI on ARM64,
-	// CSRSI+WFI on RISC-V). IRQs are re-disabled before returning.
-	enableIRQsAndWait()
-
-	// After interrupt: ISR may have pushed events to ring
-	n = DrainSoftIRQSlotEvents(slot, events[:], hid.MaxHIDEvents)
-	if n > 0 {
-		intKind := GetSlotInterruptKind(slot)
-		if err := writeSoftIRQReturn(bufPtr, events[:n], n, intKind); err != 0 {
-			return err
-		}
-		return int64(n)
-	}
-
-	return -11 // EAGAIN — interrupt was for a different slot
+	// No events available. Return EAGAIN immediately so userspace can
+	// Gosched (yielding CPU to other goroutines) and the kernel can
+	// preempt to other threads via timer interrupts.
+	//
+	// NOTE: We previously used enableIRQsAndWait() (STI+HLT/WFI) here
+	// to reduce syscall rate. But on single-core systems, HLT inside a
+	// syscall starves other processes: the timer ISR fires during kernel
+	// mode (CS=0x08), preemption is skipped for safety, and the calling
+	// process monopolizes the CPU. Returning EAGAIN ensures other
+	// processes get CPU time through normal timer-driven preemption.
+	return -11 // EAGAIN
 }
 
 // SyscallRegisterSoftIRQ registers an IRQ on a soft IRQ slot for the current priest.

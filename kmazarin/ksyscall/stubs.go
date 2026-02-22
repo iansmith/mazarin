@@ -4,6 +4,7 @@ package ksyscall
 import (
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/serial"
 
 	_ "unsafe" // for go:linkname
 )
@@ -141,15 +142,14 @@ func SyscallSchedSetaffinity(pid, cpusetsize, mask, _, _, _ uint64) int64 {
 	return 0 // Success (we accept but don't enforce CPU pinning)
 }
 
-// SyscallPrctl performs process control operations
-// Return success for PR_SET_VMA (0x53564D41) and other operations
-// to avoid confusing the Go runtime
+// SyscallPrctl performs process control operations.
+// Returns -EINVAL so the Go runtime's setVMAName() probe detects
+// PR_SET_VMA as unsupported and permanently disables VMA naming.
+// Returning 0 (success) caused ~5000 prctl calls/sec — one after every mmap.
 //
 //go:nosplit
 func SyscallPrctl(option, _, _, _, _, _ uint64) int64 {
-	// PR_SET_VMA = 0x53564D41 is used by Go runtime to name memory regions
-	// We don't implement it but should return success
-	return 0 // Success (stub)
+	return -22 // EINVAL — disables Go runtime's PR_SET_VMA naming
 }
 
 // SyscallMprotect changes memory protection
@@ -172,7 +172,14 @@ func SyscallPrlimit64(_, _, _, _, _, _ uint64) int64 {
 // We ignore the advice, return success
 //
 //go:nosplit
-func SyscallMadvise(_, _, _, _, _, _ uint64) int64 {
+func SyscallMadvise(addr, length, advice, _, _, _ uint64) int64 {
+	// Breadcrumb: confirm scavenger is calling madvise
+	// advice: 4 = MADV_DONTNEED, 8 = MADV_FREE
+	serial.PollWrite('A')
+	serial.RawUARTHexCompact(advice)
+	serial.PollWrite(':')
+	serial.RawUARTHexCompact(length)
+	serial.PollWrite(' ')
 	return 0 // Success
 }
 

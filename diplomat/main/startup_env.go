@@ -16,15 +16,17 @@ import (
 //   [0]    argc = 1
 //   [8]    argv[0] → "kmazarin" string
 //   [16]   argv[1] = NULL
-//   [24]   envp[0] → "GOGC=off"
+//   [24]   envp[0] → "GOGC=100"
 //   [32]   envp[1] → "GODEBUG=asyncpreemptoff=1"
-//   [40]   envp[2] = NULL
-//   [48+]  auxv entries (key, value pairs) — up to 20 entries (320 bytes)
+//   [40]   envp[2] → "GOMEMLIMIT=64MiB"
+//   [48]   envp[3] = NULL
+//   [56+]  auxv entries (key, value pairs) — up to 20 entries (320 bytes)
 //   ...
 //   [384]  "kmazarin\0"
 //   [400]  16 random bytes
-//   [416]  "GOGC=off\0"
+//   [416]  "GOGC=100\0"
 //   [432]  "GODEBUG=asyncpreemptoff=1\0"
+//   [464]  "GOMEMLIMIT=64MiB\0"
 func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel) (uint64, error) {
 	const paramSize = 0x300 // 768 bytes — room for 20 auxv entries + strings
 
@@ -60,16 +62,16 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel) (uint
 	randomPhys := structPhys + 400
 	getTimerBasedRandom(randomPhys)
 
-	// "GOGC=off" at offset 416
+	// "GOGC=100" at offset 416 (GC at 2x live set; balanced for kernel)
 	gogc := (*[16]byte)(unsafe.Pointer(uintptr(structPhys + 416)))
 	gogc[0] = 'G'
 	gogc[1] = 'O'
 	gogc[2] = 'G'
 	gogc[3] = 'C'
 	gogc[4] = '='
-	gogc[5] = 'o'
-	gogc[6] = 'f'
-	gogc[7] = 'f'
+	gogc[5] = '1'
+	gogc[6] = '0'
+	gogc[7] = '0'
 	gogc[8] = 0
 
 	// "GODEBUG=asyncpreemptoff=1" at offset 432
@@ -80,6 +82,14 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel) (uint
 	}
 	godebug[len(s)] = 0
 
+	// "GOMEMLIMIT=64MiB" at offset 464
+	memlimit := (*[24]byte)(unsafe.Pointer(uintptr(structPhys + 464)))
+	ml := "GOMEMLIMIT=64MiB"
+	for i := 0; i < len(ml); i++ {
+		memlimit[i] = ml[i]
+	}
+	memlimit[len(ml)] = 0
+
 	// Now fill the structure using VIRTUAL addresses for pointers
 	// (kmazarin will access them via TTBR1 high-memory VAs)
 
@@ -89,15 +99,17 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel) (uint
 	data[1] = structStart + 384
 	// argv[1] = NULL
 	data[2] = 0
-	// envp[0] = "GOGC=off" (VA)
+	// envp[0] = "GOGC=100" (VA)
 	data[3] = structStart + 416
 	// envp[1] = "GODEBUG=asyncpreemptoff=1" (VA)
 	data[4] = structStart + 432
-	// envp[2] = NULL
-	data[5] = 0
+	// envp[2] = "GOMEMLIMIT=64MiB" (VA)
+	data[5] = structStart + 464
+	// envp[3] = NULL
+	data[6] = 0
 
-	// Auxiliary vector (starts at index 6 = byte offset 48)
-	i := 6
+	// Auxiliary vector (starts at index 7 = byte offset 56)
+	i := 7
 
 	// AT_PAGESZ = 6: Physical page size
 	data[i] = 6 // AT_PAGESZ

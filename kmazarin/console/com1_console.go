@@ -4,12 +4,13 @@ package console
 
 import (
 	"fmt"
+	"mazzy/kmazarin/serial"
 	"reflect"
 	"sync/atomic"
 )
 
 // COM1Console implements Console using x86_64 COM1 serial port (I/O port 0x3F8).
-// Uses the breadcrumb() function which outputs via OUTB instruction.
+// Uses serial.PollWrite() which outputs via OUTB instruction.
 // This replaces MMIOUartConsole on x86_64 where there is no PL011 UART.
 type COM1Console struct {
 	lock uint32 // Spinlock: 0=unlocked, 1=locked
@@ -38,7 +39,7 @@ func (c *COM1Console) releaseNoIRQ() {
 func (c *COM1Console) KWrite(p []byte) int {
 	c.acquireNoIRQ()
 	for _, b := range p {
-		breadcrumb(b)
+		serial.PollWrite(b)
 	}
 	c.releaseNoIRQ()
 	return len(p)
@@ -52,7 +53,7 @@ func (c *COM1Console) KWriteByte(b byte) {
 		return
 	}
 	c.acquireNoIRQ()
-	breadcrumb(b)
+	serial.PollWrite(b)
 	c.releaseNoIRQ()
 }
 
@@ -62,7 +63,7 @@ func (c *COM1Console) KWriteByte(b byte) {
 func (c *COM1Console) KWriteString(s string) {
 	c.acquireNoIRQ()
 	for i := 0; i < len(s); i++ {
-		breadcrumb(s[i])
+		serial.PollWrite(s[i])
 	}
 	c.releaseNoIRQ()
 }
@@ -100,9 +101,3 @@ func (c *COM1Console) KPrintHex(value interface{}) {
 	}
 }
 
-// Breadcrumb implements Console.Breadcrumb
-//
-//go:nosplit
-func (c *COM1Console) Breadcrumb(b byte) {
-	breadcrumb(b)
-}

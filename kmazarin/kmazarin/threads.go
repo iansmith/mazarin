@@ -5,6 +5,7 @@ import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/ds"
+	"mazzy/kmazarin/serial"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/ktime"
@@ -44,14 +45,14 @@ func smpDebugPrintRun(cpuID uint64, tid ThreadId, pid PriestId) {
 	if !SMPDebugEnabled {
 		return
 	}
-	console.Breadcrumb('R')
-	console.Breadcrumb('0' + byte(cpuID))
-	console.Breadcrumb(' ')
-	console.BreadcrumbHex8NoSplit(uint8(tid))
-	console.Breadcrumb(' ')
-	console.BreadcrumbHex8NoSplit(uint8(pid))
-	console.Breadcrumb('\r')
-	console.Breadcrumb('\n')
+	serial.PollWrite('R')
+	serial.PollWrite('0' + byte(cpuID))
+	serial.PollWrite(' ')
+	serial.RawUARTHex8(uint8(tid))
+	serial.PollWrite(' ')
+	serial.RawUARTHex8(uint8(pid))
+	serial.PollWrite('\r')
+	serial.PollWrite('\n')
 }
 
 // smpDebugPrintSteal prints "S<cpu><tid><from>" when work is stolen.
@@ -60,14 +61,14 @@ func smpDebugPrintSteal(thisCPU uint64, tid ThreadId, victimCPU uint64) {
 	if !SMPDebugEnabled {
 		return
 	}
-	console.Breadcrumb('S')
-	console.Breadcrumb('0' + byte(thisCPU))
-	console.Breadcrumb(' ')
-	console.BreadcrumbHex8NoSplit(uint8(tid))
-	console.Breadcrumb(' ')
-	console.Breadcrumb('0' + byte(victimCPU))
-	console.Breadcrumb('\r')
-	console.Breadcrumb('\n')
+	serial.PollWrite('S')
+	serial.PollWrite('0' + byte(thisCPU))
+	serial.PollWrite(' ')
+	serial.RawUARTHex8(uint8(tid))
+	serial.PollWrite(' ')
+	serial.PollWrite('0' + byte(victimCPU))
+	serial.PollWrite('\r')
+	serial.PollWrite('\n')
 }
 
 // smpDebugPrintIRQ prints "I<cpu><irq>" when an IRQ fires.
@@ -76,12 +77,12 @@ func smpDebugPrintIRQ(cpuID uint64, irqNum uint32) {
 	if !SMPDebugEnabled {
 		return
 	}
-	console.Breadcrumb('I')
-	console.Breadcrumb('0' + byte(cpuID))
-	console.Breadcrumb(' ')
-	console.BreadcrumbHex16NoSplit(uint16(irqNum))
-	console.Breadcrumb('\r')
-	console.Breadcrumb('\n')
+	serial.PollWrite('I')
+	serial.PollWrite('0' + byte(cpuID))
+	serial.PollWrite(' ')
+	serial.RawUARTHex16(uint16(irqNum))
+	serial.PollWrite('\r')
+	serial.PollWrite('\n')
 }
 
 // Timer frequency (set from timer init)
@@ -822,7 +823,7 @@ func processStaticDeadlinesSchedLockHeld() {
 		// Timer deadlines are encoded as negative slot IDs: -(slot+2).
 		// Decode and push events to the slot, waking whatever thread is blocked.
 		if tid <= -2 {
-			console.BreadcrumbNoSplit('D')
+			serial.PollWrite('D')
 			sec, nsec := ktime.GetTime()
 			PushTimerEventAndWake(sec, nsec)
 			continue
@@ -1038,9 +1039,9 @@ func SaveThread0AndYield() uint64 {
 	smpDebugPrintRun(debugCPU, debugTID, debugPID)
 
 	if next.Context.GetPC() == 0 {
-		console.BreadcrumbStringNoSplit("[BUG] Yield RIP=0 TID=")
-		console.BreadcrumbHex64NoSplit(uint64(next.TID))
-		console.BreadcrumbNoSplit('\n')
+		serial.RawUARTPuts("[BUG] Yield RIP=0 TID=")
+		serial.RawUARTHex64(uint64(next.TID))
+		serial.PollWrite('\n')
 		for {
 			WaitForInterrupt()
 		}
@@ -1552,6 +1553,11 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	p.PID = priestId
 	p.AsyncPreemptAddr = asyncPreemptAddr
 	p.ThreadCount = 1 // This priest starts with one thread
+
+	// Breadcrumb: priest ID allocated (seeing this more than twice is suspicious)
+	BreadcrumbString("\r\n[P+]pid=")
+	BreadcrumbHex(uint64(priestId))
+	Breadcrumb('\n')
 
 	// Allocate thread slot from static list (panics if exhausted)
 	_, t := threadList.Allocate()
@@ -2230,9 +2236,9 @@ func tryPickupWorkIdleCPU(sf *SchedulerFunc) uint64 {
 	sf.EnableAndRestoreDAIF(savedDAIF)
 
 	if next.Context.GetPC() == 0 {
-		console.BreadcrumbStringNoSplit("[BUG] Pickup RIP=0 TID=")
-		console.BreadcrumbHex64NoSplit(uint64(next.TID))
-		console.BreadcrumbNoSplit('\n')
+		serial.RawUARTPuts("[BUG] Pickup RIP=0 TID=")
+		serial.RawUARTHex64(uint64(next.TID))
+		serial.PollWrite('\n')
 		for {
 			WaitForInterrupt()
 		}
@@ -2375,9 +2381,9 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	_ = savedDAIF // Keep compiler happy
 
 	if next.Context.GetPC() == 0 {
-		console.BreadcrumbStringNoSplit("[BUG] Preempt RIP=0 TID=")
-		console.BreadcrumbHex64NoSplit(uint64(next.TID))
-		console.BreadcrumbNoSplit('\n')
+		serial.RawUARTPuts("[BUG] Preempt RIP=0 TID=")
+		serial.RawUARTHex64(uint64(next.TID))
+		serial.PollWrite('\n')
 		for {
 			WaitForInterrupt()
 		}
@@ -2619,7 +2625,7 @@ func printTickDistributionNoSplit(now uint64) {
 	freq := kirq.SystemTimerFrequency
 
 	// "\n===TICKS===\n"
-	console.BreadcrumbStringNoSplit("\n===TICKS===\n")
+	serial.RawUARTPuts("\n===TICKS===\n")
 
 	for i := 0; i < MaxThreads; i++ {
 		if threadListInUse[i] {
@@ -2627,34 +2633,34 @@ func printTickDistributionNoSplit(now uint64) {
 			ticks := t.TotalTicksRunning
 			if t.TicksStartedRunning != 0 {
 				if now < t.TicksStartedRunning {
-					console.BreadcrumbNoSplit('%') // Bogus: current time < started time
+					serial.PollWrite('%') // Bogus: current time < started time
 				} else {
 					ticks += now - t.TicksStartedRunning
 				}
 			} else if t.State == ThreadRunning {
-				console.BreadcrumbNoSplit('%') // Bogus: running but no start time
+				serial.PollWrite('%') // Bogus: running but no start time
 			}
 			// "T<TID> P<PID> <hex> <secs>s\n"
-			console.BreadcrumbNoSplit('T')
-			console.BreadcrumbHex8NoSplit(byte(t.TID))
-			console.BreadcrumbNoSplit(' ')
-			console.BreadcrumbNoSplit('P')
-			console.BreadcrumbHex8NoSplit(byte(t.PID))
-			console.BreadcrumbNoSplit(' ')
-			console.BreadcrumbHex64NoSplit(ticks)
-			console.BreadcrumbNoSplit(' ')
+			serial.PollWrite('T')
+			serial.RawUARTHex8(byte(t.TID))
+			serial.PollWrite(' ')
+			serial.PollWrite('P')
+			serial.RawUARTHex8(byte(t.PID))
+			serial.PollWrite(' ')
+			serial.RawUARTHex64(ticks)
+			serial.PollWrite(' ')
 			if freq > 0 {
-				console.BreadcrumbDecimalNoSplit(ticks / freq)
+				serial.RawUARTDecimal(ticks / freq)
 			} else {
-				console.BreadcrumbNoSplit('?')
+				serial.PollWrite('?')
 			}
-			console.BreadcrumbNoSplit('s')
-			console.BreadcrumbNoSplit('\n')
+			serial.PollWrite('s')
+			serial.PollWrite('\n')
 		}
 	}
 
 	// "===PRIEST===\n"
-	console.BreadcrumbStringNoSplit("===PRIEST===\n")
+	serial.RawUARTPuts("===PRIEST===\n")
 
 	for i := 0; i < MaxPriests; i++ {
 		if priestListInUse[i] {
@@ -2662,35 +2668,35 @@ func printTickDistributionNoSplit(now uint64) {
 			ticks := p.TotalTicksRunning
 			if p.TicksStartedRunning != 0 {
 				if now < p.TicksStartedRunning {
-					console.BreadcrumbNoSplit('%')
+					serial.PollWrite('%')
 				} else {
 					ticks += now - p.TicksStartedRunning
 				}
 			}
 			// "P<PID> <hex> <secs>s\n"
-			console.BreadcrumbNoSplit('P')
-			console.BreadcrumbHex8NoSplit(byte(p.PID))
-			console.BreadcrumbNoSplit(' ')
-			console.BreadcrumbHex64NoSplit(ticks)
-			console.BreadcrumbNoSplit(' ')
+			serial.PollWrite('P')
+			serial.RawUARTHex8(byte(p.PID))
+			serial.PollWrite(' ')
+			serial.RawUARTHex64(ticks)
+			serial.PollWrite(' ')
 			if freq > 0 {
-				console.BreadcrumbDecimalNoSplit(ticks / freq)
+				serial.RawUARTDecimal(ticks / freq)
 			} else {
-				console.BreadcrumbNoSplit('?')
+				serial.PollWrite('?')
 			}
-			console.BreadcrumbNoSplit('s')
-			console.BreadcrumbNoSplit('\n')
+			serial.PollWrite('s')
+			serial.PollWrite('\n')
 		}
 	}
 
 	// "===TOTAL===\n"
-	console.BreadcrumbStringNoSplit("===TOTAL===\n")
+	serial.RawUARTPuts("===TOTAL===\n")
 	if startingTicksProgram != 0 && now >= startingTicksProgram && freq > 0 {
-		console.BreadcrumbDecimalNoSplit((now - startingTicksProgram) / freq)
+		serial.RawUARTDecimal((now - startingTicksProgram) / freq)
 	} else {
-		console.BreadcrumbNoSplit('?')
+		serial.PollWrite('?')
 	}
-	console.BreadcrumbStringNoSplit("s\n")
+	serial.RawUARTPuts("s\n")
 
 	// Brief spin for UART FIFO drain (main flush is in Exit() assembly)
 	for i := uint64(0); i < 10000000; i++ {

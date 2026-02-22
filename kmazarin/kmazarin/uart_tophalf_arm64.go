@@ -4,7 +4,7 @@ package main
 
 import (
 	"mazzy/kmazarin/asm"
-	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
 )
 
@@ -39,7 +39,7 @@ func uartTopHalf(irqNum uint32) {
 		if ringPush(&topHalfUartRing, ev) {
 			pushed = true
 		} else {
-			console.Breadcrumb('X') // overflow
+			serial.PollWrite('X') // overflow
 		}
 	}
 

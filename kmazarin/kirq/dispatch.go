@@ -1,5 +1,7 @@
 package kirq
 
+import "mazzy/kmazarin/serial"
+
 // PreemptInfo contains call injection information for async preemption
 // Returned by IRQ handlers that want to trigger preemption
 type PreemptInfo struct {
@@ -152,12 +154,12 @@ func dispatchNonTimerIRQInternal() {
 //
 //go:nosplit
 func irqPanic(msg string, irqNum uint64) {
-	breadcrumbString("\r\n*** KERNEL PANIC ***\r\n")
-	breadcrumbString(msg)
-	breadcrumbString(": IRQ #")
-	breadcrumbString("0x")
-	breadcrumbHex(irqNum)
-	breadcrumbString("\r\n")
+	serial.RawUARTPuts("\r\n*** KERNEL PANIC ***\r\n")
+	serial.RawUARTPuts(msg)
+	serial.RawUARTPuts(": IRQ #")
+	serial.RawUARTPuts("0x")
+	serial.RawUARTHex64(irqNum)
+	serial.RawUARTPuts("\r\n")
 
 	// Halt using Exit
 	Exit()

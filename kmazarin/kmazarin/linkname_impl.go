@@ -42,67 +42,12 @@ func processDeadlinesForKirq() {
 	ProcessDeadlines()
 }
 
-// breadcrumbStringForKirq provides direct UART output to kirq package via linkname
-// This is used for panic messages to avoid console recursion
-//
-//go:linkname breadcrumbStringForKirq mazzy/kmazarin/kirq.breadcrumbString
-//go:nosplit
-func breadcrumbStringForKirq(s string) {
-	BreadcrumbString(s)
-}
-
-// breadcrumbHexForKirq writes a 64-bit hex value directly to UART for kirq package
-//
-//go:linkname breadcrumbHexForKirq mazzy/kmazarin/kirq.breadcrumbHex
-//go:nosplit
-func breadcrumbHexForKirq(val uint64) {
-	hexChars := "0123456789ABCDEF"
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (val >> i) & 0xF
-		Breadcrumb(hexChars[nibble])
-	}
-}
-
 // getRuntimeConfigForKsyscall provides runtime config to ksyscall package via linkname
 //
 //go:linkname getRuntimeConfigForKsyscall mazzy/kmazarin/ksyscall.getRuntimeConfig
 //go:nosplit
 func getRuntimeConfigForKsyscall() interface{} {
 	return getFullConfig()
-}
-
-// uartPutHex64Direct writes a 64-bit hex value to UART
-// Used by ksyscall, kthread, and kmem packages via linkname
-//
-//go:linkname uartPutHex64Direct mazzy/kmazarin/ksyscall.uartPutHex64Direct
-//go:linkname uartPutHex64DirectForKmem mazzy/kmazarin/kmem.uartPutHex64Direct
-//go:nosplit
-func uartPutHex64Direct(val uint64) {
-	hexChars := "0123456789ABCDEF"
-	for i := 60; i >= 0; i -= 4 {
-		nibble := (val >> i) & 0xF
-		uartPutc(hexChars[nibble])
-	}
-}
-
-// Alias for kmem package linkname
-//
-//go:nosplit
-func uartPutHex64DirectForKmem(val uint64) {
-	uartPutHex64Direct(val)
-}
-
-// uartPutHex32Direct writes a 32-bit hex value to UART
-// Used by ksyscall and kthread packages via linkname
-//
-//go:linkname uartPutHex32Direct mazzy/kmazarin/ksyscall.uartPutHex32Direct
-//go:nosplit
-func uartPutHex32Direct(val uint32) {
-	hexChars := "0123456789ABCDEF"
-	for i := 28; i >= 0; i -= 4 {
-		nibble := (val >> i) & 0xF
-		uartPutc(hexChars[nibble])
-	}
 }
 
 // ============================================================================

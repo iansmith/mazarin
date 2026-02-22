@@ -1,9 +1,9 @@
 package ksyscall
 
 import (
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/serial"
 	"unsafe"
 )
 
@@ -17,7 +17,7 @@ func SyscallFlushFramebuffer(x, y, width, height, _, _ uint64) int64 {
 	gpu.UpdateDisplay(uint32(x), uint32(y), uint32(width), uint32(height))
 	flushDiagCount++
 	if flushDiagCount&7 == 0 {
-		console.BreadcrumbNoSplit('F')
+		serial.PollWrite('F')
 	}
 	return 0
 }
@@ -58,7 +58,7 @@ func SyscallGetFramebuffer(fbInfoPtr, _, _, _, _, _ uint64) int64 {
 		Width:          width,
 		Height:         height,
 		ResourceHeight: resourceHeight,
-		Pitch:          width * 4, // 4 bytes per pixel (BGRA)
+		Pitch:          width * 4, // 4 bytes per pixel (RGBA)
 	}
 
 	// Ensure user page is mapped (demand-page if needed)

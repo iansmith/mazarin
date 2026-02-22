@@ -97,7 +97,7 @@ func (r *cursorRenderer) Draw(stack core.CursorStack, images core.CursorImageMap
 			ra := img.Pix[pidx+0]
 			ga := img.Pix[pidx+1]
 			ba := img.Pix[pidx+2]
-			// RGBA -> BGRA
+			// BGRA framebuffer — swap R↔B from image.RGBA source
 			r.pixels[idx] = uint32(ba) | uint32(ga)<<8 | uint32(ra)<<16 | uint32(aa)<<24
 		}
 	}

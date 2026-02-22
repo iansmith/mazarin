@@ -1,6 +1,7 @@
 package kmem
 
 import (
+	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"unsafe"
 )
@@ -97,20 +98,20 @@ func verifyUserspacePriestL0(l0PA uintptr, asid uint16) {
 	l0VA := l0PA + constants.KernelMMIOOffset
 	e0 := *(*uint64)(unsafe.Pointer(l0VA))
 	if (e0 & X86_PTE_PRESENT) == 0 {
-		rawUARTPuts("\r\n[SWITCH_PT] L0[0] INVALID! l0PA=0x")
-		rawUARTHex64(uint64(l0PA))
-		rawUARTPuts(" ASID=")
-		rawUARTHex64(uint64(asid))
-		rawUARTPuts(" L0[0]=0x")
-		rawUARTHex64(e0)
-		rawUARTPuts("\r\n")
+		serial.RawUARTPuts("\r\n[SWITCH_PT] L0[0] INVALID! l0PA=0x")
+		serial.RawUARTHex64(uint64(l0PA))
+		serial.RawUARTPuts(" ASID=")
+		serial.RawUARTHex64(uint64(asid))
+		serial.RawUARTPuts(" L0[0]=0x")
+		serial.RawUARTHex64(e0)
+		serial.RawUARTPuts("\r\n")
 		for i := uintptr(0); i < 4; i++ {
 			entry := *(*uint64)(unsafe.Pointer(l0VA + i*8))
-			rawUARTPuts("  L0[")
-			rawUARTHex64(uint64(i))
-			rawUARTPuts("]=0x")
-			rawUARTHex64(entry)
-			rawUARTPuts("\r\n")
+			serial.RawUARTPuts("  L0[")
+			serial.RawUARTHex64(uint64(i))
+			serial.RawUARTPuts("]=0x")
+			serial.RawUARTHex64(entry)
+			serial.RawUARTPuts("\r\n")
 		}
 		for {
 		}

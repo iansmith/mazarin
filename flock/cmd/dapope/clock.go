@@ -85,13 +85,16 @@ func (c *clockRenderer) Update(ts sys.TimeSpec) {
 	// Render into a small gg context filled with the background color
 	dc := gg.NewContext(regionW, regionH)
 
-	// Fill with powder gray background (matches kernel surface color)
-	dc.SetRGB(224.0/255.0, 224.0/255.0, 230.0/255.0)
+	// Fill with powder gray background (matches kernel surface color).
+	// GPU uses BGRA format; swap R↔B in SetRGB so gg writes correct bytes.
+	// Actual display color: RGB(224, 224, 230)
+	dc.SetRGB(230.0/255.0, 224.0/255.0, 224.0/255.0)
 	dc.Clear()
 
-	// Draw text in dark color for contrast
+	// Draw text in dark color for contrast.
+	// Actual display color: RGB(51, 51, 64)
 	dc.SetFontFace(c.face)
-	dc.SetRGB(0.2, 0.2, 0.25)
+	dc.SetRGB(0.25, 0.2, 0.2)
 	dc.DrawString(s, float64(padX), float64(padY+c.ascent))
 
 	// Blit back to framebuffer
@@ -99,7 +102,8 @@ func (c *clockRenderer) Update(ts sys.TimeSpec) {
 	sys.FlushFramebuffer(uint32(rx), uint32(ry), uint32(regionW), uint32(regionH))
 }
 
-// blitToFramebuffer copies an RGBA image to the BGRA framebuffer at (dx, dy).
+// blitToFramebuffer copies an image to the BGRA framebuffer at (dx, dy).
+// Colors are pre-swapped (R↔B) in SetRGB calls, so raw byte copy is correct.
 func (c *clockRenderer) blitToFramebuffer(img *image.RGBA, dx, dy int) {
 	fbW := int(c.fb.Width)
 	fbH := int(c.fb.Height)
@@ -107,27 +111,27 @@ func (c *clockRenderer) blitToFramebuffer(img *image.RGBA, dx, dy int) {
 	dst := unsafe.Slice((*uint8)(unsafe.Pointer(c.fb.Addr)), pitch*fbH)
 
 	bounds := img.Bounds()
+	imgW := bounds.Dx()
 	for y := 0; y < bounds.Dy(); y++ {
 		fy := dy + y
 		if fy < 0 || fy >= fbH {
 			continue
 		}
-		for x := 0; x < bounds.Dx(); x++ {
-			fx := dx + x
-			if fx < 0 || fx >= fbW {
-				continue
-			}
-			soff := y*img.Stride + x*4
-			doff := fy*pitch + fx*4
-			r := img.Pix[soff+0]
-			g := img.Pix[soff+1]
-			b := img.Pix[soff+2]
-			// RGBA -> BGRA
-			dst[doff+0] = b
-			dst[doff+1] = g
-			dst[doff+2] = r
-			dst[doff+3] = 0x00
+		fx := dx
+		copyW := imgW
+		if fx < 0 {
+			copyW += fx
+			fx = 0
 		}
+		if fx+copyW > fbW {
+			copyW = fbW - fx
+		}
+		if copyW <= 0 {
+			continue
+		}
+		soff := y*img.Stride + (fx-dx)*4
+		doff := fy*pitch + fx*4
+		copy(dst[doff:doff+copyW*4], img.Pix[soff:soff+copyW*4])
 	}
 }
 

@@ -9,8 +9,6 @@ func Exit() {}
 func TimerIRQHandlerAsm() {}
 
 // Unexported functions (forward declarations replaced with stubs)
-func breadcrumbString(s string) {}
-func breadcrumbHex(val uint64) {}
 func getPreemptOffsets() preemptOffsetsType { return preemptOffsetsType{} }
 func getAsyncPreemptAddr() (uintptr) { return 0 }
 func getReadyForAsyncPreemptAddr() (uintptr) { return 0 }
