@@ -679,6 +679,25 @@ func BreadcrumbString(s string) {
 	}
 }
 
+// BreadcrumbHex writes a 64-bit hex value directly to UART.
+// TEMPORARY: for kernel memory diagnostics.
+//
+//go:nosplit
+func BreadcrumbHex(val uint64) {
+	hexChars := "0123456789ABCDEF"
+	// Skip leading zeros but always print at least one digit
+	started := false
+	for i := 60; i >= 0; i -= 4 {
+		nibble := (val >> uint(i)) & 0xF
+		if nibble != 0 {
+			started = true
+		}
+		if started || i == 0 {
+			console.Breadcrumb(hexChars[nibble])
+		}
+	}
+}
+
 // SetupUartSoftIRQ records the UART IRQ number so NonTimerIRQTopHalf
 // can recognize it and drain the PL011 FIFO directly.
 func SetupUartSoftIRQ(irqNum uint32) {

@@ -42,6 +42,12 @@ type BuddyAllocator struct {
 	bootstrapPages uint64 // Pages allocated by bump allocator before buddy init
 	peakAllocated  uint64 // High water mark (total = bootstrap + allocated)
 
+	// Per-type allocation tracking (pages)
+	kernelHeapPages uint64
+	kernelPTPages   uint64
+	userPages       uint64
+	userPTPages     uint64
+
 	// Protection
 	lock        Spinlock
 	initialized uint32
@@ -165,10 +171,21 @@ func buddyRemoveFree(order int) uintptr {
 
 // BuddyAlloc allocates a contiguous block of 2^order pages.
 // Returns the physical address of the block, or 0 on failure.
+// Counts as PageKernelHeap for accounting. Use BuddyAllocTyped for explicit type.
 // Thread-safe.
 //
 //go:nosplit
 func BuddyAlloc(order int) uintptr {
+	return BuddyAllocTyped(order, PageKernelHeap)
+}
+
+// BuddyAllocTyped allocates a contiguous block of 2^order pages with type tracking.
+// The pageType controls per-type accounting and the 64MB kernel limit check.
+// Returns the physical address of the block, or 0 on failure.
+// Thread-safe.
+//
+//go:nosplit
+func BuddyAllocTyped(order int, pageType PageType) uintptr {
 	if order < 0 || order >= MaxOrder {
 		return 0
 	}
@@ -202,23 +219,44 @@ func BuddyAlloc(order int) uintptr {
 	// Track allocation
 	pagesAllocated := uint64(1) << uint(order)
 	buddyAlloc.allocatedPages += pagesAllocated
-	totalUsed := buddyAlloc.bootstrapPages + buddyAlloc.allocatedPages
-	if totalUsed > buddyAlloc.peakAllocated {
+	if totalUsed := buddyAlloc.bootstrapPages + buddyAlloc.allocatedPages; totalUsed > buddyAlloc.peakAllocated {
 		buddyAlloc.peakAllocated = totalUsed
 	}
 
-	// Warn on every allocation that keeps us over 64MB total kernel memory
-	const kernelLimitPages = 16384 // 64MB = 16384 * 4KB
-	over := totalUsed > kernelLimitPages
+	// Per-type accounting
+	switch pageType {
+	case PageKernelHeap, PageFileBuffer, PageDriver:
+		buddyAlloc.kernelHeapPages += pagesAllocated
+	case PageKernelPT:
+		buddyAlloc.kernelPTPages += pagesAllocated
+	case PageUser:
+		buddyAlloc.userPages += pagesAllocated
+	case PageUserPT:
+		buddyAlloc.userPTPages += pagesAllocated
+	}
+
+	// Kernel-only total: bootstrap + kernel heap + kernel PT (excludes user pages)
+	kernelTotal := buddyAlloc.bootstrapPages + buddyAlloc.kernelHeapPages + buddyAlloc.kernelPTPages
+
 	buddyAlloc.lock.Unlock()
 
-	if over {
-		uartPuts("[kmem] WARNING: kernel memory exceeds 64MB (")
-		uartPutHex64(totalUsed)
-		uartPuts(" pages, bootstrap=")
+	// Warn on every allocation that keeps kernel memory over 64MB
+	const kernelLimitPages = 16384 // 64MB = 16384 * 4KB
+	if kernelTotal > kernelLimitPages {
+		uartPuts("[kmem] WARNING: kernel exceeds 64MB (kern=")
+		uartPutHex64(kernelTotal)
+		uartPuts(" kheap=")
+		uartPutHex64(buddyAlloc.kernelHeapPages)
+		uartPuts(" kpt=")
+		uartPutHex64(buddyAlloc.kernelPTPages)
+		uartPuts(" boot=")
 		uartPutHex64(buddyAlloc.bootstrapPages)
-		uartPuts(" buddy=")
-		uartPutHex64(buddyAlloc.allocatedPages)
+		uartPuts(" user=")
+		uartPutHex64(buddyAlloc.userPages)
+		uartPuts(" type=")
+		uartPutHex64(uint64(pageType))
+		uartPuts(" pa=")
+		uartPutHex64(uint64(pa))
 		uartPuts(")\r\n")
 	}
 
@@ -352,6 +390,36 @@ func PrintBuddyStats() {
 		uartPutHex64(uint64(PageSize) << uint(i) / 1024)
 		uartPuts(" KB each)\r\n")
 	}
+}
+
+// PrintKernelMemSummary prints a one-line kernel memory summary to UART.
+// TEMPORARY: for diagnosing kernel memory growth.
+// Format: [M] k=<kern> h=<heap> p=<pt> u=<user> a=<alloc>
+// All values in pages (x4KB).
+//
+//go:nosplit
+func PrintKernelMemSummary() {
+	buddyAlloc.lock.Lock()
+	kh := buddyAlloc.kernelHeapPages
+	kp := buddyAlloc.kernelPTPages
+	boot := buddyAlloc.bootstrapPages
+	up := buddyAlloc.userPages
+	alloc := buddyAlloc.bootstrapPages + buddyAlloc.allocatedPages
+	buddyAlloc.lock.Unlock()
+
+	uartPuts("\r\n[M] k=")
+	uartPutHex64(boot + kh + kp)
+	uartPuts(" h=")
+	uartPutHex64(kh)
+	uartPuts(" p=")
+	uartPutHex64(kp)
+	uartPuts(" b=")
+	uartPutHex64(boot)
+	uartPuts(" u=")
+	uartPutHex64(up)
+	uartPuts(" a=")
+	uartPutHex64(alloc)
+	uartPuts("\r\n")
 }
 
 // OrderForSize returns the smallest buddy order that can hold size bytes.

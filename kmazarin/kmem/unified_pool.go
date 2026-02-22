@@ -99,7 +99,7 @@ func AllocPage(pageType PageType) uintptr {
 	// Use buddy allocator if available
 	var pa uintptr
 	if atomic.LoadUint32(&buddyAlloc.initialized) != 0 {
-		pa = BuddyAlloc(0)
+		pa = BuddyAllocTyped(0, pageType)
 	} else {
 		// Ensure bump pool is initialized
 		if atomic.LoadUint32(&globalPool.initialized) == 0 {
@@ -149,7 +149,7 @@ func AllocContiguousPages(pages uintptr) uintptr {
 		for (uintptr(1) << uint(order)) < pages {
 			order++
 		}
-		return BuddyAlloc(order)
+		return BuddyAllocTyped(order, PageKernelHeap)
 	}
 
 	// Ensure bump pool is initialized
@@ -219,9 +219,25 @@ type PoolStats struct {
 }
 
 // GetPoolStats returns current unified pool statistics.
+// If the buddy allocator is active, per-type stats come from it.
 //
 //go:nosplit
 func GetPoolStats() PoolStats {
+	// If buddy is active, get per-type stats from it
+	if atomic.LoadUint32(&buddyAlloc.initialized) != 0 {
+		bs := GetBuddyStats()
+		return PoolStats{
+			TotalPages:      bs.TotalPages,
+			AllocatedPages:  bs.AllocatedPages,
+			RemainingPages:  bs.FreePages,
+			KernelHeapPages: buddyAlloc.kernelHeapPages,
+			KernelPTPages:   buddyAlloc.kernelPTPages,
+			UserPages:       buddyAlloc.userPages,
+			UserPTPages:     buddyAlloc.userPTPages,
+			KernelSoftLimit: globalPool.kernelSoftLimit,
+		}
+	}
+
 	globalPool.lock.Lock()
 	defer globalPool.lock.Unlock()
 
