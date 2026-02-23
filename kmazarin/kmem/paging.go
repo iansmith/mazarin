@@ -691,15 +691,31 @@ func HandleUserPageFault(faultAddr uintptr) bool {
 		InitPaging()
 	}
 
+	// Align to page boundary
+	pageAddr := faultAddr &^ (PageSize - 1)
+
+	// Check if the page is already mapped FIRST, before address validation.
+	// Pre-mapped pages (framebuffer, ELF code segments) may not be in any
+	// tracked region (span list, bump range), but they ARE validly mapped
+	// in the process page table. L0 and L1 are set up at process creation;
+	// demand paging only needs to fill in L2/L3 entries.
+	existingPA := WalkUserPageTable(faultAddr)
+	if existingPA != 0 {
+		// Page is already mapped — TLB miss or attribute fault.
+		// Invalidate TLB and return success.
+		tlbiVAE1IS(pageAddr)
+		dsbSY()
+		isbSY()
+		return true
+	}
+
 	// Get the current mmap allocation end (addresses >= this were NOT allocated)
 	allocEnd := currentPriestBumpEnd()
 
-	// Userspace has three valid VA regions:
+	// For UNMAPPED pages, validate the address is in a known allocation region:
 	// 1. MAP_FIXED region: 0x10000 to userMmapStart (0xC000000000) — ELF, thread stacks, etc.
 	// 2. Bump-allocated region: userMmapStart (0xC000000000) to allocEnd — Go heap arena
 	// 3. Hint-based allocations: tracked in the span list (can be anywhere in userspace range)
-	//
-	// Accept faults in any of these regions
 	const minUserAddr = 0x10000 // Minimum userspace address (64KB, above NULL guard)
 	inMapFixedRegion := uint64(faultAddr) >= minUserAddr && uint64(faultAddr) < userMmapStart
 	inBumpRegion := uint64(faultAddr) >= userMmapStart && uint64(faultAddr) < allocEnd
@@ -708,22 +724,6 @@ func HandleUserPageFault(faultAddr uintptr) bool {
 	if !inMapFixedRegion && !inBumpRegion && !inSpanRegion {
 		serial.RawUART('!')
 		return false
-	}
-
-	// Align to page boundary
-	pageAddr := faultAddr &^ (PageSize - 1)
-
-	// IMPORTANT: Check if the page is already mapped.
-	// This can happen when multiple allocations (bump + MAP_FIXED) overlap.
-	// If already mapped, just return success - no need to allocate a new frame.
-	existingPA := WalkUserPageTable(faultAddr)
-	if existingPA != 0 {
-		// Page is already mapped - this is a TLB miss, not a true page fault
-		// Just invalidate TLB and return success
-		tlbiVAE1IS(pageAddr)
-		dsbSY()
-		isbSY()
-		return true
 	}
 
 	// Allocate a physical frame from userspace pool

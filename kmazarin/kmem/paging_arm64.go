@@ -141,13 +141,20 @@ func makeUserPagePTE(pa uintptr, elfFlags uint32) uint64 {
 	return pte
 }
 
-// makeUserDevicePTE creates a leaf PTE for a userspace MMIO page (e.g. framebuffer).
-// ARM64: Device memory, RW for EL1+EL0, no execute, non-global.
+// makeUserDevicePTE creates a leaf PTE for a userspace memory-mapped page.
+// ARM64: Normal cacheable memory, RW for EL1+EL0, no execute, non-global.
+//
+// Uses PTE_ATTR_NORMAL (not PTE_ATTR_DEVICE) because the VirtIO GPU
+// framebuffer is host-shared RAM, not MMIO. Device-nGnRnE memory enforces
+// strict natural alignment on all accesses, which Go's generated code
+// violates (e.g., 8-byte stores to 4-byte-aligned addresses). The GPU
+// driver uses explicit transfer/flush VirtIO commands to synchronize,
+// so device ordering guarantees are unnecessary.
 //
 //go:nosplit
 func makeUserDevicePTE(pa uintptr) uint64 {
 	return uint64(pa) | PTE_VALID | PTE_TABLE | PTE_AF |
-		PTE_ATTR_DEVICE | PTE_AP_RW_ALL | PTE_EXEC_NEVER | PTE_NG
+		PTE_ATTR_NORMAL | PTE_AP_RW_ALL | PTE_EXEC_NEVER | PTE_NG
 }
 
 // makeKernelDevicePTE creates a leaf PTE for kernel-only MMIO pages.
