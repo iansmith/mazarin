@@ -24,3 +24,8 @@ func platformCPU0Stacks() (g0Top, g0Bottom, excTop, excBottom uint64) {
 func platformKernelVAOffset() uint64 {
 	return uint64(constants.KernelMMIOOffset)
 }
+
+// platformSaveKernelTLS is a no-op on ARM64 (uses TPIDR_EL1 instead of FS_BASE).
+//
+//go:nosplit
+func platformSaveKernelTLS() {}

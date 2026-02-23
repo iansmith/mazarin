@@ -4,6 +4,7 @@ package ksyscall
 import (
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
 
 	_ "unsafe" // for go:linkname
@@ -32,11 +33,11 @@ func isValidUserAddr(addr uint64) bool {
 	}
 
 	// Get current thread's PID to determine if we're in kernel or userspace context
-	pid := getCurrentThreadPIDForSpan() // Returns 0 for kernel, >0 for priests
+	p := proc.CurrentPriest()
 
-	// For kernel threads (PID 0), allow kernel addresses
+	// For kernel threads (PID 0 / nil priest), allow kernel addresses.
 	// The Go runtime running in kmazarin uses kernel addresses (0xFFFF...)
-	if pid == 0 {
+	if p == nil {
 		return true // Kernel context - any non-NULL address is valid
 	}
 

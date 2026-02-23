@@ -25,3 +25,13 @@ func platformCPU0Stacks() (g0Top, g0Bottom, excTop, excBottom uint64) {
 func platformKernelVAOffset() uint64 {
 	return constants.KernelMMIOOffset
 }
+
+// platformSaveKernelTLS saves the kernel's FS_BASE MSR into kmazarinFSBase.
+// On x86_64, exception handlers need to WRMSR to the kernel FS_BASE before
+// writing to the TLS slot, since FS_BASE may point to unmapped user memory
+// when handling exceptions from userspace.
+//
+//go:nosplit
+func platformSaveKernelTLS() {
+	kmazarinFSBase = readMSR(0xC0000100)
+}

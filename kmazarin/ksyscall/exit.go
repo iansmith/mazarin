@@ -2,6 +2,7 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/proc"
 )
 
 // SyscallExit implements the exit(2) syscall (syscall 93)
@@ -29,7 +30,11 @@ func SyscallExit(status, _, _, _, _, _ uint64) int64 {
 //
 //go:nosplit
 func SyscallExitGroup(status, _, _, _, _, _ uint64) int64 {
-	pid := getCurrentThreadPIDForSpan()
+	p := proc.CurrentPriest()
+	pid := proc.PriestId(0)
+	if p != nil {
+		pid = p.PID
+	}
 	if pid == 0 {
 		// Kernel exit_group — this is a fatal error (runtime.throw).
 		// Halt instead of tearing down kernel threads.

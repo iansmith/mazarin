@@ -48,3 +48,8 @@ func platformCPU0Stacks() (g0Top, g0Bottom, excTop, excBottom uint64) {
 func platformKernelVAOffset() uint64 {
 	return 0xFFFFFFFF00000000
 }
+
+// platformSaveKernelTLS is a no-op for test stubs.
+//
+//go:nosplit
+func platformSaveKernelTLS() {}

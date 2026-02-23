@@ -3,23 +3,12 @@ package kmem
 
 import (
 	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
+	"sync/atomic"
 	"unsafe"
 )
-
-// Import from ksyscall to validate mmap addresses
-//
-//go:linkname getUserMmapAllocEnd mazzy/kmazarin/ksyscall.GetUserMmapAllocEnd
-func getUserMmapAllocEnd() uint64
-
-//go:linkname isAddressInSpan mazzy/kmazarin/ksyscall.IsAddressInSpan
-func isAddressInSpan(addr uint64) bool
-
-// Import from main package for per-priest page tracking
-//
-//go:linkname getCurrentPriestID main.getCurrentThreadPIDWrapper
-func getCurrentPriestID() int16
 
 //go:linkname getCurrentThreadTID main.GetCurrentThreadTID
 func getCurrentThreadTID() int16
@@ -33,6 +22,55 @@ const debugPaging = false
 // them without adding function calls to its frame. Single-CPU, so globals are safe.
 var pfContextPriestID int16 = 0 // default: kernel (PID 0)
 var pfContextThreadID int16 = -1
+
+// currentPriestID returns the PID of the current priest, or 0 for kernel context.
+//
+//go:nosplit
+func currentPriestID() int16 {
+	p := proc.CurrentPriest()
+	if p == nil {
+		return 0
+	}
+	return int16(p.PID)
+}
+
+// currentPriestBumpEnd returns the current bump allocation end for the current
+// priest, or userMmapStart if there is no current priest or no allocations yet.
+//
+//go:nosplit
+func currentPriestBumpEnd() uint64 {
+	p := proc.CurrentPriest()
+	if p == nil {
+		return userMmapStart
+	}
+	v := atomic.LoadUint64(&p.BumpPointer)
+	if v == 0 {
+		return userMmapStart
+	}
+	return v
+}
+
+// currentPriestSpanContains returns true if the current priest has a span
+// covering addr. Returns false for kernel context.
+//
+//go:nosplit
+func currentPriestSpanContains(addr uint64) bool {
+	p := proc.CurrentPriest()
+	if p == nil {
+		return false
+	}
+	return p.Spans.Contains(addr)
+}
+
+// hexDigit returns the hex character for a 4-bit nibble (0-15).
+//
+//go:nosplit
+func hexDigit(v uint8) byte {
+	if v < 10 {
+		return '0' + v
+	}
+	return 'A' + v - 10
+}
 
 // debugPrint conditionally outputs a character if debugging is enabled.
 //
@@ -406,7 +444,7 @@ func WalkPageTable(va uintptr) uintptr {
 //go:nosplit
 func HandlePageFault(faultAddr uintptr) bool {
 	// Cache priest/thread IDs for allocPTPage (avoids adding calls to nosplit chain)
-	pfContextPriestID = getCurrentPriestID()
+	pfContextPriestID = currentPriestID()
 	pfContextThreadID = getCurrentThreadTID()
 
 	// DEBUG: Print 'G' at absolute entry (before anything else)
@@ -580,7 +618,7 @@ func HandlePageFault(faultAddr uintptr) bool {
 		PA:       frame,
 		VA:       pageAddr,
 		Type:     PageAllocKernelHeap,
-		PriestID: getCurrentPriestID(),
+		PriestID: currentPriestID(),
 		ThreadID: getCurrentThreadTID(),
 		Order:    0,
 	})
@@ -602,6 +640,9 @@ var repeatFaultCount int
 
 const repeatFaultMax = 10
 
+// userPFCount tracks total user page faults for diagnostic breadcrumbs.
+var userPFCount uint64
+
 // HandleUserPageFault handles a page fault at a userspace virtual address.
 // This is called from the EL0 exception handler for data aborts in userspace.
 // Returns true if the fault was handled successfully, false otherwise.
@@ -614,8 +655,16 @@ const repeatFaultMax = 10
 //
 //go:nosplit
 func HandleUserPageFault(faultAddr uintptr) bool {
+	// Diagnostic: print breadcrumb every 256 user page faults
+	userPFCount++
+	if userPFCount&0xFF == 1 {
+		serial.RawUART('P')
+		serial.RawUART(hexDigit(uint8(userPFCount >> 8)))
+		serial.RawUART(' ')
+	}
+
 	// Cache priest/thread IDs for allocPTPage (avoids adding calls to nosplit chain)
-	pfContextPriestID = getCurrentPriestID()
+	pfContextPriestID = currentPriestID()
 	pfContextThreadID = getCurrentThreadTID()
 
 	// Repeat-fault detection: halt if same page faults repeatedly
@@ -643,20 +692,21 @@ func HandleUserPageFault(faultAddr uintptr) bool {
 	}
 
 	// Get the current mmap allocation end (addresses >= this were NOT allocated)
-	allocEnd := getUserMmapAllocEnd()
+	allocEnd := currentPriestBumpEnd()
 
 	// Userspace has three valid VA regions:
-	// 1. MAP_FIXED region: 0x10000 to userMmapStart (ELF, thread stacks, etc.)
-	// 2. Bump-allocated region: userMmapStart to allocEnd
+	// 1. MAP_FIXED region: 0x10000 to userMmapStart (0xC000000000) — ELF, thread stacks, etc.
+	// 2. Bump-allocated region: userMmapStart (0xC000000000) to allocEnd — Go heap arena
 	// 3. Hint-based allocations: tracked in the span list (can be anywhere in userspace range)
 	//
 	// Accept faults in any of these regions
 	const minUserAddr = 0x10000 // Minimum userspace address (64KB, above NULL guard)
 	inMapFixedRegion := uint64(faultAddr) >= minUserAddr && uint64(faultAddr) < userMmapStart
 	inBumpRegion := uint64(faultAddr) >= userMmapStart && uint64(faultAddr) < allocEnd
-	inSpanRegion := isAddressInSpan(uint64(faultAddr))
+	inSpanRegion := currentPriestSpanContains(uint64(faultAddr))
 
 	if !inMapFixedRegion && !inBumpRegion && !inSpanRegion {
+		serial.RawUART('!')
 		return false
 	}
 
@@ -740,7 +790,7 @@ func HandleUserPageFault(faultAddr uintptr) bool {
 		PA:       framePA,
 		VA:       pageAddr,
 		Type:     PageAllocUser,
-		PriestID: getCurrentPriestID(),
+		PriestID: currentPriestID(),
 		ThreadID: getCurrentThreadTID(),
 		Order:    0,
 	})

@@ -47,7 +47,7 @@ func SaveContextFromFrame(framePtr uintptr) {
 	t.Context.RFLAGS = frame[18]
 	t.Context.RSP = frame[19]
 	t.Context.SS = frame[20]
-	t.Context.FSBase = readMSR(0xC0000100) // Save FS_BASE MSR for TLS per-thread
+	t.Context.FSBase = savedExcFSBase // Use saved value (set by common_exception_entry before WRMSR to kernel)
 }
 
 // doContextSwitchABI0 is the ABI0 entry point for context switching.
@@ -106,7 +106,7 @@ func SaveCurrentThreadContext(
 	t.Context.RIP = rip
 	t.Context.RFLAGS = rflags
 	t.Context.RSP = rsp
-	t.Context.FSBase = readMSR(0xC0000100) // Save FS_BASE MSR for TLS per-thread
+	t.Context.FSBase = savedExcFSBase // Use saved value (common_exception_entry saves before WRMSR to kernel)
 	// SaveCurrentThreadContext is only called from kernel context (INT $0x80 path),
 	// so hardcode kernel segment selectors.
 	t.Context.CS = kernelCS

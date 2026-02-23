@@ -5,10 +5,11 @@ import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/ds"
-	"mazzy/kmazarin/serial"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/ktime"
+	"mazzy/kmazarin/proc"
+	"mazzy/kmazarin/serial"
 	"mazzy/kmazarin/util"
 	"runtime"
 	"unsafe"
@@ -93,6 +94,18 @@ var timerFrequencyHz uint64 = 62500000 // Default 62.5 MHz for QEMU
 // when handling syscalls from userspace (which has a different g).
 var kmazarinG0Addr uint64
 
+// kmazarinFSBase holds kmazarin's FS_BASE MSR value (kernel TLS base, x86_64 only).
+// Set during InitThreads. Exception handlers WRMSR to this value before writing
+// to the TLS slot, so the write targets mapped kernel memory instead of potentially
+// unmapped user memory. Without this, a page fault from userspace with FS_BASE
+// pointing to a demand-paged TLS page causes a nested #PF → #DF → triple fault.
+var kmazarinFSBase uint64
+
+// savedExcFSBase holds the FS_BASE value saved at exception entry (x86_64 only).
+// Used by exception_return to restore the original FS_BASE after handling.
+// Safe as a global because interrupts are disabled during exception handling.
+var savedExcFSBase uint64
+
 // timerDiagCount is incremented by the assembly timer handler on each timer
 // interrupt (before any Go code runs). Used to diagnose timer hangs.
 var timerDiagCount uint64
@@ -130,8 +143,9 @@ const (
 	ThreadBlockedSoftIRQ  ThreadState = 6 // Blocked waiting for soft IRQ
 )
 
-// MaxPriests is the maximum number of priest processes (userspace programs)
-const MaxPriests = 32
+// MaxPriests is the maximum number of priest processes (userspace programs).
+// Defined in proc package; aliased here for local convenience.
+const MaxPriests = proc.MaxPriests
 
 // MaxThreads is the maximum number of threads supported
 const MaxThreads = 512
@@ -176,16 +190,16 @@ func ResetTickAccounting(startTime uint64) {
 		}
 	}
 	for i := 0; i < MaxPriests; i++ {
-		if priestListInUse[i] {
-			priestListData[i].TotalTicksRunning = 0
-			priestListData[i].TicksStartedRunning = 0
+		if proc.PriestListInUse[i] {
+			proc.PriestListData[i].TotalTicksRunning = 0
+			proc.PriestListData[i].TicksStartedRunning = 0
 		}
 	}
 	// The currently running priest needs its clock started
 	ct := GetCurrentThread()
 	if ct != nil && ct.PriestIdx >= 0 {
-		p := &priestListData[ct.PriestIdx]
-		if priestListInUse[ct.PriestIdx] {
+		p := &proc.PriestListData[ct.PriestIdx]
+		if proc.PriestListInUse[ct.PriestIdx] {
 			p.TicksStartedRunning = startTime
 		}
 	}
@@ -215,32 +229,15 @@ func FixCloneThreadIFFlags() {
 	RestoreIRQs(savedDAIF)
 }
 
-// Priest represents a userspace process that runs Go code.
-// Each priest has its own address space, Go runtime, and asyncPreempt function.
-type Priest struct {
-	PID              PriestId // Unique priest identifier
-	AsyncPreemptAddr uint64   // Address of this priest's runtime.asyncPreempt function
-
-	// Per-priest tick accounting — all thread ticks roll up here
-	TotalTicksRunning   uint64 // Cumulative ticks across all threads of this priest
-	TicksStartedRunning uint64 // When current thread of this priest started (0 = none running)
-
-	// Thread tracking for priest cleanup
-	ThreadCount int32 // Number of live threads belonging to this priest
-}
-
-// Id implements the ds.Ider interface for Priest
-func (p *Priest) Id() int32 {
-	return int32(p.PID)
-}
+// Priest and PriestId are defined in the proc package and aliased here so
+// existing code in this file can use the short names unchanged.
+type Priest = proc.Priest
+type PriestId = proc.PriestId
 
 // ThreadContext is defined in thread_context_<arch>.go (per-architecture).
 
 // ThreadId is a unique thread identifier (0-31)
 type ThreadId int16
-
-// PriestId is a unique priest (userspace process) identifier (0-3)
-type PriestId int16
 
 // Thread represents a single thread (corresponds to a Go M)
 type Thread struct {
@@ -357,10 +354,9 @@ func (t *Thread) Id() int32 {
 // ========== Static Allocation Data Structures ==========
 
 // Backing arrays - statically allocated, zero-initialized
-var threadListData [threadArraySize]Thread    // Stores Thread VALUES (not pointers)
-var threadListInUse [threadArraySize]bool     // false = available (zero value)
-var priestListData [MaxPriests]Priest    // Stores Priest VALUES (not pointers)
-var priestListInUse [MaxPriests]bool     // false = available (zero value)
+var threadListData [threadArraySize]Thread // Stores Thread VALUES (not pointers)
+var threadListInUse [threadArraySize]bool  // false = available (zero value)
+// priestListData and priestListInUse are now proc.PriestListData and proc.PriestListInUse.
 var readyQueueData [threadArraySize]ThreadId  // Stores TIDs (unique thread IDs)
 var readyQueueInUse [threadArraySize]bool     // Tracks holes in ready queue
 var blockedQueueData [threadArraySize]ThreadId // Stores TIDs (unique thread IDs)
@@ -375,7 +371,7 @@ var staticDeadlineQueue ds.StaticOrderedList
 
 // ID allocator backing arrays - statically allocated
 var threadIdStackData [threadArraySize]ThreadId // Backing array for thread ID allocator
-var priestIdStackData [MaxPriests]PriestId // Backing array for priest ID allocator
+var priestIdStackData [proc.MaxPriests]proc.PriestId // Backing array for priest ID allocator
 
 // nextKernelThreadId is a counter for allocating kernel thread IDs (0 to ReservedKernelThreads-1).
 // Kernel threads are identified by PID == 0 (the kernel priest) and get IDs from this counter.
@@ -386,7 +382,7 @@ var nextKernelThreadId ThreadId = 0
 // Data structures - will be initialized in InitThreads()
 // DO NOT initialize slices here - Go's initialization order causes them to be length 0!
 var threadList ds.StaticList[*Thread, Thread] // StaticList stores Thread VALUES, returns pointers
-var priestList ds.StaticList[*Priest, Priest] // StaticList stores Priest VALUES, returns pointers
+var priestList ds.StaticList[*proc.Priest, proc.Priest] // StaticList stores Priest VALUES, returns pointers
 
 var readyQueue ds.StaticQueue[ThreadId]
 
@@ -396,7 +392,7 @@ var sleepingQueue ds.StaticQueue[ThreadId]
 
 // ID allocators - initialized in InitIdAllocators()
 var threadIdAllocator ds.StaticAllocator[ThreadId] // Manages unique thread IDs (0..MaxThreads-1)
-var priestIdAllocator ds.StaticAllocator[PriestId] // Manages unique priest IDs (0..MaxPriests-1)
+var priestIdAllocator ds.StaticAllocator[proc.PriestId] // Manages unique priest IDs (0..MaxPriests-1)
 
 // ========== Scheduler Lock ==========
 
@@ -669,8 +665,8 @@ func InitThreads() {
 	// Must be done here, NOT as global initializers (Go init order issue)
 	threadList.Data = threadListData[:]
 	threadList.InUse = threadListInUse[:]
-	priestList.Data = priestListData[:]
-	priestList.InUse = priestListInUse[:]
+	priestList.Data = proc.PriestListData[:]
+	priestList.InUse = proc.PriestListInUse[:]
 	readyQueue.Data = readyQueueData[:]
 	readyQueue.InUse = readyQueueInUse[:]
 	blockedQueue.Data = blockedQueueData[:]
@@ -687,6 +683,10 @@ func InitThreads() {
 	// at this point (early init runs on g0/m0).
 	// This is used by the exception handler when handling userspace syscalls.
 	kmazarinG0Addr = GetGRegister()
+
+	// Save kernel FS_BASE for exception handlers (x86_64 only; no-op on ARM64/RISC-V).
+	// Must happen while FS_BASE still points to kernel TLS, before any userspace runs.
+	platformSaveKernelTLS()
 
 	// Save the exception stack top for SYSCALL entry stack switch.
 	_, _, excTop, _ := platformCPU0Stacks()
@@ -741,9 +741,29 @@ func InitThreads() {
 
 	threadList.ReservedSet(0)
 
+	// Register the proc.GetCurrentPriest hook so ksyscall/kmem can access
+	// per-process state without a go:linkname to main.
+	proc.GetCurrentPriest = currentPriestImpl
+
 	// Use SetCurrentThreadGlobal to update both per-CPU and global CurrentThread
 	SetCurrentThreadGlobal(t0)
 	threadsInitialized = true
+}
+
+// currentPriestImpl is the registered implementation of proc.GetCurrentPriest.
+// Returns nil for kernel threads (PriestIdx < 0) and early-init calls.
+//
+//go:nosplit
+func currentPriestImpl() *proc.Priest {
+	t := GetCurrentThread()
+	if t == nil {
+		return nil
+	}
+	idx := int(t.PriestIdx)
+	if idx < 0 || idx >= proc.MaxPriests || !proc.PriestListInUse[idx] {
+		return nil
+	}
+	return &proc.PriestListData[idx]
 }
 
 // InitDeadlineQueue initializes the deadline queue.
@@ -1247,8 +1267,8 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 
 		// Increment priest's thread count for userspace threads (PID > 0)
 		if parent.PID > 0 && parent.PriestIdx >= 0 {
-			priest := &priestListData[parent.PriestIdx]
-			if priestListInUse[parent.PriestIdx] {
+			priest := &proc.PriestListData[parent.PriestIdx]
+			if proc.PriestListInUse[parent.PriestIdx] {
 				priest.ThreadCount++
 			}
 		}
@@ -1343,8 +1363,8 @@ func threadExitImpl(sf *SchedulerFunc) uintptr {
 
 	// Decrement priest thread count and release priest if this was the last thread
 	exitingPID := t.PID
-	if t.PID > 0 && t.PriestIdx >= 0 && priestListInUse[t.PriestIdx] {
-		priest := &priestListData[t.PriestIdx]
+	if t.PID > 0 && t.PriestIdx >= 0 && proc.PriestListInUse[t.PriestIdx] {
+		priest := &proc.PriestListData[t.PriestIdx]
 		priest.ThreadCount--
 		if priest.ThreadCount <= 0 {
 			// Last thread of this priest - release the priest
@@ -1413,7 +1433,7 @@ func threadExitInternal() uint64 {
 //
 //go:nosplit
 func releasePriestSchedLockHeld(priestIdx int16, pid PriestId) {
-	if priestIdx < 0 || !priestListInUse[priestIdx] {
+	if priestIdx < 0 || !proc.PriestListInUse[priestIdx] {
 		return // Invalid or already released
 	}
 
@@ -1424,10 +1444,10 @@ func releasePriestSchedLockHeld(priestIdx int16, pid PriestId) {
 	kmem.TlbiASIDE1IS(uint16(pid))
 
 	// Release the priest slot
-	priestListInUse[priestIdx] = false
+	proc.PriestListInUse[priestIdx] = false
 
 	// Zero the priest struct for security (prevent info leaks)
-	priestListData[priestIdx] = Priest{}
+	proc.PriestListData[priestIdx] = proc.Priest{}
 
 	// Release the priest ID back to the allocator for immediate reuse.
 	// Because StaticAllocator uses LIFO (stack), this ID will be the next
@@ -2154,19 +2174,6 @@ func GetCurrentThreadTID() ThreadId {
 	return t.TID
 }
 
-// getCurrentThreadPIDForSpan returns the current thread's PID for span group lookup.
-// This is called via linkname from ksyscall.GetCurrentSpanGroup().
-// Returns 0 (kernel PID) if no thread is running (early init).
-//
-//go:nosplit
-func getCurrentThreadPIDForSpan() int16 {
-	t := GetCurrentThread()
-	if t == nil {
-		return 0 // Fallback to kernel span group
-	}
-	return int16(t.PID)
-}
-
 // GetGlobalTickCounter returns the global tick counter
 //
 //go:nosplit
@@ -2663,8 +2670,8 @@ func printTickDistributionNoSplit(now uint64) {
 	serial.RawUARTPuts("===PRIEST===\n")
 
 	for i := 0; i < MaxPriests; i++ {
-		if priestListInUse[i] {
-			p := &priestListData[i]
+		if proc.PriestListInUse[i] {
+			p := &proc.PriestListData[i]
 			ticks := p.TotalTicksRunning
 			if p.TicksStartedRunning != 0 {
 				if now < p.TicksStartedRunning {
@@ -2772,8 +2779,8 @@ func PrintTickDistribution() {
 	console.KPrint("\n=== Priest Tick Distribution ===\n")
 	var priestTotalTicks uint64
 	for i := 0; i < MaxPriests; i++ {
-		if priestListInUse[i] {
-			p := &priestListData[i]
+		if proc.PriestListInUse[i] {
+			p := &proc.PriestListData[i]
 			ticks := p.TotalTicksRunning
 			if p.TicksStartedRunning != 0 {
 				ticks += kirq.TimerIRQCount - p.TicksStartedRunning
@@ -2782,8 +2789,8 @@ func PrintTickDistribution() {
 		}
 	}
 	for i := 0; i < MaxPriests; i++ {
-		if priestListInUse[i] {
-			p := &priestListData[i]
+		if proc.PriestListInUse[i] {
+			p := &proc.PriestListData[i]
 			ticks := p.TotalTicksRunning
 			if p.TicksStartedRunning != 0 {
 				ticks += kirq.TimerIRQCount - p.TicksStartedRunning

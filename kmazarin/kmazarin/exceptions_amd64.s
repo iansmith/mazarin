@@ -327,6 +327,22 @@ TEXT common_exception_entry(SB), NOSPLIT|NOFRAME, $0
 	// Frame pointer = SP
 	MOVQ	SP, DI		// DI = frame pointer (first arg for Go calls)
 
+	// Save FS_BASE — but ONLY when exception came from userspace (CS=0x1B).
+	// Nested kernel exceptions (CS=0x08) must NOT overwrite savedExcFSBase,
+	// because it already holds the user FS_BASE from the outermost exception.
+	// Without this guard, a page fault during syscall processing overwrites
+	// savedExcFSBase with the kernel FS_BASE, and the outer exception_return
+	// restores the kernel value to userspace — causing load_g to read from
+	// kmazarin memory (the REPEAT fault at 0x439D1500).
+	CMPQ	136(SP), $0x08		// CS from exception frame
+	JE	exc_entry_skip_fsbase	// Kernel mode: leave savedExcFSBase alone
+	MOVL	$0xC0000100, CX		// MSR_FS_BASE
+	RDMSR				// EAX=low32, EDX=high32
+	SHLQ	$32, DX
+	ORQ	DX, AX
+	MOVQ	AX, ·savedExcFSBase(SB)
+exc_entry_skip_fsbase:
+
 	// Read the vector number from the global set by the ISR stub
 	MOVQ	·currentVector(SB), SI	// SI = vector number
 
@@ -361,15 +377,17 @@ handle_syscall:
 	CMPQ	·currentVector(SB), $129
 	JNE	syscall_skip_g_setup
 
-	// Write kernel g to TLS slot (FS_BASE - 8)
-	MOVL	$0xC0000100, CX		// MSR_FS_BASE
-	RDMSR				// EAX=low32, EDX=high32
-	SHLQ	$32, DX
-	ORQ	DX, AX			// RAX = FS_BASE
+	// Switch FS_BASE to kernel value (saved by common_exception_entry).
+	MOVQ	·kmazarinFSBase(SB), AX
+	MOVQ	AX, DX
+	SHRQ	$32, DX
+	MOVL	$0xC0000100, CX
+	WRMSR
+
+	MOVQ	·kmazarinFSBase(SB), AX
 	MOVQ	·kmazarinG0Addr(SB), DX
-	MOVQ	DX, -8(AX)		// Write kernel g to TLS slot
-	// Set R14 to kernel g for ABIInternal calls
-	MOVQ	DX, R14
+	MOVQ	DX, -8(AX)		// Write kernel g to kernel TLS slot
+	MOVQ	DX, R14			// Set R14 to kernel g for ABIInternal calls
 
 syscall_skip_g_setup:
 	// Save ELR (RIP) and SPSR (RFLAGS) for clone
@@ -401,6 +419,20 @@ syscall_skip_g_setup:
 	// AX = return value
 	MOVQ	AX, 0(SP)		// Store return value in saved RAX slot
 
+	// If a syscall changed FS_BASE (e.g., arch_prctl ARCH_SET_FS),
+	// update savedExcFSBase so exception_return preserves the new value.
+	// If FS_BASE is still the kernel value (unchanged), keep the original
+	// saved user FS_BASE for restoration.
+	MOVL	$0xC0000100, CX		// MSR_FS_BASE
+	RDMSR				// EAX=low32, EDX=high32
+	SHLQ	$32, DX
+	ORQ	DX, AX			// RAX = current FS_BASE
+	CMPQ	AX, ·kmazarinFSBase(SB)
+	JE	syscall_fsbase_unchanged
+	// FS_BASE was changed by syscall — capture new value
+	MOVQ	AX, ·savedExcFSBase(SB)
+syscall_fsbase_unchanged:
+
 	// Check if context switch needed
 	GO_CALL_0_1(·GetSyscallSwitchTarget)
 	// AX = switch target (0 or -1 = no switch)
@@ -422,16 +454,20 @@ syscall_skip_g_setup:
 
 handle_page_fault:
 	// XMM registers already saved at common_exception_entry.
+	// FS_BASE already saved by common_exception_entry.
 
-	// CRITICAL: Set kernel g0 for Go code (same as syscall handler).
-	// Without this, page faults from userspace run Go code with the user's g,
-	// causing incorrect behavior (wrong stack bounds, wrong goroutine state).
-	MOVL	$0xC0000100, CX		// MSR_FS_BASE
-	RDMSR				// EAX=low32, EDX=high32
-	SHLQ	$32, DX
-	ORQ	DX, AX			// RAX = FS_BASE
+	// Switch FS_BASE to kernel value so TLS write targets mapped kernel memory.
+	// Without this, user FS_BASE may point to unmapped TLS → nested #PF → triple fault.
+	MOVQ	·kmazarinFSBase(SB), AX
+	MOVQ	AX, DX
+	SHRQ	$32, DX
+	MOVL	$0xC0000100, CX
+	WRMSR				// FS_BASE = kernel TLS base
+
+	// Write kernel g to kernel TLS slot (safe — always mapped)
+	MOVQ	·kmazarinFSBase(SB), AX
 	MOVQ	·kmazarinG0Addr(SB), DX
-	MOVQ	DX, -8(AX)		// Write kernel g to TLS slot
+	MOVQ	DX, -8(AX)		// Write kernel g to kernel TLS slot
 	MOVQ	DX, R14			// Set R14 to kernel g for ABIInternal calls
 
 	// Read CR2 for fault address
@@ -703,13 +739,16 @@ pf_unhandled_halt:
 	JMP	pf_unhandled_halt
 
 handle_timer_irq:
-	// CRITICAL: Set kernel g0 for Go code (timer IRQs can preempt userspace).
-	MOVL	$0xC0000100, CX		// MSR_FS_BASE
-	RDMSR				// EAX=low32, EDX=high32
-	SHLQ	$32, DX
-	ORQ	DX, AX			// RAX = FS_BASE
+	// Switch FS_BASE to kernel value (saved by common_exception_entry).
+	MOVQ	·kmazarinFSBase(SB), AX
+	MOVQ	AX, DX
+	SHRQ	$32, DX
+	MOVL	$0xC0000100, CX
+	WRMSR
+
+	MOVQ	·kmazarinFSBase(SB), AX
 	MOVQ	·kmazarinG0Addr(SB), DX
-	MOVQ	DX, -8(AX)		// Write kernel g to TLS slot
+	MOVQ	DX, -8(AX)		// Write kernel g to kernel TLS slot
 	MOVQ	DX, R14			// Set R14 to kernel g for ABIInternal calls
 
 	// Send EOI to LAPIC first
@@ -761,13 +800,16 @@ handle_timer_irq:
 
 handle_device_irq:
 	// Device interrupt (vectors 32-47, used by MSI-X on AMD64).
-	// Set kernel g0 for Go code.
-	MOVL	$0xC0000100, CX		// MSR_FS_BASE
-	RDMSR				// EAX=low32, EDX=high32
-	SHLQ	$32, DX
-	ORQ	DX, AX			// RAX = FS_BASE
+	// Switch FS_BASE to kernel value (saved by common_exception_entry).
+	MOVQ	·kmazarinFSBase(SB), AX
+	MOVQ	AX, DX
+	SHRQ	$32, DX
+	MOVL	$0xC0000100, CX
+	WRMSR
+
+	MOVQ	·kmazarinFSBase(SB), AX
 	MOVQ	·kmazarinG0Addr(SB), DX
-	MOVQ	DX, -8(AX)		// Write kernel g to TLS slot
+	MOVQ	DX, -8(AX)		// Write kernel g to kernel TLS slot
 	MOVQ	DX, R14			// Set R14 to kernel g for ABIInternal calls
 
 	// Store IOAPIC input number (vector - 32) in topHalfIRQNum.
@@ -1037,12 +1079,16 @@ fripF:	OUTB
 	MOVB	$'X', AX
 	OUTB
 
-	MOVL	$0xC0000100, CX		// MSR_FS_BASE
-	RDMSR				// EAX=low32, EDX=high32
-	SHLQ	$32, DX
-	ORQ	DX, AX			// RAX = FS_BASE
+	// Switch FS_BASE to kernel value (saved by common_exception_entry).
+	MOVQ	·kmazarinFSBase(SB), AX
+	MOVQ	AX, DX
+	SHRQ	$32, DX
+	MOVL	$0xC0000100, CX
+	WRMSR
+
+	MOVQ	·kmazarinFSBase(SB), AX
 	MOVQ	·kmazarinG0Addr(SB), DX
-	MOVQ	DX, -8(AX)		// Write kernel g to TLS slot
+	MOVQ	DX, -8(AX)		// Write kernel g to kernel TLS slot
 	MOVQ	DX, R14			// Set R14 to kernel g for ABIInternal calls
 
 	// Kill faulting thread and switch to next
@@ -1065,17 +1111,33 @@ generic_halt_loop:
 // Exception return - restore GPRs and IRETQ
 // ============================================================================
 exception_return:
-	// Restore TLS: write saved R14 (g) to TLS slot (FS_BASE - 8) before returning.
-	// This undoes the kernel g0 written by page fault / timer IRQ / syscall handlers.
-	// For kernel exceptions: saved R14 = kernel g0, so this is a no-op.
-	// For user exceptions: saved R14 = user g, so user TLS is correctly restored.
-	// Uses AX, CX, DX as scratch — all will be restored by the POPs below.
+	// FS_BASE handling depends on whether we're returning to user or kernel mode.
+	//
+	// User return (CS=0x1B): WRMSR to restore savedExcFSBase (user TLS base).
+	//   Do NOT write to [FS_BASE - 8] — user TLS page may be demand-paged.
+	//   R14 (g register) is restored from the GPR frame by the POPs below.
+	//
+	// Kernel return (CS=0x08): Skip WRMSR — FS_BASE is already the kernel value
+	//   (set by the handler's entry code). Sync g to kernel TLS using kmazarinFSBase.
+	//   This is critical for nested exceptions: savedExcFSBase holds the USER value
+	//   from the outermost exception, NOT the kernel value we need for the WRMSR.
+	CMPQ	136(SP), $0x08		// CS from exception frame
+	JE	eret_kernel_tls		// Kernel mode — skip WRMSR, just sync g
+
+	// User mode return: restore user FS_BASE
+	MOVQ	·savedExcFSBase(SB), AX
+	MOVQ	AX, DX
+	SHRQ	$32, DX			// EDX = high32
 	MOVL	$0xC0000100, CX		// MSR_FS_BASE
-	RDMSR				// EAX=low32, EDX=high32
-	SHLQ	$32, DX
-	ORQ	DX, AX			// RAX = FS_BASE
-	MOVQ	104(SP), DX		// R14 from saved GPR frame (offset 13*8)
-	MOVQ	DX, -8(AX)		// Write g to TLS slot
+	WRMSR				// Restore user FS_BASE
+	JMP	eret_skip_tls_write	// Don't write g to user TLS (may fault)
+
+eret_kernel_tls:
+	// Kernel mode return: FS_BASE is already kernel value, sync g to kernel TLS.
+	MOVQ	·kmazarinFSBase(SB), AX
+	MOVQ	104(SP), DX		// R14 from saved GPR frame
+	MOVQ	DX, -8(AX)		// Write g to kernel TLS slot (safe)
+eret_skip_tls_write:
 
 	// Restore XMM registers saved at common_exception_entry.
 	// Without this, timer/device IRQ handlers clobber XMM via Go's memmove,

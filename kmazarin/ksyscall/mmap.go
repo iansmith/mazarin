@@ -2,6 +2,7 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
 	"sync/atomic"
 	"unsafe"
@@ -10,11 +11,9 @@ import (
 // Userspace mmap allocates from low-memory range accessible via TTBR0 (or equivalent).
 // This is used by priest and other userspace programs.
 //
-// userMmapStart is arch-specific (see mmap_addr_*.go) because on x86_64 the single
-// address space shares PML4[0] with kmazarin code (PDPT[1] = VA 0x40000000-0x7FFFFFFF).
-// ARM64 and RISC-V have separate kernel/user address spaces so no conflict.
-//
-// Physical memory is only used when pages are actually faulted in.
+// Per-process bump pointers and span groups live in proc.Priest (proc package),
+// accessed via proc.CurrentPriest(). Physical memory is only used when pages
+// are actually faulted in.
 const (
 	userMmapEnd = 0x0000700000000000 // 112TB - plenty of VA space
 )
@@ -26,50 +25,6 @@ const (
 	UserFramebufferVA   = 0x00007FFE00000000 // Fixed VA for framebuffer in priest space
 	UserFramebufferSize = 0x2000000          // 32MB - matches FramebufferSize in shared/constants
 )
-
-// ============================================================================
-// Span tracking wrapper functions
-// ============================================================================
-// These functions delegate to the current process's SpanGroup.
-// When per-process tracking is implemented, GetCurrentSpanGroup() will
-// return the appropriate SpanGroup for the calling process.
-
-// addSpan records a new VA reservation for the current process.
-//
-//go:nosplit
-func addSpan(start, length uint64) bool {
-	return GetCurrentSpanGroup().Add(start, length)
-}
-
-// removeSpan removes/splits spans overlapping the given range.
-//
-//go:nosplit
-func removeSpan(start, length uint64) {
-	GetCurrentSpanGroup().Remove(start, length)
-}
-
-// IsAddressInSpan checks if an address falls within any reserved span.
-// Used by the page fault handler to validate hint-based allocations.
-//
-//go:nosplit
-func IsAddressInSpan(addr uint64) bool {
-	return GetCurrentSpanGroup().Contains(addr)
-}
-
-// tryReserveHint attempts to reserve a hint address if it doesn't overlap.
-//
-//go:nosplit
-func tryReserveHint(hint, length uint64) uint64 {
-	return GetCurrentSpanGroup().TryReserve(hint, length)
-}
-
-// findSpanOverlapEnd returns the end of any span overlapping [start, start+length).
-// Returns 0 if no overlap. Used by bump allocator to skip past reserved regions.
-//
-//go:nosplit
-func findSpanOverlapEnd(start, length uint64) uint64 {
-	return GetCurrentSpanGroup().FindOverlapEnd(start, length)
-}
 
 // userspaceActive is set to true when we jump to userspace.
 // Mmap calls after this point (with addr=0) should use userspace allocator.
@@ -181,12 +136,20 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 	}
 
 	// Breadcrumb: U/u = userspace bump/fixed, K/k = kernel bump/fixed
+	// Userspace breadcrumbs include PID as 2 hex digits: U<pid>:<addr>:<size>
 	if isUserspace && result < 0x0000800000000000 {
 		if isMapFixed {
 			serial.PollWrite('u')
 		} else {
 			serial.PollWrite('U')
 		}
+		p := proc.CurrentPriest()
+		if p != nil {
+			serial.RawUARTHex8(uint8(p.PID))
+		} else {
+			serial.RawUARTHex8(0)
+		}
+		serial.PollWrite(':')
 	} else {
 		if isMapFixed {
 			serial.PollWrite('k')
@@ -203,35 +166,47 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 }
 
 
-// Userspace bump allocator for mmap
-// Allocates from low-memory range accessible via TTBR0
-// Thread-safe: uses atomic operations for concurrent allocation
-// Note: userBumpPointer is initialized directly to avoid race conditions
-var userBumpPointer uint64 = userMmapStart
-
-// GetUserMmapAllocEnd returns the current end of userspace mmap allocations.
-// Any address >= this value has NOT been allocated by mmap.
+// GetUserMmapAllocEnd returns the current end of userspace mmap allocations
+// for the calling process. Any address >= this value has NOT been allocated.
 // This is used by the page fault handler to validate fault addresses.
 //
 //go:nosplit
 func GetUserMmapAllocEnd() uint64 {
-	return atomic.LoadUint64(&userBumpPointer)
+	p := proc.CurrentPriest()
+	if p == nil {
+		return userMmapStart
+	}
+	v := atomic.LoadUint64(&p.BumpPointer)
+	if v == 0 {
+		return userMmapStart
+	}
+	return v
 }
 
 //go:nosplit
 func userBumpAlloc(size uint64) uint64 {
+	p := proc.CurrentPriest()
+	if p == nil {
+		return 0 // No priest — kernel context, don't bump-alloc userspace VA
+	}
+
 	// Align to page boundary
 	pageSize := uint64(4096)
 	aligned := (size + pageSize - 1) & ^(pageSize - 1)
 
-	// Atomically allocate from bump pointer
+	// Atomically allocate from this priest's bump pointer
 	for {
-		currentPtr := atomic.LoadUint64(&userBumpPointer)
+		currentPtr := atomic.LoadUint64(&p.BumpPointer)
+
+		// Lazy initialization: first allocation starts at userMmapStart
+		if currentPtr == 0 {
+			atomic.CompareAndSwapUint64(&p.BumpPointer, 0, userMmapStart)
+			continue
+		}
+
 		nextPtr := currentPtr + aligned
 
 		// Check if this allocation would overlap any existing span
-		// If so, return 0 (ENOMEM) - the low memory region is large enough
-		// that this shouldn't happen in practice
 		if findSpanOverlapEnd(currentPtr, aligned) != 0 {
 			return 0 // ENOMEM - allocation conflicts with reserved span
 		}
@@ -241,7 +216,7 @@ func userBumpAlloc(size uint64) uint64 {
 			return 0 // Out of VA space
 		}
 
-		if atomic.CompareAndSwapUint64(&userBumpPointer, currentPtr, nextPtr) {
+		if atomic.CompareAndSwapUint64(&p.BumpPointer, currentPtr, nextPtr) {
 			return currentPtr
 		}
 	}

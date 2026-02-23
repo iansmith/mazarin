@@ -1,5 +1,5 @@
 package kmem
 
-// userMmapStart for RISC-V: 256MB, above typical ELF VA range.
+// userMmapStart for RISC-V: 0xC000000000 (L3[1]), matching Go's standard arena hint.
 // Must match ksyscall/mmap_addr_riscv64.go.
-const userMmapStart = 0x10000000
+const userMmapStart = 0xC000000000

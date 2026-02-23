@@ -22,3 +22,8 @@ func platformKernelVAOffset() uint64 {
 	// TODO: Replace with actual offset when RISC-V memory layout is defined
 	return 0xFFFFFFFF00000000
 }
+
+// platformSaveKernelTLS is a no-op on RISC-V (uses runtime.tls_g global instead of FS_BASE).
+//
+//go:nosplit
+func platformSaveKernelTLS() {}
