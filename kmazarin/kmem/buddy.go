@@ -178,16 +178,17 @@ func buddyRemoveFree(order int) uintptr {
 //
 //go:nosplit
 func BuddyAlloc(order int) uintptr {
-	return BuddyAllocTyped(order, PageKernelHeap)
+	return BuddyAllocTyped(order, PageKernelHeap, 0)
 }
 
 // BuddyAllocTyped allocates a contiguous block of 2^order pages with type tracking.
-// The pageType controls per-type accounting and the 64MB kernel limit check.
+// The pageType and owner parameters control accounting and PageDescriptor population.
+// owner=0 for kernel, 1-31 for priest-owned pages.
 // Returns the physical address of the block, or 0 on failure.
 // Thread-safe.
 //
 //go:nosplit
-func BuddyAllocTyped(order int, pageType PageType) uintptr {
+func BuddyAllocTyped(order int, pageType PageType, owner int16) uintptr {
 	if order < 0 || order >= MaxOrder {
 		return 0
 	}
@@ -223,13 +224,15 @@ func BuddyAllocTyped(order int, pageType PageType) uintptr {
 		buddyAlloc.peakAllocated = totalUsed
 	}
 
-	// Per-type accounting
+	// Per-type accounting (bucketed into 4 categories for legacy stats)
 	switch pageType {
-	case PageKernelHeap, PageFileBuffer, PageDriver:
+	case PageKernelHeap, PageKernelStack, PageKernelMMIO,
+		PageFramebuffer, PageVirtIOQueue, PageFileBuffer,
+		PageBackingStore, PageDriver, PageSharedIPC:
 		buddyAlloc.kernelHeapPages += pagesAllocated
 	case PageKernelPT:
 		buddyAlloc.kernelPTPages += pagesAllocated
-	case PageUser:
+	case PageUserText, PageUserROData, PageUserData, PageUserHeap, PageUserStack:
 		buddyAlloc.userPages += pagesAllocated
 	case PageUserPT:
 		buddyAlloc.userPTPages += pagesAllocated
@@ -248,6 +251,14 @@ func BuddyAllocTyped(order int, pageType PageType) uintptr {
 			buddyWarnKernelLimit(kernelTotal, pageType, pa)
 		}
 	}
+
+	// TODO: Re-enable after fixing race condition (see design/RACE_CONDITION.md).
+	// Calling SetPageDescriptor here (even as a no-op) changes timing enough
+	// to expose a pre-existing race that corrupts Go runtime mspan metadata.
+	// Bump-path SetPageDescriptor (in AllocPage) is safe because it only runs
+	// during early boot before userspace or interrupts are active.
+	//
+	// SetPageDescriptor(pa, pageType, owner, uint8(order))
 
 	return pa
 }
@@ -539,7 +550,7 @@ func AllocBuffer(size uint64) *BuddyBuffer {
 		return nil
 	}
 
-	pa := BuddyAllocTyped(order, PageFileBuffer)
+	pa := BuddyAllocTyped(order, PageFileBuffer, 0)
 	if pa == 0 {
 		return nil
 	}

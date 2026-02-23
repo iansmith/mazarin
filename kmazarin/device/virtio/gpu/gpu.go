@@ -550,7 +550,7 @@ func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint3
 	// Allocate framebuffer from the physical page pool.
 	// Must be contiguous for DMA (VirtIO ATTACH_BACKING needs a single PA range).
 	fbPages := (uintptr(fbSize) + kmem.PageSize - 1) / kmem.PageSize
-	virtioGPUFramebufferAddr = kmem.AllocContiguousPages(fbPages)
+	virtioGPUFramebufferAddr = kmem.AllocContiguousPages(fbPages, kmem.PageFramebuffer, 0)
 	if virtioGPUFramebufferAddr == 0 {
 		console.KPrintln("[VirtIO GPU] ERROR: Failed to allocate framebuffer pages")
 		return false

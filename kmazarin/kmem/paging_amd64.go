@@ -69,7 +69,7 @@ func initProcessL0(l0VA uintptr) {
 	}
 
 	// Allocate a new PDPT page for this process
-	newPdptPA := AllocPage(PageKernelPT)
+	newPdptPA := AllocPage(PageUserPT, 0) // User PT page (owned by kernel during setup)
 	if newPdptPA == 0 {
 		return
 	}
@@ -318,4 +318,262 @@ const PTE_ADDR_MASK_2MB = 0x0000FFFFFFFE0000
 // DumpInstructionPageFault is a no-op on x86_64.
 // The RISC-V version walks Sv48 page tables for diagnostic output.
 func DumpInstructionPageFault(va uintptr) {
+}
+
+// =========================================================================
+// Platform Abstraction Layer (Stage 0)
+// =========================================================================
+
+// platformPTEToFlags converts a native x86_64 PTE to arch-neutral PTEFlags.
+//
+//go:nosplit
+func platformPTEToFlags(pte uint64) PTEFlags {
+	var flags PTEFlags
+
+	if pte&X86_PTE_PRESENT != 0 {
+		flags |= PF_Valid
+	}
+
+	if pte&X86_PTE_RW != 0 {
+		flags |= PF_Write
+	}
+
+	if pte&X86_PTE_USER != 0 {
+		flags |= PF_User
+	}
+
+	// Execute: inverse of NX bit 63
+	if pte&X86_PTE_NX == 0 {
+		flags |= PF_Execute
+	}
+
+	// Accessed: bit 5
+	if pte&(1<<5) != 0 {
+		flags |= PF_Accessed
+	}
+
+	// Dirty: bit 6
+	if pte&(1<<6) != 0 {
+		flags |= PF_Dirty
+	}
+
+	// Device: PCD bit 4 (Page Cache Disable) indicates uncacheable
+	if pte&(1<<4) != 0 {
+		flags |= PF_Device
+	}
+
+	// Global: bit 8
+	if pte&(1<<8) != 0 {
+		flags |= PF_Global
+	}
+
+	return flags
+}
+
+// platformFlagsToUserPTE converts arch-neutral PTEFlags to a native x86_64
+// leaf PTE for userspace pages.
+//
+//go:nosplit
+func platformFlagsToUserPTE(pa uintptr, flags PTEFlags) uint64 {
+	pte := uint64(pa) | X86_PTE_PRESENT | X86_PTE_USER
+
+	if flags.Has(PF_Write) {
+		pte |= X86_PTE_RW
+	}
+
+	if !flags.Has(PF_Execute) {
+		pte |= X86_PTE_NX
+	}
+
+	return pte
+}
+
+// platformFlagsToKernelPTE converts arch-neutral PTEFlags to a native x86_64
+// leaf PTE for kernel pages.
+//
+//go:nosplit
+func platformFlagsToKernelPTE(pa uintptr, flags PTEFlags) uint64 {
+	pte := uint64(pa) | X86_PTE_PRESENT
+
+	if flags.Has(PF_Write) {
+		pte |= X86_PTE_RW
+	}
+
+	if !flags.Has(PF_Execute) {
+		pte |= X86_PTE_NX
+	}
+
+	return pte
+}
+
+// platformReadPTEAt walks the x86_64 page table for va and returns the leaf PTE.
+// Returns (pte, level, ok) where level is 1 (1GB page), 2 (2MB page), or 3 (4KB page).
+// x86_64 uses a single PML4 (CR3) for all addresses.
+//
+//go:nosplit
+func platformReadPTEAt(va uintptr) (pte uint64, level int, ok bool) {
+	pml4Idx := (va >> L0Shift) & 0x1FF
+	pdptIdx := (va >> L1Shift) & 0x1FF
+	pdIdx := (va >> L2Shift) & 0x1FF
+	ptIdx := (va >> L3Shift) & 0x1FF
+
+	pml4PA := ttbr1L0PA
+	pml4VA := pml4PA + constants.KernelMMIOOffset
+
+	// PML4 — never a huge page
+	pml4Entry := *(*uint64)(unsafe.Pointer(pml4VA + pml4Idx*8))
+	if pml4Entry&X86_PTE_PRESENT == 0 {
+		return 0, 0, false
+	}
+
+	// PDPT
+	pdptPA := uintptr(pml4Entry & PTE_ADDR_MASK)
+	pdptVA := pdptPA + constants.KernelMMIOOffset
+	pdptEntry := *(*uint64)(unsafe.Pointer(pdptVA + pdptIdx*8))
+	if pdptEntry&X86_PTE_PRESENT == 0 {
+		return 0, 0, false
+	}
+	// 1GB page: PS bit 7
+	if pdptEntry&0x80 != 0 {
+		return pdptEntry, 1, true
+	}
+
+	// PD
+	pdPA := uintptr(pdptEntry & PTE_ADDR_MASK)
+	pdVA := pdPA + constants.KernelMMIOOffset
+	pdEntry := *(*uint64)(unsafe.Pointer(pdVA + pdIdx*8))
+	if pdEntry&X86_PTE_PRESENT == 0 {
+		return 0, 0, false
+	}
+	// 2MB page: PS bit 7
+	if pdEntry&0x80 != 0 {
+		return pdEntry, 2, true
+	}
+
+	// PT (4KB leaf)
+	ptPA := uintptr(pdEntry & PTE_ADDR_MASK)
+	ptVA := ptPA + constants.KernelMMIOOffset
+	ptEntry := *(*uint64)(unsafe.Pointer(ptVA + ptIdx*8))
+	if ptEntry&X86_PTE_PRESENT == 0 {
+		return 0, 0, false
+	}
+	return ptEntry, 3, true
+}
+
+// platformWritePTEAt writes a new PTE value at the leaf entry for va.
+// Returns false if va is not currently mapped at L3 (does not handle huge pages).
+//
+//go:nosplit
+func platformWritePTEAt(va uintptr, newPTE uint64) bool {
+	pml4Idx := (va >> L0Shift) & 0x1FF
+	pdptIdx := (va >> L1Shift) & 0x1FF
+	pdIdx := (va >> L2Shift) & 0x1FF
+	ptIdx := (va >> L3Shift) & 0x1FF
+
+	pml4PA := ttbr1L0PA
+	pml4VA := pml4PA + constants.KernelMMIOOffset
+
+	pml4Entry := *(*uint64)(unsafe.Pointer(pml4VA + pml4Idx*8))
+	if pml4Entry&X86_PTE_PRESENT == 0 {
+		return false
+	}
+
+	pdptPA := uintptr(pml4Entry & PTE_ADDR_MASK)
+	pdptVA := pdptPA + constants.KernelMMIOOffset
+	pdptEntry := *(*uint64)(unsafe.Pointer(pdptVA + pdptIdx*8))
+	if pdptEntry&X86_PTE_PRESENT == 0 || pdptEntry&0x80 != 0 {
+		return false // Not mapped or 1GB page
+	}
+
+	pdPA := uintptr(pdptEntry & PTE_ADDR_MASK)
+	pdVA := pdPA + constants.KernelMMIOOffset
+	pdEntry := *(*uint64)(unsafe.Pointer(pdVA + pdIdx*8))
+	if pdEntry&X86_PTE_PRESENT == 0 || pdEntry&0x80 != 0 {
+		return false // Not mapped or 2MB page
+	}
+
+	ptPA := uintptr(pdEntry & PTE_ADDR_MASK)
+	ptVA := ptPA + constants.KernelMMIOOffset
+	ptPtr := (*uint64)(unsafe.Pointer(ptVA + ptIdx*8))
+	if *ptPtr&X86_PTE_PRESENT == 0 {
+		return false
+	}
+
+	*ptPtr = newPTE
+	return true
+}
+
+// platformClearAccessed clears the Accessed bit (bit 5) on the PTE for va.
+// Returns whether the flag was set before clearing.
+//
+//go:nosplit
+func platformClearAccessed(va uintptr) (wasAccessed bool) {
+	pte, level, ok := platformReadPTEAt(va)
+	if !ok || level != 3 {
+		return false
+	}
+
+	wasAccessed = pte&(1<<5) != 0
+	if wasAccessed {
+		newPTE := pte &^ (1 << 5)
+		platformWritePTEAt(va, newPTE)
+		// INVLPG to ensure TLB picks up the change
+		tlbiVAE1IS(va)
+	}
+	return wasAccessed
+}
+
+// platformClearDirty clears the Dirty bit (bit 6) on the PTE for va.
+// Returns whether the flag was set before clearing.
+//
+//go:nosplit
+func platformClearDirty(va uintptr) (wasDirty bool) {
+	pte, level, ok := platformReadPTEAt(va)
+	if !ok || level != 3 {
+		return false
+	}
+
+	wasDirty = pte&(1<<6) != 0
+	if wasDirty {
+		newPTE := pte &^ (1 << 6)
+		platformWritePTEAt(va, newPTE)
+		tlbiVAE1IS(va)
+	}
+	return wasDirty
+}
+
+// platformFlushTLBPage invalidates TLB entries for a single VA.
+// x86_64: INVLPG instruction (via tlbiVAE1ISAsm which does INVLPG).
+//
+//go:nosplit
+func platformFlushTLBPage(va uintptr) {
+	tlbiVAE1IS(va)
+}
+
+// platformFlushTLBASID invalidates all TLB entries for a given ASID.
+// x86_64: No per-ASID invalidation — reload CR3 (full TLB flush).
+//
+//go:nosplit
+func platformFlushTLBASID(asid uint16) {
+	TlbiASIDE1IS(asid)
+}
+
+// platformUserL0MaxEntry returns how many L0 (PML4) entries are userspace.
+// x86_64: PML4[0-255] is user space, PML4[256-511] is kernel.
+//
+//go:nosplit
+func platformUserL0MaxEntry() int {
+	return 256
+}
+
+// isBlockEntry returns true if the PTE at the given level is a huge page
+// (not a table pointer). level: 1 = 1GB page, 2 = 2MB page.
+// x86_64: PS bit (bit 7) indicates huge page.
+//
+//go:nosplit
+func isBlockEntry(pte uint64, level int) bool {
+	if level == 1 || level == 2 {
+		return pte&0x80 != 0
+	}
+	return false
 }

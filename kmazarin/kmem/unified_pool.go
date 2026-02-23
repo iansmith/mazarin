@@ -12,17 +12,75 @@ import (
 	"sync/atomic"
 )
 
-// PageType identifies the purpose of a page allocation for accounting.
+// PageType identifies the purpose of a page allocation.
 type PageType uint8
 
 const (
-	PageKernelHeap PageType = iota // Kernel heap pages
-	PageKernelPT                   // Kernel page table pages
-	PageUser                       // Userspace data pages
-	PageUserPT                     // Userspace page table pages
-	PageFileBuffer                 // Streaming file buffer pages
-	PageDriver                     // Driver DMA pages (non-cacheable)
+	// Kernel pages (owner = PriestId 0)
+	PageKernelHeap  PageType = iota // Kernel heap (demand-paged)
+	PageKernelPT                    // Kernel page table pages
+	PageKernelStack                 // Kernel g0 + exception stacks
+	PageKernelMMIO                  // MMIO device pages mapped to kernel VA
+	PageFramebuffer                 // VirtIO GPU framebuffer
+	PageVirtIOQueue                 // VirtIO descriptor/avail/used rings
+
+	// Userspace pages (owner = PriestId 1-31)
+	PageUserText   // ELF .text segments
+	PageUserROData // ELF .rodata segments
+	PageUserData   // ELF .data/.bss segments
+	PageUserHeap   // Userspace heap (mmap, demand-paged)
+	PageUserStack  // Userspace thread stacks
+	PageUserPT     // Per-process page table pages
+
+	// Shared / IPC pages
+	PageSharedIPC    // Pages transferred between priests
+	PageFileBuffer   // File I/O streaming buffers
+	PageBackingStore // Display backing store (dapope)
+
+	// Driver pages
+	PageDriver // Driver DMA pages (non-cacheable)
+
+	// Sentinel
+	PageTypeCount // Must be last
 )
+
+// Backwards-compatible alias for old code that uses the generic PageUser name.
+const PageUser = PageUserHeap
+
+// pageTypeNames maps PageType values to human-readable strings.
+var pageTypeNames = [PageTypeCount]string{
+	PageKernelHeap:  "KernelHeap",
+	PageKernelPT:    "KernelPT",
+	PageKernelStack: "KernelStack",
+	PageKernelMMIO:  "KernelMMIO",
+	PageFramebuffer: "Framebuffer",
+	PageVirtIOQueue: "VirtIOQueue",
+	PageUserText:    "UserText",
+	PageUserROData:  "UserROData",
+	PageUserData:    "UserData",
+	PageUserHeap:    "UserHeap",
+	PageUserStack:   "UserStack",
+	PageUserPT:      "UserPT",
+	PageSharedIPC:   "SharedIPC",
+	PageFileBuffer:  "FileBuffer",
+	PageBackingStore: "BackingStore",
+	PageDriver:      "Driver",
+}
+
+// String returns a human-readable name for the page type.
+func (pt PageType) String() string {
+	if int(pt) < len(pageTypeNames) {
+		return pageTypeNames[pt]
+	}
+	return "Unknown"
+}
+
+// IsKernelType returns true if this page type is kernel-owned.
+//
+//go:nosplit
+func (pt PageType) IsKernelType() bool {
+	return pt <= PageVirtIOQueue
+}
 
 // Default soft limit for kernel memory: 16384 pages = 64MB
 const DefaultKernelSoftLimit = 16384
@@ -85,22 +143,22 @@ func InitUnifiedPool() {
 	globalPool.kernelSoftLimit = DefaultKernelSoftLimit
 
 	atomic.StoreUint32(&globalPool.initialized, 1)
-
 }
 
 // AllocPage allocates a single page from the unified pool.
 // If the buddy allocator is initialized, delegates to it.
 // Otherwise falls back to the bump allocator (used during early boot).
-// The pageType parameter is used for accounting and soft limit checks.
+// The pageType and owner parameters are used for accounting and PageDescriptor.
+// owner=0 for kernel pages, 1-31 for priest-owned pages.
 // Returns the physical address of the page, or 0 if the pool is exhausted.
 // The page is NOT zeroed - caller must zero if needed.
 //
 //go:nosplit
-func AllocPage(pageType PageType) uintptr {
+func AllocPage(pageType PageType, owner int16) uintptr {
 	// Use buddy allocator if available
 	var pa uintptr
 	if atomic.LoadUint32(&buddyAlloc.initialized) != 0 {
-		pa = BuddyAllocTyped(0, pageType)
+		pa = BuddyAllocTyped(0, pageType, owner)
 	} else {
 		// Ensure bump pool is initialized
 		if atomic.LoadUint32(&globalPool.initialized) == 0 {
@@ -132,6 +190,11 @@ func AllocPage(pageType PageType) uintptr {
 		}
 	}
 
+	// Set PageDescriptor for bump-allocated pages (buddy path handles its own)
+	if atomic.LoadUint32(&buddyAlloc.initialized) == 0 {
+		SetPageDescriptor(pa, pageType, owner, 0)
+	}
+
 	return pa
 }
 
@@ -142,7 +205,7 @@ func AllocPage(pageType PageType) uintptr {
 // Returns the physical address of the first page, or 0 on failure.
 //
 //go:nosplit
-func AllocContiguousPages(pages uintptr) uintptr {
+func AllocContiguousPages(pages uintptr, pageType PageType, owner int16) uintptr {
 	// Use buddy allocator if available
 	if atomic.LoadUint32(&buddyAlloc.initialized) != 0 {
 		// Compute order: smallest power of 2 >= pages
@@ -150,7 +213,7 @@ func AllocContiguousPages(pages uintptr) uintptr {
 		for (uintptr(1) << uint(order)) < pages {
 			order++
 		}
-		return BuddyAllocTyped(order, PageKernelHeap)
+		return BuddyAllocTyped(order, pageType, owner)
 	}
 
 	// Ensure bump pool is initialized
@@ -196,6 +259,11 @@ func TransitionToBuddy() {
 	if atomic.LoadUint32(&globalPool.initialized) == 0 {
 		InitUnifiedPool()
 	}
+
+	// Initialize PageDescriptor array (bump-allocates from pool).
+	// Must happen before GetBumpAllocatedPages so the array pages are
+	// counted and marked as used in the buddy allocator.
+	InitPageDescriptors(globalPool.initialNext, globalPool.end)
 
 	bootstrapPages := GetBumpAllocatedPages()
 

@@ -69,7 +69,7 @@ func InitFrameAllocator() {
 //
 //go:nosplit
 func AllocKernelFrame() uintptr {
-	return AllocPage(PageKernelHeap)
+	return AllocPage(PageKernelHeap, 0)
 }
 
 // ZeroFrame zeros a physical frame at the given address.
@@ -124,7 +124,7 @@ func InitUserFrameAllocator() {
 //
 //go:nosplit
 func AllocUserFrame() uintptr {
-	return AllocPage(PageUser)
+	return AllocPage(PageUserHeap, pfContextPriestID)
 }
 
 // GetUserFrameStats returns the current userspace frame allocator statistics.

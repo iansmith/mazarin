@@ -385,8 +385,15 @@ func GetPTPoolStats() (allocatedPages, totalPages uint64, nextVA, endVA uintptr)
 //
 //go:nosplit
 func allocPTPage() uintptr {
-	// Allocate from unified pool (tracks as kernel PT page)
-	pa := AllocPage(PageKernelPT)
+	// Allocate from unified pool. Use pfContextPriestID to determine ownership:
+	// if we're in a userspace page fault, the PT page belongs to that priest.
+	ptType := PageType(PageKernelPT)
+	ptOwner := int16(0)
+	if pfContextPriestID > 0 {
+		ptType = PageUserPT
+		ptOwner = pfContextPriestID
+	}
+	pa := AllocPage(ptType, ptOwner)
 	if pa == 0 {
 		serial.RawUARTPuts("[kmem] PT OOM!\r\n")
 		return 0

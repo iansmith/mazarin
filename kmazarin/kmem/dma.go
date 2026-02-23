@@ -33,7 +33,7 @@ func AllocDMAPages(numPages int) uintptr {
 //
 //go:nosplit
 func AllocDriverPage() (pa uintptr, va uintptr) {
-	pa = AllocPage(PageDriver)
+	pa = AllocPage(PageDriver, 0)
 	if pa == 0 {
 		return 0, 0
 	}

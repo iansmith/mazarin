@@ -439,3 +439,311 @@ func walkPageTable(va uintptr) uintptr {
 // The RISC-V version walks Sv48 page tables for diagnostic output.
 func DumpInstructionPageFault(va uintptr) {
 }
+
+// =========================================================================
+// Platform Abstraction Layer (Stage 0)
+// =========================================================================
+
+// platformPTEToFlags converts a native ARM64 PTE to arch-neutral PTEFlags.
+//
+//go:nosplit
+func platformPTEToFlags(pte uint64) PTEFlags {
+	var flags PTEFlags
+
+	if pte&PTE_VALID != 0 {
+		flags |= PF_Valid
+	}
+
+	// Write: AP[7:6] = 00 (EL1 RW) or 01 (EL1+EL0 RW) means writable.
+	// AP[7:6] = 10 or 11 means read-only.
+	ap := (pte >> 6) & 0x3
+	if ap == 0 || ap == 1 {
+		flags |= PF_Write
+	}
+
+	// User: AP bit 6 = 1 means EL0 access. Also check NG (non-global) which
+	// indicates per-ASID (i.e., userspace) mapping.
+	if ap == 1 || ap == 3 {
+		flags |= PF_User
+	}
+
+	// Execute: UXN bit 54 clear means user-executable.
+	// For kernel pages, PXN bit 53 clear means privileged-executable.
+	// Report PF_Execute if either user or privileged execution is allowed.
+	if pte&PTE_UXN == 0 || pte&PTE_PXN == 0 {
+		flags |= PF_Execute
+	}
+
+	// Accessed: AF bit 10
+	if pte&PTE_AF != 0 {
+		flags |= PF_Accessed
+	}
+
+	// Dirty: ARM64 without FEAT_HAFDBS has no hardware dirty bit.
+	// For now, report dirty if the page is writable (conservative).
+	// Stage 5 will implement software dirty tracking via the AP bit trick.
+	if flags.Has(PF_Write) {
+		flags |= PF_Dirty
+	}
+
+	// Device: MAIR index in bits [4:2]. Index 1 = device-nGnRnE.
+	attrIdx := (pte >> 2) & 0x7
+	if attrIdx == 1 {
+		flags |= PF_Device
+	}
+
+	// Global: inverse of NG bit 11. NG=0 means global.
+	if pte&PTE_NG == 0 {
+		flags |= PF_Global
+	}
+
+	return flags
+}
+
+// platformFlagsToUserPTE converts arch-neutral PTEFlags to a native ARM64
+// leaf PTE for userspace pages.
+//
+//go:nosplit
+func platformFlagsToUserPTE(pa uintptr, flags PTEFlags) uint64 {
+	pte := uint64(pa) | PTE_VALID | PTE_TABLE | PTE_AF |
+		PTE_ATTR_NORMAL | PTE_SH_INNER | PTE_NG
+
+	if flags.Has(PF_Write) {
+		pte |= PTE_AP_RW_ALL
+	} else {
+		pte |= PTE_AP_RO_ALL
+	}
+
+	if !flags.Has(PF_Execute) {
+		pte |= PTE_UXN
+	}
+	// Always set PXN — kernel should not execute user code
+	pte |= PTE_PXN
+
+	if flags.Has(PF_Device) {
+		// Override attribute to device-nGnRnE
+		pte &^= 0x7 << 2 // clear AttrIdx
+		pte |= PTE_ATTR_DEVICE
+	}
+
+	return pte
+}
+
+// platformFlagsToKernelPTE converts arch-neutral PTEFlags to a native ARM64
+// leaf PTE for kernel pages.
+//
+//go:nosplit
+func platformFlagsToKernelPTE(pa uintptr, flags PTEFlags) uint64 {
+	pte := uint64(pa) | PTE_VALID | PTE_TABLE | PTE_AF |
+		PTE_ATTR_NORMAL | PTE_SH_INNER
+
+	if flags.Has(PF_Write) {
+		pte |= PTE_AP_RW_EL1
+	} else {
+		pte |= PTE_AP_RO_EL1
+	}
+
+	if !flags.Has(PF_Execute) {
+		pte |= PTE_EXEC_NEVER
+	}
+
+	if flags.Has(PF_Device) {
+		pte &^= 0x7 << 2
+		pte |= PTE_ATTR_DEVICE
+	}
+
+	return pte
+}
+
+// platformReadPTEAt walks the ARM64 page table for va and returns the leaf PTE.
+// Returns (pte, level, ok) where level is 1 (1GB block), 2 (2MB block), or 3 (4KB page).
+// Selects TTBR0 or TTBR1 based on bit 63 of va.
+//
+//go:nosplit
+func platformReadPTEAt(va uintptr) (pte uint64, level int, ok bool) {
+	l0Idx := (va >> L0Shift) & 0x1FF
+	l1Idx := (va >> L1Shift) & 0x1FF
+	l2Idx := (va >> L2Shift) & 0x1FF
+	l3Idx := (va >> L3Shift) & 0x1FF
+
+	l0PA := selectRootPageTable(va)
+	l0VA := paToVAOrCache(l0PA)
+	if l0VA == 0 {
+		return 0, 0, false
+	}
+
+	// L0 — never a block on ARM64
+	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
+	if l0Entry&PTE_VALID == 0 {
+		return 0, 0, false
+	}
+
+	// L1
+	l1PA := pteExtractPA(l0Entry)
+	l1VA := paToVAOrCache(l1PA)
+	if l1VA == 0 {
+		return 0, 0, false
+	}
+	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
+	if l1Entry&PTE_VALID == 0 {
+		return 0, 0, false
+	}
+	// Block at L1: bit 1 (TABLE) not set → 1GB block
+	if l1Entry&0x2 == 0 {
+		return l1Entry, 1, true
+	}
+
+	// L2
+	l2PA := pteExtractPA(l1Entry)
+	l2VA := paToVAOrCache(l2PA)
+	if l2VA == 0 {
+		return 0, 0, false
+	}
+	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
+	if l2Entry&PTE_VALID == 0 {
+		return 0, 0, false
+	}
+	// Block at L2: bit 1 (TABLE) not set → 2MB block
+	if l2Entry&0x2 == 0 {
+		return l2Entry, 2, true
+	}
+
+	// L3
+	l3PA := pteExtractPA(l2Entry)
+	l3VA := paToVAOrCache(l3PA)
+	if l3VA == 0 {
+		return 0, 0, false
+	}
+	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
+	if l3Entry&PTE_VALID == 0 {
+		return 0, 0, false
+	}
+	return l3Entry, 3, true
+}
+
+// platformWritePTEAt writes a new PTE value at the leaf entry for va.
+// Returns false if va is not currently mapped at L3 (does not handle block entries).
+//
+//go:nosplit
+func platformWritePTEAt(va uintptr, newPTE uint64) bool {
+	l0Idx := (va >> L0Shift) & 0x1FF
+	l1Idx := (va >> L1Shift) & 0x1FF
+	l2Idx := (va >> L2Shift) & 0x1FF
+	l3Idx := (va >> L3Shift) & 0x1FF
+
+	l0PA := selectRootPageTable(va)
+	l0VA := paToVAOrCache(l0PA)
+	if l0VA == 0 {
+		return false
+	}
+
+	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
+	if l0Entry&PTE_VALID == 0 {
+		return false
+	}
+
+	l1PA := pteExtractPA(l0Entry)
+	l1VA := paToVAOrCache(l1PA)
+	if l1VA == 0 {
+		return false
+	}
+	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
+	if l1Entry&PTE_VALID == 0 || l1Entry&0x2 == 0 {
+		return false // Not mapped or block entry
+	}
+
+	l2PA := pteExtractPA(l1Entry)
+	l2VA := paToVAOrCache(l2PA)
+	if l2VA == 0 {
+		return false
+	}
+	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
+	if l2Entry&PTE_VALID == 0 || l2Entry&0x2 == 0 {
+		return false // Not mapped or block entry
+	}
+
+	l3PA := pteExtractPA(l2Entry)
+	l3VA := paToVAOrCache(l3PA)
+	if l3VA == 0 {
+		return false
+	}
+	l3Ptr := (*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
+	if *l3Ptr&PTE_VALID == 0 {
+		return false
+	}
+
+	*l3Ptr = newPTE
+	dcCIVAC(uintptr(unsafe.Pointer(l3Ptr)))
+	dsbSY()
+	return true
+}
+
+// platformClearAccessed clears the AF (Access Flag, bit 10) on the PTE for va.
+// Returns whether the flag was set before clearing.
+// NOTE: Clearing AF will cause an Access Flag fault on next access. Only use
+// this for page replacement scanning where the fault handler will re-set AF.
+//
+//go:nosplit
+func platformClearAccessed(va uintptr) (wasAccessed bool) {
+	pte, level, ok := platformReadPTEAt(va)
+	if !ok || level != 3 {
+		return false
+	}
+
+	wasAccessed = pte&PTE_AF != 0
+	if wasAccessed {
+		newPTE := pte &^ PTE_AF
+		platformWritePTEAt(va, newPTE)
+		tlbiVAE1IS(va)
+		dsbSY()
+	}
+	return wasAccessed
+}
+
+// platformClearDirty clears the dirty state for the PTE at va.
+// ARM64 without FEAT_HAFDBS has no hardware dirty bit, so this is a no-op.
+// Stage 5 will implement software dirty tracking via the AP bit trick
+// (change writable pages to read-only, catch permission faults).
+//
+//go:nosplit
+func platformClearDirty(va uintptr) (wasDirty bool) {
+	// ARM64 without FEAT_HAFDBS: no hardware dirty bit to clear.
+	// Software dirty tracking will be added in Stage 5.
+	return false
+}
+
+// platformFlushTLBPage invalidates TLB entries for a single VA.
+//
+//go:nosplit
+func platformFlushTLBPage(va uintptr) {
+	tlbiVAE1IS(va)
+	dsbSY()
+	isbSY()
+}
+
+// platformFlushTLBASID invalidates all TLB entries for a given ASID.
+//
+//go:nosplit
+func platformFlushTLBASID(asid uint16) {
+	TlbiASIDE1IS(asid)
+}
+
+// platformUserL0MaxEntry returns how many L0 entries are userspace.
+// ARM64: 512 — TTBR0 is entirely user, TTBR1 is entirely kernel.
+//
+//go:nosplit
+func platformUserL0MaxEntry() int {
+	return 512
+}
+
+// isBlockEntry returns true if the PTE at the given level is a block descriptor
+// (not a table pointer). level: 1 = 1GB block, 2 = 2MB block.
+// ARM64: block descriptors have bit 1 (TABLE) clear.
+//
+//go:nosplit
+func isBlockEntry(pte uint64, level int) bool {
+	if level == 1 || level == 2 {
+		return pte&0x2 == 0
+	}
+	return false // L0 and L3 are never blocks on ARM64
+}

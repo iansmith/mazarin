@@ -1572,6 +1572,7 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	_, p := priestList.Allocate()
 	p.PID = priestId
 	p.AsyncPreemptAddr = asyncPreemptAddr
+	p.PageTableL0PA = pageTableL0PA
 	p.ThreadCount = 1 // This priest starts with one thread
 
 	// Breadcrumb: priest ID allocated (seeing this more than twice is suspicious)

@@ -105,7 +105,7 @@ func initProcessL0(l0VA uintptr) {
 	}
 
 	// Allocate a new L2 table for this process
-	newL2PA := AllocPage(PageKernelPT)
+	newL2PA := AllocPage(PageUserPT, 0) // User PT page (owned by kernel during setup)
 	if newL2PA == 0 {
 		return
 	}
@@ -602,4 +602,274 @@ func DumpInstructionPageFault(va uintptr) {
 	}
 	serial.PollWrite('\r')
 	serial.PollWrite('\n')
+}
+
+// =========================================================================
+// Platform Abstraction Layer (Stage 0)
+// =========================================================================
+
+// platformPTEToFlags converts a native RISC-V Sv48 PTE to arch-neutral PTEFlags.
+//
+//go:nosplit
+func platformPTEToFlags(pte uint64) PTEFlags {
+	var flags PTEFlags
+
+	if pte&RV_PTE_V != 0 {
+		flags |= PF_Valid
+	}
+
+	if pte&RV_PTE_W != 0 {
+		flags |= PF_Write
+	}
+
+	if pte&RV_PTE_U != 0 {
+		flags |= PF_User
+	}
+
+	if pte&RV_PTE_X != 0 {
+		flags |= PF_Execute
+	}
+
+	if pte&RV_PTE_A != 0 {
+		flags |= PF_Accessed
+	}
+
+	if pte&RV_PTE_D != 0 {
+		flags |= PF_Dirty
+	}
+
+	// RISC-V has no PCD/device memory bit. All memory uses the same PTE format.
+	// Device memory attributes come from PMAs (Physical Memory Attributes).
+
+	if pte&RV_PTE_G != 0 {
+		flags |= PF_Global
+	}
+
+	return flags
+}
+
+// platformFlagsToUserPTE converts arch-neutral PTEFlags to a native RISC-V Sv48
+// leaf PTE for userspace pages.
+//
+//go:nosplit
+func platformFlagsToUserPTE(pa uintptr, flags PTEFlags) uint64 {
+	ppn := (uint64(pa) >> 12) & 0xFFFFFFFFFFF
+	pte := (ppn << 10) | RV_PTE_V | RV_PTE_R | RV_PTE_U | RV_PTE_A | RV_PTE_D
+
+	if flags.Has(PF_Write) {
+		pte |= RV_PTE_W
+	}
+
+	if flags.Has(PF_Execute) {
+		pte |= RV_PTE_X
+	}
+
+	return pte
+}
+
+// platformFlagsToKernelPTE converts arch-neutral PTEFlags to a native RISC-V Sv48
+// leaf PTE for kernel pages (no U bit).
+//
+//go:nosplit
+func platformFlagsToKernelPTE(pa uintptr, flags PTEFlags) uint64 {
+	ppn := (uint64(pa) >> 12) & 0xFFFFFFFFFFF
+	pte := (ppn << 10) | RV_PTE_V | RV_PTE_R | RV_PTE_A | RV_PTE_D
+
+	if flags.Has(PF_Write) {
+		pte |= RV_PTE_W
+	}
+
+	if flags.Has(PF_Execute) {
+		pte |= RV_PTE_X
+	}
+
+	return pte
+}
+
+// platformReadPTEAt walks the RISC-V Sv48 page table for va and returns the leaf PTE.
+// Returns (pte, level, ok) where level is 1 (1GB gigapage), 2 (2MB megapage), or 3 (4KB page).
+// RISC-V naming: L3=root, L2, L1, L0=leaf. We use shared naming (L0=root, L3=leaf).
+//
+//go:nosplit
+func platformReadPTEAt(va uintptr) (pte uint64, level int, ok bool) {
+	// Using hardcoded shifts for RISC-V Sv48 naming clarity
+	l3Idx := (va >> 39) & 0x1FF // Root (512GB)
+	l2Idx := (va >> 30) & 0x1FF // 1GB
+	l1Idx := (va >> 21) & 0x1FF // 2MB
+	l0Idx := (va >> 12) & 0x1FF // 4KB
+
+	l3PA := ttbr1L0PA
+	l3VA := l3PA + constants.KernelMMIOOffset
+
+	// L3 (root) — never a leaf
+	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
+	if l3Entry&RV_PTE_V == 0 {
+		return 0, 0, false
+	}
+
+	// L2
+	ppn2 := (l3Entry >> 10) & 0xFFFFFFFFFFF
+	l2PA := uintptr(ppn2 << 12)
+	l2VA := l2PA + constants.KernelMMIOOffset
+	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
+	if l2Entry&RV_PTE_V == 0 {
+		return 0, 0, false
+	}
+	// Gigapage (1GB): leaf if R|W|X bits set
+	if l2Entry&(RV_PTE_R|RV_PTE_W|RV_PTE_X) != 0 {
+		return l2Entry, 1, true
+	}
+
+	// L1
+	ppn1 := (l2Entry >> 10) & 0xFFFFFFFFFFF
+	l1PA := uintptr(ppn1 << 12)
+	l1VA := l1PA + constants.KernelMMIOOffset
+	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
+	if l1Entry&RV_PTE_V == 0 {
+		return 0, 0, false
+	}
+	// Megapage (2MB): leaf if R|W|X bits set
+	if l1Entry&(RV_PTE_R|RV_PTE_W|RV_PTE_X) != 0 {
+		return l1Entry, 2, true
+	}
+
+	// L0 (4KB leaf)
+	ppn0 := (l1Entry >> 10) & 0xFFFFFFFFFFF
+	l0PA := uintptr(ppn0 << 12)
+	l0VA := l0PA + constants.KernelMMIOOffset
+	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
+	if l0Entry&RV_PTE_V == 0 {
+		return 0, 0, false
+	}
+	return l0Entry, 3, true
+}
+
+// platformWritePTEAt writes a new PTE value at the leaf entry for va.
+// Returns false if va is not currently mapped at L0/4KB level.
+//
+//go:nosplit
+func platformWritePTEAt(va uintptr, newPTE uint64) bool {
+	l3Idx := (va >> 39) & 0x1FF
+	l2Idx := (va >> 30) & 0x1FF
+	l1Idx := (va >> 21) & 0x1FF
+	l0Idx := (va >> 12) & 0x1FF
+
+	l3PA := ttbr1L0PA
+	l3VA := l3PA + constants.KernelMMIOOffset
+
+	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
+	if l3Entry&RV_PTE_V == 0 {
+		return false
+	}
+
+	ppn2 := (l3Entry >> 10) & 0xFFFFFFFFFFF
+	l2PA := uintptr(ppn2 << 12)
+	l2VA := l2PA + constants.KernelMMIOOffset
+	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
+	if l2Entry&RV_PTE_V == 0 {
+		return false
+	}
+	// Skip if gigapage
+	if l2Entry&(RV_PTE_R|RV_PTE_W|RV_PTE_X) != 0 {
+		return false
+	}
+
+	ppn1 := (l2Entry >> 10) & 0xFFFFFFFFFFF
+	l1PA := uintptr(ppn1 << 12)
+	l1VA := l1PA + constants.KernelMMIOOffset
+	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
+	if l1Entry&RV_PTE_V == 0 {
+		return false
+	}
+	// Skip if megapage
+	if l1Entry&(RV_PTE_R|RV_PTE_W|RV_PTE_X) != 0 {
+		return false
+	}
+
+	ppn0 := (l1Entry >> 10) & 0xFFFFFFFFFFF
+	l0PA := uintptr(ppn0 << 12)
+	l0VA := l0PA + constants.KernelMMIOOffset
+	l0Ptr := (*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
+	if *l0Ptr&RV_PTE_V == 0 {
+		return false
+	}
+
+	*l0Ptr = newPTE
+	return true
+}
+
+// platformClearAccessed clears the A (Accessed, bit 6) on the PTE for va.
+// Returns whether the flag was set before clearing.
+//
+//go:nosplit
+func platformClearAccessed(va uintptr) (wasAccessed bool) {
+	pte, level, ok := platformReadPTEAt(va)
+	if !ok || level != 3 {
+		return false
+	}
+
+	wasAccessed = pte&RV_PTE_A != 0
+	if wasAccessed {
+		newPTE := pte &^ RV_PTE_A
+		platformWritePTEAt(va, newPTE)
+		// SFENCE.VMA for this VA
+		tlbiVAE1IS(va)
+	}
+	return wasAccessed
+}
+
+// platformClearDirty clears the D (Dirty, bit 7) on the PTE for va.
+// Returns whether the flag was set before clearing.
+//
+//go:nosplit
+func platformClearDirty(va uintptr) (wasDirty bool) {
+	pte, level, ok := platformReadPTEAt(va)
+	if !ok || level != 3 {
+		return false
+	}
+
+	wasDirty = pte&RV_PTE_D != 0
+	if wasDirty {
+		newPTE := pte &^ RV_PTE_D
+		platformWritePTEAt(va, newPTE)
+		tlbiVAE1IS(va)
+	}
+	return wasDirty
+}
+
+// platformFlushTLBPage invalidates TLB entries for a single VA.
+// RISC-V: SFENCE.VMA va, zero
+//
+//go:nosplit
+func platformFlushTLBPage(va uintptr) {
+	tlbiVAE1IS(va)
+	dsbSY() // FENCE rw,rw
+}
+
+// platformFlushTLBASID invalidates all TLB entries for a given ASID.
+// RISC-V: SFENCE.VMA zero, asid
+//
+//go:nosplit
+func platformFlushTLBASID(asid uint16) {
+	TlbiASIDE1IS(asid)
+}
+
+// platformUserL0MaxEntry returns how many L0 entries are userspace.
+// RISC-V Sv48: single SATP register. L0[0-255] is user, L0[256-511] is kernel.
+//
+//go:nosplit
+func platformUserL0MaxEntry() int {
+	return 256
+}
+
+// isBlockEntry returns true if the PTE at the given level is a superpage
+// (not a branch pointer). level: 1 = 1GB gigapage, 2 = 2MB megapage.
+// RISC-V: leaf PTEs have at least one of R|W|X set. Branch PTEs have only V.
+//
+//go:nosplit
+func isBlockEntry(pte uint64, level int) bool {
+	if level == 1 || level == 2 {
+		return pte&(RV_PTE_R|RV_PTE_W|RV_PTE_X) != 0
+	}
+	return false
 }

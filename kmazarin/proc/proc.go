@@ -35,6 +35,10 @@ type Priest struct {
 	// Spans tracks reserved VA ranges for this process (mmap hint reservations,
 	// MAP_FIXED mappings, etc.).
 	Spans LockedSpanGroup
+
+	// PageTableL0PA is the physical address of this priest's L0 page table.
+	// Used for page table walks during cleanup on priest exit.
+	PageTableL0PA uintptr
 }
 
 // Id implements the ds.Ider interface for Priest.
