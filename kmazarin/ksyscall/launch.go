@@ -723,7 +723,7 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 	argv := []string{filename, priestStr}
 	envp := []string{
 		"GODEBUG=gctrace=1",
-		"GOGC=5",
+		"GOGC=100",
 	}
 	auxv := []AuxvEntry{
 		{Key: 6, Value: 4096}, // AT_PAGESZ

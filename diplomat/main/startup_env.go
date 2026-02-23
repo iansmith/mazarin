@@ -16,7 +16,7 @@ import (
 //   [0]    argc = 1
 //   [8]    argv[0] → "kmazarin" string
 //   [16]   argv[1] = NULL
-//   [24]   envp[0] → "GOGC=100"
+//   [24]   envp[0] → "GOGC=5"
 //   [32]   envp[1] → "GODEBUG=asyncpreemptoff=1,gctrace=1"
 //   [40]   envp[2] → "GOMEMLIMIT=64MiB"
 //   [48]   envp[3] = NULL
@@ -24,7 +24,7 @@ import (
 //   ...
 //   [384]  "kmazarin\0"
 //   [400]  16 random bytes
-//   [416]  "GOGC=100\0"
+//   [416]  "GOGC=5\0"
 //   [432]  "GODEBUG=asyncpreemptoff=1,gctrace=1\0"
 //   [480]  "GOMEMLIMIT=64MiB\0"
 func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel) (uint64, error) {
@@ -62,17 +62,15 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel) (uint
 	randomPhys := structPhys + 400
 	getTimerBasedRandom(randomPhys)
 
-	// "GOGC=100" at offset 416 (GC at 2x live set; balanced for kernel)
+	// "GOGC=5" at offset 416 (aggressive GC for stress testing)
 	gogc := (*[16]byte)(unsafe.Pointer(uintptr(structPhys + 416)))
 	gogc[0] = 'G'
 	gogc[1] = 'O'
 	gogc[2] = 'G'
 	gogc[3] = 'C'
 	gogc[4] = '='
-	gogc[5] = '1'
-	gogc[6] = '0'
-	gogc[7] = '0'
-	gogc[8] = 0
+	gogc[5] = '5'
+	gogc[6] = 0
 
 	// "GODEBUG=asyncpreemptoff=1,gctrace=1" at offset 432
 	godebug := (*[48]byte)(unsafe.Pointer(uintptr(structPhys + 432)))
