@@ -6,6 +6,43 @@ author: iansmith
 
 # News
 
+## Feb 23, 2026
+
+**Full device support on all three architectures.** mazarin now has working
+VirtIO GPU, VirtIO Block, VirtIO Keyboard, Virtio RTC, and VirtIO Mouse drivers on all
+three supported architectures: ARM64, x86_64, and RISC-V. Each architecture
+boots into a graphical display (1920x1080 framebuffer), reads from a FAT32
+disk image, and receives keyboard and mouse input — all through the same
+high-level driver code. The userspace programs dapope (clock + input handler)
+and stdio (stdout/stderr display server) run successfully on all three
+platforms.
+
+**Architecture-independent kernel.** The kernel proper (kmazarin) is now
+largely architecture-independent. Architecture-specific code is isolated
+into per-arch packages for exception handling, context switching, page
+tables, interrupt controllers, and timers. The VirtIO drivers, FAT32
+filesystem, scheduler, syscall dispatch, and demand paging are shared across
+all three architectures. This means new kernel features written once
+automatically work on ARM64, x86_64, and RISC-V.
+
+**Custom RISC-V boot path.** There is currently no working UEFI firmware
+for the RISC-V "virt" board in QEMU, so mazarin cannot use the diplomat UEFI
+bootloader on RISC-V. Instead, diplomat is loaded directly by OpenSBI using
+its `-kernel` flag, bypassing UEFI entirely. Diplomat then handles ELF
+loading, page table setup, and the jump to kmazarin. This required a
+separate boot path — including allocation-free FAT32 mounting and direct
+VirtIO block access during early boot — but the kernel itself is identical
+across all architectures once it starts running.
+
+**AMD64 at feature parity.** The x86_64 port has reached full feature parity
+with ARM64 and RISC-V. This involved implementing APIC timer interrupts,
+IDT exception dispatch, x86_64 context switching with XMM register
+save/restore, demand paging via CR2 fault address, and correct GDT/TSS
+segment selectors. A particularly subtle bug involved XMM register corruption
+during page fault handling — Go's `memmove` uses SSE instructions, and a
+page fault during a move would clobber XMM registers in the handler before
+the CPU retried the faulting instruction with corrupted data.
+
 ## Feb 4, 2026
 
 **Multicore support.** mazarin's scheduler now supports SMP operation with
