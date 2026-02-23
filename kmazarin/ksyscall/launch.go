@@ -583,135 +583,158 @@ func allocateUserStack(base, size uint64, l0PA uintptr) error {
 	return nil
 }
 
-// setupUserStack sets up the initial stack for a userspace program.
-// Returns the adjusted stack pointer.
+// AuxvEntry represents a single auxiliary vector key-value pair,
+// as defined by the System V ABI / Linux ELF spec.
+type AuxvEntry struct {
+	Key   uint64
+	Value uint64
+}
+
+// buildProcessStack writes the standard Linux process startup stack layout.
+// This is the layout that the kernel's execve(2) produces and that all
+// ELF _start implementations (glibc, musl, Go rt0) expect on the stack.
 //
-// Stack layout for Go rt0 (from low to high addresses):
+// Layout from SP upward:
 //
-//	SP+0:   argc = 2
-//	SP+8:   argv[0] → pointer to filename string
-//	SP+16:  argv[1] → pointer to priest number string
-//	SP+24:  NULL (end of argv)
-//	SP+32:  NULL (end of envp)
-//	SP+40:  AT_PAGESZ (6)
-//	SP+48:  4096
-//	SP+56:  AT_NULL (0)
-//	SP+64:  0
-//	SP+72:  filename string data (null-terminated)
-//	SP+72+len(filename)+1: priest number string data (null-terminated)
+//	argc                                    (uint64)
+//	argv[0], argv[1], ..., argv[argc-1]     (pointers)
+//	NULL                                    (end of argv)
+//	envp[0], envp[1], ..., envp[N-1]        (pointers)
+//	NULL                                    (end of envp)
+//	auxv[0].key, auxv[0].val, ...           (key-value pairs)
+//	AT_NULL (0), 0                          (auxv terminator)
+//	<string data area>                      (null-terminated C strings)
+//
+// All pointers are userspace virtual addresses. SP is 16-byte aligned.
+func buildProcessStack(
+	argv []string,
+	envp []string,
+	auxv []AuxvEntry,
+	stackBase, stackSize uint64,
+	kernelVA uintptr,
+) (uint64, error) {
+	stackTop := stackBase + stackSize
+
+	// Count pointer-area slots:
+	//   1 (argc) + len(argv) + 1 (NULL) + len(envp) + 1 (NULL)
+	//   + (len(auxv)+1)*2 (pairs including AT_NULL terminator)
+	numSlots := 1 + len(argv) + 1 + len(envp) + 1 + (len(auxv)+1)*2
+	pointerAreaSize := uint64(numSlots) * 8
+
+	// String data: all argv and envp strings, each with null terminator
+	stringDataSize := uint64(0)
+	for _, s := range argv {
+		stringDataSize += uint64(len(s)) + 1
+	}
+	for _, s := range envp {
+		stringDataSize += uint64(len(s)) + 1
+	}
+
+	totalSize := (pointerAreaSize + stringDataSize + 15) &^ 15
+	sp := (stackTop - totalSize) &^ 15
+	stringBase := sp + pointerAreaSize
+
+	// Phase 1: Write string data and record their userspace VAs
+	stringOff := uint64(0)
+
+	argvAddrs := make([]uint64, len(argv))
+	for i, s := range argv {
+		addr := stringBase + stringOff
+		argvAddrs[i] = addr
+		for j := 0; j < len(s); j++ {
+			writeStackByte(stackBase, stackTop, kernelVA, addr+uint64(j), s[j])
+		}
+		writeStackByte(stackBase, stackTop, kernelVA, addr+uint64(len(s)), 0)
+		stringOff += uint64(len(s)) + 1
+	}
+
+	envpAddrs := make([]uint64, len(envp))
+	for i, s := range envp {
+		addr := stringBase + stringOff
+		envpAddrs[i] = addr
+		for j := 0; j < len(s); j++ {
+			writeStackByte(stackBase, stackTop, kernelVA, addr+uint64(j), s[j])
+		}
+		writeStackByte(stackBase, stackTop, kernelVA, addr+uint64(len(s)), 0)
+		stringOff += uint64(len(s)) + 1
+	}
+
+	// Phase 2: Write pointer area
+	pos := sp
+
+	// argc
+	writeStackU64(stackBase, stackTop, kernelVA, pos, uint64(len(argv)))
+	pos += 8
+
+	// argv pointers + NULL
+	for _, addr := range argvAddrs {
+		writeStackU64(stackBase, stackTop, kernelVA, pos, addr)
+		pos += 8
+	}
+	writeStackU64(stackBase, stackTop, kernelVA, pos, 0)
+	pos += 8
+
+	// envp pointers + NULL
+	for _, addr := range envpAddrs {
+		writeStackU64(stackBase, stackTop, kernelVA, pos, addr)
+		pos += 8
+	}
+	writeStackU64(stackBase, stackTop, kernelVA, pos, 0)
+	pos += 8
+
+	// auxv pairs + AT_NULL terminator
+	for _, av := range auxv {
+		writeStackU64(stackBase, stackTop, kernelVA, pos, av.Key)
+		pos += 8
+		writeStackU64(stackBase, stackTop, kernelVA, pos, av.Value)
+		pos += 8
+	}
+	writeStackU64(stackBase, stackTop, kernelVA, pos, 0) // AT_NULL
+	pos += 8
+	writeStackU64(stackBase, stackTop, kernelVA, pos, 0)
+
+	return sp, nil
+}
+
+// setupUserStack maps the stack page and calls buildProcessStack with the
+// argv/envp/auxv appropriate for launching a priest.
 func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, priestNum uint64) (uint64, error) {
 	pageSize := uint64(4096)
 	stackTop := stackBase + stackSize
 
-	// Get the physical address of the top stack page
 	topPageVA := (stackTop - 1) &^ (pageSize - 1)
 	topPA := kmem.WalkUserPageTableWithL0(uintptr(topPageVA), l0PA)
 	if topPA == 0 {
 		return 0, &elfError{"stack page not mapped"}
 	}
 
-	// Map the stack page to kernel scratch for writing
 	kernelVA := kmem.MapPAToKernelScratch(topPA &^ uintptr(pageSize-1))
 	if kernelVA == 0 {
 		return 0, &elfError{"failed to map stack to kernel scratch"}
 	}
 
-	// Convert priest number to string (single digit 0-9 for now)
+	// Convert priest number to string (single digit 0-9)
 	priestStr := "0"
 	if priestNum < 10 {
-		buf := []byte{'0' + byte(priestNum), 0}
-		priestStr = string(buf[:1])
+		buf := []byte{'0' + byte(priestNum)}
+		priestStr = string(buf)
 	}
 
-	// Calculate string data sizes (including null terminators)
-	// Remove leading '/' from filename for argv[0] display, but keep full path
-	filenameLen := uint64(len(filename)) + 1 // +1 for null terminator
-	priestStrLen := uint64(len(priestStr)) + 1
-
-	// Environment variable for GC debugging
-	godebugStr := "GODEBUG=gctrace=1"
-	godebugLen := uint64(len(godebugStr)) + 1
-
-	// Layout: 10 uint64s (pointers/values) + string data, 16-byte aligned
-	// argc + argv[0] + argv[1] + NULL(argv) + envp[0] + NULL(envp) + auxv(4)
-	pointerAreaSize := uint64(10 * 8)
-	stringDataSize := filenameLen + priestStrLen + godebugLen
-	totalSize := pointerAreaSize + stringDataSize
-	totalSize = (totalSize + 15) &^ 15 // 16-byte align
-
-	// SP will be near the top of the stack, 16-byte aligned
-	sp := (stackTop - totalSize) &^ 15
-
-	// String data starts after the pointer area
-	stringBase := sp + pointerAreaSize
-	argv0Addr := stringBase
-	argv1Addr := stringBase + filenameLen
-	godebugAddr := stringBase + filenameLen + priestStrLen
-
-	// Write the stack layout
-	offset := uint64(0)
-
-	// argc = 2
-	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, 2)
-	offset += 8
-
-	// argv[0] → pointer to filename string
-	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, argv0Addr)
-	offset += 8
-
-	// argv[1] → pointer to priest number string
-	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, argv1Addr)
-	offset += 8
-
-	// NULL (end of argv)
-	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, 0)
-	offset += 8
-
-	// envp[0] → pointer to GODEBUG string
-	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, godebugAddr)
-	offset += 8
-
-	// NULL (end of envp)
-	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, 0)
-	offset += 8
-
-	// AT_PAGESZ = 6
-	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, 6)
-	offset += 8
-
-	// page size value = 4096
-	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, pageSize)
-	offset += 8
-
-	// AT_NULL = 0 (auxv terminator)
-	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, 0)
-	offset += 8
-
-	// 0 (auxv terminator value)
-	writeStackU64(stackBase, stackTop, kernelVA, sp+offset, 0)
-	offset += 8
-
-	// Write filename string data (null-terminated)
-	for i := 0; i < len(filename); i++ {
-		writeStackByte(stackBase, stackTop, kernelVA, argv0Addr+uint64(i), filename[i])
+	argv := []string{filename, priestStr}
+	envp := []string{
+		"GODEBUG=gctrace=1",
+		"GOGC=5",
 	}
-	writeStackByte(stackBase, stackTop, kernelVA, argv0Addr+uint64(len(filename)), 0)
-
-	// Write priest number string data (null-terminated)
-	for i := 0; i < len(priestStr); i++ {
-		writeStackByte(stackBase, stackTop, kernelVA, argv1Addr+uint64(i), priestStr[i])
+	auxv := []AuxvEntry{
+		{Key: 6, Value: 4096}, // AT_PAGESZ
 	}
-	writeStackByte(stackBase, stackTop, kernelVA, argv1Addr+uint64(len(priestStr)), 0)
 
-	// Write GODEBUG environment variable string data (null-terminated)
-	for i := 0; i < len(godebugStr); i++ {
-		writeStackByte(stackBase, stackTop, kernelVA, godebugAddr+uint64(i), godebugStr[i])
+	sp, err := buildProcessStack(argv, envp, auxv, stackBase, stackSize, kernelVA)
+	if err != nil {
+		return 0, err
 	}
-	writeStackByte(stackBase, stackTop, kernelVA, godebugAddr+uint64(len(godebugStr)), 0)
 
-	// Clean cache for the stack page we wrote to
 	kmem.CleanPageCache(kernelVA)
-
 	return sp, nil
 }
 

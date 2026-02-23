@@ -17,7 +17,7 @@ import (
 //   [8]    argv[0] → "kmazarin" string
 //   [16]   argv[1] = NULL
 //   [24]   envp[0] → "GOGC=100"
-//   [32]   envp[1] → "GODEBUG=asyncpreemptoff=1"
+//   [32]   envp[1] → "GODEBUG=asyncpreemptoff=1,gctrace=1"
 //   [40]   envp[2] → "GOMEMLIMIT=64MiB"
 //   [48]   envp[3] = NULL
 //   [56+]  auxv entries (key, value pairs) — up to 20 entries (320 bytes)
@@ -25,8 +25,8 @@ import (
 //   [384]  "kmazarin\0"
 //   [400]  16 random bytes
 //   [416]  "GOGC=100\0"
-//   [432]  "GODEBUG=asyncpreemptoff=1\0"
-//   [464]  "GOMEMLIMIT=64MiB\0"
+//   [432]  "GODEBUG=asyncpreemptoff=1,gctrace=1\0"
+//   [480]  "GOMEMLIMIT=64MiB\0"
 func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel) (uint64, error) {
 	const paramSize = 0x300 // 768 bytes — room for 20 auxv entries + strings
 
@@ -74,16 +74,16 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel) (uint
 	gogc[7] = '0'
 	gogc[8] = 0
 
-	// "GODEBUG=asyncpreemptoff=1" at offset 432
-	godebug := (*[32]byte)(unsafe.Pointer(uintptr(structPhys + 432)))
-	s := "GODEBUG=asyncpreemptoff=1"
+	// "GODEBUG=asyncpreemptoff=1,gctrace=1" at offset 432
+	godebug := (*[48]byte)(unsafe.Pointer(uintptr(structPhys + 432)))
+	s := "GODEBUG=asyncpreemptoff=1,gctrace=1"
 	for i := 0; i < len(s); i++ {
 		godebug[i] = s[i]
 	}
 	godebug[len(s)] = 0
 
-	// "GOMEMLIMIT=64MiB" at offset 464
-	memlimit := (*[24]byte)(unsafe.Pointer(uintptr(structPhys + 464)))
+	// "GOMEMLIMIT=64MiB" at offset 480
+	memlimit := (*[24]byte)(unsafe.Pointer(uintptr(structPhys + 480)))
 	ml := "GOMEMLIMIT=64MiB"
 	for i := 0; i < len(ml); i++ {
 		memlimit[i] = ml[i]
@@ -101,10 +101,10 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel) (uint
 	data[2] = 0
 	// envp[0] = "GOGC=100" (VA)
 	data[3] = structStart + 416
-	// envp[1] = "GODEBUG=asyncpreemptoff=1" (VA)
+	// envp[1] = "GODEBUG=asyncpreemptoff=1,gctrace=1" (VA)
 	data[4] = structStart + 432
 	// envp[2] = "GOMEMLIMIT=64MiB" (VA)
-	data[5] = structStart + 464
+	data[5] = structStart + 480
 	// envp[3] = NULL
 	data[6] = 0
 

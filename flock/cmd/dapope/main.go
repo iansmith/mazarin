@@ -60,6 +60,26 @@ const (
 	BTN_MIDDLE = 0x112
 )
 
+// Input type tracking — when the type of input changes, we emit a newline
+// so different input types appear on separate lines in the serial console.
+const (
+	inputNone     = 0
+	inputKeyboard = 1
+	inputButton   = 2
+	inputWheel    = 3
+)
+
+var lastInputType int
+
+// switchInput prints a newline if the input type changed, then records
+// the new type. Call before printing any event output.
+func switchInput(newType int) {
+	if lastInputType != inputNone && lastInputType != newType {
+		fmt.Println()
+	}
+	lastInputType = newType
+}
+
 func keyName(code uint16) string {
 	if int(code) < len(keyNames) && keyNames[code] != "" {
 		return keyNames[code]
@@ -121,12 +141,16 @@ func keyboardLoop(slot int) {
 			}
 			ch, action := km.Feed(ke)
 			if ch != 0 {
+				switchInput(inputKeyboard)
 				fmt.Print(string(ch))
 			} else if action == "enter" {
+				switchInput(inputKeyboard)
 				fmt.Println()
 			} else if action == "backspace" {
+				switchInput(inputKeyboard)
 				fmt.Print("\b \b")
 			} else if action == "tab" {
+				switchInput(inputKeyboard)
 				fmt.Print("\t")
 			}
 		}
@@ -153,9 +177,11 @@ func mouseLoop(slot int, stack core.CursorStack, images core.CursorImageMap, ren
 				case REL_Y:
 					dy += int(int32(ev.Value))
 				case REL_WHEEL:
+					switchInput(inputWheel)
 					fmt.Printf("[dapope:mouse] wheel %+d\n", int32(ev.Value))
 				}
 			case EV_KEY:
+				switchInput(inputButton)
 				action := "pressed"
 				if ev.Value == 0 {
 					action = "released"

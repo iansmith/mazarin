@@ -252,13 +252,7 @@ func BuddyAllocTyped(order int, pageType PageType, owner int16) uintptr {
 		}
 	}
 
-	// TODO: Re-enable after fixing race condition (see design/RACE_CONDITION.md).
-	// Calling SetPageDescriptor here (even as a no-op) changes timing enough
-	// to expose a pre-existing race that corrupts Go runtime mspan metadata.
-	// Bump-path SetPageDescriptor (in AllocPage) is safe because it only runs
-	// during early boot before userspace or interrupts are active.
-	//
-	// SetPageDescriptor(pa, pageType, owner, uint8(order))
+	SetPageDescriptor(pa, pageType, owner, uint8(order))
 
 	return pa
 }
