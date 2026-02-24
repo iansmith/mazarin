@@ -41,4 +41,7 @@ const (
 	AT_KMAZARIN_HEAP_START = 0x1010 // Start of kernel heap VA space
 	AT_KMAZARIN_HEAP_END   = 0x1011 // End of kernel heap VA space
 	AT_UNIFIED_POOL_END    = 0x1012 // Unified pool end PA
+
+	// Configuration overrides from kmazarin.toml (Stage 3)
+	AT_KERNEL_BUDGET_MB = 0x1014 // Kernel memory budget warning threshold in MB
 )

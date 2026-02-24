@@ -19,6 +19,15 @@ import (
 // MaxOrder is the number of orders supported (0 through MaxOrder-1).
 const MaxOrder = 13 // Orders 0-12 (4KB to 16MB)
 
+// kmazarinKernelBudgetMB is set by archauxv() from AT_KERNEL_BUDGET_MB.
+// 0 means "use default". Accessed via go:linkname from runtime package.
+//
+//go:linkname kmazarinKernelBudgetMB runtime.kmazarinKernelBudgetMB
+var kmazarinKernelBudgetMB uintptr
+
+// defaultKernelLimitPages is the default kernel memory warning threshold (128MB).
+const defaultKernelLimitPages = 32768 // 128MB = 32768 * 4KB
+
 // BuddyAllocator manages physical memory using a buddy system.
 type BuddyAllocator struct {
 	// Free list heads per order. Each entry is a PA of the first free block,
@@ -243,11 +252,16 @@ func BuddyAllocTyped(order int, pageType PageType, owner int16) uintptr {
 
 	buddyAlloc.lock.Unlock()
 
-	// Warn when kernel memory exceeds 64MB.
+	// Warn when kernel memory exceeds the configured budget threshold.
+	// limitPages: from AT_KERNEL_BUDGET_MB auxv entry (set by kmazarin.toml),
+	// or defaultKernelLimitPages (128MB) if not configured.
 	// Print full stats on first crossing, then breadcrumb every 256 pages.
-	const kernelLimitPages = 32768 // 128MB = 32768 * 4KB
-	if kernelTotal > kernelLimitPages {
-		if kernelTotal-1 <= kernelLimitPages || (kernelTotal&0xFF) == 0 {
+	limitPages := uint64(kmazarinKernelBudgetMB) * 256 // 1MB = 256 pages of 4KB
+	if limitPages == 0 {
+		limitPages = defaultKernelLimitPages
+	}
+	if kernelTotal > limitPages {
+		if kernelTotal-1 <= limitPages || (kernelTotal&0xFF) == 0 {
 			buddyWarnKernelLimit(kernelTotal, pageType, pa)
 		}
 	}

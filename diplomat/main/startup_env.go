@@ -27,7 +27,7 @@ import (
 //   [416]  "GOGC=5\0"
 //   [432]  "GODEBUG=asyncpreemptoff=1,gctrace=1\0"
 //   [480]  "GOMEMLIMIT=64MiB\0"
-func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel) (uint64, error) {
+func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel, cfg *KmazarinConfig) (uint64, error) {
 	const paramSize = 0x300 // 768 bytes — room for 20 auxv entries + strings
 
 	// Place structure 512 bytes below g0 stack top
@@ -184,6 +184,13 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel) (uint
 	data[i] = 0x1012 // AT_UNIFIED_POOL_END
 	data[i+1] = vm.UnifiedPoolEnd
 	i += 2
+
+	// AT_KERNEL_BUDGET_MB - kernel memory warning threshold (from kmazarin.toml)
+	if cfg != nil && cfg.KernelBudgetMB > 0 {
+		data[i] = 0x1014 // AT_KERNEL_BUDGET_MB
+		data[i+1] = cfg.KernelBudgetMB
+		i += 2
+	}
 
 	// AT_DTB_PHYS - Device Tree Blob physical address
 	// Try UEFI config table first, fall back to synthesized DTB

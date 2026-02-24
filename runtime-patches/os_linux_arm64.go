@@ -30,6 +30,7 @@ const (
 	_AT_KMAZARIN_HEAP_END    = 0x1011
 	_AT_UNIFIED_POOL_END     = 0x1012
 	_AT_TTBR0_L0_PHYS       = 0x1013
+	_AT_KERNEL_BUDGET_MB     = 0x1014
 )
 
 // Kernel configuration values - set by archauxv before Go runtime init completes.
@@ -48,6 +49,7 @@ var kmazarinDtbPhysAddr uintptr
 var kmazarinCPUCount uintptr
 var kmazarinRAMBase uintptr
 var kmazarinRAMSize uintptr
+var kmazarinKernelBudgetMB uintptr
 
 // kmazarinUART writes a byte directly to UART for early boot diagnostics.
 // Uses the high-memory linear map VA of the UART.
@@ -91,6 +93,8 @@ func archauxv(tag, val uintptr) {
 		kmazarinRAMBase = val
 	case _AT_RAM_SIZE:
 		kmazarinRAMSize = val
+	case _AT_KERNEL_BUDGET_MB:
+		kmazarinKernelBudgetMB = val
 	}
 }
 

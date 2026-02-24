@@ -42,6 +42,9 @@ vars:
   # QEMU display: cocoa on macOS, sdl everywhere else
   DISPLAY: '{{if eq OS "darwin"}}cocoa{{else}}sdl{{end}}'
 
+  # QEMU RAM size — override with QEMU_RAM=512M or QEMU_RAM=4G to test different sizes
+  QEMU_RAM: '{{env "QEMU_RAM" | default "2G"}}'
+
   # Kmazarin load address - must match shared/constants.KmazarinLoadAddr
   # If the constant changes, check-env will fail with a clear error message.
   KMAZARIN_LOAD_ADDR: "0x43800000"
@@ -648,7 +651,7 @@ tasks:
     cmds:
       - '{{.GO}} tool go-rm {{.CPU_LOG_FILE}}'
       - '{{.GO}} tool go-cp {{.FW_VARS_TEMPLATE}} {{.BUILD_DIR}}/edk2-arm-vars.fd'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt -cpu cortex-a72 -m 2G -rtc base=utc,clock=host -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-pci,drive=flock0,bus=pcie.0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt -cpu cortex-a72 -m {{.QEMU_RAM}} -rtc base=utc,clock=host -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-pci,drive=flock0,bus=pcie.0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (ARM64 UEFI) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4446"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
@@ -748,9 +751,9 @@ tasks:
     cmds:
       - |
         {{if eq .VIRTIO_TRANSPORT "mmio"}}
-        {{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m 2G -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-device,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot -global virtio-mmio.force-legacy=false
+        {{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m {{.QEMU_RAM}} -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-device,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot -global virtio-mmio.force-legacy=false
         {{else}}
-        {{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m 2G -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot
+        {{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m {{.QEMU_RAM}} -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot
         {{end}}
       - '{{.GO}} tool go-echo "QEMU (RISC-V diplomat via OpenSBI, VirtIO {{.VIRTIO_TRANSPORT}}) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4447"'

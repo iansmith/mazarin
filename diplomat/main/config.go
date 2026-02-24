@@ -15,6 +15,11 @@ type KmazarinConfig struct {
 	MaxCPUs  uint64 // Maximum CPU count (cap if more)
 	MinRAMMB uint64 // Minimum RAM in MB (abort if less)
 	MaxRAMMB uint64 // Maximum RAM in MB (cap if more)
+
+	// Memory layout overrides (Stage 3 - escape hatches for future growth)
+	FramebufferMB  uint64 // VirtIO GPU framebuffer size in MB (default 32)
+	PageTableMB    uint64 // Page table pool size in MB (default 8)
+	KernelBudgetMB uint64 // Kernel memory budget warning threshold in MB (default 128)
 }
 
 // defaultConfig returns the default configuration.
@@ -27,6 +32,9 @@ func defaultConfig() *KmazarinConfig {
 	cfg.MaxCPUs = 256
 	cfg.MinRAMMB = 256
 	cfg.MaxRAMMB = 65536
+	cfg.FramebufferMB = 32  // 32MB — 1920×1080×4 = 8MB, room to grow
+	cfg.PageTableMB = 8     // 8MB page table pool
+	cfg.KernelBudgetMB = 128 // 128MB kernel memory warning threshold
 	return cfg
 }
 
@@ -170,6 +178,12 @@ func parseToml(data []byte, cfg *KmazarinConfig) {
 			cfg.MinRAMMB = val
 		} else if matchBytes(key, "max_ram_mb") {
 			cfg.MaxRAMMB = val
+		} else if matchBytes(key, "framebuffer_mb") {
+			cfg.FramebufferMB = val
+		} else if matchBytes(key, "page_table_mb") {
+			cfg.PageTableMB = val
+		} else if matchBytes(key, "kernel_budget_mb") {
+			cfg.KernelBudgetMB = val
 		}
 	}
 }

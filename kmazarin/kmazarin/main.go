@@ -702,6 +702,10 @@ func simpleMain() {
 		Print("[Main] Runtime not ready - continuing with direct UART")
 	}
 
+	// Log RAM layout and kernel budget (Stage 3: verify AT_RAM_BASE/AT_RAM_SIZE received)
+	console.KPrintf("[Main] RAM: base=0x%X size=%dMB kernel_budget=%dMB\n",
+		GetRAMBaseAddr(), GetTotalRAMSize()>>20, GetKernelBudgetMB())
+
 	// Copy FDT to a safe location BEFORE GPU init. On RISC-V, the FDT at
 	// PA 0xFFE00000 is within the buddy allocator's range and gets overwritten
 	// when the framebuffer is allocated at PA 0xFF000000 (~16MB).

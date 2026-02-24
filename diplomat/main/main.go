@@ -351,7 +351,7 @@ func DiplomatEntry() {
 	}
 
 	// Phase 9: Build startup environment (auxv on g0 stack)
-	stackPtr, err := boot.BuildStartupEnv(vm, hw, kernel)
+	stackPtr, err := boot.BuildStartupEnv(vm, hw, kernel, config)
 	if err != nil {
 		printString("ERROR: startup env: ")
 		printString(err.Error())

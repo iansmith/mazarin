@@ -69,7 +69,7 @@ type BootSequence struct {
 	QueryHardware      func(config *KmazarinConfig) (*HardwareInfo, error)
 	PrepareKernelVM    func(hw *HardwareInfo, kernel *LoadedKernel) (*KernelVM, error)
 	InstallFaultHandler func(vm *KernelVM) error
-	BuildStartupEnv    func(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel) (uint64, error)
+	BuildStartupEnv    func(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel, cfg *KmazarinConfig) (uint64, error)
 	JumpToKernelWithEnv func(entry, stackPtr, excStackTop, vbar uint64)
 }
 

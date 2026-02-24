@@ -31,6 +31,9 @@ var kmazarinRAMBase uintptr
 //go:linkname kmazarinRAMSize runtime.kmazarinRAMSize
 var kmazarinRAMSize uintptr
 
+//go:linkname kmazarinKernelBudgetMB runtime.kmazarinKernelBudgetMB
+var kmazarinKernelBudgetMB uintptr
+
 //go:linkname kmazarinUnifiedPoolStart runtime.kmazarinUnifiedPoolStart
 var kmazarinUnifiedPoolStart uintptr
 
@@ -256,6 +259,14 @@ func GetCPUCount() uint64 {
 		return 1 // Default to 1 CPU if not set
 	}
 	return count
+}
+
+// GetKernelBudgetMB returns the kernel memory budget warning threshold in MB from auxv.
+// Returns 0 if not set (buddy.go will use its compiled-in default of 128MB).
+//
+//go:nosplit
+func GetKernelBudgetMB() uint64 {
+	return uint64(kmazarinKernelBudgetMB)
 }
 
 // fullConfig is the expanded view of all memory layout values needed by
