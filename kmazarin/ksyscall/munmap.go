@@ -5,9 +5,9 @@ import (
 	"mazzy/kmazarin/kmem"
 )
 
-// SyscallMunmap implements the munmap(2) syscall
-// Unmaps pages in the specified range and updates span tracking.
-// Does NOT currently free physical frames back to the pool.
+// SyscallMunmap implements the munmap(2) syscall.
+// Unmaps pages in the specified range, updates span tracking,
+// and returns physical frames to the buddy allocator via PageDescriptor refcounting.
 //
 //go:nosplit
 func SyscallMunmap(addr, length, _, _, _, _ uint64) int64 {
@@ -24,20 +24,15 @@ func SyscallMunmap(addr, length, _, _, _, _ uint64) int64 {
 	// Update span tracking (remove/split spans for this range)
 	removeSpan(alignedAddr, alignedLength)
 
-	// Count how many pages we actually unmap
-	unmappedCount := uint64(0)
-
-	// Unmap each page in the range
+	// Unmap each page and free its physical frame.
 	for va := alignedAddr; va < alignedEnd; va += pageSize {
 		pa := kmem.UnmapUserPage(uintptr(va))
 		if pa != 0 {
-			unmappedCount++
-			// Note: We don't free the frame back to pool yet
-			// This is a memory leak, but prevents use-after-free issues
+			// Free the physical frame via PageDescriptor refcount.
+			// Skips pages outside the pool (diplomat-mapped segments, MMIO).
+			kmem.ReleasePageByPA(pa)
 		}
 	}
-
-	_ = unmappedCount
 
 	return 0
 }

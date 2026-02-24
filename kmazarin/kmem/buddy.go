@@ -375,7 +375,9 @@ func BuddyFreeTyped(pa uintptr, order int, pageType PageType) {
 
 	// Per-type accounting (mirror of BuddyAllocTyped)
 	switch pageType {
-	case PageKernelHeap, PageFileBuffer, PageDriver:
+	case PageKernelHeap, PageKernelStack, PageKernelMMIO,
+		PageFramebuffer, PageVirtIOQueue, PageFileBuffer,
+		PageBackingStore, PageDriver, PageSharedIPC:
 		if buddyAlloc.kernelHeapPages >= pagesFreed {
 			buddyAlloc.kernelHeapPages -= pagesFreed
 		}
@@ -383,7 +385,7 @@ func BuddyFreeTyped(pa uintptr, order int, pageType PageType) {
 		if buddyAlloc.kernelPTPages >= pagesFreed {
 			buddyAlloc.kernelPTPages -= pagesFreed
 		}
-	case PageUser:
+	case PageUserText, PageUserROData, PageUserData, PageUserHeap, PageUserStack:
 		if buddyAlloc.userPages >= pagesFreed {
 			buddyAlloc.userPages -= pagesFreed
 		}

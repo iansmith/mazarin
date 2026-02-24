@@ -196,3 +196,20 @@ func (g *LockedSpanGroup) FindOverlapEnd(start, length uint64) uint64 {
 	g.releaseLock()
 	return 0
 }
+
+// SpanVisitor is a callback type for ForEach.
+// Called once per active span with (start, length) in bytes.
+// The callback must NOT call any LockedSpanGroup methods (would deadlock).
+type SpanVisitor func(start, length uint64)
+
+// ForEach calls fn for each active span in the group.
+// Used by priest cleanup to walk all mapped VA regions.
+func (g *LockedSpanGroup) ForEach(fn SpanVisitor) {
+	g.acquireLock()
+	for i := 0; i < SpansPerProcess; i++ {
+		if g.spans[i].inUse != 0 {
+			fn(g.spans[i].start, g.spans[i].length)
+		}
+	}
+	g.releaseLock()
+}

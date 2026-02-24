@@ -1466,6 +1466,15 @@ func releasePriestSchedLockHeld(priestIdx int16, pid PriestId) {
 	// TLBI ASIDE1IS broadcasts to all CPUs in the inner shareable domain.
 	kmem.TlbiASIDE1IS(uint16(pid))
 
+	// Read l0PA and spans pointer BEFORE zeroing the priest struct.
+	// CleanupPriestPages needs these to walk the page tables.
+	l0PA := proc.PriestListData[priestIdx].PageTableL0PA
+	spans := &proc.PriestListData[priestIdx].Spans
+
+	// Free all physical pages owned by this priest (Linux-style VMA + PT walk).
+	// Must happen before zeroing the priest struct (which would clear Spans/l0PA).
+	kmem.CleanupPriestPages(pid, spans, l0PA)
+
 	// Release the priest slot
 	proc.PriestListInUse[priestIdx] = false
 

@@ -97,10 +97,10 @@ When `releasePriestSchedLockHeld()` runs (last thread exits):
 - TLB shootdown: **done** (`TlbiASIDE1IS`)
 - Zero priest struct: **done** (memset)
 - Release priest ID: **done** (`priestIdAllocator.Release`)
-- Walk page tables and free frames: **NOT DONE**
-- Free page table pages themselves: **NOT DONE**
-- Free shared/IPC pages (refcount decrement): **NOT DONE**
-- Return frames to buddy allocator: **NOT DONE**
+- Walk page tables and free frames: **DONE** (Stage 4 — `kmem.CleanupPriestPages`)
+- Free page table pages themselves: **DONE** (Stage 4 — `walkAndFreePageTablePages`)
+- Free shared/IPC pages (refcount decrement): **DONE** (Stage 4 — `releasePageByPA` with RefCount)
+- Return frames to buddy allocator: **DONE** (Stage 4 — `BuddyFreeTyped` via `releasePageByPA`)
 
 ### RISC-V Diplomat Constraints
 
@@ -1156,3 +1156,26 @@ Stage 6 (Shared Memory IPC)       ← depends on Stage 4
 ```
 
 Stages 3 and 5 are somewhat independent and could be reordered. Stages 0→1→2→4 is the critical path.
+
+---
+
+## Known Issues / TODO
+
+### ARM64 mspan corruption under GOGC=5 (partially mitigated)
+
+**Symptom**: `runtime.(*mcache).nextFree` crashes with `s.allocCount != s.nelems && freeIndex == s.nelems` (e.g., `s.allocCount=31, s.nelems=32`). Triggered by `SyscallWaitSoftIRQ` heap allocation (`var events [MaxHIDEvents]hid.HIDEvent` escapes to heap). Reproduces on ARM64 60-second runs with GOGC=5; not yet observed on x86_64 or RISC-V.
+
+**Mitigations applied so far**:
+1. Removed `entersyscall`/`exitsyscall` from syscall overlay (commit d161e6b) — eliminated the most frequent trigger
+2. Added `m.locks > 0` check in thread preemption path on all 3 architectures (commit 5f8ffac) — prevents context-switching a goroutine that holds runtime locks (mallocgc, mspan.sweep, etc.)
+
+**Remaining root cause**: GC stop-the-world coordination. The Go runtime uses `tgkill` to send signals that preempt goroutines during STW phases. In kmazarin, `tgkill` is a no-op, so:
+- GC STW cannot reliably stop all goroutines
+- A goroutine mid-sweep or mid-alloc may not be paused before GC proceeds
+- Under GOGC=5, GC runs extremely frequently, amplifying the race window
+
+**Possible fixes to investigate**:
+1. Implement `tgkill` as a real cross-thread preemption signal (set a flag on the target thread, inject preemption on next timer tick)
+2. Implement cooperative STW: have `SyscallSchedYield` and syscall entry check a global "STW requested" flag and park the goroutine
+3. Hook `runtime.preemptM` or `runtime.signalM` via overlay to use kmazarin's thread preemption mechanism instead of signals
+4. Check if `runtime.stopTheWorld` / `runtime.forEachP` has a fallback path when signals fail — may need to overlay the spin-wait timeout
