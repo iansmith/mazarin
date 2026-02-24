@@ -1287,6 +1287,26 @@ eret_rip_ok:
 // ============================================================================
 // R12 = pointer to ThreadContext
 load_context_and_iretq:
+	// DEBUG: Print "[LC] RIP=" + context RIP to COM1
+	MOVW	$0x3F8, DX
+	MOVB	$'[', AX; OUTB
+	MOVB	$'L', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$']', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	120(R12), R15		// RIP from context
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	152(R12), R15		// CS from context
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+
 	// Validate CS from context before building IRETQ frame
 	MOVQ	152(R12), R13		// CS from context
 	CMPQ	R13, $0x08		// kernelCS
@@ -1548,15 +1568,18 @@ pf_ph_ok:
 	RET
 
 // ============================================================================
-// SYSCALL Entry - entered via x86_64 SYSCALL instruction from Ring 3
+// SYSCALL Entry - entered via x86_64 SYSCALL instruction
 // ============================================================================
 // SYSCALL sets: RCX=return RIP, R11=RFLAGS, clears IF via FMASK.
 // We build a fake exception frame compatible with common_exception_entry,
 // then route through the same handler as INT $0x80 with vector=129 for
 // syscall number translation (x86_64→ARM64).
 //
-// Ring 0 kernel code never reaches here — it uses INT $0x80 via the
-// asm_linux_amd64.s overlay. This handler is exclusively for Ring 3 userspace.
+// Normally reached from Ring 3 userspace (overlayed INT $0x80 for Ring 0).
+// However, Go compiler-generated code (e.g. time.now's VDSO fallback,
+// syscall.rawSyscallNoError) can issue SYSCALL from Ring 0. We detect this
+// by checking the saved RSP: kernel stacks use high canonical addresses
+// (bit 63 = 1), user stacks use low canonical addresses (bit 63 = 0).
 //
 // Not using SYSRET for return — IRETQ handles all cases safely.
 TEXT ·syscallEntry(SB), NOSPLIT|NOFRAME, $0
@@ -1569,12 +1592,32 @@ TEXT ·syscallEntry(SB), NOSPLIT|NOFRAME, $0
 	MOVQ	SP, ·syscallScratchRSP(SB)
 	MOVQ	·excStackTopForSyscall(SB), SP
 
-	// Build fake exception frame with Ring 3 selectors
-	PUSHQ	$0x23				// SS (Ring 3 data: GDT 0x20 | RPL=3)
-	PUSHQ	·syscallScratchRSP(SB)		// RSP (user's original)
+	// Detect Ring 0 vs Ring 3 SYSCALL by checking the caller's RSP.
+	// Kernel stacks use high canonical addresses (bit 63 = 1).
+	// User stacks use low canonical addresses (bit 63 = 0).
+	// This handles compiler-generated SYSCALL instructions (e.g. time.now's
+	// VDSO fallback, syscall.rawSyscallNoError) that fire from Ring 0.
+	// Without this, exception_return would IRETQ to Ring 3 at a kernel address.
+	//
+	// Use scratch globals for CS/SS to avoid duplicate PUSH sequences
+	// (the Go linker's nosplit checker sums all PUSHQs in a function).
+	MOVQ	·syscallScratchRSP(SB), CX
+	TESTQ	CX, CX
+	JS	syscall_ring0_cs
+	MOVQ	$0x23, ·syscallScratchSS(SB)	// Ring 3 data: GDT 0x20 | RPL=3
+	MOVQ	$0x1B, ·syscallScratchCS(SB)	// Ring 3 code: GDT 0x18 | RPL=3
+	JMP	syscall_build_frame
+syscall_ring0_cs:
+	MOVQ	$0x10, ·syscallScratchSS(SB)	// Ring 0 data: GDT 0x10
+	MOVQ	$0x08, ·syscallScratchCS(SB)	// Ring 0 code: GDT 0x08
+
+syscall_build_frame:
+	// Build fake exception frame (single push sequence for nosplit safety)
+	PUSHQ	·syscallScratchSS(SB)		// SS
+	PUSHQ	·syscallScratchRSP(SB)		// RSP (caller's original)
 	MOVQ	·syscallScratchR11(SB), CX
 	PUSHQ	CX				// RFLAGS (saved by CPU in R11)
-	PUSHQ	$0x1B				// CS (Ring 3 code: GDT 0x18 | RPL=3)
+	PUSHQ	·syscallScratchCS(SB)		// CS
 	MOVQ	·syscallScratchRCX(SB), CX
 	PUSHQ	CX				// RIP (saved by CPU in RCX)
 	PUSHQ	$0				// Error code (none)
@@ -1588,6 +1631,8 @@ TEXT ·syscallEntry(SB), NOSPLIT|NOFRAME, $0
 GLOBL	·syscallScratchRCX(SB), NOPTR, $8
 GLOBL	·syscallScratchR11(SB), NOPTR, $8
 GLOBL	·syscallScratchRSP(SB), NOPTR, $8
+GLOBL	·syscallScratchCS(SB), NOPTR, $8
+GLOBL	·syscallScratchSS(SB), NOPTR, $8
 
 // XMM save area for page fault handler. 256 bytes = 16 XMM registers × 16 bytes.
 // Single-CPU so a global buffer is safe (no concurrent access).

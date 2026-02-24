@@ -351,6 +351,20 @@ func (t *Thread) Id() int32 {
 	return int32(t.TID)
 }
 
+// threadLookupByTID does a direct linear scan of the backing arrays to find a thread by TID.
+// This avoids the generic StaticList.FindByIdAll which uses an indirect Id() call
+// that adds 48 bytes to the nosplit stack chain.
+//
+//go:nosplit
+func threadLookupByTID(tid int32) *Thread {
+	for i := 0; i < threadArraySize; i++ {
+		if threadListInUse[i] && int32(threadListData[i].TID) == tid {
+			return &threadListData[i]
+		}
+	}
+	return nil
+}
+
 // ========== Static Allocation Data Structures ==========
 
 // Backing arrays - statically allocated, zero-initialized
@@ -850,7 +864,7 @@ func processStaticDeadlinesSchedLockHeld() {
 		}
 
 		// Find the thread by TID and wake it
-		t := threadList.FindByIdAll(int32(tid))
+		t := threadLookupByTID(int32(tid))
 		if t == nil {
 			continue // Thread exited
 		}
@@ -1066,6 +1080,15 @@ func SaveThread0AndYield() uint64 {
 			WaitForInterrupt()
 		}
 	}
+
+	BreadcrumbString("[Y] PC=0x")
+	BreadcrumbHex(next.Context.GetPC())
+	BreadcrumbString(" SP=0x")
+	BreadcrumbHex(next.Context.GetSP())
+	BreadcrumbString(" TID=")
+	BreadcrumbHex(uint64(next.TID))
+	Breadcrumb('\n')
+
 	return uint64(uintptr(unsafe.Pointer(&next.Context)))
 }
 
@@ -1604,6 +1627,7 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	t.GPtr = 0
 	t.EntryFunc = 0
 	t.LastSeenG = 0
+	t.CloneNeedsParentRegs = 0 // Clear in case slot was reused from a clone child
 
 	// Copy asyncPreemptAddr from the Priest struct and set PriestIdx for O(1) access
 	// The Priest gets this from ELF symbol lookup during process creation
@@ -1624,6 +1648,12 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 
 	// Set up initial context for userspace execution
 	t.Context.SetupForUserspace(entryPoint, stackPtr)
+
+	BreadcrumbString("[CTX] PC=0x")
+	BreadcrumbHex(t.Context.GetPC())
+	BreadcrumbString(" SP=0x")
+	BreadcrumbHex(t.Context.GetSP())
+	Breadcrumb('\n')
 
 	// Set HomeCPU to current CPU for cache locality
 	t.HomeCPU = int8(GetCPUID())
@@ -1728,7 +1758,7 @@ func enqueueReadyToCurrentCPU(t *Thread) {
 //
 //go:nosplit
 func enqueueReadyByTIDSchedLockHeld(tid ThreadId) {
-	t := threadList.FindByIdAll(int32(tid))
+	t := threadLookupByTID(int32(tid))
 	if t != nil {
 		enqueueReadyToHomeCPU(t)
 	}
@@ -1779,7 +1809,7 @@ func findReadyThreadWithStealing() *Thread {
 	for !myPerCPU.LocalReadyQueue.IsEmpty() {
 		tid := myPerCPU.LocalReadyQueue.Pop()
 
-		t := threadList.FindByIdAll(int32(tid))
+		t := threadLookupByTID(int32(tid))
 		if t != nil && t.State == ThreadReady {
 			return t
 		}
@@ -1810,7 +1840,7 @@ func stealWorkFromOtherCPUs() *Thread {
 			// Steal from BACK (oldest = likely cache-cold anyway)
 			tid := victim.LocalReadyQueue.PopBack()
 
-			t := threadList.FindByIdAll(int32(tid))
+			t := threadLookupByTID(int32(tid))
 			if t != nil && t.State == ThreadReady {
 				// Update HomeCPU to current CPU (new affinity)
 				t.HomeCPU = int8(myID)
@@ -1853,7 +1883,7 @@ func findReadyThreadPreferDifferentPriestSchedLockHeld(currentPID PriestId) *Thr
 	for seen := 0; seen < len(q.Data); seen++ {
 		if q.InUse[idx] {
 			tid := q.Data[idx]
-			t := threadList.FindByIdAll(int32(tid))
+			t := threadLookupByTID(int32(tid))
 			if t != nil && t.State == ThreadReady && t.PID != currentPID {
 				q.PluckAt(idx)
 				return t
@@ -1872,7 +1902,7 @@ func findReadyThreadPreferDifferentPriestSchedLockHeld(currentPID PriestId) *Thr
 		for vseen := 0; vseen < len(vq.Data); vseen++ {
 			if vq.InUse[vidx] {
 				tid := vq.Data[vidx]
-				t := threadList.FindByIdAll(int32(tid))
+				t := threadLookupByTID(int32(tid))
 				if t != nil && t.State == ThreadReady && t.PID != currentPID {
 					vq.PluckAt(vidx)
 					t.HomeCPU = int8(myID) // Update affinity
@@ -1887,7 +1917,7 @@ func findReadyThreadPreferDifferentPriestSchedLockHeld(currentPID PriestId) *Thr
 	for !myPerCPU.LocalReadyQueue.IsEmpty() {
 		tid := myPerCPU.LocalReadyQueue.Pop()
 
-		t := threadList.FindByIdAll(int32(tid))
+		t := threadLookupByTID(int32(tid))
 		if t != nil && t.State == ThreadReady {
 			return t
 		}
@@ -2027,7 +2057,7 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 	// Scan blocked queue
 	for i := 0; i < queueSize && woken < int32(maxWake); i++ {
 		tid := blockedQueue.Pop()
-		t := threadList.FindByIdAll(int32(tid)) // FindByIdAll to include kernel threads
+		t := threadLookupByTID(int32(tid)) // FindByIdAll to include kernel threads
 
 		if t == nil {
 			// Invalid TID in queue - skip it
@@ -2132,7 +2162,7 @@ func ThreadWakeSleeper(sf *SchedulerFunc, tidParam uintptr) {
 	schedulerLock.Lock()
 
 	// Find thread by TID - use FindByIdAll to include kernel threads
-	t := threadList.FindByIdAll(int32(tid))
+	t := threadLookupByTID(int32(tid))
 	if t == nil {
 		schedulerLock.Unlock()
 		sf.EnableAndRestoreDAIF(savedDAIF)
@@ -2274,7 +2304,6 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 			// Clear threshold to prevent re-entrant Exit() calls
 			// (Exit re-enables IRQs briefly for WFI, which can re-enter this path)
 			shutdownTicksThreshold = 0
-			printTickDistributionNoSplit(now)
 			Exit()
 		}
 	}
@@ -2396,6 +2425,15 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 			WaitForInterrupt()
 		}
 	}
+
+	BreadcrumbString("[P] PC=0x")
+	BreadcrumbHex(next.Context.GetPC())
+	BreadcrumbString(" SP=0x")
+	BreadcrumbHex(next.Context.GetSP())
+	BreadcrumbString(" TID=")
+	BreadcrumbHex(uint64(next.TID))
+	Breadcrumb('\n')
+
 	return uint64(uintptr(unsafe.Pointer(&next.Context)))
 }
 
@@ -2425,7 +2463,6 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 		now := kirq.ReadCounterValue()
 		if now-startingTicksProgram >= shutdownTicksThreshold {
 			shutdownTicksThreshold = 0
-			printTickDistributionNoSplit(now)
 			Exit()
 		}
 	}
@@ -2585,6 +2622,14 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	if sf.StateCheck != nil {
 		sf.StateCheck("context-switch-complete")
 	}
+
+	BreadcrumbString("[S] PC=0x")
+	BreadcrumbHex(newThread.Context.GetPC())
+	BreadcrumbString(" SP=0x")
+	BreadcrumbHex(newThread.Context.GetSP())
+	BreadcrumbString(" TID=")
+	BreadcrumbHex(uint64(newThread.TID))
+	Breadcrumb('\n')
 
 	// END CRITICAL SECTION
 	schedulerLock.Unlock()

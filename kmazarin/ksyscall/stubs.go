@@ -7,7 +7,7 @@ import (
 	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
 
-	_ "unsafe" // for go:linkname
+	"unsafe"
 )
 
 // getCPUCountForAffinity returns the number of CPUs configured
@@ -69,10 +69,21 @@ func SyscallGettid(_, _, _, _, _, _ uint64) int64 {
 }
 
 // SyscallSchedYield yields the processor to another ready thread
-// If no other threads are ready, returns immediately
+// If no other threads are ready, returns immediately.
+//
+// CRITICAL: Must check m.locks before yielding. The Go runtime sets m.locks > 0
+// during critical sections (e.g., inside mallocgc, mspan.sweep). Yielding with
+// locks held allows another goroutine on the same M to see inconsistent allocator
+// state, causing mspan metadata corruption. This mirrors the check in the timer
+// IRQ preemption path (kirq/preempt_arm64.s).
 //
 //go:nosplit
 func SyscallSchedYield(_, _, _, _, _, _ uint64) int64 {
+	// Check m.locks — do not yield if the runtime is in a critical section.
+	if runtimeMLocks() != 0 {
+		return 0
+	}
+
 	// Try to find another ready thread to switch to
 	nextThread := threadFindReadyForYield()
 
@@ -83,6 +94,39 @@ func SyscallSchedYield(_, _, _, _, _, _ uint64) int64 {
 	// else: No other ready thread, return immediately
 
 	return 0 // Success
+}
+
+// runtimeMLocks reads m.locks from the current goroutine's M structure.
+// Uses the same offsets as the timer IRQ preemption check in assembly.
+// Returns 0 if locks are not held (safe to yield), non-zero if held.
+//
+//go:nosplit
+func runtimeMLocks() int32 {
+	gmOff := kirq.PreemptGMOffset
+	mLocksOff := kirq.PreemptMLocksOffset
+
+	// If offsets aren't initialized yet (early boot), allow yield
+	if gmOff == 0 && mLocksOff == 0 {
+		return 0
+	}
+
+	// g pointer is in X28 (ARM64) / R14 (x86_64) / X27 (RISC-V)
+	// Read it via assembly helper linked from main package
+	gRaw := getGPointer()
+	if gRaw == 0 {
+		return 0
+	}
+	gPtr := uintptr(gRaw)
+
+	// g.m is at g + GMOffset
+	mPtr := *(*uintptr)(unsafe.Pointer(gPtr + gmOff))
+	if mPtr == 0 {
+		return 0
+	}
+
+	// m.locks is at m + MLocksOffset (int32)
+	locks := *(*int32)(unsafe.Pointer(mPtr + mLocksOff))
+	return locks
 }
 
 // SyscallSigaltstack sets up an alternate signal stack

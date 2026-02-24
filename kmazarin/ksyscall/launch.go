@@ -7,6 +7,7 @@ import (
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/serial"
 	"mazzy/shared/fs/fat32"
 	"unsafe"
 )
@@ -264,6 +265,10 @@ func loadELF(data []byte, filename string, l0PA uintptr, priestNum uint64) (*Pro
 	if hdr.Class != ELF_CLASS64 || hdr.Machine != elfExpectedMachine {
 		return nil, &elfError{"ELF machine type mismatch"}
 	}
+
+	serial.RawUARTPuts("[ELF] entry=0x")
+	serial.RawUARTHex64(hdr.Entry)
+	serial.RawUARTPuts("\r\n")
 
 	for i := uint16(0); i < hdr.Phnum; i++ {
 		phdrOffset := hdr.Phoff + uint64(i)*uint64(hdr.Phentsize)

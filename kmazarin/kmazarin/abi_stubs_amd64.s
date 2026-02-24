@@ -175,15 +175,16 @@ TEXT ·RunFirstThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOVQ	CR3, AX
 	MOVQ	AX, CR3
 
-	// Restore FS_BASE from context (per-thread TLS base)
+	// Restore FS_BASE from context (per-thread TLS base).
+	// CRITICAL: If FSBase==0 (e.g., fresh userspace thread), skip BOTH
+	// the WRMSR and the TLS sync write.
 	MOVQ	144(R12), AX		// FSBase
 	TESTQ	AX, AX
-	JZ	run_skip_fsbase
+	JZ	run_skip_tls		// FSBase==0 → skip WRMSR AND TLS sync
 	MOVQ	AX, DX
 	SHRQ	$32, DX
 	MOVL	$0xC0000100, CX		// MSR_FS_BASE
 	WRMSR
-run_skip_fsbase:
 
 	// Sync TLS: write g to FS_BASE - 8
 	MOVL	$0xC0000100, CX		// MSR_FS_BASE
@@ -192,6 +193,7 @@ run_skip_fsbase:
 	ORQ	DX, AX			// RAX = FS_BASE
 	MOVQ	104(R12), DX		// new g (R14)
 	MOVQ	DX, -8(AX)		// Write g to TLS slot
+run_skip_tls:
 
 	// Build IRETQ frame: SS, RSP, RFLAGS, CS, RIP (push in reverse order)
 	PUSHQ	160(R12)		// SS from context
@@ -291,20 +293,43 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	TESTQ	R12, R12
 	JZ	yield_restore_return
 
+	// DEBUG: Print "[YA] RIP=" + context RIP to COM1
+	MOVW	$0x3F8, DX
+	MOVB	$'[', AX; OUTB
+	MOVB	$'Y', AX; OUTB
+	MOVB	$'A', AX; OUTB
+	MOVB	$']', AX; OUTB
+	MOVB	$' ', AX; OUTB
+	MOVB	$'R', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	120(R12), R15		// RIP from context
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	152(R12), R15		// CS from context
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+
 	// Switch to new thread via IRETQ
 	// Flush TLB
 	MOVQ	CR3, AX
 	MOVQ	AX, CR3
 
-	// Restore FS_BASE from context (per-thread TLS base)
+	// Restore FS_BASE from context (per-thread TLS base).
+	// CRITICAL: If FSBase==0 (e.g., fresh userspace thread), skip BOTH
+	// the WRMSR and the TLS sync write. Otherwise the TLS sync reads
+	// the stale FS_BASE from the previous thread and writes g=0 to
+	// the kernel's TLS slot, zeroing the kernel g pointer.
 	MOVQ	144(R12), AX		// FSBase
 	TESTQ	AX, AX
-	JZ	yield_skip_fsbase
+	JZ	yield_skip_tls		// FSBase==0 → skip WRMSR AND TLS sync
 	MOVQ	AX, DX
 	SHRQ	$32, DX
 	MOVL	$0xC0000100, CX		// MSR_FS_BASE
 	WRMSR
-yield_skip_fsbase:
 
 	// Sync TLS: write g to FS_BASE - 8
 	MOVL	$0xC0000100, CX		// MSR_FS_BASE
@@ -313,6 +338,7 @@ yield_skip_fsbase:
 	ORQ	DX, AX			// RAX = FS_BASE
 	MOVQ	104(R12), DX		// new g (R14)
 	MOVQ	DX, -8(AX)		// Write g to TLS slot
+yield_skip_tls:
 
 	// Switch to exception stack for IRETQ frame — the g0 stack may contain
 	// saved call frames from preempted threads (e.g., thread 0's CALL to

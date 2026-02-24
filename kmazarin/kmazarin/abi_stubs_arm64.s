@@ -280,19 +280,27 @@ run_first_thread_hang:
 //   SPSR      offset 264
 //
 TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
-	// R20 = pointer to current thread's ThreadContext
-	// CurrentThread is an unsafe.Pointer to *Thread
-	// Context is NOT the first field — add ThreadContextOffset
-	MOVD	·CurrentThread(SB), R20
-	CBZ	R20, yield_no_thread
-	MOVD	·ThreadContextOffset(SB), R0
-	ADD	R0, R20  // R20 now points to Thread.Context
+	// Check CurrentThread using R0 (caller-saved) to preserve R20 (callee-saved).
+	// This matters when called directly (JMP from kmazarinYieldImpl) rather than
+	// via SVC exception handler — we must preserve callee-saved regs for the
+	// no-switch return path (yield_restore_return).
+	MOVD	·CurrentThread(SB), R0
+	CBZ	R0, yield_no_thread
+
+	// Compute context pointer: R0 = &Thread.Context
+	MOVD	·ThreadContextOffset(SB), R1
+	ADD	R1, R0
+
+	// Save original R20 BEFORE clobbering it
+	MOVD	R20, 160(R0)  // ThreadContext offset 160 = X20
+
+	// Now use R20 as context pointer
+	MOVD	R0, R20
 
 	// Save callee-saved registers and key registers into ThreadContext.
-	// We only need to save what the Go ABI + ERET restore path expects.
-	// Caller-saved registers (R0-R15) don't need saving for the Go call
-	// convention, but the ERET restore path loads ALL registers from
-	// ThreadContext, so we save everything for correctness.
+	// R0 and R1 are already clobbered (context ptr, offset) — they're caller-saved
+	// so wrong values don't affect the return path. The ERET path loads from the
+	// NEW thread's context, so stale R0/R1 in THIS thread's context is harmless.
 
 	// Save X0-X27 (offsets 0-216)
 	STP	(R0, R1), 0(R20)
@@ -308,8 +316,7 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	WORD	$0xF9004A92  // STR X18, [X20, #144]  (offset 18*8=144)
 	// X19 - save individually
 	MOVD	R19, 152(R20)
-	// X20 is our context pointer - save its original value (0 for now, doesn't matter)
-	// We'll fix this below
+	// X20 - already saved at offset 160 above (original value, before clobbering)
 	// X21-X27
 	MOVD	R21, 168(R20)
 	STP	(R22, R23), 176(R20)
@@ -323,14 +330,6 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	// Save X29 (FP) and X30 (LR)
 	STP	(R29, R30), 232(R20)
 
-	// Save X20 itself (our context pointer) - it was the original R20 on entry.
-	// The caller's R20 is callee-saved, but we clobbered it. However, on entry
-	// R20 had whatever the Go caller had. Since we loaded CurrentThread into R20,
-	// the original R20 is lost. Save 0 as placeholder — when resumed, R20 will
-	// be restored from this, but Go will immediately set it from the call frame.
-	MOVD	$0, R0
-	MOVD	R0, 160(R20)
-
 	// Save SP (current stack pointer = SP_EL0 since we're in EL1t)
 	MOVD	RSP, R0
 	MOVD	R0, 248(R20)
@@ -343,12 +342,19 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOVD	$0x4, R0
 	MOVD	R0, 264(R20)
 
+	// Save LR in R19 before CALL clobbers it (R30).
+	// Original R19 is already saved to ThreadContext at offset 152 above.
+	MOVD	R30, R19
+
 	// Call SaveThread0AndYield() which returns context pointer in R0
 	// func SaveThread0AndYield() uint64
 	SUB	$16, RSP
 	CALL	·SaveThread0AndYield(SB)
 	MOVD	8(RSP), R20  // R20 = context pointer (first return value)
 	ADD	$16, RSP
+
+	// Restore LR from R19 (CALL clobbered R30)
+	MOVD	R19, R30
 
 	// Check if we got a thread to switch to
 	CBZ	R20, yield_restore_return
@@ -415,9 +421,16 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	ISB	$15
 
 yield_restore_return:
-	// No thread to switch to — return normally
+	// No thread to switch to — return normally.
 	// Thread 0's context was saved but SaveThread0AndYield undid the queue change.
-	// Just return to caller.
+	// R30 (LR) was already restored from R19 above.
+	// R19 is clobbered (was used to temp-save LR) — restore from ThreadContext.
+	// R20 is clobbered (has return value 0) — restore from ThreadContext.
+	MOVD	·CurrentThread(SB), R0
+	MOVD	·ThreadContextOffset(SB), R1
+	ADD	R1, R0
+	MOVD	152(R0), R19  // restore original R19
+	MOVD	160(R0), R20  // restore original R20
 	RET
 
 yield_no_thread:
