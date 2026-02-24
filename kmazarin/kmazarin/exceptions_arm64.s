@@ -994,8 +994,30 @@ skip_deadline_processing:
 	MOVW	mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB), R10
 	CBZ	R10, timer_no_thread_preempt
 
-	// (preempt flag breadcrumb removed for performance)
+	// ========================================================================
+	// CRITICAL: Check m.locks == 0 before thread preemption
+	// ========================================================================
+	// The interrupted goroutine may be holding runtime locks (e.g., inside
+	// mallocgc, mspan.sweep). Context-switching the thread while locks are
+	// held causes mspan metadata corruption when the goroutine resumes.
+	// Load the ORIGINAL g from exception frame (R28 was overwritten above
+	// to kmazarin's g0 for ProcessDeadlinesTopHalf).
+	MOVD	EXC_FRAME_X28(RSP), R10  // R10 = interrupted thread's g
+	CBZ	R10, thread_preempt_mlocks_ok  // g is nil (early boot), allow
 
+	// Follow g → m
+	MOVD	mazzy∕kmazarin∕kirq·PreemptGMOffset(SB), R11
+	ADD	R10, R11  // R11 = &g.m
+	MOVD	(R11), R11  // R11 = g.m
+	CBZ	R11, thread_preempt_mlocks_ok  // m is nil, allow
+
+	// Read m.locks (int32)
+	MOVD	mazzy∕kmazarin∕kirq·PreemptMLocksOffset(SB), R12
+	ADD	R11, R12  // R12 = &m.locks
+	MOVW	(R12), R12  // R12 = m.locks
+	CBNZ	R12, timer_no_thread_preempt  // m.locks != 0, defer to next tick
+
+thread_preempt_mlocks_ok:
 	// Clear NeedsThreadPreempt flag
 	MOVW	$0, R10
 	MOVW	R10, mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB)

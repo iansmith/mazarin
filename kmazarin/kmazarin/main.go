@@ -169,10 +169,8 @@ func init() {
 	StartBottomHalfProcessors()
 
 	// NOTE: IRQs are NOT enabled yet - GIC must be initialized first (in main)
-	// Transition from bump allocator to buddy allocator
-	// All early boot allocations used the bump allocator; now switch to buddy
-	// for proper allocation/deallocation support
-	kmem.TransitionToBuddy()
+	// NOTE: Buddy allocator is now initialized eagerly in InitUnifiedPool()
+	// (Stage 2 of memory overhaul). No TransitionToBuddy() call needed.
 
 }
 

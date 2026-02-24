@@ -1,8 +1,9 @@
 // unified_pool.go - Unified page allocator for all memory types
 //
-// This replaces the separate kernel frame pool, kernel PT pool,
-// userspace frame pool, and userspace PT pool with a single bump
-// allocator. Allocation type is tracked for accounting purposes.
+// All allocations go through the buddy allocator. A minimal bump allocator
+// is used only during bootstrap to allocate the PageDescriptor array before
+// the buddy allocator is ready. After InitUnifiedPool(), every AllocPage
+// call goes through BuddyAllocTyped.
 
 package kmem
 
@@ -88,8 +89,9 @@ const DefaultKernelSoftLimit = 16384
 // MaxFreePages is the maximum number of pages that can be held in the free list
 const MaxFreePages = 4096
 
-// UnifiedPagePool is a single bump allocator serving all page allocations.
-// Thread-safe via spinlock protection.
+// UnifiedPagePool holds pool boundaries and the bootstrap bump allocator state.
+// The bump allocator is only used during InitUnifiedPool() to allocate the
+// PageDescriptor array. After that, the buddy allocator handles all allocations.
 type UnifiedPagePool struct {
 	// Bump allocator state
 	next        uintptr // Next page to allocate (PA)
@@ -113,7 +115,15 @@ type UnifiedPagePool struct {
 // globalPool is the singleton unified page pool instance
 var globalPool UnifiedPagePool
 
-// InitUnifiedPool initializes the unified page pool from RuntimeConfig.
+// InitUnifiedPool initializes the unified page pool and the buddy allocator.
+// After this call, all allocations go through the buddy allocator.
+//
+// Bootstrap sequence:
+//  1. Set up bump allocator boundaries from auxv
+//  2. Bump-allocate the PageDescriptor array (covers entire pool)
+//  3. Initialize buddy allocator with remaining pool (bump pages marked as used)
+//  4. Set buddyReady — all subsequent AllocPage calls use buddy
+//
 // This should be called early in kmazarin startup.
 //
 //go:nosplit
@@ -143,43 +153,35 @@ func InitUnifiedPool() {
 	globalPool.kernelSoftLimit = DefaultKernelSoftLimit
 
 	atomic.StoreUint32(&globalPool.initialized, 1)
+
+	// Initialize PageDescriptor array (bump-allocates from pool).
+	// Must happen before buddy init so the array pages are counted
+	// as bootstrap pages and marked as used.
+	InitPageDescriptors(globalPool.initialNext, globalPool.end)
+
+	// Count how many pages the bump allocator used (PageDescriptor array)
+	bootstrapPages := GetBumpAllocatedPages()
+
+	// Initialize buddy allocator with remaining pool
+	InitBuddyAllocator(
+		globalPool.initialNext,
+		globalPool.end,
+		constants.KernelMMIOOffset,
+		bootstrapPages,
+	)
 }
 
-// AllocPage allocates a single page from the unified pool.
-// If the buddy allocator is initialized, delegates to it.
-// Otherwise falls back to the bump allocator (used during early boot).
+// AllocPage allocates a single page via the buddy allocator.
 // The pageType and owner parameters are used for accounting and PageDescriptor.
 // owner=0 for kernel pages, 1-31 for priest-owned pages.
 // Returns the physical address of the page, or 0 if the pool is exhausted.
 // The page is NOT zeroed - caller must zero if needed.
 //
+// PRECONDITION: InitUnifiedPool() must have been called (happens via InitPaging).
+//
 //go:nosplit
 func AllocPage(pageType PageType, owner int16) uintptr {
-	// Use buddy allocator if available
-	var pa uintptr
-	if atomic.LoadUint32(&buddyAlloc.initialized) != 0 {
-		pa = BuddyAllocTyped(0, pageType, owner)
-	} else {
-		// Ensure bump pool is initialized
-		if atomic.LoadUint32(&globalPool.initialized) == 0 {
-			InitUnifiedPool()
-		}
-
-		globalPool.lock.Lock()
-
-		// Check for OOM
-		if globalPool.next >= globalPool.end {
-			globalPool.lock.Unlock()
-			serial.RawUARTPuts("[kmem] Unified pool OOM!\r\n")
-			return 0
-		}
-
-		// Bump allocate
-		pa = globalPool.next
-		globalPool.next += PageSize
-
-		globalPool.lock.Unlock()
-	}
+	pa := BuddyAllocTyped(0, pageType, owner)
 
 	// DEBUG: Guard against allocating kmazarin code pages
 	if pa >= 0x90000000 && pa < 0x90400000 {
@@ -190,51 +192,23 @@ func AllocPage(pageType PageType, owner int16) uintptr {
 		}
 	}
 
-	// Set PageDescriptor for bump-allocated pages (buddy path handles its own)
-	if atomic.LoadUint32(&buddyAlloc.initialized) == 0 {
-		SetPageDescriptor(pa, pageType, owner, 0)
-	}
-
 	return pa
 }
 
-// AllocContiguousPages allocates a contiguous block of physical pages.
-// If the buddy allocator is initialized, delegates to BuddyAlloc with the
-// appropriate order (smallest power-of-2 >= pages). Otherwise falls back to
-// the bump allocator where contiguity is guaranteed by sequential allocation.
+// AllocContiguousPages allocates a contiguous block of physical pages
+// via the buddy allocator with the appropriate order (smallest power-of-2 >= pages).
 // Returns the physical address of the first page, or 0 on failure.
+//
+// PRECONDITION: InitUnifiedPool() must have been called (happens via InitPaging).
 //
 //go:nosplit
 func AllocContiguousPages(pages uintptr, pageType PageType, owner int16) uintptr {
-	// Use buddy allocator if available
-	if atomic.LoadUint32(&buddyAlloc.initialized) != 0 {
-		// Compute order: smallest power of 2 >= pages
-		order := 0
-		for (uintptr(1) << uint(order)) < pages {
-			order++
-		}
-		return BuddyAllocTyped(order, pageType, owner)
+	// Compute order: smallest power of 2 >= pages
+	order := 0
+	for (uintptr(1) << uint(order)) < pages {
+		order++
 	}
-
-	// Ensure bump pool is initialized
-	if atomic.LoadUint32(&globalPool.initialized) == 0 {
-		InitUnifiedPool()
-	}
-
-	globalPool.lock.Lock()
-
-	size := pages * PageSize
-	if globalPool.next+size > globalPool.end {
-		globalPool.lock.Unlock()
-		serial.RawUARTPuts("[kmem] Contiguous alloc OOM!\r\n")
-		return 0
-	}
-
-	pa := globalPool.next
-	globalPool.next += size
-
-	globalPool.lock.Unlock()
-	return pa
+	return BuddyAllocTyped(order, pageType, owner)
 }
 
 // GetBumpAllocatedPages returns the number of pages allocated by the bump allocator.
@@ -247,32 +221,16 @@ func GetBumpAllocatedPages() uint64 {
 	return uint64(globalPool.next-globalPool.initialNext) / PageSize
 }
 
-// TransitionToBuddy initializes the buddy allocator using the unified pool's range,
-// with pages already bump-allocated marked as used.
-// Call this after early boot when the system is stable enough for the buddy allocator.
+// TransitionToBuddy is a no-op retained for backward compatibility.
+// The buddy allocator is now initialized eagerly in InitUnifiedPool().
 //
 //go:nosplit
 func TransitionToBuddy() {
-	if atomic.LoadUint32(&buddyAlloc.initialized) != 0 {
-		return
-	}
-	if atomic.LoadUint32(&globalPool.initialized) == 0 {
+	// Buddy is initialized in InitUnifiedPool(). If somehow called before
+	// pool init, trigger it now.
+	if atomic.LoadUint32(&buddyAlloc.initialized) == 0 {
 		InitUnifiedPool()
 	}
-
-	// Initialize PageDescriptor array (bump-allocates from pool).
-	// Must happen before GetBumpAllocatedPages so the array pages are
-	// counted and marked as used in the buddy allocator.
-	InitPageDescriptors(globalPool.initialNext, globalPool.end)
-
-	bootstrapPages := GetBumpAllocatedPages()
-
-	InitBuddyAllocator(
-		globalPool.initialNext,
-		globalPool.end,
-		constants.KernelMMIOOffset,
-		bootstrapPages,
-	)
 }
 
 // PoolStats contains accounting information about the unified pool.
@@ -287,40 +245,19 @@ type PoolStats struct {
 	KernelSoftLimit uint64
 }
 
-// GetPoolStats returns current unified pool statistics.
-// If the buddy allocator is active, per-type stats come from it.
+// GetPoolStats returns current unified pool statistics from the buddy allocator.
 //
 //go:nosplit
 func GetPoolStats() PoolStats {
-	// If buddy is active, get per-type stats from it
-	if atomic.LoadUint32(&buddyAlloc.initialized) != 0 {
-		bs := GetBuddyStats()
-		return PoolStats{
-			TotalPages:      bs.TotalPages,
-			AllocatedPages:  bs.AllocatedPages,
-			RemainingPages:  bs.FreePages,
-			KernelHeapPages: buddyAlloc.kernelHeapPages,
-			KernelPTPages:   buddyAlloc.kernelPTPages,
-			UserPages:       buddyAlloc.userPages,
-			UserPTPages:     buddyAlloc.userPTPages,
-			KernelSoftLimit: globalPool.kernelSoftLimit,
-		}
-	}
-
-	globalPool.lock.Lock()
-	defer globalPool.lock.Unlock()
-
-	totalSize := uint64(globalPool.end - globalPool.initialNext)
-	allocatedSize := uint64(globalPool.next - globalPool.initialNext)
-
+	bs := GetBuddyStats()
 	return PoolStats{
-		TotalPages:      totalSize / PageSize,
-		AllocatedPages:  allocatedSize / PageSize,
-		RemainingPages:  (totalSize - allocatedSize) / PageSize,
-		KernelHeapPages: globalPool.kernelHeapPages,
-		KernelPTPages:   globalPool.kernelPTPages,
-		UserPages:       globalPool.userPages,
-		UserPTPages:     globalPool.userPTPages,
+		TotalPages:      bs.TotalPages,
+		AllocatedPages:  bs.AllocatedPages,
+		RemainingPages:  bs.FreePages,
+		KernelHeapPages: buddyAlloc.kernelHeapPages,
+		KernelPTPages:   buddyAlloc.kernelPTPages,
+		UserPages:       buddyAlloc.userPages,
+		UserPTPages:     buddyAlloc.userPTPages,
 		KernelSoftLimit: globalPool.kernelSoftLimit,
 	}
 }

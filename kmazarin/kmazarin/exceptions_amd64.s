@@ -786,6 +786,32 @@ handle_timer_irq:
 	TESTL	AX, AX
 	JZ	exception_return
 
+	// ========================================================================
+	// CRITICAL: Check m.locks == 0 before thread preemption
+	// ========================================================================
+	// The interrupted goroutine may be holding runtime locks (e.g., inside
+	// mallocgc, mspan.sweep). Context-switching the thread while locks are
+	// held causes mspan metadata corruption when the goroutine resumes.
+	// Load the ORIGINAL g (R14) from exception frame at 104(SP).
+	MOVQ	104(SP), AX		// AX = interrupted thread's g (R14)
+	TESTQ	AX, AX
+	JZ	thread_preempt_mlocks_ok  // g is nil, allow
+
+	// Follow g → m
+	MOVQ	mazzy∕kmazarin∕kirq·PreemptGMOffset(SB), BX
+	ADDQ	AX, BX			// BX = &g.m
+	MOVQ	(BX), BX		// BX = g.m
+	TESTQ	BX, BX
+	JZ	thread_preempt_mlocks_ok  // m is nil, allow
+
+	// Read m.locks (int32)
+	MOVQ	mazzy∕kmazarin∕kirq·PreemptMLocksOffset(SB), CX
+	ADDQ	BX, CX			// CX = &m.locks
+	MOVL	(CX), CX		// CX = m.locks
+	TESTL	CX, CX
+	JNZ	exception_return	// m.locks != 0, defer to next tick
+
+thread_preempt_mlocks_ok:
 	// Clear NeedsThreadPreempt flag
 	MOVL	$0, mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB)
 
