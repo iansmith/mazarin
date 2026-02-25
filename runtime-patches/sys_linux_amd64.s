@@ -127,13 +127,11 @@ TEXT runtime·pipe2(SB),NOSPLIT,$0-20
 	MOVL	$-1, errno+16(FP)
 	RET
 
-// usleep - yield CPU via sched_yield INT $0x80
+// usleep - yield CPU via direct call to YieldToReadyThread.
 // Kmazarin has no timer interrupts during early boot, so spinning would
 // block forever if another thread is on the ready queue.
-// Using sched_yield lets the scheduler run queued threads.
 TEXT runtime·usleep(SB),NOSPLIT,$0-4
-	MOVL	$SYS_sched_yield, AX
-	INT	$0x80
+	CALL	main·kmazarinYieldImpl(SB)
 	RET
 
 // gettid - return 1
@@ -307,10 +305,8 @@ futex_spin:
 	JNZ	futex_spin
 
 	// Spin exhausted, value didn't change. Yield to scheduler so other
-	// threads can run (no timer interrupts during early boot), then return
-	// 0 to simulate a timeout/spurious wakeup.
-	MOVL	$SYS_sched_yield, AX
-	INT	$0x80
+	// threads can run, then return 0 to simulate a timeout/spurious wakeup.
+	CALL	main·kmazarinYieldImpl(SB)
 	MOVL	$0, ret+40(FP)
 	RET
 

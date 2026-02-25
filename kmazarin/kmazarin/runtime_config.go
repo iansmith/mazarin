@@ -40,6 +40,12 @@ var kmazarinUnifiedPoolStart uintptr
 //go:linkname kmazarinUnifiedPoolEnd runtime.kmazarinUnifiedPoolEnd
 var kmazarinUnifiedPoolEnd uintptr
 
+// kmazarinGCStatsNoSTW reads GC state without triggering stop-the-world.
+// Returns (numGC, gcPhase, panicking, heapLive, enablegc, gcPercent, gcPercentHeapGoal, heapMarked).
+//
+//go:linkname kmazarinGCStatsNoSTW runtime.kmazarinGCStats
+func kmazarinGCStatsNoSTW() (uint32, uint32, uint32, uint64, uint32, int32, uint64, uint64)
+
 // RuntimeConfig holds the minimal configuration from the bootloader.
 type RuntimeConfig struct {
 	DtbPhysAddr    uint64

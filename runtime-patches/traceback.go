@@ -164,8 +164,18 @@ func (u *unwinder) initAt(pc0, sp0, lr0 uintptr, gp *g, flags unwindFlags) {
 		}
 	}
 
-	// KMAZARIN: If sp0 is 0, bail out to avoid null dereference.
+	// KMAZARIN: If sp0 is 0 or outside the goroutine's stack bounds, bail out.
+	// A kernel-level context switch (kmazarinYield) can leave sched.sp stale
+	// while GC tries to scan the goroutine.
 	if sp0 == 0 {
+		return
+	}
+	if gp.stack.lo != 0 && (sp0 < gp.stack.lo || sp0 >= gp.stack.hi) {
+		oldSuppress := suppressSerial
+		suppressSerial = 0
+		println("KMAZARIN: initAt bad sp0 goid=", gp.goid, "status=", readgstatus(gp), "sp0=", hex(sp0), "pc0=", hex(pc0), "stk=[", hex(gp.stack.lo), ",", hex(gp.stack.hi), ")")
+		println("  sched.sp=", hex(gp.sched.sp), "sched.pc=", hex(gp.sched.pc), "syscallsp=", hex(gp.syscallsp))
+		suppressSerial = oldSuppress
 		return
 	}
 
@@ -392,7 +402,22 @@ func (u *unwinder) resolveInternal(innermost, isSyscall bool) {
 		} else {
 			if frame.lr == 0 {
 				lrPtr = frame.fp - goarch.PtrSize
-				frame.lr = *(*uintptr)(unsafe.Pointer(lrPtr))
+				// KMAZARIN: Guard against dereferencing a frame pointer outside stack bounds.
+				// A corrupt frame.fp (e.g., 0x40) causes a page fault at an unmapped address.
+				if gp.stack.lo != 0 && (lrPtr < gp.stack.lo || lrPtr >= gp.stack.hi) {
+					// Temporarily unsuppress serial so diagnostic reaches UART
+					oldSuppress := suppressSerial
+					suppressSerial = 0
+					println("KMAZARIN: resolveInternal bad fp goid=", gp.goid, "status=", readgstatus(gp), "fp=", hex(frame.fp), "sp=", hex(frame.sp), "pc=", hex(frame.pc), "stk=[", hex(gp.stack.lo), ",", hex(gp.stack.hi), ")")
+					println("  sched.sp=", hex(gp.sched.sp), "sched.pc=", hex(gp.sched.pc), "syscallsp=", hex(gp.syscallsp))
+					if gp.m != nil {
+						println("  m.id=", gp.m.id)
+					}
+					suppressSerial = oldSuppress
+					frame.lr = 0
+				} else {
+					frame.lr = *(*uintptr)(unsafe.Pointer(lrPtr))
+				}
 			}
 		}
 	}

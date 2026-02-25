@@ -114,9 +114,9 @@ func BuildIDT() {
 	setIDTEntry(0, getISR0Addr(), cs)     // Divide error (#DE)
 	setIDTEntry(1, getISR1Addr(), cs)     // Debug exception (#DB) — DR0 watchpoint
 	setIDTEntry(6, getISR6Addr(), cs)     // Invalid opcode (#UD)
-	setIDTEntry(8, getISR8Addr(), cs)     // Double fault (#DF)
+	setIDTEntryIST(8, getISR8Addr(), cs, 1) // Double fault (#DF) — IST=1 (must use dedicated stack to catch nested faults)
 	setIDTEntry(13, getISR13Addr(), cs)   // General protection (#GP)
-	setIDTEntry(14, getISR14Addr(), cs)   // Page fault (#PF)
+	setIDTEntryIST(14, getISR14Addr(), cs, 1) // Page fault (#PF) — IST=1 (must use dedicated stack; faulting stack may be unmapped)
 
 	// IOAPIC device interrupt vectors 32-47 — use IST=1 so interrupts
 	// always use the exception stack, even when preempting kernel code

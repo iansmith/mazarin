@@ -952,6 +952,9 @@ func IdleLoop(sf *SchedulerFunc) *Thread {
 //
 // LOCK DISCIPLINE: save DAIF → mask IRQs → acquire lock → process → release → restore → WFI
 //
+var gcDiagCounter uint64
+var gcDiagLastNumGC uint32
+
 //go:noinline
 func KernelIdleLoop() {
 	for {
@@ -959,6 +962,31 @@ func KernelIdleLoop() {
 		// Without this, goroutines started by StartBottomHalfProcessors()
 		// never get CPU time because this loop never triggers Go's scheduler.
 		runtime.Gosched()
+
+		// GC diagnostic — print every iteration (non-blocking, no STW)
+		gcDiagCounter++
+		numgc, phase, panicVal, heapLive, enablegc, gcPct, pctGoal, heapMarked := kmazarinGCStatsNoSTW()
+		serial.RawUARTPuts("[GC] c=")
+		serial.RawUARTDecimal(uint64(numgc))
+		serial.RawUARTPuts(" p=")
+		serial.RawUARTDecimal(uint64(phase))
+		serial.RawUARTPuts(" panic=")
+		serial.RawUARTDecimal(uint64(panicVal))
+		serial.RawUARTPuts(" live=")
+		serial.RawUARTHexCompact(heapLive)
+		serial.RawUARTPuts(" egc=")
+		serial.RawUARTDecimal(uint64(enablegc))
+		serial.RawUARTPuts(" pct=")
+		if gcPct < 0 {
+			serial.RawUARTPuts("-1")
+		} else {
+			serial.RawUARTDecimal(uint64(gcPct))
+		}
+		serial.RawUARTPuts(" goal=")
+		serial.RawUARTHexCompact(pctGoal)
+		serial.RawUARTPuts(" marked=")
+		serial.RawUARTHexCompact(heapMarked)
+		serial.RawUARTPuts("\r\n")
 
 		// Periodic A/D bit scan. Clears hardware Accessed bits on all mapped
 		// userspace pages and propagates Dirty state into PageDescriptors.
@@ -1022,6 +1050,25 @@ func KernelIdleLoop() {
 //go:nosplit
 //go:noinline
 func SaveThread0AndYield() uint64 {
+	// Check m.locks — do not yield if the Go runtime is in a critical section
+	// (e.g., mallocgc, mspan.sweep). Matches SyscallSchedYield's guard.
+	// Yielding with locks held lets another thread see inconsistent allocator
+	// state, corrupting mspan metadata and causing crashes.
+	gmOff := kirq.PreemptGMOffset
+	mLocksOff := kirq.PreemptMLocksOffset
+	if gmOff != 0 || mLocksOff != 0 { // offsets initialized
+		gRaw := GetGRegister()
+		if gRaw != 0 {
+			mPtr := *(*uintptr)(unsafe.Pointer(uintptr(gRaw) + gmOff))
+			if mPtr != 0 {
+				locks := *(*int32)(unsafe.Pointer(mPtr + mLocksOff))
+				if locks != 0 {
+					return 0
+				}
+			}
+		}
+	}
+
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 
@@ -1032,10 +1079,15 @@ func SaveThread0AndYield() uint64 {
 		return 0
 	}
 
-	// Put thread 0 on ready queue
+	// Put current thread on ready queue (at TAIL for fair round-robin yield).
+	// Using PushNoDuplicate (tail) instead of enqueueReadySchedLockHeld which
+	// calls PushHeadNoDuplicate for PID=0 threads. If the yielding kernel
+	// thread went to HEAD, it would be immediately re-selected by the fallback
+	// Pop() in findReadyThread, causing an infinite self-scheduling loop.
 	t0.State = ThreadReady
 	pluckFromAllQueues(t0.TID)
-	enqueueReadySchedLockHeld(t0)
+	perCPU := GetPerCPU()
+	perCPU.LocalReadyQueue.PushNoDuplicate(t0.TID)
 
 	// Update tick accounting for thread 0
 	currentTime := kirq.ReadCounterValue()
@@ -1106,13 +1158,6 @@ func SaveThread0AndYield() uint64 {
 		smpDebugPrintSteal(debugCPU, debugTID, uint64(debugStolenFrom))
 	}
 	smpDebugPrintRun(debugCPU, debugTID, debugPID)
-
-	// Switch-type breadcrumb: 'U' = to userspace, 'K' = to kernel
-	if debugPID != 0 {
-		serial.PollWrite('U')
-	} else {
-		serial.PollWrite('K')
-	}
 
 	if next.Context.GetPC() == 0 {
 		serial.RawUARTPuts("[BUG] Yield RIP=0 TID=")
@@ -2460,13 +2505,6 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	// The assembly will restore interrupt state via ERET with new SPSR.
 	_ = savedDAIF // Keep compiler happy
 
-	// Switch-type breadcrumb (preempt path): 'U' = to userspace, 'K' = to kernel
-	if next.PID != 0 {
-		serial.PollWrite('U')
-	} else {
-		serial.PollWrite('K')
-	}
-
 	if next.Context.GetPC() == 0 {
 		serial.RawUARTPuts("[BUG] Preempt RIP=0 TID=")
 		serial.RawUARTHex64(uint64(next.TID))
@@ -2508,8 +2546,6 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 			Exit()
 		}
 	}
-
-	// (SVC context switch breadcrumbs removed for performance)
 
 	// Save current thread's context
 	SaveContextFromFrame(framePtr)

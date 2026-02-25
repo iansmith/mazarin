@@ -48,6 +48,10 @@ var kmazarinBumpPointer atomic.Uint64
 // We can't use init() because this runs before init() during runtime bootstrap.
 var kmazarinBumpInitialized atomic.Uint32
 
+// kmazarinMmapBumpCount tracks the number of bump allocations (non-MAP_FIXED).
+// Used for diagnostics to understand heap growth rate.
+var kmazarinMmapBumpCount atomic.Uint64
+
 // mmap implements the mmap system call using a simple bump allocator.
 // This is called during early Go runtime init before ANY package init() runs.
 // Uses only primitive operations that work without full runtime.
@@ -128,6 +132,33 @@ func mmap(addr unsafe.Pointer, n uintptr, prot, flags, fd int32, off uint32) (un
 
 		// Try to atomically update the bump pointer
 		if kmazarinBumpPointer.CompareAndSwap(currentPtr, nextPtr) {
+			cnt := kmazarinMmapBumpCount.Add(1)
+			// Print diagnostic every 512th bump allocation
+			if cnt&0x1FF == 0 {
+				kmazarinUART('[')
+				kmazarinUART('m')
+				kmazarinUART('m')
+				kmazarinUART('a')
+				kmazarinUART('p')
+				kmazarinUART(']')
+				kmazarinUART(' ')
+				kmazarinUART('n')
+				kmazarinUART('=')
+				kmazarinPrintHex40(cnt)
+				kmazarinUART(' ')
+				kmazarinUART('p')
+				kmazarinUART('t')
+				kmazarinUART('r')
+				kmazarinUART('=')
+				kmazarinPrintHex40(nextPtr)
+				kmazarinUART(' ')
+				kmazarinUART('s')
+				kmazarinUART('z')
+				kmazarinUART('=')
+				kmazarinPrintHex40(alignedLength)
+				kmazarinUART('\r')
+				kmazarinUART('\n')
+			}
 			return unsafe.Pointer(uintptr(currentPtr)), 0
 		}
 		// CAS failed, retry
@@ -173,6 +204,18 @@ func kmazarinPrintHex32(v uint32) {
 //
 //go:nosplit
 func munmap(addr unsafe.Pointer, n uintptr) {
+}
+
+// kmazarinGCStats returns GC state and bump allocator stats without STW.
+// These are approximate (racy) but safe to call from any context.
+//
+//go:nosplit
+func kmazarinGCStats() (numgc uint32, phase uint32, panicVal uint32, heapLive uint64, enablegc uint32, gcPct int32, percentGoal uint64, heapMarked uint64) {
+	var egc uint32
+	if memstats.enablegc {
+		egc = 1
+	}
+	return memstats.numgc, gcphase, panicking.Load(), gcController.heapLive.Load(), egc, gcController.gcPercent.Load(), gcController.gcPercentHeapGoal.Load(), gcController.heapMarked
 }
 
 // sysMmap is declared but never called in kmazarin.

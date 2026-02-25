@@ -235,6 +235,26 @@ run_first_hang:
 // YieldToReadyThread - Save thread 0 context and switch to next thread
 // ============================================================================
 TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
+	// Save XMM registers BEFORE calling Go code (which clobbers them).
+	// Matches common_exception_entry's XMM save — ensures the interrupted
+	// thread's XMM state is preserved across the Go scheduler call.
+	MOVOU	X0, ·xmmSaveArea+0(SB)
+	MOVOU	X1, ·xmmSaveArea+16(SB)
+	MOVOU	X2, ·xmmSaveArea+32(SB)
+	MOVOU	X3, ·xmmSaveArea+48(SB)
+	MOVOU	X4, ·xmmSaveArea+64(SB)
+	MOVOU	X5, ·xmmSaveArea+80(SB)
+	MOVOU	X6, ·xmmSaveArea+96(SB)
+	MOVOU	X7, ·xmmSaveArea+112(SB)
+	MOVOU	X8, ·xmmSaveArea+128(SB)
+	MOVOU	X9, ·xmmSaveArea+144(SB)
+	MOVOU	X10, ·xmmSaveArea+160(SB)
+	MOVOU	X11, ·xmmSaveArea+176(SB)
+	MOVOU	X12, ·xmmSaveArea+192(SB)
+	MOVOU	X13, ·xmmSaveArea+208(SB)
+	MOVOU	X14, ·xmmSaveArea+224(SB)
+	MOVOU	X15, ·xmmSaveArea+240(SB)
+
 	// R12 = pointer to current thread's ThreadContext
 	MOVQ	·CurrentThread(SB), R12
 	TESTQ	R12, R12
@@ -264,10 +284,12 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOVQ	0(SP), AX
 	MOVQ	AX, 120(R12)		// RIP
 
-	// Save RFLAGS with IF set (interrupts enabled when resumed)
+	// Save RFLAGS as-is (preserve current IF state).
+	// During early boot (before EnableIRQs), IF=0 — forcing IF=1 here would
+	// enable interrupts prematurely after IRETQ, causing spurious interrupt
+	// crashes. After EnableIRQs, IF=1 naturally, so timer preemption works.
 	PUSHFQ
 	POPQ	AX
-	ORQ	$0x200, AX
 	MOVQ	AX, 128(R12)		// RFLAGS
 
 	// Save RSP (caller's RSP = our SP + 8 for the return address)
@@ -281,12 +303,11 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	ORQ	DX, AX
 	MOVQ	AX, 144(R12)		// FSBase
 
-	// Save CS/SS — thread 0 is always kernel context
+	// Save CS/SS — kernel context
 	MOVQ	$0x08, 152(R12)		// CS = kernelCS
 	MOVQ	$0x10, 160(R12)		// SS = kernelSS
 
 	// Call SaveThread0AndYield() to get next thread's context
-	// x86_64: CALL pushes return addr, so return value at 0(SP)
 	SUBQ	$16, SP
 	CALL	·SaveThread0AndYield(SB)
 	MOVQ	0(SP), R12		// R12 = new context pointer (or 0)
@@ -295,36 +316,11 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	TESTQ	R12, R12
 	JZ	yield_restore_return
 
-	// DEBUG: Print "[YA] RIP=" + context RIP to COM1
-	MOVW	$0x3F8, DX
-	MOVB	$'[', AX; OUTB
-	MOVB	$'Y', AX; OUTB
-	MOVB	$'A', AX; OUTB
-	MOVB	$']', AX; OUTB
-	MOVB	$' ', AX; OUTB
-	MOVB	$'R', AX; OUTB
-	MOVB	$'=', AX; OUTB
-	MOVQ	120(R12), R15		// RIP from context
-	CALL	pf_print_hex16(SB)
-	MOVW	$0x3F8, DX
-	MOVB	$' ', AX; OUTB
-	MOVB	$'C', AX; OUTB
-	MOVB	$'=', AX; OUTB
-	MOVQ	152(R12), R15		// CS from context
-	CALL	pf_print_hex16(SB)
-	MOVW	$0x3F8, DX
-	MOVB	$'\n', AX; OUTB
-
-	// Switch to new thread via IRETQ
 	// Flush TLB
 	MOVQ	CR3, AX
 	MOVQ	AX, CR3
 
 	// Restore FS_BASE from context (per-thread TLS base).
-	// CRITICAL: If FSBase==0 (e.g., fresh userspace thread), skip BOTH
-	// the WRMSR and the TLS sync write. Otherwise the TLS sync reads
-	// the stale FS_BASE from the previous thread and writes g=0 to
-	// the kernel's TLS slot, zeroing the kernel g pointer.
 	MOVQ	144(R12), AX		// FSBase
 	TESTQ	AX, AX
 	JZ	yield_skip_tls		// FSBase==0 → skip WRMSR AND TLS sync
@@ -342,29 +338,10 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 	MOVQ	DX, -8(AX)		// Write g to TLS slot
 yield_skip_tls:
 
-	// Switch to exception stack for IRETQ frame — the g0 stack may contain
-	// saved call frames from preempted threads (e.g., thread 0's CALL to
-	// SaveThread0AndYield). Building the IRETQ frame on the g0 stack can
-	// corrupt those saved return addresses. Safe because IRQs are disabled.
-	MOVQ	·excStackTopForSyscall(SB), SP
-
-	// Build IRETQ frame manually (avoid PUSH to keep assembler happy)
-	SUBQ	$40, SP
-	MOVQ	160(R12), AX
-	MOVQ	AX, 32(SP)		// SS from context
-	MOVQ	136(R12), AX
-	MOVQ	AX, 24(SP)		// RSP
-	MOVQ	128(R12), AX
-	MOVQ	AX, 16(SP)		// RFLAGS
-	MOVQ	152(R12), AX
-	MOVQ	AX, 8(SP)		// CS from context
+	// Check for corrupted RIP
 	MOVQ	120(R12), AX
-	MOVQ	AX, 0(SP)		// RIP
-
-	// Check for corrupted RIP before IRETQ
 	CMPQ	AX, $0x100000
 	JAE	yr_rip_ok
-	// Bad RIP — print "!YR=" + RIP + " CTX=" + context_ptr then HLT
 	MOVW	$0x3F8, DX
 	MOVB	$'!', AX; OUTB
 	MOVB	$'Y', AX; OUTB
@@ -373,37 +350,43 @@ yield_skip_tls:
 	MOVQ	120(R12), R15
 	CALL	pf_print_hex16(SB)
 	MOVW	$0x3F8, DX
-	MOVB	$' ', AX; OUTB
-	MOVB	$'C', AX; OUTB
-	MOVB	$'T', AX; OUTB
-	MOVB	$'X', AX; OUTB
-	MOVB	$'=', AX; OUTB
-	MOVQ	R12, R15
-	CALL	pf_print_hex16(SB)
-	// Also print CS and SS from context
-	MOVW	$0x3F8, DX
-	MOVB	$' ', AX; OUTB
-	MOVB	$'C', AX; OUTB
-	MOVB	$'S', AX; OUTB
-	MOVB	$'=', AX; OUTB
-	MOVQ	152(R12), R15
-	CALL	pf_print_hex16(SB)
-	MOVW	$0x3F8, DX
-	MOVB	$' ', AX; OUTB
-	MOVB	$'R', AX; OUTB
-	MOVB	$'S', AX; OUTB
-	MOVB	$'P', AX; OUTB
-	MOVB	$'=', AX; OUTB
-	MOVQ	136(R12), R15
-	CALL	pf_print_hex16(SB)
-	MOVW	$0x3F8, DX
 	MOVB	$'\n', AX; OUTB
 yr_halt:
 	HLT
 	JMP	yr_halt
 yr_rip_ok:
+	// Restore XMM registers (saved at entry before Go scheduler call)
+	MOVOU	·xmmSaveArea+0(SB), X0
+	MOVOU	·xmmSaveArea+16(SB), X1
+	MOVOU	·xmmSaveArea+32(SB), X2
+	MOVOU	·xmmSaveArea+48(SB), X3
+	MOVOU	·xmmSaveArea+64(SB), X4
+	MOVOU	·xmmSaveArea+80(SB), X5
+	MOVOU	·xmmSaveArea+96(SB), X6
+	MOVOU	·xmmSaveArea+112(SB), X7
+	MOVOU	·xmmSaveArea+128(SB), X8
+	MOVOU	·xmmSaveArea+144(SB), X9
+	MOVOU	·xmmSaveArea+160(SB), X10
+	MOVOU	·xmmSaveArea+176(SB), X11
+	MOVOU	·xmmSaveArea+192(SB), X12
+	MOVOU	·xmmSaveArea+208(SB), X13
+	MOVOU	·xmmSaveArea+224(SB), X14
+	MOVOU	·xmmSaveArea+240(SB), X15
 
-	// Load all GPRs
+	// Build IRETQ frame on current stack (same pattern as load_context_and_iretq)
+	LEAQ	-40(SP), SP		// make room for 5 QWORDs
+	MOVQ	160(R12), AX		// SS
+	MOVQ	AX, 32(SP)
+	MOVQ	136(R12), AX		// RSP
+	MOVQ	AX, 24(SP)
+	MOVQ	128(R12), AX		// RFLAGS
+	MOVQ	AX, 16(SP)
+	MOVQ	152(R12), AX		// CS
+	MOVQ	AX, 8(SP)
+	MOVQ	120(R12), AX		// RIP
+	MOVQ	AX, 0(SP)
+
+	// Load all GPRs from context
 	MOVQ	0(R12), AX
 	MOVQ	8(R12), BX
 	MOVQ	16(R12), CX
@@ -423,7 +406,23 @@ yr_rip_ok:
 	IRETQ
 
 yield_restore_return:
-	// No thread to switch to — return normally
+	// No thread to switch to — restore XMM and return normally
+	MOVOU	·xmmSaveArea+0(SB), X0
+	MOVOU	·xmmSaveArea+16(SB), X1
+	MOVOU	·xmmSaveArea+32(SB), X2
+	MOVOU	·xmmSaveArea+48(SB), X3
+	MOVOU	·xmmSaveArea+64(SB), X4
+	MOVOU	·xmmSaveArea+80(SB), X5
+	MOVOU	·xmmSaveArea+96(SB), X6
+	MOVOU	·xmmSaveArea+112(SB), X7
+	MOVOU	·xmmSaveArea+128(SB), X8
+	MOVOU	·xmmSaveArea+144(SB), X9
+	MOVOU	·xmmSaveArea+160(SB), X10
+	MOVOU	·xmmSaveArea+176(SB), X11
+	MOVOU	·xmmSaveArea+192(SB), X12
+	MOVOU	·xmmSaveArea+208(SB), X13
+	MOVOU	·xmmSaveArea+224(SB), X14
+	MOVOU	·xmmSaveArea+240(SB), X15
 	RET
 
 yield_no_thread:

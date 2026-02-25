@@ -232,6 +232,11 @@ tasks:
       - 'kmazarin/**/*.s'
       - 'shared/**/*.go'
       - '{{.KMAZARIN_OVERLAY_JSON}}'
+      # Overlay source files — Go's build cache doesn't track overlay content,
+      # so we list them here to ensure Taskfile detects changes.
+      - '{{.RUNTIME_PATCHES_DIR}}/*.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/*.s'
+      - '{{.RUNTIME_PATCHES_DIR}}/syscall/*.go'
     generates:
       - '{{.KMAZARIN_ELF}}'
     cmds:
@@ -254,6 +259,10 @@ tasks:
       - 'kmazarin/**/*.s'
       - 'shared/**/*.go'
       - '{{.KMAZARIN_AMD64_OVERLAY_JSON}}'
+      # Overlay source files — Go's build cache doesn't track overlay content
+      - '{{.RUNTIME_PATCHES_DIR}}/*.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/*.s'
+      - '{{.RUNTIME_PATCHES_DIR}}/syscall/*.go'
     generates:
       - '{{.KMAZARIN_AMD64_ELF}}'
     cmds:
@@ -272,6 +281,10 @@ tasks:
       - 'kmazarin/**/*.s'
       - 'shared/**/*.go'
       - '{{.KMAZARIN_RISCV64_OVERLAY_JSON}}'
+      # Overlay source files — Go's build cache doesn't track overlay content
+      - '{{.RUNTIME_PATCHES_DIR}}/*.go'
+      - '{{.RUNTIME_PATCHES_DIR}}/*.s'
+      - '{{.RUNTIME_PATCHES_DIR}}/syscall/*.go'
     generates:
       - '{{.KMAZARIN_RISCV64_ELF}}'
     cmds:
@@ -291,6 +304,8 @@ tasks:
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
       - '{{.USERSPACE_OVERLAY_JSON}}'
+      # Overlay source files — Go's build cache doesn't track overlay content
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:
       - '{{.DAPOPE_ELF}}'
     cmds:
@@ -306,6 +321,8 @@ tasks:
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
       - '{{.USERSPACE_OVERLAY_JSON}}'
+      # Overlay source files — Go's build cache doesn't track overlay content
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:
       - '{{.STDIO_ELF}}'
     cmds:
@@ -321,6 +338,8 @@ tasks:
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
       - '{{.USERSPACE_OVERLAY_JSON}}'
+      # Overlay source files — Go's build cache doesn't track overlay content
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:
       - '{{.DAPOPE_AMD64_ELF}}'
     cmds:
@@ -336,6 +355,8 @@ tasks:
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
       - '{{.USERSPACE_OVERLAY_JSON}}'
+      # Overlay source files — Go's build cache doesn't track overlay content
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:
       - '{{.STDIO_AMD64_ELF}}'
     cmds:
@@ -351,6 +372,8 @@ tasks:
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
       - '{{.USERSPACE_OVERLAY_JSON}}'
+      # Overlay source files — Go's build cache doesn't track overlay content
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:
       - '{{.DAPOPE_RISCV64_ELF}}'
     cmds:
@@ -366,6 +389,8 @@ tasks:
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
       - '{{.USERSPACE_OVERLAY_JSON}}'
+      # Overlay source files — Go's build cache doesn't track overlay content
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:
       - '{{.STDIO_RISCV64_ELF}}'
     cmds:
@@ -380,6 +405,8 @@ tasks:
       - 'flock/cmd/sievetest/**/*.go'
       - 'mazarin/**/*.go'
       - '{{.USERSPACE_OVERLAY_JSON}}'
+      # Overlay source files — Go's build cache doesn't track overlay content
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:
       - '{{.SIEVETEST_ELF}}'
     cmds:
@@ -487,6 +514,8 @@ tasks:
       - 'diplomat/**/*.s'
       - 'shared/**/*.go'
       - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
+      # Overlay source files — Go's build cache doesn't track overlay content
+      - 'runtime-patches/diplomat-linux/**/*'
     generates:
       - '{{.DIPLOMAT_EFI}}'
     cmds:
@@ -505,6 +534,8 @@ tasks:
       - 'diplomat/**/*.s'
       - 'shared/**/*.go'
       - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
+      # Overlay source files — Go's build cache doesn't track overlay content
+      - 'runtime-patches/diplomat-linux/**/*'
     generates:
       - '{{.BUILD_DIR}}/diplomat-arm64.efi'
     cmds:
@@ -523,6 +554,8 @@ tasks:
       - 'diplomat/**/*.s'
       - 'shared/**/*.go'
       - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
+      # Overlay source files — Go's build cache doesn't track overlay content
+      - 'runtime-patches/diplomat-linux/**/*'
     generates:
       - '{{.DIPLOMAT_RISCV64_ELF}}'
     cmds:

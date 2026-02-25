@@ -74,6 +74,10 @@ TEXT ·isr8(SB), NOSPLIT|NOFRAME, $0
 
 // Vector 13: General Protection (#GP) - CPU pushes error code
 TEXT ·isr13(SB), NOSPLIT|NOFRAME, $0
+	// DEBUG: GP fault breadcrumb
+	PUSHQ	AX; PUSHQ	DX
+	MOVW	$0x3F8, DX; MOVB	$'G', AX; OUTB
+	POPQ	DX; POPQ	AX
 	// Error code already pushed by CPU
 	MOVQ	$13, ·currentVector(SB)
 	JMP	common_exception_entry(SB)
@@ -458,7 +462,13 @@ handle_page_fault:
 
 	// Switch FS_BASE to kernel value so TLS write targets mapped kernel memory.
 	// Without this, user FS_BASE may point to unmapped TLS → nested #PF → triple fault.
+	// Guard: during early Go runtime init (before kmazarin's init() runs),
+	// kmazarinFSBase is 0. In that case, the current FS_BASE/R14 are already
+	// valid kernel values (set by diplomat), so skip the FS_BASE/TLS switch.
 	MOVQ	·kmazarinFSBase(SB), AX
+	TESTQ	AX, AX
+	JZ	pf_skip_fsbase_setup	// kmazarinFSBase not yet initialized
+
 	MOVQ	AX, DX
 	SHRQ	$32, DX
 	MOVL	$0xC0000100, CX
@@ -469,6 +479,7 @@ handle_page_fault:
 	MOVQ	·kmazarinG0Addr(SB), DX
 	MOVQ	DX, -8(AX)		// Write kernel g to kernel TLS slot
 	MOVQ	DX, R14			// Set R14 to kernel g for ABIInternal calls
+pf_skip_fsbase_setup:
 
 	// Read CR2 for fault address
 	MOVQ	CR2, R13		// save in callee-saved R13
@@ -664,12 +675,12 @@ pf_cs1:	OUTB
 pf_cs2:	OUTB
 	MOVB	$'\n', AX; OUTB
 
-	// Check if fault is at RIP < 0x400000 (below ELF base — bogus dispatch)
-	// Print: saved R14(g), RBP, faulting RSP, RA=*RSP, and 4 stack words
-	MOVQ	128(SP), AX		// RIP from exception frame
-	CMPQ	AX, $0x400000
-	JGE	pf_not_rip8
+	// Check if fault came from user mode (CS in exception frame)
+	MOVQ	136(SP), AX		// CS from exception frame
+	CMPQ	AX, $0x08		// kernelCS?
+	JNE	pf_user_fault		// User fault — try kill+switch
 
+	// Kernel-mode unhandled page fault — print full diagnostic and halt.
 	// Print "G=" then R14 (g pointer) from exception frame
 	MOVW	$0x3F8, DX
 	MOVB	$'G', AX; OUTB
@@ -695,7 +706,54 @@ pf_cs2:	OUTB
 	MOVQ	152(SP), R15		// RSP from frame
 	CALL	pf_print_hex16(SB)
 
-	// Print "\nSTK=" then 4 words from the faulting stack
+	// Print " EC=" then error code from exception frame
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'E', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	120(SP), R15		// error code
+	CALL	pf_print_hex16(SB)
+
+	// Print saved GPRs from exception frame that are useful for diagnosis:
+	// RAX (0), RCX (16), RDX (24)
+	MOVW	$0x3F8, DX
+	MOVB	$'\n', AX; OUTB
+	MOVB	$'A', AX; OUTB
+	MOVB	$'X', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	0(SP), R15		// RAX from frame
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'C', AX; OUTB
+	MOVB	$'X', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	16(SP), R15		// RCX from frame
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'X', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	24(SP), R15		// RDX from frame
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	32(SP), R15		// RSI from frame
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'D', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	40(SP), R15		// RDI from frame
+	CALL	pf_print_hex16(SB)
+
+	// Print "\nSTK=" then 6 words from the faulting stack
 	MOVW	$0x3F8, DX
 	MOVB	$'\n', AX; OUTB
 	MOVB	$'S', AX; OUTB
@@ -717,17 +775,20 @@ pf_cs2:	OUTB
 	MOVB	$' ', AX; OUTB
 	MOVQ	24(R12), R15
 	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVQ	32(R12), R15
+	CALL	pf_print_hex16(SB)
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVQ	40(R12), R15
+	CALL	pf_print_hex16(SB)
 
 	MOVW	$0x3F8, DX
 	MOVB	$'\n', AX; OUTB
 	JMP	pf_unhandled_halt
 
-pf_not_rip8:
-	// Check if fault came from user mode (CS in exception frame)
-	// Frame layout: 15 GPRs (0-112) + error code (120) + RIP (128) + CS (136)
-	MOVQ	136(SP), AX		// CS from exception frame
-	CMPQ	AX, $0x08		// kernelCS?
-	JE	pf_unhandled_halt	// Kernel fault → halt
+pf_user_fault:
 
 	// User fault: kill the faulting thread and switch to the next one.
 	// ThreadExitAsm marks thread exited, finds next ready thread,
@@ -1164,7 +1225,10 @@ exception_return:
 
 eret_kernel_tls:
 	// Kernel mode return: FS_BASE is already kernel value, sync g to kernel TLS.
+	// Guard: if kmazarinFSBase is 0 (early init), skip TLS write.
 	MOVQ	·kmazarinFSBase(SB), AX
+	TESTQ	AX, AX
+	JZ	eret_skip_tls_write
 	MOVQ	104(SP), DX		// R14 from saved GPR frame
 	MOVQ	DX, -8(AX)		// Write g to kernel TLS slot (safe)
 eret_skip_tls_write:
@@ -1206,43 +1270,12 @@ eret_skip_tls_write:
 	POPQ	R15
 	ADDQ	$8, SP		// Skip error code
 
-	// Check IF=0 in RFLAGS before IRETQ. If returning to user mode (CS=0x1B)
-	// with IF=0, that's always a bug — force IF=1 and print diagnostic.
+	// Fix IF=0 in RFLAGS for user mode returns. User code must always
+	// run with interrupts enabled. Silently force IF=1 if needed.
 	TESTQ	$0x200, 16(SP)		// Check IF in RFLAGS
 	JNZ	eret_if_ok
-	// IF=0 in exception return frame — check if user mode
 	CMPQ	8(SP), $0x1B		// Check CS = user code?
-	JNE	eret_if_ok		// Kernel mode IF=0 is OK (e.g., nested PF in timer)
-	// User mode return with IF=0 — print "!UF R=" + RIP, then force IF=1
-	PUSHQ	AX
-	PUSHQ	DX
-	MOVW	$0x3F8, DX
-	MOVB	$'!', AX; OUTB
-	MOVB	$'U', AX; OUTB
-	MOVB	$'F', AX; OUTB
-	MOVB	$' ', AX; OUTB
-	MOVB	$'R', AX; OUTB
-	MOVB	$'=', AX; OUTB
-	MOVQ	16(SP), R11		// RIP (offset 0 + 16 for 2 pushes)
-	SHRQ	$16, R11		// print high 48 bits in 12 nibbles (skip low 16 for brevity)
-	MOVQ	$44, R13
-uf_rip_loop:
-	MOVQ	R11, AX
-	MOVQ	R13, CX
-	SHRQ	CX, AX
-	ANDQ	$0xF, AX
-	ADDQ	$'0', AX
-	CMPB	AX, $('9'+1)
-	JB	uf_rip_ok
-	ADDQ	$('A'-'0'-10), AX
-uf_rip_ok:
-	MOVW	$0x3F8, DX; OUTB
-	SUBQ	$4, R13
-	JGE	uf_rip_loop
-	MOVW	$0x3F8, DX
-	MOVB	$'\n', AX; OUTB
-	POPQ	DX
-	POPQ	AX
+	JNE	eret_if_ok		// Kernel mode IF=0 is OK
 	ORQ	$0x200, 16(SP)		// Force IF=1 for user return
 eret_if_ok:
 
@@ -1317,26 +1350,6 @@ eret_rip_ok:
 // ============================================================================
 // R12 = pointer to ThreadContext
 load_context_and_iretq:
-	// DEBUG: Print "[LC] RIP=" + context RIP to COM1
-	MOVW	$0x3F8, DX
-	MOVB	$'[', AX; OUTB
-	MOVB	$'L', AX; OUTB
-	MOVB	$'C', AX; OUTB
-	MOVB	$']', AX; OUTB
-	MOVB	$' ', AX; OUTB
-	MOVB	$'R', AX; OUTB
-	MOVB	$'=', AX; OUTB
-	MOVQ	120(R12), R15		// RIP from context
-	CALL	pf_print_hex16(SB)
-	MOVW	$0x3F8, DX
-	MOVB	$' ', AX; OUTB
-	MOVB	$'C', AX; OUTB
-	MOVB	$'=', AX; OUTB
-	MOVQ	152(R12), R15		// CS from context
-	CALL	pf_print_hex16(SB)
-	MOVW	$0x3F8, DX
-	MOVB	$'\n', AX; OUTB
-
 	// Validate CS from context before building IRETQ frame
 	MOVQ	152(R12), R13		// CS from context
 	CMPQ	R13, $0x08		// kernelCS

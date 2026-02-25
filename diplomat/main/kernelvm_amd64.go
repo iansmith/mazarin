@@ -737,6 +737,27 @@ func updateIDTWithKmazarinISRs(kernel *LoadedKernel, relocDelta uint64) {
 		printString("WARN: main.isr128 not found, using diplomat stub\r\n")
 	}
 
+	// Install page fault handler with IST=1. Without IST, #PF pushes onto the
+	// faulting stack — if that stack page is itself unmapped (demand paging),
+	// the CPU gets a nested #PF → #DF → triple fault. IST=1 forces the CPU
+	// to use the dedicated exception stack (matching ARM64's SP_EL1 pattern).
+	// Must be installed here (before kmazarin init) because Go's runtime.main
+	// calls newm(sysmon) BEFORE package init(), and sysmon's stack growth
+	// triggers demand-page faults.
+	isr14Addr := findKernelSymbol(kernel, "main.isr14")
+	if isr14Addr != 0 {
+		isr14Addr += relocDelta
+		setDiplomatIDTEntryIST(14, isr14Addr, cs, 1)
+	}
+
+	// Install double fault handler with IST=1. #DF must use a dedicated stack
+	// because the original stack may be corrupted/unmapped when #DF fires.
+	isr8Addr := findKernelSymbol(kernel, "main.isr8")
+	if isr8Addr != 0 {
+		isr8Addr += relocDelta
+		setDiplomatIDTEntryIST(8, isr8Addr, cs, 1)
+	}
+
 	// Install timer IRQ handler with IST=1. On x86_64, ring 0→ring 0
 	// interrupts push to the current RSP. If the timer fires while kernel
 	// code runs on a small goroutine stack (~8KB), the Go handler code
