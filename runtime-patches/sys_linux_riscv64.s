@@ -68,7 +68,11 @@ TEXT runtime·closefd(SB),NOSPLIT|NOFRAME,$0-12
 	RET
 
 // write1 - write bytes to UART via linear map
+// When suppressSerial is set (SoftIRQ console active), skip UART output.
 TEXT runtime·write1(SB),NOSPLIT|NOFRAME,$0-28
+	MOV	$runtime·suppressSerial(SB), T0
+	MOVW	(T0), T1
+	BNE	T1, ZERO, write1_suppressed
 	// UART VA = 0xFFFFFFFF10000000 (NS16550 via linear map)
 	MOV	$0xFFFFFFFF10000000, T0
 	MOV	p+8(FP), A0		// buffer pointer
@@ -81,6 +85,10 @@ write1_loop:
 	ADD	$-1, A1
 	JMP	write1_loop
 write1_done:
+	MOVW	n+16(FP), A0
+	MOVW	A0, ret+24(FP)
+	RET
+write1_suppressed:
 	MOVW	n+16(FP), A0
 	MOVW	A0, ret+24(FP)
 	RET

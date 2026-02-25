@@ -46,7 +46,7 @@ func getAsyncPreemptWrapperAddr() uintptr { return 0 }
 func HandlePageFaultAsm(faultAddr uint64) uint64 { return 0 }
 
 //go:nosplit
-func HandleUserPageFaultAsm(faultAddr uint64) uint64 { return 0 }
+func HandleUserPageFaultAsm(faultAddr, isPermFault uint64) uint64 { return 0 }
 
 //go:nosplit
 func GetSyscallSwitchTarget() int64 { return -1 }

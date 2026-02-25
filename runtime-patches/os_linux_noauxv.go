@@ -50,6 +50,11 @@ var kmazarinRAMBase uintptr
 var kmazarinRAMSize uintptr
 var kmazarinKernelBudgetMB uintptr
 
+// suppressSerial is set to 1 by kmazarin when the SoftIRQ console activates.
+// When set, write1 skips UART output (serial copy is redundant once stdio
+// priest receives kernel output via the ring buffer).
+var suppressSerial uint32
+
 // kmazarinUART writes a byte to COM1 (0x3F8) for early boot diagnostics.
 // Implemented in sys_linux_amd64.s using port I/O (OUTB).
 //

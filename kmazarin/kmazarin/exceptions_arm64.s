@@ -1723,9 +1723,21 @@ skip_g_switch_el0_da:
 	// Get fault address from FAR_EL1 (already in exception frame)
 	MOVD	EXC_FRAME_FAR_ESR(RSP), R19
 
-	// Call HandleUserPageFaultAsm(faultAddr) to try to handle the page fault
-	// func HandleUserPageFaultAsm(faultAddr uint64) uint64 - returns 1 if handled, 0 if not
-	GO_CALL_1_1(·HandleUserPageFaultAsm, R19)
+	// Compute isPermFault from ESR DFSC bits [5:0].
+	// Permission faults have DFSC[5:2] == 0b0011 (values 0x0C-0x0F for levels 0-3).
+	// Shift ESR right 2 bits, mask to 4 bits → value 3 means permission fault.
+	MOVD	EXC_FRAME_FAR_ESR+8(RSP), R20  // R20 = ESR
+	LSR	$2, R20, R20                    // R20 = ESR >> 2 → DFSC[5:2] in bits [3:0]
+	AND	$0xF, R20                       // R20 = DFSC[5:2] & 0xF
+	CMP	$3, R20                         // DFSC[5:2] == 3 → permission fault?
+	MOVD	$0, R20
+	BNE	el0_upf_not_perm
+	MOVD	$1, R20                         // isPermFault = 1
+el0_upf_not_perm:
+
+	// Call HandleUserPageFaultAsm(faultAddr, isPermFault) to try to handle the fault.
+	// func HandleUserPageFaultAsm(faultAddr, isPermFault uint64) uint64
+	GO_CALL_2_1(·HandleUserPageFaultAsm, R19, R20)
 	// R0 = return value (1 = handled, 0 = not handled)
 
 	// Check if fault was handled
@@ -2049,8 +2061,9 @@ el0_tcr_char:
 	MOVD	$'\n', R11
 	MOVB	R11, (R12)
 
-	// AT S1E0R translation check on faulting address
-	MOVD	EXC_FRAME_ELR_SPSR(RSP), R14  // R14 = faulting VA
+	// AT S1E0R translation check on the faulting data address (FAR), not the
+	// instruction address (ELR). This checks whether EL0 can read the fault VA.
+	MOVD	EXC_FRAME_FAR_ESR(RSP), R14  // R14 = FAR (faulting data address)
 	// AT S1E0R, X14 = address translation, stage 1, EL0, read
 	// Encoding: SYS #0, C7, C8, #2, X14 = 0xD508784E
 	// op1=000, CRn=0111, CRm=1000, op2=010, Rt=01110
@@ -2082,8 +2095,8 @@ el0_par_char:
 	MOVD	$' ', R11
 	MOVB	R11, (R12)
 
-	// Page table walk for faulting VA 0x82F80
-	// With T0SZ=20, 4KB granule: L0[0] -> L1[0] -> L2[0] -> L3[0x82]
+	// Page table walk for the faulting VA (FAR_EL1).
+	// With 4KB granule: L0[0] -> L1[0] -> L2[0] -> L3[FAR[20:12]]
 	// KernelMMIOOffset = 0xFFFFFFFF00000000 to convert PA->VA
 
 	// Get TTBR0 PA (mask out ASID in bits [63:48])
@@ -2211,9 +2224,13 @@ el0_pt_l2_c:
 	AND	$0x0000FFFFFFFFF000, R8, R17
 	ADD	R16, R17  // R17 = L3 table VA
 
-	// Read L3[0x82] (index for VA 0x82F80, bits [20:12]=0x82)
-	// Offset = 0x82 * 8 = 0x410
-	MOVD	0x410(R17), R14  // R14 = L3 entry
+	// Read L3[FAR[20:12]]: compute byte offset = ((FAR >> 12) & 0x1FF) * 8
+	MOVD	EXC_FRAME_FAR_ESR(RSP), R14  // R14 = FAR
+	LSR	$12, R14, R14                 // R14 = FAR >> 12 (page number)
+	AND	$0x1FF, R14                   // R14 = L3 index (bits [20:12] of FAR)
+	LSL	$3, R14, R14                  // R14 = byte offset (index * 8)
+	ADD	R14, R17, R17                 // R17 = L3 table VA + byte offset
+	MOVD	(R17), R14                    // R14 = L3 entry at correct index
 	MOVD	$' ', R11
 	MOVB	R11, (R12)
 	MOVD	$'L', R11
@@ -2239,13 +2256,16 @@ el0_pt_l3_c:
 	SUB	$1, R15
 	CBNZ	R15, el0_pt_l3_loop
 
-	// Read instruction word at ELR via kernel linear map
-	// R8 = L3 PTE, extract PA from bits [47:12]
+	// Read word at ELR offset within the FAR page via kernel linear map.
+	// NOTE: R8 = L3 PTE for the FAR page (the data that was being accessed).
+	// Using ELR's 12-bit offset in FAR's page gives useful data only when
+	// ELR and FAR are in the same 4KB page; otherwise this reads unrelated data.
+	// A correct IW read would require a separate L3 walk for the ELR page.
 	AND	$0x0000FFFFFFFFF000, R8, R17
 	// Add page offset from ELR: offset = ELR & 0xFFF
 	MOVD	EXC_FRAME_ELR_SPSR(RSP), R14
 	AND	$0xFFF, R14
-	ADD	R14, R17  // R17 = full PA of instruction
+	ADD	R14, R17  // R17 = PA of FAR's page + ELR's page-offset
 	// Convert to kernel VA via linear map
 	MOVD	$0xFFFFFFFF00000000, R16
 	ADD	R16, R17  // R17 = kernel VA of instruction

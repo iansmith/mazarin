@@ -650,8 +650,10 @@ const repeatFaultMax = 10
 // userPFCount tracks total user page faults for diagnostic breadcrumbs.
 var userPFCount uint64
 
+
 // HandleUserPageFault handles a page fault at a userspace virtual address.
-// This is called from the EL0 exception handler for data aborts in userspace.
+// This is called from the exception handler for data/instruction aborts from userspace.
+// The caller must set PfIsPermFault before calling.
 // Returns true if the fault was handled successfully, false otherwise.
 //
 // For userspace mmap addresses, this function:
@@ -661,7 +663,7 @@ var userPFCount uint64
 // 4. Maps the VA to the PA with EL0-accessible permissions
 //
 //go:nosplit
-func HandleUserPageFault(faultAddr uintptr) bool {
+func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 	// Diagnostic: print breadcrumb every 256 user page faults
 	userPFCount++
 	if userPFCount&0xFF == 1 {
@@ -679,14 +681,9 @@ func HandleUserPageFault(faultAddr uintptr) bool {
 	if faultPage == repeatFaultLastAddr {
 		repeatFaultCount++
 		if repeatFaultCount >= repeatFaultMax {
-			serial.RawUARTPuts("[PF] REPEAT VA=0x")
-			serial.RawUARTHex64(uint64(faultAddr))
-			serial.RawUARTPuts(" CR3=0x")
-			l0PA := readCurrentL0PA()
-			serial.RawUARTHex64(uint64(l0PA))
-			serial.RawUARTPuts("\r\n")
-			// Dump raw PTE chain using rawUART (nosplit-safe)
-			dumpUserPTERaw(faultAddr, l0PA)
+			// Call non-nosplit diagnostic function to avoid dumpUserPTERaw's
+			// 312-byte frame from counting against the x86_64 nosplit chain.
+			repeatFaultDiagnostic(faultAddr)
 			return false // trigger halt in asm handler
 		}
 	} else {
@@ -708,7 +705,14 @@ func HandleUserPageFault(faultAddr uintptr) bool {
 	// demand paging only needs to fill in L2/L3 entries.
 	existingPA := WalkUserPageTable(faultAddr)
 	if existingPA != 0 {
-		// Page is already mapped — TLB miss or attribute fault.
+		if isPermFault != 0 {
+			// Permission fault on an already-mapped page: the page exists in the
+			// page table but the access was denied (e.g. write to a read-only ELF
+			// code/rodata page). We cannot fix this — return false so the exception
+			// handler kills the process instead of looping forever.
+			return false
+		}
+		// Page is already mapped — TLB miss or access-flag fault.
 		// Invalidate TLB and return success.
 		tlbiVAE1IS(pageAddr)
 		dsbSY()
@@ -732,6 +736,15 @@ func HandleUserPageFault(faultAddr uintptr) bool {
 		serial.RawUART('!')
 		return false
 	}
+
+	// (Future: check if PTE has swap reference before allocating a new frame)
+	// pte, _, ok := platformReadPTEAt(faultAddr)
+	// if ok && isSwapPTE(pte) {
+	//     slot := extractSwapSlot(pte)
+	//     pa, err := SwapInPage(faultAddr, slot, proc.PriestId(currentPriestID()))
+	//     if err == nil { return true }
+	// }
+	// Fall through to normal demand-page allocation.
 
 	// Allocate a physical frame from userspace pool
 	framePA := AllocUserFrame()
@@ -1842,6 +1855,22 @@ func WalkUserPageTableWithL0(va uintptr, l0PAParam uintptr) uintptr {
 // DumpUserPTEWithL0 walks the page table for a userspace VA and prints each level's entry.
 // Used for debugging page table issues.
 // dumpUserPTERaw walks the page table for a userspace VA and prints each level's raw PTE.
+// repeatFaultDiagnostic prints repeat-fault diagnostic information.
+// NOT nosplit — called from HandleUserPageFault only on the fatal repeat-fault path.
+// By being non-nosplit, its deep call tree (dumpUserPTERaw → serial.PollWrite, 312+ bytes)
+// doesn't count against the x86_64 nosplit chain limit.
+//
+//go:noinline
+func repeatFaultDiagnostic(faultAddr uintptr) {
+	serial.RawUARTPuts("[PF] REPEAT VA=0x")
+	serial.RawUARTHex64(uint64(faultAddr))
+	serial.RawUARTPuts(" CR3=0x")
+	l0PA := readCurrentL0PA()
+	serial.RawUARTHex64(uint64(l0PA))
+	serial.RawUARTPuts("\r\n")
+	dumpUserPTERaw(faultAddr, l0PA)
+}
+
 // Uses only rawUART output — safe from nosplit page fault handler context.
 //
 //go:nosplit

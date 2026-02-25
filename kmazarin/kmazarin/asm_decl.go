@@ -65,9 +65,9 @@ func HandlePageFaultAsm(faultAddr uint64) uint64
 // HandleUserPageFaultAsm is the ABI0 entry point for userspace page fault handler.
 // Called from exception handler for page faults from userspace.
 // Handles demand paging for mmap'd regions.
-// Takes faultAddr as argument, returns bool (1=handled, 0=not handled).
+// Takes faultAddr and isPermFault, returns bool (1=handled, 0=not handled).
 //go:nosplit
-func HandleUserPageFaultAsm(faultAddr uint64) uint64
+func HandleUserPageFaultAsm(faultAddr, isPermFault uint64) uint64
 
 // GetSyscallSwitchTarget returns the context switch target set by syscall handlers.
 // Returns -1 if no context switch needed, >=0 for target thread index.

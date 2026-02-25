@@ -584,7 +584,11 @@ pf_restore_xmm_return:
 try_user_pf_handler:
 	// Not handled by kernel — try userspace handler
 	// R13 still has fault address (callee-saved, preserved across GO_CALL)
-	GO_CALL_1_1(·HandleUserPageFaultAsm, R13)
+	// Compute isPermFault from page fault error code: bit 0 (P) set → protection fault
+	// (page present but wrong permissions), not a missing-page translation fault.
+	MOVQ	120(SP), R12   // error code from exception frame
+	ANDQ	$1, R12        // R12 = P bit (1 = protection/permission fault, 0 = not-present fault)
+	GO_CALL_2_1(·HandleUserPageFaultAsm, R13, R12)
 
 	TESTQ	AX, AX
 	JNZ	pf_restore_xmm_return	// handled by user handler

@@ -92,7 +92,11 @@ TEXT runtime·closefd(SB),NOSPLIT,$0-12
 
 // write1 - write bytes to COM1 serial port
 // func write1(fd uintptr, p unsafe.Pointer, n int32) int32
+// When suppressSerial is set (SoftIRQ console active), skip UART output.
 TEXT runtime·write1(SB),NOSPLIT,$0-28
+	MOVL	runtime·suppressSerial(SB), AX
+	TESTL	AX, AX
+	JNZ	write1_suppressed
 	MOVQ	p+8(FP), SI		// buffer pointer
 	MOVL	n+16(FP), CX		// byte count
 	MOVW	COM1_PORT, DX		// COM1 port
@@ -105,6 +109,10 @@ write1_loop:
 	DECL	CX
 	JNZ	write1_loop
 write1_done:
+	MOVL	n+16(FP), AX
+	MOVL	AX, ret+24(FP)
+	RET
+write1_suppressed:
 	MOVL	n+16(FP), AX
 	MOVL	AX, ret+24(FP)
 	RET
@@ -259,12 +267,7 @@ TEXT runtime·callCgoMunmap(SB),NOSPLIT,$16-16
 	RET
 
 // madvise - stub, return 0
-// TODO: Implement real madvise (at least MADV_DONTNEED) to let Go scavenger reclaim pages.
 TEXT runtime·madvise(SB),NOSPLIT,$0
-	// Breadcrumb: '!' on COM1 to flag madvise calls
-	MOVB	$0x21, AL		// '!'
-	MOVW	$0x3F8, DX
-	OUTB
 	MOVL	$0, ret+24(FP)
 	RET
 

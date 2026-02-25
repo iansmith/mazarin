@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"math"
 	"runtime"
 	"time"
@@ -17,6 +18,7 @@ import (
 	gg "github.com/fogleman/gg"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/math/fixed"
 
 	"mazzy/mazarin/serial"
 	"mazzy/mazarin/sys"
@@ -92,21 +94,21 @@ func newGlyphCache(charW, charH, ascent int, face font.Face) *glyphCache {
 
 // renderGlyphSet pre-renders all printable ASCII characters (32-126) into
 // pixel strips with the given text color on the given background color.
+// Uses font.Drawer.DrawString which calls draw.DrawMask (fast path for
+// RGBA destinations) instead of gg's DrawString which uses BiLinear.Transform.
 func renderGlyphSet(dst *[95][]byte, charW, charH, ascent int, face font.Face, textColor, bgColor color.RGBA) {
-	tmpDc := gg.NewContext(charW, charH)
-	tmpDc.SetFontFace(face)
-	tmpIm := tmpDc.Image().(*image.RGBA)
+	tmpIm := image.NewRGBA(image.Rect(0, 0, charW, charH))
 	rowBytes := charW * 4
-
+	bgU := image.NewUniform(bgColor)
+	d := &font.Drawer{
+		Dst:  tmpIm,
+		Src:  image.NewUniform(textColor),
+		Face: face,
+	}
 	for ch := byte(32); ch <= 126; ch++ {
-		tmpDc.SetColor(bgColor)
-		tmpDc.DrawRectangle(0, 0, float64(charW), float64(charH))
-		tmpDc.Fill()
-
-		tmpDc.SetFontFace(face)
-		tmpDc.SetColor(textColor)
-		tmpDc.DrawString(string(ch), 0, float64(ascent))
-
+		draw.Draw(tmpIm, tmpIm.Bounds(), bgU, image.Point{}, draw.Src)
+		d.Dot = fixed.P(0, ascent)
+		d.DrawString(string(ch))
 		buf := make([]byte, charW*charH*4)
 		for y := 0; y < charH; y++ {
 			srcOff := y * tmpIm.Stride
@@ -378,6 +380,13 @@ func main() {
 		dirtyMax: -1,
 	}
 
+	// Build glyph cache BEFORE card drawing so drawCardFrame can use font.Drawer.
+	// Uses font.Drawer (draw.DrawMask fast path) instead of gg's BiLinear.Transform.
+	t0 = time.Now()
+	gc := newGlyphCache(charW, charH, ascent, face)
+	fmt.Printf("[stdio] newGlyphCache: %v\n", time.Since(t0))
+	con.gc = gc
+
 	// Draw card frame (body + title + button) and content area — fast gg ops.
 	t0 = time.Now()
 	con.drawCardFrame()
@@ -410,12 +419,6 @@ func main() {
 		}
 		sys.FlushFramebuffer(uint32(flushX), uint32(flushY), uint32(flushW), uint32(flushH))
 	}
-
-	// Build glyph cache (190 DrawString calls with small gg contexts).
-	t0 = time.Now()
-	gc := newGlyphCache(charW, charH, ascent, face)
-	fmt.Printf("[stdio] newGlyphCache: %v\n", time.Since(t0))
-	con.gc = gc
 
 	// --- Enter serial event loop ---
 	for sb := range serialCh {
@@ -607,11 +610,16 @@ func (c *console) drawCardFrame() {
 	c.dc.DrawRoundedRectangle(cx, cy, cw, ch, radius)
 	c.dc.Fill()
 
-	// Title text
-	c.dc.SetFontFace(c.face)
-	c.dc.SetColor(nTitle)
+	// Title text — use font.Drawer directly on framebuffer (draw.DrawMask fast path,
+	// no BiLinear.Transform). gg's DrawString uses Transform per character.
 	titleY := cy + float64(cardBorderTop)/2 + float64(c.ascent)/2
-	c.dc.DrawString("Serial Console", cx+float64(cardBorderSide)+float64(textPad), titleY)
+	titleD := &font.Drawer{
+		Dst:  c.im,
+		Src:  image.NewUniform(nTitle),
+		Face: c.face,
+		Dot:  fixed.P(c.cardX+cardBorderSide+textPad, int(titleY)),
+	}
+	titleD.DrawString("Serial Console")
 
 	// Button body
 	btnR := float64(cardBorderTop-8) / 2

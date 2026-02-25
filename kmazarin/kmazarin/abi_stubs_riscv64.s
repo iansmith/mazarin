@@ -35,8 +35,10 @@ TEXT ·HandlePageFaultAsm(SB), NOSPLIT, $0-16
 	JMP	·handlePageFaultInternal(SB)
 
 // HandleUserPageFaultAsm tail-call stub
+// Go signature: func HandleUserPageFaultAsm(faultAddr, isPermFault uint64) uint64
+// ABI0: 2 args (16 bytes) + 1 return (8 bytes) = 24 bytes
 // NOSPLIT: called from exception stack, must not trigger stack growth check
-TEXT ·HandleUserPageFaultAsm(SB), NOSPLIT, $0-16
+TEXT ·HandleUserPageFaultAsm(SB), NOSPLIT, $0-24
 	JMP	·handleUserPageFaultInternal(SB)
 
 // GetSyscallSwitchTarget - must use CALL (has return value)

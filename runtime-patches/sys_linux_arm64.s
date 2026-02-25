@@ -65,11 +65,12 @@ TEXT runtime·closefd(SB),NOSPLIT|NOFRAME,$0-12
 // write1 - write bytes to UART via linear map
 // On ARM64 QEMU virt, UART PL011 is at PA 0x09000000.
 // With KernelVAOffset 0xFFFFFFFF00000000, UART VA = 0xFFFFFFFF09000000.
+// When suppressSerial is set (SoftIRQ console active), skip UART output.
 TEXT runtime·write1(SB),NOSPLIT|NOFRAME,$0-28
-	// Debug marker: write 'W' to UART to confirm write1 is called
+	MOVD	$runtime·suppressSerial(SB), R4
+	MOVW	(R4), R5
+	CBNZ	R5, write1_suppressed
 	MOVD	$0xFFFFFFFF09000000, R2	// UART VA via linear map
-	MOVW	$'W', R3
-	MOVW	R3, (R2)
 	MOVD	p+8(FP), R0		// buffer pointer
 	MOVW	n+16(FP), R1		// byte count
 write1_loop:
@@ -80,6 +81,10 @@ write1_loop:
 	SUB	$1, R1
 	B	write1_loop
 write1_done:
+	MOVW	n+16(FP), R0
+	MOVW	R0, ret+24(FP)
+	RET
+write1_suppressed:
 	MOVW	n+16(FP), R0
 	MOVW	R0, ret+24(FP)
 	RET

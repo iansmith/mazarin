@@ -84,7 +84,7 @@ func SyscallQueryInputDevices(bufPtr, _, _, _, _, _ uint64) int64 {
 
 	// Ensure user page is mapped (demand-page if needed)
 	if kmem.WalkUserPageTable(uintptr(bufPtr)) == 0 {
-		if !kmem.HandleUserPageFault(uintptr(bufPtr)) {
+		if !kmem.HandleUserPageFault(uintptr(bufPtr), 0) {
 			return -14 // EFAULT
 		}
 	}
@@ -114,7 +114,7 @@ func SyscallQueryInputDevices(bufPtr, _, _, _, _, _ uint64) int64 {
 func writeSoftIRQReturn(bufPtr uint64, events []hid.HIDEvent, count int, intKind hid.InterruptType) int64 {
 	// Ensure user page is mapped
 	if kmem.WalkUserPageTable(uintptr(bufPtr)) == 0 {
-		if !kmem.HandleUserPageFault(uintptr(bufPtr)) {
+		if !kmem.HandleUserPageFault(uintptr(bufPtr), 0) {
 			return -14
 		}
 	}

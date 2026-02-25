@@ -397,7 +397,10 @@ pf_not_handled:
 	BNE	T3, ZERO, pf_really_not_handled	// SPP=1 → S-mode fault, skip
 
 	// U-mode fault: S2 still has faultAddr (callee-saved, preserved across GO_CALL)
-	GO_CALL_1_1(·HandleUserPageFaultAsm, S2)
+	// Pass ZERO for isPermFault: RISC-V scause alone cannot distinguish a permission
+	// fault from a translation fault — the same scause (13=load, 15=store) is raised
+	// for both missing-page and wrong-permission cases.
+	GO_CALL_2_1(·HandleUserPageFaultAsm, S2, ZERO)
 	BNE	T0, ZERO, pf_user_handled
 
 	JMP	pf_really_not_handled

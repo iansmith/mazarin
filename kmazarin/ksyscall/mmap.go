@@ -3,7 +3,6 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"sync/atomic"
 	"unsafe"
 )
@@ -134,33 +133,6 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 	if result == 0 {
 		return -12 // ENOMEM
 	}
-
-	// Breadcrumb: U/u = userspace bump/fixed, K/k = kernel bump/fixed
-	// Userspace breadcrumbs include PID as 2 hex digits: U<pid>:<addr>:<size>
-	if isUserspace && result < 0x0000800000000000 {
-		if isMapFixed {
-			serial.PollWrite('u')
-		} else {
-			serial.PollWrite('U')
-		}
-		p := proc.CurrentPriest()
-		if p != nil {
-			serial.RawUARTHex8(uint8(p.PID))
-		} else {
-			serial.RawUARTHex8(0)
-		}
-		serial.PollWrite(':')
-	} else {
-		if isMapFixed {
-			serial.PollWrite('k')
-		} else {
-			serial.PollWrite('K')
-		}
-	}
-	serial.RawUARTHexCompact(result)
-	serial.PollWrite(':')
-	serial.RawUARTHexCompact(alignedLength)
-	serial.PollWrite(' ')
 
 	return int64(result)
 }

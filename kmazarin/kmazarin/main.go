@@ -90,14 +90,15 @@ func handlePageFaultInternal(faultAddr uint64) uint64 {
 	return 0
 }
 
-// HandleUserPageFaultAsm is defined in abi_stubs_arm64.s as an ABI0 entry point
+// HandleUserPageFaultAsm is defined in abi_stubs_<arch>.s as an ABI0 entry point
 // that tail-calls handleUserPageFaultInternal. This handles page faults from EL0.
+// isPermFault is 1 if the exception was a permission fault, 0 for translation/access.
 // Returns 1 if the fault was handled successfully, 0 otherwise.
 //
 //go:nosplit
 //go:noinline
-func handleUserPageFaultInternal(faultAddr uint64) uint64 {
-	if kmem.HandleUserPageFault(uintptr(faultAddr)) {
+func handleUserPageFaultInternal(faultAddr, isPermFault uint64) uint64 {
+	if kmem.HandleUserPageFault(uintptr(faultAddr), isPermFault) {
 		return 1
 	}
 	return 0

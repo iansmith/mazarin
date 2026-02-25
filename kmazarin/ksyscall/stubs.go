@@ -5,7 +5,6 @@ import (
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 
 	"unsafe"
 )
@@ -218,13 +217,6 @@ func SyscallPrlimit64(_, _, _, _, _, _ uint64) int64 {
 //
 //go:nosplit
 func SyscallMadvise(addr, length, advice, _, _, _ uint64) int64 {
-	// Breadcrumb: confirm scavenger is calling madvise
-	// advice: 4 = MADV_DONTNEED, 8 = MADV_FREE
-	serial.PollWrite('A')
-	serial.RawUARTHexCompact(advice)
-	serial.PollWrite(':')
-	serial.RawUARTHexCompact(length)
-	serial.PollWrite(' ')
 	return 0 // Success
 }
 

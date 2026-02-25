@@ -157,10 +157,14 @@ func buddyInsertFree(pa uintptr, order int) {
 		}
 	}
 	va := pa + buddyAlloc.kernelVAOffset
-	// Write current head as next pointer
-	*(*uintptr)(unsafe.Pointer(va)) = buddyAlloc.freeList[order]
-	buddyAlloc.freeList[order] = pa
-	buddyAlloc.freeCount[order]++
+	// Write current head as next pointer.
+	// Use unsafe pointer arithmetic to avoid bounds-check calls to runtime.panicIndex
+	// which add 16 bytes to the nosplit chain (critical for x86_64's 792-byte limit).
+	listSlot := (*uintptr)(unsafe.Pointer(uintptr(unsafe.Pointer(&buddyAlloc.freeList[0])) + uintptr(order)*unsafe.Sizeof(uintptr(0))))
+	*(*uintptr)(unsafe.Pointer(va)) = *listSlot
+	*listSlot = pa
+	countSlot := (*uint64)(unsafe.Pointer(uintptr(unsafe.Pointer(&buddyAlloc.freeCount[0])) + uintptr(order)*unsafe.Sizeof(uint64(0))))
+	*countSlot++
 }
 
 // buddyRemoveFree removes and returns the head block from the free list.

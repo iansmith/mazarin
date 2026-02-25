@@ -6,6 +6,7 @@ import (
 	"mazzy/shared/hid"
 	"reflect"
 	"sync/atomic"
+	_ "unsafe" // for go:linkname
 )
 
 // SoftIRQConsole implements console.Console by pushing bytes into the
@@ -143,13 +144,19 @@ func FlushUartRingWake() {
 // softIRQConsole is the global instance, set by EnableSoftIRQConsole.
 var softIRQConsole *SoftIRQConsole
 
+//go:linkname suppressSerial runtime.suppressSerial
+var suppressSerial uint32
+
 // EnableSoftIRQConsole switches the kernel console from direct MMIO
 // to the soft IRQ ring. Must be called after SetupUartSoftIRQ and
 // after a userspace priest has registered on the UART slot.
+// Suppresses write1 UART output so runtime fmt.Printf goes to the
+// ring (and thus to the stdio priest display) rather than UART.
 func EnableSoftIRQConsole() {
 	c := NewSoftIRQConsole()
 	softIRQConsole = c
 	console.Set(c)
+	atomic.StoreUint32(&suppressSerial, 1)
 }
 
 // IsSoftIRQConsoleActive returns true if the soft IRQ console is active.

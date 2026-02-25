@@ -12,6 +12,7 @@ import (
 	"mazzy/kmazarin/serial"
 	"mazzy/kmazarin/util"
 	"runtime"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -119,6 +120,17 @@ var timerNoSwitchCount uint64
 // timerHandlerDoneCount counts timer interrupts where TimerIRQHandler completed
 // (rearm happened). If this trails timerDiagCount, the Go handler is hanging.
 var timerHandlerDoneCount uint64
+
+// scanTimerCount is incremented by ProcessDeadlinesTopHalf on every timer IRQ.
+// ProcessDeadlinesTopHalf is called from the timer top-half on all 3 architectures
+// (ARM64 line 975, x86_64 line 770, RISC-V line 761 in their exceptions_*.s files).
+// kirq.TimerIRQCount is only incremented by kirq.TimerIRQHandlerAsm which is NOT
+// called on x86_64, so this counter is arch-universal.
+var scanTimerCount uint64
+
+// scanLastTick records the scanTimerCount value at the last A/D bit scan.
+// The scan runs every ~1000 timer IRQ ticks (~10 seconds at 10ms/tick).
+var scanLastTick uint64
 
 // syscallDiagCount counts total syscalls from user threads.
 var syscallDiagCount uint64
@@ -857,7 +869,6 @@ func processStaticDeadlinesSchedLockHeld() {
 		// Timer deadlines are encoded as negative slot IDs: -(slot+2).
 		// Decode and push events to the slot, waking whatever thread is blocked.
 		if tid <= -2 {
-			serial.PollWrite('D')
 			sec, nsec := ktime.GetTime()
 			PushTimerEventAndWake(sec, nsec)
 			continue
@@ -887,6 +898,9 @@ func processStaticDeadlinesSchedLockHeld() {
 //go:nosplit
 //go:noinline
 func ProcessDeadlinesTopHalf() {
+	// Increment arch-universal scan counter (used by KernelIdleLoop A/D scan).
+	// This is the only call site that fires on all 3 architectures.
+	atomic.AddUint64(&scanTimerCount, 1)
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 	processStaticDeadlinesSchedLockHeld()
@@ -945,6 +959,27 @@ func KernelIdleLoop() {
 		// Without this, goroutines started by StartBottomHalfProcessors()
 		// never get CPU time because this loop never triggers Go's scheduler.
 		runtime.Gosched()
+
+		// Periodic A/D bit scan. Clears hardware Accessed bits on all mapped
+		// userspace pages and propagates Dirty state into PageDescriptors.
+		// This is the "clock" algorithm reference-bit sweep — foundation for
+		// page replacement.
+		//
+		// scanTimerCount is incremented in ProcessDeadlinesTopHalf (called from
+		// the timer top-half on all 3 archs). The timer fires every ~100ms of
+		// virtual time, but QEMU TCG runs ~30x slower than real time, so each
+		// tick is ~3 seconds of wall-clock time. Threshold of 3 gives a scan
+		// roughly every ~9 seconds wall-clock in QEMU TCG.
+		currentTick := atomic.LoadUint64(&scanTimerCount)
+		if currentTick-scanLastTick >= 300 {
+			scanLastTick = currentTick
+			for i := 0; i < MaxPriests; i++ {
+				if !proc.PriestListInUse[i] {
+					continue
+				}
+				kmem.ScanAccessedBits(proc.PriestId(i))
+			}
+		}
 
 		// Process deadlines with IRQs disabled (critical section)
 		savedDAIF := SaveAndDisableIRQs()
@@ -1072,6 +1107,13 @@ func SaveThread0AndYield() uint64 {
 	}
 	smpDebugPrintRun(debugCPU, debugTID, debugPID)
 
+	// Switch-type breadcrumb: 'U' = to userspace, 'K' = to kernel
+	if debugPID != 0 {
+		serial.PollWrite('U')
+	} else {
+		serial.PollWrite('K')
+	}
+
 	if next.Context.GetPC() == 0 {
 		serial.RawUARTPuts("[BUG] Yield RIP=0 TID=")
 		serial.RawUARTHex64(uint64(next.TID))
@@ -1080,14 +1122,6 @@ func SaveThread0AndYield() uint64 {
 			WaitForInterrupt()
 		}
 	}
-
-	BreadcrumbString("[Y] PC=0x")
-	BreadcrumbHex(next.Context.GetPC())
-	BreadcrumbString(" SP=0x")
-	BreadcrumbHex(next.Context.GetSP())
-	BreadcrumbString(" TID=")
-	BreadcrumbHex(uint64(next.TID))
-	Breadcrumb('\n')
 
 	return uint64(uintptr(unsafe.Pointer(&next.Context)))
 }
@@ -2426,6 +2460,13 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	// The assembly will restore interrupt state via ERET with new SPSR.
 	_ = savedDAIF // Keep compiler happy
 
+	// Switch-type breadcrumb (preempt path): 'U' = to userspace, 'K' = to kernel
+	if next.PID != 0 {
+		serial.PollWrite('U')
+	} else {
+		serial.PollWrite('K')
+	}
+
 	if next.Context.GetPC() == 0 {
 		serial.RawUARTPuts("[BUG] Preempt RIP=0 TID=")
 		serial.RawUARTHex64(uint64(next.TID))
@@ -2434,14 +2475,6 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 			WaitForInterrupt()
 		}
 	}
-
-	BreadcrumbString("[P] PC=0x")
-	BreadcrumbHex(next.Context.GetPC())
-	BreadcrumbString(" SP=0x")
-	BreadcrumbHex(next.Context.GetSP())
-	BreadcrumbString(" TID=")
-	BreadcrumbHex(uint64(next.TID))
-	Breadcrumb('\n')
 
 	return uint64(uintptr(unsafe.Pointer(&next.Context)))
 }
@@ -2631,14 +2664,6 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	if sf.StateCheck != nil {
 		sf.StateCheck("context-switch-complete")
 	}
-
-	BreadcrumbString("[S] PC=0x")
-	BreadcrumbHex(newThread.Context.GetPC())
-	BreadcrumbString(" SP=0x")
-	BreadcrumbHex(newThread.Context.GetSP())
-	BreadcrumbString(" TID=")
-	BreadcrumbHex(uint64(newThread.TID))
-	Breadcrumb('\n')
 
 	// END CRITICAL SECTION
 	schedulerLock.Unlock()

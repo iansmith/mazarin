@@ -44,10 +44,10 @@ TEXT ·HandlePageFaultAsm(SB), $0-16
 	JMP	·handlePageFaultInternal(SB)
 
 // HandleUserPageFaultAsm is called from el0_sync_handler for data aborts from EL0
-// Go signature: func HandleUserPageFaultAsm(faultAddr uint64) uint64
-// ABI0: 1 arg (8 bytes) + 1 return (8 bytes) = 16 bytes
+// Go signature: func HandleUserPageFaultAsm(faultAddr, isPermFault uint64) uint64
+// ABI0: 2 args (16 bytes) + 1 return (8 bytes) = 24 bytes
 // Returns 1 if handled, 0 if not.
-TEXT ·HandleUserPageFaultAsm(SB), $0-16
+TEXT ·HandleUserPageFaultAsm(SB), $0-24
 	JMP	·handleUserPageFaultInternal(SB)
 
 // GetSyscallSwitchTarget returns context switch target set by syscall handlers
