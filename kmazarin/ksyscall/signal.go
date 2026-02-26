@@ -130,6 +130,7 @@ func SyscallSigaltstack(newPtr, oldPtr, _, _, _, _ uint64) int64 {
 //
 // For kmazarin: sets a pending signal bit on the target thread.
 // The signal is delivered when the thread is next scheduled.
+// Validates that tgid matches the target thread's PID (same process).
 //
 //go:nosplit
 func SyscallTgkill(tgid, tid, sig, _, _, _ uint64) int64 {
@@ -144,11 +145,21 @@ func SyscallTgkill(tgid, tid, sig, _, _, _ uint64) int64 {
 		return -3 // ESRCH — no such process/thread
 	}
 
+	// Validate tgid matches target thread's PID (cross-priest signal rejected)
+	if tgid != 0 {
+		targetPID := GetThreadPID(targetThread)
+		if int16(tgid) != targetPID {
+			return -3 // ESRCH — tgid mismatch
+		}
+	}
+
 	// Debug: trace tgkill calls
 	serial.RawUARTPuts("[TK] sig=")
 	serial.RawUARTDecimal(sig)
 	serial.RawUARTPuts(" tid=")
 	serial.RawUARTDecimal(tid)
+	serial.RawUARTPuts(" tgid=")
+	serial.RawUARTDecimal(tgid)
 	serial.PollWrite('\n')
 
 	// Set the pending signal bit.
@@ -173,6 +184,8 @@ func SyscallRtSigreturn(_, _, _, _, _, _ uint64) int64 {
 	if tPtr == 0 {
 		return -22 // EINVAL
 	}
+
+	serial.RawUARTPuts("[SR] sigreturn\n")
 
 	// RestoreFromSignalFrame reads ucontext, copies regs to thread.Context,
 	// clears InSignalHandler, and sets SigreturnPending = 1.

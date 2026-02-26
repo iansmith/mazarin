@@ -191,6 +191,13 @@ func setThreadSignalStackForKsyscall(threadPtr uintptr, base, sp, size uint64) {
 	t.SignalStackSize = size
 }
 
+//go:linkname getThreadPIDForKsyscall mazzy/kmazarin/ksyscall.GetThreadPID
+//go:nosplit
+func getThreadPIDForKsyscall(threadPtr uintptr) int16 {
+	t := (*Thread)(unsafe.Pointer(threadPtr))
+	return int16(t.PID)
+}
+
 //go:linkname restoreFromSignalFrameForKsyscall mazzy/kmazarin/ksyscall.RestoreFromSignalFrame
 //go:nosplit
 func restoreFromSignalFrameForKsyscall(threadPtr uintptr) {

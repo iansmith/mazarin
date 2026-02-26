@@ -1054,12 +1054,25 @@ func KernelIdleLoop() {
 //go:nosplit
 //go:noinline
 func SaveThread0AndYield() uint64 {
-	// NOTE: Do NOT check m.locks here. This is a voluntary yield (called from
-	// the kernel idle loop to switch to a ready thread). The Go runtime holds
-	// m.locks when calling futex/lock2, so blocking yield here creates a
-	// deadlock: the thread waiting on a futex can never yield to the thread
-	// that would release the lock. The m.locks check is only appropriate for
-	// ASYNC (timer-driven) preemption in checkThreadPreemptionImpl.
+	// Check m.locks — do not yield if the Go runtime is in a critical section
+	// (e.g., lock2, mallocgc). Yielding with locks held causes expensive
+	// context switches that prevent forward progress during early boot.
+	// Without this check, the futex overlay's yield-after-spin triggers
+	// full save/restore cycles even though the thread should just retry.
+	gmOff := kirq.PreemptGMOffset
+	mLocksOff := kirq.PreemptMLocksOffset
+	if gmOff != 0 || mLocksOff != 0 { // offsets initialized
+		gRaw := GetGRegister()
+		if gRaw != 0 {
+			mPtr := *(*uintptr)(unsafe.Pointer(uintptr(gRaw) + gmOff))
+			if mPtr != 0 {
+				locks := *(*int32)(unsafe.Pointer(mPtr + mLocksOff))
+				if locks != 0 {
+					return 0
+				}
+			}
+		}
+	}
 
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
@@ -1071,17 +1084,20 @@ func SaveThread0AndYield() uint64 {
 		return 0
 	}
 
-	// Put current thread on ready queue.
-	// CRITICAL: Use enqueueReadySchedLockHeld, which places PID=0 (kernel)
-	// threads at HEAD. HEAD placement ensures the timer preemption path can
-	// find and resume thread 0 after yielding to a userspace thread.
-	// Using PushNoDuplicate (TAIL) causes the system to hang because
-	// findReadyThreadPreferDifferentPriestSchedLockHeld scans from HEAD
-	// and thread 0 at TAIL behind multiple userspace threads never gets
-	// selected back by timer preemption.
+	// Put current thread on ready queue at TAIL for fair round-robin yield.
+	// TAIL avoids self-scheduling: with HEAD insertion, the fallback Pop()
+	// in findReadyThreadPreferDifferentPriestSchedLockHeld returns the
+	// current thread (always at HEAD), causing an infinite self-scheduling
+	// loop where the other thread never runs.
+	//
+	// Note: post-boot timer preemption uses enqueueReadySchedLockHeld (HEAD
+	// for PID=0) which is correct for that path since the preemption handler
+	// explicitly skips the current thread. SaveThread0AndYield uses TAIL
+	// because the fallback path doesn't have that skip.
 	t0.State = ThreadReady
 	pluckFromAllQueues(t0.TID)
-	enqueueReadySchedLockHeld(t0)
+	perCPU := GetPerCPU()
+	perCPU.LocalReadyQueue.PushNoDuplicate(t0.TID)
 
 	// Update tick accounting for thread 0
 	currentTime := kirq.ReadCounterValue()

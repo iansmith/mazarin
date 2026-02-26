@@ -367,6 +367,10 @@ exc_entry_skip_fsbase:
 	JMP	handle_generic_irq
 
 handle_syscall:
+	// Mark that we're inside syscall processing.
+	// Timer handler checks this to avoid preempting mid-syscall.
+	MOVQ	$1, ·inSyscallHandler(SB)
+
 	// Syscall dispatch
 	// Frame: [RAX..R15, errcode, RIP, CS, RFLAGS, RSP, SS]
 	// syscall number is in RAX (from the INT $0x80 convention)
@@ -439,9 +443,9 @@ syscall_skip_g_setup:
 	// Load ThreadContext pointer into R12 for load_context_and_iretq
 	MOVQ	·ThreadContextOffset(SB), R12
 	ADDQ	R13, R12
+	MOVQ	$0, ·inSyscallHandler(SB)	// Clear before context switch
 	JMP	load_context_and_iretq
 no_sigreturn:
-
 	// If a syscall changed FS_BASE (e.g., arch_prctl ARCH_SET_FS),
 	// update savedExcFSBase so exception_return preserves the new value.
 	// If FS_BASE is still the kernel value (unchanged), keep the original
@@ -455,12 +459,11 @@ no_sigreturn:
 	// FS_BASE was changed by syscall — capture new value
 	MOVQ	AX, ·savedExcFSBase(SB)
 syscall_fsbase_unchanged:
-
 	// Check if context switch needed
 	GO_CALL_0_1(·GetSyscallSwitchTarget)
 	// AX = switch target (0 or -1 = no switch)
 	CMPQ	AX, $0
-	JLE	exception_return
+	JLE	syscall_no_switch
 
 	MOVQ	AX, R12			// save target in callee-saved R12
 
@@ -470,10 +473,19 @@ syscall_fsbase_unchanged:
 	MOVQ	AX, R12			// new context pointer
 
 	TESTQ	R12, R12
-	JZ	exception_return
+	JZ	syscall_exit_no_ctx
 
 	// Load new context and IRETQ
+	MOVQ	$0, ·inSyscallHandler(SB)	// Clear before context switch
 	JMP	load_context_and_iretq
+
+syscall_exit_no_ctx:
+	MOVQ	$0, ·inSyscallHandler(SB)	// Clear before exception return
+	JMP	exception_return
+
+syscall_no_switch:
+	MOVQ	$0, ·inSyscallHandler(SB)	// Clear before exception return
+	JMP	exception_return
 
 handle_page_fault:
 	// XMM registers already saved at common_exception_entry.
@@ -853,13 +865,27 @@ handle_timer_irq:
 	// never fire, stalling the scheduler and blocking sysmon.
 	GO_CALL_0_0(·ProcessDeadlinesTopHalf)
 
-	// Skip preemption if the interrupted code was in kernel mode (CS=0x08).
-	// When SyscallWaitSoftIRQ enables interrupts for WFI (STI+HLT), timers
-	// fire during SYSCALL processing. Preempting here is unsafe: the SYSCALL
-	// frame on the shared exception stack would be overwritten when another
-	// thread's SYSCALL runs, corrupting the preempted thread's return state.
+	// Kernel-mode preemption decision.
+	// User-mode (CS=0x1B): always allow preemption.
+	// Kernel-mode (CS=0x08): allow preemption ONLY if:
+	//   1. Post-boot (kmazarinSyscallReady != 0) — early boot has no threads
+	//   2. NOT inside a syscall handler (inSyscallHandler == 0) — preempting
+	//      mid-syscall corrupts the exception frame when another thread's
+	//      syscall uses the same stack
+	// This enables timer preemption of kernel clone threads (sysmon,
+	// templateThread) that would otherwise run forever in usleep loops.
 	CMPQ	136(SP), $0x08		// CS from exception frame
-	JE	exception_return	// Kernel mode — never preempt
+	JNE	timer_preempt_allowed	// User mode — always allow
+	// Kernel mode: check if safe to preempt
+	MOVL	runtime·kmazarinSyscallReady(SB), AX
+	TESTL	AX, AX
+	JZ	exception_return	// Early boot — no preemption
+	MOVQ	·inSyscallHandler(SB), AX
+	TESTQ	AX, AX
+	JNZ	exception_return	// Inside syscall handler — unsafe to preempt
+	JMP	timer_preempt_check
+timer_preempt_allowed:
+timer_preempt_check:
 
 	// Check NeedsThreadPreempt flag (matching ARM64 pattern at exceptions_arm64.s:985).
 	// TimerIRQHandler sets this flag (via timerIRQHandlerInternal) when the
@@ -906,6 +932,7 @@ thread_preempt_mlocks_ok:
 
 	TESTQ	R12, R12
 	JZ	exception_return
+
 	JMP	load_context_and_iretq
 
 handle_device_irq:
@@ -1452,18 +1479,22 @@ skip_fsbase_and_tls:
 	// Clear the frame and build fresh IRETQ frame
 	MOVQ	136(R12), AX		// new RSP
 	MOVQ	128(R12), BX		// new RFLAGS
-	// NOTE: Do NOT force IF=1 unconditionally! During early boot (before
-	// EnableIRQs), threads inherit IF=0 from the parent. Forcing IF=1
-	// allows pending APIC timer interrupts to fire immediately after IRETQ,
-	// pushing an IRET frame onto the child stack and overwriting the clone
-	// canary at stk-32 with CS=0x08. Threads created during init with IF=0
-	// are fixed by FixCloneThreadIFFlags() after EnableIRQs().
-	// For userspace threads (CS=0x1B), always force IF=1 — Ring 3 code
-	// must run with interrupts enabled.
+	// Force IF=1 in RFLAGS for threads restored after boot.
+	// During early boot (kmazarinSyscallReady=0), threads inherit IF=0 to
+	// prevent APIC timer interrupts before IDT/LAPIC are ready. After boot,
+	// ALL threads (kernel AND user) must run with IF=1 so timer preemption
+	// works. Without this, kernel clone children (sysmon, templateThread)
+	// created during init with IF=0 run forever without timer interrupts,
+	// starving thread 0 and halting the system.
 	MOVQ	152(R12), R13		// CS from context
 	CMPQ	R13, $0x1B		// userCS?
-	JNE	rflags_no_fix		// Kernel thread: trust inherited IF state
-	ORQ	$0x200, BX		// User thread: force IF=1
+	JE	rflags_force_if		// User thread: always force IF=1
+	// Kernel thread: force IF=1 only after boot
+	MOVL	runtime·kmazarinSyscallReady(SB), R13
+	TESTL	R13, R13
+	JZ	rflags_no_fix		// Early boot: trust inherited IF state
+rflags_force_if:
+	ORQ	$0x200, BX		// Force IF=1
 rflags_no_fix:
 	MOVQ	120(R12), CX		// new RIP
 
@@ -1608,6 +1639,12 @@ TEXT ·ReadCS(SB), NOSPLIT, $0-2
 // Set by ISR stubs before jumping to common handler.
 // This is per-CPU safe because interrupts are disabled during handling.
 GLOBL	·currentVector(SB), NOPTR, $8
+
+// inSyscallHandler is set to 1 at handle_syscall entry and cleared before
+// exception_return / load_context_and_iretq. When set, the timer handler
+// skips kernel-mode preemption because preempting mid-syscall would corrupt
+// the exception frame on the shared stack.
+GLOBL	·inSyscallHandler(SB), NOPTR, $8
 
 // pf_print_hex16 prints R15 as 16 hex chars to COM1. Clobbers AX, CX, DX, R13.
 TEXT pf_print_hex16(SB), NOSPLIT|NOFRAME, $0

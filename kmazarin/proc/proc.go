@@ -11,6 +11,18 @@ package proc
 // MaxPriests is the maximum number of priest processes (userspace programs).
 const MaxPriests = 32
 
+// SignalNSIG is the number of signals (1-64 + sentinel), matching Linux _NSIG.
+const SignalNSIG = 65
+
+// PriestSignalAction records a signal handler for a priest.
+// Layout matches Go runtime's sigactiont struct.
+type PriestSignalAction struct {
+	Handler  uint64
+	Flags    uint64
+	Restorer uint64
+	Mask     uint64
+}
+
 // PriestId is a unique priest (userspace process) identifier (0-MaxPriests-1).
 type PriestId int16
 
@@ -39,6 +51,11 @@ type Priest struct {
 	// PageTableL0PA is the physical address of this priest's L0 page table.
 	// Used for page table walks during cleanup on priest exit.
 	PageTableL0PA uintptr
+
+	// SignalActions is the per-priest signal action table.
+	// Index 0 is unused (signal numbers are 1-based).
+	// Each priest has its own table so handlers are isolated between processes.
+	SignalActions [SignalNSIG]PriestSignalAction
 }
 
 // Id implements the ds.Ider interface for Priest.

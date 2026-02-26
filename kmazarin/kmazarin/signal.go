@@ -1,6 +1,7 @@
 package main
 
 import (
+	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
 	"sync/atomic"
 	"unsafe"
@@ -40,11 +41,17 @@ type SignalAction struct {
 	Mask     uint64 // sa_mask (signals blocked during handler)
 }
 
-// signalActions is the global signal action table.
+// signalActions is the global signal action table (kernel threads only).
 // Index 0 is unused (signal numbers are 1-based).
-// No locking needed: single-core, initsig runs sequentially during startup,
-// table is read-only after that.
+// Userspace threads use per-priest tables in proc.Priest.SignalActions.
 var signalActions [_NSIG]SignalAction
+
+// Signal delivery counters — updated atomically from nosplit context,
+// printed from non-nosplit diagnostic functions.
+var signalDeliverCount uint64 // Total signals delivered (frame built)
+var signalDeliverLastSig uint64 // Last signal number delivered
+var signalDeliverLastTID uint64 // Last TID that received a signal
+var signalDeliverLastHandler uint64 // Last handler address used
 
 // sigreturnTrampolinePC holds the address of the kmazarin sigreturn trampoline.
 // Set during signal init from getSigreturnTrampolineAddr().
@@ -59,16 +66,50 @@ func InitSignals() {
 }
 
 // GetSignalAction returns the signal action for the given signal number.
+// For userspace threads (PriestIdx >= 0), reads from the priest's per-process table.
+// For kernel threads, reads from the global table.
 //
 //go:nosplit
 func GetSignalAction(sig int) SignalAction {
+	t := GetCurrentThread()
+	if t != nil && t.PriestIdx >= 0 {
+		p := &proc.PriestListData[t.PriestIdx]
+		sa := &p.SignalActions[sig]
+		return SignalAction{Handler: sa.Handler, Flags: sa.Flags,
+			Restorer: sa.Restorer, Mask: sa.Mask}
+	}
+	return signalActions[sig]
+}
+
+// GetSignalActionForThread returns the signal action for a specific thread's priest.
+// Used by DeliverPendingSignal where the target thread may differ from the current thread.
+//
+//go:nosplit
+func GetSignalActionForThread(thread *Thread, sig int) SignalAction {
+	if thread.PriestIdx >= 0 {
+		p := &proc.PriestListData[thread.PriestIdx]
+		sa := &p.SignalActions[sig]
+		return SignalAction{Handler: sa.Handler, Flags: sa.Flags,
+			Restorer: sa.Restorer, Mask: sa.Mask}
+	}
 	return signalActions[sig]
 }
 
 // SetSignalAction installs a signal action for the given signal number.
+// For userspace threads (PriestIdx >= 0), writes to the priest's per-process table.
+// For kernel threads, writes to the global table.
 //
 //go:nosplit
 func SetSignalAction(sig int, sa *SignalAction) {
+	t := GetCurrentThread()
+	if t != nil && t.PriestIdx >= 0 {
+		p := &proc.PriestListData[t.PriestIdx]
+		p.SignalActions[sig] = proc.PriestSignalAction{
+			Handler: sa.Handler, Flags: sa.Flags,
+			Restorer: sa.Restorer, Mask: sa.Mask,
+		}
+		return
+	}
 	signalActions[sig] = *sa
 }
 
@@ -152,8 +193,8 @@ func DeliverPendingSignal(thread *Thread) {
 		}
 	}
 
-	// Check if we have a handler registered for this signal
-	action := GetSignalAction(signum)
+	// Look up action from the TARGET thread's priest, not the current thread
+	action := GetSignalActionForThread(thread, signum)
 	if action.Handler == 0 {
 		// No handler — clear the signal and return
 		atomicAndUint64(&thread.PendingSignals, ^(uint64(1) << uint(signum-1)))
@@ -162,6 +203,12 @@ func DeliverPendingSignal(thread *Thread) {
 
 	// Clear this signal from pending (before delivery)
 	atomicAndUint64(&thread.PendingSignals, ^(uint64(1) << uint(signum-1)))
+
+	// Record delivery event (nosplit-safe — no serial prints here)
+	atomic.StoreUint64(&signalDeliverLastSig, uint64(signum))
+	atomic.StoreUint64(&signalDeliverLastTID, uint64(thread.TID))
+	atomic.StoreUint64(&signalDeliverLastHandler, action.Handler)
+	atomic.AddUint64(&signalDeliverCount, 1)
 
 	// Build the signal frame on the thread's signal stack
 	// and modify the ThreadContext to enter sigtramp
@@ -172,7 +219,7 @@ func DeliverPendingSignal(thread *Thread) {
 
 // SignalSelfTest prints a diagnostic summary of the signal infrastructure state.
 // Called after each userspace program launch to verify signal readiness.
-// This is a lightweight check — full signal delivery is deferred to future work.
+// Reads from the current priest's table for userspace threads, global for kernel.
 func SignalSelfTest(label string) {
 	serial.RawUARTPuts("[SigTest] ")
 	serial.RawUARTPuts(label)
@@ -193,16 +240,45 @@ func SignalSelfTest(label string) {
 	} else {
 		serial.RawUARTPuts("(none)")
 	}
-	// Count total registered handlers
+	// Count total registered handlers from the appropriate table
 	var count int
-	for i := 1; i < _NSIG; i++ {
-		if signalActions[i].Handler != 0 {
-			count++
+	t := GetCurrentThread()
+	if t != nil && t.PriestIdx >= 0 {
+		p := &proc.PriestListData[t.PriestIdx]
+		for i := 1; i < _NSIG; i++ {
+			if p.SignalActions[i].Handler != 0 {
+				count++
+			}
+		}
+	} else {
+		for i := 1; i < _NSIG; i++ {
+			if signalActions[i].Handler != 0 {
+				count++
+			}
 		}
 	}
 	serial.RawUARTPuts(" total=")
 	serial.RawUARTDecimal(uint64(count))
 	serial.RawUARTPuts("\r\n")
+}
+
+// SignalDeliveryStats prints a summary of signal delivery activity.
+// Safe to call from non-nosplit context (uses serial output).
+func SignalDeliveryStats() {
+	count := atomic.LoadUint64(&signalDeliverCount)
+	if count == 0 {
+		serial.RawUARTPuts("[SD] no signals delivered\n")
+		return
+	}
+	serial.RawUARTPuts("[SD] delivered=")
+	serial.RawUARTDecimal(count)
+	serial.RawUARTPuts(" last: sig=")
+	serial.RawUARTDecimal(atomic.LoadUint64(&signalDeliverLastSig))
+	serial.RawUARTPuts(" tid=")
+	serial.RawUARTDecimal(atomic.LoadUint64(&signalDeliverLastTID))
+	serial.RawUARTPuts(" handler=0x")
+	serial.RawUARTHex64(atomic.LoadUint64(&signalDeliverLastHandler))
+	serial.PollWrite('\n')
 }
 
 // zeroMemory zeroes n bytes starting at ptr.

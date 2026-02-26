@@ -47,7 +47,16 @@ func SaveContextFromFrame(framePtr uintptr) {
 	t.Context.RFLAGS = frame[18]
 	t.Context.RSP = frame[19]
 	t.Context.SS = frame[20]
-	t.Context.FSBase = savedExcFSBase // Use saved value (set by common_exception_entry before WRMSR to kernel)
+	// For user-mode exceptions, savedExcFSBase holds the user's FS_BASE
+	// (saved by common_exception_entry before switching to kernel TLS).
+	// For kernel-mode exceptions (CS=0x08), common_exception_entry skips
+	// saving FS_BASE to prevent nested exceptions from overwriting the user
+	// value. But when preempting a kernel thread, we need the kernel FSBase.
+	if frame[17] == kernelCS {
+		t.Context.FSBase = kmazarinFSBase
+	} else {
+		t.Context.FSBase = savedExcFSBase
+	}
 }
 
 // doContextSwitchABI0 is the ABI0 entry point for context switching.

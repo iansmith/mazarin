@@ -127,11 +127,43 @@ TEXT runtime·pipe2(SB),NOSPLIT,$0-20
 	MOVL	$-1, errno+16(FP)
 	RET
 
-// usleep - yield CPU via direct call to YieldToReadyThread.
-// Kmazarin has no timer interrupts during early boot, so spinning would
-// block forever if another thread is on the ready queue.
+// usleep - two-phase: spin+yield during early boot, INT $0x80 nanosleep post-boot.
+//
+// Phase 1 (early boot, kmazarinSyscallReady=0): spin with PAUSE for a
+// reasonable number of iterations, then yield. The spin is critical for
+// x86_64 under TCG emulation: direct yields are expensive (~0.5ms each)
+// and cause sysmon+parent to livelock if yield frequency is too high.
+// By spinning first, we amortize the yield cost and let threads make progress.
+//
+// Phase 2 (post-boot, kmazarinSyscallReady=1): real nanosleep via INT $0x80.
 TEXT runtime·usleep(SB),NOSPLIT,$0-4
+	MOVL	runtime·kmazarinSyscallReady(SB), AX
+	TESTL	AX, AX
+	JNZ	usleep_real
+
+	// Phase 1: spin then yield.
+	MOVL	$128, CX
+usleep_spin:
+	PAUSE
+	DECL	CX
+	JNZ	usleep_spin
 	CALL	main·kmazarinYieldImpl(SB)
+	RET
+
+usleep_real:
+	// Phase 2: convert microseconds to nanoseconds, call nanosleep via INT $0x80
+	// Build timespec on stack: {tv_sec=0, tv_nsec=usec*1000}
+	MOVL	usec+0(FP), AX		// AX = microseconds
+	MOVQ	$1000, CX
+	MULQ	CX			// RAX = nanoseconds (max ~10ms = 10M ns, fits 64-bit)
+	SUBQ	$16, SP			// allocate timespec
+	MOVQ	$0, 0(SP)		// tv_sec = 0
+	MOVQ	AX, 8(SP)		// tv_nsec = usec * 1000
+	MOVQ	SP, DI			// arg0: &timespec
+	MOVQ	$0, SI			// arg1: NULL (remaining)
+	MOVL	$35, AX			// SYS_nanosleep on x86_64
+	INT	$0x80
+	ADDQ	$16, SP
 	RET
 
 // gettid - get thread ID via INT $0x80 (routed to kmazarin's dispatcher)
@@ -230,13 +262,12 @@ TEXT runtime·nanotime1(SB),NOSPLIT,$0-8
 TEXT runtime·rtsigprocmask(SB),NOSPLIT,$0-28
 	RET
 
-// rt_sigaction - register signal handler via INT $0x80
-// Two-phase: before syscall infrastructure is ready, no-op return 0.
-// After kmazarinSyscallReady is set, dispatch through kmazarin.
+// rt_sigaction - register signal handler via INT $0x80.
+// Always dispatched (no two-phase guard): diplomat installs the IDT before
+// the Go runtime starts, so INT $0x80 is available during schedinit/initsig.
+// The kmazarinSyscallReady guard was silently dropping all 56 kernel signal
+// registrations, leaving signalActions[] empty (total=0 vs ARM64's total=56).
 TEXT runtime·rt_sigaction(SB),NOSPLIT,$0-36
-	MOVL	runtime·kmazarinSyscallReady(SB), AX
-	TESTL	AX, AX
-	JZ	rt_sigaction_early
 	MOVL	sig+0(FP), DI		// arg0: signal number
 	MOVQ	new+8(FP), SI		// arg1: new sigaction ptr
 	MOVQ	old+16(FP), DX		// arg2: old sigaction ptr
@@ -244,9 +275,6 @@ TEXT runtime·rt_sigaction(SB),NOSPLIT,$0-36
 	MOVL	$13, AX			// SYS_rt_sigaction on x86_64
 	INT	$0x80
 	MOVL	AX, ret+32(FP)
-	RET
-rt_sigaction_early:
-	MOVL	$0, ret+32(FP)
 	RET
 
 // callCgoSigaction - no-op, return 0
@@ -362,7 +390,7 @@ TEXT runtime·futex(SB),NOSPLIT,$0
 	CMPL	AX, DX
 	JNE	futex_eagain		// *addr != val → return EAGAIN
 
-	// *addr == val: spin briefly waiting for change (128 iterations)
+	// *addr == val: spin waiting for change.
 	MOVL	$128, CX
 futex_spin:
 	PAUSE
@@ -480,19 +508,13 @@ clone_nog:
 	INT	$0x80
 	JMP	-3(PC)		// keep exiting
 
-// sigaltstack - set/get signal stack via INT $0x80
-// Two-phase: before syscall infrastructure is ready, no-op.
-// After kmazarinSyscallReady is set, dispatch through kmazarin.
+// sigaltstack - set/get signal stack via INT $0x80.
+// Always dispatched (no two-phase guard), matching rt_sigaction.
 TEXT runtime·sigaltstack(SB),NOSPLIT,$0-16
-	MOVL	runtime·kmazarinSyscallReady(SB), AX
-	TESTL	AX, AX
-	JZ	sigaltstack_early
 	MOVQ	new+0(FP), DI
 	MOVQ	old+8(FP), SI
 	MOVL	$131, AX		// SYS_sigaltstack on x86_64
 	INT	$0x80
-	RET
-sigaltstack_early:
 	RET
 
 // settls - set tls base to DI using WRMSR (bare-metal, no arch_prctl)

@@ -22,17 +22,22 @@ This is enforced by hooks in `.claude/settings.local.json` but read this anyway.
 
 ## Quick Reference - Environment Variables
 
-**ALWAYS set all three variables when building or running:**
+**ALWAYS set all four variables when building or running:**
 
 ```bash
 export GOTOOLCHAIN=auto
 export GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go
 export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
+export QEMU_X86_64=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-x86_64
 ```
 
 - **GOTOOLCHAIN=auto** - Required. Ensures the correct Go version is used.
 - **GO** - Path to Go binary (>= 1.24 required, 1.25.5 recommended)
 - **QEMU** - Path to qemu-system-aarch64 (>= 10.2 required)
+- **QEMU_X86_64** - Path to qemu-system-x86_64 (required for x86_64 runs)
+
+**UEFI firmware location:** `/opt/homebrew/Cellar/qemu/10.2.0/share/qemu/edk2-x86_64-code.fd`
+(Taskfile derives this from `QEMU_X86_64` path — set `OVMF` env var to override)
 
 **Usage (inline or after export):**
 ```bash
@@ -83,6 +88,7 @@ If GO or QEMU are not set, the build will attempt to find them via `which`. If f
 export GOTOOLCHAIN=auto
 export GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go
 export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
+export QEMU_X86_64=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-x86_64
 ```
 
 **Important:** Always set GOTOOLCHAIN=auto. This ensures the correct Go toolchain is used.
@@ -131,6 +137,7 @@ All build and run operations go through `$GO tool task`. See `design/TASK.md` fo
 export GOTOOLCHAIN=auto
 export GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go
 export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
+export QEMU_X86_64=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-x86_64
 
 # 2. Build and run (ARM64 — default)
 $GO tool task run              # Builds diplomat+kmazarin, runs QEMU for 5s

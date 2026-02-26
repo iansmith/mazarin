@@ -35,6 +35,11 @@ func GetThreadSignalStack(threadPtr uintptr) (base, sp, size uint64)
 //go:nosplit
 func SetThreadSignalStack(threadPtr uintptr, base, sp, size uint64)
 
+// GetThreadPID returns the PID (PriestId) of a thread.
+// Provided by main.getThreadPIDForKsyscall.
+//go:nosplit
+func GetThreadPID(threadPtr uintptr) int16
+
 // RestoreFromSignalFrame restores registers from signal frame ucontext,
 // clears InSignalHandler, and sets SigreturnPending flag.
 // Provided by main.restoreFromSignalFrameForKsyscall.
