@@ -141,6 +141,66 @@ func getCurrentThreadTIDForKsyscall() int16 {
 }
 
 // ============================================================================
+// Signal functions for ksyscall package
+// ============================================================================
+
+//go:linkname getSignalActionForKsyscall mazzy/kmazarin/ksyscall.GetSignalAction
+//go:nosplit
+func getSignalActionForKsyscall(sig int) SignalAction {
+	return GetSignalAction(sig)
+}
+
+//go:linkname setSignalActionForKsyscall mazzy/kmazarin/ksyscall.SetSignalAction
+//go:nosplit
+func setSignalActionForKsyscall(sig int, handler, flags, restorer, mask uint64) {
+	sa := SignalAction{Handler: handler, Flags: flags, Restorer: restorer, Mask: mask}
+	SetSignalAction(sig, &sa)
+}
+
+//go:linkname threadLookupByTIDForKsyscall mazzy/kmazarin/ksyscall.ThreadLookupByTID
+//go:nosplit
+func threadLookupByTIDForKsyscall(tid int32) uintptr {
+	t := threadLookupByTID(tid)
+	if t == nil {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(t))
+}
+
+//go:linkname setThreadPendingSignalForKsyscall mazzy/kmazarin/ksyscall.SetThreadPendingSignal
+//go:nosplit
+func setThreadPendingSignalForKsyscall(threadPtr uintptr, signum int) {
+	t := (*Thread)(unsafe.Pointer(threadPtr))
+	bit := uint64(1) << uint(signum-1)
+	atomicOrUint64(&t.PendingSignals, bit)
+}
+
+//go:linkname getThreadSignalStackForKsyscall mazzy/kmazarin/ksyscall.GetThreadSignalStack
+//go:nosplit
+func getThreadSignalStackForKsyscall(threadPtr uintptr) (base, sp, size uint64) {
+	t := (*Thread)(unsafe.Pointer(threadPtr))
+	return t.SignalStackBase, t.SignalSP, t.SignalStackSize
+}
+
+//go:linkname setThreadSignalStackForKsyscall mazzy/kmazarin/ksyscall.SetThreadSignalStack
+//go:nosplit
+func setThreadSignalStackForKsyscall(threadPtr uintptr, base, sp, size uint64) {
+	t := (*Thread)(unsafe.Pointer(threadPtr))
+	t.SignalStackBase = base
+	t.SignalSP = sp
+	t.SignalStackSize = size
+}
+
+//go:linkname restoreFromSignalFrameForKsyscall mazzy/kmazarin/ksyscall.RestoreFromSignalFrame
+//go:nosplit
+func restoreFromSignalFrameForKsyscall(threadPtr uintptr) {
+	t := (*Thread)(unsafe.Pointer(threadPtr))
+	RestoreFromSignalFrame(t)
+	t.InSignalHandler = 0
+	t.SigreturnPending = 1
+}
+
+// ============================================================================
 // Per-CPU Accessors for kirq package
 // ============================================================================
 

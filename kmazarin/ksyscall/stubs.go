@@ -78,10 +78,12 @@ func SyscallGettid(_, _, _, _, _, _ uint64) int64 {
 //
 //go:nosplit
 func SyscallSchedYield(_, _, _, _, _, _ uint64) int64 {
-	// Check m.locks — do not yield if the runtime is in a critical section.
-	if runtimeMLocks() != 0 {
-		return 0
-	}
+	// NOTE: Do NOT check m.locks here. Voluntary yields (from futex spin,
+	// usleep, etc.) must always be allowed. The Go runtime holds m.locks
+	// when calling futex/lock2, so blocking yield here creates a deadlock:
+	// the thread waiting on a futex can never yield to the thread that would
+	// release the lock. The m.locks check is only appropriate for ASYNC
+	// (timer-driven) preemption, not voluntary yields.
 
 	// Try to find another ready thread to switch to
 	nextThread := threadFindReadyForYield()
@@ -128,13 +130,7 @@ func runtimeMLocks() int32 {
 	return locks
 }
 
-// SyscallSigaltstack sets up an alternate signal stack
-// We don't support signals, return success
-//
-//go:nosplit
-func SyscallSigaltstack(_, _, _, _, _, _ uint64) int64 {
-	return 0 // Success
-}
+// SyscallSigaltstack is now in signal.go
 
 // SyscallSchedSetaffinity sets CPU affinity
 // In SMP configuration, we accept any valid CPU mask
@@ -323,38 +319,22 @@ func SyscallOpenat(dirfd, pathname, flags, mode, _, _ uint64) int64 {
 }
 
 // ============================================================================
-// Signal stubs
+// Signal stubs (remaining — rt_sigaction, sigaltstack, tgkill moved to signal.go)
 // ============================================================================
 
-// SyscallRtSigaction sets up a signal action
-// We don't support signals, return success
-//
-//go:nosplit
-func SyscallRtSigaction(_, _, _, _, _, _ uint64) int64 {
-	return 0 // Success
-}
-
-// SyscallKill sends a signal
-// We don't support signals, return success
+// SyscallKill sends a signal to a process.
+// Minimal implementation — just return success since we're single-process.
 //
 //go:nosplit
 func SyscallKill(_, _, _, _, _, _ uint64) int64 {
 	return 0 // Success
 }
 
-// SyscallTkill sends a signal to a thread
-// We don't support signals, return success
+// SyscallTkill sends a signal to a thread (deprecated in favor of tgkill).
+// Forward to tgkill implementation.
 //
 //go:nosplit
 func SyscallTkill(_, _, _, _, _, _ uint64) int64 {
-	return 0 // Success
-}
-
-// SyscallTgkill sends a signal to a thread in a process
-// We don't support signals, return success
-//
-//go:nosplit
-func SyscallTgkill(_, _, _, _, _, _ uint64) int64 {
 	return 0 // Success
 }
 

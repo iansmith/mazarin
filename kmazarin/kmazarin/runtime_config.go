@@ -40,11 +40,30 @@ var kmazarinUnifiedPoolStart uintptr
 //go:linkname kmazarinUnifiedPoolEnd runtime.kmazarinUnifiedPoolEnd
 var kmazarinUnifiedPoolEnd uintptr
 
+//go:linkname kmazarinSyscallReady runtime.kmazarinSyscallReady
+var kmazarinSyscallReady uint64
+
+// SetSyscallReady marks the overlay syscall handlers as operational.
+// Called after SetVBAR installs kmazarin's exception vectors.
+// This enables the usleep/futex overlays to issue real SVCs instead of
+// spin+yield, providing proper blocking sleep and futex behavior.
+//
+//go:nosplit
+func SetSyscallReady() {
+	kmazarinSyscallReady = 1
+}
+
 // kmazarinGCStatsNoSTW reads GC state without triggering stop-the-world.
-// Returns (numGC, gcPhase, panicking, heapLive, enablegc, gcPercent, gcPercentHeapGoal, heapMarked).
+// Returns (numGC, gcPhase, panicking, heapLive, enablegc, gcPercent, gcPercentHeapGoal, heapMarked, triggered, heapGoal).
 //
 //go:linkname kmazarinGCStatsNoSTW runtime.kmazarinGCStats
-func kmazarinGCStatsNoSTW() (uint32, uint32, uint32, uint64, uint32, int32, uint64, uint64)
+func kmazarinGCStatsNoSTW() (uint32, uint32, uint32, uint64, uint32, int32, uint64, uint64, uint64, uint64)
+
+// kmazarinGCGatesNoSTW returns the conditions that gcStart() checks.
+// (onG0, mLocks, preemptOff, sweepDone)
+//
+//go:linkname kmazarinGCGatesNoSTW runtime.kmazarinGCGates
+func kmazarinGCGatesNoSTW() (uint32, int32, uint32, uint32)
 
 // RuntimeConfig holds the minimal configuration from the bootloader.
 type RuntimeConfig struct {

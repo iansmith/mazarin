@@ -72,6 +72,15 @@ func RunFirstThread() {}
 //go:nosplit
 func YieldToReadyThread() {}
 
+//go:nosplit
+func sigreturnTrampoline() {}
+
+//go:nosplit
+func getSigreturnTrampolineAddr() uintptr { return 0 }
+
+//go:nosplit
+func ThreadExitAsm() uint64 { return 0 }
+
 // Additional stubs for functions called from Go code
 func IRQDispatch()       {}
 func SyscallDispatch()   {}

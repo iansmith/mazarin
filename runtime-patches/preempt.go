@@ -486,6 +486,9 @@ type PreemptOffsets struct {
 	GMOffset     uintptr // g.m - pointer to m struct
 	MG0Offset    uintptr // m.g0 - g0 goroutine (always offset 0)
 	MLocksOffset uintptr // m.locks - lock count (must be 0 for safe preemption)
+
+	// Signal delivery offsets
+	MGsignalOffset uintptr // m.gsignal - pointer to gsignal g (signal stack)
 }
 
 // GetPreemptOffsets returns the struct field offsets needed for preemption.
@@ -522,5 +525,8 @@ func GetPreemptOffsets() PreemptOffsets {
 		GMOffset:     unsafe.Offsetof(gInstance.m),
 		MG0Offset:    unsafe.Offsetof(mInstance.g0),
 		MLocksOffset: unsafe.Offsetof(mInstance.locks),
+
+		// Signal delivery offsets
+		MGsignalOffset: unsafe.Offsetof(mInstance.gsignal),
 	}
 }

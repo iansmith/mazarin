@@ -323,6 +323,15 @@ type Thread struct {
 	// Without this, the child inherits the parent's FS_BASE and corrupts the
 	// parent's TLS when it writes its g pointer to FS:-8.
 	SyscallCloneTLS uint64
+
+	// Signal delivery state
+	PendingSignals  uint64 // Bitmask of pending signals (bit N = signal N+1)
+	SignalSP        uint64 // gsignal stack top (stack grows down from here)
+	SignalStackBase uint64 // gsignal stack bottom
+	SignalStackSize uint64 // gsignal stack size in bytes
+	SignalUctxAddr  uint64 // Address of ucontext in current signal frame
+	InSignalHandler uint32 // 1 = executing signal handler, 0 = normal
+	SigreturnPending uint32 // 1 = rt_sigreturn called, load Context for ERET
 }
 
 // Thread struct field offsets for assembly access.
@@ -337,6 +346,8 @@ var (
 	ThreadGoroutineDeadlineOffset uintptr
 	ThreadAsyncPreemptAddrOffset  uintptr
 	ThreadInCloneSetupOffset      uintptr
+	ThreadSigreturnPendingOffset  uintptr
+	ThreadInSignalHandlerOffset   uintptr
 )
 
 // initThreadOffsets computes Thread struct field offsets using unsafe.Offsetof().
@@ -353,6 +364,8 @@ func initThreadOffsets() {
 	ThreadGoroutineDeadlineOffset = unsafe.Offsetof(t.GoroutinePreemptDeadline)
 	ThreadAsyncPreemptAddrOffset = unsafe.Offsetof(t.AsyncPreemptAddr)
 	ThreadInCloneSetupOffset = unsafe.Offsetof(t.InCloneSetup)
+	ThreadSigreturnPendingOffset = unsafe.Offsetof(t.SigreturnPending)
+	ThreadInSignalHandlerOffset = unsafe.Offsetof(t.InSignalHandler)
 }
 
 // Id implements the ds.Ider interface
@@ -963,30 +976,21 @@ func KernelIdleLoop() {
 		// never get CPU time because this loop never triggers Go's scheduler.
 		runtime.Gosched()
 
-		// GC diagnostic — print every iteration (non-blocking, no STW)
+		// GC diagnostic — print every 64th iteration to reduce UART spam
 		gcDiagCounter++
-		numgc, phase, panicVal, heapLive, enablegc, gcPct, pctGoal, heapMarked := kmazarinGCStatsNoSTW()
-		serial.RawUARTPuts("[GC] c=")
-		serial.RawUARTDecimal(uint64(numgc))
-		serial.RawUARTPuts(" p=")
-		serial.RawUARTDecimal(uint64(phase))
-		serial.RawUARTPuts(" panic=")
-		serial.RawUARTDecimal(uint64(panicVal))
-		serial.RawUARTPuts(" live=")
-		serial.RawUARTHexCompact(heapLive)
-		serial.RawUARTPuts(" egc=")
-		serial.RawUARTDecimal(uint64(enablegc))
-		serial.RawUARTPuts(" pct=")
-		if gcPct < 0 {
-			serial.RawUARTPuts("-1")
-		} else {
-			serial.RawUARTDecimal(uint64(gcPct))
+		numgc, _, _, heapLive, _, _, _, heapMarked, trigger, _ := kmazarinGCStatsNoSTW()
+		if gcDiagCounter&0x3F == 0 || numgc != gcDiagLastNumGC {
+			serial.RawUARTPuts("[GC] c=")
+			serial.RawUARTDecimal(uint64(numgc))
+			serial.RawUARTPuts(" live=")
+			serial.RawUARTHexCompact(heapLive)
+			serial.RawUARTPuts(" trig=")
+			serial.RawUARTHexCompact(trigger)
+			serial.RawUARTPuts(" marked=")
+			serial.RawUARTHexCompact(heapMarked)
+			serial.RawUARTPuts("\r\n")
+			gcDiagLastNumGC = numgc
 		}
-		serial.RawUARTPuts(" goal=")
-		serial.RawUARTHexCompact(pctGoal)
-		serial.RawUARTPuts(" marked=")
-		serial.RawUARTHexCompact(heapMarked)
-		serial.RawUARTPuts("\r\n")
 
 		// Periodic A/D bit scan. Clears hardware Accessed bits on all mapped
 		// userspace pages and propagates Dirty state into PageDescriptors.
@@ -1050,24 +1054,12 @@ func KernelIdleLoop() {
 //go:nosplit
 //go:noinline
 func SaveThread0AndYield() uint64 {
-	// Check m.locks — do not yield if the Go runtime is in a critical section
-	// (e.g., mallocgc, mspan.sweep). Matches SyscallSchedYield's guard.
-	// Yielding with locks held lets another thread see inconsistent allocator
-	// state, corrupting mspan metadata and causing crashes.
-	gmOff := kirq.PreemptGMOffset
-	mLocksOff := kirq.PreemptMLocksOffset
-	if gmOff != 0 || mLocksOff != 0 { // offsets initialized
-		gRaw := GetGRegister()
-		if gRaw != 0 {
-			mPtr := *(*uintptr)(unsafe.Pointer(uintptr(gRaw) + gmOff))
-			if mPtr != 0 {
-				locks := *(*int32)(unsafe.Pointer(mPtr + mLocksOff))
-				if locks != 0 {
-					return 0
-				}
-			}
-		}
-	}
+	// NOTE: Do NOT check m.locks here. This is a voluntary yield (called from
+	// the kernel idle loop to switch to a ready thread). The Go runtime holds
+	// m.locks when calling futex/lock2, so blocking yield here creates a
+	// deadlock: the thread waiting on a futex can never yield to the thread
+	// that would release the lock. The m.locks check is only appropriate for
+	// ASYNC (timer-driven) preemption in checkThreadPreemptionImpl.
 
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
@@ -1079,15 +1071,17 @@ func SaveThread0AndYield() uint64 {
 		return 0
 	}
 
-	// Put current thread on ready queue (at TAIL for fair round-robin yield).
-	// Using PushNoDuplicate (tail) instead of enqueueReadySchedLockHeld which
-	// calls PushHeadNoDuplicate for PID=0 threads. If the yielding kernel
-	// thread went to HEAD, it would be immediately re-selected by the fallback
-	// Pop() in findReadyThread, causing an infinite self-scheduling loop.
+	// Put current thread on ready queue.
+	// CRITICAL: Use enqueueReadySchedLockHeld, which places PID=0 (kernel)
+	// threads at HEAD. HEAD placement ensures the timer preemption path can
+	// find and resume thread 0 after yielding to a userspace thread.
+	// Using PushNoDuplicate (TAIL) causes the system to hang because
+	// findReadyThreadPreferDifferentPriestSchedLockHeld scans from HEAD
+	// and thread 0 at TAIL behind multiple userspace threads never gets
+	// selected back by timer preemption.
 	t0.State = ThreadReady
 	pluckFromAllQueues(t0.TID)
-	perCPU := GetPerCPU()
-	perCPU.LocalReadyQueue.PushNoDuplicate(t0.TID)
+	enqueueReadySchedLockHeld(t0)
 
 	// Update tick accounting for thread 0
 	currentTime := kirq.ReadCounterValue()
@@ -1166,6 +1160,11 @@ func SaveThread0AndYield() uint64 {
 		for {
 			WaitForInterrupt()
 		}
+	}
+
+	// Deliver pending signals before ERET to this thread.
+	if next.PendingSignals != 0 && next.InSignalHandler == 0 {
+		DeliverPendingSignal(next)
 	}
 
 	return uint64(uintptr(unsafe.Pointer(&next.Context)))
@@ -1264,6 +1263,11 @@ func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
 
 	// Don't restore DAIF - the ERET will set SPSR which controls IRQ state
 	_ = savedDAIF
+
+	// Deliver pending signals before ERET to this thread.
+	if thread.PendingSignals != 0 && thread.InSignalHandler == 0 {
+		DeliverPendingSignal(thread)
+	}
 
 	return uint64(uintptr(unsafe.Pointer(&thread.Context)))
 }
@@ -1373,6 +1377,20 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 			if proc.PriestListInUse[parent.PriestIdx] {
 				priest.ThreadCount++
 			}
+		}
+	}
+
+	// Capture gsignal stack bounds for signal delivery.
+	// Path: m → m.gsignal → gsignal.stack.hi / gsignal.stack.lo
+	if t.MPtr != 0 {
+		mPtr := uintptr(t.MPtr)
+		gsignalPtr := *(*uintptr)(unsafe.Pointer(mPtr + kirq.PreemptMGsignalOffset))
+		if gsignalPtr != 0 {
+			stackHi := *(*uintptr)(unsafe.Pointer(gsignalPtr + kirq.PreemptStackHiOffset))
+			stackLo := *(*uintptr)(unsafe.Pointer(gsignalPtr + kirq.PreemptStackLoOffset))
+			t.SignalSP = uint64(stackHi)       // Stack grows down
+			t.SignalStackBase = uint64(stackLo)
+			t.SignalStackSize = uint64(stackHi - stackLo)
 		}
 	}
 
@@ -2369,6 +2387,12 @@ func tryPickupWorkIdleCPU(sf *SchedulerFunc) uint64 {
 			WaitForInterrupt()
 		}
 	}
+
+	// Deliver pending signals before ERET to this thread.
+	if next.PendingSignals != 0 && next.InSignalHandler == 0 {
+		DeliverPendingSignal(next)
+	}
+
 	return uint64(uintptr(unsafe.Pointer(&next.Context)))
 }
 
@@ -2512,6 +2536,11 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		for {
 			WaitForInterrupt()
 		}
+	}
+
+	// Deliver pending signals before ERET to this thread.
+	if next.PendingSignals != 0 && next.InSignalHandler == 0 {
+		DeliverPendingSignal(next)
 	}
 
 	return uint64(uintptr(unsafe.Pointer(&next.Context)))

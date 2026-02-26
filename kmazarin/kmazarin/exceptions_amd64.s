@@ -1681,5 +1681,14 @@ GLOBL	·syscallScratchSS(SB), NOPTR, $8
 // Single-CPU so a global buffer is safe (no concurrent access).
 GLOBL	·xmmSaveArea(SB), NOPTR, $256
 
+// sigreturnTrampoline — stub for amd64 (signal delivery not yet implemented).
+TEXT ·sigreturnTrampoline(SB), NOSPLIT|NOFRAME, $0
+	RET
+
+// getSigreturnTrampolineAddr — returns 0 on amd64 (no trampoline yet).
+TEXT ·getSigreturnTrampolineAddr(SB), NOSPLIT, $0-8
+	MOVQ	$0, ret+0(FP)
+	RET
+
 
 

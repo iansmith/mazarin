@@ -16,17 +16,18 @@ import (
 //   [0]    argc = 1
 //   [8]    argv[0] → "kmazarin" string
 //   [16]   argv[1] = NULL
-//   [24]   envp[0] → "GOGC=5"
-//   [32]   envp[1] → "GODEBUG=asyncpreemptoff=1,gctrace=1"
-//   [40]   envp[2] → "GOMEMLIMIT=64MiB"
-//   [48]   envp[3] = NULL
-//   [56+]  auxv entries (key, value pairs) — up to 20 entries (320 bytes)
+//   [24]   envp[0] → "GODEBUG=asyncpreemptoff=1,gctrace=1"
+//   [32]   envp[1] → "GOMEMLIMIT=64MiB"
+//   [40]   envp[2] = NULL
+//   [48+]  auxv entries (key, value pairs) — up to 20 entries (320 bytes)
 //   ...
 //   [384]  "kmazarin\0"
 //   [400]  16 random bytes
-//   [416]  "GOGC=5\0"
-//   [432]  "GODEBUG=asyncpreemptoff=1,gctrace=1\0"
-//   [480]  "GOMEMLIMIT=64MiB\0"
+//   [416]  "GODEBUG=asyncpreemptoff=1,gctrace=1\0"
+//   [464]  "GOMEMLIMIT=64MiB\0"
+//
+// NOTE: GOGC is NOT set for the kernel — uses Go default (100%).
+// Userspace programs get GOGC=5 via launch.go.
 func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel, cfg *KmazarinConfig) (uint64, error) {
 	const paramSize = 0x300 // 768 bytes — room for 20 auxv entries + strings
 
@@ -62,26 +63,16 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel, cfg *
 	randomPhys := structPhys + 400
 	getTimerBasedRandom(randomPhys)
 
-	// "GOGC=5" at offset 416 (aggressive GC for stress testing)
-	gogc := (*[16]byte)(unsafe.Pointer(uintptr(structPhys + 416)))
-	gogc[0] = 'G'
-	gogc[1] = 'O'
-	gogc[2] = 'G'
-	gogc[3] = 'C'
-	gogc[4] = '='
-	gogc[5] = '5'
-	gogc[6] = 0
-
-	// "GODEBUG=asyncpreemptoff=1,gctrace=1" at offset 432
-	godebug := (*[48]byte)(unsafe.Pointer(uintptr(structPhys + 432)))
+	// "GODEBUG=asyncpreemptoff=1,gctrace=1" at offset 416
+	godebug := (*[48]byte)(unsafe.Pointer(uintptr(structPhys + 416)))
 	s := "GODEBUG=asyncpreemptoff=1,gctrace=1"
 	for i := 0; i < len(s); i++ {
 		godebug[i] = s[i]
 	}
 	godebug[len(s)] = 0
 
-	// "GOMEMLIMIT=64MiB" at offset 480
-	memlimit := (*[24]byte)(unsafe.Pointer(uintptr(structPhys + 480)))
+	// "GOMEMLIMIT=64MiB" at offset 464
+	memlimit := (*[24]byte)(unsafe.Pointer(uintptr(structPhys + 464)))
 	ml := "GOMEMLIMIT=64MiB"
 	for i := 0; i < len(ml); i++ {
 		memlimit[i] = ml[i]
@@ -97,17 +88,15 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel, cfg *
 	data[1] = structStart + 384
 	// argv[1] = NULL
 	data[2] = 0
-	// envp[0] = "GOGC=100" (VA)
+	// envp[0] = "GODEBUG=asyncpreemptoff=1,gctrace=1" (VA)
 	data[3] = structStart + 416
-	// envp[1] = "GODEBUG=asyncpreemptoff=1,gctrace=1" (VA)
-	data[4] = structStart + 432
-	// envp[2] = "GOMEMLIMIT=64MiB" (VA)
-	data[5] = structStart + 480
-	// envp[3] = NULL
-	data[6] = 0
+	// envp[1] = "GOMEMLIMIT=64MiB" (VA)
+	data[4] = structStart + 464
+	// envp[2] = NULL
+	data[5] = 0
 
-	// Auxiliary vector (starts at index 7 = byte offset 56)
-	i := 7
+	// Auxiliary vector (starts at index 6 = byte offset 48)
+	i := 6
 
 	// AT_PAGESZ = 6: Physical page size
 	data[i] = 6 // AT_PAGESZ

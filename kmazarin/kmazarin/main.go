@@ -162,6 +162,9 @@ func init() {
 	// enabling a unified approach for kmazarin and priest goroutine preemption.
 	SetKmazarinAsyncPreemptAddr(uint64(asyncPreemptAddr))
 
+	// Initialize signal delivery infrastructure (sigreturn trampoline address)
+	InitSignals()
+
 	// NOTE: OLD UART initialization disabled - now using PL011 device driver
 	// kirq.InitUART()
 
@@ -695,8 +698,10 @@ func simpleMain() {
 	if testRuntimeReadiness() {
 		Print("[Main] Runtime ready")
 
-		debug.SetGCPercent(100)                    // GC at 2x live set (balanced for kernel)
-		debug.SetMemoryLimit(64 * 1024 * 1024)     // 64MB soft heap cap
+		// NOTE: GOGC is NOT set here — kernel uses Go default (100%).
+		// Userspace programs get GOGC=5 via their envp in launch.go.
+		// GOMEMLIMIT is set via diplomat envp (64MiB).
+		debug.SetMemoryLimit(64 * 1024 * 1024)     // 64MB soft heap cap (matches diplomat envp)
 		InitDeadlineQueue()
 		InitSoftIRQDispatcher()
 	} else {
@@ -745,6 +750,10 @@ func simpleMain() {
 	// This must happen BEFORE any device initialization that might enable interrupts!
 	vectorAddr := GetExceptionVectorBase()
 	SetVBAR(vectorAddr)
+
+	// Mark syscall handlers as operational. This enables the runtime overlays
+	// (usleep, futex) to issue real SVCs for proper blocking instead of spin+yield.
+	SetSyscallReady()
 
 	// Configure SYSCALL MSRs for userspace (x86_64 only; no-op on ARM64)
 	SetupSyscallMSRs()
@@ -804,6 +813,7 @@ func simpleMain() {
 	if result == 0 {
 		kmem.FinalUserspaceSync()
 		Print("[main] dapope launched")
+		SignalSelfTest("post-dapope")
 	} else {
 		console.KPrintf("[main] dapope launch failed (error %d)\n", result)
 	}
@@ -815,6 +825,7 @@ func simpleMain() {
 	if result == 0 {
 		kmem.FinalUserspaceSync()
 		Print("[main] stdio launched")
+		SignalSelfTest("post-stdio")
 	} else {
 		console.KPrintf("[main] stdio launch failed (error %d)\n", result)
 	}

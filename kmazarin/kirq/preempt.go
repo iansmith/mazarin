@@ -29,6 +29,7 @@ type preemptOffsetsType struct {
 	GMOffset          uintptr // Offset of g.m from g pointer
 	MG0Offset         uintptr // Offset of m.g0 from m pointer (always 0)
 	MLocksOffset      uintptr // Offset of m.locks from m pointer
+	MGsignalOffset    uintptr // Offset of m.gsignal from m pointer
 }
 
 // Global preemption offsets - set by InitPreemption(), read by assembly.
@@ -47,6 +48,7 @@ var (
 	PreemptGMOffset          uintptr // Offset of g.m from g pointer
 	PreemptMG0Offset         uintptr // Offset of m.g0 from m pointer (always 0)
 	PreemptMLocksOffset      uintptr // Offset of m.locks from m pointer
+	PreemptMGsignalOffset    uintptr // Offset of m.gsignal from m pointer
 
 	// Async preemption addresses - set by SetAsyncPreemptAddr, read by assembly
 	AsyncPreemptAddr        uint64 // Address of runtime.asyncPreempt
@@ -197,6 +199,7 @@ func InitPreemption() {
 	PreemptGMOffset = offsets.GMOffset
 	PreemptMG0Offset = offsets.MG0Offset
 	PreemptMLocksOffset = offsets.MLocksOffset
+	PreemptMGsignalOffset = offsets.MGsignalOffset
 
 	// Read system timer frequency via ktimer
 	SystemTimerFrequency = uint64(ktimer.Frequency())

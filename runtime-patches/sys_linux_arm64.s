@@ -101,18 +101,46 @@ TEXT runtime·pipe2(SB),NOSPLIT|NOFRAME,$0-20
 	MOVW	R0, errno+16(FP)
 	RET
 
-// usleep - yield CPU via sched_yield SVC
-// Kmazarin has no timer interrupts during early boot, so spinning would
-// block forever if another thread (e.g., the parent from clone) is on the
-// ready queue. Using sched_yield lets the scheduler run queued threads.
-TEXT runtime·usleep(SB),NOSPLIT,$0-4
+// usleep - two-phase implementation:
+//
+// Phase 1 (early boot): sched_yield — no timer IRQs, so spinning would
+//   block forever. Yielding lets other threads run.
+//
+// Phase 2 (post-boot, kmazarinSyscallReady=1): real SVC 101 (SYS_nanosleep).
+//   Routes through kmazarin's SyscallNanosleep handler which blocks the
+//   thread with a timer deadline and context-switches to another thread.
+//   The thread wakes when the deadline expires. This matches Linux behavior
+//   and makes sysmon sleep for the correct duration instead of busy-polling.
+//
+// func usleep(usec uint32)
+TEXT runtime·usleep(SB),NOSPLIT,$24-4
+	// Check if kmazarin syscall handlers are ready
+	MOVD	runtime·kmazarinSyscallReady(SB), R7
+	CBNZ	R7, usleep_real
+
+	// Phase 1: early boot — sched_yield
 	MOVD	$124, R8	// SYS_sched_yield
 	SVC
 	RET
 
-// gettid - return 1
+usleep_real:
+	// Phase 2: convert microseconds to timespec and call nanosleep
+	MOVW	usec+0(FP), R3		// R3 = microseconds (32-bit, zero-extended)
+	MOVD	$1000, R4
+	MUL	R3, R4, R5		// R5 = nanoseconds (usec * 1000; max ~10ms = 10M ns)
+	MOVD	$0, R6			// tv_sec = 0 (sysmon max is 10ms)
+	MOVD	R6, 8(RSP)		// store tv_sec on stack
+	MOVD	R5, 16(RSP)		// store tv_nsec on stack
+	ADD	$8, RSP, R0		// R0 = &timespec
+	MOVD	$0, R1			// R1 = NULL (remaining time)
+	MOVD	$101, R8		// SYS_nanosleep
+	SVC
+	RET
+
+// gettid — route through kmazarin syscall dispatcher
 TEXT runtime·gettid(SB),NOSPLIT,$0-4
-	MOVW	$1, R0
+	MOVD	$178, R8	// SYS_gettid
+	SVC
 	MOVW	R0, ret+0(FP)
 	RET
 
@@ -130,8 +158,13 @@ TEXT ·getpid(SB),NOSPLIT|NOFRAME,$0-8
 	MOVD	R0, ret+0(FP)
 	RET
 
-// tgkill - no-op
+// tgkill — route through kmazarin syscall dispatcher
 TEXT ·tgkill(SB),NOSPLIT,$0-24
+	MOVD	tgid+0(FP), R0
+	MOVD	tid+8(FP), R1
+	MOVD	sig+16(FP), R2
+	MOVD	$131, R8	// SYS_tgkill
+	SVC
 	RET
 
 // setitimer - no-op
@@ -191,9 +224,14 @@ TEXT runtime·nanotime1(SB),NOSPLIT,$0-8
 TEXT runtime·rtsigprocmask(SB),NOSPLIT|NOFRAME,$0-28
 	RET
 
-// rt_sigaction - return 0
+// rt_sigaction — route through kmazarin syscall dispatcher
 TEXT runtime·rt_sigaction(SB),NOSPLIT|NOFRAME,$0-36
-	MOVW	$0, R0
+	MOVW	sig+0(FP), R0
+	MOVD	new+8(FP), R1
+	MOVD	old+16(FP), R2
+	MOVD	size+24(FP), R3
+	MOVD	$134, R8	// SYS_rt_sigaction
+	SVC
 	MOVW	R0, ret+32(FP)
 	RET
 
@@ -207,8 +245,23 @@ TEXT runtime·callCgoSigaction(SB),NOSPLIT,$0
 TEXT runtime·sigfwd(SB),NOSPLIT,$0-32
 	RET
 
-// sigtramp - no-op
-TEXT runtime·sigtramp(SB),NOSPLIT|TOPFRAME,$0
+// sigtramp — signal trampoline, copied from Go runtime.
+// Called when kmazarin delivers a signal: R0=sig, R1=info, R2=ctx.
+// Saves callee-saved registers, calls sigtrampgo, restores, returns.
+TEXT runtime·sigtramp(SB),NOSPLIT|TOPFRAME,$176
+	// Save callee-save registers (in case signal forwarding modifies them)
+	SAVE_R19_TO_R28(8*4)
+	SAVE_F8_TO_F15(8*14)
+
+	// In kmazarin, g is always set (no CGO), so skip load_g.
+	// R0, R1, R2 already contain sig, info, ctx.
+	MOVD	$runtime·sigtrampgo<ABIInternal>(SB), R3
+	BL	(R3)
+
+	// Restore callee-save registers
+	RESTORE_R19_TO_R28(8*4)
+	RESTORE_F8_TO_F15(8*14)
+
 	RET
 
 // sigprofNonGoWrapper - no-op
@@ -247,19 +300,25 @@ TEXT runtime·madvise(SB),NOSPLIT|NOFRAME,$0
 	MOVW	R0, ret+24(FP)
 	RET
 
-// futex - implement FUTEX_WAIT with spin-check, FUTEX_WAKE as immediate return.
+// futex - two-phase implementation:
 //
-// For FUTEX_WAIT (op & 0x7F == 0): check if *addr == val. If not, return
-// EAGAIN (-11). If yes, spin briefly checking for value change, then return 0
-// (simulating timeout/spurious wakeup).
+// Phase 1 (early boot, before SetVBAR): spin-check + sched_yield.
+//   No kmazarin exception vectors installed, so only basic SVCs work.
+//   Spin briefly checking for value change, then yield.
 //
-// For FUTEX_WAKE (op & 0x7F == 1): return 0 immediately.
-//
-// This prevents infinite spin loops in the Go scheduler by correctly returning
-// EAGAIN when the futex value has already changed.
+// Phase 2 (post-boot, kmazarinSyscallReady=1): real SVC 98 (SYS_futex).
+//   Routes through kmazarin's SyscallFutex handler which properly blocks
+//   the thread (FUTEX_WAIT) or wakes blocked threads (FUTEX_WAKE).
+//   This matches Linux behavior: threads sleep until woken, with optional
+//   timeout via deadline queue.
 //
 // func futex(addr unsafe.Pointer, op int32, val uint32, ts, addr2 unsafe.Pointer, val3 uint32) int32
 TEXT runtime·futex(SB),NOSPLIT|NOFRAME,$0
+	// Check if kmazarin syscall handlers are ready
+	MOVD	runtime·kmazarinSyscallReady(SB), R7
+	CBNZ	R7, futex_real
+
+	// --- Phase 1: early boot (spin + yield) ---
 	MOVD	addr+0(FP), R0		// addr
 	MOVW	op+8(FP), R1		// op
 	MOVW	val+12(FP), R2		// val
@@ -267,7 +326,7 @@ TEXT runtime·futex(SB),NOSPLIT|NOFRAME,$0
 	// Check operation type (low 7 bits, ignoring FUTEX_PRIVATE_FLAG)
 	AND	$0x7F, R1, R3
 	CMP	$1, R3
-	BEQ	futex_wake		// FUTEX_WAKE
+	BEQ	futex_wake_early	// FUTEX_WAKE
 
 	// FUTEX_WAIT: check *addr vs val
 	MOVW	(R0), R4		// *addr
@@ -284,10 +343,8 @@ futex_spin:
 	SUB	$1, R5
 	CBNZ	R5, futex_spin
 
-	// Spin exhausted, value didn't change. Yield to scheduler so other
-	// threads can run (no timer interrupts during early boot), then return
-	// 0 to simulate a timeout/spurious wakeup. The caller (notesleep/lock2)
-	// will re-check the condition and call futex again if still waiting.
+	// Spin exhausted — yield so other threads can run, then return 0
+	// (simulating timeout). Caller re-checks and calls futex again.
 	MOVD	$124, R8	// SYS_sched_yield
 	SVC
 	MOVW	$0, R0
@@ -295,14 +352,26 @@ futex_spin:
 	RET
 
 futex_eagain:
-	// Value at addr differs from expected val → EAGAIN
-	MOVW	$-11, R0		// EAGAIN = 11 on Linux
+	MOVW	$-11, R0		// EAGAIN
 	MOVW	R0, ret+40(FP)
 	RET
 
-futex_wake:
-	// FUTEX_WAKE: return 0 (nothing to wake on bare metal)
+futex_wake_early:
 	MOVW	$0, R0
+	MOVW	R0, ret+40(FP)
+	RET
+
+futex_real:
+	// --- Phase 2: real futex SVC (post-boot) ---
+	// Route through kmazarin's SyscallFutex handler for proper blocking/waking.
+	MOVD	addr+0(FP), R0		// uaddr
+	MOVW	op+8(FP), R1		// op
+	MOVW	val+12(FP), R2		// val
+	MOVD	ts+16(FP), R3		// timeout
+	MOVD	addr2+24(FP), R4	// uaddr2
+	MOVW	val3+32(FP), R5		// val3
+	MOVD	$98, R8			// SYS_futex
+	SVC
 	MOVW	R0, ret+40(FP)
 	RET
 
@@ -382,8 +451,12 @@ clone_exit:
 	SVC
 	B	clone_exit	// keep exiting
 
-// sigaltstack - no-op
-TEXT runtime·sigaltstack(SB),NOSPLIT|NOFRAME,$0
+// sigaltstack — route through kmazarin syscall dispatcher
+TEXT runtime·sigaltstack(SB),NOSPLIT|NOFRAME,$0-16
+	MOVD	new+0(FP), R0
+	MOVD	old+8(FP), R1
+	MOVD	$132, R8	// SYS_sigaltstack
+	SVC
 	RET
 
 // osyield - yield with WFE (with diagnostic heartbeat)

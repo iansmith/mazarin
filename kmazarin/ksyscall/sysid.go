@@ -44,6 +44,7 @@ const (
 	SysIDMadvise                       // madvise
 	SysIDPrlimit64                     // prlimit64
 	SysIDGetrandom                     // getrandom
+	SysIDRtSigreturn                   // rt_sigreturn
 
 	NumSyscallIDs // sentinel — array size
 )

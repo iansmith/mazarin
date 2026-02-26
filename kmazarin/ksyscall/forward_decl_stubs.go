@@ -117,3 +117,21 @@ func GetPendingSoftIRQ(bundlePtr uint64) bool { return false }
 // ============================================================================
 
 func RegisterAsyncPreemptAddr(asyncPreemptAddr uint64) int64 { return 0 }
+
+// ============================================================================
+// From signal_asm.go
+// ============================================================================
+
+func GetSignalAction(sig int) signalAction { return signalAction{} }
+
+func SetSignalAction(sig int, handler, flags, restorer, mask uint64) {}
+
+func ThreadLookupByTID(tid int32) uintptr { return 0 }
+
+func SetThreadPendingSignal(threadPtr uintptr, signum int) {}
+
+func GetThreadSignalStack(threadPtr uintptr) (base, sp, size uint64) { return 0, 0, 0 }
+
+func SetThreadSignalStack(threadPtr uintptr, base, sp, size uint64) {}
+
+func RestoreFromSignalFrame(threadPtr uintptr) {}

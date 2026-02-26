@@ -55,6 +55,7 @@ var syscallTable = [NumSyscallIDs]SyscallHandler{
 	SysIDMadvise:          SyscallMadvise,          // madvise
 	SysIDPrlimit64:        SyscallPrlimit64,        // prlimit64
 	SysIDGetrandom:        SyscallGetrandom,        // getrandom
+	SysIDRtSigreturn:      SyscallRtSigreturn,      // rt_sigreturn
 }
 
 // DispatchSyscall is called from assembly exception handler

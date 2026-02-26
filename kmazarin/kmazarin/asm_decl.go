@@ -127,3 +127,14 @@ func ThreadExitAsm() uint64
 // If no other thread is available, returns without yielding.
 //go:nosplit
 func YieldToReadyThread()
+
+// sigreturnTrampoline issues the rt_sigreturn syscall.
+// Called when sigtramp returns (via LR/return address on stack).
+// This function must never return.
+//go:nosplit
+func sigreturnTrampoline()
+
+// getSigreturnTrampolineAddr returns the address of sigreturnTrampoline.
+//go:nosplit
+func getSigreturnTrampolineAddr() uintptr
+

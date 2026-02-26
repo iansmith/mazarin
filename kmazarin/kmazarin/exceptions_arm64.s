@@ -342,6 +342,23 @@ el1_skip_clear_clone_setup:
 	// Store return value back to X0 in exception frame
 	MOVD	R0, EXC_FRAME_X0(RSP)
 
+	// Check if rt_sigreturn was called (SigreturnPending flag).
+	// If set, the thread's Context has been restored from the signal frame
+	// and we need to load it into the exception frame for ERET.
+	MOVD	main·CurrentThread(SB), R10
+	CBZ	R10, el1_no_sigreturn
+	MOVD	main·ThreadSigreturnPendingOffset(SB), R11
+	ADD	R11, R10, R11
+	MOVW	(R11), R12
+	CBZ	R12, el1_no_sigreturn
+	// Clear SigreturnPending flag
+	MOVW	$0, (R11)
+	// Load pointer to ThreadContext
+	MOVD	main·ThreadContextOffset(SB), R11
+	ADD	R11, R10, R21     // R21 = &thread.Context
+	B	copy_context_to_frame  // Reuse existing context-to-frame path
+el1_no_sigreturn:
+
 	// Check if syscall handler requested a context switch
 	// Call GetSyscallSwitchTarget() - returns 0 if no switch, non-zero for target node pointer
 	GO_CALL_0_1(·GetSyscallSwitchTarget)
@@ -356,8 +373,12 @@ el1_skip_clear_clone_setup:
 	GO_CALL_2_1(·DoContextSwitch, R0, R1)
 	MOVD	R0, R21            // R21 = pointer to new ThreadContext
 
+	// R21 = pointer to new ThreadContext — fall through to copy_context_to_frame
+
+copy_context_to_frame:
 	// Copy ThreadContext to exception frame, then sync_return will restore it
 	// ThreadContext: X[31], SP, ELR, SPSR
+	// R21 must point to the ThreadContext to load.
 	// Copy X0-X7 (0-64 in ThreadContext, 0-64 in frame)
 	LDP	0(R21), (R0, R1)
 	STP	(R0, R1), EXC_FRAME_X0(RSP)
@@ -1631,6 +1652,23 @@ el0_skip_clear_clone_setup:
 	// Store return value back to X0 in exception frame
 	MOVD	R0, EXC_FRAME_X0(RSP)
 
+	// Check if rt_sigreturn was called (SigreturnPending flag).
+	// If set, the thread's Context has been restored from the signal frame
+	// and we need to load it into the exception frame for ERET.
+	MOVD	main·CurrentThread(SB), R10
+	CBZ	R10, el0_no_sigreturn
+	MOVD	main·ThreadSigreturnPendingOffset(SB), R11
+	ADD	R11, R10, R11
+	MOVW	(R11), R12
+	CBZ	R12, el0_no_sigreturn
+	// Clear SigreturnPending flag
+	MOVW	$0, (R11)
+	// Load pointer to ThreadContext
+	MOVD	main·ThreadContextOffset(SB), R11
+	ADD	R11, R10, R21     // R21 = &thread.Context
+	B	el0_copy_context_to_frame
+el0_no_sigreturn:
+
 	// Check if syscall handler requested a context switch
 	// Call GetSyscallSwitchTarget() - returns 0 if no switch, non-zero for target node pointer
 	GO_CALL_0_1(·GetSyscallSwitchTarget)
@@ -1645,8 +1683,12 @@ el0_skip_clear_clone_setup:
 	GO_CALL_2_1(·DoContextSwitch, R0, R1)
 	MOVD	R0, R21            // R21 = pointer to new ThreadContext
 
+	// R21 = pointer to new ThreadContext — fall through to el0_copy_context_to_frame
+
+el0_copy_context_to_frame:
 	// Copy ThreadContext to exception frame, then el0_return will restore it
 	// ThreadContext: X[31], SP, ELR, SPSR
+	// R21 must point to the ThreadContext to load.
 	// Copy X0-X7 (0-64 in ThreadContext, 0-64 in frame)
 	LDP	0(R21), (R0, R1)
 	STP	(R0, R1), EXC_FRAME_X0(RSP)
@@ -1693,7 +1735,6 @@ el0_skip_clear_clone_setup:
 
 	// Copy ELR and SPSR (256, 264 in ThreadContext)
 	LDP	256(R21), (R0, R1)
-
 	STP	(R0, R1), EXC_FRAME_ELR_SPSR(RSP)
 
 	B	el0_return
@@ -2587,6 +2628,26 @@ TEXT ·GetExceptionVectorBase(SB), NOSPLIT, $0-8
 // loading function addresses directly in assembly (ABI0 symbol resolution).
 TEXT ·getAsyncPreemptWrapperAddr(SB), NOSPLIT, $0-8
 	MOVD	$·asyncPreemptWrapper(SB), R0
+	MOVD	R0, ret+0(FP)
+	RET
+
+// ============================================================================
+// sigreturnTrampoline — issues SYS_rt_sigreturn to kmazarin
+// ============================================================================
+// Called when sigtramp returns (via LR). Issues rt_sigreturn so kmazarin
+// can restore the (possibly modified) register context from the ucontext.
+TEXT ·sigreturnTrampoline(SB), NOSPLIT|NOFRAME, $0
+	MOVD	$139, R8            // SYS_rt_sigreturn on ARM64
+	SVC
+	// Should not return — if it does, halt
+	MOVD	$0xFFFFFFFF09000000, R0
+	MOVW	$'!', R1
+	MOVW	R1, (R0)
+	B	-1(PC)
+
+// getSigreturnTrampolineAddr — returns address of sigreturnTrampoline
+TEXT ·getSigreturnTrampolineAddr(SB), NOSPLIT, $0-8
+	MOVD	$·sigreturnTrampoline(SB), R0
 	MOVD	R0, ret+0(FP)
 	RET
 

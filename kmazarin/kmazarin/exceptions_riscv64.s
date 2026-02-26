@@ -995,3 +995,12 @@ load_context_and_sret:
 
 	// SRET
 	WORD	$0x10200073
+
+// sigreturnTrampoline — stub for riscv64 (signal delivery not yet implemented).
+TEXT ·sigreturnTrampoline(SB), NOSPLIT|NOFRAME, $0
+	RET
+
+// getSigreturnTrampolineAddr — returns 0 on riscv64 (no trampoline yet).
+TEXT ·getSigreturnTrampolineAddr(SB), NOSPLIT, $0-8
+	MOV	ZERO, ret+0(FP)
+	RET

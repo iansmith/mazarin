@@ -29,6 +29,7 @@ var arm64ToSysID = [512]SysID{
 	132: SysIDSigaltstack,
 	134: SysIDRtSigaction,
 	135: SysIDRtSigprocmask,
+	139: SysIDRtSigreturn,
 	167: SysIDPrctl,
 	172: SysIDGetpid,
 	178: SysIDGettid,
