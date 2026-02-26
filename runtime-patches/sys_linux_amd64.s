@@ -134,8 +134,18 @@ TEXT runtime·usleep(SB),NOSPLIT,$0-4
 	CALL	main·kmazarinYieldImpl(SB)
 	RET
 
-// gettid - return 1
+// gettid - get thread ID via INT $0x80 (routed to kmazarin's dispatcher)
+// Two-phase: before threads are initialized, return 1 (safe default).
+// After kmazarinSyscallReady is set, use real syscall.
 TEXT runtime·gettid(SB),NOSPLIT,$0-4
+	MOVL	runtime·kmazarinSyscallReady(SB), AX
+	TESTL	AX, AX
+	JZ	gettid_early
+	MOVL	$SYS_gettid, AX
+	INT	$0x80
+	MOVL	AX, ret+0(FP)
+	RET
+gettid_early:
 	MOVL	$1, ret+0(FP)
 	RET
 
@@ -152,8 +162,13 @@ TEXT ·getpid(SB),NOSPLIT,$0-8
 	MOVQ	$1, ret+0(FP)
 	RET
 
-// tgkill - no-op
-TEXT ·tgkill(SB),NOSPLIT,$0
+// tgkill - send signal to specific thread via INT $0x80
+TEXT ·tgkill(SB),NOSPLIT,$0-24
+	MOVQ	tgid+0(FP), DI
+	MOVQ	tid+8(FP), SI
+	MOVQ	sig+16(FP), DX
+	MOVL	$234, AX		// SYS_tgkill on x86_64
+	INT	$0x80
 	RET
 
 // setitimer - no-op
@@ -215,8 +230,22 @@ TEXT runtime·nanotime1(SB),NOSPLIT,$0-8
 TEXT runtime·rtsigprocmask(SB),NOSPLIT,$0-28
 	RET
 
-// rt_sigaction - return 0
+// rt_sigaction - register signal handler via INT $0x80
+// Two-phase: before syscall infrastructure is ready, no-op return 0.
+// After kmazarinSyscallReady is set, dispatch through kmazarin.
 TEXT runtime·rt_sigaction(SB),NOSPLIT,$0-36
+	MOVL	runtime·kmazarinSyscallReady(SB), AX
+	TESTL	AX, AX
+	JZ	rt_sigaction_early
+	MOVL	sig+0(FP), DI		// arg0: signal number
+	MOVQ	new+8(FP), SI		// arg1: new sigaction ptr
+	MOVQ	old+16(FP), DX		// arg2: old sigaction ptr
+	MOVQ	size+24(FP), R10	// arg3: sigset size
+	MOVL	$13, AX			// SYS_rt_sigaction on x86_64
+	INT	$0x80
+	MOVL	AX, ret+32(FP)
+	RET
+rt_sigaction_early:
 	MOVL	$0, ret+32(FP)
 	RET
 
@@ -229,8 +258,45 @@ TEXT runtime·callCgoSigaction(SB),NOSPLIT,$16
 TEXT runtime·sigfwd(SB),NOSPLIT,$0-32
 	RET
 
-// sigtramp - no-op
+// sigtramp - signal trampoline matching Go runtime's real implementation.
+// Called when kmazarin delivers a signal: RDI=signum, RSI=siginfo, RDX=ucontext.
+// Saves SysV callee-saved registers, sets up Go ABI, calls sigtrampgo.
 TEXT runtime·sigtramp(SB),NOSPLIT|TOPFRAME|NOFRAME,$0
+	// Save SysV callee-saved registers (match PUSH_REGS_HOST_TO_ABI0)
+	ADJSP	$48
+	MOVQ	BP, 40(SP)
+	LEAQ	40(SP), BP
+	MOVQ	BX, 0(SP)
+	MOVQ	R12, 8(SP)
+	MOVQ	R13, 16(SP)
+	MOVQ	R14, 24(SP)
+	MOVQ	R15, 32(SP)
+
+	// Set up ABIInternal: g from TLS, clear X15
+	get_tls(R12)
+	MOVQ	g(R12), R14
+	PXOR	X15, X15
+
+	// Spill slots for ABIInternal call
+	NOP	SP
+	ADJSP	$24
+
+	// Call sigtrampgo(sig, info, ctx)
+	MOVQ	DI, AX		// sig
+	MOVQ	SI, BX		// info
+	MOVQ	DX, CX		// ctx
+	CALL	·sigtrampgo<ABIInternal>(SB)
+
+	ADJSP	$-24
+
+	// Restore callee-saved
+	MOVQ	0(SP), BX
+	MOVQ	8(SP), R12
+	MOVQ	16(SP), R13
+	MOVQ	24(SP), R14
+	MOVQ	32(SP), R15
+	MOVQ	40(SP), BP
+	ADJSP	$-48
 	RET
 
 // sigprofNonGoWrapper - no-op
@@ -241,9 +307,11 @@ TEXT runtime·sigprofNonGoWrapper<>(SB),NOSPLIT|NOFRAME,$0
 TEXT runtime·cgoSigtramp(SB),NOSPLIT,$0
 	RET
 
-// sigreturn__sigaction - no-op
-TEXT runtime·sigreturn__sigaction(SB),NOSPLIT,$0
-	RET
+// sigreturn__sigaction - invoke rt_sigreturn via INT $0x80
+TEXT runtime·sigreturn__sigaction(SB),NOSPLIT|NOFRAME,$0
+	MOVL	$15, AX			// SYS_rt_sigreturn on x86_64
+	INT	$0x80
+	INT	$3			// Should not return
 
 // sysMmap - return error (handled by Go-level cgo_mmap overlay)
 TEXT runtime·sysMmap(SB),NOSPLIT,$0
@@ -412,8 +480,19 @@ clone_nog:
 	INT	$0x80
 	JMP	-3(PC)		// keep exiting
 
-// sigaltstack - no-op
-TEXT runtime·sigaltstack(SB),NOSPLIT,$0
+// sigaltstack - set/get signal stack via INT $0x80
+// Two-phase: before syscall infrastructure is ready, no-op.
+// After kmazarinSyscallReady is set, dispatch through kmazarin.
+TEXT runtime·sigaltstack(SB),NOSPLIT,$0-16
+	MOVL	runtime·kmazarinSyscallReady(SB), AX
+	TESTL	AX, AX
+	JZ	sigaltstack_early
+	MOVQ	new+0(FP), DI
+	MOVQ	old+8(FP), SI
+	MOVL	$131, AX		// SYS_sigaltstack on x86_64
+	INT	$0x80
+	RET
+sigaltstack_early:
 	RET
 
 // settls - set tls base to DI using WRMSR (bare-metal, no arch_prctl)

@@ -14,6 +14,7 @@ var x86ToSysID = [512]SysID{
 	12:  SysIDBrk,
 	13:  SysIDRtSigaction,
 	14:  SysIDRtSigprocmask,
+	15:  SysIDRtSigreturn,
 	24:  SysIDSchedYield,
 	28:  SysIDMadvise,
 	35:  SysIDNanosleep,

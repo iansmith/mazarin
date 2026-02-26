@@ -423,6 +423,25 @@ syscall_skip_g_setup:
 	// AX = return value
 	MOVQ	AX, 0(SP)		// Store return value in saved RAX slot
 
+	// Check if rt_sigreturn was called (SigreturnPending flag).
+	// If set, the thread's Context has been restored from the signal frame
+	// and we need to load it via load_context_and_iretq instead of normal return.
+	MOVQ	·CurrentThread(SB), R13
+	TESTQ	R13, R13
+	JZ	no_sigreturn
+	MOVQ	·ThreadSigreturnPendingOffset(SB), R15
+	ADDQ	R13, R15
+	MOVL	(R15), R14		// Load SigreturnPending (uint32)
+	TESTL	R14, R14
+	JZ	no_sigreturn
+	// Clear SigreturnPending flag
+	MOVL	$0, (R15)
+	// Load ThreadContext pointer into R12 for load_context_and_iretq
+	MOVQ	·ThreadContextOffset(SB), R12
+	ADDQ	R13, R12
+	JMP	load_context_and_iretq
+no_sigreturn:
+
 	// If a syscall changed FS_BASE (e.g., arch_prctl ARCH_SET_FS),
 	// update savedExcFSBase so exception_return preserves the new value.
 	// If FS_BASE is still the kernel value (unchanged), keep the original
@@ -1681,13 +1700,18 @@ GLOBL	·syscallScratchSS(SB), NOPTR, $8
 // Single-CPU so a global buffer is safe (no concurrent access).
 GLOBL	·xmmSaveArea(SB), NOPTR, $256
 
-// sigreturnTrampoline — stub for amd64 (signal delivery not yet implemented).
+// sigreturnTrampoline — invokes rt_sigreturn via INT $0x80.
+// This is the return address pushed on the signal stack by BuildSignalFrame.
+// When sigtramp's handler returns (RET), execution lands here.
 TEXT ·sigreturnTrampoline(SB), NOSPLIT|NOFRAME, $0
-	RET
+	MOVL	$15, AX			// SYS_rt_sigreturn on x86_64
+	INT	$0x80
+	INT	$3			// Should not return
 
-// getSigreturnTrampolineAddr — returns 0 on amd64 (no trampoline yet).
+// getSigreturnTrampolineAddr — returns the address of sigreturnTrampoline.
 TEXT ·getSigreturnTrampolineAddr(SB), NOSPLIT, $0-8
-	MOVQ	$0, ret+0(FP)
+	LEAQ	·sigreturnTrampoline(SB), AX
+	MOVQ	AX, ret+0(FP)
 	RET
 
 
