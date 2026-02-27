@@ -69,10 +69,10 @@ var TimerIRQCount uint64
 var TimerRearmTicks uint64 = 100000
 
 // ThreadPreemptTicks is the number of raw timer ticks before forcing
-// a thread preemption. At 62.5MHz: 200ms = 12,500,000 ticks.
+// a thread preemption. At 62.5MHz: 10ms = 625,000 ticks.
 // Set by InitPreemptThresholds() based on actual timer frequency.
 // Exported for assembly access.
-var ThreadPreemptTicks uint64 = 12500000
+var ThreadPreemptTicks uint64 = 625000
 
 // InitPreemptThresholds calculates preemption thresholds based on timer frequency.
 // Call this after SystemTimerFrequency is set.
@@ -83,8 +83,13 @@ func InitPreemptThresholds() {
 	}
 	// TimerRearmTicks = 10ms worth of ticks
 	TimerRearmTicks = freq / 100 // freq * 0.01 = freq / 100
-	// ThreadPreemptTicks = 200ms worth of ticks
-	ThreadPreemptTicks = freq / 5 // freq * 0.2 = freq / 5
+	// ThreadPreemptTicks = 10ms worth of ticks (same as timer tick interval)
+	// Reduced from 200ms to 10ms since goroutine-level preemption (asyncPreempt)
+	// was removed. Without goroutine preemption causing frequent voluntary yields,
+	// the kernel must switch threads more aggressively to ensure responsiveness.
+	// At 10ms, preemption fires at the 2nd timer tick after scheduling (the 1st
+	// tick may miss due to timing gap between EnableTimerIRQ and scheduler).
+	ThreadPreemptTicks = freq / 100 // freq * 0.01 = freq / 100
 }
 
 // NeedsThreadPreempt is set by assembly when the current thread has exceeded

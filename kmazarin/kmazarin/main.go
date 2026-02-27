@@ -807,7 +807,8 @@ func simpleMain() {
 
 	// Suppress Go runtime write1 → UART output now that boot is complete.
 	// Panic/traceback paths temporarily unsuppress (see runtime-patches/panic.go).
-	atomic.StoreUint32(&suppressSerial, 1)
+	// TEMPORARILY DISABLED for debugging ARM64 userspace crash:
+	// atomic.StoreUint32(&suppressSerial, 1)
 
 	// Enter the kernel idle loop. Thread 0 (m0/g0) stays alive as a normal
 	// scheduled thread. Priest threads are already running. The timer IRQ

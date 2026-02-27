@@ -771,46 +771,11 @@ timer_rearm_skip:
 	AND	$0x100, T0, T0		// SPP bit (bit 8): 1=S-mode, 0=U-mode
 	BNE	T0, ZERO, trap_return	// Kernel mode — never preempt
 
-	// ========================================================================
-	// CRITICAL: Check m.locks == 0 before thread preemption
-	// ========================================================================
-	// The interrupted goroutine may be holding runtime locks (e.g., inside
-	// mallocgc, mspan.sweep). Context-switching the thread while locks are
-	// held causes mspan metadata corruption when the goroutine resumes.
-	// Load the ORIGINAL g (X27) from trap frame at offset 208.
-	MOV	208(X2), T0		// T0 = interrupted thread's g
-	BEQ	T0, ZERO, thread_preempt_mlocks_ok  // g is nil, allow
-
-	// Set SUM bit to safely access g struct (may be in user-mode pages).
-	// Without SUM, S-mode cannot read U-bit pages → access fault.
-	// Uses A0 matching pattern in preempt_riscv64.s:137-138.
-	MOV	$0x40000, A0		// SUM = sstatus bit 18
-	WORD	$0x10052073		// CSRS sstatus, a0
-
-	// Follow g → m
-	MOV	mazzy∕kmazarin∕kirq·PreemptGMOffset(SB), T1
-	ADD	T0, T1, T1		// T1 = &g.m
-	MOV	(T1), T1		// T1 = g.m
-	BEQ	T1, ZERO, thread_preempt_clear_sum  // m is nil, clear SUM and allow
-
-	// Read m.locks (int32)
-	MOV	mazzy∕kmazarin∕kirq·PreemptMLocksOffset(SB), T2
-	ADD	T1, T2, T2		// T2 = &m.locks
-	MOVW	(T2), T2		// T2 = m.locks
-
-	// Clear SUM bit
-	MOV	$0x40000, A0		// SUM = sstatus bit 18
-	WORD	$0x10053073		// CSRC sstatus, a0
-
-	BNE	T2, ZERO, trap_return	// m.locks != 0, defer to next tick
-	JMP	thread_preempt_mlocks_ok
-
-thread_preempt_clear_sum:
-	// Clear SUM bit and allow preemption
-	MOV	$0x40000, A0		// SUM = sstatus bit 18
-	WORD	$0x10053073		// CSRC sstatus, a0
-
-thread_preempt_mlocks_ok:
+	// NOTE: m.locks check removed for userspace thread preemption.
+	// Each priest runs in its own address space with isolated Go runtime state.
+	// Context-switching freezes and restores the full CPU state atomically —
+	// the priest resumes exactly where it was interrupted, locks intact.
+	// S-mode (kernel) preemption was already filtered out above.
 	// Check thread preemption
 	MOV	X2, S2			// frame pointer (callee-saved)
 	GO_CALL_1_1(·CheckThreadPreemption, S2)

@@ -3,6 +3,7 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/serial"
 	_ "unsafe" // for go:linkname
 )
 
@@ -36,13 +37,19 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 	// Route to ring buffer for display by the stdio priest.
 	// The stdio priest itself (UART ring owner) cannot use the ring
 	// (it would deadlock consuming its own output).
+	// If no owner registered yet, fall back to direct serial output
+	// so early panic messages are visible.
 	useRing := false
+	useDirect := false
 	ownerPID := getUartSlotPriestID()
 	if ownerPID >= 0 {
 		callerPID := getCurrentThreadPID()
 		if callerPID != ownerPID {
 			useRing = true
 		}
+	} else {
+		// No ring owner yet — write directly to serial
+		useDirect = true
 	}
 
 	remaining := count
@@ -64,6 +71,14 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 					pushByteToUartRing(fdByte, '\r')
 				}
 				pushByteToUartRing(fdByte, c)
+			}
+		} else if useDirect {
+			for i := uint64(0); i < n; i++ {
+				c := chunk[i]
+				if c == '\n' {
+					serial.PollWrite('\r')
+				}
+				serial.PollWrite(c)
 			}
 		}
 		offset += n

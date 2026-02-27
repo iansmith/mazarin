@@ -165,14 +165,6 @@ func main() {
 	oldProcs := runtime.GOMAXPROCS(1)
 	fmt.Printf("[priestsieve] GOMAXPROCS: was %d, now %d\n", oldProcs, runtime.GOMAXPROCS(0))
 
-	// Register our asyncPreempt address with the kernel FIRST
-	// This enables goroutine-level preemption within this process
-	if err := sys.RegisterAsyncPreempt(); err != nil {
-		fmt.Printf("[priestsieve] WARNING: RegisterAsyncPreempt failed: %v\n", err)
-	} else {
-		fmt.Println("[priestsieve] AsyncPreempt registered successfully")
-	}
-
 	// =====================================================
 	// USERSPACE ENTRY POINT
 	// =====================================================

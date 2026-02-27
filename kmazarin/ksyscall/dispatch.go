@@ -4,6 +4,7 @@ package ksyscall
 import (
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/kirq"
+	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"sync/atomic"
 	_ "unsafe" // for go:linkname
@@ -76,13 +77,16 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 		// Translate native Linux syscall number to platform-independent SysID
 		sysID := translateSyscallNum(syscallNum)
 		if sysID == SysIDInvalid || sysID >= NumSyscallIDs {
+			serial.RawUARTPuts("[UNK:")
+			serial.RawUARTHexCompact(syscallNum)
+			serial.RawUARTPuts("]")
 			result = -38 // ENOSYS
 		} else {
 			handler := syscallTable[sysID]
 			if handler == nil {
-				// Return -ENOSYS for unimplemented syscalls instead of panicking.
-				// This lets userspace programs continue even when they invoke
-				// syscalls the kernel doesn't handle yet (e.g. dup, ioctl).
+				serial.RawUARTPuts("[NIL:")
+				serial.RawUARTHexCompact(syscallNum)
+				serial.RawUARTPuts("]")
 				result = -38 // ENOSYS
 			} else {
 				// Call the handler

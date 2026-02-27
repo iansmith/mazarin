@@ -230,8 +230,6 @@ func timerLoop(clock *clockRenderer, slot int) {
 }
 
 func main() {
-	sys.RegisterAsyncPreempt()
-
 	fmt.Println("[dapope] Starting input event handler")
 
 	devices, err := sys.QueryInputDevices()

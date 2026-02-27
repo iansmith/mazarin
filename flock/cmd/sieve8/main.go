@@ -73,11 +73,6 @@ func main() {
 	// Ensure single-threaded execution
 	runtime.GOMAXPROCS(1)
 
-	// Register asyncPreempt for goroutine preemption (still needed for Go runtime)
-	if err := sys.RegisterAsyncPreempt(); err != nil {
-		fmt.Printf("[sieve8] WARNING: RegisterAsyncPreempt failed: %v\n", err)
-	}
-
 	fmt.Println("[sieve8] Starting single-threaded prime sieve")
 	fmt.Printf("[sieve8] GOMAXPROCS=%d\n", runtime.GOMAXPROCS(0))
 

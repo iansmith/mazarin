@@ -18,17 +18,10 @@ const (
 	sysDebugPrint           = 0x1006 // Debug print arguments
 	sysGetFramebuffer       = 0x1007 // Get framebuffer info
 	sysWaitKernelAsync      = 0x1008 // Wait for kernel async message
-	sysRegisterAsyncPreempt  = 0x1009 // Register asyncPreempt address for goroutine preemption
 	sysFlushFramebuffer      = 0x100D // Flush framebuffer region to display
 	sysSetTimerDeadline      = 0x100E // Set timer deadline on soft IRQ slot
 	sysSetScanoutOffset      = 0x100F // Set scanout Y offset for hardware scrolling
 )
-
-// RegisterAsyncPreempt is a no-op kept for backward compatibility.
-// Goroutine preemption is now handled by the Go runtime via SIGURG signals.
-func RegisterAsyncPreempt() error {
-	return nil
-}
 
 // DebugPutChar writes a single character to the kernel debug output.
 // Uses a direct syscall with no Go runtime locks/synchronization.

@@ -957,8 +957,6 @@ irq_exception_handler:
 	// NeedsThreadPreempt if a thread has exceeded its time quantum.
 	CALL	mazzy∕kmazarin∕kirq·TimerIRQHandlerAsm(SB)
 
-	// (timer tick breadcrumb removed for performance)
-
 	// ========================================================================
 	// CRITICAL: Write GICC_EOIR for timer IRQ IMMEDIATELY after handler
 	// ========================================================================
@@ -992,6 +990,7 @@ irq_exception_handler:
 skip_curg_set:
 
 	WORD	$0xaa0a03fc  // mov x28, x10 — set g to kmazarin g0
+
 	CALL	·ProcessDeadlinesTopHalf(SB)
 
 	// Restore m0.curg
@@ -1014,30 +1013,12 @@ skip_deadline_processing:
 	MOVW	mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB), R10
 	CBZ	R10, timer_no_thread_preempt
 
-	// ========================================================================
-	// CRITICAL: Check m.locks == 0 before thread preemption
-	// ========================================================================
-	// The interrupted goroutine may be holding runtime locks (e.g., inside
-	// mallocgc, mspan.sweep). Context-switching the thread while locks are
-	// held causes mspan metadata corruption when the goroutine resumes.
-	// Load the ORIGINAL g from exception frame (R28 was overwritten above
-	// to kmazarin's g0 for ProcessDeadlinesTopHalf).
-	MOVD	EXC_FRAME_X28(RSP), R10  // R10 = interrupted thread's g
-	CBZ	R10, thread_preempt_mlocks_ok  // g is nil (early boot), allow
+	// NOTE: m.locks check removed for EL0 (userspace) thread preemption.
+	// Each priest runs in its own address space with isolated Go runtime state.
+	// Context-switching freezes and restores the full CPU state atomically —
+	// the priest resumes exactly where it was interrupted, locks intact.
+	// The SPSR/EL1 check above already filters out kernel-mode preemption.
 
-	// Follow g → m
-	MOVD	mazzy∕kmazarin∕kirq·PreemptGMOffset(SB), R11
-	ADD	R10, R11  // R11 = &g.m
-	MOVD	(R11), R11  // R11 = g.m
-	CBZ	R11, thread_preempt_mlocks_ok  // m is nil, allow
-
-	// Read m.locks (int32)
-	MOVD	mazzy∕kmazarin∕kirq·PreemptMLocksOffset(SB), R12
-	ADD	R11, R12  // R12 = &m.locks
-	MOVW	(R12), R12  // R12 = m.locks
-	CBNZ	R12, timer_no_thread_preempt  // m.locks != 0, defer to next tick
-
-thread_preempt_mlocks_ok:
 	// Clear NeedsThreadPreempt flag
 	MOVW	$0, R10
 	MOVW	R10, mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB)
@@ -1217,11 +1198,8 @@ irq_return:
 	MOVD	EXC_FRAME_SP_EL0(RSP), R10
 	MSR	R10, SP_EL0
 
-	// Restore ELR and SPSR
+	// Restore ELR and SPSR (same pattern as el0_return which works correctly)
 	LDP	EXC_FRAME_ELR_SPSR(RSP), (R10, R11)
-	// CRITICAL: Force IRQs enabled in SPSR by clearing DAIF.I bit (bit 7 = 0x80)
-	// This ensures IRQs are enabled after ERET, preventing stuck-disabled-IRQ chains
-	BIC	$0x80, R11, R11
 	MSR	R10, ELR_EL1
 	MSR	R11, SPSR_EL1
 
@@ -1350,6 +1328,13 @@ el0_skip_clear_clone_setup:
 
 	// Now dispatch syscall
 	// Load arguments from exception frame
+	LDP	EXC_FRAME_X8(RSP), (R0, R1)        // R0 = syscall num (X8)
+	LDP	EXC_FRAME_X0(RSP), (R2, R3)        // R2 = arg0, R3 = arg1
+	LDP	EXC_FRAME_X0+16(RSP), (R4, R5)     // R4 = arg2, R5 = arg3
+	LDP	EXC_FRAME_X0+32(RSP), (R6, R7)     // R6 = arg4, R7 = arg5
+
+
+	// Re-load args (R14/R15 were scratch)
 	LDP	EXC_FRAME_X8(RSP), (R0, R1)        // R0 = syscall num (X8)
 	LDP	EXC_FRAME_X0(RSP), (R2, R3)        // R2 = arg0, R3 = arg1
 	LDP	EXC_FRAME_X0+16(RSP), (R4, R5)     // R4 = arg2, R5 = arg3

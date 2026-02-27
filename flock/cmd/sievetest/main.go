@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"runtime"
 	"syscall"
-
-	"mazzy/mazarin/sys"
 )
 
 // sieveOfEratosthenes generates all prime numbers up to n.
@@ -62,11 +60,6 @@ func main() {
 
 	// Get our thread ID for identification
 	tid, _, _ := syscall.Syscall(syscall.SYS_GETTID, 0, 0, 0)
-
-	// Register asyncPreempt for goroutine preemption
-	if err := sys.RegisterAsyncPreempt(); err != nil {
-		fmt.Printf("[T%02X] WARNING: RegisterAsyncPreempt failed: %v\n", tid, err)
-	}
 
 	fmt.Printf("[T%02X] Starting prime sieve at 20001\n", tid)
 

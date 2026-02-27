@@ -270,13 +270,42 @@ func SyscallEpollPwait(_, _, _, _, _, _ uint64) int64 {
 }
 
 // SyscallFcntl performs file control operations
-// Go runtime calls fcntl(fd, F_GETFD) to verify stdin/stdout/stderr
+// Go runtime calls fcntl(fd, F_GETFD) and fcntl(fd, F_GETFL) during
+// os.init() to verify and configure stdin/stdout/stderr.
 //
 //go:nosplit
-func SyscallFcntl(fd, cmd, _, _, _, _ uint64) int64 {
-	// F_GETFD = 1: Get file descriptor flags
-	if cmd == 1 && fd <= 2 {
-		return 0 // No flags set, fd is valid
+func SyscallFcntl(fd, cmd, arg, _, _, _ uint64) int64 {
+	const (
+		F_DUPFD  = 0
+		F_GETFD  = 1
+		F_SETFD  = 2
+		F_GETFL  = 3
+		F_SETFL  = 4
+		O_RDONLY = 0
+		O_WRONLY = 1
+		O_RDWR   = 2
+	)
+	switch cmd {
+	case F_GETFD:
+		if fd <= 2 {
+			return 0 // No flags set, fd is valid
+		}
+	case F_SETFD:
+		if fd <= 2 {
+			return 0 // Pretend we set it
+		}
+	case F_GETFL:
+		// Return access mode for standard file descriptors
+		if fd == 0 {
+			return O_RDONLY // stdin is read-only
+		}
+		if fd <= 2 {
+			return O_WRONLY // stdout/stderr are write-only
+		}
+	case F_SETFL:
+		if fd <= 2 {
+			return 0 // Pretend we set it
+		}
 	}
 	return -38 // -ENOSYS
 }

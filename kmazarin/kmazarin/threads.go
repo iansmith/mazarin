@@ -95,6 +95,11 @@ var timerFrequencyHz uint64 = 62500000 // Default 62.5 MHz for QEMU
 // when handling syscalls from userspace (which has a different g).
 var kmazarinG0Addr uint64
 
+// irqSavedSPSR is used by the ARM64 IRQ handler to pass the SPSR value
+// from early in the handler to right before ERET. Writing SPSR_EL1 as late
+// as possible minimizes the window for QEMU TCG translation artifacts.
+var irqSavedSPSR uint64
+
 // kmazarinFSBase holds kmazarin's FS_BASE MSR value (kernel TLS base, x86_64 only).
 // Set during InitThreads. Exception handlers WRMSR to this value before writing
 // to the TLS slot, so the write targets mapped kernel memory instead of potentially
@@ -271,8 +276,6 @@ type Thread struct {
 	GoroutinePreemptDeadline uint64 // timer tick when goroutine preemption should occur
 	PreemptElapsed         uint64 // elapsed ticks saved when thread switched away
 	GoroutineElapsed       uint64 // elapsed goroutine ticks saved when thread switched away
-	_reservedAsyncPreempt  uint64 // Padding (was AsyncPreemptAddr — now unused)
-
 	// Runtime accounting
 	TotalTicksRunning   uint64 // Cumulative timer ticks this thread has been running
 	TicksStartedRunning uint64 // Timer tick count when this thread started its current run (0 = not running)
@@ -1572,15 +1575,6 @@ func GetPriestByPID(pid PriestId) *Priest {
 	return priestList.FindById(int32(pid))
 }
 
-// RegisterAsyncPreemptAddr is a no-op kept for backward compatibility.
-// Goroutine preemption is now handled by userspace Go runtime via SIGURG signals.
-//
-//go:nosplit
-//go:noinline
-func RegisterAsyncPreemptAddr(asyncPreemptAddr uint64) int64 {
-	return 0
-}
-
 // createUserspaceThreadImpl is the internal implementation with sf for testing
 //
 //go:nosplit
@@ -1903,6 +1897,47 @@ func findReadyThreadPreferDifferentPriestSchedLockHeld(currentPID PriestId) *Thr
 	return stealWorkFromOtherCPUs()
 }
 
+// findReadyUserspaceThreadSchedLockHeld is like findReadyThreadPreferDifferentPriestSchedLockHeld
+// but only returns threads with PageTableL0PA != 0 (i.e., userspace threads).
+// This is used by timer preemption which returns via ERET and must match the
+// interrupted exception level (EL0 for userspace, EL1 for kernel).
+//
+//go:nosplit
+func findReadyUserspaceThreadSchedLockHeld(currentPID PriestId) *Thread {
+	myPerCPU := GetPerCPU()
+
+	// Scan local queue for a userspace thread from a different priest
+	q := &myPerCPU.LocalReadyQueue
+	idx := q.Head()
+	for seen := 0; seen < len(q.Data); seen++ {
+		if q.InUse[idx] {
+			tid := q.Data[idx]
+			t := threadLookupByTID(int32(tid))
+			if t != nil && t.State == ThreadReady && t.PageTableL0PA != 0 && t.PID != currentPID {
+				q.PluckAt(idx)
+				return t
+			}
+		}
+		idx = (idx + 1) % len(q.Data)
+	}
+
+	// Fallback: any userspace thread from local queue (even same priest)
+	idx = q.Head()
+	for seen := 0; seen < len(q.Data); seen++ {
+		if q.InUse[idx] {
+			tid := q.Data[idx]
+			t := threadLookupByTID(int32(tid))
+			if t != nil && t.State == ThreadReady && t.PageTableL0PA != 0 {
+				q.PluckAt(idx)
+				return t
+			}
+		}
+		idx = (idx + 1) % len(q.Data)
+	}
+
+	return nil
+}
+
 // ThreadFindReady finds the next READY thread
 // Returns CONTEXT POINTER of ready thread, or 0 (nil) if none found
 //
@@ -1913,6 +1948,14 @@ func findReadyThreadPreferDifferentPriestSchedLockHeld(currentPID PriestId) *Thr
 func ThreadFindReady() uintptr {
 	t := findReadyThreadSchedLockHeld()
 	if t == nil {
+		return 0
+	}
+	// If current thread is userspace, skip kernel threads — the SVC return
+	// goes through el0_return/ERET which needs EL0 context.
+	// If current thread is kernel, allow any thread type.
+	current := GetCurrentThread()
+	if current != nil && current.PageTableL0PA != 0 && t.PageTableL0PA == 0 {
+		enqueueReadySchedLockHeld(t)
 		return 0
 	}
 	return uintptr(unsafe.Pointer(&t.Context))
@@ -1978,11 +2021,18 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 	// (It might not be if it was already running and not re-queued)
 	pluckFromAllQueues(t.TID)
 
-	// Find next ready thread FIRST - don't block if no one to switch to
-	// Prefer a different priest for fairness
-	next := findReadyThreadPreferDifferentPriestSchedLockHeld(t.PID)
+	// Find next ready thread. If current thread is userspace (PageTableL0PA != 0),
+	// must skip kernel threads because the SVC return path uses ERET which must
+	// match the interrupted EL (EL0 for userspace). Kernel threads use the
+	// original search which can return any thread type.
+	var next *Thread
+	if t.PageTableL0PA != 0 {
+		next = findReadyUserspaceThreadSchedLockHeld(t.PID)
+	} else {
+		next = findReadyThreadPreferDifferentPriestSchedLockHeld(t.PID)
+	}
 	if next == nil {
-		// No ready thread - can't block, thread continues running
+		// No ready userspace thread - can't block, thread continues running
 		if sf.StateCheck != nil {
 			sf.StateCheck("futex-block-no-next")
 		}
@@ -2006,7 +2056,7 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 	schedulerLock.Unlock()
 	sf.EnableAndRestoreDAIF(savedDAIF)
 
-	// Return context pointer (not index) - allows switching to thread 0
+	// Return context pointer for context switch to the new userspace thread
 	return uintptr(unsafe.Pointer(&next.Context))
 }
 
@@ -2090,9 +2140,15 @@ func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
 	// (It might not be if it was already running and not re-queued)
 	pluckFromAllQueues(t.TID)
 
-	// Find next ready thread FIRST - don't sleep if no one to switch to
-	// Prefer a different priest for fairness
-	next := findReadyThreadPreferDifferentPriestSchedLockHeld(t.PID)
+	// Find next ready thread. If the current thread is userspace, only return
+	// userspace threads — the SVC return path uses ERET which must match the
+	// interrupted EL. During kernel boot (current=kernel), any thread is OK.
+	var next *Thread
+	if t.PageTableL0PA != 0 {
+		next = findReadyUserspaceThreadSchedLockHeld(t.PID)
+	} else {
+		next = findReadyThreadPreferDifferentPriestSchedLockHeld(t.PID)
+	}
 	if next == nil {
 		// No ready thread - can't sleep, thread continues running
 		// Timer IRQ will handle preemption when other threads become ready
@@ -2276,8 +2332,6 @@ func tryPickupWorkIdleCPU(sf *SchedulerFunc) uint64 {
 //go:nosplit
 //go:noinline
 func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
-	// (preemption check breadcrumbs removed for performance)
-
 	// Timed shutdown: after shutdownTicksThreshold raw ticks, print stats and exit
 	if startingTicksProgram != 0 && shutdownTicksThreshold != 0 {
 		now := kirq.ReadCounterValue()
@@ -2319,8 +2373,10 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	}
 	oldThread.TicksStartedRunning = 0 // Mark as not running
 
-	// Find next ready thread, preferring a different priest for fairness
-	next := findReadyThreadPreferDifferentPriestSchedLockHeld(oldThread.PID)
+	// Find next ready USERSPACE thread for timer preemption.
+	// Skip kernel threads (PageTableL0PA == 0) because their SPSR is EL1,
+	// and the IRQ return path (ERET) must match the interrupted exception level.
+	next := findReadyUserspaceThreadSchedLockHeld(oldThread.PID)
 
 	if next == nil {
 		// No other ready thread - continue with current thread
