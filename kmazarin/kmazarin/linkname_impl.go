@@ -18,22 +18,6 @@ func getRuntimeConfigForKmem() interface{} {
 	return getFullConfig()
 }
 
-// getAsyncPreemptAddrForKirq provides asyncPreempt address to kirq package via linkname
-//
-//go:linkname getAsyncPreemptAddrForKirq mazzy/kmazarin/kirq.getAsyncPreemptAddr
-//go:nosplit
-func getAsyncPreemptAddrForKirq() uintptr {
-	return GetAsyncPreemptAddr()
-}
-
-// getReadyForAsyncPreemptAddrForKirq provides readyForAsyncPreempt flag address to kirq package via linkname
-//
-//go:linkname getReadyForAsyncPreemptAddrForKirq mazzy/kmazarin/kirq.getReadyForAsyncPreemptAddr
-//go:nosplit
-func getReadyForAsyncPreemptAddrForKirq() uintptr {
-	return GetReadyForAsyncPreemptAddr()
-}
-
 // processDeadlinesForKirq provides deadline processing to kirq package via linkname
 //
 //go:linkname processDeadlinesForKirq mazzy/kmazarin/kirq.processDeadlines
@@ -207,34 +191,3 @@ func restoreFromSignalFrameForKsyscall(threadPtr uintptr) {
 	t.SigreturnPending = 1
 }
 
-// ============================================================================
-// Per-CPU Accessors for kirq package
-// ============================================================================
-
-// GetPerCPUNeedsAsyncPreempt returns the per-CPU NeedsAsyncPreempt value.
-// This is used by kirq.ProcessTimerIRQ to check if preemption is needed.
-//
-//go:linkname getPerCPUNeedsAsyncPreempt mazzy/kmazarin/kirq.getPerCPUNeedsAsyncPreempt
-//go:nosplit
-func getPerCPUNeedsAsyncPreempt() uint32 {
-	return GetPerCPU().NeedsAsyncPreempt
-}
-
-// SetPerCPUNeedsAsyncPreempt sets the per-CPU NeedsAsyncPreempt value.
-// This is used by kirq to clear the flag after processing.
-//
-//go:linkname setPerCPUNeedsAsyncPreempt mazzy/kmazarin/kirq.setPerCPUNeedsAsyncPreempt
-//go:nosplit
-func setPerCPUNeedsAsyncPreempt(val uint32) {
-	GetPerCPU().NeedsAsyncPreempt = val
-}
-
-// SyncGlobalNeedsAsyncPreemptToPerCPU copies the global NeedsAsyncPreempt
-// value to the per-CPU struct. Called from timer handler to ensure per-CPU
-// is up to date after assembly sets the global.
-//
-//go:linkname syncGlobalNeedsAsyncPreemptToPerCPU mazzy/kmazarin/kirq.syncGlobalNeedsAsyncPreemptToPerCPU
-//go:nosplit
-func syncGlobalNeedsAsyncPreemptToPerCPU(globalVal uint32) {
-	GetPerCPU().NeedsAsyncPreempt = globalVal
-}

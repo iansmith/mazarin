@@ -7,7 +7,6 @@ import (
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/fs/fat32"
 	"unsafe"
 )
@@ -94,10 +93,9 @@ const (
 
 // Process represents a loaded userspace process
 type Process struct {
-	EntryPoint       uint64
-	StackTop         uint64
-	StackBase        uint64
-	AsyncPreemptAddr uint64 // Address of runtime.asyncPreempt (0 if not found)
+	EntryPoint uint64
+	StackTop   uint64
+	StackBase  uint64
 }
 
 // currentProcess holds the currently loaded process (if any)
@@ -237,9 +235,7 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 
 	// Create a new thread for this process instead of jumping directly
 	// The thread will be added to the ready queue and scheduled by the kernel
-	// Pass the asyncPreempt address extracted from ELF symbols
-
-	tid := CreateUserspaceThread(proc.EntryPoint, proc.StackTop, processL0PA, proc.AsyncPreemptAddr)
+	tid := CreateUserspaceThread(proc.EntryPoint, proc.StackTop, processL0PA)
 	_ = tid
 
 	// Return to caller - the new thread will be scheduled later
@@ -265,10 +261,6 @@ func loadELF(data []byte, filename string, l0PA uintptr, priestNum uint64) (*Pro
 	if hdr.Class != ELF_CLASS64 || hdr.Machine != elfExpectedMachine {
 		return nil, &elfError{"ELF machine type mismatch"}
 	}
-
-	serial.RawUARTPuts("[ELF] entry=0x")
-	serial.RawUARTHex64(hdr.Entry)
-	serial.RawUARTPuts("\r\n")
 
 	for i := uint16(0); i < hdr.Phnum; i++ {
 		phdrOffset := hdr.Phoff + uint64(i)*uint64(hdr.Phentsize)
@@ -300,19 +292,10 @@ func loadELF(data []byte, filename string, l0PA uintptr, priestNum uint64) (*Pro
 		return nil, err
 	}
 
-	// Find runtime.asyncPreempt symbol address for async preemption injection
-	// Note: Go 1.25+ uses .abi0 suffix for ABI0-compatible symbols
-	asyncPreemptAddr := findSymbolAddress(data, &hdr, "runtime.asyncPreempt.abi0")
-	if asyncPreemptAddr == 0 {
-		// Try without suffix (older Go versions)
-		asyncPreemptAddr = findSymbolAddress(data, &hdr, "runtime.asyncPreempt")
-	}
-
 	return &Process{
-		EntryPoint:       hdr.Entry,
-		StackTop:         stackTop,
-		StackBase:        stackBase,
-		AsyncPreemptAddr: asyncPreemptAddr,
+		EntryPoint: hdr.Entry,
+		StackTop:   stackTop,
+		StackBase:  stackBase,
 	}, nil
 }
 

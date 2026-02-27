@@ -86,7 +86,7 @@ func jumpToUserspace(entryPoint, stackPtr uint64) {}
 
 func EnableTimerIRQ() {}
 
-func CreateUserspaceThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr, asyncPreemptAddr uint64) int16 {
+func CreateUserspaceThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr) int16 {
 	return 1
 }
 
@@ -112,11 +112,6 @@ func RegisterSoftIRQDispatcher() int64 { return 0 }
 
 func GetPendingSoftIRQ(bundlePtr uint64) bool { return false }
 
-// ============================================================================
-// From register_async_preempt_asm.go
-// ============================================================================
-
-func RegisterAsyncPreemptAddr(asyncPreemptAddr uint64) int64 { return 0 }
 
 // ============================================================================
 // From signal_asm.go

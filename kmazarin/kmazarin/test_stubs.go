@@ -37,12 +37,6 @@ func GetGRegister() uint64 { return 0 }
 func GetPC() uint64 { return 0 }
 
 //go:nosplit
-func asyncPreemptWrapper() {}
-
-//go:nosplit
-func getAsyncPreemptWrapperAddr() uintptr { return 0 }
-
-//go:nosplit
 func HandlePageFaultAsm(faultAddr uint64) uint64 { return 0 }
 
 //go:nosplit

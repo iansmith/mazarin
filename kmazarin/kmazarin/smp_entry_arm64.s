@@ -46,7 +46,7 @@ TEXT ·secondaryCPUEntry(SB), NOSPLIT|NOFRAME, $0
 	// PerCPU layout:
 	//   0:  currentThread (8)
 	//   8:  TopHalfIRQNum (8)
-	//   16: NeedsAsyncPreempt (4)
+	//   16: _reservedAsyncPreempt (4)
 	//   20: NeedsThreadPreempt (4)
 	//   24: LocalTickCounter (8)
 	//   32: G0StackTop (8)

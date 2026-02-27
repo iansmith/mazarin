@@ -27,10 +27,10 @@ type PriestSignalAction struct {
 type PriestId int16
 
 // Priest represents a userspace process that runs Go code.
-// Each priest has its own address space, Go runtime, and asyncPreempt function.
+// Each priest has its own address space and Go runtime.
 type Priest struct {
-	PID              PriestId // Unique priest identifier
-	AsyncPreemptAddr uint64   // Address of this priest's runtime.asyncPreempt function
+	PID                   PriestId // Unique priest identifier
+	_reservedAsyncPreempt uint64   // Padding (was AsyncPreemptAddr — now unused)
 
 	// Per-priest tick accounting — all thread ticks roll up here
 	TotalTicksRunning   uint64 // Cumulative ticks across all threads of this priest

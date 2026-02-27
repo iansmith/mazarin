@@ -271,7 +271,7 @@ type Thread struct {
 	GoroutinePreemptDeadline uint64 // timer tick when goroutine preemption should occur
 	PreemptElapsed         uint64 // elapsed ticks saved when thread switched away
 	GoroutineElapsed       uint64 // elapsed goroutine ticks saved when thread switched away
-	AsyncPreemptAddr       uint64 // Address of asyncPreempt function for this thread's runtime
+	_reservedAsyncPreempt  uint64 // Padding (was AsyncPreemptAddr — now unused)
 
 	// Runtime accounting
 	TotalTicksRunning   uint64 // Cumulative timer ticks this thread has been running
@@ -338,14 +338,10 @@ type Thread struct {
 // These are computed from unsafe.Offsetof() in initThreadOffsets() and MUST be
 // initialized before any assembly code reads them (before timer IRQ is enabled).
 var (
-	ThreadContextOffset           uintptr // Offset of Context field within Thread struct
-	ThreadLastSeenGOffset         uintptr
-	ThreadStartTickOffset         uintptr
-	ThreadGoroutineStartOffset    uintptr
-	ThreadPreemptDeadlineOffset   uintptr
-	ThreadGoroutineDeadlineOffset uintptr
-	ThreadAsyncPreemptAddrOffset  uintptr
-	ThreadInCloneSetupOffset      uintptr
+	ThreadContextOffset         uintptr // Offset of Context field within Thread struct
+	ThreadStartTickOffset       uintptr
+	ThreadPreemptDeadlineOffset uintptr
+	ThreadInCloneSetupOffset    uintptr
 	ThreadSigreturnPendingOffset  uintptr
 	ThreadInSignalHandlerOffset   uintptr
 )
@@ -357,12 +353,8 @@ var (
 func initThreadOffsets() {
 	var t Thread
 	ThreadContextOffset = unsafe.Offsetof(t.Context)
-	ThreadLastSeenGOffset = unsafe.Offsetof(t.LastSeenG)
 	ThreadStartTickOffset = unsafe.Offsetof(t.StartTick)
-	ThreadGoroutineStartOffset = unsafe.Offsetof(t.GoroutineStart)
 	ThreadPreemptDeadlineOffset = unsafe.Offsetof(t.ThreadPreemptDeadline)
-	ThreadGoroutineDeadlineOffset = unsafe.Offsetof(t.GoroutinePreemptDeadline)
-	ThreadAsyncPreemptAddrOffset = unsafe.Offsetof(t.AsyncPreemptAddr)
 	ThreadInCloneSetupOffset = unsafe.Offsetof(t.InCloneSetup)
 	ThreadSigreturnPendingOffset = unsafe.Offsetof(t.SigreturnPending)
 	ThreadInSignalHandlerOffset = unsafe.Offsetof(t.InSignalHandler)
@@ -744,7 +736,6 @@ func InitThreads() {
 	// This represents the "kernel process" that owns all kernel threads
 	p0 := priestList.ReservedGet(0)
 	p0.PID = 0
-	p0.AsyncPreemptAddr = 0 // Will be set later by SetKmazarinAsyncPreemptAddr
 	priestList.ReservedSet(0)
 
 	// Set up thread 0 at reserved slot 0 - the kernel's "entry" thread
@@ -757,11 +748,8 @@ func InitThreads() {
 	t0.PageTableL0PA = initThread0PageTable() // Arch-specific: kernel page table PA
 	currentTick := ds.CurrentTime(0)
 	t0.StartTick = currentTick
-	t0.GoroutineStart = currentTick
 	t0.ThreadPreemptDeadline = currentTick + kirq.ThreadPreemptTicks
-	t0.GoroutinePreemptDeadline = currentTick + kirq.GoroutinePreemptTicks
 	t0.PreemptElapsed = 0
-	t0.GoroutineElapsed = 0
 	t0.TicksStartedRunning = currentTick // Initialize runtime accounting
 	t0.TotalTicksRunning = 0
 
@@ -965,9 +953,6 @@ func IdleLoop(sf *SchedulerFunc) *Thread {
 //
 // LOCK DISCIPLINE: save DAIF → mask IRQs → acquire lock → process → release → restore → WFI
 //
-var gcDiagCounter uint64
-var gcDiagLastNumGC uint32
-
 //go:noinline
 func KernelIdleLoop() {
 	for {
@@ -975,22 +960,6 @@ func KernelIdleLoop() {
 		// Without this, goroutines started by StartBottomHalfProcessors()
 		// never get CPU time because this loop never triggers Go's scheduler.
 		runtime.Gosched()
-
-		// GC diagnostic — print every 64th iteration to reduce UART spam
-		gcDiagCounter++
-		numgc, _, _, heapLive, _, _, _, heapMarked, trigger, _ := kmazarinGCStatsNoSTW()
-		if gcDiagCounter&0x3F == 0 || numgc != gcDiagLastNumGC {
-			serial.RawUARTPuts("[GC] c=")
-			serial.RawUARTDecimal(uint64(numgc))
-			serial.RawUARTPuts(" live=")
-			serial.RawUARTHexCompact(heapLive)
-			serial.RawUARTPuts(" trig=")
-			serial.RawUARTHexCompact(trigger)
-			serial.RawUARTPuts(" marked=")
-			serial.RawUARTHexCompact(heapMarked)
-			serial.RawUARTPuts("\r\n")
-			gcDiagLastNumGC = numgc
-		}
 
 		// Periodic A/D bit scan. Clears hardware Accessed bits on all mapped
 		// userspace pages and propagates Dirty state into PageDescriptors.
@@ -1139,12 +1108,8 @@ func SaveThread0AndYield() uint64 {
 	SetCurrentThreadGlobal(next)
 	next.State = ThreadRunning
 	next.StartTick = currentTime
-	next.GoroutineStart = currentTime
 	next.ThreadPreemptDeadline = currentTime + kirq.ThreadPreemptTicks
-	next.GoroutinePreemptDeadline = currentTime + kirq.GoroutinePreemptTicks
-	next.LastSeenG = next.Context.GetGRegister()
 	next.PreemptElapsed = 0
-	next.GoroutineElapsed = 0
 	next.TicksStartedRunning = currentTime
 
 	// Switch TTBR0 if needed for userspace thread
@@ -1245,12 +1210,8 @@ func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
 	// Initialize preemption tracking
 	currentTime := sf.CurrentTime(0)
 	thread.StartTick = currentTime
-	thread.GoroutineStart = currentTime
 	thread.ThreadPreemptDeadline = currentTime + kirq.ThreadPreemptTicks
-	thread.GoroutinePreemptDeadline = currentTime + kirq.GoroutinePreemptTicks
-	thread.LastSeenG = thread.Context.GetGRegister() // Use saved g
 	thread.PreemptElapsed = 0
-	thread.GoroutineElapsed = 0
 	thread.TicksStartedRunning = currentTime
 
 	// Switch TTBR0 to the thread's page table
@@ -1361,30 +1322,23 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 		currentTick = ds.CurrentTime(0)
 	}
 	t.StartTick = currentTick
-	t.GoroutineStart = currentTick
 	t.ThreadPreemptDeadline = currentTick + kirq.ThreadPreemptTicks
-	t.GoroutinePreemptDeadline = currentTick + kirq.GoroutinePreemptTicks
-	t.LastSeenG = gp
-	t.PreemptElapsed = 0   // Fresh thread, no elapsed time yet
-	t.GoroutineElapsed = 0 // Fresh goroutine, no elapsed time yet
+	t.PreemptElapsed = 0 // Fresh thread, no elapsed time yet
 	t.TotalTicksRunning = 0 // Fresh thread, no accumulated runtime yet
 	t.TicksStartedRunning = currentTick // Thread runs immediately (State = Running)
 
-	// CRITICAL: Set InCloneSetup to protect the clone child from async preempt
-	// The child must read fn/gp/mp from the stack before async preempt can safely
-	// push LR/R29 there. This flag will be cleared on the child's first syscall.
+	// CRITICAL: Set InCloneSetup to protect the clone child during setup.
+	// The child must read fn/gp/mp from the stack before any preemption.
+	// This flag will be cleared on the child's first syscall.
 	t.InCloneSetup = 1
 
-	// CRITICAL: Inherit page table, priest ID, and asyncPreempt address from parent thread!
+	// CRITICAL: Inherit page table and priest ID from parent thread!
 	// Without this, cloned threads have PageTableL0PA=0 and won't
 	// get TTBR0 switched when scheduled, causing page faults.
 	// PID (priest ID) is used as ASID for TLB tagging.
-	// AsyncPreemptAddr is inherited so all threads in the same process use the same
-	// asyncPreempt function (kmazarin's for kernel threads, priest's for priest threads).
 	if parent != nil {
 		t.PageTableL0PA = parent.PageTableL0PA
 		t.PID = parent.PID
-		t.AsyncPreemptAddr = parent.AsyncPreemptAddr
 		t.PriestIdx = parent.PriestIdx
 
 		// Increment priest's thread count for userspace threads (PID > 0)
@@ -1523,9 +1477,7 @@ func threadExitImpl(sf *SchedulerFunc) uintptr {
 	currentTick := sf.CurrentTime(0)
 	next.State = ThreadRunning
 	next.StartTick = currentTick
-	next.GoroutineStart = currentTick
 	next.ThreadPreemptDeadline = currentTick + kirq.ThreadPreemptTicks
-	next.GoroutinePreemptDeadline = currentTick + kirq.GoroutinePreemptTicks
 	next.TicksStartedRunning = currentTick
 	// Update both per-CPU and global CurrentThread
 	SetCurrentThreadGlobal(next)
@@ -1608,8 +1560,8 @@ func releasePriestSchedLockHeld(priestIdx int16, pid PriestId) {
 // Returns the TID (thread ID) of the new thread.
 //
 //go:nosplit
-func CreateUserspaceThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr, asyncPreemptAddr uint64) int16 {
-	return createUserspaceThreadImpl(&NormalSchedulerFunc, entryPoint, stackPtr, pageTableL0PA, asyncPreemptAddr)
+func CreateUserspaceThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr) int16 {
+	return createUserspaceThreadImpl(&NormalSchedulerFunc, entryPoint, stackPtr, pageTableL0PA)
 }
 
 // GetPriestByPID finds a priest by its PID.
@@ -1620,93 +1572,19 @@ func GetPriestByPID(pid PriestId) *Priest {
 	return priestList.FindById(int32(pid))
 }
 
-// SetKmazarinAsyncPreemptAddr sets the asyncPreempt address for all kmazarin threads.
-// Called after kirq.SetAsyncPreemptWrapperAddr is initialized.
-// Kernel threads (PID == 0) get this address for goroutine preemption.
-//
-//go:nosplit
-func SetKmazarinAsyncPreemptAddr(addr uint64) {
-	savedDAIF := SaveAndDisableIRQs()
-	schedulerLock.Lock()
-
-	// Update the kernel priest's asyncPreempt address
-	p0 := priestList.ReservedGet(0)
-	if p0 != nil {
-		p0.AsyncPreemptAddr = addr
-	}
-
-	// Update all kernel threads (PID == 0)
-	for i := 0; i < MaxThreads; i++ {
-		if threadListInUse[i] && threadListData[i].PID == 0 {
-			threadListData[i].AsyncPreemptAddr = addr
-		}
-	}
-
-	schedulerLock.Unlock()
-	RestoreIRQs(savedDAIF)
-}
-
-// RegisterAsyncPreemptAddr registers the asyncPreempt address for the current priest.
-// Called by priests via the SysRegisterAsyncPreempt syscall.
-// This enables goroutine-level preemption within the priest.
-//
-// Returns:
-//   0 on success
-//   -ENOENT (-2) if current thread is not a priest thread
-//   -ESRCH (-3) if priest not found
+// RegisterAsyncPreemptAddr is a no-op kept for backward compatibility.
+// Goroutine preemption is now handled by userspace Go runtime via SIGURG signals.
 //
 //go:nosplit
 //go:noinline
 func RegisterAsyncPreemptAddr(asyncPreemptAddr uint64) int64 {
-	savedDAIF := SaveAndDisableIRQs()
-	schedulerLock.Lock()
-
-	// Get current thread
-	t := GetCurrentThread()
-	if t == nil {
-		schedulerLock.Unlock()
-		RestoreIRQs(savedDAIF)
-		return -2 // ENOENT
-	}
-
-	// Check if this is a userspace priest thread (PID > 0)
-	// Kernel threads (PID == 0) should use SetKmazarinAsyncPreemptAddr instead
-	if t.PID <= 0 {
-		schedulerLock.Unlock()
-		RestoreIRQs(savedDAIF)
-		return -2 // ENOENT - not a userspace priest thread
-	}
-
-	priestId := t.PID
-
-	// Find the priest and update its asyncPreempt address
-	p := priestList.FindById(int32(priestId))
-	if p == nil {
-		schedulerLock.Unlock()
-		RestoreIRQs(savedDAIF)
-		return -3 // ESRCH - priest not found
-	}
-
-	// Store in priest record
-	p.AsyncPreemptAddr = asyncPreemptAddr
-
-	// Update all threads belonging to this priest
-	for i := 0; i < MaxThreads; i++ {
-		if threadListInUse[i] && threadListData[i].PID == priestId {
-			threadListData[i].AsyncPreemptAddr = asyncPreemptAddr
-		}
-	}
-
-	schedulerLock.Unlock()
-	RestoreIRQs(savedDAIF)
-
 	return 0
 }
 
 // createUserspaceThreadImpl is the internal implementation with sf for testing
 //
 //go:nosplit
-func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, pageTableL0PA uintptr, asyncPreemptAddr uint64) int16 {
+func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, pageTableL0PA uintptr) int16 {
 	// BEGIN CRITICAL SECTION - protect all scheduling data structures:
 	// priestIdAllocator, priestList, threadList, readyQueue
 	savedDAIF := sf.DisableAndSaveDAIF()
@@ -1716,14 +1594,8 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	priestId := priestIdAllocator.Acquire()
 	_, p := priestList.Allocate()
 	p.PID = priestId
-	p.AsyncPreemptAddr = asyncPreemptAddr
 	p.PageTableL0PA = pageTableL0PA
 	p.ThreadCount = 1 // This priest starts with one thread
-
-	// Breadcrumb: priest ID allocated (seeing this more than twice is suspicious)
-	BreadcrumbString("\r\n[P+]pid=")
-	BreadcrumbHex(uint64(priestId))
-	Breadcrumb('\n')
 
 	// Allocate thread slot from static list (panics if exhausted)
 	_, t := threadList.Allocate()
@@ -1736,29 +1608,17 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	t.PID = priestId // Priest (process) ID for ASID
 	t.State = ThreadReady // Not running yet - deadlines set when scheduled
 	t.PageTableL0PA = pageTableL0PA
-	t.StartTick = 0              // Set when scheduled
-	t.GoroutineStart = 0         // Set when scheduled
-	t.ThreadPreemptDeadline = 0  // Set when scheduled
-	t.GoroutinePreemptDeadline = 0 // Set when scheduled
+	t.StartTick = 0             // Set when scheduled
+	t.ThreadPreemptDeadline = 0 // Set when scheduled
 	t.PreemptElapsed = 0
-	t.GoroutineElapsed = 0
 	t.TotalTicksRunning = 0   // Fresh thread, no accumulated runtime yet
 	t.TicksStartedRunning = 0 // Not running yet (will be set when scheduled)
 	t.FutexAddr = 0
 	t.MPtr = 0
 	t.GPtr = 0
 	t.EntryFunc = 0
-	t.LastSeenG = 0
 	t.CloneNeedsParentRegs = 0 // Clear in case slot was reused from a clone child
 
-	// Copy asyncPreemptAddr from the Priest struct and set PriestIdx for O(1) access
-	// The Priest gets this from ELF symbol lookup during process creation
-	priest := priestList.FindById(int32(priestId))
-	if priest != nil {
-		t.AsyncPreemptAddr = priest.AsyncPreemptAddr
-	} else {
-		t.AsyncPreemptAddr = 0
-	}
 	// Set PriestIdx for O(1) priest lookup in timer handler
 	t.PriestIdx = -1 // Default: no priest
 	for pi := 0; pi < len(priestList.Data); pi++ {
@@ -1770,12 +1630,6 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 
 	// Set up initial context for userspace execution
 	t.Context.SetupForUserspace(entryPoint, stackPtr)
-
-	BreadcrumbString("[CTX] PC=0x")
-	BreadcrumbHex(t.Context.GetPC())
-	BreadcrumbString(" SP=0x")
-	BreadcrumbHex(t.Context.GetSP())
-	Breadcrumb('\n')
 
 	// Set HomeCPU to current CPU for cache locality
 	t.HomeCPU = int8(GetCPUID())
@@ -2375,7 +2229,6 @@ func tryPickupWorkIdleCPU(sf *SchedulerFunc) uint64 {
 	currentTime := sf.CurrentTime(0)
 	next.StartTick = currentTime
 	next.ThreadPreemptDeadline = currentTime + kirq.ThreadPreemptTicks
-	next.GoroutinePreemptDeadline = currentTime + kirq.GoroutinePreemptTicks
 	next.TicksStartedRunning = currentTime
 
 	// Start priest clock if needed
@@ -2458,7 +2311,6 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 
 	// Reset preemption tracking for the preempted thread
 	oldThread.PreemptElapsed = 0
-	oldThread.GoroutineElapsed = 0
 
 	// Update runtime accounting for preempted thread
 	currentTime := sf.CurrentTime(0)
@@ -2477,7 +2329,6 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		oldThread.State = ThreadRunning
 		oldThread.StartTick = currentTime
 		oldThread.ThreadPreemptDeadline = currentTime + kirq.ThreadPreemptTicks
-		oldThread.GoroutinePreemptDeadline = currentTime + kirq.GoroutinePreemptTicks
 		oldThread.TicksStartedRunning = currentTime
 		if sf.StateCheck != nil {
 			sf.StateCheck("preempt-no-next")
@@ -2512,12 +2363,8 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	SetCurrentThreadGlobal(next)
 	next.State = ThreadRunning
 	next.StartTick = currentTime
-	next.GoroutineStart = currentTime
 	next.ThreadPreemptDeadline = currentTime + kirq.ThreadPreemptTicks
-	next.GoroutinePreemptDeadline = currentTime + kirq.GoroutinePreemptTicks
-	next.LastSeenG = next.Context.GetGRegister() // Use saved g
-	next.PreemptElapsed = 0             // Fresh time slice
-	next.GoroutineElapsed = 0           // Fresh goroutine time slice
+	next.PreemptElapsed = 0 // Fresh time slice
 	next.TicksStartedRunning = currentTime // Mark when started running for accounting
 
 	// CRITICAL: Switch TTBR0 if switching to a userspace thread with different page table
@@ -2670,7 +2517,6 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 		if oldThread.State == ThreadRunning {
 			// Save elapsed time so we can restore it when this thread resumes
 			oldThread.PreemptElapsed = currentTime - oldThread.StartTick
-			oldThread.GoroutineElapsed = currentTime - oldThread.GoroutineStart
 
 			oldThread.State = ThreadReady
 					// Pluck first in case oldThread is already in queue
@@ -2697,27 +2543,15 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	// (SVC switch breadcrumbs removed for performance)
 	newThread.State = ThreadRunning
 	// Restore StartTick from saved elapsed time so preemption tracking
-	// continues from where it left off. This ensures goroutines don't get
-	// unlimited time by repeatedly triggering context switches.
+	// continues from where it left off.
 	newThread.StartTick = currentTime - newThread.PreemptElapsed
-	newThread.GoroutineStart = currentTime - newThread.GoroutineElapsed
-	// Calculate remaining time for deadlines (threshold - elapsed = remaining)
+	// Calculate remaining time for deadline (threshold - elapsed = remaining)
 	// If elapsed >= threshold, deadline will be at or before currentTime (immediate preemption)
 	if newThread.PreemptElapsed < kirq.ThreadPreemptTicks {
 		newThread.ThreadPreemptDeadline = currentTime + (kirq.ThreadPreemptTicks - newThread.PreemptElapsed)
 	} else {
 		newThread.ThreadPreemptDeadline = currentTime // Preempt immediately on next tick
 	}
-	if newThread.GoroutineElapsed < kirq.GoroutinePreemptTicks {
-		newThread.GoroutinePreemptDeadline = currentTime + (kirq.GoroutinePreemptTicks - newThread.GoroutineElapsed)
-	} else {
-		newThread.GoroutinePreemptDeadline = currentTime // Preempt immediately on next tick
-	}
-	// Use saved x28 (g register) from context, NOT GPtr (g0).
-	// This preserves the goroutine that was running when the thread was
-	// preempted, allowing async preemption tracking to work correctly
-	// when we resume this thread.
-	newThread.LastSeenG = newThread.Context.GetGRegister()
 
 	// Mark when this thread started running for runtime accounting
 	newThread.TicksStartedRunning = currentTime

@@ -2,13 +2,13 @@ package kirq
 
 import "mazzy/kmazarin/serial"
 
-// PreemptInfo contains call injection information for async preemption
-// Returned by IRQ handlers that want to trigger preemption
+// PreemptInfo is kept for interface compatibility but is no longer used for
+// goroutine preemption injection. Thread preemption uses NeedsThreadPreempt flag instead.
 type PreemptInfo struct {
-	NewELR    uint64 // New ELR_EL1 (asyncPreempt address)
-	NewSP     uint64 // New SP_EL0 (adjusted stack)
-	NewLR     uint64 // New LR (interrupted PC)
-	DoPreempt bool   // True if preemption should occur
+	NewELR    uint64 // Unused (was asyncPreempt address)
+	NewSP     uint64 // Unused (was adjusted stack)
+	NewLR     uint64 // Unused (was interrupted PC)
+	DoPreempt bool   // Unused (thread preemption uses NeedsThreadPreempt flag)
 }
 
 // IRQHandlerSimple is the type for simple interrupt handlers that don't preempt

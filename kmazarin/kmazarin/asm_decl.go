@@ -41,17 +41,6 @@ func GetGRegister() uint64
 //go:nosplit
 func GetPC() uint64
 
-// asyncPreemptWrapper is the wrapper that saves g around asyncPreempt calls.
-// Used by the IRQ handler for safe async preemption.
-//go:nosplit
-func asyncPreemptWrapper()
-
-// getAsyncPreemptWrapperAddr returns the address of asyncPreemptWrapper.
-// This function exists because loading function addresses directly in assembly
-// may not work correctly with Go's ABI system. By calling this Go function,
-// we let the Go toolchain handle the ABI0 symbol resolution properly.
-//go:nosplit
-func getAsyncPreemptWrapperAddr() uintptr
 
 // DumpInstructionPageFaultAsm is declared in asm_decl_riscv64.go (RISC-V only).
 // It walks Sv48 page tables and prints PTE chain for instruction page fault diagnostics.

@@ -45,10 +45,10 @@ type PerCPU struct {
 	// fire simultaneously on different cores.
 	TopHalfIRQNum uint64
 
-	// needsAsyncPreempt is set by the timer handler when a goroutine has
-	// exceeded its time slice. Each CPU needs its own flag because different
-	// goroutines run on different cores.
-	NeedsAsyncPreempt uint32
+	// _reservedAsyncPreempt is padding (was NeedsAsyncPreempt).
+	// Kept to preserve struct layout for assembly hardcoded offsets.
+	// NeedsThreadPreempt is at offset 20, LocalTickCounter at 24.
+	_reservedAsyncPreempt uint32
 
 	// needsThreadPreempt is set when a thread has exceeded its time slice.
 	// Each CPU needs its own flag.
@@ -122,7 +122,7 @@ func InitPerCPU() {
 	for i := 0; i < MaxCPUs; i++ {
 		perCPUData[i].currentThread = nil
 		perCPUData[i].TopHalfIRQNum = 0
-		perCPUData[i].NeedsAsyncPreempt = 0
+		perCPUData[i]._reservedAsyncPreempt = 0
 		perCPUData[i].NeedsThreadPreempt = 0
 		perCPUData[i].LocalTickCounter = 0
 		perCPUData[i].G0StackTop = 0
@@ -304,9 +304,6 @@ var (
 	// PerCPUTopHalfIRQNumOffset is the offset of TopHalfIRQNum within PerCPU
 	PerCPUTopHalfIRQNumOffset uintptr
 
-	// PerCPUNeedsAsyncPreemptOffset is the offset of NeedsAsyncPreempt within PerCPU
-	PerCPUNeedsAsyncPreemptOffset uintptr
-
 	// PerCPUSize is the size of one PerCPU struct (for indexing)
 	PerCPUSize uintptr
 )
@@ -319,7 +316,6 @@ func initPerCPUOffsets() {
 	var p PerCPU
 	PerCPUCurrentThreadOffset = unsafe.Offsetof(p.currentThread)
 	PerCPUTopHalfIRQNumOffset = unsafe.Offsetof(p.TopHalfIRQNum)
-	PerCPUNeedsAsyncPreemptOffset = unsafe.Offsetof(p.NeedsAsyncPreempt)
 	PerCPUSize = unsafe.Sizeof(p)
 }
 

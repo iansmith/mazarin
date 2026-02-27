@@ -4,7 +4,7 @@ package main
 import (
 	"mazzy/kmazarin/dtb"
 	"mazzy/shared/constants"
-	"unsafe"
+	_ "unsafe" // for go:linkname
 )
 
 // Auxv-backed config values, set by archauxv() during runtime init.
@@ -164,22 +164,6 @@ func initDerivedValues() {
 //go:nosplit
 func GetUartBase() uintptr {
 	return uintptr(constants.KernelUartBase)
-}
-
-// GetAsyncPreemptAddr returns the address of the asyncPreemptWrapper.
-// This is kmazarin's own assembly function, accessed via getAsyncPreemptWrapperAddr().
-//
-//go:nosplit
-func GetAsyncPreemptAddr() uintptr {
-	return getAsyncPreemptWrapperAddr()
-}
-
-// GetReadyForAsyncPreemptAddr returns the address of the readyForAsyncPreempt flag.
-// This is a kmazarin global, so we return its address directly.
-//
-//go:nosplit
-func GetReadyForAsyncPreemptAddr() uintptr {
-	return uintptr(unsafe.Pointer(&readyForAsyncPreempt))
 }
 
 // GetDtbPhysAddr returns the DTB physical address from auxv.

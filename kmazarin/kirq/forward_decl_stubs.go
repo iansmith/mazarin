@@ -10,8 +10,6 @@ func TimerIRQHandlerAsm() {}
 
 // Unexported functions (forward declarations replaced with stubs)
 func getPreemptOffsets() preemptOffsetsType { return preemptOffsetsType{} }
-func getAsyncPreemptAddr() (uintptr) { return 0 }
-func getReadyForAsyncPreemptAddr() (uintptr) { return 0 }
 func processDeadlines() {}
 // Timer assembly stubs moved to ktimer/platform_stubs.go
 func asmYieldSVC() {}

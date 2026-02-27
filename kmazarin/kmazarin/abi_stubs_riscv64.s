@@ -164,15 +164,6 @@ TEXT ·EnableSEIE(SB), NOSPLIT|NOFRAME, $0-0
 	WORD	$0x10452073		// csrs sie, a0
 	RET
 
-// asyncPreemptWrapper placeholder
-TEXT ·asyncPreemptWrapper(SB), NOSPLIT|NOFRAME, $0-0
-	RET
-
-// getAsyncPreemptWrapperAddr returns address of asyncPreemptWrapper.
-TEXT ·getAsyncPreemptWrapperAddr(SB), NOSPLIT, $0-8
-	MOV	$·asyncPreemptWrapper(SB), A0
-	MOV	A0, ret+0(FP)
-	RET
 
 // ============================================================================
 // RunFirstThread - Load context and SRET to first thread

@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"mazzy/kmazarin/console"
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
 	"reflect"
 	"sync/atomic"
@@ -154,7 +153,6 @@ var suppressSerial uint32
 // Suppresses write1 UART output so runtime fmt.Printf goes to the
 // ring (and thus to the stdio priest display) rather than UART.
 func EnableSoftIRQConsole() {
-	serial.RawUARTPuts("[SIC] EnableSoftIRQConsole called\r\n")
 	c := NewSoftIRQConsole()
 	softIRQConsole = c
 	console.Set(c)

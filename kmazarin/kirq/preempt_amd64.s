@@ -1,16 +1,19 @@
 //go:build !test_stubs
 
-// preempt_amd64.s - Timer IRQ handler for x86_64 cooperative preemption
+// preempt_amd64.s - Timer IRQ handler for x86_64 thread preemption
 //
-// This is the pure-assembly timer IRQ handler that implements cooperative
-// preemption by poisoning g.stackguard0 when a goroutine has exceeded
-// its time quantum. This avoids calling any Go functions from the IRQ
-// context, preventing "morestack on g0" crashes.
+// This is the pure-assembly timer IRQ handler that implements thread-level
+// preemption. When a thread has run for too long (ThreadPreemptTicks exceeded),
+// NeedsThreadPreempt is set so the exception handler can context-switch.
+//
+// Goroutine-level preemption is handled by the Go runtime in userspace via
+// SIGURG signals — the kernel no longer injects asyncPreempt or poisons
+// g.stackguard0.
 //
 // The handler:
 // 1. Increments the local tick counter
-// 2. Checks if the current thread's goroutine should be preempted
-// 3. If so, writes stackPreempt to g.stackguard0 (cooperative preemption)
+// 2. Checks if the current thread has exceeded its time quantum
+// 3. If so, sets NeedsThreadPreempt for the exception handler
 // 4. Re-arms the LAPIC timer
 
 #include "textflag.h"
@@ -22,8 +25,8 @@
 #define LAPIC_TMRDIV	0x3E0
 
 // TimerIRQHandlerAsm is the pure assembly timer IRQ handler.
-// Does NOT call any Go functions. Sets g.preempt and g.stackguard0
-// directly for cooperative preemption.
+// Does NOT call any Go functions. Sets NeedsThreadPreempt when
+// a thread has exceeded its time quantum.
 //
 // func TimerIRQHandlerAsm()
 TEXT ·TimerIRQHandlerAsm(SB), NOSPLIT|NOFRAME, $0
@@ -64,52 +67,7 @@ TEXT ·TimerIRQHandlerAsm(SB), NOSPLIT|NOFRAME, $0
 	TESTQ	BX, BX
 	JZ	timer_done		// No current thread
 
-	// Check goroutine preemption deadline
-	// Load goroutine deadline offset
-	MOVQ	main·ThreadGoroutineDeadlineOffset(SB), DX
-	ADDQ	BX, DX			// DX = &thread.GoroutinePreemptDeadline
-	MOVQ	(DX), DX		// DX = deadline value
-	CMPQ	CX, DX			// current tick vs deadline
-	JL	check_thread_deadline	// Not yet past deadline
-
-	// Goroutine deadline exceeded - set cooperative preemption
-	// Get g pointer from R14 (but we can't read R14 here since it's saved)
-	// Instead, read g from the thread's lastSeenG field
-	MOVQ	main·ThreadLastSeenGOffset(SB), DX
-	ADDQ	BX, DX
-	MOVQ	(DX), DX		// DX = g pointer
-	TESTQ	DX, DX
-	JZ	check_thread_deadline
-
-	// Read g.atomicstatus to check if goroutine is running
-	MOVQ	·PreemptGStatusOffset(SB), CX
-	ADDQ	DX, CX			// CX = &g.atomicstatus
-	MOVL	(CX), CX		// CX = atomicstatus (32-bit)
-	// Mask off _Gscan bit
-	ANDL	$0xFFFFEFFF, CX		// Clear bit 12 (_Gscan)
-	CMPL	CX, $2			// _Grunning = 2
-	JNE	check_thread_deadline
-
-	// Set g.preempt = true
-	MOVQ	·PreemptPreemptOffset(SB), CX
-	ADDQ	DX, CX
-	MOVQ	$1, (CX)
-
-	// Set g.stackguard0 = stackPreempt
-	MOVQ	·PreemptStackGuard0Offset(SB), CX
-	ADDQ	DX, CX
-	MOVQ	·PreemptStackPreemptValue(SB), SI
-	MOVQ	SI, (CX)
-
-	// Reset goroutine deadline
-	MOVQ	·GoroutinePreemptTicks(SB), SI
-	MOVQ	24(AX), CX		// current tick from perCPU
-	ADDQ	SI, CX			// new deadline
-	MOVQ	main·ThreadGoroutineDeadlineOffset(SB), SI
-	ADDQ	BX, SI
-	MOVQ	CX, (SI)
-
-check_thread_deadline:
+	// Check thread preemption deadline
 	// Check thread preemption deadline
 	MOVQ	main·ThreadPreemptDeadlineOffset(SB), DX
 	ADDQ	BX, DX

@@ -273,7 +273,7 @@ func virtioPCISetupQueue(queueIndex uint16, vq *virtio.VirtQueue) bool {
 //
 //go:nosplit
 func findVirtIOGPU() bool {
-	console.KPrintln("[VirtIO GPU] Scanning PCI bus...")
+	// PCI bus scan (silent)
 
 	// Scan PCI bus
 	for bus := uint8(0); bus < 1; bus++ {
@@ -310,7 +310,6 @@ func findVirtIOGPU() bool {
 
 				// Check if this is VirtIO GPU
 				if vendorID == pci.VIRTIO_VENDOR_ID && deviceID == pci.VIRTIO_GPU_DEVICE_ID {
-					console.KPrintln("[VirtIO GPU] Found device")
 
 					// Enable device
 					cmd := pci.ConfigRead32(bus, slot, funcNum, pci.PCI_COMMAND)
@@ -555,8 +554,7 @@ func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint3
 		console.KPrintln("[VirtIO GPU] ERROR: Failed to allocate framebuffer pages")
 		return false
 	}
-	console.KPrintf("[VirtIO GPU] Allocated framebuffer: PA=0x%X (%d pages)\n",
-		virtioGPUFramebufferAddr, fbPages)
+	// Framebuffer allocated
 
 	// Zero framebuffer (use linear map VA for CPU access)
 	fbVA := virtioGPUFramebufferAddr + constants.KernelMMIOOffset
@@ -581,7 +579,6 @@ func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint3
 	var createResp VirtIOGPUCtrlHdr
 
 	respType := virtioGPUSendCommand(unsafe.Pointer(&createCmd), uint32(unsafe.Sizeof(createCmd)), unsafe.Pointer(&createResp), uint32(unsafe.Sizeof(createResp)))
-	console.KPrintf("[VirtIO GPU] CREATE_2D response: 0x%04X\n", respType)
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
 		console.KPrintf("[VirtIO GPU] ERROR: CREATE_2D failed (0x%04x)\n", respType)
 		return false
@@ -604,7 +601,6 @@ func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint3
 
 	var attachResp VirtIOGPUCtrlHdr
 	respType = virtioGPUSendCommand(attachCmdBuf, attachCmdSize, unsafe.Pointer(&attachResp), uint32(unsafe.Sizeof(attachResp)))
-	console.KPrintf("[VirtIO GPU] ATTACH_BACKING response: 0x%04X (PA=0x%X len=0x%X)\n", respType, memEntryPtr.Addr, memEntryPtr.Len)
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
 		console.KPrintf("[VirtIO GPU] ERROR: ATTACH_BACKING failed (0x%04x)\n", respType)
 		return false
@@ -620,20 +616,13 @@ func virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight uint3
 
 	var scanoutResp VirtIOGPUCtrlHdr
 	respType = virtioGPUSendCommand(unsafe.Pointer(&scanoutCmd), uint32(unsafe.Sizeof(scanoutCmd)), unsafe.Pointer(&scanoutResp), uint32(unsafe.Sizeof(scanoutResp)))
-	console.KPrintf("[VirtIO GPU] SET_SCANOUT response: 0x%04X (expected 0x1100=OK_NODATA)\n", respType)
 	if respType != VIRTIO_GPU_RESP_OK_NODATA {
 		console.KPrintf("[VirtIO GPU] ERROR: SET_SCANOUT failed (0x%04x)\n", respType)
 		return false
 	}
 
-	// Print framebuffer details
-	console.KPrintf("[VirtIO GPU] Framebuffer: %dx%d (resource: %dx%d)\n",
-		displayWidth, displayHeight, displayWidth, resourceHeight)
-	console.KPrintf("[VirtIO GPU] FB physical addr: 0x%X size: 0x%X pitch: 0x%X\n",
-		virtioGPUFramebufferAddr, fbSize, virtioGPUDevice.Pitch)
-	console.KPrintf("[VirtIO GPU] Scanout: ID=%d Rect=(%d,%d,%dx%d) ResourceID=%d\n",
-		scanoutCmd.ScanoutID, scanoutCmd.Rect.X, scanoutCmd.Rect.Y,
-		scanoutCmd.Rect.Width, scanoutCmd.Rect.Height, scanoutCmd.ResourceID)
+	console.KPrintf("[VirtIO GPU] %dx%d FB at PA 0x%X\n",
+		displayWidth, displayHeight, virtioGPUFramebufferAddr)
 
 	return true
 }

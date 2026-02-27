@@ -168,8 +168,8 @@ type runtimeConfigStruct struct {
 	ExceptionStackTop    uint64
 	ExceptionStackSize   uint64
 	G0StructAddr         uint64
-	AsyncPreemptAddr     uint64
-	ReadyForAsyncPreempt uint64
+	_reservedAsyncPreempt1 uint64 // Padding (was AsyncPreemptAddr — now unused)
+	_reservedAsyncPreempt2 uint64 // Padding (was ReadyForAsyncPreempt — now unused)
 	FramebufferPhysAddr  uint64
 	FramebufferSize      uint64
 	BootImagePhysAddr    uint64

@@ -442,7 +442,6 @@ var (
 // NOTE: Using busy-loop instead of time.Ticker to avoid timer initialization issues.
 //
 func eventPoller() {
-	console.KPrintf("[eventPoller] started\n")
 	for {
 		// Yield to other goroutines periodically
 		runtime.Gosched()

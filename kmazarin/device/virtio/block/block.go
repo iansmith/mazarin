@@ -139,7 +139,7 @@ func Init() bool {
 
 // findVirtIOBlock scans the PCI bus for a VirtIO block device
 func findVirtIOBlock() bool {
-	console.KPrintln("[VirtIO Block] Scanning PCI bus...")
+	// PCI bus scan (silent)
 
 	// Scan PCI bus
 	for bus := uint8(0); bus < 1; bus++ {
@@ -177,9 +177,6 @@ func findVirtIOBlock() bool {
 				// Check if this is VirtIO block device
 				if vendorID == pci.VIRTIO_VENDOR_ID &&
 					(deviceID == VIRTIO_BLK_DEVICE_ID_LEGACY || deviceID == VIRTIO_BLK_DEVICE_ID_MODERN) {
-					console.KPrintf("[VirtIO Block] Found device at bus=%d slot=%d func=%d (device ID 0x%04X)\n",
-						bus, slot, funcNum, deviceID)
-
 					// Enable device
 					cmd := pci.ConfigRead32(bus, slot, funcNum, pci.PCI_COMMAND)
 					cmd |= 0x7 // Enable I/O, memory, bus master

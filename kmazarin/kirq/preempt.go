@@ -1,9 +1,9 @@
 
-// Package kirq provides kernel IRQ handling including timer-based preemption.
+// Package kirq provides kernel IRQ handling including timer-based thread preemption.
 //
-// This file implements cooperative preemption using Go's native mechanism:
-// setting g.preempt=true and g.stackguard0=stackPreempt causes the next
-// function call to trigger a yield via the stack growth check.
+// Goroutine-level preemption is handled by the Go runtime in userspace via
+// SIGURG signals. The kernel only performs thread-level preemption when a
+// thread (priest) has exceeded its time quantum.
 
 package kirq
 
@@ -49,11 +49,6 @@ var (
 	PreemptMG0Offset         uintptr // Offset of m.g0 from m pointer (always 0)
 	PreemptMLocksOffset      uintptr // Offset of m.locks from m pointer
 	PreemptMGsignalOffset    uintptr // Offset of m.gsignal from m pointer
-
-	// Async preemption addresses - set by SetAsyncPreemptAddr, read by assembly
-	AsyncPreemptAddr        uint64 // Address of runtime.asyncPreempt
-	AsyncPreemptWrapperAddr uint64 // Address of main.asyncPreemptWrapper
-	ReadyForAsyncPreempt    uint32 // 1 when ready for async preemption
 )
 
 // TimerIRQCount is incremented by assembly on each timer IRQ.
@@ -62,8 +57,8 @@ var TimerIRQCount uint64
 
 // Thread struct offsets for assembly access.
 // IMPORTANT: These are computed dynamically via unsafe.Offsetof() in
-// main.initThreadOffsets() and stored in main.ThreadLastSeenGOffset,
-// main.ThreadStartTickOffset, etc. Assembly loads these at runtime.
+// main.initThreadOffsets() and stored in main.ThreadStartTickOffset,
+// main.ThreadPreemptDeadlineOffset, etc. Assembly loads these at runtime.
 //
 // DO NOT use hardcoded offsets - struct layout may change!
 
@@ -72,12 +67,6 @@ var TimerIRQCount uint64
 // Set by InitPreemptThresholds() based on actual timer frequency.
 // Exported for assembly access (used by preempt_riscv64.s).
 var TimerRearmTicks uint64 = 100000
-
-// GoroutinePreemptTicks is the number of raw timer ticks before forcing
-// async preemption on a goroutine. At 62.5MHz: 50ms = 3,125,000 ticks.
-// Set by InitPreemptThresholds() based on actual timer frequency.
-// Exported for assembly access.
-var GoroutinePreemptTicks uint64 = 3125000
 
 // ThreadPreemptTicks is the number of raw timer ticks before forcing
 // a thread preemption. At 62.5MHz: 200ms = 12,500,000 ticks.
@@ -94,16 +83,9 @@ func InitPreemptThresholds() {
 	}
 	// TimerRearmTicks = 10ms worth of ticks
 	TimerRearmTicks = freq / 100 // freq * 0.01 = freq / 100
-	// GoroutinePreemptTicks = 50ms worth of ticks
-	GoroutinePreemptTicks = freq / 20 // freq * 0.05 = freq / 20
 	// ThreadPreemptTicks = 200ms worth of ticks
 	ThreadPreemptTicks = freq / 5 // freq * 0.2 = freq / 5
 }
-
-// NeedsAsyncPreempt is set by assembly when a goroutine has exceeded
-// the preemption threshold and needs async preemption injection.
-// Checked by Go timer handler after TimerIRQHandlerAsm returns.
-var NeedsAsyncPreempt uint32
 
 // NeedsThreadPreempt is set by assembly when the current thread has exceeded
 // the thread preemption threshold and should be switched out.
@@ -214,38 +196,6 @@ func InitPreemption() {
 	atomic.StoreUint32(&PreemptOffsetsValid, 1)
 }
 
-// SetAsyncPreemptAddr sets the asyncPreempt address and marks ready for async preemption.
-// Called from main package after getting the address from RuntimeConfig.
-//
-//go:nosplit
-func SetAsyncPreemptAddr(addr uintptr) {
-	AsyncPreemptAddr = uint64(addr)
-}
-
-// SetAsyncPreemptWrapperAddr sets the asyncPreemptWrapper address.
-// Called from main package init() after getting the address via assembly helper.
-// The IRQ handler reads this address to inject async preemption.
-//
-//go:nosplit
-func SetAsyncPreemptWrapperAddr(addr uintptr) {
-	AsyncPreemptWrapperAddr = uint64(addr)
-}
-
-// SetReadyForAsyncPreempt marks the system as ready for async preemption.
-// Called when the Go runtime is fully initialized.
-//
-//go:nosplit
-func SetReadyForAsyncPreempt() {
-	atomic.StoreUint32(&ReadyForAsyncPreempt, 1)
-}
-
-// GetPreemptOffsetDebug returns the preemption offsets for debug printing.
-// Only valid after InitPreemption() has been called.
-func GetPreemptOffsetDebug() (stackguard0, preempt, status, stackPreempt uintptr, gRunning, gScan uint32) {
-	return PreemptStackGuard0Offset, PreemptPreemptOffset, PreemptGStatusOffset,
-		PreemptStackPreemptValue, PreemptGRunning, PreemptGScan
-}
-
 // GetTimerTicksFor10ms returns the number of timer ticks for 10ms interval.
 // Uses SystemTimerFrequency to compute accurate tick count.
 //
@@ -303,28 +253,6 @@ func CheckAndYieldPreemption() bool {
 	return true
 }
 
-// asmYieldSVC is implemented in preempt_yield_arm64.s
-// Issues SVC #124 (sched_yield syscall) to trigger a voluntary yield.
-func asmYieldSVC()
+// asmYieldSVC is declared in preempt_yield_decl.go (excluded from test_stubs builds).
+// Implemented in assembly: preempt_yield_{arm64,amd64,riscv64}.s
 
-// ============================================================================
-// Per-CPU Accessors (implemented in main package via linkname)
-// ============================================================================
-
-// getPerCPUNeedsAsyncPreempt returns the per-CPU NeedsAsyncPreempt value.
-// Implemented in main/linkname_impl.go.
-//
-//go:linkname getPerCPUNeedsAsyncPreempt
-func getPerCPUNeedsAsyncPreempt() uint32
-
-// setPerCPUNeedsAsyncPreempt sets the per-CPU NeedsAsyncPreempt value.
-// Implemented in main/linkname_impl.go.
-//
-//go:linkname setPerCPUNeedsAsyncPreempt
-func setPerCPUNeedsAsyncPreempt(val uint32)
-
-// syncGlobalNeedsAsyncPreemptToPerCPU copies the global to per-CPU.
-// Implemented in main/linkname_impl.go.
-//
-//go:linkname syncGlobalNeedsAsyncPreemptToPerCPU
-func syncGlobalNeedsAsyncPreemptToPerCPU(globalVal uint32)

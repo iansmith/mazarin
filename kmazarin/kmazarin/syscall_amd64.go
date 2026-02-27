@@ -196,5 +196,4 @@ func SetupSyscallMSRs() {
 		console.KPrintln("[SYSCALL] WARNING: FMASK not set, configuring")
 		writeMSR(msrFMASK, 0x200)
 	}
-	console.KPrintln("[SYSCALL] GDT + TSS + MSRs ready (kmazarin-owned)")
 }

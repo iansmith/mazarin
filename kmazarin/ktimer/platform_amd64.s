@@ -187,61 +187,7 @@ cal_store:
 	MOVL	$ONESHOT_MODE_VEC30, BX
 	MOVL	BX, LAPIC_LVT_TIMER(R8)
 
-	// DEBUG: Print calibration values to COM1
-	// Format: "N=<hex> D=<hex>\n"
-	MOVQ	AX, R15			// Save TSC freq in R15
-
-	MOVW	$0x3F8, DX
-	MOVB	$'N', AX
-	OUTB
-	MOVB	$'=', AX
-	OUTB
-
-	// Print R12 (scaleNumer = LAPIC elapsed) in hex (16 nibbles)
-	MOVQ	$60, CX
-cal_hex_n:
-	MOVQ	R12, AX
-	SHRQ	CX, AX
-	ANDQ	$0xF, AX
-	ADDQ	$'0', AX
-	CMPB	AX, $('9'+1)
-	JB	cal_hex_n_ok
-	ADDQ	$('A'-'0'-10), AX
-cal_hex_n_ok:
-	MOVW	$0x3F8, DX
-	OUTB
-	SUBQ	$4, CX
-	JGE	cal_hex_n
-
-	MOVW	$0x3F8, DX
-	MOVB	$' ', AX
-	OUTB
-	MOVB	$'D', AX
-	OUTB
-	MOVB	$'=', AX
-	OUTB
-
-	// Print R13 (scaleDenom = TSC elapsed) in hex
-	MOVQ	$60, CX
-cal_hex_d:
-	MOVQ	R13, AX
-	SHRQ	CX, AX
-	ANDQ	$0xF, AX
-	ADDQ	$'0', AX
-	CMPB	AX, $('9'+1)
-	JB	cal_hex_d_ok
-	ADDQ	$('A'-'0'-10), AX
-cal_hex_d_ok:
-	MOVW	$0x3F8, DX
-	OUTB
-	SUBQ	$4, CX
-	JGE	cal_hex_d
-
-	MOVW	$0x3F8, DX
-	MOVB	$'\n', AX
-	OUTB
-
-	MOVQ	R15, AX			// Restore TSC freq
+	// TSC freq already in AX from calibration
 
 	// Return TSC frequency as uint32
 	MOVL	AX, ret+0(FP)

@@ -152,15 +152,6 @@ TEXT ·GetPC(SB), NOSPLIT, $0-8
 	MOVQ	AX, ret+0(FP)
 	RET
 
-// asyncPreemptWrapper saves g around asyncPreempt calls.
-TEXT ·asyncPreemptWrapper(SB), NOSPLIT|NOFRAME, $0-0
-	RET
-
-// getAsyncPreemptWrapperAddr returns address of asyncPreemptWrapper.
-TEXT ·getAsyncPreemptWrapperAddr(SB), NOSPLIT, $0-8
-	LEAQ	·asyncPreemptWrapper(SB), AX
-	MOVQ	AX, ret+0(FP)
-	RET
 
 // ============================================================================
 // RunFirstThread - Load context and IRETQ to first thread

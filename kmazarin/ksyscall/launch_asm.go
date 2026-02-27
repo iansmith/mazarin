@@ -18,10 +18,9 @@ func EnableTimerIRQ()
 
 // CreateUserspaceThread is provided by main package via go:linkname
 // Allocates a new thread for a userspace process and adds it to the ready queue
-// asyncPreemptAddr: address of runtime.asyncPreempt from ELF symbol table (0 if not found)
 //
 //go:linkname CreateUserspaceThread main.CreateUserspaceThread
-func CreateUserspaceThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr, asyncPreemptAddr uint64) int16
+func CreateUserspaceThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr) int16
 
 // unsafePointer is a helper to convert uintptr to pointer
 //

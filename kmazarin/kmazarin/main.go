@@ -151,17 +151,6 @@ func init() {
 	kirq.RegisterHandlers()
 	kirq.InitPreemption()
 
-	// Store asyncPreemptWrapper address for IRQ handler to read.
-	// This must be done before EnableIRQs() since the timer IRQ handler
-	// needs this address to inject async preemption.
-	asyncPreemptAddr := getAsyncPreemptWrapperAddr()
-	kirq.SetAsyncPreemptWrapperAddr(asyncPreemptAddr)
-
-	// Also set the asyncPreempt address in all existing kernel threads.
-	// This allows the exception handler to use per-thread asyncPreempt addresses,
-	// enabling a unified approach for kmazarin and priest goroutine preemption.
-	SetKmazarinAsyncPreemptAddr(uint64(asyncPreemptAddr))
-
 	// Initialize signal delivery infrastructure (sigreturn trampoline address)
 	InitSignals()
 
@@ -247,12 +236,6 @@ func copyFDTToSafeLocation() {
 // Placed in main package to test if the kirq.TimerIRQCount location has mapping issues.
 // This variable is written from timer IRQ handler assembly.
 var DebugTimerCount uint64
-
-// readyForAsyncPreempt controls whether timer IRQs should trigger async preemption.
-// Set to 0 initially, then 1 in main() after Go runtime is fully initialized.
-// This prevents asyncPreempt crashes during runtime.doInit1 (package init phase).
-// Accessed atomically from interrupt context.
-var readyForAsyncPreempt atomic.Uint32
 
 // Print uses direct UART before runtime is ready, fmt.Println after
 func Print(s string) {
@@ -457,8 +440,6 @@ func testDeviceDiscovery() {
 		}
 		dtbAddr = dtbVirtAddr(dtbPhysAddr)
 	}
-	console.KPrintf("[DeviceTest] DTB at VA 0x%X\n", dtbAddr)
-
 	// Register all device drivers BEFORE discovering devices
 	device.RegisterAllDrivers()
 
@@ -723,24 +704,9 @@ func simpleMain() {
 	// VirtqueueInit trigger diplomat's page fault handler instead.
 	// On ARM64, this is also safe — GPU init uses polling (no IRQs needed).
 	initVirtIOGPU()
-	console.KPrintln("[Main] VirtIO GPU init done")
 
 	// Initialize VirtIO block device (also safe to do before VBAR switch)
-	console.KPrintln("[Main] About to init VirtIO Block...")
-	if block.Init() {
-		console.KPrintln("[Main] VirtIO Block init done")
-		// Quick verification: check PA translation and block reads
-		blk, blkOk := device.GetBlockDevice()
-		if blkOk {
-			testBuf := make([]byte, 512)
-			if err := blk.ReadBlock(0, testBuf); err != nil {
-				console.KPrintln("[BlockTest] Sector 0 read FAILED")
-			} else {
-				console.KPrintf("[BlockTest] Sector 0: sig=0x%02X%02X OEM=%c%c%c%c%c\n",
-					testBuf[511], testBuf[510], testBuf[3], testBuf[4], testBuf[5], testBuf[6], testBuf[7])
-			}
-		}
-	} else {
+	if !block.Init() {
 		console.KPrintln("[Main] VirtIO Block init failed (no device found?)")
 	}
 
@@ -762,17 +728,12 @@ func simpleMain() {
 	// (DTB is at 0x40000000 in Cardinal's memory region)
 	testDeviceDiscovery()
 
-	console.KPrintln("[Main] About to initCachedIC")
 	// Cache GIC pointer for nosplit-safe timer IRQ enable/disable
 	initCachedIC()
-	console.KPrintln("[Main] initCachedIC done")
 
-	console.KPrintln("[Main] About to initVirtIOInputDevices")
 	// Initialize VirtIO Input devices (keyboard, mouse)
 	initVirtIOInputDevices()
-	console.KPrintln("[Main] initVirtIOInputDevices done")
 
-	console.KPrintln("[Main] About to EnableIRQs")
 	// CRITICAL: Enable IRQs at CPU AFTER GIC is initialized (matches Cardinal's order)
 	// This unmasks IRQs at the CPU (clears DAIF.I bit)
 	EnableIRQs()
@@ -781,14 +742,7 @@ func simpleMain() {
 	// this, those threads run without timer interrupts when scheduled, causing
 	// the system to freeze if they pick up a non-blocking goroutine.
 	FixCloneThreadIFFlags()
-	console.KPrintln("[Main] EnableIRQs done")
 	EnableTimerIRQ()
-	console.KPrintln("[Main] EnableTimerIRQ done")
-
-	asyncPreemptAddr := GetAsyncPreemptAddr()
-	kirq.SetAsyncPreemptAddr(asyncPreemptAddr)
-	readyForAsyncPreempt.Store(1)
-	kirq.SetReadyForAsyncPreempt()
 
 	unmapCardinal()
 	DisableTimerIRQ()
@@ -813,7 +767,6 @@ func simpleMain() {
 	if result == 0 {
 		kmem.FinalUserspaceSync()
 		Print("[main] dapope launched")
-		SignalSelfTest("post-dapope")
 	} else {
 		console.KPrintf("[main] dapope launch failed (error %d)\n", result)
 	}
@@ -825,7 +778,6 @@ func simpleMain() {
 	if result == 0 {
 		kmem.FinalUserspaceSync()
 		Print("[main] stdio launched")
-		SignalSelfTest("post-stdio")
 	} else {
 		console.KPrintf("[main] stdio launch failed (error %d)\n", result)
 	}
@@ -833,7 +785,6 @@ func simpleMain() {
 	// Re-enable IRQs and timer for ongoing scheduling
 	EnableIRQs()
 	EnableTimerIRQ()
-	console.KPrintln("[Main] Second EnableIRQs done")
 
 	// Timer and IRQs verified working at this point
 
@@ -854,7 +805,9 @@ func simpleMain() {
 	ResetTickAccounting(startingTicksProgram)
 	RestoreIRQs(savedDAIF)
 
-	launchAllgsDiagnostic()
+	// Suppress Go runtime write1 → UART output now that boot is complete.
+	// Panic/traceback paths temporarily unsuppress (see runtime-patches/panic.go).
+	atomic.StoreUint32(&suppressSerial, 1)
 
 	// Enter the kernel idle loop. Thread 0 (m0/g0) stays alive as a normal
 	// scheduled thread. Priest threads are already running. The timer IRQ
@@ -862,7 +815,6 @@ func simpleMain() {
 	//
 	// This preserves thread 0 for the Go runtime — m0 continues to exist
 	// and can run goroutines (sysmon, GC, etc.) when scheduled back.
-	// (idle loop entry breadcrumb removed for performance)
 	KernelIdleLoop()
 
 	// Should never reach here

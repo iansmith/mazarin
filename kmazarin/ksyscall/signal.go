@@ -43,14 +43,6 @@ func SyscallRtSigaction(signum, actPtr, oactPtr, sigsetsize, _, _ uint64) int64 
 		return -22 // EINVAL
 	}
 
-	// Debug: trace signal registration for SIGURG (23)
-	if sig == 23 && actPtr != 0 {
-		handler := *(*uint64)(unsafe.Pointer(uintptr(actPtr)))
-		serial.RawUARTPuts("[SA] SIGURG handler=")
-		serial.RawUARTHex64(handler)
-		serial.PollWrite('\n')
-	}
-
 	// If oactPtr is non-nil, copy the old action to it
 	if oactPtr != 0 {
 		oldAction := GetSignalAction(sig)

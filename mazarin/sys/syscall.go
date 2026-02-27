@@ -3,8 +3,6 @@
 package sys
 
 import (
-	"errors"
-	"reflect"
 	_ "unsafe" // For go:linkname
 )
 
@@ -26,27 +24,9 @@ const (
 	sysSetScanoutOffset      = 0x100F // Set scanout Y offset for hardware scrolling
 )
 
-// asyncPreempt is the runtime's async preemption function.
-// We use linkname to get its address for registration with the kernel.
-//
-//go:linkname asyncPreempt runtime.asyncPreempt
-func asyncPreempt()
-
-// RegisterAsyncPreempt registers this process's runtime.asyncPreempt address
-// with the kernel, enabling goroutine-level preemption within this process.
-// Should be called early in main() before spawning goroutines.
+// RegisterAsyncPreempt is a no-op kept for backward compatibility.
+// Goroutine preemption is now handled by the Go runtime via SIGURG signals.
 func RegisterAsyncPreempt() error {
-	// Get the address of runtime.asyncPreempt using reflect
-	// This gives us the actual code address of the function
-	addr := reflect.ValueOf(asyncPreempt).Pointer()
-	if addr == 0 {
-		return errors.New("RegisterAsyncPreempt: failed to get asyncPreempt address")
-	}
-
-	r1, _, errno := RawSyscall(sysRegisterAsyncPreempt, addr, 0, 0, 0, 0, 0)
-	if errno != 0 || r1 < 0 {
-		return errors.New("RegisterAsyncPreempt: syscall failed")
-	}
 	return nil
 }
 

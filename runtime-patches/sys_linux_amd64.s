@@ -529,11 +529,8 @@ TEXT runtime·settls(SB),NOSPLIT,$32
 	WRMSR
 	RET
 
-// osyield - yield with PAUSE (with diagnostic heartbeat to COM1)
+// osyield - yield with PAUSE
 TEXT runtime·osyield(SB),NOSPLIT,$0
-	MOVW	COM1_PORT, DX
-	MOVB	$'y', AX
-	OUTB
 	PAUSE
 	RET
 
