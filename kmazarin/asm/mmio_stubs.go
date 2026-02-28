@@ -60,3 +60,15 @@ func CleanDCacheRange(start uintptr, size uintptr) {
 //go:nosplit
 func InvalidateDCacheRange(start uintptr, size uintptr) {
 }
+
+//go:nosplit
+func Wfe() {
+}
+
+//go:nosplit
+func Wfi() {
+}
+
+//go:nosplit
+func Hlt() {
+}

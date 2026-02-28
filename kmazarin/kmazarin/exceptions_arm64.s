@@ -1136,14 +1136,6 @@ irq_not_timer:
 	CMP	$1020, R0
 	BGE	irq_invalid
 
-	// Set pending flag for bottom-half (legacy path)
-	MOVD	$·irqPendingFlags(SB), R10
-	MOVD	$4, R11
-	MUL	R11, R0, R11
-	ADD	R11, R10
-	MOVD	$1, R12
-	MOVW	R12, (R10)
-
 	// Call Go top-half handler directly with kmazarin g0 context.
 	// Store IRQ number in global before calling (ABI0 — no register args).
 	MOVD	R0, ·topHalfIRQNum(SB)

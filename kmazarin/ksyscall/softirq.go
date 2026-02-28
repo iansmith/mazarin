@@ -11,11 +11,10 @@ import (
 // arg1 = pointer to SoftIRQReturn struct in userspace memory
 // Returns: number of events (>0), or -EAGAIN if no events available.
 //
-// NOTE: Kernel-level thread blocking (BlockOnSlot) causes Go runtime
-// P-starvation on all architectures. When a blocked thread is woken,
-// exitsyscall() can't reliably re-acquire the P — all Ms eventually
-// park in stopm() waiting for a P nobody is handing off. Userspace
-// must poll with RawSyscall + Gosched instead.
+// This syscall blocks the calling kernel thread when no events are
+// available (via BlockOnSlot). Userspace MUST call via Syscall6 (not
+// RawSyscall) so entersyscall/exitsyscall properly release and reacquire
+// the Go runtime P. See mazarin/sys/softirq.go.
 //
 //go:noinline
 func SyscallWaitSoftIRQ(slotNum, bufPtr, _, _, _, _ uint64) int64 {
@@ -30,7 +29,7 @@ func SyscallWaitSoftIRQ(slotNum, bufPtr, _, _, _, _ uint64) int64 {
 
 	var events [hid.MaxHIDEvents]hid.HIDEvent
 
-	// First check: non-blocking drain
+	// Non-blocking drain
 	n := DrainSoftIRQSlotEvents(slot, events[:], hid.MaxHIDEvents)
 	if n > 0 {
 		intKind := GetSlotInterruptKind(slot)
@@ -40,16 +39,20 @@ func SyscallWaitSoftIRQ(slotNum, bufPtr, _, _, _, _ uint64) int64 {
 		return int64(n)
 	}
 
-	// No events available. Return EAGAIN immediately so userspace can
-	// Gosched (yielding CPU to other goroutines) and the kernel can
-	// preempt to other threads via timer interrupts.
-	//
-	// NOTE: We previously used enableIRQsAndWait() (STI+HLT/WFI) here
-	// to reduce syscall rate. But on single-core systems, HLT inside a
-	// syscall starves other processes: the timer ISR fires during kernel
-	// mode (CS=0x08), preemption is skipped for safety, and the calling
-	// process monopolizes the CPU. Returning EAGAIN ensures other
-	// processes get CPU time through normal timer-driven preemption.
+	// No events — block this kernel thread on the slot.
+	ctxPtr := BlockOnSlot(slot)
+	if ctxPtr != 0 {
+		SetSyscallSwitchTarget(ctxPtr)
+	} else {
+		// No other userspace thread to switch to — halt until next timer tick.
+		// This gives ProcessDeadlinesTopHalf a chance to wake sleeping threads
+		// (e.g. sysmon doing P handoff so more goroutines can run).
+		// Without this, we return immediately and spin in a tight SVC loop
+		// where timer preemption can't fire (SPSR shows EL1 in SVC handler).
+		// The timer IRQ handler's SPSR check (exceptions_arm64.s:1008-1010)
+		// correctly skips preemption when interrupted from kernel mode.
+		enableIRQsAndWait()
+	}
 	return -11 // EAGAIN
 }
 

@@ -187,14 +187,16 @@ func mouseLoop(slot int, stack core.CursorStack, images core.CursorImageMap, ren
 					action = "released"
 				}
 				fmt.Printf("[dapope:mouse] %s %s\n", buttonName(ev.Code), action)
-			case EV_SYN:
-				if dx != 0 || dy != 0 {
-					// evdev REL_Y is screen-top-positive; negate for quadrant-1
-					stack.Move(dx, -dy)
-					renderer.Draw(stack, images)
-					dx, dy = 0, 0
-				}
 			}
+		}
+		// Draw ONCE per batch: accumulate all mouse movement from the
+		// entire WaitSoftIRQ batch and render a single frame. Drawing
+		// per-EV_SYN generated 10+ GPU commands per batch (each with
+		// IRQs disabled), monopolizing the CPU and starving draining.
+		if dx != 0 || dy != 0 {
+			stack.Move(dx, -dy)
+			renderer.Draw(stack, images)
+			dx, dy = 0, 0
 		}
 	}
 }

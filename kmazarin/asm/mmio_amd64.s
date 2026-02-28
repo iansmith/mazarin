@@ -80,3 +80,21 @@ TEXT ·CleanDCacheRange(SB), NOSPLIT, $0-16
 TEXT ·InvalidateDCacheRange(SB), NOSPLIT, $0-16
 	MFENCE
 	RET
+
+// Wfe()
+// PAUSE on x86_64 — yields the CPU pipeline, improves spin-wait efficiency.
+// Under KVM/HVF, PAUSE can cause a VM exit (pause-loop exiting).
+TEXT ·Wfe(SB), NOSPLIT, $0-0
+	BYTE $0xF3; BYTE $0x90	// PAUSE instruction
+	RET
+
+// Wfi()
+// No-op on x86_64 (WFI is an ARM64/RISC-V instruction)
+TEXT ·Wfi(SB), NOSPLIT, $0-0
+	RET
+
+// Hlt()
+// Halt the CPU until the next interrupt fires.
+TEXT ·Hlt(SB), NOSPLIT, $0-0
+	HLT
+	RET

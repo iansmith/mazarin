@@ -4,11 +4,9 @@ package main
 import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
-	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
-	"runtime"
 	"sync/atomic"
 )
 
@@ -20,13 +18,13 @@ import (
 //
 // Architecture:
 //   1. IRQ handlers (assembly) drain hardware FIFOs → ring buffers, set flags
-//   2. Event poller (goroutine) checks flags → sends on channels (wakes bottom halves)
+//   2. KernelIdleLoop (thread 0) checks flags → sends on channels (wakes bottom halves)
 //   3. Bottom half processors (goroutines) wait on channels → process in safe Go context
 //
 // Why this works:
 //   - IRQ handlers are pure assembly (no Go calls)
 //   - Flags are just atomic loads/stores (safe from any context)
-//   - Channels properly wake goroutines via runtime.goready()
+//   - KernelIdleLoop bridges flags to channels each iteration
 //   - Bottom half processors run in normal goroutine context (safe for Go code)
 
 // ============================================================================
@@ -61,21 +59,6 @@ var (
 	DeadlinePending uint32 // Flag: deadlines need processing
 )
 
-// ============================================================================
-// Generic IRQ Pending Flags (for bottom-half dispatch)
-// ============================================================================
-
-// irqPendingFlags is an array of flags, one per IRQ number (0-1019).
-// The assembly IRQ handler sets irqPendingFlags[irqNum] = 1 when an IRQ fires.
-// The event poller checks these flags and dispatches to bottom-half handlers.
-//
-// This allows us to avoid calling Go code from IRQ context (unsafe on exception stack).
-var irqPendingFlags [1020]uint32
-
-// IAR values for each IRQ (used to write GICC_EOIR after handling)
-// Set by assembly IRQ handler alongside irqPendingFlags
-var irqIARValues [1020]uint32
-
 // topHalfIRQNum is set by the assembly IRQ handler before calling NonTimerIRQTopHalf.
 var topHalfIRQNum uint64
 
@@ -85,6 +68,9 @@ var topHalfKbd topHalfDev
 var topHalfMouse topHalfDev
 
 // softIRQRingSize must be a power of 2 for mask-based indexing.
+// 256 entries: small enough that the ring empties between processing cycles,
+// forcing the consumer to block periodically (releasing the Go runtime P).
+// A larger ring causes the consumer to monopolize the P during heavy input.
 const softIRQRingSize = 256
 
 // softIRQRing is an SPSC ring buffer for delivering HID events from
@@ -109,11 +95,10 @@ type topHalfDev struct {
 	nextAvailIdx     uint16
 	ring             *softIRQRing
 	lastUsedIdxSync  *uint16 // points to VirtQueue.LastUsedIdx to prevent double-drain
-	// Backpressure: when softIRQ ring is full, we consume used entries but
-	// don't repost their descriptors. The descriptor indices are saved here
-	// so they can be recovered when the ring has space on the next interrupt.
-	leakedDescs      [32]uint16 // descriptor indices consumed but not reposted
-	leakedCount      uint16     // number of valid entries in leakedDescs
+	// Debug counters
+	dbgPushOK        uint32     // events successfully pushed to ring
+	dbgPushFail      uint32     // events dropped (ring full)
+	dbgIRQCount      uint32     // total IRQ invocations
 }
 
 var topHalfKbdRing softIRQRing
@@ -121,9 +106,28 @@ var topHalfMouseRing softIRQRing
 var topHalfUartRing softIRQRing
 var topHalfTimerRing softIRQRing
 
+// Debug counters for event flow tracking
+var dbgDrainTotal uint32          // total events drained by userspace
+var dbgDrainCalls uint32          // total drain syscalls
+var dbgDrainPerSlot [maxSoftIRQSlots]uint32 // per-slot drain counts
+
+
 // uartIRQNum is set during device init so the event poller can wake
 // the soft IRQ slot after UART dispatch.
 var uartIRQNum uint32
+
+// Block device IRQ state — set by SetBlockIRQ during init.
+var blockIRQNum uint32
+var blockISRBase uintptr
+var blockIOComplete *uint32
+
+// SetBlockIRQ registers the block device's IRQ number, ISR base address,
+// and IOComplete flag pointer with the top-half dispatcher.
+func SetBlockIRQ(irqNum uint32, isrBase uintptr, ioComplete *uint32) {
+	blockIRQNum = irqNum
+	blockISRBase = isrBase
+	blockIOComplete = ioComplete
+}
 
 // SetTopHalfDev is called during input init to register device pointers
 // for the nosplit top-half path.
@@ -184,95 +188,6 @@ func RingDrain(r *softIRQRing, buf []hid.HIDEvent, max int) int {
 	return n
 }
 
-// pollInputTopHalf checks both keyboard and mouse VirtIO used rings for
-// pending events, drains them into softIRQ ring buffers, reposts descriptors,
-// and wakes any blocked userspace slot. Called from eventPoller (normal
-// goroutine context). On ARM64 where NonTimerIRQTopHalf already drained the
-// rings, lastUsedIdx == usedIdx so this returns immediately.
-func pollInputTopHalf() {
-	pollOneInputDev(&topHalfKbd)
-	pollOneInputDev(&topHalfMouse)
-}
-
-// pollOneInputDev drains one VirtIO input device's used ring into the
-// associated softIRQ ring buffer. Only active for polled devices (irqNum==0).
-// For IRQ-driven devices (ARM64, RISC-V, x86_64 with MSI-X), all VirtIO
-// queue mutations happen in NonTimerIRQTopHalf on the exception stack.
-// Touching dev.* from goroutine context would race with the ISR.
-func pollOneInputDev(dev *topHalfDev) {
-	if dev.usedVA == 0 {
-		return
-	}
-	// On ARM64/RISC-V/x86_64-MSI-X the interrupt top-half drains the
-	// used ring. Skip polling to avoid racing with the ISR.
-	if dev.irqNum != 0 {
-		return
-	}
-
-	// Sync with DrainEvents to avoid double-processing the same entries.
-	if dev.lastUsedIdxSync != nil {
-		syncIdx := *dev.lastUsedIdxSync
-		if syncIdx != dev.lastUsedIdx {
-			dev.lastUsedIdx = syncIdx
-		}
-	}
-
-	// RISC-V has no Device memory attribute in page tables, so DMA writes
-	// from the VirtIO device may not be visible without an explicit fence.
-	asm.Dsb()
-	usedIdx := asm.MmioRead16(dev.usedVA + 2)
-
-	pushed := false
-
-	for dev.lastUsedIdx != usedIdx {
-		ringIdx := dev.lastUsedIdx % dev.queueSize
-		entryAddr := dev.usedVA + 4 + uintptr(ringIdx)*8
-		descIdx := asm.MmioRead32(entryAddr)
-
-		if descIdx < uint32(dev.queueSize) {
-			evtAddr := dev.evtBufVA + uintptr(descIdx)*8
-			evtType := asm.MmioRead16(evtAddr)
-			evtCode := asm.MmioRead16(evtAddr + 2)
-			evtValue := asm.MmioRead32(evtAddr + 4)
-
-			ev := hid.HIDEvent{Type: evtType, Code: evtCode, Value: evtValue}
-			ringPush(dev.ring, ev)
-			pushed = true
-
-			// Repost buffer to device
-			descAddr := dev.descVA + uintptr(descIdx)*16
-			bufPA := uint64(dev.evtBufPA) + uint64(descIdx)*8
-			asm.MmioWrite32(descAddr, uint32(bufPA))
-			asm.MmioWrite32(descAddr+4, uint32(bufPA>>32))
-			asm.MmioWrite32(descAddr+8, 8)
-			asm.MmioWrite16(descAddr+12, 2)
-			asm.MmioWrite16(descAddr+14, 0xFFFF)
-			availRingIdx := dev.nextAvailIdx % dev.queueSize
-			asm.MmioWrite16(dev.availVA+4+uintptr(availRingIdx)*2, uint16(descIdx))
-			dev.nextAvailIdx++
-		}
-
-		dev.lastUsedIdx++
-	}
-
-	// Sync VirtQueue.LastUsedIdx so DrainEvents does not re-drain
-	// events we already pushed into the softIRQ ring.
-	if dev.lastUsedIdxSync != nil {
-		*dev.lastUsedIdxSync = dev.lastUsedIdx
-	}
-
-	if pushed {
-		asm.Dsb()
-		asm.MmioWrite16(dev.availVA+2, dev.nextAvailIdx)
-		asm.Dsb()
-		asm.MmioWrite16(dev.notifyAddr, 0)
-		asm.Dsb()
-		_ = asm.MmioRead16(dev.notifyAddr)
-
-		WakeSlotForIRQ(dev.irqNum)
-	}
-}
-
 // NonTimerIRQTopHalf is called directly from the assembly exception handler
 // (on the exception stack with g set to kmazarin g0) for non-timer IRQs.
 // Reads the virtqueue used ring, pushes HIDEvents into the per-device
@@ -292,6 +207,17 @@ func NonTimerIRQTopHalf() {
 		return
 	}
 
+	// Block device: acknowledge interrupt + signal IOComplete flag
+	if irqNum == blockIRQNum && blockIRQNum != 0 {
+		if blockISRBase != 0 {
+			_ = asm.MmioRead8(blockISRBase) // Acknowledge interrupt
+		}
+		if blockIOComplete != nil {
+			atomic.StoreUint32(blockIOComplete, 1) // Signal completion
+		}
+		return
+	}
+
 	var dev *topHalfDev
 	if irqNum == topHalfKbd.irqNum && topHalfKbd.usedVA != 0 {
 		dev = &topHalfKbd
@@ -302,42 +228,15 @@ func NonTimerIRQTopHalf() {
 		return
 	}
 
+	dev.dbgIRQCount++
+
 	// Read ISR to acknowledge interrupt at device level.
 	if dev.isrBase != 0 {
 		_ = asm.MmioRead8(dev.isrBase)
 	}
 
-	// Recover leaked descriptors from a previous overflow: if the softIRQ
-	// ring now has space, repost the descriptors we held back last time.
-	// This runs entirely within the ISR (nosplit) so there's no race.
-	recovered := false
-	if dev.leakedCount > 0 {
-		tail := atomic.LoadUint32(&dev.ring.tail)
-		head := atomic.LoadUint32(&dev.ring.head)
-		avail := softIRQRingSize - (tail - head)
-		if avail > 0 {
-			// Ring has space — repost leaked descriptors so the device
-			// gets its buffers back.
-			for i := uint16(0); i < dev.leakedCount; i++ {
-				descIdx := dev.leakedDescs[i]
-				descAddr := dev.descVA + uintptr(descIdx)*16
-				bufPA := uint64(dev.evtBufPA) + uint64(descIdx)*8
-				asm.MmioWrite32(descAddr, uint32(bufPA))
-				asm.MmioWrite32(descAddr+4, uint32(bufPA>>32))
-				asm.MmioWrite32(descAddr+8, 8)
-				asm.MmioWrite16(descAddr+12, 2)
-				asm.MmioWrite16(descAddr+14, 0xFFFF)
-				availRingIdx := dev.nextAvailIdx % dev.queueSize
-				asm.MmioWrite16(dev.availVA+4+uintptr(availRingIdx)*2, uint16(descIdx))
-				dev.nextAvailIdx++
-			}
-			dev.leakedCount = 0
-			recovered = true
-		}
-	}
-
 	usedIdx := asm.MmioRead16(dev.usedVA + 2)
-	pushed := false
+	reposted := false
 
 	for dev.lastUsedIdx != usedIdx {
 		ringIdx := dev.lastUsedIdx % dev.queueSize
@@ -352,21 +251,16 @@ func NonTimerIRQTopHalf() {
 
 			ev := hid.HIDEvent{Type: evtType, Code: evtCode, Value: evtValue}
 			if !ringPush(dev.ring, ev) {
-				// Ring full — apply backpressure: consume the used entry
-				// (advance lastUsedIdx) but don't repost the descriptor.
-				// Save the descriptor index so we can recover it later.
-				if dev.leakedCount < 32 {
-					dev.leakedDescs[dev.leakedCount] = uint16(descIdx)
-					dev.leakedCount++
-				}
-				// Continue draining so lastUsedIdx stays in sync.
-				// Events are dropped but the used ring is fully consumed.
-				dev.lastUsedIdx++
-				continue
+				dev.dbgPushFail++
+				// Ring full — event dropped. Descriptor is ALWAYS reposted
+				// below so the device keeps its buffers. Never hold back
+				// descriptors: that risks permanent device starvation when
+				// all buffers are leaked and no IRQs can fire.
+			} else {
+				dev.dbgPushOK++
 			}
-			pushed = true
 
-			// Repost buffer to device
+			// ALWAYS repost buffer to device, even if ring push failed.
 			descAddr := dev.descVA + uintptr(descIdx)*16
 			bufPA := uint64(dev.evtBufPA) + uint64(descIdx)*8
 			asm.MmioWrite32(descAddr, uint32(bufPA))
@@ -377,18 +271,19 @@ func NonTimerIRQTopHalf() {
 			availRingIdx := dev.nextAvailIdx % dev.queueSize
 			asm.MmioWrite16(dev.availVA+4+uintptr(availRingIdx)*2, uint16(descIdx))
 			dev.nextAvailIdx++
+			reposted = true
 		}
 
 		dev.lastUsedIdx++
 	}
 
-	// Sync VirtQueue.LastUsedIdx so DrainEvents (called later by eventPoller)
-	// sees nothing to drain. This prevents double-drain and descriptor leak.
+	// Sync VirtQueue.LastUsedIdx so DrainEvents does not re-drain
+	// events we already pushed into the softIRQ ring.
 	if dev.lastUsedIdxSync != nil {
 		*dev.lastUsedIdxSync = dev.lastUsedIdx
 	}
 
-	if pushed || recovered {
+	if reposted {
 		asm.Dsb()
 		asm.MmioWrite16(dev.availVA+2, dev.nextAvailIdx)
 		asm.Dsb()
@@ -397,8 +292,13 @@ func NonTimerIRQTopHalf() {
 		_ = asm.MmioRead16(dev.notifyAddr)
 	}
 
-	if pushed || recovered {
-		// Wake any thread blocked on a slot for this IRQ
+	if reposted {
+		// Wake any thread blocked on a slot for this IRQ.
+		// Use 'reposted' (not 'pushed') because even when ring push fails
+		// (ring full), the ring already has events that the consumer should
+		// drain. If we only woke on 'pushed', a consumer that blocked
+		// between batches (ring momentarily empty) and then the ring
+		// re-filled with all pushes failing would NEVER be woken.
 		WakeSlotForIRQ(irqNum)
 	}
 }
@@ -427,115 +327,6 @@ var (
 	deadlineEventChan     = make(chan struct{}, 1)
 	pageTrackingEventChan = make(chan struct{}, 1)
 )
-
-// ============================================================================
-// Event Poller - Bridges Async IRQ World to Sync Go World
-// ============================================================================
-
-// eventPoller runs continuously, checking atomic flags set by IRQ handlers
-// and dispatching to registered Go handlers in safe context.
-//
-// This goroutine is the bridge between:
-//   - Async world: IRQ handlers set flags (unsafe for Go calls)
-//   - Sync world: Call Go handlers in safe goroutine context
-//
-// NOTE: Using busy-loop instead of time.Ticker to avoid timer initialization issues.
-//
-func eventPoller() {
-	for {
-		// Yield to other goroutines periodically
-		runtime.Gosched()
-
-		// Check generic IRQ pending flags
-		// Scan the entire array and call registered handlers.
-		// Skip IRQs already handled by NonTimerIRQTopHalf (called from
-		// assembly): those events are in softIRQ ring buffers already.
-		// Dispatching them again via kirq would call HandleIRQ/DrainEvents,
-		// stealing events from the hardware used ring before pollInputTopHalf
-		// can deliver them to userspace.
-		for irqNum := uint32(0); irqNum < 1020; irqNum++ {
-			if atomic.SwapUint32(&irqPendingFlags[irqNum], 0) == 1 {
-				if irqNum == topHalfKbd.irqNum || irqNum == topHalfMouse.irqNum || (irqNum == uartIRQNum && uartIRQNum != 0) {
-					continue
-				}
-				dispatchIRQ(irqNum)
-			}
-		}
-
-		// Poll VirtIO input devices: drain used rings into softIRQ ring
-		// buffers and wake blocked slots. On ARM64/RISC-V the IRQ top-half
-		// already drained (this is a no-op). On AMD64 with interrupts
-		// enabled (irqNum != 0) this is also a no-op.
-		pollInputTopHalf()
-
-		// Check UART RX flag (legacy - will be replaced by generic dispatch)
-		if atomic.SwapUint32(&uartRxPending, 0) == 1 {
-			// Non-blocking send - if channel already has a pending event, skip
-			select {
-			case uartRxEventChan <- struct{}{}:
-			default:
-			}
-		}
-
-		// Check UART TX flag (legacy - will be replaced by generic dispatch)
-		if atomic.SwapUint32(&uartTxPending, 0) == 1 {
-			select {
-			case uartTxEventChan <- struct{}{}:
-			default:
-			}
-		}
-
-		// Check deadline flag
-		if atomic.SwapUint32(&DeadlinePending, 0) == 1 {
-			select {
-			case deadlineEventChan <- struct{}{}:
-			default:
-			}
-		}
-
-		// Check page tracking flag
-		if atomic.SwapUint32(&kmem.PageTrackingPending, 0) == 1 {
-			select {
-			case pageTrackingEventChan <- struct{}{}:
-			default:
-			}
-		}
-
-		// Flush any pending console ring data to userspace.
-		// Nosplit KWriteByte/KWriteString pushes to the ring but can't
-		// call WakeSlotForIRQ. The event poller does it on their behalf.
-		if softIRQConsole != nil {
-			softIRQConsole.CheckPendingWake()
-		}
-	}
-}
-
-// writeGICCEOIR writes to the GIC End Of Interrupt Register to acknowledge
-// that an interrupt has been fully serviced.
-//
-//go:nosplit
-func writeGICCEOIR(iarValue uint32) {
-	// GICC_EOIR = GIC CPU interface base + 0x10
-	// Physical: 0x08010000 → High-memory: 0xFFFFFFFF08010000
-	const GICC_BASE_PHYS = 0x08010000
-	const KERNEL_MMIO_OFFSET = 0xFFFFFFFF00000000
-	const GICC_EOIR_OFFSET = 0x10
-	addr := uintptr(GICC_BASE_PHYS + KERNEL_MMIO_OFFSET + GICC_EOIR_OFFSET)
-	asm.MmioWrite32(addr, iarValue)
-}
-
-// dispatchIRQ calls the registered handler for the given IRQ number.
-// This runs in safe Go context (event poller goroutine).
-//
-func dispatchIRQ(irqNum uint32) {
-	// Call kirq.DispatchIRQ with dummy values for framePtr, elr, spEl0
-	// (these aren't needed for simple handlers like UART)
-	kirq.DispatchIRQ(uint64(irqNum), 0, 0, 0)
-
-	// NOTE: EOIR is written in the assembly top-half (exceptions_arm64.s)
-	// immediately after setting the pending flag. This ensures the GIC
-	// unblocks for the next interrupt without waiting for the bottom-half.
-}
 
 // ============================================================================
 // UART RX Bottom Half
@@ -680,7 +471,6 @@ func SetupUartSoftIRQ(irqNum uint32) {
 // Must be called during initialization, BEFORE enabling interrupts.
 //
 func StartBottomHalfProcessors() {
-	go eventPoller()
 	go uartRxBottomHalf()
 	go uartTxBottomHalf()
 	go deadlineBottomHalf()

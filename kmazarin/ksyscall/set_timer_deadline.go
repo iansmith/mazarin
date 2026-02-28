@@ -4,6 +4,7 @@ package ksyscall
 import (
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/ktime"
+	"mazzy/kmazarin/serial"
 )
 
 // SyscallSetTimerDeadline implements Mazzy syscall 0x100E.
@@ -24,6 +25,7 @@ func SyscallSetTimerDeadline(slotNum, deadlineSec, deadlineNsec, _, _, _ uint64)
 
 	// Check if deadline is already past
 	if deadlineSec < nowSec || (deadlineSec == nowSec && deadlineNsec <= nowNsec) {
+		serial.RawUARTPuts("Tp") // breadcrumb: timer deadline already past
 		return 0 // Already past, return immediately
 	}
 
@@ -45,5 +47,6 @@ func SyscallSetTimerDeadline(slotNum, deadlineSec, deadlineNsec, _, _, _ uint64)
 	// avoid collision with the -1 sentinel used by PopIfLess.
 	encodedSlot := -int32(slotNum) - 2
 	AddDeadlineStatic(tickDeadline, encodedSlot)
+	serial.RawUARTPuts("Ta") // breadcrumb: timer deadline armed
 	return 0
 }

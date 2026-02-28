@@ -124,3 +124,25 @@ loop_inval:
 
 	DSB	$15			// Ensure invalidate completes (DSB SY)
 	RET
+
+// Wfe()
+// Wait For Event — yields to the hypervisor under HVF.
+// Causes a VM exit (trapped via HCR_EL2.TWE) that gives QEMU's event loop
+// a scheduling point to process async I/O, then returns immediately.
+// Under TCG, WFE is a NOP hint.
+TEXT ·Wfe(SB), NOSPLIT, $0-0
+	WFE
+	RET
+
+// Wfi()
+// Wait For Interrupt — halts the vCPU until an interrupt fires.
+// Under HVF, this halts the vCPU thread (EXCP_HLT) until QEMU injects an IRQ.
+// Under TCG, this stalls emulation until a virtual interrupt fires.
+TEXT ·Wfi(SB), NOSPLIT, $0-0
+	WFI
+	RET
+
+// Hlt()
+// No-op on ARM64 (HLT is an x86_64 instruction)
+TEXT ·Hlt(SB), NOSPLIT, $0-0
+	RET

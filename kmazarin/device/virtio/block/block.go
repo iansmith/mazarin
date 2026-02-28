@@ -82,6 +82,11 @@ type VirtIOBlockDevice struct {
 	//   [32..543] 512-byte data buffer (aligned to 32 for safety)
 	DmaPagePA uintptr // Physical address of the DMA page
 	DmaPageVA uintptr // Virtual address of the DMA page (PA + KernelMMIOOffset)
+
+	// Interrupt-driven I/O (set by ConfigureInterrupts after SetVBAR)
+	ISRBase    uintptr // ISR register VA (read to acknowledge interrupt)
+	IRQNum     uint32  // Assigned IRQ number (0 = polling mode, no interrupts)
+	IOComplete uint32  // Atomic: set to 1 by IRQ top-half when I/O completes
 }
 
 // Global device instance
@@ -89,11 +94,24 @@ var virtioBlockDevice VirtIOBlockDevice
 
 // Init initializes the VirtIO block device.
 // Tries PCI first (works on all architectures), falls back to MMIO (RISC-V).
+// For PCI transport on ARM64, uses INTx (PCI legacy interrupts through GIC SPIs)
+// for interrupt-driven I/O. The caller must enable the GIC SPI after Init returns.
 // Returns true on success, false if no device found or initialization failed.
 func Init() bool {
 	// Try PCI first (all architectures)
 	if findVirtIOBlock() {
-		// PCI path
+		dev := &virtioBlockDevice
+
+		// For PCI transport, determine the INTx interrupt number.
+		// INTx uses pre-wired GIC SPIs — no MSI-X configuration needed.
+		if dev.MMIOBase == 0 {
+			irq := configureBlockInterrupt(dev.Bus, dev.Slot, dev.Func)
+			if irq != 0 {
+				dev.IRQNum = irq
+			}
+		}
+
+		// VirtIO handshake (INTx — no MSI-X vector assignment needed)
 		if !virtioBlockInit() {
 			console.KPrintln("[VirtIO Block] PCI device initialization failed")
 			return false
@@ -128,8 +146,13 @@ func Init() bool {
 	virtioBlockDevice.DmaPagePA = dmaPA
 	virtioBlockDevice.DmaPageVA = dmaPA + constants.KernelMMIOOffset
 
-	console.KPrintf("[VirtIO Block] Initialized: %d MB (%d sectors)\n",
-		virtioBlockDevice.Capacity/2048, virtioBlockDevice.Capacity)
+	if virtioBlockDevice.IRQNum != 0 {
+		console.KPrintf("[VirtIO Block] Initialized: %d MB (%d sectors) IRQ=%d\n",
+			virtioBlockDevice.Capacity/2048, virtioBlockDevice.Capacity, virtioBlockDevice.IRQNum)
+	} else {
+		console.KPrintf("[VirtIO Block] Initialized: %d MB (%d sectors) polling\n",
+			virtioBlockDevice.Capacity/2048, virtioBlockDevice.Capacity)
+	}
 
 	// Register with device manager
 	device.RegisterBlockDevice(&virtioBlockDevice)
@@ -213,6 +236,17 @@ func findVirtIOBlock() bool {
 					virtioBlockDevice.DeviceConfig = deviceCfg
 					virtioBlockDevice.CommonConfigBase = barBase + constants.KernelMMIOOffset + uintptr(common.OffsetInBar)
 
+					// Map ISR BAR for interrupt acknowledgement
+					if isr.Offset != 0 {
+						isrBarBase := pci.ReadBAR64(bus, slot, funcNum, isr.Bar)
+						if isrBarBase != 0 && isrBarBase < 0x100000000 {
+							if isrBarBase != barBase {
+								kmem.MapDeviceMMIO(isrBarBase, 0x10000)
+							}
+							virtioBlockDevice.ISRBase = isrBarBase + constants.KernelMMIOOffset + uintptr(isr.OffsetInBar)
+						}
+					}
+
 					// Calculate notify base (handles 64-bit BARs)
 					notifyBarBase := pci.ReadBAR64(bus, slot, funcNum, notify.Bar)
 					if notifyBarBase == 0 || notifyBarBase >= 0x100000000 {
@@ -233,19 +267,21 @@ func findVirtIOBlock() bool {
 	return false
 }
 
-// virtioBlockInit initializes the VirtIO block device
-// Returns true on success, false on failure
+// virtioBlockInit initializes the VirtIO block device via the VirtIO handshake.
+// Uses INTx (PCI legacy interrupts) — no MSI-X vector assignment needed.
+// Returns true on success, false on failure.
 //
 //go:nosplit
 func virtioBlockInit() bool {
-	// Reset device
+	dev := &virtioBlockDevice
+	// Step 1: Reset device
 	virtioPCISetDeviceStatus(0)
 
-	// Acknowledge and indicate driver present
+	// Step 2-3: Acknowledge and indicate driver present
 	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE)
 	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER)
 
-	// Feature negotiation - read device features
+	// Step 4: Feature negotiation - read device features
 	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE_SELECT, 0)
 	virtioPCIReadCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE)
 	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE_SELECT, 1)
@@ -257,7 +293,7 @@ func virtioBlockInit() bool {
 	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE_SELECT, 1)
 	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE, 1) // VIRTIO_F_VERSION_1
 
-	// Features OK
+	// Step 5: Features OK
 	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK)
 
 	// Verify FEATURES_OK is still set
@@ -267,9 +303,10 @@ func virtioBlockInit() bool {
 		return false
 	}
 
-	// Allocate a DMA page for virtqueue structures (desc table, avail ring, used ring).
-	// Using a pre-allocated page with known PA avoids demand-paging page table walks
-	// for the queue structures themselves.
+	// No MSI-X configuration — we use INTx (PCI legacy interrupts).
+	// The device will use its Interrupt Pin to signal completion via the GIC.
+
+	// Step 6: Allocate DMA page for virtqueue structures
 	queuePagePA := kmem.AllocKernelFrame()
 	if queuePagePA == 0 {
 		console.KPrintln("[VirtIO Block] ERROR: Failed to allocate queue DMA page")
@@ -278,19 +315,43 @@ func virtioBlockInit() bool {
 	queuePageVA := queuePagePA + constants.KernelMMIOOffset
 
 	queueSize := uint16(128) // 128 entries: desc(2048)+avail(262)+used(1030) = 3340 bytes < 4096
-	endOff := virtio.VirtqueueInitOnDMAPage(&virtioBlockDevice.Queue, queueSize, queuePagePA, queuePageVA, 0)
+	endOff := virtio.VirtqueueInitOnDMAPage(&dev.Queue, queueSize, queuePagePA, queuePageVA, 0)
 	if endOff == 0 {
 		console.KPrintln("[VirtIO Block] ERROR: Failed to init I/O queue on DMA page")
 		return false
 	}
 
-	// Setup queue in device
-	if !virtioPCISetupQueue(0, &virtioBlockDevice.Queue) {
-		console.KPrintln("[VirtIO Block] ERROR: Failed to setup queue")
+	// Step 7: Write queue addresses to device and enable
+	base := dev.CommonConfigBase
+	vq := &dev.Queue
+
+	// Select queue 0
+	*(*uint16)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_SELECT)) = 0
+
+	// Read device's max queue size, then write our actual size
+	maxQueueSize := *(*uint16)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE))
+	if maxQueueSize == 0 || maxQueueSize < vq.QueueSize {
+		console.KPrintf("[VirtIO Block] ERROR: Queue 0 size too small (%d < %d)\n",
+			maxQueueSize, vq.QueueSize)
 		return false
 	}
+	*(*uint16)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE)) = vq.QueueSize
 
-	// Driver OK
+	// Write queue addresses
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_LOW)) = uint32(vq.DescPA)
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_HIGH)) = uint32(vq.DescPA >> 32)
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_DRIVER_LOW)) = uint32(vq.AvailPA)
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_DRIVER_HIGH)) = uint32(vq.AvailPA >> 32)
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_DEVICE_LOW)) = uint32(vq.UsedPA)
+	*(*uint32)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_DEVICE_HIGH)) = uint32(vq.UsedPA >> 32)
+
+	// Read queue_notify_off for this queue
+	dev.QueueNotifyOff = *(*uint16)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_NOTIFY_OFF))
+
+	// Enable queue
+	*(*uint16)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_ENABLE)) = 1
+
+	// DRIVER_OK
 	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK)
 
 	// Check if FAILED bit is set
@@ -369,47 +430,6 @@ func virtioPCIReadCommonConfig32(offset uint32) uint32 {
 	return *(*uint32)(unsafe.Pointer(addr))
 }
 
-// virtioPCISetupQueue sets up a virtqueue in the device
-//
-//go:nosplit
-func virtioPCISetupQueue(queueIndex uint16, vq *virtio.VirtQueue) bool {
-	base := virtioBlockDevice.CommonConfigBase
-
-	// Select queue
-	*(*uint16)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_SELECT)) = queueIndex
-
-	// Read device's max queue size, then write our actual size
-	maxQueueSize := *(*uint16)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE))
-	if maxQueueSize == 0 || maxQueueSize < vq.QueueSize {
-		console.KPrintf("[VirtIO Block] ERROR: Queue %d size too small (%d < %d)\n",
-			queueIndex, maxQueueSize, vq.QueueSize)
-		return false
-	}
-	// Write our chosen queue size (may be smaller than device max)
-	*(*uint16)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE)) = vq.QueueSize
-
-	// Write queue addresses (split into low/high 32-bit words)
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_LOW)) = uint32(vq.DescPA)
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_HIGH)) = uint32(vq.DescPA >> 32)
-
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_DRIVER_LOW)) = uint32(vq.AvailPA)
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_DRIVER_HIGH)) = uint32(vq.AvailPA >> 32)
-
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_DEVICE_LOW)) = uint32(vq.UsedPA)
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_DEVICE_HIGH)) = uint32(vq.UsedPA >> 32)
-
-	// Read queue_notify_off for this queue
-	queueNotifyOff := *(*uint16)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_NOTIFY_OFF))
-	if queueIndex == 0 {
-		virtioBlockDevice.QueueNotifyOff = queueNotifyOff
-	}
-
-	// Enable queue
-	*(*uint16)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_ENABLE)) = 1
-
-	return true
-}
-
 // Implement BlockDevice interface methods
 
 // Name returns the device name
@@ -433,3 +453,25 @@ func (d *VirtIOBlockDevice) NumBlocks() uint64 {
 	// Capacity is in 512-byte sectors, convert to blocks
 	return d.Capacity / (uint64(d.BlockSizeBytes) / 512)
 }
+
+// ConfigureInterrupts is kept for backward compatibility but is now a no-op.
+// INTx interrupt routing is configured during Init(). The caller should use
+// GetIRQNum/GetISRBase/GetIOCompletePtr to wire up the top-half dispatcher.
+func ConfigureInterrupts() {
+}
+
+// GetIRQNum returns the assigned IRQ number (0 = polling mode).
+func GetIRQNum() uint32 {
+	return virtioBlockDevice.IRQNum
+}
+
+// GetISRBase returns the ISR register VA for interrupt acknowledgement.
+func GetISRBase() uintptr {
+	return virtioBlockDevice.ISRBase
+}
+
+// GetIOCompletePtr returns a pointer to the IOComplete atomic flag.
+func GetIOCompletePtr() *uint32 {
+	return &virtioBlockDevice.IOComplete
+}
+

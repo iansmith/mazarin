@@ -12,3 +12,10 @@ func platformInitInterrupts() {
 func platformConfigureDeviceIRQ(bus, slot, funcNum uint8) uint32 {
 	return configureMSIX(bus, slot, funcNum)
 }
+
+// ConfigureMSIXForDevice is a public wrapper around configureMSIX so other
+// VirtIO drivers (block, GPU) can reuse the MSI-X setup.
+// Returns the GIC IRQ number (SPI + 32) for this device, or 0 on failure.
+func ConfigureMSIXForDevice(bus, slot, funcNum uint8) uint32 {
+	return configureMSIX(bus, slot, funcNum)
+}

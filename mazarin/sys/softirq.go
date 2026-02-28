@@ -4,6 +4,7 @@ import (
 	"errors"
 	"mazzy/shared/hid"
 	"runtime"
+	"syscall"
 	"unsafe"
 )
 
@@ -14,18 +15,16 @@ const (
 )
 
 // WaitSoftIRQ waits for soft IRQ events on the given slot.
-// The kernel halts the CPU (WFI/HLT) when no events are available,
-// so each syscall round-trip takes ~10ms (until next interrupt).
-// A single Gosched between retries suffices to let other goroutines run.
+// Uses Syscall6 so entersyscall/exitsyscall release the P while blocked.
 func WaitSoftIRQ(slot int, buf *hid.SoftIRQReturn) (int, error) {
 	for {
-		r1, _, errno := RawSyscall(sysWaitSoftIRQ,
+		r1, _, errno := syscall.Syscall6(sysWaitSoftIRQ,
 			uintptr(slot),
 			uintptr(unsafe.Pointer(buf)),
 			0, 0, 0, 0)
 
 		if errno != 0 {
-			if errno == 11 { // EAGAIN
+			if errno == 11 { // EAGAIN — was blocked and woken
 				runtime.Gosched()
 				continue
 			}

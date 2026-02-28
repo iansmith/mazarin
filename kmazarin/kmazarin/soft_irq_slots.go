@@ -6,10 +6,15 @@ import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio/input"
+	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
 	"sync/atomic"
 	"unsafe"
 )
+
+// Debug counters for preemption tracking
+var dbgPreemptSwitchCount uint64
+var dbgPreemptNoNextCount uint64
 
 // ============================================================================
 // Soft IRQ Slot System
@@ -176,6 +181,10 @@ func WakeSlotForIRQ(irqNum uint32) {
 	enqueueReadySchedLockHeld(t)
 	asm.Dsb() // Memory barrier to ensure enqueue is visible to other CPUs
 
+	serial.RawUARTPuts("W")
+	serial.RawUARTDecimal(uint64(t.TID))
+	serial.RawUARTPuts(" ")
+
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
 }
@@ -197,7 +206,37 @@ func BlockOnSlot(slotNum int32) uintptr {
 		return 0
 	}
 
-	next := findReadyThreadSchedLockHeld()
+	// Use filtered search for userspace threads to avoid returning kernel
+	// thread 0 (EL1t SPSR) when a userspace thread is blocking — same fix
+	// as the other 4 EL0 context-switch paths.
+	var next *Thread
+	if t.PageTableL0PA != 0 {
+		next = findReadyUserspaceThreadSchedLockHeld(t.PID)
+	} else {
+		next = findReadyThreadSchedLockHeld()
+	}
+	if next == nil {
+		// No ready userspace thread — process nanosleep/futex deadlines
+		// while we hold the scheduler lock. This can wake sleeping threads
+		// (e.g. sysmon) immediately, avoiding a round-trip through WFI.
+		processStaticDeadlinesSchedLockHeld()
+		if t.PageTableL0PA != 0 {
+			next = findReadyUserspaceThreadSchedLockHeld(t.PID)
+		} else {
+			next = findReadyThreadSchedLockHeld()
+		}
+	}
+	if next == nil && t.PageTableL0PA != 0 {
+		// Last resort: accept ANY ready thread including kernel thread 0.
+		// Without this fallback, a userspace thread returns 0 and loops at
+		// EL1 (SVC handler doing WFI) where timer preemption can't fire
+		// (SPSR shows EL1). On HVF (native speed) the EL0 window between
+		// SVCs is too brief for timer preemption to catch, causing deadlock.
+		// Switching to thread 0 lets KernelIdleLoop run and reschedule.
+		// The SVC handler's DoContextSwitch handles EL0→EL1 transitions
+		// correctly via SPSR in the target ThreadContext.
+		next = findReadyThreadSchedLockHeld()
+	}
 	if next == nil {
 		schedulerLock.Unlock()
 		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
@@ -220,6 +259,13 @@ func BlockOnSlot(slotNum int32) uintptr {
 	// Commit: block current thread, record in slot
 	t.State = ThreadBlockedSoftIRQ
 	softIRQSlotData[slotNum].blockedTID = t.TID
+
+	serial.RawUARTPuts("B")
+	serial.RawUARTDecimal(uint64(t.TID))
+	serial.RawUARTPuts(">")
+	serial.RawUARTDecimal(uint64(next.TID))
+	serial.RawUARTPuts(" ")
+
 	schedulerLock.Unlock()
 	NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
 
@@ -240,7 +286,15 @@ func DrainSoftIRQSlotEvents(slotNum int32, buf []hid.HIDEvent, max int) int {
 		return 0
 	}
 
-	return RingDrain(slot.ring, buf, max)
+	n := RingDrain(slot.ring, buf, max)
+	if n > 0 {
+		atomic.AddUint32(&dbgDrainTotal, uint32(n))
+		atomic.AddUint32(&dbgDrainCalls, 1)
+		if slotNum < maxSoftIRQSlots {
+			atomic.AddUint32(&dbgDrainPerSlot[slotNum], uint32(n))
+		}
+	}
+	return n
 }
 
 
@@ -251,6 +305,7 @@ func DrainSoftIRQSlotEvents(slotNum int32, buf []hid.HIDEvent, max int) int {
 //go:nosplit
 //go:noinline
 func PushTimerEventAndWake(sec, nsec uint64) {
+	serial.RawUARTPuts("T!") // breadcrumb: PushTimerEventAndWake called
 	// Push 3 events: seconds low, nanoseconds, seconds high
 	ev0 := hid.HIDEvent{Type: 0, Code: 0, Value: uint32(sec)}
 	ev1 := hid.HIDEvent{Type: 0, Code: 1, Value: uint32(nsec)}
@@ -263,22 +318,26 @@ func PushTimerEventAndWake(sec, nsec uint64) {
 	irqNum := hid.TimerVirtualIRQ
 	slotIdx := irqToSlot[irqNum]
 	if slotIdx < 0 || slotIdx >= maxSoftIRQSlots {
+		serial.RawUARTPuts("Tn") // breadcrumb: no slot mapping
 		return
 	}
 	slot := &softIRQSlotData[slotIdx]
 	tid := slot.blockedTID
 	if tid < 0 {
+		serial.RawUARTPuts("Tb") // breadcrumb: no blocked thread
 		return
 	}
 	t := threadList.FindByIdAll(int32(tid))
 	if t == nil || t.State != ThreadBlockedSoftIRQ {
 		slot.blockedTID = -1
+		serial.RawUARTPuts("Ts") // breadcrumb: thread not in BlockedSoftIRQ state
 		return
 	}
 	t.State = ThreadReady
 	slot.blockedTID = -1
 	enqueueReadySchedLockHeld(t)
 	asm.Dsb() // Memory barrier to ensure enqueue is visible
+	serial.RawUARTPuts("Tw") // breadcrumb: timer wake SUCCESS
 }
 
 // GetUartSlotPriestID returns the priest ID that owns the UART serial slot.

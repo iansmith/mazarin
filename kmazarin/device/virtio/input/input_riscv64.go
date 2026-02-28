@@ -20,3 +20,9 @@ func platformConfigureDeviceIRQ(bus, slot, funcNum uint8) uint32 {
 	}
 	return PLIC_PCI_INTX_BASE + (uint32(slot)+uint32(pin)-1)%4
 }
+
+// ConfigureMSIXForDevice is a no-op on RISC-V. RISC-V uses PLIC INTx
+// routing, not MSI-X. Returns 0 (no MSI-X IRQ).
+func ConfigureMSIXForDevice(bus, slot, funcNum uint8) uint32 {
+	return 0
+}

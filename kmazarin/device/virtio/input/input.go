@@ -369,7 +369,7 @@ var irqCounter uint32
 
 // HandleIRQ acknowledges the device interrupt via ISR read.
 // Event draining and console printing are intentionally removed:
-// the nosplit top-half (NonTimerIRQTopHalf / pollOneInputDev) now handles
+// the nosplit top-half (NonTimerIRQTopHalf) now handles
 // event delivery through per-device softIRQ ring buffers.
 // DrainEvents here would race with the top-half and steal events.
 func (dev *VirtIOInputDevice) HandleIRQ() {
@@ -581,9 +581,16 @@ func initDevice(dev *VirtIOInputDevice) bool {
 	return true
 }
 
+// gicv2mInitDone tracks whether initGICv2mSPIBase has been called.
+var gicv2mInitDone bool
+
 // initGICv2mSPIBase maps the GICv2m and reads TYPER to determine the SPI base.
-// Must be called once before configureMSIX.
+// Must be called once before configureMSIX. Idempotent.
 func initGICv2mSPIBase() {
+	if gicv2mInitDone {
+		return
+	}
+	gicv2mInitDone = true
 	if err := kmem.MapDeviceMMIO(GICV2M_PHYS, GICV2M_SIZE); err != nil {
 		console.KPrintf("[VirtIO Input] ERROR: Failed to map GICv2m: %v\n", err)
 		return
@@ -595,11 +602,24 @@ func initGICv2mSPIBase() {
 	nextMSIXSPI = spiBase
 }
 
+// PlatformInitInterrupts exports the platform-specific interrupt initialization
+// so other drivers (block, GPU) can ensure the SPI allocator is ready before
+// configuring their own MSI-X. Idempotent — safe to call multiple times.
+func PlatformInitInterrupts() {
+	platformInitInterrupts()
+}
+
 // allocateMSIXSPI allocates the next available GICv2m SPI number.
 func allocateMSIXSPI() uint32 {
 	spi := nextMSIXSPI
 	nextMSIXSPI++
 	return spi
+}
+
+// AllocateMSIXSPI is the public version of allocateMSIXSPI.
+// Used by other VirtIO drivers (block, GPU) that configure their own MSI-X.
+func AllocateMSIXSPI() uint32 {
+	return allocateMSIXSPI()
 }
 
 // configureMSIX finds the MSI-X capability, programs MSI-X table entries

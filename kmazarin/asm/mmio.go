@@ -83,3 +83,23 @@ func CleanDCacheRange(start uintptr, size uintptr)
 //
 //go:nosplit
 func InvalidateDCacheRange(start uintptr, size uintptr)
+
+// Wfe executes Wait For Event (ARM64) or PAUSE (x86_64).
+// Under HVF, this causes a VM exit that gives QEMU's event loop a
+// scheduling point to process async I/O, then returns immediately.
+// Under TCG, this is effectively a NOP hint.
+//
+//go:nosplit
+func Wfe()
+
+// Wfi executes Wait For Interrupt (ARM64/RISC-V) or HLT (x86_64).
+// Halts the vCPU until an interrupt fires.
+//
+//go:nosplit
+func Wfi()
+
+// Hlt executes the HLT instruction (x86_64) or a no-op on ARM64/RISC-V.
+// Halts the vCPU until an interrupt fires.
+//
+//go:nosplit
+func Hlt()

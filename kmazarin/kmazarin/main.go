@@ -469,7 +469,6 @@ func testDeviceDiscovery() {
 			}
 		}
 		// AMD64: register COM1 as UART if no DTB-based UART was found.
-		// Uses polling from eventPoller instead of hardware interrupts.
 		if uartIRQNum == 0 {
 			initCOM1Uart()
 		}
@@ -705,11 +704,6 @@ func simpleMain() {
 	// On ARM64, this is also safe — GPU init uses polling (no IRQs needed).
 	initVirtIOGPU()
 
-	// Initialize VirtIO block device (also safe to do before VBAR switch)
-	if !block.Init() {
-		console.KPrintln("[Main] VirtIO Block init failed (no device found?)")
-	}
-
 	// CRITICAL: Set VBAR_EL1 to point to kmazarin's exception vector table
 	// Cardinal's VBAR_EL1 points to its own vectors at low memory (0x401xxxxx).
 	// We must update VBAR_EL1 to use kmazarin's vectors at high memory.
@@ -731,8 +725,25 @@ func simpleMain() {
 	// Cache GIC pointer for nosplit-safe timer IRQ enable/disable
 	initCachedIC()
 
-	// Initialize VirtIO Input devices (keyboard, mouse)
+	// Initialize VirtIO Input devices (keyboard, mouse).
+	// This also initializes the platform interrupt infrastructure (GICv2m SPI
+	// allocator on ARM64) needed for MSI-X configuration of any PCI device.
 	initVirtIOInputDevices()
+
+	// Initialize VirtIO block device. For PCI transport, Init() determines
+	// the INTx GIC IRQ from the PCI interrupt pin routing (no MSI-X).
+	if !block.Init() {
+		console.KPrintln("[Main] VirtIO Block init failed (no device found?)")
+	}
+
+	// Wire up block device IRQ: register with top-half dispatcher and
+	// enable the GIC SPI so INTx interrupts reach the CPU.
+	if irq := block.GetIRQNum(); irq != 0 {
+		SetBlockIRQ(irq, block.GetISRBase(), block.GetIOCompletePtr())
+		if cachedIC != nil {
+			cachedIC.EnableIRQ(irq)
+		}
+	}
 
 	// CRITICAL: Enable IRQs at CPU AFTER GIC is initialized (matches Cardinal's order)
 	// This unmasks IRQs at the CPU (clears DAIF.I bit)

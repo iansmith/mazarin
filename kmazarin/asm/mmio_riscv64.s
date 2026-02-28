@@ -82,3 +82,21 @@ TEXT ·InvalidateDCacheRange(SB), NOSPLIT, $0-16
 	// FENCE iorw,iorw
 	WORD	$0x0FF0000F
 	RET
+
+// Wfe()
+// No direct WFE equivalent on RISC-V. Use WFI as a yield mechanism.
+// Under QEMU TCG, WFI stalls emulation until the next interrupt.
+TEXT ·Wfe(SB), NOSPLIT, $0-0
+	WORD	$0x10500073	// WFI instruction encoding
+	RET
+
+// Wfi()
+// Wait For Interrupt — halts the vCPU until an interrupt fires.
+TEXT ·Wfi(SB), NOSPLIT, $0-0
+	WORD	$0x10500073	// WFI instruction encoding
+	RET
+
+// Hlt()
+// No-op on RISC-V (HLT is an x86_64 instruction)
+TEXT ·Hlt(SB), NOSPLIT, $0-0
+	RET

@@ -1,6 +1,7 @@
 package block
 
 import (
+	"sync/atomic"
 	"unsafe"
 
 	"mazzy/kmazarin/asm"
@@ -113,29 +114,71 @@ func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte
 	// Memory barrier before notifying device
 	asm.Dsb()
 
-	// Submit to available ring and notify device
+	// Submit to available ring and notify device.
+	// Clear IOComplete BEFORE notify to avoid race: under HVF the interrupt
+	// can fire before we reach the WFI loop.
+	if d.IRQNum != 0 {
+		atomic.StoreUint32(&d.IOComplete, 0)
+	}
 	virtio.VirtqueueAddToAvailable(vq, reqDescIdx)
 	asm.Dsb()
+
 	virtioBlockNotify(0)
 
-	// Wait for completion (poll used ring)
-	// Re-notify periodically in case the device missed the first notify.
-	const maxRetries = 100000
-	const renotifyInterval = 10000
-	for i := 0; i < maxRetries; i++ {
-		if virtio.VirtqueueHasUsed(vq) {
-			break
+	// Wait for I/O completion. Three paths:
+	//
+	// 1. Interrupt-driven (IRQNum != 0): WFE yields to the hypervisor,
+	//    giving QEMU's event loop time to process the I/O. The INTx
+	//    interrupt fires when the device completes, and the top-half
+	//    handler sets IOComplete. Under HVF, WFE causes a VM exit
+	//    (trapped via HCR_EL2.TWE) and returns immediately — each
+	//    iteration is a cooperative yield to the hypervisor.
+	//
+	// 2. ISR polling (ISRBase != 0, IRQNum == 0): Read the VirtIO ISR
+	//    register. Each MMIO read causes a VM exit, and ISR bit 0
+	//    indicates used buffer notification.
+	//
+	// 3. MMIO transport (ISRBase == 0, RISC-V): WFI + check used ring.
+	if d.IRQNum != 0 {
+		const maxWaits = 1000000
+		for i := 0; i < maxWaits; i++ {
+			if atomic.LoadUint32(&d.IOComplete) != 0 {
+				break
+			}
+			asm.Wfe()
 		}
-		if i > 0 && i%renotifyInterval == 0 {
-			virtioBlockNotify(0)
+		if atomic.LoadUint32(&d.IOComplete) == 0 && !virtio.VirtqueueHasUsed(vq) {
+			console.KPrintf("[VirtIO Block] ERROR: I/O timeout (avail=%d used=%d LBA=%d)\n",
+				vq.Available.Idx, vq.Used.Idx, lba)
+			return ErrTimeout
 		}
-	}
-
-	// Check if we timed out
-	if !virtio.VirtqueueHasUsed(vq) {
-		console.KPrintf("[VirtIO Block] ERROR: I/O timeout (avail=%d used=%d LBA=%d)\n",
-			vq.Available.Idx, vq.Used.Idx, lba)
-		return ErrTimeout
+	} else if d.ISRBase != 0 {
+		const maxWaits = 100000
+		for i := 0; i < maxWaits; i++ {
+			isr := asm.MmioRead8(d.ISRBase)
+			if isr&1 != 0 {
+				break
+			}
+		}
+		if !virtio.VirtqueueHasUsed(vq) {
+			console.KPrintf("[VirtIO Block] ERROR: I/O timeout (avail=%d used=%d LBA=%d)\n",
+				vq.Available.Idx, vq.Used.Idx, lba)
+			return ErrTimeout
+		}
+	} else {
+		// MMIO transport: WFI + check used ring directly
+		const maxRetries = 5000
+		for i := 0; i < maxRetries; i++ {
+			if virtio.VirtqueueHasUsed(vq) {
+				break
+			}
+			yieldForIO()
+		}
+		if !virtio.VirtqueueHasUsed(vq) {
+			console.KPrintf("[VirtIO Block] ERROR: I/O timeout (avail=%d used=%d LBA=%d)\n",
+				vq.Available.Idx, vq.Used.Idx, lba)
+			return ErrTimeout
+		}
 	}
 
 	// Pop from used ring

@@ -229,7 +229,7 @@ func ResetTickAccounting(startTime uint64) {
 // Go runtime creates clone threads (sysmon, templateThread) during init when
 // interrupts are disabled. On AMD64, these threads inherit IF=0 in RFLAGS.
 // When the timer scheduler later picks them, they run without interrupts —
-// if such a thread picks up a non-blocking goroutine (eventPoller), the system
+// if such a thread picks up a non-blocking goroutine, the system
 // freezes permanently because the timer can never preempt it.
 //
 // ARM64 and RISC-V SetupForCloneChild already fix this (ARM64 clears DAIF.I,
@@ -873,6 +873,7 @@ func processStaticDeadlinesSchedLockHeld() {
 		// Timer deadlines are encoded as negative slot IDs: -(slot+2).
 		// Decode and push events to the slot, waking whatever thread is blocked.
 		if tid <= -2 {
+			serial.RawUARTPuts("Td") // breadcrumb: timer deadline expired
 			sec, nsec := ktime.GetTime()
 			PushTimerEventAndWake(sec, nsec)
 			continue
@@ -888,10 +889,12 @@ func processStaticDeadlinesSchedLockHeld() {
 			t.FutexAddr = 0
 			blockedQueue.Pluck(ThreadId(tid))
 			enqueueReadySchedLockHeld(t)
+			serial.RawUARTPuts("Df") // breadcrumb: deadline woke futex thread
 		} else if t.State == ThreadSleeping {
 			t.State = ThreadReady
 			sleepingQueue.Pluck(ThreadId(tid))
 			enqueueReadySchedLockHeld(t)
+			serial.RawUARTPuts("Ds") // breadcrumb: deadline woke sleeping thread
 		}
 	}
 }
@@ -904,12 +907,53 @@ func processStaticDeadlinesSchedLockHeld() {
 func ProcessDeadlinesTopHalf() {
 	// Increment arch-universal scan counter (used by KernelIdleLoop A/D scan).
 	// This is the only call site that fires on all 3 architectures.
-	atomic.AddUint64(&scanTimerCount, 1)
+	cnt := atomic.AddUint64(&scanTimerCount, 1)
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 	processStaticDeadlinesSchedLockHeld()
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
+
+	// Debug: print event flow stats every ~5 seconds (assuming ~100 Hz timer)
+	if cnt%500 == 0 {
+		kPush := topHalfKbd.dbgPushOK
+		kFail := topHalfKbd.dbgPushFail
+		kIRQ := topHalfKbd.dbgIRQCount
+		mPush := topHalfMouse.dbgPushOK
+		mFail := topHalfMouse.dbgPushFail
+		mIRQ := topHalfMouse.dbgIRQCount
+		drain := atomic.LoadUint32(&dbgDrainTotal)
+		drainC := atomic.LoadUint32(&dbgDrainCalls)
+		serial.RawUARTPuts("\n[EVT] kbd irq=")
+		serial.RawUARTDecimal(uint64(kIRQ))
+		serial.RawUARTPuts(" ok=")
+		serial.RawUARTDecimal(uint64(kPush))
+		serial.RawUARTPuts(" fail=")
+		serial.RawUARTDecimal(uint64(kFail))
+		serial.RawUARTPuts(" | mouse irq=")
+		serial.RawUARTDecimal(uint64(mIRQ))
+		serial.RawUARTPuts(" ok=")
+		serial.RawUARTDecimal(uint64(mPush))
+		serial.RawUARTPuts(" fail=")
+		serial.RawUARTDecimal(uint64(mFail))
+		serial.RawUARTPuts(" | drain=")
+		serial.RawUARTDecimal(uint64(drain))
+		serial.RawUARTPuts("/")
+		serial.RawUARTDecimal(uint64(drainC))
+		serial.RawUARTPuts(" s0=")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgDrainPerSlot[0])))
+		serial.RawUARTPuts(" s1=")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgDrainPerSlot[1])))
+		serial.RawUARTPuts(" s2=")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgDrainPerSlot[2])))
+		serial.RawUARTPuts(" s3=")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgDrainPerSlot[3])))
+		mHead := atomic.LoadUint32(&topHalfMouseRing.head)
+		mTail := atomic.LoadUint32(&topHalfMouseRing.tail)
+		serial.RawUARTPuts(" mring=")
+		serial.RawUARTDecimal(uint64(mTail - mHead))
+		serial.RawUARTPuts("\n")
+	}
 }
 
 // IdleLoop is called when no threads are ready to run.
@@ -956,13 +1000,55 @@ func IdleLoop(sf *SchedulerFunc) *Thread {
 //
 // LOCK DISCIPLINE: save DAIF → mask IRQs → acquire lock → process → release → restore → WFI
 //
+var dbgIdleCount uint64
+
 //go:noinline
 func KernelIdleLoop() {
 	for {
-		// Yield to Go goroutines (eventPoller, bottom halves, etc.)
+		// Yield to Go goroutines (channel-based bottom halves).
 		// Without this, goroutines started by StartBottomHalfProcessors()
 		// never get CPU time because this loop never triggers Go's scheduler.
 		runtime.Gosched()
+
+		// Bridge IRQ flags to bottom-half channels.
+		// IRQ handlers set atomic flags; we convert them to channel sends
+		// so the channel-based bottom-half goroutines wake up.
+		if atomic.SwapUint32(&uartRxPending, 0) == 1 {
+			select {
+			case uartRxEventChan <- struct{}{}:
+			default:
+			}
+		}
+		if atomic.SwapUint32(&uartTxPending, 0) == 1 {
+			select {
+			case uartTxEventChan <- struct{}{}:
+			default:
+			}
+		}
+		if atomic.SwapUint32(&DeadlinePending, 0) == 1 {
+			select {
+			case deadlineEventChan <- struct{}{}:
+			default:
+			}
+		}
+		if atomic.SwapUint32(&kmem.PageTrackingPending, 0) == 1 {
+			select {
+			case pageTrackingEventChan <- struct{}{}:
+			default:
+			}
+		}
+		// Flush any pending console ring data to userspace.
+		if softIRQConsole != nil {
+			softIRQConsole.CheckPendingWake()
+		}
+
+		// Heartbeat: print idle loop counter every 500 iterations
+		dbgIdleCount++
+		if dbgIdleCount%500 == 0 {
+			serial.RawUARTPuts("I")
+			serial.RawUARTDecimal(dbgIdleCount)
+			serial.RawUARTPuts(" ")
+		}
 
 		// Periodic A/D bit scan. Clears hardware Accessed bits on all mapped
 		// userspace pages and propagates Dirty state into PageDescriptors.
@@ -996,6 +1082,7 @@ func KernelIdleLoop() {
 		RestoreIRQs(savedDAIF)
 
 		if hasReady {
+			serial.RawUARTPuts("Ir") // breadcrumb: idle loop sees ready thread
 			// A thread is ready - yield to it.
 			// YieldToReadyThread saves thread 0's context, enqueues it,
 			// and ERETSs to the next ready thread. Thread 0 resumes here
@@ -1040,6 +1127,7 @@ func SaveThread0AndYield() uint64 {
 			if mPtr != 0 {
 				locks := *(*int32)(unsafe.Pointer(mPtr + mLocksOff))
 				if locks != 0 {
+					serial.RawUARTPuts("Ym") // breadcrumb: m.locks blocked yield
 					return 0
 				}
 			}
@@ -1087,6 +1175,7 @@ func SaveThread0AndYield() uint64 {
 		t0.TicksStartedRunning = currentTime
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
+		serial.RawUARTPuts("Yn") // breadcrumb: no next thread found
 		return 0
 	}
 
@@ -2022,22 +2111,47 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 	pluckFromAllQueues(t.TID)
 
 	// Find next ready thread. If current thread is userspace (PageTableL0PA != 0),
-	// must skip kernel threads because the SVC return path uses ERET which must
-	// match the interrupted EL (EL0 for userspace). Kernel threads use the
-	// original search which can return any thread type.
+	// prefer userspace threads first, then fall back to any thread (including
+	// kernel thread 0). The SVC return path handles EL0→EL1 transitions correctly
+	// via DoContextSwitch + SPSR in the target ThreadContext.
 	var next *Thread
 	if t.PageTableL0PA != 0 {
 		next = findReadyUserspaceThreadSchedLockHeld(t.PID)
+		if next == nil {
+			next = findReadyThreadSchedLockHeld()
+		}
 	} else {
 		next = findReadyThreadPreferDifferentPriestSchedLockHeld(t.PID)
 	}
 	if next == nil {
-		// No ready userspace thread - can't block, thread continues running
+		// No ready thread — process nanosleep/futex deadlines while we hold
+		// the scheduler lock. This can wake sleeping threads (e.g. sysmon)
+		// immediately, avoiding a round-trip through WFI.
+		processStaticDeadlinesSchedLockHeld()
+		if t.PageTableL0PA != 0 {
+			next = findReadyUserspaceThreadSchedLockHeld(t.PID)
+			if next == nil {
+				next = findReadyThreadSchedLockHeld()
+			}
+		} else {
+			next = findReadyThreadPreferDifferentPriestSchedLockHeld(t.PID)
+		}
+	}
+	if next == nil {
+		// Still no ready thread — for kernel threads running at EL1, this
+		// causes a tight spin loop that can't be preempted by the timer
+		// (SPSR=EL1t). WFI yields the CPU until the next interrupt fires,
+		// which processes deadlines and may wake threads.
 		if sf.StateCheck != nil {
 			sf.StateCheck("futex-block-no-next")
 		}
 		schedulerLock.Unlock()
 		sf.EnableAndRestoreDAIF(savedDAIF)
+		if t.PageTableL0PA == 0 {
+			// Kernel thread: WFI to prevent EL1 spin monopolization
+			EnableIRQs()
+			WaitForInterrupt()
+		}
 		return 0
 	}
 
@@ -2047,6 +2161,12 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 
 	// Add current thread to blocked queue
 	blockedQueue.PushNoDuplicate(t.TID)
+
+	serial.RawUARTPuts("F")
+	serial.RawUARTDecimal(uint64(t.TID))
+	serial.RawUARTPuts(">")
+	serial.RawUARTDecimal(uint64(next.TID))
+	serial.RawUARTPuts(" ")
 
 	if sf.StateCheck != nil {
 		sf.StateCheck("futex-block-complete")
@@ -2140,24 +2260,48 @@ func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
 	// (It might not be if it was already running and not re-queued)
 	pluckFromAllQueues(t.TID)
 
-	// Find next ready thread. If the current thread is userspace, only return
-	// userspace threads — the SVC return path uses ERET which must match the
-	// interrupted EL. During kernel boot (current=kernel), any thread is OK.
+	// Find next ready thread. If the current thread is userspace, prefer
+	// userspace threads first, then fall back to any thread (including kernel
+	// thread 0). The SVC return path handles EL0→EL1 transitions correctly
+	// via DoContextSwitch + SPSR in the target ThreadContext.
 	var next *Thread
 	if t.PageTableL0PA != 0 {
 		next = findReadyUserspaceThreadSchedLockHeld(t.PID)
+		if next == nil {
+			next = findReadyThreadSchedLockHeld()
+		}
 	} else {
 		next = findReadyThreadPreferDifferentPriestSchedLockHeld(t.PID)
 	}
 	if next == nil {
-		// No ready thread - can't sleep, thread continues running
-		// Timer IRQ will handle preemption when other threads become ready
-		// DON'T push to per-CPU queue - thread is still Running, not Ready
+		// No ready thread — process nanosleep/futex deadlines while we hold
+		// the scheduler lock. This can wake sleeping threads (e.g. sysmon)
+		// immediately, avoiding a round-trip through WFI.
+		processStaticDeadlinesSchedLockHeld()
+		if t.PageTableL0PA != 0 {
+			next = findReadyUserspaceThreadSchedLockHeld(t.PID)
+			if next == nil {
+				next = findReadyThreadSchedLockHeld()
+			}
+		} else {
+			next = findReadyThreadPreferDifferentPriestSchedLockHeld(t.PID)
+		}
+	}
+	if next == nil {
+		// Still no ready thread — for kernel threads running at EL1, this
+		// causes a tight spin loop that can't be preempted by the timer
+		// (SPSR=EL1t). WFI yields the CPU until the next interrupt fires,
+		// which processes deadlines and may wake threads.
 		if sf.StateCheck != nil {
 			sf.StateCheck("sleep-block-no-next")
 		}
 		schedulerLock.Unlock()
 		sf.EnableAndRestoreDAIF(savedDAIF)
+		if t.PageTableL0PA == 0 {
+			// Kernel thread: WFI to prevent EL1 spin monopolization
+			EnableIRQs()
+			WaitForInterrupt()
+		}
 		return 0
 	}
 
@@ -2166,6 +2310,12 @@ func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
 
 	// Add current thread to sleeping queue
 	sleepingQueue.PushNoDuplicate(t.TID)
+
+	serial.RawUARTPuts("S")
+	serial.RawUARTDecimal(uint64(t.TID))
+	serial.RawUARTPuts(">")
+	serial.RawUARTDecimal(uint64(next.TID))
+	serial.RawUARTPuts(" ")
 
 	if sf.StateCheck != nil {
 		sf.StateCheck("sleep-block-complete")
@@ -2373,9 +2523,13 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	}
 	oldThread.TicksStartedRunning = 0 // Mark as not running
 
-	// Find next ready USERSPACE thread for timer preemption.
-	// Skip kernel threads (PageTableL0PA == 0) because their SPSR is EL1,
-	// and the IRQ return path (ERET) must match the interrupted exception level.
+	// Find next ready userspace thread for timer preemption.
+	// Timer preemption only fires when SPSR shows EL0 (userspace), so we
+	// only search for other userspace threads here. Switching to kernel
+	// thread 0 from the timer preemption path causes a regression because
+	// the timer handler assembly path is different from the SVC-based
+	// DoContextSwitch path (BlockOnSlot/futex/sleep handle EL0→EL1
+	// transitions correctly via SetSyscallSwitchTarget).
 	next := findReadyUserspaceThreadSchedLockHeld(oldThread.PID)
 
 	if next == nil {
@@ -2386,6 +2540,7 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		oldThread.StartTick = currentTime
 		oldThread.ThreadPreemptDeadline = currentTime + kirq.ThreadPreemptTicks
 		oldThread.TicksStartedRunning = currentTime
+		atomic.AddUint64(&dbgPreemptNoNextCount, 1)
 		if sf.StateCheck != nil {
 			sf.StateCheck("preempt-no-next")
 		}
@@ -2394,6 +2549,7 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		return 0
 	}
 
+	atomic.AddUint64(&dbgPreemptSwitchCount, 1)
 	// Priest-level tick accounting
 	// Stop old priest's clock
 	if oldThread.PriestIdx >= 0 {

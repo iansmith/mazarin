@@ -101,3 +101,10 @@ func platformConfigureDeviceIRQ(bus, slot, funcNum uint8) uint32 {
 
 	return irqNum
 }
+
+// ConfigureMSIXForDevice is a public wrapper around platformConfigureDeviceIRQ
+// so other VirtIO drivers (block, GPU) can reuse the MSI-X setup.
+// Returns the IRQ number (vector - 32) for this device, or 0 on failure.
+func ConfigureMSIXForDevice(bus, slot, funcNum uint8) uint32 {
+	return platformConfigureDeviceIRQ(bus, slot, funcNum)
+}

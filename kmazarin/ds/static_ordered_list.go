@@ -131,6 +131,17 @@ func (l *StaticOrderedList) Size() int {
 	return l.size
 }
 
+// Peek returns the front element without removing it.
+// Returns (-1, 0) if the list is empty.
+//
+//go:nosplit
+func (l *StaticOrderedList) Peek() (int16, uint64) {
+	if l.size == 0 {
+		return -1, 0
+	}
+	return l.data[0], l.orderBy[0]
+}
+
 // IsEmpty returns true if the list has no elements.
 //
 //go:nosplit
