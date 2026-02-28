@@ -84,6 +84,13 @@ type PerCPU struct {
 	// Set to 1 when the CPU finishes its initialization sequence.
 	Online uint32
 
+	// SVCDepth tracks whether this CPU is inside an SVC handler.
+	// 0 = running normal code (safe to preempt), 1 = inside SVC handler (NOT safe).
+	// Set to 1 at SVC entry in assembly, cleared to 0 at SVC exit (sync_return).
+	// Read by timer ISR to decide whether kernel threads can be preempted.
+	// Per-CPU for SMP: each CPU has its own exception stack and SVC state.
+	SVCDepth uint32
+
 	// LocalReadyQueue is this CPU's ready queue for per-CPU scheduling.
 	// Protected by LocalLock (finer-grained than schedulerLock).
 	LocalReadyQueue ds.StaticQueue[ThreadId]
@@ -96,6 +103,12 @@ type PerCPU struct {
 // perCPUData is the array of per-CPU data structures.
 // Indexed by logical CPU ID from getCPUIDAsm().
 var perCPUData [MaxCPUs]PerCPU
+
+// svcDepth tracks whether the CPU is inside an SVC handler.
+// 0 = running normal code (safe to preempt), 1 = inside SVC handler (NOT safe).
+// Accessed directly from assembly as ·svcDepth(SB).
+// For SMP: move to PerCPU struct and access via per-CPU pointer.
+var svcDepth uint32
 
 // perCPUInitialized tracks whether InitPerCPU has been called.
 var perCPUInitialized bool = false
@@ -130,6 +143,7 @@ func InitPerCPU() {
 		perCPUData[i].ExceptionStackTop = 0
 		perCPUData[i].ExceptionStackBottom = 0
 		perCPUData[i].Online = 0
+		perCPUData[i].SVCDepth = 0
 
 		// Initialize per-CPU ready queue with backing arrays
 		perCPUData[i].LocalReadyQueue.Data = perCPUReadyQueueData[i][:]

@@ -3,6 +3,7 @@ package ksyscall
 import (
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/serial"
 )
 
 // SyscallNanosleep implements the nanosleep(2) syscall
@@ -69,8 +70,12 @@ func SyscallNanosleep(req, rem, _, _, _, _ uint64) int64 {
 	nextThread := ThreadBlockSleep()
 	if nextThread != 0 {
 		SetSyscallSwitchTarget(nextThread)
+	} else if currentTID < 10 {
+		// Diagnostic: kernel thread tried to sleep but no ready thread found
+		serial.RawUARTPuts("Zn")
+		serial.RawUARTDecimal(uint64(currentTID))
+		serial.RawUARTPuts(" ")
 	}
-	// else: No ready threads - will enter idle loop on return
 
 	return 0
 }

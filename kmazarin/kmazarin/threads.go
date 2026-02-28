@@ -7,6 +7,7 @@ import (
 	"mazzy/kmazarin/ds"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/ksyscall"
 	"mazzy/kmazarin/ktime"
 	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
@@ -952,6 +953,8 @@ func ProcessDeadlinesTopHalf() {
 		mTail := atomic.LoadUint32(&topHalfMouseRing.tail)
 		serial.RawUARTPuts(" mring=")
 		serial.RawUARTDecimal(uint64(mTail - mHead))
+		serial.RawUARTPuts(" ksvc=")
+		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.KernelSVCCount))
 		serial.RawUARTPuts("\n")
 	}
 }
@@ -1002,6 +1005,41 @@ func IdleLoop(sf *SchedulerFunc) *Thread {
 //
 var dbgIdleCount uint64
 
+func printThreadStateSummary() {
+	var nReady, nFutex, nSleep, nSoftIRQ, nRunning int
+	for i := 0; i < len(threadList.Data); i++ {
+		if !threadList.InUse[i] {
+			continue
+		}
+		t := &threadList.Data[i]
+		switch t.State {
+		case ThreadReady:
+			nReady++
+		case ThreadRunning:
+			nRunning++
+		case ThreadBlockedFutex:
+			nFutex++
+		case ThreadSleeping:
+			nSleep++
+		case ThreadBlockedSoftIRQ:
+			nSoftIRQ++
+		}
+	}
+	serial.RawUARTPuts(" R=")
+	serial.RawUARTDecimal(uint64(nReady))
+	serial.RawUARTPuts(" F=")
+	serial.RawUARTDecimal(uint64(nFutex))
+	serial.RawUARTPuts(" S=")
+	serial.RawUARTDecimal(uint64(nSleep))
+	serial.RawUARTPuts(" I=")
+	serial.RawUARTDecimal(uint64(nSoftIRQ))
+	serial.RawUARTPuts(" X=")
+	serial.RawUARTDecimal(uint64(nRunning))
+	serial.RawUARTPuts(" dQ=")
+	serial.RawUARTDecimal(uint64(staticDeadlineQueue.Size()))
+	serial.RawUARTPuts("\n")
+}
+
 //go:noinline
 func KernelIdleLoop() {
 	for {
@@ -1042,12 +1080,12 @@ func KernelIdleLoop() {
 			softIRQConsole.CheckPendingWake()
 		}
 
-		// Heartbeat: print idle loop counter every 500 iterations
+		// Heartbeat: print idle loop counter every 50 iterations
 		dbgIdleCount++
-		if dbgIdleCount%500 == 0 {
+		if dbgIdleCount%50 == 0 {
 			serial.RawUARTPuts("I")
 			serial.RawUARTDecimal(dbgIdleCount)
-			serial.RawUARTPuts(" ")
+			printThreadStateSummary()
 		}
 
 		// Periodic A/D bit scan. Clears hardware Accessed bits on all mapped
@@ -1444,15 +1482,19 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 
 	// Capture gsignal stack bounds for signal delivery.
 	// Path: m → m.gsignal → gsignal.stack.hi / gsignal.stack.lo
+	// Use safe accessors — direct dereference fails on RISC-V (SUM=0).
 	if t.MPtr != 0 {
 		mPtr := uintptr(t.MPtr)
-		gsignalPtr := *(*uintptr)(unsafe.Pointer(mPtr + kirq.PreemptMGsignalOffset))
-		if gsignalPtr != 0 {
-			stackHi := *(*uintptr)(unsafe.Pointer(gsignalPtr + kirq.PreemptStackHiOffset))
-			stackLo := *(*uintptr)(unsafe.Pointer(gsignalPtr + kirq.PreemptStackLoOffset))
-			t.SignalSP = uint64(stackHi)       // Stack grows down
-			t.SignalStackBase = uint64(stackLo)
-			t.SignalStackSize = uint64(stackHi - stackLo)
+		gsignalVal, ok := kmem.ReadUserUint64(mPtr + kirq.PreemptMGsignalOffset)
+		gsignalPtr := uintptr(gsignalVal)
+		if ok && gsignalPtr != 0 {
+			stackHiVal, ok1 := kmem.ReadUserUint64(gsignalPtr + kirq.PreemptStackHiOffset)
+			stackLoVal, ok2 := kmem.ReadUserUint64(gsignalPtr + kirq.PreemptStackLoOffset)
+			if ok1 && ok2 {
+				t.SignalSP = stackHiVal       // Stack grows down
+				t.SignalStackBase = stackLoVal
+				t.SignalStackSize = stackHiVal - stackLoVal
+			}
 		}
 	}
 
@@ -2523,14 +2565,18 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	}
 	oldThread.TicksStartedRunning = 0 // Mark as not running
 
-	// Find next ready userspace thread for timer preemption.
-	// Timer preemption only fires when SPSR shows EL0 (userspace), so we
-	// only search for other userspace threads here. Switching to kernel
-	// thread 0 from the timer preemption path causes a regression because
-	// the timer handler assembly path is different from the SVC-based
-	// DoContextSwitch path (BlockOnSlot/futex/sleep handle EL0→EL1
-	// transitions correctly via SetSyscallSwitchTarget).
-	next := findReadyUserspaceThreadSchedLockHeld(oldThread.PID)
+	// Find next ready thread for timer preemption.
+	// When preempted thread is userspace: prefer other userspace threads
+	// (same TTBR0/ASID context avoids TLB flush overhead).
+	// When preempted thread is kernel: any ready thread is fine.
+	var next *Thread
+	if oldThread.PageTableL0PA != 0 {
+		// Userspace thread: prefer other userspace threads
+		next = findReadyUserspaceThreadSchedLockHeld(oldThread.PID)
+	} else {
+		// Kernel thread: any ready thread (kernel or userspace)
+		next = findReadyThreadPreferDifferentPriestSchedLockHeld(oldThread.PID)
+	}
 
 	if next == nil {
 		// No other ready thread - continue with current thread

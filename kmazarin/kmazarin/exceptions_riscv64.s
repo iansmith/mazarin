@@ -216,6 +216,11 @@ unknown_stval_print:
 
 handle_ecall:
 ecall_dispatch:
+	// Mark that we're inside an ecall handler (unsafe to preempt by timer).
+	// Cleared after SyscallDispatch returns, before context switch check.
+	MOV	$·svcDepth(SB), T0
+	MOV	$1, T1
+	MOVW	T1, (T0)
 
 	// ---- DIAGNOSTIC: count syscalls ----
 	MOV	$·syscallDiagCount(SB), T0
@@ -260,6 +265,11 @@ ecall_skip_marker:
 	GO_CALL_7_1(·SyscallDispatch, T0, T1, T2, A3, A4, A5, A6)
 	// T0 = return value
 	MOV	T0, 72(X2)		// Store return value in saved a0 slot
+
+	// Clear svcDepth — syscall dispatch is done (safe to preempt again).
+	// IRQs are disabled during trap handling, so no race with timer.
+	MOV	$·svcDepth(SB), T0
+	MOVW	ZERO, (T0)
 
 	// Check context switch
 	GO_CALL_0_1(·GetSyscallSwitchTarget)
@@ -763,19 +773,37 @@ timer_rearm_skip:
 	// (Same pattern as ARM64 exceptions_arm64.s:969-987)
 	GO_CALL_0_0(·ProcessDeadlinesTopHalf)
 
-	// Skip preemption if the interrupted code was in kernel mode (SPP=1).
-	// When SyscallWaitSoftIRQ calls EnableIRQsAndWait, a timer that fires
-	// during kernel-mode WFI must NOT preempt — the outer ecall frame is
-	// still on the exception stack and a context switch would corrupt it.
+	// Check if interrupted code was in kernel mode (SPP=1).
+	// If S-mode: only preempt when svcDepth==0 (running normal Go code, not
+	// inside an ecall handler where the trap frame has a live syscall context).
+	// If U-mode: always eligible for preemption.
 	MOV	256(X2), T0		// saved sstatus from trap frame
 	AND	$0x100, T0, T0		// SPP bit (bit 8): 1=S-mode, 0=U-mode
-	BNE	T0, ZERO, trap_return	// Kernel mode — never preempt
+	BEQ	T0, ZERO, timer_check_preemption	// U-mode — always check
+
+	// S-mode: check svcDepth — only safe to preempt when depth==0
+	MOV	$·svcDepth(SB), T0
+	MOVW	(T0), T0
+	BNE	T0, ZERO, trap_return	// depth=1, inside ecall — skip
+
+	// S-mode, depth=0 — safe to preempt kernel thread
+timer_check_preemption:
+
+	// Check NeedsThreadPreempt flag set by TimerIRQHandlerAsm
+	MOV	$mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB), T0
+	MOVW	(T0), T0
+	BEQ	T0, ZERO, timer_no_switch	// flag not set — skip preemption
 
 	// NOTE: m.locks check removed for userspace thread preemption.
 	// Each priest runs in its own address space with isolated Go runtime state.
 	// Context-switching freezes and restores the full CPU state atomically —
 	// the priest resumes exactly where it was interrupted, locks intact.
 	// S-mode (kernel) preemption was already filtered out above.
+
+	// Clear NeedsThreadPreempt flag
+	MOV	$mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB), T0
+	MOVW	ZERO, (T0)
+
 	// Check thread preemption
 	MOV	X2, S2			// frame pointer (callee-saved)
 	GO_CALL_1_1(·CheckThreadPreemption, S2)

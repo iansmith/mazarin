@@ -679,7 +679,7 @@ func simpleMain() {
 		Print("[Main] Runtime ready")
 
 		// NOTE: GOGC is NOT set here — kernel uses Go default (100%).
-		// Userspace programs get GOGC=5 via their envp in launch.go.
+		// Userspace programs also get GOGC=100 via their envp in launch.go.
 		// GOMEMLIMIT is set via diplomat envp (64MiB).
 		debug.SetMemoryLimit(64 * 1024 * 1024)     // 64MB soft heap cap (matches diplomat envp)
 		InitDeadlineQueue()

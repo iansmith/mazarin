@@ -298,6 +298,11 @@ sync_exception_handler:
 	CMP	$0x15, R10
 	BNE	not_svc
 
+	// Mark that we're inside an SVC handler (unsafe to preempt by timer).
+	// Must be set before any Go code runs. Cleared in sync_return before ERET.
+	MOVD	$1, R10
+	MOVW	R10, ·svcDepth(SB)
+
 	// CRITICAL: Switch to kmazarin's g0 before calling any Go code!
 	// The interrupted goroutine may have m.p=nil (parked without P), which
 	// would crash if syscall handlers try to allocate. Using g0 ensures
@@ -820,6 +825,10 @@ data_abort_hang:
 	B	data_abort_hang
 
 sync_return:
+	// Clear svcDepth — we're leaving the SVC handler (safe to preempt again).
+	// IRQs are masked (DAIF.I set during exception handling), so no race with timer.
+	MOVW	ZR, ·svcDepth(SB)
+
 	// Restore SP_EL0
 	MOVD	EXC_FRAME_SP_EL0(RSP), R10
 	// MSR SP_EL0, X10 - use WORD to avoid assembler issues
@@ -1001,13 +1010,20 @@ skip_deadline_processing:
 	// ========================================================================
 	// Thread preemption check - switch to another thread if threshold exceeded
 	// ========================================================================
-	// Skip preemption if the interrupted code was in kernel mode (EL1).
-	// When SyscallWaitSoftIRQ calls EnableIRQsAndWait, a timer that fires
-	// during kernel-mode WFI must NOT preempt — the outer SVC frame is
-	// still on the exception stack and a context switch would corrupt it.
+	// Check if the interrupted code was in kernel mode (EL1).
+	// If EL1: only preempt when SVCDepth==0 (running normal Go code, not
+	// inside an SVC handler where the exception stack has a live frame).
+	// If EL0: always eligible for preemption (userspace).
 	MOVD	(EXC_FRAME_ELR_SPSR+8)(RSP), R10	// R10 = saved SPSR
 	AND	$0x4, R10, R10				// EL1 bit (M[2])
-	CBNZ	R10, timer_no_thread_preempt		// Kernel mode — skip
+	CBZ	R10, timer_check_preemption		// EL0 — always check
+
+	// EL1: check svcDepth — only safe to preempt when depth==0
+	MOVW	·svcDepth(SB), R10
+	CBNZ	R10, timer_no_thread_preempt		// depth=1, inside SVC — skip
+
+	// EL1, depth=0 — safe to preempt kernel thread
+timer_check_preemption:
 
 	// Check NeedsThreadPreempt flag set by TimerIRQHandlerAsm
 	MOVW	mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB), R10

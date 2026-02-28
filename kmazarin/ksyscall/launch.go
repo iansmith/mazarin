@@ -596,8 +596,9 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 	}
 
 	penv := NewProcessEnv()
-	penv.SetEnv("GODEBUG", "gctrace=1")
-	penv.SetEnv("GOGC", "5")
+	penv.SetEnv("GODEBUG", "asyncpreemptoff=1,gctrace=1")
+	penv.SetEnv("GOGC", "100")
+	penv.SetEnv("GOMAXPROCS", "1")
 	penv.SetAuxv(6, 4096) // AT_PAGESZ
 
 	argv := []string{filename, priestStr}

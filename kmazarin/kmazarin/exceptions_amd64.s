@@ -367,9 +367,9 @@ exc_entry_skip_fsbase:
 	JMP	handle_generic_irq
 
 handle_syscall:
-	// Mark that we're inside syscall processing.
-	// Timer handler checks this to avoid preempting mid-syscall.
-	MOVQ	$1, ·inSyscallHandler(SB)
+	// Mark that we're inside syscall processing (unsafe to preempt).
+	// Timer handler checks svcDepth to avoid preempting mid-syscall.
+	MOVL	$1, ·svcDepth(SB)
 
 	// Syscall dispatch
 	// Frame: [RAX..R15, errcode, RIP, CS, RFLAGS, RSP, SS]
@@ -443,7 +443,7 @@ syscall_skip_g_setup:
 	// Load ThreadContext pointer into R12 for load_context_and_iretq
 	MOVQ	·ThreadContextOffset(SB), R12
 	ADDQ	R13, R12
-	MOVQ	$0, ·inSyscallHandler(SB)	// Clear before context switch
+	MOVL	$0, ·svcDepth(SB)		// Clear before context switch
 	JMP	load_context_and_iretq
 no_sigreturn:
 	// If a syscall changed FS_BASE (e.g., arch_prctl ARCH_SET_FS),
@@ -476,15 +476,15 @@ syscall_fsbase_unchanged:
 	JZ	syscall_exit_no_ctx
 
 	// Load new context and IRETQ
-	MOVQ	$0, ·inSyscallHandler(SB)	// Clear before context switch
+	MOVL	$0, ·svcDepth(SB)		// Clear before context switch
 	JMP	load_context_and_iretq
 
 syscall_exit_no_ctx:
-	MOVQ	$0, ·inSyscallHandler(SB)	// Clear before exception return
+	MOVL	$0, ·svcDepth(SB)		// Clear before exception return
 	JMP	exception_return
 
 syscall_no_switch:
-	MOVQ	$0, ·inSyscallHandler(SB)	// Clear before exception return
+	MOVL	$0, ·svcDepth(SB)		// Clear before exception return
 	JMP	exception_return
 
 handle_page_fault:
@@ -869,19 +869,16 @@ handle_timer_irq:
 	// User-mode (CS=0x1B): always allow preemption.
 	// Kernel-mode (CS=0x08): allow preemption ONLY if:
 	//   1. Post-boot (kmazarinSyscallReady != 0) — early boot has no threads
-	//   2. NOT inside a syscall handler (inSyscallHandler == 0) — preempting
-	//      mid-syscall corrupts the exception frame when another thread's
-	//      syscall uses the same stack
-	// This enables timer preemption of kernel clone threads (sysmon,
-	// templateThread) that would otherwise run forever in usleep loops.
+	//   2. svcDepth == 0 — not inside a syscall handler (preempting mid-syscall
+	//      corrupts the exception frame on the shared stack)
 	CMPQ	136(SP), $0x08		// CS from exception frame
 	JNE	timer_preempt_allowed	// User mode — always allow
 	// Kernel mode: check if safe to preempt
 	MOVL	runtime·kmazarinSyscallReady(SB), AX
 	TESTL	AX, AX
 	JZ	exception_return	// Early boot — no preemption
-	MOVQ	·inSyscallHandler(SB), AX
-	TESTQ	AX, AX
+	MOVL	·svcDepth(SB), AX
+	TESTL	AX, AX
 	JNZ	exception_return	// Inside syscall handler — unsafe to preempt
 	JMP	timer_preempt_check
 timer_preempt_allowed:
@@ -1619,11 +1616,10 @@ TEXT ·ReadCS(SB), NOSPLIT, $0-2
 // This is per-CPU safe because interrupts are disabled during handling.
 GLOBL	·currentVector(SB), NOPTR, $8
 
-// inSyscallHandler is set to 1 at handle_syscall entry and cleared before
-// exception_return / load_context_and_iretq. When set, the timer handler
-// skips kernel-mode preemption because preempting mid-syscall would corrupt
-// the exception frame on the shared stack.
-GLOBL	·inSyscallHandler(SB), NOPTR, $8
+// svcDepth (declared in percpu.go as var svcDepth uint32) tracks whether
+// the CPU is inside a syscall handler. Set to 1 at handle_syscall entry,
+// cleared before exception_return / load_context_and_iretq. The timer handler
+// checks svcDepth to decide if kernel-mode preemption is safe.
 
 // pf_print_hex16 prints R15 as 16 hex chars to COM1. Clobbers AX, CX, DX, R13.
 TEXT pf_print_hex16(SB), NOSPLIT|NOFRAME, $0

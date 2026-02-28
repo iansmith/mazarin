@@ -12,6 +12,7 @@ var (
 	FutexWaitBlocked  uint64 // Calls that blocked thread (switched to another)
 	FutexWaitEagain   uint64 // Calls that returned EAGAIN (same thread continues)
 	FutexWakeCalls    uint64 // Total FUTEX_WAKE calls
+	KernelSVCCount    uint64 // SVCs from kernel threads (TID < 10)
 )
 
 // PrintFutexStats prints futex statistics for debugging
@@ -67,30 +68,36 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 			return -11 // -EAGAIN: value already changed
 		}
 
-		// If timeout is non-zero, add a deadline so the thread wakes up
-		// even if no explicit futex_wake arrives. The Go runtime uses timed
-		// futex waits for sysmon and other periodic wakeups.
-		if timeout != 0 {
-			// timeout is a pointer to struct timespec {int64 tv_sec, int64 tv_nsec}
-			ts, ok := kmem.ReadUserInt64Pair(uintptr(timeout))
-			if !ok {
-				return -14 // EFAULT
-			}
-			seconds := ts[0]
-			nanoseconds := ts[1]
-
+		// Add a deadline so the thread wakes up even if no explicit
+		// futex_wake arrives. For explicit timeouts, use the caller's
+		// timespec. For untimed waits, add an implicit 1ms deadline:
+		// on our cooperative single-CPU scheduler, indefinite futex
+		// blocking starves goroutines because all Ms block and no M
+		// is left to run the Go scheduler's retake/handoff.
+		{
 			frequency := uint64(kirq.GetTimerFrequency())
 			var ticks uint64
-			if seconds > 0 {
-				ticks = uint64(seconds) * frequency
-			}
-			if nanoseconds > 0 {
-				ticks += (uint64(nanoseconds) * frequency) / 1000000000
+			if timeout != 0 {
+				// timeout is a pointer to struct timespec {int64 tv_sec, int64 tv_nsec}
+				ts, ok := kmem.ReadUserInt64Pair(uintptr(timeout))
+				if !ok {
+					return -14 // EFAULT
+				}
+				seconds := ts[0]
+				nanoseconds := ts[1]
+				if seconds > 0 {
+					ticks = uint64(seconds) * frequency
+				}
+				if nanoseconds > 0 {
+					ticks += (uint64(nanoseconds) * frequency) / 1000000000
+				}
+			} else {
+				// Implicit 1ms timeout for cooperative scheduling fairness
+				ticks = frequency / 1000
 			}
 			if ticks == 0 {
-				ticks = 1 // At least 1 tick so deadline fires on next check
+				ticks = 1
 			}
-
 			currentTick := kirq.ReadCounterValue()
 			deadline := currentTick + ticks
 			currentTID := int32(GetCurrentThreadTID())

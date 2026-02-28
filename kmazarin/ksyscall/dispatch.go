@@ -65,6 +65,12 @@ var syscallTable = [NumSyscallIDs]SyscallHandler{
 //go:nosplit
 //go:noinline
 func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
+	// Track SVCs from kernel threads for deadlock diagnostics
+	tid := GetCurrentThreadTID()
+	if tid < 10 {
+		atomic.AddUint64(&KernelSVCCount, 1)
+	}
+
 	// Record entry time for kernel time accounting
 	entryTick := kirq.ReadCounterValue()
 

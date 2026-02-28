@@ -1,8 +1,8 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/serial"
-	"unsafe"
 )
 
 // Signal constants matching Linux definitions.
@@ -43,23 +43,25 @@ func SyscallRtSigaction(signum, actPtr, oactPtr, sigsetsize, _, _ uint64) int64 
 		return -22 // EINVAL
 	}
 
-	// If oactPtr is non-nil, copy the old action to it
+	// If oactPtr is non-nil, copy the old action to it.
+	// Use safe accessors — direct dereference fails on RISC-V (SUM=0).
 	if oactPtr != 0 {
 		oldAction := GetSignalAction(sig)
 		addr := uintptr(oactPtr)
-		*(*uint64)(unsafe.Pointer(addr)) = oldAction.Handler
-		*(*uint64)(unsafe.Pointer(addr + 8)) = oldAction.Flags
-		*(*uint64)(unsafe.Pointer(addr + 16)) = oldAction.Restorer
-		*(*uint64)(unsafe.Pointer(addr + 24)) = oldAction.Mask
+		kmem.WriteUserUint64(addr, oldAction.Handler)
+		kmem.WriteUserUint64(addr+8, oldAction.Flags)
+		kmem.WriteUserUint64(addr+16, oldAction.Restorer)
+		kmem.WriteUserUint64(addr+24, oldAction.Mask)
 	}
 
-	// If actPtr is non-nil, install the new action
+	// If actPtr is non-nil, install the new action.
+	// Use safe accessors — direct dereference fails on RISC-V (SUM=0).
 	if actPtr != 0 {
 		addr := uintptr(actPtr)
-		handler := *(*uint64)(unsafe.Pointer(addr))
-		flags := *(*uint64)(unsafe.Pointer(addr + 8))
-		restorer := *(*uint64)(unsafe.Pointer(addr + 16))
-		mask := *(*uint64)(unsafe.Pointer(addr + 24))
+		handler, _ := kmem.ReadUserUint64(addr)
+		flags, _ := kmem.ReadUserUint64(addr + 8)
+		restorer, _ := kmem.ReadUserUint64(addr + 16)
+		mask, _ := kmem.ReadUserUint64(addr + 24)
 
 		SetSignalAction(sig, handler, flags, restorer, mask)
 	}
@@ -85,32 +87,34 @@ func SyscallSigaltstack(newPtr, oldPtr, _, _, _, _ uint64) int64 {
 		return 0 // No thread context, ignore
 	}
 
-	// Return current state if oldPtr is non-nil
+	// Return current state if oldPtr is non-nil.
+	// Use safe accessors — direct dereference fails on RISC-V (SUM=0).
 	if oldPtr != 0 {
 		base, _, size := GetThreadSignalStack(tPtr)
 		addr := uintptr(oldPtr)
 		if base != 0 {
-			*(*uint64)(unsafe.Pointer(addr)) = base     // ss_sp
-			*(*int32)(unsafe.Pointer(addr + 8)) = 0     // ss_flags (active)
-			*(*uint64)(unsafe.Pointer(addr + 16)) = size // ss_size
+			kmem.WriteUserUint64(addr, base)      // ss_sp
+			kmem.WriteUserUint32(addr+8, 0)       // ss_flags (active)
+			kmem.WriteUserUint64(addr+16, size)    // ss_size
 		} else {
-			*(*uint64)(unsafe.Pointer(addr)) = 0                // ss_sp
-			*(*int32)(unsafe.Pointer(addr + 8)) = int32(ssDisable) // SS_DISABLE
-			*(*uint64)(unsafe.Pointer(addr + 16)) = 0           // ss_size
+			kmem.WriteUserUint64(addr, 0)                    // ss_sp
+			kmem.WriteUserUint32(addr+8, uint32(ssDisable))  // SS_DISABLE
+			kmem.WriteUserUint64(addr+16, 0)                 // ss_size
 		}
 	}
 
-	// Install new signal stack if newPtr is non-nil
+	// Install new signal stack if newPtr is non-nil.
+	// Use safe accessors — direct dereference fails on RISC-V (SUM=0).
 	if newPtr != 0 {
 		addr := uintptr(newPtr)
-		sp := *(*uint64)(unsafe.Pointer(addr))
-		flags := *(*int32)(unsafe.Pointer(addr + 8))
-		size := *(*uint64)(unsafe.Pointer(addr + 16))
+		sp, _ := kmem.ReadUserUint64(addr)
+		flagsVal, _ := kmem.ReadUserUint32(addr + 8)
+		size, _ := kmem.ReadUserUint64(addr + 16)
 
-		if flags == int32(ssDisable) {
+		if flagsVal == uint32(ssDisable) {
 			SetThreadSignalStack(tPtr, 0, 0, 0)
 		} else {
-			SetThreadSignalStack(tPtr, sp, sp+size, size) // SP starts at top (grows down)
+			SetThreadSignalStack(tPtr, sp, sp+uint64(size), uint64(size))
 		}
 	}
 
