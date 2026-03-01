@@ -3,8 +3,7 @@
 package main
 
 import (
-	"unsafe"
-
+	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/serial"
 )
 
@@ -55,6 +54,10 @@ const (
 // BuildSignalFrame builds a signal frame on the thread's gsignal stack
 // and modifies the ThreadContext to enter sigtramp.
 //
+// The signal frame is in userspace memory, so all writes go through the kernel
+// linear map (VA→PA walk + KernelMMIOOffset) since direct userspace access is
+// blocked by SMAP on x86_64.
+//
 //go:nosplit
 func BuildSignalFrame(thread *Thread, signum int, action *SignalAction) {
 	signalSP := thread.SignalSP
@@ -65,52 +68,58 @@ func BuildSignalFrame(thread *Thread, signum int, action *SignalAction) {
 		return
 	}
 
+	l0PA := thread.PageTableL0PA
+
 	// Allocate space on signal stack (grows downward)
 	frameSP := signalSP - uint64(amd64SignalFrameSize)
 	frameSP &= ^uint64(0xF) // 16-byte align
+
+	// NOTE: Signal stack pages must already be backed by physical memory.
+	// The sigaltstack runtime overlay pre-touches the top 2 pages to trigger
+	// demand paging in userspace before the kernel needs to write the frame.
 
 	// Pointers to siginfo and ucontext within the frame
 	siginfoAddr := frameSP
 	uctxAddr := frameSP + uint64(amd64SiginfoSize)
 
-	// Zero the entire frame
-	zeroMemory(unsafe.Pointer(uintptr(frameSP)), uintptr(amd64SignalFrameSize))
+	// Zero the entire frame through kernel mapping
+	kmem.ZeroUserMemoryWithL0(uintptr(frameSP), uintptr(amd64SignalFrameSize), l0PA)
 
 	// --- Populate siginfo ---
 	siPtr := uintptr(siginfoAddr)
-	*(*int32)(unsafe.Pointer(siPtr)) = int32(signum)   // si_signo
-	*(*int32)(unsafe.Pointer(siPtr + 4)) = 0           // si_errno
-	*(*int32)(unsafe.Pointer(siPtr + 8)) = _SI_KERNEL  // si_code
+	kmem.WriteUserInt32WithL0(siPtr, int32(signum), l0PA)  // si_signo
+	kmem.WriteUserInt32WithL0(siPtr+4, 0, l0PA)            // si_errno
+	kmem.WriteUserInt32WithL0(siPtr+8, _SI_KERNEL, l0PA)   // si_code
 
 	// --- Populate ucontext ---
 	ucPtr := uintptr(uctxAddr)
 
 	// Save registers from ThreadContext into sigcontext
 	scBase := ucPtr + amd64UcSigctx
-	*(*uint64)(unsafe.Pointer(scBase + scR8)) = thread.Context.R8
-	*(*uint64)(unsafe.Pointer(scBase + scR9)) = thread.Context.R9
-	*(*uint64)(unsafe.Pointer(scBase + scR10)) = thread.Context.R10
-	*(*uint64)(unsafe.Pointer(scBase + scR11)) = thread.Context.R11
-	*(*uint64)(unsafe.Pointer(scBase + scR12)) = thread.Context.R12
-	*(*uint64)(unsafe.Pointer(scBase + scR13)) = thread.Context.R13
-	*(*uint64)(unsafe.Pointer(scBase + scR14)) = thread.Context.R14
-	*(*uint64)(unsafe.Pointer(scBase + scR15)) = thread.Context.R15
-	*(*uint64)(unsafe.Pointer(scBase + scRDI)) = thread.Context.RDI
-	*(*uint64)(unsafe.Pointer(scBase + scRSI)) = thread.Context.RSI
-	*(*uint64)(unsafe.Pointer(scBase + scRBP)) = thread.Context.RBP
-	*(*uint64)(unsafe.Pointer(scBase + scRBX)) = thread.Context.RBX
-	*(*uint64)(unsafe.Pointer(scBase + scRDX)) = thread.Context.RDX
-	*(*uint64)(unsafe.Pointer(scBase + scRAX)) = thread.Context.RAX
-	*(*uint64)(unsafe.Pointer(scBase + scRCX)) = thread.Context.RCX
-	*(*uint64)(unsafe.Pointer(scBase + scRSP)) = thread.Context.RSP
-	*(*uint64)(unsafe.Pointer(scBase + scRIP)) = thread.Context.RIP
-	*(*uint64)(unsafe.Pointer(scBase + scEFLAGS)) = thread.Context.RFLAGS
-	*(*uint16)(unsafe.Pointer(scBase + scCS)) = uint16(thread.Context.CS)
+	kmem.WriteUserUint64WithL0(scBase+scR8, thread.Context.R8, l0PA)
+	kmem.WriteUserUint64WithL0(scBase+scR9, thread.Context.R9, l0PA)
+	kmem.WriteUserUint64WithL0(scBase+scR10, thread.Context.R10, l0PA)
+	kmem.WriteUserUint64WithL0(scBase+scR11, thread.Context.R11, l0PA)
+	kmem.WriteUserUint64WithL0(scBase+scR12, thread.Context.R12, l0PA)
+	kmem.WriteUserUint64WithL0(scBase+scR13, thread.Context.R13, l0PA)
+	kmem.WriteUserUint64WithL0(scBase+scR14, thread.Context.R14, l0PA)
+	kmem.WriteUserUint64WithL0(scBase+scR15, thread.Context.R15, l0PA)
+	kmem.WriteUserUint64WithL0(scBase+scRDI, thread.Context.RDI, l0PA)
+	kmem.WriteUserUint64WithL0(scBase+scRSI, thread.Context.RSI, l0PA)
+	kmem.WriteUserUint64WithL0(scBase+scRBP, thread.Context.RBP, l0PA)
+	kmem.WriteUserUint64WithL0(scBase+scRBX, thread.Context.RBX, l0PA)
+	kmem.WriteUserUint64WithL0(scBase+scRDX, thread.Context.RDX, l0PA)
+	kmem.WriteUserUint64WithL0(scBase+scRAX, thread.Context.RAX, l0PA)
+	kmem.WriteUserUint64WithL0(scBase+scRCX, thread.Context.RCX, l0PA)
+	kmem.WriteUserUint64WithL0(scBase+scRSP, thread.Context.RSP, l0PA)
+	kmem.WriteUserUint64WithL0(scBase+scRIP, thread.Context.RIP, l0PA)
+	kmem.WriteUserUint64WithL0(scBase+scEFLAGS, thread.Context.RFLAGS, l0PA)
+	kmem.WriteUserUint16WithL0(scBase+scCS, uint16(thread.Context.CS), l0PA)
 
 	// uc_stack: record the signal stack info
-	*(*uint64)(unsafe.Pointer(ucPtr + amd64UcStack)) = thread.SignalStackBase     // ss_sp
-	*(*int32)(unsafe.Pointer(ucPtr + amd64UcStack + 8)) = _SS_ONSTACK            // ss_flags
-	*(*uint64)(unsafe.Pointer(ucPtr + amd64UcStack + 16)) = thread.SignalStackSize // ss_size
+	kmem.WriteUserUint64WithL0(ucPtr+amd64UcStack, thread.SignalStackBase, l0PA)      // ss_sp
+	kmem.WriteUserInt32WithL0(ucPtr+amd64UcStack+8, _SS_ONSTACK, l0PA)                // ss_flags
+	kmem.WriteUserUint64WithL0(ucPtr+amd64UcStack+16, thread.SignalStackSize, l0PA)   // ss_size
 
 	// Store ucontext address for rt_sigreturn to find later
 	thread.SignalUctxAddr = uctxAddr
@@ -129,7 +138,7 @@ func BuildSignalFrame(thread *Thread, signum int, action *SignalAction) {
 	}
 	// Place return address below the frame (x86_64 CALL convention)
 	retAddrSP := frameSP - 8
-	*(*uint64)(unsafe.Pointer(uintptr(retAddrSP))) = restorerAddr
+	kmem.WriteUserUint64WithL0(uintptr(retAddrSP), restorerAddr, l0PA)
 
 	thread.Context.RSP = retAddrSP
 	thread.Context.RIP = action.Handler
@@ -149,26 +158,64 @@ func RestoreFromSignalFrame(t *Thread) {
 		return
 	}
 
+	l0PA := t.PageTableL0PA
+
 	// Restore registers from sigcontext
 	scBase := ucPtr + amd64UcSigctx
-	t.Context.R8 = *(*uint64)(unsafe.Pointer(scBase + scR8))
-	t.Context.R9 = *(*uint64)(unsafe.Pointer(scBase + scR9))
-	t.Context.R10 = *(*uint64)(unsafe.Pointer(scBase + scR10))
-	t.Context.R11 = *(*uint64)(unsafe.Pointer(scBase + scR11))
-	t.Context.R12 = *(*uint64)(unsafe.Pointer(scBase + scR12))
-	t.Context.R13 = *(*uint64)(unsafe.Pointer(scBase + scR13))
-	t.Context.R14 = *(*uint64)(unsafe.Pointer(scBase + scR14))
-	t.Context.R15 = *(*uint64)(unsafe.Pointer(scBase + scR15))
-	t.Context.RDI = *(*uint64)(unsafe.Pointer(scBase + scRDI))
-	t.Context.RSI = *(*uint64)(unsafe.Pointer(scBase + scRSI))
-	t.Context.RBP = *(*uint64)(unsafe.Pointer(scBase + scRBP))
-	t.Context.RBX = *(*uint64)(unsafe.Pointer(scBase + scRBX))
-	t.Context.RDX = *(*uint64)(unsafe.Pointer(scBase + scRDX))
-	t.Context.RAX = *(*uint64)(unsafe.Pointer(scBase + scRAX))
-	t.Context.RCX = *(*uint64)(unsafe.Pointer(scBase + scRCX))
-	t.Context.RSP = *(*uint64)(unsafe.Pointer(scBase + scRSP))
-	t.Context.RIP = *(*uint64)(unsafe.Pointer(scBase + scRIP))
-	t.Context.RFLAGS = *(*uint64)(unsafe.Pointer(scBase + scEFLAGS))
+	if v, ok := kmem.ReadUserUint64WithL0(scBase+scR8, l0PA); ok {
+		t.Context.R8 = v
+	}
+	if v, ok := kmem.ReadUserUint64WithL0(scBase+scR9, l0PA); ok {
+		t.Context.R9 = v
+	}
+	if v, ok := kmem.ReadUserUint64WithL0(scBase+scR10, l0PA); ok {
+		t.Context.R10 = v
+	}
+	if v, ok := kmem.ReadUserUint64WithL0(scBase+scR11, l0PA); ok {
+		t.Context.R11 = v
+	}
+	if v, ok := kmem.ReadUserUint64WithL0(scBase+scR12, l0PA); ok {
+		t.Context.R12 = v
+	}
+	if v, ok := kmem.ReadUserUint64WithL0(scBase+scR13, l0PA); ok {
+		t.Context.R13 = v
+	}
+	if v, ok := kmem.ReadUserUint64WithL0(scBase+scR14, l0PA); ok {
+		t.Context.R14 = v
+	}
+	if v, ok := kmem.ReadUserUint64WithL0(scBase+scR15, l0PA); ok {
+		t.Context.R15 = v
+	}
+	if v, ok := kmem.ReadUserUint64WithL0(scBase+scRDI, l0PA); ok {
+		t.Context.RDI = v
+	}
+	if v, ok := kmem.ReadUserUint64WithL0(scBase+scRSI, l0PA); ok {
+		t.Context.RSI = v
+	}
+	if v, ok := kmem.ReadUserUint64WithL0(scBase+scRBP, l0PA); ok {
+		t.Context.RBP = v
+	}
+	if v, ok := kmem.ReadUserUint64WithL0(scBase+scRBX, l0PA); ok {
+		t.Context.RBX = v
+	}
+	if v, ok := kmem.ReadUserUint64WithL0(scBase+scRDX, l0PA); ok {
+		t.Context.RDX = v
+	}
+	if v, ok := kmem.ReadUserUint64WithL0(scBase+scRAX, l0PA); ok {
+		t.Context.RAX = v
+	}
+	if v, ok := kmem.ReadUserUint64WithL0(scBase+scRCX, l0PA); ok {
+		t.Context.RCX = v
+	}
+	if v, ok := kmem.ReadUserUint64WithL0(scBase+scRSP, l0PA); ok {
+		t.Context.RSP = v
+	}
+	if v, ok := kmem.ReadUserUint64WithL0(scBase+scRIP, l0PA); ok {
+		t.Context.RIP = v
+	}
+	if v, ok := kmem.ReadUserUint64WithL0(scBase+scEFLAGS, l0PA); ok {
+		t.Context.RFLAGS = v
+	}
 
 	t.SignalUctxAddr = 0 // Consumed
 }

@@ -45,6 +45,7 @@ const (
 	SysIDPrlimit64                     // prlimit64
 	SysIDGetrandom                     // getrandom
 	SysIDRtSigreturn                   // rt_sigreturn
+	SysIDGetitimer                     // getitimer
 
 	NumSyscallIDs // sentinel — array size
 )

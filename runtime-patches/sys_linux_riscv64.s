@@ -105,9 +105,37 @@ TEXT runtime·pipe2(SB),NOSPLIT|NOFRAME,$0-20
 	MOVW	A0, errno+16(FP)
 	RET
 
-// usleep - yield CPU via EBREAK to trap handler → scheduler
-TEXT runtime·usleep(SB),NOSPLIT,$0-4
+// usleep - two-phase implementation:
+//
+// Phase 1 (early boot): sched_yield — no timer IRQs, so spinning would
+//   block forever. Yielding lets other threads run.
+//
+// Phase 2 (post-boot, kmazarinSyscallReady=1): real EBREAK with A7=101
+//   (SYS_nanosleep). Routes through kmazarin's SyscallNanosleep handler
+//   which blocks the thread with a timer deadline and context-switches.
+//
+// func usleep(usec uint32)
+TEXT runtime·usleep(SB),NOSPLIT,$24-4
+	// Check if kmazarin syscall handlers are ready
+	MOV	runtime·kmazarinSyscallReady(SB), T0
+	BNE	T0, ZERO, usleep_real
+
+	// Phase 1: early boot — sched_yield
 	MOV	$124, A7		// SYS_sched_yield
+	WORD	$0x00100073		// ebreak → trap handler → SyscallDispatch
+	RET
+
+usleep_real:
+	// Phase 2: convert microseconds to timespec and call nanosleep
+	MOVW	usec+0(FP), A0		// A0 = microseconds (32-bit, zero-extended)
+	MOV	$1000, T0
+	MUL	A0, T0, T1		// T1 = nanoseconds (usec * 1000; max ~10ms = 10M ns)
+	MOV	ZERO, T2		// tv_sec = 0 (sysmon max is 10ms)
+	MOV	T2, 8(X2)		// store tv_sec on stack
+	MOV	T1, 16(X2)		// store tv_nsec on stack
+	ADD	$8, X2, A0		// A0 = &timespec
+	MOV	ZERO, A1		// A1 = NULL (remaining time)
+	MOV	$101, A7		// SYS_nanosleep
 	WORD	$0x00100073		// ebreak → trap handler → SyscallDispatch
 	RET
 
@@ -167,9 +195,14 @@ TEXT runtime·nanotime1(SB),NOSPLIT,$0-8
 TEXT runtime·rtsigprocmask(SB),NOSPLIT|NOFRAME,$0-28
 	RET
 
-// rt_sigaction - return 0 (success), signals are not supported
+// rt_sigaction - register signal handler via EBREAK
 TEXT runtime·rt_sigaction(SB),NOSPLIT|NOFRAME,$0-36
-	MOV	ZERO, A0
+	MOV	sig+0(FP), A0
+	MOV	new+8(FP), A1
+	MOV	old+16(FP), A2
+	MOV	size+24(FP), A3
+	MOV	$134, A7		// SYS_rt_sigaction
+	WORD	$0x00100073		// ebreak → trap handler → SyscallDispatch
 	MOVW	A0, ret+32(FP)
 	RET
 
@@ -177,8 +210,14 @@ TEXT runtime·rt_sigaction(SB),NOSPLIT|NOFRAME,$0-36
 TEXT runtime·sigfwd(SB),NOSPLIT,$0-32
 	RET
 
-// sigtramp - not implemented
-TEXT runtime·sigtramp(SB),NOSPLIT|TOPFRAME,$176
+// sigtramp - signal trampoline, called when a signal is delivered.
+// Receives: A0=signum, A1=siginfo_ptr, A2=ucontext_ptr
+TEXT runtime·sigtramp(SB),NOSPLIT|TOPFRAME,$64
+	MOVW	A0, 8(X2)		// save signum
+	MOV	A1, 16(X2)		// save info
+	MOV	A2, 24(X2)		// save ctx
+	MOV	$runtime·sigtrampgo(SB), A3
+	JALR	RA, A3
 	RET
 
 // cgoSigtramp - not implemented
@@ -311,8 +350,12 @@ clone_parent:
 	MOVW	A0, ret+40(FP)
 	RET
 
-// sigaltstack - not implemented
-TEXT runtime·sigaltstack(SB),NOSPLIT|NOFRAME,$0-24
+// sigaltstack - set/get signal stack via EBREAK
+TEXT runtime·sigaltstack(SB),NOSPLIT|NOFRAME,$0-16
+	MOV	new+0(FP), A0
+	MOV	old+8(FP), A1
+	MOV	$132, A7		// SYS_sigaltstack
+	WORD	$0x00100073		// ebreak → trap handler → SyscallDispatch
 	RET
 
 // osyield - NOP yield (WFI can halt CPU when SIE=1 with no timer configured)
@@ -324,8 +367,24 @@ TEXT runtime·osyield(SB),NOSPLIT|NOFRAME,$0
 TEXT runtime·sched_getaffinity_trampoline(SB),NOSPLIT|NOFRAME,$0
 	RET
 
-// futex - spin-wait implementation (no ECALL, mirrors ARM64 pattern)
+// futex - two-phase implementation:
+//
+// Phase 1 (early boot, before SetVBAR): spin-check + sched_yield.
+//   No kmazarin exception vectors installed, so only basic EBREAKs work.
+//   Spin briefly checking for value change, then yield.
+//
+// Phase 2 (post-boot, kmazarinSyscallReady=1): real EBREAK with A7=98
+//   (SYS_futex). Routes through kmazarin's SyscallFutex handler which
+//   properly blocks the thread (FUTEX_WAIT) or wakes blocked threads
+//   (FUTEX_WAKE).
+//
+// func futex(addr unsafe.Pointer, op int32, val uint32, ts, addr2 unsafe.Pointer, val3 uint32) int32
 TEXT runtime·futex(SB),NOSPLIT|NOFRAME,$0
+	// Check if kmazarin syscall handlers are ready
+	MOV	runtime·kmazarinSyscallReady(SB), T0
+	BNE	T0, ZERO, futex_real
+
+	// --- Phase 1: early boot (spin + yield) ---
 	MOV	addr+0(FP), A0		// addr
 	MOVW	op+8(FP), A1		// op
 	MOVW	val+12(FP), A2		// val
@@ -333,7 +392,7 @@ TEXT runtime·futex(SB),NOSPLIT|NOFRAME,$0
 	// Check operation type (low 7 bits, ignoring FUTEX_PRIVATE_FLAG)
 	AND	$0x7F, A1, T0
 	MOV	$1, T1
-	BEQ	T0, T1, futex_wake	// FUTEX_WAKE
+	BEQ	T0, T1, futex_wake_early	// FUTEX_WAKE
 
 	// FUTEX_WAIT: check *addr vs val
 	MOVW	(A0), T0		// *addr
@@ -350,9 +409,8 @@ futex_spin:
 	ADD	$-1, T2
 	BNE	T2, ZERO, futex_spin
 
-	// Spin exhausted, value didn't change. Yield to scheduler so other
-	// threads can run, then return 0 to simulate a timeout/spurious wakeup.
-	// The caller (notesleep/lock2) will re-check and call futex again.
+	// Spin exhausted — yield so other threads can run, then return 0
+	// (simulating timeout). Caller re-checks and calls futex again.
 	MOV	$124, A7		// SYS_sched_yield
 	WORD	$0x00100073		// ebreak → trap handler → SyscallDispatch
 	MOV	ZERO, A0
@@ -365,9 +423,22 @@ futex_eagain:
 	MOVW	A0, ret+40(FP)
 	RET
 
-futex_wake:
-	// FUTEX_WAKE: return 0 (nothing to wake on bare metal)
+futex_wake_early:
 	MOV	ZERO, A0
+	MOVW	A0, ret+40(FP)
+	RET
+
+futex_real:
+	// --- Phase 2: real futex EBREAK (post-boot) ---
+	// Route through kmazarin's SyscallFutex handler for proper blocking/waking.
+	MOV	addr+0(FP), A0		// uaddr
+	MOVW	op+8(FP), A1		// op
+	MOVW	val+12(FP), A2		// val
+	MOV	ts+16(FP), A3		// timeout
+	MOV	addr2+24(FP), A4	// uaddr2
+	MOVW	val3+32(FP), A5		// val3
+	MOV	$98, A7			// SYS_futex
+	WORD	$0x00100073		// ebreak → trap handler → SyscallDispatch
 	MOVW	A0, ret+40(FP)
 	RET
 
@@ -377,13 +448,20 @@ TEXT runtime·getrandom(SB),NOSPLIT,$0-28
 	MOVW	A0, ret+24(FP)
 	RET
 
-// sigreturn - not implemented
+// sigreturn - issues rt_sigreturn syscall via EBREAK.
+// Called as sa_restorer when the signal handler returns.
+// The kernel's SyscallRtSigreturn restores the pre-signal context.
 TEXT runtime·sigreturn(SB),NOSPLIT|NOFRAME,$0-0
-	RET
+	MOV	$139, A7		// SYS_rt_sigreturn
+	WORD	$0x00100073		// ebreak → trap handler → SyscallDispatch
+	// Should not return — halt if it does
+	WORD	$0x10500073		// WFI
+	JMP	-1(PC)
 
-// gettid - return 1
+// gettid - get thread ID via EBREAK
 TEXT runtime·gettid(SB),NOSPLIT,$0-4
-	MOV	$1, A0
+	MOV	$178, A7		// SYS_gettid
+	WORD	$0x00100073		// ebreak → trap handler → SyscallDispatch
 	MOVW	A0, ret+0(FP)
 	RET
 
@@ -393,8 +471,13 @@ TEXT runtime·getpid(SB),NOSPLIT|NOFRAME,$0-8
 	MOV	A0, ret+0(FP)
 	RET
 
-// tgkill - no-op
+// tgkill - send signal to thread via EBREAK
 TEXT runtime·tgkill(SB),NOSPLIT,$0-24
+	MOV	tgid+0(FP), A0
+	MOV	tid+8(FP), A1
+	MOV	sig+16(FP), A2
+	MOV	$131, A7		// SYS_tgkill
+	WORD	$0x00100073		// ebreak → trap handler → SyscallDispatch
 	RET
 
 // kmazarinUART - write a byte to UART via linear map

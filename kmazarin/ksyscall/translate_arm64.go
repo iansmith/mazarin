@@ -20,6 +20,7 @@ var arm64ToSysID = [512]SysID{
 	96:  SysIDSetTidAddress,
 	98:  SysIDFutex,
 	101: SysIDNanosleep,
+	102: SysIDGetitimer,
 	113: SysIDClockGettime,
 	123: SysIDSchedGetaffinity,
 	124: SysIDSchedYield,

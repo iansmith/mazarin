@@ -386,6 +386,70 @@ func threadLookupByTID(tid int32) *Thread {
 	return nil
 }
 
+// threadLookupByPID finds the first thread belonging to the priest with the given PID.
+// Returns nil if no matching thread is found. Used by SyscallKill to deliver signals
+// to a process by PID.
+//
+//go:nosplit
+func threadLookupByPID(pid int16) *Thread {
+	for i := 0; i < threadArraySize; i++ {
+		if threadListInUse[i] && int16(threadListData[i].PID) == pid {
+			return &threadListData[i]
+		}
+	}
+	return nil
+}
+
+// WakeThreadForSignal moves a blocked thread to the ready queue so that
+// pending signals are delivered at the next context switch.  Called from
+// SyscallKill / SyscallTgkill after setting PendingSignals.
+//
+// Only transitions ThreadBlockedFutex, ThreadSleeping, and
+// ThreadBlockedSoftIRQ — if the thread is already Running or Ready the
+// signal will be delivered at the next context switch naturally.
+//
+//go:nosplit
+func WakeThreadForSignal(t *Thread) {
+	savedDAIF := SaveAndDisableIRQs()
+	schedulerLock.Lock()
+
+	switch t.State {
+	case ThreadBlockedFutex:
+		t.State = ThreadReady
+		t.FutexAddr = 0
+		blockedQueue.Pluck(t.TID)
+		enqueueReadySchedLockHeld(t)
+	case ThreadSleeping:
+		t.State = ThreadReady
+		sleepingQueue.Pluck(t.TID)
+		enqueueReadySchedLockHeld(t)
+	case ThreadBlockedSoftIRQ:
+		t.State = ThreadReady
+		clearSoftIRQSlotForTID(t.TID)
+		enqueueReadySchedLockHeld(t)
+	}
+	// ThreadRunning / ThreadReady: signal delivered at next context switch
+
+	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
+}
+
+// clearSoftIRQSlotForTID scans softIRQSlotData and clears the blockedTID
+// field of any slot that matches the given TID.  This is necessary when
+// waking a thread out of ThreadBlockedSoftIRQ via signal delivery.
+//
+// REQUIRES: schedulerLock held.
+//
+//go:nosplit
+func clearSoftIRQSlotForTID(tid ThreadId) {
+	for i := 0; i < maxSoftIRQSlots; i++ {
+		if softIRQSlotData[i].blockedTID == tid {
+			softIRQSlotData[i].blockedTID = -1
+			return
+		}
+	}
+}
+
 // ========== Static Allocation Data Structures ==========
 
 // Backing arrays - statically allocated, zero-initialized
@@ -2505,10 +2569,9 @@ func tryPickupWorkIdleCPU(sf *SchedulerFunc) uint64 {
 		}
 	}
 
-	// Deliver pending signals before ERET to this thread.
-	if next.PendingSignals != 0 && next.InSignalHandler == 0 {
-		DeliverPendingSignal(next)
-	}
+	// NOTE: Signal delivery moved to caller (checkThreadPreemptionImpl)
+	// to reduce nosplit stack depth. tryPickupWorkIdleCPU adds 80 bytes
+	// to the chain which pushes BuildSignalFrame's page walks over limit.
 
 	return uint64(uintptr(unsafe.Pointer(&next.Context)))
 }
@@ -2540,7 +2603,16 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		// Idle CPU (no current thread) - check if there's work to pick up
 		// This is critical for SMP: secondary CPUs start idle and need to
 		// pick up work from their local queues when timer interrupts wake them.
-		return tryPickupWorkIdleCPU(sf)
+		ctxPtr := tryPickupWorkIdleCPU(sf)
+		if ctxPtr != 0 {
+			// Deliver pending signals at this stack depth (shallower than inside
+			// tryPickupWorkIdleCPU) to stay within nosplit stack budget.
+			next := GetCurrentThread()
+			if next != nil && next.PendingSignals != 0 && next.InSignalHandler == 0 {
+				DeliverPendingSignal(next)
+			}
+		}
+		return ctxPtr
 	}
 
 	// BEGIN CRITICAL SECTION - protect thread state modifications

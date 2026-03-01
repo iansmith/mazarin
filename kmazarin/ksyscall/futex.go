@@ -70,10 +70,11 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 
 		// Add a deadline so the thread wakes up even if no explicit
 		// futex_wake arrives. For explicit timeouts, use the caller's
-		// timespec. For untimed waits, add an implicit 1ms deadline:
-		// on our cooperative single-CPU scheduler, indefinite futex
-		// blocking starves goroutines because all Ms block and no M
-		// is left to run the Go scheduler's retake/handoff.
+		// timespec. For untimed waits, add an implicit 1ms deadline
+		// as a safety net: on our cooperative single-CPU scheduler,
+		// indefinite futex blocking can starve goroutines when lock
+		// contention causes all Ms to block and no M is left to run
+		// the Go scheduler's retake/handoff.
 		{
 			frequency := uint64(kirq.GetTimerFrequency())
 			var ticks uint64

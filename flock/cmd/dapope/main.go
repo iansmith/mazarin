@@ -14,6 +14,8 @@ import (
 	"mazzy/mazarin/sys"
 	"mazzy/shared/hid"
 	"os"
+	"runtime"
+	"syscall"
 	"time"
 )
 
@@ -201,10 +203,29 @@ func mouseLoop(slot int, stack core.CursorStack, images core.CursorImageMap, ren
 	}
 }
 
+// findOtherPID scans PIDs 1-31 and returns the first valid PID that
+// isn't our own. Returns -1 if none found.
+func findOtherPID(myPID int) int {
+	for pid := 1; pid < 32; pid++ {
+		if pid == myPID {
+			continue
+		}
+		if err := syscall.Kill(pid, 0); err == nil {
+			return pid
+		}
+	}
+	return -1
+}
+
 func timerLoop(clock *clockRenderer, slot int) {
 	fmt.Printf("[dapope:timer] timer goroutine started on slot %d\n", slot)
 	var buf hid.SoftIRQReturn
 	tick := 0
+
+	// Discover stdio's PID after a few ticks (give it time to launch)
+	myPID := syscall.Getpid()
+	stdioPID := -1
+
 	for {
 		ts, err := sys.GetTime()
 		if err != nil {
@@ -228,6 +249,26 @@ func timerLoop(clock *clockRenderer, slot int) {
 		}
 		clock.Update(sys.TimeSpec{Seconds: sec, Nanoseconds: nsec})
 		tick++
+		if tick%3 == 0 {
+			runtime.GC()
+		}
+
+		// Discover stdio's PID once (after 5s to let it launch)
+		if stdioPID < 0 && tick >= 5 {
+			stdioPID = findOtherPID(myPID)
+			if stdioPID > 0 {
+				fmt.Printf("[dapope:timer] found stdio at PID %d (my PID=%d)\n", stdioPID, myPID)
+			}
+		}
+
+		// Send SIGUSR1 to stdio every ~10 seconds
+		if stdioPID > 0 && tick%10 == 0 {
+			if err := syscall.Kill(stdioPID, syscall.SIGUSR1); err != nil {
+				fmt.Printf("[dapope:timer] kill(%d, SIGUSR1) error: %v\n", stdioPID, err)
+			} else {
+				fmt.Printf("[dapope:timer] sent SIGUSR1 to PID %d\n", stdioPID)
+			}
+		}
 	}
 }
 

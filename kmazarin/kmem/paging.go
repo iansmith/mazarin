@@ -1852,6 +1852,53 @@ func WalkUserPageTableWithL0(va uintptr, l0PAParam uintptr) uintptr {
 	return pa | (va & (PageSize - 1))
 }
 
+// WalkUserPTLean translates a userspace VA to PA using an explicit L0 page table.
+// Unlike WalkUserPageTableWithL0, this function:
+//   - Skips pagingInitialized check (caller guarantees paging is initialized)
+//   - Uses direct linear map (pa + KernelMMIOOffset) instead of VA cache
+//   - Requires l0PA to be non-zero
+//
+// Designed for use from deep nosplit call chains (signal frame building)
+// where the full WalkUserPageTableWithL0 exceeds the nosplit stack budget.
+//
+//go:nosplit
+func WalkUserPTLean(va uintptr, l0PA uintptr) uintptr {
+	l0Idx := (va >> L0Shift) & 0x1FF
+	l1Idx := (va >> L1Shift) & 0x1FF
+	l2Idx := (va >> L2Shift) & 0x1FF
+	l3Idx := (va >> L3Shift) & 0x1FF
+
+	l0VA := l0PA + constants.KernelMMIOOffset
+	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
+	if !pteIsValid(l0Entry) {
+		return 0
+	}
+
+	l1PA := pteExtractPA(l0Entry)
+	l1VA := l1PA + constants.KernelMMIOOffset
+	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
+	if !pteIsValid(l1Entry) {
+		return 0
+	}
+
+	l2PA := pteExtractPA(l1Entry)
+	l2VA := l2PA + constants.KernelMMIOOffset
+	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
+	if !pteIsValid(l2Entry) {
+		return 0
+	}
+
+	l3PA := pteExtractPA(l2Entry)
+	l3VA := l3PA + constants.KernelMMIOOffset
+	l3Entry := *(*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
+	if !pteIsValid(l3Entry) {
+		return 0
+	}
+
+	pa := pteExtractPA(l3Entry)
+	return pa | (va & (PageSize - 1))
+}
+
 // DumpUserPTEWithL0 walks the page table for a userspace VA and prints each level's entry.
 // Used for debugging page table issues.
 // dumpUserPTERaw walks the page table for a userspace VA and prints each level's raw PTE.
@@ -2370,6 +2417,174 @@ func WriteUserUint64(va uintptr, val uint64) bool {
 		return false
 	}
 	*(*uint64)(unsafe.Pointer(kernelVA + pageOffset)) = val
+	return true
+}
+
+// WriteUserUint64WithL0 writes a 64-bit value to a userspace VA using an explicit page table.
+// For kernel addresses, writes directly. For user addresses, walks the given page table
+// and writes through the kernel linear map.
+// Assumes the value does not cross a page boundary (8-byte aligned VA).
+//
+//go:nosplit
+func WriteUserUint64WithL0(va uintptr, val uint64, l0PA uintptr) bool {
+	if isKernelAddr(va) {
+		*(*uint64)(unsafe.Pointer(va)) = val
+		return true
+	}
+	pa := WalkUserPTLean(va, l0PA)
+	if pa == 0 {
+		return false
+	}
+	kernelVA := pa + constants.KernelMMIOOffset
+	*(*uint64)(unsafe.Pointer(kernelVA)) = val
+	return true
+}
+
+// WriteUserUint32WithL0 writes a 32-bit value to a userspace VA using an explicit page table.
+//
+//go:nosplit
+func WriteUserUint32WithL0(va uintptr, val uint32, l0PA uintptr) bool {
+	if isKernelAddr(va) {
+		*(*uint32)(unsafe.Pointer(va)) = val
+		return true
+	}
+	pa := WalkUserPTLean(va, l0PA)
+	if pa == 0 {
+		return false
+	}
+	kernelVA := pa + constants.KernelMMIOOffset
+	*(*uint32)(unsafe.Pointer(kernelVA)) = val
+	return true
+}
+
+// WriteUserInt32WithL0 writes a signed 32-bit value to a userspace VA using an explicit page table.
+//
+//go:nosplit
+func WriteUserInt32WithL0(va uintptr, val int32, l0PA uintptr) bool {
+	if isKernelAddr(va) {
+		*(*int32)(unsafe.Pointer(va)) = val
+		return true
+	}
+	pa := WalkUserPTLean(va, l0PA)
+	if pa == 0 {
+		return false
+	}
+	kernelVA := pa + constants.KernelMMIOOffset
+	*(*int32)(unsafe.Pointer(kernelVA)) = val
+	return true
+}
+
+// WriteUserUint16WithL0 writes a 16-bit value to a userspace VA using an explicit page table.
+//
+//go:nosplit
+func WriteUserUint16WithL0(va uintptr, val uint16, l0PA uintptr) bool {
+	if isKernelAddr(va) {
+		*(*uint16)(unsafe.Pointer(va)) = val
+		return true
+	}
+	pa := WalkUserPTLean(va, l0PA)
+	if pa == 0 {
+		return false
+	}
+	kernelVA := pa + constants.KernelMMIOOffset
+	*(*uint16)(unsafe.Pointer(kernelVA)) = val
+	return true
+}
+
+// ReadUserUint64WithL0 reads a 64-bit value from a userspace VA using an explicit page table.
+// For kernel addresses, reads directly. For user addresses, walks the given page table
+// and reads through the kernel linear map.
+//
+//go:nosplit
+func ReadUserUint64WithL0(va uintptr, l0PA uintptr) (uint64, bool) {
+	if isKernelAddr(va) {
+		return *(*uint64)(unsafe.Pointer(va)), true
+	}
+	pa := WalkUserPTLean(va, l0PA)
+	if pa == 0 {
+		return 0, false
+	}
+	kernelVA := pa + constants.KernelMMIOOffset
+	return *(*uint64)(unsafe.Pointer(kernelVA)), true
+}
+
+// ZeroUserMemoryWithL0 zeros a region of userspace memory using an explicit page table.
+// Handles page boundaries by processing one page at a time.
+//
+//go:nosplit
+func ZeroUserMemoryWithL0(va uintptr, n uintptr, l0PA uintptr) bool {
+	if isKernelAddr(va) {
+		for i := uintptr(0); i < n; i++ {
+			*(*byte)(unsafe.Pointer(va + i)) = 0
+		}
+		return true
+	}
+	zeroed := uintptr(0)
+	for zeroed < n {
+		currentVA := va + zeroed
+		pa := WalkUserPTLean(currentVA, l0PA)
+		if pa == 0 {
+			return false
+		}
+		kernelVA := pa + constants.KernelMMIOOffset
+		// Calculate how many bytes we can zero on this page
+		pageOffset := currentVA & (PageSize - 1)
+		pageRemain := PageSize - pageOffset
+		chunk := n - zeroed
+		if chunk > pageRemain {
+			chunk = pageRemain
+		}
+		for i := uintptr(0); i < chunk; i++ {
+			*(*byte)(unsafe.Pointer(kernelVA + i)) = 0
+		}
+		zeroed += chunk
+	}
+	return true
+}
+
+// EnsureUserPageMappedWithL0 ensures that the 4KB page containing userVA is
+// backed by a physical frame in the page table rooted at l0PA.
+// If the page is already mapped, returns true immediately.
+// If not mapped, allocates a frame, maps it with RWX permissions, zeros it,
+// and invalidates TLBs.
+//
+// This is safe to call from nosplit context (signal delivery, exception handlers).
+// It uses the same allocation path as HandleUserPageFault.
+//
+//go:nosplit
+func EnsureUserPageMappedWithL0(userVA uintptr, l0PA uintptr) bool {
+	pageAddr := userVA &^ (PageSize - 1)
+
+	// Check if already mapped
+	pa := WalkUserPTLean(pageAddr, l0PA)
+	if pa != 0 {
+		return true
+	}
+
+	// Not mapped — demand-allocate a physical frame
+	pfContextPriestID = currentPriestID()
+	framePA := AllocUserFrame()
+	if framePA == 0 {
+		return false
+	}
+
+	// Map with RWX permissions (signal stack needs RW at minimum)
+	elfFlags := uint32(ELF_PF_R | ELF_PF_W | ELF_PF_X)
+	if !mapUserPageWithL0(pageAddr, framePA, elfFlags, l0PA) {
+		return false
+	}
+
+	// Zero the page via kernel linear map
+	scratchVA := framePA + constants.KernelMMIOOffset
+	zeroPageSlow(scratchVA)
+
+	// Cache clean + TLB invalidate
+	CleanPageCache(scratchVA)
+	dsbSY()
+	tlbiVMALLE1IS()
+	dsbSY()
+	isbSY()
+
 	return true
 }
 

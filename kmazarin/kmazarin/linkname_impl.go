@@ -151,6 +151,16 @@ func threadLookupByTIDForKsyscall(tid int32) uintptr {
 	return uintptr(unsafe.Pointer(t))
 }
 
+//go:linkname threadLookupByPIDForKsyscall mazzy/kmazarin/ksyscall.ThreadLookupByPID
+//go:nosplit
+func threadLookupByPIDForKsyscall(pid int16) uintptr {
+	t := threadLookupByPID(pid)
+	if t == nil {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(t))
+}
+
 //go:linkname setThreadPendingSignalForKsyscall mazzy/kmazarin/ksyscall.SetThreadPendingSignal
 //go:nosplit
 func setThreadPendingSignalForKsyscall(threadPtr uintptr, signum int) {
@@ -189,5 +199,12 @@ func restoreFromSignalFrameForKsyscall(threadPtr uintptr) {
 	RestoreFromSignalFrame(t)
 	t.InSignalHandler = 0
 	t.SigreturnPending = 1
+}
+
+//go:linkname wakeThreadForSignalForKsyscall mazzy/kmazarin/ksyscall.WakeThreadForSignal
+//go:nosplit
+func wakeThreadForSignalForKsyscall(threadPtr uintptr) {
+	t := (*Thread)(unsafe.Pointer(threadPtr))
+	WakeThreadForSignal(t)
 }
 

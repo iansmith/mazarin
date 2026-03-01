@@ -2,7 +2,6 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/kmem"
-	"mazzy/kmazarin/serial"
 )
 
 // Signal constants matching Linux definitions.
@@ -115,6 +114,20 @@ func SyscallSigaltstack(newPtr, oldPtr, _, _, _, _ uint64) int64 {
 			SetThreadSignalStack(tPtr, 0, 0, 0)
 		} else {
 			SetThreadSignalStack(tPtr, sp, sp+uint64(size), uint64(size))
+
+			// Pre-fault the top 2 pages of the signal stack.
+			// BuildSignalFrame writes the signal frame at the top of this stack
+			// from nosplit kernel context where the nosplit budget is too tight
+			// for demand-paging allocation. Pre-faulting here (in the syscall
+			// path, which has more budget) ensures the pages are mapped.
+			l0PA := uintptr(kmem.ReadCurrentL0PA())
+			if l0PA != 0 && size > 0 {
+				top := uintptr(sp + uint64(size) - 1)
+				kmem.EnsureUserPageMappedWithL0(top, l0PA)
+				if size > 4096 {
+					kmem.EnsureUserPageMappedWithL0(top-4096, l0PA)
+				}
+			}
 		}
 	}
 
@@ -149,17 +162,9 @@ func SyscallTgkill(tgid, tid, sig, _, _, _ uint64) int64 {
 		}
 	}
 
-	// Debug: trace tgkill calls
-	serial.RawUARTPuts("[TK] sig=")
-	serial.RawUARTDecimal(sig)
-	serial.RawUARTPuts(" tid=")
-	serial.RawUARTDecimal(tid)
-	serial.RawUARTPuts(" tgid=")
-	serial.RawUARTDecimal(tgid)
-	serial.PollWrite('\n')
-
-	// Set the pending signal bit.
+	// Set the pending signal bit and wake the thread if blocked.
 	SetThreadPendingSignal(targetThread, signum)
+	WakeThreadForSignal(targetThread)
 
 	return 0
 }
@@ -180,8 +185,6 @@ func SyscallRtSigreturn(_, _, _, _, _, _ uint64) int64 {
 	if tPtr == 0 {
 		return -22 // EINVAL
 	}
-
-	serial.RawUARTPuts("[SR] sigreturn\n")
 
 	// RestoreFromSignalFrame reads ucontext, copies regs to thread.Context,
 	// clears InSignalHandler, and sets SigreturnPending = 1.

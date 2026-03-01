@@ -3,8 +3,7 @@
 package main
 
 import (
-	"unsafe"
-
+	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/serial"
 )
 
@@ -41,6 +40,10 @@ const (
 // BuildSignalFrame builds a signal frame on the thread's gsignal stack
 // and modifies the ThreadContext to enter sigtramp.
 //
+// The signal frame is in userspace memory, so all writes go through the kernel
+// linear map (VA→PA walk + KernelMMIOOffset) since direct userspace access is
+// blocked by PAN (ARM64) / SUM (RISC-V) / SMAP (x86_64).
+//
 //go:nosplit
 func BuildSignalFrame(thread *Thread, signum int, action *SignalAction) {
 	// Determine signal stack to use
@@ -52,38 +55,44 @@ func BuildSignalFrame(thread *Thread, signum int, action *SignalAction) {
 		return
 	}
 
+	l0PA := thread.PageTableL0PA
+
 	// Allocate space on signal stack (grows downward)
 	frameSP := signalSP - uint64(arm64SignalFrameSize)
 	frameSP &= ^uint64(0xF) // 16-byte align
+
+	// NOTE: Signal stack pages must already be backed by physical memory.
+	// The sigaltstack runtime overlay pre-touches the top 2 pages to trigger
+	// demand paging in userspace before the kernel needs to write the frame.
 
 	// Pointers to siginfo and ucontext within the frame
 	siginfoAddr := frameSP
 	uctxAddr := frameSP + uint64(arm64SiginfoSize)
 
-	// Zero the entire frame
-	zeroMemory(unsafe.Pointer(uintptr(frameSP)), uintptr(arm64SignalFrameSize))
+	// Zero the entire frame through kernel mapping
+	kmem.ZeroUserMemoryWithL0(uintptr(frameSP), uintptr(arm64SignalFrameSize), l0PA)
 
 	// --- Populate siginfo ---
 	siPtr := uintptr(siginfoAddr)
-	*(*int32)(unsafe.Pointer(siPtr)) = int32(signum)    // si_signo
-	*(*int32)(unsafe.Pointer(siPtr + 4)) = 0            // si_errno
-	*(*int32)(unsafe.Pointer(siPtr + 8)) = _SI_KERNEL   // si_code
+	kmem.WriteUserInt32WithL0(siPtr, int32(signum), l0PA)  // si_signo
+	kmem.WriteUserInt32WithL0(siPtr+4, 0, l0PA)            // si_errno
+	kmem.WriteUserInt32WithL0(siPtr+8, _SI_KERNEL, l0PA)   // si_code
 
 	// --- Populate ucontext ---
 	ucPtr := uintptr(uctxAddr)
 
 	// Save all general-purpose registers from ThreadContext into ucontext
 	for i := 0; i < 31; i++ {
-		*(*uint64)(unsafe.Pointer(ucPtr + ucMcontextRegs + uintptr(i)*8)) = thread.Context.X[i]
+		kmem.WriteUserUint64WithL0(ucPtr+ucMcontextRegs+uintptr(i)*8, thread.Context.X[i], l0PA)
 	}
-	*(*uint64)(unsafe.Pointer(ucPtr + ucMcontextSP)) = thread.Context.SP
-	*(*uint64)(unsafe.Pointer(ucPtr + ucMcontextPC)) = thread.Context.ELR
-	*(*uint64)(unsafe.Pointer(ucPtr + ucMcontextPstate)) = thread.Context.SPSR
+	kmem.WriteUserUint64WithL0(ucPtr+ucMcontextSP, thread.Context.SP, l0PA)
+	kmem.WriteUserUint64WithL0(ucPtr+ucMcontextPC, thread.Context.ELR, l0PA)
+	kmem.WriteUserUint64WithL0(ucPtr+ucMcontextPstate, thread.Context.SPSR, l0PA)
 
 	// uc_stack: record the signal stack info
-	*(*uint64)(unsafe.Pointer(ucPtr + ucStack)) = thread.SignalStackBase      // ss_sp
-	*(*int32)(unsafe.Pointer(ucPtr + ucStackFlags)) = _SS_ONSTACK            // ss_flags
-	*(*uint64)(unsafe.Pointer(ucPtr + ucStackSize)) = thread.SignalStackSize  // ss_size
+	kmem.WriteUserUint64WithL0(ucPtr+ucStack, thread.SignalStackBase, l0PA)      // ss_sp
+	kmem.WriteUserInt32WithL0(ucPtr+ucStackFlags, _SS_ONSTACK, l0PA)             // ss_flags
+	kmem.WriteUserUint64WithL0(ucPtr+ucStackSize, thread.SignalStackSize, l0PA)  // ss_size
 
 	// Store ucontext address for rt_sigreturn to find later
 	thread.SignalUctxAddr = uctxAddr
@@ -121,13 +130,24 @@ func RestoreFromSignalFrame(t *Thread) {
 		return
 	}
 
+	l0PA := t.PageTableL0PA
+
 	// Restore GPRs from ucontext.uc_mcontext.regs[0..30]
 	for i := 0; i < 31; i++ {
-		t.Context.X[i] = *(*uint64)(unsafe.Pointer(ucPtr + ucMcontextRegs + uintptr(i)*8))
+		val, ok := kmem.ReadUserUint64WithL0(ucPtr+ucMcontextRegs+uintptr(i)*8, l0PA)
+		if ok {
+			t.Context.X[i] = val
+		}
 	}
-	t.Context.SP = *(*uint64)(unsafe.Pointer(ucPtr + ucMcontextSP))
-	t.Context.ELR = *(*uint64)(unsafe.Pointer(ucPtr + ucMcontextPC))
-	t.Context.SPSR = *(*uint64)(unsafe.Pointer(ucPtr + ucMcontextPstate))
+	if val, ok := kmem.ReadUserUint64WithL0(ucPtr+ucMcontextSP, l0PA); ok {
+		t.Context.SP = val
+	}
+	if val, ok := kmem.ReadUserUint64WithL0(ucPtr+ucMcontextPC, l0PA); ok {
+		t.Context.ELR = val
+	}
+	if val, ok := kmem.ReadUserUint64WithL0(ucPtr+ucMcontextPstate, l0PA); ok {
+		t.Context.SPSR = val
+	}
 
 	t.SignalUctxAddr = 0 // Consumed
 }

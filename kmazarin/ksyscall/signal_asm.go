@@ -20,6 +20,12 @@ func SetSignalAction(sig int, handler, flags, restorer, mask uint64)
 //go:nosplit
 func ThreadLookupByTID(tid int32) uintptr
 
+// ThreadLookupByPID finds the first thread belonging to a priest with the given PID.
+// Returns 0 if not found.
+// Provided by main.threadLookupByPIDForKsyscall.
+//go:nosplit
+func ThreadLookupByPID(pid int16) uintptr
+
 // SetThreadPendingSignal sets a pending signal bit on a thread.
 // Provided by main.setThreadPendingSignalForKsyscall.
 //go:nosplit
@@ -45,3 +51,9 @@ func GetThreadPID(threadPtr uintptr) int16
 // Provided by main.restoreFromSignalFrameForKsyscall.
 //go:nosplit
 func RestoreFromSignalFrame(threadPtr uintptr)
+
+// WakeThreadForSignal moves a blocked thread (futex/sleep/softIRQ) to the
+// ready queue so that pending signals are delivered at the next context switch.
+// Provided by main.wakeThreadForSignalForKsyscall.
+//go:nosplit
+func WakeThreadForSignal(threadPtr uintptr)

@@ -271,6 +271,23 @@ ecall_skip_marker:
 	MOV	$·svcDepth(SB), T0
 	MOVW	ZERO, (T0)
 
+	// Check if rt_sigreturn was called (SigreturnPending flag).
+	// If set, the thread's Context has been restored from the signal frame
+	// and we need to load it for SRET.
+	MOV	·CurrentThread(SB), T0
+	BEQ	T0, ZERO, ecall_no_sigreturn
+	MOV	·ThreadSigreturnPendingOffset(SB), T1
+	ADD	T1, T0, T1		// T1 = &thread.SigreturnPending
+	MOVW	(T1), T2
+	BEQ	T2, ZERO, ecall_no_sigreturn
+	// Clear SigreturnPending flag
+	MOVW	ZERO, (T1)
+	// Load pointer to ThreadContext
+	MOV	·ThreadContextOffset(SB), T1
+	ADD	T1, T0, S2		// S2 = &thread.Context
+	JMP	load_context_and_sret
+ecall_no_sigreturn:
+
 	// Check context switch
 	GO_CALL_0_1(·GetSyscallSwitchTarget)
 	// T0 = target or -1
@@ -989,11 +1006,21 @@ load_context_and_sret:
 	// SRET
 	WORD	$0x10200073
 
-// sigreturnTrampoline — stub for riscv64 (signal delivery not yet implemented).
+// sigreturnTrampoline — userspace calls this after signal handler returns.
+// Issues rt_sigreturn syscall via EBREAK (A7=139).
 TEXT ·sigreturnTrampoline(SB), NOSPLIT|NOFRAME, $0
-	RET
+	MOV	$139, A7		// SYS_rt_sigreturn
+	WORD	$0x00100073		// ebreak → trap handler → SyscallDispatch
+	// Should not return — halt if it does
+	MOV	$0xFFFFFFFF10000000, T0
+	MOV	$'!', T1
+	MOVB	T1, (T0)
+sigreturn_trap_halt:
+	WORD	$0x10500073		// wfi
+	JMP	sigreturn_trap_halt
 
-// getSigreturnTrampolineAddr — returns 0 on riscv64 (no trampoline yet).
+// getSigreturnTrampolineAddr — returns address of sigreturnTrampoline.
 TEXT ·getSigreturnTrampolineAddr(SB), NOSPLIT, $0-8
-	MOV	ZERO, ret+0(FP)
+	MOV	$·sigreturnTrampoline(SB), T0
+	MOV	T0, ret+0(FP)
 	RET

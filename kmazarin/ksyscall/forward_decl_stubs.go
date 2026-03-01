@@ -123,6 +123,8 @@ func SetSignalAction(sig int, handler, flags, restorer, mask uint64) {}
 
 func ThreadLookupByTID(tid int32) uintptr { return 0 }
 
+func ThreadLookupByPID(pid int16) uintptr { return 0 }
+
 func SetThreadPendingSignal(threadPtr uintptr, signum int) {}
 
 func GetThreadSignalStack(threadPtr uintptr) (base, sp, size uint64) { return 0, 0, 0 }
@@ -132,3 +134,5 @@ func SetThreadSignalStack(threadPtr uintptr, base, sp, size uint64) {}
 func GetThreadPID(threadPtr uintptr) int16 { return -1 }
 
 func RestoreFromSignalFrame(threadPtr uintptr) {}
+
+func WakeThreadForSignal(threadPtr uintptr) {}

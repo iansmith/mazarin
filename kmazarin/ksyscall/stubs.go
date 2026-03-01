@@ -52,12 +52,16 @@ func isValidUserAddr(addr uint64) bool {
 // Simple stub syscalls that return constants or success
 // ============================================================================
 
-// SyscallGetpid returns the process ID
-// Always return 1 (init process)
+// SyscallGetpid returns the process ID (priest PID).
+// Returns 0 for kernel threads.
 //
 //go:nosplit
 func SyscallGetpid(_, _, _, _, _, _ uint64) int64 {
-	return 1
+	p := proc.CurrentPriest()
+	if p == nil {
+		return 0
+	}
+	return int64(p.PID)
 }
 
 // SyscallGettid returns the thread ID
@@ -351,12 +355,41 @@ func SyscallOpenat(dirfd, pathname, flags, mode, _, _ uint64) int64 {
 // Signal stubs (remaining — rt_sigaction, sigaltstack, tgkill moved to signal.go)
 // ============================================================================
 
-// SyscallKill sends a signal to a process.
-// Minimal implementation — just return success since we're single-process.
+// SyscallKill sends a signal to a process (priest).
+// Linux: kill(pid, sig)
+// Finds a thread belonging to the target PID and sets PendingSignals.
 //
 //go:nosplit
-func SyscallKill(_, _, _, _, _, _ uint64) int64 {
-	return 0 // Success
+func SyscallKill(pid, sig, _, _, _, _ uint64) int64 {
+	signum := int(sig)
+	// Signal 0 is a validity check — no signal is actually sent
+	if signum < 0 || signum >= sigNSIG {
+		return -22 // EINVAL
+	}
+
+	targetPID := int16(pid)
+	targetThread := ThreadLookupByPID(targetPID)
+	if targetThread == 0 {
+		return -3 // ESRCH — no such process
+	}
+
+	// Signal 0: just check existence, don't deliver
+	if signum == 0 {
+		return 0
+	}
+
+	SetThreadPendingSignal(targetThread, signum)
+	WakeThreadForSignal(targetThread)
+
+	return 0
+}
+
+// SyscallGetitimer returns the value of an interval timer.
+// We don't support interval timers, return 0 (success, zeroed struct).
+//
+//go:nosplit
+func SyscallGetitimer(_, _, _, _, _, _ uint64) int64 {
+	return 0
 }
 
 // SyscallTkill sends a signal to a thread (deprecated in favor of tgkill).

@@ -195,6 +195,7 @@ func DeliverPendingSignal(thread *Thread) {
 
 	// Look up action from the TARGET thread's priest, not the current thread
 	action := GetSignalActionForThread(thread, signum)
+
 	if action.Handler == 0 {
 		// No handler — clear the signal and return
 		atomicAndUint64(&thread.PendingSignals, ^(uint64(1) << uint(signum-1)))
@@ -281,13 +282,3 @@ func SignalDeliveryStats() {
 	serial.PollWrite('\n')
 }
 
-// zeroMemory zeroes n bytes starting at ptr.
-// Used to zero signal frames on the gsignal stack.
-//
-//go:nosplit
-func zeroMemory(ptr unsafe.Pointer, n uintptr) {
-	p := (*[1 << 30]byte)(ptr)
-	for i := uintptr(0); i < n; i++ {
-		p[i] = 0
-	}
-}
