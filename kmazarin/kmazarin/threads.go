@@ -1068,6 +1068,8 @@ func IdleLoop(sf *SchedulerFunc) *Thread {
 // LOCK DISCIPLINE: save DAIF → mask IRQs → acquire lock → process → release → restore → WFI
 //
 var dbgIdleCount uint64
+var wfiCount uint64
+var trapReturnCount uint64
 
 func printThreadStateSummary() {
 	var nReady, nFutex, nSleep, nSoftIRQ, nRunning int
@@ -1107,10 +1109,19 @@ func printThreadStateSummary() {
 //go:noinline
 func KernelIdleLoop() {
 	for {
+		dbgIdleCount++
+		if dbgIdleCount <= 3 {
+			serial.RawUARTPuts("\n[IL")
+			serial.RawUARTDecimal(dbgIdleCount)
+			serial.RawUARTPuts("]")
+		}
 		// Yield to Go goroutines (channel-based bottom halves).
 		// Without this, goroutines started by StartBottomHalfProcessors()
 		// never get CPU time because this loop never triggers Go's scheduler.
 		runtime.Gosched()
+		if dbgIdleCount <= 3 {
+			serial.RawUARTPuts("G")
+		}
 
 		// Bridge IRQ flags to bottom-half channels.
 		// IRQ handlers set atomic flags; we convert them to channel sends
@@ -1145,7 +1156,6 @@ func KernelIdleLoop() {
 		}
 
 		// Heartbeat: print idle loop counter every 50 iterations
-		dbgIdleCount++
 		if dbgIdleCount%50 == 0 {
 			serial.RawUARTPuts("I")
 			serial.RawUARTDecimal(dbgIdleCount)
@@ -1196,6 +1206,12 @@ func KernelIdleLoop() {
 
 		// No ready threads — wait for an interrupt (timer tick, etc.)
 		// IRQs MUST be enabled for WFI so the timer interrupt can fire
+		wfiCount++
+		if wfiCount <= 5 || wfiCount%100 == 0 {
+			serial.RawUARTPuts("\n[WFI#")
+			serial.RawUARTDecimal(wfiCount)
+			serial.RawUARTPuts("]")
+		}
 		EnableIRQs()
 		WaitForInterrupt()
 	}
@@ -2094,8 +2110,10 @@ func findReadyThreadPreferDifferentPriestSchedLockHeld(currentPID PriestId) *Thr
 
 // findReadyUserspaceThreadSchedLockHeld is like findReadyThreadPreferDifferentPriestSchedLockHeld
 // but only returns threads with PageTableL0PA != 0 (i.e., userspace threads).
-// This is used by timer preemption which returns via ERET and must match the
-// interrupted exception level (EL0 for userspace, EL1 for kernel).
+// This is used by context-switch paths where the current thread is userspace,
+// preferring to stay in userspace to avoid cross-privilege ERET issues on ARM64.
+// Callers fall back to findReadyThreadSchedLockHeld when this returns nil,
+// which naturally gives kernel thread 0 CPU time when no userspace threads are ready.
 //
 //go:nosplit
 func findReadyUserspaceThreadSchedLockHeld(currentPID PriestId) *Thread {
@@ -2639,12 +2657,19 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 
 	// Find next ready thread for timer preemption.
 	// When preempted thread is userspace: prefer other userspace threads
-	// (same TTBR0/ASID context avoids TLB flush overhead).
+	// (same TTBR0/ASID context avoids TLB flush overhead), but fall back
+	// to any thread (including kernel) so thread 0 isn't starved.
 	// When preempted thread is kernel: any ready thread is fine.
 	var next *Thread
 	if oldThread.PageTableL0PA != 0 {
 		// Userspace thread: prefer other userspace threads
 		next = findReadyUserspaceThreadSchedLockHeld(oldThread.PID)
+		if next == nil {
+			// Fallback: any thread, including kernel thread 0.
+			// On RISC-V/x86_64, SRET/IRETQ handles cross-privilege transitions
+			// via SSTATUS.SPP / CS selector in the target ThreadContext.
+			next = findReadyThreadSchedLockHeld()
+		}
 	} else {
 		// Kernel thread: any ready thread (kernel or userspace)
 		next = findReadyThreadPreferDifferentPriestSchedLockHeld(oldThread.PID)

@@ -747,9 +747,12 @@ handle_timer_interrupt:
 	MOV	(T0), T1
 	ADD	$1, T1
 	MOV	T1, (T0)
-	// Print 'T' every 64th timer interrupt (~6.4s at 100ms interval)
-	AND	$63, T1, T2
+	// Print 'T' on first 20 timer interrupts, then every 16th
+	MOV	$20, T2
+	BLT	T1, T2, timer_print_marker
+	AND	$15, T1, T2
 	BNE	T2, ZERO, timer_skip_marker
+timer_print_marker:
 	MOV	$0xFFFFFFFF10000000, T0
 	MOV	$0x54, T1		// 'T'
 	MOVB	T1, (T0)
@@ -879,6 +882,20 @@ handle_external_interrupt:
 // Trap return - restore GPRs and SRET
 // ============================================================================
 trap_return:
+	// ---- DIAGNOSTIC: count all trap returns ----
+	MOV	$·trapReturnCount(SB), T0
+	MOV	(T0), T1
+	ADD	$1, T1
+	MOV	T1, (T0)
+	// Print 'r' every 4096th trap return
+	AND	$4095, T1, T2
+	BNE	T2, ZERO, trap_return_skip_marker
+	MOV	$0xFFFFFFFF10000000, T0
+	MOV	$0x72, T1		// 'r'
+	MOVB	T1, (T0)
+trap_return_skip_marker:
+	// ---- END DIAGNOSTIC ----
+
 	// Restore sepc
 	MOV	248(X2), T0
 	// CSRW sepc, t0
