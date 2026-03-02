@@ -89,3 +89,16 @@ func CurrentPriest() *Priest {
 	}
 	return f()
 }
+
+// FindPriestByPID looks up a priest by PID without requiring the kmazarin/kmazarin package.
+// Returns nil if no priest with the given PID is found.
+//
+//go:nosplit
+func FindPriestByPID(pid PriestId) *Priest {
+	for i := 0; i < MaxPriests; i++ {
+		if PriestListInUse[i] && PriestListData[i].PID == pid {
+			return &PriestListData[i]
+		}
+	}
+	return nil
+}

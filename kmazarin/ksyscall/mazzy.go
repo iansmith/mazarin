@@ -28,6 +28,8 @@ const (
 	SysFlushFramebuffer     = MazzySyscallBase + 13 // 0x100D - Flush framebuffer region to display
 	SysSetTimerDeadline     = MazzySyscallBase + 14 // 0x100E - Set timer deadline on soft IRQ slot
 	SysSetScanoutOffset     = MazzySyscallBase + 15 // 0x100F - Set scanout Y offset for hardware scrolling
+	SysTransferPages        = MazzySyscallBase + 16 // 0x1010 - Transfer pages between priests
+	SysMapSharedPage        = MazzySyscallBase + 17 // 0x1011 - Map shared page from another priest
 )
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
@@ -49,6 +51,8 @@ var mazzySyscallTable = [64]SyscallHandler{
 	13: SyscallFlushFramebuffer,    // FlushFramebuffer = 0x100D
 	14: SyscallSetTimerDeadline,    // SetTimerDeadline = 0x100E
 	15: SyscallSetScanoutOffset,    // SetScanoutOffset = 0x100F
+	16: SyscallTransferPages,      // TransferPages = 0x1010
+	17: SyscallMapSharedPage,      // MapSharedPage = 0x1011
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.

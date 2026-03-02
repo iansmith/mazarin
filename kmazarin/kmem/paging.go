@@ -2184,6 +2184,125 @@ func UnmapUserPage(va uintptr) uintptr {
 	return pa
 }
 
+// UnmapUserPageWithL0 removes the mapping for a userspace page using an explicit L0 PA.
+// This variant is safe to use when the target process is not the currently active one.
+// Returns the physical address that was mapped, or 0 if not mapped.
+// Does NOT free the physical frame — caller is responsible for that.
+//
+//go:nosplit
+func UnmapUserPageWithL0(va uintptr, l0PAParam uintptr) uintptr {
+	if !pagingInitialized {
+		InitPaging()
+	}
+
+	// Userspace addresses must have bit 63 = 0
+	if (va>>63)&1 != 0 {
+		return 0
+	}
+
+	// Align to page boundary
+	pageVA := va &^ (PageSize - 1)
+
+	// Extract indices
+	l0Idx := (pageVA >> L0Shift) & 0x1FF
+	l1Idx := (pageVA >> L1Shift) & 0x1FF
+	l2Idx := (pageVA >> L2Shift) & 0x1FF
+	l3Idx := (pageVA >> L3Shift) & 0x1FF
+
+	// Use explicit L0 if provided, otherwise read from hardware
+	l0PA := l0PAParam
+	if l0PA == 0 {
+		l0PA = readCurrentL0PA()
+	}
+	if l0PA == 0 {
+		l0PA = ttbr0L0PA
+	}
+	l0VA := paToVAOrCache(l0PA)
+	if l0VA == 0 {
+		return 0
+	}
+
+	// L0 entry
+	l0Entry := *(*uint64)(unsafe.Pointer(l0VA + l0Idx*8))
+	if !pteIsValid(l0Entry) {
+		return 0
+	}
+
+	// L1 table
+	l1PA := pteExtractPA(l0Entry)
+	l1VA := paToVAOrCache(l1PA)
+	if l1VA == 0 {
+		return 0
+	}
+	l1Entry := *(*uint64)(unsafe.Pointer(l1VA + l1Idx*8))
+	if !pteIsValid(l1Entry) {
+		return 0
+	}
+
+	// L2 table
+	l2PA := pteExtractPA(l1Entry)
+	l2VA := paToVAOrCache(l2PA)
+	if l2VA == 0 {
+		return 0
+	}
+	l2Entry := *(*uint64)(unsafe.Pointer(l2VA + l2Idx*8))
+	if !pteIsValid(l2Entry) {
+		return 0
+	}
+
+	// L3 table
+	l3PA := pteExtractPA(l2Entry)
+	l3VA := paToVAOrCache(l3PA)
+	if l3VA == 0 {
+		return 0
+	}
+	l3EntryPtr := (*uint64)(unsafe.Pointer(l3VA + l3Idx*8))
+	l3Entry := *l3EntryPtr
+	if !pteIsValid(l3Entry) {
+		return 0
+	}
+
+	// Get PA before clearing
+	pa := pteExtractPA(l3Entry)
+
+	// Clear the L3 entry (unmap the page)
+	*l3EntryPtr = 0
+
+	// Ensure PTE write is visible
+	dsbSY()
+
+	// Invalidate TLB for this VA
+	tlbiVAE1IS(pageVA)
+	dsbSY()
+	isbSY()
+
+	return pa
+}
+
+// MapPageInProcess maps a physical page into a specific priest's address space.
+// Saves/restores pfContext so page table pages allocated during the mapping
+// are attributed to the target priest.
+// If elfFlags is 0, defaults to ELF_PF_R | ELF_PF_W.
+// Returns true on success.
+func MapPageInProcess(priestID int16, va, pa uintptr, elfFlags uint32) bool {
+	p := proc.FindPriestByPID(proc.PriestId(priestID))
+	if p == nil || p.PageTableL0PA == 0 {
+		return false
+	}
+	if elfFlags == 0 {
+		elfFlags = ELF_PF_R | ELF_PF_W
+	}
+	// Save/restore pfContext so allocPTPage attributes PT pages to target priest
+	savedPID := pfContextPriestID
+	savedTID := pfContextThreadID
+	pfContextPriestID = priestID
+	pfContextThreadID = -1
+	ok := mapUserPageWithL0(va, pa, elfFlags, p.PageTableL0PA)
+	pfContextPriestID = savedPID
+	pfContextThreadID = savedTID
+	return ok
+}
+
 // GetUserL3PTE returns the raw L3 PTE for a userspace VA.
 // Uses the process-specific page table if one exists.
 // Useful for debugging page table entries.

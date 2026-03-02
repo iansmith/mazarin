@@ -182,6 +182,19 @@ func ClearPageDescriptor(pa uintptr) {
 	desc.Flags = 0
 }
 
+// TransferPageOwnership atomically changes the owner of a physical page.
+// Returns false if the PA is invalid or the current owner doesn't match fromPID.
+//
+//go:nosplit
+func TransferPageOwnership(pa uintptr, fromPID, toPID int16) bool {
+	desc := GetPageDescriptor(pa)
+	if desc == nil || desc.Owner != fromPID {
+		return false
+	}
+	desc.Owner = toPID
+	return true
+}
+
 // PrintPageStats walks the PageDescriptor array and prints per-type and
 // per-priest page counts. This is a diagnostic function — the linear scan
 // over the array costs microseconds and should only be called on demand.

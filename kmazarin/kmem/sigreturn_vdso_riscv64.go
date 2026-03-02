@@ -32,7 +32,7 @@ var SigreturnVDSOPA uintptr
 //	li a7, 139        // SYS_rt_sigreturn
 //	ebreak            // trap to kernel
 func InitSigreturnVDSO() {
-	pa := AllocPage(PageUserText, 0) // Use UserText — it's executable user code
+	pa := AllocPage(PageVDSO, 0) // Kernel-allocated, user-accessible trampoline
 	if pa == 0 {
 		return
 	}

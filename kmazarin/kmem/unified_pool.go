@@ -41,6 +41,9 @@ const (
 	// Driver pages
 	PageDriver // Driver DMA pages (non-cacheable)
 
+	// System pages (kernel-allocated, user-accessible)
+	PageVDSO // vDSO trampoline (shared across all processes)
+
 	// Sentinel
 	PageTypeCount // Must be last
 )
@@ -66,6 +69,7 @@ var pageTypeNames = [PageTypeCount]string{
 	PageFileBuffer:  "FileBuffer",
 	PageBackingStore: "BackingStore",
 	PageDriver:      "Driver",
+	PageVDSO:        "VDSO",
 }
 
 // String returns a human-readable name for the page type.
@@ -80,7 +84,7 @@ func (pt PageType) String() string {
 //
 //go:nosplit
 func (pt PageType) IsKernelType() bool {
-	return pt <= PageVirtIOQueue
+	return pt <= PageVirtIOQueue || pt == PageVDSO
 }
 
 // Default soft limit for kernel memory: 16384 pages = 64MB

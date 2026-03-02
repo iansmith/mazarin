@@ -194,6 +194,46 @@ func userBumpAlloc(size uint64) uint64 {
 	}
 }
 
+// bumpAllocForPriest allocates VA space from a specific priest's bump pointer.
+// Same logic as userBumpAlloc but operates on an explicit priest, not CurrentPriest().
+// Used by IPC syscalls that need to allocate VA in a target process.
+//
+//go:nosplit
+func bumpAllocForPriest(p *proc.Priest, size uint64) uint64 {
+	if p == nil {
+		return 0
+	}
+
+	pageSize := uint64(4096)
+	aligned := (size + pageSize - 1) & ^(pageSize - 1)
+
+	for {
+		currentPtr := atomic.LoadUint64(&p.BumpPointer)
+
+		// Lazy initialization: first allocation starts at userMmapStart
+		if currentPtr == 0 {
+			atomic.CompareAndSwapUint64(&p.BumpPointer, 0, userMmapStart)
+			continue
+		}
+
+		nextPtr := currentPtr + aligned
+
+		// Check if this allocation would overlap any existing span
+		if p.Spans.FindOverlapEnd(currentPtr, aligned) != 0 {
+			return 0 // ENOMEM - allocation conflicts with reserved span
+		}
+
+		// Check for wrap-around AND exceeding end
+		if nextPtr < currentPtr || nextPtr > userMmapEnd {
+			return 0 // Out of VA space
+		}
+
+		if atomic.CompareAndSwapUint64(&p.BumpPointer, currentPtr, nextPtr) {
+			return currentPtr
+		}
+	}
+}
+
 // ============================================================================
 // Kernel bump allocator (for kmazarin's own heap, high memory via TTBR1)
 // ============================================================================
