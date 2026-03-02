@@ -365,16 +365,25 @@ TEXT runtime·madvise(SB),NOSPLIT,$0
 	MOVL	$0, ret+24(FP)
 	RET
 
-// futex - implement FUTEX_WAIT with spin-check, FUTEX_WAKE as immediate return.
+// futex - two-phase implementation:
 //
-// For FUTEX_WAIT (op & 0x7F == 0): check if *addr == val. If not, return
-// EAGAIN (-11). If yes, spin briefly checking for value change, then
-// yield to scheduler and return 0 (simulating timeout/spurious wakeup).
+// Phase 1 (early boot, before SetVBAR): spin-check + yield.
+//   No kmazarin exception vectors installed, so only basic INT $0x80 works.
+//   Spin briefly checking for value change, then yield.
 //
-// For FUTEX_WAKE (op & 0x7F == 1): return 0 immediately.
+// Phase 2 (post-boot, kmazarinSyscallReady=1): real INT $0x80 with AX=202
+//   (SYS_futex on x86_64). Routes through kmazarin's SyscallFutex handler
+//   which properly blocks the thread (FUTEX_WAIT) or wakes blocked threads
+//   (FUTEX_WAKE).
 //
 // func futex(addr unsafe.Pointer, op int32, val uint32, ts, addr2 unsafe.Pointer, val3 uint32) int32
 TEXT runtime·futex(SB),NOSPLIT,$0
+	// Check if kmazarin syscall handlers are ready
+	MOVL	runtime·kmazarinSyscallReady(SB), AX
+	TESTL	AX, AX
+	JNZ	futex_real
+
+	// --- Phase 1: early boot (spin + yield) ---
 	MOVQ	addr+0(FP), DI		// addr
 	MOVL	op+8(FP), SI		// op
 	MOVL	val+12(FP), DX		// val
@@ -383,7 +392,7 @@ TEXT runtime·futex(SB),NOSPLIT,$0
 	MOVL	SI, AX
 	ANDL	$0x7F, AX
 	CMPL	AX, $1
-	JEQ	futex_wake		// FUTEX_WAKE
+	JEQ	futex_wake_early	// FUTEX_WAKE
 
 	// FUTEX_WAIT: check *addr vs val
 	MOVL	(DI), AX		// *addr
@@ -411,9 +420,24 @@ futex_eagain:
 	MOVL	$-11, ret+40(FP)	// EAGAIN = 11 on Linux
 	RET
 
-futex_wake:
+futex_wake_early:
 	// FUTEX_WAKE: return 0 (nothing to wake on bare metal)
 	MOVL	$0, ret+40(FP)
+	RET
+
+futex_real:
+	// --- Phase 2: real futex INT $0x80 (post-boot) ---
+	// Route through kmazarin's SyscallFutex handler for proper blocking/waking.
+	// x86_64 INT $0x80 convention: AX=syscall#, DI, SI, DX, R10, R8, R9
+	MOVQ	addr+0(FP), DI		// uaddr
+	MOVL	op+8(FP), SI		// op
+	MOVL	val+12(FP), DX		// val
+	MOVQ	ts+16(FP), R10		// timeout
+	MOVQ	addr2+24(FP), R8	// uaddr2
+	MOVL	val3+32(FP), R9		// val3
+	MOVL	$202, AX		// SYS_futex on x86_64
+	INT	$0x80
+	MOVL	AX, ret+40(FP)
 	RET
 
 // clone - issue INT $0x80 so kmazarin's IDT handler can create a real thread.
