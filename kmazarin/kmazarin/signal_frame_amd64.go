@@ -132,9 +132,12 @@ func BuildSignalFrame(thread *Thread, signum int, action *SignalAction) {
 
 	// Push restorer address on signal stack as return address
 	// (sigtramp will RET to this address, which calls rt_sigreturn)
-	restorerAddr := action.Restorer
-	if restorerAddr == 0 {
-		restorerAddr = uint64(sigreturnTrampolinePC)
+	// Only use action.Restorer if SA_RESTORER flag is set in the action flags.
+	// Without this check, garbage in the sa_restorer field (e.g., signal mask bits)
+	// gets used as the return address, causing crashes.
+	restorerAddr := uint64(sigreturnTrampolinePC)
+	if action.Flags&_SA_RESTORER != 0 && action.Restorer != 0 {
+		restorerAddr = action.Restorer
 	}
 	// Place return address below the frame (x86_64 CALL convention)
 	retAddrSP := frameSP - 8

@@ -242,6 +242,11 @@ func CreateProcessPageTable() uintptr {
 	// switched. On ARM64, this is a no-op (TTBR0/TTBR1 are separate).
 	initProcessL0(l0VA)
 
+	// Map the sigreturn vDSO page into the process's page table.
+	// On RISC-V, U-mode can't execute kernel pages (PTE.U=0), so the sigreturn
+	// trampoline must be at a user-accessible VA. On ARM64/x86_64, this is a no-op.
+	mapSigreturnVDSOInProcessL0(l0PA)
+
 	// Cache the PA -> VA mapping
 	cachePTVA(l0PA, l0VA)
 

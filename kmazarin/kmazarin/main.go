@@ -8,6 +8,7 @@ import (
 	"mazzy/kmazarin/device/virtio/block"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/device/virtio/input"
+	"mazzy/kmazarin/dtb"
 	"mazzy/shared/fs/fat32"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
@@ -129,9 +130,6 @@ func init() {
 	g0StructAddr := GetG0StructAddr()
 	_ = g0StructAddr // Suppress unused warning
 
-	// Initialize preemption thresholds BEFORE threads, so deadlines use correct values
-	kirq.InitPreemptThresholds()
-
 	// Initialize thread table - M0 is thread 0
 	// MUST happen before any clone syscalls!
 	InitThreads()
@@ -145,9 +143,10 @@ func init() {
 	// Initialize critical early devices (UART, GIC, Timer, RNG)
 	EarlyInit()
 
-	// Initialize timer, IRQ handlers, and preemption subsystem
+	// Initialize timer hardware and IRQ handlers.
+	// Timer frequency and tick thresholds are set later during DTB processing
+	// in initTimerFrequency(), which is called before EnableTimerIRQ().
 	kirq.InitTimer()
-	console.KPrintf("[Timer] freq=%d Hz\n", ktimer.Frequency())
 	kirq.RegisterHandlers()
 	kirq.InitPreemption()
 
@@ -477,6 +476,70 @@ func testDeviceDiscovery() {
 	}
 }
 
+// discoveredDTBTimerFreq is set by dtbTimerFreqCallback during DTB walk.
+var discoveredDTBTimerFreq uint32
+
+// initTimerFrequency discovers the platform timer frequency and sets
+// kirq.SystemTimerFrequency, then computes the kernel tick count
+// (kirq.TimerRearmTicks from TickIntervalMs) and thread preemption
+// quantum (kirq.ThreadPreemptTicks from ThreadPreemptMs).
+//
+// On RISC-V, the frequency comes from DTB /cpus/timebase-frequency.
+// On ARM64 and x86_64, it comes from hardware registers calibrated
+// by ktimer.Init() during early boot (CNTFRQ_EL0 and PIT respectively).
+//
+// Called from simpleMain() after DTB processing, before EnableTimerIRQ().
+func initTimerFrequency() {
+	// Determine DTB address (same logic as testDeviceDiscovery)
+	var dtbAddr uintptr
+	if safeDTBVirtAddr != 0 {
+		dtbAddr = safeDTBVirtAddr
+	} else {
+		dtbPhysAddr := GetDtbPhysAddr()
+		if dtbPhysAddr != 0 {
+			dtbAddr = dtbVirtAddr(dtbPhysAddr)
+		}
+	}
+
+	// Walk DTB for /cpus/timebase-frequency (present in RISC-V DTBs)
+	discoveredDTBTimerFreq = 0
+	if dtbAddr != 0 {
+		dtb.Walk(dtbAddr, dtbTimerFreqCallback)
+	}
+
+	if discoveredDTBTimerFreq > 0 {
+		kirq.SystemTimerFrequency = uint64(discoveredDTBTimerFreq)
+	} else {
+		// ARM64: CNTFRQ_EL0 (hardware register, cached by ktimer.Init())
+		// x86_64: PIT-calibrated TSC frequency (cached by ktimer.Init())
+		kirq.SystemTimerFrequency = uint64(ktimer.Frequency())
+	}
+
+	if kirq.SystemTimerFrequency == 0 {
+		kirq.SystemTimerFrequency = 62500000 // Fallback for QEMU virt
+	}
+
+	// Single computation path: derive tick counts from frequency and policy constants
+	kirq.InitPreemptThresholds()
+
+	console.KPrintf("[Timer] freq=%d Hz, tick=%d ticks (%dms), quantum=%d ticks (%dms)\n",
+		kirq.SystemTimerFrequency, kirq.TimerRearmTicks, kirq.TickIntervalMs,
+		kirq.ThreadPreemptTicks, kirq.ThreadPreemptMs)
+}
+
+// dtbTimerFreqCallback is the DTB walk callback for timer frequency discovery.
+// Looks for the /cpus node and reads its timebase-frequency property.
+func dtbTimerFreqCallback(node *dtb.DTBNode) {
+	var nameBuf [64]byte
+	nameLen := node.GetNameBuf(nameBuf[:])
+	name := string(nameBuf[:nameLen])
+	if name == "cpus" {
+		if freq, ok := node.GetPropU32("timebase-frequency"); ok {
+			discoveredDTBTimerFreq = freq
+		}
+	}
+}
+
 // initVirtIOGPU initializes the VirtIO GPU device for display output
 func initVirtIOGPU() {
 	if !gpu.Init() {
@@ -721,6 +784,12 @@ func simpleMain() {
 	// Test DTB-based device discovery BEFORE unmapping Cardinal
 	// (DTB is at 0x40000000 in Cardinal's memory region)
 	testDeviceDiscovery()
+
+	// Discover platform timer frequency and compute tick thresholds.
+	// On RISC-V, reads /cpus/timebase-frequency from DTB.
+	// On ARM64/x86_64, uses hardware-calibrated frequency from ktimer.Init().
+	// Must be called before EnableTimerIRQ().
+	initTimerFrequency()
 
 	// Cache GIC pointer for nosplit-safe timer IRQ enable/disable
 	initCachedIC()

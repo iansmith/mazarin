@@ -279,6 +279,71 @@ ecall_skip_marker:
 	MOV	·ThreadSigreturnPendingOffset(SB), T1
 	ADD	T1, T0, T1		// T1 = &thread.SigreturnPending
 	MOVW	(T1), T2
+
+	// DEBUG: Check if this was a sigreturn syscall (A7=139 in frame)
+	// If A7==139 && SigreturnPending==0, something went wrong
+	MOV	128(X2), A3		// A7 from frame (syscall number)
+	MOV	$139, A4		// SYS_rt_sigreturn
+	BNE	A3, A4, ecall_not_sigreturn_syscall
+	// This IS a sigreturn syscall
+	BNE	T2, ZERO, ecall_sigreturn_ok	// SigreturnPending=1, all good
+	// BUG: sigreturn syscall but SigreturnPending=0!
+	MOV	$0xFFFFFFFF10000000, A3
+	MOV	$0x51, A4		// 'Q' = sigreturn pending not set
+	MOVB	A4, (A3)
+	// Print the thread's SigreturnPending offset and value for debugging
+	MOV	$0x3D, A4		// '='
+	MOVB	A4, (A3)
+	// Print T2 (should be 0)
+	ADD	$0x30, T2, A4		// '0' + value
+	MOVB	A4, (A3)
+	// Print thread pointer as hex
+	MOV	$0x40, A4		// '@'
+	MOVB	A4, (A3)
+	MOV	T0, X19
+	MOV	$60, T4
+ecall_sigret_dbg_loop:
+	SRL	T4, X19, T5
+	AND	$0xF, T5
+	MOV	$10, A3
+	BLT	T5, A3, ecall_sigret_dbg_digit
+	ADD	$0x37, T5, T5
+	JMP	ecall_sigret_dbg_print
+ecall_sigret_dbg_digit:
+	ADD	$0x30, T5, T5
+ecall_sigret_dbg_print:
+	MOV	$0xFFFFFFFF10000000, A3
+	MOVB	T5, (A3)
+	ADD	$-4, T4
+	MOV	$-4, A3
+	BNE	T4, A3, ecall_sigret_dbg_loop
+	// Print SigreturnPendingOffset
+	MOV	$0xFFFFFFFF10000000, A3
+	MOV	$0x2B, A4		// '+'
+	MOVB	A4, (A3)
+	MOV	·ThreadSigreturnPendingOffset(SB), X19
+	MOV	$60, T4
+ecall_sigret_off_loop:
+	SRL	T4, X19, T5
+	AND	$0xF, T5
+	MOV	$10, A3
+	BLT	T5, A3, ecall_sigret_off_digit
+	ADD	$0x37, T5, T5
+	JMP	ecall_sigret_off_print
+ecall_sigret_off_digit:
+	ADD	$0x30, T5, T5
+ecall_sigret_off_print:
+	MOV	$0xFFFFFFFF10000000, A3
+	MOVB	T5, (A3)
+	ADD	$-4, T4
+	MOV	$-4, A3
+	BNE	T4, A3, ecall_sigret_off_loop
+ecall_sigret_halt:
+	WORD	$0x10500073		// wfi
+	JMP	ecall_sigret_halt
+
+ecall_sigreturn_ok:
+ecall_not_sigreturn_syscall:
 	BEQ	T2, ZERO, ecall_no_sigreturn
 	// Clear SigreturnPending flag
 	MOVW	ZERO, (T1)
@@ -898,6 +963,68 @@ trap_return_skip_marker:
 
 	// Restore sepc
 	MOV	248(X2), T0
+
+	// DEBUG: Check for stackPreempt sentinel in trap frame SEPC
+	MOV	$-16, T1		// T1 = 0xFFFFFFFFFFFFFFF0
+	BLTU	T0, T1, trap_sepc_ok	// unsigned: if sepc < 0xFFFFFFFFFFFFFFF0, OK
+	// Print 'Y[' then SEPC, then ']' and halt
+	MOV	$0xFFFFFFFF10000000, T1
+	MOV	$0x59, T2		// 'Y' = bad trap_return SEPC
+	MOVB	T2, (T1)
+	MOV	$0x5B, T2		// '['
+	MOVB	T2, (T1)
+	MOV	T0, X19
+	MOV	$60, T4
+trap_sepc_loop:
+	SRL	T4, X19, T5
+	AND	$0xF, T5
+	MOV	$10, T1
+	BLT	T5, T1, trap_sepc_digit
+	ADD	$0x37, T5, T5
+	JMP	trap_sepc_print
+trap_sepc_digit:
+	ADD	$0x30, T5, T5
+trap_sepc_print:
+	MOV	$0xFFFFFFFF10000000, T1
+	MOVB	T5, (T1)
+	ADD	$-4, T4
+	MOV	$-4, T1
+	BNE	T4, T1, trap_sepc_loop
+	MOV	$0xFFFFFFFF10000000, T1
+	MOV	$0x5D, T2		// ']'
+	MOVB	T2, (T1)
+	// Also print RA from frame offset 0
+	MOV	$0x3E, T2		// '>'
+	MOVB	T2, (T1)
+	MOV	0(X2), X19		// RA from frame
+	MOV	$60, T4
+trap_sepc_ra_loop:
+	SRL	T4, X19, T5
+	AND	$0xF, T5
+	MOV	$10, T1
+	BLT	T5, T1, trap_sepc_ra_digit
+	ADD	$0x37, T5, T5
+	JMP	trap_sepc_ra_print
+trap_sepc_ra_digit:
+	ADD	$0x30, T5, T5
+trap_sepc_ra_print:
+	MOV	$0xFFFFFFFF10000000, T1
+	MOVB	T5, (T1)
+	ADD	$-4, T4
+	MOV	$-4, T1
+	BNE	T4, T1, trap_sepc_ra_loop
+	// Also print scause
+	MOV	$0xFFFFFFFF10000000, T1
+	MOV	$0x2F, T2		// '/'
+	MOVB	T2, (T1)
+	WORD	$0x142022F3		// csrr t0, scause
+	ADD	$0x30, T0, T2		// digit '0'+cause
+	MOVB	T2, (T1)
+trap_sepc_halt:
+	WORD	$0x10500073		// wfi
+	JMP	trap_sepc_halt
+
+trap_sepc_ok:
 	// CSRW sepc, t0
 	WORD	$0x14129073		// csrw sepc, t0(x5)
 
@@ -965,6 +1092,42 @@ trap_return_skip_marker:
 load_context_and_sret:
 	// Load SEPC
 	MOV	256(S2), A0
+
+	// DEBUG: Check for stackPreempt sentinel (0xFFFFFFFFFFFFFFFE) in SEPC
+	MOV	$-16, T0		// T0 = 0xFFFFFFFFFFFFFFF0
+	BLTU	A0, T0, sepc_ok	// unsigned: if SEPC < 0xFFFFFFFFFFFFFFF0, OK
+	// SEPC is in the stackPreempt range — print diagnostic and halt
+	MOV	$0xFFFFFFFF10000000, T0
+	MOV	$0x5A, T1		// 'Z' = bad SEPC marker
+	MOVB	T1, (T0)
+	MOV	$0x5B, T1		// '['
+	MOVB	T1, (T0)
+	// Print SEPC as 16 hex digits
+	MOV	A0, X19
+	MOV	$60, T4
+sepc_bad_loop:
+	SRL	T4, X19, T5
+	AND	$0xF, T5
+	MOV	$10, T0
+	BLT	T5, T0, sepc_bad_digit
+	ADD	$0x37, T5, T5
+	JMP	sepc_bad_print
+sepc_bad_digit:
+	ADD	$0x30, T5, T5
+sepc_bad_print:
+	MOV	$0xFFFFFFFF10000000, T0
+	MOVB	T5, (T0)
+	ADD	$-4, T4
+	MOV	$-4, T0
+	BNE	T4, T0, sepc_bad_loop
+	MOV	$0xFFFFFFFF10000000, T0
+	MOV	$0x5D, T1		// ']'
+	MOVB	T1, (T0)
+sepc_bad_halt:
+	WORD	$0x10500073		// wfi
+	JMP	sepc_bad_halt
+
+sepc_ok:
 	// CSRW sepc, a0
 	WORD	$0x14151073
 

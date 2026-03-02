@@ -118,11 +118,15 @@ func BuildSignalFrame(thread *Thread, signum int, action *SignalAction) {
 	// PC (SEPC) = handler address
 	thread.Context.SEPC = action.Handler
 	// RA (X1) = sigreturn trampoline
-	if action.Restorer != 0 {
+	// Only use action.Restorer if SA_RESTORER flag is set.
+	// On RISC-V, the Go runtime does NOT set SA_RESTORER, so the sa_restorer
+	// field contains garbage (e.g., 0xFFFFFFFFFFFFFFFF from the signal mask).
+	if action.Flags&_SA_RESTORER != 0 && action.Restorer != 0 {
 		thread.Context.X[1] = action.Restorer
 	} else {
 		thread.Context.X[1] = uint64(sigreturnTrampolinePC)
 	}
+
 	// FP (X8/s0) = 0 for clean frame
 	thread.Context.X[8] = 0
 	// SSTATUS remains unchanged (same privilege, same interrupt state)

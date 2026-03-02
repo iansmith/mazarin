@@ -4,8 +4,16 @@ package ksyscall
 import (
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/serial"
+	"sync/atomic"
 	_ "unsafe" // for go:linkname
 )
+
+// suppressSerial mirrors the runtime.suppressSerial flag.
+// When 0, userspace write() output is echoed to the serial port.
+// When 1, output goes only to the ring buffer (normal production mode).
+//
+//go:linkname suppressSerial runtime.suppressSerial
+var suppressSerial uint32
 
 // SyscallWrite implements the write(2) syscall.
 // For now, we only support stdout/stderr (fd 1 and 2).
@@ -42,10 +50,14 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 	useRing := false
 	useDirect := false
 	ownerPID := getUartSlotPriestID()
+	echoToSerial := atomic.LoadUint32(&suppressSerial) == 0
 	if ownerPID >= 0 {
 		callerPID := getCurrentThreadPID()
 		if callerPID != ownerPID {
 			useRing = true
+		} else if echoToSerial {
+			// stdio priest: can't use ring (deadlock), but echo to serial
+			useDirect = true
 		}
 	} else {
 		// No ring owner yet — write directly to serial
@@ -71,6 +83,15 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 					pushByteToUartRing(fdByte, '\r')
 				}
 				pushByteToUartRing(fdByte, c)
+			}
+			if echoToSerial {
+				for i := uint64(0); i < n; i++ {
+					c := chunk[i]
+					if c == '\n' {
+						serial.PollWrite('\r')
+					}
+					serial.PollWrite(c)
+				}
 			}
 		} else if useDirect {
 			for i := uint64(0); i < n; i++ {

@@ -8,7 +8,6 @@
 package kirq
 
 import (
-	"mazzy/kmazarin/ktimer"
 	"sync/atomic"
 	_ "unsafe" // For go:linkname
 )
@@ -93,14 +92,10 @@ var ThreadPreemptTicks uint64 = 6250000 // Default: 100ms at 62.5MHz (ARM64)
 
 // InitPreemptThresholds calculates TimerRearmTicks and ThreadPreemptTicks
 // from SystemTimerFrequency and the policy constants above.
-// Call this after SystemTimerFrequency is set.
+// Caller must set SystemTimerFrequency before calling.
 func InitPreemptThresholds() {
-	freq := SystemTimerFrequency
-	if freq == 0 {
-		freq = 62500000 // Default QEMU frequency
-	}
-	TimerRearmTicks = (freq * TickIntervalMs) / 1000
-	ThreadPreemptTicks = (freq * ThreadPreemptMs) / 1000
+	TimerRearmTicks = (SystemTimerFrequency * TickIntervalMs) / 1000
+	ThreadPreemptTicks = (SystemTimerFrequency * ThreadPreemptMs) / 1000
 }
 
 // NeedsThreadPreempt is set by assembly when the current thread has exceeded
@@ -179,6 +174,9 @@ var SystemTimerFrequency uint64
 // Reads preemption offsets from runtime and stores them in global variables
 // accessible by assembly.
 //
+// NOTE: Timer frequency and tick thresholds are set separately by
+// initTimerFrequency() during DTB processing in simpleMain().
+//
 //go:nosplit
 func InitPreemption() {
 	// Read offsets from runtime
@@ -198,15 +196,6 @@ func InitPreemption() {
 	PreemptMG0Offset = offsets.MG0Offset
 	PreemptMLocksOffset = offsets.MLocksOffset
 	PreemptMGsignalOffset = offsets.MGsignalOffset
-
-	// Read system timer frequency via ktimer
-	SystemTimerFrequency = uint64(ktimer.Frequency())
-	if SystemTimerFrequency == 0 {
-		SystemTimerFrequency = 62500000 // Default for QEMU virt
-	}
-
-	// Initialize deadline-based preemption thresholds based on timer frequency
-	InitPreemptThresholds()
 
 	// Memory barrier to ensure all stores are visible before setting valid flag
 	atomic.StoreUint32(&PreemptOffsetsValid, 1)

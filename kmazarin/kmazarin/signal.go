@@ -59,10 +59,20 @@ var sigreturnTrampolinePC uintptr
 
 // InitSignals initializes signal infrastructure.
 // Called during kmazarin startup after assembly functions are available.
-//
-//go:nosplit
 func InitSignals() {
 	sigreturnTrampolinePC = getSigreturnTrampolineAddr()
+	kernelTramp := sigreturnTrampolinePC
+
+	// On RISC-V, allocate a user-accessible vDSO page for the sigreturn
+	// trampoline and update sigreturnTrampolinePC to the user VA.
+	// U-mode can't execute kernel pages on RISC-V (PTE.U=0).
+	initSigreturnVDSO()
+
+	serial.RawUARTPuts("[Signal] tramp: kernel=0x")
+	serial.RawUARTHex64(uint64(kernelTramp))
+	serial.RawUARTPuts(" final=0x")
+	serial.RawUARTHex64(uint64(sigreturnTrampolinePC))
+	serial.RawUARTPuts("\r\n")
 }
 
 // GetSignalAction returns the signal action for the given signal number.

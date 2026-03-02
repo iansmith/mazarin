@@ -108,8 +108,11 @@ func BuildSignalFrame(thread *Thread, signum int, action *SignalAction) {
 	thread.Context.SP = frameSP
 	// PC = sigtramp address (registered as sa_handler during initsig)
 	thread.Context.ELR = action.Handler
-	// LR = sigreturn trampoline (for ARM64, sa_restorer is not set by setsig)
-	if action.Restorer != 0 {
+	// LR = sigreturn trampoline
+	// Only use action.Restorer if SA_RESTORER flag is set in the action flags.
+	// Without this check, garbage in the sa_restorer field (e.g., signal mask bits)
+	// gets used as the return address, causing crashes.
+	if action.Flags&_SA_RESTORER != 0 && action.Restorer != 0 {
 		thread.Context.X[30] = action.Restorer
 	} else {
 		thread.Context.X[30] = uint64(sigreturnTrampolinePC)

@@ -307,6 +307,18 @@ func (n *DTBNode) GetInterrupt() (int, bool) {
 	return int(irqNum) + 32, true
 }
 
+// GetPropU32 reads a uint32 property value by name.
+// Returns (value, true) if found, (0, false) if not found or too short.
+//
+//go:nosplit
+func (n *DTBNode) GetPropU32(name string) (uint32, bool) {
+	prop := n.findProperty(name)
+	if prop == nil || prop.valueLen < 4 {
+		return 0, false
+	}
+	return swapU32(*(*uint32)(unsafe.Pointer(&prop.value[0]))), true
+}
+
 // GetNameBuf copies the node name into provided buffer
 // Returns the length
 //

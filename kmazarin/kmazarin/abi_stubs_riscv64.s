@@ -309,6 +309,18 @@ TEXT ·YieldToReadyThread(SB), NOSPLIT|NOFRAME, $0-0
 
 	// Load SEPC and SSTATUS into CSRs
 	MOV	256(X18), A0
+
+	// DEBUG: Check for stackPreempt sentinel in YieldToReadyThread SEPC
+	MOV	$-16, T1		// T1 = 0xFFFFFFFFFFFFFFF0
+	BLTU	A0, T1, yield_sepc_ok	// unsigned: if sepc < 0xFFFFFFFFFFFFFFF0, OK
+	MOV	$0xFFFFFFFF10000000, T1
+	MOV	$0x57, T2		// 'W' = bad yield SEPC
+	MOVB	T2, (T1)
+yield_sepc_halt:
+	WORD	$0x10500073		// wfi
+	JMP	yield_sepc_halt
+yield_sepc_ok:
+
 	WORD	$0x14151073		// csrw sepc, a0
 	MOV	264(X18), A0
 	WORD	$0x10051073		// csrw sstatus, a0

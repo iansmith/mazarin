@@ -21,14 +21,14 @@ func PlatformDisableTimer()
 //go:nosplit
 func PlatformTimerIRQ() uint32 { return platformTimerIRQ }
 
-// PlatformTimerInit returns the timer frequency in Hz.
-// TODO: Read from device tree /cpus/timebase-frequency.
-// For now, hardcode QEMU virt default (10MHz).
+// PlatformTimerInit returns a default timer frequency in Hz for early boot.
+// The accurate frequency is read from DTB /cpus/timebase-frequency during
+// device discovery (initTimerFrequency in main.go) and set in
+// kirq.SystemTimerFrequency before the timer is enabled.
 //
 //go:nosplit
 func PlatformTimerInit() uint32 {
-	// QEMU virt machine default timebase-frequency
-	return 10000000 // 10 MHz
+	return 10000000 // 10 MHz (QEMU virt default)
 }
 
 // PlatformReadCounter reads the TIME CSR and returns the current counter value.
