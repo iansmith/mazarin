@@ -11,7 +11,7 @@ import (
 const (
 	sysGetTime              = 0x1000 // Get current time
 	sysLaunch               = 0x1001 // Launch a priest from ELF file
-	sysRun                  = 0x1002 // Load a .maz program into priest's address space
+	sysBootstrapRunElf      = 0x1002 // Bootstrap: load ELF from disk (disk manager only)
 	sysAllocPages           = 0x1003 // Allocate pages for userspace
 	sysExit                 = 0x1004 // Exit program (Mazzy-specific)
 	sysReap                 = 0x1005 // Reap terminated program

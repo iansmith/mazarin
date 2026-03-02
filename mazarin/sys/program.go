@@ -1,7 +1,6 @@
 package sys
 
 import (
-	"fmt"
 	"syscall"
 	"unsafe"
 
@@ -9,7 +8,7 @@ import (
 )
 
 // ProgramControl contains information about a loaded program.
-// Allocated by priest, filled in by kernel during SysRun.
+// Allocated by priest, filled in by kernel during BootstrapRunElf.
 type ProgramControl struct {
 	// ProgramID is the kernel-assigned identifier for this program.
 	// Used for subsequent control operations (stop, kill, suspend).
@@ -27,22 +26,26 @@ type ProgramControl struct {
 	Reserved [8]uint64
 }
 
-// Run loads a .maz program into this priest's address space.
+// BootstrapRunElf loads an ELF from disk into this priest's address space.
+// This is a bootstrap-only call used to get the disk manager off the disk.
 // pc must point to writable memory (heap, data, BSS, or stack).
 // priestSyscallEntry is the address of priest's syscall handler.
-func Run(filename string, priestSyscallEntry uintptr, pc *ProgramControl) error {
+func BootstrapRunElf(filename string, priestSyscallEntry uintptr, pc *ProgramControl) *merror.Error {
 	filenameBytes := append([]byte(filename), 0)
 
 	result, _, _ := syscall.RawSyscall6(
-		sysRun,
+		sysBootstrapRunElf,
 		uintptr(unsafe.Pointer(&filenameBytes[0])),
 		priestSyscallEntry,
 		uintptr(unsafe.Pointer(pc)),
 		0, 0, 0,
 	)
 
-	if merror.IsError(uint64(result)) {
-		return fmt.Errorf("SysRun failed: %s", merror.String(uint64(result)))
+	if result != 0 {
+		if e := merror.FromCode(merror.ErrorCode(result)); e != nil {
+			return e
+		}
+		return merror.ErrInvalidELF // fallback for unrecognized codes
 	}
 
 	return nil

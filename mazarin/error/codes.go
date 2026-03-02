@@ -1,171 +1,97 @@
-// Package error provides Mazzy error code definitions.
-// Error codes are returned from syscalls as a single 64-bit value
-// encoding two 32-bit integers: major (category) and minor (specific).
+// Package error provides allocation-free error codes for Mazzy userspace.
+//
+// ErrorCode values are returned directly from kernel Mazzy-specific syscalls
+// (not Linux syscalls, which use -errno). Client code compares the Code field
+// of *Error to identify specific failures.
 package error
 
-import (
-	"errors"
-	"fmt"
-)
+// ErrorCode is a 32-bit error identifier shared between kernel and userspace.
+// Values must stay in sync with kmazarin/ksyscall/run.go constants.
+type ErrorCode uint32
 
-// Major error codes - categories of errors
-var Major = [...]uint32{
-	0: 0,          // Success (no error)
-	1: 0x00010000, // BadArg - invalid argument
-	2: 0x00020000, // NotFound - resource not found
-	3: 0x00030000, // IOError - I/O operation failed
-	4: 0x00040000, // NoMem - out of memory
-	5: 0x00050000, // Denied - permission denied
-	6: 0x00060000, // Busy - resource busy
-	7: 0x00070000, // Internal - internal kernel error
-}
-
-// Minor error codes - specific errors within categories
-var Minor = [...]uint32{
-	0:  0,  // None (no specific error)
-	1:  1,  // NotWritableData - pointer not in caller's writable memory (heap/data/bss/stack)
-	2:  2,  // NotInExec - address not in caller's executable segment
-	3:  3,  // NotAccessibleMemory - pointer not in valid/accessible memory
-	4:  4,  // NullPointer - unexpected null pointer
-	5:  5,  // InvalidFilename - malformed filename
-	6:  6,  // TooLarge - value exceeds maximum
-	7:  7,  // TooSmall - value below minimum
-	8:  8,  // InvalidELF - not a valid ELF file
-	9:  9,  // WrongArch - wrong architecture
-	10: 10, // NoSymbol - required symbol not found
-	11: 11, // AlreadyLoaded - program already loaded at address
-	12: 12, // NoSpace - no address space available
-	13: 13, // FileNotFound - file does not exist
-}
-
-// Named constants for convenience
 const (
-	MajorSuccess  = 0
-	MajorBadArg   = 1
-	MajorNotFound = 2
-	MajorIOError  = 3
-	MajorNoMem    = 4
-	MajorDenied   = 5
-	MajorBusy     = 6
-	MajorInternal = 7
+	// Validation errors (returned by kernel syscalls)
+	NotWritableData     ErrorCode = 0x1000 + iota // pointer not in writable memory
+	NotInExec                                      // address not in executable segment
+	NotAccessibleMemory                            // pointer not in valid memory
+	NullPointer                                    // unexpected null pointer
+	InvalidFilename                                // malformed or empty filename
+	TooLarge                                       // value exceeds maximum
+	TooSmall                                       // value below minimum
+	InvalidELF                                     // not a valid ELF file
+	WrongArch                                      // wrong architecture
+	NoSymbol                                       // required symbol not found
+	AlreadyLoaded                                  // program already loaded
+	NoSpace                                        // no address space available
+	FileNotFound                                   // file does not exist
 
-	MinorNone              = 0
-	MinorNotWritableData   = 1
-	MinorNotInExec         = 2
-	MinorNotAccessibleMem  = 3
-	MinorNullPointer       = 4
-	MinorInvalidFilename   = 5
-	MinorTooLarge          = 6
-	MinorTooSmall          = 7
-	MinorInvalidELF        = 8
-	MinorWrongArch         = 9
-	MinorNoSymbol          = 10
-	MinorAlreadyLoaded     = 11
-	MinorNoSpace           = 12
-	MinorFileNotFound      = 13
+	// Client-side errors (memblob, etc.)
+	ExceedsCapacity // request exceeds MemBlob size
+	ReadOnlyBlob    // MemBlob is read-only
+	MmapFailed      // mmap failed
+	InvalidSize     // invalid size argument
+	NilBuffer       // nil buffer argument
 )
 
-// Encode combines major and minor codes into a 64-bit error value
-func Encode(major, minor uint32) uint64 {
-	return (uint64(major) << 32) | uint64(minor)
+// Error is a non-allocating error value. Pre-defined package-level
+// vars are returned by pointer — callers compare the Code field.
+type Error struct {
+	Code    ErrorCode
+	message string
 }
 
-// Decode extracts major and minor codes from a 64-bit error value.
-// Returns error if the value doesn't represent a valid error code
-// (i.e., major code is 0, which means success).
-func Decode(value uint64) (major, minor uint32, err error) {
-	major = uint32(value >> 32)
-	minor = uint32(value & 0xFFFFFFFF)
+func (e *Error) Error() string { return e.message }
 
-	if major == 0 && minor == 0 {
-		return 0, 0, errors.New("not an error: success code")
-	}
+// Pre-defined errors (allocated once at init, never on the hot path).
+var (
+	ErrNotWritableData     = &Error{NotWritableData, "pointer not in writable memory"}
+	ErrNotInExec           = &Error{NotInExec, "address not in executable segment"}
+	ErrNotAccessibleMemory = &Error{NotAccessibleMemory, "pointer not in valid memory"}
+	ErrNullPointer         = &Error{NullPointer, "unexpected null pointer"}
+	ErrInvalidFilename     = &Error{InvalidFilename, "invalid filename"}
+	ErrTooLarge            = &Error{TooLarge, "value exceeds maximum"}
+	ErrTooSmall            = &Error{TooSmall, "value below minimum"}
+	ErrInvalidELF          = &Error{InvalidELF, "not a valid ELF file"}
+	ErrWrongArch           = &Error{WrongArch, "wrong architecture"}
+	ErrNoSymbol            = &Error{NoSymbol, "required symbol not found"}
+	ErrAlreadyLoaded       = &Error{AlreadyLoaded, "program already loaded"}
+	ErrNoSpace             = &Error{NoSpace, "no address space available"}
+	ErrFileNotFound        = &Error{FileNotFound, "file not found"}
+	ErrExceedsCapacity     = &Error{ExceedsCapacity, "request exceeds size of MemBlob"}
+	ErrReadOnlyBlob        = &Error{ReadOnlyBlob, "MemBlob is read-only"}
+	ErrMmapFailed          = &Error{MmapFailed, "mmap failed"}
+	ErrInvalidSize         = &Error{InvalidSize, "invalid size"}
+	ErrNilBuffer           = &Error{NilBuffer, "nil buffer"}
+)
 
-	// Validate major code is known
-	validMajor := false
-	for i := 1; i < len(Major); i++ {
-		if Major[i] == major {
-			validMajor = true
-			break
-		}
-	}
-	if !validMajor {
-		return major, minor, fmt.Errorf("unknown major code: 0x%08x", major)
-	}
-
-	return major, minor, nil
+// codeToError maps ErrorCode values to pre-defined *Error values.
+var codeToError = [...]**Error{
+	NotWritableData - 0x1000:     &ErrNotWritableData,
+	NotInExec - 0x1000:           &ErrNotInExec,
+	NotAccessibleMemory - 0x1000: &ErrNotAccessibleMemory,
+	NullPointer - 0x1000:         &ErrNullPointer,
+	InvalidFilename - 0x1000:     &ErrInvalidFilename,
+	TooLarge - 0x1000:            &ErrTooLarge,
+	TooSmall - 0x1000:            &ErrTooSmall,
+	InvalidELF - 0x1000:          &ErrInvalidELF,
+	WrongArch - 0x1000:           &ErrWrongArch,
+	NoSymbol - 0x1000:            &ErrNoSymbol,
+	AlreadyLoaded - 0x1000:       &ErrAlreadyLoaded,
+	NoSpace - 0x1000:             &ErrNoSpace,
+	FileNotFound - 0x1000:        &ErrFileNotFound,
+	ExceedsCapacity - 0x1000:     &ErrExceedsCapacity,
+	ReadOnlyBlob - 0x1000:        &ErrReadOnlyBlob,
+	MmapFailed - 0x1000:          &ErrMmapFailed,
+	InvalidSize - 0x1000:         &ErrInvalidSize,
+	NilBuffer - 0x1000:           &ErrNilBuffer,
 }
 
-// IsError returns true if the value represents an error (major != 0)
-func IsError(value uint64) bool {
-	return (value >> 32) != 0
-}
-
-// String returns a human-readable description of the error
-func String(value uint64) string {
-	major, minor, err := Decode(value)
-	if err != nil {
-		return fmt.Sprintf("invalid error code: 0x%016x", value)
+// FromCode returns the pre-defined *Error for a given ErrorCode,
+// or nil if the code is not recognized.
+func FromCode(code ErrorCode) *Error {
+	idx := code - 0x1000
+	if int(idx) >= len(codeToError) {
+		return nil
 	}
-
-	majorStr := majorToString(major)
-	minorStr := minorToString(minor)
-
-	return fmt.Sprintf("%s: %s", majorStr, minorStr)
-}
-
-func majorToString(code uint32) string {
-	switch code {
-	case Major[MajorBadArg]:
-		return "BadArg"
-	case Major[MajorNotFound]:
-		return "NotFound"
-	case Major[MajorIOError]:
-		return "IOError"
-	case Major[MajorNoMem]:
-		return "NoMem"
-	case Major[MajorDenied]:
-		return "Denied"
-	case Major[MajorBusy]:
-		return "Busy"
-	case Major[MajorInternal]:
-		return "Internal"
-	default:
-		return fmt.Sprintf("Unknown(0x%08x)", code)
-	}
-}
-
-func minorToString(code uint32) string {
-	switch code {
-	case Minor[MinorNone]:
-		return "None"
-	case Minor[MinorNotWritableData]:
-		return "NotWritableData"
-	case Minor[MinorNotInExec]:
-		return "NotInExec"
-	case Minor[MinorNotAccessibleMem]:
-		return "NotAccessibleMemory"
-	case Minor[MinorNullPointer]:
-		return "NullPointer"
-	case Minor[MinorInvalidFilename]:
-		return "InvalidFilename"
-	case Minor[MinorTooLarge]:
-		return "TooLarge"
-	case Minor[MinorTooSmall]:
-		return "TooSmall"
-	case Minor[MinorInvalidELF]:
-		return "InvalidELF"
-	case Minor[MinorWrongArch]:
-		return "WrongArch"
-	case Minor[MinorNoSymbol]:
-		return "NoSymbol"
-	case Minor[MinorAlreadyLoaded]:
-		return "AlreadyLoaded"
-	case Minor[MinorNoSpace]:
-		return "NoSpace"
-	case Minor[MinorFileNotFound]:
-		return "FileNotFound"
-	default:
-		return fmt.Sprintf("Unknown(%d)", code)
-	}
+	return *codeToError[idx]
 }

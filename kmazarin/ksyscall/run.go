@@ -5,15 +5,17 @@ import (
 	"mazzy/shared/fs/fat32"
 )
 
-// SyscallRun loads a .maz program into the calling priest's address space.
-// This is called by priest via SVC after receiving a syscall from a program.
+// SyscallBootstrapRunElf loads an ELF from disk into the calling priest's
+// address space. This is a bootstrap-only syscall used to get the disk
+// manager off the disk; once the disk manager is running, programs are
+// loaded through it instead.
 //
 // arg0: Pointer to null-terminated filename string
 // arg1: Address of priest's PriestSyscallEntry function
 // arg2: Pointer to ProgramControl struct (in priest's writable memory)
 //
-// Returns: 0 on success, encoded error on failure
-func SyscallRun(filenamePtr, priestSyscallAddr, programControlPtr, _, _, _ uint64) int64 {
+// Returns: 0 on success, ErrorCode on failure
+func SyscallBootstrapRunElf(filenamePtr, priestSyscallAddr, programControlPtr, _, _, _ uint64) int64 {
 	// === PHASE 1: Validate all arguments ===
 
 	// Validate filename pointer (must be in accessible memory)
@@ -34,7 +36,7 @@ func SyscallRun(filenamePtr, priestSyscallAddr, programControlPtr, _, _, _ uint6
 	// Read the filename string
 	filename := readNullTerminatedString(uintptr(filenamePtr))
 	if filename == "" {
-		return int64(encodeError(majorBadArg, minorInvalidFilename))
+		return int64(errInvalidFilename)
 	}
 
 	// === PHASE 2: Load the ELF file from disk ===
@@ -42,43 +44,43 @@ func SyscallRun(filenamePtr, priestSyscallAddr, programControlPtr, _, _, _ uint6
 	// Get block device
 	blk, ok := device.GetBlockDevice()
 	if !ok {
-		return int64(encodeError(majorNotFound, minorFileNotFound))
+		return int64(errFileNotFound)
 	}
 
 	// Mount FAT32 filesystem
 	fs, err := fat32.Mount(blk)
 	if err != nil {
-		return int64(encodeError(majorNotFound, minorFileNotFound))
+		return int64(errFileNotFound)
 	}
 
 	// Open the ELF file
 	file, err := fs.Open(filename)
 	if err != nil {
-		return int64(encodeError(majorNotFound, minorFileNotFound))
+		return int64(errFileNotFound)
 	}
 	defer file.Close()
 
 	// Read entire file
 	elfData, err := file.ReadAll()
 	if err != nil {
-		return int64(encodeError(majorNotFound, minorFileNotFound))
+		return int64(errFileNotFound)
 	}
 
 	// === PHASE 3: Parse ELF header (validation only for now) ===
 
 	if len(elfData) < 64 {
-		return int64(encodeError(majorBadArg, minorInvalidELF))
+		return int64(errInvalidELF)
 	}
 
 	// Parse and validate ELF header
 	hdr := parseELFHeader(elfData)
 
 	if hdr.Magic != ELF_MAGIC {
-		return int64(encodeError(majorBadArg, minorInvalidELF))
+		return int64(errInvalidELF)
 	}
 
 	if hdr.Class != ELF_CLASS64 || hdr.Machine != elfExpectedMachine {
-		return int64(encodeError(majorBadArg, minorWrongArch))
+		return int64(errWrongArch)
 	}
 
 	// === PHASE 4: TODO - Full implementation ===
@@ -97,28 +99,23 @@ func SyscallRun(filenamePtr, priestSyscallAddr, programControlPtr, _, _, _ uint6
 	_ = programControlPtr
 	_ = hdr
 
-	return int64(encodeError(majorNotFound, minorFileNotFound))
+	return int64(errFileNotFound)
 }
 
-// Error encoding helpers (mirror client-side codes from mazarin/error)
+// Mazzy ErrorCode values — must stay in sync with mazarin/error/codes.go.
+// These are returned directly as syscall results (not negative errno).
 const (
-	majorBadArg   uint32 = 0x00010000
-	majorNotFound uint32 = 0x00020000
-	majorNoMem    uint32 = 0x00040000
-
-	minorNone              uint32 = 0
-	minorNotWritableData   uint32 = 1
-	minorNotInExec         uint32 = 2
-	minorNotAccessibleMem  uint32 = 3
-	minorInvalidFilename   uint32 = 5
-	minorInvalidELF        uint32 = 8
-	minorWrongArch         uint32 = 9
-	minorNoSymbol          uint32 = 10
-	minorNoSpace           uint32 = 12
-	minorFileNotFound      uint32 = 13
+	errNotWritableData     uint32 = 0x1000
+	errNotInExec           uint32 = 0x1001
+	errNotAccessibleMemory uint32 = 0x1002
+	errNullPointer         uint32 = 0x1003
+	errInvalidFilename     uint32 = 0x1004
+	errTooLarge            uint32 = 0x1005
+	errTooSmall            uint32 = 0x1006
+	errInvalidELF          uint32 = 0x1007
+	errWrongArch           uint32 = 0x1008
+	errNoSymbol            uint32 = 0x1009
+	errAlreadyLoaded       uint32 = 0x100A
+	errNoSpace             uint32 = 0x100B
+	errFileNotFound        uint32 = 0x100C
 )
-
-//go:nosplit
-func encodeError(major, minor uint32) uint64 {
-	return (uint64(major) << 32) | uint64(minor)
-}

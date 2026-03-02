@@ -94,35 +94,35 @@ func isInWritableData(ptr uintptr) bool {
 }
 
 // ValidateFilenamePtr validates a filename pointer argument.
-// Returns encoded error or 0 on success.
+// Returns ErrorCode or 0 on success.
 //
 //go:nosplit
-func ValidateFilenamePtr(ptr uint64) uint64 {
+func ValidateFilenamePtr(ptr uint64) uint32 {
 	if !isInValidMemory(uintptr(ptr)) {
-		return encodeError(majorBadArg, minorNotAccessibleMem)
+		return errNotAccessibleMemory
 	}
 	return 0
 }
 
 // ValidateExecAddr validates an executable address argument.
-// Returns encoded error or 0 on success.
+// Returns ErrorCode or 0 on success.
 //
 //go:nosplit
-func ValidateExecAddr(addr uint64) uint64 {
+func ValidateExecAddr(addr uint64) uint32 {
 	if !isInExecSegment(uintptr(addr)) {
-		return encodeError(majorBadArg, minorNotInExec)
+		return errNotInExec
 	}
 	return 0
 }
 
 // ValidateWritablePtr validates a writable data pointer argument.
 // Accepts heap, data, BSS, or stack pointers.
-// Returns encoded error or 0 on success.
+// Returns ErrorCode or 0 on success.
 //
 //go:nosplit
-func ValidateWritablePtr(ptr uint64) uint64 {
+func ValidateWritablePtr(ptr uint64) uint32 {
 	if !isInWritableData(uintptr(ptr)) {
-		return encodeError(majorBadArg, minorNotWritableData)
+		return errNotWritableData
 	}
 	return 0
 }

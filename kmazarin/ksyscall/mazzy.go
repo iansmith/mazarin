@@ -15,7 +15,7 @@ const MazzySyscallBase = 0x1000
 const (
 	SysGetTime             = MazzySyscallBase + 0 // 0x1000 - Get current time
 	SysLaunch              = MazzySyscallBase + 1 // 0x1001 - Launch a priest from ELF file
-	SysRun                 = MazzySyscallBase + 2 // 0x1002 - Load a .maz program into priest's address space
+	SysBootstrapRunElf     = MazzySyscallBase + 2 // 0x1002 - Bootstrap: load ELF from disk (disk manager only)
 	SysAllocPages          = MazzySyscallBase + 3 // 0x1003 - Allocate pages for userspace
 	SysExit                = MazzySyscallBase + 4 // 0x1004 - Exit program (Mazzy-specific)
 	SysReap                = MazzySyscallBase + 5 // 0x1005 - Reap terminated program
@@ -37,7 +37,7 @@ const (
 var mazzySyscallTable = [64]SyscallHandler{
 	0: SyscallGetTime,              // GetTime = 0x1000
 	1: SyscallLaunch,               // Launch = 0x1001
-	2: SyscallRun,                  // Run = 0x1002
+	2: SyscallBootstrapRunElf,      // BootstrapRunElf = 0x1002
 	3: nil,                         // AllocPages = 0x1003 (not yet implemented)
 	4: SyscallMazzyExit,            // Exit = 0x1004
 	5: nil,                         // Reap = 0x1005 (not yet implemented)
