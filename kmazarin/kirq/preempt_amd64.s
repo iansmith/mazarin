@@ -89,8 +89,11 @@ timer_done:
 	// Set LVT timer: one-shot, vector 0x30, not masked
 	MOVL	$0x30, LAPIC_LVT_TMR(CX)
 
-	// Set initial count (~10ms at ~62.5MHz effective rate)
-	MOVL	$625000, LAPIC_TMRINITCNT(CX)
+	// Set initial count: TickIntervalMs (4ms) at ~62.5MHz effective rate = 250000
+	// NOTE: This handler is not called on x86_64 (Go path handles timer re-arm
+	// via TimerIRQHandlerCanPreempt → ktimer.Rearm(TimerRearmTicks)).
+	// Kept for reference / potential future use.
+	MOVL	$250000, LAPIC_TMRINITCNT(CX)
 
 	// Send EOI
 	MOVL	$0, LAPIC_EOI(CX)

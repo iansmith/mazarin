@@ -415,7 +415,7 @@ func EnableTimerIRQ() {
 	// Rearming first clears the pending state, then after the enable,
 	// the next expiration creates a proper edge.
 	// On RISC-V, PlatformRearmTimer also sets the STIE bit in SIE.
-	ktimer.Rearm(kirq.GetTimerTicksFor10ms())
+	ktimer.Rearm(kirq.TimerRearmTicks)
 	if cachedIC != nil {
 		cachedIC.EnableIRQ(ktimer.IRQNum())
 	}

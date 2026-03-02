@@ -11,7 +11,7 @@
 // g.stackguard0.
 //
 // The handler:
-//   1. Re-arms the timer via SBI set_timer using TimerRearmTicks
+//   1. Re-arms the timer via SBI set_timer using TimerRearmTicks (TickIntervalMs)
 //   2. Validates preemption offsets and gets current thread from perCPU
 //   3. Uses rdtime hardware counter for deadline comparisons
 //   4. Initializes thread deadline fields on first tick (StartTick == 0)

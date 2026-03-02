@@ -62,34 +62,45 @@ var TimerIRQCount uint64
 //
 // DO NOT use hardcoded offsets - struct layout may change!
 
-// TimerRearmTicks is the number of raw timer ticks to add when re-arming
-// the timer. At 10MHz: 10ms = 100,000 ticks.
-// Set by InitPreemptThresholds() based on actual timer frequency.
-// Exported for assembly access (used by preempt_riscv64.s).
-var TimerRearmTicks uint64 = 100000
+// Kernel timing policy constants. All timer and preemption intervals are
+// derived from these two values. Assembly handlers read the computed tick
+// variables (TimerRearmTicks, ThreadPreemptTicks) at runtime.
+const (
+	// TickIntervalMs is the kernel timer tick rate in milliseconds.
+	// Matches Linux CONFIG_HZ=250 (4ms). Controls how often deadlines
+	// are processed and pending signals are delivered.
+	TickIntervalMs = 4
 
-// ThreadPreemptTicks is the number of raw timer ticks before forcing
-// a thread preemption. At 62.5MHz: 10ms = 625,000 ticks.
-// Set by InitPreemptThresholds() based on actual timer frequency.
+	// ThreadPreemptMs is the thread-level preemption quantum in milliseconds.
+	// This is the coarse scheduling interval for switching between priests.
+	// Fine-grained goroutine preemption within each priest is handled by
+	// Go's sysmon sending SIGURG signals at ~10ms intervals.
+	ThreadPreemptMs = 100
+)
+
+// TimerRearmTicks is the number of raw timer ticks for one kernel tick
+// (TickIntervalMs). Set by InitPreemptThresholds() from timer frequency.
+// Exported for assembly access (used by preempt_arm64.s, preempt_riscv64.s).
+// Note: These defaults are never used at runtime — InitPreemptThresholds()
+// is called (via InitPreemption) before the timer is enabled (EnableTimerIRQ).
+var TimerRearmTicks uint64 = 40000 // Default: 4ms at 10MHz (RISC-V)
+
+// ThreadPreemptTicks is the number of raw timer ticks before forcing a
+// thread preemption (ThreadPreemptMs). Set by InitPreemptThresholds().
 // Exported for assembly access.
-var ThreadPreemptTicks uint64 = 625000
+// Note: Default never used at runtime — see TimerRearmTicks comment above.
+var ThreadPreemptTicks uint64 = 6250000 // Default: 100ms at 62.5MHz (ARM64)
 
-// InitPreemptThresholds calculates preemption thresholds based on timer frequency.
+// InitPreemptThresholds calculates TimerRearmTicks and ThreadPreemptTicks
+// from SystemTimerFrequency and the policy constants above.
 // Call this after SystemTimerFrequency is set.
 func InitPreemptThresholds() {
 	freq := SystemTimerFrequency
 	if freq == 0 {
 		freq = 62500000 // Default QEMU frequency
 	}
-	// TimerRearmTicks = 10ms worth of ticks
-	TimerRearmTicks = freq / 100 // freq * 0.01 = freq / 100
-	// ThreadPreemptTicks = 10ms worth of ticks (same as timer tick interval)
-	// Reduced from 200ms to 10ms since goroutine-level preemption (asyncPreempt)
-	// was removed. Without goroutine preemption causing frequent voluntary yields,
-	// the kernel must switch threads more aggressively to ensure responsiveness.
-	// At 10ms, preemption fires at the 2nd timer tick after scheduling (the 1st
-	// tick may miss due to timing gap between EnableTimerIRQ and scheduler).
-	ThreadPreemptTicks = freq / 100 // freq * 0.01 = freq / 100
+	TimerRearmTicks = (freq * TickIntervalMs) / 1000
+	ThreadPreemptTicks = (freq * ThreadPreemptMs) / 1000
 }
 
 // NeedsThreadPreempt is set by assembly when the current thread has exceeded

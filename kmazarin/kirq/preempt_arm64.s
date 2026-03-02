@@ -10,7 +10,7 @@
 // from IRQ context where the Go runtime may be in an inconsistent state.
 //
 // The handler:
-//   1. Re-arms the timer for the next tick (~10ms)
+//   1. Re-arms the timer for the next tick (TickIntervalMs via TimerRearmTicks)
 //   2. Validates that preemption offsets are initialized
 //   3. Gets current thread and checks thread preemption deadline
 //   4. Sets NeedsThreadPreempt if a thread has exceeded its time quantum
@@ -26,23 +26,11 @@ TEXT ·TimerIRQHandlerAsm(SB), NOSPLIT|NOFRAME, $0
 	// Step 1: Re-arm timer immediately
 	// ========================================================================
 	// This ensures we get the next tick even if we abort early.
-	// Use relative timer (CNTV_TVAL_EL0) for simplicity.
-	// 10ms at 62.5MHz = 625000 ticks (default, actual computed at runtime)
+	// Use absolute timer (CNTV_CVAL_EL0) for precision.
+	// TimerRearmTicks is computed by InitPreemptThresholds() from TickIntervalMs.
 
-	// Load tick count from SystemTimerFrequency
-	// ticks = (freq * 10) / 1000 = freq / 100
-	MOVD	·SystemTimerFrequency(SB), R0
-	MOVD	$100, R1
-	UDIV	R1, R0, R0  // R0 = freq / 100 = ticks for 10ms
-
-	// If frequency not set, use default
-	CBZ	R0, use_default_ticks
-	B	rearm_timer
-
-use_default_ticks:
-	MOVD	$625000, R0  // Default: 62.5MHz / 100 = 625000
-
-rearm_timer:
+	// Load pre-computed tick count (set by Go InitPreemptThresholds)
+	MOVD	·TimerRearmTicks(SB), R0
 	// Read current counter: MRS X1, CNTVCT_EL0
 	WORD	$0xD53BE041
 

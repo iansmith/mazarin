@@ -22,9 +22,8 @@ func InitTimer() {
 //go:nosplit
 //go:noinline
 func TimerIRQHandlerCanPreempt(irqNum uint64, framePtr uintptr, elr, spEl0 uint64) PreemptInfo {
-	// Re-arm timer for next interrupt (~10ms)
-	ticks := (uint64(ktimer.Frequency()) * 10) / 1000
-	ktimer.Rearm(ticks)
+	// Re-arm timer for next kernel tick (TickIntervalMs, derived in InitPreemptThresholds)
+	ktimer.Rearm(TimerRearmTicks)
 
 	// Suppress unused warnings
 	_ = irqNum
