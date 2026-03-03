@@ -1,8 +1,10 @@
 // tools/gen-ast-stubs.go
 //
-// Generates thin client stubs by parsing Go runtime source files with go/ast
-// and replacing function bodies with minimal `for {}` loops.
+// Generates thin client stubs by parsing Go standard library source files
+// with go/ast and replacing function bodies with minimal `for {}` loops.
 // The resulting overlay allows compilation of tiny userspace binaries.
+//
+// Supports multiple packages (e.g., runtime and syscall) via the -packages flag.
 package main
 
 import (
@@ -36,6 +38,13 @@ type TransformResult struct {
 	UsedImports map[string]bool // Imports actually used outside function bodies
 }
 
+// packageInfo holds source and output directories for one package being processed.
+type packageInfo struct {
+	name      string // e.g., "runtime", "syscall"
+	sourceDir string // e.g., $GOROOT/src/runtime
+	outputDir string // e.g., build/thin-overlay/runtime
+}
+
 var (
 	flagRuntimeDir    = flag.String("runtime", "", "Path to Go runtime source directory ($GOROOT/src/runtime)")
 	flagOutputDir     = flag.String("output", "", "Output directory for stub files")
@@ -44,12 +53,14 @@ var (
 	flagVerbose       = flag.Bool("v", false, "Verbose output")
 	flagGo            = flag.String("go", "", "Path to Go binary (used with -runtime-from-go)")
 	flagRuntimeFromGo = flag.Bool("runtime-from-go", false, "Discover runtime dir via 'go env GOROOT' using the -go binary")
+	flagPackages      = flag.String("packages", "runtime", "Comma-separated list of packages to stub (e.g., runtime,syscall)")
 )
 
 func main() {
 	flag.Parse()
 
-	// If -runtime-from-go is set, discover runtime dir from the Go binary
+	// Discover GOROOT if -runtime-from-go is set
+	var goroot string
 	if *flagRuntimeFromGo {
 		if *flagGo == "" {
 			fmt.Fprintf(os.Stderr, "Error: -runtime-from-go requires -go=<path-to-go-binary>\n")
@@ -60,72 +71,53 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error running '%s env GOROOT': %v\n", *flagGo, err)
 			os.Exit(1)
 		}
-		goroot := strings.TrimSpace(string(out))
-		runtimeDir := filepath.Join(goroot, "src", "runtime")
-		flagRuntimeDir = &runtimeDir
+		goroot = strings.TrimSpace(string(out))
+
+		// For backward compatibility: set -runtime to GOROOT/src/runtime
+		// if not explicitly provided
+		if *flagRuntimeDir == "" {
+			runtimeDir := filepath.Join(goroot, "src", "runtime")
+			flagRuntimeDir = &runtimeDir
+		}
 	}
 
-	if *flagRuntimeDir == "" || *flagOutputDir == "" || *flagOverlayOut == "" {
+	if *flagOutputDir == "" || *flagOverlayOut == "" {
 		fmt.Fprintf(os.Stderr, "Usage: %s -runtime=<dir> -output=<dir> -overlay=<file.json> [-manifest=<file>] [-v]\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "   or: %s -go=<path> -runtime-from-go -output=<dir> -overlay=<file.json> [-manifest=<file>] [-v]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "   or: %s -go=<path> -runtime-from-go -output=<dir> -overlay=<file.json> [-packages=runtime,syscall] [-manifest=<file>] [-v]\n", os.Args[0])
 		os.Exit(1)
 	}
 
-	// Find all runtime source files
-	files, err := findSourceFiles(*flagRuntimeDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error finding source files: %v\n", err)
+	// Build the list of packages to process
+	packages := buildPackageList(goroot)
+
+	if len(packages) == 0 {
+		fmt.Fprintf(os.Stderr, "Error: no packages to process (set -runtime or -packages with -runtime-from-go)\n")
 		os.Exit(1)
 	}
 
-	if *flagVerbose {
-		fmt.Printf("Found %d source files\n", len(files))
-	}
-
-	// Process each file
+	// Process each package
 	var allStubs []FuncStub
-	var processedFiles []string
+	totalFiles := 0
+	// overlayReplace accumulates all overlay mappings across packages
+	overlayReplace := make(map[string]string)
 
-	for _, path := range files {
-		// Skip assembly files - they can't be parsed by go/parser
-		if strings.HasSuffix(path, ".s") {
-			if *flagVerbose {
-				rel, _ := filepath.Rel(*flagRuntimeDir, path)
-				fmt.Printf("  %s: skipped (assembly)\n", rel)
-			}
-			continue
-		}
-
-		result, err := transformFile(path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error transforming %s: %v\n", path, err)
-			os.Exit(1)
-		}
-
-		// Calculate output path
-		rel, err := filepath.Rel(*flagRuntimeDir, path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error computing relative path for %s: %v\n", path, err)
-			os.Exit(1)
-		}
-		outputPath := filepath.Join(*flagOutputDir, rel)
-
-		// Write transformed file
-		if err := writeStubFile(result, outputPath); err != nil {
-			fmt.Fprintf(os.Stderr, "Error writing %s: %v\n", outputPath, err)
-			os.Exit(1)
-		}
-
-		allStubs = append(allStubs, result.StubFuncs...)
-		processedFiles = append(processedFiles, path)
-
+	for _, pkg := range packages {
 		if *flagVerbose {
-			fmt.Printf("  %s: %d stubs\n", rel, len(result.StubFuncs))
+			fmt.Printf("Processing package: %s (source: %s)\n", pkg.name, pkg.sourceDir)
 		}
+
+		stubs, fileCount, err := processPackage(pkg, overlayReplace)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error processing package %s: %v\n", pkg.name, err)
+			os.Exit(1)
+		}
+
+		allStubs = append(allStubs, stubs...)
+		totalFiles += fileCount
 	}
 
-	// Generate overlay JSON
-	if err := generateOverlay(*flagRuntimeDir, *flagOutputDir, *flagOverlayOut, processedFiles); err != nil {
+	// Generate combined overlay JSON
+	if err := writeOverlayJSON(*flagOverlayOut, overlayReplace); err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating overlay: %v\n", err)
 		os.Exit(1)
 	}
@@ -138,8 +130,104 @@ func main() {
 		}
 	}
 
-	fmt.Printf("Generated %d stub files with %d stubbed functions\n", len(processedFiles), len(allStubs))
+	fmt.Printf("Generated %d stub files with %d stubbed functions across %d packages\n",
+		totalFiles, len(allStubs), len(packages))
 	fmt.Printf("Overlay written to: %s\n", *flagOverlayOut)
+}
+
+// buildPackageList constructs the list of packages to process from flags.
+func buildPackageList(goroot string) []packageInfo {
+	pkgNames := strings.Split(*flagPackages, ",")
+
+	var packages []packageInfo
+	for _, name := range pkgNames {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+
+		var srcDir, outDir string
+		if name == "runtime" && *flagRuntimeDir != "" {
+			// Use explicit -runtime flag for backward compatibility
+			srcDir = *flagRuntimeDir
+			outDir = filepath.Join(*flagOutputDir, "runtime")
+		} else if goroot != "" {
+			// Derive source dir from GOROOT
+			srcDir = filepath.Join(goroot, "src", name)
+			outDir = filepath.Join(*flagOutputDir, name)
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: cannot locate source for package %q (need -runtime-from-go)\n", name)
+			continue
+		}
+
+		packages = append(packages, packageInfo{
+			name:      name,
+			sourceDir: srcDir,
+			outputDir: outDir,
+		})
+	}
+
+	return packages
+}
+
+// processPackage processes a single package: finds files, transforms them,
+// writes stubs, and adds overlay entries. Returns stubs and file count.
+func processPackage(pkg packageInfo, overlayReplace map[string]string) ([]FuncStub, int, error) {
+	// Find source files
+	files, err := findSourceFiles(pkg.sourceDir)
+	if err != nil {
+		return nil, 0, fmt.Errorf("finding source files: %w", err)
+	}
+
+	if *flagVerbose {
+		fmt.Printf("  Found %d source files in %s\n", len(files), pkg.name)
+	}
+
+	var stubs []FuncStub
+	fileCount := 0
+
+	for _, path := range files {
+		// Skip assembly files - they can't be parsed by go/parser
+		if strings.HasSuffix(path, ".s") {
+			if *flagVerbose {
+				rel, _ := filepath.Rel(pkg.sourceDir, path)
+				fmt.Printf("  %s/%s: skipped (assembly)\n", pkg.name, rel)
+			}
+			continue
+		}
+
+		result, err := transformFile(path)
+		if err != nil {
+			return nil, 0, fmt.Errorf("transforming %s: %w", path, err)
+		}
+
+		// Calculate output path
+		rel, err := filepath.Rel(pkg.sourceDir, path)
+		if err != nil {
+			return nil, 0, fmt.Errorf("computing relative path for %s: %w", path, err)
+		}
+		outputPath := filepath.Join(pkg.outputDir, rel)
+
+		// Write transformed file
+		if err := writeStubFile(result, outputPath); err != nil {
+			return nil, 0, fmt.Errorf("writing %s: %w", outputPath, err)
+		}
+
+		// Add overlay mapping: original → stub
+		absOrig, _ := filepath.Abs(path)
+		absStub, _ := filepath.Abs(outputPath)
+		overlayReplace[absOrig] = absStub
+
+		stubs = append(stubs, result.StubFuncs...)
+		fileCount++
+
+		if *flagVerbose {
+			fmt.Printf("  %s/%s: %d stubs\n", pkg.name, rel, len(result.StubFuncs))
+		}
+	}
+
+	fmt.Printf("  %s: %d files, %d stubbed functions\n", pkg.name, fileCount, len(stubs))
+	return stubs, fileCount, nil
 }
 
 // findSourceFiles returns all .go and .s files for the target platform
@@ -592,29 +680,14 @@ func writeStubFile(result *TransformResult, outputPath string) error {
 	return cfg.Fprint(f, result.FileSet, result.File)
 }
 
-// generateOverlay creates the overlay JSON file
-func generateOverlay(runtimeDir, outputDir, overlayPath string, files []string) error {
+// writeOverlayJSON writes the combined overlay JSON file from accumulated replacements.
+func writeOverlayJSON(overlayPath string, replace map[string]string) error {
 	overlay := struct {
 		Replace map[string]string `json:"Replace"`
 	}{
-		Replace: make(map[string]string),
+		Replace: replace,
 	}
 
-	for _, origPath := range files {
-		// Calculate relative path from runtime dir
-		rel, _ := filepath.Rel(runtimeDir, origPath)
-
-		// Output path
-		stubPath := filepath.Join(outputDir, rel)
-
-		// Absolute paths for overlay
-		absOrig, _ := filepath.Abs(origPath)
-		absStub, _ := filepath.Abs(stubPath)
-
-		overlay.Replace[absOrig] = absStub
-	}
-
-	// Write JSON
 	f, err := os.Create(overlayPath)
 	if err != nil {
 		return err

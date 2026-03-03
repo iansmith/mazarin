@@ -159,6 +159,7 @@ const (
 	ThreadSleeping        ThreadState = 4 // Blocked on nanosleep
 	ThreadExited          ThreadState = 5 // Thread has exited (being cleaned up)
 	ThreadBlockedSoftIRQ  ThreadState = 6 // Blocked waiting for soft IRQ
+	ThreadBlockedLoadMaz  ThreadState = 7 // Blocked waiting for .maz load to complete
 )
 
 // MaxPriests is the maximum number of priest processes (userspace programs).
@@ -427,6 +428,10 @@ func WakeThreadForSignal(t *Thread) {
 		t.State = ThreadReady
 		clearSoftIRQSlotForTID(t.TID)
 		enqueueReadySchedLockHeld(t)
+	case ThreadBlockedLoadMaz:
+		// Defer signal delivery until LoadMaz completes — the worker
+		// goroutine will wake this thread with the result. Waking
+		// prematurely would return a half-filled MazLoadResult.
 	}
 	// ThreadRunning / ThreadReady: signal delivered at next context switch
 
@@ -1150,6 +1155,9 @@ func KernelIdleLoop() {
 			default:
 			}
 		}
+		// Check for pending .maz load work and execute it directly on this
+		// goroutine's growable stack. Both atomic flag and BlockedTID are checked.
+		DispatchLoadMazWork()
 		// Flush any pending console ring data to userspace.
 		if softIRQConsole != nil {
 			softIRQConsole.CheckPendingWake()

@@ -136,3 +136,9 @@ func GetThreadPID(threadPtr uintptr) int16 { return -1 }
 func RestoreFromSignalFrame(threadPtr uintptr) {}
 
 func WakeThreadForSignal(threadPtr uintptr) {}
+
+// ============================================================================
+// From loadmaz_asm.go
+// ============================================================================
+
+func blockForLoadMaz() uintptr { return 0 }

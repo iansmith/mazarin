@@ -21,6 +21,7 @@ const (
 	sysFlushFramebuffer      = 0x100D // Flush framebuffer region to display
 	sysSetTimerDeadline      = 0x100E // Set timer deadline on soft IRQ slot
 	sysSetScanoutOffset      = 0x100F // Set scanout Y offset for hardware scrolling
+	sysLoadMaz               = 0x1012 // Load .maz PIE ELF into priest's address space
 )
 
 // DebugPutChar writes a single character to the kernel debug output.

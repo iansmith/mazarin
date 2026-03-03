@@ -122,6 +122,7 @@ tool (
 	mazzy/cmd/go-wc
 	mazzy/cmd/imageconvert
 	mazzy/cmd/incbin2goasm
+	mazzy/cmd/maz-reloc
 	mazzy/cmd/mkfat32
 	mazzy/cmd/patch-entry
 	mazzy/cmd/print-kmazarin-addr

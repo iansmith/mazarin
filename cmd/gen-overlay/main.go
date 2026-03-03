@@ -24,11 +24,14 @@ type Overlay struct {
 }
 
 func main() {
-	overlayType := flag.String("type", "", "overlay type: kmazarin, kmazarin-amd64, kmazarin-riscv64, userspace")
+	overlayType := flag.String("type", "", "overlay type: kmazarin, kmazarin-amd64, kmazarin-riscv64, userspace, merge")
 	patchesDir := flag.String("patches", "", "directory containing patch files")
 	output := flag.String("o", "", "output JSON file")
+	baseOverlay := flag.String("base", "", "base overlay JSON (for -type merge)")
+	extraOverlay := flag.String("extra", "", "extra overlay JSON to merge on top (for -type merge)")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: gen-overlay -type TYPE -patches DIR -o OUTPUT\n")
+		fmt.Fprintf(os.Stderr, "   or: gen-overlay -type merge -base BASE.json -extra EXTRA.json -o OUTPUT\n")
 		fmt.Fprintf(os.Stderr, "Generate Go overlay JSON for patched runtime files.\n\n")
 		fmt.Fprintf(os.Stderr, "Types:\n")
 		fmt.Fprintf(os.Stderr, "  kmazarin         - Kernel runtime patches (ARM64)\n")
@@ -37,12 +40,33 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  userspace        - Userspace runtime patches\n")
 		fmt.Fprintf(os.Stderr, "  cardinal-linux   - Cardinal bootloader runtime patches (Linux ARM64→bare metal)\n")
 		fmt.Fprintf(os.Stderr, "  diplomat         - UEFI bootloader runtime patches (Windows→UEFI, deprecated)\n")
-		fmt.Fprintf(os.Stderr, "  diplomat-linux   - UEFI bootloader runtime patches (Linux→UEFI)\n\n")
+		fmt.Fprintf(os.Stderr, "  diplomat-linux   - UEFI bootloader runtime patches (Linux→UEFI)\n")
+		fmt.Fprintf(os.Stderr, "  merge            - Merge two overlay JSONs (extra overwrites base for same keys)\n\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
 
-	if *overlayType == "" || *patchesDir == "" || *output == "" {
+	if *overlayType == "" || *output == "" {
+		flag.Usage()
+		os.Exit(1)
+	}
+
+	// Handle merge type specially — it doesn't need GOROOT or patches dir
+	if *overlayType == "merge" {
+		if *baseOverlay == "" || *extraOverlay == "" {
+			fmt.Fprintf(os.Stderr, "gen-overlay: -type merge requires -base and -extra\n")
+			os.Exit(1)
+		}
+		err := mergeOverlays(*baseOverlay, *extraOverlay, *output)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gen-overlay: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Generated %s\n", *output)
+		return
+	}
+
+	if *patchesDir == "" {
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -292,6 +316,47 @@ func buildDiplomatOverlay(overlay *Overlay, goroot, patchesDir string) error {
 	}
 
 	return nil
+}
+
+// mergeOverlays reads two overlay JSON files, merges them (extra overwrites base
+// for the same keys), and writes the result to output.
+func mergeOverlays(basePath, extraPath, outputPath string) error {
+	baseData, err := os.ReadFile(basePath)
+	if err != nil {
+		return fmt.Errorf("reading base overlay: %w", err)
+	}
+	extraData, err := os.ReadFile(extraPath)
+	if err != nil {
+		return fmt.Errorf("reading extra overlay: %w", err)
+	}
+
+	var base, extra Overlay
+	if err := json.Unmarshal(baseData, &base); err != nil {
+		return fmt.Errorf("parsing base overlay: %w", err)
+	}
+	if err := json.Unmarshal(extraData, &extra); err != nil {
+		return fmt.Errorf("parsing extra overlay: %w", err)
+	}
+
+	// Start with base, overwrite with extra
+	merged := Overlay{Replace: make(map[string]string)}
+	for k, v := range base.Replace {
+		merged.Replace[k] = v
+	}
+	for k, v := range extra.Replace {
+		merged.Replace[k] = v
+	}
+
+	data, err := json.MarshalIndent(merged, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling merged overlay: %w", err)
+	}
+
+	fmt.Printf("Merged %d base + %d extra = %d total entries (%d overwritten)\n",
+		len(base.Replace), len(extra.Replace), len(merged.Replace),
+		len(base.Replace)+len(extra.Replace)-len(merged.Replace))
+
+	return os.WriteFile(outputPath, data, 0644)
 }
 
 func buildDiplomatLinuxOverlay(overlay *Overlay, goroot, patchesDir string) error {

@@ -30,6 +30,7 @@ const (
 	SysSetScanoutOffset     = MazzySyscallBase + 15 // 0x100F - Set scanout Y offset for hardware scrolling
 	SysTransferPages        = MazzySyscallBase + 16 // 0x1010 - Transfer pages between priests
 	SysMapSharedPage        = MazzySyscallBase + 17 // 0x1011 - Map shared page from another priest
+	SysLoadMaz              = MazzySyscallBase + 18 // 0x1012 - Load .maz PIE ELF into priest's address space
 )
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
@@ -53,6 +54,7 @@ var mazzySyscallTable = [64]SyscallHandler{
 	15: SyscallSetScanoutOffset,    // SetScanoutOffset = 0x100F
 	16: SyscallTransferPages,      // TransferPages = 0x1010
 	17: SyscallMapSharedPage,      // MapSharedPage = 0x1011
+	18: SyscallLoadMaz,            // LoadMaz = 0x1012
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.

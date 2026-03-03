@@ -58,6 +58,13 @@ vars:
   KMAZARIN_OVERLAY_JSON: '{{.BUILD_DIR}}/kmazarin-overlay.json'
   USERSPACE_OVERLAY_JSON: '{{.BUILD_DIR}}/userspace-overlay.json'
   SIEVETEST_ELF: '{{.BUILD_DIR}}/sievetest.elf'
+
+  # .maz program build artifacts
+  THIN_OVERLAY_DIR: '{{.BUILD_DIR}}/thin-overlay'
+  THIN_OVERLAY_JSON: '{{.BUILD_DIR}}/thin-overlay.json'
+  THIN_MANIFEST: '{{.BUILD_DIR}}/thin-stubs.manifest'
+  MAZ_OVERLAY_JSON: '{{.BUILD_DIR}}/maz-overlay.json'
+  HELLOWORLD_MAZ: '{{.BUILD_DIR}}/helloworld.maz'
   DAPOPE_ELF: '{{.BUILD_DIR}}/dapope.elf'
   STDIO_ELF: '{{.BUILD_DIR}}/stdio.elf'
   DISK_IMAGE: '{{.BUILD_DIR}}/disk.img'
@@ -424,23 +431,80 @@ tasks:
       - '{{.GO}} tool go-echo "Sievetest built at {{.SIEVETEST_ELF}}"'
 
   # ===========================================================================
+  # .maz Programs (PIE + thin stubs, dynamically linked at load time)
+  # ===========================================================================
+  # .maz programs are loaded INTO a priest's address space, sharing its Go
+  # runtime. They are built as PIE with thin runtime stubs (for {} loops)
+  # that get patched at load time by the kernel to target the priest's real
+  # functions. The build pipeline:
+  #   1. gen-ast-stubs generates thin overlay (runtime+syscall → for{})
+  #   2. Merge thin overlay with userspace overlay (syscall PriestSyscallEntry routing)
+  #   3. Build as PIE with merged overlay
+  #   4. maz-reloc scans binary, generates .maz_imports section
+
+  thin-overlay:
+    run: once
+    method: checksum
+    desc: Generate thin client overlay (runtime + syscall stubs)
+    deps: [build-dir]
+    sources:
+      - cmd/gen-ast-stubs/main.go
+    generates:
+      - '{{.THIN_OVERLAY_JSON}}'
+      - '{{.THIN_MANIFEST}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Generating thin client overlay (runtime + syscall)..."'
+      - '{{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.THIN_OVERLAY_DIR}} -overlay={{.THIN_OVERLAY_JSON}} -manifest={{.THIN_MANIFEST}}'
+
+  maz-overlay:
+    run: once
+    method: checksum
+    desc: Generate merged overlay for .maz build (thin stubs + userspace syscall routing)
+    deps: [thin-overlay, userspace-overlay]
+    sources:
+      - '{{.THIN_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.MAZ_OVERLAY_JSON}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Merging thin + userspace overlays for .maz build..."'
+      - '{{.GO}} tool gen-overlay -type merge -base {{.THIN_OVERLAY_JSON}} -extra {{.USERSPACE_OVERLAY_JSON}} -o {{.MAZ_OVERLAY_JSON}}'
+
+  helloworld-maz:
+    desc: Build helloworld.maz (PIE + thin stubs, dynamically linked)
+    deps: [check-env, maz-overlay]
+    sources:
+      - 'flock/cmd/helloworld/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.MAZ_OVERLAY_JSON}}'
+    generates:
+      - '{{.HELLOWORLD_MAZ}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building helloworld.maz (PIE + thin stubs)..."'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -buildmode=pie -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.HELLOWORLD_MAZ}} ./flock/cmd/helloworld'
+      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
+      - '{{.GO}} tool maz-reloc {{.HELLOWORLD_MAZ}} {{.THIN_MANIFEST}}'
+      - '{{.GO}} tool go-echo "helloworld.maz ready at {{.HELLOWORLD_MAZ}}"'
+
+  # ===========================================================================
   # Disk Image
   # ===========================================================================
 
   disk-arm64:
     desc: Create FAT32 disk image with ARM64 flock binaries and kmazarin kernel
-    deps: [dapope-arm64, stdio-arm64, sievetest, kmazarin-arm64, convert-boot-image]
+    deps: [dapope-arm64, stdio-arm64, sievetest, helloworld-maz, kmazarin-arm64, convert-boot-image]
     sources:
       - '{{.DAPOPE_ELF}}'
       - '{{.STDIO_ELF}}'
       - '{{.SIEVETEST_ELF}}'
+      - '{{.HELLOWORLD_MAZ}}'
       - '{{.KMAZARIN_ELF}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
     generates:
       - '{{.DISK_IMAGE}}'
     cmds:
       - '{{.GO}} tool go-echo "Creating FAT32 disk image (ARM64)..."'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.DAPOPE_ELF}} {{.STDIO_ELF}} {{.SIEVETEST_ELF}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.DAPOPE_ELF}} {{.STDIO_ELF}} {{.SIEVETEST_ELF}} {{.HELLOWORLD_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "Disk image created at {{.DISK_IMAGE}}"'
 
   disk-x86_64:

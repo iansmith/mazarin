@@ -890,6 +890,10 @@ func simpleMain() {
 	// TEMPORARILY DISABLED for debugging ARM64 userspace crash:
 	// atomic.StoreUint32(&suppressSerial, 1)
 
+	// Start the kernel worker goroutine for .maz loading. Must be done
+	// before KernelIdleLoop since the worker needs a normal goroutine stack.
+	initLoadMazWorker()
+
 	// Enter the kernel idle loop. Thread 0 (m0/g0) stays alive as a normal
 	// scheduled thread. Priest threads are already running. The timer IRQ
 	// preempts thread 0 and context-switches to priest threads naturally.

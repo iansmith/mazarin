@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 // Linux evdev event types
@@ -369,6 +370,39 @@ func main() {
 		time.Sleep(2 * time.Second)
 		fmt.Fprintln(os.Stderr, "[dapope] stderr test: this should be dark red")
 	}()
+
+	// Load and launch .maz test program
+	fmt.Println("[dapope] loading helloworld.maz...")
+	mazResult, mazErr := sys.LoadMaz("/helloworld.maz")
+	if mazErr != nil {
+		fmt.Printf("[dapope] LoadMaz failed: %v\n", mazErr)
+	} else {
+		// Debug: print entry point via direct UART before any fmt calls
+		sys.DebugPutChar('[')
+		sys.DebugPutChar('E')
+		sys.DebugPutChar('P')
+		sys.DebugPutChar('=')
+		ep := mazResult.EntryPoint
+		for shift := 60; shift >= 0; shift -= 4 {
+			nib := byte((ep >> uint(shift)) & 0xF)
+			if nib < 10 {
+				sys.DebugPutChar('0' + nib)
+			} else {
+				sys.DebugPutChar('A' + nib - 10)
+			}
+		}
+		sys.DebugPutChar(']')
+
+		fmt.Printf("[dapope] .maz loaded: entry=0x%X base=0x%X size=0x%X\n",
+			mazResult.EntryPoint, mazResult.LoadBase, mazResult.LoadSize)
+
+		// Convert entry point to a callable function and launch as goroutine
+		type funcval struct{ fn uintptr }
+		fv := &funcval{fn: uintptr(mazResult.EntryPoint)}
+		mazMain := *(*func())(unsafe.Pointer(&fv))
+		go mazMain()
+		fmt.Println("[dapope] .maz goroutine launched")
+	}
 
 	// Block main goroutine forever
 	select {}

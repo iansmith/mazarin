@@ -56,6 +56,15 @@ type Priest struct {
 	// Index 0 is unused (signal numbers are 1-based).
 	// Each priest has its own table so handlers are isolated between processes.
 	SignalActions [SignalNSIG]PriestSignalAction
+
+	// SymbolTable caches the priest's ELF symbol name → VA address mapping.
+	// Built during SyscallLaunch so that SysLoadMaz can resolve .maz imports
+	// against the priest's real functions at load time.
+	SymbolTable map[string]uint64
+
+	// HighestVA tracks the highest VA address used by the priest's loaded segments.
+	// Used by SysLoadMaz to determine where to place .maz segments.
+	HighestVA uint64
 }
 
 // Id implements the ds.Ider interface for Priest.

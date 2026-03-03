@@ -7,6 +7,7 @@ import (
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/proc"
 	"mazzy/shared/fs/fat32"
 	"unsafe"
 )
@@ -202,19 +203,25 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 	// Register the framebuffer as a span to prevent mmap collisions
 	addSpan(UserFramebufferVA, UserFramebufferSize)
 
+	// Build symbol table and track highest VA BEFORE loading
+	// (we need the raw ELF data, not the loaded memory image)
+	hdr := parseELFHeader(elfData)
+	priestSymTable := buildSymbolTable(elfData, &hdr)
+	priestHighestVA := findHighestVA(elfData, &hdr)
+
 	// Parse and load ELF (now using the fresh process page table)
 	// CRITICAL: Pass processL0PA explicitly to prevent race conditions!
 	// Without this, context switches during ELF loading could cause the
 	// global processL0PA to be overwritten, loading ELF data into the
 	// WRONG page table.
-	proc, err := loadELF(elfData, filename, processL0PA, priestNum)
+	loadedProc, err := loadELF(elfData, filename, processL0PA, priestNum)
 	if err != nil {
 		console.KPrintf("[Launch] loadELF FAILED: %v\n", err)
 		return -5
 	}
 
 	// Store process info
-	currentProcess = proc
+	currentProcess = loadedProc
 
 	// Final I-cache invalidation before userspace - ensure all loaded code is visible
 	kmem.InvalidateAllICache()
@@ -235,7 +242,20 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 
 	// Create a new thread for this process instead of jumping directly
 	// The thread will be added to the ready queue and scheduled by the kernel
-	tid := CreateUserspaceThread(proc.EntryPoint, proc.StackTop, processL0PA)
+	tid := CreateUserspaceThread(loadedProc.EntryPoint, loadedProc.StackTop, processL0PA)
+
+	// Cache the symbol table and highest VA on the priest struct.
+	// Find the priest by matching its PageTableL0PA (just allocated above).
+	for i := 0; i < proc.MaxPriests; i++ {
+		if proc.PriestListInUse[i] && proc.PriestListData[i].PageTableL0PA == processL0PA {
+			proc.PriestListData[i].SymbolTable = priestSymTable
+			proc.PriestListData[i].HighestVA = priestHighestVA
+			console.KPrintf("[Launch] cached %d symbols, highestVA=0x%X for priest %d\n",
+				len(priestSymTable), priestHighestVA, proc.PriestListData[i].PID)
+			break
+		}
+	}
+
 	_ = tid
 
 	// Return to caller - the new thread will be scheduled later
@@ -452,6 +472,118 @@ func findSymbolAddress(elfData []byte, hdr *elf64Header, symbolName string) uint
 	}
 
 	return 0 // Symbol not found
+}
+
+// buildSymbolTable builds a complete name → VA address map from an ELF's .symtab.
+// This is used to cache the priest's symbols for SysLoadMaz import resolution.
+// Only includes FUNC and OBJECT symbols with non-zero values.
+func buildSymbolTable(elfData []byte, hdr *elf64Header) map[string]uint64 {
+	result := make(map[string]uint64)
+
+	if hdr.Shnum == 0 || hdr.Shoff == 0 {
+		return result
+	}
+
+	// Find the symbol table section
+	var symtab *elf64Shdr
+	for i := uint16(0); i < hdr.Shnum; i++ {
+		shdrOffset := hdr.Shoff + uint64(i)*uint64(hdr.Shentsize)
+		if shdrOffset+uint64(hdr.Shentsize) > uint64(len(elfData)) {
+			continue
+		}
+		shdr := parseSectionHeader(elfData[shdrOffset:])
+		if shdr.Type == SHT_SYMTAB {
+			symtabCopy := shdr
+			symtab = &symtabCopy
+			break
+		}
+	}
+
+	if symtab == nil {
+		return result
+	}
+
+	// Get the associated string table
+	if symtab.Link >= uint32(hdr.Shnum) {
+		return result
+	}
+	strtabOffset := hdr.Shoff + uint64(symtab.Link)*uint64(hdr.Shentsize)
+	if strtabOffset+uint64(hdr.Shentsize) > uint64(len(elfData)) {
+		return result
+	}
+	strtabHdr := parseSectionHeader(elfData[strtabOffset:])
+
+	if strtabHdr.Offset+strtabHdr.Size > uint64(len(elfData)) {
+		return result
+	}
+	strtabData := elfData[strtabHdr.Offset : strtabHdr.Offset+strtabHdr.Size]
+
+	if symtab.Offset+symtab.Size > uint64(len(elfData)) {
+		return result
+	}
+	symtabData := elfData[symtab.Offset : symtab.Offset+symtab.Size]
+
+	symSize := uint64(24) // sizeof(elf64Sym)
+	numSyms := symtab.Size / symSize
+
+	for i := uint64(0); i < numSyms; i++ {
+		symOffset := i * symSize
+		if symOffset+symSize > uint64(len(symtabData)) {
+			break
+		}
+
+		sym := parseSymbol(symtabData[symOffset:])
+
+		// Skip symbols with no value (undefined, etc.)
+		if sym.Value == 0 {
+			continue
+		}
+
+		// Only include FUNC and OBJECT symbols
+		symType := sym.Info & 0x0F
+		if symType != 1 && symType != 2 { // STT_OBJECT=1, STT_FUNC=2
+			continue
+		}
+
+		// Get name from string table
+		if sym.Name >= uint32(len(strtabData)) {
+			continue
+		}
+		nameStart := sym.Name
+		nameEnd := nameStart
+		for nameEnd < uint32(len(strtabData)) && strtabData[nameEnd] != 0 {
+			nameEnd++
+		}
+		name := string(strtabData[nameStart:nameEnd])
+		if name == "" {
+			continue
+		}
+
+		result[name] = sym.Value
+	}
+
+	return result
+}
+
+// findHighestVA returns the highest VA address used by loaded segments.
+func findHighestVA(elfData []byte, hdr *elf64Header) uint64 {
+	var highest uint64
+	for i := uint16(0); i < hdr.Phnum; i++ {
+		phdrOffset := hdr.Phoff + uint64(i)*uint64(hdr.Phentsize)
+		if phdrOffset+uint64(hdr.Phentsize) > uint64(len(elfData)) {
+			continue
+		}
+		phdr := parseProgramHeader(elfData[phdrOffset:])
+		if phdr.Type != PT_LOAD {
+			continue
+		}
+		end := phdr.Vaddr + phdr.Memsz
+		if end > highest {
+			highest = end
+		}
+	}
+	// Page-align upward
+	return (highest + 4095) &^ 4095
 }
 
 // loadSegment loads a single ELF segment into memory

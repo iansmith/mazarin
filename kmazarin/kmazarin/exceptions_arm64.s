@@ -1717,6 +1717,32 @@ el0_spsr_char:
 	SUB	$1, R15
 	CBNZ	R15, el0_print_spsr_loop
 
+	// Print " LR=" (X30 at time of fault — tells us who called/jumped to the faulting address)
+	MOVD	$' ', R11
+	MOVB	R11, (R12)
+	MOVD	$'L', R11
+	MOVB	R11, (R12)
+	MOVD	$'R', R11
+	MOVB	R11, (R12)
+	MOVD	$'=', R11
+	MOVB	R11, (R12)
+	MOVD	(EXC_FRAME_X28+16)(RSP), R14  // X30 = LR from exception frame
+	MOVD	$16, R15
+el0_print_lr_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	el0_lr_digit
+	ADD	$('A'-10), R11
+	B	el0_lr_char
+el0_lr_digit:
+	ADD	$'0', R11
+el0_lr_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, el0_print_lr_loop
+
 	// Print " SP0="
 	MOVD	$' ', R11
 	MOVB	R11, (R12)
