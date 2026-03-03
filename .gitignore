@@ -53,6 +53,10 @@ stdio
 elf2pe
 relocate-kmazarin
 go-start
+gen-ast-stubs
+gen-overlay
+maz-reloc
+helloworld
 
 # Old directories (should be removed)
 src/
