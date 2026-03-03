@@ -67,16 +67,19 @@ vars:
   HELLOWORLD_MAZ: '{{.BUILD_DIR}}/helloworld.maz'
   DAPOPE_ELF: '{{.BUILD_DIR}}/dapope.elf'
   STDIO_ELF: '{{.BUILD_DIR}}/stdio.elf'
+  DISKPRIEST_ELF: '{{.BUILD_DIR}}/disk.elf'
   DISK_IMAGE: '{{.BUILD_DIR}}/disk.img'
 
   # x86_64 userspace programs
   DAPOPE_AMD64_ELF: '{{.BUILD_DIR}}/dapope-amd64.elf'
   STDIO_AMD64_ELF: '{{.BUILD_DIR}}/stdio-amd64.elf'
+  DISKPRIEST_AMD64_ELF: '{{.BUILD_DIR}}/disk-amd64.elf'
   DISK_AMD64_IMAGE: '{{.BUILD_DIR}}/disk-amd64.img'
 
   # RISC-V 64-bit userspace programs
   DAPOPE_RISCV64_ELF: '{{.BUILD_DIR}}/dapope-riscv64.elf'
   STDIO_RISCV64_ELF: '{{.BUILD_DIR}}/stdio-riscv64.elf'
+  DISKPRIEST_RISCV64_ELF: '{{.BUILD_DIR}}/disk-riscv64.elf'
   DISK_RISCV64_IMAGE: '{{.BUILD_DIR}}/disk-riscv64.img'
 
   # Diplomat (x86_64 UEFI bootloader) output files
@@ -346,6 +349,23 @@ tasks:
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.STDIO_ELF}} ./flock/cmd/stdio'
       - '{{.GO}} tool go-echo "Stdio ARM64 built at {{.STDIO_ELF}}"'
 
+  diskpriest-arm64:
+    desc: Build disk priest (filesystem server, ARM64)
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - 'shared/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.DISKPRIEST_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building disk priest for ARM64..."'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DISKPRIEST_ELF}} ./flock/cmd/disk'
+      - '{{.GO}} tool go-echo "Disk priest ARM64 built at {{.DISKPRIEST_ELF}}"'
+
   dapope-x86_64:
     desc: Build dapope input event handler priest (x86_64)
     deps: [check-env, userspace-overlay]
@@ -380,6 +400,23 @@ tasks:
       - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.STDIO_AMD64_ELF}} ./flock/cmd/stdio'
       - '{{.GO}} tool go-echo "Stdio x86_64 built at {{.STDIO_AMD64_ELF}}"'
 
+  diskpriest-x86_64:
+    desc: Build disk priest (filesystem server, x86_64)
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - 'shared/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.DISKPRIEST_AMD64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building disk priest for x86_64..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DISKPRIEST_AMD64_ELF}} ./flock/cmd/disk'
+      - '{{.GO}} tool go-echo "Disk priest x86_64 built at {{.DISKPRIEST_AMD64_ELF}}"'
+
   dapope-riscv64:
     desc: Build dapope input event handler priest (RISC-V 64-bit)
     deps: [check-env, userspace-overlay]
@@ -413,6 +450,23 @@ tasks:
       - '{{.GO}} tool go-echo "Building stdio for RISC-V 64-bit..."'
       - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.STDIO_RISCV64_ELF}} ./flock/cmd/stdio'
       - '{{.GO}} tool go-echo "Stdio RISC-V 64-bit built at {{.STDIO_RISCV64_ELF}}"'
+
+  diskpriest-riscv64:
+    desc: Build disk priest (filesystem server, RISC-V 64-bit)
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - 'shared/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.DISKPRIEST_RISCV64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building disk priest for RISC-V 64-bit..."'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DISKPRIEST_RISCV64_ELF}} ./flock/cmd/disk'
+      - '{{.GO}} tool go-echo "Disk priest RISC-V 64-bit built at {{.DISKPRIEST_RISCV64_ELF}}"'
 
   sievetest:
     desc: Build sievetest (simple prime sieve for multi-priest testing)
@@ -492,10 +546,11 @@ tasks:
 
   disk-arm64:
     desc: Create FAT32 disk image with ARM64 flock binaries and kmazarin kernel
-    deps: [dapope-arm64, stdio-arm64, sievetest, helloworld-maz, kmazarin-arm64, convert-boot-image]
+    deps: [dapope-arm64, stdio-arm64, diskpriest-arm64, sievetest, helloworld-maz, kmazarin-arm64, convert-boot-image]
     sources:
       - '{{.DAPOPE_ELF}}'
       - '{{.STDIO_ELF}}'
+      - '{{.DISKPRIEST_ELF}}'
       - '{{.SIEVETEST_ELF}}'
       - '{{.HELLOWORLD_MAZ}}'
       - '{{.KMAZARIN_ELF}}'
@@ -504,15 +559,16 @@ tasks:
       - '{{.DISK_IMAGE}}'
     cmds:
       - '{{.GO}} tool go-echo "Creating FAT32 disk image (ARM64)..."'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.DAPOPE_ELF}} {{.STDIO_ELF}} {{.SIEVETEST_ELF}} {{.HELLOWORLD_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.DAPOPE_ELF}} {{.STDIO_ELF}} {{.DISKPRIEST_ELF}} {{.SIEVETEST_ELF}} {{.HELLOWORLD_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "Disk image created at {{.DISK_IMAGE}}"'
 
   disk-x86_64:
     desc: Create FAT32 disk image with x86_64 flock binaries and kmazarin kernel
-    deps: [dapope-x86_64, stdio-x86_64, kmazarin-x86_64, convert-boot-image]
+    deps: [dapope-x86_64, stdio-x86_64, diskpriest-x86_64, kmazarin-x86_64, convert-boot-image]
     sources:
       - '{{.DAPOPE_AMD64_ELF}}'
       - '{{.STDIO_AMD64_ELF}}'
+      - '{{.DISKPRIEST_AMD64_ELF}}'
       - '{{.KMAZARIN_AMD64_ELF}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
     generates:
@@ -523,15 +579,17 @@ tasks:
       - '{{.GO}} tool go-mkdir {{.BUILD_DIR}}/disk-staging-amd64'
       - '{{.GO}} tool go-cp {{.DAPOPE_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf'
       - '{{.GO}} tool go-cp {{.STDIO_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_AMD64_IMAGE}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool go-cp {{.DISKPRIEST_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/disk.elf'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_AMD64_IMAGE}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf {{.BUILD_DIR}}/disk-staging-amd64/disk.elf {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "x86_64 disk image created at {{.DISK_AMD64_IMAGE}}"'
 
   disk-riscv64:
     desc: Create FAT32 disk image with RISC-V 64-bit flock binaries and kmazarin kernel
-    deps: [dapope-riscv64, stdio-riscv64, kmazarin-riscv64, convert-boot-image]
+    deps: [dapope-riscv64, stdio-riscv64, diskpriest-riscv64, kmazarin-riscv64, convert-boot-image]
     sources:
       - '{{.DAPOPE_RISCV64_ELF}}'
       - '{{.STDIO_RISCV64_ELF}}'
+      - '{{.DISKPRIEST_RISCV64_ELF}}'
       - '{{.KMAZARIN_RISCV64_ELF}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
     generates:
@@ -541,7 +599,8 @@ tasks:
       - '{{.GO}} tool go-mkdir {{.BUILD_DIR}}/disk-staging-riscv64'
       - '{{.GO}} tool go-cp {{.DAPOPE_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/dapope.elf'
       - '{{.GO}} tool go-cp {{.STDIO_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/stdio.elf'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_RISCV64_IMAGE}} {{.BUILD_DIR}}/disk-staging-riscv64/dapope.elf {{.BUILD_DIR}}/disk-staging-riscv64/stdio.elf {{.KMAZARIN_RISCV64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool go-cp {{.DISKPRIEST_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/disk.elf'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_RISCV64_IMAGE}} {{.BUILD_DIR}}/disk-staging-riscv64/dapope.elf {{.BUILD_DIR}}/disk-staging-riscv64/stdio.elf {{.BUILD_DIR}}/disk-staging-riscv64/disk.elf {{.KMAZARIN_RISCV64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "RISC-V 64-bit disk image created at {{.DISK_RISCV64_IMAGE}}"'
 
   # ===========================================================================

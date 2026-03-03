@@ -2,7 +2,10 @@
 
 package ksyscall
 
-import "unsafe"
+import (
+	"mazzy/kmazarin/proc"
+	"unsafe"
+)
 
 // Stub implementations for forward declarations when running tests.
 // These replace the assembly/linkname implementations during test builds.
@@ -142,3 +145,16 @@ func WakeThreadForSignal(threadPtr uintptr) {}
 // ============================================================================
 
 func blockForLoadMaz() uintptr { return 0 }
+
+// ============================================================================
+// From ipc_asm.go
+// ============================================================================
+
+func blockForIPCCall() uintptr  { return 0 }
+func blockForIPCRecv() uintptr  { return 0 }
+func wakeIPCThread(tid int32, returnVal int64) {}
+func wakeIPCThreadByPID(pid int16, returnVal int64) {}
+func getCurrentThreadPIDAndTID() (proc.PriestId, int16) { return -1, -1 }
+func ipcQueuePush(p *proc.Priest, req proc.IPCRequest) bool { return true }
+func ipcQueuePop(p *proc.Priest) (proc.IPCRequest, bool) { return proc.IPCRequest{}, false }
+func getBlockDeviceOwnerPID() int16 { return -1 }

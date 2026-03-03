@@ -91,7 +91,12 @@ const (
 	DeviceTypeMouse    = 2
 	DeviceTypeSerial   = 3
 	DeviceTypeTimer    = 4
+	DeviceTypeBlock    = 5
 )
+
+// BlockVirtualIRQ is the virtual IRQ number for the kernel block device.
+// Used by the disk priest to register for block device ownership via RegisterSoftIRQ.
+const BlockVirtualIRQ uint32 = 201
 
 // TimerVirtualIRQ is the virtual IRQ number for the kernel timer device.
 // Well above real device IRQs, within the 256-entry irqToSlot array.

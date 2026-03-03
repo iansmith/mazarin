@@ -840,10 +840,21 @@ func simpleMain() {
 
 	// DEBUG: ReadMemStats disabled - hangs in bare-metal (triggers STW GC)
 
+	// Launch disk priest (filesystem server — must start before dapope/stdio)
+	diskName := "/disk.elf\x00"
+	diskPtr := uintptr(unsafe.Pointer(&([]byte(diskName))[0]))
+	result := ksyscall.SyscallLaunch(uint64(diskPtr), 0, 0, 0, 0, 0)
+	if result == 0 {
+		kmem.FinalUserspaceSync()
+		Print("[main] disk priest launched")
+	} else {
+		console.KPrintf("[main] disk priest launch failed (error %d)\n", result)
+	}
+
 	// Launch dapope (input event handler priest)
 	dapopeName := "/dapope.elf\x00"
 	dapopePtr := uintptr(unsafe.Pointer(&([]byte(dapopeName))[0]))
-	result := ksyscall.SyscallLaunch(uint64(dapopePtr), 0, 0, 0, 0, 0)
+	result = ksyscall.SyscallLaunch(uint64(dapopePtr), 0, 0, 0, 0, 0)
 	if result == 0 {
 		kmem.FinalUserspaceSync()
 		Print("[main] dapope launched")

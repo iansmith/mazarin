@@ -56,6 +56,26 @@ func New(pages uint8) (MemBlob, *merror.Error) {
 	}, nil
 }
 
+// FromVA wraps an existing page-aligned memory region (e.g., pages received via IPC)
+// as a MemBlob. The caller is responsible for ensuring the memory is valid.
+// The returned MemBlob is read-write.
+func FromVA(addr uintptr, size uint64) MemBlob {
+	pages := uint8(size / pageSize)
+	if pages == 0 {
+		pages = 1
+	}
+	return &memBlob{
+		pagesStart: addr,
+		numPages:   pages,
+		readOnly:   false,
+	}
+}
+
+// VA returns the base virtual address of the blob.
+func (m *memBlob) VA() uintptr {
+	return m.pagesStart
+}
+
 func (m *memBlob) blobSize() uint64 {
 	return uint64(m.numPages) * pageSize
 }

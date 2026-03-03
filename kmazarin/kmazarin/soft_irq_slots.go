@@ -16,6 +16,19 @@ import (
 var dbgPreemptSwitchCount uint64
 var dbgPreemptNoNextCount uint64
 
+// blockDeviceOwnerPID tracks which priest owns the block device.
+// Set when a priest registers for BlockVirtualIRQ via RegisterSoftIRQ.
+// -1 means no owner.
+var blockDeviceOwnerPID int16 = -1
+
+// GetBlockDeviceOwnerPID returns the PID of the priest that owns the block device.
+// Returns -1 if no priest has registered for block device ownership.
+//
+//go:nosplit
+func GetBlockDeviceOwnerPID() int16 {
+	return blockDeviceOwnerPID
+}
+
 // ============================================================================
 // Soft IRQ Slot System
 // ============================================================================
@@ -97,6 +110,11 @@ func RegisterSoftIRQSlotKsyscall(irqNum uint32, slotNum int32, priestID int16) i
 			intKind = hid.TimerInterrupt
 			ring = &topHalfTimerRing
 			devIdx = 0 // dummy
+		} else if irqNum == hid.BlockVirtualIRQ {
+			intKind = hid.DiskInterrupt
+			ring = nil // Block device doesn't use ring buffers — uses SysBlockRead
+			devIdx = 0 // dummy
+			blockDeviceOwnerPID = priestID
 		} else {
 			console.KPrintf("[SoftIRQSlot] No device found for IRQ %d\n", irqNum)
 			return -19 // ENODEV
@@ -404,6 +422,15 @@ func QueryInputDevicesKernel(infos []hid.InputDeviceInfo, max int) int {
 			IRQNum:        hid.TimerVirtualIRQ,
 			DeviceType:    hid.DeviceTypeTimer,
 			InterruptKind: hid.TimerInterrupt,
+		}
+		n++
+	}
+	// Report the block device as a virtual device (for disk priest ownership)
+	if n < max && n < len(infos) {
+		infos[n] = hid.InputDeviceInfo{
+			IRQNum:        hid.BlockVirtualIRQ,
+			DeviceType:    hid.DeviceTypeBlock,
+			InterruptKind: hid.DiskInterrupt,
 		}
 		n++
 	}

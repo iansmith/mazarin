@@ -31,6 +31,10 @@ const (
 	SysTransferPages        = MazzySyscallBase + 16 // 0x1010 - Transfer pages between priests
 	SysMapSharedPage        = MazzySyscallBase + 17 // 0x1011 - Map shared page from another priest
 	SysLoadMaz              = MazzySyscallBase + 18 // 0x1012 - Load .maz PIE ELF into priest's address space
+	SysIPCCall              = MazzySyscallBase + 19 // 0x1013 - IPC: send request, block for reply
+	SysIPCRecv              = MazzySyscallBase + 20 // 0x1014 - IPC: block until request arrives
+	SysIPCReply             = MazzySyscallBase + 21 // 0x1015 - IPC: send reply, unblock client
+	SysBlockRead            = MazzySyscallBase + 22 // 0x1016 - Read disk sectors (block device owner only)
 )
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
@@ -55,6 +59,10 @@ var mazzySyscallTable = [64]SyscallHandler{
 	16: SyscallTransferPages,      // TransferPages = 0x1010
 	17: SyscallMapSharedPage,      // MapSharedPage = 0x1011
 	18: SyscallLoadMaz,            // LoadMaz = 0x1012
+	19: SyscallIPCCall,            // IPCCall = 0x1013
+	20: SyscallIPCRecv,            // IPCRecv = 0x1014
+	21: SyscallIPCReply,           // IPCReply = 0x1015
+	22: SyscallBlockRead,          // BlockRead = 0x1016
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.

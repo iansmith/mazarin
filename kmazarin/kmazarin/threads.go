@@ -160,6 +160,8 @@ const (
 	ThreadExited          ThreadState = 5 // Thread has exited (being cleaned up)
 	ThreadBlockedSoftIRQ  ThreadState = 6 // Blocked waiting for soft IRQ
 	ThreadBlockedLoadMaz  ThreadState = 7 // Blocked waiting for .maz load to complete
+	ThreadBlockedIPC      ThreadState = 8 // Client blocked waiting for IPC reply
+	ThreadBlockedIPCRecv  ThreadState = 9 // Server blocked waiting for IPC request
 )
 
 // MaxPriests is the maximum number of priest processes (userspace programs).
@@ -432,6 +434,13 @@ func WakeThreadForSignal(t *Thread) {
 		// Defer signal delivery until LoadMaz completes — the worker
 		// goroutine will wake this thread with the result. Waking
 		// prematurely would return a half-filled MazLoadResult.
+	case ThreadBlockedIPC:
+		// Defer signal delivery until IPC reply arrives — waking
+		// prematurely would return without a valid reply.
+	case ThreadBlockedIPCRecv:
+		// Wake the server thread so it can handle the signal.
+		t.State = ThreadReady
+		enqueueReadySchedLockHeld(t)
 	}
 	// ThreadRunning / ThreadReady: signal delivered at next context switch
 
@@ -1809,6 +1818,7 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	p.PID = priestId
 	p.PageTableL0PA = pageTableL0PA
 	p.ThreadCount = 1 // This priest starts with one thread
+	p.IPCRecvTID = -1 // No thread blocked in IPCRecv yet
 
 	// Allocate thread slot from static list (panics if exhausted)
 	_, t := threadList.Allocate()
