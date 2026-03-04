@@ -8,11 +8,18 @@ import (
 	"mazzy/mazarin/sys"
 )
 
-// MazEntryPoint is a global function pointer that prevents the Go linker
-// from dead-code-eliminating MazarinMain in .maz builds. The thin overlay
-// stubs cause the compiler to optimize away the runtime.main → main_main
-// code path, so without this reference MazarinMain would be unreachable.
+// MazEntryPoint holds a reference to MazarinMain to prevent DCE.
 var MazEntryPoint func() = MazarinMain
+
+// init forces the linker to keep MazarinMain alive. With thin stubs,
+// runtime.main never reaches main.main, so MazarinMain would be DCE'd.
+// Reading MazEntryPoint in init prevents the linker from treating it as
+// write-only.
+func init() {
+	if MazEntryPoint == nil {
+		panic("unreachable")
+	}
+}
 
 // MazarinMain is the entry point called by the priest when this .maz is loaded.
 // The priest finds this symbol in the ELF symbol table and launches it as a goroutine.

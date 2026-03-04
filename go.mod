@@ -2,7 +2,10 @@ module mazzy
 
 go 1.25.5
 
-require github.com/fogleman/gg v1.3.0
+require (
+	github.com/fogleman/gg v1.3.0
+	golang.org/x/image v0.23.0
+)
 
 require (
 	cloud.google.com/go v0.110.0 // indirect
@@ -74,7 +77,6 @@ require (
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.3 // indirect
-	golang.org/x/image v0.23.0 // indirect
 	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/oauth2 v0.27.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect

@@ -65,6 +65,7 @@ vars:
   THIN_MANIFEST: '{{.BUILD_DIR}}/thin-stubs.manifest'
   MAZ_OVERLAY_JSON: '{{.BUILD_DIR}}/maz-overlay.json'
   HELLOWORLD_MAZ: '{{.BUILD_DIR}}/helloworld.maz'
+  FS_MAZ: '{{.BUILD_DIR}}/fs.maz'
   DAPOPE_ELF: '{{.BUILD_DIR}}/dapope.elf'
   STDIO_ELF: '{{.BUILD_DIR}}/stdio.elf'
   DISKPRIEST_ELF: '{{.BUILD_DIR}}/disk.elf'
@@ -540,26 +541,46 @@ tasks:
       - '{{.GO}} tool maz-reloc {{.HELLOWORLD_MAZ}} {{.THIN_MANIFEST}}'
       - '{{.GO}} tool go-echo "helloworld.maz ready at {{.HELLOWORLD_MAZ}}"'
 
+  fs-maz:
+    desc: Build fs.maz — FAT32 filesystem module (PIE + thin stubs)
+    deps: [check-env, maz-overlay]
+    sources:
+      - 'flock/cmd/fat32/**/*.go'
+      - 'mazarin/**/*.go'
+      - 'shared/fs/fat32/**/*.go'
+      - 'shared/ipc/**/*.go'
+      - 'shared/blockdev/**/*.go'
+      - '{{.MAZ_OVERLAY_JSON}}'
+    generates:
+      - '{{.FS_MAZ}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building fs.maz (FAT32 filesystem module)..."'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -buildmode=pie -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.FS_MAZ}} ./flock/cmd/fat32'
+      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
+      - '{{.GO}} tool maz-reloc {{.FS_MAZ}} {{.THIN_MANIFEST}}'
+      - '{{.GO}} tool go-echo "fs.maz ready at {{.FS_MAZ}}"'
+
   # ===========================================================================
   # Disk Image
   # ===========================================================================
 
   disk-arm64:
     desc: Create FAT32 disk image with ARM64 flock binaries and kmazarin kernel
-    deps: [dapope-arm64, stdio-arm64, diskpriest-arm64, sievetest, helloworld-maz, kmazarin-arm64, convert-boot-image]
+    deps: [dapope-arm64, stdio-arm64, diskpriest-arm64, sievetest, helloworld-maz, fs-maz, kmazarin-arm64, convert-boot-image]
     sources:
       - '{{.DAPOPE_ELF}}'
       - '{{.STDIO_ELF}}'
       - '{{.DISKPRIEST_ELF}}'
       - '{{.SIEVETEST_ELF}}'
       - '{{.HELLOWORLD_MAZ}}'
+      - '{{.FS_MAZ}}'
       - '{{.KMAZARIN_ELF}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
     generates:
       - '{{.DISK_IMAGE}}'
     cmds:
       - '{{.GO}} tool go-echo "Creating FAT32 disk image (ARM64)..."'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.DAPOPE_ELF}} {{.STDIO_ELF}} {{.DISKPRIEST_ELF}} {{.SIEVETEST_ELF}} {{.HELLOWORLD_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.DAPOPE_ELF}} {{.STDIO_ELF}} {{.DISKPRIEST_ELF}} {{.SIEVETEST_ELF}} {{.HELLOWORLD_MAZ}} {{.FS_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "Disk image created at {{.DISK_IMAGE}}"'
 
   disk-x86_64:

@@ -26,7 +26,7 @@ This is enforced by hooks in `.claude/settings.local.json` but read this anyway.
 
 ```bash
 export GOTOOLCHAIN=auto
-export GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go
+export GO=/Users/iansmith/sdk/go1.25.5/bin/go
 export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 export QEMU_X86_64=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-x86_64
 ```
@@ -86,7 +86,7 @@ If GO or QEMU are not set, the build will attempt to find them via `which`. If f
 **On this system (Homebrew installation):**
 ```bash
 export GOTOOLCHAIN=auto
-export GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go
+export GO=/Users/iansmith/sdk/go1.25.5/bin/go
 export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 export QEMU_X86_64=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-x86_64
 ```
@@ -135,7 +135,7 @@ All build and run operations go through `$GO tool task`. See `design/TASK.md` fo
 ```bash
 # 1. Set environment (once per session)
 export GOTOOLCHAIN=auto
-export GO=/opt/homebrew/Cellar/go/1.25.5/libexec/bin/go
+export GO=/Users/iansmith/sdk/go1.25.5/bin/go
 export QEMU=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-aarch64
 export QEMU_X86_64=/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-x86_64
 

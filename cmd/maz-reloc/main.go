@@ -139,7 +139,10 @@ func readManifest(path string) (map[string]bool, error) {
 }
 
 // findStubAddresses looks up each stub symbol in the ELF's symbol table
-// and returns a map of name → VA address for symbols that exist.
+// and returns a map of name → VA address for symbols that exist AND are
+// actually thin stubs (not real functions from the userspace overlay).
+// A thin stub is identified by its body: NOP followed by B self (ARM64),
+// INT3+JMP self (x86_64), or NOP+J self (RISC-V).
 func findStubAddresses(f *elf.File, stubNames map[string]bool) map[string]uint64 {
 	result := make(map[string]uint64)
 
@@ -148,16 +151,73 @@ func findStubAddresses(f *elf.File, stubNames map[string]bool) map[string]uint64
 		return result
 	}
 
+	// Load .text section data for stub body verification
+	text := f.Section(".text")
+	var textData []byte
+	var textAddr uint64
+	if text != nil {
+		textData, _ = text.Data()
+		textAddr = text.Addr
+	}
+
+	skipped := 0
 	for _, sym := range syms {
 		if sym.Value == 0 || sym.Size == 0 {
 			continue
 		}
-		if stubNames[sym.Name] {
+		if !stubNames[sym.Name] {
+			continue
+		}
+		// Verify this is actually a thin stub by checking the function body.
+		// The userspace overlay replaces some thin stubs with real functions
+		// (e.g., syscall.RawSyscall6, syscall.Syscall6). We must not create
+		// import entries for those — they have working implementations.
+		if textData != nil && isThinStub(f.Machine, textData, textAddr, sym.Value) {
 			result[sym.Name] = sym.Value
+		} else if textData == nil {
+			// Can't verify, include anyway
+			result[sym.Name] = sym.Value
+		} else {
+			skipped++
 		}
 	}
 
+	if skipped > 0 {
+		fmt.Printf("maz-reloc: skipped %d manifest symbols (overlay-provided, not thin stubs)\n", skipped)
+	}
+
 	return result
+}
+
+// isThinStub checks if the function at the given VA starts with a thin stub pattern.
+func isThinStub(machine elf.Machine, textData []byte, textAddr, funcAddr uint64) bool {
+	offset := funcAddr - textAddr
+	switch machine {
+	case elf.EM_AARCH64:
+		// ARM64 thin stub: NOP (0xD503201F) + B .-4 (0x17FFFFFF)
+		// The B branches back to the NOP, creating an infinite loop.
+		if offset+8 > uint64(len(textData)) {
+			return false
+		}
+		insn0 := binary.LittleEndian.Uint32(textData[offset:])
+		insn1 := binary.LittleEndian.Uint32(textData[offset+4:])
+		return insn0 == 0xD503201F && insn1 == 0x17FFFFFF
+	case elf.EM_X86_64:
+		// x86_64 thin stub: INT3 (0xCC) + JMP self (0xEB 0xFE)
+		if offset+3 > uint64(len(textData)) {
+			return false
+		}
+		return textData[offset] == 0xCC && textData[offset+1] == 0xEB && textData[offset+2] == 0xFE
+	case elf.EM_RISCV:
+		// RISC-V thin stub: NOP (0x00000013) + J self (0x0000006F)
+		if offset+8 > uint64(len(textData)) {
+			return false
+		}
+		insn0 := binary.LittleEndian.Uint32(textData[offset:])
+		insn1 := binary.LittleEndian.Uint32(textData[offset+4:])
+		return insn0 == 0x00000013 && insn1 == 0x0000006F
+	}
+	return false
 }
 
 // scanText scans the .text section for call/branch instructions that target stub addresses.

@@ -21,9 +21,10 @@ import (
 // MazLoadResult is the struct written back to the priest upon successful load.
 // Layout must match mazarin/sys/loadmaz.go exactly.
 type MazLoadResult struct {
-	EntryPoint uint64 // Address of entry point (main.MazarinMain or main) in loaded .maz
-	LoadBase   uint64 // Base VA where .maz was loaded
-	LoadSize   uint64 // Total VA size of loaded segments
+	EntryPoint     uint64 // Address of entry point (main.MazarinMain or main) in loaded .maz
+	LoadBase       uint64 // Base VA where .maz was loaded
+	LoadSize       uint64 // Total VA size of loaded segments
+	ModuledataAddr uint64 // Address of runtime.firstmoduledata in loaded .maz (0 if not found)
 }
 
 // LoadMazWorkRequest contains the parameters for a .maz load operation.
@@ -242,6 +243,18 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 	}
 	entryPoint := entrySymAddr + loadOffset
 
+	// === Find runtime.firstmoduledata for pclntab registration ===
+	moduledataSymAddr := findSymbolAddress(elfData, &hdr, "runtime.firstmoduledata")
+	var moduledataVA uint64
+	if moduledataSymAddr != 0 {
+		moduledataVA = moduledataSymAddr + loadOffset
+		console.KWriteString("[LoadMaz] moduledata=")
+		console.KPrintHex64(moduledataVA)
+		console.KWriteString("\r\n")
+	} else {
+		console.KWriteString("[LoadMaz] no runtime.firstmoduledata found\r\n")
+	}
+
 	// === Update priest's highest VA ===
 	newHighest := loadBase + (mazHighest - mazLowest)
 	newHighest = (newHighest + 4095) &^ 4095
@@ -270,6 +283,7 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 	writeU64ToUser(uintptr(req.ResultPtr), entryPoint, l0PA)
 	writeU64ToUser(uintptr(req.ResultPtr+8), loadBase, l0PA)
 	writeU64ToUser(uintptr(req.ResultPtr+16), loadSize, l0PA)
+	writeU64ToUser(uintptr(req.ResultPtr+24), moduledataVA, l0PA)
 
 	console.KWriteString("[LoadMaz] OK entry=")
 	console.KPrintHex64(entryPoint)
