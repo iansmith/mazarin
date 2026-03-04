@@ -2,7 +2,10 @@
 
 package ksyscall
 
-import _ "unsafe" // Required for go:linkname
+import (
+	"mazzy/kmazarin/proc"
+	_ "unsafe" // Required for go:linkname
+)
 
 // Forward declarations for functions provided via assembly or go:linkname.
 
@@ -15,3 +18,9 @@ func haltForever()
 //
 //go:linkname ThreadExit main.ThreadExit
 func ThreadExit() uintptr
+
+// TerminatePriest kills all threads of a priest and cleans up resources.
+// Returns context pointer of next thread, or 0 if no threads available.
+//
+//go:linkname TerminatePriest main.TerminatePriest
+func TerminatePriest(pid proc.PriestId, status int64) uintptr

@@ -117,6 +117,19 @@ TEXT ·CheckThreadPreemption(SB), NOSPLIT, $0-16
 TEXT ·ThreadExitAsm(SB), NOSPLIT, $0-8
 	JMP	·threadExitInternal(SB)
 
+// TerminatePriestAsm tail-call stub
+// Go signature: func TerminatePriestAsm(pid uint64, status int64) uint64
+// ABI0: 2 args (16 bytes) + 1 return (8 bytes) = 24 bytes
+TEXT ·TerminatePriestAsm(SB), NOSPLIT, $0-24
+	JMP	·terminatePriestInternal(SB)
+
+// HandleUnhandledExceptionAsm tail-call stub
+// Go signature: func HandleUnhandledExceptionAsm(excInfo, faultAddr, faultPC uint64) uint64
+// ABI0: 3 args (24 bytes) + 1 return (8 bytes) = 32 bytes
+// NOT NOSPLIT: Same as HandlePageFaultAsm — exception stack is above g0.stackguard0.
+TEXT ·HandleUnhandledExceptionAsm(SB), $0-32
+	JMP	·handleUnhandledExceptionInternal(SB)
+
 // RunFirstThread starts the first thread from the ready queue.
 // This function never returns - it transitions to userspace via ERET.
 // Go signature: func RunFirstThread()

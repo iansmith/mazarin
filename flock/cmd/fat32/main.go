@@ -10,6 +10,7 @@ import (
 	"mazzy/shared/blockdev"
 	"mazzy/shared/fs/fat32"
 	"mazzy/shared/ipc"
+	"os"
 	"syscall"
 	"unsafe"
 )
@@ -37,12 +38,37 @@ func init() {
 	}
 }
 
+// crashMode selects which failure to test:
+//   0 = nil pointer dereference (SIGSEGV)
+//   1 = panic("test crash")
+//   2 = os.Exit(42)
+//   3 = deref 0xFFFFFFFFFFFFFFFF (SIGSEGV at high address)
+//   4 = normal operation
+const crashMode = 4
+
 // MazarinMain is the entry point called by the disk priest when this .maz
 // is loaded. It mounts FAT32 and enters the IPC serve loop. Never returns.
 //
 //go:noinline
 func MazarinMain() {
 	debugPuts("[fs] FAT32 filesystem maz starting\n")
+
+	switch crashMode {
+	case 0:
+		debugPuts("[fs] TEST: nil pointer dereference\n")
+		var p *int
+		_ = *p // SIGSEGV
+	case 1:
+		debugPuts("[fs] TEST: panic\n")
+		panic("test crash from fs.maz")
+	case 2:
+		debugPuts("[fs] TEST: os.Exit(42)\n")
+		os.Exit(42)
+	case 3:
+		debugPuts("[fs] TEST: deref 0xFFFFFFFFFFFFFFFF\n")
+		p := (*int)(unsafe.Pointer(uintptr(0xFFFFFFFFFFFFFFFF)))
+		_ = *p // SIGSEGV at high address
+	}
 
 	// Mount FAT32 filesystem using SysBlockRead (inherited from disk priest PID)
 	blkDev := &userspaceBlockDev{}
@@ -57,6 +83,7 @@ func MazarinMain() {
 	debugPuts("[fs] entering IPC serve loop\n")
 	serveLoop(fs)
 }
+
 
 func main() {
 	MazarinMain()

@@ -14,6 +14,14 @@ const (
 	_SIGPROF   = 27 // Profiling signal (stub for now)
 	_SI_KERNEL = 0x80
 
+	// Hardware fault signals
+	_SIGILL  = 4  // Illegal instruction
+	_SIGTRAP = 5  // Trace/breakpoint trap
+	_SIGABRT = 6  // Abort
+	_SIGBUS  = 7  // Bus error (misaligned access)
+	_SIGFPE  = 8  // Floating point exception
+	_SIGSEGV = 11 // Segmentation fault
+
 	_SA_SIGINFO  = 0x00000004
 	_SA_ONSTACK  = 0x08000000
 	_SA_RESTORER = 0x04000000
@@ -290,5 +298,109 @@ func SignalDeliveryStats() {
 	serial.RawUARTPuts(" handler=0x")
 	serial.RawUARTHex64(atomic.LoadUint64(&signalDeliverLastHandler))
 	serial.PollWrite('\n')
+}
+
+// HandleUnhandledException handles a userspace exception that was not resolved
+// by the page fault handler. Maps the hardware exception to a Linux signal,
+// delivers it to a registered handler, or terminates the priest.
+//
+// excInfo: architecture-specific exception info (ESR on ARM64, vector on x86_64, scause on RISC-V)
+// faultAddr: faulting address (FAR on ARM64, CR2 on x86_64, stval on RISC-V)
+// faultPC: faulting instruction PC (ELR on ARM64, RIP on x86_64, SEPC on RISC-V)
+//
+// Returns: 0 if signal was queued (caller should return via normal exception path,
+// which will load the modified ThreadContext that now points to the signal handler).
+// Non-zero: pointer to next ThreadContext (priest was killed, load this context).
+func HandleUnhandledException(excInfo, faultAddr, faultPC uint64) uintptr {
+	t := GetCurrentThread()
+	if t == nil {
+		return 0
+	}
+
+	// Map hardware exception to signal number (arch-specific)
+	signum := mapExceptionToSignal(excInfo)
+	if signum == 0 {
+		// Unknown exception type — kill the priest
+		signum = _SIGSEGV
+	}
+
+	// If we're already inside a signal handler and take ANOTHER hardware fault,
+	// that's a double-fault (the handler itself crashed). Kill the priest
+	// immediately — re-delivering the signal would loop forever.
+	if t.InSignalHandler != 0 {
+		pid := t.PID
+		PrintProcessDeathDiag(pid, signum, faultAddr, faultPC)
+		return TerminatePriest(pid, int64(128+signum))
+	}
+
+	// Look up signal handler
+	action := GetSignalActionForThread(t, signum)
+
+	if action.Handler != 0 {
+		// Handler registered — build signal frame so the thread enters the
+		// handler on the next exception return. The assembly caller should
+		// return via the normal el0_return / iretq / sret path which will
+		// load the (now modified) ThreadContext.
+
+		// Update the thread's context with the faulting PC so BuildSignalFrame
+		// saves it correctly (the exception assembly may not have written it
+		// back to Context yet).
+		t.Context.SetPC(faultPC)
+
+		BuildSignalFrame(t, signum, &action)
+		t.InSignalHandler = 1
+		return 0
+	}
+
+	// No handler — kill the priest
+	pid := t.PID
+	PrintProcessDeathDiag(pid, signum, faultAddr, faultPC)
+	return TerminatePriest(pid, int64(128+signum))
+}
+
+// handleUnhandledExceptionInternal is the ABI0-compatible wrapper.
+// Called from assembly via HandleUnhandledExceptionAsm tail-call stub.
+func handleUnhandledExceptionInternal(excInfo, faultAddr, faultPC uint64) uint64 {
+	return uint64(HandleUnhandledException(excInfo, faultAddr, faultPC))
+}
+
+// PrintProcessDeathDiag prints diagnostic info when a process is killed by a signal.
+// Uses only serial.RawUART* functions (safe for nosplit context).
+//
+//go:nosplit
+func PrintProcessDeathDiag(pid PriestId, signum int, faultAddr, faultPC uint64) {
+	serial.RawUARTPuts("[KILLED] priest PID=")
+	serial.RawUARTDecimal(uint64(pid))
+	serial.RawUARTPuts(" ")
+	serial.RawUARTPuts(signalName(signum))
+	serial.RawUARTPuts("(")
+	serial.RawUARTDecimal(uint64(signum))
+	serial.RawUARTPuts(") PC=0x")
+	serial.RawUARTHex64(faultPC)
+	serial.RawUARTPuts(" addr=0x")
+	serial.RawUARTHex64(faultAddr)
+	serial.RawUARTPuts("\r\n")
+}
+
+// signalName returns a human-readable name for common signals.
+//
+//go:nosplit
+func signalName(sig int) string {
+	switch sig {
+	case _SIGILL:
+		return "SIGILL"
+	case _SIGTRAP:
+		return "SIGTRAP"
+	case _SIGABRT:
+		return "SIGABRT"
+	case _SIGBUS:
+		return "SIGBUS"
+	case _SIGFPE:
+		return "SIGFPE"
+	case _SIGSEGV:
+		return "SIGSEGV"
+	default:
+		return "SIG?"
+	}
 }
 

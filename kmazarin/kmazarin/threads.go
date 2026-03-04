@@ -1745,6 +1745,133 @@ func threadExitInternal() uint64 {
 	return uint64(threadExitImpl(&NormalSchedulerFunc))
 }
 
+// TerminatePriest kills all threads belonging to a priest and cleans up resources.
+// Walks all thread slots, exits every thread with matching PID (except current),
+// then exits the current thread last. Calls releasePriestSchedLockHeld when
+// the last thread exits.
+// Returns pointer to next ready thread's ThreadContext (or 0 if none remain).
+//
+//go:nosplit
+func TerminatePriest(pid PriestId, status int64) uintptr {
+	return terminatePriestImpl(&NormalSchedulerFunc, pid, status)
+}
+
+// terminatePriestImpl is the internal implementation of TerminatePriest.
+//
+//go:nosplit
+func terminatePriestImpl(sf *SchedulerFunc, pid PriestId, status int64) uintptr {
+	current := GetCurrentThread()
+
+	// BEGIN CRITICAL SECTION
+	savedDAIF := sf.DisableAndSaveDAIF()
+	schedulerLock.Lock()
+
+	// Count threads killed (for diagnostic output after lock release)
+	var killed int
+
+	// Walk all thread slots, kill non-current threads belonging to this priest
+	for i := 0; i < MaxThreads; i++ {
+		if !threadListInUse[i] {
+			continue
+		}
+		t := &threadListData[i]
+		if t.PID != pid {
+			continue
+		}
+		if t == current {
+			continue // Handle calling thread last
+		}
+
+		// Mark as exited
+		t.State = ThreadExited
+
+		// Pluck from whatever queue it's in
+		pluckFromAllQueues(t.TID)
+		blockedQueue.Pluck(t.TID)
+		sleepingQueue.Pluck(t.TID)
+		clearSoftIRQSlotForTID(t.TID)
+
+		// Release resources
+		threadIdAllocator.Release(t.TID)
+		threadList.Release(i)
+		killed++
+	}
+
+	// Now handle calling thread (same as threadExitImpl)
+	if current != nil && current.PID == pid {
+		current.State = ThreadExited
+		pluckFromAllQueues(current.TID)
+		threadIdAllocator.Release(current.TID)
+		threadList.Release(int(threadToIdx(current)))
+		killed++
+	}
+
+	// Find the priest and release it
+	priestIdx := int16(-1)
+	for i := int16(0); i < int16(MaxPriests); i++ {
+		if proc.PriestListInUse[i] && proc.PriestListData[i].PID == pid {
+			priestIdx = i
+			break
+		}
+	}
+	if priestIdx >= 0 {
+		// Force ThreadCount to 0 and release
+		proc.PriestListData[priestIdx].ThreadCount = 0
+		releasePriestSchedLockHeld(priestIdx, pid)
+	}
+
+	// Find next ready thread
+	next := findReadyThreadPreferDifferentPriestSchedLockHeld(pid)
+	if next == nil {
+		schedulerLock.Unlock()
+		sf.EnableAndRestoreDAIF(savedDAIF)
+
+		// Diagnostic output
+		serial.RawUARTPuts("[EXIT] priest PID=")
+		serial.RawUARTDecimal(uint64(pid))
+		serial.RawUARTPuts(" status=")
+		serial.RawUARTDecimal(uint64(status))
+		serial.RawUARTPuts(" threads_killed=")
+		serial.RawUARTDecimal(uint64(killed))
+		serial.RawUARTPuts("\r\n")
+		return 0
+	}
+
+	// DO NOT call SetCurrentThreadGlobal(next) here!
+	// CurrentThread still points to the dying thread. This is intentional:
+	// the SVC return path will call DoContextSwitch, which:
+	// 1. Calls SaveContextFromFrame on the dying thread (harmless — slot released)
+	// 2. Sees oldThread.PageTableL0PA != newThread.PageTableL0PA → switches TTBR0
+	// 3. Calls SetCurrentThreadGlobal(newThread) to complete the transition
+	// If we set CurrentThread here, DoContextSwitch would save the dying priest's
+	// exception frame into the NEW thread's context (corrupting it) and skip the
+	// TTBR0 switch (old == new).
+
+	schedulerLock.Unlock()
+	sf.EnableAndRestoreDAIF(savedDAIF)
+
+	// Diagnostic output after lock release
+	serial.RawUARTPuts("[EXIT] priest PID=")
+	serial.RawUARTDecimal(uint64(pid))
+	serial.RawUARTPuts(" status=")
+	serial.RawUARTDecimal(uint64(status))
+	serial.RawUARTPuts(" threads_killed=")
+	serial.RawUARTDecimal(uint64(killed))
+	serial.RawUARTPuts("\r\n")
+
+	return uintptr(unsafe.Pointer(&next.Context))
+}
+
+// terminatePriestInternal is the ABI0-compatible wrapper for TerminatePriest.
+// Called from assembly via TerminatePriestAsm tail-call stub.
+// Args: pid (uint64), status (int64)
+// Returns: pointer to next ThreadContext (or 0 if none remain).
+//
+//go:nosplit
+func terminatePriestInternal(pid uint64, status int64) uint64 {
+	return uint64(terminatePriestImpl(&NormalSchedulerFunc, PriestId(pid), status))
+}
+
 // releasePriestSchedLockHeld releases a priest when its last thread exits.
 // MUST be called with schedulerLock held.
 // Performs TLB shootdown for the ASID before releasing the priest ID,

@@ -42,9 +42,8 @@ func SyscallExitGroup(status, _, _, _, _, _ uint64) int64 {
 		haltForever()
 	}
 
-	// Userspace exit_group
-	// Userspace priest exit — tear down thread
-	nextCtx := ThreadExit()
+	// Userspace exit_group — kill all threads of this priest
+	nextCtx := TerminatePriest(pid, int64(status))
 	if nextCtx == 0 {
 		haltForever()
 	}
@@ -54,21 +53,28 @@ func SyscallExitGroup(status, _, _, _, _, _ uint64) int64 {
 
 // SyscallMazzyExit implements the Mazzy SysExit syscall (0x1004)
 // This is called by userspace programs through priest to cleanly exit.
-// For now, just prints the status and panics the kernel.
+// Terminates the calling priest and all its threads.
 //
 // arg0: exit status code
+//
+//go:nosplit
 func SyscallMazzyExit(status, _, _, _, _, _ uint64) int64 {
-	console.KWriteString("\r\n")
-	console.KWriteString("=== PROGRAM EXIT (SysExit) ===\r\n")
-	console.KWriteString("Status: ")
-	printDecimalNonRecursive(status)
-	console.KWriteString("\r\n")
+	p := proc.CurrentPriest()
+	pid := proc.PriestId(0)
+	if p != nil {
+		pid = p.PID
+	}
+	if pid == 0 {
+		console.KWriteString("KERNEL SysExit — halting\r\n")
+		haltForever()
+	}
 
-	// For now, just panic the kernel
-	// TODO: Clean up program resources, notify priest, continue execution
-	KernelPanic("SysExit called - program terminated")
-
-	return 0 // unreachable
+	nextCtx := TerminatePriest(pid, int64(status))
+	if nextCtx == 0 {
+		haltForever()
+	}
+	SetSyscallSwitchTarget(nextCtx)
+	return 0
 }
 
 // printDecimalNonRecursive prints a uint64 as decimal to console

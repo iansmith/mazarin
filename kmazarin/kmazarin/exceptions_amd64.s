@@ -821,13 +821,26 @@ pf_cs2:	OUTB
 
 pf_user_fault:
 
-	// User fault: kill the faulting thread and switch to the next one.
-	// ThreadExitAsm marks thread exited, finds next ready thread,
-	// returns pointer to its ThreadContext (or 0 if no threads left).
-	GO_CALL_0_1(·ThreadExitAsm)
+	// User page fault not handled — map to signal and deliver or kill priest.
+	// Switch FS_BASE to kernel value for Go call.
+	MOVQ	·kmazarinFSBase(SB), AX
+	MOVQ	AX, DX
+	SHRQ	$32, DX
+	MOVL	$0xC0000100, CX
+	WRMSR
+	MOVQ	·kmazarinFSBase(SB), AX
+	MOVQ	·kmazarinG0Addr(SB), DX
+	MOVQ	DX, -8(AX)
+	MOVQ	DX, R14
+
+	// Call HandleUnhandledExceptionAsm(vector=14, CR2, RIP)
+	MOVQ	$14, R13		// excInfo = vector 14 (page fault)
+	MOVQ	CR2, R12		// faultAddr = CR2
+	MOVQ	128(SP), BX		// faultPC = RIP from exception frame
+	GO_CALL_3_1(·HandleUnhandledExceptionAsm, R13, R12, BX)
 	TESTQ	AX, AX
-	JZ	pf_unhandled_halt	// No threads left → halt
-	MOVQ	AX, R12			// R12 = ThreadContext pointer
+	JZ	exception_return	// Signal queued → normal return
+	MOVQ	AX, R12			// R12 = next ThreadContext
 	JMP	load_context_and_iretq
 
 pf_unhandled_halt:
@@ -1186,29 +1199,27 @@ fripF:	OUTB
 	CMPQ	AX, $0x08		// kernelCS?
 	JE	generic_halt		// Kernel fault → halt
 
-	// User fault: set kernel g0, kill the faulting thread, switch to next.
-	// Print 'X' to COM1 to indicate a user thread was killed.
-	MOVW	$0x3F8, DX
-	MOVB	$'X', AX
-	OUTB
-
-	// Switch FS_BASE to kernel value (saved by common_exception_entry).
+	// User fault: map to signal and deliver or kill priest.
+	// Switch FS_BASE to kernel value.
 	MOVQ	·kmazarinFSBase(SB), AX
 	MOVQ	AX, DX
 	SHRQ	$32, DX
 	MOVL	$0xC0000100, CX
 	WRMSR
-
 	MOVQ	·kmazarinFSBase(SB), AX
 	MOVQ	·kmazarinG0Addr(SB), DX
-	MOVQ	DX, -8(AX)		// Write kernel g to kernel TLS slot
-	MOVQ	DX, R14			// Set R14 to kernel g for ABIInternal calls
+	MOVQ	DX, -8(AX)
+	MOVQ	DX, R14
 
-	// Kill faulting thread and switch to next
-	GO_CALL_0_1(·ThreadExitAsm)
+	// Call HandleUnhandledExceptionAsm(vector, 0, RIP)
+	// For non-PF vectors, faultAddr is 0 (no CR2 relevant)
+	MOVQ	·currentVector(SB), R13	// excInfo = vector number
+	MOVQ	$0, R12			// faultAddr = 0
+	MOVQ	128(SP), BX		// faultPC = RIP from exception frame
+	GO_CALL_3_1(·HandleUnhandledExceptionAsm, R13, R12, BX)
 	TESTQ	AX, AX
-	JZ	generic_halt		// No threads left → halt
-	MOVQ	AX, R12			// R12 = ThreadContext pointer
+	JZ	exception_return	// Signal queued → normal return
+	MOVQ	AX, R12			// R12 = next ThreadContext
 	JMP	load_context_and_iretq
 
 generic_halt:

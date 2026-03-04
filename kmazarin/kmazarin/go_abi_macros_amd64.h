@@ -67,6 +67,17 @@
 	CALL	fn(SB); \
 	ADDQ	$32, SP
 
+// GO_CALL_3_1(fn, a0, a1, a2) - 3 args, 1 return in AX
+// Frame: 32 bytes (24 args + 8 return)
+#define GO_CALL_3_1(fn, a0, a1, a2) \
+	SUBQ	$32, SP; \
+	MOVQ	a0, 0(SP); \
+	MOVQ	a1, 8(SP); \
+	MOVQ	a2, 16(SP); \
+	CALL	fn(SB); \
+	MOVQ	24(SP), AX; \
+	ADDQ	$32, SP
+
 // GO_CALL_4_0(fn, a0, a1, a2, a3) - 4 args, 0 returns
 // Frame: 64 bytes (32 args + 32 return space for callee safety)
 // Note: some 4-arg functions (e.g. TimerIRQHandler) have return values in their

@@ -107,6 +107,8 @@ vars:
   # Runtime patches directory
   RUNTIME_PATCHES_DIR: runtime-patches
   USERSPACE_OVERLAY_DIR: mazarin/overlay/userspace
+  MAZ_EXIT_OVERLAY_DIR: mazarin/overlay/maz
+  MAZ_EXIT_OVERLAY_JSON: '{{.BUILD_DIR}}/maz-exit-overlay.json'
 
 tasks:
   # ===========================================================================
@@ -511,19 +513,34 @@ tasks:
       - '{{.GO}} tool go-echo "Generating thin client overlay (runtime + syscall)..."'
       - '{{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.THIN_OVERLAY_DIR}} -overlay={{.THIN_OVERLAY_JSON}} -manifest={{.THIN_MANIFEST}}'
 
+  maz-exit-overlay:
+    run: once
+    method: checksum
+    desc: Generate maz-specific overlay (os.Exit → panic)
+    deps: [build-dir]
+    sources:
+      - '{{.MAZ_EXIT_OVERLAY_DIR}}/os_proc.go'
+    generates:
+      - '{{.MAZ_EXIT_OVERLAY_JSON}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Generating maz-exit overlay (os.Exit → panic)..."'
+      - '{{.GO}} tool gen-overlay -type maz-exit -patches {{.MAZ_EXIT_OVERLAY_DIR}} -o {{.MAZ_EXIT_OVERLAY_JSON}}'
+
   maz-overlay:
     run: once
     method: checksum
-    desc: Generate merged overlay for .maz build (thin stubs + userspace syscall routing)
-    deps: [thin-overlay, userspace-overlay]
+    desc: Generate merged overlay for .maz build (thin stubs + userspace syscall routing + maz-exit)
+    deps: [thin-overlay, userspace-overlay, maz-exit-overlay]
     sources:
       - '{{.THIN_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.MAZ_EXIT_OVERLAY_JSON}}'
     generates:
       - '{{.MAZ_OVERLAY_JSON}}'
     cmds:
-      - '{{.GO}} tool go-echo "Merging thin + userspace overlays for .maz build..."'
+      - '{{.GO}} tool go-echo "Merging thin + userspace + maz-exit overlays for .maz build..."'
       - '{{.GO}} tool gen-overlay -type merge -base {{.THIN_OVERLAY_JSON}} -extra {{.USERSPACE_OVERLAY_JSON}} -o {{.MAZ_OVERLAY_JSON}}'
+      - '{{.GO}} tool gen-overlay -type merge -base {{.MAZ_OVERLAY_JSON}} -extra {{.MAZ_EXIT_OVERLAY_JSON}} -o {{.MAZ_OVERLAY_JSON}}'
 
   helloworld-maz:
     desc: Build helloworld.maz (PIE + thin stubs, dynamically linked)

@@ -1491,634 +1491,91 @@ el0_upf_not_perm:
 	B	el0_return
 
 el0_data_abort_unhandled:
-	// Fault not handled - fall through to error print
+	// Userspace fault not handled by page fault handler — fall through
 
 el0_not_svc:
-	// Non-SVC exception from userspace - print error and halt
-	// DEBUG: Print ELR from exception frame (saved at entry, not corrupted by nested calls)
-	MOVD	$UART_BASE, R12
-	MOVD	$'[', R11
-	MOVB	R11, (R12)
-	MOVD	$'F', R11
-	MOVB	R11, (R12)
-	MOVD	$'R', R11
-	MOVB	R11, (R12)
-	MOVD	$'M', R11
-	MOVB	R11, (R12)
-	MOVD	$':', R11
-	MOVB	R11, (R12)
-	// Also print ESR from frame for full diagnosis
-	MOVD	$'E', R11
-	MOVB	R11, (R12)
-	MOVD	$'S', R11
-	MOVB	R11, (R12)
-	MOVD	$'R', R11
-	MOVB	R11, (R12)
-	MOVD	$'=', R11
-	MOVB	R11, (R12)
-	MOVD	EXC_FRAME_FAR_ESR+8(RSP), R14  // ESR from exception frame
-	MOVD	$8, R15  // 8 hex digits for ESR
-print_real_esr:
-	LSR	$28, R14, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	print_real_esr_d
-	ADD	$('A'-10), R11
-	B	print_real_esr_c
-print_real_esr_d:
-	ADD	$'0', R11
-print_real_esr_c:
-	MOVB	R11, (R12)
-	LSL	$4, R14
-	SUB	$1, R15
-	CBNZ	R15, print_real_esr
-	MOVD	$' ', R11
-	MOVB	R11, (R12)
-	// Now print ELR from exception frame (saved at entry)
-	MOVD	EXC_FRAME_ELR_SPSR(RSP), R14
-	MOVD	$16, R15
-print_real_elr:
-	LSR	$60, R14, R11
-	CMP	$10, R11
-	BLT	print_real_elr_d
-	ADD	$('A'-10), R11
-	B	print_real_elr_c
-print_real_elr_d:
-	ADD	$'0', R11
-print_real_elr_c:
-	MOVB	R11, (R12)
-	LSL	$4, R14
-	SUB	$1, R15
-	CBNZ	R15, print_real_elr
-	MOVD	$']', R11
-	MOVB	R11, (R12)
-	// End DEBUG
-	MOVD	$'U', R11
-	MOVB	R11, (R12)
-	MOVD	$'E', R11
-	MOVB	R11, (R12)
-	MOVD	$':', R11
-	MOVB	R11, (R12)
+	// Non-SVC exception from userspace: map to signal and deliver or kill priest.
+	// Extract excInfo (ESR), faultAddr (FAR), faultPC (ELR) from exception frame.
+	MOVD	EXC_FRAME_FAR_ESR+8(RSP), R19  // R19 = ESR (excInfo)
+	MOVD	EXC_FRAME_FAR_ESR(RSP), R20    // R20 = FAR (faultAddr)
+	MOVD	EXC_FRAME_ELR_SPSR(RSP), R21   // R21 = ELR (faultPC)
 
-	// Reload EC (may have been clobbered by GO_CALL)
-	MOVD	EXC_FRAME_FAR_ESR+8(RSP), R10
-	LSR	$26, R10, R10
-	AND	$0x3F, R10
+	// Call HandleUnhandledExceptionAsm(excInfo, faultAddr, faultPC)
+	// Returns: 0 if signal was queued (return via normal path),
+	//          non-zero = pointer to next ThreadContext (priest killed)
+	GO_CALL_3_1(·HandleUnhandledExceptionAsm, R19, R20, R21)
 
-	// Print EC
-	LSR	$4, R10, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	el0_not_svc_digit1
-	ADD	$('A'-10), R11
-	B	el0_not_svc_char1
-el0_not_svc_digit1:
-	ADD	$'0', R11
-el0_not_svc_char1:
-	MOVB	R11, (R12)
+	// Check result
+	CBZ	R0, el0_return  // Signal queued → normal return (enters handler via modified Context)
 
-	AND	$0xF, R10
-	CMP	$10, R10
-	BLT	el0_not_svc_digit2
-	ADD	$('A'-10), R10
-	B	el0_not_svc_char2
-el0_not_svc_digit2:
-	ADD	$'0', R10
-el0_not_svc_char2:
-	MOVB	R10, (R12)
+	// Priest killed → R0 = pointer to next ThreadContext
+	// Load context and ERET to next thread
+	MOVD	R0, R20  // R20 = context pointer
 
-	// Print " FAR="
-	MOVD	$' ', R11
-	MOVB	R11, (R12)
-	MOVD	$'F', R11
-	MOVB	R11, (R12)
-	MOVD	$'A', R11
-	MOVB	R11, (R12)
-	MOVD	$'R', R11
-	MOVB	R11, (R12)
-	MOVD	$'=', R11
-	MOVB	R11, (R12)
-	MOVD	$'0', R11
-	MOVB	R11, (R12)
-	MOVD	$'x', R11
-	MOVB	R11, (R12)
+	// Load ELR_EL1 (offset 256)
+	MOVD	256(R20), R0
+	MSR	R0, ELR_EL1
 
-	// Print FAR_EL1 (16 hex digits)
-	MOVD	EXC_FRAME_FAR_ESR(RSP), R14
-	MOVD	$16, R15
-el0_print_far_loop:
-	LSR	$60, R14, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	el0_far_digit
-	ADD	$('A'-10), R11
-	B	el0_far_char
-el0_far_digit:
-	ADD	$'0', R11
-el0_far_char:
-	MOVB	R11, (R12)
-	LSL	$4, R14
-	SUB	$1, R15
-	CBNZ	R15, el0_print_far_loop
+	// Load SPSR_EL1 (offset 264)
+	MOVD	264(R20), R0
+	MSR	R0, SPSR_EL1
 
-	// Print " ELR="
-	MOVD	$' ', R11
-	MOVB	R11, (R12)
-	MOVD	$'E', R11
-	MOVB	R11, (R12)
-	MOVD	$'L', R11
-	MOVB	R11, (R12)
-	MOVD	$'R', R11
-	MOVB	R11, (R12)
-	MOVD	$'=', R11
-	MOVB	R11, (R12)
-	MOVD	$'0', R11
-	MOVB	R11, (R12)
-	MOVD	$'x', R11
-	MOVB	R11, (R12)
+	// Switch to EL1h mode to safely set SP_EL0
+	MOVD	$1, R0
+	MSR	R0, SPSel
 
-	// Print ELR_EL1 (16 hex digits)
-	MOVD	EXC_FRAME_ELR_SPSR(RSP), R14
-	MOVD	$16, R15
-el0_print_elr_loop:
-	LSR	$60, R14, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	el0_elr_digit
-	ADD	$('A'-10), R11
-	B	el0_elr_char
-el0_elr_digit:
-	ADD	$'0', R11
-el0_elr_char:
-	MOVB	R11, (R12)
-	LSL	$4, R14
-	SUB	$1, R15
-	CBNZ	R15, el0_print_elr_loop
+	// Load SP_EL0 (offset 248)
+	MOVD	248(R20), R0
+	MSR	R0, SP_EL0
 
-	// Print " x28="
-	MOVD	$' ', R11
-	MOVB	R11, (R12)
-	MOVD	$'x', R11
-	MOVB	R11, (R12)
-	MOVD	$'2', R11
-	MOVB	R11, (R12)
-	MOVD	$'8', R11
-	MOVB	R11, (R12)
-	MOVD	$'=', R11
-	MOVB	R11, (R12)
-
-	// Print x28 from saved context (16 hex digits)
-	MOVD	EXC_FRAME_X28(RSP), R14
-	MOVD	$16, R15
-el0_print_x28_loop:
-	LSR	$60, R14, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	el0_x28_digit
-	ADD	$('A'-10), R11
-	B	el0_x28_char
-el0_x28_digit:
-	ADD	$'0', R11
-el0_x28_char:
-	MOVB	R11, (R12)
-	LSL	$4, R14
-	SUB	$1, R15
-	CBNZ	R15, el0_print_x28_loop
-
-	// Print " SPSR="
-	MOVD	$' ', R11
-	MOVB	R11, (R12)
-	MOVD	$'S', R11
-	MOVB	R11, (R12)
-	MOVD	$'P', R11
-	MOVB	R11, (R12)
-	MOVD	$'S', R11
-	MOVB	R11, (R12)
-	MOVD	$'R', R11
-	MOVB	R11, (R12)
-	MOVD	$'=', R11
-	MOVB	R11, (R12)
-
-	// Print SPSR from exception frame (16 hex digits)
-	MOVD	EXC_FRAME_ELR_SPSR+8(RSP), R14
-	MOVD	$16, R15
-el0_print_spsr_loop:
-	LSR	$60, R14, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	el0_spsr_digit
-	ADD	$('A'-10), R11
-	B	el0_spsr_char
-el0_spsr_digit:
-	ADD	$'0', R11
-el0_spsr_char:
-	MOVB	R11, (R12)
-	LSL	$4, R14
-	SUB	$1, R15
-	CBNZ	R15, el0_print_spsr_loop
-
-	// Print " LR=" (X30 at time of fault — tells us who called/jumped to the faulting address)
-	MOVD	$' ', R11
-	MOVB	R11, (R12)
-	MOVD	$'L', R11
-	MOVB	R11, (R12)
-	MOVD	$'R', R11
-	MOVB	R11, (R12)
-	MOVD	$'=', R11
-	MOVB	R11, (R12)
-	MOVD	(EXC_FRAME_X28+16)(RSP), R14  // X30 = LR from exception frame
-	MOVD	$16, R15
-el0_print_lr_loop:
-	LSR	$60, R14, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	el0_lr_digit
-	ADD	$('A'-10), R11
-	B	el0_lr_char
-el0_lr_digit:
-	ADD	$'0', R11
-el0_lr_char:
-	MOVB	R11, (R12)
-	LSL	$4, R14
-	SUB	$1, R15
-	CBNZ	R15, el0_print_lr_loop
-
-	// Print " SP0="
-	MOVD	$' ', R11
-	MOVB	R11, (R12)
-	MOVD	$'S', R11
-	MOVB	R11, (R12)
-	MOVD	$'P', R11
-	MOVB	R11, (R12)
-	MOVD	$'0', R11
-	MOVB	R11, (R12)
-	MOVD	$'=', R11
-	MOVB	R11, (R12)
-
-	// Print SP_EL0 from exception frame (16 hex digits)
-	MOVD	EXC_FRAME_SP_EL0(RSP), R14
-	MOVD	$16, R15
-el0_print_sp0_loop:
-	LSR	$60, R14, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	el0_sp0_digit
-	ADD	$('A'-10), R11
-	B	el0_sp0_char
-el0_sp0_digit:
-	ADD	$'0', R11
-el0_sp0_char:
-	MOVB	R11, (R12)
-	LSL	$4, R14
-	SUB	$1, R15
-	CBNZ	R15, el0_print_sp0_loop
-
-	// Print " T0=" (TTBR0_EL1)
-	MOVD	$' ', R11
-	MOVB	R11, (R12)
-	MOVD	$'T', R11
-	MOVB	R11, (R12)
-	MOVD	$'0', R11
-	MOVB	R11, (R12)
-	MOVD	$'=', R11
-	MOVB	R11, (R12)
-	MRS	TTBR0_EL1, R14
-	MOVD	$16, R15
-el0_print_ttbr0_loop:
-	LSR	$60, R14, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	el0_ttbr0_digit
-	ADD	$('A'-10), R11
-	B	el0_ttbr0_char
-el0_ttbr0_digit:
-	ADD	$'0', R11
-el0_ttbr0_char:
-	MOVB	R11, (R12)
-	LSL	$4, R14
-	SUB	$1, R15
-	CBNZ	R15, el0_print_ttbr0_loop
-
-	// Print " TC=" (TCR_EL1)
-	MOVD	$' ', R11
-	MOVB	R11, (R12)
-	MOVD	$'T', R11
-	MOVB	R11, (R12)
-	MOVD	$'C', R11
-	MOVB	R11, (R12)
-	MOVD	$'=', R11
-	MOVB	R11, (R12)
-	MRS	TCR_EL1, R14
-	MOVD	$16, R15
-el0_print_tcr_loop:
-	LSR	$60, R14, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	el0_tcr_digit
-	ADD	$('A'-10), R11
-	B	el0_tcr_char
-el0_tcr_digit:
-	ADD	$'0', R11
-el0_tcr_char:
-	MOVB	R11, (R12)
-	LSL	$4, R14
-	SUB	$1, R15
-	CBNZ	R15, el0_print_tcr_loop
-
-	MOVD	$'\r', R11
-	MOVB	R11, (R12)
-	MOVD	$'\n', R11
-	MOVB	R11, (R12)
-
-	// AT S1E0R translation check on the faulting data address (FAR), not the
-	// instruction address (ELR). This checks whether EL0 can read the fault VA.
-	MOVD	EXC_FRAME_FAR_ESR(RSP), R14  // R14 = FAR (faulting data address)
-	// AT S1E0R, X14 = address translation, stage 1, EL0, read
-	// Encoding: SYS #0, C7, C8, #2, X14 = 0xD508784E
-	// op1=000, CRn=0111, CRm=1000, op2=010, Rt=01110
-	WORD	$0xD508784E  // AT S1E0R, X14
+	// I-cache and TLB invalidation
+	WORD	$0xD508751F  // IC IALLU
+	DSB	$15
+	WORD	$0xD508871F  // TLBI VMALLE1
+	DSB	$15
 	ISB	$15
-	MRS	PAR_EL1, R14
-	// Print "AR=" (AT Result)
-	MOVD	$'A', R11
-	MOVB	R11, (R12)
-	MOVD	$'R', R11
-	MOVB	R11, (R12)
-	MOVD	$'=', R11
-	MOVB	R11, (R12)
-	MOVD	$16, R15
-el0_print_par_loop:
-	LSR	$60, R14, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	el0_par_digit
-	ADD	$('A'-10), R11
-	B	el0_par_char
-el0_par_digit:
-	ADD	$'0', R11
-el0_par_char:
-	MOVB	R11, (R12)
-	LSL	$4, R14
-	SUB	$1, R15
-	CBNZ	R15, el0_print_par_loop
-	MOVD	$' ', R11
-	MOVB	R11, (R12)
 
-	// Page table walk for the faulting VA (FAR_EL1).
-	// With 4KB granule: L0[0] -> L1[0] -> L2[0] -> L3[FAR[20:12]]
-	// KernelMMIOOffset = 0xFFFFFFFF00000000 to convert PA->VA
+	// Load all GPRs from new ThreadContext (same pattern as RunFirstThread)
+	// X28 (g register) first using R0 as temp
+	MOVD	224(R20), R0
+	WORD	$0xAA0003FC  // MOV X28, X0
 
-	// Get TTBR0 PA (mask out ASID in bits [63:48])
-	MRS	TTBR0_EL1, R13
-	AND	$0x0000FFFFFFFFFFFF, R13  // R13 = L0 table PA
+	LDP	16(R20), (R2, R3)
+	LDP	32(R20), (R4, R5)
+	LDP	48(R20), (R6, R7)
+	LDP	64(R20), (R8, R9)
+	LDP	80(R20), (R10, R11)
+	LDP	96(R20), (R12, R13)
+	LDP	112(R20), (R14, R15)
+	LDP	128(R20), (R16, R17)
+	MOVD	152(R20), R19
+	MOVD	168(R20), R21
+	LDP	176(R20), (R22, R23)
+	LDP	192(R20), (R24, R25)
+	LDP	208(R20), (R26, R27)
+	LDP	232(R20), (R29, R30)
 
-	// Convert L0 PA to kernel VA
-	MOVD	$0xFFFFFFFF00000000, R16
-	ADD	R16, R13, R17  // R17 = L0 table VA
+	// Reload R0, R1 (corrupted by X28 load)
+	LDP	0(R20), (R0, R1)
 
-	// Print "PT:" then L0[0]
-	MOVD	$'P', R11
-	MOVB	R11, (R12)
-	MOVD	$'T', R11
-	MOVB	R11, (R12)
-	MOVD	$':', R11
-	MOVB	R11, (R12)
+	// Load R20 LAST
+	MOVD	160(R20), R20
 
-	// Read L0[0] (index 0 for VA 0x82F80, bits [43:39]=0)
-	MOVD	(R17), R14  // R14 = L0 entry
-	MOVD	$' ', R11
-	MOVB	R11, (R12)
-	MOVD	$'L', R11
-	MOVB	R11, (R12)
-	MOVD	$'0', R11
-	MOVB	R11, (R12)
-	MOVD	$'=', R11
-	MOVB	R11, (R12)
-	MOVD	R14, R8  // save L0 entry
-	MOVD	$16, R15
-el0_pt_l0_loop:
-	LSR	$60, R14, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	el0_pt_l0_d
-	ADD	$('A'-10), R11
-	B	el0_pt_l0_c
-el0_pt_l0_d:
-	ADD	$'0', R11
-el0_pt_l0_c:
-	MOVB	R11, (R12)
-	LSL	$4, R14
-	SUB	$1, R15
-	CBNZ	R15, el0_pt_l0_loop
+	// Deallocate exception frame before ERET
+	ADD	$EXC_FRAME_SIZE, RSP
 
-	// Check L0 valid (bit 0)
-	TST	$1, R8
-	BEQ	el0_pt_invalid
+	DSB	$15
+	ISB	$15
+	ERET
+	DSB	$15
+	ISB	$15
 
-	// Extract L1 table PA from L0 entry (bits [47:12])
-	AND	$0x0000FFFFFFFFF000, R8, R17
-	ADD	R16, R17  // R17 = L1 table VA
+// Legacy el0_not_svc diagnostic+hang removed — exceptions now handled via signals
+// (Old code printed [FRM:ESR=... and page table walk, then hung forever)
 
-	// Read L1[0] (index 0 for VA 0x82F80, bits [38:30]=0)
-	MOVD	(R17), R14  // R14 = L1 entry
-	MOVD	$' ', R11
-	MOVB	R11, (R12)
-	MOVD	$'L', R11
-	MOVB	R11, (R12)
-	MOVD	$'1', R11
-	MOVB	R11, (R12)
-	MOVD	$'=', R11
-	MOVB	R11, (R12)
-	MOVD	R14, R8  // save L1 entry
-	MOVD	$16, R15
-el0_pt_l1_loop:
-	LSR	$60, R14, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	el0_pt_l1_d
-	ADD	$('A'-10), R11
-	B	el0_pt_l1_c
-el0_pt_l1_d:
-	ADD	$'0', R11
-el0_pt_l1_c:
-	MOVB	R11, (R12)
-	LSL	$4, R14
-	SUB	$1, R15
-	CBNZ	R15, el0_pt_l1_loop
-
-	// Check L1 valid
-	TST	$1, R8
-	BEQ	el0_pt_invalid
-
-	// Extract L2 table PA from L1 entry
-	AND	$0x0000FFFFFFFFF000, R8, R17
-	ADD	R16, R17  // R17 = L2 table VA
-
-	// Read L2[0] (index 0 for VA 0x82F80, bits [29:21]=0)
-	MOVD	(R17), R14  // R14 = L2 entry
-	MOVD	$' ', R11
-	MOVB	R11, (R12)
-	MOVD	$'L', R11
-	MOVB	R11, (R12)
-	MOVD	$'2', R11
-	MOVB	R11, (R12)
-	MOVD	$'=', R11
-	MOVB	R11, (R12)
-	MOVD	R14, R8  // save L2 entry
-	MOVD	$16, R15
-el0_pt_l2_loop:
-	LSR	$60, R14, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	el0_pt_l2_d
-	ADD	$('A'-10), R11
-	B	el0_pt_l2_c
-el0_pt_l2_d:
-	ADD	$'0', R11
-el0_pt_l2_c:
-	MOVB	R11, (R12)
-	LSL	$4, R14
-	SUB	$1, R15
-	CBNZ	R15, el0_pt_l2_loop
-
-	// Check L2 valid
-	TST	$1, R8
-	BEQ	el0_pt_invalid
-
-	// Check if L2 is a block descriptor (bit 1 = 0) or table (bit 1 = 1)
-	TST	$2, R8
-	BEQ	el0_pt_block  // 2MB block, stop here
-
-	// Extract L3 table PA from L2 entry
-	AND	$0x0000FFFFFFFFF000, R8, R17
-	ADD	R16, R17  // R17 = L3 table VA
-
-	// Read L3[FAR[20:12]]: compute byte offset = ((FAR >> 12) & 0x1FF) * 8
-	MOVD	EXC_FRAME_FAR_ESR(RSP), R14  // R14 = FAR
-	LSR	$12, R14, R14                 // R14 = FAR >> 12 (page number)
-	AND	$0x1FF, R14                   // R14 = L3 index (bits [20:12] of FAR)
-	LSL	$3, R14, R14                  // R14 = byte offset (index * 8)
-	ADD	R14, R17, R17                 // R17 = L3 table VA + byte offset
-	MOVD	(R17), R14                    // R14 = L3 entry at correct index
-	MOVD	$' ', R11
-	MOVB	R11, (R12)
-	MOVD	$'L', R11
-	MOVB	R11, (R12)
-	MOVD	$'3', R11
-	MOVB	R11, (R12)
-	MOVD	$'=', R11
-	MOVB	R11, (R12)
-	MOVD	R14, R8  // save L3 entry for instruction read below
-	MOVD	$16, R15
-el0_pt_l3_loop:
-	LSR	$60, R14, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	el0_pt_l3_d
-	ADD	$('A'-10), R11
-	B	el0_pt_l3_c
-el0_pt_l3_d:
-	ADD	$'0', R11
-el0_pt_l3_c:
-	MOVB	R11, (R12)
-	LSL	$4, R14
-	SUB	$1, R15
-	CBNZ	R15, el0_pt_l3_loop
-
-	// Read word at ELR offset within the FAR page via kernel linear map.
-	// NOTE: R8 = L3 PTE for the FAR page (the data that was being accessed).
-	// Using ELR's 12-bit offset in FAR's page gives useful data only when
-	// ELR and FAR are in the same 4KB page; otherwise this reads unrelated data.
-	// A correct IW read would require a separate L3 walk for the ELR page.
-	AND	$0x0000FFFFFFFFF000, R8, R17
-	// Add page offset from ELR: offset = ELR & 0xFFF
-	MOVD	EXC_FRAME_ELR_SPSR(RSP), R14
-	AND	$0xFFF, R14
-	ADD	R14, R17  // R17 = PA of FAR's page + ELR's page-offset
-	// Convert to kernel VA via linear map
-	MOVD	$0xFFFFFFFF00000000, R16
-	ADD	R16, R17  // R17 = kernel VA of instruction
-	// Read 32-bit instruction word
-	WORD	$0xB940022E  // LDR W14, [X17] (32-bit zero-extended load)
-	// Print " IW=" + 8 hex digits
-	MOVD	$' ', R11
-	MOVB	R11, (R12)
-	MOVD	$'I', R11
-	MOVB	R11, (R12)
-	MOVD	$'W', R11
-	MOVB	R11, (R12)
-	MOVD	$'=', R11
-	MOVB	R11, (R12)
-	MOVD	$8, R15
-el0_iw_loop:
-	LSR	$28, R14, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	el0_iw_d
-	ADD	$('A'-10), R11
-	B	el0_iw_c
-el0_iw_d:
-	ADD	$'0', R11
-el0_iw_c:
-	MOVB	R11, (R12)
-	LSL	$4, R14
-	SUB	$1, R15
-	CBNZ	R15, el0_iw_loop
-
-	// Print SCTLR_EL1
-	MOVD	$' ', R11
-	MOVB	R11, (R12)
-	MOVD	$'S', R11
-	MOVB	R11, (R12)
-	MOVD	$'C', R11
-	MOVB	R11, (R12)
-	MOVD	$'=', R11
-	MOVB	R11, (R12)
-	MRS	SCTLR_EL1, R14
-	MOVD	$16, R15
-el0_sc_loop:
-	LSR	$60, R14, R11
-	AND	$0xF, R11
-	CMP	$10, R11
-	BLT	el0_sc_d
-	ADD	$('A'-10), R11
-	B	el0_sc_c
-el0_sc_d:
-	ADD	$'0', R11
-el0_sc_c:
-	MOVB	R11, (R12)
-	LSL	$4, R14
-	SUB	$1, R15
-	CBNZ	R15, el0_sc_loop
-
-	B	el0_pt_done
-
-el0_pt_block:
-	MOVD	$' ', R11
-	MOVB	R11, (R12)
-	MOVD	$'B', R11
-	MOVB	R11, (R12)
-	MOVD	$'K', R11
-	MOVB	R11, (R12)
-	B	el0_pt_done
-
-el0_pt_invalid:
-	MOVD	$' ', R11
-	MOVB	R11, (R12)
-	MOVD	$'I', R11
-	MOVB	R11, (R12)
-	MOVD	$'V', R11
-	MOVB	R11, (R12)
-
-el0_pt_done:
-	MOVD	$'\r', R11
-	MOVB	R11, (R12)
-	MOVD	$'\n', R11
-	MOVB	R11, (R12)
-
-el0_not_svc_hang:
-	B	el0_not_svc_hang
-
+el0_unhandled_halt:
+	// Fallback halt if HandleUnhandledExceptionAsm somehow falls through
+	B	el0_unhandled_halt
 el0_return:
 	// Restore SP_EL0
 	MOVD	EXC_FRAME_SP_EL0(RSP), R10

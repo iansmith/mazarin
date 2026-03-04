@@ -75,6 +75,11 @@ func getSigreturnTrampolineAddr() uintptr { return 0 }
 //go:nosplit
 func ThreadExitAsm() uint64 { return 0 }
 
+//go:nosplit
+func TerminatePriestAsm(pid uint64, status int64) uint64 { return 0 }
+
+func HandleUnhandledExceptionAsm(excInfo, faultAddr, faultPC uint64) uint64 { return 0 }
+
 // Additional stubs for functions called from Go code
 func IRQDispatch()       {}
 func SyscallDispatch()   {}

@@ -51,6 +51,17 @@
 	MOVD	24(RSP), R0; \
 	ADD	$32, RSP
 
+// GO_CALL_3_1(fn, a0, a1, a2) - 3 args, 1 return in R0
+// Frame: 48 bytes (8 reserved + 24 args + 8 return, padded to 16-align)
+#define GO_CALL_3_1(fn, a0, a1, a2) \
+	SUB	$48, RSP; \
+	MOVD	a0, 8(RSP); \
+	MOVD	a1, 16(RSP); \
+	MOVD	a2, 24(RSP); \
+	CALL	fn(SB); \
+	MOVD	32(RSP), R0; \
+	ADD	$48, RSP
+
 // GO_CALL_4_0(fn, a0, a1, a2, a3) - 4 args, 0 returns
 // Frame: 48 bytes (8 reserved + 32 args, padded to 16-align)
 #define GO_CALL_4_0(fn, a0, a1, a2, a3) \

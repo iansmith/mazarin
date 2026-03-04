@@ -465,7 +465,20 @@ pf_ifault_ra_print:
 	// Call DumpInstructionPageFaultAsm to walk and print PTE chain
 	GO_CALL_1_0(·DumpInstructionPageFaultAsm, X20)
 
-	// Halt — do NOT try to handle instruction fetch at non-executable page
+	// Check if instruction page fault came from user mode
+	MOV	256(X2), T3			// saved sstatus from trap frame
+	AND	$0x100, T3, T3			// SPP bit (bit 8)
+	BNE	T3, ZERO, pf_ifault_halt	// Kernel fault → halt
+
+	// User fault: map to signal and deliver or kill priest
+	MOV	$12, S3				// scause=12 (instruction page fault)
+	MOV	X20, S4				// stval (faultAddr)
+	MOV	248(X2), S5			// sepc from trap frame (faultPC)
+	GO_CALL_3_1(·HandleUnhandledExceptionAsm, S3, S4, S5)
+	BEQ	T0, ZERO, trap_return		// Signal queued → normal return
+	MOV	T0, S2				// S2 = next ThreadContext
+	JMP	load_context_and_sret
+
 pf_ifault_halt:
 	WORD	$0x10500073			// wfi
 	JMP	pf_ifault_halt
@@ -753,12 +766,16 @@ pf_skip_stack_walk:
 	AND	$0x100, T3, T3			// SPP bit (bit 8)
 	BNE	T3, ZERO, pf_unhandled_halt	// Kernel fault → still halt
 
-	// User fault: kill the faulting thread instead of halting the system.
-	// ThreadExitAsm marks thread exited, finds next ready thread,
-	// returns pointer to its ThreadContext (or 0 if no threads left).
-	GO_CALL_0_1(·ThreadExitAsm)
-	BEQ	T0, ZERO, pf_unhandled_halt	// No threads left → halt
-	MOV	T0, S2				// S2 = ThreadContext pointer
+	// User fault: map to signal and deliver or kill priest.
+	// Call HandleUnhandledExceptionAsm(scause, stval, sepc)
+	WORD	$0x142022F3			// csrr t0, scause → S3(X19)
+	MOV	T0, S3				// S3 = scause (excInfo)
+	WORD	$0x14302373			// csrr t1, stval → S4(X20)
+	MOV	T1, S4				// S4 = stval (faultAddr)
+	MOV	248(X2), S5			// S5 = sepc from trap frame (faultPC)
+	GO_CALL_3_1(·HandleUnhandledExceptionAsm, S3, S4, S5)
+	BEQ	T0, ZERO, trap_return		// Signal queued → normal return
+	MOV	T0, S2				// S2 = next ThreadContext pointer
 	JMP	load_context_and_sret
 
 	// Halt - kernel fault or no threads remain

@@ -24,7 +24,7 @@ type Overlay struct {
 }
 
 func main() {
-	overlayType := flag.String("type", "", "overlay type: kmazarin, kmazarin-amd64, kmazarin-riscv64, userspace, merge")
+	overlayType := flag.String("type", "", "overlay type: kmazarin, kmazarin-amd64, kmazarin-riscv64, userspace, maz-exit, merge")
 	patchesDir := flag.String("patches", "", "directory containing patch files")
 	output := flag.String("o", "", "output JSON file")
 	baseOverlay := flag.String("base", "", "base overlay JSON (for -type merge)")
@@ -41,6 +41,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  cardinal-linux   - Cardinal bootloader runtime patches (Linux ARM64→bare metal)\n")
 		fmt.Fprintf(os.Stderr, "  diplomat         - UEFI bootloader runtime patches (Windows→UEFI, deprecated)\n")
 		fmt.Fprintf(os.Stderr, "  diplomat-linux   - UEFI bootloader runtime patches (Linux→UEFI)\n")
+		fmt.Fprintf(os.Stderr, "  maz-exit         - Maz-specific patches (os.Exit → panic)\n")
 		fmt.Fprintf(os.Stderr, "  merge            - Merge two overlay JSONs (extra overwrites base for same keys)\n\n")
 		flag.PrintDefaults()
 	}
@@ -98,6 +99,8 @@ func main() {
 		err = buildKmazarinRISCV64Overlay(&overlay, goroot, absPatchesDir)
 	case "userspace":
 		err = buildUserspaceOverlay(&overlay, goroot, absPatchesDir)
+	case "maz-exit":
+		err = buildMazExitOverlay(&overlay, goroot, absPatchesDir)
 	case "diplomat":
 		err = buildDiplomatOverlay(&overlay, goroot, absPatchesDir)
 	case "cardinal-linux":
@@ -261,6 +264,24 @@ func buildUserspaceOverlay(overlay *Overlay, goroot, patchesDir string) error {
 		"syscall/asm_linux_riscv64.s": "asm_linux_riscv64.s",
 		"runtime/cgo_mmap.go":         "runtime/cgo_mmap.go",
 		"runtime/lock_spinbit.go":     "runtime/lock_spinbit.go",
+	}
+
+	for goFile, patchFile := range patches {
+		src := filepath.Join(goroot, "src", goFile)
+		dst := filepath.Join(patchesDir, patchFile)
+		if _, err := os.Stat(dst); err != nil {
+			return fmt.Errorf("patch file not found: %s", dst)
+		}
+		overlay.Replace[src] = dst
+	}
+
+	return nil
+}
+
+func buildMazExitOverlay(overlay *Overlay, goroot, patchesDir string) error {
+	// Maz-specific patches: override os.Exit to panic instead of killing priest.
+	patches := map[string]string{
+		"os/proc.go": "os_proc.go",
 	}
 
 	for goFile, patchFile := range patches {

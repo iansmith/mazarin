@@ -55,9 +55,19 @@ func main() {
 	// 3. Register .maz moduledata for stack trace support
 	sys.RegisterMazModule(mazResult)
 
-	// 4. Call the loaded entry point (MazarinMain — never returns)
+	// 4. Call the loaded entry point with panic recovery.
+	// If the .maz calls os.Exit() (which the maz overlay converts to a panic),
+	// we catch it here instead of letting it kill the priest.
 	type funcval struct{ fn uintptr }
 	fv := &funcval{fn: uintptr(mazResult.EntryPoint)}
 	mazMain := *(*func())(unsafe.Pointer(&fv))
-	mazMain()
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("[disk] maz terminated: %v\n", r)
+			}
+		}()
+		mazMain()
+	}()
+	fmt.Println("[disk] maz returned, priest exiting")
 }
