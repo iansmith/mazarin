@@ -219,6 +219,25 @@ bin/target-gdb build/kmazarin.elf
 
 ## Critical Development Rules
 
+### Runtime Environment — MANDATORY (Kernel AND Userspace)
+
+**NEVER disable async preemption or the GC — not for the kernel, not for userspace priests.** These are hard, non-negotiable requirements:
+
+- **`asyncpreemptoff`** must NOT be set — not in GODEBUG, not anywhere. Async preemption is required for correct Go scheduling. If something breaks with async preemption enabled, fix the root cause — do not disable preemption as a workaround.
+- **`GOGC`** must NOT be set to `"off"`. The GC must run. Use a low value like `"5"` if needed to reduce frequency, but never disable it.
+- **`GODEBUG=gctrace=1`** must always be set (both kernel and priests) so GC statistics are visible in serial output, confirming the GC is functioning.
+
+The correct kernel environment in `diplomat/main/startup_env.go` is:
+```go
+s := "GODEBUG=gctrace=1"    // NO asyncpreemptoff!
+```
+
+The correct priest environment in `kmazarin/ksyscall/launch.go` is:
+```go
+penv.SetEnv("GODEBUG", "gctrace=1")
+penv.SetEnv("GOGC", "5")
+```
+
 ### Debug Output Safety
 
 **NEVER write directly to UART in assembly** - always use safe macros:

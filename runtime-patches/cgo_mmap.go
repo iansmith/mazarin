@@ -249,6 +249,26 @@ func kmazarinGCGates() (onG0 uint32, mLocks int32, preemptOff uint32, sweepDone 
 	return g0Flag, mp.locks, poFlag, sdFlag
 }
 
+// kmazarinDumpPState prints the P idle list and P[0] status via UART.
+// Called from userspace WaitSoftIRQ (via linkname) to diagnose P acquisition failures.
+// Must be called while goroutine is still in _Gsyscall state (before exitsyscall).
+//
+//go:nosplit
+func kmazarinDumpPState() {
+	if sched.pidle.ptr() != nil {
+		kmazarinUART('p')
+		kmazarinUART('+')
+	} else {
+		kmazarinUART('p')
+		kmazarinUART('-')
+	}
+	if len(allp) > 0 {
+		s := allp[0].status
+		// P status: 0=idle, 1=running, 2=syscall, 3=gcstop, 4=dead
+		kmazarinUART('0' + byte(s))
+	}
+}
+
 // sysMmap is declared but never called in kmazarin.
 // We keep it to satisfy any references in the runtime.
 func sysMmap(addr unsafe.Pointer, n uintptr, prot, flags, fd int32, off uint32) (p unsafe.Pointer, err int)

@@ -226,8 +226,13 @@ func timerLoop(clock *clockRenderer, slot int) {
 	// Discover stdio's PID after a few ticks (give it time to launch)
 	myPID := syscall.Getpid()
 	stdioPID := -1
+	loopIter := 0
 
 	for {
+		loopIter++
+		// Diagnostic: 'L' marks each timer loop iteration
+		sys.RawWrite(1, 'L')
+
 		ts, err := sys.GetTime()
 		if err != nil {
 			fmt.Printf("[dapope:timer] GetTime error: %v\n", err)
@@ -250,9 +255,6 @@ func timerLoop(clock *clockRenderer, slot int) {
 		}
 		clock.Update(sys.TimeSpec{Seconds: sec, Nanoseconds: nsec})
 		tick++
-		if tick%3 == 0 {
-			runtime.GC()
-		}
 
 		// Discover stdio's PID once (after 5s to let it launch)
 		if stdioPID < 0 && tick >= 5 {
@@ -293,8 +295,9 @@ func main() {
 	mouseSlot := -1
 	timerSlot := -1
 	for i, dev := range devices {
-		// Skip serial devices — handled by stdio priest
-		if dev.DeviceType == hid.DeviceTypeSerial {
+		// Skip serial devices (handled by stdio priest) and block devices
+		// (owned by disk priest)
+		if dev.DeviceType == hid.DeviceTypeSerial || dev.DeviceType == hid.DeviceTypeBlock {
 			continue
 		}
 
@@ -340,18 +343,20 @@ func main() {
 	cursorStack.SetPosition(960, 540)
 
 	renderer := newCursorRenderer(fb)
-	// Don't draw cursor yet — the framebuffer background hasn't been
-	// painted by other priests (stdio). The first mouse event will
-	// trigger the initial draw, capturing the correct backing store.
 	fmt.Println("[dapope] Cursor ready (deferred until first mouse event)")
 
 	// Launch goroutines that block on WaitSoftIRQ (via Syscall6).
-	// The Go runtime M-handoff allows both to block independently.
+	// Each goroutine needs its own M (kernel thread) since WaitSoftIRQ
+	// calls entersyscall to release the P. We yield after each launch
+	// so the goroutine starts running and enters WaitSoftIRQ before
+	// we launch the next one. This ensures orderly M creation.
 	if kbdSlot >= 0 {
 		go keyboardLoop(kbdSlot)
+		runtime.Gosched()
 	}
 	if mouseSlot >= 0 {
 		go mouseLoop(mouseSlot, cursorStack, cursorImages, renderer)
+		runtime.Gosched()
 	}
 
 	// Launch periodic timer goroutine with clock display
@@ -362,6 +367,7 @@ func main() {
 			clock.Update(ts)
 		}
 		go timerLoop(clock, timerSlot)
+		runtime.Gosched()
 	}
 
 	// Test stderr rendering — run in a goroutine with a short delay
@@ -377,24 +383,10 @@ func main() {
 	if mazErr != nil {
 		fmt.Printf("[dapope] LoadMaz failed: %v\n", mazErr)
 	} else {
-		// Debug: print entry point via direct UART before any fmt calls
-		sys.DebugPutChar('[')
-		sys.DebugPutChar('E')
-		sys.DebugPutChar('P')
-		sys.DebugPutChar('=')
-		ep := mazResult.EntryPoint
-		for shift := 60; shift >= 0; shift -= 4 {
-			nib := byte((ep >> uint(shift)) & 0xF)
-			if nib < 10 {
-				sys.DebugPutChar('0' + nib)
-			} else {
-				sys.DebugPutChar('A' + nib - 10)
-			}
-		}
-		sys.DebugPutChar(']')
-
 		fmt.Printf("[dapope] .maz loaded: entry=0x%X base=0x%X size=0x%X\n",
 			mazResult.EntryPoint, mazResult.LoadBase, mazResult.LoadSize)
+
+		sys.RegisterMazModule(mazResult)
 
 		// Convert entry point to a callable function and launch as goroutine
 		type funcval struct{ fn uintptr }

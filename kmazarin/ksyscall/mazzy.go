@@ -2,7 +2,6 @@
 package ksyscall
 
 import (
-	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/serial"
 )
 
@@ -71,14 +70,9 @@ var mazzySyscallTable = [64]SyscallHandler{
 //
 //go:nosplit
 func SyscallDebugPrint(marker, v1, v2, v3, v4, v5 uint64) int64 {
-	// Special case: single character output — use same routing as SyscallWrite.
+	// Special case: single character output — always go to serial for debugging.
 	if v1 == 0 && v2 == 0 && v3 == 0 && v4 == 0 && v5 == 0 && marker < 256 {
-		ownerPID := getUartSlotPriestID()
-		if ownerPID >= 0 && getCurrentThreadPID() != ownerPID {
-			console.KWriteByte(byte(marker))
-		} else {
-			serial.PollWrite(byte(marker))
-		}
+		serial.PollWrite(byte(marker))
 		return 0
 	}
 	// Full debug print — disabled during investigation

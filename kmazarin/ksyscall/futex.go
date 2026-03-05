@@ -13,6 +13,11 @@ var (
 	FutexWaitEagain   uint64 // Calls that returned EAGAIN (same thread continues)
 	FutexWakeCalls    uint64 // Total FUTEX_WAKE calls
 	KernelSVCCount    uint64 // SVCs from kernel threads (TID < 10)
+	DbgFutexUserDeadlines   uint64 // Deadlines set for userspace threads
+	DbgFutexKernelDeadlines uint64 // Deadlines set for kernel threads
+	DbgFutexExplicitTimeout uint64 // Deadlines with explicit timeout
+	DbgStdioFutexAddr       uint64 // Last futex address for stdio debug
+	DbgStdioFutexSyscallNum uint64 // Last syscall number from stdio's main
 )
 
 // PrintFutexStats prints futex statistics for debugging
@@ -79,6 +84,7 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 			frequency := uint64(kirq.GetTimerFrequency())
 			var ticks uint64
 			if timeout != 0 {
+				atomic.AddUint64(&DbgFutexExplicitTimeout, 1)
 				// timeout is a pointer to struct timespec {int64 tv_sec, int64 tv_nsec}
 				ts, ok := kmem.ReadUserInt64Pair(uintptr(timeout))
 				if !ok {
@@ -93,8 +99,20 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 					ticks += (uint64(nanoseconds) * frequency) / 1000000000
 				}
 			} else {
-				// Implicit 1ms timeout for cooperative scheduling fairness
-				ticks = frequency / 1000
+				// Implicit safety-net deadline. The Go runtime uses explicit
+				// futex_wake to wake blocked Ms, so this is a backstop only.
+				// 100ms balances init speed vs steady-state efficiency:
+				//   10ms → too frequent (24 wakes/s from idle template threads)
+				//   1s   → too slow (Go runtime init needs many wake cycles)
+				//   100ms → clean: fu counter stops growing in steady state
+				// Kernel: 1ms (cooperative boot-time scheduling needs faster wakeups)
+				if IsCurrentThreadUserspace() {
+					ticks = frequency / 10 // 100ms
+					atomic.AddUint64(&DbgFutexUserDeadlines, 1)
+				} else {
+					ticks = frequency / 1000 // 1ms
+					atomic.AddUint64(&DbgFutexKernelDeadlines, 1)
+				}
 			}
 			if ticks == 0 {
 				ticks = 1

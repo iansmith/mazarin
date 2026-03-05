@@ -16,6 +16,10 @@ import (
 var dbgPreemptSwitchCount uint64
 var dbgPreemptNoNextCount uint64
 
+// dbgLastTimerWakeTID records the TID of the last thread woken by PushTimerEventAndWake.
+// Read from the EVT handler for diagnostics.
+var dbgLastTimerWakeTID int32 = -1
+
 // blockDeviceOwnerPID tracks which priest owns the block device.
 // Set when a priest registers for BlockVirtualIRQ via RegisterSoftIRQ.
 // -1 means no owner.
@@ -42,13 +46,14 @@ const maxSoftIRQSlots = 32
 
 // softIRQSlot represents one registered soft IRQ slot.
 type softIRQSlot struct {
-	active      uint32         // atomic: 1 = active
-	irqNum      uint32
-	priestID    int16
-	devIdx      int            // index into input.AllDevices()
-	intKind     hid.InterruptType // KeyboardInterrupt or MouseInterrupt
-	blockedTID  ThreadId       // TID of thread blocked on this slot (-1 = none)
-	ring        *softIRQRing   // pointer to per-device ring buffer
+	active        uint32         // atomic: 1 = active
+	irqNum        uint32
+	priestID      int16
+	devIdx        int            // index into input.AllDevices()
+	intKind       hid.InterruptType // KeyboardInterrupt or MouseInterrupt
+	blockedTID       ThreadId // TID of thread blocked on this slot (-1 = none)
+	blockedThreadPtr uintptr  // cached *Thread as uintptr (avoids GC write barrier in nosplit ISR)
+	ring          *softIRQRing   // pointer to per-device ring buffer
 }
 
 // Ider implementation for StaticList compatibility.
@@ -186,9 +191,10 @@ func WakeSlotForIRQ(irqNum uint32) {
 		return
 	}
 
-	t := threadList.FindByIdAll(int32(tid))
+	t := (*Thread)(unsafe.Pointer(slot.blockedThreadPtr))
 	if t == nil || t.State != ThreadBlockedSoftIRQ {
 		slot.blockedTID = -1
+		slot.blockedThreadPtr = 0
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
 		return
@@ -196,6 +202,14 @@ func WakeSlotForIRQ(irqNum uint32) {
 
 	t.State = ThreadReady
 	slot.blockedTID = -1
+	slot.blockedThreadPtr = 0
+	// Rewind the thread's saved PC so it re-executes the SVC instruction
+	// when scheduled. SyscallWaitSoftIRQ will run fresh and drain the events
+	// from the ring, returning success instead of EAGAIN.
+	// Also restore X0/a0 (first arg = slotNum) which was overwritten with
+	// the return value by the SVC handler.
+	t.Context.RewindToSyscall()
+	t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
 	enqueueReadySchedLockHeld(t)
 	asm.Dsb() // Memory barrier to ensure enqueue is visible to other CPUs
 
@@ -229,7 +243,7 @@ func BlockOnSlot(slotNum int32) uintptr {
 	// as the other 4 EL0 context-switch paths.
 	var next *Thread
 	if t.PageTableL0PA != 0 {
-		next = findReadyUserspaceThreadSchedLockHeld(t.PID)
+		next = findReadyUserspaceThreadSchedLockHeld(-1)
 	} else {
 		next = findReadyThreadSchedLockHeld()
 	}
@@ -239,7 +253,7 @@ func BlockOnSlot(slotNum int32) uintptr {
 		// (e.g. sysmon) immediately, avoiding a round-trip through WFI.
 		processStaticDeadlinesSchedLockHeld()
 		if t.PageTableL0PA != 0 {
-			next = findReadyUserspaceThreadSchedLockHeld(t.PID)
+			next = findReadyUserspaceThreadSchedLockHeld(-1)
 		} else {
 			next = findReadyThreadSchedLockHeld()
 		}
@@ -264,19 +278,18 @@ func BlockOnSlot(slotNum int32) uintptr {
 	// If another thread was previously blocked on this slot (orphaned by
 	// Go runtime M migration), unblock it so its thread slot is reclaimed.
 	// The Go runtime will exit the old M once it sees the goroutine moved.
-	prevTID := softIRQSlotData[slotNum].blockedTID
-	if prevTID >= 0 {
-		prev := threadList.FindByIdAll(int32(prevTID))
-		if prev != nil && prev.State == ThreadBlockedSoftIRQ {
-			prev.State = ThreadReady
-			enqueueReadySchedLockHeld(prev)
-			asm.Dsb() // Memory barrier to ensure enqueue is visible
-		}
+	prev := (*Thread)(unsafe.Pointer(softIRQSlotData[slotNum].blockedThreadPtr))
+	if prev != nil && prev.State == ThreadBlockedSoftIRQ {
+		prev.State = ThreadReady
+		enqueueReadySchedLockHeld(prev)
+		asm.Dsb() // Memory barrier to ensure enqueue is visible
 	}
 
 	// Commit: block current thread, record in slot
 	t.State = ThreadBlockedSoftIRQ
+	t.SoftIRQSlotArg = uint64(slotNum) // Save for RewindToSyscall arg restore
 	softIRQSlotData[slotNum].blockedTID = t.TID
+	softIRQSlotData[slotNum].blockedThreadPtr = uintptr(unsafe.Pointer(t))
 
 	serial.RawUARTPuts("B")
 	serial.RawUARTDecimal(uint64(t.TID))
@@ -345,16 +358,34 @@ func PushTimerEventAndWake(sec, nsec uint64) {
 		serial.RawUARTPuts("Tb") // breadcrumb: no blocked thread
 		return
 	}
-	t := threadList.FindByIdAll(int32(tid))
+	t := (*Thread)(unsafe.Pointer(slot.blockedThreadPtr))
 	if t == nil || t.State != ThreadBlockedSoftIRQ {
 		slot.blockedTID = -1
+		slot.blockedThreadPtr = 0
 		serial.RawUARTPuts("Ts") // breadcrumb: thread not in BlockedSoftIRQ state
 		return
 	}
 	t.State = ThreadReady
 	slot.blockedTID = -1
-	enqueueReadySchedLockHeld(t)
+	slot.blockedThreadPtr = 0
+	// Rewind the thread's saved PC so it re-executes the SVC instruction
+	// when scheduled. SyscallWaitSoftIRQ will run fresh and drain the events
+	// we just pushed, returning success instead of EAGAIN.
+	// Also restore X0/a0 (first arg = slotNum) which was overwritten with
+	// the return value by the SVC handler.
+	t.Context.RewindToSyscall()
+	t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+	// Push to HEAD of queue so the timer goroutine is scheduled promptly.
+	// processStaticDeadlinesSchedLockHeld processes futex deadlines before
+	// the timer deadline, filling the queue with futex-cycling runtime Ms.
+	// Without head-push, the timer thread is at the back and gets starved.
+	targetCPU := t.HomeCPU
+	if targetCPU < 0 || targetCPU >= int8(GetCPUCount()) {
+		targetCPU = int8(GetCPUID())
+	}
+	GetPerCPUByID(uint64(targetCPU)).LocalReadyQueue.PushHeadNoDuplicate(t.TID)
 	asm.Dsb() // Memory barrier to ensure enqueue is visible
+	dbgLastTimerWakeTID = int32(tid)
 	serial.RawUARTPuts("Tw") // breadcrumb: timer wake SUCCESS
 }
 

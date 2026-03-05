@@ -104,6 +104,19 @@ func (ctx *ThreadContext) GetProcessorState() uint64 { return ctx.RFLAGS }
 //go:nosplit
 func (ctx *ThreadContext) SetProcessorState(v uint64) { ctx.RFLAGS = v }
 
+// RewindToSyscall rewinds the saved PC to re-execute the SYSCALL instruction.
+// x86_64 SYSCALL saves RCX = RIP of next instruction. Our handler stores RCX
+// as RIP. Subtracting 2 (SYSCALL is 0x0F 0x05) points back to the SYSCALL.
+//
+//go:nosplit
+func (ctx *ThreadContext) RewindToSyscall() { ctx.RIP -= 2 }
+
+// RestoreSyscallArg0 is a no-op on x86_64. The return value (RAX) is separate
+// from the first argument (RDI), so the SVC handler doesn't overwrite arg0.
+//
+//go:nosplit
+func (ctx *ThreadContext) RestoreSyscallArg0(v uint64) {}
+
 // SetCloneTLS sets FSBase for CLONE_SETTLS support on AMD64.
 // Called during clone child setup to give the child its own FS_BASE,
 // preventing TLS corruption when the child writes g to FS:-8.

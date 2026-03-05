@@ -54,7 +54,7 @@ elf2pe
 relocate-kmazarin
 go-start
 gen-ast-stubs
-gen-overlay
+/gen-overlay
 maz-reloc
 helloworld
 

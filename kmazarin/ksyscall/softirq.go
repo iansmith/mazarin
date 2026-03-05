@@ -3,21 +3,42 @@ package ksyscall
 import (
 	"mazzy/kmazarin/kmem"
 	"mazzy/shared/hid"
+	"sync/atomic"
 	"unsafe"
 )
+
+// dbgWaitSoftIRQEntries counts total SyscallWaitSoftIRQ calls (for EVT diagnostic)
+var DbgWaitSoftIRQEntries uint64
+
+// slotEventBufs holds pre-allocated per-slot event buffers to avoid heap
+// allocation in SyscallWaitSoftIRQ. Each slot is serviced by at most one
+// kernel thread at a time, so no synchronization is needed.
+var slotEventBufs [32][hid.MaxHIDEvents]hid.HIDEvent
+
+// DbgSlot3DrainHit counts how many times slot 3 (timer) had events to drain.
+var DbgSlot3DrainHit uint64
+
+// DbgSlot3DrainMiss counts how many times slot 3 (timer) was polled but empty.
+var DbgSlot3DrainMiss uint64
 
 // SyscallWaitSoftIRQ drains soft IRQ events from a slot's ring buffer.
 // arg0 = slot number (0-31)
 // arg1 = pointer to SoftIRQReturn struct in userspace memory
+// arg2 = flags: if bit 0 set, non-blocking (return -EAGAIN if no events)
 // Returns: number of events (>0), or -EAGAIN if no events available.
 //
-// This syscall blocks the calling kernel thread when no events are
-// available (via BlockOnSlot). Userspace MUST call via Syscall6 (not
-// RawSyscall) so entersyscall/exitsyscall properly release and reacquire
-// the Go runtime P. See mazarin/sys/softirq.go.
+// When called in non-blocking mode (arg2 & 1), the syscall returns
+// immediately with -EAGAIN if no events are in the ring. This allows
+// userspace to poll with runtime.Gosched() between calls, avoiding
+// the entersyscall/exitsyscall P-acquisition deadlock on single-P
+// configurations (GOMAXPROCS=1).
+//
+// When called in blocking mode (arg2 == 0), the calling kernel thread
+// blocks via BlockOnSlot until events arrive.
 //
 //go:noinline
-func SyscallWaitSoftIRQ(slotNum, bufPtr, _, _, _, _ uint64) int64 {
+func SyscallWaitSoftIRQ(slotNum, bufPtr, flags, _, _, _ uint64) int64 {
+	atomic.AddUint64(&DbgWaitSoftIRQEntries, 1)
 	if slotNum >= 32 {
 		return -22 // EINVAL
 	}
@@ -26,12 +47,16 @@ func SyscallWaitSoftIRQ(slotNum, bufPtr, _, _, _, _ uint64) int64 {
 	}
 
 	slot := int32(slotNum)
+	nonblock := (flags & 1) != 0
 
-	var events [hid.MaxHIDEvents]hid.HIDEvent
+	events := &slotEventBufs[slotNum]
 
 	// Non-blocking drain
 	n := DrainSoftIRQSlotEvents(slot, events[:], hid.MaxHIDEvents)
 	if n > 0 {
+		if slot == 3 {
+			atomic.AddUint64(&DbgSlot3DrainHit, 1)
+		}
 		intKind := GetSlotInterruptKind(slot)
 		if err := writeSoftIRQReturn(bufPtr, events[:n], n, intKind); err != 0 {
 			return err
@@ -39,21 +64,37 @@ func SyscallWaitSoftIRQ(slotNum, bufPtr, _, _, _, _ uint64) int64 {
 		return int64(n)
 	}
 
-	// No events — block this kernel thread on the slot.
+	// No events available
+	if nonblock {
+		if slot == 3 {
+			atomic.AddUint64(&DbgSlot3DrainMiss, 1)
+		}
+		return -11 // EAGAIN — caller should Gosched and retry
+	}
+
+	// Blocking path: block this kernel thread on the slot.
 	ctxPtr := BlockOnSlot(slot)
 	if ctxPtr != 0 {
+		// Context switch to another thread. The wake path (PushTimerEventAndWake
+		// or WakeSlotForIRQ) will rewind our ELR to re-execute the SVC, so
+		// SyscallWaitSoftIRQ runs fresh and drains events on resume.
 		SetSyscallSwitchTarget(ctxPtr)
-	} else {
-		// No other userspace thread to switch to — halt until next timer tick.
-		// This gives ProcessDeadlinesTopHalf a chance to wake sleeping threads
-		// (e.g. sysmon doing P handoff so more goroutines can run).
-		// Without this, we return immediately and spin in a tight SVC loop
-		// where timer preemption can't fire (SPSR shows EL1 in SVC handler).
-		// The timer IRQ handler's SPSR check (exceptions_arm64.s:1008-1010)
-		// correctly skips preemption when interrupted from kernel mode.
-		enableIRQsAndWait()
+		return -11 // Value doesn't matter — overwritten by re-executed SVC
 	}
-	return -11 // EAGAIN
+
+	// No other thread to switch to — WFI loop until events arrive.
+	// The timer ISR pushes events to the ring; we drain after each WFI.
+	for {
+		enableIRQsAndWait()
+		n = DrainSoftIRQSlotEvents(slot, events[:], hid.MaxHIDEvents)
+		if n > 0 {
+			intKind := GetSlotInterruptKind(slot)
+			if err := writeSoftIRQReturn(bufPtr, events[:n], n, intKind); err != 0 {
+				return err
+			}
+			return int64(n)
+		}
+	}
 }
 
 // SyscallRegisterSoftIRQ registers an IRQ on a soft IRQ slot for the current priest.

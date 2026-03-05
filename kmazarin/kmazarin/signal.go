@@ -22,6 +22,10 @@ const (
 	_SIGFPE  = 8  // Floating point exception
 	_SIGSEGV = 11 // Segmentation fault
 
+	// SIGSEGV si_code values (from Linux asm-generic/siginfo.h)
+	_SEGV_MAPERR = 1 // Address not mapped to object
+	_SEGV_ACCERR = 2 // Invalid permissions for mapped object
+
 	_SA_SIGINFO  = 0x00000004
 	_SA_ONSTACK  = 0x08000000
 	_SA_RESTORER = 0x04000000
@@ -230,7 +234,10 @@ func DeliverPendingSignal(thread *Thread) {
 	atomic.AddUint64(&signalDeliverCount, 1)
 
 	// Build the signal frame on the thread's signal stack
-	// and modify the ThreadContext to enter sigtramp
+	// and modify the ThreadContext to enter sigtramp.
+	// Software signals (tgkill, etc.) have no fault address or si_code.
+	thread.SignalFaultAddr = 0
+	thread.SignalSiCode = 0
 	BuildSignalFrame(thread, signum, &action)
 
 	thread.InSignalHandler = 1
@@ -336,20 +343,35 @@ func HandleUnhandledException(excInfo, faultAddr, faultPC uint64) uintptr {
 	// Look up signal handler
 	action := GetSignalActionForThread(t, signum)
 
+
 	if action.Handler != 0 {
 		// Handler registered — build signal frame so the thread enters the
-		// handler on the next exception return. The assembly caller should
-		// return via the normal el0_return / iretq / sret path which will
-		// load the (now modified) ThreadContext.
+		// handler on the next exception return.
+		//
+		// We return the current thread's Context pointer (not 0) because the
+		// assembly exception return path (el0_return / iretq / sret) restores
+		// from the exception frame on the stack, NOT from ThreadContext.
+		// BuildSignalFrame modifies ThreadContext, so we must tell the assembly
+		// to load from the modified ThreadContext instead of the stale exception frame.
 
-		// Update the thread's context with the faulting PC so BuildSignalFrame
-		// saves it correctly (the exception assembly may not have written it
-		// back to Context yet).
-		t.Context.SetPC(faultPC)
+		// NOTE: SaveContextFromFrame is now called from assembly before this
+		// function, so ThreadContext already has the correct SP, LR, PC, and
+		// all registers from the exception frame. No manual SetPC needed.
 
+		serial.RawUARTPuts("[SIG] delivering sig=")
+		serial.RawUARTDecimal(uint64(signum))
+		serial.RawUARTPuts(" PC=0x")
+		serial.RawUARTHex64(faultPC)
+		serial.RawUARTPuts(" addr=0x")
+		serial.RawUARTHex64(faultAddr)
+		serial.RawUARTPuts("\r\n")
+
+		// Map hardware exception info to Linux si_code (e.g., SEGV_MAPERR)
+		t.SignalFaultAddr = faultAddr
+		t.SignalSiCode = mapExceptionToSICode(signum, excInfo)
 		BuildSignalFrame(t, signum, &action)
 		t.InSignalHandler = 1
-		return 0
+		return uintptr(unsafe.Pointer(&t.Context))
 	}
 
 	// No handler — kill the priest
@@ -365,21 +387,71 @@ func handleUnhandledExceptionInternal(excInfo, faultAddr, faultPC uint64) uint64
 }
 
 // PrintProcessDeathDiag prints diagnostic info when a process is killed by a signal.
-// Uses only serial.RawUART* functions (safe for nosplit context).
+// Output goes to both serial UART and the soft IRQ console ring (stdio display).
+// Uses only nosplit-safe functions.
 //
 //go:nosplit
 func PrintProcessDeathDiag(pid PriestId, signum int, faultAddr, faultPC uint64) {
-	serial.RawUARTPuts("[KILLED] priest PID=")
-	serial.RawUARTDecimal(uint64(pid))
-	serial.RawUARTPuts(" ")
-	serial.RawUARTPuts(signalName(signum))
-	serial.RawUARTPuts("(")
-	serial.RawUARTDecimal(uint64(signum))
-	serial.RawUARTPuts(") PC=0x")
-	serial.RawUARTHex64(faultPC)
-	serial.RawUARTPuts(" addr=0x")
-	serial.RawUARTHex64(faultAddr)
-	serial.RawUARTPuts("\r\n")
+	dualPuts("[KILLED] priest PID=")
+	dualDecimal(uint64(pid))
+	dualPuts(" ")
+	dualPuts(signalName(signum))
+	dualPuts("(")
+	dualDecimal(uint64(signum))
+	dualPuts(") PC=0x")
+	dualHex64(faultPC)
+	dualPuts(" addr=0x")
+	dualHex64(faultAddr)
+	dualPuts("\r\n")
+}
+
+// dualPuts writes a string to both the serial UART and the soft IRQ console ring.
+//
+//go:nosplit
+func dualPuts(s string) {
+	serial.RawUARTPuts(s)
+	for i := 0; i < len(s); i++ {
+		PushByteToUartRing(2, s[i]) // fd=2 (stderr) for red text in stdio
+	}
+}
+
+// dualDecimal writes a decimal number to both UART and console ring.
+//
+//go:nosplit
+func dualDecimal(v uint64) {
+	// Write to UART
+	serial.RawUARTDecimal(v)
+	// Write to ring using stack buffer (nosplit-safe)
+	if v == 0 {
+		PushByteToUartRing(2, '0')
+		return
+	}
+	var buf [20]byte
+	i := len(buf)
+	for v > 0 {
+		i--
+		buf[i] = byte('0' + v%10)
+		v /= 10
+	}
+	for i < len(buf) {
+		PushByteToUartRing(2, buf[i])
+		i++
+	}
+}
+
+// dualHex64 writes a 64-bit hex value to both UART and console ring.
+//
+//go:nosplit
+func dualHex64(v uint64) {
+	serial.RawUARTHex64(v)
+	for i := 60; i >= 0; i -= 4 {
+		nibble := (v >> uint(i)) & 0xF
+		if nibble < 10 {
+			PushByteToUartRing(2, byte('0'+nibble))
+		} else {
+			PushByteToUartRing(2, byte('A'+nibble-10))
+		}
+	}
 }
 
 // signalName returns a human-readable name for common signals.

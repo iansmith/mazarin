@@ -32,6 +32,8 @@ func AddDeadline(deadline uint64, tid int32) bool { return true }
 
 func AddDeadlineStatic(deadline uint64, tid int32) {}
 
+func IsCurrentThreadUserspace() bool { return false }
+
 func ThreadBlockSleep() uintptr { return 0 }
 
 // ============================================================================

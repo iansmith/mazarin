@@ -55,8 +55,8 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 		callerPID := getCurrentThreadPID()
 		if callerPID != ownerPID {
 			useRing = true
-		} else if echoToSerial {
-			// stdio priest: can't use ring (deadlock), but echo to serial
+		} else {
+			// stdio priest: can't use ring (deadlock), always write direct to serial
 			useDirect = true
 		}
 	} else {
@@ -84,7 +84,9 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 				}
 				pushByteToUartRing(fdByte, c)
 			}
-			if echoToSerial {
+			// Echo stderr to serial so panic backtraces are visible in
+			// diagnostic output. Only for non-owner priests (useRing path).
+			if echoToSerial || fd == 2 {
 				for i := uint64(0); i < n; i++ {
 					c := chunk[i]
 					if c == '\n' {

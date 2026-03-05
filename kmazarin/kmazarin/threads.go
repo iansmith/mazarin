@@ -331,12 +331,20 @@ type Thread struct {
 	// parent's TLS when it writes its g pointer to FS:-8.
 	SyscallCloneTLS uint64
 
+	// Soft IRQ blocking state — saved so the wake path can rewind the SVC
+	// and re-execute SyscallWaitSoftIRQ with the correct first argument.
+	// On ARM64/RISC-V the return value overwrites the arg0 register (X0/a0),
+	// so we must restore it before re-executing the SVC instruction.
+	SoftIRQSlotArg uint64
+
 	// Signal delivery state
 	PendingSignals  uint64 // Bitmask of pending signals (bit N = signal N+1)
 	SignalSP        uint64 // gsignal stack top (stack grows down from here)
 	SignalStackBase uint64 // gsignal stack bottom
 	SignalStackSize uint64 // gsignal stack size in bytes
 	SignalUctxAddr  uint64 // Address of ucontext in current signal frame
+	SignalFaultAddr uint64 // Fault address for hardware signal (SIGSEGV, etc.)
+	SignalSiCode    int32  // si_code for siginfo (e.g., SEGV_MAPERR)
 	InSignalHandler uint32 // 1 = executing signal handler, 0 = normal
 	SigreturnPending uint32 // 1 = rt_sigreturn called, load Context for ERET
 }
@@ -974,6 +982,13 @@ func processStaticDeadlinesSchedLockHeld() {
 			sleepingQueue.Pluck(ThreadId(tid))
 			enqueueReadySchedLockHeld(t)
 			serial.RawUARTPuts("Ds") // breadcrumb: deadline woke sleeping thread
+		} else {
+			// Deadline fired but thread in unexpected state — dropped
+			serial.RawUARTPuts("Dx")
+			serial.RawUARTDecimal(uint64(tid))
+			serial.RawUARTPuts(":")
+			serial.RawUARTDecimal(uint64(t.State))
+			serial.RawUARTPuts(" ")
 		}
 	}
 }
@@ -992,6 +1007,14 @@ func ProcessDeadlinesTopHalf() {
 	processStaticDeadlinesSchedLockHeld()
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
+
+	// Flush any pending console ring data to userspace.
+	// This was in KernelIdleLoop but the idle loop is starved when many
+	// userspace threads are cycling through futex/sleep deadlines.
+	// Moving it here ensures the stdio priest gets woken every timer tick.
+	if softIRQConsole != nil {
+		softIRQConsole.CheckPendingWake()
+	}
 
 	// Debug: print event flow stats every ~5 seconds (assuming ~100 Hz timer)
 	if cnt%500 == 0 {
@@ -1031,8 +1054,20 @@ func ProcessDeadlinesTopHalf() {
 		mTail := atomic.LoadUint32(&topHalfMouseRing.tail)
 		serial.RawUARTPuts(" mring=")
 		serial.RawUARTDecimal(uint64(mTail - mHead))
+		tHead := atomic.LoadUint32(&topHalfTimerRing.head)
+		tTail := atomic.LoadUint32(&topHalfTimerRing.tail)
+		serial.RawUARTPuts(" tring=")
+		serial.RawUARTDecimal(uint64(tTail - tHead))
+		serial.RawUARTPuts(" t3h=")
+		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.DbgSlot3DrainHit))
+		serial.RawUARTPuts("/")
+		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.DbgSlot3DrainMiss))
 		serial.RawUARTPuts(" ksvc=")
 		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.KernelSVCCount))
+		serial.RawUARTPuts(" fu=")
+		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.DbgFutexUserDeadlines))
+		serial.RawUARTPuts(" fk=")
+		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.DbgFutexKernelDeadlines))
 		serial.RawUARTPuts("\n")
 	}
 }
@@ -2380,12 +2415,12 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 	pluckFromAllQueues(t.TID)
 
 	// Find next ready thread. If current thread is userspace (PageTableL0PA != 0),
-	// prefer userspace threads first, then fall back to any thread (including
-	// kernel thread 0). The SVC return path handles EL0→EL1 transitions correctly
-	// via DoContextSwitch + SPSR in the target ThreadContext.
+	// pick the next userspace thread in FIFO order (pass PID -1 to disable
+	// priest preference — see timer preemption comment for rationale).
+	// Fall back to any thread (including kernel thread 0).
 	var next *Thread
 	if t.PageTableL0PA != 0 {
-		next = findReadyUserspaceThreadSchedLockHeld(t.PID)
+		next = findReadyUserspaceThreadSchedLockHeld(-1)
 		if next == nil {
 			next = findReadyThreadSchedLockHeld()
 		}
@@ -2398,7 +2433,7 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 		// immediately, avoiding a round-trip through WFI.
 		processStaticDeadlinesSchedLockHeld()
 		if t.PageTableL0PA != 0 {
-			next = findReadyUserspaceThreadSchedLockHeld(t.PID)
+			next = findReadyUserspaceThreadSchedLockHeld(-1)
 			if next == nil {
 				next = findReadyThreadSchedLockHeld()
 			}
@@ -2488,10 +2523,17 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 			pluckFromAllQueues(tid)
 			enqueueReadySchedLockHeld(t)
 			woken++
+			serial.RawUARTPuts("Wf") // breadcrumb: futex_wake found match
+			serial.RawUARTDecimal(uint64(tid))
+			serial.RawUARTPuts(" ")
 		} else {
 			// Put back if not matching
 			blockedQueue.PushNoDuplicate(tid)
 		}
+	}
+
+	if woken == 0 && queueSize > 0 {
+		serial.RawUARTPuts("W0") // breadcrumb: futex_wake no match (threads blocked on different addr)
 	}
 
 	if sf.StateCheck != nil {
@@ -2535,7 +2577,7 @@ func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
 	// via DoContextSwitch + SPSR in the target ThreadContext.
 	var next *Thread
 	if t.PageTableL0PA != 0 {
-		next = findReadyUserspaceThreadSchedLockHeld(t.PID)
+		next = findReadyUserspaceThreadSchedLockHeld(-1)
 		if next == nil {
 			next = findReadyThreadSchedLockHeld()
 		}
@@ -2548,7 +2590,7 @@ func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
 		// immediately, avoiding a round-trip through WFI.
 		processStaticDeadlinesSchedLockHeld()
 		if t.PageTableL0PA != 0 {
-			next = findReadyUserspaceThreadSchedLockHeld(t.PID)
+			next = findReadyUserspaceThreadSchedLockHeld(-1)
 			if next == nil {
 				next = findReadyThreadSchedLockHeld()
 			}
@@ -2778,6 +2820,14 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		return ctxPtr
 	}
 
+	// Don't preempt thread 0 while it's dispatching LoadMaz work.
+	// Without this, the userspace-preferring scheduler starves thread 0
+	// after completing one request, preventing subsequent requests from
+	// being dispatched.
+	if oldThread.TID == 0 && atomic.LoadUint32(&loadMazDispatching) != 0 {
+		return 0
+	}
+
 	// BEGIN CRITICAL SECTION - protect thread state modifications
 	savedDAIF := sf.DisableAndSaveDAIF()
 	schedulerLock.Lock()
@@ -2801,14 +2851,16 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	oldThread.TicksStartedRunning = 0 // Mark as not running
 
 	// Find next ready thread for timer preemption.
-	// When preempted thread is userspace: prefer other userspace threads
-	// (same TTBR0/ASID context avoids TLB flush overhead), but fall back
-	// to any thread (including kernel) so thread 0 isn't starved.
+	// When preempted thread is userspace: pick the next userspace thread
+	// in FIFO order (pass PID -1 so all userspace threads match the
+	// "different priest" first pass). Using oldThread.PID here causes
+	// starvation: same-priest threads are skipped when a different-priest
+	// thread is always available (e.g., futex-cycling Go runtime Ms).
 	// When preempted thread is kernel: any ready thread is fine.
 	var next *Thread
 	if oldThread.PageTableL0PA != 0 {
-		// Userspace thread: prefer other userspace threads
-		next = findReadyUserspaceThreadSchedLockHeld(oldThread.PID)
+		// Userspace thread: FIFO across all priests
+		next = findReadyUserspaceThreadSchedLockHeld(-1)
 		if next == nil {
 			// Fallback: any thread, including kernel thread 0.
 			// On RISC-V/x86_64, SRET/IRETQ handles cross-privilege transitions

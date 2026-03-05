@@ -54,6 +54,10 @@ const (
 // BuildSignalFrame builds a signal frame on the thread's gsignal stack
 // and modifies the ThreadContext to enter sigtramp.
 //
+// Fault info (faultAddr, siCode) is read from thread.SignalFaultAddr and
+// thread.SignalSiCode. Callers must set these before calling BuildSignalFrame.
+// For software signals (tgkill, etc.) they should be left as 0.
+//
 // The signal frame is in userspace memory, so all writes go through the kernel
 // linear map (VA→PA walk + KernelMMIOOffset) since direct userspace access is
 // blocked by SMAP on x86_64.
@@ -87,9 +91,11 @@ func BuildSignalFrame(thread *Thread, signum int, action *SignalAction) {
 
 	// --- Populate siginfo ---
 	siPtr := uintptr(siginfoAddr)
-	kmem.WriteUserInt32WithL0(siPtr, int32(signum), l0PA)  // si_signo
-	kmem.WriteUserInt32WithL0(siPtr+4, 0, l0PA)            // si_errno
-	kmem.WriteUserInt32WithL0(siPtr+8, _SI_KERNEL, l0PA)   // si_code
+	kmem.WriteUserInt32WithL0(siPtr, int32(signum), l0PA)   // si_signo
+	kmem.WriteUserInt32WithL0(siPtr+4, 0, l0PA)             // si_errno
+	kmem.WriteUserInt32WithL0(siPtr+8, thread.SignalSiCode, l0PA)        // si_code (e.g., SEGV_MAPERR)
+	// si_addr at offset 16 (after 4 bytes padding for alignment)
+	kmem.WriteUserUint64WithL0(siPtr+16, thread.SignalFaultAddr, l0PA) // si_addr (fault address)
 
 	// --- Populate ucontext ---
 	ucPtr := uintptr(uctxAddr)
@@ -115,6 +121,7 @@ func BuildSignalFrame(thread *Thread, signum int, action *SignalAction) {
 	kmem.WriteUserUint64WithL0(scBase+scRIP, thread.Context.RIP, l0PA)
 	kmem.WriteUserUint64WithL0(scBase+scEFLAGS, thread.Context.RFLAGS, l0PA)
 	kmem.WriteUserUint16WithL0(scBase+scCS, uint16(thread.Context.CS), l0PA)
+	kmem.WriteUserUint64WithL0(scBase+scCR2, thread.SignalFaultAddr, l0PA) // CR2 (fault address)
 
 	// uc_stack: record the signal stack info
 	kmem.WriteUserUint64WithL0(ucPtr+amd64UcStack, thread.SignalStackBase, l0PA)      // ss_sp

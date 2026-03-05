@@ -833,14 +833,23 @@ pf_user_fault:
 	MOVQ	DX, -8(AX)
 	MOVQ	DX, R14
 
-	// Call HandleUnhandledExceptionAsm(vector=14, CR2, RIP)
+	// Save exception frame pointer and extract fault info into callee-saved regs.
+	MOVQ	SP, BP			// BP = exception frame base
 	MOVQ	$14, R13		// excInfo = vector 14 (page fault)
 	MOVQ	CR2, R12		// faultAddr = CR2
 	MOVQ	128(SP), BX		// faultPC = RIP from exception frame
+
+	// CRITICAL: Save the full exception context to ThreadContext BEFORE calling
+	// HandleUnhandledExceptionAsm. Without this, BuildSignalFrame reads stale
+	// SP/LR/register values from ThreadContext, causing the Go runtime's
+	// stack traceback to read garbage and throw "unknown caller pc".
+	GO_CALL_1_0(·SaveContextFromFrame, BP)
+
+	// Call HandleUnhandledExceptionAsm(vector=14, CR2, RIP)
 	GO_CALL_3_1(·HandleUnhandledExceptionAsm, R13, R12, BX)
 	TESTQ	AX, AX
-	JZ	exception_return	// Signal queued → normal return
-	MOVQ	AX, R12			// R12 = next ThreadContext
+	JZ	pf_unhandled_halt	// 0 = error, halt
+	MOVQ	AX, R12			// R12 = ThreadContext (signal or next thread)
 	JMP	load_context_and_iretq
 
 pf_unhandled_halt:
@@ -1211,15 +1220,22 @@ fripF:	OUTB
 	MOVQ	DX, -8(AX)
 	MOVQ	DX, R14
 
-	// Call HandleUnhandledExceptionAsm(vector, 0, RIP)
-	// For non-PF vectors, faultAddr is 0 (no CR2 relevant)
+	// Save exception frame pointer and extract fault info into callee-saved regs.
+	MOVQ	SP, BP				// BP = exception frame base
 	MOVQ	·currentVector(SB), R13	// excInfo = vector number
-	MOVQ	$0, R12			// faultAddr = 0
+	MOVQ	$0, R12			// faultAddr = 0 (no CR2 relevant for non-PF)
 	MOVQ	128(SP), BX		// faultPC = RIP from exception frame
+
+	// CRITICAL: Save the full exception context to ThreadContext BEFORE calling
+	// HandleUnhandledExceptionAsm. Without this, BuildSignalFrame reads stale
+	// register values from ThreadContext.
+	GO_CALL_1_0(·SaveContextFromFrame, BP)
+
+	// Call HandleUnhandledExceptionAsm(vector, 0, RIP)
 	GO_CALL_3_1(·HandleUnhandledExceptionAsm, R13, R12, BX)
 	TESTQ	AX, AX
-	JZ	exception_return	// Signal queued → normal return
-	MOVQ	AX, R12			// R12 = next ThreadContext
+	JZ	generic_halt		// 0 = error, halt
+	MOVQ	AX, R12			// R12 = ThreadContext (signal or next thread)
 	JMP	load_context_and_iretq
 
 generic_halt:

@@ -124,6 +124,16 @@ func getCurrentThreadTIDForKsyscall() int16 {
 	return int16(GetCurrentThreadTID())
 }
 
+// IsCurrentThreadUserspace returns true if the current thread belongs to a
+// userspace priest (PageTableL0PA != 0).
+//
+//go:linkname isCurrentThreadUserspaceForKsyscall mazzy/kmazarin/ksyscall.IsCurrentThreadUserspace
+//go:nosplit
+func isCurrentThreadUserspaceForKsyscall() bool {
+	t := GetCurrentThread()
+	return t != nil && t.PageTableL0PA != 0
+}
+
 // ============================================================================
 // Signal functions for ksyscall package
 // ============================================================================

@@ -32,14 +32,14 @@ func BlockForIPCCall() uintptr {
 	// Find next ready thread (prefer userspace if caller is userspace)
 	var next *Thread
 	if t.PageTableL0PA != 0 {
-		next = findReadyUserspaceThreadSchedLockHeld(t.PID)
+		next = findReadyUserspaceThreadSchedLockHeld(-1)
 	} else {
 		next = findReadyThreadSchedLockHeld()
 	}
 	if next == nil {
 		processStaticDeadlinesSchedLockHeld()
 		if t.PageTableL0PA != 0 {
-			next = findReadyUserspaceThreadSchedLockHeld(t.PID)
+			next = findReadyUserspaceThreadSchedLockHeld(-1)
 		} else {
 			next = findReadyThreadSchedLockHeld()
 		}
@@ -86,14 +86,14 @@ func BlockForIPCRecv() uintptr {
 
 	var next *Thread
 	if t.PageTableL0PA != 0 {
-		next = findReadyUserspaceThreadSchedLockHeld(t.PID)
+		next = findReadyUserspaceThreadSchedLockHeld(-1)
 	} else {
 		next = findReadyThreadSchedLockHeld()
 	}
 	if next == nil {
 		processStaticDeadlinesSchedLockHeld()
 		if t.PageTableL0PA != 0 {
-			next = findReadyUserspaceThreadSchedLockHeld(t.PID)
+			next = findReadyUserspaceThreadSchedLockHeld(-1)
 		} else {
 			next = findReadyThreadSchedLockHeld()
 		}

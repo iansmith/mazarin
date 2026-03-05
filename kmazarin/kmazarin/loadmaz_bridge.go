@@ -25,6 +25,12 @@ import (
 // by KernelIdleLoop to dispatch .maz loading work.
 var loadMazPending uint32
 
+// loadMazDispatching is set while thread 0 is inside DispatchLoadMazWork.
+// The timer ISR checks this to avoid preempting thread 0 mid-dispatch,
+// which would starve it (the userspace-preferring scheduler never picks
+// thread 0 from the ready queue).
+var loadMazDispatching uint32
+
 // initLoadMazWorker initializes the .maz loading bridge.
 // Called from simpleMain before entering KernelIdleLoop.
 func initLoadMazWorker() {
@@ -34,40 +40,58 @@ func initLoadMazWorker() {
 
 // DispatchLoadMazWork is called from KernelIdleLoop (on the main goroutine
 // with a growable stack) to perform the heavy .maz loading work.
-// Returns true if work was dispatched.
+// Loops internally to process all pending requests before returning,
+// and sets loadMazDispatching to prevent timer preemption of thread 0
+// while we're dispatching (otherwise the userspace-preferring scheduler
+// starves thread 0 and subsequent requests never get processed).
+// Returns true if any work was dispatched.
 func DispatchLoadMazWork() bool {
-	// Check both the atomic flag AND the BlockedTID as a belt-and-suspenders
-	// approach. The atomic flag is the primary signal; BlockedTID >= 0 is backup.
-	atomicFired := atomic.SwapUint32(&loadMazPending, 0) == 1
-	hasPending := ksyscall.LoadMazReq.BlockedTID >= 0
+	dispatched := false
+	for {
+		// Check both the atomic flag AND the BlockedTID as a belt-and-suspenders
+		// approach. The atomic flag is the primary signal; BlockedTID >= 0 is backup.
+		atomicFired := atomic.SwapUint32(&loadMazPending, 0) == 1
+		hasPending := ksyscall.LoadMazReq.BlockedTID >= 0
 
-	if !atomicFired && !hasPending {
-		return false
+		if !atomicFired && !hasPending {
+			if dispatched {
+				atomic.StoreUint32(&loadMazDispatching, 0)
+			}
+			return dispatched
+		}
+
+		tid := ksyscall.LoadMazReq.BlockedTID
+		if tid < 0 {
+			// Atomic flag fired but no valid TID — spurious, ignore.
+			if dispatched {
+				atomic.StoreUint32(&loadMazDispatching, 0)
+			}
+			return dispatched
+		}
+
+		// Set anti-preemption flag so the timer ISR doesn't preempt us
+		// between request completions.
+		atomic.StoreUint32(&loadMazDispatching, 1)
+
+		if atomicFired {
+			serial.RawUARTPuts("[LM:atomic]")
+		} else {
+			serial.RawUARTPuts("[LM:tid]")
+		}
+
+		// Snapshot the request and clear the TID to prevent re-dispatch.
+		req := ksyscall.LoadMazReq
+		ksyscall.LoadMazReq.BlockedTID = -1
+
+		serial.RawUARTPuts("[LM:work]")
+		result := ksyscall.DoLoadMazWork(&req)
+
+		// Wake the blocked thread with the result.
+		wakeLoadMazThread(req.BlockedTID, result)
+		serial.RawUARTPuts("[LM:done]")
+		dispatched = true
+		// Loop back to check for more pending requests.
 	}
-
-	tid := ksyscall.LoadMazReq.BlockedTID
-	if tid < 0 {
-		// Atomic flag fired but no valid TID — spurious, ignore.
-		return false
-	}
-
-	if atomicFired {
-		serial.RawUARTPuts("[LM:atomic]")
-	} else {
-		serial.RawUARTPuts("[LM:tid]")
-	}
-
-	// Snapshot the request and clear the TID to prevent re-dispatch.
-	req := ksyscall.LoadMazReq
-	ksyscall.LoadMazReq.BlockedTID = -1
-
-	serial.RawUARTPuts("[LM:work]")
-	result := ksyscall.DoLoadMazWork(&req)
-
-	// Wake the blocked thread with the result.
-	wakeLoadMazThread(req.BlockedTID, result)
-	serial.RawUARTPuts("[LM:done]")
-	return true
 }
 
 // BlockForLoadMaz blocks the calling kernel thread for a .maz load request.

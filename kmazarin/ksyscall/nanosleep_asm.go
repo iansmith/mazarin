@@ -25,3 +25,7 @@ func AddDeadlineStatic(deadline uint64, tid int32)
 // ThreadBlockSleep is provided by main package via go:linkname.
 // Marks the current thread as sleeping and returns the next ready thread index.
 func ThreadBlockSleep() uintptr
+
+// IsCurrentThreadUserspace is provided by main package via go:linkname.
+// Returns true if the current thread belongs to a userspace priest.
+func IsCurrentThreadUserspace() bool

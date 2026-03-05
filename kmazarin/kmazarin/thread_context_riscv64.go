@@ -76,6 +76,21 @@ func (ctx *ThreadContext) SetProcessorState(v uint64) { ctx.SSTATUS = v }
 //go:nosplit
 func (ctx *ThreadContext) FixIRQEnabled() { ctx.SSTATUS |= 1 << 5 }
 
+// RewindToSyscall rewinds the saved PC to re-execute the ECALL instruction.
+// RISC-V ECALL sets SEPC = PC of ECALL. Our handler adds 4 before saving to
+// context so SRET returns to the next instruction. Subtracting 4 re-executes ECALL.
+//
+//go:nosplit
+func (ctx *ThreadContext) RewindToSyscall() { ctx.SEPC -= 4 }
+
+// RestoreSyscallArg0 restores the first syscall argument register.
+// On RISC-V, a0 (X[10]) serves as both arg0 and return value. The ECALL handler
+// overwrites a0 in the saved context with the return value, so we must restore
+// the original arg0 before re-executing the ECALL.
+//
+//go:nosplit
+func (ctx *ThreadContext) RestoreSyscallArg0(v uint64) { ctx.X[10] = v }
+
 // SetCloneTLS is a no-op on RISC-V (no FS_BASE, TLS is handled via TP register).
 //
 //go:nosplit

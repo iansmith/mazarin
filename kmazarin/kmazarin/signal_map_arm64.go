@@ -30,3 +30,22 @@ func mapExceptionToSignal(esr uint64) int {
 		return _SIGSEGV // Default to SIGSEGV for unknown
 	}
 }
+
+// mapExceptionToSICode maps an ARM64 ESR_EL1 to a Linux si_code value
+// appropriate for the given signal. For SIGSEGV, distinguishes between
+// SEGV_MAPERR (translation fault) and SEGV_ACCERR (permission fault).
+//
+//go:nosplit
+func mapExceptionToSICode(signum int, esr uint64) int32 {
+	if signum == _SIGSEGV {
+		// DFSC/IFSC in bits [5:0], category in bits [5:2]
+		fsc := esr & 0x3F
+		switch fsc & 0x3C {
+		case 0x0C: // Permission fault (L0-L3)
+			return _SEGV_ACCERR
+		default: // Translation fault, access flag fault, etc.
+			return _SEGV_MAPERR
+		}
+	}
+	return 1 // Generic si_code for other signals
+}

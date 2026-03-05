@@ -4,7 +4,6 @@ import (
 	"errors"
 	"mazzy/shared/hid"
 	"runtime"
-	"syscall"
 	"unsafe"
 )
 
@@ -12,19 +11,27 @@ const (
 	sysWaitSoftIRQ       = 0x100A
 	sysRegisterSoftIRQ   = 0x100B
 	sysQueryInputDevices = 0x100C
+
+	// waitSoftIRQNonBlock is the flags value for non-blocking mode.
+	// Passed as arg2 to SyscallWaitSoftIRQ.
+	waitSoftIRQNonBlock = 1
 )
 
 // WaitSoftIRQ waits for soft IRQ events on the given slot.
-// Uses Syscall6 so entersyscall/exitsyscall release the P while blocked.
+//
+// Uses non-blocking poll + Gosched loop with RawSyscall (no entersyscall).
+// This avoids creating extra M's and futex contention that occurs with
+// Syscall6/entersyscall under GOMAXPROCS=1. The goroutine cooperatively
+// yields the P via Gosched between polls, allowing other goroutines to run.
 func WaitSoftIRQ(slot int, buf *hid.SoftIRQReturn) (int, error) {
 	for {
-		r1, _, errno := syscall.Syscall6(sysWaitSoftIRQ,
+		r1, _, errno := RawSyscall(sysWaitSoftIRQ,
 			uintptr(slot),
 			uintptr(unsafe.Pointer(buf)),
-			0, 0, 0, 0)
+			waitSoftIRQNonBlock, 0, 0, 0)
 
 		if errno != 0 {
-			if errno == 11 { // EAGAIN — was blocked and woken
+			if errno == 11 { // EAGAIN — no events ready
 				runtime.Gosched()
 				continue
 			}
@@ -43,7 +50,7 @@ func TryWaitSoftIRQ(slot int, buf *hid.SoftIRQReturn) (int, error) {
 	r1, _, errno := RawSyscall(sysWaitSoftIRQ,
 		uintptr(slot),
 		uintptr(unsafe.Pointer(buf)),
-		0, 0, 0, 0)
+		waitSoftIRQNonBlock, 0, 0, 0)
 
 	if errno != 0 {
 		if errno == 11 { // EAGAIN

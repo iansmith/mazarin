@@ -16,14 +16,14 @@ import (
 //   [0]    argc = 1
 //   [8]    argv[0] → "kmazarin" string
 //   [16]   argv[1] = NULL
-//   [24]   envp[0] → "GODEBUG=asyncpreemptoff=1,gctrace=1"
+//   [24]   envp[0] → "GODEBUG=gctrace=1"
 //   [32]   envp[1] → "GOMEMLIMIT=64MiB"
 //   [40]   envp[2] = NULL
 //   [48+]  auxv entries (key, value pairs) — up to 20 entries (320 bytes)
 //   ...
 //   [384]  "kmazarin\0"
 //   [400]  16 random bytes
-//   [416]  "GODEBUG=asyncpreemptoff=1,gctrace=1\0"
+//   [416]  "GODEBUG=gctrace=1\0"
 //   [464]  "GOMEMLIMIT=64MiB\0"
 //
 // NOTE: GOGC is NOT set for the kernel — uses Go default (100%).
@@ -63,9 +63,9 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel, cfg *
 	randomPhys := structPhys + 400
 	getTimerBasedRandom(randomPhys)
 
-	// "GODEBUG=asyncpreemptoff=1,gctrace=1" at offset 416
+	// "GODEBUG=gctrace=1" at offset 416
 	godebug := (*[48]byte)(unsafe.Pointer(uintptr(structPhys + 416)))
-	s := "GODEBUG=asyncpreemptoff=1,gctrace=1"
+	s := "GODEBUG=gctrace=1"
 	for i := 0; i < len(s); i++ {
 		godebug[i] = s[i]
 	}
@@ -88,7 +88,7 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel, cfg *
 	data[1] = structStart + 384
 	// argv[1] = NULL
 	data[2] = 0
-	// envp[0] = "GODEBUG=asyncpreemptoff=1,gctrace=1" (VA)
+	// envp[0] = "GODEBUG=gctrace=1" (VA)
 	data[3] = structStart + 416
 	// envp[1] = "GOMEMLIMIT=64MiB" (VA)
 	data[4] = structStart + 464

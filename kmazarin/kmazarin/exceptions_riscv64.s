@@ -471,12 +471,20 @@ pf_ifault_ra_print:
 	BNE	T3, ZERO, pf_ifault_halt	// Kernel fault → halt
 
 	// User fault: map to signal and deliver or kill priest
+	MOV	X2, S6				// S6 = trap frame base (for SaveContextFromFrame)
 	MOV	$12, S3				// scause=12 (instruction page fault)
 	MOV	X20, S4				// stval (faultAddr)
 	MOV	248(X2), S5			// sepc from trap frame (faultPC)
+
+	// CRITICAL: Save the full exception context to ThreadContext BEFORE calling
+	// HandleUnhandledExceptionAsm. Without this, BuildSignalFrame reads stale
+	// SP/LR/register values from ThreadContext, causing the Go runtime's
+	// stack traceback to read garbage and throw "unknown caller pc".
+	GO_CALL_1_0(·SaveContextFromFrame, S6)
+
 	GO_CALL_3_1(·HandleUnhandledExceptionAsm, S3, S4, S5)
-	BEQ	T0, ZERO, trap_return		// Signal queued → normal return
-	MOV	T0, S2				// S2 = next ThreadContext
+	BEQ	T0, ZERO, pf_ifault_halt	// 0 = error, halt
+	MOV	T0, S2				// S2 = ThreadContext (signal or next thread)
 	JMP	load_context_and_sret
 
 pf_ifault_halt:
@@ -767,15 +775,23 @@ pf_skip_stack_walk:
 	BNE	T3, ZERO, pf_unhandled_halt	// Kernel fault → still halt
 
 	// User fault: map to signal and deliver or kill priest.
-	// Call HandleUnhandledExceptionAsm(scause, stval, sepc)
+	// Save trap frame pointer and extract fault info into callee-saved regs.
+	MOV	X2, S6				// S6 = trap frame base (for SaveContextFromFrame)
 	WORD	$0x142022F3			// csrr t0, scause → S3(X19)
 	MOV	T0, S3				// S3 = scause (excInfo)
 	WORD	$0x14302373			// csrr t1, stval → S4(X20)
 	MOV	T1, S4				// S4 = stval (faultAddr)
 	MOV	248(X2), S5			// S5 = sepc from trap frame (faultPC)
+
+	// CRITICAL: Save the full exception context to ThreadContext BEFORE calling
+	// HandleUnhandledExceptionAsm. Without this, BuildSignalFrame reads stale
+	// register values from ThreadContext.
+	GO_CALL_1_0(·SaveContextFromFrame, S6)
+
+	// Call HandleUnhandledExceptionAsm(scause, stval, sepc)
 	GO_CALL_3_1(·HandleUnhandledExceptionAsm, S3, S4, S5)
-	BEQ	T0, ZERO, trap_return		// Signal queued → normal return
-	MOV	T0, S2				// S2 = next ThreadContext pointer
+	BEQ	T0, ZERO, pf_unhandled_halt	// 0 = error, halt
+	MOV	T0, S2				// S2 = ThreadContext (signal or next thread)
 	JMP	load_context_and_sret
 
 	// Halt - kernel fault or no threads remain

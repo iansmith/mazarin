@@ -21,6 +21,8 @@ import (
 func SyscallClone(flags, stack, ptid, tls, ctid, _ uint64) int64 {
 	serial.RawUARTPuts("\r\n[CLONE] stk=0x")
 	serial.RawUARTHex64(stack)
+	serial.RawUARTPuts(" parentPID=")
+	serial.RawUARTDecimal(uint64(getCurrentThreadPID()))
 	serial.RawUARTPuts("\r\n")
 	// Extract mp, gp, fn from the stack (same as Cardinal)
 	// Go writes values at negative offsets from the original stack pointer,
@@ -59,6 +61,10 @@ func SyscallClone(flags, stack, ptid, tls, ctid, _ uint64) int64 {
 	if tid < 0 {
 		return -1 // EAGAIN - no free thread slots
 	}
+
+	serial.RawUARTPuts("[CLONE] childTID=")
+	serial.RawUARTDecimal(uint64(tid))
+	serial.RawUARTPuts("\r\n")
 
 	// Return TID to parent
 	// CRITICAL: CloneThread has called SetSyscallSwitchTarget, so after this

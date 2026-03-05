@@ -29,3 +29,15 @@ func mapExceptionToSignal(vector uint64) int {
 		return _SIGSEGV
 	}
 }
+
+// mapExceptionToSICode maps an x86_64 exception vector to a Linux si_code.
+// For SIGSEGV page faults, defaults to SEGV_MAPERR (we don't have the
+// page fault error code here to distinguish present vs not-present).
+//
+//go:nosplit
+func mapExceptionToSICode(signum int, vector uint64) int32 {
+	if signum == _SIGSEGV {
+		return _SEGV_MAPERR
+	}
+	return 1
+}

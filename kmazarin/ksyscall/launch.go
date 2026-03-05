@@ -256,7 +256,7 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 		}
 	}
 
-	_ = tid
+	console.KPrintf("[Launch] main thread TID=%d\n", tid)
 
 	// Return to caller - the new thread will be scheduled later
 	return 0
@@ -728,8 +728,9 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 	}
 
 	penv := NewProcessEnv()
-	penv.SetEnv("GODEBUG", "asyncpreemptoff=1,gctrace=1")
+	penv.SetEnv("GODEBUG", "gctrace=1")
 	penv.SetEnv("GOGC", "5")
+	penv.SetEnv("GOMEMLIMIT", "64MiB")
 	penv.SetEnv("GOMAXPROCS", "1")
 	penv.SetAuxv(6, 4096) // AT_PAGESZ
 

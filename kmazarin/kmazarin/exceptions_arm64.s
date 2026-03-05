@@ -1495,20 +1495,35 @@ el0_data_abort_unhandled:
 
 el0_not_svc:
 	// Non-SVC exception from userspace: map to signal and deliver or kill priest.
-	// Extract excInfo (ESR), faultAddr (FAR), faultPC (ELR) from exception frame.
+	//
+	// Ensure kmazarin g is loaded — non-page-fault exceptions (SIGILL, etc.)
+	// reach here without going through el0_handle_page_fault's g switch.
+	MOVD	·kmazarinG0Addr(SB), R10
+	CBZ	R10, skip_g_switch_el0_nsc
+	WORD	$0xaa0a03fc  // mov x28, x10
+skip_g_switch_el0_nsc:
+
+	// Save exception frame pointer and extract fault info into callee-saved regs.
+	MOVD	RSP, R22                        // R22 = exception frame base
 	MOVD	EXC_FRAME_FAR_ESR+8(RSP), R19  // R19 = ESR (excInfo)
 	MOVD	EXC_FRAME_FAR_ESR(RSP), R20    // R20 = FAR (faultAddr)
 	MOVD	EXC_FRAME_ELR_SPSR(RSP), R21   // R21 = ELR (faultPC)
+
+	// CRITICAL: Save the full exception context to ThreadContext BEFORE calling
+	// HandleUnhandledExceptionAsm. Without this, BuildSignalFrame reads stale
+	// SP/LR/register values from ThreadContext, causing the Go runtime's
+	// stack traceback to read garbage and throw "unknown caller pc".
+	GO_CALL_1_0(·SaveContextFromFrame, R22)
 
 	// Call HandleUnhandledExceptionAsm(excInfo, faultAddr, faultPC)
 	// Returns: 0 if signal was queued (return via normal path),
 	//          non-zero = pointer to next ThreadContext (priest killed)
 	GO_CALL_3_1(·HandleUnhandledExceptionAsm, R19, R20, R21)
 
-	// Check result
-	CBZ	R0, el0_return  // Signal queued → normal return (enters handler via modified Context)
+	// Check result: R0 = context pointer (signal delivered or priest killed), 0 = error
+	CBZ	R0, el0_unhandled_halt  // 0 = shouldn't happen, halt
 
-	// Priest killed → R0 = pointer to next ThreadContext
+	// R0 = pointer to ThreadContext (signal handler or next thread)
 	// Load context and ERET to next thread
 	MOVD	R0, R20  // R20 = context pointer
 

@@ -3,7 +3,6 @@ package ksyscall
 import (
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
-	"mazzy/kmazarin/serial"
 )
 
 // SyscallNanosleep implements the nanosleep(2) syscall
@@ -70,12 +69,14 @@ func SyscallNanosleep(req, rem, _, _, _, _ uint64) int64 {
 	nextThread := ThreadBlockSleep()
 	if nextThread != 0 {
 		SetSyscallSwitchTarget(nextThread)
-	} else if currentTID < 10 {
-		// Diagnostic: kernel thread tried to sleep but no ready thread found
-		serial.RawUARTPuts("Zn")
-		serial.RawUARTDecimal(uint64(currentTID))
-		serial.RawUARTPuts(" ")
 	}
+	// If ThreadBlockSleep returned 0 (no ready thread), return immediately.
+	// The deadline is already in the static queue and will fire later,
+	// waking this thread via processStaticDeadlinesSchedLockHeld.
+	// NOTE: We intentionally do NOT WFI-loop here because this code runs
+	// inside the SVC handler (svcDepth=1), where timer preemption is
+	// disabled. WFI-looping would block the CPU and starve threads that
+	// become ready during the wait (e.g., drain goroutines woken by IRQs).
 
 	return 0
 }

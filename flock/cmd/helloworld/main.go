@@ -4,7 +4,6 @@
 package main
 
 import (
-	"fmt"
 	"mazzy/mazarin/sys"
 )
 
@@ -26,12 +25,11 @@ func init() {
 //
 //go:noinline
 func MazarinMain() {
-	t, err := sys.GetTime()
-	if err != nil {
-		fmt.Printf("GetTime error: %v\n", err)
-		return
+	// Use raw syscall writes to avoid fmt/os.Stdout (nil in .maz — init doesn't run)
+	msg := []byte("hello world from .maz!\n")
+	for _, ch := range msg {
+		sys.RawWrite(1, ch)
 	}
-	fmt.Printf("hello world %d.%09d\n", t.Seconds, t.Nanoseconds)
 }
 
 func main() {

@@ -34,3 +34,14 @@ func mapExceptionToSignal(scause uint64) int {
 		return _SIGSEGV
 	}
 }
+
+// mapExceptionToSICode maps a RISC-V scause to a Linux si_code.
+// For SIGSEGV page faults, defaults to SEGV_MAPERR.
+//
+//go:nosplit
+func mapExceptionToSICode(signum int, scause uint64) int32 {
+	if signum == _SIGSEGV {
+		return _SEGV_MAPERR
+	}
+	return 1
+}

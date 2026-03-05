@@ -11,10 +11,7 @@ import (
 	"image/color"
 	"image/draw"
 	"math"
-	"os"
-	"os/signal"
 	"runtime"
-	"syscall"
 	"time"
 	"unsafe"
 
@@ -421,17 +418,7 @@ func main() {
 		sys.FlushFramebuffer(uint32(flushX), uint32(flushY), uint32(flushW), uint32(flushH))
 	}
 
-	// --- Register SIGUSR1 handler ---
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGUSR1)
-	go func() {
-		count := 0
-		for range sigCh {
-			count++
-			fmt.Printf("[stdio] caught SIGUSR1 (#%d)\n", count)
-		}
-	}()
-	fmt.Printf("[stdio] SIGUSR1 handler registered (pid=%d)\n", syscall.Getpid())
+	fmt.Println("[stdio] Entering serial event loop")
 
 	// --- Enter serial event loop ---
 	for sb := range serialCh {

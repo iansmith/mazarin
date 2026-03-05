@@ -8,6 +8,16 @@ import (
 	merror "mazzy/mazarin/error"
 )
 
+// runtime_entersyscall releases the Go P before a potentially-blocking syscall.
+//
+//go:linkname runtime_entersyscall runtime.entersyscall
+func runtime_entersyscall()
+
+// runtime_exitsyscall reacquires a Go P after returning from a syscall.
+//
+//go:linkname runtime_exitsyscall runtime.exitsyscall
+func runtime_exitsyscall()
+
 // MazLoadResult is filled in by the kernel when loading a .maz binary.
 // Layout must match kmazarin/ksyscall/loadmaz.go exactly.
 type MazLoadResult struct {

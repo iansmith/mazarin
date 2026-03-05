@@ -68,6 +68,21 @@ func (ctx *ThreadContext) SetProcessorState(v uint64) { ctx.SPSR = v }
 //go:nosplit
 func (ctx *ThreadContext) FixIRQEnabled() { ctx.SPSR &^= 0x80 }
 
+// RewindToSyscall rewinds the saved PC to re-execute the SVC instruction.
+// ARM64 SVC saves ELR_EL1 = PC+4 (next instruction). Subtracting 4 points
+// back to the SVC itself, so the thread re-enters the syscall handler on resume.
+//
+//go:nosplit
+func (ctx *ThreadContext) RewindToSyscall() { ctx.ELR -= 4 }
+
+// RestoreSyscallArg0 restores the first syscall argument register.
+// On ARM64, X0 serves as both arg0 and return value. The SVC handler
+// overwrites X0 in the saved context with the return value, so we must
+// restore the original arg0 before re-executing the SVC.
+//
+//go:nosplit
+func (ctx *ThreadContext) RestoreSyscallArg0(v uint64) { ctx.X[0] = v }
+
 // SetCloneTLS is a no-op on ARM64 (no FS_BASE, TLS is handled via TPIDR_EL0).
 //
 //go:nosplit
