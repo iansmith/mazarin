@@ -66,7 +66,8 @@ var syscallTable = [NumSyscallIDs]SyscallHandler{
 //go:nosplit
 //go:noinline
 func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
-	// Track SVCs from kernel threads for deadlock diagnostics
+	// Track SVCs for diagnostics
+	atomic.AddUint64(&TotalSVCCount, 1)
 	tid := GetCurrentThreadTID()
 	if tid < 10 {
 		atomic.AddUint64(&KernelSVCCount, 1)
@@ -89,15 +90,21 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 			serial.RawUARTPuts("]")
 			result = -38 // ENOSYS
 		} else {
-			handler := syscallTable[sysID]
-			if handler == nil {
-				serial.RawUARTPuts("[NIL:")
-				serial.RawUARTHexCompact(syscallNum)
-				serial.RawUARTPuts("]")
-				result = -38 // ENOSYS
+			// Check if this syscall is delegated to a userspace priest
+			callerPID := getCurrentThreadPID()
+			if IsDelegated(sysID, callerPID) {
+				result = DelegateSyscall(sysID, arg0, arg1, arg2, arg3, arg4, arg5)
 			} else {
-				// Call the handler
-				result = handler(arg0, arg1, arg2, arg3, arg4, arg5)
+				handler := syscallTable[sysID]
+				if handler == nil {
+					serial.RawUARTPuts("[NIL:")
+					serial.RawUARTHexCompact(syscallNum)
+					serial.RawUARTPuts("]")
+					result = -38 // ENOSYS
+				} else {
+					// Call the handler
+					result = handler(arg0, arg1, arg2, arg3, arg4, arg5)
+				}
 			}
 		}
 	}

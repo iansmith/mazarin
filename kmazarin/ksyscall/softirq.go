@@ -2,6 +2,7 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
 	"sync/atomic"
 	"unsafe"
@@ -59,7 +60,19 @@ func SyscallWaitSoftIRQ(slotNum, bufPtr, flags, _, _, _ uint64) int64 {
 		}
 		intKind := GetSlotInterruptKind(slot)
 		if err := writeSoftIRQReturn(bufPtr, events[:n], n, intKind); err != 0 {
+			// Breadcrumb: writeSoftIRQReturn failed
+			if slot == 0 {
+				serial.RawUARTPuts("!k")
+			} else if slot == 1 {
+				serial.RawUARTPuts("!m")
+			}
 			return err
+		}
+		// Breadcrumb: events delivered to userspace
+		if slot == 0 {
+			serial.RawUARTPuts("k")
+		} else if slot == 1 {
+			serial.RawUARTPuts("m")
 		}
 		return int64(n)
 	}

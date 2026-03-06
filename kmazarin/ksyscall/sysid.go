@@ -1,51 +1,53 @@
 package ksyscall
 
+import "mazzy/shared/sysid"
+
 // SysID is a platform-independent syscall identifier.
-// The dispatch table is indexed by SysID, not native Linux syscall numbers.
-// Each architecture has a translation table mapping native numbers → SysID.
-type SysID uint16
+// Alias of sysid.ID so existing kernel code doesn't need to change.
+type SysID = sysid.ID
 
+// Re-export all constants so existing kernel code compiles unchanged.
 const (
-	SysIDInvalid          SysID = iota // sentinel — zero value for unmapped entries
-	SysIDIoSetup                       // io_setup
-	SysIDEventfd                       // eventfd2
-	SysIDEpollCreate                   // epoll_create1
-	SysIDEpollCtl                      // epoll_ctl
-	SysIDEpollPwait                    // epoll_pwait
-	SysIDFcntl                         // fcntl
-	SysIDOpenat                        // openat
-	SysIDClose                         // close
-	SysIDRead                          // read
-	SysIDWrite                         // write
-	SysIDExit                          // exit
-	SysIDExitGroup                     // exit_group
-	SysIDSetTidAddress                 // set_tid_address
-	SysIDFutex                         // futex
-	SysIDNanosleep                     // nanosleep
-	SysIDClockGettime                  // clock_gettime
-	SysIDSchedGetaffinity              // sched_getaffinity
-	SysIDSchedYield                    // sched_yield
-	SysIDKill                          // kill
-	SysIDTkill                         // tkill
-	SysIDTgkill                        // tgkill
-	SysIDSigaltstack                   // sigaltstack
-	SysIDRtSigaction                   // rt_sigaction
-	SysIDRtSigprocmask                 // rt_sigprocmask
-	SysIDArchPrctl                     // arch_prctl (x86_64 only)
-	SysIDPrctl                         // prctl
-	SysIDGetpid                        // getpid
-	SysIDGettid                        // gettid
-	SysIDSchedSetaffinity              // sched_setaffinity
-	SysIDBrk                           // brk
-	SysIDMunmap                        // munmap
-	SysIDClone                         // clone
-	SysIDMmap                          // mmap
-	SysIDMprotect                      // mprotect
-	SysIDMadvise                       // madvise
-	SysIDPrlimit64                     // prlimit64
-	SysIDGetrandom                     // getrandom
-	SysIDRtSigreturn                   // rt_sigreturn
-	SysIDGetitimer                     // getitimer
+	SysIDInvalid          = sysid.Invalid
+	SysIDIoSetup          = sysid.IoSetup
+	SysIDEventfd          = sysid.Eventfd
+	SysIDEpollCreate      = sysid.EpollCreate
+	SysIDEpollCtl         = sysid.EpollCtl
+	SysIDEpollPwait       = sysid.EpollPwait
+	SysIDFcntl            = sysid.Fcntl
+	SysIDOpenat           = sysid.Openat
+	SysIDClose            = sysid.Close
+	SysIDRead             = sysid.Read
+	SysIDWrite            = sysid.Write
+	SysIDExit             = sysid.Exit
+	SysIDExitGroup        = sysid.ExitGroup
+	SysIDSetTidAddress    = sysid.SetTidAddress
+	SysIDFutex            = sysid.Futex
+	SysIDNanosleep        = sysid.Nanosleep
+	SysIDClockGettime     = sysid.ClockGettime
+	SysIDSchedGetaffinity = sysid.SchedGetaffinity
+	SysIDSchedYield       = sysid.SchedYield
+	SysIDKill             = sysid.Kill
+	SysIDTkill            = sysid.Tkill
+	SysIDTgkill           = sysid.Tgkill
+	SysIDSigaltstack      = sysid.Sigaltstack
+	SysIDRtSigaction      = sysid.RtSigaction
+	SysIDRtSigprocmask    = sysid.RtSigprocmask
+	SysIDArchPrctl        = sysid.ArchPrctl
+	SysIDPrctl            = sysid.Prctl
+	SysIDGetpid           = sysid.Getpid
+	SysIDGettid           = sysid.Gettid
+	SysIDSchedSetaffinity = sysid.SchedSetaffinity
+	SysIDBrk              = sysid.Brk
+	SysIDMunmap           = sysid.Munmap
+	SysIDClone            = sysid.Clone
+	SysIDMmap             = sysid.Mmap
+	SysIDMprotect         = sysid.Mprotect
+	SysIDMadvise          = sysid.Madvise
+	SysIDPrlimit64        = sysid.Prlimit64
+	SysIDGetrandom        = sysid.Getrandom
+	SysIDRtSigreturn      = sysid.RtSigreturn
+	SysIDGetitimer        = sysid.Getitimer
 
-	NumSyscallIDs // sentinel — array size
+	NumSyscallIDs = sysid.NumIDs
 )

@@ -238,6 +238,10 @@ func BlockOnSlot(slotNum int32) uintptr {
 		return 0
 	}
 
+	// Pluck current thread from ready queue if it's there
+	// (It might not be if it was already running and not re-queued)
+	pluckFromAllQueues(t.TID)
+
 	// Use filtered search for userspace threads to avoid returning kernel
 	// thread 0 (EL1t SPSR) when a userspace thread is blocking — same fix
 	// as the other 4 EL0 context-switch paths.
@@ -336,7 +340,6 @@ func DrainSoftIRQSlotEvents(slotNum int32, buf []hid.HIDEvent, max int) int {
 //go:nosplit
 //go:noinline
 func PushTimerEventAndWake(sec, nsec uint64) {
-	serial.RawUARTPuts("T!") // breadcrumb: PushTimerEventAndWake called
 	// Push 3 events: seconds low, nanoseconds, seconds high
 	ev0 := hid.HIDEvent{Type: 0, Code: 0, Value: uint32(sec)}
 	ev1 := hid.HIDEvent{Type: 0, Code: 1, Value: uint32(nsec)}
@@ -349,20 +352,17 @@ func PushTimerEventAndWake(sec, nsec uint64) {
 	irqNum := hid.TimerVirtualIRQ
 	slotIdx := irqToSlot[irqNum]
 	if slotIdx < 0 || slotIdx >= maxSoftIRQSlots {
-		serial.RawUARTPuts("Tn") // breadcrumb: no slot mapping
 		return
 	}
 	slot := &softIRQSlotData[slotIdx]
 	tid := slot.blockedTID
 	if tid < 0 {
-		serial.RawUARTPuts("Tb") // breadcrumb: no blocked thread
 		return
 	}
 	t := (*Thread)(unsafe.Pointer(slot.blockedThreadPtr))
 	if t == nil || t.State != ThreadBlockedSoftIRQ {
 		slot.blockedTID = -1
 		slot.blockedThreadPtr = 0
-		serial.RawUARTPuts("Ts") // breadcrumb: thread not in BlockedSoftIRQ state
 		return
 	}
 	t.State = ThreadReady
@@ -386,7 +386,6 @@ func PushTimerEventAndWake(sec, nsec uint64) {
 	GetPerCPUByID(uint64(targetCPU)).LocalReadyQueue.PushHeadNoDuplicate(t.TID)
 	asm.Dsb() // Memory barrier to ensure enqueue is visible
 	dbgLastTimerWakeTID = int32(tid)
-	serial.RawUARTPuts("Tw") // breadcrumb: timer wake SUCCESS
 }
 
 // GetUartSlotPriestID returns the priest ID that owns the UART serial slot.

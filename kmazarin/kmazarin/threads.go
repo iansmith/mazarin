@@ -160,8 +160,10 @@ const (
 	ThreadExited          ThreadState = 5 // Thread has exited (being cleaned up)
 	ThreadBlockedSoftIRQ  ThreadState = 6 // Blocked waiting for soft IRQ
 	ThreadBlockedLoadMaz  ThreadState = 7 // Blocked waiting for .maz load to complete
-	ThreadBlockedIPC      ThreadState = 8 // Client blocked waiting for IPC reply
-	ThreadBlockedIPCRecv  ThreadState = 9 // Server blocked waiting for IPC request
+	ThreadBlockedIPC      ThreadState = 8  // Client blocked waiting for IPC reply
+	ThreadBlockedIPCRecv  ThreadState = 9  // Server blocked waiting for IPC request
+	ThreadBlockedDelegate ThreadState = 10 // Caller blocked waiting for delegated syscall reply
+	ThreadBlockedDelegateRecv ThreadState = 11 // Handler blocked waiting for delegated syscall request
 )
 
 // MaxPriests is the maximum number of priest processes (userspace programs).
@@ -447,6 +449,12 @@ func WakeThreadForSignal(t *Thread) {
 		// prematurely would return without a valid reply.
 	case ThreadBlockedIPCRecv:
 		// Wake the server thread so it can handle the signal.
+		t.State = ThreadReady
+		enqueueReadySchedLockHeld(t)
+	case ThreadBlockedDelegate:
+		// Defer signal delivery until delegated syscall reply arrives.
+	case ThreadBlockedDelegateRecv:
+		// Wake the handler thread so it can handle the signal.
 		t.State = ThreadReady
 		enqueueReadySchedLockHeld(t)
 	}
@@ -3312,6 +3320,14 @@ func PrintTickDistribution() {
 				stateStr = "EXT"
 			case ThreadBlockedSoftIRQ:
 				stateStr = "IRQ"
+			case ThreadBlockedIPC:
+				stateStr = "IPC"
+			case ThreadBlockedIPCRecv:
+				stateStr = "IPR"
+			case ThreadBlockedDelegate:
+				stateStr = "DLG"
+			case ThreadBlockedDelegateRecv:
+				stateStr = "DLR"
 			}
 
 			console.KPrintf("  T%02d P%02d [%s] ticks=%d (%d%%)\n",

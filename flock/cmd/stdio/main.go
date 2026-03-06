@@ -22,6 +22,7 @@ import (
 
 	"mazzy/mazarin/serial"
 	"mazzy/mazarin/sys"
+	"mazzy/shared/sysid"
 )
 
 //go:embed AtkinsonHyperlegibleMono-Regular.otf
@@ -418,6 +419,15 @@ func main() {
 		sys.FlushFramebuffer(uint32(flushX), uint32(flushY), uint32(flushW), uint32(flushH))
 	}
 
+	// --- Register for delegated syscalls ---
+	delegateCh, delegateErr := sys.HandleSyscalls(sysid.Openat)
+	if delegateErr != nil {
+		fmt.Printf("[stdio] HandleSyscalls(Openat) failed: %v\n", delegateErr)
+	} else {
+		go handleDelegatedSyscalls(delegateCh)
+		fmt.Println("[stdio] Registered as Openat handler")
+	}
+
 	fmt.Println("[stdio] Entering serial event loop")
 
 	// --- Enter serial event loop ---
@@ -434,6 +444,25 @@ func main() {
 			}
 		}
 		con.flushDirty()
+	}
+}
+
+// handleDelegatedSyscalls processes delegated syscall requests (Openat, etc.)
+// in a dedicated goroutine.
+func handleDelegatedSyscalls(ch <-chan sys.SyscallRequest) {
+	for req := range ch {
+		switch req.SysID {
+		case sysid.Openat:
+			path := req.PathString()
+			sys.UartWriteString("[stdio] openat: " + path + "\n")
+			if path == "/dev/random" {
+				panic("[stdio] /dev/random not implemented yet")
+			}
+			// TODO: forward to fs handler via nested delegation
+			req.Reply(-38) // ENOSYS
+		default:
+			req.Reply(-38) // ENOSYS
+		}
 	}
 }
 

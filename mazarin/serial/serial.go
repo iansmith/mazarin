@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/hid"
+	"runtime"
 	"sync"
 )
 
@@ -66,12 +67,14 @@ func doInit() {
 }
 
 func serialLoop() {
+	runtime.LockOSThread()
 	var buf hid.SoftIRQReturn
 	for {
-		n, waitErr := sys.WaitSoftIRQ(serialSlot, &buf)
+		n, waitErr := sys.WaitSoftIRQBlocking(serialSlot, &buf)
 		if waitErr != nil || n == 0 {
 			continue
 		}
+		sys.RawWrite(2, 'u') // diag: UART ring drained by stdio
 		for i := 0; i < n; i++ {
 			sb := SerialByte{
 				Fd: byte(buf.Events[i].Code),

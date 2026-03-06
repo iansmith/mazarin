@@ -217,3 +217,162 @@ func WakeIPCThreadByPID(pid int16, returnVal int64) {
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
 }
+
+// BlockForDelegatedSyscall blocks the current thread (caller of a delegated syscall)
+// waiting for the handler priest to reply.
+// Returns the context pointer of the next thread to switch to, or 0.
+//
+//go:nosplit
+//go:noinline
+func BlockForDelegatedSyscall() uintptr {
+	savedDAIF := NormalSchedulerFunc.DisableAndSaveDAIF()
+	schedulerLock.Lock()
+
+	t := GetCurrentThread()
+	if t == nil {
+		schedulerLock.Unlock()
+		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
+		return 0
+	}
+
+	var next *Thread
+	if t.PageTableL0PA != 0 {
+		next = findReadyUserspaceThreadSchedLockHeld(-1)
+	} else {
+		next = findReadyThreadSchedLockHeld()
+	}
+	if next == nil {
+		processStaticDeadlinesSchedLockHeld()
+		if t.PageTableL0PA != 0 {
+			next = findReadyUserspaceThreadSchedLockHeld(-1)
+		} else {
+			next = findReadyThreadSchedLockHeld()
+		}
+	}
+	if next == nil && t.PageTableL0PA != 0 {
+		next = findReadyThreadSchedLockHeld()
+	}
+	if next == nil {
+		schedulerLock.Unlock()
+		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
+		return 0
+	}
+
+	t.State = ThreadBlockedDelegate
+
+	serial.RawUARTPuts("DC")
+	serial.RawUARTDecimal(uint64(t.TID))
+	serial.RawUARTPuts(">")
+	serial.RawUARTDecimal(uint64(next.TID))
+	serial.RawUARTPuts(" ")
+
+	schedulerLock.Unlock()
+	NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
+
+	return uintptr(unsafe.Pointer(&next.Context))
+}
+
+// BlockForDelegatedRecv blocks the current thread (handler priest)
+// waiting for a delegated syscall request.
+// Returns the context pointer of the next thread to switch to, or 0.
+//
+//go:nosplit
+//go:noinline
+func BlockForDelegatedRecv() uintptr {
+	savedDAIF := NormalSchedulerFunc.DisableAndSaveDAIF()
+	schedulerLock.Lock()
+
+	t := GetCurrentThread()
+	if t == nil {
+		schedulerLock.Unlock()
+		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
+		return 0
+	}
+
+	var next *Thread
+	if t.PageTableL0PA != 0 {
+		next = findReadyUserspaceThreadSchedLockHeld(-1)
+	} else {
+		next = findReadyThreadSchedLockHeld()
+	}
+	if next == nil {
+		processStaticDeadlinesSchedLockHeld()
+		if t.PageTableL0PA != 0 {
+			next = findReadyUserspaceThreadSchedLockHeld(-1)
+		} else {
+			next = findReadyThreadSchedLockHeld()
+		}
+	}
+	if next == nil && t.PageTableL0PA != 0 {
+		next = findReadyThreadSchedLockHeld()
+	}
+	if next == nil {
+		schedulerLock.Unlock()
+		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
+		return 0
+	}
+
+	t.State = ThreadBlockedDelegateRecv
+
+	serial.RawUARTPuts("DR")
+	serial.RawUARTDecimal(uint64(t.TID))
+	serial.RawUARTPuts(">")
+	serial.RawUARTDecimal(uint64(next.TID))
+	serial.RawUARTPuts(" ")
+
+	schedulerLock.Unlock()
+	NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
+
+	return uintptr(unsafe.Pointer(&next.Context))
+}
+
+// WakeDelegateThread wakes a thread blocked in ThreadBlockedDelegateRecv,
+// setting its return value.
+//
+//go:nosplit
+//go:noinline
+func WakeDelegateThread(tid int32, returnVal int64) {
+	savedDAIF := SaveAndDisableIRQs()
+	schedulerLock.Lock()
+
+	t := threadLookupByTID(tid)
+	if t != nil && t.State == ThreadBlockedDelegateRecv {
+		t.Context.SetReturnValue(uint64(returnVal))
+		t.PreemptElapsed = 0
+		t.State = ThreadReady
+		enqueueReadySchedLockHeld(t)
+		asm.Dsb()
+
+		serial.RawUARTPuts("DW")
+		serial.RawUARTDecimal(uint64(tid))
+		serial.RawUARTPuts(" ")
+	}
+
+	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
+}
+
+// WakeDelegateCallerThread wakes the original caller blocked in ThreadBlockedDelegate.
+// Called from SyscallDelegatedReply when the handler sends the return value.
+//
+//go:noinline
+func WakeDelegateCallerThread(pid int16, tid int32, returnVal int64) {
+	savedDAIF := SaveAndDisableIRQs()
+	schedulerLock.Lock()
+
+	t := threadLookupByTID(tid)
+	if t != nil && t.PID == proc.PriestId(pid) && t.State == ThreadBlockedDelegate {
+		t.Context.SetReturnValue(uint64(returnVal))
+		t.PreemptElapsed = 0
+		t.State = ThreadReady
+		enqueueReadySchedLockHeld(t)
+		asm.Dsb()
+
+		serial.RawUARTPuts("DWc")
+		serial.RawUARTDecimal(uint64(tid))
+		serial.RawUARTPuts(" ")
+	}
+
+	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
+}

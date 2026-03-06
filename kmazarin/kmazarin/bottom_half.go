@@ -247,7 +247,13 @@ func NonTimerIRQTopHalf() {
 			evtAddr := dev.evtBufVA + uintptr(descIdx)*8
 			evtType := asm.MmioRead16(evtAddr)
 			evtCode := asm.MmioRead16(evtAddr + 2)
-			evtValue := asm.MmioRead32(evtAddr + 4)
+			// Read value as two 16-bit halves: Device-nGnRnE mapped DMA pages
+			// on ARM64 return 0 for 32-bit reads under QEMU TCG, but 16-bit
+			// reads work correctly. VirtIO DMA buffers should be Normal memory
+			// but are currently mapped as Device on ARM64 (unlike RISC-V).
+			evtValueLo := uint32(asm.MmioRead16(evtAddr + 4))
+			evtValueHi := uint32(asm.MmioRead16(evtAddr + 6))
+			evtValue := evtValueLo | (evtValueHi << 16)
 
 			ev := hid.HIDEvent{Type: evtType, Code: evtCode, Value: evtValue}
 			if !ringPush(dev.ring, ev) {

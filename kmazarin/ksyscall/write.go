@@ -77,6 +77,7 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 			return -14 // EFAULT
 		}
 		if useRing {
+			serial.PollWrite('r') // diag: ring path for non-owner priest
 			for i := uint64(0); i < n; i++ {
 				c := chunk[i]
 				if c == '\n' {

@@ -2791,6 +2791,49 @@ func CopyToUser(userVA uintptr, src []byte) bool {
 	return true
 }
 
+// CopyToUserWithL0 copies up to n bytes from src to a userspace VA using an
+// explicit L0 page table. Returns the number of bytes actually copied.
+// On a fault mid-copy, returns the partial count (like Linux's copy_to_user).
+// This is needed when copying into a different process's address space
+// (e.g., copying read() results back to the original caller from a delegated
+// syscall handler running in a different priest).
+func CopyToUserWithL0(userVA uintptr, l0PA uintptr, src []byte, n int) int {
+	if n > len(src) {
+		n = len(src)
+	}
+	copied := 0
+	for copied < n {
+		va := userVA + uintptr(copied)
+		pa := WalkUserPageTableWithL0(va, l0PA)
+		if pa == 0 {
+			if !HandleUserPageFault(va, 0) {
+				return copied
+			}
+			pa = WalkUserPageTableWithL0(va, l0PA)
+			if pa == 0 {
+				return copied
+			}
+		}
+		pagePA := pa &^ (PageSize - 1)
+		pageOffset := pa & (PageSize - 1)
+		kernelVA := MapPAToKernelScratch(pagePA)
+		if kernelVA == 0 {
+			return copied
+		}
+		pageRemain := int(PageSize - pageOffset)
+		chunk := n - copied
+		if chunk > pageRemain {
+			chunk = pageRemain
+		}
+		dst := kernelVA + pageOffset
+		for i := 0; i < chunk; i++ {
+			*(*byte)(unsafe.Pointer(dst + uintptr(i))) = src[copied+i]
+		}
+		copied += chunk
+	}
+	return copied
+}
+
 // AllocAndMapUserPage allocates, maps, and zeros a userspace page in one operation.
 // This is the SINGLE unified mechanism for issuing pages to userspace.
 // Reads the current process's page table from TTBR0_EL1, which is always

@@ -13,6 +13,7 @@ var (
 	FutexWaitEagain   uint64 // Calls that returned EAGAIN (same thread continues)
 	FutexWakeCalls    uint64 // Total FUTEX_WAKE calls
 	KernelSVCCount    uint64 // SVCs from kernel threads (TID < 10)
+	TotalSVCCount     uint64 // All SVCs from all threads
 	DbgFutexUserDeadlines   uint64 // Deadlines set for userspace threads
 	DbgFutexKernelDeadlines uint64 // Deadlines set for kernel threads
 	DbgFutexExplicitTimeout uint64 // Deadlines with explicit timeout

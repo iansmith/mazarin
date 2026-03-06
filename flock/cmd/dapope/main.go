@@ -73,6 +73,7 @@ const (
 )
 
 var lastInputType int
+var kbdDbgCount int
 
 // switchInput prints a newline if the input type changed, then records
 // the new type. Call before printing any event output.
@@ -116,12 +117,19 @@ func keyboardLoop(slot int) {
 			fmt.Printf("[dapope:kbd] WaitSoftIRQ error: %v\n", err)
 			continue
 		}
+		// Direct serial breadcrumb (fd=2 always echoed to serial)
+		sys.RawWrite(2, 'K')
 		for i := 0; i < n; i++ {
 			ev := buf.Events[i]
 			if ev.Type != EV_KEY {
 				continue
 			}
 			code := ev.Code
+			// DEBUG: dump first 10 keyboard events to serial
+			if kbdDbgCount < 10 {
+				kbdDbgCount++
+				fmt.Fprintf(os.Stderr, "[kbd t=%d c=%d v=%d]", ev.Type, ev.Code, ev.Value)
+			}
 			if ev.Value == 1 { // press
 				if code < 256 && keyHeld[code] {
 					continue // suppress repeat (already held)
@@ -144,6 +152,10 @@ func keyboardLoop(slot int) {
 			}
 			ch, action := km.Feed(ke)
 			if ch != 0 {
+				// DEBUG: confirm character generated (to serial via stderr)
+				if kbdDbgCount < 20 {
+					fmt.Fprintf(os.Stderr, "[ch=%c]", ch)
+				}
 				switchInput(inputKeyboard)
 				fmt.Print(string(ch))
 			} else if action == "enter" {
@@ -164,12 +176,16 @@ func mouseLoop(slot int, stack core.CursorStack, images core.CursorImageMap, ren
 	fmt.Printf("[dapope] mouse goroutine started on slot %d\n", slot)
 	var buf hid.SoftIRQReturn
 	var dx, dy int
+	batches := 0
 	for {
 		n, err := sys.WaitSoftIRQ(slot, &buf)
 		if err != nil {
 			fmt.Printf("[dapope:mouse] WaitSoftIRQ error: %v\n", err)
 			continue
 		}
+		batches++
+		// Direct serial breadcrumb (fd=2 always echoed to serial)
+		sys.RawWrite(2, 'M')
 		for i := 0; i < n; i++ {
 			ev := buf.Events[i]
 			switch ev.Type {
@@ -182,6 +198,10 @@ func mouseLoop(slot int, stack core.CursorStack, images core.CursorImageMap, ren
 				case REL_WHEEL:
 					switchInput(inputWheel)
 					fmt.Printf("[dapope:mouse] wheel %+d\n", int32(ev.Value))
+				}
+				// Debug: dump first 3 batches of REL events with values
+				if batches <= 3 {
+					fmt.Fprintf(os.Stderr, "[rel c=%d v=%d]", ev.Code, int32(ev.Value))
 				}
 			case EV_KEY:
 				switchInput(inputButton)
@@ -197,6 +217,7 @@ func mouseLoop(slot int, stack core.CursorStack, images core.CursorImageMap, ren
 		// per-EV_SYN generated 10+ GPU commands per batch (each with
 		// IRQs disabled), monopolizing the CPU and starving draining.
 		if dx != 0 || dy != 0 {
+			sys.RawWrite(2, 'D') // Draw breadcrumb (fd=2 echoed to serial)
 			stack.Move(dx, -dy)
 			renderer.Draw(stack, images)
 			dx, dy = 0, 0

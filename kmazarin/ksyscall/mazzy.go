@@ -34,6 +34,11 @@ const (
 	SysIPCRecv              = MazzySyscallBase + 20 // 0x1014 - IPC: block until request arrives
 	SysIPCReply             = MazzySyscallBase + 21 // 0x1015 - IPC: send reply, unblock client
 	SysBlockRead            = MazzySyscallBase + 22 // 0x1016 - Read disk sectors (block device owner only)
+	SysRegisterSyscallHandler = MazzySyscallBase + 23 // 0x1017 - Register priest as handler for a SysID
+	SysDelegatedRecv        = MazzySyscallBase + 24 // 0x1018 - Receive a delegated syscall request (blocks)
+	SysDelegatedReply       = MazzySyscallBase + 25 // 0x1019 - Reply to a delegated syscall
+	SysUartWrite            = MazzySyscallBase + 26 // 0x101A - Write bytes to UART txBuf (non-blocking, drops on overflow)
+	SysUartWriteBlocking    = MazzySyscallBase + 27 // 0x101B - Write bytes to UART txBuf (blocking, waits for space)
 )
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
@@ -61,7 +66,12 @@ var mazzySyscallTable = [64]SyscallHandler{
 	19: SyscallIPCCall,            // IPCCall = 0x1013
 	20: SyscallIPCRecv,            // IPCRecv = 0x1014
 	21: SyscallIPCReply,           // IPCReply = 0x1015
-	22: SyscallBlockRead,          // BlockRead = 0x1016
+	22: SyscallBlockRead,                // BlockRead = 0x1016
+	23: SyscallRegisterSyscallHandler,    // RegisterSyscallHandler = 0x1017
+	24: SyscallDelegatedRecv,             // DelegatedRecv = 0x1018
+	25: SyscallDelegatedReply,            // DelegatedReply = 0x1019
+	26: SyscallUartWrite,                 // UartWrite = 0x101A
+	27: SyscallUartWriteBlocking,         // UartWriteBlocking = 0x101B
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.

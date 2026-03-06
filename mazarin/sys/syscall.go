@@ -22,6 +22,11 @@ const (
 	sysSetTimerDeadline      = 0x100E // Set timer deadline on soft IRQ slot
 	sysSetScanoutOffset      = 0x100F // Set scanout Y offset for hardware scrolling
 	sysLoadMaz               = 0x1012 // Load .maz PIE ELF into priest's address space
+	sysRegisterSyscallHandler = 0x1017 // Register priest as handler for a SysID
+	sysDelegatedRecv          = 0x1018 // Receive a delegated syscall request
+	sysDelegatedReply         = 0x1019 // Reply to a delegated syscall
+	sysUartWrite              = 0x101A // Write to UART (non-blocking)
+	sysUartWriteBlocking      = 0x101B // Write to UART (blocking)
 )
 
 // DebugPutChar writes a single character to the kernel debug output.

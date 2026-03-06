@@ -45,6 +45,29 @@ func WaitSoftIRQ(slot int, buf *hid.SoftIRQReturn) (int, error) {
 	}
 }
 
+// WaitSoftIRQBlocking blocks until events arrive on the given slot.
+// Uses the kernel's BlockOnSlot mechanism — the thread sleeps until
+// WakeSlotForIRQ wakes it when events are pushed to the ring.
+//
+// Calls runtime.entersyscall/exitsyscall to release the P before blocking,
+// so other goroutines can run on a different M while this one sleeps.
+func WaitSoftIRQBlocking(slot int, buf *hid.SoftIRQReturn) (int, error) {
+	runtime_entersyscall()
+	r1, _, errno := RawSyscall(sysWaitSoftIRQ,
+		uintptr(slot),
+		uintptr(unsafe.Pointer(buf)),
+		0, 0, 0, 0) // flag=0 → blocking mode
+	runtime_exitsyscall()
+
+	if errno != 0 {
+		return 0, errors.New("WaitSoftIRQBlocking failed")
+	}
+	if r1 > 0 {
+		return int(r1), nil
+	}
+	return 0, nil
+}
+
 // TryWaitSoftIRQ is a non-blocking variant that returns (0, nil) if no events.
 func TryWaitSoftIRQ(slot int, buf *hid.SoftIRQReturn) (int, error) {
 	r1, _, errno := RawSyscall(sysWaitSoftIRQ,
