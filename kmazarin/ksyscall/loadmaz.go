@@ -544,25 +544,8 @@ func patchPTR64(ptrVA, targetAddr uint64, l0PA uintptr) {
 	writeU64ToUser(uintptr(ptrVA), targetAddr, l0PA)
 }
 
-// patchJAL_RISCV rewrites a RISC-V JAL instruction at instrVA to jump to targetAddr.
-func patchJAL_RISCV(instrVA, targetAddr uint64, l0PA uintptr) {
-	offset := int64(targetAddr) - int64(instrVA)
-	if offset < -(1<<20) || offset >= (1<<20) {
-		return
-	}
-
-	imm := uint32(offset)
-	// Encode J-immediate: imm[20|10:1|11|19:12]
-	bit20 := (imm >> 20) & 1
-	bits10_1 := (imm >> 1) & 0x3FF
-	bit11 := (imm >> 11) & 1
-	bits19_12 := (imm >> 12) & 0xFF
-
-	// JAL rd=1 (ra), opcode = 0x6F
-	insn := (bit20 << 31) | (bits10_1 << 21) | (bit11 << 20) | (bits19_12 << 12) | (1 << 7) | 0x6F
-
-	writeU32ToUser(uintptr(instrVA), insn, l0PA)
-}
+// patchJAL_RISCV is defined in loadmaz_riscv64.go (real implementation)
+// and loadmaz_arm64.go / loadmaz_amd64.go (empty stubs).
 
 // writeU32ToUser writes a uint32 value to a userspace address via kernel scratch mapping.
 func writeU32ToUser(userVA uintptr, val uint32, l0PA uintptr) {
