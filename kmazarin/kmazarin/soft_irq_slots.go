@@ -6,7 +6,6 @@ import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio/input"
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
 	"sync/atomic"
 	"unsafe"
@@ -213,9 +212,6 @@ func WakeSlotForIRQ(irqNum uint32) {
 	enqueueReadySchedLockHeld(t)
 	asm.Dsb() // Memory barrier to ensure enqueue is visible to other CPUs
 
-	serial.RawUARTPuts("W")
-	serial.RawUARTDecimal(uint64(t.TID))
-	serial.RawUARTPuts(" ")
 
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
@@ -295,11 +291,6 @@ func BlockOnSlot(slotNum int32) uintptr {
 	softIRQSlotData[slotNum].blockedTID = t.TID
 	softIRQSlotData[slotNum].blockedThreadPtr = uintptr(unsafe.Pointer(t))
 
-	serial.RawUARTPuts("B")
-	serial.RawUARTDecimal(uint64(t.TID))
-	serial.RawUARTPuts(">")
-	serial.RawUARTDecimal(uint64(next.TID))
-	serial.RawUARTPuts(" ")
 
 	schedulerLock.Unlock()
 	NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)

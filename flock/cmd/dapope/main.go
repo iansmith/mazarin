@@ -117,8 +117,7 @@ func keyboardLoop(slot int) {
 			fmt.Printf("[dapope:kbd] WaitSoftIRQ error: %v\n", err)
 			continue
 		}
-		// Direct serial breadcrumb (fd=2 always echoed to serial)
-		sys.RawWrite(2, 'K')
+		// (keyboard 'K' breadcrumb removed — write delegation renders these on console)
 		for i := 0; i < n; i++ {
 			ev := buf.Events[i]
 			if ev.Type != EV_KEY {
@@ -184,8 +183,7 @@ func mouseLoop(slot int, stack core.CursorStack, images core.CursorImageMap, ren
 			continue
 		}
 		batches++
-		// Direct serial breadcrumb (fd=2 always echoed to serial)
-		sys.RawWrite(2, 'M')
+		// (mouse 'M' breadcrumb removed — write delegation renders these on console)
 		for i := 0; i < n; i++ {
 			ev := buf.Events[i]
 			switch ev.Type {
@@ -217,7 +215,7 @@ func mouseLoop(slot int, stack core.CursorStack, images core.CursorImageMap, ren
 		// per-EV_SYN generated 10+ GPU commands per batch (each with
 		// IRQs disabled), monopolizing the CPU and starving draining.
 		if dx != 0 || dy != 0 {
-			sys.RawWrite(2, 'D') // Draw breadcrumb (fd=2 echoed to serial)
+			// (draw 'D' breadcrumb removed — write delegation renders these on console)
 			stack.Move(dx, -dy)
 			renderer.Draw(stack, images)
 			dx, dy = 0, 0
@@ -251,8 +249,8 @@ func timerLoop(clock *clockRenderer, slot int) {
 
 	for {
 		loopIter++
-		// Diagnostic: 'L' marks each timer loop iteration
-		sys.RawWrite(1, 'L')
+		// (diagnostic 'L' breadcrumb removed — with write delegation active,
+		// RawWrite(1, ...) goes to stdio's console display)
 
 		ts, err := sys.GetTime()
 		if err != nil {

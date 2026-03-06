@@ -260,12 +260,6 @@ func BlockForDelegatedSyscall() uintptr {
 
 	t.State = ThreadBlockedDelegate
 
-	serial.RawUARTPuts("DC")
-	serial.RawUARTDecimal(uint64(t.TID))
-	serial.RawUARTPuts(">")
-	serial.RawUARTDecimal(uint64(next.TID))
-	serial.RawUARTPuts(" ")
-
 	schedulerLock.Unlock()
 	NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
 
@@ -314,12 +308,6 @@ func BlockForDelegatedRecv() uintptr {
 
 	t.State = ThreadBlockedDelegateRecv
 
-	serial.RawUARTPuts("DR")
-	serial.RawUARTDecimal(uint64(t.TID))
-	serial.RawUARTPuts(">")
-	serial.RawUARTDecimal(uint64(next.TID))
-	serial.RawUARTPuts(" ")
-
 	schedulerLock.Unlock()
 	NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
 
@@ -343,9 +331,6 @@ func WakeDelegateThread(tid int32, returnVal int64) {
 		enqueueReadySchedLockHeld(t)
 		asm.Dsb()
 
-		serial.RawUARTPuts("DW")
-		serial.RawUARTDecimal(uint64(tid))
-		serial.RawUARTPuts(" ")
 	}
 
 	schedulerLock.Unlock()
@@ -368,9 +353,6 @@ func WakeDelegateCallerThread(pid int16, tid int32, returnVal int64) {
 		enqueueReadySchedLockHeld(t)
 		asm.Dsb()
 
-		serial.RawUARTPuts("DWc")
-		serial.RawUARTDecimal(uint64(tid))
-		serial.RawUARTPuts(" ")
 	}
 
 	schedulerLock.Unlock()

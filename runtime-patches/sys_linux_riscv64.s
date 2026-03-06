@@ -12,36 +12,8 @@
 #include "go_tls.h"
 #include "textflag.h"
 
-// exit - print diagnostic then infinite loop (no OS to exit to)
+// exit - infinite loop (no OS to exit to)
 TEXT runtime·exit(SB),NOSPLIT|NOFRAME,$0-4
-	// Write 'E' to UART to signal exit was called
-	// RISC-V QEMU virt: UART NS16550 at PA 0x10000000
-	// With KernelVAOffset 0xFFFFFFFF00000000, UART VA = 0xFFFFFFFF10000000
-	MOV	$0xFFFFFFFF10000000, T0
-	MOV	$'E', T1
-	MOVB	T1, (T0)
-
-	// Print exit code as 2 hex digits
-	MOVW	code+0(FP), A0
-	SRL	$4, A0, T1
-	AND	$0xF, T1
-	MOV	$10, T2
-	BGE	T1, T2, exit_dig1_alpha
-	ADD	$'0', T1
-	JMP	exit_out1
-exit_dig1_alpha:
-	ADD	$('A'-10), T1
-exit_out1:
-	MOVB	T1, (T0)
-
-	AND	$0xF, A0, T1
-	BGE	T1, T2, exit_dig2_alpha
-	ADD	$'0', T1
-	JMP	exit_out2
-exit_dig2_alpha:
-	ADD	$('A'-10), T1
-exit_out2:
-	MOVB	T1, (T0)
 halt_loop:
 	WORD	$0x10500073	// wfi
 	JMP	halt_loop

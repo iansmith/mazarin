@@ -1002,12 +1002,10 @@ func processStaticDeadlinesSchedLockHeld() {
 			t.FutexAddr = 0
 			blockedQueue.Pluck(ThreadId(tid))
 			enqueueReadySchedLockHeld(t)
-			serial.RawUARTPuts("Df") // breadcrumb: deadline woke futex thread
 		} else if t.State == ThreadSleeping {
 			t.State = ThreadReady
 			sleepingQueue.Pluck(ThreadId(tid))
 			enqueueReadySchedLockHeld(t)
-			serial.RawUARTPuts("Ds") // breadcrumb: deadline woke sleeping thread
 
 			// When waking a sleeping thread (e.g., sysmon from usleep),
 			// also wake that priest's netpoll waiter if one exists.
@@ -1215,9 +1213,6 @@ func KernelIdleLoop() {
 		// Without this, goroutines started by StartBottomHalfProcessors()
 		// never get CPU time because this loop never triggers Go's scheduler.
 		runtime.Gosched()
-		if dbgIdleCount <= 3 {
-			serial.RawUARTPuts("G")
-		}
 
 		// Bridge IRQ flags to bottom-half channels.
 		// IRQ handlers set atomic flags; we convert them to channel sends
@@ -1254,12 +1249,6 @@ func KernelIdleLoop() {
 			softIRQConsole.CheckPendingWake()
 		}
 
-		// Heartbeat: print idle loop counter every 50 iterations
-		if dbgIdleCount%50 == 0 {
-			serial.RawUARTPuts("I")
-			serial.RawUARTDecimal(dbgIdleCount)
-			printThreadStateSummary()
-		}
 
 		// Periodic A/D bit scan. Clears hardware Accessed bits on all mapped
 		// userspace pages and propagates Dirty state into PageDescriptors.
@@ -2517,13 +2506,6 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 	// Add current thread to blocked queue
 	blockedQueue.PushNoDuplicate(t.TID)
 
-	serial.RawUARTPuts("F")
-	serial.RawUARTDecimal(uint64(t.TID))
-	serial.RawUARTPuts("@")
-	serial.RawUARTHexCompact(futexAddr)
-	serial.RawUARTPuts(">")
-	serial.RawUARTDecimal(uint64(next.TID))
-	serial.RawUARTPuts(" ")
 
 	if sf.StateCheck != nil {
 		sf.StateCheck("futex-block-complete")
@@ -2583,11 +2565,6 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 			pluckFromAllQueues(tid)
 			enqueueReadySchedLockHeld(t)
 			woken++
-			serial.RawUARTPuts("Wf") // breadcrumb: futex_wake found match
-			serial.RawUARTDecimal(uint64(tid))
-			serial.RawUARTPuts("@")
-			serial.RawUARTHexCompact(futexAddr)
-			serial.RawUARTPuts(" ")
 		} else {
 			// Put back if not matching
 			blockedQueue.PushNoDuplicate(tid)
@@ -2686,11 +2663,6 @@ func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
 	// Add current thread to sleeping queue
 	sleepingQueue.PushNoDuplicate(t.TID)
 
-	serial.RawUARTPuts("S")
-	serial.RawUARTDecimal(uint64(t.TID))
-	serial.RawUARTPuts(">")
-	serial.RawUARTDecimal(uint64(next.TID))
-	serial.RawUARTPuts(" ")
 
 	if sf.StateCheck != nil {
 		sf.StateCheck("sleep-block-complete")

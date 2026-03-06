@@ -421,50 +421,97 @@ func main() {
 	}
 
 	// --- Register for delegated syscalls ---
-	delegateCh, delegateErr := sys.HandleSyscalls(sysid.Openat)
+	// Write delegation: other priests' write() calls come here for rendering,
+	// then stdio pushes the data to the kernel's UART output path.
+	delegateCh, delegateErr := sys.HandleSyscalls(sysid.Write, sysid.Openat)
 	if delegateErr != nil {
-		fmt.Printf("[stdio] HandleSyscalls(Openat) failed: %v\n", delegateErr)
+		fmt.Printf("[stdio] HandleSyscalls failed: %v\n", delegateErr)
 	} else {
-		go handleDelegatedSyscalls(delegateCh)
-		fmt.Println("[stdio] Registered as Openat handler")
+		fmt.Println("[stdio] Registered as Write+Openat handler")
 	}
 
-	fmt.Println("[stdio] Entering serial event loop")
+	fmt.Println("[stdio] Entering event loop")
 
-	// --- Enter serial event loop ---
-	for sb := range serialCh {
-		con.handleSerialByte(sb)
-		// Drain any additional buffered chars before flushing
-		done := false
-		for !done {
-			select {
-			case sb = <-serialCh:
-				con.handleSerialByte(sb)
-			default:
-				done = true
+	// --- Enter unified event loop ---
+	// Both serial ring data and delegated syscalls are handled here
+	// so the console is only accessed from one goroutine.
+	for {
+		select {
+		case sb := <-serialCh:
+			con.handleSerialByte(sb)
+			// Drain any additional buffered chars before flushing
+			done := false
+			for !done {
+				select {
+				case sb = <-serialCh:
+					con.handleSerialByte(sb)
+				default:
+					done = true
+				}
 			}
+			con.flushDirty()
+		case req := <-delegateCh:
+			con.handleDelegatedRequest(req)
 		}
-		con.flushDirty()
 	}
 }
 
-// handleDelegatedSyscalls processes delegated syscall requests (Openat, etc.)
-// in a dedicated goroutine.
-func handleDelegatedSyscalls(ch <-chan sys.SyscallRequest) {
-	for req := range ch {
-		switch req.SysID {
-		case sysid.Openat:
-			path := req.PathString()
-			sys.UartWriteString("[stdio] openat: " + path + "\n")
-			if path == "/dev/random" {
-				panic("[stdio] /dev/random not implemented yet")
-			}
-			// TODO: forward to fs handler via nested delegation
-			req.Reply(-38) // ENOSYS
-		default:
-			req.Reply(-38) // ENOSYS
+// handleDelegatedRequest processes a single delegated syscall request.
+// Called from the main event loop so console access is single-threaded.
+func (c *console) handleDelegatedRequest(req sys.SyscallRequest) {
+	switch req.SysID {
+	case sysid.Write:
+		data := req.Data()
+		if data == nil {
+			req.Reply(0)
+			return
+		}
+		fd := byte(req.Arg0())
+		// Render each byte to the framebuffer console
+		for _, b := range data {
+			c.handleSerialByte(serial.SerialByte{Fd: fd, B: b})
+		}
+		c.flushDirty()
+		// Push to UART for serial output (with \r\n conversion)
+		sys.UartWriteBlocking(addCRBeforeLF(data))
+		req.Reply(int64(len(data)))
+
+	case sysid.Openat:
+		path := req.PathString()
+		sys.UartWriteString("[stdio] openat: " + path + "\n")
+		if path == "/dev/random" {
+			panic("[stdio] /dev/random not implemented yet")
+		}
+		// TODO: forward to fs handler via nested delegation
+		req.Reply(-38) // ENOSYS
+
+	default:
+		req.Reply(-38) // ENOSYS
+	}
+}
+
+// addCRBeforeLF inserts \r before each \n for serial terminal compatibility.
+func addCRBeforeLF(data []byte) []byte {
+	n := 0
+	for _, b := range data {
+		if b == '\n' {
+			n++
 		}
 	}
+	if n == 0 {
+		return data
+	}
+	out := make([]byte, len(data)+n)
+	j := 0
+	for _, b := range data {
+		if b == '\n' {
+			out[j] = '\r'
+			j++
+		}
+		out[j] = b
+		j++
+	}
+	return out
 }
 
 // bgraColor creates a color.RGBA with R and B swapped so that when gg

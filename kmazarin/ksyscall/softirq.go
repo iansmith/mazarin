@@ -68,12 +68,6 @@ func SyscallWaitSoftIRQ(slotNum, bufPtr, flags, _, _, _ uint64) int64 {
 			}
 			return err
 		}
-		// Breadcrumb: events delivered to userspace
-		if slot == 0 {
-			serial.RawUARTPuts("k")
-		} else if slot == 1 {
-			serial.RawUARTPuts("m")
-		}
 		return int64(n)
 	}
 

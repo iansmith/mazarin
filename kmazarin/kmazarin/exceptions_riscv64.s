@@ -256,13 +256,6 @@ ecall_dispatch:
 	MOV	(T0), T1
 	ADD	$1, T1
 	MOV	T1, (T0)
-	// Print 'E' every 256th syscall
-	AND	$255, T1, T2
-	BNE	T2, ZERO, ecall_skip_marker
-	MOV	$0xFFFFFFFF10000000, T0
-	MOV	$0x45, T1		// 'E'
-	MOVB	T1, (T0)
-ecall_skip_marker:
 	// ---- END DIAGNOSTIC ----
 
 	// Syscall dispatch
@@ -874,16 +867,6 @@ handle_timer_interrupt:
 	MOV	(T0), T1
 	ADD	$1, T1
 	MOV	T1, (T0)
-	// Print 'T' on first 20 timer interrupts, then every 16th
-	MOV	$20, T2
-	BLT	T1, T2, timer_print_marker
-	AND	$15, T1, T2
-	BNE	T2, ZERO, timer_skip_marker
-timer_print_marker:
-	MOV	$0xFFFFFFFF10000000, T0
-	MOV	$0x54, T1		// 'T'
-	MOVB	T1, (T0)
-timer_skip_marker:
 	// ---- END DIAGNOSTIC ----
 
 	// Call pure assembly preemption handler (g poisoning, deadline tracking).
@@ -903,13 +886,6 @@ timer_skip_marker:
 	MOV	(T0), T1
 	ADD	$1, T1
 	MOV	T1, (T0)
-	// Print 'R' (rearm done) every 64th time
-	AND	$63, T1, T2
-	BNE	T2, ZERO, timer_rearm_skip
-	MOV	$0xFFFFFFFF10000000, T0
-	MOV	$0x52, T1		// 'R'
-	MOVB	T1, (T0)
-timer_rearm_skip:
 	// ---- END DIAGNOSTIC ----
 
 	// Process deadline queue in top-half context.
@@ -963,13 +939,6 @@ timer_check_preemption:
 	MOV	(T0), T1
 	ADD	$1, T1
 	MOV	T1, (T0)
-	// Print 'S' every 64th context switch
-	AND	$63, T1, T2
-	BNE	T2, ZERO, timer_switch_skip_marker
-	MOV	$0xFFFFFFFF10000000, T0
-	MOV	$0x53, T1		// 'S'
-	MOVB	T1, (T0)
-timer_switch_skip_marker:
 	// ---- END DIAGNOSTIC ----
 
 	JMP	load_context_and_sret
@@ -980,13 +949,6 @@ timer_no_switch:
 	MOV	(T0), T1
 	ADD	$1, T1
 	MOV	T1, (T0)
-	// Print 'N' every 64th no-switch return
-	AND	$63, T1, T2
-	BNE	T2, ZERO, timer_no_switch_skip
-	MOV	$0xFFFFFFFF10000000, T0
-	MOV	$0x4E, T1		// 'N'
-	MOVB	T1, (T0)
-timer_no_switch_skip:
 	// ---- END DIAGNOSTIC ----
 
 	JMP	trap_return
@@ -1014,13 +976,6 @@ trap_return:
 	MOV	(T0), T1
 	ADD	$1, T1
 	MOV	T1, (T0)
-	// Print 'r' every 4096th trap return
-	AND	$4095, T1, T2
-	BNE	T2, ZERO, trap_return_skip_marker
-	MOV	$0xFFFFFFFF10000000, T0
-	MOV	$0x72, T1		// 'r'
-	MOVB	T1, (T0)
-trap_return_skip_marker:
 	// ---- END DIAGNOSTIC ----
 
 	// Restore sepc

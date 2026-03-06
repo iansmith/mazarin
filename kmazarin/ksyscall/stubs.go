@@ -5,7 +5,6 @@ import (
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 
 	"unsafe"
 )
@@ -284,7 +283,6 @@ func SyscallEpollCtl(_, _, _, _, _, _ uint64) int64 {
 func SyscallEpollPwait(_, _, _, timeoutMS, _, _ uint64) int64 {
 	ms := int32(timeoutMS)
 	if ms == 0 {
-		serial.PollWrite('e')
 		return 0 // Non-blocking poll
 	}
 

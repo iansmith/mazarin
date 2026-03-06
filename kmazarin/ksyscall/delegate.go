@@ -214,8 +214,6 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		info.InUse = true
 	}
 
-	serial.RawUARTPuts("D")
-
 	// If handler has a thread blocked in recv, wake it
 	if handlerPID >= 0 && int(handlerPID) < proc.MaxPriests {
 		rs := &delegateRecvStates[handlerPID]
@@ -480,7 +478,6 @@ func SyscallDelegatedRecv(arg0, _, _, _, _, _ uint64) int64 {
 	e := delegateQueuePopAnyForPriest(myPID)
 	if e != nil {
 		writeDelegateRecvResult(resultPtr, callerPriest.PageTableL0PA, e)
-		serial.RawUARTPuts("d")
 		return 0
 	}
 
@@ -564,8 +561,6 @@ func SyscallDelegatedReply(arg0, arg1, arg2, _, _, _ uint64) int64 {
 			info.InUse = false
 		}
 	}
-
-	serial.RawUARTPuts("R")
 
 	// Wake the blocked caller thread with the return value
 	wakeDelegateCallerThread(callerPID, int32(callerTID), returnVal)

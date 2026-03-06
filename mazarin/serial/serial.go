@@ -74,7 +74,6 @@ func serialLoop() {
 		if waitErr != nil || n == 0 {
 			continue
 		}
-		sys.RawWrite(2, 'u') // diag: UART ring drained by stdio
 		for i := 0; i < n; i++ {
 			sb := SerialByte{
 				Fd: byte(buf.Events[i].Code),
