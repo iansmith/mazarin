@@ -1,16 +1,39 @@
 // disk is a userspace priest that owns the block device and loads a
-// filesystem .maz module to serve IPC requests. It discovers the block
-// device, registers for ownership via SoftIRQ, then loads fs.maz which
-// mounts FAT32 and enters the IPC serve loop.
+// filesystem .maz module to serve IPC requests.
 package main
 
 import (
 	"fmt"
+	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/sys"
+	"mazzy/shared/blockdev"
 	"mazzy/shared/hid"
 	"os"
+	"time"
 	"unsafe"
 )
+
+// forceBlockDevItab ensures the linker includes the blockdev.BlockDevice
+// interface type descriptor, itab, and method wrappers for (*diskBlockDev, blockdev.BlockDevice).
+// Without this, fs.maz's type assertion priest.(blockdev.BlockDevice) fails
+// because the host binary doesn't include the interface type in its typelinks.
+// The methods must actually be called to prevent the linker from marking Ifn as -1 (unreachable).
+//
+//go:noinline
+func forceBlockDevItab(v interface{}) {
+	bd, ok := v.(blockdev.BlockDevice)
+	if !ok {
+		return
+	}
+	// Call each method to force the linker to keep the interface method wrappers
+	_ = bd.Name()
+	_ = bd.Close()
+	_ = bd.BlockSize()
+	_ = bd.NumBlocks()
+	buf := make([]byte, 512)
+	_ = bd.ReadBlock(0, buf)
+	_ = bd.WriteBlock(0, buf)
+}
 
 func main() {
 	fmt.Println("[disk] starting disk priest")
@@ -25,8 +48,7 @@ func main() {
 	blockSlot := -1
 	for _, dev := range devices {
 		if dev.DeviceType == hid.DeviceTypeBlock {
-			// Register for block device ownership
-			err := sys.RegisterSoftIRQ(dev.IRQNum, 0) // slot 0
+			err := sys.RegisterSoftIRQ(dev.IRQNum, 0)
 			if err != nil {
 				fmt.Printf("[disk] RegisterSoftIRQ for block device failed: %v\n", err)
 				os.Exit(1)
@@ -44,23 +66,61 @@ func main() {
 
 	// 2. Load filesystem .maz module
 	fmt.Println("[disk] loading filesystem maz...")
-	mazResult, mazErr := sys.LoadMaz("/fs.maz")
+	blkDev := &diskBlockDev{}
+	// Force linker to include blockdev.BlockDevice itab for cross-module type assertions
+	forceBlockDevItab(blkDev)
+	mazMain, priestInitAddr, mazErr := mazhost.LoadMazBootstrap("/fs.maz", blkDev)
 	if mazErr != nil {
-		fmt.Printf("[disk] LoadMaz failed: %v\n", mazErr)
+		fmt.Printf("[disk] LoadMazBootstrap failed: %v\n", mazErr)
 		os.Exit(1)
 	}
-	fmt.Printf("[disk] fs.maz loaded: entry=0x%X base=0x%X size=0x%X\n",
-		mazResult.EntryPoint, mazResult.LoadBase, mazResult.LoadSize)
 
-	// 3. Register .maz moduledata for stack trace support
-	sys.RegisterMazModule(mazResult)
+	// 3. Experiment: try calling MazarinPriest in a goroutine
+	if priestInitAddr != 0 {
+		fmt.Printf("[disk] MazarinPriest at 0x%X — testing goroutine call\n", priestInitAddr)
 
-	// 4. Call the loaded entry point.
-	// No recover() — let panics print their full backtrace before exit_group
-	// triggers TerminatePriest for proper cleanup.
-	type funcval struct{ fn uintptr }
-	fv := &funcval{fn: uintptr(mazResult.EntryPoint)}
-	mazMain := *(*func())(unsafe.Pointer(&fv))
-	mazMain()
-	fmt.Println("[disk] maz returned, priest exiting")
+		type funcval struct{ fn uintptr }
+		fv := &funcval{fn: priestInitAddr}
+		priestInit := *(*func(interface{}) error)(unsafe.Pointer(&fv))
+
+		done := make(chan error, 1)
+		go func() {
+			fmt.Println("[disk] goroutine: calling priestInit...")
+			initErr := priestInit(blkDev)
+			fmt.Printf("[disk] goroutine: priestInit returned: %v\n", initErr)
+			done <- initErr
+		}()
+
+		// Wait with timeout
+		select {
+		case initErr := <-done:
+			fmt.Printf("[disk] MazarinPriest result: %v\n", initErr)
+		case <-time.After(3 * time.Second):
+			fmt.Println("[disk] MazarinPriest TIMED OUT (3s)")
+		}
+	}
+
+	// 4. Run MazarinMain as goroutine (known working)
+	fmt.Println("[disk] starting fs.maz goroutine")
+	go mazMain()
+
+	select {}
+}
+
+// diskBlockDev implements blockdev.BlockDevice using SysBlockRead.
+type diskBlockDev struct{}
+
+func (d *diskBlockDev) Name() string         { return "virtio-blk-disk" }
+func (d *diskBlockDev) Close() error         { return nil }
+func (d *diskBlockDev) BlockSize() uint64    { return 512 }
+func (d *diskBlockDev) NumBlocks() uint64    { return 0 }
+func (d *diskBlockDev) WriteBlock(lba uint64, buf []byte) error {
+	return fmt.Errorf("write not supported")
+}
+
+func (d *diskBlockDev) ReadBlock(lba uint64, buf []byte) error {
+	if len(buf) < 512 {
+		return fmt.Errorf("buffer too small: %d < 512", len(buf))
+	}
+	return sys.BlockRead(lba, 1, buf)
 }

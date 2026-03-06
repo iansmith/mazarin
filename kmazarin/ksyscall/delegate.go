@@ -29,8 +29,11 @@ const MaxDelegateQueueDepth = 8
 const MaxDelegateThreads = 512
 
 // delegateHandler maps a SysID to the priest that handles it.
+// pid is int32 (not int16) because RISC-V lr.w/sc.w atomics require
+// 4-byte alignment. With int16, odd-indexed array elements would be
+// at 2-byte boundaries, causing misaligned load traps (scause=4).
 type delegateHandler struct {
-	pid int16 // handler priest PID (-1 = unregistered)
+	pid int32 // handler priest PID (-1 = unregistered)
 }
 
 // delegateRecvState tracks a handler priest's blocked recv thread.
@@ -97,7 +100,7 @@ func IsDelegated(id sysid.ID, callerPID int16) bool {
 	if id == sysid.Invalid || id >= sysid.NumIDs {
 		return false
 	}
-	hpid := atomic.LoadInt32((*int32)(unsafe.Pointer(&syscallDelegates[id].pid)))
+	hpid := atomic.LoadInt32(&syscallDelegates[id].pid)
 	return hpid >= 0 && int16(hpid) != callerPID
 }
 
@@ -107,7 +110,7 @@ func IsDelegated(id sysid.ID, callerPID int16) bool {
 //
 //go:noinline
 func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
-	handlerPID := int16(atomic.LoadInt32((*int32)(unsafe.Pointer(&syscallDelegates[id].pid))))
+	handlerPID := int16(atomic.LoadInt32(&syscallDelegates[id].pid))
 	if handlerPID < 0 {
 		return -38 // ENOSYS
 	}
@@ -392,7 +395,7 @@ func delegateQueuePop(id sysid.ID) *DelegateQueueEntry {
 // the given handler priest. Returns the first found, or nil.
 func delegateQueuePopAnyForPriest(handlerPID int16) *DelegateQueueEntry {
 	for i := sysid.ID(0); i < sysid.NumIDs; i++ {
-		hpid := int16(atomic.LoadInt32((*int32)(unsafe.Pointer(&syscallDelegates[i].pid))))
+		hpid := int16(atomic.LoadInt32(&syscallDelegates[i].pid))
 		if hpid != handlerPID {
 			continue
 		}
@@ -422,12 +425,12 @@ func SyscallRegisterSyscallHandler(arg0, _, _, _, _, _ uint64) int64 {
 	}
 
 	h := &syscallDelegates[id]
-	existing := int16(atomic.LoadInt32((*int32)(unsafe.Pointer(&h.pid))))
+	existing := atomic.LoadInt32(&h.pid)
 	if existing >= 0 {
 		return -16 // EBUSY — already registered
 	}
 
-	atomic.StoreInt32((*int32)(unsafe.Pointer(&h.pid)), int32(callerPriest.PID))
+	atomic.StoreInt32(&h.pid, int32(callerPriest.PID))
 
 	serial.RawUARTPuts("[DLG] P")
 	serial.RawUARTDecimal(uint64(callerPriest.PID))
@@ -464,7 +467,7 @@ func SyscallDelegatedRecv(arg0, _, _, _, _, _ uint64) int64 {
 	// Verify this priest handles at least one SysID
 	hasAny := false
 	for i := sysid.ID(0); i < sysid.NumIDs; i++ {
-		if int16(atomic.LoadInt32((*int32)(unsafe.Pointer(&syscallDelegates[i].pid)))) == myPID {
+		if int16(atomic.LoadInt32(&syscallDelegates[i].pid)) == myPID {
 			hasAny = true
 			break
 		}

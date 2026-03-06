@@ -1,7 +1,7 @@
 // fat32 is a .maz module that provides FAT32 filesystem services via IPC.
 // It is loaded by the disk priest into its address space, inheriting block
-// device ownership. It mounts the FAT32 filesystem using SysBlockRead and
-// serves file read requests from other priests via IPC.
+// device ownership. It mounts the FAT32 filesystem using the BlockDevice
+// injected via MazarinPriest and serves file read requests via IPC.
 package main
 
 import (
@@ -15,6 +15,31 @@ import (
 	"unsafe"
 )
 
+// injectedBlockDev holds the BlockDevice passed in by the disk priest
+// via MazarinPriest. Set before MazarinMain is called.
+var injectedBlockDev blockdev.BlockDevice
+
+// MazarinPriest is called by the host priest (via mazhost) after loading
+// this .maz. It receives the priest's interface implementation for use
+// by this module. For fs.maz, this is a blockdev.BlockDevice.
+//
+//go:noinline
+func MazarinPriest(priest interface{}) error {
+	debugPuts("[fs] MazarinPriest: entered\n")
+	if priest == nil {
+		debugPuts("[fs] MazarinPriest: nil priest\n")
+		return nil
+	}
+	blk, ok := priest.(blockdev.BlockDevice)
+	if !ok {
+		debugPuts("[fs] MazarinPriest: type assertion failed\n")
+		return nil
+	}
+	injectedBlockDev = blk
+	debugPuts("[fs] MazarinPriest: received BlockDevice\n")
+	return nil
+}
+
 // debugPuts writes a string to the serial console via DebugPutChar syscalls.
 // Used instead of fmt because .maz programs have os.Stdout = nil
 // (runtime.main/os.init never run with thin stubs).
@@ -27,27 +52,31 @@ func debugPuts(s string) {
 // MazEntryPoint holds a reference to MazarinMain to prevent DCE.
 var MazEntryPoint func() = MazarinMain
 
-// init forces the linker to keep MazarinMain alive. With thin stubs,
-// runtime.main never reaches main.main (the compiler optimizes it away),
-// so package-level var initializers referencing MazarinMain get DCE'd.
-// But init() IS called during runtime initialization, and reading
-// MazEntryPoint here prevents the linker from treating it as write-only.
+// MazPriestEntry holds a reference to MazarinPriest to prevent DCE.
+var MazPriestEntry func(interface{}) error = MazarinPriest
+
+// init forces the linker to keep MazarinMain and MazarinPriest alive.
 func init() {
 	if MazEntryPoint == nil {
+		panic("unreachable")
+	}
+	if MazPriestEntry == nil {
 		panic("unreachable")
 	}
 }
 
 // crashMode selects which failure to test:
-//   0 = nil pointer dereference (SIGSEGV)
-//   1 = panic("test crash")
-//   2 = os.Exit(42)
-//   3 = deref 0xFFFFFFFFFFFFFFFF (SIGSEGV at high address)
-//   4 = normal operation
+//
+//	0 = nil pointer dereference (SIGSEGV)
+//	1 = panic("test crash")
+//	2 = os.Exit(42)
+//	3 = deref 0xFFFFFFFFFFFFFFFF (SIGSEGV at high address)
+//	4 = normal operation
 const crashMode = 4
 
 // MazarinMain is the entry point called by the disk priest when this .maz
-// is loaded. It mounts FAT32 and enters the IPC serve loop. Never returns.
+// is loaded. It mounts FAT32 using the injected BlockDevice and enters
+// the IPC serve loop. Never returns.
 //
 //go:noinline
 func MazarinMain() {
@@ -70,8 +99,15 @@ func MazarinMain() {
 		_ = *p // SIGSEGV at high address
 	}
 
-	// Mount FAT32 filesystem using SysBlockRead (inherited from disk priest PID)
-	blkDev := &userspaceBlockDev{}
+	// Mount FAT32 filesystem using the injected BlockDevice, or fall back to SysBlockRead
+	var blkDev blockdev.BlockDevice
+	if injectedBlockDev != nil {
+		debugPuts("[fs] using injected BlockDevice\n")
+		blkDev = injectedBlockDev
+	} else {
+		debugPuts("[fs] no injected BlockDevice, using SysBlockRead fallback\n")
+		blkDev = &userspaceBlockDev{}
+	}
 	fs, fsErr := fat32.Mount(blkDev)
 	if fsErr != nil {
 		debugPuts("[fs] FAT32 mount failed\n")
@@ -84,18 +120,18 @@ func MazarinMain() {
 	serveLoop(fs)
 }
 
-
 func main() {
 	MazarinMain()
 }
 
 // userspaceBlockDev implements blockdev.BlockDevice using SysBlockRead.
+// Used as fallback when MazarinPriest was not called.
 type userspaceBlockDev struct{}
 
 func (d *userspaceBlockDev) Name() string         { return "virtio-blk-user" }
-func (d *userspaceBlockDev) Close() error          { return nil }
-func (d *userspaceBlockDev) BlockSize() uint64     { return 512 }
-func (d *userspaceBlockDev) NumBlocks() uint64     { return 0 } // Unknown from userspace
+func (d *userspaceBlockDev) Close() error         { return nil }
+func (d *userspaceBlockDev) BlockSize() uint64    { return 512 }
+func (d *userspaceBlockDev) NumBlocks() uint64    { return 0 }
 func (d *userspaceBlockDev) WriteBlock(lba uint64, buf []byte) error {
 	return fmt.Errorf("write not supported")
 }
@@ -106,9 +142,6 @@ func (d *userspaceBlockDev) ReadBlock(lba uint64, buf []byte) error {
 	}
 	return sys.BlockRead(lba, 1, buf)
 }
-
-// Verify interface compliance
-var _ blockdev.BlockDevice = (*userspaceBlockDev)(nil)
 
 // serveLoop handles incoming IPC requests.
 func serveLoop(fs *fat32.FileSystem) {

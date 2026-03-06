@@ -13,6 +13,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"debug/elf"
 	"encoding/binary"
 	"fmt"
@@ -53,8 +54,10 @@ func main() {
 	}
 	fmt.Printf("maz-reloc: loaded %d stub symbols from manifest\n", len(stubNames))
 
-	// Open the ELF binary
-	f, err := elf.Open(mazPath)
+	// Open the ELF binary. Go's -T flag creates negative p_offset values
+	// in program headers that debug/elf rejects. Use openELF which
+	// sanitizes those before parsing.
+	f, err := openELF(mazPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening ELF: %v\n", err)
 		os.Exit(1)
@@ -105,6 +108,41 @@ func main() {
 
 	fmt.Printf("maz-reloc: wrote %d imports (%d bytes) + strtab (%d bytes) to %s\n",
 		len(entries), len(entries)*16, len(strtab), mazPath)
+}
+
+// openELF opens an ELF file, working around Go's -T flag which creates
+// program headers with negative (huge) p_offset values that debug/elf rejects.
+// We read the raw bytes, zero out any bogus phdr offsets, and parse from bytes.
+func openELF(path string) (*elf.File, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) < 64 || string(data[0:4]) != "\x7fELF" {
+		return nil, fmt.Errorf("not an ELF file")
+	}
+
+	// ELF64: e_phoff at 0x20 (8 bytes), e_phentsize at 0x36 (2 bytes), e_phnum at 0x38 (2 bytes)
+	phoff := binary.LittleEndian.Uint64(data[0x20:])
+	phentsize := binary.LittleEndian.Uint16(data[0x36:])
+	phnum := binary.LittleEndian.Uint16(data[0x38:])
+
+	fileSize := uint64(len(data))
+	for i := uint16(0); i < phnum; i++ {
+		off := phoff + uint64(i)*uint64(phentsize)
+		if off+uint64(phentsize) > fileSize {
+			break
+		}
+		// p_offset is at bytes 8-15 within each phdr (ELF64)
+		pOffset := binary.LittleEndian.Uint64(data[off+8:])
+		if pOffset > fileSize {
+			// Bogus offset (e.g. 0xffffffffffff1000 from -T flag) — zero it out.
+			// maz-reloc only uses sections, not program headers, so this is safe.
+			binary.LittleEndian.PutUint64(data[off+8:], 0)
+		}
+	}
+
+	return elf.NewFile(bytes.NewReader(data))
 }
 
 // importRef is an in-memory representation of one import reference.
@@ -172,7 +210,11 @@ func findStubAddresses(f *elf.File, stubNames map[string]bool) map[string]uint64
 		// The userspace overlay replaces some thin stubs with real functions
 		// (e.g., syscall.RawSyscall6, syscall.Syscall6). We must not create
 		// import entries for those — they have working implementations.
-		if textData != nil && isThinStub(f.Machine, textData, textAddr, sym.Value) {
+		isStub := textData != nil && isThinStub(f.Machine, textData, textAddr, sym.Value)
+		if strings.Contains(sym.Name, "typeAssert") || strings.Contains(sym.Name, "interfaceSwitch") {
+			fmt.Printf("maz-reloc: DEBUG %s addr=0x%X size=%d isStub=%v\n", sym.Name, sym.Value, sym.Size, isStub)
+		}
+		if isStub {
 			result[sym.Name] = sym.Value
 		} else if textData == nil {
 			// Can't verify, include anyway
@@ -209,13 +251,14 @@ func isThinStub(machine elf.Machine, textData []byte, textAddr, funcAddr uint64)
 		}
 		return textData[offset] == 0xCC && textData[offset+1] == 0xEB && textData[offset+2] == 0xFE
 	case elf.EM_RISCV:
-		// RISC-V thin stub: NOP (0x00000013) + J self (0x0000006F)
+		// RISC-V thin stub: NOP (0x00000013) + J .-4 (0xffdff06f)
+		// The J branches back to the NOP, creating a 2-instruction infinite loop.
 		if offset+8 > uint64(len(textData)) {
 			return false
 		}
 		insn0 := binary.LittleEndian.Uint32(textData[offset:])
 		insn1 := binary.LittleEndian.Uint32(textData[offset+4:])
-		return insn0 == 0x00000013 && insn1 == 0x0000006F
+		return insn0 == 0x00000013 && insn1 == 0xffdff06f
 	}
 	return false
 }
@@ -268,6 +311,9 @@ func scanTextARM64(data []byte, baseAddr uint64, stubAddrs map[string]uint64, ad
 		target := uint64(int64(pc) + int64(imm26)*4)
 
 		if name, ok := addrToName[target]; ok {
+			if strings.Contains(name, "typeAssert") || strings.Contains(name, "interfaceSwitch") {
+				fmt.Printf("maz-reloc: DEBUG BL at 0x%X -> %s (0x%X)\n", pc, name, target)
+			}
 			imports = append(imports, importRef{
 				fileOffset: uint64(i), // offset in .text section data
 				segOffset:  uint32(pc),

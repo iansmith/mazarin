@@ -25,6 +25,7 @@ type MazLoadResult struct {
 	LoadBase       uint64 // Base VA where .maz was loaded
 	LoadSize       uint64 // Total VA size of loaded segments
 	ModuledataAddr uint64 // Address of runtime.firstmoduledata in loaded .maz (0 if not found)
+	PriestInitAddr uint64 // Address of main.MazarinPriest in loaded .maz (0 if not found)
 }
 
 // LoadMazWorkRequest contains the parameters for a .maz load operation.
@@ -153,20 +154,15 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 		return int64(errWrongArch)
 	}
 
-	// Verify it's a PIE (ET_DYN)
-	if hdr.Type != 3 { // ET_DYN = 3
-		console.KWriteString("[LoadMaz] ERROR: not a PIE binary (expected ET_DYN)\r\n")
+	// Check ELF type: ET_EXEC (2) = fixed-address .mzr, ET_DYN (3) = PIE .maz
+	isFixedAddr := hdr.Type == 2 // ET_EXEC
+	isPIE := hdr.Type == 3       // ET_DYN
+	if !isFixedAddr && !isPIE {
+		console.KWriteString("[LoadMaz] ERROR: unsupported ELF type (expected ET_EXEC or ET_DYN)\r\n")
 		return int64(errInvalidELF)
 	}
 
-	// === Determine load base address ===
-	loadBase := priest.HighestVA
-	if loadBase == 0 {
-		loadBase = 0x10000000
-	}
-	loadBase = (loadBase + 0x100000 + 4095) &^ 4095 // 1MB gap, page-aligned
-
-	// Find the lowest and highest VA in the .maz's program headers
+	// Find the lowest and highest VA in the program headers
 	var mazLowest, mazHighest uint64
 	mazLowest = ^uint64(0)
 	for i := uint16(0); i < hdr.Phnum; i++ {
@@ -190,9 +186,23 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 		return int64(errInvalidELF)
 	}
 
-	loadOffset := loadBase - mazLowest
-
-	console.KWriteString("[LoadMaz] base=")
+	// === Determine load base and offset ===
+	var loadBase, loadOffset uint64
+	if isFixedAddr {
+		// ET_EXEC: binary runs at its linked addresses, no relocation
+		loadBase = mazLowest
+		loadOffset = 0
+		console.KWriteString("[LoadMaz] ET_EXEC base=")
+	} else {
+		// ET_DYN (PIE): relocate above priest's current highest VA
+		loadBase = priest.HighestVA
+		if loadBase == 0 {
+			loadBase = 0x10000000
+		}
+		loadBase = (loadBase + 0x100000 + 4095) &^ 4095 // 1MB gap, page-aligned
+		loadOffset = loadBase - mazLowest
+		console.KWriteString("[LoadMaz] ET_DYN base=")
+	}
 	console.KPrintHex64(loadBase)
 	console.KWriteString(" offset=")
 	console.KPrintHex64(loadOffset)
@@ -219,10 +229,13 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 		}
 	}
 
-	// === Apply PIE base relocations (.rela.dyn) ===
-	reloCount := applyPIERelocations(elfData, &hdr, loadOffset, l0PA)
+	// === Apply PIE base relocations (.rela.dyn) — only for ET_DYN ===
+	reloCount := 0
+	if isPIE {
+		reloCount = applyPIERelocations(elfData, &hdr, loadOffset, l0PA)
+	}
 
-	// === Resolve .maz_imports ===
+	// === Resolve .maz_imports (works for both ET_EXEC and ET_DYN) ===
 	importCount := resolveMazImports(elfData, &hdr, loadOffset, l0PA, priest.SymbolTable)
 
 	console.KWriteString("[LoadMaz] relocs=")
@@ -232,7 +245,6 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 	console.KWriteString("\r\n")
 
 	// === Find entry point ===
-	// Try "main.MazarinMain" first (convention), fall back to "main" (standard Go PIE).
 	entrySymAddr := findSymbolAddress(elfData, &hdr, "main.MazarinMain")
 	if entrySymAddr == 0 {
 		entrySymAddr = findSymbolAddress(elfData, &hdr, "main")
@@ -253,6 +265,16 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 		console.KWriteString("\r\n")
 	} else {
 		console.KWriteString("[LoadMaz] no runtime.firstmoduledata found\r\n")
+	}
+
+	// === Find main.MazarinPriest for interface injection ===
+	priestInitSymAddr := findSymbolAddress(elfData, &hdr, "main.MazarinPriest")
+	var priestInitVA uint64
+	if priestInitSymAddr != 0 {
+		priestInitVA = priestInitSymAddr + loadOffset
+		console.KWriteString("[LoadMaz] MazarinPriest=")
+		console.KPrintHex64(priestInitVA)
+		console.KWriteString("\r\n")
 	}
 
 	// === Update priest's highest VA ===
@@ -284,6 +306,7 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 	writeU64ToUser(uintptr(req.ResultPtr+8), loadBase, l0PA)
 	writeU64ToUser(uintptr(req.ResultPtr+16), loadSize, l0PA)
 	writeU64ToUser(uintptr(req.ResultPtr+24), moduledataVA, l0PA)
+	writeU64ToUser(uintptr(req.ResultPtr+32), priestInitVA, l0PA)
 
 	console.KWriteString("[LoadMaz] OK entry=")
 	console.KPrintHex64(entryPoint)
@@ -464,8 +487,9 @@ func resolveMazImports(elfData []byte, hdr *elf64Header, loadOffset uint64, l0PA
 
 		switch relocType {
 		case 0: // BL_ARM64
-			patchBL_ARM64(targetVA, priestAddr, l0PA)
-			count++
+			if patchBL_ARM64(targetVA, priestAddr, l0PA) {
+				count++
+			}
 		case 1: // CALL_X86
 			patchCALL_X86(targetVA, priestAddr, l0PA)
 			count++
@@ -482,16 +506,24 @@ func resolveMazImports(elfData []byte, hdr *elf64Header, loadOffset uint64, l0PA
 }
 
 // patchBL_ARM64 rewrites an ARM64 BL instruction at instrVA to branch to targetAddr.
-func patchBL_ARM64(instrVA, targetAddr uint64, l0PA uintptr) {
+func patchBL_ARM64(instrVA, targetAddr uint64, l0PA uintptr) bool {
 	offset := int64(targetAddr) - int64(instrVA)
 	if offset < -(1<<27) || offset >= (1<<27) {
-		return
+		console.KWriteString("[LoadMaz] BL range exceeded: from=")
+		console.KPrintHex64(instrVA)
+		console.KWriteString(" to=")
+		console.KPrintHex64(targetAddr)
+		console.KWriteString(" offset=")
+		console.KPrintHex64(uint64(offset))
+		console.KWriteString("\r\n")
+		return false
 	}
 
 	imm26 := uint32((offset >> 2) & 0x03FFFFFF)
 	insn := uint32(0x94000000) | imm26
 
 	writeU32ToUser(uintptr(instrVA), insn, l0PA)
+	return true
 }
 
 // patchCALL_X86 rewrites an x86_64 CALL (E8) instruction at instrVA to call targetAddr.

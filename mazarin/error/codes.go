@@ -25,12 +25,14 @@ const (
 	NoSpace                                        // no address space available
 	FileNotFound                                   // file does not exist
 
-	// Client-side errors (memblob, etc.)
-	ExceedsCapacity // request exceeds MemBlob size
-	ReadOnlyBlob    // MemBlob is read-only
-	MmapFailed      // mmap failed
-	InvalidSize     // invalid size argument
-	NilBuffer       // nil buffer argument
+	// Client-side errors (memblob, mazhost, etc.)
+	ExceedsCapacity  // request exceeds MemBlob size
+	ReadOnlyBlob     // MemBlob is read-only
+	MmapFailed       // mmap failed
+	InvalidSize      // invalid size argument
+	NilBuffer        // nil buffer argument
+	NotImplemented   // feature not yet implemented
+	PriestInitFailed // MazarinPriest() returned an error
 )
 
 // Error is a non-allocating error value. Pre-defined package-level
@@ -62,6 +64,8 @@ var (
 	ErrMmapFailed          = &Error{MmapFailed, "mmap failed"}
 	ErrInvalidSize         = &Error{InvalidSize, "invalid size"}
 	ErrNilBuffer           = &Error{NilBuffer, "nil buffer"}
+	ErrNotImplemented      = &Error{NotImplemented, "not implemented"}
+	ErrPriestInitFailed    = &Error{PriestInitFailed, "MazarinPriest() returned an error"}
 )
 
 // codeToError maps ErrorCode values to pre-defined *Error values.
@@ -84,6 +88,8 @@ var codeToError = [...]**Error{
 	MmapFailed - 0x1000:          &ErrMmapFailed,
 	InvalidSize - 0x1000:         &ErrInvalidSize,
 	NilBuffer - 0x1000:           &ErrNilBuffer,
+	NotImplemented - 0x1000:      &ErrNotImplemented,
+	PriestInitFailed - 0x1000:    &ErrPriestInitFailed,
 }
 
 // FromCode returns the pre-defined *Error for a given ErrorCode,

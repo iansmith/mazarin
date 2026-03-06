@@ -25,6 +25,7 @@ type MazLoadResult struct {
 	LoadBase       uint64 // Base VA where .maz was loaded
 	LoadSize       uint64 // Total VA size of loaded segments
 	ModuledataAddr uint64 // Address of runtime.firstmoduledata in loaded .maz (0 if not found)
+	PriestInitAddr uint64 // Address of main.MazarinPriest in loaded .maz (0 if not found)
 }
 
 // LoadMaz loads a .maz PIE ELF into the calling priest's address space.
