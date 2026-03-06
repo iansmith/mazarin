@@ -3,6 +3,7 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
 	"sync/atomic"
 	_ "unsafe" // for go:linkname
@@ -28,6 +29,24 @@ var suppressSerial uint32
 //
 //go:nosplit
 func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
+	// Handle eventfd writes (fd 11) — Go's netpollBreak mechanism.
+	// When Go's runtime calls write(eventfd, ...) it is trying to wake
+	// a thread sleeping in epoll_wait (our SyscallEpollPwait).
+	// We look up the priest's NetpollWaiterTID and wake that thread.
+	if fd == 11 {
+		p := proc.CurrentPriest()
+		if p != nil {
+			waiterTID := p.NetpollWaiterTID
+			if waiterTID != 0 {
+				serial.PollWrite('n')
+				WakeNetpollThread(waiterTID)
+			} else {
+				serial.PollWrite('N')
+			}
+		}
+		return int64(count) // Success — pretend we wrote the bytes
+	}
+
 	// Only support stdout/stderr for now
 	if fd != 1 && fd != 2 {
 		return -1 // EBADF

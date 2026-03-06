@@ -143,6 +143,10 @@ skip_g_switch:
 	MOV	$7, T1
 	BEQ	T0, T1, handle_page_fault
 
+	// Illegal instruction = 2: check for lazy FP enable
+	MOV	$2, T1
+	BEQ	T0, T1, handle_illegal_insn
+
 	// Page faults: 12=instruction, 13=load, 15=store
 	MOV	$12, T1
 	BEQ	T0, T1, handle_page_fault
@@ -151,7 +155,32 @@ skip_g_switch:
 	MOV	$15, T1
 	BEQ	T0, T1, handle_page_fault
 
+	// Fall through to unknown exception handler
+	JMP	unknown_exception
+
+handle_illegal_insn:
+	// scause=2 (illegal instruction). Check if this is an FP instruction
+	// trapping because sstatus.FS=00 (Off). RISC-V disables FP by default
+	// and FS can be lost on context switch paths. Lazy FP enable:
+	// if FS==00, set FS=01 (Initial) in saved sstatus and re-execute.
+	MOV	256(X2), T1		// saved sstatus from frame
+	MOV	$0x6000, T2		// FS field mask (bits 14:13)
+	AND	T1, T2, T2		// T2 = FS bits
+	BNE	T2, ZERO, illegal_insn_not_fp	// FS != 00 → real illegal insn
+
+	// FS=00: enable FP and re-execute the instruction (no SEPC advance)
+	MOV	$0x2000, T2		// FS=01 (Initial)
+	OR	T1, T2, T1		// set FS bits
+	MOV	T1, 256(X2)		// update saved sstatus in frame
+	JMP	trap_return		// SRET re-executes the FP instruction
+
+illegal_insn_not_fp:
+	// Real illegal instruction — fall through to unknown exception handler
+
+unknown_exception:
 	// Unknown exception - print: U<scause>@<sepc>[<stval>
+	// Re-read scause (may have been clobbered by lazy FP check)
+	WORD	$0x142022F3		// csrr t0, scause
 	MOV	$0xFFFFFFFF10000000, T3
 	MOV	$0x55, T4		// 'U'
 	MOVB	T4, (T3)

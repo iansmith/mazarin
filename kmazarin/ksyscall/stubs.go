@@ -5,6 +5,7 @@ import (
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
+	"mazzy/kmazarin/serial"
 
 	"unsafe"
 )
@@ -265,12 +266,68 @@ func SyscallEpollCtl(_, _, _, _, _, _ uint64) int64 {
 	return 0 // Success
 }
 
-// SyscallEpollPwait waits for events on an epoll fd
-// Return 0 (no events)
+// SyscallEpollPwait waits for events on an epoll fd.
+// Go's runtime calls this from netpoll(delay) to sleep until the next timer
+// deadline or until an event arrives (e.g., netpollBreak writes to eventfd).
+//
+// On real Linux, epoll_wait blocks and wakes on I/O events or timeout.
+// We emulate this: the thread sleeps with a deadline, and write(eventfd)
+// wakes it early via WakeNetpollThread (implementing netpollBreak).
+//
+// Timeout semantics match Linux epoll_wait:
+//
+//	-1 = block indefinitely  → use 2-minute safety-net deadline; primary wake is eventfd
+//	 0 = non-blocking poll   → return immediately
+//	>0 = wait up to N ms     → block for that duration
 //
 //go:nosplit
-func SyscallEpollPwait(_, _, _, _, _, _ uint64) int64 {
-	return 0 // No events
+func SyscallEpollPwait(_, _, _, timeoutMS, _, _ uint64) int64 {
+	ms := int32(timeoutMS)
+	if ms == 0 {
+		serial.PollWrite('e')
+		return 0 // Non-blocking poll
+	}
+
+	// Convert timeout to timer ticks
+	frequency := uint64(kirq.GetTimerFrequency())
+	var ticks uint64
+	if ms < 0 {
+		// "Block indefinitely" — use a 2-minute safety-net deadline.
+		// The primary wake mechanism is write(eventfd) → WakeNetpollThread.
+		// The deadline is only a backstop in case wake is missed.
+		ticks = frequency * 120 // 2 minutes
+	} else {
+		ticks = (uint64(ms) * frequency) / 1000
+	}
+	if ticks == 0 {
+		ticks = 1
+	}
+
+	currentTID := int32(GetCurrentThreadTID())
+
+	// Register this thread as the netpoll waiter for the current priest.
+	// SyscallWrite(eventfd) reads this to know which thread to wake.
+	p := proc.CurrentPriest()
+	if p != nil {
+		p.NetpollWaiterTID = currentTID
+	}
+
+	currentTick := kirq.ReadCounterValue()
+	deadline := currentTick + ticks
+
+	// Add deadline and block thread until deadline fires or eventfd write wakes us
+	AddDeadlineStatic(deadline, currentTID)
+	nextThread := ThreadBlockSleep()
+	if nextThread != 0 {
+		SetSyscallSwitchTarget(nextThread)
+	}
+
+	// Clear the waiter registration on return (we've been woken)
+	if p != nil {
+		p.NetpollWaiterTID = 0
+	}
+
+	return 0 // No events (timeout expired or eventfd woke us)
 }
 
 // SyscallFcntl performs file control operations

@@ -413,6 +413,24 @@ func threadLookupByPID(pid int16) *Thread {
 	return nil
 }
 
+// hasReadyThreadForPID returns true if any thread with the given PID is in
+// ThreadReady state, excluding excludeTID.  Used by threadBlockFutexImpl to
+// prevent blocking the last runnable thread of a priest.
+// REQUIRES: schedulerLock held.
+//
+//go:nosplit
+func hasReadyThreadForPID(pid PriestId, excludeTID ThreadId) bool {
+	for i := 0; i < MaxThreads; i++ {
+		if threadListInUse[i] &&
+			threadListData[i].PID == pid &&
+			threadListData[i].TID != excludeTID &&
+			threadListData[i].State == ThreadReady {
+			return true
+		}
+	}
+	return false
+}
+
 // WakeThreadForSignal moves a blocked thread to the ready queue so that
 // pending signals are delivered at the next context switch.  Called from
 // SyscallKill / SyscallTgkill after setting PendingSignals.
@@ -990,6 +1008,27 @@ func processStaticDeadlinesSchedLockHeld() {
 			sleepingQueue.Pluck(ThreadId(tid))
 			enqueueReadySchedLockHeld(t)
 			serial.RawUARTPuts("Ds") // breadcrumb: deadline woke sleeping thread
+
+			// When waking a sleeping thread (e.g., sysmon from usleep),
+			// also wake that priest's netpoll waiter if one exists.
+			// This implements the kernel-level event delivery that Linux's
+			// epoll provides: when sysmon wakes, the netpoll thread should
+			// also wake so findRunnable can check timers and run queues.
+			if t.PID != 0 {
+				p := proc.FindPriestByPID(proc.PriestId(t.PID))
+				if p != nil {
+					waiterTID := p.NetpollWaiterTID
+					if waiterTID != 0 && int32(tid) != waiterTID {
+						wt := threadLookupByTID(waiterTID)
+						if wt != nil && wt.State == ThreadSleeping {
+							wt.State = ThreadReady
+							sleepingQueue.Pluck(ThreadId(int16(waiterTID)))
+							enqueueReadySchedLockHeld(wt)
+							serial.RawUARTPuts("Dn") // breadcrumb: deadline woke netpoll waiter
+						}
+					}
+				}
+			}
 		} else {
 			// Deadline fired but thread in unexpected state — dropped
 			serial.RawUARTPuts("Dx")
@@ -1072,10 +1111,10 @@ func ProcessDeadlinesTopHalf() {
 		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.DbgSlot3DrainMiss))
 		serial.RawUARTPuts(" ksvc=")
 		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.KernelSVCCount))
-		serial.RawUARTPuts(" fu=")
-		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.DbgFutexUserDeadlines))
-		serial.RawUARTPuts(" fk=")
-		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.DbgFutexKernelDeadlines))
+		serial.RawUARTPuts(" fw=")
+		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.FutexWaitBlocked))
+		serial.RawUARTPuts(" fW=")
+		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.FutexWakeCalls))
 		serial.RawUARTPuts("\n")
 	}
 }
@@ -2467,7 +2506,11 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 		return 0
 	}
 
-	// Found a ready thread - now safe to mark current as blocked
+	// Block unconditionally — match Linux futex_wait behavior.
+	// The thread blocks and the scheduler picks the next ready thread
+	// regardless of PID. Timer preemption ensures the lock holder
+	// (which was preempted into the ready queue) eventually runs,
+	// releases the lock, and calls futex_wake to wake us.
 	t.State = ThreadBlockedFutex
 	t.FutexAddr = futexAddr
 
@@ -2476,6 +2519,8 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 
 	serial.RawUARTPuts("F")
 	serial.RawUARTDecimal(uint64(t.TID))
+	serial.RawUARTPuts("@")
+	serial.RawUARTHexCompact(futexAddr)
 	serial.RawUARTPuts(">")
 	serial.RawUARTDecimal(uint64(next.TID))
 	serial.RawUARTPuts(" ")
@@ -2509,6 +2554,13 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 	savedDAIF := sf.DisableAndSaveDAIF()
 	schedulerLock.Lock()
 
+	// Get caller's PID to scope futex matching — each priest has its own
+	// address space, so the same VA in different priests is a different futex.
+	callerPID := PriestId(-1)
+	if caller := GetCurrentThread(); caller != nil {
+		callerPID = caller.PID
+	}
+
 	woken := int32(0)
 	queueSize := blockedQueue.Size()
 
@@ -2523,7 +2575,7 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 			continue
 		}
 
-		if t.FutexAddr == futexAddr {
+		if t.FutexAddr == futexAddr && t.PID == callerPID {
 			// Move to ready
 			t.State = ThreadReady
 			t.FutexAddr = 0
@@ -2533,6 +2585,8 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 			woken++
 			serial.RawUARTPuts("Wf") // breadcrumb: futex_wake found match
 			serial.RawUARTDecimal(uint64(tid))
+			serial.RawUARTPuts("@")
+			serial.RawUARTHexCompact(futexAddr)
 			serial.RawUARTPuts(" ")
 		} else {
 			// Put back if not matching
@@ -2541,7 +2595,9 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 	}
 
 	if woken == 0 && queueSize > 0 {
-		serial.RawUARTPuts("W0") // breadcrumb: futex_wake no match (threads blocked on different addr)
+		serial.RawUARTPuts("W0@") // breadcrumb: futex_wake no match (threads blocked on different addr)
+		serial.RawUARTHexCompact(futexAddr)
+		serial.RawUARTPuts(" ")
 	}
 
 	if sf.StateCheck != nil {

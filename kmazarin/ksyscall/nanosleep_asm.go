@@ -29,3 +29,8 @@ func ThreadBlockSleep() uintptr
 // IsCurrentThreadUserspace is provided by main package via go:linkname.
 // Returns true if the current thread belongs to a userspace priest.
 func IsCurrentThreadUserspace() bool
+
+// WakeNetpollThread is provided by main package via go:linkname.
+// Wakes a thread that is sleeping (e.g., blocked in SyscallEpollPwait).
+// Used by write(eventfd) to implement Go's netpollBreak mechanism.
+func WakeNetpollThread(tid int32)

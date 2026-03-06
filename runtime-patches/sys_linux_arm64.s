@@ -211,12 +211,21 @@ TEXT runtime·walltime(SB),NOSPLIT,$0-12
 	MOVW	R0, nsec+8(FP)
 	RET
 
-// nanotime1 - read ARM generic timer, convert to approximate nanoseconds.
-// CNTVCT_EL0 runs at CNTFRQ_EL0 Hz (62.5 MHz on QEMU virt = 16ns/tick).
-// Multiply by 16 (LSL #4) for approximate nanosecond resolution.
+// nsPerTickX256 — fixed-point (×256) nanoseconds per timer tick.
+// Default 4096 = 16 ns/tick × 256 for ARM64 62.5 MHz timer.
+// Updated by kmazarin's initTimerFrequency() when the real frequency
+// is discovered from CNTFRQ_EL0: nsPerTickX256 = 256000000000 / freq.
+DATA	runtime·nsPerTickX256+0(SB)/8, $4096
+GLOBL	runtime·nsPerTickX256(SB), NOPTR, $8
+
+// nanotime1 — monotonic nanoseconds from CNTVCT_EL0.
+// Reads nsPerTickX256 for a dynamic conversion factor:
+//   ns = (ticks × nsPerTickX256) >> 8
 TEXT runtime·nanotime1(SB),NOSPLIT,$0-8
 	MRS	CNTVCT_EL0, R0
-	LSL	$4, R0, R0	// ×16 ≈ ns for 62.5 MHz counter
+	MOVD	runtime·nsPerTickX256(SB), R1
+	MUL	R1, R0, R0		// ticks × nsPerTickX256
+	LSR	$8, R0, R0		// >> 8 to remove ×256 scaling
 	MOVD	R0, ret+0(FP)
 	RET
 

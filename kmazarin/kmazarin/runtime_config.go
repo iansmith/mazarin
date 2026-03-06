@@ -43,6 +43,14 @@ var kmazarinUnifiedPoolEnd uintptr
 //go:linkname kmazarinSyscallReady runtime.kmazarinSyscallReady
 var kmazarinSyscallReady uint64
 
+// nsPerTickX256 is the fixed-point (×256) nanoseconds-per-tick conversion
+// factor used by runtime·nanotime1 (assembly). Defined in each arch's
+// sys_linux_<arch>.s with a default for the expected QEMU timer frequency.
+// Updated by initTimerFrequency() when the real frequency is discovered.
+//
+//go:linkname nsPerTickX256 runtime.nsPerTickX256
+var nsPerTickX256 uint64
+
 // SetSyscallReady marks the overlay syscall handlers as operational.
 // Called after SetVBAR installs kmazarin's exception vectors.
 // This enables the usleep/futex overlays to issue real SVCs instead of

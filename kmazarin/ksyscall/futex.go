@@ -14,8 +14,6 @@ var (
 	FutexWakeCalls    uint64 // Total FUTEX_WAKE calls
 	KernelSVCCount    uint64 // SVCs from kernel threads (TID < 10)
 	TotalSVCCount     uint64 // All SVCs from all threads
-	DbgFutexUserDeadlines   uint64 // Deadlines set for userspace threads
-	DbgFutexKernelDeadlines uint64 // Deadlines set for kernel threads
 	DbgFutexExplicitTimeout uint64 // Deadlines with explicit timeout
 	DbgStdioFutexAddr       uint64 // Last futex address for stdio debug
 	DbgStdioFutexSyscallNum uint64 // Last syscall number from stdio's main
@@ -74,46 +72,23 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 			return -11 // -EAGAIN: value already changed
 		}
 
-		// Add a deadline so the thread wakes up even if no explicit
-		// futex_wake arrives. For explicit timeouts, use the caller's
-		// timespec. For untimed waits, add an implicit 1ms deadline
-		// as a safety net: on our cooperative single-CPU scheduler,
-		// indefinite futex blocking can starve goroutines when lock
-		// contention causes all Ms to block and no M is left to run
-		// the Go scheduler's retake/handoff.
-		{
+		// Add a deadline only when an explicit timeout is provided.
+		// Untimed futex_wait relies on futex_wake to wake the thread.
+		if timeout != 0 {
 			frequency := uint64(kirq.GetTimerFrequency())
+			atomic.AddUint64(&DbgFutexExplicitTimeout, 1)
+			ts, ok := kmem.ReadUserInt64Pair(uintptr(timeout))
+			if !ok {
+				return -14 // EFAULT
+			}
+			seconds := ts[0]
+			nanoseconds := ts[1]
 			var ticks uint64
-			if timeout != 0 {
-				atomic.AddUint64(&DbgFutexExplicitTimeout, 1)
-				// timeout is a pointer to struct timespec {int64 tv_sec, int64 tv_nsec}
-				ts, ok := kmem.ReadUserInt64Pair(uintptr(timeout))
-				if !ok {
-					return -14 // EFAULT
-				}
-				seconds := ts[0]
-				nanoseconds := ts[1]
-				if seconds > 0 {
-					ticks = uint64(seconds) * frequency
-				}
-				if nanoseconds > 0 {
-					ticks += (uint64(nanoseconds) * frequency) / 1000000000
-				}
-			} else {
-				// Implicit safety-net deadline. The Go runtime uses explicit
-				// futex_wake to wake blocked Ms, so this is a backstop only.
-				// 100ms balances init speed vs steady-state efficiency:
-				//   10ms → too frequent (24 wakes/s from idle template threads)
-				//   1s   → too slow (Go runtime init needs many wake cycles)
-				//   100ms → clean: fu counter stops growing in steady state
-				// Kernel: 1ms (cooperative boot-time scheduling needs faster wakeups)
-				if IsCurrentThreadUserspace() {
-					ticks = frequency / 10 // 100ms
-					atomic.AddUint64(&DbgFutexUserDeadlines, 1)
-				} else {
-					ticks = frequency / 1000 // 1ms
-					atomic.AddUint64(&DbgFutexKernelDeadlines, 1)
-				}
+			if seconds > 0 {
+				ticks = uint64(seconds) * frequency
+			}
+			if nanoseconds > 0 {
+				ticks += (uint64(nanoseconds) * frequency) / 1000000000
 			}
 			if ticks == 0 {
 				ticks = 1

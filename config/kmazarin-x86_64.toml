@@ -1,0 +1,17 @@
+# kmazarin.toml — x86_64 boot sequence configuration
+
+timezone = "America/New_York"
+
+# Bootstrap priests: loaded by the kernel during early boot
+[[bootstrap_priest]]
+name = "disk"
+path = "/disk.elf"
+
+# Application priests: launched after bootstrap priests are running
+[[priest]]
+name = "dapope"
+path = "/dapope.elf"
+
+[[priest]]
+name = "stdio"
+path = "/stdio.elf"

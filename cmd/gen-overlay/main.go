@@ -231,6 +231,7 @@ func buildKmazarinRISCV64Overlay(overlay *Overlay, goroot, patchesDir string) er
 		"runtime/preempt.go":             "preempt.go",
 		"runtime/sys_linux_riscv64.s":    "sys_linux_riscv64.s",
 		"runtime/rt0_linux_riscv64.s":    "rt0_linux_riscv64.s",
+		"runtime/sigaction.go":           "sigaction.go",
 		"runtime/tagptr_64bit.go":        "tagptr_64bit.go",
 		"runtime/fds_unix.go":            "fds_unix.go",
 	}
@@ -265,6 +266,7 @@ func buildUserspaceOverlay(overlay *Overlay, goroot, patchesDir string) error {
 		"runtime/cgo_mmap.go":         "runtime/cgo_mmap.go",
 		"runtime/lock_spinbit.go":     "runtime/lock_spinbit.go",
 		"runtime/maz_moduledata.go":   "runtime/maz_moduledata.go",
+		"runtime/netpoll_maz.go":      "runtime/netpoll_maz.go",
 	}
 
 	for goFile, patchFile := range patches {

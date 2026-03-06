@@ -183,11 +183,21 @@ TEXT runtime·walltime(SB),NOSPLIT,$0-16
 	MOVW	A0, nsec+8(FP)
 	RET
 
-// nanotime1 - return monotonic time from TIME CSR
+// nsPerTickX256 — fixed-point (×256) nanoseconds per timer tick.
+// Default 25600 = 100 ns/tick × 256 for RISC-V 10 MHz timer.
+// Updated by kmazarin's initTimerFrequency() when the real frequency
+// is discovered from DTB: nsPerTickX256 = 256000000000 / freq.
+DATA	runtime·nsPerTickX256+0(SB)/8, $25600
+GLOBL	runtime·nsPerTickX256(SB), NOPTR, $8
+
+// nanotime1 — monotonic nanoseconds from TIME CSR.
+// Reads nsPerTickX256 for a dynamic conversion factor:
+//   ns = (ticks × nsPerTickX256) >> 8
 TEXT runtime·nanotime1(SB),NOSPLIT,$0-8
-	WORD	$0xC01022F3	// csrr a0, time (rdtime)
-	MOV	$10000000, T0	// 10MHz timebase
-	MUL	A0, T0, A0	// Convert ticks to nanoseconds (approximate)
+	WORD	$0xC01022F3		// csrr a0, time (rdtime)
+	MOV	runtime·nsPerTickX256(SB), T0
+	MUL	A0, T0, A0		// ticks × nsPerTickX256
+	SRL	$8, A0			// >> 8 to remove ×256 scaling
 	MOV	A0, ret+0(FP)
 	RET
 
@@ -196,6 +206,10 @@ TEXT runtime·rtsigprocmask(SB),NOSPLIT|NOFRAME,$0-28
 	RET
 
 // rt_sigaction - register signal handler via EBREAK
+// NOTE: On RISC-V, this is dead code — sigaction.go overlay calls
+// SyscallRtSigaction directly via linkname, bypassing this stub.
+// Kept for reference and for potential use by other architectures
+// that share this file's build tag.
 TEXT runtime·rt_sigaction(SB),NOSPLIT|NOFRAME,$0-36
 	MOV	sig+0(FP), A0
 	MOV	new+8(FP), A1

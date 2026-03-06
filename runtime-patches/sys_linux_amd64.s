@@ -247,14 +247,25 @@ TEXT runtime·walltime(SB),NOSPLIT,$0-12
 	MOVL	AX, nsec+8(FP)
 	RET
 
-// nanotime1 - read TSC, convert to approximate nanoseconds.
-// Assumes ~2 GHz TSC → multiply by ~0.5 ns/tick (shift right by 1).
+// nsPerTickX256 — fixed-point (×256) nanoseconds per TSC tick.
+// Default 128 = 0.5 ns/tick × 256 for ~2 GHz TSC.
+// Updated by kmazarin's initTimerFrequency() when the real frequency
+// is calibrated: nsPerTickX256 = 256000000000 / freq.
+DATA	runtime·nsPerTickX256+0(SB)/8, $128
+GLOBL	runtime·nsPerTickX256(SB), NOPTR, $8
+
+// nanotime1 — monotonic nanoseconds from TSC.
+// Reads nsPerTickX256 for a dynamic conversion factor:
+//   ns = (ticks × nsPerTickX256) >> 8
+// MULQ produces 128-bit RDX:RAX; extract bits [71:8] for correct >>8.
 TEXT runtime·nanotime1(SB),NOSPLIT,$0-8
 	RDTSC
 	SHLQ	$32, DX
-	ADDQ	DX, AX		// AX = full 64-bit TSC
-	// Approximate ns: each tick ≈ 0.5 ns at 2 GHz
-	SHRQ	$1, AX
+	ADDQ	DX, AX			// AX = full 64-bit TSC
+	MULQ	runtime·nsPerTickX256(SB) // RDX:RAX = TSC × nsPerTickX256
+	SHRQ	$8, AX			// low 64 >> 8
+	SHLQ	$56, DX			// high bits [7:0] → [63:56]
+	ORQ	DX, AX			// combine: bits [71:8] of 128-bit product
 	MOVQ	AX, ret+0(FP)
 	RET
 

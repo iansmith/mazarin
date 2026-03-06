@@ -166,13 +166,29 @@ func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte
 			return ErrTimeout
 		}
 	} else {
-		// MMIO transport: WFI + check used ring directly
-		const maxRetries = 5000
+		// MMIO transport: poll InterruptStatus + check used ring.
+		// Read InterruptStatus (offset 0x60) to cause VM exits, giving
+		// QEMU's event loop time to process block I/O. ACK the interrupt
+		// (write to offset 0x64) so the device continues signaling.
+		// 500000 iterations covers rare QEMU scheduling delays that
+		// caused timeouts at 5000 with large sequential reads.
+		const maxRetries = 500000
+		mmioBase := d.MMIOBase
 		for i := 0; i < maxRetries; i++ {
-			if virtio.VirtqueueHasUsed(vq) {
-				break
+			if mmioBase != 0 {
+				isr := asm.MmioRead32(mmioBase + 0x60)
+				if isr&1 != 0 {
+					asm.MmioWrite32(mmioBase+0x64, isr)
+					if virtio.VirtqueueHasUsed(vq) {
+						break
+					}
+				}
+			} else {
+				if virtio.VirtqueueHasUsed(vq) {
+					break
+				}
+				asm.Wfi()
 			}
-			yieldForIO()
 		}
 		if !virtio.VirtqueueHasUsed(vq) {
 			console.KPrintf("[VirtIO Block] ERROR: I/O timeout (avail=%d used=%d LBA=%d)\n",

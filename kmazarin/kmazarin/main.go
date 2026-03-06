@@ -8,8 +8,11 @@ import (
 	"mazzy/kmazarin/device/virtio/block"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/device/virtio/input"
+	"mazzy/kmazarin/device/virtio/rng"
 	"mazzy/kmazarin/dtb"
+	"mazzy/shared/constants"
 	"mazzy/shared/fs/fat32"
+	"mazzy/shared/toml"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/ksyscall"
@@ -519,11 +522,16 @@ func initTimerFrequency() {
 		kirq.SystemTimerFrequency = 62500000 // Fallback for QEMU virt
 	}
 
+	// Update the runtime's nanotime1 conversion factor from the actual frequency.
+	// nsPerTickX256 = 256_000_000_000 / freq gives a fixed-point ×256 multiplier
+	// that assembly uses: ns = (ticks × nsPerTickX256) >> 8.
+	nsPerTickX256 = 256_000_000_000 / kirq.SystemTimerFrequency
+
 	// Single computation path: derive tick counts from frequency and policy constants
 	kirq.InitPreemptThresholds()
 
-	console.KPrintf("[Timer] freq=%d Hz, tick=%d ticks (%dms), quantum=%d ticks (%dms)\n",
-		kirq.SystemTimerFrequency, kirq.TimerRearmTicks, kirq.TickIntervalMs,
+	console.KPrintf("[Timer] freq=%d Hz, nsPerTickX256=%d, tick=%d ticks (%dms), quantum=%d ticks (%dms)\n",
+		kirq.SystemTimerFrequency, nsPerTickX256, kirq.TimerRearmTicks, kirq.TickIntervalMs,
 		kirq.ThreadPreemptTicks, kirq.ThreadPreemptMs)
 }
 
@@ -805,11 +813,53 @@ func simpleMain() {
 		console.KPrintln("[Main] VirtIO Block init failed (no device found?)")
 	}
 
+	// Initialize VirtIO RNG device (entropy source).
+	// Uses polling (no IRQ) — RNG requests are infrequent.
+	if !rng.Init() {
+		console.KPrintln("[Main] VirtIO RNG init failed (no device found?)")
+	} else {
+		// Quick sanity check: read 32 bytes and verify they're not all zero
+		var rngBuf [32]byte
+		n := rng.Get(rngBuf[:])
+		allZero := true
+		for i := 0; i < n; i++ {
+			if rngBuf[i] != 0 {
+				allZero = false
+				break
+			}
+		}
+		console.KPrintf("[Main] RNG test: got %d bytes, allZero=%v\n", n, allZero)
+		console.KPrintf("[Main] RNG data: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n",
+			rngBuf[0], rngBuf[1], rngBuf[2], rngBuf[3],
+			rngBuf[4], rngBuf[5], rngBuf[6], rngBuf[7],
+			rngBuf[8], rngBuf[9], rngBuf[10], rngBuf[11],
+			rngBuf[12], rngBuf[13], rngBuf[14], rngBuf[15])
+		// Read a second time to verify values differ
+		var rngBuf2 [32]byte
+		n2 := rng.Get(rngBuf2[:])
+		same := n == n2
+		if same {
+			for i := 0; i < n; i++ {
+				if rngBuf[i] != rngBuf2[i] {
+					same = false
+					break
+				}
+			}
+		}
+		console.KPrintf("[Main] RNG test2: got %d bytes, sameAsPrev=%v\n", n2, same)
+		console.KPrintf("[Main] RNG data2: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n",
+			rngBuf2[0], rngBuf2[1], rngBuf2[2], rngBuf2[3],
+			rngBuf2[4], rngBuf2[5], rngBuf2[6], rngBuf2[7],
+			rngBuf2[8], rngBuf2[9], rngBuf2[10], rngBuf2[11],
+			rngBuf2[12], rngBuf2[13], rngBuf2[14], rngBuf2[15])
+	}
+
 	// Wire up block device IRQ: register with top-half dispatcher and
 	// enable the GIC SPI so INTx interrupts reach the CPU.
 	if irq := block.GetIRQNum(); irq != 0 {
 		SetBlockIRQ(irq, block.GetISRBase(), block.GetIOCompletePtr())
 		if cachedIC != nil {
+			cachedIC.SetIRQPriority(irq, 0xA0)
 			cachedIC.EnableIRQ(irq)
 		}
 	}
@@ -840,37 +890,16 @@ func simpleMain() {
 
 	// DEBUG: ReadMemStats disabled - hangs in bare-metal (triggers STW GC)
 
-	// Launch disk priest (filesystem server — must start before dapope/stdio)
-	diskName := "/disk.elf\x00"
-	diskPtr := uintptr(unsafe.Pointer(&([]byte(diskName))[0]))
-	result := ksyscall.SyscallLaunch(uint64(diskPtr), 0, 0, 0, 0, 0)
-	if result == 0 {
-		kmem.FinalUserspaceSync()
-		Print("[main] disk priest launched")
+	// Parse boot config from /kmazarin.toml and launch priests
+	bootCfg := readBootConfig()
+	if bootCfg != nil {
+		launchPriestsFromConfig(bootCfg)
 	} else {
-		console.KPrintf("[main] disk priest launch failed (error %d)\n", result)
-	}
-
-	// Launch dapope (input event handler priest)
-	dapopeName := "/dapope.elf\x00"
-	dapopePtr := uintptr(unsafe.Pointer(&([]byte(dapopeName))[0]))
-	result = ksyscall.SyscallLaunch(uint64(dapopePtr), 0, 0, 0, 0, 0)
-	if result == 0 {
-		kmem.FinalUserspaceSync()
-		Print("[main] dapope launched")
-	} else {
-		console.KPrintf("[main] dapope launch failed (error %d)\n", result)
-	}
-
-	// Launch stdio (console priest — serial port + display)
-	stdioName := "/stdio.elf\x00"
-	stdioPtr := uintptr(unsafe.Pointer(&([]byte(stdioName))[0]))
-	result = ksyscall.SyscallLaunch(uint64(stdioPtr), 0, 0, 0, 0, 0)
-	if result == 0 {
-		kmem.FinalUserspaceSync()
-		Print("[main] stdio launched")
-	} else {
-		console.KPrintf("[main] stdio launch failed (error %d)\n", result)
+		// Fallback: hardcoded launch sequence
+		console.KPrintln("[boot] no config, using hardcoded sequence")
+		launchPriest("/disk.elf\x00", "disk")
+		launchPriest("/dapope.elf\x00", "dapope")
+		launchPriest("/stdio.elf\x00", "stdio")
 	}
 
 	// Re-enable IRQs and timer for ongoing scheduling
@@ -921,4 +950,69 @@ func simpleMain() {
 
 func main() {
 	simpleMain()
+}
+
+// readBootConfig reads and parses /kmazarin.toml from the FAT32 disk.
+// Returns nil if the file is not found or cannot be parsed.
+func readBootConfig() *constants.BootConfig {
+	blk, ok := device.GetBlockDevice()
+	if !ok {
+		console.KPrintln("[boot] no block device, cannot read config")
+		return nil
+	}
+
+	fs, err := fat32.Mount(blk)
+	if err != nil {
+		console.KPrintln("[boot] FAT32 mount failed, cannot read config")
+		return nil
+	}
+
+	file, err := fs.Open("/kmazarin.toml")
+	if err != nil {
+		console.KPrintln("[boot] /kmazarin.toml not found")
+		return nil
+	}
+	defer file.Close()
+
+	data, err := file.ReadAll()
+	if err != nil {
+		console.KPrintln("[boot] failed to read kmazarin.toml")
+		return nil
+	}
+
+	cfg := toml.Parse(data)
+	console.KPrintf("[boot] config: %d bootstrap, %d priests, tz=%s\n",
+		cfg.BootstrapPriestCount, cfg.PriestCount,
+		constants.NullTermString(cfg.Timezone[:]))
+	return cfg
+}
+
+// launchPriestsFromConfig launches all priests defined in the boot config.
+// Bootstrap priests are launched first, then application priests.
+func launchPriestsFromConfig(cfg *constants.BootConfig) {
+	for i := 0; i < cfg.BootstrapPriestCount; i++ {
+		p := &cfg.BootstrapPriests[i]
+		name := constants.NullTermString(p.Name[:])
+		path := constants.NullTermString(p.Path[:])
+		launchPriest(path+"\x00", name)
+	}
+
+	for i := 0; i < cfg.PriestCount; i++ {
+		p := &cfg.Priests[i]
+		name := constants.NullTermString(p.Name[:])
+		path := constants.NullTermString(p.Path[:])
+		launchPriest(path+"\x00", name)
+	}
+}
+
+// launchPriest launches a single priest ELF by path.
+func launchPriest(path, name string) {
+	pathPtr := uintptr(unsafe.Pointer(&([]byte(path))[0]))
+	result := ksyscall.SyscallLaunch(uint64(pathPtr), 0, 0, 0, 0, 0)
+	if result == 0 {
+		kmem.FinalUserspaceSync()
+		console.KPrintf("[boot] %s launched\n", name)
+	} else {
+		console.KPrintf("[boot] %s launch failed (error %d)\n", name, result)
+	}
 }

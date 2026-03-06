@@ -1,7 +1,17 @@
 package block
 
-// configureBlockInterrupt is a no-op on RISC-V.
-// RISC-V uses MMIO transport with PLIC, not PCI INTx.
-func configureBlockInterrupt(_, _, _ uint8) uint32 {
-	return 0
+import "mazzy/kmazarin/pci"
+
+// QEMU virt machine routes PCI INTx to PLIC sources 32-35.
+// Swizzle: plic_source = 32 + (slot + pin - 1) % 4
+const plicPCIINTxBase = 32
+
+// configureBlockInterrupt computes the PLIC source number for the block
+// device's PCI INTx interrupt. Same swizzle formula as input devices.
+func configureBlockInterrupt(bus, slot, funcNum uint8) uint32 {
+	pin := pci.ConfigRead8(bus, slot, funcNum, 0x3D) // PCI Interrupt Pin
+	if pin == 0 || pin > 4 {
+		return 0
+	}
+	return plicPCIINTxBase + (uint32(slot)+uint32(pin)-1)%4
 }

@@ -84,6 +84,12 @@ type Priest struct {
 	IPCQueueTail     uint32  // Next slot to enqueue into
 	IPCRecvTID       int16   // TID of thread blocked in SysIPCRecv (-1 = none)
 	IPCRecvResultPtr uintptr // VA of IPCRecvResult in receiver's address space (stashed while blocked)
+
+	// Netpoll waiter — TID of thread blocked in SyscallEpollPwait (0 = none).
+	// Set by SyscallEpollPwait before blocking, cleared on wake.
+	// Read by SyscallWrite when fd matches the eventfd — the write wakes the
+	// sleeping thread, implementing Go's netpollBreak mechanism.
+	NetpollWaiterTID int32
 }
 
 // Id implements the ds.Ider interface for Priest.

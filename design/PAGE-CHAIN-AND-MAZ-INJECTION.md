@@ -197,3 +197,5 @@ type PageChainEntry struct {
 - [ ] Register `SysFilesystemRead` / `SysFilesystemOpen` as delegated syscalls
 - [ ] Build fs.maz with FAT32 implementation
 - [ ] Wire disk priest to load fs.maz and inject block device interface
+- [ ] Fix pre-existing RISC-V boot crash (`sysSigaction` panic in `initsig` — overlay not covering rt_sigaction)
+- [ ] Verify VirtIO RNG device initialization and `rng.Get()` returns valid entropy (test on RISC-V once boot is fixed)

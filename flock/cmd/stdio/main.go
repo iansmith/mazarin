@@ -278,6 +278,7 @@ func (c *console) tokenizeLine(text string) []token {
 }
 
 func main() {
+	sys.UartWriteString("[stdio] main() entered\n")
 	fmt.Println("[stdio] Starting console priest")
 
 	// --- Get serial channel ---

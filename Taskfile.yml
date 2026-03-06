@@ -81,6 +81,7 @@ vars:
   DAPOPE_RISCV64_ELF: '{{.BUILD_DIR}}/dapope-riscv64.elf'
   STDIO_RISCV64_ELF: '{{.BUILD_DIR}}/stdio-riscv64.elf'
   DISKPRIEST_RISCV64_ELF: '{{.BUILD_DIR}}/disk-riscv64.elf'
+  FS_MZR_RISCV64: '{{.BUILD_DIR}}/fs-riscv64.mzr'
   DISK_RISCV64_IMAGE: '{{.BUILD_DIR}}/disk-riscv64.img'
 
   # Diplomat (x86_64 UEFI bootloader) output files
@@ -578,6 +579,27 @@ tasks:
       - '{{.GO}} tool maz-reloc {{.FS_MAZ}} {{.THIN_MANIFEST}}'
       - '{{.GO}} tool go-echo "fs.maz ready at {{.FS_MAZ}}"'
 
+  fs-mzr-riscv64:
+    desc: Build fs.mzr for RISC-V 64-bit — FAT32 filesystem module (fixed-address slot 0)
+    deps: [check-env, maz-overlay]
+    sources:
+      - 'flock/cmd/fat32/**/*.go'
+      - 'mazarin/**/*.go'
+      - 'shared/fs/fat32/**/*.go'
+      - 'shared/ipc/**/*.go'
+      - 'shared/blockdev/**/*.go'
+      - '{{.MAZ_OVERLAY_JSON}}'
+    generates:
+      - '{{.FS_MZR_RISCV64}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building fs.mzr for RISC-V 64-bit (fixed-address slot 0)..."'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_JSON}} -ldflags="-T 0x30000000" {{.GCFLAGS}} -o {{.FS_MZR_RISCV64}} ./flock/cmd/fat32'
+      - '{{.GO}} tool go-echo "Fixing negative ELF offsets from -T flag..."'
+      - '{{.GO}} tool fix-go-elf -no-bootstrap {{.FS_MZR_RISCV64}}'
+      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
+      - '{{.GO}} tool maz-reloc {{.FS_MZR_RISCV64}} {{.THIN_MANIFEST}}'
+      - '{{.GO}} tool go-echo "fs.mzr (RISC-V 64-bit) ready at {{.FS_MZR_RISCV64}}"'
+
   # ===========================================================================
   # Disk Image
   # ===========================================================================
@@ -594,11 +616,14 @@ tasks:
       - '{{.FS_MAZ}}'
       - '{{.KMAZARIN_ELF}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
+      - 'config/kmazarin-arm64.toml'
     generates:
       - '{{.DISK_IMAGE}}'
     cmds:
       - '{{.GO}} tool go-echo "Creating FAT32 disk image (ARM64)..."'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.DAPOPE_ELF}} {{.STDIO_ELF}} {{.DISKPRIEST_ELF}} {{.SIEVETEST_ELF}} {{.HELLOWORLD_MAZ}} {{.FS_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool go-mkdir {{.BUILD_DIR}}/disk-staging-arm64'
+      - '{{.GO}} tool go-cp config/kmazarin-arm64.toml {{.BUILD_DIR}}/disk-staging-arm64/kmazarin.toml'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.DAPOPE_ELF}} {{.STDIO_ELF}} {{.DISKPRIEST_ELF}} {{.SIEVETEST_ELF}} {{.HELLOWORLD_MAZ}} {{.FS_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/kmazarin.toml'
       - '{{.GO}} tool go-echo "Disk image created at {{.DISK_IMAGE}}"'
 
   disk-x86_64:
@@ -619,16 +644,18 @@ tasks:
       - '{{.GO}} tool go-cp {{.DAPOPE_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf'
       - '{{.GO}} tool go-cp {{.STDIO_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf'
       - '{{.GO}} tool go-cp {{.DISKPRIEST_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/disk.elf'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_AMD64_IMAGE}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf {{.BUILD_DIR}}/disk-staging-amd64/disk.elf {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool go-cp config/kmazarin-x86_64.toml {{.BUILD_DIR}}/disk-staging-amd64/kmazarin.toml'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_AMD64_IMAGE}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf {{.BUILD_DIR}}/disk-staging-amd64/disk.elf {{.BUILD_DIR}}/disk-staging-amd64/kmazarin.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "x86_64 disk image created at {{.DISK_AMD64_IMAGE}}"'
 
   disk-riscv64:
     desc: Create FAT32 disk image with RISC-V 64-bit flock binaries and kmazarin kernel
-    deps: [dapope-riscv64, stdio-riscv64, diskpriest-riscv64, kmazarin-riscv64, convert-boot-image]
+    deps: [dapope-riscv64, stdio-riscv64, diskpriest-riscv64, fs-mzr-riscv64, kmazarin-riscv64, convert-boot-image]
     sources:
       - '{{.DAPOPE_RISCV64_ELF}}'
       - '{{.STDIO_RISCV64_ELF}}'
       - '{{.DISKPRIEST_RISCV64_ELF}}'
+      - '{{.FS_MZR_RISCV64}}'
       - '{{.KMAZARIN_RISCV64_ELF}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
     generates:
@@ -639,7 +666,9 @@ tasks:
       - '{{.GO}} tool go-cp {{.DAPOPE_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/dapope.elf'
       - '{{.GO}} tool go-cp {{.STDIO_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/stdio.elf'
       - '{{.GO}} tool go-cp {{.DISKPRIEST_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/disk.elf'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_RISCV64_IMAGE}} {{.BUILD_DIR}}/disk-staging-riscv64/dapope.elf {{.BUILD_DIR}}/disk-staging-riscv64/stdio.elf {{.BUILD_DIR}}/disk-staging-riscv64/disk.elf {{.KMAZARIN_RISCV64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool go-cp {{.FS_MZR_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/fs.maz'
+      - '{{.GO}} tool go-cp config/kmazarin-riscv64.toml {{.BUILD_DIR}}/disk-staging-riscv64/kmazarin.toml'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_RISCV64_IMAGE}} {{.BUILD_DIR}}/disk-staging-riscv64/dapope.elf {{.BUILD_DIR}}/disk-staging-riscv64/stdio.elf {{.BUILD_DIR}}/disk-staging-riscv64/disk.elf {{.BUILD_DIR}}/disk-staging-riscv64/fs.maz {{.BUILD_DIR}}/disk-staging-riscv64/kmazarin.toml {{.KMAZARIN_RISCV64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "RISC-V 64-bit disk image created at {{.DISK_RISCV64_IMAGE}}"'
 
   # ===========================================================================
@@ -856,7 +885,7 @@ tasks:
     cmds:
       - '{{.GO}} tool go-rm {{.CPU_LOG_FILE}}'
       - '{{.GO}} tool go-cp {{.FW_VARS_TEMPLATE}} {{.BUILD_DIR}}/edk2-arm-vars.fd'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt -cpu cortex-a72 -m {{.QEMU_RAM}} -rtc base=utc,clock=host -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-pci,drive=flock0,bus=pcie.0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt -cpu cortex-a72 -m {{.QEMU_RAM}} -rtc base=utc,clock=host -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-pci,drive=flock0,bus=pcie.0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -device virtio-rng-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (ARM64 UEFI) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4446"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
@@ -902,7 +931,7 @@ tasks:
     cmds:
       - '{{.GO}} tool go-rm {{.CPU_LOG_FILE}}'
       - '{{.GO}} tool go-cp {{.FW_VARS_TEMPLATE}} {{.BUILD_DIR}}/edk2-arm-vars.fd'
-      - '{{.GO}} tool go-start {{.QEMU}} -M virt -accel hvf -cpu host -m {{.QEMU_RAM}} -rtc base=utc,clock=host -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-pci,drive=flock0,bus=pcie.0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot'
+      - '{{.GO}} tool go-start {{.QEMU}} -M virt -accel hvf -cpu host -m {{.QEMU_RAM}} -rtc base=utc,clock=host -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive if=pflash,format=raw,file={{.BUILD_DIR}}/edk2-arm-vars.fd -drive file={{.ESP_ARM64_IMAGE}},format=raw,if=virtio -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-pci,drive=flock0,bus=pcie.0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -device virtio-rng-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4446,server,nowait -display {{.DISPLAY}} -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (ARM64 UEFI + HVF) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4446"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
@@ -935,7 +964,7 @@ tasks:
       LOG_FILE: /tmp/diplomat-serial.log
       FW_CODE: '{{if ne .OVMF ""}}{{.OVMF}}{{else}}{{dir .QEMU_X86_64}}/../share/qemu/edk2-x86_64-code.fd{{end}}'
     cmds:
-      - '{{.GO}} tool go-start {{.QEMU_X86_64}} -machine q35,accel=tcg -cpu max -m 8G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive file={{.BUILD_DIR}}/esp-kmazarin.img,format=raw,if=ide -drive file={{.BUILD_DIR}}/disk-amd64.img,format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0,bus=pcie.0,addr=0x10 -boot c -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4445,server,nowait -device virtio-vga -device virtio-keyboard-pci -device virtio-mouse-pci -display cocoa -no-reboot'
+      - '{{.GO}} tool go-start {{.QEMU_X86_64}} -machine q35,accel=tcg -cpu max -m 8G -drive if=pflash,format=raw,readonly=on,file={{.FW_CODE}} -drive file={{.BUILD_DIR}}/esp-kmazarin.img,format=raw,if=ide -drive file={{.BUILD_DIR}}/disk-amd64.img,format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0,bus=pcie.0,addr=0x10 -boot c -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4445,server,nowait -device virtio-vga -device virtio-keyboard-pci -device virtio-mouse-pci -device virtio-rng-pci -display cocoa -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (x86_64 + kmazarin) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4445"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'
@@ -997,14 +1026,14 @@ tasks:
     internal: true
     vars:
       LOG_FILE: /tmp/diplomat-riscv64-serial.log
-      # VIRTIO_TRANSPORT options: "mmio" (default for RISC-V diplomat boot) or "pci"
-      VIRTIO_TRANSPORT: '{{.VIRTIO_TRANSPORT | default "mmio"}}'
+      # VIRTIO_TRANSPORT options: "pci" (default) or "mmio" (legacy RISC-V fallback)
+      VIRTIO_TRANSPORT: '{{.VIRTIO_TRANSPORT | default "pci"}}'
     cmds:
       - |
         {{if eq .VIRTIO_TRANSPORT "mmio"}}
-        {{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m {{.QEMU_RAM}} -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-device,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot -global virtio-mmio.force-legacy=false
+        {{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m {{.QEMU_RAM}} -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-device,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -device virtio-rng-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot -global virtio-mmio.force-legacy=false
         {{else}}
-        {{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m {{.QEMU_RAM}} -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0 -device virtio-blk-pci,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot
+        {{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -m {{.QEMU_RAM}} -rtc base=utc,clock=host -bios default -kernel {{.DIPLOMAT_RISCV64_ELF}} -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=boot-mmio,readonly=on -device virtio-blk-device,drive=boot-mmio -drive file={{.DISK_RISCV64_IMAGE}},format=raw,if=none,id=drive-virtio-disk0,file.locking=off -device virtio-blk-pci,drive=drive-virtio-disk0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -device virtio-rng-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4447,server,nowait -display {{.DISPLAY}} -no-reboot -global virtio-mmio.force-legacy=false
         {{end}}
       - '{{.GO}} tool go-echo "QEMU (RISC-V diplomat via OpenSBI, VirtIO {{.VIRTIO_TRANSPORT}}) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4447"'
@@ -1041,7 +1070,7 @@ tasks:
       LOG_FILE: /tmp/kmazarin-riscv64-serial.log
       OPENSBI: '{{dir .QEMU_RISCV64}}/../share/qemu/opensbi-riscv64-generic-fw_dynamic.bin'
     cmds:
-      - '{{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -cpu rv64 -m 2G -bios {{.OPENSBI}} -kernel {{.KMAZARIN_RISCV64_ELF}} -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-pci,drive=flock0,bus=pcie.0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4448,server,nowait -display {{.DISPLAY}} -no-reboot'
+      - '{{.GO}} tool go-start {{.QEMU_RISCV64}} -M virt -cpu rv64 -m 2G -bios {{.OPENSBI}} -kernel {{.KMAZARIN_RISCV64_ELF}} -drive if=none,format=raw,readonly=on,file={{.DISK_IMAGE}},id=flock0 -device virtio-blk-pci,drive=flock0,bus=pcie.0 -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci -device virtio-rng-pci -serial file:{{.LOG_FILE}} -monitor tcp:127.0.0.1:4448,server,nowait -display {{.DISPLAY}} -no-reboot'
       - '{{.GO}} tool go-echo "QEMU (RISC-V direct kernel boot) started in background"'
       - '{{.GO}} tool go-echo "Monitor: tcp:127.0.0.1:4448"'
       - '{{.GO}} tool go-echo "Log file: {{.LOG_FILE}}"'

@@ -218,3 +218,12 @@ func wakeThreadForSignalForKsyscall(threadPtr uintptr) {
 	WakeThreadForSignal(t)
 }
 
+// WakeNetpollThread wrapper — wakes a sleeping thread by TID.
+// Used by SyscallWrite(eventfd) to implement Go's netpollBreak mechanism.
+//
+//go:linkname wakeNetpollThreadForKsyscall mazzy/kmazarin/ksyscall.WakeNetpollThread
+//go:nosplit
+func wakeNetpollThreadForKsyscall(tid int32) {
+	ThreadWakeSleeper(&NormalSchedulerFunc, uintptr(tid))
+}
+
