@@ -164,6 +164,7 @@ const (
 	ThreadBlockedIPCRecv  ThreadState = 9  // Server blocked waiting for IPC request
 	ThreadBlockedDelegate ThreadState = 10 // Caller blocked waiting for delegated syscall reply
 	ThreadBlockedDelegateRecv ThreadState = 11 // Handler blocked waiting for delegated syscall request
+	ThreadBlockedIO           ThreadState = 12 // Blocked waiting for block I/O completion
 )
 
 // MaxPriests is the maximum number of priest processes (userspace programs).
@@ -475,6 +476,8 @@ func WakeThreadForSignal(t *Thread) {
 		// Wake the handler thread so it can handle the signal.
 		t.State = ThreadReady
 		enqueueReadySchedLockHeld(t)
+	case ThreadBlockedIO:
+		// Defer signal delivery until block I/O completes.
 	}
 	// ThreadRunning / ThreadReady: signal delivered at next context switch
 
@@ -3356,6 +3359,8 @@ func PrintTickDistribution() {
 				stateStr = "DLG"
 			case ThreadBlockedDelegateRecv:
 				stateStr = "DLR"
+			case ThreadBlockedIO:
+				stateStr = "BIO"
 			}
 
 			console.KPrintf("  T%02d P%02d [%s] ticks=%d (%d%%)\n",
@@ -3398,7 +3403,7 @@ func PrintTickDistribution() {
 
 // PrintThreadStateSummary prints a compact one-line summary of thread states.
 func PrintThreadStateSummary() {
-	var run, rdy, ftx, irq, slp, total int
+	var run, rdy, ftx, irq, slp, bio, total int
 	for i := 0; i < MaxThreads; i++ {
 		if threadListInUse[i] {
 			total++
@@ -3413,10 +3418,12 @@ func PrintThreadStateSummary() {
 				irq++
 			case ThreadSleeping:
 				slp++
+			case ThreadBlockedIO:
+				bio++
 			}
 		}
 	}
 	avail := threadIdAllocator.Available()
-	console.KPrintf("[Threads] total=%d run=%d rdy=%d ftx=%d irq=%d slp=%d free=%d\n",
-		total, run, rdy, ftx, irq, slp, avail)
+	console.KPrintf("[Threads] total=%d run=%d rdy=%d ftx=%d irq=%d slp=%d bio=%d free=%d\n",
+		total, run, rdy, ftx, irq, slp, bio, avail)
 }

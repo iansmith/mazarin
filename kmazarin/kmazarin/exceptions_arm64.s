@@ -1166,17 +1166,15 @@ timer_no_preempt:
 	MOVD	$0, R22
 	MOVD	$0, R23
 
-	B	irq_write_eoir
+	B	irq_return
 
 irq_not_timer:
 	// ========================================================================
 	// Non-timer IRQs - Set pending flag for bottom-half processing
 	// ========================================================================
 	// R0 contains the masked IRQ number, R19 contains IAR value
-
-	// Write EOIR immediately so GIC can deliver the next interrupt.
-	MOVD	$(GIC_CPU_BASE + GICC_EOIR), R10
-	MOVW	R19, (R10)
+	// Save IAR in R21 — R19 gets overwritten by m0.curg save below.
+	MOVD	R19, R21
 
 	// Check if IRQ number is in valid range (0-1019)
 	CMP	$1020, R0
@@ -1207,7 +1205,6 @@ irq_skip_dispatch:
 
 	// Non-timer IRQs don't trigger preemption (only timer does)
 	MOVD	$0, R20
-	MOVD	$0, R21
 	MOVD	$0, R22
 	MOVD	$0, R23
 	B	irq_write_eoir
@@ -1215,22 +1212,18 @@ irq_skip_dispatch:
 irq_invalid:
 	// Invalid IRQ number - just acknowledge and return
 	MOVD	$0, R20
-	MOVD	$0, R21
 	MOVD	$0, R22
 	MOVD	$0, R23
 
 irq_write_eoir:
-	// NOTE: Do NOT write GICC_EOIR here!
-	// For level-triggered interrupts (UART TX), writing EOIR while the condition
-	// is still true causes an immediate re-fire, creating an interrupt storm.
-	// The bottom-half dispatcher will write EOIR after the handler clears the condition.
+	// Write GICC_EOIR AFTER the handler has read ISR and deasserted INTx.
+	// R21 holds the saved IAR value from irq_not_timer entry.
+	// PCI INTx is level-triggered: writing EOIR before the handler clears
+	// the interrupt source would cause the GIC to immediately re-fire.
+	MOVD	$(GIC_CPU_BASE + GICC_EOIR), R10
+	MOVW	R21, (R10)
 
 irq_return:
-	// NOTE: Do NOT write GICC_EOIR here for level-triggered interrupts!
-	// For level-triggered interrupts (like UART TX), the interrupt condition
-	// may still be true (e.g., TX FIFO has space). Writing EOIR now would
-	// cause the GIC to immediately re-fire the interrupt, creating a storm.
-	// Instead, the bottom-half writes EOIR after clearing the interrupt condition.
 
 	// Restore SP_EL0
 	MOVD	EXC_FRAME_SP_EL0(RSP), R10

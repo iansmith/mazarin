@@ -120,13 +120,15 @@ var uartIRQNum uint32
 var blockIRQNum uint32
 var blockISRBase uintptr
 var blockIOComplete *uint32
+var blockIOBlockedTID *int32
 
 // SetBlockIRQ registers the block device's IRQ number, ISR base address,
-// and IOComplete flag pointer with the top-half dispatcher.
-func SetBlockIRQ(irqNum uint32, isrBase uintptr, ioComplete *uint32) {
+// IOComplete flag pointer, and BlockedTID pointer with the top-half dispatcher.
+func SetBlockIRQ(irqNum uint32, isrBase uintptr, ioComplete *uint32, blockedTID *int32) {
 	blockIRQNum = irqNum
 	blockISRBase = isrBase
 	blockIOComplete = ioComplete
+	blockIOBlockedTID = blockedTID
 }
 
 // SetTopHalfDev is called during input init to register device pointers
@@ -207,13 +209,20 @@ func NonTimerIRQTopHalf() {
 		return
 	}
 
-	// Block device: acknowledge interrupt + signal IOComplete flag
+	// Block device: acknowledge interrupt, signal IOComplete, wake blocked thread
 	if irqNum == blockIRQNum && blockIRQNum != 0 {
 		if blockISRBase != 0 {
-			_ = asm.MmioRead8(blockISRBase) // Acknowledge interrupt
+			_ = asm.MmioRead8(blockISRBase) // Acknowledge interrupt (deasserts INTx)
 		}
 		if blockIOComplete != nil {
 			atomic.StoreUint32(blockIOComplete, 1) // Signal completion
+		}
+		if blockIOBlockedTID != nil {
+			tid := atomic.LoadInt32(blockIOBlockedTID)
+			if tid >= 0 {
+				atomic.StoreInt32(blockIOBlockedTID, -1)
+				WakeBlockIOThread(tid)
+			}
 		}
 		return
 	}

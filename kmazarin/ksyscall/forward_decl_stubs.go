@@ -160,3 +160,9 @@ func getCurrentThreadPIDAndTID() (proc.PriestId, int16) { return -1, -1 }
 func ipcQueuePush(p *proc.Priest, req proc.IPCRequest) bool { return true }
 func ipcQueuePop(p *proc.Priest) (proc.IPCRequest, bool) { return proc.IPCRequest{}, false }
 func getBlockDeviceOwnerPID() int16 { return -1 }
+
+// ============================================================================
+// From blockio_bridge.go
+// ============================================================================
+
+func BlockForBlockIO(ioComplete *uint32) uintptr { return 0 }

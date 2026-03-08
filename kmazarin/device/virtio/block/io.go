@@ -42,16 +42,12 @@ const (
 	dmaBufOffset    = 32 // Data buffer: 512 bytes (aligned to 32)
 )
 
-// doBlockIO performs a block I/O operation (read or write) using the
-// pre-allocated DMA page. All descriptor physical addresses are known
-// at init time, completely avoiding demand-paging page table walks.
-//
-// requestType: VIRTIO_BLK_T_IN (read) or VIRTIO_BLK_T_OUT (write)
-// lba: logical block address (sector number)
-// buf: caller's data buffer (must be at least BlockSize bytes)
+// DoBlockIOSubmit sets up descriptors and submits a block I/O request.
+// Returns the head descriptor index, or 0xFFFF on error.
+// Clears IOComplete before notify so the IRQ handler can set it.
 //
 //go:nosplit
-func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte) error {
+func (d *VirtIOBlockDevice) DoBlockIOSubmit(requestType uint32, lba uint64, buf []byte) (uint16, error) {
 	vq := &d.Queue
 	dmaVA := d.DmaPageVA
 	dmaPA := d.DmaPagePA
@@ -80,7 +76,7 @@ func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte
 	reqDescIdx := virtio.VirtqueueAddDesc(vq, reqPhys, 16, 0, 0xFFFF)
 	if reqDescIdx == 0xFFFF {
 		console.KPrintln("[VirtIO Block] ERROR: Failed to allocate request descriptor")
-		return ErrNoDescriptors
+		return 0xFFFF, ErrNoDescriptors
 	}
 
 	bufFlags := uint16(0)
@@ -91,7 +87,7 @@ func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte
 	if bufDescIdx == 0xFFFF {
 		console.KPrintln("[VirtIO Block] ERROR: Failed to allocate buffer descriptor")
 		virtio.VirtqueueFreeDescChain(vq, reqDescIdx)
-		return ErrNoDescriptors
+		return 0xFFFF, ErrNoDescriptors
 	}
 
 	statusDescIdx := virtio.VirtqueueAddDesc(vq, statusPhys, 1, virtio.VIRTQ_DESC_F_WRITE, 0xFFFF)
@@ -99,7 +95,7 @@ func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte
 		console.KPrintln("[VirtIO Block] ERROR: Failed to allocate status descriptor")
 		virtio.VirtqueueFreeDescChain(vq, reqDescIdx)
 		virtio.VirtqueueFreeDescChain(vq, bufDescIdx)
-		return ErrNoDescriptors
+		return 0xFFFF, ErrNoDescriptors
 	}
 
 	// Link descriptors: req -> buf -> status
@@ -114,35 +110,79 @@ func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte
 	// Memory barrier before notifying device
 	asm.Dsb()
 
-	// Submit to available ring and notify device.
 	// Clear IOComplete BEFORE notify to avoid race: under HVF the interrupt
-	// can fire before we reach the WFI loop.
-	if d.IRQNum != 0 {
-		atomic.StoreUint32(&d.IOComplete, 0)
-	}
+	// can fire before we reach the blocking call.
+	atomic.StoreUint32(&d.IOComplete, 0)
+
+	// Submit to available ring and notify device
 	virtio.VirtqueueAddToAvailable(vq, reqDescIdx)
 	asm.Dsb()
-
 	virtioBlockNotify(0)
 
-	// Wait for I/O completion. Three paths:
-	//
-	// 1. Interrupt-driven (IRQNum != 0): WFE yields to the hypervisor,
-	//    giving QEMU's event loop time to process the I/O. The INTx
-	//    interrupt fires when the device completes, and the top-half
-	//    handler sets IOComplete. Under HVF, WFE causes a VM exit
-	//    (trapped via HCR_EL2.TWE) and returns immediately — each
-	//    iteration is a cooperative yield to the hypervisor.
-	//
-	// 2. ISR polling (ISRBase != 0, IRQNum == 0): Read the VirtIO ISR
-	//    register. Each MMIO read causes a VM exit, and ISR bit 0
-	//    indicates used buffer notification.
-	//
-	// 3. MMIO transport (ISRBase == 0, RISC-V): WFI + check used ring.
+	return reqDescIdx, nil
+}
+
+// DoBlockIOComplete pops the used ring, checks status, and copies read data.
+// Must be called after IOComplete is set (by IRQ or polling).
+//
+//go:nosplit
+func (d *VirtIOBlockDevice) DoBlockIOComplete(requestType uint32, reqDescIdx uint16, buf []byte) error {
+	vq := &d.Queue
+
+	// Pop from used ring
+	usedDescIdx, _ := virtio.VirtqueueGetUsed(vq)
+	if uint16(usedDescIdx) != reqDescIdx {
+		console.KPrintf("[VirtIO Block] ERROR: Unexpected descriptor index (got %d, expected %d)\n",
+			usedDescIdx, reqDescIdx)
+		return ErrDeviceError
+	}
+
+	// Free the descriptor chain
+	virtio.VirtqueueFreeDescChain(vq, reqDescIdx)
+
+	// Check status
+	statusPtr := (*VirtIOBlockStatus)(unsafe.Pointer(d.DmaPageVA + dmaStatusOffset))
+	status := *statusPtr
+	if status != VIRTIO_BLK_S_OK {
+		console.KPrintf("[VirtIO Block] ERROR: Bad status=%d type=%d\n", status, requestType)
+		if status == VIRTIO_BLK_S_IOERR {
+			return ErrIOError
+		} else if status == VIRTIO_BLK_S_UNSUPP {
+			return ErrUnsupported
+		}
+		return ErrDeviceError
+	}
+
+	// For reads, copy data from DMA buffer into caller's buffer
+	if requestType == VIRTIO_BLK_T_IN {
+		dmaBuf := unsafe.Pointer(d.DmaPageVA + dmaBufOffset)
+		copyBytes(unsafe.Pointer(&buf[0]), dmaBuf, uintptr(d.BlockSizeBytes))
+	}
+
+	return nil
+}
+
+// doBlockIO performs a block I/O operation using polling (fallback path).
+// Used by ReadBlock/WriteBlock which are called during early boot (before
+// interrupt-driven I/O is available) and by non-syscall kernel code.
+//
+//go:nosplit
+func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte) error {
+	reqDescIdx, err := d.DoBlockIOSubmit(requestType, lba, buf)
+	if err != nil {
+		return err
+	}
+
+	vq := &d.Queue
+
+	// Wait for I/O completion via polling.
 	if d.IRQNum != 0 {
 		const maxWaits = 1000000
 		for i := 0; i < maxWaits; i++ {
 			if atomic.LoadUint32(&d.IOComplete) != 0 {
+				break
+			}
+			if virtio.VirtqueueHasUsed(vq) {
 				break
 			}
 			asm.Wfe()
@@ -167,11 +207,6 @@ func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte
 		}
 	} else {
 		// MMIO transport: poll InterruptStatus + check used ring.
-		// Read InterruptStatus (offset 0x60) to cause VM exits, giving
-		// QEMU's event loop time to process block I/O. ACK the interrupt
-		// (write to offset 0x64) so the device continues signaling.
-		// 500000 iterations covers rare QEMU scheduling delays that
-		// caused timeouts at 5000 with large sequential reads.
 		const maxRetries = 500000
 		mmioBase := d.MMIOBase
 		for i := 0; i < maxRetries; i++ {
@@ -197,36 +232,7 @@ func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte
 		}
 	}
 
-	// Pop from used ring
-	usedDescIdx, _ := virtio.VirtqueueGetUsed(vq)
-	if uint16(usedDescIdx) != reqDescIdx {
-		console.KPrintf("[VirtIO Block] ERROR: Unexpected descriptor index (got %d, expected %d)\n",
-			usedDescIdx, reqDescIdx)
-		return ErrDeviceError
-	}
-
-	// Free the descriptor chain
-	virtio.VirtqueueFreeDescChain(vq, reqDescIdx)
-
-	// Check status
-	status := *statusPtr
-	if status != VIRTIO_BLK_S_OK {
-		console.KPrintf("[VirtIO Block] ERROR: Bad status=%d LBA=%d type=%d\n", status, lba, requestType)
-		if status == VIRTIO_BLK_S_IOERR {
-			return ErrIOError
-		} else if status == VIRTIO_BLK_S_UNSUPP {
-			return ErrUnsupported
-		}
-		return ErrDeviceError
-	}
-
-	// For reads, copy data from DMA buffer into caller's buffer
-	if requestType == VIRTIO_BLK_T_IN {
-		dmaBuf := unsafe.Pointer(dmaVA + dmaBufOffset)
-		copyBytes(unsafe.Pointer(&buf[0]), dmaBuf, uintptr(d.BlockSizeBytes))
-	}
-
-	return nil
+	return d.DoBlockIOComplete(requestType, reqDescIdx, buf)
 }
 
 // copyBytes copies n bytes from src to dst.

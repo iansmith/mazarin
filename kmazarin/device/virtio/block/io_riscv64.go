@@ -3,9 +3,9 @@ package block
 import "mazzy/kmazarin/asm"
 
 // yieldForIO reads the VirtIO MMIO InterruptStatus register (offset 0x60).
-// Each MMIO read causes a VM exit under QEMU TCG, giving the event loop
-// time to process the pending block I/O request. WFI alone is insufficient
-// because QEMU TCG may treat WFI as a NOP when no interrupt is pending.
+// Each MMIO read causes a VM exit under QEMU, giving the event loop
+// time to process the pending block I/O request.
+// Falls back to WFI for non-MMIO devices.
 //
 //go:nosplit
 func yieldForIO() {

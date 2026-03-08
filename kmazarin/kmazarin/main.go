@@ -630,21 +630,16 @@ func initVirtIOInputDevices() {
 			})
 			if runtime.GOARCH != "amd64" {
 				// ARM64/RISC-V: configure interrupt controller for this IRQ.
-				// PCI INTx is level-triggered, but we must configure the GIC
-				// for edge-triggered to prevent an IRQ storm: EOIR is written
-				// before the handler reads ISR, and with level-triggered the
-				// GIC would re-fire immediately. Edge-triggered detects the
-				// 0→1 transition and fires once per assertion.
+				// PCI INTx is level-triggered. EOIR is written after the
+				// handler reads ISR and deasserts INTx, so level-triggered
+				// works correctly without an IRQ storm.
 				//
-				// CRITICAL: Read the VirtIO ISR register BEFORE enabling the
-				// GIC IRQ. VirtIO devices assert INTx during init (DRIVER_OK
-				// triggers a config change notification). With edge-triggered
-				// GIC, the rising edge is missed if the line is already high
-				// when we EnableIRQ. Reading ISR clears the device's interrupt
-				// assertion, deasserting the INTx line, so future interrupts
-				// produce a proper 0→1 edge.
-				asm.MmioRead8(dev.ISRBase) // Clear pending INTx assertion
-				cachedIC.SetIRQEdgeTriggered(localIRQ)
+				// Clear any pending INTx assertion before enabling the GIC IRQ.
+				// VirtIO devices assert INTx during init (DRIVER_OK triggers
+				// a config change notification). Without this, the IRQ fires
+				// immediately but SetTopHalfDev hasn't been called yet, so
+				// the handler returns without reading ISR → IRQ storm.
+				asm.MmioRead8(dev.ISRBase)
 				cachedIC.SetIRQPriority(localIRQ, 0xA0)
 				cachedIC.SetIRQTarget(localIRQ, 0x01)
 				cachedIC.EnableIRQ(localIRQ)
@@ -871,7 +866,7 @@ func simpleMain() {
 	// Wire up block device IRQ: register with top-half dispatcher and
 	// enable the GIC SPI so INTx interrupts reach the CPU.
 	if irq := block.GetIRQNum(); irq != 0 {
-		SetBlockIRQ(irq, block.GetISRBase(), block.GetIOCompletePtr())
+		SetBlockIRQ(irq, block.GetISRBase(), block.GetIOCompletePtr(), block.GetBlockedTIDPtr())
 		if cachedIC != nil {
 			cachedIC.SetIRQPriority(irq, 0xA0)
 			cachedIC.EnableIRQ(irq)
