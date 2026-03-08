@@ -27,6 +27,7 @@ const (
 	sysDelegatedReply         = 0x1019 // Reply to a delegated syscall
 	sysUartWrite              = 0x101A // Write to UART (non-blocking)
 	sysUartWriteBlocking      = 0x101B // Write to UART (blocking)
+	sysPriestInfo             = 0x101C // Get info about running priests
 )
 
 // DebugPutChar writes a single character to the kernel debug output.

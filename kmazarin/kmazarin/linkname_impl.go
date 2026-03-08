@@ -3,6 +3,7 @@
 package main
 
 import (
+	"mazzy/shared/hid"
 	"unsafe" // for go:linkname and unsafe.Pointer
 )
 
@@ -225,5 +226,21 @@ func wakeThreadForSignalForKsyscall(threadPtr uintptr) {
 //go:nosplit
 func wakeNetpollThreadForKsyscall(tid int32) {
 	ThreadWakeSleeper(&NormalSchedulerFunc, uintptr(tid))
+}
+
+// ForEachThreadForKsyscall iterates over threads belonging to a priest and
+// populates the ThreadIDs array in a PriestInfoEntry.
+//
+//go:linkname forEachThreadForKsyscall mazzy/kmazarin/ksyscall.ForEachThread
+func forEachThreadForKsyscall(priestPID int16, entry *hid.PriestInfoEntry) {
+	tidIdx := 0
+	for i := 0; i < threadArraySize; i++ {
+		if threadListInUse[i] && int16(threadListData[i].PID) == priestPID {
+			if tidIdx < len(entry.ThreadIDs) {
+				entry.ThreadIDs[tidIdx] = int16(threadListData[i].TID)
+				tidIdx++
+			}
+		}
+	}
 }
 

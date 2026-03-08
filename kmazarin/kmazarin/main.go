@@ -13,6 +13,7 @@ import (
 	"mazzy/shared/constants"
 	"mazzy/shared/fs/fat32"
 	"mazzy/shared/toml"
+	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/ksyscall"
@@ -597,11 +598,11 @@ func initVirtIOGPU() {
 }
 
 // initVirtIOInputDevices discovers VirtIO input devices and wires their
-// MSI-X interrupts into the GIC so keypresses generate IRQs.
+// PCI INTx interrupts into the interrupt controller so keypresses generate IRQs.
 func initVirtIOInputDevices() {
 	input.InitVirtIOInput()
 
-	// Wire each input device's MSI-X IRQ into the GIC
+	// Wire each input device's INTx IRQ into the interrupt controller
 	devices := input.AllDevices()
 	if len(devices) == 0 {
 		return
@@ -617,7 +618,7 @@ func initVirtIOInputDevices() {
 		}
 
 		// Wire hardware interrupt controller for real IRQs.
-		// ARM64 uses MSI-X (GIC SPIs), RISC-V uses PCI INTx (PLIC sources 32-35),
+		// ARM64 uses PCI INTx (GIC SPIs 35-38), RISC-V uses PCI INTx (PLIC sources 32-35),
 		// AMD64 uses MSI-X (LAPIC vectors). On AMD64, MSI-X bypasses the IOAPIC
 		// entirely — the device writes directly to the LAPIC, so we only need
 		// to register a no-op handler with kirq (in case DispatchIRQ is called).
@@ -629,7 +630,20 @@ func initVirtIOInputDevices() {
 			})
 			if runtime.GOARCH != "amd64" {
 				// ARM64/RISC-V: configure interrupt controller for this IRQ.
-				// AMD64 MSI-X bypasses IOAPIC, no configuration needed.
+				// PCI INTx is level-triggered, but we must configure the GIC
+				// for edge-triggered to prevent an IRQ storm: EOIR is written
+				// before the handler reads ISR, and with level-triggered the
+				// GIC would re-fire immediately. Edge-triggered detects the
+				// 0→1 transition and fires once per assertion.
+				//
+				// CRITICAL: Read the VirtIO ISR register BEFORE enabling the
+				// GIC IRQ. VirtIO devices assert INTx during init (DRIVER_OK
+				// triggers a config change notification). With edge-triggered
+				// GIC, the rising edge is missed if the line is already high
+				// when we EnableIRQ. Reading ISR clears the device's interrupt
+				// assertion, deasserting the INTx line, so future interrupts
+				// produce a proper 0→1 edge.
+				asm.MmioRead8(dev.ISRBase) // Clear pending INTx assertion
 				cachedIC.SetIRQEdgeTriggered(localIRQ)
 				cachedIC.SetIRQPriority(localIRQ, 0xA0)
 				cachedIC.SetIRQTarget(localIRQ, 0x01)

@@ -515,11 +515,17 @@ func initDevice(dev *VirtIOInputDevice) bool {
 	}
 
 	// Step 6: MSI-X config vector (Linux: vp_request_msix_vectors → config_vector)
-	// Tells device which MSI-X vector to use for config change notifications
-	dev.writeCommonConfig16(VIRTIO_PCI_COMMON_CFG_MSIX_CONFIG, 0)
-	msixCfgBack := dev.readCommonConfig16(VIRTIO_PCI_COMMON_CFG_MSIX_CONFIG)
-	if msixCfgBack != 0 {
-		console.KPrintf("[VirtIO Input] WARNING: msix_config readback=%d (expect 0)\n", msixCfgBack)
+	// Only write MSIX_CONFIG on platforms that use MSI-X (x86_64).
+	// On INTx platforms (ARM64/RISC-V), writing ANY value to MSIX_CONFIG
+	// tells QEMU "I support MSI-X", which suppresses INTx delivery.
+	// The block device proves INTx works by never touching these registers.
+	msixVec := platformMSIXVector()
+	if msixVec != 0xFFFF {
+		dev.writeCommonConfig16(VIRTIO_PCI_COMMON_CFG_MSIX_CONFIG, msixVec)
+		msixCfgBack := dev.readCommonConfig16(VIRTIO_PCI_COMMON_CFG_MSIX_CONFIG)
+		if msixCfgBack != msixVec {
+			console.KPrintf("[VirtIO Input] WARNING: msix_config readback=%d (expect %d)\n", msixCfgBack, msixVec)
+		}
 	}
 
 	// Step 7: Queue setup using a dedicated DMA page.
@@ -553,12 +559,15 @@ func initDevice(dev *VirtIOInputDevice) bool {
 		console.KPrintln("[VirtIO Input] ERROR: Failed to setup event queue")
 		return false
 	}
-	// Assign MSI-X vector 0 to queue 0 (Linux: vp_active_vq writes queue_msix_vector)
-	dev.writeCommonConfig16(VIRTIO_PCI_COMMON_CFG_QUEUE_SELECT, 0)
-	dev.writeCommonConfig16(VIRTIO_PCI_COMMON_CFG_QUEUE_MSIX_VECTOR, 0)
-	msixVecBack := dev.readCommonConfig16(VIRTIO_PCI_COMMON_CFG_QUEUE_MSIX_VECTOR)
-	if msixVecBack == 0xFFFF {
-		console.KPrintln("[VirtIO Input] WARNING: queue_msix_vector rejected (0xFFFF)")
+	// Assign MSI-X vector to queue 0 (Linux: vp_active_vq writes queue_msix_vector).
+	// Only write on MSI-X platforms — same reason as MSIX_CONFIG above.
+	if msixVec != 0xFFFF {
+		dev.writeCommonConfig16(VIRTIO_PCI_COMMON_CFG_QUEUE_SELECT, 0)
+		dev.writeCommonConfig16(VIRTIO_PCI_COMMON_CFG_QUEUE_MSIX_VECTOR, msixVec)
+		msixVecBack := dev.readCommonConfig16(VIRTIO_PCI_COMMON_CFG_QUEUE_MSIX_VECTOR)
+		if msixVecBack != msixVec {
+			console.KPrintf("[VirtIO Input] WARNING: queue_msix_vector readback=%d (expect %d)\n", msixVecBack, msixVec)
+		}
 	}
 
 	// Step 8: Queue enable (Linux: vp_modern_set_queue_enable after all queues set up)
@@ -767,7 +776,7 @@ func InitVirtIOInput() {
 				barBasePA := pci.ReadBAR64(bus, slot, funcNum, common.Bar)
 				if barBasePA == 0 || barBasePA >= 0x100000000 {
 					// Program BAR to PCI MMIO window, offset to avoid GPU/Block conflicts
-					pciAddr := pci.PCI_MMIO_BASE + 0x40000 + uintptr(len(allDevices))*0x10000
+					pciAddr := pci.PCI_MMIO_BASE + 0x400000 + uintptr(len(allDevices))*0x10000
 					pci.WriteBAR64(bus, slot, funcNum, common.Bar, pciAddr)
 					barBasePA = pci.ReadBAR64(bus, slot, funcNum, common.Bar)
 				}
@@ -775,7 +784,7 @@ func InitVirtIOInput() {
 				kmem.MapDeviceMMIO(barBasePA, 0x10000) // Map 64KB for the BAR range
 				barBase := barBasePA + constants.KernelMMIOOffset
 
-				// Use platform-configured IRQ (MSI-X on ARM64, 0 for polling on x86_64)
+				// Use platform-configured IRQ (INTx on ARM64/RISC-V, 0 for polling on x86_64)
 				irqNum := irq
 
 				dev := &VirtIOInputDevice{
@@ -807,6 +816,8 @@ func InitVirtIOInput() {
 					isrBarPA := pci.ReadBAR64(bus, slot, funcNum, isr.Bar)
 					kmem.MapDeviceMMIO(isrBarPA, 0x10000)
 					dev.ISRBase = isrBarPA + constants.KernelMMIOOffset + uintptr(isr.OffsetInBar)
+					console.KPrintf("[VirtIO Input] ISR: bar=%d barPA=0x%x offset=0x%x ISRBase=0x%x commonBar=%d commonBarPA=0x%x\n",
+						isr.Bar, isrBarPA, isr.OffsetInBar, dev.ISRBase, common.Bar, barBasePA)
 				}
 
 				// Device config BAR (handles 64-bit BARs)

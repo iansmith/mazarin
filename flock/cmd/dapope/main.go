@@ -183,7 +183,6 @@ func mouseLoop(slot int, stack core.CursorStack, images core.CursorImageMap, ren
 			continue
 		}
 		batches++
-		// (mouse 'M' breadcrumb removed — write delegation renders these on console)
 		for i := 0; i < n; i++ {
 			ev := buf.Events[i]
 			switch ev.Type {
@@ -215,7 +214,6 @@ func mouseLoop(slot int, stack core.CursorStack, images core.CursorImageMap, ren
 		// per-EV_SYN generated 10+ GPU commands per batch (each with
 		// IRQs disabled), monopolizing the CPU and starving draining.
 		if dx != 0 || dy != 0 {
-			// (draw 'D' breadcrumb removed — write delegation renders these on console)
 			stack.Move(dx, -dy)
 			renderer.Draw(stack, images)
 			dx, dy = 0, 0
@@ -223,15 +221,17 @@ func mouseLoop(slot int, stack core.CursorStack, images core.CursorImageMap, ren
 	}
 }
 
-// findOtherPID scans PIDs 1-31 and returns the first valid PID that
-// isn't our own. Returns -1 if none found.
-func findOtherPID(myPID int) int {
-	for pid := 1; pid < 32; pid++ {
-		if pid == myPID {
-			continue
-		}
-		if err := syscall.Kill(pid, 0); err == nil {
-			return pid
+// findStdioPID uses the PriestInfo syscall to find the priest launched
+// from "/stdio.elf" and returns its PID. Returns -1 if not found.
+func findStdioPID() int {
+	priests, err := sys.PriestInfo()
+	if err != nil {
+		return -1
+	}
+	for _, p := range priests {
+		name := string(p.Filename[:p.FilenameLen])
+		if name == "/stdio.elf" {
+			return int(p.PID)
 		}
 	}
 	return -1
@@ -243,7 +243,6 @@ func timerLoop(clock *clockRenderer, slot int) {
 	tick := 0
 
 	// Discover stdio's PID after a few ticks (give it time to launch)
-	myPID := syscall.Getpid()
 	stdioPID := -1
 	loopIter := 0
 
@@ -277,9 +276,9 @@ func timerLoop(clock *clockRenderer, slot int) {
 
 		// Discover stdio's PID once (after 5s to let it launch)
 		if stdioPID < 0 && tick >= 5 {
-			stdioPID = findOtherPID(myPID)
+			stdioPID = findStdioPID()
 			if stdioPID > 0 {
-				fmt.Printf("[dapope:timer] found stdio at PID %d (my PID=%d)\n", stdioPID, myPID)
+				fmt.Printf("[dapope:timer] found stdio at PID %d\n", stdioPID)
 			}
 		}
 

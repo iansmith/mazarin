@@ -196,30 +196,11 @@ func pteExtractPA(entry uint64) uintptr {
 	return uintptr(entry & PTE_ADDR_MASK)
 }
 
-// MapDeviceMMIO maps a physical address range as device MMIO memory
-// in the kernel's TTBR1 page tables with non-cacheable attributes.
+// MapDeviceMMIO is a no-op on ARM64.
+// Diplomat maps the full MMIO range (0x00000000-0x40000000) as 2MB device-memory
+// blocks in the TTBR1 page tables before jumping to kmazarin. All PCI BARs,
+// GIC, UART, and RTC addresses fall within this range.
 func MapDeviceMMIO(physAddr uintptr, size uint64) error {
-	// Lazy initialization
-	if !pagingInitialized {
-		InitPaging()
-	}
-
-	// Calculate number of pages needed (round up)
-	if size == 0 {
-		size = PageSize // Default to one page if size not specified
-	}
-	numPages := (size + PageSize - 1) / PageSize
-
-	// Map all pages in the region
-	for i := uint64(0); i < numPages; i++ {
-		pagePhys := (physAddr &^ (PageSize - 1)) + uintptr(i*PageSize)
-		pageVA := pagePhys + constants.KernelMMIOOffset
-
-		if !mapDevicePage(pageVA, pagePhys) {
-			return &MappingError{addr: physAddr + uintptr(i*PageSize), msg: "failed to map device page"}
-		}
-	}
-
 	return nil
 }
 

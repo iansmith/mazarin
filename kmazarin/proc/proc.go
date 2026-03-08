@@ -43,6 +43,10 @@ type Priest struct {
 	PID                   PriestId // Unique priest identifier
 	_reservedAsyncPreempt uint64   // Padding (was AsyncPreemptAddr — now unused)
 
+	// Filename is the ELF filename used to launch this priest (e.g., "/dapope.elf").
+	// Stored at launch time for introspection via PriestInfo syscall.
+	Filename string
+
 	// Per-priest tick accounting — all thread ticks roll up here
 	TotalTicksRunning   uint64 // Cumulative ticks across all threads of this priest
 	TicksStartedRunning uint64 // When current thread of this priest started (0 = none running)

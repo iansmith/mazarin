@@ -39,6 +39,7 @@ const (
 	SysDelegatedReply       = MazzySyscallBase + 25 // 0x1019 - Reply to a delegated syscall
 	SysUartWrite            = MazzySyscallBase + 26 // 0x101A - Write bytes to UART txBuf (non-blocking, drops on overflow)
 	SysUartWriteBlocking    = MazzySyscallBase + 27 // 0x101B - Write bytes to UART txBuf (blocking, waits for space)
+	SysPriestInfo           = MazzySyscallBase + 28 // 0x101C - Get info about running priests
 )
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
@@ -72,6 +73,7 @@ var mazzySyscallTable = [64]SyscallHandler{
 	25: SyscallDelegatedReply,            // DelegatedReply = 0x1019
 	26: SyscallUartWrite,                 // UartWrite = 0x101A
 	27: SyscallUartWriteBlocking,         // UartWriteBlocking = 0x101B
+	28: SyscallPriestInfo,                // PriestInfo = 0x101C
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.

@@ -230,7 +230,7 @@ func NonTimerIRQTopHalf() {
 
 	dev.dbgIRQCount++
 
-	// Read ISR to acknowledge interrupt at device level.
+	// Read ISR to acknowledge interrupt at device level (deasserts PCI INTx).
 	if dev.isrBase != 0 {
 		_ = asm.MmioRead8(dev.isrBase)
 	}

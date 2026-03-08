@@ -10,33 +10,8 @@
 #include "textflag.h"
 #include "cgo/abi_arm64.h"
 
-// exit - print diagnostic then infinite loop (no OS to exit to)
+// exit - infinite loop (no OS to exit to)
 TEXT runtime·exit(SB),NOSPLIT|NOFRAME,$0-4
-	// Write 'E' to UART to signal exit was called
-	MOVD	$0xFFFFFFFF09000000, R2
-	MOVW	$'E', R3
-	MOVW	R3, (R2)
-	// Print exit code as 2 hex digits
-	MOVW	code+0(FP), R0
-	LSR	$4, R0, R1
-	AND	$0xF, R1, R1
-	CMP	$10, R1
-	BLO	exit_dig1
-	ADD	$('A'-10), R1, R1
-	B	exit_out1
-exit_dig1:
-	ADD	$'0', R1, R1
-exit_out1:
-	MOVW	R1, (R2)
-	AND	$0xF, R0, R1
-	CMP	$10, R1
-	BLO	exit_dig2
-	ADD	$('A'-10), R1, R1
-	B	exit_out2
-exit_dig2:
-	ADD	$'0', R1, R1
-exit_out2:
-	MOVW	R1, (R2)
 halt_loop:
 	WFI
 	B	halt_loop
@@ -468,11 +443,8 @@ TEXT runtime·sigaltstack(SB),NOSPLIT|NOFRAME,$0-16
 	SVC
 	RET
 
-// osyield - yield with WFE (with diagnostic heartbeat)
+// osyield - yield
 TEXT runtime·osyield(SB),NOSPLIT|NOFRAME,$0
-	MOVD	$0xFFFFFFFF09000000, R0
-	MOVW	$'y', R1
-	MOVW	R1, (R0)
 	YIELD
 	RET
 

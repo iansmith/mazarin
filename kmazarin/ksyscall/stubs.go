@@ -423,6 +423,12 @@ func SyscallKill(pid, sig, _, _, _, _ uint64) int64 {
 	}
 
 	targetPID := int16(pid)
+
+	// PID 0 is the kernel — userspace must never signal it.
+	if targetPID == 0 {
+		return -1 // EPERM
+	}
+
 	targetThread := ThreadLookupByPID(targetPID)
 	if targetThread == 0 {
 		return -3 // ESRCH — no such process

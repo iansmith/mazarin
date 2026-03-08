@@ -9,11 +9,10 @@ path = "/disk.elf"
 maz = ["fs=/fs.maz"]
 
 # Application priests: launched after bootstrap priests are running
-# (disabled for disk+fs testing)
-#[[priest]]
-#name = "dapope"
-#path = "/dapope.elf"
+[[priest]]
+name = "dapope"
+path = "/dapope.elf"
 
-#[[priest]]
-#name = "stdio"
-#path = "/stdio.elf"
+[[priest]]
+name = "stdio"
+path = "/stdio.elf"

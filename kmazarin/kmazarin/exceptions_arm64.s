@@ -648,6 +648,36 @@ print_elr_char_da:
 	SUB	$1, R13
 	CBNZ	R13, print_elr_data_abort
 
+	// Print " ESR="
+	MOVD	$' ', R11
+	MOVB	R11, (R10)
+	MOVD	$'E', R11
+	MOVB	R11, (R10)
+	MOVD	$'S', R11
+	MOVB	R11, (R10)
+	MOVD	$'R', R11
+	MOVB	R11, (R10)
+	MOVD	$'=', R11
+	MOVB	R11, (R10)
+
+	// Print ESR (exception syndrome) - stored in exception frame
+	MOVD	EXC_FRAME_FAR_ESR+8(RSP), R12
+	MOVD	$16, R13
+print_esr_data_abort:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_esr_digit_da
+	ADD	$('A'-10), R11
+	B	print_esr_char_da
+print_esr_digit_da:
+	ADD	$'0', R11
+print_esr_char_da:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_esr_data_abort
+
 	// Print extra debug: X0 from exception frame (unwinder ptr) and key fields
 	MOVD	$'\r', R11
 	MOVB	R11, (R10)

@@ -244,6 +244,8 @@ func findVirtIOBlock() bool {
 								kmem.MapDeviceMMIO(isrBarBase, 0x10000)
 							}
 							virtioBlockDevice.ISRBase = isrBarBase + constants.KernelMMIOOffset + uintptr(isr.OffsetInBar)
+							console.KPrintf("[VirtIO Block] ISR: bar=%d barPA=0x%x offset=0x%x ISRBase=0x%x\n",
+								isr.Bar, isrBarBase, isr.OffsetInBar, virtioBlockDevice.ISRBase)
 						}
 					}
 

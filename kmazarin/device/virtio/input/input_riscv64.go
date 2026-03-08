@@ -26,3 +26,10 @@ func platformConfigureDeviceIRQ(bus, slot, funcNum uint8) uint32 {
 func ConfigureMSIXForDevice(bus, slot, funcNum uint8) uint32 {
 	return 0
 }
+
+// platformMSIXVector returns 0xFFFF (VIRTIO_MSI_NO_VECTOR) on RISC-V.
+// This tells the VirtIO device not to use MSI-X, preventing spurious
+// INTx assertions from config change notifications.
+func platformMSIXVector() uint16 {
+	return 0xFFFF
+}

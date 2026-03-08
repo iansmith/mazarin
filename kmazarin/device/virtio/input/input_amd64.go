@@ -108,3 +108,9 @@ func platformConfigureDeviceIRQ(bus, slot, funcNum uint8) uint32 {
 func ConfigureMSIXForDevice(bus, slot, funcNum uint8) uint32 {
 	return platformConfigureDeviceIRQ(bus, slot, funcNum)
 }
+
+// platformMSIXVector returns 0 on x86_64 (MSI-X vector 0).
+// x86_64 uses MSI-X, so the device should use vector 0 for notifications.
+func platformMSIXVector() uint16 {
+	return 0
+}

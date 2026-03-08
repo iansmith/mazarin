@@ -37,7 +37,7 @@ const (
 	mmioRtcBase  = 0x09010000
 	mmioFwcfgBase = 0x09020000
 	mmioPciStart = 0x10000000
-	mmioPciEnd   = 0x20000000
+	mmioPciEnd   = 0x40000000
 
 	// Page table pool sizing
 	ptPoolPages       = 64   // 64 pages (256KB) for page table hierarchy
@@ -458,11 +458,14 @@ func mapKernelCode(l0Phys uint64, kernel *LoadedKernel) {
 // mapMMIO maps MMIO device regions with device memory attributes.
 // Uses 2MB blocks where possible, 4KB pages for smaller regions.
 func mapMMIO(l0Phys uint64) {
-	// Map MMIO regions from 0x08000000 to 0x20000000 using 2MB blocks
-	// This covers GIC, UART, RTC, fw_cfg, and PCI BARs
+	// Map MMIO regions from 0x00000000 to 0x40000000 using 2MB blocks.
+	// This covers the full device MMIO range below RAM (GIC, UART, RTC,
+	// fw_cfg, and the entire PCI MMIO window 0x10000000-0x3EFFFFFF),
+	// matching RISC-V diplomat's 1GB page coverage of 0x00-0x7F.
+	// With full coverage, kmazarin's MapDeviceMMIO can be a no-op.
 	const blockSize2MB = 0x200000
-	mmioStart := uint64(0x08000000) &^ (blockSize2MB - 1) // Round down to 2MB
-	mmioEnd := uint64(0x20000000)
+	mmioStart := uint64(0x00000000)
+	mmioEnd := uint64(0x40000000)
 
 	l0 := (*[ENTRIES_PER_TABLE]uint64)(unsafe.Pointer(uintptr(l0Phys)))
 

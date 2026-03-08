@@ -244,12 +244,13 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 	// The thread will be added to the ready queue and scheduled by the kernel
 	tid := CreateUserspaceThread(loadedProc.EntryPoint, loadedProc.StackTop, processL0PA)
 
-	// Cache the symbol table and highest VA on the priest struct.
+	// Cache the symbol table, highest VA, and filename on the priest struct.
 	// Find the priest by matching its PageTableL0PA (just allocated above).
 	for i := 0; i < proc.MaxPriests; i++ {
 		if proc.PriestListInUse[i] && proc.PriestListData[i].PageTableL0PA == processL0PA {
 			proc.PriestListData[i].SymbolTable = priestSymTable
 			proc.PriestListData[i].HighestVA = priestHighestVA
+			proc.PriestListData[i].Filename = filename
 			console.KPrintf("[Launch] cached %d symbols, highestVA=0x%X for priest %d\n",
 				len(priestSymTable), priestHighestVA, proc.PriestListData[i].PID)
 			break
