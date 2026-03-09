@@ -118,4 +118,7 @@ const (
 	errAlreadyLoaded       uint32 = 0x100A
 	errNoSpace             uint32 = 0x100B
 	errFileNotFound        uint32 = 0x100C
+	errNoDelegate          uint32 = 0x100D
+	errNotReady            uint32 = 0x100E
+	errTransferFailed      uint32 = 0x100F
 )

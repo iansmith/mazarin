@@ -160,9 +160,7 @@ const (
 	ThreadExited          ThreadState = 5 // Thread has exited (being cleaned up)
 	ThreadBlockedSoftIRQ  ThreadState = 6 // Blocked waiting for soft IRQ
 	ThreadBlockedLoadMaz  ThreadState = 7 // Blocked waiting for .maz load to complete
-	ThreadBlockedIPC      ThreadState = 8  // Client blocked waiting for IPC reply
-	ThreadBlockedIPCRecv  ThreadState = 9  // Server blocked waiting for IPC request
-	ThreadBlockedDelegate ThreadState = 10 // Caller blocked waiting for delegated syscall reply
+	ThreadBlockedDelegate     ThreadState = 10 // Caller blocked waiting for delegated syscall reply
 	ThreadBlockedDelegateRecv ThreadState = 11 // Handler blocked waiting for delegated syscall request
 	ThreadBlockedIO           ThreadState = 12 // Blocked waiting for block I/O completion
 )
@@ -463,13 +461,6 @@ func WakeThreadForSignal(t *Thread) {
 		// Defer signal delivery until LoadMaz completes — the worker
 		// goroutine will wake this thread with the result. Waking
 		// prematurely would return a half-filled MazLoadResult.
-	case ThreadBlockedIPC:
-		// Defer signal delivery until IPC reply arrives — waking
-		// prematurely would return without a valid reply.
-	case ThreadBlockedIPCRecv:
-		// Wake the server thread so it can handle the signal.
-		t.State = ThreadReady
-		enqueueReadySchedLockHeld(t)
 	case ThreadBlockedDelegate:
 		// Defer signal delivery until delegated syscall reply arrives.
 	case ThreadBlockedDelegateRecv:
@@ -1261,9 +1252,11 @@ func KernelIdleLoop() {
 			default:
 			}
 		}
-		// Check for pending .maz load work and execute it directly on this
+		// Check for pending kernel work and execute it directly on this
 		// goroutine's growable stack. Both atomic flag and BlockedTID are checked.
 		DispatchLoadMazWork()
+		DispatchRunMazWork()
+		DispatchRunPriestWork()
 		// Flush any pending console ring data to userspace.
 		if softIRQConsole != nil {
 			softIRQConsole.CheckPendingWake()
@@ -2041,7 +2034,6 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	p.PID = priestId
 	p.PageTableL0PA = pageTableL0PA
 	p.ThreadCount = 1 // This priest starts with one thread
-	p.IPCRecvTID = -1 // No thread blocked in IPCRecv yet
 
 	// Allocate thread slot from static list (panics if exhausted)
 	_, t := threadList.Allocate()
@@ -3395,10 +3387,6 @@ func PrintTickDistribution() {
 				stateStr = "EXT"
 			case ThreadBlockedSoftIRQ:
 				stateStr = "IRQ"
-			case ThreadBlockedIPC:
-				stateStr = "IPC"
-			case ThreadBlockedIPCRecv:
-				stateStr = "IPR"
 			case ThreadBlockedDelegate:
 				stateStr = "DLG"
 			case ThreadBlockedDelegateRecv:

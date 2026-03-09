@@ -25,6 +25,12 @@ bin/
 *.swp
 *~
 
+# Claude Code
+.claude/
+
+# Built .maz binaries
+fat32
+
 # Task checksum cache
 .task/
 

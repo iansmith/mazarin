@@ -26,17 +26,6 @@ type PriestSignalAction struct {
 // PriestId is a unique priest (userspace process) identifier (0-MaxPriests-1).
 type PriestId int16
 
-// MaxIPCPending is the maximum number of queued IPC requests per priest.
-const MaxIPCPending = 8
-
-// IPCRequest represents a pending IPC request from a client priest.
-type IPCRequest struct {
-	SenderPID    PriestId // PID of the sending priest
-	SenderTID    int16    // TID of the sending thread (blocked in ThreadBlockedIPC)
-	RequestVA    uint64   // VA of the request data in the receiver's address space
-	RequestPages uint32   // Number of pages transferred
-}
-
 // Priest represents a userspace process that runs Go code.
 // Each priest has its own address space and Go runtime.
 type Priest struct {
@@ -81,19 +70,16 @@ type Priest struct {
 	// Used by SysLoadMaz to determine where to place .maz segments.
 	HighestVA uint64
 
-	// IPC request queue — ring buffer of pending requests from client priests.
-	// Producers: SysIPCCall (enqueues). Consumer: SysIPCRecv (dequeues).
-	IPCQueue         [MaxIPCPending]IPCRequest
-	IPCQueueHead     uint32  // Next slot to dequeue from
-	IPCQueueTail     uint32  // Next slot to enqueue into
-	IPCRecvTID       int16   // TID of thread blocked in SysIPCRecv (-1 = none)
-	IPCRecvResultPtr uintptr // VA of IPCRecvResult in receiver's address space (stashed while blocked)
-
 	// Netpoll waiter — TID of thread blocked in SyscallEpollPwait (0 = none).
 	// Set by SyscallEpollPwait before blocking, cleared on wake.
 	// Read by SyscallWrite when fd matches the eventfd — the write wakes the
 	// sleeping thread, implementing Go's netpollBreak mechanism.
 	NetpollWaiterTID int32
+
+	// Ready indicates this priest is ready to accept delegated work.
+	// Set by SysSetReady, checked by the kernel before delegating LoadFile.
+	// 0 = not ready, 1 = ready.
+	Ready int32
 }
 
 // Id implements the ds.Ider interface for Priest.

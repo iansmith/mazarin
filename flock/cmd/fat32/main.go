@@ -1,16 +1,18 @@
-// fat32 is a .maz module that provides FAT32 filesystem services via IPC.
-// It is loaded by the disk priest into its address space, inheriting block
-// device ownership. It mounts the FAT32 filesystem using the BlockDevice
-// injected via MazarinPriest and serves file read requests via IPC.
+// fat32 is a .maz module that provides FAT32 filesystem services via
+// delegated syscalls. It is loaded by the disk priest into its address space,
+// inheriting block device ownership. It mounts the FAT32 filesystem using
+// the BlockDevice injected via MazarinPriest and serves LoadFile requests
+// via the delegate mechanism. It also reads /kmazarin.toml and launches
+// [[priest]] entries via RunPriest.
 package main
 
 import (
-	"fmt"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/blockdev"
+	"mazzy/shared/constants"
 	"mazzy/shared/fs/fat32"
-	"mazzy/shared/ipc"
-	"os"
+	"mazzy/shared/sysid"
+	"mazzy/shared/toml"
 	"syscall"
 	"unsafe"
 )
@@ -65,39 +67,26 @@ func init() {
 	}
 }
 
-// crashMode selects which failure to test:
-//
-//	0 = nil pointer dereference (SIGSEGV)
-//	1 = panic("test crash")
-//	2 = os.Exit(42)
-//	3 = deref 0xFFFFFFFFFFFFFFFF (SIGSEGV at high address)
-//	4 = normal operation
-const crashMode = 4
+// workItem represents a unit of work for the file worker goroutine.
+// Either loadReq is set (LoadFile delegate request) or launchName/launchPath
+// are set (launch a priest from TOML config).
+type workItem struct {
+	loadReq    *sys.SyscallRequest
+	launchName string
+	launchPath string
+}
+
+// workCh serializes all disk I/O through a single goroutine.
+var workCh chan workItem
 
 // MazarinMain is the entry point called by the disk priest when this .maz
-// is loaded. It mounts FAT32 using the injected BlockDevice and enters
-// the IPC serve loop. Never returns.
+// is loaded. It mounts FAT32 using the injected BlockDevice, reads boot
+// config, registers as the LoadFile delegate handler, launches application
+// priests from TOML config, and serves LoadFile requests. Never returns.
 //
 //go:noinline
 func MazarinMain() {
 	debugPuts("[fs] FAT32 filesystem maz starting\n")
-
-	switch crashMode {
-	case 0:
-		debugPuts("[fs] TEST: nil pointer dereference\n")
-		var p *int
-		_ = *p // SIGSEGV
-	case 1:
-		debugPuts("[fs] TEST: panic\n")
-		panic("test crash from fs.maz")
-	case 2:
-		debugPuts("[fs] TEST: os.Exit(42)\n")
-		os.Exit(42)
-	case 3:
-		debugPuts("[fs] TEST: deref 0xFFFFFFFFFFFFFFFF\n")
-		p := (*int)(unsafe.Pointer(uintptr(0xFFFFFFFFFFFFFFFF)))
-		_ = *p // SIGSEGV at high address
-	}
 
 	// Mount FAT32 filesystem using the injected BlockDevice, or fall back to SysBlockRead
 	var blkDev blockdev.BlockDevice
@@ -115,168 +104,197 @@ func MazarinMain() {
 	}
 	debugPuts("[fs] FAT32 mounted successfully\n")
 
-	// Enter IPC serve loop (never returns)
-	debugPuts("[fs] entering IPC serve loop\n")
-	serveLoop(fs)
+	// Read and parse boot config (synchronous, before any concurrency)
+	cfg := readBootConfig(fs)
+
+	// Start the serialized file worker goroutine
+	workCh = make(chan workItem, 64)
+	go fileWorker(fs)
+
+	// Register as LoadFile delegate handler
+	delegateCh, err := sys.HandleSyscalls(sysid.LoadFile)
+	if err != nil {
+		debugPuts("[fs] HandleSyscalls(LoadFile) failed\n")
+		return
+	}
+	debugPuts("[fs] registered as LoadFile delegate\n")
+
+	// Signal readiness — kernel will now forward LoadFile requests to us
+	sys.SetReady(true)
+	debugPuts("[fs] SetReady(true)\n")
+
+	// Queue priest launches from TOML config
+	if cfg != nil {
+		for i := 0; i < cfg.PriestCount; i++ {
+			p := &cfg.Priests[i]
+			name := constants.NullTermString(p.Name[:])
+			path := constants.NullTermString(p.Path[:])
+			debugPuts("[fs] queuing priest launch: ")
+			debugPuts(name)
+			debugPuts(" (")
+			debugPuts(path)
+			debugPuts(")\n")
+			workCh <- workItem{launchName: name, launchPath: path}
+		}
+	}
+
+	// Forward delegate requests to the worker (never returns)
+	debugPuts("[fs] entering delegate receive loop\n")
+	for req := range delegateCh {
+		r := req // copy for channel send
+		workCh <- workItem{loadReq: &r}
+	}
 }
 
 func main() {
 	MazarinMain()
 }
 
+// fileWorker is the single goroutine that performs all disk I/O.
+// It processes work items from workCh one at a time, ensuring serialized
+// access to the FAT32 filesystem.
+func fileWorker(fs *fat32.FileSystem) {
+	for item := range workCh {
+		if item.loadReq != nil {
+			handleLoadFile(fs, item.loadReq)
+		} else {
+			handleLaunchPriest(fs, item.launchName, item.launchPath)
+		}
+	}
+}
+
+// handleLoadFile processes a delegated LoadFile request:
+// reads the file from FAT32 into mmap'd pages, transfers them to the
+// caller via TransferAndUnmap, and replies with the result.
+func handleLoadFile(fs *fat32.FileSystem, req *sys.SyscallRequest) {
+	path := req.PathString()
+	debugPuts("[fs] LoadFile \"")
+	debugPuts(path)
+	debugPuts("\"\n")
+
+	va, numPages, bytesRead, err := readFileIntoPages(fs, path)
+	if err != nil {
+		debugPuts("[fs] LoadFile: file not found\n")
+		req.Reply(-2) // ENOENT
+		return
+	}
+
+	targetVA, terr := sys.TransferAndUnmap(int(req.CallerPID), va, numPages)
+	if terr != nil {
+		debugPuts("[fs] LoadFile: TransferAndUnmap failed\n")
+		req.Reply(-5) // EIO
+		return
+	}
+
+	debugPuts("[fs] LoadFile: transferred ")
+	debugPutDec(numPages)
+	debugPuts(" pages\n")
+
+	req.LoadFileReply(0, uint64(targetVA), uint64(numPages), uint64(bytesRead))
+}
+
+// handleLaunchPriest reads an ELF from FAT32 and launches it as a new priest
+// via the RunPriest syscall.
+func handleLaunchPriest(fs *fat32.FileSystem, name, path string) {
+	debugPuts("[fs] launching priest ")
+	debugPuts(name)
+	debugPuts(" from ")
+	debugPuts(path)
+	debugPuts("\n")
+
+	va, numPages, bytesRead, err := readFileIntoPages(fs, path)
+	if err != nil {
+		debugPuts("[fs] failed to read ")
+		debugPuts(path)
+		debugPuts("\n")
+		return
+	}
+
+	rpErr := sys.RunPriest(name, va, numPages, bytesRead)
+	if rpErr != nil {
+		debugPuts("[fs] RunPriest failed for ")
+		debugPuts(name)
+		debugPuts(": ")
+		debugPuts(rpErr.Error())
+		debugPuts("\n")
+		return
+	}
+
+	debugPuts("[fs] priest ")
+	debugPuts(name)
+	debugPuts(" launched\n")
+}
+
+// readFileIntoPages opens a file from FAT32, allocates pages via mmap,
+// reads the file data into them, and returns the VA, page count, and bytes read.
+func readFileIntoPages(fs *fat32.FileSystem, path string) (va uintptr, numPages int, bytesRead int, err error) {
+	file, ferr := fs.Open(path)
+	if ferr != nil {
+		return 0, 0, 0, ferr
+	}
+	defer file.Close()
+
+	fileSize := int(file.Size())
+	numPages = (fileSize + 4095) / 4096
+	if numPages == 0 {
+		numPages = 1
+	}
+
+	totalSize := uintptr(numPages) * 4096
+	va, _, errno := syscall.RawSyscall6(
+		syscall.SYS_MMAP, 0, totalSize,
+		syscall.PROT_READ|syscall.PROT_WRITE,
+		syscall.MAP_PRIVATE|syscall.MAP_ANONYMOUS,
+		^uintptr(0), 0)
+	if errno != 0 || int64(va) < 0 {
+		return 0, 0, 0, errno
+	}
+
+	buf := unsafe.Slice((*byte)(unsafe.Pointer(va)), totalSize)
+	n, _ := file.Read(buf[:fileSize])
+	return va, numPages, n, nil
+}
+
+// readBootConfig reads and parses /kmazarin.toml from the FAT32 filesystem.
+// Returns nil if the file doesn't exist or can't be parsed.
+func readBootConfig(fs *fat32.FileSystem) *constants.BootConfig {
+	file, err := fs.Open("/kmazarin.toml")
+	if err != nil {
+		debugPuts("[fs] no /kmazarin.toml found\n")
+		return nil
+	}
+	defer file.Close()
+
+	data, err := file.ReadAll()
+	if err != nil {
+		debugPuts("[fs] failed to read kmazarin.toml\n")
+		return nil
+	}
+
+	cfg := toml.Parse(data)
+	debugPuts("[fs] boot config: ")
+	debugPutDec(cfg.PriestCount)
+	debugPuts(" priests\n")
+	return cfg
+}
+
 // userspaceBlockDev implements blockdev.BlockDevice using SysBlockRead.
 // Used as fallback when MazarinPriest was not called.
 type userspaceBlockDev struct{}
 
-func (d *userspaceBlockDev) Name() string         { return "virtio-blk-user" }
-func (d *userspaceBlockDev) Close() error         { return nil }
-func (d *userspaceBlockDev) BlockSize() uint64    { return 512 }
-func (d *userspaceBlockDev) NumBlocks() uint64    { return 0 }
+func (d *userspaceBlockDev) Name() string      { return "virtio-blk-user" }
+func (d *userspaceBlockDev) Close() error      { return nil }
+func (d *userspaceBlockDev) BlockSize() uint64 { return 512 }
+func (d *userspaceBlockDev) NumBlocks() uint64 { return 0 }
 func (d *userspaceBlockDev) WriteBlock(lba uint64, buf []byte) error {
-	return fmt.Errorf("write not supported")
+	return nil // write not supported
 }
 
 func (d *userspaceBlockDev) ReadBlock(lba uint64, buf []byte) error {
 	if len(buf) < 512 {
-		return fmt.Errorf("buffer too small: %d < 512", len(buf))
+		return nil // buffer too small
 	}
 	return sys.BlockRead(lba, 1, buf)
-}
-
-// serveLoop handles incoming IPC requests.
-func serveLoop(fs *fat32.FileSystem) {
-	for {
-		senderPID, reqVA, reqPages, err := sys.IPCRecv()
-		if err != nil {
-			debugPuts("[fs] IPCRecv error\n")
-			continue
-		}
-
-		debugPuts("[fs] request from P")
-		debugPutDec(senderPID)
-		debugPuts("\n")
-
-		handleRequest(fs, senderPID, reqVA, reqPages)
-	}
-}
-
-// handleRequest processes a single IPC filesystem request.
-func handleRequest(fs *fat32.FileSystem, senderPID int, reqVA uintptr, reqPages int) {
-	reqSize := uintptr(reqPages) * 4096
-	reqBuf := unsafe.Slice((*byte)(unsafe.Pointer(reqVA)), reqSize)
-
-	if len(reqBuf) < ipc.HeaderSize {
-		sendErrorReply(senderPID, -22) // EINVAL
-		return
-	}
-
-	hdr := ipc.UnmarshalHeader(reqBuf)
-
-	switch hdr.Opcode {
-	case ipc.OpFSRead:
-		handleFSRead(fs, senderPID, reqBuf[ipc.HeaderSize:], hdr.PayloadLen)
-	default:
-		debugPuts("[fs] unknown opcode\n")
-		sendErrorReply(senderPID, -38) // ENOSYS
-	}
-}
-
-// handleFSRead reads a file and sends its contents as the IPC reply.
-func handleFSRead(fs *fat32.FileSystem, senderPID int, payload []byte, payloadLen uint64) {
-	// Extract null-terminated path from payload
-	if payloadLen == 0 || payloadLen > uint64(len(payload)) {
-		sendErrorReply(senderPID, -22)
-		return
-	}
-	pathBytes := payload[:payloadLen]
-	// Find null terminator
-	pathEnd := 0
-	for pathEnd < len(pathBytes) && pathBytes[pathEnd] != 0 {
-		pathEnd++
-	}
-	path := string(pathBytes[:pathEnd])
-
-	debugPuts("[fs] FS_READ \"")
-	debugPuts(path)
-	debugPuts("\"\n")
-
-	// Open and read the file
-	file, err := fs.Open(path)
-	if err != nil {
-		debugPuts("[fs] open failed\n")
-		sendErrorReply(senderPID, -2) // ENOENT
-		return
-	}
-	defer file.Close()
-
-	fileSize := uint64(file.Size())
-
-	// Calculate reply size: header + file data
-	replyDataSize := ipc.HeaderSize + int(fileSize)
-	replyPages := (replyDataSize + 4095) / 4096
-	if replyPages == 0 {
-		replyPages = 1
-	}
-
-	// Allocate reply pages
-	replySize := uintptr(replyPages) * 4096
-	replyVA, _, errno := syscall.RawSyscall6(
-		syscall.SYS_MMAP, 0, replySize,
-		syscall.PROT_READ|syscall.PROT_WRITE,
-		syscall.MAP_PRIVATE|syscall.MAP_ANONYMOUS,
-		^uintptr(0), 0)
-	if errno != 0 || int64(replyVA) < 0 {
-		debugPuts("[fs] mmap for reply failed\n")
-		sendErrorReply(senderPID, -12) // ENOMEM
-		return
-	}
-
-	replyBuf := unsafe.Slice((*byte)(unsafe.Pointer(replyVA)), replySize)
-
-	// Write reply header
-	replyHdr := ipc.IPCHeader{
-		Opcode:     ipc.OpFSRead,
-		PayloadLen: fileSize,
-		ErrorCode:  0,
-	}
-	ipc.MarshalHeader(replyBuf, &replyHdr)
-
-	// Read file data into reply buffer
-	dataBuf := replyBuf[ipc.HeaderSize:]
-	n, err := file.Read(dataBuf)
-	if err != nil && n == 0 {
-		debugPuts("[fs] read failed\n")
-		sendErrorReply(senderPID, -5) // EIO
-		return
-	}
-
-	debugPuts("[fs] sending reply\n")
-
-	// Send reply via IPC
-	err = sys.IPCReply(senderPID, replyVA, replyPages)
-	if err != nil {
-		debugPuts("[fs] IPCReply failed\n")
-	}
-}
-
-// sendErrorReply sends a minimal error reply (1 page with header only).
-func sendErrorReply(senderPID int, errCode int64) {
-	replyVA, _, errno := syscall.RawSyscall6(
-		syscall.SYS_MMAP, 0, 4096,
-		syscall.PROT_READ|syscall.PROT_WRITE,
-		syscall.MAP_PRIVATE|syscall.MAP_ANONYMOUS,
-		^uintptr(0), 0)
-	if errno != 0 || int64(replyVA) < 0 {
-		return
-	}
-
-	replyBuf := unsafe.Slice((*byte)(unsafe.Pointer(replyVA)), 4096)
-	replyHdr := ipc.IPCHeader{
-		ErrorCode: errCode,
-	}
-	ipc.MarshalHeader(replyBuf, &replyHdr)
-
-	sys.IPCReply(senderPID, replyVA, 1)
 }
 
 // debugPutDec writes an integer as decimal to the serial console.

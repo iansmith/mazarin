@@ -24,6 +24,9 @@ const (
 	AlreadyLoaded                                  // program already loaded
 	NoSpace                                        // no address space available
 	FileNotFound                                   // file does not exist
+	NoDelegate                                     // no delegate registered for this syscall
+	NotReady                                       // delegate priest not ready
+	TransferFailed                                 // page transfer failed
 
 	// Client-side errors (memblob, mazhost, etc.)
 	ExceedsCapacity  // request exceeds MemBlob size
@@ -59,6 +62,9 @@ var (
 	ErrAlreadyLoaded       = &Error{AlreadyLoaded, "program already loaded"}
 	ErrNoSpace             = &Error{NoSpace, "no address space available"}
 	ErrFileNotFound        = &Error{FileNotFound, "file not found"}
+	ErrNoDelegate          = &Error{NoDelegate, "no delegate registered"}
+	ErrNotReady            = &Error{NotReady, "delegate priest not ready"}
+	ErrTransferFailed      = &Error{TransferFailed, "page transfer failed"}
 	ErrExceedsCapacity     = &Error{ExceedsCapacity, "request exceeds size of MemBlob"}
 	ErrReadOnlyBlob        = &Error{ReadOnlyBlob, "MemBlob is read-only"}
 	ErrMmapFailed          = &Error{MmapFailed, "mmap failed"}
@@ -83,6 +89,9 @@ var codeToError = [...]**Error{
 	AlreadyLoaded - 0x1000:       &ErrAlreadyLoaded,
 	NoSpace - 0x1000:             &ErrNoSpace,
 	FileNotFound - 0x1000:        &ErrFileNotFound,
+	NoDelegate - 0x1000:          &ErrNoDelegate,
+	NotReady - 0x1000:            &ErrNotReady,
+	TransferFailed - 0x1000:      &ErrTransferFailed,
 	ExceedsCapacity - 0x1000:     &ErrExceedsCapacity,
 	ReadOnlyBlob - 0x1000:        &ErrReadOnlyBlob,
 	MmapFailed - 0x1000:          &ErrMmapFailed,

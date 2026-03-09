@@ -945,9 +945,11 @@ func simpleMain() {
 	// TEMPORARILY DISABLED for debugging ARM64 userspace crash:
 	// atomic.StoreUint32(&suppressSerial, 1)
 
-	// Start the kernel worker goroutine for .maz loading. Must be done
-	// before KernelIdleLoop since the worker needs a normal goroutine stack.
+	// Initialize kernel worker goroutines. Must be done
+	// before KernelIdleLoop since the workers need normal goroutine stacks.
 	initLoadMazWorker()
+	initRunMazWorker()
+	initRunPriestWorker()
 
 	// Enter the kernel idle loop. Thread 0 (m0/g0) stays alive as a normal
 	// scheduled thread. Priest threads are already running. The timer IRQ
@@ -1002,8 +1004,9 @@ func readBootConfig() *constants.BootConfig {
 	return cfg
 }
 
-// launchPriestsFromConfig launches all priests defined in the boot config.
-// Bootstrap priests are launched first, then application priests.
+// launchPriestsFromConfig launches bootstrap priests defined in the boot config.
+// Only [[bootstrap_priest]] entries are launched by the kernel. Application
+// [[priest]] entries are launched by fs.maz after it reads /kmazarin.toml.
 func launchPriestsFromConfig(cfg *constants.BootConfig) {
 	for i := 0; i < cfg.BootstrapPriestCount; i++ {
 		p := &cfg.BootstrapPriests[i]
@@ -1012,11 +1015,8 @@ func launchPriestsFromConfig(cfg *constants.BootConfig) {
 		launchPriest(path+"\x00", name)
 	}
 
-	for i := 0; i < cfg.PriestCount; i++ {
-		p := &cfg.Priests[i]
-		name := constants.NullTermString(p.Name[:])
-		path := constants.NullTermString(p.Path[:])
-		launchPriest(path+"\x00", name)
+	if cfg.PriestCount > 0 {
+		console.KPrintf("[boot] %d application priests deferred to fs.maz\n", cfg.PriestCount)
 	}
 }
 

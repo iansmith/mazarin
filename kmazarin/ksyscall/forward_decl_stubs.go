@@ -149,20 +149,28 @@ func WakeThreadForSignal(threadPtr uintptr) {}
 func blockForLoadMaz() uintptr { return 0 }
 
 // ============================================================================
-// From ipc_asm.go
+// From bridge_asm.go (delegate + utility stubs)
 // ============================================================================
 
-func blockForIPCCall() uintptr  { return 0 }
-func blockForIPCRecv() uintptr  { return 0 }
-func wakeIPCThread(tid int32, returnVal int64) {}
-func wakeIPCThreadByPID(pid int16, returnVal int64) {}
 func getCurrentThreadPIDAndTID() (proc.PriestId, int16) { return -1, -1 }
-func ipcQueuePush(p *proc.Priest, req proc.IPCRequest) bool { return true }
-func ipcQueuePop(p *proc.Priest) (proc.IPCRequest, bool) { return proc.IPCRequest{}, false }
 func getBlockDeviceOwnerPID() int16 { return -1 }
+func saveAndDisableIRQs() uint64    { return 0 }
+func restoreIRQs(savedDAIF uint64)  {}
 
 // ============================================================================
 // From blockio_bridge.go
 // ============================================================================
 
 func BlockForBlockIO(ioComplete *uint32) uintptr { return 0 }
+
+// ============================================================================
+// From runmaz_bridge.go
+// ============================================================================
+
+func blockForRunMaz() uintptr { return 0 }
+
+// ============================================================================
+// From runpriest_bridge.go
+// ============================================================================
+
+func blockForRunPriest() uintptr { return 0 }

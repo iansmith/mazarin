@@ -49,6 +49,7 @@ const (
 	Getrandom                  // getrandom
 	RtSigreturn                // rt_sigreturn
 	Getitimer                  // getitimer
+	LoadFile                   // LoadFile (Mazzy delegated file load)
 
 	NumIDs // sentinel — array size
 )

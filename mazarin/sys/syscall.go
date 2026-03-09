@@ -28,6 +28,10 @@ const (
 	sysUartWrite              = 0x101A // Write to UART (non-blocking)
 	sysUartWriteBlocking      = 0x101B // Write to UART (blocking)
 	sysPriestInfo             = 0x101C // Get info about running priests
+	sysSetReady               = 0x101D // Signal priest is ready for delegated work
+	sysLoadFile               = 0x101E // Load file via fs.maz delegate
+	sysRunMaz                 = 0x101F // Load .maz ELF from caller's pages
+	sysRunPriest              = 0x1020 // Create new priest from caller's pages
 )
 
 // DebugPutChar writes a single character to the kernel debug output.

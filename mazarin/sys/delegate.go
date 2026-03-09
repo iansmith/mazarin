@@ -91,6 +91,19 @@ func (r *SyscallRequest) Reply(returnVal int64) {
 		0, 0, 0)
 }
 
+// LoadFileReply sends the return value and file result back to the blocked caller.
+// For LoadFile: the kernel writes (targetVA, numPages, bytesRead) to the caller's
+// LoadFileResult struct before waking the caller.
+func (r *SyscallRequest) LoadFileReply(returnVal int64, targetVA, numPages, bytesRead uint64) {
+	RawSyscall(sysDelegatedReply,
+		uintptr(r.CallerPID),
+		uintptr(r.CallerTID),
+		uintptr(uint64(returnVal)),
+		uintptr(targetVA),
+		uintptr(numPages),
+		uintptr(bytesRead))
+}
+
 // delegateRecvResult matches the kernel-side layout written by writeDelegateRecvResult.
 type delegateRecvResult struct {
 	SysID     uint16

@@ -30,9 +30,6 @@ const (
 	SysTransferPages        = MazzySyscallBase + 16 // 0x1010 - Transfer pages between priests
 	SysMapSharedPage        = MazzySyscallBase + 17 // 0x1011 - Map shared page from another priest
 	SysLoadMaz              = MazzySyscallBase + 18 // 0x1012 - Load .maz PIE ELF into priest's address space
-	SysIPCCall              = MazzySyscallBase + 19 // 0x1013 - IPC: send request, block for reply
-	SysIPCRecv              = MazzySyscallBase + 20 // 0x1014 - IPC: block until request arrives
-	SysIPCReply             = MazzySyscallBase + 21 // 0x1015 - IPC: send reply, unblock client
 	SysBlockRead            = MazzySyscallBase + 22 // 0x1016 - Read disk sectors (block device owner only)
 	SysRegisterSyscallHandler = MazzySyscallBase + 23 // 0x1017 - Register priest as handler for a SysID
 	SysDelegatedRecv        = MazzySyscallBase + 24 // 0x1018 - Receive a delegated syscall request (blocks)
@@ -40,6 +37,10 @@ const (
 	SysUartWrite            = MazzySyscallBase + 26 // 0x101A - Write bytes to UART txBuf (non-blocking, drops on overflow)
 	SysUartWriteBlocking    = MazzySyscallBase + 27 // 0x101B - Write bytes to UART txBuf (blocking, waits for space)
 	SysPriestInfo           = MazzySyscallBase + 28 // 0x101C - Get info about running priests
+	SysSetReady             = MazzySyscallBase + 29 // 0x101D - Signal priest is ready for delegated work
+	SysLoadFile             = MazzySyscallBase + 30 // 0x101E - Load file via fs.maz delegate
+	SysRunMaz               = MazzySyscallBase + 31 // 0x101F - Load .maz ELF from caller's pages
+	SysRunPriest            = MazzySyscallBase + 32 // 0x1020 - Create new priest from caller's pages
 )
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
@@ -64,9 +65,6 @@ var mazzySyscallTable = [64]SyscallHandler{
 	16: SyscallTransferPages,      // TransferPages = 0x1010
 	17: SyscallMapSharedPage,      // MapSharedPage = 0x1011
 	18: SyscallLoadMaz,            // LoadMaz = 0x1012
-	19: SyscallIPCCall,            // IPCCall = 0x1013
-	20: SyscallIPCRecv,            // IPCRecv = 0x1014
-	21: SyscallIPCReply,           // IPCReply = 0x1015
 	22: SyscallBlockRead,                // BlockRead = 0x1016
 	23: SyscallRegisterSyscallHandler,    // RegisterSyscallHandler = 0x1017
 	24: SyscallDelegatedRecv,             // DelegatedRecv = 0x1018
@@ -74,6 +72,10 @@ var mazzySyscallTable = [64]SyscallHandler{
 	26: SyscallUartWrite,                 // UartWrite = 0x101A
 	27: SyscallUartWriteBlocking,         // UartWriteBlocking = 0x101B
 	28: SyscallPriestInfo,                // PriestInfo = 0x101C
+	29: SyscallSetReady,                  // SetReady = 0x101D
+	30: SyscallLoadFile,                  // LoadFile = 0x101E
+	31: SyscallRunMaz,                    // RunMaz = 0x101F
+	32: SyscallRunPriest,                 // RunPriest = 0x1020
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.

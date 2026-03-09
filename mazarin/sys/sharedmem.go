@@ -36,6 +36,14 @@ func TransferPages(targetPID int, sourceVA uintptr, numPages int, elfFlags uint3
 	return r1, nil
 }
 
+// TransferAndUnmap transfers ownership of pages from this priest to a target
+// priest, unmapping them from the caller. The pages are mapped into the target's
+// address space at a kernel-chosen VA. Returns the target VA base address.
+// This is the zero-copy page transfer primitive used by LoadFile and IPC.
+func TransferAndUnmap(targetPID int, sourceVA uintptr, numPages int) (uintptr, error) {
+	return TransferPages(targetPID, sourceVA, numPages, 0) // elfFlags=0 → RW
+}
+
 // MapSharedPage creates a shared mapping of a page owned by another priest
 // into the calling priest's address space. Both priests can access the same
 // physical page. The page's refcount is incremented. Returns the caller VA.

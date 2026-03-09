@@ -176,6 +176,19 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			dataLen = uint32(n)
 		}
 
+	case sysid.LoadFile:
+		// LoadFile: copy pathname string into data page (path is in arg0).
+		// arg0 = pathname pointer, arg1 = result struct pointer (stashed in CallerBufVA)
+		if arg0 != 0 {
+			pa, va, n := allocAndCopyCallerString(handlerPID, handlerPriest, uintptr(arg0))
+			if pa == 0 {
+				return -12 // ENOMEM
+			}
+			dataPagePA = pa
+			handlerDataVA = va
+			dataLen = uint32(n)
+		}
+
 	default:
 		// Close, etc: no data page
 	}
@@ -191,9 +204,15 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 	}
 	entry.Args = [6]uint64{arg0, arg1, arg2, arg3, arg4, arg5}
 
+	// Disable IRQs around the queue push + recv state check to prevent
+	// preemption mid-operation, which could corrupt the ring buffer or
+	// cause a TOCTOU race on delegateRecvStates.
+	savedDAIF := saveAndDisableIRQs()
+
 	q := &delegateQueues[id]
 	next := (q.tail + 1) % MaxDelegateQueueDepth
 	if next == q.head {
+		restoreIRQs(savedDAIF)
 		reclaimDataPage(dataPagePA, handlerDataVA, handlerPID, handlerPriest)
 		serial.RawUARTPuts("[DLG] queue full\r\n")
 		return -11 // EAGAIN
@@ -231,6 +250,8 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			}
 		}
 	}
+
+	restoreIRQs(savedDAIF)
 
 	// Block the caller
 	ctx := blockForDelegatedSyscall()
@@ -423,12 +444,9 @@ func SyscallRegisterSyscallHandler(arg0, _, _, _, _, _ uint64) int64 {
 	}
 
 	h := &syscallDelegates[id]
-	existing := atomic.LoadInt32(&h.pid)
-	if existing >= 0 {
+	if !atomic.CompareAndSwapInt32(&h.pid, -1, int32(callerPriest.PID)) {
 		return -16 // EBUSY — already registered
 	}
-
-	atomic.StoreInt32(&h.pid, int32(callerPriest.PID))
 
 	serial.RawUARTPuts("[DLG] P")
 	serial.RawUARTDecimal(uint64(callerPriest.PID))
@@ -474,9 +492,16 @@ func SyscallDelegatedRecv(arg0, _, _, _, _, _ uint64) int64 {
 		return -22 // EINVAL — not a handler
 	}
 
+	// Disable IRQs around the queue pop + recv state set to prevent
+	// preemption between checking the queue and recording the recv state.
+	// Without this, a concurrent DelegateSyscall could enqueue + check
+	// recvTID between our pop (empty) and our recvTID set, losing the request.
+	savedDAIF := saveAndDisableIRQs()
+
 	// Check all queues for pending requests
 	e := delegateQueuePopAnyForPriest(myPID)
 	if e != nil {
+		restoreIRQs(savedDAIF)
 		writeDelegateRecvResult(resultPtr, callerPriest.PageTableL0PA, e)
 		return 0
 	}
@@ -488,6 +513,8 @@ func SyscallDelegatedRecv(arg0, _, _, _, _, _ uint64) int64 {
 		rs.recvTID = callerTID
 		rs.resultPtr = resultPtr
 	}
+
+	restoreIRQs(savedDAIF)
 
 	ctx := blockForDelegatedRecv()
 	if ctx == 0 {
@@ -513,7 +540,7 @@ func SyscallDelegatedRecv(arg0, _, _, _, _, _ uint64) int64 {
 // Returns: 0 on success, negative errno on error.
 //
 //go:noinline
-func SyscallDelegatedReply(arg0, arg1, arg2, _, _, _ uint64) int64 {
+func SyscallDelegatedReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	callerPID := int16(arg0)
 	callerTID := int16(arg1)
 	returnVal := int64(arg2)
@@ -550,6 +577,15 @@ func SyscallDelegatedReply(arg0, arg1, arg2, _, _, _ uint64) int64 {
 					serial.RawUARTPuts(" were written before a fault\r\n")
 					returnVal = -14 // EFAULT
 				}
+			}
+
+			// For LoadFile: write result struct to caller's address space.
+			// arg3 = targetVA, arg4 = numPages, arg5 = bytesRead.
+			// CallerBufVA stores the result struct pointer for LoadFile.
+			if info.SysID == sysid.LoadFile && returnVal >= 0 && info.CallerBufVA != 0 {
+				writeU64ToUser(info.CallerBufVA, arg3, info.CallerL0PA)       // StartVA
+				writeU64ToUser(info.CallerBufVA+8, arg4, info.CallerL0PA)     // NumPages
+				writeU64ToUser(info.CallerBufVA+16, arg5, info.CallerL0PA)    // BytesRead
 			}
 
 			// Reclaim the data page
