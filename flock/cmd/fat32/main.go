@@ -81,8 +81,8 @@ var workCh chan workItem
 
 // MazarinMain is the entry point called by the disk priest when this .maz
 // is loaded. It mounts FAT32 using the injected BlockDevice, reads boot
-// config, registers as the LoadFile delegate handler, launches application
-// priests from TOML config, and serves LoadFile requests. Never returns.
+// config, launches application priests synchronously, then registers as
+// the LoadFile delegate handler and serves requests. Never returns.
 //
 //go:noinline
 func MazarinMain() {
@@ -107,7 +107,20 @@ func MazarinMain() {
 	// Read and parse boot config (synchronous, before any concurrency)
 	cfg := readBootConfig(fs)
 
-	// Start the serialized file worker goroutine
+	// Launch application priests synchronously before starting the delegate
+	// infrastructure. The delegateRecvLoop goroutine blocks in the kernel
+	// without releasing the P (entersyscall is a no-op in .maz), so any work
+	// queued for a fileWorker goroutine would never be processed.
+	if cfg != nil {
+		for i := 0; i < cfg.PriestCount; i++ {
+			p := &cfg.Priests[i]
+			name := constants.NullTermString(p.Name[:])
+			path := constants.NullTermString(p.Path[:])
+			handleLaunchPriest(fs, name, path)
+		}
+	}
+
+	// Start the serialized file worker goroutine for LoadFile requests
 	workCh = make(chan workItem, 64)
 	go fileWorker(fs)
 
@@ -122,21 +135,6 @@ func MazarinMain() {
 	// Signal readiness — kernel will now forward LoadFile requests to us
 	sys.SetReady(true)
 	debugPuts("[fs] SetReady(true)\n")
-
-	// Queue priest launches from TOML config
-	if cfg != nil {
-		for i := 0; i < cfg.PriestCount; i++ {
-			p := &cfg.Priests[i]
-			name := constants.NullTermString(p.Name[:])
-			path := constants.NullTermString(p.Path[:])
-			debugPuts("[fs] queuing priest launch: ")
-			debugPuts(name)
-			debugPuts(" (")
-			debugPuts(path)
-			debugPuts(")\n")
-			workCh <- workItem{launchName: name, launchPath: path}
-		}
-	}
 
 	// Forward delegate requests to the worker (never returns)
 	debugPuts("[fs] entering delegate receive loop\n")
@@ -252,6 +250,7 @@ func readFileIntoPages(fs *fat32.FileSystem, path string) (va uintptr, numPages 
 
 	buf := unsafe.Slice((*byte)(unsafe.Pointer(va)), totalSize)
 	n, _ := file.Read(buf[:fileSize])
+
 	return va, numPages, n, nil
 }
 
@@ -260,7 +259,9 @@ func readFileIntoPages(fs *fat32.FileSystem, path string) (va uintptr, numPages 
 func readBootConfig(fs *fat32.FileSystem) *constants.BootConfig {
 	file, err := fs.Open("/kmazarin.toml")
 	if err != nil {
-		debugPuts("[fs] no /kmazarin.toml found\n")
+		debugPuts("[fs] Open(/kmazarin.toml) error: ")
+		debugPuts(err.Error())
+		debugPuts("\n")
 		return nil
 	}
 	defer file.Close()

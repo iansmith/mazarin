@@ -162,7 +162,6 @@ const (
 	ThreadBlockedLoadMaz  ThreadState = 7 // Blocked waiting for .maz load to complete
 	ThreadBlockedDelegate     ThreadState = 10 // Caller blocked waiting for delegated syscall reply
 	ThreadBlockedDelegateRecv ThreadState = 11 // Handler blocked waiting for delegated syscall request
-	ThreadBlockedIO           ThreadState = 12 // Blocked waiting for block I/O completion
 )
 
 // MaxPriests is the maximum number of priest processes (userspace programs).
@@ -467,8 +466,6 @@ func WakeThreadForSignal(t *Thread) {
 		// Wake the handler thread so it can handle the signal.
 		t.State = ThreadReady
 		enqueueReadySchedLockHeld(t)
-	case ThreadBlockedIO:
-		// Defer signal delivery until block I/O completes.
 	}
 	// ThreadRunning / ThreadReady: signal delivered at next context switch
 
@@ -1261,12 +1258,6 @@ func KernelIdleLoop() {
 		if softIRQConsole != nil {
 			softIRQConsole.CheckPendingWake()
 		}
-
-		// Poll for block I/O completion. Under QEMU HVF, MSI-X interrupts
-		// are unreliably delivered (GIC auto-clear), so we poll the used ring
-		// from the idle loop. The WFI at the bottom of this loop causes a VM
-		// exit that lets QEMU's event loop complete pending I/O.
-		PollBlockIOCompletion()
 
 		// Periodic A/D bit scan. Clears hardware Accessed bits on all mapped
 		// userspace pages and propagates Dirty state into PageDescriptors.
@@ -3391,8 +3382,6 @@ func PrintTickDistribution() {
 				stateStr = "DLG"
 			case ThreadBlockedDelegateRecv:
 				stateStr = "DLR"
-			case ThreadBlockedIO:
-				stateStr = "BIO"
 			}
 
 			console.KPrintf("  T%02d P%02d [%s] ticks=%d (%d%%)\n",
@@ -3435,7 +3424,7 @@ func PrintTickDistribution() {
 
 // PrintThreadStateSummary prints a compact one-line summary of thread states.
 func PrintThreadStateSummary() {
-	var run, rdy, ftx, irq, slp, bio, total int
+	var run, rdy, ftx, irq, slp, total int
 	for i := 0; i < MaxThreads; i++ {
 		if threadListInUse[i] {
 			total++
@@ -3450,12 +3439,10 @@ func PrintThreadStateSummary() {
 				irq++
 			case ThreadSleeping:
 				slp++
-			case ThreadBlockedIO:
-				bio++
 			}
 		}
 	}
 	avail := threadIdAllocator.Available()
-	console.KPrintf("[Threads] total=%d run=%d rdy=%d ftx=%d irq=%d slp=%d bio=%d free=%d\n",
-		total, run, rdy, ftx, irq, slp, bio, avail)
+	console.KPrintf("[Threads] total=%d run=%d rdy=%d ftx=%d irq=%d slp=%d free=%d\n",
+		total, run, rdy, ftx, irq, slp, avail)
 }

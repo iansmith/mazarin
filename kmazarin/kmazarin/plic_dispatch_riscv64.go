@@ -50,19 +50,12 @@ func plicDispatchIRQInternal() {
 	} else if irq == topHalfMouse.irqNum && topHalfMouse.usedVA != 0 {
 		virtioInputPLICTopHalf(&topHalfMouse)
 	} else if irq == blockIRQNum && blockIRQNum != 0 {
-		// VirtIO block PCI INTx: read ISR to deassert, set IOComplete, wake blocked thread.
+		// VirtIO block PCI INTx: read ISR to deassert, set IOComplete for WFI loop.
 		if blockISRBase != 0 {
 			_ = asm.MmioRead8(blockISRBase)
 		}
 		if blockIOComplete != nil {
 			atomic.StoreUint32(blockIOComplete, 1)
-		}
-		if blockIOBlockedTID != nil {
-			tid := atomic.LoadInt32(blockIOBlockedTID)
-			if tid >= 0 {
-				atomic.StoreInt32(blockIOBlockedTID, -1)
-				WakeBlockIOThread(tid)
-			}
 		}
 	} else {
 		plicInstance.CallHandler(irq)

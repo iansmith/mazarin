@@ -866,11 +866,11 @@ func simpleMain() {
 	// Wire up block device IRQ: register with top-half dispatcher and
 	// enable the GIC SPI so INTx interrupts reach the CPU.
 	if irq := block.GetIRQNum(); irq != 0 {
-		SetBlockIRQ(irq, block.GetISRBase(), block.GetIOCompletePtr(), block.GetBlockedTIDPtr())
-		SetBlockIOPollFunc(block.HasUsedRingData)
+		SetBlockIRQ(irq, block.GetISRBase(), block.GetIOCompletePtr())
 		if cachedIC != nil {
 			cachedIC.SetIRQPriority(irq, 0xA0)
-			cachedIC.SetIRQTarget(irq, 0x01) // Target CPU 0
+			cachedIC.SetIRQTarget(irq, 0x01)       // Target CPU 0
+			cachedIC.SetIRQEdgeTriggered(irq)       // GICv2m uses qemu_irq_pulse (edge)
 			cachedIC.EnableIRQ(irq)
 		}
 	}

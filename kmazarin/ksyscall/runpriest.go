@@ -50,7 +50,10 @@ func SyscallRunPriest(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	if startVA&0xFFF != 0 {
 		return -22 // EINVAL
 	}
-	if numPages < 1 || numPages > MaxTransferPages {
+	// RunPriest uses copyPagesFromUser (byte-by-byte), not the fixed-size PA
+	// array in TransferPages, so it can handle much larger transfers.
+	const maxRunPriestPages = 4096 // 16MB
+	if numPages < 1 || numPages > maxRunPriestPages {
 		return -22 // EINVAL
 	}
 	if totalBytes < 64 || totalBytes > numPages*4096 {

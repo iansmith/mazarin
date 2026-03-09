@@ -66,7 +66,7 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	var pas [MaxTransferPages]uintptr
 	for i := 0; i < numPages; i++ {
 		va := sourceVA + uintptr(i)*kmem.PageSize
-		pa := kmem.WalkUserPageTableWithL0(va, sourceL0PA)
+		pa := kmem.DemandMapUserPage(va, sourceL0PA)
 		if pa == 0 {
 			serial.RawUARTPuts("[IPC] TransferPages: page not mapped at VA 0x")
 			serial.RawUARTHex64(uint64(va))

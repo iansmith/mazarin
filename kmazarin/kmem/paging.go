@@ -823,6 +823,85 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 	return true
 }
 
+// DemandMapUserPage ensures a userspace page is mapped, demand-faulting if needed.
+// Given a userspace VA and the process's L0 page table PA, it either:
+//   - Returns the existing PA if the page is already mapped, or
+//   - Allocates a physical frame, maps it, zeros it, and returns the new PA.
+//
+// Returns 0 if the page cannot be mapped (invalid address, out of frames, etc.).
+// This is the page-level primitive for kernel→userspace data transfer: callers
+// should ensure each destination page is mapped before writing to it.
+//
+//go:noinline
+func DemandMapUserPage(va uintptr, l0PA uintptr) uintptr {
+	pageAddr := va &^ (PageSize - 1)
+
+	// Check if already mapped
+	pa := WalkUserPageTableWithL0(va, l0PA)
+	if pa != 0 {
+		return pa
+	}
+
+	// Set priest/thread context for AllocUserFrame tracking
+	pfContextPriestID = currentPriestID()
+	pfContextThreadID = getCurrentThreadTID()
+
+	// Validate address is in a known allocation region
+	allocEnd := currentPriestBumpEnd()
+	const minUserAddr = 0x10000
+	inMapFixedRegion := uint64(va) >= minUserAddr && uint64(va) < userMmapStart
+	inBumpRegion := uint64(va) >= userMmapStart && uint64(va) < allocEnd
+	inSpanRegion := currentPriestSpanContains(uint64(va))
+
+	if !inMapFixedRegion && !inBumpRegion && !inSpanRegion {
+		serial.RawUARTPuts("[DemandMap] VA 0x")
+		serial.RawUARTHex64(uint64(va))
+		serial.RawUARTPuts(" not in valid region\r\n")
+		return 0
+	}
+
+	// Allocate a physical frame
+	framePA := AllocUserFrame()
+	if framePA == 0 {
+		serial.RawUARTPuts("[DemandMap] out of frames\r\n")
+		return 0
+	}
+
+	// Map page with RWX permissions (same as HandleUserPageFault)
+	elfFlags := uint32(ELF_PF_R | ELF_PF_W | ELF_PF_X)
+	if !mapUserPageWithL0(pageAddr, framePA, elfFlags, l0PA) {
+		serial.RawUARTPuts("[DemandMap] mapUserPageWithL0 failed\r\n")
+		return 0
+	}
+
+	// Zero the page via kernel scratch mapping
+	scratchVA := MapPAToKernelScratch(framePA)
+	if scratchVA == 0 {
+		return 0
+	}
+	zeroPageSlow(scratchVA)
+
+	// Synchronize: clean cache, invalidate TLB
+	CleanPageCache(scratchVA)
+	dsbSY()
+	tlbiVMALLE1IS()
+	dsbSY()
+	isbSY()
+
+	// Track the allocation
+	QueueDeferredRecord(DeferredPageRecord{
+		PA:       framePA,
+		VA:       pageAddr,
+		Type:     PageAllocUser,
+		PriestID: pfContextPriestID,
+		ThreadID: pfContextThreadID,
+		Order:    0,
+	})
+
+	// Return PA with page offset
+	return framePA | (va & (PageSize - 1))
+}
+
 // mapPage maps a virtual address to a physical address.
 // Uses TTBR0 for user-space addresses (heap) and TTBR1 for kernel addresses.
 // Allocates L2/L3 tables from PT pool as needed.

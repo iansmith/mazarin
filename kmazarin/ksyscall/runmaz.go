@@ -49,7 +49,10 @@ func SyscallRunMaz(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	if startVA == 0 || startVA&0xFFF != 0 {
 		return int64(errNullPointer)
 	}
-	if numPages < 1 || numPages > MaxTransferPages {
+	// RunMaz uses copyPagesFromUser (byte-by-byte), not the fixed-size PA
+	// array in TransferPages, so it can handle larger .maz files.
+	const maxRunMazPages = 4096 // 16MB
+	if numPages < 1 || numPages > maxRunMazPages {
 		return -22 // EINVAL
 	}
 	if totalBytes < 64 || totalBytes > numPages*4096 {
@@ -263,7 +266,7 @@ func copyPagesFromUser(startVA uintptr, totalBytes int, l0PA uintptr) []byte {
 		if chunk > totalBytes-offset {
 			chunk = totalBytes - offset
 		}
-		pa := kmem.WalkUserPageTableWithL0(va, l0PA)
+		pa := kmem.DemandMapUserPage(va, l0PA)
 		if pa == 0 {
 			return nil
 		}

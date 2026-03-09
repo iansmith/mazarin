@@ -92,6 +92,13 @@ func SyscallBlockRead(arg0, arg1, arg2, _, _, _ uint64) int64 {
 		// Copy sector data to userspace via scratch mapping
 		dstVA := bufVA + uintptr(i*blockSize)
 		if !copyToUser(dstVA, buf, l0PA) {
+			serial.RawUARTPuts("[BlockRead] EFAULT at LBA ")
+			serial.RawUARTDecimal(lba)
+			serial.RawUARTPuts(" dstVA=0x")
+			serial.RawUARTHex64(uint64(dstVA))
+			serial.RawUARTPuts(" l0PA=0x")
+			serial.RawUARTHex64(uint64(l0PA))
+			serial.RawUARTPuts("\r\n")
 			return -14 // EFAULT
 		}
 	}
@@ -100,9 +107,14 @@ func SyscallBlockRead(arg0, arg1, arg2, _, _, _ uint64) int64 {
 }
 
 // blockReadInterrupt performs a single block read using interrupt-driven I/O.
-// Submits the request, blocks the thread until the IRQ fires, then completes.
-// BlockForBlockIO switches to thread 0 (KernelIdleLoop), which WFIs until the
-// block IRQ fires and wakes us back. Returns 0 if I/O completed before blocking.
+// Submits the request, waits for the MSI-X/INTx interrupt to signal completion
+// via IOComplete, then reads the result from the used ring.
+//
+// Runs synchronously within the SVC handler using EnableIRQsAndWait
+// (DAIFClr + WFI + DAIFSet) to halt the CPU until the block device interrupt
+// fires. svcDepth=1 prevents timer preemption during the SVC handler, so
+// only device interrupts are processed. Interrupt-driven, not a busy-loop;
+// completes in microseconds.
 //
 //go:noinline
 func blockReadInterrupt(dev *block.VirtIOBlockDevice, lba uint64, buf []byte) error {
@@ -110,35 +122,24 @@ func blockReadInterrupt(dev *block.VirtIOBlockDevice, lba uint64, buf []byte) er
 		return block.ErrBufferTooSmall
 	}
 
-	// Store current TID so the IRQ top-half can wake us
-	_, tid := getCurrentThreadPIDAndTID()
-	atomic.StoreInt32(&dev.BlockedTID, int32(tid))
-
 	reqDescIdx, err := dev.DoBlockIOSubmit(block.VIRTIO_BLK_T_IN, lba, buf)
 	if err != nil {
-		atomic.StoreInt32(&dev.BlockedTID, -1)
 		return err
 	}
 
-	// Block until I/O completes. BlockForBlockIO re-checks IOComplete under
-	// the scheduler lock to prevent the missed-wakeup race. Normally switches
-	// to thread 0 (KernelIdleLoop) which WFIs until the block IRQ fires and
-	// WakeBlockIOThread marks us ready. Returns 0 if I/O already completed.
-	nextCtx := BlockForBlockIO(&dev.IOComplete)
-	if nextCtx != 0 {
-		// Context switch happens in the SVC return path.
-		// When we resume, I/O is complete.
-		SetSyscallSwitchTarget(nextCtx)
+	// Wait for I/O completion via interrupt. EnableIRQsAndWait enables IRQs,
+	// executes WFI (CPU halts until interrupt), then re-disables IRQs.
+	// The block device interrupt handler (NonTimerIRQTopHalf) sets IOComplete.
+	for atomic.LoadUint32(&dev.IOComplete) == 0 {
+		enableIRQsAndWait()
 	}
-
-	// Clear our TID from the device
-	atomic.StoreInt32(&dev.BlockedTID, -1)
 
 	return dev.DoBlockIOComplete(block.VIRTIO_BLK_T_IN, reqDescIdx, buf)
 }
 
-// copyToUser copies data from a kernel buffer to a userspace VA
-// using the kernel scratch mapping.
+// copyToUser copies data from a kernel buffer to a userspace VA.
+// Works page-by-page: for each destination page, ensures it is mapped
+// (demand-faulting if needed), then copies through the kernel scratch mapping.
 //
 //go:noinline
 func copyToUser(userVA uintptr, data []byte, l0PA uintptr) bool {
@@ -146,9 +147,9 @@ func copyToUser(userVA uintptr, data []byte, l0PA uintptr) bool {
 	offset := 0
 
 	for remaining > 0 {
-		// Find the physical page for this VA
+		// Resolve the physical page for this VA, demand-faulting if unmapped
 		va := userVA + uintptr(offset)
-		pa := kmem.WalkUserPageTableWithL0(va, l0PA)
+		pa := kmem.DemandMapUserPage(va, l0PA)
 		if pa == 0 {
 			return false
 		}

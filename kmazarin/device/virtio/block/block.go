@@ -87,7 +87,6 @@ type VirtIOBlockDevice struct {
 	ISRBase    uintptr // ISR register VA (read to acknowledge interrupt)
 	IRQNum     uint32  // Assigned IRQ number (0 = polling mode, no interrupts)
 	IOComplete uint32  // Atomic: set to 1 by IRQ top-half when I/O completes
-	BlockedTID int32   // TID of thread blocked on I/O (-1 = none)
 }
 
 // Global device instance
@@ -135,8 +134,6 @@ func Init() bool {
 			return false
 		}
 	}
-
-	virtioBlockDevice.BlockedTID = -1
 
 	// Allocate a DMA-safe page for I/O buffers.
 	// This avoids demand paging issues — the page has a known PA via the linear map.
@@ -492,20 +489,9 @@ func GetIOCompletePtr() *uint32 {
 	return &virtioBlockDevice.IOComplete
 }
 
-// GetBlockedTIDPtr returns a pointer to the BlockedTID field.
-func GetBlockedTIDPtr() *int32 {
-	return &virtioBlockDevice.BlockedTID
-}
-
 // GetDevice returns a pointer to the global block device instance.
 func GetDevice() *VirtIOBlockDevice {
 	return &virtioBlockDevice
 }
 
-// HasUsedRingData returns true if the block device's used ring has pending data.
-// Used by the idle loop to poll for I/O completion when hardware interrupts
-// are unreliable (e.g., QEMU HVF auto-clears GIC interrupts).
-func HasUsedRingData() bool {
-	return virtio.VirtqueueHasUsed(&virtioBlockDevice.Queue)
-}
 
