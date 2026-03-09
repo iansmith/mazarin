@@ -8,6 +8,7 @@ import (
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
+	"mazzy/kmazarin/serial"
 	"mazzy/shared/fs/fat32"
 	"unsafe"
 )
@@ -747,6 +748,25 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 	}
 
 	kmem.CleanPageCache(kernelVA)
+
+	// DEBUG: Read back what was written to verify stack contents
+	{
+		pageSize := uint64(4096)
+		topPageVA := (stackTop - 1) &^ (pageSize - 1)
+		offset := sp - topPageVA
+		basePtr := kernelVA + uintptr(offset)
+		// Read back argc and first argv pointer
+		argc := *(*uint64)(unsafe.Pointer(basePtr))
+		argv0 := *(*uint64)(unsafe.Pointer(basePtr + 8))
+		serial.RawUARTPuts("[stk] sp=0x")
+		serial.RawUARTHex64(sp)
+		serial.RawUARTPuts(" argc=")
+		serial.RawUARTDecimal(argc)
+		serial.RawUARTPuts(" argv0ptr=0x")
+		serial.RawUARTHex64(argv0)
+		serial.RawUARTPuts("\r\n")
+	}
+
 	return sp, nil
 }
 

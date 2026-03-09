@@ -1112,11 +1112,28 @@ func ProcessDeadlinesTopHalf() {
 		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.DbgSlot3DrainMiss))
 		serial.RawUARTPuts(" ksvc=")
 		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.KernelSVCCount))
+		serial.RawUARTPuts(" tsvc=")
+		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.TotalSVCCount))
 		serial.RawUARTPuts(" fw=")
 		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.FutexWaitBlocked))
 		serial.RawUARTPuts(" fW=")
 		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.FutexWakeCalls))
+		tidVal := int16(-1)
+		ct := GetCurrentThread()
+		if ct != nil {
+			tidVal = int16(ct.TID)
+		}
+		serial.RawUARTPuts(" tid=")
+		serial.RawUARTDecimal(uint64(uint16(tidVal)))
+		serial.RawUARTPuts(" pSw=")
+		serial.RawUARTDecimal(atomic.LoadUint64(&dbgPreemptSwitchCount))
+		serial.RawUARTPuts(" pNo=")
+		serial.RawUARTDecimal(atomic.LoadUint64(&dbgPreemptNoNextCount))
 		serial.RawUARTPuts("\n")
+	}
+	// Heartbeat: print '.' every 100 ticks to confirm timer is alive
+	if cnt%100 == 0 {
+		serial.RawUART('.')
 	}
 }
 
@@ -2328,24 +2345,31 @@ func findReadyThreadPreferDifferentPriestSchedLockHeld(currentPID PriestId) *Thr
 }
 
 // findReadyUserspaceThreadSchedLockHeld is like findReadyThreadPreferDifferentPriestSchedLockHeld
-// but only returns threads with PageTableL0PA != 0 (i.e., userspace threads).
+// but only returns actual userspace threads (PID > 0).
 // This is used by context-switch paths where the current thread is userspace,
 // preferring to stay in userspace to avoid cross-privilege ERET issues on ARM64.
 // Callers fall back to findReadyThreadSchedLockHeld when this returns nil,
 // which naturally gives kernel thread 0 CPU time when no userspace threads are ready.
 //
+// NOTE: Filters by PID > 0 (not PageTableL0PA != 0). On AMD64, kernel threads
+// have non-zero PageTableL0PA because there's no TTBR0/TTBR1 split.
+//
 //go:nosplit
 func findReadyUserspaceThreadSchedLockHeld(currentPID PriestId) *Thread {
 	myPerCPU := GetPerCPU()
 
-	// Scan local queue for a userspace thread from a different priest
+	// Scan local queue for a userspace thread from a different priest.
+	// Filter by PID > 0 (not just PageTableL0PA != 0) because on AMD64,
+	// kernel threads also have non-zero PageTableL0PA (single CR3, no
+	// TTBR0/TTBR1 split). Without the PID check, kernel threads at the
+	// head of the queue are mistakenly returned, starving userspace priests.
 	q := &myPerCPU.LocalReadyQueue
 	idx := q.Head()
 	for seen := 0; seen < len(q.Data); seen++ {
 		if q.InUse[idx] {
 			tid := q.Data[idx]
 			t := threadLookupByTID(int32(tid))
-			if t != nil && t.State == ThreadReady && t.PageTableL0PA != 0 && t.PID != currentPID {
+			if t != nil && t.State == ThreadReady && t.PID > 0 && t.PID != currentPID {
 				q.PluckAt(idx)
 				return t
 			}
@@ -2359,7 +2383,7 @@ func findReadyUserspaceThreadSchedLockHeld(currentPID PriestId) *Thread {
 		if q.InUse[idx] {
 			tid := q.Data[idx]
 			t := threadLookupByTID(int32(tid))
-			if t != nil && t.State == ThreadReady && t.PageTableL0PA != 0 {
+			if t != nil && t.State == ThreadReady && t.PID > 0 {
 				q.PluckAt(idx)
 				return t
 			}
@@ -2453,12 +2477,13 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 	// (It might not be if it was already running and not re-queued)
 	pluckFromAllQueues(t.TID)
 
-	// Find next ready thread. If current thread is userspace (PageTableL0PA != 0),
+	// Find next ready thread. If current thread is userspace (PID > 0),
 	// pick the next userspace thread in FIFO order (pass PID -1 to disable
 	// priest preference — see timer preemption comment for rationale).
 	// Fall back to any thread (including kernel thread 0).
+	// NOTE: Use PID > 0 (not PageTableL0PA != 0) — see checkThreadPreemptionImpl.
 	var next *Thread
-	if t.PageTableL0PA != 0 {
+	if t.PID > 0 {
 		next = findReadyUserspaceThreadSchedLockHeld(-1)
 		if next == nil {
 			next = findReadyThreadSchedLockHeld()
@@ -2471,7 +2496,7 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 		// the scheduler lock. This can wake sleeping threads (e.g. sysmon)
 		// immediately, avoiding a round-trip through WFI.
 		processStaticDeadlinesSchedLockHeld()
-		if t.PageTableL0PA != 0 {
+		if t.PID > 0 {
 			next = findReadyUserspaceThreadSchedLockHeld(-1)
 			if next == nil {
 				next = findReadyThreadSchedLockHeld()
@@ -2615,12 +2640,13 @@ func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
 	// (It might not be if it was already running and not re-queued)
 	pluckFromAllQueues(t.TID)
 
-	// Find next ready thread. If the current thread is userspace, prefer
-	// userspace threads first, then fall back to any thread (including kernel
-	// thread 0). The SVC return path handles EL0→EL1 transitions correctly
-	// via DoContextSwitch + SPSR in the target ThreadContext.
+	// Find next ready thread. If the current thread is userspace (PID > 0),
+	// prefer userspace threads first, then fall back to any thread (including
+	// kernel thread 0). The SVC return path handles EL0→EL1 transitions
+	// correctly via DoContextSwitch + SPSR in the target ThreadContext.
+	// NOTE: Use PID > 0 (not PageTableL0PA != 0) — see checkThreadPreemptionImpl.
 	var next *Thread
-	if t.PageTableL0PA != 0 {
+	if t.PID > 0 {
 		next = findReadyUserspaceThreadSchedLockHeld(-1)
 		if next == nil {
 			next = findReadyThreadSchedLockHeld()
@@ -2633,7 +2659,7 @@ func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
 		// the scheduler lock. This can wake sleeping threads (e.g. sysmon)
 		// immediately, avoiding a round-trip through WFI.
 		processStaticDeadlinesSchedLockHeld()
-		if t.PageTableL0PA != 0 {
+		if t.PID > 0 {
 			next = findReadyUserspaceThreadSchedLockHeld(-1)
 			if next == nil {
 				next = findReadyThreadSchedLockHeld()
@@ -2896,8 +2922,11 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	// starvation: same-priest threads are skipped when a different-priest
 	// thread is always available (e.g., futex-cycling Go runtime Ms).
 	// When preempted thread is kernel: any ready thread is fine.
+	// NOTE: Use PID > 0 (not PageTableL0PA != 0) to identify userspace threads.
+	// On AMD64, kernel threads also have non-zero PageTableL0PA because there's
+	// no TTBR0/TTBR1 split — a single CR3 serves both kernel and user.
 	var next *Thread
-	if oldThread.PageTableL0PA != 0 {
+	if oldThread.PID > 0 {
 		// Userspace thread: FIFO across all priests
 		next = findReadyUserspaceThreadSchedLockHeld(-1)
 		if next == nil {
@@ -2928,7 +2957,17 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		return 0
 	}
 
-	atomic.AddUint64(&dbgPreemptSwitchCount, 1)
+	n := atomic.AddUint64(&dbgPreemptSwitchCount, 1)
+	// Log first few preemption switches for debugging
+	if n <= 30 {
+		serial.RawUARTPuts("[P:")
+		serial.RawUARTDecimal(uint64(uint16(oldThread.TID)))
+		serial.RawUART('>')
+		serial.RawUARTDecimal(uint64(uint16(next.TID)))
+		serial.RawUART(':')
+		serial.RawUARTHexCompact(next.Context.GetPC())
+		serial.RawUART(']')
+	}
 	// Priest-level tick accounting
 	// Stop old priest's clock
 	if oldThread.PriestIdx >= 0 {

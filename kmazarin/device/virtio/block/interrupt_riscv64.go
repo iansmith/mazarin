@@ -15,3 +15,9 @@ func configureBlockInterrupt(bus, slot, funcNum uint8) uint32 {
 	}
 	return plicPCIINTxBase + (uint32(slot)+uint32(pin)-1)%4
 }
+
+// blockMSIXVector returns 0xFFFF (VIRTIO_MSI_NO_VECTOR) on RISC-V.
+// RISC-V uses INTx (PCI legacy interrupts through PLIC), not MSI-X.
+func blockMSIXVector() uint16 {
+	return 0xFFFF
+}

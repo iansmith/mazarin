@@ -704,6 +704,44 @@ pf_cs1:	OUTB
 	JB	pf_cs2
 	ADDQ	$('A'-'0'-10), AX
 pf_cs2:	OUTB
+
+	// Print " BX=" + RBX from exception frame (possible argv pointer)
+	MOVB	$' ', AX; OUTB
+	MOVB	$'B', AX; OUTB
+	MOVB	$'X', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	8(SP), R15		// BX from frame
+	CALL	pf_print_hex16(SB)
+
+	// Print " SI=" + RSI from exception frame
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'I', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	32(SP), R15		// SI from frame
+	CALL	pf_print_hex16(SB)
+
+	// Print " uSP=" + RSP from exception frame
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'u', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'P', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	152(SP), R15		// RSP from frame (user SP)
+	CALL	pf_print_hex16(SB)
+
+	// Print " FS=" + FS_BASE from savedExcFSBase
+	MOVW	$0x3F8, DX
+	MOVB	$' ', AX; OUTB
+	MOVB	$'F', AX; OUTB
+	MOVB	$'S', AX; OUTB
+	MOVB	$'=', AX; OUTB
+	MOVQ	·savedExcFSBase(SB), R15
+	CALL	pf_print_hex16(SB)
+
+	MOVW	$0x3F8, DX
 	MOVB	$'\n', AX; OUTB
 
 	// Check if fault came from user mode (CS in exception frame)

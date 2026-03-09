@@ -273,7 +273,8 @@ func findVirtIOBlock() bool {
 }
 
 // virtioBlockInit initializes the VirtIO block device via the VirtIO handshake.
-// Uses INTx (PCI legacy interrupts) — no MSI-X vector assignment needed.
+// On ARM64/RISC-V, uses INTx (PCI legacy interrupts). On AMD64, uses MSI-X
+// (configured by configureBlockInterrupt before this function is called).
 // Returns true on success, false on failure.
 //
 //go:nosplit
@@ -308,10 +309,16 @@ func virtioBlockInit() bool {
 		return false
 	}
 
-	// No MSI-X configuration — we use INTx (PCI legacy interrupts).
-	// The device will use its Interrupt Pin to signal completion via the GIC.
+	// Step 6: MSI-X config vector (AMD64 only).
+	// On INTx platforms (ARM64/RISC-V), blockMSIXVector() returns 0xFFFF
+	// (VIRTIO_MSI_NO_VECTOR) and we skip these writes — touching MSIX_CONFIG
+	// tells QEMU "I support MSI-X", which would suppress INTx delivery.
+	msixVec := blockMSIXVector()
+	if msixVec != 0xFFFF {
+		*(*uint16)(unsafe.Pointer(dev.CommonConfigBase + VIRTIO_PCI_COMMON_CFG_MSIX_CONFIG)) = msixVec
+	}
 
-	// Step 6: Allocate DMA page for virtqueue structures
+	// Step 7: Allocate DMA page for virtqueue structures
 	queuePagePA := kmem.AllocKernelFrame()
 	if queuePagePA == 0 {
 		console.KPrintln("[VirtIO Block] ERROR: Failed to allocate queue DMA page")
@@ -352,6 +359,12 @@ func virtioBlockInit() bool {
 
 	// Read queue_notify_off for this queue
 	dev.QueueNotifyOff = *(*uint16)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_NOTIFY_OFF))
+
+	// Assign MSI-X vector to queue 0 (AMD64 only).
+	// Must be done after queue select and before queue enable.
+	if msixVec != 0xFFFF {
+		*(*uint16)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_MSIX_VECTOR)) = msixVec
+	}
 
 	// Enable queue
 	*(*uint16)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_ENABLE)) = 1

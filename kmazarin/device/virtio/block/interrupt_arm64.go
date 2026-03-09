@@ -28,3 +28,9 @@ func configureBlockInterrupt(bus, slot, funcNum uint8) uint32 {
 
 	return gicIRQ
 }
+
+// blockMSIXVector returns 0xFFFF (VIRTIO_MSI_NO_VECTOR) on ARM64.
+// ARM64 uses INTx (PCI legacy interrupts through GIC SPIs), not MSI-X.
+func blockMSIXVector() uint16 {
+	return 0xFFFF
+}

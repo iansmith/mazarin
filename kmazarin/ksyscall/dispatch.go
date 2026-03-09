@@ -71,6 +71,16 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 	tid := GetCurrentThreadTID()
 	if tid < 10 {
 		atomic.AddUint64(&KernelSVCCount, 1)
+	} else {
+		// Log first N priest syscalls for debugging AMD64 priest init
+		n := atomic.AddUint64(&priestSyscallCount, 1)
+		if n <= 60 {
+			serial.RawUARTPuts("[ps:")
+			serial.RawUARTHexCompact(syscallNum)
+			serial.RawUART(':')
+			serial.RawUARTDecimal(uint64(uint16(tid)))
+			serial.RawUART(']')
+		}
 	}
 
 	// Record entry time for kernel time accounting
