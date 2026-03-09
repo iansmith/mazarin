@@ -39,10 +39,13 @@ func disableMSIX(bus, slot, funcNum uint8) {
 	}
 }
 
-// ConfigureMSIXForDevice is a no-op on ARM64. ARM64 uses PCI INTx
-// routing, not MSI-X. Returns 0 (no MSI-X IRQ).
+// ConfigureMSIXForDevice configures MSI-X for an external VirtIO device
+// (block, GPU) on ARM64 via GICv2m. Programs the MSI-X table to target the
+// GICv2m SETSPI doorbell and allocates a unique SPI for this device.
+// Returns the GIC IRQ number (SPI + 32) for NonTimerIRQTopHalf, or 0 on failure.
 func ConfigureMSIXForDevice(bus, slot, funcNum uint8) uint32 {
-	return 0
+	initGICv2mSPIBase()
+	return configureMSIX(bus, slot, funcNum)
 }
 
 // platformMSIXVector returns 0xFFFF (VIRTIO_MSI_NO_VECTOR) on ARM64.

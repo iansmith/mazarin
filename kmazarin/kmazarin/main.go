@@ -867,8 +867,10 @@ func simpleMain() {
 	// enable the GIC SPI so INTx interrupts reach the CPU.
 	if irq := block.GetIRQNum(); irq != 0 {
 		SetBlockIRQ(irq, block.GetISRBase(), block.GetIOCompletePtr(), block.GetBlockedTIDPtr())
+		SetBlockIOPollFunc(block.HasUsedRingData)
 		if cachedIC != nil {
 			cachedIC.SetIRQPriority(irq, 0xA0)
+			cachedIC.SetIRQTarget(irq, 0x01) // Target CPU 0
 			cachedIC.EnableIRQ(irq)
 		}
 	}
@@ -902,6 +904,10 @@ func simpleMain() {
 	// Parse boot config from /kmazarin.toml and launch priests
 	bootCfg := readBootConfig()
 	if bootCfg != nil {
+		tz := constants.NullTermString(bootCfg.Timezone[:])
+		if tz != "" {
+			ksyscall.SetBootTimezone(tz)
+		}
 		launchPriestsFromConfig(bootCfg)
 	} else {
 		// Fallback: hardcoded launch sequence

@@ -185,7 +185,7 @@ func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte
 			if virtio.VirtqueueHasUsed(vq) {
 				break
 			}
-			asm.Wfe()
+			bootYieldForIO()
 		}
 		if atomic.LoadUint32(&d.IOComplete) == 0 && !virtio.VirtqueueHasUsed(vq) {
 			console.KPrintf("[VirtIO Block] ERROR: I/O timeout (avail=%d used=%d LBA=%d)\n",

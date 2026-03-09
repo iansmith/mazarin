@@ -122,6 +122,12 @@ var blockISRBase uintptr
 var blockIOComplete *uint32
 var blockIOBlockedTID *int32
 
+// blockIOPollFunc is called from the idle loop to poll for block I/O completion.
+// Returns true if I/O completed (used ring has data). Set by the block device
+// driver during init. This polling compensates for unreliable MSI-X interrupt
+// delivery under QEMU HVF (Apple Hypervisor Framework auto-clears GIC interrupts).
+var blockIOPollFunc func() bool
+
 // SetBlockIRQ registers the block device's IRQ number, ISR base address,
 // IOComplete flag pointer, and BlockedTID pointer with the top-half dispatcher.
 func SetBlockIRQ(irqNum uint32, isrBase uintptr, ioComplete *uint32, blockedTID *int32) {
@@ -129,6 +135,36 @@ func SetBlockIRQ(irqNum uint32, isrBase uintptr, ioComplete *uint32, blockedTID 
 	blockISRBase = isrBase
 	blockIOComplete = ioComplete
 	blockIOBlockedTID = blockedTID
+}
+
+// SetBlockIOPollFunc registers a function to poll for block I/O completion.
+// Called from the block device driver during init.
+func SetBlockIOPollFunc(f func() bool) {
+	blockIOPollFunc = f
+}
+
+// PollBlockIOCompletion checks if a pending block I/O has completed by polling
+// the used ring. Called from KernelIdleLoop on each iteration. If completion is
+// detected, sets IOComplete and wakes the blocked thread.
+// This is the "software bottom half" for block I/O under HVF where hardware
+// interrupts are unreliable.
+func PollBlockIOCompletion() {
+	if blockIOBlockedTID == nil || blockIOPollFunc == nil {
+		return
+	}
+	tid := atomic.LoadInt32(blockIOBlockedTID)
+	if tid < 0 {
+		return // No thread waiting for I/O
+	}
+	if !blockIOPollFunc() {
+		return // Used ring has no data
+	}
+	// I/O completed — set flag and wake thread
+	if blockIOComplete != nil {
+		atomic.StoreUint32(blockIOComplete, 1)
+	}
+	atomic.StoreInt32(blockIOBlockedTID, -1)
+	WakeBlockIOThread(tid)
 }
 
 // SetTopHalfDev is called during input init to register device pointers

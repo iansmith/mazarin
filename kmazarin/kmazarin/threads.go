@@ -1269,6 +1269,11 @@ func KernelIdleLoop() {
 			softIRQConsole.CheckPendingWake()
 		}
 
+		// Poll for block I/O completion. Under QEMU HVF, MSI-X interrupts
+		// are unreliably delivered (GIC auto-clear), so we poll the used ring
+		// from the idle loop. The WFI at the bottom of this loop causes a VM
+		// exit that lets QEMU's event loop complete pending I/O.
+		PollBlockIOCompletion()
 
 		// Periodic A/D bit scan. Clears hardware Accessed bits on all mapped
 		// userspace pages and propagates Dirty state into PageDescriptors.

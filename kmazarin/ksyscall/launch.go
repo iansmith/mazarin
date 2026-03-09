@@ -13,6 +13,15 @@ import (
 	"unsafe"
 )
 
+// bootTimezone is the IANA timezone string from the boot config (e.g. "America/New_York").
+// Set by the kernel during boot, passed to priests as the TZ env var.
+var bootTimezone string
+
+// SetBootTimezone stores the timezone string from the boot config.
+func SetBootTimezone(tz string) {
+	bootTimezone = tz
+}
+
 // ELF constants
 const (
 	ELF_MAGIC      = 0x464C457F // "\x7FELF"
@@ -734,6 +743,9 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 	penv.SetEnv("GOGC", "5")
 	penv.SetEnv("GOMEMLIMIT", "64MiB")
 	penv.SetEnv("GOMAXPROCS", "1")
+	if bootTimezone != "" {
+		penv.SetEnv("TZ", bootTimezone)
+	}
 	penv.SetAuxv(6, 4096) // AT_PAGESZ
 
 	argv := []string{filename, priestStr}

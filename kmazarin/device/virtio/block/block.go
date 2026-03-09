@@ -95,16 +95,15 @@ var virtioBlockDevice VirtIOBlockDevice
 
 // Init initializes the VirtIO block device.
 // Tries PCI first (works on all architectures), falls back to MMIO (RISC-V).
-// For PCI transport on ARM64, uses INTx (PCI legacy interrupts through GIC SPIs)
-// for interrupt-driven I/O. The caller must enable the GIC SPI after Init returns.
+// PCI transport uses MSI-X on AMD64 and ARM64 (via GICv2m), INTx on RISC-V (via PLIC).
+// The caller must enable the interrupt after Init returns.
 // Returns true on success, false if no device found or initialization failed.
 func Init() bool {
 	// Try PCI first (all architectures)
 	if findVirtIOBlock() {
 		dev := &virtioBlockDevice
 
-		// For PCI transport, determine the INTx interrupt number.
-		// INTx uses pre-wired GIC SPIs — no MSI-X configuration needed.
+		// For PCI transport, configure interrupts (MSI-X on AMD64/ARM64, INTx on RISC-V).
 		if dev.MMIOBase == 0 {
 			irq := configureBlockInterrupt(dev.Bus, dev.Slot, dev.Func)
 			if irq != 0 {
@@ -112,7 +111,7 @@ func Init() bool {
 			}
 		}
 
-		// VirtIO handshake (INTx — no MSI-X vector assignment needed)
+		// VirtIO handshake (MSI-X vector assigned if platform supports it)
 		if !virtioBlockInit() {
 			console.KPrintln("[VirtIO Block] PCI device initialization failed")
 			return false
@@ -273,8 +272,8 @@ func findVirtIOBlock() bool {
 }
 
 // virtioBlockInit initializes the VirtIO block device via the VirtIO handshake.
-// On ARM64/RISC-V, uses INTx (PCI legacy interrupts). On AMD64, uses MSI-X
-// (configured by configureBlockInterrupt before this function is called).
+// On AMD64 and ARM64, uses MSI-X (configured by configureBlockInterrupt before
+// this function is called). On RISC-V, uses INTx (PCI legacy interrupts via PLIC).
 // Returns true on success, false on failure.
 //
 //go:nosplit
@@ -501,5 +500,12 @@ func GetBlockedTIDPtr() *int32 {
 // GetDevice returns a pointer to the global block device instance.
 func GetDevice() *VirtIOBlockDevice {
 	return &virtioBlockDevice
+}
+
+// HasUsedRingData returns true if the block device's used ring has pending data.
+// Used by the idle loop to poll for I/O completion when hardware interrupts
+// are unreliable (e.g., QEMU HVF auto-clears GIC interrupts).
+func HasUsedRingData() bool {
+	return virtio.VirtqueueHasUsed(&virtioBlockDevice.Queue)
 }
 

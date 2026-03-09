@@ -2,8 +2,12 @@ package main
 
 import (
 	_ "embed"
+	"fmt"
 	"image"
 	"mazzy/mazarin/sys"
+	"os"
+	"time"
+	_ "time/tzdata"
 	"unsafe"
 
 	"github.com/fogleman/gg"
@@ -24,6 +28,7 @@ type clockRenderer struct {
 	face   font.Face
 	charW  int
 	ascent int
+	loc    *time.Location
 	// Region in framebuffer coordinates
 	x, y, w, h int
 }
@@ -47,11 +52,22 @@ func newClockRenderer(fb *sys.FramebufferInfo) *clockRenderer {
 	metrics := face.Metrics()
 	ascent := metrics.Ascent.Ceil()
 
+	loc := time.UTC
+	if tz := os.Getenv("TZ"); tz != "" {
+		if l, err := time.LoadLocation(tz); err == nil {
+			loc = l
+			fmt.Printf("[dapope] timezone: %s\n", tz)
+		} else {
+			fmt.Printf("[dapope] timezone %q failed: %v, using UTC\n", tz, err)
+		}
+	}
+
 	return &clockRenderer{
 		fb:     fb,
 		face:   face,
 		charW:  charW,
 		ascent: ascent,
+		loc:    loc,
 	}
 }
 
@@ -61,7 +77,8 @@ func (c *clockRenderer) Update(ts sys.TimeSpec) {
 		return
 	}
 
-	s := formatDateTime(ts.Seconds, ts.Nanoseconds)
+	t := time.Unix(int64(ts.Seconds), int64(ts.Nanoseconds)).In(c.loc)
+	s := t.Format("Mon Jan 2 15:04:05 MST")
 
 	metrics := c.face.Metrics()
 	textH := (metrics.Ascent + metrics.Descent).Ceil()
@@ -135,99 +152,3 @@ func (c *clockRenderer) blitToFramebuffer(img *image.RGBA, dx, dy int) {
 	}
 }
 
-// formatDateTime converts Unix seconds to "Sun Feb 1 19:20:00"
-func formatDateTime(sec, _ uint64) string {
-	days := int64(sec) / 86400
-	timeOfDay := int64(sec) % 86400
-	if timeOfDay < 0 {
-		timeOfDay += 86400
-		days--
-	}
-
-	hours := timeOfDay / 3600
-	minutes := (timeOfDay % 3600) / 60
-	seconds := timeOfDay % 60
-
-	// Day of week: Jan 1, 1970 was Thursday (4)
-	dow := (days + 4) % 7
-	if dow < 0 {
-		dow += 7
-	}
-	dayNames := [7]string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
-	monthNames := [12]string{"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-		"Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
-
-	_, month, day := daysToDate(days)
-
-	// "Sun Feb 1 19:20:00 UTC"
-	var buf [24]byte
-	i := 0
-	copy(buf[i:], dayNames[dow])
-	i += 3
-	buf[i] = ' '
-	i++
-	copy(buf[i:], monthNames[month-1])
-	i += 3
-	buf[i] = ' '
-	i++
-	if day >= 10 {
-		buf[i] = byte('0' + day/10)
-		i++
-	}
-	buf[i] = byte('0' + day%10)
-	i++
-	buf[i] = ' '
-	i++
-	i += writeInt2(buf[:], i, int(hours))
-	buf[i] = ':'
-	i++
-	i += writeInt2(buf[:], i, int(minutes))
-	buf[i] = ':'
-	i++
-	i += writeInt2(buf[:], i, int(seconds))
-	buf[i] = ' '
-	i++
-	copy(buf[i:], "UTC")
-	i += 3
-	return string(buf[:i])
-}
-
-func writeInt2(buf []byte, off int, v int) int {
-	buf[off] = byte('0' + v/10)
-	buf[off+1] = byte('0' + v%10)
-	return 2
-}
-
-func writeInt4(buf []byte, off int, v int) int {
-	buf[off] = byte('0' + v/1000)
-	buf[off+1] = byte('0' + (v/100)%10)
-	buf[off+2] = byte('0' + (v/10)%10)
-	buf[off+3] = byte('0' + v%10)
-	return 4
-}
-
-// daysToDate converts days since Unix epoch to (year, month, day).
-func daysToDate(days int64) (year, month, day int) {
-	// Howard Hinnant's civil_from_days
-	z := days + 719468
-	era := z / 146097
-	if z < 0 {
-		era = (z - 146096) / 146097
-	}
-	doe := z - era*146097
-	yoe := (doe - doe/1460 + doe/36524 - doe/146096) / 365
-	y := yoe + era*400
-	doy := doe - (365*yoe + yoe/4 - yoe/100)
-	mp := (5*doy + 2) / 153
-	d := doy - (153*mp+2)/5 + 1
-	var m int64
-	if mp < 10 {
-		m = mp + 3
-	} else {
-		m = mp - 9
-	}
-	if m <= 2 {
-		y++
-	}
-	return int(y), int(m), int(d)
-}

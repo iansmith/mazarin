@@ -2,10 +2,13 @@ package block
 
 import "mazzy/kmazarin/asm"
 
-// yieldForIO halts the vCPU until an interrupt fires (HLT on x86_64).
-// Used by the interrupt-driven I/O path to wait for block completion.
+// bootYieldForIO halts the vCPU until the next interrupt or event.
+// Used only by doBlockIO's polling loop during early boot (TOML config read,
+// ELF loading) before the scheduler and disk priest are running. Once the disk
+// priest is active, block I/O goes through blockReadInterrupt which does a
+// proper scheduler transition to thread 0's idle loop.
 //
 //go:nosplit
-func yieldForIO() {
+func bootYieldForIO() {
 	asm.Hlt()
 }

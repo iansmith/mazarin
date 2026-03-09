@@ -1,36 +1,18 @@
 package block
 
-import (
-	"mazzy/kmazarin/pci"
-)
+import "mazzy/kmazarin/device/virtio/input"
 
-// configureBlockInterrupt determines the PCI INTx interrupt number for the
-// block device on ARM64. Unlike MSI-X, INTx uses the GIC's pre-wired SPI
-// routing and doesn't require any BAR reprogramming or doorbell writes.
+// configureBlockInterrupt configures MSI-X for the VirtIO block device on ARM64
+// via GICv2m. Programs the MSI-X table to write to the GICv2m SETSPI doorbell,
+// allocating a unique SPI for the block device.
 //
-// Returns the GIC IRQ number or 0 if no interrupt pin is configured.
-//
-//go:nosplit
+// Returns the GIC IRQ number (SPI + 32) for NonTimerIRQTopHalf, or 0 on failure.
 func configureBlockInterrupt(bus, slot, funcNum uint8) uint32 {
-	// Read PCI Interrupt Pin (config offset 0x3D):
-	//   0 = no interrupt, 1 = INTA, 2 = INTB, 3 = INTC, 4 = INTD
-	pin := pci.ConfigRead8(bus, slot, funcNum, 0x3D)
-	if pin == 0 || pin > 4 {
-		return 0
-	}
-
-	// QEMU ARM64 virt machine PCI INTx → GIC SPI mapping:
-	//   SPI = 3 + ((device_number + pin - 1) % 4)
-	//   GIC IRQ = SPI + 32
-	// This matches the interrupt-map in QEMU's virt machine DTB.
-	spi := 3 + ((uint32(slot) + uint32(pin) - 1) % 4)
-	gicIRQ := spi + 32
-
-	return gicIRQ
+	return input.ConfigureMSIXForDevice(bus, slot, funcNum)
 }
 
-// blockMSIXVector returns 0xFFFF (VIRTIO_MSI_NO_VECTOR) on ARM64.
-// ARM64 uses INTx (PCI legacy interrupts through GIC SPIs), not MSI-X.
+// blockMSIXVector returns the MSI-X vector to assign to the VirtIO config and
+// queue registers during the handshake. On ARM64, we use MSI-X vector 0.
 func blockMSIXVector() uint16 {
-	return 0xFFFF
+	return 0
 }

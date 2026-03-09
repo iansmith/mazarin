@@ -2,17 +2,13 @@ package block
 
 import "mazzy/kmazarin/asm"
 
-// yieldForIO reads the VirtIO MMIO InterruptStatus register (offset 0x60).
-// Each MMIO read causes a VM exit under QEMU, giving the event loop
-// time to process the pending block I/O request.
-// Falls back to WFI for non-MMIO devices.
+// bootYieldForIO halts the vCPU until the next interrupt or event.
+// Used only by doBlockIO's polling loop during early boot (TOML config read,
+// ELF loading) before the scheduler and disk priest are running. Once the disk
+// priest is active, block I/O goes through blockReadInterrupt which does a
+// proper scheduler transition to thread 0's idle loop.
 //
 //go:nosplit
-func yieldForIO() {
-	base := virtioBlockDevice.MMIOBase
-	if base != 0 {
-		_ = asm.MmioRead32(base + 0x60)
-	} else {
-		asm.Wfi()
-	}
+func bootYieldForIO() {
+	asm.Wfi()
 }

@@ -607,7 +607,8 @@ func initGICv2mSPIBase() {
 	gicv2mBase = 0xFFFFFFFF00000000 + GICV2M_PHYS
 	typer := asm.MmioRead32(gicv2mBase + GICV2M_TYPER)
 	spiBase := (typer >> 16) & 0x3FF
-	_ = typer & 0x3FF // spiCount
+	spiCount := typer & 0x3FF
+	console.KPrintf("[GICv2m] TYPER=0x%x spiBase=%d spiCount=%d\n", typer, spiBase, spiCount)
 	nextMSIXSPI = spiBase
 }
 
@@ -724,10 +725,10 @@ func configureMSIX(bus, slot, funcNum uint8) uint32 {
 	funcMasked := (finalCtrl & (1 << 14)) != 0
 	readAddr := asm.MmioRead32(tableBase + MSIX_ENTRY_ADDR_LO)
 	readDataFinal := asm.MmioRead32(tableBase + MSIX_ENTRY_DATA)
-	_ = msixEnabled
-	_ = funcMasked
-	_ = readAddr
-	_ = readDataFinal
+	console.KPrintf("[MSI-X] dev=%d:%d.%d spi=%d gicIRQ=%d doorbell=0x%x barPA=0x%x tableOff=0x%x\n",
+		bus, slot, funcNum, spi, gicIRQ, doorbellAddr, barBasePA, tableOffset)
+	console.KPrintf("[MSI-X] enabled=%v funcMask=%v entry[0]: addr=0x%x data=%d\n",
+		msixEnabled, funcMasked, readAddr, readDataFinal)
 	return gicIRQ
 }
 
