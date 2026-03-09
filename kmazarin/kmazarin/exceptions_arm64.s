@@ -708,6 +708,78 @@ print_x0_char_da:
 	SUB	$1, R13
 	CBNZ	R13, print_x0_da
 
+	// Always print R28 (g register), LR, and SP0 — critical for crash diagnosis
+	// Print " R28="
+	MOVD	$' ', R11; MOVB	R11, (R10)
+	MOVD	$'R', R11; MOVB	R11, (R10)
+	MOVD	$'2', R11; MOVB	R11, (R10)
+	MOVD	$'8', R11; MOVB	R11, (R10)
+	MOVD	$'=', R11; MOVB	R11, (R10)
+	MOVD	EXC_FRAME_X28(RSP), R12
+	MOVD	$16, R13
+print_r28_early:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_r28_digit_early
+	ADD	$('A'-10), R11
+	B	print_r28_char_early
+print_r28_digit_early:
+	ADD	$'0', R11
+print_r28_char_early:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_r28_early
+
+	// Print " LR="
+	MOVD	$' ', R11; MOVB	R11, (R10)
+	MOVD	$'L', R11; MOVB	R11, (R10)
+	MOVD	$'R', R11; MOVB	R11, (R10)
+	MOVD	$'=', R11; MOVB	R11, (R10)
+	MOVD	(EXC_FRAME_X29_X30+8)(RSP), R12
+	MOVD	$16, R13
+print_lr_early:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_lr_digit_early
+	ADD	$('A'-10), R11
+	B	print_lr_char_early
+print_lr_digit_early:
+	ADD	$'0', R11
+print_lr_char_early:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_lr_early
+
+	// Print " SP0="
+	MOVD	$' ', R11; MOVB	R11, (R10)
+	MOVD	$'S', R11; MOVB	R11, (R10)
+	MOVD	$'P', R11; MOVB	R11, (R10)
+	MOVD	$'0', R11; MOVB	R11, (R10)
+	MOVD	$'=', R11; MOVB	R11, (R10)
+	MOVD	EXC_FRAME_SP_EL0(RSP), R12
+	MOVD	$16, R13
+print_sp0_early:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_sp0_digit_early
+	ADD	$('A'-10), R11
+	B	print_sp0_char_early
+print_sp0_digit_early:
+	ADD	$'0', R11
+print_sp0_char_early:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, print_sp0_early
+
+	MOVD	$'\r', R11; MOVB	R11, (R10)
+	MOVD	$'\n', R11; MOVB	R11, (R10)
+
 	// If X0 looks valid (high kernel addr), print [X0+16] (unwinder.frame.pc) and [X0+40] (sp)
 	// Check if X0 > 0xFFFFFFFF40000000
 	MOVD	$0xFFFFFFFF40000000, R15
@@ -1020,21 +1092,10 @@ irq_exception_handler:
 	MOVD	·kmazarinG0Addr(SB), R10
 	CBZ	R10, skip_deadline_processing  // g0 not ready yet
 
-	// Set m.curg = g0 so Go runtime sees getg() == m.curg (avoids "defer on system stack").
-	MOVD	48(R10), R11           // R11 = g0.m = m0
-	CBZ	R11, skip_curg_set
-	MOVD	0xB8(R11), R19         // R19 = saved m0.curg
-	MOVD	R11, R20               // R20 = saved m0 pointer
-	MOVD	R10, 0xB8(R11)         // m0.curg = g0
-skip_curg_set:
-
 	WORD	$0xaa0a03fc  // mov x28, x10 — set g to kmazarin g0
 
 	CALL	·ProcessDeadlinesTopHalf(SB)
 
-	// Restore m0.curg
-	CBZ	R20, skip_deadline_processing
-	MOVD	R19, 0xB8(R20)         // m0.curg = saved value
 skip_deadline_processing:
 
 	// ========================================================================
@@ -1075,24 +1136,12 @@ timer_check_preemption:
 	CBNZ	R10, g0_addr_ok
 	B	timer_no_thread_preempt  // Skip if not initialized
 g0_addr_ok:
-	// Set m.curg = g0 (same fix as ProcessDeadlinesTopHalf)
-	// R19/R20 may hold values from ProcessDeadlinesTopHalf but that section
-	// already restored them, so re-save here.
-	MOVD	48(R10), R11           // R11 = g0.m = m0
-	CBZ	R11, timer_no_thread_preempt
-	MOVD	0xB8(R11), R19         // R19 = saved m0.curg
-	MOVD	R11, R20               // R20 = saved m0 ptr
-	MOVD	R10, 0xB8(R11)         // m0.curg = g0
-
-	WORD	$0xaa0a03fc  // mov x28, x10
+	WORD	$0xaa0a03fc  // mov x28, x10 — set g to kmazarin g0
 
 	// Call CheckThreadPreemption(framePtr) to check and perform switch
 	// func CheckThreadPreemption(framePtr uint64) uint64
 	MOVD	RSP, R0                        // R0 = framePtr (exception frame)
 	GO_CALL_1_1(·CheckThreadPreemption, R0)
-
-	// Restore m0.curg
-	MOVD	R19, 0xB8(R20)         // m0.curg = saved value
 
 	MOVD	R0, R21                        // R21 = new context pointer (or 0)
 
@@ -1186,20 +1235,8 @@ irq_not_timer:
 	MOVD	·kmazarinG0Addr(SB), R10
 	CBZ	R10, irq_skip_dispatch  // g0 not ready yet
 
-	// Set m.curg = g0 (same fix as timer IRQ handler)
-	MOVD	48(R10), R11           // R11 = g0.m = m0
-	CBZ	R11, irq_skip_curg_set
-	MOVD	0xB8(R11), R19         // R19 = saved m0.curg
-	MOVD	R11, R20               // R20 = saved m0 ptr
-	MOVD	R10, 0xB8(R11)         // m0.curg = g0
-irq_skip_curg_set:
-
 	WORD	$0xaa0a03fc  // mov x28, x10 — set g to kmazarin g0
 	CALL	·NonTimerIRQTopHalf(SB)
-
-	// Restore m0.curg
-	CBZ	R20, irq_skip_dispatch
-	MOVD	R19, 0xB8(R20)         // m0.curg = saved value
 
 irq_skip_dispatch:
 
