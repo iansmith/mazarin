@@ -763,21 +763,6 @@ func transformFile(path string) (*TransformResult, error) {
 
 			// Replace body with minimal stub
 			fn.Body = createMinimalBody(fset, fn, file.Name.Name)
-
-			// Replace doc comment with //go:noinline to prevent the compiler
-			// from inlining the stub body into callers. Without this, the
-			// compiler might inline the sentinel check + panic into callers,
-			// eliminating the BL instruction that maz-reloc needs to create
-			// import entries for.
-			if fn.Doc != nil {
-				delete(cmap, fn.Doc)
-			}
-			fn.Doc = &ast.CommentGroup{
-				List: []*ast.Comment{{
-					Slash: fn.Pos() - 1,
-					Text:  "//go:noinline",
-				}},
-			}
 		}
 	}
 
@@ -1142,20 +1127,74 @@ func writeStubFile(result *TransformResult, outputPath string) error {
 		return os.WriteFile(outputPath, result.priestSrc, 0644)
 	}
 
-	// Create file
-	f, err := os.Create(outputPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	// Write with proper formatting
+	// Write AST to buffer first, then post-process to insert //go:noinline.
+	// The AST-based fn.Doc replacement doesn't work with go/printer
+	// (it ignores the new Doc if the comment isn't in file.Comments),
+	// so we do text-based insertion instead.
+	var buf strings.Builder
 	cfg := printer.Config{
 		Mode:     printer.UseSpaces | printer.TabIndent,
 		Tabwidth: 8,
 	}
+	if err := cfg.Fprint(&buf, result.FileSet, result.File); err != nil {
+		return err
+	}
 
-	return cfg.Fprint(f, result.FileSet, result.File)
+	// Build set of stubbed function names for matching
+	stubbedFuncs := make(map[string]bool)
+	for _, stub := range result.StubFuncs {
+		stubbedFuncs[stub.Name] = true
+	}
+
+	// Post-process: insert //go:noinline before stubbed functions.
+	// Match lines starting with "func " or "func (" (methods).
+	lines := strings.Split(buf.String(), "\n")
+	var out strings.Builder
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if len(stubbedFuncs) > 0 && strings.HasPrefix(trimmed, "func ") {
+			// Extract function name: "func Name(" or "func (recv) Name("
+			funcName := extractFuncName(trimmed)
+			if funcName != "" && stubbedFuncs[funcName] {
+				// Check if previous line already has //go:noinline
+				if i == 0 || strings.TrimSpace(lines[i-1]) != "//go:noinline" {
+					out.WriteString("//go:noinline\n")
+				}
+			}
+		}
+		out.WriteString(line)
+		if i < len(lines)-1 {
+			out.WriteString("\n")
+		}
+	}
+
+	return os.WriteFile(outputPath, []byte(out.String()), 0644)
+}
+
+// extractFuncName extracts the function name from a line like
+// "func Name(" or "func (r *Type) Name(". Returns "" if not parseable.
+func extractFuncName(line string) string {
+	// Remove "func " prefix
+	rest := strings.TrimPrefix(line, "func ")
+	if rest == line {
+		return ""
+	}
+
+	// Skip receiver: "(*Type) " or "(Type) "
+	if strings.HasPrefix(rest, "(") {
+		idx := strings.Index(rest, ") ")
+		if idx < 0 {
+			return ""
+		}
+		rest = rest[idx+2:]
+	}
+
+	// Extract name up to "(" or end
+	idx := strings.IndexByte(rest, '(')
+	if idx < 0 {
+		return strings.TrimSpace(rest)
+	}
+	return strings.TrimSpace(rest[:idx])
 }
 
 // writeOverlayJSON writes the combined overlay JSON file from accumulated replacements.
