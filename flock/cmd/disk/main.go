@@ -9,6 +9,7 @@ import (
 	"mazzy/shared/blockdev"
 	"mazzy/shared/hid"
 	"os"
+	"runtime"
 	"time"
 	"unsafe"
 )
@@ -101,35 +102,39 @@ func main() {
 	}
 
 	// 4. Run MazarinMain as goroutine.
-	// Pre-grow the goroutine stack BEFORE entering .maz code, because
-	// .maz modules have their own copy of runtime.morestack/newstack
-	// that cannot function correctly (they reference uninitialized runtime
-	// globals from the .maz binary). By growing the stack here using the
-	// host's working morestack, we ensure .maz code never needs to grow.
+	// Use runWithLargeStack to keep a 256KB frame alive for the ENTIRE
+	// duration of .maz execution, preventing GC from shrinking the
+	// goroutine stack. .maz modules have their own broken copy of
+	// runtime.morestack/newstack (uninitialized globals) so we must
+	// ensure the stack never needs to grow while .maz code runs.
 	fmt.Println("[disk] starting fs.maz goroutine")
 	go func() {
-		preGrowStack()
-		mazMain()
+		runWithLargeStack(mazMain)
 	}()
 
 	select {}
 }
 
-// preGrowStack forces the goroutine stack to grow to at least 64KB+
-// by allocating a large local buffer. This must be a separate function
-// (not inlined) so the stack growth check fires in the host's runtime
-// code, not in the .maz module's broken copy of morestack.
+// runWithLargeStack allocates a 256KB stack frame, calls fn, then
+// touches the buffer after fn returns to prevent GC from shrinking
+// the goroutine stack while fn is running. This is critical because
+// GC's shrinkstack halves any goroutine stack where <1/4 is used.
+// If preGrowStack were a separate call before fn, GC could shrink
+// the stack between the two calls (or during fn's execution), causing
+// .maz code to hit its broken morestack and hang.
 //
 //go:noinline
-func preGrowStack() {
-	var buf [65536]byte
+func runWithLargeStack(fn func()) {
+	var buf [262144]byte
 	buf[0] = 1
 	buf[len(buf)-1] = 1
-	// Prevent the compiler from optimizing away the stack allocation.
-	// Use a volatile-style read to ensure the buffer is actually allocated.
-	if buf[32768] != 0 {
+	if buf[131072] != 0 {
 		panic("unreachable")
 	}
+	fn()
+	// Keep buf alive across the fn() call so GC's shrinkstack sees the
+	// goroutine as using >1/4 of its 256KB stack and doesn't shrink it.
+	runtime.KeepAlive(&buf)
 }
 
 // diskBlockDev implements blockdev.BlockDevice using SysBlockRead.

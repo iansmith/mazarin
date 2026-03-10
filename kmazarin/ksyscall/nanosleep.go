@@ -3,6 +3,8 @@ package ksyscall
 import (
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/serial"
+	"sync/atomic"
 )
 
 // SyscallNanosleep implements the nanosleep(2) syscall
@@ -62,21 +64,32 @@ func SyscallNanosleep(req, rem, _, _, _, _ uint64) int64 {
 	currentTick := kirq.ReadCounterValue()
 	deadline := currentTick + ticks
 
+	// Diagnostic: log first few nanosleep calls per priest
+	pid := getCurrentThreadPID()
+	if pid > 0 {
+		n := atomic.AddUint64(&dbgNanosleepCount, 1)
+		if n <= 30 {
+			serial.RawUARTPuts("[ns:")
+			serial.RawUARTDecimal(uint64(uint16(currentTID)))
+			serial.RawUARTPuts("/p")
+			serial.RawUARTDecimal(uint64(uint16(pid)))
+			serial.RawUARTPuts("/")
+			serial.RawUARTDecimal(ticks)
+			serial.RawUART(']')
+		}
+	}
+
 	// Add to static deadline queue (always available, initialized in InitThreads)
 	AddDeadlineStatic(deadline, currentTID)
 
-	// Mark current thread as sleeping and find next thread
+	// Block current thread and context-switch to another.
+	// ThreadBlockSleep unconditionally marks the thread sleeping. If no
+	// ready thread exists, it enters idleWaitForReadyThread (WFI loop)
+	// until the timer ISR processes our deadline and wakes a thread.
 	nextThread := ThreadBlockSleep()
-	if nextThread != 0 {
-		SetSyscallSwitchTarget(nextThread)
-	}
-	// If ThreadBlockSleep returned 0 (no ready thread), return immediately.
-	// The deadline is already in the static queue and will fire later,
-	// waking this thread via processStaticDeadlinesSchedLockHeld.
-	// NOTE: We intentionally do NOT WFI-loop here because this code runs
-	// inside the SVC handler (svcDepth=1), where timer preemption is
-	// disabled. WFI-looping would block the CPU and starve threads that
-	// become ready during the wait (e.g., drain goroutines woken by IRQs).
+	SetSyscallSwitchTarget(nextThread)
 
 	return 0
 }
+
+var dbgNanosleepCount uint64

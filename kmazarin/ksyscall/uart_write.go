@@ -28,6 +28,7 @@ func SyscallUartWrite(arg0, arg1, _, _, _, _ uint64) int64 {
 	bufPtr := arg0
 	count := arg1
 
+
 	if count == 0 {
 		return 0
 	}

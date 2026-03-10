@@ -6,6 +6,12 @@ import (
 	"unsafe"
 )
 
+// Display resolution constants. Change these to resize the QEMU display window.
+const (
+	DisplayWidth  = 1280
+	DisplayHeight = 720
+)
+
 // gpuLock protects all GPU command queue operations. Without this,
 // concurrent FlushFramebuffer syscalls from different priests corrupt
 // the virtio ring and hang the GPU.
@@ -33,12 +39,10 @@ func Init() bool {
 		return false
 	}
 
-	// Setup framebuffer (1920x1080 display @ 32bpp)
-	// Resource is 2x display height to enable hardware scrolling via SET_SCANOUT offset
-	const displayWidth = 1920
-	const displayHeight = 1080
-	const resourceHeight = displayHeight * 2 // 2160 for scrolling buffer
-	if !virtioGPUSetupFramebuffer(displayWidth, displayHeight, resourceHeight) {
+	// Setup framebuffer at DisplayWidth x DisplayHeight @ 32bpp.
+	// Resource is 2x display height to enable hardware scrolling via SET_SCANOUT offset.
+	const resourceHeight = DisplayHeight * 2
+	if !virtioGPUSetupFramebuffer(DisplayWidth, DisplayHeight, resourceHeight) {
 		return false
 	}
 
@@ -46,8 +50,8 @@ func Init() bool {
 	fillScreen(0xFFE0E0E6) // RGB(224,224,230) in BGRA: B=230,G=224,R=224,A=255
 
 	// Initial transfer and flush to make display visible
-	virtioGPUTransferToHost(0, 0, 1920, 1080)
-	virtioGPUFlush(0, 0, 1920, 1080)
+	virtioGPUTransferToHost(0, 0, DisplayWidth, DisplayHeight)
+	virtioGPUFlush(0, 0, DisplayWidth, DisplayHeight)
 
 	return true
 }

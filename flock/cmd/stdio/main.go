@@ -30,7 +30,7 @@ var fontData []byte
 
 const (
 	LineSpacing = 2
-	pad         = 120
+	pad         = 40
 	textPad     = 8 // inner padding from rect edge to text
 
 	// Neumorphic card dimensions
@@ -322,9 +322,20 @@ func main() {
 	ascent := metrics.Ascent.Ceil()
 	lineH := charH + LineSpacing
 
-	// Compute content area from desired text dimensions
-	maxLines := 35
-	maxCols := 120
+	// Compute content area from framebuffer dimensions, leaving pad on all sides.
+	// The card border extends outside the content rect, so account for it.
+	availW := int(fb.Width) - 2*pad + 2*cardBorderSide - 2*textPad
+	availH := int(fb.Height) - 2*pad + cardBorderTop + cardBorderSide
+
+	maxCols := availW / charW
+	if maxCols < 40 {
+		maxCols = 40
+	}
+	maxLines := availH / lineH
+	if maxLines < 10 {
+		maxLines = 10
+	}
+
 	rectW := maxCols*charW + 2*textPad
 	rectH := maxLines * lineH
 	rectX := pad

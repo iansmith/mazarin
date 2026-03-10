@@ -27,6 +27,9 @@ const (
 	RelocCALL_X86  uint8 = 1 // x86_64 CALL instruction (E8 + 32-bit relative)
 	RelocPTR64     uint8 = 2 // 8-byte absolute pointer (data sections)
 	RelocJAL_RISCV uint8 = 3 // RISC-V JAL instruction (20-bit J-immediate × 2)
+	RelocB_ARM64   uint8 = 4 // ARM64 B (unconditional branch, no link) — body trampoline
+	RelocJMP_X86   uint8 = 5 // x86_64 JMP rel32 (E9) — body trampoline
+	RelocJ_RISCV   uint8 = 6 // RISC-V J (JAL x0) — body trampoline
 )
 
 // importEntry is the on-disk format of a .maz_imports entry (16 bytes).
@@ -89,8 +92,16 @@ func main() {
 	dataImports := scanDataSections(f, stubAddrs, addrToName)
 	imports = append(imports, dataImports...)
 
-	fmt.Printf("maz-reloc: found %d call sites + %d data pointers = %d total imports\n",
-		len(textImports), len(dataImports), len(imports))
+	// Add body-trampoline imports for runtime.morestack functions.
+	// These are assembly-implemented (not Go source), so gen-ast-stubs can't
+	// stub them and they don't match the thin stub pattern. But .maz's copies
+	// reference uninitialized runtime globals and hang when called. We patch
+	// the function body to jump directly to the host priest's version.
+	morestackImports := findMorestackSymbols(f)
+	imports = append(imports, morestackImports...)
+
+	fmt.Printf("maz-reloc: found %d call sites + %d data pointers + %d morestack trampolines = %d total imports\n",
+		len(textImports), len(dataImports), len(morestackImports), len(imports))
 
 	if len(imports) == 0 {
 		fmt.Printf("maz-reloc: no imports found, binary unchanged\n")
@@ -261,6 +272,61 @@ func isThinStub(machine elf.Machine, textData []byte, textAddr, funcAddr uint64)
 		return insn0 == 0x00000013 && insn1 == 0xffdff06f
 	}
 	return false
+}
+
+// morestackSymbols lists the assembly-implemented runtime functions whose
+// bodies must be patched to trampoline to the host priest's versions.
+// These can't be stubbed by gen-ast-stubs (they're assembly, not Go source).
+// The ELF symbols have the .abi0 suffix because morestack is implemented in
+// assembly (ABI0 calling convention).
+var morestackSymbols = []string{
+	"runtime.morestack.abi0",
+	"runtime.morestack_noctxt.abi0",
+}
+
+// findMorestackSymbols locates runtime.morestack and runtime.morestack_noctxt
+// in the .maz ELF and returns body-trampoline import entries for them.
+func findMorestackSymbols(f *elf.File) []importRef {
+	syms, err := f.Symbols()
+	if err != nil {
+		return nil
+	}
+
+	// Determine the architecture-specific body reloc type
+	var relocType uint8
+	switch f.Machine {
+	case elf.EM_AARCH64:
+		relocType = RelocB_ARM64
+	case elf.EM_X86_64:
+		relocType = RelocJMP_X86
+	case elf.EM_RISCV:
+		relocType = RelocJ_RISCV
+	default:
+		return nil
+	}
+
+	want := make(map[string]bool)
+	for _, name := range morestackSymbols {
+		want[name] = true
+	}
+
+	var imports []importRef
+	for _, sym := range syms {
+		if sym.Value == 0 {
+			continue
+		}
+		if !want[sym.Name] {
+			continue
+		}
+		fmt.Printf("maz-reloc: morestack trampoline: %s at 0x%X\n", sym.Name, sym.Value)
+		imports = append(imports, importRef{
+			segOffset: uint32(sym.Value),
+			name:      sym.Name,
+			relocType: relocType,
+		})
+	}
+
+	return imports
 }
 
 // scanText scans the .text section for call/branch instructions that target stub addresses.

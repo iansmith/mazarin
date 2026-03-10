@@ -67,18 +67,6 @@ func init() {
 	}
 }
 
-// workItem represents a unit of work for the file worker goroutine.
-// Either loadReq is set (LoadFile delegate request) or launchName/launchPath
-// are set (launch a priest from TOML config).
-type workItem struct {
-	loadReq    *sys.SyscallRequest
-	launchName string
-	launchPath string
-}
-
-// workCh serializes all disk I/O through a single goroutine.
-var workCh chan workItem
-
 // MazarinMain is the entry point called by the disk priest when this .maz
 // is loaded. It mounts FAT32 using the injected BlockDevice, reads boot
 // config, launches application priests synchronously, then registers as
@@ -120,10 +108,6 @@ func MazarinMain() {
 		}
 	}
 
-	// Start the serialized file worker goroutine for LoadFile requests
-	workCh = make(chan workItem, 64)
-	go fileWorker(fs)
-
 	// Register as LoadFile delegate handler
 	delegateCh, err := sys.HandleSyscalls(sysid.LoadFile)
 	if err != nil {
@@ -136,29 +120,20 @@ func MazarinMain() {
 	sys.SetReady(true)
 	debugPuts("[fs] SetReady(true)\n")
 
-	// Forward delegate requests to the worker (never returns)
+	// Handle LoadFile requests inline on this goroutine's pre-grown stack.
+	// DO NOT use "go fileWorker(fs)" — goroutines created inside .maz code
+	// get a default 8KB stack, and when they need to grow, .maz's broken
+	// runtime.morestack hangs the goroutine forever. By processing requests
+	// inline, we use the host's runWithLargeStack frame (256KB), which is
+	// kept alive for the duration of MazarinMain.
 	debugPuts("[fs] entering delegate receive loop\n")
 	for req := range delegateCh {
-		r := req // copy for channel send
-		workCh <- workItem{loadReq: &r}
+		handleLoadFile(fs, &req)
 	}
 }
 
 func main() {
 	MazarinMain()
-}
-
-// fileWorker is the single goroutine that performs all disk I/O.
-// It processes work items from workCh one at a time, ensuring serialized
-// access to the FAT32 filesystem.
-func fileWorker(fs *fat32.FileSystem) {
-	for item := range workCh {
-		if item.loadReq != nil {
-			handleLoadFile(fs, item.loadReq)
-		} else {
-			handleLaunchPriest(fs, item.launchName, item.launchPath)
-		}
-	}
 }
 
 // handleLoadFile processes a delegated LoadFile request:
@@ -226,31 +201,46 @@ func handleLaunchPriest(fs *fat32.FileSystem, name, path string) {
 // readFileIntoPages opens a file from FAT32, allocates pages via mmap,
 // reads the file data into them, and returns the VA, page count, and bytes read.
 func readFileIntoPages(fs *fat32.FileSystem, path string) (va uintptr, numPages int, bytesRead int, err error) {
+	debugPuts("[fs] readFile: opening ")
+	debugPuts(path)
+	debugPuts("\n")
 	file, ferr := fs.Open(path)
 	if ferr != nil {
+		debugPuts("[fs] readFile: open failed\n")
 		return 0, 0, 0, ferr
 	}
 	defer file.Close()
 
 	fileSize := int(file.Size())
+	debugPuts("[fs] readFile: size=")
+	debugPutDec(fileSize)
+	debugPuts("\n")
 	numPages = (fileSize + 4095) / 4096
 	if numPages == 0 {
 		numPages = 1
 	}
 
 	totalSize := uintptr(numPages) * 4096
+	debugPuts("[fs] readFile: mmap ")
+	debugPutDec(numPages)
+	debugPuts(" pages\n")
 	va, _, errno := syscall.RawSyscall6(
 		syscall.SYS_MMAP, 0, totalSize,
 		syscall.PROT_READ|syscall.PROT_WRITE,
 		syscall.MAP_PRIVATE|syscall.MAP_ANONYMOUS,
 		^uintptr(0), 0)
 	if errno != 0 || int64(va) < 0 {
+		debugPuts("[fs] readFile: mmap failed\n")
 		return 0, 0, 0, errno
 	}
 
+	debugPuts("[fs] readFile: reading...\n")
 	buf := unsafe.Slice((*byte)(unsafe.Pointer(va)), totalSize)
 	n, _ := file.Read(buf[:fileSize])
 
+	debugPuts("[fs] readFile: read ")
+	debugPutDec(n)
+	debugPuts(" bytes\n")
 	return va, numPages, n, nil
 }
 

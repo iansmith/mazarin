@@ -5,6 +5,28 @@ import (
 	"unsafe"
 )
 
+// patchJ_RISCV patches a function body to trampoline to targetAddr using
+// AUIPC+JALR(x0). Same encoding as patchJAL_RISCV but the funcVA IS the
+// function to patch (no call-site decoding needed). Used for morestack.
+func patchJ_RISCV(funcVA, targetAddr uint64, l0PA uintptr) {
+	offset := int64(targetAddr) - int64(funcVA)
+	if offset < -(1<<31) || offset >= (1<<31) {
+		return
+	}
+
+	off32 := uint32(int32(offset))
+	hi20 := ((off32 + 0x800) >> 12) & 0xFFFFF
+	lo12 := off32 & 0xFFF
+
+	// AUIPC t1(x6), hi20
+	auipc := (hi20 << 12) | (6 << 7) | 0x17
+	// JALR x0, lo12(t1) — tail call (preserves ra)
+	jalr := (lo12 << 20) | (6 << 15) | 0x67
+
+	writeU32ToUser(uintptr(funcVA), auipc, l0PA)
+	writeU32ToUser(uintptr(funcVA+4), jalr, l0PA)
+}
+
 // patchJAL_RISCV patches the thin stub targeted by a JAL call site to
 // trampoline to the host's function using AUIPC+JALR (±2GB range).
 //

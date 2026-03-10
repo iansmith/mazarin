@@ -499,6 +499,16 @@ func resolveMazImports(elfData []byte, hdr *elf64Header, loadOffset uint64, l0PA
 		case 3: // JAL_RISCV
 			patchJAL_RISCV(targetVA, priestAddr, l0PA)
 			count++
+		case 4: // B_ARM64 — body trampoline (unconditional branch, no link)
+			if patchB_ARM64(targetVA, priestAddr, l0PA) {
+				count++
+			}
+		case 5: // JMP_X86 — body trampoline (E9 JMP rel32)
+			patchJMP_X86(targetVA, priestAddr, l0PA)
+			count++
+		case 6: // J_RISCV — body trampoline (JAL x0)
+			patchJ_RISCV(targetVA, priestAddr, l0PA)
+			count++
 		}
 	}
 
@@ -524,6 +534,39 @@ func patchBL_ARM64(instrVA, targetAddr uint64, l0PA uintptr) bool {
 
 	writeU32ToUser(uintptr(instrVA), insn, l0PA)
 	return true
+}
+
+// patchB_ARM64 writes an ARM64 B (unconditional branch, no link) at funcVA
+// to trampoline to targetAddr. Used to patch .maz's runtime.morestack body
+// so it jumps to the host priest's working morestack.
+func patchB_ARM64(funcVA, targetAddr uint64, l0PA uintptr) bool {
+	offset := int64(targetAddr) - int64(funcVA)
+	if offset < -(1<<27) || offset >= (1<<27) {
+		console.KWriteString("[LoadMaz] B range exceeded: from=")
+		console.KPrintHex64(funcVA)
+		console.KWriteString(" to=")
+		console.KPrintHex64(targetAddr)
+		console.KWriteString("\r\n")
+		return false
+	}
+
+	imm26 := uint32((offset >> 2) & 0x03FFFFFF)
+	insn := uint32(0x14000000) | imm26 // B (not BL)
+
+	writeU32ToUser(uintptr(funcVA), insn, l0PA)
+	return true
+}
+
+// patchJMP_X86 writes an x86_64 JMP rel32 (E9) at funcVA to trampoline
+// to targetAddr. Used for morestack body patching.
+func patchJMP_X86(funcVA, targetAddr uint64, l0PA uintptr) {
+	// JMP rel32: offset relative to next instruction (funcVA + 5)
+	offset := int64(targetAddr) - int64(funcVA) - 5
+	if offset < -(1<<31) || offset >= (1<<31) {
+		return
+	}
+	writeU8ToUser(uintptr(funcVA), 0xE9, l0PA)
+	writeU32ToUser(uintptr(funcVA+1), uint32(offset), l0PA)
 }
 
 // patchCALL_X86 rewrites an x86_64 CALL (E8) instruction at instrVA to call targetAddr.

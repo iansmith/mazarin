@@ -2429,6 +2429,51 @@ func ThreadBlockFutex(futexAddr uint64, expectedVal uint32) uintptr {
 	return threadBlockFutexImpl(&NormalSchedulerFunc, futexAddr, expectedVal)
 }
 
+// idleWaitForReadyThread is the single-CPU idle loop for the scheduler.
+// When a futex_wait caller blocks and no other thread is ready, this function
+// yields the CPU via WFI (Wait For Interrupt) until the timer tick wakes a
+// thread. The 4ms timer ISR fires during WFI, processes the deadline queue
+// (waking threads whose nanosleep timeouts have expired, e.g. sysmon), and
+// we re-check the ready queue.
+//
+// This is the equivalent of Linux's idle task. On Linux, futex_wait removes
+// the thread from the run queue and the CPU runs the idle task until an
+// interrupt (timer, device) makes a thread runnable. Here, we do the same
+// thing inline: block the caller, WFI, process deadlines, check for ready
+// threads.
+//
+// Without this, the last thread would spin on EAGAIN from futex_wait. The
+// tight spin prevents QEMU's IO thread from delivering timer interrupts,
+// so deadline-based wakeups (nanosleep, timed futex) never fire.
+//
+// Must be called with schedulerLock held.
+// Returns with schedulerLock held.
+//
+//go:nosplit
+func idleWaitForReadyThread(sf *SchedulerFunc, savedDAIF uint64, callerPID PriestId) (*Thread, uint64) {
+	for {
+		schedulerLock.Unlock()
+		sf.EnableAndRestoreDAIF(savedDAIF)
+		EnableIRQs()
+		WaitForInterrupt()
+		savedDAIF = sf.DisableAndSaveDAIF()
+		schedulerLock.Lock()
+		processStaticDeadlinesSchedLockHeld()
+		var next *Thread
+		if callerPID > 0 {
+			next = findReadyUserspaceThreadSchedLockHeld(-1)
+			if next == nil {
+				next = findReadyThreadSchedLockHeld()
+			}
+		} else {
+			next = findReadyThreadPreferDifferentPriestSchedLockHeld(callerPID)
+		}
+		if next != nil {
+			return next, savedDAIF
+		}
+	}
+}
+
 // threadBlockFutexImpl is the internal implementation with sf for testing
 //
 //go:nosplit
@@ -2493,24 +2538,6 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 			next = findReadyThreadPreferDifferentPriestSchedLockHeld(t.PID)
 		}
 	}
-	if next == nil {
-		// Still no ready thread — for kernel threads running at EL1, this
-		// causes a tight spin loop that can't be preempted by the timer
-		// (SPSR=EL1t). WFI yields the CPU until the next interrupt fires,
-		// which processes deadlines and may wake threads.
-		if sf.StateCheck != nil {
-			sf.StateCheck("futex-block-no-next")
-		}
-		schedulerLock.Unlock()
-		sf.EnableAndRestoreDAIF(savedDAIF)
-		if t.PageTableL0PA == 0 {
-			// Kernel thread: WFI to prevent EL1 spin monopolization
-			EnableIRQs()
-			WaitForInterrupt()
-		}
-		return 0
-	}
-
 	// Block unconditionally — match Linux futex_wait behavior.
 	// The thread blocks and the scheduler picks the next ready thread
 	// regardless of PID. Timer preemption ensures the lock holder
@@ -2518,10 +2545,14 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 	// releases the lock, and calls futex_wake to wake us.
 	t.State = ThreadBlockedFutex
 	t.FutexAddr = futexAddr
-
-	// Add current thread to blocked queue
 	blockedQueue.PushNoDuplicate(t.TID)
 
+	if next == nil {
+		if sf.StateCheck != nil {
+			sf.StateCheck("futex-block-no-next")
+		}
+		next, savedDAIF = idleWaitForReadyThread(sf, savedDAIF, t.PID)
+	}
 
 	if sf.StateCheck != nil {
 		sf.StateCheck("futex-block-complete")
@@ -2531,7 +2562,7 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 	schedulerLock.Unlock()
 	sf.EnableAndRestoreDAIF(savedDAIF)
 
-	// Return context pointer for context switch to the new userspace thread
+	// Return context pointer for context switch to the next thread
 	return uintptr(unsafe.Pointer(&next.Context))
 }
 
@@ -2604,14 +2635,15 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 	return woken
 }
 
-// ThreadBlockSleep marks current thread as sleeping
-// Returns CONTEXT POINTER of next thread to run, or 0 (nil) if none
+// ThreadBlockSleep marks current thread as sleeping and context-switches
+// to the next ready thread. The caller (SyscallNanosleep) must have already
+// added a deadline to the static queue before calling this.
 //
-// CRITICAL: Only marks thread as sleeping if there's another thread to switch to.
-// If no ready thread exists, returns 0 WITHOUT marking current thread as sleeping.
+// The thread is unconditionally marked sleeping. If no ready thread exists,
+// idleWaitForReadyThread WFI-loops until the timer ISR wakes a thread
+// (typically via the caller's own nanosleep deadline or sysmon's).
 //
-// NOTE: Returns context pointer (not index) so 0 unambiguously means "no switch".
-// Thread index 0 is valid and would return a non-zero context pointer.
+// Returns CONTEXT POINTER of next thread to run (always non-zero).
 //
 //go:nosplit
 func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
@@ -2656,29 +2688,17 @@ func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
 			next = findReadyThreadPreferDifferentPriestSchedLockHeld(t.PID)
 		}
 	}
+	// Block unconditionally — the caller has already added a deadline.
+	// Mark sleeping so the timer ISR can process the deadline and wake us.
+	t.State = ThreadSleeping
+	sleepingQueue.PushNoDuplicate(t.TID)
+
 	if next == nil {
-		// Still no ready thread — for kernel threads running at EL1, this
-		// causes a tight spin loop that can't be preempted by the timer
-		// (SPSR=EL1t). WFI yields the CPU until the next interrupt fires,
-		// which processes deadlines and may wake threads.
 		if sf.StateCheck != nil {
 			sf.StateCheck("sleep-block-no-next")
 		}
-		schedulerLock.Unlock()
-		sf.EnableAndRestoreDAIF(savedDAIF)
-		if t.PageTableL0PA == 0 {
-			// Kernel thread: WFI to prevent EL1 spin monopolization
-			EnableIRQs()
-			WaitForInterrupt()
-		}
-		return 0
+		next, savedDAIF = idleWaitForReadyThread(sf, savedDAIF, t.PID)
 	}
-
-	// Found a ready thread - now safe to mark current as sleeping
-	t.State = ThreadSleeping
-
-	// Add current thread to sleeping queue
-	sleepingQueue.PushNoDuplicate(t.TID)
 
 
 	if sf.StateCheck != nil {
