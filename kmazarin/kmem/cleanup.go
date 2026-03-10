@@ -6,11 +6,11 @@
 //  Phase 1: Walk the priest's Spans (VMA list) and for each VA range walk
 //           the user page tables to find and free every mapped leaf page.
 //
-//  Phase 2: Walk the full page table hierarchy (L0→L3) bottom-up:
-//           - Also frees any leaf pages not covered by Phase 1 (safety net
-//             for ELF segments and other regions not yet tracked in Spans).
-//           - Frees the intermediate page table pages (L1, L2, L3 tables).
-//           - Frees the L0 root page itself.
+//  Phase 2: Walk the full page table hierarchy (L0→L3) bottom-up and free
+//           intermediate page table pages (L3, L2, L1 tables + L0 root).
+//           Leaf pages are NOT freed here — Phase 1 handles all leaf pages.
+//           The releasePageByPA RefCount guard catches any overlap, but we
+//           skip leaf freeing entirely to avoid redundant work.
 //
 // Both phases use PageDescriptor refcounting: releasePageByPA decrements
 // RefCount and frees (returns to buddy) only when it reaches zero, so
@@ -63,9 +63,9 @@ func CleanupPriestPages(priestID proc.PriestId, spans *proc.LockedSpanGroup, l0P
 	serial.RawUARTHex64(uint64(priestID))
 	serial.RawUARTPuts(" cleanup: freed ")
 	serial.RawUARTHex64(uint64(freed))
-	serial.RawUARTPuts(" span-pages, ")
+	serial.RawUARTPuts(" leaf-pages, ")
 	serial.RawUARTHex64(uint64(ptFreed))
-	serial.RawUARTPuts(" PT/leaf pages\r\n")
+	serial.RawUARTPuts(" PT-pages\r\n")
 }
 
 // ReleasePageByPA decrements the refcount for the physical page at pa and
@@ -105,12 +105,11 @@ func releasePageByPA(pa uintptr) bool {
 }
 
 // walkAndFreePageTablePages walks the userspace half of the L0→L3 page table
-// hierarchy bottom-up and frees:
-//  1. Leaf pages (safety net for pages not covered by Phase 1)
-//  2. Intermediate page table pages (L3, L2, L1 tables)
-//  3. The L0 root page itself
+// hierarchy bottom-up and frees intermediate page table pages (L3, L2, L1
+// tables and the L0 root). Leaf (data) pages are NOT freed here — Phase 1
+// already handles all leaf pages via the Spans walk.
 //
-// Returns the total number of pages freed (leaf + PT pages combined).
+// Returns the total number of PT pages freed.
 func walkAndFreePageTablePages(l0PA uintptr) int {
 	freed := 0
 
@@ -161,21 +160,11 @@ func walkAndFreePageTablePages(l0PA uintptr) int {
 				}
 
 				l3PA := pteExtractPA(l2e)
-				l3VA := paToVAOrCache(l3PA)
-				if l3VA != 0 {
-					// Walk L3 leaf entries: free data pages (safety net for
-					// pages not covered by Span-based Phase 1 above).
-					for m := 0; m < 512; m++ {
-						l3e := *(*uint64)(unsafe.Pointer(l3VA + uintptr(m)*8))
-						if !pteIsValid(l3e) {
-							continue
-						}
-						leafPA := pteExtractPA(l3e)
-						if releasePageByPA(leafPA) {
-							freed++
-						}
-					}
-				}
+				// Skip leaf page freeing — Phase 1 already freed all
+				// leaf pages via the Spans walk. The releasePageByPA
+				// RefCount guard would catch overlap anyway, but we
+				// avoid the redundant work entirely.
+
 				// Free the L3 page table page itself.
 				if releasePageByPA(l3PA) {
 					freed++

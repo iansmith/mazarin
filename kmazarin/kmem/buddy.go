@@ -179,6 +179,10 @@ func buddyRemoveFree(order int) uintptr {
 	// Read next pointer from block
 	va := pa + buddyAlloc.kernelVAOffset
 	next := *(*uintptr)(unsafe.Pointer(va))
+	// Validate next pointer: must be 0 (end of list) or within pool range.
+	if next != 0 && (next < buddyAlloc.poolStart || next >= buddyAlloc.poolEnd) {
+		buddyCorruptionHalt(next, pa, order)
+	}
 	buddyAlloc.freeList[order] = next
 	buddyAlloc.freeCount[order]--
 	return pa
@@ -430,6 +434,14 @@ func buddyRemoveSpecific(pa uintptr, order int) bool {
 	// Walk the list
 	prev := buddyAlloc.freeList[order]
 	for prev != 0 {
+		// Validate prev is within the buddy pool range before dereferencing.
+		// A corrupted next pointer outside the pool would cause a page fault
+		// when we add kernelVAOffset and dereference. Halt with "B!C!" marker
+		// to make corruption visible in serial output.
+		if prev < buddyAlloc.poolStart || prev >= buddyAlloc.poolEnd {
+			buddyCorruptionHalt(prev, pa, order)
+			return false
+		}
 		prevVA := prev + buddyAlloc.kernelVAOffset
 		next := *(*uintptr)(unsafe.Pointer(prevVA))
 		if next == pa {
@@ -443,6 +455,25 @@ func buddyRemoveSpecific(pa uintptr, order int) bool {
 		prev = next
 	}
 	return false
+}
+
+// buddyCorruptionHalt prints diagnostic info about a corrupted free list
+// entry and halts. NOT nosplit — breaks the nosplit chain from exception
+// handlers so we can print full diagnostic output.
+func buddyCorruptionHalt(prev, pa uintptr, order int) {
+	serial.RawUARTPuts("\r\n[BUDDY] CORRUPT free list! order=")
+	serial.RawUARTHex64(uint64(order))
+	serial.RawUARTPuts(" bad-next=")
+	serial.RawUARTHex64(uint64(prev))
+	serial.RawUARTPuts(" looking-for=")
+	serial.RawUARTHex64(uint64(pa))
+	serial.RawUARTPuts(" pool=[")
+	serial.RawUARTHex64(uint64(buddyAlloc.poolStart))
+	serial.RawUARTPuts(",")
+	serial.RawUARTHex64(uint64(buddyAlloc.poolEnd))
+	serial.RawUARTPuts(")\r\n")
+	for {
+	}
 }
 
 // BuddyStats contains buddy allocator statistics.
