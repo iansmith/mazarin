@@ -453,6 +453,7 @@ func resolveMazImports(elfData []byte, hdr *elf64Header, loadOffset uint64, l0PA
 	strtabData := elfData[strtabSection.Offset : strtabSection.Offset+strtabSection.Size]
 
 	count := 0
+	unresolved := 0
 	entrySize := uint64(16)
 	numEntries := importsSection.Size / entrySize
 
@@ -479,6 +480,12 @@ func resolveMazImports(elfData []byte, hdr *elf64Header, loadOffset uint64, l0PA
 		// Look up in priest's symbol table
 		priestAddr, found := priestSyms[symbolName]
 		if !found {
+			unresolved++
+			if unresolved <= 5 {
+				console.KWriteString("[LoadMaz] UNRESOLVED import: ")
+				console.KWriteString(symbolName)
+				console.KWriteString("\r\n")
+			}
 			continue
 		}
 
@@ -510,6 +517,14 @@ func resolveMazImports(elfData []byte, hdr *elf64Header, loadOffset uint64, l0PA
 			patchJ_RISCV(targetVA, priestAddr, l0PA)
 			count++
 		}
+	}
+
+	if unresolved > 0 {
+		console.KWriteString("[LoadMaz] unresolved: ")
+		console.KPrintHex64(uint64(unresolved))
+		console.KWriteString(" of ")
+		console.KPrintHex64(numEntries)
+		console.KWriteString(" total\r\n")
 	}
 
 	return count

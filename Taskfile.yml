@@ -111,6 +111,11 @@ vars:
   MAZ_EXIT_OVERLAY_DIR: mazarin/overlay/maz
   MAZ_EXIT_OVERLAY_JSON: '{{.BUILD_DIR}}/maz-exit-overlay.json'
 
+  # Priest overlay — adds //go:noinline + keep-alive to prevent DCE of runtime functions
+  PRIEST_OVERLAY_DIR: '{{.BUILD_DIR}}/priest-overlay'
+  PRIEST_OVERLAY_JSON: '{{.BUILD_DIR}}/priest-overlay.json'
+  MERGED_PRIEST_OVERLAY_JSON: '{{.BUILD_DIR}}/merged-priest-overlay.json'
+
 tasks:
   # ===========================================================================
   # Environment and Version Checks
@@ -228,6 +233,33 @@ tasks:
     cmds:
       - '{{.GO}} tool gen-overlay -type userspace -patches {{.USERSPACE_OVERLAY_DIR}} -o {{.USERSPACE_OVERLAY_JSON}}'
 
+  priest-overlay:
+    run: once
+    method: checksum
+    desc: Generate priest overlay (//go:noinline + keep-alive for all stubbable runtime functions)
+    deps: [build-dir]
+    sources:
+      - 'cmd/gen-ast-stubs/**/*.go'
+    generates:
+      - '{{.PRIEST_OVERLAY_JSON}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Generating priest overlay (//go:noinline + keep-alive)..."'
+      - '{{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.PRIEST_OVERLAY_DIR}} -overlay={{.PRIEST_OVERLAY_JSON}} -mode=priest'
+
+  merged-priest-overlay:
+    run: once
+    method: checksum
+    desc: Merge priest + userspace overlays for disk priest builds
+    deps: [priest-overlay, userspace-overlay]
+    sources:
+      - '{{.PRIEST_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.MERGED_PRIEST_OVERLAY_JSON}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Merging priest + userspace overlays..."'
+      - '{{.GO}} tool gen-overlay -type merge -base {{.PRIEST_OVERLAY_JSON}} -extra {{.USERSPACE_OVERLAY_JSON}} -o {{.MERGED_PRIEST_OVERLAY_JSON}}'
+
   # ===========================================================================
   # Boot Image Conversion
   # ===========================================================================
@@ -322,19 +354,19 @@ tasks:
 
   dapope-arm64:
     desc: Build dapope input event handler priest (ARM64)
-    deps: [check-env, userspace-overlay]
+    deps: [check-env, merged-priest-overlay]
     sources:
       - 'flock/**/*.go'
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      # Overlay source files — Go's build cache doesn't track overlay content
+      - '{{.MERGED_PRIEST_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.PRIEST_OVERLAY_DIR}}/**/*'
     generates:
       - '{{.DAPOPE_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building dapope for ARM64..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DAPOPE_ELF}} ./flock/cmd/dapope'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DAPOPE_ELF}} ./flock/cmd/dapope'
       - '{{.GO}} tool go-echo "Dapope ARM64 built at {{.DAPOPE_ELF}}"'
 
   stdio-arm64:
@@ -356,36 +388,37 @@ tasks:
 
   diskpriest-arm64:
     desc: Build disk priest (filesystem server, ARM64)
-    deps: [check-env, userspace-overlay]
+    deps: [check-env, merged-priest-overlay]
     sources:
       - 'flock/**/*.go'
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
       - 'shared/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.MERGED_PRIEST_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.PRIEST_OVERLAY_DIR}}/**/*'
     generates:
       - '{{.DISKPRIEST_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building disk priest for ARM64..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DISKPRIEST_ELF}} ./flock/cmd/disk'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DISKPRIEST_ELF}} ./flock/cmd/disk'
       - '{{.GO}} tool go-echo "Disk priest ARM64 built at {{.DISKPRIEST_ELF}}"'
 
   dapope-x86_64:
     desc: Build dapope input event handler priest (x86_64)
-    deps: [check-env, userspace-overlay]
+    deps: [check-env, merged-priest-overlay]
     sources:
       - 'flock/**/*.go'
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      # Overlay source files — Go's build cache doesn't track overlay content
+      - '{{.MERGED_PRIEST_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.PRIEST_OVERLAY_DIR}}/**/*'
     generates:
       - '{{.DAPOPE_AMD64_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building dapope for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DAPOPE_AMD64_ELF}} ./flock/cmd/dapope'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DAPOPE_AMD64_ELF}} ./flock/cmd/dapope'
       - '{{.GO}} tool go-echo "Dapope x86_64 built at {{.DAPOPE_AMD64_ELF}}"'
 
   stdio-x86_64:
@@ -407,36 +440,37 @@ tasks:
 
   diskpriest-x86_64:
     desc: Build disk priest (filesystem server, x86_64)
-    deps: [check-env, userspace-overlay]
+    deps: [check-env, merged-priest-overlay]
     sources:
       - 'flock/**/*.go'
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
       - 'shared/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.MERGED_PRIEST_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.PRIEST_OVERLAY_DIR}}/**/*'
     generates:
       - '{{.DISKPRIEST_AMD64_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building disk priest for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DISKPRIEST_AMD64_ELF}} ./flock/cmd/disk'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DISKPRIEST_AMD64_ELF}} ./flock/cmd/disk'
       - '{{.GO}} tool go-echo "Disk priest x86_64 built at {{.DISKPRIEST_AMD64_ELF}}"'
 
   dapope-riscv64:
     desc: Build dapope input event handler priest (RISC-V 64-bit)
-    deps: [check-env, userspace-overlay]
+    deps: [check-env, merged-priest-overlay]
     sources:
       - 'flock/**/*.go'
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      # Overlay source files — Go's build cache doesn't track overlay content
+      - '{{.MERGED_PRIEST_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.PRIEST_OVERLAY_DIR}}/**/*'
     generates:
       - '{{.DAPOPE_RISCV64_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building dapope for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DAPOPE_RISCV64_ELF}} ./flock/cmd/dapope'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DAPOPE_RISCV64_ELF}} ./flock/cmd/dapope'
       - '{{.GO}} tool go-echo "Dapope RISC-V 64-bit built at {{.DAPOPE_RISCV64_ELF}}"'
 
   stdio-riscv64:
@@ -458,19 +492,20 @@ tasks:
 
   diskpriest-riscv64:
     desc: Build disk priest (filesystem server, RISC-V 64-bit)
-    deps: [check-env, userspace-overlay]
+    deps: [check-env, merged-priest-overlay]
     sources:
       - 'flock/**/*.go'
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
       - 'shared/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.MERGED_PRIEST_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.PRIEST_OVERLAY_DIR}}/**/*'
     generates:
       - '{{.DISKPRIEST_RISCV64_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building disk priest for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DISKPRIEST_RISCV64_ELF}} ./flock/cmd/disk'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DISKPRIEST_RISCV64_ELF}} ./flock/cmd/disk'
       - '{{.GO}} tool go-echo "Disk priest RISC-V 64-bit built at {{.DISKPRIEST_RISCV64_ELF}}"'
 
   sievetest:

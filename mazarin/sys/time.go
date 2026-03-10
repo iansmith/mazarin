@@ -33,7 +33,7 @@ func GetTime() (TimeSpec, error) {
 // SetTimerDeadline sets a timer deadline on a soft IRQ slot.
 // When the deadline expires, the kernel pushes time events to the slot's ring
 // and wakes the thread blocked on WaitSoftIRQ for that slot.
-// This is non-blocking — the caller should block via WaitSoftIRQ separately.
+// This is non-blocking — the caller should wait via WaitSoftIRQ separately.
 func SetTimerDeadline(slot int, deadlineSec, deadlineNsec uint64) error {
 	r1, _, errno := RawSyscall(sysSetTimerDeadline,
 		uintptr(slot), uintptr(deadlineSec), uintptr(deadlineNsec),

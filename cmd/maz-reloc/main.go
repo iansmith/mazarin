@@ -187,11 +187,30 @@ func readManifest(path string) (map[string]bool, error) {
 	return names, scanner.Err()
 }
 
+// findPanicHelperAddresses returns the VA of every _thinStubPanic symbol.
+// Each package processed by gen-ast-stubs has its own panic helper (e.g.
+// runtime._thinStubPanic, syscall._thinStubPanic).
+func findPanicHelperAddresses(f *elf.File) []uint64 {
+	syms, err := f.Symbols()
+	if err != nil {
+		return nil
+	}
+	var addrs []uint64
+	for _, sym := range syms {
+		if strings.HasSuffix(sym.Name, "._thinStubPanic") || sym.Name == "_thinStubPanic" {
+			addrs = append(addrs, sym.Value)
+			fmt.Printf("maz-reloc: panic helper %s at 0x%X\n", sym.Name, sym.Value)
+		}
+	}
+	return addrs
+}
+
 // findStubAddresses looks up each stub symbol in the ELF's symbol table
 // and returns a map of name → VA address for symbols that exist AND are
 // actually thin stubs (not real functions from the userspace overlay).
-// A thin stub is identified by its body: NOP followed by B self (ARM64),
-// INT3+JMP self (x86_64), or NOP+J self (RISC-V).
+// Stubs are identified by either:
+//   - Legacy: NOP + B.-4 (ARM64), INT3+JMP (x86_64), NOP+J.-4 (RISC-V)
+//   - Sentinel: ADRP+LDR targeting _thinStubSentinel (ARM64), etc.
 func findStubAddresses(f *elf.File, stubNames map[string]bool) map[string]uint64 {
 	result := make(map[string]uint64)
 
@@ -199,6 +218,9 @@ func findStubAddresses(f *elf.File, stubNames map[string]bool) map[string]uint64
 	if err != nil {
 		return result
 	}
+
+	// Find _thinStubPanic addresses for new-style stub detection
+	panicHelperAddrs := findPanicHelperAddresses(f)
 
 	// Load .text section data for stub body verification
 	text := f.Section(".text")
@@ -221,7 +243,7 @@ func findStubAddresses(f *elf.File, stubNames map[string]bool) map[string]uint64
 		// The userspace overlay replaces some thin stubs with real functions
 		// (e.g., syscall.RawSyscall6, syscall.Syscall6). We must not create
 		// import entries for those — they have working implementations.
-		isStub := textData != nil && isThinStub(f.Machine, textData, textAddr, sym.Value)
+		isStub := textData != nil && isThinStub(f.Machine, textData, textAddr, sym.Value, panicHelperAddrs)
 		if strings.Contains(sym.Name, "typeAssert") || strings.Contains(sym.Name, "interfaceSwitch") {
 			fmt.Printf("maz-reloc: DEBUG %s addr=0x%X size=%d isStub=%v\n", sym.Name, sym.Value, sym.Size, isStub)
 		}
@@ -242,34 +264,135 @@ func findStubAddresses(f *elf.File, stubNames map[string]bool) map[string]uint64
 	return result
 }
 
-// isThinStub checks if the function at the given VA starts with a thin stub pattern.
-func isThinStub(machine elf.Machine, textData []byte, textAddr, funcAddr uint64) bool {
+// isThinStub checks if the function at the given VA is a thin stub.
+// It recognizes both:
+//   - Legacy: for{} loop → NOP+B.-4 (ARM64), INT3+JMP (x86), NOP+J.-4 (RISC-V)
+//   - New: _thinStubPanic call → BL/CALL/JAL to _thinStubPanic within first 20 instructions
+func isThinStub(machine elf.Machine, textData []byte, textAddr, funcAddr uint64, panicHelperAddrs []uint64) bool {
 	offset := funcAddr - textAddr
 	switch machine {
 	case elf.EM_AARCH64:
-		// ARM64 thin stub: NOP (0xD503201F) + B .-4 (0x17FFFFFF)
-		// The B branches back to the NOP, creating an infinite loop.
-		if offset+8 > uint64(len(textData)) {
-			return false
-		}
-		insn0 := binary.LittleEndian.Uint32(textData[offset:])
-		insn1 := binary.LittleEndian.Uint32(textData[offset+4:])
-		return insn0 == 0xD503201F && insn1 == 0x17FFFFFF
+		return isThinStubARM64(textData, offset, funcAddr, panicHelperAddrs)
 	case elf.EM_X86_64:
-		// x86_64 thin stub: INT3 (0xCC) + JMP self (0xEB 0xFE)
-		if offset+3 > uint64(len(textData)) {
-			return false
-		}
-		return textData[offset] == 0xCC && textData[offset+1] == 0xEB && textData[offset+2] == 0xFE
+		return isThinStubX86_64(textData, offset, funcAddr, panicHelperAddrs)
 	case elf.EM_RISCV:
-		// RISC-V thin stub: NOP (0x00000013) + J .-4 (0xffdff06f)
-		// The J branches back to the NOP, creating a 2-instruction infinite loop.
-		if offset+8 > uint64(len(textData)) {
-			return false
-		}
+		return isThinStubRISCV64(textData, offset, funcAddr, panicHelperAddrs)
+	}
+	return false
+}
+
+// isThinStubARM64 checks ARM64 stub patterns.
+func isThinStubARM64(textData []byte, offset, funcAddr uint64, panicHelperAddrs []uint64) bool {
+	// Legacy: NOP (0xD503201F) + B .-4 (0x17FFFFFF) at function start
+	if offset+8 <= uint64(len(textData)) {
 		insn0 := binary.LittleEndian.Uint32(textData[offset:])
 		insn1 := binary.LittleEndian.Uint32(textData[offset+4:])
-		return insn0 == 0x00000013 && insn1 == 0xffdff06f
+		if insn0 == 0xD503201F && insn1 == 0x17FFFFFF {
+			return true
+		}
+	}
+
+	// New pattern: scan first 20 instructions for BL to _thinStubPanic.
+	// The function may have a stack-check prologue (3-5 instructions)
+	// before the call to _thinStubPanic.
+	if len(panicHelperAddrs) == 0 {
+		return false
+	}
+	maxScan := uint64(80) // 20 instructions × 4 bytes
+	for i := uint64(0); i < maxScan && offset+i+4 <= uint64(len(textData)); i += 4 {
+		insn := binary.LittleEndian.Uint32(textData[offset+i:])
+		// BL: bits [31:26] = 100101
+		if insn&0xFC000000 != 0x94000000 {
+			continue
+		}
+		// Decode 26-bit signed offset
+		imm26 := int32(insn & 0x03FFFFFF)
+		if imm26&0x02000000 != 0 {
+			imm26 |= ^int32(0x03FFFFFF)
+		}
+		pc := funcAddr + i
+		target := uint64(int64(pc) + int64(imm26)*4)
+		for _, addr := range panicHelperAddrs {
+			if target == addr {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isThinStubX86_64 checks x86_64 stub patterns.
+func isThinStubX86_64(textData []byte, offset, funcAddr uint64, panicHelperAddrs []uint64) bool {
+	// Legacy: INT3 (0xCC) + JMP self (0xEB 0xFE)
+	if offset+3 <= uint64(len(textData)) {
+		if textData[offset] == 0xCC && textData[offset+1] == 0xEB && textData[offset+2] == 0xFE {
+			return true
+		}
+	}
+
+	// New pattern: scan first 64 bytes for CALL (E8) to _thinStubPanic
+	if len(panicHelperAddrs) == 0 {
+		return false
+	}
+	maxScan := uint64(64)
+	for i := uint64(0); i < maxScan && offset+i+5 <= uint64(len(textData)); i++ {
+		if textData[offset+i] != 0xE8 {
+			continue
+		}
+		rel32 := int32(binary.LittleEndian.Uint32(textData[offset+i+1:]))
+		pc := funcAddr + i
+		target := uint64(int64(pc) + 5 + int64(rel32))
+		for _, addr := range panicHelperAddrs {
+			if target == addr {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isThinStubRISCV64 checks RISC-V stub patterns.
+func isThinStubRISCV64(textData []byte, offset, funcAddr uint64, panicHelperAddrs []uint64) bool {
+	// Legacy: NOP (0x00000013) + J .-4 (0xffdff06f)
+	if offset+8 <= uint64(len(textData)) {
+		insn0 := binary.LittleEndian.Uint32(textData[offset:])
+		insn1 := binary.LittleEndian.Uint32(textData[offset+4:])
+		if insn0 == 0x00000013 && insn1 == 0xffdff06f {
+			return true
+		}
+	}
+
+	// New pattern: scan first 20 instructions for JAL ra targeting _thinStubPanic
+	if len(panicHelperAddrs) == 0 {
+		return false
+	}
+	maxScan := uint64(80)
+	for i := uint64(0); i < maxScan && offset+i+4 <= uint64(len(textData)); i += 4 {
+		insn := binary.LittleEndian.Uint32(textData[offset+i:])
+		// JAL rd, offset: opcode = 0x6F, rd = x1 (ra)
+		if insn&0x7F != 0x6F {
+			continue
+		}
+		rd := (insn >> 7) & 0x1F
+		if rd != 1 {
+			continue
+		}
+		// Decode J-immediate
+		imm20 := (insn >> 31) & 1
+		imm10_1 := (insn >> 21) & 0x3FF
+		imm11 := (insn >> 20) & 1
+		imm19_12 := (insn >> 12) & 0xFF
+		imm := (imm20 << 20) | (imm19_12 << 12) | (imm11 << 11) | (imm10_1 << 1)
+		if imm20 != 0 {
+			imm |= 0xFFE00000
+		}
+		pc := funcAddr + i
+		target := uint64(int64(pc) + int64(int32(imm)))
+		for _, addr := range panicHelperAddrs {
+			if target == addr {
+				return true
+			}
+		}
 	}
 	return false
 }

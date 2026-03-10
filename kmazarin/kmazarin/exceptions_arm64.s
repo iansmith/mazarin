@@ -1364,6 +1364,16 @@ el0_sync_handler:
 	CMP	$0x15, R10
 	BNE	el0_check_data_abort
 
+	// Mark that we're inside an EL0 SVC handler (unsafe to preempt by timer).
+	// Without this, timer preemption during SVC handling (e.g., when
+	// enableIRQsAndWait or idleWaitForReadyThread explicitly enable IRQs)
+	// saves the EL1 context (ELR inside this handler, SPSR=EL1) as the
+	// thread's context. When restored, the thread ERETsto EL1 inside
+	// the handler with a corrupted SP_EL1 stack — livelock.
+	// Cleared in el0_return before ERET.
+	MOVD	$1, R10
+	MOVW	R10, ·svcDepth(SB)
+
 	// CRITICAL: Switch to kmazarin's g before calling any Go code!
 	// x28 currently contains userspace's g (e.g., priest's g), but the syscall
 	// handlers are compiled into kmazarin's Go runtime and expect kmazarin's g.
@@ -1652,6 +1662,10 @@ el0_unhandled_halt:
 	// Fallback halt if HandleUnhandledExceptionAsm somehow falls through
 	B	el0_unhandled_halt
 el0_return:
+	// Clear svcDepth — leaving EL0 SVC handler (safe to preempt again).
+	// Must be cleared before ERET so the next thread's timer preemption works.
+	MOVW	ZR, ·svcDepth(SB)
+
 	// Restore SP_EL0
 	MOVD	EXC_FRAME_SP_EL0(RSP), R10
 	MSR	R10, SP_EL0

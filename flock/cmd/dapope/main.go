@@ -2,7 +2,7 @@
 // via the soft IRQ mechanism. It discovers available input devices,
 // registers for their IRQs, and blocks waiting for HID events.
 //
-// Each device gets its own goroutine that blocks on WaitSoftIRQ (via Syscall6),
+// Each device gets its own goroutine that blocks on WaitSoftIRQ,
 // allowing the Go runtime to hand off the M and run other goroutines.
 package main
 
@@ -13,6 +13,9 @@ import (
 	"mazzy/mazarin/input"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/hid"
+	// mazhost import forces the linker to retain all runtime functions
+	// needed by .maz thin stubs (via MazKeepAliveSymbols).
+	_ "mazzy/mazarin/mazhost"
 	"os"
 	"runtime"
 	"syscall"
@@ -363,11 +366,11 @@ func main() {
 	renderer := newCursorRenderer(fb)
 	fmt.Println("[dapope] Cursor ready (deferred until first mouse event)")
 
-	// Launch goroutines that block on WaitSoftIRQ (via Syscall6).
-	// Each goroutine needs its own M (kernel thread) since WaitSoftIRQ
-	// calls entersyscall to release the P. We yield after each launch
-	// so the goroutine starts running and enters WaitSoftIRQ before
-	// we launch the next one. This ensures orderly M creation.
+	// Launch goroutines that block on WaitSoftIRQ.
+	// Each goroutine uses entersyscall to release the P while the
+	// kernel thread sleeps waiting for events, allowing other
+	// goroutines to run. We yield after each launch so the goroutine
+	// starts running before we launch the next one.
 	if kbdSlot >= 0 {
 		go keyboardLoop(kbdSlot)
 		runtime.Gosched()

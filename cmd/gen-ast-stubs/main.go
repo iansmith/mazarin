@@ -36,6 +36,7 @@ type TransformResult struct {
 	FileSet     *token.FileSet
 	StubFuncs   []FuncStub      // Functions that were stubbed
 	UsedImports map[string]bool // Imports actually used outside function bodies
+	priestSrc   []byte          // In priest mode: text-modified source (nil = use AST printer)
 }
 
 // packageInfo holds source and output directories for one package being processed.
@@ -54,6 +55,7 @@ var (
 	flagGo            = flag.String("go", "", "Path to Go binary (used with -runtime-from-go)")
 	flagRuntimeFromGo = flag.Bool("runtime-from-go", false, "Discover runtime dir via 'go env GOROOT' using the -go binary")
 	flagPackages      = flag.String("packages", "runtime", "Comma-separated list of packages to stub (e.g., runtime,syscall)")
+	flagMode          = flag.String("mode", "thin", "Mode: 'thin' generates stub bodies for .maz, 'priest' adds //go:noinline + keep-alive for priest builds")
 )
 
 func main() {
@@ -95,10 +97,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Process each package
+	// Dispatch based on mode
+	switch *flagMode {
+	case "thin":
+		runThinMode(packages)
+	case "priest":
+		runPriestMode(packages)
+	default:
+		fmt.Fprintf(os.Stderr, "Error: unknown mode %q (use 'thin' or 'priest')\n", *flagMode)
+		os.Exit(1)
+	}
+}
+
+// runThinMode generates thin stub overlay files for .maz builds.
+// Each stubbable function's body is replaced with _thinStubPanic + return.
+func runThinMode(packages []packageInfo) {
 	var allStubs []FuncStub
 	totalFiles := 0
-	// overlayReplace accumulates all overlay mappings across packages
 	overlayReplace := make(map[string]string)
 
 	for _, pkg := range packages {
@@ -116,13 +131,11 @@ func main() {
 		totalFiles += fileCount
 	}
 
-	// Generate combined overlay JSON
 	if err := writeOverlayJSON(*flagOverlayOut, overlayReplace); err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating overlay: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Generate manifest if requested
 	if *flagManifest != "" {
 		if err := generateManifest(allStubs, *flagManifest); err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating manifest: %v\n", err)
@@ -133,6 +146,359 @@ func main() {
 	fmt.Printf("Generated %d stub files with %d stubbed functions across %d packages\n",
 		totalFiles, len(allStubs), len(packages))
 	fmt.Printf("Overlay written to: %s\n", *flagOverlayOut)
+}
+
+// keepAliveEntry tracks a function that needs to be referenced in _keepForMaz.
+type keepAliveEntry struct {
+	receiverExpr string // "" for functions, "(*Type)" or "Type" for methods
+	funcName     string // function or method name
+}
+
+// runPriestMode generates overlay files for priest (host) builds.
+// Each stubbable function gets //go:noinline added (body unchanged).
+// A _keepForMaz() function is appended per sub-package to prevent DCE.
+func runPriestMode(packages []packageInfo) {
+	totalFiles := 0
+	totalNoinline := 0
+	overlayReplace := make(map[string]string)
+
+	for _, pkg := range packages {
+		if *flagVerbose {
+			fmt.Printf("Processing package (priest): %s (source: %s)\n", pkg.name, pkg.sourceDir)
+		}
+
+		noinlineCount, fileCount, err := processPackageForPriest(pkg, overlayReplace)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error processing package %s: %v\n", pkg.name, err)
+			os.Exit(1)
+		}
+
+		totalNoinline += noinlineCount
+		totalFiles += fileCount
+	}
+
+	if err := writeOverlayJSON(*flagOverlayOut, overlayReplace); err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating overlay: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Generated %d priest overlay files with %d //go:noinline functions across %d packages\n",
+		totalFiles, totalNoinline, len(packages))
+	fmt.Printf("Overlay written to: %s\n", *flagOverlayOut)
+}
+
+// processPackageForPriest processes a package in priest mode: adds //go:noinline
+// to stubbable functions and generates MazKeepAliveSymbols() per sub-package.
+func processPackageForPriest(pkg packageInfo, overlayReplace map[string]string) (int, int, error) {
+	files, err := findSourceFiles(pkg.sourceDir)
+	if err != nil {
+		return 0, 0, fmt.Errorf("finding source files: %w", err)
+	}
+
+	// Use `go list` to get the authoritative set of files the compiler
+	// would include for each sub-package. This handles all build constraints
+	// (goexperiment, asan, race, etc.) correctly.
+	compiledFileCache := make(map[string]map[string]bool) // subPkgDir → set of basenames
+	getCompiled := func(filePath string) bool {
+		// Determine sub-package directory relative to pkg.sourceDir
+		dir := filepath.Dir(filePath)
+		if cached, ok := compiledFileCache[dir]; ok {
+			return cached[filepath.Base(filePath)]
+		}
+
+		// Compute import path from directory
+		rel, _ := filepath.Rel(filepath.Dir(pkg.sourceDir), dir)
+		importPath := strings.ReplaceAll(rel, string(filepath.Separator), "/")
+		if importPath == "" {
+			importPath = pkg.name
+		}
+
+		compiled, err := getCompiledFiles(*flagGo, importPath)
+		if err != nil {
+			if *flagVerbose {
+				fmt.Printf("  WARNING: go list %s failed: %v (skipping keep-alive for this sub-package)\n", importPath, err)
+			}
+			compiledFileCache[dir] = nil
+			return false
+		}
+		compiledFileCache[dir] = compiled
+		return compiled[filepath.Base(filePath)]
+	}
+
+	// Collect keep-alive entries per sub-package.
+	type subPkgInfo struct {
+		entries   []keepAliveEntry
+		firstFile string // first output file (for appending MazKeepAliveSymbols)
+	}
+	subPackages := make(map[string]*subPkgInfo)
+
+	noinlineCount := 0
+	fileCount := 0
+
+	for _, path := range files {
+		if strings.HasSuffix(path, ".s") {
+			rel, _ := filepath.Rel(pkg.sourceDir, path)
+			outputPath := filepath.Join(pkg.outputDir, rel)
+			if err := copyFile(path, outputPath); err != nil {
+				return 0, 0, fmt.Errorf("copying %s: %w", path, err)
+			}
+			absOrig, _ := filepath.Abs(path)
+			absStub, _ := filepath.Abs(outputPath)
+			overlayReplace[absOrig] = absStub
+			fileCount++
+			continue
+		}
+
+		result, count, err := transformFileForPriest(path)
+		if err != nil {
+			return 0, 0, fmt.Errorf("transforming %s: %w", path, err)
+		}
+
+		rel, _ := filepath.Rel(pkg.sourceDir, path)
+		outputPath := filepath.Join(pkg.outputDir, rel)
+
+		if result.priestSrc != nil {
+			if err := writeStubFile(result, outputPath); err != nil {
+				return 0, 0, fmt.Errorf("writing %s: %w", outputPath, err)
+			}
+		} else {
+			if err := copyFile(path, outputPath); err != nil {
+				return 0, 0, fmt.Errorf("copying %s: %w", path, err)
+			}
+		}
+
+		// Track entries for keep-alive, grouped by sub-package
+		pkgName := result.File.Name.Name
+		if subPackages[pkgName] == nil {
+			subPackages[pkgName] = &subPkgInfo{}
+		}
+		sp := subPackages[pkgName]
+		if sp.firstFile == "" {
+			sp.firstFile = outputPath
+		}
+
+		// Only include functions from files that `go list` confirms will be
+		// compiled for the target platform. This correctly handles all build
+		// constraints including goexperiment flags.
+		if len(result.StubFuncs) > 0 && getCompiled(path) {
+			for _, stub := range result.StubFuncs {
+				entry := keepAliveEntry{funcName: stub.Name}
+				if stub.Receiver != "" {
+					entry.receiverExpr = stub.Receiver
+				}
+				sp.entries = append(sp.entries, entry)
+			}
+		}
+
+		absOrig, _ := filepath.Abs(path)
+		absStub, _ := filepath.Abs(outputPath)
+		overlayReplace[absOrig] = absStub
+
+		noinlineCount += count
+		fileCount++
+
+		if *flagVerbose {
+			fmt.Printf("  %s/%s: %d noinline\n", pkg.name, rel, count)
+		}
+	}
+
+	// Append MazKeepAliveSymbols() to first file of each sub-package.
+	// This exported function references all stubbable functions from
+	// unconditionally-compiled files, preventing the linker from DCE'ing them.
+	for pkgName, sp := range subPackages {
+		if len(sp.entries) == 0 || sp.firstFile == "" {
+			continue
+		}
+		if err := appendMazKeepAliveSymbolsFunc(sp.firstFile, sp.entries); err != nil {
+			return 0, 0, fmt.Errorf("appending MazKeepAliveSymbols for %s: %w", pkgName, err)
+		}
+		if *flagVerbose {
+			fmt.Printf("  %s: MazKeepAliveSymbols with %d entries\n", pkgName, len(sp.entries))
+		}
+	}
+
+	fmt.Printf("  %s: %d files, %d //go:noinline functions\n",
+		pkg.name, fileCount, noinlineCount)
+	return noinlineCount, fileCount, nil
+}
+
+// priestFuncInfo holds info about a function that needs //go:noinline in priest mode.
+type priestFuncInfo struct {
+	line int      // 1-based line number of the func keyword
+	stub FuncStub // stub info for keep-alive generation
+}
+
+// transformFileForPriest parses a file to find stubbable functions, then does
+// text-based insertion of //go:noinline before each one. This avoids go/ast
+// comment positioning issues that cause "misplaced compiler directive" errors.
+// Returns a TransformResult (for keep-alive tracking) and the noinline count.
+func transformFileForPriest(path string) (*TransformResult, int, error) {
+	fset := token.NewFileSet()
+
+	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	if err != nil {
+		return nil, 0, fmt.Errorf("parse %s: %w", path, err)
+	}
+
+	result := &TransformResult{
+		File:        file,
+		FileSet:     fset,
+		UsedImports: make(map[string]bool),
+	}
+
+	// Collect functions that need //go:noinline
+	var funcs []priestFuncInfo
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || !shouldStub(fn) {
+			continue
+		}
+
+		// Check if already has //go:noinline
+		alreadyHas := false
+		if fn.Doc != nil {
+			for _, c := range fn.Doc.List {
+				if strings.TrimSpace(c.Text) == "//go:noinline" {
+					alreadyHas = true
+					break
+				}
+			}
+		}
+
+		stub := createStub(fn, file.Name.Name)
+		result.StubFuncs = append(result.StubFuncs, stub)
+
+		if !alreadyHas {
+			// Use the line of the func keyword for insertion
+			pos := fset.Position(fn.Pos())
+			funcs = append(funcs, priestFuncInfo{
+				line: pos.Line,
+				stub: stub,
+			})
+		}
+	}
+
+	if len(funcs) == 0 {
+		// No modifications needed — just copy the file
+		return result, 0, nil
+	}
+
+	// Read original file and insert //go:noinline directives
+	srcBytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, 0, fmt.Errorf("reading %s: %w", path, err)
+	}
+
+	lines := strings.Split(string(srcBytes), "\n")
+
+	// Build set of lines that need //go:noinline inserted before them
+	insertBefore := make(map[int]bool) // 1-based line numbers
+	for _, fi := range funcs {
+		insertBefore[fi.line] = true
+	}
+
+	// Rebuild the file with insertions
+	var out strings.Builder
+	for i, line := range lines {
+		lineNum := i + 1 // 1-based
+		if insertBefore[lineNum] {
+			out.WriteString("//go:noinline\n")
+		}
+		out.WriteString(line)
+		if i < len(lines)-1 {
+			out.WriteString("\n")
+		}
+	}
+
+	// Store the modified source for writing
+	result.priestSrc = []byte(out.String())
+
+	return result, len(funcs), nil
+}
+
+// getCompiledFiles uses `go list` to get the authoritative list of Go files
+// that the compiler would include for a package on the target platform.
+// This handles all build constraints correctly, including goexperiment flags.
+func getCompiledFiles(goBinary, pkgPath string) (map[string]bool, error) {
+	goos := os.Getenv("TARGET_GOOS")
+	if goos == "" {
+		goos = "linux"
+	}
+	goarch := os.Getenv("TARGET_GOARCH")
+	if goarch == "" {
+		goarch = "arm64"
+	}
+
+	cmd := exec.Command(goBinary, "list", "-f", `{{join .GoFiles "\n"}}`, pkgPath)
+	cmd.Env = append(os.Environ(),
+		"GOOS="+goos,
+		"GOARCH="+goarch,
+		"CGO_ENABLED=0",
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("go list %s: %w", pkgPath, err)
+	}
+
+	files := make(map[string]bool)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			files[line] = true
+		}
+	}
+	return files, nil
+}
+
+// appendMazKeepAliveSymbolsFunc appends the exported MazKeepAliveSymbols()
+// function and its backing array to the given file. Each function reference
+// is stored to a unique slot in an exported global array, which the compiler
+// cannot eliminate (stores to exported globals are observable side effects).
+func appendMazKeepAliveSymbolsFunc(path string, entries []keepAliveEntry) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var buf strings.Builder
+
+	// Exported global array — stores to exported globals are observable
+	// side effects that the compiler cannot eliminate.
+	buf.WriteString(fmt.Sprintf("\n\n// MazKeptSymbols holds references to all stubbable functions.\n"))
+	buf.WriteString(fmt.Sprintf("// Exported so the compiler cannot prove no one reads it.\n"))
+	buf.WriteString(fmt.Sprintf("var MazKeptSymbols [%d]interface{}\n", len(entries)))
+
+	buf.WriteString("\n// MazKeepAliveSymbols stores function references into MazKeptSymbols,\n")
+	buf.WriteString("// preventing the linker from eliminating runtime functions that\n")
+	buf.WriteString("// .maz modules may need via thin stub imports.\n")
+	buf.WriteString("//\n//go:noinline\n")
+	buf.WriteString("func MazKeepAliveSymbols() {\n")
+
+	for i, e := range entries {
+		if e.receiverExpr != "" {
+			buf.WriteString(fmt.Sprintf("\tMazKeptSymbols[%d] = %s.%s\n", i, e.receiverExpr, e.funcName))
+		} else {
+			buf.WriteString(fmt.Sprintf("\tMazKeptSymbols[%d] = %s\n", i, e.funcName))
+		}
+	}
+
+	buf.WriteString("}\n")
+
+	_, err = f.WriteString(buf.String())
+	return err
+}
+
+// copyFile copies a file from src to dst, creating parent directories as needed.
+func copyFile(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0644)
 }
 
 // buildPackageList constructs the list of packages to process from flags.
@@ -185,6 +551,7 @@ func processPackage(pkg packageInfo, overlayReplace map[string]string) ([]FuncSt
 
 	var stubs []FuncStub
 	fileCount := 0
+	sentinelAdded := false
 
 	for _, path := range files {
 		// Skip assembly files - they can't be parsed by go/parser
@@ -213,6 +580,20 @@ func processPackage(pkg packageInfo, overlayReplace map[string]string) ([]FuncSt
 			return nil, 0, fmt.Errorf("writing %s: %w", outputPath, err)
 		}
 
+		// Append _thinStubSentinel + _thinStubPanic to the first stub file.
+		// We can't add new files to stdlib directories via overlay (Go
+		// rejects overlays that add files under GOROOT), so we append
+		// these declarations to an existing overlaid file instead.
+		if !sentinelAdded && len(result.StubFuncs) > 0 {
+			if err := appendSentinelCode(outputPath); err != nil {
+				return nil, 0, fmt.Errorf("appending sentinel to %s: %w", outputPath, err)
+			}
+			sentinelAdded = true
+			if *flagVerbose {
+				fmt.Printf("  %s/%s: sentinel code appended\n", pkg.name, rel)
+			}
+		}
+
 		// Add overlay mapping: original → stub
 		absOrig, _ := filepath.Abs(path)
 		absStub, _ := filepath.Abs(outputPath)
@@ -228,6 +609,31 @@ func processPackage(pkg packageInfo, overlayReplace map[string]string) ([]FuncSt
 
 	fmt.Printf("  %s: %d files, %d stubbed functions\n", pkg.name, fileCount, len(stubs))
 	return stubs, fileCount, nil
+}
+
+// appendSentinelCode appends _thinStubSentinel and _thinStubPanic
+// declarations to an existing stub file. We append to an existing file
+// because Go's overlay system cannot add NEW files to standard library
+// package directories (it rejects overlays modifying paths under GOROOT).
+func appendSentinelCode(path string) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = f.WriteString(`
+
+var _thinStubSentinel uint32
+
+//go:noinline
+func _thinStubPanic(name string) {
+	if _thinStubSentinel == 0 {
+		panic("stub called without trampoline: " + name)
+	}
+}
+`)
+	return err
 }
 
 // findSourceFiles returns all .go and .s files for the target platform
@@ -283,7 +689,8 @@ func findSourceFiles(runtimeDir string) ([]string, error) {
 			// For linux/arm64: original behavior
 			// Skip wrong platforms (keep linux, skip others)
 			if containsAny(base, "_windows", "_darwin", "_plan9", "_js", "_wasm",
-				"_freebsd", "_openbsd", "_netbsd", "_dragonfly", "_solaris", "_aix") {
+				"_freebsd", "_openbsd", "_netbsd", "_dragonfly", "_solaris", "_aix",
+				"_bsd", "_illumos", "_wasip1") {
 				return nil
 			}
 
@@ -309,6 +716,8 @@ func containsAny(s string, patterns ...string) bool {
 	}
 	return false
 }
+
+
 
 // transformFile parses and transforms a single file
 func transformFile(path string) (*TransformResult, error) {
@@ -353,7 +762,22 @@ func transformFile(path string) (*TransformResult, error) {
 			}
 
 			// Replace body with minimal stub
-			fn.Body = createMinimalBody(fset, fn)
+			fn.Body = createMinimalBody(fset, fn, file.Name.Name)
+
+			// Replace doc comment with //go:noinline to prevent the compiler
+			// from inlining the stub body into callers. Without this, the
+			// compiler might inline the sentinel check + panic into callers,
+			// eliminating the BL instruction that maz-reloc needs to create
+			// import entries for.
+			if fn.Doc != nil {
+				delete(cmap, fn.Doc)
+			}
+			fn.Doc = &ast.CommentGroup{
+				List: []*ast.Comment{{
+					Slash: fn.Pos() - 1,
+					Text:  "//go:noinline",
+				}},
+			}
 		}
 	}
 
@@ -629,31 +1053,80 @@ func typeString(expr ast.Expr) string {
 	}
 }
 
-// createMinimalBody creates a function body that compiles but is minimal
-// The body is: for { } (infinite loop that will be patched)
-// This avoids import issues and is easy to identify for patching
-func createMinimalBody(fset *token.FileSet, fn *ast.FuncDecl) *ast.BlockStmt {
-	// Get position info from the original body to help with comment placement
+// createMinimalBody creates a stub function body:
+//
+//	_thinStubPanic("pkg.func")
+//	return
+//
+// _thinStubPanic is defined in the generated _thin_stub_sentinel.go file
+// with //go:noinline, so the compiler cannot see that it panics. From
+// the compiler's perspective, _thinStubPanic might return, so:
+//  1. The stub function is NOT marked NeverReturns — the return statement
+//     is reachable. This prevents the compiler from propagating "never
+//     returns" to callers (which caused chanrecv2 to be dead-code-eliminated).
+//  2. If the stub is ever called without being trampolined, _thinStubPanic
+//     panics with the function name for diagnosis.
+//
+// To enable bare `return`, any unnamed return values in the function
+// signature are given synthetic names (_stubR0, _stubR1, ...).
+func createMinimalBody(fset *token.FileSet, fn *ast.FuncDecl, pkgName string) *ast.BlockStmt {
 	var pos token.Pos
 	if fn.Body != nil {
 		pos = fn.Body.Lbrace
 	}
 
-	// Create: for { }
-	// This compiles, doesn't need imports, and has predictable assembly
-	forStmt := &ast.ForStmt{
-		For: pos,
-		Body: &ast.BlockStmt{
-			Lbrace: pos,
-			List:   []ast.Stmt{},
-			Rbrace: pos,
+	// Name any unnamed return values so bare `return` works
+	nameReturnValues(fn)
+
+	// Build "pkg.func" or "pkg.(*Type).Method" for the panic message
+	funcName := fn.Name.Name
+	if fn.Recv != nil && len(fn.Recv.List) > 0 {
+		funcName = typeString(fn.Recv.List[0].Type) + "." + funcName
+	}
+	qualName := fmt.Sprintf("%s.%s", pkgName, funcName)
+
+	// _thinStubPanic("pkg.func")
+	callStmt := &ast.ExprStmt{
+		X: &ast.CallExpr{
+			Fun:    &ast.Ident{Name: "_thinStubPanic", NamePos: pos},
+			Lparen: pos,
+			Args: []ast.Expr{
+				&ast.BasicLit{
+					Kind:     token.STRING,
+					Value:    fmt.Sprintf("%q", qualName),
+					ValuePos: pos,
+				},
+			},
+			Rparen: pos,
 		},
 	}
 
+	// return (bare — uses named return values, all zero-initialized)
+	retStmt := &ast.ReturnStmt{Return: pos}
+
 	return &ast.BlockStmt{
 		Lbrace: pos,
-		List:   []ast.Stmt{forStmt},
+		List:   []ast.Stmt{callStmt, retStmt},
 		Rbrace: pos,
+	}
+}
+
+// nameReturnValues adds synthetic names (_stubR0, _stubR1, ...) to any
+// unnamed return values in the function signature. This enables bare
+// `return` statements that return zero values without needing to know
+// the actual types.
+func nameReturnValues(fn *ast.FuncDecl) {
+	if fn.Type.Results == nil {
+		return
+	}
+	counter := 0
+	for _, field := range fn.Type.Results.List {
+		if len(field.Names) == 0 {
+			field.Names = []*ast.Ident{{Name: fmt.Sprintf("_stubR%d", counter)}}
+			counter++
+		} else {
+			counter += len(field.Names)
+		}
 	}
 }
 
@@ -662,6 +1135,11 @@ func writeStubFile(result *TransformResult, outputPath string) error {
 	// Create directory
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
 		return err
+	}
+
+	// In priest mode, use pre-built text source if available
+	if result.priestSrc != nil {
+		return os.WriteFile(outputPath, result.priestSrc, 0644)
 	}
 
 	// Create file

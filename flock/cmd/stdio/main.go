@@ -322,10 +322,13 @@ func main() {
 	ascent := metrics.Ascent.Ceil()
 	lineH := charH + LineSpacing
 
-	// Compute content area from framebuffer dimensions, leaving pad on all sides.
-	// The card border extends outside the content rect, so account for it.
-	availW := int(fb.Width) - 2*pad + 2*cardBorderSide - 2*textPad
-	availH := int(fb.Height) - 2*pad + cardBorderTop + cardBorderSide
+	// Compute content area from framebuffer dimensions.
+	// The card border extends outside the content rect:
+	//   cardX = rectX - cardBorderSide, cardY = rectY - cardBorderTop
+	//   card right = pad + rectW + cardBorderSide  (must be <= fb.Width)
+	//   card bottom = pad + rectH + cardBorderSide (must be <= fb.Height, since cardY = pad - cardBorderTop)
+	availW := int(fb.Width) - pad - cardBorderSide - 2*textPad
+	availH := int(fb.Height) - pad - cardBorderSide
 
 	maxCols := availW / charW
 	if maxCols < 40 {

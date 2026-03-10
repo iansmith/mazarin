@@ -70,7 +70,7 @@ func serialLoop() {
 	runtime.LockOSThread()
 	var buf hid.SoftIRQReturn
 	for {
-		n, waitErr := sys.WaitSoftIRQBlocking(serialSlot, &buf)
+		n, waitErr := sys.WaitSoftIRQ(serialSlot, &buf)
 		if waitErr != nil || n == 0 {
 			continue
 		}

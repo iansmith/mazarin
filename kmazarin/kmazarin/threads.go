@@ -1117,7 +1117,7 @@ func ProcessDeadlinesTopHalf() {
 		serial.RawUARTDecimal(atomic.LoadUint64(&dbgPreemptSwitchCount))
 		serial.RawUARTPuts(" pNo=")
 		serial.RawUARTDecimal(atomic.LoadUint64(&dbgPreemptNoNextCount))
-		serial.RawUARTPuts("\n")
+		printThreadStateSummary()
 	}
 	// Heartbeat: print '.' every 100 ticks to confirm timer is alive
 	if cnt%100 == 0 {
@@ -1172,6 +1172,11 @@ func IdleLoop(sf *SchedulerFunc) *Thread {
 var dbgIdleCount uint64
 var wfiCount uint64
 var trapReturnCount uint64
+var dbgZeroProgressCount uint64
+var dbgZeroProgressT0Count uint64 // zero-progress for TID 0 only (idle loop, expected)
+var dbgZPLastTID uint64           // TID of last non-TID0 zero-progress thread
+var dbgZPLastELR uint64           // ELR of last non-TID0 zero-progress thread
+var dbgZPLastSPSR uint64          // SPSR of last non-TID0 zero-progress thread
 
 func printThreadStateSummary() {
 	var nReady, nFutex, nSleep, nSoftIRQ, nRunning int
@@ -1205,6 +1210,38 @@ func printThreadStateSummary() {
 	serial.RawUARTDecimal(uint64(nRunning))
 	serial.RawUARTPuts(" dQ=")
 	serial.RawUARTDecimal(uint64(staticDeadlineQueue.Size()))
+	serial.RawUARTPuts(" zp=")
+	serial.RawUARTDecimal(atomic.LoadUint64(&dbgZeroProgressCount))
+	serial.RawUARTPuts(" zt0=")
+	serial.RawUARTDecimal(atomic.LoadUint64(&dbgZeroProgressT0Count))
+	zpTID := atomic.LoadUint64(&dbgZPLastTID)
+	if zpTID != 0 {
+		serial.RawUARTPuts(" zTID=")
+		serial.RawUARTDecimal(zpTID)
+		serial.RawUARTPuts(":elr=")
+		serial.RawUARTHexCompact(atomic.LoadUint64(&dbgZPLastELR))
+		serial.RawUARTPuts(":spsr=")
+		serial.RawUARTHexCompact(atomic.LoadUint64(&dbgZPLastSPSR))
+	}
+	// Dump PC/SPSR/PID of ALL ready threads when many are stuck
+	if nReady >= 6 {
+		serial.RawUARTPuts("\n[PC")
+		for i := 0; i < len(threadList.Data); i++ {
+			if !threadList.InUse[i] {
+				continue
+			}
+			t := &threadList.Data[i]
+			if t.State == ThreadReady {
+				serial.RawUART(' ')
+				serial.RawUARTDecimal(uint64(uint16(t.TID)))
+				serial.RawUART('/')
+				serial.RawUARTDecimal(uint64(uint16(t.PID)))
+				serial.RawUART(':')
+				serial.RawUARTHexCompact(t.Context.ELR)
+			}
+		}
+		serial.RawUART(']')
+	}
 	serial.RawUARTPuts("\n")
 }
 
@@ -2904,6 +2941,22 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	// BEGIN CRITICAL SECTION - protect thread state modifications
 	savedDAIF := sf.DisableAndSaveDAIF()
 	schedulerLock.Lock()
+
+	// Check if the thread made progress since last preemption/schedule.
+	// Compare exception frame ELR (where timer interrupted) with saved context ELR
+	// (where thread was scheduled to resume). Same ELR = zero progress.
+	frame := (*[40]uint64)(unsafe.Pointer(uintptr(framePtr)))
+	if frame[32] == oldThread.Context.ELR {
+		if oldThread.TID == 0 {
+			atomic.AddUint64(&dbgZeroProgressT0Count, 1)
+		} else {
+			atomic.AddUint64(&dbgZeroProgressCount, 1)
+			// Store last zero-progress details for periodic diagnostic dump
+			atomic.StoreUint64(&dbgZPLastTID, uint64(uint16(oldThread.TID)))
+			atomic.StoreUint64(&dbgZPLastELR, frame[32])
+			atomic.StoreUint64(&dbgZPLastSPSR, frame[33])
+		}
+	}
 
 	// Save current thread's context from exception frame
 	SaveContextFromFrame(uintptr(framePtr))
