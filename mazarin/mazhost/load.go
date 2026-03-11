@@ -36,7 +36,7 @@ func loadMaz(useKernelToLoad bool, filename string, priest interface{}) (func(),
 	// Step 1: Load the .maz via kernel syscall
 	result, err := sys.LoadMaz(filename)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, err.Wrap(filename)
 	}
 	fmt.Printf("[mazhost] loaded %s: entry=0x%X base=0x%X size=0x%X\n",
 		filename, result.EntryPoint, result.LoadBase, result.LoadSize)

@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 // abi_stubs_amd64.s - ABI0 entry points and context switch for x86_64
 //
 // Exception frame layout (pushed by handler, from SP upward):

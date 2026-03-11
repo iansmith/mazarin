@@ -15,6 +15,10 @@ import (
 var dbgPreemptSwitchCount uint64
 var dbgPreemptNoNextCount uint64
 
+// Debug counters for deadline/signal wake tracking
+var dbgDeadlineWokeSleeper uint64
+var dbgSignalWokeFutex uint64
+
 // dbgLastTimerWakeTID records the TID of the last thread woken by PushTimerEventAndWake.
 // Read from the EVT handler for diagnostics.
 var dbgLastTimerWakeTID int32 = -1
@@ -207,8 +211,10 @@ func WakeSlotForIRQ(irqNum uint32) {
 	// from the ring, returning success instead of EAGAIN.
 	// Also restore X0/a0 (first arg = slotNum) which was overwritten with
 	// the return value by the SVC handler.
+	// On x86_64, restore RAX (syscall number) which was overwritten by the return value.
 	t.Context.RewindToSyscall()
 	t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+	t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
 	enqueueReadySchedLockHeld(t)
 	asm.Dsb() // Memory barrier to ensure enqueue is visible to other CPUs
 
@@ -287,7 +293,8 @@ func BlockOnSlot(slotNum int32) uintptr {
 
 	// Commit: block current thread, record in slot
 	t.State = ThreadBlockedSoftIRQ
-	t.SoftIRQSlotArg = uint64(slotNum) // Save for RewindToSyscall arg restore
+	t.SoftIRQSlotArg = uint64(slotNum)    // Save for RewindToSyscall arg restore
+	t.SoftIRQSyscallNum = 0x100A          // sysWaitSoftIRQ — for x86_64 RAX restore
 	softIRQSlotData[slotNum].blockedTID = t.TID
 	softIRQSlotData[slotNum].blockedThreadPtr = uintptr(unsafe.Pointer(t))
 
@@ -364,8 +371,10 @@ func PushTimerEventAndWake(sec, nsec uint64) {
 	// we just pushed, returning success instead of EAGAIN.
 	// Also restore X0/a0 (first arg = slotNum) which was overwritten with
 	// the return value by the SVC handler.
+	// On x86_64, restore RAX (syscall number) which was overwritten by the return value.
 	t.Context.RewindToSyscall()
 	t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+	t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
 	// Push to HEAD of queue so the timer goroutine is scheduled promptly.
 	// processStaticDeadlinesSchedLockHeld processes futex deadlines before
 	// the timer deadline, filling the queue with futex-cycling runtime Ms.

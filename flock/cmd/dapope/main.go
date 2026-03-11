@@ -251,8 +251,6 @@ func timerLoop(clock *clockRenderer, slot int) {
 
 	for {
 		loopIter++
-		// (diagnostic 'L' breadcrumb removed — with write delegation active,
-		// RawWrite(1, ...) goes to stdio's console display)
 
 		ts, err := sys.GetTime()
 		if err != nil {
@@ -285,12 +283,13 @@ func timerLoop(clock *clockRenderer, slot int) {
 			}
 		}
 
-		// Send SIGUSR1 to stdio every ~10 seconds
+		// Send SIGUSR1 to stdio every ~10 seconds.
+		// kill() targets a priest by PID; the kernel picks a thread in that priest.
 		if stdioPID > 0 && tick%10 == 0 {
 			if err := syscall.Kill(stdioPID, syscall.SIGUSR1); err != nil {
-				fmt.Printf("[dapope:timer] kill(%d, SIGUSR1) error: %v\n", stdioPID, err)
+				fmt.Printf("[dapope:timer] kill(priest %d, SIGUSR1) error: %v\n", stdioPID, err)
 			} else {
-				fmt.Printf("[dapope:timer] sent SIGUSR1 to PID %d\n", stdioPID)
+				fmt.Printf("[dapope:timer] sent SIGUSR1 to priest %d (kernel picks thread)\n", stdioPID)
 			}
 		}
 	}

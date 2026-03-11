@@ -1,4 +1,3 @@
-//go:build !test_stubs
 // launch_arm64.s - Assembly for userspace transition
 
 #include "textflag.h"

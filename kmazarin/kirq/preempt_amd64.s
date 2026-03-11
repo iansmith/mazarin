@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 // preempt_amd64.s - Timer IRQ handler for x86_64 thread preemption
 //
 // This is the pure-assembly timer IRQ handler that implements thread-level

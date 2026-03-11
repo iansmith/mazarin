@@ -1,4 +1,3 @@
-//go:build !test_stubs
 #include "textflag.h"
 
 // haltForever loops forever using WFI to save power.

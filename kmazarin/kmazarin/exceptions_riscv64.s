@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 // exceptions_riscv64.s - RISC-V trap handler
 #include "go_abi_macros_riscv64.h"
 //

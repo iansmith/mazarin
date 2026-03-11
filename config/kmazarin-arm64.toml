@@ -2,6 +2,12 @@
 
 timezone = "America/New_York"
 
+# When true, userspace stdout/stderr is routed only through the stdio priest
+# and NOT echoed to the serial port. This improves performance since serial
+# UART output is slow, but means serial logs won't contain priest output.
+# When false (default), all output is echoed to serial as well.
+suppress_serial = true
+
 # Bootstrap priests: loaded by the kernel during early boot
 [[bootstrap_priest]]
 name = "disk"

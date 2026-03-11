@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 package asm
 
 // MmioRead8 is implemented in mmio_arm64.s

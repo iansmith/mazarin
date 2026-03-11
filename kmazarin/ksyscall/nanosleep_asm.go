@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 package ksyscall
 
 // Forward declarations for functions provided via go:linkname from main package.

@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 package main
 
 // Exit hangs the system in an infinite loop

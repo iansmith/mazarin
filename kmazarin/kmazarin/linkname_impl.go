@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 package main
 
 import (

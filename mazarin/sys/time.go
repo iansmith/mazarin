@@ -59,5 +59,5 @@ var rawWriteBuf [1]byte
 
 func RawWrite(fd int, b byte) {
 	rawWriteBuf[0] = b
-	syscall.RawSyscall6(64, uintptr(fd), uintptr(unsafe.Pointer(&rawWriteBuf[0])), 1, 0, 0, 0)
+	syscall.RawSyscall6(syscall.SYS_WRITE, uintptr(fd), uintptr(unsafe.Pointer(&rawWriteBuf[0])), 1, 0, 0, 0)
 }

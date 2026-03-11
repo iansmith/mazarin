@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 #include "textflag.h"
 
 // x86_64 MMIO primitives for volatile hardware register access.

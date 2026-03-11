@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 #include "textflag.h"
 
 // SyscallFutex is called from dispatch.go via function pointer in syscallTable.

@@ -1,4 +1,4 @@
-//go:build amd64 && !test_stubs
+//go:build amd64
 
 #include "textflag.h"
 
@@ -61,8 +61,14 @@ rearm_fallback:
 rearm_write:
 	MOVQ	AX, R8			// R8 = LAPIC ticks
 
-	// Set LVT Timer: one-shot, unmasked, vector 0x30
+	// Ensure divide-by-1 (0x0B) matches PlatformTimerInit calibration.
+	// RearmTimerNow sets divide-by-16 (0x03) which makes all subsequent
+	// rearms 16x slower than calibrated if we don't reset it here.
 	MOVQ	$LAPIC_BASE, AX
+	MOVL	$0x0B, CX
+	MOVL	CX, LAPIC_DIVIDE_CONFIG(AX)
+
+	// Set LVT Timer: one-shot, unmasked, vector 0x30
 	MOVL	$ONESHOT_MODE_VEC30, CX
 	MOVL	CX, LAPIC_LVT_TIMER(AX)
 

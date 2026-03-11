@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 #include "textflag.h"
 
 // Exit hangs the system in an infinite loop.

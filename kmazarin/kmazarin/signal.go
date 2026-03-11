@@ -227,7 +227,7 @@ func DeliverPendingSignal(thread *Thread) {
 	// Clear this signal from pending (before delivery)
 	atomicAndUint64(&thread.PendingSignals, ^(uint64(1) << uint(signum-1)))
 
-	// Record delivery event (nosplit-safe — no serial prints here)
+	// Record delivery event
 	atomic.StoreUint64(&signalDeliverLastSig, uint64(signum))
 	atomic.StoreUint64(&signalDeliverLastTID, uint64(thread.TID))
 	atomic.StoreUint64(&signalDeliverLastHandler, action.Handler)
@@ -247,45 +247,14 @@ func DeliverPendingSignal(thread *Thread) {
 // Called after each userspace program launch to verify signal readiness.
 // Reads from the current priest's table for userspace threads, global for kernel.
 func SignalSelfTest(label string) {
+	action := GetSignalAction(_SIGURG)
 	serial.RawUARTPuts("[SigTest] ")
 	serial.RawUARTPuts(label)
-	serial.RawUARTPuts(": SIGURG=")
-	action := GetSignalAction(_SIGURG)
 	if action.Handler != 0 {
-		serial.RawUARTPuts("0x")
-		serial.RawUARTHex64(action.Handler)
-		serial.RawUARTPuts(" flags=0x")
-		serial.RawUARTHex64(action.Flags)
+		serial.RawUARTPuts(": ok\r\n")
 	} else {
-		serial.RawUARTPuts("(none)")
+		serial.RawUARTPuts(": no SIGURG handler\r\n")
 	}
-	serial.RawUARTPuts(" tramp=")
-	if sigreturnTrampolinePC != 0 {
-		serial.RawUARTPuts("0x")
-		serial.RawUARTHex64(uint64(sigreturnTrampolinePC))
-	} else {
-		serial.RawUARTPuts("(none)")
-	}
-	// Count total registered handlers from the appropriate table
-	var count int
-	t := GetCurrentThread()
-	if t != nil && t.PriestIdx >= 0 {
-		p := &proc.PriestListData[t.PriestIdx]
-		for i := 1; i < _NSIG; i++ {
-			if p.SignalActions[i].Handler != 0 {
-				count++
-			}
-		}
-	} else {
-		for i := 1; i < _NSIG; i++ {
-			if signalActions[i].Handler != 0 {
-				count++
-			}
-		}
-	}
-	serial.RawUARTPuts(" total=")
-	serial.RawUARTDecimal(uint64(count))
-	serial.RawUARTPuts("\r\n")
 }
 
 // SignalDeliveryStats prints a summary of signal delivery activity.

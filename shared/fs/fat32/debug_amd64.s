@@ -1,13 +1,11 @@
 // shared/fs/fat32/debug_amd64.s
-// Debug port output for FAT32 package
+// Debug output stub for x86_64 — no-op in userspace (OUTB requires Ring 0)
 
 #include "textflag.h"
 
 // func debugOut(c byte)
 //
-// Writes a byte to QEMU debug port 0xE9
+// No-op on x86_64 — OUTB is a privileged instruction that causes #GP in Ring 3.
+// Use sys.RawWrite for output from .maz modules instead.
 TEXT ·debugOut(SB), NOSPLIT, $0-1
-	MOVB c+0(FP), AL
-	MOVW $0xE9, DX
-	OUTB
 	RET

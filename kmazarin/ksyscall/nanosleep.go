@@ -68,13 +68,9 @@ func SyscallNanosleep(req, rem, _, _, _, _ uint64) int64 {
 	pid := getCurrentThreadPID()
 	if pid > 0 {
 		n := atomic.AddUint64(&dbgNanosleepCount, 1)
-		if n <= 30 {
+		if n <= 5 {
 			serial.RawUARTPuts("[ns:")
 			serial.RawUARTDecimal(uint64(uint16(currentTID)))
-			serial.RawUARTPuts("/p")
-			serial.RawUARTDecimal(uint64(uint16(pid)))
-			serial.RawUARTPuts("/")
-			serial.RawUARTDecimal(ticks)
 			serial.RawUART(']')
 		}
 	}

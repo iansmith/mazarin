@@ -43,35 +43,47 @@ const (
 type Error struct {
 	Code    ErrorCode
 	message string
+	context string // optional context (e.g., filename)
 }
 
-func (e *Error) Error() string { return e.message }
+func (e *Error) Error() string {
+	if e.context != "" {
+		return e.message + ": " + e.context
+	}
+	return e.message
+}
+
+// Wrap returns a new Error with the same code but additional context.
+// The original pre-defined Error is not modified.
+func (e *Error) Wrap(context string) *Error {
+	return &Error{Code: e.Code, message: e.message, context: context}
+}
 
 // Pre-defined errors (allocated once at init, never on the hot path).
 var (
-	ErrNotWritableData     = &Error{NotWritableData, "pointer not in writable memory"}
-	ErrNotInExec           = &Error{NotInExec, "address not in executable segment"}
-	ErrNotAccessibleMemory = &Error{NotAccessibleMemory, "pointer not in valid memory"}
-	ErrNullPointer         = &Error{NullPointer, "unexpected null pointer"}
-	ErrInvalidFilename     = &Error{InvalidFilename, "invalid filename"}
-	ErrTooLarge            = &Error{TooLarge, "value exceeds maximum"}
-	ErrTooSmall            = &Error{TooSmall, "value below minimum"}
-	ErrInvalidELF          = &Error{InvalidELF, "not a valid ELF file"}
-	ErrWrongArch           = &Error{WrongArch, "wrong architecture"}
-	ErrNoSymbol            = &Error{NoSymbol, "required symbol not found"}
-	ErrAlreadyLoaded       = &Error{AlreadyLoaded, "program already loaded"}
-	ErrNoSpace             = &Error{NoSpace, "no address space available"}
-	ErrFileNotFound        = &Error{FileNotFound, "file not found"}
-	ErrNoDelegate          = &Error{NoDelegate, "no delegate registered"}
-	ErrNotReady            = &Error{NotReady, "delegate priest not ready"}
-	ErrTransferFailed      = &Error{TransferFailed, "page transfer failed"}
-	ErrExceedsCapacity     = &Error{ExceedsCapacity, "request exceeds size of MemBlob"}
-	ErrReadOnlyBlob        = &Error{ReadOnlyBlob, "MemBlob is read-only"}
-	ErrMmapFailed          = &Error{MmapFailed, "mmap failed"}
-	ErrInvalidSize         = &Error{InvalidSize, "invalid size"}
-	ErrNilBuffer           = &Error{NilBuffer, "nil buffer"}
-	ErrNotImplemented      = &Error{NotImplemented, "not implemented"}
-	ErrPriestInitFailed    = &Error{PriestInitFailed, "MazarinPriest() returned an error"}
+	ErrNotWritableData     = &Error{Code: NotWritableData, message: "pointer not in writable memory"}
+	ErrNotInExec           = &Error{Code: NotInExec, message: "address not in executable segment"}
+	ErrNotAccessibleMemory = &Error{Code: NotAccessibleMemory, message: "pointer not in valid memory"}
+	ErrNullPointer         = &Error{Code: NullPointer, message: "unexpected null pointer"}
+	ErrInvalidFilename     = &Error{Code: InvalidFilename, message: "invalid filename"}
+	ErrTooLarge            = &Error{Code: TooLarge, message: "value exceeds maximum"}
+	ErrTooSmall            = &Error{Code: TooSmall, message: "value below minimum"}
+	ErrInvalidELF          = &Error{Code: InvalidELF, message: "not a valid ELF file"}
+	ErrWrongArch           = &Error{Code: WrongArch, message: "wrong architecture"}
+	ErrNoSymbol            = &Error{Code: NoSymbol, message: "required symbol not found"}
+	ErrAlreadyLoaded       = &Error{Code: AlreadyLoaded, message: "program already loaded"}
+	ErrNoSpace             = &Error{Code: NoSpace, message: "no address space available"}
+	ErrFileNotFound        = &Error{Code: FileNotFound, message: "file not found"}
+	ErrNoDelegate          = &Error{Code: NoDelegate, message: "no delegate registered"}
+	ErrNotReady            = &Error{Code: NotReady, message: "delegate priest not ready"}
+	ErrTransferFailed      = &Error{Code: TransferFailed, message: "page transfer failed"}
+	ErrExceedsCapacity     = &Error{Code: ExceedsCapacity, message: "request exceeds size of MemBlob"}
+	ErrReadOnlyBlob        = &Error{Code: ReadOnlyBlob, message: "MemBlob is read-only"}
+	ErrMmapFailed          = &Error{Code: MmapFailed, message: "mmap failed"}
+	ErrInvalidSize         = &Error{Code: InvalidSize, message: "invalid size"}
+	ErrNilBuffer           = &Error{Code: NilBuffer, message: "nil buffer"}
+	ErrNotImplemented      = &Error{Code: NotImplemented, message: "not implemented"}
+	ErrPriestInitFailed    = &Error{Code: PriestInitFailed, message: "MazarinPriest() returned an error"}
 )
 
 // codeToError maps ErrorCode values to pre-defined *Error values.

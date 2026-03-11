@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 package ksyscall
 
 // Signal-related forward declarations — provided by main package via go:linkname.

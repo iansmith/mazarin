@@ -1,6 +1,3 @@
-
-//go:build !test_stubs
-
 #include "textflag.h"
 
 // TimerIRQHandlerAsm is the pure assembly timer IRQ handler.

@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 
 // exceptions_arm64.s - Kmazarin exception handlers (Go/Plan9 assembly)
 //
@@ -978,6 +976,11 @@ sync_sp_ok:
 	// CRITICAL: Force IRQs enabled in SPSR by clearing DAIF.I bit (bit 7 = 0x80)
 	// This ensures IRQs are enabled after ERET, preventing stuck-disabled-IRQ chains
 	BIC	$0x80, R11, R11
+	// Mask IRQs before writing ELR/SPSR to prevent timer corruption.
+	// A nested page fault during the SVC handler's Go code clears DAIF.I
+	// (via sync_return's own BIC above). If a timer fires between MSR and
+	// ERET, it overwrites ELR/SPSR with hardware-set values.
+	WORD	$0xD50342DF  // MSR DAIFSet, #2 — disable IRQs
 	// MSR ELR_EL1, X10 - use WORD to avoid assembler issues
 	WORD	$0xD518402A
 	// MSR SPSR_EL1, X11 - use WORD to avoid assembler issues
@@ -1385,6 +1388,11 @@ irq_bad_elr_halt:
 	B	irq_bad_elr_halt
 
 irq_elr_ok:
+	// Mask IRQs before writing ELR/SPSR to prevent timer corruption.
+	// If Go code called during preemption check triggered a page fault,
+	// sync_return's BIC cleared DAIF.I. A timer between MSR and ERET
+	// overwrites ELR/SPSR with hardware-set values → corrupted ERET.
+	WORD	$0xD50342DF  // MSR DAIFSet, #2 — disable IRQs
 	MSR	R10, ELR_EL1
 	MSR	R11, SPSR_EL1
 
@@ -1899,6 +1907,19 @@ el0_bad_elr_halt:
 	B	el0_bad_elr_halt
 
 el0_elr_ok:
+	// CRITICAL: Mask IRQs before writing ELR/SPSR to system registers.
+	// After a nested page fault during the SVC handler's Go code,
+	// sync_return's BIC clears DAIF.I, leaving PSTATE.I=0 (IRQs enabled).
+	// Without this mask, a timer IRQ between MSR ELR/SPSR and ERET would
+	// overwrite ELR_EL1/SPSR_EL1 with hardware-set values (kernel PC, EL1h).
+	// Our ERET would then jump back into the handler with SP at stack top
+	// (frame already popped) — causing the data abort at ldr x28, [sp, #224].
+	// ERET restores PSTATE from SPSR (DAIF.I=0 for EL0), re-enabling IRQs.
+	// Under TCG this is a no-op (PSTATE.I already 1 or timer granularity
+	// prevents hitting this window). Under HVF the real hardware timer can
+	// fire between any two instructions.
+	WORD	$0xD50342DF  // MSR DAIFSet, #2 — disable IRQs
+
 	MSR	R10, ELR_EL1
 	MSR	R11, SPSR_EL1
 
@@ -1906,6 +1927,8 @@ el0_elr_ok:
 	// R10/R11 are dead (will be overwritten by frame restore below).
 	// svcDepth stayed 1 through the entire el0_return path until now,
 	// so timer preemption was blocked by svcDepth even without the M[0] check.
+	// With IRQs now masked (DAIFSet above), this is safe — no timer can
+	// see svcDepth=0 and attempt preemption before ERET.
 	MOVW	ZR, ·svcDepth(SB)
 
 	// Restore X28-X30

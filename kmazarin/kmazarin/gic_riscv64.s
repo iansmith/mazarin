@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 #include "textflag.h"
 
 // ReadTime reads the time CSR (rdtime pseudo-instruction).

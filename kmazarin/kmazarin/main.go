@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
-	"mazzy/kmazarin/deviceapi"
 	"mazzy/kmazarin/device/virtio/block"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/device/virtio/input"
@@ -13,7 +12,6 @@ import (
 	"mazzy/shared/constants"
 	"mazzy/shared/fs/fat32"
 	"mazzy/shared/toml"
-	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/ksyscall"
@@ -388,28 +386,16 @@ func testRuntimeReadiness() bool {
 // stop the timer from generating interrupt requests.
 func DisableTimerIRQ() {
 	ktimer.Disable()
-	if cachedIC != nil {
-		cachedIC.DisableIRQ(ktimer.IRQNum())
-	}
+	disableTimerAtController()
 }
 
 // printTimerDebug is defined in debug_arm64.go (ARM64-specific).
 
-// cachedIC holds a reference to the interrupt controller for timer enable/disable.
-// Set once during boot after device discovery.
-var cachedIC deviceapi.InterruptController
-
-// initCachedIC must be called once during boot after device discovery.
-func initCachedIC() {
-	if ic, ok := device.GetInterruptController(); ok {
-		cachedIC = ic
-	}
-}
-
 // EnableTimerIRQ enables the timer IRQ.
 // On RISC-V, the timer is controlled directly via SIE CSR (STIE bit),
-// so it works without an interrupt controller. On ARM64/x86, the timer
-// also needs to be enabled at the interrupt controller (GIC/APIC).
+// so it works without an interrupt controller. On ARM64, the timer
+// also needs to be enabled at the GIC. On x86_64, the LAPIC timer
+// is local and doesn't need the IOAPIC.
 func EnableTimerIRQ() {
 	// CRITICAL: Rearm timer BEFORE enabling the IRQ at the controller.
 	// On ARM64, IRQ 27 is edge-triggered. If the timer line is already
@@ -419,9 +405,7 @@ func EnableTimerIRQ() {
 	// the next expiration creates a proper edge.
 	// On RISC-V, PlatformRearmTimer also sets the STIE bit in SIE.
 	ktimer.Rearm(kirq.TimerRearmTicks)
-	if cachedIC != nil {
-		cachedIC.EnableIRQ(ktimer.IRQNum())
-	}
+	enableTimerAtController()
 }
 
 // testDeviceDiscovery tests the DTB-based device discovery system
@@ -622,29 +606,7 @@ func initVirtIOInputDevices() {
 		// AMD64 uses MSI-X (LAPIC vectors). On AMD64, MSI-X bypasses the IOAPIC
 		// entirely — the device writes directly to the LAPIC, so we only need
 		// to register a no-op handler with kirq (in case DispatchIRQ is called).
-		if cachedIC != nil && irqNum != 0 {
-			localIRQ := irqNum
-			cachedIC.RegisterHandler(localIRQ, func() {
-				// No-op: events handled by NonTimerIRQTopHalf via assembly top-half.
-				_ = localIRQ
-			})
-			if runtime.GOARCH != "amd64" {
-				// ARM64/RISC-V: configure interrupt controller for this IRQ.
-				// PCI INTx is level-triggered. EOIR is written after the
-				// handler reads ISR and deasserts INTx, so level-triggered
-				// works correctly without an IRQ storm.
-				//
-				// Clear any pending INTx assertion before enabling the GIC IRQ.
-				// VirtIO devices assert INTx during init (DRIVER_OK triggers
-				// a config change notification). Without this, the IRQ fires
-				// immediately but SetTopHalfDev hasn't been called yet, so
-				// the handler returns without reading ISR → IRQ storm.
-				asm.MmioRead8(dev.ISRBase)
-				cachedIC.SetIRQPriority(localIRQ, 0xA0)
-				cachedIC.SetIRQTarget(localIRQ, 0x01)
-				cachedIC.EnableIRQ(localIRQ)
-			}
-		}
+		enableDeviceIRQ(irqNum, dev.ISRBase)
 	}
 
 	// Wire soft IRQ slot fire callback for future userspace event delivery
@@ -808,8 +770,8 @@ func simpleMain() {
 	// Must be called before EnableTimerIRQ().
 	initTimerFrequency()
 
-	// Cache GIC pointer for nosplit-safe timer IRQ enable/disable
-	initCachedIC()
+	// Cache interrupt controller pointer for per-arch IRQ enable/disable
+	initInterruptController()
 
 	// Initialize VirtIO Input devices (keyboard, mouse).
 	// This also initializes the platform interrupt infrastructure (GICv2m SPI
@@ -864,15 +826,10 @@ func simpleMain() {
 	}
 
 	// Wire up block device IRQ: register with top-half dispatcher and
-	// enable the GIC SPI so INTx interrupts reach the CPU.
+	// enable at the interrupt controller so interrupts reach the CPU.
 	if irq := block.GetIRQNum(); irq != 0 {
 		SetBlockIRQ(irq, block.GetISRBase(), block.GetIOCompletePtr())
-		if cachedIC != nil {
-			cachedIC.SetIRQPriority(irq, 0xA0)
-			cachedIC.SetIRQTarget(irq, 0x01)       // Target CPU 0
-			cachedIC.SetIRQEdgeTriggered(irq)       // GICv2m uses qemu_irq_pulse (edge)
-			cachedIC.EnableIRQ(irq)
-		}
+		enableBlockDeviceIRQ(irq)
 	}
 
 	// CRITICAL: Enable IRQs at CPU AFTER GIC is initialized (matches Cardinal's order)
@@ -940,10 +897,13 @@ func simpleMain() {
 	ResetTickAccounting(startingTicksProgram)
 	RestoreIRQs(savedDAIF)
 
-	// Suppress Go runtime write1 → UART output now that boot is complete.
-	// Panic/traceback paths temporarily unsuppress (see runtime-patches/panic.go).
-	// TEMPORARILY DISABLED for debugging ARM64 userspace crash:
-	// atomic.StoreUint32(&suppressSerial, 1)
+	// Suppress serial echo of userspace stdout/stderr if configured.
+	// When suppress_serial = true in kmazarin.toml, only the stdio priest
+	// writes to the serial port. Panic/traceback paths temporarily
+	// unsuppress (see runtime-patches/panic.go).
+	if bootCfg != nil && bootCfg.SuppressSerial {
+		atomic.StoreUint32(&suppressSerial, 1)
+	}
 
 	// Initialize kernel worker goroutines. Must be done
 	// before KernelIdleLoop since the workers need normal goroutine stacks.

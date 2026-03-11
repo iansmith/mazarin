@@ -1,4 +1,4 @@
-//go:build arm64 && !test_stubs
+//go:build arm64
 
 // ARM64 SMP support using PSCI (Power State Coordination Interface).
 //

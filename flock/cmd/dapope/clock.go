@@ -36,6 +36,7 @@ type clockRenderer struct {
 func newClockRenderer(fb *sys.FramebufferInfo) *clockRenderer {
 	otFont, err := opentype.Parse(clockFontData)
 	if err != nil {
+		fmt.Printf("[dapope] clock font parse failed: %v\n", err)
 		return nil
 	}
 	face, err := opentype.NewFace(otFont, &opentype.FaceOptions{
@@ -44,6 +45,7 @@ func newClockRenderer(fb *sys.FramebufferInfo) *clockRenderer {
 		Hinting: font.HintingFull,
 	})
 	if err != nil {
+		fmt.Printf("[dapope] clock font face failed: %v\n", err)
 		return nil
 	}
 

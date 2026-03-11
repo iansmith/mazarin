@@ -1,4 +1,4 @@
-//go:build amd64 && !test_stubs
+//go:build amd64
 
 package main
 
@@ -13,7 +13,5 @@ const com1IOAPICInput uint32 = 4
 func initCOM1Uart() {
 	serial.EnableRxInterrupt()
 	SetupUartSoftIRQ(com1IOAPICInput)
-	if cachedIC != nil {
-		cachedIC.EnableIRQ(com1IOAPICInput)
-	}
+	enableIOAPICIRQ(com1IOAPICInput)
 }

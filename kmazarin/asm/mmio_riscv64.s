@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 #include "textflag.h"
 
 // RISC-V MMIO primitives for volatile hardware register access.

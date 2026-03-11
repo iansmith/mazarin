@@ -128,6 +128,13 @@ func (p *parser) parseTopLevel(key string) {
 			copyToArray(p.cfg.Timezone[:], val)
 		}
 		p.skipLine()
+	} else if ch == 't' || ch == 'f' {
+		val := p.readBool()
+		switch key {
+		case "suppress_serial":
+			p.cfg.SuppressSerial = val
+		}
+		p.skipLine()
 	} else {
 		val := p.readInt()
 		switch key {
@@ -219,6 +226,15 @@ func (p *parser) readQuotedString() string {
 		p.pos++ // skip closing "
 	}
 	return string(p.data[start:end])
+}
+
+// readBool reads a TOML boolean (true or false).
+func (p *parser) readBool() bool {
+	start := p.pos
+	for p.pos < len(p.data) && p.data[p.pos] >= 'a' && p.data[p.pos] <= 'z' {
+		p.pos++
+	}
+	return string(p.data[start:p.pos]) == "true"
 }
 
 // readInt reads a decimal integer.

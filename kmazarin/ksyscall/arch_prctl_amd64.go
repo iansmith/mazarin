@@ -1,4 +1,4 @@
-//go:build amd64 && !test_stubs
+//go:build amd64
 
 package ksyscall
 

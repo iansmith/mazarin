@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 // preempt_riscv64.s - Timer IRQ handler for RISC-V thread preemption
 //
 // Pure-assembly timer IRQ handler that implements thread-level preemption.

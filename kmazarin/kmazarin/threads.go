@@ -335,7 +335,10 @@ type Thread struct {
 	// and re-execute SyscallWaitSoftIRQ with the correct first argument.
 	// On ARM64/RISC-V the return value overwrites the arg0 register (X0/a0),
 	// so we must restore it before re-executing the SVC instruction.
-	SoftIRQSlotArg uint64
+	// On x86_64, RAX serves as both syscall number and return value, so we
+	// also save the original syscall number for restoration on rewind.
+	SoftIRQSlotArg    uint64
+	SoftIRQSyscallNum uint64
 
 	// Signal delivery state
 	PendingSignals  uint64 // Bitmask of pending signals (bit N = signal N+1)
@@ -448,6 +451,7 @@ func WakeThreadForSignal(t *Thread) {
 		t.FutexAddr = 0
 		blockedQueue.Pluck(t.TID)
 		enqueueReadySchedLockHeld(t)
+		atomic.AddUint64(&dbgSignalWokeFutex, 1)
 	case ThreadSleeping:
 		t.State = ThreadReady
 		sleepingQueue.Pluck(t.TID)
@@ -977,7 +981,6 @@ func processStaticDeadlinesSchedLockHeld() {
 		// Timer deadlines are encoded as negative slot IDs: -(slot+2).
 		// Decode and push events to the slot, waking whatever thread is blocked.
 		if tid <= -2 {
-			serial.RawUARTPuts("Td") // breadcrumb: timer deadline expired
 			sec, nsec := ktime.GetTime()
 			PushTimerEventAndWake(sec, nsec)
 			continue
@@ -997,6 +1000,7 @@ func processStaticDeadlinesSchedLockHeld() {
 			t.State = ThreadReady
 			sleepingQueue.Pluck(ThreadId(tid))
 			enqueueReadySchedLockHeld(t)
+			atomic.AddUint64(&dbgDeadlineWokeSleeper, 1)
 
 			// When waking a sleeping thread (e.g., sysmon from usleep),
 			// also wake that priest's netpoll waiter if one exists.
@@ -1013,7 +1017,6 @@ func processStaticDeadlinesSchedLockHeld() {
 							wt.State = ThreadReady
 							sleepingQueue.Pluck(ThreadId(int16(waiterTID)))
 							enqueueReadySchedLockHeld(wt)
-							serial.RawUARTPuts("Dn") // breadcrumb: deadline woke netpoll waiter
 						}
 					}
 				}
@@ -1052,75 +1055,18 @@ func ProcessDeadlinesTopHalf() {
 		softIRQConsole.CheckPendingWake()
 	}
 
-	// Debug: print event flow stats every ~5 seconds (assuming ~100 Hz timer)
-	if cnt%500 == 0 {
-		kPush := topHalfKbd.dbgPushOK
-		kFail := topHalfKbd.dbgPushFail
-		kIRQ := topHalfKbd.dbgIRQCount
-		mPush := topHalfMouse.dbgPushOK
-		mFail := topHalfMouse.dbgPushFail
-		mIRQ := topHalfMouse.dbgIRQCount
-		drain := atomic.LoadUint32(&dbgDrainTotal)
-		drainC := atomic.LoadUint32(&dbgDrainCalls)
-		serial.RawUARTPuts("\n[EVT] kbd irq=")
-		serial.RawUARTDecimal(uint64(kIRQ))
-		serial.RawUARTPuts(" ok=")
-		serial.RawUARTDecimal(uint64(kPush))
-		serial.RawUARTPuts(" fail=")
-		serial.RawUARTDecimal(uint64(kFail))
-		serial.RawUARTPuts(" | mouse irq=")
-		serial.RawUARTDecimal(uint64(mIRQ))
-		serial.RawUARTPuts(" ok=")
-		serial.RawUARTDecimal(uint64(mPush))
-		serial.RawUARTPuts(" fail=")
-		serial.RawUARTDecimal(uint64(mFail))
-		serial.RawUARTPuts(" | drain=")
-		serial.RawUARTDecimal(uint64(drain))
-		serial.RawUARTPuts("/")
-		serial.RawUARTDecimal(uint64(drainC))
-		serial.RawUARTPuts(" s0=")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgDrainPerSlot[0])))
-		serial.RawUARTPuts(" s1=")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgDrainPerSlot[1])))
-		serial.RawUARTPuts(" s2=")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgDrainPerSlot[2])))
-		serial.RawUARTPuts(" s3=")
-		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgDrainPerSlot[3])))
-		mHead := atomic.LoadUint32(&topHalfMouseRing.head)
-		mTail := atomic.LoadUint32(&topHalfMouseRing.tail)
-		serial.RawUARTPuts(" mring=")
-		serial.RawUARTDecimal(uint64(mTail - mHead))
-		tHead := atomic.LoadUint32(&topHalfTimerRing.head)
-		tTail := atomic.LoadUint32(&topHalfTimerRing.tail)
-		serial.RawUARTPuts(" tring=")
-		serial.RawUARTDecimal(uint64(tTail - tHead))
-		serial.RawUARTPuts(" t3h=")
-		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.DbgSlot3DrainHit))
-		serial.RawUARTPuts("/")
-		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.DbgSlot3DrainMiss))
-		serial.RawUARTPuts(" ksvc=")
-		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.KernelSVCCount))
-		serial.RawUARTPuts(" tsvc=")
+	// Compact stats every ~10 seconds (assuming ~100 Hz timer)
+	if cnt%1000 == 0 {
+		serial.RawUARTPuts("\n[E] svc=")
 		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.TotalSVCCount))
 		serial.RawUARTPuts(" fw=")
 		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.FutexWaitBlocked))
-		serial.RawUARTPuts(" fW=")
+		serial.RawUARTPuts("/")
 		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.FutexWakeCalls))
-		tidVal := int16(-1)
-		ct := GetCurrentThread()
-		if ct != nil {
-			tidVal = int16(ct.TID)
-		}
-		serial.RawUARTPuts(" tid=")
-		serial.RawUARTDecimal(uint64(uint16(tidVal)))
-		serial.RawUARTPuts(" pSw=")
-		serial.RawUARTDecimal(atomic.LoadUint64(&dbgPreemptSwitchCount))
-		serial.RawUARTPuts(" pNo=")
-		serial.RawUARTDecimal(atomic.LoadUint64(&dbgPreemptNoNextCount))
 		printThreadStateSummary()
 	}
-	// Heartbeat: print '.' every 100 ticks to confirm timer is alive
-	if cnt%100 == 0 {
+	// Heartbeat: print '.' every ~5 seconds to confirm timer is alive
+	if cnt%500 == 0 {
 		serial.RawUART('.')
 	}
 }
@@ -1175,12 +1121,12 @@ var trapReturnCount uint64
 var dbgZeroProgressCount uint64
 var dbgZeroProgressT0Count uint64 // zero-progress for TID 0 only (idle loop, expected)
 var dbgZPLastTID uint64           // TID of last non-TID0 zero-progress thread
-var dbgZPLastELR uint64           // ELR of last non-TID0 zero-progress thread
-var dbgZPLastSPSR uint64          // SPSR of last non-TID0 zero-progress thread
-var dbgBadELR uint64              // DEBUG: kernel ELR saved for userspace thread
-var dbgBadSPSR uint64
+var dbgZPLastPC uint64            // PC of last non-TID0 zero-progress thread
+var dbgZPLastPS uint64            // Processor state of last non-TID0 zero-progress thread
+var dbgBadPC uint64               // DEBUG: kernel PC saved for userspace thread
+var dbgBadPS uint64
 var dbgBadTID uint64
-var dbgBadELRCount uint64
+var dbgBadPCCount uint64
 
 func printThreadStateSummary() {
 	var nReady, nFutex, nSleep, nSoftIRQ, nRunning int
@@ -1212,52 +1158,6 @@ func printThreadStateSummary() {
 	serial.RawUARTDecimal(uint64(nSoftIRQ))
 	serial.RawUARTPuts(" X=")
 	serial.RawUARTDecimal(uint64(nRunning))
-	serial.RawUARTPuts(" dQ=")
-	serial.RawUARTDecimal(uint64(staticDeadlineQueue.Size()))
-	serial.RawUARTPuts(" zp=")
-	serial.RawUARTDecimal(atomic.LoadUint64(&dbgZeroProgressCount))
-	serial.RawUARTPuts(" zt0=")
-	serial.RawUARTDecimal(atomic.LoadUint64(&dbgZeroProgressT0Count))
-	zpTID := atomic.LoadUint64(&dbgZPLastTID)
-	if zpTID != 0 {
-		serial.RawUARTPuts(" zTID=")
-		serial.RawUARTDecimal(zpTID)
-		serial.RawUARTPuts(":elr=")
-		serial.RawUARTHexCompact(atomic.LoadUint64(&dbgZPLastELR))
-		serial.RawUARTPuts(":spsr=")
-		serial.RawUARTHexCompact(atomic.LoadUint64(&dbgZPLastSPSR))
-	}
-	// DEBUG: report kernel-ELR corruption for userspace threads
-	badN := atomic.LoadUint64(&dbgBadELRCount)
-	if badN != 0 {
-		serial.RawUARTPuts(" BAD_ELR=")
-		serial.RawUARTDecimal(badN)
-		serial.RawUARTPuts(":tid=")
-		serial.RawUARTDecimal(atomic.LoadUint64(&dbgBadTID))
-		serial.RawUARTPuts(":elr=")
-		serial.RawUARTHexCompact(atomic.LoadUint64(&dbgBadELR))
-		serial.RawUARTPuts(":spsr=")
-		serial.RawUARTHexCompact(atomic.LoadUint64(&dbgBadSPSR))
-	}
-	// Dump PC/SPSR/PID of ALL ready threads when many are stuck
-	if nReady >= 6 {
-		serial.RawUARTPuts("\n[PC")
-		for i := 0; i < len(threadList.Data); i++ {
-			if !threadList.InUse[i] {
-				continue
-			}
-			t := &threadList.Data[i]
-			if t.State == ThreadReady {
-				serial.RawUART(' ')
-				serial.RawUARTDecimal(uint64(uint16(t.TID)))
-				serial.RawUART('/')
-				serial.RawUARTDecimal(uint64(uint16(t.PID)))
-				serial.RawUART(':')
-				serial.RawUARTHexCompact(t.Context.ELR)
-			}
-		}
-		serial.RawUART(']')
-	}
 	serial.RawUARTPuts("\n")
 }
 
@@ -1344,7 +1244,6 @@ func KernelIdleLoop() {
 		RestoreIRQs(savedDAIF)
 
 		if hasReady {
-			serial.RawUARTPuts("Ir") // breadcrumb: idle loop sees ready thread
 			// A thread is ready - yield to it.
 			// YieldToReadyThread saves thread 0's context, enqueues it,
 			// and ERETSs to the next ready thread. Thread 0 resumes here
@@ -1357,10 +1256,8 @@ func KernelIdleLoop() {
 		// No ready threads — wait for an interrupt (timer tick, etc.)
 		// IRQs MUST be enabled for WFI so the timer interrupt can fire
 		wfiCount++
-		if wfiCount <= 5 || wfiCount%100 == 0 {
-			serial.RawUARTPuts("\n[WFI#")
-			serial.RawUARTDecimal(wfiCount)
-			serial.RawUARTPuts("]")
+		if wfiCount <= 3 {
+			serial.RawUARTPuts("[WFI]")
 		}
 		EnableIRQs()
 		WaitForInterrupt()
@@ -1395,7 +1292,6 @@ func SaveThread0AndYield() uint64 {
 			if mPtr != 0 {
 				locks := *(*int32)(unsafe.Pointer(mPtr + mLocksOff))
 				if locks != 0 {
-					serial.RawUARTPuts("Ym") // breadcrumb: m.locks blocked yield
 					return 0
 				}
 			}
@@ -1443,7 +1339,6 @@ func SaveThread0AndYield() uint64 {
 		t0.TicksStartedRunning = currentTime
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
-		serial.RawUARTPuts("Yn") // breadcrumb: no next thread found
 		return 0
 	}
 
@@ -2671,11 +2566,6 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 		}
 	}
 
-	if woken == 0 && queueSize > 0 {
-		serial.RawUARTPuts("W0@") // breadcrumb: futex_wake no match (threads blocked on different addr)
-		serial.RawUARTHexCompact(futexAddr)
-		serial.RawUARTPuts(" ")
-	}
 
 	if sf.StateCheck != nil {
 		sf.StateCheck("futex-wake-complete")
@@ -2959,33 +2849,33 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	schedulerLock.Lock()
 
 	// Check if the thread made progress since last preemption/schedule.
-	// Compare exception frame ELR (where timer interrupted) with saved context ELR
-	// (where thread was scheduled to resume). Same ELR = zero progress.
+	// Compare exception frame PC (where timer interrupted) with saved context PC
+	// (where thread was scheduled to resume). Same PC = zero progress.
 	frame := (*[40]uint64)(unsafe.Pointer(uintptr(framePtr)))
-	if frame[32] == oldThread.Context.ELR {
+	if frame[excFramePCIndex] == oldThread.Context.GetPC() {
 		if oldThread.TID == 0 {
 			atomic.AddUint64(&dbgZeroProgressT0Count, 1)
 		} else {
 			atomic.AddUint64(&dbgZeroProgressCount, 1)
 			// Store last zero-progress details for periodic diagnostic dump
 			atomic.StoreUint64(&dbgZPLastTID, uint64(uint16(oldThread.TID)))
-			atomic.StoreUint64(&dbgZPLastELR, frame[32])
-			atomic.StoreUint64(&dbgZPLastSPSR, frame[33])
+			atomic.StoreUint64(&dbgZPLastPC, frame[excFramePCIndex])
+			atomic.StoreUint64(&dbgZPLastPS, frame[excFramePSIndex])
 		}
 	}
 
 	// Save current thread's context from exception frame
 	SaveContextFromFrame(uintptr(framePtr))
 
-	// DEBUG: detect kernel-address ELR saved for a userspace thread.
+	// DEBUG: detect kernel-address PC saved for a userspace thread.
 	// This would mean preemption happened while the thread was inside
-	// an SVC handler (EL1), which svcDepth should have prevented.
+	// a syscall handler, which svcDepth should have prevented.
 	// Store in globals (zero nosplit overhead) — printed by EVT periodic dump.
-	if oldThread.PID > 0 && frame[32] >= 0xFFFFFFFF00000000 {
-		atomic.StoreUint64(&dbgBadELR, frame[32])
-		atomic.StoreUint64(&dbgBadSPSR, frame[33])
+	if oldThread.PID > 0 && frame[excFramePCIndex] >= 0xFFFFFFFF00000000 {
+		atomic.StoreUint64(&dbgBadPC, frame[excFramePCIndex])
+		atomic.StoreUint64(&dbgBadPS, frame[excFramePSIndex])
 		atomic.StoreUint64(&dbgBadTID, uint64(uint16(oldThread.TID)))
-		atomic.AddUint64(&dbgBadELRCount, 1)
+		atomic.AddUint64(&dbgBadPCCount, 1)
 	}
 
 	oldThread.State = ThreadReady
@@ -3046,14 +2936,11 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	}
 
 	n := atomic.AddUint64(&dbgPreemptSwitchCount, 1)
-	// Log first few preemption switches for debugging
-	if n <= 30 {
+	if n <= 5 {
 		serial.RawUARTPuts("[P:")
 		serial.RawUARTDecimal(uint64(uint16(oldThread.TID)))
 		serial.RawUART('>')
 		serial.RawUARTDecimal(uint64(uint16(next.TID)))
-		serial.RawUART(':')
-		serial.RawUARTHexCompact(next.Context.GetPC())
 		serial.RawUART(']')
 	}
 	// Priest-level tick accounting
@@ -3128,14 +3015,6 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 }
 
 // Exception frame offsets (must match exceptions.s)
-const (
-	excFrameX0     = 0   // x0, x1, x2, ... stored sequentially
-	excFrameX28    = 224 // x28 (g pointer)
-	excFrameX29X30 = 232 // x29, x30 (FP, LR)
-	excFrameSPEL0  = 288 // Saved SP_EL0
-	excFrameELR    = 256 // ELR_EL1
-	excFrameSPSR   = 264 // SPSR_EL1
-)
 
 // SaveContextFromFrame is defined in save_context_<arch>.go (per-architecture).
 // doContextSwitchABI0 is defined in save_context_<arch>.go (per-architecture).

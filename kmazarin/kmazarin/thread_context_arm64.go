@@ -1,4 +1,4 @@
-//go:build arm64 && !test_stubs
+//go:build arm64
 
 package main
 
@@ -83,6 +83,12 @@ func (ctx *ThreadContext) RewindToSyscall() { ctx.ELR -= 4 }
 //go:nosplit
 func (ctx *ThreadContext) RestoreSyscallArg0(v uint64) { ctx.X[0] = v }
 
+// RestoreSyscallNum is a no-op on ARM64. The syscall number is in X8 which
+// is NOT overwritten by the return value (X0), so no restoration needed.
+//
+//go:nosplit
+func (ctx *ThreadContext) RestoreSyscallNum(v uint64) {}
+
 // SetCloneTLS is a no-op on ARM64 (no FS_BASE, TLS is handled via TPIDR_EL0).
 //
 //go:nosplit
@@ -111,6 +117,12 @@ func initThread0Context(ctx *ThreadContext) {}
 //
 //go:nosplit
 func initThread0PageTable() uintptr { return 0 }
+
+// Exception frame indices for portable access from shared code.
+const (
+	excFramePCIndex = 32 // ELR_EL1 in ARM64 exception frame
+	excFramePSIndex = 33 // SPSR_EL1 in ARM64 exception frame
+)
 
 // SetupForCloneChild initializes the context for a clone child thread.
 // Clears x0 (child returns 0), sets stack/return address, enables IRQs,

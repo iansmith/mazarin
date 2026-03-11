@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 #include "textflag.h"
 
 // WaitForInterrupt executes the HLT instruction to wait for an interrupt.

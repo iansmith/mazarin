@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 package main
 
 // Assembly function declarations — architecture-neutral.
@@ -9,8 +7,9 @@ package main
 //go:nosplit
 func GetExceptionVectorBase() uintptr
 
-//go:nosplit
-func ExceptionVectorTable()
+// ExceptionVectorTable has NO Go declaration — it's a pure assembly symbol
+// used only by diplomat's ELF symbol lookup. Without a Go declaration,
+// the linker emits "main.ExceptionVectorTable" (no .abi0 suffix).
 
 //go:nosplit
 func SetVBAR(addr uintptr)

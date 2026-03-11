@@ -1,4 +1,4 @@
-//go:build riscv64 && !test_stubs
+//go:build riscv64
 
 package main
 

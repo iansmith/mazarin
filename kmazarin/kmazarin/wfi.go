@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 package main
 
 // WaitForInterrupt puts the CPU into a low-power idle state until

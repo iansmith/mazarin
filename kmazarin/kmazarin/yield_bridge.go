@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 package main
 
 // kmazarinYieldImpl is called from the runtime overlay (usleep, futex) to yield

@@ -55,9 +55,9 @@ func LoadMaz(filename string) (*MazLoadResult, *merror.Error) {
 
 	if r1 != 0 {
 		if e := merror.FromCode(merror.ErrorCode(r1)); e != nil {
-			return nil, e
+			return nil, e.Wrap(filename)
 		}
-		return nil, merror.ErrInvalidELF
+		return nil, merror.ErrInvalidELF.Wrap(filename)
 	}
 
 	return &result, nil

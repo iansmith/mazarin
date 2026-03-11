@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 // syscall_amd64.s - x86_64 SYSCALL MSR helpers and ABI0 stubs
 
 #include "textflag.h"

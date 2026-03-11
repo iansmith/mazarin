@@ -73,42 +73,23 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 			return -11 // -EAGAIN: value already changed
 		}
 
-		// Add a deadline for the blocked thread. For explicit timeouts,
-		// use the caller's timespec. For untimed waits, add an implicit
-		// 100ms safety-net deadline. Even though sysmon can send SIGURG
-		// via tgkill to wake futex-blocked threads, the implicit deadline
-		// covers edge cases during early init (before sysmon is created
-		// by newm, or before initsig installs the SIGURG handler).
-		// 100ms balances init speed vs steady-state efficiency:
-		//   10ms → too frequent (24 wakes/s from idle template threads)
-		//   1s   → too slow (Go runtime init needs many wake cycles)
-		//   100ms → clean: fu counter stops growing in steady state
-		{
+		// Add a deadline only if the caller provided an explicit timeout.
+		// Untimed futex_wait blocks until futex_wake — no implicit deadline.
+		if timeout != 0 {
+			atomic.AddUint64(&DbgFutexExplicitTimeout, 1)
+			ts, ok := kmem.ReadUserInt64Pair(uintptr(timeout))
+			if !ok {
+				return -14 // EFAULT
+			}
 			frequency := uint64(kirq.GetTimerFrequency())
 			var ticks uint64
-			if timeout != 0 {
-				atomic.AddUint64(&DbgFutexExplicitTimeout, 1)
-				ts, ok := kmem.ReadUserInt64Pair(uintptr(timeout))
-				if !ok {
-					return -14 // EFAULT
-				}
-				seconds := ts[0]
-				nanoseconds := ts[1]
-				if seconds > 0 {
-					ticks = uint64(seconds) * frequency
-				}
-				if nanoseconds > 0 {
-					ticks += (uint64(nanoseconds) * frequency) / 1000000000
-				}
-			} else {
-				// Implicit safety-net deadline for untimed futex_wait.
-				// Userspace: 100ms (balances init speed vs idle overhead)
-				// Kernel: 1ms (boot-time cooperative scheduling)
-				if IsCurrentThreadUserspace() {
-					ticks = frequency / 10 // 100ms
-				} else {
-					ticks = frequency / 1000 // 1ms
-				}
+			seconds := ts[0]
+			nanoseconds := ts[1]
+			if seconds > 0 {
+				ticks = uint64(seconds) * frequency
+			}
+			if nanoseconds > 0 {
+				ticks += (uint64(nanoseconds) * frequency) / 1000000000
 			}
 			if ticks == 0 {
 				ticks = 1

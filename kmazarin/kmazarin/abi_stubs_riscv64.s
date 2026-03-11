@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 // abi_stubs_riscv64.s - ABI0 entry points and context switch for RISC-V
 //
 // ThreadContext layout (X[32] + SEPC + SSTATUS):

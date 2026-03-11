@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 // exceptions_amd64.s - x86_64 exception/interrupt handlers
 //
 // Exception frame layout (from SP after full save):

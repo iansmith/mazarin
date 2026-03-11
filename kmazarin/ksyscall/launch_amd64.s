@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 #include "textflag.h"
 
 // jumpToUserspace transitions to a new execution context on x86_64.

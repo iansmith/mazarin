@@ -1,4 +1,4 @@
-//go:build amd64 && !test_stubs
+//go:build amd64
 
 package main
 
@@ -117,6 +117,15 @@ func (ctx *ThreadContext) RewindToSyscall() { ctx.RIP -= 2 }
 //go:nosplit
 func (ctx *ThreadContext) RestoreSyscallArg0(v uint64) {}
 
+// RestoreSyscallNum restores RAX to the original syscall number.
+// On x86_64, RAX serves as BOTH the syscall number and return value.
+// After a blocking syscall returns, RAX holds the return value.
+// When rewinding to re-execute the SYSCALL instruction, RAX must be
+// restored to the original syscall number so the kernel dispatches correctly.
+//
+//go:nosplit
+func (ctx *ThreadContext) RestoreSyscallNum(v uint64) { ctx.RAX = v }
+
 // SetCloneTLS sets FSBase for CLONE_SETTLS support on AMD64.
 // Called during clone child setup to give the child its own FS_BASE,
 // preventing TLS corruption when the child writes g to FS:-8.
@@ -140,6 +149,13 @@ func initThread0PageTable() uintptr {
 //
 //go:nosplit
 func (ctx *ThreadContext) FixIRQEnabled() { ctx.RFLAGS |= 0x200 }
+
+// Exception frame indices for portable access from shared code.
+// x86_64 frame: [0..14]=GPRs, [15]=error_code, [16]=RIP, [17]=CS, [18]=RFLAGS, [19]=RSP, [20]=SS
+const (
+	excFramePCIndex = 16 // RIP in x86_64 exception frame
+	excFramePSIndex = 18 // RFLAGS in x86_64 exception frame
+)
 
 // Ring 3 segment selectors (standard GDT layout with RPL=3)
 const (

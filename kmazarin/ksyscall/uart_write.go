@@ -13,6 +13,7 @@ package ksyscall
 import (
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/serial"
+	"sync/atomic"
 )
 
 // SyscallUartWrite writes bytes from a user buffer to the UART.
@@ -28,6 +29,11 @@ func SyscallUartWrite(arg0, arg1, _, _, _, _ uint64) int64 {
 	bufPtr := arg0
 	count := arg1
 
+	// When serial is suppressed, pretend we wrote everything.
+	// Stdio priest's display is the primary output path.
+	if atomic.LoadUint32(&suppressSerial) != 0 {
+		return int64(count)
+	}
 
 	if count == 0 {
 		return 0
@@ -80,6 +86,11 @@ func SyscallUartWrite(arg0, arg1, _, _, _, _ uint64) int64 {
 func SyscallUartWriteBlocking(arg0, arg1, _, _, _, _ uint64) int64 {
 	bufPtr := arg0
 	count := arg1
+
+	// When serial is suppressed, pretend we wrote everything.
+	if atomic.LoadUint32(&suppressSerial) != 0 {
+		return int64(count)
+	}
 
 	if count == 0 {
 		return 0

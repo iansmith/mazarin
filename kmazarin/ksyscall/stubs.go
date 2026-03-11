@@ -275,7 +275,7 @@ func SyscallEpollCtl(_, _, _, _, _, _ uint64) int64 {
 //
 // Timeout semantics match Linux epoll_wait:
 //
-//	-1 = block indefinitely  → use 2-minute safety-net deadline; primary wake is eventfd
+//	-1 = block indefinitely  → no deadline; woken by write(eventfd) → WakeNetpollThread
 //	 0 = non-blocking poll   → return immediately
 //	>0 = wait up to N ms     → block for that duration
 //
@@ -284,21 +284,6 @@ func SyscallEpollPwait(_, _, _, timeoutMS, _, _ uint64) int64 {
 	ms := int32(timeoutMS)
 	if ms == 0 {
 		return 0 // Non-blocking poll
-	}
-
-	// Convert timeout to timer ticks
-	frequency := uint64(kirq.GetTimerFrequency())
-	var ticks uint64
-	if ms < 0 {
-		// "Block indefinitely" — use a 2-minute safety-net deadline.
-		// The primary wake mechanism is write(eventfd) → WakeNetpollThread.
-		// The deadline is only a backstop in case wake is missed.
-		ticks = frequency * 120 // 2 minutes
-	} else {
-		ticks = (uint64(ms) * frequency) / 1000
-	}
-	if ticks == 0 {
-		ticks = 1
 	}
 
 	currentTID := int32(GetCurrentThreadTID())
@@ -310,11 +295,20 @@ func SyscallEpollPwait(_, _, _, timeoutMS, _, _ uint64) int64 {
 		p.NetpollWaiterTID = currentTID
 	}
 
-	currentTick := kirq.ReadCounterValue()
-	deadline := currentTick + ticks
+	// Add deadline only for explicit timeouts (ms > 0).
+	// Indefinite blocking (ms < 0) relies on write(eventfd) → WakeNetpollThread.
+	if ms > 0 {
+		frequency := uint64(kirq.GetTimerFrequency())
+		ticks := (uint64(ms) * frequency) / 1000
+		if ticks == 0 {
+			ticks = 1
+		}
+		currentTick := kirq.ReadCounterValue()
+		deadline := currentTick + ticks
+		AddDeadlineStatic(deadline, currentTID)
+	}
 
-	// Add deadline and block thread until deadline fires or eventfd write wakes us
-	AddDeadlineStatic(deadline, currentTID)
+	// Block thread until deadline fires or eventfd write wakes us
 	nextThread := ThreadBlockSleep()
 	if nextThread != 0 {
 		SetSyscallSwitchTarget(nextThread)

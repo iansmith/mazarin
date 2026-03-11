@@ -1,5 +1,3 @@
-//go:build !test_stubs
-
 #include "textflag.h"
 
 // readTTBR0 reads the CR3 register (page table base on x86_64).

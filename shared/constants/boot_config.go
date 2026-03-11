@@ -33,6 +33,11 @@ type BootConfig struct {
 	MaxRamMB       int
 	KernelBudgetMB int
 
+	// SuppressSerial controls whether userspace write() output is echoed
+	// to the serial port in addition to being routed through the stdio
+	// priest's display. When true, only the stdio priest writes to serial.
+	SuppressSerial bool
+
 	Timezone [MaxTimezoneLen]byte
 
 	BootstrapPriests     [MaxBootstrapPriests]BootPriest

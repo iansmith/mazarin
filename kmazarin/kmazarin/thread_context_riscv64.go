@@ -1,4 +1,4 @@
-//go:build riscv64 && !test_stubs
+//go:build riscv64
 
 package main
 
@@ -91,6 +91,12 @@ func (ctx *ThreadContext) RewindToSyscall() { ctx.SEPC -= 4 }
 //go:nosplit
 func (ctx *ThreadContext) RestoreSyscallArg0(v uint64) { ctx.X[10] = v }
 
+// RestoreSyscallNum is a no-op on RISC-V. The syscall number is in A7 (X17) which
+// is NOT overwritten by the return value (A0/X10), so no restoration needed.
+//
+//go:nosplit
+func (ctx *ThreadContext) RestoreSyscallNum(v uint64) {}
+
 // SetCloneTLS is a no-op on RISC-V (no FS_BASE, TLS is handled via TP register).
 //
 //go:nosplit
@@ -124,6 +130,12 @@ func initThread0Context(ctx *ThreadContext) {}
 //
 //go:nosplit
 func initThread0PageTable() uintptr { return 0 }
+
+// Exception frame indices for portable access from shared code.
+const (
+	excFramePCIndex = 31 // SEPC in RISC-V trap frame
+	excFramePSIndex = 32 // SSTATUS in RISC-V trap frame
+)
 
 // SetupForCloneChild initializes the context for a clone child thread.
 // Clears a0 (child returns 0), sets stack/return address, enables IRQs,

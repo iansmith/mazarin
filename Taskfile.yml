@@ -59,13 +59,18 @@ vars:
   USERSPACE_OVERLAY_JSON: '{{.BUILD_DIR}}/userspace-overlay.json'
   SIEVETEST_ELF: '{{.BUILD_DIR}}/sievetest.elf'
 
-  # .maz program build artifacts
+  # .maz program build artifacts (per-architecture: thin overlay, maz overlay, manifest)
   THIN_OVERLAY_DIR: '{{.BUILD_DIR}}/thin-overlay'
   THIN_OVERLAY_JSON: '{{.BUILD_DIR}}/thin-overlay.json'
   THIN_MANIFEST: '{{.BUILD_DIR}}/thin-stubs.manifest'
   MAZ_OVERLAY_JSON: '{{.BUILD_DIR}}/maz-overlay.json'
   HELLOWORLD_MAZ: '{{.BUILD_DIR}}/helloworld.maz'
   FS_MAZ: '{{.BUILD_DIR}}/fs.maz'
+  THIN_OVERLAY_AMD64_DIR: '{{.BUILD_DIR}}/thin-overlay-amd64'
+  THIN_OVERLAY_AMD64_JSON: '{{.BUILD_DIR}}/thin-overlay-amd64.json'
+  THIN_MANIFEST_AMD64: '{{.BUILD_DIR}}/thin-stubs-amd64.manifest'
+  MAZ_OVERLAY_AMD64_JSON: '{{.BUILD_DIR}}/maz-overlay-amd64.json'
+  FS_MAZ_AMD64: '{{.BUILD_DIR}}/fs-amd64.maz'
   DAPOPE_ELF: '{{.BUILD_DIR}}/dapope.elf'
   STDIO_ELF: '{{.BUILD_DIR}}/stdio.elf'
   DISKPRIEST_ELF: '{{.BUILD_DIR}}/disk.elf'
@@ -112,9 +117,16 @@ vars:
   MAZ_EXIT_OVERLAY_JSON: '{{.BUILD_DIR}}/maz-exit-overlay.json'
 
   # Priest overlay — adds //go:noinline + keep-alive to prevent DCE of runtime functions
+  # Per-architecture because sigctxt methods differ (ARM64: r0-r29, x86_64: rax/rbx, RISC-V: different)
   PRIEST_OVERLAY_DIR: '{{.BUILD_DIR}}/priest-overlay'
   PRIEST_OVERLAY_JSON: '{{.BUILD_DIR}}/priest-overlay.json'
   MERGED_PRIEST_OVERLAY_JSON: '{{.BUILD_DIR}}/merged-priest-overlay.json'
+  PRIEST_OVERLAY_AMD64_DIR: '{{.BUILD_DIR}}/priest-overlay-amd64'
+  PRIEST_OVERLAY_AMD64_JSON: '{{.BUILD_DIR}}/priest-overlay-amd64.json'
+  MERGED_PRIEST_OVERLAY_AMD64_JSON: '{{.BUILD_DIR}}/merged-priest-overlay-amd64.json'
+  PRIEST_OVERLAY_RISCV64_DIR: '{{.BUILD_DIR}}/priest-overlay-riscv64'
+  PRIEST_OVERLAY_RISCV64_JSON: '{{.BUILD_DIR}}/priest-overlay-riscv64.json'
+  MERGED_PRIEST_OVERLAY_RISCV64_JSON: '{{.BUILD_DIR}}/merged-priest-overlay-riscv64.json'
 
 tasks:
   # ===========================================================================
@@ -236,20 +248,46 @@ tasks:
   priest-overlay:
     run: once
     method: checksum
-    desc: Generate priest overlay (//go:noinline + keep-alive for all stubbable runtime functions)
+    desc: Generate priest overlay for ARM64 (//go:noinline + keep-alive for all stubbable runtime functions)
     deps: [build-dir]
     sources:
       - 'cmd/gen-ast-stubs/**/*.go'
     generates:
       - '{{.PRIEST_OVERLAY_JSON}}'
     cmds:
-      - '{{.GO}} tool go-echo "Generating priest overlay (//go:noinline + keep-alive)..."'
-      - '{{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.PRIEST_OVERLAY_DIR}} -overlay={{.PRIEST_OVERLAY_JSON}} -mode=priest'
+      - '{{.GO}} tool go-echo "Generating priest overlay for ARM64 (//go:noinline + keep-alive)..."'
+      - 'TARGET_GOARCH=arm64 TARGET_GOOS=linux {{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.PRIEST_OVERLAY_DIR}} -overlay={{.PRIEST_OVERLAY_JSON}} -mode=priest'
+
+  priest-overlay-amd64:
+    run: once
+    method: checksum
+    desc: Generate priest overlay for x86_64 (//go:noinline + keep-alive for all stubbable runtime functions)
+    deps: [build-dir]
+    sources:
+      - 'cmd/gen-ast-stubs/**/*.go'
+    generates:
+      - '{{.PRIEST_OVERLAY_AMD64_JSON}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Generating priest overlay for x86_64 (//go:noinline + keep-alive)..."'
+      - 'TARGET_GOARCH=amd64 TARGET_GOOS=linux {{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.PRIEST_OVERLAY_AMD64_DIR}} -overlay={{.PRIEST_OVERLAY_AMD64_JSON}} -mode=priest'
+
+  priest-overlay-riscv64:
+    run: once
+    method: checksum
+    desc: Generate priest overlay for RISC-V (//go:noinline + keep-alive for all stubbable runtime functions)
+    deps: [build-dir]
+    sources:
+      - 'cmd/gen-ast-stubs/**/*.go'
+    generates:
+      - '{{.PRIEST_OVERLAY_RISCV64_JSON}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Generating priest overlay for RISC-V (//go:noinline + keep-alive)..."'
+      - 'TARGET_GOARCH=riscv64 TARGET_GOOS=linux {{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.PRIEST_OVERLAY_RISCV64_DIR}} -overlay={{.PRIEST_OVERLAY_RISCV64_JSON}} -mode=priest'
 
   merged-priest-overlay:
     run: once
     method: checksum
-    desc: Merge priest + userspace overlays for disk priest builds
+    desc: Merge priest + userspace overlays for ARM64 disk priest builds
     deps: [priest-overlay, userspace-overlay]
     sources:
       - '{{.PRIEST_OVERLAY_JSON}}'
@@ -257,8 +295,36 @@ tasks:
     generates:
       - '{{.MERGED_PRIEST_OVERLAY_JSON}}'
     cmds:
-      - '{{.GO}} tool go-echo "Merging priest + userspace overlays..."'
+      - '{{.GO}} tool go-echo "Merging priest + userspace overlays (ARM64)..."'
       - '{{.GO}} tool gen-overlay -type merge -base {{.PRIEST_OVERLAY_JSON}} -extra {{.USERSPACE_OVERLAY_JSON}} -o {{.MERGED_PRIEST_OVERLAY_JSON}}'
+
+  merged-priest-overlay-amd64:
+    run: once
+    method: checksum
+    desc: Merge priest + userspace overlays for x86_64 disk priest builds
+    deps: [priest-overlay-amd64, userspace-overlay]
+    sources:
+      - '{{.PRIEST_OVERLAY_AMD64_JSON}}'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.MERGED_PRIEST_OVERLAY_AMD64_JSON}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Merging priest + userspace overlays (x86_64)..."'
+      - '{{.GO}} tool gen-overlay -type merge -base {{.PRIEST_OVERLAY_AMD64_JSON}} -extra {{.USERSPACE_OVERLAY_JSON}} -o {{.MERGED_PRIEST_OVERLAY_AMD64_JSON}}'
+
+  merged-priest-overlay-riscv64:
+    run: once
+    method: checksum
+    desc: Merge priest + userspace overlays for RISC-V disk priest builds
+    deps: [priest-overlay-riscv64, userspace-overlay]
+    sources:
+      - '{{.PRIEST_OVERLAY_RISCV64_JSON}}'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    generates:
+      - '{{.MERGED_PRIEST_OVERLAY_RISCV64_JSON}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Merging priest + userspace overlays (RISC-V)..."'
+      - '{{.GO}} tool gen-overlay -type merge -base {{.PRIEST_OVERLAY_RISCV64_JSON}} -extra {{.USERSPACE_OVERLAY_JSON}} -o {{.MERGED_PRIEST_OVERLAY_RISCV64_JSON}}'
 
   # ===========================================================================
   # Boot Image Conversion
@@ -406,19 +472,19 @@ tasks:
 
   dapope-x86_64:
     desc: Build dapope input event handler priest (x86_64)
-    deps: [check-env, merged-priest-overlay]
+    deps: [check-env, merged-priest-overlay-amd64]
     sources:
       - 'flock/**/*.go'
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
-      - '{{.MERGED_PRIEST_OVERLAY_JSON}}'
+      - '{{.MERGED_PRIEST_OVERLAY_AMD64_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.PRIEST_OVERLAY_DIR}}/**/*'
+      - '{{.PRIEST_OVERLAY_AMD64_DIR}}/**/*'
     generates:
       - '{{.DAPOPE_AMD64_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building dapope for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DAPOPE_AMD64_ELF}} ./flock/cmd/dapope'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.DAPOPE_AMD64_ELF}} ./flock/cmd/dapope'
       - '{{.GO}} tool go-echo "Dapope x86_64 built at {{.DAPOPE_AMD64_ELF}}"'
 
   stdio-x86_64:
@@ -440,37 +506,37 @@ tasks:
 
   diskpriest-x86_64:
     desc: Build disk priest (filesystem server, x86_64)
-    deps: [check-env, merged-priest-overlay]
+    deps: [check-env, merged-priest-overlay-amd64]
     sources:
       - 'flock/**/*.go'
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
       - 'shared/**/*.go'
-      - '{{.MERGED_PRIEST_OVERLAY_JSON}}'
+      - '{{.MERGED_PRIEST_OVERLAY_AMD64_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.PRIEST_OVERLAY_DIR}}/**/*'
+      - '{{.PRIEST_OVERLAY_AMD64_DIR}}/**/*'
     generates:
       - '{{.DISKPRIEST_AMD64_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building disk priest for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DISKPRIEST_AMD64_ELF}} ./flock/cmd/disk'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.DISKPRIEST_AMD64_ELF}} ./flock/cmd/disk'
       - '{{.GO}} tool go-echo "Disk priest x86_64 built at {{.DISKPRIEST_AMD64_ELF}}"'
 
   dapope-riscv64:
     desc: Build dapope input event handler priest (RISC-V 64-bit)
-    deps: [check-env, merged-priest-overlay]
+    deps: [check-env, merged-priest-overlay-riscv64]
     sources:
       - 'flock/**/*.go'
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
-      - '{{.MERGED_PRIEST_OVERLAY_JSON}}'
+      - '{{.MERGED_PRIEST_OVERLAY_RISCV64_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.PRIEST_OVERLAY_DIR}}/**/*'
+      - '{{.PRIEST_OVERLAY_RISCV64_DIR}}/**/*'
     generates:
       - '{{.DAPOPE_RISCV64_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building dapope for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DAPOPE_RISCV64_ELF}} ./flock/cmd/dapope'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_RISCV64_JSON}} {{.GCFLAGS}} -o {{.DAPOPE_RISCV64_ELF}} ./flock/cmd/dapope'
       - '{{.GO}} tool go-echo "Dapope RISC-V 64-bit built at {{.DAPOPE_RISCV64_ELF}}"'
 
   stdio-riscv64:
@@ -492,20 +558,20 @@ tasks:
 
   diskpriest-riscv64:
     desc: Build disk priest (filesystem server, RISC-V 64-bit)
-    deps: [check-env, merged-priest-overlay]
+    deps: [check-env, merged-priest-overlay-riscv64]
     sources:
       - 'flock/**/*.go'
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
       - 'shared/**/*.go'
-      - '{{.MERGED_PRIEST_OVERLAY_JSON}}'
+      - '{{.MERGED_PRIEST_OVERLAY_RISCV64_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.PRIEST_OVERLAY_DIR}}/**/*'
+      - '{{.PRIEST_OVERLAY_RISCV64_DIR}}/**/*'
     generates:
       - '{{.DISKPRIEST_RISCV64_ELF}}'
     cmds:
       - '{{.GO}} tool go-echo "Building disk priest for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DISKPRIEST_RISCV64_ELF}} ./flock/cmd/disk'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_RISCV64_JSON}} {{.GCFLAGS}} -o {{.DISKPRIEST_RISCV64_ELF}} ./flock/cmd/disk'
       - '{{.GO}} tool go-echo "Disk priest RISC-V 64-bit built at {{.DISKPRIEST_RISCV64_ELF}}"'
 
   sievetest:
@@ -539,7 +605,7 @@ tasks:
   thin-overlay:
     run: once
     method: checksum
-    desc: Generate thin client overlay (runtime + syscall stubs)
+    desc: Generate thin client overlay for ARM64 (runtime + syscall stubs)
     deps: [build-dir]
     sources:
       - cmd/gen-ast-stubs/main.go
@@ -547,8 +613,22 @@ tasks:
       - '{{.THIN_OVERLAY_JSON}}'
       - '{{.THIN_MANIFEST}}'
     cmds:
-      - '{{.GO}} tool go-echo "Generating thin client overlay (runtime + syscall)..."'
-      - '{{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.THIN_OVERLAY_DIR}} -overlay={{.THIN_OVERLAY_JSON}} -manifest={{.THIN_MANIFEST}}'
+      - '{{.GO}} tool go-echo "Generating thin client overlay for ARM64 (runtime + syscall)..."'
+      - 'TARGET_GOARCH=arm64 TARGET_GOOS=linux {{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.THIN_OVERLAY_DIR}} -overlay={{.THIN_OVERLAY_JSON}} -manifest={{.THIN_MANIFEST}}'
+
+  thin-overlay-amd64:
+    run: once
+    method: checksum
+    desc: Generate thin client overlay for x86_64 (runtime + syscall stubs)
+    deps: [build-dir]
+    sources:
+      - cmd/gen-ast-stubs/main.go
+    generates:
+      - '{{.THIN_OVERLAY_AMD64_JSON}}'
+      - '{{.THIN_MANIFEST_AMD64}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Generating thin client overlay for x86_64 (runtime + syscall)..."'
+      - 'TARGET_GOARCH=amd64 TARGET_GOOS=linux {{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.THIN_OVERLAY_AMD64_DIR}} -overlay={{.THIN_OVERLAY_AMD64_JSON}} -manifest={{.THIN_MANIFEST_AMD64}}'
 
   maz-exit-overlay:
     run: once
@@ -566,7 +646,7 @@ tasks:
   maz-overlay:
     run: once
     method: checksum
-    desc: Generate merged overlay for .maz build (thin stubs + userspace syscall routing + maz-exit)
+    desc: Generate merged overlay for ARM64 .maz build (thin stubs + userspace syscall routing + maz-exit)
     deps: [thin-overlay, userspace-overlay, maz-exit-overlay]
     sources:
       - '{{.THIN_OVERLAY_JSON}}'
@@ -575,9 +655,25 @@ tasks:
     generates:
       - '{{.MAZ_OVERLAY_JSON}}'
     cmds:
-      - '{{.GO}} tool go-echo "Merging thin + userspace + maz-exit overlays for .maz build..."'
+      - '{{.GO}} tool go-echo "Merging thin + userspace + maz-exit overlays for ARM64 .maz build..."'
       - '{{.GO}} tool gen-overlay -type merge -base {{.THIN_OVERLAY_JSON}} -extra {{.USERSPACE_OVERLAY_JSON}} -o {{.MAZ_OVERLAY_JSON}}'
       - '{{.GO}} tool gen-overlay -type merge -base {{.MAZ_OVERLAY_JSON}} -extra {{.MAZ_EXIT_OVERLAY_JSON}} -o {{.MAZ_OVERLAY_JSON}}'
+
+  maz-overlay-amd64:
+    run: once
+    method: checksum
+    desc: Generate merged overlay for x86_64 .maz build (thin stubs + userspace syscall routing + maz-exit)
+    deps: [thin-overlay-amd64, userspace-overlay, maz-exit-overlay]
+    sources:
+      - '{{.THIN_OVERLAY_AMD64_JSON}}'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.MAZ_EXIT_OVERLAY_JSON}}'
+    generates:
+      - '{{.MAZ_OVERLAY_AMD64_JSON}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Merging thin + userspace + maz-exit overlays for x86_64 .maz build..."'
+      - '{{.GO}} tool gen-overlay -type merge -base {{.THIN_OVERLAY_AMD64_JSON}} -extra {{.USERSPACE_OVERLAY_JSON}} -o {{.MAZ_OVERLAY_AMD64_JSON}}'
+      - '{{.GO}} tool gen-overlay -type merge -base {{.MAZ_OVERLAY_AMD64_JSON}} -extra {{.MAZ_EXIT_OVERLAY_JSON}} -o {{.MAZ_OVERLAY_AMD64_JSON}}'
 
   helloworld-maz:
     desc: Build helloworld.maz (PIE + thin stubs, dynamically linked)
@@ -596,7 +692,7 @@ tasks:
       - '{{.GO}} tool go-echo "helloworld.maz ready at {{.HELLOWORLD_MAZ}}"'
 
   fs-maz:
-    desc: Build fs.maz — FAT32 filesystem module (PIE + thin stubs)
+    desc: Build fs.maz — FAT32 filesystem module for ARM64 (PIE + thin stubs)
     deps: [check-env, maz-overlay]
     sources:
       - 'flock/cmd/fat32/**/*.go'
@@ -608,11 +704,30 @@ tasks:
     generates:
       - '{{.FS_MAZ}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building fs.maz (FAT32 filesystem module)..."'
+      - '{{.GO}} tool go-echo "Building fs.maz for ARM64 (FAT32 filesystem module)..."'
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -buildmode=pie -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.FS_MAZ}} ./flock/cmd/fat32'
       - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
       - '{{.GO}} tool maz-reloc {{.FS_MAZ}} {{.THIN_MANIFEST}}'
       - '{{.GO}} tool go-echo "fs.maz ready at {{.FS_MAZ}}"'
+
+  fs-maz-amd64:
+    desc: Build fs.maz — FAT32 filesystem module for x86_64 (PIE + thin stubs)
+    deps: [check-env, maz-overlay-amd64]
+    sources:
+      - 'flock/cmd/fat32/**/*.go'
+      - 'mazarin/**/*.go'
+      - 'shared/fs/fat32/**/*.go'
+      - 'shared/ipc/**/*.go'
+      - 'shared/blockdev/**/*.go'
+      - '{{.MAZ_OVERLAY_AMD64_JSON}}'
+    generates:
+      - '{{.FS_MAZ_AMD64}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building fs.maz for x86_64 (FAT32 filesystem module)..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -buildmode=pie -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.FS_MAZ_AMD64}} ./flock/cmd/fat32'
+      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
+      - '{{.GO}} tool maz-reloc {{.FS_MAZ_AMD64}} {{.THIN_MANIFEST_AMD64}}'
+      - '{{.GO}} tool go-echo "fs.maz (x86_64) ready at {{.FS_MAZ_AMD64}}"'
 
   fs-mzr-riscv64:
     desc: Build fs.mzr for RISC-V 64-bit — FAT32 filesystem module (fixed-address slot 0)
@@ -663,11 +778,12 @@ tasks:
 
   disk-x86_64:
     desc: Create FAT32 disk image with x86_64 flock binaries and kmazarin kernel
-    deps: [dapope-x86_64, stdio-x86_64, diskpriest-x86_64, kmazarin-x86_64, convert-boot-image]
+    deps: [dapope-x86_64, stdio-x86_64, diskpriest-x86_64, fs-maz-amd64, kmazarin-x86_64, convert-boot-image]
     sources:
       - '{{.DAPOPE_AMD64_ELF}}'
       - '{{.STDIO_AMD64_ELF}}'
       - '{{.DISKPRIEST_AMD64_ELF}}'
+      - '{{.FS_MAZ_AMD64}}'
       - '{{.KMAZARIN_AMD64_ELF}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
     generates:
@@ -679,8 +795,9 @@ tasks:
       - '{{.GO}} tool go-cp {{.DAPOPE_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf'
       - '{{.GO}} tool go-cp {{.STDIO_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf'
       - '{{.GO}} tool go-cp {{.DISKPRIEST_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/disk.elf'
+      - '{{.GO}} tool go-cp {{.FS_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/fs.maz'
       - '{{.GO}} tool go-cp config/kmazarin-x86_64.toml {{.BUILD_DIR}}/disk-staging-amd64/kmazarin.toml'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_AMD64_IMAGE}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf {{.BUILD_DIR}}/disk-staging-amd64/disk.elf {{.BUILD_DIR}}/disk-staging-amd64/kmazarin.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_AMD64_IMAGE}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf {{.BUILD_DIR}}/disk-staging-amd64/disk.elf {{.BUILD_DIR}}/disk-staging-amd64/fs.maz {{.BUILD_DIR}}/disk-staging-amd64/kmazarin.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "x86_64 disk image created at {{.DISK_AMD64_IMAGE}}"'
 
   disk-riscv64:
