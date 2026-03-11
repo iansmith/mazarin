@@ -212,6 +212,14 @@ func NonTimerIRQTopHalf() {
 		if blockISRBase != 0 {
 			_ = asm.MmioRead8(blockISRBase) // Acknowledge interrupt (deasserts INTx)
 		}
+		// DMA read barrier: ensure the device's used ring DMA writes are
+		// visible to this CPU before we signal IOComplete. Under HVF the
+		// VirtIO backend runs on a separate host thread; without this
+		// barrier the IOComplete STLR may become visible to the WFI loop
+		// before the used ring data has propagated through the coherency
+		// domain. Combined with the DMB in EnableIRQsAndWait, this gives
+		// the WFI reader a happens-before on the DMA data.
+		asm.DmaRmb()
 		if blockIOComplete != nil {
 			atomic.StoreUint32(blockIOComplete, 1) // Signal completion
 		}

@@ -432,11 +432,11 @@ copy_context_to_frame:
 	LDP	256(R21), (R0, R1)
 	STP	(R0, R1), EXC_FRAME_ELR_SPSR(RSP)
 
-	B	sync_return
+	B	svc_return
 
 syscall_no_switch:
 	// No context switch, normal return
-	B	sync_return
+	B	svc_return
 
 not_svc:
 	// Check if this is Data Abort (EC = 0x25 or 0x24)
@@ -926,10 +926,47 @@ skip_unwinder_dump:
 data_abort_hang:
 	B	data_abort_hang
 
-sync_return:
+svc_return:
 	// Clear svcDepth — we're leaving the SVC handler (safe to preempt again).
 	// IRQs are masked (DAIF.I set during exception handling), so no race with timer.
+	// Only SVC paths branch here. data_abort (handled page fault) branches directly
+	// to sync_return to preserve svcDepth — a page fault during an SVC handler must
+	// NOT clear svcDepth, or the timer could preempt us on the shared exception stack.
 	MOVW	ZR, ·svcDepth(SB)
+
+sync_return:
+
+	// DEBUG: SP corruption guard — catch SP_EL1 at/above stack top
+	MOVD	$0xFFFFFFFF43E0C000, R12
+	CMP	R12, RSP
+	BLO	sync_sp_ok
+	// SP is at/above stack top — no exception frame!
+	MOVD	$UART_BASE, R12
+	MOVD	$'!', R13; MOVB	R13, (R12)
+	MOVD	$'S', R13; MOVB	R13, (R12)
+	MOVD	$'R', R13; MOVB	R13, (R12)
+	MOVD	$':', R13; MOVB	R13, (R12)
+	// Print RSP in hex
+	MOVD	RSP, R14
+	MOVD	$60, R15
+sync_bad_sp_hex:
+	LSR	R15, R14, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLO	sync_bad_sp_digit
+	ADD	$('A'-10), R13
+	B	sync_bad_sp_emit
+sync_bad_sp_digit:
+	ADD	$'0', R13
+sync_bad_sp_emit:
+	MOVB	R13, (R12)
+	SUBS	$4, R15
+	BPL	sync_bad_sp_hex
+	MOVD	$'\r', R13; MOVB	R13, (R12)
+	MOVD	$'\n', R13; MOVB	R13, (R12)
+sync_bad_sp_halt:
+	B	sync_bad_sp_halt
+sync_sp_ok:
 
 	// Restore SP_EL0
 	MOVD	EXC_FRAME_SP_EL0(RSP), R10
@@ -1109,7 +1146,18 @@ skip_deadline_processing:
 	AND	$0x4, R10, R10				// EL1 bit (M[2])
 	CBZ	R10, timer_check_preemption		// EL0 — always check
 
-	// EL1: check svcDepth — only safe to preempt when depth==0
+	// EL1: check if EL1h (SPSR.M[0]=1, exception handler mode).
+	// NEVER preempt EL1h code — the exception stack has a live frame.
+	// SaveContextFromFrame would capture ELR pointing into handler code;
+	// when restored, the thread ERETs mid-handler with wrong SP_EL1.
+	// Under HVF, timer IRQs can arrive during exception return paths
+	// (e.g., el0_return after svcDepth is cleared) even though DAIF.I
+	// should be set — this check catches that case.
+	MOVD	(EXC_FRAME_ELR_SPSR+8)(RSP), R10	// Re-read SPSR
+	AND	$0x1, R10, R10				// M[0] bit
+	CBNZ	R10, timer_no_thread_preempt		// EL1h → NEVER preempt
+
+	// EL1t: check svcDepth — only safe to preempt when depth==0
 	MOVW	·svcDepth(SB), R10
 	CBNZ	R10, timer_no_thread_preempt		// depth=1, inside SVC — skip
 
@@ -1262,12 +1310,81 @@ irq_write_eoir:
 
 irq_return:
 
+	// DEBUG: SP corruption guard — catch SP_EL1 at/above stack top
+	MOVD	$0xFFFFFFFF43E0C000, R12
+	CMP	R12, RSP
+	BLO	irq_sp_ok
+	// SP is at/above stack top — no exception frame!
+	MOVD	$UART_BASE, R12
+	MOVD	$'!', R13; MOVB	R13, (R12)
+	MOVD	$'I', R13; MOVB	R13, (R12)
+	MOVD	$'R', R13; MOVB	R13, (R12)
+	MOVD	$':', R13; MOVB	R13, (R12)
+	// Print RSP in hex
+	MOVD	RSP, R14
+	MOVD	$60, R15
+irq_bad_sp_hex:
+	LSR	R15, R14, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLO	irq_bad_sp_digit
+	ADD	$('A'-10), R13
+	B	irq_bad_sp_emit
+irq_bad_sp_digit:
+	ADD	$'0', R13
+irq_bad_sp_emit:
+	MOVB	R13, (R12)
+	SUBS	$4, R15
+	BPL	irq_bad_sp_hex
+	MOVD	$'\r', R13; MOVB	R13, (R12)
+	MOVD	$'\n', R13; MOVB	R13, (R12)
+irq_bad_sp_halt:
+	B	irq_bad_sp_halt
+irq_sp_ok:
+
 	// Restore SP_EL0
 	MOVD	EXC_FRAME_SP_EL0(RSP), R10
 	MSR	R10, SP_EL0
 
 	// Restore ELR and SPSR (same pattern as el0_return which works correctly)
 	LDP	EXC_FRAME_ELR_SPSR(RSP), (R10, R11)
+
+	// DEBUG: if SPSR says EL0 (M[2]=0) but ELR is a kernel address, the
+	// context switch loaded corrupted state. Catch it before ERET.
+	AND	$0x4, R11, R12		// R12 = SPSR.M[2]
+	CBNZ	R12, irq_elr_ok		// EL1 — kernel ELR is fine
+	MOVD	$0xFFFFFFFF00000000, R12
+	CMP	R12, R10
+	BLO	irq_elr_ok		// EL0 + userspace ELR — fine
+	// EL0 + kernel ELR — corrupted context!
+	MOVD	$UART_BASE, R12
+	MOVD	$'!', R13; MOVB	R13, (R12)
+	MOVD	$'I', R13; MOVB	R13, (R12)
+	MOVD	$'R', R13; MOVB	R13, (R12)
+	MOVD	$'Q', R13; MOVB	R13, (R12)
+	MOVD	$'=', R13; MOVB	R13, (R12)
+	// Print ELR (R10) in hex
+	MOVD	R10, R14
+	MOVD	$60, R15
+irq_bad_elr_hex:
+	LSR	R15, R14, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLO	irq_bad_elr_digit
+	ADD	$('A'-10), R13
+	B	irq_bad_elr_emit
+irq_bad_elr_digit:
+	ADD	$'0', R13
+irq_bad_elr_emit:
+	MOVB	R13, (R12)
+	SUBS	$4, R15
+	BPL	irq_bad_elr_hex
+	MOVD	$'\r', R13; MOVB	R13, (R12)
+	MOVD	$'\n', R13; MOVB	R13, (R12)
+irq_bad_elr_halt:
+	B	irq_bad_elr_halt
+
+irq_elr_ok:
 	MSR	R10, ELR_EL1
 	MSR	R11, SPSR_EL1
 
@@ -1662,9 +1779,41 @@ el0_unhandled_halt:
 	// Fallback halt if HandleUnhandledExceptionAsm somehow falls through
 	B	el0_unhandled_halt
 el0_return:
-	// Clear svcDepth — leaving EL0 SVC handler (safe to preempt again).
-	// Must be cleared before ERET so the next thread's timer preemption works.
-	MOVW	ZR, ·svcDepth(SB)
+	// DEBUG: SP corruption guard — catch SP_EL1 at/above stack top
+	MOVD	$0xFFFFFFFF43E0C000, R12
+	CMP	R12, RSP
+	BLO	el0_sp_ok
+	// SP is at/above stack top — no exception frame!
+	MOVD	$UART_BASE, R12
+	MOVD	$'!', R13; MOVB	R13, (R12)
+	MOVD	$'E', R13; MOVB	R13, (R12)
+	MOVD	$'0', R13; MOVB	R13, (R12)
+	MOVD	$':', R13; MOVB	R13, (R12)
+	// Print RSP in hex
+	MOVD	RSP, R14
+	MOVD	$60, R15
+el0_spguard_hex:
+	LSR	R15, R14, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLO	el0_spguard_digit
+	ADD	$('A'-10), R13
+	B	el0_spguard_emit
+el0_spguard_digit:
+	ADD	$'0', R13
+el0_spguard_emit:
+	MOVB	R13, (R12)
+	SUBS	$4, R15
+	BPL	el0_spguard_hex
+	MOVD	$'\r', R13; MOVB	R13, (R12)
+	MOVD	$'\n', R13; MOVB	R13, (R12)
+el0_spguard_halt:
+	B	el0_spguard_halt
+el0_sp_ok:
+
+	// NOTE: svcDepth is cleared later (at el0_elr_ok) to minimize the window
+	// between svcDepth=0 and ERET. The M[0] check in the timer preemption
+	// code is the primary defense, but moving the clear later is belt-and-suspenders.
 
 	// Restore SP_EL0
 	MOVD	EXC_FRAME_SP_EL0(RSP), R10
@@ -1672,8 +1821,92 @@ el0_return:
 
 	// Restore ELR and SPSR
 	LDP	EXC_FRAME_ELR_SPSR(RSP), (R10, R11)
+
+	// DEBUG: if SPSR says EL0 (M[2]=0) but ELR is a kernel address, the
+	// exception frame was corrupted during SVC handling.
+	AND	$0x4, R11, R12		// R12 = SPSR.M[2]
+	CBNZ	R12, el0_elr_ok		// EL1 — kernel ELR is fine (ctx switch to kernel thread)
+	MOVD	$0xFFFFFFFF00000000, R12
+	CMP	R12, R10
+	BLO	el0_elr_ok		// EL0 + userspace ELR — fine
+	// Kernel ELR in el0_return — print diagnostic and halt
+	MOVD	$UART_BASE, R12
+	MOVD	$'!', R13; MOVB	R13, (R12)
+	MOVD	$'E', R13; MOVB	R13, (R12)
+	MOVD	$'L', R13; MOVB	R13, (R12)
+	MOVD	$'R', R13; MOVB	R13, (R12)
+	MOVD	$'=', R13; MOVB	R13, (R12)
+	// Print ELR (R10) in hex
+	MOVD	R10, R14
+	MOVD	$60, R15	// shift = 60
+el0_bad_elr_hex:
+	LSR	R15, R14, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLO	el0_bad_elr_digit
+	ADD	$('A'-10), R13
+	B	el0_bad_elr_emit
+el0_bad_elr_digit:
+	ADD	$'0', R13
+el0_bad_elr_emit:
+	MOVB	R13, (R12)
+	SUBS	$4, R15
+	BPL	el0_bad_elr_hex
+	// Print SP
+	MOVD	$' ', R13; MOVB	R13, (R12)
+	MOVD	$'S', R13; MOVB	R13, (R12)
+	MOVD	$'P', R13; MOVB	R13, (R12)
+	MOVD	$'=', R13; MOVB	R13, (R12)
+	MOVD	RSP, R14
+	MOVD	$60, R15
+el0_bad_sp_hex:
+	LSR	R15, R14, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLO	el0_bad_sp_digit
+	ADD	$('A'-10), R13
+	B	el0_bad_sp_emit
+el0_bad_sp_digit:
+	ADD	$'0', R13
+el0_bad_sp_emit:
+	MOVB	R13, (R12)
+	SUBS	$4, R15
+	BPL	el0_bad_sp_hex
+	// Print SPSR (R11)
+	MOVD	$' ', R13; MOVB	R13, (R12)
+	MOVD	$'P', R13; MOVB	R13, (R12)
+	MOVD	$'S', R13; MOVB	R13, (R12)
+	MOVD	$'R', R13; MOVB	R13, (R12)
+	MOVD	$'=', R13; MOVB	R13, (R12)
+	MOVD	R11, R14
+	MOVD	$60, R15
+el0_bad_psr_hex:
+	LSR	R15, R14, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLO	el0_bad_psr_digit
+	ADD	$('A'-10), R13
+	B	el0_bad_psr_emit
+el0_bad_psr_digit:
+	ADD	$'0', R13
+el0_bad_psr_emit:
+	MOVB	R13, (R12)
+	SUBS	$4, R15
+	BPL	el0_bad_psr_hex
+	MOVD	$'\r', R13; MOVB	R13, (R12)
+	MOVD	$'\n', R13; MOVB	R13, (R12)
+el0_bad_elr_halt:
+	B	el0_bad_elr_halt
+
+el0_elr_ok:
 	MSR	R10, ELR_EL1
 	MSR	R11, SPSR_EL1
+
+	// Clear svcDepth HERE — as late as possible before ERET.
+	// R10/R11 are dead (will be overwritten by frame restore below).
+	// svcDepth stayed 1 through the entire el0_return path until now,
+	// so timer preemption was blocked by svcDepth even without the M[0] check.
+	MOVW	ZR, ·svcDepth(SB)
 
 	// Restore X28-X30
 	WORD	$0xf94073fc  // ldr x28, [sp, #224]

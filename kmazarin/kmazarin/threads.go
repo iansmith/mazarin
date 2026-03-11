@@ -1177,6 +1177,10 @@ var dbgZeroProgressT0Count uint64 // zero-progress for TID 0 only (idle loop, ex
 var dbgZPLastTID uint64           // TID of last non-TID0 zero-progress thread
 var dbgZPLastELR uint64           // ELR of last non-TID0 zero-progress thread
 var dbgZPLastSPSR uint64          // SPSR of last non-TID0 zero-progress thread
+var dbgBadELR uint64              // DEBUG: kernel ELR saved for userspace thread
+var dbgBadSPSR uint64
+var dbgBadTID uint64
+var dbgBadELRCount uint64
 
 func printThreadStateSummary() {
 	var nReady, nFutex, nSleep, nSoftIRQ, nRunning int
@@ -1222,6 +1226,18 @@ func printThreadStateSummary() {
 		serial.RawUARTHexCompact(atomic.LoadUint64(&dbgZPLastELR))
 		serial.RawUARTPuts(":spsr=")
 		serial.RawUARTHexCompact(atomic.LoadUint64(&dbgZPLastSPSR))
+	}
+	// DEBUG: report kernel-ELR corruption for userspace threads
+	badN := atomic.LoadUint64(&dbgBadELRCount)
+	if badN != 0 {
+		serial.RawUARTPuts(" BAD_ELR=")
+		serial.RawUARTDecimal(badN)
+		serial.RawUARTPuts(":tid=")
+		serial.RawUARTDecimal(atomic.LoadUint64(&dbgBadTID))
+		serial.RawUARTPuts(":elr=")
+		serial.RawUARTHexCompact(atomic.LoadUint64(&dbgBadELR))
+		serial.RawUARTPuts(":spsr=")
+		serial.RawUARTHexCompact(atomic.LoadUint64(&dbgBadSPSR))
 	}
 	// Dump PC/SPSR/PID of ALL ready threads when many are stuck
 	if nReady >= 6 {
@@ -2960,6 +2976,17 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 
 	// Save current thread's context from exception frame
 	SaveContextFromFrame(uintptr(framePtr))
+
+	// DEBUG: detect kernel-address ELR saved for a userspace thread.
+	// This would mean preemption happened while the thread was inside
+	// an SVC handler (EL1), which svcDepth should have prevented.
+	// Store in globals (zero nosplit overhead) — printed by EVT periodic dump.
+	if oldThread.PID > 0 && frame[32] >= 0xFFFFFFFF00000000 {
+		atomic.StoreUint64(&dbgBadELR, frame[32])
+		atomic.StoreUint64(&dbgBadSPSR, frame[33])
+		atomic.StoreUint64(&dbgBadTID, uint64(uint16(oldThread.TID)))
+		atomic.AddUint64(&dbgBadELRCount, 1)
+	}
 
 	oldThread.State = ThreadReady
 	// Pluck first in case oldThread is already in queue from a previous preemption

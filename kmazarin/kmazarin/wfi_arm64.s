@@ -35,6 +35,15 @@ TEXT ·EnableIRQsAndWait(SB), NOSPLIT|NOFRAME, $0-0
 	ISB	$15
 	// WFI
 	HINT	$1
+	// DMB OSH — data memory barrier (outer shareable) after WFI wake.
+	// Under HVF, the VirtIO backend runs on a separate host thread. Its DMA
+	// writes (used ring) may not be visible to this vCPU without a barrier
+	// after the interrupt handler returns via ERET. ERET is a context sync
+	// event (ISB-like) but does NOT imply a data barrier. This DMB ensures
+	// the device's DMA writes are ordered before any subsequent loads
+	// (e.g., reading the used ring in DoBlockIOComplete).
+	// On TCG this is harmless (single-threaded, trivially consistent).
+	WORD	$0xD50333BF
 	// MSR DAIFSet, #2 - re-disable IRQs
 	WORD	$0xD50342DF
 	RET

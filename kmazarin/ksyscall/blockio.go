@@ -12,13 +12,14 @@ package ksyscall
 // Falls back to polling (ReadBlock) when no IRQ is available.
 
 import (
+	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
+	"mazzy/kmazarin/device/virtio"
 	"mazzy/kmazarin/device/virtio/block"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
-	"sync/atomic"
 	"unsafe"
 )
 
@@ -129,10 +130,28 @@ func blockReadInterrupt(dev *block.VirtIOBlockDevice, lba uint64, buf []byte) er
 
 	// Wait for I/O completion via interrupt. EnableIRQsAndWait enables IRQs,
 	// executes WFI (CPU halts until interrupt), then re-disables IRQs.
-	// The block device interrupt handler (NonTimerIRQTopHalf) sets IOComplete.
-	for atomic.LoadUint32(&dev.IOComplete) == 0 {
+	//
+	// We check VirtqueueHasUsed (the actual used ring) rather than IOComplete
+	// because under HVF, stale MSI-X interrupts from a previous polling-path
+	// I/O can set IOComplete prematurely before the current request completes.
+	// The polling path (doBlockIO, used during early boot) leaves interrupts
+	// pending in the GIC; when we unmask IRQs here, the stale interrupt fires
+	// and sets IOComplete even though Used.Idx hasn't been updated for our
+	// request. VirtqueueHasUsed checks the used ring directly, so stale
+	// interrupts just cause a harmless extra WFI iteration.
+	//
+	// Still interrupt-driven: WFI halts until an interrupt wakes us, we just
+	// verify the used ring rather than trusting a flag.
+	vq := &dev.Queue
+	for !virtio.VirtqueueHasUsed(vq) {
 		enableIRQsAndWait()
 	}
+
+	// DMA read barrier: ensure the device's used ring DMA writes are visible
+	// before we read them in DoBlockIOComplete. Under HVF, the VirtIO backend
+	// runs on a separate host thread; this barrier orders their DMA writes
+	// before our reads. (EnableIRQsAndWait also has a DMB, but belt-and-suspenders.)
+	asm.DmaRmb()
 
 	return dev.DoBlockIOComplete(block.VIRTIO_BLK_T_IN, reqDescIdx, buf)
 }

@@ -132,8 +132,11 @@ func (d *VirtIOBlockDevice) DoBlockIOComplete(requestType uint32, reqDescIdx uin
 	// Pop from used ring
 	usedDescIdx, _ := virtio.VirtqueueGetUsed(vq)
 	if uint16(usedDescIdx) != reqDescIdx {
-		console.KPrintf("[VirtIO Block] ERROR: Unexpected descriptor index (got %d, expected %d)\n",
-			usedDescIdx, reqDescIdx)
+		// Diagnostic: show queue state to help debug HVF memory ordering issues
+		usedVA := virtio.PointerToUintptr(unsafe.Pointer(vq.Used))
+		rawUsedIdx := asm.MmioRead16(usedVA + 2)
+		console.KPrintf("[VirtIO Block] ERROR: Unexpected descriptor index (got %d, expected %d) Used.Idx=%d LastUsedIdx=%d avail=%d\n",
+			usedDescIdx, reqDescIdx, rawUsedIdx, vq.LastUsedIdx, vq.Available.Idx)
 		return ErrDeviceError
 	}
 
@@ -176,18 +179,19 @@ func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte
 	vq := &d.Queue
 
 	// Wait for I/O completion via polling.
+	// We check VirtqueueHasUsed (the actual used ring) rather than IOComplete
+	// because under HVF, stale MSI-X interrupts from a previous I/O can set
+	// IOComplete=1 before the current request completes. VirtqueueHasUsed
+	// checks Used.Idx directly, so stale interrupts are harmless.
 	if d.IRQNum != 0 {
 		const maxWaits = 1000000
 		for i := 0; i < maxWaits; i++ {
-			if atomic.LoadUint32(&d.IOComplete) != 0 {
-				break
-			}
 			if virtio.VirtqueueHasUsed(vq) {
 				break
 			}
 			bootYieldForIO()
 		}
-		if atomic.LoadUint32(&d.IOComplete) == 0 && !virtio.VirtqueueHasUsed(vq) {
+		if !virtio.VirtqueueHasUsed(vq) {
 			console.KPrintf("[VirtIO Block] ERROR: I/O timeout (avail=%d used=%d LBA=%d)\n",
 				vq.Available.Idx, vq.Used.Idx, lba)
 			return ErrTimeout
