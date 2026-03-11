@@ -938,6 +938,17 @@ handle_timer_irq:
 	MOVL	·svcDepth(SB), AX
 	TESTL	AX, AX
 	JNZ	exception_return	// Inside syscall handler — unsafe to preempt
+
+	// Ring 0, svcDepth==0: check kernel goroutine async preemption.
+	// The Go runtime sets m.signalPending when GC/sysmon wants to preempt.
+	// CheckKernelGoroutinePreempt calls isAsyncSafePoint and injects
+	// asyncPreempt into the exception frame if safe.
+	// g (R14) is already set to g0 from handle_timer_irq.
+	MOVQ	SP, R13
+	GO_CALL_1_1(·CheckKernelGoroutinePreempt, R13)
+	TESTQ	AX, AX
+	JNZ	exception_return	// frame was modified, skip thread preempt
+
 	JMP	timer_preempt_check
 timer_preempt_allowed:
 timer_preempt_check:

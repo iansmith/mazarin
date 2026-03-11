@@ -95,6 +95,20 @@ func SetSyscallCloneRegs(r12, r13, r9 uint64)
 //go:nosplit
 func CheckThreadPreemption(framePtr uint64) uint64
 
+// CheckKernelGoroutinePreempt checks if the Go runtime has requested async
+// preemption of the current kernel goroutine (via m.signalPending, set by
+// preemptM). If the interrupted code is at an async-safe point, injects
+// asyncPreempt into the exception frame so the goroutine will be preempted
+// when ERET/IRET/SRET restores the modified frame.
+//
+// framePtr = exception frame pointer containing saved registers
+// Returns 1 if asyncPreempt was injected, 0 otherwise.
+// Called from timer IRQ handler when interrupted code is kernel mode with svcDepth==0.
+//
+// NOT nosplit: calls runtime.isAsyncSafePoint which walks pclntab.
+// Safe because exception stack address > g0.stackguard0, so stack check passes.
+func CheckKernelGoroutinePreempt(framePtr uint64) uint64
+
 // RunFirstThread starts the first thread from the ready queue.
 // Waits for a thread to become ready, then switches to it via ERET/IRET/SRET.
 // This function never returns - it transitions to userspace.

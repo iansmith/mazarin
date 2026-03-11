@@ -1164,6 +1164,15 @@ skip_deadline_processing:
 	MOVW	·svcDepth(SB), R10
 	CBNZ	R10, timer_no_thread_preempt		// depth=1, inside SVC — skip
 
+	// EL1t, depth=0: check kernel goroutine async preemption.
+	// The Go runtime sets m.signalPending when GC/sysmon wants to preempt.
+	// CheckKernelGoroutinePreempt calls isAsyncSafePoint and injects
+	// asyncPreempt into the exception frame if safe.
+	// g is already set to g0 (from ProcessDeadlinesTopHalf above).
+	MOVD	RSP, R0
+	GO_CALL_1_1(·CheckKernelGoroutinePreempt, R0)
+	CBNZ	R0, timer_no_thread_preempt		// frame was modified, skip thread preempt
+
 	// EL1, depth=0 — safe to preempt kernel thread
 timer_check_preemption:
 

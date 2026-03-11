@@ -73,6 +73,11 @@ TEXT ·SetSyscallCloneRegs(SB), NOSPLIT, $0-24
 TEXT ·CheckThreadPreemption(SB), NOSPLIT, $0-16
 	JMP	·checkThreadPreemptionInternal(SB)
 
+// CheckKernelGoroutinePreempt checks kernel goroutine async preemption.
+// NOT NOSPLIT: calls isAsyncSafePoint (exception stack > g0.stackguard0).
+TEXT ·CheckKernelGoroutinePreempt(SB), $0-16
+	JMP	·checkKernelGoroutinePreemptInternal(SB)
+
 // ThreadExitAsm tail-call stub
 // Called from exception handler to kill faulting user thread.
 // Returns pointer to next ThreadContext (0 if no threads left).

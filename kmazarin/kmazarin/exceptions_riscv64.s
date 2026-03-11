@@ -907,6 +907,15 @@ handle_timer_interrupt:
 	MOVW	(T0), T0
 	BNE	T0, ZERO, trap_return	// depth=1, inside ecall — skip
 
+	// S-mode, depth=0: check kernel goroutine async preemption.
+	// The Go runtime sets m.signalPending when GC/sysmon wants to preempt.
+	// CheckKernelGoroutinePreempt calls isAsyncSafePoint and injects
+	// asyncPreempt into the exception frame if safe.
+	// g register is already set to g0.
+	MOV	X2, S2			// frame pointer (callee-saved)
+	GO_CALL_1_1(·CheckKernelGoroutinePreempt, S2)
+	BNE	T0, ZERO, trap_return	// frame was modified, skip thread preempt
+
 	// S-mode, depth=0 — safe to preempt kernel thread
 timer_check_preemption:
 

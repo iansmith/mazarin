@@ -55,6 +55,7 @@ package runtime
 import (
 	"internal/abi"
 	"internal/goarch"
+	"internal/runtime/atomic"
 	"internal/stringslite"
 	"unsafe"
 )
@@ -489,6 +490,12 @@ type PreemptOffsets struct {
 
 	// Signal delivery offsets
 	MGsignalOffset uintptr // m.gsignal - pointer to gsignal g (signal stack)
+
+	// Kernel goroutine async preemption offsets
+	MSignalPendingOffset uintptr // m.signalPending - atomic.Uint32
+	MPreemptGenOffset    uintptr // m.preemptGen - atomic.Uint32
+	MCurgOffset          uintptr // m.curg - current user goroutine (*g)
+	MMallocingOffset     uintptr // m.mallocing - int32 (must be 0 for preemption)
 }
 
 // GetPreemptOffsets returns the struct field offsets needed for preemption.
@@ -528,5 +535,84 @@ func GetPreemptOffsets() PreemptOffsets {
 
 		// Signal delivery offsets
 		MGsignalOffset: unsafe.Offsetof(mInstance.gsignal),
+
+		// Kernel goroutine async preemption offsets
+		MSignalPendingOffset: unsafe.Offsetof(mInstance.signalPending),
+		MPreemptGenOffset:    unsafe.Offsetof(mInstance.preemptGen),
+		MCurgOffset:          unsafe.Offsetof(mInstance.curg),
+		MMallocingOffset:     unsafe.Offsetof(mInstance.mallocing),
 	}
+}
+
+// TryKernelAsyncPreempt checks whether the kernel's current goroutine should
+// be asynchronously preempted. Called from kmazarin's timer IRQ handler (via
+// Go code) when the interrupted code was kernel code at a safe preemption
+// point (EL1t/Ring0 with svcDepth==0).
+//
+// The caller provides the interrupted goroutine's PC, SP, and LR from the
+// exception frame. If preemption is safe, returns shouldPreempt=true with the
+// targetPC (asyncPreempt entry) and resumePC (where to resume after
+// asyncPreempt returns, possibly adjusted for restartable sequences).
+//
+// This function:
+//   - Checks m.signalPending (set by preemptM when GC/sysmon want preemption)
+//   - Verifies the goroutine wants preemption (wantAsyncPreempt)
+//   - Verifies the PC is at an async-safe point (isAsyncSafePoint)
+//   - Acknowledges the preemption (increments preemptGen, clears signalPending)
+//
+// Called via go:linkname from kmazarin/kmazarin package.
+//
+//go:linkname TryKernelAsyncPreempt
+func TryKernelAsyncPreempt(pc, sp, lr uintptr) (shouldPreempt bool, targetPC, resumePC uintptr) {
+	gp := getg() // g0 (set by timer handler)
+	mp := gp.m
+
+	// Quick check — no preemption pending
+	if mp.signalPending.Load() == 0 {
+		return false, 0, 0
+	}
+
+	// Always acknowledge the preemption request regardless of outcome,
+	// so the runtime's suspendG loop can make progress.
+	mp.preemptGen.Add(1)
+	mp.signalPending.Store(0)
+
+	atomic.Xadd64(&kgpSignalSeen, 1)
+
+	curg := mp.curg
+	if curg == nil {
+		return false, 0, 0
+	}
+
+	if !wantAsyncPreempt(curg) {
+		atomic.Xadd64(&kgpNotWanted, 1)
+		return false, 0, 0
+	}
+
+	ok, newpc := isAsyncSafePoint(curg, pc, sp, lr)
+	if !ok {
+		atomic.Xadd64(&kgpUnsafe, 1)
+		return false, 0, 0
+	}
+
+	atomic.Xadd64(&kgpInjected, 1)
+	return true, abi.FuncPCABI0(asyncPreempt), newpc
+}
+
+// Kernel goroutine preemption counters — lock-free, safe from any context.
+// Uses runtime-internal atomic operations (no sync/atomic import needed).
+var (
+	kgpSignalSeen uint64 // signalPending was set
+	kgpNotWanted  uint64 // !wantAsyncPreempt
+	kgpUnsafe     uint64 // !isAsyncSafePoint
+	kgpInjected   uint64 // asyncPreempt injected
+)
+
+// GetKGPCounters returns the kernel goroutine preemption counters.
+// Called via go:linkname from kmazarin.
+//
+//go:linkname GetKGPCounters
+//go:nosplit
+func GetKGPCounters() (seen, notWanted, unsafe_, injected uint64) {
+	return atomic.Load64(&kgpSignalSeen), atomic.Load64(&kgpNotWanted), atomic.Load64(&kgpUnsafe), atomic.Load64(&kgpInjected)
 }

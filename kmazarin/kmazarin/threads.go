@@ -1064,6 +1064,18 @@ func ProcessDeadlinesTopHalf() {
 		serial.RawUARTPuts("/")
 		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.FutexWakeCalls))
 		printThreadStateSummary()
+		// Kernel goroutine preemption counters (seen/notWanted/unsafe/injected)
+		seen, notWanted, unsafePt, injected := getKGPCounters()
+		if seen > 0 || injected > 0 {
+			serial.RawUARTPuts(" KGP=")
+			serial.RawUARTDecimal(seen)
+			serial.RawUARTPuts("/")
+			serial.RawUARTDecimal(notWanted)
+			serial.RawUARTPuts("/")
+			serial.RawUARTDecimal(unsafePt)
+			serial.RawUARTPuts("/")
+			serial.RawUARTDecimal(injected)
+		}
 	}
 	// Heartbeat: print '.' every ~5 seconds to confirm timer is alive
 	if cnt%500 == 0 {

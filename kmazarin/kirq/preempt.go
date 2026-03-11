@@ -29,6 +29,12 @@ type preemptOffsetsType struct {
 	MG0Offset         uintptr // Offset of m.g0 from m pointer (always 0)
 	MLocksOffset      uintptr // Offset of m.locks from m pointer
 	MGsignalOffset    uintptr // Offset of m.gsignal from m pointer
+
+	// Kernel goroutine async preemption offsets
+	MSignalPendingOffset uintptr // Offset of m.signalPending (atomic.Uint32)
+	MPreemptGenOffset    uintptr // Offset of m.preemptGen (atomic.Uint32)
+	MCurgOffset          uintptr // Offset of m.curg (*g)
+	MMallocingOffset     uintptr // Offset of m.mallocing (int32)
 }
 
 // Global preemption offsets - set by InitPreemption(), read by assembly.
@@ -48,6 +54,12 @@ var (
 	PreemptMG0Offset         uintptr // Offset of m.g0 from m pointer (always 0)
 	PreemptMLocksOffset      uintptr // Offset of m.locks from m pointer
 	PreemptMGsignalOffset    uintptr // Offset of m.gsignal from m pointer
+
+	// Kernel goroutine async preemption offsets
+	PreemptMSignalPendingOffset uintptr // Offset of m.signalPending (atomic.Uint32)
+	PreemptMPreemptGenOffset    uintptr // Offset of m.preemptGen (atomic.Uint32)
+	PreemptMCurgOffset          uintptr // Offset of m.curg (*g)
+	PreemptMMallocingOffset     uintptr // Offset of m.mallocing (int32)
 )
 
 // TimerIRQCount is incremented by assembly on each timer IRQ.
@@ -196,6 +208,10 @@ func InitPreemption() {
 	PreemptMG0Offset = offsets.MG0Offset
 	PreemptMLocksOffset = offsets.MLocksOffset
 	PreemptMGsignalOffset = offsets.MGsignalOffset
+	PreemptMSignalPendingOffset = offsets.MSignalPendingOffset
+	PreemptMPreemptGenOffset = offsets.MPreemptGenOffset
+	PreemptMCurgOffset = offsets.MCurgOffset
+	PreemptMMallocingOffset = offsets.MMallocingOffset
 
 	// Memory barrier to ensure all stores are visible before setting valid flag
 	atomic.StoreUint32(&PreemptOffsetsValid, 1)
