@@ -153,6 +153,10 @@ func setSignalActionForKsyscall(sig int, handler, flags, restorer, mask uint64) 
 //go:linkname threadLookupByTIDForKsyscall mazzy/kmazarin/ksyscall.ThreadLookupByTID
 //go:nosplit
 func threadLookupByTIDForKsyscall(tid int32) uintptr {
+	// Refuse to look up kernel-reserved TIDs from ksyscall context.
+	if tid < int32(ReservedKernelThreads) {
+		return 0
+	}
 	t := threadLookupByTID(tid)
 	if t == nil {
 		return 0
@@ -163,6 +167,10 @@ func threadLookupByTIDForKsyscall(tid int32) uintptr {
 //go:linkname threadLookupByPIDForKsyscall mazzy/kmazarin/ksyscall.ThreadLookupByPID
 //go:nosplit
 func threadLookupByPIDForKsyscall(pid int16) uintptr {
+	// Refuse to look up kernel-reserved PIDs from ksyscall context.
+	if pid < int16(ReservedKernelPriests) {
+		return 0
+	}
 	t := threadLookupByPID(pid)
 	if t == nil {
 		return 0
@@ -215,6 +223,25 @@ func restoreFromSignalFrameForKsyscall(threadPtr uintptr) {
 func wakeThreadForSignalForKsyscall(threadPtr uintptr) {
 	t := (*Thread)(unsafe.Pointer(threadPtr))
 	WakeThreadForSignal(t)
+}
+
+//go:linkname getThreadTIDForKsyscall mazzy/kmazarin/ksyscall.GetThreadTID
+//go:nosplit
+func getThreadTIDForKsyscall(threadPtr uintptr) int32 {
+	t := (*Thread)(unsafe.Pointer(threadPtr))
+	return int32(t.TID)
+}
+
+//go:linkname reservedKernelTIDsForKsyscall mazzy/kmazarin/ksyscall.ReservedKernelTIDs
+//go:nosplit
+func reservedKernelTIDsForKsyscall() int32 {
+	return int32(ReservedKernelThreads)
+}
+
+//go:linkname reservedKernelPIDsForKsyscall mazzy/kmazarin/ksyscall.ReservedKernelPIDs
+//go:nosplit
+func reservedKernelPIDsForKsyscall() int16 {
+	return int16(ReservedKernelPriests)
 }
 
 // WakeNetpollThread wrapper — wakes a sleeping thread by TID.

@@ -55,3 +55,20 @@ func RestoreFromSignalFrame(threadPtr uintptr)
 // Provided by main.wakeThreadForSignalForKsyscall.
 //go:nosplit
 func WakeThreadForSignal(threadPtr uintptr)
+
+// GetThreadTID returns the TID of a thread.
+// Provided by main.getThreadTIDForKsyscall.
+//go:nosplit
+func GetThreadTID(threadPtr uintptr) int32
+
+// ReservedKernelTIDs returns the number of TIDs reserved for kernel threads.
+// Userspace must not target TIDs in [0, ReservedKernelTIDs).
+// Provided by main.reservedKernelTIDsForKsyscall.
+//go:nosplit
+func ReservedKernelTIDs() int32
+
+// ReservedKernelPIDs returns the number of PIDs reserved for the kernel.
+// Userspace must not target PIDs in [0, ReservedKernelPIDs).
+// Provided by main.reservedKernelPIDsForKsyscall.
+//go:nosplit
+func ReservedKernelPIDs() int16

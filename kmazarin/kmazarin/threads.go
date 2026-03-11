@@ -1128,14 +1128,14 @@ var dbgBadPS uint64
 var dbgBadTID uint64
 var dbgBadPCCount uint64
 
+//go:nosplit
 func printThreadStateSummary() {
 	var nReady, nFutex, nSleep, nSoftIRQ, nRunning int
-	for i := 0; i < len(threadList.Data); i++ {
-		if !threadList.InUse[i] {
+	for i := 0; i < threadArraySize; i++ {
+		if !threadListInUse[i] {
 			continue
 		}
-		t := &threadList.Data[i]
-		switch t.State {
+		switch threadListData[i].State {
 		case ThreadReady:
 			nReady++
 		case ThreadRunning:

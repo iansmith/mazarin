@@ -141,11 +141,25 @@ func SyscallSigaltstack(newPtr, oldPtr, _, _, _, _ uint64) int64 {
 // The signal is delivered when the thread is next scheduled.
 // Validates that tgid matches the target thread's PID (same process).
 //
+// Security: userspace callers cannot target kernel-reserved TIDs or PIDs.
+// Kernel threads (PID 0, TIDs 0..ReservedKernelTIDs-1) can only be
+// signaled by the kernel itself.
+//
 //go:nosplit
 func SyscallTgkill(tgid, tid, sig, _, _, _ uint64) int64 {
 	signum := int(sig)
 	if signum <= 0 || signum >= sigNSIG {
 		return -22 // EINVAL
+	}
+
+	// Userspace callers must not target kernel-reserved TIDs or PIDs.
+	if IsCurrentThreadUserspace() {
+		if int32(tid) < ReservedKernelTIDs() {
+			return -1 // EPERM — kernel thread
+		}
+		if tgid == 0 || int16(tgid) < ReservedKernelPIDs() {
+			return -1 // EPERM — kernel PID
+		}
 	}
 
 	// Find the target thread by TID.

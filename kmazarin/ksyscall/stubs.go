@@ -408,6 +408,9 @@ func SyscallOpenat(dirfd, pathname, flags, mode, _, _ uint64) int64 {
 // Linux: kill(pid, sig)
 // Finds a thread belonging to the target PID and sets PendingSignals.
 //
+// Security: userspace callers cannot target kernel-reserved PIDs.
+// The kernel PID (0) and any other reserved PIDs are off-limits.
+//
 //go:nosplit
 func SyscallKill(pid, sig, _, _, _, _ uint64) int64 {
 	signum := int(sig)
@@ -418,8 +421,14 @@ func SyscallKill(pid, sig, _, _, _, _ uint64) int64 {
 
 	targetPID := int16(pid)
 
-	// PID 0 is the kernel — userspace must never signal it.
-	if targetPID == 0 {
+	// Userspace callers must not target kernel-reserved PIDs.
+	if IsCurrentThreadUserspace() && targetPID < ReservedKernelPIDs() {
+		return -1 // EPERM — kernel process
+	}
+
+	// Kernel callers targeting PID 0 should also be rejected —
+	// the kernel signals its own threads via tgkill, not kill.
+	if targetPID < ReservedKernelPIDs() {
 		return -1 // EPERM
 	}
 
