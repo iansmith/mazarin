@@ -854,7 +854,7 @@ unk_irq_print:
 	// Disable ALL S-mode interrupt enables to stop the loop
 	// CSRW sie, zero
 	WORD	$0x10401073		// csrw sie, zero
-	JMP	trap_return
+	JMP	irq_trap_return
 
 handle_timer_interrupt:
 	// S-mode timer interrupt (cause 5)
@@ -905,7 +905,7 @@ handle_timer_interrupt:
 	// S-mode: check svcDepth — only safe to preempt when depth==0
 	MOV	$·svcDepth(SB), T0
 	MOVW	(T0), T0
-	BNE	T0, ZERO, trap_return	// depth=1, inside ecall — skip
+	BNE	T0, ZERO, irq_trap_return	// depth=1, inside ecall — skip
 
 	// S-mode, depth=0: check kernel goroutine async preemption.
 	// The Go runtime sets m.signalPending when GC/sysmon wants to preempt.
@@ -914,7 +914,7 @@ handle_timer_interrupt:
 	// g register is already set to g0.
 	MOV	X2, S2			// frame pointer (callee-saved)
 	GO_CALL_1_1(·CheckKernelGoroutinePreempt, S2)
-	BNE	T0, ZERO, trap_return	// frame was modified, skip thread preempt
+	BNE	T0, ZERO, irq_trap_return	// frame was modified, skip thread preempt
 
 	// S-mode, depth=0 — safe to preempt kernel thread
 timer_check_preemption:
@@ -958,7 +958,7 @@ timer_no_switch:
 	MOV	T1, (T0)
 	// ---- END DIAGNOSTIC ----
 
-	JMP	trap_return
+	JMP	irq_trap_return
 
 handle_software_interrupt:
 	// S-mode software interrupt (cause 1)
@@ -966,13 +966,31 @@ handle_software_interrupt:
 	MOV	$2, T0			// bit 1 = SSIP
 	// CSRC sip, t0  = csrrc x0, sip, t0(x5)
 	WORD	$0x1442B073		// csrrc x0, sip, x5
-	JMP	trap_return
+	JMP	irq_trap_return
 
 handle_external_interrupt:
 	// S-mode external interrupt (cause 9) — PLIC external IRQ
 	// Dispatch via PLIC: claim interrupt, call handler, complete.
 	GO_CALL_0_0(·PLICDispatchIRQ)
-	JMP	trap_return
+	JMP	irq_trap_return
+
+// ============================================================================
+// IRQ trap return — PrepareForExceptionExit (RISC-V)
+// ============================================================================
+// Timer and device IRQ handlers jump here instead of trap_return.
+// Forces SPIE=1 in saved sstatus before falling through to trap_return.
+// Hardware IRQs only fire when SIE=1, so the interrupted code always had
+// interrupts enabled. SRET copies SPIE→SIE, ensuring interrupts remain
+// enabled after return. This prevents WFI hangs caused by incorrect SPIE
+// values (observed in QEMU TCG emulation).
+//
+// Ecalls and page faults use trap_return directly — they can occur during
+// critical sections where SIE=0 must be preserved.
+irq_trap_return:
+	MOV	256(X2), T0		// load saved sstatus from frame
+	MOV	$0x20, T1		// SPIE bit mask (bit 5)
+	OR	T0, T1, T0		// T0 = sstatus | SPIE
+	MOV	T0, 256(X2)		// store back to frame
 
 // ============================================================================
 // Trap return - restore GPRs and SRET
@@ -1155,8 +1173,12 @@ sepc_ok:
 	// CSRW sepc, a0
 	WORD	$0x14151073
 
-	// Load SSTATUS
+	// Load SSTATUS — PrepareForExceptionExit: force SPIE=1 for context switch.
+	// The restored thread was interrupted while SIE=1 (timer preemption requires
+	// SIE=1 on RISC-V), so SPIE must be 1 for correct SIE restoration via SRET.
 	MOV	264(S2), A0
+	MOV	$0x20, T0		// SPIE bit mask (bit 5)
+	OR	A0, T0, A0		// A0 = sstatus | SPIE
 	// CSRW sstatus, a0
 	WORD	$0x10051073
 

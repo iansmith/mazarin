@@ -95,9 +95,9 @@ TEXT ·TimerIRQHandlerAsm(SB), NOSPLIT|NOFRAME, $0
 	MOV	(A5), A5		// A5 = ThreadPreemptDeadline
 	BLT	A3, A5, rv_timer_done
 
-	// Thread deadline exceeded
+	// Thread deadline exceeded — set global flag (read by exception handler)
 	MOV	$1, A0
-	MOVW	A0, 20(A2)		// perCPU.NeedsThreadPreempt (offset 20)
+	MOVW	A0, ·NeedsThreadPreempt(SB)
 
 rv_timer_done:
 	// Restore saved registers

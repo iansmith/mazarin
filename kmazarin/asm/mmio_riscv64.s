@@ -100,6 +100,10 @@ TEXT ·Hlt(SB), NOSPLIT, $0-0
 	RET
 
 // StiHlt()
-// No-op on RISC-V (STI+HLT is an x86_64 pattern)
+// RISC-V equivalent of x86_64 STI+HLT: enable SIE, WFI, then clear SIE.
+// Ensures the vCPU wakes on the next interrupt regardless of caller's SIE state.
 TEXT ·StiHlt(SB), NOSPLIT, $0-0
+	WORD	$0x10016073		// CSRSI sstatus, 2 (set SIE — enable interrupts)
+	WORD	$0x10500073		// WFI
+	WORD	$0x10017073		// CSRCI sstatus, 2 (clear SIE — restore masked state)
 	RET

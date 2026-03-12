@@ -89,6 +89,18 @@ func SyscallSchedYield(_, _, _, _, _, _ uint64) int64 {
 	// release the lock. The m.locks check is only appropriate for ASYNC
 	// (timer-driven) preemption, not voluntary yields.
 
+	// If thread 0 has pending kernel dispatch work (LoadMaz/RunMaz/RunPriest),
+	// skip the OS-level thread switch. This lets Go's internal goroutine
+	// scheduler keep cycling through goroutines on M0 until the idle loop
+	// goroutine (which calls DispatchLoadMazWork etc.) gets scheduled.
+	// Without this, goroutines on M0 doing SVC sched_yield cause thread 0
+	// to be context-switched away, starving the idle loop of CPU time and
+	// preventing kernel dispatch work from ever being processed.
+	// Timer preemption still works, so other threads still get CPU time.
+	if thread0HasPendingWork() {
+		return 0
+	}
+
 	// Try to find another ready thread to switch to
 	nextThread := threadFindReadyForYield()
 

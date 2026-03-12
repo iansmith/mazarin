@@ -1397,6 +1397,10 @@ irq_bad_elr_halt:
 	B	irq_bad_elr_halt
 
 irq_elr_ok:
+	// PrepareForExceptionExit: force IRQs enabled in SPSR for IRQ returns.
+	// Same pattern as sync_return's BIC — hardware IRQs only fire when
+	// DAIF.I=0, so the interrupted code always had IRQs enabled.
+	BIC	$0x80, R11, R11
 	// Mask IRQs before writing ELR/SPSR to prevent timer corruption.
 	// If Go code called during preemption check triggered a page fault,
 	// sync_return's BIC cleared DAIF.I. A timer between MSR and ERET

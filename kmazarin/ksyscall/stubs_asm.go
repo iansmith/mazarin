@@ -15,3 +15,12 @@ func setSyscallSwitchTargetForYield(target uintptr)
 //
 //go:linkname getGPointer main.GetGRegister
 func getGPointer() uint64
+
+// thread0HasPendingWork returns true if the current thread is thread 0
+// AND there is pending kernel dispatch work (LoadMaz/RunMaz/RunPriest).
+// Used by SyscallSchedYield to skip OS-level thread switches when
+// thread 0 has pending work, allowing Go's goroutine scheduler to
+// reach the dispatcher goroutine in KernelIdleLoop.
+//
+//go:linkname thread0HasPendingWork main.Thread0HasPendingWork
+func thread0HasPendingWork() bool

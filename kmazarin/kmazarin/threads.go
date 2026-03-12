@@ -12,7 +12,6 @@ import (
 	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
 	"mazzy/kmazarin/util"
-	"runtime"
 	"sync/atomic"
 	"unsafe"
 )
@@ -1076,6 +1075,26 @@ func ProcessDeadlinesTopHalf() {
 			serial.RawUARTPuts("/")
 			serial.RawUARTDecimal(injected)
 		}
+		// Thread preemption: timer context switches / no-switch / NeedsThreadPreempt sets
+		tcs := atomic.LoadUint64(&timerCtxSwitchCount)
+		tns := atomic.LoadUint64(&timerNoSwitchCount)
+		serial.RawUARTPuts(" T=")
+		serial.RawUARTDecimal(tcs)
+		serial.RawUARTPuts("/")
+		serial.RawUARTDecimal(tns)
+		// Boost thread 0 diagnostics: attempts/successes/lastFailState
+		ba := atomic.LoadUint64(&dbgBoostAttempt)
+		bs := atomic.LoadUint64(&dbgBoostSuccess)
+		if ba > 0 {
+			serial.RawUARTPuts(" B0=")
+			serial.RawUARTDecimal(ba)
+			serial.RawUARTPuts("/")
+			serial.RawUARTDecimal(bs)
+			serial.RawUARTPuts("/s")
+			serial.RawUARTDecimal(atomic.LoadUint64(&dbgBoostFailState))
+		}
+		serial.RawUARTPuts(" IL=")
+		serial.RawUARTDecimal(dbgIdleCount)
 	}
 	// Heartbeat: print '.' every ~5 seconds to confirm timer is alive
 	if cnt%500 == 0 {
@@ -1139,6 +1158,9 @@ var dbgBadPC uint64               // DEBUG: kernel PC saved for userspace thread
 var dbgBadPS uint64
 var dbgBadTID uint64
 var dbgBadPCCount uint64
+var dbgBoostAttempt uint64        // times boostThread0ForPendingWork was called
+var dbgBoostSuccess uint64        // times boost succeeded (thread 0 was Ready)
+var dbgBoostFailState uint64      // thread 0 state when boost failed (last value)
 
 //go:nosplit
 func printThreadStateSummary() {
@@ -1170,6 +1192,23 @@ func printThreadStateSummary() {
 	serial.RawUARTDecimal(uint64(nSoftIRQ))
 	serial.RawUARTPuts(" X=")
 	serial.RawUARTDecimal(uint64(nRunning))
+	// Show TIDs of Ready threads (up to 8)
+	if nReady > 0 {
+		serial.RawUARTPuts(" Rt[")
+		shown := 0
+		for i := 0; i < threadArraySize && shown < 8; i++ {
+			if threadListInUse[i] && threadListData[i].State == ThreadReady {
+				if shown > 0 {
+					serial.RawUART(',')
+				}
+				serial.RawUARTDecimal(uint64(threadListData[i].TID))
+				serial.RawUART('/')
+				serial.RawUARTDecimal(uint64(threadListData[i].PID))
+				shown++
+			}
+		}
+		serial.RawUART(']')
+	}
 	serial.RawUARTPuts("\n")
 }
 
@@ -1182,10 +1221,22 @@ func KernelIdleLoop() {
 			serial.RawUARTDecimal(dbgIdleCount)
 			serial.RawUARTPuts("]")
 		}
-		// Yield to Go goroutines (channel-based bottom halves).
-		// Without this, goroutines started by StartBottomHalfProcessors()
-		// never get CPU time because this loop never triggers Go's scheduler.
-		runtime.Gosched()
+		// Check for pending kernel work and execute it directly on this
+		// goroutine's growable stack. Both atomic flag and BlockedTID are checked.
+		DispatchLoadMazWork()
+		DispatchRunMazWork()
+		DispatchRunPriestWork()
+
+		// NOTE: runtime.Gosched() was removed here. When Gosched runs Go's
+		// internal goroutine scheduler, goroutines doing SVC sched_yield cause
+		// OS-level context switches that save thread 0 inside a random goroutine.
+		// When thread 0 resumes, it's in that goroutine — not the idle loop —
+		// and the dispatch calls above are never reached again.
+		// Without Gosched, thread 0 is always saved inside this loop (by timer
+		// preemption or YieldToReadyThread). When restored, it resumes here
+		// and reaches the dispatch calls on the next iteration.
+		// Bottom-half goroutines get CPU time via Go's async preemption or
+		// when they're woken by channel sends and scheduled by the runtime.
 
 		// Bridge IRQ flags to bottom-half channels.
 		// IRQ handlers set atomic flags; we convert them to channel sends
@@ -1214,11 +1265,6 @@ func KernelIdleLoop() {
 			default:
 			}
 		}
-		// Check for pending kernel work and execute it directly on this
-		// goroutine's growable stack. Both atomic flag and BlockedTID are checked.
-		DispatchLoadMazWork()
-		DispatchRunMazWork()
-		DispatchRunPriestWork()
 		// Flush any pending console ring data to userspace.
 		if softIRQConsole != nil {
 			softIRQConsole.CheckPendingWake()
@@ -2824,16 +2870,32 @@ func hasPendingKernelWork() bool {
 		atomic.LoadUint32(&runPriestPending) != 0
 }
 
+// Thread0HasPendingWork returns true if the current thread is thread 0
+// AND there is pending kernel dispatch work (LoadMaz/RunMaz/RunPriest).
+// Used by SyscallSchedYield to skip OS-level thread switches so that
+// Go's internal goroutine scheduler can reach the dispatcher goroutine.
+//
+//go:nosplit
+func Thread0HasPendingWork() bool {
+	t := GetCurrentThread()
+	if t == nil || t.TID != 0 {
+		return false
+	}
+	return hasPendingKernelWork()
+}
+
 // boostThread0ForPendingWork forces a context switch to thread 0 when
 // kernel dispatch work is pending. Returns thread 0's context pointer
 // on success, or 0 if thread 0 is not in the ready queue.
 //
 //go:nosplit
 func boostThread0ForPendingWork(sf *SchedulerFunc, oldThread *Thread, framePtr uint64) uint64 {
+	atomic.AddUint64(&dbgBoostAttempt, 1)
 	savedDAIF := sf.DisableAndSaveDAIF()
 	schedulerLock.Lock()
 	thread0 := threadLookupByTID(0)
 	if thread0 != nil && thread0.State == ThreadReady {
+		atomic.AddUint64(&dbgBoostSuccess, 1)
 		// Save preempted thread's context and enqueue it
 		SaveContextFromFrame(uintptr(framePtr))
 		oldThread.State = ThreadReady
@@ -2866,6 +2928,9 @@ func boostThread0ForPendingWork(sf *SchedulerFunc, oldThread *Thread, framePtr u
 		schedulerLock.Unlock()
 		// Don't restore DAIF — ERET will restore from the saved context
 		return uint64(uintptr(unsafe.Pointer(&thread0.Context)))
+	}
+	if thread0 != nil {
+		atomic.StoreUint64(&dbgBoostFailState, uint64(thread0.State))
 	}
 	schedulerLock.Unlock()
 	sf.EnableAndRestoreDAIF(savedDAIF)
@@ -2962,9 +3027,11 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	}
 
 	oldThread.State = ThreadReady
-	// Pluck first in case oldThread is already in queue from a previous preemption
+	// Pluck first in case oldThread is already in queue from a previous preemption.
+	// Always insert at TAIL so findReadyThreadSchedLockHeld (which pops the front)
+	// picks a different thread, not the one we just preempted.
 	pluckFromAllQueues(oldThread.TID)
-	enqueueReadySchedLockHeld(oldThread)
+	GetPerCPU().LocalReadyQueue.PushNoDuplicate(oldThread.TID) // TAIL
 
 	// Reset preemption tracking for the preempted thread
 	oldThread.PreemptElapsed = 0
@@ -2977,29 +3044,12 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	oldThread.TicksStartedRunning = 0 // Mark as not running
 
 	// Find next ready thread for timer preemption.
-	// When preempted thread is userspace: pick the next userspace thread
-	// in FIFO order (pass PID -1 so all userspace threads match the
-	// "different priest" first pass). Using oldThread.PID here causes
-	// starvation: same-priest threads are skipped when a different-priest
-	// thread is always available (e.g., futex-cycling Go runtime Ms).
-	// When preempted thread is kernel: any ready thread is fine.
-	// NOTE: Use PID > 0 (not PageTableL0PA != 0) to identify userspace threads.
-	// On AMD64, kernel threads also have non-zero PageTableL0PA because there's
-	// no TTBR0/TTBR1 split — a single CR3 serves both kernel and user.
-	var next *Thread
-	if oldThread.PID > 0 {
-		// Userspace thread: FIFO across all priests
-		next = findReadyUserspaceThreadSchedLockHeld(-1)
-		if next == nil {
-			// Fallback: any thread, including kernel thread 0.
-			// On RISC-V/x86_64, SRET/IRETQ handles cross-privilege transitions
-			// via SSTATUS.SPP / CS selector in the target ThreadContext.
-			next = findReadyThreadSchedLockHeld()
-		}
-	} else {
-		// Kernel thread: any ready thread (kernel or userspace)
-		next = findReadyThreadPreferDifferentPriestSchedLockHeld(oldThread.PID)
-	}
+	// Simple FIFO: pick the next ready thread in queue order, regardless of
+	// whether it's kernel or userspace. Thread 0 (idle loop) gets its fair
+	// share of time for housekeeping (IRQ bridging, deadlines, A/D scanning).
+	// The cost is two extra context switches when thread 0 runs briefly and
+	// yields back, but that's negligible compared to the 4ms tick interval.
+	next := findReadyThreadSchedLockHeld()
 
 	if next == nil {
 		// No other ready thread - continue with current thread

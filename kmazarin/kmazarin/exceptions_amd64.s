@@ -1295,7 +1295,7 @@ generic_halt_loop:
 	JMP	generic_halt_loop
 
 // ============================================================================
-// IRQ exception return - force IF=1 then fall through to exception_return
+// IRQ exception return — PrepareForExceptionExit (x86_64)
 // ============================================================================
 // Timer and device IRQ handlers jump here instead of exception_return.
 // Hardware IRQs always interrupt running code that had IF=1 (interrupts must
