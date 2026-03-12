@@ -101,3 +101,13 @@ func Wfi()
 //
 //go:nosplit
 func Hlt()
+
+// StiHlt atomically enables interrupts and halts (x86_64 only).
+// STI has a 1-instruction shadow: HLT executes before any pending interrupt
+// is delivered. The CPU wakes on the first interrupt. After the interrupt
+// handler returns via IRETQ, execution continues at the instruction after HLT
+// with IF=1 (restored from the pre-interrupt RFLAGS).
+// On ARM64/RISC-V this is a no-op (use Wfi instead).
+//
+//go:nosplit
+func StiHlt()

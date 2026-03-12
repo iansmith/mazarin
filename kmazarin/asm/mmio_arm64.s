@@ -144,3 +144,8 @@ TEXT ·Wfi(SB), NOSPLIT, $0-0
 // No-op on ARM64 (HLT is an x86_64 instruction)
 TEXT ·Hlt(SB), NOSPLIT, $0-0
 	RET
+
+// StiHlt()
+// No-op on ARM64 (STI+HLT is an x86_64 pattern)
+TEXT ·StiHlt(SB), NOSPLIT, $0-0
+	RET

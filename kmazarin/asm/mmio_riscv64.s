@@ -98,3 +98,8 @@ TEXT ·Wfi(SB), NOSPLIT, $0-0
 // No-op on RISC-V (HLT is an x86_64 instruction)
 TEXT ·Hlt(SB), NOSPLIT, $0-0
 	RET
+
+// StiHlt()
+// No-op on RISC-V (STI+HLT is an x86_64 pattern)
+TEXT ·StiHlt(SB), NOSPLIT, $0-0
+	RET

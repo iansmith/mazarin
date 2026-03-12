@@ -934,10 +934,10 @@ handle_timer_irq:
 	// Kernel mode: check if safe to preempt
 	MOVL	runtime·kmazarinSyscallReady(SB), AX
 	TESTL	AX, AX
-	JZ	exception_return	// Early boot — no preemption
+	JZ	irq_exception_return	// Early boot — no preemption
 	MOVL	·svcDepth(SB), AX
 	TESTL	AX, AX
-	JNZ	exception_return	// Inside syscall handler — unsafe to preempt
+	JNZ	irq_exception_return	// Inside syscall handler — unsafe to preempt
 
 	// Ring 0, svcDepth==0: check kernel goroutine async preemption.
 	// The Go runtime sets m.signalPending when GC/sysmon wants to preempt.
@@ -947,7 +947,7 @@ handle_timer_irq:
 	MOVQ	SP, R13
 	GO_CALL_1_1(·CheckKernelGoroutinePreempt, R13)
 	TESTQ	AX, AX
-	JNZ	exception_return	// frame was modified, skip thread preempt
+	JNZ	irq_exception_return	// frame was modified, skip thread preempt
 
 	JMP	timer_preempt_check
 timer_preempt_allowed:
@@ -960,7 +960,7 @@ timer_preempt_check:
 	// loop where the user thread never completes a syscall.
 	MOVL	mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB), AX
 	TESTL	AX, AX
-	JZ	exception_return
+	JZ	irq_exception_return
 
 	// NOTE: m.locks check removed for userspace thread preemption.
 	// Each priest runs in its own address space with isolated Go runtime state.
@@ -976,7 +976,7 @@ timer_preempt_check:
 	MOVQ	AX, R12			// new context pointer
 
 	TESTQ	R12, R12
-	JZ	exception_return
+	JZ	irq_exception_return
 
 	JMP	load_context_and_iretq
 
@@ -1011,7 +1011,7 @@ handle_device_irq:
 	MOVQ	$(0xFEE00000 + 0xFFFFFFFF00000000), AX
 	MOVL	$0, 0xB0(AX)		// LAPIC_EOI = 0
 
-	JMP	exception_return
+	JMP	irq_exception_return
 
 handle_generic_irq:
 	// Print '!' + 2-digit hex vector number for diagnostic
@@ -1041,7 +1041,7 @@ gvec2:
 	// For IRQs (32+), send EOI and return
 	MOVQ	$(0xFEE00000 + 0xFFFFFFFF00000000), AX
 	MOVL	$0, 0xB0(AX)		// LAPIC_EOI = 0
-	JMP	exception_return
+	JMP	irq_exception_return
 
 generic_fault_diag:
 	// Print error code (at 120(SP)) and faulting RIP (at 128(SP))
@@ -1295,6 +1295,23 @@ generic_halt_loop:
 	JMP	generic_halt_loop
 
 // ============================================================================
+// IRQ exception return - force IF=1 then fall through to exception_return
+// ============================================================================
+// Timer and device IRQ handlers jump here instead of exception_return.
+// Hardware IRQs always interrupt running code that had IF=1 (interrupts must
+// be enabled for the IRQ to fire). The CPU saves RFLAGS with IF=1 and clears
+// IF for the handler. However, under QEMU TCG on Apple Silicon, the saved
+// RFLAGS can have IF=0 — possibly a TCG translation bug. This trampoline
+// forces IF=1 in the saved RFLAGS before restoring, preventing the interrupted
+// kernel code from resuming with IF=0 (which causes HLT hangs in doBlockIO).
+//
+// Page faults and other exceptions use exception_return directly because they
+// can legitimately occur during CLI critical sections where IF=0 must be
+// preserved.
+irq_exception_return:
+	ORQ	$0x200, 144(SP)		// Force IF=1 in saved RFLAGS on stack
+
+// ============================================================================
 // Exception return - restore GPRs and IRETQ
 // ============================================================================
 exception_return:
@@ -1368,10 +1385,13 @@ eret_skip_tls_write:
 
 	// Fix IF=0 in RFLAGS for user mode returns. User code must always
 	// run with interrupts enabled. Silently force IF=1 if needed.
+	// NOTE: Kernel mode IF=0 must be preserved — page faults during CLI
+	// critical sections (SaveAndDisableIRQs) must return with IF=0 to
+	// maintain the invariant. IRQ returns force IF=1 via irq_exception_return.
 	TESTQ	$0x200, 16(SP)		// Check IF in RFLAGS
 	JNZ	eret_if_ok
 	CMPQ	8(SP), $0x1B		// Check CS = user code?
-	JNE	eret_if_ok		// Kernel mode IF=0 is OK
+	JNE	eret_if_ok		// Kernel mode IF=0 is OK (page fault in CLI section)
 	ORQ	$0x200, 16(SP)		// Force IF=1 for user return
 eret_if_ok:
 

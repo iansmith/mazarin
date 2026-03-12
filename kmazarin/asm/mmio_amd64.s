@@ -93,6 +93,18 @@ TEXT ·Wfi(SB), NOSPLIT, $0-0
 
 // Hlt()
 // Halt the CPU until the next interrupt fires.
+// REQUIRES: IF=1 (caller must have enabled interrupts).
 TEXT ·Hlt(SB), NOSPLIT, $0-0
+	HLT
+	RET
+
+// StiHlt()
+// Atomically enables interrupts and halts the CPU.
+// STI shadow: HLT executes with IRQs still masked, so the first pending
+// interrupt fires during HLT, waking the CPU. This is the correct x86_64
+// idiom for "wait for interrupt" — bare HLT is fragile because it requires
+// the caller to guarantee IF=1.
+TEXT ·StiHlt(SB), NOSPLIT, $0-0
+	STI
 	HLT
 	RET
