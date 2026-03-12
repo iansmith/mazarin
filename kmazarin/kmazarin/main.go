@@ -786,10 +786,12 @@ func simpleMain() {
 
 	// Initialize VirtIO RNG device (entropy source).
 	// Uses polling (no IRQ) — RNG requests are infrequent.
+	console.KPrintln("[RNG] discovering...")
 	if !rng.Init() {
 		console.KPrintln("[Main] VirtIO RNG init failed (no device found?)")
 	} else {
 		// Quick sanity check: read 32 bytes and verify they're not all zero
+		console.KPrintln("[RNG] init OK, getting 32 bytes...")
 		var rngBuf [32]byte
 		n := rng.Get(rngBuf[:])
 		allZero := true
@@ -806,6 +808,7 @@ func simpleMain() {
 			rngBuf[8], rngBuf[9], rngBuf[10], rngBuf[11],
 			rngBuf[12], rngBuf[13], rngBuf[14], rngBuf[15])
 		// Read a second time to verify values differ
+		console.KPrintln("[RNG] getting 32 more bytes...")
 		var rngBuf2 [32]byte
 		n2 := rng.Get(rngBuf2[:])
 		same := n == n2
@@ -827,23 +830,31 @@ func simpleMain() {
 
 	// Wire up block device IRQ: register with top-half dispatcher and
 	// enable at the interrupt controller so interrupts reach the CPU.
+	console.KPrintln("[Main] wiring block IRQ...")
 	if irq := block.GetIRQNum(); irq != 0 {
 		SetBlockIRQ(irq, block.GetISRBase(), block.GetIOCompletePtr())
 		enableBlockDeviceIRQ(irq)
 	}
+	console.KPrintln("[Main] block IRQ wired")
 
 	// CRITICAL: Enable IRQs at CPU AFTER GIC is initialized (matches Cardinal's order)
 	// This unmasks IRQs at the CPU (clears DAIF.I bit)
+	console.KPrintln("[Main] EnableIRQs...")
 	EnableIRQs()
+	console.KPrintln("[Main] IRQs enabled")
 	// Fix clone threads created during Go runtime init — they have IF=0 in
 	// their saved RFLAGS because they were cloned before EnableIRQs(). Without
 	// this, those threads run without timer interrupts when scheduled, causing
 	// the system to freeze if they pick up a non-blocking goroutine.
 	FixCloneThreadIFFlags()
+	console.KPrintln("[Main] EnableTimerIRQ...")
 	EnableTimerIRQ()
+	console.KPrintln("[Main] timer enabled, unmapping cardinal...")
 
 	unmapCardinal()
+	console.KPrintln("[Main] DisableTimerIRQ...")
 	DisableTimerIRQ()
+	console.KPrintln("[Main] timer disabled, reading boot config...")
 
 	// =========================================================================
 	// USERSPACE TEST: Launch 6 sieve workers as separate threads
@@ -932,11 +943,13 @@ func main() {
 // readBootConfig reads and parses /kmazarin.toml from the FAT32 disk.
 // Returns nil if the file is not found or cannot be parsed.
 func readBootConfig() *constants.BootConfig {
+	console.KPrintln("[boot] getting block device...")
 	blk, ok := device.GetBlockDevice()
 	if !ok {
 		console.KPrintln("[boot] no block device, cannot read config")
 		return nil
 	}
+	console.KPrintln("[boot] mounting FAT32...")
 
 	fs, err := fat32.Mount(blk)
 	if err != nil {
