@@ -774,6 +774,7 @@ tasks:
   disk-arm64:
     desc: Create FAT32 disk image with ARM64 flock binaries and kmazarin kernel
     deps: [dapope-arm64, stdio-arm64, diskpriest-arm64, sievetest, helloworld-maz, fs-maz, kmazarin-arm64, convert-boot-image]
+    method: checksum
     sources:
       - '{{.DAPOPE_ELF}}'
       - '{{.STDIO_ELF}}'
@@ -796,6 +797,7 @@ tasks:
   disk-x86_64:
     desc: Create FAT32 disk image with x86_64 flock binaries and kmazarin kernel
     deps: [dapope-x86_64, stdio-x86_64, diskpriest-x86_64, fs-maz-amd64, helloworld-maz-amd64, kmazarin-x86_64, convert-boot-image]
+    method: checksum
     sources:
       - '{{.DAPOPE_AMD64_ELF}}'
       - '{{.STDIO_AMD64_ELF}}'
@@ -804,6 +806,7 @@ tasks:
       - '{{.HELLOWORLD_MAZ_AMD64}}'
       - '{{.KMAZARIN_AMD64_ELF}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
+      - 'config/kmazarin-x86_64.toml'
     generates:
       - '{{.DISK_AMD64_IMAGE}}'
     cmds:
@@ -822,6 +825,7 @@ tasks:
   disk-riscv64:
     desc: Create FAT32 disk image with RISC-V 64-bit flock binaries and kmazarin kernel
     deps: [dapope-riscv64, stdio-riscv64, diskpriest-riscv64, fs-mzr-riscv64, kmazarin-riscv64, convert-boot-image]
+    method: checksum
     sources:
       - '{{.DAPOPE_RISCV64_ELF}}'
       - '{{.STDIO_RISCV64_ELF}}'
@@ -829,6 +833,7 @@ tasks:
       - '{{.FS_MZR_RISCV64}}'
       - '{{.KMAZARIN_RISCV64_ELF}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
+      - 'config/kmazarin-riscv64.toml'
     generates:
       - '{{.DISK_RISCV64_IMAGE}}'
     cmds:
@@ -984,6 +989,7 @@ tasks:
   esp-x86_64-kmazarin:
     desc: Create EFI System Partition image for x86_64 diplomat with real kmazarin
     deps: [diplomat-x86_64, mkesp, kmazarin-x86_64]
+    method: checksum
     sources:
       - '{{.DIPLOMAT_EFI}}'
       - '{{.KMAZARIN_AMD64_ELF}}'
@@ -998,6 +1004,7 @@ tasks:
   esp-arm64:
     desc: Create EFI System Partition image for ARM64 diplomat
     deps: [diplomat-arm64, mkesp, kmazarin-arm64]
+    method: checksum
     sources:
       - '{{.DIPLOMAT_ARM64_EFI}}'
       - '{{.KMAZARIN_ELF}}'

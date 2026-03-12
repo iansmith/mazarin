@@ -52,8 +52,8 @@ kmazarin/ds/ds.test
 fonts/
 
 # Userspace binaries (built by task)
-dapope
-stdio
+/dapope
+/stdio
 
 # Standalone tool binaries
 elf2pe

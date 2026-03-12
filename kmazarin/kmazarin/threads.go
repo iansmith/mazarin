@@ -2814,6 +2814,64 @@ func tryPickupWorkIdleCPU(sf *SchedulerFunc) uint64 {
 // framePtr: pointer to exception frame with saved registers
 // Returns: pointer to new ThreadContext if switch happened, 0 otherwise
 //
+// hasPendingKernelWork returns true if any LoadMaz/RunMaz/RunPriest work
+// is waiting to be dispatched by thread 0.
+//
+//go:nosplit
+func hasPendingKernelWork() bool {
+	return atomic.LoadUint32(&loadMazPending) != 0 ||
+		atomic.LoadUint32(&runMazPending) != 0 ||
+		atomic.LoadUint32(&runPriestPending) != 0
+}
+
+// boostThread0ForPendingWork forces a context switch to thread 0 when
+// kernel dispatch work is pending. Returns thread 0's context pointer
+// on success, or 0 if thread 0 is not in the ready queue.
+//
+//go:nosplit
+func boostThread0ForPendingWork(sf *SchedulerFunc, oldThread *Thread, framePtr uint64) uint64 {
+	savedDAIF := sf.DisableAndSaveDAIF()
+	schedulerLock.Lock()
+	thread0 := threadLookupByTID(0)
+	if thread0 != nil && thread0.State == ThreadReady {
+		// Save preempted thread's context and enqueue it
+		SaveContextFromFrame(uintptr(framePtr))
+		oldThread.State = ThreadReady
+		pluckFromAllQueues(oldThread.TID)
+		enqueueReadySchedLockHeld(oldThread)
+		oldThread.PreemptElapsed = 0
+
+		currentTime := sf.CurrentTime(0)
+
+		// Stop old thread's runtime clock
+		if oldThread.TicksStartedRunning != 0 {
+			oldThread.TotalTicksRunning += currentTime - oldThread.TicksStartedRunning
+		}
+		oldThread.TicksStartedRunning = 0
+
+		// Pluck thread 0 and make it the active thread
+		pluckFromAllQueues(thread0.TID)
+		SetCurrentThreadGlobal(thread0)
+		thread0.State = ThreadRunning
+		thread0.StartTick = currentTime
+		thread0.ThreadPreemptDeadline = currentTime + kirq.ThreadPreemptTicks
+		thread0.PreemptElapsed = 0
+		thread0.TicksStartedRunning = currentTime
+
+		// Switch page table if needed (userspace → kernel)
+		if thread0.PageTableL0PA != 0 && thread0.PageTableL0PA != oldThread.PageTableL0PA {
+			kmem.SwitchTTBR0WithASID(thread0.PageTableL0PA, uint16(thread0.PID))
+		}
+
+		schedulerLock.Unlock()
+		// Don't restore DAIF — ERET will restore from the saved context
+		return uint64(uintptr(unsafe.Pointer(&thread0.Context)))
+	}
+	schedulerLock.Unlock()
+	sf.EnableAndRestoreDAIF(savedDAIF)
+	return 0
+}
+
 // CRITICAL: This is called from IRQ context after EOIR, with g switched to kmazarin's g0.
 // The exception frame contains the interrupted thread's complete state.
 //
@@ -2856,6 +2914,17 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		atomic.LoadUint32(&runMazDispatching) != 0 ||
 		atomic.LoadUint32(&runPriestDispatching) != 0) {
 		return 0
+	}
+
+	// Boost thread 0 when kernel work is pending. The userspace-preferring
+	// scheduler never picks thread 0 while any userspace thread is ready,
+	// so pending LoadMaz/RunMaz/RunPriest requests can stall indefinitely.
+	// When a pending flag is set and we're preempting a non-thread-0 thread,
+	// force a switch to thread 0 so it can dispatch the work.
+	if oldThread.TID != 0 && hasPendingKernelWork() {
+		if ctxPtr := boostThread0ForPendingWork(sf, oldThread, framePtr); ctxPtr != 0 {
+			return ctxPtr
+		}
 	}
 
 	// BEGIN CRITICAL SECTION - protect thread state modifications
