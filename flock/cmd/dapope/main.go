@@ -412,10 +412,28 @@ func main() {
 		type funcval struct{ fn uintptr }
 		fv := &funcval{fn: uintptr(mazResult.EntryPoint)}
 		mazMain := *(*func())(unsafe.Pointer(&fv))
-		go mazMain()
+		go runWithLargeStack(mazMain)
 		fmt.Println("[dapope] .maz goroutine launched")
 	}
 
 	// Block main goroutine forever
 	select {}
+}
+
+// runWithLargeStack allocates a 256KB stack frame before calling fn,
+// preventing .maz code from hitting its broken morestack (which hangs
+// forever due to uninitialized runtime globals in the PIE binary).
+// The buffer is kept alive across fn() so GC's shrinkstack doesn't
+// shrink the goroutine stack while .maz code is running.
+//
+//go:noinline
+func runWithLargeStack(fn func()) {
+	var buf [262144]byte
+	buf[0] = 1
+	buf[len(buf)-1] = 1
+	if buf[131072] != 0 {
+		panic("unreachable")
+	}
+	fn()
+	runtime.KeepAlive(&buf)
 }

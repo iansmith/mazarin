@@ -2848,11 +2848,13 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		return ctxPtr
 	}
 
-	// Don't preempt thread 0 while it's dispatching LoadMaz work.
+	// Don't preempt thread 0 while it's dispatching LoadMaz/RunMaz/RunPriest work.
 	// Without this, the userspace-preferring scheduler starves thread 0
 	// after completing one request, preventing subsequent requests from
 	// being dispatched.
-	if oldThread.TID == 0 && atomic.LoadUint32(&loadMazDispatching) != 0 {
+	if oldThread.TID == 0 && (atomic.LoadUint32(&loadMazDispatching) != 0 ||
+		atomic.LoadUint32(&runMazDispatching) != 0 ||
+		atomic.LoadUint32(&runPriestDispatching) != 0) {
 		return 0
 	}
 

@@ -15,6 +15,10 @@ import (
 // runMazPending is set by BlockForRunMaz and checked by KernelIdleLoop.
 var runMazPending uint32
 
+// runMazDispatching is set while thread 0 is inside DispatchRunMazWork.
+// The timer ISR checks this to avoid preempting thread 0 mid-dispatch.
+var runMazDispatching uint32
+
 func initRunMazWorker() {
 	ksyscall.RunMazReq.BlockedTID = -1
 }
@@ -28,7 +32,7 @@ func DispatchRunMazWork() bool {
 
 		if !atomicFired && !hasPending {
 			if dispatched {
-				atomic.StoreUint32(&loadMazDispatching, 0)
+				atomic.StoreUint32(&runMazDispatching, 0)
 			}
 			return dispatched
 		}
@@ -36,12 +40,12 @@ func DispatchRunMazWork() bool {
 		tid := ksyscall.RunMazReq.BlockedTID
 		if tid < 0 {
 			if dispatched {
-				atomic.StoreUint32(&loadMazDispatching, 0)
+				atomic.StoreUint32(&runMazDispatching, 0)
 			}
 			return dispatched
 		}
 
-		atomic.StoreUint32(&loadMazDispatching, 1)
+		atomic.StoreUint32(&runMazDispatching, 1)
 
 		req := ksyscall.RunMazReq
 		ksyscall.RunMazReq.BlockedTID = -1

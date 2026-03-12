@@ -15,6 +15,10 @@ import (
 // runPriestPending is set by BlockForRunPriest and checked by KernelIdleLoop.
 var runPriestPending uint32
 
+// runPriestDispatching is set while thread 0 is inside DispatchRunPriestWork.
+// The timer ISR checks this to avoid preempting thread 0 mid-dispatch.
+var runPriestDispatching uint32
+
 func initRunPriestWorker() {
 	ksyscall.RunPriestReq.BlockedTID = -1
 }
@@ -28,7 +32,7 @@ func DispatchRunPriestWork() bool {
 
 		if !atomicFired && !hasPending {
 			if dispatched {
-				atomic.StoreUint32(&loadMazDispatching, 0)
+				atomic.StoreUint32(&runPriestDispatching, 0)
 			}
 			return dispatched
 		}
@@ -36,12 +40,12 @@ func DispatchRunPriestWork() bool {
 		tid := ksyscall.RunPriestReq.BlockedTID
 		if tid < 0 {
 			if dispatched {
-				atomic.StoreUint32(&loadMazDispatching, 0)
+				atomic.StoreUint32(&runPriestDispatching, 0)
 			}
 			return dispatched
 		}
 
-		atomic.StoreUint32(&loadMazDispatching, 1)
+		atomic.StoreUint32(&runPriestDispatching, 1)
 
 		req := ksyscall.RunPriestReq
 		ksyscall.RunPriestReq.BlockedTID = -1

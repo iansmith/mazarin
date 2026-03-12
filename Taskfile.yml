@@ -71,6 +71,7 @@ vars:
   THIN_MANIFEST_AMD64: '{{.BUILD_DIR}}/thin-stubs-amd64.manifest'
   MAZ_OVERLAY_AMD64_JSON: '{{.BUILD_DIR}}/maz-overlay-amd64.json'
   FS_MAZ_AMD64: '{{.BUILD_DIR}}/fs-amd64.maz'
+  HELLOWORLD_MAZ_AMD64: '{{.BUILD_DIR}}/helloworld-amd64.maz'
   DAPOPE_ELF: '{{.BUILD_DIR}}/dapope.elf'
   STDIO_ELF: '{{.BUILD_DIR}}/stdio.elf'
   DISKPRIEST_ELF: '{{.BUILD_DIR}}/disk.elf'
@@ -691,6 +692,22 @@ tasks:
       - '{{.GO}} tool maz-reloc {{.HELLOWORLD_MAZ}} {{.THIN_MANIFEST}}'
       - '{{.GO}} tool go-echo "helloworld.maz ready at {{.HELLOWORLD_MAZ}}"'
 
+  helloworld-maz-amd64:
+    desc: Build helloworld.maz for x86_64 (PIE + thin stubs, dynamically linked)
+    deps: [check-env, maz-overlay-amd64]
+    sources:
+      - 'flock/cmd/helloworld/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.MAZ_OVERLAY_AMD64_JSON}}'
+    generates:
+      - '{{.HELLOWORLD_MAZ_AMD64}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building helloworld.maz for x86_64 (PIE + thin stubs)..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -buildmode=pie -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.HELLOWORLD_MAZ_AMD64}} ./flock/cmd/helloworld'
+      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
+      - '{{.GO}} tool maz-reloc {{.HELLOWORLD_MAZ_AMD64}} {{.THIN_MANIFEST_AMD64}}'
+      - '{{.GO}} tool go-echo "helloworld.maz (x86_64) ready at {{.HELLOWORLD_MAZ_AMD64}}"'
+
   fs-maz:
     desc: Build fs.maz — FAT32 filesystem module for ARM64 (PIE + thin stubs)
     deps: [check-env, maz-overlay]
@@ -778,12 +795,13 @@ tasks:
 
   disk-x86_64:
     desc: Create FAT32 disk image with x86_64 flock binaries and kmazarin kernel
-    deps: [dapope-x86_64, stdio-x86_64, diskpriest-x86_64, fs-maz-amd64, kmazarin-x86_64, convert-boot-image]
+    deps: [dapope-x86_64, stdio-x86_64, diskpriest-x86_64, fs-maz-amd64, helloworld-maz-amd64, kmazarin-x86_64, convert-boot-image]
     sources:
       - '{{.DAPOPE_AMD64_ELF}}'
       - '{{.STDIO_AMD64_ELF}}'
       - '{{.DISKPRIEST_AMD64_ELF}}'
       - '{{.FS_MAZ_AMD64}}'
+      - '{{.HELLOWORLD_MAZ_AMD64}}'
       - '{{.KMAZARIN_AMD64_ELF}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
     generates:
@@ -796,8 +814,9 @@ tasks:
       - '{{.GO}} tool go-cp {{.STDIO_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf'
       - '{{.GO}} tool go-cp {{.DISKPRIEST_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/disk.elf'
       - '{{.GO}} tool go-cp {{.FS_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/fs.maz'
+      - '{{.GO}} tool go-cp {{.HELLOWORLD_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz'
       - '{{.GO}} tool go-cp config/kmazarin-x86_64.toml {{.BUILD_DIR}}/disk-staging-amd64/kmazarin.toml'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_AMD64_IMAGE}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf {{.BUILD_DIR}}/disk-staging-amd64/disk.elf {{.BUILD_DIR}}/disk-staging-amd64/fs.maz {{.BUILD_DIR}}/disk-staging-amd64/kmazarin.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_AMD64_IMAGE}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf {{.BUILD_DIR}}/disk-staging-amd64/disk.elf {{.BUILD_DIR}}/disk-staging-amd64/fs.maz {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz {{.BUILD_DIR}}/disk-staging-amd64/kmazarin.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "x86_64 disk image created at {{.DISK_AMD64_IMAGE}}"'
 
   disk-riscv64:

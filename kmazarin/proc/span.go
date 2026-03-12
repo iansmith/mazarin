@@ -202,14 +202,19 @@ func (g *LockedSpanGroup) FindOverlapEnd(start, length uint64) uint64 {
 // The callback must NOT call any LockedSpanGroup methods (would deadlock).
 type SpanVisitor func(start, length uint64)
 
-// ForEach calls fn for each active span in the group.
-// Used by priest cleanup to walk all mapped VA regions.
+// ForEach snapshots the span array under the lock, then iterates
+// the copy without holding it. This prevents deadlock when a page
+// fault handler calls Contains on the same LockedSpanGroup while
+// the ForEach callback (e.g. A/D bit scan) is running on another
+// thread — the lock is held only for the copy, not the callback.
 func (g *LockedSpanGroup) ForEach(fn SpanVisitor) {
+	var buf [SpansPerProcess]spanImpl
 	g.acquireLock()
+	buf = g.spans
+	g.releaseLock()
 	for i := 0; i < SpansPerProcess; i++ {
-		if g.spans[i].inUse != 0 {
-			fn(g.spans[i].start, g.spans[i].length)
+		if buf[i].inUse != 0 {
+			fn(buf[i].start, buf[i].length)
 		}
 	}
-	g.releaseLock()
 }
