@@ -1120,6 +1120,8 @@ func ProcessDeadlinesTopHalf() {
 		serial.RawUARTDecimal(atomic.LoadUint64(&dbgPreemptSwitchCount))
 		serial.RawUARTPuts("/")
 		serial.RawUARTDecimal(atomic.LoadUint64(&dbgPreemptNoNextCount))
+		// A/D scan deltas since last [E] dump
+		printADScanCounters()
 		// Per-priest GC cycle counts
 		printGCCounters()
 	}
@@ -1127,6 +1129,19 @@ func ProcessDeadlinesTopHalf() {
 	if cnt%500 == 0 {
 		serial.RawUART('.')
 	}
+}
+
+// printADScanCounters prints A/D scan delta counters for the [E] event dump.
+// NOT nosplit — breaks the nosplit chain so it doesn't add to the timer IRQ
+// nosplit budget (same pattern as printGCCounters).
+func printADScanCounters() {
+	adRuns, adAccessed, adTotal := kmem.ReadAndResetScanDeltas()
+	serial.RawUARTPuts(" AD=")
+	serial.RawUARTDecimal(adRuns)
+	serial.RawUARTPuts("/")
+	serial.RawUARTDecimal(adAccessed)
+	serial.RawUARTPuts("/")
+	serial.RawUARTDecimal(adTotal)
 }
 
 // printGCCounters prints per-priest GC cycle counts, kernel heap size,
@@ -1928,6 +1943,7 @@ func TerminatePriest(pid PriestId, status int64) uintptr {
 	// the 792-byte stack limit. Safe because the delegate data structures are
 	// protected by IRQ disabling (we're in SVC handler context).
 	terminatePriestDelegateCleanup(int16(pid))
+	CleanupSoftIRQSlotsForPriest(int16(pid))
 	return terminatePriestImpl(&NormalSchedulerFunc, pid, status)
 }
 

@@ -6,6 +6,7 @@ import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio/input"
+	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
 	"sync/atomic"
 	"unsafe"
@@ -404,6 +405,85 @@ func GetUartSlotPriestID() int16 {
 		return -1
 	}
 	return softIRQSlotData[slotIdx].priestID
+}
+
+// CleanupSoftIRQSlotsForPriest deactivates all soft IRQ slots belonging to the
+// given priest. For each matching slot:
+//   - Deactivates the slot (atomic store active=0)
+//   - Removes IRQ→slot mapping
+//   - Wakes any blocked thread (marks ready, enqueues)
+//   - Clears slot fields
+//
+// If the priest owned the UART serial slot, reverts the kernel console to
+// direct UART output by nilling softIRQConsole and clearing suppressSerial.
+//
+// If the priest owned the block device, clears blockDeviceOwnerPID.
+//
+// NOT nosplit — breaks the nosplit chain in TerminatePriest (same pattern as
+// terminatePriestDelegateCleanup). Acquires schedulerLock internally for
+// thread wake operations.
+func CleanupSoftIRQSlotsForPriest(priestID int16) {
+	// Disable IRQs + acquire scheduler lock for thread wake safety.
+	savedDAIF := SaveAndDisableIRQs()
+	schedulerLock.Lock()
+
+	for i := 0; i < maxSoftIRQSlots; i++ {
+		if !softIRQSlotInUse[i] {
+			continue
+		}
+		slot := &softIRQSlotData[i]
+		if slot.priestID != priestID {
+			continue
+		}
+
+		// Deactivate
+		atomic.StoreUint32(&slot.active, 0)
+
+		// Remove IRQ→slot mapping
+		if slot.irqNum < 256 {
+			atomic.StoreInt32(&irqToSlot[slot.irqNum], -1)
+		}
+
+		// If the UART slot is being cleaned up, revert console to direct UART
+		if slot.intKind == hid.SerialInterrupt && softIRQConsole != nil {
+			softIRQConsole = nil
+			console.Set(nil)
+			atomic.StoreUint32(&suppressSerial, 0)
+		}
+
+		// If the block device slot is being cleaned up, clear owner
+		if slot.intKind == hid.DiskInterrupt {
+			blockDeviceOwnerPID = -1
+		}
+
+		// Wake any blocked thread on this slot
+		if slot.blockedTID >= 0 {
+			t := (*Thread)(unsafe.Pointer(slot.blockedThreadPtr))
+			if t != nil && t.State == ThreadBlockedSoftIRQ {
+				t.State = ThreadReady
+				enqueueReadySchedLockHeld(t)
+			}
+		}
+
+		// Clear slot fields
+		slot.blockedTID = -1
+		slot.blockedThreadPtr = 0
+		slot.irqNum = 0
+		slot.priestID = 0
+		slot.devIdx = 0
+		slot.intKind = 0
+		slot.ring = nil
+		softIRQSlotInUse[i] = false
+
+		serial.RawUARTPuts("[SoftIRQ] cleaned slot ")
+		serial.RawUARTDecimal(uint64(i))
+		serial.RawUARTPuts(" for priest ")
+		serial.RawUARTDecimal(uint64(priestID))
+		serial.RawUARTPuts("\r\n")
+	}
+
+	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
 }
 
 // GetSlotInterruptKind returns the InterruptType for a given slot.

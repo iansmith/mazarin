@@ -683,13 +683,19 @@ func platformClearAccessed(va uintptr) (wasAccessed bool) {
 
 // platformClearDirty clears the dirty state for the PTE at va.
 // ARM64 without FEAT_HAFDBS has no hardware dirty bit, so this is a no-op.
-// Stage 5 will implement software dirty tracking via the AP bit trick
-// (change writable pages to read-only, catch permission faults).
+//
+// TODO(Stage 5 deferred): Implement software dirty tracking via the "AP bit
+// permission trick": map writable pages as read-only (AP=11), catch the
+// permission fault on first write in the page fault handler, set a software
+// dirty flag in PageDescriptor, and remap as writable (AP=01). This requires
+// changes to makeUserPagePTE (initial RO mapping), HandleUserPageFault
+// (permission fault → set dirty + remap RW), and this function (clear dirty
+// = set page back to RO). Only needed when swap is implemented — dirty pages
+// must be written back before eviction. Since swap I/O is stubs-only, deferred.
+// See also page_scanner.go architecture note.
 //
 //go:nosplit
 func platformClearDirty(va uintptr) (wasDirty bool) {
-	// ARM64 without FEAT_HAFDBS: no hardware dirty bit to clear.
-	// Software dirty tracking will be added in Stage 5.
 	return false
 }
 

@@ -744,13 +744,16 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 		return false
 	}
 
-	// (Future: check if PTE has swap reference before allocating a new frame)
-	// pte, _, ok := platformReadPTEAt(faultAddr)
-	// if ok && isSwapPTE(pte) {
-	//     slot := extractSwapSlot(pte)
-	//     pa, err := SwapInPage(faultAddr, slot, proc.PriestId(currentPriestID()))
-	//     if err == nil { return true }
-	// }
+	// Check if PTE has swap reference before allocating a new frame.
+	// Currently isSwapPTE always returns false (stubs), so this never triggers.
+	pte, _, pteOk := platformReadPTEAt(faultAddr)
+	if pteOk && isSwapPTE(pte) {
+		slot := extractSwapSlot(pte)
+		_, err := SwapInPage(faultAddr, slot, proc.PriestId(currentPriestID()))
+		if err == nil {
+			return true
+		}
+	}
 	// Fall through to normal demand-page allocation.
 
 	// Allocate a physical frame from userspace pool

@@ -76,6 +76,24 @@ func SwapOutPage(pa uintptr, desc *PageDescriptor, va uintptr, priestID proc.Pri
 //
 // Returns the new physical address where the page was loaded, or
 // ErrSwapNotImplemented.
+// isSwapPTE returns true if the given PTE encodes a swap slot reference.
+// A swap PTE is an invalid entry (!Valid) that carries a swap marker in its
+// upper bits. The marker encoding is not yet defined — this stub always
+// returns false so the page fault handler falls through to normal demand paging.
+//
+//go:nosplit
+func isSwapPTE(pte uint64) bool {
+	return false
+}
+
+// extractSwapSlot decodes a swap slot from a swap-encoded PTE.
+// The encoding is not yet defined — this stub returns a zero SwapSlot.
+//
+//go:nosplit
+func extractSwapSlot(pte uint64) SwapSlot {
+	return SwapSlot{}
+}
+
 func SwapInPage(va uintptr, slot SwapSlot, priestID proc.PriestId) (uintptr, error) {
 	serial.RawUARTPuts("[swap] Would swap in VA=0x")
 	serial.RawUARTHex64(uint64(va))
