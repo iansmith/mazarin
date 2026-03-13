@@ -3133,3 +3133,30 @@ func mapKernelScratchPage(va, pa uintptr) bool {
 
 	return true
 }
+
+// ReleaseKernelPage clears the PTE for a kernel VA (heap page) and returns
+// the physical address that was mapped, or 0 if not mapped.
+// The caller must free the returned PA via ReleasePageByPA.
+// This is used by madvise(MADV_DONTNEED/MADV_FREE) to return kernel heap
+// pages to the physical frame allocator.
+//
+//go:nosplit
+func ReleaseKernelPage(va uintptr) uintptr {
+	pte, level, ok := platformReadPTEAt(va)
+	if !ok || level != 3 {
+		return 0 // Not mapped at 4KB level (or superpage — don't touch)
+	}
+
+	pa := pteExtractPA(pte)
+	if pa == 0 {
+		return 0
+	}
+
+	// Clear the PTE
+	platformWritePTEAt(va, 0)
+
+	// Flush TLB for this VA
+	platformFlushTLBPage(va)
+
+	return pa
+}

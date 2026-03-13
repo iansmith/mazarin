@@ -908,6 +908,11 @@ func simpleMain() {
 	ResetTickAccounting(startingTicksProgram)
 	RestoreIRQs(savedDAIF)
 
+	// Apply kernel memory budget from TOML config (overrides diplomat auxv value).
+	if bootCfg != nil && bootCfg.KernelBudgetMB > 0 {
+		kmem.SetKernelBudgetMB(bootCfg.KernelBudgetMB)
+	}
+
 	// Suppress serial echo of userspace stdout/stderr if configured.
 	// When suppress_serial_stdio_copy = true in kmazarin.toml, only the stdio priest
 	// writes to the serial port. Panic/traceback paths temporarily

@@ -58,7 +58,8 @@ func RawUARTHex8(val uint8) {
 }
 
 // RawUARTDecimal writes a uint64 as decimal digits (no leading zeros).
-// Uses fixed individual variables to minimize nosplit stack usage.
+// Handles full uint64 range (up to 20 digits) using a fixed-size buffer
+// to stay within nosplit stack limits.
 //
 //go:nosplit
 func RawUARTDecimal(val uint64) {
@@ -66,45 +67,18 @@ func RawUARTDecimal(val uint64) {
 		PollWrite('0')
 		return
 	}
-	// Extract digits in reverse using fixed slots.
-	// 5 slots handles 0–99999; larger values truncate (sufficient for debug output).
-	var d0, d1, d2, d3, d4 byte
+	// 20 digits covers the full uint64 range (max 18446744073709551615).
+	var buf [20]byte
 	n := 0
-	d0 = byte(val%10) + '0'
-	val /= 10
-	n = 1
-	if val > 0 {
-		d1 = byte(val%10) + '0'
+	for val > 0 {
+		buf[n] = byte(val%10) + '0'
 		val /= 10
-		n = 2
+		n++
 	}
-	if val > 0 {
-		d2 = byte(val%10) + '0'
-		val /= 10
-		n = 3
+	// Print in reverse (most significant first)
+	for i := n - 1; i >= 0; i-- {
+		PollWrite(buf[i])
 	}
-	if val > 0 {
-		d3 = byte(val%10) + '0'
-		val /= 10
-		n = 4
-	}
-	if val > 0 {
-		d4 = byte(val%10) + '0'
-		n = 5
-	}
-	if n >= 5 {
-		PollWrite(d4)
-	}
-	if n >= 4 {
-		PollWrite(d3)
-	}
-	if n >= 3 {
-		PollWrite(d2)
-	}
-	if n >= 2 {
-		PollWrite(d1)
-	}
-	PollWrite(d0)
 }
 
 // RawUARTHexCompact writes a hex value with no leading zeros (at least 1 digit).

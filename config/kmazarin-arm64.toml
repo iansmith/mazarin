@@ -6,6 +6,7 @@ timezone = "America/New_York"
 # and NOT echoed to the serial port. This improves performance since serial
 # UART output is slow, but means serial logs won't contain priest output.
 # When false (default), all output is echoed to serial as well.
+kernel_budget_mb = 32
 suppress_serial_stdio_copy = true
 suppress_kernel_serial = false
 

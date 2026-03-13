@@ -34,7 +34,7 @@ func defaultConfig() *KmazarinConfig {
 	cfg.MaxRAMMB = 65536
 	cfg.FramebufferMB = 32  // 32MB — 1920×1080×4 = 8MB, room to grow
 	cfg.PageTableMB = 8     // 8MB page table pool
-	cfg.KernelBudgetMB = 128 // 128MB kernel memory warning threshold
+	cfg.KernelBudgetMB = 32 // 32MB kernel memory warning threshold
 	return cfg
 }
 

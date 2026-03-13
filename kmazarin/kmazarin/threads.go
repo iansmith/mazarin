@@ -12,6 +12,7 @@ import (
 	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
 	"mazzy/kmazarin/util"
+	"mazzy/shared/constants"
 	"sync/atomic"
 	"unsafe"
 )
@@ -170,10 +171,10 @@ const MaxPriests = proc.MaxPriests
 // MaxThreads is the maximum number of threads supported
 const MaxThreads = 512
 
-// threadArraySize is the fixed backing array size. Using a value larger than
-// MaxThreads avoids .noptrbss layout changes when MaxThreads is tuned, which
-// reduces churn in the ELF binary layout.
-const threadArraySize = 1024
+// threadArraySize is the fixed backing array size from the shared constant.
+// Using a value larger than MaxThreads avoids .noptrbss layout changes when
+// MaxThreads is tuned, which reduces churn in the ELF binary layout.
+const threadArraySize = constants.ThreadPoolSize
 
 // ReservedKernelThreads is the number of thread slots reserved for kernel threads.
 // These slots (0 to ReservedKernelThreads-1) are for kernel use only.
@@ -1119,10 +1120,67 @@ func ProcessDeadlinesTopHalf() {
 		serial.RawUARTDecimal(atomic.LoadUint64(&dbgPreemptSwitchCount))
 		serial.RawUARTPuts("/")
 		serial.RawUARTDecimal(atomic.LoadUint64(&dbgPreemptNoNextCount))
+		// Per-priest GC cycle counts
+		printGCCounters()
 	}
 	// Heartbeat: print '.' every ~5 seconds to confirm timer is alive
 	if cnt%500 == 0 {
 		serial.RawUART('.')
+	}
+}
+
+// printGCCounters prints per-priest GC cycle counts, kernel heap size,
+// and per-type page breakdown.
+// NOT nosplit — this gets its own stack check so it doesn't add to the
+// timer IRQ nosplit chain budget.
+//
+//go:noinline
+func printGCCounters() {
+	// Kernel heap size: pages/MBm, page faults
+	khPages := kmem.KernelHeapPageCount()
+	serial.RawUARTPuts(" kh=")
+	serial.RawUARTDecimal(khPages)
+	serial.RawUARTPuts("/")
+	serial.RawUARTDecimal(khPages / 256)
+	serial.RawUARTPuts("m pf=")
+	serial.RawUARTDecimal(kmem.KernelPageFaultCount())
+	// Per-type page breakdown (only non-zero types)
+	byType := kmem.PagesByType()
+	serial.RawUARTPuts(" [")
+	first := true
+	typeNames := [...]string{"kh", "kpt", "ks", "mmio", "fb", "vq", "ut", "uro", "ud", "uh", "us", "upt", "ipc", "fil", "bs", "drv", "vdso"}
+	for i, cnt := range byType {
+		if cnt == 0 {
+			continue
+		}
+		if !first {
+			serial.RawUARTPuts(",")
+		}
+		first = false
+		if i < len(typeNames) {
+			serial.RawUARTPuts(typeNames[i])
+		} else {
+			serial.RawUARTPuts("?")
+		}
+		serial.RawUARTPuts("=")
+		serial.RawUARTDecimal(cnt)
+	}
+	serial.RawUARTPuts("]")
+	// Per-priest GC cycle counts
+	hasGC := false
+	for i := 0; i < len(ksyscall.GCCountByPID); i++ {
+		gc := atomic.LoadUint64(&ksyscall.GCCountByPID[i])
+		if gc > 0 {
+			if !hasGC {
+				serial.RawUARTPuts(" GC=")
+				hasGC = true
+			} else {
+				serial.RawUARTPuts(",")
+			}
+			serial.RawUARTDecimal(uint64(i))
+			serial.RawUARTPuts(":")
+			serial.RawUARTDecimal(gc)
+		}
 	}
 }
 

@@ -92,6 +92,14 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 		if !kmem.CopyFromUser(chunk[:n], uintptr(bufPtr+offset), int(n)) {
 			return -14 // EFAULT
 		}
+		// Detect gctrace output: "gc N @..." on stderr.
+		// Increment per-priest GC counter on first chunk only.
+		if offset == 0 && fd == 2 && n >= 3 && chunk[0] == 'g' && chunk[1] == 'c' && chunk[2] == ' ' {
+			pid := getCurrentThreadPID()
+			if pid >= 0 && int(pid) < len(GCCountByPID) {
+				atomic.AddUint64(&GCCountByPID[pid], 1)
+			}
+		}
 		if useRing {
 			for i := uint64(0); i < n; i++ {
 				c := chunk[i]

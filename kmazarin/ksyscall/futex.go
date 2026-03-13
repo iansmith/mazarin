@@ -18,6 +18,7 @@ var (
 	DbgStdioFutexAddr       uint64 // Last futex address for stdio debug
 	DbgStdioFutexSyscallNum uint64 // Last syscall number from stdio's main
 	priestSyscallCount      uint64 // Count of priest syscalls (for debug logging)
+	GCCountByPID            [16]uint64 // Per-priest GC cycle counter (indexed by PID)
 )
 
 // PrintFutexStats prints futex statistics for debugging

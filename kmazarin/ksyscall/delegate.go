@@ -17,6 +17,7 @@ import (
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
+	"mazzy/shared/constants"
 	"mazzy/shared/sysid"
 	"sync/atomic"
 	"unsafe"
@@ -25,8 +26,9 @@ import (
 // MaxDelegateQueueDepth is the max queued delegation requests per SysID.
 const MaxDelegateQueueDepth = 8
 
-// MaxDelegateThreads is the max concurrent delegated calls in flight.
-const MaxDelegateThreads = 512
+// MaxDelegateThreads matches the thread pool size since TIDs are used
+// as direct indices into delegateCallInfos.
+const MaxDelegateThreads = constants.ThreadPoolSize
 
 // delegateHandler maps a SysID to the priest that handles it.
 // pid is int32 (not int16) because RISC-V lr.w/sc.w atomics require

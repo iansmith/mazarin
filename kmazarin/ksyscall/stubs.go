@@ -5,6 +5,7 @@ import (
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
+	"mazzy/shared/constants"
 
 	"unsafe"
 )
@@ -224,12 +225,44 @@ func SyscallPrlimit64(_, _, _, _, _, _ uint64) int64 {
 	return 0 // Success
 }
 
-// SyscallMadvise gives advice about memory usage
-// We ignore the advice, return success
+// SyscallMadvise gives advice about memory usage.
+// For MADV_DONTNEED and MADV_FREE on kernel heap pages, clears the PTEs
+// and returns physical frames to the buddy allocator. This is critical
+// for the Go runtime scavenger to reclaim unused heap memory.
+// For userspace or unrecognized advice, returns success (no-op).
 //
 //go:nosplit
 func SyscallMadvise(addr, length, advice, _, _, _ uint64) int64 {
-	return 0 // Success
+	const (
+		MADV_DONTNEED = 4
+		MADV_FREE     = 8
+	)
+
+	// Only act on DONTNEED/FREE — other advice is a no-op
+	if advice != MADV_DONTNEED && advice != MADV_FREE {
+		return 0
+	}
+
+	// Only release kernel heap pages (high VA range)
+	heapStart := uint64(constants.KernelHeapStart)
+	heapEnd := uint64(constants.KernelHeapEnd)
+	if addr < heapStart || addr+length > heapEnd {
+		return 0 // Outside kernel heap — no-op
+	}
+
+	// Align to page boundaries
+	pageSize := uint64(4096)
+	alignedAddr := addr &^ (pageSize - 1)
+	alignedEnd := (addr + length + pageSize - 1) &^ (pageSize - 1)
+
+	for va := alignedAddr; va < alignedEnd; va += pageSize {
+		pa := kmem.ReleaseKernelPage(uintptr(va))
+		if pa != 0 {
+			kmem.ReleasePageByPA(pa)
+		}
+	}
+
+	return 0
 }
 
 // SyscallBrk changes the program break

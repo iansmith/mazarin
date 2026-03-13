@@ -25,8 +25,17 @@ const MaxOrder = 13 // Orders 0-12 (4KB to 16MB)
 //go:linkname kmazarinKernelBudgetMB runtime.kmazarinKernelBudgetMB
 var kmazarinKernelBudgetMB uintptr
 
-// defaultKernelLimitPages is the default kernel memory warning threshold (128MB).
-const defaultKernelLimitPages = 32768 // 128MB = 32768 * 4KB
+// defaultKernelLimitPages is the default kernel memory warning threshold (32MB).
+const defaultKernelLimitPages = 8192 // 32MB = 8192 * 4KB
+
+// SetKernelBudgetMB overrides the kernel memory warning threshold.
+// Called from main after parsing kmazarin.toml, taking priority over the
+// auxv value set by diplomat during early boot.
+func SetKernelBudgetMB(mb int) {
+	if mb > 0 {
+		kmazarinKernelBudgetMB = uintptr(mb)
+	}
+}
 
 // BuddyAllocator manages physical memory using a buddy system.
 type BuddyAllocator struct {
@@ -65,6 +74,11 @@ type BuddyAllocator struct {
 
 // buddyAlloc is the singleton buddy allocator instance.
 var buddyAlloc BuddyAllocator
+
+// Per-type page counters (outstanding pages = allocs - frees).
+// Indexed by PageType. Updated inside BuddyAllocTyped/BuddyFreeTyped
+// under the buddy lock.
+var buddyPagesByType [PageTypeCount]uint64
 
 // InitBuddyAllocator initializes the buddy allocator from the unified pool range.
 // bootstrapPages is the number of pages already allocated by the bump allocator
@@ -255,6 +269,11 @@ func BuddyAllocTyped(order int, pageType PageType, owner int16) uintptr {
 		buddyAlloc.userPTPages += pagesAllocated
 	}
 
+	// Per-type detail counter
+	if pageType < PageTypeCount {
+		buddyPagesByType[pageType] += pagesAllocated
+	}
+
 	// Kernel-only total: bootstrap + kernel heap + kernel PT (excludes user pages)
 	kernelTotal := buddyAlloc.bootstrapPages + buddyAlloc.kernelHeapPages + buddyAlloc.kernelPTPages
 
@@ -294,7 +313,7 @@ func buddyWarnOOM(order int) {
 // Uses rawUART (serial.PollWrite) so output goes to COM1/serial log,
 // not through console abstraction (which on AMD64 uses MMIO, not I/O ports).
 func buddyWarnKernelLimit(kernelTotal uint64, pageType PageType, pa uintptr) {
-	serial.RawUARTPuts("\r\n[kmem] WARNING: kernel exceeds 128MB (kern=")
+	serial.RawUARTPuts("\r\n[kmem] WARNING: kernel exceeds 32MB (kern=")
 	serial.RawUARTHex64(kernelTotal)
 	serial.RawUARTPuts(" kheap=")
 	serial.RawUARTHex64(buddyAlloc.kernelHeapPages)
@@ -417,6 +436,13 @@ func BuddyFreeTyped(pa uintptr, order int, pageType PageType) {
 		}
 	}
 
+	// Per-type detail counter
+	if pageType < PageTypeCount {
+		if buddyPagesByType[pageType] >= pagesFreed {
+			buddyPagesByType[pageType] -= pagesFreed
+		}
+	}
+
 	buddyAlloc.lock.Unlock()
 }
 
@@ -504,6 +530,29 @@ func GetBuddyStats() BuddyStats {
 	}
 	buddyAlloc.lock.Unlock()
 	return stats
+}
+
+// KernelHeapPageCount returns the current kernel heap page count without
+// acquiring the buddy lock. Safe to call from timer IRQ context. The value
+// may be slightly stale but won't tear on 64-bit platforms.
+//
+//go:nosplit
+func KernelHeapPageCount() uint64 {
+	return buddyAlloc.kernelHeapPages
+}
+
+// PagesByType returns a copy of the per-type page counters.
+// Safe to call without the buddy lock (values may be slightly stale).
+func PagesByType() [PageTypeCount]uint64 {
+	return buddyPagesByType
+}
+
+// KernelPageFaultCount returns the number of successful kernel page faults.
+// Safe to call from timer IRQ context.
+//
+//go:nosplit
+func KernelPageFaultCount() uint64 {
+	return pfSuccessCount
 }
 
 // PrintBuddyStats prints buddy allocator statistics.
