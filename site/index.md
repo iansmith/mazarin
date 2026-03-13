@@ -4,21 +4,17 @@ title: mazarin, an introduction
 author: iansmith
 ---
 
-## [News (last updated Feb 23)](news.md). Feature Parity On RISC-V, ARM64, and X86_64!
+## [News (last updated Mar 13)](news.md). Dynamic Loading, IPC, and Filesystem — All 4 Platforms Stable!
 
 ## What It Means
 
-The beginnings of the microkernel is in place on all platforms! The userspace 
-program "dapope" runs the clock on screen but has no more UI. It registers itself 
-with kmazarin (kernel) to receive the input streams from the virtio-input device
-so it receives the raw event information and its processed in userspace.
-dapope writes information about the input reeceived to stdout.  
-
-The program stdio registers itself as the implementation of the system call
-`write`. This will change a lot in the future, but for now it takes what comes
-through file descriptor 1 and displays it on the screen. It does the same
-for file descriptor 2 (stderr) but it colors that output red.  To test the
-stderr output, there is a print to stderr in dapope.
+mazarin now boots a full priest hierarchy from a TOML config file. The kernel
+launches a disk priest, which loads a filesystem module (fs.maz) at runtime,
+which reads the boot config and launches application priests from ELF files
+on disk. Priests communicate through L4-style page-transfer IPC — no copying.
+The kernel's resident memory is stable at 24MB across all four platforms
+(ARM64 TCG, ARM64 HVF, x86_64, RISC-V) for 90+ seconds of continuous
+operation with GC running in both the kernel and all priests.
 
 
 ## [Quick Start: build and run mazarin](quickstart.md)

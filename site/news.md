@@ -6,6 +6,70 @@ author: iansmith
 
 # News
 
+## Mar 13, 2026
+
+**Dynamic module loading.** mazarin can now load PIE ELF binaries (.maz files)
+into a running priest's address space. The kernel patches call sites at load
+time — BL instructions on ARM64, AUIPC+JALR trampolines on RISC-V, near-call
+on x86_64 — so that .maz code can call functions in its host priest. Cross-module
+interface assertions work via type deduplication: the kernel re-runs Go's
+`typelinksinit` and `itabsinit` after registering the new module's metadata.
+Stack traces work across module boundaries.
+
+**Filesystem priest and TOML-driven boot.** The boot sequence is now
+data-driven. Each architecture has a `kmazarin.toml` config file that
+declares bootstrap priests (loaded by the kernel) and application priests
+(loaded by the filesystem). The disk priest loads `fs.maz`, which mounts
+FAT32 via an injected `BlockDevice` interface, reads the config, and launches
+all application priests from ELF files on disk. No more hardcoded launch
+sequences.
+
+**Syscall delegation.** Priests can register as handlers for system calls.
+When another priest makes a delegated syscall, the kernel forwards the
+request (with data pages) to the handler and blocks the caller until the
+reply arrives. The stdio priest uses this to handle `write` and `openat` —
+any priest's stdout/stderr output is routed to the console display without
+the kernel knowing anything about text rendering.
+
+**Interrupt-driven block I/O.** Disk reads use hardware interrupts instead
+of polling. On ARM64, this uses MSI-X through the GICv2m; on RISC-V,
+INTx through the PLIC; on x86_64, MSI-X through the LAPIC. The CPU halts
+between I/O requests and wakes only when the device signals completion.
+
+**Kernel memory stable at 24MB.** Per-type page accounting was added to
+the buddy allocator, which immediately identified a leak in the IPC
+delegation path: a sizing mismatch between the thread pool (1024 slots)
+and the delegation table (512 slots) caused pages for high-numbered
+threads to never be freed. With the fix, kernel resident memory holds
+steady at 24MB across all platforms during extended runs. The Go runtime
+scavenger can now reclaim physical memory via `madvise(MADV_DONTNEED)`.
+
+**Kernel goroutine preemption.** The timer IRQ handler can now preempt
+kernel goroutines, not just userspace threads. This prevents any single
+goroutine from monopolizing the CPU. On ARM64 under hardware virtualization
+(HVF), a guard on `SPSR.M[0]` ensures the timer never preempts exception
+handler code, fixing a class of crashes where the saved PC pointed into
+kernel exception return paths.
+
+**x86_64 fully working.** The x86_64 port was hanging during early boot
+when reading the FAT32 filesystem. The root cause: `bootYieldForIO()` used
+`STI; HLT` to wait for block I/O completion, but with the timer disabled
+and MSI-X not waking the CPU, it halted forever. Fixed by reading the
+VirtIO ISR register via MMIO (matching ARM64 and RISC-V), which forces a
+vCPU exit regardless of interrupt state.
+
+**Stability test results (90-second runs):**
+
+| Platform | Syscalls | Heap | Priests |
+|----------|----------|------|---------|
+| ARM64 TCG | 9.4M | 24MB | 3 + helloworld.maz |
+| ARM64 HVF | 720M | 24MB | 3 + helloworld.maz |
+| x86_64 | 5.4M (est.) | 24MB | 3 |
+| RISC-V | 7.8M | 24MB | 3 + helloworld.maz |
+
+No panics, no memory leaks, GC running in kernel and all priests on every
+platform.
+
 ## Feb 23, 2026
 
 **Full device support on all three architectures.** mazarin now has working
