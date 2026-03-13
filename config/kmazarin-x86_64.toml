@@ -6,7 +6,7 @@ timezone = "America/New_York"
 # and NOT echoed to the serial port. This improves performance since serial
 # UART output is slow, but means serial logs won't contain priest output.
 # When false (default), all output is echoed to serial as well.
-suppress_serial = false
+suppress_serial_stdio_copy = false
 suppress_kernel_serial = false
 
 # Bootstrap priests: loaded by the kernel during early boot
@@ -23,3 +23,7 @@ path = "/dapope.elf"
 [[priest]]
 name = "stdio"
 path = "/stdio.elf"
+
+[[priest]]
+name = "sievetest"
+path = "/sievetest.elf"

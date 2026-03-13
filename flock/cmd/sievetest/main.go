@@ -61,10 +61,10 @@ func main() {
 	// Get our thread ID for identification
 	tid, _, _ := syscall.Syscall(syscall.SYS_GETTID, 0, 0, 0)
 
-	fmt.Printf("[T%02X] Starting prime sieve at 20001\n", tid)
+	fmt.Printf("[T%02X] Starting prime sieve at 25001\n", tid)
 
 	// Run sieve starting at 20001, printing primes with TID prefix
-	for n := uint64(20001); ; n += 2 {
+	for n := uint64(25001); ; n += 2 {
 		if isPrimeSieve(n) {
 			fmt.Printf("T%02X:%d\n", tid, n)
 		}

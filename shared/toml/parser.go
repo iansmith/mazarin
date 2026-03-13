@@ -131,8 +131,8 @@ func (p *parser) parseTopLevel(key string) {
 	} else if ch == 't' || ch == 'f' {
 		val := p.readBool()
 		switch key {
-		case "suppress_serial":
-			p.cfg.SuppressSerial = val
+		case "suppress_serial_stdio_copy":
+			p.cfg.SuppressSerialStdioCopy = val
 		case "suppress_kernel_serial":
 			p.cfg.SuppressKernelSerial = val
 		}

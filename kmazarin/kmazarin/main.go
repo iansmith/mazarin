@@ -909,15 +909,15 @@ func simpleMain() {
 	RestoreIRQs(savedDAIF)
 
 	// Suppress serial echo of userspace stdout/stderr if configured.
-	// When suppress_serial = true in kmazarin.toml, only the stdio priest
+	// When suppress_serial_stdio_copy = true in kmazarin.toml, only the stdio priest
 	// writes to the serial port. Panic/traceback paths temporarily
 	// unsuppress (see runtime-patches/panic.go).
-	if bootCfg != nil && bootCfg.SuppressSerial {
+	if bootCfg != nil && bootCfg.SuppressSerialStdioCopy {
 		atomic.StoreUint32(&suppressSerial, 1)
 	}
 
 	// Suppress kernel console output (KPrintf, etc.) if configured.
-	// Use together with suppress_serial to eliminate nearly all UART
+	// Use together with suppress_serial_stdio_copy to eliminate nearly all UART
 	// traffic for performance testing.
 	if bootCfg != nil && bootCfg.SuppressKernelSerial {
 		console.SetSuppressed(true)

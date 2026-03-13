@@ -530,25 +530,44 @@ func resolveMazImports(elfData []byte, hdr *elf64Header, loadOffset uint64, l0PA
 	return count
 }
 
-// patchBL_ARM64 rewrites an ARM64 BL instruction at instrVA to branch to targetAddr.
+// patchBL_ARM64 patches an ARM64 BL import by replacing the stub body
+// with a B (unconditional branch) trampoline to the host function.
+//
+// Instead of patching the call-site BL instruction (which only fixes
+// direct calls found by maz-reloc), we decode the BL to find the stub
+// address and replace the stub body with a B trampoline. This ensures
+// ALL calls to the stub — direct BL, indirect calls through funcvals,
+// interface dispatch, etc. — are redirected to the host function.
+//
+// This follows the same pattern as RISC-V's patchJAL_RISCV and x86_64's
+// patchCALL_X86, which decode the call-site instruction, find the stub,
+// and patch the stub body.
 func patchBL_ARM64(instrVA, targetAddr uint64, l0PA uintptr) bool {
-	offset := int64(targetAddr) - int64(instrVA)
-	if offset < -(1<<27) || offset >= (1<<27) {
-		console.KWriteString("[LoadMaz] BL range exceeded: from=")
-		console.KPrintHex64(instrVA)
-		console.KWriteString(" to=")
-		console.KPrintHex64(targetAddr)
-		console.KWriteString(" offset=")
-		console.KPrintHex64(uint64(offset))
-		console.KWriteString("\r\n")
+	// Read the BL instruction at the call site to find the stub.
+	pa := kmem.WalkUserPageTableWithL0(uintptr(instrVA), l0PA)
+	if pa == 0 {
+		return false
+	}
+	kva := kmem.MapPAToKernelScratch(pa)
+	if kva == 0 {
+		return false
+	}
+	insn := *(*uint32)(unsafe.Pointer(kva))
+
+	// Verify this is a BL instruction (opcode [31:26] = 100101).
+	if insn&0xFC000000 != 0x94000000 {
 		return false
 	}
 
-	imm26 := uint32((offset >> 2) & 0x03FFFFFF)
-	insn := uint32(0x94000000) | imm26
+	// Decode 26-bit signed offset (in units of 4 bytes).
+	imm26 := int32(insn & 0x03FFFFFF)
+	if imm26&0x02000000 != 0 {
+		imm26 |= ^int32(0x03FFFFFF) // sign extend from bit 25
+	}
+	stubVA := uint64(int64(instrVA) + int64(imm26)*4)
 
-	writeU32ToUser(uintptr(instrVA), insn, l0PA)
-	return true
+	// Patch the stub body with B (tail jump) to the host function.
+	return patchB_ARM64(stubVA, targetAddr, l0PA)
 }
 
 // patchB_ARM64 writes an ARM64 B (unconditional branch, no link) at funcVA
@@ -584,17 +603,50 @@ func patchJMP_X86(funcVA, targetAddr uint64, l0PA uintptr) {
 	writeU32ToUser(uintptr(funcVA+1), uint32(offset), l0PA)
 }
 
-// patchCALL_X86 rewrites an x86_64 CALL (E8) instruction at instrVA to call targetAddr.
+// patchCALL_X86 patches an x86_64 CALL (E8) import by replacing the stub
+// body with a JMP (E9) trampoline to the host function.
+//
+// Instead of patching the call-site CALL instruction (which only fixes
+// direct calls found by maz-reloc), we decode the CALL to find the stub
+// address and replace the stub body with a JMP trampoline. This ensures
+// ALL calls to the stub — direct CALL, indirect CALL through funcvals,
+// interface dispatch, etc. — are redirected to the host function.
+//
+// This follows the same pattern as RISC-V's patchJAL_RISCV, which
+// decodes the JAL to find the stub and patches the stub body with
+// AUIPC+JALR. The stub body is always at least 5 bytes (Go function
+// prologue + CALL to _thinStubPanic), so the 5-byte JMP fits.
 func patchCALL_X86(instrVA, targetAddr uint64, l0PA uintptr) {
-	// CALL rel32: the offset is relative to the NEXT instruction (instrVA + 5)
-	offset := int64(targetAddr) - int64(instrVA) - 5
-	if offset < -(1<<31) || offset >= (1<<31) {
+	// Read the CALL (E8) instruction at the call site to find the stub.
+	pa := kmem.WalkUserPageTableWithL0(uintptr(instrVA), l0PA)
+	if pa == 0 {
+		return
+	}
+	kva := kmem.MapPAToKernelScratch(pa)
+	if kva == 0 {
+		return
+	}
+	opcode := *(*uint8)(unsafe.Pointer(kva))
+	if opcode != 0xE8 {
 		return
 	}
 
-	// Write E8 opcode + 32-bit relative offset (5 bytes total)
-	writeU8ToUser(uintptr(instrVA), 0xE8, l0PA)
-	writeU32ToUser(uintptr(instrVA+1), uint32(offset), l0PA)
+	// Read the 32-bit relative offset (at instrVA+1).
+	rel32PA := kmem.WalkUserPageTableWithL0(uintptr(instrVA+1), l0PA)
+	if rel32PA == 0 {
+		return
+	}
+	rel32KVA := kmem.MapPAToKernelScratch(rel32PA)
+	if rel32KVA == 0 {
+		return
+	}
+	rel32 := *(*int32)(unsafe.Pointer(rel32KVA))
+
+	// Compute stub address: CALL target = instrVA + 5 + rel32
+	stubVA := uint64(int64(instrVA) + 5 + int64(rel32))
+
+	// Patch the stub body with JMP (E9 + rel32) to the host function.
+	patchJMP_X86(stubVA, targetAddr, l0PA)
 }
 
 // patchPTR64 writes a 64-bit absolute address at the given VA.

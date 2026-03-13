@@ -81,12 +81,14 @@ vars:
   DAPOPE_AMD64_ELF: '{{.BUILD_DIR}}/dapope-amd64.elf'
   STDIO_AMD64_ELF: '{{.BUILD_DIR}}/stdio-amd64.elf'
   DISKPRIEST_AMD64_ELF: '{{.BUILD_DIR}}/disk-amd64.elf'
+  SIEVETEST_AMD64_ELF: '{{.BUILD_DIR}}/sievetest-amd64.elf'
   DISK_AMD64_IMAGE: '{{.BUILD_DIR}}/disk-amd64.img'
 
   # RISC-V 64-bit userspace programs
   DAPOPE_RISCV64_ELF: '{{.BUILD_DIR}}/dapope-riscv64.elf'
   STDIO_RISCV64_ELF: '{{.BUILD_DIR}}/stdio-riscv64.elf'
   DISKPRIEST_RISCV64_ELF: '{{.BUILD_DIR}}/disk-riscv64.elf'
+  SIEVETEST_RISCV64_ELF: '{{.BUILD_DIR}}/sievetest-riscv64.elf'
   FS_MZR_RISCV64: '{{.BUILD_DIR}}/fs-riscv64.mzr'
   DISK_RISCV64_IMAGE: '{{.BUILD_DIR}}/disk-riscv64.img'
 
@@ -591,6 +593,36 @@ tasks:
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVETEST_ELF}} ./flock/cmd/sievetest'
       - '{{.GO}} tool go-echo "Sievetest built at {{.SIEVETEST_ELF}}"'
 
+  sievetest-x86_64:
+    desc: Build sievetest (x86_64)
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/cmd/sievetest/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.SIEVETEST_AMD64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building sievetest for x86_64..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVETEST_AMD64_ELF}} ./flock/cmd/sievetest'
+      - '{{.GO}} tool go-echo "Sievetest x86_64 built at {{.SIEVETEST_AMD64_ELF}}"'
+
+  sievetest-riscv64:
+    desc: Build sievetest (RISC-V 64-bit)
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/cmd/sievetest/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.SIEVETEST_RISCV64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building sievetest for RISC-V 64-bit..."'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVETEST_RISCV64_ELF}} ./flock/cmd/sievetest'
+      - '{{.GO}} tool go-echo "Sievetest RISC-V 64-bit built at {{.SIEVETEST_RISCV64_ELF}}"'
+
   # ===========================================================================
   # .maz Programs (PIE + thin stubs, dynamically linked at load time)
   # ===========================================================================
@@ -796,12 +828,13 @@ tasks:
 
   disk-x86_64:
     desc: Create FAT32 disk image with x86_64 flock binaries and kmazarin kernel
-    deps: [dapope-x86_64, stdio-x86_64, diskpriest-x86_64, fs-maz-amd64, helloworld-maz-amd64, kmazarin-x86_64, convert-boot-image]
+    deps: [dapope-x86_64, stdio-x86_64, diskpriest-x86_64, sievetest-x86_64, fs-maz-amd64, helloworld-maz-amd64, kmazarin-x86_64, convert-boot-image]
     method: checksum
     sources:
       - '{{.DAPOPE_AMD64_ELF}}'
       - '{{.STDIO_AMD64_ELF}}'
       - '{{.DISKPRIEST_AMD64_ELF}}'
+      - '{{.SIEVETEST_AMD64_ELF}}'
       - '{{.FS_MAZ_AMD64}}'
       - '{{.HELLOWORLD_MAZ_AMD64}}'
       - '{{.KMAZARIN_AMD64_ELF}}'
@@ -816,20 +849,22 @@ tasks:
       - '{{.GO}} tool go-cp {{.DAPOPE_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf'
       - '{{.GO}} tool go-cp {{.STDIO_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf'
       - '{{.GO}} tool go-cp {{.DISKPRIEST_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/disk.elf'
+      - '{{.GO}} tool go-cp {{.SIEVETEST_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/sievetest.elf'
       - '{{.GO}} tool go-cp {{.FS_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/fs.maz'
       - '{{.GO}} tool go-cp {{.HELLOWORLD_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz'
       - '{{.GO}} tool go-cp config/kmazarin-x86_64.toml {{.BUILD_DIR}}/disk-staging-amd64/kmazarin.toml'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_AMD64_IMAGE}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf {{.BUILD_DIR}}/disk-staging-amd64/disk.elf {{.BUILD_DIR}}/disk-staging-amd64/fs.maz {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz {{.BUILD_DIR}}/disk-staging-amd64/kmazarin.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_AMD64_IMAGE}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf {{.BUILD_DIR}}/disk-staging-amd64/disk.elf {{.BUILD_DIR}}/disk-staging-amd64/sievetest.elf {{.BUILD_DIR}}/disk-staging-amd64/fs.maz {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz {{.BUILD_DIR}}/disk-staging-amd64/kmazarin.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "x86_64 disk image created at {{.DISK_AMD64_IMAGE}}"'
 
   disk-riscv64:
     desc: Create FAT32 disk image with RISC-V 64-bit flock binaries and kmazarin kernel
-    deps: [dapope-riscv64, stdio-riscv64, diskpriest-riscv64, fs-mzr-riscv64, kmazarin-riscv64, convert-boot-image]
+    deps: [dapope-riscv64, stdio-riscv64, diskpriest-riscv64, sievetest-riscv64, fs-mzr-riscv64, kmazarin-riscv64, convert-boot-image]
     method: checksum
     sources:
       - '{{.DAPOPE_RISCV64_ELF}}'
       - '{{.STDIO_RISCV64_ELF}}'
       - '{{.DISKPRIEST_RISCV64_ELF}}'
+      - '{{.SIEVETEST_RISCV64_ELF}}'
       - '{{.FS_MZR_RISCV64}}'
       - '{{.KMAZARIN_RISCV64_ELF}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
@@ -842,9 +877,10 @@ tasks:
       - '{{.GO}} tool go-cp {{.DAPOPE_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/dapope.elf'
       - '{{.GO}} tool go-cp {{.STDIO_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/stdio.elf'
       - '{{.GO}} tool go-cp {{.DISKPRIEST_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/disk.elf'
+      - '{{.GO}} tool go-cp {{.SIEVETEST_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/sievetest.elf'
       - '{{.GO}} tool go-cp {{.FS_MZR_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/fs.maz'
       - '{{.GO}} tool go-cp config/kmazarin-riscv64.toml {{.BUILD_DIR}}/disk-staging-riscv64/kmazarin.toml'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_RISCV64_IMAGE}} {{.BUILD_DIR}}/disk-staging-riscv64/dapope.elf {{.BUILD_DIR}}/disk-staging-riscv64/stdio.elf {{.BUILD_DIR}}/disk-staging-riscv64/disk.elf {{.BUILD_DIR}}/disk-staging-riscv64/fs.maz {{.BUILD_DIR}}/disk-staging-riscv64/kmazarin.toml {{.KMAZARIN_RISCV64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_RISCV64_IMAGE}} {{.BUILD_DIR}}/disk-staging-riscv64/dapope.elf {{.BUILD_DIR}}/disk-staging-riscv64/stdio.elf {{.BUILD_DIR}}/disk-staging-riscv64/disk.elf {{.BUILD_DIR}}/disk-staging-riscv64/sievetest.elf {{.BUILD_DIR}}/disk-staging-riscv64/fs.maz {{.BUILD_DIR}}/disk-staging-riscv64/kmazarin.toml {{.KMAZARIN_RISCV64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "RISC-V 64-bit disk image created at {{.DISK_RISCV64_IMAGE}}"'
 
   # ===========================================================================

@@ -33,15 +33,15 @@ type BootConfig struct {
 	MaxRamMB       int
 	KernelBudgetMB int
 
-	// SuppressSerial controls whether userspace write() output is echoed
+	// SuppressSerialStdioCopy controls whether userspace write() output is echoed
 	// to the serial port in addition to being routed through the stdio
 	// priest's display. When true, only the stdio priest writes to serial.
-	SuppressSerial bool
+	SuppressSerialStdioCopy bool
 
 	// SuppressKernelSerial controls whether kernel console output
 	// (KPrintf, KWriteString, etc.) is suppressed. When true, all
 	// console package output becomes a no-op. Use together with
-	// SuppressSerial to eliminate nearly all UART traffic for
+	// SuppressSerialStdioCopy to eliminate nearly all UART traffic for
 	// performance testing.
 	SuppressKernelSerial bool
 
