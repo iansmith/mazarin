@@ -916,6 +916,13 @@ func simpleMain() {
 		atomic.StoreUint32(&suppressSerial, 1)
 	}
 
+	// Suppress kernel console output (KPrintf, etc.) if configured.
+	// Use together with suppress_serial to eliminate nearly all UART
+	// traffic for performance testing.
+	if bootCfg != nil && bootCfg.SuppressKernelSerial {
+		console.SetSuppressed(true)
+	}
+
 	// Initialize kernel worker goroutines. Must be done
 	// before KernelIdleLoop since the workers need normal goroutine stacks.
 	initLoadMazWorker()

@@ -133,6 +133,8 @@ func (p *parser) parseTopLevel(key string) {
 		switch key {
 		case "suppress_serial":
 			p.cfg.SuppressSerial = val
+		case "suppress_kernel_serial":
+			p.cfg.SuppressKernelSerial = val
 		}
 		p.skipLine()
 	} else {

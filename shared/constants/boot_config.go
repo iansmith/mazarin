@@ -38,6 +38,13 @@ type BootConfig struct {
 	// priest's display. When true, only the stdio priest writes to serial.
 	SuppressSerial bool
 
+	// SuppressKernelSerial controls whether kernel console output
+	// (KPrintf, KWriteString, etc.) is suppressed. When true, all
+	// console package output becomes a no-op. Use together with
+	// SuppressSerial to eliminate nearly all UART traffic for
+	// performance testing.
+	SuppressKernelSerial bool
+
 	Timezone [MaxTimezoneLen]byte
 
 	BootstrapPriests     [MaxBootstrapPriests]BootPriest

@@ -45,6 +45,26 @@ type consoleWrapper struct {
 // Uses atomic.Value for safe swapping from any context.
 var current atomic.Value
 
+// suppressed is set to 1 to suppress all console output. Used for
+// performance testing to eliminate kernel UART traffic.
+var suppressed uint32
+
+// SetSuppressed enables or disables console output suppression.
+func SetSuppressed(s bool) {
+	if s {
+		atomic.StoreUint32(&suppressed, 1)
+	} else {
+		atomic.StoreUint32(&suppressed, 0)
+	}
+}
+
+// isSuppressed returns true if console output is suppressed.
+//
+//go:nosplit
+func isSuppressed() bool {
+	return atomic.LoadUint32(&suppressed) != 0
+}
+
 // Set sets the active console implementation.
 // Safe to call from any context.
 func Set(c Console) {
@@ -69,10 +89,13 @@ func Get() Console {
 }
 
 // KWrite writes bytes to the current console.
-// No-op if no console is set.
+// No-op if no console is set or if suppressed.
 //
 //go:nosplit
 func KWrite(p []byte) int {
+	if isSuppressed() {
+		return len(p)
+	}
 	c := Get()
 	if c == nil {
 		return 0
@@ -81,10 +104,13 @@ func KWrite(p []byte) int {
 }
 
 // KWriteByte writes a single byte to the current console.
-// No-op if no console is set.
+// No-op if no console is set or if suppressed.
 //
 //go:nosplit
 func KWriteByte(b byte) {
+	if isSuppressed() {
+		return
+	}
 	c := Get()
 	if c == nil {
 		return
@@ -93,10 +119,13 @@ func KWriteByte(b byte) {
 }
 
 // KWriteString writes a string to the current console.
-// No-op if no console is set.
+// No-op if no console is set or if suppressed.
 //
 //go:nosplit
 func KWriteString(s string) {
+	if isSuppressed() {
+		return
+	}
 	c := Get()
 	if c == nil {
 		return
@@ -133,8 +162,11 @@ func KPrintHex64(val uint64) {
 }
 
 // KPrintf formats and writes to the current console.
-// No-op if no console is set.
+// No-op if no console is set or if suppressed.
 func KPrintf(format string, args ...interface{}) {
+	if isSuppressed() {
+		return
+	}
 	c := Get()
 	if c == nil {
 		return
@@ -143,8 +175,11 @@ func KPrintf(format string, args ...interface{}) {
 }
 
 // KErrPrintf formats and writes error output to the current console.
-// No-op if no console is set.
+// No-op if no console is set or if suppressed.
 func KErrPrintf(format string, args ...interface{}) {
+	if isSuppressed() {
+		return
+	}
 	c := Get()
 	if c == nil {
 		return
@@ -154,8 +189,11 @@ func KErrPrintf(format string, args ...interface{}) {
 
 // KPrintHex formats and writes a value in hex with appropriate width.
 // Uses reflection to determine the type and format integers/pointers accordingly.
-// No-op if no console is set.
+// No-op if no console is set or if suppressed.
 func KPrintHex(value interface{}) {
+	if isSuppressed() {
+		return
+	}
 	c := Get()
 	if c == nil {
 		return

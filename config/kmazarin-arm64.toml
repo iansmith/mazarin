@@ -7,6 +7,7 @@ timezone = "America/New_York"
 # UART output is slow, but means serial logs won't contain priest output.
 # When false (default), all output is echoed to serial as well.
 suppress_serial = true
+suppress_kernel_serial = false
 
 # Bootstrap priests: loaded by the kernel during early boot
 [[bootstrap_priest]]
