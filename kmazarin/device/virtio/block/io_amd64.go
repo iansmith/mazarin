@@ -2,11 +2,11 @@ package block
 
 import "mazzy/kmazarin/asm"
 
-// bootYieldForIO atomically enables interrupts and halts the vCPU until the
-// next interrupt fires. Uses STI+HLT (the STI shadow makes this atomic) so
-// the CPU wakes regardless of the caller's IF state. Bare HLT is wrong here
-// because IF can be cleared by timer IRQ exception return paths that don't
-// force IF=1 for kernel-mode returns.
+// bootYieldForIO yields to QEMU's event loop so pending block I/O can complete.
+// On x86_64 TCG, reading the VirtIO ISR register via MMIO forces a vCPU exit
+// which lets QEMU's main loop process the virtqueue. This avoids depending on
+// STI+HLT + MSI-X interrupt delivery, which hangs when the timer is disabled
+// (no periodic interrupt to wake from HLT) and MSI-X routing isn't waking the CPU.
 //
 // Used only by doBlockIO's polling loop during early boot (TOML config read,
 // ELF loading) before the scheduler and disk priest are running. Once the disk
@@ -15,5 +15,10 @@ import "mazzy/kmazarin/asm"
 //
 //go:nosplit
 func bootYieldForIO() {
-	asm.StiHlt()
+	base := virtioBlockDevice.ISRBase
+	if base != 0 {
+		_ = asm.MmioRead8(base)
+	} else {
+		asm.StiHlt()
+	}
 }
