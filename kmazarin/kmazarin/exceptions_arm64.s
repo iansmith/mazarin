@@ -1147,38 +1147,52 @@ skip_deadline_processing:
 	// If EL0: always eligible for preemption (userspace).
 	MOVD	(EXC_FRAME_ELR_SPSR+8)(RSP), R10	// R10 = saved SPSR
 	AND	$0x4, R10, R10				// EL1 bit (M[2])
-	CBZ	R10, timer_check_preemption		// EL0 — always check
+	CBZ	R10, timer_is_el0			// EL0 — always check
 
 	// EL1: check if EL1h (SPSR.M[0]=1, exception handler mode).
 	// NEVER preempt EL1h code — the exception stack has a live frame.
-	// SaveContextFromFrame would capture ELR pointing into handler code;
-	// when restored, the thread ERETs mid-handler with wrong SP_EL1.
-	// Under HVF, timer IRQs can arrive during exception return paths
-	// (e.g., el0_return after svcDepth is cleared) even though DAIF.I
-	// should be set — this check catches that case.
 	MOVD	(EXC_FRAME_ELR_SPSR+8)(RSP), R10	// Re-read SPSR
 	AND	$0x1, R10, R10				// M[0] bit
-	CBNZ	R10, timer_no_thread_preempt		// EL1h → NEVER preempt
+	CBNZ	R10, timer_skip_el1h			// EL1h → NEVER preempt
 
 	// EL1t: check svcDepth — only safe to preempt when depth==0
 	MOVW	·svcDepth(SB), R10
-	CBNZ	R10, timer_no_thread_preempt		// depth=1, inside SVC — skip
+	CBNZ	R10, timer_skip_svcdepth		// depth=1, inside SVC — skip
 
 	// EL1t, depth=0: check kernel goroutine async preemption.
-	// The Go runtime sets m.signalPending when GC/sysmon wants to preempt.
-	// CheckKernelGoroutinePreempt calls isAsyncSafePoint and injects
-	// asyncPreempt into the exception frame if safe.
-	// g is already set to g0 (from ProcessDeadlinesTopHalf above).
 	MOVD	RSP, R0
 	GO_CALL_1_1(·CheckKernelGoroutinePreempt, R0)
 	CBNZ	R0, timer_no_thread_preempt		// frame was modified, skip thread preempt
 
 	// EL1, depth=0 — safe to preempt kernel thread
+	B	timer_check_preemption
+
+timer_is_el0:
+	// Diagnostic: count EL0 timer interrupts
+	MOVD	·dbgTimerEL0(SB), R10
+	ADD	$1, R10
+	MOVD	R10, ·dbgTimerEL0(SB)
+	B	timer_check_preemption
+
+timer_skip_el1h:
+	// Diagnostic: count EL1h skips
+	MOVD	·dbgTimerSkipEL1h(SB), R10
+	ADD	$1, R10
+	MOVD	R10, ·dbgTimerSkipEL1h(SB)
+	B	timer_no_thread_preempt
+
+timer_skip_svcdepth:
+	// Diagnostic: count svcDepth skips
+	MOVD	·dbgTimerSkipSVC(SB), R10
+	ADD	$1, R10
+	MOVD	R10, ·dbgTimerSkipSVC(SB)
+	B	timer_no_thread_preempt
+
 timer_check_preemption:
 
 	// Check NeedsThreadPreempt flag set by TimerIRQHandlerAsm
 	MOVW	mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB), R10
-	CBZ	R10, timer_no_thread_preempt
+	CBZ	R10, timer_preempt_not_set
 
 	// NOTE: m.locks check removed for EL0 (userspace) thread preemption.
 	// Each priest runs in its own address space with isolated Go runtime state.
@@ -1208,9 +1222,17 @@ g0_addr_ok:
 	// Check if context switch happened
 	CBNZ	R21, timer_switch_ok
 
+	// Increment no-switch counter
+	MOVD	·timerNoSwitchCount(SB), R10
+	ADD	$1, R10
+	MOVD	R10, ·timerNoSwitchCount(SB)
 	B	timer_no_thread_preempt
 
 timer_switch_ok:
+	// Increment context switch counter
+	MOVD	·timerCtxSwitchCount(SB), R10
+	ADD	$1, R10
+	MOVD	R10, ·timerCtxSwitchCount(SB)
 
 	// Context switch happened - copy new ThreadContext to exception frame
 	// ThreadContext layout: X[31]*8=248 bytes, SP(8), ELR(8), SPSR(8) = 272 bytes total
@@ -1265,6 +1287,12 @@ timer_switch_ok:
 
 	// Skip async preemption - we already switched threads
 	B	timer_no_preempt
+
+timer_preempt_not_set:
+	// Diagnostic: NeedsThreadPreempt was 0 when we checked
+	MOVD	·dbgTimerPreemptNotSet(SB), R10
+	ADD	$1, R10
+	MOVD	R10, ·dbgTimerPreemptNotSet(SB)
 
 timer_no_thread_preempt:
 timer_no_preempt:

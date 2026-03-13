@@ -154,7 +154,9 @@ func InitPaging() {
 	pagingInitialized = true
 
 	// Initialize the unified pool for PT allocation
+	serial.RawUARTPuts("[kmem] InitPaging: before InitUnifiedPool\r\n")
 	InitUnifiedPool()
+	serial.RawUARTPuts("[kmem] InitPaging: done\r\n")
 
 	// L1 PA will be discovered by lazy init when needed (read from L0 entry)
 }

@@ -115,6 +115,11 @@ func InitPreemptThresholds() {
 // Checked by exception handler after TimerIRQHandlerAsm returns.
 var NeedsThreadPreempt uint32
 
+// Diagnostic counters for timer preemption debugging (written by assembly)
+var DbgTimerReachedCheck uint64  // timer ticks that reached deadline comparison
+var DbgTimerDeadlineHit uint64   // times current >= deadline (preempt signaled)
+var DbgTimerDeadlineNotHit uint64 // times current < deadline (no preempt)
+
 // Kernel time accounting - measures time spent in kernel mode
 // All values are in timer ticks (use SystemTimerFrequency to convert to seconds)
 var KernelTimerIRQTicks uint64      // Total ticks spent in timer IRQ handler

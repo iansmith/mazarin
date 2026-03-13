@@ -1095,6 +1095,30 @@ func ProcessDeadlinesTopHalf() {
 		}
 		serial.RawUARTPuts(" IL=")
 		serial.RawUARTDecimal(dbgIdleCount)
+		// Timer preemption assembly diagnostics: reached/hit/nothit
+		trc := atomic.LoadUint64(&kirq.DbgTimerReachedCheck)
+		tdh := atomic.LoadUint64(&kirq.DbgTimerDeadlineHit)
+		tdn := atomic.LoadUint64(&kirq.DbgTimerDeadlineNotHit)
+		serial.RawUARTPuts("\n TP=")
+		serial.RawUARTDecimal(trc)
+		serial.RawUARTPuts("/")
+		serial.RawUARTDecimal(tdh)
+		serial.RawUARTPuts("/")
+		serial.RawUARTDecimal(tdn)
+		// Exception handler path: el0/el1h/svc/notset
+		serial.RawUARTPuts(" EH=")
+		serial.RawUARTDecimal(atomic.LoadUint64(&dbgTimerEL0))
+		serial.RawUARTPuts("/")
+		serial.RawUARTDecimal(atomic.LoadUint64(&dbgTimerSkipEL1h))
+		serial.RawUARTPuts("/")
+		serial.RawUARTDecimal(atomic.LoadUint64(&dbgTimerSkipSVC))
+		serial.RawUARTPuts("/")
+		serial.RawUARTDecimal(atomic.LoadUint64(&dbgTimerPreemptNotSet))
+		// checkThreadPreemptionImpl: switch/noNext
+		serial.RawUARTPuts(" PS=")
+		serial.RawUARTDecimal(atomic.LoadUint64(&dbgPreemptSwitchCount))
+		serial.RawUARTPuts("/")
+		serial.RawUARTDecimal(atomic.LoadUint64(&dbgPreemptNoNextCount))
 	}
 	// Heartbeat: print '.' every ~5 seconds to confirm timer is alive
 	if cnt%500 == 0 {
@@ -1155,6 +1179,11 @@ var dbgZPLastTID uint64           // TID of last non-TID0 zero-progress thread
 var dbgZPLastPC uint64            // PC of last non-TID0 zero-progress thread
 var dbgZPLastPS uint64            // Processor state of last non-TID0 zero-progress thread
 var dbgBadPC uint64               // DEBUG: kernel PC saved for userspace thread
+// Timer preemption path diagnostics (written by exceptions_arm64.s)
+var dbgTimerEL0 uint64          // timer IRQ interrupted EL0 (userspace)
+var dbgTimerSkipEL1h uint64     // skipped: EL1h (exception handler mode)
+var dbgTimerSkipSVC uint64      // skipped: svcDepth > 0
+var dbgTimerPreemptNotSet uint64 // reached check but NeedsThreadPreempt was 0
 var dbgBadPS uint64
 var dbgBadTID uint64
 var dbgBadPCCount uint64
@@ -1366,20 +1395,11 @@ func SaveThread0AndYield() uint64 {
 		return 0
 	}
 
-	// Put current thread on ready queue at TAIL for fair round-robin yield.
-	// TAIL avoids self-scheduling: with HEAD insertion, the fallback Pop()
-	// in findReadyThreadPreferDifferentPriestSchedLockHeld returns the
-	// current thread (always at HEAD), causing an infinite self-scheduling
-	// loop where the other thread never runs.
-	//
-	// Note: post-boot timer preemption uses enqueueReadySchedLockHeld (HEAD
-	// for PID=0) which is correct for that path since the preemption handler
-	// explicitly skips the current thread. SaveThread0AndYield uses TAIL
-	// because the fallback path doesn't have that skip.
+	// Thread 0 is the idle thread — NOT enqueued in the ready queue.
+	// It runs opportunistically between preemptions of other threads.
+	// Save context so it can be restored, but don't queue it.
 	t0.State = ThreadReady
-	pluckFromAllQueues(t0.TID)
-	perCPU := GetPerCPU()
-	perCPU.LocalReadyQueue.PushNoDuplicate(t0.TID)
+	pluckFromAllQueues(t0.TID) // safety: ensure not in queue from prior path
 
 	// Update tick accounting for thread 0
 	currentTime := kirq.ReadCounterValue()
@@ -1391,8 +1411,7 @@ func SaveThread0AndYield() uint64 {
 	// Find next ready thread (prefer a priest, not kernel)
 	next := findReadyThreadPreferDifferentPriestSchedLockHeld(t0.PID)
 	if next == nil {
-		// No thread available — undo the save
-		pluckFromAllQueues(t0.TID)
+		// No thread available — continue running thread 0
 		t0.State = ThreadRunning
 		t0.TicksStartedRunning = currentTime
 		schedulerLock.Unlock()
@@ -3027,11 +3046,15 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	}
 
 	oldThread.State = ThreadReady
-	// Pluck first in case oldThread is already in queue from a previous preemption.
-	// Always insert at TAIL so findReadyThreadSchedLockHeld (which pops the front)
-	// picks a different thread, not the one we just preempted.
-	pluckFromAllQueues(oldThread.TID)
-	GetPerCPU().LocalReadyQueue.PushNoDuplicate(oldThread.TID) // TAIL
+
+	// Thread 0 is the idle thread — NOT enqueued. It runs opportunistically
+	// between preemptions of other threads. All other threads go to TAIL.
+	if oldThread.TID != 0 {
+		pluckFromAllQueues(oldThread.TID)
+		GetPerCPU().LocalReadyQueue.PushNoDuplicate(oldThread.TID) // TAIL
+	} else {
+		pluckFromAllQueues(oldThread.TID) // safety: ensure not in queue
+	}
 
 	// Reset preemption tracking for the preempted thread
 	oldThread.PreemptElapsed = 0
@@ -3043,18 +3066,28 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	}
 	oldThread.TicksStartedRunning = 0 // Mark as not running
 
-	// Find next ready thread for timer preemption.
-	// Simple FIFO: pick the next ready thread in queue order, regardless of
-	// whether it's kernel or userspace. Thread 0 (idle loop) gets its fair
-	// share of time for housekeeping (IRQ bridging, deadlines, A/D scanning).
-	// The cost is two extra context switches when thread 0 runs briefly and
-	// yields back, but that's negligible compared to the 4ms tick interval.
-	next := findReadyThreadSchedLockHeld()
+	// Opportunistic idle thread scheduling:
+	// When preempting a non-idle thread, switch to thread 0 first so it can
+	// do one idle loop iteration (IRQ bridging, dispatch, deadlines). Thread 0
+	// runs for microseconds then yields to the next ready thread.
+	// Sequence: ... → T0 → A (100ms) → T0 → B (100ms) → T0 → ...
+	// Two extra context switches per quantum, negligible vs 100ms tick.
+	var next *Thread
+	if oldThread.TID != 0 {
+		// Non-idle thread preempted: run thread 0 if available
+		thread0 := threadLookupByTID(0)
+		if thread0 != nil && thread0.State == ThreadReady {
+			next = thread0
+		} else {
+			next = findReadyThreadSchedLockHeld()
+		}
+	} else {
+		// Thread 0 preempted: pick next real thread from queue
+		next = findReadyThreadSchedLockHeld()
+	}
 
 	if next == nil {
-		// No other ready thread - continue with current thread
-		// Remove it from ready queue since we're continuing to run it
-		pluckFromAllQueues(oldThread.TID)
+		// No ready thread — continue current
 		oldThread.State = ThreadRunning
 		oldThread.StartTick = currentTime
 		oldThread.ThreadPreemptDeadline = currentTime + kirq.ThreadPreemptTicks

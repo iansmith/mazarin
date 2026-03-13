@@ -92,8 +92,10 @@ func InitPageDescriptors(poolStart, poolEnd uintptr) {
 	serial.RawUARTHex64(uint64(arrayPages))
 	serial.RawUARTPuts(" pages)\r\n")
 
+	serial.RawUART('a') // breadcrumb: before lock
 	// Bump-allocate from the pool
 	globalPool.lock.Lock()
+	serial.RawUART('b') // breadcrumb: after lock
 	allocSize := arrayPages * PageSize
 	if globalPool.next+allocSize > globalPool.end {
 		globalPool.lock.Unlock()
@@ -105,17 +107,21 @@ func InitPageDescriptors(poolStart, poolEnd uintptr) {
 	arrayPA := globalPool.next
 	globalPool.next += allocSize
 	globalPool.lock.Unlock()
+	serial.RawUART('c') // breadcrumb: after unlock
 
 	// Map to kernel VA and zero
 	arrayVA := paToVA(arrayPA)
+	serial.RawUART('d') // breadcrumb: before bzero
 	for i := uintptr(0); i < arrayPages; i++ {
 		Bzero4K(arrayVA + i*PageSize)
 	}
+	serial.RawUART('e') // breadcrumb: after bzero
 
 	// Store raw base pointer — NO Go slice, NO unsafe.Slice
 	pdBase = arrayVA
 
 	atomic.StoreUint32(&pdInitialized, 1)
+	serial.RawUART('f') // breadcrumb: pd init done
 }
 
 // SetPageDescriptor sets the descriptor for a page at the given PA.

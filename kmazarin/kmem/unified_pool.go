@@ -165,6 +165,7 @@ func InitUnifiedPool() {
 
 	// Count how many pages the bump allocator used (PageDescriptor array)
 	bootstrapPages := GetBumpAllocatedPages()
+	serial.RawUART('g') // breadcrumb: before buddy init
 
 	// Initialize buddy allocator with remaining pool
 	InitBuddyAllocator(
@@ -173,6 +174,8 @@ func InitUnifiedPool() {
 		constants.KernelMMIOOffset,
 		bootstrapPages,
 	)
+	serial.RawUART('h') // breadcrumb: after buddy init
+	serial.RawUARTPuts("\r\n[kmem] InitUnifiedPool done\r\n")
 }
 
 // AllocPage allocates a single page via the buddy allocator.

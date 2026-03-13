@@ -73,6 +73,11 @@ offsets_valid:
 	MOVD	(R5), R8  // R8 = currentThread.StartTick
 	CBZ	R8, init_deadlines  // Not initialized yet
 
+	// Diagnostic: count timer ticks that reached deadline check
+	MOVD	·DbgTimerReachedCheck(SB), R0
+	ADD	$1, R0
+	MOVD	R0, ·DbgTimerReachedCheck(SB)
+
 	// Check thread deadline: if current >= deadline, signal preemption
 	// NOTE: Go ARM64 CMP is swapped: CMP Rn, Rm computes Rm - Rn
 	MOVD	main·ThreadPreemptDeadlineOffset(SB), R5
@@ -80,11 +85,23 @@ offsets_valid:
 	MOVD	(R5), R8  // R8 = ThreadPreemptDeadline
 
 	CMP	R8, R9  // Computes R9 - R8 = current - deadline
-	BLT	timer_return  // if current < deadline (negative), no preemption
+	BLT	timer_not_expired  // if current < deadline (negative), no preemption
+
+	// Diagnostic: count times deadline was exceeded
+	MOVD	·DbgTimerDeadlineHit(SB), R0
+	ADD	$1, R0
+	MOVD	R0, ·DbgTimerDeadlineHit(SB)
 
 	// Current >= thread deadline: signal preemption
 	MOVW	$1, R8
 	MOVW	R8, ·NeedsThreadPreempt(SB)
+	B	timer_return
+
+timer_not_expired:
+	// Diagnostic: count times deadline was NOT exceeded
+	MOVD	·DbgTimerDeadlineNotHit(SB), R0
+	ADD	$1, R0
+	MOVD	R0, ·DbgTimerDeadlineNotHit(SB)
 	B	timer_return
 
 init_deadlines:

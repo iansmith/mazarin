@@ -141,13 +141,15 @@ TEXT runtime·usleep(SB),NOSPLIT,$0-4
 	TESTL	AX, AX
 	JNZ	usleep_real
 
-	// Phase 1: spin then yield.
+	// Phase 1: spin then yield via INT $0x80 sched_yield.
+	// Uses INT $0x80 (not kmazarinYieldImpl) for proper thread queue management.
 	MOVL	$128, CX
 usleep_spin:
 	PAUSE
 	DECL	CX
 	JNZ	usleep_spin
-	CALL	main·kmazarinYieldImpl(SB)
+	MOVL	$SYS_sched_yield, AX
+	INT	$0x80
 	RET
 
 usleep_real:
@@ -395,6 +397,12 @@ TEXT runtime·futex(SB),NOSPLIT,$0
 	JNZ	futex_real
 
 	// --- Phase 1: early boot (spin + yield) ---
+	// Before kmazarinSyscallReady, INT $0x80 is still available — diplomat
+	// installs kmazarin's ISR vectors in the IDT before jumping to kmazarin.
+	// Use INT $0x80 with SYS_sched_yield (not kmazarinYieldImpl) because the
+	// SVC exception handler → SyscallSchedYield → DoContextSwitch path properly
+	// manages thread queues. kmazarinYieldImpl → SaveThread0AndYield doesn't
+	// enqueue non-thread-0 threads, orphaning them.
 	MOVQ	addr+0(FP), DI		// addr
 	MOVL	op+8(FP), SI		// op
 	MOVL	val+12(FP), DX		// val
@@ -420,9 +428,10 @@ futex_spin:
 	DECL	CX
 	JNZ	futex_spin
 
-	// Spin exhausted, value didn't change. Yield to scheduler so other
-	// threads can run, then return 0 to simulate a timeout/spurious wakeup.
-	CALL	main·kmazarinYieldImpl(SB)
+	// Spin exhausted, value didn't change. Yield via INT $0x80 sched_yield
+	// so the exception handler can properly context-switch to another thread.
+	MOVL	$SYS_sched_yield, AX
+	INT	$0x80
 	MOVL	$0, ret+40(FP)
 	RET
 
