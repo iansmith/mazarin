@@ -8,12 +8,17 @@ author: iansmith
 
 ## Mar 13, 2026
 
-**Dynamic module loading.** mazarin can now load PIE ELF binaries (.maz files)
-into a running priest's address space. The kernel patches call sites at load
-time — BL instructions on ARM64, AUIPC+JALR trampolines on RISC-V, near-call
-on x86_64 — so that .maz code can call functions in its host priest. Cross-module
-interface assertions work via type deduplication: the kernel re-runs Go's
-`typelinksinit` and `itabsinit` after registering the new module's metadata.
+**Dynamic module loading.** mazarin can now load ELF modules (.maz files)
+into a running priest's address space. On ARM64 and x86_64 these are PIE
+(position-independent) binaries that can be loaded at any address. On
+RISC-V, Go cannot currently produce PIE binaries, so we use .mzr files —
+fixed-address executables placed at predetermined "slots" in virtual
+memory (slot 0 at 0x30000000, 32MB spacing). This is less flexible than
+true PIE but works: fs.maz and helloworld.maz both load correctly on all
+platforms. The disk priest loads fs.maz into its own address space to
+provide filesystem services to the rest of the system. The kernel patches
+call sites at load time so that .maz code can call functions in its host
+priest, and cross-module interface assertions work via type deduplication.
 Stack traces work across module boundaries.
 
 **Filesystem priest and TOML-driven boot.** The boot sequence is now
@@ -31,10 +36,11 @@ reply arrives. The stdio priest uses this to handle `write` and `openat` —
 any priest's stdout/stderr output is routed to the console display without
 the kernel knowing anything about text rendering.
 
-**Interrupt-driven block I/O.** Disk reads use hardware interrupts instead
-of polling. On ARM64, this uses MSI-X through the GICv2m; on RISC-V,
-INTx through the PLIC; on x86_64, MSI-X through the LAPIC. The CPU halts
-between I/O requests and wakes only when the device signals completion.
+**Userspace interrupt and syscall handling.** Like syscall delegation,
+hardware interrupt handling is now a userspace concern. Priests implement
+policy for the kernel: the disk priest handles block device interrupts,
+dapope handles keyboard and mouse input, and stdio handles serial port
+output. The kernel delivers events and gets out of the way.
 
 **Kernel memory stable at 24MB.** Per-type page accounting was added to
 the buddy allocator, which immediately identified a leak in the IPC
@@ -57,6 +63,8 @@ when reading the FAT32 filesystem. The root cause: `bootYieldForIO()` used
 and MSI-X not waking the CPU, it halted forever. Fixed by reading the
 VirtIO ISR register via MMIO (matching ARM64 and RISC-V), which forces a
 vCPU exit regardless of interrupt state.
+*If you have the ability to test the system running on a hypervisor on
+x86_64 hardware (like Hyper-V), we'd love to talk to you.*
 
 **Stability test results (90-second runs):**
 
