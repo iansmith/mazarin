@@ -15,10 +15,10 @@
 
 package main
 
-// buildSyntheticDTB allocates a UEFI page and builds a DTB describing the
-// QEMU virt platform's devices. Returns the physical address of the DTB,
-// or 0 on failure.
-func buildSyntheticDTB(hw *HardwareInfo) uint64 {
+// getOrBuildDTB returns a firmware-provided DTB if available, otherwise
+// synthesizes one describing the QEMU virt platform (ARM64).
+// Returns the physical address of the DTB, or 0 on failure.
+func getOrBuildDTB(hw *HardwareInfo) uint64 {
 	// Allocate one 4KB UEFI page for the DTB (below 4GB for linear map)
 	page := linearMapMaxPA - 1
 	status := UEFIAllocatePages(AllocateMaxAddress, EfiLoaderData, 1, &page)

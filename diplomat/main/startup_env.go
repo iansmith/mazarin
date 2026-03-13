@@ -185,7 +185,7 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel, cfg *
 	// Try UEFI config table first, fall back to synthesized DTB
 	dtbAddr := findDTBFromUEFI()
 	if dtbAddr == 0 {
-		dtbAddr = buildSyntheticDTB(hw)
+		dtbAddr = getOrBuildDTB(hw)
 	}
 	if dtbAddr != 0 {
 		data[i] = 0x1000 // AT_DTB_PHYS

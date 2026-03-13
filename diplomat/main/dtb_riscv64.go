@@ -8,13 +8,20 @@
 
 package main
 
-// buildSyntheticDTB allocates a UEFI page and builds a DTB describing the
-// QEMU virt platform's devices (RISC-V specific). Returns the physical address
-// of the DTB, or 0 on failure.
-func buildSyntheticDTB(hw *HardwareInfo) uint64 {
+// getOrBuildDTB returns the firmware-provided FDT if available, otherwise
+// synthesizes a DTB describing the QEMU virt platform (RISC-V).
+// Returns the physical address of the DTB, or 0 on failure.
+func getOrBuildDTB(hw *HardwareInfo) uint64 {
 	// On RISC-V, OpenSBI provides a real FDT at a known physical address.
 	// Use it directly — it accurately describes all hardware (PLIC, CLINT,
 	// UART, VirtIO MMIO, PCI controller). No allocation needed.
+	//
+	// NOTE: fdtPointer is normally set by init() in platform_riscv64.go,
+	// but on RISC-V the assembly entry bypasses runtime.main() so init()
+	// never runs. Set it here as a fallback.
+	if fdtPointer == 0 {
+		fdtPointer = QEMU_VIRT_FDT_ADDR
+	}
 	if fdtPointer != 0 {
 		printString("Using OpenSBI FDT at PA ")
 		printHex(fdtPointer)

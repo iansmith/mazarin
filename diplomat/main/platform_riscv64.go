@@ -160,14 +160,6 @@ func ReadBlockVirtIONoError(lba uint64, buf []byte) {
 	readBlockVirtIO(lba, buf)
 }
 
-func init() {
-	// Initialize RISC-V-specific platform operations
-	plat.ReadBlockVirtIO = ReadBlockVirtIO
-	plat.ReadBlockVirtIONoError = ReadBlockVirtIONoError
-
-	// Initialize FDT info (sets fdtPointer, needed before QueryHardware)
-	InitializeFDT()
-}
 
 // LoadKernelRISCVWrapper wraps LoadKernelNoError to match the BootSequence signature.
 // Used for RISC-V early boot to avoid error interface allocation.

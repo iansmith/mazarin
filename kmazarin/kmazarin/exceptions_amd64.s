@@ -433,8 +433,8 @@ syscall_skip_g_setup:
 	JZ	no_sigreturn
 	MOVQ	·ThreadSigreturnPendingOffset(SB), R15
 	ADDQ	R13, R15
-	MOVL	(R15), R14		// Load SigreturnPending (uint32)
-	TESTL	R14, R14
+	MOVL	(R15), AX		// Load SigreturnPending (uint32)
+	TESTL	AX, AX
 	JZ	no_sigreturn
 	// Clear SigreturnPending flag
 	MOVL	$0, (R15)

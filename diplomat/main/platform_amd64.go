@@ -81,10 +81,7 @@ func readBlockVirtIOStub(lba uint64, buf []byte) error {
 	panic("ReadBlockVirtIO called on AMD64 - should use UEFI BlockIO")
 }
 
-func init() {
-	// Initialize AMD64-specific platform operations
-	plat.ReadBlockVirtIO = readBlockVirtIOStub
-}
+
 
 // saveTextChecksum is a no-op on AMD64 — only used by RISC-V for verifying
 // code integrity through page table transitions.
