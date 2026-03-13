@@ -8,7 +8,6 @@ package bootloader
 import (
 	"mazzy/shared/blockdev"
 	"mazzy/shared/fs/fat32"
-	"unsafe"
 )
 
 // PlatformOps contains low-level platform primitive operations.
@@ -57,19 +56,6 @@ type BootSequence struct {
 	MapKernel       func(virtBase, physBase, size uint64) error
 	PrepareKernel   func(kernel *LoadedKernel) error
 	JumpToKernel    func(kernel *LoadedKernel)
-}
-
-// SyscallTable contains syscall handler functions.
-type SyscallTable struct {
-	Mmap    func(addr uintptr, length uint64, prot, flags, fd int32, offset int64) int64
-	Munmap  func(addr uintptr, length uint64) int64
-	Madvise func(addr uintptr, length uint64, advice int32) int64
-	Brk     func(addr uintptr) int64
-	Write   func(fd int32, buf unsafe.Pointer, count uint64) int64
-	Read    func(fd int32, buf unsafe.Pointer, count uint64) int64
-	Open    func(path unsafe.Pointer, flags, mode int32) int64
-	Close   func(fd int32) int64
-	Futex   func(uaddr unsafe.Pointer, op int32, val uint32, timeout, uaddr2 unsafe.Pointer, val3 uint32) int64
 }
 
 // KernelSymbol holds a named symbol extracted from the kernel ELF.

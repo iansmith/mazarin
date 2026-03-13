@@ -198,17 +198,12 @@ var imageHandle EFI_HANDLE
 // Active function pointer tables — initialized in DiplomatEntry
 var plat PlatformOps
 var boot BootSequence
-var syscalls SyscallTable
 
 // TLS block for storing g pointer (required by Go .abi0 wrappers)
 // The .abi0 wrappers load g from %fs:-0x8, so we need:
 //   - TLS block with g0 address at offset 0
 //   - FS segment base set to tlsBlock address
 var tlsBlock [256]byte
-
-// executionMarker is set by assembly entry point to prove code executed
-// Check from QEMU monitor: x/1gx &main.executionMarker
-var executionMarker uint64
 
 // uefiReturnAddr saves UEFI's return address so _efi_main_arm64 can
 // call through a TOPFRAME wrapper and still return to UEFI.
@@ -243,16 +238,8 @@ func DiplomatEntry() {
 	// Initialize function pointer tables
 	plat = defaultPlatform
 	boot = defaultBootSequence
-	syscalls = defaultSyscalls
 
 	printString("Diplomat UEFI Bootloader\r\n")
-
-	// Initialize memory span tracking for mmap
-	if !boot.InitSpans() {
-		printString("FATAL: Failed to initialize memory spans\r\n")
-		for {
-		}
-	}
 
 	// Get block device for boot partition
 	blockDev, err := boot.GetBlockDevice()

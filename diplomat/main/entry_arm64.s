@@ -97,14 +97,3 @@ TEXT main·diplomatTopFrame(SB), NOSPLIT|TOPFRAME, $8
 	MOVD	(RSP), R30
 	RET
 
-// _minimal_uefi_test_arm64 is a minimal entry point for toolchain validation
-// It does the bare minimum to prove UEFI called us
-TEXT main·_minimal_uefi_test_arm64(SB), NOSPLIT|NOFRAME, $0
-	// Just save parameters and return success
-	// UEFI passes ImageHandle in R0, SystemTable in R1
-	MOVD	R0, main·imageHandle(SB)
-	MOVD	R1, main·systemTable(SB)
-	MOVD	$1, R0
-	MOVD	R0, main·executionMarker(SB)
-	MOVD	$0, R0	// EFI_SUCCESS
-	RET

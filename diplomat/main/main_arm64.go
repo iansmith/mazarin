@@ -11,13 +11,8 @@ const elfMachineExpected = elfMachineARM64
 // Implemented in entry_arm64.s - sets up g0/m0 and calls DiplomatEntry
 func _efi_main_arm64()
 
-// _minimal_uefi_test_arm64 is a minimal test entry point for ARM64
-// Implemented in entry_arm64.s
-func _minimal_uefi_test_arm64()
-
 // keepAlive keeps ARM64-specific entry points from being optimized away
 // Called from main()
 func keepAlive() {
 	_efi_main_arm64()
-	_minimal_uefi_test_arm64()
 }

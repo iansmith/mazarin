@@ -70,20 +70,6 @@ func InitializeFDT() bool {
 	return true
 }
 
-// InitSpansRISCV wraps InitializeSpans with FDT initialization.
-// This is called from the RISC-V boot sequence instead of InitializeSpans directly.
-//
-//go:nosplit
-func InitSpansRISCV() bool {
-	// Parse FDT first
-	if !InitializeFDT() {
-		return false
-	}
-
-	// Then initialize memory spans (regular path)
-	return InitializeSpans()
-}
-
 
 // ============================================================================
 // VirtIO MMIO Constants (RISC-V bare-metal)

@@ -14,7 +14,6 @@ var defaultPlatform = PlatformOps{
 	DebugPortOut:         debugPortOut,
 	AllocatePages:        UEFIAllocatePages,
 	FreePages:            UEFIFreePages,
-	AllocatePagesForMmap: AllocatePagesForMmap,
 	ZeroMemory:           zeroMemory,
 	ReadCR3:              readCR3Wrapper,  // RISC-V uses SATP, not CR3
 	WriteCR3:             writeCR3Wrapper, // RISC-V uses SATP, not CR3
@@ -27,7 +26,6 @@ var defaultPlatform = PlatformOps{
 }
 
 var defaultBootSequence = BootSequence{
-	InitSpans:       InitSpansRISCV,       // RISC-V: parse FDT + init spans
 	GetBlockDevice:  GetBootDeviceRISCV,    // RISC-V uses VirtIO, not UEFI
 	MountFilesystem: fat32Mount,
 	LoadKernel:      LoadKernelRISCVWrapper, // RISC-V: no-error version for early boot
@@ -41,18 +39,6 @@ var defaultBootSequence = BootSequence{
 	InstallFaultHandler: InstallFaultHandler,
 	BuildStartupEnv:     BuildStartupEnv,
 	JumpToKernelWithEnv: jumpToKmazarinWithStack,
-}
-
-var defaultSyscalls = SyscallTable{
-	Mmap:    DiplomatMmap,
-	Munmap:  DiplomatMunmap,
-	Madvise: DiplomatMadvise,
-	Brk:     DiplomatBrk,
-	Write:   DiplomatWrite,
-	Read:    DiplomatRead,
-	Open:    DiplomatOpen,
-	Close:   DiplomatClose,
-	Futex:   DiplomatFutex,
 }
 
 // readCR3Wrapper adapts RISC-V's readSATP to the PlatformOps interface.
@@ -178,6 +164,9 @@ func init() {
 	// Initialize RISC-V-specific platform operations
 	plat.ReadBlockVirtIO = ReadBlockVirtIO
 	plat.ReadBlockVirtIONoError = ReadBlockVirtIONoError
+
+	// Initialize FDT info (sets fdtPointer, needed before QueryHardware)
+	InitializeFDT()
 }
 
 // LoadKernelRISCVWrapper wraps LoadKernelNoError to match the BootSequence signature.

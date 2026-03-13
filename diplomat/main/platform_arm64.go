@@ -14,7 +14,6 @@ var defaultPlatform = PlatformOps{
 	DebugPortOut:         debugPortOut,
 	AllocatePages:        UEFIAllocatePages,
 	FreePages:            UEFIFreePages,
-	AllocatePagesForMmap: AllocatePagesForMmap,
 	ZeroMemory:           zeroMemory,
 	ReadCR3:              readCR3Wrapper,  // ARM64 uses TTBR0, not CR3
 	WriteCR3:             writeCR3Wrapper, // ARM64 uses TTBR0, not CR3
@@ -27,7 +26,6 @@ var defaultPlatform = PlatformOps{
 }
 
 var defaultBootSequence = BootSequence{
-	InitSpans:       InitializeSpans,
 	GetBlockDevice:  GetBootDeviceBlockIO,
 	MountFilesystem: fat32Mount,
 	LoadKernel:      LoadKernel,
@@ -41,18 +39,6 @@ var defaultBootSequence = BootSequence{
 	InstallFaultHandler: InstallFaultHandler,
 	BuildStartupEnv:    BuildStartupEnv,
 	JumpToKernelWithEnv: jumpToKmazarinWithStack,
-}
-
-var defaultSyscalls = SyscallTable{
-	Mmap:    DiplomatMmap,
-	Munmap:  DiplomatMunmap,
-	Madvise: DiplomatMadvise,
-	Brk:     DiplomatBrk,
-	Write:   DiplomatWrite,
-	Read:    DiplomatRead,
-	Open:    DiplomatOpen,
-	Close:   DiplomatClose,
-	Futex:   DiplomatFutex,
 }
 
 // readCR3Wrapper adapts ARM64's readTTBR0 to the PlatformOps interface.

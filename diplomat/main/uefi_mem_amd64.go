@@ -58,54 +58,6 @@ func UEFIFreePages(memory uint64, pages uint64) EFI_STATUS {
 	return status
 }
 
-// AllocatePagesForMmap allocates memory for mmap using UEFI
-// This is called by DiplomatMmap when UEFI Boot Services are available
-//
-//go:nosplit
-func AllocatePagesForMmap(addr uintptr, size uintptr, fixed bool) (uintptr, bool) {
-	// Calculate number of pages needed (round up)
-	pages := (uint64(size) + 4095) / 4096
-
-	var memory uint64
-	var allocType uint32
-	var status EFI_STATUS
-
-	if fixed {
-		// MAP_FIXED: try to allocate at specific address
-		memory = uint64(addr)
-		allocType = AllocateAddress
-		status = UEFIAllocatePages(allocType, EfiLoaderData, pages, &memory)
-
-		if status != EFI_SUCCESS {
-			return 0, false // Failed to allocate at requested address
-		}
-		return uintptr(memory), true
-	}
-
-	// Not fixed - try hint first if provided
-	if addr != 0 {
-		memory = uint64(addr)
-		allocType = AllocateAddress
-		status = UEFIAllocatePages(allocType, EfiLoaderData, pages, &memory)
-
-		if status == EFI_SUCCESS {
-			return uintptr(memory), true // Hint worked
-		}
-		// Hint failed - fall through to any pages
-	}
-
-	// Allocate any pages
-	memory = 0
-	allocType = AllocateAnyPages
-	status = UEFIAllocatePages(allocType, EfiLoaderData, pages, &memory)
-
-	if status != EFI_SUCCESS {
-		return 0, false
-	}
-
-	return uintptr(memory), true
-}
-
 // memMapBuf is a global buffer for GetMemoryMap (avoids blowing nosplit stack limit)
 var memMapBuf [16384]byte
 

@@ -20,7 +20,6 @@ var defaultPlatform = PlatformOps{
 	DebugPortOut:         debugPortOut,
 	AllocatePages:        UEFIAllocatePages,
 	FreePages:            UEFIFreePages,
-	AllocatePagesForMmap: AllocatePagesForMmap,
 	ZeroMemory:           zeroMemory,
 	ReadCR3:              readCR3,
 	WriteCR3:             writeCR3,
@@ -33,7 +32,6 @@ var defaultPlatform = PlatformOps{
 }
 
 var defaultBootSequence = BootSequence{
-	InitSpans:       InitializeSpans,
 	GetBlockDevice:  GetBootDeviceBlockIO,
 	MountFilesystem: fat32Mount,
 	LoadKernel:      LoadKernel,
@@ -47,18 +45,6 @@ var defaultBootSequence = BootSequence{
 	InstallFaultHandler: InstallFaultHandler,
 	BuildStartupEnv:     BuildStartupEnv,
 	JumpToKernelWithEnv: jumpToKmazarinWithStack,
-}
-
-var defaultSyscalls = SyscallTable{
-	Mmap:    DiplomatMmap,
-	Munmap:  DiplomatMunmap,
-	Madvise: DiplomatMadvise,
-	Brk:     DiplomatBrk,
-	Write:   DiplomatWrite,
-	Read:    DiplomatRead,
-	Open:    DiplomatOpen,
-	Close:   DiplomatClose,
-	Futex:   DiplomatFutex,
 }
 
 // jumpToKmazarinWithStack sets up RSP, optionally loads IDT, and jumps to kernel.

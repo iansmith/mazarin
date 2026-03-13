@@ -17,7 +17,6 @@ import (
 )
 
 // Re-export shared types for use throughout diplomat
-type SyscallTable = bootloader.SyscallTable
 type LoadedKernel = bootloader.LoadedKernel
 
 // PlatformOps contains all hardware/UEFI primitive operations.
@@ -30,8 +29,7 @@ type PlatformOps struct {
 	// Memory — UEFI page allocation
 	AllocatePages       func(allocType, memoryType uint32, pages uint64, memory *uint64) EFI_STATUS
 	FreePages           func(memory uint64, pages uint64) EFI_STATUS
-	AllocatePagesForMmap func(addr uintptr, size uintptr, fixed bool) (uintptr, bool)
-	ZeroMemory          func(addr, size uint64)
+	ZeroMemory func(addr, size uint64)
 
 	// CPU — page table manipulation
 	ReadCR3             func() uint64
@@ -57,8 +55,7 @@ type PlatformOps struct {
 // BootSequence contains the high-level boot steps.
 // Each function performs one logical phase of the boot process.
 type BootSequence struct {
-	InitSpans       func() bool
-	GetBlockDevice  func() (*UEFIBlockDevice, error)
+	GetBlockDevice func() (*UEFIBlockDevice, error)
 	MountFilesystem func(dev blockdev.BlockDevice) (*fat32.FileSystem, error)
 	LoadKernel      func(fs *fat32.FileSystem, path string) (*LoadedKernel, error)
 	MapKernel       func(virtBase, physBase, size uint64) error
@@ -73,4 +70,3 @@ type BootSequence struct {
 	JumpToKernelWithEnv func(entry, stackPtr, excStackTop, vbar uint64)
 }
 
-// SyscallTable is bootloader.SyscallTable (re-exported via type alias above)
