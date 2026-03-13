@@ -8,7 +8,9 @@ author: iansmith
 
 ## What It Means
 
-mazarin now boots a full priest hierarchy from a TOML config file. The kernel
+mazarin now boots a full priest hierarchy from a TOML config file.
+A *priest* is roughly analogous to a unix process--but priests can load other
+programs into their own address space, creating a *flock*. The kernel
 launches a disk priest, which loads a filesystem module (fs.maz) at runtime,
 which reads the boot config and launches application priests from ELF files
 on disk. Priests communicate through L4-style page-transfer IPC — no copying.
