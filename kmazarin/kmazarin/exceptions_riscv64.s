@@ -900,29 +900,46 @@ handle_timer_interrupt:
 	// If U-mode: always eligible for preemption.
 	MOV	256(X2), T0		// saved sstatus from trap frame
 	AND	$0x100, T0, T0		// SPP bit (bit 8): 1=S-mode, 0=U-mode
-	BEQ	T0, ZERO, timer_check_preemption	// U-mode — always check
+	BEQ	T0, ZERO, timer_is_umode	// U-mode — always check
 
 	// S-mode: check svcDepth — only safe to preempt when depth==0
 	MOV	$·svcDepth(SB), T0
 	MOVW	(T0), T0
-	BNE	T0, ZERO, irq_trap_return	// depth=1, inside ecall — skip
+	BNE	T0, ZERO, timer_skip_svc	// depth=1, inside ecall — skip
 
 	// S-mode, depth=0: check kernel goroutine async preemption.
 	// The Go runtime sets m.signalPending when GC/sysmon wants to preempt.
 	// CheckKernelGoroutinePreempt calls isAsyncSafePoint and injects
 	// asyncPreempt into the exception frame if safe.
 	// g register is already set to g0.
+
 	MOV	X2, S2			// frame pointer (callee-saved)
 	GO_CALL_1_1(·CheckKernelGoroutinePreempt, S2)
 	BNE	T0, ZERO, irq_trap_return	// frame was modified, skip thread preempt
 
 	// S-mode, depth=0 — safe to preempt kernel thread
+	JMP	timer_check_preemption
+
+timer_is_umode:
+	// Diagnostic: count U-mode timer interrupts
+	MOV	·dbgTimerEL0(SB), T0
+	ADD	$1, T0, T0
+	MOV	T0, ·dbgTimerEL0(SB)
+	JMP	timer_check_preemption
+
+timer_skip_svc:
+	// Diagnostic: count svcDepth>0 skips
+	MOV	·dbgTimerSkipSVC(SB), T0
+	ADD	$1, T0, T0
+	MOV	T0, ·dbgTimerSkipSVC(SB)
+	JMP	irq_trap_return
+
 timer_check_preemption:
 
 	// Check NeedsThreadPreempt flag set by TimerIRQHandlerAsm
 	MOV	$mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB), T0
 	MOVW	(T0), T0
-	BEQ	T0, ZERO, timer_no_switch	// flag not set — skip preemption
+	BEQ	T0, ZERO, timer_preempt_not_set	// flag not set — skip preemption
 
 	// NOTE: m.locks check removed for userspace thread preemption.
 	// Each priest runs in its own address space with isolated Go runtime state.
@@ -949,6 +966,12 @@ timer_check_preemption:
 	// ---- END DIAGNOSTIC ----
 
 	JMP	load_context_and_sret
+
+timer_preempt_not_set:
+	// Diagnostic: NeedsThreadPreempt was 0 when we checked
+	MOV	·dbgTimerPreemptNotSet(SB), T0
+	ADD	$1, T0, T0
+	MOV	T0, ·dbgTimerPreemptNotSet(SB)
 
 timer_no_switch:
 	// ---- DIAGNOSTIC: count no-switch timer returns ----

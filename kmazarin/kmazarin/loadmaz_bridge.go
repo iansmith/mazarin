@@ -82,6 +82,7 @@ func DispatchLoadMazWork() bool {
 		// Snapshot the request and clear the TID to prevent re-dispatch.
 		req := ksyscall.LoadMazReq
 		ksyscall.LoadMazReq.BlockedTID = -1
+		atomic.StoreInt32(&ksyscall.LoadMazBusy, 0)
 
 		serial.RawUARTPuts("[LM:work]")
 		result := ksyscall.DoLoadMazWork(&req)

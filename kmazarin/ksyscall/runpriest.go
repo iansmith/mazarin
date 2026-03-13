@@ -11,6 +11,7 @@ import (
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
+	"sync/atomic"
 )
 
 // RunPriestWorkRequest contains the parameters for a RunPriest operation.
@@ -26,7 +27,9 @@ type RunPriestWorkRequest struct {
 
 // RunPriestReq is the global request struct shared between the SVC handler
 // and the kernel worker goroutine. One request at a time.
+// RunPriestBusy guards against concurrent access (latent SMP hazard).
 var RunPriestReq RunPriestWorkRequest
+var RunPriestBusy int32
 
 // SyscallRunPriest creates a new priest from ELF data in the caller's pages.
 //
@@ -69,6 +72,12 @@ func SyscallRunPriest(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	name := readNullTerminatedString(namePtr)
 	if name == "" {
 		return int64(errInvalidFilename)
+	}
+
+	// Guard against concurrent access (latent SMP hazard).
+	if !atomic.CompareAndSwapInt32(&RunPriestBusy, 0, 1) {
+		console.KWriteString("[RunPriest] ERROR: concurrent request\r\n")
+		return -16 // EBUSY
 	}
 
 	// Store request for the worker goroutine

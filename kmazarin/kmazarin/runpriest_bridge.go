@@ -49,6 +49,7 @@ func DispatchRunPriestWork() bool {
 
 		req := ksyscall.RunPriestReq
 		ksyscall.RunPriestReq.BlockedTID = -1
+		atomic.StoreInt32(&ksyscall.RunPriestBusy, 0)
 
 		serial.RawUARTPuts("[RP:work]")
 		result := ksyscall.DoRunPriestWork(&req)

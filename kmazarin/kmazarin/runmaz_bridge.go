@@ -49,6 +49,7 @@ func DispatchRunMazWork() bool {
 
 		req := ksyscall.RunMazReq
 		ksyscall.RunMazReq.BlockedTID = -1
+		atomic.StoreInt32(&ksyscall.RunMazBusy, 0)
 
 		serial.RawUARTPuts("[RM:work]")
 		result := ksyscall.DoRunMazWork(&req)

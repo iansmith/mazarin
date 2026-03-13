@@ -17,6 +17,7 @@ import (
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/device/virtio"
 	"mazzy/kmazarin/device/virtio/block"
+	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
@@ -142,8 +143,19 @@ func blockReadInterrupt(dev *block.VirtIOBlockDevice, lba uint64, buf []byte) er
 	//
 	// Still interrupt-driven: WFI halts until an interrupt wakes us, we just
 	// verify the used ring rather than trusting a flag.
+	// Timeout: 5 seconds. If the device fails to complete the request
+	// (no IRQ, no used ring update), return EIO rather than hang forever.
+	freq := uint64(kirq.GetTimerFrequency())
+	deadline := kirq.ReadCounterValue() + freq*5
+
 	vq := &dev.Queue
 	for !virtio.VirtqueueHasUsed(vq) {
+		if kirq.ReadCounterValue() > deadline {
+			serial.RawUARTPuts("[BlockRead] TIMEOUT: no completion at LBA ")
+			serial.RawUARTDecimal(lba)
+			serial.RawUARTPuts("\r\n")
+			return block.ErrTimeout
+		}
 		enableIRQsAndWait()
 	}
 

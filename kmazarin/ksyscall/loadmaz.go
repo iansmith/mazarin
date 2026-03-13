@@ -15,6 +15,7 @@ import (
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/fs/fat32"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -42,7 +43,9 @@ type LoadMazWorkRequest struct {
 // LoadMazReq is the global request struct shared between the SVC handler
 // (which writes it) and the kernel worker goroutine (which reads it).
 // Only one LoadMaz request can be in flight at a time.
+// LoadMazBusy guards against concurrent access (latent SMP hazard).
 var LoadMazReq LoadMazWorkRequest
+var LoadMazBusy int32
 
 // SyscallLoadMaz loads a .maz PIE ELF into the calling priest's address space.
 // This is a thin entry point that validates arguments, stores the request, and
@@ -82,6 +85,13 @@ func SyscallLoadMaz(filenamePtr, resultPtr, _, _, _, _ uint64) int64 {
 	if priest.SymbolTable == nil {
 		console.KWriteString("[LoadMaz] ERROR: priest has no symbol table\r\n")
 		return int64(errNoSymbol)
+	}
+
+	// Guard against concurrent access. Safe on single-CPU (svcDepth=1
+	// prevents concurrent SVCs), but this CAS catches it under SMP.
+	if !atomic.CompareAndSwapInt32(&LoadMazBusy, 0, 1) {
+		console.KWriteString("[LoadMaz] ERROR: concurrent request\r\n")
+		return -16 // EBUSY
 	}
 
 	// Store the request for the worker goroutine.

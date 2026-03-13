@@ -2887,13 +2887,13 @@ func CopyToUserWithL0(userVA uintptr, l0PA uintptr, src []byte, n int) int {
 		va := userVA + uintptr(copied)
 		pa := WalkUserPageTableWithL0(va, l0PA)
 		if pa == 0 {
-			if !HandleUserPageFault(va, 0) {
-				return copied
-			}
-			pa = WalkUserPageTableWithL0(va, l0PA)
-			if pa == 0 {
-				return copied
-			}
+			// Do NOT call HandleUserPageFault here — it reads TTBR0 and
+			// CurrentPriest() to walk the page table and validate the VA
+			// against bump/span regions. During delegation reply, those
+			// belong to the delegate handler, not the original caller.
+			// Demand-mapping would allocate into the wrong address space.
+			// Instead, return partial copy (Linux copy_to_user semantics).
+			return copied
 		}
 		pagePA := pa &^ (PageSize - 1)
 		pageOffset := pa & (PageSize - 1)
@@ -3139,6 +3139,12 @@ func mapKernelScratchPage(va, pa uintptr) bool {
 // The caller must free the returned PA via ReleasePageByPA.
 // This is used by madvise(MADV_DONTNEED/MADV_FREE) to return kernel heap
 // pages to the physical frame allocator.
+//
+// PRECONDITION: The caller MUST validate that va is within the kernel heap
+// range (KernelHeapStart..KernelHeapEnd). This function does not perform
+// range validation — passing a VA outside the heap (e.g., kernel code/data,
+// page tables, exception vectors) would silently unmap critical pages.
+// Currently the only caller is SyscallMadvise, which validates the range.
 //
 //go:nosplit
 func ReleaseKernelPage(va uintptr) uintptr {

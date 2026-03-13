@@ -1134,6 +1134,13 @@ func ProcessDeadlinesTopHalf() {
 // NOT nosplit — this gets its own stack check so it doesn't add to the
 // timer IRQ nosplit chain budget.
 //
+// WARNING: This runs from the timer top-half (~every 10 seconds) and performs
+// significant serial UART output — iterating page type arrays and writing
+// multiple strings per type. Could cause timer ISR overruns if many page types
+// are active, since UART writes are blocking. Mitigated by go:noinline keeping
+// it out of the nosplit chain (stack can grow if needed), and by being called
+// infrequently (every ~1000 ticks).
+//
 //go:noinline
 func printGCCounters() {
 	// Kernel heap size: pages/MBm, page faults
@@ -1237,7 +1244,7 @@ var dbgZPLastTID uint64           // TID of last non-TID0 zero-progress thread
 var dbgZPLastPC uint64            // PC of last non-TID0 zero-progress thread
 var dbgZPLastPS uint64            // Processor state of last non-TID0 zero-progress thread
 var dbgBadPC uint64               // DEBUG: kernel PC saved for userspace thread
-// Timer preemption path diagnostics (written by exceptions_arm64.s)
+// Timer preemption path diagnostics (written by exceptions_{arm64,riscv64}.s)
 var dbgTimerEL0 uint64          // timer IRQ interrupted EL0 (userspace)
 var dbgTimerSkipEL1h uint64     // skipped: EL1h (exception handler mode)
 var dbgTimerSkipSVC uint64      // skipped: svcDepth > 0
@@ -1916,7 +1923,24 @@ func threadExitInternal() uint64 {
 //
 //go:nosplit
 func TerminatePriest(pid PriestId, status int64) uintptr {
+	// Clean up delegation resources BEFORE acquiring the scheduler lock.
+	// NOT nosplit, which breaks the nosplit chain and avoids exceeding
+	// the 792-byte stack limit. Safe because the delegate data structures are
+	// protected by IRQ disabling (we're in SVC handler context).
+	terminatePriestDelegateCleanup(int16(pid))
 	return terminatePriestImpl(&NormalSchedulerFunc, pid, status)
+}
+
+// terminatePriestDelegateCleanup reclaims delegation resources for a dying priest
+// and wakes any orphaned caller threads whose handler priest is dying.
+// NOT nosplit — breaks the nosplit chain in TerminatePriest.
+func terminatePriestDelegateCleanup(pid int16) {
+	orphanCount := ksyscall.CleanupDelegateForDeadPriest(pid)
+	for i := 0; i < orphanCount; i++ {
+		tid := ksyscall.DelegateOrphanedCallerTIDs[i]
+		cpid := ksyscall.DelegateOrphanedCallerPIDs[i]
+		WakeDelegateCallerThread(cpid, int32(tid), -3) // -ESRCH
+	}
 }
 
 // terminatePriestImpl is the internal implementation of TerminatePriest.

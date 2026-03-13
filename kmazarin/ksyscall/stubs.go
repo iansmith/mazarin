@@ -255,12 +255,18 @@ func SyscallMadvise(addr, length, advice, _, _, _ uint64) int64 {
 	alignedAddr := addr &^ (pageSize - 1)
 	alignedEnd := (addr + length + pageSize - 1) &^ (pageSize - 1)
 
+	// Disable IRQs to prevent async preemption between ReleaseKernelPage
+	// (clears PTE, returns PA) and ReleasePageByPA (frees PA to buddy).
+	// Without this, a preempted goroutine could leave the buddy allocator
+	// in an inconsistent state if another goroutine concurrently calls madvise.
+	savedDAIF := saveAndDisableIRQs()
 	for va := alignedAddr; va < alignedEnd; va += pageSize {
 		pa := kmem.ReleaseKernelPage(uintptr(va))
 		if pa != 0 {
 			kmem.ReleasePageByPA(pa)
 		}
 	}
+	restoreIRQs(savedDAIF)
 
 	return 0
 }

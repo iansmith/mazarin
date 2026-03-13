@@ -62,6 +62,7 @@ type DelegateCallInfo struct {
 	DataPagePA   uintptr  // PA of data page (0 = no page)
 	DataPageVA   uint64   // VA of data page in handler's address space
 	HandlerPID   int16    // Handler priest PID (to unmap from)
+	CallerPID    int16    // Caller priest PID (for cleanup on caller death)
 	CallerBufVA  uintptr  // Caller's original buffer VA (Read: copy-back destination)
 	CallerBufLen uint32   // Max bytes caller requested (Read: cap for copy-back)
 	CallerL0PA   uintptr  // Caller's L0 page table PA (for copy-back)
@@ -228,6 +229,7 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 		info.DataPagePA = dataPagePA
 		info.DataPageVA = handlerDataVA
 		info.HandlerPID = handlerPID
+		info.CallerPID = int16(callerPriest.PID)
 		info.CallerBufVA = uintptr(arg1)
 		info.CallerBufLen = uint32(arg2)
 		info.CallerL0PA = callerPriest.PageTableL0PA
@@ -247,7 +249,9 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			// Dequeue and deliver to the handler
 			e := delegateQueuePop(id)
 			if e != nil {
-				writeDelegateRecvResult(resultPtr, handlerPriest.PageTableL0PA, e)
+				if !writeDelegateRecvResult(resultPtr, handlerPriest.PageTableL0PA, e) {
+					serial.RawUARTPuts("[DLG] recv result write fault\r\n")
+				}
 				wakeDelegateThread(int32(recvTID), 0)
 			}
 		}
@@ -504,7 +508,9 @@ func SyscallDelegatedRecv(arg0, _, _, _, _, _ uint64) int64 {
 	e := delegateQueuePopAnyForPriest(myPID)
 	if e != nil {
 		restoreIRQs(savedDAIF)
-		writeDelegateRecvResult(resultPtr, callerPriest.PageTableL0PA, e)
+		if !writeDelegateRecvResult(resultPtr, callerPriest.PageTableL0PA, e) {
+			return -14 // EFAULT — handler's result buffer is not mapped
+		}
 		return 0
 	}
 
@@ -547,8 +553,8 @@ func SyscallDelegatedReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	callerTID := int16(arg1)
 	returnVal := int64(arg2)
 
-	callerPriest := proc.CurrentPriest()
-	if callerPriest == nil {
+	replyingPriest := proc.CurrentPriest()
+	if replyingPriest == nil {
 		return -1 // EPERM
 	}
 
@@ -556,6 +562,12 @@ func SyscallDelegatedReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	if int(callerTID) < MaxDelegateThreads {
 		info := &delegateCallInfos[callerTID]
 		if info.InUse {
+			// Verify the replying priest is the registered handler for this
+			// delegation. Without this check, any priest that guesses a
+			// caller's TID could forge a reply with an arbitrary return value.
+			if info.HandlerPID != int16(replyingPriest.PID) {
+				return -1 // EPERM
+			}
 			// For Read: copy data from handler's page back to caller's buffer.
 			// Linux semantics: if the copy faults at any point (even after
 			// partial success), read() returns -EFAULT. A partial copy means
@@ -585,9 +597,11 @@ func SyscallDelegatedReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 			// arg3 = targetVA, arg4 = numPages, arg5 = bytesRead.
 			// CallerBufVA stores the result struct pointer for LoadFile.
 			if info.SysID == sysid.LoadFile && returnVal >= 0 && info.CallerBufVA != 0 {
-				writeU64ToUser(info.CallerBufVA, arg3, info.CallerL0PA)       // StartVA
-				writeU64ToUser(info.CallerBufVA+8, arg4, info.CallerL0PA)     // NumPages
-				writeU64ToUser(info.CallerBufVA+16, arg5, info.CallerL0PA)    // BytesRead
+				if !writeU64ToUserChecked(info.CallerBufVA, arg3, info.CallerL0PA) ||
+					!writeU64ToUserChecked(info.CallerBufVA+8, arg4, info.CallerL0PA) ||
+					!writeU64ToUserChecked(info.CallerBufVA+16, arg5, info.CallerL0PA) {
+					returnVal = -14 // EFAULT
+				}
 			}
 
 			// Reclaim the data page
@@ -620,43 +634,75 @@ func copyDataPageToCaller(pagePA uintptr, callerBufVA uintptr, callerL0PA uintpt
 }
 
 // writeDelegateRecvResult writes the delegate recv result to userspace.
-func writeDelegateRecvResult(resultPtr uintptr, l0PA uintptr, e *DelegateQueueEntry) {
+// Returns false if any write faults — the result struct is partially written
+// and the caller should return -EFAULT.
+func writeDelegateRecvResult(resultPtr uintptr, l0PA uintptr, e *DelegateQueueEntry) bool {
 	// Result layout: SysID(2) + CallerPID(2) + CallerTID(2) + pad(2) +
 	//                Args[6](48) + DataVA(8) + DataLen(8) = 72 bytes
-	writeU16ToUser(resultPtr+0, uint16(e.SysID), l0PA)
-	writeI16ToUser(resultPtr+2, int16(e.CallerPID), l0PA)
-	writeI16ToUser(resultPtr+4, e.CallerTID, l0PA)
-	writeU16ToUser(resultPtr+6, 0, l0PA)
+	if !writeU16ToUser(resultPtr+0, uint16(e.SysID), l0PA) {
+		return false
+	}
+	if !writeI16ToUser(resultPtr+2, int16(e.CallerPID), l0PA) {
+		return false
+	}
+	if !writeI16ToUser(resultPtr+4, e.CallerTID, l0PA) {
+		return false
+	}
+	if !writeU16ToUser(resultPtr+6, 0, l0PA) {
+		return false
+	}
 	for i := 0; i < 6; i++ {
-		writeU64ToUser(resultPtr+8+uintptr(i*8), e.Args[i], l0PA)
+		if !writeU64ToUserChecked(resultPtr+8+uintptr(i*8), e.Args[i], l0PA) {
+			return false
+		}
 	}
 	// DataVA points directly at the data (no header — data starts at offset 0)
-	writeU64ToUser(resultPtr+56, e.DataVA, l0PA)
-	writeU64ToUser(resultPtr+64, uint64(e.DataLen), l0PA)
+	if !writeU64ToUserChecked(resultPtr+56, e.DataVA, l0PA) {
+		return false
+	}
+	if !writeU64ToUserChecked(resultPtr+64, uint64(e.DataLen), l0PA) {
+		return false
+	}
+	return true
 }
 
 // writeU16ToUser writes a uint16 to userspace memory via scratch mapping.
-func writeU16ToUser(addr uintptr, val uint16, l0PA uintptr) {
-	if kmem.WalkUserPageTableWithL0(addr, l0PA) == 0 {
-		if !kmem.HandleUserPageFault(addr, 0) {
-			return
-		}
-	}
+// Returns false if the page is not mapped (no demand-faulting — would use
+// the wrong address space in cross-process contexts).
+func writeU16ToUser(addr uintptr, val uint16, l0PA uintptr) bool {
 	pa := kmem.WalkUserPageTableWithL0(addr, l0PA)
 	if pa == 0 {
-		return
+		return false
 	}
 	scratchVA := kmem.MapPAToKernelScratch(pa &^ 0xFFF)
 	if scratchVA == 0 {
-		return
+		return false
 	}
 	offset := addr & 0xFFF
 	*(*uint16)(unsafe.Pointer(scratchVA + offset)) = val
+	return true
 }
 
 // writeI16ToUser writes an int16 to userspace memory via scratch mapping.
-func writeI16ToUser(addr uintptr, val int16, l0PA uintptr) {
-	writeU16ToUser(addr, uint16(val), l0PA)
+func writeI16ToUser(addr uintptr, val int16, l0PA uintptr) bool {
+	return writeU16ToUser(addr, uint16(val), l0PA)
+}
+
+// writeU64ToUserChecked writes a uint64 to userspace memory via scratch mapping.
+// Returns false if the page is not mapped. Used by writeDelegateRecvResult
+// where error propagation is needed.
+func writeU64ToUserChecked(userVA uintptr, val uint64, l0PA uintptr) bool {
+	pa := kmem.WalkUserPageTableWithL0(userVA, l0PA)
+	if pa == 0 {
+		return false
+	}
+	kernelVA := kmem.MapPAToKernelScratch(pa)
+	if kernelVA == 0 {
+		return false
+	}
+	*(*uint64)(unsafe.Pointer(kernelVA)) = val
+	kmem.CleanPageCache(kernelVA)
+	return true
 }
 
 // Linkname bridge functions — implemented in kmazarin/kmazarin/ipc_bridge.go
@@ -672,3 +718,88 @@ func wakeDelegateThread(tid int32, returnVal int64)
 
 //go:linkname wakeDelegateCallerThread main.WakeDelegateCallerThread
 func wakeDelegateCallerThread(pid int16, tid int32, returnVal int64)
+
+// CleanupDelegateForDeadPriest reclaims resources for a priest that is being terminated.
+// Handles both cases:
+//   - Dying priest was a CALLER: reclaim data pages from in-flight and queued delegations.
+//   - Dying priest was a HANDLER: unregister SysIDs, clear recv state.
+//
+// Called from terminatePriestImpl with schedulerLock held and IRQs disabled.
+// Returns the number of in-flight delegations where the dying priest was the
+// HANDLER — the caller (terminatePriestImpl) must wake those blocked caller
+// threads. The TIDs are written to DelegateOrphanedCallerTIDs.
+func CleanupDelegateForDeadPriest(pid int16) int {
+	orphanCount := 0
+
+	// Part 1: Dying priest was a CALLER — reclaim in-flight data pages.
+	for i := 0; i < MaxDelegateThreads; i++ {
+		info := &delegateCallInfos[i]
+		if !info.InUse || info.CallerPID != pid {
+			continue
+		}
+		// Reclaim the data page (owned by handler, mapped in handler's space)
+		if info.DataPagePA != 0 {
+			handlerPriest := proc.FindPriestByPID(proc.PriestId(info.HandlerPID))
+			reclaimDataPage(info.DataPagePA, info.DataPageVA, info.HandlerPID, handlerPriest)
+		}
+		info.InUse = false
+	}
+
+	// Part 2: Dying priest was a CALLER — neuter queued entries.
+	// Zero out DataPagePA so the handler won't double-free when it dequeues.
+	for sid := sysid.ID(0); sid < sysid.NumIDs; sid++ {
+		q := &delegateQueues[sid]
+		for idx := q.head; idx != q.tail; idx = (idx + 1) % MaxDelegateQueueDepth {
+			e := &q.entries[idx]
+			if int16(e.CallerPID) != pid {
+				continue
+			}
+			if e.DataPagePA != 0 {
+				hpid := int16(atomic.LoadInt32(&syscallDelegates[sid].pid))
+				handlerPriest := proc.FindPriestByPID(proc.PriestId(hpid))
+				reclaimDataPage(e.DataPagePA, e.DataVA, hpid, handlerPriest)
+				e.DataPagePA = 0
+				e.DataVA = 0
+			}
+		}
+	}
+
+	// Part 3: Dying priest was a HANDLER — unregister all SysIDs.
+	for sid := sysid.ID(0); sid < sysid.NumIDs; sid++ {
+		if int16(atomic.LoadInt32(&syscallDelegates[sid].pid)) == pid {
+			atomic.StoreInt32(&syscallDelegates[sid].pid, -1)
+		}
+	}
+
+	// Part 4: Dying priest was a HANDLER — clear recv state.
+	if int(pid) < proc.MaxPriests {
+		delegateRecvStates[pid].recvTID = -1
+		delegateRecvStates[pid].resultPtr = 0
+	}
+
+	// Part 5: Dying priest was a HANDLER — find orphaned callers.
+	// Data pages are owned by the dying handler and will be freed by
+	// CleanupPriestPages. Clear InUse and record caller TIDs to wake.
+	for i := 0; i < MaxDelegateThreads; i++ {
+		info := &delegateCallInfos[i]
+		if !info.InUse || info.HandlerPID != pid {
+			continue
+		}
+		info.DataPagePA = 0 // Will be freed by CleanupPriestPages
+		info.DataPageVA = 0
+		info.InUse = false
+		if orphanCount < len(DelegateOrphanedCallerTIDs) {
+			DelegateOrphanedCallerTIDs[orphanCount] = int16(i)
+			DelegateOrphanedCallerPIDs[orphanCount] = info.CallerPID
+			orphanCount++
+		}
+	}
+
+	return orphanCount
+}
+
+// DelegateOrphanedCallerTIDs holds TIDs of callers whose handler priest died.
+// DelegateOrphanedCallerPIDs holds the corresponding caller PIDs.
+// Written by CleanupDelegateForDeadPriest, read by TerminatePriest.
+var DelegateOrphanedCallerTIDs [MaxDelegateThreads]int16
+var DelegateOrphanedCallerPIDs [MaxDelegateThreads]int16

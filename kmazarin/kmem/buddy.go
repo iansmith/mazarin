@@ -532,19 +532,23 @@ func GetBuddyStats() BuddyStats {
 	return stats
 }
 
-// KernelHeapPageCount returns the current kernel heap page count without
-// acquiring the buddy lock. Safe to call from timer IRQ context. The value
-// may be slightly stale but won't tear on 64-bit platforms.
+// KernelHeapPageCount returns the current kernel heap page count.
+// Uses atomic load for correctness. Safe to call from timer IRQ context
+// (no lock — acquiring the buddy spinlock from IRQ would deadlock if
+// the lock is already held by the interrupted thread).
 //
 //go:nosplit
 func KernelHeapPageCount() uint64 {
-	return buddyAlloc.kernelHeapPages
+	return atomic.LoadUint64(&buddyAlloc.kernelHeapPages)
 }
 
-// PagesByType returns a copy of the per-type page counters.
-// Safe to call without the buddy lock (values may be slightly stale).
+// PagesByType returns a copy of the per-type page counters under the
+// buddy lock for a consistent snapshot.
 func PagesByType() [PageTypeCount]uint64 {
-	return buddyPagesByType
+	buddyAlloc.lock.Lock()
+	result := buddyPagesByType
+	buddyAlloc.lock.Unlock()
+	return result
 }
 
 // KernelPageFaultCount returns the number of successful kernel page faults.

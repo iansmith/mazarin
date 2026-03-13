@@ -61,6 +61,13 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 
 	sourceL0PA := callerPriest.PageTableL0PA
 
+	// Disable IRQs across both passes to prevent async preemption between
+	// page validation (Pass 1) and ownership transfer (Pass 2). Without this,
+	// a timer IRQ could trigger goroutine preemption, allowing another goroutine
+	// to call exit_group — CleanupPriestPages would free pages that Pass 1
+	// already validated, causing use-after-free in Pass 2.
+	savedDAIF := saveAndDisableIRQs()
+
 	// Pass 1: Validate all pages exist and are owned by caller.
 	// Store resolved PAs in stack array.
 	var pas [MaxTransferPages]uintptr
@@ -68,6 +75,7 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		va := sourceVA + uintptr(i)*kmem.PageSize
 		pa := kmem.DemandMapUserPage(va, sourceL0PA)
 		if pa == 0 {
+			restoreIRQs(savedDAIF)
 			serial.RawUARTPuts("[IPC] TransferPages: page not mapped at VA 0x")
 			serial.RawUARTHex64(uint64(va))
 			serial.RawUARTPuts("\r\n")
@@ -77,6 +85,7 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		pa = pa &^ (kmem.PageSize - 1)
 		desc := kmem.GetPageDescriptor(pa)
 		if desc == nil || desc.Owner != callerPID {
+			restoreIRQs(savedDAIF)
 			serial.RawUARTPuts("[IPC] TransferPages: page not owned by caller at PA 0x")
 			serial.RawUARTHex64(uint64(pa))
 			serial.RawUARTPuts("\r\n")
@@ -89,6 +98,7 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	totalSize := uint64(numPages) * uint64(kmem.PageSize)
 	targetVABase := bumpAllocForPriest(targetPriest, totalSize)
 	if targetVABase == 0 {
+		restoreIRQs(savedDAIF)
 		return -12 // ENOMEM
 	}
 
@@ -113,6 +123,8 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 
 	// Remove source span
 	callerPriest.Spans.Remove(uint64(sourceVA), totalSize)
+
+	restoreIRQs(savedDAIF)
 
 	return int64(targetVABase)
 }
