@@ -28,7 +28,7 @@ are available. Similarly, programs in Webassembly format may be supported for so
 compiled languages as there are Webassembly virtual machines written in go.
 Support for languages other than go is possible, but not a priority.
 
-# mazarin, what this not
+# mazarin, what this is not
 mazarin is not unix. mazarin does not argue that everything should be a file--it
 argues that everything is part of the UI. mazarin is not byte streams which work 
 by read/write/open/close and file descriptors. If that is what you want, I suggest 
