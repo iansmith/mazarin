@@ -11,6 +11,7 @@ import (
 	"image/color"
 	"image/draw"
 	"math"
+	"os"
 	"runtime"
 	"time"
 	"unsafe"
@@ -236,6 +237,10 @@ type console struct {
 	// Last fd seen — used to force a newline when fd changes mid-line
 	// so stdout and stderr appear on separate lines.
 	lastFd byte
+
+	// suppressSerialCopy: when true, stdout is not echoed to serial
+	// (framebuffer only). Stderr always goes through via PollWrite syscall.
+	suppressSerialCopy bool
 }
 
 func (c *console) markDirty(lineIdx int) {
@@ -370,28 +375,29 @@ func main() {
 	fmt.Printf("[stdio] gg.NewContextForRGBA: %v\n", time.Since(t0))
 
 	con := &console{
-		fb:       fb,
-		dc:       dc,
-		im:       fbImage,
-		face:     face,
-		ascent:   ascent,
-		charW:    charW,
-		charH:    charH,
-		lineH:    lineH,
-		rectX:    rectX,
-		rectY:    rectY,
-		rectW:    rectW,
-		rectH:    rectH,
-		cardX:    cardX,
-		cardY:    cardY,
-		cardW:    cardW,
-		cardH:    cardH,
-		maxLines: maxLines,
-		maxCols:  maxCols,
-		lines:    [][]serial.SerialByte{nil},
-		tokBuf:   make([]token, 0, 64),
-		dirtyMin: -1,
-		dirtyMax: -1,
+		fb:                 fb,
+		dc:                 dc,
+		im:                 fbImage,
+		face:               face,
+		ascent:             ascent,
+		charW:              charW,
+		charH:              charH,
+		lineH:              lineH,
+		rectX:              rectX,
+		rectY:              rectY,
+		rectW:              rectW,
+		rectH:              rectH,
+		cardX:              cardX,
+		cardY:              cardY,
+		cardW:              cardW,
+		cardH:              cardH,
+		maxLines:           maxLines,
+		maxCols:            maxCols,
+		lines:              [][]serial.SerialByte{nil},
+		tokBuf:             make([]token, 0, 64),
+		dirtyMin:           -1,
+		dirtyMax:           -1,
+		suppressSerialCopy: os.Getenv("SUPPRESS_SERIAL_STDIO_COPY") == "1",
 	}
 
 	// Build glyph cache BEFORE card drawing so drawCardFrame can use font.Drawer.
@@ -486,8 +492,17 @@ func (c *console) handleDelegatedRequest(req sys.SyscallRequest) {
 			c.handleSerialByte(serial.SerialByte{Fd: fd, B: b})
 		}
 		c.flushDirty()
-		// Push to UART for serial output (with \r\n conversion)
-		sys.UartWriteBlocking(addCRBeforeLF(data))
+		// Serial output policy:
+		if fd == 2 {
+			// stderr: ALWAYS use PollWrite syscall — guaranteed delivery.
+			// Runs synchronously, cannot be preempted. This is intentional:
+			// stderr is "be sure it gets to the serial port" output.
+			sys.UartWriteDirect(addCRBeforeLF(data))
+		} else if !c.suppressSerialCopy {
+			// stdout: use TX ring buffer syscall (non-blocking, drops if full)
+			sys.UartWrite(addCRBeforeLF(data))
+		}
+		// else: stdout suppressed, framebuffer only
 		req.Reply(int64(len(data)))
 
 	case sysid.Openat:

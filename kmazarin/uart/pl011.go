@@ -7,7 +7,6 @@ import (
 	"mazzy/kmazarin/dtb"
 	"mazzy/kmazarin/kmem"
 	"reflect"
-	"runtime"
 	"sync/atomic"
 	_ "unsafe" // for go:linkname
 )
@@ -193,31 +192,28 @@ func (u *PL011) txLockRelease() {
 	atomic.StoreUint32(&u.txLock, 0)
 }
 
-// WriteByte writes a single byte to the TX ring buffer.
-// If buffer is full, falls back to direct MMIO write.
-// Implements console.Console interface.
+// WriteByte writes a single byte to the TX ring buffer and immediately
+// drains as many bytes as possible to the PL011 FIFO. If the FIFO is
+// full, remaining bytes stay in the ring buffer for the TX interrupt
+// top-half to drain later. If both FIFO and ring buffer are full,
+// the byte is silently dropped (non-blocking policy).
 //
 //go:nosplit
 func (u *PL011) WriteByte(c byte) {
 	u.txLockAcquire()
-
-	// Try to write to ring buffer
 	success := u.txBuf.WriteByte(c)
-
 	if success {
-		// Enable TX interrupt to drain buffer
-		u.WriteReg(RegIMSC, IRQ_RX|IRQ_TX)
-		u.txLockRelease()
-	} else {
-		u.txLockRelease()
-		// Buffer full - fall back to direct MMIO (busy-wait for FIFO space)
-		// Note: Release lock before busy-waiting to avoid deadlock
-		// IMPORTANT: Yield to scheduler so event poller can run
-		for u.ReadReg(RegFR)&FR_TXFF != 0 {
-			runtime.Gosched() // Allow other goroutines (event poller) to run
+		// Drain as much as possible to hardware right now
+		for u.txBuf.Available() > 0 && u.ReadReg(RegFR)&FR_TXFF == 0 {
+			data := u.txBuf.ReadByte()
+			u.WriteReg(RegDR, uint32(data))
 		}
-		u.WriteReg(RegDR, uint32(c))
+		// Enable TX interrupt for any bytes that didn't fit in the FIFO
+		if u.txBuf.Available() > 0 {
+			u.WriteReg(RegIMSC, IRQ_RX|IRQ_TX)
+		}
 	}
+	u.txLockRelease()
 }
 
 // WriteString writes a string to the TX ring buffer.
@@ -316,12 +312,37 @@ func (u *PL011) WriteReg(offset uintptr, value uint32) {
 	asm.MmioWrite32(u.baseAddr+offset, value)
 }
 
-// txTryLock attempts to acquire the TX spinlock without blocking.
+// TxTryLock attempts to acquire the TX spinlock without blocking.
 // Returns true if lock acquired, false if already held.
+// Exported for use by the nosplit top-half TX drain.
 //
 //go:nosplit
-func (u *PL011) txTryLock() bool {
+func (u *PL011) TxTryLock() bool {
 	return atomic.CompareAndSwapUint32(&u.txLock, 0, 1)
+}
+
+// TxLockRelease releases the TX spinlock.
+// Exported for use by the nosplit top-half TX drain.
+//
+//go:nosplit
+func (u *PL011) TxLockRelease() {
+	atomic.StoreUint32(&u.txLock, 0)
+}
+
+// TxBufAvailable returns the number of bytes available to read from the TX buffer.
+// Exported for use by the nosplit top-half TX drain.
+//
+//go:nosplit
+func (u *PL011) TxBufAvailable() int {
+	return u.txBuf.Available()
+}
+
+// TxBufReadByte reads one byte from the TX buffer.
+// Exported for use by the nosplit top-half TX drain.
+//
+//go:nosplit
+func (u *PL011) TxBufReadByte() byte {
+	return u.txBuf.ReadByte()
 }
 
 // handleInterrupt is called from the bottom-half dispatcher when UART IRQ fires.
@@ -346,7 +367,7 @@ func (u *PL011) handleInterrupt() {
 	// Handle transmit interrupt - drain ring buffer to TX FIFO
 	if status&IRQ_TX != 0 {
 		// Try to get lock - if held by WriteByte, skip and try next interrupt
-		if u.txTryLock() {
+		if u.TxTryLock() {
 			for u.txBuf.Available() > 0 && u.ReadReg(RegFR)&FR_TXFF == 0 {
 				data := u.txBuf.ReadByte()
 				u.WriteReg(RegDR, uint32(data))
@@ -357,7 +378,7 @@ func (u *PL011) handleInterrupt() {
 			if u.txBuf.Available() == 0 {
 				u.WriteReg(RegIMSC, IRQ_RX)
 			}
-			u.txLockRelease()
+			u.TxLockRelease()
 		}
 		// If lock not acquired, TX interrupt stays enabled and will retry
 	}

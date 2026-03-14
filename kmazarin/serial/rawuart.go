@@ -10,6 +10,38 @@ package serial
 //
 // For locked/ordered output in normal Go code, use console.KWrite* instead.
 
+// queueByteFunc is set during UART driver init to route through the
+// device's TX ring buffer (interrupt-driven). Before init, nil → falls
+// back to PollWrite.
+var queueByteFunc func(byte)
+
+// SetQueueByteFunc registers the interrupt-driven TX path.
+// Called during device init with the driver's WriteByte method.
+func SetQueueByteFunc(f func(byte)) { queueByteFunc = f }
+
+// QueueByte writes a byte to the TX ring buffer (interrupt-driven).
+// Falls back to PollWrite before driver init.
+//
+//go:nosplit
+func QueueByte(b byte) {
+	f := queueByteFunc
+	if f != nil {
+		f(b)
+		return
+	}
+	PollWrite(b) // Early boot fallback
+}
+
+// QueueString writes a string to the TX ring buffer (interrupt-driven).
+// Falls back to PollWrite before driver init.
+//
+//go:nosplit
+func QueueString(s string) {
+	for i := 0; i < len(s); i++ {
+		QueueByte(s[i])
+	}
+}
+
 const hexChars = "0123456789ABCDEF"
 
 // RawUARTPuts writes a string to UART, polling for TX ready per byte.

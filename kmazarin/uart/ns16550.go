@@ -161,6 +161,38 @@ func (u *NS16550) txTryLock() bool {
 	return atomic.CompareAndSwapUint32(&u.txLock, 0, 1)
 }
 
+// TxTryLock attempts to acquire the TX spinlock without blocking.
+// Exported for use by the nosplit top-half TX drain.
+//
+//go:nosplit
+func (u *NS16550) TxTryLock() bool {
+	return atomic.CompareAndSwapUint32(&u.txLock, 0, 1)
+}
+
+// TxLockRelease releases the TX spinlock.
+// Exported for use by the nosplit top-half TX drain.
+//
+//go:nosplit
+func (u *NS16550) TxLockRelease() {
+	atomic.StoreUint32(&u.txLock, 0)
+}
+
+// TxBufAvailable returns the number of bytes available to read from the TX buffer.
+// Exported for use by the nosplit top-half TX drain.
+//
+//go:nosplit
+func (u *NS16550) TxBufAvailable() int {
+	return u.txBuf.Available()
+}
+
+// TxBufReadByte reads one byte from the TX buffer.
+// Exported for use by the nosplit top-half TX drain.
+//
+//go:nosplit
+func (u *NS16550) TxBufReadByte() byte {
+	return u.txBuf.ReadByte()
+}
+
 func (u *NS16550) Read(p []byte) (n int, err error) {
 	u.rxLockAcquire()
 	n, err = u.rxBuf.Read(p)
@@ -177,25 +209,31 @@ func (u *NS16550) Write(p []byte) (n int, err error) {
 	return n, nil
 }
 
-// WriteByte writes a single byte to the TX ring buffer.
-// Falls back to direct MMIO if buffer is full.
+// WriteByte writes a single byte to the TX ring buffer and immediately
+// drains as many bytes as possible to the NS16550 THR. If the THR is
+// busy, remaining bytes stay in the ring buffer for the TX interrupt
+// top-half to drain later. If both THR and ring buffer are full,
+// the byte is silently dropped (non-blocking policy).
 //
 //go:nosplit
 func (u *NS16550) WriteByte(c byte) {
 	u.txLockAcquire()
-
 	success := u.txBuf.WriteByte(c)
-
 	if success {
-		u.WriteReg(NS_IER, NS_IER_RDI|NS_IER_THRI)
-		u.txLockRelease()
-	} else {
-		u.txLockRelease()
-		// Buffer full - busy-wait for THR empty
-		for u.ReadReg(NS_LSR)&NS_LSR_THRE == 0 {
+		// Drain as much as possible to hardware right now.
+		// This is critical for NS16550 whose TX interrupt is edge-triggered
+		// (fires on THR transition to empty). Writing to THR creates the
+		// transition needed for subsequent TX interrupts.
+		for u.txBuf.Available() > 0 && u.ReadReg(NS_LSR)&NS_LSR_THRE != 0 {
+			data := u.txBuf.ReadByte()
+			u.WriteReg(NS_THR, data)
 		}
-		u.WriteReg(NS_THR, c)
+		// Enable TX interrupt for any bytes that didn't fit
+		if u.txBuf.Available() > 0 {
+			u.WriteReg(NS_IER, NS_IER_RDI|NS_IER_THRI)
+		}
 	}
+	u.txLockRelease()
 }
 
 // WriteString writes a string to the UART.
@@ -284,7 +322,7 @@ func (u *NS16550) handleInterrupt() {
 	}
 
 	// Handle transmit - drain TX ring buffer
-	if u.txTryLock() {
+	if u.TxTryLock() {
 		for u.txBuf.Available() > 0 && u.ReadReg(NS_LSR)&NS_LSR_THRE != 0 {
 			data := u.txBuf.ReadByte()
 			u.WriteReg(NS_THR, data)
@@ -292,6 +330,6 @@ func (u *NS16550) handleInterrupt() {
 		if u.txBuf.Available() == 0 {
 			u.WriteReg(NS_IER, NS_IER_RDI) // Disable TX interrupt
 		}
-		u.txLockRelease()
+		u.TxLockRelease()
 	}
 }

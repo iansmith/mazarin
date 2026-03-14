@@ -7,6 +7,7 @@ import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
+	"mazzy/kmazarin/uart"
 	"mazzy/shared/constants"
 	"mazzy/shared/hid"
 	"sync/atomic"
@@ -80,13 +81,29 @@ func virtioInputPLICTopHalf(dev *topHalfDev) {
 
 // NS16550 register offsets for direct MMIO access in top-half context.
 const (
-	ns16550_RBR    uintptr = 0x00 // Receiver Buffer Register (read)
-	ns16550_LSR    uintptr = 0x05 // Line Status Register
-	ns16550_LSR_DR byte    = 1    // Data Ready bit in LSR
+	ns16550_RBR     uintptr = 0x00 // Receiver Buffer Register (read)
+	ns16550_THR     uintptr = 0x00 // Transmitter Holding Register (write)
+	ns16550_IER     uintptr = 0x01 // Interrupt Enable Register
+	ns16550_LSR     uintptr = 0x05 // Line Status Register
+	ns16550_LSR_DR  byte    = 1    // Data Ready bit in LSR
+	ns16550_LSR_THR byte    = 1 << 5 // Transmitter Holding Register Empty
+	ns16550_IER_RDI byte    = 1    // RX interrupt enable
 )
 
+// uartTxDriver holds the NS16550 instance for TX drain from the top-half.
+// Set during device init via StoreUartTxDriver.
+var uartTxDriver *uart.NS16550
+
+// StoreUartTxDriver stores the NS16550 driver reference for top-half TX drain.
+func StoreUartTxDriver(v interface{}) {
+	if d, ok := v.(*uart.NS16550); ok {
+		uartTxDriver = d
+	}
+}
+
 // ns16550UartTopHalf drains the NS16550 RX FIFO via MMIO and pushes each
-// received byte to topHalfUartRing as an HIDEvent. This delivers serial
+// received byte to topHalfUartRing as an HIDEvent. Also drains the TX
+// ring buffer when the transmitter is ready. This delivers serial
 // input to userspace via the soft IRQ slot mechanism.
 //
 //go:nosplit
@@ -94,11 +111,28 @@ func ns16550UartTopHalf(irqNum uint32) {
 	base := uintptr(constants.KernelUartBase)
 
 	pushed := false
+
+	// Handle RX: drain NS16550 FIFO into soft IRQ ring
 	for asm.MmioRead8(base+ns16550_LSR)&ns16550_LSR_DR != 0 {
 		data := asm.MmioRead8(base + ns16550_RBR)
 		ev := hid.HIDEvent{Type: 0, Code: 0, Value: uint32(data)}
 		if ringPush(&topHalfUartRing, ev) {
 			pushed = true
+		}
+	}
+
+	// Handle TX: drain driver's txBuf to NS16550 THR
+	if uartTxDriver != nil {
+		if uartTxDriver.TxTryLock() {
+			for uartTxDriver.TxBufAvailable() > 0 && asm.MmioRead8(base+ns16550_LSR)&ns16550_LSR_THR != 0 {
+				b := uartTxDriver.TxBufReadByte()
+				asm.MmioWrite8(base+ns16550_THR, b)
+			}
+			// If buffer empty, disable TX interrupt
+			if uartTxDriver.TxBufAvailable() == 0 {
+				asm.MmioWrite8(base+ns16550_IER, ns16550_IER_RDI) // RX only
+			}
+			uartTxDriver.TxLockRelease()
 		}
 	}
 

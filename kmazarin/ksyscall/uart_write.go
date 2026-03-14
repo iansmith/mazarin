@@ -1,24 +1,28 @@
 package ksyscall
 
-// uart_write.go — SysUartWrite and SysUartWriteBlocking syscalls.
+// uart_write.go — SysUartWrite and SysUartWriteDirect syscalls.
 //
 // These allow userspace priests (particularly stdio) to push bytes directly
 // into the UART output path. This decouples screen rendering (fast, handled
 // by stdio via delegated SyscallWrite) from serial output (slow, UART speed).
 //
 // Two variants:
-//   - SysUartWrite (non-blocking): writes what fits, drops the rest, returns count written
-//   - SysUartWriteBlocking: writes all bytes, blocking until UART has space
+//   - SysUartWrite (0x101A): non-blocking, pushes to TX ring buffer (interrupt-driven),
+//     drops bytes if buffer is full. Used by stdio for stdout.
+//   - SysUartWriteDirect (0x101B): synchronous PollWrite, guaranteed delivery.
+//     Used by stdio for stderr (panics, tracebacks, errors).
 
 import (
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/serial"
-	"sync/atomic"
 )
 
-// SyscallUartWrite writes bytes from a user buffer to the UART.
-// Non-blocking: writes what the hardware can accept, returns count written.
-// Drops bytes that don't fit (caller should not retry dropped bytes).
+// SyscallUartWrite writes bytes from a user buffer to the UART TX ring buffer.
+// Non-blocking: pushes what fits, drops the rest. Interrupt-driven drain.
+//
+// NOTE: This syscall is NOT gated by suppressSerial. The caller (stdio priest)
+// explicitly wants to write to UART — the suppressSerial flag only controls
+// whether SyscallWrite's ring-buffer path auto-echoes to serial.
 //
 // arg0 = bufPtr (user VA)
 // arg1 = count (bytes to write)
@@ -28,12 +32,6 @@ import (
 func SyscallUartWrite(arg0, arg1, _, _, _, _ uint64) int64 {
 	bufPtr := arg0
 	count := arg1
-
-	// When serial is suppressed, pretend we wrote everything.
-	// Stdio priest's display is the primary output path.
-	if atomic.LoadUint32(&suppressSerial) != 0 {
-		return int64(count)
-	}
 
 	if count == 0 {
 		return 0
@@ -62,10 +60,7 @@ func SyscallUartWrite(arg0, arg1, _, _, _, _ uint64) int64 {
 			return -14 // EFAULT
 		}
 		for i := uint64(0); i < n; i++ {
-			// TODO: When PL011 TX interrupt is wired, use txBuf.WriteByte
-			// and return early if txBuf is full (non-blocking).
-			// For now, use PollWrite which busy-waits per byte.
-			serial.PollWrite(chunk[i])
+			serial.QueueByte(chunk[i])
 			written++
 		}
 		offset += n
@@ -75,22 +70,22 @@ func SyscallUartWrite(arg0, arg1, _, _, _, _ uint64) int64 {
 	return int64(written)
 }
 
-// SyscallUartWriteBlocking writes all bytes from a user buffer to the UART.
-// Blocks until all bytes are written (waits for UART FIFO space).
+// SyscallUartWriteDirect writes all bytes from a user buffer to the UART
+// via synchronous PollWrite. Guaranteed delivery — blocks until all bytes
+// are transmitted. Used by stdio for stderr output (panics, tracebacks).
+//
+// NOTE: This syscall is NOT gated by suppressSerial. The caller (stdio priest)
+// explicitly wants to write to UART — the suppressSerial flag only controls
+// whether SyscallWrite's ring-buffer path auto-echoes to serial.
 //
 // arg0 = bufPtr (user VA)
 // arg1 = count (bytes to write)
 // Returns: count on success, or negative errno.
 //
 //go:noinline
-func SyscallUartWriteBlocking(arg0, arg1, _, _, _, _ uint64) int64 {
+func SyscallUartWriteDirect(arg0, arg1, _, _, _, _ uint64) int64 {
 	bufPtr := arg0
 	count := arg1
-
-	// When serial is suppressed, pretend we wrote everything.
-	if atomic.LoadUint32(&suppressSerial) != 0 {
-		return int64(count)
-	}
 
 	if count == 0 {
 		return 0
@@ -115,10 +110,6 @@ func SyscallUartWriteBlocking(arg0, arg1, _, _, _, _ uint64) int64 {
 			return -14 // EFAULT
 		}
 		for i := uint64(0); i < n; i++ {
-			// PollWrite already busy-waits for FIFO space.
-			// TODO: When PL011 TX interrupt is wired, use txBuf and
-			// block the thread (via BlockOnSlot) when txBuf is full,
-			// waking when TX interrupt drains some bytes.
 			serial.PollWrite(chunk[i])
 		}
 		offset += n
