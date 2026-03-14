@@ -14,7 +14,10 @@ func (a *Attribute[T]) nodePtr() *node { return &a.n }
 
 // NewValue creates a value attribute with an initial value.
 func NewValue[T any](initial T) *Attribute[T] {
-	return &Attribute[T]{value: initial}
+	return &Attribute[T]{
+		value: initial,
+		n:     node{createdAt: callerLocation(2)},
+	}
 }
 
 // NewConstraint creates a lazy constraint attribute.
@@ -24,7 +27,8 @@ func NewConstraint[T any](fn func() T, deps ...Noder) *Attribute[T] {
 	a := &Attribute[T]{
 		compute: fn,
 		n: node{
-			dirty: true, // start dirty so first Get() computes
+			dirty:     true, // start dirty so first Get() computes
+			createdAt: callerLocation(2),
 		},
 	}
 	a.n.recompute = func() { a.Get() }
@@ -45,7 +49,17 @@ func (a *Attribute[T]) Get() T {
 	if !a.n.dirty {
 		return a.value
 	}
+	if a.n.evaluating {
+		if PanicOnCycle {
+			panic(formatCycle(&a.n))
+		}
+		return a.value
+	}
+	a.n.evaluating = true
+	evalStack = append(evalStack, &a.n)
 	a.value = a.compute()
+	evalStack = evalStack[:len(evalStack)-1]
+	a.n.evaluating = false
 	a.n.dirty = false
 	return a.value
 }
