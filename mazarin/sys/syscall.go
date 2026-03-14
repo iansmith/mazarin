@@ -26,7 +26,7 @@ const (
 	sysDelegatedRecv          = 0x1018 // Receive a delegated syscall request
 	sysDelegatedReply         = 0x1019 // Reply to a delegated syscall
 	sysUartWrite              = 0x101A // Write to UART (non-blocking)
-	sysUartWriteBlocking      = 0x101B // Write to UART (blocking)
+	sysUartWriteBlocking      = 0x101B // Write to UART via PollWrite (synchronous, guaranteed delivery)
 	sysPriestInfo             = 0x101C // Get info about running priests
 	sysSetReady               = 0x101D // Signal priest is ready for delegated work
 	sysLoadFile               = 0x101E // Load file via fs.maz delegate

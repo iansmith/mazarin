@@ -108,9 +108,10 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 				}
 				pushByteToUartRing(fdByte, c)
 			}
-			// Echo stderr to serial so panic backtraces are visible in
-			// diagnostic output. Only for non-owner priests (useRing path).
-			if echoToSerial || fd == 2 {
+			// Echo to serial for diagnostic output (non-owner priests).
+			// stdout: interrupt-driven TX ring buffer, gated by echoToSerial.
+			// stderr: synchronous PollWrite, always (panics/tracebacks must reach serial).
+			if fd == 2 {
 				for i := uint64(0); i < n; i++ {
 					c := chunk[i]
 					if c == '\n' {
@@ -118,14 +119,35 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 					}
 					serial.PollWrite(c)
 				}
+			} else if echoToSerial {
+				for i := uint64(0); i < n; i++ {
+					c := chunk[i]
+					if c == '\n' {
+						serial.QueueByte('\r')
+					}
+					serial.QueueByte(c)
+				}
 			}
 		} else if useDirect {
-			for i := uint64(0); i < n; i++ {
-				c := chunk[i]
-				if c == '\n' {
-					serial.PollWrite('\r')
+			// stdio priest's own writes: fd-based routing.
+			// stderr: always PollWrite (guaranteed delivery).
+			// stdout: QueueByte (interrupt-driven).
+			if fd == 2 {
+				for i := uint64(0); i < n; i++ {
+					c := chunk[i]
+					if c == '\n' {
+						serial.PollWrite('\r')
+					}
+					serial.PollWrite(c)
 				}
-				serial.PollWrite(c)
+			} else {
+				for i := uint64(0); i < n; i++ {
+					c := chunk[i]
+					if c == '\n' {
+						serial.QueueByte('\r')
+					}
+					serial.QueueByte(c)
+				}
 			}
 		}
 		offset += n

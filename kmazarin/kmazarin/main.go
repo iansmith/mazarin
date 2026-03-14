@@ -17,6 +17,7 @@ import (
 	"mazzy/kmazarin/ksyscall"
 	"mazzy/kmazarin/ktime"
 	"mazzy/kmazarin/ktimer"
+	"mazzy/kmazarin/serial"
 	"mazzy/kmazarin/uart"
 	_ "os"     // Keep to maintain BSS size
 	"runtime"
@@ -447,12 +448,17 @@ func testDeviceDiscovery() {
 		console.KWriteString("[DeviceTest] ERROR wiring interrupts: ")
 		console.KPrintln(err.Error())
 	} else {
-		// Set up UART soft IRQ hook for userspace serial RX
+		// Set up UART soft IRQ hook for userspace serial RX, and
+		// register the interrupt-driven TX path (QueueByte → txBuf → top-half drain).
 		if bs, ok := device.GetByteStream(); ok {
 			if pl011, ok := bs.(*uart.PL011); ok {
 				SetupUartSoftIRQ(pl011.IRQ())
+				serial.SetQueueByteFunc(pl011.WriteByte)
+				StoreUartTxDriver(pl011)
 			} else if ns16550, ok := bs.(*uart.NS16550); ok {
 				SetupUartSoftIRQ(ns16550.IRQ())
+				serial.SetQueueByteFunc(ns16550.WriteByte)
+				StoreUartTxDriver(ns16550)
 			}
 		}
 		// AMD64: register COM1 as UART if no DTB-based UART was found.
@@ -876,6 +882,7 @@ func simpleMain() {
 		if tz != "" {
 			ksyscall.SetBootTimezone(tz)
 		}
+		ksyscall.SetSuppressSerialStdioCopy(bootCfg.SuppressSerialStdioCopy)
 		launchPriestsFromConfig(bootCfg)
 	} else {
 		// Fallback: hardcoded launch sequence

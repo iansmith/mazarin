@@ -22,6 +22,15 @@ func SetBootTimezone(tz string) {
 	bootTimezone = tz
 }
 
+// suppressSerialStdioCopy is set from the boot config's SuppressSerialStdioCopy field.
+// Passed to priests as the SUPPRESS_SERIAL_STDIO_COPY env var.
+var suppressSerialStdioCopy bool
+
+// SetSuppressSerialStdioCopy stores the suppress serial stdio copy setting.
+func SetSuppressSerialStdioCopy(v bool) {
+	suppressSerialStdioCopy = v
+}
+
 // ELF constants
 const (
 	ELF_MAGIC      = 0x464C457F // "\x7FELF"
@@ -745,6 +754,11 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 	penv.SetEnv("GOMAXPROCS", "1")
 	if bootTimezone != "" {
 		penv.SetEnv("TZ", bootTimezone)
+	}
+	if suppressSerialStdioCopy {
+		penv.SetEnv("SUPPRESS_SERIAL_STDIO_COPY", "1")
+	} else {
+		penv.SetEnv("SUPPRESS_SERIAL_STDIO_COPY", "0")
 	}
 	penv.SetAuxv(6, 4096) // AT_PAGESZ
 

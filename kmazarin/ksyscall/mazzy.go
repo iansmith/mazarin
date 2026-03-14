@@ -35,7 +35,7 @@ const (
 	SysDelegatedRecv        = MazzySyscallBase + 24 // 0x1018 - Receive a delegated syscall request (blocks)
 	SysDelegatedReply       = MazzySyscallBase + 25 // 0x1019 - Reply to a delegated syscall
 	SysUartWrite            = MazzySyscallBase + 26 // 0x101A - Write bytes to UART txBuf (non-blocking, drops on overflow)
-	SysUartWriteBlocking    = MazzySyscallBase + 27 // 0x101B - Write bytes to UART txBuf (blocking, waits for space)
+	SysUartWriteDirect      = MazzySyscallBase + 27 // 0x101B - Write bytes to UART via PollWrite (synchronous, guaranteed delivery)
 	SysPriestInfo           = MazzySyscallBase + 28 // 0x101C - Get info about running priests
 	SysSetReady             = MazzySyscallBase + 29 // 0x101D - Signal priest is ready for delegated work
 	SysLoadFile             = MazzySyscallBase + 30 // 0x101E - Load file via fs.maz delegate
@@ -70,7 +70,7 @@ var mazzySyscallTable = [64]SyscallHandler{
 	24: SyscallDelegatedRecv,             // DelegatedRecv = 0x1018
 	25: SyscallDelegatedReply,            // DelegatedReply = 0x1019
 	26: SyscallUartWrite,                 // UartWrite = 0x101A
-	27: SyscallUartWriteBlocking,         // UartWriteBlocking = 0x101B
+	27: SyscallUartWriteDirect,           // UartWriteDirect = 0x101B
 	28: SyscallPriestInfo,                // PriestInfo = 0x101C
 	29: SyscallSetReady,                  // SetReady = 0x101D
 	30: SyscallLoadFile,                  // LoadFile = 0x101E

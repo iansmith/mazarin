@@ -1356,12 +1356,6 @@ func KernelIdleLoop() {
 			default:
 			}
 		}
-		if atomic.SwapUint32(&uartTxPending, 0) == 1 {
-			select {
-			case uartTxEventChan <- struct{}{}:
-			default:
-			}
-		}
 		if atomic.SwapUint32(&DeadlinePending, 0) == 1 {
 			select {
 			case deadlineEventChan <- struct{}{}:

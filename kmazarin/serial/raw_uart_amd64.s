@@ -50,3 +50,19 @@ TEXT ·EnableRxInterrupt(SB), NOSPLIT, $0-0
 	MOVB	$0x01, AX	// Enable Received Data Available interrupt
 	OUTB
 	RET
+
+// EnableTxInterrupt enables RX+TX interrupts on COM1 (IER = 0x03).
+// func EnableTxInterrupt()
+TEXT ·EnableTxInterrupt(SB), NOSPLIT, $0-0
+	MOVW	$0x3F9, DX	// IER register
+	MOVB	$0x03, AX	// Enable RX (bit 0) + TX (bit 1) interrupts
+	OUTB
+	RET
+
+// DisableTxInterrupt disables TX interrupt, keeping RX enabled (IER = 0x01).
+// func DisableTxInterrupt()
+TEXT ·DisableTxInterrupt(SB), NOSPLIT, $0-0
+	MOVW	$0x3F9, DX	// IER register
+	MOVB	$0x01, AX	// RX only (bit 0)
+	OUTB
+	RET

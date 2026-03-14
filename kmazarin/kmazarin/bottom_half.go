@@ -41,16 +41,6 @@ var (
 	uartRxPending    uint32 // Flag: RX data available
 )
 
-// UART TX: Go writes, IRQ handler reads
-const uartTxRingSize = 4096
-
-var (
-	uartTxRingBuffer [uartTxRingSize]byte
-	uartTxRingHead   uint32 // Read position (IRQ handler)
-	uartTxRingTail   uint32 // Write position (Go code)
-	uartTxPending    uint32 // Flag: TX data to send
-)
-
 // ============================================================================
 // Other Bottom Half Flags
 // ============================================================================
@@ -337,7 +327,6 @@ func breadcrumbDec16(v uint16) {
 
 var (
 	uartRxEventChan       = make(chan struct{}, 1) // Buffered to avoid blocking poller
-	uartTxEventChan       = make(chan struct{}, 1)
 	deadlineEventChan     = make(chan struct{}, 1)
 	pageTrackingEventChan = make(chan struct{}, 1)
 )
@@ -393,22 +382,6 @@ func processRxByte(b byte) {
 	// For now, just echo back using console abstraction
 	// In the future, this could build command buffers, parse protocols, etc.
 	console.KWriteByte(b)
-}
-
-// ============================================================================
-// UART TX Bottom Half
-// ============================================================================
-
-// uartTxBottomHalf handles TX completion events.
-// Currently just a placeholder - TX is mostly handled by the IRQ handler
-// draining the ring buffer automatically.
-//
-func uartTxBottomHalf() {
-	for range uartTxEventChan {
-		// TX IRQ fired - ring buffer is being drained
-		// Could check for errors, update statistics, etc.
-		// For now, nothing to do
-	}
 }
 
 // ============================================================================
@@ -486,7 +459,6 @@ func SetupUartSoftIRQ(irqNum uint32) {
 //
 func StartBottomHalfProcessors() {
 	go uartRxBottomHalf()
-	go uartTxBottomHalf()
 	go deadlineBottomHalf()
 	go pageTrackingBottomHalf()
 }

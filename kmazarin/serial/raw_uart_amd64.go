@@ -2,6 +2,8 @@
 
 package serial
 
+import "sync/atomic"
+
 // COM1 I/O ports
 // THR (Transmitter Holding Register) = 0x3F8
 // LSR (Line Status Register) = 0x3FD
@@ -49,3 +51,90 @@ func ReadRxByte() byte
 //
 //go:nosplit
 func EnableRxInterrupt()
+
+// EnableTxInterrupt enables RX+TX interrupts on COM1 (IER = 0x03).
+// Implemented in raw_uart_amd64.s.
+//
+//go:nosplit
+func EnableTxInterrupt()
+
+// DisableTxInterrupt disables TX interrupt, keeping RX enabled (IER = 0x01).
+// Implemented in raw_uart_amd64.s.
+//
+//go:nosplit
+func DisableTxInterrupt()
+
+// COM1 TX ring buffer — interrupt-driven transmit path for x86_64.
+// COM1 uses I/O port instructions (not MMIO), so the ring buffer and
+// drain logic live here in the serial package rather than in uart/*.
+const com1TxBufSize = 4096
+
+var (
+	com1TxBuf  [com1TxBufSize]byte
+	com1TxHead int    // read position (drain in top-half)
+	com1TxTail int    // write position (COM1QueueByte caller)
+	com1TxLock uint32 // CAS spinlock
+)
+
+// COM1QueueByte pushes a byte to the COM1 TX ring buffer and immediately
+// drains as many bytes as possible to COM1 THR. If the THR is busy,
+// remaining bytes stay in the ring buffer for the TX interrupt top-half
+// to drain later. If both THR and ring buffer are full, the byte is
+// silently dropped (non-blocking policy).
+//
+//go:nosplit
+func COM1QueueByte(b byte) {
+	// Acquire spinlock
+	for !com1TxTryLock() {
+	}
+	next := (com1TxTail + 1) % com1TxBufSize
+	if next == com1TxHead {
+		// Buffer full — drop byte
+		com1TxUnlock()
+		return
+	}
+	com1TxBuf[com1TxTail] = b
+	com1TxTail = next
+	// Drain as much as possible to hardware right now.
+	// This is critical for COM1/NS16550 whose TX interrupt is edge-triggered
+	// (fires on THR transition to empty). Writing to THR creates the
+	// transition needed for subsequent TX interrupts.
+	for com1TxHead != com1TxTail && txReady() {
+		RawUART(com1TxBuf[com1TxHead])
+		com1TxHead = (com1TxHead + 1) % com1TxBufSize
+	}
+	// Enable TX interrupt for any bytes that didn't fit
+	if com1TxHead != com1TxTail {
+		EnableTxInterrupt()
+	}
+	com1TxUnlock()
+}
+
+// COM1DrainTx drains the TX ring buffer to COM1 THR while THRE is set.
+// Called from the top-half when a TX interrupt fires.
+// Disables TX interrupt when buffer is empty.
+//
+//go:nosplit
+func COM1DrainTx() {
+	if !com1TxTryLock() {
+		return // Lock held by writer, next interrupt will drain
+	}
+	for com1TxHead != com1TxTail && txReady() {
+		RawUART(com1TxBuf[com1TxHead])
+		com1TxHead = (com1TxHead + 1) % com1TxBufSize
+	}
+	if com1TxHead == com1TxTail {
+		DisableTxInterrupt()
+	}
+	com1TxUnlock()
+}
+
+//go:nosplit
+func com1TxTryLock() bool {
+	return atomic.CompareAndSwapUint32(&com1TxLock, 0, 1)
+}
+
+//go:nosplit
+func com1TxUnlock() {
+	atomic.StoreUint32(&com1TxLock, 0)
+}
