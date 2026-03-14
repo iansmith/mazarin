@@ -20,6 +20,13 @@
 // correct (takes explicit l0PA). A future stage will add arch-neutral
 // per-priest PTE write support to make the A/D clear work for all priests.
 //
+// TODO(Stage 5 deferred): ARM64 software dirty tracking. Cortex-A72 lacks
+// FEAT_HAFDBS, so platformClearDirty is a no-op. The "AP bit permission trick"
+// would map writable pages as read-only, take a permission fault on first
+// write, and set a software dirty bit. This only matters when swap is
+// implemented (dirty pages must be written back before eviction). Since swap
+// I/O is stubs-only, this is deferred. See also paging_arm64.go:platformClearDirty.
+//
 // Design reference: design/MEMORY_OVERHAUL.md Stage 5
 
 package kmem
@@ -27,7 +34,36 @@ package kmem
 import (
 	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
+	"sync/atomic"
 )
+
+// A/D scan counters — updated by ScanAccessedBits, read by [E] event dump.
+// Use atomic access: scanner runs from idle loop, dump runs from timer IRQ.
+var scanRunCount uint64
+var scanTotalAccessed uint64
+var scanTotalPages uint64
+
+// Previous snapshot for delta-since-last-dump reporting.
+var scanPrevRunCount uint64
+var scanPrevTotalAccessed uint64
+var scanPrevTotalPages uint64
+
+// ReadAndResetScanDeltas returns delta values since last call and resets the
+// snapshot. Called from the [E] event dump in timer IRQ context.
+//
+//go:nosplit
+func ReadAndResetScanDeltas() (runs, accessed, total uint64) {
+	curRuns := atomic.LoadUint64(&scanRunCount)
+	curAccessed := atomic.LoadUint64(&scanTotalAccessed)
+	curTotal := atomic.LoadUint64(&scanTotalPages)
+	runs = curRuns - scanPrevRunCount
+	accessed = curAccessed - scanPrevTotalAccessed
+	total = curTotal - scanPrevTotalPages
+	scanPrevRunCount = curRuns
+	scanPrevTotalAccessed = curAccessed
+	scanPrevTotalPages = curTotal
+	return
+}
 
 // ScanAccessedBits walks all mapped pages for the given priest, clears the
 // Accessed bit on each, and returns (accessedCount, totalCount).
@@ -42,6 +78,11 @@ func ScanAccessedBits(priestID proc.PriestId) (accessedCount int, totalCount int
 	if !proc.PriestListInUse[priestID] {
 		return
 	}
+	defer func() {
+		atomic.AddUint64(&scanRunCount, 1)
+		atomic.AddUint64(&scanTotalAccessed, uint64(accessedCount))
+		atomic.AddUint64(&scanTotalPages, uint64(totalCount))
+	}()
 
 	p := &proc.PriestListData[priestID]
 	l0PA := p.PageTableL0PA

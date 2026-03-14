@@ -28,3 +28,7 @@ path = "/stdio.elf"
 [[priest]]
 name = "sievetest"
 path = "/sievetest.elf"
+
+[[priest]]
+name = "attrtest"
+path = "/attrtest.elf"
