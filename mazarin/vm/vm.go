@@ -181,6 +181,12 @@ func (m *machine) execOne(inst Inst) error {
 		m.locals[slot] = v
 		return nil
 
+	case OpDup:
+		if m.sp <= 0 {
+			return m.haltf("DUP on empty stack")
+		}
+		return m.push(m.stack[m.sp-1])
+
 	// --- Arithmetic ---
 
 	case OpAdd:

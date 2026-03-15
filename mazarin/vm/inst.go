@@ -26,9 +26,10 @@ const (
 	OpConstTri  uint8 = 0x04 // push imm as tribool (0, 1, or 2)
 	OpConstStr  uint8 = 0x05 // push string from string table at index op1
 
-	// Locals.
+	// Locals / stack manipulation.
 	OpLoad  uint8 = 0x10 // push local[op1]
 	OpStore uint8 = 0x11 // pop and store to local[op1]
+	OpDup   uint8 = 0x12 // push stack[sp-1] again
 
 	// Arithmetic — pop two (or one for NEG/ABS), push result.
 	// typ determines I64 or F64.
@@ -161,3 +162,5 @@ func InstRet(count uint16) Inst {
 func InstCall(funcIdx, argc uint16) Inst {
 	return Inst{Opcode: OpCall, Op1: funcIdx, Op2: argc}
 }
+
+func InstDup() Inst { return Inst{Opcode: OpDup} }

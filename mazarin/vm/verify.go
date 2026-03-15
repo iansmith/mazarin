@@ -365,6 +365,15 @@ func (v *verifier) verify() error {
 			v.initLocal[slot] = true
 			v.localType[slot] = t
 
+		case OpDup:
+			t, err := v.peekType()
+			if err != nil {
+				return err
+			}
+			if err := v.pushType(t); err != nil {
+				return err
+			}
+
 		// --- Arithmetic ---
 
 		case OpAdd, OpSub, OpMul, OpDiv:
