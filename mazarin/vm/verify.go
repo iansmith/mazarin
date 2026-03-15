@@ -23,8 +23,10 @@ func Verify(prog *Program) error {
 		return &VerifyError{PC: 0, Message: fmt.Sprintf("program too large: %d instructions (max %d)", len(prog.Code), MaxInstructions)}
 	}
 	v := &verifier{
-		code:    prog.Code,
-		strings: prog.Strings,
+		code:     prog.Code,
+		strings:  prog.Strings,
+		numArgs:  prog.NumArgs,
+		argTypes: prog.ArgTypes,
 	}
 	return v.verify()
 }
@@ -42,13 +44,16 @@ func (e *VerifyError) Error() string {
 const maxNestingDepth = 32
 
 type verifier struct {
-	code    []Inst
-	strings []string
+	code     []Inst
+	strings  []string
+	numArgs  uint16
+	argTypes []uint8 // type tags for arguments; nil = all I64
 
 	// Abstract state.
-	tstack   []uint8          // type stack (stack of type tags)
-	initLocal [MaxLocals]bool  // which locals have been initialized
-	pc       int
+	tstack    []uint8           // type stack (stack of type tags)
+	initLocal [MaxLocals]bool   // which locals have been initialized
+	localType [MaxLocals]uint8  // type stored in each local
+	pc        int
 
 	// Control flow nesting.
 	ctrlStack []ctrlFrame
@@ -67,12 +72,14 @@ type ctrlFrame struct {
 	pc       int // PC of the control instruction
 
 	// Saved state at entry (after consuming the guard value).
-	entryStack []uint8
-	entryInit  [MaxLocals]bool
+	entryStack    []uint8
+	entryInit     [MaxLocals]bool
+	entryLocalTyp [MaxLocals]uint8
 
 	// IF-specific: then-branch result.
 	thenStack    []uint8
 	thenInit     [MaxLocals]bool
+	thenLocalTyp [MaxLocals]uint8
 	thenReturned bool
 	hasElse      bool
 
@@ -140,6 +147,14 @@ func (v *verifier) restoreInit(init [MaxLocals]bool) {
 	v.initLocal = init
 }
 
+func (v *verifier) saveLocalTypes() [MaxLocals]uint8 {
+	return v.localType
+}
+
+func (v *verifier) restoreLocalTypes(lt [MaxLocals]uint8) {
+	v.localType = lt
+}
+
 // mergeInit returns the intersection — only locals initialized on both paths.
 func mergeInit(a, b [MaxLocals]bool) [MaxLocals]bool {
 	var r [MaxLocals]bool
@@ -162,6 +177,15 @@ func stacksEqual(a, b []uint8) bool {
 }
 
 func (v *verifier) verify() error {
+	// Seed the type stack with argument types (the VM pushes args before execution).
+	for i := 0; i < int(v.numArgs); i++ {
+		if i < len(v.argTypes) {
+			v.tstack = append(v.tstack, v.argTypes[i])
+		} else {
+			v.tstack = append(v.tstack, TypeI64)
+		}
+	}
+
 	returned := false
 
 	for v.pc < len(v.code) {
@@ -221,12 +245,7 @@ func (v *verifier) verify() error {
 			if !v.initLocal[slot] {
 				return v.errf("load from uninitialized local %d", slot)
 			}
-			// We don't track per-local types in this version — push unknown.
-			// The runtime type checks catch mismatches. Push a wildcard.
-			// Actually, for a useful verifier, we should track local types.
-			// For now, push TypeI64 as placeholder — this is a known limitation.
-			// TODO: track local types properly.
-			if err := v.pushType(TypeI64); err != nil {
+			if err := v.pushType(v.localType[slot]); err != nil {
 				return err
 			}
 
@@ -235,10 +254,12 @@ func (v *verifier) verify() error {
 			if slot >= MaxLocals {
 				return v.errf("local slot %d out of range (max %d)", slot, MaxLocals)
 			}
-			if _, err := v.popType(); err != nil {
+			t, err := v.popType()
+			if err != nil {
 				return err
 			}
 			v.initLocal[slot] = true
+			v.localType[slot] = t
 
 		// --- Arithmetic ---
 
@@ -380,10 +401,11 @@ func (v *verifier) verify() error {
 				return err
 			}
 			v.ctrlStack = append(v.ctrlStack, ctrlFrame{
-				kind:       ctrlIf,
-				pc:         v.pc - 1,
-				entryStack: v.saveStack(),
-				entryInit:  v.saveInit(),
+				kind:          ctrlIf,
+				pc:            v.pc - 1,
+				entryStack:    v.saveStack(),
+				entryInit:     v.saveInit(),
+				entryLocalTyp: v.saveLocalTypes(),
 			})
 
 		case OpElse:
@@ -400,10 +422,12 @@ func (v *verifier) verify() error {
 			frame.hasElse = true
 			frame.thenStack = v.saveStack()
 			frame.thenInit = v.saveInit()
+			frame.thenLocalTyp = v.saveLocalTypes()
 			frame.thenReturned = returned
 			// Restore pre-IF state for the else-branch.
 			v.restoreStack(frame.entryStack)
 			v.restoreInit(frame.entryInit)
+			v.restoreLocalTypes(frame.entryLocalTyp)
 			returned = false
 
 		case OpEndIf:
@@ -419,6 +443,7 @@ func (v *verifier) verify() error {
 			if frame.hasElse {
 				elseStack := v.saveStack()
 				elseInit := v.saveInit()
+				elseLocalTyp := v.saveLocalTypes()
 				elseReturned := returned
 
 				if frame.thenReturned && elseReturned {
@@ -428,11 +453,13 @@ func (v *verifier) verify() error {
 					// Only then returned — continue with else state.
 					v.restoreStack(elseStack)
 					v.restoreInit(elseInit)
+					v.restoreLocalTypes(elseLocalTyp)
 					returned = false
 				} else if elseReturned {
 					// Only else returned — continue with then state.
 					v.restoreStack(frame.thenStack)
 					v.restoreInit(frame.thenInit)
+					v.restoreLocalTypes(frame.thenLocalTyp)
 					returned = false
 				} else {
 					// Neither returned — stacks must match.
@@ -442,6 +469,7 @@ func (v *verifier) verify() error {
 					}
 					v.restoreStack(elseStack)
 					v.restoreInit(mergeInit(frame.thenInit, elseInit))
+					v.restoreLocalTypes(elseLocalTyp) // conservative: use else side
 					returned = false
 				}
 			} else {
@@ -450,6 +478,7 @@ func (v *verifier) verify() error {
 					// Then-branch returned. False path continues with pre-IF state.
 					v.restoreStack(frame.entryStack)
 					v.restoreInit(frame.entryInit)
+					v.restoreLocalTypes(frame.entryLocalTyp)
 					returned = false
 				} else {
 					// Then-branch did not return.
@@ -483,18 +512,21 @@ func (v *verifier) verify() error {
 			}
 
 			v.ctrlStack = append(v.ctrlStack, ctrlFrame{
-				kind:       ctrlForRange,
-				pc:         v.pc - 1,
-				entryStack: v.saveStack(),
-				entryInit:  v.saveInit(),
-				idxSlot:    idxSlot,
-				valSlot:    valSlot,
-				elemType:   elementType(collTyp),
+				kind:          ctrlForRange,
+				pc:            v.pc - 1,
+				entryStack:    v.saveStack(),
+				entryInit:     v.saveInit(),
+				entryLocalTyp: v.saveLocalTypes(),
+				idxSlot:       idxSlot,
+				valSlot:       valSlot,
+				elemType:      elementType(collTyp),
 			})
 			v.forDepth++
 			// Inside the body, index and value locals are initialized.
 			v.initLocal[idxSlot] = true
 			v.initLocal[valSlot] = true
+			v.localType[idxSlot] = TypeI64
+			v.localType[valSlot] = elementType(collTyp)
 
 		case OpEndFor:
 			if len(v.ctrlStack) == 0 {
@@ -515,9 +547,10 @@ func (v *verifier) verify() error {
 						len(frame.entryStack), len(v.tstack))
 				}
 			}
-			// Conservative: restore pre-loop init (body might not have executed).
+			// Conservative: restore pre-loop state (body might not have executed).
 			v.restoreStack(frame.entryStack)
 			v.restoreInit(frame.entryInit)
+			v.restoreLocalTypes(frame.entryLocalTyp)
 			returned = false
 
 		case OpBreak:

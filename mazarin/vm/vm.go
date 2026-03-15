@@ -17,9 +17,10 @@ const (
 
 // Program is a verified, ready-to-execute constraint program.
 type Program struct {
-	Code    []Inst   // instruction stream
-	Strings []string // string constant table
-	NumArgs uint16   // number of parameters (taken from stack on entry)
+	Code     []Inst   // instruction stream
+	Strings  []string // string constant table
+	NumArgs  uint16   // number of parameters (taken from stack on entry)
+	ArgTypes []uint8  // type tags for each argument (used by verifier)
 }
 
 // ErrHalt is returned when the VM halts abnormally.
