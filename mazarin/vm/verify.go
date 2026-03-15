@@ -22,6 +22,12 @@ func Verify(prog *Program) error {
 	if len(prog.Code) > MaxInstructions {
 		return &VerifyError{PC: 0, Message: fmt.Sprintf("program too large: %d instructions (max %d)", len(prog.Code), MaxInstructions)}
 	}
+
+	if prog.Funcs != nil {
+		return verifyMultiFunc(prog)
+	}
+
+	// Single-function (backward compatible).
 	v := &verifier{
 		code:     prog.Code,
 		strings:  prog.Strings,
@@ -29,6 +35,103 @@ func Verify(prog *Program) error {
 		argTypes: prog.ArgTypes,
 	}
 	return v.verify()
+}
+
+// verifyMultiFunc validates a multi-function program.
+func verifyMultiFunc(prog *Program) error {
+	if int(prog.Entry) >= len(prog.Funcs) {
+		return &VerifyError{PC: 0, Message: fmt.Sprintf("entry index %d out of range (have %d funcs)", prog.Entry, len(prog.Funcs))}
+	}
+
+	// Check for call graph cycles.
+	if err := checkCallGraph(prog.Funcs, prog.Code); err != nil {
+		return err
+	}
+
+	// Verify each function independently.
+	for i, fn := range prog.Funcs {
+		// Find the end of this function's code (scan for the last RET).
+		endPC := len(prog.Code)
+		if i+1 < len(prog.Funcs) {
+			endPC = int(prog.Funcs[i+1].PC)
+		}
+		fnCode := prog.Code[fn.PC:endPC]
+
+		v := &verifier{
+			code:     fnCode,
+			strings:  prog.Strings,
+			numArgs:  fn.NumArgs,
+			argTypes: prog.ArgTypes, // entry function types; helpers use I64 fallback
+			funcs:    prog.Funcs,
+		}
+		if i != int(prog.Entry) {
+			// Non-entry functions: seed with their arg count but no ArgTypes info.
+			v.argTypes = nil
+		}
+		if err := v.verify(); err != nil {
+			return &VerifyError{
+				PC:      int(fn.PC) + err.(*VerifyError).PC,
+				Message: fmt.Sprintf("in %s: %s", fn.Name, err.(*VerifyError).Message),
+			}
+		}
+	}
+	return nil
+}
+
+// checkCallGraph builds a call graph from OpCall instructions and rejects cycles.
+func checkCallGraph(funcs []FuncInfo, code []Inst) error {
+	// Build adjacency list.
+	adj := make([][]uint16, len(funcs))
+	for i, fn := range funcs {
+		endPC := len(code)
+		if i+1 < len(funcs) {
+			endPC = int(funcs[i+1].PC)
+		}
+		for pc := int(fn.PC); pc < endPC; pc++ {
+			if code[pc].Opcode == OpCall {
+				target := code[pc].Op1
+				if int(target) >= len(funcs) {
+					return &VerifyError{PC: pc, Message: fmt.Sprintf("call to invalid function index %d", target)}
+				}
+				adj[i] = append(adj[i], target)
+			}
+		}
+	}
+
+	// DFS cycle detection.
+	const (
+		white = 0
+		gray  = 1
+		black = 2
+	)
+	color := make([]int, len(funcs))
+	var dfs func(u int) error
+	dfs = func(u int) error {
+		color[u] = gray
+		for _, v := range adj[u] {
+			if color[v] == gray {
+				return &VerifyError{
+					PC:      int(funcs[u].PC),
+					Message: fmt.Sprintf("recursion: %s calls %s (cycles not allowed)", funcs[u].Name, funcs[v].Name),
+				}
+			}
+			if color[v] == white {
+				if err := dfs(int(v)); err != nil {
+					return err
+				}
+			}
+		}
+		color[u] = black
+		return nil
+	}
+	for i := range funcs {
+		if color[i] == white {
+			if err := dfs(i); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // VerifyError describes a static verification failure.
@@ -47,7 +150,8 @@ type verifier struct {
 	code     []Inst
 	strings  []string
 	numArgs  uint16
-	argTypes []uint8 // type tags for arguments; nil = all I64
+	argTypes []uint8     // type tags for arguments; nil = all I64
+	funcs    []FuncInfo  // nil for single-function programs
 
 	// Abstract state.
 	tstack    []uint8           // type stack (stack of type tags)
@@ -580,6 +684,29 @@ func (v *verifier) verify() error {
 
 		case OpCallBuiltin:
 			if err := v.verifyBuiltin(inst.Op1, inst.Op2, inst.Typ); err != nil {
+				return err
+			}
+
+		// --- Function calls ---
+
+		case OpCall:
+			funcIdx := int(inst.Op1)
+			argc := int(inst.Op2)
+			if v.funcs == nil || funcIdx >= len(v.funcs) {
+				return v.errf("call to invalid function index %d", funcIdx)
+			}
+			target := v.funcs[funcIdx]
+			if argc != int(target.NumArgs) {
+				return v.errf("call to %s: expected %d args, got %d", target.Name, target.NumArgs, argc)
+			}
+			// Pop argc argument types.
+			for i := 0; i < argc; i++ {
+				if _, err := v.popType(); err != nil {
+					return err
+				}
+			}
+			// Push one return value (I64 placeholder — we don't track return types yet).
+			if err := v.pushType(TypeI64); err != nil {
 				return err
 			}
 

@@ -157,3 +157,7 @@ func InstCallBuiltin(id, argc uint16) Inst {
 func InstRet(count uint16) Inst {
 	return Inst{Opcode: OpRet, Op2: count}
 }
+
+func InstCall(funcIdx, argc uint16) Inst {
+	return Inst{Opcode: OpCall, Op1: funcIdx, Op2: argc}
+}

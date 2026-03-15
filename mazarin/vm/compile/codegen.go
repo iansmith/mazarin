@@ -413,6 +413,18 @@ func (c *compiler) compileCall(e *ast.CallExpr) error {
 		return nil
 	}
 
+	// Intra-program function call.
+	if funcIdx, ok := c.funcTable[ident.Name]; ok {
+		// Compile arguments.
+		for _, arg := range e.Args {
+			if err := c.compileExpr(arg); err != nil {
+				return err
+			}
+		}
+		c.emit(vm.InstCall(uint16(funcIdx), uint16(len(e.Args))))
+		return nil
+	}
+
 	builtin, ok := builtinFuncs[ident.Name]
 	if !ok {
 		return c.errAt(e.Pos(), "unknown function %q", ident.Name)

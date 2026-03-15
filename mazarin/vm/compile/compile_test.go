@@ -458,3 +458,133 @@ func FortyTwo() int64 {
 		t.Fatalf("expected 42, got %d", results[0].AsI64())
 	}
 }
+
+// --- Multi-function (intra-program calls) ---
+
+func TestCompileCallHelper(t *testing.T) {
+	// Helper function called from entry.
+	results := compileAndRun(t, `
+func double(x int64) int64 {
+	return x * 2
+}
+
+func Main(n int64) int64 {
+	return double(n) + 1
+}
+`, vm.I64(5))
+	// double(5) + 1 = 11
+	if results[0].AsI64() != 11 {
+		t.Fatalf("expected 11, got %d", results[0].AsI64())
+	}
+}
+
+func TestCompileCallMultipleHelpers(t *testing.T) {
+	// Two helpers chained together.
+	results := compileAndRun(t, `
+func double(x int64) int64 {
+	return x * 2
+}
+
+func inc(x int64) int64 {
+	return x + 1
+}
+
+func Main(n int64) int64 {
+	return inc(double(n))
+}
+`, vm.I64(3))
+	// inc(double(3)) = inc(6) = 7
+	if results[0].AsI64() != 7 {
+		t.Fatalf("expected 7, got %d", results[0].AsI64())
+	}
+}
+
+func TestCompileCallHelperWithIfElse(t *testing.T) {
+	// Helper with branching logic.
+	results := compileAndRun(t, `
+func adjust(x int64) int64 {
+	if x > 10 {
+		return x - 5
+	} else {
+		return x + 5
+	}
+}
+
+func Main(a int64, b int64) int64 {
+	return adjust(a) + adjust(b)
+}
+`, vm.I64(20), vm.I64(3))
+	// adjust(20)=15, adjust(3)=8 → 23
+	if results[0].AsI64() != 23 {
+		t.Fatalf("expected 23, got %d", results[0].AsI64())
+	}
+}
+
+func TestCompileCallHelperCallingHelper(t *testing.T) {
+	// Helper calls another helper (no recursion, just chaining).
+	results := compileAndRun(t, `
+func square(x int64) int64 {
+	return x * x
+}
+
+func sumOfSquares(a int64, b int64) int64 {
+	return square(a) + square(b)
+}
+
+func Main(x int64, y int64) int64 {
+	return sumOfSquares(x, y)
+}
+`, vm.I64(3), vm.I64(4))
+	// 9 + 16 = 25
+	if results[0].AsI64() != 25 {
+		t.Fatalf("expected 25, got %d", results[0].AsI64())
+	}
+}
+
+func TestCompileCallFloatHelper(t *testing.T) {
+	// Helper with float args and return.
+	results := compileAndRun(t, `
+func lerp(a float64, b float64, t float64) float64 {
+	return a + (b - a) * t
+}
+
+func Main(lo float64, hi float64) float64 {
+	return lerp(lo, hi, 0.5)
+}
+`, vm.F64(10.0), vm.F64(20.0))
+	// lerp(10, 20, 0.5) = 15.0
+	if results[0].AsF64() != 15.0 {
+		t.Fatalf("expected 15.0, got %g", results[0].AsF64())
+	}
+}
+
+func TestCompileRejectRecursion(t *testing.T) {
+	// Direct recursion should be rejected by the verifier.
+	mustCompileErr(t, `
+func factorial(n int64) int64 {
+	if n == 0 {
+		return 1
+	}
+	return n * factorial(n - 1)
+}
+`, "recursion")
+}
+
+func TestCompileRejectMutualRecursion(t *testing.T) {
+	// Mutual recursion should be rejected.
+	mustCompileErr(t, `
+func isEven(n int64) bool {
+	if n == 0 {
+		return true
+	}
+	return isOdd(n - 1)
+}
+
+func isOdd(n int64) bool {
+	if n == 0 {
+		return false
+	}
+	return isEven(n - 1)
+}
+`, "recursion")
+}

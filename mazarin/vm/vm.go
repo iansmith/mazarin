@@ -13,14 +13,26 @@ const (
 	MaxInstructions = 100_000 // instruction counter kill limit
 	MaxStackDepth   = 256
 	MaxLocals       = 64
+	MaxCallDepth    = 8
 )
+
+// FuncInfo describes a function within a multi-function program.
+type FuncInfo struct {
+	Name      string  // for diagnostics
+	PC        uint16  // start offset in Code
+	NumArgs   uint16  // parameters consumed from stack
+	NumLocals uint16  // total local slots used (args + body locals)
+	LocalBase uint16  // first local slot for this function
+}
 
 // Program is a verified, ready-to-execute constraint program.
 type Program struct {
-	Code     []Inst   // instruction stream
-	Strings  []string // string constant table
-	NumArgs  uint16   // number of parameters (taken from stack on entry)
-	ArgTypes []uint8  // type tags for each argument (used by verifier)
+	Code     []Inst     // instruction stream
+	Strings  []string   // string constant table
+	NumArgs  uint16     // number of parameters (entry function)
+	ArgTypes []uint8    // type tags for each argument (entry function, used by verifier)
+	Funcs    []FuncInfo // function table (nil for single-function programs)
+	Entry    uint16     // index into Funcs for the entry point
 }
 
 // ErrHalt is returned when the VM halts abnormally.
@@ -43,7 +55,12 @@ func Run(prog *Program, args ...Value) ([]Value, error) {
 	vm := machine{
 		code:    prog.Code,
 		strings: prog.Strings,
+		funcs:   prog.Funcs,
 		fuel:    MaxInstructions,
+	}
+	// For multi-function programs, start at the entry function's PC.
+	if prog.Funcs != nil {
+		vm.pc = int(prog.Funcs[prog.Entry].PC)
 	}
 	for _, a := range args {
 		if err := vm.push(a); err != nil {
@@ -56,14 +73,22 @@ func Run(prog *Program, args ...Value) ([]Value, error) {
 	return vm.stack[:vm.sp], nil
 }
 
+type retFrame struct {
+	pc int // return address (PC after OpCall)
+	sp int // caller's stack pointer before args were pushed
+}
+
 type machine struct {
-	code    []Inst
-	strings []string
-	stack   [MaxStackDepth]Value
-	locals  [MaxLocals]Value
-	sp      int // stack pointer (points to next free slot)
-	pc      int // program counter
-	fuel    int // instructions remaining
+	code      []Inst
+	strings   []string
+	funcs     []FuncInfo // nil for single-function programs
+	stack     [MaxStackDepth]Value
+	locals    [MaxLocals]Value
+	sp        int // stack pointer (points to next free slot)
+	pc        int // program counter
+	fuel      int // instructions remaining
+	retStack  [MaxCallDepth]retFrame
+	callDepth int
 }
 
 func (m *machine) push(v Value) error {
@@ -389,6 +414,28 @@ func (m *machine) execOne(inst Inst) error {
 	case OpCallBuiltin:
 		return m.callBuiltin(inst.Op1, inst.Op2, inst.Typ)
 
+	// --- Function calls ---
+
+	case OpCall:
+		funcIdx := int(inst.Op1)
+		argc := int(inst.Op2)
+		if m.callDepth >= MaxCallDepth {
+			return m.haltf("call depth exceeded (max %d)", MaxCallDepth)
+		}
+		if m.funcs == nil || funcIdx >= len(m.funcs) {
+			return m.haltf("invalid function index %d", funcIdx)
+		}
+		// Save return frame. The args are already on the stack;
+		// sp before args = sp - argc.
+		m.retStack[m.callDepth] = retFrame{
+			pc: m.pc,
+			sp: m.sp - argc,
+		}
+		m.callDepth++
+		// Jump to callee. Its compiled prologue will STORE args into its locals.
+		m.pc = int(m.funcs[funcIdx].PC)
+		return nil
+
 	// --- Return ---
 
 	case OpRet:
@@ -396,9 +443,24 @@ func (m *machine) execOne(inst Inst) error {
 		if count > m.sp {
 			return m.haltf("RET %d but only %d values on stack", count, m.sp)
 		}
-		copy(m.stack[:count], m.stack[m.sp-count:m.sp])
-		m.sp = count
-		return errRet
+		if m.callDepth == 0 {
+			// Top-level return: halt.
+			copy(m.stack[:count], m.stack[m.sp-count:m.sp])
+			m.sp = count
+			return errRet
+		}
+		// Return to caller: collect return values, restore SP, push results.
+		m.callDepth--
+		frame := m.retStack[m.callDepth]
+		retBase := m.sp - count
+		m.sp = frame.sp
+		for i := 0; i < count; i++ {
+			if err := m.push(m.stack[retBase+i]); err != nil {
+				return err
+			}
+		}
+		m.pc = frame.pc
+		return nil
 
 	default:
 		return m.haltf("unknown opcode 0x%02x", inst.Opcode)

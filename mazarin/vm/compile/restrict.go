@@ -175,7 +175,7 @@ func (c *compiler) checkExpr(expr ast.Expr) error {
 				return err
 			}
 		}
-		// Check that the function is a known builtin.
+		// Check that the function is a known builtin or intra-program function.
 		if ident, ok := e.Fun.(*ast.Ident); ok {
 			if _, ok := builtinFuncs[ident.Name]; ok {
 				return nil
@@ -184,7 +184,11 @@ func (c *compiler) checkExpr(expr ast.Expr) error {
 			if ident.Name == "int64" || ident.Name == "float64" || ident.Name == "bool" {
 				return nil
 			}
-			return c.errAt(e.Pos(), "unknown function %q (only builtins allowed)", ident.Name)
+			// Intra-program function calls.
+			if _, ok := c.funcTable[ident.Name]; ok {
+				return nil
+			}
+			return c.errAt(e.Pos(), "unknown function %q (only builtins and local functions allowed)", ident.Name)
 		}
 		return c.errAt(e.Pos(), "only direct function calls allowed (no method calls, no closures)")
 

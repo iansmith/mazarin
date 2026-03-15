@@ -542,3 +542,89 @@ func TestVerifyAllRuntimePrograms(t *testing.T) {
 		}
 	}
 }
+
+// --- Multi-function verification ---
+
+func TestVerifyMultiFuncValid(t *testing.T) {
+	// double(x) = x * 2; main(a) = double(a) + 1
+	mustVerify(t, &Program{
+		Code: []Inst{
+			// double: pc=0
+			InstStore(0),
+			InstLoad(0),
+			InstConstI64(2),
+			InstArith(OpMul, TypeI64),
+			InstRet(1),
+			// main: pc=5
+			InstStore(1),
+			InstLoad(1),
+			InstCall(0, 1),
+			InstConstI64(1),
+			InstArith(OpAdd, TypeI64),
+			InstRet(1),
+		},
+		Funcs: []FuncInfo{
+			{Name: "double", PC: 0, NumArgs: 1, NumLocals: 1, LocalBase: 0},
+			{Name: "main", PC: 5, NumArgs: 1, NumLocals: 1, LocalBase: 1},
+		},
+		Entry:    1,
+		NumArgs:  1,
+		ArgTypes: []uint8{TypeI64},
+	})
+}
+
+func TestVerifyCallCycleDirectRecursion(t *testing.T) {
+	mustReject(t, &Program{
+		Code: []Inst{
+			// f: calls itself
+			InstStore(0),
+			InstLoad(0),
+			InstCall(0, 1),
+			InstRet(1),
+		},
+		Funcs: []FuncInfo{
+			{Name: "f", PC: 0, NumArgs: 1, NumLocals: 1, LocalBase: 0},
+		},
+		Entry:    0,
+		NumArgs:  1,
+		ArgTypes: []uint8{TypeI64},
+	}, "recursion")
+}
+
+func TestVerifyCallCycleMutualRecursion(t *testing.T) {
+	mustReject(t, &Program{
+		Code: []Inst{
+			// f0: calls f1
+			InstStore(0),
+			InstLoad(0),
+			InstCall(1, 1),
+			InstRet(1),
+			// f1: calls f0
+			InstStore(1),
+			InstLoad(1),
+			InstCall(0, 1),
+			InstRet(1),
+		},
+		Funcs: []FuncInfo{
+			{Name: "f0", PC: 0, NumArgs: 1, NumLocals: 1, LocalBase: 0},
+			{Name: "f1", PC: 4, NumArgs: 1, NumLocals: 1, LocalBase: 1},
+		},
+		Entry:    0,
+		NumArgs:  1,
+		ArgTypes: []uint8{TypeI64},
+	}, "recursion")
+}
+
+func TestVerifyCallBadFuncIndex(t *testing.T) {
+	mustReject(t, &Program{
+		Code: []Inst{
+			InstConstI64(1),
+			InstCall(5, 1), // index 5 doesn't exist
+			InstRet(1),
+		},
+		Funcs: []FuncInfo{
+			{Name: "main", PC: 0, NumArgs: 0, NumLocals: 0, LocalBase: 0},
+		},
+		Entry: 0,
+	}, "invalid function index")
+}
