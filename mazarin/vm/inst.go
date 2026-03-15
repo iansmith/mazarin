@@ -69,6 +69,19 @@ const (
 	OpElse  uint8 = 0x61 // end of then-branch, skip to END_IF
 	OpEndIf uint8 = 0x62
 
+	// Bounded iteration.
+	// FOR_RANGE: pop collection; iterate elements.
+	// op1 = local slot for index (i), op2 = local slot for element value (v).
+	// Body runs once per element, then jumps back to the top of the loop.
+	// Bounded by collection length — no unbounded loops.
+	OpForRange uint8 = 0x68
+	OpEndFor   uint8 = 0x69
+	OpBreak    uint8 = 0x6A // exit innermost FOR_RANGE
+
+	// Collection literal.
+	// Pop op2 elements from stack, push a collection of type typ.
+	OpMakeColl uint8 = 0x6C
+
 	// Return.
 	OpRet uint8 = 0x70 // pop op2 values as return values, halt
 
@@ -126,6 +139,20 @@ func InstCmp(op uint8, typ uint8) Inst {
 func InstIf() Inst    { return Inst{Opcode: OpIf} }
 func InstElse() Inst  { return Inst{Opcode: OpElse} }
 func InstEndIf() Inst { return Inst{Opcode: OpEndIf} }
+
+func InstForRange(indexSlot, valueSlot uint16) Inst {
+	return Inst{Opcode: OpForRange, Op1: indexSlot, Op2: valueSlot}
+}
+func InstEndFor() Inst { return Inst{Opcode: OpEndFor} }
+func InstBreak() Inst  { return Inst{Opcode: OpBreak} }
+
+func InstMakeColl(typ uint8, count uint16) Inst {
+	return Inst{Opcode: OpMakeColl, Typ: typ, Op2: count}
+}
+
+func InstCallBuiltin(id, argc uint16) Inst {
+	return Inst{Opcode: OpCallBuiltin, Op1: id, Op2: argc}
+}
 
 func InstRet(count uint16) Inst {
 	return Inst{Opcode: OpRet, Op2: count}
