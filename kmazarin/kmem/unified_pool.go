@@ -42,7 +42,8 @@ const (
 	PageDriver // Driver DMA pages (non-cacheable)
 
 	// System pages (kernel-allocated, user-accessible)
-	PageVDSO // vDSO trampoline (shared across all processes)
+	PageVDSO             // vDSO trampoline (shared across all processes)
+	PageConstraintShared // Constraint VM shared pages (kernel-writable, priest-readable)
 
 	// Sentinel
 	PageTypeCount // Must be last
@@ -69,7 +70,8 @@ var pageTypeNames = [PageTypeCount]string{
 	PageFileBuffer:  "FileBuffer",
 	PageBackingStore: "BackingStore",
 	PageDriver:      "Driver",
-	PageVDSO:        "VDSO",
+	PageVDSO:             "VDSO",
+	PageConstraintShared: "ConstraintShared",
 }
 
 // String returns a human-readable name for the page type.

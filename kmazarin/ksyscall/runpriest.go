@@ -144,6 +144,12 @@ func DoRunPriestWork(req *RunPriestWorkRequest) int64 {
 	}
 	addSpan(UserFramebufferVA, UserFramebufferSize)
 
+	// Map constraint shared pages read-only into priest address space.
+	if !kmem.MapUserConstraintPages() {
+		return int64(errNoSpace)
+	}
+	addSpan(UserConstraintPagesVA, UserConstraintPagesSize)
+
 	// Build symbol table and find highest VA from the raw ELF
 	priestSymTable := buildSymbolTable(elfData, &hdr)
 	priestHighestVA := findHighestVA(elfData, &hdr)

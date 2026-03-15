@@ -25,6 +25,14 @@ const (
 	UserFramebufferSize = 0x2000000          // 32MB - matches FramebufferSize in shared/constants
 )
 
+// Constraint shared page mapping constants.
+// Constraint pages are mapped read-only into every priest's address space.
+// The kernel writes via its own VA mapping (PA + KernelVAOffset).
+const (
+	UserConstraintPagesVA   = 0x00007FFD00000000 // Fixed VA for constraint pages
+	UserConstraintPagesSize = 0x80000            // 512KB = 128 pages (initial capacity)
+)
+
 // userspaceActive is set to true when we jump to userspace.
 // Mmap calls after this point (with addr=0) should use userspace allocator.
 var userspaceActive uint32 // 0 = kernel only, 1 = userspace active

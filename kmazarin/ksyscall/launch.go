@@ -222,6 +222,12 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 	// Register the framebuffer as a span to prevent mmap collisions
 	addSpan(UserFramebufferVA, UserFramebufferSize)
 
+	// Map constraint shared pages read-only into priest address space.
+	if !kmem.MapUserConstraintPages() {
+		return -8
+	}
+	addSpan(UserConstraintPagesVA, UserConstraintPagesSize)
+
 	// Build symbol table and track highest VA BEFORE loading
 	// (we need the raw ELF data, not the loaded memory image)
 	hdr := parseELFHeader(elfData)
