@@ -115,8 +115,10 @@ func fixELF(inputPath, outputPath string) error {
 
 	// For RISC-V: First pass to check if binary has negative offset (from -T flag)
 	// If it does, the binary is already at the correct address and we should skip
-	// relocation (only handle negative offset fix below)
-	if isRISCV {
+	// relocation (only handle negative offset fix below).
+	// Also skip relocation for -no-bootstrap binaries (kmazarin, .mzr, .maz) —
+	// only diplomat needs to be relocated to 0x80000000 for OpenSBI.
+	if isRISCV && !noBootstrap {
 		for i := uint16(0); i < e_phnum; i++ {
 			phOffset := e_phoff + uint64(i)*uint64(e_phentsize)
 			if phOffset+56 > uint64(len(data)) {

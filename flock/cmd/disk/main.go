@@ -65,12 +65,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 2. Load filesystem .maz module
-	fmt.Println("[disk] loading filesystem maz...")
+	// 2. Load filesystem module (.maz on ARM64/AMD64, .mzr on RISC-V)
+	fsPath := sys.LoadMazByName("/fs")
+	fmt.Printf("[disk] loading filesystem module %s...\n", fsPath)
 	blkDev := &diskBlockDev{}
 	// Force linker to include blockdev.BlockDevice itab for cross-module type assertions
 	forceBlockDevItab(blkDev)
-	mazMain, priestInitAddr, mazErr := mazhost.LoadMazBootstrap("/fs.maz", blkDev)
+	mazMain, priestInitAddr, mazErr := mazhost.LoadMazBootstrap(fsPath, blkDev)
 	if mazErr != nil {
 		fmt.Printf("[disk] LoadMazBootstrap failed: %v\n", mazErr)
 		os.Exit(1)

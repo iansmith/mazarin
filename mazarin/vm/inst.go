@@ -121,6 +121,10 @@ func InstConstBool(v bool) Inst {
 	return Inst{Opcode: OpConstBool, Imm: imm}
 }
 
+func InstConstStr(index uint16) Inst {
+	return Inst{Opcode: OpConstStr, Op1: index}
+}
+
 func InstLoad(slot uint16) Inst {
 	return Inst{Opcode: OpLoad, Op1: slot}
 }

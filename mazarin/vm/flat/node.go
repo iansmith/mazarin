@@ -32,7 +32,7 @@ type FlatAttrNode struct {
 
 	// Constraint program (6 bytes)
 	ProgramOffset uint32 // byte offset into bytecode region (0 = none)
-	ProgramLen    uint16 // number of instructions
+	ProgramLen    uint16 // byte length of serialized program (MZBC blob)
 
 	// Dependencies — who I depend on (6 bytes)
 	DepsCount  uint16

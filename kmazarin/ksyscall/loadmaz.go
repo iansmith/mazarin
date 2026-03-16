@@ -14,6 +14,7 @@ import (
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
+	"mazzy/shared/constants"
 	"mazzy/shared/fs/fat32"
 	"sync/atomic"
 	"unsafe"
@@ -202,7 +203,14 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 		// ET_EXEC: binary runs at its linked addresses, no relocation
 		loadBase = mazLowest
 		loadOffset = 0
-		console.KWriteString("[LoadMaz] ET_EXEC base=")
+		slot := constants.MzrSlotFromAddr(loadBase)
+		console.KWriteString("[LoadMaz] loading .mzr (ET_EXEC) at slot ")
+		if slot >= 0 {
+			console.KPrintHex64(uint64(slot))
+		} else {
+			console.KWriteString("unknown")
+		}
+		console.KWriteString(" base=")
 	} else {
 		// ET_DYN (PIE): relocate above priest's current highest VA
 		loadBase = priest.HighestVA

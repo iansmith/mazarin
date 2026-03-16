@@ -36,6 +36,17 @@ type Handle[T any] struct {
 	isStr   bool                   // true if this handle manages string type
 }
 
+// registerCascade registers a constraint handle for cascading evaluation.
+// When another constraint derefs this handle's slot, the resolver will
+// evaluate it first if dirty.
+func registerCascade[T any](h *Handle[T]) {
+	registerConstraintEvaluator(h.slot, func() {
+		if h.IsDirty() {
+			h.evaluate()
+		}
+	})
+}
+
 // Slot returns the shared page slot index.
 func (h *Handle[T]) Slot() uint16 { return h.slot }
 
@@ -122,12 +133,9 @@ func (h *Handle[T]) evaluate() {
 		if bcLen == 0 {
 			return // no program
 		}
-		// The bytecode region contains the full serialized Program.
-		// ProgramOffset is byte offset, ProgramLen is in instruction units (legacy).
-		// With the new marshal format, the entire blob starting at ProgramOffset
-		// is a serialized Program.
-		totalBytes := int(bcLen) * 16 // legacy: instruction count × 16
-		// Try to unmarshal as full Program first (new format with MZBC magic).
+		// The bytecode region contains the full serialized Program (MZBC blob).
+		// ProgramOffset is byte offset, ProgramLen is total byte length.
+		totalBytes := int(bcLen)
 		data := sharedPR.Bytecode[bcOff : uint32(bcOff)+uint32(totalBytes)]
 		prog, err := vm.UnmarshalProgram(data)
 		if err != nil {

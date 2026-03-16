@@ -16,7 +16,7 @@ import (
 // ConstraintI64 creates a constraint attribute that evaluates to int64.
 func ConstraintI64(uri string, prog *vm.Program, deps ...HandleAny) *Handle[int64] {
 	slot := createConstraintSlot(uri, flat.TypeI64, prog, deps)
-	return &Handle[int64]{
+	h := &Handle[int64]{
 		slot:  slot,
 		uri:   uri,
 		kind:  flat.AttrKindConstraint,
@@ -25,12 +25,14 @@ func ConstraintI64(uri string, prog *vm.Program, deps ...HandleAny) *Handle[int6
 		toT:   func(fv flat.FlatValue) int64 { return fv.AsI64() },
 		fromT: func(v int64) flat.FlatValue { return flat.NewI64(v) },
 	}
+	registerCascade(h)
+	return h
 }
 
 // ConstraintF64 creates a constraint attribute that evaluates to float64.
 func ConstraintF64(uri string, prog *vm.Program, deps ...HandleAny) *Handle[float64] {
 	slot := createConstraintSlot(uri, flat.TypeF64, prog, deps)
-	return &Handle[float64]{
+	h := &Handle[float64]{
 		slot:  slot,
 		uri:   uri,
 		kind:  flat.AttrKindConstraint,
@@ -39,12 +41,14 @@ func ConstraintF64(uri string, prog *vm.Program, deps ...HandleAny) *Handle[floa
 		toT:   func(fv flat.FlatValue) float64 { return fv.AsF64() },
 		fromT: func(v float64) flat.FlatValue { return flat.NewF64(v) },
 	}
+	registerCascade(h)
+	return h
 }
 
 // ConstraintBool creates a constraint attribute that evaluates to bool.
 func ConstraintBool(uri string, prog *vm.Program, deps ...HandleAny) *Handle[bool] {
 	slot := createConstraintSlot(uri, flat.TypeBool, prog, deps)
-	return &Handle[bool]{
+	h := &Handle[bool]{
 		slot:  slot,
 		uri:   uri,
 		kind:  flat.AttrKindConstraint,
@@ -53,12 +57,14 @@ func ConstraintBool(uri string, prog *vm.Program, deps ...HandleAny) *Handle[boo
 		toT:   func(fv flat.FlatValue) bool { return fv.AsBool() },
 		fromT: func(v bool) flat.FlatValue { return flat.NewBool(v) },
 	}
+	registerCascade(h)
+	return h
 }
 
 // ConstraintStr creates a constraint attribute that evaluates to string.
 func ConstraintStr(uri string, prog *vm.Program, deps ...HandleAny) *Handle[string] {
 	slot := createConstraintSlot(uri, flat.TypeStr, prog, deps)
-	return &Handle[string]{
+	h := &Handle[string]{
 		slot:  slot,
 		uri:   uri,
 		kind:  flat.AttrKindConstraint,
@@ -70,12 +76,14 @@ func ConstraintStr(uri string, prog *vm.Program, deps ...HandleAny) *Handle[stri
 			return sharedPR.ReadString(ref)
 		},
 	}
+	registerCascade(h)
+	return h
 }
 
 // ConstraintComposite creates a constraint attribute for a composite type.
 func ConstraintComposite(uri string, flatType uint8, prog *vm.Program, deps ...HandleAny) *Handle[vm.Value] {
 	slot := createConstraintSlot(uri, flatType, prog, deps)
-	return &Handle[vm.Value]{
+	h := &Handle[vm.Value]{
 		slot: slot,
 		uri:  uri,
 		kind: flat.AttrKindConstraint,
@@ -96,6 +104,8 @@ func ConstraintComposite(uri string, flatType uint8, prog *vm.Program, deps ...H
 			return fv
 		},
 	}
+	registerCascade(h)
+	return h
 }
 
 // --- Internal helpers ---

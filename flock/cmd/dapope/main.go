@@ -397,14 +397,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, "[dapope] stderr test: this should be dark red")
 	}()
 
-	// Load and launch .maz test program
-	fmt.Println("[dapope] loading helloworld.maz...")
-	mazResult, mazErr := sys.LoadMaz("/helloworld.maz")
+	// Load and launch .maz/.mzr test program
+	hwPath := sys.LoadMazByName("/helloworld")
+	fmt.Printf("[dapope] loading %s...\n", hwPath)
+	mazResult, mazErr := sys.LoadMaz(hwPath)
 	if mazErr != nil {
 		fmt.Printf("[dapope] LoadMaz failed: %v\n", mazErr)
 	} else {
-		fmt.Printf("[dapope] .maz loaded: entry=0x%X base=0x%X size=0x%X\n",
-			mazResult.EntryPoint, mazResult.LoadBase, mazResult.LoadSize)
+		fmt.Printf("[dapope] loaded %s: entry=0x%X base=0x%X size=0x%X\n",
+			hwPath, mazResult.EntryPoint, mazResult.LoadBase, mazResult.LoadSize)
 
 		sys.RegisterMazModule(mazResult)
 

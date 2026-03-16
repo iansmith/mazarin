@@ -14,6 +14,16 @@ import (
 	"mazzy/shared/constants"
 )
 
+// constraintEvaluators maps slot → evaluate-if-dirty function for local
+// constraint handles. Used by Deref to cascade evaluation when a deref'd
+// attribute is a dirty constraint that hasn't been evaluated yet.
+var constraintEvaluators = make(map[uint16]func())
+
+// registerConstraintEvaluator registers a cascade evaluator for a constraint slot.
+func registerConstraintEvaluator(slot uint16, fn func()) {
+	constraintEvaluators[slot] = fn
+}
+
 // sharedResolver implements vm.AttrResolver backed by shared constraint pages.
 type sharedResolver struct {
 	pr      *flat.PageRegion
@@ -26,6 +36,11 @@ func (r *sharedResolver) Deref(uri string, expectedType uint8) (vm.Value, uint16
 	slot, found := trieLookupShared(uri)
 	if !found {
 		return vm.Value{}, 0, false
+	}
+
+	// Cascade: if the target slot is a local dirty constraint, evaluate it first.
+	if fn, ok := constraintEvaluators[slot]; ok {
+		fn()
 	}
 
 	node := r.pr.Node(int16(slot))

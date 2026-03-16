@@ -52,6 +52,7 @@ kmazarin/ds/ds.test
 fonts/
 
 # Userspace binaries (built by task)
+/attrtest
 /dapope
 /stdio
 

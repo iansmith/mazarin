@@ -104,7 +104,7 @@ func SyscallAttrCreate(uriBufPtr, uriLen, valueType, attrKind, bytecodeBufPtr, b
 		}
 		attrMgr.bytecodeBumpOff += needed
 		node.ProgramOffset = bcOff
-		node.ProgramLen = uint16(bytecodeLen / 16) // instructions are 16 bytes
+		node.ProgramLen = uint16(bytecodeLen) // total byte length of serialized MZBC blob
 	}
 
 	// Allocate string slot for the URI name.

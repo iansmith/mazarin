@@ -59,6 +59,7 @@ vars:
   USERSPACE_OVERLAY_JSON: '{{.BUILD_DIR}}/userspace-overlay.json'
   SIEVETEST_ELF: '{{.BUILD_DIR}}/sievetest.elf'
   ATTRTEST_ELF: '{{.BUILD_DIR}}/attrtest.elf'
+  HANDLETEST_ELF: '{{.BUILD_DIR}}/handletest.elf'
 
   # .maz program build artifacts (per-architecture: thin overlay, maz overlay, manifest)
   THIN_OVERLAY_DIR: '{{.BUILD_DIR}}/thin-overlay'
@@ -84,6 +85,7 @@ vars:
   DISKPRIEST_AMD64_ELF: '{{.BUILD_DIR}}/disk-amd64.elf'
   SIEVETEST_AMD64_ELF: '{{.BUILD_DIR}}/sievetest-amd64.elf'
   ATTRTEST_AMD64_ELF: '{{.BUILD_DIR}}/attrtest-amd64.elf'
+  HANDLETEST_AMD64_ELF: '{{.BUILD_DIR}}/handletest-amd64.elf'
   DISK_AMD64_IMAGE: '{{.BUILD_DIR}}/disk-amd64.img'
 
   # RISC-V 64-bit userspace programs
@@ -92,6 +94,7 @@ vars:
   DISKPRIEST_RISCV64_ELF: '{{.BUILD_DIR}}/disk-riscv64.elf'
   SIEVETEST_RISCV64_ELF: '{{.BUILD_DIR}}/sievetest-riscv64.elf'
   ATTRTEST_RISCV64_ELF: '{{.BUILD_DIR}}/attrtest-riscv64.elf'
+  HANDLETEST_RISCV64_ELF: '{{.BUILD_DIR}}/handletest-riscv64.elf'
   FS_MZR_RISCV64: '{{.BUILD_DIR}}/fs-riscv64.mzr'
   HELLOWORLD_MAZ_RISCV64: '{{.BUILD_DIR}}/helloworld-riscv64.maz'
   DISK_RISCV64_IMAGE: '{{.BUILD_DIR}}/disk-riscv64.img'
@@ -672,6 +675,51 @@ tasks:
       - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.ATTRTEST_RISCV64_ELF}} ./flock/cmd/attrtest'
       - '{{.GO}} tool go-echo "Attrtest RISC-V 64-bit built at {{.ATTRTEST_RISCV64_ELF}}"'
 
+  handletest:
+    desc: Build handletest (Handle[T] API integration test priest, ARM64)
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/cmd/handletest/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.HANDLETEST_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building handletest..."'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.HANDLETEST_ELF}} ./flock/cmd/handletest'
+      - '{{.GO}} tool go-echo "Handletest built at {{.HANDLETEST_ELF}}"'
+
+  handletest-x86_64:
+    desc: Build handletest (x86_64)
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/cmd/handletest/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.HANDLETEST_AMD64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building handletest for x86_64..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.HANDLETEST_AMD64_ELF}} ./flock/cmd/handletest'
+      - '{{.GO}} tool go-echo "Handletest x86_64 built at {{.HANDLETEST_AMD64_ELF}}"'
+
+  handletest-riscv64:
+    desc: Build handletest (RISC-V 64-bit)
+    deps: [check-env, userspace-overlay]
+    sources:
+      - 'flock/cmd/handletest/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.HANDLETEST_RISCV64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building handletest for RISC-V 64-bit..."'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.HANDLETEST_RISCV64_ELF}} ./flock/cmd/handletest'
+      - '{{.GO}} tool go-echo "Handletest RISC-V 64-bit built at {{.HANDLETEST_RISCV64_ELF}}"'
+
   # ===========================================================================
   # .maz Programs (PIE + thin stubs, dynamically linked at load time)
   # ===========================================================================
@@ -872,7 +920,7 @@ tasks:
 
   disk-arm64:
     desc: Create FAT32 disk image with ARM64 flock binaries and kmazarin kernel
-    deps: [dapope-arm64, stdio-arm64, diskpriest-arm64, sievetest, attrtest, helloworld-maz, fs-maz, kmazarin-arm64, convert-boot-image]
+    deps: [dapope-arm64, stdio-arm64, diskpriest-arm64, sievetest, attrtest, handletest, helloworld-maz, fs-maz, kmazarin-arm64, convert-boot-image]
     method: checksum
     sources:
       - '{{.DAPOPE_ELF}}'
@@ -880,6 +928,7 @@ tasks:
       - '{{.DISKPRIEST_ELF}}'
       - '{{.SIEVETEST_ELF}}'
       - '{{.ATTRTEST_ELF}}'
+      - '{{.HANDLETEST_ELF}}'
       - '{{.HELLOWORLD_MAZ}}'
       - '{{.FS_MAZ}}'
       - '{{.KMAZARIN_ELF}}'
@@ -891,12 +940,12 @@ tasks:
       - '{{.GO}} tool go-echo "Creating FAT32 disk image (ARM64)..."'
       - '{{.GO}} tool go-mkdir {{.BUILD_DIR}}/disk-staging-arm64'
       - '{{.GO}} tool go-cp config/kmazarin-arm64.toml {{.BUILD_DIR}}/disk-staging-arm64/kmazarin.toml'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.DAPOPE_ELF}} {{.STDIO_ELF}} {{.DISKPRIEST_ELF}} {{.SIEVETEST_ELF}} {{.ATTRTEST_ELF}} {{.HELLOWORLD_MAZ}} {{.FS_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/kmazarin.toml'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.DAPOPE_ELF}} {{.STDIO_ELF}} {{.DISKPRIEST_ELF}} {{.SIEVETEST_ELF}} {{.ATTRTEST_ELF}} {{.HANDLETEST_ELF}} {{.HELLOWORLD_MAZ}} {{.FS_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/kmazarin.toml'
       - '{{.GO}} tool go-echo "Disk image created at {{.DISK_IMAGE}}"'
 
   disk-x86_64:
     desc: Create FAT32 disk image with x86_64 flock binaries and kmazarin kernel
-    deps: [dapope-x86_64, stdio-x86_64, diskpriest-x86_64, sievetest-x86_64, attrtest-x86_64, fs-maz-amd64, helloworld-maz-amd64, kmazarin-x86_64, convert-boot-image]
+    deps: [dapope-x86_64, stdio-x86_64, diskpriest-x86_64, sievetest-x86_64, attrtest-x86_64, handletest-x86_64, fs-maz-amd64, helloworld-maz-amd64, kmazarin-x86_64, convert-boot-image]
     method: checksum
     sources:
       - '{{.DAPOPE_AMD64_ELF}}'
@@ -904,6 +953,7 @@ tasks:
       - '{{.DISKPRIEST_AMD64_ELF}}'
       - '{{.SIEVETEST_AMD64_ELF}}'
       - '{{.ATTRTEST_AMD64_ELF}}'
+      - '{{.HANDLETEST_AMD64_ELF}}'
       - '{{.FS_MAZ_AMD64}}'
       - '{{.HELLOWORLD_MAZ_AMD64}}'
       - '{{.KMAZARIN_AMD64_ELF}}'
@@ -920,15 +970,16 @@ tasks:
       - '{{.GO}} tool go-cp {{.DISKPRIEST_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/disk.elf'
       - '{{.GO}} tool go-cp {{.SIEVETEST_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/sievetest.elf'
       - '{{.GO}} tool go-cp {{.ATTRTEST_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/attrtest.elf'
+      - '{{.GO}} tool go-cp {{.HANDLETEST_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/handletest.elf'
       - '{{.GO}} tool go-cp {{.FS_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/fs.maz'
       - '{{.GO}} tool go-cp {{.HELLOWORLD_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz'
       - '{{.GO}} tool go-cp config/kmazarin-x86_64.toml {{.BUILD_DIR}}/disk-staging-amd64/kmazarin.toml'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_AMD64_IMAGE}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf {{.BUILD_DIR}}/disk-staging-amd64/disk.elf {{.BUILD_DIR}}/disk-staging-amd64/sievetest.elf {{.BUILD_DIR}}/disk-staging-amd64/attrtest.elf {{.BUILD_DIR}}/disk-staging-amd64/fs.maz {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz {{.BUILD_DIR}}/disk-staging-amd64/kmazarin.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_AMD64_IMAGE}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf {{.BUILD_DIR}}/disk-staging-amd64/disk.elf {{.BUILD_DIR}}/disk-staging-amd64/sievetest.elf {{.BUILD_DIR}}/disk-staging-amd64/attrtest.elf {{.BUILD_DIR}}/disk-staging-amd64/handletest.elf {{.BUILD_DIR}}/disk-staging-amd64/fs.maz {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz {{.BUILD_DIR}}/disk-staging-amd64/kmazarin.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "x86_64 disk image created at {{.DISK_AMD64_IMAGE}}"'
 
   disk-riscv64:
     desc: Create FAT32 disk image with RISC-V 64-bit flock binaries and kmazarin kernel
-    deps: [dapope-riscv64, stdio-riscv64, diskpriest-riscv64, sievetest-riscv64, attrtest-riscv64, helloworld-maz-riscv64, fs-mzr-riscv64, kmazarin-riscv64, convert-boot-image]
+    deps: [dapope-riscv64, stdio-riscv64, diskpriest-riscv64, sievetest-riscv64, attrtest-riscv64, handletest-riscv64, helloworld-maz-riscv64, fs-mzr-riscv64, kmazarin-riscv64, convert-boot-image]
     method: checksum
     sources:
       - '{{.DAPOPE_RISCV64_ELF}}'
@@ -936,6 +987,7 @@ tasks:
       - '{{.DISKPRIEST_RISCV64_ELF}}'
       - '{{.SIEVETEST_RISCV64_ELF}}'
       - '{{.ATTRTEST_RISCV64_ELF}}'
+      - '{{.HANDLETEST_RISCV64_ELF}}'
       - '{{.HELLOWORLD_MAZ_RISCV64}}'
       - '{{.FS_MZR_RISCV64}}'
       - '{{.KMAZARIN_RISCV64_ELF}}'
@@ -951,10 +1003,11 @@ tasks:
       - '{{.GO}} tool go-cp {{.DISKPRIEST_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/disk.elf'
       - '{{.GO}} tool go-cp {{.SIEVETEST_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/sievetest.elf'
       - '{{.GO}} tool go-cp {{.ATTRTEST_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/attrtest.elf'
-      - '{{.GO}} tool go-cp {{.HELLOWORLD_MAZ_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/helloworld.maz'
-      - '{{.GO}} tool go-cp {{.FS_MZR_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/fs.maz'
+      - '{{.GO}} tool go-cp {{.HANDLETEST_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/handletest.elf'
+      - '{{.GO}} tool go-cp {{.HELLOWORLD_MAZ_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/helloworld.mzr'
+      - '{{.GO}} tool go-cp {{.FS_MZR_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/fs.mzr'
       - '{{.GO}} tool go-cp config/kmazarin-riscv64.toml {{.BUILD_DIR}}/disk-staging-riscv64/kmazarin.toml'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_RISCV64_IMAGE}} {{.BUILD_DIR}}/disk-staging-riscv64/dapope.elf {{.BUILD_DIR}}/disk-staging-riscv64/stdio.elf {{.BUILD_DIR}}/disk-staging-riscv64/disk.elf {{.BUILD_DIR}}/disk-staging-riscv64/sievetest.elf {{.BUILD_DIR}}/disk-staging-riscv64/attrtest.elf {{.BUILD_DIR}}/disk-staging-riscv64/helloworld.maz {{.BUILD_DIR}}/disk-staging-riscv64/fs.maz {{.BUILD_DIR}}/disk-staging-riscv64/kmazarin.toml {{.KMAZARIN_RISCV64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_RISCV64_IMAGE}} {{.BUILD_DIR}}/disk-staging-riscv64/dapope.elf {{.BUILD_DIR}}/disk-staging-riscv64/stdio.elf {{.BUILD_DIR}}/disk-staging-riscv64/disk.elf {{.BUILD_DIR}}/disk-staging-riscv64/sievetest.elf {{.BUILD_DIR}}/disk-staging-riscv64/attrtest.elf {{.BUILD_DIR}}/disk-staging-riscv64/handletest.elf {{.BUILD_DIR}}/disk-staging-riscv64/helloworld.mzr {{.BUILD_DIR}}/disk-staging-riscv64/fs.mzr {{.BUILD_DIR}}/disk-staging-riscv64/kmazarin.toml {{.KMAZARIN_RISCV64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "RISC-V 64-bit disk image created at {{.DISK_RISCV64_IMAGE}}"'
 
   # ===========================================================================

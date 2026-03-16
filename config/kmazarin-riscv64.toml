@@ -23,7 +23,7 @@ gc_percent_kernel = 10000
 [[bootstrap_priest]]
 name = "disk"
 path = "/disk.elf"
-maz = ["fs=/fs.maz"]
+maz = ["fs=/fs.mzr"]
 
 # Application priests: launched after bootstrap priests are running
 [[priest]]
@@ -41,3 +41,7 @@ path = "/sievetest.elf"
 [[priest]]
 name = "attrtest"
 path = "/attrtest.elf"
+
+[[priest]]
+name = "handletest"
+path = "/handletest.elf"
