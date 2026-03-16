@@ -9,6 +9,7 @@ timezone = "America/New_York"
 kernel_budget_mb = 32
 suppress_serial_stdio_copy = false
 suppress_kernel_serial = false
+gc_percentage = 90
 
 # Bootstrap priests: loaded by the kernel during early boot
 [[bootstrap_priest]]

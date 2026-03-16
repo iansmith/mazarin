@@ -114,7 +114,7 @@ func BuildIDT() {
 	setIDTEntry(0, getISR0Addr(), cs)     // Divide error (#DE)
 	setIDTEntry(1, getISR1Addr(), cs)     // Debug exception (#DB) — DR0 watchpoint
 	setIDTEntry(6, getISR6Addr(), cs)     // Invalid opcode (#UD)
-	setIDTEntryIST(8, getISR8Addr(), cs, 1) // Double fault (#DF) — IST=1 (must use dedicated stack to catch nested faults)
+	setIDTEntryIST(8, getISR8Addr(), cs, 2) // Double fault (#DF) — IST=2 (MUST be separate from IST=1 used by #PF/timer)
 	setIDTEntry(13, getISR13Addr(), cs)   // General protection (#GP)
 	setIDTEntryIST(14, getISR14Addr(), cs, 1) // Page fault (#PF) — IST=1 (must use dedicated stack; faulting stack may be unmapped)
 

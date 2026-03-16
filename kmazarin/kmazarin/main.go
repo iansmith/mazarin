@@ -883,6 +883,9 @@ func simpleMain() {
 			ksyscall.SetBootTimezone(tz)
 		}
 		ksyscall.SetSuppressSerialStdioCopy(bootCfg.SuppressSerialStdioCopy)
+		if bootCfg.GCPercentage > 0 {
+			ksyscall.SetPriestGCPercentage(bootCfg.GCPercentage)
+		}
 		launchPriestsFromConfig(bootCfg)
 	} else {
 		// Fallback: hardcoded launch sequence

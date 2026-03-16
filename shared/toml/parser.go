@@ -150,6 +150,8 @@ func (p *parser) parseTopLevel(key string) {
 			p.cfg.MaxRamMB = val
 		case "kernel_budget_mb":
 			p.cfg.KernelBudgetMB = val
+		case "gc_percentage":
+			p.cfg.GCPercentage = val
 		}
 		p.skipLine()
 	}

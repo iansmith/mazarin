@@ -566,6 +566,17 @@ func platformUserL0MaxEntry() int {
 	return 256
 }
 
+// platformIsSharedKernelL1 returns true if the given L1 entry (within L0[0])
+// is shared with the kernel and must NOT have its subtree freed during priest
+// cleanup. On x86_64, initProcessL0 copies PDPT[1] from the kernel to share
+// the kmazarin code PD at VA 0x40000000-0x7FFFFFFF. Walking into that shared
+// PD during cleanup would free kernel PT pages still in use by other priests.
+//
+//go:nosplit
+func platformIsSharedKernelL1(l1Idx int) bool {
+	return l1Idx == 1
+}
+
 // isBlockEntry returns true if the PTE at the given level is a huge page
 // (not a table pointer). level: 1 = 1GB page, 2 = 2MB page.
 // x86_64: PS bit (bit 7) indicates huge page.

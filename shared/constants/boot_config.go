@@ -45,6 +45,12 @@ type BootConfig struct {
 	// performance testing.
 	SuppressKernelSerial bool
 
+	// GCPercentage is the GOGC value for priest processes. 0 means use
+	// the default (currently 5). Higher values delay GC, reducing CPU
+	// overhead at the cost of more memory usage. For example, 90 means
+	// the GC triggers when heap is 90% larger than the previous live set.
+	GCPercentage int
+
 	Timezone [MaxTimezoneLen]byte
 
 	BootstrapPriests     [MaxBootstrapPriests]BootPriest

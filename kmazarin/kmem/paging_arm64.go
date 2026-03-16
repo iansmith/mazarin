@@ -73,6 +73,16 @@ func verifyUserspacePriestL0(l0PA uintptr, asid uint16) {
 //go:nosplit
 func VerifyCurrentSATPL3E0() {}
 
+// platformIsSharedKernelL1 returns true if the given L1 entry (within L0[0])
+// is shared with the kernel and must NOT have its subtree freed during priest
+// cleanup. ARM64 uses TTBR0/TTBR1 split — no shared kernel entries exist in
+// the userspace page table.
+//
+//go:nosplit
+func platformIsSharedKernelL1(_ int) bool {
+	return false
+}
+
 // constructTTBR0Value constructs the TTBR0 register value for ARM64.
 // TTBR0 format: [63:48]=ASID(16-bit), [47:1]=PA, [0]=CnP(0)
 //

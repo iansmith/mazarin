@@ -37,6 +37,18 @@ func CleanupPriestPages(priestID proc.PriestId, spans *proc.LockedSpanGroup, l0P
 		return // No page table allocated (e.g., priest that never ran)
 	}
 
+	// CRITICAL: On x86_64/RISC-V, the current CR3/SATP may still point to the
+	// dying priest's page table (syscall entry doesn't change CR3). Phase 2
+	// frees the priest's L0/PDPT pages — if CR3 still points to them, any TLB
+	// miss after the free would walk through freed/reused pages → triple fault.
+	// Switch to the kernel's own page table before freeing anything.
+	// (ARM64 is immune: TTBR0 is user-only, kernel runs on TTBR1.)
+	savedL0PA := readCurrentL0PA()
+	kernelL0PA := GetKernelL0PA()
+	if savedL0PA != kernelL0PA {
+		SwitchTTBR0WithASID(kernelL0PA, 0)
+	}
+
 	freed := 0
 
 	// Phase 1: Walk Spans (our VMA list) to find all mapped VA regions and
@@ -142,6 +154,13 @@ func walkAndFreePageTablePages(l0PA uintptr) int {
 			}
 			if isBlockEntry(l1e, 1) {
 				continue // 1GB block mapping (should not appear in userspace)
+			}
+			// On x86_64/RISC-V, L0[0]'s L1 table has entries shared with
+			// the kernel (PDPT[1] on x86_64, L2[1+] on RISC-V). These
+			// point to kernel PD/PT pages used by ALL priests. Freeing
+			// them destroys kernel mappings and causes triple faults.
+			if i == 0 && platformIsSharedKernelL1(j) {
+				continue
 			}
 
 			l2PA := pteExtractPA(l1e)

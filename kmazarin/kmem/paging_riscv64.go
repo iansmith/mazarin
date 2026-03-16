@@ -148,6 +148,16 @@ func initProcessL0(l0VA uintptr) {
 
 }
 
+// platformIsSharedKernelL1 returns true if the given L1 entry (within L0[0])
+// is shared with the kernel and must NOT have its subtree freed during priest
+// cleanup. On RISC-V, initProcessL0 copies L2[1..511] from the kernel to share
+// kmazarin code at VA 0x40000000+. Only L2[0] (user code) is per-process.
+//
+//go:nosplit
+func platformIsSharedKernelL1(l1Idx int) bool {
+	return l1Idx >= 1
+}
+
 // VerifyCurrentSATPL3E0 checks that L3[0] of the current SATP's root page table
 // is valid. Called from the timer IRQ handler to detect page table corruption.
 // Only checks when ASID != 0 (i.e., in process context, not kernel-only).

@@ -31,6 +31,15 @@ func SetSuppressSerialStdioCopy(v bool) {
 	suppressSerialStdioCopy = v
 }
 
+// priestGCPercentage is the GOGC value for priest processes.
+// 0 means use the default (5).
+var priestGCPercentage int
+
+// SetPriestGCPercentage stores the GC percentage from the boot config.
+func SetPriestGCPercentage(v int) {
+	priestGCPercentage = v
+}
+
 // ELF constants
 const (
 	ELF_MAGIC      = 0x464C457F // "\x7FELF"
@@ -758,7 +767,29 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 
 	penv := NewProcessEnv()
 	penv.SetEnv("GODEBUG", "gctrace=1")
-	penv.SetEnv("GOGC", "5")
+	gcVal := priestGCPercentage
+	if gcVal <= 0 {
+		gcVal = 5 // default
+	}
+	// Convert gcVal to string (max 4 digits)
+	var gcBuf [4]byte
+	gcLen := 0
+	tmp := gcVal
+	for tmp > 0 {
+		gcLen++
+		tmp /= 10
+	}
+	if gcLen == 0 {
+		gcLen = 1
+		gcBuf[0] = '0'
+	} else {
+		tmp = gcVal
+		for i := gcLen - 1; i >= 0; i-- {
+			gcBuf[i] = byte('0' + tmp%10)
+			tmp /= 10
+		}
+	}
+	penv.SetEnv("GOGC", string(gcBuf[:gcLen]))
 	penv.SetEnv("GOMEMLIMIT", "64MiB")
 	penv.SetEnv("GOMAXPROCS", "1")
 	if bootTimezone != "" {

@@ -40,6 +40,12 @@ var gdtrDesc [10]byte
 // Used for RSP0 (kernel stack on Ring 3 → Ring 0 transitions).
 var tssBuffer [128]byte
 
+// doubleFaultStack is the dedicated IST2 stack for the #DF handler.
+// Separate from IST1 (used by #PF, timer, device IRQs) so that a double
+// fault during a page fault handler gets a clean stack for diagnostics
+// instead of clobbering IST1 and causing an unrecoverable triple fault.
+var doubleFaultStack [4096]byte
+
 // copyGDTToOwnedBuffer copies the current GDT (set up by diplomat) to kmazarin's
 // own newGDT buffer and reloads LGDT. This ensures the GDT survives after
 // diplomat's memory is reclaimed.
@@ -96,6 +102,20 @@ func copyGDTToOwnedBuffer() {
 	tssBuffer[41] = byte(ist1 >> 40)
 	tssBuffer[42] = byte(ist1 >> 48)
 	tssBuffer[43] = byte(ist1 >> 56)
+
+	// IST2 at offset 44-51: dedicated stack for double fault (#DF) handler.
+	// MUST be separate from IST1 — if #PF and #DF share the same IST, a
+	// nested fault during #PF causes the CPU to reload the same stack pointer,
+	// clobbering the #PF frame and producing an unrecoverable triple fault.
+	ist2 := uint64(uintptr(unsafe.Pointer(&doubleFaultStack[0])) + uintptr(len(doubleFaultStack)))
+	tssBuffer[44] = byte(ist2)
+	tssBuffer[45] = byte(ist2 >> 8)
+	tssBuffer[46] = byte(ist2 >> 16)
+	tssBuffer[47] = byte(ist2 >> 24)
+	tssBuffer[48] = byte(ist2 >> 32)
+	tssBuffer[49] = byte(ist2 >> 40)
+	tssBuffer[50] = byte(ist2 >> 48)
+	tssBuffer[51] = byte(ist2 >> 56)
 
 	// IOPB offset at 102-103: set to TSS size (104) to disable I/O bitmap
 	tssBuffer[102] = 104
