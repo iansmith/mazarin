@@ -150,6 +150,9 @@ func DoRunPriestWork(req *RunPriestWorkRequest) int64 {
 	}
 	addSpan(UserConstraintPagesVA, UserConstraintPagesSize)
 
+	// Initialize kernel attribute manager (once, on first priest launch).
+	InitKernelAttrManager()
+
 	// Build symbol table and find highest VA from the raw ELF
 	priestSymTable := buildSymbolTable(elfData, &hdr)
 	priestHighestVA := findHighestVA(elfData, &hdr)

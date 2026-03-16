@@ -43,11 +43,16 @@ type FlatAttrNode struct {
 	_pad1            uint16
 	DependentsOffset uint32 // byte offset into edge array region
 
+	// Dirty walk generation (8 bytes, offset 64) — used by kernel for diamond
+	// dedup. Priests see this as read-only noise; co-located for cache locality.
+	// Placed before NameOffset to keep 8-byte alignment without implicit padding.
+	LastWalk uint64
+
 	// Name (4 bytes)
 	NameOffset uint32 // byte offset into string data region (0 = unnamed)
 
 	// Padding to 128 bytes
-	_pad2 [60]byte
+	_pad2 [52]byte
 }
 
 const FlatAttrNodeSize = 128

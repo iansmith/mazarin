@@ -15,13 +15,78 @@ import (
 
 // Constraint page layout constants.
 const (
-	ConstraintPageCount = 128                       // 128 × 4KB = 512KB
+	ConstraintPageCount = 128                        // 128 × 4KB = 512KB
 	ConstraintTotalSize = ConstraintPageCount * 4096 // 512KB
 )
 
 // Page header magic for constraint shared pages.
 const ConstraintPageMagic = 0x4D415A46 // "MAZF"
-const ConstraintPageVersion = 1
+const ConstraintPageVersion = 2        // bumped from 1: now includes region table
+
+// Region layout offsets within the 512KB shared pages.
+// Must match SharedPageHeader field values written during init.
+const (
+	RegionHeaderSize = 256 // SharedPageHeader is 256 bytes
+
+	RegionNodeOff     = 0x0100  // 256 — attribute nodes
+	RegionNodeSize    = 0x10000 // 64KB = 512 × 128B
+	RegionNodeCap     = 512     // max attribute slots
+
+	RegionEdgeOff     = 0x10100 // node end
+	RegionEdgeSize    = 0x2000  // 8KB = 4096 × uint16
+	RegionEdgeCap     = 4096    // max edges
+
+	RegionBytecodeOff = 0x12100 // edge end
+	RegionBytecodeSize = 0x8000 // 32KB
+	RegionBytecodeCap = 2048    // max 16B instructions
+
+	RegionStringOff   = 0x1A100 // bytecode end
+	RegionStringSize  = 0x10000 // 64KB = 256 × 256B
+	RegionStringCap   = 256     // max string slots
+
+	RegionCollOff     = 0x2A100 // string end
+	RegionCollSize    = 0x8000  // 32KB = 1024 × 32B
+	RegionCollCap     = 1024    // max collection elements
+
+	RegionTrieOff     = 0x32100 // collection end
+	RegionTrieSize    = 0x40000 // 256KB = 2048 × 128B
+	RegionTrieCap     = 2048    // max trie nodes
+)
+
+// SharedPageHeader — first 256 bytes of the shared constraint pages.
+// Readable by priests (read-only mapping). Written once during init.
+type SharedPageHeader struct {
+	Magic      uint32 // 0x4D415A46 "MAZF"
+	Version    uint32 // 2
+	Generation uint64 // bumped on attr destroy / trie mutation
+
+	// Region table: offset + capacity pairs
+	NodeRegionOff    uint32
+	NodeCapacity     uint16
+	_pad0            uint16
+	EdgeRegionOff    uint32
+	EdgeCapacity     uint16
+	_pad1            uint16
+	BytecodeRegionOff uint32
+	BytecodeCapacity uint16
+	_pad2            uint16
+	StringRegionOff  uint32
+	StringCapacity   uint16
+	_pad3            uint16
+	CollRegionOff    uint32
+	CollCapacity     uint16
+	_pad4            uint16
+	TrieRegionOff    uint32
+	TrieCapacity     uint16
+	_pad5            uint16
+
+	_reserved [256 - 64]byte
+}
+
+// Compile-time size assertion.
+const _sharedPageHeaderSize = unsafe.Sizeof(SharedPageHeader{})
+var _ [256 - _sharedPageHeaderSize]byte
+var _ [_sharedPageHeaderSize - 256]byte
 
 // constraintState holds the global constraint page allocation.
 var constraintState struct {
@@ -52,16 +117,29 @@ func InitConstraintPages() bool {
 		ptr[i] = 0
 	}
 
-	// Write magic + version at the start of the page header.
-	// Layout: [magic:uint32][version:uint32]
-	hdr := (*[2]uint32)(unsafe.Pointer(va))
-	hdr[0] = ConstraintPageMagic
-	hdr[1] = ConstraintPageVersion
+	// Write the full SharedPageHeader with region table.
+	hdr := (*SharedPageHeader)(unsafe.Pointer(va))
+	hdr.Magic = ConstraintPageMagic
+	hdr.Version = ConstraintPageVersion
+	hdr.Generation = 0
+
+	hdr.NodeRegionOff = RegionNodeOff
+	hdr.NodeCapacity = RegionNodeCap
+	hdr.EdgeRegionOff = RegionEdgeOff
+	hdr.EdgeCapacity = RegionEdgeCap
+	hdr.BytecodeRegionOff = RegionBytecodeOff
+	hdr.BytecodeCapacity = RegionBytecodeCap
+	hdr.StringRegionOff = RegionStringOff
+	hdr.StringCapacity = RegionStringCap
+	hdr.CollRegionOff = RegionCollOff
+	hdr.CollCapacity = RegionCollCap
+	hdr.TrieRegionOff = RegionTrieOff
+	hdr.TrieCapacity = RegionTrieCap
 
 	constraintState.pa = pa
 	atomic.StoreUint32(&constraintState.initialized, 1)
 
-	serial.RawUARTPuts("[kmem] Constraint pages allocated at PA=0x")
+	serial.RawUARTPuts("[kmem] Constraint pages v2 at PA=0x")
 	serial.RawUARTHex64(uint64(pa))
 	serial.RawUARTPuts(" (")
 	serial.RawUARTHex64(ConstraintTotalSize)

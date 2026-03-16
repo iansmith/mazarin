@@ -41,6 +41,12 @@ const (
 	SysLoadFile             = MazzySyscallBase + 30 // 0x101E - Load file via fs.maz delegate
 	SysRunMaz               = MazzySyscallBase + 31 // 0x101F - Load .maz ELF from caller's pages
 	SysRunPriest            = MazzySyscallBase + 32 // 0x1020 - Create new priest from caller's pages
+	SysAttrCreate           = MazzySyscallBase + 33 // 0x1021 - Create attribute with URI
+	SysAttrWrite            = MazzySyscallBase + 34 // 0x1022 - Write value by slot index
+	SysAttrWriteURI         = MazzySyscallBase + 35 // 0x1023 - Write value by URI string
+	SysAttrAddDep           = MazzySyscallBase + 36 // 0x1024 - Add single dependency edge
+	SysAttrUpdateDeps       = MazzySyscallBase + 37 // 0x1025 - Replace full dependency set
+	SysAttrRegisterQuery    = MazzySyscallBase + 38 // 0x1026 - Register find pattern, get query result slot
 )
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
@@ -76,6 +82,12 @@ var mazzySyscallTable = [64]SyscallHandler{
 	30: SyscallLoadFile,                  // LoadFile = 0x101E
 	31: SyscallRunMaz,                    // RunMaz = 0x101F
 	32: SyscallRunPriest,                 // RunPriest = 0x1020
+	33: SyscallAttrCreate,                // AttrCreate = 0x1021
+	34: SyscallAttrWrite,                 // AttrWrite = 0x1022
+	35: SyscallAttrWriteURI,              // AttrWriteURI = 0x1023
+	36: SyscallAttrAddDep,                // AttrAddDep = 0x1024
+	37: SyscallAttrUpdateDeps,            // AttrUpdateDeps = 0x1025
+	38: SyscallAttrRegisterQuery,         // AttrRegisterQuery = 0x1026
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.
