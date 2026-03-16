@@ -21,6 +21,7 @@ type KmazarinConfig struct {
 	PageTableMB    uint64 // Page table pool size in MB (default 8)
 	KernelBudgetMB   uint64 // Kernel memory budget warning threshold in MB (default 128)
 	KernelMemLimitMB uint64 // GOMEMLIMIT for the kernel in MB (default 24)
+	GCPercentKernel  uint64 // GOGC for the kernel (0 = Go default 100)
 }
 
 // defaultConfig returns the default configuration.
@@ -188,6 +189,8 @@ func parseToml(data []byte, cfg *KmazarinConfig) {
 			cfg.KernelBudgetMB = val
 		} else if matchBytes(key, "kernel_mem_limit") {
 			cfg.KernelMemLimitMB = val
+		} else if matchBytes(key, "gc_percent_kernel") {
+			cfg.GCPercentKernel = val
 		}
 	}
 }

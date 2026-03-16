@@ -156,6 +156,8 @@ func (p *parser) parseTopLevel(key string) {
 			p.cfg.GoMemLimitMB = val
 		case "kernel_mem_limit":
 			p.cfg.KernelMemLimitMB = val
+		case "gc_percent_kernel":
+			p.cfg.GCPercentKernel = val
 		}
 		p.skipLine()
 	}

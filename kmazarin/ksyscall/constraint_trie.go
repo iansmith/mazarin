@@ -9,29 +9,17 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/serial"
+	"mazzy/shared/constants"
 	"unsafe"
 )
 
-const trieNodeSize = 128
-const trieSegmentLen = 64 // including NUL
-const trieNone uint16 = 0xFFFF
+// TrieNode is re-exported from shared/constants for kernel use.
+type TrieNode = constants.TrieNode
 
-// TrieNode is a flat 128-byte trie node in the shared pages.
-type TrieNode struct {
-	Segment     [trieSegmentLen]byte // URI segment, NUL-terminated
-	FirstChild  uint16               // index of first child (0xFFFF = none)
-	NextSibling uint16               // index of next sibling (0xFFFF = none)
-	AttrSlot    uint16               // attribute slot (0xFFFF = not a leaf)
-	ChildCount  uint16               // total descendants for exists() queries
-	SeqCounter  uint32               // seqlock: odd = mutation in progress
-	_pad        [52]byte
-}
-
-// Compile-time size assertion.
-const _trieNodeSize = unsafe.Sizeof(TrieNode{})
-
-var _ [trieNodeSize - _trieNodeSize]byte
-var _ [_trieNodeSize - trieNodeSize]byte
+// Local aliases for trie constants.
+const trieNodeSize = constants.TrieNodeSize
+const trieSegmentLen = constants.TrieSegmentLen
+const trieNone = constants.TrieNone
 
 // trieNode returns a writable pointer to the TrieNode at the given index.
 //

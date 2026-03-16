@@ -15,6 +15,8 @@ const (
 	sysAttrAddDep        = 0x1024
 	sysAttrUpdateDeps    = 0x1025
 	sysAttrRegisterQuery = 0x1026
+	sysAttrWriteResult   = 0x1027
+	sysAttrWriteString   = 0x1028
 )
 
 // Attribute kinds (must match flat.AttrKindValue / AttrKindConstraint).
@@ -130,4 +132,47 @@ func AttrRegisterQuery(pattern string) (uint16, error) {
 		return 0, errno
 	}
 	return uint16(result), nil
+}
+
+// AttrWriteResult writes a constraint evaluation result (scalar/composite) to a
+// constraint slot. Does not dirty-propagate.
+func AttrWriteResult(slot uint16, value *[32]byte) error {
+	r1, _, errno := RawSyscall(sysAttrWriteResult,
+		uintptr(slot),
+		uintptr(unsafe.Pointer(&value[0])), 32,
+		0, 0, 0)
+	result := int64(r1)
+	if result < 0 {
+		return syscall.Errno(-result)
+	}
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
+// AttrWriteString writes a string value to an attribute.
+// If isConstraintResult is true, writes as a constraint result (no propagation).
+// Otherwise writes as a value (with dirty propagation).
+func AttrWriteString(slot uint16, s string, isConstraintResult bool) error {
+	var sPtr unsafe.Pointer
+	if len(s) > 0 {
+		sPtr = unsafe.Pointer(unsafe.StringData(s))
+	}
+	var constraintFlag uintptr
+	if isConstraintResult {
+		constraintFlag = 1
+	}
+	r1, _, errno := RawSyscall(sysAttrWriteString,
+		uintptr(slot),
+		uintptr(sPtr), uintptr(len(s)),
+		constraintFlag, 0, 0)
+	result := int64(r1)
+	if result < 0 {
+		return syscall.Errno(-result)
+	}
+	if errno != 0 {
+		return errno
+	}
+	return nil
 }

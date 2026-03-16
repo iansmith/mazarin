@@ -47,6 +47,8 @@ const (
 	SysAttrAddDep           = MazzySyscallBase + 36 // 0x1024 - Add single dependency edge
 	SysAttrUpdateDeps       = MazzySyscallBase + 37 // 0x1025 - Replace full dependency set
 	SysAttrRegisterQuery    = MazzySyscallBase + 38 // 0x1026 - Register find pattern, get query result slot
+	SysAttrWriteResult      = MazzySyscallBase + 39 // 0x1027 - Write constraint evaluation result (scalar/composite)
+	SysAttrWriteString      = MazzySyscallBase + 40 // 0x1028 - Write string value (value or constraint result)
 )
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
@@ -88,6 +90,8 @@ var mazzySyscallTable = [64]SyscallHandler{
 	36: SyscallAttrAddDep,                // AttrAddDep = 0x1024
 	37: SyscallAttrUpdateDeps,            // AttrUpdateDeps = 0x1025
 	38: SyscallAttrRegisterQuery,         // AttrRegisterQuery = 0x1026
+	39: SyscallAttrWriteResult,           // AttrWriteResult = 0x1027
+	40: SyscallAttrWriteString,           // AttrWriteString = 0x1028
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.

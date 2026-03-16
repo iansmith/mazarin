@@ -60,6 +60,11 @@ type BootConfig struct {
 	// config and passes it as the kernel's GOMEMLIMIT environment variable.
 	KernelMemLimitMB int
 
+	// GCPercentKernel is the GOGC value for the kernel process.
+	// 0 means use Go default (100). Set very high (e.g. 10000) to let
+	// GOMEMLIMIT be the GC governor instead of GOGC.
+	GCPercentKernel int
+
 	Timezone [MaxTimezoneLen]byte
 
 	BootstrapPriests     [MaxBootstrapPriests]BootPriest

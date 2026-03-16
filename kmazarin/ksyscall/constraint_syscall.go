@@ -405,6 +405,152 @@ func SyscallAttrRegisterQuery(patternBufPtr, patternLen, _, _, _, _ uint64) int6
 	return int64(slot)
 }
 
+// SyscallAttrWriteResult writes a constraint evaluation result to a constraint slot.
+// Only constraint attributes are accepted (values are rejected).
+// Does NOT dirty-propagate — dependents were already dirtied by the original Set() walk.
+//
+// Args: slotIndex, valueBufPtr, valueLen, _, _, _
+// Returns: 0 on success, negative errno on failure.
+//
+func SyscallAttrWriteResult(slotIndex, valueBufPtr, valueLen, _, _, _ uint64) int64 {
+	if !attrMgr.initialized {
+		return -12
+	}
+
+	slot := uint16(slotIndex)
+	if !attrMgr.isNodeAllocated(slot) {
+		return -22 // EINVAL
+	}
+
+	node := attrMgr.node(slot)
+	if node.IsTombstoned() {
+		return -22 // EINVAL
+	}
+
+	// Check ownership.
+	pid, _ := getCurrentThreadPIDAndTID()
+	if node.Owner != uint16(pid) {
+		return -1 // EPERM
+	}
+
+	// Only constraint attributes can receive results.
+	if node.Kind != flat.AttrKindConstraint {
+		return -1 // EPERM
+	}
+
+	// Copy FlatValue from user buffer (32 bytes).
+	if valueLen != flat.FlatValueSize {
+		return -22 // EINVAL
+	}
+	var valBuf [flat.FlatValueSize]byte
+	if !kmem.CopyFromUser(valBuf[:], uintptr(valueBufPtr), flat.FlatValueSize) {
+		return -14 // EFAULT
+	}
+	newVal := *(*flat.FlatValue)(unsafe.Pointer(&valBuf[0]))
+
+	// Validate type matches.
+	if newVal.Typ != node.ValueType {
+		return -22 // EINVAL
+	}
+
+	// Seqlock write: odd = in progress, even = stable.
+	node.SeqCounter++
+	node.CachedValue = newVal
+	node.SeqCounter++
+
+	// Clear dirty flag — this constraint has been evaluated.
+	node.SetDirty(false)
+
+	// No dirty-propagation: dependents were already dirtied by the Set() that
+	// caused this constraint to be dirty in the first place.
+
+	return 0
+}
+
+// SyscallAttrWriteString writes a string value to an attribute. The kernel copies
+// the string bytes from priest memory, allocates a string slot, and writes the
+// resulting FlatStrRef into the attribute's CachedValue.
+//
+// Args: slotIndex, strBufPtr, strLen, isConstraintResult, _, _
+//   - isConstraintResult=1: clears dirty, no propagation (constraint result path)
+//   - isConstraintResult=0: dirty-propagates (value write path)
+//
+// Returns: 0 on success, negative errno on failure.
+//
+func SyscallAttrWriteString(slotIndex, strBufPtr, strLen, isConstraintResult, _, _ uint64) int64 {
+	if !attrMgr.initialized {
+		return -12
+	}
+
+	slot := uint16(slotIndex)
+	if !attrMgr.isNodeAllocated(slot) {
+		return -22 // EINVAL
+	}
+
+	node := attrMgr.node(slot)
+	if node.IsTombstoned() {
+		return -22 // EINVAL
+	}
+
+	// Check ownership.
+	pid, _ := getCurrentThreadPIDAndTID()
+	if node.Owner != uint16(pid) {
+		return -1 // EPERM
+	}
+
+	// Type must be string.
+	if node.ValueType != flat.TypeStr {
+		return -22 // EINVAL
+	}
+
+	// Validate constraint/value path consistency.
+	if isConstraintResult != 0 && node.Kind != flat.AttrKindConstraint {
+		return -22 // EINVAL — can't write constraint result to a value attribute
+	}
+	if isConstraintResult == 0 && node.Kind == flat.AttrKindConstraint {
+		return -1 // EPERM — use constraint result path for constraints
+	}
+
+	// Copy string from user.
+	if strLen > flat.FlatStringMaxLen {
+		return -22 // EINVAL — string too long
+	}
+	var strBuf [flat.FlatStringMaxLen]byte
+	copyLen := int(strLen)
+	if !kmem.CopyFromUser(strBuf[:copyLen], uintptr(strBufPtr), copyLen) {
+		return -14 // EFAULT
+	}
+
+	// Allocate string slot in shared page and write string content.
+	strVal := unsafeStringFromBytes(strBuf[:copyLen])
+	nameOff, ok := attrMgr.allocString(strVal)
+	if !ok {
+		return -12 // ENOMEM
+	}
+
+	// Build FlatStrRef and write to CachedValue via seqlock.
+	ref := flat.FlatStrRef{
+		RegionOffset: nameOff,
+		Len:          uint16(copyLen),
+	}
+	newVal := flat.NewStr(ref)
+
+	node.SeqCounter++
+	node.CachedValue = newVal
+	node.SeqCounter++
+
+	if isConstraintResult != 0 {
+		// Constraint result path: clear dirty, no propagation.
+		node.SetDirty(false)
+	} else {
+		// Value write path: clear dirty, propagate.
+		node.SetDirty(false)
+		attrMgr.dirtyPropagate(slot)
+	}
+
+	return 0
+}
+
 // --- Internal helpers ---
 
 // addForwardEdge adds toSlot to fromSlot's Deps list.
