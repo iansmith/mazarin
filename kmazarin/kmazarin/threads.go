@@ -162,6 +162,7 @@ const (
 	ThreadBlockedLoadMaz  ThreadState = 7 // Blocked waiting for .maz load to complete
 	ThreadBlockedDelegate     ThreadState = 10 // Caller blocked waiting for delegated syscall reply
 	ThreadBlockedDelegateRecv ThreadState = 11 // Handler blocked waiting for delegated syscall request
+	ThreadBlockedDirtyNotify  ThreadState = 12 // Blocked waiting for constraint dirty notification
 )
 
 // MaxPriests is the maximum number of priest processes (userspace programs).
@@ -468,6 +469,10 @@ func WakeThreadForSignal(t *Thread) {
 		// Defer signal delivery until delegated syscall reply arrives.
 	case ThreadBlockedDelegateRecv:
 		// Wake the handler thread so it can handle the signal.
+		t.State = ThreadReady
+		enqueueReadySchedLockHeld(t)
+	case ThreadBlockedDirtyNotify:
+		// Wake so signal is delivered; WaitDirty will re-check queue on resume.
 		t.State = ThreadReady
 		enqueueReadySchedLockHeld(t)
 	}
@@ -3619,6 +3624,8 @@ func PrintTickDistribution() {
 				stateStr = "DLG"
 			case ThreadBlockedDelegateRecv:
 				stateStr = "DLR"
+			case ThreadBlockedDirtyNotify:
+				stateStr = "DNT"
 			}
 
 			console.KPrintf("  T%02d P%02d [%s] ticks=%d (%d%%)\n",

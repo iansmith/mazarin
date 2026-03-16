@@ -17,6 +17,8 @@ const (
 	sysAttrRegisterQuery = 0x1026
 	sysAttrWriteResult   = 0x1027
 	sysAttrWriteString   = 0x1028
+	sysAttrSetEager      = 0x1029
+	sysAttrWaitDirty     = 0x102A
 )
 
 // Attribute kinds (must match flat.AttrKindValue / AttrKindConstraint).
@@ -175,4 +177,38 @@ func AttrWriteString(slot uint16, s string, isConstraintResult bool) error {
 		return errno
 	}
 	return nil
+}
+
+// AttrSetEager sets or clears the FlagEagerNotify flag on an attribute.
+// When eager is true, dirty propagation to this attribute enqueues a
+// notification that can be retrieved via AttrWaitDirty.
+func AttrSetEager(slot uint16, eager bool) error {
+	var eagerVal uintptr
+	if eager {
+		eagerVal = 1
+	}
+	r1, _, errno := RawSyscall(sysAttrSetEager,
+		uintptr(slot), eagerVal,
+		0, 0, 0, 0)
+	result := int64(r1)
+	if result < 0 {
+		return syscall.Errno(-result)
+	}
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
+// AttrWaitDirty blocks until dirty notifications are available, then returns
+// the dirty slot numbers. Returns the count of dirty slots, or -1 on overflow
+// (caller should re-scan all eager attributes).
+func AttrWaitDirty(buf []uint16) int {
+	if len(buf) == 0 {
+		return 0
+	}
+	r1, _, _ := RawSyscall(sysAttrWaitDirty,
+		uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)),
+		0, 0, 0, 0)
+	return int(int64(r1))
 }

@@ -68,10 +68,12 @@ func (h *Handle[T]) IsDirty() bool {
 	}
 }
 
-// SetEager marks this handle for eager notification. For Phase 5, this is stored
-// locally only — no kernel effect until Phase 6 adds the notification channel.
+// SetEager marks this handle for eager dirty notification. When enabled, dirty
+// propagation to this attribute enqueues a notification that can be retrieved
+// via WaitDirty(). Sets both the local flag and the shared-page FlagEagerNotify.
 func (h *Handle[T]) SetEager(eager bool) {
 	h.eager = eager
+	sys.AttrSetEager(h.slot, eager)
 }
 
 // Get returns the current value. For constraint attributes, evaluates the

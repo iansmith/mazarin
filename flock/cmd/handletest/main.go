@@ -6,6 +6,7 @@ package main
 
 import (
 	"fmt"
+	"sync"
 
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/vm"
@@ -22,6 +23,8 @@ func main() {
 	pass = testConstraintAdd() && pass
 	pass = testConstraintChain() && pass
 	pass = testTrieExistence() && pass
+	pass = testEagerNotification() && pass
+	pass = testChangeGating() && pass
 
 	if pass {
 		fmt.Println("\nhandletest: All tests PASSED.")
@@ -261,6 +264,143 @@ func testTrieExistence() bool {
 	exists = attr.Exists("attr:///priest/nonexistent")
 	fmt.Printf("Exists(\"attr:///priest/nonexistent\") = %v (expected false)\n", exists)
 	if exists {
+		fmt.Println("FAIL")
+		return false
+	}
+
+	fmt.Println("PASS")
+	return true
+}
+
+// testEagerNotification creates a value and a constraint, marks the constraint
+// eager, writes the value, and verifies that WaitDirty returns the constraint's slot.
+func testEagerNotification() bool {
+	fmt.Println("\n=== Test 7: Eager notification round-trip ===")
+
+	a := attr.ValueI64("attr:///priest/handletest/eager_a", 5)
+
+	// doubled = a * 2
+	prog := &vm.Program{
+		Code: []vm.Inst{
+			vm.InstConstStr(0),
+			vm.InstCallBuiltin(vm.BuiltinDerefI64, 1),
+			vm.InstConstI64(2),
+			vm.InstArith(vm.OpMul, vm.TypeI64),
+			vm.InstRet(1),
+		},
+		Strings: []string{
+			"attr:///priest/handletest/eager_a",
+		},
+	}
+	doubled := attr.ConstraintI64("attr:///priest/handletest/eager_doubled", prog, a)
+
+	// Force initial evaluation so the constraint is clean.
+	got := doubled.Get()
+	if got != 10 {
+		fmt.Printf("initial doubled = %d (expected 10)\n", got)
+		fmt.Println("FAIL")
+		return false
+	}
+
+	// Enable eager notification on the constraint.
+	doubled.SetEager(true)
+
+	// Spawn goroutine that blocks on WaitDirty.
+	var wg sync.WaitGroup
+	var notifiedSlots []uint16
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		notifiedSlots = attr.WaitDirty()
+	}()
+
+	// Write to the value — triggers dirty walk → eager notification.
+	a.Set(10)
+
+	// Wait for the goroutine to receive the notification.
+	wg.Wait()
+
+	// Verify we got notified about the doubled constraint's slot.
+	foundSlot := false
+	for _, s := range notifiedSlots {
+		if s == doubled.Slot() {
+			foundSlot = true
+			break
+		}
+	}
+	if !foundSlot {
+		fmt.Printf("WaitDirty returned slots %v, expected to contain %d\n", notifiedSlots, doubled.Slot())
+		fmt.Println("FAIL")
+		return false
+	}
+
+	// Verify the constraint evaluates correctly after notification.
+	got = doubled.Get()
+	fmt.Printf("after a=10, doubled = %d (expected 20)\n", got)
+	if got != 20 {
+		fmt.Println("FAIL")
+		return false
+	}
+
+	fmt.Println("PASS")
+	return true
+}
+
+// testChangeGating verifies that writing the same value to an attribute does
+// NOT trigger dirty propagation or eager notification.
+func testChangeGating() bool {
+	fmt.Println("\n=== Test 8: Change-gated propagation ===")
+
+	a := attr.ValueI64("attr:///priest/handletest/gate_a", 5)
+
+	// sum = a + 0 (identity constraint)
+	prog := &vm.Program{
+		Code: []vm.Inst{
+			vm.InstConstStr(0),
+			vm.InstCallBuiltin(vm.BuiltinDerefI64, 1),
+			vm.InstConstI64(0),
+			vm.InstArith(vm.OpAdd, vm.TypeI64),
+			vm.InstRet(1),
+		},
+		Strings: []string{
+			"attr:///priest/handletest/gate_a",
+		},
+	}
+	sum := attr.ConstraintI64("attr:///priest/handletest/gate_sum", prog, a)
+
+	// Force initial evaluation.
+	got := sum.Get()
+	if got != 5 {
+		fmt.Printf("initial sum = %d (expected 5)\n", got)
+		fmt.Println("FAIL")
+		return false
+	}
+
+	// Enable eager notification.
+	sum.SetEager(true)
+
+	// Write the SAME value — change-gating should skip propagation.
+	a.Set(5)
+
+	// The constraint should NOT be dirty (no propagation occurred).
+	if sum.IsDirty() {
+		fmt.Println("sum is dirty after Set(5) with same value — change gating failed")
+		fmt.Println("FAIL")
+		return false
+	}
+	fmt.Println("same-value Set(5): not dirty (change-gated) — PASS")
+
+	// Now write a DIFFERENT value — should propagate.
+	a.Set(6)
+	if !sum.IsDirty() {
+		fmt.Println("sum is NOT dirty after Set(6) — propagation failed")
+		fmt.Println("FAIL")
+		return false
+	}
+
+	got = sum.Get()
+	fmt.Printf("after a=6, sum = %d (expected 6)\n", got)
+	if got != 6 {
 		fmt.Println("FAIL")
 		return false
 	}

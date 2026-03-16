@@ -49,6 +49,8 @@ const (
 	SysAttrRegisterQuery    = MazzySyscallBase + 38 // 0x1026 - Register find pattern, get query result slot
 	SysAttrWriteResult      = MazzySyscallBase + 39 // 0x1027 - Write constraint evaluation result (scalar/composite)
 	SysAttrWriteString      = MazzySyscallBase + 40 // 0x1028 - Write string value (value or constraint result)
+	SysAttrSetEager         = MazzySyscallBase + 41 // 0x1029 - Set/clear eager notification on attribute
+	SysAttrWaitDirty        = MazzySyscallBase + 42 // 0x102A - Wait for dirty notifications
 )
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
@@ -92,6 +94,8 @@ var mazzySyscallTable = [64]SyscallHandler{
 	38: SyscallAttrRegisterQuery,         // AttrRegisterQuery = 0x1026
 	39: SyscallAttrWriteResult,           // AttrWriteResult = 0x1027
 	40: SyscallAttrWriteString,           // AttrWriteString = 0x1028
+	41: SyscallAttrSetEager,              // AttrSetEager = 0x1029
+	42: SyscallAttrWaitDirty,             // AttrWaitDirty = 0x102A
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.

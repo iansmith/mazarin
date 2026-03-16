@@ -18,6 +18,7 @@ func (mgr *KernelAttrManager) dirtyPropagate(startSlot uint16) {
 
 // dirtyWalk recursively marks a node and its dependents dirty.
 // Uses the LastWalk field on FlatAttrNode for diamond dedup.
+// When a node has FlagEagerNotify, enqueues a notification for its owner.
 func (mgr *KernelAttrManager) dirtyWalk(slot uint16, gen uint64) {
 	node := mgr.node(slot)
 
@@ -29,6 +30,11 @@ func (mgr *KernelAttrManager) dirtyWalk(slot uint16, gen uint64) {
 
 	// Mark dirty.
 	node.Flags |= flat.FlagDirty
+
+	// Eager notification: enqueue slot for the owning priest.
+	if node.Flags&flat.FlagEagerNotify != 0 {
+		mgr.enqueueNotification(slot, node.Owner)
+	}
 
 	// Walk dependents.
 	depCount := int(node.DependentsCount)

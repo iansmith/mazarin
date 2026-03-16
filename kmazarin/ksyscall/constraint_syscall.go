@@ -174,6 +174,11 @@ func SyscallAttrWrite(slotIndex, valueBufPtr, valueLen, _, _, _ uint64) int64 {
 		return -22 // EINVAL
 	}
 
+	// Change-gating: skip propagation if value is unchanged (bitwise equal).
+	if node.CachedValue == newVal {
+		return 0
+	}
+
 	// Seqlock write: odd = in progress, even = stable.
 	node.SeqCounter++
 	node.CachedValue = newVal

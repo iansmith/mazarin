@@ -118,6 +118,9 @@ func InitKernelAttrManager() bool {
 	// Initialize the namespace trie root and top-level children.
 	initTrie()
 
+	// Initialize per-priest notification queues.
+	initNotifyQueues()
+
 	attrMgr.initialized = true
 
 	serial.RawUARTPuts("[attr] KernelAttrManager initialized (nodes=")
