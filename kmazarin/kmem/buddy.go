@@ -25,9 +25,6 @@ const MaxOrder = 13 // Orders 0-12 (4KB to 16MB)
 //go:linkname kmazarinKernelBudgetMB runtime.kmazarinKernelBudgetMB
 var kmazarinKernelBudgetMB uintptr
 
-// defaultKernelLimitPages is the default kernel memory warning threshold (32MB).
-const defaultKernelLimitPages = 8192 // 32MB = 8192 * 4KB
-
 // SetKernelBudgetMB overrides the kernel memory warning threshold.
 // Called from main after parsing kmazarin.toml, taking priority over the
 // auxv value set by diplomat during early boot.
@@ -274,89 +271,19 @@ func BuddyAllocTyped(order int, pageType PageType, owner int16) uintptr {
 		buddyPagesByType[pageType] += pagesAllocated
 	}
 
-	// Kernel-only total: bootstrap + kernel heap + kernel PT (excludes user pages)
-	kernelTotal := buddyAlloc.bootstrapPages + buddyAlloc.kernelHeapPages + buddyAlloc.kernelPTPages
-
 	buddyAlloc.lock.Unlock()
-
-	// Warn when kernel memory exceeds the configured budget threshold.
-	// limitPages: from AT_KERNEL_BUDGET_MB auxv entry (set by kmazarin.toml),
-	// or defaultKernelLimitPages (128MB) if not configured.
-	// Print full stats on first crossing, then breadcrumb every 256 pages.
-	limitPages := uint64(kmazarinKernelBudgetMB) * 256 // 1MB = 256 pages of 4KB
-	if limitPages == 0 {
-		limitPages = defaultKernelLimitPages
-	}
-	if kernelTotal > limitPages {
-		if kernelTotal-1 <= limitPages || (kernelTotal&0xFF) == 0 {
-			buddyWarnKernelLimit(kernelTotal, pageType, pa)
-		}
-	}
 
 	SetPageDescriptor(pa, pageType, owner, uint8(order))
 
 	return pa
 }
 
-// buddyWarnKernelLimit prints the 64MB kernel memory warning via raw UART.
 // buddyWarnOOM prints an OOM warning via raw UART.
 // NOT nosplit — breaks the nosplit chain from exception handlers.
 func buddyWarnOOM(order int) {
 	serial.RawUARTPuts("[kmem] Buddy OOM for order ")
 	serial.RawUARTHex64(uint64(order))
 	serial.RawUARTPuts("\r\n")
-}
-
-// buddyWarnKernelLimit prints the kernel memory limit warning via raw UART.
-// NOT nosplit — this breaks the nosplit chain from exception handlers so
-// the rawUART calls (serial.PollWrite) don't blow the 792-byte nosplit limit.
-// Uses rawUART (serial.PollWrite) so output goes to COM1/serial log,
-// not through console abstraction (which on AMD64 uses MMIO, not I/O ports).
-func buddyWarnKernelLimit(kernelTotal uint64, pageType PageType, pa uintptr) {
-	serial.RawUARTPuts("\r\n[kmem] WARNING: kernel exceeds 32MB (kern=")
-	serial.RawUARTHex64(kernelTotal)
-	serial.RawUARTPuts(" kheap=")
-	serial.RawUARTHex64(buddyAlloc.kernelHeapPages)
-	serial.RawUARTPuts(" kpt=")
-	serial.RawUARTHex64(buddyAlloc.kernelPTPages)
-	serial.RawUARTPuts(" boot=")
-	serial.RawUARTHex64(buddyAlloc.bootstrapPages)
-	serial.RawUARTPuts(" user=")
-	serial.RawUARTHex64(buddyAlloc.userPages)
-	serial.RawUARTPuts(" type=")
-	serial.RawUARTHex64(uint64(pageType))
-	serial.RawUARTPuts(" pa=")
-	serial.RawUARTHex64(uint64(pa))
-	serial.RawUARTPuts(")\r\n")
-
-	// Print per-priest breakdown from page tracker
-	stats := GetMemoryStats()
-	if stats.TotalTracked > 0 {
-		serial.RawUARTPuts("  [tracker] total=")
-		serial.RawUARTHex64(stats.TotalTracked)
-		serial.RawUARTPuts(" kheap=")
-		serial.RawUARTHex64(stats.KernelHeapPages)
-		serial.RawUARTPuts(" kpt=")
-		serial.RawUARTHex64(stats.KernelPTPages)
-		serial.RawUARTPuts(" user=")
-		serial.RawUARTHex64(stats.UserPages)
-		serial.RawUARTPuts("\r\n")
-		// Per-priest: index 0 = kernel (PID 0), 1+ = priests
-		if stats.ByPriest[0] > 0 {
-			serial.RawUARTPuts("  [priest] kernel(0): ")
-			serial.RawUARTHex64(stats.ByPriest[0])
-			serial.RawUARTPuts("\r\n")
-		}
-		for i := 1; i < MaxPriests; i++ {
-			if stats.ByPriest[i] > 0 {
-				serial.RawUARTPuts("  [priest] ")
-				serial.RawUARTHex64(uint64(i))
-				serial.RawUARTPuts(": ")
-				serial.RawUARTHex64(stats.ByPriest[i])
-				serial.RawUARTPuts("\r\n")
-			}
-		}
-	}
 }
 
 // BuddyFree returns a block of 2^order pages starting at pa to the allocator.

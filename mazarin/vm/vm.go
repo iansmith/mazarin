@@ -89,6 +89,8 @@ type machine struct {
 	fuel      int // instructions remaining
 	retStack  [MaxCallDepth]retFrame
 	callDepth int
+	resolver  AttrResolver // optional namespace resolver for find/deref/exists
+	readSet   ReadSet      // attribute slots accessed during evaluation
 }
 
 func (m *machine) push(v Value) error {

@@ -674,3 +674,65 @@ func TestFlatValueString(t *testing.T) {
 		}
 	}
 }
+
+// --- Composite conversion round-trips ---
+
+func TestConvertRectangleRoundTrip(t *testing.T) {
+	pr := NewPageRegion(4, 16, 0, 4, 4)
+	orig := vm.RectangleVal(10, 20, 110, 220)
+	fv, err := ValueToFlat(orig, pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fv.Typ != TypeRectangle {
+		t.Fatalf("flat type = 0x%02x, want rectangle", fv.Typ)
+	}
+	back, err := FlatToValue(fv, pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Type() != vm.TypeRectangle {
+		t.Fatalf("vm type = 0x%02x, want rectangle", back.Type())
+	}
+	x0, y0, x1, y1 := back.AsRectangle()
+	if x0 != 10 || y0 != 20 || x1 != 110 || y1 != 220 {
+		t.Fatalf("expected (10,20,110,220), got (%d,%d,%d,%d)", x0, y0, x1, y1)
+	}
+}
+
+func TestConvertTimespecRoundTrip(t *testing.T) {
+	pr := NewPageRegion(4, 16, 0, 4, 4)
+	orig := vm.TimespecVal(1710000000, 500000000)
+	fv, err := ValueToFlat(orig, pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fv.Typ != TypeTimespec {
+		t.Fatalf("flat type = 0x%02x, want timespec", fv.Typ)
+	}
+	back, err := FlatToValue(fv, pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec, ns := back.AsTimespec()
+	if sec != 1710000000 || ns != 500000000 {
+		t.Fatalf("expected (1710000000, 500000000), got (%d, %d)", sec, ns)
+	}
+}
+
+func TestConvertPoint2DRoundTrip(t *testing.T) {
+	pr := NewPageRegion(4, 16, 0, 4, 4)
+	orig := vm.Point2DVal(42, 99)
+	fv, err := ValueToFlat(orig, pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := FlatToValue(fv, pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	x, y := back.AsPoint2D()
+	if x != 42 || y != 99 {
+		t.Fatalf("expected (42, 99), got (%d, %d)", x, y)
+	}
+}

@@ -9,7 +9,12 @@ timezone = "America/New_York"
 kernel_budget_mb = 32
 suppress_serial_stdio_copy = false
 suppress_kernel_serial = false
-gc_percentage = 90
+# gc_percentage is set very high so that GOMEMLIMIT is the governor.
+# With a low gc_percentage, GOGC fires at its minimum heap threshold (~4MB)
+# regardless of GOMEMLIMIT, causing thousands of unnecessary GC cycles.
+gc_percentage = 10000
+go_mem_limit = 24
+kernel_mem_limit = 24
 
 # Bootstrap priests: loaded by the kernel during early boot
 [[bootstrap_priest]]

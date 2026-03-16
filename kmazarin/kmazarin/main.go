@@ -886,6 +886,9 @@ func simpleMain() {
 		if bootCfg.GCPercentage > 0 {
 			ksyscall.SetPriestGCPercentage(bootCfg.GCPercentage)
 		}
+		if bootCfg.GoMemLimitMB > 0 {
+			ksyscall.SetPriestMemLimitMB(bootCfg.GoMemLimitMB)
+		}
 		launchPriestsFromConfig(bootCfg)
 	} else {
 		// Fallback: hardcoded launch sequence

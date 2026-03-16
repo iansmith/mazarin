@@ -6,6 +6,59 @@ import (
 	"mazzy/mazarin/vm"
 )
 
+// flatToVMType maps flat.Type* constants to vm.Type* constants.
+var flatToVMType = map[uint8]uint8{
+	TypeI64:       vm.TypeI64,
+	TypeF64:       vm.TypeF64,
+	TypeBool:      vm.TypeBool,
+	TypeTribool:   vm.TypeTribool,
+	TypeStr:       vm.TypeStr,
+	TypeTimespec:  vm.TypeTimespec,
+	TypeTimezone:  vm.TypeTimezone,
+	TypeDuration:  vm.TypeDuration,
+	TypeDate:      vm.TypeDate,
+	TypePoint2D:   vm.TypePoint2D,
+	TypePoint3D:   vm.TypePoint3D,
+	TypePointF2D:  vm.TypePointF2D,
+	TypePointF3D:  vm.TypePointF3D,
+	TypeRadians:   vm.TypeRadians,
+	TypeDegrees:   vm.TypeDegrees,
+	TypeIPv4:      vm.TypeIPv4,
+	TypeIPv6:      vm.TypeIPv6,
+	TypePriestId:  vm.TypePriestId,
+	TypeMazId:     vm.TypeMazId,
+	TypeRectangle: vm.TypeRectangle,
+}
+
+// vmToFlatType maps vm composite type tags to flat.Type* constants.
+var vmToFlatType = map[uint8]uint8{
+	vm.TypeTimespec:  TypeTimespec,
+	vm.TypeTimezone:  TypeTimezone,
+	vm.TypeDuration:  TypeDuration,
+	vm.TypeDate:      TypeDate,
+	vm.TypePoint2D:   TypePoint2D,
+	vm.TypePoint3D:   TypePoint3D,
+	vm.TypePointF2D:  TypePointF2D,
+	vm.TypePointF3D:  TypePointF3D,
+	vm.TypeRadians:   TypeRadians,
+	vm.TypeDegrees:   TypeDegrees,
+	vm.TypeIPv4:      TypeIPv4,
+	vm.TypeIPv6:      TypeIPv6,
+	vm.TypePriestId:  TypePriestId,
+	vm.TypeMazId:     TypeMazId,
+	vm.TypeRectangle: TypeRectangle,
+}
+
+// FlatTypeToVM converts a flat.Type* constant to the corresponding vm.Type* constant.
+func FlatTypeToVM(flatType uint8) uint8 {
+	return flatToVMType[flatType]
+}
+
+// VMTypeToFlat converts a vm.Type* constant to the corresponding flat.Type* constant.
+func VMTypeToFlat(vmType uint8) uint8 {
+	return vmToFlatType[vmType]
+}
+
 // ValueToFlat converts a heap-based vm.Value to a FlatValue.
 // Strings and collections are allocated in the provided PageRegion.
 func ValueToFlat(v vm.Value, pr *PageRegion) (FlatValue, error) {
@@ -53,6 +106,16 @@ func ValueToFlat(v vm.Value, pr *PageRegion) (FlatValue, error) {
 		return NewCollection(ref), nil
 
 	default:
+		if vm.IsCompositeType(v.Type()) {
+			flatType := VMTypeToFlat(v.Type())
+			if flatType == 0 {
+				return FlatValue{}, fmt.Errorf("flat: unsupported composite vm type 0x%02x", v.Type())
+			}
+			var fv FlatValue
+			fv.Typ = flatType
+			copy(fv.Data[:], v.CompositeData())
+			return fv, nil
+		}
 		return FlatValue{}, fmt.Errorf("flat: unsupported vm type %d for conversion", v.Type())
 	}
 }
@@ -120,6 +183,13 @@ func FlatToValue(fv FlatValue, pr *PageRegion) (vm.Value, error) {
 		}
 
 	default:
+		if IsCompositeType(fv.Typ) {
+			vmType := FlatTypeToVM(fv.Typ)
+			if vmType == 0 {
+				return vm.Value{}, fmt.Errorf("flat: type %s has no vm.Value equivalent", TypeName(fv.Typ))
+			}
+			return vm.CompositeFromData(vmType, fv.Data), nil
+		}
 		return vm.Value{}, fmt.Errorf("flat: type %s has no vm.Value equivalent", TypeName(fv.Typ))
 	}
 }

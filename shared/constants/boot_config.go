@@ -51,6 +51,15 @@ type BootConfig struct {
 	// the GC triggers when heap is 90% larger than the previous live set.
 	GCPercentage int
 
+	// GoMemLimitMB is the GOMEMLIMIT value (in MB) for priest processes.
+	// 0 means use the default (24MB).
+	GoMemLimitMB int
+
+	// KernelMemLimitMB is the GOMEMLIMIT value (in MB) for the kernel.
+	// 0 means use the default (24MB). Diplomat reads this from the TOML
+	// config and passes it as the kernel's GOMEMLIMIT environment variable.
+	KernelMemLimitMB int
+
 	Timezone [MaxTimezoneLen]byte
 
 	BootstrapPriests     [MaxBootstrapPriests]BootPriest

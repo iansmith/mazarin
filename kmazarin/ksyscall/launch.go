@@ -40,6 +40,15 @@ func SetPriestGCPercentage(v int) {
 	priestGCPercentage = v
 }
 
+// priestMemLimitMB is the GOMEMLIMIT value (in MB) for priest processes.
+// 0 means use the default (24MB).
+var priestMemLimitMB int
+
+// SetPriestMemLimitMB stores the GOMEMLIMIT value from the boot config.
+func SetPriestMemLimitMB(v int) {
+	priestMemLimitMB = v
+}
+
 // ELF constants
 const (
 	ELF_MAGIC      = 0x464C457F // "\x7FELF"
@@ -771,8 +780,8 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 	if gcVal <= 0 {
 		gcVal = 5 // default
 	}
-	// Convert gcVal to string (max 4 digits)
-	var gcBuf [4]byte
+	// Convert gcVal to string (max 6 digits)
+	var gcBuf [6]byte
 	gcLen := 0
 	tmp := gcVal
 	for tmp > 0 {
@@ -790,7 +799,32 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 		}
 	}
 	penv.SetEnv("GOGC", string(gcBuf[:gcLen]))
-	penv.SetEnv("GOMEMLIMIT", "64MiB")
+	memLimitMB := priestMemLimitMB
+	if memLimitMB <= 0 {
+		memLimitMB = 24 // default
+	}
+	// Convert memLimitMB to string (max 6 digits) + "MiB"
+	var mlBuf [10]byte // "NNNNNNMiB\0"
+	mlLen := 0
+	tmp = memLimitMB
+	for tmp > 0 {
+		mlLen++
+		tmp /= 10
+	}
+	if mlLen == 0 {
+		mlLen = 1
+		mlBuf[0] = '0'
+	} else {
+		tmp = memLimitMB
+		for i := mlLen - 1; i >= 0; i-- {
+			mlBuf[i] = byte('0' + tmp%10)
+			tmp /= 10
+		}
+	}
+	mlBuf[mlLen] = 'M'
+	mlBuf[mlLen+1] = 'i'
+	mlBuf[mlLen+2] = 'B'
+	penv.SetEnv("GOMEMLIMIT", string(mlBuf[:mlLen+3]))
 	penv.SetEnv("GOMAXPROCS", "1")
 	if bootTimezone != "" {
 		penv.SetEnv("TZ", bootTimezone)

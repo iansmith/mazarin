@@ -795,6 +795,94 @@ func (v *verifier) verifyBuiltin(id, argc uint16, instTyp uint8) error {
 			return v.pushType(instTyp)
 		}
 		return v.pushType(TypeCollI64)
+
+	// Rectangle builtins.
+	case BuiltinRect:
+		return v.pushType(TypeRectangle)
+	case BuiltinRectUnion, BuiltinRectIntersect:
+		return v.pushType(TypeRectangle)
+	case BuiltinRectOverlaps, BuiltinRectContains, BuiltinRectEmpty:
+		return v.pushType(TypeBool)
+	case BuiltinRectArea, BuiltinRectWidth, BuiltinRectHeight:
+		return v.pushType(TypeI64)
+
+	// Trig builtins.
+	case BuiltinSin, BuiltinCos, BuiltinTan, BuiltinAsin, BuiltinAcos:
+		return v.pushType(TypeF64)
+	case BuiltinAtan2:
+		return v.pushType(TypeF64)
+	case BuiltinDegToRad, BuiltinRadToDeg, BuiltinAbsF:
+		return v.pushType(TypeF64)
+	case BuiltinPow:
+		return v.pushType(TypeF64)
+
+	// Composite constructors.
+	case BuiltinTimespec:
+		return v.pushType(TypeTimespec)
+	case BuiltinTimespecSeconds, BuiltinTimespecNanos:
+		return v.pushType(TypeI64)
+	case BuiltinTimezone:
+		return v.pushType(TypeTimezone)
+	case BuiltinTzConvert:
+		return v.pushType(TypeTimespec)
+	case BuiltinDuration:
+		return v.pushType(TypeDuration)
+	case BuiltinDurationNanos:
+		return v.pushType(TypeI64)
+	case BuiltinDate:
+		return v.pushType(TypeDate)
+	case BuiltinDateYear, BuiltinDateMonth, BuiltinDateDay:
+		return v.pushType(TypeI64)
+	case BuiltinPoint2D:
+		return v.pushType(TypePoint2D)
+	case BuiltinPoint2DX, BuiltinPoint2DY:
+		return v.pushType(TypeI64)
+	case BuiltinPoint3D:
+		return v.pushType(TypePoint3D)
+	case BuiltinPointF2D:
+		return v.pushType(TypePointF2D)
+	case BuiltinPointF3D:
+		return v.pushType(TypePointF3D)
+	case BuiltinIPv4:
+		return v.pushType(TypeIPv4)
+	case BuiltinIPv4Octet:
+		return v.pushType(TypeI64)
+	case BuiltinIPv6:
+		return v.pushType(TypeIPv6)
+	case BuiltinPriestId:
+		return v.pushType(TypePriestId)
+	case BuiltinPriestIdNum:
+		return v.pushType(TypeI64)
+	case BuiltinMazId:
+		return v.pushType(TypeMazId)
+	case BuiltinMazIdNum:
+		return v.pushType(TypeI64)
+
+	// Service discovery builtins.
+	case BuiltinFind:
+		return v.pushType(TypeCollStr)
+	case BuiltinDerefI64:
+		// Returns I64 or Tribool(unknown) — verifier pushes I64 conservatively.
+		return v.pushType(TypeI64)
+	case BuiltinDerefStr:
+		return v.pushType(TypeStr)
+	case BuiltinDerefBool:
+		return v.pushType(TypeBool)
+	case BuiltinDerefF64:
+		return v.pushType(TypeF64)
+	case BuiltinDerefRect:
+		return v.pushType(TypeRectangle)
+	case BuiltinDerefPoint2D:
+		return v.pushType(TypePoint2D)
+	case BuiltinDerefTribool:
+		return v.pushType(TypeTribool)
+	case BuiltinExists:
+		return v.pushType(TypeBool)
+	case BuiltinURISegment:
+		return v.pushType(TypeStr)
+	case BuiltinIsUnknown:
+		return v.pushType(TypeBool)
+
 	default:
 		return v.errf("unknown builtin %d", id)
 	}

@@ -17,17 +17,18 @@ import (
 //   [8]    argv[0] → "kmazarin" string
 //   [16]   argv[1] = NULL
 //   [24]   envp[0] → "GODEBUG=gctrace=1"
-//   [32]   envp[1] → "GOMEMLIMIT=64MiB"
+//   [32]   envp[1] → "GOMEMLIMIT=NNMiB" (from kernel_mem_limit config)
 //   [40]   envp[2] = NULL
 //   [48+]  auxv entries (key, value pairs) — up to 20 entries (320 bytes)
 //   ...
 //   [384]  "kmazarin\0"
 //   [400]  16 random bytes
 //   [416]  "GODEBUG=gctrace=1\0"
-//   [464]  "GOMEMLIMIT=64MiB\0"
+//   [464]  "GOMEMLIMIT=NNMiB\0"
 //
 // NOTE: GOGC is NOT set for the kernel — uses Go default (100%).
-// Userspace programs get GOGC=5 via launch.go.
+// GOMEMLIMIT is set from kernel_mem_limit in kmazarin.toml (default 24MB).
+// Userspace programs get GOGC and GOMEMLIMIT from the TOML config via launch.go.
 func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel, cfg *KmazarinConfig) (uint64, error) {
 	const paramSize = 0x300 // 768 bytes — room for 20 auxv entries + strings
 
@@ -71,13 +72,47 @@ func BuildStartupEnv(vm *KernelVM, hw *HardwareInfo, kernel *LoadedKernel, cfg *
 	}
 	godebug[len(s)] = 0
 
-	// "GOMEMLIMIT=64MiB" at offset 464
+	// "GOMEMLIMIT=NNMiB" at offset 464
 	memlimit := (*[24]byte)(unsafe.Pointer(uintptr(structPhys + 464)))
-	ml := "GOMEMLIMIT=64MiB"
-	for i := 0; i < len(ml); i++ {
-		memlimit[i] = ml[i]
+	// Build "GOMEMLIMIT=" prefix
+	prefix := "GOMEMLIMIT="
+	off := 0
+	for off < len(prefix) {
+		memlimit[off] = prefix[off]
+		off++
 	}
-	memlimit[len(ml)] = 0
+	// Convert KernelMemLimitMB to decimal digits
+	kmLimit := uint64(24) // default
+	if cfg != nil && cfg.KernelMemLimitMB > 0 {
+		kmLimit = cfg.KernelMemLimitMB
+	}
+	// Write decimal digits (max 4 digits for MB value)
+	var digits [4]byte
+	dLen := 0
+	tmp := kmLimit
+	for tmp > 0 {
+		dLen++
+		tmp /= 10
+	}
+	if dLen == 0 {
+		dLen = 1
+		digits[0] = '0'
+	} else {
+		tmp = kmLimit
+		for j := dLen - 1; j >= 0; j-- {
+			digits[j] = byte('0' + tmp%10)
+			tmp /= 10
+		}
+	}
+	for j := 0; j < dLen; j++ {
+		memlimit[off] = digits[j]
+		off++
+	}
+	// Append "MiB\0"
+	memlimit[off] = 'M'
+	memlimit[off+1] = 'i'
+	memlimit[off+2] = 'B'
+	memlimit[off+3] = 0
 
 	// Now fill the structure using VIRTUAL addresses for pointers
 	// (kmazarin will access them via TTBR1 high-memory VAs)
