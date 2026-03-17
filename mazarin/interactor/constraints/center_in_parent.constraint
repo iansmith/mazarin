@@ -1,0 +1,11 @@
+func center_in_parent() Point2D {
+	pulx := point2d_x(deref_point2d("_0_"))
+	puly := point2d_y(deref_point2d("_0_"))
+	pw := deref_i64("_1_")
+	ph := deref_i64("_2_")
+	mw := deref_i64("_3_")
+	mh := deref_i64("_4_")
+	x := pulx + (pw-mw)/2
+	y := puly + (ph-mh)/2
+	return point2d(x, y)
+}

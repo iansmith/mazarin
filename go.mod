@@ -100,6 +100,7 @@ tool (
 	mazzy/cmd/block-serial-bash-hook
 	mazzy/cmd/block-serial-read-hook
 	mazzy/cmd/check-version
+	mazzy/cmd/compile-constraints
 	mazzy/cmd/fix-go-elf
 	mazzy/cmd/gen-ast-stubs
 	mazzy/cmd/gen-overlay

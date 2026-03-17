@@ -633,6 +633,18 @@ func (m *machine) cmp(op uint8, typ uint8) error {
 		case OpGe:
 			result = a.str >= b.str
 		}
+	case TypeBool:
+		if a.typ != TypeBool || b.typ != TypeBool {
+			return m.haltf("compare requires bool, got %s and %s", TypeName(a.typ), TypeName(b.typ))
+		}
+		switch op {
+		case OpEq:
+			result = a.i64 == b.i64
+		case OpNeq:
+			result = a.i64 != b.i64
+		default:
+			return m.haltf("bool only supports == and != comparison")
+		}
 	default:
 		return m.haltf("compare on unsupported type %s", TypeName(typ))
 	}

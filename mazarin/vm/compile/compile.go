@@ -18,9 +18,14 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"strings"
 
 	"mazzy/mazarin/vm"
 )
+
+// builtinStubLineOffset is the number of lines to subtract from error positions
+// to account for the "package constraint\n\n" header + builtin stubs.
+var builtinStubLineOffset = 2 + strings.Count(builtinStubs, "\n")
 
 // Result is the output of a successful compilation.
 type Result struct {
@@ -178,8 +183,8 @@ func (c *compiler) emit(inst vm.Inst) {
 
 func (c *compiler) errAt(pos token.Pos, format string, args ...any) error {
 	position := c.fset.Position(pos)
-	// Adjust line number for the "package constraint\n\n" wrapper.
-	position.Line -= 2
+	// Adjust line number for the "package constraint\n\n" + builtinStubs wrapper.
+	position.Line -= builtinStubLineOffset
 	return fmt.Errorf("%s: %s", position, fmt.Sprintf(format, args...))
 }
 
@@ -312,11 +317,22 @@ func countLocalsInStmts(stmts []ast.Stmt, names map[string]bool) {
 
 // goTypeToVMType maps a Go type to a VM type tag.
 func goTypeToVMType(t types.Type) (uint8, bool) {
+	// Check named types first (composite VM types like Rect, Point2D).
+	if named, ok := t.(*types.Named); ok {
+		switch named.Obj().Name() {
+		case "Rect":
+			return vm.TypeRectangle, true
+		case "Point2D":
+			return vm.TypePoint2D, true
+		}
+	}
 	switch t := t.Underlying().(type) {
 	case *types.Basic:
 		switch t.Kind() {
 		case types.Int64:
 			return vm.TypeI64, true
+		case types.Int32:
+			return vm.TypeI64, true // int32 maps to I64 in the VM
 		case types.Float64:
 			return vm.TypeF64, true
 		case types.Bool:
@@ -357,7 +373,13 @@ func isNumericType(t uint8) bool {
 // builtinStubs provides Go source declarations for our VM builtins so
 // go/types can type-check programs that call them. Types are approximate —
 // the actual dispatch is by name, and the VM handles types at runtime.
+//
+// Rect and Point2D are defined as named struct types so they can appear in
+// function signatures. The compiler maps these names to VM composite types.
 const builtinStubs = `
+type Rect struct{ _x0, _y0, _x1, _y1 int32 }
+type Point2D struct{ _x, _y int64 }
+
 func clamp(val, lo, hi int64) int64 { return 0 }
 func minf(a, b float64) float64 { return 0 }
 func maxf(a, b float64) float64 { return 0 }
@@ -382,6 +404,31 @@ func coll_sort(c []int64) []int64 { return nil }
 func coll_concat(a, b []int64) []int64 { return nil }
 func coll_page(c []int64, page, size int64) []int64 { return nil }
 func coll_empty() []int64 { return nil }
+
+func rect(x0, y0, x1, y1 int64) Rect { return Rect{} }
+func rect_union(a, b Rect) Rect { return Rect{} }
+func rect_intersect(a, b Rect) Rect { return Rect{} }
+func rect_overlaps(a, b Rect) bool { return false }
+func rect_contains(a, b Rect) bool { return false }
+func rect_empty(r Rect) bool { return false }
+func rect_area(r Rect) int64 { return 0 }
+func rect_width(r Rect) int64 { return 0 }
+func rect_height(r Rect) int64 { return 0 }
+func point2d(x, y int64) Point2D { return Point2D{} }
+func point2d_x(p Point2D) int64 { return 0 }
+func point2d_y(p Point2D) int64 { return 0 }
+
+func find(pattern string) []string { return nil }
+func deref_i64(uri string) int64 { return 0 }
+func deref_str(uri string) string { return "" }
+func deref_bool(uri string) bool { return false }
+func deref_f64(uri string) float64 { return 0 }
+func deref_rect(uri string) Rect { return Rect{} }
+func deref_point2d(uri string) Point2D { return Point2D{} }
+func deref_tribool(uri string) int64 { return 0 }
+func exists(uri string) bool { return false }
+func uri_segment(uri string, idx int64) string { return "" }
+func is_unknown(val int64) bool { return false }
 `
 
 // builtinStubNames is the set of function names injected as stubs.
@@ -392,4 +439,10 @@ var builtinStubNames = map[string]struct{}{
 	"str_prefix": {}, "str_suffix": {}, "str_upper": {}, "str_lower": {},
 	"coll_len": {}, "coll_get": {}, "coll_take": {}, "coll_drop": {},
 	"coll_sort": {}, "coll_concat": {}, "coll_page": {}, "coll_empty": {},
+	"rect": {}, "rect_union": {}, "rect_intersect": {}, "rect_overlaps": {},
+	"rect_contains": {}, "rect_empty": {}, "rect_area": {}, "rect_width": {},
+	"rect_height": {}, "point2d": {}, "point2d_x": {}, "point2d_y": {},
+	"find": {}, "deref_i64": {}, "deref_str": {}, "deref_bool": {},
+	"deref_f64": {}, "deref_rect": {}, "deref_point2d": {}, "deref_tribool": {},
+	"exists": {}, "uri_segment": {}, "is_unknown": {},
 }

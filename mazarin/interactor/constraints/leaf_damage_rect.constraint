@@ -1,0 +1,30 @@
+func leaf_damage_rect() Rect {
+	bounds := deref_rect("_0_")
+	lpBounds := deref_rect("_1_")
+
+	vis := deref_bool("_2_")
+	lpVis := deref_bool("_3_")
+	if vis != lpVis {
+		return rect_union(bounds, lpBounds)
+	}
+
+	content := deref_str("_4_")
+	lpContent := deref_str("_5_")
+	if content != lpContent {
+		return rect_union(bounds, lpBounds)
+	}
+
+	bgc := deref_i64("_6_")
+	lpBgc := deref_i64("_7_")
+	if bgc != lpBgc {
+		return rect_union(bounds, lpBounds)
+	}
+
+	tc := deref_i64("_8_")
+	lpTc := deref_i64("_9_")
+	if tc != lpTc {
+		return rect_union(bounds, lpBounds)
+	}
+
+	return rect(0, 0, 0, 0)
+}

@@ -40,6 +40,33 @@ var builtinFuncs = map[string]struct {
 	"coll_page":    {vm.BuiltinCollPage, 3},
 	"coll_empty":   {vm.BuiltinCollEmpty, 0},
 	"len":          {vm.BuiltinCollLen, 1}, // Go's len() maps to coll_len
+
+	// Geometry builtins.
+	"rect":           {vm.BuiltinRect, 4},
+	"rect_union":     {vm.BuiltinRectUnion, 2},
+	"rect_intersect": {vm.BuiltinRectIntersect, 2},
+	"rect_overlaps":  {vm.BuiltinRectOverlaps, 2},
+	"rect_contains":  {vm.BuiltinRectContains, 2},
+	"rect_empty":     {vm.BuiltinRectEmpty, 1},
+	"rect_area":      {vm.BuiltinRectArea, 1},
+	"rect_width":     {vm.BuiltinRectWidth, 1},
+	"rect_height":    {vm.BuiltinRectHeight, 1},
+	"point2d":        {vm.BuiltinPoint2D, 2},
+	"point2d_x":      {vm.BuiltinPoint2DX, 1},
+	"point2d_y":      {vm.BuiltinPoint2DY, 1},
+
+	// Service discovery / deref builtins.
+	"find":           {vm.BuiltinFind, 1},
+	"deref_i64":      {vm.BuiltinDerefI64, 1},
+	"deref_str":      {vm.BuiltinDerefStr, 1},
+	"deref_bool":     {vm.BuiltinDerefBool, 1},
+	"deref_f64":      {vm.BuiltinDerefF64, 1},
+	"deref_rect":     {vm.BuiltinDerefRect, 1},
+	"deref_point2d":  {vm.BuiltinDerefPoint2D, 1},
+	"deref_tribool":  {vm.BuiltinDerefTribool, 1},
+	"exists":         {vm.BuiltinExists, 1},
+	"uri_segment":    {vm.BuiltinURISegment, 2},
+	"is_unknown":     {vm.BuiltinIsUnknown, 1},
 }
 
 // compileFn compiles the function body to bytecode.
@@ -379,8 +406,16 @@ func (c *compiler) compileCall(e *ast.CallExpr) error {
 		if srcType == vm.TypeF64 {
 			c.emit(vm.Inst{Opcode: vm.OpF64ToI64})
 		}
-		// int64(int64) is a no-op.
+		// int64(int64) and int64(int32) are no-ops (VM only has int64).
 		return nil
+	}
+	if ident.Name == "int32" {
+		// int32(x) is a no-op in the VM — screen coordinates fit in int32.
+		// The rect() builtin handles the int64→int32 truncation internally.
+		if len(e.Args) != 1 {
+			return c.errAt(e.Pos(), "int32() takes exactly 1 argument")
+		}
+		return c.compileExpr(e.Args[0])
 	}
 	if ident.Name == "float64" {
 		if len(e.Args) != 1 {

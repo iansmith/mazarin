@@ -526,6 +526,27 @@ func SyscallAttrWriteString(slotIndex, strBufPtr, strLen, isConstraintResult, _,
 		return -14 // EFAULT
 	}
 
+	// Change-gating for strings: compare new content against existing value.
+	// Unlike scalar FlatValues, string FlatValues can't be compared bitwise
+	// because each write allocates a new string slot (different RegionOffset).
+	// Compare the actual string bytes instead.
+	if isConstraintResult == 0 && node.CachedValue.Typ == flat.TypeStr {
+		oldRef := node.CachedValue.AsStrRef()
+		if oldRef.Len == uint16(copyLen) {
+			oldBase := attrMgr.baseVA + uintptr(attrMgr.stringRegionOff) + uintptr(oldRef.RegionOffset)
+			same := true
+			for i := 0; i < copyLen; i++ {
+				if *(*byte)(unsafe.Pointer(oldBase + uintptr(i))) != strBuf[i] {
+					same = false
+					break
+				}
+			}
+			if same {
+				return 0 // value unchanged, skip write and propagation
+			}
+		}
+	}
+
 	// Allocate string slot in shared page and write string content.
 	strVal := unsafeStringFromBytes(strBuf[:copyLen])
 	nameOff, ok := attrMgr.allocString(strVal)

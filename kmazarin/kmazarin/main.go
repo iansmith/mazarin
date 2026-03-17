@@ -877,6 +877,18 @@ func simpleMain() {
 
 	// Parse boot config from /kmazarin.toml and launch priests
 	bootCfg := readBootConfig()
+
+	// Initialize constraint system and publish kernel attributes before
+	// launching priests, so they can discover kernel attrs at startup.
+	if kmem.InitConstraintPages() && ksyscall.InitKernelAttrManager() {
+		ksyscall.PublishKernelAttributes()
+		ksyscall.PublishSystemAttributes(GetTotalRAMSize()>>20, GetCPUCount(), GetKernelBudgetMB())
+		if bootCfg != nil {
+			tz := constants.NullTermString(bootCfg.Timezone[:])
+			ksyscall.PublishBootConfigAttributes(tz, bootCfg.GoMemLimitMB, bootCfg.GCPercentage)
+		}
+	}
+
 	if bootCfg != nil {
 		tz := constants.NullTermString(bootCfg.Timezone[:])
 		if tz != "" {
@@ -946,6 +958,9 @@ func simpleMain() {
 	initLoadMazWorker()
 	initRunMazWorker()
 	initRunPriestWorker()
+
+	// Start kernel attribute updaters (time update goroutine).
+	ksyscall.StartKernelAttrUpdaters()
 
 	// Enter the kernel idle loop. Thread 0 (m0/g0) stays alive as a normal
 	// scheduled thread. Priest threads are already running. The timer IRQ

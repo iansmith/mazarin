@@ -180,8 +180,8 @@ func (c *compiler) checkExpr(expr ast.Expr) error {
 			if _, ok := builtinFuncs[ident.Name]; ok {
 				return nil
 			}
-			// int64() and float64() type conversions.
-			if ident.Name == "int64" || ident.Name == "float64" || ident.Name == "bool" {
+			// Type conversions: int64(), int32(), float64(), bool().
+			if ident.Name == "int64" || ident.Name == "int32" || ident.Name == "float64" || ident.Name == "bool" {
 				return nil
 			}
 			// Intra-program function calls.
@@ -231,6 +231,10 @@ func (c *compiler) resolveTypeExpr(expr ast.Expr) (uint8, bool) {
 			return vm.TypeBool, true
 		case "string":
 			return vm.TypeStr, true
+		case "Rect":
+			return vm.TypeRectangle, true
+		case "Point2D":
+			return vm.TypePoint2D, true
 		}
 	case *ast.ArrayType:
 		if e.Len != nil {

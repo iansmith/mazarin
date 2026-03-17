@@ -415,8 +415,8 @@ func (v *verifier) verify() error {
 		// --- Comparison ---
 
 		case OpEq, OpNeq, OpLt, OpGt, OpLe, OpGe:
-			if inst.Typ != TypeI64 && inst.Typ != TypeF64 && inst.Typ != TypeStr {
-				return v.errf("comparison requires I64, F64, or Str type tag, got %s", TypeName(inst.Typ))
+			if inst.Typ != TypeI64 && inst.Typ != TypeF64 && inst.Typ != TypeStr && inst.Typ != TypeBool {
+				return v.errf("comparison requires I64, F64, Str, or Bool type tag, got %s", TypeName(inst.Typ))
 			}
 			if _, err := v.popType(); err != nil {
 				return err

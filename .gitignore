@@ -54,9 +54,15 @@ fonts/
 # Userspace binaries (built by task)
 /attrtest
 /dapope
+/handletest
 /stdio
+/uitest
+/clocktest
 
 # Standalone tool binaries
+/compile-constraints
+/fix-go-elf
+/mkfat32
 elf2pe
 relocate-kmazarin
 go-start

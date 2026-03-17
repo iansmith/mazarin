@@ -5,6 +5,7 @@ import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/ksyscall"
 	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
 	"sync/atomic"
@@ -254,6 +255,13 @@ func NonTimerIRQTopHalf() {
 			evtValue := evtValueLo | (evtValueHi << 16)
 
 			ev := hid.HIDEvent{Type: evtType, Code: evtCode, Value: evtValue}
+
+			// Track modifier key state for the constraint attribute system.
+			// Only keyboard EV_KEY events can change modifier state.
+			if dev == &topHalfKbd && evtType == hid.EvKey {
+				ksyscall.TopHalfUpdateModifiers(evtCode, evtValue)
+			}
+
 			if !ringPush(dev.ring, ev) {
 				dev.dbgPushFail++
 				// Ring full — event dropped. Descriptor is ALWAYS reposted

@@ -1,0 +1,3 @@
+func constant_empty_str() string {
+	return ""
+}

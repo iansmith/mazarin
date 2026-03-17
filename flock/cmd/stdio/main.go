@@ -221,6 +221,7 @@ type console struct {
 	cardY    int
 	cardW    int
 	cardH    int
+	regionW  int // width of our screen region (left half)
 	maxLines int
 	maxCols  int // max characters per line
 	lines    [][]serial.SerialByte
@@ -327,12 +328,15 @@ func main() {
 	ascent := metrics.Ascent.Ceil()
 	lineH := charH + LineSpacing
 
-	// Compute content area from framebuffer dimensions.
+	// Stdio owns the LEFT half of the screen. The right half belongs to uitest.
+	regionW := int(fb.Width) / 2
+
+	// Compute content area from region dimensions.
 	// The card border extends outside the content rect:
 	//   cardX = rectX - cardBorderSide, cardY = rectY - cardBorderTop
-	//   card right = pad + rectW + cardBorderSide  (must be <= fb.Width)
+	//   card right = pad + rectW + cardBorderSide  (must be <= regionW)
 	//   card bottom = pad + rectH + cardBorderSide (must be <= fb.Height, since cardY = pad - cardBorderTop)
-	availW := int(fb.Width) - pad - cardBorderSide - 2*textPad
+	availW := regionW - pad - cardBorderSide - 2*textPad
 	availH := int(fb.Height) - pad - cardBorderSide
 
 	maxCols := availW / charW
@@ -391,6 +395,7 @@ func main() {
 		cardY:              cardY,
 		cardW:              cardW,
 		cardH:              cardH,
+		regionW:            regionW,
 		maxLines:           maxLines,
 		maxCols:            maxCols,
 		lines:              [][]serial.SerialByte{nil},
@@ -425,7 +430,7 @@ func main() {
 		con.drawCardShadows()
 		fmt.Printf("[stdio] drawCardShadows: %v\n", time.Since(t0))
 
-		// Flush shadow region (extends beyond card edges).
+		// Flush shadow region (extends beyond card edges), clipped to our region.
 		margin := 40 + 4
 		flushX := cardX - margin
 		flushY := cardY - margin
@@ -436,6 +441,9 @@ func main() {
 		}
 		if flushY < 0 {
 			flushY = 0
+		}
+		if flushX+flushW > regionW {
+			flushW = regionW - flushX
 		}
 		sys.FlushFramebuffer(uint32(flushX), uint32(flushY), uint32(flushW), uint32(flushH))
 	}
@@ -753,6 +761,9 @@ func (c *console) drawCardShadows() {
 
 	im := c.im
 	bounds := im.Bounds()
+	// Clip to our region (left half of screen).
+	maxX := c.regionW
+	if maxX > bounds.Max.X { maxX = bounds.Max.X }
 
 	// Card SDF shadow
 	{
@@ -766,7 +777,7 @@ func (c *console) drawCardShadows() {
 		ey := c.cardY + c.cardH + margin
 		if sx < bounds.Min.X { sx = bounds.Min.X }
 		if sy < bounds.Min.Y { sy = bounds.Min.Y }
-		if ex > bounds.Max.X { ex = bounds.Max.X }
+		if ex > maxX { ex = maxX }
 		if ey > bounds.Max.Y { ey = bounds.Max.Y }
 
 		t0 := time.Now()
@@ -813,7 +824,7 @@ func (c *console) drawCardShadows() {
 		bey := int(btnCy+btnR) + bMargin
 		if bsx < bounds.Min.X { bsx = bounds.Min.X }
 		if bsy < bounds.Min.Y { bsy = bounds.Min.Y }
-		if bex > bounds.Max.X { bex = bounds.Max.X }
+		if bex > maxX { bex = maxX }
 		if bey > bounds.Max.Y { bey = bounds.Max.Y }
 
 		for py := bsy; py < bey; py++ {
