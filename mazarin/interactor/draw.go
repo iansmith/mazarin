@@ -115,6 +115,11 @@ func (dc *DrawContext) renderGlyphs(face font.Face) {
 	}
 }
 
+// Image returns the framebuffer as an *image.RGBA.
+func (dc *DrawContext) Image() *image.RGBA {
+	return dc.im
+}
+
 // DrawTree renders the interactor tree within the given clip rectangle.
 func (dc *DrawContext) DrawTree(root *Interactor, clipRect [4]int32) {
 	dc.drawNode(root, clipRect)

@@ -133,10 +133,11 @@ def load_font(size, index=0):
 def main():
     img = Image.new('RGBA', (CW, CH), SURFACE + (255,))
 
-    # Dialog box (raised) ── logical 450×235 @ (75, 60)
+    # Dialog box (raised, HEAVY) ── logical 450×235 @ (75, 60)
     DX, DY, DW, DH = px(75), px(60), px(450), px(235)
     neu_raised(img, DX, DY, DX+DW, DY+DH,
-               r=px(18), light_off=3, light_blur=5, dark_off=14, dark_blur=14)
+               r=px(18), light_off=6, light_blur=10, dark_off=22, dark_blur=22,
+               dark_alpha=140, light_alpha=255)
 
     # Title — 21pt bold
     font_title = load_font(px(21), index=1)
@@ -164,14 +165,14 @@ def main():
     BW, BH = px(108), px(44)
     BY = GY + px(5) + px(16)
 
-    # Cancel (inset, left)
+    # Cancel (inset, HEAVY, left)
     BCX = DX + px(65)
     neu_inset(img, BCX, BY, BCX+BW, BY+BH,
-              r=px(10), off=2, dark_blur=5, light_blur=3)
+              r=px(10), off=4, dark_blur=10, light_blur=6)
     icon_x(ImageDraw.Draw(img), BCX + BW//2, BY + BH//2,
            sz=px(8), lw=px(2))
 
-    # Confirm (raised, right)
+    # Confirm (raised, normal, right)
     BRX = DX + DW - px(65) - BW
     neu_raised(img, BRX, BY, BRX+BW, BY+BH,
                r=px(10), light_off=2, light_blur=4, dark_off=7, dark_blur=7)

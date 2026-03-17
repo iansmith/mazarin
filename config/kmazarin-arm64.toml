@@ -34,21 +34,21 @@ path = "/dapope.elf"
 name = "stdio"
 path = "/stdio.elf"
 
-[[priest]]
-name = "sievetest"
-path = "/sievetest.elf"
+#[[priest]]
+#name = "sievetest"
+#path = "/sievetest.elf"
 
-[[priest]]
-name = "attrtest"
-path = "/attrtest.elf"
+#[[priest]]
+#name = "attrtest"
+#path = "/attrtest.elf"
 
-[[priest]]
-name = "handletest"
-path = "/handletest.elf"
+#[[priest]]
+#name = "handletest"
+#path = "/handletest.elf"
 
-[[priest]]
-name = "clocktest"
-path = "/clocktest.elf"
+#[[priest]]
+#name = "clocktest"
+#path = "/clocktest.elf"
 
 [[priest]]
 name = "uitest"
