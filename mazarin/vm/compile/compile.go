@@ -47,6 +47,18 @@ func Compile(src string) (*Result, error) {
 		return nil, fmt.Errorf("parse error: %w", err)
 	}
 
+	// Strip import declarations so the type checker (Importer: nil) doesn't fail.
+	// Imports are resolved by the compile-constraints tool before reaching here.
+	file.Imports = nil
+	var filteredDecls []ast.Decl
+	for _, decl := range file.Decls {
+		if gd, ok := decl.(*ast.GenDecl); ok && gd.Tok == token.IMPORT {
+			continue
+		}
+		filteredDecls = append(filteredDecls, decl)
+	}
+	file.Decls = filteredDecls
+
 	// Collect user function declarations (skip builtin stubs).
 	var fnDecls []*ast.FuncDecl
 	for _, decl := range file.Decls {
@@ -429,6 +441,7 @@ func deref_tribool(uri string) int64 { return 0 }
 func exists(uri string) bool { return false }
 func uri_segment(uri string, idx int64) string { return "" }
 func is_unknown(val int64) bool { return false }
+func increment_atomic(uri string) int64 { return 0 }
 `
 
 // builtinStubNames is the set of function names injected as stubs.
@@ -445,4 +458,5 @@ var builtinStubNames = map[string]struct{}{
 	"find": {}, "deref_i64": {}, "deref_str": {}, "deref_bool": {},
 	"deref_f64": {}, "deref_rect": {}, "deref_point2d": {}, "deref_tribool": {},
 	"exists": {}, "uri_segment": {}, "is_unknown": {},
+	"increment_atomic": {},
 }

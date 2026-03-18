@@ -112,8 +112,8 @@ func KernelAttrWriteI64(slot uint16, val int64) {
 	node.CachedValue = newVal
 	node.SeqCounter++
 
-	// Clear dirty, propagate to dependents.
-	node.SetDirty(false)
+	// Propagate dirty to dependents. The source node is marked dirty by
+	// dirtyWalk itself; no need to clear it first.
 	attrMgr.dirtyPropagate(slot)
 }
 
@@ -131,7 +131,6 @@ func KernelAttrWriteBool(slot uint16, val bool) {
 	node.CachedValue = newVal
 	node.SeqCounter++
 
-	node.SetDirty(false)
 	attrMgr.dirtyPropagate(slot)
 }
 
@@ -160,7 +159,6 @@ func KernelAttrWriteStr(slot uint16, val string) {
 	node.CachedValue = newVal
 	node.SeqCounter++
 
-	node.SetDirty(false)
 	attrMgr.dirtyPropagate(slot)
 }
 
@@ -296,11 +294,17 @@ func PublishKernelAttributes() {
 	serial.RawUARTPuts("[attr] kernel attributes published (time, screen, darkMode, modifiers, charMetrics)\r\n")
 }
 
+// timeUpdateHertz is the configured time update frequency (Hz).
+// 0 or 1 means once per second (default). Set from boot config.
+var timeUpdateHertz int
+
 // StartKernelAttrUpdaters spawns goroutines that keep kernel attributes current.
-func StartKernelAttrUpdaters() {
+// hertz is the time update frequency from boot config (0 = default 1Hz).
+func StartKernelAttrUpdaters(hertz int) {
 	if !kernelAttrsPublished {
 		return
 	}
+	timeUpdateHertz = hertz
 	go timeUpdateLoop()
 }
 
@@ -372,23 +376,53 @@ func PublishBootConfigAttributes(tz string, goMemLimitMB, gcPercentage int) {
 	serial.RawUARTPuts("[attr] boot config attributes published\r\n")
 }
 
-// timeUpdateLoop updates the time attributes once per second and flushes
-// modifier state changes from the nosplit top-half.
+// timeUpdateLoop updates the time attributes at the configured frequency and
+// flushes modifier state changes from the nosplit top-half.
 // Runs as a regular goroutine on the kernel's M/P, yielding cooperatively.
+//
+// At 1Hz (default): only writes when the second changes (change-gated).
+// At >1Hz: writes nanos on every tick interval (nanos always changes),
+// giving priests more frequent dirty notifications for smoother displays.
 func timeUpdateLoop() {
+	hertz := timeUpdateHertz
+	if hertz <= 1 {
+		hertz = 1
+	}
+
+	// Compute tick interval for the configured Hz using the timer frequency.
+	timerFreq := uint64(ktime.GetFrequency())
+	tickInterval := timerFreq / uint64(hertz)
+	lastUpdateTick := ktime.ReadCounter()
+
 	var lastSec uint64
 	for {
-		sec, nanos := ktime.GetTime()
-		if sec != lastSec {
-			KernelAttrWriteI64(slotTimeSeconds, int64(sec))
-			KernelAttrWriteI64(slotTimeNanos, int64(nanos))
-			lastSec = sec
-		}
-
 		// Flush modifier bitmask if changed by top-half IRQ handler.
 		if atomic.CompareAndSwapUint32(&modifierDirty, 1, 0) {
 			mods := atomic.LoadUint64(&modifierState)
 			KernelAttrWriteI64(slotModifiers, int64(mods))
+		}
+
+		now := ktime.ReadCounter()
+		if now-lastUpdateTick < tickInterval {
+			runtime.Gosched()
+			continue
+		}
+		lastUpdateTick = now
+
+		sec, nanos := ktime.GetTime()
+		if hertz == 1 {
+			// Original behavior: only write when second changes.
+			if sec != lastSec {
+				KernelAttrWriteI64(slotTimeSeconds, int64(sec))
+				KernelAttrWriteI64(slotTimeNanos, int64(nanos))
+				lastSec = sec
+			}
+		} else {
+			// Multi-Hz: always write seconds (change-gated internally),
+			// always write nanos (always different → always propagates).
+			KernelAttrWriteI64(slotTimeSeconds, int64(sec))
+			KernelAttrWriteI64(slotTimeNanos, int64(nanos))
+			lastSec = sec
 		}
 
 		runtime.Gosched()

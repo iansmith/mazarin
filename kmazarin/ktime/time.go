@@ -69,3 +69,13 @@ func GetTime() (seconds, nanoseconds uint64) {
 
 	return state.baseSeconds + elapsedSeconds, elapsedNanoseconds
 }
+
+// GetFrequency returns the timer frequency in Hz.
+func GetFrequency() uint64 {
+	return state.frequency
+}
+
+// ReadCounter returns the current raw tick counter value.
+func ReadCounter() uint64 {
+	return kirq.ReadCounterValue()
+}

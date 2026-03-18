@@ -143,6 +143,21 @@ func (r *sharedResolver) Exists(prefix string) (bool, uint16) {
 	return node.ChildCount > 0, current
 }
 
+// IncrementI64 atomically increments an int64 value attribute by URI.
+// Uses trieLookupShared to resolve URI→slot, then calls the kernel syscall.
+// Does NOT add to read set — intended for side-effect counters.
+func (r *sharedResolver) IncrementI64(uri string) (int64, bool) {
+	slot, found := trieLookupShared(uri)
+	if !found {
+		return 0, false
+	}
+	newVal, err := sys.AttrIncrementI64(slot)
+	if err != nil {
+		return 0, false
+	}
+	return newVal, true
+}
+
 // --- Trie walking on shared pages ---
 
 // trieLookupShared looks up a URI in the shared-page trie (read-only).

@@ -111,6 +111,9 @@ const (
 	BuiltinExists       uint16 = 208 // (Str) → Bool
 	BuiltinURISegment   uint16 = 209 // (Str, I64) → Str
 	BuiltinIsUnknown    uint16 = 210 // (any) → Bool
+
+	// Side-effect builtins.
+	BuiltinIncrementAtomic uint16 = 220 // (Str) → I64  atomically increment int64 attr
 )
 
 // callBuiltin dispatches a builtin function call.
@@ -961,6 +964,25 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		return m.push(Bool(a.typ == TypeTribool && a.i64 == TriboolUnknown))
+
+	// --- Side-effect builtins ---
+
+	case BuiltinIncrementAtomic:
+		uri, err := m.pop()
+		if err != nil {
+			return err
+		}
+		if uri.typ != TypeStr {
+			return m.haltf("increment_atomic requires string, got %s", TypeName(uri.typ))
+		}
+		if m.resolver == nil {
+			return m.haltf("increment_atomic: no resolver configured")
+		}
+		newVal, ok := m.resolver.IncrementI64(uri.str)
+		if !ok {
+			return m.push(I64(0))
+		}
+		return m.push(I64(newVal))
 
 	default:
 		return m.haltf("unknown builtin %d", id)

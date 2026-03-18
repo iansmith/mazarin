@@ -3,7 +3,6 @@
 package sys
 
 import (
-	"syscall"
 	"unsafe"
 )
 
@@ -19,6 +18,7 @@ const (
 	sysAttrWriteString   = 0x1028
 	sysAttrSetEager      = 0x1029
 	sysAttrWaitDirty     = 0x102A
+	sysAttrIncrementI64  = 0x102B
 )
 
 // Attribute kinds (must match flat.AttrKindValue / AttrKindConstraint).
@@ -42,26 +42,18 @@ func AttrCreate(uri string, valueType uint8, kind uint8, bytecode []byte) (uint1
 		uintptr(uriPtr), uintptr(len(uri)),
 		uintptr(valueType), uintptr(kind),
 		uintptr(bcPtr), bcLen)
-	result := int64(r1)
-	if result < 0 {
-		return 0, syscall.Errno(-result)
-	}
 	if errno != 0 {
 		return 0, errno
 	}
-	return uint16(result), nil
+	return uint16(r1), nil
 }
 
 // AttrWrite writes a FlatValue (32 bytes) to an attribute by slot index.
 func AttrWrite(slot uint16, value *[32]byte) error {
-	r1, _, errno := RawSyscall(sysAttrWrite,
+	_, _, errno := RawSyscall(sysAttrWrite,
 		uintptr(slot),
 		uintptr(unsafe.Pointer(&value[0])), 32,
 		0, 0, 0)
-	result := int64(r1)
-	if result < 0 {
-		return syscall.Errno(-result)
-	}
 	if errno != 0 {
 		return errno
 	}
@@ -71,14 +63,10 @@ func AttrWrite(slot uint16, value *[32]byte) error {
 // AttrWriteURI writes a FlatValue (32 bytes) to an attribute by URI string.
 func AttrWriteURI(uri string, value *[32]byte) error {
 	uriPtr := unsafe.Pointer(unsafe.StringData(uri))
-	r1, _, errno := RawSyscall(sysAttrWriteURI,
+	_, _, errno := RawSyscall(sysAttrWriteURI,
 		uintptr(uriPtr), uintptr(len(uri)),
 		uintptr(unsafe.Pointer(&value[0])), 32,
 		0, 0)
-	result := int64(r1)
-	if result < 0 {
-		return syscall.Errno(-result)
-	}
 	if errno != 0 {
 		return errno
 	}
@@ -87,13 +75,9 @@ func AttrWriteURI(uri string, value *[32]byte) error {
 
 // AttrAddDep adds a dependency edge: fromSlot depends on toSlot.
 func AttrAddDep(fromSlot, toSlot uint16) error {
-	r1, _, errno := RawSyscall(sysAttrAddDep,
+	_, _, errno := RawSyscall(sysAttrAddDep,
 		uintptr(fromSlot), uintptr(toSlot),
 		0, 0, 0, 0)
-	result := int64(r1)
-	if result < 0 {
-		return syscall.Errno(-result)
-	}
 	if errno != 0 {
 		return errno
 	}
@@ -106,14 +90,10 @@ func AttrUpdateDeps(constraintSlot uint16, readSet []uint16) error {
 	if len(readSet) > 0 {
 		ptr = unsafe.Pointer(&readSet[0])
 	}
-	r1, _, errno := RawSyscall(sysAttrUpdateDeps,
+	_, _, errno := RawSyscall(sysAttrUpdateDeps,
 		uintptr(constraintSlot),
 		uintptr(ptr), uintptr(len(readSet)),
 		0, 0, 0)
-	result := int64(r1)
-	if result < 0 {
-		return syscall.Errno(-result)
-	}
 	if errno != 0 {
 		return errno
 	}
@@ -126,27 +106,19 @@ func AttrRegisterQuery(pattern string) (uint16, error) {
 	r1, _, errno := RawSyscall(sysAttrRegisterQuery,
 		uintptr(patPtr), uintptr(len(pattern)),
 		0, 0, 0, 0)
-	result := int64(r1)
-	if result < 0 {
-		return 0, syscall.Errno(-result)
-	}
 	if errno != 0 {
 		return 0, errno
 	}
-	return uint16(result), nil
+	return uint16(r1), nil
 }
 
 // AttrWriteResult writes a constraint evaluation result (scalar/composite) to a
 // constraint slot. Does not dirty-propagate.
 func AttrWriteResult(slot uint16, value *[32]byte) error {
-	r1, _, errno := RawSyscall(sysAttrWriteResult,
+	_, _, errno := RawSyscall(sysAttrWriteResult,
 		uintptr(slot),
 		uintptr(unsafe.Pointer(&value[0])), 32,
 		0, 0, 0)
-	result := int64(r1)
-	if result < 0 {
-		return syscall.Errno(-result)
-	}
 	if errno != 0 {
 		return errno
 	}
@@ -165,14 +137,10 @@ func AttrWriteString(slot uint16, s string, isConstraintResult bool) error {
 	if isConstraintResult {
 		constraintFlag = 1
 	}
-	r1, _, errno := RawSyscall(sysAttrWriteString,
+	_, _, errno := RawSyscall(sysAttrWriteString,
 		uintptr(slot),
 		uintptr(sPtr), uintptr(len(s)),
 		constraintFlag, 0, 0)
-	result := int64(r1)
-	if result < 0 {
-		return syscall.Errno(-result)
-	}
 	if errno != 0 {
 		return errno
 	}
@@ -187,13 +155,9 @@ func AttrSetEager(slot uint16, eager bool) error {
 	if eager {
 		eagerVal = 1
 	}
-	r1, _, errno := RawSyscall(sysAttrSetEager,
+	_, _, errno := RawSyscall(sysAttrSetEager,
 		uintptr(slot), eagerVal,
 		0, 0, 0, 0)
-	result := int64(r1)
-	if result < 0 {
-		return syscall.Errno(-result)
-	}
 	if errno != 0 {
 		return errno
 	}
@@ -211,4 +175,16 @@ func AttrWaitDirty(buf []uint16) int {
 		uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)),
 		0, 0, 0, 0)
 	return int(int64(r1))
+}
+
+// AttrIncrementI64 atomically increments an int64 value attribute.
+// Returns the new value on success, or an error.
+// No dirty propagation — intended for side-effect counters.
+func AttrIncrementI64(slot uint16) (int64, error) {
+	r1, _, errno := RawSyscall(sysAttrIncrementI64,
+		uintptr(slot), 0, 0, 0, 0, 0)
+	if int64(r1) < 0 {
+		return 0, errno
+	}
+	return int64(r1), nil
 }

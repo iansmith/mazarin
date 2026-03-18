@@ -18,7 +18,6 @@ import (
 	_ "mazzy/mazarin/mazhost"
 	"os"
 	"runtime"
-	"syscall"
 	"time"
 	"unsafe"
 )
@@ -224,76 +223,8 @@ func mouseLoop(slot int, stack core.CursorStack, images core.CursorImageMap, ren
 	}
 }
 
-// findStdioPID uses the PriestInfo syscall to find the priest launched
-// from "/stdio.elf" and returns its PID. Returns -1 if not found.
-func findStdioPID() int {
-	priests, err := sys.PriestInfo()
-	if err != nil {
-		return -1
-	}
-	for _, p := range priests {
-		name := string(p.Filename[:p.FilenameLen])
-		if name == "/stdio.elf" {
-			return int(p.PID)
-		}
-	}
-	return -1
-}
-
-func timerLoop(clock *clockRenderer, slot int) {
-	fmt.Printf("[dapope:timer] timer goroutine started on slot %d\n", slot)
-	var buf hid.SoftIRQReturn
-	tick := 0
-
-	// Discover stdio's PID after a few ticks (give it time to launch)
-	stdioPID := -1
-	loopIter := 0
-
-	for {
-		loopIter++
-
-		ts, err := sys.GetTime()
-		if err != nil {
-			fmt.Printf("[dapope:timer] GetTime error: %v\n", err)
-			return
-		}
-		// Set deadline 1 second from now
-		if err := sys.SetTimerDeadline(slot, ts.Seconds+1, ts.Nanoseconds); err != nil {
-			fmt.Printf("[dapope:timer] SetTimerDeadline error: %v\n", err)
-			continue
-		}
-		n, err := sys.WaitSoftIRQ(slot, &buf)
-		if err != nil || n == 0 {
-			continue
-		}
-		// Extract time from events: [0]=sec low, [1]=nsec, [2]=sec high
-		sec := uint64(buf.Events[0].Value)
-		nsec := uint64(buf.Events[1].Value)
-		if n >= 3 {
-			sec |= uint64(buf.Events[2].Value) << 32
-		}
-		clock.Update(sys.TimeSpec{Seconds: sec, Nanoseconds: nsec})
-		tick++
-
-		// Discover stdio's PID once (after 5s to let it launch)
-		if stdioPID < 0 && tick >= 5 {
-			stdioPID = findStdioPID()
-			if stdioPID > 0 {
-				fmt.Printf("[dapope:timer] found stdio at PID %d\n", stdioPID)
-			}
-		}
-
-		// Send SIGUSR1 to stdio every ~10 seconds.
-		// kill() targets a priest by PID; the kernel picks a thread in that priest.
-		if stdioPID > 0 && tick%10 == 0 {
-			if err := syscall.Kill(stdioPID, syscall.SIGUSR1); err != nil {
-				fmt.Printf("[dapope:timer] kill(priest %d, SIGUSR1) error: %v\n", stdioPID, err)
-			} else {
-				fmt.Printf("[dapope:timer] sent SIGUSR1 to priest %d (kernel picks thread)\n", stdioPID)
-			}
-		}
-	}
-}
+// timerLoop and findStdioPID disabled — clock display handled by uitest.
+// Timer IRQ registration also skipped (see device loop above).
 
 func main() {
 	fmt.Println("[dapope] Starting input event handler")
@@ -313,19 +244,16 @@ func main() {
 
 	kbdSlot := -1
 	mouseSlot := -1
-	timerSlot := -1
 	for i, dev := range devices {
-		// Skip serial devices (handled by stdio priest) and block devices
-		// (owned by disk priest)
-		if dev.DeviceType == hid.DeviceTypeSerial || dev.DeviceType == hid.DeviceTypeBlock {
+		// Skip serial, block, and timer devices.
+		// Timer clock display is handled by uitest via constraint system.
+		if dev.DeviceType == hid.DeviceTypeSerial || dev.DeviceType == hid.DeviceTypeBlock || dev.DeviceType == hid.DeviceTypeTimer {
 			continue
 		}
 
 		typeName := "keyboard"
 		if dev.DeviceType == hid.DeviceTypeMouse {
 			typeName = "mouse"
-		} else if dev.DeviceType == hid.DeviceTypeTimer {
-			typeName = "timer"
 		}
 
 		if err := sys.RegisterSoftIRQ(dev.IRQNum, i); err != nil {
@@ -337,8 +265,6 @@ func main() {
 
 		if dev.DeviceType == hid.DeviceTypeMouse {
 			mouseSlot = i
-		} else if dev.DeviceType == hid.DeviceTypeTimer {
-			timerSlot = i
 		} else {
 			kbdSlot = i
 		}
@@ -379,19 +305,7 @@ func main() {
 		runtime.Gosched()
 	}
 
-	// Launch periodic timer goroutine with clock display
-	clock := newClockRenderer(fb)
-	if clock != nil && timerSlot >= 0 {
-		// Render initial time immediately
-		if ts, err := sys.GetTime(); err == nil {
-			clock.Update(ts)
-		}
-		go timerLoop(clock, timerSlot)
-		runtime.Gosched()
-	}
-
-	// Test stderr rendering — run in a goroutine with a short delay
-	// so the stdio priest has time to register the UART slot.
+	// Stderr test (stdio priest disabled for now, but keep for diagnostics).
 	go func() {
 		time.Sleep(2 * time.Second)
 		fmt.Fprintln(os.Stderr, "[dapope] stderr test: this should be dark red")

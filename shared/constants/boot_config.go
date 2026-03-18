@@ -65,6 +65,12 @@ type BootConfig struct {
 	// GOMEMLIMIT be the GC governor instead of GOGC.
 	GCPercentKernel int
 
+	// TimeUpdateHertz is the frequency (in Hz) at which the kernel publishes
+	// time attributes (utc_seconds, utc_nanos). 0 or 1 means once per second
+	// (default). Higher values (e.g. 3) reduce visual jitter in clock displays
+	// by providing more frequent dirty notifications.
+	TimeUpdateHertz int
+
 	Timezone [MaxTimezoneLen]byte
 
 	BootstrapPriests     [MaxBootstrapPriests]BootPriest

@@ -16,6 +16,11 @@ type AttrResolver interface {
 	// Exists returns true if any attributes exist under the URI prefix,
 	// along with the trie node slot for read set tracking.
 	Exists(prefix string) (bool, uint16)
+
+	// IncrementI64 atomically increments an int64 value attribute by URI.
+	// Returns (new value, true) on success, or (0, false) if not found.
+	// Does NOT add to read set — intended for side-effect counters.
+	IncrementI64(uri string) (int64, bool)
 }
 
 // RunWithResolver executes a program with attribute namespace access.

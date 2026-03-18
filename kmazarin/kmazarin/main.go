@@ -960,7 +960,11 @@ func simpleMain() {
 	initRunPriestWorker()
 
 	// Start kernel attribute updaters (time update goroutine).
-	ksyscall.StartKernelAttrUpdaters()
+	timeHertz := 0
+	if bootCfg != nil {
+		timeHertz = bootCfg.TimeUpdateHertz
+	}
+	ksyscall.StartKernelAttrUpdaters(timeHertz)
 
 	// Enter the kernel idle loop. Thread 0 (m0/g0) stays alive as a normal
 	// scheduled thread. Priest threads are already running. The timer IRQ

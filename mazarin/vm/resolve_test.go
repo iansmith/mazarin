@@ -42,6 +42,16 @@ func (r *mockResolver) Deref(uri string, expectedType uint8) (Value, uint16, boo
 	return a.value, a.slot, true
 }
 
+func (r *mockResolver) IncrementI64(uri string) (int64, bool) {
+	a, ok := r.attrs[uri]
+	if !ok {
+		return 0, false
+	}
+	newVal := a.value.AsI64() + 1
+	r.attrs[uri] = mockAttr{slot: a.slot, value: I64(newVal)}
+	return newVal, true
+}
+
 func (r *mockResolver) Exists(prefix string) (bool, uint16) {
 	for uri := range r.attrs {
 		if len(uri) >= len(prefix) && uri[:len(prefix)] == prefix {
@@ -310,6 +320,40 @@ func TestReadSetEqual(t *testing.T) {
 
 	if a.Equal(c) {
 		t.Fatal("expected unequal read sets")
+	}
+}
+
+func TestIncrementAtomic(t *testing.T) {
+	r := newMockResolver()
+	r.Set("attr:///uitest/int64/eagerCount", 50, I64(0))
+
+	prog := &Program{
+		Strings: []string{"attr:///uitest/int64/eagerCount"},
+		Code: []Inst{
+			{Opcode: OpConstStr, Op1: 0},
+			InstCallBuiltin(BuiltinIncrementAtomic, 1),
+			InstStore(0),
+			{Opcode: OpConstStr, Op1: 0},
+			InstCallBuiltin(BuiltinIncrementAtomic, 1),
+			InstStore(1),
+			InstLoad(0),
+			InstLoad(1),
+			InstRet(2),
+		},
+	}
+	results, readSet, err := RunWithResolver(prog, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].AsI64() != 1 {
+		t.Fatalf("expected first increment=1, got %d", results[0].AsI64())
+	}
+	if results[1].AsI64() != 2 {
+		t.Fatalf("expected second increment=2, got %d", results[1].AsI64())
+	}
+	// increment_atomic does NOT add to read set.
+	if readSet.Count != 0 {
+		t.Fatalf("expected empty read set, got count=%d", readSet.Count)
 	}
 }
 

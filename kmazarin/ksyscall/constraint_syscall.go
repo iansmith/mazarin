@@ -89,18 +89,12 @@ func SyscallAttrCreate(uriBufPtr, uriLen, valueType, attrKind, bytecodeBufPtr, b
 			attrMgr.freeNode(slot)
 			return -12 // ENOMEM
 		}
-		var bcBuf [4096]byte
-		copyLen := int(bytecodeLen)
-		if copyLen > len(bcBuf) {
-			copyLen = len(bcBuf)
-		}
-		if !kmem.CopyFromUser(bcBuf[:copyLen], uintptr(bytecodeBufPtr), copyLen) {
+		// Copy directly from userspace into the bytecode region (no stack buffer limit).
+		dst := attrMgr.baseVA + uintptr(attrMgr.bytecodeRegionOff) + uintptr(bcOff)
+		dstSlice := unsafe.Slice((*byte)(unsafe.Pointer(dst)), int(bytecodeLen))
+		if !kmem.CopyFromUser(dstSlice, uintptr(bytecodeBufPtr), int(bytecodeLen)) {
 			attrMgr.freeNode(slot)
 			return -14 // EFAULT
-		}
-		dst := attrMgr.baseVA + uintptr(attrMgr.bytecodeRegionOff) + uintptr(bcOff)
-		for i := 0; i < copyLen; i++ {
-			*(*byte)(unsafe.Pointer(dst + uintptr(i))) = bcBuf[i]
 		}
 		attrMgr.bytecodeBumpOff += needed
 		node.ProgramOffset = bcOff
@@ -184,10 +178,8 @@ func SyscallAttrWrite(slotIndex, valueBufPtr, valueLen, _, _, _ uint64) int64 {
 	node.CachedValue = newVal
 	node.SeqCounter++
 
-	// Clear dirty flag on this node (it now has a fresh value).
-	node.SetDirty(false)
-
-	// Dirty-propagate to dependents.
+	// Dirty-propagate to dependents. The source node is marked dirty by
+	// dirtyWalk itself; no need to clear it first.
 	attrMgr.dirtyPropagate(slot)
 
 	return 0
@@ -401,11 +393,11 @@ func SyscallAttrRegisterQuery(patternBufPtr, patternLen, _, _, _, _ uint64) int6
 	q.ownerPID = uint16(pid)
 	attrMgr.queryCount++
 
-	// Evaluate the pattern against the current trie.
+	// Evaluate the pattern against the current trie and write collection results.
 	patStr := unsafeStringFromBytes(patBuf[:patternLen])
-	var matches [256]uint16
-	matchCount := attrMgr.trieMatchPattern(patStr, matches[:])
-	_ = matchCount // collection write deferred to Phase 4 (requires collection region management)
+	var matchURIs [256]string
+	matchCount := attrMgr.trieMatchPatternURIs(patStr, matchURIs[:])
+	attrMgr.writeQueryCollection(q, matchURIs[:], matchCount)
 
 	return int64(slot)
 }
@@ -547,6 +539,15 @@ func SyscallAttrWriteString(slotIndex, strBufPtr, strLen, isConstraintResult, _,
 		}
 	}
 
+	// Free the old string slot before allocating a new one.
+	// This prevents string region exhaustion when values are repeatedly updated.
+	if node.CachedValue.Typ == flat.TypeStr {
+		oldRef := node.CachedValue.AsStrRef()
+		if oldRef.Len > 0 || oldRef.RegionOffset > 0 {
+			attrMgr.freeString(oldRef.RegionOffset)
+		}
+	}
+
 	// Allocate string slot in shared page and write string content.
 	strVal := unsafeStringFromBytes(strBuf[:copyLen])
 	nameOff, ok := attrMgr.allocString(strVal)
@@ -569,8 +570,8 @@ func SyscallAttrWriteString(slotIndex, strBufPtr, strLen, isConstraintResult, _,
 		// Constraint result path: clear dirty, no propagation.
 		node.SetDirty(false)
 	} else {
-		// Value write path: clear dirty, propagate.
-		node.SetDirty(false)
+		// Value write path: propagate to dependents. The source node is
+		// marked dirty by dirtyWalk; no need to clear first.
 		attrMgr.dirtyPropagate(slot)
 	}
 
@@ -659,6 +660,101 @@ func (mgr *KernelAttrManager) removeReverseEdge(depSlot, constraintSlot uint16) 
 	node.DependentsCount = uint16(newCount)
 }
 
+// writeQueryCollection writes matched URIs as a collection into a query's result slot.
+// Frees any old string slots from a previous collection result before writing new ones.
+func (mgr *KernelAttrManager) writeQueryCollection(q *queryPattern, uris []string, count int) {
+	node := mgr.node(q.resultSlot)
+
+	// Free old strings from previous collection result.
+	if node.CachedValue.Typ == flat.TypeCollection {
+		oldRef := node.CachedValue.AsCollRef()
+		for i := 0; i < int(oldRef.Count); i++ {
+			elemAddr := mgr.baseVA + uintptr(mgr.collRegionOff) + uintptr(oldRef.RegionOffset) + uintptr(i)*flat.FlatValueSize
+			elem := *(*flat.FlatValue)(unsafe.Pointer(elemAddr))
+			if elem.Typ == flat.TypeStr {
+				sref := elem.AsStrRef()
+				mgr.freeString(sref.RegionOffset)
+			}
+		}
+	}
+
+	if count == 0 {
+		// Empty result: write an empty collection.
+		node.SeqCounter++
+		node.CachedValue = flat.NewCollection(flat.FlatCollRef{
+			ElemType: flat.TypeStr,
+			Count:    0,
+		})
+		node.SeqCounter++
+		return
+	}
+
+	// Cap at 128 results to bound memory usage.
+	if count > 128 {
+		count = 128
+	}
+
+	// Allocate strings in the string region for each URI.
+	type uriStr struct {
+		off uint32
+		len uint16
+	}
+	var strBuf [128]uriStr
+	for i := 0; i < count; i++ {
+		off, ok := mgr.allocString(uris[i])
+		if !ok {
+			// Free already-allocated strings and write truncated result.
+			for j := 0; j < i; j++ {
+				mgr.freeString(strBuf[j].off)
+			}
+			count = 0
+			break
+		}
+		strBuf[i] = uriStr{off: off, len: uint16(len(uris[i]))}
+	}
+
+	if count == 0 {
+		node.SeqCounter++
+		node.CachedValue = flat.NewCollection(flat.FlatCollRef{ElemType: flat.TypeStr})
+		node.SeqCounter++
+		return
+	}
+
+	// Bump-allocate collection entries in the collection region.
+	needed := uint32(count) * flat.FlatValueSize
+	collCapBytes := uint32(kmem.RegionCollCap) * flat.FlatValueSize
+	if mgr.collectionBumpOff+needed > collCapBytes {
+		// No room: free all strings, write empty.
+		for i := 0; i < count; i++ {
+			mgr.freeString(strBuf[i].off)
+		}
+		node.SeqCounter++
+		node.CachedValue = flat.NewCollection(flat.FlatCollRef{ElemType: flat.TypeStr})
+		node.SeqCounter++
+		return
+	}
+
+	collOff := mgr.collectionBumpOff
+	for i := 0; i < count; i++ {
+		fv := flat.NewStr(flat.FlatStrRef{
+			RegionOffset: strBuf[i].off,
+			Len:          strBuf[i].len,
+		})
+		dst := mgr.baseVA + uintptr(mgr.collRegionOff) + uintptr(collOff) + uintptr(i)*flat.FlatValueSize
+		*(*flat.FlatValue)(unsafe.Pointer(dst)) = fv
+	}
+	mgr.collectionBumpOff += needed
+
+	// Write the collection ref to the result node.
+	node.SeqCounter++
+	node.CachedValue = flat.NewCollection(flat.FlatCollRef{
+		ElemType:     flat.TypeStr,
+		RegionOffset: collOff,
+		Count:        uint16(count),
+	})
+	node.SeqCounter++
+}
+
 // updateQueryResultsForURI re-evaluates query patterns after a URI is created/removed.
 //
 func (mgr *KernelAttrManager) updateQueryResultsForURI(uri string) {
@@ -684,12 +780,58 @@ func (mgr *KernelAttrManager) updateQueryResultsForURI(uri string) {
 			}
 		}
 		if match {
-			// The newly created/removed URI matches this query pattern.
+			// Re-evaluate the full query and write updated collection results.
+			var matchURIs [256]string
+			matchCount := mgr.trieMatchPatternURIs(patStr, matchURIs[:])
+			mgr.writeQueryCollection(q, matchURIs[:], matchCount)
+
 			// Dirty-propagate from the query result slot so dependents know
 			// the collection changed.
 			mgr.dirtyPropagate(q.resultSlot)
 		}
 	}
+}
+
+// SyscallAttrIncrementI64 atomically increments an int64 value attribute.
+// No dirty propagation — intended for side-effect counters, not constraint inputs.
+//
+// Args: slotIndex, _, _, _, _, _
+// Returns: new value on success, negative errno on failure.
+func SyscallAttrIncrementI64(slotIndex, _, _, _, _, _ uint64) int64 {
+	if !attrMgr.initialized {
+		return -12 // ENOMEM
+	}
+
+	slot := uint16(slotIndex)
+	if !attrMgr.isNodeAllocated(slot) {
+		return -22 // EINVAL
+	}
+
+	node := attrMgr.node(slot)
+	if node.IsTombstoned() {
+		return -22 // EINVAL
+	}
+
+	// Ownership check.
+	pid, _ := getCurrentThreadPIDAndTID()
+	if node.Owner != uint16(pid) {
+		return -1 // EPERM
+	}
+
+	// Must be a value attribute with int64 type.
+	if node.Kind != flat.AttrKindValue || node.ValueType != flat.TypeI64 {
+		return -22 // EINVAL
+	}
+
+	// Atomic read-increment-write under seqlock.
+	cur := node.CachedValue.AsI64()
+	newVal := flat.NewI64(cur + 1)
+	node.SeqCounter++
+	node.CachedValue = newVal
+	node.SeqCounter++
+
+	// No dirty propagation — counters are read-only side effects.
+	return cur + 1
 }
 
 // unsafeStringFromBytes creates a string from a byte slice without allocation.

@@ -66,7 +66,8 @@ var builtinFuncs = map[string]struct {
 	"deref_tribool":  {vm.BuiltinDerefTribool, 1},
 	"exists":         {vm.BuiltinExists, 1},
 	"uri_segment":    {vm.BuiltinURISegment, 2},
-	"is_unknown":     {vm.BuiltinIsUnknown, 1},
+	"is_unknown":         {vm.BuiltinIsUnknown, 1},
+	"increment_atomic":   {vm.BuiltinIncrementAtomic, 1},
 }
 
 // compileFn compiles the function body to bytecode.
