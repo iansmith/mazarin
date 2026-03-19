@@ -25,7 +25,7 @@ const (
 	NoSpace                                        // no address space available
 	FileNotFound                                   // file does not exist
 	NoDelegate                                     // no delegate registered for this syscall
-	NotReady                                       // delegate priest not ready
+	NotReady                                       // delegate shepherd not ready
 	TransferFailed                                 // page transfer failed
 
 	// Client-side errors (memblob, mazhost, etc.)
@@ -35,7 +35,7 @@ const (
 	InvalidSize      // invalid size argument
 	NilBuffer        // nil buffer argument
 	NotImplemented   // feature not yet implemented
-	PriestInitFailed // MazarinPriest() returned an error
+	ShepherdInitFailed // MazarinShepherd() returned an error
 )
 
 // Error is a non-allocating error value. Pre-defined package-level
@@ -75,7 +75,7 @@ var (
 	ErrNoSpace             = &Error{Code: NoSpace, message: "no address space available"}
 	ErrFileNotFound        = &Error{Code: FileNotFound, message: "file not found"}
 	ErrNoDelegate          = &Error{Code: NoDelegate, message: "no delegate registered"}
-	ErrNotReady            = &Error{Code: NotReady, message: "delegate priest not ready"}
+	ErrNotReady            = &Error{Code: NotReady, message: "delegate shepherd not ready"}
 	ErrTransferFailed      = &Error{Code: TransferFailed, message: "page transfer failed"}
 	ErrExceedsCapacity     = &Error{Code: ExceedsCapacity, message: "request exceeds size of MemBlob"}
 	ErrReadOnlyBlob        = &Error{Code: ReadOnlyBlob, message: "MemBlob is read-only"}
@@ -83,7 +83,7 @@ var (
 	ErrInvalidSize         = &Error{Code: InvalidSize, message: "invalid size"}
 	ErrNilBuffer           = &Error{Code: NilBuffer, message: "nil buffer"}
 	ErrNotImplemented      = &Error{Code: NotImplemented, message: "not implemented"}
-	ErrPriestInitFailed    = &Error{Code: PriestInitFailed, message: "MazarinPriest() returned an error"}
+	ErrShepherdInitFailed    = &Error{Code: ShepherdInitFailed, message: "MazarinShepherd() returned an error"}
 )
 
 // codeToError maps ErrorCode values to pre-defined *Error values.
@@ -110,7 +110,7 @@ var codeToError = [...]**Error{
 	InvalidSize - 0x1000:         &ErrInvalidSize,
 	NilBuffer - 0x1000:           &ErrNilBuffer,
 	NotImplemented - 0x1000:      &ErrNotImplemented,
-	PriestInitFailed - 0x1000:    &ErrPriestInitFailed,
+	ShepherdInitFailed - 0x1000:    &ErrShepherdInitFailed,
 }
 
 // FromCode returns the pre-defined *Error for a given ErrorCode,

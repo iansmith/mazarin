@@ -2,7 +2,7 @@ package ksyscall
 
 // uart_write.go — SysUartWrite and SysUartWriteDirect syscalls.
 //
-// These allow userspace priests (particularly stdio) to push bytes directly
+// These allow userspace shepherds (particularly stdio) to push bytes directly
 // into the UART output path. This decouples screen rendering (fast, handled
 // by stdio via delegated SyscallWrite) from serial output (slow, UART speed).
 //
@@ -20,7 +20,7 @@ import (
 // SyscallUartWrite writes bytes from a user buffer to the UART TX ring buffer.
 // Non-blocking: pushes what fits, drops the rest. Interrupt-driven drain.
 //
-// NOTE: This syscall is NOT gated by suppressSerial. The caller (stdio priest)
+// NOTE: This syscall is NOT gated by suppressSerial. The caller (stdio shepherd)
 // explicitly wants to write to UART — the suppressSerial flag only controls
 // whether SyscallWrite's ring-buffer path auto-echoes to serial.
 //
@@ -74,7 +74,7 @@ func SyscallUartWrite(arg0, arg1, _, _, _, _ uint64) int64 {
 // via synchronous PollWrite. Guaranteed delivery — blocks until all bytes
 // are transmitted. Used by stdio for stderr output (panics, tracebacks).
 //
-// NOTE: This syscall is NOT gated by suppressSerial. The caller (stdio priest)
+// NOTE: This syscall is NOT gated by suppressSerial. The caller (stdio shepherd)
 // explicitly wants to write to UART — the suppressSerial flag only controls
 // whether SyscallWrite's ring-buffer path auto-echoes to serial.
 //

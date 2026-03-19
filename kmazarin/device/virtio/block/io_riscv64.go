@@ -9,8 +9,8 @@ import "mazzy/kmazarin/asm"
 // when the timer may be disabled and interrupt returns may leave SIE cleared.
 //
 // Used only by doBlockIO's polling loop during early boot (TOML config read,
-// ELF loading) before the scheduler and disk priest are running. Once the disk
-// priest is active, block I/O goes through blockReadInterrupt which does a
+// ELF loading) before the scheduler and disk shepherd are running. Once the disk
+// shepherd is active, block I/O goes through blockReadInterrupt which does a
 // proper scheduler transition to thread 0's idle loop.
 //
 //go:nosplit

@@ -1,4 +1,4 @@
-// priest3 is a test program that spawns three goroutines:
+// shepherd3 is a test program that spawns three goroutines:
 // - goroutine 1 prints '4's
 // - goroutine 2 prints '6's
 // - goroutine 3 prints '7's
@@ -68,7 +68,7 @@ func busyLoop7() {
 
 func main() {
 	fmt.Println("========================================")
-	fmt.Println("[PRIEST3] Goroutine scheduling test")
+	fmt.Println("[SHEPHERD3] Goroutine scheduling test")
 	fmt.Println("========================================")
 	fmt.Println("Spawning three goroutines:")
 	fmt.Println("  - Goroutine 1: prints 4s")

@@ -3,7 +3,7 @@
 //
 // Goroutine-level preemption is handled by the Go runtime in userspace via
 // SIGURG signals. The kernel only performs thread-level preemption when a
-// thread (priest) has exceeded its time quantum.
+// thread (shepherd) has exceeded its time quantum.
 
 package kirq
 
@@ -83,8 +83,8 @@ const (
 	TickIntervalMs = 4
 
 	// ThreadPreemptMs is the thread-level preemption quantum in milliseconds.
-	// This is the coarse scheduling interval for switching between priests.
-	// Fine-grained goroutine preemption within each priest is handled by
+	// This is the coarse scheduling interval for switching between shepherds.
+	// Fine-grained goroutine preemption within each shepherd is handled by
 	// Go's sysmon sending SIGURG signals at ~10ms intervals.
 	ThreadPreemptMs = 100
 )

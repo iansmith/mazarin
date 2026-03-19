@@ -17,8 +17,8 @@ type section int
 
 const (
 	sectionTop             section = iota // top-level key=value
-	sectionBootstrapPriest               // inside [[bootstrap_priest]]
-	sectionPriest                        // inside [[priest]]
+	sectionBootstrapShepherd               // inside [[bootstrap_shepherd]]
+	sectionShepherd                        // inside [[shepherd]]
 )
 
 type parser struct {
@@ -73,16 +73,16 @@ func (p *parser) parseTableHeader() {
 	p.skipLine()
 
 	switch name {
-	case "bootstrap_priest":
-		if p.cfg.BootstrapPriestCount < constants.MaxBootstrapPriests {
-			p.cfg.BootstrapPriestCount++
+	case "bootstrap_shepherd":
+		if p.cfg.BootstrapShepherdCount < constants.MaxBootstrapShepherds {
+			p.cfg.BootstrapShepherdCount++
 		}
-		p.sec = sectionBootstrapPriest
-	case "priest":
-		if p.cfg.PriestCount < constants.MaxPriests {
-			p.cfg.PriestCount++
+		p.sec = sectionBootstrapShepherd
+	case "shepherd":
+		if p.cfg.ShepherdCount < constants.MaxShepherds {
+			p.cfg.ShepherdCount++
 		}
-		p.sec = sectionPriest
+		p.sec = sectionShepherd
 	}
 }
 
@@ -103,17 +103,17 @@ func (p *parser) parseKeyValue() {
 	switch p.sec {
 	case sectionTop:
 		p.parseTopLevel(key)
-	case sectionBootstrapPriest:
-		idx := p.cfg.BootstrapPriestCount - 1
-		if idx >= 0 && idx < constants.MaxBootstrapPriests {
-			p.parsePriestField(key, &p.cfg.BootstrapPriests[idx])
+	case sectionBootstrapShepherd:
+		idx := p.cfg.BootstrapShepherdCount - 1
+		if idx >= 0 && idx < constants.MaxBootstrapShepherds {
+			p.parseShepherdField(key, &p.cfg.BootstrapShepherds[idx])
 		} else {
 			p.skipLine()
 		}
-	case sectionPriest:
-		idx := p.cfg.PriestCount - 1
-		if idx >= 0 && idx < constants.MaxPriests {
-			p.parsePriestField(key, &p.cfg.Priests[idx])
+	case sectionShepherd:
+		idx := p.cfg.ShepherdCount - 1
+		if idx >= 0 && idx < constants.MaxShepherds {
+			p.parseShepherdField(key, &p.cfg.Shepherds[idx])
 		} else {
 			p.skipLine()
 		}
@@ -165,16 +165,16 @@ func (p *parser) parseTopLevel(key string) {
 	}
 }
 
-func (p *parser) parsePriestField(key string, priest *constants.BootPriest) {
+func (p *parser) parseShepherdField(key string, shepherd *constants.BootShepherd) {
 	ch := p.data[p.pos]
 	switch {
 	case ch == '"':
 		val := p.readQuotedString()
 		switch key {
 		case "name":
-			copyToArray(priest.Name[:], val)
+			copyToArray(shepherd.Name[:], val)
 		case "path":
-			copyToArray(priest.Path[:], val)
+			copyToArray(shepherd.Path[:], val)
 		}
 		p.skipLine()
 	case ch == '[':
@@ -183,25 +183,25 @@ func (p *parser) parsePriestField(key string, priest *constants.BootPriest) {
 		switch key {
 		case "mzr":
 			for _, e := range entries {
-				if priest.MzrCount >= constants.MaxModulesPerPriest {
+				if shepherd.MzrCount >= constants.MaxModulesPerShepherd {
 					break
 				}
 				name, path := splitNamePath(e)
-				mod := &priest.Mzr[priest.MzrCount]
+				mod := &shepherd.Mzr[shepherd.MzrCount]
 				copyToArray(mod.Name[:], name)
 				copyToArray(mod.Path[:], path)
-				priest.MzrCount++
+				shepherd.MzrCount++
 			}
 		case "maz":
 			for _, e := range entries {
-				if priest.MazCount >= constants.MaxModulesPerPriest {
+				if shepherd.MazCount >= constants.MaxModulesPerShepherd {
 					break
 				}
 				name, path := splitNamePath(e)
-				mod := &priest.Maz[priest.MazCount]
+				mod := &shepherd.Maz[shepherd.MazCount]
 				copyToArray(mod.Name[:], name)
 				copyToArray(mod.Path[:], path)
-				priest.MazCount++
+				shepherd.MazCount++
 			}
 		}
 		p.skipLine()

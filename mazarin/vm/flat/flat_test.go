@@ -200,11 +200,11 @@ func TestCompositeIPv6(t *testing.T) {
 	}
 }
 
-func TestCompositePriestId(t *testing.T) {
-	fv := NewPriestId(42, 1024, 7)
-	id, off, ln := fv.AsPriestId()
+func TestCompositeShepherdId(t *testing.T) {
+	fv := NewShepherdId(42, 1024, 7)
+	id, off, ln := fv.AsShepherdId()
 	if id != 42 || off != 1024 || ln != 7 {
-		t.Errorf("PriestId = (%d, %d, %d), want (42, 1024, 7)", id, off, ln)
+		t.Errorf("ShepherdId = (%d, %d, %d), want (42, 1024, 7)", id, off, ln)
 	}
 }
 

@@ -31,7 +31,7 @@ func patchJ_RISCV(funcVA, targetAddr uint64, l0PA uintptr) {
 // trampoline to the host's function using AUIPC+JALR (±2GB range).
 //
 // RISC-V JAL has only ±1MB range, which is insufficient when the .mzr
-// module (at 0x30000000) needs to call the priest's runtime functions
+// module (at 0x30000000) needs to call the shepherd's runtime functions
 // at distant addresses. Instead of patching the 4-byte call-site JAL
 // (which can't encode large offsets), we decode the JAL to find the
 // stub address and replace the 8-byte stub body (NOP + J .-4) with

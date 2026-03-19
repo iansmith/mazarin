@@ -9,7 +9,7 @@ import (
 
 // SigreturnVDSOVA is the fixed user-accessible virtual address of the sigreturn
 // vDSO page. This page contains the EBREAK instruction sequence for rt_sigreturn,
-// mapped with U+R+X in each priest's page table.
+// mapped with U+R+X in each shepherd's page table.
 //
 // On RISC-V, U-mode cannot execute kernel pages (PTE.U=0). Unlike ARM64 (which
 // allows EL0 to fetch instructions from TTBR1 pages without UXN), RISC-V uses a

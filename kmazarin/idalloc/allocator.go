@@ -7,7 +7,7 @@
 // - ID 0 is poison/invalid - never allocated
 // - Page-aligned backing storage
 // - Exhaustive validation with kernel panic on any error
-// - Separate instance per resource type (priest, maz, thread, etc.)
+// - Separate instance per resource type (shepherd, maz, thread, etc.)
 //
 // TODO: Shuffle the initial array before use for security/unpredictability.
 // Currently disabled because RNG correctness is not yet verified.
@@ -158,7 +158,7 @@ func (a *Int8Allocator) Release(id int8) {
 // ReleaseTable zeros all entries, zeros the backing page(s), and unmaps them.
 // After this call, the allocator is INVALID and must not be used.
 //
-// Use case: When a priest exits, release its maz ID allocator entirely.
+// Use case: When a shepherd exits, release its maz ID allocator entirely.
 //
 //go:nosplit
 func (a *Int8Allocator) ReleaseTable() {
@@ -219,7 +219,7 @@ type Int16Allocator struct {
 // Uses exactly numPages pages of memory.
 // Usable IDs: 1 to min(numPages * PageSize / 2, 32767)
 //
-// For priest IDs: NewInt16Allocator(1) gives IDs 1-2047
+// For shepherd IDs: NewInt16Allocator(1) gives IDs 1-2047
 // For larger pools: NewInt16Allocator(16) gives IDs 1-32767
 func NewInt16Allocator(numPages int) *Int16Allocator {
 	if numPages < 1 {

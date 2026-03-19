@@ -1,4 +1,4 @@
-// Package ipc defines the IPC message protocol used between priests.
+// Package ipc defines the IPC message protocol used between shepherds.
 // All IPC messages start with an IPCHeader, followed by opcode-specific payload.
 package ipc
 

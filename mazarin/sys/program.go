@@ -8,7 +8,7 @@ import (
 )
 
 // ProgramControl contains information about a loaded program.
-// Allocated by priest, filled in by kernel during BootstrapRunElf.
+// Allocated by shepherd, filled in by kernel during BootstrapRunElf.
 type ProgramControl struct {
 	// ProgramID is the kernel-assigned identifier for this program.
 	// Used for subsequent control operations (stop, kill, suspend).
@@ -19,24 +19,24 @@ type ProgramControl struct {
 	LoadAddress uint64
 
 	// EntryPoint is the address of main.MazarinMain().
-	// Priest converts this to a function pointer and calls it.
+	// Shepherd converts this to a function pointer and calls it.
 	EntryPoint uint64
 
 	// Reserved for future use (stack info, etc.)
 	Reserved [8]uint64
 }
 
-// BootstrapRunElf loads an ELF from disk into this priest's address space.
+// BootstrapRunElf loads an ELF from disk into this shepherd's address space.
 // This is a bootstrap-only call used to get the disk manager off the disk.
 // pc must point to writable memory (heap, data, BSS, or stack).
-// priestSyscallEntry is the address of priest's syscall handler.
-func BootstrapRunElf(filename string, priestSyscallEntry uintptr, pc *ProgramControl) *merror.Error {
+// shepherdSyscallEntry is the address of shepherd's syscall handler.
+func BootstrapRunElf(filename string, shepherdSyscallEntry uintptr, pc *ProgramControl) *merror.Error {
 	filenameBytes := append([]byte(filename), 0)
 
 	result, _, _ := syscall.RawSyscall6(
 		sysBootstrapRunElf,
 		uintptr(unsafe.Pointer(&filenameBytes[0])),
-		priestSyscallEntry,
+		shepherdSyscallEntry,
 		uintptr(unsafe.Pointer(pc)),
 		0, 0, 0,
 	)

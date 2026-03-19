@@ -18,7 +18,7 @@ func SetSignalAction(sig int, handler, flags, restorer, mask uint64)
 //go:nosplit
 func ThreadLookupByTID(tid int32) uintptr
 
-// ThreadLookupByPID finds the first thread belonging to a priest with the given PID.
+// ThreadLookupByPID finds the first thread belonging to a shepherd with the given PID.
 // Returns 0 if not found.
 // Provided by main.threadLookupByPIDForKsyscall.
 //go:nosplit
@@ -39,7 +39,7 @@ func GetThreadSignalStack(threadPtr uintptr) (base, sp, size uint64)
 //go:nosplit
 func SetThreadSignalStack(threadPtr uintptr, base, sp, size uint64)
 
-// GetThreadPID returns the PID (PriestId) of a thread.
+// GetThreadPID returns the PID (ShepherdId) of a thread.
 // Provided by main.getThreadPIDForKsyscall.
 //go:nosplit
 func GetThreadPID(threadPtr uintptr) int16

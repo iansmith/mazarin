@@ -1,4 +1,4 @@
-// disk is a userspace priest that owns the block device and loads a
+// disk is a userspace shepherd that owns the block device and loads a
 // filesystem .maz module to serve IPC requests.
 package main
 
@@ -16,7 +16,7 @@ import (
 
 // forceBlockDevItab ensures the linker includes the blockdev.BlockDevice
 // interface type descriptor, itab, and method wrappers for (*diskBlockDev, blockdev.BlockDevice).
-// Without this, fs.maz's type assertion priest.(blockdev.BlockDevice) fails
+// Without this, fs.maz's type assertion shepherd.(blockdev.BlockDevice) fails
 // because the host binary doesn't include the interface type in its typelinks.
 // The methods must actually be called to prevent the linker from marking Ifn as -1 (unreachable).
 //
@@ -37,7 +37,7 @@ func forceBlockDevItab(v interface{}) {
 }
 
 func main() {
-	fmt.Println("[disk] starting disk priest")
+	fmt.Println("[disk] starting disk shepherd")
 
 	// 1. Query devices to find the block device virtual IRQ
 	devices, err := sys.QueryInputDevices()
@@ -71,34 +71,34 @@ func main() {
 	blkDev := &diskBlockDev{}
 	// Force linker to include blockdev.BlockDevice itab for cross-module type assertions
 	forceBlockDevItab(blkDev)
-	mazMain, priestInitAddr, mazErr := mazhost.LoadMazBootstrap(fsPath, blkDev)
+	mazMain, shepherdInitAddr, mazErr := mazhost.LoadMazBootstrap(fsPath, blkDev)
 	if mazErr != nil {
 		fmt.Printf("[disk] LoadMazBootstrap failed: %v\n", mazErr)
 		os.Exit(1)
 	}
 
-	// 3. Experiment: try calling MazarinPriest in a goroutine
-	if priestInitAddr != 0 {
-		fmt.Printf("[disk] MazarinPriest at 0x%X — testing goroutine call\n", priestInitAddr)
+	// 3. Experiment: try calling MazarinShepherd in a goroutine
+	if shepherdInitAddr != 0 {
+		fmt.Printf("[disk] MazarinShepherd at 0x%X — testing goroutine call\n", shepherdInitAddr)
 
 		type funcval struct{ fn uintptr }
-		fv := &funcval{fn: priestInitAddr}
-		priestInit := *(*func(interface{}) error)(unsafe.Pointer(&fv))
+		fv := &funcval{fn: shepherdInitAddr}
+		shepherdInit := *(*func(interface{}) error)(unsafe.Pointer(&fv))
 
 		done := make(chan error, 1)
 		go func() {
-			fmt.Println("[disk] goroutine: calling priestInit...")
-			initErr := priestInit(blkDev)
-			fmt.Printf("[disk] goroutine: priestInit returned: %v\n", initErr)
+			fmt.Println("[disk] goroutine: calling shepherdInit...")
+			initErr := shepherdInit(blkDev)
+			fmt.Printf("[disk] goroutine: shepherdInit returned: %v\n", initErr)
 			done <- initErr
 		}()
 
 		// Wait with timeout
 		select {
 		case initErr := <-done:
-			fmt.Printf("[disk] MazarinPriest result: %v\n", initErr)
+			fmt.Printf("[disk] MazarinShepherd result: %v\n", initErr)
 		case <-time.After(3 * time.Second):
-			fmt.Println("[disk] MazarinPriest TIMED OUT (3s)")
+			fmt.Println("[disk] MazarinShepherd TIMED OUT (3s)")
 		}
 	}
 

@@ -17,10 +17,10 @@ import (
 //
 // Additionally, this function runs typelinksinit() and itabsinit() to build the
 // typemap for cross-module type deduplication. Without this, type assertions like
-// priest.(blockdev.BlockDevice) fail across module boundaries because the .maz
+// shepherd.(blockdev.BlockDevice) fail across module boundaries because the .maz
 // has its own copy of type descriptors.
 //
-// mdPtr is the address of the .maz's runtime.firstmoduledata in the priest's VA space.
+// mdPtr is the address of the .maz's runtime.firstmoduledata in the shepherd's VA space.
 //
 //go:linkname RegisterMazModuledata RegisterMazModuledata
 func RegisterMazModuledata(mdPtr uintptr) {
@@ -29,7 +29,7 @@ func RegisterMazModuledata(mdPtr uintptr) {
 	}
 	md := (*moduledata)(unsafe.Pointer(mdPtr))
 
-	// Clear fields that could cause issues when registered with the priest's runtime.
+	// Clear fields that could cause issues when registered with the shepherd's runtime.
 	// Keep typelinks and itablinks intact — they are needed for cross-module type
 	// deduplication (typelinksinit) and interface dispatch (itabsinit). Without them,
 	// type assertions across module boundaries fail.
@@ -56,7 +56,7 @@ func RegisterMazModuledata(mdPtr uintptr) {
 	modulesinit()
 
 	// Build typemap for the new module so that types shared between the host
-	// priest and the .maz resolve to the same *_type pointers. This is the
+	// shepherd and the .maz resolve to the same *_type pointers. This is the
 	// same sequence used by Go's plugin system (see runtime/plugin.go).
 	typelinksinit()
 

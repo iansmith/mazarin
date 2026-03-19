@@ -20,21 +20,21 @@ var suppressSerial uint32
 // For now, we only support stdout/stderr (fd 1 and 2).
 //
 // Routing logic:
-//   - If the caller is the stdio priest (UART ring owner), writes are
+//   - If the caller is the stdio shepherd (UART ring owner), writes are
 //     silently dropped (it cannot push into its own ring without deadlock).
-//   - If the caller is any other priest, bytes are pushed through the
-//     ring buffer so the stdio priest can display them. The fd number
+//   - If the caller is any other shepherd, bytes are pushed through the
+//     ring buffer so the stdio shepherd can display them. The fd number
 //     is carried through the ring so stdio can color stderr differently.
-//   - If no priest owns the UART slot yet (early boot), writes are dropped.
+//   - If no shepherd owns the UART slot yet (early boot), writes are dropped.
 //
 //go:nosplit
 func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 	// Handle eventfd writes (fd 11) — Go's netpollBreak mechanism.
 	// When Go's runtime calls write(eventfd, ...) it is trying to wake
 	// a thread sleeping in epoll_wait (our SyscallEpollPwait).
-	// We look up the priest's NetpollWaiterTID and wake that thread.
+	// We look up the shepherd's NetpollWaiterTID and wake that thread.
 	if fd == 11 {
-		p := proc.CurrentPriest()
+		p := proc.CurrentShepherd()
 		if p != nil {
 			waiterTID := p.NetpollWaiterTID
 			if waiterTID != 0 {
@@ -58,21 +58,21 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 		return -14 // EFAULT
 	}
 
-	// Route to ring buffer for display by the stdio priest.
-	// The stdio priest itself (UART ring owner) cannot use the ring
+	// Route to ring buffer for display by the stdio shepherd.
+	// The stdio shepherd itself (UART ring owner) cannot use the ring
 	// (it would deadlock consuming its own output).
 	// If no owner registered yet, fall back to direct serial output
 	// so early panic messages are visible.
 	useRing := false
 	useDirect := false
-	ownerPID := getUartSlotPriestID()
+	ownerSID := getUartSlotShepherdID()
 	echoToSerial := atomic.LoadUint32(&suppressSerial) == 0
-	if ownerPID >= 0 {
-		callerPID := getCurrentThreadPID()
-		if callerPID != ownerPID {
+	if ownerSID >= 0 {
+		callerSID := getCurrentThreadSID()
+		if callerSID != ownerSID {
 			useRing = true
 		} else {
-			// stdio priest: can't use ring (deadlock), always write direct to serial
+			// stdio shepherd: can't use ring (deadlock), always write direct to serial
 			useDirect = true
 		}
 	} else {
@@ -93,11 +93,11 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 			return -14 // EFAULT
 		}
 		// Detect gctrace output: "gc N @..." on stderr.
-		// Increment per-priest GC counter on first chunk only.
+		// Increment per-shepherd GC counter on first chunk only.
 		if offset == 0 && fd == 2 && n >= 3 && chunk[0] == 'g' && chunk[1] == 'c' && chunk[2] == ' ' {
-			pid := getCurrentThreadPID()
-			if pid >= 0 && int(pid) < len(GCCountByPID) {
-				atomic.AddUint64(&GCCountByPID[pid], 1)
+			pid := getCurrentThreadSID()
+			if pid >= 0 && int(pid) < len(GCCountBySID) {
+				atomic.AddUint64(&GCCountBySID[pid], 1)
 			}
 		}
 		if useRing {
@@ -108,7 +108,7 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 				}
 				pushByteToUartRing(fdByte, c)
 			}
-			// Echo to serial for diagnostic output (non-owner priests).
+			// Echo to serial for diagnostic output (non-owner shepherds).
 			// stdout: interrupt-driven TX ring buffer, gated by echoToSerial.
 			// stderr: synchronous PollWrite, always (panics/tracebacks must reach serial).
 			if fd == 2 {
@@ -129,7 +129,7 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 				}
 			}
 		} else if useDirect {
-			// stdio priest's own writes: fd-based routing.
+			// stdio shepherd's own writes: fd-based routing.
 			// stderr: always PollWrite (guaranteed delivery).
 			// stdout: QueueByte (interrupt-driven).
 			if fd == 2 {
@@ -161,12 +161,12 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 	return int64(count)
 }
 
-// getUartSlotPriestID returns the priest ID that owns the UART serial slot.
-// Returns -1 if no priest has registered.
+// getUartSlotShepherdID returns the shepherd ID that owns the UART serial slot.
+// Returns -1 if no shepherd has registered.
 //
 //go:nosplit
-//go:linkname getUartSlotPriestID main.GetUartSlotPriestID
-func getUartSlotPriestID() int16
+//go:linkname getUartSlotShepherdID main.GetUartSlotShepherdID
+func getUartSlotShepherdID() int16
 
 // pushByteToUartRing pushes a byte into the UART ring buffer with fd info.
 // The fd is carried in the HIDEvent.Code field so the consumer can

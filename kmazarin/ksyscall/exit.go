@@ -30,8 +30,8 @@ func SyscallExit(status, _, _, _, _, _ uint64) int64 {
 //
 //go:nosplit
 func SyscallExitGroup(status, _, _, _, _, _ uint64) int64 {
-	p := proc.CurrentPriest()
-	pid := proc.PriestId(0)
+	p := proc.CurrentShepherd()
+	pid := proc.ShepherdId(0)
 	if p != nil {
 		pid = p.PID
 	}
@@ -42,8 +42,8 @@ func SyscallExitGroup(status, _, _, _, _, _ uint64) int64 {
 		haltForever()
 	}
 
-	// Userspace exit_group — kill all threads of this priest
-	nextCtx := TerminatePriest(pid, int64(status))
+	// Userspace exit_group — kill all threads of this shepherd
+	nextCtx := TerminateShepherd(pid, int64(status))
 	if nextCtx == 0 {
 		haltForever()
 	}
@@ -52,15 +52,15 @@ func SyscallExitGroup(status, _, _, _, _, _ uint64) int64 {
 }
 
 // SyscallMazzyExit implements the Mazzy SysExit syscall (0x1004)
-// This is called by userspace programs through priest to cleanly exit.
-// Terminates the calling priest and all its threads.
+// This is called by userspace programs through shepherd to cleanly exit.
+// Terminates the calling shepherd and all its threads.
 //
 // arg0: exit status code
 //
 //go:nosplit
 func SyscallMazzyExit(status, _, _, _, _, _ uint64) int64 {
-	p := proc.CurrentPriest()
-	pid := proc.PriestId(0)
+	p := proc.CurrentShepherd()
+	pid := proc.ShepherdId(0)
 	if p != nil {
 		pid = p.PID
 	}
@@ -69,7 +69,7 @@ func SyscallMazzyExit(status, _, _, _, _, _ uint64) int64 {
 		haltForever()
 	}
 
-	nextCtx := TerminatePriest(pid, int64(status))
+	nextCtx := TerminateShepherd(pid, int64(status))
 	if nextCtx == 0 {
 		haltForever()
 	}

@@ -8,18 +8,18 @@ import (
 )
 
 // ============================================================================
-// Channel System - Kernel-to-Priest Async Messaging
+// Channel System - Kernel-to-Shepherd Async Messaging
 // ============================================================================
 //
-// Each priest has a dedicated async channel for receiving kernel messages.
-// The kernel queues messages and delivers them when the priest calls
+// Each shepherd has a dedicated async channel for receiving kernel messages.
+// The kernel queues messages and delivers them when the shepherd calls
 // WaitKernelAsync.
 
 // ============================================================================
 // Channel Constants
 // ============================================================================
 
-// Channel slot indices for each priest (8 slots per priest)
+// Channel slot indices for each shepherd (8 slots per shepherd)
 const (
 	ChannelSlotAPI      = 0 // API channel for kernel communication
 	ChannelSlotReserved1 = 1
@@ -31,12 +31,12 @@ const (
 	ChannelSlotReserved7 = 7
 )
 
-const MaxChannelSlotsPerPriest = 8
-const MaxChannels = MaxChannelSlotsPerPriest * MaxPriests // 8 * 16 = 128
-const ReservedKernelChannels = MaxChannelSlotsPerPriest   // 8 channels for kernel (priest 0)
+const MaxChannelSlotsPerShepherd = 8
+const MaxChannels = MaxChannelSlotsPerShepherd * MaxShepherds // 8 * 16 = 128
+const ReservedKernelChannels = MaxChannelSlotsPerShepherd   // 8 channels for kernel (shepherd 0)
 
 // ============================================================================
-// KernelAsyncBundle - Message format for kernel-to-priest communication
+// KernelAsyncBundle - Message format for kernel-to-shepherd communication
 // ============================================================================
 
 type KernelAsyncOp int32
@@ -47,7 +47,7 @@ const (
 	KernelAsyncOpRemove KernelAsyncOp = 2
 )
 
-// KernelAsyncBundle is the message format sent from kernel to priest.
+// KernelAsyncBundle is the message format sent from kernel to shepherd.
 // This struct must match the userspace definition in mazarin/sys/async.go.
 type KernelAsyncBundle struct {
 	Op        KernelAsyncOp // Operation type (Add, Remove)
@@ -65,7 +65,7 @@ type ChannelId int16
 type Channel struct {
 	ChanId      ChannelId // Unique channel ID
 	BundleSize  int       // Size of bundles for this channel
-	OwnerPID    PriestId  // Priest that owns this channel (-1 = kernel)
+	OwnerPID    ShepherdId  // Shepherd that owns this channel (-1 = kernel)
 	Counterpart ChannelId // Connected channel (-1 = none)
 }
 
@@ -86,13 +86,13 @@ var channelIdStackData [MaxChannels]ChannelId
 var channelIdAllocator ds.StaticAllocator[ChannelId]
 
 // ============================================================================
-// Per-Priest Async State
+// Per-Shepherd Async State
 // ============================================================================
 
-// Each priest has one pending message slot. The kernel queues a message here,
-// and it's delivered when the priest calls WaitKernelAsync.
-var priestPendingMessage [MaxPriests]KernelAsyncBundle
-var priestHasPendingMessage [MaxPriests]bool
+// Each shepherd has one pending message slot. The kernel queues a message here,
+// and it's delivered when the shepherd calls WaitKernelAsync.
+var shepherdPendingMessage [MaxShepherds]KernelAsyncBundle
+var shepherdHasPendingMessage [MaxShepherds]bool
 
 // ============================================================================
 // Initialization
@@ -113,8 +113,8 @@ func InitChannels() {
 	channelIdAllocator.InitWithReserved(channelIdStackData[:], ReservedKernelChannels)
 
 	// Clear pending message state
-	for i := 0; i < MaxPriests; i++ {
-		priestHasPendingMessage[i] = false
+	for i := 0; i < MaxShepherds; i++ {
+		shepherdHasPendingMessage[i] = false
 	}
 }
 
@@ -122,11 +122,11 @@ func InitChannels() {
 // Channel Allocation
 // ============================================================================
 
-// AllocateChannel allocates a new channel for the given priest.
+// AllocateChannel allocates a new channel for the given shepherd.
 // Returns the channel ID, or -1 on failure.
 //
 //go:nosplit
-func AllocateChannel(ownerPID PriestId, bundleSize int) ChannelId {
+func AllocateChannel(ownerSID ShepherdId, bundleSize int) ChannelId {
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 
@@ -144,7 +144,7 @@ func AllocateChannel(ownerPID PriestId, bundleSize int) ChannelId {
 	// Initialize channel
 	ch.ChanId = chanId
 	ch.BundleSize = bundleSize
-	ch.OwnerPID = ownerPID
+	ch.OwnerPID = ownerSID
 	ch.Counterpart = -1
 
 	schedulerLock.Unlock()
@@ -152,18 +152,18 @@ func AllocateChannel(ownerPID PriestId, bundleSize int) ChannelId {
 	return chanId
 }
 
-// AllocateAPIChannel allocates the API channel for a new priest.
+// AllocateAPIChannel allocates the API channel for a new shepherd.
 // Also queues the initial ADD message for delivery on first WaitKernelAsync.
 // Returns the channel ID, or -1 on failure.
 //
 //go:nosplit
-func AllocateAPIChannel(pid PriestId) ChannelId {
+func AllocateAPIChannel(pid ShepherdId) ChannelId {
 	chanId := AllocateChannel(pid, int(unsafe.Sizeof(KernelAsyncBundle{})))
 	if chanId < 0 {
 		return -1
 	}
 
-	// Queue the initial ADD message for this priest
+	// Queue the initial ADD message for this shepherd
 	QueueKernelAsync(pid, KernelAsyncBundle{
 		Op:        KernelAsyncOpAdd,
 		ChannelId: int32(chanId),
@@ -177,80 +177,80 @@ func AllocateAPIChannel(pid PriestId) ChannelId {
 // Message Queuing
 // ============================================================================
 
-// QueueKernelAsync queues a message for delivery to the specified priest.
-// The message will be delivered when the priest calls WaitKernelAsync.
+// QueueKernelAsync queues a message for delivery to the specified shepherd.
+// The message will be delivered when the shepherd calls WaitKernelAsync.
 // Returns true on success, false if a message is already pending.
 //
 //go:nosplit
-func QueueKernelAsync(pid PriestId, bundle KernelAsyncBundle) bool {
-	if pid < 0 || int(pid) >= MaxPriests {
+func QueueKernelAsync(pid ShepherdId, bundle KernelAsyncBundle) bool {
+	if pid < 0 || int(pid) >= MaxShepherds {
 		return false
 	}
 
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 
-	if priestHasPendingMessage[pid] {
+	if shepherdHasPendingMessage[pid] {
 		// Already have a pending message - can't queue another
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
 		return false
 	}
 
-	priestPendingMessage[pid] = bundle
-	priestHasPendingMessage[pid] = true
+	shepherdPendingMessage[pid] = bundle
+	shepherdHasPendingMessage[pid] = true
 
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
 	return true
 }
 
-// DequeueKernelAsync retrieves and clears the pending message for a priest.
+// DequeueKernelAsync retrieves and clears the pending message for a shepherd.
 // Returns the bundle and true if a message was pending, or empty bundle and false.
 //
 //go:nosplit
-func DequeueKernelAsync(pid PriestId) (KernelAsyncBundle, bool) {
-	if pid < 0 || int(pid) >= MaxPriests {
+func DequeueKernelAsync(pid ShepherdId) (KernelAsyncBundle, bool) {
+	if pid < 0 || int(pid) >= MaxShepherds {
 		return KernelAsyncBundle{}, false
 	}
 
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 
-	if !priestHasPendingMessage[pid] {
+	if !shepherdHasPendingMessage[pid] {
 		schedulerLock.Unlock()
 		RestoreIRQs(savedDAIF)
 		return KernelAsyncBundle{}, false
 	}
 
-	bundle := priestPendingMessage[pid]
-	priestHasPendingMessage[pid] = false
+	bundle := shepherdPendingMessage[pid]
+	shepherdHasPendingMessage[pid] = false
 
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
 	return bundle, true
 }
 
-// HasPendingKernelAsync checks if a priest has a pending message.
+// HasPendingKernelAsync checks if a shepherd has a pending message.
 //
 //go:nosplit
-func HasPendingKernelAsync(pid PriestId) bool {
-	if pid < 0 || int(pid) >= MaxPriests {
+func HasPendingKernelAsync(pid ShepherdId) bool {
+	if pid < 0 || int(pid) >= MaxShepherds {
 		return false
 	}
-	return priestHasPendingMessage[pid]
+	return shepherdHasPendingMessage[pid]
 }
 
 // ============================================================================
 // Linkname Wrappers for ksyscall Package
 // ============================================================================
 
-// getCurrentThreadPIDWrapper returns the PID of the currently running thread.
+// getCurrentThreadSIDWrapper returns the PID of the currently running thread.
 // Called via linkname from ksyscall package.
 //
 //go:nosplit
 //go:noinline
-func getCurrentThreadPIDWrapper() int16 {
+func getCurrentThreadSIDWrapper() int16 {
 	t := GetCurrentThread()
 	if t == nil {
 		return 0 // kernel context (no thread) uses PID 0
@@ -264,5 +264,5 @@ func getCurrentThreadPIDWrapper() int16 {
 //go:nosplit
 //go:noinline
 func dequeueKernelAsyncWrapper(pid int16) (KernelAsyncBundle, bool) {
-	return DequeueKernelAsync(PriestId(pid))
+	return DequeueKernelAsync(ShepherdId(pid))
 }

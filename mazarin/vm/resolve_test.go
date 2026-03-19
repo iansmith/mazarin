@@ -98,11 +98,11 @@ func splitSegments(s string) []string {
 
 func TestFind(t *testing.T) {
 	r := newMockResolver()
-	r.Set("attr:///priest/cal/str/title", 1, Str("hello"))
-	r.Set("attr:///priest/mail/str/subject", 2, Str("world"))
+	r.Set("attr:///shepherd/cal/str/title", 1, Str("hello"))
+	r.Set("attr:///shepherd/mail/str/subject", 2, Str("world"))
 
 	prog := &Program{
-		Strings: []string{"attr:///priest/*/str/title"},
+		Strings: []string{"attr:///shepherd/*/str/title"},
 		Code: []Inst{
 			{Opcode: OpConstStr, Op1: 0},
 			InstCallBuiltin(BuiltinFind, 1),
@@ -191,10 +191,10 @@ func TestDerefTypeMismatch(t *testing.T) {
 
 func TestExists(t *testing.T) {
 	r := newMockResolver()
-	r.Set("attr:///priest/cal/str/title", 1, Str("hello"))
+	r.Set("attr:///shepherd/cal/str/title", 1, Str("hello"))
 
 	prog := &Program{
-		Strings: []string{"attr:///priest/cal"},
+		Strings: []string{"attr:///shepherd/cal"},
 		Code: []Inst{
 			{Opcode: OpConstStr, Op1: 0},
 			InstCallBuiltin(BuiltinExists, 1),
@@ -217,7 +217,7 @@ func TestExistsMissing(t *testing.T) {
 	r := newMockResolver()
 
 	prog := &Program{
-		Strings: []string{"attr:///priest/nonexistent"},
+		Strings: []string{"attr:///shepherd/nonexistent"},
 		Code: []Inst{
 			{Opcode: OpConstStr, Op1: 0},
 			InstCallBuiltin(BuiltinExists, 1),
@@ -235,7 +235,7 @@ func TestExistsMissing(t *testing.T) {
 
 func TestURISegment(t *testing.T) {
 	prog := &Program{
-		Strings: []string{"attr:///priest/calendar.elf/str/currentlyDisplayed/eventTitle"},
+		Strings: []string{"attr:///shepherd/calendar.elf/str/currentlyDisplayed/eventTitle"},
 		Code: []Inst{
 			{Opcode: OpConstStr, Op1: 0},
 			InstConstI64(0),
@@ -254,8 +254,8 @@ func TestURISegment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if results[0].AsStr() != "priest" {
-		t.Fatalf("expected segment[0]='priest', got %q", results[0].AsStr())
+	if results[0].AsStr() != "shepherd" {
+		t.Fatalf("expected segment[0]='shepherd', got %q", results[0].AsStr())
 	}
 	if results[1].AsStr() != "currentlyDisplayed" {
 		t.Fatalf("expected segment[3]='currentlyDisplayed', got %q", results[1].AsStr())
@@ -357,15 +357,15 @@ func TestIncrementAtomic(t *testing.T) {
 	}
 }
 
-// Integration test: cross-priest service discovery workflow.
+// Integration test: cross-shepherd service discovery workflow.
 func TestServiceDiscoveryWorkflow(t *testing.T) {
 	r := newMockResolver()
-	r.Set("attr:///priest/calendar.elf/str/currentlyDisplayed/eventTitle", 42, Str("Team Standup"))
+	r.Set("attr:///shepherd/calendar.elf/str/currentlyDisplayed/eventTitle", 42, Str("Team Standup"))
 
 	// Program: find calendars, get first, build URI, deref title.
 	prog := &Program{
 		Strings: []string{
-			"attr:///priest/*/str/currentlyDisplayed/eventTitle", // 0: find pattern
+			"attr:///shepherd/*/str/currentlyDisplayed/eventTitle", // 0: find pattern
 			"No calendar available",                              // 1: fallback
 		},
 		Code: []Inst{

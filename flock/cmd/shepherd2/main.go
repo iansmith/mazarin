@@ -1,4 +1,4 @@
-// priest2 is a test program that spawns two goroutines:
+// shepherd2 is a test program that spawns two goroutines:
 // - goroutine 1 prints '1's
 // - goroutine 2 prints '2's
 // This tests goroutine scheduling within a userspace process.
@@ -48,7 +48,7 @@ func busyLoop2() {
 
 func main() {
 	fmt.Println("========================================")
-	fmt.Println("[PRIEST2] Goroutine scheduling test")
+	fmt.Println("[SHEPHERD2] Goroutine scheduling test")
 	fmt.Println("========================================")
 	fmt.Println("Spawning two goroutines:")
 	fmt.Println("  - Goroutine 1: prints 1s")

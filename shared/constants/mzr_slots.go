@@ -8,9 +8,9 @@ package constants
 // ET_EXEC binaries linked at a specific address using -ldflags="-T <address>".
 // These are called .mzr files.
 //
-// Each .mzr occupies a fixed 32MB "slot" in the priest's virtual address space.
+// Each .mzr occupies a fixed 32MB "slot" in the shepherd's virtual address space.
 // The user must coordinate slot assignments at build time to avoid overlaps —
-// two .mzr modules compiled for the same slot cannot be loaded into the same priest.
+// two .mzr modules compiled for the same slot cannot be loaded into the same shepherd.
 //
 // Slot layout (8 slots, 32MB each, starting at 0x30000000):
 //

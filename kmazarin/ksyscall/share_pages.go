@@ -11,12 +11,12 @@ import (
 const MaxTransferPages = 256
 
 // SyscallTransferPages transfers ownership of contiguous pages from the calling
-// priest to a target priest. The pages are unmapped from the caller's address space,
+// shepherd to a target shepherd. The pages are unmapped from the caller's address space,
 // their ownership is updated, and they are mapped into the target's address space.
 //
 // Args:
 //
-//	arg0 = targetPID (priest to transfer pages to)
+//	arg0 = targetPID (shepherd to transfer pages to)
 //	arg1 = sourceVA  (start of contiguous page range in caller's address space)
 //	arg2 = numPages  (number of 4KB pages to transfer, 1..256)
 //	arg3 = elfFlags  (ELF permission flags for target mapping; 0 = RW)
@@ -38,33 +38,33 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		return -22 // EINVAL
 	}
 
-	// Get caller priest
-	callerPriest := proc.CurrentPriest()
-	if callerPriest == nil {
+	// Get caller shepherd
+	callerShepherd := proc.CurrentShepherd()
+	if callerShepherd == nil {
 		return -1 // EPERM — kernel context
 	}
-	callerPID := int16(callerPriest.PID)
+	callerSID := int16(callerShepherd.PID)
 
 	// Can't transfer to self
-	if targetPID == callerPID {
+	if targetPID == callerSID {
 		return -22 // EINVAL
 	}
 
-	// Look up target priest
-	targetPriest := proc.FindPriestByPID(proc.PriestId(targetPID))
-	if targetPriest == nil {
+	// Look up target shepherd
+	targetShepherd := proc.FindShepherdBySID(proc.ShepherdId(targetPID))
+	if targetShepherd == nil {
 		return -3 // ESRCH — no such process
 	}
-	if targetPriest.PageTableL0PA == 0 {
+	if targetShepherd.PageTableL0PA == 0 {
 		return -3 // ESRCH — target has no address space
 	}
 
-	sourceL0PA := callerPriest.PageTableL0PA
+	sourceL0PA := callerShepherd.PageTableL0PA
 
 	// Disable IRQs across both passes to prevent async preemption between
 	// page validation (Pass 1) and ownership transfer (Pass 2). Without this,
 	// a timer IRQ could trigger goroutine preemption, allowing another goroutine
-	// to call exit_group — CleanupPriestPages would free pages that Pass 1
+	// to call exit_group — CleanupShepherdPages would free pages that Pass 1
 	// already validated, causing use-after-free in Pass 2.
 	savedDAIF := saveAndDisableIRQs()
 
@@ -84,7 +84,7 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		// Strip page offset (WalkUserPageTableWithL0 may include offset bits)
 		pa = pa &^ (kmem.PageSize - 1)
 		desc := kmem.GetPageDescriptor(pa)
-		if desc == nil || desc.Owner != callerPID {
+		if desc == nil || desc.Owner != callerSID {
 			restoreIRQs(savedDAIF)
 			serial.RawUARTPuts("[IPC] TransferPages: page not owned by caller at PA 0x")
 			serial.RawUARTHex64(uint64(pa))
@@ -96,14 +96,14 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 
 	// Allocate target VA range
 	totalSize := uint64(numPages) * uint64(kmem.PageSize)
-	targetVABase := bumpAllocForPriest(targetPriest, totalSize)
+	targetVABase := bumpAllocForShepherd(targetShepherd, totalSize)
 	if targetVABase == 0 {
 		restoreIRQs(savedDAIF)
 		return -12 // ENOMEM
 	}
 
-	// Add span to target priest
-	targetPriest.Spans.Add(targetVABase, totalSize)
+	// Add span to target shepherd
+	targetShepherd.Spans.Add(targetVABase, totalSize)
 
 	// Pass 2: Transfer — unmap from source, change ownership, map into target
 	for i := 0; i < numPages; i++ {
@@ -114,7 +114,7 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		kmem.UnmapUserPageWithL0(va, sourceL0PA)
 
 		// Transfer ownership
-		kmem.TransferPageOwnership(pa, callerPID, targetPID)
+		kmem.TransferPageOwnership(pa, callerSID, targetPID)
 
 		// Map into target
 		targetVA := uintptr(targetVABase) + uintptr(i)*kmem.PageSize
@@ -122,7 +122,7 @@ func SyscallTransferPages(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	}
 
 	// Remove source span
-	callerPriest.Spans.Remove(uint64(sourceVA), totalSize)
+	callerShepherd.Spans.Remove(uint64(sourceVA), totalSize)
 
 	restoreIRQs(savedDAIF)
 

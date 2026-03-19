@@ -23,10 +23,10 @@ func RegisterSoftIRQDispatcher() int64
 //go:linkname GetPendingSoftIRQ main.GetPendingSoftIRQ
 func GetPendingSoftIRQ(bundlePtr uint64) bool
 
-// RegisterSoftIRQSlotKsyscall registers an IRQ on a soft IRQ slot for a priest.
+// RegisterSoftIRQSlotKsyscall registers an IRQ on a soft IRQ slot for a shepherd.
 //
 //go:linkname RegisterSoftIRQSlotKsyscall main.RegisterSoftIRQSlotKsyscall
-func RegisterSoftIRQSlotKsyscall(irqNum uint32, slotNum int32, priestID int16) int64
+func RegisterSoftIRQSlotKsyscall(irqNum uint32, slotNum int32, shepherdID int16) int64
 
 // DrainSoftIRQSlotEvents drains events from a soft IRQ slot.
 //

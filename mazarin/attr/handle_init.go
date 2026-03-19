@@ -14,7 +14,7 @@ import (
 )
 
 // UserConstraintPagesVA is the fixed VA where constraint shared pages are
-// mapped read-only into every priest's address space.
+// mapped read-only into every shepherd's address space.
 const UserConstraintPagesVA = 0x00007FFD00000000
 
 // sharedPR is the package-level read-only PageRegion over constraint shared pages.

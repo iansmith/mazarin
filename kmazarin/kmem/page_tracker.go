@@ -27,7 +27,7 @@ type PageAllocInfo struct {
 	PA       uintptr       // Physical address of the page
 	VA       uintptr       // Virtual address (0 if not mapped to user VA)
 	Type     PageAllocType // Purpose of the allocation
-	PriestID int16         // Process ID (-1 = kernel)
+	ShepherdID int16         // Process ID (-1 = kernel)
 	ThreadID int16         // Thread that allocated
 	Order    uint8         // Buddy order (0 = single page)
 }
@@ -74,8 +74,8 @@ func UntrackPage(pa uintptr) {
 	trackerLock.Unlock()
 }
 
-// MaxPriests is the maximum number of priests (processes) we track.
-const MaxPriests = 16
+// MaxShepherds is the maximum number of shepherds (processes) we track.
+const MaxShepherds = 16
 
 // MemoryStats summarizes page tracker state by type and owner.
 type MemoryStats struct {
@@ -85,21 +85,21 @@ type MemoryStats struct {
 	UserPTPages     uint64
 	FileBufferPages uint64
 	TotalTracked    uint64
-	// Per-priest page counts (index = priestID directly; [0] = kernel)
-	ByPriest [MaxPriests]uint64
+	// Per-shepherd page counts (index = shepherdID directly; [0] = kernel)
+	ByShepherd [MaxShepherds]uint64
 }
 
-// priestIndex maps a PriestID to an array index.
+// shepherdIndex maps a ShepherdID to an array index.
 // PID is used directly as index; out-of-range maps to 0 (kernel).
-func priestIndex(pid int16) int {
+func shepherdIndex(pid int16) int {
 	idx := int(pid)
-	if idx < 0 || idx >= MaxPriests {
+	if idx < 0 || idx >= MaxShepherds {
 		return 0 // treat out-of-range as kernel
 	}
 	return idx
 }
 
-// GetMemoryStats scans the tracker and returns per-type and per-priest counts.
+// GetMemoryStats scans the tracker and returns per-type and per-shepherd counts.
 func GetMemoryStats() MemoryStats {
 	var stats MemoryStats
 	trackerLock.Lock()
@@ -118,8 +118,8 @@ func GetMemoryStats() MemoryStats {
 		case PageAllocFileBuffer:
 			stats.FileBufferPages += pages
 		}
-		idx := priestIndex(pageTracker[i].PriestID)
-		stats.ByPriest[idx] += pages
+		idx := shepherdIndex(pageTracker[i].ShepherdID)
+		stats.ByShepherd[idx] += pages
 	}
 	trackerLock.Unlock()
 	return stats
@@ -146,20 +146,20 @@ func PrintMemoryStats() {
 	serial.RawUARTPuts("  File buffer: ")
 	serial.RawUARTHex64(stats.FileBufferPages)
 	serial.RawUARTPuts(" pages\r\n")
-	// Per-priest breakdown
-	serial.RawUARTPuts("  By priest:\r\n")
+	// Per-shepherd breakdown
+	serial.RawUARTPuts("  By shepherd:\r\n")
 	// Index 0 = kernel (PID 0)
-	if stats.ByPriest[0] > 0 {
+	if stats.ByShepherd[0] > 0 {
 		serial.RawUARTPuts("    kernel(0): ")
-		serial.RawUARTHex64(stats.ByPriest[0])
+		serial.RawUARTHex64(stats.ByShepherd[0])
 		serial.RawUARTPuts(" pages\r\n")
 	}
-	for i := 1; i < MaxPriests; i++ {
-		if stats.ByPriest[i] > 0 {
-			serial.RawUARTPuts("    priest ")
+	for i := 1; i < MaxShepherds; i++ {
+		if stats.ByShepherd[i] > 0 {
+			serial.RawUARTPuts("    shepherd ")
 			serial.RawUARTHex64(uint64(i))
 			serial.RawUARTPuts(": ")
-			serial.RawUARTHex64(stats.ByPriest[i])
+			serial.RawUARTHex64(stats.ByShepherd[i])
 			serial.RawUARTPuts(" pages\r\n")
 		}
 	}

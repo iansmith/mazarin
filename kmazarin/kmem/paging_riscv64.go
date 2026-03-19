@@ -45,11 +45,11 @@ func readCurrentL0PA() uintptr {
 //   RISC-V convention is opposite: L3=root, L0=leaf.
 //   This file uses RISC-V naming for local vars but hardcoded shift values for clarity.
 
-// verifyUserspacePriestL0 checks that a priest's page table is valid before switching to it.
+// verifyUserspaceShepherdL0 checks that a shepherd's page table is valid before switching to it.
 // RISC-V: single SATP, so L0[0] must contain kernel mappings (copied by initProcessL0).
 //
 //go:nosplit
-func verifyUserspacePriestL0(l0PA uintptr, asid uint16) {
+func verifyUserspaceShepherdL0(l0PA uintptr, asid uint16) {
 	l0VA := l0PA + constants.KernelMMIOOffset
 	e0 := *(*uint64)(unsafe.Pointer(l0VA))
 	if (e0 & RV_PTE_V) == 0 {
@@ -149,7 +149,7 @@ func initProcessL0(l0VA uintptr) {
 }
 
 // platformIsSharedKernelL1 returns true if the given L1 entry (within L0[0])
-// is shared with the kernel and must NOT have its subtree freed during priest
+// is shared with the kernel and must NOT have its subtree freed during shepherd
 // cleanup. On RISC-V, initProcessL0 copies L2[1..511] from the kernel to share
 // kmazarin code at VA 0x40000000+. Only L2[0] (user code) is per-process.
 //

@@ -12,7 +12,7 @@ func NewLabel(id string, parent *Interactor, textColor int64) *Interactor {
 		ID:         id,
 		Kind:       KindLabel,
 		Parent:     parent,
-		priestName: pName,
+		shepherdName: pName,
 	}
 
 	// Value attrs for layout and visual state.

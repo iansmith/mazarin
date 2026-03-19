@@ -1,26 +1,26 @@
 package constants
 
 const (
-	MaxBootstrapPriests = 4   // Maximum bootstrap priests (kernel-loaded)
-	MaxPriests          = 8   // Maximum application priests (fs-loaded)
-	MaxModulesPerPriest = 8   // Maximum .maz/.mzr per priest
+	MaxBootstrapShepherds = 4   // Maximum bootstrap shepherds (kernel-loaded)
+	MaxShepherds          = 8   // Maximum application shepherds (fs-loaded)
+	MaxModulesPerShepherd = 8   // Maximum .maz/.mzr per shepherd
 	MaxPathLen          = 64  // Maximum path string length
 	MaxNameLen          = 32  // Maximum name identifier length
 	MaxTimezoneLen      = 48  // Maximum timezone string length
 )
 
-// BootModule describes a named module (.maz or .mzr) to load into a priest.
+// BootModule describes a named module (.maz or .mzr) to load into a shepherd.
 type BootModule struct {
 	Name [MaxNameLen]byte
 	Path [MaxPathLen]byte
 }
 
-// BootPriest describes one priest in the boot sequence.
-type BootPriest struct {
+// BootShepherd describes one shepherd in the boot sequence.
+type BootShepherd struct {
 	Name     [MaxNameLen]byte
 	Path     [MaxPathLen]byte
-	Mzr      [MaxModulesPerPriest]BootModule
-	Maz      [MaxModulesPerPriest]BootModule
+	Mzr      [MaxModulesPerShepherd]BootModule
+	Maz      [MaxModulesPerShepherd]BootModule
 	MzrCount int
 	MazCount int
 }
@@ -35,7 +35,7 @@ type BootConfig struct {
 
 	// SuppressSerialStdioCopy controls whether userspace write() output is echoed
 	// to the serial port in addition to being routed through the stdio
-	// priest's display. When true, only the stdio priest writes to serial.
+	// shepherd's display. When true, only the stdio shepherd writes to serial.
 	SuppressSerialStdioCopy bool
 
 	// SuppressKernelSerial controls whether kernel console output
@@ -45,13 +45,13 @@ type BootConfig struct {
 	// performance testing.
 	SuppressKernelSerial bool
 
-	// GCPercentage is the GOGC value for priest processes. 0 means use
+	// GCPercentage is the GOGC value for shepherd processes. 0 means use
 	// the default (currently 5). Higher values delay GC, reducing CPU
 	// overhead at the cost of more memory usage. For example, 90 means
 	// the GC triggers when heap is 90% larger than the previous live set.
 	GCPercentage int
 
-	// GoMemLimitMB is the GOMEMLIMIT value (in MB) for priest processes.
+	// GoMemLimitMB is the GOMEMLIMIT value (in MB) for shepherd processes.
 	// 0 means use the default (24MB).
 	GoMemLimitMB int
 
@@ -73,11 +73,11 @@ type BootConfig struct {
 
 	Timezone [MaxTimezoneLen]byte
 
-	BootstrapPriests     [MaxBootstrapPriests]BootPriest
-	BootstrapPriestCount int
+	BootstrapShepherds     [MaxBootstrapShepherds]BootShepherd
+	BootstrapShepherdCount int
 
-	Priests     [MaxPriests]BootPriest
-	PriestCount int
+	Shepherds     [MaxShepherds]BootShepherd
+	ShepherdCount int
 }
 
 // NullTermString returns a Go string from a null-terminated byte array.

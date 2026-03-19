@@ -25,7 +25,7 @@ var flatToVMType = map[uint8]uint8{
 	TypeDegrees:   vm.TypeDegrees,
 	TypeIPv4:      vm.TypeIPv4,
 	TypeIPv6:      vm.TypeIPv6,
-	TypePriestId:  vm.TypePriestId,
+	TypeShepherdId:  vm.TypeShepherdId,
 	TypeMazId:     vm.TypeMazId,
 	TypeRectangle: vm.TypeRectangle,
 }
@@ -44,7 +44,7 @@ var vmToFlatType = map[uint8]uint8{
 	vm.TypeDegrees:   TypeDegrees,
 	vm.TypeIPv4:      TypeIPv4,
 	vm.TypeIPv6:      TypeIPv6,
-	vm.TypePriestId:  TypePriestId,
+	vm.TypeShepherdId:  TypeShepherdId,
 	vm.TypeMazId:     TypeMazId,
 	vm.TypeRectangle: TypeRectangle,
 }

@@ -19,7 +19,7 @@ import (
 	"sync"
 )
 
-// Soft IRQ slots — high numbers to avoid conflicts with dapope (0-3)
+// Soft IRQ slots — high numbers to avoid conflicts with rachel (0-3)
 // and timer (30).
 const (
 	kbdSlot   = 28

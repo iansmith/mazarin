@@ -282,7 +282,7 @@ func buildUserspaceOverlay(overlay *Overlay, goroot, patchesDir string) error {
 }
 
 func buildMazExitOverlay(overlay *Overlay, goroot, patchesDir string) error {
-	// Maz-specific patches: override os.Exit to panic instead of killing priest.
+	// Maz-specific patches: override os.Exit to panic instead of killing shepherd.
 	patches := map[string]string{
 		"os/proc.go": "os_proc.go",
 	}

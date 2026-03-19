@@ -1,6 +1,6 @@
 // handletest exercises the Handle[T] API (mazarin/attr) through actual kernel
 // syscalls. Unlike attrtest (which uses the in-process Attribute[T] API), this
-// priest creates attributes via SysAttrCreate, writes via SysAttrWrite, and
+// shepherd creates attributes via SysAttrCreate, writes via SysAttrWrite, and
 // reads values via seqlock-protected shared page reads.
 package main
 
@@ -36,7 +36,7 @@ func main() {
 // testValueI64 creates an int64 value handle and verifies Get/Set round-trip.
 func testValueI64() bool {
 	fmt.Println("=== Test 1: ValueI64 round-trip ===")
-	h := attr.ValueI64("attr:///priest/handletest/foo", 42)
+	h := attr.ValueI64("attr:///shepherd/handletest/foo", 42)
 
 	got := h.Get()
 	fmt.Printf("initial Get() = %d (expected 42)\n", got)
@@ -60,7 +60,7 @@ func testValueI64() bool {
 // testValueStr creates a string value handle and verifies Get/Set round-trip.
 func testValueStr() bool {
 	fmt.Println("\n=== Test 2: ValueStr round-trip ===")
-	h := attr.ValueStr("attr:///priest/handletest/name", "hello")
+	h := attr.ValueStr("attr:///shepherd/handletest/name", "hello")
 
 	got := h.Get()
 	fmt.Printf("initial Get() = %q (expected \"hello\")\n", got)
@@ -85,7 +85,7 @@ func testValueStr() bool {
 func testMultiType() bool {
 	fmt.Println("\n=== Test 3: Multi-type value handles ===")
 
-	bh := attr.ValueBool("attr:///priest/handletest/flag", true)
+	bh := attr.ValueBool("attr:///shepherd/handletest/flag", true)
 	if !bh.Get() {
 		fmt.Println("bool initial: FAIL (expected true)")
 		return false
@@ -97,7 +97,7 @@ func testMultiType() bool {
 	}
 	fmt.Println("bool: PASS")
 
-	fh := attr.ValueF64("attr:///priest/handletest/ratio", 3.14)
+	fh := attr.ValueF64("attr:///shepherd/handletest/ratio", 3.14)
 	got := fh.Get()
 	fmt.Printf("f64 initial = %f (expected 3.14)\n", got)
 	if got != 3.14 {
@@ -113,7 +113,7 @@ func testMultiType() bool {
 	}
 	fmt.Println("f64: PASS")
 
-	th := attr.ValueTribool("attr:///priest/handletest/maybe", 2) // unknown
+	th := attr.ValueTribool("attr:///shepherd/handletest/maybe", 2) // unknown
 	tgot := th.Get()
 	fmt.Printf("tribool initial = %d (expected 2=unknown)\n", tgot)
 	if tgot != 2 {
@@ -139,8 +139,8 @@ func testMultiType() bool {
 func testConstraintAdd() bool {
 	fmt.Println("\n=== Test 4: Constraint (add two values) ===")
 
-	a := attr.ValueI64("attr:///priest/handletest/a", 10)
-	b := attr.ValueI64("attr:///priest/handletest/b", 20)
+	a := attr.ValueI64("attr:///shepherd/handletest/a", 10)
+	b := attr.ValueI64("attr:///shepherd/handletest/b", 20)
 
 	// Hand-assemble: deref(a_uri) + deref(b_uri) → return
 	prog := &vm.Program{
@@ -153,12 +153,12 @@ func testConstraintAdd() bool {
 			vm.InstRet(1),                                      // return 1 value
 		},
 		Strings: []string{
-			"attr:///priest/handletest/a",
-			"attr:///priest/handletest/b",
+			"attr:///shepherd/handletest/a",
+			"attr:///shepherd/handletest/b",
 		},
 	}
 
-	sum := attr.ConstraintI64("attr:///priest/handletest/sum", prog, a, b)
+	sum := attr.ConstraintI64("attr:///shepherd/handletest/sum", prog, a, b)
 
 	got := sum.Get()
 	fmt.Printf("sum = %d (expected 30)\n", got)
@@ -193,8 +193,8 @@ func testConstraintAdd() bool {
 func testConstraintChain() bool {
 	fmt.Println("\n=== Test 5: Constraint chain (a+b → sum → doubled) ===")
 
-	a := attr.ValueI64("attr:///priest/handletest/chain_a", 3)
-	b := attr.ValueI64("attr:///priest/handletest/chain_b", 7)
+	a := attr.ValueI64("attr:///shepherd/handletest/chain_a", 3)
+	b := attr.ValueI64("attr:///shepherd/handletest/chain_b", 7)
 
 	// sum = a + b
 	sumProg := &vm.Program{
@@ -207,11 +207,11 @@ func testConstraintChain() bool {
 			vm.InstRet(1),
 		},
 		Strings: []string{
-			"attr:///priest/handletest/chain_a",
-			"attr:///priest/handletest/chain_b",
+			"attr:///shepherd/handletest/chain_a",
+			"attr:///shepherd/handletest/chain_b",
 		},
 	}
-	sum := attr.ConstraintI64("attr:///priest/handletest/chain_sum", sumProg, a, b)
+	sum := attr.ConstraintI64("attr:///shepherd/handletest/chain_sum", sumProg, a, b)
 
 	// doubled = sum * 2
 	doubledProg := &vm.Program{
@@ -223,10 +223,10 @@ func testConstraintChain() bool {
 			vm.InstRet(1),
 		},
 		Strings: []string{
-			"attr:///priest/handletest/chain_sum",
+			"attr:///shepherd/handletest/chain_sum",
 		},
 	}
-	doubled := attr.ConstraintI64("attr:///priest/handletest/chain_doubled", doubledProg, sum)
+	doubled := attr.ConstraintI64("attr:///shepherd/handletest/chain_doubled", doubledProg, sum)
 
 	got := doubled.Get()
 	fmt.Printf("doubled = %d (expected 20)\n", got)
@@ -251,18 +251,18 @@ func testConstraintChain() bool {
 func testTrieExistence() bool {
 	fmt.Println("\n=== Test 6: Trie Exists() ===")
 
-	// The previous tests created several attributes under "attr:///priest/handletest/".
+	// The previous tests created several attributes under "attr:///shepherd/handletest/".
 	// Exists should return true for the prefix.
-	exists := attr.Exists("attr:///priest/handletest")
-	fmt.Printf("Exists(\"attr:///priest/handletest\") = %v (expected true)\n", exists)
+	exists := attr.Exists("attr:///shepherd/handletest")
+	fmt.Printf("Exists(\"attr:///shepherd/handletest\") = %v (expected true)\n", exists)
 	if !exists {
 		fmt.Println("FAIL")
 		return false
 	}
 
 	// A non-existent prefix should return false.
-	exists = attr.Exists("attr:///priest/nonexistent")
-	fmt.Printf("Exists(\"attr:///priest/nonexistent\") = %v (expected false)\n", exists)
+	exists = attr.Exists("attr:///shepherd/nonexistent")
+	fmt.Printf("Exists(\"attr:///shepherd/nonexistent\") = %v (expected false)\n", exists)
 	if exists {
 		fmt.Println("FAIL")
 		return false
@@ -277,7 +277,7 @@ func testTrieExistence() bool {
 func testEagerNotification() bool {
 	fmt.Println("\n=== Test 7: Eager notification round-trip ===")
 
-	a := attr.ValueI64("attr:///priest/handletest/eager_a", 5)
+	a := attr.ValueI64("attr:///shepherd/handletest/eager_a", 5)
 
 	// doubled = a * 2
 	prog := &vm.Program{
@@ -289,10 +289,10 @@ func testEagerNotification() bool {
 			vm.InstRet(1),
 		},
 		Strings: []string{
-			"attr:///priest/handletest/eager_a",
+			"attr:///shepherd/handletest/eager_a",
 		},
 	}
-	doubled := attr.ConstraintI64("attr:///priest/handletest/eager_doubled", prog, a)
+	doubled := attr.ConstraintI64("attr:///shepherd/handletest/eager_doubled", prog, a)
 
 	// Force initial evaluation so the constraint is clean.
 	got := doubled.Get()
@@ -351,7 +351,7 @@ func testEagerNotification() bool {
 func testChangeGating() bool {
 	fmt.Println("\n=== Test 8: Change-gated propagation ===")
 
-	a := attr.ValueI64("attr:///priest/handletest/gate_a", 5)
+	a := attr.ValueI64("attr:///shepherd/handletest/gate_a", 5)
 
 	// sum = a + 0 (identity constraint)
 	prog := &vm.Program{
@@ -363,10 +363,10 @@ func testChangeGating() bool {
 			vm.InstRet(1),
 		},
 		Strings: []string{
-			"attr:///priest/handletest/gate_a",
+			"attr:///shepherd/handletest/gate_a",
 		},
 	}
-	sum := attr.ConstraintI64("attr:///priest/handletest/gate_sum", prog, a)
+	sum := attr.ConstraintI64("attr:///shepherd/handletest/gate_sum", prog, a)
 
 	// Force initial evaluation.
 	got := sum.Get()

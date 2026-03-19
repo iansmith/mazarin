@@ -4,7 +4,7 @@
 
 // Process etc.
 //
-// Mazzy maz-overlay: os.Exit replaced with panic so the host priest
+// Mazzy maz-overlay: os.Exit replaced with panic so the host shepherd
 // can catch it via defer/recover instead of being killed.
 
 package os
@@ -60,12 +60,12 @@ func Getgroups() ([]int, error) {
 // Conventionally, code zero indicates success, non-zero an error.
 //
 // Mazzy maz-overlay: In .maz modules, os.Exit is replaced with a panic
-// so the host priest can recover from it instead of being terminated.
+// so the host shepherd can recover from it instead of being terminated.
 // The program terminates immediately; deferred functions are not run.
 //
 // For portability, the status code should be in the range [0, 125].
 func Exit(code int) {
 	// Maz overlay: skip runtime_beforeExit (race/coverage hooks not needed)
-	// and just panic so the host priest can recover.
+	// and just panic so the host shepherd can recover.
 	panic("maz: os.Exit() called")
 }

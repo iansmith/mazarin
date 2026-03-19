@@ -17,7 +17,7 @@ func SyscallFlushFramebuffer(x, y, width, height, _, _ uint64) int64 {
 
 // FramebufferInfo matches the layout expected by userspace (mazarin/sys.FramebufferInfo)
 type FramebufferInfo struct {
-	Addr           uint64 // Virtual address of framebuffer in priest space
+	Addr           uint64 // Virtual address of framebuffer in shepherd space
 	Width          uint32 // Width in pixels
 	Height         uint32 // Display height in pixels (visible area)
 	ResourceHeight uint32 // Total resource height (may be > Height for scrolling)

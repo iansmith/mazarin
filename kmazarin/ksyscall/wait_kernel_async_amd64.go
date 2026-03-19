@@ -39,12 +39,12 @@ func SyscallWaitKernelAsync(bundlePtr, _, _, _, _, _ uint64) int64 {
 	}
 
 	// Get current thread's PID
-	pid := getCurrentThreadPID()
+	pid := getCurrentThreadSID()
 	if pid < 0 {
-		return -22 // EINVAL - no valid priest
+		return -22 // EINVAL - no valid shepherd
 	}
 
-	// Try to dequeue a pending message for this priest
+	// Try to dequeue a pending message for this shepherd
 	bundle, hasPending := dequeueKernelAsyncWrapper(int16(pid))
 	if !hasPending {
 		return -11 // EAGAIN - no message pending
@@ -68,18 +68,18 @@ func SyscallWaitKernelAsync(bundlePtr, _, _, _, _, _ uint64) int64 {
 	return 0
 }
 
-// getCurrentThreadPID returns the PID of the current thread.
+// getCurrentThreadSID returns the PID of the current thread.
 // Returns -1 if no valid thread.
 //
 //go:nosplit
-func getCurrentThreadPID() int16 {
-	return getCurrentThreadPIDWrapper()
+func getCurrentThreadSID() int16 {
+	return getCurrentThreadSIDWrapper()
 }
 
 // Linkname wrappers to access main package functions
 
-//go:linkname getCurrentThreadPIDWrapper main.getCurrentThreadPIDWrapper
-func getCurrentThreadPIDWrapper() int16
+//go:linkname getCurrentThreadSIDWrapper main.getCurrentThreadSIDWrapper
+func getCurrentThreadSIDWrapper() int16
 
 //go:linkname dequeueKernelAsyncWrapper main.dequeueKernelAsyncWrapper
 func dequeueKernelAsyncWrapper(pid int16) (KernelAsyncBundle, bool)

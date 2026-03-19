@@ -104,14 +104,14 @@ func SyscallWaitSoftIRQ(slotNum, bufPtr, flags, _, _, _ uint64) int64 {
 	}
 }
 
-// SyscallRegisterSoftIRQ registers an IRQ on a soft IRQ slot for the current priest.
+// SyscallRegisterSoftIRQ registers an IRQ on a soft IRQ slot for the current shepherd.
 // arg0 = IRQ number
 // arg1 = slot number (0-31)
 // Returns: 0 on success, negative errno on error.
 //
 //go:noinline
 func SyscallRegisterSoftIRQ(irqNum, slotNum, _, _, _, _ uint64) int64 {
-	pid := getCurrentThreadPID()
+	pid := getCurrentThreadSID()
 	return RegisterSoftIRQSlotKsyscall(uint32(irqNum), int32(slotNum), int16(pid))
 }
 

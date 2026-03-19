@@ -1,4 +1,4 @@
-// dapope is a userspace priest that receives keyboard and mouse events
+// rachel is a userspace shepherd that receives keyboard and mouse events
 // via the soft IRQ mechanism. It discovers available input devices,
 // registers for their IRQs, and blocks waiting for HID events.
 //
@@ -106,7 +106,7 @@ func buttonName(code uint16) string {
 }
 
 func keyboardLoop(slot int) {
-	fmt.Printf("[dapope] keyboard goroutine started on slot %d\n", slot)
+	fmt.Printf("[rachel] keyboard goroutine started on slot %d\n", slot)
 	var buf hid.SoftIRQReturn
 	var km input.Keymap
 	// Track per-key held state to suppress repeats. QEMU on macOS sends
@@ -115,7 +115,7 @@ func keyboardLoop(slot int) {
 	for {
 		n, err := sys.WaitSoftIRQ(slot, &buf)
 		if err != nil {
-			fmt.Printf("[dapope:kbd] WaitSoftIRQ error: %v\n", err)
+			fmt.Printf("[rachel:kbd] WaitSoftIRQ error: %v\n", err)
 			continue
 		}
 		for i := 0; i < n; i++ {
@@ -172,13 +172,13 @@ func keyboardLoop(slot int) {
 }
 
 func mouseLoop(slot int) {
-	fmt.Printf("[dapope] mouse goroutine started on slot %d\n", slot)
+	fmt.Printf("[rachel] mouse goroutine started on slot %d\n", slot)
 	var buf hid.SoftIRQReturn
 	batches := 0
 	for {
 		n, err := sys.WaitSoftIRQ(slot, &buf)
 		if err != nil {
-			fmt.Printf("[dapope:mouse] WaitSoftIRQ error: %v\n", err)
+			fmt.Printf("[rachel:mouse] WaitSoftIRQ error: %v\n", err)
 			continue
 		}
 		batches++
@@ -192,7 +192,7 @@ func mouseLoop(slot int) {
 				}
 				if ev.Code == REL_WHEEL {
 					switchInput(inputWheel)
-					fmt.Printf("[dapope:mouse] wheel %+d\n", int32(ev.Value))
+					fmt.Printf("[rachel:mouse] wheel %+d\n", int32(ev.Value))
 				}
 			case EV_KEY:
 				switchInput(inputButton)
@@ -200,27 +200,27 @@ func mouseLoop(slot int) {
 				if ev.Value == 0 {
 					action = "released"
 				}
-				fmt.Printf("[dapope:mouse] %s %s\n", buttonName(ev.Code), action)
+				fmt.Printf("[rachel:mouse] %s %s\n", buttonName(ev.Code), action)
 			}
 		}
 	}
 }
 
 func main() {
-	fmt.Println("[dapope] Starting input event handler")
+	fmt.Println("[rachel] Starting input event handler")
 
 	devices, err := sys.QueryInputDevices()
 	if err != nil {
-		fmt.Printf("[dapope] QueryInputDevices failed: %v\n", err)
+		fmt.Printf("[rachel] QueryInputDevices failed: %v\n", err)
 		return
 	}
 
 	if len(devices) == 0 {
-		fmt.Println("[dapope] No input devices found")
+		fmt.Println("[rachel] No input devices found")
 		return
 	}
 
-	fmt.Printf("[dapope] Found %d input device(s)\n", len(devices))
+	fmt.Printf("[rachel] Found %d input device(s)\n", len(devices))
 
 	kbdSlot := -1
 	mouseSlot := -1
@@ -237,10 +237,10 @@ func main() {
 		}
 
 		if err := sys.RegisterSoftIRQ(dev.IRQNum, i); err != nil {
-			fmt.Printf("[dapope] RegisterSoftIRQ slot %d failed: %v\n", i, err)
+			fmt.Printf("[rachel] RegisterSoftIRQ slot %d failed: %v\n", i, err)
 			continue
 		}
-		fmt.Printf("[dapope] Registered %s on slot %d (IRQ %d)\n",
+		fmt.Printf("[rachel] Registered %s on slot %d (IRQ %d)\n",
 			typeName, i, dev.IRQNum)
 
 		if dev.DeviceType == hid.DeviceTypeMouse {
@@ -264,20 +264,20 @@ func main() {
 		runtime.Gosched()
 	}
 
-	// Stderr test (stdio priest disabled for now, but keep for diagnostics).
+	// Stderr test (stdio shepherd disabled for now, but keep for diagnostics).
 	go func() {
 		time.Sleep(2 * time.Second)
-		fmt.Fprintln(os.Stderr, "[dapope] stderr test: this should be dark red")
+		fmt.Fprintln(os.Stderr, "[rachel] stderr test: this should be dark red")
 	}()
 
 	// Load and launch .maz/.mzr test program
 	hwPath := sys.LoadMazByName("/helloworld")
-	fmt.Printf("[dapope] loading %s...\n", hwPath)
+	fmt.Printf("[rachel] loading %s...\n", hwPath)
 	mazResult, mazErr := sys.LoadMaz(hwPath)
 	if mazErr != nil {
-		fmt.Printf("[dapope] LoadMaz failed: %v\n", mazErr)
+		fmt.Printf("[rachel] LoadMaz failed: %v\n", mazErr)
 	} else {
-		fmt.Printf("[dapope] loaded %s: entry=0x%X base=0x%X size=0x%X\n",
+		fmt.Printf("[rachel] loaded %s: entry=0x%X base=0x%X size=0x%X\n",
 			hwPath, mazResult.EntryPoint, mazResult.LoadBase, mazResult.LoadSize)
 
 		sys.RegisterMazModule(mazResult)
@@ -287,14 +287,14 @@ func main() {
 		fv := &funcval{fn: uintptr(mazResult.EntryPoint)}
 		mazMain := *(*func())(unsafe.Pointer(&fv))
 		go runWithLargeStack(mazMain)
-		fmt.Println("[dapope] .maz goroutine launched")
+		fmt.Println("[rachel] .maz goroutine launched")
 	}
 
 	// Publish ready status to constraint network.
 	attr.Init()
-	ready := attr.ValueBool("attr:///priest/dapope/bool/ready", true)
+	ready := attr.ValueBool("attr:///shepherd/rachel/bool/ready", true)
 	_ = ready
-	fmt.Println("[dapope] ready=true published to constraint network")
+	fmt.Println("[rachel] ready=true published to constraint network")
 
 	// Block main goroutine forever
 	select {}

@@ -1,9 +1,9 @@
 // fat32 is a .maz module that provides FAT32 filesystem services via
-// delegated syscalls. It is loaded by the disk priest into its address space,
+// delegated syscalls. It is loaded by the disk shepherd into its address space,
 // inheriting block device ownership. It mounts the FAT32 filesystem using
-// the BlockDevice injected via MazarinPriest and serves LoadFile requests
+// the BlockDevice injected via MazarinShepherd and serves LoadFile requests
 // via the delegate mechanism. It also reads /kmazarin.toml and launches
-// [[priest]] entries via RunPriest.
+// [[shepherd]] entries via RunShepherd.
 package main
 
 import (
@@ -17,28 +17,28 @@ import (
 	"unsafe"
 )
 
-// injectedBlockDev holds the BlockDevice passed in by the disk priest
-// via MazarinPriest. Set before MazarinMain is called.
+// injectedBlockDev holds the BlockDevice passed in by the disk shepherd
+// via MazarinShepherd. Set before MazarinMain is called.
 var injectedBlockDev blockdev.BlockDevice
 
-// MazarinPriest is called by the host priest (via mazhost) after loading
-// this .maz. It receives the priest's interface implementation for use
+// MazarinShepherd is called by the host shepherd (via mazhost) after loading
+// this .maz. It receives the shepherd's interface implementation for use
 // by this module. For fs.maz, this is a blockdev.BlockDevice.
 //
 //go:noinline
-func MazarinPriest(priest interface{}) error {
-	debugPuts("[fs] MazarinPriest: entered\n")
-	if priest == nil {
-		debugPuts("[fs] MazarinPriest: nil priest\n")
+func MazarinShepherd(shepherd interface{}) error {
+	debugPuts("[fs] MazarinShepherd: entered\n")
+	if shepherd == nil {
+		debugPuts("[fs] MazarinShepherd: nil shepherd\n")
 		return nil
 	}
-	blk, ok := priest.(blockdev.BlockDevice)
+	blk, ok := shepherd.(blockdev.BlockDevice)
 	if !ok {
-		debugPuts("[fs] MazarinPriest: type assertion failed\n")
+		debugPuts("[fs] MazarinShepherd: type assertion failed\n")
 		return nil
 	}
 	injectedBlockDev = blk
-	debugPuts("[fs] MazarinPriest: received BlockDevice\n")
+	debugPuts("[fs] MazarinShepherd: received BlockDevice\n")
 	return nil
 }
 
@@ -54,22 +54,22 @@ func debugPuts(s string) {
 // MazEntryPoint holds a reference to MazarinMain to prevent DCE.
 var MazEntryPoint func() = MazarinMain
 
-// MazPriestEntry holds a reference to MazarinPriest to prevent DCE.
-var MazPriestEntry func(interface{}) error = MazarinPriest
+// MazShepherdEntry holds a reference to MazarinShepherd to prevent DCE.
+var MazShepherdEntry func(interface{}) error = MazarinShepherd
 
-// init forces the linker to keep MazarinMain and MazarinPriest alive.
+// init forces the linker to keep MazarinMain and MazarinShepherd alive.
 func init() {
 	if MazEntryPoint == nil {
 		panic("unreachable")
 	}
-	if MazPriestEntry == nil {
+	if MazShepherdEntry == nil {
 		panic("unreachable")
 	}
 }
 
-// MazarinMain is the entry point called by the disk priest when this .maz
+// MazarinMain is the entry point called by the disk shepherd when this .maz
 // is loaded. It mounts FAT32 using the injected BlockDevice, reads boot
-// config, launches application priests synchronously, then registers as
+// config, launches application shepherds synchronously, then registers as
 // the LoadFile delegate handler and serves requests. Never returns.
 //
 //go:noinline
@@ -95,16 +95,16 @@ func MazarinMain() {
 	// Read and parse boot config (synchronous, before any concurrency)
 	cfg := readBootConfig(fs)
 
-	// Launch application priests synchronously before starting the delegate
+	// Launch application shepherds synchronously before starting the delegate
 	// infrastructure. The delegateRecvLoop goroutine blocks in the kernel
 	// without releasing the P (entersyscall is a no-op in .maz), so any work
 	// queued for a fileWorker goroutine would never be processed.
 	if cfg != nil {
-		for i := 0; i < cfg.PriestCount; i++ {
-			p := &cfg.Priests[i]
+		for i := 0; i < cfg.ShepherdCount; i++ {
+			p := &cfg.Shepherds[i]
 			name := constants.NullTermString(p.Name[:])
 			path := constants.NullTermString(p.Path[:])
-			handleLaunchPriest(fs, name, path)
+			handleLaunchShepherd(fs, name, path)
 		}
 	}
 
@@ -166,10 +166,10 @@ func handleLoadFile(fs *fat32.FileSystem, req *sys.SyscallRequest) {
 	req.LoadFileReply(0, uint64(targetVA), uint64(numPages), uint64(bytesRead))
 }
 
-// handleLaunchPriest reads an ELF from FAT32 and launches it as a new priest
-// via the RunPriest syscall.
-func handleLaunchPriest(fs *fat32.FileSystem, name, path string) {
-	debugPuts("[fs] launching priest ")
+// handleLaunchShepherd reads an ELF from FAT32 and launches it as a new shepherd
+// via the RunShepherd syscall.
+func handleLaunchShepherd(fs *fat32.FileSystem, name, path string) {
+	debugPuts("[fs] launching shepherd ")
 	debugPuts(name)
 	debugPuts(" from ")
 	debugPuts(path)
@@ -183,9 +183,9 @@ func handleLaunchPriest(fs *fat32.FileSystem, name, path string) {
 		return
 	}
 
-	rpErr := sys.RunPriest(name, va, numPages, bytesRead)
+	rpErr := sys.RunShepherd(name, va, numPages, bytesRead)
 	if rpErr != nil {
-		debugPuts("[fs] RunPriest failed for ")
+		debugPuts("[fs] RunShepherd failed for ")
 		debugPuts(name)
 		debugPuts(": ")
 		debugPuts(rpErr.Error())
@@ -193,7 +193,7 @@ func handleLaunchPriest(fs *fat32.FileSystem, name, path string) {
 		return
 	}
 
-	debugPuts("[fs] priest ")
+	debugPuts("[fs] shepherd ")
 	debugPuts(name)
 	debugPuts(" launched\n")
 }
@@ -264,13 +264,13 @@ func readBootConfig(fs *fat32.FileSystem) *constants.BootConfig {
 
 	cfg := toml.Parse(data)
 	debugPuts("[fs] boot config: ")
-	debugPutDec(cfg.PriestCount)
-	debugPuts(" priests\n")
+	debugPutDec(cfg.ShepherdCount)
+	debugPuts(" shepherds\n")
 	return cfg
 }
 
 // userspaceBlockDev implements blockdev.BlockDevice using SysBlockRead.
-// Used as fallback when MazarinPriest was not called.
+// Used as fallback when MazarinShepherd was not called.
 type userspaceBlockDev struct{}
 
 func (d *userspaceBlockDev) Name() string      { return "virtio-blk-user" }

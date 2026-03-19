@@ -53,7 +53,7 @@ fonts/
 
 # Userspace binaries (built by task)
 /attrtest
-/dapope
+/rachel
 /handletest
 /stdio
 /uitest

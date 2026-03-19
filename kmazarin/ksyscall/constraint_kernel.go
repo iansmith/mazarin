@@ -1,7 +1,7 @@
 // constraint_kernel.go — Kernel-published attributes.
 //
 // The kernel creates attributes under attr:///kernel/... and updates them from
-// normal Go context (not nosplit). Priests discover these via the existing
+// normal Go context (not nosplit). Shepherds discover these via the existing
 // deref/WaitDirty infrastructure.
 //
 // KernelAttrCreate bypasses the syscall path (no ownership checks — Owner=0).
@@ -382,7 +382,7 @@ func PublishBootConfigAttributes(tz string, goMemLimitMB, gcPercentage int) {
 //
 // At 1Hz (default): only writes when the second changes (change-gated).
 // At >1Hz: writes nanos on every tick interval (nanos always changes),
-// giving priests more frequent dirty notifications for smoother displays.
+// giving shepherds more frequent dirty notifications for smoother displays.
 func timeUpdateLoop() {
 	hertz := timeUpdateHertz
 	if hertz <= 1 {

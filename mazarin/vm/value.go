@@ -34,7 +34,7 @@ const (
 	TypeDegrees   uint8 = 0x29
 	TypeIPv4      uint8 = 0x2A
 	TypeIPv6      uint8 = 0x2B
-	TypePriestId  uint8 = 0x2C
+	TypeShepherdId  uint8 = 0x2C
 	TypeMazId     uint8 = 0x2D
 	TypeRectangle uint8 = 0x2E
 )
@@ -203,9 +203,9 @@ func IPv6Val(addr [16]byte) Value {
 	return v
 }
 
-func PriestIdVal(id uint16) Value {
+func ShepherdIdVal(id uint16) Value {
 	var v Value
-	v.typ = TypePriestId
+	v.typ = TypeShepherdId
 	binary.LittleEndian.PutUint16(v.data[0:2], id)
 	return v
 }
@@ -286,7 +286,7 @@ func (v Value) AsIPv6() [16]byte {
 	return addr
 }
 
-func (v Value) AsPriestIdNum() uint16 {
+func (v Value) AsShepherdIdNum() uint16 {
 	return binary.LittleEndian.Uint16(v.data[0:2])
 }
 
@@ -366,8 +366,8 @@ func (v Value) String() string {
 	case TypeIPv4:
 		a := v.AsIPv4()
 		return fmt.Sprintf("ipv4(%d.%d.%d.%d)", a[0], a[1], a[2], a[3])
-	case TypePriestId:
-		return fmt.Sprintf("priest_id(%d)", v.AsPriestIdNum())
+	case TypeShepherdId:
+		return fmt.Sprintf("shepherd_id(%d)", v.AsShepherdIdNum())
 	case TypeMazId:
 		return fmt.Sprintf("maz_id(%d)", v.AsMazIdNum())
 	default:
@@ -420,8 +420,8 @@ func TypeName(t uint8) string {
 		return "ipv4"
 	case TypeIPv6:
 		return "ipv6"
-	case TypePriestId:
-		return "priest_id"
+	case TypeShepherdId:
+		return "shepherd_id"
 	case TypeMazId:
 		return "maz_id"
 	case TypeRectangle:

@@ -54,7 +54,7 @@ func (mgr *KernelAttrManager) dirtyWalk(slot uint16, gen uint64) {
 
 	// Already dirty — entire subtree was marked by a previous walk.
 	// No descendant needs re-marking. Eager nodes still re-enqueue
-	// so the priest's WaitDirty fires for the new upstream value.
+	// so the shepherd's WaitDirty fires for the new upstream value.
 	if node.Flags&flat.FlagDirty != 0 {
 		if node.Flags&flat.FlagEagerNotify != 0 {
 			mgr.enqueueNotification(slot, node.Owner)
@@ -65,7 +65,7 @@ func (mgr *KernelAttrManager) dirtyWalk(slot uint16, gen uint64) {
 	// Mark dirty.
 	node.Flags |= flat.FlagDirty
 
-	// Eager notification: enqueue slot for the owning priest.
+	// Eager notification: enqueue slot for the owning shepherd.
 	if node.Flags&flat.FlagEagerNotify != 0 {
 		mgr.enqueueNotification(slot, node.Owner)
 	}

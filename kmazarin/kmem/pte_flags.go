@@ -24,7 +24,7 @@ const (
 	PF_Device   PTEFlags = 1 << 6 // Device/uncacheable memory
 	PF_Global   PTEFlags = 1 << 7 // Global (not ASID-tagged)
 	PF_Pinned   PTEFlags = 1 << 8 // Software: do not evict
-	PF_Shared   PTEFlags = 1 << 9 // Software: shared between priests
+	PF_Shared   PTEFlags = 1 << 9 // Software: shared between shepherds
 )
 
 // Has returns true if all the specified flags are set.

@@ -32,7 +32,7 @@ var ErrNoMessage = errors.New("no kernel async message pending")
 // This function blocks the calling goroutine (not the thread) until
 // a message is available. Other goroutines continue to run while waiting.
 //
-// On the first call, the kernel returns the priest's API channel ID
+// On the first call, the kernel returns the shepherd's API channel ID
 // via an ADD operation.
 //
 // Returns the message bundle on success, or an error if the syscall failed.

@@ -19,7 +19,7 @@ const (
 // Fixed size (128 bytes), no Go pointers, cache-line aligned.
 type FlatAttrNode struct {
 	// Identity and ownership (4 bytes)
-	Owner     uint16 // priest ID (0 = kernel)
+	Owner     uint16 // shepherd ID (0 = kernel)
 	Kind      uint8  // AttrKindValue or AttrKindConstraint
 	ValueType uint8  // TypeI64, TypeF64, TypeBool, etc.
 
@@ -44,7 +44,7 @@ type FlatAttrNode struct {
 	DependentsOffset uint32 // byte offset into edge array region
 
 	// Dirty walk generation (8 bytes, offset 64) — used by kernel for diamond
-	// dedup. Priests see this as read-only noise; co-located for cache locality.
+	// dedup. Shepherds see this as read-only noise; co-located for cache locality.
 	// Placed before NameOffset to keep 8-byte alignment without implicit padding.
 	LastWalk uint64
 

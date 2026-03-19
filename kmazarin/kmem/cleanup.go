@@ -1,9 +1,9 @@
-// cleanup.go - Priest page cleanup on exit (Linux exit_mmap() equivalent)
+// cleanup.go - Shepherd page cleanup on exit (Linux exit_mmap() equivalent)
 //
-// When the last thread of a priest exits, CleanupPriestPages reclaims all
-// physical pages owned by that priest:
+// When the last thread of a shepherd exits, CleanupShepherdPages reclaims all
+// physical pages owned by that shepherd:
 //
-//  Phase 1: Walk the priest's Spans (VMA list) and for each VA range walk
+//  Phase 1: Walk the shepherd's Spans (VMA list) and for each VA range walk
 //           the user page tables to find and free every mapped leaf page.
 //
 //  Phase 2: Walk the full page table hierarchy (L0→L3) bottom-up and free
@@ -26,20 +26,20 @@ import (
 	"unsafe"
 )
 
-// CleanupPriestPages frees all physical pages belonging to the given priest.
-// Called from releasePriestSchedLockHeld() after TLB shootdown, before the
-// priest struct is zeroed.
+// CleanupShepherdPages frees all physical pages belonging to the given shepherd.
+// Called from releaseShepherdSchedLockHeld() after TLB shootdown, before the
+// shepherd struct is zeroed.
 //
-// spans must point to the priest's LockedSpanGroup (read before zeroing the struct).
-// l0PA is the physical address of the priest's L0 page table.
-func CleanupPriestPages(priestID proc.PriestId, spans *proc.LockedSpanGroup, l0PA uintptr) {
+// spans must point to the shepherd's LockedSpanGroup (read before zeroing the struct).
+// l0PA is the physical address of the shepherd's L0 page table.
+func CleanupShepherdPages(shepherdID proc.ShepherdId, spans *proc.LockedSpanGroup, l0PA uintptr) {
 	if l0PA == 0 {
-		return // No page table allocated (e.g., priest that never ran)
+		return // No page table allocated (e.g., shepherd that never ran)
 	}
 
 	// CRITICAL: On x86_64/RISC-V, the current CR3/SATP may still point to the
-	// dying priest's page table (syscall entry doesn't change CR3). Phase 2
-	// frees the priest's L0/PDPT pages — if CR3 still points to them, any TLB
+	// dying shepherd's page table (syscall entry doesn't change CR3). Phase 2
+	// frees the shepherd's L0/PDPT pages — if CR3 still points to them, any TLB
 	// miss after the free would walk through freed/reused pages → triple fault.
 	// Switch to the kernel's own page table before freeing anything.
 	// (ARM64 is immune: TTBR0 is user-only, kernel runs on TTBR1.)
@@ -71,8 +71,8 @@ func CleanupPriestPages(priestID proc.PriestId, spans *proc.LockedSpanGroup, l0P
 	// and all intermediate page table pages (L1/L2/L3 tables + L0 root).
 	ptFreed := walkAndFreePageTablePages(l0PA)
 
-	serial.RawUARTPuts("[kmem] priest ")
-	serial.RawUARTHex64(uint64(priestID))
+	serial.RawUARTPuts("[kmem] shepherd ")
+	serial.RawUARTHex64(uint64(shepherdID))
 	serial.RawUARTPuts(" cleanup: freed ")
 	serial.RawUARTHex64(uint64(freed))
 	serial.RawUARTPuts(" leaf-pages, ")
@@ -110,7 +110,7 @@ func releasePageByPA(pa uintptr) bool {
 
 	// Clear the descriptor first, then return to buddy (no window where
 	// RefCount=0 but page is not yet in the free list matters here because
-	// we run with the scheduler lock held during priest cleanup).
+	// we run with the scheduler lock held during shepherd cleanup).
 	ClearPageDescriptor(pa)
 	BuddyFreeTyped(pa, order, pageType)
 	return true
@@ -157,7 +157,7 @@ func walkAndFreePageTablePages(l0PA uintptr) int {
 			}
 			// On x86_64/RISC-V, L0[0]'s L1 table has entries shared with
 			// the kernel (PDPT[1] on x86_64, L2[1+] on RISC-V). These
-			// point to kernel PD/PT pages used by ALL priests. Freeing
+			// point to kernel PD/PT pages used by ALL shepherds. Freeing
 			// them destroys kernel mappings and causes triple faults.
 			if i == 0 && platformIsSharedKernelL1(j) {
 				continue

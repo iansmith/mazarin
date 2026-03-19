@@ -7,19 +7,19 @@ import (
 	"unsafe"
 )
 
-// PriestInfo returns information about all running priests.
-// Each entry includes the priest's PID, thread count, thread IDs,
+// ShepherdInfo returns information about all running shepherds.
+// Each entry includes the shepherd's PID, thread count, thread IDs,
 // launch filename, and number of mapped pages.
-func PriestInfo() ([]hid.PriestInfoEntry, error) {
-	var buf [32]hid.PriestInfoEntry
+func ShepherdInfo() ([]hid.ShepherdInfoEntry, error) {
+	var buf [32]hid.ShepherdInfoEntry
 	r1, _, errno := syscall.RawSyscall6(
-		sysPriestInfo,
+		sysShepherdInfo,
 		uintptr(unsafe.Pointer(&buf[0])),
 		uintptr(len(buf)),
 		0, 0, 0, 0,
 	)
 	if errno != 0 {
-		return nil, errors.New("PriestInfo failed")
+		return nil, errors.New("ShepherdInfo failed")
 	}
 	n := int(r1)
 	if n > len(buf) {

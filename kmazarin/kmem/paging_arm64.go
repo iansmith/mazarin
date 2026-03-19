@@ -61,11 +61,11 @@ func initProcessL0(l0VA uintptr) {
 	// Nothing to do on ARM64
 }
 
-// verifyUserspacePriestL0 checks that a priest's page table is valid before switching to it.
+// verifyUserspaceShepherdL0 checks that a shepherd's page table is valid before switching to it.
 // ARM64: no-op. User L0 starts empty (kernel lives in TTBR1).
 //
 //go:nosplit
-func verifyUserspacePriestL0(l0PA uintptr, asid uint16) {
+func verifyUserspaceShepherdL0(l0PA uintptr, asid uint16) {
 }
 
 // VerifyCurrentSATPL3E0 is a no-op on ARM64 (TTBR0/TTBR1 are separate).
@@ -74,7 +74,7 @@ func verifyUserspacePriestL0(l0PA uintptr, asid uint16) {
 func VerifyCurrentSATPL3E0() {}
 
 // platformIsSharedKernelL1 returns true if the given L1 entry (within L0[0])
-// is shared with the kernel and must NOT have its subtree freed during priest
+// is shared with the kernel and must NOT have its subtree freed during shepherd
 // cleanup. ARM64 uses TTBR0/TTBR1 split — no shared kernel entries exist in
 // the userspace page table.
 //

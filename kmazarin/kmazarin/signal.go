@@ -55,7 +55,7 @@ type SignalAction struct {
 
 // signalActions is the global signal action table (kernel threads only).
 // Index 0 is unused (signal numbers are 1-based).
-// Userspace threads use per-priest tables in proc.Priest.SignalActions.
+// Userspace threads use per-shepherd tables in proc.Shepherd.SignalActions.
 var signalActions [_NSIG]SignalAction
 
 // Signal delivery counters — updated atomically from nosplit context,
@@ -88,14 +88,14 @@ func InitSignals() {
 }
 
 // GetSignalAction returns the signal action for the given signal number.
-// For userspace threads (PriestIdx >= 0), reads from the priest's per-process table.
+// For userspace threads (ShepherdIdx >= 0), reads from the shepherd's per-process table.
 // For kernel threads, reads from the global table.
 //
 //go:nosplit
 func GetSignalAction(sig int) SignalAction {
 	t := GetCurrentThread()
-	if t != nil && t.PriestIdx >= 0 {
-		p := &proc.PriestListData[t.PriestIdx]
+	if t != nil && t.ShepherdIdx >= 0 {
+		p := &proc.ShepherdListData[t.ShepherdIdx]
 		sa := &p.SignalActions[sig]
 		return SignalAction{Handler: sa.Handler, Flags: sa.Flags,
 			Restorer: sa.Restorer, Mask: sa.Mask}
@@ -103,13 +103,13 @@ func GetSignalAction(sig int) SignalAction {
 	return signalActions[sig]
 }
 
-// GetSignalActionForThread returns the signal action for a specific thread's priest.
+// GetSignalActionForThread returns the signal action for a specific thread's shepherd.
 // Used by DeliverPendingSignal where the target thread may differ from the current thread.
 //
 //go:nosplit
 func GetSignalActionForThread(thread *Thread, sig int) SignalAction {
-	if thread.PriestIdx >= 0 {
-		p := &proc.PriestListData[thread.PriestIdx]
+	if thread.ShepherdIdx >= 0 {
+		p := &proc.ShepherdListData[thread.ShepherdIdx]
 		sa := &p.SignalActions[sig]
 		return SignalAction{Handler: sa.Handler, Flags: sa.Flags,
 			Restorer: sa.Restorer, Mask: sa.Mask}
@@ -118,15 +118,15 @@ func GetSignalActionForThread(thread *Thread, sig int) SignalAction {
 }
 
 // SetSignalAction installs a signal action for the given signal number.
-// For userspace threads (PriestIdx >= 0), writes to the priest's per-process table.
+// For userspace threads (ShepherdIdx >= 0), writes to the shepherd's per-process table.
 // For kernel threads, writes to the global table.
 //
 //go:nosplit
 func SetSignalAction(sig int, sa *SignalAction) {
 	t := GetCurrentThread()
-	if t != nil && t.PriestIdx >= 0 {
-		p := &proc.PriestListData[t.PriestIdx]
-		p.SignalActions[sig] = proc.PriestSignalAction{
+	if t != nil && t.ShepherdIdx >= 0 {
+		p := &proc.ShepherdListData[t.ShepherdIdx]
+		p.SignalActions[sig] = proc.ShepherdSignalAction{
 			Handler: sa.Handler, Flags: sa.Flags,
 			Restorer: sa.Restorer, Mask: sa.Mask,
 		}
@@ -215,7 +215,7 @@ func DeliverPendingSignal(thread *Thread) {
 		}
 	}
 
-	// Look up action from the TARGET thread's priest, not the current thread
+	// Look up action from the TARGET thread's shepherd, not the current thread
 	action := GetSignalActionForThread(thread, signum)
 
 	if action.Handler == 0 {
@@ -245,7 +245,7 @@ func DeliverPendingSignal(thread *Thread) {
 
 // SignalSelfTest prints a diagnostic summary of the signal infrastructure state.
 // Called after each userspace program launch to verify signal readiness.
-// Reads from the current priest's table for userspace threads, global for kernel.
+// Reads from the current shepherd's table for userspace threads, global for kernel.
 func SignalSelfTest(label string) {
 	action := GetSignalAction(_SIGURG)
 	serial.RawUARTPuts("[SigTest] ")
@@ -278,7 +278,7 @@ func SignalDeliveryStats() {
 
 // HandleUnhandledException handles a userspace exception that was not resolved
 // by the page fault handler. Maps the hardware exception to a Linux signal,
-// delivers it to a registered handler, or terminates the priest.
+// delivers it to a registered handler, or terminates the shepherd.
 //
 // excInfo: architecture-specific exception info (ESR on ARM64, vector on x86_64, scause on RISC-V)
 // faultAddr: faulting address (FAR on ARM64, CR2 on x86_64, stval on RISC-V)
@@ -286,7 +286,7 @@ func SignalDeliveryStats() {
 //
 // Returns: 0 if signal was queued (caller should return via normal exception path,
 // which will load the modified ThreadContext that now points to the signal handler).
-// Non-zero: pointer to next ThreadContext (priest was killed, load this context).
+// Non-zero: pointer to next ThreadContext (shepherd was killed, load this context).
 func HandleUnhandledException(excInfo, faultAddr, faultPC uint64) uintptr {
 	t := GetCurrentThread()
 	if t == nil {
@@ -296,17 +296,17 @@ func HandleUnhandledException(excInfo, faultAddr, faultPC uint64) uintptr {
 	// Map hardware exception to signal number (arch-specific)
 	signum := mapExceptionToSignal(excInfo)
 	if signum == 0 {
-		// Unknown exception type — kill the priest
+		// Unknown exception type — kill the shepherd
 		signum = _SIGSEGV
 	}
 
 	// If we're already inside a signal handler and take ANOTHER hardware fault,
-	// that's a double-fault (the handler itself crashed). Kill the priest
+	// that's a double-fault (the handler itself crashed). Kill the shepherd
 	// immediately — re-delivering the signal would loop forever.
 	if t.InSignalHandler != 0 {
 		pid := t.PID
 		PrintProcessDeathDiag(pid, signum, faultAddr, faultPC)
-		return TerminatePriest(pid, int64(128+signum))
+		return TerminateShepherd(pid, int64(128+signum))
 	}
 
 	// Look up signal handler
@@ -343,10 +343,10 @@ func HandleUnhandledException(excInfo, faultAddr, faultPC uint64) uintptr {
 		return uintptr(unsafe.Pointer(&t.Context))
 	}
 
-	// No handler — kill the priest
+	// No handler — kill the shepherd
 	pid := t.PID
 	PrintProcessDeathDiag(pid, signum, faultAddr, faultPC)
-	return TerminatePriest(pid, int64(128+signum))
+	return TerminateShepherd(pid, int64(128+signum))
 }
 
 // handleUnhandledExceptionInternal is the ABI0-compatible wrapper.
@@ -360,8 +360,8 @@ func handleUnhandledExceptionInternal(excInfo, faultAddr, faultPC uint64) uint64
 // Uses only nosplit-safe functions.
 //
 //go:nosplit
-func PrintProcessDeathDiag(pid PriestId, signum int, faultAddr, faultPC uint64) {
-	dualPuts("[KILLED] priest PID=")
+func PrintProcessDeathDiag(pid ShepherdId, signum int, faultAddr, faultPC uint64) {
+	dualPuts("[KILLED] shepherd PID=")
 	dualDecimal(uint64(pid))
 	dualPuts(" ")
 	dualPuts(signalName(signum))

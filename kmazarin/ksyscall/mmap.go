@@ -8,25 +8,25 @@ import (
 )
 
 // Userspace mmap allocates from low-memory range accessible via TTBR0 (or equivalent).
-// This is used by priest and other userspace programs.
+// This is used by shepherd and other userspace programs.
 //
-// Per-process bump pointers and span groups live in proc.Priest (proc package),
-// accessed via proc.CurrentPriest(). Physical memory is only used when pages
+// Per-process bump pointers and span groups live in proc.Shepherd (proc package),
+// accessed via proc.CurrentShepherd(). Physical memory is only used when pages
 // are actually faulted in.
 const (
 	userMmapEnd = 0x0000700000000000 // 112TB - plenty of VA space
 )
 
 // Userspace framebuffer mapping constants.
-// The framebuffer is mapped at a fixed VA for all priests to allow UI rendering.
+// The framebuffer is mapped at a fixed VA for all shepherds to allow UI rendering.
 // Located below the stack region to avoid conflicts.
 const (
-	UserFramebufferVA   = 0x00007FFE00000000 // Fixed VA for framebuffer in priest space
+	UserFramebufferVA   = 0x00007FFE00000000 // Fixed VA for framebuffer in shepherd space
 	UserFramebufferSize = 0x2000000          // 32MB - matches FramebufferSize in shared/constants
 )
 
 // Constraint shared page mapping constants.
-// Constraint pages are mapped read-only into every priest's address space.
+// Constraint pages are mapped read-only into every shepherd's address space.
 // The kernel writes via its own VA mapping (PA + KernelVAOffset).
 const (
 	UserConstraintPagesVA   = 0x00007FFD00000000 // Fixed VA for constraint pages
@@ -152,7 +152,7 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 //
 //go:nosplit
 func GetUserMmapAllocEnd() uint64 {
-	p := proc.CurrentPriest()
+	p := proc.CurrentShepherd()
 	if p == nil {
 		return userMmapStart
 	}
@@ -165,16 +165,16 @@ func GetUserMmapAllocEnd() uint64 {
 
 //go:nosplit
 func userBumpAlloc(size uint64) uint64 {
-	p := proc.CurrentPriest()
+	p := proc.CurrentShepherd()
 	if p == nil {
-		return 0 // No priest — kernel context, don't bump-alloc userspace VA
+		return 0 // No shepherd — kernel context, don't bump-alloc userspace VA
 	}
 
 	// Align to page boundary
 	pageSize := uint64(4096)
 	aligned := (size + pageSize - 1) & ^(pageSize - 1)
 
-	// Atomically allocate from this priest's bump pointer
+	// Atomically allocate from this shepherd's bump pointer
 	for {
 		currentPtr := atomic.LoadUint64(&p.BumpPointer)
 
@@ -202,12 +202,12 @@ func userBumpAlloc(size uint64) uint64 {
 	}
 }
 
-// bumpAllocForPriest allocates VA space from a specific priest's bump pointer.
-// Same logic as userBumpAlloc but operates on an explicit priest, not CurrentPriest().
+// bumpAllocForShepherd allocates VA space from a specific shepherd's bump pointer.
+// Same logic as userBumpAlloc but operates on an explicit shepherd, not CurrentShepherd().
 // Used by IPC syscalls that need to allocate VA in a target process.
 //
 //go:nosplit
-func bumpAllocForPriest(p *proc.Priest, size uint64) uint64 {
+func bumpAllocForShepherd(p *proc.Shepherd, size uint64) uint64 {
 	if p == nil {
 		return 0
 	}

@@ -20,7 +20,7 @@ type IPCRecvResult struct {
 	RequestPages uint64
 }
 
-// IPCCall sends an IPC request to a target priest and blocks until a reply arrives.
+// IPCCall sends an IPC request to a target shepherd and blocks until a reply arrives.
 // requestVA must be page-aligned. requestPages is the number of 4KB pages.
 // Returns the reply VA and reply page count.
 //
@@ -46,7 +46,7 @@ func IPCCall(targetPID int, requestVA uintptr, requestPages int) (replyVA uintpt
 	return va, pages, nil
 }
 
-// IPCRecv blocks until an IPC request arrives from a client priest.
+// IPCRecv blocks until an IPC request arrives from a client shepherd.
 // Returns the sender's PID, the request VA (in our address space), and the page count.
 //
 // Uses Syscall6 so the P is released while blocked.
@@ -67,7 +67,7 @@ func IPCRecv() (senderPID int, requestVA uintptr, requestPages int, err error) {
 	return int(result.SenderPID), uintptr(result.RequestVA), int(result.RequestPages), nil
 }
 
-// IPCReply sends a reply to a client priest blocked in IPCCall.
+// IPCReply sends a reply to a client shepherd blocked in IPCCall.
 // replyVA must be page-aligned.
 func IPCReply(clientPID int, replyVA uintptr, replyPages int) error {
 	r1, _, errno := RawSyscall(sysIPCReply,
@@ -85,7 +85,7 @@ func IPCReply(clientPID int, replyVA uintptr, replyPages int) error {
 	return nil
 }
 
-// ReadFile is a convenience wrapper that reads a file via IPC to the disk priest.
+// ReadFile is a convenience wrapper that reads a file via IPC to the disk shepherd.
 // Sends a FS_READ request to diskPID and returns the file contents.
 func ReadFile(diskPID int, path string) ([]byte, error) {
 	// Allocate 1 page for the request
@@ -144,7 +144,7 @@ func ReadFile(diskPID int, path string) ([]byte, error) {
 		errCode |= int64(replyHdr[16+i]) << (i * 8)
 	}
 	if errCode != 0 {
-		return nil, errors.New("disk priest returned error")
+		return nil, errors.New("disk shepherd returned error")
 	}
 
 	// Read payload length

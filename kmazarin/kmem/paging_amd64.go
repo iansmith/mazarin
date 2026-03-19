@@ -90,11 +90,11 @@ func initProcessL0(l0VA uintptr) {
 	*(*uint64)(unsafe.Pointer(l0VA)) = uint64(newPdptPA) | X86_PTE_PRESENT | X86_PTE_RW | X86_PTE_USER
 }
 
-// verifyUserspacePriestL0 checks that a priest's page table is valid before switching to it.
+// verifyUserspaceShepherdL0 checks that a shepherd's page table is valid before switching to it.
 // x86_64: single CR3, so L0[0] must contain kernel mappings (copied by initProcessL0).
 //
 //go:nosplit
-func verifyUserspacePriestL0(l0PA uintptr, asid uint16) {
+func verifyUserspaceShepherdL0(l0PA uintptr, asid uint16) {
 	l0VA := l0PA + constants.KernelMMIOOffset
 	e0 := *(*uint64)(unsafe.Pointer(l0VA))
 	if (e0 & X86_PTE_PRESENT) == 0 {
@@ -567,10 +567,10 @@ func platformUserL0MaxEntry() int {
 }
 
 // platformIsSharedKernelL1 returns true if the given L1 entry (within L0[0])
-// is shared with the kernel and must NOT have its subtree freed during priest
+// is shared with the kernel and must NOT have its subtree freed during shepherd
 // cleanup. On x86_64, initProcessL0 copies PDPT[1] from the kernel to share
 // the kmazarin code PD at VA 0x40000000-0x7FFFFFFF. Walking into that shared
-// PD during cleanup would free kernel PT pages still in use by other priests.
+// PD during cleanup would free kernel PT pages still in use by other shepherds.
 //
 //go:nosplit
 func platformIsSharedKernelL1(l1Idx int) bool {

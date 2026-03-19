@@ -7,27 +7,27 @@ import (
 	"unsafe"
 )
 
-// SyscallPriestInfo returns information about all running priests.
+// SyscallShepherdInfo returns information about all running shepherds.
 //
-// arg0: pointer to userspace buffer (array of hid.PriestInfoEntry)
+// arg0: pointer to userspace buffer (array of hid.ShepherdInfoEntry)
 // arg1: max number of entries the buffer can hold
 //
-// Returns the number of priests written, or negative errno on error.
-func SyscallPriestInfo(bufPtr, maxEntries, _, _, _, _ uint64) int64 {
+// Returns the number of shepherds written, or negative errno on error.
+func SyscallShepherdInfo(bufPtr, maxEntries, _, _, _, _ uint64) int64 {
 	if bufPtr == 0 || maxEntries == 0 {
 		return -22 // EINVAL
 	}
 
-	entrySize := int(unsafe.Sizeof(hid.PriestInfoEntry{}))
+	entrySize := int(unsafe.Sizeof(hid.ShepherdInfoEntry{}))
 	written := 0
 
-	for i := 0; i < proc.MaxPriests && written < int(maxEntries); i++ {
-		if !proc.PriestListInUse[i] {
+	for i := 0; i < proc.MaxShepherds && written < int(maxEntries); i++ {
+		if !proc.ShepherdListInUse[i] {
 			continue
 		}
-		p := &proc.PriestListData[i]
+		p := &proc.ShepherdListData[i]
 
-		var entry hid.PriestInfoEntry
+		var entry hid.ShepherdInfoEntry
 		entry.PID = int16(p.PID)
 		entry.ThreadCount = int16(p.ThreadCount)
 
@@ -39,13 +39,13 @@ func SyscallPriestInfo(bufPtr, maxEntries, _, _, _, _ uint64) int64 {
 		copy(entry.Filename[:n], p.Filename)
 		entry.FilenameLen = uint8(n)
 
-		// Gather thread IDs belonging to this priest
+		// Gather thread IDs belonging to this shepherd
 		for j := range entry.ThreadIDs {
 			entry.ThreadIDs[j] = -1 // sentinel for unused slots
 		}
 		ForEachThread(int16(p.PID), &entry)
 
-		// Count mapped pages by walking the priest's page table
+		// Count mapped pages by walking the shepherd's page table
 		if p.PageTableL0PA != 0 {
 			entry.PageCount = uint32(kmem.CountMappedPages(p.PageTableL0PA))
 		}
@@ -61,6 +61,6 @@ func SyscallPriestInfo(bufPtr, maxEntries, _, _, _, _ uint64) int64 {
 	return int64(written)
 }
 
-// ForEachThread iterates over threads belonging to priestPID and fills
+// ForEachThread iterates over threads belonging to shepherdSID and fills
 // entry.ThreadIDs. Implemented via go:linkname in kmazarin/kmazarin/linkname_impl.go.
-func ForEachThread(priestPID int16, entry *hid.PriestInfoEntry)
+func ForEachThread(shepherdSID int16, entry *hid.ShepherdInfoEntry)

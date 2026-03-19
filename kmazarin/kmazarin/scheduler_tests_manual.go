@@ -10,9 +10,9 @@ func ManualSchedulerTest() {
 	passed := 0
 	failed := 0
 
-	// Test 1: Different Priest Preference
-	fmt.Println("\n[Test 1] findReadyThreadPreferDifferentPriestSchedLockHeld - Different Priest Available")
-	if testPriestPreferenceDifferent() {
+	// Test 1: Different Shepherd Preference
+	fmt.Println("\n[Test 1] findReadyThreadPreferDifferentShepherdSchedLockHeld - Different Shepherd Available")
+	if testShepherdPreferenceDifferent() {
 		fmt.Println("  ✓ PASS")
 		passed++
 	} else {
@@ -20,9 +20,9 @@ func ManualSchedulerTest() {
 		failed++
 	}
 
-	// Test 2: Same Priest Fallback
-	fmt.Println("\n[Test 2] findReadyThreadPreferDifferentPriestSchedLockHeld - Same Priest Fallback")
-	if testPriestPreferenceFallback() {
+	// Test 2: Same Shepherd Fallback
+	fmt.Println("\n[Test 2] findReadyThreadPreferDifferentShepherdSchedLockHeld - Same Shepherd Fallback")
+	if testShepherdPreferenceFallback() {
 		fmt.Println("  ✓ PASS")
 		passed++
 	} else {
@@ -31,8 +31,8 @@ func ManualSchedulerTest() {
 	}
 
 	// Test 3: Empty Queue
-	fmt.Println("\n[Test 3] findReadyThreadPreferDifferentPriestSchedLockHeld - Empty Queue")
-	if testPriestPreferenceEmpty() {
+	fmt.Println("\n[Test 3] findReadyThreadPreferDifferentShepherdSchedLockHeld - Empty Queue")
+	if testShepherdPreferenceEmpty() {
 		fmt.Println("  ✓ PASS")
 		passed++
 	} else {
@@ -47,8 +47,8 @@ func ManualSchedulerTest() {
 	}
 }
 
-// testPriestPreferenceDifferent tests that different priest is preferred
-func testPriestPreferenceDifferent() bool {
+// testShepherdPreferenceDifferent tests that different shepherd is preferred
+func testShepherdPreferenceDifferent() bool {
 	// Save original state
 	origThreadList := threadList
 	origReadyQueue := readyQueue
@@ -73,7 +73,7 @@ func testPriestPreferenceDifferent() bool {
 	threadList.Data[0] = Thread{
 		TID:   ThreadId(10),
 		State: ThreadReady,
-		PID:   PriestId(1),
+		PID:   ShepherdId(1),
 	}
 	threadList.InUse[0] = true
 
@@ -81,7 +81,7 @@ func testPriestPreferenceDifferent() bool {
 	threadList.Data[1] = Thread{
 		TID:   ThreadId(20),
 		State: ThreadReady,
-		PID:   PriestId(2),
+		PID:   ShepherdId(2),
 	}
 	threadList.InUse[1] = true
 
@@ -90,7 +90,7 @@ func testPriestPreferenceDifferent() bool {
 	readyQueue.Push(ThreadId(20)) // Thread C
 
 	// Call with currentPID=1, should select Thread C (PID=2)
-	selected := findReadyThreadPreferDifferentPriestSchedLockHeld(PriestId(1))
+	selected := findReadyThreadPreferDifferentShepherdSchedLockHeld(ShepherdId(1))
 
 	// Verify
 	if selected == nil {
@@ -101,7 +101,7 @@ func testPriestPreferenceDifferent() bool {
 		fmt.Printf("    Error: Expected TID=20, got TID=%d\n", selected.TID)
 		return false
 	}
-	if selected.PID != PriestId(2) {
+	if selected.PID != ShepherdId(2) {
 		fmt.Printf("    Error: Expected PID=2, got PID=%d\n", selected.PID)
 		return false
 	}
@@ -109,8 +109,8 @@ func testPriestPreferenceDifferent() bool {
 	return true
 }
 
-// testPriestPreferenceFallback tests fallback to same priest
-func testPriestPreferenceFallback() bool {
+// testShepherdPreferenceFallback tests fallback to same shepherd
+func testShepherdPreferenceFallback() bool {
 	// Save original state
 	origThreadList := threadList
 	origReadyQueue := readyQueue
@@ -135,7 +135,7 @@ func testPriestPreferenceFallback() bool {
 	threadList.Data[0] = Thread{
 		TID:   ThreadId(10),
 		State: ThreadReady,
-		PID:   PriestId(1),
+		PID:   ShepherdId(1),
 	}
 	threadList.InUse[0] = true
 
@@ -143,7 +143,7 @@ func testPriestPreferenceFallback() bool {
 	threadList.Data[1] = Thread{
 		TID:   ThreadId(20),
 		State: ThreadReady,
-		PID:   PriestId(1),
+		PID:   ShepherdId(1),
 	}
 	threadList.InUse[1] = true
 
@@ -152,7 +152,7 @@ func testPriestPreferenceFallback() bool {
 	readyQueue.Push(ThreadId(20))
 
 	// Call with currentPID=1, should fall back to FIFO (Thread B)
-	selected := findReadyThreadPreferDifferentPriestSchedLockHeld(PriestId(1))
+	selected := findReadyThreadPreferDifferentShepherdSchedLockHeld(ShepherdId(1))
 
 	// Verify
 	if selected == nil {
@@ -167,8 +167,8 @@ func testPriestPreferenceFallback() bool {
 	return true
 }
 
-// testPriestPreferenceEmpty tests empty queue handling
-func testPriestPreferenceEmpty() bool {
+// testShepherdPreferenceEmpty tests empty queue handling
+func testShepherdPreferenceEmpty() bool {
 	// Save original state
 	origThreadList := threadList
 	origReadyQueue := readyQueue
@@ -192,7 +192,7 @@ func testPriestPreferenceEmpty() bool {
 	// Don't add any threads (empty queue)
 
 	// Call should return nil
-	selected := findReadyThreadPreferDifferentPriestSchedLockHeld(PriestId(1))
+	selected := findReadyThreadPreferDifferentShepherdSchedLockHeld(ShepherdId(1))
 
 	// Verify
 	if selected != nil {

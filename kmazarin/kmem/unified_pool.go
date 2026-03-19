@@ -17,7 +17,7 @@ import (
 type PageType uint8
 
 const (
-	// Kernel pages (owner = PriestId 0)
+	// Kernel pages (owner = ShepherdId 0)
 	PageKernelHeap  PageType = iota // Kernel heap (demand-paged)
 	PageKernelPT                    // Kernel page table pages
 	PageKernelStack                 // Kernel g0 + exception stacks
@@ -25,7 +25,7 @@ const (
 	PageFramebuffer                 // VirtIO GPU framebuffer
 	PageVirtIOQueue                 // VirtIO descriptor/avail/used rings
 
-	// Userspace pages (owner = PriestId 1-31)
+	// Userspace pages (owner = ShepherdId 1-31)
 	PageUserText   // ELF .text segments
 	PageUserROData // ELF .rodata segments
 	PageUserData   // ELF .data/.bss segments
@@ -34,16 +34,16 @@ const (
 	PageUserPT     // Per-process page table pages
 
 	// Shared / IPC pages
-	PageSharedIPC    // Pages transferred between priests
+	PageSharedIPC    // Pages transferred between shepherds
 	PageFileBuffer   // File I/O streaming buffers
-	PageBackingStore // Display backing store (dapope)
+	PageBackingStore // Display backing store (rachel)
 
 	// Driver pages
 	PageDriver // Driver DMA pages (non-cacheable)
 
 	// System pages (kernel-allocated, user-accessible)
 	PageVDSO             // vDSO trampoline (shared across all processes)
-	PageConstraintShared // Constraint VM shared pages (kernel-writable, priest-readable)
+	PageConstraintShared // Constraint VM shared pages (kernel-writable, shepherd-readable)
 
 	// Sentinel
 	PageTypeCount // Must be last
@@ -182,7 +182,7 @@ func InitUnifiedPool() {
 
 // AllocPage allocates a single page via the buddy allocator.
 // The pageType and owner parameters are used for accounting and PageDescriptor.
-// owner=0 for kernel pages, 1-31 for priest-owned pages.
+// owner=0 for kernel pages, 1-31 for shepherd-owned pages.
 // Returns the physical address of the page, or 0 if the pool is exhausted.
 // The page is NOT zeroed - caller must zero if needed.
 //

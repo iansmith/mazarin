@@ -24,13 +24,13 @@ var dbgSignalWokeFutex uint64
 // Read from the EVT handler for diagnostics.
 var dbgLastTimerWakeTID int32 = -1
 
-// blockDeviceOwnerPID tracks which priest owns the block device.
-// Set when a priest registers for BlockVirtualIRQ via RegisterSoftIRQ.
+// blockDeviceOwnerPID tracks which shepherd owns the block device.
+// Set when a shepherd registers for BlockVirtualIRQ via RegisterSoftIRQ.
 // -1 means no owner.
 var blockDeviceOwnerPID int16 = -1
 
-// GetBlockDeviceOwnerPID returns the PID of the priest that owns the block device.
-// Returns -1 if no priest has registered for block device ownership.
+// GetBlockDeviceOwnerPID returns the PID of the shepherd that owns the block device.
+// Returns -1 if no shepherd has registered for block device ownership.
 //
 //go:nosplit
 func GetBlockDeviceOwnerPID() int16 {
@@ -52,7 +52,7 @@ const maxSoftIRQSlots = 32
 type softIRQSlot struct {
 	active        uint32         // atomic: 1 = active
 	irqNum        uint32
-	priestID      int16
+	shepherdID      int16
 	devIdx        int            // index into input.AllDevices()
 	intKind       hid.InterruptType // KeyboardInterrupt or MouseInterrupt
 	blockedTID       ThreadId // TID of thread blocked on this slot (-1 = none)
@@ -86,9 +86,9 @@ func init() {
 	}
 }
 
-// RegisterSoftIRQSlotKsyscall registers an IRQ on a soft IRQ slot for a priest.
+// RegisterSoftIRQSlotKsyscall registers an IRQ on a soft IRQ slot for a shepherd.
 // Called from ksyscall via linkname.
-func RegisterSoftIRQSlotKsyscall(irqNum uint32, slotNum int32, priestID int16) int64 {
+func RegisterSoftIRQSlotKsyscall(irqNum uint32, slotNum int32, shepherdID int16) int64 {
 	if slotNum < 0 || slotNum >= maxSoftIRQSlots {
 		return -22 // EINVAL
 	}
@@ -123,7 +123,7 @@ func RegisterSoftIRQSlotKsyscall(irqNum uint32, slotNum int32, priestID int16) i
 			intKind = hid.DiskInterrupt
 			ring = nil // Block device doesn't use ring buffers — uses SysBlockRead
 			devIdx = 0 // dummy
-			blockDeviceOwnerPID = priestID
+			blockDeviceOwnerPID = shepherdID
 		} else {
 			console.KPrintf("[SoftIRQSlot] No device found for IRQ %d\n", irqNum)
 			return -19 // ENODEV
@@ -139,7 +139,7 @@ func RegisterSoftIRQSlotKsyscall(irqNum uint32, slotNum int32, priestID int16) i
 
 	slot := &softIRQSlotData[slotNum]
 	slot.irqNum = irqNum
-	slot.priestID = priestID
+	slot.shepherdID = shepherdID
 	slot.devIdx = devIdx
 	slot.intKind = intKind
 	slot.ring = ring
@@ -151,9 +151,9 @@ func RegisterSoftIRQSlotKsyscall(irqNum uint32, slotNum int32, priestID int16) i
 		irqToSlot[irqNum] = slotNum
 	}
 
-	// When a userspace priest registers on the UART serial slot,
+	// When a userspace shepherd registers on the UART serial slot,
 	// switch the kernel console to push through the soft IRQ ring
-	// so the priest receives kernel output.
+	// so the shepherd receives kernel output.
 	if intKind == hid.SerialInterrupt && !IsSoftIRQConsoleActive() {
 		EnableSoftIRQConsole()
 	}
@@ -389,11 +389,11 @@ func PushTimerEventAndWake(sec, nsec uint64) {
 	dbgLastTimerWakeTID = int32(tid)
 }
 
-// GetUartSlotPriestID returns the priest ID that owns the UART serial slot.
-// Returns -1 if no priest has registered on the UART slot.
+// GetUartSlotShepherdID returns the shepherd ID that owns the UART serial slot.
+// Returns -1 if no shepherd has registered on the UART slot.
 //
 //go:nosplit
-func GetUartSlotPriestID() int16 {
+func GetUartSlotShepherdID() int16 {
 	if uartIRQNum == 0 || uartIRQNum >= 256 {
 		return -1
 	}
@@ -404,25 +404,25 @@ func GetUartSlotPriestID() int16 {
 	if atomic.LoadUint32(&softIRQSlotData[slotIdx].active) == 0 {
 		return -1
 	}
-	return softIRQSlotData[slotIdx].priestID
+	return softIRQSlotData[slotIdx].shepherdID
 }
 
-// CleanupSoftIRQSlotsForPriest deactivates all soft IRQ slots belonging to the
-// given priest. For each matching slot:
+// CleanupSoftIRQSlotsForShepherd deactivates all soft IRQ slots belonging to the
+// given shepherd. For each matching slot:
 //   - Deactivates the slot (atomic store active=0)
 //   - Removes IRQ→slot mapping
 //   - Wakes any blocked thread (marks ready, enqueues)
 //   - Clears slot fields
 //
-// If the priest owned the UART serial slot, reverts the kernel console to
+// If the shepherd owned the UART serial slot, reverts the kernel console to
 // direct UART output by nilling softIRQConsole and clearing suppressSerial.
 //
-// If the priest owned the block device, clears blockDeviceOwnerPID.
+// If the shepherd owned the block device, clears blockDeviceOwnerPID.
 //
-// NOT nosplit — breaks the nosplit chain in TerminatePriest (same pattern as
-// terminatePriestDelegateCleanup). Acquires schedulerLock internally for
+// NOT nosplit — breaks the nosplit chain in TerminateShepherd (same pattern as
+// terminateShepherdDelegateCleanup). Acquires schedulerLock internally for
 // thread wake operations.
-func CleanupSoftIRQSlotsForPriest(priestID int16) {
+func CleanupSoftIRQSlotsForShepherd(shepherdID int16) {
 	// Disable IRQs + acquire scheduler lock for thread wake safety.
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
@@ -432,7 +432,7 @@ func CleanupSoftIRQSlotsForPriest(priestID int16) {
 			continue
 		}
 		slot := &softIRQSlotData[i]
-		if slot.priestID != priestID {
+		if slot.shepherdID != shepherdID {
 			continue
 		}
 
@@ -469,7 +469,7 @@ func CleanupSoftIRQSlotsForPriest(priestID int16) {
 		slot.blockedTID = -1
 		slot.blockedThreadPtr = 0
 		slot.irqNum = 0
-		slot.priestID = 0
+		slot.shepherdID = 0
 		slot.devIdx = 0
 		slot.intKind = 0
 		slot.ring = nil
@@ -477,8 +477,8 @@ func CleanupSoftIRQSlotsForPriest(priestID int16) {
 
 		serial.RawUARTPuts("[SoftIRQ] cleaned slot ")
 		serial.RawUARTDecimal(uint64(i))
-		serial.RawUARTPuts(" for priest ")
-		serial.RawUARTDecimal(uint64(priestID))
+		serial.RawUARTPuts(" for shepherd ")
+		serial.RawUARTDecimal(uint64(shepherdID))
 		serial.RawUARTPuts("\r\n")
 	}
 
@@ -535,7 +535,7 @@ func QueryInputDevicesKernel(infos []hid.InputDeviceInfo, max int) int {
 		}
 		n++
 	}
-	// Report the block device as a virtual device (for disk priest ownership)
+	// Report the block device as a virtual device (for disk shepherd ownership)
 	if n < max && n < len(infos) {
 		infos[n] = hid.InputDeviceInfo{
 			IRQNum:        hid.BlockVirtualIRQ,

@@ -1,8 +1,8 @@
-// constraint_notify.go — Per-priest dirty notification queue and WaitDirty syscall.
+// constraint_notify.go — Per-shepherd dirty notification queue and WaitDirty syscall.
 //
 // When a value attribute is written and the dirty walk encounters a node with
-// FlagEagerNotify, the kernel enqueues the slot number in the owning priest's
-// notification queue. A priest blocked on SysAttrWaitDirty is woken to drain
+// FlagEagerNotify, the kernel enqueues the slot number in the owning shepherd's
+// notification queue. A shepherd blocked on SysAttrWaitDirty is woken to drain
 // the queue.
 //
 // SysAttrSetEager (0x1029) — set/clear FlagEagerNotify on a shared-page node.
@@ -18,22 +18,22 @@ import (
 )
 
 // notifyQueueSize is the maximum number of pending dirty slot notifications
-// per priest before overflow coalescing kicks in.
+// per shepherd before overflow coalescing kicks in.
 const notifyQueueSize = 64
 
-// NotifyQueue holds pending dirty slot notifications for a priest.
-// Fixed-size ring buffer — if full, set Overflowed (priest will re-scan).
+// NotifyQueue holds pending dirty slot notifications for a shepherd.
+// Fixed-size ring buffer — if full, set Overflowed (shepherd will re-scan).
 type NotifyQueue struct {
 	Slots      [notifyQueueSize]uint16
 	Head       uint16 // next write position (wraps at notifyQueueSize)
 	Count      uint16 // number of pending notifications
-	Overflowed bool   // if true, priest must re-scan all eager attrs
+	Overflowed bool   // if true, shepherd must re-scan all eager attrs
 	BlockedTID int32  // TID of thread blocked on WaitDirty (-1 = none)
 }
 
-// notifyQueues is the per-priest notification queue array.
-// Indexed by PriestId (0 to MaxPriests-1).
-var notifyQueues [proc.MaxPriests]NotifyQueue
+// notifyQueues is the per-shepherd notification queue array.
+// Indexed by ShepherdId (0 to MaxShepherds-1).
+var notifyQueues [proc.MaxShepherds]NotifyQueue
 
 // initNotifyQueues initializes all notification queues.
 // Called from InitKernelAttrManager.
@@ -43,14 +43,14 @@ func initNotifyQueues() {
 	}
 }
 
-// enqueueNotification records a dirty slot for a priest and wakes its blocked
+// enqueueNotification records a dirty slot for a shepherd and wakes its blocked
 // WaitDirty thread (if any). Called from dirtyWalk when FlagEagerNotify is set.
 //
 // The owner field comes from FlatAttrNode.Owner (uint16, which stores the
-// PriestId cast to uint16).
+// ShepherdId cast to uint16).
 func (mgr *KernelAttrManager) enqueueNotification(slot uint16, owner uint16) {
 	pid := int(owner)
-	if pid < 0 || pid >= proc.MaxPriests {
+	if pid < 0 || pid >= proc.MaxShepherds {
 		return
 	}
 	q := &notifyQueues[pid]
@@ -81,7 +81,7 @@ func (mgr *KernelAttrManager) enqueueNotification(slot uint16, owner uint16) {
 // drainNotifyQueue copies pending slot numbers to a kernel buffer and resets
 // the queue. Returns the count of slots drained, or -1 if overflow occurred.
 func drainNotifyQueue(pid int) ([]uint16, int) {
-	if pid < 0 || pid >= proc.MaxPriests {
+	if pid < 0 || pid >= proc.MaxShepherds {
 		return nil, 0
 	}
 	q := &notifyQueues[pid]
@@ -132,7 +132,7 @@ func SyscallAttrSetEager(slotIndex, eager, _, _, _, _ uint64) int64 {
 	}
 
 	// Check ownership.
-	pid, _ := getCurrentThreadPIDAndTID()
+	pid, _ := getCurrentThreadSIDAndTID()
 	if node.Owner != uint16(pid) {
 		return -1 // EPERM
 	}
@@ -147,7 +147,7 @@ func SyscallAttrSetEager(slotIndex, eager, _, _, _, _ uint64) int64 {
 }
 
 // SyscallAttrWaitDirty blocks until dirty notifications are available for the
-// calling priest, then copies slot numbers to userspace.
+// calling shepherd, then copies slot numbers to userspace.
 //
 // Args: resultBufPtr, maxSlots, _, _, _, _
 //   - resultBufPtr: pointer to uint16 array in userspace
@@ -159,9 +159,9 @@ func SyscallAttrWaitDirty(resultBufPtr, maxSlots, _, _, _, _ uint64) int64 {
 		return -12 // ENOMEM
 	}
 
-	pid, _ := getCurrentThreadPIDAndTID()
-	priestPID := int(pid)
-	if priestPID < 0 || priestPID >= proc.MaxPriests {
+	pid, _ := getCurrentThreadSIDAndTID()
+	shepherdSID := int(pid)
+	if shepherdSID < 0 || shepherdSID >= proc.MaxShepherds {
 		return -22 // EINVAL
 	}
 
@@ -170,7 +170,7 @@ func SyscallAttrWaitDirty(resultBufPtr, maxSlots, _, _, _, _ uint64) int64 {
 	}
 
 	// Try to drain pending notifications.
-	slots, count := drainNotifyQueue(priestPID)
+	slots, count := drainNotifyQueue(shepherdSID)
 	if count == -1 {
 		return -1 // overflow — caller must re-scan all eager attrs
 	}
@@ -179,8 +179,8 @@ func SyscallAttrWaitDirty(resultBufPtr, maxSlots, _, _, _, _ uint64) int64 {
 	}
 
 	// No notifications pending — block the thread.
-	q := &notifyQueues[priestPID]
-	_, tid := getCurrentThreadPIDAndTID()
+	q := &notifyQueues[shepherdSID]
+	_, tid := getCurrentThreadSIDAndTID()
 	q.BlockedTID = int32(tid)
 
 	ctxPtr := blockForDirtyNotify(resultBufPtr)
@@ -194,7 +194,7 @@ func SyscallAttrWaitDirty(resultBufPtr, maxSlots, _, _, _, _ uint64) int64 {
 	// No other thread to switch to — WFI loop until notifications arrive.
 	for {
 		enableIRQsAndWait()
-		slots, count = drainNotifyQueue(priestPID)
+		slots, count = drainNotifyQueue(shepherdSID)
 		if count == -1 {
 			return -1 // overflow
 		}

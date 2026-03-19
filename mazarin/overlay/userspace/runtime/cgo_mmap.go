@@ -25,7 +25,7 @@ var _cgo_munmap unsafe.Pointer
 
 // MazzyMmapHandler is a function pointer for mmap interception.
 // By default it's nil, which means use sysMmap (real SVC).
-// The syscall package sets this to route mmap through PriestSyscallEntry.
+// The syscall package sets this to route mmap through ShepherdSyscallEntry.
 // Exported via linkname without package prefix so syscall can set it.
 //
 //go:linkname MazzyMmapHandler MazzyMmapHandler

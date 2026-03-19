@@ -84,11 +84,11 @@ TEXT ·CheckKernelGoroutinePreempt(SB), $0-16
 TEXT ·ThreadExitAsm(SB), NOSPLIT, $0-8
 	JMP	·threadExitInternal(SB)
 
-// TerminatePriestAsm tail-call stub
-// Go signature: func TerminatePriestAsm(pid uint64, status int64) uint64
+// TerminateShepherdAsm tail-call stub
+// Go signature: func TerminateShepherdAsm(pid uint64, status int64) uint64
 // ABI0: 2 args (16 bytes) + 1 return (8 bytes) = 24 bytes
-TEXT ·TerminatePriestAsm(SB), NOSPLIT, $0-24
-	JMP	·terminatePriestInternal(SB)
+TEXT ·TerminateShepherdAsm(SB), NOSPLIT, $0-24
+	JMP	·terminateShepherdInternal(SB)
 
 // HandleUnhandledExceptionAsm tail-call stub
 // Go signature: func HandleUnhandledExceptionAsm(excInfo, faultAddr, faultPC uint64) uint64

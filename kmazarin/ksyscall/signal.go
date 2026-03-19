@@ -168,7 +168,7 @@ func SyscallTgkill(tgid, tid, sig, _, _, _ uint64) int64 {
 		return -3 // ESRCH — no such process/thread
 	}
 
-	// Validate tgid matches target thread's PID (cross-priest signal rejected)
+	// Validate tgid matches target thread's PID (cross-shepherd signal rejected)
 	if tgid != 0 {
 		targetPID := GetThreadPID(targetThread)
 		if int16(tgid) != targetPID {

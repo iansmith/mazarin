@@ -21,7 +21,7 @@ func getCPUCountForAffinity() uint64
 
 // isValidUserAddr checks if an address is a valid buffer address for the current context.
 // For kernel threads (PID 0): accepts both kernel and userspace addresses (only rejects NULL)
-// For userspace threads (priests): rejects NULL and kernel addresses
+// For userspace threads (shepherds): rejects NULL and kernel addresses
 // This prevents userspace from tricking the kernel into writing to kernel memory,
 // while allowing kmazarin's own syscalls (which use kernel addresses) to work.
 //
@@ -33,15 +33,15 @@ func isValidUserAddr(addr uint64) bool {
 	}
 
 	// Get current thread's PID to determine if we're in kernel or userspace context
-	p := proc.CurrentPriest()
+	p := proc.CurrentShepherd()
 
-	// For kernel threads (PID 0 / nil priest), allow kernel addresses.
+	// For kernel threads (PID 0 / nil shepherd), allow kernel addresses.
 	// The Go runtime running in kmazarin uses kernel addresses (0xFFFF...)
 	if p == nil {
 		return true // Kernel context - any non-NULL address is valid
 	}
 
-	// For userspace (priest) threads, reject kernel addresses
+	// For userspace (shepherd) threads, reject kernel addresses
 	// Kernel addresses have the upper 16 bits set (TTBR1 space)
 	if (addr & 0xFFFF000000000000) != 0 {
 		return false
@@ -53,12 +53,12 @@ func isValidUserAddr(addr uint64) bool {
 // Simple stub syscalls that return constants or success
 // ============================================================================
 
-// SyscallGetpid returns the process ID (priest PID).
+// SyscallGetpid returns the process ID (shepherd PID).
 // Returns 0 for kernel threads.
 //
 //go:nosplit
 func SyscallGetpid(_, _, _, _, _, _ uint64) int64 {
-	p := proc.CurrentPriest()
+	p := proc.CurrentShepherd()
 	if p == nil {
 		return 0
 	}
@@ -90,7 +90,7 @@ func SyscallSchedYield(_, _, _, _, _, _ uint64) int64 {
 	// release the lock. The m.locks check is only appropriate for ASYNC
 	// (timer-driven) preemption, not voluntary yields.
 
-	// If thread 0 has pending kernel dispatch work (LoadMaz/RunMaz/RunPriest),
+	// If thread 0 has pending kernel dispatch work (LoadMaz/RunMaz/RunShepherd),
 	// skip the OS-level thread switch. This lets Go's internal goroutine
 	// scheduler keep cycling through goroutines on M0 until the idle loop
 	// goroutine (which calls DispatchLoadMazWork etc.) gets scheduled.
@@ -339,9 +339,9 @@ func SyscallEpollPwait(_, _, _, timeoutMS, _, _ uint64) int64 {
 
 	currentTID := int32(GetCurrentThreadTID())
 
-	// Register this thread as the netpoll waiter for the current priest.
+	// Register this thread as the netpoll waiter for the current shepherd.
 	// SyscallWrite(eventfd) reads this to know which thread to wake.
-	p := proc.CurrentPriest()
+	p := proc.CurrentShepherd()
 	if p != nil {
 		p.NetpollWaiterTID = currentTID
 	}
@@ -455,7 +455,7 @@ func SyscallOpenat(dirfd, pathname, flags, mode, _, _ uint64) int64 {
 // Signal stubs (remaining — rt_sigaction, sigaltstack, tgkill moved to signal.go)
 // ============================================================================
 
-// SyscallKill sends a signal to a process (priest).
+// SyscallKill sends a signal to a process (shepherd).
 // Linux: kill(pid, sig)
 // Finds a thread belonging to the target PID and sets PendingSignals.
 //

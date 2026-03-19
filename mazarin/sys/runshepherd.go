@@ -7,9 +7,9 @@ import (
 	merror "mazzy/mazarin/error"
 )
 
-// RunPriest creates a new priest from ELF data in the caller's pages.
+// RunShepherd creates a new shepherd from ELF data in the caller's pages.
 // A new address space is created, the ELF is loaded into it, and the
-// priest's main thread is started.
+// shepherd's main thread is started.
 //
 // The raw ELF pages (from LoadFile) are implicitly unmapped from the caller.
 //
@@ -17,13 +17,13 @@ import (
 //
 //	lf, err := sys.LoadFile("/stdio.elf")
 //	if err == nil {
-//	    err = sys.RunPriest("stdio", uintptr(lf.StartVA), int(lf.NumPages), int(lf.BytesRead))
+//	    err = sys.RunShepherd("stdio", uintptr(lf.StartVA), int(lf.NumPages), int(lf.BytesRead))
 //	}
-func RunPriest(name string, startVA uintptr, numPages int, totalBytes int) *merror.Error {
+func RunShepherd(name string, startVA uintptr, numPages int, totalBytes int) *merror.Error {
 	nameBytes := append([]byte(name), 0)
 
 	r1, _, _ := syscall.RawSyscall6(
-		sysRunPriest,
+		sysRunShepherd,
 		uintptr(unsafe.Pointer(&nameBytes[0])),
 		startVA,
 		uintptr(numPages),

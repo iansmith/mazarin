@@ -36,7 +36,7 @@ type TransformResult struct {
 	FileSet     *token.FileSet
 	StubFuncs   []FuncStub      // Functions that were stubbed
 	UsedImports map[string]bool // Imports actually used outside function bodies
-	priestSrc   []byte          // In priest mode: text-modified source (nil = use AST printer)
+	shepherdSrc   []byte          // In shepherd mode: text-modified source (nil = use AST printer)
 }
 
 // packageInfo holds source and output directories for one package being processed.
@@ -55,7 +55,7 @@ var (
 	flagGo            = flag.String("go", "", "Path to Go binary (used with -runtime-from-go)")
 	flagRuntimeFromGo = flag.Bool("runtime-from-go", false, "Discover runtime dir via 'go env GOROOT' using the -go binary")
 	flagPackages      = flag.String("packages", "runtime", "Comma-separated list of packages to stub (e.g., runtime,syscall)")
-	flagMode          = flag.String("mode", "thin", "Mode: 'thin' generates stub bodies for .maz, 'priest' adds //go:noinline + keep-alive for priest builds")
+	flagMode          = flag.String("mode", "thin", "Mode: 'thin' generates stub bodies for .maz, 'shepherd' adds //go:noinline + keep-alive for shepherd builds")
 )
 
 func main() {
@@ -101,10 +101,10 @@ func main() {
 	switch *flagMode {
 	case "thin":
 		runThinMode(packages)
-	case "priest":
-		runPriestMode(packages)
+	case "shepherd":
+		runShepherdMode(packages)
 	default:
-		fmt.Fprintf(os.Stderr, "Error: unknown mode %q (use 'thin' or 'priest')\n", *flagMode)
+		fmt.Fprintf(os.Stderr, "Error: unknown mode %q (use 'thin' or 'shepherd')\n", *flagMode)
 		os.Exit(1)
 	}
 }
@@ -154,20 +154,20 @@ type keepAliveEntry struct {
 	funcName     string // function or method name
 }
 
-// runPriestMode generates overlay files for priest (host) builds.
+// runShepherdMode generates overlay files for shepherd (host) builds.
 // Each stubbable function gets //go:noinline added (body unchanged).
 // A _keepForMaz() function is appended per sub-package to prevent DCE.
-func runPriestMode(packages []packageInfo) {
+func runShepherdMode(packages []packageInfo) {
 	totalFiles := 0
 	totalNoinline := 0
 	overlayReplace := make(map[string]string)
 
 	for _, pkg := range packages {
 		if *flagVerbose {
-			fmt.Printf("Processing package (priest): %s (source: %s)\n", pkg.name, pkg.sourceDir)
+			fmt.Printf("Processing package (shepherd): %s (source: %s)\n", pkg.name, pkg.sourceDir)
 		}
 
-		noinlineCount, fileCount, err := processPackageForPriest(pkg, overlayReplace)
+		noinlineCount, fileCount, err := processPackageForShepherd(pkg, overlayReplace)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error processing package %s: %v\n", pkg.name, err)
 			os.Exit(1)
@@ -182,14 +182,14 @@ func runPriestMode(packages []packageInfo) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Generated %d priest overlay files with %d //go:noinline functions across %d packages\n",
+	fmt.Printf("Generated %d shepherd overlay files with %d //go:noinline functions across %d packages\n",
 		totalFiles, totalNoinline, len(packages))
 	fmt.Printf("Overlay written to: %s\n", *flagOverlayOut)
 }
 
-// processPackageForPriest processes a package in priest mode: adds //go:noinline
+// processPackageForShepherd processes a package in shepherd mode: adds //go:noinline
 // to stubbable functions and generates MazKeepAliveSymbols() per sub-package.
-func processPackageForPriest(pkg packageInfo, overlayReplace map[string]string) (int, int, error) {
+func processPackageForShepherd(pkg packageInfo, overlayReplace map[string]string) (int, int, error) {
 	files, err := findSourceFiles(pkg.sourceDir)
 	if err != nil {
 		return 0, 0, fmt.Errorf("finding source files: %w", err)
@@ -249,7 +249,7 @@ func processPackageForPriest(pkg packageInfo, overlayReplace map[string]string) 
 			continue
 		}
 
-		result, count, err := transformFileForPriest(path)
+		result, count, err := transformFileForShepherd(path)
 		if err != nil {
 			return 0, 0, fmt.Errorf("transforming %s: %w", path, err)
 		}
@@ -257,7 +257,7 @@ func processPackageForPriest(pkg packageInfo, overlayReplace map[string]string) 
 		rel, _ := filepath.Rel(pkg.sourceDir, path)
 		outputPath := filepath.Join(pkg.outputDir, rel)
 
-		if result.priestSrc != nil {
+		if result.shepherdSrc != nil {
 			if err := writeStubFile(result, outputPath); err != nil {
 				return 0, 0, fmt.Errorf("writing %s: %w", outputPath, err)
 			}
@@ -322,17 +322,17 @@ func processPackageForPriest(pkg packageInfo, overlayReplace map[string]string) 
 	return noinlineCount, fileCount, nil
 }
 
-// priestFuncInfo holds info about a function that needs //go:noinline in priest mode.
-type priestFuncInfo struct {
+// shepherdFuncInfo holds info about a function that needs //go:noinline in shepherd mode.
+type shepherdFuncInfo struct {
 	line int      // 1-based line number of the func keyword
 	stub FuncStub // stub info for keep-alive generation
 }
 
-// transformFileForPriest parses a file to find stubbable functions, then does
+// transformFileForShepherd parses a file to find stubbable functions, then does
 // text-based insertion of //go:noinline before each one. This avoids go/ast
 // comment positioning issues that cause "misplaced compiler directive" errors.
 // Returns a TransformResult (for keep-alive tracking) and the noinline count.
-func transformFileForPriest(path string) (*TransformResult, int, error) {
+func transformFileForShepherd(path string) (*TransformResult, int, error) {
 	fset := token.NewFileSet()
 
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
@@ -347,7 +347,7 @@ func transformFileForPriest(path string) (*TransformResult, int, error) {
 	}
 
 	// Collect functions that need //go:noinline
-	var funcs []priestFuncInfo
+	var funcs []shepherdFuncInfo
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || !shouldStub(fn) {
@@ -371,7 +371,7 @@ func transformFileForPriest(path string) (*TransformResult, int, error) {
 		if !alreadyHas {
 			// Use the line of the func keyword for insertion
 			pos := fset.Position(fn.Pos())
-			funcs = append(funcs, priestFuncInfo{
+			funcs = append(funcs, shepherdFuncInfo{
 				line: pos.Line,
 				stub: stub,
 			})
@@ -411,7 +411,7 @@ func transformFileForPriest(path string) (*TransformResult, int, error) {
 	}
 
 	// Store the modified source for writing
-	result.priestSrc = []byte(out.String())
+	result.shepherdSrc = []byte(out.String())
 
 	return result, len(funcs), nil
 }
@@ -1122,9 +1122,9 @@ func writeStubFile(result *TransformResult, outputPath string) error {
 		return err
 	}
 
-	// In priest mode, use pre-built text source if available
-	if result.priestSrc != nil {
-		return os.WriteFile(outputPath, result.priestSrc, 0644)
+	// In shepherd mode, use pre-built text source if available
+	if result.shepherdSrc != nil {
+		return os.WriteFile(outputPath, result.shepherdSrc, 0644)
 	}
 
 	// Write AST to buffer first, then post-process to insert //go:noinline.

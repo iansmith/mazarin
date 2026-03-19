@@ -10,7 +10,7 @@
 
 // defaultSyscallHandler performs a real SVC syscall.
 // This is used as the default PriestSyscallEntry for programs that make
-// real syscalls to the kernel (like priest itself).
+// real syscalls to the kernel (like shepherd itself).
 //
 // func defaultSyscallHandler(num, a1, a2, a3, a4, a5, a6 uintptr) int64
 TEXT ·defaultSyscallHandler(SB),NOSPLIT,$0-64

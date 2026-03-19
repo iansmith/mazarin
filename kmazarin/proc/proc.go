@@ -1,47 +1,47 @@
 // Package proc provides per-process state shared between kmazarin's internal
 // packages (ksyscall, kmem, kirq) without circular imports.
 //
-// The key type is Priest, which represents a userspace process. Previously
-// Priest lived in kmazarin/kmazarin (the main package), forcing ksyscall and
-// kmem to use go:linkname hacks to access per-process state. Moving Priest
+// The key type is Shepherd, which represents a userspace process. Previously
+// Shepherd lived in kmazarin/kmazarin (the main package), forcing ksyscall and
+// kmem to use go:linkname hacks to access per-process state. Moving Shepherd
 // here breaks the cycle: proc imports nothing from kmazarin, so any package
 // can import proc freely.
 package proc
 
-// MaxPriests is the maximum number of priest processes (userspace programs).
-const MaxPriests = 32
+// MaxShepherds is the maximum number of shepherd processes (userspace programs).
+const MaxShepherds = 32
 
 // SignalNSIG is the number of signals (1-64 + sentinel), matching Linux _NSIG.
 const SignalNSIG = 65
 
-// PriestSignalAction records a signal handler for a priest.
+// ShepherdSignalAction records a signal handler for a shepherd.
 // Layout matches Go runtime's sigactiont struct.
-type PriestSignalAction struct {
+type ShepherdSignalAction struct {
 	Handler  uint64
 	Flags    uint64
 	Restorer uint64
 	Mask     uint64
 }
 
-// PriestId is a unique priest (userspace process) identifier (0-MaxPriests-1).
-type PriestId int16
+// ShepherdId is a unique shepherd (userspace process) identifier (0-MaxShepherds-1).
+type ShepherdId int16
 
-// Priest represents a userspace process that runs Go code.
-// Each priest has its own address space and Go runtime.
-type Priest struct {
-	PID                   PriestId // Unique priest identifier
+// Shepherd represents a userspace process that runs Go code.
+// Each shepherd has its own address space and Go runtime.
+type Shepherd struct {
+	PID                   ShepherdId // Unique shepherd identifier
 	_reservedAsyncPreempt uint64   // Padding (was AsyncPreemptAddr — now unused)
 
-	// Filename is the ELF filename used to launch this priest (e.g., "/dapope.elf").
-	// Stored at launch time for introspection via PriestInfo syscall.
+	// Filename is the ELF filename used to launch this shepherd (e.g., "/rachel.elf").
+	// Stored at launch time for introspection via ShepherdInfo syscall.
 	Filename string
 
-	// Per-priest tick accounting — all thread ticks roll up here
-	TotalTicksRunning   uint64 // Cumulative ticks across all threads of this priest
-	TicksStartedRunning uint64 // When current thread of this priest started (0 = none running)
+	// Per-shepherd tick accounting — all thread ticks roll up here
+	TotalTicksRunning   uint64 // Cumulative ticks across all threads of this shepherd
+	TicksStartedRunning uint64 // When current thread of this shepherd started (0 = none running)
 
-	// Thread tracking for priest cleanup
-	ThreadCount int32 // Number of live threads belonging to this priest
+	// Thread tracking for shepherd cleanup
+	ThreadCount int32 // Number of live threads belonging to this shepherd
 
 	// Per-process userspace memory management.
 	// BumpPointer is the next VA to hand out. Zero means uninitialized;
@@ -52,21 +52,21 @@ type Priest struct {
 	// MAP_FIXED mappings, etc.).
 	Spans LockedSpanGroup
 
-	// PageTableL0PA is the physical address of this priest's L0 page table.
-	// Used for page table walks during cleanup on priest exit.
+	// PageTableL0PA is the physical address of this shepherd's L0 page table.
+	// Used for page table walks during cleanup on shepherd exit.
 	PageTableL0PA uintptr
 
-	// SignalActions is the per-priest signal action table.
+	// SignalActions is the per-shepherd signal action table.
 	// Index 0 is unused (signal numbers are 1-based).
-	// Each priest has its own table so handlers are isolated between processes.
-	SignalActions [SignalNSIG]PriestSignalAction
+	// Each shepherd has its own table so handlers are isolated between processes.
+	SignalActions [SignalNSIG]ShepherdSignalAction
 
-	// SymbolTable caches the priest's ELF symbol name → VA address mapping.
+	// SymbolTable caches the shepherd's ELF symbol name → VA address mapping.
 	// Built during SyscallLaunch so that SysLoadMaz can resolve .maz imports
-	// against the priest's real functions at load time.
+	// against the shepherd's real functions at load time.
 	SymbolTable map[string]uint64
 
-	// HighestVA tracks the highest VA address used by the priest's loaded segments.
+	// HighestVA tracks the highest VA address used by the shepherd's loaded segments.
 	// Used by SysLoadMaz to determine where to place .maz segments.
 	HighestVA uint64
 
@@ -76,52 +76,52 @@ type Priest struct {
 	// sleeping thread, implementing Go's netpollBreak mechanism.
 	NetpollWaiterTID int32
 
-	// Ready indicates this priest is ready to accept delegated work.
+	// Ready indicates this shepherd is ready to accept delegated work.
 	// Set by SysSetReady, checked by the kernel before delegating LoadFile.
 	// 0 = not ready, 1 = ready.
 	Ready int32
 }
 
-// Id implements the ds.Ider interface for Priest.
-func (p *Priest) Id() int32 {
+// Id implements the ds.Ider interface for Shepherd.
+func (p *Shepherd) Id() int32 {
 	return int32(p.PID)
 }
 
-// PriestListData is the backing array for the priest list, indexed by list slot
-// (NOT necessarily by PID — use Thread.PriestIdx for O(1) access).
+// ShepherdListData is the backing array for the shepherd list, indexed by list slot
+// (NOT necessarily by PID — use Thread.ShepherdIdx for O(1) access).
 // Exported so kmazarin/kmazarin and other packages can access it directly.
-var PriestListData [MaxPriests]Priest
+var ShepherdListData [MaxShepherds]Shepherd
 
-// PriestListInUse tracks which slots in PriestListData are occupied.
-var PriestListInUse [MaxPriests]bool
+// ShepherdListInUse tracks which slots in ShepherdListData are occupied.
+var ShepherdListInUse [MaxShepherds]bool
 
-// GetCurrentPriest is a function hook registered by the main package at boot.
-// It returns a pointer to the Priest for the currently running thread, or nil
+// GetCurrentShepherd is a function hook registered by the main package at boot.
+// It returns a pointer to the Shepherd for the currently running thread, or nil
 // for kernel threads (PID 0) and calls before boot registration.
 //
 // The registered function must be //go:nosplit safe.
-var GetCurrentPriest func() *Priest
+var GetCurrentShepherd func() *Shepherd
 
-// CurrentPriest calls the registered GetCurrentPriest hook.
+// CurrentShepherd calls the registered GetCurrentShepherd hook.
 // Safe to call before registration: returns nil.
 //
 //go:nosplit
-func CurrentPriest() *Priest {
-	f := GetCurrentPriest
+func CurrentShepherd() *Shepherd {
+	f := GetCurrentShepherd
 	if f == nil {
 		return nil
 	}
 	return f()
 }
 
-// FindPriestByPID looks up a priest by PID without requiring the kmazarin/kmazarin package.
-// Returns nil if no priest with the given PID is found.
+// FindShepherdBySID looks up a shepherd by PID without requiring the kmazarin/kmazarin package.
+// Returns nil if no shepherd with the given PID is found.
 //
 //go:nosplit
-func FindPriestByPID(pid PriestId) *Priest {
-	for i := 0; i < MaxPriests; i++ {
-		if PriestListInUse[i] && PriestListData[i].PID == pid {
-			return &PriestListData[i]
+func FindShepherdBySID(pid ShepherdId) *Shepherd {
+	for i := 0; i < MaxShepherds; i++ {
+		if ShepherdListInUse[i] && ShepherdListData[i].PID == pid {
+			return &ShepherdListData[i]
 		}
 	}
 	return nil

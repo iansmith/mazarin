@@ -85,7 +85,7 @@ func TrySoftIRQ(slot int, buf *hid.SoftIRQReturn) (int, error) {
 }
 
 // RegisterSoftIRQ registers an IRQ number on a soft IRQ slot.
-// The current priest becomes the owner of the slot.
+// The current shepherd becomes the owner of the slot.
 func RegisterSoftIRQ(irqNum uint32, slot int) error {
 	r1, _, errno := RawSyscall(sysRegisterSoftIRQ,
 		uintptr(irqNum),

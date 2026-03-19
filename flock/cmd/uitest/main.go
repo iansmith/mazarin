@@ -101,12 +101,12 @@ func main() {
 	// 4. Time tracking via constraint system — needed by Clock widgets.
 	timeProg := interactor.BindStrings(interactor.ProgIdentityI64,
 		"attr:///kernel/int64/time/utc_seconds")
-	timeSec := attr.ConstraintI64("attr:///priest/uitest/int64/time_sec", timeProg)
+	timeSec := attr.ConstraintI64("attr:///shepherd/uitest/int64/time_sec", timeProg)
 	timeSec.Get()
 
 	nanosProg := interactor.BindStrings(interactor.ProgIdentityI64,
 		"attr:///kernel/int64/time/utc_nanos")
-	timeNanos := attr.ConstraintI64("attr:///priest/uitest/int64/time_nanos", nanosProg)
+	timeNanos := attr.ConstraintI64("attr:///shepherd/uitest/int64/time_nanos", nanosProg)
 	timeNanos.SetEager(true)
 	_ = timeNanos.Get()
 
@@ -263,7 +263,7 @@ func main() {
 	sys.UartWriteString("[uitest] initial draw done, entering loop\n")
 
 	// 8. Instrumentation counters.
-	eagerHandle := attr.ValueI64("attr:///priest/uitest/int64/stats/eagerUpdates", 0)
+	eagerHandle := attr.ValueI64("attr:///shepherd/uitest/int64/stats/eagerUpdates", 0)
 	eagerSlot := eagerHandle.Slot()
 	var drawCount atomic.Int64
 

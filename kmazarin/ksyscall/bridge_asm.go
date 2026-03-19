@@ -8,12 +8,12 @@ import (
 // Forward declarations for bridge functions provided via go:linkname.
 // These connect ksyscall to the scheduler in kmazarin/kmazarin.
 
-// getCurrentThreadPIDAndTID returns the PID and TID of the current thread.
+// getCurrentThreadSIDAndTID returns the PID and TID of the current thread.
 //
-//go:linkname getCurrentThreadPIDAndTID main.GetCurrentThreadPIDAndTID
-func getCurrentThreadPIDAndTID() (proc.PriestId, int16)
+//go:linkname getCurrentThreadSIDAndTID main.GetCurrentThreadPIDAndTID
+func getCurrentThreadSIDAndTID() (proc.ShepherdId, int16)
 
-// getBlockDeviceOwnerPID returns the PID of the block device owner priest.
+// getBlockDeviceOwnerPID returns the PID of the block device owner shepherd.
 //
 //go:linkname getBlockDeviceOwnerPID main.GetBlockDeviceOwnerPID
 func getBlockDeviceOwnerPID() int16
@@ -34,7 +34,7 @@ func restoreIRQs(savedDAIF uint64)
 //go:linkname blockForRunMaz main.BlockForRunMaz
 func blockForRunMaz() uintptr
 
-// blockForRunPriest blocks the calling thread for a RunPriest request.
+// blockForRunShepherd blocks the calling thread for a RunShepherd request.
 //
-//go:linkname blockForRunPriest main.BlockForRunPriest
-func blockForRunPriest() uintptr
+//go:linkname blockForRunShepherd main.BlockForRunShepherd
+func blockForRunShepherd() uintptr

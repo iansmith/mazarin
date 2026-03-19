@@ -7,7 +7,7 @@
 //
 // The driver pre-populates the eventq with buffers. When a key is pressed or mouse moved,
 // the device fills a buffer and places it in the used ring. The IRQ handler fires softIRQFire()
-// to wake any waiting userspace priest. The syscall handler then drains events.
+// to wake any waiting userspace shepherd. The syscall handler then drains events.
 package input
 
 import (

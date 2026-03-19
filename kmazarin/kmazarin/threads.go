@@ -29,12 +29,12 @@ const (
 // ============================================================================
 //
 // Output format (compact to minimize nosplit stack usage):
-//   R<cpu><tid><pid>  - Thread TID runs on CPU with priest PID
+//   R<cpu><tid><pid>  - Thread TID runs on CPU with shepherd PID
 //   S<cpu><tid><from> - CPU stole TID from CPU <from>
 //   I<cpu><irq>       - CPU received IRQ number
 //
 // Example output:
-//   R0 08 01  - CPU 0 running thread 0x08, priest 0x01
+//   R0 08 01  - CPU 0 running thread 0x08, shepherd 0x01
 //   S1 0A 0   - CPU 1 stole thread 0x0A from CPU 0
 //   I0 001B   - CPU 0 received IRQ 0x1B
 
@@ -44,7 +44,7 @@ const SMPDebugEnabled = false
 
 // smpDebugPrintRun prints "R<cpu><tid><pid>" when a thread starts running.
 // Uses Breadcrumb for minimal overhead.
-func smpDebugPrintRun(cpuID uint64, tid ThreadId, pid PriestId) {
+func smpDebugPrintRun(cpuID uint64, tid ThreadId, pid ShepherdId) {
 	if !SMPDebugEnabled {
 		return
 	}
@@ -165,9 +165,9 @@ const (
 	ThreadBlockedDirtyNotify  ThreadState = 12 // Blocked waiting for constraint dirty notification
 )
 
-// MaxPriests is the maximum number of priest processes (userspace programs).
+// MaxShepherds is the maximum number of shepherd processes (userspace programs).
 // Defined in proc package; aliased here for local convenience.
-const MaxPriests = proc.MaxPriests
+const MaxShepherds = proc.MaxShepherds
 
 // MaxThreads is the maximum number of threads supported
 const MaxThreads = 512
@@ -182,11 +182,11 @@ const threadArraySize = constants.ThreadPoolSize
 // Userspace threads get IDs from ReservedKernelThreads to MaxThreads-1 (shuffled).
 const ReservedKernelThreads = 8
 
-// ReservedKernelPriests is the number of priest slots reserved for the kernel.
-// Slot 0 is for the kernel's "priest" entry (PID 0, used for kernel threads).
-const ReservedKernelPriests = 1
+// ReservedKernelShepherds is the number of shepherd slots reserved for the kernel.
+// Slot 0 is for the kernel's "shepherd" entry (PID 0, used for kernel threads).
+const ReservedKernelShepherds = 1
 
-// startingTicksProgram is the CNTVCT_EL0 value when all priests are launched.
+// startingTicksProgram is the CNTVCT_EL0 value when all shepherds are launched.
 // Zero means not yet set — skip all timed-shutdown accounting.
 var startingTicksProgram uint64
 
@@ -195,8 +195,8 @@ var startingTicksProgram uint64
 var shutdownTicksThreshold uint64
 
 
-// ResetTickAccounting zeroes all thread and priest tick accumulators and sets
-// TicksStartedRunning to startTime for any currently-running thread/priest.
+// ResetTickAccounting zeroes all thread and shepherd tick accumulators and sets
+// TicksStartedRunning to startTime for any currently-running thread/shepherd.
 // MUST be called with IRQs disabled (no timer preemption during reset).
 //
 //go:nosplit
@@ -211,17 +211,17 @@ func ResetTickAccounting(startTime uint64) {
 			}
 		}
 	}
-	for i := 0; i < MaxPriests; i++ {
-		if proc.PriestListInUse[i] {
-			proc.PriestListData[i].TotalTicksRunning = 0
-			proc.PriestListData[i].TicksStartedRunning = 0
+	for i := 0; i < MaxShepherds; i++ {
+		if proc.ShepherdListInUse[i] {
+			proc.ShepherdListData[i].TotalTicksRunning = 0
+			proc.ShepherdListData[i].TicksStartedRunning = 0
 		}
 	}
-	// The currently running priest needs its clock started
+	// The currently running shepherd needs its clock started
 	ct := GetCurrentThread()
-	if ct != nil && ct.PriestIdx >= 0 {
-		p := &proc.PriestListData[ct.PriestIdx]
-		if proc.PriestListInUse[ct.PriestIdx] {
+	if ct != nil && ct.ShepherdIdx >= 0 {
+		p := &proc.ShepherdListData[ct.ShepherdIdx]
+		if proc.ShepherdListInUse[ct.ShepherdIdx] {
 			p.TicksStartedRunning = startTime
 		}
 	}
@@ -251,10 +251,10 @@ func FixCloneThreadIFFlags() {
 	RestoreIRQs(savedDAIF)
 }
 
-// Priest and PriestId are defined in the proc package and aliased here so
+// Shepherd and ShepherdId are defined in the proc package and aliased here so
 // existing code in this file can use the short names unchanged.
-type Priest = proc.Priest
-type PriestId = proc.PriestId
+type Shepherd = proc.Shepherd
+type ShepherdId = proc.ShepherdId
 
 // ThreadContext is defined in thread_context_<arch>.go (per-architecture).
 
@@ -265,7 +265,7 @@ type ThreadId int16
 type Thread struct {
 	State         ThreadState // ThreadRunning, ThreadReady, etc.
 	TID           ThreadId    // Unique thread ID from threadIdAllocator (0-31)
-	PID           PriestId    // Priest (process) ID for ASID (-1 = kernel thread)
+	PID           ShepherdId    // Shepherd (process) ID for ASID (-1 = kernel thread)
 	FutexAddr     uint64      // Address being waited on (for ThreadBlockedFutex)
 	MPtr          uint64      // Pointer to Go M struct
 	GPtr          uint64      // Pointer to Go g struct (g0 for this M)
@@ -295,12 +295,12 @@ type Thread struct {
 	// Set in CloneThread, cleared in doContextSwitchImpl after the copy.
 	CloneNeedsParentRegs uint32
 
-	// WARNING: PriestIdx is a priest LIST INDEX (not a PID). Used ONLY by time-critical
+	// WARNING: ShepherdIdx is a shepherd LIST INDEX (not a PID). Used ONLY by time-critical
 	// code paths (timer IRQ top-half, preemption checks) that need O(1) access to
-	// the priest's tick accounting without a PID→Priest lookup. This index is set
-	// once at thread creation and never changes. Do NOT use for general priest
-	// lookups — use GetPriestByPID(t.PID) instead.
-	PriestIdx int16
+	// the shepherd's tick accounting without a PID→Shepherd lookup. This index is set
+	// once at thread creation and never changes. Do NOT use for general shepherd
+	// lookups — use GetShepherdByPID(t.PID) instead.
+	ShepherdIdx int16
 
 	// HomeCPU is the preferred CPU for this thread (soft affinity).
 	// Threads wake to their HomeCPU's local queue for cache locality.
@@ -401,7 +401,7 @@ func threadLookupByTID(tid int32) *Thread {
 	return nil
 }
 
-// threadLookupByPID finds the first thread belonging to the priest with the given PID.
+// threadLookupByPID finds the first thread belonging to the shepherd with the given PID.
 // Returns nil if no matching thread is found. Used by SyscallKill to deliver signals
 // to a process by PID.
 //
@@ -417,11 +417,11 @@ func threadLookupByPID(pid int16) *Thread {
 
 // hasReadyThreadForPID returns true if any thread with the given PID is in
 // ThreadReady state, excluding excludeTID.  Used by threadBlockFutexImpl to
-// prevent blocking the last runnable thread of a priest.
+// prevent blocking the last runnable thread of a shepherd.
 // REQUIRES: schedulerLock held.
 //
 //go:nosplit
-func hasReadyThreadForPID(pid PriestId, excludeTID ThreadId) bool {
+func hasReadyThreadForPID(pid ShepherdId, excludeTID ThreadId) bool {
 	for i := 0; i < MaxThreads; i++ {
 		if threadListInUse[i] &&
 			threadListData[i].PID == pid &&
@@ -503,7 +503,7 @@ func clearSoftIRQSlotForTID(tid ThreadId) {
 // Backing arrays - statically allocated, zero-initialized
 var threadListData [threadArraySize]Thread // Stores Thread VALUES (not pointers)
 var threadListInUse [threadArraySize]bool  // false = available (zero value)
-// priestListData and priestListInUse are now proc.PriestListData and proc.PriestListInUse.
+// shepherdListData and shepherdListInUse are now proc.ShepherdListData and proc.ShepherdListInUse.
 var readyQueueData [threadArraySize]ThreadId  // Stores TIDs (unique thread IDs)
 var readyQueueInUse [threadArraySize]bool     // Tracks holes in ready queue
 var blockedQueueData [threadArraySize]ThreadId // Stores TIDs (unique thread IDs)
@@ -518,10 +518,10 @@ var staticDeadlineQueue ds.StaticOrderedList
 
 // ID allocator backing arrays - statically allocated
 var threadIdStackData [threadArraySize]ThreadId // Backing array for thread ID allocator
-var priestIdStackData [proc.MaxPriests]proc.PriestId // Backing array for priest ID allocator
+var shepherdIdStackData [proc.MaxShepherds]proc.ShepherdId // Backing array for shepherd ID allocator
 
 // nextKernelThreadId is a counter for allocating kernel thread IDs (0 to ReservedKernelThreads-1).
-// Kernel threads are identified by PID == 0 (the kernel priest) and get IDs from this counter.
+// Kernel threads are identified by PID == 0 (the kernel shepherd) and get IDs from this counter.
 // Starts at 0, incremented each time a kernel thread is created.
 // Panics if exhausted (kernel has limited threads).
 var nextKernelThreadId ThreadId = 0
@@ -529,7 +529,7 @@ var nextKernelThreadId ThreadId = 0
 // Data structures - will be initialized in InitThreads()
 // DO NOT initialize slices here - Go's initialization order causes them to be length 0!
 var threadList ds.StaticList[*Thread, Thread] // StaticList stores Thread VALUES, returns pointers
-var priestList ds.StaticList[*proc.Priest, proc.Priest] // StaticList stores Priest VALUES, returns pointers
+var shepherdList ds.StaticList[*proc.Shepherd, proc.Shepherd] // StaticList stores Shepherd VALUES, returns pointers
 
 var readyQueue ds.StaticQueue[ThreadId]
 
@@ -539,13 +539,13 @@ var sleepingQueue ds.StaticQueue[ThreadId]
 
 // ID allocators - initialized in InitIdAllocators()
 var threadIdAllocator ds.StaticAllocator[ThreadId] // Manages unique thread IDs (0..MaxThreads-1)
-var priestIdAllocator ds.StaticAllocator[proc.PriestId] // Manages unique priest IDs (0..MaxPriests-1)
+var shepherdIdAllocator ds.StaticAllocator[proc.ShepherdId] // Manages unique shepherd IDs (0..MaxShepherds-1)
 
 // ========== Scheduler Lock ==========
 
 // schedulerLock protects ALL scheduler structures:
 // - threadList, readyQueue, blockedQueue, sleepingQueue
-// - threadIdAllocator, priestIdAllocator
+// - threadIdAllocator, shepherdIdAllocator
 // - CurrentThread (via atomic operations)
 // - All thread state transitions
 //
@@ -741,7 +741,7 @@ func SetSyscallSwitchTarget(target uintptr) {
 	}
 }
 
-// InitIdAllocators initializes the ID allocators for thread IDs and priest IDs.
+// InitIdAllocators initializes the ID allocators for thread IDs and shepherd IDs.
 // Must be called before any threads are created.
 // Kernel thread IDs (0 to ReservedKernelThreads-1) are reserved.
 // Userspace thread IDs (ReservedKernelThreads to MaxThreads-1) are shuffled.
@@ -753,16 +753,16 @@ func InitIdAllocators() {
 	// IDs ReservedKernelThreads..MaxThreads-1 are shuffled for userspace
 	threadIdAllocator.InitWithReserved(threadIdStackData[:], ReservedKernelThreads)
 
-	// Initialize priest ID allocator with ID 0 reserved for kernel
-	// IDs 1..MaxPriests-1 are shuffled and available for Acquire()
-	priestIdAllocator.InitWithReserved(priestIdStackData[:], 1)
+	// Initialize shepherd ID allocator with ID 0 reserved for kernel
+	// IDs 1..MaxShepherds-1 are shuffled and available for Acquire()
+	shepherdIdAllocator.InitWithReserved(shepherdIdStackData[:], 1)
 
 	// Reset kernel thread counter (starts at 0, used by AcquireKernelThreadId)
 	nextKernelThreadId = 0
 }
 
 // AcquireKernelThreadId allocates the next kernel thread ID.
-// Kernel threads belong to PID 0 (kernel priest) and get sequential IDs 0..ReservedKernelThreads-1.
+// Kernel threads belong to PID 0 (kernel shepherd) and get sequential IDs 0..ReservedKernelThreads-1.
 // Panics if all kernel thread slots are exhausted.
 //
 //go:nosplit
@@ -775,7 +775,7 @@ func AcquireKernelThreadId() ThreadId {
 	return id
 }
 
-// IsKernelThread returns true if this is a kernel thread (PID == 0, the kernel priest).
+// IsKernelThread returns true if this is a kernel thread (PID == 0, the kernel shepherd).
 // Used by Clone syscall to determine which allocator to use.
 //
 //go:nosplit
@@ -812,8 +812,8 @@ func InitThreads() {
 	// Must be done here, NOT as global initializers (Go init order issue)
 	threadList.Data = threadListData[:]
 	threadList.InUse = threadListInUse[:]
-	priestList.Data = proc.PriestListData[:]
-	priestList.InUse = proc.PriestListInUse[:]
+	shepherdList.Data = proc.ShepherdListData[:]
+	shepherdList.InUse = proc.ShepherdListInUse[:]
 	readyQueue.Data = readyQueueData[:]
 	readyQueue.InUse = readyQueueInUse[:]
 	blockedQueue.Data = blockedQueueData[:]
@@ -824,7 +824,7 @@ func InitThreads() {
 
 	// Initialize reserved slots for kernel use
 	threadList.InitReserved(ReservedKernelThreads)
-	priestList.InitReserved(ReservedKernelPriests)
+	shepherdList.InitReserved(ReservedKernelShepherds)
 
 	// Save kmazarin's g address early - x28 should be pointing to kmazarin's g
 	// at this point (early init runs on g0/m0).
@@ -848,11 +848,11 @@ func InitThreads() {
 	// Acquire thread ID 0 for the kernel's entry thread
 	firstThreadId := AcquireKernelThreadId()
 
-	// Set up the kernel priest at reserved slot 0
+	// Set up the kernel shepherd at reserved slot 0
 	// This represents the "kernel process" that owns all kernel threads
-	p0 := priestList.ReservedGet(0)
+	p0 := shepherdList.ReservedGet(0)
 	p0.PID = 0
-	priestList.ReservedSet(0)
+	shepherdList.ReservedSet(0)
 
 	// Set up thread 0 at reserved slot 0 - the kernel's "entry" thread
 	// This thread represents the initial execution context and gets scheduled
@@ -860,7 +860,7 @@ func InitThreads() {
 	initThread0Context(&t0.Context)
 	t0.State = ThreadRunning
 	t0.TID = firstThreadId              // Should be 0
-	t0.PID = 0             // Belongs to kernel priest (slot 0)
+	t0.PID = 0             // Belongs to kernel shepherd (slot 0)
 	t0.PageTableL0PA = initThread0PageTable() // Arch-specific: kernel page table PA
 	currentTick := ds.CurrentTime(0)
 	t0.StartTick = currentTick
@@ -884,29 +884,29 @@ func InitThreads() {
 
 	threadList.ReservedSet(0)
 
-	// Register the proc.GetCurrentPriest hook so ksyscall/kmem can access
+	// Register the proc.GetCurrentShepherd hook so ksyscall/kmem can access
 	// per-process state without a go:linkname to main.
-	proc.GetCurrentPriest = currentPriestImpl
+	proc.GetCurrentShepherd = currentShepherdImpl
 
 	// Use SetCurrentThreadGlobal to update both per-CPU and global CurrentThread
 	SetCurrentThreadGlobal(t0)
 	threadsInitialized = true
 }
 
-// currentPriestImpl is the registered implementation of proc.GetCurrentPriest.
-// Returns nil for kernel threads (PriestIdx < 0) and early-init calls.
+// currentShepherdImpl is the registered implementation of proc.GetCurrentShepherd.
+// Returns nil for kernel threads (ShepherdIdx < 0) and early-init calls.
 //
 //go:nosplit
-func currentPriestImpl() *proc.Priest {
+func currentShepherdImpl() *proc.Shepherd {
 	t := GetCurrentThread()
 	if t == nil {
 		return nil
 	}
-	idx := int(t.PriestIdx)
-	if idx < 0 || idx >= proc.MaxPriests || !proc.PriestListInUse[idx] {
+	idx := int(t.ShepherdIdx)
+	if idx < 0 || idx >= proc.MaxShepherds || !proc.ShepherdListInUse[idx] {
 		return nil
 	}
-	return &proc.PriestListData[idx]
+	return &proc.ShepherdListData[idx]
 }
 
 // InitDeadlineQueue initializes the deadline queue.
@@ -1008,12 +1008,12 @@ func processStaticDeadlinesSchedLockHeld() {
 			atomic.AddUint64(&dbgDeadlineWokeSleeper, 1)
 
 			// When waking a sleeping thread (e.g., sysmon from usleep),
-			// also wake that priest's netpoll waiter if one exists.
+			// also wake that shepherd's netpoll waiter if one exists.
 			// This implements the kernel-level event delivery that Linux's
 			// epoll provides: when sysmon wakes, the netpoll thread should
 			// also wake so findRunnable can check timers and run queues.
 			if t.PID != 0 {
-				p := proc.FindPriestByPID(proc.PriestId(t.PID))
+				p := proc.FindShepherdBySID(proc.ShepherdId(t.PID))
 				if p != nil {
 					waiterTID := p.NetpollWaiterTID
 					if waiterTID != 0 && int32(tid) != waiterTID {
@@ -1055,7 +1055,7 @@ func ProcessDeadlinesTopHalf() {
 	// Flush any pending console ring data to userspace.
 	// This was in KernelIdleLoop but the idle loop is starved when many
 	// userspace threads are cycling through futex/sleep deadlines.
-	// Moving it here ensures the stdio priest gets woken every timer tick.
+	// Moving it here ensures the stdio shepherd gets woken every timer tick.
 	if softIRQConsole != nil {
 		softIRQConsole.CheckPendingWake()
 	}
@@ -1129,7 +1129,7 @@ func ProcessDeadlinesTopHalf() {
 		printADScanCounters()
 		// Input device IRQ counts: kbd/mouse/tablet
 		printInputIRQCounters()
-		// Per-priest GC cycle counts
+		// Per-shepherd GC cycle counts
 		printGCCounters()
 	}
 	// Heartbeat: print '.' every ~5 seconds to confirm timer is alive
@@ -1151,7 +1151,7 @@ func printADScanCounters() {
 	serial.RawUARTDecimal(adTotal)
 }
 
-// printGCCounters prints per-priest GC cycle counts, kernel heap size,
+// printGCCounters prints per-shepherd GC cycle counts, kernel heap size,
 // and per-type page breakdown.
 // NOT nosplit — this gets its own stack check so it doesn't add to the
 // timer IRQ nosplit chain budget.
@@ -1195,10 +1195,10 @@ func printGCCounters() {
 		serial.RawUARTDecimal(cnt)
 	}
 	serial.RawUARTPuts("]")
-	// Per-priest GC cycle counts
+	// Per-shepherd GC cycle counts
 	hasGC := false
-	for i := 0; i < len(ksyscall.GCCountByPID); i++ {
-		gc := atomic.LoadUint64(&ksyscall.GCCountByPID[i])
+	for i := 0; i < len(ksyscall.GCCountBySID); i++ {
+		gc := atomic.LoadUint64(&ksyscall.GCCountBySID[i])
 		if gc > 0 {
 			if !hasGC {
 				serial.RawUARTPuts(" GC=")
@@ -1247,11 +1247,11 @@ func IdleLoop(sf *SchedulerFunc) *Thread {
 }
 
 // KernelIdleLoop is the permanent idle loop for kernel thread 0 (m0/g0).
-// Called from main() after all setup is complete and priest threads are on the
+// Called from main() after all setup is complete and shepherd threads are on the
 // ready queue. This function never returns.
 //
 // Thread 0 stays alive as a normal scheduled thread. The timer IRQ preempts it
-// and context-switches to priest threads on the ready queue. When thread 0 gets
+// and context-switches to shepherd threads on the ready queue. When thread 0 gets
 // scheduled back, it resumes here — processing deadlines and waiting for the
 // next interrupt.
 //
@@ -1341,7 +1341,7 @@ func KernelIdleLoop() {
 		// goroutine's growable stack. Both atomic flag and BlockedTID are checked.
 		DispatchLoadMazWork()
 		DispatchRunMazWork()
-		DispatchRunPriestWork()
+		DispatchRunShepherdWork()
 
 		// NOTE: runtime.Gosched() was removed here. When Gosched runs Go's
 		// internal goroutine scheduler, goroutines doing SVC sched_yield cause
@@ -1393,11 +1393,11 @@ func KernelIdleLoop() {
 		currentTick := atomic.LoadUint64(&scanTimerCount)
 		if currentTick-scanLastTick >= 300 {
 			scanLastTick = currentTick
-			for i := 0; i < MaxPriests; i++ {
-				if !proc.PriestListInUse[i] {
+			for i := 0; i < MaxShepherds; i++ {
+				if !proc.ShepherdListInUse[i] {
 					continue
 				}
-				kmem.ScanAccessedBits(proc.PriestId(i))
+				kmem.ScanAccessedBits(proc.ShepherdId(i))
 			}
 		}
 
@@ -1489,8 +1489,8 @@ func SaveThread0AndYield() uint64 {
 	}
 	t0.TicksStartedRunning = 0
 
-	// Find next ready thread (prefer a priest, not kernel)
-	next := findReadyThreadPreferDifferentPriestSchedLockHeld(t0.PID)
+	// Find next ready thread (prefer a shepherd, not kernel)
+	next := findReadyThreadPreferDifferentShepherdSchedLockHeld(t0.PID)
 	if next == nil {
 		// No thread available — continue running thread 0
 		t0.State = ThreadRunning
@@ -1500,19 +1500,19 @@ func SaveThread0AndYield() uint64 {
 		return 0
 	}
 
-	// Priest-level tick accounting: stop old priest, start new priest
+	// Shepherd-level tick accounting: stop old shepherd, start new shepherd
 	if next.PID != t0.PID {
-		if t0.PriestIdx >= 0 {
-			oldPriest := priestList.Get(int(t0.PriestIdx))
-			if oldPriest != nil && oldPriest.TicksStartedRunning != 0 {
-				oldPriest.TotalTicksRunning += currentTime - oldPriest.TicksStartedRunning
-				oldPriest.TicksStartedRunning = 0
+		if t0.ShepherdIdx >= 0 {
+			oldShepherd := shepherdList.Get(int(t0.ShepherdIdx))
+			if oldShepherd != nil && oldShepherd.TicksStartedRunning != 0 {
+				oldShepherd.TotalTicksRunning += currentTime - oldShepherd.TicksStartedRunning
+				oldShepherd.TicksStartedRunning = 0
 			}
 		}
-		if next.PriestIdx >= 0 {
-			newPriest := priestList.Get(int(next.PriestIdx))
-			if newPriest != nil {
-				newPriest.TicksStartedRunning = currentTime
+		if next.ShepherdIdx >= 0 {
+			newShepherd := shepherdList.Get(int(next.ShepherdIdx))
+			if newShepherd != nil {
+				newShepherd.TicksStartedRunning = currentTime
 			}
 		}
 	}
@@ -1590,12 +1590,12 @@ func startFirstThreadImpl(sf *SchedulerFunc) uint64 {
 		return 0
 	}
 
-	// CRITICAL: Skip kernel threads (PID=0) and find a priest thread (PID>0)
+	// CRITICAL: Skip kernel threads (PID=0) and find a shepherd thread (PID>0)
 	// Kernel goroutines may have been preempted into the ready queue before
-	// timer was disabled. We need to re-queue them and find a priest thread.
+	// timer was disabled. We need to re-queue them and find a shepherd thread.
 	for thread.PID == 0 {
 		// Put kernel thread back at the BACK of the ready queue (not front!)
-		// StartFirstThread needs a priest thread to ERET to userspace.
+		// StartFirstThread needs a shepherd thread to ERET to userspace.
 		// Use direct per-CPU push to avoid priority front-insertion for PID=0.
 		savedDAIF := sf.DisableAndSaveDAIF()
 		schedulerLock.Lock()
@@ -1688,7 +1688,7 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 	// First, get the parent thread to determine if this is a kernel or userspace thread
 	parent := GetCurrentThread()
 
-	// Determine if this is a kernel thread (parent PID == 0, the kernel priest)
+	// Determine if this is a kernel thread (parent PID == 0, the kernel shepherd)
 	isKernel := parent != nil && parent.PID == 0
 
 	// Acquire thread ID and slot from appropriate allocator
@@ -1745,20 +1745,20 @@ func CloneThread(sf *SchedulerFunc, stack, returnAddr, spsr, mp, gp, fn uint64) 
 	// This flag will be cleared on the child's first syscall.
 	t.InCloneSetup = 1
 
-	// CRITICAL: Inherit page table and priest ID from parent thread!
+	// CRITICAL: Inherit page table and shepherd ID from parent thread!
 	// Without this, cloned threads have PageTableL0PA=0 and won't
 	// get TTBR0 switched when scheduled, causing page faults.
-	// PID (priest ID) is used as ASID for TLB tagging.
+	// PID (shepherd ID) is used as ASID for TLB tagging.
 	if parent != nil {
 		t.PageTableL0PA = parent.PageTableL0PA
 		t.PID = parent.PID
-		t.PriestIdx = parent.PriestIdx
+		t.ShepherdIdx = parent.ShepherdIdx
 
-		// Increment priest's thread count for userspace threads (PID > 0)
-		if parent.PID > 0 && parent.PriestIdx >= 0 {
-			priest := &proc.PriestListData[parent.PriestIdx]
-			if proc.PriestListInUse[parent.PriestIdx] {
-				priest.ThreadCount++
+		// Increment shepherd's thread count for userspace threads (PID > 0)
+		if parent.PID > 0 && parent.ShepherdIdx >= 0 {
+			shepherd := &proc.ShepherdListData[parent.ShepherdIdx]
+			if proc.ShepherdListInUse[parent.ShepherdIdx] {
+				shepherd.ThreadCount++
 			}
 		}
 	}
@@ -1868,19 +1868,19 @@ func threadExitImpl(sf *SchedulerFunc) uintptr {
 	// Release thread slot
 	threadList.Release(int(threadToIdx(t)))
 
-	// Decrement priest thread count and release priest if this was the last thread
+	// Decrement shepherd thread count and release shepherd if this was the last thread
 	exitingPID := t.PID
-	if t.PID > 0 && t.PriestIdx >= 0 && proc.PriestListInUse[t.PriestIdx] {
-		priest := &proc.PriestListData[t.PriestIdx]
-		priest.ThreadCount--
-		if priest.ThreadCount <= 0 {
-			// Last thread of this priest - release the priest
-			releasePriestSchedLockHeld(t.PriestIdx, exitingPID)
+	if t.PID > 0 && t.ShepherdIdx >= 0 && proc.ShepherdListInUse[t.ShepherdIdx] {
+		shepherd := &proc.ShepherdListData[t.ShepherdIdx]
+		shepherd.ThreadCount--
+		if shepherd.ThreadCount <= 0 {
+			// Last thread of this shepherd - release the shepherd
+			releaseShepherdSchedLockHeld(t.ShepherdIdx, exitingPID)
 		}
 	}
 
-	// Find next ready thread, preferring a different priest for fairness
-	next := findReadyThreadPreferDifferentPriestSchedLockHeld(exitingPID)
+	// Find next ready thread, preferring a different shepherd for fairness
+	next := findReadyThreadPreferDifferentShepherdSchedLockHeld(exitingPID)
 	if next == nil {
 		if sf.StateCheck != nil {
 			sf.StateCheck("thread-exit-no-next")
@@ -1931,39 +1931,39 @@ func threadExitInternal() uint64 {
 	return uint64(threadExitImpl(&NormalSchedulerFunc))
 }
 
-// TerminatePriest kills all threads belonging to a priest and cleans up resources.
+// TerminateShepherd kills all threads belonging to a shepherd and cleans up resources.
 // Walks all thread slots, exits every thread with matching PID (except current),
-// then exits the current thread last. Calls releasePriestSchedLockHeld when
+// then exits the current thread last. Calls releaseShepherdSchedLockHeld when
 // the last thread exits.
 // Returns pointer to next ready thread's ThreadContext (or 0 if none remain).
 //
 //go:nosplit
-func TerminatePriest(pid PriestId, status int64) uintptr {
+func TerminateShepherd(pid ShepherdId, status int64) uintptr {
 	// Clean up delegation resources BEFORE acquiring the scheduler lock.
 	// NOT nosplit, which breaks the nosplit chain and avoids exceeding
 	// the 792-byte stack limit. Safe because the delegate data structures are
 	// protected by IRQ disabling (we're in SVC handler context).
-	terminatePriestDelegateCleanup(int16(pid))
-	CleanupSoftIRQSlotsForPriest(int16(pid))
-	return terminatePriestImpl(&NormalSchedulerFunc, pid, status)
+	terminateShepherdDelegateCleanup(int16(pid))
+	CleanupSoftIRQSlotsForShepherd(int16(pid))
+	return terminateShepherdImpl(&NormalSchedulerFunc, pid, status)
 }
 
-// terminatePriestDelegateCleanup reclaims delegation resources for a dying priest
-// and wakes any orphaned caller threads whose handler priest is dying.
-// NOT nosplit — breaks the nosplit chain in TerminatePriest.
-func terminatePriestDelegateCleanup(pid int16) {
-	orphanCount := ksyscall.CleanupDelegateForDeadPriest(pid)
+// terminateShepherdDelegateCleanup reclaims delegation resources for a dying shepherd
+// and wakes any orphaned caller threads whose handler shepherd is dying.
+// NOT nosplit — breaks the nosplit chain in TerminateShepherd.
+func terminateShepherdDelegateCleanup(pid int16) {
+	orphanCount := ksyscall.CleanupDelegateForDeadShepherd(pid)
 	for i := 0; i < orphanCount; i++ {
 		tid := ksyscall.DelegateOrphanedCallerTIDs[i]
-		cpid := ksyscall.DelegateOrphanedCallerPIDs[i]
+		cpid := ksyscall.DelegateOrphanedCallerSIDs[i]
 		WakeDelegateCallerThread(cpid, int32(tid), -3) // -ESRCH
 	}
 }
 
-// terminatePriestImpl is the internal implementation of TerminatePriest.
+// terminateShepherdImpl is the internal implementation of TerminateShepherd.
 //
 //go:nosplit
-func terminatePriestImpl(sf *SchedulerFunc, pid PriestId, status int64) uintptr {
+func terminateShepherdImpl(sf *SchedulerFunc, pid ShepherdId, status int64) uintptr {
 	current := GetCurrentThread()
 
 	// BEGIN CRITICAL SECTION
@@ -1973,7 +1973,7 @@ func terminatePriestImpl(sf *SchedulerFunc, pid PriestId, status int64) uintptr 
 	// Count threads killed (for diagnostic output after lock release)
 	var killed int
 
-	// Walk all thread slots, kill non-current threads belonging to this priest
+	// Walk all thread slots, kill non-current threads belonging to this shepherd
 	for i := 0; i < MaxThreads; i++ {
 		if !threadListInUse[i] {
 			continue
@@ -2010,28 +2010,28 @@ func terminatePriestImpl(sf *SchedulerFunc, pid PriestId, status int64) uintptr 
 		killed++
 	}
 
-	// Find the priest and release it
-	priestIdx := int16(-1)
-	for i := int16(0); i < int16(MaxPriests); i++ {
-		if proc.PriestListInUse[i] && proc.PriestListData[i].PID == pid {
-			priestIdx = i
+	// Find the shepherd and release it
+	shepherdIdx := int16(-1)
+	for i := int16(0); i < int16(MaxShepherds); i++ {
+		if proc.ShepherdListInUse[i] && proc.ShepherdListData[i].PID == pid {
+			shepherdIdx = i
 			break
 		}
 	}
-	if priestIdx >= 0 {
+	if shepherdIdx >= 0 {
 		// Force ThreadCount to 0 and release
-		proc.PriestListData[priestIdx].ThreadCount = 0
-		releasePriestSchedLockHeld(priestIdx, pid)
+		proc.ShepherdListData[shepherdIdx].ThreadCount = 0
+		releaseShepherdSchedLockHeld(shepherdIdx, pid)
 	}
 
 	// Find next ready thread
-	next := findReadyThreadPreferDifferentPriestSchedLockHeld(pid)
+	next := findReadyThreadPreferDifferentShepherdSchedLockHeld(pid)
 	if next == nil {
 		schedulerLock.Unlock()
 		sf.EnableAndRestoreDAIF(savedDAIF)
 
 		// Diagnostic output
-		serial.RawUARTPuts("[EXIT] priest PID=")
+		serial.RawUARTPuts("[EXIT] shepherd PID=")
 		serial.RawUARTDecimal(uint64(pid))
 		serial.RawUARTPuts(" status=")
 		serial.RawUARTDecimal(uint64(status))
@@ -2047,7 +2047,7 @@ func terminatePriestImpl(sf *SchedulerFunc, pid PriestId, status int64) uintptr 
 	// 1. Calls SaveContextFromFrame on the dying thread (harmless — slot released)
 	// 2. Sees oldThread.PageTableL0PA != newThread.PageTableL0PA → switches TTBR0
 	// 3. Calls SetCurrentThreadGlobal(newThread) to complete the transition
-	// If we set CurrentThread here, DoContextSwitch would save the dying priest's
+	// If we set CurrentThread here, DoContextSwitch would save the dying shepherd's
 	// exception frame into the NEW thread's context (corrupting it) and skip the
 	// TTBR0 switch (old == new).
 
@@ -2055,7 +2055,7 @@ func terminatePriestImpl(sf *SchedulerFunc, pid PriestId, status int64) uintptr 
 	sf.EnableAndRestoreDAIF(savedDAIF)
 
 	// Diagnostic output after lock release
-	serial.RawUARTPuts("[EXIT] priest PID=")
+	serial.RawUARTPuts("[EXIT] shepherd PID=")
 	serial.RawUARTDecimal(uint64(pid))
 	serial.RawUARTPuts(" status=")
 	serial.RawUARTDecimal(uint64(status))
@@ -2066,59 +2066,59 @@ func terminatePriestImpl(sf *SchedulerFunc, pid PriestId, status int64) uintptr 
 	return uintptr(unsafe.Pointer(&next.Context))
 }
 
-// terminatePriestInternal is the ABI0-compatible wrapper for TerminatePriest.
-// Called from assembly via TerminatePriestAsm tail-call stub.
+// terminateShepherdInternal is the ABI0-compatible wrapper for TerminateShepherd.
+// Called from assembly via TerminateShepherdAsm tail-call stub.
 // Args: pid (uint64), status (int64)
 // Returns: pointer to next ThreadContext (or 0 if none remain).
 //
 //go:nosplit
-func terminatePriestInternal(pid uint64, status int64) uint64 {
-	return uint64(terminatePriestImpl(&NormalSchedulerFunc, PriestId(pid), status))
+func terminateShepherdInternal(pid uint64, status int64) uint64 {
+	return uint64(terminateShepherdImpl(&NormalSchedulerFunc, ShepherdId(pid), status))
 }
 
-// releasePriestSchedLockHeld releases a priest when its last thread exits.
+// releaseShepherdSchedLockHeld releases a shepherd when its last thread exits.
 // MUST be called with schedulerLock held.
-// Performs TLB shootdown for the ASID before releasing the priest ID,
+// Performs TLB shootdown for the ASID before releasing the shepherd ID,
 // enabling aggressive ASID reuse to expose bugs.
 //
 //go:nosplit
-func releasePriestSchedLockHeld(priestIdx int16, pid PriestId) {
-	if priestIdx < 0 || !proc.PriestListInUse[priestIdx] {
+func releaseShepherdSchedLockHeld(shepherdIdx int16, pid ShepherdId) {
+	if shepherdIdx < 0 || !proc.ShepherdListInUse[shepherdIdx] {
 		return // Invalid or already released
 	}
 
 	// CRITICAL: TLB shootdown before releasing the ASID.
-	// When this ASID is reused by a new priest, we must ensure no stale
+	// When this ASID is reused by a new shepherd, we must ensure no stale
 	// TLB entries remain that could cause incorrect address translations.
 	// TLBI ASIDE1IS broadcasts to all CPUs in the inner shareable domain.
 	kmem.TlbiASIDE1IS(uint16(pid))
 
-	// Read l0PA and spans pointer BEFORE zeroing the priest struct.
-	// CleanupPriestPages needs these to walk the page tables.
-	l0PA := proc.PriestListData[priestIdx].PageTableL0PA
-	spans := &proc.PriestListData[priestIdx].Spans
+	// Read l0PA and spans pointer BEFORE zeroing the shepherd struct.
+	// CleanupShepherdPages needs these to walk the page tables.
+	l0PA := proc.ShepherdListData[shepherdIdx].PageTableL0PA
+	spans := &proc.ShepherdListData[shepherdIdx].Spans
 
-	// Free all physical pages owned by this priest (Linux-style VMA + PT walk).
-	// Must happen before zeroing the priest struct (which would clear Spans/l0PA).
-	kmem.CleanupPriestPages(pid, spans, l0PA)
+	// Free all physical pages owned by this shepherd (Linux-style VMA + PT walk).
+	// Must happen before zeroing the shepherd struct (which would clear Spans/l0PA).
+	kmem.CleanupShepherdPages(pid, spans, l0PA)
 
-	// Release the priest slot
-	proc.PriestListInUse[priestIdx] = false
+	// Release the shepherd slot
+	proc.ShepherdListInUse[shepherdIdx] = false
 
-	// Zero the priest struct for security (prevent info leaks)
-	proc.PriestListData[priestIdx] = proc.Priest{}
+	// Zero the shepherd struct for security (prevent info leaks)
+	proc.ShepherdListData[shepherdIdx] = proc.Shepherd{}
 
-	// Release the priest ID back to the allocator for immediate reuse.
+	// Release the shepherd ID back to the allocator for immediate reuse.
 	// Because StaticAllocator uses LIFO (stack), this ID will be the next
 	// one allocated, enabling aggressive reuse to find bugs.
-	priestIdAllocator.Release(pid)
+	shepherdIdAllocator.Release(pid)
 }
 
-// CreateUserspaceThread allocates a new thread for a userspace process (like a priest).
+// CreateUserspaceThread allocates a new thread for a userspace process (like a shepherd).
 // entryPoint: the PC to start executing at (ELR_EL1)
 // stackPtr: the user stack pointer (SP_EL0)
 // pageTableL0PA: physical address of the process's L0 page table
-// priestId: the priest (process) ID, used as ASID for TLB tagging
+// shepherdId: the shepherd (process) ID, used as ASID for TLB tagging
 // Returns the TID (thread ID) of the new thread.
 //
 //go:nosplit
@@ -2126,12 +2126,12 @@ func CreateUserspaceThread(entryPoint, stackPtr uint64, pageTableL0PA uintptr) i
 	return createUserspaceThreadImpl(&NormalSchedulerFunc, entryPoint, stackPtr, pageTableL0PA)
 }
 
-// GetPriestByPID finds a priest by its PID.
+// GetShepherdByPID finds a shepherd by its PID.
 // Returns nil if not found.
 //
 //go:nosplit
-func GetPriestByPID(pid PriestId) *Priest {
-	return priestList.FindById(int32(pid))
+func GetShepherdByPID(pid ShepherdId) *Shepherd {
+	return shepherdList.FindById(int32(pid))
 }
 
 // createUserspaceThreadImpl is the internal implementation with sf for testing
@@ -2139,16 +2139,16 @@ func GetPriestByPID(pid PriestId) *Priest {
 //go:nosplit
 func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, pageTableL0PA uintptr) int16 {
 	// BEGIN CRITICAL SECTION - protect all scheduling data structures:
-	// priestIdAllocator, priestList, threadList, readyQueue
+	// shepherdIdAllocator, shepherdList, threadList, readyQueue
 	savedDAIF := sf.DisableAndSaveDAIF()
 	schedulerLock.Lock()
 
-	// Allocate priest ID and priest entry inside the critical section
-	priestId := priestIdAllocator.Acquire()
-	_, p := priestList.Allocate()
-	p.PID = priestId
+	// Allocate shepherd ID and shepherd entry inside the critical section
+	shepherdId := shepherdIdAllocator.Acquire()
+	_, p := shepherdList.Allocate()
+	p.PID = shepherdId
 	p.PageTableL0PA = pageTableL0PA
-	p.ThreadCount = 1 // This priest starts with one thread
+	p.ThreadCount = 1 // This shepherd starts with one thread
 
 	// Allocate thread slot from static list (panics if exhausted)
 	_, t := threadList.Allocate()
@@ -2158,7 +2158,7 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 
 	// Fill in thread state
 	t.TID = tid // Unique ID from allocator
-	t.PID = priestId // Priest (process) ID for ASID
+	t.PID = shepherdId // Shepherd (process) ID for ASID
 	t.State = ThreadReady // Not running yet - deadlines set when scheduled
 	t.PageTableL0PA = pageTableL0PA
 	t.StartTick = 0             // Set when scheduled
@@ -2172,11 +2172,11 @@ func createUserspaceThreadImpl(sf *SchedulerFunc, entryPoint, stackPtr uint64, p
 	t.EntryFunc = 0
 	t.CloneNeedsParentRegs = 0 // Clear in case slot was reused from a clone child
 
-	// Set PriestIdx for O(1) priest lookup in timer handler
-	t.PriestIdx = -1 // Default: no priest
-	for pi := 0; pi < len(priestList.Data); pi++ {
-		if priestList.InUse[pi] && priestList.Data[pi].PID == priestId {
-			t.PriestIdx = int16(pi)
+	// Set ShepherdIdx for O(1) shepherd lookup in timer handler
+	t.ShepherdIdx = -1 // Default: no shepherd
+	for pi := 0; pi < len(shepherdList.Data); pi++ {
+		if shepherdList.InUse[pi] && shepherdList.Data[pi].PID == shepherdId {
+			t.ShepherdIdx = int16(pi)
 			break
 		}
 	}
@@ -2394,19 +2394,19 @@ func findReadyThreadSchedLockHeld() *Thread {
 	return findReadyThreadWithStealing()
 }
 
-// findReadyThreadPreferDifferentPriestSchedLockHeld finds next ready thread, preferring a different priest.
-// Used for timer preemption to promote fairness across priests.
-// Falls back to any ready thread if only same-priest threads available.
+// findReadyThreadPreferDifferentShepherdSchedLockHeld finds next ready thread, preferring a different shepherd.
+// Used for timer preemption to promote fairness across shepherds.
+// Falls back to any ready thread if only same-shepherd threads available.
 // Uses per-CPU queues with work stealing.
 // REQUIRES: schedulerLock held (protects all per-CPU queues).
 //
 //go:nosplit
-func findReadyThreadPreferDifferentPriestSchedLockHeld(currentPID PriestId) *Thread {
+func findReadyThreadPreferDifferentShepherdSchedLockHeld(currentPID ShepherdId) *Thread {
 	myPerCPU := GetPerCPU()
 	myID := GetCPUID()
 	cpuCount := GetCPUCount()
 
-	// First pass: look for a different priest in local queue
+	// First pass: look for a different shepherd in local queue
 	q := &myPerCPU.LocalReadyQueue
 	idx := q.Head()
 	for seen := 0; seen < len(q.Data); seen++ {
@@ -2421,7 +2421,7 @@ func findReadyThreadPreferDifferentPriestSchedLockHeld(currentPID PriestId) *Thr
 		idx = (idx + 1) % len(q.Data)
 	}
 
-	// Second pass: look for a different priest on other CPUs (steal)
+	// Second pass: look for a different shepherd on other CPUs (steal)
 	for i := uint64(1); i < cpuCount; i++ {
 		targetCPU := (myID + i) % cpuCount
 		victim := GetPerCPUByID(targetCPU)
@@ -2456,7 +2456,7 @@ func findReadyThreadPreferDifferentPriestSchedLockHeld(currentPID PriestId) *Thr
 	return stealWorkFromOtherCPUs()
 }
 
-// findReadyUserspaceThreadSchedLockHeld is like findReadyThreadPreferDifferentPriestSchedLockHeld
+// findReadyUserspaceThreadSchedLockHeld is like findReadyThreadPreferDifferentShepherdSchedLockHeld
 // but only returns actual userspace threads (PID > 0).
 // This is used by context-switch paths where the current thread is userspace,
 // preferring to stay in userspace to avoid cross-privilege ERET issues on ARM64.
@@ -2467,14 +2467,14 @@ func findReadyThreadPreferDifferentPriestSchedLockHeld(currentPID PriestId) *Thr
 // have non-zero PageTableL0PA because there's no TTBR0/TTBR1 split.
 //
 //go:nosplit
-func findReadyUserspaceThreadSchedLockHeld(currentPID PriestId) *Thread {
+func findReadyUserspaceThreadSchedLockHeld(currentPID ShepherdId) *Thread {
 	myPerCPU := GetPerCPU()
 
-	// Scan local queue for a userspace thread from a different priest.
+	// Scan local queue for a userspace thread from a different shepherd.
 	// Filter by PID > 0 (not just PageTableL0PA != 0) because on AMD64,
 	// kernel threads also have non-zero PageTableL0PA (single CR3, no
 	// TTBR0/TTBR1 split). Without the PID check, kernel threads at the
-	// head of the queue are mistakenly returned, starving userspace priests.
+	// head of the queue are mistakenly returned, starving userspace shepherds.
 	q := &myPerCPU.LocalReadyQueue
 	idx := q.Head()
 	for seen := 0; seen < len(q.Data); seen++ {
@@ -2489,7 +2489,7 @@ func findReadyUserspaceThreadSchedLockHeld(currentPID PriestId) *Thread {
 		idx = (idx + 1) % len(q.Data)
 	}
 
-	// Fallback: any userspace thread from local queue (even same priest)
+	// Fallback: any userspace thread from local queue (even same shepherd)
 	idx = q.Head()
 	for seen := 0; seen < len(q.Data); seen++ {
 		if q.InUse[idx] {
@@ -2574,7 +2574,7 @@ func ThreadBlockFutex(futexAddr uint64, expectedVal uint32) uintptr {
 // Returns with schedulerLock held.
 //
 //go:nosplit
-func idleWaitForReadyThread(sf *SchedulerFunc, savedDAIF uint64, callerPID PriestId) (*Thread, uint64) {
+func idleWaitForReadyThread(sf *SchedulerFunc, savedDAIF uint64, callerSID ShepherdId) (*Thread, uint64) {
 	for {
 		schedulerLock.Unlock()
 		sf.EnableAndRestoreDAIF(savedDAIF)
@@ -2584,13 +2584,13 @@ func idleWaitForReadyThread(sf *SchedulerFunc, savedDAIF uint64, callerPID Pries
 		schedulerLock.Lock()
 		processStaticDeadlinesSchedLockHeld()
 		var next *Thread
-		if callerPID > 0 {
+		if callerSID > 0 {
 			next = findReadyUserspaceThreadSchedLockHeld(-1)
 			if next == nil {
 				next = findReadyThreadSchedLockHeld()
 			}
 		} else {
-			next = findReadyThreadPreferDifferentPriestSchedLockHeld(callerPID)
+			next = findReadyThreadPreferDifferentShepherdSchedLockHeld(callerSID)
 		}
 		if next != nil {
 			return next, savedDAIF
@@ -2636,7 +2636,7 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 
 	// Find next ready thread. If current thread is userspace (PID > 0),
 	// pick the next userspace thread in FIFO order (pass PID -1 to disable
-	// priest preference — see timer preemption comment for rationale).
+	// shepherd preference — see timer preemption comment for rationale).
 	// Fall back to any thread (including kernel thread 0).
 	// NOTE: Use PID > 0 (not PageTableL0PA != 0) — see checkThreadPreemptionImpl.
 	var next *Thread
@@ -2646,7 +2646,7 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 			next = findReadyThreadSchedLockHeld()
 		}
 	} else {
-		next = findReadyThreadPreferDifferentPriestSchedLockHeld(t.PID)
+		next = findReadyThreadPreferDifferentShepherdSchedLockHeld(t.PID)
 	}
 	if next == nil {
 		// No ready thread — process nanosleep/futex deadlines while we hold
@@ -2659,7 +2659,7 @@ func threadBlockFutexImpl(sf *SchedulerFunc, futexAddr uint64, expectedVal uint3
 				next = findReadyThreadSchedLockHeld()
 			}
 		} else {
-			next = findReadyThreadPreferDifferentPriestSchedLockHeld(t.PID)
+			next = findReadyThreadPreferDifferentShepherdSchedLockHeld(t.PID)
 		}
 	}
 	// Block unconditionally — match Linux futex_wait behavior.
@@ -2707,11 +2707,11 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 	savedDAIF := sf.DisableAndSaveDAIF()
 	schedulerLock.Lock()
 
-	// Get caller's PID to scope futex matching — each priest has its own
-	// address space, so the same VA in different priests is a different futex.
-	callerPID := PriestId(-1)
+	// Get caller's PID to scope futex matching — each shepherd has its own
+	// address space, so the same VA in different shepherds is a different futex.
+	callerSID := ShepherdId(-1)
 	if caller := GetCurrentThread(); caller != nil {
-		callerPID = caller.PID
+		callerSID = caller.PID
 	}
 
 	woken := int32(0)
@@ -2728,7 +2728,7 @@ func threadWakeFutexImpl(sf *SchedulerFunc, futexAddr uint64, maxWake int16) int
 			continue
 		}
 
-		if t.FutexAddr == futexAddr && t.PID == callerPID {
+		if t.FutexAddr == futexAddr && t.PID == callerSID {
 			// Move to ready
 			t.State = ThreadReady
 			t.FutexAddr = 0
@@ -2791,7 +2791,7 @@ func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
 			next = findReadyThreadSchedLockHeld()
 		}
 	} else {
-		next = findReadyThreadPreferDifferentPriestSchedLockHeld(t.PID)
+		next = findReadyThreadPreferDifferentShepherdSchedLockHeld(t.PID)
 	}
 	if next == nil {
 		// No ready thread — process nanosleep/futex deadlines while we hold
@@ -2804,7 +2804,7 @@ func ThreadBlockSleep(sf *SchedulerFunc) uintptr {
 				next = findReadyThreadSchedLockHeld()
 			}
 		} else {
-			next = findReadyThreadPreferDifferentPriestSchedLockHeld(t.PID)
+			next = findReadyThreadPreferDifferentShepherdSchedLockHeld(t.PID)
 		}
 	}
 	// Block unconditionally — the caller has already added a deadline.
@@ -2940,11 +2940,11 @@ func tryPickupWorkIdleCPU(sf *SchedulerFunc) uint64 {
 	next.ThreadPreemptDeadline = currentTime + kirq.ThreadPreemptTicks
 	next.TicksStartedRunning = currentTime
 
-	// Start priest clock if needed
-	if next.PriestIdx >= 0 {
-		priest := priestList.Get(int(next.PriestIdx))
-		if priest != nil && priest.TicksStartedRunning == 0 {
-			priest.TicksStartedRunning = currentTime
+	// Start shepherd clock if needed
+	if next.ShepherdIdx >= 0 {
+		shepherd := shepherdList.Get(int(next.ShepherdIdx))
+		if shepherd != nil && shepherd.TicksStartedRunning == 0 {
+			shepherd.TicksStartedRunning = currentTime
 		}
 	}
 
@@ -2978,18 +2978,18 @@ func tryPickupWorkIdleCPU(sf *SchedulerFunc) uint64 {
 // framePtr: pointer to exception frame with saved registers
 // Returns: pointer to new ThreadContext if switch happened, 0 otherwise
 //
-// hasPendingKernelWork returns true if any LoadMaz/RunMaz/RunPriest work
+// hasPendingKernelWork returns true if any LoadMaz/RunMaz/RunShepherd work
 // is waiting to be dispatched by thread 0.
 //
 //go:nosplit
 func hasPendingKernelWork() bool {
 	return atomic.LoadUint32(&loadMazPending) != 0 ||
 		atomic.LoadUint32(&runMazPending) != 0 ||
-		atomic.LoadUint32(&runPriestPending) != 0
+		atomic.LoadUint32(&runShepherdPending) != 0
 }
 
 // Thread0HasPendingWork returns true if the current thread is thread 0
-// AND there is pending kernel dispatch work (LoadMaz/RunMaz/RunPriest).
+// AND there is pending kernel dispatch work (LoadMaz/RunMaz/RunShepherd).
 // Used by SyscallSchedYield to skip OS-level thread switches so that
 // Go's internal goroutine scheduler can reach the dispatcher goroutine.
 //
@@ -3089,19 +3089,19 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		return ctxPtr
 	}
 
-	// Don't preempt thread 0 while it's dispatching LoadMaz/RunMaz/RunPriest work.
+	// Don't preempt thread 0 while it's dispatching LoadMaz/RunMaz/RunShepherd work.
 	// Without this, the userspace-preferring scheduler starves thread 0
 	// after completing one request, preventing subsequent requests from
 	// being dispatched.
 	if oldThread.TID == 0 && (atomic.LoadUint32(&loadMazDispatching) != 0 ||
 		atomic.LoadUint32(&runMazDispatching) != 0 ||
-		atomic.LoadUint32(&runPriestDispatching) != 0) {
+		atomic.LoadUint32(&runShepherdDispatching) != 0) {
 		return 0
 	}
 
 	// Boost thread 0 when kernel work is pending. The userspace-preferring
 	// scheduler never picks thread 0 while any userspace thread is ready,
-	// so pending LoadMaz/RunMaz/RunPriest requests can stall indefinitely.
+	// so pending LoadMaz/RunMaz/RunShepherd requests can stall indefinitely.
 	// When a pending flag is set and we're preempting a non-thread-0 thread,
 	// force a switch to thread 0 so it can dispatch the work.
 	if oldThread.TID != 0 && hasPendingKernelWork() {
@@ -3208,24 +3208,24 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		serial.RawUARTDecimal(uint64(uint16(next.TID)))
 		serial.RawUART(']')
 	}
-	// Priest-level tick accounting
-	// Stop old priest's clock
-	if oldThread.PriestIdx >= 0 {
-		oldPriest := priestList.Get(int(oldThread.PriestIdx))
-		if oldPriest != nil && oldPriest.TicksStartedRunning != 0 {
-			oldPriest.TotalTicksRunning += currentTime - oldPriest.TicksStartedRunning
-			// Only clear priest clock if switching to a DIFFERENT priest
+	// Shepherd-level tick accounting
+	// Stop old shepherd's clock
+	if oldThread.ShepherdIdx >= 0 {
+		oldShepherd := shepherdList.Get(int(oldThread.ShepherdIdx))
+		if oldShepherd != nil && oldShepherd.TicksStartedRunning != 0 {
+			oldShepherd.TotalTicksRunning += currentTime - oldShepherd.TicksStartedRunning
+			// Only clear shepherd clock if switching to a DIFFERENT shepherd
 			if next.PID != oldThread.PID {
-				oldPriest.TicksStartedRunning = 0
+				oldShepherd.TicksStartedRunning = 0
 			}
 		}
 	}
 
-	// Start new priest's clock (only if different priest)
-	if next.PriestIdx >= 0 && next.PID != oldThread.PID {
-		newPriest := priestList.Get(int(next.PriestIdx))
-		if newPriest != nil {
-			newPriest.TicksStartedRunning = currentTime
+	// Start new shepherd's clock (only if different shepherd)
+	if next.ShepherdIdx >= 0 && next.PID != oldThread.PID {
+		newShepherd := shepherdList.Get(int(next.ShepherdIdx))
+		if newShepherd != nil {
+			newShepherd.TicksStartedRunning = currentTime
 		}
 	}
 
@@ -3366,7 +3366,7 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	// ThreadBlockedFutex before calling context switch). If we only update when
 	// ThreadRunning, blocked threads keep a stale TicksStartedRunning and the
 	// print function adds phantom time.
-	oldPID := PriestId(-1)
+	oldPID := ShepherdId(-1)
 	if oldThread != nil {
 		oldPID = oldThread.PID
 
@@ -3386,12 +3386,12 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 			enqueueReadySchedLockHeld(oldThread)
 		}
 
-		// Priest-level tick accounting: stop old priest's clock if switching to a different priest
-		if newThread != nil && newThread.PID != oldPID && oldThread.PriestIdx >= 0 {
-			oldPriest := priestList.Get(int(oldThread.PriestIdx))
-			if oldPriest != nil && oldPriest.TicksStartedRunning != 0 {
-				oldPriest.TotalTicksRunning += currentTime - oldPriest.TicksStartedRunning
-				oldPriest.TicksStartedRunning = 0
+		// Shepherd-level tick accounting: stop old shepherd's clock if switching to a different shepherd
+		if newThread != nil && newThread.PID != oldPID && oldThread.ShepherdIdx >= 0 {
+			oldShepherd := shepherdList.Get(int(oldThread.ShepherdIdx))
+			if oldShepherd != nil && oldShepherd.TicksStartedRunning != 0 {
+				oldShepherd.TotalTicksRunning += currentTime - oldShepherd.TicksStartedRunning
+				oldShepherd.TicksStartedRunning = 0
 			}
 		}
 	}
@@ -3418,16 +3418,16 @@ func doContextSwitchImpl(sf *SchedulerFunc, framePtr uintptr, targetIdx int32) *
 	// Mark when this thread started running for runtime accounting
 	newThread.TicksStartedRunning = currentTime
 
-	// Start new priest's clock if switching to a different priest
-	if newThread.PID != oldPID && newThread.PriestIdx >= 0 {
-		newPriest := priestList.Get(int(newThread.PriestIdx))
-		if newPriest != nil {
-			newPriest.TicksStartedRunning = currentTime
+	// Start new shepherd's clock if switching to a different shepherd
+	if newThread.PID != oldPID && newThread.ShepherdIdx >= 0 {
+		newShepherd := shepherdList.Get(int(newThread.ShepherdIdx))
+		if newShepherd != nil {
+			newShepherd.TicksStartedRunning = currentTime
 		}
 	}
 
 	// Switch TTBR0 if the new thread has a different page table
-	// This is needed when switching between different userspace processes (priests)
+	// This is needed when switching between different userspace processes (shepherds)
 	// Use the thread's PID as the ASID for TLB tagging.
 	oldPageTable := uintptr(0)
 	if oldThread != nil {
@@ -3523,12 +3523,12 @@ func printTickDistributionNoSplit(now uint64) {
 		}
 	}
 
-	// "===PRIEST===\n"
-	serial.RawUARTPuts("===PRIEST===\n")
+	// "===SHEPHERD===\n"
+	serial.RawUARTPuts("===SHEPHERD===\n")
 
-	for i := 0; i < MaxPriests; i++ {
-		if proc.PriestListInUse[i] {
-			p := &proc.PriestListData[i]
+	for i := 0; i < MaxShepherds; i++ {
+		if proc.ShepherdListInUse[i] {
+			p := &proc.ShepherdListData[i]
 			ticks := p.TotalTicksRunning
 			if p.TicksStartedRunning != 0 {
 				if now < p.TicksStartedRunning {
@@ -3638,29 +3638,29 @@ func PrintTickDistribution() {
 
 	PrintThreadStateSummary()
 
-	// Per-priest tick distribution
-	console.KPrint("\n=== Priest Tick Distribution ===\n")
-	var priestTotalTicks uint64
-	for i := 0; i < MaxPriests; i++ {
-		if proc.PriestListInUse[i] {
-			p := &proc.PriestListData[i]
+	// Per-shepherd tick distribution
+	console.KPrint("\n=== Shepherd Tick Distribution ===\n")
+	var shepherdTotalTicks uint64
+	for i := 0; i < MaxShepherds; i++ {
+		if proc.ShepherdListInUse[i] {
+			p := &proc.ShepherdListData[i]
 			ticks := p.TotalTicksRunning
 			if p.TicksStartedRunning != 0 {
 				ticks += kirq.TimerIRQCount - p.TicksStartedRunning
 			}
-			priestTotalTicks += ticks
+			shepherdTotalTicks += ticks
 		}
 	}
-	for i := 0; i < MaxPriests; i++ {
-		if proc.PriestListInUse[i] {
-			p := &proc.PriestListData[i]
+	for i := 0; i < MaxShepherds; i++ {
+		if proc.ShepherdListInUse[i] {
+			p := &proc.ShepherdListData[i]
 			ticks := p.TotalTicksRunning
 			if p.TicksStartedRunning != 0 {
 				ticks += kirq.TimerIRQCount - p.TicksStartedRunning
 			}
 			var pct uint64
-			if priestTotalTicks > 0 {
-				pct = (ticks * 100) / priestTotalTicks
+			if shepherdTotalTicks > 0 {
+				pct = (ticks * 100) / shepherdTotalTicks
 			}
 			console.KPrintf("  P%02d ticks=%d (%d%%)\n", p.PID, ticks, pct)
 		}

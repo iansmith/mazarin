@@ -1,5 +1,5 @@
-// sievetest is a simple prime sieve program for multi-priest thread testing.
-// It runs as a single-threaded priest (no extra goroutines) and prints primes
+// sievetest is a simple prime sieve program for multi-shepherd thread testing.
+// It runs as a single-threaded shepherd (no extra goroutines) and prints primes
 // with its thread ID prefix.
 package main
 

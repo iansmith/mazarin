@@ -60,7 +60,7 @@ func ValueBool(uri string, initial bool) *Handle[bool] {
 }
 
 // ValueStr creates a value attribute of type string.
-// String writes go through SysAttrWriteString since the priest can't construct
+// String writes go through SysAttrWriteString since the shepherd can't construct
 // FlatStrRefs (shared pages are read-only).
 func ValueStr(uri string, initial string) *Handle[string] {
 	slot := createValueSlot(uri, flat.TypeStr)

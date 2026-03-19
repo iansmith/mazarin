@@ -1,4 +1,4 @@
-// stdio is a userspace priest that owns the serial port soft IRQ and
+// stdio is a userspace shepherd that owns the serial port soft IRQ and
 // renders kernel console output to a dark gray rectangle on the display.
 // It loads the Atkinson Hyperlegible Mono font and displays serial
 // output as lines of monospaced text.
@@ -285,7 +285,7 @@ func (c *console) tokenizeLine(text string) []token {
 
 func main() {
 	sys.UartWriteString("[stdio] main() entered\n")
-	fmt.Println("[stdio] Starting console priest")
+	fmt.Println("[stdio] Starting console shepherd")
 
 	// --- Get serial channel ---
 	serialCh, err := serial.Chars()
@@ -449,7 +449,7 @@ func main() {
 	}
 
 	// --- Register for delegated syscalls ---
-	// Write delegation: other priests' write() calls come here for rendering,
+	// Write delegation: other shepherds' write() calls come here for rendering,
 	// then stdio pushes the data to the kernel's UART output path.
 	delegateCh, delegateErr := sys.HandleSyscalls(sysid.Write, sysid.Openat)
 	if delegateErr != nil {

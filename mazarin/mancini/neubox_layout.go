@@ -34,8 +34,8 @@ func (n *NeuBox) InitLayout(parent string) {
 	attr.ValueI64(maxSizeURI, maxSize)
 
 	// Build find pattern and URI fragments for constraint binding.
-	findPattern := "attr:///priest/" + manciniPID + "/str/*/layout/parent"
-	prefix := "attr:///priest/" + manciniPID + "/int64/"
+	findPattern := "attr:///shepherd/" + manciniPID + "/str/*/layout/parent"
+	prefix := "attr:///shepherd/" + manciniPID + "/int64/"
 
 	// Width = min(child width + 2*margin, maxSize). Default 20 if no child.
 	widthProg := interactor.BindStrings(ProgDecorationWidth,

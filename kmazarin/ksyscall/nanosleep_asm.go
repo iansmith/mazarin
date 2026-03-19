@@ -25,7 +25,7 @@ func AddDeadlineStatic(deadline uint64, tid int32)
 func ThreadBlockSleep() uintptr
 
 // IsCurrentThreadUserspace is provided by main package via go:linkname.
-// Returns true if the current thread belongs to a userspace priest.
+// Returns true if the current thread belongs to a userspace shepherd.
 func IsCurrentThreadUserspace() bool
 
 // WakeNetpollThread is provided by main package via go:linkname.

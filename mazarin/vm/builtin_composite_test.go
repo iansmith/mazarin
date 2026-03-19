@@ -230,12 +230,12 @@ func TestIPv4RoundTrip(t *testing.T) {
 	}
 }
 
-func TestPriestIdRoundTrip(t *testing.T) {
+func TestShepherdIdRoundTrip(t *testing.T) {
 	prog := &Program{
 		Code: []Inst{
 			InstConstI64(42),
-			InstCallBuiltin(BuiltinPriestId, 1),
-			InstCallBuiltin(BuiltinPriestIdNum, 1),
+			InstCallBuiltin(BuiltinShepherdId, 1),
+			InstCallBuiltin(BuiltinShepherdIdNum, 1),
 			InstRet(1),
 		},
 	}

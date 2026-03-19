@@ -94,8 +94,8 @@ const (
 	BuiltinIPv4            uint16 = 120 // (I64, I64, I64, I64) → IPv4
 	BuiltinIPv4Octet       uint16 = 121 // (IPv4, I64) → I64
 	BuiltinIPv6            uint16 = 122 // (CollI64) → IPv6
-	BuiltinPriestId        uint16 = 130 // (I64) → PriestId
-	BuiltinPriestIdNum     uint16 = 131 // (PriestId) → I64
+	BuiltinShepherdId        uint16 = 130 // (I64) → ShepherdId
+	BuiltinShepherdIdNum     uint16 = 131 // (ShepherdId) → I64
 	BuiltinMazId           uint16 = 132 // (I64) → MazId
 	BuiltinMazIdNum        uint16 = 133 // (MazId) → I64
 
@@ -862,22 +862,22 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 		}
 		return m.push(IPv6Val(addr))
 
-	case BuiltinPriestId:
+	case BuiltinShepherdId:
 		id, err := m.pop()
 		if err != nil {
 			return err
 		}
-		return m.push(PriestIdVal(uint16(id.i64)))
+		return m.push(ShepherdIdVal(uint16(id.i64)))
 
-	case BuiltinPriestIdNum:
+	case BuiltinShepherdIdNum:
 		a, err := m.pop()
 		if err != nil {
 			return err
 		}
-		if a.typ != TypePriestId {
-			return m.haltf("priest_id_num requires priest_id, got %s", TypeName(a.typ))
+		if a.typ != TypeShepherdId {
+			return m.haltf("shepherd_id_num requires shepherd_id, got %s", TypeName(a.typ))
 		}
-		return m.push(I64(int64(a.AsPriestIdNum())))
+		return m.push(I64(int64(a.AsShepherdIdNum())))
 
 	case BuiltinMazId:
 		id, err := m.pop()

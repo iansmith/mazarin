@@ -17,7 +17,7 @@ type DeferredPageRecord struct {
 	PA       uintptr
 	VA       uintptr
 	Type     PageAllocType
-	PriestID int16
+	ShepherdID int16
 	ThreadID int16
 	Order    uint8
 }
@@ -78,7 +78,7 @@ func ProcessDeferredRecords() {
 			PA:       rec.PA,
 			VA:       rec.VA,
 			Type:     rec.Type,
-			PriestID: rec.PriestID,
+			ShepherdID: rec.ShepherdID,
 			ThreadID: rec.ThreadID,
 			Order:    rec.Order,
 		})

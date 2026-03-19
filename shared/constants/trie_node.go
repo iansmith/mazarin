@@ -1,7 +1,7 @@
 // trie_node.go — Shared trie node struct used by both kernel and userspace.
 //
 // TrieNode is a flat 128-byte structure stored in the trie region of the
-// constraint shared pages. Both kernel (writable) and priests (read-only)
+// constraint shared pages. Both kernel (writable) and shepherds (read-only)
 // use this same layout.
 
 package constants

@@ -124,7 +124,7 @@ func getCurrentThreadTIDForKsyscall() int16 {
 }
 
 // IsCurrentThreadUserspace returns true if the current thread belongs to a
-// userspace priest (PageTableL0PA != 0).
+// userspace shepherd (PageTableL0PA != 0).
 //
 //go:linkname isCurrentThreadUserspaceForKsyscall mazzy/kmazarin/ksyscall.IsCurrentThreadUserspace
 //go:nosplit
@@ -168,7 +168,7 @@ func threadLookupByTIDForKsyscall(tid int32) uintptr {
 //go:nosplit
 func threadLookupByPIDForKsyscall(pid int16) uintptr {
 	// Refuse to look up kernel-reserved PIDs from ksyscall context.
-	if pid < int16(ReservedKernelPriests) {
+	if pid < int16(ReservedKernelShepherds) {
 		return 0
 	}
 	t := threadLookupByPID(pid)
@@ -241,7 +241,7 @@ func reservedKernelTIDsForKsyscall() int32 {
 //go:linkname reservedKernelPIDsForKsyscall mazzy/kmazarin/ksyscall.ReservedKernelPIDs
 //go:nosplit
 func reservedKernelPIDsForKsyscall() int16 {
-	return int16(ReservedKernelPriests)
+	return int16(ReservedKernelShepherds)
 }
 
 // WakeNetpollThread wrapper — wakes a sleeping thread by TID.
@@ -253,14 +253,14 @@ func wakeNetpollThreadForKsyscall(tid int32) {
 	ThreadWakeSleeper(&NormalSchedulerFunc, uintptr(tid))
 }
 
-// ForEachThreadForKsyscall iterates over threads belonging to a priest and
-// populates the ThreadIDs array in a PriestInfoEntry.
+// ForEachThreadForKsyscall iterates over threads belonging to a shepherd and
+// populates the ThreadIDs array in a ShepherdInfoEntry.
 //
 //go:linkname forEachThreadForKsyscall mazzy/kmazarin/ksyscall.ForEachThread
-func forEachThreadForKsyscall(priestPID int16, entry *hid.PriestInfoEntry) {
+func forEachThreadForKsyscall(shepherdSID int16, entry *hid.ShepherdInfoEntry) {
 	tidIdx := 0
 	for i := 0; i < threadArraySize; i++ {
-		if threadListInUse[i] && int16(threadListData[i].PID) == priestPID {
+		if threadListInUse[i] && int16(threadListData[i].PID) == shepherdSID {
 			if tidIdx < len(entry.ThreadIDs) {
 				entry.ThreadIDs[tidIdx] = int16(threadListData[i].TID)
 				tidIdx++

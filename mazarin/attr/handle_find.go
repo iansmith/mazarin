@@ -14,7 +14,7 @@ import (
 
 // Find registers a query pattern and returns the current set of matching URIs.
 // The pattern supports '*' as a single-segment wildcard.
-// Example: "attr:///priest/*/display/width"
+// Example: "attr:///shepherd/*/display/width"
 func Find(pattern string) []string {
 	slot, err := sys.AttrRegisterQuery(pattern)
 	if err != nil {

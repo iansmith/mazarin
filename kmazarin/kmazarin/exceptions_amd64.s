@@ -857,7 +857,7 @@ pf_cs2:	OUTB
 
 pf_user_fault:
 
-	// User page fault not handled — map to signal and deliver or kill priest.
+	// User page fault not handled — map to signal and deliver or kill shepherd.
 	// Switch FS_BASE to kernel value for Go call.
 	MOVQ	·kmazarinFSBase(SB), AX
 	MOVQ	AX, DX
@@ -963,9 +963,9 @@ timer_preempt_check:
 	JZ	irq_exception_return
 
 	// NOTE: m.locks check removed for userspace thread preemption.
-	// Each priest runs in its own address space with isolated Go runtime state.
+	// Each shepherd runs in its own address space with isolated Go runtime state.
 	// Context-switching freezes and restores the full CPU state atomically —
-	// the priest resumes exactly where it was interrupted, locks intact.
+	// the shepherd resumes exactly where it was interrupted, locks intact.
 	// Ring 0 (kernel) preemption was already filtered out above.
 	// Clear NeedsThreadPreempt flag
 	MOVL	$0, mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB)
@@ -1255,7 +1255,7 @@ fripF:	OUTB
 	CMPQ	AX, $0x08		// kernelCS?
 	JE	generic_halt		// Kernel fault → halt
 
-	// User fault: map to signal and deliver or kill priest.
+	// User fault: map to signal and deliver or kill shepherd.
 	// Switch FS_BASE to kernel value.
 	MOVQ	·kmazarinFSBase(SB), AX
 	MOVQ	AX, DX

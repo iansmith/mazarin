@@ -96,7 +96,7 @@ func main() {
 	// These are assembly-implemented (not Go source), so gen-ast-stubs can't
 	// stub them and they don't match the thin stub pattern. But .maz's copies
 	// reference uninitialized runtime globals and hang when called. We patch
-	// the function body to jump directly to the host priest's version.
+	// the function body to jump directly to the host shepherd's version.
 	morestackImports := findMorestackSymbols(f)
 	imports = append(imports, morestackImports...)
 
@@ -398,7 +398,7 @@ func isThinStubRISCV64(textData []byte, offset, funcAddr uint64, panicHelperAddr
 }
 
 // morestackSymbols lists the assembly-implemented runtime functions whose
-// bodies must be patched to trampoline to the host priest's versions.
+// bodies must be patched to trampoline to the host shepherd's versions.
 // These can't be stubbed by gen-ast-stubs (they're assembly, not Go source).
 // The ELF symbols have the .abi0 suffix because morestack is implemented in
 // assembly (ABI0 calling convention).

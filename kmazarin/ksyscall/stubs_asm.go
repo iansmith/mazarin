@@ -17,7 +17,7 @@ func setSyscallSwitchTargetForYield(target uintptr)
 func getGPointer() uint64
 
 // thread0HasPendingWork returns true if the current thread is thread 0
-// AND there is pending kernel dispatch work (LoadMaz/RunMaz/RunPriest).
+// AND there is pending kernel dispatch work (LoadMaz/RunMaz/RunShepherd).
 // Used by SyscallSchedYield to skip OS-level thread switches when
 // thread 0 has pending work, allowing Go's goroutine scheduler to
 // reach the dispatcher goroutine in KernelIdleLoop.

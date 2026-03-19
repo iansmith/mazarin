@@ -14,7 +14,7 @@ import (
 
 var manciniPID string
 
-// Init initializes the mancini layout system with the priest's namespace name.
+// Init initializes the mancini layout system with the shepherd's namespace name.
 // Must be called after attr.Init().
 func Init(name string) {
 	manciniPID = name
@@ -40,7 +40,7 @@ func defaultName(typeName string) string {
 }
 
 func layoutURI(name, typePath, attrName string) string {
-	return "attr:///priest/" + manciniPID + "/" + typePath + "/" + name + "/layout/" + attrName
+	return "attr:///shepherd/" + manciniPID + "/" + typePath + "/" + name + "/layout/" + attrName
 }
 
 // newLayoutHandlesBase creates X, Y, Visible, Parent handles (no Width/Height).
@@ -156,8 +156,8 @@ func (w *AppWindow) InitLayout(parent string) {
 	maxSizeURI := layoutURI(w.Name, "int64", "maxSize")
 	attr.ValueI64(maxSizeURI, 800)
 
-	findPattern := "attr:///priest/" + manciniPID + "/str/*/layout/parent"
-	prefix := "attr:///priest/" + manciniPID + "/int64/"
+	findPattern := "attr:///shepherd/" + manciniPID + "/str/*/layout/parent"
+	prefix := "attr:///shepherd/" + manciniPID + "/int64/"
 
 	widthProg := interactor.BindStrings(ProgDecorationWidth,
 		findPattern, w.Name, hMarginURI, prefix, "/layout/width", maxSizeURI)

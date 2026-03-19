@@ -11,7 +11,7 @@ func NewCard(id string, parent *Interactor, padding int64, bgColor int64) *Inter
 		ID:         id,
 		Kind:       KindCard,
 		Parent:     parent,
-		priestName: pName,
+		shepherdName: pName,
 		padding:    padding,
 	}
 

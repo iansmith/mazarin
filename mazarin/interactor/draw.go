@@ -29,7 +29,7 @@ type DrawContext struct {
 }
 
 // NewDrawContext creates a draw context with framebuffer access and pre-rendered glyphs.
-// fontData is the embedded OTF font bytes. Region defines the screen area owned by this priest.
+// fontData is the embedded OTF font bytes. Region defines the screen area owned by this shepherd.
 func NewDrawContext(fontData []byte, regionX, regionY, regionW, regionH int) *DrawContext {
 	fb, err := sys.GetFramebuffer()
 	if err != nil {
@@ -133,7 +133,7 @@ func (dc *DrawContext) drawNode(i *Interactor, clipRect [4]int32) {
 	bv := i.Bounds.Get()
 	bx0, by0, bx1, by1 := bv.AsRectangle()
 
-	// Clip to priest's region.
+	// Clip to shepherd's region.
 	rx0, ry0 := int32(dc.regionX), int32(dc.regionY)
 	rx1, ry1 := int32(dc.regionX+dc.regionW), int32(dc.regionY+dc.regionH)
 
@@ -269,7 +269,7 @@ func (dc *DrawContext) Flush(x0, y0, x1, y1 int32) {
 	_ = sys.FlushFramebuffer(uint32(x0), uint32(y0), uint32(w), uint32(h))
 }
 
-// FlushRegion sends the entire priest region to the GPU.
+// FlushRegion sends the entire shepherd region to the GPU.
 func (dc *DrawContext) FlushRegion() {
 	_ = sys.FlushFramebuffer(uint32(dc.regionX), uint32(dc.regionY),
 		uint32(dc.regionW), uint32(dc.regionH))

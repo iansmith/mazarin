@@ -76,15 +76,15 @@ vars:
   MAZ_OVERLAY_AMD64_JSON: '{{.BUILD_DIR}}/maz-overlay-amd64.json'
   FS_MAZ_AMD64: '{{.BUILD_DIR}}/fs-amd64.maz'
   HELLOWORLD_MAZ_AMD64: '{{.BUILD_DIR}}/helloworld-amd64.maz'
-  DAPOPE_ELF: '{{.BUILD_DIR}}/dapope.elf'
+  RACHEL_ELF: '{{.BUILD_DIR}}/rachel.elf'
   STDIO_ELF: '{{.BUILD_DIR}}/stdio.elf'
-  DISKPRIEST_ELF: '{{.BUILD_DIR}}/disk.elf'
+  DISKSHEPHERD_ELF: '{{.BUILD_DIR}}/disk.elf'
   DISK_IMAGE: '{{.BUILD_DIR}}/disk.img'
 
   # x86_64 userspace programs
-  DAPOPE_AMD64_ELF: '{{.BUILD_DIR}}/dapope-amd64.elf'
+  RACHEL_AMD64_ELF: '{{.BUILD_DIR}}/rachel-amd64.elf'
   STDIO_AMD64_ELF: '{{.BUILD_DIR}}/stdio-amd64.elf'
-  DISKPRIEST_AMD64_ELF: '{{.BUILD_DIR}}/disk-amd64.elf'
+  DISKSHEPHERD_AMD64_ELF: '{{.BUILD_DIR}}/disk-amd64.elf'
   SIEVETEST_AMD64_ELF: '{{.BUILD_DIR}}/sievetest-amd64.elf'
   ATTRTEST_AMD64_ELF: '{{.BUILD_DIR}}/attrtest-amd64.elf'
   HANDLETEST_AMD64_ELF: '{{.BUILD_DIR}}/handletest-amd64.elf'
@@ -93,9 +93,9 @@ vars:
   DISK_AMD64_IMAGE: '{{.BUILD_DIR}}/disk-amd64.img'
 
   # RISC-V 64-bit userspace programs
-  DAPOPE_RISCV64_ELF: '{{.BUILD_DIR}}/dapope-riscv64.elf'
+  RACHEL_RISCV64_ELF: '{{.BUILD_DIR}}/rachel-riscv64.elf'
   STDIO_RISCV64_ELF: '{{.BUILD_DIR}}/stdio-riscv64.elf'
-  DISKPRIEST_RISCV64_ELF: '{{.BUILD_DIR}}/disk-riscv64.elf'
+  DISKSHEPHERD_RISCV64_ELF: '{{.BUILD_DIR}}/disk-riscv64.elf'
   SIEVETEST_RISCV64_ELF: '{{.BUILD_DIR}}/sievetest-riscv64.elf'
   ATTRTEST_RISCV64_ELF: '{{.BUILD_DIR}}/attrtest-riscv64.elf'
   HANDLETEST_RISCV64_ELF: '{{.BUILD_DIR}}/handletest-riscv64.elf'
@@ -137,17 +137,17 @@ vars:
   MAZ_EXIT_OVERLAY_DIR: mazarin/overlay/maz
   MAZ_EXIT_OVERLAY_JSON: '{{.BUILD_DIR}}/maz-exit-overlay.json'
 
-  # Priest overlay — adds //go:noinline + keep-alive to prevent DCE of runtime functions
+  # Shepherd overlay — adds //go:noinline + keep-alive to prevent DCE of runtime functions
   # Per-architecture because sigctxt methods differ (ARM64: r0-r29, x86_64: rax/rbx, RISC-V: different)
-  PRIEST_OVERLAY_DIR: '{{.BUILD_DIR}}/priest-overlay'
-  PRIEST_OVERLAY_JSON: '{{.BUILD_DIR}}/priest-overlay.json'
-  MERGED_PRIEST_OVERLAY_JSON: '{{.BUILD_DIR}}/merged-priest-overlay.json'
-  PRIEST_OVERLAY_AMD64_DIR: '{{.BUILD_DIR}}/priest-overlay-amd64'
-  PRIEST_OVERLAY_AMD64_JSON: '{{.BUILD_DIR}}/priest-overlay-amd64.json'
-  MERGED_PRIEST_OVERLAY_AMD64_JSON: '{{.BUILD_DIR}}/merged-priest-overlay-amd64.json'
-  PRIEST_OVERLAY_RISCV64_DIR: '{{.BUILD_DIR}}/priest-overlay-riscv64'
-  PRIEST_OVERLAY_RISCV64_JSON: '{{.BUILD_DIR}}/priest-overlay-riscv64.json'
-  MERGED_PRIEST_OVERLAY_RISCV64_JSON: '{{.BUILD_DIR}}/merged-priest-overlay-riscv64.json'
+  SHEPHERD_OVERLAY_DIR: '{{.BUILD_DIR}}/shepherd-overlay'
+  SHEPHERD_OVERLAY_JSON: '{{.BUILD_DIR}}/shepherd-overlay.json'
+  MERGED_SHEPHERD_OVERLAY_JSON: '{{.BUILD_DIR}}/merged-shepherd-overlay.json'
+  SHEPHERD_OVERLAY_AMD64_DIR: '{{.BUILD_DIR}}/shepherd-overlay-amd64'
+  SHEPHERD_OVERLAY_AMD64_JSON: '{{.BUILD_DIR}}/shepherd-overlay-amd64.json'
+  MERGED_SHEPHERD_OVERLAY_AMD64_JSON: '{{.BUILD_DIR}}/merged-shepherd-overlay-amd64.json'
+  SHEPHERD_OVERLAY_RISCV64_DIR: '{{.BUILD_DIR}}/shepherd-overlay-riscv64'
+  SHEPHERD_OVERLAY_RISCV64_JSON: '{{.BUILD_DIR}}/shepherd-overlay-riscv64.json'
+  MERGED_SHEPHERD_OVERLAY_RISCV64_JSON: '{{.BUILD_DIR}}/merged-shepherd-overlay-riscv64.json'
 
 tasks:
   # ===========================================================================
@@ -266,86 +266,86 @@ tasks:
     cmds:
       - '{{.GO}} tool gen-overlay -type userspace -patches {{.USERSPACE_OVERLAY_DIR}} -o {{.USERSPACE_OVERLAY_JSON}}'
 
-  priest-overlay:
+  shepherd-overlay:
     run: once
     method: checksum
-    desc: Generate priest overlay for ARM64 (//go:noinline + keep-alive for all stubbable runtime functions)
+    desc: Generate shepherd overlay for ARM64 (//go:noinline + keep-alive for all stubbable runtime functions)
     deps: [build-dir]
     sources:
       - 'cmd/gen-ast-stubs/**/*.go'
     generates:
-      - '{{.PRIEST_OVERLAY_JSON}}'
+      - '{{.SHEPHERD_OVERLAY_JSON}}'
     cmds:
-      - '{{.GO}} tool go-echo "Generating priest overlay for ARM64 (//go:noinline + keep-alive)..."'
-      - 'TARGET_GOARCH=arm64 TARGET_GOOS=linux {{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.PRIEST_OVERLAY_DIR}} -overlay={{.PRIEST_OVERLAY_JSON}} -mode=priest'
+      - '{{.GO}} tool go-echo "Generating shepherd overlay for ARM64 (//go:noinline + keep-alive)..."'
+      - 'TARGET_GOARCH=arm64 TARGET_GOOS=linux {{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.SHEPHERD_OVERLAY_DIR}} -overlay={{.SHEPHERD_OVERLAY_JSON}} -mode=shepherd'
 
-  priest-overlay-amd64:
+  shepherd-overlay-amd64:
     run: once
     method: checksum
-    desc: Generate priest overlay for x86_64 (//go:noinline + keep-alive for all stubbable runtime functions)
+    desc: Generate shepherd overlay for x86_64 (//go:noinline + keep-alive for all stubbable runtime functions)
     deps: [build-dir]
     sources:
       - 'cmd/gen-ast-stubs/**/*.go'
     generates:
-      - '{{.PRIEST_OVERLAY_AMD64_JSON}}'
+      - '{{.SHEPHERD_OVERLAY_AMD64_JSON}}'
     cmds:
-      - '{{.GO}} tool go-echo "Generating priest overlay for x86_64 (//go:noinline + keep-alive)..."'
-      - 'TARGET_GOARCH=amd64 TARGET_GOOS=linux {{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.PRIEST_OVERLAY_AMD64_DIR}} -overlay={{.PRIEST_OVERLAY_AMD64_JSON}} -mode=priest'
+      - '{{.GO}} tool go-echo "Generating shepherd overlay for x86_64 (//go:noinline + keep-alive)..."'
+      - 'TARGET_GOARCH=amd64 TARGET_GOOS=linux {{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.SHEPHERD_OVERLAY_AMD64_DIR}} -overlay={{.SHEPHERD_OVERLAY_AMD64_JSON}} -mode=shepherd'
 
-  priest-overlay-riscv64:
+  shepherd-overlay-riscv64:
     run: once
     method: checksum
-    desc: Generate priest overlay for RISC-V (//go:noinline + keep-alive for all stubbable runtime functions)
+    desc: Generate shepherd overlay for RISC-V (//go:noinline + keep-alive for all stubbable runtime functions)
     deps: [build-dir]
     sources:
       - 'cmd/gen-ast-stubs/**/*.go'
     generates:
-      - '{{.PRIEST_OVERLAY_RISCV64_JSON}}'
+      - '{{.SHEPHERD_OVERLAY_RISCV64_JSON}}'
     cmds:
-      - '{{.GO}} tool go-echo "Generating priest overlay for RISC-V (//go:noinline + keep-alive)..."'
-      - 'TARGET_GOARCH=riscv64 TARGET_GOOS=linux {{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.PRIEST_OVERLAY_RISCV64_DIR}} -overlay={{.PRIEST_OVERLAY_RISCV64_JSON}} -mode=priest'
+      - '{{.GO}} tool go-echo "Generating shepherd overlay for RISC-V (//go:noinline + keep-alive)..."'
+      - 'TARGET_GOARCH=riscv64 TARGET_GOOS=linux {{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.SHEPHERD_OVERLAY_RISCV64_DIR}} -overlay={{.SHEPHERD_OVERLAY_RISCV64_JSON}} -mode=shepherd'
 
-  merged-priest-overlay:
+  merged-shepherd-overlay:
     run: once
     method: checksum
-    desc: Merge priest + userspace overlays for ARM64 disk priest builds
-    deps: [priest-overlay, userspace-overlay]
+    desc: Merge shepherd + userspace overlays for ARM64 disk shepherd builds
+    deps: [shepherd-overlay, userspace-overlay]
     sources:
-      - '{{.PRIEST_OVERLAY_JSON}}'
+      - '{{.SHEPHERD_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_JSON}}'
     generates:
-      - '{{.MERGED_PRIEST_OVERLAY_JSON}}'
+      - '{{.MERGED_SHEPHERD_OVERLAY_JSON}}'
     cmds:
-      - '{{.GO}} tool go-echo "Merging priest + userspace overlays (ARM64)..."'
-      - '{{.GO}} tool gen-overlay -type merge -base {{.PRIEST_OVERLAY_JSON}} -extra {{.USERSPACE_OVERLAY_JSON}} -o {{.MERGED_PRIEST_OVERLAY_JSON}}'
+      - '{{.GO}} tool go-echo "Merging shepherd + userspace overlays (ARM64)..."'
+      - '{{.GO}} tool gen-overlay -type merge -base {{.SHEPHERD_OVERLAY_JSON}} -extra {{.USERSPACE_OVERLAY_JSON}} -o {{.MERGED_SHEPHERD_OVERLAY_JSON}}'
 
-  merged-priest-overlay-amd64:
+  merged-shepherd-overlay-amd64:
     run: once
     method: checksum
-    desc: Merge priest + userspace overlays for x86_64 disk priest builds
-    deps: [priest-overlay-amd64, userspace-overlay]
+    desc: Merge shepherd + userspace overlays for x86_64 disk shepherd builds
+    deps: [shepherd-overlay-amd64, userspace-overlay]
     sources:
-      - '{{.PRIEST_OVERLAY_AMD64_JSON}}'
+      - '{{.SHEPHERD_OVERLAY_AMD64_JSON}}'
       - '{{.USERSPACE_OVERLAY_JSON}}'
     generates:
-      - '{{.MERGED_PRIEST_OVERLAY_AMD64_JSON}}'
+      - '{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
     cmds:
-      - '{{.GO}} tool go-echo "Merging priest + userspace overlays (x86_64)..."'
-      - '{{.GO}} tool gen-overlay -type merge -base {{.PRIEST_OVERLAY_AMD64_JSON}} -extra {{.USERSPACE_OVERLAY_JSON}} -o {{.MERGED_PRIEST_OVERLAY_AMD64_JSON}}'
+      - '{{.GO}} tool go-echo "Merging shepherd + userspace overlays (x86_64)..."'
+      - '{{.GO}} tool gen-overlay -type merge -base {{.SHEPHERD_OVERLAY_AMD64_JSON}} -extra {{.USERSPACE_OVERLAY_JSON}} -o {{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
 
-  merged-priest-overlay-riscv64:
+  merged-shepherd-overlay-riscv64:
     run: once
     method: checksum
-    desc: Merge priest + userspace overlays for RISC-V disk priest builds
-    deps: [priest-overlay-riscv64, userspace-overlay]
+    desc: Merge shepherd + userspace overlays for RISC-V disk shepherd builds
+    deps: [shepherd-overlay-riscv64, userspace-overlay]
     sources:
-      - '{{.PRIEST_OVERLAY_RISCV64_JSON}}'
+      - '{{.SHEPHERD_OVERLAY_RISCV64_JSON}}'
       - '{{.USERSPACE_OVERLAY_JSON}}'
     generates:
-      - '{{.MERGED_PRIEST_OVERLAY_RISCV64_JSON}}'
+      - '{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}}'
     cmds:
-      - '{{.GO}} tool go-echo "Merging priest + userspace overlays (RISC-V)..."'
-      - '{{.GO}} tool gen-overlay -type merge -base {{.PRIEST_OVERLAY_RISCV64_JSON}} -extra {{.USERSPACE_OVERLAY_JSON}} -o {{.MERGED_PRIEST_OVERLAY_RISCV64_JSON}}'
+      - '{{.GO}} tool go-echo "Merging shepherd + userspace overlays (RISC-V)..."'
+      - '{{.GO}} tool gen-overlay -type merge -base {{.SHEPHERD_OVERLAY_RISCV64_JSON}} -extra {{.USERSPACE_OVERLAY_JSON}} -o {{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}}'
 
   # ===========================================================================
   # Boot Image Conversion
@@ -439,25 +439,25 @@ tasks:
   # Flock Userspace Programs
   # ===========================================================================
 
-  dapope-arm64:
-    desc: Build dapope input event handler priest (ARM64)
-    deps: [check-env, merged-priest-overlay]
+  rachel-arm64:
+    desc: Build rachel input event handler shepherd (ARM64)
+    deps: [check-env, merged-shepherd-overlay]
     sources:
       - 'flock/**/*.go'
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
-      - '{{.MERGED_PRIEST_OVERLAY_JSON}}'
+      - '{{.MERGED_SHEPHERD_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.PRIEST_OVERLAY_DIR}}/**/*'
+      - '{{.SHEPHERD_OVERLAY_DIR}}/**/*'
     generates:
-      - '{{.DAPOPE_ELF}}'
+      - '{{.RACHEL_ELF}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building dapope for ARM64..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DAPOPE_ELF}} ./flock/cmd/dapope'
-      - '{{.GO}} tool go-echo "Dapope ARM64 built at {{.DAPOPE_ELF}}"'
+      - '{{.GO}} tool go-echo "Building rachel for ARM64..."'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.RACHEL_ELF}} ./flock/cmd/rachel'
+      - '{{.GO}} tool go-echo "Rachel ARM64 built at {{.RACHEL_ELF}}"'
 
   stdio-arm64:
-    desc: Build stdio console priest (ARM64)
+    desc: Build stdio console shepherd (ARM64)
     deps: [check-env, userspace-overlay]
     sources:
       - 'flock/**/*.go'
@@ -473,43 +473,43 @@ tasks:
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.STDIO_ELF}} ./flock/cmd/stdio'
       - '{{.GO}} tool go-echo "Stdio ARM64 built at {{.STDIO_ELF}}"'
 
-  diskpriest-arm64:
-    desc: Build disk priest (filesystem server, ARM64)
-    deps: [check-env, merged-priest-overlay]
+  diskshepherd-arm64:
+    desc: Build disk shepherd (filesystem server, ARM64)
+    deps: [check-env, merged-shepherd-overlay]
     sources:
       - 'flock/**/*.go'
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
       - 'shared/**/*.go'
-      - '{{.MERGED_PRIEST_OVERLAY_JSON}}'
+      - '{{.MERGED_SHEPHERD_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.PRIEST_OVERLAY_DIR}}/**/*'
+      - '{{.SHEPHERD_OVERLAY_DIR}}/**/*'
     generates:
-      - '{{.DISKPRIEST_ELF}}'
+      - '{{.DISKSHEPHERD_ELF}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building disk priest for ARM64..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DISKPRIEST_ELF}} ./flock/cmd/disk'
-      - '{{.GO}} tool go-echo "Disk priest ARM64 built at {{.DISKPRIEST_ELF}}"'
+      - '{{.GO}} tool go-echo "Building disk shepherd for ARM64..."'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DISKSHEPHERD_ELF}} ./flock/cmd/disk'
+      - '{{.GO}} tool go-echo "Disk shepherd ARM64 built at {{.DISKSHEPHERD_ELF}}"'
 
-  dapope-x86_64:
-    desc: Build dapope input event handler priest (x86_64)
-    deps: [check-env, merged-priest-overlay-amd64]
+  rachel-x86_64:
+    desc: Build rachel input event handler shepherd (x86_64)
+    deps: [check-env, merged-shepherd-overlay-amd64]
     sources:
       - 'flock/**/*.go'
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
-      - '{{.MERGED_PRIEST_OVERLAY_AMD64_JSON}}'
+      - '{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.PRIEST_OVERLAY_AMD64_DIR}}/**/*'
+      - '{{.SHEPHERD_OVERLAY_AMD64_DIR}}/**/*'
     generates:
-      - '{{.DAPOPE_AMD64_ELF}}'
+      - '{{.RACHEL_AMD64_ELF}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building dapope for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.DAPOPE_AMD64_ELF}} ./flock/cmd/dapope'
-      - '{{.GO}} tool go-echo "Dapope x86_64 built at {{.DAPOPE_AMD64_ELF}}"'
+      - '{{.GO}} tool go-echo "Building rachel for x86_64..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.RACHEL_AMD64_ELF}} ./flock/cmd/rachel'
+      - '{{.GO}} tool go-echo "Rachel x86_64 built at {{.RACHEL_AMD64_ELF}}"'
 
   stdio-x86_64:
-    desc: Build stdio console priest (x86_64)
+    desc: Build stdio console shepherd (x86_64)
     deps: [check-env, userspace-overlay]
     sources:
       - 'flock/**/*.go'
@@ -525,43 +525,43 @@ tasks:
       - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.STDIO_AMD64_ELF}} ./flock/cmd/stdio'
       - '{{.GO}} tool go-echo "Stdio x86_64 built at {{.STDIO_AMD64_ELF}}"'
 
-  diskpriest-x86_64:
-    desc: Build disk priest (filesystem server, x86_64)
-    deps: [check-env, merged-priest-overlay-amd64]
+  diskshepherd-x86_64:
+    desc: Build disk shepherd (filesystem server, x86_64)
+    deps: [check-env, merged-shepherd-overlay-amd64]
     sources:
       - 'flock/**/*.go'
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
       - 'shared/**/*.go'
-      - '{{.MERGED_PRIEST_OVERLAY_AMD64_JSON}}'
+      - '{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.PRIEST_OVERLAY_AMD64_DIR}}/**/*'
+      - '{{.SHEPHERD_OVERLAY_AMD64_DIR}}/**/*'
     generates:
-      - '{{.DISKPRIEST_AMD64_ELF}}'
+      - '{{.DISKSHEPHERD_AMD64_ELF}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building disk priest for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.DISKPRIEST_AMD64_ELF}} ./flock/cmd/disk'
-      - '{{.GO}} tool go-echo "Disk priest x86_64 built at {{.DISKPRIEST_AMD64_ELF}}"'
+      - '{{.GO}} tool go-echo "Building disk shepherd for x86_64..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.DISKSHEPHERD_AMD64_ELF}} ./flock/cmd/disk'
+      - '{{.GO}} tool go-echo "Disk shepherd x86_64 built at {{.DISKSHEPHERD_AMD64_ELF}}"'
 
-  dapope-riscv64:
-    desc: Build dapope input event handler priest (RISC-V 64-bit)
-    deps: [check-env, merged-priest-overlay-riscv64]
+  rachel-riscv64:
+    desc: Build rachel input event handler shepherd (RISC-V 64-bit)
+    deps: [check-env, merged-shepherd-overlay-riscv64]
     sources:
       - 'flock/**/*.go'
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
-      - '{{.MERGED_PRIEST_OVERLAY_RISCV64_JSON}}'
+      - '{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.PRIEST_OVERLAY_RISCV64_DIR}}/**/*'
+      - '{{.SHEPHERD_OVERLAY_RISCV64_DIR}}/**/*'
     generates:
-      - '{{.DAPOPE_RISCV64_ELF}}'
+      - '{{.RACHEL_RISCV64_ELF}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building dapope for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_RISCV64_JSON}} {{.GCFLAGS}} -o {{.DAPOPE_RISCV64_ELF}} ./flock/cmd/dapope'
-      - '{{.GO}} tool go-echo "Dapope RISC-V 64-bit built at {{.DAPOPE_RISCV64_ELF}}"'
+      - '{{.GO}} tool go-echo "Building rachel for RISC-V 64-bit..."'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}} {{.GCFLAGS}} -o {{.RACHEL_RISCV64_ELF}} ./flock/cmd/rachel'
+      - '{{.GO}} tool go-echo "Rachel RISC-V 64-bit built at {{.RACHEL_RISCV64_ELF}}"'
 
   stdio-riscv64:
-    desc: Build stdio console priest (RISC-V 64-bit)
+    desc: Build stdio console shepherd (RISC-V 64-bit)
     deps: [check-env, userspace-overlay]
     sources:
       - 'flock/**/*.go'
@@ -577,26 +577,26 @@ tasks:
       - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.STDIO_RISCV64_ELF}} ./flock/cmd/stdio'
       - '{{.GO}} tool go-echo "Stdio RISC-V 64-bit built at {{.STDIO_RISCV64_ELF}}"'
 
-  diskpriest-riscv64:
-    desc: Build disk priest (filesystem server, RISC-V 64-bit)
-    deps: [check-env, merged-priest-overlay-riscv64]
+  diskshepherd-riscv64:
+    desc: Build disk shepherd (filesystem server, RISC-V 64-bit)
+    deps: [check-env, merged-shepherd-overlay-riscv64]
     sources:
       - 'flock/**/*.go'
       - 'flock/**/*.s'
       - 'mazarin/**/*.go'
       - 'shared/**/*.go'
-      - '{{.MERGED_PRIEST_OVERLAY_RISCV64_JSON}}'
+      - '{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}}'
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.PRIEST_OVERLAY_RISCV64_DIR}}/**/*'
+      - '{{.SHEPHERD_OVERLAY_RISCV64_DIR}}/**/*'
     generates:
-      - '{{.DISKPRIEST_RISCV64_ELF}}'
+      - '{{.DISKSHEPHERD_RISCV64_ELF}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building disk priest for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_PRIEST_OVERLAY_RISCV64_JSON}} {{.GCFLAGS}} -o {{.DISKPRIEST_RISCV64_ELF}} ./flock/cmd/disk'
-      - '{{.GO}} tool go-echo "Disk priest RISC-V 64-bit built at {{.DISKPRIEST_RISCV64_ELF}}"'
+      - '{{.GO}} tool go-echo "Building disk shepherd for RISC-V 64-bit..."'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}} {{.GCFLAGS}} -o {{.DISKSHEPHERD_RISCV64_ELF}} ./flock/cmd/disk'
+      - '{{.GO}} tool go-echo "Disk shepherd RISC-V 64-bit built at {{.DISKSHEPHERD_RISCV64_ELF}}"'
 
   sievetest:
-    desc: Build sievetest (simple prime sieve for multi-priest testing)
+    desc: Build sievetest (simple prime sieve for multi-shepherd testing)
     deps: [check-env, userspace-overlay]
     sources:
       - 'flock/cmd/sievetest/**/*.go'
@@ -642,7 +642,7 @@ tasks:
       - '{{.GO}} tool go-echo "Sievetest RISC-V 64-bit built at {{.SIEVETEST_RISCV64_ELF}}"'
 
   attrtest:
-    desc: Build attrtest (Eval/Vite attribute library test priest, ARM64)
+    desc: Build attrtest (Eval/Vite attribute library test shepherd, ARM64)
     deps: [check-env, userspace-overlay]
     sources:
       - 'flock/cmd/attrtest/**/*.go'
@@ -687,7 +687,7 @@ tasks:
       - '{{.GO}} tool go-echo "Attrtest RISC-V 64-bit built at {{.ATTRTEST_RISCV64_ELF}}"'
 
   handletest:
-    desc: Build handletest (Handle[T] API integration test priest, ARM64)
+    desc: Build handletest (Handle[T] API integration test shepherd, ARM64)
     deps: [check-env, userspace-overlay]
     sources:
       - 'flock/cmd/handletest/**/*.go'
@@ -838,12 +838,12 @@ tasks:
   # ===========================================================================
   # .maz Programs (PIE + thin stubs, dynamically linked at load time)
   # ===========================================================================
-  # .maz programs are loaded INTO a priest's address space, sharing its Go
+  # .maz programs are loaded INTO a shepherd's address space, sharing its Go
   # runtime. They are built as PIE with thin runtime stubs (for {} loops)
-  # that get patched at load time by the kernel to target the priest's real
+  # that get patched at load time by the kernel to target the shepherd's real
   # functions. The build pipeline:
   #   1. gen-ast-stubs generates thin overlay (runtime+syscall → for{})
-  #   2. Merge thin overlay with userspace overlay (syscall PriestSyscallEntry routing)
+  #   2. Merge thin overlay with userspace overlay (syscall ShepherdSyscallEntry routing)
   #   3. Build as PIE with merged overlay
   #   4. maz-reloc scans binary, generates .maz_imports section
 
@@ -1052,15 +1052,15 @@ tasks:
 
   disk-arm64:
     desc: Create FAT32 disk image with ARM64 flock binaries and kmazarin kernel
-    deps: [dapope-arm64, stdio-arm64, diskpriest-arm64, sievetest, attrtest, handletest, clocktest, uitest, helloworld-maz, fs-maz, kmazarin-arm64, convert-boot-image]
+    deps: [rachel-arm64, stdio-arm64, diskshepherd-arm64, sievetest, attrtest, handletest, clocktest, uitest, helloworld-maz, fs-maz, kmazarin-arm64, convert-boot-image]
     method: checksum
     vars:
       MKFAT32_BASE:
         sh: test -f {{.FONTS_BASE_IMAGE}} && echo "-base {{.FONTS_BASE_IMAGE}}" || echo ""
     sources:
-      - '{{.DAPOPE_ELF}}'
+      - '{{.RACHEL_ELF}}'
       - '{{.STDIO_ELF}}'
-      - '{{.DISKPRIEST_ELF}}'
+      - '{{.DISKSHEPHERD_ELF}}'
       - '{{.SIEVETEST_ELF}}'
       - '{{.ATTRTEST_ELF}}'
       - '{{.HANDLETEST_ELF}}'
@@ -1077,20 +1077,20 @@ tasks:
       - '{{.GO}} tool go-echo "Creating FAT32 disk image (ARM64)..."'
       - '{{.GO}} tool go-mkdir {{.BUILD_DIR}}/disk-staging-arm64'
       - '{{.GO}} tool go-cp config/kmazarin-arm64.toml {{.BUILD_DIR}}/disk-staging-arm64/kmazarin.toml'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.MKFAT32_BASE}} {{.DAPOPE_ELF}} {{.STDIO_ELF}} {{.DISKPRIEST_ELF}} {{.SIEVETEST_ELF}} {{.ATTRTEST_ELF}} {{.HANDLETEST_ELF}} {{.CLOCKTEST_ELF}} {{.UITEST_ELF}} {{.HELLOWORLD_MAZ}} {{.FS_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/kmazarin.toml'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.MKFAT32_BASE}} {{.RACHEL_ELF}} {{.STDIO_ELF}} {{.DISKSHEPHERD_ELF}} {{.SIEVETEST_ELF}} {{.ATTRTEST_ELF}} {{.HANDLETEST_ELF}} {{.CLOCKTEST_ELF}} {{.UITEST_ELF}} {{.HELLOWORLD_MAZ}} {{.FS_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/kmazarin.toml'
       - '{{.GO}} tool go-echo "Disk image created at {{.DISK_IMAGE}}"'
 
   disk-x86_64:
     desc: Create FAT32 disk image with x86_64 flock binaries and kmazarin kernel
-    deps: [dapope-x86_64, stdio-x86_64, diskpriest-x86_64, sievetest-x86_64, attrtest-x86_64, handletest-x86_64, clocktest-x86_64, uitest-x86_64, fs-maz-amd64, helloworld-maz-amd64, kmazarin-x86_64, convert-boot-image]
+    deps: [rachel-x86_64, stdio-x86_64, diskshepherd-x86_64, sievetest-x86_64, attrtest-x86_64, handletest-x86_64, clocktest-x86_64, uitest-x86_64, fs-maz-amd64, helloworld-maz-amd64, kmazarin-x86_64, convert-boot-image]
     method: checksum
     vars:
       MKFAT32_BASE:
         sh: test -f {{.FONTS_BASE_IMAGE}} && echo "-base {{.FONTS_BASE_IMAGE}}" || echo ""
     sources:
-      - '{{.DAPOPE_AMD64_ELF}}'
+      - '{{.RACHEL_AMD64_ELF}}'
       - '{{.STDIO_AMD64_ELF}}'
-      - '{{.DISKPRIEST_AMD64_ELF}}'
+      - '{{.DISKSHEPHERD_AMD64_ELF}}'
       - '{{.SIEVETEST_AMD64_ELF}}'
       - '{{.ATTRTEST_AMD64_ELF}}'
       - '{{.HANDLETEST_AMD64_ELF}}'
@@ -1105,11 +1105,11 @@ tasks:
       - '{{.DISK_AMD64_IMAGE}}'
     cmds:
       - '{{.GO}} tool go-echo "Creating FAT32 disk image for x86_64..."'
-      # Stage amd64 ELFs in a subdirectory so we don't overwrite ARM64 build/dapope.elf
+      # Stage amd64 ELFs in a subdirectory so we don't overwrite ARM64 build/rachel.elf
       - '{{.GO}} tool go-mkdir {{.BUILD_DIR}}/disk-staging-amd64'
-      - '{{.GO}} tool go-cp {{.DAPOPE_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf'
+      - '{{.GO}} tool go-cp {{.RACHEL_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/rachel.elf'
       - '{{.GO}} tool go-cp {{.STDIO_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf'
-      - '{{.GO}} tool go-cp {{.DISKPRIEST_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/disk.elf'
+      - '{{.GO}} tool go-cp {{.DISKSHEPHERD_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/disk.elf'
       - '{{.GO}} tool go-cp {{.SIEVETEST_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/sievetest.elf'
       - '{{.GO}} tool go-cp {{.ATTRTEST_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/attrtest.elf'
       - '{{.GO}} tool go-cp {{.HANDLETEST_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/handletest.elf'
@@ -1118,20 +1118,20 @@ tasks:
       - '{{.GO}} tool go-cp {{.FS_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/fs.maz'
       - '{{.GO}} tool go-cp {{.HELLOWORLD_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz'
       - '{{.GO}} tool go-cp config/kmazarin-x86_64.toml {{.BUILD_DIR}}/disk-staging-amd64/kmazarin.toml'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_AMD64_IMAGE}} {{.MKFAT32_BASE}} {{.BUILD_DIR}}/disk-staging-amd64/dapope.elf {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf {{.BUILD_DIR}}/disk-staging-amd64/disk.elf {{.BUILD_DIR}}/disk-staging-amd64/sievetest.elf {{.BUILD_DIR}}/disk-staging-amd64/attrtest.elf {{.BUILD_DIR}}/disk-staging-amd64/handletest.elf {{.BUILD_DIR}}/disk-staging-amd64/clocktest.elf {{.BUILD_DIR}}/disk-staging-amd64/uitest.elf {{.BUILD_DIR}}/disk-staging-amd64/fs.maz {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz {{.BUILD_DIR}}/disk-staging-amd64/kmazarin.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_AMD64_IMAGE}} {{.MKFAT32_BASE}} {{.BUILD_DIR}}/disk-staging-amd64/rachel.elf {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf {{.BUILD_DIR}}/disk-staging-amd64/disk.elf {{.BUILD_DIR}}/disk-staging-amd64/sievetest.elf {{.BUILD_DIR}}/disk-staging-amd64/attrtest.elf {{.BUILD_DIR}}/disk-staging-amd64/handletest.elf {{.BUILD_DIR}}/disk-staging-amd64/clocktest.elf {{.BUILD_DIR}}/disk-staging-amd64/uitest.elf {{.BUILD_DIR}}/disk-staging-amd64/fs.maz {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz {{.BUILD_DIR}}/disk-staging-amd64/kmazarin.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "x86_64 disk image created at {{.DISK_AMD64_IMAGE}}"'
 
   disk-riscv64:
     desc: Create FAT32 disk image with RISC-V 64-bit flock binaries and kmazarin kernel
-    deps: [dapope-riscv64, stdio-riscv64, diskpriest-riscv64, sievetest-riscv64, attrtest-riscv64, handletest-riscv64, clocktest-riscv64, uitest-riscv64, helloworld-maz-riscv64, fs-mzr-riscv64, kmazarin-riscv64, convert-boot-image]
+    deps: [rachel-riscv64, stdio-riscv64, diskshepherd-riscv64, sievetest-riscv64, attrtest-riscv64, handletest-riscv64, clocktest-riscv64, uitest-riscv64, helloworld-maz-riscv64, fs-mzr-riscv64, kmazarin-riscv64, convert-boot-image]
     method: checksum
     vars:
       MKFAT32_BASE:
         sh: test -f {{.FONTS_BASE_IMAGE}} && echo "-base {{.FONTS_BASE_IMAGE}}" || echo ""
     sources:
-      - '{{.DAPOPE_RISCV64_ELF}}'
+      - '{{.RACHEL_RISCV64_ELF}}'
       - '{{.STDIO_RISCV64_ELF}}'
-      - '{{.DISKPRIEST_RISCV64_ELF}}'
+      - '{{.DISKSHEPHERD_RISCV64_ELF}}'
       - '{{.SIEVETEST_RISCV64_ELF}}'
       - '{{.ATTRTEST_RISCV64_ELF}}'
       - '{{.HANDLETEST_RISCV64_ELF}}'
@@ -1147,9 +1147,9 @@ tasks:
     cmds:
       - '{{.GO}} tool go-echo "Creating FAT32 disk image for RISC-V 64-bit..."'
       - '{{.GO}} tool go-mkdir {{.BUILD_DIR}}/disk-staging-riscv64'
-      - '{{.GO}} tool go-cp {{.DAPOPE_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/dapope.elf'
+      - '{{.GO}} tool go-cp {{.RACHEL_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/rachel.elf'
       - '{{.GO}} tool go-cp {{.STDIO_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/stdio.elf'
-      - '{{.GO}} tool go-cp {{.DISKPRIEST_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/disk.elf'
+      - '{{.GO}} tool go-cp {{.DISKSHEPHERD_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/disk.elf'
       - '{{.GO}} tool go-cp {{.SIEVETEST_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/sievetest.elf'
       - '{{.GO}} tool go-cp {{.ATTRTEST_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/attrtest.elf'
       - '{{.GO}} tool go-cp {{.HANDLETEST_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/handletest.elf'
@@ -1158,7 +1158,7 @@ tasks:
       - '{{.GO}} tool go-cp {{.HELLOWORLD_MAZ_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/helloworld.mzr'
       - '{{.GO}} tool go-cp {{.FS_MZR_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/fs.mzr'
       - '{{.GO}} tool go-cp config/kmazarin-riscv64.toml {{.BUILD_DIR}}/disk-staging-riscv64/kmazarin.toml'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_RISCV64_IMAGE}} {{.MKFAT32_BASE}} {{.BUILD_DIR}}/disk-staging-riscv64/dapope.elf {{.BUILD_DIR}}/disk-staging-riscv64/stdio.elf {{.BUILD_DIR}}/disk-staging-riscv64/disk.elf {{.BUILD_DIR}}/disk-staging-riscv64/sievetest.elf {{.BUILD_DIR}}/disk-staging-riscv64/attrtest.elf {{.BUILD_DIR}}/disk-staging-riscv64/handletest.elf {{.BUILD_DIR}}/disk-staging-riscv64/clocktest.elf {{.BUILD_DIR}}/disk-staging-riscv64/uitest.elf {{.BUILD_DIR}}/disk-staging-riscv64/helloworld.mzr {{.BUILD_DIR}}/disk-staging-riscv64/fs.mzr {{.BUILD_DIR}}/disk-staging-riscv64/kmazarin.toml {{.KMAZARIN_RISCV64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool mkfat32 -o {{.DISK_RISCV64_IMAGE}} {{.MKFAT32_BASE}} {{.BUILD_DIR}}/disk-staging-riscv64/rachel.elf {{.BUILD_DIR}}/disk-staging-riscv64/stdio.elf {{.BUILD_DIR}}/disk-staging-riscv64/disk.elf {{.BUILD_DIR}}/disk-staging-riscv64/sievetest.elf {{.BUILD_DIR}}/disk-staging-riscv64/attrtest.elf {{.BUILD_DIR}}/disk-staging-riscv64/handletest.elf {{.BUILD_DIR}}/disk-staging-riscv64/clocktest.elf {{.BUILD_DIR}}/disk-staging-riscv64/uitest.elf {{.BUILD_DIR}}/disk-staging-riscv64/helloworld.mzr {{.BUILD_DIR}}/disk-staging-riscv64/fs.mzr {{.BUILD_DIR}}/disk-staging-riscv64/kmazarin.toml {{.KMAZARIN_RISCV64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "RISC-V 64-bit disk image created at {{.DISK_RISCV64_IMAGE}}"'
 
   # ===========================================================================

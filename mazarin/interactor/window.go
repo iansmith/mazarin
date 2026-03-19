@@ -10,7 +10,7 @@ func NewWindow(id string, width, height int64, bgColor int64) *Interactor {
 	i := &Interactor{
 		ID:         id,
 		Kind:       KindWindow,
-		priestName: pName,
+		shepherdName: pName,
 	}
 
 	// Value attrs for layout and visual state.

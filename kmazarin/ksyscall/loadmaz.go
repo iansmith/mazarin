@@ -1,8 +1,8 @@
-// loadmaz.go - SysLoadMaz syscall: load a .maz PIE ELF into a priest's address space.
+// loadmaz.go - SysLoadMaz syscall: load a .maz PIE ELF into a shepherd's address space.
 //
 // .maz programs are dynamically linked at load time: their thin runtime stubs
-// are patched to call the host priest's real functions. This allows .maz binaries
-// to be tiny (~100KB) while sharing the priest's full Go runtime.
+// are patched to call the host shepherd's real functions. This allows .maz binaries
+// to be tiny (~100KB) while sharing the shepherd's full Go runtime.
 //
 // The heavy work (FAT32 I/O, ELF segment loading, PIE relocations) is offloaded
 // to a kernel worker goroutine because the SVC handler runs on g0/SP_EL1 where
@@ -20,14 +20,14 @@ import (
 	"unsafe"
 )
 
-// MazLoadResult is the struct written back to the priest upon successful load.
+// MazLoadResult is the struct written back to the shepherd upon successful load.
 // Layout must match mazarin/sys/loadmaz.go exactly.
 type MazLoadResult struct {
 	EntryPoint     uint64 // Address of entry point (main.MazarinMain or main) in loaded .maz
 	LoadBase       uint64 // Base VA where .maz was loaded
 	LoadSize       uint64 // Total VA size of loaded segments
 	ModuledataAddr uint64 // Address of runtime.firstmoduledata in loaded .maz (0 if not found)
-	PriestInitAddr uint64 // Address of main.MazarinPriest in loaded .maz (0 if not found)
+	ShepherdInitAddr uint64 // Address of main.MazarinShepherd in loaded .maz (0 if not found)
 }
 
 // LoadMazWorkRequest contains the parameters for a .maz load operation.
@@ -36,7 +36,7 @@ type MazLoadResult struct {
 type LoadMazWorkRequest struct {
 	Filename   string
 	ResultPtr  uint64
-	Priest     *proc.Priest
+	Shepherd     *proc.Shepherd
 	L0PA       uintptr
 	BlockedTID int32 // Set by BlockForLoadMaz in main package
 }
@@ -48,13 +48,13 @@ type LoadMazWorkRequest struct {
 var LoadMazReq LoadMazWorkRequest
 var LoadMazBusy int32
 
-// SyscallLoadMaz loads a .maz PIE ELF into the calling priest's address space.
+// SyscallLoadMaz loads a .maz PIE ELF into the calling shepherd's address space.
 // This is a thin entry point that validates arguments, stores the request, and
 // blocks the calling thread. The actual loading is done by the kernel worker
 // goroutine (via DoLoadMazWork) which has a growable stack.
 //
-// arg0: pointer to null-terminated filename string (in priest's memory)
-// arg1: pointer to MazLoadResult struct (in priest's writable memory)
+// arg0: pointer to null-terminated filename string (in shepherd's memory)
+// arg1: pointer to MazLoadResult struct (in shepherd's writable memory)
 // Returns: 0 on success, ErrorCode on failure
 //
 //go:noinline
@@ -76,15 +76,15 @@ func SyscallLoadMaz(filenamePtr, resultPtr, _, _, _, _ uint64) int64 {
 	console.KWriteString(filename)
 	console.KWriteString("\r\n")
 
-	// Find the calling priest
-	priest := proc.CurrentPriest()
-	if priest == nil {
-		console.KWriteString("[LoadMaz] ERROR: not called from a priest\r\n")
+	// Find the calling shepherd
+	shepherd := proc.CurrentShepherd()
+	if shepherd == nil {
+		console.KWriteString("[LoadMaz] ERROR: not called from a shepherd\r\n")
 		return int64(errNullPointer)
 	}
 
-	if priest.SymbolTable == nil {
-		console.KWriteString("[LoadMaz] ERROR: priest has no symbol table\r\n")
+	if shepherd.SymbolTable == nil {
+		console.KWriteString("[LoadMaz] ERROR: shepherd has no symbol table\r\n")
 		return int64(errNoSymbol)
 	}
 
@@ -99,8 +99,8 @@ func SyscallLoadMaz(filenamePtr, resultPtr, _, _, _, _ uint64) int64 {
 	LoadMazReq = LoadMazWorkRequest{
 		Filename:  filename,
 		ResultPtr: resultPtr,
-		Priest:    priest,
-		L0PA:      priest.PageTableL0PA,
+		Shepherd:    shepherd,
+		L0PA:      shepherd.PageTableL0PA,
 	}
 
 	// Block this thread and notify the worker goroutine.
@@ -110,7 +110,7 @@ func SyscallLoadMaz(filenamePtr, resultPtr, _, _, _, _ uint64) int64 {
 		SetSyscallSwitchTarget(ctxPtr)
 	} else {
 		// No other thread to switch to — cannot offload work.
-		// This should be rare (other priests should be running).
+		// This should be rare (other shepherds should be running).
 		console.KWriteString("[LoadMaz] ERROR: no thread to switch to\r\n")
 		return int64(errNoSpace)
 	}
@@ -124,7 +124,7 @@ func SyscallLoadMaz(filenamePtr, resultPtr, _, _, _, _ uint64) int64 {
 // worker goroutine (in loadmaz_bridge.go) on a normal growable stack.
 func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 	l0PA := req.L0PA
-	priest := req.Priest
+	shepherd := req.Shepherd
 
 	// === Read the .maz file from disk ===
 	blk, ok := device.GetBlockDevice()
@@ -212,8 +212,8 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 		}
 		console.KWriteString(" base=")
 	} else {
-		// ET_DYN (PIE): relocate above priest's current highest VA
-		loadBase = priest.HighestVA
+		// ET_DYN (PIE): relocate above shepherd's current highest VA
+		loadBase = shepherd.HighestVA
 		if loadBase == 0 {
 			loadBase = 0x10000000
 		}
@@ -226,7 +226,7 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 	console.KPrintHex64(loadOffset)
 	console.KWriteString("\r\n")
 
-	// === Load segments into priest's page table ===
+	// === Load segments into shepherd's page table ===
 	for i := uint16(0); i < hdr.Phnum; i++ {
 		phdrOffset := hdr.Phoff + uint64(i)*uint64(hdr.Phentsize)
 		if phdrOffset+uint64(hdr.Phentsize) > uint64(len(elfData)) {
@@ -254,7 +254,7 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 	}
 
 	// === Resolve .maz_imports (works for both ET_EXEC and ET_DYN) ===
-	importCount := resolveMazImports(elfData, &hdr, loadOffset, l0PA, priest.SymbolTable)
+	importCount := resolveMazImports(elfData, &hdr, loadOffset, l0PA, shepherd.SymbolTable)
 
 	console.KWriteString("[LoadMaz] relocs=")
 	console.KPrintHex64(uint64(reloCount))
@@ -285,28 +285,28 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 		console.KWriteString("[LoadMaz] no runtime.firstmoduledata found\r\n")
 	}
 
-	// === Find main.MazarinPriest for interface injection ===
-	priestInitSymAddr := findSymbolAddress(elfData, &hdr, "main.MazarinPriest")
-	var priestInitVA uint64
-	if priestInitSymAddr != 0 {
-		priestInitVA = priestInitSymAddr + loadOffset
-		console.KWriteString("[LoadMaz] MazarinPriest=")
-		console.KPrintHex64(priestInitVA)
+	// === Find main.MazarinShepherd for interface injection ===
+	shepherdInitSymAddr := findSymbolAddress(elfData, &hdr, "main.MazarinShepherd")
+	var shepherdInitVA uint64
+	if shepherdInitSymAddr != 0 {
+		shepherdInitVA = shepherdInitSymAddr + loadOffset
+		console.KWriteString("[LoadMaz] MazarinShepherd=")
+		console.KPrintHex64(shepherdInitVA)
 		console.KWriteString("\r\n")
 	}
 
-	// === Update priest's highest VA ===
+	// === Update shepherd's highest VA ===
 	newHighest := loadBase + (mazHighest - mazLowest)
 	newHighest = (newHighest + 4095) &^ 4095
-	if newHighest > priest.HighestVA {
-		priest.HighestVA = newHighest
+	if newHighest > shepherd.HighestVA {
+		shepherd.HighestVA = newHighest
 	}
 
 	// === Cache maintenance ===
 	kmem.InvalidateAllICache()
 	kmem.FinalUserspaceSync()
 
-	// === Write result back to priest ===
+	// === Write result back to shepherd ===
 	loadSize := mazHighest - mazLowest
 
 	console.KWriteString("[LoadMaz] writing result to ")
@@ -324,7 +324,7 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 	writeU64ToUser(uintptr(req.ResultPtr+8), loadBase, l0PA)
 	writeU64ToUser(uintptr(req.ResultPtr+16), loadSize, l0PA)
 	writeU64ToUser(uintptr(req.ResultPtr+24), moduledataVA, l0PA)
-	writeU64ToUser(uintptr(req.ResultPtr+32), priestInitVA, l0PA)
+	writeU64ToUser(uintptr(req.ResultPtr+32), shepherdInitVA, l0PA)
 
 	console.KWriteString("[LoadMaz] OK entry=")
 	console.KPrintHex64(entryPoint)
@@ -431,8 +431,8 @@ func applyPIERelocations(elfData []byte, hdr *elf64Header, loadOffset uint64, l0
 }
 
 // resolveMazImports reads the .maz_imports and .maz_import_strtab sections
-// and patches call sites / data pointers to target the priest's real functions.
-func resolveMazImports(elfData []byte, hdr *elf64Header, loadOffset uint64, l0PA uintptr, priestSyms map[string]uint64) int {
+// and patches call sites / data pointers to target the shepherd's real functions.
+func resolveMazImports(elfData []byte, hdr *elf64Header, loadOffset uint64, l0PA uintptr, shepherdSyms map[string]uint64) int {
 	// Find .maz_imports and .maz_import_strtab by name
 	shstrData := getSectionHeaderStrings(elfData, hdr)
 	if shstrData == nil {
@@ -495,8 +495,8 @@ func resolveMazImports(elfData []byte, hdr *elf64Header, loadOffset uint64, l0PA
 		}
 		symbolName := string(strtabData[nameIdx:nameEnd])
 
-		// Look up in priest's symbol table
-		priestAddr, found := priestSyms[symbolName]
+		// Look up in shepherd's symbol table
+		shepherdAddr, found := shepherdSyms[symbolName]
 		if !found {
 			unresolved++
 			if unresolved <= 5 {
@@ -512,27 +512,27 @@ func resolveMazImports(elfData []byte, hdr *elf64Header, loadOffset uint64, l0PA
 
 		switch relocType {
 		case 0: // BL_ARM64
-			if patchBL_ARM64(targetVA, priestAddr, l0PA) {
+			if patchBL_ARM64(targetVA, shepherdAddr, l0PA) {
 				count++
 			}
 		case 1: // CALL_X86
-			patchCALL_X86(targetVA, priestAddr, l0PA)
+			patchCALL_X86(targetVA, shepherdAddr, l0PA)
 			count++
 		case 2: // PTR64
-			patchPTR64(targetVA, priestAddr, l0PA)
+			patchPTR64(targetVA, shepherdAddr, l0PA)
 			count++
 		case 3: // JAL_RISCV
-			patchJAL_RISCV(targetVA, priestAddr, l0PA)
+			patchJAL_RISCV(targetVA, shepherdAddr, l0PA)
 			count++
 		case 4: // B_ARM64 — body trampoline (unconditional branch, no link)
-			if patchB_ARM64(targetVA, priestAddr, l0PA) {
+			if patchB_ARM64(targetVA, shepherdAddr, l0PA) {
 				count++
 			}
 		case 5: // JMP_X86 — body trampoline (E9 JMP rel32)
-			patchJMP_X86(targetVA, priestAddr, l0PA)
+			patchJMP_X86(targetVA, shepherdAddr, l0PA)
 			count++
 		case 6: // J_RISCV — body trampoline (JAL x0)
-			patchJ_RISCV(targetVA, priestAddr, l0PA)
+			patchJ_RISCV(targetVA, shepherdAddr, l0PA)
 			count++
 		}
 	}
@@ -590,7 +590,7 @@ func patchBL_ARM64(instrVA, targetAddr uint64, l0PA uintptr) bool {
 
 // patchB_ARM64 writes an ARM64 B (unconditional branch, no link) at funcVA
 // to trampoline to targetAddr. Used to patch .maz's runtime.morestack body
-// so it jumps to the host priest's working morestack.
+// so it jumps to the host shepherd's working morestack.
 func patchB_ARM64(funcVA, targetAddr uint64, l0PA uintptr) bool {
 	offset := int64(targetAddr) - int64(funcVA)
 	if offset < -(1<<27) || offset >= (1<<27) {

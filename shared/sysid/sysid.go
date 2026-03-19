@@ -1,6 +1,6 @@
 // Package sysid defines platform-independent syscall identifiers.
 // Both the kernel (kmazarin) and userspace (mazarin) import this package
-// so that priests can register to handle specific syscalls portably.
+// so that shepherds can register to handle specific syscalls portably.
 package sysid
 
 // ID is a platform-independent syscall identifier.

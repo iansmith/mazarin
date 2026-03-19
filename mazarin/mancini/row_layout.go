@@ -22,8 +22,8 @@ func (r *Row) InitLayout(parent string) {
 	r.Layout.SpacingHandle = attr.ValueI64(spacingURI, 0)
 
 	// Build find pattern and URI fragments for constraint binding.
-	findPattern := "attr:///priest/" + manciniPID + "/str/*/layout/parent"
-	prefix := "attr:///priest/" + manciniPID + "/int64/"
+	findPattern := "attr:///shepherd/" + manciniPID + "/str/*/layout/parent"
+	prefix := "attr:///shepherd/" + manciniPID + "/int64/"
 
 	// Row WIDTH is a constraint: sum of children widths + spacing.
 	// Bindings: _0_=findPattern, _1_=spacingURI, _2_=r.Name, _3_=prefix, _4_="/layout/width"

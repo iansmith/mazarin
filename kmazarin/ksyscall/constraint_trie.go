@@ -1,7 +1,7 @@
 // constraint_trie.go — Flat, pointer-free namespace trie in shared constraint pages.
 //
 // Each trie node is 128 bytes, stored in the trie region of the shared pages.
-// The root node (index 0) has an empty segment; its children are "priest" and
+// The root node (index 0) has an empty segment; its children are "shepherd" and
 // "kernel" (created during init). URI parsing splits on '/', skipping the
 // "attr:///" prefix.
 
@@ -69,7 +69,7 @@ func (mgr *KernelAttrManager) freeTrieNode(idx uint16) {
 	mgr.trieBitmap[byteIdx] &^= 1 << bit
 }
 
-// initTrie initializes the root node and top-level children ("priest", "kernel").
+// initTrie initializes the root node and top-level children ("shepherd", "kernel").
 func initTrie() {
 	// Allocate root (always slot 0).
 	root := attrMgr.allocTrieNode()
@@ -80,17 +80,17 @@ func initTrie() {
 	rootNode := attrMgr.trieNode(0)
 	rootNode.Segment[0] = 0 // empty segment = root
 
-	// Allocate "priest" child.
-	priestIdx := attrMgr.allocTrieNode()
-	if priestIdx == trieNone {
-		serial.RawUARTPuts("[attr] trie: cannot alloc priest node\r\n")
+	// Allocate "shepherd" child.
+	shepherdIdx := attrMgr.allocTrieNode()
+	if shepherdIdx == trieNone {
+		serial.RawUARTPuts("[attr] trie: cannot alloc shepherd node\r\n")
 		return
 	}
-	pn := attrMgr.trieNode(priestIdx)
-	copySegment(&pn.Segment, "priest")
-	rootNode.FirstChild = priestIdx
+	pn := attrMgr.trieNode(shepherdIdx)
+	copySegment(&pn.Segment, "shepherd")
+	rootNode.FirstChild = shepherdIdx
 
-	// Allocate "kernel" child as sibling of "priest".
+	// Allocate "kernel" child as sibling of "shepherd".
 	kernelIdx := attrMgr.allocTrieNode()
 	if kernelIdx == trieNone {
 		serial.RawUARTPuts("[attr] trie: cannot alloc kernel node\r\n")
@@ -133,7 +133,7 @@ func segmentMatch(seg *[trieSegmentLen]byte, s string) bool {
 
 // parseURI splits a URI into segments. Returns segment count, or -1 on error.
 // Segments are written into the provided buffer.
-// Valid format: "attr:///priest/<name>/..." or "attr:///kernel/..."
+// Valid format: "attr:///shepherd/<name>/..." or "attr:///kernel/..."
 //
 //go:nosplit
 func parseURI(uri string, segments *[maxURISegments]string) int {

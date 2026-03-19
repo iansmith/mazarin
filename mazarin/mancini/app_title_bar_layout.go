@@ -58,8 +58,8 @@ func (tb *AppTitleBar) InitLayout(parent string) {
 	maxSizeURI := layoutURI(tb.Name, "int64", "maxSize")
 	attr.ValueI64(maxSizeURI, 800)
 
-	findPattern := "attr:///priest/" + manciniPID + "/str/*/layout/parent"
-	prefix := "attr:///priest/" + manciniPID + "/int64/"
+	findPattern := "attr:///shepherd/" + manciniPID + "/str/*/layout/parent"
+	prefix := "attr:///shepherd/" + manciniPID + "/int64/"
 
 	heightProg := interactor.BindStrings(ProgDecorationHeight,
 		findPattern, tb.Name, vMarginURI, prefix, "/layout/height", maxSizeURI)

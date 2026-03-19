@@ -1,5 +1,5 @@
 
-// priestsieve is a prime number sieve test program for Mazzy userspace.
+// shepherdsieve is a prime number sieve test program for Mazzy userspace.
 // It spawns multiple goroutines that cooperatively find primes using
 // the Sieve of Eratosthenes, testing goroutine scheduling and preemption.
 package main
@@ -19,22 +19,22 @@ import (
 // Buffered channel (size 10) for fairer distribution among workers.
 var candidates = make(chan uint64, 10)
 
-// priestNumber is this priest's index, read from os.Args[1]
-var priestNumber int
+// shepherdNumber is this shepherd's index, read from os.Args[1]
+var shepherdNumber int
 
 // attemptCounts tracks how many candidates each worker goroutine has received.
 // Indexed by worker ID (0-9). Accessed atomically since workers and producer
 // run on different goroutines.
 var attemptCounts [10]atomic.Uint64
 
-// PriestSyscallEntry is the entry point for syscalls from other programs.
+// ShepherdSyscallEntry is the entry point for syscalls from other programs.
 // This function's address is patched into userspace programs at load time.
-// The symbol name in the ELF will be "main.PriestSyscallEntry".
+// The symbol name in the ELF will be "main.ShepherdSyscallEntry".
 //
 //go:noinline
-func PriestSyscallEntry(num, a1, a2, a3, a4, a5, a6 uintptr) int64 {
+func ShepherdSyscallEntry(num, a1, a2, a3, a4, a5, a6 uintptr) int64 {
 	// For now, just print the syscall info
-	fmt.Printf("[priestsieve] syscall %d (0x%x) args: %x %x %x %x %x %x\n",
+	fmt.Printf("[shepherdsieve] syscall %d (0x%x) args: %x %x %x %x %x %x\n",
 		num, num, a1, a2, a3, a4, a5, a6)
 
 	// Check if it's a Mazzy syscall (0x1000+)
@@ -43,7 +43,7 @@ func PriestSyscallEntry(num, a1, a2, a3, a4, a5, a6 uintptr) int64 {
 	}
 
 	// Linux syscall - for now, just print and return error
-	fmt.Printf("[priestsieve] Linux syscall %d not implemented\n", num)
+	fmt.Printf("[shepherdsieve] Linux syscall %d not implemented\n", num)
 	return -38 // ENOSYS
 }
 
@@ -58,10 +58,10 @@ func handleMazzySyscall(num, a1, a2, a3, a4, a5, a6 uintptr) int64 {
 	return int64(r1)
 }
 
-// priestSyscallEntryAddr holds the address of PriestSyscallEntry.
+// shepherdSyscallEntryAddr holds the address of ShepherdSyscallEntry.
 // This is used to prevent the linker from stripping the function
-// and to provide a known symbol for the patchpriest tool to find.
-var priestSyscallEntryAddr = PriestSyscallEntry
+// and to provide a known symbol for the patchshepherd tool to find.
+var shepherdSyscallEntryAddr = ShepherdSyscallEntry
 
 // sieveOfEratosthenes generates all prime numbers up to n using the
 // classic Sieve of Eratosthenes algorithm.
@@ -142,78 +142,78 @@ func candidateProducer() {
 		sent++
 		if sent%10 == 0 {
 			for _, id := range workerIDs {
-				fmt.Printf("ATTEMPTS, %d, %d, %d\n", priestNumber, id, attemptCounts[id].Load())
+				fmt.Printf("ATTEMPTS, %d, %d, %d\n", shepherdNumber, id, attemptCounts[id].Load())
 			}
 		}
 	}
 }
 
 func main() {
-	// Read priest number from argv
+	// Read shepherd number from argv
 	if len(os.Args) > 1 {
 		var err error
-		priestNumber, err = strconv.Atoi(os.Args[1])
+		shepherdNumber, err = strconv.Atoi(os.Args[1])
 		if err != nil {
-			priestNumber = -1
+			shepherdNumber = -1
 		}
 	} else {
-		priestNumber = -1
+		shepherdNumber = -1
 	}
-	fmt.Printf("[priestsieve] priest=%d os.Args=%v\n", priestNumber, os.Args)
+	fmt.Printf("[shepherdsieve] shepherd=%d os.Args=%v\n", shepherdNumber, os.Args)
 
 	// Set GOMAXPROCS to ensure goroutine scheduling works
 	oldProcs := runtime.GOMAXPROCS(1)
-	fmt.Printf("[priestsieve] GOMAXPROCS: was %d, now %d\n", oldProcs, runtime.GOMAXPROCS(0))
+	fmt.Printf("[shepherdsieve] GOMAXPROCS: was %d, now %d\n", oldProcs, runtime.GOMAXPROCS(0))
 
 	// =====================================================
 	// USERSPACE ENTRY POINT
 	// =====================================================
 	// This is the first code running in EL0 (userspace)!
 	// If we see this message, the kernel successfully:
-	//   1. Loaded priest.elf from FAT32 disk
+	//   1. Loaded shepherd.elf from FAT32 disk
 	//   2. Mapped it into low memory with user permissions
 	//   3. Performed ERET to EL0
 	//   4. We made an SVC syscall for fmt.Println and it worked!
 	fmt.Println("============================================")
-	fmt.Println("[PRIESTSIEVE] RUNNING IN USERSPACE (EL0)!")
+	fmt.Println("[SHEPHERDSIEVE] RUNNING IN USERSPACE (EL0)!")
 	fmt.Println("============================================")
 
 	// Get framebuffer info via syscall
 	if fb, err := sys.GetFramebuffer(); err == nil {
-		fmt.Printf("[priestsieve] Framebuffer: addr=0x%x %dx%d pitch=%d\n",
+		fmt.Printf("[shepherdsieve] Framebuffer: addr=0x%x %dx%d pitch=%d\n",
 			fb.Addr, fb.Width, fb.Height, fb.Pitch)
 	} else {
-		fmt.Printf("[priestsieve] No framebuffer: %v\n", err)
+		fmt.Printf("[shepherdsieve] No framebuffer: %v\n", err)
 	}
 
-	// Print the address of PriestSyscallEntry for debugging
+	// Print the address of ShepherdSyscallEntry for debugging
 	// This also ensures the function is not stripped
-	fmt.Printf("[priestsieve] PriestSyscallEntry at %p\n", priestSyscallEntryAddr)
+	fmt.Printf("[shepherdsieve] ShepherdSyscallEntry at %p\n", shepherdSyscallEntryAddr)
 
 	// For now, just call GetTime to verify we can make Mazzy syscalls
 	ts, err := sys.GetTime()
 	if err != nil {
-		fmt.Printf("[priestsieve] GetTime error: %v\n", err)
+		fmt.Printf("[shepherdsieve] GetTime error: %v\n", err)
 	} else {
-		fmt.Printf("[priestsieve] Current time: %d.%09d\n", ts.Seconds, ts.Nanoseconds)
+		fmt.Printf("[shepherdsieve] Current time: %d.%09d\n", ts.Seconds, ts.Nanoseconds)
 	}
 
-	fmt.Println("[priestsieve] Ready to handle syscalls from userspace programs")
+	fmt.Println("[shepherdsieve] Ready to handle syscalls from userspace programs")
 
 	// Demonstrate Sieve of Eratosthenes
-	fmt.Println("[priestsieve] Testing Sieve of Eratosthenes...")
+	fmt.Println("[shepherdsieve] Testing Sieve of Eratosthenes...")
 	testNumbers := []uint64{2, 3, 4, 7, 10, 13, 17, 20, 23, 97, 100}
 	for _, n := range testNumbers {
 		if isPrimeSieve(n) {
-			fmt.Printf("[priestsieve] %d is PRIME\n", n)
+			fmt.Printf("[shepherdsieve] %d is PRIME\n", n)
 		} else {
-			fmt.Printf("[priestsieve] %d is not prime\n", n)
+			fmt.Printf("[shepherdsieve] %d is not prime\n", n)
 		}
 	}
 
 	// Show first 25 primes using the sieve
 	primes := sieveOfEratosthenes(100)
-	fmt.Printf("[priestsieve] First %d primes (up to 100): ", len(primes))
+	fmt.Printf("[shepherdsieve] First %d primes (up to 100): ", len(primes))
 	for i, p := range primes {
 		if i > 0 {
 			fmt.Print(", ")
@@ -228,8 +228,8 @@ func main() {
 	//
 	// With GOMAXPROCS=1, all goroutines share a single OS thread.
 	// The Go scheduler multiplexes them cooperatively.
-	fmt.Println("[priestsieve] Starting prime finding workers...")
-	fmt.Printf("[priestsieve] GOMAXPROCS=%d (all goroutines share one OS thread)\n", runtime.GOMAXPROCS(0))
+	fmt.Println("[shepherdsieve] Starting prime finding workers...")
+	fmt.Printf("[shepherdsieve] GOMAXPROCS=%d (all goroutines share one OS thread)\n", runtime.GOMAXPROCS(0))
 
 	go candidateProducer()
 	go primeWorker(5)
@@ -237,6 +237,6 @@ func main() {
 	go primeWorker(7)
 	go primeWorker(8)
 	go primeWorker(9)
-	fmt.Println("[priestsieve] 5 worker goroutines spawned + main goroutine as worker 3...")
+	fmt.Println("[shepherdsieve] 5 worker goroutines spawned + main goroutine as worker 3...")
 	primeWorker(3) // Main goroutine runs as worker 3
 }

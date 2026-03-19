@@ -22,8 +22,8 @@ func (c *Column) InitLayout(parent string) {
 	c.Layout.SpacingHandle = attr.ValueI64(spacingURI, 0)
 
 	// Build find pattern and URI fragments for constraint binding.
-	findPattern := "attr:///priest/" + manciniPID + "/str/*/layout/parent"
-	prefix := "attr:///priest/" + manciniPID + "/int64/"
+	findPattern := "attr:///shepherd/" + manciniPID + "/str/*/layout/parent"
+	prefix := "attr:///shepherd/" + manciniPID + "/int64/"
 
 	// Column HEIGHT is a constraint: sum of children heights + spacing.
 	heightProg := interactor.BindStrings(interactor.ProgColumnHeight,

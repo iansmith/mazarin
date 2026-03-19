@@ -29,7 +29,7 @@ func main() {
 		},
 	}
 
-	timeSec := attr.ConstraintI64("attr:///priest/clocktest/time_sec", prog)
+	timeSec := attr.ConstraintI64("attr:///shepherd/clocktest/time_sec", prog)
 
 	// Force initial evaluation to wire dependency edges.
 	sec := timeSec.Get()

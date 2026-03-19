@@ -20,7 +20,7 @@ const (
 	TypeDegrees    uint8 = 0x0F // {Val float64}
 	TypeIPv4       uint8 = 0x10 // {Addr [4]byte}
 	TypeIPv6       uint8 = 0x11 // {Addr [16]byte}
-	TypePriestId   uint8 = 0x12 // {Id uint16, NameOffset uint32, NameLen uint16}
+	TypeShepherdId   uint8 = 0x12 // {Id uint16, NameOffset uint32, NameLen uint16}
 	TypeMazId      uint8 = 0x13 // {Id uint16, PathOffset uint32, PathLen uint16}
 	TypeCollection uint8 = 0x14 // FlatCollRef: {ElemType uint8, RegionOffset uint32, Count uint16}
 	TypeRectangle  uint8 = 0x15 // {X0 int32, Y0 int32, X1 int32, Y1 int32}
@@ -55,7 +55,7 @@ var typeInfoTable = [MaxTypeTag + 1]TypeInfo{
 	TypeDegrees:    {"degrees", 8, true, true},
 	TypeIPv4:       {"ipv4", 4, true, true},
 	TypeIPv6:       {"ipv6", 16, true, true},
-	TypePriestId:   {"priest_id", 10, true, true},
+	TypeShepherdId:   {"shepherd_id", 10, true, true},
 	TypeMazId:      {"maz_id", 10, true, true},
 	TypeCollection: {"collection", 10, false, false},
 	TypeRectangle:  {"rectangle", 16, true, true},

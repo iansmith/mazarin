@@ -37,15 +37,15 @@ func SyscallAttrCreate(uriBufPtr, uriLen, valueType, attrKind, bytecodeBufPtr, b
 	var segments [maxURISegments]string
 	nSeg := parseURI(uri, &segments)
 	if nSeg < 2 {
-		return -22 // EINVAL — need at least "priest/<name>" or "kernel/<name>"
+		return -22 // EINVAL — need at least "shepherd/<name>" or "kernel/<name>"
 	}
 
-	// Validate ownership: priests can only create under "priest/<priestName>/..."
+	// Validate ownership: shepherds can only create under "shepherd/<shepherdName>/..."
 	if segments[0] == "kernel" {
 		return -1 // EPERM — kernel namespace not accessible via syscall
 	}
-	if segments[0] != "priest" {
-		return -22 // EINVAL — must be under "priest" or "kernel"
+	if segments[0] != "shepherd" {
+		return -22 // EINVAL — must be under "shepherd" or "kernel"
 	}
 
 	// Validate value type.
@@ -69,8 +69,8 @@ func SyscallAttrCreate(uriBufPtr, uriLen, valueType, attrKind, bytecodeBufPtr, b
 		return -12 // ENOMEM
 	}
 
-	// Get caller's priest ID.
-	pid, _ := getCurrentThreadPIDAndTID()
+	// Get caller's shepherd ID.
+	pid, _ := getCurrentThreadSIDAndTID()
 
 	// Initialize the node.
 	node := attrMgr.node(slot)
@@ -143,7 +143,7 @@ func SyscallAttrWrite(slotIndex, valueBufPtr, valueLen, _, _, _ uint64) int64 {
 	}
 
 	// Check ownership.
-	pid, _ := getCurrentThreadPIDAndTID()
+	pid, _ := getCurrentThreadSIDAndTID()
 	if node.Owner != uint16(pid) {
 		return -1 // EPERM
 	}
@@ -377,7 +377,7 @@ func SyscallAttrRegisterQuery(patternBufPtr, patternLen, _, _, _, _ uint64) int6
 		return -12
 	}
 
-	pid, _ := getCurrentThreadPIDAndTID()
+	pid, _ := getCurrentThreadSIDAndTID()
 	node := attrMgr.node(slot)
 	node.Owner = uint16(pid)
 	node.Kind = flat.AttrKindValue
@@ -390,7 +390,7 @@ func SyscallAttrRegisterQuery(patternBufPtr, patternLen, _, _, _, _ uint64) int6
 	}
 	q.patternLen = uint16(patternLen)
 	q.resultSlot = slot
-	q.ownerPID = uint16(pid)
+	q.ownerSID = uint16(pid)
 	attrMgr.queryCount++
 
 	// Evaluate the pattern against the current trie and write collection results.
@@ -425,7 +425,7 @@ func SyscallAttrWriteResult(slotIndex, valueBufPtr, valueLen, _, _, _ uint64) in
 	}
 
 	// Check ownership.
-	pid, _ := getCurrentThreadPIDAndTID()
+	pid, _ := getCurrentThreadSIDAndTID()
 	if node.Owner != uint16(pid) {
 		return -1 // EPERM
 	}
@@ -465,7 +465,7 @@ func SyscallAttrWriteResult(slotIndex, valueBufPtr, valueLen, _, _, _ uint64) in
 }
 
 // SyscallAttrWriteString writes a string value to an attribute. The kernel copies
-// the string bytes from priest memory, allocates a string slot, and writes the
+// the string bytes from shepherd memory, allocates a string slot, and writes the
 // resulting FlatStrRef into the attribute's CachedValue.
 //
 // Args: slotIndex, strBufPtr, strLen, isConstraintResult, _, _
@@ -490,7 +490,7 @@ func SyscallAttrWriteString(slotIndex, strBufPtr, strLen, isConstraintResult, _,
 	}
 
 	// Check ownership.
-	pid, _ := getCurrentThreadPIDAndTID()
+	pid, _ := getCurrentThreadSIDAndTID()
 	if node.Owner != uint16(pid) {
 		return -1 // EPERM
 	}
@@ -813,7 +813,7 @@ func SyscallAttrIncrementI64(slotIndex, _, _, _, _, _ uint64) int64 {
 	}
 
 	// Ownership check.
-	pid, _ := getCurrentThreadPIDAndTID()
+	pid, _ := getCurrentThreadSIDAndTID()
 	if node.Owner != uint16(pid) {
 		return -1 // EPERM
 	}

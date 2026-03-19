@@ -103,7 +103,7 @@ This project uses a single Go module (`mazzy`). Build is managed by Taskfile (`T
 - `cmd/` - Build tools (used via `go tool <name>`)
 - `diplomat/` - Diplomat UEFI bootloader (multi-arch: ARM64, x86_64, RISC-V)
 - `kmazarin/` - Kmazarin kernel (Go kernel, multi-arch)
-- `flock/` - Userspace programs (priest, helloworld, etc.)
+- `flock/` - Userspace programs (shepherd, helloworld, etc.)
 - `mazarin/` - Shared userspace libraries
 - `shared/` - Shared packages
 
@@ -221,18 +221,18 @@ bin/target-gdb build/kmazarin.elf
 
 ### Runtime Environment — MANDATORY (Kernel AND Userspace)
 
-**NEVER disable async preemption or the GC — not for the kernel, not for userspace priests.** These are hard, non-negotiable requirements:
+**NEVER disable async preemption or the GC — not for the kernel, not for userspace shepherds.** These are hard, non-negotiable requirements:
 
 - **`asyncpreemptoff`** must NOT be set — not in GODEBUG, not anywhere. Async preemption is required for correct Go scheduling. If something breaks with async preemption enabled, fix the root cause — do not disable preemption as a workaround.
 - **`GOGC`** must NOT be set to `"off"`. The GC must run. Use a low value like `"5"` if needed to reduce frequency, but never disable it.
-- **`GODEBUG=gctrace=1`** must always be set (both kernel and priests) so GC statistics are visible in serial output, confirming the GC is functioning.
+- **`GODEBUG=gctrace=1`** must always be set (both kernel and shepherds) so GC statistics are visible in serial output, confirming the GC is functioning.
 
 The correct kernel environment in `diplomat/main/startup_env.go` is:
 ```go
 s := "GODEBUG=gctrace=1"    // NO asyncpreemptoff!
 ```
 
-The correct priest environment in `kmazarin/ksyscall/launch.go` is:
+The correct shepherd environment in `kmazarin/ksyscall/launch.go` is:
 ```go
 penv.SetEnv("GODEBUG", "gctrace=1")
 penv.SetEnv("GOGC", "5")
@@ -369,7 +369,7 @@ in registers, second expects stack). The tail-call stub pattern avoids this.
 - Diplomat loaded via OpenSBI -kernel (UEFI firmware broken on RISC-V)
 - Kmazarin kernel fully working (syscalls, threading, demand paging)
 - VirtIO GPU, block, keyboard, mouse all working via PLIC interrupts
-- Userspace programs (dapope, stdio) run successfully
+- Userspace programs (rachel, stdio) run successfully
 
 ## Git Practices
 

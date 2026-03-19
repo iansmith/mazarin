@@ -24,7 +24,7 @@ import (
 type PageDescriptor struct {
 	PA       uintptr  // Physical address of this page
 	Type     PageType // What the page is used for
-	Owner    int16    // 0 = kernel, 1-31 = priest ID
+	Owner    int16    // 0 = kernel, 1-31 = shepherd ID
 	RefCount int16    // >1 for shared pages (IPC, framebuffer)
 	Order    uint8    // Buddy order (0 = single page)
 	Flags    uint8    // PD_PINNED, PD_DIRTY, etc.
@@ -202,7 +202,7 @@ func TransferPageOwnership(pa uintptr, fromPID, toPID int16) bool {
 }
 
 // PrintPageStats walks the PageDescriptor array and prints per-type and
-// per-priest page counts. This is a diagnostic function — the linear scan
+// per-shepherd page counts. This is a diagnostic function — the linear scan
 // over the array costs microseconds and should only be called on demand.
 func PrintPageStats() {
 	if atomic.LoadUint32(&pdInitialized) == 0 {
@@ -212,7 +212,7 @@ func PrintPageStats() {
 
 	// Count by type
 	var typeCounts [PageTypeCount]uint64
-	var priestCounts [32]uint64 // PriestId 0-31
+	var shepherdCounts [32]uint64 // ShepherdId 0-31
 	var totalAllocated uint64
 
 	for i := uint64(0); i < pdCapacity; i++ {
@@ -229,7 +229,7 @@ func PrintPageStats() {
 			pidIdx = 0
 		}
 		if pidIdx < 32 {
-			priestCounts[pidIdx]++
+			shepherdCounts[pidIdx]++
 		}
 	}
 
@@ -254,19 +254,19 @@ func PrintPageStats() {
 		serial.RawUARTPuts(" pages\r\n")
 	}
 
-	// Print per-priest
-	serial.RawUARTPuts("  By priest:\r\n")
-	if priestCounts[0] > 0 {
+	// Print per-shepherd
+	serial.RawUARTPuts("  By shepherd:\r\n")
+	if shepherdCounts[0] > 0 {
 		serial.RawUARTPuts("    kernel(0): ")
-		serial.RawUARTHex64(priestCounts[0])
+		serial.RawUARTHex64(shepherdCounts[0])
 		serial.RawUARTPuts("\r\n")
 	}
 	for i := 1; i < 32; i++ {
-		if priestCounts[i] > 0 {
-			serial.RawUARTPuts("    priest ")
+		if shepherdCounts[i] > 0 {
+			serial.RawUARTPuts("    shepherd ")
 			serial.RawUARTHex64(uint64(i))
 			serial.RawUARTPuts(": ")
-			serial.RawUARTHex64(priestCounts[i])
+			serial.RawUARTHex64(shepherdCounts[i])
 			serial.RawUARTPuts("\r\n")
 		}
 	}

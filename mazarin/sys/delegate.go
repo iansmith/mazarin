@@ -2,8 +2,8 @@ package sys
 
 // delegate.go — Userspace API for syscall delegation.
 //
-// A priest registers to handle one or more syscalls (by sysid.ID).
-// The kernel forwards matching syscalls from other priests to the handler.
+// A shepherd registers to handle one or more syscalls (by sysid.ID).
+// The kernel forwards matching syscalls from other shepherds to the handler.
 // The handler receives all requests on a single channel and replies via Reply().
 //
 // Usage:
@@ -31,7 +31,7 @@ import (
 	"unsafe"
 )
 
-// SyscallRequest represents a delegated syscall delivered to a handler priest.
+// SyscallRequest represents a delegated syscall delivered to a handler shepherd.
 type SyscallRequest struct {
 	SysID     sysid.ID // Which syscall
 	CallerPID int16    // Who made the call
@@ -115,7 +115,7 @@ type delegateRecvResult struct {
 	DataLen   uint64
 }
 
-// HandleSyscalls registers the calling priest as the handler for the given
+// HandleSyscalls registers the calling shepherd as the handler for the given
 // syscalls and returns a single channel that delivers all incoming requests.
 //
 // The caller should process each request and call req.Reply() to unblock the

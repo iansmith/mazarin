@@ -16,7 +16,7 @@ import (
 //
 //go:nosplit
 //go:noinline
-func GetCurrentThreadPIDAndTID() (proc.PriestId, int16) {
+func GetCurrentThreadPIDAndTID() (proc.ShepherdId, int16) {
 	t := GetCurrentThread()
 	if t == nil {
 		return -1, -1
@@ -25,7 +25,7 @@ func GetCurrentThreadPIDAndTID() (proc.PriestId, int16) {
 }
 
 // BlockForDelegatedSyscall blocks the current thread (caller of a delegated syscall)
-// waiting for the handler priest to reply.
+// waiting for the handler shepherd to reply.
 // Returns the context pointer of the next thread to switch to, or 0.
 //
 //go:nosplit
@@ -72,7 +72,7 @@ func BlockForDelegatedSyscall() uintptr {
 	return uintptr(unsafe.Pointer(&next.Context))
 }
 
-// BlockForDelegatedRecv blocks the current thread (handler priest)
+// BlockForDelegatedRecv blocks the current thread (handler shepherd)
 // waiting for a delegated syscall request.
 // Returns the context pointer of the next thread to switch to, or 0.
 //
@@ -152,7 +152,7 @@ func WakeDelegateCallerThread(pid int16, tid int32, returnVal int64) {
 	schedulerLock.Lock()
 
 	t := threadLookupByTID(tid)
-	if t != nil && t.PID == proc.PriestId(pid) && t.State == ThreadBlockedDelegate {
+	if t != nil && t.PID == proc.ShepherdId(pid) && t.State == ThreadBlockedDelegate {
 		t.Context.SetReturnValue(uint64(returnVal))
 		t.PreemptElapsed = 0
 		t.State = ThreadReady

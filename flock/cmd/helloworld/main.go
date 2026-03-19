@@ -1,6 +1,6 @@
 
 // helloworld is the simplest .maz userspace test program.
-// It calls GetTime (Mazzy syscall) and Printf (Linux syscall via priest).
+// It calls GetTime (Mazzy syscall) and Printf (Linux syscall via shepherd).
 package main
 
 import (
@@ -20,8 +20,8 @@ func init() {
 	}
 }
 
-// MazarinMain is the entry point called by the priest when this .maz is loaded.
-// The priest finds this symbol in the ELF symbol table and launches it as a goroutine.
+// MazarinMain is the entry point called by the shepherd when this .maz is loaded.
+// The shepherd finds this symbol in the ELF symbol table and launches it as a goroutine.
 //
 //go:noinline
 func MazarinMain() {

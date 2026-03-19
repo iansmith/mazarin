@@ -141,7 +141,7 @@ func init() {
 	// Initialize soft IRQ subsystem (static allocation, no heap needed)
 	InitSoftIRQ()
 
-	// Initialize channel subsystem for kernel-to-priest async messaging
+	// Initialize channel subsystem for kernel-to-shepherd async messaging
 	InitChannels()
 
 	// Initialize critical early devices (UART, GIC, Timer, RNG)
@@ -663,7 +663,7 @@ func busyLoop4s() {
 				fmt.Println("")
 			} else {
 				// Use fmt.Print instead of console.KWriteString to go through
-				// Go's runtime mutexes - this makes scheduling fair with priests
+				// Go's runtime mutexes - this makes scheduling fair with shepherds
 				// who also use fmt.Print and block on the same mutexes.
 				fmt.Print("4")
 			}
@@ -878,15 +878,15 @@ func simpleMain() {
 	//   3. Kernel scheduler distributes CPU time among them
 	//   4. Each prints primes as "ID:prime" (e.g., "3:20011")
 	//
-	// To switch back to goroutine test, comment out below and launch priestsieve.elf
+	// To switch back to goroutine test, comment out below and launch shepherdsieve.elf
 
 	// DEBUG: ReadMemStats disabled - hangs in bare-metal (triggers STW GC)
 
-	// Parse boot config from /kmazarin.toml and launch priests
+	// Parse boot config from /kmazarin.toml and launch shepherds
 	bootCfg := readBootConfig()
 
 	// Initialize constraint system and publish kernel attributes before
-	// launching priests, so they can discover kernel attrs at startup.
+	// launching shepherds, so they can discover kernel attrs at startup.
 	if kmem.InitConstraintPages() && ksyscall.InitKernelAttrManager() {
 		ksyscall.PublishKernelAttributes()
 		ksyscall.PublishSystemAttributes(GetTotalRAMSize()>>20, GetCPUCount(), GetKernelBudgetMB())
@@ -903,18 +903,18 @@ func simpleMain() {
 		}
 		ksyscall.SetSuppressSerialStdioCopy(bootCfg.SuppressSerialStdioCopy)
 		if bootCfg.GCPercentage > 0 {
-			ksyscall.SetPriestGCPercentage(bootCfg.GCPercentage)
+			ksyscall.SetShepherdGCPercentage(bootCfg.GCPercentage)
 		}
 		if bootCfg.GoMemLimitMB > 0 {
-			ksyscall.SetPriestMemLimitMB(bootCfg.GoMemLimitMB)
+			ksyscall.SetShepherdMemLimitMB(bootCfg.GoMemLimitMB)
 		}
-		launchPriestsFromConfig(bootCfg)
+		launchShepherdsFromConfig(bootCfg)
 	} else {
 		// Fallback: hardcoded launch sequence
 		console.KPrintln("[boot] no config, using hardcoded sequence")
-		launchPriest("/disk.elf\x00", "disk")
-		launchPriest("/dapope.elf\x00", "dapope")
-		launchPriest("/stdio.elf\x00", "stdio")
+		launchShepherd("/disk.elf\x00", "disk")
+		launchShepherd("/rachel.elf\x00", "rachel")
+		launchShepherd("/stdio.elf\x00", "stdio")
 	}
 
 	// Re-enable IRQs and timer for ongoing scheduling
@@ -946,7 +946,7 @@ func simpleMain() {
 	}
 
 	// Suppress serial echo of userspace stdout/stderr if configured.
-	// When suppress_serial_stdio_copy = true in kmazarin.toml, only the stdio priest
+	// When suppress_serial_stdio_copy = true in kmazarin.toml, only the stdio shepherd
 	// writes to the serial port. Panic/traceback paths temporarily
 	// unsuppress (see runtime-patches/panic.go).
 	if bootCfg != nil && bootCfg.SuppressSerialStdioCopy {
@@ -964,7 +964,7 @@ func simpleMain() {
 	// before KernelIdleLoop since the workers need normal goroutine stacks.
 	initLoadMazWorker()
 	initRunMazWorker()
-	initRunPriestWorker()
+	initRunShepherdWorker()
 
 	// Start kernel attribute updaters (time update goroutine).
 	timeHertz := 0
@@ -974,8 +974,8 @@ func simpleMain() {
 	ksyscall.StartKernelAttrUpdaters(timeHertz)
 
 	// Enter the kernel idle loop. Thread 0 (m0/g0) stays alive as a normal
-	// scheduled thread. Priest threads are already running. The timer IRQ
-	// preempts thread 0 and context-switches to priest threads naturally.
+	// scheduled thread. Shepherd threads are already running. The timer IRQ
+	// preempts thread 0 and context-switches to shepherd threads naturally.
 	//
 	// This preserves thread 0 for the Go runtime — m0 continues to exist
 	// and can run goroutines (sysmon, GC, etc.) when scheduled back.
@@ -1022,30 +1022,30 @@ func readBootConfig() *constants.BootConfig {
 	}
 
 	cfg := toml.Parse(data)
-	console.KPrintf("[boot] config: %d bootstrap, %d priests, tz=%s\n",
-		cfg.BootstrapPriestCount, cfg.PriestCount,
+	console.KPrintf("[boot] config: %d bootstrap, %d shepherds, tz=%s\n",
+		cfg.BootstrapShepherdCount, cfg.ShepherdCount,
 		constants.NullTermString(cfg.Timezone[:]))
 	return cfg
 }
 
-// launchPriestsFromConfig launches bootstrap priests defined in the boot config.
-// Only [[bootstrap_priest]] entries are launched by the kernel. Application
-// [[priest]] entries are launched by fs.maz after it reads /kmazarin.toml.
-func launchPriestsFromConfig(cfg *constants.BootConfig) {
-	for i := 0; i < cfg.BootstrapPriestCount; i++ {
-		p := &cfg.BootstrapPriests[i]
+// launchShepherdsFromConfig launches bootstrap shepherds defined in the boot config.
+// Only [[bootstrap_shepherd]] entries are launched by the kernel. Application
+// [[shepherd]] entries are launched by fs.maz after it reads /kmazarin.toml.
+func launchShepherdsFromConfig(cfg *constants.BootConfig) {
+	for i := 0; i < cfg.BootstrapShepherdCount; i++ {
+		p := &cfg.BootstrapShepherds[i]
 		name := constants.NullTermString(p.Name[:])
 		path := constants.NullTermString(p.Path[:])
-		launchPriest(path+"\x00", name)
+		launchShepherd(path+"\x00", name)
 	}
 
-	if cfg.PriestCount > 0 {
-		console.KPrintf("[boot] %d application priests deferred to fs.maz\n", cfg.PriestCount)
+	if cfg.ShepherdCount > 0 {
+		console.KPrintf("[boot] %d application shepherds deferred to fs.maz\n", cfg.ShepherdCount)
 	}
 }
 
-// launchPriest launches a single priest ELF by path.
-func launchPriest(path, name string) {
+// launchShepherd launches a single shepherd ELF by path.
+func launchShepherd(path, name string) {
 	pathPtr := uintptr(unsafe.Pointer(&([]byte(path))[0]))
 	result := ksyscall.SyscallLaunch(uint64(pathPtr), 0, 0, 0, 0, 0)
 	if result == 0 {

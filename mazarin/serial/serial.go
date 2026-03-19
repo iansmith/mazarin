@@ -28,7 +28,7 @@ type SerialByte struct {
 	B  byte
 }
 
-// Soft IRQ slot — near input's 28/29 and timer's 30, away from dapope's 0-3.
+// Soft IRQ slot — near input's 28/29 and timer's 30, away from rachel's 0-3.
 const serialSlot = 27
 
 var (

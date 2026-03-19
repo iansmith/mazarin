@@ -19,7 +19,7 @@ type RunMazWorkRequest struct {
 	NumPages   int
 	TotalBytes int
 	ResultPtr  uint64
-	Priest     *proc.Priest
+	Shepherd     *proc.Shepherd
 	L0PA       uintptr
 	BlockedTID int32 // Set by BlockForRunMaz in main package
 }
@@ -65,11 +65,11 @@ func SyscallRunMaz(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		return int64(errNullPointer)
 	}
 
-	priest := proc.CurrentPriest()
-	if priest == nil {
+	shepherd := proc.CurrentShepherd()
+	if shepherd == nil {
 		return int64(errNullPointer)
 	}
-	if priest.SymbolTable == nil {
+	if shepherd.SymbolTable == nil {
 		return int64(errNoSymbol)
 	}
 
@@ -85,8 +85,8 @@ func SyscallRunMaz(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		NumPages:   numPages,
 		TotalBytes: totalBytes,
 		ResultPtr:  resultPtr,
-		Priest:     priest,
-		L0PA:       priest.PageTableL0PA,
+		Shepherd:     shepherd,
+		L0PA:       shepherd.PageTableL0PA,
 	}
 
 	// Block and dispatch to worker goroutine (needs growable stack)
@@ -105,7 +105,7 @@ func SyscallRunMaz(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 // Called by the kernel worker goroutine on a normal growable stack.
 func DoRunMazWork(req *RunMazWorkRequest) int64 {
 	l0PA := req.L0PA
-	priest := req.Priest
+	shepherd := req.Shepherd
 
 	// Copy ELF data from the caller's pages into a contiguous kernel buffer.
 	elfData := copyPagesFromUser(req.StartVA, req.TotalBytes, l0PA)
@@ -115,7 +115,7 @@ func DoRunMazWork(req *RunMazWorkRequest) int64 {
 	}
 
 	// Unmap the raw ELF pages from the caller (implicit cleanup).
-	unmapUserPages(req.StartVA, req.NumPages, l0PA, int16(priest.PID))
+	unmapUserPages(req.StartVA, req.NumPages, l0PA, int16(shepherd.PID))
 
 	// === Parse ELF header ===
 	if len(elfData) < 64 {
@@ -166,7 +166,7 @@ func DoRunMazWork(req *RunMazWorkRequest) int64 {
 		loadBase = mazLowest
 		loadOffset = 0
 	} else {
-		loadBase = priest.HighestVA
+		loadBase = shepherd.HighestVA
 		if loadBase == 0 {
 			loadBase = 0x10000000
 		}
@@ -180,7 +180,7 @@ func DoRunMazWork(req *RunMazWorkRequest) int64 {
 	console.KPrintHex64(loadOffset)
 	console.KWriteString("\r\n")
 
-	// Load segments into priest's page table
+	// Load segments into shepherd's page table
 	for i := uint16(0); i < hdr.Phnum; i++ {
 		phdrOffset := hdr.Phoff + uint64(i)*uint64(hdr.Phentsize)
 		if phdrOffset+uint64(hdr.Phentsize) > uint64(len(elfData)) {
@@ -206,7 +206,7 @@ func DoRunMazWork(req *RunMazWorkRequest) int64 {
 	}
 
 	// Resolve .maz_imports
-	importCount := resolveMazImports(elfData, &hdr, loadOffset, l0PA, priest.SymbolTable)
+	importCount := resolveMazImports(elfData, &hdr, loadOffset, l0PA, shepherd.SymbolTable)
 
 	console.KWriteString("[RunMaz] relocs=")
 	console.KPrintHex64(uint64(reloCount))
@@ -231,30 +231,30 @@ func DoRunMazWork(req *RunMazWorkRequest) int64 {
 		moduledataVA = moduledataSymAddr + loadOffset
 	}
 
-	// Find MazarinPriest
-	priestInitSymAddr := findSymbolAddress(elfData, &hdr, "main.MazarinPriest")
-	var priestInitVA uint64
-	if priestInitSymAddr != 0 {
-		priestInitVA = priestInitSymAddr + loadOffset
+	// Find MazarinShepherd
+	shepherdInitSymAddr := findSymbolAddress(elfData, &hdr, "main.MazarinShepherd")
+	var shepherdInitVA uint64
+	if shepherdInitSymAddr != 0 {
+		shepherdInitVA = shepherdInitSymAddr + loadOffset
 	}
 
-	// Update priest's highest VA
+	// Update shepherd's highest VA
 	newHighest := loadBase + (mazHighest - mazLowest)
 	newHighest = (newHighest + 4095) &^ 4095
-	if newHighest > priest.HighestVA {
-		priest.HighestVA = newHighest
+	if newHighest > shepherd.HighestVA {
+		shepherd.HighestVA = newHighest
 	}
 
 	// Cache maintenance
 	kmem.InvalidateAllICache()
 	kmem.FinalUserspaceSync()
 
-	// Write result back to priest
+	// Write result back to shepherd
 	writeU64ToUser(uintptr(req.ResultPtr), entryPoint, l0PA)
 	writeU64ToUser(uintptr(req.ResultPtr+8), loadBase, l0PA)
 	writeU64ToUser(uintptr(req.ResultPtr+16), mazHighest-mazLowest, l0PA) // LoadSize
 	writeU64ToUser(uintptr(req.ResultPtr+24), moduledataVA, l0PA)
-	writeU64ToUser(uintptr(req.ResultPtr+32), priestInitVA, l0PA)
+	writeU64ToUser(uintptr(req.ResultPtr+32), shepherdInitVA, l0PA)
 
 	console.KWriteString("[RunMaz] OK entry=")
 	console.KPrintHex64(entryPoint)
@@ -291,7 +291,7 @@ func copyPagesFromUser(startVA uintptr, totalBytes int, l0PA uintptr) []byte {
 }
 
 // unmapUserPages unmaps a range of user pages and releases them.
-func unmapUserPages(startVA uintptr, numPages int, l0PA uintptr, ownerPID int16) {
+func unmapUserPages(startVA uintptr, numPages int, l0PA uintptr, ownerSID int16) {
 	for i := 0; i < numPages; i++ {
 		va := startVA + uintptr(i)*4096
 		pa := kmem.UnmapUserPageWithL0(va, l0PA)
@@ -299,9 +299,9 @@ func unmapUserPages(startVA uintptr, numPages int, l0PA uintptr, ownerPID int16)
 			kmem.ReleasePageByPA(pa &^ 0xFFF)
 		}
 	}
-	// Remove span from priest
-	callerPriest := proc.FindPriestByPID(proc.PriestId(ownerPID))
-	if callerPriest != nil {
-		callerPriest.Spans.Remove(uint64(startVA), uint64(numPages)*4096)
+	// Remove span from shepherd
+	callerShepherd := proc.FindShepherdBySID(proc.ShepherdId(ownerSID))
+	if callerShepherd != nil {
+		callerShepherd.Spans.Remove(uint64(startVA), uint64(numPages)*4096)
 	}
 }

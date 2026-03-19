@@ -2,9 +2,9 @@
 
 timezone = "America/New_York"
 
-# When true, userspace stdout/stderr is routed only through the stdio priest
+# When true, userspace stdout/stderr is routed only through the stdio shepherd
 # and NOT echoed to the serial port. This improves performance since serial
-# UART output is slow, but means serial logs won't contain priest output.
+# UART output is slow, but means serial logs won't contain shepherd output.
 # When false (default), all output is echoed to serial as well.
 kernel_budget_mb = 32
 suppress_serial_stdio_copy = false
@@ -20,37 +20,37 @@ kernel_mem_limit = 24
 gc_percent_kernel = 10000
 time_update_hertz = 10
 
-# Bootstrap priests: loaded by the kernel during early boot
-[[bootstrap_priest]]
+# Bootstrap shepherds: loaded by the kernel during early boot
+[[bootstrap_shepherd]]
 name = "disk"
 path = "/disk.elf"
 maz = ["fs=/fs.maz"]
 
-# Application priests: launched after bootstrap priests are running
-[[priest]]
-name = "dapope"
-path = "/dapope.elf"
+# Application shepherds: launched after bootstrap shepherds are running
+[[shepherd]]
+name = "rachel"
+path = "/rachel.elf"
 
-#[[priest]]
+#[[shepherd]]
 #name = "stdio"
 #path = "/stdio.elf"
 
-#[[priest]]
+#[[shepherd]]
 #name = "sievetest"
 #path = "/sievetest.elf"
 
-#[[priest]]
+#[[shepherd]]
 #name = "attrtest"
 #path = "/attrtest.elf"
 
-#[[priest]]
+#[[shepherd]]
 #name = "handletest"
 #path = "/handletest.elf"
 
-#[[priest]]
+#[[shepherd]]
 #name = "clocktest"
 #path = "/clocktest.elf"
 
-[[priest]]
+[[shepherd]]
 name = "uitest"
 path = "/uitest.elf"

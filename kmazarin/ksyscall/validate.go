@@ -1,6 +1,6 @@
 // Package ksyscall provides argument validation helpers for syscalls.
 // These check that pointers/addresses are in appropriate memory regions
-// of the calling priest/program.
+// of the calling shepherd/program.
 package ksyscall
 
 import "mazzy/kmazarin/kmem"

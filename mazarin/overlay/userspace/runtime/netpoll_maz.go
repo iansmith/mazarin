@@ -1,4 +1,4 @@
-// netpoll_maz.go — Force netpoll initialization for Mazzy priests.
+// netpoll_maz.go — Force netpoll initialization for Mazzy shepherds.
 //
 // On Linux, netpollGenericInit is lazily called by addHeap when the first
 // Go timer is created. But on Mazzy's cooperative uniprocessor scheduler,

@@ -154,7 +154,7 @@ func BlockForLoadMaz() uintptr {
 }
 
 // wakeLoadMazThread wakes a thread blocked in ThreadBlockedLoadMaz state,
-// setting its return value so the priest sees success (0) or an error code.
+// setting its return value so the shepherd sees success (0) or an error code.
 func wakeLoadMazThread(tid int32, result int64) {
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()

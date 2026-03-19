@@ -1,5 +1,5 @@
 
-// launch.go - Launch syscall implementation for loading and starting priests
+// launch.go - Launch syscall implementation for loading and starting shepherds
 package ksyscall
 
 import (
@@ -14,7 +14,7 @@ import (
 )
 
 // bootTimezone is the IANA timezone string from the boot config (e.g. "America/New_York").
-// Set by the kernel during boot, passed to priests as the TZ env var.
+// Set by the kernel during boot, passed to shepherds as the TZ env var.
 var bootTimezone string
 
 // SetBootTimezone stores the timezone string from the boot config.
@@ -23,7 +23,7 @@ func SetBootTimezone(tz string) {
 }
 
 // suppressSerialStdioCopy is set from the boot config's SuppressSerialStdioCopy field.
-// Passed to priests as the SUPPRESS_SERIAL_STDIO_COPY env var.
+// Passed to shepherds as the SUPPRESS_SERIAL_STDIO_COPY env var.
 var suppressSerialStdioCopy bool
 
 // SetSuppressSerialStdioCopy stores the suppress serial stdio copy setting.
@@ -31,22 +31,22 @@ func SetSuppressSerialStdioCopy(v bool) {
 	suppressSerialStdioCopy = v
 }
 
-// priestGCPercentage is the GOGC value for priest processes.
+// shepherdGCPercentage is the GOGC value for shepherd processes.
 // 0 means use the default (5).
-var priestGCPercentage int
+var shepherdGCPercentage int
 
-// SetPriestGCPercentage stores the GC percentage from the boot config.
-func SetPriestGCPercentage(v int) {
-	priestGCPercentage = v
+// SetShepherdGCPercentage stores the GC percentage from the boot config.
+func SetShepherdGCPercentage(v int) {
+	shepherdGCPercentage = v
 }
 
-// priestMemLimitMB is the GOMEMLIMIT value (in MB) for priest processes.
+// shepherdMemLimitMB is the GOMEMLIMIT value (in MB) for shepherd processes.
 // 0 means use the default (24MB).
-var priestMemLimitMB int
+var shepherdMemLimitMB int
 
-// SetPriestMemLimitMB stores the GOMEMLIMIT value from the boot config.
-func SetPriestMemLimitMB(v int) {
-	priestMemLimitMB = v
+// SetShepherdMemLimitMB stores the GOMEMLIMIT value from the boot config.
+func SetShepherdMemLimitMB(v int) {
+	shepherdMemLimitMB = v
 }
 
 // ELF constants
@@ -160,10 +160,10 @@ func readKernelString(ptr uintptr) string {
 	return string(buf)
 }
 
-// SyscallLaunch loads and launches a priest from an ELF file
+// SyscallLaunch loads and launches a shepherd from an ELF file
 // arg0: filename pointer (null-terminated string in kernel memory)
-// arg1: priest number (passed as argv[1] to the program)
-func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
+// arg1: shepherd number (passed as argv[1] to the program)
+func SyscallLaunch(filenamePtr, shepherdNum, _, _, _, _ uint64) int64 {
 	// Read filename from kernel memory (TTBR1 high addresses)
 	filename := readKernelString(uintptr(filenamePtr))
 	if filename == "" {
@@ -223,12 +223,12 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 	// This ensures IC IVAU (instruction cache invalidate by VA) works correctly!
 	// IC IVAU uses the current TTBR0 translation context. Without this switch,
 	// IC IVAU during loadSegment would invalidate I-cache for the WRONG physical
-	// pages (whatever TTBR0 was pointing to before, likely a different priest).
+	// pages (whatever TTBR0 was pointing to before, likely a different shepherd).
 	// The kernel runs entirely via TTBR1 (high addresses), so switching TTBR0
 	// does not affect kernel code execution.
 	kmem.SwitchTTBR0WithASID(processL0PA, 0) // ASID=0 for now, will be set properly at thread schedule
 
-	// Map the framebuffer into priest address space for UI rendering.
+	// Map the framebuffer into shepherd address space for UI rendering.
 	// Use the GPU's actual framebuffer PA (dynamically allocated), not the
 	// compile-time constant which may not match the actual allocation.
 	fbPA := gpu.GetFramebufferPA()
@@ -240,27 +240,27 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 	// Register the framebuffer as a span to prevent mmap collisions
 	addSpan(UserFramebufferVA, UserFramebufferSize)
 
-	// Map constraint shared pages read-only into priest address space.
+	// Map constraint shared pages read-only into shepherd address space.
 	if !kmem.MapUserConstraintPages() {
 		return -8
 	}
 	addSpan(UserConstraintPagesVA, UserConstraintPagesSize)
 
-	// Initialize kernel attribute manager (once, on first priest launch).
+	// Initialize kernel attribute manager (once, on first shepherd launch).
 	InitKernelAttrManager()
 
 	// Build symbol table and track highest VA BEFORE loading
 	// (we need the raw ELF data, not the loaded memory image)
 	hdr := parseELFHeader(elfData)
-	priestSymTable := buildSymbolTable(elfData, &hdr)
-	priestHighestVA := findHighestVA(elfData, &hdr)
+	shepherdSymTable := buildSymbolTable(elfData, &hdr)
+	shepherdHighestVA := findHighestVA(elfData, &hdr)
 
 	// Parse and load ELF (now using the fresh process page table)
 	// CRITICAL: Pass processL0PA explicitly to prevent race conditions!
 	// Without this, context switches during ELF loading could cause the
 	// global processL0PA to be overwritten, loading ELF data into the
 	// WRONG page table.
-	loadedProc, err := loadELF(elfData, filename, processL0PA, priestNum)
+	loadedProc, err := loadELF(elfData, filename, processL0PA, shepherdNum)
 	if err != nil {
 		console.KPrintf("[Launch] loadELF FAILED: %v\n", err)
 		return -5
@@ -290,15 +290,15 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 	// The thread will be added to the ready queue and scheduled by the kernel
 	tid := CreateUserspaceThread(loadedProc.EntryPoint, loadedProc.StackTop, processL0PA)
 
-	// Cache the symbol table, highest VA, and filename on the priest struct.
-	// Find the priest by matching its PageTableL0PA (just allocated above).
-	for i := 0; i < proc.MaxPriests; i++ {
-		if proc.PriestListInUse[i] && proc.PriestListData[i].PageTableL0PA == processL0PA {
-			proc.PriestListData[i].SymbolTable = priestSymTable
-			proc.PriestListData[i].HighestVA = priestHighestVA
-			proc.PriestListData[i].Filename = filename
-			console.KPrintf("[Launch] cached %d symbols, highestVA=0x%X for priest %d\n",
-				len(priestSymTable), priestHighestVA, proc.PriestListData[i].PID)
+	// Cache the symbol table, highest VA, and filename on the shepherd struct.
+	// Find the shepherd by matching its PageTableL0PA (just allocated above).
+	for i := 0; i < proc.MaxShepherds; i++ {
+		if proc.ShepherdListInUse[i] && proc.ShepherdListData[i].PageTableL0PA == processL0PA {
+			proc.ShepherdListData[i].SymbolTable = shepherdSymTable
+			proc.ShepherdListData[i].HighestVA = shepherdHighestVA
+			proc.ShepherdListData[i].Filename = filename
+			console.KPrintf("[Launch] cached %d symbols, highestVA=0x%X for shepherd %d\n",
+				len(shepherdSymTable), shepherdHighestVA, proc.ShepherdListData[i].PID)
 			break
 		}
 	}
@@ -314,7 +314,7 @@ func SyscallLaunch(filenamePtr, priestNum, _, _, _, _ uint64) int64 {
 // l0PA is the physical address of the L0 page table to use for mapping.
 // CRITICAL: This must be passed explicitly to prevent race conditions with
 // context switches that would otherwise corrupt the global processL0PA.
-func loadELF(data []byte, filename string, l0PA uintptr, priestNum uint64) (*Process, error) {
+func loadELF(data []byte, filename string, l0PA uintptr, shepherdNum uint64) (*Process, error) {
 	if len(data) < 64 {
 		return nil, &elfError{"file too small for ELF header"}
 	}
@@ -354,7 +354,7 @@ func loadELF(data []byte, filename string, l0PA uintptr, priestNum uint64) (*Pro
 		return nil, err
 	}
 
-	stackTop, err := setupUserStack(stackBase, stackSize, filename, l0PA, priestNum)
+	stackTop, err := setupUserStack(stackBase, stackSize, filename, l0PA, shepherdNum)
 	if err != nil {
 		return nil, err
 	}
@@ -522,7 +522,7 @@ func findSymbolAddress(elfData []byte, hdr *elf64Header, symbolName string) uint
 }
 
 // buildSymbolTable builds a complete name → VA address map from an ELF's .symtab.
-// This is used to cache the priest's symbols for SysLoadMaz import resolution.
+// This is used to cache the shepherd's symbols for SysLoadMaz import resolution.
 // Only includes FUNC and OBJECT symbols with non-zero values.
 func buildSymbolTable(elfData []byte, hdr *elf64Header) map[string]uint64 {
 	result := make(map[string]uint64)
@@ -751,8 +751,8 @@ func allocateUserStack(base, size uint64, l0PA uintptr) error {
 }
 
 // setupUserStack maps the stack page and uses ProcessEnv to lay out the
-// argv/envp/auxv appropriate for launching a priest.
-func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, priestNum uint64) (uint64, error) {
+// argv/envp/auxv appropriate for launching a shepherd.
+func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, shepherdNum uint64) (uint64, error) {
 	pageSize := uint64(4096)
 	stackTop := stackBase + stackSize
 
@@ -767,16 +767,16 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 		return 0, &elfError{"failed to map stack to kernel scratch"}
 	}
 
-	// Convert priest number to string (single digit 0-9)
-	priestStr := "0"
-	if priestNum < 10 {
-		buf := []byte{'0' + byte(priestNum)}
-		priestStr = string(buf)
+	// Convert shepherd number to string (single digit 0-9)
+	shepherdStr := "0"
+	if shepherdNum < 10 {
+		buf := []byte{'0' + byte(shepherdNum)}
+		shepherdStr = string(buf)
 	}
 
 	penv := NewProcessEnv()
 	penv.SetEnv("GODEBUG", "gctrace=1")
-	gcVal := priestGCPercentage
+	gcVal := shepherdGCPercentage
 	if gcVal <= 0 {
 		gcVal = 5 // default
 	}
@@ -799,7 +799,7 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 		}
 	}
 	penv.SetEnv("GOGC", string(gcBuf[:gcLen]))
-	memLimitMB := priestMemLimitMB
+	memLimitMB := shepherdMemLimitMB
 	if memLimitMB <= 0 {
 		memLimitMB = 24 // default
 	}
@@ -836,7 +836,7 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 	}
 	penv.SetAuxv(6, 4096) // AT_PAGESZ
 
-	argv := []string{filename, priestStr}
+	argv := []string{filename, shepherdStr}
 	sw := &StackWriter{
 		StackBase: stackBase,
 		StackTop:  stackTop,

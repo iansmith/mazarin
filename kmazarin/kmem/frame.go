@@ -124,7 +124,7 @@ func InitUserFrameAllocator() {
 //
 //go:nosplit
 func AllocUserFrame() uintptr {
-	return AllocPage(PageUserHeap, pfContextPriestID)
+	return AllocPage(PageUserHeap, pfContextShepherdID)
 }
 
 // GetUserFrameStats returns the current userspace frame allocator statistics.

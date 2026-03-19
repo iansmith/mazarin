@@ -2,7 +2,7 @@ package kmem
 
 import "unsafe"
 
-// CountMappedPages walks a priest's page table hierarchy and returns the
+// CountMappedPages walks a shepherd's page table hierarchy and returns the
 // number of valid leaf pages (4KB pages at L3 level). Block entries at
 // L1 (1GB) and L2 (2MB) are counted as their equivalent 4KB page count.
 func CountMappedPages(l0PA uintptr) int {

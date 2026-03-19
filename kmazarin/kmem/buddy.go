@@ -211,7 +211,7 @@ func BuddyAlloc(order int) uintptr {
 
 // BuddyAllocTyped allocates a contiguous block of 2^order pages with type tracking.
 // The pageType and owner parameters control accounting and PageDescriptor population.
-// owner=0 for kernel, 1-31 for priest-owned pages.
+// owner=0 for kernel, 1-31 for shepherd-owned pages.
 // Returns the physical address of the block, or 0 on failure.
 // Thread-safe.
 //

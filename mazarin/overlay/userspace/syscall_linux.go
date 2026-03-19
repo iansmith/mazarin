@@ -18,14 +18,14 @@ import (
 	"unsafe"
 )
 
-// Mazzy userspace syscall overlay: RawSyscall6 calls priest via function pointer.
-// PriestSyscallEntry is patched by priest when loading userspace programs.
+// Mazzy userspace syscall overlay: RawSyscall6 calls shepherd via function pointer.
+// ShepherdSyscallEntry is patched by shepherd when loading userspace programs.
 // By default, it points to defaultSyscallHandler which does real SVC.
-// This allows priest itself to bootstrap before it can set up interception.
-var PriestSyscallEntry func(num, a1, a2, a3, a4, a5, a6 uintptr) int64 = defaultSyscallHandler
+// This allows shepherd itself to bootstrap before it can set up interception.
+var ShepherdSyscallEntry func(num, a1, a2, a3, a4, a5, a6 uintptr) int64 = defaultSyscallHandler
 
 // defaultSyscallHandler performs a real SVC syscall to the kernel.
-// This is used by priest during bootstrap before it patches userspace programs.
+// This is used by shepherd during bootstrap before it patches userspace programs.
 // Implemented in asm_linux_arm64.s
 func defaultSyscallHandler(num, a1, a2, a3, a4, a5, a6 uintptr) int64
 
@@ -36,33 +36,33 @@ const _SYS_mmap = SYS_MMAP
 const _SYS_debugPrint = 0x1006
 
 // MazzyMmapHandler is defined in runtime/cgo_mmap.go
-// We use go:linkname to set it from here to route mmap through PriestSyscallEntry
+// We use go:linkname to set it from here to route mmap through ShepherdSyscallEntry
 // The runtime exports it as "MazzyMmapHandler" (without package prefix)
 //
 //go:linkname mazzyMmapHandler MazzyMmapHandler
 var mazzyMmapHandler func(addr uintptr, n uintptr, prot, flags, fd int32, off uint32) (uintptr, int)
 
-// mmapViaPriestSyscallEntry routes mmap through PriestSyscallEntry
+// mmapViaShepherdSyscallEntry routes mmap through ShepherdSyscallEntry
 //
 //go:nosplit
-func mmapViaPriestSyscallEntry(addr uintptr, n uintptr, prot, flags, fd int32, off uint32) (uintptr, int) {
-	result := PriestSyscallEntry(_SYS_mmap, addr, n, uintptr(prot), uintptr(flags), uintptr(fd), uintptr(off))
+func mmapViaShepherdSyscallEntry(addr uintptr, n uintptr, prot, flags, fd int32, off uint32) (uintptr, int) {
+	result := ShepherdSyscallEntry(_SYS_mmap, addr, n, uintptr(prot), uintptr(flags), uintptr(fd), uintptr(off))
 	if int64(result) < 0 {
 		return 0, int(-result)
 	}
 	return uintptr(result), 0
 }
 
-// init sets up the mmap handler to route through PriestSyscallEntry.
+// init sets up the mmap handler to route through ShepherdSyscallEntry.
 // This runs after runtime init, so early heap allocation uses direct SVC,
 // but subsequent allocations go through the interceptable path.
 func init() {
-	mazzyMmapHandler = mmapViaPriestSyscallEntry
+	mazzyMmapHandler = mmapViaShepherdSyscallEntry
 }
 
 // Mazzy: runtime_entersyscall/runtime_exitsyscall removed.
 // In .maz modules, runtime.entersyscall is a thin stub that gets patched
-// to the priest's version, which validates caller PCs against pclntab.
+// to the shepherd's version, which validates caller PCs against pclntab.
 // Since .maz addresses aren't in pclntab, this causes "unknown caller pc"
 // crashes. Syscall/Syscall6 now call RawSyscall6 directly.
 
@@ -97,9 +97,9 @@ func RawSyscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err Errno) {
 func RawSyscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errno) {
 	// Mazzy userspace: call syscall handler via function pointer.
 	// By default this is defaultSyscallHandler (real SVC).
-	// For userspace programs loaded by priest, this gets patched to
-	// point to priest's handler function.
-	result := PriestSyscallEntry(trap, a1, a2, a3, a4, a5, a6)
+	// For userspace programs loaded by shepherd, this gets patched to
+	// point to shepherd's handler function.
+	result := ShepherdSyscallEntry(trap, a1, a2, a3, a4, a5, a6)
 
 	// Convert from Linux return convention
 	if int64(result) < 0 {
@@ -116,9 +116,9 @@ func RawSyscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errn
 func Syscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err Errno) {
 	// Mazzy: do NOT call runtime_entersyscall/runtime_exitsyscall.
 	// In .maz modules, runtime.entersyscall is a thin stub patched to the
-	// priest's version. The priest's entersyscall validates caller PCs
+	// shepherd's version. The shepherd's entersyscall validates caller PCs
 	// against pclntab, but .maz addresses aren't in pclntab → crash.
-	// All Mazzy priest syscall wrappers already use RawSyscall6 (no
+	// All Mazzy shepherd syscall wrappers already use RawSyscall6 (no
 	// entersyscall), and Syscall-path calls (fmt.Println → syscall.write)
 	// are short-lived and non-blocking.
 	return RawSyscall6(trap, a1, a2, a3, 0, 0, 0)

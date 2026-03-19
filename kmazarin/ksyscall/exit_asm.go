@@ -17,8 +17,8 @@ func haltForever()
 //go:linkname ThreadExit main.ThreadExit
 func ThreadExit() uintptr
 
-// TerminatePriest kills all threads of a priest and cleans up resources.
+// TerminateShepherd kills all threads of a shepherd and cleans up resources.
 // Returns context pointer of next thread, or 0 if no threads available.
 //
-//go:linkname TerminatePriest main.TerminatePriest
-func TerminatePriest(pid proc.PriestId, status int64) uintptr
+//go:linkname TerminateShepherd main.TerminateShepherd
+func TerminateShepherd(pid proc.ShepherdId, status int64) uintptr

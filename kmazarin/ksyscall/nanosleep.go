@@ -64,8 +64,8 @@ func SyscallNanosleep(req, rem, _, _, _, _ uint64) int64 {
 	currentTick := kirq.ReadCounterValue()
 	deadline := currentTick + ticks
 
-	// Diagnostic: log first few nanosleep calls per priest
-	pid := getCurrentThreadPID()
+	// Diagnostic: log first few nanosleep calls per shepherd
+	pid := getCurrentThreadSID()
 	if pid > 0 {
 		n := atomic.AddUint64(&dbgNanosleepCount, 1)
 		if n <= 5 {

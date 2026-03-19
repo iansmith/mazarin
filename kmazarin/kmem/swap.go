@@ -37,17 +37,17 @@ type SwapSlot struct {
 // Parameters:
 //   - pa:      physical address of the page to swap out
 //   - desc:    the page's PageDescriptor (type, owner, dirty flag); may be nil
-//   - va:      virtual address where the page is mapped in the priest's space
-//   - priestID: the owning priest (for TLB invalidation after PTE update)
+//   - va:      virtual address where the page is mapped in the shepherd's space
+//   - shepherdID: the owning shepherd (for TLB invalidation after PTE update)
 //
 // Returns the swap slot where the page was written, or ErrSwapNotImplemented.
-func SwapOutPage(pa uintptr, desc *PageDescriptor, va uintptr, priestID proc.PriestId) (SwapSlot, error) {
+func SwapOutPage(pa uintptr, desc *PageDescriptor, va uintptr, shepherdID proc.ShepherdId) (SwapSlot, error) {
 	serial.RawUARTPuts("[swap] Would swap out PA=0x")
 	serial.RawUARTHex64(uint64(pa))
 	serial.RawUARTPuts(" VA=0x")
 	serial.RawUARTHex64(uint64(va))
-	serial.RawUARTPuts(" priest=")
-	serial.RawUARTHex64(uint64(priestID))
+	serial.RawUARTPuts(" shepherd=")
+	serial.RawUARTHex64(uint64(shepherdID))
 	if desc != nil {
 		serial.RawUARTPuts(" type=")
 		typeName := desc.Type.String()
@@ -72,7 +72,7 @@ func SwapOutPage(pa uintptr, desc *PageDescriptor, va uintptr, priestID proc.Pri
 // Parameters:
 //   - va:      the faulting virtual address (page-aligned)
 //   - slot:    the swap slot to read from
-//   - priestID: the owning priest
+//   - shepherdID: the owning shepherd
 //
 // Returns the new physical address where the page was loaded, or
 // ErrSwapNotImplemented.
@@ -94,15 +94,15 @@ func extractSwapSlot(pte uint64) SwapSlot {
 	return SwapSlot{}
 }
 
-func SwapInPage(va uintptr, slot SwapSlot, priestID proc.PriestId) (uintptr, error) {
+func SwapInPage(va uintptr, slot SwapSlot, shepherdID proc.ShepherdId) (uintptr, error) {
 	serial.RawUARTPuts("[swap] Would swap in VA=0x")
 	serial.RawUARTHex64(uint64(va))
 	serial.RawUARTPuts(" device=")
 	serial.RawUARTHex64(uint64(slot.DeviceID))
 	serial.RawUARTPuts(" block=")
 	serial.RawUARTHex64(slot.BlockNum)
-	serial.RawUARTPuts(" priest=")
-	serial.RawUARTHex64(uint64(priestID))
+	serial.RawUARTPuts(" shepherd=")
+	serial.RawUARTHex64(uint64(shepherdID))
 	serial.RawUARTPuts("\r\n")
 	return 0, ErrSwapNotImplemented
 }

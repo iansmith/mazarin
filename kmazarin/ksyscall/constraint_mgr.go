@@ -3,7 +3,7 @@
 // KernelAttrManager wraps the raw shared page VA and provides allocators for
 // nodes, strings, edges, trie nodes, bytecode, and collections. This struct
 // lives in kernel BSS — only the data written into the shared pages is visible
-// to priests (read-only).
+// to shepherds (read-only).
 
 package ksyscall
 
@@ -28,7 +28,7 @@ type queryPattern struct {
 	pattern    [256]byte
 	patternLen uint16
 	resultSlot uint16
-	ownerPID   uint16
+	ownerSID   uint16
 	_pad       uint16
 }
 
@@ -118,7 +118,7 @@ func InitKernelAttrManager() bool {
 	// Initialize the namespace trie root and top-level children.
 	initTrie()
 
-	// Initialize per-priest notification queues.
+	// Initialize per-shepherd notification queues.
 	initNotifyQueues()
 
 	attrMgr.initialized = true

@@ -1,4 +1,4 @@
-// sieve-fairness analyzes priestsieve output to evaluate goroutine scheduling fairness.
+// sieve-fairness analyzes shepherdsieve output to evaluate goroutine scheduling fairness.
 // It reads from stdin (pipe from safe-serial-read) and produces fairness statistics.
 //
 // Usage:
@@ -119,7 +119,7 @@ func main() {
 
 	// Print report
 	fmt.Println("╔══════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║              PRIESTSIEVE FAIRNESS ANALYSIS REPORT                ║")
+	fmt.Println("║              SHEPHERDSIEVE FAIRNESS ANALYSIS REPORT                ║")
 	fmt.Println("╚══════════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 

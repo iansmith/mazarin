@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 )
 
-// SyscallLoadFile delegates a file load request to the filesystem priest (fs.maz).
-// The filesystem priest reads the file, allocates pages, and transfers them to
+// SyscallLoadFile delegates a file load request to the filesystem shepherd (fs.maz).
+// The filesystem shepherd reads the file, allocates pages, and transfers them to
 // the caller via TransferAndUnmap.
 //
 // arg0 = pointer to null-terminated path string (in caller's address space)
@@ -38,12 +38,12 @@ func SyscallLoadFile(arg0, arg1, _, _, _, _ uint64) int64 {
 		return int64(errNoDelegate)
 	}
 
-	// Check if delegate priest is ready
-	handlerPriest := proc.FindPriestByPID(proc.PriestId(hpid))
-	if handlerPriest == nil {
+	// Check if delegate shepherd is ready
+	handlerShepherd := proc.FindShepherdBySID(proc.ShepherdId(hpid))
+	if handlerShepherd == nil {
 		return int64(errNoDelegate)
 	}
-	if atomic.LoadInt32(&handlerPriest.Ready) == 0 {
+	if atomic.LoadInt32(&handlerShepherd.Ready) == 0 {
 		return int64(errNotReady)
 	}
 

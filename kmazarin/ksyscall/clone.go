@@ -22,7 +22,7 @@ func SyscallClone(flags, stack, ptid, tls, ctid, _ uint64) int64 {
 	serial.RawUARTPuts("\r\n[CLONE] stk=0x")
 	serial.RawUARTHex64(stack)
 	serial.RawUARTPuts(" parentPID=")
-	serial.RawUARTDecimal(uint64(getCurrentThreadPID()))
+	serial.RawUARTDecimal(uint64(getCurrentThreadSID()))
 	serial.RawUARTPuts("\r\n")
 	// Extract mp, gp, fn from the stack (same as Cardinal)
 	// Go writes values at negative offsets from the original stack pointer,

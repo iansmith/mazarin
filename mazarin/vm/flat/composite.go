@@ -186,18 +186,18 @@ func (fv FlatValue) AsIPv6() [16]byte {
 	return addr
 }
 
-// --- PriestId: {Id uint16 @ 0, NameOffset uint32 @ 4, NameLen uint16 @ 8} ---
+// --- ShepherdId: {Id uint16 @ 0, NameOffset uint32 @ 4, NameLen uint16 @ 8} ---
 
-func NewPriestId(id uint16, nameOffset uint32, nameLen uint16) FlatValue {
+func NewShepherdId(id uint16, nameOffset uint32, nameLen uint16) FlatValue {
 	var fv FlatValue
-	fv.Typ = TypePriestId
+	fv.Typ = TypeShepherdId
 	binary.LittleEndian.PutUint16(fv.Data[0:2], id)
 	binary.LittleEndian.PutUint32(fv.Data[4:8], nameOffset)
 	binary.LittleEndian.PutUint16(fv.Data[8:10], nameLen)
 	return fv
 }
 
-func (fv FlatValue) AsPriestId() (id uint16, nameOffset uint32, nameLen uint16) {
+func (fv FlatValue) AsShepherdId() (id uint16, nameOffset uint32, nameLen uint16) {
 	return binary.LittleEndian.Uint16(fv.Data[0:2]),
 		binary.LittleEndian.Uint32(fv.Data[4:8]),
 		binary.LittleEndian.Uint16(fv.Data[8:10])

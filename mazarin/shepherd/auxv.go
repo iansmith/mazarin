@@ -1,6 +1,6 @@
-// Package priest provides APIs specific to priest programs.
-// Priests are userspace processes that host and manage .maz programs.
-package priest
+// Package shepherd provides APIs specific to shepherd programs.
+// Shepherds are userspace processes that host and manage .maz programs.
+package shepherd
 
 import (
 	"unsafe"
@@ -19,7 +19,7 @@ const (
 
 	// Mazzy-specific auxv types (must match kernel definitions)
 	// Start at 512 to leave room for future Linux additions
-	AT_MAZZY_FB_ADDR   AuxvType = 512 // Framebuffer virtual address in priest space
+	AT_MAZZY_FB_ADDR   AuxvType = 512 // Framebuffer virtual address in shepherd space
 	AT_MAZZY_FB_WIDTH  AuxvType = 513 // Framebuffer width in pixels
 	AT_MAZZY_FB_HEIGHT AuxvType = 514 // Framebuffer height in pixels
 	AT_MAZZY_FB_PITCH  AuxvType = 515 // Framebuffer pitch (bytes per row)
@@ -58,7 +58,7 @@ func initAuxvCache(auxvPtr unsafe.Pointer) {
 }
 
 // InitFromStack initializes the auxv cache from the program's initial stack.
-// Call this early in priest startup with a pointer to the auxv array.
+// Call this early in shepherd startup with a pointer to the auxv array.
 // The auxv pointer can be found by walking past argc, argv, and envp on the stack.
 func InitFromStack(sp uintptr) {
 	// Stack layout: argc, argv[0..argc], NULL, envp[0..n], NULL, auxv...

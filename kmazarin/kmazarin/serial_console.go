@@ -10,11 +10,11 @@ import (
 )
 
 // SoftIRQConsole implements console.Console by pushing bytes into the
-// topHalfUartRing. Dapope (or any userspace priest registered on the
+// topHalfUartRing. Rachel (or any userspace shepherd registered on the
 // UART soft IRQ slot) receives these bytes via WaitSoftIRQ.
 //
 // Breadcrumb remains direct MMIO for IRQ-safe debug output.
-// write(2) from userspace also remains Breadcrumb, so dapope's own
+// write(2) from userspace also remains Breadcrumb, so rachel's own
 // fmt.Printf does not loop back through the ring.
 type SoftIRQConsole struct {
 	// pendingWake is set to 1 by nosplit pushes that cannot call
@@ -126,9 +126,9 @@ func (c *SoftIRQConsole) CheckPendingWake() {
 }
 
 // PushByteToUartRing pushes a byte into the UART soft IRQ ring with fd info.
-// The fd is carried in the HIDEvent.Code field so the consumer (stdio priest)
+// The fd is carried in the HIDEvent.Code field so the consumer (stdio shepherd)
 // can distinguish stdout (1) from stderr (2). Called by SyscallWrite for
-// non-stdio priest output that needs to appear on the stdio display.
+// non-stdio shepherd output that needs to appear on the stdio display.
 func PushByteToUartRing(fd byte, b byte) {
 	ev := hid.HIDEvent{Type: 0, Code: uint16(fd), Value: uint32(b)}
 	ringPush(&topHalfUartRing, ev)
@@ -149,9 +149,9 @@ var suppressSerial uint32
 
 // EnableSoftIRQConsole switches the kernel console from direct MMIO
 // to the soft IRQ ring. Must be called after SetupUartSoftIRQ and
-// after a userspace priest has registered on the UART slot.
+// after a userspace shepherd has registered on the UART slot.
 // Suppresses write1 UART output so runtime fmt.Printf goes to the
-// ring (and thus to the stdio priest display) rather than UART.
+// ring (and thus to the stdio shepherd display) rather than UART.
 func EnableSoftIRQConsole() {
 	c := NewSoftIRQConsole()
 	softIRQConsole = c

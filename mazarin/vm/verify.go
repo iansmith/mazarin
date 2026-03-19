@@ -849,9 +849,9 @@ func (v *verifier) verifyBuiltin(id, argc uint16, instTyp uint8) error {
 		return v.pushType(TypeI64)
 	case BuiltinIPv6:
 		return v.pushType(TypeIPv6)
-	case BuiltinPriestId:
-		return v.pushType(TypePriestId)
-	case BuiltinPriestIdNum:
+	case BuiltinShepherdId:
+		return v.pushType(TypeShepherdId)
+	case BuiltinShepherdIdNum:
 		return v.pushType(TypeI64)
 	case BuiltinMazId:
 		return v.pushType(TypeMazId)

@@ -14,7 +14,7 @@ const (
 )
 
 // gpuLock protects all GPU command queue operations. Without this,
-// concurrent FlushFramebuffer syscalls from different priests corrupt
+// concurrent FlushFramebuffer syscalls from different shepherds corrupt
 // the virtio ring and hang the GPU.
 var gpuLock uint32
 
@@ -77,7 +77,7 @@ func Flush(x, y, width, height uint32) {
 }
 
 // UpdateDisplay transfers and flushes a region of the framebuffer.
-// Safe to call concurrently from multiple priests — serialized by gpuLock.
+// Safe to call concurrently from multiple shepherds — serialized by gpuLock.
 //
 //go:nosplit
 func UpdateDisplay(x, y, width, height uint32) {

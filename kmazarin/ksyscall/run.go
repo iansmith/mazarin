@@ -5,17 +5,17 @@ import (
 	"mazzy/shared/fs/fat32"
 )
 
-// SyscallBootstrapRunElf loads an ELF from disk into the calling priest's
+// SyscallBootstrapRunElf loads an ELF from disk into the calling shepherd's
 // address space. This is a bootstrap-only syscall used to get the disk
 // manager off the disk; once the disk manager is running, programs are
 // loaded through it instead.
 //
 // arg0: Pointer to null-terminated filename string
-// arg1: Address of priest's PriestSyscallEntry function
-// arg2: Pointer to ProgramControl struct (in priest's writable memory)
+// arg1: Address of shepherd's ShepherdSyscallEntry function
+// arg2: Pointer to ProgramControl struct (in shepherd's writable memory)
 //
 // Returns: 0 on success, ErrorCode on failure
-func SyscallBootstrapRunElf(filenamePtr, priestSyscallAddr, programControlPtr, _, _, _ uint64) int64 {
+func SyscallBootstrapRunElf(filenamePtr, shepherdSyscallAddr, programControlPtr, _, _, _ uint64) int64 {
 	// === PHASE 1: Validate all arguments ===
 
 	// Validate filename pointer (must be in accessible memory)
@@ -23,8 +23,8 @@ func SyscallBootstrapRunElf(filenamePtr, priestSyscallAddr, programControlPtr, _
 		return int64(err)
 	}
 
-	// Validate priest syscall entry address (must be in executable segment)
-	if err := ValidateExecAddr(priestSyscallAddr); err != 0 {
+	// Validate shepherd syscall entry address (must be in executable segment)
+	if err := ValidateExecAddr(shepherdSyscallAddr); err != 0 {
 		return int64(err)
 	}
 
@@ -86,16 +86,16 @@ func SyscallBootstrapRunElf(filenamePtr, priestSyscallAddr, programControlPtr, _
 	// === PHASE 4: TODO - Full implementation ===
 	// For now, return error indicating this isn't fully implemented yet
 	// The next phases will:
-	// - Find available load address (different from priest)
+	// - Find available load address (different from shepherd)
 	// - Load ELF segments at that address
 	// - Process relocations for PIE
 	// - Find main.MazarinMain symbol
-	// - Patch PriestSyscallEntry in the loaded program
+	// - Patch ShepherdSyscallEntry in the loaded program
 	// - Fill in ProgramControl struct
 
 	// Suppress unused variable warnings
 	_ = filename
-	_ = priestSyscallAddr
+	_ = shepherdSyscallAddr
 	_ = programControlPtr
 	_ = hdr
 

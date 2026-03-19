@@ -1195,9 +1195,9 @@ timer_check_preemption:
 	CBZ	R10, timer_preempt_not_set
 
 	// NOTE: m.locks check removed for EL0 (userspace) thread preemption.
-	// Each priest runs in its own address space with isolated Go runtime state.
+	// Each shepherd runs in its own address space with isolated Go runtime state.
 	// Context-switching freezes and restores the full CPU state atomically —
-	// the priest resumes exactly where it was interrupted, locks intact.
+	// the shepherd resumes exactly where it was interrupted, locks intact.
 	// The SPSR/EL1 check above already filters out kernel-mode preemption.
 
 	// Clear NeedsThreadPreempt flag
@@ -1205,7 +1205,7 @@ timer_check_preemption:
 	MOVW	R10, mazzy∕kmazarin∕kirq·NeedsThreadPreempt(SB)
 
 	// CRITICAL: Switch to kmazarin's g before calling Go code
-	// The timer may have interrupted userspace (priest) which has a different g
+	// The timer may have interrupted userspace (shepherd) which has a different g
 	MOVD	·kmazarinG0Addr(SB), R10
 	CBNZ	R10, g0_addr_ok
 	B	timer_no_thread_preempt  // Skip if not initialized
@@ -1473,7 +1473,7 @@ irq_elr_ok:
 // ============================================================================
 // el0_sync_handler - Synchronous exceptions from EL0 (userspace)
 // ============================================================================
-// Handles SVC syscalls from userspace programs (priest, etc.)
+// Handles SVC syscalls from userspace programs (shepherd, etc.)
 // Very similar to sync_exception_handler but for EL0 origin.
 //
 el0_sync_handler:
@@ -1541,7 +1541,7 @@ el0_sync_handler:
 	MOVW	R10, ·svcDepth(SB)
 
 	// CRITICAL: Switch to kmazarin's g before calling any Go code!
-	// x28 currently contains userspace's g (e.g., priest's g), but the syscall
+	// x28 currently contains userspace's g (e.g., shepherd's g), but the syscall
 	// handlers are compiled into kmazarin's Go runtime and expect kmazarin's g.
 	// We saved userspace's g in the exception frame, so we can load kmazarin's g0.
 	// Only switch if kmazarinG0Addr is non-zero (initialized).
@@ -1730,7 +1730,7 @@ el0_data_abort_unhandled:
 	// Userspace fault not handled by page fault handler — fall through
 
 el0_not_svc:
-	// Non-SVC exception from userspace: map to signal and deliver or kill priest.
+	// Non-SVC exception from userspace: map to signal and deliver or kill shepherd.
 	//
 	// Ensure kmazarin g is loaded — non-page-fault exceptions (SIGILL, etc.)
 	// reach here without going through el0_handle_page_fault's g switch.
@@ -1753,10 +1753,10 @@ skip_g_switch_el0_nsc:
 
 	// Call HandleUnhandledExceptionAsm(excInfo, faultAddr, faultPC)
 	// Returns: 0 if signal was queued (return via normal path),
-	//          non-zero = pointer to next ThreadContext (priest killed)
+	//          non-zero = pointer to next ThreadContext (shepherd killed)
 	GO_CALL_3_1(·HandleUnhandledExceptionAsm, R19, R20, R21)
 
-	// Check result: R0 = context pointer (signal delivered or priest killed), 0 = error
+	// Check result: R0 = context pointer (signal delivered or shepherd killed), 0 = error
 	CBZ	R0, el0_unhandled_halt  // 0 = shouldn't happen, halt
 
 	// R0 = pointer to ThreadContext (signal handler or next thread)

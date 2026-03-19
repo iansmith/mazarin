@@ -2,8 +2,8 @@ package ksyscall
 
 // blockio.go — SysBlockRead kernel syscall implementation.
 //
-// Provides kernel-mediated block device I/O for the disk priest.
-// The disk priest cannot drive VirtIO hardware directly (DMA requires
+// Provides kernel-mediated block device I/O for the disk shepherd.
+// The disk shepherd cannot drive VirtIO hardware directly (DMA requires
 // physical addresses and device register access), so it uses this syscall
 // to read sectors through the kernel's block device driver.
 //
@@ -25,7 +25,7 @@ import (
 )
 
 // SyscallBlockRead reads disk sectors into the caller's buffer.
-// Restricted to the priest that registered for BlockVirtualIRQ.
+// Restricted to the shepherd that registered for BlockVirtualIRQ.
 //
 // arg0 = startLBA    (first sector to read)
 // arg1 = numSectors  (number of 512-byte sectors to read)
@@ -40,12 +40,12 @@ func SyscallBlockRead(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	bufVA := uintptr(arg2)
 
 	// Validate caller is the block device owner
-	callerPriest := proc.CurrentPriest()
-	if callerPriest == nil {
+	callerShepherd := proc.CurrentShepherd()
+	if callerShepherd == nil {
 		return -1 // EPERM
 	}
-	ownerPID := getBlockDeviceOwnerPID()
-	if ownerPID < 0 || int16(callerPriest.PID) != ownerPID {
+	ownerSID := getBlockDeviceOwnerPID()
+	if ownerSID < 0 || int16(callerShepherd.PID) != ownerSID {
 		serial.RawUARTPuts("[BlockRead] EPERM: not block device owner\r\n")
 		return -1 // EPERM
 	}
@@ -66,7 +66,7 @@ func SyscallBlockRead(arg0, arg1, arg2, _, _, _ uint64) int64 {
 		return -19 // ENODEV
 	}
 
-	l0PA := callerPriest.PageTableL0PA
+	l0PA := callerShepherd.PageTableL0PA
 
 	// Check if interrupt-driven I/O is available
 	dev := block.GetDevice()

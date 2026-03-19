@@ -6,8 +6,8 @@ import (
 	"sync/atomic"
 )
 
-// SyscallSetReady sets or clears the calling priest's Ready flag.
-// The Ready flag indicates the priest is ready to accept delegated work
+// SyscallSetReady sets or clears the calling shepherd's Ready flag.
+// The Ready flag indicates the shepherd is ready to accept delegated work
 // (e.g., fs.maz signals it's ready to handle LoadFile requests).
 //
 // arg0 = 1 to set ready, 0 to clear
@@ -15,8 +15,8 @@ import (
 //
 //go:noinline
 func SyscallSetReady(arg0, _, _, _, _, _ uint64) int64 {
-	priest := proc.CurrentPriest()
-	if priest == nil {
+	shepherd := proc.CurrentShepherd()
+	if shepherd == nil {
 		return -1 // EPERM
 	}
 
@@ -24,10 +24,10 @@ func SyscallSetReady(arg0, _, _, _, _, _ uint64) int64 {
 	if arg0 != 0 {
 		val = 1
 	}
-	atomic.StoreInt32(&priest.Ready, val)
+	atomic.StoreInt32(&shepherd.Ready, val)
 
 	serial.RawUARTPuts("[SetReady] P")
-	serial.RawUARTDecimal(uint64(priest.PID))
+	serial.RawUARTDecimal(uint64(shepherd.PID))
 	serial.RawUARTPuts(" ready=")
 	serial.RawUARTDecimal(arg0)
 	serial.RawUARTPuts("\r\n")

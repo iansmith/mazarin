@@ -1,7 +1,7 @@
 // constraint.go — Constraint VM shared page allocation.
 //
 // Allocates a contiguous block of physical pages from the unified pool.
-// These pages are mapped read-only into every priest's address space at
+// These pages are mapped read-only into every shepherd's address space at
 // a fixed VA, and writable by the kernel via PA + KernelVAOffset.
 
 package kmem
@@ -54,7 +54,7 @@ const (
 )
 
 // SharedPageHeader — first 256 bytes of the shared constraint pages.
-// Readable by priests (read-only mapping). Written once during init.
+// Readable by shepherds (read-only mapping). Written once during init.
 type SharedPageHeader struct {
 	Magic      uint32 // 0x4D415A46 "MAZF"
 	Version    uint32 // 2
@@ -169,12 +169,12 @@ func GetConstraintPageKernelVA() uintptr {
 }
 
 // MapUserConstraintPages maps the constraint shared pages read-only into the
-// current priest's address space at the fixed VA.
-// Must be called after TTBR0 has been switched to the priest's page table.
+// current shepherd's address space at the fixed VA.
+// Must be called after TTBR0 has been switched to the shepherd's page table.
 //
 //go:nosplit
 func MapUserConstraintPages() bool {
-	// Lazy init: allocate on first priest launch.
+	// Lazy init: allocate on first shepherd launch.
 	if !InitConstraintPages() {
 		return false
 	}

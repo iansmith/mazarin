@@ -17,29 +17,29 @@ func getCurrentThreadTID() int16
 // Set to false for production, true for debugging
 const debugPaging = false
 
-// pfContextPriestID and pfContextThreadID are set at the top of HandlePageFault /
+// pfContextShepherdID and pfContextThreadID are set at the top of HandlePageFault /
 // HandleUserPageFault so that allocPTPage (deeper in the nosplit chain) can read
 // them without adding function calls to its frame. Single-CPU, so globals are safe.
-var pfContextPriestID int16 = 0 // default: kernel (PID 0)
+var pfContextShepherdID int16 = 0 // default: kernel (PID 0)
 var pfContextThreadID int16 = -1
 
-// currentPriestID returns the PID of the current priest, or 0 for kernel context.
+// currentShepherdID returns the PID of the current shepherd, or 0 for kernel context.
 //
 //go:nosplit
-func currentPriestID() int16 {
-	p := proc.CurrentPriest()
+func currentShepherdID() int16 {
+	p := proc.CurrentShepherd()
 	if p == nil {
 		return 0
 	}
 	return int16(p.PID)
 }
 
-// currentPriestBumpEnd returns the current bump allocation end for the current
-// priest, or userMmapStart if there is no current priest or no allocations yet.
+// currentShepherdBumpEnd returns the current bump allocation end for the current
+// shepherd, or userMmapStart if there is no current shepherd or no allocations yet.
 //
 //go:nosplit
-func currentPriestBumpEnd() uint64 {
-	p := proc.CurrentPriest()
+func currentShepherdBumpEnd() uint64 {
+	p := proc.CurrentShepherd()
 	if p == nil {
 		return userMmapStart
 	}
@@ -50,12 +50,12 @@ func currentPriestBumpEnd() uint64 {
 	return v
 }
 
-// currentPriestSpanContains returns true if the current priest has a span
+// currentShepherdSpanContains returns true if the current shepherd has a span
 // covering addr. Returns false for kernel context.
 //
 //go:nosplit
-func currentPriestSpanContains(addr uint64) bool {
-	p := proc.CurrentPriest()
+func currentShepherdSpanContains(addr uint64) bool {
+	p := proc.CurrentShepherd()
 	if p == nil {
 		return false
 	}
@@ -127,7 +127,7 @@ var (
 	// Key: PA of page table, Value: VA of page table
 	// CRITICAL: If this fills up, page table lookups will fail because
 	// PT pool pages are NOT identity-mapped - paToVA fallback won't work!
-	// 2048 entries supports many priests with large page tables.
+	// 2048 entries supports many shepherds with large page tables.
 	ptVACache     [2048]ptVACacheEntry // Simple fixed-size cache
 	ptVACacheSize int
 )
@@ -260,7 +260,7 @@ func CreateProcessPageTable() uintptr {
 }
 
 // NOTE: GetProcessL0PA() and SwitchToProcessPageTable() were removed.
-// They used a global processL0PA which caused race conditions with multiple priests.
+// They used a global processL0PA which caused race conditions with multiple shepherds.
 // Use SwitchToProcessPageTableWithL0() or SwitchTTBR0WithASID() with explicit L0PA.
 // For reading the current L0PA, use readCurrentL0PA().
 
@@ -303,7 +303,7 @@ func SwitchTTBR0WithASID(l0PA uintptr, asid uint16) {
 		return // No page table to switch to
 	}
 
-	verifyUserspacePriestL0(l0PA, asid)
+	verifyUserspaceShepherdL0(l0PA, asid)
 
 	// Arch-specific register value construction
 	regVal := constructTTBR0Value(l0PA, asid)
@@ -392,13 +392,13 @@ func GetPTPoolStats() (allocatedPages, totalPages uint64, nextVA, endVA uintptr)
 //
 //go:nosplit
 func allocPTPage() uintptr {
-	// Allocate from unified pool. Use pfContextPriestID to determine ownership:
-	// if we're in a userspace page fault, the PT page belongs to that priest.
+	// Allocate from unified pool. Use pfContextShepherdID to determine ownership:
+	// if we're in a userspace page fault, the PT page belongs to that shepherd.
 	ptType := PageType(PageKernelPT)
 	ptOwner := int16(0)
-	if pfContextPriestID > 0 {
+	if pfContextShepherdID > 0 {
 		ptType = PageUserPT
-		ptOwner = pfContextPriestID
+		ptOwner = pfContextShepherdID
 	}
 	pa := AllocPage(ptType, ptOwner)
 	if pa == 0 {
@@ -422,7 +422,7 @@ func allocPTPage() uintptr {
 		PA:       pa,
 		VA:       va,
 		Type:     PageAllocKernelPT,
-		PriestID: pfContextPriestID,
+		ShepherdID: pfContextShepherdID,
 		ThreadID: pfContextThreadID,
 		Order:    0,
 	})
@@ -457,8 +457,8 @@ func WalkPageTable(va uintptr) uintptr {
 //
 //go:nosplit
 func HandlePageFault(faultAddr uintptr) bool {
-	// Cache priest/thread IDs for allocPTPage (avoids adding calls to nosplit chain)
-	pfContextPriestID = currentPriestID()
+	// Cache shepherd/thread IDs for allocPTPage (avoids adding calls to nosplit chain)
+	pfContextShepherdID = currentShepherdID()
 	pfContextThreadID = getCurrentThreadTID()
 
 	// DEBUG: Print 'G' at absolute entry (before anything else)
@@ -632,7 +632,7 @@ func HandlePageFault(faultAddr uintptr) bool {
 		PA:       frame,
 		VA:       pageAddr,
 		Type:     PageAllocKernelHeap,
-		PriestID: currentPriestID(),
+		ShepherdID: currentShepherdID(),
 		ThreadID: getCurrentThreadTID(),
 		Order:    0,
 	})
@@ -679,8 +679,8 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 		serial.RawUART(' ')
 	}
 
-	// Cache priest/thread IDs for allocPTPage (avoids adding calls to nosplit chain)
-	pfContextPriestID = currentPriestID()
+	// Cache shepherd/thread IDs for allocPTPage (avoids adding calls to nosplit chain)
+	pfContextShepherdID = currentShepherdID()
 	pfContextThreadID = getCurrentThreadTID()
 
 	// Repeat-fault detection: halt if same page faults repeatedly
@@ -728,7 +728,7 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 	}
 
 	// Get the current mmap allocation end (addresses >= this were NOT allocated)
-	allocEnd := currentPriestBumpEnd()
+	allocEnd := currentShepherdBumpEnd()
 
 	// For UNMAPPED pages, validate the address is in a known allocation region:
 	// 1. MAP_FIXED region: 0x10000 to userMmapStart (0xC000000000) — ELF, thread stacks, etc.
@@ -737,7 +737,7 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 	const minUserAddr = 0x10000 // Minimum userspace address (64KB, above NULL guard)
 	inMapFixedRegion := uint64(faultAddr) >= minUserAddr && uint64(faultAddr) < userMmapStart
 	inBumpRegion := uint64(faultAddr) >= userMmapStart && uint64(faultAddr) < allocEnd
-	inSpanRegion := currentPriestSpanContains(uint64(faultAddr))
+	inSpanRegion := currentShepherdSpanContains(uint64(faultAddr))
 
 	if !inMapFixedRegion && !inBumpRegion && !inSpanRegion {
 		serial.RawUART('!')
@@ -749,7 +749,7 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 	pte, _, pteOk := platformReadPTEAt(faultAddr)
 	if pteOk && isSwapPTE(pte) {
 		slot := extractSwapSlot(pte)
-		_, err := SwapInPage(faultAddr, slot, proc.PriestId(currentPriestID()))
+		_, err := SwapInPage(faultAddr, slot, proc.ShepherdId(currentShepherdID()))
 		if err == nil {
 			return true
 		}
@@ -820,7 +820,7 @@ func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
 		PA:       framePA,
 		VA:       pageAddr,
 		Type:     PageAllocUser,
-		PriestID: currentPriestID(),
+		ShepherdID: currentShepherdID(),
 		ThreadID: getCurrentThreadTID(),
 		Order:    0,
 	})
@@ -847,16 +847,16 @@ func DemandMapUserPage(va uintptr, l0PA uintptr) uintptr {
 		return pa
 	}
 
-	// Set priest/thread context for AllocUserFrame tracking
-	pfContextPriestID = currentPriestID()
+	// Set shepherd/thread context for AllocUserFrame tracking
+	pfContextShepherdID = currentShepherdID()
 	pfContextThreadID = getCurrentThreadTID()
 
 	// Validate address is in a known allocation region
-	allocEnd := currentPriestBumpEnd()
+	allocEnd := currentShepherdBumpEnd()
 	const minUserAddr = 0x10000
 	inMapFixedRegion := uint64(va) >= minUserAddr && uint64(va) < userMmapStart
 	inBumpRegion := uint64(va) >= userMmapStart && uint64(va) < allocEnd
-	inSpanRegion := currentPriestSpanContains(uint64(va))
+	inSpanRegion := currentShepherdSpanContains(uint64(va))
 
 	if !inMapFixedRegion && !inBumpRegion && !inSpanRegion {
 		serial.RawUARTPuts("[DemandMap] VA 0x")
@@ -898,7 +898,7 @@ func DemandMapUserPage(va uintptr, l0PA uintptr) uintptr {
 		PA:       framePA,
 		VA:       pageAddr,
 		Type:     PageAllocUser,
-		PriestID: pfContextPriestID,
+		ShepherdID: pfContextShepherdID,
 		ThreadID: pfContextThreadID,
 		Order:    0,
 	})
@@ -1325,8 +1325,8 @@ func TlbiVMALLE1() {
 
 // TlbiASIDE1IS invalidates all TLB entries for a specific ASID (inner shareable).
 // This broadcasts the invalidation to all CPUs in the inner shareable domain.
-// Used for aggressive ASID reuse: when a priest exits and its ASID will be
-// reused by a new priest, all old TLB entries must be invalidated first.
+// Used for aggressive ASID reuse: when a shepherd exits and its ASID will be
+// reused by a new shepherd, all old TLB entries must be invalidated first.
 //
 //go:nosplit
 func TlbiASIDE1IS(asid uint16) {
@@ -1434,7 +1434,7 @@ const (
 // MapUserPage allocates a physical frame and maps it to a virtual address
 // in userspace (TTBR0, low memory) with the specified ELF permissions.
 //
-// This is used for loading userspace programs (priests).
+// This is used for loading userspace programs (shepherds).
 // The permissions are derived from ELF program header flags.
 //
 // Returns nil on success, error on failure.
@@ -1626,7 +1626,7 @@ func mapUserPageWithL0(va, pa uintptr, elfFlags uint32, l0PAParam uintptr) bool 
 }
 
 // MapUserDevicePage maps a physical address to a userspace VA with device memory attributes.
-// This is used for mapping MMIO regions (like framebuffer) into priest address space.
+// This is used for mapping MMIO regions (like framebuffer) into shepherd address space.
 // Unlike mapUserPage, this does NOT allocate a frame - it maps the given PA directly.
 //
 // The mapping is:
@@ -2363,26 +2363,26 @@ func UnmapUserPageWithL0(va uintptr, l0PAParam uintptr) uintptr {
 	return pa
 }
 
-// MapPageInProcess maps a physical page into a specific priest's address space.
+// MapPageInProcess maps a physical page into a specific shepherd's address space.
 // Saves/restores pfContext so page table pages allocated during the mapping
-// are attributed to the target priest.
+// are attributed to the target shepherd.
 // If elfFlags is 0, defaults to ELF_PF_R | ELF_PF_W.
 // Returns true on success.
-func MapPageInProcess(priestID int16, va, pa uintptr, elfFlags uint32) bool {
-	p := proc.FindPriestByPID(proc.PriestId(priestID))
+func MapPageInProcess(shepherdID int16, va, pa uintptr, elfFlags uint32) bool {
+	p := proc.FindShepherdBySID(proc.ShepherdId(shepherdID))
 	if p == nil || p.PageTableL0PA == 0 {
 		return false
 	}
 	if elfFlags == 0 {
 		elfFlags = ELF_PF_R | ELF_PF_W
 	}
-	// Save/restore pfContext so allocPTPage attributes PT pages to target priest
-	savedPID := pfContextPriestID
+	// Save/restore pfContext so allocPTPage attributes PT pages to target shepherd
+	savedPID := pfContextShepherdID
 	savedTID := pfContextThreadID
-	pfContextPriestID = priestID
+	pfContextShepherdID = shepherdID
 	pfContextThreadID = -1
 	ok := mapUserPageWithL0(va, pa, elfFlags, p.PageTableL0PA)
-	pfContextPriestID = savedPID
+	pfContextShepherdID = savedPID
 	pfContextThreadID = savedTID
 	return ok
 }
@@ -2770,7 +2770,7 @@ func EnsureUserPageMappedWithL0(userVA uintptr, l0PA uintptr) bool {
 	}
 
 	// Not mapped — demand-allocate a physical frame
-	pfContextPriestID = currentPriestID()
+	pfContextShepherdID = currentShepherdID()
 	framePA := AllocUserFrame()
 	if framePA == 0 {
 		return false
@@ -2880,7 +2880,7 @@ func CopyToUser(userVA uintptr, src []byte) bool {
 // On a fault mid-copy, returns the partial count (like Linux's copy_to_user).
 // This is needed when copying into a different process's address space
 // (e.g., copying read() results back to the original caller from a delegated
-// syscall handler running in a different priest).
+// syscall handler running in a different shepherd).
 func CopyToUserWithL0(userVA uintptr, l0PA uintptr, src []byte, n int) int {
 	if n > len(src) {
 		n = len(src)
@@ -2891,7 +2891,7 @@ func CopyToUserWithL0(userVA uintptr, l0PA uintptr, src []byte, n int) int {
 		pa := WalkUserPageTableWithL0(va, l0PA)
 		if pa == 0 {
 			// Do NOT call HandleUserPageFault here — it reads TTBR0 and
-			// CurrentPriest() to walk the page table and validate the VA
+			// CurrentShepherd() to walk the page table and validate the VA
 			// against bump/span regions. During delegation reply, those
 			// belong to the delegate handler, not the original caller.
 			// Demand-mapping would allocate into the wrong address space.

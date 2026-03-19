@@ -94,7 +94,7 @@ type Theme struct {
 	FontRegular string // path to regular-weight font file (slicer)
 	FontBold    string // path to bold-weight font file (slicer)
 	// FontLoader creates a font.Face at the given size. Used when fonts are
-	// embedded (kernel/priest) rather than loaded from file paths. If non-nil,
+	// embedded (kernel/shepherd) rather than loaded from file paths. If non-nil,
 	// takes precedence over FontRegular/FontBold.
 	FontLoader  func(bold bool, size float64) font.Face
 	ScaleFactor float64

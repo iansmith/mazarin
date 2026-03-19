@@ -6,7 +6,7 @@ import (
 )
 
 // kernelSpanGroup is the fallback span group for kernel-context calls
-// (when proc.CurrentPriest() returns nil). Kernel threads do not perform
+// (when proc.CurrentShepherd() returns nil). Kernel threads do not perform
 // userspace mmap, so this group is effectively unused in practice.
 var kernelSpanGroup proc.LockedSpanGroup
 
@@ -14,7 +14,7 @@ var kernelSpanGroup proc.LockedSpanGroup
 //
 //go:nosplit
 func getCurrentSpanGroup() *proc.LockedSpanGroup {
-	p := proc.CurrentPriest()
+	p := proc.CurrentShepherd()
 	if p == nil {
 		return &kernelSpanGroup
 	}

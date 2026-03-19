@@ -490,7 +490,7 @@ pf_ifault_ra_print:
 	AND	$0x100, T3, T3			// SPP bit (bit 8)
 	BNE	T3, ZERO, pf_ifault_halt	// Kernel fault → halt
 
-	// User fault: map to signal and deliver or kill priest
+	// User fault: map to signal and deliver or kill shepherd
 	MOV	X2, S6				// S6 = trap frame base (for SaveContextFromFrame)
 	MOV	$12, S3				// scause=12 (instruction page fault)
 	MOV	X20, S4				// stval (faultAddr)
@@ -794,7 +794,7 @@ pf_skip_stack_walk:
 	AND	$0x100, T3, T3			// SPP bit (bit 8)
 	BNE	T3, ZERO, pf_unhandled_halt	// Kernel fault → still halt
 
-	// User fault: map to signal and deliver or kill priest.
+	// User fault: map to signal and deliver or kill shepherd.
 	// Save trap frame pointer and extract fault info into callee-saved regs.
 	MOV	X2, S6				// S6 = trap frame base (for SaveContextFromFrame)
 	WORD	$0x142022F3			// csrr t0, scause → S3(X19)
@@ -942,9 +942,9 @@ timer_check_preemption:
 	BEQ	T0, ZERO, timer_preempt_not_set	// flag not set — skip preemption
 
 	// NOTE: m.locks check removed for userspace thread preemption.
-	// Each priest runs in its own address space with isolated Go runtime state.
+	// Each shepherd runs in its own address space with isolated Go runtime state.
 	// Context-switching freezes and restores the full CPU state atomically —
-	// the priest resumes exactly where it was interrupted, locks intact.
+	// the shepherd resumes exactly where it was interrupted, locks intact.
 	// S-mode (kernel) preemption was already filtered out above.
 
 	// Clear NeedsThreadPreempt flag

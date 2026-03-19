@@ -1,5 +1,5 @@
 // attrtest exercises the mazarin/attr Eval/Vite attribute library
-// inside a priest. It prints results to stdout via fmt.
+// inside a shepherd. It prints results to stdout via fmt.
 package main
 
 import (

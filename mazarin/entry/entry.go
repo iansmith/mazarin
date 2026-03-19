@@ -9,7 +9,7 @@ import (
 	"mazzy/mazarin/sys"
 )
 
-// MazarinMain is the entry point called by priest after loading a .maz program.
+// MazarinMain is the entry point called by shepherd after loading a .maz program.
 // It sets up the environment and calls the program's main.main().
 // This function is NOT visible to user-level programmers.
 //
@@ -17,8 +17,8 @@ import (
 //
 //go:linkname MazarinMain main.MazarinMain
 func MazarinMain() {
-	// The Go runtime is already initialized by priest's runtime
-	// (thin client model - we share priest's runtime via trampolines)
+	// The Go runtime is already initialized by shepherd's runtime
+	// (thin client model - we share shepherd's runtime via trampolines)
 
 	// Call the program's main.main()
 	// argc=0, argv=empty - programs should use other mechanisms for args

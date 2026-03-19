@@ -25,13 +25,13 @@ type MazLoadResult struct {
 	LoadBase       uint64 // Base VA where .maz was loaded
 	LoadSize       uint64 // Total VA size of loaded segments
 	ModuledataAddr uint64 // Address of runtime.firstmoduledata in loaded .maz (0 if not found)
-	PriestInitAddr uint64 // Address of main.MazarinPriest in loaded .maz (0 if not found)
+	ShepherdInitAddr uint64 // Address of main.MazarinShepherd in loaded .maz (0 if not found)
 }
 
-// LoadMaz loads a .maz PIE ELF into the calling priest's address space.
-// The kernel reads the file from disk, loads segments into the priest's
+// LoadMaz loads a .maz PIE ELF into the calling shepherd's address space.
+// The kernel reads the file from disk, loads segments into the shepherd's
 // page table, applies PIE relocations, and resolves runtime imports
-// against the priest's cached symbol table.
+// against the shepherd's cached symbol table.
 //
 // On success, result.EntryPoint contains the address of main.MazarinMain
 // in the loaded .maz, ready to be called as a goroutine.

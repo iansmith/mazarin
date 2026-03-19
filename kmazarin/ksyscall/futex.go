@@ -17,8 +17,8 @@ var (
 	DbgFutexExplicitTimeout uint64 // Deadlines with explicit timeout
 	DbgStdioFutexAddr       uint64 // Last futex address for stdio debug
 	DbgStdioFutexSyscallNum uint64 // Last syscall number from stdio's main
-	priestSyscallCount      uint64 // Count of priest syscalls (for debug logging)
-	GCCountByPID            [16]uint64 // Per-priest GC cycle counter (indexed by PID)
+	shepherdSyscallCount      uint64 // Count of shepherd syscalls (for debug logging)
+	GCCountBySID            [16]uint64 // Per-shepherd GC cycle counter (indexed by PID)
 )
 
 // PrintFutexStats prints futex statistics for debugging

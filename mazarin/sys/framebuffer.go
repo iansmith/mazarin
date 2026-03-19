@@ -9,7 +9,7 @@ import (
 // FramebufferInfo contains information about the framebuffer.
 // This is filled by the kernel during GetFramebuffer syscall.
 type FramebufferInfo struct {
-	Addr           uintptr // Virtual address of framebuffer in priest space
+	Addr           uintptr // Virtual address of framebuffer in shepherd space
 	Width          uint32  // Width in pixels
 	Height         uint32  // Display height in pixels (visible area)
 	ResourceHeight uint32  // Total resource height (may be > Height for scrolling)
@@ -17,7 +17,7 @@ type FramebufferInfo struct {
 }
 
 // GetFramebuffer retrieves framebuffer information from the kernel.
-// The framebuffer is pre-mapped into priest's address space at a fixed VA.
+// The framebuffer is pre-mapped into shepherd's address space at a fixed VA.
 // Returns an error if the framebuffer is not available.
 func GetFramebuffer() (*FramebufferInfo, error) {
 	var fb FramebufferInfo

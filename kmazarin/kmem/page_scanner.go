@@ -1,6 +1,6 @@
 // page_scanner.go - A/D bit scanning for page replacement framework (Stage 5)
 //
-// ScanAccessedBits walks all mapped user pages for a priest, clears the
+// ScanAccessedBits walks all mapped user pages for a shepherd, clears the
 // hardware Accessed bit on each, and tracks dirty state in the PageDescriptor.
 // This implements the "clock" algorithm's reference check — the foundation
 // for future LRU/clock page replacement.
@@ -15,10 +15,10 @@
 //
 // ARCHITECTURE NOTE: platformClearAccessed/platformClearDirty walk the page
 // table via the platform's cached root pointer (ttbr0L0PA on ARM64). For
-// priests whose page table is not currently active in the MMU, these calls
+// shepherds whose page table is not currently active in the MMU, these calls
 // return false (no-op). The PA lookup via WalkUserPageTableWithL0 is always
 // correct (takes explicit l0PA). A future stage will add arch-neutral
-// per-priest PTE write support to make the A/D clear work for all priests.
+// per-shepherd PTE write support to make the A/D clear work for all shepherds.
 //
 // TODO(Stage 5 deferred): ARM64 software dirty tracking. Cortex-A72 lacks
 // FEAT_HAFDBS, so platformClearDirty is a no-op. The "AP bit permission trick"
@@ -65,17 +65,17 @@ func ReadAndResetScanDeltas() (runs, accessed, total uint64) {
 	return
 }
 
-// ScanAccessedBits walks all mapped pages for the given priest, clears the
+// ScanAccessedBits walks all mapped pages for the given shepherd, clears the
 // Accessed bit on each, and returns (accessedCount, totalCount).
 // Also propagates the hardware Dirty bit into the PageDescriptor's PD_DIRTY flag.
 //
 // Called from the timer bottom-half goroutine (KernelIdleLoop) every ~1000
 // timer ticks. NOT nosplit — uses spans.ForEach and page table walking.
-func ScanAccessedBits(priestID proc.PriestId) (accessedCount int, totalCount int) {
-	if priestID < 0 || int(priestID) >= proc.MaxPriests {
+func ScanAccessedBits(shepherdID proc.ShepherdId) (accessedCount int, totalCount int) {
+	if shepherdID < 0 || int(shepherdID) >= proc.MaxShepherds {
 		return
 	}
-	if !proc.PriestListInUse[priestID] {
+	if !proc.ShepherdListInUse[shepherdID] {
 		return
 	}
 	defer func() {
@@ -84,16 +84,16 @@ func ScanAccessedBits(priestID proc.PriestId) (accessedCount int, totalCount int
 		atomic.AddUint64(&scanTotalPages, uint64(totalCount))
 	}()
 
-	p := &proc.PriestListData[priestID]
+	p := &proc.ShepherdListData[shepherdID]
 	l0PA := p.PageTableL0PA
 	if l0PA == 0 {
-		return // No page table allocated (priest never ran)
+		return // No page table allocated (shepherd never ran)
 	}
 
 	p.Spans.ForEach(func(start, length uint64) {
 		end := start + length
 		for va := uintptr(start); va < uintptr(end); va += PageSize {
-			// Look up PA using the priest's page table (explicit l0PA).
+			// Look up PA using the shepherd's page table (explicit l0PA).
 			// This is correct regardless of which page table is active in the MMU.
 			pa := WalkUserPageTableWithL0(va, l0PA)
 			if pa == 0 {
@@ -109,7 +109,7 @@ func ScanAccessedBits(priestID proc.PriestId) (accessedCount int, totalCount int
 
 			// Clear the Accessed bit and record if it was set.
 			// NOTE: On ARM64, this walks ttbr0L0PA (the platform's cached root).
-			// If the priest's page table is not currently active, platformClearAccessed
+			// If the shepherd's page table is not currently active, platformClearAccessed
 			// returns false (no match found) — acceptable for the stub framework.
 			wasAccessed := platformClearAccessed(va)
 			if wasAccessed {
@@ -129,22 +129,22 @@ func ScanAccessedBits(priestID proc.PriestId) (accessedCount int, totalCount int
 }
 
 // FindEvictionCandidates returns up to count physical addresses suitable for
-// eviction from the given priest's address space. Pages are ranked:
+// eviction from the given shepherd's address space. Pages are ranked:
 //   1. Clean + unaccessed (best: not recently used, no write-back needed)
 //   2. Clean + accessed   (recently used but clean — cheap to evict)
 //   3. Dirty + unaccessed (not recently used, but requires write-back)
 //
 // Pinned pages and already-swapped pages are never returned.
 // Returned PAs are still mapped; the caller must call SwapOutPage to evict.
-func FindEvictionCandidates(priestID proc.PriestId, count int) []uintptr {
-	if priestID < 0 || int(priestID) >= proc.MaxPriests || count <= 0 {
+func FindEvictionCandidates(shepherdID proc.ShepherdId, count int) []uintptr {
+	if shepherdID < 0 || int(shepherdID) >= proc.MaxShepherds || count <= 0 {
 		return nil
 	}
-	if !proc.PriestListInUse[priestID] {
+	if !proc.ShepherdListInUse[shepherdID] {
 		return nil
 	}
 
-	p := &proc.PriestListData[priestID]
+	p := &proc.ShepherdListData[shepherdID]
 	l0PA := p.PageTableL0PA
 	if l0PA == 0 {
 		return nil
@@ -182,7 +182,7 @@ func FindEvictionCandidates(priestID proc.PriestId, count int) []uintptr {
 			pte, _, ok := platformReadPTEAt(va)
 			if !ok {
 				// PTE not found via current page table root — use descriptor flags only.
-				// This happens when the priest's page table is not currently active.
+				// This happens when the shepherd's page table is not currently active.
 				// Treat as unaccessed+clean (conservative — may over-evict).
 				if nCleanUnacc < maxPerBucket {
 					cleanUnaccessed[nCleanUnacc] = pa
@@ -230,11 +230,11 @@ func FindEvictionCandidates(priestID proc.PriestId, count int) []uintptr {
 	return result
 }
 
-// LogScanResult logs a one-line A/D scan summary for a priest.
+// LogScanResult logs a one-line A/D scan summary for a shepherd.
 // Uses serial directly to avoid fmt/console allocation in the kmem package.
-func LogScanResult(priestID proc.PriestId, accessed, total int) {
-	serial.RawUARTPuts("[scan] priest ")
-	serial.RawUARTHex64(uint64(priestID))
+func LogScanResult(shepherdID proc.ShepherdId, accessed, total int) {
+	serial.RawUARTPuts("[scan] shepherd ")
+	serial.RawUARTHex64(uint64(shepherdID))
 	serial.RawUARTPuts(": accessed=")
 	serial.RawUARTHex64(uint64(accessed))
 	serial.RawUARTPuts("/")

@@ -1,9 +1,9 @@
 package main
 
-// runpriest_bridge.go — Bridge between SVC handler and RunPriest worker goroutine.
+// runshepherd_bridge.go — Bridge between SVC handler and RunShepherd worker goroutine.
 //
 // Same pattern as loadmaz_bridge.go: blocks the calling thread and dispatches
-// heavy priest creation work from KernelIdleLoop's goroutine (growable stack).
+// heavy shepherd creation work from KernelIdleLoop's goroutine (growable stack).
 
 import (
 	"mazzy/kmazarin/ksyscall"
@@ -12,47 +12,47 @@ import (
 	"unsafe"
 )
 
-// runPriestPending is set by BlockForRunPriest and checked by KernelIdleLoop.
-var runPriestPending uint32
+// runShepherdPending is set by BlockForRunShepherd and checked by KernelIdleLoop.
+var runShepherdPending uint32
 
-// runPriestDispatching is set while thread 0 is inside DispatchRunPriestWork.
+// runShepherdDispatching is set while thread 0 is inside DispatchRunShepherdWork.
 // The timer ISR checks this to avoid preempting thread 0 mid-dispatch.
-var runPriestDispatching uint32
+var runShepherdDispatching uint32
 
-func initRunPriestWorker() {
-	ksyscall.RunPriestReq.BlockedTID = -1
+func initRunShepherdWorker() {
+	ksyscall.RunShepherdReq.BlockedTID = -1
 }
 
-// DispatchRunPriestWork is called from KernelIdleLoop to perform RunPriest work.
-func DispatchRunPriestWork() bool {
+// DispatchRunShepherdWork is called from KernelIdleLoop to perform RunShepherd work.
+func DispatchRunShepherdWork() bool {
 	dispatched := false
 	for {
-		atomicFired := atomic.SwapUint32(&runPriestPending, 0) == 1
-		hasPending := ksyscall.RunPriestReq.BlockedTID >= 0
+		atomicFired := atomic.SwapUint32(&runShepherdPending, 0) == 1
+		hasPending := ksyscall.RunShepherdReq.BlockedTID >= 0
 
 		if !atomicFired && !hasPending {
 			if dispatched {
-				atomic.StoreUint32(&runPriestDispatching, 0)
+				atomic.StoreUint32(&runShepherdDispatching, 0)
 			}
 			return dispatched
 		}
 
-		tid := ksyscall.RunPriestReq.BlockedTID
+		tid := ksyscall.RunShepherdReq.BlockedTID
 		if tid < 0 {
 			if dispatched {
-				atomic.StoreUint32(&runPriestDispatching, 0)
+				atomic.StoreUint32(&runShepherdDispatching, 0)
 			}
 			return dispatched
 		}
 
-		atomic.StoreUint32(&runPriestDispatching, 1)
+		atomic.StoreUint32(&runShepherdDispatching, 1)
 
-		req := ksyscall.RunPriestReq
-		ksyscall.RunPriestReq.BlockedTID = -1
-		atomic.StoreInt32(&ksyscall.RunPriestBusy, 0)
+		req := ksyscall.RunShepherdReq
+		ksyscall.RunShepherdReq.BlockedTID = -1
+		atomic.StoreInt32(&ksyscall.RunShepherdBusy, 0)
 
 		serial.RawUARTPuts("[RP:work]")
-		result := ksyscall.DoRunPriestWork(&req)
+		result := ksyscall.DoRunShepherdWork(&req)
 
 		wakeLoadMazThread(req.BlockedTID, result)
 		serial.RawUARTPuts("[RP:done]")
@@ -60,12 +60,12 @@ func DispatchRunPriestWork() bool {
 	}
 }
 
-// BlockForRunPriest blocks the calling thread for a RunPriest request.
+// BlockForRunShepherd blocks the calling thread for a RunShepherd request.
 // Returns the next thread's context pointer.
 //
 //go:nosplit
 //go:noinline
-func BlockForRunPriest() uintptr {
+func BlockForRunShepherd() uintptr {
 	savedDAIF := NormalSchedulerFunc.DisableAndSaveDAIF()
 	schedulerLock.Lock()
 
@@ -76,7 +76,7 @@ func BlockForRunPriest() uintptr {
 		return 0
 	}
 
-	ksyscall.RunPriestReq.BlockedTID = int32(t.TID)
+	ksyscall.RunShepherdReq.BlockedTID = int32(t.TID)
 
 	// Switch to thread 0 (kernel idle loop)
 	var next *Thread
@@ -88,7 +88,7 @@ func BlockForRunPriest() uintptr {
 		next = findReadyThreadSchedLockHeld()
 	}
 	if next == nil {
-		ksyscall.RunPriestReq.BlockedTID = -1
+		ksyscall.RunShepherdReq.BlockedTID = -1
 		schedulerLock.Unlock()
 		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
 		return 0
@@ -99,7 +99,7 @@ func BlockForRunPriest() uintptr {
 	schedulerLock.Unlock()
 	NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
 
-	atomic.StoreUint32(&runPriestPending, 1)
+	atomic.StoreUint32(&runShepherdPending, 1)
 
 	return uintptr(unsafe.Pointer(&next.Context))
 }

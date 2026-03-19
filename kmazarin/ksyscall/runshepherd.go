@@ -1,8 +1,8 @@
-// runpriest.go - SysRunPriest syscall: create a new priest from ELF pages.
+// runshepherd.go - SysRunShepherd syscall: create a new shepherd from ELF pages.
 //
 // The caller has pages containing an ELF binary (loaded via LoadFile).
-// RunPriest creates a new priest with its own address space, loads the ELF
-// into it, and starts the priest's main thread.
+// RunShepherd creates a new shepherd with its own address space, loads the ELF
+// into it, and starts the shepherd's main thread.
 // The raw ELF pages are implicitly unmapped from the caller.
 package ksyscall
 
@@ -14,24 +14,24 @@ import (
 	"sync/atomic"
 )
 
-// RunPriestWorkRequest contains the parameters for a RunPriest operation.
-type RunPriestWorkRequest struct {
+// RunShepherdWorkRequest contains the parameters for a RunShepherd operation.
+type RunShepherdWorkRequest struct {
 	Name       string
 	StartVA    uintptr
 	NumPages   int
 	TotalBytes int
-	CallerPriest *proc.Priest
+	CallerShepherd *proc.Shepherd
 	CallerL0PA   uintptr
-	BlockedTID   int32 // Set by BlockForRunPriest in main package
+	BlockedTID   int32 // Set by BlockForRunShepherd in main package
 }
 
-// RunPriestReq is the global request struct shared between the SVC handler
+// RunShepherdReq is the global request struct shared between the SVC handler
 // and the kernel worker goroutine. One request at a time.
-// RunPriestBusy guards against concurrent access (latent SMP hazard).
-var RunPriestReq RunPriestWorkRequest
-var RunPriestBusy int32
+// RunShepherdBusy guards against concurrent access (latent SMP hazard).
+var RunShepherdReq RunShepherdWorkRequest
+var RunShepherdBusy int32
 
-// SyscallRunPriest creates a new priest from ELF data in the caller's pages.
+// SyscallRunShepherd creates a new shepherd from ELF data in the caller's pages.
 //
 // arg0 = pointer to null-terminated name string (in caller's address space)
 // arg1 = startVA (page-aligned, where raw ELF data is mapped)
@@ -41,7 +41,7 @@ var RunPriestBusy int32
 // Returns: 0 on success, ErrorCode on failure.
 //
 //go:noinline
-func SyscallRunPriest(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
+func SyscallRunShepherd(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	namePtr := uintptr(arg0)
 	startVA := uintptr(arg1)
 	numPages := int(arg2)
@@ -53,18 +53,18 @@ func SyscallRunPriest(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	if startVA&0xFFF != 0 {
 		return -22 // EINVAL
 	}
-	// RunPriest uses copyPagesFromUser (byte-by-byte), not the fixed-size PA
+	// RunShepherd uses copyPagesFromUser (byte-by-byte), not the fixed-size PA
 	// array in TransferPages, so it can handle much larger transfers.
-	const maxRunPriestPages = 4096 // 16MB
-	if numPages < 1 || numPages > maxRunPriestPages {
+	const maxRunShepherdPages = 4096 // 16MB
+	if numPages < 1 || numPages > maxRunShepherdPages {
 		return -22 // EINVAL
 	}
 	if totalBytes < 64 || totalBytes > numPages*4096 {
 		return int64(errInvalidELF)
 	}
 
-	priest := proc.CurrentPriest()
-	if priest == nil {
+	shepherd := proc.CurrentShepherd()
+	if shepherd == nil {
 		return int64(errNullPointer)
 	}
 
@@ -75,45 +75,45 @@ func SyscallRunPriest(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	}
 
 	// Guard against concurrent access (latent SMP hazard).
-	if !atomic.CompareAndSwapInt32(&RunPriestBusy, 0, 1) {
-		console.KWriteString("[RunPriest] ERROR: concurrent request\r\n")
+	if !atomic.CompareAndSwapInt32(&RunShepherdBusy, 0, 1) {
+		console.KWriteString("[RunShepherd] ERROR: concurrent request\r\n")
 		return -16 // EBUSY
 	}
 
 	// Store request for the worker goroutine
-	RunPriestReq = RunPriestWorkRequest{
+	RunShepherdReq = RunShepherdWorkRequest{
 		Name:         name,
 		StartVA:      startVA,
 		NumPages:     numPages,
 		TotalBytes:   totalBytes,
-		CallerPriest: priest,
-		CallerL0PA:   priest.PageTableL0PA,
+		CallerShepherd: shepherd,
+		CallerL0PA:   shepherd.PageTableL0PA,
 	}
 
 	// Block and dispatch to worker goroutine (needs growable stack)
-	ctxPtr := blockForRunPriest()
+	ctxPtr := blockForRunShepherd()
 	if ctxPtr != 0 {
 		SetSyscallSwitchTarget(ctxPtr)
 	} else {
-		console.KWriteString("[RunPriest] ERROR: no thread to switch to\r\n")
+		console.KWriteString("[RunShepherd] ERROR: no thread to switch to\r\n")
 		return int64(errNoSpace)
 	}
 
 	return 0
 }
 
-// DoRunPriestWork performs the heavy priest creation from the caller's pages.
+// DoRunShepherdWork performs the heavy shepherd creation from the caller's pages.
 // Called by the kernel worker goroutine on a normal growable stack.
-func DoRunPriestWork(req *RunPriestWorkRequest) int64 {
+func DoRunShepherdWork(req *RunShepherdWorkRequest) int64 {
 	// Copy ELF data from the caller's pages into a contiguous kernel buffer.
 	elfData := copyPagesFromUser(req.StartVA, req.TotalBytes, req.CallerL0PA)
 	if elfData == nil {
-		console.KWriteString("[RunPriest] ERROR: failed to copy pages from user\r\n")
+		console.KWriteString("[RunShepherd] ERROR: failed to copy pages from user\r\n")
 		return int64(errNullPointer)
 	}
 
 	// Unmap the raw ELF pages from the caller (implicit cleanup).
-	unmapUserPages(req.StartVA, req.NumPages, req.CallerL0PA, int16(req.CallerPriest.PID))
+	unmapUserPages(req.StartVA, req.NumPages, req.CallerL0PA, int16(req.CallerShepherd.PID))
 
 	// Validate ELF header
 	if len(elfData) < 64 {
@@ -127,7 +127,7 @@ func DoRunPriestWork(req *RunPriestWorkRequest) int64 {
 		return int64(errWrongArch)
 	}
 
-	// Create a fresh page table for the new priest
+	// Create a fresh page table for the new shepherd
 	processL0PA := kmem.CreateProcessPageTable()
 	if processL0PA == 0 {
 		return int64(errNoSpace)
@@ -136,7 +136,7 @@ func DoRunPriestWork(req *RunPriestWorkRequest) int64 {
 	// Switch TTBR0 to new process page table for IC IVAU correctness
 	kmem.SwitchTTBR0WithASID(processL0PA, 0)
 
-	// Map framebuffer into new priest's address space
+	// Map framebuffer into new shepherd's address space
 	fbPA := gpu.GetFramebufferPA()
 	fbSize := uintptr(gpu.GetFramebufferSize())
 	if !kmem.MapUserFramebuffer(fbPA, fbSize) {
@@ -144,23 +144,23 @@ func DoRunPriestWork(req *RunPriestWorkRequest) int64 {
 	}
 	addSpan(UserFramebufferVA, UserFramebufferSize)
 
-	// Map constraint shared pages read-only into priest address space.
+	// Map constraint shared pages read-only into shepherd address space.
 	if !kmem.MapUserConstraintPages() {
 		return int64(errNoSpace)
 	}
 	addSpan(UserConstraintPagesVA, UserConstraintPagesSize)
 
-	// Initialize kernel attribute manager (once, on first priest launch).
+	// Initialize kernel attribute manager (once, on first shepherd launch).
 	InitKernelAttrManager()
 
 	// Build symbol table and find highest VA from the raw ELF
-	priestSymTable := buildSymbolTable(elfData, &hdr)
-	priestHighestVA := findHighestVA(elfData, &hdr)
+	shepherdSymTable := buildSymbolTable(elfData, &hdr)
+	shepherdHighestVA := findHighestVA(elfData, &hdr)
 
-	// Load ELF into the new priest's page table
+	// Load ELF into the new shepherd's page table
 	loadedProc, err := loadELF(elfData, "/"+req.Name+".elf", processL0PA, 0)
 	if err != nil {
-		console.KWriteString("[RunPriest] loadELF failed\r\n")
+		console.KWriteString("[RunShepherd] loadELF failed\r\n")
 		return int64(errInvalidELF)
 	}
 
@@ -169,17 +169,17 @@ func DoRunPriestWork(req *RunPriestWorkRequest) int64 {
 	SetUserspaceActive()
 	kmem.FinalUserspaceSync()
 
-	// Create a new thread for this priest
+	// Create a new thread for this shepherd
 	tid := CreateUserspaceThread(loadedProc.EntryPoint, loadedProc.StackTop, processL0PA)
 
-	// Cache symbol table, highest VA, and filename on the priest struct
-	for i := 0; i < proc.MaxPriests; i++ {
-		if proc.PriestListInUse[i] && proc.PriestListData[i].PageTableL0PA == processL0PA {
-			proc.PriestListData[i].SymbolTable = priestSymTable
-			proc.PriestListData[i].HighestVA = priestHighestVA
-			proc.PriestListData[i].Filename = "/" + req.Name + ".elf"
-			console.KPrintf("[RunPriest] %s launched (TID=%d, PID=%d)\n",
-				req.Name, tid, proc.PriestListData[i].PID)
+	// Cache symbol table, highest VA, and filename on the shepherd struct
+	for i := 0; i < proc.MaxShepherds; i++ {
+		if proc.ShepherdListInUse[i] && proc.ShepherdListData[i].PageTableL0PA == processL0PA {
+			proc.ShepherdListData[i].SymbolTable = shepherdSymTable
+			proc.ShepherdListData[i].HighestVA = shepherdHighestVA
+			proc.ShepherdListData[i].Filename = "/" + req.Name + ".elf"
+			console.KPrintf("[RunShepherd] %s launched (TID=%d, PID=%d)\n",
+				req.Name, tid, proc.ShepherdListData[i].PID)
 			break
 		}
 	}

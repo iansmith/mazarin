@@ -46,7 +46,7 @@ type Interactor struct {
 	LPTextColor *attr.Handle[int64]
 
 	// Private
-	priestName string
+	shepherdName string
 	padding    int64
 }
 
@@ -89,13 +89,13 @@ func readKernelI64(kernelURI string) int64 {
 			break
 		}
 	}
-	uri := "attr:///priest/" + pName + "/int64/_init/" + short
+	uri := "attr:///shepherd/" + pName + "/int64/_init/" + short
 	h := attr.ConstraintI64(uri, prog)
 	return h.Get()
 }
 
 func (i *Interactor) uri(typePath, attrName string) string {
-	return "attr:///priest/" + i.priestName + "/" + typePath + "/" + i.ID + "/" + attrName
+	return "attr:///shepherd/" + i.shepherdName + "/" + typePath + "/" + i.ID + "/" + attrName
 }
 
 func register(i *Interactor) {

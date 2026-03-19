@@ -109,7 +109,7 @@ const (
 const AbsMax = 32767
 
 // BlockVirtualIRQ is the virtual IRQ number for the kernel block device.
-// Used by the disk priest to register for block device ownership via RegisterSoftIRQ.
+// Used by the disk shepherd to register for block device ownership via RegisterSoftIRQ.
 const BlockVirtualIRQ uint32 = 201
 
 // TimerVirtualIRQ is the virtual IRQ number for the kernel timer device.

@@ -122,19 +122,19 @@ func RunFirstThread()
 //go:nosplit
 func ThreadExitAsm() uint64
 
-// TerminatePriestAsm is the ABI0 entry point for killing all threads of a priest.
+// TerminateShepherdAsm is the ABI0 entry point for killing all threads of a shepherd.
 // Called from exception handler or syscall handler.
 // Args: pid (uint64), status (int64)
 // Returns pointer to next ThreadContext (or 0 if no threads remain).
 //go:nosplit
-func TerminatePriestAsm(pid uint64, status int64) uint64
+func TerminateShepherdAsm(pid uint64, status int64) uint64
 
 // HandleUnhandledExceptionAsm is the ABI0 entry point for handling unhandled
 // userspace exceptions (data abort, instruction abort, illegal instruction, etc.).
-// Maps hardware exception to signal, delivers to handler or kills priest.
+// Maps hardware exception to signal, delivers to handler or kills shepherd.
 // Args: excInfo (ESR/vector/scause), faultAddr (FAR/CR2/stval), faultPC (ELR/RIP/SEPC)
 // Returns: 0 if signal was queued (return via normal path), or pointer to next
-// ThreadContext if priest was killed.
+// ThreadContext if shepherd was killed.
 // NOT nosplit: exception stack is above g0.stackguard0, stack check passes.
 func HandleUnhandledExceptionAsm(excInfo, faultAddr, faultPC uint64) uint64
 

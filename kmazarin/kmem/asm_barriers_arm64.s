@@ -37,7 +37,7 @@ TEXT ·tlbiVMALLE1IS(SB), NOSPLIT, $0-0
 
 // tlbiASIDE1ISAsm - Invalidate TLB entries by ASID Inner Shareable
 // Invalidates all TLB entries matching the given ASID across all CPUs.
-// This is used for aggressive ASID reuse - when a priest exits and its
+// This is used for aggressive ASID reuse - when a shepherd exits and its
 // ASID is about to be reused, we must invalidate all old TLB entries.
 // TLBI ASIDE1IS, Xt where Xt[63:48] = ASID
 // Encoding: TLBI ASIDE1IS = 0xD5088720 | (Rt << 0) where Rt is the register
