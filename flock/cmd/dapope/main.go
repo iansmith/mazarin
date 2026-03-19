@@ -8,8 +8,7 @@ package main
 
 import (
 	"fmt"
-	"mazzy/flock/cmd/dapope/cursorgen"
-	"mazzy/mazarin/gui/core"
+	"mazzy/mazarin/attr"
 	"mazzy/mazarin/input"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/hid"
@@ -119,7 +118,6 @@ func keyboardLoop(slot int) {
 			fmt.Printf("[dapope:kbd] WaitSoftIRQ error: %v\n", err)
 			continue
 		}
-		// (keyboard 'K' breadcrumb removed — write delegation renders these on console)
 		for i := 0; i < n; i++ {
 			ev := buf.Events[i]
 			if ev.Type != EV_KEY {
@@ -173,10 +171,9 @@ func keyboardLoop(slot int) {
 	}
 }
 
-func mouseLoop(slot int, stack core.CursorStack, images core.CursorImageMap, renderer *cursorRenderer) {
+func mouseLoop(slot int) {
 	fmt.Printf("[dapope] mouse goroutine started on slot %d\n", slot)
 	var buf hid.SoftIRQReturn
-	var dx, dy int
 	batches := 0
 	for {
 		n, err := sys.WaitSoftIRQ(slot, &buf)
@@ -189,18 +186,13 @@ func mouseLoop(slot int, stack core.CursorStack, images core.CursorImageMap, ren
 			ev := buf.Events[i]
 			switch ev.Type {
 			case EV_REL:
-				switch ev.Code {
-				case REL_X:
-					dx += int(int32(ev.Value))
-				case REL_Y:
-					dy += int(int32(ev.Value))
-				case REL_WHEEL:
-					switchInput(inputWheel)
-					fmt.Printf("[dapope:mouse] wheel %+d\n", int32(ev.Value))
-				}
 				// Debug: dump first 3 batches of REL events with values
 				if batches <= 3 {
 					fmt.Fprintf(os.Stderr, "[rel c=%d v=%d]", ev.Code, int32(ev.Value))
+				}
+				if ev.Code == REL_WHEEL {
+					switchInput(inputWheel)
+					fmt.Printf("[dapope:mouse] wheel %+d\n", int32(ev.Value))
 				}
 			case EV_KEY:
 				switchInput(inputButton)
@@ -211,20 +203,8 @@ func mouseLoop(slot int, stack core.CursorStack, images core.CursorImageMap, ren
 				fmt.Printf("[dapope:mouse] %s %s\n", buttonName(ev.Code), action)
 			}
 		}
-		// Draw ONCE per batch: accumulate all mouse movement from the
-		// entire WaitSoftIRQ batch and render a single frame. Drawing
-		// per-EV_SYN generated 10+ GPU commands per batch (each with
-		// IRQs disabled), monopolizing the CPU and starving draining.
-		if dx != 0 || dy != 0 {
-			stack.Move(dx, -dy)
-			renderer.Draw(stack, images)
-			dx, dy = 0, 0
-		}
 	}
 }
-
-// timerLoop and findStdioPID disabled — clock display handled by uitest.
-// Timer IRQ registration also skipped (see device loop above).
 
 func main() {
 	fmt.Println("[dapope] Starting input event handler")
@@ -270,27 +250,6 @@ func main() {
 		}
 	}
 
-	cursorImages := NewCursorImageDefault()
-	cursorStack := NewCursorStackDefault()
-
-	// Set up framebuffer and cursor rendering
-	fb, err := sys.GetFramebuffer()
-	if err != nil {
-		fmt.Printf("[dapope] GetFramebuffer failed: %v\n", err)
-		return
-	}
-	fmt.Printf("[dapope] Framebuffer: %dx%d pitch=%d addr=0x%x\n",
-		fb.Width, fb.Height, fb.Pitch, fb.Addr)
-
-	// Generate arrow cursor and register it
-	arrowImg := cursorgen.GenerateArrowCursor()
-	arrowCursor := cursorImages.CursorImageAdd(arrowImg)
-	cursorStack.Bottom(arrowCursor)
-	cursorStack.SetPosition(960, 540)
-
-	renderer := newCursorRenderer(fb)
-	fmt.Println("[dapope] Cursor ready (deferred until first mouse event)")
-
 	// Launch goroutines that block on WaitSoftIRQ.
 	// Each goroutine uses entersyscall to release the P while the
 	// kernel thread sleeps waiting for events, allowing other
@@ -301,7 +260,7 @@ func main() {
 		runtime.Gosched()
 	}
 	if mouseSlot >= 0 {
-		go mouseLoop(mouseSlot, cursorStack, cursorImages, renderer)
+		go mouseLoop(mouseSlot)
 		runtime.Gosched()
 	}
 
@@ -330,6 +289,12 @@ func main() {
 		go runWithLargeStack(mazMain)
 		fmt.Println("[dapope] .maz goroutine launched")
 	}
+
+	// Publish ready status to constraint network.
+	attr.Init()
+	ready := attr.ValueBool("attr:///priest/dapope/bool/ready", true)
+	_ = ready
+	fmt.Println("[dapope] ready=true published to constraint network")
 
 	// Block main goroutine forever
 	select {}
