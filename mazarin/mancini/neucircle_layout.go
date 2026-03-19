@@ -21,6 +21,6 @@ func (n *NeuCircle) InitLayout(parent string) {
 	n.Layout = newLayoutHandles(n.Name, parent)
 
 	// Publish margin as a value attribute for debugging/inspection.
-	marginURI := layoutURI(n.Name, "int64", "margin")
+	marginURI := layoutURI(n.Name, "int64", "Margin")
 	attr.ValueI64(marginURI, int64(n.margin))
 }

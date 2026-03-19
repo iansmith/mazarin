@@ -10,6 +10,8 @@ package attr
 import (
 	"mazzy/mazarin/vm/flat"
 	"mazzy/shared/constants"
+	"os"
+	"strconv"
 	"unsafe"
 )
 
@@ -32,6 +34,9 @@ var trieCap uint16
 // initialized tracks whether Init() has been called.
 var handleInitialized bool
 
+// sidStr is the string representation of this shepherd's SID, set during Init().
+var sidStr string
+
 // Init sets up the client attribute library by reading the SharedPageHeader
 // from the well-known constraint page VA. Must be called before using any
 // Handle operations. Safe to call multiple times.
@@ -47,7 +52,19 @@ func Init() {
 	}
 
 	trieBase, trieCap = flat.ReadTrieRegion(sharedBase)
+	sidStr = strconv.Itoa(os.Getpid())
 	handleInitialized = true
+}
+
+// SID returns this shepherd's SID as a string, for use in attribute URIs.
+// Must be called after Init().
+func SID() string {
+	return sidStr
+}
+
+// ShepherdURI builds a URI for this shepherd: attr:///shepherd/{sid}/{typePath}/{rest}.
+func ShepherdURI(typePath, rest string) string {
+	return "attr:///shepherd/" + sidStr + "/" + typePath + "/" + rest
 }
 
 // trieNode returns a read-only pointer to the TrieNode at the given index.

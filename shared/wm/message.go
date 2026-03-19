@@ -46,3 +46,23 @@ type YouLostFocusMsg struct {
 	Type int64 // MsgYouLostFocus
 	_    [120]byte
 }
+
+// Well-known attribute URIs.
+//
+// These define the contract between shepherds and the window manager.
+// A shepherd publishes Ready=true once it has drawn its first frame and
+// its constraint handles are valid. The WM must not read any other
+// attributes from a shepherd until Ready is true.
+
+// ReadyURI returns the URI for a shepherd's Ready flag.
+// A shepherd sets this to true after first draw + successful Bounds evaluation.
+// The WM gates all interaction on this: no Ready, no tracking.
+func ReadyURI(sid string) string {
+	return "attr:///shepherd/" + sid + "/bool/Ready"
+}
+
+// AppWindowBoundsURI returns the URI for a shepherd's AppWindow bounding rectangle.
+// This is a Rectangle2D constraint: rect(X, Y, X+W, Y+H) in screen coordinates.
+func AppWindowBoundsURI(sid string) string {
+	return "attr:///shepherd/" + sid + "/rect/AppWindow/layout/Bounds"
+}

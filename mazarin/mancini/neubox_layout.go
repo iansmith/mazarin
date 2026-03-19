@@ -22,7 +22,7 @@ func (n *NeuBox) InitLayout(parent string) {
 	n.Layout.constraintHeight = true
 
 	// Margin value attribute for constraint programs to reference.
-	marginURI := layoutURI(n.Name, "int64", "margin")
+	marginURI := layoutURI(n.Name, "int64", "Margin")
 	attr.ValueI64(marginURI, int64(n.margin))
 
 	// Max size attribute (default 800 logical pixels).
@@ -30,24 +30,24 @@ func (n *NeuBox) InitLayout(parent string) {
 	if n.MaxSize > 0 {
 		maxSize = int64(n.MaxSize)
 	}
-	maxSizeURI := layoutURI(n.Name, "int64", "maxSize")
+	maxSizeURI := layoutURI(n.Name, "int64", "MaxSize")
 	attr.ValueI64(maxSizeURI, maxSize)
 
 	// Build find pattern and URI fragments for constraint binding.
-	findPattern := "attr:///shepherd/" + manciniPID + "/str/*/layout/parent"
+	findPattern := "attr:///shepherd/" + manciniPID + "/str/*/layout/Parent"
 	prefix := "attr:///shepherd/" + manciniPID + "/int64/"
 
 	// Width = min(child width + 2*margin, maxSize). Default 20 if no child.
 	widthProg := interactor.BindStrings(ProgDecorationWidth,
-		findPattern, n.Name, marginURI, prefix, "/layout/width", maxSizeURI)
+		findPattern, n.Name, marginURI, prefix, "/layout/Width", maxSizeURI)
 	n.Layout.Width = attr.ConstraintI64(
-		layoutURI(n.Name, "int64", "width"), widthProg)
+		layoutURI(n.Name, "int64", "Width"), widthProg)
 
 	// Height = min(child height + 2*margin, maxSize). Default 30 if no child.
 	heightProg := interactor.BindStrings(ProgDecorationHeight,
-		findPattern, n.Name, marginURI, prefix, "/layout/height", maxSizeURI)
+		findPattern, n.Name, marginURI, prefix, "/layout/Height", maxSizeURI)
 	n.Layout.Height = attr.ConstraintI64(
-		layoutURI(n.Name, "int64", "height"), heightProg)
+		layoutURI(n.Name, "int64", "Height"), heightProg)
 
 	// Bounds and BoundsHash derived from X, Y, Width, Height.
 	n.Layout.initBounds(n.Name)

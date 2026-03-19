@@ -66,9 +66,10 @@ const CharWidthURI = "attr:///kernel/int64/screen/charWidth"
 // CharHeightURI is the kernel attribute for character height.
 const CharHeightURI = "attr:///kernel/int64/screen/charHeight"
 
-// Init initializes the interactor library. Must be called after attr.Init().
-func Init(name string) {
-	pName = name
+// Init initializes the interactor library using the shepherd's SID from attr.SID().
+// Must be called after attr.Init().
+func Init() {
+	pName = attr.SID()
 	registry = make(map[string]*Interactor)
 
 	charWidthV = readKernelI64(CharWidthURI)

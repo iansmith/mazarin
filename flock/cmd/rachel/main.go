@@ -9,8 +9,11 @@ import (
 	"fmt"
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/input"
+	"mazzy/mazarin/interactor"
 	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
+	"mazzy/mazarin/vm"
+	"mazzy/mazarin/vm/flat"
 	"mazzy/shared/hid"
 	"mazzy/shared/wm"
 	// mazhost import forces the linker to retain all runtime functions
@@ -18,6 +21,7 @@ import (
 	_ "mazzy/mazarin/mazhost"
 	"os"
 	"runtime"
+	"strconv"
 	"time"
 	"unsafe"
 )
@@ -221,6 +225,55 @@ func mouseMovementLoop() {
 	}
 }
 
+// trackedApp holds rachel's constraint handles for a managed shepherd.
+type trackedApp struct {
+	sid    int
+	bounds *attr.Handle[vm.Value] // tracks shepherd's AppWindow/layout/Bounds
+}
+
+// trackedApps maps SID → trackedApp for all shepherds rachel is managing.
+var trackedApps = make(map[int]*trackedApp)
+
+// trackAppBounds creates a local constraint that mirrors a shepherd's
+// AppWindow Bounds rectangle. Returns nil if the shepherd is not Ready
+// or has no Bounds attribute (shepherd probably crashed).
+func trackAppBounds(sid int) *trackedApp {
+	sidStr := strconv.Itoa(sid)
+
+	// Gate on Ready — the shepherd must have published Ready=true before
+	// we read any of its constraint attributes.
+	readyURI := wm.ReadyURI(sidStr)
+	if !attr.Exists(readyURI) {
+		fmt.Printf("[rachel:wm] SID %d has no Ready attribute — ignoring\n", sid)
+		return nil
+	}
+
+	// Check that the shepherd's AppWindow Bounds attribute exists.
+	boundsURI := wm.AppWindowBoundsURI(sidStr)
+	if !attr.Exists(boundsURI) {
+		fmt.Printf("[rachel:wm] SID %d Ready but no AppWindow Bounds — ignoring\n", sid)
+		return nil
+	}
+
+	// Create a constraint in rachel's namespace that tracks the remote Bounds.
+	prog := interactor.BindStrings(interactor.ProgIdentityRect, boundsURI)
+	localURI := attr.ShepherdURI("rect", "tracked/"+sidStr+"/Bounds")
+	bounds := attr.ConstraintComposite(localURI, flat.TypeRectangle, prog)
+
+	// Force initial evaluation to wire dependency edges.
+	v := bounds.Get()
+	if v.Type() == vm.TypeTribool {
+		fmt.Printf("[rachel:wm] SID %d Bounds deref returned unknown — ignoring\n", sid)
+		return nil
+	}
+	x0, y0, x1, y1 := v.AsRectangle()
+	fmt.Printf("[rachel:wm] tracking SID %d Bounds: (%d,%d)-(%d,%d)\n", sid, x0, y0, x1, y1)
+
+	ta := &trackedApp{sid: sid, bounds: bounds}
+	trackedApps[sid] = ta
+	return ta
+}
+
 // mailboxLoop receives mailbox notifications from other shepherds.
 // When a shepherd sends AppStart, rachel sets input focus for it
 // and sends YouHaveFocus back via a return ring buffer.
@@ -245,6 +298,14 @@ func mailboxLoop() {
 					msg := (*wm.AppStartMsg)(unsafe.Pointer(&raw[0]))
 					senderSID := int(msg.SID)
 					fmt.Printf("[rachel:mailbox] AppStart from SID %d\n", senderSID)
+
+					// Track the shepherd's AppWindow Bounds in rachel's constraint space.
+					// If the Bounds attribute doesn't exist, the shepherd crashed or
+					// didn't publish constraints — ignore the AppStart.
+					if trackAppBounds(senderSID) == nil {
+						fmt.Printf("[rachel:mailbox] SID %d has no trackable Bounds, skipping\n", senderSID)
+						continue
+					}
 
 					// Grant all input focus to this shepherd
 					sys.SetInputFocus(senderSID, hid.InputClassKeyboard)
@@ -290,6 +351,10 @@ func main() {
 	}
 	fmt.Println("[rachel] became window manager")
 
+	// Initialize constraint system early — mailbox handler creates constraints.
+	attr.Init()
+	fmt.Printf("[rachel] attr init done (SID=%s)\n", attr.SID())
+
 	// Start mailbox receiver — handles AppStart from other shepherds.
 	go mailboxLoop()
 	runtime.Gosched()
@@ -330,11 +395,10 @@ func main() {
 		fmt.Println("[rachel] .maz goroutine launched")
 	}
 
-	// Publish ready status to constraint network.
-	attr.Init()
-	ready := attr.ValueBool("attr:///shepherd/rachel/bool/ready", true)
+	// Publish ready status to constraint network using the well-known URI.
+	ready := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
 	_ = ready
-	fmt.Println("[rachel] ready=true published to constraint network")
+	fmt.Printf("[rachel] Ready=true published (SID=%s)\n", attr.SID())
 
 	// Block main goroutine forever
 	select {}

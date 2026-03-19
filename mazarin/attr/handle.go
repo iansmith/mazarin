@@ -163,7 +163,14 @@ func (h *Handle[T]) evaluate() {
 	}
 
 	// Write result back to kernel.
+	// If the result is Tribool(unknown), the constraint could not resolve
+	// its dependencies (e.g., remote attribute not yet published). Skip
+	// the write-back and leave the cached value unchanged. Dependencies
+	// are still updated so re-evaluation triggers when the remote appears.
 	result := results[0]
+	if result.Type() == vm.TypeTribool && result.AsI64() == vm.TriboolUnknown {
+		goto updateDeps
+	}
 	if result.Type() == vm.TypeStr {
 		// String results go through the special string syscall.
 		if err := sys.AttrWriteString(h.slot, result.AsStr(), true); err != nil {
@@ -181,6 +188,7 @@ func (h *Handle[T]) evaluate() {
 		}
 	}
 
+updateDeps:
 	// Update dependencies if the read set changed.
 	if readSet != nil {
 		if h.lastRS == nil || !h.lastRS.Equal(readSet) {

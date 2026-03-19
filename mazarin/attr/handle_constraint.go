@@ -92,7 +92,9 @@ func ConstraintComposite(uri string, flatType uint8, prog *vm.Program, deps ...H
 		toT: func(fv flat.FlatValue) vm.Value {
 			v, err := flat.FlatToValue(fv, sharedPR)
 			if err != nil {
-				panic("attr: FlatToValue failed: " + err.Error())
+				// Slot has no valid value yet (e.g., constraint returned unknown).
+				// Return tribool(unknown) so callers can detect this.
+				return vm.Tribool(vm.TriboolUnknown)
 			}
 			return v
 		},

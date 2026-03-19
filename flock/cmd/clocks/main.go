@@ -61,6 +61,41 @@ func findShepherdByName(name string) int {
 	return -1
 }
 
+// announceToWM finds rachel, sends AppStart, and starts the mailbox receiver.
+// Runs as a goroutine so the main goroutine can draw the window immediately.
+func announceToWM() {
+	rachelSID := findShepherdByName("rachel")
+	if rachelSID < 0 {
+		sys.UartWriteString("[clocks] WARNING: rachel not found, requesting focus directly\n")
+		sys.SetInputFocus(0, hid.InputClassKeyboard)
+		sys.SetInputFocus(0, hid.InputClassMouseClick)
+		return
+	}
+
+	myPID := os.Getpid()
+	sys.UartWriteString(fmt.Sprintf("[clocks] found rachel SID=%d, my SID=%d (T+%v)\n", rachelSID, myPID, time.Since(startTime)))
+
+	rb, err := ringbuf.New(rachelSID, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
+	if err != nil {
+		sys.UartWriteString("[clocks] ring buffer creation failed: " + err.Error() + "\n")
+		return
+	}
+
+	var msg wm.AppStartMsg
+	msg.Type = wm.MsgAppStart
+	msg.SID = int64(myPID)
+	rb.Push(unsafe.Pointer(&msg))
+
+	if err := sys.MailboxSend(rachelSID, wm.WMNotify, rb.Addr()); err != nil {
+		sys.UartWriteString("[clocks] MailboxSend failed: " + err.Error() + "\n")
+		return
+	}
+	sys.UartWriteString(fmt.Sprintf("[clocks] sent AppStart to rachel (T+%v)\n", time.Since(startTime)))
+
+	// Start mailbox receiver for focus notifications.
+	go mailboxRecvLoop()
+}
+
 // mailboxRecvLoop receives notifications from rachel (e.g., YouHaveFocus).
 func mailboxRecvLoop() {
 	for {
@@ -76,7 +111,7 @@ func mailboxRecvLoop() {
 				msgType := *(*int64)(unsafe.Pointer(&raw[0]))
 				switch msgType {
 				case wm.MsgYouHaveFocus:
-					sys.UartWriteString("[clocks:mailbox] received YouHaveFocus!\n")
+					sys.UartWriteString(fmt.Sprintf("[clocks:mailbox] received YouHaveFocus! (T+%v)\n", time.Since(startTime)))
 				case wm.MsgYouLostFocus:
 					sys.UartWriteString("[clocks:mailbox] received YouLostFocus\n")
 				default:
@@ -87,47 +122,17 @@ func mailboxRecvLoop() {
 	}
 }
 
+var startTime time.Time
+
 func main() {
+	startTime = time.Now()
 	sys.UartWriteString("[clocks] main() entered\n")
 
 	// 1. Initialize constraint system.
 	attr.Init()
-	interactor.Init("clocks")
-	mancini.Init("clocks")
-	sys.UartWriteString("[clocks] attr + interactor init done\n")
-
-	// Find rachel (window manager) and send AppStart so she can grant us focus.
-	rachelSID := findShepherdByName("rachel")
-	if rachelSID < 0 {
-		sys.UartWriteString("[clocks] WARNING: rachel not found, requesting focus directly\n")
-		sys.SetInputFocus(0, hid.InputClassKeyboard)
-		sys.SetInputFocus(0, hid.InputClassMouseClick)
-	} else {
-		myPID := os.Getpid()
-		sys.UartWriteString(fmt.Sprintf("[clocks] found rachel SID=%d, my SID=%d\n", rachelSID, myPID))
-
-		// Create ring buffer targeting rachel
-		rb, err := ringbuf.New(rachelSID, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
-		if err != nil {
-			sys.UartWriteString("[clocks] ring buffer creation failed: " + err.Error() + "\n")
-		} else {
-			// Push AppStart message
-			var msg wm.AppStartMsg
-			msg.Type = wm.MsgAppStart
-			msg.SID = int64(myPID)
-			rb.Push(unsafe.Pointer(&msg))
-
-			// Notify rachel
-			if err := sys.MailboxSend(rachelSID, wm.WMNotify, rb.Addr()); err != nil {
-				sys.UartWriteString("[clocks] MailboxSend failed: " + err.Error() + "\n")
-			} else {
-				sys.UartWriteString("[clocks] sent AppStart to rachel\n")
-			}
-		}
-
-		// Start mailbox receiver to get focus notifications from rachel.
-		go mailboxRecvLoop()
-	}
+	interactor.Init()
+	mancini.Init()
+	sys.UartWriteString(fmt.Sprintf("[clocks] attr + interactor init done, SID=%s (T+%v)\n", attr.SID(), time.Since(startTime)))
 
 	// 2. Parse embedded fonts and build a Theme.
 	otFont, err := opentype.Parse(fontData)
@@ -182,12 +187,12 @@ func main() {
 	// 4. Time tracking via constraint system — needed by Clock widgets.
 	timeProg := interactor.BindStrings(interactor.ProgIdentityI64,
 		"attr:///kernel/int64/time/utc_seconds")
-	timeSec := attr.ConstraintI64("attr:///shepherd/clocks/int64/time_sec", timeProg)
+	timeSec := attr.ConstraintI64(attr.ShepherdURI("int64", "time_sec"), timeProg)
 	timeSec.Get()
 
 	nanosProg := interactor.BindStrings(interactor.ProgIdentityI64,
 		"attr:///kernel/int64/time/utc_nanos")
-	timeNanos := attr.ConstraintI64("attr:///shepherd/clocks/int64/time_nanos", nanosProg)
+	timeNanos := attr.ConstraintI64(attr.ShepherdURI("int64", "time_nanos"), nanosProg)
 	timeNanos.SetEager(true)
 	_ = timeNanos.Get()
 
@@ -262,7 +267,7 @@ func main() {
 		Name:     "main_row",
 		Children: columns,
 	}
-	row.InitLayout("clock_window")
+	row.InitLayout("AppWindow")
 	row.SetSpacing(20)
 
 	// Title bar: AppTitleBar with a bold centered label.
@@ -283,7 +288,7 @@ func main() {
 
 	app := &mancini.AppWindow{
 		Theme:    theme,
-		Name:     "clock_window",
+		Name:     "AppWindow",
 		Title:    "World Clocks",
 		Focused:  true,
 		TitleBar: titleBar,
@@ -341,10 +346,22 @@ func main() {
 	// Draw at the centered position with proper dimensions.
 	app.Draw(fbImage, winX, winY, winW, winH)
 	dc.FlushRegion()
-	sys.UartWriteString("[clocks] initial draw done, entering loop\n")
+	sys.UartWriteString(fmt.Sprintf("[clocks] initial draw done (T+%v)\n", time.Since(startTime)))
 
-	// 8. Instrumentation counters.
-	eagerHandle := attr.ValueI64("attr:///shepherd/clocks/int64/stats/eagerUpdates", 0)
+	// 8. Force Bounds evaluation so the shared page has a valid rectangle,
+	// then publish Ready. Rachel gates all interaction on Ready.
+	_ = app.Layout.Bounds.Get()
+	readyHandle := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
+	_ = readyHandle
+	sys.UartWriteString(fmt.Sprintf("[clocks] Ready=true, Bounds published (T+%v)\n", time.Since(startTime)))
+
+	// 9. Announce to rachel (window manager).
+	// All constraint attributes (including Bounds) are published by now,
+	// so rachel can attach her own constraints to track our window.
+	announceToWM()
+
+	// 9. Instrumentation counters.
+	eagerHandle := attr.ValueI64(attr.ShepherdURI("int64", "stats/eagerUpdates"), 0)
 	eagerSlot := eagerHandle.Slot()
 	var drawCount atomic.Int64
 

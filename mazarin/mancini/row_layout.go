@@ -18,25 +18,25 @@ func (r *Row) InitLayout(parent string) {
 	r.Layout.constraintHeight = true
 
 	// Inter-child spacing attribute. Set via Row.SetSpacing() after InitLayout.
-	spacingURI := layoutURI(r.Name, "int64", "spacing")
+	spacingURI := layoutURI(r.Name, "int64", "Spacing")
 	r.Layout.SpacingHandle = attr.ValueI64(spacingURI, 0)
 
 	// Build find pattern and URI fragments for constraint binding.
-	findPattern := "attr:///shepherd/" + manciniPID + "/str/*/layout/parent"
+	findPattern := "attr:///shepherd/" + manciniPID + "/str/*/layout/Parent"
 	prefix := "attr:///shepherd/" + manciniPID + "/int64/"
 
 	// Row WIDTH is a constraint: sum of children widths + spacing.
-	// Bindings: _0_=findPattern, _1_=spacingURI, _2_=r.Name, _3_=prefix, _4_="/layout/width"
+	// Bindings: _0_=findPattern, _1_=spacingURI, _2_=r.Name, _3_=prefix, _4_="/layout/Width"
 	widthProg := interactor.BindStrings(interactor.ProgRowWidth,
-		findPattern, spacingURI, r.Name, prefix, "/layout/width")
-	widthURI := layoutURI(r.Name, "int64", "width")
+		findPattern, spacingURI, r.Name, prefix, "/layout/Width")
+	widthURI := layoutURI(r.Name, "int64", "Width")
 	r.Layout.Width = attr.ConstraintI64(widthURI, widthProg)
 
 	// Row HEIGHT is a constraint: max of children heights.
-	// Bindings: _0_=findPattern, _1_=r.Name, _2_=prefix, _3_="/layout/height"
+	// Bindings: _0_=findPattern, _1_=r.Name, _2_=prefix, _3_="/layout/Height"
 	heightProg := interactor.BindStrings(interactor.ProgRowHeight,
-		findPattern, r.Name, prefix, "/layout/height")
-	heightURI := layoutURI(r.Name, "int64", "height")
+		findPattern, r.Name, prefix, "/layout/Height")
+	heightURI := layoutURI(r.Name, "int64", "Height")
 	r.Layout.Height = attr.ConstraintI64(heightURI, heightProg)
 
 	// Bounds derived from X, Y, Width, Height.

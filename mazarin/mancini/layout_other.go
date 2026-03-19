@@ -6,7 +6,7 @@ package mancini
 type LayoutHandles struct{}
 
 // Init is a no-op on non-linux.
-func Init(name string) {}
+func Init() {}
 
 func setVisibleHandle(lh *LayoutHandles, v int64)       {}
 func (lh *LayoutHandles) boundsHashValue() int64        { return 0 }

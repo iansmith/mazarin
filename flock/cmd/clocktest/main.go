@@ -10,6 +10,8 @@ import (
 	"mazzy/mazarin/vm"
 )
 
+
+
 func main() {
 	attr.Init()
 
@@ -29,7 +31,7 @@ func main() {
 		},
 	}
 
-	timeSec := attr.ConstraintI64("attr:///shepherd/clocktest/time_sec", prog)
+	timeSec := attr.ConstraintI64(attr.ShepherdURI("int64", "time_sec"), prog)
 
 	// Force initial evaluation to wire dependency edges.
 	sec := timeSec.Get()
