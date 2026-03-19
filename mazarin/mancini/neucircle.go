@@ -30,6 +30,7 @@ type NeuCircle struct {
 }
 
 func (n *NeuCircle) GetLayout() *LayoutHandles { return n.Layout }
+func (n *NeuCircle) GetChild() Drawer            { return n.Child }
 
 // preferredDiameter computes the circle diameter from the child's preferred size.
 // diameter = max(childW, childH) + 2*margin. The child receives the full inner

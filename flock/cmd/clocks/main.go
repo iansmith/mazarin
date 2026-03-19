@@ -17,7 +17,6 @@ import (
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
-	"mazzy/shared/hid"
 	"mazzy/shared/wm"
 	"os"
 	"unsafe"
@@ -62,13 +61,11 @@ func findShepherdByName(name string) int {
 }
 
 // announceToWM finds rachel, sends AppStart, and starts the mailbox receiver.
-// Runs as a goroutine so the main goroutine can draw the window immediately.
-func announceToWM() {
+// clickTargets are the interactors that can receive mouse press events.
+func announceToWM(clickTargets []mancini.Drawer) {
 	rachelSID := findShepherdByName("rachel")
 	if rachelSID < 0 {
-		sys.UartWriteString("[clocks] WARNING: rachel not found, requesting focus directly\n")
-		sys.SetInputFocus(0, hid.InputClassKeyboard)
-		sys.SetInputFocus(0, hid.InputClassMouseClick)
+		sys.UartWriteString("[clocks] WARNING: rachel not found\n")
 		return
 	}
 
@@ -92,12 +89,13 @@ func announceToWM() {
 	}
 	sys.UartWriteString(fmt.Sprintf("[clocks] sent AppStart to rachel (T+%v)\n", time.Since(startTime)))
 
-	// Start mailbox receiver for focus notifications.
-	go mailboxRecvLoop()
+	// Start mailbox receiver for focus + mouse events.
+	go mailboxRecvLoop(clickTargets)
 }
 
-// mailboxRecvLoop receives notifications from rachel (e.g., YouHaveFocus).
-func mailboxRecvLoop() {
+// mailboxRecvLoop receives notifications from rachel (e.g., YouHaveFocus, MousePress).
+// Mouse press events are dispatched through MousePolicy to the appropriate clock interactor.
+func mailboxRecvLoop(clickTargets []mancini.Drawer) {
 	for {
 		notif, err := sys.MailboxRecv()
 		if err != nil {
@@ -114,6 +112,12 @@ func mailboxRecvLoop() {
 					sys.UartWriteString(fmt.Sprintf("[clocks:mailbox] received YouHaveFocus! (T+%v)\n", time.Since(startTime)))
 				case wm.MsgYouLostFocus:
 					sys.UartWriteString("[clocks:mailbox] received YouLostFocus\n")
+				case wm.MsgMousePress:
+					msg := (*wm.MousePressMsg)(unsafe.Pointer(&raw[0]))
+					sys.UartWriteString(fmt.Sprintf("[clocks:mailbox] MousePress at (%d,%d) btn=%d\n", msg.X, msg.Y, msg.Button))
+					mancini.MousePolicy(int64(msg.X), int64(msg.Y), clickTargets)
+				case wm.MsgMouseRelease:
+					// Ignored for now — only press triggers face cycling.
 				default:
 					sys.UartWriteString(fmt.Sprintf("[clocks:mailbox] unknown msg type %d\n", msgType))
 				}
@@ -200,11 +204,35 @@ func main() {
 	textColor := color.NRGBA{0, 0, 0, 255}
 	subtitleColor := color.NRGBA{78, 72, 112, 255}
 
+	// Shared UTC time source — all clocks read from the same constraint handles.
+	utcFunc := func() (int64, int64) {
+		return timeSec.Get(), timeNanos.Get()
+	}
+
+	// clickTargets collects the NeuCircle decorators wrapping each clock.
+	// MousePolicy hit-tests against these (larger) bounds, then dispatches
+	// to the child Clock via ChildAccessor.
+	var clickTargets []mancini.Drawer
+
 	var columns []mancini.Drawer
-	for _, city := range cities {
+	for i, city := range cities {
 		colName := city.name + "_col"
 		circleName := city.name + "_circle"
-		loc := city.loc // capture for closure
+		loc := city.loc
+
+		// Build all four face styles for this city's timezone.
+		// Rotate the list so each city starts on a different face style.
+		baseFaces := []mancini.ClockFace{
+			&mancini.ClassicFace{HandColor: textColor, Loc: loc},
+			&mancini.RomanFace{HandColor: textColor, Loc: loc},
+			&mancini.MovadoFace{Loc: loc},
+			&mancini.DigitFace{HandColor: textColor, Loc: loc},
+		}
+		start := i % len(baseFaces)
+		rotated := make([]mancini.ClockFace, len(baseFaces))
+		for j := range baseFaces {
+			rotated[j] = baseFaces[(start+j)%len(baseFaces)]
+		}
 
 		cityLabel := &mancini.Label{
 			Theme:    theme,
@@ -215,27 +243,22 @@ func main() {
 			Bold:     true,
 		}
 
-		clockFace := &mancini.Clock{
-			Theme: theme,
-			Name:  city.name + "_clock",
-			Size:  50,
-			Color: textColor,
-			TimeFunc: func() (int, int, int, int) {
-				sec := timeSec.Get()
-				nanos := timeNanos.Get()
-				millis := int(nanos / 1_000_000)
-				t := time.Unix(sec, 0).In(loc)
-				return t.Hour(), t.Minute(), t.Second(), millis
-			},
+		clockWidget := &mancini.Clock{
+			Theme:   theme,
+			Name:    city.name + "_clock",
+			Size:    50,
+			UTCFunc: utcFunc,
+			Faces:   rotated,
+			Face:    rotated[0],
 		}
-
 		circle := &mancini.NeuCircle{
 			Theme:  theme,
 			Name:   circleName,
 			Depth:  mancini.Raised,
 			Params: mancini.ButtonParams,
-			Child:  clockFace,
+			Child:  clockWidget,
 		}
+		clickTargets = append(clickTargets, circle)
 
 		tzLabel := &mancini.Label{
 			Theme:    theme,
@@ -253,7 +276,7 @@ func main() {
 
 		// InitLayout bottom-up: leaves first, then decorator, then container.
 		cityLabel.InitLayout(colName)
-		clockFace.InitLayout(circleName)
+		clockWidget.InitLayout(circleName)
 		circle.InitLayout(colName)
 		tzLabel.InitLayout(colName)
 		col.InitLayout("main_row")
@@ -358,7 +381,7 @@ func main() {
 	// 9. Announce to rachel (window manager).
 	// All constraint attributes (including Bounds) are published by now,
 	// so rachel can attach her own constraints to track our window.
-	announceToWM()
+	announceToWM(clickTargets)
 
 	// 9. Instrumentation counters.
 	eagerHandle := attr.ValueI64(attr.ShepherdURI("int64", "stats/eagerUpdates"), 0)
@@ -377,41 +400,7 @@ func main() {
 		}
 	}()
 
-	// 9. Input event listeners — log to UART so we can see focus routing works.
-	go func() {
-		var buf hid.SoftIRQReturn
-		for {
-			n, err := sys.WaitInputEvent(hid.InputClassKeyboard, &buf)
-			if err != nil {
-				continue
-			}
-			for i := 0; i < n; i++ {
-				ev := buf.Events[i]
-				if ev.Type == 1 && ev.Value == 1 { // EV_KEY press only
-					sys.UartWriteString(fmt.Sprintf("[clocks:kbd] code=%d\n", ev.Code))
-				}
-			}
-		}
-	}()
-	go func() {
-		var buf hid.SoftIRQReturn
-		for {
-			n, err := sys.WaitInputEvent(hid.InputClassMouseClick, &buf)
-			if err != nil {
-				continue
-			}
-			for i := 0; i < n; i++ {
-				ev := buf.Events[i]
-				if ev.Type == 1 { // EV_KEY (button)
-					action := "press"
-					if ev.Value == 0 {
-						action = "release"
-					}
-					sys.UartWriteString(fmt.Sprintf("[clocks:click] btn=%d %s\n", ev.Code, action))
-				}
-			}
-		}
-	}()
+	// 9. Mouse events arrive from rachel (WM) via mailbox, not from kernel directly.
 
 	// 10. Main loop: wake on dirty, redraw when second changes.
 	// Clock widgets read timeSec directly via their TimeFunc closures.

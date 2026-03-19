@@ -1,5 +1,6 @@
 // rachel is the window manager shepherd. It claims the WM role to receive
-// all input events, and routes focus to other shepherds via SetInputFocus.
+// all input events, enriches them with position data, and forwards them
+// to the focused shepherd via ring buffer IPC.
 //
 // Uses the focus-based input routing system: RequestWindowManager gives rachel
 // all keyboard, mouse-click, and mouse-move events via per-device-class queues.
@@ -187,15 +188,50 @@ func mouseClickLoop() {
 		}
 		for i := 0; i < n; i++ {
 			ev := buf.Events[i]
-			if ev.Type == EV_KEY {
-				switchInput(inputButton)
-				action := "pressed"
-				if ev.Value == 0 {
-					action = "released"
-				}
-				fmt.Printf("[rachel:mouse] %s %s\n", buttonName(ev.Code), action)
+			if ev.Type != EV_KEY {
+				continue
+			}
+			switchInput(inputButton)
+			x, y := mouseX, mouseY
+
+			if ev.Value == 1 { // press
+				fmt.Printf("[rachel:mouse] %s pressed at (%d,%d)\n", buttonName(ev.Code), x, y)
+				forwardMouseEvent(wm.MsgMousePress, x, y, int32(ev.Code))
+			} else if ev.Value == 0 { // release
+				fmt.Printf("[rachel:mouse] %s released at (%d,%d)\n", buttonName(ev.Code), x, y)
+				forwardMouseEvent(wm.MsgMouseRelease, x, y, int32(ev.Code))
 			}
 		}
+	}
+}
+
+// forwardMouseEvent sends a mouse press or release to the focused shepherd.
+func forwardMouseEvent(msgType int64, x, y, button int32) {
+	sid := focusedSID
+	if sid < 0 {
+		return
+	}
+	ta, ok := trackedApps[sid]
+	if !ok || ta.returnRb == nil {
+		return
+	}
+	if msgType == wm.MsgMousePress {
+		var msg wm.MousePressMsg
+		msg.Type = wm.MsgMousePress
+		msg.X = x
+		msg.Y = y
+		msg.Button = button
+		ta.returnRb.Push(unsafe.Pointer(&msg))
+	} else {
+		var msg wm.MouseReleaseMsg
+		msg.Type = wm.MsgMouseRelease
+		msg.X = x
+		msg.Y = y
+		msg.Button = button
+		ta.returnRb.Push(unsafe.Pointer(&msg))
+	}
+	if err := sys.MailboxSend(sid, wm.ShepherdNotify, ta.returnRb.Addr()); err != nil {
+		fmt.Fprintf(os.Stderr, "[rachel:mouse] MailboxSend to SID %d failed: %v\n", sid, err)
 	}
 }
 
@@ -418,9 +454,14 @@ func mouseMovementLoop() {
 
 // trackedApp holds rachel's constraint handles for a managed shepherd.
 type trackedApp struct {
-	sid    int
-	bounds *attr.Handle[vm.Value] // tracks shepherd's AppWindow/layout/Bounds
+	sid      int
+	bounds   *attr.Handle[vm.Value]  // tracks shepherd's AppWindow/layout/Bounds
+	returnRb *ringbuf.RingBuffer     // ring buffer for sending messages back to this shepherd
 }
+
+// focusedSID is the SID of the shepherd that currently has input focus.
+// -1 means no shepherd has focus.
+var focusedSID = -1
 
 // trackedApps maps SID → trackedApp for all shepherds rachel is managing.
 var trackedApps = make(map[int]*trackedApp)
@@ -498,18 +539,17 @@ func mailboxLoop() {
 						continue
 					}
 
-					// Grant all input focus to this shepherd
-					sys.SetInputFocus(senderSID, hid.InputClassKeyboard)
-					sys.SetInputFocus(senderSID, hid.InputClassMouseClick)
-					sys.SetInputFocus(senderSID, hid.InputClassMouseMove)
-					fmt.Printf("[rachel:mailbox] set focus → SID %d\n", senderSID)
-
-					// Create return ring buffer to the sender
+					// Create return ring buffer to the sender (reused for all future messages).
 					returnRb, err := ringbuf.New(senderSID, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
 					if err != nil {
 						fmt.Printf("[rachel:mailbox] return ring failed: %v\n", err)
 						continue
 					}
+					trackedApps[senderSID].returnRb = returnRb
+
+					// Grant focus to this shepherd.
+					focusedSID = senderSID
+					fmt.Printf("[rachel:mailbox] set focus → SID %d\n", senderSID)
 
 					// Send YouHaveFocus
 					var focusMsg wm.YouHaveFocusMsg

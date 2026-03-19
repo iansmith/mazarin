@@ -26,6 +26,10 @@ const (
 	MsgYouHaveFocus int64 = 2
 	// MsgYouLostFocus: WM→shepherd. "You no longer have input focus."
 	MsgYouLostFocus int64 = 3
+	// MsgMousePress: WM→shepherd. "Mouse button pressed at (X, Y)."
+	MsgMousePress int64 = 4
+	// MsgMouseRelease: WM→shepherd. "Mouse button released at (X, Y)."
+	MsgMouseRelease int64 = 5
 )
 
 // AppStartMsg is sent by a shepherd to the WM when it starts up.
@@ -45,6 +49,27 @@ type YouHaveFocusMsg struct {
 type YouLostFocusMsg struct {
 	Type int64 // MsgYouLostFocus
 	_    [120]byte
+}
+
+// MousePressMsg is sent by the WM to a shepherd when a mouse button is pressed.
+// X and Y are screen coordinates at the time of the press.
+// Layout: 8 + 4 + 4 + 4 + 108 = 128 bytes.
+type MousePressMsg struct {
+	Type   int64 // MsgMousePress
+	X      int32 // screen X coordinate
+	Y      int32 // screen Y coordinate
+	Button int32 // button code (BTN_LEFT=0x110, BTN_RIGHT=0x111, etc.)
+	_      [108]byte
+}
+
+// MouseReleaseMsg is sent by the WM to a shepherd when a mouse button is released.
+// Layout: 8 + 4 + 4 + 4 + 108 = 128 bytes.
+type MouseReleaseMsg struct {
+	Type   int64 // MsgMouseRelease
+	X      int32 // screen X coordinate
+	Y      int32 // screen Y coordinate
+	Button int32 // button code
+	_      [108]byte
 }
 
 // Well-known attribute URIs.
