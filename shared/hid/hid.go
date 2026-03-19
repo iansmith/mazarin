@@ -92,7 +92,21 @@ const (
 	DeviceTypeSerial   = 3
 	DeviceTypeTimer    = 4
 	DeviceTypeBlock    = 5
+	DeviceTypeTablet   = 6
 )
+
+// Linux evdev axis codes for EV_REL and EV_ABS events.
+const (
+	RelX     = 0x00 // REL_X
+	RelY     = 0x01 // REL_Y
+	RelWheel = 0x08 // REL_WHEEL
+
+	AbsX = 0x00 // ABS_X
+	AbsY = 0x01 // ABS_Y
+)
+
+// AbsMax is the maximum absolute axis value reported by virtio-tablet (0-32767).
+const AbsMax = 32767
 
 // BlockVirtualIRQ is the virtual IRQ number for the kernel block device.
 // Used by the disk priest to register for block device ownership via RegisterSoftIRQ.

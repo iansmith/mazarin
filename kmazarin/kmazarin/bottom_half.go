@@ -4,6 +4,7 @@ package main
 import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/ksyscall"
 	"mazzy/kmazarin/serial"
@@ -53,10 +54,11 @@ var (
 // topHalfIRQNum is set by the assembly IRQ handler before calling NonTimerIRQTopHalf.
 var topHalfIRQNum uint64
 
-// topHalfKbd and topHalfMouse hold the pointers needed to read events
-// in the nosplit top-half. Set during input device init.
+// topHalfKbd, topHalfMouse, and topHalfTablet hold the pointers needed to
+// read events in the nosplit top-half. Set during input device init.
 var topHalfKbd topHalfDev
 var topHalfMouse topHalfDev
+var topHalfTablet topHalfDev
 
 // softIRQRingSize must be a power of 2 for mask-based indexing.
 // 256 entries: small enough that the ring empties between processing cycles,
@@ -94,6 +96,7 @@ type topHalfDev struct {
 
 var topHalfKbdRing softIRQRing
 var topHalfMouseRing softIRQRing
+var topHalfTabletRing softIRQRing
 var topHalfUartRing softIRQRing
 var topHalfTimerRing softIRQRing
 
@@ -122,12 +125,16 @@ func SetBlockIRQ(irqNum uint32, isrBase uintptr, ioComplete *uint32) {
 
 // SetTopHalfDev is called during input init to register device pointers
 // for the nosplit top-half path.
-func SetTopHalfDev(irqNum uint32, usedVA, evtBufVA, availVA, descVA, notifyAddr, evtBufPA, isrBase uintptr, queueSize, initAvailIdx uint16, isMouse bool, lastUsedIdxSync *uint16) {
+// devType: 0=keyboard, 1=mouse, 2=tablet
+func SetTopHalfDev(irqNum uint32, usedVA, evtBufVA, availVA, descVA, notifyAddr, evtBufPA, isrBase uintptr, queueSize, initAvailIdx uint16, devType int, lastUsedIdxSync *uint16) {
 	dev := &topHalfKbd
 	ring := &topHalfKbdRing
-	if isMouse {
+	if devType == 1 {
 		dev = &topHalfMouse
 		ring = &topHalfMouseRing
+	} else if devType == 2 {
+		dev = &topHalfTablet
+		ring = &topHalfTabletRing
 	}
 	dev.irqNum = irqNum
 	dev.usedVA = usedVA
@@ -217,6 +224,12 @@ func NonTimerIRQTopHalf() {
 		return
 	}
 
+	// Tablet device: drain events, coalesce position, move hardware cursor
+	if irqNum == topHalfTablet.irqNum && topHalfTablet.usedVA != 0 {
+		topHalfTabletHandler()
+		return
+	}
+
 	var dev *topHalfDev
 	if irqNum == topHalfKbd.irqNum && topHalfKbd.usedVA != 0 {
 		dev = &topHalfKbd
@@ -228,6 +241,13 @@ func NonTimerIRQTopHalf() {
 	}
 
 	dev.dbgIRQCount++
+
+	// DEBUG: breadcrumb for kbd/mouse IRQ
+	if dev == &topHalfMouse {
+		serial.PollWrite('M')
+	} else {
+		serial.PollWrite('K')
+	}
 
 	// Read ISR to acknowledge interrupt at device level (deasserts PCI INTx).
 	if dev.isrBase != 0 {
@@ -312,6 +332,112 @@ func NonTimerIRQTopHalf() {
 		// between batches (ring momentarily empty) and then the ring
 		// re-filled with all pushes failing would NEVER be woken.
 		WakeSlotForIRQ(irqNum)
+	}
+}
+
+// topHalfTabletHandler drains the tablet virtqueue, coalesces EV_ABS
+// events to get the latest cursor position, pushes events to the tablet
+// ring for userspace, and moves the hardware cursor via the GPU cursorq.
+// All operations are nosplit-safe.
+//
+//go:nosplit
+//go:noinline
+func topHalfTabletHandler() {
+	dev := &topHalfTablet
+	dev.dbgIRQCount++
+
+	// Read ISR to acknowledge interrupt
+	if dev.isrBase != 0 {
+		_ = asm.MmioRead8(dev.isrBase)
+	}
+
+	usedIdx := asm.MmioRead16(dev.usedVA + 2)
+	reposted := false
+
+	// Track latest absolute position
+	var lastAbsX, lastAbsY uint32
+	gotAbs := false
+
+	for dev.lastUsedIdx != usedIdx {
+		ringIdx := dev.lastUsedIdx % dev.queueSize
+		entryAddr := dev.usedVA + 4 + uintptr(ringIdx)*8
+		descIdx := asm.MmioRead32(entryAddr)
+
+		if descIdx < uint32(dev.queueSize) {
+			evtAddr := dev.evtBufVA + uintptr(descIdx)*8
+			evtType := asm.MmioRead16(evtAddr)
+			evtCode := asm.MmioRead16(evtAddr + 2)
+			evtValueLo := uint32(asm.MmioRead16(evtAddr + 4))
+			evtValueHi := uint32(asm.MmioRead16(evtAddr + 6))
+			evtValue := evtValueLo | (evtValueHi << 16)
+
+			// Track absolute position for cursor
+			if evtType == hid.EvAbs {
+				if evtCode == hid.AbsX {
+					lastAbsX = evtValue
+					gotAbs = true
+				} else if evtCode == hid.AbsY {
+					lastAbsY = evtValue
+					gotAbs = true
+				}
+			}
+
+			// Push to ring for userspace consumption (same as mouse events)
+			ev := hid.HIDEvent{Type: evtType, Code: evtCode, Value: evtValue}
+			if ringPush(dev.ring, ev) {
+				dev.dbgPushOK++
+			} else {
+				dev.dbgPushFail++
+			}
+
+			// Repost buffer to device
+			descAddr := dev.descVA + uintptr(descIdx)*16
+			bufPA := uint64(dev.evtBufPA) + uint64(descIdx)*8
+			asm.MmioWrite32(descAddr, uint32(bufPA))
+			asm.MmioWrite32(descAddr+4, uint32(bufPA>>32))
+			asm.MmioWrite32(descAddr+8, 8)
+			asm.MmioWrite16(descAddr+12, 2) // VIRTQ_DESC_F_WRITE
+			asm.MmioWrite16(descAddr+14, 0xFFFF)
+			availRingIdx := dev.nextAvailIdx % dev.queueSize
+			asm.MmioWrite16(dev.availVA+4+uintptr(availRingIdx)*2, uint16(descIdx))
+			dev.nextAvailIdx++
+			reposted = true
+		}
+
+		dev.lastUsedIdx++
+	}
+
+	// Sync LastUsedIdx
+	if dev.lastUsedIdxSync != nil {
+		*dev.lastUsedIdxSync = dev.lastUsedIdx
+	}
+
+	if reposted {
+		asm.Dsb()
+		asm.MmioWrite16(dev.availVA+2, dev.nextAvailIdx)
+		asm.Dsb()
+		asm.MmioWrite16(dev.notifyAddr, 0)
+		asm.Dsb()
+		_ = asm.MmioRead16(dev.notifyAddr)
+	}
+
+	// Move hardware cursor to latest absolute position
+	if gotAbs {
+		// Map tablet coordinates (0-32767) to screen coordinates
+		screenX := (lastAbsX * gpu.DisplayWidth) / (hid.AbsMax + 1)
+		screenY := (lastAbsY * gpu.DisplayHeight) / (hid.AbsMax + 1)
+		// DEBUG: breadcrumb for tablet cursor move
+		serial.PollWrite('T')
+		serial.RawUARTDecimal(uint64(screenX))
+		serial.PollWrite(',')
+		serial.RawUARTDecimal(uint64(screenY))
+		serial.PollWrite(' ')
+		gpu.TopHalfMoveCursor(screenX, screenY)
+	}
+
+	// Wake any soft IRQ consumer
+	if reposted {
+		WakeSlotForIRQ(dev.irqNum)
 	}
 }
 
@@ -450,6 +576,17 @@ func BreadcrumbString(s string) {
 //go:nosplit
 func BreadcrumbHex(val uint64) {
 	serial.RawUARTHexCompact(val)
+}
+
+// printInputIRQCounters prints the IRQ invocation counts for keyboard, mouse,
+// and tablet devices, plus the used ring indices to diagnose event delivery.
+func printInputIRQCounters() {
+	serial.RawUARTPuts(" IN=")
+	serial.RawUARTDecimal(uint64(topHalfKbd.dbgIRQCount))
+	serial.RawUARTPuts("/")
+	serial.RawUARTDecimal(uint64(topHalfMouse.dbgIRQCount))
+	serial.RawUARTPuts("/")
+	serial.RawUARTDecimal(uint64(topHalfTablet.dbgIRQCount))
 }
 
 // SetupUartSoftIRQ records the UART IRQ number so NonTimerIRQTopHalf

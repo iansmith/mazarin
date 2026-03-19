@@ -10,6 +10,7 @@ import (
 	"mazzy/kmazarin/device/virtio/rng"
 	"mazzy/kmazarin/dtb"
 	"mazzy/shared/constants"
+	"mazzy/shared/hid"
 	"mazzy/shared/fs/fat32"
 	"mazzy/shared/toml"
 	"mazzy/kmazarin/kirq"
@@ -624,7 +625,13 @@ func initVirtIOInputDevices() {
 		if dev == nil {
 			continue
 		}
-		isMouse := dev.DevType == 2 // hid.DeviceTypeMouse
+		// devType: 0=keyboard, 1=mouse, 2=tablet
+		devType := 0
+		if dev.DevType == hid.DeviceTypeMouse {
+			devType = 1
+		} else if dev.DevType == hid.DeviceTypeTablet {
+			devType = 2
+		}
 		vq := &dev.EventQueue
 		usedVA := uintptr(unsafe.Pointer(vq.Used))
 		evtBufVA := uintptr(unsafe.Pointer(&dev.EventBuffers[0]))
@@ -635,7 +642,7 @@ func initVirtIOInputDevices() {
 		evtBufPA := dev.EventBuffersPA
 		initAvailIdx := vq.Available.Idx
 		SetTopHalfDev(dev.IRQNum, usedVA, evtBufVA, availVA, descVA,
-			notifyAddr, evtBufPA, dev.ISRBase, vq.QueueSize, initAvailIdx, isMouse, &vq.LastUsedIdx)
+			notifyAddr, evtBufPA, dev.ISRBase, vq.QueueSize, initAvailIdx, devType, &vq.LastUsedIdx)
 	}
 
 }

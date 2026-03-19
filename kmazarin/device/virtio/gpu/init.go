@@ -2,6 +2,7 @@
 package gpu
 
 import (
+	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/ds"
 	"unsafe"
 )
@@ -52,6 +53,13 @@ func Init() bool {
 	// Initial transfer and flush to make display visible
 	virtioGPUTransferToHost(0, 0, DisplayWidth, DisplayHeight)
 	virtioGPUFlush(0, 0, DisplayWidth, DisplayHeight)
+
+	// Initialize hardware cursor
+	if !InitCursor() {
+		console.KPrintln("[VirtIO GPU] WARNING: Hardware cursor init failed, continuing without cursor")
+	} else {
+		InitCursorTopHalf()
+	}
 
 	return true
 }

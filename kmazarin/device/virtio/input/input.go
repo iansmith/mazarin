@@ -153,6 +153,7 @@ type VirtIOInputDevice struct {
 // Discovered devices (nil if not found)
 var KeyboardDevice *VirtIOInputDevice
 var MouseDevice *VirtIOInputDevice
+var TabletDevice *VirtIOInputDevice
 
 // allDevices holds all discovered input devices for QueryInputDevices
 var allDevices []*VirtIOInputDevice
@@ -438,11 +439,21 @@ func (dev *VirtIOInputDevice) readDeviceName() string {
 	return string(nameBuf[:size])
 }
 
-// classifyDevice determines if this is a keyboard or mouse based on
+// classifyDevice determines if this is a keyboard, mouse, or tablet based on
 // the event types it supports.
 func (dev *VirtIOInputDevice) classifyDevice() uint32 {
 	if dev.DeviceConfigBase == 0 {
 		return hid.DeviceTypeKeyboard // Default to keyboard
+	}
+
+	// Check if device supports EV_ABS (absolute positioning = tablet)
+	asm.MmioWrite8(dev.DeviceConfigBase+0, VIRTIO_INPUT_CFG_EV_BITS) // select
+	asm.MmioWrite8(dev.DeviceConfigBase+1, EV_ABS)                   // subsel = EV_ABS
+	asm.Dsb()
+
+	size := asm.MmioRead8(dev.DeviceConfigBase + 2)
+	if size > 0 {
+		return hid.DeviceTypeTablet
 	}
 
 	// Check if device supports EV_REL (relative movement = mouse)
@@ -450,7 +461,7 @@ func (dev *VirtIOInputDevice) classifyDevice() uint32 {
 	asm.MmioWrite8(dev.DeviceConfigBase+1, EV_REL)                   // subsel = EV_REL
 	asm.Dsb()
 
-	size := asm.MmioRead8(dev.DeviceConfigBase + 2)
+	size = asm.MmioRead8(dev.DeviceConfigBase + 2)
 	if size > 0 {
 		return hid.DeviceTypeMouse
 	}
@@ -837,6 +848,8 @@ func InitVirtIOInput() {
 				typeName := "keyboard"
 				if dev.DevType == hid.DeviceTypeMouse {
 					typeName = "mouse"
+				} else if dev.DevType == hid.DeviceTypeTablet {
+					typeName = "tablet"
 				}
 				console.KPrintf("[VirtIO Input] %s '%s' at %d:%d.%d IRQ=%d ISR=0x%x\n",
 					typeName, name, bus, slot, funcNum, irqNum, dev.ISRBase)
@@ -846,6 +859,8 @@ func InitVirtIOInput() {
 					KeyboardDevice = dev
 				} else if dev.DevType == hid.DeviceTypeMouse && MouseDevice == nil {
 					MouseDevice = dev
+				} else if dev.DevType == hid.DeviceTypeTablet && TabletDevice == nil {
+					TabletDevice = dev
 				}
 				allDevices = append(allDevices, dev)
 			}

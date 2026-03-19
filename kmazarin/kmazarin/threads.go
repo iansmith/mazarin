@@ -1127,6 +1127,8 @@ func ProcessDeadlinesTopHalf() {
 		serial.RawUARTDecimal(atomic.LoadUint64(&dbgPreemptNoNextCount))
 		// A/D scan deltas since last [E] dump
 		printADScanCounters()
+		// Input device IRQ counts: kbd/mouse/tablet
+		printInputIRQCounters()
 		// Per-priest GC cycle counts
 		printGCCounters()
 	}

@@ -24,6 +24,10 @@ const (
 	VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D     = 0x0105
 	VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING = 0x0106
 	VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING = 0x0107
+
+	// Cursor commands (use cursorq, not controlq)
+	VIRTIO_GPU_CMD_UPDATE_CURSOR = 0x0300
+	VIRTIO_GPU_CMD_MOVE_CURSOR   = 0x0301
 )
 
 // VirtIO GPU Response Types
@@ -144,6 +148,24 @@ type VirtIOGPUResourceFlush struct {
 	Padding    uint32        // Padding
 }
 
+// VirtIOGPUCursorPos describes cursor position
+type VirtIOGPUCursorPos struct {
+	ScanoutID uint32
+	X         uint32
+	Y         uint32
+	Padding   uint32
+}
+
+// VirtIOGPUUpdateCursor is the command for UPDATE_CURSOR and MOVE_CURSOR
+type VirtIOGPUUpdateCursor struct {
+	Hdr        VirtIOGPUCtrlHdr
+	Pos        VirtIOGPUCursorPos
+	ResourceID uint32 // Cursor image resource ID
+	HotX       uint32 // Hot spot X offset
+	HotY       uint32 // Hot spot Y offset
+	Padding    uint32
+}
+
 // VirtIOGPUDevice holds VirtIO GPU device state
 type VirtIOGPUDevice struct {
 	Bus              uint8
@@ -157,6 +179,8 @@ type VirtIOGPUDevice struct {
 	NotifyBase       uintptr                  // MMIO base for notify
 	ControlQueue          virtio.VirtQueue // Control queue for GPU commands
 	ControlQueueNotifyOff uint16           // Notify offset for control queue
+	CursorQueue           virtio.VirtQueue // Cursor queue (queue 1) for cursor updates
+	CursorQueueNotifyOff  uint16           // Notify offset for cursor queue
 	ResourceID            uint32           // Current resource ID
 	Framebuffer      unsafe.Pointer       // Framebuffer memory
 	FramebufferSize  uint32               // Framebuffer size in bytes
@@ -260,6 +284,8 @@ func virtioPCISetupQueue(queueIndex uint16, vq *virtio.VirtQueue) bool {
 	queueNotifyOff := virtioPCIReadCommonConfig(VIRTIO_PCI_COMMON_CFG_QUEUE_NOTIFY_OFF)
 	if queueIndex == 0 {
 		virtioGPUDevice.ControlQueueNotifyOff = queueNotifyOff
+	} else if queueIndex == 1 {
+		virtioGPUDevice.CursorQueueNotifyOff = queueNotifyOff
 	}
 
 	// Enable queue
@@ -406,9 +432,27 @@ func virtioGPUInit() bool {
 		return false
 	}
 
-	// Setup queue in device
+	// Setup control queue in device
 	if !virtioPCISetupQueue(0, &virtioGPUDevice.ControlQueue) {
-		console.KPrintln("[VirtIO GPU] ERROR: Failed to setup queue")
+		console.KPrintln("[VirtIO GPU] ERROR: Failed to setup control queue")
+		return false
+	}
+
+	// Initialize cursor queue (queue index 1) on a DMA page so the top-half
+	// can submit MOVE_CURSOR commands directly via MMIO without cache issues.
+	cursorQueueSize := uint16(16)
+	cursorDmaPA, cursorDmaVA := kmem.AllocDMAPageMapped()
+	if cursorDmaPA == 0 {
+		console.KPrintln("[VirtIO GPU] ERROR: Failed to alloc cursor queue DMA page")
+		return false
+	}
+	endOff := virtio.VirtqueueInitOnDMAPage(&virtioGPUDevice.CursorQueue, cursorQueueSize, cursorDmaPA, cursorDmaVA, 0)
+	if endOff == 0 {
+		console.KPrintln("[VirtIO GPU] ERROR: Failed to init cursor queue on DMA page")
+		return false
+	}
+	if !virtioPCISetupQueue(1, &virtioGPUDevice.CursorQueue) {
+		console.KPrintln("[VirtIO GPU] ERROR: Failed to setup cursor queue")
 		return false
 	}
 
