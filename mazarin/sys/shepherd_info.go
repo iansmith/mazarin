@@ -12,6 +12,13 @@ import (
 // launch filename, and number of mapped pages.
 func ShepherdInfo() ([]hid.ShepherdInfoEntry, error) {
 	var buf [32]hid.ShepherdInfoEntry
+	// Touch every page of the buffer to ensure demand faults fire before
+	// the kernel's CopyToUser writes to these addresses.
+	entrySize := unsafe.Sizeof(buf[0])
+	for i := range buf {
+		p := (*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(&buf[0])) + uintptr(i)*entrySize))
+		*p = 0
+	}
 	r1, _, errno := syscall.RawSyscall6(
 		sysShepherdInfo,
 		uintptr(unsafe.Pointer(&buf[0])),

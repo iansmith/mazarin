@@ -51,6 +51,8 @@ func MailboxSend(targetSID int, code int64, callerVA uintptr) error {
 // Uses entersyscall/exitsyscall to release the P while blocking.
 func MailboxRecv() (MailboxNotification, error) {
 	var notif MailboxNotification
+	// Touch the struct to ensure the page is demand-faulted before the kernel writes to it.
+	*(*byte)(unsafe.Pointer(&notif)) = 0
 	runtime_entersyscall()
 	r1, _, errno := RawSyscall(sysMailboxRecv,
 		uintptr(unsafe.Pointer(&notif)),

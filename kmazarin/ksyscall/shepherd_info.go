@@ -53,7 +53,12 @@ func SyscallShepherdInfo(bufPtr, maxEntries, _, _, _, _ uint64) int64 {
 		// Copy entry to userspace buffer
 		destVA := uintptr(bufPtr) + uintptr(written)*uintptr(entrySize)
 		src := unsafe.Slice((*byte)(unsafe.Pointer(&entry)), entrySize)
-		kmem.CopyToUser(destVA, src)
+		if !kmem.CopyToUser(destVA, src) {
+			// Demand-fault and retry
+			if kmem.HandleUserPageFault(destVA, 0) {
+				kmem.CopyToUser(destVA, src)
+			}
+		}
 
 		written++
 	}

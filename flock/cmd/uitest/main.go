@@ -15,8 +15,12 @@ import (
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/interactor"
 	"mazzy/mazarin/mancini"
+	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/hid"
+	"mazzy/shared/wm"
+	"os"
+	"unsafe"
 )
 
 //go:embed AtkinsonHyperlegibleMono-Regular.otf
@@ -40,6 +44,49 @@ type cityInfo struct {
 	loc     *time.Location
 }
 
+// findShepherdByName looks up a shepherd SID by its launch filename.
+// Returns -1 if not found.
+func findShepherdByName(name string) int {
+	entries, err := sys.ShepherdInfo()
+	if err != nil {
+		return -1
+	}
+	target := "/" + name + ".elf"
+	for _, e := range entries {
+		fn := string(e.Filename[:e.FilenameLen])
+		if fn == target {
+			return int(e.PID)
+		}
+	}
+	return -1
+}
+
+// mailboxRecvLoop receives notifications from rachel (e.g., YouHaveFocus).
+func mailboxRecvLoop() {
+	for {
+		notif, err := sys.MailboxRecv()
+		if err != nil {
+			sys.UartWriteString("[uitest:mailbox] recv error\n")
+			continue
+		}
+		if notif.Code == wm.ShepherdNotify {
+			rb := ringbuf.Open(uintptr(notif.RingAddr))
+			var raw [wm.SizeWMMessage]byte
+			for rb.Pop(unsafe.Pointer(&raw[0])) {
+				msgType := *(*int64)(unsafe.Pointer(&raw[0]))
+				switch msgType {
+				case wm.MsgYouHaveFocus:
+					sys.UartWriteString("[uitest:mailbox] received YouHaveFocus!\n")
+				case wm.MsgYouLostFocus:
+					sys.UartWriteString("[uitest:mailbox] received YouLostFocus\n")
+				default:
+					sys.UartWriteString(fmt.Sprintf("[uitest:mailbox] unknown msg type %d\n", msgType))
+				}
+			}
+		}
+	}
+}
+
 func main() {
 	sys.UartWriteString("[uitest] main() entered\n")
 
@@ -49,11 +96,38 @@ func main() {
 	mancini.Init("uitest")
 	sys.UartWriteString("[uitest] attr + interactor init done\n")
 
-	// Request all three input foci for testing (temporary — in production,
-	// rachel (WM) would call SetInputFocus for us when our window is clicked).
-	sys.SetInputFocus(0, hid.InputClassKeyboard)
-	sys.SetInputFocus(0, hid.InputClassMouseClick)
-	sys.UartWriteString("[uitest] input focus requested\n")
+	// Find rachel (window manager) and send AppStart so she can grant us focus.
+	rachelSID := findShepherdByName("rachel")
+	if rachelSID < 0 {
+		sys.UartWriteString("[uitest] WARNING: rachel not found, requesting focus directly\n")
+		sys.SetInputFocus(0, hid.InputClassKeyboard)
+		sys.SetInputFocus(0, hid.InputClassMouseClick)
+	} else {
+		myPID := os.Getpid()
+		sys.UartWriteString(fmt.Sprintf("[uitest] found rachel SID=%d, my SID=%d\n", rachelSID, myPID))
+
+		// Create ring buffer targeting rachel
+		rb, err := ringbuf.New(rachelSID, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
+		if err != nil {
+			sys.UartWriteString("[uitest] ring buffer creation failed: " + err.Error() + "\n")
+		} else {
+			// Push AppStart message
+			var msg wm.AppStartMsg
+			msg.Type = wm.MsgAppStart
+			msg.SID = int64(myPID)
+			rb.Push(unsafe.Pointer(&msg))
+
+			// Notify rachel
+			if err := sys.MailboxSend(rachelSID, wm.WMNotify, rb.Addr()); err != nil {
+				sys.UartWriteString("[uitest] MailboxSend failed: " + err.Error() + "\n")
+			} else {
+				sys.UartWriteString("[uitest] sent AppStart to rachel\n")
+			}
+		}
+
+		// Start mailbox receiver to get focus notifications from rachel.
+		go mailboxRecvLoop()
+	}
 
 	// 2. Parse embedded fonts and build a Theme.
 	otFont, err := opentype.Parse(fontData)

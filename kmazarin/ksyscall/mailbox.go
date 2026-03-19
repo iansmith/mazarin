@@ -135,7 +135,7 @@ func SyscallMailboxRecv(arg0, _, _, _, _, _ uint64) int64 {
 	}
 
 	// Block until notification arrives
-	ctxPtr := BlockForMailboxRecv(shepherdIdx)
+	ctxPtr := BlockForMailboxRecv(shepherdIdx, bufPtr)
 	if ctxPtr != 0 {
 		SetSyscallSwitchTarget(ctxPtr)
 		return -11 // Value overwritten by re-executed SVC

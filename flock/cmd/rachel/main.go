@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/input"
+	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/hid"
+	"mazzy/shared/wm"
 	// mazhost import forces the linker to retain all runtime functions
 	// needed by .maz thin stubs (via MazKeepAliveSymbols).
 	_ "mazzy/mazarin/mazhost"
@@ -219,6 +221,65 @@ func mouseMovementLoop() {
 	}
 }
 
+// mailboxLoop receives mailbox notifications from other shepherds.
+// When a shepherd sends AppStart, rachel sets input focus for it
+// and sends YouHaveFocus back via a return ring buffer.
+func mailboxLoop() {
+	fmt.Println("[rachel] mailbox goroutine started")
+	for {
+		notif, err := sys.MailboxRecv()
+		if err != nil {
+			fmt.Printf("[rachel:mailbox] recv error: %v\n", err)
+			continue
+		}
+
+		switch notif.Code {
+		case wm.WMNotify:
+			// A shepherd sent us a message — open ring at translated VA
+			rb := ringbuf.Open(uintptr(notif.RingAddr))
+			var raw [wm.SizeWMMessage]byte
+			for rb.Pop(unsafe.Pointer(&raw[0])) {
+				msgType := *(*int64)(unsafe.Pointer(&raw[0]))
+				switch msgType {
+				case wm.MsgAppStart:
+					msg := (*wm.AppStartMsg)(unsafe.Pointer(&raw[0]))
+					senderSID := int(msg.SID)
+					fmt.Printf("[rachel:mailbox] AppStart from SID %d\n", senderSID)
+
+					// Grant all input focus to this shepherd
+					sys.SetInputFocus(senderSID, hid.InputClassKeyboard)
+					sys.SetInputFocus(senderSID, hid.InputClassMouseClick)
+					sys.SetInputFocus(senderSID, hid.InputClassMouseMove)
+					fmt.Printf("[rachel:mailbox] set focus → SID %d\n", senderSID)
+
+					// Create return ring buffer to the sender
+					returnRb, err := ringbuf.New(senderSID, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
+					if err != nil {
+						fmt.Printf("[rachel:mailbox] return ring failed: %v\n", err)
+						continue
+					}
+
+					// Send YouHaveFocus
+					var focusMsg wm.YouHaveFocusMsg
+					focusMsg.Type = wm.MsgYouHaveFocus
+					returnRb.Push(unsafe.Pointer(&focusMsg))
+					if err := sys.MailboxSend(senderSID, wm.ShepherdNotify, returnRb.Addr()); err != nil {
+						fmt.Printf("[rachel:mailbox] send YouHaveFocus failed: %v\n", err)
+					} else {
+						fmt.Printf("[rachel:mailbox] sent YouHaveFocus → SID %d\n", senderSID)
+					}
+
+				default:
+					fmt.Printf("[rachel:mailbox] unknown msg type %d from SID %d\n", msgType, notif.SenderSID)
+				}
+			}
+
+		default:
+			fmt.Printf("[rachel:mailbox] unknown notify code %d from SID %d\n", notif.Code, notif.SenderSID)
+		}
+	}
+}
+
 func main() {
 	fmt.Println("[rachel] Starting window manager")
 
@@ -228,6 +289,10 @@ func main() {
 		return
 	}
 	fmt.Println("[rachel] became window manager")
+
+	// Start mailbox receiver — handles AppStart from other shepherds.
+	go mailboxLoop()
+	runtime.Gosched()
 
 	// Launch event loops for all three device classes.
 	// As WM, rachel receives all events and can handle global shortcuts,

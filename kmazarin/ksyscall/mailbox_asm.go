@@ -7,7 +7,7 @@ import (
 // Forward declarations for mailbox functions in the main package.
 
 //go:linkname BlockForMailboxRecv main.BlockForMailboxRecv
-func BlockForMailboxRecv(shepherdIdx int) uintptr
+func BlockForMailboxRecv(shepherdIdx int, bufPtr uint64) uintptr
 
 //go:linkname mailboxSendKernel main.mailboxSendKernel
 func mailboxSendKernel(senderSID, targetSID int16, code int64, senderVA uintptr) int64

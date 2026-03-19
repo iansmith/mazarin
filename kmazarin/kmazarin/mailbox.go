@@ -216,11 +216,12 @@ func mailboxSendKernel(senderSID, targetSID int16, code int64, senderVA uintptr)
 }
 
 // BlockForMailboxRecv blocks the current thread waiting for mailbox notifications.
+// bufPtr is saved for SVC rewind (arg0 of SysMailboxRecv).
 // Returns the context pointer of the next thread, or 0.
 //
 //go:nosplit
 //go:noinline
-func BlockForMailboxRecv(shepherdIdx int) uintptr {
+func BlockForMailboxRecv(shepherdIdx int, bufPtr uint64) uintptr {
 	savedDAIF := NormalSchedulerFunc.DisableAndSaveDAIF()
 	schedulerLock.Lock()
 
@@ -266,7 +267,7 @@ func BlockForMailboxRecv(shepherdIdx int) uintptr {
 	}
 
 	t.State = ThreadBlockedMailbox
-	t.SoftIRQSlotArg = 0         // arg0 for rewind (bufPtr — overwritten anyway)
+	t.SoftIRQSlotArg = bufPtr    // arg0 for rewind (bufPtr for SysMailboxRecv)
 	t.SoftIRQSyscallNum = 0x1031 // SysMailboxRecv
 	if shepherdIdx >= 0 && shepherdIdx < proc.MaxShepherds {
 		mailboxBlockedTID[shepherdIdx] = t.TID
