@@ -18,12 +18,41 @@ const (
 	CursorHotY   = 0
 )
 
-// cursorResourceID is the resource ID used for the hardware cursor.
+// cursorResourceID is the resource ID used for the initial hardware cursor.
 const cursorResourceID = 2
 
 // cursorImageBGRA holds the 64x64 BGRA cursor image (16384 bytes).
 // Generated from cursorBitmap at init time.
 var cursorImageBGRA [CursorWidth * CursorHeight * 4]byte
+
+// ---- Cursor Registry ----
+// Supports up to MaxCursors registered cursor images. Each has its own
+// GPU resource ID and backing pixel data. The initial built-in cursor
+// is registered as ID 0. SetActiveCursor switches which resource ID
+// the top-half MOVE_CURSOR uses.
+
+const MaxCursors = 8
+
+// cursorEntry holds per-cursor GPU state.
+type cursorEntry struct {
+	valid      bool
+	resourceID uint32
+	hotX       uint32
+	hotY       uint32
+	// Pixel data lives in cursorPixelBufs (static arrays, known PA).
+}
+
+var cursorRegistry [MaxCursors]cursorEntry
+var cursorRegistryCount int
+var activeCursorID int32 // index into cursorRegistry
+
+// cursorPixelBufs holds BGRA pixel data for each registered cursor.
+// Static arrays so we can get stable PAs via page table walk.
+var cursorPixelBufs [MaxCursors][CursorWidth * CursorHeight * 4]byte
+
+// nextCursorResourceID is the GPU resource ID for the next registered cursor.
+// Starts at 3 (resource 1 = framebuffer, resource 2 = built-in cursor).
+var nextCursorResourceID uint32 = 3
 
 // Standard arrow cursor bitmap.
 // 0 = transparent, 1 = white outline, 2 = black fill.
@@ -171,7 +200,222 @@ func InitCursor() bool {
 	}
 
 	console.KPrintln("[VirtIO GPU] Hardware cursor initialized")
+
+	// Register the built-in cursor as cursor ID 0.
+	cursorRegistry[0] = cursorEntry{
+		valid:      true,
+		resourceID: cursorResourceID,
+		hotX:       CursorHotX,
+		hotY:       CursorHotY,
+	}
+	// Copy built-in image to slot 0 pixel buffer (for consistency).
+	for i := range cursorImageBGRA {
+		cursorPixelBufs[0][i] = cursorImageBGRA[i]
+	}
+	cursorRegistryCount = 1
+	activeCursorID = 0
+
 	return true
+}
+
+// RegisterCursorImage registers a new cursor image with the GPU.
+// pixelData must be CursorWidth*CursorHeight*4 bytes of NRGBA pixel data.
+// The kernel converts NRGBA→BGRA during the copy.
+// Returns the cursor ID (>=0) on success, or -1 on failure.
+func RegisterCursorImage(pixelData []byte, hotX, hotY uint32) int32 {
+	if cursorRegistryCount >= MaxCursors {
+		console.KPrintln("[VirtIO GPU] cursor registry full")
+		return -1
+	}
+	expectedSize := CursorWidth * CursorHeight * 4
+	if len(pixelData) < expectedSize {
+		console.KPrintf("[VirtIO GPU] cursor pixel data too small: %d < %d\n", len(pixelData), expectedSize)
+		return -1
+	}
+
+	id := cursorRegistryCount
+	resID := nextCursorResourceID
+	nextCursorResourceID++
+
+	// Convert NRGBA→BGRA into the static pixel buffer for this slot.
+	dst := &cursorPixelBufs[id]
+	for i := 0; i < CursorWidth*CursorHeight; i++ {
+		srcOff := i * 4
+		dstOff := i * 4
+		r := pixelData[srcOff+0]
+		g := pixelData[srcOff+1]
+		b := pixelData[srcOff+2]
+		a := pixelData[srcOff+3]
+		dst[dstOff+0] = b // B
+		dst[dstOff+1] = g // G
+		dst[dstOff+2] = r // R
+		dst[dstOff+3] = a // A
+	}
+
+	// GPU operations must be serialized.
+	savedDAIF := saveAndDisableIRQs()
+	lockGPU()
+	ok := registerCursorGPU(id, resID, hotX, hotY)
+	unlockGPU()
+	restoreIRQs(savedDAIF)
+
+	if !ok {
+		return -1
+	}
+
+	cursorRegistry[id] = cursorEntry{
+		valid:      true,
+		resourceID: resID,
+		hotX:       hotX,
+		hotY:       hotY,
+	}
+	cursorRegistryCount++
+
+	console.KPrintf("[VirtIO GPU] registered cursor ID %d (resource %d)\n", id, resID)
+	return int32(id)
+}
+
+// registerCursorGPU creates the GPU resource, attaches backing, and transfers
+// pixel data to the host. Caller must hold gpuLock with IRQs disabled.
+func registerCursorGPU(id int, resID, hotX, hotY uint32) bool {
+	// Step 1: Create 2D resource.
+	var createCmd VirtIOGPUResourceCreate2D
+	createCmd.Hdr.Type = VIRTIO_GPU_CMD_RESOURCE_CREATE_2D
+	createCmd.ResourceID = resID
+	createCmd.Format = VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM
+	createCmd.Width = CursorWidth
+	createCmd.Height = CursorHeight
+
+	var createResp VirtIOGPUCtrlHdr
+	respType := virtioGPUSendCommand(
+		unsafe.Pointer(&createCmd), uint32(unsafe.Sizeof(createCmd)),
+		unsafe.Pointer(&createResp), uint32(unsafe.Sizeof(createResp)))
+	if respType != VIRTIO_GPU_RESP_OK_NODATA {
+		console.KPrintf("[VirtIO GPU] cursor %d CREATE_2D failed (0x%04x)\n", id, respType)
+		return false
+	}
+
+	// Step 2: Attach backing store.
+	pixBufPA := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(&cursorPixelBufs[id][0]))
+
+	attachCmdSize := uint32(unsafe.Sizeof(VirtIOGPUResourceAttachBacking{}) + unsafe.Sizeof(VirtIOGPUMemEntry{}))
+	attachBuf := unsafe.Pointer(&cursorAttachCmdBuf[0])
+
+	cmdPtr := virtio.CastToPointer[VirtIOGPUResourceAttachBacking](virtio.PointerToUintptr(attachBuf))
+	cmdPtr.Hdr.Type = VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING
+	cmdPtr.ResourceID = resID
+	cmdPtr.NrEntries = 1
+
+	memEntryPtr := virtio.CastToPointer[VirtIOGPUMemEntry](
+		virtio.PointerToUintptr(attachBuf) + unsafe.Sizeof(VirtIOGPUResourceAttachBacking{}))
+	memEntryPtr.Addr = pixBufPA
+	memEntryPtr.Len = CursorWidth * CursorHeight * 4
+
+	var attachResp VirtIOGPUCtrlHdr
+	respType = virtioGPUSendCommand(attachBuf, attachCmdSize,
+		unsafe.Pointer(&attachResp), uint32(unsafe.Sizeof(attachResp)))
+	if respType != VIRTIO_GPU_RESP_OK_NODATA {
+		console.KPrintf("[VirtIO GPU] cursor %d ATTACH_BACKING failed (0x%04x)\n", id, respType)
+		return false
+	}
+
+	// Step 3: Transfer pixel data to host.
+	var transferCmd VirtIOGPUTransferToHost2D
+	transferCmd.Hdr.Type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D
+	transferCmd.Rect.Width = CursorWidth
+	transferCmd.Rect.Height = CursorHeight
+	transferCmd.ResourceID = resID
+
+	var transferResp VirtIOGPUCtrlHdr
+	respType = virtioGPUSendCommand(
+		unsafe.Pointer(&transferCmd), uint32(unsafe.Sizeof(transferCmd)),
+		unsafe.Pointer(&transferResp), uint32(unsafe.Sizeof(transferResp)))
+	if respType != VIRTIO_GPU_RESP_OK_NODATA {
+		console.KPrintf("[VirtIO GPU] cursor %d TRANSFER failed (0x%04x)\n", id, respType)
+		return false
+	}
+
+	return true
+}
+
+// SetActiveCursor switches the displayed cursor to the given cursor ID.
+// Uses the top-half's DMA command buffer and queue indices directly,
+// because after InitCursorTopHalf the top-half owns the cursor queue
+// and cursorqSendCommand's indices are stale.
+// Returns true on success.
+func SetActiveCursor(cursorID int32) bool {
+	if cursorID < 0 || int(cursorID) >= cursorRegistryCount {
+		return false
+	}
+	entry := &cursorRegistry[cursorID]
+	if !entry.valid {
+		return false
+	}
+	if !topHalfCursorReady {
+		return false
+	}
+
+	savedDAIF := saveAndDisableIRQs()
+	lockGPU()
+
+	// Drain any in-flight top-half commands before we reuse the DMA buffer.
+	usedIdx := asm.MmioRead16(topHalfCursorUsedVA + 2)
+	for topHalfCursorLastUsedIdx != usedIdx {
+		topHalfCursorLastUsedIdx++
+	}
+
+	// Temporarily change the DMA command buffer to UPDATE_CURSOR.
+	// UPDATE_CURSOR tells QEMU to re-read the cursor image from the resource.
+	asm.MmioWrite32(topHalfCursorCmdVA+0, VIRTIO_GPU_CMD_UPDATE_CURSOR)
+	asm.MmioWrite32(topHalfCursorCmdVA+40, entry.resourceID)
+	asm.MmioWrite32(topHalfCursorCmdVA+44, entry.hotX)
+	asm.MmioWrite32(topHalfCursorCmdVA+48, entry.hotY)
+
+	// Submit via the top-half's queue state (same pattern as TopHalfMoveCursor).
+	descVA := topHalfCursorDescVA
+	asm.MmioWrite32(descVA+0, uint32(topHalfCursorCmdPA))
+	asm.MmioWrite32(descVA+4, uint32(topHalfCursorCmdPA>>32))
+	asm.MmioWrite32(descVA+8, 56) // sizeof(UpdateCursor)
+	asm.MmioWrite16(descVA+12, 0)
+	asm.MmioWrite16(descVA+14, 0xFFFF)
+
+	availRingIdx := topHalfCursorNextAvailIdx % topHalfCursorQueueSize
+	asm.MmioWrite16(topHalfCursorAvailVA+4+uintptr(availRingIdx)*2, 0)
+	topHalfCursorNextAvailIdx++
+
+	asm.Dsb()
+	asm.MmioWrite16(topHalfCursorAvailVA+2, topHalfCursorNextAvailIdx)
+	asm.Dsb()
+	asm.MmioWrite16(topHalfCursorNotifyAddr, 1)
+	asm.Dsb()
+
+	// Poll for completion — UPDATE_CURSOR must finish before we switch
+	// back to MOVE_CURSOR, otherwise the device might see a half-written cmd.
+	maxWait := 1000000
+	waited := 0
+	for waited < maxWait {
+		newUsedIdx := asm.MmioRead16(topHalfCursorUsedVA + 2)
+		if newUsedIdx != topHalfCursorLastUsedIdx {
+			topHalfCursorLastUsedIdx = newUsedIdx
+			break
+		}
+		waited++
+	}
+
+	ok := waited < maxWait
+
+	// Restore to MOVE_CURSOR for subsequent top-half position updates.
+	// Resource ID, hotX, hotY stay as the new cursor's values.
+	asm.MmioWrite32(topHalfCursorCmdVA+0, VIRTIO_GPU_CMD_MOVE_CURSOR)
+
+	if ok {
+		activeCursorID = cursorID
+	}
+
+	unlockGPU()
+	restoreIRQs(savedDAIF)
+
+	return ok
 }
 
 // cursorqSendCommand sends a command via the cursor queue (queue 1) and polls

@@ -58,6 +58,8 @@ const (
 	SysMailboxMapPage       = MazzySyscallBase + 47 // 0x102F - Map caller's page into target shepherd's space
 	SysMailboxSend          = MazzySyscallBase + 48 // 0x1030 - Send mailbox notification to target shepherd
 	SysMailboxRecv          = MazzySyscallBase + 49 // 0x1031 - Wait for mailbox notification
+	SysRegisterCursor       = MazzySyscallBase + 50 // 0x1032 - Register cursor image, get cursor ID
+	SysSetCursor            = MazzySyscallBase + 51 // 0x1033 - Switch active cursor by ID
 )
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
@@ -110,6 +112,8 @@ var mazzySyscallTable = [64]SyscallHandler{
 	47: SyscallMailboxMapPage,           // MailboxMapPage = 0x102F
 	48: SyscallMailboxSend,              // MailboxSend = 0x1030
 	49: SyscallMailboxRecv,              // MailboxRecv = 0x1031
+	50: SyscallRegisterCursor,          // RegisterCursor = 0x1032
+	51: SyscallSetCursor,               // SetCursor = 0x1033
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.

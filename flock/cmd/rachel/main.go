@@ -199,6 +199,143 @@ func mouseClickLoop() {
 	}
 }
 
+// Cursor state — set by initCursors, used by mouseMovementLoop.
+var standardCursorID = -1
+var inverseCursorID = -1
+var cursorIsInverse bool // current cursor state
+
+// Mouse position — accumulated from relative events. Clamped to display.
+var mouseX int32 = 864 // start at center of display
+var mouseY int32 = 558
+
+const displayWidth = 1728
+const displayHeight = 1117
+
+// generateStandardCursor returns a 64x64 NRGBA cursor image (white outline, black fill).
+func generateStandardCursor() []byte {
+	img := make([]byte, 64*64*4)
+	for y := 0; y < 64; y++ {
+		for x := 0; x < 64; x++ {
+			off := (y*64 + x) * 4
+			v := cursorBitmap[y][x]
+			switch v {
+			case 0: // transparent
+				img[off+0] = 0   // R
+				img[off+1] = 0   // G
+				img[off+2] = 0   // B
+				img[off+3] = 0   // A
+			case 1: // white outline
+				img[off+0] = 255 // R
+				img[off+1] = 255 // G
+				img[off+2] = 255 // B
+				img[off+3] = 255 // A
+			case 2: // black fill
+				img[off+0] = 0   // R
+				img[off+1] = 0   // G
+				img[off+2] = 0   // B
+				img[off+3] = 255 // A
+			}
+		}
+	}
+	return img
+}
+
+// generateInverseCursor returns a 64x64 NRGBA cursor image (black outline, white fill).
+func generateInverseCursor() []byte {
+	img := make([]byte, 64*64*4)
+	for y := 0; y < 64; y++ {
+		for x := 0; x < 64; x++ {
+			off := (y*64 + x) * 4
+			v := cursorBitmap[y][x]
+			switch v {
+			case 0: // transparent
+				img[off+0] = 0   // R
+				img[off+1] = 0   // G
+				img[off+2] = 0   // B
+				img[off+3] = 0   // A
+			case 1: // black outline (inverted from white)
+				img[off+0] = 0   // R
+				img[off+1] = 0   // G
+				img[off+2] = 0   // B
+				img[off+3] = 255 // A
+			case 2: // white fill (inverted from black)
+				img[off+0] = 255 // R
+				img[off+1] = 255 // G
+				img[off+2] = 255 // B
+				img[off+3] = 255 // A
+			}
+		}
+	}
+	return img
+}
+
+// cursorBitmap is the same arrow shape used by the kernel's built-in cursor.
+// 0 = transparent, 1 = outline, 2 = fill.
+var cursorBitmap = [64][64]byte{
+	{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{1, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{1, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{1, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{1, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{1, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{1, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{1, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{1, 2, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{1, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{1, 2, 2, 2, 1, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{1, 2, 2, 1, 0, 1, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{1, 2, 1, 0, 0, 1, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{1, 1, 0, 0, 0, 0, 1, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{1, 0, 0, 0, 0, 0, 1, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{0, 0, 0, 0, 0, 0, 0, 1, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{0, 0, 0, 0, 0, 0, 0, 1, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+	{0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+}
+
+// initCursors generates and registers the standard and inverse cursor images.
+func initCursors() {
+	stdImg := generateStandardCursor()
+	id, err := sys.RegisterCursor(stdImg, 0, 0)
+	if err != nil {
+		fmt.Printf("[rachel] RegisterCursor(standard) failed: %v\n", err)
+		return
+	}
+	standardCursorID = id
+	fmt.Printf("[rachel] registered standard cursor ID=%d\n", id)
+
+	invImg := generateInverseCursor()
+	id, err = sys.RegisterCursor(invImg, 0, 0)
+	if err != nil {
+		fmt.Printf("[rachel] RegisterCursor(inverse) failed: %v\n", err)
+		return
+	}
+	inverseCursorID = id
+	fmt.Printf("[rachel] registered inverse cursor ID=%d\n", id)
+
+	// Set the standard cursor as the active cursor at startup.
+	if err = sys.SetCursor(standardCursorID); err != nil {
+		fmt.Printf("[rachel] SetCursor(standard) failed: %v\n", err)
+	}
+}
+
+// pointInAnyAppBounds returns true if (x,y) is inside any tracked app's Bounds rectangle.
+func pointInAnyAppBounds(x, y int32) bool {
+	for _, ta := range trackedApps {
+		v := ta.bounds.Get()
+		if v.Type() == vm.TypeTribool {
+			continue
+		}
+		x0, y0, x1, y1 := v.AsRectangle()
+		if int32(x0) <= x && x < int32(x1) && int32(y0) <= y && y < int32(y1) {
+			return true
+		}
+	}
+	return false
+}
+
 func mouseMovementLoop() {
 	fmt.Println("[rachel] mouse-move goroutine started (WM)")
 	var buf hid.SoftIRQReturn
@@ -212,13 +349,67 @@ func mouseMovementLoop() {
 		batches++
 		for i := 0; i < n; i++ {
 			ev := buf.Events[i]
-			if ev.Type == EV_REL {
+			switch ev.Type {
+			case EV_REL:
 				if batches <= 3 {
 					fmt.Fprintf(os.Stderr, "[rel c=%d v=%d]", ev.Code, int32(ev.Value))
 				}
-				if ev.Code == REL_WHEEL {
+				switch ev.Code {
+				case REL_X:
+					mouseX += int32(ev.Value)
+					if mouseX < 0 {
+						mouseX = 0
+					}
+					if mouseX >= displayWidth {
+						mouseX = displayWidth - 1
+					}
+				case REL_Y:
+					mouseY += int32(ev.Value)
+					if mouseY < 0 {
+						mouseY = 0
+					}
+					if mouseY >= displayHeight {
+						mouseY = displayHeight - 1
+					}
+				case REL_WHEEL:
 					switchInput(inputWheel)
 					fmt.Printf("[rachel:mouse] wheel %+d\n", int32(ev.Value))
+				}
+			case EV_ABS:
+				// Tablet absolute coordinates (0-32767) → screen coordinates.
+				switch ev.Code {
+				case hid.AbsX:
+					mouseX = int32((uint32(ev.Value) * displayWidth) / (hid.AbsMax + 1))
+				case hid.AbsY:
+					mouseY = int32((uint32(ev.Value) * displayHeight) / (hid.AbsMax + 1))
+				}
+			}
+		}
+
+		// After processing all events in this batch, check cursor state.
+		if standardCursorID >= 0 && inverseCursorID >= 0 {
+			inApp := pointInAnyAppBounds(mouseX, mouseY)
+			// Log every 50th batch so we can see position + state even without transitions.
+			if batches%50 == 0 {
+				cur := "std"
+				if cursorIsInverse {
+					cur = "inv"
+				}
+				in := "out"
+				if inApp {
+					in = "IN"
+				}
+				fmt.Fprintf(os.Stderr, "[rachel:pos] (%d,%d) %s %s batch=%d\n", mouseX, mouseY, cur, in, batches)
+			}
+			if inApp && !cursorIsInverse {
+				if err := sys.SetCursor(inverseCursorID); err == nil {
+					cursorIsInverse = true
+					fmt.Fprintf(os.Stderr, "[rachel:cursor] → inverse at (%d,%d)\n", mouseX, mouseY)
+				}
+			} else if !inApp && cursorIsInverse {
+				if err := sys.SetCursor(standardCursorID); err == nil {
+					cursorIsInverse = false
+					fmt.Fprintf(os.Stderr, "[rachel:cursor] → standard at (%d,%d)\n", mouseX, mouseY)
 				}
 			}
 		}
@@ -354,6 +545,9 @@ func main() {
 	// Initialize constraint system early — mailbox handler creates constraints.
 	attr.Init()
 	fmt.Printf("[rachel] attr init done (SID=%s)\n", attr.SID())
+
+	// Register standard and inverse cursors with the GPU.
+	initCursors()
 
 	// Start mailbox receiver — handles AppStart from other shepherds.
 	go mailboxLoop()
