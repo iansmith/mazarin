@@ -51,6 +51,7 @@ const (
 	SysAttrWriteString      = MazzySyscallBase + 40 // 0x1028 - Write string value (value or constraint result)
 	SysAttrSetEager         = MazzySyscallBase + 41 // 0x1029 - Set/clear eager notification on attribute
 	SysAttrWaitDirty        = MazzySyscallBase + 42 // 0x102A - Wait for dirty notifications
+	SysAttrIncrementI64     = MazzySyscallBase + 43 // 0x102B - Atomically increment int64 attribute
 )
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
@@ -96,6 +97,7 @@ var mazzySyscallTable = [64]SyscallHandler{
 	40: SyscallAttrWriteString,           // AttrWriteString = 0x1028
 	41: SyscallAttrSetEager,              // AttrSetEager = 0x1029
 	42: SyscallAttrWaitDirty,             // AttrWaitDirty = 0x102A
+	43: SyscallAttrIncrementI64,          // AttrIncrementI64 = 0x102B
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.

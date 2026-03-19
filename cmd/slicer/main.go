@@ -8,7 +8,7 @@ import (
 
 	"github.com/fogleman/gg"
 
-	"mazzy/mazarin/neu"
+	"mazzy/mazarin/mancini"
 )
 
 const (
@@ -17,8 +17,8 @@ const (
 	fontBold    = fontDir + "AtkinsonHyperlegible-Bold.ttf"
 )
 
-var theme = &neu.Theme{
-	Pal:         neu.DefaultPalette(),
+var theme = &mancini.Theme{
+	Pal:         mancini.DefaultPalette(),
 	FontRegular: fontRegular,
 	FontBold:    fontBold,
 	ScaleFactor: 2.0,
@@ -45,29 +45,29 @@ func drawButtonGrid(canvas *image.RGBA, ax, ay, aw, ah float64) {
 		row := i / 2
 		bx := gridX + float64(col)*(btnW+btnGap)
 		by := gridY + float64(row)*(btnH+btnGap)
-		neu.NeuBox(theme, canvas, neu.Raised, bx, by, bx+btnW, by+btnH, btnR, theme.Pal.Surface,
-			neu.TextFace(theme, lbl, btnFontSize, theme.Pal.Icon, false))
+		mancini.DrawNeuBox(theme, canvas, mancini.Raised, bx, by, bx+btnW, by+btnH, btnR, theme.Pal.Surface,
+			mancini.TextFace(theme, lbl, btnFontSize, theme.Pal.Icon, false))
 	}
 }
 
 // drawFreeFloatingWindow draws a FreeFloatingWindow with title, groove, and
 // a 2×2 button grid below the groove.
 func drawFreeFloatingWindow(canvas *image.RGBA, wx, wy, winW, winH, winR float64, title string) {
-	fw := &neu.FreeFloatingWindow{
+	fw := &mancini.FreeFloatingWindow{
 		Theme:   theme,
 		Title:   title,
 		Visible: true,
-		Content: neu.FaceDrawer(drawButtonGrid),
+		Content: mancini.FaceDrawer(drawButtonGrid),
 	}
 	fw.Draw(canvas, wx, wy, winW, winH)
 }
 
 // drawAppWindow draws an AppWindow with title bar and a 2×2 button grid.
-func drawAppWindow(canvas *image.RGBA, focused bool, wx, wy, winW, winH float64, title string, titleBar neu.Drawer) {
-	contentDrawer := neu.FaceDrawer(func(canvas *image.RGBA, x, y, w, h float64) {
-		neu.Container(theme, canvas, x, y, x+w, y+h, px(10), true, drawButtonGrid)
+func drawAppWindow(canvas *image.RGBA, focused bool, wx, wy, winW, winH float64, title string, titleBar mancini.Drawer) {
+	contentDrawer := mancini.FaceDrawer(func(canvas *image.RGBA, x, y, w, h float64) {
+		mancini.Container(theme, canvas, x, y, x+w, y+h, px(10), true, drawButtonGrid)
 	})
-	app := &neu.AppWindow{
+	app := &mancini.AppWindow{
 		Theme:    theme,
 		Title:    title,
 		Focused:  focused,
@@ -108,7 +108,7 @@ func main() {
 
 	// ── Row 1: Labels at three depths ──
 	ly := marginTop + labelH
-	depths := []neu.NeuDepth{neu.Raised, neu.Flush, neu.Inset}
+	depths := []mancini.NeuDepth{mancini.Raised, mancini.Flush, mancini.Inset}
 	depthNames := []string{"Raised", "Flush", "Inset"}
 	lblTotalW := 3*lblW + 2*lblGap
 	lblStartX := (float64(totalW) - lblTotalW) / 2
@@ -116,7 +116,7 @@ func main() {
 	drawSectionLabel(0, marginTop, float64(totalW), "Label")
 	for i, d := range depths {
 		lx := lblStartX + float64(i)*(lblW+lblGap)
-		lbl := &neu.NeuLabel{
+		lbl := &mancini.NeuLabel{
 			Theme:    theme,
 			Depth:    d,
 			Text:     depthNames[i],
@@ -141,7 +141,7 @@ func main() {
 	drawSectionLabel(wx1, winRowTop, winW, "AppWindow (focused)")
 	tbR := px(8)
 	drawAppWindow(canvas, true, wx1, wy, winW, winH, "My Application",
-		neu.StripedTitleFace(theme, "My Application", px(10), tbR))
+		mancini.StripedTitleFace(theme, "My Application", px(10), tbR))
 
 	// FreeFloatingWindow
 	wx2 := marginX + 2*(winW+winGap)

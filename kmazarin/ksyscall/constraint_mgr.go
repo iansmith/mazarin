@@ -54,7 +54,7 @@ type KernelAttrManager struct {
 
 	// Bitmap allocators — one bit per slot, 1 = allocated
 	nodeBitmap   [64]byte  // 512 bits = 512 node slots
-	stringBitmap [32]byte  // 256 bits = 256 string slots
+	stringBitmap [64]byte  // 512 bits = 512 string slots
 	trieBitmap   [256]byte // 2048 bits = 2048 trie nodes
 
 	// Bump allocators (byte offsets into their regions, relative to region start)
@@ -221,6 +221,20 @@ func (mgr *KernelAttrManager) allocString(s string) (uint32, bool) {
 		}
 	}
 	return 0, false
+}
+
+// freeString releases a string slot back to the bitmap.
+// off is the byte offset from the string region start (same as FlatStrRef.RegionOffset).
+//
+//go:nosplit
+func (mgr *KernelAttrManager) freeString(off uint32) {
+	slot := uint16(off / flat.FlatStringSlotSize)
+	if slot >= mgr.stringCap {
+		return
+	}
+	byteIdx := int(slot / 8)
+	bit := uint(slot % 8)
+	mgr.stringBitmap[byteIdx] &^= 1 << bit
 }
 
 // allocEdges bump-allocates space for n uint16 edge entries.

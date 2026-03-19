@@ -1,4 +1,4 @@
-package neu
+package mancini
 
 import (
 	"image"
@@ -185,8 +185,8 @@ func NeuBoxWith(t *Theme, canvas *image.RGBA, depth NeuDepth, x1, y1, x2, y2, r 
 	}
 }
 
-// NeuBox draws a neumorphic rounded rectangle using ButtonParams.
-func NeuBox(t *Theme, canvas *image.RGBA, depth NeuDepth, x1, y1, x2, y2, r float64, face color.NRGBA, content FaceDrawer) {
+// DrawNeuBox draws a neumorphic rounded rectangle using ButtonParams.
+func DrawNeuBox(t *Theme, canvas *image.RGBA, depth NeuDepth, x1, y1, x2, y2, r float64, face color.NRGBA, content FaceDrawer) {
 	NeuBoxWith(t, canvas, depth, x1, y1, x2, y2, r, face, ButtonParams, content)
 }
 
@@ -308,6 +308,162 @@ func applyTintOverlay(t *Theme, canvas *image.RGBA, x1, y1, x2, y2, r float64, t
 	tc := t.C(tint)
 	dc.SetColor(color.NRGBA{tc.R, tc.G, tc.B, 100})
 	dc.DrawRoundedRectangle(lx1, ly1, x2-x1, y2-y1, r)
+	dc.Fill()
+	dst := image.Rect(int(ox), int(oy), int(ox)+lw, int(oy)+lh)
+	draw.Draw(canvas, dst, overlay, image.Point{}, draw.Over)
+}
+
+// ── Neumorphic circle rendering ──────────────────────────────────────────────
+
+// NeuCircleWith draws a neumorphic circle using explicit params.
+func NeuCircleWith(t *Theme, canvas *image.RGBA, depth NeuDepth, cx, cy, rad float64, face color.NRGBA, p NeuParams, content FaceDrawer) {
+	switch depth {
+	case Raised:
+		neuCircleRaised(t, canvas, cx, cy, rad, face, p.Raised)
+	case Flush:
+		neuCircleFlush(t, canvas, cx, cy, rad, face, p.Flush)
+	case Inset:
+		neuCircleInset(t, canvas, cx, cy, rad, face, p.Inset)
+	}
+	if face != t.Pal.Surface && depth != Raised {
+		applyCircleTintOverlay(t, canvas, cx, cy, rad, face)
+	}
+	if content != nil {
+		content(canvas, cx-rad, cy-rad, 2*rad, 2*rad)
+	}
+}
+
+// NeuCircleDraw draws a neumorphic circle using ButtonParams.
+func NeuCircleDraw(t *Theme, canvas *image.RGBA, depth NeuDepth, cx, cy, rad float64, face color.NRGBA, content FaceDrawer) {
+	NeuCircleWith(t, canvas, depth, cx, cy, rad, face, ButtonParams, content)
+}
+
+func circleShadowLayer(w, h int, cx, cy, rad float64, c color.NRGBA, alpha uint8, blur float64) *image.NRGBA {
+	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
+	dc := gg.NewContextForRGBA(rgba)
+	dc.SetColor(color.NRGBA{c.R, c.G, c.B, alpha})
+	dc.DrawCircle(cx, cy, rad)
+	dc.Fill()
+	nrgba := rgbaToNRGBA(rgba)
+	if blur > 0 {
+		return gaussianBlurNRGBA(nrgba, blur)
+	}
+	return nrgba
+}
+
+func circleMask(w, h int, cx, cy, rad float64) *image.Alpha {
+	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
+	dc := gg.NewContextForRGBA(rgba)
+	dc.SetColor(color.White)
+	dc.DrawCircle(cx, cy, rad)
+	dc.Fill()
+	mask := image.NewAlpha(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			mask.Pix[y*mask.Stride+x] = rgba.Pix[y*rgba.Stride+x*4+3]
+		}
+	}
+	return mask
+}
+
+func neuCircleRaised(t *Theme, canvas *image.RGBA, cx, cy, rad float64, face color.NRGBA, p RaisedParams) {
+	x1, y1, x2, y2 := cx-rad, cy-rad, cx+rad, cy+rad
+	maxOff := math.Max(p.DarkOff, p.LightOff)
+	maxBlur := math.Max(p.DarkBlur, p.LightBlur)
+	pad := maxOff + math.Ceil(maxBlur*3) + 2
+	lw, lh, ox, oy := localRect(canvas, x1, y1, x2, y2, pad)
+	lcx, lcy := cx-ox, cy-oy
+	dst := image.Rect(int(ox), int(oy), int(ox)+lw, int(oy)+lh)
+
+	dark := circleShadowLayer(lw, lh,
+		lcx+p.DarkOff, lcy+p.DarkOff, rad,
+		t.C(t.Pal.DarkSh), p.DarkAlpha, p.DarkBlur)
+	draw.Draw(canvas, dst, dark, image.Point{}, draw.Over)
+	light := circleShadowLayer(lw, lh,
+		lcx-p.LightOff, lcy-p.LightOff, rad,
+		t.C(t.Pal.LightSh), p.LightAlpha, p.LightBlur)
+	draw.Draw(canvas, dst, light, image.Point{}, draw.Over)
+	dc := gg.NewContextForRGBA(canvas)
+	dc.SetColor(t.C(face))
+	dc.DrawCircle(cx, cy, rad)
+	dc.Fill()
+}
+
+func neuCircleInset(t *Theme, canvas *image.RGBA, cx, cy, rad float64, face color.NRGBA, p InsetParams) {
+	dc := gg.NewContextForRGBA(canvas)
+	dc.SetColor(t.C(face))
+	dc.DrawCircle(cx, cy, rad)
+	dc.Fill()
+
+	x1, y1, x2, y2 := cx-rad, cy-rad, cx+rad, cy+rad
+	maxBlur := math.Max(p.DarkBlur, p.LightBlur)
+	pad := p.Off + math.Ceil(maxBlur*3) + 2
+	lw, lh, ox, oy := localRect(canvas, x1, y1, x2, y2, pad)
+	lcx, lcy := cx-ox, cy-oy
+	dst := image.Rect(int(ox), int(oy), int(ox)+lw, int(oy)+lh)
+
+	mask := circleMask(lw, lh, lcx, lcy, rad)
+	type shadowSpec struct {
+		ox, oy float64
+		alpha  uint8
+		blur   float64
+		c      color.NRGBA
+	}
+	shadows := []shadowSpec{
+		{-p.Off, -p.Off, 190, p.DarkBlur, t.C(t.Pal.DarkSh)},
+		{+p.Off, +p.Off, 190, p.LightBlur, t.C(t.Pal.LightSh)},
+	}
+	for _, s := range shadows {
+		sh := circleShadowLayer(lw, lh,
+			lcx+s.ox, lcy+s.oy, rad,
+			s.c, s.alpha, s.blur)
+		draw.DrawMask(canvas, dst, sh, image.Point{}, mask, image.Point{}, draw.Over)
+	}
+}
+
+func neuCircleFlush(t *Theme, canvas *image.RGBA, cx, cy, rad float64, face color.NRGBA, p FlushParams) {
+	dc := gg.NewContextForRGBA(canvas)
+	dc.SetColor(t.C(face))
+	dc.DrawCircle(cx, cy, rad)
+	dc.Fill()
+
+	x1, y1, x2, y2 := cx-rad, cy-rad, cx+rad, cy+rad
+	pad := p.EdgeW + 2
+	lw, lh, ox, oy := localRect(canvas, x1, y1, x2, y2, pad)
+	lcx, lcy := cx-ox, cy-oy
+	dst := image.Rect(int(ox), int(oy), int(ox)+lw, int(oy)+lh)
+
+	darkEdge := image.NewRGBA(image.Rect(0, 0, lw, lh))
+	ddc := gg.NewContextForRGBA(darkEdge)
+	darkC := t.C(t.Pal.DarkSh)
+	ddc.SetColor(color.NRGBA{darkC.R, darkC.G, darkC.B, p.EdgeAlpha})
+	ddc.SetLineWidth(p.EdgeW)
+	ddc.DrawCircle(lcx, lcy, rad)
+	ddc.Stroke()
+	draw.Draw(canvas, dst, darkEdge, image.Point{}, draw.Over)
+
+	lightEdge := image.NewRGBA(image.Rect(0, 0, lw, lh))
+	ldc := gg.NewContextForRGBA(lightEdge)
+	lightC := t.C(t.Pal.LightSh)
+	ldc.SetColor(color.NRGBA{lightC.R, lightC.G, lightC.B, p.EdgeAlpha})
+	ldc.SetLineWidth(p.EdgeW)
+	ldc.DrawCircle(lcx+1, lcy+1, rad)
+	ldc.Stroke()
+	mask := circleMask(lw, lh, lcx, lcy, rad)
+	draw.DrawMask(canvas, dst, lightEdge, image.Point{}, mask, image.Point{}, draw.Over)
+}
+
+func applyCircleTintOverlay(t *Theme, canvas *image.RGBA, cx, cy, rad float64, tint color.NRGBA) {
+	x1, y1, x2, y2 := cx-rad, cy-rad, cx+rad, cy+rad
+	pad := 2.0
+	lw, lh, ox, oy := localRect(canvas, x1, y1, x2, y2, pad)
+	lcx, lcy := cx-ox, cy-oy
+
+	overlay := image.NewRGBA(image.Rect(0, 0, lw, lh))
+	dc := gg.NewContextForRGBA(overlay)
+	tc := t.C(tint)
+	dc.SetColor(color.NRGBA{tc.R, tc.G, tc.B, 100})
+	dc.DrawCircle(lcx, lcy, rad)
 	dc.Fill()
 	dst := image.Rect(int(ox), int(oy), int(ox)+lw, int(oy)+lh)
 	draw.Draw(canvas, dst, overlay, image.Point{}, draw.Over)

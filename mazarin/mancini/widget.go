@@ -1,4 +1,4 @@
-package neu
+package mancini
 
 import (
 	"image"
@@ -36,12 +36,19 @@ func loadFont(t *Theme, dc *gg.Context, bold bool, size float64) bool {
 // Focused: Raised, decorated title bar, floaters visible.
 type AppWindow struct {
 	Theme    *Theme
+	Name     string
 	Title    string
 	Focused  bool
 	TitleBar Drawer // used when Focused (StripedTitleFace, GradientTitleFace, or custom)
 	Content  Drawer
 	Floaters []*FreeFloatingWindow
+	Layout   *LayoutHandles
+
+	lastBoundsHash int64
+	lastFocused    bool
 }
+
+func (w *AppWindow) GetLayout() *LayoutHandles { return w.Layout }
 
 func (w *AppWindow) Depth() NeuDepth {
 	if w.Focused {
@@ -66,21 +73,37 @@ func (w *AppWindow) Unfocus() {
 
 // Draw implements the Drawer interface.
 func (w *AppWindow) Draw(canvas *image.RGBA, x, y, ww, hh float64) {
+	publishLayout(w.Layout, x, y, ww, hh)
 	t := w.Theme
-	NeuBoxWith(t, canvas, w.Depth(), x, y, x+ww, y+hh, t.Px(14), t.Pal.Surface, WindowParams, nil)
+
+	// Skip expensive NeuBoxWith calls when bounds and focus are unchanged.
+	needDecoration := true
+	hash := w.Layout.boundsHashValue()
+	if hash == w.lastBoundsHash && w.lastBoundsHash != 0 && w.Focused == w.lastFocused {
+		needDecoration = false
+	}
+	w.lastBoundsHash = hash
+	w.lastFocused = w.Focused
+
+	if needDecoration {
+		NeuBoxWith(t, canvas, w.Depth(), x, y, x+ww, y+hh, t.Px(14), t.Pal.Surface, WindowParams, nil)
+	}
 
 	// Title bar
 	tbMargin := t.Px(8)
 	tbX, tbY := x+tbMargin, y+tbMargin
-	tbW, tbH := ww-2*tbMargin, t.Px(26)
-	tbR := t.Px(8)
-	if w.Focused {
-		NeuBoxWith(t, canvas, Raised, tbX, tbY, tbX+tbW, tbY+tbH, tbR,
-			t.Pal.Surface, ButtonParams, asFaceDrawer(w.TitleBar))
-	} else {
-		NeuBoxWith(t, canvas, Flush, tbX, tbY, tbX+tbW, tbY+tbH, tbR,
-			t.Pal.Surface, ButtonParams,
-			TextFace(t, w.Title, t.Px(10), t.Pal.Text, false))
+	tbW := ww - 2*tbMargin
+	tbH := t.Px(26) // default
+	if s, ok := w.TitleBar.(Sizer); ok {
+		tbH = s.PreferredHeight()
+	}
+	if needDecoration {
+		if w.Focused && w.TitleBar != nil {
+			w.TitleBar.Draw(canvas, tbX, tbY, tbW, tbH)
+		} else {
+			// Unfocused: plain centered text, no pinstripes.
+			TextFace(t, w.Title, t.Px(18), t.Pal.Text, false)(canvas, tbX, tbY, tbW, tbH)
+		}
 	}
 
 	// Content area
@@ -98,18 +121,56 @@ func (w *AppWindow) Draw(canvas *image.RGBA, x, y, ww, hh float64) {
 	}
 }
 
+// fillRect fills a rectangle with the theme's surface color (fast, no gg context).
+func fillRect(canvas *image.RGBA, t *Theme, x, y, w, h float64) {
+	sc := t.Pal.Surface
+	if t.SwapRB {
+		sc = color.NRGBA{R: sc.B, G: sc.G, B: sc.R, A: sc.A}
+	}
+	x0, y0 := int(x), int(y)
+	x1, y1 := int(x+w), int(y+h)
+	b := canvas.Bounds()
+	if x0 < b.Min.X {
+		x0 = b.Min.X
+	}
+	if y0 < b.Min.Y {
+		y0 = b.Min.Y
+	}
+	if x1 > b.Max.X {
+		x1 = b.Max.X
+	}
+	if y1 > b.Max.Y {
+		y1 = b.Max.Y
+	}
+	for py := y0; py < y1; py++ {
+		for px := x0; px < x1; px++ {
+			off := canvas.PixOffset(px, py)
+			canvas.Pix[off+0] = sc.R
+			canvas.Pix[off+1] = sc.G
+			canvas.Pix[off+2] = sc.B
+			canvas.Pix[off+3] = sc.A
+		}
+	}
+}
+
 // ── FreeFloatingWindow ───────────────────────────────────────────────────────
 
 // FreeFloatingWindow is a neumorphic floating panel owned by an AppWindow.
 // Always Flush when visible.
 type FreeFloatingWindow struct {
 	Theme   *Theme
+	Name    string
 	Title   string
 	Visible bool
 	Content Drawer
 	X, Y    float64 // position (set by caller or constraints)
 	W, H    float64 // size (set by caller or constraints)
+	Layout  *LayoutHandles
+
+	lastBoundsHash int64
 }
+
+func (w *FreeFloatingWindow) GetLayout() *LayoutHandles { return w.Layout }
 
 func (w *FreeFloatingWindow) Depth() NeuDepth {
 	return Flush
@@ -117,8 +178,20 @@ func (w *FreeFloatingWindow) Depth() NeuDepth {
 
 // Draw implements the Drawer interface.
 func (w *FreeFloatingWindow) Draw(canvas *image.RGBA, x, y, ww, hh float64) {
+	publishLayout(w.Layout, x, y, ww, hh)
 	t := w.Theme
-	NeuBoxWith(t, canvas, Flush, x, y, x+ww, y+hh, t.Px(14), t.Pal.Surface, WindowParams, nil)
+
+	// Skip expensive NeuBoxWith calls when bounds are unchanged.
+	needDecoration := true
+	hash := w.Layout.boundsHashValue()
+	if hash == w.lastBoundsHash && w.lastBoundsHash != 0 {
+		needDecoration = false
+	}
+	w.lastBoundsHash = hash
+
+	if needDecoration {
+		NeuBoxWith(t, canvas, Flush, x, y, x+ww, y+hh, t.Px(14), t.Pal.Surface, WindowParams, nil)
+	}
 
 	// Title
 	titleY := y + t.Px(14)
@@ -130,7 +203,9 @@ func (w *FreeFloatingWindow) Draw(canvas *image.RGBA, x, y, ww, hh float64) {
 	// Groove separator
 	grooveMargin := t.Px(18)
 	grooveY := y + t.Px(26)
-	NeuGroove(t, canvas, x+grooveMargin, grooveY, x+ww-grooveMargin)
+	if needDecoration {
+		NeuGroove(t, canvas, x+grooveMargin, grooveY, x+ww-grooveMargin)
+	}
 
 	// Content area below groove
 	cY := grooveY + t.Px(6)
@@ -144,14 +219,19 @@ func (w *FreeFloatingWindow) Draw(canvas *image.RGBA, x, y, ww, hh float64) {
 
 // Button is a neumorphic button that delegates its face rendering to a Drawer.
 type Button struct {
-	Theme *Theme
-	Depth NeuDepth
-	Face  Drawer
+	Theme  *Theme
+	Name   string
+	Depth  NeuDepth
+	Face   Drawer
+	Layout *LayoutHandles
 }
+
+func (b *Button) GetLayout() *LayoutHandles { return b.Layout }
 
 // Draw implements the Drawer interface.
 func (b *Button) Draw(canvas *image.RGBA, x, y, w, h float64) {
-	NeuBox(b.Theme, canvas, b.Depth, x, y, x+w, y+h, b.Theme.Px(8),
+	publishLayout(b.Layout, x, y, w, h)
+	DrawNeuBox(b.Theme, canvas, b.Depth, x, y, x+w, y+h, b.Theme.Px(8),
 		b.Theme.Pal.Surface, asFaceDrawer(b.Face))
 }
 
@@ -160,21 +240,31 @@ func (b *Button) Draw(canvas *image.RGBA, x, y, w, h float64) {
 // NeuLabel is a text label inside a neumorphic box at any depth.
 type NeuLabel struct {
 	Theme    *Theme
+	Name     string
 	Depth    NeuDepth
 	Text     string         // static text (used when TextFunc is nil)
 	TextFunc func() string  // dynamic text source (takes precedence over Text)
 	FontSize float64
 	Color    color.NRGBA
 	Bold     bool
+	Layout   *LayoutHandles
+}
+
+func (l *NeuLabel) GetLayout() *LayoutHandles { return l.Layout }
+
+// PreferredHeight returns the preferred height for a NeuLabel.
+func (l *NeuLabel) PreferredHeight() float64 {
+	return l.FontSize + l.Theme.Px(16) // font + box padding
 }
 
 // Draw implements the Drawer interface.
 func (l *NeuLabel) Draw(canvas *image.RGBA, x, y, w, h float64) {
+	publishLayout(l.Layout, x, y, w, h)
 	text := l.Text
 	if l.TextFunc != nil {
 		text = l.TextFunc()
 	}
-	NeuBox(l.Theme, canvas, l.Depth, x, y, x+w, y+h, l.Theme.Px(8),
+	DrawNeuBox(l.Theme, canvas, l.Depth, x, y, x+w, y+h, l.Theme.Px(8),
 		l.Theme.Pal.Surface, TextFace(l.Theme, text, l.FontSize, l.Color, l.Bold))
 }
 
@@ -183,18 +273,53 @@ func (l *NeuLabel) Draw(canvas *image.RGBA, x, y, w, h float64) {
 // Label is plain text with no neumorphic box.
 type Label struct {
 	Theme    *Theme
+	Name     string
 	Text     string         // static text (used when TextFunc is nil)
 	TextFunc func() string  // dynamic text source (takes precedence over Text)
 	FontSize float64
 	Color    color.NRGBA
 	Bold     bool
+	Layout   *LayoutHandles
+
+	lastDrawnText string
+	lastDrawnHash int64
+}
+
+func (l *Label) GetLayout() *LayoutHandles { return l.Layout }
+
+// PreferredHeight returns the preferred height for a Label.
+func (l *Label) PreferredHeight() float64 {
+	return l.FontSize + l.Theme.Px(4) // font + minimal padding
+}
+
+// PreferredWidth returns the preferred width for a Label based on text measurement.
+func (l *Label) PreferredWidth() float64 {
+	text := l.Text
+	if l.TextFunc != nil {
+		text = l.TextFunc()
+	}
+	return l.Theme.MeasureText(text, l.Bold, l.FontSize) + l.Theme.Px(8) // text + padding
 }
 
 // Draw implements the Drawer interface.
 func (l *Label) Draw(canvas *image.RGBA, x, y, w, h float64) {
+	// Publish intrinsic dimensions so inside-out constraints see actual text size.
+	pw := l.PreferredWidth()
+	ph := l.PreferredHeight()
+	publishLayout(l.Layout, x, y, pw, ph)
 	text := l.Text
 	if l.TextFunc != nil {
 		text = l.TextFunc()
+	}
+	hash := l.Layout.boundsHashValue()
+	if text == l.lastDrawnText && hash == l.lastDrawnHash && l.lastDrawnHash != 0 {
+		return // text and position unchanged — no damage
+	}
+	l.lastDrawnText = text
+	l.lastDrawnHash = hash
+	// Clear label area before drawing new text.
+	if l.Theme != nil {
+		fillRect(canvas, l.Theme, x, y, pw, ph)
 	}
 	TextFace(l.Theme, text, l.FontSize, l.Color, l.Bold)(canvas, x, y, w, h)
 }
@@ -285,7 +410,7 @@ func GradientTitleFace(t *Theme, title string, fontSize, r float64) FaceDrawer {
 	}
 }
 
-// asFaceDrawer converts a Drawer to a FaceDrawer for use with NeuBox.
+// asFaceDrawer converts a Drawer to a FaceDrawer for use with DrawNeuBox/NeuBoxWith.
 func asFaceDrawer(d Drawer) FaceDrawer {
 	if d == nil {
 		return nil

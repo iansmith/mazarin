@@ -1,0 +1,3 @@
+func identity_point2d() Point2D {
+	return deref_point2d("_0_")
+}

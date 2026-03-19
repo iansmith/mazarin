@@ -1,4 +1,4 @@
-package neu
+package mancini
 
 import (
 	"image"
@@ -11,6 +11,11 @@ import (
 // Drawer draws itself into the given bounds on the canvas.
 type Drawer interface {
 	Draw(canvas *image.RGBA, x, y, w, h float64)
+}
+
+// Layouter is implemented by interactors that have layout handles.
+type Layouter interface {
+	GetLayout() *LayoutHandles
 }
 
 // FaceDrawer draws content onto the face of a neumorphic box.
@@ -94,6 +99,19 @@ type Theme struct {
 	FontLoader  func(bold bool, size float64) font.Face
 	ScaleFactor float64
 	SwapRB      bool // true for BGRA GPU framebuffers
+}
+
+// MeasureText returns the advance width of text at the given font size.
+func (t *Theme) MeasureText(text string, bold bool, fontSize float64) float64 {
+	if t.FontLoader == nil {
+		return float64(len(text)) * fontSize * 0.6 // rough estimate
+	}
+	face := t.FontLoader(bold, fontSize)
+	if face == nil {
+		return float64(len(text)) * fontSize * 0.6
+	}
+	advance := font.MeasureString(face, text)
+	return math.Ceil(float64(advance) / 64.0) // fixed.Int26_6 → float64
 }
 
 // Px converts logical pixels to device pixels.

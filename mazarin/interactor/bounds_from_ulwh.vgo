@@ -1,0 +1,7 @@
+func bounds_from_ulwh() Rect {
+	ulx := point2d_x(deref_point2d("_0_"))
+	uly := point2d_y(deref_point2d("_0_"))
+	w := deref_i64("_1_")
+	h := deref_i64("_2_")
+	return rect(ulx, uly, ulx+w, uly+h)
+}

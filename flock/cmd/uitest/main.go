@@ -21,6 +21,9 @@ import (
 //go:embed AtkinsonHyperlegibleMono-Regular.otf
 var fontData []byte
 
+//go:embed AtkinsonHyperlegibleMono-Bold.otf
+var boldFontData []byte
+
 const (
 	// Right half of 1728×1117 display.
 	regionX = 864
@@ -34,7 +37,6 @@ type cityInfo struct {
 	tz      string // IANA timezone for time.LoadLocation
 	tzLabel string // display label for timezone row
 	loc     *time.Location
-	content *attr.Handle[string]
 }
 
 func main() {
@@ -46,14 +48,23 @@ func main() {
 	mancini.Init("uitest")
 	sys.UartWriteString("[uitest] attr + interactor init done\n")
 
-	// 2. Parse embedded font and build a Theme.
+	// 2. Parse embedded fonts and build a Theme.
 	otFont, err := opentype.Parse(fontData)
 	if err != nil {
 		sys.UartWriteString("[uitest] font parse error: " + err.Error() + "\n")
 		return
 	}
+	otFontBold, err := opentype.Parse(boldFontData)
+	if err != nil {
+		sys.UartWriteString("[uitest] bold font parse error: " + err.Error() + "\n")
+		return
+	}
 	fontLoader := func(bold bool, size float64) font.Face {
-		face, err := opentype.NewFace(otFont, &opentype.FaceOptions{
+		f := otFont
+		if bold {
+			f = otFontBold
+		}
+		face, err := opentype.NewFace(f, &opentype.FaceOptions{
 			Size:    size,
 			DPI:     72,
 			Hinting: font.HintingFull,
@@ -71,7 +82,7 @@ func main() {
 		SwapRB:      true,
 	}
 
-	// 3. Define three cities with their timezones.
+	// 3. Define cities with their timezones.
 	cities := []cityInfo{
 		{name: "Atlanta", tz: "America/New_York", tzLabel: "US/New_York"},
 		{name: "London", tz: "Europe/London", tzLabel: "GB/London"},
@@ -85,56 +96,82 @@ func main() {
 			loc = time.UTC
 		}
 		cities[i].loc = loc
-		uri := "attr:///priest/uitest/str/" + cities[i].name + "_clock/content"
-		cities[i].content = attr.ValueStr(uri, "00:00:00")
 	}
 
-	// 4. Build drawer tree: AppWindow → Row → 3 Columns → 3 Labels each.
+	// 4. Time tracking via constraint system — needed by Clock widgets.
+	timeProg := interactor.BindStrings(interactor.ProgIdentityI64,
+		"attr:///kernel/int64/time/utc_seconds")
+	timeSec := attr.ConstraintI64("attr:///priest/uitest/int64/time_sec", timeProg)
+	timeSec.Get()
+
+	nanosProg := interactor.BindStrings(interactor.ProgIdentityI64,
+		"attr:///kernel/int64/time/utc_nanos")
+	timeNanos := attr.ConstraintI64("attr:///priest/uitest/int64/time_nanos", nanosProg)
+	timeNanos.SetEager(true)
+	_ = timeNanos.Get()
+
+	// 5. Build drawer tree: AppWindow → Row → 4 Columns → [Label, NeuCircle→Clock, Label].
 	textColor := color.NRGBA{0, 0, 0, 255}
 	subtitleColor := color.NRGBA{78, 72, 112, 255}
 
 	var columns []mancini.Drawer
 	for _, city := range cities {
 		colName := city.name + "_col"
-		content := city.content // capture for closure
+		circleName := city.name + "_circle"
+		loc := city.loc // capture for closure
 
 		cityLabel := &mancini.Label{
 			Theme:    theme,
 			Name:     city.name + "_name",
 			Text:     city.name,
-			FontSize: 16,
+			FontSize: 18,
 			Color:    textColor,
 			Bold:     true,
 		}
 
-		clockLabel := &mancini.Label{
-			Theme:    theme,
-			Name:     city.name + "_clock",
-			TextFunc: func() string { return content.Get() },
-			FontSize: 24,
-			Color:    textColor,
+		clockFace := &mancini.Clock{
+			Theme: theme,
+			Name:  city.name + "_clock",
+			Size:  50,
+			Color: textColor,
+			TimeFunc: func() (int, int, int, int) {
+				sec := timeSec.Get()
+				nanos := timeNanos.Get()
+				millis := int(nanos / 1_000_000)
+				t := time.Unix(sec, 0).In(loc)
+				return t.Hour(), t.Minute(), t.Second(), millis
+			},
+		}
+
+		circle := &mancini.NeuCircle{
+			Theme:  theme,
+			Name:   circleName,
+			Depth:  mancini.Raised,
+			Params: mancini.ButtonParams,
+			Child:  clockFace,
 		}
 
 		tzLabel := &mancini.Label{
 			Theme:    theme,
 			Name:     city.name + "_tz",
 			Text:     city.tzLabel,
-			FontSize: 12,
+			FontSize: 18,
 			Color:    subtitleColor,
 		}
 
 		col := &mancini.Column{
 			Theme:    theme,
 			Name:     colName,
-			Spacing:  4,
-			Children: []mancini.Drawer{cityLabel, clockLabel, tzLabel},
+			Children: []mancini.Drawer{cityLabel, circle, tzLabel},
 		}
 
-		// InitLayout bottom-up: leaves first, then container.
+		// InitLayout bottom-up: leaves first, then decorator, then container.
 		cityLabel.InitLayout(colName)
-		clockLabel.InitLayout(colName)
+		clockFace.InitLayout(circleName)
+		circle.InitLayout(colName)
 		tzLabel.InitLayout(colName)
 		col.InitLayout("main_row")
+		col.SetSpacing(15)
 
 		columns = append(columns, col)
 	}
@@ -142,27 +179,43 @@ func main() {
 	row := &mancini.Row{
 		Theme:    theme,
 		Name:     "main_row",
-		Spacing:  12,
 		Children: columns,
 	}
 	row.InitLayout("clock_window")
+	row.SetSpacing(20)
+
+	// Title bar: AppTitleBar with a bold centered label.
+	titleLabel := &mancini.Label{
+		Theme:    theme,
+		Name:     "title_label",
+		Text:     "World Clocks",
+		FontSize: 22,
+		Color:    theme.Pal.Text,
+		Bold:     true,
+	}
+	titleBar := &mancini.AppTitleBar{
+		Theme: theme,
+		Name:  "title_bar",
+		Child: titleLabel,
+	}
+	titleBar.InitLayout("") // also creates child label's layout with Y constraint
 
 	app := &mancini.AppWindow{
 		Theme:    theme,
 		Name:     "clock_window",
 		Title:    "World Clocks",
 		Focused:  true,
-		TitleBar: mancini.StripedTitleFace(theme, "World Clocks", theme.Px(10), theme.Px(8)),
+		TitleBar: titleBar,
 		Content:  row,
 	}
 	app.InitLayout("")
 
-	// 5. Create draw context.
+	// 6. Create draw context.
 	dc := interactor.NewDrawContext(fontData, regionX, regionY, regionW, regionH)
 	fbImage := dc.Image()
 	sys.UartWriteString("[uitest] draw context created\n")
 
-	// 6. Initial sizing draw at a small default size to publish children's dimensions
+	// 7. Initial sizing draw at a small default size to publish children's dimensions
 	// without spending forever computing neumorphic shadows at full-region size.
 	initW, initH := 600.0, 200.0
 	initX := float64(regionX) + (float64(regionW)-initW)/2
@@ -209,20 +262,6 @@ func main() {
 	dc.FlushRegion()
 	sys.UartWriteString("[uitest] initial draw done, entering loop\n")
 
-	// 7. Time tracking via constraint system — shared UTC source.
-	// Depend on utc_nanos (updated at time_update_hertz frequency) so we get
-	// woken at the configured rate, not just once per second.
-	timeProg := interactor.BindStrings(interactor.ProgIdentityI64,
-		"attr:///kernel/int64/time/utc_seconds")
-	timeSec := attr.ConstraintI64("attr:///priest/uitest/int64/time_sec", timeProg)
-	timeSec.Get()
-
-	nanosProg := interactor.BindStrings(interactor.ProgIdentityI64,
-		"attr:///kernel/int64/time/utc_nanos")
-	timeNanos := attr.ConstraintI64("attr:///priest/uitest/int64/time_nanos", nanosProg)
-	timeNanos.SetEager(true)
-	_ = timeNanos.Get()
-
 	// 8. Instrumentation counters.
 	eagerHandle := attr.ValueI64("attr:///priest/uitest/int64/stats/eagerUpdates", 0)
 	eagerSlot := eagerHandle.Slot()
@@ -240,25 +279,16 @@ func main() {
 		}
 	}()
 
-	// 9. Main loop: wake on dirty, update clocks only when second changes, redraw.
+	// 9. Main loop: wake on dirty, redraw when second changes.
+	// Clock widgets read timeSec directly via their TimeFunc closures.
 	loopCount := 0
-	var lastSec int64
 	for {
 		attr.WaitDirty()
 		sys.AttrIncrementI64(eagerSlot)
 		loopCount++
 
-		sec := timeSec.Get()
-		if sec == lastSec {
-			// Second hasn't changed — no visual update needed.
-			continue
-		}
-		lastSec = sec
-
-		for i := range cities {
-			t := time.Unix(int64(sec), 0).In(cities[i].loc)
-			cities[i].content.Set(t.Format("15:04:05"))
-		}
+		_ = timeSec.Get()
+		_ = timeNanos.Get()
 
 		winW = float64(app.Layout.Width.Get())
 		winH = float64(app.Layout.Height.Get())

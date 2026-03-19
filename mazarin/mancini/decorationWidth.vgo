@@ -1,0 +1,6 @@
+import "decorator"
+
+func decorationWidth() int64 {
+	margin := deref_i64("_2_")
+	return simpleDecoratorInsideOut("_0_", "_1_", margin, "_3_", "_4_", int64(20), deref_i64("_5_"))
+}

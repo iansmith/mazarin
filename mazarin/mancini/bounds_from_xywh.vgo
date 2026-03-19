@@ -1,0 +1,7 @@
+func bounds_from_xywh() Rect {
+	x := deref_i64("_0_")
+	y := deref_i64("_1_")
+	w := deref_i64("_2_")
+	h := deref_i64("_3_")
+	return rect(x, y, x+w, y+h)
+}

@@ -18,7 +18,7 @@ kernel_mem_limit = 24
 # gc_percent_kernel is the kernel's GOGC value, also set very high so
 # GOMEMLIMIT (kernel_mem_limit) is the governor for kernel GC too.
 gc_percent_kernel = 10000
-time_update_hertz = 3
+time_update_hertz = 10
 
 # Bootstrap priests: loaded by the kernel during early boot
 [[bootstrap_priest]]

@@ -357,6 +357,91 @@ func (mgr *KernelAttrManager) trieMatchWalk(nodeIdx uint16, segments []string, d
 	}
 }
 
+// trieMatchPatternURIs finds all URIs matching a pattern with '*' wildcards.
+// Reconstructs full URIs by walking the trie and building the path.
+// Writes matched URIs into uris buffer, returns count.
+func (mgr *KernelAttrManager) trieMatchPatternURIs(pattern string, uris []string) int {
+	var segments [maxURISegments]string
+	nSeg := parseURI(pattern, &segments)
+	if nSeg < 0 {
+		return 0
+	}
+
+	count := 0
+	var pathBuf [512]byte
+	prefix := constants.URIPrefix // "attr:///"
+	copy(pathBuf[:], prefix)
+	mgr.trieMatchWalkURI(0, segments[:nSeg], 0, uris, &count, pathBuf[:], len(prefix))
+	return count
+}
+
+// trieMatchWalkURI recursively matches pattern segments, building full URIs.
+// path[:pathLen] contains the URI built so far.
+func (mgr *KernelAttrManager) trieMatchWalkURI(nodeIdx uint16, segments []string, depth int, uris []string, count *int, path []byte, pathLen int) {
+	if depth >= len(segments) {
+		node := mgr.trieNode(nodeIdx)
+		if node.AttrSlot != trieNone && *count < len(uris) {
+			uris[*count] = string(path[:pathLen])
+			*count++
+		}
+		return
+	}
+
+	seg := segments[depth]
+	node := mgr.trieNode(nodeIdx)
+
+	if seg == "*" {
+		// Wildcard: match all children at this level.
+		childIdx := node.FirstChild
+		for childIdx != trieNone {
+			child := mgr.trieNode(childIdx)
+			segStr := trieSegmentString(&child.Segment)
+			newLen := pathLen + len(segStr)
+			if depth > 0 {
+				newLen++ // '/' separator
+			}
+			if newLen < len(path) {
+				if depth > 0 {
+					path[pathLen] = '/'
+					copy(path[pathLen+1:], segStr)
+				} else {
+					copy(path[pathLen:], segStr)
+				}
+				mgr.trieMatchWalkURI(childIdx, segments, depth+1, uris, count, path, newLen)
+			}
+			childIdx = child.NextSibling
+		}
+	} else {
+		// Exact match.
+		child := mgr.findChild(nodeIdx, seg)
+		if child != trieNone {
+			newLen := pathLen + len(seg)
+			if depth > 0 {
+				newLen++
+			}
+			if newLen < len(path) {
+				if depth > 0 {
+					path[pathLen] = '/'
+					copy(path[pathLen+1:], seg)
+				} else {
+					copy(path[pathLen:], seg)
+				}
+				mgr.trieMatchWalkURI(child, segments, depth+1, uris, count, path, newLen)
+			}
+		}
+	}
+}
+
+// trieSegmentString returns a Go string from a NUL-terminated trie segment.
+func trieSegmentString(seg *[trieSegmentLen]byte) string {
+	for i := 0; i < trieSegmentLen; i++ {
+		if seg[i] == 0 {
+			return string(seg[:i])
+		}
+	}
+	return string(seg[:])
+}
+
 // findChild searches for a child node with the given segment name.
 // Returns child index or trieNone.
 //

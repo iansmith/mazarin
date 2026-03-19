@@ -1,0 +1,30 @@
+func parent_damage_rect() Rect {
+	bounds := deref_rect("_0_")
+	lpBounds := deref_rect("_1_")
+	vis := deref_bool("_2_")
+	lpVis := deref_bool("_3_")
+	bgc := deref_i64("_4_")
+	lpBgc := deref_i64("_5_")
+	tc := deref_i64("_6_")
+	lpTc := deref_i64("_7_")
+
+	ownDamage := rect(0, 0, 0, 0)
+	if vis != lpVis {
+		ownDamage = rect_union(bounds, lpBounds)
+	}
+	if bgc != lpBgc {
+		ownDamage = rect_union(bounds, lpBounds)
+	}
+	if tc != lpTc {
+		ownDamage = rect_union(bounds, lpBounds)
+	}
+
+	childDmg := deref_rect("_8_")
+	if !rect_empty(childDmg) {
+		if rect_empty(ownDamage) {
+			return childDmg
+		}
+		return rect_union(ownDamage, childDmg)
+	}
+	return ownDamage
+}

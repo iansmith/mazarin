@@ -1,0 +1,16 @@
+import "children"
+
+func simpleDecoratorInsideOut(findPattern string, myName string, margin int64, prefix string, dimSuffix string, defaultSize int64, maxSize int64) int64 {
+	childURI := hasOneChild(findPattern, myName)
+	size := defaultSize
+	if childURI != "" {
+		seg := uri_segment(childURI, 3)
+		uri := str_concat(str_concat(prefix, seg), dimSuffix)
+		size = deref_i64(uri)
+	}
+	result := size + margin + margin
+	if result > maxSize {
+		return maxSize
+	}
+	return result
+}

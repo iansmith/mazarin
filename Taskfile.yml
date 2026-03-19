@@ -777,14 +777,18 @@ tasks:
       - '{{.GO}} tool go-echo "Clocktest RISC-V 64-bit built at {{.CLOCKTEST_RISCV64_ELF}}"'
 
   compile-constraints:
-    desc: Compile constraint source files to Go bytecode
+    desc: Compile .vgo constraint source files to .vbc.go bytecode
     sources:
-      - 'mazarin/interactor/constraints/*.constraint'
+      - 'mazarin/interactor/*.vgo'
+      - 'mazarin/mancini/*.vgo'
+      - 'mazarin/vgolib/*.vgo'
       - 'cmd/compile-constraints/*.go'
     generates:
-      - 'mazarin/interactor/programs_gen.go'
+      - 'mazarin/interactor/*.vbc.go'
+      - 'mazarin/mancini/*.vbc.go'
     cmds:
-      - '{{.GO}} tool compile-constraints -pkg interactor -o mazarin/interactor/programs_gen.go mazarin/interactor/constraints/*.constraint'
+      - 'for f in mazarin/interactor/*.vgo; do {{.GO}} tool compile-constraints -pkg interactor -vgolib mazarin/vgolib "$f"; done'
+      - 'for f in mazarin/mancini/*.vgo; do {{.GO}} tool compile-constraints -pkg mancini -vgolib mazarin/vgolib "$f"; done'
 
   uitest:
     desc: Build uitest (interactor framework demo, ARM64)

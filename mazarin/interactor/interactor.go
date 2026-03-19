@@ -102,13 +102,38 @@ func register(i *Interactor) {
 	registry[i.ID] = i
 }
 
-// BindStrings returns a copy of prog with the given strings as its string table.
-// Pre-compiled programs use placeholder strings ("_0_", "_1_", ...) which are
-// replaced with actual URIs at constraint creation time.
-func BindStrings(prog *vm.Program, strings ...string) *vm.Program {
+// BindStrings returns a copy of prog with placeholder strings replaced by the
+// given bindings. Pre-compiled programs use placeholder strings ("_0_", "_1_",
+// ...) which are replaced with actual URIs at constraint creation time.
+// Non-placeholder strings (literals) are preserved at their original indices.
+func BindStrings(prog *vm.Program, bindings ...string) *vm.Program {
 	p := *prog
-	p.Strings = strings
+	newStrings := make([]string, len(prog.Strings))
+	for i, s := range prog.Strings {
+		if idx, ok := parsePlaceholder(s); ok && idx < len(bindings) {
+			newStrings[i] = bindings[idx]
+		} else {
+			newStrings[i] = s
+		}
+	}
+	p.Strings = newStrings
 	return &p
+}
+
+// parsePlaceholder checks if s matches the pattern _N_ (e.g. "_0_", "_12_")
+// and returns the numeric index.
+func parsePlaceholder(s string) (int, bool) {
+	if len(s) < 3 || s[0] != '_' || s[len(s)-1] != '_' {
+		return 0, false
+	}
+	n := 0
+	for _, c := range s[1 : len(s)-1] {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, true
 }
 
 // emptyRect returns a vm.Value for an empty rectangle.

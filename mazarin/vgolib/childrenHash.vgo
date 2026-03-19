@@ -1,0 +1,20 @@
+func childrenBoundsHash(findPattern string, myName string, prefix string, hashSuffix string) int64 {
+	children := find(findPattern)
+	combined := int64(0)
+	for _, uri := range children {
+		pname := deref_str(uri)
+		if pname == myName {
+			seg := uri_segment(uri, 3)
+			hashURI := str_concat(str_concat(prefix, seg), hashSuffix)
+			h := deref_i64(hashURI)
+			combined = combined * int64(31) + h
+		}
+	}
+	return combined
+}
+
+func haveChildrenChanged(findPattern string, myName string, prefix string, hashSuffix string, lpCombinedHashURI string) bool {
+	current := childrenBoundsHash(findPattern, myName, prefix, hashSuffix)
+	previous := deref_i64(lpCombinedHashURI)
+	return current != previous
+}

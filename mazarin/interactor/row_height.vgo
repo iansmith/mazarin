@@ -1,0 +1,32 @@
+import "children"
+
+func rowHeight() int64 {
+	// No children: default empty height.
+	if hasNoChildren("_0_", "_1_") {
+		return int64(30)
+	}
+
+	// One child: decorator-like (child height, pass-through).
+	oneChild := hasOneChild("_0_", "_1_")
+	if oneChild != "" {
+		seg := uri_segment(oneChild, 3)
+		huri := str_concat(str_concat("_2_", seg), "_3_")
+		return deref_i64(huri)
+	}
+
+	// Two+ children: max of children heights.
+	children := find("_0_")
+	maxh := int64(0)
+	for _, uri := range children {
+		pname := deref_str(uri)
+		if pname == "_1_" {
+			seg := uri_segment(uri, 3)
+			huri := str_concat(str_concat("_2_", seg), "_3_")
+			h := deref_i64(huri)
+			if h > maxh {
+				maxh = h
+			}
+		}
+	}
+	return maxh
+}

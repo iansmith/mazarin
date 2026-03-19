@@ -1,0 +1,6 @@
+func verticalCenter() int64 {
+	cy := deref_i64("_0_")
+	ch := deref_i64("_1_")
+	eh := deref_i64("_2_")
+	return cy + (ch - eh) / 2
+}

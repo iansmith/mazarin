@@ -1,0 +1,43 @@
+import "children"
+
+func columnHeight() int64 {
+	// No children: default empty height.
+	if hasNoChildren("_0_", "_2_") {
+		return int64(30)
+	}
+
+	spacing := deref_i64("_1_")
+
+	// One child: decorator-like (child + margin on both sides).
+	oneChild := hasOneChild("_0_", "_2_")
+	if oneChild != "" {
+		seg := uri_segment(oneChild, 3)
+		huri := str_concat(str_concat("_3_", seg), "_4_")
+		return deref_i64(huri) + spacing + spacing
+	}
+
+	// Two+ children: sum heights + inter-child spacing.
+	children := find("_0_")
+	total := int64(0)
+	n := int64(0)
+	firstH := int64(0)
+	for _, uri := range children {
+		pname := deref_str(uri)
+		if pname == "_2_" {
+			seg := uri_segment(uri, 3)
+			huri := str_concat(str_concat("_3_", seg), "_4_")
+			h := deref_i64(huri)
+			total = total + h
+			if n == 0 {
+				firstH = h
+			}
+			n = n + 1
+		}
+	}
+	if n > 1 {
+		total = total + (n - 1) * spacing
+	}
+	// Minimum height: first child + margin.
+	minH := firstH + spacing + spacing
+	return max(total, minH)
+}

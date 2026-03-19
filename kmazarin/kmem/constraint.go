@@ -15,15 +15,15 @@ import (
 
 // Constraint page layout constants.
 const (
-	ConstraintPageCount = 128                        // 128 × 4KB = 512KB
-	ConstraintTotalSize = ConstraintPageCount * 4096 // 512KB
+	ConstraintPageCount = 256                        // 256 × 4KB = 1MB
+	ConstraintTotalSize = ConstraintPageCount * 4096 // 1MB
 )
 
 // Page header magic for constraint shared pages.
 const ConstraintPageMagic = 0x4D415A46 // "MAZF"
 const ConstraintPageVersion = 2        // bumped from 1: now includes region table
 
-// Region layout offsets within the 512KB shared pages.
+// Region layout offsets within the 1MB shared pages.
 // Must match SharedPageHeader field values written during init.
 const (
 	RegionHeaderSize = 256 // SharedPageHeader is 256 bytes
@@ -36,19 +36,19 @@ const (
 	RegionEdgeSize    = 0x2000  // 8KB = 4096 × uint16
 	RegionEdgeCap     = 4096    // max edges
 
-	RegionBytecodeOff = 0x12100 // edge end
-	RegionBytecodeSize = 0x8000 // 32KB
-	RegionBytecodeCap = 2048    // max 16B instructions
+	RegionBytecodeOff  = 0x12100 // edge end
+	RegionBytecodeSize = 0x40000 // 256KB
+	RegionBytecodeCap  = 16384   // max 16B instructions
 
-	RegionStringOff   = 0x1A100 // bytecode end
-	RegionStringSize  = 0x10000 // 64KB = 256 × 256B
-	RegionStringCap   = 256     // max string slots
+	RegionStringOff   = 0x52100 // bytecode end
+	RegionStringSize  = 0x20000 // 128KB = 512 × 256B
+	RegionStringCap   = 512     // max string slots
 
-	RegionCollOff     = 0x2A100 // string end
+	RegionCollOff     = 0x72100 // string end
 	RegionCollSize    = 0x8000  // 32KB = 1024 × 32B
 	RegionCollCap     = 1024    // max collection elements
 
-	RegionTrieOff     = 0x32100 // collection end
+	RegionTrieOff     = 0x7A100 // collection end
 	RegionTrieSize    = 0x40000 // 256KB = 2048 × 128B
 	RegionTrieCap     = 2048    // max trie nodes
 )
@@ -103,8 +103,8 @@ func InitConstraintPages() bool {
 		return true
 	}
 
-	// Order 7 = 128 pages = 512KB
-	pa := BuddyAllocTyped(7, PageConstraintShared, 0)
+	// Order 8 = 256 pages = 1MB (must match ConstraintTotalSize)
+	pa := BuddyAllocTyped(8, PageConstraintShared, 0)
 	if pa == 0 {
 		serial.RawUARTPuts("[kmem] InitConstraintPages: allocation failed\r\n")
 		return false
