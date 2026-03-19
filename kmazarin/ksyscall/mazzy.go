@@ -55,6 +55,9 @@ const (
 	SysRequestWindowManager = MazzySyscallBase + 44 // 0x102C - Claim window manager role
 	SysSetInputFocus        = MazzySyscallBase + 45 // 0x102D - Set input focus for device class
 	SysWaitInputEvent       = MazzySyscallBase + 46 // 0x102E - Wait for input events on device class queue
+	SysMailboxMapPage       = MazzySyscallBase + 47 // 0x102F - Map caller's page into target shepherd's space
+	SysMailboxSend          = MazzySyscallBase + 48 // 0x1030 - Send mailbox notification to target shepherd
+	SysMailboxRecv          = MazzySyscallBase + 49 // 0x1031 - Wait for mailbox notification
 )
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
@@ -104,6 +107,9 @@ var mazzySyscallTable = [64]SyscallHandler{
 	44: SyscallRequestWindowManager,     // RequestWindowManager = 0x102C
 	45: SyscallSetInputFocus,            // SetInputFocus = 0x102D
 	46: SyscallWaitInputEvent,           // WaitInputEvent = 0x102E
+	47: SyscallMailboxMapPage,           // MailboxMapPage = 0x102F
+	48: SyscallMailboxSend,              // MailboxSend = 0x1030
+	49: SyscallMailboxRecv,              // MailboxRecv = 0x1031
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.

@@ -164,6 +164,7 @@ const (
 	ThreadBlockedDelegateRecv ThreadState = 11 // Handler blocked waiting for delegated syscall request
 	ThreadBlockedDirtyNotify  ThreadState = 12 // Blocked waiting for constraint dirty notification
 	ThreadBlockedInputEvent   ThreadState = 13 // Blocked waiting for input focus event
+	ThreadBlockedMailbox      ThreadState = 14 // Blocked waiting for mailbox notification
 )
 
 // MaxShepherds is the maximum number of shepherd processes (userspace programs).
@@ -478,6 +479,10 @@ func WakeThreadForSignal(t *Thread) {
 		enqueueReadySchedLockHeld(t)
 	case ThreadBlockedInputEvent:
 		// Wake so signal is delivered; WaitInputEvent will re-check on resume.
+		t.State = ThreadReady
+		enqueueReadySchedLockHeld(t)
+	case ThreadBlockedMailbox:
+		// Wake so signal is delivered; MailboxRecv will re-check on resume.
 		t.State = ThreadReady
 		enqueueReadySchedLockHeld(t)
 	}
@@ -1951,6 +1956,7 @@ func TerminateShepherd(pid ShepherdId, status int64) uintptr {
 	terminateShepherdDelegateCleanup(int16(pid))
 	CleanupSoftIRQSlotsForShepherd(int16(pid))
 	CleanupInputFocusForShepherd(int16(pid))
+	CleanupMailboxForShepherd(int16(pid))
 	return terminateShepherdImpl(&NormalSchedulerFunc, pid, status)
 }
 
@@ -3636,6 +3642,8 @@ func PrintTickDistribution() {
 				stateStr = "DNT"
 			case ThreadBlockedInputEvent:
 				stateStr = "INP"
+			case ThreadBlockedMailbox:
+				stateStr = "MBX"
 			}
 
 			console.KPrintf("  T%02d P%02d [%s] ticks=%d (%d%%)\n",
