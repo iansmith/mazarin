@@ -51,5 +51,5 @@ name = "clocktest"
 path = "/clocktest.elf"
 
 [[shepherd]]
-name = "uitest"
-path = "/uitest.elf"
+name = "clocks"
+path = "/clocks.elf"

@@ -328,7 +328,7 @@ func main() {
 	ascent := metrics.Ascent.Ceil()
 	lineH := charH + LineSpacing
 
-	// Stdio owns the LEFT half of the screen. The right half belongs to uitest.
+	// Stdio owns the LEFT half of the screen. The right half belongs to clocks.
 	regionW := int(fb.Width) / 2
 
 	// Compute content area from region dimensions.

@@ -325,10 +325,10 @@ func TestReadSetEqual(t *testing.T) {
 
 func TestIncrementAtomic(t *testing.T) {
 	r := newMockResolver()
-	r.Set("attr:///uitest/int64/eagerCount", 50, I64(0))
+	r.Set("attr:///clocks/int64/eagerCount", 50, I64(0))
 
 	prog := &Program{
-		Strings: []string{"attr:///uitest/int64/eagerCount"},
+		Strings: []string{"attr:///clocks/int64/eagerCount"},
 		Code: []Inst{
 			{Opcode: OpConstStr, Op1: 0},
 			InstCallBuiltin(BuiltinIncrementAtomic, 1),

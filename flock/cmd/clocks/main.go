@@ -66,7 +66,7 @@ func mailboxRecvLoop() {
 	for {
 		notif, err := sys.MailboxRecv()
 		if err != nil {
-			sys.UartWriteString("[uitest:mailbox] recv error\n")
+			sys.UartWriteString("[clocks:mailbox] recv error\n")
 			continue
 		}
 		if notif.Code == wm.ShepherdNotify {
@@ -76,11 +76,11 @@ func mailboxRecvLoop() {
 				msgType := *(*int64)(unsafe.Pointer(&raw[0]))
 				switch msgType {
 				case wm.MsgYouHaveFocus:
-					sys.UartWriteString("[uitest:mailbox] received YouHaveFocus!\n")
+					sys.UartWriteString("[clocks:mailbox] received YouHaveFocus!\n")
 				case wm.MsgYouLostFocus:
-					sys.UartWriteString("[uitest:mailbox] received YouLostFocus\n")
+					sys.UartWriteString("[clocks:mailbox] received YouLostFocus\n")
 				default:
-					sys.UartWriteString(fmt.Sprintf("[uitest:mailbox] unknown msg type %d\n", msgType))
+					sys.UartWriteString(fmt.Sprintf("[clocks:mailbox] unknown msg type %d\n", msgType))
 				}
 			}
 		}
@@ -88,28 +88,28 @@ func mailboxRecvLoop() {
 }
 
 func main() {
-	sys.UartWriteString("[uitest] main() entered\n")
+	sys.UartWriteString("[clocks] main() entered\n")
 
 	// 1. Initialize constraint system.
 	attr.Init()
-	interactor.Init("uitest")
-	mancini.Init("uitest")
-	sys.UartWriteString("[uitest] attr + interactor init done\n")
+	interactor.Init("clocks")
+	mancini.Init("clocks")
+	sys.UartWriteString("[clocks] attr + interactor init done\n")
 
 	// Find rachel (window manager) and send AppStart so she can grant us focus.
 	rachelSID := findShepherdByName("rachel")
 	if rachelSID < 0 {
-		sys.UartWriteString("[uitest] WARNING: rachel not found, requesting focus directly\n")
+		sys.UartWriteString("[clocks] WARNING: rachel not found, requesting focus directly\n")
 		sys.SetInputFocus(0, hid.InputClassKeyboard)
 		sys.SetInputFocus(0, hid.InputClassMouseClick)
 	} else {
 		myPID := os.Getpid()
-		sys.UartWriteString(fmt.Sprintf("[uitest] found rachel SID=%d, my SID=%d\n", rachelSID, myPID))
+		sys.UartWriteString(fmt.Sprintf("[clocks] found rachel SID=%d, my SID=%d\n", rachelSID, myPID))
 
 		// Create ring buffer targeting rachel
 		rb, err := ringbuf.New(rachelSID, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
 		if err != nil {
-			sys.UartWriteString("[uitest] ring buffer creation failed: " + err.Error() + "\n")
+			sys.UartWriteString("[clocks] ring buffer creation failed: " + err.Error() + "\n")
 		} else {
 			// Push AppStart message
 			var msg wm.AppStartMsg
@@ -119,9 +119,9 @@ func main() {
 
 			// Notify rachel
 			if err := sys.MailboxSend(rachelSID, wm.WMNotify, rb.Addr()); err != nil {
-				sys.UartWriteString("[uitest] MailboxSend failed: " + err.Error() + "\n")
+				sys.UartWriteString("[clocks] MailboxSend failed: " + err.Error() + "\n")
 			} else {
-				sys.UartWriteString("[uitest] sent AppStart to rachel\n")
+				sys.UartWriteString("[clocks] sent AppStart to rachel\n")
 			}
 		}
 
@@ -132,12 +132,12 @@ func main() {
 	// 2. Parse embedded fonts and build a Theme.
 	otFont, err := opentype.Parse(fontData)
 	if err != nil {
-		sys.UartWriteString("[uitest] font parse error: " + err.Error() + "\n")
+		sys.UartWriteString("[clocks] font parse error: " + err.Error() + "\n")
 		return
 	}
 	otFontBold, err := opentype.Parse(boldFontData)
 	if err != nil {
-		sys.UartWriteString("[uitest] bold font parse error: " + err.Error() + "\n")
+		sys.UartWriteString("[clocks] bold font parse error: " + err.Error() + "\n")
 		return
 	}
 	fontLoader := func(bold bool, size float64) font.Face {
@@ -173,7 +173,7 @@ func main() {
 	for i := range cities {
 		loc, err := time.LoadLocation(cities[i].tz)
 		if err != nil {
-			sys.UartWriteString("[uitest] tz " + cities[i].tz + " failed: " + err.Error() + "\n")
+			sys.UartWriteString("[clocks] tz " + cities[i].tz + " failed: " + err.Error() + "\n")
 			loc = time.UTC
 		}
 		cities[i].loc = loc
@@ -182,12 +182,12 @@ func main() {
 	// 4. Time tracking via constraint system — needed by Clock widgets.
 	timeProg := interactor.BindStrings(interactor.ProgIdentityI64,
 		"attr:///kernel/int64/time/utc_seconds")
-	timeSec := attr.ConstraintI64("attr:///shepherd/uitest/int64/time_sec", timeProg)
+	timeSec := attr.ConstraintI64("attr:///shepherd/clocks/int64/time_sec", timeProg)
 	timeSec.Get()
 
 	nanosProg := interactor.BindStrings(interactor.ProgIdentityI64,
 		"attr:///kernel/int64/time/utc_nanos")
-	timeNanos := attr.ConstraintI64("attr:///shepherd/uitest/int64/time_nanos", nanosProg)
+	timeNanos := attr.ConstraintI64("attr:///shepherd/clocks/int64/time_nanos", nanosProg)
 	timeNanos.SetEager(true)
 	_ = timeNanos.Get()
 
@@ -294,20 +294,20 @@ func main() {
 	// 6. Create draw context.
 	dc := interactor.NewDrawContext(fontData, regionX, regionY, regionW, regionH)
 	fbImage := dc.Image()
-	sys.UartWriteString("[uitest] draw context created\n")
+	sys.UartWriteString("[clocks] draw context created\n")
 
 	// 7. Initial sizing draw at a small default size to publish children's dimensions
 	// without spending forever computing neumorphic shadows at full-region size.
 	initW, initH := 600.0, 200.0
 	initX := float64(regionX) + (float64(regionW)-initW)/2
 	initY := float64(regionY) + (float64(regionH)-initH)/2
-	sys.UartWriteString("[uitest] sizing draw...\n")
+	sys.UartWriteString("[clocks] sizing draw...\n")
 	app.Draw(fbImage, initX, initY, initW, initH)
 
 	// Debug: check intrinsic sizes after sizing draw.
-	sys.UartWriteString(fmt.Sprintf("[uitest] row intrinsic: w=%d h=%d\n",
+	sys.UartWriteString(fmt.Sprintf("[clocks] row intrinsic: w=%d h=%d\n",
 		row.Layout.Width.Get(), row.Layout.Height.Get()))
-	sys.UartWriteString(fmt.Sprintf("[uitest] row preferred: w=%.0f h=%.0f\n",
+	sys.UartWriteString(fmt.Sprintf("[clocks] row preferred: w=%.0f h=%.0f\n",
 		row.PreferredWidth(), row.PreferredHeight()))
 
 	// Read constraint-computed size and center the window.
@@ -321,7 +321,7 @@ func main() {
 	}
 	winX := float64(regionX) + (float64(regionW)-winW)/2
 	winY := float64(regionY) + (float64(regionH)-winH)/2
-	sys.UartWriteString(fmt.Sprintf("[uitest] constraint size: %.0fx%.0f\n", winW, winH))
+	sys.UartWriteString(fmt.Sprintf("[clocks] constraint size: %.0fx%.0f\n", winW, winH))
 
 	// Clear the region to surface color before final draw (removes sizing draw ghost).
 	surfaceColor := theme.Pal.Surface
@@ -341,10 +341,10 @@ func main() {
 	// Draw at the centered position with proper dimensions.
 	app.Draw(fbImage, winX, winY, winW, winH)
 	dc.FlushRegion()
-	sys.UartWriteString("[uitest] initial draw done, entering loop\n")
+	sys.UartWriteString("[clocks] initial draw done, entering loop\n")
 
 	// 8. Instrumentation counters.
-	eagerHandle := attr.ValueI64("attr:///shepherd/uitest/int64/stats/eagerUpdates", 0)
+	eagerHandle := attr.ValueI64("attr:///shepherd/clocks/int64/stats/eagerUpdates", 0)
 	eagerSlot := eagerHandle.Slot()
 	var drawCount atomic.Int64
 
@@ -355,7 +355,7 @@ func main() {
 			time.Sleep(10 * time.Second)
 			eager := eagerHandle.Get()
 			draws := drawCount.Load()
-			sys.UartWriteString(fmt.Sprintf("[uitest-stats] eagerUpdates=%d draws=%d\n",
+			sys.UartWriteString(fmt.Sprintf("[clocks-stats] eagerUpdates=%d draws=%d\n",
 				eager, draws))
 		}
 	}()
@@ -371,7 +371,7 @@ func main() {
 			for i := 0; i < n; i++ {
 				ev := buf.Events[i]
 				if ev.Type == 1 && ev.Value == 1 { // EV_KEY press only
-					sys.UartWriteString(fmt.Sprintf("[uitest:kbd] code=%d\n", ev.Code))
+					sys.UartWriteString(fmt.Sprintf("[clocks:kbd] code=%d\n", ev.Code))
 				}
 			}
 		}
@@ -390,7 +390,7 @@ func main() {
 					if ev.Value == 0 {
 						action = "release"
 					}
-					sys.UartWriteString(fmt.Sprintf("[uitest:click] btn=%d %s\n", ev.Code, action))
+					sys.UartWriteString(fmt.Sprintf("[clocks:click] btn=%d %s\n", ev.Code, action))
 				}
 			}
 		}
@@ -422,7 +422,7 @@ func main() {
 		flushDur := time.Since(t1)
 
 		if loopCount <= 10 || loopCount%10 == 0 {
-			sys.UartWriteString(fmt.Sprintf("[uitest] loop=%d draw=%v flush=%v pos=(%.0f,%.0f) sz=(%.0f,%.0f)\n",
+			sys.UartWriteString(fmt.Sprintf("[clocks] loop=%d draw=%v flush=%v pos=(%.0f,%.0f) sz=(%.0f,%.0f)\n",
 				loopCount, drawDur, flushDur, winX, winY, winW, winH))
 		}
 	}
