@@ -1,9 +1,8 @@
-// rachel is a userspace shepherd that receives keyboard and mouse events
-// via the soft IRQ mechanism. It discovers available input devices,
-// registers for their IRQs, and blocks waiting for HID events.
+// rachel is the window manager shepherd. It claims the WM role to receive
+// all input events, and routes focus to other shepherds via SetInputFocus.
 //
-// Each device gets its own goroutine that blocks on WaitSoftIRQ,
-// allowing the Go runtime to hand off the M and run other goroutines.
+// Uses the focus-based input routing system: RequestWindowManager gives rachel
+// all keyboard, mouse-click, and mouse-move events via per-device-class queues.
 package main
 
 import (
@@ -105,17 +104,17 @@ func buttonName(code uint16) string {
 	}
 }
 
-func keyboardLoop(slot int) {
-	fmt.Printf("[rachel] keyboard goroutine started on slot %d\n", slot)
+func keyboardLoop() {
+	fmt.Println("[rachel] keyboard goroutine started (WM)")
 	var buf hid.SoftIRQReturn
 	var km input.Keymap
 	// Track per-key held state to suppress repeats. QEMU on macOS sends
 	// repeated EV_KEY value=1 (press) events for auto-repeat, not value=2.
 	var keyHeld [256]bool
 	for {
-		n, err := sys.WaitSoftIRQ(slot, &buf)
+		n, err := sys.WaitInputEvent(hid.InputClassKeyboard, &buf)
 		if err != nil {
-			fmt.Printf("[rachel:kbd] WaitSoftIRQ error: %v\n", err)
+			fmt.Printf("[rachel:kbd] WaitInputEvent error: %v\n", err)
 			continue
 		}
 		for i := 0; i < n; i++ {
@@ -171,30 +170,18 @@ func keyboardLoop(slot int) {
 	}
 }
 
-func mouseLoop(slot int) {
-	fmt.Printf("[rachel] mouse goroutine started on slot %d\n", slot)
+func mouseClickLoop() {
+	fmt.Println("[rachel] mouse-click goroutine started (WM)")
 	var buf hid.SoftIRQReturn
-	batches := 0
 	for {
-		n, err := sys.WaitSoftIRQ(slot, &buf)
+		n, err := sys.WaitInputEvent(hid.InputClassMouseClick, &buf)
 		if err != nil {
-			fmt.Printf("[rachel:mouse] WaitSoftIRQ error: %v\n", err)
+			fmt.Printf("[rachel:click] WaitInputEvent error: %v\n", err)
 			continue
 		}
-		batches++
 		for i := 0; i < n; i++ {
 			ev := buf.Events[i]
-			switch ev.Type {
-			case EV_REL:
-				// Debug: dump first 3 batches of REL events with values
-				if batches <= 3 {
-					fmt.Fprintf(os.Stderr, "[rel c=%d v=%d]", ev.Code, int32(ev.Value))
-				}
-				if ev.Code == REL_WHEEL {
-					switchInput(inputWheel)
-					fmt.Printf("[rachel:mouse] wheel %+d\n", int32(ev.Value))
-				}
-			case EV_KEY:
+			if ev.Type == EV_KEY {
 				switchInput(inputButton)
 				action := "pressed"
 				if ev.Value == 0 {
@@ -206,63 +193,51 @@ func mouseLoop(slot int) {
 	}
 }
 
+func mouseMovementLoop() {
+	fmt.Println("[rachel] mouse-move goroutine started (WM)")
+	var buf hid.SoftIRQReturn
+	batches := 0
+	for {
+		n, err := sys.WaitInputEvent(hid.InputClassMouseMove, &buf)
+		if err != nil {
+			fmt.Printf("[rachel:move] WaitInputEvent error: %v\n", err)
+			continue
+		}
+		batches++
+		for i := 0; i < n; i++ {
+			ev := buf.Events[i]
+			if ev.Type == EV_REL {
+				if batches <= 3 {
+					fmt.Fprintf(os.Stderr, "[rel c=%d v=%d]", ev.Code, int32(ev.Value))
+				}
+				if ev.Code == REL_WHEEL {
+					switchInput(inputWheel)
+					fmt.Printf("[rachel:mouse] wheel %+d\n", int32(ev.Value))
+				}
+			}
+		}
+	}
+}
+
 func main() {
-	fmt.Println("[rachel] Starting input event handler")
+	fmt.Println("[rachel] Starting window manager")
 
-	devices, err := sys.QueryInputDevices()
-	if err != nil {
-		fmt.Printf("[rachel] QueryInputDevices failed: %v\n", err)
+	// Claim window manager role — rachel gets ALL input events automatically
+	if err := sys.RequestWindowManager(); err != nil {
+		fmt.Printf("[rachel] failed to become window manager: %v\n", err)
 		return
 	}
+	fmt.Println("[rachel] became window manager")
 
-	if len(devices) == 0 {
-		fmt.Println("[rachel] No input devices found")
-		return
-	}
-
-	fmt.Printf("[rachel] Found %d input device(s)\n", len(devices))
-
-	kbdSlot := -1
-	mouseSlot := -1
-	for i, dev := range devices {
-		// Skip serial, block, and timer devices.
-		// Timer clock display is handled by uitest via constraint system.
-		if dev.DeviceType == hid.DeviceTypeSerial || dev.DeviceType == hid.DeviceTypeBlock || dev.DeviceType == hid.DeviceTypeTimer {
-			continue
-		}
-
-		typeName := "keyboard"
-		if dev.DeviceType == hid.DeviceTypeMouse {
-			typeName = "mouse"
-		}
-
-		if err := sys.RegisterSoftIRQ(dev.IRQNum, i); err != nil {
-			fmt.Printf("[rachel] RegisterSoftIRQ slot %d failed: %v\n", i, err)
-			continue
-		}
-		fmt.Printf("[rachel] Registered %s on slot %d (IRQ %d)\n",
-			typeName, i, dev.IRQNum)
-
-		if dev.DeviceType == hid.DeviceTypeMouse {
-			mouseSlot = i
-		} else {
-			kbdSlot = i
-		}
-	}
-
-	// Launch goroutines that block on WaitSoftIRQ.
-	// Each goroutine uses entersyscall to release the P while the
-	// kernel thread sleeps waiting for events, allowing other
-	// goroutines to run. We yield after each launch so the goroutine
-	// starts running before we launch the next one.
-	if kbdSlot >= 0 {
-		go keyboardLoop(kbdSlot)
-		runtime.Gosched()
-	}
-	if mouseSlot >= 0 {
-		go mouseLoop(mouseSlot)
-		runtime.Gosched()
-	}
+	// Launch event loops for all three device classes.
+	// As WM, rachel receives all events and can handle global shortcuts,
+	// log clicks, etc. For now, processes keyboard and logs mouse clicks.
+	go keyboardLoop()
+	runtime.Gosched()
+	go mouseClickLoop()
+	runtime.Gosched()
+	go mouseMovementLoop()
+	runtime.Gosched()
 
 	// Stderr test (stdio shepherd disabled for now, but keep for diagnostics).
 	go func() {

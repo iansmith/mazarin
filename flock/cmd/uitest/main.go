@@ -16,6 +16,7 @@ import (
 	"mazzy/mazarin/interactor"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/sys"
+	"mazzy/shared/hid"
 )
 
 //go:embed AtkinsonHyperlegibleMono-Regular.otf
@@ -47,6 +48,12 @@ func main() {
 	interactor.Init("uitest")
 	mancini.Init("uitest")
 	sys.UartWriteString("[uitest] attr + interactor init done\n")
+
+	// Request all three input foci for testing (temporary — in production,
+	// rachel (WM) would call SetInputFocus for us when our window is clicked).
+	sys.SetInputFocus(0, hid.InputClassKeyboard)
+	sys.SetInputFocus(0, hid.InputClassMouseClick)
+	sys.UartWriteString("[uitest] input focus requested\n")
 
 	// 2. Parse embedded fonts and build a Theme.
 	otFont, err := opentype.Parse(fontData)
@@ -279,7 +286,43 @@ func main() {
 		}
 	}()
 
-	// 9. Main loop: wake on dirty, redraw when second changes.
+	// 9. Input event listeners — log to UART so we can see focus routing works.
+	go func() {
+		var buf hid.SoftIRQReturn
+		for {
+			n, err := sys.WaitInputEvent(hid.InputClassKeyboard, &buf)
+			if err != nil {
+				continue
+			}
+			for i := 0; i < n; i++ {
+				ev := buf.Events[i]
+				if ev.Type == 1 && ev.Value == 1 { // EV_KEY press only
+					sys.UartWriteString(fmt.Sprintf("[uitest:kbd] code=%d\n", ev.Code))
+				}
+			}
+		}
+	}()
+	go func() {
+		var buf hid.SoftIRQReturn
+		for {
+			n, err := sys.WaitInputEvent(hid.InputClassMouseClick, &buf)
+			if err != nil {
+				continue
+			}
+			for i := 0; i < n; i++ {
+				ev := buf.Events[i]
+				if ev.Type == 1 { // EV_KEY (button)
+					action := "press"
+					if ev.Value == 0 {
+						action = "release"
+					}
+					sys.UartWriteString(fmt.Sprintf("[uitest:click] btn=%d %s\n", ev.Code, action))
+				}
+			}
+		}
+	}()
+
+	// 10. Main loop: wake on dirty, redraw when second changes.
 	// Clock widgets read timeSec directly via their TimeFunc closures.
 	loopCount := 0
 	for {

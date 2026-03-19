@@ -186,6 +186,24 @@ func RingDrain(r *softIRQRing, buf []hid.HIDEvent, max int) int {
 	return n
 }
 
+// classifyInputEvent maps an HID event to an InputClass for focus routing.
+// dev == &topHalfKbd means keyboard device; nil or other means mouse/tablet.
+// Returns -1 if the event doesn't map to any input class (e.g. EV_SYN).
+//
+//go:nosplit
+func classifyInputEvent(dev *topHalfDev, evtType, evtCode uint16) int {
+	switch evtType {
+	case hid.EvKey:
+		if evtCode < hid.BtnMouse {
+			return hid.InputClassKeyboard
+		}
+		return hid.InputClassMouseClick
+	case hid.EvRel, hid.EvAbs:
+		return hid.InputClassMouseMove
+	}
+	return -1 // EV_SYN or unknown — don't route
+}
+
 // NonTimerIRQTopHalf is called directly from the assembly exception handler
 // (on the exception stack with g set to kmazarin g0) for non-timer IRQs.
 // Reads the virtqueue used ring, pushes HIDEvents into the per-device
@@ -292,6 +310,12 @@ func NonTimerIRQTopHalf() {
 				dev.dbgPushOK++
 			}
 
+			// Route through focus-based input system (dual delivery to WM + focused shepherd).
+			inputClass := classifyInputEvent(dev, evtType, evtCode)
+			if inputClass >= 0 {
+				routeInputEvent(ev, inputClass)
+			}
+
 			// ALWAYS repost buffer to device, even if ring push failed.
 			descAddr := dev.descVA + uintptr(descIdx)*16
 			bufPA := uint64(dev.evtBufPA) + uint64(descIdx)*8
@@ -332,6 +356,15 @@ func NonTimerIRQTopHalf() {
 		// between batches (ring momentarily empty) and then the ring
 		// re-filled with all pushes failing would NEVER be woken.
 		WakeSlotForIRQ(irqNum)
+
+		// Also wake input focus consumers. Wake all three classes since
+		// we may have pushed events of different classes in this batch.
+		if dev == &topHalfKbd {
+			wakeInputConsumers(hid.InputClassKeyboard)
+		} else {
+			wakeInputConsumers(hid.InputClassMouseClick)
+			wakeInputConsumers(hid.InputClassMouseMove)
+		}
 	}
 }
 
@@ -390,6 +423,12 @@ func topHalfTabletHandler() {
 				dev.dbgPushFail++
 			}
 
+			// Route through focus-based input system
+			tabletClass := classifyInputEvent(nil, evtType, evtCode)
+			if tabletClass >= 0 {
+				routeInputEvent(ev, tabletClass)
+			}
+
 			// Repost buffer to device
 			descAddr := dev.descVA + uintptr(descIdx)*16
 			bufPA := uint64(dev.evtBufPA) + uint64(descIdx)*8
@@ -438,6 +477,9 @@ func topHalfTabletHandler() {
 	// Wake any soft IRQ consumer
 	if reposted {
 		WakeSlotForIRQ(dev.irqNum)
+		// Tablet generates mouse-class events (clicks and movement)
+		wakeInputConsumers(hid.InputClassMouseClick)
+		wakeInputConsumers(hid.InputClassMouseMove)
 	}
 }
 

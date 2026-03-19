@@ -163,6 +163,7 @@ const (
 	ThreadBlockedDelegate     ThreadState = 10 // Caller blocked waiting for delegated syscall reply
 	ThreadBlockedDelegateRecv ThreadState = 11 // Handler blocked waiting for delegated syscall request
 	ThreadBlockedDirtyNotify  ThreadState = 12 // Blocked waiting for constraint dirty notification
+	ThreadBlockedInputEvent   ThreadState = 13 // Blocked waiting for input focus event
 )
 
 // MaxShepherds is the maximum number of shepherd processes (userspace programs).
@@ -473,6 +474,10 @@ func WakeThreadForSignal(t *Thread) {
 		enqueueReadySchedLockHeld(t)
 	case ThreadBlockedDirtyNotify:
 		// Wake so signal is delivered; WaitDirty will re-check queue on resume.
+		t.State = ThreadReady
+		enqueueReadySchedLockHeld(t)
+	case ThreadBlockedInputEvent:
+		// Wake so signal is delivered; WaitInputEvent will re-check on resume.
 		t.State = ThreadReady
 		enqueueReadySchedLockHeld(t)
 	}
@@ -1945,6 +1950,7 @@ func TerminateShepherd(pid ShepherdId, status int64) uintptr {
 	// protected by IRQ disabling (we're in SVC handler context).
 	terminateShepherdDelegateCleanup(int16(pid))
 	CleanupSoftIRQSlotsForShepherd(int16(pid))
+	CleanupInputFocusForShepherd(int16(pid))
 	return terminateShepherdImpl(&NormalSchedulerFunc, pid, status)
 }
 
@@ -3628,6 +3634,8 @@ func PrintTickDistribution() {
 				stateStr = "DLR"
 			case ThreadBlockedDirtyNotify:
 				stateStr = "DNT"
+			case ThreadBlockedInputEvent:
+				stateStr = "INP"
 			}
 
 			console.KPrintf("  T%02d P%02d [%s] ticks=%d (%d%%)\n",

@@ -52,6 +52,9 @@ const (
 	SysAttrSetEager         = MazzySyscallBase + 41 // 0x1029 - Set/clear eager notification on attribute
 	SysAttrWaitDirty        = MazzySyscallBase + 42 // 0x102A - Wait for dirty notifications
 	SysAttrIncrementI64     = MazzySyscallBase + 43 // 0x102B - Atomically increment int64 attribute
+	SysRequestWindowManager = MazzySyscallBase + 44 // 0x102C - Claim window manager role
+	SysSetInputFocus        = MazzySyscallBase + 45 // 0x102D - Set input focus for device class
+	SysWaitInputEvent       = MazzySyscallBase + 46 // 0x102E - Wait for input events on device class queue
 )
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
@@ -98,6 +101,9 @@ var mazzySyscallTable = [64]SyscallHandler{
 	41: SyscallAttrSetEager,              // AttrSetEager = 0x1029
 	42: SyscallAttrWaitDirty,             // AttrWaitDirty = 0x102A
 	43: SyscallAttrIncrementI64,          // AttrIncrementI64 = 0x102B
+	44: SyscallRequestWindowManager,     // RequestWindowManager = 0x102C
+	45: SyscallSetInputFocus,            // SetInputFocus = 0x102D
+	46: SyscallWaitInputEvent,           // WaitInputEvent = 0x102E
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.
