@@ -6,6 +6,67 @@ author: iansmith
 
 # News
 
+## Mar 20, 2026
+
+**Constraint-driven UI.** mazarin now has a reactive constraint system
+at its core. Layout — positions, sizes, visibility — is expressed as
+constraint programs (bytecodes) that the kernel evaluates on shared
+VDSO pages. When an attribute changes, a dirty walk propagates through
+the dependency graph and only the affected constraints are re-evaluated.
+Reads are lock-free (seqlock protocol on shared pages, no syscall);
+writes go through the kernel so dirty propagation is atomic. Applications
+describe their layout declaratively and the system figures out when to
+redraw. This replaces all imperative layout code.
+
+**Mancini interactor toolkit.** A neumorphic UI framework built on top
+of the constraint system. Interactors include AppWindow, Row, Column,
+NeuBox, NeuCircle, Label, Button, and Spacer — each with constraint-bound
+layout handles (X, Y, Width, Height, Visible). Neumorphic shadows are
+cached and only recomputed when bounds actually change. The toolkit
+includes a press-drag-release mouse state machine: press arms a target,
+dragging outside disarms it (with visual feedback), releasing while
+armed completes the action. The clocks application uses this for cycling
+between six analog clock face styles (Classic, Roman, Movado, Digit,
+Metric, Polar) on click.
+
+**Window manager (rachel).** The system now has a window manager. Rachel
+claims the WM role from the kernel, intercepts all keyboard and mouse
+input, and forwards events to the focused application via mailbox IPC.
+Rachel tracks each application's screen bounds, manages focus, and
+publishes a `visibleArea` constraint that applications use to position
+themselves. Mouse events carry global screen coordinates so applications
+can hit-test against their interactor trees.
+
+**Mailbox IPC.** A new kernel IPC mechanism based on shared-page ring
+buffers. A shepherd maps a page into another shepherd's address space
+and sends a notification; the receiver pops messages from the ring
+buffer at the mapped address. Page mappings are cached per sender/receiver
+pair. Notification codes (WMNotify, FontNotify, etc.) allow multiplexing
+different message types on the same mailbox. This is how rachel delivers
+mouse events to applications and how font requests reach fontsvc.
+
+**Centralized font service (fontsvc.maz).** Font loading and glyph
+rasterization are now handled by a dedicated .maz module running inside
+rachel's address space. When a shepherd opens a font, fontsvc parses
+the OTF file, pre-renders ASCII glyphs into a 2MB shared-memory cache,
+and maps the cache into the requesting shepherd. The client-side
+`fontcache` library implements Go's `font.Face` interface, so existing
+drawing code (gg's `DrawString`) works unchanged. Glyphs missing from
+the tier-1 cache are rendered on demand via a tier-2 IPC request.
+Measured performance: first font open ~112ms (parse + rasterize 256
+glyphs), subsequent opens ~10ms (cached), per-character rendering
+~4.8µs. Shepherds no longer embed font files — fonts live on disk and
+are loaded once by fontsvc.
+
+**Terminology rename.** "Priest" is now "shepherd" throughout the
+codebase; "pid" is "sid" (shepherd ID); "dapope" is "rachel." The old
+names were placeholder names from early development.
+
+**Hardware cursor.** Rachel registers cursor images with the kernel via
+VirtIO GPU's cursor queue and tablet input device. The cursor changes
+shape when entering or leaving application bounds, providing visual
+feedback for window boundaries.
+
 ## Mar 13, 2026
 
 **Dynamic module loading.** mazarin can now load ELF modules (.maz files)

@@ -4,19 +4,19 @@ title: mazarin, an introduction
 author: iansmith
 ---
 
-## [News (last updated Mar 13)](news.md). Dynamic Loading, IPC, and Filesystem — All 4 Platforms Stable!
+## [News (last updated Mar 20)](news.md). Constraint-Driven UI, Window Manager, and Centralized Font Service!
 
 ## What It Means
 
-mazarin now boots a full priest hierarchy from a TOML config file.
-A *priest* is roughly analogous to a unix process--but priests can load other
-programs into their own address space, creating a *flock*. The kernel
-launches a disk priest, which loads a filesystem module (fs.maz) at runtime,
-which reads the boot config and launches application priests from ELF files
-on disk. Priests communicate through L4-style page-transfer IPC — no copying.
-The kernel's resident memory is stable at 24MB across all four platforms
-(ARM64 TCG, ARM64 HVF, x86_64, RISC-V) for 90+ seconds of continuous
-operation with GC running in both the kernel and all priests.
+mazarin now has a reactive constraint system driving its UI.  Layout is
+declarative: applications describe constraints as bytecodes, and the kernel
+evaluates them on shared pages with lock-free reads.  A window manager
+(rachel) routes input to focused applications via shared-page mailbox IPC.
+A centralized font service (fontsvc.maz) pre-renders glyph caches in shared
+memory so shepherds never embed fonts.  The clocks application demonstrates
+the full stack: six world clocks with neumorphic styling, constraint-driven
+layout, and interactive clock face cycling via press-drag-release mouse
+handling.
 
 
 ## [Quick Start: build and run mazarin](quickstart.md)
