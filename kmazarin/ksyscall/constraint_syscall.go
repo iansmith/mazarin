@@ -397,6 +397,8 @@ func SyscallAttrRegisterQuery(patternBufPtr, patternLen, _, _, _, _ uint64) int6
 	patStr := unsafeStringFromBytes(patBuf[:patternLen])
 	var matchURIs [256]string
 	matchCount := attrMgr.trieMatchPatternURIs(patStr, matchURIs[:])
+
+
 	attrMgr.writeQueryCollection(q, matchURIs[:], matchCount)
 
 	return int64(slot)
@@ -661,22 +663,11 @@ func (mgr *KernelAttrManager) removeReverseEdge(depSlot, constraintSlot uint16) 
 }
 
 // writeQueryCollection writes matched URIs as a collection into a query's result slot.
-// Frees any old string slots from a previous collection result before writing new ones.
+// Instead of allocating new string slots (which would exhaust the 512-slot string
+// region), we borrow the existing NameOffset from each attribute's node — the URI
+// is already stored there.
 func (mgr *KernelAttrManager) writeQueryCollection(q *queryPattern, uris []string, count int) {
 	node := mgr.node(q.resultSlot)
-
-	// Free old strings from previous collection result.
-	if node.CachedValue.Typ == flat.TypeCollection {
-		oldRef := node.CachedValue.AsCollRef()
-		for i := 0; i < int(oldRef.Count); i++ {
-			elemAddr := mgr.baseVA + uintptr(mgr.collRegionOff) + uintptr(oldRef.RegionOffset) + uintptr(i)*flat.FlatValueSize
-			elem := *(*flat.FlatValue)(unsafe.Pointer(elemAddr))
-			if elem.Typ == flat.TypeStr {
-				sref := elem.AsStrRef()
-				mgr.freeString(sref.RegionOffset)
-			}
-		}
-	}
 
 	if count == 0 {
 		// Empty result: write an empty collection.
@@ -694,24 +685,24 @@ func (mgr *KernelAttrManager) writeQueryCollection(q *queryPattern, uris []strin
 		count = 128
 	}
 
-	// Allocate strings in the string region for each URI.
+	// Look up each matched URI's attribute node and borrow its NameOffset
+	// (the URI string is already stored in the string region from SyscallAttrCreate).
 	type uriStr struct {
 		off uint32
 		len uint16
 	}
 	var strBuf [128]uriStr
+	actualCount := 0
 	for i := 0; i < count; i++ {
-		off, ok := mgr.allocString(uris[i])
-		if !ok {
-			// Free already-allocated strings and write truncated result.
-			for j := 0; j < i; j++ {
-				mgr.freeString(strBuf[j].off)
-			}
-			count = 0
-			break
+		attrSlot, found := mgr.trieLookup(uris[i])
+		if !found {
+			continue
 		}
-		strBuf[i] = uriStr{off: off, len: uint16(len(uris[i]))}
+		attrNode := mgr.node(attrSlot)
+		strBuf[actualCount] = uriStr{off: attrNode.NameOffset, len: uint16(len(uris[i]))}
+		actualCount++
 	}
+	count = actualCount
 
 	if count == 0 {
 		node.SeqCounter++
@@ -724,10 +715,7 @@ func (mgr *KernelAttrManager) writeQueryCollection(q *queryPattern, uris []strin
 	needed := uint32(count) * flat.FlatValueSize
 	collCapBytes := uint32(kmem.RegionCollCap) * flat.FlatValueSize
 	if mgr.collectionBumpOff+needed > collCapBytes {
-		// No room: free all strings, write empty.
-		for i := 0; i < count; i++ {
-			mgr.freeString(strBuf[i].off)
-		}
+		// No room: write empty.
 		node.SeqCounter++
 		node.CachedValue = flat.NewCollection(flat.FlatCollRef{ElemType: flat.TypeStr})
 		node.SeqCounter++
@@ -783,6 +771,7 @@ func (mgr *KernelAttrManager) updateQueryResultsForURI(uri string) {
 			// Re-evaluate the full query and write updated collection results.
 			var matchURIs [256]string
 			matchCount := mgr.trieMatchPatternURIs(patStr, matchURIs[:])
+
 			mgr.writeQueryCollection(q, matchURIs[:], matchCount)
 
 			// Dirty-propagate from the query result slot so dependents know

@@ -292,6 +292,15 @@ type Label struct {
 
 func (l *Label) GetLayout() *LayoutHandles { return l.Layout }
 
+// resolveText returns the current text for this label, checking
+// TextFunc and Text in priority order.
+func (l *Label) resolveText() string {
+	if l.TextFunc != nil {
+		return l.TextFunc()
+	}
+	return l.Text
+}
+
 // PreferredHeight returns the preferred height for a Label.
 func (l *Label) PreferredHeight() float64 {
 	return l.FontSize + l.Theme.Px(4) // font + minimal padding
@@ -299,11 +308,7 @@ func (l *Label) PreferredHeight() float64 {
 
 // PreferredWidth returns the preferred width for a Label based on text measurement.
 func (l *Label) PreferredWidth() float64 {
-	text := l.Text
-	if l.TextFunc != nil {
-		text = l.TextFunc()
-	}
-	return l.Theme.MeasureText(text, l.Bold, l.FontSize) + l.Theme.Px(8) // text + padding
+	return l.Theme.MeasureText(l.resolveText(), l.Bold, l.FontSize) + l.Theme.Px(8) // text + padding
 }
 
 // Draw implements the Drawer interface.
@@ -315,10 +320,7 @@ func (l *Label) Draw(dc DrawContext, x, y, w, h float64) {
 	pw := l.PreferredWidth()
 	ph := l.PreferredHeight()
 	publishLayout(l.Layout, x, y, pw, ph)
-	text := l.Text
-	if l.TextFunc != nil {
-		text = l.TextFunc()
-	}
+	text := l.resolveText()
 	hash := l.Layout.boundsHashValue()
 	if text == l.lastDrawnText && hash == l.lastDrawnHash && l.lastDrawnHash != 0 {
 		return // text and position unchanged — no damage

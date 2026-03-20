@@ -242,6 +242,8 @@ func main() {
 			&mancini.RomanFace{HandColor: textColor, Loc: loc},
 			&mancini.MovadoFace{Loc: loc},
 			&mancini.DigitFace{HandColor: textColor, Loc: loc},
+			&mancini.MetricFace{HandColor: textColor, Loc: loc},
+			&mancini.PolarFace{HandColor: textColor, Loc: loc},
 		}
 		start := i % len(baseFaces)
 		rotated := make([]mancini.ClockFace, len(baseFaces))
@@ -267,13 +269,14 @@ func main() {
 			Face:    rotated[0],
 		}
 
-		// Face name label — hidden in steady state, shown during interaction.
+		// Face name label — text driven by constraint attribute, updates
+		// reactively during press-drag-release face cycling.
 		faceNameLabel := &mancini.Label{
 			Theme:    theme,
 			Name:     city.id + "_facename",
+			Text:     rotated[0].FaceName(), // fallback for InitLayout width measurement
 			FontSize: faceNameFontSize,
 			Color:    subtitleColor,
-			TextFunc: func() string { return clockWidget.Face.FaceName() },
 		}
 		// Matching spacer — visible in steady state (same height as label).
 		faceNameSpacer := &mancini.Spacer{
@@ -314,10 +317,16 @@ func main() {
 		clockWidget.InitLayout(circleName)
 		circle.InitLayout(colName)
 		tzLabel.InitLayout(colName)
-		faceNameLabel.InitLayout(colName)
+		faceNameLabel.InitLayout(colName) // measures width from static Text field
 		faceNameSpacer.InitLayout(colName)
 		col.InitLayout("main_row")
 		col.SetSpacing(15)
+
+		// Wire face name label to clock's FaceNameHandle AFTER InitLayout.
+		// TextFunc reads the constraint attribute reactively during draw.
+		faceNameLabel.TextFunc = func() string {
+			return clockWidget.FaceNameHandle.Get()
+		}
 
 		// Steady state: face name label visible (non-empty text), spacer hidden.
 		mancini.SetVisible(faceNameSpacer, false)

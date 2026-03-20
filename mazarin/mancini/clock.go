@@ -4,6 +4,7 @@ import (
 	"math"
 	"time"
 
+	"mazzy/mazarin/attr"
 )
 
 // Clock is a leaf interactor that draws an analog clock using a ClockFace.
@@ -21,10 +22,11 @@ type Clock struct {
 	faceIdx     int                    // index into Faces of the current face
 	prePressIdx int                    // saved faceIdx before press (for cancel/revert)
 	interacting bool                   // true while in a press-drag-release interaction
-	UTCFunc    func() (sec, nanos int64) // returns current UTC time
-	FaceLabel  Drawer                    // label showing face name (hidden in steady state)
-	FaceSpacer Drawer                    // spacer matching label height (visible in steady state)
-	Layout     *LayoutHandles
+	UTCFunc        func() (sec, nanos int64) // returns current UTC time
+	FaceLabel      Drawer                    // label showing face name
+	FaceSpacer     Drawer                    // spacer matching label height
+	FaceNameHandle *attr.Handle[string]       // constraint attribute for current face name
+	Layout         *LayoutHandles
 }
 
 func (c *Clock) GetLayout() *LayoutHandles { return c.Layout }

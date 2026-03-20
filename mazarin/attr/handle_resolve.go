@@ -10,6 +10,7 @@ import (
 	"mazzy/mazarin/vm"
 	"mazzy/mazarin/vm/flat"
 	"mazzy/shared/constants"
+	"strconv"
 )
 
 // constraintEvaluators maps slot → evaluate-if-dirty function for local
@@ -81,6 +82,7 @@ func (r *sharedResolver) Deref(uri string, expectedType uint8) (vm.Value, uint16
 func (r *sharedResolver) Find(pattern string) ([]string, uint16) {
 	slot, err := sys.AttrRegisterQuery(pattern)
 	if err != nil {
+		sys.UartWriteString("[find] AttrRegisterQuery FAILED: " + err.Error() + "\n")
 		return nil, 0
 	}
 
@@ -104,6 +106,7 @@ func (r *sharedResolver) Find(pattern string) ([]string, uint16) {
 	}
 
 	if fv.Typ != flat.TypeCollection {
+		sys.UartWriteString("[find] NOT collection typ=" + strconv.Itoa(int(fv.Typ)) + " pattern=" + pattern + "\n")
 		return nil, slot
 	}
 

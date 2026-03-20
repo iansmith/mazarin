@@ -34,6 +34,11 @@ func (c *Clock) Feedback(active bool) {
 	}
 	c.Face = c.Faces[c.faceIdx]
 
+	// Publish current face name to constraint attribute.
+	if c.FaceNameHandle != nil {
+		c.FaceNameHandle.Set(c.Face.FaceName())
+	}
+
 	// Toggle face name label / spacer visibility.
 	if c.FaceLabel != nil {
 		SetVisible(c.FaceLabel, active)
@@ -48,11 +53,15 @@ func (c *Clock) Feedback(active bool) {
 // outside (cancel — face was already reverted by Feedback(false)).
 func (c *Clock) Complete(success bool) {
 	c.interacting = false
-	// Return to steady state: hide label, show spacer.
-	if c.FaceLabel != nil {
-		SetVisible(c.FaceLabel, false)
+	if !success {
+		// Cancelled: hide label, show spacer (steady state unchanged).
+		if c.FaceLabel != nil {
+			SetVisible(c.FaceLabel, false)
+		}
+		if c.FaceSpacer != nil {
+			SetVisible(c.FaceSpacer, true)
+		}
 	}
-	if c.FaceSpacer != nil {
-		SetVisible(c.FaceSpacer, true)
-	}
+	// On success the label stays visible showing the new face name,
+	// and the spacer stays hidden. TextFunc dynamically reads Face.FaceName().
 }
