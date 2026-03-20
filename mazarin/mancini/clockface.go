@@ -15,7 +15,7 @@ type ClockFace interface {
 	// DrawFace renders the complete clock within a circle centered at (cx, cy)
 	// with the given radius. Time components are already converted to the
 	// face's local timezone by the Clock interactor.
-	DrawFace(dc DrawContext, theme *Theme, cx, cy, radius float64, hour, minute, second, millis int)
+	DrawFace(dc DrawContext, fc *FontConfig, pal Palette, cx, cy, radius float64, hour, minute, second, millis int)
 
 	// Location returns the timezone for this clock face.
 	Location() *time.Location
@@ -55,14 +55,11 @@ func (f *ClassicFace) Location() *time.Location {
 func (f *ClassicFace) FaceName() string { return "Classic" }
 
 // DrawFace renders the classic clock face.
-func (f *ClassicFace) DrawFace(dc DrawContext, theme *Theme, cx, cy, radius float64, hour, minute, second, millis int) {
+func (f *ClassicFace) DrawFace(dc DrawContext, fc *FontConfig, pal Palette, cx, cy, radius float64, hour, minute, second, millis int) {
 	// Clear the clock face.
 	face := f.FillColor
-	if face == (color.NRGBA{}) && theme != nil {
-		face = theme.Pal.Surface
-	}
-	if theme != nil {
-		face = theme.C(face)
+	if face == (color.NRGBA{}) {
+		face = pal.Surface
 	}
 	dc.SetColor(face)
 	dc.DrawCircle(cx, cy, radius)
@@ -71,9 +68,6 @@ func (f *ClassicFace) DrawFace(dc DrawContext, theme *Theme, cx, cy, radius floa
 	col := f.HandColor
 	if col == (color.NRGBA{}) {
 		col = color.NRGBA{0, 0, 0, 255}
-	}
-	if theme != nil {
-		col = theme.C(col)
 	}
 
 	// Hour markers: 12 dots at the perimeter — outer edge flush with face edge.
@@ -110,9 +104,6 @@ func (f *ClassicFace) DrawFace(dc DrawContext, theme *Theme, cx, cy, radius floa
 	secLen := radius * 0.78
 	secW := math.Max(1, radius*0.02)
 	secColor := color.NRGBA{200, 60, 60, 255}
-	if theme != nil {
-		secColor = theme.C(secColor)
-	}
 	DrawHand(dc, cx, cy, secAngle, secLen, secW, secColor)
 
 	// Center dot.

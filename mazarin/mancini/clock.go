@@ -14,7 +14,8 @@ import (
 // If Faces is populated, clicking the clock cycles through face styles.
 // Clock implements MousePressHandler for this purpose.
 type Clock struct {
-	Theme   *Theme
+	Pal     Palette
+	Fonts   *FontConfig
 	Name    string
 	Size    float64                    // preferred side length (logical pixels)
 	Face    ClockFace                  // current active face
@@ -61,6 +62,6 @@ func (c *Clock) Draw(dc DrawContext, x, y, w, h float64) {
 	}
 
 	if c.Face != nil {
-		c.Face.DrawFace(dc, c.Theme, cx, cy, rad, hour, minute, second, millis)
+		c.Face.DrawFace(dc, c.Fonts, c.Pal, cx, cy, rad, hour, minute, second, millis)
 	}
 }

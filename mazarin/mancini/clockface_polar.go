@@ -28,14 +28,11 @@ func (f *PolarFace) Location() *time.Location {
 func (f *PolarFace) FaceName() string { return "Polar" }
 
 // DrawFace renders the Raketa Polar clock face.
-func (f *PolarFace) DrawFace(dc DrawContext, theme *Theme, cx, cy, radius float64, hour, minute, second, millis int) {
+func (f *PolarFace) DrawFace(dc DrawContext, fc *FontConfig, pal Palette, cx, cy, radius float64, hour, minute, second, millis int) {
 	// Fill the clock face.
 	face := f.FillColor
-	if face == (color.NRGBA{}) && theme != nil {
-		face = theme.Pal.Surface
-	}
-	if theme != nil {
-		face = theme.C(face)
+	if face == (color.NRGBA{}) {
+		face = pal.Surface
 	}
 	dc.SetColor(face)
 	dc.DrawCircle(cx, cy, radius)
@@ -44,9 +41,6 @@ func (f *PolarFace) DrawFace(dc DrawContext, theme *Theme, cx, cy, radius float6
 	col := f.HandColor
 	if col == (color.NRGBA{}) {
 		col = color.NRGBA{0, 0, 0, 255}
-	}
-	if theme != nil {
-		col = theme.C(col)
 	}
 
 	// 24 hour markers: digits at 0, 6, 12, 18; dots elsewhere.
@@ -61,7 +55,7 @@ func (f *PolarFace) DrawFace(dc DrawContext, theme *Theme, cx, cy, radius float6
 
 		if i == 0 || i == 6 || i == 12 || i == 18 {
 			// Cardinal positions: draw digit.
-			loadFont(theme, dc, true, fontSize)
+			loadFont(fc, dc, true, fontSize)
 			dc.SetColor(col)
 			mx := cx + digitRad*math.Cos(posAngle)
 			my := cy + digitRad*math.Sin(posAngle)

@@ -2,9 +2,6 @@ package mancini
 
 import (
 	"image/color"
-	"math"
-
-	"golang.org/x/image/font"
 )
 
 // Drawer draws itself into the given bounds using a DrawContext.
@@ -68,7 +65,8 @@ func (d NeuDepth) MouseDown() NeuDepth {
 	return d
 }
 
-// Palette holds the colors for a neumorphic theme.
+// Palette holds the colors for a neumorphic theme and the framebuffer
+// color-channel configuration needed to render them correctly.
 type Palette struct {
 	Surface     color.NRGBA
 	SurfaceTint color.NRGBA
@@ -76,6 +74,7 @@ type Palette struct {
 	LightSh     color.NRGBA
 	Text        color.NRGBA
 	Icon        color.NRGBA
+	SwapRB      bool // true for BGRA GPU framebuffers
 }
 
 // DefaultPalette returns the standard neumorphic purple palette.
@@ -88,52 +87,6 @@ func DefaultPalette() Palette {
 		Text:        color.NRGBA{78, 72, 112, 255},
 		Icon:        color.NRGBA{105, 99, 148, 235},
 	}
-}
-
-// Theme holds the rendering configuration for a neumorphic UI.
-type Theme struct {
-	Pal         Palette
-	FontRegular string // path to regular-weight font file (slicer)
-	FontBold    string // path to bold-weight font file (slicer)
-	// FontLoader creates a font.Face at the given size. Used when fonts are
-	// embedded (kernel/shepherd) rather than loaded from file paths. If non-nil,
-	// takes precedence over FontRegular/FontBold.
-	FontLoader  func(bold bool, size float64) font.Face
-	ScaleFactor float64
-	SwapRB      bool // true for BGRA GPU framebuffers
-}
-
-// MeasureText returns the advance width of text at the given font size.
-func (t *Theme) MeasureText(text string, bold bool, fontSize float64) float64 {
-	if t.FontLoader == nil {
-		return float64(len(text)) * fontSize * 0.6 // rough estimate
-	}
-	face := t.FontLoader(bold, fontSize)
-	if face == nil {
-		return float64(len(text)) * fontSize * 0.6
-	}
-	advance := font.MeasureString(face, text)
-	return math.Ceil(float64(advance) / 64.0) // fixed.Int26_6 → float64
-}
-
-// Px converts logical pixels to device pixels.
-func (t *Theme) Px(logical float64) float64 {
-	return math.Round(logical * t.ScaleFactor)
-}
-
-// Pxi returns Px as an integer.
-func (t *Theme) Pxi(logical float64) int {
-	return int(t.Px(logical))
-}
-
-// C returns c with R and B swapped when SwapRB is true. Pass all colors
-// through C() before handing them to gg so that BGRA framebuffers get
-// correct channel ordering.
-func (t *Theme) C(c color.NRGBA) color.NRGBA {
-	if t.SwapRB {
-		return color.NRGBA{R: c.B, G: c.G, B: c.R, A: c.A}
-	}
-	return c
 }
 
 // Neumorphic parameter types.

@@ -26,6 +26,9 @@ type DrawContext interface {
 	Fill()
 	Stroke()
 
+	// Fast-path rectangle fill using current color (bypasses rasterizer).
+	FillRectangle(x, y, w, h float64)
+
 	// Text.
 	DrawString(s string, x, y float64)
 	DrawStringAnchored(s string, x, y, ax, ay float64)

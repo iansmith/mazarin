@@ -17,14 +17,14 @@ const (
 	fontBold    = fontDir + "AtkinsonHyperlegible-Bold.ttf"
 )
 
-var theme = &mancini.Theme{
-	Pal:         mancini.DefaultPalette(),
+var fonts = &mancini.FontConfig{
 	FontRegular: fontRegular,
 	FontBold:    fontBold,
-	ScaleFactor: 2.0,
 }
 
-func px(n float64) float64 { return theme.Px(n) }
+var pal = mancini.DefaultPalette()
+
+func px(n float64) float64 { return n * 2.0 }
 
 // drawButtonGrid draws a 2×2 grid of raised TextButtons centered in the
 // rectangle (ax, ay) to (ax+aw, ay+ah).
@@ -45,8 +45,8 @@ func drawButtonGrid(dc mancini.DrawContext, ax, ay, aw, ah float64) {
 		row := i / 2
 		bx := gridX + float64(col)*(btnW+btnGap)
 		by := gridY + float64(row)*(btnH+btnGap)
-		mancini.DrawNeuBox(theme, dc, mancini.Raised, bx, by, bx+btnW, by+btnH, btnR, theme.Pal.Surface,
-			mancini.TextFace(theme, lbl, btnFontSize, theme.Pal.Icon, false))
+		mancini.DrawNeuBox(pal,dc, mancini.Raised, bx, by, bx+btnW, by+btnH, btnR, pal.Surface,
+			mancini.TextFace(fonts, lbl, btnFontSize, pal.Icon, false))
 	}
 }
 
@@ -54,7 +54,8 @@ func drawButtonGrid(dc mancini.DrawContext, ax, ay, aw, ah float64) {
 // a 2×2 button grid below the groove.
 func drawFreeFloatingWindow(dc mancini.DrawContext, wx, wy, winW, winH, winR float64, title string) {
 	fw := &mancini.FreeFloatingWindow{
-		Theme:   theme,
+		Pal:     pal,
+		Fonts:   fonts,
 		Title:   title,
 		Visible: true,
 		Content: mancini.FaceDrawer(drawButtonGrid),
@@ -65,10 +66,11 @@ func drawFreeFloatingWindow(dc mancini.DrawContext, wx, wy, winW, winH, winR flo
 // drawAppWindow draws an AppWindow with title bar and a 2×2 button grid.
 func drawAppWindow(dc mancini.DrawContext, focused bool, wx, wy, winW, winH float64, title string, titleBar mancini.Drawer) {
 	contentDrawer := mancini.FaceDrawer(func(dc mancini.DrawContext, x, y, w, h float64) {
-		mancini.Container(theme, dc, x, y, x+w, y+h, px(10), true, drawButtonGrid)
+		mancini.Container(pal,dc, x, y, x+w, y+h, px(10), true, drawButtonGrid)
 	})
 	app := &mancini.AppWindow{
-		Theme:    theme,
+		Pal:      pal,
+		Fonts:    fonts,
 		Title:    title,
 		Focused:  focused,
 		TitleBar: titleBar,
@@ -95,13 +97,13 @@ func main() {
 
 	canvas := image.NewRGBA(image.Rect(0, 0, totalW, totalH))
 	dc := gg.NewContextForRGBA(canvas)
-	dc.SetColor(theme.Pal.Surface)
+	dc.SetColor(pal.Surface)
 	dc.DrawRectangle(0, 0, float64(totalW), float64(totalH))
 	dc.Fill()
 
 	drawSectionLabel := func(wx, wy, colW float64, label string) {
 		_ = dc.LoadFontFace(fontBold, px(8))
-		dc.SetColor(theme.Pal.Text)
+		dc.SetColor(pal.Text)
 		dc.DrawStringAnchored(label, wx+colW/2, wy+labelH/2, 0.5, 0.5)
 	}
 
@@ -116,11 +118,12 @@ func main() {
 	for i, d := range depths {
 		lx := lblStartX + float64(i)*(lblW+lblGap)
 		lbl := &mancini.NeuLabel{
-			Theme:    theme,
+			Pal:      pal,
+			Fonts:    fonts,
 			Depth:    d,
 			Text:     depthNames[i],
 			FontSize: px(11),
-			Color:    theme.Pal.Text,
+			Color:    pal.Text,
 			Bold:     false,
 		}
 		lbl.Draw(dc, lx, ly, lblW, lblH)
@@ -140,7 +143,7 @@ func main() {
 	drawSectionLabel(wx1, winRowTop, winW, "AppWindow (focused)")
 	tbR := px(8)
 	drawAppWindow(dc, true, wx1, wy, winW, winH, "My Application",
-		mancini.StripedTitleFace(theme, "My Application", px(10), tbR))
+		mancini.StripedTitleFace(fonts, pal, "My Application", px(10), tbR))
 
 	// FreeFloatingWindow
 	wx2 := marginX + 2*(winW+winGap)

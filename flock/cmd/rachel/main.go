@@ -9,17 +9,16 @@ package main
 import (
 	"fmt"
 	"mazzy/mazarin/attr"
+	"mazzy/mazarin/fontcache"
 	"mazzy/mazarin/input"
 	"mazzy/mazarin/interactor"
+	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
 	"mazzy/mazarin/vm"
 	"mazzy/mazarin/vm/flat"
 	"mazzy/shared/hid"
 	"mazzy/shared/wm"
-	// mazhost import forces the linker to retain all runtime functions
-	// needed by .maz thin stubs (via MazKeepAliveSymbols).
-	_ "mazzy/mazarin/mazhost"
 	"os"
 	"runtime"
 	"strconv"
@@ -250,16 +249,19 @@ var inverseCursorID = -1
 var cursorIsInverse bool // current cursor state
 
 // Mouse position — accumulated from relative events. Clamped to display.
-var mouseX int32 = 864 // start at center of display
-var mouseY int32 = 558
+// Initialized to center of screen in main() after reading kernel dimensions.
+var mouseX int32
+var mouseY int32
 
 // mouseButtonHeld tracks whether any mouse button is currently held.
 // Set by mouseClickLoop on press, cleared on release.
 // Read by mouseMovementLoop to decide whether to forward moves.
 var mouseButtonHeld int32 // 0 = no button held, >0 = button code
 
-const displayWidth = 1728
-const displayHeight = 1117
+// displayWidth and displayHeight are set at startup from kernel's screen
+// dimension attributes. Mouse clamping and tablet mapping use these values.
+var displayWidth int32
+var displayHeight int32
 
 // generateStandardCursor returns a 64x64 NRGBA cursor image (white outline, black fill).
 func generateStandardCursor() []byte {
@@ -429,9 +431,9 @@ func mouseMovementLoop() {
 				// Tablet absolute coordinates (0-32767) → screen coordinates.
 				switch ev.Code {
 				case hid.AbsX:
-					mouseX = int32((uint32(ev.Value) * displayWidth) / (hid.AbsMax + 1))
+					mouseX = int32((uint32(ev.Value) * uint32(displayWidth)) / (hid.AbsMax + 1))
 				case hid.AbsY:
-					mouseY = int32((uint32(ev.Value) * displayHeight) / (hid.AbsMax + 1))
+					mouseY = int32((uint32(ev.Value) * uint32(displayHeight)) / (hid.AbsMax + 1))
 				}
 			}
 		}
@@ -525,18 +527,26 @@ func trackAppBounds(sid int) *trackedApp {
 	return ta
 }
 
-// mailboxLoop receives mailbox notifications from other shepherds.
-// When a shepherd sends AppStart, rachel sets input focus for it
-// and sends YouHaveFocus back via a return ring buffer.
-func mailboxLoop() {
-	fmt.Println("[rachel] mailbox goroutine started")
-	for {
-		notif, err := sys.MailboxRecv()
-		if err != nil {
-			fmt.Printf("[rachel:mailbox] recv error: %v\n", err)
-			continue
-		}
+// forceFontSvcItab ensures the linker includes the fontcache.FontSvcInjector
+// interface itab and method wrappers for (*FontSvcInit, FontSvcInjector).
+// Without this, fontsvc.maz's type assertion fails because the host binary
+// doesn't include the interface type in its typelinks.
+//
+//go:noinline
+func forceFontSvcItab(v interface{}) {
+	inj, ok := v.(fontcache.FontSvcInjector)
+	if !ok {
+		return
+	}
+	_ = inj.GetRachelChannel()
+}
 
+// mailboxLoop receives mailbox notifications forwarded by fontsvc.maz.
+// fontsvc owns the MailboxRecv loop and forwards non-font notifications
+// (WMNotify, ShepherdNotify, etc.) to this channel.
+func mailboxLoop(ch <-chan sys.MailboxNotification) {
+	fmt.Println("[rachel] mailbox goroutine started (channel-based)")
+	for notif := range ch {
 		switch notif.Code {
 		case wm.WMNotify:
 			// A shepherd sent us a message — open ring at translated VA
@@ -605,11 +615,87 @@ func main() {
 	attr.Init()
 	fmt.Printf("[rachel] attr init done (SID=%s)\n", attr.SID())
 
+	// Read kernel screen dimensions via constraints.
+	screenWProg := interactor.BindStrings(interactor.ProgIdentityI64,
+		"attr:///kernel/int64/screen/width")
+	screenW := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_w"), screenWProg)
+
+	screenHProg := interactor.BindStrings(interactor.ProgIdentityI64,
+		"attr:///kernel/int64/screen/height")
+	screenH := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
+
+	w := int32(screenW.Get())
+	h := int32(screenH.Get())
+	fmt.Printf("[rachel] kernel screen: %dx%d\n", w, h)
+
+	// Set display dimensions for mouse clamping and initial cursor position.
+	displayWidth = w
+	displayHeight = h
+	mouseX = w / 2
+	mouseY = h / 2
+
+	// Publish visibleArea as a Rectangle2D. For now, full screen (no decorations).
+	// When we add taskbars/panels, the insets will shrink this area.
+	visibleAreaRect := attr.ValueRectangle(
+		attr.ShepherdURI("rect", "visibleArea"),
+		vm.RectangleVal(0, 0, w, h))
+	_ = visibleAreaRect
+
+	// Publish individual visibleArea edges as int64 values for constraint programs
+	// that need to decompose the rectangle (VM lacks rect field accessors).
+	vaX := attr.ValueI64(attr.ShepherdURI("int64", "visibleArea/x"), int64(0))
+	vaY := attr.ValueI64(attr.ShepherdURI("int64", "visibleArea/y"), int64(0))
+	vaW := attr.ValueI64(attr.ShepherdURI("int64", "visibleArea/w"), int64(w))
+	vaH := attr.ValueI64(attr.ShepherdURI("int64", "visibleArea/h"), int64(h))
+	_, _, _, _ = vaX, vaY, vaW, vaH
+	fmt.Printf("[rachel] visibleArea published: rect(0,0,%d,%d)\n", w, h)
+
 	// Register standard and inverse cursors with the GPU.
 	initCursors()
 
-	// Start mailbox receiver — handles AppStart from other shepherds.
-	go mailboxLoop()
+	// Load fontsvc.maz — it owns the MailboxRecv loop and forwards non-font
+	// notifications to rachel via a Go channel.
+	rachelCh := make(chan sys.MailboxNotification, 32)
+
+	// Force linker to include FontSvcInjector itab for cross-module type assertions.
+	initData := &fontcache.FontSvcInit{RachelCh: rachelCh}
+	forceFontSvcItab(initData)
+
+	fontSvcPath := sys.LoadMazByName("/fontsvc")
+	fmt.Printf("[rachel] loading fontsvc from %s...\n", fontSvcPath)
+	fontSvcMain, fontSvcInitAddr, fontSvcErr := mazhost.LoadMazBootstrap(fontSvcPath, nil)
+	if fontSvcErr != nil {
+		fmt.Printf("[rachel] LoadMazBootstrap(fontsvc) failed: %v\n", fontSvcErr)
+		// Fall back to direct mailbox loop if fontsvc is not available.
+		go func() {
+			for {
+				notif, err := sys.MailboxRecv()
+				if err != nil {
+					continue
+				}
+				rachelCh <- notif
+			}
+		}()
+	} else {
+		// Inject the rachel channel into fontsvc via MazarinShepherd.
+		if fontSvcInitAddr != 0 {
+			type funcval struct{ fn uintptr }
+			fv := &funcval{fn: fontSvcInitAddr}
+			shepherdInit := *(*func(interface{}) error)(unsafe.Pointer(&fv))
+			if err := shepherdInit(initData); err != nil {
+				fmt.Printf("[rachel] fontsvc MazarinShepherd failed: %v\n", err)
+			} else {
+				fmt.Println("[rachel] fontsvc MazarinShepherd injected successfully")
+			}
+		}
+		// Start fontsvc's MailboxRecv loop (which forwards non-font messages to rachelCh).
+		go mazhost.RunMaz(fontSvcMain)
+		fmt.Println("[rachel] fontsvc goroutine launched")
+	}
+	runtime.Gosched()
+
+	// Start mailbox receiver — reads from channel populated by fontsvc.
+	go mailboxLoop(rachelCh)
 	runtime.Gosched()
 
 	// Launch event loops for all three device classes.
@@ -628,25 +714,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "[rachel] stderr test: this should be dark red")
 	}()
 
-	// Load and launch .maz/.mzr test program
-	hwPath := sys.LoadMazByName("/helloworld")
-	fmt.Printf("[rachel] loading %s...\n", hwPath)
-	mazResult, mazErr := sys.LoadMaz(hwPath)
-	if mazErr != nil {
-		fmt.Printf("[rachel] LoadMaz failed: %v\n", mazErr)
-	} else {
-		fmt.Printf("[rachel] loaded %s: entry=0x%X base=0x%X size=0x%X\n",
-			hwPath, mazResult.EntryPoint, mazResult.LoadBase, mazResult.LoadSize)
-
-		sys.RegisterMazModule(mazResult)
-
-		// Convert entry point to a callable function and launch as goroutine
-		type funcval struct{ fn uintptr }
-		fv := &funcval{fn: uintptr(mazResult.EntryPoint)}
-		mazMain := *(*func())(unsafe.Pointer(&fv))
-		go runWithLargeStack(mazMain)
-		fmt.Println("[rachel] .maz goroutine launched")
-	}
+	// Load and launch prefs.maz
+	mazhost.LaunchMaz("prefs")
 
 	// Publish ready status to constraint network using the well-known URI.
 	ready := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
@@ -655,22 +724,4 @@ func main() {
 
 	// Block main goroutine forever
 	select {}
-}
-
-// runWithLargeStack allocates a 256KB stack frame before calling fn,
-// preventing .maz code from hitting its broken morestack (which hangs
-// forever due to uninitialized runtime globals in the PIE binary).
-// The buffer is kept alive across fn() so GC's shrinkstack doesn't
-// shrink the goroutine stack while .maz code is running.
-//
-//go:noinline
-func runWithLargeStack(fn func()) {
-	var buf [262144]byte
-	buf[0] = 1
-	buf[len(buf)-1] = 1
-	if buf[131072] != 0 {
-		panic("unreachable")
-	}
-	fn()
-	runtime.KeepAlive(&buf)
 }

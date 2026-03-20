@@ -13,7 +13,7 @@ import (
 // The margin is the max shadow padding across all depth states, so state
 // transitions never change the interactor's bounds.
 type NeuCircle struct {
-	Theme  *Theme
+	Pal    Palette
 	Name   string
 	Depth  NeuDepth
 	Params NeuParams
@@ -67,11 +67,7 @@ func (n *NeuCircle) Draw(dc DrawContext, x, y, w, h float64) {
 
 	// No child: pink error indicator.
 	if n.Child == nil {
-		pc := errPink
-		if n.Theme != nil {
-			pc = n.Theme.C(pc)
-		}
-		dc.SetColor(pc)
+		dc.SetColor(errPink)
 		dc.DrawCircle(x+w/2, y+h/2, math.Min(w, h)/2)
 		dc.Fill()
 		return
@@ -102,10 +98,10 @@ func (n *NeuCircle) Draw(dc DrawContext, x, y, w, h float64) {
 
 	if needDecoration {
 		face := n.Face
-		if face == (color.NRGBA{}) && n.Theme != nil {
-			face = n.Theme.Pal.Surface
+		if face == (color.NRGBA{}) {
+			face = n.Pal.Surface
 		}
-		NeuCircleWith(n.Theme, dc, n.Depth, cx, cy, rad, face, n.Params, nil)
+		NeuCircleWith(n.Pal, dc, n.Depth, cx, cy, rad, face, n.Params, nil)
 	}
 
 	n.Child.Draw(dc, childX, childY, 2*rad, 2*rad)

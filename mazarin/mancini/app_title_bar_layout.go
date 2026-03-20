@@ -49,7 +49,7 @@ func (tb *AppTitleBar) InitLayout(parent string) {
 	}
 
 	// Height = child height + 2*vMargin (decoration pattern).
-	vMargin := int64(tb.Theme.Px(2)) // 2px padding top and bottom
+	vMargin := int64(2) // 2px padding top and bottom
 	vMarginURI := layoutURI(tb.Name, "int64", "VMargin")
 	attr.ValueI64(vMarginURI, vMargin)
 

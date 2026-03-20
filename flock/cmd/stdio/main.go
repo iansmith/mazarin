@@ -5,7 +5,6 @@
 package main
 
 import (
-	_ "embed"
 	"fmt"
 	"image"
 	"image/color"
@@ -18,16 +17,14 @@ import (
 
 	gg "github.com/fogleman/gg"
 	"golang.org/x/image/font"
-	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
 
+	"mazzy/mazarin/fontcache"
 	"mazzy/mazarin/serial"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/sysid"
+	"mazzy/shared/wm"
 )
-
-//go:embed AtkinsonHyperlegibleMono-Regular.otf
-var fontData []byte
 
 const (
 	LineSpacing = 2
@@ -83,8 +80,8 @@ func isAlnum(b byte) bool {
 func newGlyphCache(charW, charH, ascent int, face font.Face) *glyphCache {
 	gc := &glyphCache{charW: charW, charH: charH}
 
-	renderGlyphSet(&gc.glyphs, charW, charH, ascent, face, nText, nContent)
-	renderGlyphSet(&gc.glyphsErr, charW, charH, ascent, face, nStderr, nContent)
+	renderGlyphSet(&gc.glyphs, charW, charH, ascent, face, pixelSwapRB(nText), pixelSwapRB(nContent))
+	renderGlyphSet(&gc.glyphsErr, charW, charH, ascent, face, pixelSwapRB(nStderr), pixelSwapRB(nContent))
 
 	// Pre-allocate word cache entry buffers
 	maxBuf := glyphKeyMax * charW * charH * 4
@@ -98,7 +95,7 @@ func newGlyphCache(charW, charH, ascent int, face font.Face) *glyphCache {
 // pixel strips with the given text color on the given background color.
 // Uses font.Drawer.DrawString which calls draw.DrawMask (fast path for
 // RGBA destinations) instead of gg's DrawString which uses BiLinear.Transform.
-func renderGlyphSet(dst *[95][]byte, charW, charH, ascent int, face font.Face, textColor, bgColor color.RGBA) {
+func renderGlyphSet(dst *[95][]byte, charW, charH, ascent int, face font.Face, textColor, bgColor color.Color) {
 	tmpIm := image.NewRGBA(image.Rect(0, 0, charW, charH))
 	rowBytes := charW * 4
 	bgU := image.NewUniform(bgColor)
@@ -301,20 +298,19 @@ func main() {
 		return
 	}
 
-	// --- Parse font ---
-	otFont, err := opentype.Parse(fontData)
-	if err != nil {
-		fmt.Printf("[stdio] font parse error: %v\n", err)
+	// --- Open font via fontcache (fontsvc inside rachel) ---
+	rachelSID := findShepherdByName("rachel")
+	if rachelSID < 0 {
+		fmt.Println("[stdio] FATAL: rachel not found")
 		return
 	}
+	fc := fontcache.New(rachelSID)
+	// Start mailbox receiver for font responses.
+	go fontMailboxLoop(fc)
 	const fontSize = 16.0
-	face, err := opentype.NewFace(otFont, &opentype.FaceOptions{
-		Size:    fontSize,
-		DPI:     72,
-		Hinting: font.HintingFull,
-	})
-	if err != nil {
-		fmt.Printf("[stdio] NewFace error: %v\n", err)
+	face := fc.OpenFace("/fonts/AtkinsonHyperlegibleMono-Regular.otf", false, fontSize)
+	if face == nil {
+		fmt.Println("[stdio] FATAL: OpenFace returned nil")
 		return
 	}
 	adv, ok := face.GlyphAdvance('M')
@@ -363,8 +359,8 @@ func main() {
 		charW, charH, lineH, rectW, rectH, maxLines)
 
 	// Create gg context wrapping the framebuffer memory directly.
-	// The GPU uses BGRA format but all colors are pre-swapped via bgraColor(),
-	// so gg's RGBA byte writes produce correct BGRA output.
+	// The GPU uses BGRA format. SwapRB is set on the gg context so colors
+	// are specified in natural RGB order.
 	// All drawing goes directly to the framebuffer — no separate backbuffer.
 	// Framebuffer pages are pre-mapped by the kernel, so no demand paging.
 	t0 := time.Now()
@@ -375,6 +371,7 @@ func main() {
 		Rect:   image.Rect(0, 0, int(fb.Width), int(fb.Height)),
 	}
 	dc := gg.NewContextForRGBA(fbImage)
+	dc.SwapRB = true
 	dc.SetFontFace(face)
 	fmt.Printf("[stdio] gg.NewContextForRGBA: %v\n", time.Since(t0))
 
@@ -551,23 +548,51 @@ func addCRBeforeLF(data []byte) []byte {
 	return out
 }
 
-// bgraColor creates a color.RGBA with R and B swapped so that when gg
-// writes to image.RGBA (byte order [R,G,B,A]), the GPU's BGRA format
-// reads the channels correctly. Parameters are real display R, G, B, A.
-func bgraColor(r, g, b, a uint8) color.RGBA {
-	return color.RGBA{R: b, G: g, B: r, A: a}
+// findShepherdByName looks up a shepherd SID by its launch filename.
+func findShepherdByName(name string) int {
+	entries, err := sys.ShepherdInfo()
+	if err != nil {
+		return -1
+	}
+	target := "/" + name + ".elf"
+	for _, e := range entries {
+		fn := string(e.Filename[:e.FilenameLen])
+		if fn == target {
+			return int(e.PID)
+		}
+	}
+	return -1
+}
+
+// fontMailboxLoop receives MailboxRecv notifications and forwards
+// FontResponse messages to the FontCache.
+func fontMailboxLoop(fc *fontcache.FontCache) {
+	for {
+		notif, err := sys.MailboxRecv()
+		if err != nil {
+			continue
+		}
+		if notif.Code == wm.FontResponse {
+			fc.HandleNotification(notif)
+		}
+	}
 }
 
 // Neumorphic palette — light gray surface, same color for bg and elements.
-// GPU uses BGRA format (format 1). bgraColor swaps R↔B so that gg's RGBA
-// byte writes produce correct BGRA output for the framebuffer.
+// SwapRB is set on the gg context, so colors are specified in natural RGB order.
 var (
-	nBase    = bgraColor(224, 224, 230, 255) // light warm gray surface
-	nContent = bgraColor(40, 42, 48, 255)    // content well (dark neutral gray)
-	nTitle   = bgraColor(100, 100, 110, 255) // title text
-	nText    = bgraColor(200, 205, 215, 255) // content text (stdout)
-	nStderr  = bgraColor(200, 80, 80, 255)   // stderr text (dark red)
+	nBase    = color.NRGBA{224, 224, 230, 255} // light warm gray surface
+	nContent = color.NRGBA{40, 42, 48, 255}    // content well (dark neutral gray)
+	nTitle   = color.NRGBA{100, 100, 110, 255} // title text
+	nText    = color.NRGBA{200, 205, 215, 255} // content text (stdout)
+	nStderr  = color.NRGBA{200, 80, 80, 255}   // stderr text (dark red)
 )
+
+// pixelSwapRB returns c with R and B swapped. Used for direct pixel blits
+// that bypass the gg context (e.g., pre-rendered glyph buffers).
+func pixelSwapRB(c color.NRGBA) color.NRGBA {
+	return color.NRGBA{R: c.B, G: c.G, B: c.R, A: c.A}
+}
 
 // gaussLUT is a precomputed lookup table for exp(-d²/(2σ²)) * amplitude.
 // Indexed by dist in 0.1px increments up to 4σ.
@@ -729,7 +754,7 @@ func (c *console) drawCardFrame() {
 	titleY := cy + float64(cardBorderTop)/2 + float64(c.ascent)/2
 	titleD := &font.Drawer{
 		Dst:  c.im,
-		Src:  image.NewUniform(nTitle),
+		Src:  image.NewUniform(pixelSwapRB(nTitle)),
 		Face: c.face,
 		Dot:  fixed.P(c.cardX+cardBorderSide+textPad, int(titleY)),
 	}
@@ -781,9 +806,11 @@ func (c *console) drawCardShadows() {
 		if ey > bounds.Max.Y { ey = bounds.Max.Y }
 
 		t0 := time.Now()
-		bgR := float64(nBase.R)
-		bgG := float64(nBase.G)
-		bgB := float64(nBase.B)
+		// Direct pixel writes: swap R↔B for BGRA framebuffer.
+		bgSwap := pixelSwapRB(nBase)
+		bgR := float64(bgSwap.R)
+		bgG := float64(bgSwap.G)
+		bgB := float64(bgSwap.B)
 		for py := sy; py < ey; py++ {
 			for px := sx; px < ex; px++ {
 				delta := sdfShadowLUT(float64(px)+0.5, float64(py)+0.5,

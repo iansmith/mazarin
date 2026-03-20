@@ -31,14 +31,11 @@ func (f *MetricFace) FaceName() string { return "Metric" }
 // DrawFace renders the metric clock face. The hour/minute/second/millis
 // parameters are conventional (24h) local time; this method converts them
 // to metric time for display.
-func (f *MetricFace) DrawFace(dc DrawContext, theme *Theme, cx, cy, radius float64, hour, minute, second, millis int) {
+func (f *MetricFace) DrawFace(dc DrawContext, fc *FontConfig, pal Palette, cx, cy, radius float64, hour, minute, second, millis int) {
 	// Fill the clock face.
 	face := f.FillColor
-	if face == (color.NRGBA{}) && theme != nil {
-		face = theme.Pal.Surface
-	}
-	if theme != nil {
-		face = theme.C(face)
+	if face == (color.NRGBA{}) {
+		face = pal.Surface
 	}
 	dc.SetColor(face)
 	dc.DrawCircle(cx, cy, radius)
@@ -48,13 +45,10 @@ func (f *MetricFace) DrawFace(dc DrawContext, theme *Theme, cx, cy, radius float
 	if col == (color.NRGBA{}) {
 		col = color.NRGBA{0, 0, 0, 255}
 	}
-	if theme != nil {
-		col = theme.C(col)
-	}
 
 	// Digit markers: 0-9 evenly spaced, 36 degrees apart, 0 at top.
 	fontSize := math.Max(6, radius*0.20)
-	loadFont(theme, dc, true, fontSize)
+	loadFont(fc, dc, true, fontSize)
 	dc.SetColor(col)
 	markerRad := radius * 0.80
 	for i := 0; i < 10; i++ {
@@ -99,9 +93,6 @@ func (f *MetricFace) DrawFace(dc DrawContext, theme *Theme, cx, cy, radius float
 	secLen := radius * 0.72
 	secW := math.Max(1, radius*0.02)
 	secColor := color.NRGBA{200, 60, 60, 255}
-	if theme != nil {
-		secColor = theme.C(secColor)
-	}
 	DrawHand(dc, cx, cy, secAngle, secLen, secW, secColor)
 
 	// Center dot.

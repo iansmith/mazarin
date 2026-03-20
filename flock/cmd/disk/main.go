@@ -9,7 +9,6 @@ import (
 	"mazzy/shared/blockdev"
 	"mazzy/shared/hid"
 	"os"
-	"runtime"
 	"time"
 	"unsafe"
 )
@@ -102,40 +101,11 @@ func main() {
 		}
 	}
 
-	// 4. Run MazarinMain as goroutine.
-	// Use runWithLargeStack to keep a 256KB frame alive for the ENTIRE
-	// duration of .maz execution, preventing GC from shrinking the
-	// goroutine stack. .maz modules have their own broken copy of
-	// runtime.morestack/newstack (uninitialized globals) so we must
-	// ensure the stack never needs to grow while .maz code runs.
+	// 4. Run MazarinMain as goroutine with pre-grown stack.
 	fmt.Println("[disk] starting fs.maz goroutine")
-	go func() {
-		runWithLargeStack(mazMain)
-	}()
+	go mazhost.RunMaz(mazMain)
 
 	select {}
-}
-
-// runWithLargeStack allocates a 256KB stack frame, calls fn, then
-// touches the buffer after fn returns to prevent GC from shrinking
-// the goroutine stack while fn is running. This is critical because
-// GC's shrinkstack halves any goroutine stack where <1/4 is used.
-// If preGrowStack were a separate call before fn, GC could shrink
-// the stack between the two calls (or during fn's execution), causing
-// .maz code to hit its broken morestack and hang.
-//
-//go:noinline
-func runWithLargeStack(fn func()) {
-	var buf [262144]byte
-	buf[0] = 1
-	buf[len(buf)-1] = 1
-	if buf[131072] != 0 {
-		panic("unreachable")
-	}
-	fn()
-	// Keep buf alive across the fn() call so GC's shrinkstack sees the
-	// goroutine as using >1/4 of its 256KB stack and doesn't shrink it.
-	runtime.KeepAlive(&buf)
 }
 
 // diskBlockDev implements blockdev.BlockDevice using SysBlockRead.

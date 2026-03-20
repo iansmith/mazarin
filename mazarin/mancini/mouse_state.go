@@ -64,6 +64,11 @@ func NewMouseState(interactors []Drawer) *MouseState {
 	return &MouseState{interactors: interactors}
 }
 
+// SetTargets replaces the set of interactors that receive mouse events.
+func (m *MouseState) SetTargets(interactors []Drawer) {
+	m.interactors = interactors
+}
+
 // Press handles a mouse press at global coordinates (x, y).
 // Hit-tests each interactor and begins an interaction if one is found.
 func (m *MouseState) Press(x, y int64) {

@@ -94,6 +94,8 @@ require (
 	mvdan.cc/sh/v3 v3.12.0 // indirect
 )
 
+replace github.com/fogleman/gg v1.3.0 => ./internal/gg
+
 // Tool directives - these can be run with "go tool <name>"
 tool (
 	github.com/go-task/task/v3/cmd/task

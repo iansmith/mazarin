@@ -9,7 +9,7 @@ type WidthSizer interface {
 // Row arranges children horizontally. Gaps between children are provided
 // by Spacer interactors — spacing is computed by the constraint system.
 type Row struct {
-	Theme             *Theme
+	Pal               Palette
 	Name              string
 	Children          []Drawer
 	CrossAlign        Alignment // cross-axis (vertical) alignment of children
@@ -70,11 +70,7 @@ func (r *Row) Draw(dc DrawContext, x, y, w, h float64) {
 	// No children: pink error indicator.
 	if len(r.Children) == 0 {
 		publishLayout(r.Layout, x, y, w, h)
-		pc := errPink
-		if r.Theme != nil {
-			pc = r.Theme.C(pc)
-		}
-		dc.SetColor(pc)
+		dc.SetColor(errPink)
 		dc.DrawRectangle(x, y, w, h)
 		dc.Fill()
 		return

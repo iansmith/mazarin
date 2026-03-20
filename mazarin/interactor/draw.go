@@ -44,42 +44,39 @@ func NewDrawContext(fontData []byte, regionX, regionY, regionW, regionH int) *Dr
 		Rect:   image.Rect(0, 0, int(fb.Width), int(fb.Height)),
 	}
 
-	// Parse font.
-	otFont, err := opentype.Parse(fontData)
-	if err != nil {
-		panic("interactor: font parse error: " + err.Error())
-	}
-	face, err := opentype.NewFace(otFont, &opentype.FaceOptions{
-		Size:    16.0,
-		DPI:     72,
-		Hinting: font.HintingFull,
-	})
-	if err != nil {
-		panic("interactor: NewFace error: " + err.Error())
-	}
-	adv, ok := face.GlyphAdvance('M')
-	if !ok {
-		panic("interactor: could not measure glyph")
-	}
-	charW := adv.Ceil()
-	metrics := face.Metrics()
-	charH := (metrics.Ascent + metrics.Descent).Ceil()
-	ascent := metrics.Ascent.Ceil()
-
 	dc := &DrawContext{
 		fb:      fb,
 		im:      im,
-		charW:   charW,
-		charH:   charH,
-		ascent:  ascent,
 		regionX: regionX,
 		regionY: regionY,
 		regionW: regionW,
 		regionH: regionH,
 	}
 
-	// Pre-render glyph set.
-	dc.renderGlyphs(face)
+	// Pre-render glyph set if font data is provided.
+	if len(fontData) > 0 {
+		otFont, err := opentype.Parse(fontData)
+		if err != nil {
+			panic("interactor: font parse error: " + err.Error())
+		}
+		face, err := opentype.NewFace(otFont, &opentype.FaceOptions{
+			Size:    16.0,
+			DPI:     72,
+			Hinting: font.HintingFull,
+		})
+		if err != nil {
+			panic("interactor: NewFace error: " + err.Error())
+		}
+		adv, ok := face.GlyphAdvance('M')
+		if !ok {
+			panic("interactor: could not measure glyph")
+		}
+		dc.charW = adv.Ceil()
+		metrics := face.Metrics()
+		dc.charH = (metrics.Ascent + metrics.Descent).Ceil()
+		dc.ascent = metrics.Ascent.Ceil()
+		dc.renderGlyphs(face)
+	}
 	return dc
 }
 

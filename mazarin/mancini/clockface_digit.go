@@ -28,14 +28,11 @@ func (f *DigitFace) Location() *time.Location {
 func (f *DigitFace) FaceName() string { return "Digital" }
 
 // DrawFace renders the digit clock face with rotated numerals.
-func (f *DigitFace) DrawFace(dc DrawContext, theme *Theme, cx, cy, radius float64, hour, minute, second, millis int) {
+func (f *DigitFace) DrawFace(dc DrawContext, fc *FontConfig, pal Palette, cx, cy, radius float64, hour, minute, second, millis int) {
 	// Clear the clock face.
 	face := f.FillColor
-	if face == (color.NRGBA{}) && theme != nil {
-		face = theme.Pal.Surface
-	}
-	if theme != nil {
-		face = theme.C(face)
+	if face == (color.NRGBA{}) {
+		face = pal.Surface
 	}
 	dc.SetColor(face)
 	dc.DrawCircle(cx, cy, radius)
@@ -45,14 +42,11 @@ func (f *DigitFace) DrawFace(dc DrawContext, theme *Theme, cx, cy, radius float6
 	if col == (color.NRGBA{}) {
 		col = color.NRGBA{0, 0, 0, 255}
 	}
-	if theme != nil {
-		col = theme.C(col)
-	}
 
 	// Rotated digit markers at each hour position.
 	// Each digit is rotated by its angular position: 12→0°, 1→30°, 2→60°, ...
 	fontSize := math.Max(6, radius*0.20)
-	loadFont(theme, dc, true, fontSize)
+	loadFont(fc, dc, true, fontSize)
 	dc.SetColor(col)
 	markerRad := radius * 0.80
 	for i := 1; i <= 12; i++ {
@@ -92,9 +86,6 @@ func (f *DigitFace) DrawFace(dc DrawContext, theme *Theme, cx, cy, radius float6
 	secLen := radius * 0.72
 	secW := math.Max(1, radius*0.02)
 	secColor := color.NRGBA{200, 60, 60, 255}
-	if theme != nil {
-		secColor = theme.C(secColor)
-	}
 	DrawHand(dc, cx, cy, secAngle, secLen, secW, secColor)
 
 	// Center dot.

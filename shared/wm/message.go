@@ -3,11 +3,17 @@
 package wm
 
 // NotifyCode identifies the target type of a mailbox notification.
+// Font codes (3, 4) must be disjoint from WM codes (1, 2) so fontsvc.maz
+// can distinguish font requests from WM messages in the shared mailbox loop.
 const (
 	// WMNotify is sent by a shepherd TO the window manager.
 	WMNotify int64 = 1
 	// ShepherdNotify is sent by the window manager TO a shepherd.
 	ShepherdNotify int64 = 2
+	// FontNotify is sent by a shepherd TO fontsvc (font request).
+	FontNotify int64 = 3
+	// FontResponse is sent by fontsvc TO a shepherd (font reply).
+	FontResponse int64 = 4
 )
 
 // SizeWMMessage is the fixed size of all messages exchanged between

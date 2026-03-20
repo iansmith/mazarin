@@ -1,6 +1,7 @@
 package mancini
 
 import (
+	"math"
 	"strconv"
 	"sync/atomic"
 
@@ -181,30 +182,39 @@ func (w *AppWindow) InitLayout(parent string) {
 	// AppWindow always uses "AppWindow" as its constraint name so rachel
 	// can locate it at a well-known path: attr:///shepherd/{pid}/rect/AppWindow/Bounds
 	w.Name = "AppWindow"
-	t := w.Theme
 	w.Layout = newLayoutHandlesBase(w.Name, parent)
 	w.Layout.constraintWidth = true
 	w.Layout.constraintHeight = true
 
-	// Horizontal margin: tbMargin on each side.
-	hMargin := int64(t.Px(8))
+	// Shadow margin: the neumorphic shadow extent outside the NeuBox face.
+	// Published bounds include this margin so shadows don't get clipped.
+	w.shadowMargin = math.Ceil(neuMaxPad(WindowParams))
+	sm := int64(w.shadowMargin)
+
+	// Horizontal margin: tbMargin + shadowMargin on each side.
+	hMargin := int64(8) + sm
 	hMarginURI := layoutURI(w.Name, "int64", "HMargin")
 	attr.ValueI64(hMarginURI, hMargin)
 
-	// Vertical margin: (tbMargin + tbH + gap + tbMargin) / 2
-	// so that child + 2*vMargin = child + full vertical chrome.
-	tbH := t.Px(26) // default title bar height
+	// Vertical margin: (tbMargin + tbH + gap + tbMargin) / 2 + shadowMargin
+	// so that child + 2*vMargin = child + full vertical chrome + shadow.
+	tbH := 26.0 // default title bar height
 	if s, ok := w.TitleBar.(Sizer); ok {
 		tbH = s.PreferredHeight()
 	}
-	vOverhead := t.Px(8) + tbH + t.Px(6) + t.Px(8)
-	vMargin := int64(vOverhead / 2)
+	vOverhead := 8 + tbH + 6 + 8
+	vMargin := int64(vOverhead/2) + sm
 	vMarginURI := layoutURI(w.Name, "int64", "VMargin")
 	attr.ValueI64(vMarginURI, vMargin)
 
-	// Max size (740 logical pixels).
+	// Max size (default 740 logical pixels), including shadow margin.
+	maxW := w.MaxWidth
+	if maxW <= 0 {
+		maxW = 740
+	}
+	maxW += 2 * sm // maxWidth accounts for shadow on both sides
 	maxSizeURI := layoutURI(w.Name, "int64", "MaxSize")
-	attr.ValueI64(maxSizeURI, 740)
+	attr.ValueI64(maxSizeURI, maxW)
 
 	findPattern := "attr:///shepherd/" + manciniPID + "/str/*/layout/Parent"
 	prefix := "attr:///shepherd/" + manciniPID + "/int64/"
@@ -251,13 +261,13 @@ func (l *Label) InitLayout(parent string) {
 
 	// Publish intrinsic dimensions so constraint programs can bootstrap
 	// without waiting for a Draw pass.
-	if l.Theme != nil {
-		l.Layout.Height.Set(int64(l.FontSize + l.Theme.Px(4)))
+	if l.Fonts != nil {
+		l.Layout.Height.Set(int64(l.FontSize + 4))
 		text := l.Text
 		if l.TextFunc != nil {
 			text = l.TextFunc()
 		}
-		l.Layout.Width.Set(int64(l.Theme.MeasureText(text, l.Bold, l.FontSize) + l.Theme.Px(8)))
+		l.Layout.Width.Set(int64(l.Fonts.MeasureText(text, l.Bold, l.FontSize) + 8))
 	}
 }
 

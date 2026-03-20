@@ -1,7 +1,6 @@
 package mancini
 
 import (
-	"image"
 	"image/color"
 	"math"
 	"time"
@@ -9,19 +8,22 @@ import (
 	"github.com/fogleman/gg"
 )
 
-// loadFont sets the font on a gg context. Uses Theme.FontLoader if available,
+// loadFont sets the font on a gg context. Uses FontConfig.LoadFace if available,
 // otherwise falls back to loading from FontRegular/FontBold file paths.
-func loadFont(t *Theme, dc DrawContext, bold bool, size float64) bool {
-	if t.FontLoader != nil {
-		face := t.FontLoader(bold, size)
+func loadFont(fc *FontConfig, dc DrawContext, bold bool, size float64) bool {
+	if fc == nil {
+		return false
+	}
+	if fc.LoadFace != nil {
+		face := fc.LoadFace(bold, size)
 		if face != nil {
 			dc.SetFontFace(face)
 			return true
 		}
 	}
-	path := t.FontRegular
+	path := fc.FontRegular
 	if bold {
-		path = t.FontBold
+		path = fc.FontBold
 	}
 	if path == "" {
 		return false
@@ -35,7 +37,8 @@ func loadFont(t *Theme, dc DrawContext, bold bool, size float64) bool {
 // Resting: Flush, plain title, floaters hidden.
 // Focused: Raised, decorated title bar, floaters visible.
 type AppWindow struct {
-	Theme    *Theme
+	Pal      Palette
+	Fonts    *FontConfig
 	Name     string
 	Title    string
 	Focused  bool
@@ -43,7 +46,9 @@ type AppWindow struct {
 	Content  Drawer
 	Floaters []*FreeFloatingWindow
 	Layout   *LayoutHandles
+	MaxWidth int64 // maximum width in logical pixels (0 = default 740)
 
+	shadowMargin   float64 // neumorphic shadow padding (set by InitLayout)
 	lastBoundsHash int64
 	lastFocused    bool
 }
@@ -72,9 +77,18 @@ func (w *AppWindow) Unfocus() {
 }
 
 // Draw implements the Drawer interface.
+// The published bounds (x, y, ww, hh) include the neumorphic shadow padding.
+// The NeuBox decoration and all content are offset inward by shadowMargin so
+// that shadows stay within the published bounds.
 func (w *AppWindow) Draw(dc DrawContext, x, y, ww, hh float64) {
 	publishLayout(w.Layout, x, y, ww, hh)
-	t := w.Theme
+
+	// The NeuBox inner area excludes the shadow margin on all sides.
+	sm := w.shadowMargin
+	ix := x + sm
+	iy := y + sm
+	iw := ww - 2*sm
+	ih := hh - 2*sm
 
 	// Skip expensive NeuBoxWith calls when bounds and focus are unchanged.
 	needDecoration := true
@@ -86,14 +100,14 @@ func (w *AppWindow) Draw(dc DrawContext, x, y, ww, hh float64) {
 	w.lastFocused = w.Focused
 
 	if needDecoration {
-		NeuBoxWith(t, dc, w.Depth(), x, y, x+ww, y+hh, t.Px(14), t.Pal.Surface, WindowParams, nil)
+		NeuBoxWith(w.Pal, dc, w.Depth(), ix, iy, ix+iw, iy+ih, 14, w.Pal.Surface, WindowParams, nil)
 	}
 
-	// Title bar
-	tbMargin := t.Px(8)
-	tbX, tbY := x+tbMargin, y+tbMargin
-	tbW := ww - 2*tbMargin
-	tbH := t.Px(26) // default
+	// Title bar — positioned inside the NeuBox inner area.
+	tbMargin := 8.0
+	tbX, tbY := ix+tbMargin, iy+tbMargin
+	tbW := iw - 2*tbMargin
+	tbH := 26.0 // default
 	if s, ok := w.TitleBar.(Sizer); ok {
 		tbH = s.PreferredHeight()
 	}
@@ -102,18 +116,15 @@ func (w *AppWindow) Draw(dc DrawContext, x, y, ww, hh float64) {
 			w.TitleBar.Draw(dc, tbX, tbY, tbW, tbH)
 		} else {
 			// Unfocused: plain centered text, no pinstripes.
-			TextFace(t, w.Title, t.Px(18), t.Pal.Text, false)(dc, tbX, tbY, tbW, tbH)
+			TextFace(w.Fonts, w.Title, 18, w.Pal.Text, false)(dc, tbX, tbY, tbW, tbH)
 		}
 	}
 
-	// Content area — bounds enforcement is done by Row/Column (skip children
-	// that don't fully fit). Shadow compositing bypasses gg's clip mask, so
-	// pixel-level dc.Clip() alone cannot prevent overflow. Child-level bounds
-	// checking is both correct and fast.
-	cX := x + tbMargin
-	cY := tbY + tbH + t.Px(6)
-	cW := ww - 2*tbMargin
-	cH := (y + hh) - cY - tbMargin
+	// Content area — clipped to the NeuBox inner area.
+	cX := ix + tbMargin
+	cY := tbY + tbH + 6
+	cW := iw - 2*tbMargin
+	cH := (iy + ih) - cY - tbMargin
 	if w.Content != nil {
 		w.Content.Draw(dc, cX, cY, cW, cH)
 	}
@@ -126,36 +137,11 @@ func (w *AppWindow) Draw(dc DrawContext, x, y, ww, hh float64) {
 	}
 }
 
-// fillRect fills a rectangle with the theme's surface color (fast, no gg context).
-func fillRect(canvas *image.RGBA, t *Theme, x, y, w, h float64) {
-	sc := t.Pal.Surface
-	if t.SwapRB {
-		sc = color.NRGBA{R: sc.B, G: sc.G, B: sc.R, A: sc.A}
-	}
-	x0, y0 := int(x), int(y)
-	x1, y1 := int(x+w), int(y+h)
-	b := canvas.Bounds()
-	if x0 < b.Min.X {
-		x0 = b.Min.X
-	}
-	if y0 < b.Min.Y {
-		y0 = b.Min.Y
-	}
-	if x1 > b.Max.X {
-		x1 = b.Max.X
-	}
-	if y1 > b.Max.Y {
-		y1 = b.Max.Y
-	}
-	for py := y0; py < y1; py++ {
-		for px := x0; px < x1; px++ {
-			off := canvas.PixOffset(px, py)
-			canvas.Pix[off+0] = sc.R
-			canvas.Pix[off+1] = sc.G
-			canvas.Pix[off+2] = sc.B
-			canvas.Pix[off+3] = sc.A
-		}
-	}
+// fillRect fills a rectangle with the theme's surface color using dc.FillRectangle.
+// The dc already has SwapRB set on its underlying gg context.
+func fillRect(dc DrawContext, pal Palette, x, y, w, h float64) {
+	dc.SetColor(pal.Surface)
+	dc.FillRectangle(x, y, w, h)
 }
 
 // ── FreeFloatingWindow ───────────────────────────────────────────────────────
@@ -163,7 +149,8 @@ func fillRect(canvas *image.RGBA, t *Theme, x, y, w, h float64) {
 // FreeFloatingWindow is a neumorphic floating panel owned by an AppWindow.
 // Always Flush when visible.
 type FreeFloatingWindow struct {
-	Theme   *Theme
+	Pal     Palette
+	Fonts   *FontConfig
 	Name    string
 	Title   string
 	Visible bool
@@ -184,7 +171,6 @@ func (w *FreeFloatingWindow) Depth() NeuDepth {
 // Draw implements the Drawer interface.
 func (w *FreeFloatingWindow) Draw(dc DrawContext, x, y, ww, hh float64) {
 	publishLayout(w.Layout, x, y, ww, hh)
-	t := w.Theme
 
 	// Skip expensive NeuBoxWith calls when bounds are unchanged.
 	needDecoration := true
@@ -195,25 +181,25 @@ func (w *FreeFloatingWindow) Draw(dc DrawContext, x, y, ww, hh float64) {
 	w.lastBoundsHash = hash
 
 	if needDecoration {
-		NeuBoxWith(t, dc, Flush, x, y, x+ww, y+hh, t.Px(14), t.Pal.Surface, WindowParams, nil)
+		NeuBoxWith(w.Pal, dc, Flush, x, y, x+ww, y+hh, 14, w.Pal.Surface, WindowParams, nil)
 	}
 
 	// Title
-	titleY := y + t.Px(14)
+	titleY := y + 14
 
-	loadFont(t, dc, true, t.Px(10))
-	dc.SetColor(t.C(t.Pal.Text))
+	loadFont(w.Fonts, dc, true, 10)
+	dc.SetColor(w.Pal.Text)
 	dc.DrawStringAnchored(w.Title, x+ww/2, titleY, 0.5, 0.5)
 
 	// Groove separator
-	grooveMargin := t.Px(18)
-	grooveY := y + t.Px(26)
+	grooveMargin := 18.0
+	grooveY := y + 26
 	if needDecoration {
-		NeuGroove(t, dc, x+grooveMargin, grooveY, x+ww-grooveMargin)
+		NeuGroove(w.Pal, dc, x+grooveMargin, grooveY, x+ww-grooveMargin)
 	}
 
 	// Content area below groove
-	cY := grooveY + t.Px(6)
+	cY := grooveY + 6
 	cH := (y + hh) - cY
 	if w.Content != nil {
 		w.Content.Draw(dc, x, cY, ww, cH)
@@ -224,7 +210,7 @@ func (w *FreeFloatingWindow) Draw(dc DrawContext, x, y, ww, hh float64) {
 
 // Button is a neumorphic button that delegates its face rendering to a Drawer.
 type Button struct {
-	Theme  *Theme
+	Pal    Palette
 	Name   string
 	Depth  NeuDepth
 	Face   Drawer
@@ -236,15 +222,16 @@ func (b *Button) GetLayout() *LayoutHandles { return b.Layout }
 // Draw implements the Drawer interface.
 func (b *Button) Draw(dc DrawContext, x, y, w, h float64) {
 	publishLayout(b.Layout, x, y, w, h)
-	DrawNeuBox(b.Theme, dc, b.Depth, x, y, x+w, y+h, b.Theme.Px(8),
-		b.Theme.Pal.Surface, asFaceDrawer(b.Face))
+	DrawNeuBox(b.Pal, dc, b.Depth, x, y, x+w, y+h, 8,
+		b.Pal.Surface, asFaceDrawer(b.Face))
 }
 
 // ── NeuLabel ─────────────────────────────────────────────────────────────────
 
 // NeuLabel is a text label inside a neumorphic box at any depth.
 type NeuLabel struct {
-	Theme    *Theme
+	Pal      Palette
+	Fonts    *FontConfig
 	Name     string
 	Depth    NeuDepth
 	Text     string         // static text (used when TextFunc is nil)
@@ -259,7 +246,7 @@ func (l *NeuLabel) GetLayout() *LayoutHandles { return l.Layout }
 
 // PreferredHeight returns the preferred height for a NeuLabel.
 func (l *NeuLabel) PreferredHeight() float64 {
-	return l.FontSize + l.Theme.Px(16) // font + box padding
+	return l.FontSize + 16 // font + box padding
 }
 
 // Draw implements the Drawer interface.
@@ -269,15 +256,16 @@ func (l *NeuLabel) Draw(dc DrawContext, x, y, w, h float64) {
 	if l.TextFunc != nil {
 		text = l.TextFunc()
 	}
-	DrawNeuBox(l.Theme, dc, l.Depth, x, y, x+w, y+h, l.Theme.Px(8),
-		l.Theme.Pal.Surface, TextFace(l.Theme, text, l.FontSize, l.Color, l.Bold))
+	DrawNeuBox(l.Pal, dc, l.Depth, x, y, x+w, y+h, 8,
+		l.Pal.Surface, TextFace(l.Fonts, text, l.FontSize, l.Color, l.Bold))
 }
 
 // ── Label ────────────────────────────────────────────────────────────────────
 
 // Label is plain text with no neumorphic box.
 type Label struct {
-	Theme    *Theme
+	Pal      Palette
+	Fonts    *FontConfig
 	Name     string
 	Text     string         // static text (used when TextFunc is nil)
 	TextFunc func() string  // dynamic text source (takes precedence over Text)
@@ -303,12 +291,12 @@ func (l *Label) resolveText() string {
 
 // PreferredHeight returns the preferred height for a Label.
 func (l *Label) PreferredHeight() float64 {
-	return l.FontSize + l.Theme.Px(4) // font + minimal padding
+	return l.FontSize + 4 // font + minimal padding
 }
 
 // PreferredWidth returns the preferred width for a Label based on text measurement.
 func (l *Label) PreferredWidth() float64 {
-	return l.Theme.MeasureText(l.resolveText(), l.Bold, l.FontSize) + l.Theme.Px(8) // text + padding
+	return l.Fonts.MeasureText(l.resolveText(), l.Bold, l.FontSize) + 8 // text + padding
 }
 
 // Draw implements the Drawer interface.
@@ -328,30 +316,27 @@ func (l *Label) Draw(dc DrawContext, x, y, w, h float64) {
 	l.lastDrawnText = text
 	l.lastDrawnHash = hash
 	// Clear label area before drawing new text.
-	if l.Theme != nil {
-		canvas := dc.Image().(*image.RGBA)
-		fillRect(canvas, l.Theme, x, y, pw, ph)
-	}
-	TextFace(l.Theme, text, l.FontSize, l.Color, l.Bold)(dc, x, y, w, h)
+	fillRect(dc, l.Pal, x, y, pw, ph)
+	TextFace(l.Fonts, text, l.FontSize, l.Color, l.Bold)(dc, x, y, w, h)
 }
 
 // ── Face factories ───────────────────────────────────────────────────────────
 
 // TextFace returns a FaceDrawer that renders centered text.
-func TextFace(t *Theme, text string, fontSize float64, col color.NRGBA, bold bool) FaceDrawer {
+func TextFace(fc *FontConfig, text string, fontSize float64, col color.NRGBA, bold bool) FaceDrawer {
 	return func(dc DrawContext, x, y, w, h float64) {
-		if !loadFont(t, dc, bold, fontSize) {
+		if !loadFont(fc, dc, bold, fontSize) {
 			return
 		}
-		dc.SetColor(t.C(col))
+		dc.SetColor(col)
 		dc.DrawStringAnchored(text, x+w/2, y+h/2, 0.5, 0.5)
 	}
 }
 
 // CheckFace returns a FaceDrawer that renders a centered checkmark icon.
-func CheckFace(t *Theme, sz, lw float64, col color.NRGBA) FaceDrawer {
+func CheckFace(sz, lw float64, col color.NRGBA) FaceDrawer {
 	return func(dc DrawContext, x, y, w, h float64) {
-		dc.SetColor(t.C(col))
+		dc.SetColor(col)
 		dc.SetLineWidth(lw)
 		dc.SetLineCap(gg.LineCapRound)
 		cx, cy := x+w/2, y+h/2
@@ -364,21 +349,21 @@ func CheckFace(t *Theme, sz, lw float64, col color.NRGBA) FaceDrawer {
 
 // StripedTitleFace returns a FaceDrawer that draws horizontal pinstripes
 // interrupted by a centered title — classic Mac OS style.
-func StripedTitleFace(t *Theme, title string, fontSize, r float64) FaceDrawer {
+func StripedTitleFace(fc *FontConfig, pal Palette, title string, fontSize, r float64) FaceDrawer {
 	return func(dc DrawContext, x, y, w, h float64) {
-		loadFont(t, dc, true, fontSize)
+		loadFont(fc, dc, true, fontSize)
 		tw, _ := dc.MeasureString(title)
-		pad := t.Px(8)
+		pad := 8.0
 		cx := x + w/2
 		gapL := cx - tw/2 - pad
 		gapR := cx + tw/2 + pad
 
-		darkC := t.C(t.Pal.DarkSh)
+		darkC := pal.DarkSh
 		stripe := color.NRGBA{darkC.R, darkC.G, darkC.B, 120}
 		dc.SetColor(stripe)
-		dc.SetLineWidth(t.Px(1))
-		spacing := t.Px(3)
-		inset := t.Px(4)
+		dc.SetLineWidth(1)
+		spacing := 3.0
+		inset := 4.0
 		for sy := y + spacing; sy < y+h-spacing/2; sy += spacing {
 			if gapL > x+inset {
 				dc.DrawLine(x+inset, sy, gapL, sy)
@@ -389,29 +374,29 @@ func StripedTitleFace(t *Theme, title string, fontSize, r float64) FaceDrawer {
 		}
 		dc.Stroke()
 
-		dc.SetColor(t.C(t.Pal.Text))
+		dc.SetColor(pal.Text)
 		dc.DrawStringAnchored(title, cx, y+h/2, 0.5, 0.5)
 	}
 }
 
 // GradientTitleFace returns a FaceDrawer that fills the face with an animated
 // horizontal gradient. The purple peak slowly sweeps back and forth.
-func GradientTitleFace(t *Theme, title string, fontSize, r float64) FaceDrawer {
+func GradientTitleFace(fc *FontConfig, pal Palette, title string, fontSize, r float64) FaceDrawer {
 	start := time.Now()
 	return func(dc DrawContext, x, y, w, h float64) {
 		elapsed := time.Since(start).Seconds()
 		peak := (math.Sin(elapsed*math.Pi/6) + 1) / 2
 
 		grad := gg.NewLinearGradient(x, y+h/2, x+w, y+h/2)
-		grad.AddColorStop(0, t.C(t.Pal.Surface))
-		grad.AddColorStop(peak, t.C(t.Pal.SurfaceTint))
-		grad.AddColorStop(1, t.C(t.Pal.Surface))
+		grad.AddColorStop(0, pal.Surface)
+		grad.AddColorStop(peak, pal.SurfaceTint)
+		grad.AddColorStop(1, pal.Surface)
 		dc.SetFillStyle(grad)
 		dc.DrawRoundedRectangle(x, y, w, h, r)
 		dc.Fill()
 
-		loadFont(t, dc, true, fontSize)
-		dc.SetColor(t.C(t.Pal.Text))
+		loadFont(fc, dc, true, fontSize)
+		dc.SetColor(pal.Text)
 		dc.DrawStringAnchored(title, x+w/2, y+h/2, 0.5, 0.5)
 	}
 }

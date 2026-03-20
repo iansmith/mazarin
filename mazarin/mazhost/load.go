@@ -6,6 +6,7 @@ package mazhost
 
 import (
 	"fmt"
+	"runtime"
 	"unsafe"
 
 	merror "mazzy/mazarin/error"
@@ -18,17 +19,50 @@ import (
 // function for interface injection (e.g., passing a BlockDevice implementation).
 // On success, returns a func() that the caller should run as a goroutine.
 func LoadMazBootstrap(filename string, shepherd interface{}) (func(), uintptr, *merror.Error) {
-	return loadMaz(true, filename, shepherd)
+	return loadMazInternal(true, filename, shepherd)
 }
 
-// LoadMaz loads a .maz module via the filesystem shepherd (post-bootstrap).
-// Not yet implemented — returns ErrNotImplemented.
-func LoadMaz(filename string, shepherd interface{}) (func(), uintptr, *merror.Error) {
-	return loadMaz(false, filename, shepherd)
+// LaunchMaz loads a .maz module by name and runs its MazarinMain in a new
+// goroutine with a pre-grown stack. This is the standard way to load .maz
+// modules — it handles LoadMazByName, LoadMaz, RegisterMazModule, funcval
+// construction, and runWithLargeStack in one call.
+func LaunchMaz(name string) {
+	path := sys.LoadMazByName("/" + name)
+	fmt.Printf("[mazhost] LaunchMaz(%q): loading %s...\n", name, path)
+	mazMain, _, err := loadMazInternal(true, path, nil)
+	if err != nil {
+		panic(fmt.Sprintf("[mazhost] LaunchMaz(%q) failed: %v", name, err))
+	}
+	go runWithLargeStack(mazMain)
+	fmt.Printf("[mazhost] LaunchMaz(%q): goroutine launched\n", name)
 }
 
-// loadMaz is the private implementation shared by LoadMazBootstrap and LoadMaz.
-func loadMaz(useKernelToLoad bool, filename string, shepherd interface{}) (func(), uintptr, *merror.Error) {
+// RunMaz runs an already-loaded .maz func on a pre-grown stack.
+// Used by disk shepherd after LoadMazBootstrap + MazarinShepherd injection.
+func RunMaz(fn func()) {
+	runWithLargeStack(fn)
+}
+
+// runWithLargeStack allocates a 256KB stack frame before calling fn,
+// preventing .maz code from hitting its broken morestack (which hangs
+// forever due to uninitialized runtime globals in the PIE binary).
+// The buffer is kept alive across fn() so GC's shrinkstack doesn't
+// shrink the goroutine stack while .maz code is running.
+//
+//go:noinline
+func runWithLargeStack(fn func()) {
+	var buf [262144]byte
+	buf[0] = 1
+	buf[len(buf)-1] = 1
+	if buf[131072] != 0 {
+		panic("unreachable")
+	}
+	fn()
+	runtime.KeepAlive(&buf)
+}
+
+// loadMazInternal is the private implementation shared by LoadMazBootstrap and LaunchMaz.
+func loadMazInternal(useKernelToLoad bool, filename string, shepherd interface{}) (func(), uintptr, *merror.Error) {
 	if !useKernelToLoad {
 		return nil, 0, merror.ErrNotImplemented
 	}

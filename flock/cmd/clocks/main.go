@@ -1,42 +1,31 @@
 package main
 
 import (
-	_ "embed"
 	"fmt"
 	"image/color"
 	"time"
 	_ "time/tzdata"
 
-	"golang.org/x/image/font"
-	"golang.org/x/image/font/opentype"
-
 	"sync/atomic"
 
+	"golang.org/x/image/font"
+
 	"mazzy/mazarin/attr"
+	"mazzy/mazarin/fontcache"
 	"mazzy/mazarin/interactor"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/wm"
 	"os"
+	"strconv"
 	"unsafe"
 
 	"github.com/fogleman/gg"
 )
 
-//go:embed AtkinsonHyperlegibleMono-Regular.otf
-var fontData []byte
-
-//go:embed AtkinsonHyperlegibleMono-Bold.otf
-var boldFontData []byte
-
-const (
-	// Right half of 1728×1117 display.
-	regionX = 864
-	regionY = 0
-	regionW = 864
-	regionH = 1117
-)
+// Screen dimensions — read from kernel constraint attributes at startup.
+var screenW, screenH int
 
 type cityInfo struct {
 	name    string // display name
@@ -63,9 +52,9 @@ func findShepherdByName(name string) int {
 	return -1
 }
 
-// announceToWM finds rachel, sends AppStart, and starts the mailbox receiver.
-// clickTargets are the interactors that can receive mouse press events.
-func announceToWM(clickTargets []mancini.Drawer) {
+// announceToWM sends AppStart to rachel and sets click targets on the MouseState.
+// The mailbox receiver must already be running (started earlier for font loading).
+func announceToWM(mouse *mancini.MouseState, clickTargets []mancini.Drawer) {
 	rachelSID := findShepherdByName("rachel")
 	if rachelSID < 0 {
 		sys.UartWriteString("[clocks] WARNING: rachel not found\n")
@@ -92,21 +81,25 @@ func announceToWM(clickTargets []mancini.Drawer) {
 	}
 	sys.UartWriteString(fmt.Sprintf("[clocks] sent AppStart to rachel (T+%v)\n", time.Since(startTime)))
 
-	// Start mailbox receiver for focus + mouse events.
-	go mailboxRecvLoop(clickTargets)
+	// Now that AppStart is sent, rachel may send mouse events.
+	// Set the click targets so they can be hit-tested.
+	mouse.SetTargets(clickTargets)
 }
 
-// mailboxRecvLoop receives notifications from rachel (e.g., YouHaveFocus, MousePress).
+// mailboxRecvLoopWithMouse receives notifications from rachel (e.g., YouHaveFocus, MousePress).
 // Mouse events are dispatched through the MouseState state machine.
-func mailboxRecvLoop(clickTargets []mancini.Drawer) {
-	mouse := mancini.NewMouseState(clickTargets)
+// FontResponse notifications are forwarded to the FontCache.
+func mailboxRecvLoopWithMouse(mouse *mancini.MouseState, fc *fontcache.FontCache) {
 	for {
 		notif, err := sys.MailboxRecv()
 		if err != nil {
 			sys.UartWriteString("[clocks:mailbox] recv error\n")
 			continue
 		}
-		if notif.Code == wm.ShepherdNotify {
+		switch notif.Code {
+		case wm.FontResponse:
+			fc.HandleNotification(notif)
+		case wm.ShepherdNotify:
 			rb := ringbuf.Open(uintptr(notif.RingAddr))
 			var raw [wm.SizeWMMessage]byte
 			for rb.Pop(unsafe.Pointer(&raw[0])) {
@@ -147,39 +140,34 @@ func main() {
 	mancini.Init()
 	sys.UartWriteString(fmt.Sprintf("[clocks] attr + interactor init done, SID=%s (T+%v)\n", attr.SID(), time.Since(startTime)))
 
-	// 2. Parse embedded fonts and build a Theme.
-	otFont, err := opentype.Parse(fontData)
-	if err != nil {
-		sys.UartWriteString("[clocks] font parse error: " + err.Error() + "\n")
+	// 2. Create font cache backed by fontsvc (inside rachel).
+	rachelSID := findShepherdByName("rachel")
+	if rachelSID < 0 {
+		sys.UartWriteString("[clocks] FATAL: rachel not found\n")
 		return
 	}
-	otFontBold, err := opentype.Parse(boldFontData)
-	if err != nil {
-		sys.UartWriteString("[clocks] bold font parse error: " + err.Error() + "\n")
-		return
-	}
-	fontLoader := func(bold bool, size float64) font.Face {
-		f := otFont
-		if bold {
-			f = otFontBold
-		}
-		face, err := opentype.NewFace(f, &opentype.FaceOptions{
-			Size:    size,
-			DPI:     72,
-			Hinting: font.HintingFull,
-		})
-		if err != nil {
-			return nil
-		}
-		return face
-	}
+	fc := fontcache.New(rachelSID)
+	sys.UartWriteString(fmt.Sprintf("[clocks] fontcache created, rachel SID=%d (T+%v)\n", rachelSID, time.Since(startTime)))
 
-	theme := &mancini.Theme{
-		Pal:         mancini.DefaultPalette(),
-		FontLoader:  fontLoader,
-		ScaleFactor: 1.0,
-		SwapRB:      true,
+	// Start mailbox receiver early so FontResponse notifications are processed
+	// while OpenFace blocks waiting for replies. Mouse targets are set later
+	// after the UI tree is built (rachel won't send mouse events until AppStart).
+	mouse := mancini.NewMouseState(nil)
+	go mailboxRecvLoopWithMouse(mouse, fc)
+
+	fonts := &mancini.FontConfig{
+		LoadFace: func(bold bool, size float64) font.Face {
+			path := "/fonts/AtkinsonHyperlegibleMono-Regular.otf"
+			if bold {
+				path = "/fonts/AtkinsonHyperlegibleMono-Bold.otf"
+			}
+			return fc.OpenFace(path, bold, size)
+		},
 	}
+	sys.UartWriteString(fmt.Sprintf("[clocks] fonts configured via fontcache (T+%v)\n", time.Since(startTime)))
+
+	pal := mancini.DefaultPalette()
+	pal.SwapRB = true // propagated to offscreen gg contexts in draw.go
 
 	// 3. Define cities with their timezones.
 	cities := []cityInfo{
@@ -222,7 +210,7 @@ func main() {
 
 	// Face name label font size and matching spacer height.
 	faceNameFontSize := 14.0
-	faceNameH := faceNameFontSize + theme.Px(4) // matches Label.PreferredHeight()
+	faceNameH := faceNameFontSize + 4 // matches Label.PreferredHeight()
 
 	// clickTargets collects the NeuCircle decorators wrapping each clock.
 	// MousePolicy hit-tests against these (larger) bounds, then dispatches
@@ -252,7 +240,8 @@ func main() {
 		}
 
 		cityLabel := &mancini.Label{
-			Theme:    theme,
+			Pal:      pal,
+			Fonts:    fonts,
 			Name:     city.id + "_name",
 			Text:     city.name,
 			FontSize: 18,
@@ -261,9 +250,10 @@ func main() {
 		}
 
 		clockWidget := &mancini.Clock{
-			Theme:   theme,
+			Pal:     pal,
+			Fonts:   fonts,
 			Name:    city.id + "_clock",
-			Size:    50,
+			Size:    34,
 			UTCFunc: utcFunc,
 			Faces:   rotated,
 			Face:    rotated[0],
@@ -272,7 +262,8 @@ func main() {
 		// Face name label — text driven by constraint attribute, updates
 		// reactively during press-drag-release face cycling.
 		faceNameLabel := &mancini.Label{
-			Theme:    theme,
+			Pal:      pal,
+			Fonts:    fonts,
 			Name:     city.id + "_facename",
 			Text:     rotated[0].FaceName(), // fallback for InitLayout width measurement
 			FontSize: faceNameFontSize,
@@ -289,7 +280,7 @@ func main() {
 		clockWidget.FaceSpacer = faceNameSpacer
 
 		circle := &mancini.NeuCircle{
-			Theme:  theme,
+			Pal:    pal,
 			Name:   circleName,
 			Depth:  mancini.Raised,
 			Params: mancini.ButtonParams,
@@ -298,7 +289,8 @@ func main() {
 		clickTargets = append(clickTargets, circle)
 
 		tzLabel := &mancini.Label{
-			Theme:    theme,
+			Pal:      pal,
+			Fonts:    fonts,
 			Name:     city.id + "_tz",
 			Text:     city.tzLabel,
 			FontSize: 18,
@@ -306,7 +298,7 @@ func main() {
 		}
 
 		col := &mancini.Column{
-			Theme:      theme,
+			Pal:        pal,
 			Name:       colName,
 			CrossAlign: mancini.AxisMiddle,
 			Children:   []mancini.Drawer{cityLabel, circle, tzLabel, faceNameLabel, faceNameSpacer},
@@ -335,7 +327,7 @@ func main() {
 	}
 
 	row := &mancini.Row{
-		Theme:             theme,
+		Pal:               pal,
 		Name:              "main_row",
 		CrossAlign:        mancini.AxisMinimum,
 		Children:          columns,
@@ -346,47 +338,64 @@ func main() {
 
 	// Title bar: AppTitleBar with a bold centered label.
 	titleLabel := &mancini.Label{
-		Theme:    theme,
+		Pal:      pal,
+		Fonts:    fonts,
 		Name:     "title_label",
 		Text:     "World Clocks",
 		FontSize: 22,
-		Color:    theme.Pal.Text,
+		Color:    pal.Text,
 		Bold:     true,
 	}
 	titleBar := &mancini.AppTitleBar{
-		Theme: theme,
+		Pal:   pal,
+		Fonts: fonts,
 		Name:  "title_bar",
 		Child: titleLabel,
 	}
 	titleBar.InitLayout("") // also creates child label's layout with Y constraint
 
 	app := &mancini.AppWindow{
-		Theme:    theme,
+		Pal:      pal,
+		Fonts:    fonts,
 		Name:     "AppWindow",
 		Title:    "World Clocks",
 		Focused:  true,
 		TitleBar: titleBar,
 		Content:  row,
+		MaxWidth: 850,
 	}
 	app.InitLayout("")
 
-	// 6. Create draw context.
-	drawCtx := interactor.NewDrawContext(fontData, regionX, regionY, regionW, regionH)
+	// 6. Read kernel screen dimensions for DrawContext sizing.
+	screenWProg := interactor.BindStrings(interactor.ProgIdentityI64,
+		"attr:///kernel/int64/screen/width")
+	screenWHandle := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_w"), screenWProg)
+	screenHProg := interactor.BindStrings(interactor.ProgIdentityI64,
+		"attr:///kernel/int64/screen/height")
+	screenHHandle := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
+	screenW = int(screenWHandle.Get())
+	screenH = int(screenHHandle.Get())
+	sys.UartWriteString(fmt.Sprintf("[clocks] screen: %dx%d\n", screenW, screenH))
+
+	// 7. Create draw context covering the full screen. Clocks positions itself
+	// within rachel's visibleArea via constraints, so it needs full-screen access.
+	drawCtx := interactor.NewDrawContext(nil, 0, 0, screenW, screenH)
 	fbImage := drawCtx.Image()
 
 	// Single gg context for the entire draw pass — threaded through the tree.
 	ggCtx := gg.NewContextForRGBA(fbImage)
+	ggCtx.SwapRB = true
 	sys.UartWriteString("[clocks] draw context created\n")
 
-	// 7. Initial sizing draw at a small default size to publish children's dimensions
+	// 8. Initial sizing draw at a small default size to publish children's dimensions
 	// without spending forever computing neumorphic shadows at full-region size.
 	initW, initH := 800.0, 250.0
-	initX := float64(regionX) + (float64(regionW)-initW)/2
-	initY := float64(regionY) + (float64(regionH)-initH)/2
+	initX := float64(screenW)/2 - initW/2
+	initY := float64(screenH)/2 - initH/2
 	sys.UartWriteString("[clocks] sizing draw...\n")
 	app.Draw(ggCtx, initX, initY, initW, initH)
 
-	// Read constraint-computed size and center the window.
+	// Read constraint-computed size.
 	winW := float64(app.Layout.Width.Get())
 	winH := float64(app.Layout.Height.Get())
 	if winW < 100 {
@@ -395,43 +404,80 @@ func main() {
 	if winH < 50 {
 		winH = initH
 	}
-	winX := float64(regionX) + (float64(regionW)-winW)/2
-	winY := float64(regionY) + (float64(regionH)-winH)/2
 	sys.UartWriteString(fmt.Sprintf("[clocks] constraint size: %.0fx%.0f\n", winW, winH))
 
-	// Clear the region to surface color before final draw (removes sizing draw ghost).
-	surfaceColor := theme.Pal.Surface
-	if theme.SwapRB {
-		surfaceColor = color.NRGBA{R: surfaceColor.B, G: surfaceColor.G, B: surfaceColor.R, A: surfaceColor.A}
-	}
-	for py := regionY; py < regionY+regionH; py++ {
-		for px := regionX; px < regionX+regionW; px++ {
-			off := fbImage.PixOffset(px, py)
-			fbImage.Pix[off+0] = surfaceColor.R
-			fbImage.Pix[off+1] = surfaceColor.G
-			fbImage.Pix[off+2] = surfaceColor.B
-			fbImage.Pix[off+3] = surfaceColor.A
-		}
-	}
-
-	// Draw at the centered position with proper dimensions.
-	app.Draw(ggCtx, winX, winY, winW, winH)
-	drawCtx.FlushRegion()
-	sys.UartWriteString(fmt.Sprintf("[clocks] initial draw done (T+%v)\n", time.Since(startTime)))
-
-	// 8. Force Bounds evaluation so the shared page has a valid rectangle,
+	// 9. Force Bounds evaluation so the shared page has a valid rectangle,
 	// then publish Ready. Rachel gates all interaction on Ready.
 	_ = app.Layout.Bounds.Get()
 	readyHandle := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
 	_ = readyHandle
 	sys.UartWriteString(fmt.Sprintf("[clocks] Ready=true, Bounds published (T+%v)\n", time.Since(startTime)))
 
-	// 9. Announce to rachel (window manager).
-	// All constraint attributes (including Bounds) are published by now,
-	// so rachel can attach her own constraints to track our window.
-	announceToWM(clickTargets)
+	// 10. Announce to rachel and set up position constraints from her visibleArea.
+	announceToWM(mouse, clickTargets)
 
-	// 9. Instrumentation counters.
+	// Use rachel's SID to read her visibleArea attributes.
+	var posXHandle, posYHandle *attr.Handle[int64]
+	if rachelSID >= 0 {
+		rachelSIDStr := strconv.Itoa(rachelSID)
+		vaXURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/x"
+		vaYURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/y"
+		vaWURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/w"
+
+		// X = visibleArea.x + visibleArea.w - appWindow.Width (right-align)
+		xProg := interactor.BindStrings(interactor.ProgAddSubDeref,
+			vaXURI, vaWURI, app.Layout.Width.URI())
+		posXHandle = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/x"), xProg)
+
+		// Y = visibleArea.y (top-align)
+		yProg := interactor.BindStrings(interactor.ProgIdentityI64, vaYURI)
+		posYHandle = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/y"), yProg)
+
+		x := posXHandle.Get()
+		y := posYHandle.Get()
+		sys.UartWriteString(fmt.Sprintf("[clocks] position constraints: x=%d y=%d (from rachel SID %d)\n", x, y, rachelSID))
+	} else {
+		sys.UartWriteString("[clocks] WARNING: rachel not found, using fallback position\n")
+	}
+
+	// Compute initial window position.
+	var winX, winY float64
+	if posXHandle != nil {
+		winX = float64(posXHandle.Get())
+		winY = float64(posYHandle.Get())
+	} else {
+		// Fallback: center on screen.
+		winX = float64(screenW)/2 - winW/2
+		winY = float64(screenH)/2 - winH/2
+	}
+
+	// Clear the window area to surface color before final draw (removes sizing draw ghost).
+	clearX0 := winX
+	clearY0 := winY
+	clearX1 := winX + winW
+	clearY1 := winY + winH
+	// Also clear the sizing draw ghost which may be at a different position.
+	if initX < clearX0 {
+		clearX0 = initX
+	}
+	if initY < clearY0 {
+		clearY0 = initY
+	}
+	if initX+initW > clearX1 {
+		clearX1 = initX + initW
+	}
+	if initY+initH > clearY1 {
+		clearY1 = initY + initH
+	}
+	ggCtx.SetColor(pal.Surface)
+	ggCtx.FillRectangle(clearX0, clearY0, clearX1-clearX0, clearY1-clearY0)
+
+	// Draw at the constraint-computed position.
+	app.Draw(ggCtx, winX, winY, winW, winH)
+	drawCtx.Flush(int32(winX), int32(winY), int32(winX+winW), int32(winY+winH))
+	sys.UartWriteString(fmt.Sprintf("[clocks] initial draw done at (%.0f,%.0f) (T+%v)\n", winX, winY, time.Since(startTime)))
+
+	// 11. Instrumentation counters.
 	eagerHandle := attr.ValueI64(attr.ShepherdURI("int64", "stats/eagerUpdates"), 0)
 	eagerSlot := eagerHandle.Slot()
 	var drawCount atomic.Int64
@@ -448,10 +494,8 @@ func main() {
 		}
 	}()
 
-	// 9. Mouse events arrive from rachel (WM) via mailbox, not from kernel directly.
-
-	// 10. Main loop: wake on dirty, redraw when second changes.
-	// Clock widgets read timeSec directly via their TimeFunc closures.
+	// 12. Main loop: wake on dirty, redraw when second changes.
+	// Position comes from constraints against rachel's visibleArea.
 	loopCount := 0
 	for {
 		attr.WaitDirty()
@@ -463,8 +507,13 @@ func main() {
 
 		winW = float64(app.Layout.Width.Get())
 		winH = float64(app.Layout.Height.Get())
-		winX = float64(regionX) + (float64(regionW)-winW)/2
-		winY = float64(regionY) + (float64(regionH)-winH)/2
+		if posXHandle != nil {
+			winX = float64(posXHandle.Get())
+			winY = float64(posYHandle.Get())
+		} else {
+			winX = float64(screenW)/2 - winW/2
+			winY = float64(screenH)/2 - winH/2
+		}
 
 		t0 := time.Now()
 		app.Draw(ggCtx, winX, winY, winW, winH)
@@ -481,3 +530,4 @@ func main() {
 		}
 	}
 }
+

@@ -24,20 +24,14 @@ func (f *MovadoFace) Location() *time.Location {
 func (f *MovadoFace) FaceName() string { return "Movado" }
 
 // DrawFace renders the Movado-style clock face.
-func (f *MovadoFace) DrawFace(dc DrawContext, theme *Theme, cx, cy, radius float64, hour, minute, second, millis int) {
+func (f *MovadoFace) DrawFace(dc DrawContext, _ *FontConfig, _ Palette, cx, cy, radius float64, hour, minute, second, millis int) {
 	// Black face.
 	faceColor := color.NRGBA{20, 20, 20, 255}
-	if theme != nil {
-		faceColor = theme.C(faceColor)
-	}
 	dc.SetColor(faceColor)
 	dc.DrawCircle(cx, cy, radius)
 	dc.Fill()
 
 	white := color.NRGBA{230, 230, 230, 255}
-	if theme != nil {
-		white = theme.C(white)
-	}
 
 	// Single dot at 12 o'clock — the Movado signature.
 	dotR := math.Max(2, radius*0.09)
@@ -67,9 +61,6 @@ func (f *MovadoFace) DrawFace(dc DrawContext, theme *Theme, cx, cy, radius float
 	secLen := radius * 0.75
 	secW := math.Max(1, radius*0.02)
 	secColor := color.NRGBA{200, 60, 60, 255}
-	if theme != nil {
-		secColor = theme.C(secColor)
-	}
 	DrawHand(dc, cx, cy, secAngle, secLen, secW, secColor)
 
 	// Center dot (white).

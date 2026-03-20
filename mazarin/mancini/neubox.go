@@ -12,7 +12,7 @@ import (
 // padding across all depth states, so state transitions never
 // change the interactor's bounds.
 type NeuBox struct {
-	Theme  *Theme
+	Pal    Palette
 	Name   string
 	Depth  NeuDepth
 	Params NeuParams
@@ -52,11 +52,7 @@ func (n *NeuBox) Draw(dc DrawContext, x, y, w, h float64) {
 
 	// No child: pink error indicator.
 	if n.Child == nil {
-		pc := errPink
-		if n.Theme != nil {
-			pc = n.Theme.C(pc)
-		}
-		dc.SetColor(pc)
+		dc.SetColor(errPink)
 		dc.DrawRectangle(x, y, w, h)
 		dc.Fill()
 		return
@@ -83,14 +79,11 @@ func (n *NeuBox) Draw(dc DrawContext, x, y, w, h float64) {
 
 	if needDecoration {
 		r := n.Radius
-		if n.Theme != nil {
-			r = n.Theme.Px(r)
-		}
 		face := n.Face
-		if face == (color.NRGBA{}) && n.Theme != nil {
-			face = n.Theme.Pal.Surface
+		if face == (color.NRGBA{}) {
+			face = n.Pal.Surface
 		}
-		NeuBoxWith(n.Theme, dc, n.Depth, x, y, x+w, y+h, r, face, n.Params, nil)
+		NeuBoxWith(n.Pal, dc, n.Depth, x, y, x+w, y+h, r, face, n.Params, nil)
 	}
 
 	n.Child.Draw(dc, childX, childY, childW, childH)
