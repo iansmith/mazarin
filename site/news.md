@@ -11,7 +11,7 @@ author: iansmith
 **Constraint-driven UI.** mazarin now has a reactive constraint system
 at its core. Layout — positions, sizes, visibility — is expressed as
 constraint programs (bytecodes) that the kernel evaluates on shared
-VDSO pages. When an attribute changes, a dirty walk propagates through
+memory pages. When an attribute changes, a dirty walk propagates through
 the dependency graph and only the affected constraints are re-evaluated.
 Reads are lock-free (seqlock protocol on shared pages, no syscall);
 writes go through the kernel so dirty propagation is atomic. Applications
