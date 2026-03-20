@@ -38,38 +38,98 @@ func detailedCheck(target Drawer, localX, localY int64) bool {
 	return true // no detailed test — bounding box is sufficient
 }
 
-// MousePolicy dispatches a mouse press to the appropriate interactor.
-// It transforms global coordinates to each interactor's local space,
-// checks containment via bounding box, then refines with DetailedHit
-// if the interactor supports it. Dispatches to the first hit that
-// implements MousePressHandler. If the hit interactor is a decorator
-// (ChildAccessor), the child is checked for MousePressHandler as well.
-func MousePolicy(x, y int64, interactors []Drawer) {
-	for _, d := range interactors {
-		localX, localY, inside := GlobalToLocal(x, y, d)
+// hitTest checks whether (x, y) in global coordinates hits target,
+// using bounding box and optional DetailedHit.
+func hitTest(x, y int64, target Drawer) (localX, localY int64, inside bool) {
+	localX, localY, inside = GlobalToLocal(x, y, target)
+	if !inside {
+		return localX, localY, false
+	}
+	if !detailedCheck(target, localX, localY) {
+		return localX, localY, false
+	}
+	return localX, localY, true
+}
+
+// MouseState tracks the press-drag-release state machine for mouse
+// interactions. Create one with NewMouseState and call Press/Move/Release
+// from the event loop.
+type MouseState struct {
+	interactors []Drawer
+	tracker     StdMouseFeedback // active interactor (nil when idle)
+	target      Drawer       // the Drawer used for hit testing
+	armed       bool         // true = active/previewing, false = inactive
+}
+
+// NewMouseState creates a MouseState for the given set of interactors.
+func NewMouseState(interactors []Drawer) *MouseState {
+	return &MouseState{interactors: interactors}
+}
+
+// Press handles a mouse press at global coordinates (x, y).
+// Hit-tests each interactor and begins an interaction if one is found.
+func (m *MouseState) Press(x, y int64) {
+	// If there's a stale interaction (e.g., lost release), force-cancel it.
+	if m.tracker != nil {
+		m.tracker.Complete(false)
+		m.tracker = nil
+		m.target = nil
+		m.armed = false
+	}
+
+	for _, d := range m.interactors {
+		_, _, inside := hitTest(x, y, d)
 		if !inside {
 			continue
 		}
-		// Check the interactor itself first.
-		if handler, ok := d.(MousePressHandler); ok {
-			if detailedCheck(d, localX, localY) {
-				handler.HandleMousePress(localX, localY)
-				return
-			}
-			continue
+		// Check the interactor itself.
+		if tracker, ok := d.(StdMouseFeedback); ok {
+			m.tracker = tracker
+			m.target = d
+			m.armed = true
+			tracker.Feedback(true)
+			return
 		}
 		// If it's a decorator, check the child.
 		if ca, ok := d.(ChildAccessor); ok {
 			child := ca.GetChild()
 			if child != nil {
-				if handler, ok := child.(MousePressHandler); ok {
-					childLX, childLY, _ := GlobalToLocal(x, y, child)
-					if detailedCheck(child, childLX, childLY) {
-						handler.HandleMousePress(childLX, childLY)
-						return
-					}
+				if tracker, ok := child.(StdMouseFeedback); ok {
+					m.tracker = tracker
+					m.target = child
+					m.armed = true
+					tracker.Feedback(true)
+					return
 				}
 			}
 		}
 	}
+}
+
+// Move handles a mouse move at global coordinates (x, y) during a drag.
+// Transitions between armed and disarmed states.
+func (m *MouseState) Move(x, y int64) {
+	if m.tracker == nil {
+		return
+	}
+	_, _, inside := hitTest(x, y, m.target)
+	if inside && !m.armed {
+		m.armed = true
+		m.tracker.Feedback(true)
+	} else if !inside && m.armed {
+		m.armed = false
+		m.tracker.Feedback(false)
+	}
+}
+
+// Release handles a mouse release at global coordinates (x, y).
+// Completes the interaction: success if armed, failure if disarmed.
+func (m *MouseState) Release(x, y int64) {
+	if m.tracker == nil {
+		return
+	}
+	m.tracker.Complete(m.armed)
+	m.tracker = nil
+	m.target = nil
+	m.armed = false
 }

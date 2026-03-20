@@ -30,6 +30,8 @@ const (
 	MsgMousePress int64 = 4
 	// MsgMouseRelease: WM→shepherd. "Mouse button released at (X, Y)."
 	MsgMouseRelease int64 = 5
+	// MsgMouseMove: WM→shepherd. "Mouse moved to (X, Y) while button held."
+	MsgMouseMove int64 = 6
 )
 
 // AppStartMsg is sent by a shepherd to the WM when it starts up.
@@ -70,6 +72,15 @@ type MouseReleaseMsg struct {
 	Y      int32 // screen Y coordinate
 	Button int32 // button code
 	_      [108]byte
+}
+
+// MouseMoveMsg is sent by the WM to a shepherd while a button is held.
+// Layout: 8 + 4 + 4 + 108 = 124 ... pad to 128.
+type MouseMoveMsg struct {
+	Type int64 // MsgMouseMove
+	X    int32 // screen X coordinate
+	Y    int32 // screen Y coordinate
+	_    [112]byte
 }
 
 // Well-known attribute URIs.

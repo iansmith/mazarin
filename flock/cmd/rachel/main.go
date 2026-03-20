@@ -195,9 +195,11 @@ func mouseClickLoop() {
 			x, y := mouseX, mouseY
 
 			if ev.Value == 1 { // press
+				mouseButtonHeld = int32(ev.Code)
 				fmt.Printf("[rachel:mouse] %s pressed at (%d,%d)\n", buttonName(ev.Code), x, y)
 				forwardMouseEvent(wm.MsgMousePress, x, y, int32(ev.Code))
 			} else if ev.Value == 0 { // release
+				mouseButtonHeld = 0
 				fmt.Printf("[rachel:mouse] %s released at (%d,%d)\n", buttonName(ev.Code), x, y)
 				forwardMouseEvent(wm.MsgMouseRelease, x, y, int32(ev.Code))
 			}
@@ -205,7 +207,7 @@ func mouseClickLoop() {
 	}
 }
 
-// forwardMouseEvent sends a mouse press or release to the focused shepherd.
+// forwardMouseEvent sends a mouse event to the focused shepherd.
 func forwardMouseEvent(msgType int64, x, y, button int32) {
 	sid := focusedSID
 	if sid < 0 {
@@ -215,19 +217,26 @@ func forwardMouseEvent(msgType int64, x, y, button int32) {
 	if !ok || ta.returnRb == nil {
 		return
 	}
-	if msgType == wm.MsgMousePress {
+	switch msgType {
+	case wm.MsgMousePress:
 		var msg wm.MousePressMsg
 		msg.Type = wm.MsgMousePress
 		msg.X = x
 		msg.Y = y
 		msg.Button = button
 		ta.returnRb.Push(unsafe.Pointer(&msg))
-	} else {
+	case wm.MsgMouseRelease:
 		var msg wm.MouseReleaseMsg
 		msg.Type = wm.MsgMouseRelease
 		msg.X = x
 		msg.Y = y
 		msg.Button = button
+		ta.returnRb.Push(unsafe.Pointer(&msg))
+	case wm.MsgMouseMove:
+		var msg wm.MouseMoveMsg
+		msg.Type = wm.MsgMouseMove
+		msg.X = x
+		msg.Y = y
 		ta.returnRb.Push(unsafe.Pointer(&msg))
 	}
 	if err := sys.MailboxSend(sid, wm.ShepherdNotify, ta.returnRb.Addr()); err != nil {
@@ -243,6 +252,11 @@ var cursorIsInverse bool // current cursor state
 // Mouse position — accumulated from relative events. Clamped to display.
 var mouseX int32 = 864 // start at center of display
 var mouseY int32 = 558
+
+// mouseButtonHeld tracks whether any mouse button is currently held.
+// Set by mouseClickLoop on press, cleared on release.
+// Read by mouseMovementLoop to decide whether to forward moves.
+var mouseButtonHeld int32 // 0 = no button held, >0 = button code
 
 const displayWidth = 1728
 const displayHeight = 1117
@@ -420,6 +434,11 @@ func mouseMovementLoop() {
 					mouseY = int32((uint32(ev.Value) * displayHeight) / (hid.AbsMax + 1))
 				}
 			}
+		}
+
+		// Forward move to focused shepherd while a button is held.
+		if mouseButtonHeld != 0 {
+			forwardMouseEvent(wm.MsgMouseMove, mouseX, mouseY, 0)
 		}
 
 		// After processing all events in this batch, check cursor state.

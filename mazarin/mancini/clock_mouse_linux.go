@@ -18,11 +18,28 @@ func (c *Clock) DetailedHit(localX, localY int64) bool {
 	return dx*dx+dy*dy <= rad*rad
 }
 
-// HandleMousePress cycles to the next ClockFace in the Faces list.
-func (c *Clock) HandleMousePress(x, y int64) {
+// Feedback is called by the mouse state machine during a press-drag-release.
+// active=true means the mouse is inside (preview the next face).
+// active=false means the mouse dragged outside (revert to original face).
+func (c *Clock) Feedback(active bool) {
 	if len(c.Faces) < 2 {
 		return
 	}
-	c.faceIdx = (c.faceIdx + 1) % len(c.Faces)
+	if active {
+		if !c.interacting {
+			c.prePressIdx = c.faceIdx
+			c.interacting = true
+		}
+		c.faceIdx = (c.prePressIdx + 1) % len(c.Faces)
+	} else {
+		c.faceIdx = c.prePressIdx
+	}
 	c.Face = c.Faces[c.faceIdx]
+}
+
+// Complete is called when the button is released.
+// success=true means released inside (commit). success=false means released
+// outside (cancel — face was already reverted by Feedback(false)).
+func (c *Clock) Complete(success bool) {
+	c.interacting = false
 }

@@ -20,7 +20,9 @@ type Clock struct {
 	Size    float64                    // preferred side length (logical pixels)
 	Face    ClockFace                  // current active face
 	Faces   []ClockFace                // ordered list of faces to cycle through on click
-	faceIdx int                        // index into Faces of the current face
+	faceIdx     int                    // index into Faces of the current face
+	prePressIdx int                    // saved faceIdx before press (for cancel/revert)
+	interacting bool                   // true while in a press-drag-release interaction
 	UTCFunc func() (sec, nanos int64) // returns current UTC time
 	Layout  *LayoutHandles
 }

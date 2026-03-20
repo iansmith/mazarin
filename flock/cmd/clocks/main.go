@@ -94,8 +94,9 @@ func announceToWM(clickTargets []mancini.Drawer) {
 }
 
 // mailboxRecvLoop receives notifications from rachel (e.g., YouHaveFocus, MousePress).
-// Mouse press events are dispatched through MousePolicy to the appropriate clock interactor.
+// Mouse events are dispatched through the MouseState state machine.
 func mailboxRecvLoop(clickTargets []mancini.Drawer) {
+	mouse := mancini.NewMouseState(clickTargets)
 	for {
 		notif, err := sys.MailboxRecv()
 		if err != nil {
@@ -115,9 +116,14 @@ func mailboxRecvLoop(clickTargets []mancini.Drawer) {
 				case wm.MsgMousePress:
 					msg := (*wm.MousePressMsg)(unsafe.Pointer(&raw[0]))
 					sys.UartWriteString(fmt.Sprintf("[clocks:mailbox] MousePress at (%d,%d) btn=%d\n", msg.X, msg.Y, msg.Button))
-					mancini.MousePolicy(int64(msg.X), int64(msg.Y), clickTargets)
+					mouse.Press(int64(msg.X), int64(msg.Y))
+				case wm.MsgMouseMove:
+					msg := (*wm.MouseMoveMsg)(unsafe.Pointer(&raw[0]))
+					mouse.Move(int64(msg.X), int64(msg.Y))
 				case wm.MsgMouseRelease:
-					// Ignored for now — only press triggers face cycling.
+					msg := (*wm.MouseReleaseMsg)(unsafe.Pointer(&raw[0]))
+					sys.UartWriteString(fmt.Sprintf("[clocks:mailbox] MouseRelease at (%d,%d) btn=%d\n", msg.X, msg.Y, msg.Button))
+					mouse.Release(int64(msg.X), int64(msg.Y))
 				default:
 					sys.UartWriteString(fmt.Sprintf("[clocks:mailbox] unknown msg type %d\n", msgType))
 				}
