@@ -1,10 +1,5 @@
 package mancini
 
-import (
-	"image"
-
-	"github.com/fogleman/gg"
-)
 
 // WidthSizer is implemented by interactors that know their preferred width.
 type WidthSizer interface {
@@ -14,10 +9,12 @@ type WidthSizer interface {
 // Row arranges children horizontally. Gaps between children are provided
 // by Spacer interactors — spacing is computed by the constraint system.
 type Row struct {
-	Theme    *Theme
-	Name     string
-	Children []Drawer
-	Layout   *LayoutHandles
+	Theme             *Theme
+	Name              string
+	Children          []Drawer
+	CrossAlign        Alignment // cross-axis (vertical) alignment of children
+	ClipChildOverflow bool      // true: clip last partial child; false: skip it
+	Layout            *LayoutHandles
 }
 
 func (r *Row) GetLayout() *LayoutHandles { return r.Layout }
@@ -27,11 +24,20 @@ func (r *Row) SetSpacing(v float64) {
 	setLayoutSpacing(r.Layout, v)
 }
 
-// PreferredWidth returns the total width: sum of children widths + inter-child spacing.
+// SetCrossAlign sets the cross-axis (vertical) alignment for children.
+func (r *Row) SetCrossAlign(a Alignment) {
+	r.CrossAlign = a
+	setLayoutCrossAlign(r.Layout, a)
+}
+
+// PreferredWidth returns the total width: sum of visible children widths + inter-child spacing.
 func (r *Row) PreferredWidth() float64 {
 	total := 0.0
 	n := 0
 	for _, child := range r.Children {
+		if !isVisible(child) {
+			continue
+		}
 		if s, ok := child.(WidthSizer); ok {
 			total += s.PreferredWidth()
 			n++
@@ -43,10 +49,13 @@ func (r *Row) PreferredWidth() float64 {
 	return total
 }
 
-// PreferredHeight returns the max preferred height among children.
+// PreferredHeight returns the max preferred height among visible children.
 func (r *Row) PreferredHeight() float64 {
 	maxH := 0.0
 	for _, child := range r.Children {
+		if !isVisible(child) {
+			continue
+		}
 		if s, ok := child.(Sizer); ok {
 			if ch := s.PreferredHeight(); ch > maxH {
 				maxH = ch
@@ -57,18 +66,10 @@ func (r *Row) PreferredHeight() float64 {
 }
 
 // Draw implements the Drawer interface.
-func (r *Row) Draw(canvas *image.RGBA, x, y, w, h float64) {
-	// Publish intrinsic dimensions for inside-out constraints.
-	pw := r.PreferredWidth()
-	ph := r.PreferredHeight()
-	if pw > 0 {
-		publishLayout(r.Layout, x, y, pw, ph)
-	} else {
-		publishLayout(r.Layout, x, y, w, h)
-	}
+func (r *Row) Draw(dc DrawContext, x, y, w, h float64) {
 	// No children: pink error indicator.
 	if len(r.Children) == 0 {
-		dc := gg.NewContextForRGBA(canvas)
+		publishLayout(r.Layout, x, y, w, h)
 		pc := errPink
 		if r.Theme != nil {
 			pc = r.Theme.C(pc)
@@ -79,53 +80,81 @@ func (r *Row) Draw(canvas *image.RGBA, x, y, w, h float64) {
 		return
 	}
 
-	// One child: give it all available width.
-	if len(r.Children) == 1 {
-		child := r.Children[0]
-		var childW float64
-		if s, ok := child.(WidthSizer); ok {
-			childW = s.PreferredWidth()
-		} else {
-			childW = w
+	// Count visible children for fallback width division.
+	visCount := 0
+	for _, child := range r.Children {
+		if isVisible(child) {
+			visCount++
 		}
-		child.Draw(canvas, x, y, childW, h)
+	}
+	if visCount == 0 {
+		publishLayout(r.Layout, x, y, w, h)
 		return
 	}
+	fallbackW := w / float64(visCount)
 
-	// Two+ children: layout left-to-right with inter-child spacing.
+	// Layout left-to-right with inter-child spacing.
+	// Invisible children are skipped entirely (no space, no draw).
+	// Children past the right edge are skipped (parent's dc clip handles pixels).
 	spacing := r.Layout.GetSpacing()
 	curX := x
-	right := x + w
-	for i, child := range r.Children {
-		var childW float64
-		if s, ok := child.(WidthSizer); ok {
-			childW = s.PreferredWidth()
-		} else {
-			childW = w / float64(len(r.Children))
+	drawnCount := 0
+	for _, child := range r.Children {
+		if !isVisible(child) {
+			continue
+		}
+		childW := childLayoutWidth(child, fallbackW)
+
+		// Add spacing before this child (but not before the first visible one).
+		if drawnCount > 0 {
+			curX += spacing
 		}
 
-		// Check if this child fits with spacing before the next.
-		remaining := right - curX
-		needsSpace := childW
-		if i < len(r.Children)-1 {
-			if spacing > 0 {
-				needsSpace += spacing
-			} else {
-				needsSpace += 1 // at least 1px gap before next child
-			}
-		}
-		if remaining < needsSpace {
-			setChildrenVisible(r.Children[i:], false)
+		// Child completely outside the row's right edge: stop.
+		if curX >= x+w {
 			break
 		}
 
-		childH := h
-		if s, ok := child.(Sizer); ok {
-			childH = s.PreferredHeight()
+		childH := childLayoutHeight(child, h)
+
+		// Cross-axis (vertical) alignment.
+		childY := y
+		switch r.CrossAlign {
+		case AxisMiddle:
+			childY = y + (h-childH)/2
+		case AxisMaximum:
+			childY = y + h - childH
 		}
 
-		setVisible(child, true)
-		child.Draw(canvas, curX, y, childW, childH)
-		curX += childW + spacing
+		// Child partially fits: use ClipChildOverflow to decide.
+		if curX+childW > x+w {
+			if r.ClipChildOverflow {
+				// Draw clipped: save overflow pixels, draw, restore.
+				// Pad must cover the full child overflow + max shadow spread.
+				visibleW := (x + w) - curX
+				overflowW := childW - visibleW
+				shadowPad := 60.0 // worst-case neumorphic shadow extent
+				pad := overflowW + shadowPad
+				cc := WithClip(dc, curX, childY, visibleW, h, pad, ClipRight)
+				child.Draw(dc, curX, childY, childW, childH)
+				cc.Flush()
+				curX += childW
+				drawnCount++
+			}
+			// Whether we drew it clipped or skipped it, no more children fit.
+			break
+		}
+
+		child.Draw(dc, curX, childY, childW, childH)
+		curX += childW
+		drawnCount++
+	}
+
+	// Publish actual used width so inside-out constraints see content size.
+	usedW := curX - x
+	if usedW < w {
+		publishLayout(r.Layout, x, y, usedW, h)
+	} else {
+		publishLayout(r.Layout, x, y, w, h)
 	}
 }

@@ -1,5 +1,3 @@
-//go:build linux
-
 // reactor.go — Reactor dispatches dirty notifications to typed callbacks.
 //
 // A Reactor wraps OnDirty() and maintains a dispatch table mapping attribute

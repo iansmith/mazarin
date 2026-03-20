@@ -14,16 +14,19 @@ import (
 type ClockFace interface {
 	// DrawFace renders the complete clock within a circle centered at (cx, cy)
 	// with the given radius. Time components are already converted to the
-	// face's local timezone by the Clock widget.
-	DrawFace(dc *gg.Context, theme *Theme, cx, cy, radius float64, hour, minute, second, millis int)
+	// face's local timezone by the Clock interactor.
+	DrawFace(dc DrawContext, theme *Theme, cx, cy, radius float64, hour, minute, second, millis int)
 
 	// Location returns the timezone for this clock face.
 	Location() *time.Location
+
+	// FaceName returns a short display name for this face style.
+	FaceName() string
 }
 
 // DrawHand draws a single clock hand as a line from center.
 // Exported as a convenience for ClockFace implementations.
-func DrawHand(dc *gg.Context, cx, cy, angle, length, width float64, col color.NRGBA) {
+func DrawHand(dc DrawContext, cx, cy, angle, length, width float64, col color.NRGBA) {
 	ex := cx + length*math.Cos(angle)
 	ey := cy + length*math.Sin(angle)
 	dc.SetColor(col)
@@ -49,8 +52,10 @@ func (f *ClassicFace) Location() *time.Location {
 	return f.Loc
 }
 
+func (f *ClassicFace) FaceName() string { return "Classic" }
+
 // DrawFace renders the classic clock face.
-func (f *ClassicFace) DrawFace(dc *gg.Context, theme *Theme, cx, cy, radius float64, hour, minute, second, millis int) {
+func (f *ClassicFace) DrawFace(dc DrawContext, theme *Theme, cx, cy, radius float64, hour, minute, second, millis int) {
 	// Clear the clock face.
 	face := f.FillColor
 	if face == (color.NRGBA{}) && theme != nil {

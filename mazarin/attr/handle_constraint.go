@@ -1,5 +1,3 @@
-//go:build linux
-
 // handle_constraint.go — Typed constraint constructors for Handle[T].
 //
 // Each constructor serializes a vm.Program, creates a kernel constraint

@@ -9,7 +9,7 @@ import (
 // Default region capacities.
 const (
 	DefaultNodeCapacity       = 512
-	DefaultEdgeCapacity       = 4096  // number of uint16 edges
+	DefaultEdgeCapacity       = 8192  // number of uint16 edges
 	DefaultBytecodeCapacity   = 2048  // number of 16-byte instructions
 	DefaultStringCapacity     = 256   // number of 256-byte string slots
 	DefaultCollectionCapacity = 1024  // number of FlatValue elements

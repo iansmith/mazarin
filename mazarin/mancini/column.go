@@ -1,16 +1,24 @@
 package mancini
 
 import (
-	"image"
 	"image/color"
-
-	"github.com/fogleman/gg"
 )
 
 // Sizer is implemented by interactors that know their preferred height.
 type Sizer interface {
 	PreferredHeight() float64
 }
+
+// Alignment controls cross-axis positioning of children within a container.
+// For Column (vertical layout), this aligns children horizontally.
+// For Row (horizontal layout), this aligns children vertically.
+type Alignment int
+
+const (
+	AxisMinimum Alignment = 0 // left (Column) or top (Row)
+	AxisMiddle  Alignment = 1 // centered
+	AxisMaximum Alignment = 2 // right (Column) or bottom (Row)
+)
 
 // errPink is the background color drawn when an interactor has no children
 // (almost always a programming error).
@@ -19,10 +27,12 @@ var errPink = color.NRGBA{255, 105, 180, 255}
 // Column arranges children vertically. Gaps between children are provided
 // by Spacer interactors — spacing is computed by the constraint system.
 type Column struct {
-	Theme    *Theme
-	Name     string
-	Children []Drawer
-	Layout   *LayoutHandles
+	Theme             *Theme
+	Name              string
+	Children          []Drawer
+	CrossAlign        Alignment // cross-axis (horizontal) alignment of children
+	ClipChildOverflow bool      // true: clip last partial child; false: skip it
+	Layout            *LayoutHandles
 }
 
 func (c *Column) GetLayout() *LayoutHandles { return c.Layout }
@@ -32,11 +42,20 @@ func (c *Column) SetSpacing(v float64) {
 	setLayoutSpacing(c.Layout, v)
 }
 
-// PreferredHeight returns the total height: sum of children heights + inter-child spacing.
+// SetCrossAlign sets the cross-axis (horizontal) alignment for children.
+func (c *Column) SetCrossAlign(a Alignment) {
+	c.CrossAlign = a
+	setLayoutCrossAlign(c.Layout, a)
+}
+
+// PreferredHeight returns the total height: sum of visible children heights + inter-child spacing.
 func (c *Column) PreferredHeight() float64 {
 	total := 0.0
 	n := 0
 	for _, child := range c.Children {
+		if !isVisible(child) {
+			continue
+		}
 		if s, ok := child.(Sizer); ok {
 			total += s.PreferredHeight()
 			n++
@@ -48,10 +67,13 @@ func (c *Column) PreferredHeight() float64 {
 	return total
 }
 
-// PreferredWidth returns the max width among children that implement WidthSizer.
+// PreferredWidth returns the max width among visible children that implement WidthSizer.
 func (c *Column) PreferredWidth() float64 {
 	maxW := 0.0
 	for _, child := range c.Children {
+		if !isVisible(child) {
+			continue
+		}
 		if s, ok := child.(WidthSizer); ok {
 			if cw := s.PreferredWidth(); cw > maxW {
 				maxW = cw
@@ -62,18 +84,10 @@ func (c *Column) PreferredWidth() float64 {
 }
 
 // Draw implements the Drawer interface.
-func (c *Column) Draw(canvas *image.RGBA, x, y, w, h float64) {
-	// Publish intrinsic dimensions for inside-out constraints.
-	pw := c.PreferredWidth()
-	ph := c.PreferredHeight()
-	if pw > 0 {
-		publishLayout(c.Layout, x, y, pw, ph)
-	} else {
-		publishLayout(c.Layout, x, y, w, h)
-	}
+func (c *Column) Draw(dc DrawContext, x, y, w, h float64) {
 	// No children: pink error indicator.
 	if len(c.Children) == 0 {
-		dc := gg.NewContextForRGBA(canvas)
+		publishLayout(c.Layout, x, y, w, h)
 		pc := errPink
 		if c.Theme != nil {
 			pc = c.Theme.C(pc)
@@ -84,55 +98,96 @@ func (c *Column) Draw(canvas *image.RGBA, x, y, w, h float64) {
 		return
 	}
 
-	// One child: give it all available height.
-	if len(c.Children) == 1 {
-		child := c.Children[0]
-		var childH float64
-		if s, ok := child.(Sizer); ok {
-			childH = s.PreferredHeight()
-		} else {
-			childH = h
+	// Count visible children for fallback height division.
+	visCount := 0
+	for _, child := range c.Children {
+		if isVisible(child) {
+			visCount++
 		}
-		child.Draw(canvas, x, y, w, childH)
+	}
+	if visCount == 0 {
+		publishLayout(c.Layout, x, y, w, h)
 		return
 	}
+	fallbackH := h / float64(visCount)
 
-	// Two+ children: layout top-to-bottom with inter-child spacing.
+	// Layout top-to-bottom with inter-child spacing.
+	// Invisible children are skipped entirely (no space, no draw).
+	// Children past the bottom edge are skipped (parent's dc clip handles pixels).
 	spacing := c.Layout.GetSpacing()
 	curY := y
-	bottom := y + h
-	for i, child := range c.Children {
-		var childH float64
-		if s, ok := child.(Sizer); ok {
-			childH = s.PreferredHeight()
-		} else {
-			childH = h / float64(len(c.Children))
+	drawnCount := 0
+	for _, child := range c.Children {
+		if !isVisible(child) {
+			continue
+		}
+		childH := childLayoutHeight(child, fallbackH)
+
+		// Add spacing before this child (but not before the first visible one).
+		if drawnCount > 0 {
+			curY += spacing
 		}
 
-		// Check if this child fits with spacing before the next.
-		remaining := bottom - curY
-		needsSpace := childH
-		if i < len(c.Children)-1 {
-			if spacing > 0 {
-				needsSpace += spacing
-			} else {
-				needsSpace += 1 // at least 1px gap before next child
-			}
-		}
-		if remaining < needsSpace {
-			// Not enough room: hide this and all subsequent children.
-			setChildrenVisible(c.Children[i:], false)
+		// Child completely outside the column's bottom edge: stop.
+		if curY >= y+h {
 			break
 		}
 
-		setVisible(child, true)
-		child.Draw(canvas, x, curY, w, childH)
-		curY += childH + spacing
+		childW := childLayoutWidth(child, w)
+
+		// Cross-axis (horizontal) alignment.
+		childX := x
+		switch c.CrossAlign {
+		case AxisMiddle:
+			childX = x + (w-childW)/2
+		case AxisMaximum:
+			childX = x + w - childW
+		}
+
+		// Child partially fits: use ClipChildOverflow to decide.
+		if curY+childH > y+h {
+			if c.ClipChildOverflow {
+				// Pad must cover the full child overflow + max shadow spread.
+				visibleH := (y + h) - curY
+				overflowH := childH - visibleH
+				shadowPad := 60.0
+				pad := overflowH + shadowPad
+				cc := WithClip(dc, childX, curY, childW, visibleH, pad, ClipBottom)
+				child.Draw(dc, childX, curY, childW, childH)
+				cc.Flush()
+				curY += childH
+				drawnCount++
+			}
+			break
+		}
+
+		child.Draw(dc, childX, curY, childW, childH)
+		curY += childH
+		drawnCount++
+	}
+
+	// Publish actual used height so inside-out constraints see content size.
+	usedH := curY - y
+	if usedH < h {
+		publishLayout(c.Layout, x, y, w, usedH)
+	} else {
+		publishLayout(c.Layout, x, y, w, h)
 	}
 }
 
-// setVisible sets the Visible layout handle on an interactor if it has one.
-func setVisible(d Drawer, visible bool) {
+// isVisible returns true if an interactor's Visible handle is set (or has no handle).
+func isVisible(d Drawer) bool {
+	if l, ok := d.(Layouter); ok {
+		lh := l.GetLayout()
+		if lh != nil {
+			return isVisibleHandle(lh)
+		}
+	}
+	return true
+}
+
+// SetVisible sets the Visible layout handle on an interactor if it has one.
+func SetVisible(d Drawer, visible bool) {
 	if l, ok := d.(Layouter); ok {
 		lh := l.GetLayout()
 		if lh != nil {
@@ -148,6 +203,6 @@ func setVisible(d Drawer, visible bool) {
 // setChildrenVisible sets visibility on a slice of drawers.
 func setChildrenVisible(children []Drawer, visible bool) {
 	for _, child := range children {
-		setVisible(child, visible)
+		SetVisible(child, visible)
 	}
 }

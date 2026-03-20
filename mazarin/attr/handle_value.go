@@ -1,5 +1,3 @@
-//go:build linux
-
 // handle_value.go — Typed value constructors for Handle[T].
 //
 // Each constructor creates a kernel-managed value attribute via SysAttrCreate,

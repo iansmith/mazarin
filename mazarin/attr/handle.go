@@ -1,5 +1,3 @@
-//go:build linux
-
 // handle.go — Handle[T] type for kernel-managed constraint attributes.
 //
 // Handle[T] wraps a kernel attribute slot with type-safe Get/Set operations.

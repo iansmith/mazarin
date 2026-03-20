@@ -28,7 +28,7 @@ func px(n float64) float64 { return theme.Px(n) }
 
 // drawButtonGrid draws a 2×2 grid of raised TextButtons centered in the
 // rectangle (ax, ay) to (ax+aw, ay+ah).
-func drawButtonGrid(canvas *image.RGBA, ax, ay, aw, ah float64) {
+func drawButtonGrid(dc mancini.DrawContext, ax, ay, aw, ah float64) {
 	btnW, btnH := px(75), px(34)
 	btnR := px(8)
 	btnGap := px(12)
@@ -45,27 +45,27 @@ func drawButtonGrid(canvas *image.RGBA, ax, ay, aw, ah float64) {
 		row := i / 2
 		bx := gridX + float64(col)*(btnW+btnGap)
 		by := gridY + float64(row)*(btnH+btnGap)
-		mancini.DrawNeuBox(theme, canvas, mancini.Raised, bx, by, bx+btnW, by+btnH, btnR, theme.Pal.Surface,
+		mancini.DrawNeuBox(theme, dc, mancini.Raised, bx, by, bx+btnW, by+btnH, btnR, theme.Pal.Surface,
 			mancini.TextFace(theme, lbl, btnFontSize, theme.Pal.Icon, false))
 	}
 }
 
 // drawFreeFloatingWindow draws a FreeFloatingWindow with title, groove, and
 // a 2×2 button grid below the groove.
-func drawFreeFloatingWindow(canvas *image.RGBA, wx, wy, winW, winH, winR float64, title string) {
+func drawFreeFloatingWindow(dc mancini.DrawContext, wx, wy, winW, winH, winR float64, title string) {
 	fw := &mancini.FreeFloatingWindow{
 		Theme:   theme,
 		Title:   title,
 		Visible: true,
 		Content: mancini.FaceDrawer(drawButtonGrid),
 	}
-	fw.Draw(canvas, wx, wy, winW, winH)
+	fw.Draw(dc, wx, wy, winW, winH)
 }
 
 // drawAppWindow draws an AppWindow with title bar and a 2×2 button grid.
-func drawAppWindow(canvas *image.RGBA, focused bool, wx, wy, winW, winH float64, title string, titleBar mancini.Drawer) {
-	contentDrawer := mancini.FaceDrawer(func(canvas *image.RGBA, x, y, w, h float64) {
-		mancini.Container(theme, canvas, x, y, x+w, y+h, px(10), true, drawButtonGrid)
+func drawAppWindow(dc mancini.DrawContext, focused bool, wx, wy, winW, winH float64, title string, titleBar mancini.Drawer) {
+	contentDrawer := mancini.FaceDrawer(func(dc mancini.DrawContext, x, y, w, h float64) {
+		mancini.Container(theme, dc, x, y, x+w, y+h, px(10), true, drawButtonGrid)
 	})
 	app := &mancini.AppWindow{
 		Theme:    theme,
@@ -74,7 +74,7 @@ func drawAppWindow(canvas *image.RGBA, focused bool, wx, wy, winW, winH float64,
 		TitleBar: titleBar,
 		Content:  contentDrawer,
 	}
-	app.Draw(canvas, wx, wy, winW, winH)
+	app.Draw(dc, wx, wy, winW, winH)
 }
 
 func main() {
@@ -100,7 +100,6 @@ func main() {
 	dc.Fill()
 
 	drawSectionLabel := func(wx, wy, colW float64, label string) {
-		dc = gg.NewContextForRGBA(canvas)
 		_ = dc.LoadFontFace(fontBold, px(8))
 		dc.SetColor(theme.Pal.Text)
 		dc.DrawStringAnchored(label, wx+colW/2, wy+labelH/2, 0.5, 0.5)
@@ -124,7 +123,7 @@ func main() {
 			Color:    theme.Pal.Text,
 			Bold:     false,
 		}
-		lbl.Draw(canvas, lx, ly, lblW, lblH)
+		lbl.Draw(dc, lx, ly, lblW, lblH)
 	}
 
 	// ── Row 2: Windows ──
@@ -134,19 +133,19 @@ func main() {
 	// AppWindow (resting)
 	wx0 := marginX
 	drawSectionLabel(wx0, winRowTop, winW, "AppWindow (resting)")
-	drawAppWindow(canvas, false, wx0, wy, winW, winH, "My Application", nil)
+	drawAppWindow(dc, false, wx0, wy, winW, winH, "My Application", nil)
 
 	// AppWindow (focused, striped)
 	wx1 := marginX + winW + winGap
 	drawSectionLabel(wx1, winRowTop, winW, "AppWindow (focused)")
 	tbR := px(8)
-	drawAppWindow(canvas, true, wx1, wy, winW, winH, "My Application",
+	drawAppWindow(dc, true, wx1, wy, winW, winH, "My Application",
 		mancini.StripedTitleFace(theme, "My Application", px(10), tbR))
 
 	// FreeFloatingWindow
 	wx2 := marginX + 2*(winW+winGap)
 	drawSectionLabel(wx2, winRowTop, winW, "FreeFloatingWindow")
-	drawFreeFloatingWindow(canvas, wx2, wy, winW, winH, px(14), "Extra Window")
+	drawFreeFloatingWindow(dc, wx2, wy, winW, winH, px(14), "Extra Window")
 
 	outPath := "cmd/slicer/go_pressed_states.png"
 	f, err := os.Create(outPath)

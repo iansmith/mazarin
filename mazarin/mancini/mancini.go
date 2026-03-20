@@ -1,16 +1,18 @@
 package mancini
 
 import (
-	"image"
 	"image/color"
 	"math"
 
 	"golang.org/x/image/font"
 )
 
-// Drawer draws itself into the given bounds on the canvas.
+// Drawer draws itself into the given bounds using a DrawContext.
+// The context is created once per draw pass at the top level and threaded
+// down through the tree. Parents may wrap dc in a ClippedContext before
+// calling children to enforce clipping.
 type Drawer interface {
-	Draw(canvas *image.RGBA, x, y, w, h float64)
+	Draw(dc DrawContext, x, y, w, h float64)
 }
 
 // Layouter is implemented by interactors that have layout handles.
@@ -21,14 +23,14 @@ type Layouter interface {
 // FaceDrawer draws content onto the face of a neumorphic box.
 // It satisfies the Drawer interface, so any rendering function can serve
 // as a leaf node in a Drawer tree.
-type FaceDrawer func(canvas *image.RGBA, x, y, w, h float64)
+type FaceDrawer func(dc DrawContext, x, y, w, h float64)
 
 // Draw implements the Drawer interface.
-func (f FaceDrawer) Draw(canvas *image.RGBA, x, y, w, h float64) {
-	f(canvas, x, y, w, h)
+func (f FaceDrawer) Draw(dc DrawContext, x, y, w, h float64) {
+	f(dc, x, y, w, h)
 }
 
-// NeuDepth represents the neumorphic depth of a widget relative to the surface.
+// NeuDepth represents the neumorphic depth of an interactor relative to the surface.
 type NeuDepth int
 
 const (
@@ -152,7 +154,7 @@ type FlushParams struct {
 	EdgeAlpha uint8
 }
 
-// NeuParams bundles per-depth drawing parameters for a widget class.
+// NeuParams bundles per-depth drawing parameters for an interactor class.
 type NeuParams struct {
 	Raised RaisedParams
 	Flush  FlushParams

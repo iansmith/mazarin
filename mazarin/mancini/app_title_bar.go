@@ -1,10 +1,7 @@
 package mancini
 
 import (
-	"image"
 	"image/color"
-
-	"github.com/fogleman/gg"
 )
 
 // AppTitleBar is a title bar interactor that centers a child Label
@@ -41,7 +38,7 @@ func (tb *AppTitleBar) PreferredWidth() float64 {
 // of the centered title text. The child Label is used for constraint sizing
 // but drawing is done directly here to avoid fillRect artifacts inside the
 // parent AppWindow's neumorphic surface.
-func (tb *AppTitleBar) Draw(canvas *image.RGBA, x, y, w, h float64) {
+func (tb *AppTitleBar) Draw(dc DrawContext, x, y, w, h float64) {
 	publishLayout(tb.Layout, x, y, w, h)
 
 	// Publish child layout for constraint system (without calling Label.Draw).
@@ -78,7 +75,6 @@ func (tb *AppTitleBar) Draw(canvas *image.RGBA, x, y, w, h float64) {
 	}
 
 	// Measure text width for pinstripe gap calculation.
-	dc := gg.NewContextForRGBA(canvas)
 	loadFont(t, dc, bold, fontSize)
 	tw, _ := dc.MeasureString(text)
 	pad := t.Px(8)

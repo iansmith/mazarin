@@ -10,6 +10,10 @@ const (
 	sysIPCCall  = 0x1013
 	sysIPCRecv  = 0x1014
 	sysIPCReply = 0x1015
+
+	// mapAnonymous is MAP_ANONYMOUS (0x20) — defined here because
+	// syscall.MAP_ANONYMOUS only exists on Linux (macOS uses MAP_ANON).
+	mapAnonymous = 0x20
 )
 
 // IPCRecvResult is the struct filled by SysIPCRecv.
@@ -93,7 +97,7 @@ func ReadFile(diskPID int, path string) ([]byte, error) {
 	reqVA, _, errno := syscall.RawSyscall6(
 		syscall.SYS_MMAP, 0, reqSize,
 		syscall.PROT_READ|syscall.PROT_WRITE,
-		syscall.MAP_PRIVATE|syscall.MAP_ANONYMOUS,
+		syscall.MAP_PRIVATE|mapAnonymous,
 		^uintptr(0), 0)
 	if errno != 0 || int64(reqVA) < 0 {
 		return nil, errors.New("mmap failed for IPC request")

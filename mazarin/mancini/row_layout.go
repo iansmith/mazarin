@@ -1,5 +1,3 @@
-//go:build linux
-
 package mancini
 
 import (
@@ -20,6 +18,10 @@ func (r *Row) InitLayout(parent string) {
 	// Inter-child spacing attribute. Set via Row.SetSpacing() after InitLayout.
 	spacingURI := layoutURI(r.Name, "int64", "Spacing")
 	r.Layout.SpacingHandle = attr.ValueI64(spacingURI, 0)
+
+	// Cross-axis alignment (vertical for Row).
+	alignURI := layoutURI(r.Name, "int64", "CrossAlign")
+	r.Layout.CrossAlignHandle = attr.ValueI64(alignURI, int64(r.CrossAlign))
 
 	// Build find pattern and URI fragments for constraint binding.
 	findPattern := "attr:///shepherd/" + manciniPID + "/str/*/layout/Parent"

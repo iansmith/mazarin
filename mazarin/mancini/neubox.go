@@ -1,11 +1,8 @@
 package mancini
 
 import (
-	"image"
 	"image/color"
 	"math"
-
-	"github.com/fogleman/gg"
 )
 
 // NeuBox is a decorative parent interactor with a single child.
@@ -50,12 +47,11 @@ func neuMaxPad(p NeuParams) float64 {
 }
 
 // Draw implements the Drawer interface.
-func (n *NeuBox) Draw(canvas *image.RGBA, x, y, w, h float64) {
+func (n *NeuBox) Draw(dc DrawContext, x, y, w, h float64) {
 	publishLayout(n.Layout, x, y, w, h)
 
 	// No child: pink error indicator.
 	if n.Child == nil {
-		dc := gg.NewContextForRGBA(canvas)
 		pc := errPink
 		if n.Theme != nil {
 			pc = n.Theme.C(pc)
@@ -94,8 +90,8 @@ func (n *NeuBox) Draw(canvas *image.RGBA, x, y, w, h float64) {
 		if face == (color.NRGBA{}) && n.Theme != nil {
 			face = n.Theme.Pal.Surface
 		}
-		NeuBoxWith(n.Theme, canvas, n.Depth, x, y, x+w, y+h, r, face, n.Params, nil)
+		NeuBoxWith(n.Theme, dc, n.Depth, x, y, x+w, y+h, r, face, n.Params, nil)
 	}
 
-	n.Child.Draw(canvas, childX, childY, childW, childH)
+	n.Child.Draw(dc, childX, childY, childW, childH)
 }

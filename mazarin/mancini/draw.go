@@ -168,26 +168,27 @@ func roundedRectMask(w, h int, x1, y1, x2, y2, r float64) *image.Alpha {
 // ── Neumorphic box rendering ─────────────────────────────────────────────────
 
 // NeuBoxWith draws a neumorphic rounded rectangle using explicit params.
-func NeuBoxWith(t *Theme, canvas *image.RGBA, depth NeuDepth, x1, y1, x2, y2, r float64, face color.NRGBA, p NeuParams, content FaceDrawer) {
+func NeuBoxWith(t *Theme, dc DrawContext, depth NeuDepth, x1, y1, x2, y2, r float64, face color.NRGBA, p NeuParams, content FaceDrawer) {
 	switch depth {
 	case Raised:
-		neuRaised(t, canvas, x1, y1, x2, y2, r, face, p.Raised)
+		neuRaised(t, dc, x1, y1, x2, y2, r, face, p.Raised)
 	case Flush:
-		neuFlush(t, canvas, x1, y1, x2, y2, r, face, p.Flush)
+		neuFlush(t, dc, x1, y1, x2, y2, r, face, p.Flush)
 	case Inset:
-		neuInset(t, canvas, x1, y1, x2, y2, r, face, p.Inset)
+		neuInset(t, dc, x1, y1, x2, y2, r, face, p.Inset)
 	}
 	if face != t.Pal.Surface && depth != Raised {
+		canvas := dc.Image().(*image.RGBA)
 		applyTintOverlay(t, canvas, x1, y1, x2, y2, r, face)
 	}
 	if content != nil {
-		content(canvas, x1, y1, x2-x1, y2-y1)
+		content(dc, x1, y1, x2-x1, y2-y1)
 	}
 }
 
 // DrawNeuBox draws a neumorphic rounded rectangle using ButtonParams.
-func DrawNeuBox(t *Theme, canvas *image.RGBA, depth NeuDepth, x1, y1, x2, y2, r float64, face color.NRGBA, content FaceDrawer) {
-	NeuBoxWith(t, canvas, depth, x1, y1, x2, y2, r, face, ButtonParams, content)
+func DrawNeuBox(t *Theme, dc DrawContext, depth NeuDepth, x1, y1, x2, y2, r float64, face color.NRGBA, content FaceDrawer) {
+	NeuBoxWith(t, dc, depth, x1, y1, x2, y2, r, face, ButtonParams, content)
 }
 
 // localRect computes a padded bounding box around (x1,y1)-(x2,y2) for
@@ -214,7 +215,8 @@ func localRect(canvas *image.RGBA, x1, y1, x2, y2, pad float64) (lw, lh int, ox,
 	return int(ex - ox), int(ey - oy), ox, oy
 }
 
-func neuRaised(t *Theme, canvas *image.RGBA, x1, y1, x2, y2, r float64, face color.NRGBA, p RaisedParams) {
+func neuRaised(t *Theme, dc DrawContext, x1, y1, x2, y2, r float64, face color.NRGBA, p RaisedParams) {
+	canvas := dc.Image().(*image.RGBA)
 	maxOff := math.Max(p.DarkOff, p.LightOff)
 	maxBlur := math.Max(p.DarkBlur, p.LightBlur)
 	pad := maxOff + math.Ceil(maxBlur*3) + 2
@@ -230,14 +232,15 @@ func neuRaised(t *Theme, canvas *image.RGBA, x1, y1, x2, y2, r float64, face col
 		lx1-p.LightOff, ly1-p.LightOff, lx2-p.LightOff, ly2-p.LightOff,
 		r, t.C(t.Pal.LightSh), p.LightAlpha, p.LightBlur)
 	draw.Draw(canvas, dst, light, image.Point{}, draw.Over)
-	dc := gg.NewContextForRGBA(canvas)
+
 	dc.SetColor(t.C(face))
 	dc.DrawRoundedRectangle(x1, y1, x2-x1, y2-y1, r)
 	dc.Fill()
 }
 
-func neuInset(t *Theme, canvas *image.RGBA, x1, y1, x2, y2, r float64, face color.NRGBA, p InsetParams) {
-	dc := gg.NewContextForRGBA(canvas)
+func neuInset(t *Theme, dc DrawContext, x1, y1, x2, y2, r float64, face color.NRGBA, p InsetParams) {
+	canvas := dc.Image().(*image.RGBA)
+
 	dc.SetColor(t.C(face))
 	dc.DrawRoundedRectangle(x1, y1, x2-x1, y2-y1, r)
 	dc.Fill()
@@ -267,8 +270,9 @@ func neuInset(t *Theme, canvas *image.RGBA, x1, y1, x2, y2, r float64, face colo
 	}
 }
 
-func neuFlush(t *Theme, canvas *image.RGBA, x1, y1, x2, y2, r float64, face color.NRGBA, p FlushParams) {
-	dc := gg.NewContextForRGBA(canvas)
+func neuFlush(t *Theme, dc DrawContext, x1, y1, x2, y2, r float64, face color.NRGBA, p FlushParams) {
+	canvas := dc.Image().(*image.RGBA)
+
 	dc.SetColor(t.C(face))
 	dc.DrawRoundedRectangle(x1, y1, x2-x1, y2-y1, r)
 	dc.Fill()
@@ -316,26 +320,27 @@ func applyTintOverlay(t *Theme, canvas *image.RGBA, x1, y1, x2, y2, r float64, t
 // ── Neumorphic circle rendering ──────────────────────────────────────────────
 
 // NeuCircleWith draws a neumorphic circle using explicit params.
-func NeuCircleWith(t *Theme, canvas *image.RGBA, depth NeuDepth, cx, cy, rad float64, face color.NRGBA, p NeuParams, content FaceDrawer) {
+func NeuCircleWith(t *Theme, dc DrawContext, depth NeuDepth, cx, cy, rad float64, face color.NRGBA, p NeuParams, content FaceDrawer) {
 	switch depth {
 	case Raised:
-		neuCircleRaised(t, canvas, cx, cy, rad, face, p.Raised)
+		neuCircleRaised(t, dc, cx, cy, rad, face, p.Raised)
 	case Flush:
-		neuCircleFlush(t, canvas, cx, cy, rad, face, p.Flush)
+		neuCircleFlush(t, dc, cx, cy, rad, face, p.Flush)
 	case Inset:
-		neuCircleInset(t, canvas, cx, cy, rad, face, p.Inset)
+		neuCircleInset(t, dc, cx, cy, rad, face, p.Inset)
 	}
 	if face != t.Pal.Surface && depth != Raised {
+		canvas := dc.Image().(*image.RGBA)
 		applyCircleTintOverlay(t, canvas, cx, cy, rad, face)
 	}
 	if content != nil {
-		content(canvas, cx-rad, cy-rad, 2*rad, 2*rad)
+		content(dc, cx-rad, cy-rad, 2*rad, 2*rad)
 	}
 }
 
 // NeuCircleDraw draws a neumorphic circle using ButtonParams.
-func NeuCircleDraw(t *Theme, canvas *image.RGBA, depth NeuDepth, cx, cy, rad float64, face color.NRGBA, content FaceDrawer) {
-	NeuCircleWith(t, canvas, depth, cx, cy, rad, face, ButtonParams, content)
+func NeuCircleDraw(t *Theme, dc DrawContext, depth NeuDepth, cx, cy, rad float64, face color.NRGBA, content FaceDrawer) {
+	NeuCircleWith(t, dc, depth, cx, cy, rad, face, ButtonParams, content)
 }
 
 func circleShadowLayer(w, h int, cx, cy, rad float64, c color.NRGBA, alpha uint8, blur float64) *image.NRGBA {
@@ -366,7 +371,8 @@ func circleMask(w, h int, cx, cy, rad float64) *image.Alpha {
 	return mask
 }
 
-func neuCircleRaised(t *Theme, canvas *image.RGBA, cx, cy, rad float64, face color.NRGBA, p RaisedParams) {
+func neuCircleRaised(t *Theme, dc DrawContext, cx, cy, rad float64, face color.NRGBA, p RaisedParams) {
+	canvas := dc.Image().(*image.RGBA)
 	x1, y1, x2, y2 := cx-rad, cy-rad, cx+rad, cy+rad
 	maxOff := math.Max(p.DarkOff, p.LightOff)
 	maxBlur := math.Max(p.DarkBlur, p.LightBlur)
@@ -383,14 +389,15 @@ func neuCircleRaised(t *Theme, canvas *image.RGBA, cx, cy, rad float64, face col
 		lcx-p.LightOff, lcy-p.LightOff, rad,
 		t.C(t.Pal.LightSh), p.LightAlpha, p.LightBlur)
 	draw.Draw(canvas, dst, light, image.Point{}, draw.Over)
-	dc := gg.NewContextForRGBA(canvas)
+
 	dc.SetColor(t.C(face))
 	dc.DrawCircle(cx, cy, rad)
 	dc.Fill()
 }
 
-func neuCircleInset(t *Theme, canvas *image.RGBA, cx, cy, rad float64, face color.NRGBA, p InsetParams) {
-	dc := gg.NewContextForRGBA(canvas)
+func neuCircleInset(t *Theme, dc DrawContext, cx, cy, rad float64, face color.NRGBA, p InsetParams) {
+	canvas := dc.Image().(*image.RGBA)
+
 	dc.SetColor(t.C(face))
 	dc.DrawCircle(cx, cy, rad)
 	dc.Fill()
@@ -421,8 +428,9 @@ func neuCircleInset(t *Theme, canvas *image.RGBA, cx, cy, rad float64, face colo
 	}
 }
 
-func neuCircleFlush(t *Theme, canvas *image.RGBA, cx, cy, rad float64, face color.NRGBA, p FlushParams) {
-	dc := gg.NewContextForRGBA(canvas)
+func neuCircleFlush(t *Theme, dc DrawContext, cx, cy, rad float64, face color.NRGBA, p FlushParams) {
+	canvas := dc.Image().(*image.RGBA)
+
 	dc.SetColor(t.C(face))
 	dc.DrawCircle(cx, cy, rad)
 	dc.Fill()
@@ -472,17 +480,17 @@ func applyCircleTintOverlay(t *Theme, canvas *image.RGBA, cx, cy, rad float64, t
 // ── Groove ────────────────────────────────────────────────────────────────────
 
 // NeuGroove draws a thin horizontal inset line (groove separator).
-func NeuGroove(t *Theme, canvas *image.RGBA, x1, y, x2 float64) {
-	neuInset(t, canvas, x1, y, x2, y+t.Px(3), t.Px(2), t.Pal.Surface, GrooveParams)
+func NeuGroove(t *Theme, dc DrawContext, x1, y, x2 float64) {
+	neuInset(t, dc, x1, y, x2, y+t.Px(3), t.Px(2), t.Pal.Surface, GrooveParams)
 }
 
 // ── Container ────────────────────────────────────────────────────────────────
 
 // Container draws an optional flush-style border around content.
-func Container(t *Theme, canvas *image.RGBA, x1, y1, x2, y2, r float64, border bool, content FaceDrawer) {
+func Container(t *Theme, dc DrawContext, x1, y1, x2, y2, r float64, border bool, content FaceDrawer) {
 	if border {
-		NeuBoxWith(t, canvas, Flush, x1, y1, x2, y2, r, t.Pal.Surface, ButtonParams, content)
+		NeuBoxWith(t, dc, Flush, x1, y1, x2, y2, r, t.Pal.Surface, ButtonParams, content)
 	} else if content != nil {
-		content(canvas, x1, y1, x2-x1, y2-y1)
+		content(dc, x1, y1, x2-x1, y2-y1)
 	}
 }

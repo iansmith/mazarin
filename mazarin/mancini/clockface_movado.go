@@ -5,7 +5,6 @@ import (
 	"math"
 	"time"
 
-	"github.com/fogleman/gg"
 )
 
 // MovadoFace draws a minimalist clock inspired by the Movado Museum Watch:
@@ -22,8 +21,10 @@ func (f *MovadoFace) Location() *time.Location {
 	return f.Loc
 }
 
+func (f *MovadoFace) FaceName() string { return "Movado" }
+
 // DrawFace renders the Movado-style clock face.
-func (f *MovadoFace) DrawFace(dc *gg.Context, theme *Theme, cx, cy, radius float64, hour, minute, second, millis int) {
+func (f *MovadoFace) DrawFace(dc DrawContext, theme *Theme, cx, cy, radius float64, hour, minute, second, millis int) {
 	// Black face.
 	faceColor := color.NRGBA{20, 20, 20, 255}
 	if theme != nil {

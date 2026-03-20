@@ -1,5 +1,3 @@
-//go:build linux
-
 package mancini
 
 import "math"
@@ -35,6 +33,14 @@ func (c *Clock) Feedback(active bool) {
 		c.faceIdx = c.prePressIdx
 	}
 	c.Face = c.Faces[c.faceIdx]
+
+	// Toggle face name label / spacer visibility.
+	if c.FaceLabel != nil {
+		SetVisible(c.FaceLabel, active)
+	}
+	if c.FaceSpacer != nil {
+		SetVisible(c.FaceSpacer, !active)
+	}
 }
 
 // Complete is called when the button is released.
@@ -42,4 +48,11 @@ func (c *Clock) Feedback(active bool) {
 // outside (cancel — face was already reverted by Feedback(false)).
 func (c *Clock) Complete(success bool) {
 	c.interacting = false
+	// Return to steady state: hide label, show spacer.
+	if c.FaceLabel != nil {
+		SetVisible(c.FaceLabel, false)
+	}
+	if c.FaceSpacer != nil {
+		SetVisible(c.FaceSpacer, true)
+	}
 }

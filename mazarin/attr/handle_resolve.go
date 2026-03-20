@@ -1,5 +1,3 @@
-//go:build linux
-
 // handle_resolve.go — AttrResolver backed by shared-page reads.
 //
 // sharedResolver implements vm.AttrResolver using direct reads from the

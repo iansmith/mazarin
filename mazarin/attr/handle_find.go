@@ -1,5 +1,3 @@
-//go:build linux
-
 // handle_find.go — Service discovery: Find and Exists.
 //
 // Find registers a query pattern with the kernel and returns the matching URIs.

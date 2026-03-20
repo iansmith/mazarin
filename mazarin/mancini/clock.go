@@ -1,11 +1,9 @@
 package mancini
 
 import (
-	"image"
 	"math"
 	"time"
 
-	"github.com/fogleman/gg"
 )
 
 // Clock is a leaf interactor that draws an analog clock using a ClockFace.
@@ -23,8 +21,10 @@ type Clock struct {
 	faceIdx     int                    // index into Faces of the current face
 	prePressIdx int                    // saved faceIdx before press (for cancel/revert)
 	interacting bool                   // true while in a press-drag-release interaction
-	UTCFunc func() (sec, nanos int64) // returns current UTC time
-	Layout  *LayoutHandles
+	UTCFunc    func() (sec, nanos int64) // returns current UTC time
+	FaceLabel  Drawer                    // label showing face name (hidden in steady state)
+	FaceSpacer Drawer                    // spacer matching label height (visible in steady state)
+	Layout     *LayoutHandles
 }
 
 func (c *Clock) GetLayout() *LayoutHandles { return c.Layout }
@@ -42,10 +42,8 @@ func (c *Clock) PreferredWidth() float64 {
 func (c *Clock) PreferredHeight() float64 { return c.PreferredWidth() }
 
 // Draw implements the Drawer interface.
-func (c *Clock) Draw(canvas *image.RGBA, x, y, w, h float64) {
+func (c *Clock) Draw(dc DrawContext, x, y, w, h float64) {
 	publishLayout(c.Layout, x, y, math.Round(w), math.Round(h))
-
-	dc := gg.NewContextForRGBA(canvas)
 
 	cx := x + w/2
 	cy := y + h/2

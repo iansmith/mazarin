@@ -1,5 +1,3 @@
-//go:build linux
-
 package mancini
 
 // GlobalToLocal transforms global screen coordinates to local coordinates

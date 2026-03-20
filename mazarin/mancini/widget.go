@@ -11,7 +11,7 @@ import (
 
 // loadFont sets the font on a gg context. Uses Theme.FontLoader if available,
 // otherwise falls back to loading from FontRegular/FontBold file paths.
-func loadFont(t *Theme, dc *gg.Context, bold bool, size float64) bool {
+func loadFont(t *Theme, dc DrawContext, bold bool, size float64) bool {
 	if t.FontLoader != nil {
 		face := t.FontLoader(bold, size)
 		if face != nil {
@@ -72,7 +72,7 @@ func (w *AppWindow) Unfocus() {
 }
 
 // Draw implements the Drawer interface.
-func (w *AppWindow) Draw(canvas *image.RGBA, x, y, ww, hh float64) {
+func (w *AppWindow) Draw(dc DrawContext, x, y, ww, hh float64) {
 	publishLayout(w.Layout, x, y, ww, hh)
 	t := w.Theme
 
@@ -86,7 +86,7 @@ func (w *AppWindow) Draw(canvas *image.RGBA, x, y, ww, hh float64) {
 	w.lastFocused = w.Focused
 
 	if needDecoration {
-		NeuBoxWith(t, canvas, w.Depth(), x, y, x+ww, y+hh, t.Px(14), t.Pal.Surface, WindowParams, nil)
+		NeuBoxWith(t, dc, w.Depth(), x, y, x+ww, y+hh, t.Px(14), t.Pal.Surface, WindowParams, nil)
 	}
 
 	// Title bar
@@ -99,24 +99,29 @@ func (w *AppWindow) Draw(canvas *image.RGBA, x, y, ww, hh float64) {
 	}
 	if needDecoration {
 		if w.Focused && w.TitleBar != nil {
-			w.TitleBar.Draw(canvas, tbX, tbY, tbW, tbH)
+			w.TitleBar.Draw(dc, tbX, tbY, tbW, tbH)
 		} else {
 			// Unfocused: plain centered text, no pinstripes.
-			TextFace(t, w.Title, t.Px(18), t.Pal.Text, false)(canvas, tbX, tbY, tbW, tbH)
+			TextFace(t, w.Title, t.Px(18), t.Pal.Text, false)(dc, tbX, tbY, tbW, tbH)
 		}
 	}
 
-	// Content area
+	// Content area — bounds enforcement is done by Row/Column (skip children
+	// that don't fully fit). Shadow compositing bypasses gg's clip mask, so
+	// pixel-level dc.Clip() alone cannot prevent overflow. Child-level bounds
+	// checking is both correct and fast.
+	cX := x + tbMargin
 	cY := tbY + tbH + t.Px(6)
+	cW := ww - 2*tbMargin
 	cH := (y + hh) - cY - tbMargin
 	if w.Content != nil {
-		w.Content.Draw(canvas, x+tbMargin, cY, ww-2*tbMargin, cH)
+		w.Content.Draw(dc, cX, cY, cW, cH)
 	}
 
 	// Floaters
 	for _, f := range w.Floaters {
 		if f.Visible {
-			f.Draw(canvas, f.X, f.Y, f.W, f.H)
+			f.Draw(dc, f.X, f.Y, f.W, f.H)
 		}
 	}
 }
@@ -177,7 +182,7 @@ func (w *FreeFloatingWindow) Depth() NeuDepth {
 }
 
 // Draw implements the Drawer interface.
-func (w *FreeFloatingWindow) Draw(canvas *image.RGBA, x, y, ww, hh float64) {
+func (w *FreeFloatingWindow) Draw(dc DrawContext, x, y, ww, hh float64) {
 	publishLayout(w.Layout, x, y, ww, hh)
 	t := w.Theme
 
@@ -190,12 +195,12 @@ func (w *FreeFloatingWindow) Draw(canvas *image.RGBA, x, y, ww, hh float64) {
 	w.lastBoundsHash = hash
 
 	if needDecoration {
-		NeuBoxWith(t, canvas, Flush, x, y, x+ww, y+hh, t.Px(14), t.Pal.Surface, WindowParams, nil)
+		NeuBoxWith(t, dc, Flush, x, y, x+ww, y+hh, t.Px(14), t.Pal.Surface, WindowParams, nil)
 	}
 
 	// Title
 	titleY := y + t.Px(14)
-	dc := gg.NewContextForRGBA(canvas)
+
 	loadFont(t, dc, true, t.Px(10))
 	dc.SetColor(t.C(t.Pal.Text))
 	dc.DrawStringAnchored(w.Title, x+ww/2, titleY, 0.5, 0.5)
@@ -204,14 +209,14 @@ func (w *FreeFloatingWindow) Draw(canvas *image.RGBA, x, y, ww, hh float64) {
 	grooveMargin := t.Px(18)
 	grooveY := y + t.Px(26)
 	if needDecoration {
-		NeuGroove(t, canvas, x+grooveMargin, grooveY, x+ww-grooveMargin)
+		NeuGroove(t, dc, x+grooveMargin, grooveY, x+ww-grooveMargin)
 	}
 
 	// Content area below groove
 	cY := grooveY + t.Px(6)
 	cH := (y + hh) - cY
 	if w.Content != nil {
-		w.Content.Draw(canvas, x, cY, ww, cH)
+		w.Content.Draw(dc, x, cY, ww, cH)
 	}
 }
 
@@ -229,9 +234,9 @@ type Button struct {
 func (b *Button) GetLayout() *LayoutHandles { return b.Layout }
 
 // Draw implements the Drawer interface.
-func (b *Button) Draw(canvas *image.RGBA, x, y, w, h float64) {
+func (b *Button) Draw(dc DrawContext, x, y, w, h float64) {
 	publishLayout(b.Layout, x, y, w, h)
-	DrawNeuBox(b.Theme, canvas, b.Depth, x, y, x+w, y+h, b.Theme.Px(8),
+	DrawNeuBox(b.Theme, dc, b.Depth, x, y, x+w, y+h, b.Theme.Px(8),
 		b.Theme.Pal.Surface, asFaceDrawer(b.Face))
 }
 
@@ -258,13 +263,13 @@ func (l *NeuLabel) PreferredHeight() float64 {
 }
 
 // Draw implements the Drawer interface.
-func (l *NeuLabel) Draw(canvas *image.RGBA, x, y, w, h float64) {
+func (l *NeuLabel) Draw(dc DrawContext, x, y, w, h float64) {
 	publishLayout(l.Layout, x, y, w, h)
 	text := l.Text
 	if l.TextFunc != nil {
 		text = l.TextFunc()
 	}
-	DrawNeuBox(l.Theme, canvas, l.Depth, x, y, x+w, y+h, l.Theme.Px(8),
+	DrawNeuBox(l.Theme, dc, l.Depth, x, y, x+w, y+h, l.Theme.Px(8),
 		l.Theme.Pal.Surface, TextFace(l.Theme, text, l.FontSize, l.Color, l.Bold))
 }
 
@@ -302,7 +307,10 @@ func (l *Label) PreferredWidth() float64 {
 }
 
 // Draw implements the Drawer interface.
-func (l *Label) Draw(canvas *image.RGBA, x, y, w, h float64) {
+func (l *Label) Draw(dc DrawContext, x, y, w, h float64) {
+	if !isVisible(l) {
+		return
+	}
 	// Publish intrinsic dimensions so inside-out constraints see actual text size.
 	pw := l.PreferredWidth()
 	ph := l.PreferredHeight()
@@ -319,17 +327,17 @@ func (l *Label) Draw(canvas *image.RGBA, x, y, w, h float64) {
 	l.lastDrawnHash = hash
 	// Clear label area before drawing new text.
 	if l.Theme != nil {
+		canvas := dc.Image().(*image.RGBA)
 		fillRect(canvas, l.Theme, x, y, pw, ph)
 	}
-	TextFace(l.Theme, text, l.FontSize, l.Color, l.Bold)(canvas, x, y, w, h)
+	TextFace(l.Theme, text, l.FontSize, l.Color, l.Bold)(dc, x, y, w, h)
 }
 
 // ── Face factories ───────────────────────────────────────────────────────────
 
 // TextFace returns a FaceDrawer that renders centered text.
 func TextFace(t *Theme, text string, fontSize float64, col color.NRGBA, bold bool) FaceDrawer {
-	return func(canvas *image.RGBA, x, y, w, h float64) {
-		dc := gg.NewContextForRGBA(canvas)
+	return func(dc DrawContext, x, y, w, h float64) {
 		if !loadFont(t, dc, bold, fontSize) {
 			return
 		}
@@ -340,8 +348,7 @@ func TextFace(t *Theme, text string, fontSize float64, col color.NRGBA, bold boo
 
 // CheckFace returns a FaceDrawer that renders a centered checkmark icon.
 func CheckFace(t *Theme, sz, lw float64, col color.NRGBA) FaceDrawer {
-	return func(canvas *image.RGBA, x, y, w, h float64) {
-		dc := gg.NewContextForRGBA(canvas)
+	return func(dc DrawContext, x, y, w, h float64) {
 		dc.SetColor(t.C(col))
 		dc.SetLineWidth(lw)
 		dc.SetLineCap(gg.LineCapRound)
@@ -356,9 +363,7 @@ func CheckFace(t *Theme, sz, lw float64, col color.NRGBA) FaceDrawer {
 // StripedTitleFace returns a FaceDrawer that draws horizontal pinstripes
 // interrupted by a centered title — classic Mac OS style.
 func StripedTitleFace(t *Theme, title string, fontSize, r float64) FaceDrawer {
-	return func(canvas *image.RGBA, x, y, w, h float64) {
-		dc := gg.NewContextForRGBA(canvas)
-
+	return func(dc DrawContext, x, y, w, h float64) {
 		loadFont(t, dc, true, fontSize)
 		tw, _ := dc.MeasureString(title)
 		pad := t.Px(8)
@@ -391,11 +396,10 @@ func StripedTitleFace(t *Theme, title string, fontSize, r float64) FaceDrawer {
 // horizontal gradient. The purple peak slowly sweeps back and forth.
 func GradientTitleFace(t *Theme, title string, fontSize, r float64) FaceDrawer {
 	start := time.Now()
-	return func(canvas *image.RGBA, x, y, w, h float64) {
+	return func(dc DrawContext, x, y, w, h float64) {
 		elapsed := time.Since(start).Seconds()
 		peak := (math.Sin(elapsed*math.Pi/6) + 1) / 2
 
-		dc := gg.NewContextForRGBA(canvas)
 		grad := gg.NewLinearGradient(x, y+h/2, x+w, y+h/2)
 		grad.AddColorStop(0, t.C(t.Pal.Surface))
 		grad.AddColorStop(peak, t.C(t.Pal.SurfaceTint))
@@ -415,7 +419,7 @@ func asFaceDrawer(d Drawer) FaceDrawer {
 	if d == nil {
 		return nil
 	}
-	return func(canvas *image.RGBA, x, y, w, h float64) {
-		d.Draw(canvas, x, y, w, h)
+	return func(dc DrawContext, x, y, w, h float64) {
+		d.Draw(dc, x, y, w, h)
 	}
 }

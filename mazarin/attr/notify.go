@@ -1,5 +1,3 @@
-//go:build linux
-
 // notify.go — Client-side dirty notification API.
 //
 // WaitDirty blocks until one or more eager-notify attributes become dirty.

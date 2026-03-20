@@ -1,11 +1,8 @@
 package mancini
 
 import (
-	"image"
 	"image/color"
 	"math"
-
-	"github.com/fogleman/gg"
 )
 
 // NeuCircle is a decorative parent interactor with a single child.
@@ -60,7 +57,7 @@ func (n *NeuCircle) PreferredWidth() float64 { return n.preferredDiameter() }
 func (n *NeuCircle) PreferredHeight() float64 { return n.preferredDiameter() }
 
 // Draw implements the Drawer interface.
-func (n *NeuCircle) Draw(canvas *image.RGBA, x, y, w, h float64) {
+func (n *NeuCircle) Draw(dc DrawContext, x, y, w, h float64) {
 	// Publish the preferred diameter as both width and height (circle is square).
 	if diam := n.preferredDiameter(); diam > 0 {
 		publishLayout(n.Layout, x, y, diam, diam)
@@ -70,7 +67,6 @@ func (n *NeuCircle) Draw(canvas *image.RGBA, x, y, w, h float64) {
 
 	// No child: pink error indicator.
 	if n.Child == nil {
-		dc := gg.NewContextForRGBA(canvas)
 		pc := errPink
 		if n.Theme != nil {
 			pc = n.Theme.C(pc)
@@ -109,8 +105,8 @@ func (n *NeuCircle) Draw(canvas *image.RGBA, x, y, w, h float64) {
 		if face == (color.NRGBA{}) && n.Theme != nil {
 			face = n.Theme.Pal.Surface
 		}
-		NeuCircleWith(n.Theme, canvas, n.Depth, cx, cy, rad, face, n.Params, nil)
+		NeuCircleWith(n.Theme, dc, n.Depth, cx, cy, rad, face, n.Params, nil)
 	}
 
-	n.Child.Draw(canvas, childX, childY, 2*rad, 2*rad)
+	n.Child.Draw(dc, childX, childY, 2*rad, 2*rad)
 }

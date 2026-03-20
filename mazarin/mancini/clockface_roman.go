@@ -5,7 +5,6 @@ import (
 	"math"
 	"time"
 
-	"github.com/fogleman/gg"
 )
 
 // romanNumerals maps hour position (1-12) to its Roman numeral string.
@@ -30,8 +29,10 @@ func (f *RomanFace) Location() *time.Location {
 	return f.Loc
 }
 
+func (f *RomanFace) FaceName() string { return "Roman" }
+
 // DrawFace renders the Roman numeral clock face.
-func (f *RomanFace) DrawFace(dc *gg.Context, theme *Theme, cx, cy, radius float64, hour, minute, second, millis int) {
+func (f *RomanFace) DrawFace(dc DrawContext, theme *Theme, cx, cy, radius float64, hour, minute, second, millis int) {
 	// Clear the clock face.
 	face := f.FillColor
 	if face == (color.NRGBA{}) && theme != nil {

@@ -1,5 +1,3 @@
-//go:build linux
-
 // handle_program.go — Bytecode loading from ELF sections.
 //
 // MustGetProgram reads a named program from the .constraint ELF section

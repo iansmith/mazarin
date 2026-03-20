@@ -6,7 +6,6 @@ import (
 	"math"
 	"time"
 
-	"github.com/fogleman/gg"
 )
 
 // DigitFace draws an analog clock with Arabic numerals rotated to match
@@ -26,8 +25,10 @@ func (f *DigitFace) Location() *time.Location {
 	return f.Loc
 }
 
+func (f *DigitFace) FaceName() string { return "Digital" }
+
 // DrawFace renders the digit clock face with rotated numerals.
-func (f *DigitFace) DrawFace(dc *gg.Context, theme *Theme, cx, cy, radius float64, hour, minute, second, millis int) {
+func (f *DigitFace) DrawFace(dc DrawContext, theme *Theme, cx, cy, radius float64, hour, minute, second, millis int) {
 	// Clear the clock face.
 	face := f.FillColor
 	if face == (color.NRGBA{}) && theme != nil {

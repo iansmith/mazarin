@@ -20,6 +20,8 @@ import (
 	"mazzy/shared/wm"
 	"os"
 	"unsafe"
+
+	"github.com/fogleman/gg"
 )
 
 //go:embed AtkinsonHyperlegibleMono-Regular.otf
@@ -37,7 +39,8 @@ const (
 )
 
 type cityInfo struct {
-	name    string
+	name    string // display name
+	id      string // safe identifier for constraint names (no spaces)
 	tz      string // IANA timezone for time.LoadLocation
 	tzLabel string // display label for timezone row
 	loc     *time.Location
@@ -180,10 +183,12 @@ func main() {
 
 	// 3. Define cities with their timezones.
 	cities := []cityInfo{
-		{name: "Atlanta", tz: "America/New_York", tzLabel: "US/New_York"},
-		{name: "London", tz: "Europe/London", tzLabel: "GB/London"},
-		{name: "Paris", tz: "Europe/Paris", tzLabel: "FR/Paris"},
-		{name: "Tokyo", tz: "Asia/Tokyo", tzLabel: "JP/Tokyo"},
+		{name: "Atlanta", id: "Atlanta", tz: "America/New_York", tzLabel: "US/New_York"},
+		{name: "London", id: "London", tz: "Europe/London", tzLabel: "GB/London"},
+		{name: "Paris", id: "Paris", tz: "Europe/Paris", tzLabel: "FR/Paris"},
+		{name: "Tokyo", id: "Tokyo", tz: "Asia/Tokyo", tzLabel: "JP/Tokyo"},
+		{name: "Auckland", id: "Auckland", tz: "Pacific/Auckland", tzLabel: "NZ/Auckland"},
+		{name: "Los Angeles", id: "LosAngeles", tz: "America/Los_Angeles", tzLabel: "US/Los_Angeles"},
 	}
 	for i := range cities {
 		loc, err := time.LoadLocation(cities[i].tz)
@@ -215,6 +220,10 @@ func main() {
 		return timeSec.Get(), timeNanos.Get()
 	}
 
+	// Face name label font size and matching spacer height.
+	faceNameFontSize := 14.0
+	faceNameH := faceNameFontSize + theme.Px(4) // matches Label.PreferredHeight()
+
 	// clickTargets collects the NeuCircle decorators wrapping each clock.
 	// MousePolicy hit-tests against these (larger) bounds, then dispatches
 	// to the child Clock via ChildAccessor.
@@ -222,8 +231,8 @@ func main() {
 
 	var columns []mancini.Drawer
 	for i, city := range cities {
-		colName := city.name + "_col"
-		circleName := city.name + "_circle"
+		colName := city.id + "_col"
+		circleName := city.id + "_circle"
 		loc := city.loc
 
 		// Build all four face styles for this city's timezone.
@@ -242,7 +251,7 @@ func main() {
 
 		cityLabel := &mancini.Label{
 			Theme:    theme,
-			Name:     city.name + "_name",
+			Name:     city.id + "_name",
 			Text:     city.name,
 			FontSize: 18,
 			Color:    textColor,
@@ -251,12 +260,31 @@ func main() {
 
 		clockWidget := &mancini.Clock{
 			Theme:   theme,
-			Name:    city.name + "_clock",
+			Name:    city.id + "_clock",
 			Size:    50,
 			UTCFunc: utcFunc,
 			Faces:   rotated,
 			Face:    rotated[0],
 		}
+
+		// Face name label — hidden in steady state, shown during interaction.
+		faceNameLabel := &mancini.Label{
+			Theme:    theme,
+			Name:     city.id + "_facename",
+			FontSize: faceNameFontSize,
+			Color:    subtitleColor,
+			TextFunc: func() string { return clockWidget.Face.FaceName() },
+		}
+		// Matching spacer — visible in steady state (same height as label).
+		faceNameSpacer := &mancini.Spacer{
+			Name:       city.id + "_facespc",
+			PreferredH: faceNameH,
+		}
+
+		// Wire face label/spacer to the clock for visibility toggling.
+		clockWidget.FaceLabel = faceNameLabel
+		clockWidget.FaceSpacer = faceNameSpacer
+
 		circle := &mancini.NeuCircle{
 			Theme:  theme,
 			Name:   circleName,
@@ -268,16 +296,17 @@ func main() {
 
 		tzLabel := &mancini.Label{
 			Theme:    theme,
-			Name:     city.name + "_tz",
+			Name:     city.id + "_tz",
 			Text:     city.tzLabel,
 			FontSize: 18,
 			Color:    subtitleColor,
 		}
 
 		col := &mancini.Column{
-			Theme:    theme,
-			Name:     colName,
-			Children: []mancini.Drawer{cityLabel, circle, tzLabel},
+			Theme:      theme,
+			Name:       colName,
+			CrossAlign: mancini.AxisMiddle,
+			Children:   []mancini.Drawer{cityLabel, circle, tzLabel, faceNameLabel, faceNameSpacer},
 		}
 
 		// InitLayout bottom-up: leaves first, then decorator, then container.
@@ -285,16 +314,23 @@ func main() {
 		clockWidget.InitLayout(circleName)
 		circle.InitLayout(colName)
 		tzLabel.InitLayout(colName)
+		faceNameLabel.InitLayout(colName)
+		faceNameSpacer.InitLayout(colName)
 		col.InitLayout("main_row")
 		col.SetSpacing(15)
+
+		// Steady state: face name label visible (non-empty text), spacer hidden.
+		mancini.SetVisible(faceNameSpacer, false)
 
 		columns = append(columns, col)
 	}
 
 	row := &mancini.Row{
-		Theme:    theme,
-		Name:     "main_row",
-		Children: columns,
+		Theme:             theme,
+		Name:              "main_row",
+		CrossAlign:        mancini.AxisMinimum,
+		Children:          columns,
+		ClipChildOverflow: true,
 	}
 	row.InitLayout("AppWindow")
 	row.SetSpacing(20)
@@ -326,23 +362,20 @@ func main() {
 	app.InitLayout("")
 
 	// 6. Create draw context.
-	dc := interactor.NewDrawContext(fontData, regionX, regionY, regionW, regionH)
-	fbImage := dc.Image()
+	drawCtx := interactor.NewDrawContext(fontData, regionX, regionY, regionW, regionH)
+	fbImage := drawCtx.Image()
+
+	// Single gg context for the entire draw pass — threaded through the tree.
+	ggCtx := gg.NewContextForRGBA(fbImage)
 	sys.UartWriteString("[clocks] draw context created\n")
 
 	// 7. Initial sizing draw at a small default size to publish children's dimensions
 	// without spending forever computing neumorphic shadows at full-region size.
-	initW, initH := 600.0, 200.0
+	initW, initH := 800.0, 250.0
 	initX := float64(regionX) + (float64(regionW)-initW)/2
 	initY := float64(regionY) + (float64(regionH)-initH)/2
 	sys.UartWriteString("[clocks] sizing draw...\n")
-	app.Draw(fbImage, initX, initY, initW, initH)
-
-	// Debug: check intrinsic sizes after sizing draw.
-	sys.UartWriteString(fmt.Sprintf("[clocks] row intrinsic: w=%d h=%d\n",
-		row.Layout.Width.Get(), row.Layout.Height.Get()))
-	sys.UartWriteString(fmt.Sprintf("[clocks] row preferred: w=%.0f h=%.0f\n",
-		row.PreferredWidth(), row.PreferredHeight()))
+	app.Draw(ggCtx, initX, initY, initW, initH)
 
 	// Read constraint-computed size and center the window.
 	winW := float64(app.Layout.Width.Get())
@@ -373,8 +406,8 @@ func main() {
 	}
 
 	// Draw at the centered position with proper dimensions.
-	app.Draw(fbImage, winX, winY, winW, winH)
-	dc.FlushRegion()
+	app.Draw(ggCtx, winX, winY, winW, winH)
+	drawCtx.FlushRegion()
 	sys.UartWriteString(fmt.Sprintf("[clocks] initial draw done (T+%v)\n", time.Since(startTime)))
 
 	// 8. Force Bounds evaluation so the shared page has a valid rectangle,
@@ -425,12 +458,12 @@ func main() {
 		winY = float64(regionY) + (float64(regionH)-winH)/2
 
 		t0 := time.Now()
-		app.Draw(fbImage, winX, winY, winW, winH)
+		app.Draw(ggCtx, winX, winY, winW, winH)
 		drawDur := time.Since(t0)
 		drawCount.Add(1)
 
 		t1 := time.Now()
-		dc.Flush(int32(winX), int32(winY), int32(winX+winW), int32(winY+winH))
+		drawCtx.Flush(int32(winX), int32(winY), int32(winX+winW), int32(winY+winH))
 		flushDur := time.Since(t1)
 
 		if loopCount <= 10 || loopCount%10 == 0 {

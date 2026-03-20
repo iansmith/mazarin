@@ -1,5 +1,3 @@
-//go:build linux
-
 // handle_init.go — Initialization of the client-side attribute library.
 //
 // Init() reads the SharedPageHeader from the well-known constraint page VA
