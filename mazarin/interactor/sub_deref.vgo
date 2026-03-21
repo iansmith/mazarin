@@ -1,0 +1,5 @@
+func sub_deref() int64 {
+	a := deref_i64("_0_")
+	b := deref_i64("_1_")
+	return a - b
+}

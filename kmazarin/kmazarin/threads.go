@@ -1187,7 +1187,7 @@ func printGCCounters() {
 	byType := kmem.PagesByType()
 	serial.RawUARTPuts(" [")
 	first := true
-	typeNames := [...]string{"kh", "kpt", "ks", "mmio", "fb", "vq", "ut", "uro", "ud", "uh", "us", "upt", "ipc", "fil", "bs", "drv", "vdso"}
+	typeNames := [...]string{"kh", "kpt", "ks", "mmio", "fb", "vq", "ut", "uro", "ud", "uh", "us", "upt", "ipc", "fil", "bs", "drv", "vdso", "cstr", "fc", "ipb"}
 	for i, cnt := range byType {
 		if cnt == 0 {
 			continue

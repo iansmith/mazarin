@@ -45,6 +45,10 @@ const (
 	PageVDSO             // vDSO trampoline (shared across all processes)
 	PageConstraintShared // Constraint VM shared pages (kernel-writable, shepherd-readable)
 
+	// Explicitly-allocated shared pages (via SysAllocPages)
+	PageFontCache // Font glyph cache pages (owned by rachel/fontsvc)
+	PageIPCBuffer // IPC ring buffer pages (owned by creating shepherd)
+
 	// Sentinel
 	PageTypeCount // Must be last
 )
@@ -72,6 +76,8 @@ var pageTypeNames = [PageTypeCount]string{
 	PageDriver:      "Driver",
 	PageVDSO:             "VDSO",
 	PageConstraintShared: "ConstraintShared",
+	PageFontCache:        "FontCache",
+	PageIPCBuffer:        "IPCBuffer",
 }
 
 // String returns a human-readable name for the page type.

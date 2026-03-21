@@ -19,6 +19,9 @@ var (
 	DbgStdioFutexSyscallNum uint64 // Last syscall number from stdio's main
 	shepherdSyscallCount      uint64 // Count of shepherd syscalls (for debug logging)
 	GCCountBySID            [16]uint64 // Per-shepherd GC cycle counter (indexed by PID)
+	NanosleepCallCount uint64     // Total nanosleep calls (all threads)
+	YieldCallCount     uint64     // Total sched_yield calls (all threads)
+	SVCCountBySID      [32]uint64 // Per-SID SVC counter for diagnostics
 )
 
 // PrintFutexStats prints futex statistics for debugging
@@ -48,8 +51,12 @@ const (
 //go:nosplit
 //go:noinline
 func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
-	// Validate user address - reject NULL and kernel addresses
-	if !isValidUserAddr(uaddr) {
+	// Reject NULL but allow kernel addresses. The Go runtime running in
+	// kmazarin calls futex with kernel addresses for its own mutexes.
+	// isValidUserAddr would reject these when CurrentShepherd() is non-nil
+	// (Go scheduler can run kernel goroutines on a shepherd M). Futex is
+	// safe: WAIT only reads, WAKE uses the address as a lookup key.
+	if uaddr == 0 {
 		return -14 // EFAULT
 	}
 

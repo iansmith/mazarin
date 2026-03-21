@@ -317,7 +317,9 @@ func (l *Label) Draw(dc DrawContext, x, y, w, h float64) {
 	l.lastDrawnHash = hash
 	// Clear label area before drawing new text.
 	fillRect(dc, l.Pal, x, y, pw, ph)
-	TextFace(l.Fonts, text, l.FontSize, l.Color, l.Bold)(dc, x, y, w, h)
+	loadFont(l.Fonts, dc, l.Bold, l.FontSize)
+	dc.SetColor(l.Color)
+	dc.DrawStringAnchored(text, x+pw/2, y+ph/2, 0.5, 0.5)
 }
 
 // ── Face factories ───────────────────────────────────────────────────────────

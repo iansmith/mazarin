@@ -133,7 +133,9 @@ func HandleSyscalls(ids ...sysid.ID) (<-chan SyscallRequest, error) {
 	}
 
 	ch := make(chan SyscallRequest, 4)
-	go delegateRecvLoop(ch)
+	ready := make(chan struct{})
+	go delegateRecvLoop(ch, ready)
+	<-ready // Wait for goroutine to start and lock its thread
 	return ch, nil
 }
 
@@ -144,8 +146,9 @@ func HandleSyscall(id sysid.ID) (<-chan SyscallRequest, error) {
 
 // delegateRecvLoop runs in a dedicated goroutine, calling SysDelegatedRecv
 // in a loop. The kernel returns whichever SysID has a pending request first.
-func delegateRecvLoop(ch chan<- SyscallRequest) {
+func delegateRecvLoop(ch chan<- SyscallRequest, ready chan<- struct{}) {
 	runtime.LockOSThread()
+	close(ready)
 	var result delegateRecvResult
 	for {
 		runtime_entersyscall()

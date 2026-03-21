@@ -35,31 +35,10 @@ type cityInfo struct {
 	loc     *time.Location
 }
 
-// findShepherdByName looks up a shepherd SID by its launch filename.
-// Returns -1 if not found.
-func findShepherdByName(name string) int {
-	entries, err := sys.ShepherdInfo()
-	if err != nil {
-		return -1
-	}
-	target := "/" + name + ".elf"
-	for _, e := range entries {
-		fn := string(e.Filename[:e.FilenameLen])
-		if fn == target {
-			return int(e.PID)
-		}
-	}
-	return -1
-}
-
 // announceToWM sends AppStart to rachel and sets click targets on the MouseState.
 // The mailbox receiver must already be running (started earlier for font loading).
 func announceToWM(mouse *mancini.MouseState, clickTargets []mancini.Drawer) {
-	rachelSID := findShepherdByName("rachel")
-	if rachelSID < 0 {
-		sys.UartWriteString("[clocks] WARNING: rachel not found\n")
-		return
-	}
+	rachelSID := sys.MustGetShepherdByName("rachel")
 
 	myPID := os.Getpid()
 	sys.UartWriteString(fmt.Sprintf("[clocks] found rachel SID=%d, my SID=%d (T+%v)\n", rachelSID, myPID, time.Since(startTime)))
@@ -96,8 +75,10 @@ func mailboxRecvLoopWithMouse(mouse *mancini.MouseState, fc *fontcache.FontCache
 			sys.UartWriteString("[clocks:mailbox] recv error\n")
 			continue
 		}
+		sys.UartWriteString(fmt.Sprintf("[clocks:mailbox] notif code=%d from SID=%d\n", notif.Code, notif.SenderSID))
 		switch notif.Code {
 		case wm.FontResponse:
+			sys.UartWriteString("[clocks:mailbox] FontResponse, calling HandleNotification\n")
 			fc.HandleNotification(notif)
 		case wm.ShepherdNotify:
 			rb := ringbuf.Open(uintptr(notif.RingAddr))
@@ -140,12 +121,17 @@ func main() {
 	mancini.Init()
 	sys.UartWriteString(fmt.Sprintf("[clocks] attr + interactor init done, SID=%s (T+%v)\n", attr.SID(), time.Since(startTime)))
 
-	// 2. Create font cache backed by fontsvc (inside rachel).
-	rachelSID := findShepherdByName("rachel")
-	if rachelSID < 0 {
-		sys.UartWriteString("[clocks] FATAL: rachel not found\n")
-		return
+	// 2. Wait for rachel (fontsvc) and disk (fs.maz) before creating fontcache.
+	sys.UartWriteString(fmt.Sprintf("[clocks] waiting for rachel + disk ready... (T+%v)\n", time.Since(startTime)))
+	if !sys.WaitForReady("rachel", 10*time.Second) {
+		panic("[clocks] FATAL: rachel not ready after 10s")
 	}
+	if !sys.WaitForReady("disk", 10*time.Second) {
+		panic("[clocks] FATAL: disk not ready after 10s")
+	}
+	sys.UartWriteString(fmt.Sprintf("[clocks] rachel + disk ready (T+%v)\n", time.Since(startTime)))
+
+	rachelSID := sys.MustGetShepherdByName("rachel")
 	fc := fontcache.New(rachelSID)
 	sys.UartWriteString(fmt.Sprintf("[clocks] fontcache created, rachel SID=%d (T+%v)\n", rachelSID, time.Since(startTime)))
 
@@ -186,18 +172,22 @@ func main() {
 		}
 		cities[i].loc = loc
 	}
+	sys.UartWriteString(fmt.Sprintf("[clocks] %d cities configured (T+%v)\n", len(cities), time.Since(startTime)))
 
 	// 4. Time tracking via constraint system — needed by Clock widgets.
+	sys.UartWriteString(fmt.Sprintf("[clocks] setting up time constraints... (T+%v)\n", time.Since(startTime)))
 	timeProg := interactor.BindStrings(interactor.ProgIdentityI64,
 		"attr:///kernel/int64/time/utc_seconds")
 	timeSec := attr.ConstraintI64(attr.ShepherdURI("int64", "time_sec"), timeProg)
 	timeSec.Get()
+	sys.UartWriteString(fmt.Sprintf("[clocks] timeSec constraint ready (T+%v)\n", time.Since(startTime)))
 
 	nanosProg := interactor.BindStrings(interactor.ProgIdentityI64,
 		"attr:///kernel/int64/time/utc_nanos")
 	timeNanos := attr.ConstraintI64(attr.ShepherdURI("int64", "time_nanos"), nanosProg)
 	timeNanos.SetEager(true)
 	_ = timeNanos.Get()
+	sys.UartWriteString(fmt.Sprintf("[clocks] timeNanos constraint ready (T+%v)\n", time.Since(startTime)))
 
 	// 5. Build drawer tree: AppWindow → Row → 4 Columns → [Label, NeuCircle→Clock, Label].
 	textColor := color.NRGBA{0, 0, 0, 255}
@@ -217,6 +207,7 @@ func main() {
 	// to the child Clock via ChildAccessor.
 	var clickTargets []mancini.Drawer
 
+	sys.UartWriteString(fmt.Sprintf("[clocks] building columns... (T+%v)\n", time.Since(startTime)))
 	var columns []mancini.Drawer
 	for i, city := range cities {
 		colName := city.id + "_col"
@@ -305,10 +296,15 @@ func main() {
 		}
 
 		// InitLayout bottom-up: leaves first, then decorator, then container.
+		sys.UartWriteString(fmt.Sprintf("[clocks] col %d: cityLabel.InitLayout... (T+%v)\n", i, time.Since(startTime)))
 		cityLabel.InitLayout(colName)
+		sys.UartWriteString(fmt.Sprintf("[clocks] col %d: cityLabel done, clockWidget... (T+%v)\n", i, time.Since(startTime)))
 		clockWidget.InitLayout(circleName)
+		sys.UartWriteString(fmt.Sprintf("[clocks] col %d: clockWidget done (T+%v)\n", i, time.Since(startTime)))
 		circle.InitLayout(colName)
+		sys.UartWriteString(fmt.Sprintf("[clocks] col %d: circle done, tzLabel... (T+%v)\n", i, time.Since(startTime)))
 		tzLabel.InitLayout(colName)
+		sys.UartWriteString(fmt.Sprintf("[clocks] col %d: tzLabel done, faceNameLabel... (T+%v)\n", i, time.Since(startTime)))
 		faceNameLabel.InitLayout(colName) // measures width from static Text field
 		faceNameSpacer.InitLayout(colName)
 		col.InitLayout("main_row")
@@ -324,7 +320,10 @@ func main() {
 		mancini.SetVisible(faceNameSpacer, false)
 
 		columns = append(columns, col)
+		sys.UartWriteString(fmt.Sprintf("[clocks] column %d (%s) built (T+%v)\n", i, city.id, time.Since(startTime)))
 	}
+
+	sys.UartWriteString(fmt.Sprintf("[clocks] UI tree built: %d columns (T+%v)\n", len(columns), time.Since(startTime)))
 
 	row := &mancini.Row{
 		Pal:               pal,
@@ -413,7 +412,7 @@ func main() {
 	_ = readyHandle
 	sys.UartWriteString(fmt.Sprintf("[clocks] Ready=true, Bounds published (T+%v)\n", time.Since(startTime)))
 
-	// 10. Announce to rachel and set up position constraints from her visibleArea.
+	// 10. Rachel already confirmed ready (step 2b). Announce to WM.
 	announceToWM(mouse, clickTargets)
 
 	// Use rachel's SID to read her visibleArea attributes.

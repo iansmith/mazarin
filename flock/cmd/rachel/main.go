@@ -602,6 +602,7 @@ func mailboxLoop(ch <-chan sys.MailboxNotification) {
 }
 
 func main() {
+	startTime := time.Now()
 	fmt.Println("[rachel] Starting window manager")
 
 	// Claim window manager role — rachel gets ALL input events automatically
@@ -609,11 +610,11 @@ func main() {
 		fmt.Printf("[rachel] failed to become window manager: %v\n", err)
 		return
 	}
-	fmt.Println("[rachel] became window manager")
+	fmt.Printf("[rachel] became window manager (T+%v)\n", time.Since(startTime))
 
 	// Initialize constraint system early — mailbox handler creates constraints.
 	attr.Init()
-	fmt.Printf("[rachel] attr init done (SID=%s)\n", attr.SID())
+	fmt.Printf("[rachel] attr init done (SID=%s, T+%v)\n", attr.SID(), time.Since(startTime))
 
 	// Read kernel screen dimensions via constraints.
 	screenWProg := interactor.BindStrings(interactor.ProgIdentityI64,
@@ -626,7 +627,7 @@ func main() {
 
 	w := int32(screenW.Get())
 	h := int32(screenH.Get())
-	fmt.Printf("[rachel] kernel screen: %dx%d\n", w, h)
+	fmt.Printf("[rachel] kernel screen: %dx%d (T+%v)\n", w, h, time.Since(startTime))
 
 	// Set display dimensions for mouse clamping and initial cursor position.
 	displayWidth = w
@@ -648,7 +649,7 @@ func main() {
 	vaW := attr.ValueI64(attr.ShepherdURI("int64", "visibleArea/w"), int64(w))
 	vaH := attr.ValueI64(attr.ShepherdURI("int64", "visibleArea/h"), int64(h))
 	_, _, _, _ = vaX, vaY, vaW, vaH
-	fmt.Printf("[rachel] visibleArea published: rect(0,0,%d,%d)\n", w, h)
+	fmt.Printf("[rachel] visibleArea published: rect(0,0,%d,%d) (T+%v)\n", w, h, time.Since(startTime))
 
 	// Register standard and inverse cursors with the GPU.
 	initCursors()
@@ -662,7 +663,7 @@ func main() {
 	forceFontSvcItab(initData)
 
 	fontSvcPath := sys.LoadMazByName("/fontsvc")
-	fmt.Printf("[rachel] loading fontsvc from %s...\n", fontSvcPath)
+	fmt.Printf("[rachel] loading fontsvc from %s (T+%v)...\n", fontSvcPath, time.Since(startTime))
 	fontSvcMain, fontSvcInitAddr, fontSvcErr := mazhost.LoadMazBootstrap(fontSvcPath, nil)
 	if fontSvcErr != nil {
 		fmt.Printf("[rachel] LoadMazBootstrap(fontsvc) failed: %v\n", fontSvcErr)
@@ -690,13 +691,14 @@ func main() {
 		}
 		// Start fontsvc's MailboxRecv loop (which forwards non-font messages to rachelCh).
 		go mazhost.RunMaz(fontSvcMain)
-		fmt.Println("[rachel] fontsvc goroutine launched")
+		fmt.Printf("[rachel] fontsvc goroutine launched (T+%v)\n", time.Since(startTime))
 	}
 	runtime.Gosched()
 
 	// Start mailbox receiver — reads from channel populated by fontsvc.
 	go mailboxLoop(rachelCh)
 	runtime.Gosched()
+	fmt.Printf("[rachel] mailbox + event loops starting (T+%v)\n", time.Since(startTime))
 
 	// Launch event loops for all three device classes.
 	// As WM, rachel receives all events and can handle global shortcuts,
@@ -720,7 +722,7 @@ func main() {
 	// Publish ready status to constraint network using the well-known URI.
 	ready := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
 	_ = ready
-	fmt.Printf("[rachel] Ready=true published (SID=%s)\n", attr.SID())
+	fmt.Printf("[rachel] Ready=true published (SID=%s, T+%v)\n", attr.SID(), time.Since(startTime))
 
 	// Block main goroutine forever
 	select {}

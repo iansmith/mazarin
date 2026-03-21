@@ -6,6 +6,7 @@ import (
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 	"mazzy/shared/constants"
+	"sync/atomic"
 
 	"unsafe"
 )
@@ -83,6 +84,7 @@ func SyscallGettid(_, _, _, _, _, _ uint64) int64 {
 //
 //go:nosplit
 func SyscallSchedYield(_, _, _, _, _, _ uint64) int64 {
+	atomic.AddUint64(&YieldCallCount, 1)
 	// NOTE: Do NOT check m.locks here. Voluntary yields (from futex spin,
 	// usleep, etc.) must always be allowed. The Go runtime holds m.locks
 	// when calling futex/lock2, so blocking yield here creates a deadlock:

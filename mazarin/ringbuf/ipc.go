@@ -3,12 +3,11 @@ package ringbuf
 import (
 	"errors"
 	"mazzy/mazarin/sys"
-	"syscall"
 	"unsafe"
 )
 
 // New creates a ring buffer for IPC with a target shepherd.
-// If pageAddr is 0, a page is automatically allocated (via mmap + demand fault).
+// If pageAddr is 0, a page is allocated via SysAllocPages (kernel-tracked, PageIPCBuffer).
 // The page is then mapped into targetSID's address space via the kernel.
 // slotSize is the byte size of each message slot.
 // slotCount must be a power of 2.
@@ -17,18 +16,15 @@ import (
 // The target shepherd will receive the translated VA via a mailbox notification.
 func New(targetSID int, pageAddr uintptr, slotSize, slotCount uint32) (*RingBuffer, error) {
 	if pageAddr == 0 {
-		va, _, errno := syscall.RawSyscall6(
-			syscall.SYS_MMAP, 0, 4096,
-			syscall.PROT_READ|syscall.PROT_WRITE,
-			syscall.MAP_PRIVATE|syscall.MAP_ANONYMOUS,
-			^uintptr(0), 0)
-		if errno != 0 || int64(va) < 0 {
-			return nil, errors.New("ringbuf: mmap failed")
+		ptr, err := sys.AllocPages(1, sys.PageIPC)
+		if err != nil {
+			return nil, errors.New("ringbuf: AllocPages failed")
 		}
-		pageAddr = va
+		pageAddr = uintptr(ptr)
 	}
 
-	// Touch the page to ensure it's demand-faulted before mapping
+	// Touch the page to ensure it's faulted (AllocPages pages are pre-mapped,
+	// but callers passing their own pageAddr may not have faulted it).
 	p := (*byte)(unsafe.Pointer(pageAddr))
 	*p = 0
 

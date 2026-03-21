@@ -260,7 +260,8 @@ func BuddyAllocTyped(order int, pageType PageType, owner int16) uintptr {
 		buddyAlloc.kernelHeapPages += pagesAllocated
 	case PageKernelPT:
 		buddyAlloc.kernelPTPages += pagesAllocated
-	case PageUserText, PageUserROData, PageUserData, PageUserHeap, PageUserStack:
+	case PageUserText, PageUserROData, PageUserData, PageUserHeap, PageUserStack,
+		PageFontCache, PageIPCBuffer:
 		buddyAlloc.userPages += pagesAllocated
 	case PageUserPT:
 		buddyAlloc.userPTPages += pagesAllocated
@@ -353,7 +354,8 @@ func BuddyFreeTyped(pa uintptr, order int, pageType PageType) {
 		if buddyAlloc.kernelPTPages >= pagesFreed {
 			buddyAlloc.kernelPTPages -= pagesFreed
 		}
-	case PageUserText, PageUserROData, PageUserData, PageUserHeap, PageUserStack:
+	case PageUserText, PageUserROData, PageUserData, PageUserHeap, PageUserStack,
+		PageFontCache, PageIPCBuffer:
 		if buddyAlloc.userPages >= pagesFreed {
 			buddyAlloc.userPages -= pagesFreed
 		}

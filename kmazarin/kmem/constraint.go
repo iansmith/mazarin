@@ -29,28 +29,28 @@ const (
 	RegionHeaderSize = 256 // SharedPageHeader is 256 bytes
 
 	RegionNodeOff     = 0x0100  // 256 — attribute nodes
-	RegionNodeSize    = 0x10000 // 64KB = 512 × 128B
-	RegionNodeCap     = 512     // max attribute slots
+	RegionNodeSize    = 0x20000 // 128KB = 1024 × 128B
+	RegionNodeCap     = 1024    // max attribute slots
 
-	RegionEdgeOff     = 0x10100 // node end
+	RegionEdgeOff     = 0x20100 // node end
 	RegionEdgeSize    = 0x4000  // 16KB = 8192 × uint16
 	RegionEdgeCap     = 8192    // max edges
 
-	RegionBytecodeOff  = 0x14100 // edge end
+	RegionBytecodeOff  = 0x24100 // edge end
 	RegionBytecodeSize = 0x40000 // 256KB
 	RegionBytecodeCap  = 16384   // max 16B instructions
 
-	RegionStringOff   = 0x54100 // bytecode end
-	RegionStringSize  = 0x20000 // 128KB = 512 × 256B
-	RegionStringCap   = 512     // max string slots
+	RegionStringOff   = 0x64100  // bytecode end
+	RegionStringSize  = 0x40000  // 256KB = 1024 × 256B
+	RegionStringCap   = 1024     // max string slots
 
-	RegionCollOff     = 0x74100 // string end
-	RegionCollSize    = 0x8000  // 32KB = 1024 × 32B
-	RegionCollCap     = 1024    // max collection elements
+	RegionCollOff     = 0xA4100  // string end
+	RegionCollSize    = 0x8000   // 32KB = 1024 × 32B
+	RegionCollCap     = 1024     // max collection elements
 
-	RegionTrieOff     = 0x7C100 // collection end
-	RegionTrieSize    = 0x40000 // 256KB = 2048 × 128B
-	RegionTrieCap     = 2048    // max trie nodes
+	RegionTrieOff     = 0xAC100  // collection end
+	RegionTrieSize    = 0x40000  // 256KB = 2048 × 128B
+	RegionTrieCap     = 2048     // max trie nodes
 )
 
 // SharedPageHeader — first 256 bytes of the shared constraint pages.

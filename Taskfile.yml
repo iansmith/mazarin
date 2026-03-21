@@ -267,6 +267,9 @@ tasks:
       - '{{.USERSPACE_OVERLAY_DIR}}/runtime/cgo_mmap.go'
       - '{{.USERSPACE_OVERLAY_DIR}}/runtime/lock_spinbit.go'
       - '{{.USERSPACE_OVERLAY_DIR}}/runtime/maz_moduledata.go'
+      - '{{.USERSPACE_OVERLAY_DIR}}/runtime/sys_linux_arm64.s'
+      - '{{.USERSPACE_OVERLAY_DIR}}/runtime/walltime_mazzy.go'
+      - '{{.USERSPACE_OVERLAY_DIR}}/runtime/timestub2.go'
     generates:
       - '{{.USERSPACE_OVERLAY_JSON}}'
     cmds:

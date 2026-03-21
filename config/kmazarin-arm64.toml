@@ -6,7 +6,7 @@ timezone = "America/New_York"
 # and NOT echoed to the serial port. This improves performance since serial
 # UART output is slow, but means serial logs won't contain shepherd output.
 # When false (default), all output is echoed to serial as well.
-kernel_budget_mb = 32
+kernel_budget_mb = 64
 suppress_serial_stdio_copy = false
 suppress_kernel_serial = false
 # gc_percentage is set very high so that GOMEMLIMIT is the governor.
@@ -31,9 +31,9 @@ maz = ["fs=/fs.maz"]
 name = "rachel"
 path = "/rachel.elf"
 
-#[[shepherd]]
-#name = "stdio"
-#path = "/stdio.elf"
+[[shepherd]]
+name = "stdio"
+path = "/stdio.elf"
 
 #[[shepherd]]
 #name = "sievetest"

@@ -70,6 +70,15 @@ func GetTime() (seconds, nanoseconds uint64) {
 	return state.baseSeconds + elapsedSeconds, elapsedNanoseconds
 }
 
+// GetBootEpoch returns the boot epoch data for passing to userspace shepherds.
+// Returns (baseSeconds, baseTicks, frequency) where:
+//   - baseSeconds is Unix epoch seconds at boot time
+//   - baseTicks is the CNTVCT_EL0 value when the RTC was read
+//   - frequency is the timer frequency in Hz
+func GetBootEpoch() (baseSeconds, baseTicks, frequency uint64) {
+	return state.baseSeconds, state.baseTicks, state.frequency
+}
+
 // GetFrequency returns the timer frequency in Hz.
 func GetFrequency() uint64 {
 	return state.frequency

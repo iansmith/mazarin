@@ -7,6 +7,7 @@ import (
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/ktime"
 	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
 	"mazzy/shared/fs/fat32"
@@ -834,6 +835,16 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 	} else {
 		penv.SetEnv("SUPPRESS_SERIAL_STDIO_COPY", "0")
 	}
+
+	// Pass boot epoch to userspace for walltime computation.
+	// Shepherds use these to compute real wall clock time from CNTVCT_EL0
+	// without needing a clock_gettime SVC on every nanotime/walltime call.
+	bootSec, bootTicks, _ := ktime.GetBootEpoch()
+	// RTC only provides whole-second resolution, so boot nsec is 0.
+	penv.SetEnv("MAZZY_BOOT_SEC", uint64ToDecimal(bootSec))
+	penv.SetEnv("MAZZY_BOOT_TICKS", uint64ToDecimal(bootTicks))
+	penv.SetEnv("MAZZY_BOOT_NSEC", "0")
+
 	penv.SetAuxv(6, 4096) // AT_PAGESZ
 
 	argv := []string{filename, shepherdStr}
@@ -888,6 +899,21 @@ func readU64LE(b []byte) uint64 {
 //go:nosplit
 func uintptrToPtr(p uintptr) *byte {
 	return (*byte)(unsafePointer(p))
+}
+
+// uint64ToDecimal converts a uint64 to its decimal string representation.
+func uint64ToDecimal(val uint64) string {
+	if val == 0 {
+		return "0"
+	}
+	var buf [20]byte // uint64 max is 20 digits
+	pos := len(buf)
+	for val > 0 {
+		pos--
+		buf[pos] = byte('0' + val%10)
+		val /= 10
+	}
+	return string(buf[pos:])
 }
 
 // elfError represents an ELF parsing error

@@ -3,7 +3,6 @@ package ksyscall
 import (
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
-	"mazzy/kmazarin/serial"
 	"sync/atomic"
 )
 
@@ -51,6 +50,8 @@ func SyscallNanosleep(req, rem, _, _, _, _ uint64) int64 {
 		ticks += (uint64(nanoseconds) * frequency) / 1000000000
 	}
 
+	atomic.AddUint64(&NanosleepCallCount, 1)
+
 	// If requested sleep is 0, just yield
 	if ticks == 0 {
 		nextThread := ThreadFindReady()
@@ -64,17 +65,6 @@ func SyscallNanosleep(req, rem, _, _, _, _ uint64) int64 {
 	currentTick := kirq.ReadCounterValue()
 	deadline := currentTick + ticks
 
-	// Diagnostic: log first few nanosleep calls per shepherd
-	pid := getCurrentThreadSID()
-	if pid > 0 {
-		n := atomic.AddUint64(&dbgNanosleepCount, 1)
-		if n <= 5 {
-			serial.RawUARTPuts("[ns:")
-			serial.RawUARTDecimal(uint64(uint16(currentTID)))
-			serial.RawUART(']')
-		}
-	}
-
 	// Add to static deadline queue (always available, initialized in InitThreads)
 	AddDeadlineStatic(deadline, currentTID)
 
@@ -87,5 +77,3 @@ func SyscallNanosleep(req, rem, _, _, _, _ uint64) int64 {
 
 	return 0
 }
-
-var dbgNanosleepCount uint64

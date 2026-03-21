@@ -267,6 +267,9 @@ func buildUserspaceOverlay(overlay *Overlay, goroot, patchesDir string) error {
 		"runtime/lock_spinbit.go":     "runtime/lock_spinbit.go",
 		"runtime/maz_moduledata.go":   "runtime/maz_moduledata.go",
 		"runtime/netpoll_maz.go":      "runtime/netpoll_maz.go",
+		"runtime/sys_linux_arm64.s":   "runtime/sys_linux_arm64.s",
+		"runtime/walltime_mazzy.go":   "runtime/walltime_mazzy.go",
+		"runtime/timestub2.go":        "runtime/timestub2.go",
 	}
 
 	for goFile, patchFile := range patches {

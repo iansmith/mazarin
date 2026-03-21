@@ -95,8 +95,10 @@ func init() {
 	}
 }
 
-// IsDelegated returns true if the given SysID has a handler shepherd registered
-// and the caller is not the handler itself.
+// IsDelegated returns true if the given SysID has a handler shepherd registered,
+// the handler has signaled Ready, and the caller is not the handler itself.
+// Both registration (HandleSyscalls) and readiness (SetReady) are required
+// before the kernel will forward syscalls to the handler.
 //
 //go:nosplit
 func IsDelegated(id sysid.ID, callerSID int16) bool {
@@ -104,7 +106,21 @@ func IsDelegated(id sysid.ID, callerSID int16) bool {
 		return false
 	}
 	hpid := atomic.LoadInt32(&syscallDelegates[id].pid)
-	return hpid >= 0 && int16(hpid) != callerSID
+	if hpid < 0 || int16(hpid) == callerSID {
+		return false
+	}
+	return isDelegateReady(proc.ShepherdId(hpid))
+}
+
+// isDelegateReady checks if the handler shepherd has signaled Ready.
+// Scans ShepherdListData since PID != array index.
+func isDelegateReady(pid proc.ShepherdId) bool {
+	for i := 0; i < proc.MaxShepherds; i++ {
+		if proc.ShepherdListInUse[i] && proc.ShepherdListData[i].PID == pid {
+			return atomic.LoadInt32(&proc.ShepherdListData[i].Ready) != 0
+		}
+	}
+	return false
 }
 
 // DelegateSyscall forwards a syscall to the registered handler shepherd.
@@ -252,16 +268,33 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 				if !writeDelegateRecvResult(resultPtr, handlerShepherd.PageTableL0PA, e) {
 					serial.RawUARTPuts("[DLG] recv result write fault\r\n")
 				}
+				serial.RawUARTPuts("[DLG:deliver] recvTID=")
+				serial.RawUARTDecimal(uint64(recvTID))
+				serial.RawUARTPuts(" sysID=")
+				serial.RawUARTDecimal(uint64(id))
+				serial.RawUARTPuts("\r\n")
 				wakeDelegateThread(int32(recvTID), 0)
 			}
+		} else {
+			serial.RawUARTPuts("[DLG:queued] handlerSID=")
+			serial.RawUARTDecimal(uint64(handlerSID))
+			serial.RawUARTPuts(" sysID=")
+			serial.RawUARTDecimal(uint64(id))
+			serial.RawUARTPuts(" recvTID=-1\r\n")
 		}
 	}
 
 	restoreIRQs(savedDAIF)
 
 	// Block the caller
+	serial.RawUARTPuts("[DLG:block] callerTID=")
+	serial.RawUARTDecimal(uint64(callerTID))
+	serial.RawUARTPuts(" sysID=")
+	serial.RawUARTDecimal(uint64(id))
+	serial.RawUARTPuts("\r\n")
 	ctx := blockForDelegatedSyscall()
 	if ctx == 0 {
+		serial.RawUARTPuts("[DLG:block] NO NEXT THREAD, EAGAIN\r\n")
 		return -11 // EAGAIN
 	}
 	SetSyscallSwitchTarget(ctx)
@@ -508,6 +541,11 @@ func SyscallDelegatedRecv(arg0, _, _, _, _, _ uint64) int64 {
 	e := delegateQueuePopAnyForShepherd(mySID)
 	if e != nil {
 		restoreIRQs(savedDAIF)
+		serial.RawUARTPuts("[DLG:recv-hit] SID=")
+		serial.RawUARTDecimal(uint64(mySID))
+		serial.RawUARTPuts(" sysID=")
+		serial.RawUARTDecimal(uint64(e.SysID))
+		serial.RawUARTPuts("\r\n")
 		if !writeDelegateRecvResult(resultPtr, callerShepherd.PageTableL0PA, e) {
 			return -14 // EFAULT — handler's result buffer is not mapped
 		}
@@ -523,6 +561,12 @@ func SyscallDelegatedRecv(arg0, _, _, _, _, _ uint64) int64 {
 	}
 
 	restoreIRQs(savedDAIF)
+
+	serial.RawUARTPuts("[DLG:recv-block] SID=")
+	serial.RawUARTDecimal(uint64(mySID))
+	serial.RawUARTPuts(" TID=")
+	serial.RawUARTDecimal(uint64(callerTID))
+	serial.RawUARTPuts("\r\n")
 
 	ctx := blockForDelegatedRecv()
 	if ctx == 0 {
@@ -615,6 +659,13 @@ func SyscallDelegatedReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	}
 
 	// Wake the blocked caller thread with the return value
+	serial.RawUARTPuts("[DLG:reply] callerSID=")
+	serial.RawUARTDecimal(uint64(callerSID))
+	serial.RawUARTPuts(" callerTID=")
+	serial.RawUARTDecimal(uint64(callerTID))
+	serial.RawUARTPuts(" ret=")
+	serial.RawUARTHexCompact(uint64(returnVal))
+	serial.RawUARTPuts("\r\n")
 	wakeDelegateCallerThread(callerSID, int32(callerTID), returnVal)
 
 	return 0

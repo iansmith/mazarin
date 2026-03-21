@@ -53,8 +53,8 @@ type KernelAttrManager struct {
 	edgeCap      uint16
 
 	// Bitmap allocators — one bit per slot, 1 = allocated
-	nodeBitmap   [64]byte  // 512 bits = 512 node slots
-	stringBitmap [64]byte  // 512 bits = 512 string slots
+	nodeBitmap   [128]byte // 1024 bits = 1024 node slots
+	stringBitmap [128]byte // 1024 bits = 1024 string slots
 	trieBitmap   [256]byte // 2048 bits = 2048 trie nodes
 
 	// Bump allocators (byte offsets into their regions, relative to region start)

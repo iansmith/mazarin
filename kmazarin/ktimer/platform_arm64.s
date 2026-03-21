@@ -38,9 +38,19 @@ TEXT ·PlatformRearmTimer(SB), NOSPLIT, $0-8
 	ISB	$15
 	RET
 
-// PlatformTimerInit reads the counter frequency register.
+// PlatformTimerInit reads the counter frequency register and enables
+// EL0 access to counter registers (CNTVCT_EL0, CNTFRQ_EL0).
+// This is needed for userspace nanotime1/walltime to read the counter
+// directly without trapping to EL1.
 // func PlatformTimerInit() uint32
 TEXT ·PlatformTimerInit(SB), NOSPLIT, $0-4
+	// Enable EL0 access to virtual and physical counter registers.
+	// CNTKCTL_EL1: bit 0 = EL0PCTEN, bit 1 = EL0VCTEN
+	MOVD	$3, R0		// Set both EL0PCTEN and EL0VCTEN
+	// MSR CNTKCTL_EL1, X0 (op0=3, op1=0, CRn=14, CRm=1, op2=0)
+	WORD	$0xD518E100
+	ISB	$15
+
 	// MRS X0, CNTFRQ_EL0
 	WORD	$0xD53BE000
 	MOVW	R0, ret+0(FP)

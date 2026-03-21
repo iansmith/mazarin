@@ -1,6 +1,7 @@
 package fontcache
 
 import (
+	"fmt"
 	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/wm"
@@ -59,9 +60,12 @@ func (fc *FontCache) OpenFace(path string, bold bool, size float64) font.Face {
 	key := faceKey{path: path, bold: bold, size: size}
 	for i := 0; i < fc.cachedCount; i++ {
 		if fc.cachedFaces[i].key == key {
+			sys.UartWriteString(fmt.Sprintf("[fontcache] cache hit: %s bold=%v size=%.0f\n", path, bold, size))
 			return fc.cachedFaces[i].face
 		}
 	}
+
+	sys.UartWriteString(fmt.Sprintf("[fontcache] cache miss: %s bold=%v size=%.0f, pushing to rb\n", path, bold, size))
 
 	var msg wm.OpenFontMsg
 	msg.Type = wm.MsgOpenFont
@@ -72,13 +76,16 @@ func (fc *FontCache) OpenFace(path string, bold bool, size float64) font.Face {
 	copy(msg.Path[:], path)
 
 	fc.requestRb.Push(unsafe.Pointer(&msg))
+	sys.UartWriteString("[fontcache] pushed, calling MailboxSend\n")
 	if err := sys.MailboxSend(fc.rachelSID, wm.FontNotify, fc.requestRb.Addr()); err != nil {
 		sys.UartWriteString("[fontcache] MailboxSend failed: " + err.Error() + "\n")
 		return nil
 	}
+	sys.UartWriteString("[fontcache] MailboxSend OK, waiting on replyCh\n")
 
 	// Block until fontsvc responds
 	raw := <-fc.replyCh
+	sys.UartWriteString("[fontcache] got reply from replyCh\n")
 	msgType := *(*int64)(unsafe.Pointer(&raw[0]))
 	if msgType != wm.MsgOpenFontReply {
 		sys.UartWriteString("[fontcache] unexpected reply type\n")
@@ -87,6 +94,16 @@ func (fc *FontCache) OpenFace(path string, bold bool, size float64) font.Face {
 	reply := (*wm.OpenFontReplyMsg)(unsafe.Pointer(&raw[0]))
 	if reply.FontID < 0 {
 		sys.UartWriteString("[fontcache] OpenFont failed (FontID=-1)\n")
+		// Cache the nil result to prevent repeated blocking requests
+		// during the event loop. If fonts need to load later, the
+		// caller should ensure services are ready before calling OpenFace.
+		if fc.cachedCount < len(fc.cachedFaces) {
+			fc.cachedFaces[fc.cachedCount] = struct {
+				key  faceKey
+				face font.Face
+			}{key: key, face: nil}
+			fc.cachedCount++
+		}
 		return nil
 	}
 
@@ -113,9 +130,14 @@ func (fc *FontCache) HandleNotification(notif sys.MailboxNotification) {
 		fc.responseRb = rb
 	}
 	var raw [wm.SizeWMMessage]byte
+	count := 0
 	for rb.Pop(unsafe.Pointer(&raw[0])) {
+		count++
+		sys.UartWriteString(fmt.Sprintf("[fontcache] HandleNotification: pushing msg %d to replyCh (len=%d cap=%d)\n", count, len(fc.replyCh), cap(fc.replyCh)))
 		fc.replyCh <- raw
+		sys.UartWriteString(fmt.Sprintf("[fontcache] HandleNotification: pushed msg %d\n", count))
 	}
+	sys.UartWriteString(fmt.Sprintf("[fontcache] HandleNotification: done, %d msgs\n", count))
 }
 
 // requestGlyph sends a tier-2 glyph request and blocks until fontsvc renders it.
