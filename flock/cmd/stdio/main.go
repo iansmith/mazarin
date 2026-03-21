@@ -20,6 +20,7 @@ import (
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/fontcache"
 	"mazzy/mazarin/interactor"
+	mfont "mazzy/shared/font"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/serial"
@@ -250,7 +251,7 @@ func main() {
 
 	fonts := &mancini.FontConfig{
 		LoadFace: func(bold bool, size float64) font.Face {
-			return fc.OpenFace("/fonts/AtkinsonHyperlegibleMono-Regular.otf", false, size)
+			return fc.OpenFaceByName(mfont.DefaultMono, mfont.Regular, size)
 		},
 	}
 	sys.UartWriteString(fmt.Sprintf("[stdio] FontConfig ready (T+%v)\n", time.Since(startTime)))

@@ -11,6 +11,7 @@ import (
 	"golang.org/x/image/font"
 
 	"mazzy/mazarin/attr"
+	mfont "mazzy/shared/font"
 	"mazzy/mazarin/fontcache"
 	"mazzy/mazarin/interactor"
 	"mazzy/mazarin/mancini"
@@ -143,11 +144,11 @@ func main() {
 
 	fonts := &mancini.FontConfig{
 		LoadFace: func(bold bool, size float64) font.Face {
-			path := "/fonts/AtkinsonHyperlegibleMono-Regular.otf"
+			style := mfont.Regular
 			if bold {
-				path = "/fonts/AtkinsonHyperlegibleMono-Bold.otf"
+				style = mfont.Bold
 			}
-			return fc.OpenFace(path, bold, size)
+			return fc.OpenFaceByName(mfont.DefaultMono, style, size)
 		},
 	}
 	sys.UartWriteString(fmt.Sprintf("[clocks] fonts configured via fontcache (T+%v)\n", time.Since(startTime)))

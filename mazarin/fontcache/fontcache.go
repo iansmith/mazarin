@@ -35,6 +35,10 @@ type FontCache struct {
 		face font.Face
 	}
 	cachedCount int
+
+	// fontIndex is loaded lazily on first OpenFaceByName call.
+	fontIndex       *FontIndex
+	fontIndexLoaded bool // true after first load attempt (even if it failed)
 }
 
 // New creates a FontCache that communicates with fontsvc via rachel's mailbox.
@@ -119,6 +123,27 @@ func (fc *FontCache) OpenFace(path string, bold bool, size float64) font.Face {
 	}
 
 	return face
+}
+
+// OpenFaceByName resolves a logical (family, style) to a font path via
+// the font index (/fonts/fonts.csv) and opens the face. The index is
+// loaded lazily on first call.
+//
+// Example: fc.OpenFaceByName("AtkinsonHyperlegibleMono", "Bold", 18)
+func (fc *FontCache) OpenFaceByName(family, style string, size float64) font.Face {
+	if !fc.fontIndexLoaded {
+		fc.fontIndexLoaded = true
+		idx, err := LoadFontIndex("/fonts/fonts.csv")
+		if err != nil {
+			panic("[fontcache] failed to load font index: " + err.Error())
+		}
+		fc.fontIndex = idx
+	}
+	path := fc.fontIndex.Resolve(family, style)
+	if path == "" {
+		panic("[fontcache] font not in index: " + family + "/" + style)
+	}
+	return fc.OpenFace(path, IsBoldStyle(style), size)
 }
 
 // HandleNotification is called by the shepherd's mailbox loop when a

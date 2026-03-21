@@ -1147,6 +1147,7 @@ tasks:
     method: checksum
     sources:
       - '{{.FONTS_DIR}}/**/*'
+      - 'fonts/fonts.csv'
     generates:
       - '{{.FONTS_BASE_IMAGE}}'
     status:
@@ -1156,6 +1157,7 @@ tasks:
         msg: "Fonts directory not found at {{.FONTS_DIR}}. Set FONTS_DIR env var or skip this task."
     cmds:
       - '{{.GO}} tool go-echo "Creating fonts base image from {{.FONTS_DIR}}..."'
+      - '{{.GO}} tool go-cp fonts/fonts.csv {{.FONTS_DIR}}/fonts.csv'
       - '{{.GO}} tool mkfat32 -o {{.FONTS_BASE_IMAGE}} -pad {{.FONTS_PAD_MB}} -dir /fonts={{.FONTS_DIR}}'
       - '{{.GO}} tool go-echo "Fonts base image created at {{.FONTS_BASE_IMAGE}}"'
 
