@@ -42,7 +42,7 @@ type DrawContext interface {
 	SetFontFace(fontFace font.Face)
 	LoadFontFace(path string, points float64) error
 
-	// Transform stack.
+	// Transform stack and clipping.
 	Push()
 	Pop()
 	Rotate(angle float64)
@@ -128,3 +128,4 @@ func (c *ClippedContext) Flush() {
 		copy(c.canvas.Pix[di:di+sw*4], c.saved[si:si+sw*4])
 	}
 }
+

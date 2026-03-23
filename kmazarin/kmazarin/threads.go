@@ -1079,6 +1079,7 @@ func ProcessDeadlinesTopHalf() {
 		serial.RawUARTPuts("/")
 		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.FutexWakeCalls))
 		printThreadStateSummary()
+		printYieldCounters()
 		// Kernel goroutine preemption counters (seen/notWanted/unsafe/injected)
 		seen, notWanted, unsafePt, injected := getKGPCounters()
 		if seen > 0 || injected > 0 {
@@ -1146,6 +1147,17 @@ func ProcessDeadlinesTopHalf() {
 	if cnt%500 == 0 {
 		serial.RawUART('.')
 	}
+}
+
+// printYieldCounters prints yield success/fail counters for the [E] event dump.
+// NOT nosplit — breaks the nosplit chain.
+func printYieldCounters() {
+	serial.RawUARTPuts(" Y=")
+	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.YieldCallCount))
+	serial.RawUART('/')
+	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.YieldSwitchCount))
+	serial.RawUART('/')
+	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.YieldNoReadyCount))
 }
 
 // printADScanCounters prints A/D scan delta counters for the [E] event dump.
@@ -1288,9 +1300,12 @@ var dbgBoostAttempt uint64        // times boostThread0ForPendingWork was called
 var dbgBoostSuccess uint64        // times boost succeeded (thread 0 was Ready)
 var dbgBoostFailState uint64      // thread 0 state when boost failed (last value)
 
-//go:nosplit
 func printThreadStateSummary() {
-	var nReady, nFutex, nSleep, nSoftIRQ, nRunning int
+	var nReady, nFutex, nSleep, nSoftIRQ, nRunning, nMailbox, nDelegate int
+	var runTID int32 = -1
+	var runSID int16 = -1
+	var readyTIDs [8]int32 // Track up to 8 Ready thread TIDs
+	var readyCount int
 	for i := 0; i < threadArraySize; i++ {
 		if !threadListInUse[i] {
 			continue
@@ -1298,41 +1313,55 @@ func printThreadStateSummary() {
 		switch threadListData[i].State {
 		case ThreadReady:
 			nReady++
+			if readyCount < len(readyTIDs) {
+				readyTIDs[readyCount] = int32(threadListData[i].TID)
+				readyCount++
+			}
 		case ThreadRunning:
 			nRunning++
+			runTID = int32(threadListData[i].TID)
+			runSID = threadListData[i].ShepherdIdx
 		case ThreadBlockedFutex:
 			nFutex++
 		case ThreadSleeping:
 			nSleep++
 		case ThreadBlockedSoftIRQ:
 			nSoftIRQ++
+		case ThreadBlockedMailbox:
+			nMailbox++
+		case ThreadBlockedDelegate, ThreadBlockedDelegateRecv:
+			nDelegate++
 		}
 	}
 	serial.RawUARTPuts(" R=")
 	serial.RawUARTDecimal(uint64(nReady))
+	if readyCount > 0 {
+		serial.RawUART('{')
+		for i := 0; i < readyCount; i++ {
+			if i > 0 {
+				serial.RawUART(',')
+			}
+			serial.RawUARTDecimal(uint64(readyTIDs[i]))
+		}
+		serial.RawUART('}')
+	}
 	serial.RawUARTPuts(" F=")
 	serial.RawUARTDecimal(uint64(nFutex))
 	serial.RawUARTPuts(" S=")
 	serial.RawUARTDecimal(uint64(nSleep))
 	serial.RawUARTPuts(" I=")
 	serial.RawUARTDecimal(uint64(nSoftIRQ))
+	serial.RawUARTPuts(" M=")
+	serial.RawUARTDecimal(uint64(nMailbox))
+	serial.RawUARTPuts(" D=")
+	serial.RawUARTDecimal(uint64(nDelegate))
 	serial.RawUARTPuts(" X=")
 	serial.RawUARTDecimal(uint64(nRunning))
-	// Show TIDs of Ready threads (up to 8)
-	if nReady > 0 {
-		serial.RawUARTPuts(" Rt[")
-		shown := 0
-		for i := 0; i < threadArraySize && shown < 8; i++ {
-			if threadListInUse[i] && threadListData[i].State == ThreadReady {
-				if shown > 0 {
-					serial.RawUART(',')
-				}
-				serial.RawUARTDecimal(uint64(threadListData[i].TID))
-				serial.RawUART('/')
-				serial.RawUARTDecimal(uint64(threadListData[i].PID))
-				shown++
-			}
-		}
+	if runTID >= 0 {
+		serial.RawUART('[')
+		serial.RawUARTDecimal(uint64(runTID))
+		serial.RawUART('s')
+		serial.RawUARTDecimal(uint64(runSID))
 		serial.RawUART(']')
 	}
 	serial.RawUARTPuts("\n")
@@ -1486,11 +1515,12 @@ func SaveThread0AndYield() uint64 {
 		return 0
 	}
 
-	// Thread 0 is the idle thread — NOT enqueued in the ready queue.
-	// It runs opportunistically between preemptions of other threads.
-	// Save context so it can be restored, but don't queue it.
+	// Thread 0 participates in normal round-robin scheduling.
+	// Its idle loop yields quickly via YieldToReadyThread() when
+	// other threads are ready, so it won't hog the CPU.
 	t0.State = ThreadReady
 	pluckFromAllQueues(t0.TID) // safety: ensure not in queue from prior path
+	GetPerCPU().LocalReadyQueue.PushNoDuplicate(t0.TID)
 
 	// Update tick accounting for thread 0
 	currentTime := kirq.ReadCounterValue()
@@ -2242,8 +2272,12 @@ func threadToIdx(t *Thread) int32 {
 
 // enqueueReadySchedLockHeld pushes a thread onto the ready queue.
 // Uses per-CPU queues: thread goes to its HomeCPU's local queue.
-// Kernel threads (PID == 0) go to the FRONT for priority scheduling;
-// all other threads go to the BACK (FIFO).
+// All threads go to the BACK (FIFO round-robin). Kernel threads no longer
+// get HEAD priority — this caused starvation where sysmon (PID=0) waking
+// from sleep deadlines always went to HEAD, blocking userspace threads at
+// TAIL from ever being scheduled. The boostThread0ForPendingWork mechanism
+// in checkThreadPreemptionImpl handles the urgent case where thread 0
+// must run to dispatch LoadMaz/RunMaz/RunShepherd work.
 // REQUIRES: schedulerLock held.
 //
 //go:nosplit
@@ -2251,7 +2285,7 @@ func enqueueReadySchedLockHeld(t *Thread) {
 	enqueueReadyToHomeCPU(t)
 }
 
-// enqueueReadyToHomeCPU adds thread to its HomeCPU's local queue.
+// enqueueReadyToHomeCPU adds thread to its HomeCPU's local queue (TAIL).
 // Falls back to current CPU if HomeCPU is invalid.
 // REQUIRES: schedulerLock held (protects all per-CPU queues).
 //
@@ -2266,16 +2300,10 @@ func enqueueReadyToHomeCPU(t *Thread) {
 	}
 
 	perCPU := GetPerCPUByID(uint64(targetCPU))
-
-	// Kernel threads (PID=0) still get priority (front of queue)
-	if t.PID == 0 {
-		perCPU.LocalReadyQueue.PushHeadNoDuplicate(t.TID)
-	} else {
-		perCPU.LocalReadyQueue.PushNoDuplicate(t.TID)
-	}
+	perCPU.LocalReadyQueue.PushNoDuplicate(t.TID)
 }
 
-// enqueueReadyToCurrentCPU adds thread to current CPU's local queue.
+// enqueueReadyToCurrentCPU adds thread to current CPU's local queue (TAIL).
 // Used when no HomeCPU affinity is desired (e.g., newly created threads).
 // REQUIRES: schedulerLock held.
 //
@@ -2285,12 +2313,7 @@ func enqueueReadyToCurrentCPU(t *Thread) {
 	t.HomeCPU = int8(cpuID) // Set affinity to current CPU
 
 	perCPU := GetPerCPU()
-
-	if t.PID == 0 {
-		perCPU.LocalReadyQueue.PushHeadNoDuplicate(t.TID)
-	} else {
-		perCPU.LocalReadyQueue.PushNoDuplicate(t.TID)
-	}
+	perCPU.LocalReadyQueue.PushNoDuplicate(t.TID)
 }
 
 // enqueueReadyByTIDSchedLockHeld is like enqueueReadySchedLockHeld but looks up the
@@ -2518,24 +2541,38 @@ func findReadyUserspaceThreadSchedLockHeld(currentPID ShepherdId) *Thread {
 	return nil
 }
 
-// ThreadFindReady finds the next READY thread
-// Returns CONTEXT POINTER of ready thread, or 0 (nil) if none found
+// ThreadFindReady finds the next READY thread to yield to.
+// Returns CONTEXT POINTER of ready thread, or 0 (nil) if none found.
+//
+// When the current thread is userspace, only userspace threads are considered.
+// The old approach popped a kernel thread from HEAD, rejected it, and re-enqueued
+// it — creating a livelock where userspace threads at TAIL were never reached.
+// Now we use findReadyUserspaceThreadSchedLockHeld which scans without popping,
+// skipping kernel threads in place.
 //
 // NOTE: Returns context pointer (not index) so 0 unambiguously means "no switch".
 // Thread index 0 is valid and would return a non-zero context pointer.
 //
 //go:nosplit
 func ThreadFindReady() uintptr {
-	t := findReadyThreadSchedLockHeld()
-	if t == nil {
-		return 0
-	}
-	// If current thread is userspace, skip kernel threads — the SVC return
-	// goes through el0_return/ERET which needs EL0 context.
-	// If current thread is kernel, allow any thread type.
+	savedDAIF := SaveAndDisableIRQs()
+	schedulerLock.Lock()
+
 	current := GetCurrentThread()
-	if current != nil && current.PageTableL0PA != 0 && t.PageTableL0PA == 0 {
-		enqueueReadySchedLockHeld(t)
+	var t *Thread
+	if current != nil && current.PID > 0 {
+		// Userspace caller: only find userspace threads.
+		// -1 means no shepherd preference (accept any userspace thread).
+		t = findReadyUserspaceThreadSchedLockHeld(-1)
+	} else {
+		// Kernel caller: any thread type is fine.
+		t = findReadyThreadSchedLockHeld()
+	}
+
+	schedulerLock.Unlock()
+	RestoreIRQs(savedDAIF)
+
+	if t == nil {
 		return 0
 	}
 	return uintptr(unsafe.Pointer(&t.Context))
@@ -3158,14 +3195,12 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 
 	oldThread.State = ThreadReady
 
-	// Thread 0 is the idle thread — NOT enqueued. It runs opportunistically
-	// between preemptions of other threads. All other threads go to TAIL.
-	if oldThread.TID != 0 {
-		pluckFromAllQueues(oldThread.TID)
-		GetPerCPU().LocalReadyQueue.PushNoDuplicate(oldThread.TID) // TAIL
-	} else {
-		pluckFromAllQueues(oldThread.TID) // safety: ensure not in queue
-	}
+	// All threads — including thread 0 — go to TAIL of the ready queue.
+	// Thread 0 participates in normal round-robin scheduling. Its idle
+	// loop calls YieldToReadyThread() after doing housekeeping work, so
+	// it voluntarily donates most of its quantum to other threads.
+	pluckFromAllQueues(oldThread.TID)
+	GetPerCPU().LocalReadyQueue.PushNoDuplicate(oldThread.TID) // TAIL
 
 	// Reset preemption tracking for the preempted thread
 	oldThread.PreemptElapsed = 0
@@ -3177,25 +3212,9 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	}
 	oldThread.TicksStartedRunning = 0 // Mark as not running
 
-	// Opportunistic idle thread scheduling:
-	// When preempting a non-idle thread, switch to thread 0 first so it can
-	// do one idle loop iteration (IRQ bridging, dispatch, deadlines). Thread 0
-	// runs for microseconds then yields to the next ready thread.
-	// Sequence: ... → T0 → A (100ms) → T0 → B (100ms) → T0 → ...
-	// Two extra context switches per quantum, negligible vs 100ms tick.
-	var next *Thread
-	if oldThread.TID != 0 {
-		// Non-idle thread preempted: run thread 0 if available
-		thread0 := threadLookupByTID(0)
-		if thread0 != nil && thread0.State == ThreadReady {
-			next = thread0
-		} else {
-			next = findReadyThreadSchedLockHeld()
-		}
-	} else {
-		// Thread 0 preempted: pick next real thread from queue
-		next = findReadyThreadSchedLockHeld()
-	}
+	// Pick next ready thread — no special-casing for thread 0.
+	// All threads are treated equally in the ready queue.
+	next := findReadyThreadSchedLockHeld()
 
 	if next == nil {
 		// No ready thread — continue current

@@ -21,6 +21,8 @@ var (
 	GCCountBySID            [16]uint64 // Per-shepherd GC cycle counter (indexed by PID)
 	NanosleepCallCount uint64     // Total nanosleep calls (all threads)
 	YieldCallCount     uint64     // Total sched_yield calls (all threads)
+	YieldSwitchCount   uint64     // Yields that actually found a thread to switch to
+	YieldNoReadyCount  uint64     // Yields that found no ready thread
 	SVCCountBySID      [32]uint64 // Per-SID SVC counter for diagnostics
 )
 

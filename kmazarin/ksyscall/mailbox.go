@@ -141,7 +141,10 @@ func SyscallMailboxRecv(arg0, _, _, _, _, _ uint64) int64 {
 		return -11 // Value overwritten by re-executed SVC
 	}
 
-	// No other thread — WFI loop
+	// No other thread — WFI loop (should rarely be reached with thread 0 fallback)
+	serial.RawUARTPuts("[MBR:WFI] sid=")
+	serial.RawUARTDecimal(uint64(shepherdIdx))
+	serial.RawUARTPuts("\r\n")
 	for {
 		enableIRQsAndWait()
 		notif, ok = drainMailboxQueue(shepherdIdx)

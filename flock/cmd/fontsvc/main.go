@@ -129,6 +129,18 @@ func findCachedFont(path string, variant int32, size float32) int32 {
 	return -1
 }
 
+// findParsedFont finds an existing slot with the same path+variant (any size).
+// Returns the parsed *opentype.Font so we can skip LoadFile+Parse.
+func findParsedFont(path string, variant int32) *opentype.Font {
+	for i := int32(0); i < fontcache.MaxFonts; i++ {
+		if fonts[i].inUse && fonts[i].path == path &&
+			fonts[i].variant == variant && fonts[i].otFont != nil {
+			return fonts[i].otFont
+		}
+	}
+	return nil
+}
+
 // MazarinMain is the fontsvc entry point. It runs the MailboxRecv loop,
 // handling font requests and forwarding other notifications to rachel.
 //
@@ -230,28 +242,35 @@ func handleOpenFont(senderSID int, msg *wm.OpenFontMsg) {
 	rawPutsInt(int(fontID))
 	rawPuts("\n")
 
-	// Load font file from FAT32.
-	rawPuts("[fontsvc] step4: LoadFile\n")
-	result, loadErr := sys.LoadFile(path)
-	if loadErr != nil {
-		rawPuts("[fontsvc] LoadFile failed: " + path + "\n")
-		sendOpenFontError(conn, senderSID)
-		return
-	}
-	rawPuts("[fontsvc] step4: LoadFile done, bytes=")
-	rawPutsInt(int(result.BytesRead))
-	rawPuts("\n")
-	fontData := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(result.StartVA))), result.BytesRead)
+	// Try reusing an already-parsed font (same file, different size).
+	otFont := findParsedFont(path, msg.Variant)
+	if otFont != nil {
+		rawPuts("[fontsvc] step4: reusing parsed font (skip LoadFile+Parse)\n")
+	} else {
+		// Load font file from FAT32.
+		rawPuts("[fontsvc] step4: LoadFile\n")
+		result, loadErr := sys.LoadFile(path)
+		if loadErr != nil {
+			rawPuts("[fontsvc] LoadFile failed: " + path + "\n")
+			sendOpenFontError(conn, senderSID)
+			return
+		}
+		rawPuts("[fontsvc] step4: LoadFile done, bytes=")
+		rawPutsInt(int(result.BytesRead))
+		rawPuts("\n")
+		fontData := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(result.StartVA))), result.BytesRead)
 
-	// Parse font.
-	rawPuts("[fontsvc] step5: opentype.Parse\n")
-	otFont, err := opentype.Parse(fontData)
-	if err != nil {
-		rawPuts("[fontsvc] opentype.Parse failed\n")
-		sendOpenFontError(conn, senderSID)
-		return
+		// Parse font.
+		rawPuts("[fontsvc] step5: opentype.Parse\n")
+		var err error
+		otFont, err = opentype.Parse(fontData)
+		if err != nil {
+			rawPuts("[fontsvc] opentype.Parse failed\n")
+			sendOpenFontError(conn, senderSID)
+			return
+		}
+		rawPuts("[fontsvc] step5: Parse done\n")
 	}
-	rawPuts("[fontsvc] step5: Parse done\n")
 
 	// Create face at requested size.
 	rawPuts("[fontsvc] step6: NewFace\n")

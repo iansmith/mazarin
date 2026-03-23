@@ -194,11 +194,13 @@ func mailboxSendKernel(senderSID, targetSID int16, code int64, senderVA uintptr)
 	}
 
 	// Wake if blocked
+	var wokeTID ThreadId = -1
 	tid := mailboxBlockedTID[targetSID]
 	if tid >= 0 {
 		t := (*Thread)(unsafe.Pointer(mailboxBlockedPtr[targetSID]))
 		if t != nil && t.State == ThreadBlockedMailbox {
 			t.State = ThreadReady
+			wokeTID = t.TID
 			mailboxBlockedTID[targetSID] = -1
 			mailboxBlockedPtr[targetSID] = 0
 			t.Context.RewindToSyscall()
@@ -211,6 +213,25 @@ func mailboxSendKernel(senderSID, targetSID int16, code int64, senderVA uintptr)
 
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
+
+	// Diagnostic: print wake status after releasing lock
+	if code == 3 { // FontNotify
+		serial.RawUARTPuts("[MBS] tgt=")
+		serial.RawUARTDecimal(uint64(targetSID))
+		serial.RawUARTPuts(" blkTID=")
+		if tid >= 0 {
+			serial.RawUARTDecimal(uint64(tid))
+		} else {
+			serial.RawUARTPuts("-1")
+		}
+		serial.RawUARTPuts(" woke=")
+		if wokeTID >= 0 {
+			serial.RawUARTDecimal(uint64(wokeTID))
+		} else {
+			serial.RawUARTPuts("none")
+		}
+		serial.RawUARTPuts("\r\n")
+	}
 
 	return 0
 }
@@ -251,7 +272,21 @@ func BlockForMailboxRecv(shepherdIdx int, bufPtr uint64) uintptr {
 	if next == nil && t.PageTableL0PA != 0 {
 		next = findReadyThreadSchedLockHeld()
 	}
+	if next == nil && t.TID != 0 {
+		// Last resort: look for thread 0 (idle thread) directly.
+		// Thread 0's idle loop runs with svcDepth=0 and can be preempted,
+		// avoiding the WFI-inside-SVC stall that blocks all scheduling.
+		t0 := threadLookupByTID(0)
+		if t0 != nil && t0.State == ThreadReady {
+			pluckFromAllQueues(t0.TID)
+			next = t0
+		}
+	}
 	if next == nil {
+		// Truly nobody available — return 0 for WFI fallback.
+		// Do NOT set ThreadBlockedMailbox here: the thread will
+		// continue executing the WFI loop, so its state must remain
+		// consistent (ThreadRunning).
 		schedulerLock.Unlock()
 		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
 		return 0

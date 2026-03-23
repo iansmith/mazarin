@@ -109,9 +109,11 @@ func SyscallSchedYield(_, _, _, _, _, _ uint64) int64 {
 
 	if nextThread != 0 {
 		// Found a ready thread - yield to it
+		atomic.AddUint64(&YieldSwitchCount, 1)
 		setSyscallSwitchTargetForYield(nextThread)
+	} else {
+		atomic.AddUint64(&YieldNoReadyCount, 1)
 	}
-	// else: No other ready thread, return immediately
 
 	return 0 // Success
 }

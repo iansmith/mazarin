@@ -120,7 +120,7 @@ func (w *AppWindow) Draw(dc DrawContext, x, y, ww, hh float64) {
 		}
 	}
 
-	// Content area — clipped to the NeuBox inner area.
+	// Content area — inside the NeuBox inner area.
 	cX := ix + tbMargin
 	cY := tbY + tbH + 6
 	cW := iw - 2*tbMargin

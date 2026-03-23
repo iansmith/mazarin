@@ -110,38 +110,59 @@ func (c *console) scroll() {
 	// lineCount stays at maxPoolLines
 }
 
-// handleDelegatedRequest processes a single delegated syscall request.
-func (c *console) handleDelegatedRequest(req sys.SyscallRequest) {
-	switch req.SysID {
-	case sysid.Write:
-		data := req.Data()
-		if data == nil {
-			req.Reply(0)
-			return
-		}
-		fd := byte(req.Arg0())
-		for _, b := range data {
-			c.handleSerialByte(serial.SerialByte{Fd: fd, B: b})
-		}
-		// Serial output policy:
-		if fd == 2 {
-			sys.UartWriteDirect(addCRBeforeLF(data))
-		} else if !c.suppressSerialCopy {
-			sys.UartWrite(addCRBeforeLF(data))
-		}
-		req.Reply(int64(len(data)))
+// delegateMsg carries processed delegate data to the main goroutine.
+// The delegate goroutine replies immediately (unblocking callers) and
+// forwards text data here for console state update + redraw.
+type delegateMsg struct {
+	fd   byte
+	data []byte
+}
 
-	case sysid.Openat:
-		path := req.PathString()
-		sys.UartWriteString("[stdio] openat: " + path + "\n")
-		if path == "/dev/random" {
-			panic("[stdio] /dev/random not implemented yet")
-		}
-		req.Reply(-38) // ENOSYS
+// startDelegateHandler runs a goroutine that processes delegated syscalls.
+// It replies immediately (so callers never block on stdio's redraw) and
+// forwards Write data to the returned channel for the main goroutine.
+func startDelegateHandler(delegateCh <-chan sys.SyscallRequest, suppressSerialCopy bool) <-chan delegateMsg {
+	dataCh := make(chan delegateMsg, 32)
+	go func() {
+		for req := range delegateCh {
+			switch req.SysID {
+			case sysid.Write:
+				data := req.Data()
+				if data == nil {
+					req.Reply(0)
+					continue
+				}
+				fd := byte(req.Arg0())
+				// Copy before Reply — kernel reclaims the data page on Reply.
+				dataCopy := make([]byte, len(data))
+				copy(dataCopy, data)
+				// Echo to UART ring buffer (non-blocking).
+				if fd == 2 || !suppressSerialCopy {
+					sys.UartWrite(addCRBeforeLF(data))
+				}
+				req.Reply(int64(len(data)))
+				// Forward to main goroutine for console state + redraw.
+				// Non-blocking: drop display update if main goroutine is behind.
+				// Caller is already unblocked and UART echo is done.
+				select {
+				case dataCh <- delegateMsg{fd: fd, data: dataCopy}:
+				default:
+				}
 
-	default:
-		req.Reply(-38) // ENOSYS
-	}
+			case sysid.Openat:
+				path := req.PathString()
+				sys.UartWriteString("[stdio] openat: " + path + "\n")
+				if path == "/dev/random" {
+					panic("[stdio] /dev/random not implemented yet")
+				}
+				req.Reply(-38) // ENOSYS
+
+			default:
+				req.Reply(-38) // ENOSYS
+			}
+		}
+	}()
+	return dataCh
 }
 
 // addCRBeforeLF inserts \r before each \n for serial terminal compatibility.
@@ -445,7 +466,14 @@ func main() {
 		sys.UartWriteString("[stdio] Registered as Write+Openat handler\n")
 	}
 
-	// 11. Event loop — single goroutine, no data races.
+	// Delegate handler goroutine — replies immediately to unblock callers,
+	// forwards text data to delegateDataCh for the main goroutine.
+	var delegateDataCh <-chan delegateMsg
+	if delegateErr == nil {
+		delegateDataCh = startDelegateHandler(delegateCh, con.suppressSerialCopy)
+	}
+
+	// 11. Event loop — main goroutine owns console state + redraw.
 	dirtyCh := attr.OnDirty()
 	sys.UartWriteString("[stdio] Entering event loop\n")
 
@@ -459,10 +487,6 @@ func main() {
 	}
 
 	for {
-		// Yield the P so the delegation recv goroutine (on the global
-		// run queue after runtime_exitsyscall) can deliver requests.
-		// Without this, the main goroutine can starve the recv goroutine
-		// on single-P systems when redraws keep the P busy.
 		runtime.Gosched()
 
 		select {
@@ -480,26 +504,25 @@ func main() {
 			}
 			redraw()
 
-		case req := <-delegateCh:
-			con.handleDelegatedRequest(req)
-			// Drain all pending delegations before redrawing.
-			// Without this, byte-at-a-time Write delegations (e.g.
-			// GC trace output) each trigger a full redraw, stalling
-			// other shepherds waiting for fontsvc.
-			for {
-				runtime.Gosched() // let recv goroutine deliver more
+		case msg := <-delegateDataCh:
+			for _, b := range msg.data {
+				con.handleSerialByte(serial.SerialByte{Fd: msg.fd, B: b})
+			}
+			// Drain queued messages before redrawing.
+			drained := false
+			for !drained {
 				select {
-				case req = <-delegateCh:
-					con.handleDelegatedRequest(req)
+				case msg = <-delegateDataCh:
+					for _, b := range msg.data {
+						con.handleSerialByte(serial.SerialByte{Fd: msg.fd, B: b})
+					}
 				default:
-					goto delegatesDrained
+					drained = true
 				}
 			}
-		delegatesDrained:
 			redraw()
 
 		case <-dirtyCh:
-			// Position changed or other attribute update.
 			redraw()
 		}
 	}
