@@ -9,7 +9,7 @@ package mancini
 // read an intrinsic content size before the first Draw pass.
 func (c *ColumnOutsideIn) InitLayout(parent string) {
 	if c.Name == "" {
-		c.Name = defaultName("col_oi")
+		c.Name = DefaultName("col_oi")
 	}
 	c.Layout = newLayoutHandles(c.Name, parent)
 

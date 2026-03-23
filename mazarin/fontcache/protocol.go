@@ -40,7 +40,7 @@ func (f *FontSvcInit) GetRachelChannel() chan<- sys.MailboxNotification {
 type CacheHeader struct {
 	Magic     uint32  // CacheMagic
 	Version   uint32  // CacheVersion
-	PointSize float32 // point size this cache was rendered at
+	PointSize int32   // point size this cache was rendered at
 	FontID    uint32  // allocated font ID (0–31)
 
 	// Font-level metrics (fixed.Int26_6)

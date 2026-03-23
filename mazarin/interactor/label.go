@@ -22,29 +22,29 @@ func NewLabel(id string, parent *Interactor, textColor int64) *Interactor {
 	// yet; deref_str returns "" for non-existent attrs, giving width=0 until
 	// BindContent/SetContentValue is called.
 	i.Width = attr.ConstraintI64(i.uri("int64", "width"),
-		BindStrings(ProgLabelWidth, i.uri("str", "content"), CharWidthURI))
+		BindStrings(ProgLabelWidth, "_content_", i.uri("str", "content"), "_charWidth_", CharWidthURI))
 
 	// Height = kernel charHeight (identity deref).
 	i.Height = attr.ConstraintI64(i.uri("int64", "height"),
-		BindStrings(ProgIdentityI64, CharHeightURI))
+		BindStrings(ProgIdentityI64, "_source_", CharHeightURI))
 
 	// UpperLeft = centered in parent.
 	i.UpperLeft = attr.ConstraintComposite(i.uri("point2d", "upperLeft"),
 		flat.TypePoint2D,
 		BindStrings(ProgCenterInParent,
-			parent.uri("point2d", "upperLeft"),
-			parent.uri("int64", "width"),
-			parent.uri("int64", "height"),
-			i.uri("int64", "width"),
-			i.uri("int64", "height")))
+			"_parentUL_", parent.uri("point2d", "upperLeft"),
+			"_parentWidth_", parent.uri("int64", "width"),
+			"_parentHeight_", parent.uri("int64", "height"),
+			"_myWidth_", i.uri("int64", "width"),
+			"_myHeight_", i.uri("int64", "height")))
 
 	// Bounds from UL + W + H.
 	i.Bounds = attr.ConstraintComposite(i.uri("rect", "bounds"),
 		flat.TypeRectangle,
 		BindStrings(ProgBoundsFromUlwh,
-			i.uri("point2d", "upperLeft"),
-			i.uri("int64", "width"),
-			i.uri("int64", "height")))
+			"_upperLeft_", i.uri("point2d", "upperLeft"),
+			"_width_", i.uri("int64", "width"),
+			"_height_", i.uri("int64", "height")))
 
 	// Visible = always true.
 	i.Visible = attr.ConstraintBool(i.uri("bool", "visible"), ProgConstantTrue)

@@ -1,21 +1,32 @@
-func hasNoChildren(findPattern string, myName string) bool {
+func isChildVisible(prefix string, visSuffix string, seg string) bool {
+	vuri := str_concat(str_concat(prefix, seg), visSuffix)
+	return deref_i64(vuri) != int64(0)
+}
+
+func hasNoChildren(findPattern string, myName string, prefix string, visSuffix string) bool {
 	children := find(findPattern)
 	for _, uri := range children {
 		if deref_str(uri) == myName {
-			return false
+			seg := uri_segment(uri, 3)
+			if isChildVisible(prefix, visSuffix, seg) {
+				return false
+			}
 		}
 	}
 	return true
 }
 
-func hasOneChild(findPattern string, myName string) string {
+func hasOneChild(findPattern string, myName string, prefix string, visSuffix string) string {
 	children := find(findPattern)
 	result := ""
 	n := int64(0)
 	for _, uri := range children {
 		if deref_str(uri) == myName {
-			result = uri
-			n = n + 1
+			seg := uri_segment(uri, 3)
+			if isChildVisible(prefix, visSuffix, seg) {
+				result = uri
+				n = n + 1
+			}
 		}
 	}
 	if n == 1 {
@@ -24,27 +35,33 @@ func hasOneChild(findPattern string, myName string) string {
 	return ""
 }
 
-func numChildren(findPattern string, myName string) int64 {
+func numChildren(findPattern string, myName string, prefix string, visSuffix string) int64 {
 	children := find(findPattern)
 	n := int64(0)
 	for _, uri := range children {
 		if deref_str(uri) == myName {
-			n = n + 1
+			seg := uri_segment(uri, 3)
+			if isChildVisible(prefix, visSuffix, seg) {
+				n = n + 1
+			}
 		}
 	}
 	return n
 }
 
-func nthChild(findPattern string, myName string, index int64) string {
+func nthChild(findPattern string, myName string, prefix string, visSuffix string, index int64) string {
 	children := find(findPattern)
 	n := int64(0)
 	result := ""
 	for _, uri := range children {
 		if deref_str(uri) == myName {
-			if n == index {
-				result = uri
+			seg := uri_segment(uri, 3)
+			if isChildVisible(prefix, visSuffix, seg) {
+				if n == index {
+					result = uri
+				}
+				n = n + 1
 			}
-			n = n + 1
 		}
 	}
 	return result

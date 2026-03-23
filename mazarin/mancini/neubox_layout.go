@@ -1,8 +1,6 @@
 package mancini
 
 import (
-	"math"
-
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/interactor"
 )
@@ -12,16 +10,16 @@ import (
 // If no child has registered, NeuBox defaults to 20x30 logical pixels + margin.
 func (n *NeuBox) InitLayout(parent string) {
 	if n.Name == "" {
-		n.Name = defaultName("neubox")
+		n.Name = DefaultName("neubox")
 	}
-	n.margin = math.Ceil(neuMaxPad(n.Params))
+	n.margin = NeuMaxPad(n.Params)
 	n.Layout = newLayoutHandlesBase(n.Name, parent)
 	n.Layout.constraintWidth = true
 	n.Layout.constraintHeight = true
 
 	// Margin value attribute for constraint programs to reference.
 	marginURI := layoutURI(n.Name, "int64", "Margin")
-	attr.ValueI64(marginURI, int64(n.margin))
+	attr.ValueI64(marginURI, n.margin)
 
 	// Max size attribute (default 800 logical pixels).
 	maxSize := int64(800)
@@ -37,13 +35,15 @@ func (n *NeuBox) InitLayout(parent string) {
 
 	// Width = min(child width + 2*margin, maxSize). Default 20 if no child.
 	widthProg := interactor.BindStrings(ProgDecorationWidth,
-		findPattern, n.Name, marginURI, prefix, "/layout/Width", maxSizeURI)
+		"_findPattern_", findPattern, "_myName_", n.Name, "_margin_", marginURI,
+		"_int64Prefix_", prefix, "_widthSuffix_", "/layout/Width", "_maxSize_", maxSizeURI, "_visSuffix_", visSuffix)
 	n.Layout.Width = attr.ConstraintI64(
 		layoutURI(n.Name, "int64", "Width"), widthProg)
 
 	// Height = min(child height + 2*margin, maxSize). Default 30 if no child.
 	heightProg := interactor.BindStrings(ProgDecorationHeight,
-		findPattern, n.Name, marginURI, prefix, "/layout/Height", maxSizeURI)
+		"_findPattern_", findPattern, "_myName_", n.Name, "_margin_", marginURI,
+		"_int64Prefix_", prefix, "_heightSuffix_", "/layout/Height", "_maxSize_", maxSizeURI, "_visSuffix_", visSuffix)
 	n.Layout.Height = attr.ConstraintI64(
 		layoutURI(n.Name, "int64", "Height"), heightProg)
 

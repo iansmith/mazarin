@@ -143,7 +143,7 @@ func main() {
 	go mailboxRecvLoopWithMouse(mouse, fc)
 
 	fonts := &mancini.FontConfig{
-		LoadFace: func(bold bool, size float64) font.Face {
+		LoadFace: func(bold bool, size int64) font.Face {
 			style := mfont.Regular
 			if bold {
 				style = mfont.Bold
@@ -200,8 +200,8 @@ func main() {
 	}
 
 	// Face name label font size and matching spacer height.
-	faceNameFontSize := 14.0
-	faceNameH := faceNameFontSize + 4 // matches Label.PreferredHeight()
+	faceNameFontSize := int64(14)
+	faceNameH := float64(faceNameFontSize) + 4 // matches Label.PreferredHeight()
 
 	// clickTargets collects the NeuCircle decorators wrapping each clock.
 	// MousePolicy hit-tests against these (larger) bounds, then dispatches
@@ -327,11 +327,10 @@ func main() {
 	sys.UartWriteString(fmt.Sprintf("[clocks] UI tree built: %d columns (T+%v)\n", len(columns), time.Since(startTime)))
 
 	row := &mancini.Row{
-		Pal:               pal,
-		Name:              "main_row",
-		CrossAlign:        mancini.AxisMinimum,
-		Children:          columns,
-		ClipChildOverflow: true,
+		Pal:        pal,
+		Name:       "main_row",
+		CrossAlign: mancini.AxisMinimum,
+		Children:   columns,
 	}
 	row.InitLayout("AppWindow")
 	row.SetSpacing(20)

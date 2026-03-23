@@ -1,8 +1,6 @@
 package mancini
 
 import (
-	"math"
-
 	"mazzy/mazarin/attr"
 )
 
@@ -12,14 +10,14 @@ import (
 // is not expressible with the rectangular decoration constraint programs.
 func (n *NeuCircle) InitLayout(parent string) {
 	if n.Name == "" {
-		n.Name = defaultName("neucircle")
+		n.Name = DefaultName("neucircle")
 	}
-	n.margin = math.Ceil(neuMaxPad(n.Params))
+	n.margin = NeuMaxPad(n.Params)
 	n.Layout = newLayoutHandles(n.Name, parent)
 
 	// Publish margin as a value attribute for debugging/inspection.
 	marginURI := layoutURI(n.Name, "int64", "Margin")
-	attr.ValueI64(marginURI, int64(n.margin))
+	attr.ValueI64(marginURI, n.margin)
 
 	// Publish initial diameter so parent constraints can bootstrap.
 	// Child must be initialized (InitLayout called) before this.

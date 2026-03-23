@@ -24,13 +24,14 @@ type NeuBox struct {
 
 	lastChildHash int64
 	lastDepth     NeuDepth
-	margin        float64
+	margin        int64
 }
 
 func (n *NeuBox) GetLayout() *LayoutHandles { return n.Layout }
 
-// neuMaxPad computes the maximum shadow padding across all depth states.
-func neuMaxPad(p NeuParams) float64 {
+// NeuMaxPad computes the maximum shadow padding across all depth states.
+// Returns the ceiling as an integer — all interactor dimensions are int64.
+func NeuMaxPad(p NeuParams) int64 {
 	// Raised: external shadows
 	rOff := math.Max(p.Raised.DarkOff, p.Raised.LightOff)
 	rBlur := math.Max(p.Raised.DarkBlur, p.Raised.LightBlur)
@@ -43,7 +44,7 @@ func neuMaxPad(p NeuParams) float64 {
 	// Flush: edge stroke
 	fPad := p.Flush.EdgeW + 2
 
-	return math.Max(rPad, math.Max(iPad, fPad))
+	return int64(math.Ceil(math.Max(rPad, math.Max(iPad, fPad))))
 }
 
 // Draw implements the Drawer interface.
@@ -58,7 +59,7 @@ func (n *NeuBox) Draw(dc DrawContext, x, y, w, h float64) {
 		return
 	}
 
-	m := n.margin
+	m := float64(n.margin)
 	childX := x + m
 	childY := y + m
 	childW := w - 2*m

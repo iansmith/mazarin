@@ -18,8 +18,8 @@ var ProgLabelWidth = &vm.Program{
 		{Opcode: 0x70, Typ: 0x00, Op1: 0, Op2: 1, Flags: 0, Imm: 0x0},
 	},
 	Strings: []string{
-		"_0_",
-		"_1_",
+		"_content_",
+		"_charWidth_",
 	},
 	NumArgs: 0,
 	ArgTypes: []uint8{},

@@ -1,7 +1,6 @@
 package mancini
 
 import (
-	"math"
 	"strconv"
 	"sync/atomic"
 
@@ -15,26 +14,39 @@ var manciniPID string
 
 // Init initializes the mancini layout system using the shepherd's SID from attr.SID().
 // Must be called after attr.Init().
+const visSuffix = "/layout/Visible"
+
 func Init() {
 	manciniPID = attr.SID()
 }
 
 // LayoutHandles holds constraint system handles for an interactor's layout attributes.
 type LayoutHandles struct {
+	name                         string               // interactor's constraint-system name
 	X, Y, Width, Height, Visible *attr.Handle[int64]
 	Bounds                       *attr.Handle[vm.Value] // Rectangle2D: (x, y, x+w, y+h)
 	BoundsHash                   *attr.Handle[int64]    // hash of X,Y,W,H for fast change detection
 	Parent                       *attr.Handle[string]
 	SpacingHandle                *attr.Handle[int64] // inter-child spacing (containers only)
 	CrossAlignHandle             *attr.Handle[int64] // cross-axis alignment (containers only)
+	MaxWidthHandle               *attr.Handle[int64] // max width for overflow clipping (Row only)
+	LastChildDrawnHandle         *attr.Handle[int64] // 0-based index of last child to draw (Row only)
 	constraintWidth              bool                // true if Width is a constraint (don't Set)
 	constraintHeight             bool                // true if Height is a constraint (don't Set)
 	constraintY                  bool                // true if Y is a constraint (don't Set)
 }
 
+// Name returns the interactor's constraint-system name.
+func (lh *LayoutHandles) Name() string {
+	if lh == nil {
+		return ""
+	}
+	return lh.name
+}
+
 var nameCounter uint64
 
-func defaultName(typeName string) string {
+func DefaultName(typeName string) string {
 	n := atomic.AddUint64(&nameCounter, 1)
 	return typeName + strconv.FormatUint(n, 10)
 }
@@ -46,6 +58,7 @@ func layoutURI(name, typePath, attrName string) string {
 // newLayoutHandlesBase creates X, Y, Visible, Parent handles (no Width/Height).
 func newLayoutHandlesBase(name, parent string) *LayoutHandles {
 	return &LayoutHandles{
+		name:    name,
 		X:       attr.ValueI64(layoutURI(name, "int64", "X"), 0),
 		Y:       attr.ValueI64(layoutURI(name, "int64", "Y"), 0),
 		Visible: attr.ValueI64(layoutURI(name, "int64", "Visible"), 1),
@@ -67,13 +80,13 @@ func newLayoutHandles(name, parent string) *LayoutHandles {
 // plus a BoundsHash constraint for fast layout-change detection.
 func (lh *LayoutHandles) initBounds(name string) {
 	prog := interactor.BindStrings(ProgBoundsFromXywh,
-		lh.X.URI(), lh.Y.URI(), lh.Width.URI(), lh.Height.URI())
+		"_x_", lh.X.URI(), "_y_", lh.Y.URI(), "_width_", lh.Width.URI(), "_height_", lh.Height.URI())
 	lh.Bounds = attr.ConstraintComposite(
 		layoutURI(name, "rect", "Bounds"),
 		flat.TypeRectangle, prog)
 
 	hashProg := interactor.BindStrings(ProgBoundsHash,
-		lh.X.URI(), lh.Y.URI(), lh.Width.URI(), lh.Height.URI())
+		"_x_", lh.X.URI(), "_y_", lh.Y.URI(), "_width_", lh.Width.URI(), "_height_", lh.Height.URI())
 	lh.BoundsHash = attr.ConstraintI64(layoutURI(name, "int64", "BoundsHash"), hashProg)
 }
 
@@ -188,8 +201,8 @@ func (w *AppWindow) InitLayout(parent string) {
 
 	// Shadow margin: the neumorphic shadow extent outside the NeuBox face.
 	// Published bounds include this margin so shadows don't get clipped.
-	w.shadowMargin = math.Ceil(neuMaxPad(WindowParams))
-	sm := int64(w.shadowMargin)
+	w.shadowMargin = NeuMaxPad(WindowParams)
+	sm := w.shadowMargin
 
 	// Horizontal margin: tbMargin + shadowMargin on each side.
 	hMargin := int64(8) + sm
@@ -220,12 +233,14 @@ func (w *AppWindow) InitLayout(parent string) {
 	prefix := "attr:///shepherd/" + manciniPID + "/int64/"
 
 	widthProg := interactor.BindStrings(ProgDecorationWidth,
-		findPattern, w.Name, hMarginURI, prefix, "/layout/Width", maxSizeURI)
+		"_findPattern_", findPattern, "_myName_", w.Name, "_margin_", hMarginURI,
+		"_int64Prefix_", prefix, "_widthSuffix_", "/layout/Width", "_maxSize_", maxSizeURI, "_visSuffix_", visSuffix)
 	w.Layout.Width = attr.ConstraintI64(
 		layoutURI(w.Name, "int64", "Width"), widthProg)
 
 	heightProg := interactor.BindStrings(ProgDecorationHeight,
-		findPattern, w.Name, vMarginURI, prefix, "/layout/Height", maxSizeURI)
+		"_findPattern_", findPattern, "_myName_", w.Name, "_margin_", vMarginURI,
+		"_int64Prefix_", prefix, "_heightSuffix_", "/layout/Height", "_maxSize_", maxSizeURI, "_visSuffix_", visSuffix)
 	w.Layout.Height = attr.ConstraintI64(
 		layoutURI(w.Name, "int64", "Height"), heightProg)
 
@@ -234,28 +249,28 @@ func (w *AppWindow) InitLayout(parent string) {
 
 func (w *FreeFloatingWindow) InitLayout(parent string) {
 	if w.Name == "" {
-		w.Name = defaultName("floater")
+		w.Name = DefaultName("floater")
 	}
 	w.Layout = newLayoutHandles(w.Name, parent)
 }
 
 func (b *Button) InitLayout(parent string) {
 	if b.Name == "" {
-		b.Name = defaultName("button")
+		b.Name = DefaultName("button")
 	}
 	b.Layout = newLayoutHandles(b.Name, parent)
 }
 
 func (l *NeuLabel) InitLayout(parent string) {
 	if l.Name == "" {
-		l.Name = defaultName("neulabel")
+		l.Name = DefaultName("neulabel")
 	}
 	l.Layout = newLayoutHandles(l.Name, parent)
 }
 
 func (l *Label) InitLayout(parent string) {
 	if l.Name == "" {
-		l.Name = defaultName("label")
+		l.Name = DefaultName("label")
 	}
 	l.Layout = newLayoutHandles(l.Name, parent)
 
@@ -273,11 +288,67 @@ func (l *Label) InitLayout(parent string) {
 
 func (s *Spacer) InitLayout(parent string) {
 	if s.Name == "" {
-		s.Name = defaultName("spacer")
+		s.Name = DefaultName("spacer")
 	}
 	s.Layout = newLayoutHandles(s.Name, parent)
 
 	// Publish intrinsic dimensions so constraint programs can bootstrap.
 	s.Layout.Width.Set(int64(s.PreferredW))
 	s.Layout.Height.Set(int64(s.PreferredH))
+}
+
+// NewDecoratorLayout creates layout handles with inside-out constraint sizing
+// for decorator-style parents. The parent interactor is used to extract the
+// parent's constraint-system name. hMargin and vMargin are the half-margins
+// for width and height respectively: width = child.Width + 2*hMargin,
+// height = child.Height + 2*vMargin (both clamped to maxSize).
+// For symmetric decorators (equal insets), pass the same value for both.
+// If no child is found, defaults from ProgDecorationWidth/Height apply (20/30).
+func NewDecoratorLayout(name string, parent Interactor, hMargin, vMargin, maxSize int64) *LayoutHandles {
+	parentName := ""
+	if parent != nil {
+		if l, ok := parent.(Layouter); ok {
+			lh := l.GetLayout()
+			if lh != nil {
+				parentName = lh.Name()
+			}
+		}
+	}
+	return NewDecoratorLayoutByParentName(name, parentName, hMargin, vMargin, maxSize)
+}
+
+// NewDecoratorLayoutByParentName is the string-based variant of NewDecoratorLayout.
+// Prefer NewDecoratorLayout which takes an Interactor — this version exists for
+// cases where only the parent's constraint-system name is available.
+func NewDecoratorLayoutByParentName(name, parentName string, hMargin, vMargin, maxSize int64) *LayoutHandles {
+	lh := newLayoutHandlesBase(name, parentName)
+	lh.constraintWidth = true
+	lh.constraintHeight = true
+
+	hMarginURI := layoutURI(name, "int64", "HMargin")
+	attr.ValueI64(hMarginURI, hMargin)
+
+	vMarginURI := layoutURI(name, "int64", "VMargin")
+	attr.ValueI64(vMarginURI, vMargin)
+
+	maxSizeURI := layoutURI(name, "int64", "MaxSize")
+	attr.ValueI64(maxSizeURI, maxSize)
+
+	findPattern := "attr:///shepherd/" + manciniPID + "/str/*/layout/Parent"
+	prefix := "attr:///shepherd/" + manciniPID + "/int64/"
+
+	widthProg := interactor.BindStrings(ProgDecorationWidth,
+		"_findPattern_", findPattern, "_myName_", name, "_margin_", hMarginURI,
+		"_int64Prefix_", prefix, "_widthSuffix_", "/layout/Width", "_maxSize_", maxSizeURI, "_visSuffix_", visSuffix)
+	lh.Width = attr.ConstraintI64(
+		layoutURI(name, "int64", "Width"), widthProg)
+
+	heightProg := interactor.BindStrings(ProgDecorationHeight,
+		"_findPattern_", findPattern, "_myName_", name, "_margin_", vMarginURI,
+		"_int64Prefix_", prefix, "_heightSuffix_", "/layout/Height", "_maxSize_", maxSizeURI, "_visSuffix_", visSuffix)
+	lh.Height = attr.ConstraintI64(
+		layoutURI(name, "int64", "Height"), heightProg)
+
+	lh.initBounds(name)
+	return lh
 }

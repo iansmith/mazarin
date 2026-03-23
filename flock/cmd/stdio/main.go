@@ -31,7 +31,7 @@ import (
 
 const (
 	maxPoolLines = 10 // pre-allocated label pool size (limited by kernel attr node slots)
-	fontSize     = 16.0
+	fontSize     int64 = 16
 )
 
 // Console text colors (natural RGB — gg context has SwapRB set).
@@ -271,7 +271,7 @@ func main() {
 	sys.UartWriteString(fmt.Sprintf("[stdio] fontcache created, rachel SID=%d (T+%v)\n", rachelSID, time.Since(startTime)))
 
 	fonts := &mancini.FontConfig{
-		LoadFace: func(bold bool, size float64) font.Face {
+		LoadFace: func(bold bool, size int64) font.Face {
 			return fc.OpenFaceByName(mfont.DefaultMono, mfont.Regular, size)
 		},
 	}

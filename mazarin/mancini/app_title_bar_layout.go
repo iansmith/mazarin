@@ -10,7 +10,7 @@ import (
 // title bar's Y, Height, and the child's Height.
 func (tb *AppTitleBar) InitLayout(parent string) {
 	if tb.Name == "" {
-		tb.Name = defaultName("apptitlebar")
+		tb.Name = DefaultName("apptitlebar")
 	}
 	tb.Layout = newLayoutHandlesBase(tb.Name, parent)
 	tb.Layout.constraintHeight = true
@@ -21,7 +21,7 @@ func (tb *AppTitleBar) InitLayout(parent string) {
 	// Initialize child label's layout with Y as a vertical-center constraint.
 	if label, ok := tb.Child.(*Label); ok {
 		if label.Name == "" {
-			label.Name = defaultName("label")
+			label.Name = DefaultName("label")
 		}
 		childName := label.Name
 
@@ -41,7 +41,7 @@ func (tb *AppTitleBar) InitLayout(parent string) {
 		childHeightURI := layoutURI(childName, "int64", "Height")
 
 		yProg := interactor.BindStrings(ProgVerticalCenter,
-			tbYURI, tbHeightURI, childHeightURI)
+			"_containerY_", tbYURI, "_containerHeight_", tbHeightURI, "_elementHeight_", childHeightURI)
 		lh.Y = attr.ConstraintI64(layoutURI(childName, "int64", "Y"), yProg)
 
 		lh.initBounds(childName)
@@ -60,7 +60,8 @@ func (tb *AppTitleBar) InitLayout(parent string) {
 	prefix := "attr:///shepherd/" + manciniPID + "/int64/"
 
 	heightProg := interactor.BindStrings(ProgDecorationHeight,
-		findPattern, tb.Name, vMarginURI, prefix, "/layout/Height", maxSizeURI)
+		"_findPattern_", findPattern, "_myName_", tb.Name, "_margin_", vMarginURI,
+		"_int64Prefix_", prefix, "_heightSuffix_", "/layout/Height", "_maxSize_", maxSizeURI, "_visSuffix_", visSuffix)
 	tb.Layout.Height = attr.ConstraintI64(
 		layoutURI(tb.Name, "int64", "Height"), heightProg)
 

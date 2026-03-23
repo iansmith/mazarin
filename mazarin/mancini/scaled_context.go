@@ -105,7 +105,7 @@ func (s *ScaledDrawContext) SetFontFace(fontFace font.Face) {
 	s.DrawContext.SetFontFace(fontFace)
 }
 
-func (s *ScaledDrawContext) LoadFontFace(path string, points float64) error {
+func (s *ScaledDrawContext) LoadFontFace(path string, points int64) error {
 	return s.DrawContext.LoadFontFace(path, points)
 }
 

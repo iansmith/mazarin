@@ -1,7 +1,7 @@
 func bounds_hash() int64 {
-	x := deref_i64("_0_")
-	y := deref_i64("_1_")
-	w := deref_i64("_2_")
-	h := deref_i64("_3_")
+	x := deref_i64("_x_")
+	y := deref_i64("_y_")
+	w := deref_i64("_width_")
+	h := deref_i64("_height_")
 	return x*2654435761 + y*2246822519 + w*3266489917 + h*668265263
 }

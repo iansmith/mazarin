@@ -10,7 +10,7 @@ type ConsoleLabel struct {
 	Pal       Palette
 	Fonts     *FontConfig
 	Name      string
-	FontSize  float64
+	FontSize  int64
 	BgColor   color.NRGBA        // line background (content well color)
 	TextFunc  func() string      // dynamic text source
 	ColorFunc func() color.NRGBA // per-line color (stdout vs stderr)
@@ -24,7 +24,7 @@ func (l *ConsoleLabel) GetLayout() *LayoutHandles { return l.Layout }
 
 // PreferredHeight returns the line height for console text.
 func (l *ConsoleLabel) PreferredHeight() float64 {
-	return l.FontSize + 2 // fontSize + LineSpacing
+	return float64(l.FontSize) + 2 // fontSize + LineSpacing
 }
 
 // Draw implements the Drawer interface.
@@ -71,7 +71,7 @@ func (l *ConsoleLabel) Draw(dc DrawContext, x, y, w, h float64) {
 // InitLayout creates layout handles for the ConsoleLabel.
 func (l *ConsoleLabel) InitLayout(parent string) {
 	if l.Name == "" {
-		l.Name = defaultName("clabel")
+		l.Name = DefaultName("clabel")
 	}
 	l.Layout = newLayoutHandles(l.Name, parent)
 	l.Layout.Height.Set(int64(l.PreferredHeight()))

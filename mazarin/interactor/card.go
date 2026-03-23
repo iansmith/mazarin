@@ -23,27 +23,27 @@ func NewCard(id string, parent *Interactor, padding int64, bgColor int64) *Inter
 
 	// Width = parent.width - 2*padding (outside-in layout).
 	i.Width = attr.ConstraintI64(i.uri("int64", "width"),
-		BindStrings(ProgOutsideInDim, parent.uri("int64", "width"), paddingAttr.URI()))
+		BindStrings(ProgOutsideInDim, "_parentDim_", parent.uri("int64", "width"), "_padding_", paddingAttr.URI()))
 	i.Height = attr.ConstraintI64(i.uri("int64", "height"),
-		BindStrings(ProgOutsideInDim, parent.uri("int64", "height"), paddingAttr.URI()))
+		BindStrings(ProgOutsideInDim, "_parentDim_", parent.uri("int64", "height"), "_padding_", paddingAttr.URI()))
 
 	// UpperLeft = centered in parent.
 	i.UpperLeft = attr.ConstraintComposite(i.uri("point2d", "upperLeft"),
 		flat.TypePoint2D,
 		BindStrings(ProgCenterInParent,
-			parent.uri("point2d", "upperLeft"),
-			parent.uri("int64", "width"),
-			parent.uri("int64", "height"),
-			i.uri("int64", "width"),
-			i.uri("int64", "height")))
+			"_parentUL_", parent.uri("point2d", "upperLeft"),
+			"_parentWidth_", parent.uri("int64", "width"),
+			"_parentHeight_", parent.uri("int64", "height"),
+			"_myWidth_", i.uri("int64", "width"),
+			"_myHeight_", i.uri("int64", "height")))
 
 	// Bounds from UL + W + H.
 	i.Bounds = attr.ConstraintComposite(i.uri("rect", "bounds"),
 		flat.TypeRectangle,
 		BindStrings(ProgBoundsFromUlwh,
-			i.uri("point2d", "upperLeft"),
-			i.uri("int64", "width"),
-			i.uri("int64", "height")))
+			"_upperLeft_", i.uri("point2d", "upperLeft"),
+			"_width_", i.uri("int64", "width"),
+			"_height_", i.uri("int64", "height")))
 
 	// Visible = always true.
 	i.Visible = attr.ConstraintBool(i.uri("bool", "visible"), ProgConstantTrue)

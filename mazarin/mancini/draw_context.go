@@ -40,7 +40,7 @@ type DrawContext interface {
 	SetLineWidth(lineWidth float64)
 	SetLineCap(lineCap gg.LineCap)
 	SetFontFace(fontFace font.Face)
-	LoadFontFace(path string, points float64) error
+	LoadFontFace(path string, points int64) error
 
 	// Transform stack and clipping.
 	Push()

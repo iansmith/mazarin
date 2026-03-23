@@ -1,5 +1,5 @@
 func outside_in_dim() int64 {
-	pd := deref_i64("_0_")
-	padding := deref_i64("_1_")
+	pd := deref_i64("_parentDim_")
+	padding := deref_i64("_padding_")
 	return pd - 2*padding
 }

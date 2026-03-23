@@ -66,7 +66,7 @@ type fontSlot struct {
 	inUse   bool
 	path    string
 	variant int32
-	size    float32
+	size    int32
 	cache   []byte   // 2MB glyph cache (owned by fontsvc)
 	otFont  *opentype.Font
 	face    font.Face
@@ -119,7 +119,7 @@ func allocFontID() int32 {
 }
 
 // findCachedFont checks if (path, variant, size) is already loaded.
-func findCachedFont(path string, variant int32, size float32) int32 {
+func findCachedFont(path string, variant int32, size int32) int32 {
 	for i := int32(0); i < fontcache.MaxFonts; i++ {
 		if fonts[i].inUse && fonts[i].path == path &&
 			fonts[i].variant == variant && fonts[i].size == size {
@@ -325,7 +325,7 @@ func handleOpenFont(senderSID int, msg *wm.OpenFontMsg) {
 // buildGlyphCache populates the cache buffer with header, glyph map, and glyph data.
 // Returns the number of glyphs rendered.
 func buildGlyphCache(cache []byte, face font.Face, metrics font.Metrics,
-	fontID uint32, pointSize float32) uint32 {
+	fontID uint32, pointSize int32) uint32 {
 
 	rawPuts("[fontsvc] buildGlyphCache: enter fontID=")
 	rawPutsInt(int(fontID))

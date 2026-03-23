@@ -19,7 +19,7 @@ const (
 type OpenFontMsg struct {
 	Type    int64     // MsgOpenFont
 	Variant int32     // 0=regular, 1=bold
-	Size    float32   // point size (e.g., 18.0)
+	Size    int32     // point size (e.g., 18)
 	Path    [112]byte // null-terminated font path (e.g., "/fonts/Atkinson...")
 }
 

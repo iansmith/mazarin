@@ -48,7 +48,7 @@ func (f *RomanFace) DrawFace(dc DrawContext, fc *FontConfig, pal Palette, cx, cy
 	}
 
 	// Roman numeral markers at each hour position.
-	fontSize := math.Max(6, radius*0.18)
+	fontSize := int64(math.Max(6, radius*0.18))
 	loadFont(fc, dc, true, fontSize)
 	dc.SetColor(col)
 	markerRad := radius * 0.82

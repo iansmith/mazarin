@@ -20,22 +20,22 @@ func NewWindow(id string, width, height int64, bgColor int64) *Interactor {
 	fixedW := attr.ValueI64(i.uri("int64", "fixedWidth"), width)
 	fixedH := attr.ValueI64(i.uri("int64", "fixedHeight"), height)
 	i.Width = attr.ConstraintI64(i.uri("int64", "width"),
-		BindStrings(ProgIdentityI64, fixedW.URI()))
+		BindStrings(ProgIdentityI64, "_source_", fixedW.URI()))
 	i.Height = attr.ConstraintI64(i.uri("int64", "height"),
-		BindStrings(ProgIdentityI64, fixedH.URI()))
+		BindStrings(ProgIdentityI64, "_source_", fixedH.URI()))
 
 	// UpperLeft reads from originPoint via identity deref.
 	i.UpperLeft = attr.ConstraintComposite(i.uri("point2d", "upperLeft"),
 		flat.TypePoint2D,
-		BindStrings(ProgIdentityPoint2d, i.uri("point2d", "originPoint")))
+		BindStrings(ProgIdentityPoint2d, "_source_", i.uri("point2d", "originPoint")))
 
 	// Bounds from UL + W + H.
 	i.Bounds = attr.ConstraintComposite(i.uri("rect", "bounds"),
 		flat.TypeRectangle,
 		BindStrings(ProgBoundsFromUlwh,
-			i.uri("point2d", "upperLeft"),
-			i.uri("int64", "width"),
-			i.uri("int64", "height")))
+			"_upperLeft_", i.uri("point2d", "upperLeft"),
+			"_width_", i.uri("int64", "width"),
+			"_height_", i.uri("int64", "height")))
 
 	// Visible = always true.
 	i.Visible = attr.ConstraintBool(i.uri("bool", "visible"), ProgConstantTrue)

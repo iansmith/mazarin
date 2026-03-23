@@ -61,7 +61,7 @@ func (tb *AppTitleBar) Draw(dc DrawContext, x, y, w, h float64) {
 
 	// Get label properties for direct text rendering.
 	text := ""
-	fontSize := 18.0
+	fontSize := int64(18)
 	textColor := tb.Pal.Text
 	bold := true
 	if label, ok := tb.Child.(*Label); ok {

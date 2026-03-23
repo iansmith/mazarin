@@ -14,7 +14,7 @@ import (
 type faceKey struct {
 	path string
 	bold bool
-	size float64
+	size int64
 }
 
 // FontCache is the client-side handle for communicating with fontsvc.maz.
@@ -59,24 +59,24 @@ func New(rachelSID int) *FontCache {
 // are returned immediately without IPC. On first call for a given combination,
 // sends an OpenFont request to fontsvc and blocks until the glyph cache
 // is built and shared.
-func (fc *FontCache) OpenFace(path string, bold bool, size float64) font.Face {
+func (fc *FontCache) OpenFace(path string, bold bool, size int64) font.Face {
 	// Check client-side cache first.
 	key := faceKey{path: path, bold: bold, size: size}
 	for i := 0; i < fc.cachedCount; i++ {
 		if fc.cachedFaces[i].key == key {
-			sys.UartWriteString(fmt.Sprintf("[fontcache] cache hit: %s bold=%v size=%.0f\n", path, bold, size))
+			sys.UartWriteString(fmt.Sprintf("[fontcache] cache hit: %s bold=%v size=%d\n", path, bold, size))
 			return fc.cachedFaces[i].face
 		}
 	}
 
-	sys.UartWriteString(fmt.Sprintf("[fontcache] cache miss: %s bold=%v size=%.0f, pushing to rb\n", path, bold, size))
+	sys.UartWriteString(fmt.Sprintf("[fontcache] cache miss: %s bold=%v size=%d, pushing to rb\n", path, bold, size))
 
 	var msg wm.OpenFontMsg
 	msg.Type = wm.MsgOpenFont
 	if bold {
 		msg.Variant = 1
 	}
-	msg.Size = float32(size)
+	msg.Size = int32(size)
 	copy(msg.Path[:], path)
 
 	fc.requestRb.Push(unsafe.Pointer(&msg))
@@ -130,7 +130,7 @@ func (fc *FontCache) OpenFace(path string, bold bool, size float64) font.Face {
 // loaded lazily on first call.
 //
 // Example: fc.OpenFaceByName("AtkinsonHyperlegibleMono", "Bold", 18)
-func (fc *FontCache) OpenFaceByName(family, style string, size float64) font.Face {
+func (fc *FontCache) OpenFaceByName(family, style string, size int64) font.Face {
 	if !fc.fontIndexLoaded {
 		fc.fontIndexLoaded = true
 		idx, err := LoadFontIndex("/fonts/fonts.csv")

@@ -23,7 +23,7 @@ type NeuCircle struct {
 
 	lastChildHash int64
 	lastDepth     NeuDepth
-	margin        float64
+	margin        int64
 }
 
 func (n *NeuCircle) GetLayout() *LayoutHandles { return n.Layout }
@@ -47,7 +47,7 @@ func (n *NeuCircle) preferredDiameter() float64 {
 		return 0
 	}
 	side := math.Max(childW, childH)
-	return math.Ceil(side + 2*n.margin)
+	return math.Ceil(side + 2*float64(n.margin))
 }
 
 // PreferredWidth returns the circle diameter (Width == Height for a circle).

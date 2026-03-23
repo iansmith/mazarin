@@ -45,7 +45,7 @@ func (f *PolarFace) DrawFace(dc DrawContext, fc *FontConfig, pal Palette, cx, cy
 
 	// 24 hour markers: digits at 0, 6, 12, 18; dots elsewhere.
 	// Each hour is 2*pi/24 = pi/12 radians apart, 0 at top (-pi/2).
-	fontSize := math.Max(6, radius*0.20)
+	fontSize := int64(math.Max(6, radius*0.20))
 	dotR := math.Max(2, radius*0.05)
 	digitRad := radius * 0.80 // radius for digit placement
 	dotRad := radius - dotR   // radius for dot placement (flush with edge)

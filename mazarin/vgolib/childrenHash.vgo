@@ -12,9 +12,3 @@ func childrenBoundsHash(findPattern string, myName string, prefix string, hashSu
 	}
 	return combined
 }
-
-func haveChildrenChanged(findPattern string, myName string, prefix string, hashSuffix string, lpCombinedHashURI string) bool {
-	current := childrenBoundsHash(findPattern, myName, prefix, hashSuffix)
-	previous := deref_i64(lpCombinedHashURI)
-	return current != previous
-}

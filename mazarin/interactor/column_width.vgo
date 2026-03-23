@@ -1,30 +1,29 @@
 import "children"
 
 func columnWidth() int64 {
-	// No children: default empty width.
-	if hasNoChildren("_0_", "_1_") {
+	if hasNoChildren("_findPattern_", "_myName_", "_int64Prefix_", "_visSuffix_") {
 		return int64(20)
 	}
 
-	// One child: decorator-like (child width + spacing as margin).
-	oneChild := hasOneChild("_0_", "_1_")
+	oneChild := hasOneChild("_findPattern_", "_myName_", "_int64Prefix_", "_visSuffix_")
 	if oneChild != "" {
 		seg := uri_segment(oneChild, 3)
-		wuri := str_concat(str_concat("_2_", seg), "_3_")
+		wuri := str_concat(str_concat("_int64Prefix_", seg), "_widthSuffix_")
 		return deref_i64(wuri)
 	}
 
-	// Two+ children: max of children widths.
-	children := find("_0_")
+	children := find("_findPattern_")
 	maxw := int64(0)
 	for _, uri := range children {
 		pname := deref_str(uri)
-		if pname == "_1_" {
+		if pname == "_myName_" {
 			seg := uri_segment(uri, 3)
-			wuri := str_concat(str_concat("_2_", seg), "_3_")
-			w := deref_i64(wuri)
-			if w > maxw {
-				maxw = w
+			if isChildVisible("_int64Prefix_", "_visSuffix_", seg) {
+				wuri := str_concat(str_concat("_int64Prefix_", seg), "_widthSuffix_")
+				w := deref_i64(wuri)
+				if w > maxw {
+					maxw = w
+				}
 			}
 		}
 	}

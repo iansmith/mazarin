@@ -9,11 +9,11 @@ type WidthSizer interface {
 // Row arranges children horizontally. Gaps between children are provided
 // by Spacer interactors — spacing is computed by the constraint system.
 type Row struct {
-	Pal               Palette
-	Name              string
-	Children          []Drawer
+	Pal      Palette
+	Name     string
+	Children []Drawer
+	MaxWidth int64     // maximum row width in logical pixels (0 = uncapped)
 	CrossAlign        Alignment // cross-axis (vertical) alignment of children
-	ClipChildOverflow bool      // true: clip last partial child; false: skip it
 	Layout            *LayoutHandles
 }
 
@@ -89,26 +89,34 @@ func (r *Row) Draw(dc DrawContext, x, y, w, h float64) {
 	}
 	fallbackW := w / float64(visCount)
 
+	// lastChildDrawn is the 0-based index (among visible children) of the
+	// last child to draw. That child may be clipped if it overflows maxWidth.
+	// A value of -1 means empty row (shouldn't happen if visCount > 0).
+	lastChildDrawn := int64(-1)
+	if r.Layout.LastChildDrawnHandle != nil {
+		lastChildDrawn = r.Layout.LastChildDrawnHandle.Get()
+	}
+
 	// Layout left-to-right with inter-child spacing.
 	// Invisible children are skipped entirely (no space, no draw).
-	// Children past the right edge are skipped (parent's dc clip handles pixels).
 	spacing := r.Layout.GetSpacing()
 	curX := x
-	drawnCount := 0
+	visIndex := 0
 	for _, child := range r.Children {
 		if !isVisible(child) {
 			continue
 		}
+
+		// Past the last drawable child: stop.
+		if lastChildDrawn >= 0 && int64(visIndex) > lastChildDrawn {
+			break
+		}
+
 		childW := childLayoutWidth(child, fallbackW)
 
 		// Add spacing before this child (but not before the first visible one).
-		if drawnCount > 0 {
+		if visIndex > 0 {
 			curX += spacing
-		}
-
-		// Child completely outside the row's right edge: stop.
-		if curX >= x+w {
-			break
 		}
 
 		childH := childLayoutHeight(child, h)
@@ -122,28 +130,25 @@ func (r *Row) Draw(dc DrawContext, x, y, w, h float64) {
 			childY = y + h - childH
 		}
 
-		// Child partially fits: use ClipChildOverflow to decide.
-		if curX+childW > x+w {
-			if r.ClipChildOverflow {
-				// Draw clipped: save overflow pixels, draw, restore.
-				// Pad must cover the full child overflow + max shadow spread.
-				visibleW := (x + w) - curX
+		// Last drawable child that overflows: clip it.
+		if lastChildDrawn >= 0 && int64(visIndex) == lastChildDrawn && curX+childW > x+w {
+			visibleW := (x + w) - curX
+			if visibleW > 0 {
 				overflowW := childW - visibleW
 				shadowPad := 60.0 // worst-case neumorphic shadow extent
 				pad := overflowW + shadowPad
 				cc := WithClip(dc, curX, childY, visibleW, h, pad, ClipRight)
 				child.Draw(dc, curX, childY, childW, childH)
 				cc.Flush()
-				curX += childW
-				drawnCount++
 			}
-			// Whether we drew it clipped or skipped it, no more children fit.
+			curX += childW
+			visIndex++
 			break
 		}
 
 		child.Draw(dc, curX, childY, childW, childH)
 		curX += childW
-		drawnCount++
+		visIndex++
 	}
 
 	// Publish actual used width so inside-out constraints see content size.

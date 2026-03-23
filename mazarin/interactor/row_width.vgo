@@ -1,43 +1,38 @@
 import "children"
 
 func rowWidth() int64 {
-	// No children: default empty width.
-	if hasNoChildren("_0_", "_2_") {
+	maxW := deref_i64("_maxWidth_")
+	spacing := deref_i64("_spacing_")
+
+	if hasNoChildren("_findPattern_", "_myName_", "_int64Prefix_", "_visSuffix_") {
 		return int64(20)
 	}
 
-	spacing := deref_i64("_1_")
-
-	// One child: decorator-like (child + margin on both sides).
-	oneChild := hasOneChild("_0_", "_2_")
-	if oneChild != "" {
-		seg := uri_segment(oneChild, 3)
-		wuri := str_concat(str_concat("_3_", seg), "_4_")
-		return deref_i64(wuri) + spacing + spacing
-	}
-
-	// Two+ children: sum widths + inter-child spacing.
-	children := find("_0_")
+	children := find("_findPattern_")
 	total := int64(0)
 	n := int64(0)
-	firstW := int64(0)
 	for _, uri := range children {
 		pname := deref_str(uri)
-		if pname == "_2_" {
+		if pname == "_myName_" {
 			seg := uri_segment(uri, 3)
-			wuri := str_concat(str_concat("_3_", seg), "_4_")
-			w := deref_i64(wuri)
-			total = total + w
-			if n == 0 {
-				firstW = w
+			if isChildVisible("_int64Prefix_", "_visSuffix_", seg) {
+				wuri := str_concat(str_concat("_int64Prefix_", seg), "_widthSuffix_")
+				w := deref_i64(wuri)
+
+				next := total + w
+				if n > 0 {
+					next = next + spacing
+				}
+				if next > maxW {
+					return maxW
+				}
+				total = next
+				n = n + 1
 			}
-			n = n + 1
 		}
 	}
-	if n > 1 {
-		total = total + (n - 1) * spacing
+	if total == 0 {
+		return int64(20)
 	}
-	// Minimum width: first child + margin.
-	minW := firstW + spacing + spacing
-	return max(total, minW)
+	return total
 }

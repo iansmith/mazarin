@@ -1,7 +1,7 @@
 func offset_point() Point2D {
-	pulx := point2d_x(deref_point2d("_0_"))
-	puly := point2d_y(deref_point2d("_0_"))
-	ox := point2d_x(deref_point2d("_1_"))
-	oy := point2d_y(deref_point2d("_1_"))
+	pulx := point2d_x(deref_point2d("_base_"))
+	puly := point2d_y(deref_point2d("_base_"))
+	ox := point2d_x(deref_point2d("_offset_"))
+	oy := point2d_y(deref_point2d("_offset_"))
 	return point2d(pulx+ox, puly+oy)
 }

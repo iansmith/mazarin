@@ -5,11 +5,17 @@ import (
 )
 
 // Drawer draws itself into the given bounds using a DrawContext.
-// The context is created once per draw pass at the top level and threaded
-// down through the tree. Parents may wrap dc in a ClippedContext before
-// calling children to enforce clipping.
+// This is the legacy interface — new interactors should implement
+// NewDrawer instead. Remove once all interactors are migrated.
 type Drawer interface {
 	Draw(dc DrawContext, x, y, w, h float64)
+}
+
+// NewDrawer draws itself into its bounds. The Interactor provides bounds
+// (X, Y, W, H), the DrawContext (DC), and theme info if the Interactor
+// is also a ThemedInteractor. This replaces Drawer once migration is complete.
+type NewDrawer interface {
+	Draw(self Interactor)
 }
 
 // Layouter is implemented by interactors that have layout handles.

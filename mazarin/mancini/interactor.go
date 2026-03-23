@@ -10,7 +10,7 @@ import (
 
 // loadFont sets the font on a gg context. Uses FontConfig.LoadFace if available,
 // otherwise falls back to loading from FontRegular/FontBold file paths.
-func loadFont(fc *FontConfig, dc DrawContext, bold bool, size float64) bool {
+func loadFont(fc *FontConfig, dc DrawContext, bold bool, size int64) bool {
 	if fc == nil {
 		return false
 	}
@@ -48,7 +48,7 @@ type AppWindow struct {
 	Layout   *LayoutHandles
 	MaxWidth int64 // maximum width in logical pixels (0 = default 740)
 
-	shadowMargin   float64 // neumorphic shadow padding (set by InitLayout)
+	shadowMargin   int64 // neumorphic shadow padding (set by InitLayout)
 	lastBoundsHash int64
 	lastFocused    bool
 }
@@ -84,7 +84,7 @@ func (w *AppWindow) Draw(dc DrawContext, x, y, ww, hh float64) {
 	publishLayout(w.Layout, x, y, ww, hh)
 
 	// The NeuBox inner area excludes the shadow margin on all sides.
-	sm := w.shadowMargin
+	sm := float64(w.shadowMargin)
 	ix := x + sm
 	iy := y + sm
 	iw := ww - 2*sm
@@ -236,7 +236,7 @@ type NeuLabel struct {
 	Depth    NeuDepth
 	Text     string         // static text (used when TextFunc is nil)
 	TextFunc func() string  // dynamic text source (takes precedence over Text)
-	FontSize float64
+	FontSize int64
 	Color    color.NRGBA
 	Bold     bool
 	Layout   *LayoutHandles
@@ -246,7 +246,7 @@ func (l *NeuLabel) GetLayout() *LayoutHandles { return l.Layout }
 
 // PreferredHeight returns the preferred height for a NeuLabel.
 func (l *NeuLabel) PreferredHeight() float64 {
-	return l.FontSize + 16 // font + box padding
+	return float64(l.FontSize) + 16 // font + box padding
 }
 
 // Draw implements the Drawer interface.
@@ -269,7 +269,7 @@ type Label struct {
 	Name     string
 	Text     string         // static text (used when TextFunc is nil)
 	TextFunc func() string  // dynamic text source (takes precedence over Text)
-	FontSize float64
+	FontSize int64
 	Color    color.NRGBA
 	Bold     bool
 	Layout   *LayoutHandles
@@ -291,7 +291,7 @@ func (l *Label) resolveText() string {
 
 // PreferredHeight returns the preferred height for a Label.
 func (l *Label) PreferredHeight() float64 {
-	return l.FontSize + 4 // font + minimal padding
+	return float64(l.FontSize) + 4 // font + minimal padding
 }
 
 // PreferredWidth returns the preferred width for a Label based on text measurement.
@@ -325,7 +325,7 @@ func (l *Label) Draw(dc DrawContext, x, y, w, h float64) {
 // ── Face factories ───────────────────────────────────────────────────────────
 
 // TextFace returns a FaceDrawer that renders centered text.
-func TextFace(fc *FontConfig, text string, fontSize float64, col color.NRGBA, bold bool) FaceDrawer {
+func TextFace(fc *FontConfig, text string, fontSize int64, col color.NRGBA, bold bool) FaceDrawer {
 	return func(dc DrawContext, x, y, w, h float64) {
 		if !loadFont(fc, dc, bold, fontSize) {
 			return
@@ -351,7 +351,7 @@ func CheckFace(sz, lw float64, col color.NRGBA) FaceDrawer {
 
 // StripedTitleFace returns a FaceDrawer that draws horizontal pinstripes
 // interrupted by a centered title — classic Mac OS style.
-func StripedTitleFace(fc *FontConfig, pal Palette, title string, fontSize, r float64) FaceDrawer {
+func StripedTitleFace(fc *FontConfig, pal Palette, title string, fontSize int64, r float64) FaceDrawer {
 	return func(dc DrawContext, x, y, w, h float64) {
 		loadFont(fc, dc, true, fontSize)
 		tw, _ := dc.MeasureString(title)
@@ -383,7 +383,7 @@ func StripedTitleFace(fc *FontConfig, pal Palette, title string, fontSize, r flo
 
 // GradientTitleFace returns a FaceDrawer that fills the face with an animated
 // horizontal gradient. The purple peak slowly sweeps back and forth.
-func GradientTitleFace(fc *FontConfig, pal Palette, title string, fontSize, r float64) FaceDrawer {
+func GradientTitleFace(fc *FontConfig, pal Palette, title string, fontSize int64, r float64) FaceDrawer {
 	start := time.Now()
 	return func(dc DrawContext, x, y, w, h float64) {
 		elapsed := time.Since(start).Seconds()

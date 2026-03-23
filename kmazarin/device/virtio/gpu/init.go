@@ -47,8 +47,9 @@ func Init() bool {
 		return false
 	}
 
-	// Fill screen with powder gray background (neumorphic surface)
-	fillScreen(0xFFE0E0E6) // RGB(224,224,230) in BGRA: B=230,G=224,R=224,A=255
+	// Fill screen with neumorphic surface color — must match mancini.DefaultPalette().Surface
+	// Surface = NRGBA{232, 230, 244, 255} → BGRA uint32 = 0xFFE8E6F4
+	fillScreen(0xFFE8E6F4)
 
 	// Initial transfer and flush to make display visible
 	virtioGPUTransferToHost(0, 0, DisplayWidth, DisplayHeight)
@@ -197,11 +198,12 @@ func RenderBootImage(imageAddr uintptr, imageSize uint64) bool {
 	fadeStart := float32(0.70)
 	fadeEnd := float32(1.0)
 
-	// Background color: powder gray (BGRA format)
-	const bgColor uint32 = 0xFFE0E0E6
-	bgB := uint8(bgColor & 0xFF)         // B=230
-	bgG := uint8((bgColor >> 8) & 0xFF)  // G=224
-	bgR := uint8((bgColor >> 16) & 0xFF) // R=224
+	// Background color: must match mancini.DefaultPalette().Surface
+	// Surface = NRGBA{232, 230, 244, 255} → BGRA uint32 = 0xFFE8E6F4
+	const bgColor uint32 = 0xFFE8E6F4
+	bgB := uint8(bgColor & 0xFF)         // B=244
+	bgG := uint8((bgColor >> 8) & 0xFF)  // G=230
+	bgR := uint8((bgColor >> 16) & 0xFF) // R=232
 
 	// Copy pixels to framebuffer (centered) with oval fade and background blending
 	for y := uint32(0); y < imgHeight; y++ {

@@ -9,7 +9,7 @@ import (
 // for HEIGHT and WIDTH that reactively compute from children's dimensions.
 func (c *Column) InitLayout(parent string) {
 	if c.Name == "" {
-		c.Name = defaultName("column")
+		c.Name = DefaultName("column")
 	}
 	c.Layout = newLayoutHandlesBase(c.Name, parent)
 	c.Layout.constraintWidth = true
@@ -29,13 +29,15 @@ func (c *Column) InitLayout(parent string) {
 
 	// Column HEIGHT is a constraint: sum of children heights + spacing.
 	heightProg := interactor.BindStrings(interactor.ProgColumnHeight,
-		findPattern, spacingURI, c.Name, prefix, "/layout/Height")
+		"_findPattern_", findPattern, "_spacing_", spacingURI, "_myName_", c.Name,
+		"_int64Prefix_", prefix, "_heightSuffix_", "/layout/Height", "_visSuffix_", visSuffix)
 	heightURI := layoutURI(c.Name, "int64", "Height")
 	c.Layout.Height = attr.ConstraintI64(heightURI, heightProg)
 
 	// Column WIDTH is a constraint: max of children widths.
 	widthProg := interactor.BindStrings(interactor.ProgColumnWidth,
-		findPattern, c.Name, prefix, "/layout/Width")
+		"_findPattern_", findPattern, "_myName_", c.Name,
+		"_int64Prefix_", prefix, "_widthSuffix_", "/layout/Width", "_visSuffix_", visSuffix)
 	widthURI := layoutURI(c.Name, "int64", "Width")
 	c.Layout.Width = attr.ConstraintI64(widthURI, widthProg)
 

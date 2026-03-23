@@ -80,7 +80,7 @@ func Init() {
 
 // readKernelI64 reads a kernel int64 attribute using a deref constraint.
 func readKernelI64(kernelURI string) int64 {
-	prog := BindStrings(ProgIdentityI64, kernelURI)
+	prog := BindStrings(ProgIdentityI64, "_source_", kernelURI)
 	// Extract last path segment for a clean local URI (e.g. "charWidth" from
 	// "attr:///kernel/int64/screen/charWidth").
 	short := kernelURI
@@ -104,15 +104,30 @@ func register(i *Interactor) {
 }
 
 // BindStrings returns a copy of prog with placeholder strings replaced by the
-// given bindings. Pre-compiled programs use placeholder strings ("_0_", "_1_",
-// ...) which are replaced with actual URIs at constraint creation time.
-// Non-placeholder strings (literals) are preserved at their original indices.
+// given bindings. Bindings are alternating name-value pairs:
+//
+//	BindStrings(prog, "_maxWidth_", maxWidthURI, "_spacing_", spacingURI, ...)
+//
+// Any string in the program's string table that matches a placeholder name
+// (underscore-prefixed and suffixed, e.g. "_maxWidth_") is replaced with the
+// corresponding value. Non-placeholder strings are preserved.
 func BindStrings(prog *vm.Program, bindings ...string) *vm.Program {
+	if len(bindings)%2 != 0 {
+		panic("BindStrings: odd number of arguments; expected alternating name-value pairs")
+	}
+	m := make(map[string]string, len(bindings)/2)
+	for i := 0; i < len(bindings); i += 2 {
+		m[bindings[i]] = bindings[i+1]
+	}
 	p := *prog
 	newStrings := make([]string, len(prog.Strings))
 	for i, s := range prog.Strings {
-		if idx, ok := parsePlaceholder(s); ok && idx < len(bindings) {
-			newStrings[i] = bindings[idx]
+		if isPlaceholder(s) {
+			if val, ok := m[s]; ok {
+				newStrings[i] = val
+			} else {
+				newStrings[i] = s
+			}
 		} else {
 			newStrings[i] = s
 		}
@@ -121,20 +136,19 @@ func BindStrings(prog *vm.Program, bindings ...string) *vm.Program {
 	return &p
 }
 
-// parsePlaceholder checks if s matches the pattern _N_ (e.g. "_0_", "_12_")
-// and returns the numeric index.
-func parsePlaceholder(s string) (int, bool) {
+// isPlaceholder returns true if s matches _name_ where name is one or more
+// non-underscore characters bracketed by underscores (e.g. "_maxWidth_",
+// "_0_", "_findPattern_").
+func isPlaceholder(s string) bool {
 	if len(s) < 3 || s[0] != '_' || s[len(s)-1] != '_' {
-		return 0, false
+		return false
 	}
-	n := 0
 	for _, c := range s[1 : len(s)-1] {
-		if c < '0' || c > '9' {
-			return 0, false
+		if c == '_' {
+			return false
 		}
-		n = n*10 + int(c-'0')
 	}
-	return n, true
+	return true
 }
 
 // emptyRect returns a vm.Value for an empty rectangle.
@@ -164,16 +178,16 @@ func (i *Interactor) makeValueAttrs(bgColor, textColor int64) {
 // makeLeafDamage creates the damageRect constraint for leaf interactors.
 func (i *Interactor) makeLeafDamage() {
 	prog := BindStrings(ProgLeafDamageRect,
-		i.uri("rect", "bounds"),
-		i.uri("rect", "lpBounds"),
-		i.uri("bool", "visible"),
-		i.uri("bool", "lpVisible"),
-		i.uri("str", "content"),
-		i.uri("str", "lpContent"),
-		i.uri("int64", "bgColor"),
-		i.uri("int64", "lpBgColor"),
-		i.uri("int64", "textColor"),
-		i.uri("int64", "lpTextColor"),
+		"_bounds_", i.uri("rect", "bounds"),
+		"_lpBounds_", i.uri("rect", "lpBounds"),
+		"_visible_", i.uri("bool", "visible"),
+		"_lpVisible_", i.uri("bool", "lpVisible"),
+		"_content_", i.uri("str", "content"),
+		"_lpContent_", i.uri("str", "lpContent"),
+		"_bgColor_", i.uri("int64", "bgColor"),
+		"_lpBgColor_", i.uri("int64", "lpBgColor"),
+		"_textColor_", i.uri("int64", "textColor"),
+		"_lpTextColor_", i.uri("int64", "lpTextColor"),
 	)
 	i.DamageRect = attr.ConstraintComposite(i.uri("rect", "damageRect"),
 		flat.TypeRectangle, prog)
@@ -182,15 +196,15 @@ func (i *Interactor) makeLeafDamage() {
 // makeParentDamage creates the damageRect constraint for parent interactors.
 func (i *Interactor) makeParentDamage(childDamageURI string) {
 	prog := BindStrings(ProgParentDamageRect,
-		i.uri("rect", "bounds"),
-		i.uri("rect", "lpBounds"),
-		i.uri("bool", "visible"),
-		i.uri("bool", "lpVisible"),
-		i.uri("int64", "bgColor"),
-		i.uri("int64", "lpBgColor"),
-		i.uri("int64", "textColor"),
-		i.uri("int64", "lpTextColor"),
-		childDamageURI,
+		"_bounds_", i.uri("rect", "bounds"),
+		"_lpBounds_", i.uri("rect", "lpBounds"),
+		"_visible_", i.uri("bool", "visible"),
+		"_lpVisible_", i.uri("bool", "lpVisible"),
+		"_bgColor_", i.uri("int64", "bgColor"),
+		"_lpBgColor_", i.uri("int64", "lpBgColor"),
+		"_textColor_", i.uri("int64", "textColor"),
+		"_lpTextColor_", i.uri("int64", "lpTextColor"),
+		"_childDamage_", childDamageURI,
 	)
 	i.DamageRect = attr.ConstraintComposite(i.uri("rect", "damageRect"),
 		flat.TypeRectangle, prog)
