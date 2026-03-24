@@ -374,14 +374,14 @@ func initCursors() {
 }
 
 // pointInAnyAppBounds returns true if (x,y) is inside any tracked app's Bounds rectangle.
-func pointInAnyAppBounds(x, y int32) bool {
+func pointInAnyAppBounds(x, y int64) bool {
 	for _, ta := range trackedApps {
 		v := ta.bounds.Get()
 		if v.Type() == vm.TypeTribool {
 			continue
 		}
 		x0, y0, x1, y1 := v.AsRectangle()
-		if int32(x0) <= x && x < int32(x1) && int32(y0) <= y && y < int32(y1) {
+		if x0 <= x && x < x1 && y0 <= y && y < y1 {
 			return true
 		}
 	}
@@ -445,7 +445,7 @@ func mouseMovementLoop() {
 
 		// After processing all events in this batch, check cursor state.
 		if standardCursorID >= 0 && inverseCursorID >= 0 {
-			inApp := pointInAnyAppBounds(mouseX, mouseY)
+			inApp := pointInAnyAppBounds(int64(mouseX), int64(mouseY))
 			// Log every 50th batch so we can see position + state even without transitions.
 			if batches%50 == 0 {
 				cur := "std"
@@ -509,7 +509,7 @@ func trackAppBounds(sid int) *trackedApp {
 	}
 
 	// Create a constraint in rachel's namespace that tracks the remote Bounds.
-	prog := mancini.BindStrings(mancini.ProgIdentityRect, boundsURI)
+	prog := mancini.BindStrings(mancini.ProgIdentityRect, "_0_", boundsURI)
 	localURI := attr.ShepherdURI("rect", "tracked/"+sidStr+"/Bounds")
 	bounds := attr.ConstraintComposite(localURI, flat.TypeRectangle, prog)
 
@@ -618,11 +618,11 @@ func main() {
 
 	// Read kernel screen dimensions via constraints.
 	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
-		"attr:///kernel/int64/screen/width")
+		"_source_", "attr:///kernel/int64/screen/width")
 	screenW := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_w"), screenWProg)
 
 	screenHProg := mancini.BindStrings(mancini.ProgIdentityI64,
-		"attr:///kernel/int64/screen/height")
+		"_source_", "attr:///kernel/int64/screen/height")
 	screenH := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
 
 	w := int32(screenW.Get())
@@ -639,7 +639,7 @@ func main() {
 	// When we add taskbars/panels, the insets will shrink this area.
 	visibleAreaRect := attr.ValueRectangle(
 		attr.ShepherdURI("rect", "visibleArea"),
-		vm.RectangleVal(0, 0, w, h))
+		vm.RectangleVal(0, 0, int64(w), int64(h)))
 	_ = visibleAreaRect
 
 	// Publish individual visibleArea edges as int64 values for constraint programs

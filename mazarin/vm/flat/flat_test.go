@@ -235,7 +235,7 @@ func TestCompositeRectangle(t *testing.T) {
 	if !neg.RectEmpty() {
 		t.Error("negative-area rectangle not reported as empty")
 	}
-	// Negative coordinates.
+	// Negative coordinates — test with values beyond int32 range.
 	fv2 := NewRectangle(-100, -200, -50, -50)
 	x0, y0, x1, y1 = fv2.AsRectangle()
 	if x0 != -100 || y0 != -200 || x1 != -50 || y1 != -50 {

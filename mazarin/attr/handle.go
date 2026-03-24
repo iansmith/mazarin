@@ -84,6 +84,11 @@ func (h *Handle[T]) Get() T {
 	return h.toT(fv)
 }
 
+// IsConstraint returns true if this handle is driven by a constraint program.
+func (h *Handle[T]) IsConstraint() bool {
+	return h.kind == flat.AttrKindConstraint
+}
+
 // Set writes a new value to a value attribute. Panics on constraint attributes.
 func (h *Handle[T]) Set(v T) {
 	if h.kind == flat.AttrKindConstraint {
@@ -100,7 +105,7 @@ func (h *Handle[T]) Set(v T) {
 		return
 	}
 	fv := h.fromT(v)
-	buf := (*[32]byte)(unsafe.Pointer(&fv))
+	buf := (*[40]byte)(unsafe.Pointer(&fv))
 	if err := sys.AttrWrite(h.slot, buf); err != nil {
 		panic("attr: AttrWrite failed: " + err.Error())
 	}
@@ -180,7 +185,7 @@ func (h *Handle[T]) evaluate() {
 		if err != nil {
 			panic("attr: ValueToFlat failed: " + err.Error())
 		}
-		buf := (*[32]byte)(unsafe.Pointer(&fv))
+		buf := (*[40]byte)(unsafe.Pointer(&fv))
 		if err := sys.AttrWriteResult(h.slot, buf); err != nil {
 			panic("attr: AttrWriteResult failed: " + err.Error())
 		}

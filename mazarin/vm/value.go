@@ -56,7 +56,7 @@ type Value struct {
 	f64  float64  // F64
 	str  string   // Str
 	coll []Value  // CollI64, CollF64, CollBool, CollStr
-	data [24]byte // Composite types (Rectangle, Timespec, Point2D, etc.)
+	data [32]byte // Composite types (Rectangle, Timespec, Point2D, etc.)
 }
 
 func I64(v int64) Value       { return Value{typ: TypeI64, i64: v} }
@@ -96,13 +96,13 @@ func (v Value) AsColl() []Value { return v.coll }
 
 // --- Composite constructors ---
 
-func RectangleVal(x0, y0, x1, y1 int32) Value {
+func RectangleVal(x0, y0, x1, y1 int64) Value {
 	var v Value
 	v.typ = TypeRectangle
-	binary.LittleEndian.PutUint32(v.data[0:4], uint32(x0))
-	binary.LittleEndian.PutUint32(v.data[4:8], uint32(y0))
-	binary.LittleEndian.PutUint32(v.data[8:12], uint32(x1))
-	binary.LittleEndian.PutUint32(v.data[12:16], uint32(y1))
+	binary.LittleEndian.PutUint64(v.data[0:8], uint64(x0))
+	binary.LittleEndian.PutUint64(v.data[8:16], uint64(y0))
+	binary.LittleEndian.PutUint64(v.data[16:24], uint64(x1))
+	binary.LittleEndian.PutUint64(v.data[24:32], uint64(y1))
 	return v
 }
 
@@ -219,11 +219,11 @@ func MazIdVal(id uint16) Value {
 
 // --- Composite accessors ---
 
-func (v Value) AsRectangle() (x0, y0, x1, y1 int32) {
-	return int32(binary.LittleEndian.Uint32(v.data[0:4])),
-		int32(binary.LittleEndian.Uint32(v.data[4:8])),
-		int32(binary.LittleEndian.Uint32(v.data[8:12])),
-		int32(binary.LittleEndian.Uint32(v.data[12:16]))
+func (v Value) AsRectangle() (x0, y0, x1, y1 int64) {
+	return int64(binary.LittleEndian.Uint64(v.data[0:8])),
+		int64(binary.LittleEndian.Uint64(v.data[8:16])),
+		int64(binary.LittleEndian.Uint64(v.data[16:24])),
+		int64(binary.LittleEndian.Uint64(v.data[24:32]))
 }
 
 func (v Value) AsTimespec() (seconds int64, nanos int32) {
@@ -307,7 +307,7 @@ func (v Value) CompositeData() []byte {
 
 // CompositeFromData constructs a Value of a composite type from raw data bytes.
 // The data layout must match the FlatValue.Data layout for the given type.
-func CompositeFromData(typ uint8, data [24]byte) Value {
+func CompositeFromData(typ uint8, data [32]byte) Value {
 	var v Value
 	v.typ = typ
 	v.data = data

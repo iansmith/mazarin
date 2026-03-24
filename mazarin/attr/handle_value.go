@@ -151,7 +151,7 @@ func createValueSlot(uri string, valueType uint8) uint16 {
 }
 
 func writeInitialValue(slot uint16, fv *flat.FlatValue) {
-	buf := (*[32]byte)(unsafe.Pointer(fv))
+	buf := (*[40]byte)(unsafe.Pointer(fv))
 	if err := sys.AttrWrite(slot, buf); err != nil {
 		panic("attr: AttrWrite initial value failed: " + err.Error())
 	}

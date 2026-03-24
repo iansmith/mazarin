@@ -12,16 +12,16 @@ import (
 type FlatValue struct {
 	Typ  uint8
 	_pad [7]byte
-	Data [24]byte
+	Data [32]byte
 }
 
 // Compile-time size assertion.
 const _flatValueSize = unsafe.Sizeof(FlatValue{})
 
-var _ [32 - _flatValueSize]byte
-var _ [_flatValueSize - 32]byte
+var _ [40 - _flatValueSize]byte
+var _ [_flatValueSize - 40]byte
 
-const FlatValueSize = 32
+const FlatValueSize = 40
 
 // FlatStrRef describes a string reference in FlatValue.Data.
 type FlatStrRef struct {

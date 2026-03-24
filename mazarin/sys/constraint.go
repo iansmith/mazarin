@@ -48,11 +48,11 @@ func AttrCreate(uri string, valueType uint8, kind uint8, bytecode []byte) (uint1
 	return uint16(r1), nil
 }
 
-// AttrWrite writes a FlatValue (32 bytes) to an attribute by slot index.
-func AttrWrite(slot uint16, value *[32]byte) error {
+// AttrWrite writes a FlatValue (40 bytes) to an attribute by slot index.
+func AttrWrite(slot uint16, value *[40]byte) error {
 	_, _, errno := RawSyscall(sysAttrWrite,
 		uintptr(slot),
-		uintptr(unsafe.Pointer(&value[0])), 32,
+		uintptr(unsafe.Pointer(&value[0])), 40,
 		0, 0, 0)
 	if errno != 0 {
 		return errno
@@ -60,12 +60,12 @@ func AttrWrite(slot uint16, value *[32]byte) error {
 	return nil
 }
 
-// AttrWriteURI writes a FlatValue (32 bytes) to an attribute by URI string.
-func AttrWriteURI(uri string, value *[32]byte) error {
+// AttrWriteURI writes a FlatValue (40 bytes) to an attribute by URI string.
+func AttrWriteURI(uri string, value *[40]byte) error {
 	uriPtr := unsafe.Pointer(unsafe.StringData(uri))
 	_, _, errno := RawSyscall(sysAttrWriteURI,
 		uintptr(uriPtr), uintptr(len(uri)),
-		uintptr(unsafe.Pointer(&value[0])), 32,
+		uintptr(unsafe.Pointer(&value[0])), 40,
 		0, 0)
 	if errno != 0 {
 		return errno
@@ -114,10 +114,10 @@ func AttrRegisterQuery(pattern string) (uint16, error) {
 
 // AttrWriteResult writes a constraint evaluation result (scalar/composite) to a
 // constraint slot. Does not dirty-propagate.
-func AttrWriteResult(slot uint16, value *[32]byte) error {
+func AttrWriteResult(slot uint16, value *[40]byte) error {
 	_, _, errno := RawSyscall(sysAttrWriteResult,
 		uintptr(slot),
-		uintptr(unsafe.Pointer(&value[0])), 32,
+		uintptr(unsafe.Pointer(&value[0])), 40,
 		0, 0, 0)
 	if errno != 0 {
 		return errno

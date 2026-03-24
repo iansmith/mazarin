@@ -23,7 +23,7 @@ const (
 	TypeShepherdId   uint8 = 0x12 // {Id uint16, NameOffset uint32, NameLen uint16}
 	TypeMazId      uint8 = 0x13 // {Id uint16, PathOffset uint32, PathLen uint16}
 	TypeCollection uint8 = 0x14 // FlatCollRef: {ElemType uint8, RegionOffset uint32, Count uint16}
-	TypeRectangle  uint8 = 0x15 // {X0 int32, Y0 int32, X1 int32, Y1 int32}
+	TypeRectangle  uint8 = 0x15 // {X0 int64, Y0 int64, X1 int64, Y1 int64}
 )
 
 // MaxTypeTag is the highest valid type tag.
@@ -58,7 +58,7 @@ var typeInfoTable = [MaxTypeTag + 1]TypeInfo{
 	TypeShepherdId:   {"shepherd_id", 10, true, true},
 	TypeMazId:      {"maz_id", 10, true, true},
 	TypeCollection: {"collection", 10, false, false},
-	TypeRectangle:  {"rectangle", 16, true, true},
+	TypeRectangle:  {"rectangle", 32, true, true},
 }
 
 // LookupType returns metadata for a type tag, or zero TypeInfo if invalid.

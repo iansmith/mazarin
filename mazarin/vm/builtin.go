@@ -504,17 +504,17 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 		if err != nil {
 			return err
 		}
-		return m.push(RectangleVal(int32(x0.i64), int32(y0.i64), int32(x1.i64), int32(y1.i64)))
+		return m.push(RectangleVal(x0.i64, y0.i64, x1.i64, y1.i64))
 
 	case BuiltinRectUnion:
-		return m.builtinRectBin(func(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1 int32) Value {
-			return RectangleVal(min32(ax0, bx0), min32(ay0, by0), max32(ax1, bx1), max32(ay1, by1))
+		return m.builtinRectBin(func(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1 int64) Value {
+			return RectangleVal(min(ax0, bx0), min(ay0, by0), max(ax1, bx1), max(ay1, by1))
 		})
 
 	case BuiltinRectIntersect:
-		return m.builtinRectBin(func(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1 int32) Value {
-			ix0, iy0 := max32(ax0, bx0), max32(ay0, by0)
-			ix1, iy1 := min32(ax1, bx1), min32(ay1, by1)
+		return m.builtinRectBin(func(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1 int64) Value {
+			ix0, iy0 := max(ax0, bx0), max(ay0, by0)
+			ix1, iy1 := min(ax1, bx1), min(ay1, by1)
 			if ix0 >= ix1 || iy0 >= iy1 {
 				return RectangleVal(0, 0, 0, 0)
 			}
@@ -522,12 +522,12 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 		})
 
 	case BuiltinRectOverlaps:
-		return m.builtinRectBinBool(func(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1 int32) bool {
+		return m.builtinRectBinBool(func(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1 int64) bool {
 			return ax0 < bx1 && bx0 < ax1 && ay0 < by1 && by0 < ay1
 		})
 
 	case BuiltinRectContains:
-		return m.builtinRectBinBool(func(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1 int32) bool {
+		return m.builtinRectBinBool(func(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1 int64) bool {
 			// a contains b
 			return ax0 <= bx0 && ay0 <= by0 && ax1 >= bx1 && ay1 >= by1
 		})
@@ -552,8 +552,8 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return m.haltf("rect_area requires rectangle, got %s", TypeName(a.typ))
 		}
 		x0, y0, x1, y1 := a.AsRectangle()
-		w := int64(x1 - x0)
-		h := int64(y1 - y0)
+		w := x1 - x0
+		h := y1 - y0
 		if w <= 0 || h <= 0 {
 			return m.push(I64(0))
 		}
@@ -568,7 +568,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return m.haltf("rect_width requires rectangle, got %s", TypeName(a.typ))
 		}
 		x0, _, x1, _ := a.AsRectangle()
-		w := int64(x1 - x0)
+		w := x1 - x0
 		if w < 0 {
 			w = 0
 		}
@@ -583,7 +583,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return m.haltf("rect_height requires rectangle, got %s", TypeName(a.typ))
 		}
 		_, y0, _, y1 := a.AsRectangle()
-		h := int64(y1 - y0)
+		h := y1 - y0
 		if h < 0 {
 			h = 0
 		}
@@ -1023,7 +1023,7 @@ func (m *machine) builtinUnaryF64(op func(float64) float64) error {
 	return m.push(F64(op(a.f64)))
 }
 
-func (m *machine) builtinRectBin(op func(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1 int32) Value) error {
+func (m *machine) builtinRectBin(op func(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1 int64) Value) error {
 	b, err := m.pop()
 	if err != nil {
 		return err
@@ -1040,7 +1040,7 @@ func (m *machine) builtinRectBin(op func(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1 
 	return m.push(op(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1))
 }
 
-func (m *machine) builtinRectBinBool(op func(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1 int32) bool) error {
+func (m *machine) builtinRectBinBool(op func(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1 int64) bool) error {
 	b, err := m.pop()
 	if err != nil {
 		return err
@@ -1074,20 +1074,6 @@ func (m *machine) builtinDeref(expectedType uint8) error {
 		return m.push(Tribool(TriboolUnknown))
 	}
 	return m.push(val)
-}
-
-func min32(a, b int32) int32 {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func max32(a, b int32) int32 {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // uriSegment extracts segment at index from a URI string.

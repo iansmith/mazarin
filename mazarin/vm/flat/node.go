@@ -27,7 +27,7 @@ type FlatAttrNode struct {
 	Flags      uint32 // dirty, eager-notify, tombstoned
 	SeqCounter uint32 // seqlock: odd = write in progress, even = stable
 
-	// Cached value (32 bytes)
+	// Cached value (40 bytes)
 	CachedValue FlatValue
 
 	// Constraint program (6 bytes)
@@ -52,7 +52,7 @@ type FlatAttrNode struct {
 	NameOffset uint32 // byte offset into string data region (0 = unnamed)
 
 	// Padding to 128 bytes
-	_pad2 [52]byte
+	_pad2 [44]byte
 }
 
 const FlatAttrNodeSize = 128

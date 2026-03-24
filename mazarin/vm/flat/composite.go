@@ -220,23 +220,23 @@ func (fv FlatValue) AsMazId() (id uint16, pathOffset uint32, pathLen uint16) {
 		binary.LittleEndian.Uint16(fv.Data[8:10])
 }
 
-// --- Rectangle: {X0 int32 @ 0, Y0 int32 @ 4, X1 int32 @ 8, Y1 int32 @ 12} ---
+// --- Rectangle: {X0 int64 @ 0, Y0 int64 @ 8, X1 int64 @ 16, Y1 int64 @ 24} ---
 
-func NewRectangle(x0, y0, x1, y1 int32) FlatValue {
+func NewRectangle(x0, y0, x1, y1 int64) FlatValue {
 	var fv FlatValue
 	fv.Typ = TypeRectangle
-	binary.LittleEndian.PutUint32(fv.Data[0:4], uint32(x0))
-	binary.LittleEndian.PutUint32(fv.Data[4:8], uint32(y0))
-	binary.LittleEndian.PutUint32(fv.Data[8:12], uint32(x1))
-	binary.LittleEndian.PutUint32(fv.Data[12:16], uint32(y1))
+	binary.LittleEndian.PutUint64(fv.Data[0:8], uint64(x0))
+	binary.LittleEndian.PutUint64(fv.Data[8:16], uint64(y0))
+	binary.LittleEndian.PutUint64(fv.Data[16:24], uint64(x1))
+	binary.LittleEndian.PutUint64(fv.Data[24:32], uint64(y1))
 	return fv
 }
 
-func (fv FlatValue) AsRectangle() (x0, y0, x1, y1 int32) {
-	return int32(binary.LittleEndian.Uint32(fv.Data[0:4])),
-		int32(binary.LittleEndian.Uint32(fv.Data[4:8])),
-		int32(binary.LittleEndian.Uint32(fv.Data[8:12])),
-		int32(binary.LittleEndian.Uint32(fv.Data[12:16]))
+func (fv FlatValue) AsRectangle() (x0, y0, x1, y1 int64) {
+	return int64(binary.LittleEndian.Uint64(fv.Data[0:8])),
+		int64(binary.LittleEndian.Uint64(fv.Data[8:16])),
+		int64(binary.LittleEndian.Uint64(fv.Data[16:24])),
+		int64(binary.LittleEndian.Uint64(fv.Data[24:32]))
 }
 
 // RectEmpty returns true if the rectangle has zero or negative area.
