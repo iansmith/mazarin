@@ -51,6 +51,66 @@ func NewLabelColor(layout *mancini.LayoutHandles, theme mancini.Theme,
 	return l
 }
 
+// NewLabelNamed creates a Label with layout built from name + parent strings.
+// Publishes intrinsic dimensions (fontSize+4 height, text-measured width)
+// so constraint programs can bootstrap.
+func NewLabelNamed(myName, parent string, theme mancini.Theme,
+	text string, fontSize int64) *Label {
+	if myName == "" {
+		myName = mancini.DefaultName("label")
+	}
+	lh := mancini.NewLayoutHandles(myName, parent)
+	lh.Height.Set(fontSize + 4)
+
+	// Measure width if the theme has a font resolver.
+	fc := theme.Font(mancini.None, fontSize)
+	if fc != nil && fc.LoadFace != nil {
+		if face := fc.LoadFace(false, fontSize); face != nil {
+			lh.Width.Set(mancini.MeasureTextWidth(face, text) + 8)
+		}
+	}
+
+	return NewLabel(lh, theme, text, fontSize)
+}
+
+// NewLabelNamedBold creates a bold Label with layout from name + parent.
+func NewLabelNamedBold(myName, parent string, theme mancini.Theme,
+	text string, fontSize int64) *Label {
+	if myName == "" {
+		myName = mancini.DefaultName("label")
+	}
+	lh := mancini.NewLayoutHandles(myName, parent)
+	lh.Height.Set(fontSize + 4)
+
+	fc := theme.Font(mancini.Bold, fontSize)
+	if fc != nil && fc.LoadFace != nil {
+		if face := fc.LoadFace(true, fontSize); face != nil {
+			lh.Width.Set(mancini.MeasureTextWidth(face, text) + 8)
+		}
+	}
+
+	return NewLabelBold(lh, theme, text, fontSize)
+}
+
+// NewLabelNamedColor creates a colored Label with layout from name + parent.
+func NewLabelNamedColor(myName, parent string, theme mancini.Theme,
+	text string, fontSize int64, col color.NRGBA) *Label {
+	if myName == "" {
+		myName = mancini.DefaultName("label")
+	}
+	lh := mancini.NewLayoutHandles(myName, parent)
+	lh.Height.Set(fontSize + 4)
+
+	fc := theme.Font(mancini.None, fontSize)
+	if fc != nil && fc.LoadFace != nil {
+		if face := fc.LoadFace(false, fontSize); face != nil {
+			lh.Width.Set(mancini.MeasureTextWidth(face, text) + 8)
+		}
+	}
+
+	return NewLabelColor(lh, theme, text, fontSize, col)
+}
+
 // resolveText returns the current display text.
 func (l *Label) resolveText() string {
 	if l.TextFunc != nil {
@@ -59,15 +119,15 @@ func (l *Label) resolveText() string {
 	return l.Text
 }
 
-// Draw implements mancini.Drawer. Clears background via super,
+// Draw implements mancini.NewDrawer. Clears background via super,
 // then renders centered text.
-func (l *Label) Draw(self mancini.Interactor) {
+func (l *Label) Draw(self mancini.Interactor, x, y, w, h int64) {
 	if !self.Visible() {
 		return
 	}
 
 	// Super — clear background to theme BgColor.
-	l.ThemedInteractor.Draw(self)
+	l.ThemedInteractor.Draw(self, x, y, w, h)
 
 	dc := self.DC()
 
@@ -86,7 +146,7 @@ func (l *Label) Draw(self mancini.Interactor) {
 
 	dc.SetColor(l.Color)
 	text := l.resolveText()
-	x, y := float64(self.X()), float64(self.Y())
-	w, h := float64(self.W()), float64(self.H())
-	dc.DrawStringAnchored(text, x+w/2, y+h/2, 0.5, 0.5)
+	fx, fy := float64(x), float64(y)
+	fw, fh := float64(w), float64(h)
+	dc.DrawStringAnchored(text, fx+fw/2, fy+fh/2, 0.5, 0.5)
 }

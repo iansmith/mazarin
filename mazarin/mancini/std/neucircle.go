@@ -36,23 +36,33 @@ func NewNeuCircle(layout *mancini.LayoutHandles, pal mancini.Palette,
 	return n
 }
 
+// NewNeuCircleNamed creates a NeuCircle with inside-out sizing constraints.
+// Builds the layout internally from name and parent strings.
+func NewNeuCircleNamed(myName, parent string, pal mancini.Palette,
+	depth mancini.NeuDepth, params mancini.NeuParams) *NeuCircle {
+
+	margin := mancini.NeuMaxPad(params)
+	layout := mancini.NewDecoratorLayoutByParentName(myName, parent, margin, margin, 300)
+	return NewNeuCircle(layout, pal, depth, params)
+}
+
 // Decorate implements mancini.Decoratable — draws neumorphic circular
-// shadows centered in the Decorator's bounds.
-func (n *NeuCircle) Decorate(self mancini.Interactor) {
+// shadows centered in the given bounds.
+func (n *NeuCircle) Decorate(self mancini.Interactor, x, y, w, h int64) {
 	dc := self.DC()
 	if dc == nil {
 		return
 	}
-	x, y := float64(self.X()), float64(self.Y())
-	w, h := float64(self.W()), float64(self.H())
+	fx, fy := float64(x), float64(y)
+	fw, fh := float64(w), float64(h)
 
-	cx := x + w/2
-	cy := y + h/2
-	rad := math.Min(w, h) / 2
+	cx := fx + fw/2
+	cy := fy + fh/2
+	rad := math.Min(fw, fh) / 2
 
 	face := n.Face
 	if face == (color.NRGBA{}) {
 		face = n.Pal.Surface
 	}
-	mancini.NeuCircleWith(n.Pal, dc, n.Depth, cx, cy, rad, face, n.Params, nil)
+	NeuCircleWith(n.Pal, dc, n.Depth, cx, cy, rad, face, n.Params, nil)
 }

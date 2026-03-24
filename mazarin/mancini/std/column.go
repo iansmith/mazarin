@@ -1,0 +1,181 @@
+package std
+
+import (
+	"mazzy/mazarin/attr"
+	"mazzy/mazarin/mancini"
+	"mazzy/mazarin/mancini/impl"
+)
+
+// Column arranges children vertically with inside-out sizing.
+// Width and Height are constraints computed from children.
+// Children declare this Column as their parent via the attribute namespace.
+type Column struct {
+	impl.Interactor // X(), Y(), W(), H(), Visible(), DC(), GetLayout()
+	impl.Parent     // GetChildren() via constraint network
+
+	Pal               mancini.Palette
+	CrossAlign        mancini.Alignment
+	ClipChildOverflow bool // true: clip last partial child; false: skip it
+}
+
+// NewColumn creates a Column wired to the constraint system.
+// Children are not passed here — they declare this Column as their parent
+// via their own InitLayout(parentName) call, and are discovered at draw
+// time via the constraint network.
+func NewColumn(myName, parent string, pal mancini.Palette, crossAlign mancini.Alignment, clipOverflow bool) *Column {
+	c := &Column{
+		Pal:               pal,
+		CrossAlign:        crossAlign,
+		ClipChildOverflow: clipOverflow,
+	}
+
+	if myName == "" {
+		myName = mancini.DefaultName("column")
+	}
+
+	lh := mancini.NewLayoutHandlesBase(myName, parent)
+
+	// Inter-child spacing attribute.
+	spacingURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutSpacing)
+	lh.SpacingHandle = attr.ValueI64(spacingURI, 0)
+
+	// Cross-axis alignment.
+	alignURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutCrossAlign)
+	lh.CrossAlignHandle = attr.ValueI64(alignURI, int64(crossAlign))
+
+	// Build find pattern and URI fragments for constraint binding.
+	findPattern := mancini.FindPattern()
+	prefix := mancini.Int64Prefix()
+
+	// Column HEIGHT constraint: sum of children heights + spacing.
+	heightProg := mancini.BindStrings(ProgColumnHeight,
+		"_findPattern_", findPattern, "_spacing_", spacingURI, "_myName_", myName,
+		"_int64Prefix_", prefix, "_heightSuffix_", mancini.LayoutHeight.Suffix(), "_visSuffix_", mancini.VisSuffix)
+	heightURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutHeight)
+	lh.Height = attr.ConstraintI64(heightURI, heightProg)
+
+	// Column WIDTH constraint: max of children widths.
+	widthProg := mancini.BindStrings(ProgColumnWidth,
+		"_findPattern_", findPattern, "_myName_", myName,
+		"_int64Prefix_", prefix, "_widthSuffix_", mancini.LayoutWidth.Suffix(), "_visSuffix_", mancini.VisSuffix)
+	widthURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutWidth)
+	lh.Width = attr.ConstraintI64(widthURI, widthProg)
+
+	lh.InitBounds(myName)
+
+	c.Interactor.Init(c, lh)
+	c.Parent.InitParent(&c.Interactor)
+	return c
+}
+
+// SetSpacing sets the inter-child spacing value (in pixels).
+func (c *Column) SetSpacing(v float64) {
+	lh := c.GetLayout()
+	if lh != nil && lh.SpacingHandle != nil {
+		lh.SpacingHandle.Set(int64(v))
+	}
+}
+
+// Draw implements mancini.NewDrawer. Arranges children top-to-bottom
+// with spacing, cross-axis alignment, and overflow clipping.
+func (c *Column) Draw(self mancini.Interactor, x, y, w, h int64) {
+	lh := c.GetLayout()
+	dc := self.DC()
+
+	children := c.GetChildren()
+	if len(children) == 0 {
+		dc.SetColor(mancini.ErrPink)
+		dc.DrawRectangle(float64(x), float64(y), float64(w), float64(h))
+		dc.Fill()
+		return
+	}
+
+	// Count visible children for fallback height division.
+	visCount := int64(0)
+	for _, child := range children {
+		if child.Visible() {
+			visCount++
+		}
+	}
+	if visCount == 0 {
+		return
+	}
+	fallbackH := h / visCount
+
+	spacing := int64(lh.GetSpacing())
+	curY := y
+	drawnCount := 0
+	for _, child := range children {
+		if !child.Visible() {
+			continue
+		}
+
+		childL, hasLayout := child.(mancini.Layouter)
+		childH := fallbackH
+		if hasLayout {
+			childH = int64(mancini.ChildHeight(childL, float64(fallbackH)))
+		}
+
+		// Add spacing before this child (but not before the first visible one).
+		if drawnCount > 0 {
+			curY += spacing
+		}
+
+		// Child completely outside the column's bottom edge: stop.
+		if curY >= y+h {
+			break
+		}
+
+		childW := w
+		if hasLayout {
+			childW = int64(mancini.ChildWidth(childL, float64(w)))
+		}
+
+		// Cross-axis (horizontal) alignment.
+		childX := x
+		switch c.CrossAlign {
+		case mancini.AxisMiddle:
+			childX = x + (w-childW)/2
+		case mancini.AxisMaximum:
+			childX = x + w - childW
+		}
+
+		// Publish child position to layout handles for constraint visibility.
+		if hasLayout {
+			clh := childL.GetLayout()
+			if clh != nil {
+				clh.X.Set(childX)
+				clh.Y.Set(curY)
+			}
+		}
+
+		// Propagate DC and draw.
+		if cs, ok := child.(interface{ SetDC(mancini.DrawContext) }); ok {
+			cs.SetDC(dc)
+		}
+
+		// Child partially fits: use ClipChildOverflow to decide.
+		if curY+childH > y+h {
+			if c.ClipChildOverflow {
+				visibleH := (y + h) - curY
+				overflowH := childH - visibleH
+				shadowPad := int64(60)
+				pad := overflowH + shadowPad
+				cc := mancini.WithClip(dc, float64(childX), float64(curY), float64(childW), float64(visibleH), float64(pad), mancini.ClipBottom)
+				if d, ok := child.(mancini.NewDrawer); ok {
+					d.Draw(child, childX, curY, childW, childH)
+				}
+				cc.Flush()
+				curY += childH
+				drawnCount++
+			}
+			break
+		}
+
+		if d, ok := child.(mancini.NewDrawer); ok {
+			d.Draw(child, childX, curY, childW, childH)
+		}
+		curY += childH
+		drawnCount++
+	}
+}

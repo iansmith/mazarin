@@ -1,0 +1,36 @@
+func leaf_damage_rect() Rect {
+	bounds := deref_rect("_bounds_")
+	lpBounds := deref_rect("_lpBounds_")
+
+	vis := deref_i64("_visible_")
+	lpVis := deref_i64("_lpVisible_")
+	if vis != lpVis {
+		return rect_union(bounds, lpBounds)
+	}
+
+	contentHash := deref_i64("_contentHash_")
+	lpContentHash := deref_i64("_lpContentHash_")
+	if contentHash != lpContentHash {
+		return rect_union(bounds, lpBounds)
+	}
+
+	bgc := deref_i64("_bgColor_")
+	lpBgc := deref_i64("_lpBgColor_")
+	if bgc != lpBgc {
+		return rect_union(bounds, lpBounds)
+	}
+
+	fgc := deref_i64("_fgColor_")
+	lpFgc := deref_i64("_lpFgColor_")
+	if fgc != lpFgc {
+		return rect_union(bounds, lpBounds)
+	}
+
+	boundsHash := deref_i64("_boundsHash_")
+	lpBoundsHash := deref_i64("_lpBoundsHash_")
+	if boundsHash != lpBoundsHash {
+		return rect_union(bounds, lpBounds)
+	}
+
+	return rect(0, 0, 0, 0)
+}

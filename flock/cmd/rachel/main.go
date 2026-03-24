@@ -11,7 +11,7 @@ import (
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/fontcache"
 	"mazzy/mazarin/input"
-	"mazzy/mazarin/interactor"
+	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mazhost"
 	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
@@ -509,7 +509,7 @@ func trackAppBounds(sid int) *trackedApp {
 	}
 
 	// Create a constraint in rachel's namespace that tracks the remote Bounds.
-	prog := interactor.BindStrings(interactor.ProgIdentityRect, boundsURI)
+	prog := mancini.BindStrings(mancini.ProgIdentityRect, boundsURI)
 	localURI := attr.ShepherdURI("rect", "tracked/"+sidStr+"/Bounds")
 	bounds := attr.ConstraintComposite(localURI, flat.TypeRectangle, prog)
 
@@ -617,11 +617,11 @@ func main() {
 	fmt.Printf("[rachel] attr init done (SID=%s, T+%v)\n", attr.SID(), time.Since(startTime))
 
 	// Read kernel screen dimensions via constraints.
-	screenWProg := interactor.BindStrings(interactor.ProgIdentityI64,
+	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"attr:///kernel/int64/screen/width")
 	screenW := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_w"), screenWProg)
 
-	screenHProg := interactor.BindStrings(interactor.ProgIdentityI64,
+	screenHProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"attr:///kernel/int64/screen/height")
 	screenH := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
 

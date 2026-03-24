@@ -12,9 +12,14 @@ type Interactor struct {
 
 // Init wires the back-pointer and layout. Must be called from the
 // concrete type's constructor: i.Interactor.Init(i, layout).
+// Registers the owner in the global interactor registry keyed by
+// the layout handle's constraint-system name.
 func (i *Interactor) Init(owner mancini.Interactor, layout *mancini.LayoutHandles) {
 	i.owner = owner
 	i.layout = layout
+	if layout != nil {
+		mancini.RegisterInteractor(layout.Name(), owner)
+	}
 }
 
 func (i *Interactor) X() int64       { return i.layout.X.Get() }

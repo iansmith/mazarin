@@ -20,7 +20,7 @@ import (
 // (self.X+Left, self.Y+Top). The child's Width and Height are owned by
 // the child itself (inside-out) — the Decorator never sets them.
 //
-// Decorator embeds Parent for GetChildren/AddChild but does NOT use
+// Decorator embeds Parent for GetChildren but does NOT use
 // DrawChildren — it handles its single child directly in Draw.
 type Decorator struct {
 	Interactor
@@ -33,6 +33,7 @@ type Decorator struct {
 // is set up separately in InitLayout on the concrete type.
 func (d *Decorator) InitDecorator(owner any, layout *mancini.LayoutHandles, top, right, bottom, left int64) {
 	d.Interactor.Init(owner.(mancini.Interactor), layout)
+	d.Parent.InitParent(&d.Interactor)
 	d.Top = top
 	d.Right = right
 	d.Bottom = bottom
@@ -44,51 +45,59 @@ func (d *Decorator) InitDecorator(owner any, layout *mancini.LayoutHandles, top,
 // 1. Calls Decorate through virtual dispatch on the owner — the concrete
 //    type's Decorate draws the visual decoration at the Decorator's full
 //    bounds.
-// 2. Positions the child by setting its layout X/Y to self's X/Y + insets.
+// 2. Positions the child by setting its layout X/Y to (x+Left, y+Top) and
+//    passes computed child bounds to the child's Draw.
 // 3. Propagates the DrawContext to the child and calls its Draw.
 //
 // Note: the child's Width and Height are NOT set here. They are owned by
 // the child (inside-out sizing). The Decorator's own Width/Height come
 // from constraint programs that read child.Width + Left + Right, etc.
-func (d *Decorator) Draw(self mancini.Interactor) {
+func (d *Decorator) Draw(self mancini.Interactor, x, y, w, h int64) {
 	// 1. Virtual dispatch for Decorate.
 	if dec, ok := d.Interactor.Owner().(mancini.Decoratable); ok {
-		dec.Decorate(self)
+		dec.Decorate(self, x, y, w, h)
 	}
 
-	// 2. Position child inside the decoration insets.
-	// 3. Propagate DrawContext and draw child.
+	// 2. Compute child bounds inside the decoration insets.
 	children := d.GetChildren()
 	if len(children) == 0 {
 		return
 	}
 	child := children[0]
+	childX := x + d.Left
+	childY := y + d.Top
+	childW := w - d.Left - d.Right
+	childH := h - d.Top - d.Bottom
+
+	// Publish child position to layout handles for constraint visibility.
 	if l, ok := child.(mancini.Layouter); ok {
 		lh := l.GetLayout()
 		if lh != nil {
-			lh.X.Set(self.X() + d.Left)
-			lh.Y.Set(self.Y() + d.Top)
+			lh.X.Set(childX)
+			lh.Y.Set(childY)
 		}
 	}
+
+	// 3. Propagate DrawContext and draw child.
 	if cs, ok := child.(dcSetter); ok {
 		cs.SetDC(self.DC())
 	}
 	if drawer, ok := child.(mancini.NewDrawer); ok {
-		drawer.Draw(child)
+		drawer.Draw(child, childX, childY, childW, childH)
 	}
 }
 
 // Decorate draws the default thick box decoration.
 // Embedding types (NeuBox, NeuCircle) override this method.
-func (d *Decorator) Decorate(self mancini.Interactor) {
+func (d *Decorator) Decorate(self mancini.Interactor, x, y, w, h int64) {
 	dc := self.DC()
 	if dc == nil {
 		return
 	}
-	x, y := float64(self.X()), float64(self.Y())
-	w, h := float64(self.W()), float64(self.H())
+	fx, fy := float64(x), float64(y)
+	fw, fh := float64(w), float64(h)
 	dc.SetColor(color.NRGBA{0, 0, 0, 255})
 	dc.SetLineWidth(3)
-	dc.DrawRectangle(x+1.5, y+1.5, w-3, h-3)
+	dc.DrawRectangle(fx+1.5, fy+1.5, fw-3, fh-3)
 	dc.Stroke()
 }

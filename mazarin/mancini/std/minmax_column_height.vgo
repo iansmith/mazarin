@@ -1,0 +1,30 @@
+import "children"
+
+func minMaxColumnHeight() int64 {
+	minH := deref_i64("_minH_")
+	maxH := deref_i64("_maxH_")
+
+	if hasNoChildren("_findPattern_", "_myName_", "_int64Prefix_", "_visSuffix_") {
+		return minH
+	}
+
+	children := find("_findPattern_")
+	total := int64(0)
+	n := int64(0)
+	for _, uri := range children {
+		pname := deref_str(uri)
+		if pname == "_myName_" {
+			seg := uri_segment(uri, 3)
+			if isChildVisible("_int64Prefix_", "_visSuffix_", seg) {
+				huri := str_concat(str_concat("_int64Prefix_", seg), "_heightSuffix_")
+				h := deref_i64(huri)
+				total = total + h
+				n = n + 1
+			}
+		}
+	}
+	if n > 1 {
+		total = total + (n - 1)
+	}
+	return clamp(total, minH, maxH)
+}

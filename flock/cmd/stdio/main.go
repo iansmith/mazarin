@@ -19,9 +19,9 @@ import (
 
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/fontcache"
-	"mazzy/mazarin/interactor"
 	mfont "mazzy/shared/font"
 	"mazzy/mazarin/mancini"
+	"mazzy/mazarin/mancini/std"
 	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/serial"
 	"mazzy/mazarin/sys"
@@ -244,7 +244,7 @@ func main() {
 
 	// 1. Initialize constraint system.
 	attr.Init()
-	interactor.Init()
+	
 	mancini.Init()
 	sys.UartWriteString(fmt.Sprintf("[stdio] attr + interactor + mancini init done, SID=%s (T+%v)\n", attr.SID(), time.Since(startTime)))
 
@@ -280,128 +280,99 @@ func main() {
 	pal := mancini.DefaultPalette()
 	pal.SwapRB = true
 
-	// 3. Probe font metrics (this triggers the first OpenFace RPC to rachel).
-	sys.UartWriteString(fmt.Sprintf("[stdio] probing font metrics... (T+%v)\n", time.Since(startTime)))
-	probeFace := fonts.LoadFace(false, fontSize)
-	charW := 10 // fallback
-	if probeFace != nil {
-		adv, ok := probeFace.GlyphAdvance('M')
-		if ok {
-			charW = adv.Ceil()
-		}
-	}
-	// Approximate content width: MaxWidth(900) - shadow(~40) - chrome(~32) - textpad(8)
-	approxContentW := 900 - 40 - 32 - 8
-	maxCols := approxContentW / charW
-	if maxCols < 40 {
-		maxCols = 40
-	}
-	sys.UartWriteString(fmt.Sprintf("[stdio] charW=%d maxCols=%d (T+%v)\n", charW, maxCols, time.Since(startTime)))
+	// Theme for ConsoleLabel (monospaced font, console colors).
+	theme := mancini.NewTheme(nContent, nText, mfont.DefaultMono, fontSize,
+		func(family string, feature mancini.Feature, size int64) font.Face {
+			return fc.OpenFaceByName(family, mfont.Regular, size)
+		})
+	sys.UartWriteString(fmt.Sprintf("[stdio] Theme ready (T+%v)\n", time.Since(startTime)))
 
-	// 4. Console state.
+	// 3. Console state.
+	const maxCols = 120
 	con := &console{
 		maxCols:            maxCols,
 		suppressSerialCopy: os.Getenv("SUPPRESS_SERIAL_STDIO_COPY") == "1",
 	}
 
-	// 5. Build UI tree: AppWindow → ColumnOutsideIn → ConsoleLabels.
-	labels := make([]*mancini.ConsoleLabel, maxPoolLines)
-	drawers := make([]mancini.Drawer, maxPoolLines)
+	// 4. Build UI tree: AppWindow → ColumnOutsideIn → ConsoleLabels.
+	// ConsoleLabels are children of "console_col" via the constraint network.
+	labels := make([]*std.ConsoleLabel, maxPoolLines)
 	for i := range labels {
 		idx := i
-		labels[i] = &mancini.ConsoleLabel{
-			Pal:      pal,
-			Fonts:    fonts,
-			Name:     fmt.Sprintf("line_%d", i),
-			FontSize: fontSize,
-			BgColor:  nContent,
-			TextFunc: func() string {
-				if idx < con.lineCount {
-					return con.lines[idx].text
-				}
-				return ""
-			},
-			ColorFunc: func() color.NRGBA {
-				if idx < con.lineCount {
-					return con.lines[idx].color
-				}
-				return nText
-			},
+		labels[i] = std.NewConsoleLabel(fmt.Sprintf("line_%d", i), "console_col",
+			theme, fontSize, nContent, maxCols)
+		labels[i].TextFunc = func() string {
+			if idx < con.lineCount {
+				return con.lines[idx].text
+			}
+			return ""
 		}
-		drawers[i] = labels[i]
+		labels[i].ColorFunc = func() color.NRGBA {
+			if idx < con.lineCount {
+				return con.lines[idx].color
+			}
+			return nText
+		}
 	}
 
-	content := &mancini.ColumnOutsideIn{
-		Pal:      pal,
-		Name:     "console_col",
-		Children: drawers,
-		BgColor:  nContent,
-	}
+	// Height: grows with children, clamped to [1 line .. all lines + spacing].
+	lineH := fontSize
+	minH := lineH
+	maxH := int64(maxPoolLines)*lineH + int64(maxPoolLines-1)
+	content := std.NewColumnOutsideIn("console_col", "AppWindow", nContent, minH, maxH)
 
-	titleBar := mancini.GradientTitleFace(fonts, pal, "Serial Console", 18, 8)
-
-	app := &mancini.AppWindow{
-		Pal:      pal,
-		Fonts:    fonts,
-		Name:     "AppWindow",
-		Title:    "Serial Console",
-		Focused:  true,
-		TitleBar: titleBar,
-		Content:  content,
-		MaxWidth: 900,
-	}
-
-	// InitLayout bottom-up: labels → column → app.
-	for _, label := range labels {
-		label.InitLayout("console_col")
-	}
-	content.InitLayout("AppWindow")
-	app.InitLayout("")
+	gt := std.NewGradientTitle(pal, fonts, "Serial Console", 18, 8)
+	app := std.NewAppWindow(nil, pal, fonts, "Serial Console", 26, 900, gt.TitleDraw)
+	app.Focused = false // wait for rachel to grant focus
 	sys.UartWriteString(fmt.Sprintf("[stdio] UI tree built (T+%v)\n", time.Since(startTime)))
 
 	// 6. Screen dimensions and draw context.
-	screenWProg := interactor.BindStrings(interactor.ProgIdentityI64,
+	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"attr:///kernel/int64/screen/width")
 	screenWHandle := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_w"), screenWProg)
-	screenHProg := interactor.BindStrings(interactor.ProgIdentityI64,
+	screenHProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"attr:///kernel/int64/screen/height")
 	screenHHandle := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
 	screenW := int(screenWHandle.Get())
 	screenH := int(screenHHandle.Get())
 	sys.UartWriteString(fmt.Sprintf("[stdio] screen: %dx%d\n", screenW, screenH))
 
-	drawCtx := interactor.NewDrawContext(nil, 0, 0, screenW, screenH)
+	drawCtx := mancini.NewFramebufferContext()
 	fbImage := drawCtx.Image()
 	ggCtx := gg.NewContextForRGBA(fbImage)
 	ggCtx.SwapRB = true
 	sys.UartWriteString(fmt.Sprintf("[stdio] draw context created (T+%v)\n", time.Since(startTime)))
 
-	// 7. Initial sizing draw at small default.
-	initW, initH := 800.0, 400.0
-	initX := float64(screenW)/2 - initW/2
-	initY := float64(screenH)/2 - initH/2
+	// 7. Initial sizing draw.
+	appLH := app.GetLayout()
+	initX := float64(screenW)/2 - 400
+	initY := float64(screenH)/2 - 200
 	sys.UartWriteString("[stdio] sizing draw...\n")
-	app.Draw(ggCtx, initX, initY, initW, initH)
+	appLH.X.Set(int64(initX))
+	appLH.Y.Set(int64(initY))
+	app.SetDC(ggCtx)
+	app.Draw(app, int64(initX), int64(initY), appLH.Width.Get(), appLH.Height.Get())
 
 	// Read constraint-computed size.
-	rawW := app.Layout.Width.Get()
-	rawH := app.Layout.Height.Get()
-	contentW := content.Layout.Width.Get()
-	contentH := content.Layout.Height.Get()
+	rawW := appLH.Width.Get()
+	rawH := appLH.Height.Get()
+	contentLH := content.GetLayout()
+	contentW := contentLH.Width.Get()
+	contentH := contentLH.Height.Get()
 	sys.UartWriteString(fmt.Sprintf("[stdio] raw constraint: W=%d H=%d contentW=%d contentH=%d\n", rawW, rawH, contentW, contentH))
 	winW := float64(rawW)
 	winH := float64(rawH)
 	if winW < 100 {
-		winW = initW
+		winW = 800
 	}
 	if winH < 50 {
-		winH = initH
+		winH = 400
 	}
 	sys.UartWriteString(fmt.Sprintf("[stdio] constraint size: %.0fx%.0f (T+%v)\n", winW, winH, time.Since(startTime)))
 
 	// Force Bounds evaluation for rachel.
 	sys.UartWriteString(fmt.Sprintf("[stdio] evaluating Bounds... (T+%v)\n", time.Since(startTime)))
-	_ = app.Layout.Bounds.Get()
+	_ = appLH.Bounds.Get()
 	sys.UartWriteString(fmt.Sprintf("[stdio] Bounds evaluated (T+%v)\n", time.Since(startTime)))
 
 	// 8. Rachel is already confirmed ready (step 2b). Announce to WM.
@@ -414,10 +385,10 @@ func main() {
 	vaYURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/y"
 
 	// Stdio left-aligns: X = visibleArea.x, Y = visibleArea.y.
-	xProg := interactor.BindStrings(interactor.ProgIdentityI64, vaXURI)
+	xProg := mancini.BindStrings(mancini.ProgIdentityI64, vaXURI)
 	posXHandle = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/x"), xProg)
 
-	yProg := interactor.BindStrings(interactor.ProgIdentityI64, vaYURI)
+	yProg := mancini.BindStrings(mancini.ProgIdentityI64, vaYURI)
 	posYHandle = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/y"), yProg)
 
 	winX := float64(posXHandle.Get())
@@ -427,7 +398,7 @@ func main() {
 	// Clear sizing ghost and draw at final position.
 	ggCtx.SetColor(pal.Surface)
 	clearX0, clearY0 := initX, initY
-	clearX1, clearY1 := initX+initW, initY+initH
+	clearX1, clearY1 := initX+winW, initY+winH
 	if winX < clearX0 {
 		clearX0 = winX
 	}
@@ -442,7 +413,9 @@ func main() {
 	}
 	ggCtx.FillRectangle(clearX0, clearY0, clearX1-clearX0, clearY1-clearY0)
 
-	app.Draw(ggCtx, winX, winY, winW, winH)
+	appLH.X.Set(int64(winX))
+	appLH.Y.Set(int64(winY))
+	app.Draw(app, int64(winX), int64(winY), int64(winW), int64(winH))
 	drawCtx.Flush(int32(winX), int32(winY), int32(winX+winW), int32(winY+winH))
 	sys.UartWriteString(fmt.Sprintf("[stdio] initial draw done at (%.0f,%.0f) (T+%v)\n", winX, winY, time.Since(startTime)))
 
@@ -478,11 +451,13 @@ func main() {
 	sys.UartWriteString("[stdio] Entering event loop\n")
 
 	redraw := func() {
-		winW = float64(app.Layout.Width.Get())
-		winH = float64(app.Layout.Height.Get())
+		winW = float64(appLH.Width.Get())
+		winH = float64(appLH.Height.Get())
 		winX = float64(posXHandle.Get())
 		winY = float64(posYHandle.Get())
-		app.Draw(ggCtx, winX, winY, winW, winH)
+		appLH.X.Set(int64(winX))
+		appLH.Y.Set(int64(winY))
+		app.Draw(app, int64(winX), int64(winY), int64(winW), int64(winH))
 		drawCtx.Flush(int32(winX), int32(winY), int32(winX+winW), int32(winY+winH))
 	}
 

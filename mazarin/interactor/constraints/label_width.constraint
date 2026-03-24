@@ -1,5 +1,0 @@
-func label_width() int64 {
-	content := deref_str("_0_")
-	cw := deref_i64("_1_")
-	return str_len(content) * cw
-}

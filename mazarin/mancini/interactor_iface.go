@@ -28,12 +28,13 @@ type ThemedInteractor interface {
 // but handle drawing themselves.
 type Parent interface {
 	GetChildren() []Interactor
-	DrawChildren(self Interactor)
+	DrawChildren(self Interactor, x, y, w, h int64)
 }
 
 // Decoratable is implemented by types that customize decoration drawing.
 // The default Decorator draws a thick black box; NeuBox and NeuCircle
 // override Decorate to draw neumorphic shadows instead.
+// x, y, w, h are the decorator's authoritative bounds from its parent.
 type Decoratable interface {
-	Decorate(self Interactor)
+	Decorate(self Interactor, x, y, w, h int64)
 }

@@ -37,18 +37,18 @@ func NewNeuBox(layout *mancini.LayoutHandles, pal mancini.Palette,
 }
 
 // Decorate implements mancini.Decoratable — draws neumorphic box shadows
-// at the Decorator's full bounds.
-func (n *NeuBox) Decorate(self mancini.Interactor) {
+// at the given bounds.
+func (n *NeuBox) Decorate(self mancini.Interactor, x, y, w, h int64) {
 	dc := self.DC()
 	if dc == nil {
 		return
 	}
-	x, y := float64(self.X()), float64(self.Y())
-	w, h := float64(self.W()), float64(self.H())
+	fx, fy := float64(x), float64(y)
+	fw, fh := float64(w), float64(h)
 
 	face := n.Face
 	if face == (color.NRGBA{}) {
 		face = n.Pal.Surface
 	}
-	mancini.NeuBoxWith(n.Pal, dc, n.Depth, x, y, x+w, y+h, n.Radius, face, n.Params, nil)
+	NeuBoxWith(n.Pal, dc, n.Depth, fx, fy, fx+fw, fy+fh, n.Radius, face, n.Params, nil)
 }

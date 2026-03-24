@@ -11,11 +11,11 @@ type Drawer interface {
 	Draw(dc DrawContext, x, y, w, h float64)
 }
 
-// NewDrawer draws itself into its bounds. The Interactor provides bounds
-// (X, Y, W, H), the DrawContext (DC), and theme info if the Interactor
-// is also a ThemedInteractor. This replaces Drawer once migration is complete.
+// NewDrawer draws itself into the given bounds. The parent passes
+// authoritative x, y, w, h — these override any stale layout handle values.
+// self provides access to the DrawContext and identity for virtual dispatch.
 type NewDrawer interface {
-	Draw(self Interactor)
+	Draw(self Interactor, x, y, w, h int64)
 }
 
 // Layouter is implemented by interactors that have layout handles.

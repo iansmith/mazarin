@@ -31,3 +31,12 @@ func (fc *FontConfig) MeasureText(text string, bold bool, fontSize int64) float6
 	advance := font.MeasureString(face, text)
 	return float64(advance) / 64.0
 }
+
+// MeasureTextWidth returns the advance width of text using a pre-resolved font.Face.
+func MeasureTextWidth(face font.Face, text string) int64 {
+	if face == nil {
+		return int64(len(text) * 10) // rough estimate
+	}
+	advance := font.MeasureString(face, text)
+	return int64(advance) / 64
+}

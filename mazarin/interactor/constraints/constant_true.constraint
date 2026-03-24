@@ -1,3 +1,0 @@
-func constant_true() bool {
-	return true
-}

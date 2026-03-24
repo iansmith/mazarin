@@ -5,19 +5,20 @@ import (
 	"sync/atomic"
 
 	"mazzy/mazarin/attr"
-	"mazzy/mazarin/interactor"
 	"mazzy/mazarin/vm"
 	"mazzy/mazarin/vm/flat"
 )
 
-var manciniPID string
+var manciniSID string
 
 // Init initializes the mancini layout system using the shepherd's SID from attr.SID().
 // Must be called after attr.Init().
-const visSuffix = "/layout/Visible"
+// VisSuffix is the URI suffix for the Visible attribute, used by constraint programs
+// to check child visibility.
+var VisSuffix = LayoutVisible.Suffix()
 
 func Init() {
-	manciniPID = attr.SID()
+	manciniSID = attr.SID()
 }
 
 // LayoutHandles holds constraint system handles for an interactor's layout attributes.
@@ -27,13 +28,11 @@ type LayoutHandles struct {
 	Bounds                       *attr.Handle[vm.Value] // Rectangle2D: (x, y, x+w, y+h)
 	BoundsHash                   *attr.Handle[int64]    // hash of X,Y,W,H for fast change detection
 	Parent                       *attr.Handle[string]
-	SpacingHandle                *attr.Handle[int64] // inter-child spacing (containers only)
-	CrossAlignHandle             *attr.Handle[int64] // cross-axis alignment (containers only)
-	MaxWidthHandle               *attr.Handle[int64] // max width for overflow clipping (Row only)
-	LastChildDrawnHandle         *attr.Handle[int64] // 0-based index of last child to draw (Row only)
-	constraintWidth              bool                // true if Width is a constraint (don't Set)
-	constraintHeight             bool                // true if Height is a constraint (don't Set)
-	constraintY                  bool                // true if Y is a constraint (don't Set)
+	SpacingHandle        *attr.Handle[int64] // inter-child spacing (containers only)
+	CrossAlignHandle     *attr.Handle[int64] // cross-axis alignment (containers only)
+	MaxWidthHandle       *attr.Handle[int64] // max width for overflow clipping (Row only)
+	LastChildDrawnHandle *attr.Handle[int64] // 0-based index of last child to draw (Row only)
+	Damage               *DamageHandles      // damage rectangle tracking (nil = no damage)
 }
 
 // Name returns the interactor's constraint-system name.
@@ -51,43 +50,54 @@ func DefaultName(typeName string) string {
 	return typeName + strconv.FormatUint(n, 10)
 }
 
-func layoutURI(name, typePath, attrName string) string {
-	return "attr:///shepherd/" + manciniPID + "/" + typePath + "/" + name + "/layout/" + attrName
+// LayoutURI builds an attribute URI in the mancini namespace.
+func LayoutURI(myName string, dt DataType, prop LayoutProp) string {
+	return "attr:///shepherd/" + manciniSID + "/" + string(dt) + "/" + myName + "/layout/" + string(prop)
 }
 
-// newLayoutHandlesBase creates X, Y, Visible, Parent handles (no Width/Height).
-func newLayoutHandlesBase(name, parent string) *LayoutHandles {
+// FindPattern returns the find pattern for discovering all interactors' Parent attributes.
+func FindPattern() string {
+	return "attr:///shepherd/" + manciniSID + "/str/*/layout/Parent"
+}
+
+// Int64Prefix returns the URI prefix for int64 attributes in the mancini namespace.
+func Int64Prefix() string {
+	return "attr:///shepherd/" + manciniSID + "/int64/"
+}
+
+// NewLayoutHandlesBase creates X, Y, Visible, Parent handles (no Width/Height).
+func NewLayoutHandlesBase(myName, parent string) *LayoutHandles {
 	return &LayoutHandles{
-		name:    name,
-		X:       attr.ValueI64(layoutURI(name, "int64", "X"), 0),
-		Y:       attr.ValueI64(layoutURI(name, "int64", "Y"), 0),
-		Visible: attr.ValueI64(layoutURI(name, "int64", "Visible"), 1),
-		Parent:  attr.ValueStr(layoutURI(name, "str", "Parent"), parent),
+		name:    myName,
+		X:       attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutX), 0),
+		Y:       attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutY), 0),
+		Visible: attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutVisible), 1),
+		Parent:  attr.ValueStr(LayoutURI(myName, DataTypeStr, LayoutParent), parent),
 	}
 }
 
-// newLayoutHandles creates all layout handles as Value handles,
+// NewLayoutHandles creates all layout handles as Value handles,
 // plus a Bounds constraint derived from X, Y, Width, Height.
-func newLayoutHandles(name, parent string) *LayoutHandles {
-	lh := newLayoutHandlesBase(name, parent)
-	lh.Width = attr.ValueI64(layoutURI(name, "int64", "Width"), 0)
-	lh.Height = attr.ValueI64(layoutURI(name, "int64", "Height"), 0)
-	lh.initBounds(name)
+func NewLayoutHandles(myName, parent string) *LayoutHandles {
+	lh := NewLayoutHandlesBase(myName, parent)
+	lh.Width = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutWidth), 0)
+	lh.Height = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutHeight), 0)
+	lh.InitBounds(myName)
 	return lh
 }
 
-// initBounds creates the Bounds constraint: rect(X, Y, X+Width, Y+Height),
+// InitBounds creates the Bounds constraint: rect(X, Y, X+Width, Y+Height),
 // plus a BoundsHash constraint for fast layout-change detection.
-func (lh *LayoutHandles) initBounds(name string) {
-	prog := interactor.BindStrings(ProgBoundsFromXywh,
+func (lh *LayoutHandles) InitBounds(myName string) {
+	prog := BindStrings(ProgBoundsFromXywh,
 		"_x_", lh.X.URI(), "_y_", lh.Y.URI(), "_width_", lh.Width.URI(), "_height_", lh.Height.URI())
 	lh.Bounds = attr.ConstraintComposite(
-		layoutURI(name, "rect", "Bounds"),
+		LayoutURI(myName, DataTypeRect, LayoutBounds),
 		flat.TypeRectangle, prog)
 
-	hashProg := interactor.BindStrings(ProgBoundsHash,
+	hashProg := BindStrings(ProgBoundsHash,
 		"_x_", lh.X.URI(), "_y_", lh.Y.URI(), "_width_", lh.Width.URI(), "_height_", lh.Height.URI())
-	lh.BoundsHash = attr.ConstraintI64(layoutURI(name, "int64", "BoundsHash"), hashProg)
+	lh.BoundsHash = attr.ConstraintI64(LayoutURI(myName, DataTypeInt64, LayoutBoundsHash), hashProg)
 }
 
 // setVisibleHandle sets the Visible handle value.
@@ -147,12 +157,7 @@ func setLayoutCrossAlign(lh *LayoutHandles, v Alignment) {
 // Returns fallback if the child has no layout or its width is 0.
 func childLayoutWidth(d Drawer, fallback float64) float64 {
 	if l, ok := d.(Layouter); ok {
-		lh := l.GetLayout()
-		if lh != nil && lh.Width != nil {
-			if v := float64(lh.Width.Get()); v > 0 {
-				return v
-			}
-		}
+		return ChildWidth(l, fallback)
 	}
 	return fallback
 }
@@ -161,141 +166,56 @@ func childLayoutWidth(d Drawer, fallback float64) float64 {
 // Returns fallback if the child has no layout or its height is 0.
 func childLayoutHeight(d Drawer, fallback float64) float64 {
 	if l, ok := d.(Layouter); ok {
-		lh := l.GetLayout()
-		if lh != nil && lh.Height != nil {
-			if v := float64(lh.Height.Get()); v > 0 {
-				return v
-			}
+		return ChildHeight(l, fallback)
+	}
+	return fallback
+}
+
+// ChildWidth reads a Layouter's width from its constraint handles.
+// Returns fallback if the layout is nil or width is 0.
+func ChildWidth(l Layouter, fallback float64) float64 {
+	lh := l.GetLayout()
+	if lh != nil && lh.Width != nil {
+		if v := float64(lh.Width.Get()); v > 0 {
+			return v
 		}
 	}
 	return fallback
 }
 
-// publishLayout writes position and size to an interactor's layout handles.
-// Skips Width if constraintWidth is true, Height if constraintHeight is true.
-func publishLayout(l *LayoutHandles, x, y, w, h float64) {
+// ChildHeight reads a Layouter's height from its constraint handles.
+// Returns fallback if the layout is nil or height is 0.
+func ChildHeight(l Layouter, fallback float64) float64 {
+	lh := l.GetLayout()
+	if lh != nil && lh.Height != nil {
+		if v := float64(lh.Height.Get()); v > 0 {
+			return v
+		}
+	}
+	return fallback
+}
+
+// PublishLayout writes position and size to an interactor's layout handles.
+// Panics if a non-nil handle is a constraint — constraint values are computed
+// by the VM and must not be set imperatively.
+func PublishLayout(l *LayoutHandles, x, y, w, h float64) {
 	if l == nil {
 		return
 	}
-	l.X.Set(int64(x))
-	if !l.constraintY {
+	if l.X != nil {
+		l.X.Set(int64(x))
+	}
+	if l.Y != nil {
 		l.Y.Set(int64(y))
 	}
-	if !l.constraintWidth {
+	if l.Width != nil {
 		l.Width.Set(int64(w))
 	}
-	if !l.constraintHeight {
+	if l.Height != nil {
 		l.Height.Set(int64(h))
 	}
 }
 
-// InitLayout methods for each interactor type.
-
-func (w *AppWindow) InitLayout(parent string) {
-	// AppWindow always uses "AppWindow" as its constraint name so rachel
-	// can locate it at a well-known path: attr:///shepherd/{pid}/rect/AppWindow/Bounds
-	w.Name = "AppWindow"
-	w.Layout = newLayoutHandlesBase(w.Name, parent)
-	w.Layout.constraintWidth = true
-	w.Layout.constraintHeight = true
-
-	// Shadow margin: the neumorphic shadow extent outside the NeuBox face.
-	// Published bounds include this margin so shadows don't get clipped.
-	w.shadowMargin = NeuMaxPad(WindowParams)
-	sm := w.shadowMargin
-
-	// Horizontal margin: tbMargin + shadowMargin on each side.
-	hMargin := int64(8) + sm
-	hMarginURI := layoutURI(w.Name, "int64", "HMargin")
-	attr.ValueI64(hMarginURI, hMargin)
-
-	// Vertical margin: (tbMargin + tbH + gap + tbMargin) / 2 + shadowMargin
-	// so that child + 2*vMargin = child + full vertical chrome + shadow.
-	tbH := 26.0 // default title bar height
-	if s, ok := w.TitleBar.(Sizer); ok {
-		tbH = s.PreferredHeight()
-	}
-	vOverhead := 8 + tbH + 6 + 8
-	vMargin := int64(vOverhead/2) + sm
-	vMarginURI := layoutURI(w.Name, "int64", "VMargin")
-	attr.ValueI64(vMarginURI, vMargin)
-
-	// Max size (default 740 logical pixels), including shadow margin.
-	maxW := w.MaxWidth
-	if maxW <= 0 {
-		maxW = 740
-	}
-	maxW += 2 * sm // maxWidth accounts for shadow on both sides
-	maxSizeURI := layoutURI(w.Name, "int64", "MaxSize")
-	attr.ValueI64(maxSizeURI, maxW)
-
-	findPattern := "attr:///shepherd/" + manciniPID + "/str/*/layout/Parent"
-	prefix := "attr:///shepherd/" + manciniPID + "/int64/"
-
-	widthProg := interactor.BindStrings(ProgDecorationWidth,
-		"_findPattern_", findPattern, "_myName_", w.Name, "_margin_", hMarginURI,
-		"_int64Prefix_", prefix, "_widthSuffix_", "/layout/Width", "_maxSize_", maxSizeURI, "_visSuffix_", visSuffix)
-	w.Layout.Width = attr.ConstraintI64(
-		layoutURI(w.Name, "int64", "Width"), widthProg)
-
-	heightProg := interactor.BindStrings(ProgDecorationHeight,
-		"_findPattern_", findPattern, "_myName_", w.Name, "_margin_", vMarginURI,
-		"_int64Prefix_", prefix, "_heightSuffix_", "/layout/Height", "_maxSize_", maxSizeURI, "_visSuffix_", visSuffix)
-	w.Layout.Height = attr.ConstraintI64(
-		layoutURI(w.Name, "int64", "Height"), heightProg)
-
-	w.Layout.initBounds(w.Name)
-}
-
-func (w *FreeFloatingWindow) InitLayout(parent string) {
-	if w.Name == "" {
-		w.Name = DefaultName("floater")
-	}
-	w.Layout = newLayoutHandles(w.Name, parent)
-}
-
-func (b *Button) InitLayout(parent string) {
-	if b.Name == "" {
-		b.Name = DefaultName("button")
-	}
-	b.Layout = newLayoutHandles(b.Name, parent)
-}
-
-func (l *NeuLabel) InitLayout(parent string) {
-	if l.Name == "" {
-		l.Name = DefaultName("neulabel")
-	}
-	l.Layout = newLayoutHandles(l.Name, parent)
-}
-
-func (l *Label) InitLayout(parent string) {
-	if l.Name == "" {
-		l.Name = DefaultName("label")
-	}
-	l.Layout = newLayoutHandles(l.Name, parent)
-
-	// Publish intrinsic dimensions so constraint programs can bootstrap
-	// without waiting for a Draw pass.
-	if l.Fonts != nil {
-		l.Layout.Height.Set(int64(l.FontSize + 4))
-		text := l.Text
-		if l.TextFunc != nil {
-			text = l.TextFunc()
-		}
-		l.Layout.Width.Set(int64(l.Fonts.MeasureText(text, l.Bold, l.FontSize) + 8))
-	}
-}
-
-func (s *Spacer) InitLayout(parent string) {
-	if s.Name == "" {
-		s.Name = DefaultName("spacer")
-	}
-	s.Layout = newLayoutHandles(s.Name, parent)
-
-	// Publish intrinsic dimensions so constraint programs can bootstrap.
-	s.Layout.Width.Set(int64(s.PreferredW))
-	s.Layout.Height.Set(int64(s.PreferredH))
-}
 
 // NewDecoratorLayout creates layout handles with inside-out constraint sizing
 // for decorator-style parents. The parent interactor is used to extract the
@@ -320,35 +240,33 @@ func NewDecoratorLayout(name string, parent Interactor, hMargin, vMargin, maxSiz
 // NewDecoratorLayoutByParentName is the string-based variant of NewDecoratorLayout.
 // Prefer NewDecoratorLayout which takes an Interactor — this version exists for
 // cases where only the parent's constraint-system name is available.
-func NewDecoratorLayoutByParentName(name, parentName string, hMargin, vMargin, maxSize int64) *LayoutHandles {
-	lh := newLayoutHandlesBase(name, parentName)
-	lh.constraintWidth = true
-	lh.constraintHeight = true
+func NewDecoratorLayoutByParentName(myName, parentName string, hMargin, vMargin, maxSize int64) *LayoutHandles {
+	lh := NewLayoutHandlesBase(myName, parentName)
 
-	hMarginURI := layoutURI(name, "int64", "HMargin")
+	hMarginURI := LayoutURI(myName, DataTypeInt64, LayoutHMargin)
 	attr.ValueI64(hMarginURI, hMargin)
 
-	vMarginURI := layoutURI(name, "int64", "VMargin")
+	vMarginURI := LayoutURI(myName, DataTypeInt64, LayoutVMargin)
 	attr.ValueI64(vMarginURI, vMargin)
 
-	maxSizeURI := layoutURI(name, "int64", "MaxSize")
+	maxSizeURI := LayoutURI(myName, DataTypeInt64, LayoutMaxSize)
 	attr.ValueI64(maxSizeURI, maxSize)
 
-	findPattern := "attr:///shepherd/" + manciniPID + "/str/*/layout/Parent"
-	prefix := "attr:///shepherd/" + manciniPID + "/int64/"
+	findPattern := FindPattern()
+	prefix := Int64Prefix()
 
-	widthProg := interactor.BindStrings(ProgDecorationWidth,
-		"_findPattern_", findPattern, "_myName_", name, "_margin_", hMarginURI,
-		"_int64Prefix_", prefix, "_widthSuffix_", "/layout/Width", "_maxSize_", maxSizeURI, "_visSuffix_", visSuffix)
+	widthProg := BindStrings(ProgDecorationWidth,
+		"_findPattern_", findPattern, "_myName_", myName, "_margin_", hMarginURI,
+		"_int64Prefix_", prefix, "_widthSuffix_", LayoutWidth.Suffix(), "_maxSize_", maxSizeURI, "_VisSuffix_", VisSuffix)
 	lh.Width = attr.ConstraintI64(
-		layoutURI(name, "int64", "Width"), widthProg)
+		LayoutURI(myName, DataTypeInt64, LayoutWidth), widthProg)
 
-	heightProg := interactor.BindStrings(ProgDecorationHeight,
-		"_findPattern_", findPattern, "_myName_", name, "_margin_", vMarginURI,
-		"_int64Prefix_", prefix, "_heightSuffix_", "/layout/Height", "_maxSize_", maxSizeURI, "_visSuffix_", visSuffix)
+	heightProg := BindStrings(ProgDecorationHeight,
+		"_findPattern_", findPattern, "_myName_", myName, "_margin_", vMarginURI,
+		"_int64Prefix_", prefix, "_heightSuffix_", LayoutHeight.Suffix(), "_maxSize_", maxSizeURI, "_VisSuffix_", VisSuffix)
 	lh.Height = attr.ConstraintI64(
-		layoutURI(name, "int64", "Height"), heightProg)
+		LayoutURI(myName, DataTypeInt64, LayoutHeight), heightProg)
 
-	lh.initBounds(name)
+	lh.InitBounds(myName)
 	return lh
 }
