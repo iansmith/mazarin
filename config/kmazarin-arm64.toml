@@ -31,9 +31,9 @@ maz = ["fs=/fs.maz"]
 name = "rachel"
 path = "/rachel.elf"
 
-[[shepherd]]
-name = "stdio"
-path = "/stdio.elf"
+#[[shepherd]]
+#name = "stdio"
+#path = "/stdio.elf"
 
 #[[shepherd]]
 #name = "sievetest"

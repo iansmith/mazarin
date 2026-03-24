@@ -1,14 +1,14 @@
-func isChildVisible(prefix string, visSuffix string, seg string) bool {
-	vuri := str_concat(str_concat(prefix, seg), visSuffix)
-	return deref_i64(vuri) != int64(0)
+func isChildVisible(boolPrefix string, visSuffix string, seg string) bool {
+	vuri := str_concat(str_concat(boolPrefix, seg), visSuffix)
+	return deref_bool(vuri)
 }
 
-func hasNoChildren(findPattern string, myName string, prefix string, visSuffix string) bool {
+func hasNoChildren(findPattern string, myName string, boolPrefix string, visSuffix string) bool {
 	children := find(findPattern)
 	for _, uri := range children {
 		if deref_str(uri) == myName {
 			seg := uri_segment(uri, 3)
-			if isChildVisible(prefix, visSuffix, seg) {
+			if isChildVisible(boolPrefix, visSuffix, seg) {
 				return false
 			}
 		}
@@ -16,14 +16,14 @@ func hasNoChildren(findPattern string, myName string, prefix string, visSuffix s
 	return true
 }
 
-func hasOneChild(findPattern string, myName string, prefix string, visSuffix string) string {
+func hasOneChild(findPattern string, myName string, boolPrefix string, visSuffix string) string {
 	children := find(findPattern)
 	result := ""
 	n := int64(0)
 	for _, uri := range children {
 		if deref_str(uri) == myName {
 			seg := uri_segment(uri, 3)
-			if isChildVisible(prefix, visSuffix, seg) {
+			if isChildVisible(boolPrefix, visSuffix, seg) {
 				result = uri
 				n = n + 1
 			}
@@ -35,13 +35,13 @@ func hasOneChild(findPattern string, myName string, prefix string, visSuffix str
 	return ""
 }
 
-func numChildren(findPattern string, myName string, prefix string, visSuffix string) int64 {
+func numChildren(findPattern string, myName string, boolPrefix string, visSuffix string) int64 {
 	children := find(findPattern)
 	n := int64(0)
 	for _, uri := range children {
 		if deref_str(uri) == myName {
 			seg := uri_segment(uri, 3)
-			if isChildVisible(prefix, visSuffix, seg) {
+			if isChildVisible(boolPrefix, visSuffix, seg) {
 				n = n + 1
 			}
 		}
@@ -49,14 +49,14 @@ func numChildren(findPattern string, myName string, prefix string, visSuffix str
 	return n
 }
 
-func nthChild(findPattern string, myName string, prefix string, visSuffix string, index int64) string {
+func nthChild(findPattern string, myName string, boolPrefix string, visSuffix string, index int64) string {
 	children := find(findPattern)
 	n := int64(0)
 	result := ""
 	for _, uri := range children {
 		if deref_str(uri) == myName {
 			seg := uri_segment(uri, 3)
-			if isChildVisible(prefix, visSuffix, seg) {
+			if isChildVisible(boolPrefix, visSuffix, seg) {
 				if n == index {
 					result = uri
 				}

@@ -1,13 +1,13 @@
 import "children"
 
 func columnHeight() int64 {
-	if hasNoChildren("_findPattern_", "_myName_", "_int64Prefix_", "_visSuffix_") {
+	if hasNoChildren("_findPattern_", "_myName_", "_boolPrefix_", "_visSuffix_") {
 		return int64(30)
 	}
 
 	spacing := deref_i64("_spacing_")
 
-	oneChild := hasOneChild("_findPattern_", "_myName_", "_int64Prefix_", "_visSuffix_")
+	oneChild := hasOneChild("_findPattern_", "_myName_", "_boolPrefix_", "_visSuffix_")
 	if oneChild != "" {
 		seg := uri_segment(oneChild, 3)
 		huri := str_concat(str_concat("_int64Prefix_", seg), "_heightSuffix_")
@@ -22,7 +22,7 @@ func columnHeight() int64 {
 		pname := deref_str(uri)
 		if pname == "_myName_" {
 			seg := uri_segment(uri, 3)
-			if isChildVisible("_int64Prefix_", "_visSuffix_", seg) {
+			if isChildVisible("_boolPrefix_", "_visSuffix_", seg) {
 				huri := str_concat(str_concat("_int64Prefix_", seg), "_heightSuffix_")
 				h := deref_i64(huri)
 				total = total + h

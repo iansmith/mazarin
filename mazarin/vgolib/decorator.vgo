@@ -1,7 +1,7 @@
 import "children"
 
-func simpleDecoratorInsideOut(findPattern string, myName string, prefix string, visSuffix string, margin int64, dimPrefix string, dimSuffix string, defaultSize int64, maxSize int64) int64 {
-	childURI := hasOneChild(findPattern, myName, prefix, visSuffix)
+func simpleDecoratorInsideOut(findPattern string, myName string, boolPrefix string, visSuffix string, margin int64, dimPrefix string, dimSuffix string, defaultSize int64, maxSize int64) int64 {
+	childURI := hasOneChild(findPattern, myName, boolPrefix, visSuffix)
 	size := defaultSize
 	if childURI != "" {
 		seg := uri_segment(childURI, 3)

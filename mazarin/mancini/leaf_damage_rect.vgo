@@ -2,8 +2,8 @@ func leaf_damage_rect() Rect {
 	bounds := deref_rect("_bounds_")
 	lpBounds := deref_rect("_lpBounds_")
 
-	vis := deref_i64("_visible_")
-	lpVis := deref_i64("_lpVisible_")
+	vis := deref_bool("_visible_")
+	lpVis := deref_bool("_lpVisible_")
 	if vis != lpVis {
 		return rect_union(bounds, lpBounds)
 	}

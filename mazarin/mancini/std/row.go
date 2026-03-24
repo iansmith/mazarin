@@ -58,21 +58,21 @@ func NewRow(myName, parent string, pal mancini.Palette, maxWidth int64, crossAli
 	// Row WIDTH constraint.
 	widthProg := mancini.BindStrings(ProgRowWidth,
 		"_maxWidth_", maxWidthURI, "_spacing_", spacingURI, "_findPattern_", findPattern,
-		"_myName_", myName, "_int64Prefix_", prefix, "_widthSuffix_", mancini.LayoutWidth.Suffix(), "_visSuffix_", mancini.VisSuffix)
+		"_myName_", myName, "_int64Prefix_", prefix, "_boolPrefix_", mancini.BoolPrefix(), "_widthSuffix_", mancini.LayoutWidth.Suffix(), "_visSuffix_", mancini.VisSuffix)
 	widthURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutWidth)
 	lh.Width = attr.ConstraintI64(widthURI, widthProg)
 
 	// Row HEIGHT constraint.
 	heightProg := mancini.BindStrings(ProgRowHeight,
 		"_findPattern_", findPattern, "_myName_", myName,
-		"_int64Prefix_", prefix, "_heightSuffix_", mancini.LayoutHeight.Suffix(), "_visSuffix_", mancini.VisSuffix)
+		"_int64Prefix_", prefix, "_boolPrefix_", mancini.BoolPrefix(), "_heightSuffix_", mancini.LayoutHeight.Suffix(), "_visSuffix_", mancini.VisSuffix)
 	heightURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutHeight)
 	lh.Height = attr.ConstraintI64(heightURI, heightProg)
 
 	// LastChildDrawn constraint.
 	lastChildProg := mancini.BindStrings(ProgRowLastChild,
 		"_maxWidth_", maxWidthURI, "_spacing_", spacingURI, "_findPattern_", findPattern,
-		"_myName_", myName, "_int64Prefix_", prefix, "_widthSuffix_", mancini.LayoutWidth.Suffix(), "_visSuffix_", mancini.VisSuffix)
+		"_myName_", myName, "_int64Prefix_", prefix, "_boolPrefix_", mancini.BoolPrefix(), "_widthSuffix_", mancini.LayoutWidth.Suffix(), "_visSuffix_", mancini.VisSuffix)
 	lastChildURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutLastChildDrawn)
 	lh.LastChildDrawnHandle = attr.ConstraintI64(lastChildURI, lastChildProg)
 

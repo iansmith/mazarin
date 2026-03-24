@@ -394,7 +394,6 @@ func timeUpdateLoop() {
 	tickInterval := timerFreq / uint64(hertz)
 	lastUpdateTick := ktime.ReadCounter()
 
-	var lastSec uint64
 	for {
 		// Flush modifier bitmask if changed by top-half IRQ handler.
 		if atomic.CompareAndSwapUint32(&modifierDirty, 1, 0) {
@@ -410,20 +409,10 @@ func timeUpdateLoop() {
 		lastUpdateTick = now
 
 		sec, nanos := ktime.GetTime()
-		if hertz == 1 {
-			// Original behavior: only write when second changes.
-			if sec != lastSec {
-				KernelAttrWriteI64(slotTimeSeconds, int64(sec))
-				KernelAttrWriteI64(slotTimeNanos, int64(nanos))
-				lastSec = sec
-			}
-		} else {
-			// Multi-Hz: always write seconds (change-gated internally),
-			// always write nanos (always different → always propagates).
-			KernelAttrWriteI64(slotTimeSeconds, int64(sec))
-			KernelAttrWriteI64(slotTimeNanos, int64(nanos))
-			lastSec = sec
-		}
+		// Always write seconds (change-gated internally) and nanos
+		// (always different → always propagates dirty notifications).
+		KernelAttrWriteI64(slotTimeSeconds, int64(sec))
+		KernelAttrWriteI64(slotTimeNanos, int64(nanos))
 
 		runtime.Gosched()
 	}

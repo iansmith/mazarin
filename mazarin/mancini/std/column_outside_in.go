@@ -44,7 +44,7 @@ func NewColumnOutsideIn(myName, parent string, bgColor color.NRGBA, minH, maxH i
 	// Height constraint: sum of children heights + 1px spacing, clamped to [minH, maxH].
 	heightProg := mancini.BindStrings(ProgMinmaxColumnHeight,
 		"_findPattern_", findPattern, "_myName_", myName,
-		"_int64Prefix_", prefix, "_heightSuffix_", mancini.LayoutHeight.Suffix(),
+		"_int64Prefix_", prefix, "_boolPrefix_", mancini.BoolPrefix(), "_heightSuffix_", mancini.LayoutHeight.Suffix(),
 		"_visSuffix_", mancini.VisSuffix,
 		"_minH_", minHURI, "_maxH_", maxHURI)
 	heightURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutHeight)
@@ -53,7 +53,7 @@ func NewColumnOutsideIn(myName, parent string, bgColor color.NRGBA, minH, maxH i
 	// Width constraint: max of children widths.
 	widthProg := mancini.BindStrings(ProgColumnWidth,
 		"_findPattern_", findPattern, "_myName_", myName,
-		"_int64Prefix_", prefix, "_widthSuffix_", mancini.LayoutWidth.Suffix(),
+		"_int64Prefix_", prefix, "_boolPrefix_", mancini.BoolPrefix(), "_widthSuffix_", mancini.LayoutWidth.Suffix(),
 		"_visSuffix_", mancini.VisSuffix)
 	widthURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutWidth)
 	lh.Width = attr.ConstraintI64(widthURI, widthProg)
@@ -99,7 +99,7 @@ func (c *ColumnOutsideIn) Draw(self mancini.Interactor, x, y, w, h int64) {
 			if l, ok := child.(mancini.Layouter); ok {
 				lh := l.GetLayout()
 				if lh != nil && lh.Visible != nil {
-					lh.Visible.Set(0)
+					lh.Visible.Set(false)
 				}
 			}
 			continue
@@ -110,7 +110,7 @@ func (c *ColumnOutsideIn) Draw(self mancini.Interactor, x, y, w, h int64) {
 			lh := l.GetLayout()
 			if lh != nil {
 				if lh.Visible != nil {
-					lh.Visible.Set(1)
+					lh.Visible.Set(true)
 				}
 				lh.X.Set(x)
 				lh.Y.Set(curY)

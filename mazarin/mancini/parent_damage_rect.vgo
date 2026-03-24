@@ -1,8 +1,8 @@
 func parent_damage_rect() Rect {
 	bounds := deref_rect("_bounds_")
 	lpBounds := deref_rect("_lpBounds_")
-	vis := deref_i64("_visible_")
-	lpVis := deref_i64("_lpVisible_")
+	vis := deref_bool("_visible_")
+	lpVis := deref_bool("_lpVisible_")
 	bgc := deref_i64("_bgColor_")
 	lpBgc := deref_i64("_lpBgColor_")
 	fgc := deref_i64("_fgColor_")

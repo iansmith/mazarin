@@ -7,30 +7,50 @@ package attr
 
 import (
 	"mazzy/mazarin/sys"
+	"mazzy/mazarin/vm/flat"
 	"mazzy/shared/constants"
 )
 
 // Find registers a query pattern and returns the current set of matching URIs.
 // The pattern supports '*' as a single-segment wildcard.
-// Example: "attr:///shepherd/*/display/width"
+// Example: "attr:///shepherd/*/str/*/layout/Parent"
 func Find(pattern string) []string {
 	slot, err := sys.AttrRegisterQuery(pattern)
 	if err != nil {
 		return nil
 	}
 
-	// Read the collection from the query result slot.
+	// Read the collection from the query result slot using seqlock.
 	node := sharedPR.Node(int16(slot))
-	var fv = node.CachedValue // direct read, query result is always consistent
-	if fv.Typ == 0 {
-		return nil // empty result
+	var fv flat.FlatValue
+	for {
+		seq := node.SeqCounter
+		if seq&1 != 0 {
+			continue // writer in progress
+		}
+		fv = node.CachedValue
+		if node.SeqCounter == seq {
+			break // consistent read
+		}
 	}
 
-	// For now, return nil — collection reading will be available when the
-	// kernel writes collection results (Phase 4+). The slot is registered
-	// for future updates.
-	_ = fv
-	return nil
+	if fv.Typ != flat.TypeCollection {
+		return nil
+	}
+
+	ref := fv.AsCollRef()
+	if ref.Count == 0 {
+		return nil
+	}
+	result := make([]string, ref.Count)
+	for i := 0; i < int(ref.Count); i++ {
+		elem := sharedPR.ReadCollectionElement(ref, i)
+		if elem.Typ == flat.TypeStr {
+			sref := elem.AsStrRef()
+			result[i] = sharedPR.ReadString(sref)
+		}
+	}
+	return result
 }
 
 // Exists checks if any attributes exist under the given URI prefix.

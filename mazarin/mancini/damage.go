@@ -12,7 +12,7 @@ import (
 type DamageHandles struct {
 	DamageRect    *attr.Handle[vm.Value] // constraint: damaged region (empty if no change)
 	LPBounds      *attr.Handle[vm.Value] // value: last-painted bounds (set after painting)
-	LPVisible     *attr.Handle[int64]    // value: last-painted visibility
+	LPVisible     *attr.Handle[bool]     // value: last-painted visibility
 	LPBoundsHash  *attr.Handle[int64]    // value: last-painted bounds hash
 	LPBgColor     *attr.Handle[int64]    // value: last-painted background color
 	LPFgColor     *attr.Handle[int64]    // value: last-painted foreground color
@@ -34,7 +34,7 @@ func (lh *LayoutHandles) InitLeafDamage(bgColorURI, fgColorURI, contentHashURI s
 
 	// Last-painted mirrors — value attributes set by the draw loop after painting.
 	d.LPBounds = attr.ValueRectangle(LayoutURI(myName, DataTypeRect, LayoutLPBounds), emptyRect())
-	d.LPVisible = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutLPVisible), 0)
+	d.LPVisible = attr.ValueBool(LayoutURI(myName, DataTypeBool, LayoutLPVisible), false)
 	d.LPBoundsHash = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutLPBoundsHash), 0)
 	d.LPBgColor = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutLPBgColor), 0)
 	d.LPFgColor = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutLPFgColor), 0)
@@ -67,7 +67,7 @@ func (lh *LayoutHandles) InitParentDamage(bgColorURI, fgColorURI, childDamageURI
 	d := &DamageHandles{}
 
 	d.LPBounds = attr.ValueRectangle(LayoutURI(myName, DataTypeRect, LayoutLPBounds), emptyRect())
-	d.LPVisible = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutLPVisible), 0)
+	d.LPVisible = attr.ValueBool(LayoutURI(myName, DataTypeBool, LayoutLPVisible), false)
 	d.LPBoundsHash = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutLPBoundsHash), 0)
 	d.LPBgColor = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutLPBgColor), 0)
 	d.LPFgColor = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutLPFgColor), 0)

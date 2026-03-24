@@ -328,10 +328,10 @@ func main() {
 
 	// 6. Screen dimensions and draw context.
 	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
-		"attr:///kernel/int64/screen/width")
+		"_source_", "attr:///kernel/int64/screen/width")
 	screenWHandle := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_w"), screenWProg)
 	screenHProg := mancini.BindStrings(mancini.ProgIdentityI64,
-		"attr:///kernel/int64/screen/height")
+		"_source_", "attr:///kernel/int64/screen/height")
 	screenHHandle := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
 	screenW := int(screenWHandle.Get())
 	screenH := int(screenHHandle.Get())
@@ -385,10 +385,10 @@ func main() {
 	vaYURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/y"
 
 	// Stdio left-aligns: X = visibleArea.x, Y = visibleArea.y.
-	xProg := mancini.BindStrings(mancini.ProgIdentityI64, vaXURI)
+	xProg := mancini.BindStrings(mancini.ProgIdentityI64, "_source_", vaXURI)
 	posXHandle = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/x"), xProg)
 
-	yProg := mancini.BindStrings(mancini.ProgIdentityI64, vaYURI)
+	yProg := mancini.BindStrings(mancini.ProgIdentityI64, "_source_", vaYURI)
 	posYHandle = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/y"), yProg)
 
 	winX := float64(posXHandle.Get())

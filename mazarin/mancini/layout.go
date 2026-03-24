@@ -24,7 +24,8 @@ func Init() {
 // LayoutHandles holds constraint system handles for an interactor's layout attributes.
 type LayoutHandles struct {
 	name                         string               // interactor's constraint-system name
-	X, Y, Width, Height, Visible *attr.Handle[int64]
+	X, Y, Width, Height *attr.Handle[int64]
+	Visible             *attr.Handle[bool]
 	Bounds                       *attr.Handle[vm.Value] // Rectangle2D: (x, y, x+w, y+h)
 	BoundsHash                   *attr.Handle[int64]    // hash of X,Y,W,H for fast change detection
 	Parent                       *attr.Handle[string]
@@ -65,13 +66,18 @@ func Int64Prefix() string {
 	return "attr:///shepherd/" + manciniSID + "/int64/"
 }
 
+// BoolPrefix returns the URI prefix for bool attributes in the mancini namespace.
+func BoolPrefix() string {
+	return "attr:///shepherd/" + manciniSID + "/bool/"
+}
+
 // NewLayoutHandlesBase creates X, Y, Visible, Parent handles (no Width/Height).
 func NewLayoutHandlesBase(myName, parent string) *LayoutHandles {
 	return &LayoutHandles{
 		name:    myName,
 		X:       attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutX), 0),
 		Y:       attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutY), 0),
-		Visible: attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutVisible), 1),
+		Visible: attr.ValueBool(LayoutURI(myName, DataTypeBool, LayoutVisible), true),
 		Parent:  attr.ValueStr(LayoutURI(myName, DataTypeStr, LayoutParent), parent),
 	}
 }
@@ -101,7 +107,7 @@ func (lh *LayoutHandles) InitBounds(myName string) {
 }
 
 // setVisibleHandle sets the Visible handle value.
-func setVisibleHandle(lh *LayoutHandles, v int64) {
+func setVisibleHandle(lh *LayoutHandles, v bool) {
 	if lh != nil && lh.Visible != nil {
 		lh.Visible.Set(v)
 	}
@@ -112,7 +118,7 @@ func isVisibleHandle(lh *LayoutHandles) bool {
 	if lh == nil || lh.Visible == nil {
 		return true
 	}
-	return lh.Visible.Get() != 0
+	return lh.Visible.Get()
 }
 
 // boundsHashValue returns the current bounds hash, or 0 if unavailable.
@@ -257,13 +263,13 @@ func NewDecoratorLayoutByParentName(myName, parentName string, hMargin, vMargin,
 
 	widthProg := BindStrings(ProgDecorationWidth,
 		"_findPattern_", findPattern, "_myName_", myName, "_margin_", hMarginURI,
-		"_int64Prefix_", prefix, "_widthSuffix_", LayoutWidth.Suffix(), "_maxSize_", maxSizeURI, "_VisSuffix_", VisSuffix)
+		"_int64Prefix_", prefix, "_boolPrefix_", BoolPrefix(), "_widthSuffix_", LayoutWidth.Suffix(), "_maxSize_", maxSizeURI, "_visSuffix_", VisSuffix)
 	lh.Width = attr.ConstraintI64(
 		LayoutURI(myName, DataTypeInt64, LayoutWidth), widthProg)
 
 	heightProg := BindStrings(ProgDecorationHeight,
 		"_findPattern_", findPattern, "_myName_", myName, "_margin_", vMarginURI,
-		"_int64Prefix_", prefix, "_heightSuffix_", LayoutHeight.Suffix(), "_maxSize_", maxSizeURI, "_VisSuffix_", VisSuffix)
+		"_int64Prefix_", prefix, "_boolPrefix_", BoolPrefix(), "_heightSuffix_", LayoutHeight.Suffix(), "_maxSize_", maxSizeURI, "_visSuffix_", VisSuffix)
 	lh.Height = attr.ConstraintI64(
 		LayoutURI(myName, DataTypeInt64, LayoutHeight), heightProg)
 

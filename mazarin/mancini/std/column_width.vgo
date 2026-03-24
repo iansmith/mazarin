@@ -1,11 +1,11 @@
 import "children"
 
 func columnWidth() int64 {
-	if hasNoChildren("_findPattern_", "_myName_", "_int64Prefix_", "_visSuffix_") {
+	if hasNoChildren("_findPattern_", "_myName_", "_boolPrefix_", "_visSuffix_") {
 		return int64(20)
 	}
 
-	oneChild := hasOneChild("_findPattern_", "_myName_", "_int64Prefix_", "_visSuffix_")
+	oneChild := hasOneChild("_findPattern_", "_myName_", "_boolPrefix_", "_visSuffix_")
 	if oneChild != "" {
 		seg := uri_segment(oneChild, 3)
 		wuri := str_concat(str_concat("_int64Prefix_", seg), "_widthSuffix_")
@@ -18,7 +18,7 @@ func columnWidth() int64 {
 		pname := deref_str(uri)
 		if pname == "_myName_" {
 			seg := uri_segment(uri, 3)
-			if isChildVisible("_int64Prefix_", "_visSuffix_", seg) {
+			if isChildVisible("_boolPrefix_", "_visSuffix_", seg) {
 				wuri := str_concat(str_concat("_int64Prefix_", seg), "_widthSuffix_")
 				w := deref_i64(wuri)
 				if w > maxw {

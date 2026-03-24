@@ -149,18 +149,10 @@ func (c *Clock) Feedback(active bool) {
 
 	// Toggle face name label / spacer visibility.
 	if c.FaceLabelLayout != nil {
-		v := int64(0)
-		if active {
-			v = 1
-		}
-		c.FaceLabelLayout.Visible.Set(v)
+		c.FaceLabelLayout.Visible.Set(active)
 	}
 	if c.FaceSpacerLayout != nil {
-		v := int64(1)
-		if active {
-			v = 0
-		}
-		c.FaceSpacerLayout.Visible.Set(v)
+		c.FaceSpacerLayout.Visible.Set(!active)
 	}
 }
 
@@ -172,10 +164,10 @@ func (c *Clock) Complete(success bool) {
 	if !success {
 		// Cancelled: hide label, show spacer (return to steady state).
 		if c.FaceLabelLayout != nil {
-			c.FaceLabelLayout.Visible.Set(0)
+			c.FaceLabelLayout.Visible.Set(false)
 		}
 		if c.FaceSpacerLayout != nil {
-			c.FaceSpacerLayout.Visible.Set(1)
+			c.FaceSpacerLayout.Visible.Set(true)
 		}
 	}
 }

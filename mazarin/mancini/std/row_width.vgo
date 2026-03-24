@@ -4,7 +4,7 @@ func rowWidth() int64 {
 	maxW := deref_i64("_maxWidth_")
 	spacing := deref_i64("_spacing_")
 
-	if hasNoChildren("_findPattern_", "_myName_", "_int64Prefix_", "_visSuffix_") {
+	if hasNoChildren("_findPattern_", "_myName_", "_boolPrefix_", "_visSuffix_") {
 		return int64(20)
 	}
 
@@ -15,7 +15,7 @@ func rowWidth() int64 {
 		pname := deref_str(uri)
 		if pname == "_myName_" {
 			seg := uri_segment(uri, 3)
-			if isChildVisible("_int64Prefix_", "_visSuffix_", seg) {
+			if isChildVisible("_boolPrefix_", "_visSuffix_", seg) {
 				wuri := str_concat(str_concat("_int64Prefix_", seg), "_widthSuffix_")
 				w := deref_i64(wuri)
 

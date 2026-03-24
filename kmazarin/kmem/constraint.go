@@ -32,23 +32,23 @@ const (
 	RegionNodeSize    = 0x20000 // 128KB = 1024 × 128B
 	RegionNodeCap     = 1024    // max attribute slots
 
-	RegionEdgeOff     = 0x20100 // node end
-	RegionEdgeSize    = 0x4000  // 16KB = 8192 × uint16
-	RegionEdgeCap     = 8192    // max edges
+	RegionEdgeOff     = 0x20100  // node end
+	RegionEdgeSize    = 0x10000 // 64KB = 32768 × uint16
+	RegionEdgeCap     = 32768   // max edges
 
-	RegionBytecodeOff  = 0x24100 // edge end
+	RegionBytecodeOff  = 0x30100 // edge end
 	RegionBytecodeSize = 0x40000 // 256KB
 	RegionBytecodeCap  = 16384   // max 16B instructions
 
-	RegionStringOff   = 0x64100  // bytecode end
+	RegionStringOff   = 0x70100  // bytecode end
 	RegionStringSize  = 0x40000  // 256KB = 1024 × 256B
 	RegionStringCap   = 1024     // max string slots
 
-	RegionCollOff     = 0xA4100  // string end
+	RegionCollOff     = 0xB0100  // string end
 	RegionCollSize    = 0x8000   // 32KB = 1024 × 32B
 	RegionCollCap     = 1024     // max collection elements
 
-	RegionTrieOff     = 0xAC100  // collection end
+	RegionTrieOff     = 0xB8100  // collection end
 	RegionTrieSize    = 0x40000  // 256KB = 2048 × 128B
 	RegionTrieCap     = 2048     // max trie nodes
 )

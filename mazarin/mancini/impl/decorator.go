@@ -26,6 +26,9 @@ type Decorator struct {
 	Interactor
 	Parent
 	Top, Right, Bottom, Left int64
+	lastOwnHash   int64
+	lastChildHash int64
+	hasDecorated  bool
 }
 
 // InitDecorator wires the back-pointer, layout, and decoration insets.
@@ -40,11 +43,46 @@ func (d *Decorator) InitDecorator(owner any, layout *mancini.LayoutHandles, top,
 	d.Left = left
 }
 
+// DecorateIfNeeded checks whether the decoration needs to be redrawn by
+// comparing the decorator's own BoundsHash and its child's BoundsHash
+// against saved values. If either has changed (or this is the first frame),
+// it calls Decorate via virtual dispatch and updates the saved hashes.
+// If neither has changed, Decorate is skipped entirely — the previous
+// frame's pixels are still in the framebuffer.
+func (d *Decorator) DecorateIfNeeded(self mancini.Interactor, x, y, w, h int64) {
+	ownHash := int64(0)
+	if l, ok := self.(mancini.Layouter); ok {
+		if lh := l.GetLayout(); lh != nil && lh.BoundsHash != nil {
+			ownHash = lh.BoundsHash.Get()
+		}
+	}
+
+	childHash := int64(0)
+	children := d.GetChildren()
+	if len(children) > 0 {
+		if l, ok := children[0].(mancini.Layouter); ok {
+			if lh := l.GetLayout(); lh != nil && lh.BoundsHash != nil {
+				childHash = lh.BoundsHash.Get()
+			}
+		}
+	}
+
+	if d.hasDecorated && ownHash == d.lastOwnHash && childHash == d.lastChildHash {
+		return
+	}
+
+	if dec, ok := d.Interactor.Owner().(mancini.Decoratable); ok {
+		dec.Decorate(self, x, y, w, h)
+	}
+	d.lastOwnHash = ownHash
+	d.lastChildHash = childHash
+	d.hasDecorated = true
+}
+
 // Draw implements mancini.NewDrawer.
 //
-// 1. Calls Decorate through virtual dispatch on the owner — the concrete
-//    type's Decorate draws the visual decoration at the Decorator's full
-//    bounds.
+// 1. Calls DecorateIfNeeded — skips Decorate when the decorator's and
+//    child's BoundsHash are unchanged from the previous frame.
 // 2. Positions the child by setting its layout X/Y to (x+Left, y+Top) and
 //    passes computed child bounds to the child's Draw.
 // 3. Propagates the DrawContext to the child and calls its Draw.
@@ -53,10 +91,8 @@ func (d *Decorator) InitDecorator(owner any, layout *mancini.LayoutHandles, top,
 // the child (inside-out sizing). The Decorator's own Width/Height come
 // from constraint programs that read child.Width + Left + Right, etc.
 func (d *Decorator) Draw(self mancini.Interactor, x, y, w, h int64) {
-	// 1. Virtual dispatch for Decorate.
-	if dec, ok := d.Interactor.Owner().(mancini.Decoratable); ok {
-		dec.Decorate(self, x, y, w, h)
-	}
+	// 1. Skip decoration if bounds unchanged.
+	d.DecorateIfNeeded(self, x, y, w, h)
 
 	// 2. Compute child bounds inside the decoration insets.
 	children := d.GetChildren()

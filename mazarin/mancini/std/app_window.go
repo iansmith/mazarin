@@ -99,8 +99,8 @@ func (w *AppWindow) Unfocus() { w.Focused = false }
 // Draw implements mancini.NewDrawer. Decorates and draws the single child
 // content area inside the decoration insets.
 func (w *AppWindow) Draw(self mancini.Interactor, x, y, ww, hh int64) {
-	// 1. Decorate: NeuBox shadow + title bar.
-	w.Decorate(self, x, y, ww, hh)
+	// 1. Decorate: NeuBox shadow + title bar (skipped if bounds unchanged).
+	w.Decorator.DecorateIfNeeded(self, x, y, ww, hh)
 
 	// 2. Content area inside the decoration insets.
 	contentX := x + w.Left

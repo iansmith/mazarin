@@ -5,6 +5,7 @@ type DataType string
 
 const (
 	DataTypeInt64 DataType = "int64"
+	DataTypeBool  DataType = "bool"
 	DataTypeStr   DataType = "str"
 	DataTypeRect  DataType = "rect"
 )

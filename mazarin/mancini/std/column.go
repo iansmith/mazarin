@@ -50,14 +50,14 @@ func NewColumn(myName, parent string, pal mancini.Palette, crossAlign mancini.Al
 	// Column HEIGHT constraint: sum of children heights + spacing.
 	heightProg := mancini.BindStrings(ProgColumnHeight,
 		"_findPattern_", findPattern, "_spacing_", spacingURI, "_myName_", myName,
-		"_int64Prefix_", prefix, "_heightSuffix_", mancini.LayoutHeight.Suffix(), "_visSuffix_", mancini.VisSuffix)
+		"_int64Prefix_", prefix, "_boolPrefix_", mancini.BoolPrefix(), "_heightSuffix_", mancini.LayoutHeight.Suffix(), "_visSuffix_", mancini.VisSuffix)
 	heightURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutHeight)
 	lh.Height = attr.ConstraintI64(heightURI, heightProg)
 
 	// Column WIDTH constraint: max of children widths.
 	widthProg := mancini.BindStrings(ProgColumnWidth,
 		"_findPattern_", findPattern, "_myName_", myName,
-		"_int64Prefix_", prefix, "_widthSuffix_", mancini.LayoutWidth.Suffix(), "_visSuffix_", mancini.VisSuffix)
+		"_int64Prefix_", prefix, "_boolPrefix_", mancini.BoolPrefix(), "_widthSuffix_", mancini.LayoutWidth.Suffix(), "_visSuffix_", mancini.VisSuffix)
 	widthURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutWidth)
 	lh.Width = attr.ConstraintI64(widthURI, widthProg)
 

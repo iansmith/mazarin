@@ -26,7 +26,7 @@ func (i *Interactor) X() int64       { return i.layout.X.Get() }
 func (i *Interactor) Y() int64       { return i.layout.Y.Get() }
 func (i *Interactor) W() int64       { return i.layout.Width.Get() }
 func (i *Interactor) H() int64       { return i.layout.Height.Get() }
-func (i *Interactor) Visible() bool  { return i.layout.Visible.Get() != 0 }
+func (i *Interactor) Visible() bool  { return i.layout.Visible.Get() }
 func (i *Interactor) DC() mancini.DrawContext { return i.dc }
 
 // SetDC sets the DrawContext for this interactor. Called once per draw

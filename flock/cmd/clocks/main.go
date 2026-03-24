@@ -159,13 +159,13 @@ func main() {
 	// 4. Time tracking via constraint system — needed by Clock widgets.
 	sys.UartWriteString(fmt.Sprintf("[clocks] setting up time constraints... (T+%v)\n", time.Since(startTime)))
 	timeProg := mancini.BindStrings(mancini.ProgIdentityI64,
-		"attr:///kernel/int64/time/utc_seconds")
+		"_source_", "attr:///kernel/int64/time/utc_seconds")
 	timeSec := attr.ConstraintI64(attr.ShepherdURI("int64", "time_sec"), timeProg)
 	timeSec.Get()
 	sys.UartWriteString(fmt.Sprintf("[clocks] timeSec constraint ready (T+%v)\n", time.Since(startTime)))
 
 	nanosProg := mancini.BindStrings(mancini.ProgIdentityI64,
-		"attr:///kernel/int64/time/utc_nanos")
+		"_source_", "attr:///kernel/int64/time/utc_nanos")
 	timeNanos := attr.ConstraintI64(attr.ShepherdURI("int64", "time_nanos"), nanosProg)
 	timeNanos.SetEager(true)
 	_ = timeNanos.Get()
@@ -253,7 +253,7 @@ func main() {
 		clockWidget.FaceSpacerLayout = spacer.GetLayout()
 
 		// Steady state: face name label visible, spacer hidden.
-		spacer.GetLayout().Visible.Set(0)
+		spacer.GetLayout().Visible.Set(false)
 
 		sys.UartWriteString(fmt.Sprintf("[clocks] column %d (%s) built (T+%v)\n", i, city.id, time.Since(startTime)))
 	}
@@ -262,10 +262,10 @@ func main() {
 
 	// 6. Read kernel screen dimensions for DrawContext sizing.
 	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
-		"attr:///kernel/int64/screen/width")
+		"_source_", "attr:///kernel/int64/screen/width")
 	screenWHandle := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_w"), screenWProg)
 	screenHProg := mancini.BindStrings(mancini.ProgIdentityI64,
-		"attr:///kernel/int64/screen/height")
+		"_source_", "attr:///kernel/int64/screen/height")
 	screenHHandle := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
 	screenW = int(screenWHandle.Get())
 	screenH = int(screenHHandle.Get())
@@ -322,11 +322,11 @@ func main() {
 
 		// X = visibleArea.x + visibleArea.w - appWindow.Width (right-align)
 		xProg := mancini.BindStrings(mancini.ProgAddSubDeref,
-			vaXURI, vaWURI, appLH.Width.URI())
+			"_a_", vaXURI, "_b_", vaWURI, "_c_", appLH.Width.URI())
 		posXHandle = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/x"), xProg)
 
 		// Y = visibleArea.y (top-align)
-		yProg := mancini.BindStrings(mancini.ProgIdentityI64, vaYURI)
+		yProg := mancini.BindStrings(mancini.ProgIdentityI64, "_source_", vaYURI)
 		posYHandle = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/y"), yProg)
 
 		x := posXHandle.Get()
