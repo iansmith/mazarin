@@ -43,12 +43,15 @@ func initNotifyQueues() {
 	}
 }
 
-// enqueueNotification records a dirty slot for a shepherd and wakes its blocked
-// WaitDirty thread (if any). Called from dirtyWalk when FlagEagerNotify is set.
+// enqueueNotificationCollectWake records a dirty slot for a shepherd.
+// If the shepherd has a thread blocked on WaitDirty, the TID is collected
+// into PendingDirtyWakeTIDs for the caller to flush (either via
+// flushPendingDirtyWakes or direct wake under scheduler lock).
 //
-// The owner field comes from FlatAttrNode.Owner (uint16, which stores the
-// ShepherdId cast to uint16).
-func (mgr *KernelAttrManager) enqueueNotification(slot uint16, owner uint16) {
+// Nosplit-safe: only ring buffer operations and array writes.
+//
+//go:nosplit
+func (mgr *KernelAttrManager) enqueueNotificationCollectWake(slot uint16, owner uint16) {
 	pid := int(owner)
 	if pid < 0 || pid >= proc.MaxShepherds {
 		return
@@ -59,22 +62,40 @@ func (mgr *KernelAttrManager) enqueueNotification(slot uint16, owner uint16) {
 		q.Overflowed = true
 	} else {
 		// Dedup: don't enqueue the same slot twice.
-		for i := uint16(0); i < q.Count; i++ {
-			idx := (q.Head - q.Count + i) % notifyQueueSize
+		// Use int arithmetic + bitmask to help compiler eliminate bounds checks.
+		count := int(q.Count)
+		head := int(q.Head)
+		for i := 0; i < count; i++ {
+			idx := (head - count + i) & (notifyQueueSize - 1)
 			if q.Slots[idx] == slot {
-				return // already pending
+				// Slot already pending, but still check for wake.
+				goto checkWake
 			}
 		}
-		q.Slots[q.Head] = slot
-		q.Head = (q.Head + 1) % notifyQueueSize
+		q.Slots[head&(notifyQueueSize-1)] = slot
+		q.Head = uint16((head + 1) & (notifyQueueSize - 1))
 		q.Count++
 	}
 
-	// Wake the blocked thread if any.
+checkWake:
+	// Collect blocked thread TID for caller to wake.
 	if q.BlockedTID >= 0 {
 		tid := q.BlockedTID
 		q.BlockedTID = -1
-		wakeDirtyNotifyThread(tid)
+		// Dedup TIDs — same shepherd may be enqueued multiple times.
+		n := int(PendingDirtyWakeCount)
+		if n < 0 || n > maxPendingDirtyWakes {
+			n = 0
+		}
+		for i := 0; i < n; i++ {
+			if PendingDirtyWakeTIDs[i] == tid {
+				return
+			}
+		}
+		if n < maxPendingDirtyWakes {
+			PendingDirtyWakeTIDs[n] = tid
+			PendingDirtyWakeCount = int32(n + 1)
+		}
 	}
 }
 

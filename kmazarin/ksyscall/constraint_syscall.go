@@ -181,6 +181,7 @@ func SyscallAttrWrite(slotIndex, valueBufPtr, valueLen, _, _, _ uint64) int64 {
 	// Dirty-propagate to dependents. The source node is marked dirty by
 	// dirtyWalk itself; no need to clear it first.
 	attrMgr.dirtyPropagate(slot)
+	flushPendingDirtyWakes()
 
 	return 0
 }
@@ -575,6 +576,7 @@ func SyscallAttrWriteString(slotIndex, strBufPtr, strLen, isConstraintResult, _,
 		// Value write path: propagate to dependents. The source node is
 		// marked dirty by dirtyWalk; no need to clear first.
 		attrMgr.dirtyPropagate(slot)
+		flushPendingDirtyWakes()
 	}
 
 	return 0
@@ -777,6 +779,7 @@ func (mgr *KernelAttrManager) updateQueryResultsForURI(uri string) {
 			// Dirty-propagate from the query result slot so dependents know
 			// the collection changed.
 			mgr.dirtyPropagate(q.resultSlot)
+			flushPendingDirtyWakes()
 		}
 	}
 }

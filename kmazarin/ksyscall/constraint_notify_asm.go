@@ -17,3 +17,9 @@ func blockForDirtyNotify(syscallArg0 uint64) uintptr
 //
 //go:linkname wakeDirtyNotifyThread main.WakeDirtyNotifyThread
 func wakeDirtyNotifyThread(tid int32)
+
+// wakeDirtyNotifyThreadSchedLockHeld wakes a blocked thread when the caller
+// already holds the scheduler lock (used by TopHalfTickTimeUpdate path).
+//
+//go:linkname wakeDirtyNotifyThreadSchedLockHeld main.WakeDirtyNotifyThreadSchedLockHeld
+func wakeDirtyNotifyThreadSchedLockHeld(tid int32)

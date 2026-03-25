@@ -1065,6 +1065,7 @@ func simpleMain() {
 	// Start kernel attribute updaters (time update goroutine).
 	// Time updates are driven by kirq.TimerIRQCount + kirq.PreemptAfterTicks.
 	ksyscall.StartKernelAttrUpdaters()
+	SetupTopHalfTimeUpdate()
 
 	// Enter the kernel idle loop. Thread 0 (m0/g0) stays alive as a normal
 	// scheduled thread. Shepherd threads are already running. The timer IRQ

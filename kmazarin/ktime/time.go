@@ -60,12 +60,17 @@ func GetTime() (seconds, nanoseconds uint64) {
 		return 0, 0
 	}
 
+	freq := state.frequency
+	if freq == 0 {
+		return 0, 0
+	}
+
 	currentTicks := kirq.ReadCounterValue()
 	elapsedTicks := currentTicks - state.baseTicks
 
-	elapsedSeconds := elapsedTicks / state.frequency
-	remainderTicks := elapsedTicks % state.frequency
-	elapsedNanoseconds := (remainderTicks * 1_000_000_000) / state.frequency
+	elapsedSeconds := elapsedTicks / freq
+	remainderTicks := elapsedTicks % freq
+	elapsedNanoseconds := (remainderTicks * 1_000_000_000) / freq
 
 	return state.baseSeconds + elapsedSeconds, elapsedNanoseconds
 }

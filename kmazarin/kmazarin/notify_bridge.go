@@ -87,3 +87,22 @@ func WakeDirtyNotifyThread(tid int32) {
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
 }
+
+// WakeDirtyNotifyThreadSchedLockHeld wakes a thread blocked in
+// ThreadBlockedDirtyNotify. Same as WakeDirtyNotifyThread but the caller
+// already holds schedulerLock with IRQs disabled (e.g. ProcessDeadlinesTopHalf).
+//
+//go:nosplit
+//go:noinline
+func WakeDirtyNotifyThreadSchedLockHeld(tid int32) {
+	t := threadLookupByTID(tid)
+	if t != nil && t.State == ThreadBlockedDirtyNotify {
+		t.State = ThreadReady
+		t.Context.RewindToSyscall()
+		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
+		t.PreemptElapsed = 0
+		enqueueReadySchedLockHeld(t)
+		asm.Dsb()
+	}
+}

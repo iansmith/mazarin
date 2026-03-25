@@ -117,6 +117,28 @@ var savedExcFSBase uint64
 // interrupt (before any Go code runs). Used to diagnose timer hangs.
 var timerDiagCount uint64
 
+// topHalfTimeUpdateHook is called from ProcessDeadlinesTopHalf via function
+// pointer (indirect call) so the nosplit checker doesn't trace the
+// TopHalfTickTimeUpdate → dirtyPropagate chain against ExceptionVectorTable's
+// budget. Set by SetupTopHalfTimeUpdate after kernel attrs are published.
+var topHalfTimeUpdateHook func()
+
+// topHalfTimeUpdateAndFlush updates time/modifier attributes and wakes any
+// threads blocked on WaitDirty. Must be called with schedulerLock held.
+//
+//go:nosplit
+//go:noinline
+func topHalfTimeUpdateAndFlush() {
+	ksyscall.TopHalfTickTimeUpdate()
+	ksyscall.FlushPendingDirtyWakesSchedLockHeld()
+}
+
+// SetupTopHalfTimeUpdate installs the time update hook for the timer top-half.
+// Called from main after StartKernelAttrUpdaters.
+func SetupTopHalfTimeUpdate() {
+	topHalfTimeUpdateHook = topHalfTimeUpdateAndFlush
+}
+
 // timerCtxSwitchCount counts timer interrupts that resulted in a context switch.
 var timerCtxSwitchCount uint64
 
@@ -1066,6 +1088,15 @@ func ProcessDeadlinesTopHalf() {
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 	processStaticDeadlinesSchedLockHeld()
+	// Update time/modifier attributes and propagate dirty notifications
+	// at ~10Hz (counter-based threshold). Called through function pointer
+	// to keep nosplit stack budget within limits — the checker cannot trace
+	// indirect calls, and our exception stack is large enough for the actual
+	// chain (~550 bytes worst case vs 4KB+ stack).
+	fn := topHalfTimeUpdateHook
+	if fn != nil {
+		fn()
+	}
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
 
@@ -1087,6 +1118,12 @@ func ProcessDeadlinesTopHalf() {
 		serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.FutexWakeCalls))
 		printThreadStateSummary()
 		printYieldCounters()
+		// Top-half time update fires (should be ~10/sec × 10s = ~100)
+		thf := atomic.LoadUint64(&ksyscall.TopHalfFireCount)
+		if thf > 0 {
+			serial.RawUARTPuts(" THF=")
+			serial.RawUARTDecimal(thf)
+		}
 		// Kernel goroutine preemption counters (seen/notWanted/unsafe/injected)
 		seen, notWanted, unsafePt, injected := getKGPCounters()
 		if seen > 0 || injected > 0 {

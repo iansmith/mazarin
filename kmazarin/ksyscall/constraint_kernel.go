@@ -115,6 +115,7 @@ func KernelAttrWriteI64(slot uint16, val int64) {
 	// Propagate dirty to dependents. The source node is marked dirty by
 	// dirtyWalk itself; no need to clear it first.
 	attrMgr.dirtyPropagate(slot)
+	flushPendingDirtyWakes()
 }
 
 // KernelAttrWriteBool writes a bool value to a kernel-owned attribute.
@@ -132,6 +133,7 @@ func KernelAttrWriteBool(slot uint16, val bool) {
 	node.SeqCounter++
 
 	attrMgr.dirtyPropagate(slot)
+	flushPendingDirtyWakes()
 }
 
 // KernelAttrWriteStr writes a string value to a kernel-owned attribute.
@@ -160,6 +162,7 @@ func KernelAttrWriteStr(slot uint16, val string) {
 	node.SeqCounter++
 
 	attrMgr.dirtyPropagate(slot)
+	flushPendingDirtyWakes()
 }
 
 // TopHalfUpdateModifiers updates the modifier bitmask from nosplit IRQ context.
@@ -295,13 +298,26 @@ func PublishKernelAttributes() {
 }
 
 // StartKernelAttrUpdaters initializes the tick-based time update state.
-// Actual updates happen via TickTimeUpdate() called from KernelIdleLoop.
+// Actual updates happen via TickTimeUpdate() called from KernelIdleLoop,
+// and TopHalfTickTimeUpdate() called from ProcessDeadlinesTopHalf.
 func StartKernelAttrUpdaters() {
 	if !kernelAttrsPublished {
 		return
 	}
 	timeUpdateLastTick = atomic.LoadUint64(&kirq.TimerIRQCount)
 	timeUpdateThreshold = kirq.PreemptAfterTicks
+
+	// Set the counter-based interval for top-half 10Hz updates.
+	// SystemTimerFrequency / 10 = one update every 100ms of wall-clock time.
+	if kirq.SystemTimerFrequency > 0 {
+		topHalfUpdateInterval = kirq.SystemTimerFrequency / 10
+		topHalfLastCounter = kirq.ReadCounterValue()
+		serial.RawUARTPuts("[attr] top-half time update: interval=")
+		serial.RawUARTDecimal(topHalfUpdateInterval)
+		serial.RawUARTPuts(" freq=")
+		serial.RawUARTDecimal(kirq.SystemTimerFrequency)
+		serial.RawUARTPuts("\r\n")
+	}
 }
 
 // timeUpdateLastTick / timeUpdateThreshold track when to write time attributes.
@@ -336,6 +352,83 @@ func TickTimeUpdate() bool {
 	}
 
 	return true
+}
+
+// topHalfLastCounter tracks the counter value at the last top-half time update.
+var topHalfLastCounter uint64
+
+// topHalfUpdateInterval is the counter tick interval for 10Hz updates.
+// Set by StartKernelAttrUpdaters once SystemTimerFrequency is known.
+var topHalfUpdateInterval uint64
+
+// TopHalfFireCount tracks how many times TopHalfTickTimeUpdate actually updated.
+var TopHalfFireCount uint64
+
+// TopHalfTickTimeUpdate writes time and modifier attributes and propagates
+// dirty notifications. Called from ProcessDeadlinesTopHalf under the
+// scheduler lock with IRQs disabled.
+//
+// Uses counter-based threshold (not TimerIRQCount) for precise wall-clock
+// cadence independent of timer interrupt delivery rate.
+//
+// After this returns, the caller must read PendingDirtyWakeCount/TIDs and
+// wake those threads under the scheduler lock.
+//
+//go:nosplit
+func TopHalfTickTimeUpdate() {
+	if !kernelAttrsPublished {
+		return
+	}
+	if topHalfUpdateInterval == 0 {
+		return
+	}
+
+	currentCounter := kirq.ReadCounterValue()
+	if currentCounter-topHalfLastCounter < topHalfUpdateInterval {
+		return
+	}
+	topHalfLastCounter = currentCounter
+	TopHalfFireCount++
+
+	// Clear pending wakes from any previous propagation.
+	PendingDirtyWakeCount = 0
+
+	// --- Time seconds: seqlock write + propagate ---
+	sec, nanos := ktime.GetTime()
+
+	secNode := attrMgr.node(slotTimeSeconds)
+	secVal := flat.NewI64(int64(sec))
+	if secNode.CachedValue != secVal {
+		secNode.SeqCounter++
+		secNode.CachedValue = secVal
+		secNode.SeqCounter++
+		attrMgr.dirtyPropagate(slotTimeSeconds)
+	}
+
+	// --- Time nanos: seqlock write + propagate ---
+	nanosNode := attrMgr.node(slotTimeNanos)
+	nanosVal := flat.NewI64(int64(nanos))
+	if nanosNode.CachedValue != nanosVal {
+		nanosNode.SeqCounter++
+		nanosNode.CachedValue = nanosVal
+		nanosNode.SeqCounter++
+		attrMgr.dirtyPropagate(slotTimeNanos)
+	}
+
+	// --- Modifier bitmask: flush if top-half IRQ handler flagged a change ---
+	if atomic.CompareAndSwapUint32(&modifierDirty, 1, 0) {
+		mods := atomic.LoadUint64(&modifierState)
+		modNode := attrMgr.node(slotModifiers)
+		modVal := flat.NewI64(int64(mods))
+		if modNode.CachedValue != modVal {
+			modNode.SeqCounter++
+			modNode.CachedValue = modVal
+			modNode.SeqCounter++
+			attrMgr.dirtyPropagate(slotModifiers)
+		}
+	}
+
+	// PendingDirtyWakeTIDs/Count now populated — caller wakes under sched lock.
 }
 
 // PublishSystemAttributes creates kernel-owned attributes for system info.
