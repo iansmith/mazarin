@@ -110,7 +110,7 @@ var ProgLeafDamageRect = &vm.Program{
 	NumArgs: 0,
 	ArgTypes: []uint8{},
 	Funcs: []vm.FuncInfo{
-		{Name: "leaf_damage_rect", PC: 0, NumArgs: 0, NumLocals: 12, LocalBase: 0},
+		{Name: "leafDamageRect", PC: 0, NumArgs: 0, NumLocals: 12, LocalBase: 0},
 	},
 	Entry: 0,
 }

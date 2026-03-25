@@ -175,7 +175,7 @@ func TestDerefMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !results[0].AsBool() {
-		t.Fatal("expected is_unknown=true for missing attr")
+		t.Fatal("expected isUnknown=true for missing attr")
 	}
 }
 
@@ -197,7 +197,7 @@ func TestDerefTypeMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !results[0].AsBool() {
-		t.Fatal("expected is_unknown=true for type mismatch")
+		t.Fatal("expected isUnknown=true for type mismatch")
 	}
 }
 
@@ -293,10 +293,10 @@ func TestIsUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	if results[0].AsBool() {
-		t.Fatal("is_unknown(42) should be false")
+		t.Fatal("isUnknown(42) should be false")
 	}
 	if !results[1].AsBool() {
-		t.Fatal("is_unknown(tribool(unknown)) should be true")
+		t.Fatal("isUnknown(tribool(unknown)) should be true")
 	}
 }
 
@@ -363,7 +363,7 @@ func TestIncrementAtomic(t *testing.T) {
 	if results[1].AsI64() != 2 {
 		t.Fatalf("expected second increment=2, got %d", results[1].AsI64())
 	}
-	// increment_atomic does NOT add to read set.
+	// incrementAtomic does NOT add to read set.
 	if readSet.Count != 0 {
 		t.Fatalf("expected empty read set, got count=%d", readSet.Count)
 	}

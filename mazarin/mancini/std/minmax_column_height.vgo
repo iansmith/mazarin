@@ -1,8 +1,8 @@
 import "children"
 
 func minMaxColumnHeight() int64 {
-	minH := deref_i64("_minH_")
-	maxH := deref_i64("_maxH_")
+	minH := derefI64("_minH_")
+	maxH := derefI64("_maxH_")
 
 	if hasNoChildren("_myName_") {
 		return minH
@@ -12,7 +12,7 @@ func minMaxColumnHeight() int64 {
 	total := int64(0)
 	n := int64(0)
 	for _, uri := range children {
-		seg := uri_segment(uri, 3)
+		seg := uriSegment(uri, 3)
 		h := childHeight(seg)
 		total = total + h
 		n = n + 1

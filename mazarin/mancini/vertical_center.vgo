@@ -1,6 +1,6 @@
 func verticalCenter() int64 {
-	cy := deref_i64("_containerY_")
-	ch := deref_i64("_containerHeight_")
-	eh := deref_i64("_elementHeight_")
+	cy := derefI64("_containerY_")
+	ch := derefI64("_containerHeight_")
+	eh := derefI64("_elementHeight_")
 	return cy + (ch - eh) / 2
 }

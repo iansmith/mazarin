@@ -114,7 +114,7 @@ var ProgParentDamageRect = &vm.Program{
 	NumArgs: 0,
 	ArgTypes: []uint8{},
 	Funcs: []vm.FuncInfo{
-		{Name: "parent_damage_rect", PC: 0, NumArgs: 0, NumLocals: 12, LocalBase: 0},
+		{Name: "parentDamageRect", PC: 0, NumArgs: 0, NumLocals: 12, LocalBase: 0},
 	},
 	Entry: 0,
 }

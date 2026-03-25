@@ -1,9 +1,9 @@
 import "children"
 
 func rowLastChild() int64 {
-	maxW := deref_i64("_maxWidth_")
-	spacing := deref_i64("_spacing_")
-	margin := deref_i64("_hMargin_")
+	maxW := derefI64("_maxWidth_")
+	spacing := derefI64("_spacing_")
+	margin := derefI64("_hMargin_")
 
 	if hasNoVisibleChildren("_myName_") {
 		return int64(-1)
@@ -13,7 +13,7 @@ func rowLastChild() int64 {
 	total := int64(0)
 	n := int64(0)
 	for _, uri := range children {
-		seg := uri_segment(uri, 3)
+		seg := uriSegment(uri, 3)
 		w := childWidth(seg)
 		next := total + w
 		if n > 0 {

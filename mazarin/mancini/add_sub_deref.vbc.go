@@ -29,7 +29,7 @@ var ProgAddSubDeref = &vm.Program{
 	NumArgs: 0,
 	ArgTypes: []uint8{},
 	Funcs: []vm.FuncInfo{
-		{Name: "add_sub_deref", PC: 0, NumArgs: 0, NumLocals: 3, LocalBase: 0},
+		{Name: "addSubDeref", PC: 0, NumArgs: 0, NumLocals: 3, LocalBase: 0},
 	},
 	Entry: 0,
 }

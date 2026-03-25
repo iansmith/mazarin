@@ -10,7 +10,7 @@ type AttrResolver interface {
 
 	// FindWhere matches a URI pattern and filters results to those whose
 	// dereferenced string value equals the given value. This is more efficient
-	// than Find + per-URI deref_str checks when only a subset of matches
+	// than Find + per-URI derefStr checks when only a subset of matches
 	// is needed (e.g., finding children of a specific parent).
 	FindWhere(pattern string, value string) (uris []string, querySlot uint16)
 

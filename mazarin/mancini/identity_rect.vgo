@@ -1,3 +1,3 @@
-func identity_rect() Rect {
-	return deref_rect("_0_")
+func identityRect() Rect {
+	return derefRect("_0_")
 }

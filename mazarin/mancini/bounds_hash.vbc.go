@@ -43,7 +43,7 @@ var ProgBoundsHash = &vm.Program{
 	NumArgs: 0,
 	ArgTypes: []uint8{},
 	Funcs: []vm.FuncInfo{
-		{Name: "bounds_hash", PC: 0, NumArgs: 0, NumLocals: 4, LocalBase: 0},
+		{Name: "boundsHash", PC: 0, NumArgs: 0, NumLocals: 4, LocalBase: 0},
 	},
 	Entry: 0,
 }

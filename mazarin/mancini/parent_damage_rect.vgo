@@ -1,35 +1,35 @@
-func parent_damage_rect() Rect {
-	bounds := deref_rect("_bounds_")
-	lpBounds := deref_rect("_lpBounds_")
-	vis := deref_bool("_visible_")
-	lpVis := deref_bool("_lpVisible_")
-	bgc := deref_i64("_bgColor_")
-	lpBgc := deref_i64("_lpBgColor_")
-	fgc := deref_i64("_fgColor_")
-	lpFgc := deref_i64("_lpFgColor_")
-	boundsHash := deref_i64("_boundsHash_")
-	lpBoundsHash := deref_i64("_lpBoundsHash_")
+func parentDamageRect() Rect {
+	bounds := derefRect("_bounds_")
+	lpBounds := derefRect("_lpBounds_")
+	vis := derefBool("_visible_")
+	lpVis := derefBool("_lpVisible_")
+	bgc := derefI64("_bgColor_")
+	lpBgc := derefI64("_lpBgColor_")
+	fgc := derefI64("_fgColor_")
+	lpFgc := derefI64("_lpFgColor_")
+	boundsHash := derefI64("_boundsHash_")
+	lpBoundsHash := derefI64("_lpBoundsHash_")
 
 	ownDamage := rect(0, 0, 0, 0)
 	if vis != lpVis {
-		ownDamage = rect_union(bounds, lpBounds)
+		ownDamage = rectUnion(bounds, lpBounds)
 	}
 	if bgc != lpBgc {
-		ownDamage = rect_union(bounds, lpBounds)
+		ownDamage = rectUnion(bounds, lpBounds)
 	}
 	if fgc != lpFgc {
-		ownDamage = rect_union(bounds, lpBounds)
+		ownDamage = rectUnion(bounds, lpBounds)
 	}
 	if boundsHash != lpBoundsHash {
-		ownDamage = rect_union(bounds, lpBounds)
+		ownDamage = rectUnion(bounds, lpBounds)
 	}
 
-	childDmg := deref_rect("_childDamage_")
-	if !rect_empty(childDmg) {
-		if rect_empty(ownDamage) {
+	childDmg := derefRect("_childDamage_")
+	if !rectEmpty(childDmg) {
+		if rectEmpty(ownDamage) {
 			return childDmg
 		}
-		return rect_union(ownDamage, childDmg)
+		return rectUnion(ownDamage, childDmg)
 	}
 	return ownDamage
 }

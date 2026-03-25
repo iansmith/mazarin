@@ -15,17 +15,24 @@ type Column struct {
 
 	Pal               mancini.Palette
 	CrossAlign        mancini.Alignment
-	ClipChildOverflow bool // true: clip last partial child; false: skip it
+	MaxHeight         int64
+	VMargin           int64 // vertical margin applied at top and bottom edges
+	ClipChildOverflow bool  // true: clip last partial child; false: skip it
 }
 
 // NewColumn creates a Column wired to the constraint system.
 // Children are not passed here — they declare this Column as their parent
 // via their own InitLayout(parentName) call, and are discovered at draw
 // time via the constraint network.
-func NewColumn(myName, parent string, pal mancini.Palette, crossAlign mancini.Alignment, clipOverflow bool) *Column {
+func NewColumn(myName, parent string, pal mancini.Palette, maxHeight int64, crossAlign mancini.Alignment, vMargin int64, clipOverflow bool) *Column {
+	if vMargin <= 0 {
+		vMargin = 1
+	}
 	c := &Column{
 		Pal:               pal,
 		CrossAlign:        crossAlign,
+		MaxHeight:         maxHeight,
+		VMargin:           vMargin,
 		ClipChildOverflow: clipOverflow,
 	}
 
@@ -43,9 +50,22 @@ func NewColumn(myName, parent string, pal mancini.Palette, crossAlign mancini.Al
 	alignURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutCrossAlign)
 	lh.CrossAlignAttr = attr.ValueI64(alignURI, int64(crossAlign))
 
-	// Column HEIGHT constraint: sum of children heights + spacing.
+	// MaxHeight attribute.
+	maxH := maxHeight
+	if maxH <= 0 {
+		maxH = 9999
+	}
+	maxHeightURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutMaxHeight)
+	lh.MaxHeightAttr = attr.ValueI64(maxHeightURI, maxH)
+
+	// Vertical margin attribute.
+	vMarginURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutVMargin)
+	attr.ValueI64(vMarginURI, vMargin)
+
+	// Column HEIGHT constraint.
 	heightProg := mancini.BindStringsChildren(ProgColumnHeight,
-		"_spacing_", spacingURI, "_myName_", myName)
+		"_maxHeight_", maxHeightURI, "_spacing_", spacingURI, "_vMargin_", vMarginURI,
+		"_myName_", myName)
 	heightURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutHeight)
 	lh.Height = attr.ConstraintI64(heightURI, heightProg)
 
@@ -54,6 +74,13 @@ func NewColumn(myName, parent string, pal mancini.Palette, crossAlign mancini.Al
 		"_myName_", myName)
 	widthURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutWidth)
 	lh.Width = attr.ConstraintI64(widthURI, widthProg)
+
+	// LastChildDrawn constraint.
+	lastChildProg := mancini.BindStringsChildren(ProgColumnLastChild,
+		"_maxHeight_", maxHeightURI, "_spacing_", spacingURI, "_vMargin_", vMarginURI,
+		"_myName_", myName)
+	lastChildURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutLastChildDrawn)
+	lh.LastChildDrawnAttr = attr.ConstraintI64(lastChildURI, lastChildProg)
 
 	lh.InitBounds(myName)
 

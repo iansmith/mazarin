@@ -1,7 +1,7 @@
-func bounds_from_xywh() Rect {
-	x := deref_i64("_x_")
-	y := deref_i64("_y_")
-	w := deref_i64("_width_")
-	h := deref_i64("_height_")
+func boundsFromXywh() Rect {
+	x := derefI64("_x_")
+	y := derefI64("_y_")
+	w := derefI64("_width_")
+	h := derefI64("_height_")
 	return rect(x, y, x+w, y+h)
 }

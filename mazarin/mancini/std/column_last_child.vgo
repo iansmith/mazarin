@@ -1,12 +1,12 @@
 import "children"
 
-func rowWidth() int64 {
-	maxW := derefI64("_maxWidth_")
+func columnLastChild() int64 {
+	maxH := derefI64("_maxHeight_")
 	spacing := derefI64("_spacing_")
-	margin := derefI64("_hMargin_")
+	margin := derefI64("_vMargin_")
 
 	if hasNoVisibleChildren("_myName_") {
-		return int64(20)
+		return int64(-1)
 	}
 
 	children := findVisibleChildren("_myName_")
@@ -14,16 +14,17 @@ func rowWidth() int64 {
 	n := int64(0)
 	for _, uri := range children {
 		seg := uriSegment(uri, 3)
-		w := childWidth(seg)
-		next := total + w
+		h := childHeight(seg)
+		next := total + h
 		if n > 0 {
 			next = next + spacing
 		}
-		if next + margin > maxW {
-			return maxW
+		// no bottom margin when clipping
+		if next + margin > maxH {
+			return n
 		}
 		total = next
 		n = n + 1
 	}
-	return total + 2*margin
+	return n
 }

@@ -1,35 +1,35 @@
-func leaf_damage_rect() Rect {
-	bounds := deref_rect("_bounds_")
-	lpBounds := deref_rect("_lpBounds_")
+func leafDamageRect() Rect {
+	bounds := derefRect("_bounds_")
+	lpBounds := derefRect("_lpBounds_")
 
-	vis := deref_bool("_visible_")
-	lpVis := deref_bool("_lpVisible_")
+	vis := derefBool("_visible_")
+	lpVis := derefBool("_lpVisible_")
 	if vis != lpVis {
-		return rect_union(bounds, lpBounds)
+		return rectUnion(bounds, lpBounds)
 	}
 
-	contentHash := deref_i64("_contentHash_")
-	lpContentHash := deref_i64("_lpContentHash_")
+	contentHash := derefI64("_contentHash_")
+	lpContentHash := derefI64("_lpContentHash_")
 	if contentHash != lpContentHash {
-		return rect_union(bounds, lpBounds)
+		return rectUnion(bounds, lpBounds)
 	}
 
-	bgc := deref_i64("_bgColor_")
-	lpBgc := deref_i64("_lpBgColor_")
+	bgc := derefI64("_bgColor_")
+	lpBgc := derefI64("_lpBgColor_")
 	if bgc != lpBgc {
-		return rect_union(bounds, lpBounds)
+		return rectUnion(bounds, lpBounds)
 	}
 
-	fgc := deref_i64("_fgColor_")
-	lpFgc := deref_i64("_lpFgColor_")
+	fgc := derefI64("_fgColor_")
+	lpFgc := derefI64("_lpFgColor_")
 	if fgc != lpFgc {
-		return rect_union(bounds, lpBounds)
+		return rectUnion(bounds, lpBounds)
 	}
 
-	boundsHash := deref_i64("_boundsHash_")
-	lpBoundsHash := deref_i64("_lpBoundsHash_")
+	boundsHash := derefI64("_boundsHash_")
+	lpBoundsHash := derefI64("_lpBoundsHash_")
 	if boundsHash != lpBoundsHash {
-		return rect_union(bounds, lpBounds)
+		return rectUnion(bounds, lpBounds)
 	}
 
 	return rect(0, 0, 0, 0)

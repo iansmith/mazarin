@@ -4,8 +4,8 @@ func simpleDecoratorInsideOut(myName string, margin int64, dimPrefix string, dim
 	childURI := hasOneChild(myName)
 	size := defaultSize
 	if childURI != "" {
-		seg := uri_segment(childURI, 3)
-		size = deref_i64(dimPrefix + seg + dimSuffix)
+		seg := uriSegment(childURI, 3)
+		size = derefI64(dimPrefix + seg + dimSuffix)
 	}
 	result := size + margin + margin
 	if result > maxSize {

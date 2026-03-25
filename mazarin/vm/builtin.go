@@ -112,7 +112,7 @@ const (
 	BuiltinURISegment   uint16 = 209 // (Str, I64) → Str
 	BuiltinIsUnknown    uint16 = 210 // (any) → Bool
 
-	BuiltinFindWhere uint16 = 211 // (Str, Str) → CollStr  find(pattern) filtered by deref_str == value
+	BuiltinFindWhere uint16 = 211 // (Str, Str) → CollStr  find(pattern) filtered by derefStr == value
 	BuiltinCollPush  uint16 = 212 // (Coll, elem) → Coll  append element to collection
 
 	// Side-effect builtins.
@@ -239,7 +239,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if a.typ != TypeStr {
-			return m.haltf("str_len requires string, got %s", TypeName(a.typ))
+			return m.haltf("strLen requires string, got %s", TypeName(a.typ))
 		}
 		return m.push(I64(int64(len(a.str))))
 
@@ -253,7 +253,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if a.typ != TypeStr || b.typ != TypeStr {
-			return m.haltf("str_concat requires strings, got %s and %s", TypeName(a.typ), TypeName(b.typ))
+			return m.haltf("strConcat requires strings, got %s and %s", TypeName(a.typ), TypeName(b.typ))
 		}
 		return m.push(Str(a.str + b.str))
 
@@ -267,7 +267,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if a.typ != TypeStr || b.typ != TypeStr {
-			return m.haltf("str_contains requires strings, got %s and %s", TypeName(a.typ), TypeName(b.typ))
+			return m.haltf("strContains requires strings, got %s and %s", TypeName(a.typ), TypeName(b.typ))
 		}
 		return m.push(Bool(strings.Contains(a.str, b.str)))
 
@@ -285,7 +285,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if s.typ != TypeStr {
-			return m.haltf("str_substr requires string, got %s", TypeName(s.typ))
+			return m.haltf("strSubstr requires string, got %s", TypeName(s.typ))
 		}
 		st := int(start.i64)
 		ln := int(length.i64)
@@ -346,7 +346,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if !isCollType(a.typ) {
-			return m.haltf("coll_len requires collection, got %s", TypeName(a.typ))
+			return m.haltf("collLen requires collection, got %s", TypeName(a.typ))
 		}
 		return m.push(I64(int64(len(a.coll))))
 
@@ -360,11 +360,11 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if !isCollType(coll.typ) {
-			return m.haltf("coll_get requires collection, got %s", TypeName(coll.typ))
+			return m.haltf("collGet requires collection, got %s", TypeName(coll.typ))
 		}
 		i := int(idx.i64)
 		if i < 0 || i >= len(coll.coll) {
-			return m.haltf("coll_get index %d out of range (len %d)", i, len(coll.coll))
+			return m.haltf("collGet index %d out of range (len %d)", i, len(coll.coll))
 		}
 		return m.push(coll.coll[i])
 
@@ -378,7 +378,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if !isCollType(coll.typ) {
-			return m.haltf("coll_take requires collection, got %s", TypeName(coll.typ))
+			return m.haltf("collTake requires collection, got %s", TypeName(coll.typ))
 		}
 		count := int(n.i64)
 		if count < 0 {
@@ -401,7 +401,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if !isCollType(coll.typ) {
-			return m.haltf("coll_drop requires collection, got %s", TypeName(coll.typ))
+			return m.haltf("collDrop requires collection, got %s", TypeName(coll.typ))
 		}
 		count := int(n.i64)
 		if count < 0 {
@@ -420,7 +420,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if !isCollType(coll.typ) {
-			return m.haltf("coll_sort requires collection, got %s", TypeName(coll.typ))
+			return m.haltf("collSort requires collection, got %s", TypeName(coll.typ))
 		}
 		sorted := make([]Value, len(coll.coll))
 		copy(sorted, coll.coll)
@@ -432,7 +432,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 		case TypeCollF64:
 			sort.Slice(sorted, func(i, j int) bool { return sorted[i].f64 < sorted[j].f64 })
 		default:
-			return m.haltf("coll_sort not supported for %s", TypeName(coll.typ))
+			return m.haltf("collSort not supported for %s", TypeName(coll.typ))
 		}
 		return m.push(Value{typ: coll.typ, coll: sorted})
 
@@ -446,7 +446,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if a.typ != b.typ {
-			return m.haltf("coll_concat type mismatch: %s and %s", TypeName(a.typ), TypeName(b.typ))
+			return m.haltf("collConcat type mismatch: %s and %s", TypeName(a.typ), TypeName(b.typ))
 		}
 		result := make([]Value, 0, len(a.coll)+len(b.coll))
 		result = append(result, a.coll...)
@@ -467,7 +467,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if !isCollType(coll.typ) {
-			return m.haltf("coll_page requires collection, got %s", TypeName(coll.typ))
+			return m.haltf("collPage requires collection, got %s", TypeName(coll.typ))
 		}
 		ps := int(pageSize.i64)
 		start := int(pageNum.i64) * ps
@@ -541,7 +541,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if a.typ != TypeRectangle {
-			return m.haltf("rect_empty requires rectangle, got %s", TypeName(a.typ))
+			return m.haltf("rectEmpty requires rectangle, got %s", TypeName(a.typ))
 		}
 		x0, y0, x1, y1 := a.AsRectangle()
 		return m.push(Bool(x0 >= x1 || y0 >= y1))
@@ -552,7 +552,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if a.typ != TypeRectangle {
-			return m.haltf("rect_area requires rectangle, got %s", TypeName(a.typ))
+			return m.haltf("rectArea requires rectangle, got %s", TypeName(a.typ))
 		}
 		x0, y0, x1, y1 := a.AsRectangle()
 		w := x1 - x0
@@ -568,7 +568,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if a.typ != TypeRectangle {
-			return m.haltf("rect_width requires rectangle, got %s", TypeName(a.typ))
+			return m.haltf("rectWidth requires rectangle, got %s", TypeName(a.typ))
 		}
 		x0, _, x1, _ := a.AsRectangle()
 		w := x1 - x0
@@ -583,7 +583,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if a.typ != TypeRectangle {
-			return m.haltf("rect_height requires rectangle, got %s", TypeName(a.typ))
+			return m.haltf("rectHeight requires rectangle, got %s", TypeName(a.typ))
 		}
 		_, y0, _, y1 := a.AsRectangle()
 		h := y1 - y0
@@ -756,7 +756,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if a.typ != TypePoint2D {
-			return m.haltf("point2d_x requires point2d, got %s", TypeName(a.typ))
+			return m.haltf("point2dX requires point2d, got %s", TypeName(a.typ))
 		}
 		x, _ := a.AsPoint2D()
 		return m.push(I64(x))
@@ -767,7 +767,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if a.typ != TypePoint2D {
-			return m.haltf("point2d_y requires point2d, got %s", TypeName(a.typ))
+			return m.haltf("point2dY requires point2d, got %s", TypeName(a.typ))
 		}
 		_, y := a.AsPoint2D()
 		return m.push(I64(y))
@@ -926,13 +926,13 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if pattern.typ != TypeStr {
-			return m.haltf("find_where requires string pattern, got %s", TypeName(pattern.typ))
+			return m.haltf("findWhere requires string pattern, got %s", TypeName(pattern.typ))
 		}
 		if value.typ != TypeStr {
-			return m.haltf("find_where requires string value, got %s", TypeName(value.typ))
+			return m.haltf("findWhere requires string value, got %s", TypeName(value.typ))
 		}
 		if m.resolver == nil {
-			return m.haltf("find_where: no resolver configured")
+			return m.haltf("findWhere: no resolver configured")
 		}
 		fwURIs, fwSlot := m.resolver.FindWhere(pattern.str, value.str)
 		m.readSet.Add(fwSlot)
@@ -948,7 +948,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if !isCollType(coll.typ) {
-			return m.haltf("coll_push requires collection, got %s", TypeName(coll.typ))
+			return m.haltf("collPush requires collection, got %s", TypeName(coll.typ))
 		}
 		newColl := make([]Value, len(coll.coll)+1)
 		copy(newColl, coll.coll)
@@ -995,7 +995,7 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if uri.typ != TypeStr {
-			return m.haltf("uri_segment requires string, got %s", TypeName(uri.typ))
+			return m.haltf("uriSegment requires string, got %s", TypeName(uri.typ))
 		}
 		seg := uriSegment(uri.str, int(idx.i64))
 		return m.push(Str(seg))
@@ -1015,10 +1015,10 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 			return err
 		}
 		if uri.typ != TypeStr {
-			return m.haltf("increment_atomic requires string, got %s", TypeName(uri.typ))
+			return m.haltf("incrementAtomic requires string, got %s", TypeName(uri.typ))
 		}
 		if m.resolver == nil {
-			return m.haltf("increment_atomic: no resolver configured")
+			return m.haltf("incrementAtomic: no resolver configured")
 		}
 		newVal, ok := m.resolver.IncrementI64(uri.str)
 		if !ok {

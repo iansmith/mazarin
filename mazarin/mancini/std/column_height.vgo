@@ -1,34 +1,29 @@
 import "children"
 
 func columnHeight() int64 {
-	if hasNoChildren("_myName_") {
-		return int64(30)
-	}
+	maxH := derefI64("_maxHeight_")
+	spacing := derefI64("_spacing_")
+	margin := derefI64("_vMargin_")
 
-	spacing := deref_i64("_spacing_")
-
-	oneChild := hasOneChild("_myName_")
-	if oneChild != "" {
-		seg := uri_segment(oneChild, 3)
-		return childHeight(seg) + spacing + spacing
+	if hasNoVisibleChildren("_myName_") {
+		return int64(20)
 	}
 
 	children := findVisibleChildren("_myName_")
 	total := int64(0)
 	n := int64(0)
-	firstH := int64(0)
 	for _, uri := range children {
-		seg := uri_segment(uri, 3)
+		seg := uriSegment(uri, 3)
 		h := childHeight(seg)
-		total = total + h
-		if n == 0 {
-			firstH = h
+		next := total + h
+		if n > 0 {
+			next = next + spacing
 		}
+		if next + margin > maxH {
+			return maxH
+		}
+		total = next
 		n = n + 1
 	}
-	if n > 1 {
-		total = total + (n - 1) * spacing
-	}
-	minH := firstH + spacing + spacing
-	return max(total, minH)
+	return total + 2*margin
 }

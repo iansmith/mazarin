@@ -229,7 +229,7 @@ func main() {
 		}
 
 		// Column: parent = "main_row". Created first so its name is registered.
-		col := std.NewColumn(colName, "main_row", pal, mancini.AxisMiddle, false)
+		col := std.NewColumn(colName, "main_row", pal, 0, mancini.AxisMiddle, 1, false)
 		col.SetSpacing(15)
 
 		// Children created in display order — sequence numbers give deterministic ordering.

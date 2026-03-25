@@ -31,8 +31,9 @@ type LayoutAttributes struct {
 	Parent                       *attr.Attribute[string]
 	SpacingAttr        *attr.Attribute[int64] // inter-child spacing (containers only)
 	CrossAlignAttr     *attr.Attribute[int64] // cross-axis alignment (containers only)
-	MaxWidthAttr       *attr.Attribute[int64] // max width for overflow clipping (Row only)
-	LastChildDrawnAttr *attr.Attribute[int64] // 0-based index of last child to draw (Row only)
+	MaxWidthAttr       *attr.Attribute[int64] // max width for overflow clipping (Row)
+	MaxHeightAttr      *attr.Attribute[int64] // max height for overflow clipping (Column)
+	LastChildDrawnAttr *attr.Attribute[int64] // 0-based index of last child to draw (Row/Column)
 	Damage               *DamageAttributes      // damage rectangle tracking (nil = no damage)
 }
 

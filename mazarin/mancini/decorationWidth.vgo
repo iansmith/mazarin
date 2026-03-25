@@ -1,12 +1,12 @@
 import "children"
 
 func decorationWidth() int64 {
-	margin := deref_i64("_margin_")
-	maxSize := deref_i64("_maxSize_")
+	margin := derefI64("_margin_")
+	maxSize := derefI64("_maxSize_")
 	childURI := hasOneChild("_myName_")
 	size := int64(20)
 	if childURI != "" {
-		seg := uri_segment(childURI, 3)
+		seg := uriSegment(childURI, 3)
 		size = childWidth(seg)
 	}
 	result := size + margin + margin

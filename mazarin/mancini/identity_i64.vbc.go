@@ -15,7 +15,7 @@ var ProgIdentityI64 = &vm.Program{
 	NumArgs: 0,
 	ArgTypes: []uint8{},
 	Funcs: []vm.FuncInfo{
-		{Name: "identity_i64", PC: 0, NumArgs: 0, NumLocals: 0, LocalBase: 0},
+		{Name: "identityI64", PC: 0, NumArgs: 0, NumLocals: 0, LocalBase: 0},
 	},
 	Entry: 0,
 }

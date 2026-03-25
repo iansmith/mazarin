@@ -438,7 +438,7 @@ func Mod(a int64, b int64) int64 {
 func TestCompileStringPrefix(t *testing.T) {
 	results := compileAndRun(t, `
 func HasPrefix(s string, prefix string) bool {
-	return str_prefix(s, prefix)
+	return strPrefix(s, prefix)
 }
 `, vm.Str("hello world"), vm.Str("hello"))
 	if !results[0].AsBool() {

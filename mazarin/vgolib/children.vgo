@@ -1,41 +1,41 @@
 func childX(seg string) int64 {
-	return deref_i64("_int64Prefix_" + seg + "_xSuffix_")
+	return derefI64("_int64Prefix_" + seg + "_xSuffix_")
 }
 
 func childY(seg string) int64 {
-	return deref_i64("_int64Prefix_" + seg + "_ySuffix_")
+	return derefI64("_int64Prefix_" + seg + "_ySuffix_")
 }
 
 func childWidth(seg string) int64 {
-	return deref_i64("_int64Prefix_" + seg + "_widthSuffix_")
+	return derefI64("_int64Prefix_" + seg + "_widthSuffix_")
 }
 
 func childHeight(seg string) int64 {
-	return deref_i64("_int64Prefix_" + seg + "_heightSuffix_")
+	return derefI64("_int64Prefix_" + seg + "_heightSuffix_")
 }
 
 func isChildVisible(seg string) bool {
-	return deref_bool("_boolPrefix_" + seg + "_visSuffix_")
+	return derefBool("_boolPrefix_" + seg + "_visSuffix_")
 }
 
 func childBoundsHash(seg string) int64 {
-	return deref_i64("_int64Prefix_" + seg + "_boundsHashSuffix_")
+	return derefI64("_int64Prefix_" + seg + "_boundsHashSuffix_")
 }
 
 func findVisibleChildren(myName string) []string {
-	children := find_where("_childPattern_", myName)
-	result := coll_empty()
+	children := findWhere("_childPattern_", myName)
+	result := collEmpty()
 	for _, uri := range children {
-		seg := uri_segment(uri, 3)
+		seg := uriSegment(uri, 3)
 		if isChildVisible(seg) {
-			result = coll_push(result, uri)
+			result = collPush(result, uri)
 		}
 	}
 	return result
 }
 
 func hasNoChildren(myName string) bool {
-	children := find_where("_childPattern_", myName)
+	children := findWhere("_childPattern_", myName)
 	if len(children) == 0 {
 		return true
 	}
@@ -43,9 +43,9 @@ func hasNoChildren(myName string) bool {
 }
 
 func hasNoVisibleChildren(myName string) bool {
-	children := find_where("_childPattern_", myName)
+	children := findWhere("_childPattern_", myName)
 	for _, uri := range children {
-		seg := uri_segment(uri, 3)
+		seg := uriSegment(uri, 3)
 		if isChildVisible(seg) {
 			return false
 		}
@@ -54,11 +54,11 @@ func hasNoVisibleChildren(myName string) bool {
 }
 
 func hasOneChild(myName string) string {
-	children := find_where("_childPattern_", myName)
+	children := findWhere("_childPattern_", myName)
 	result := ""
 	n := int64(0)
 	for _, uri := range children {
-		seg := uri_segment(uri, 3)
+		seg := uriSegment(uri, 3)
 		if isChildVisible(seg) {
 			result = uri
 			n = n + 1
@@ -71,10 +71,10 @@ func hasOneChild(myName string) string {
 }
 
 func numChildren(myName string) int64 {
-	children := find_where("_childPattern_", myName)
+	children := findWhere("_childPattern_", myName)
 	n := int64(0)
 	for _, uri := range children {
-		seg := uri_segment(uri, 3)
+		seg := uriSegment(uri, 3)
 		if isChildVisible(seg) {
 			n = n + 1
 		}
@@ -83,11 +83,11 @@ func numChildren(myName string) int64 {
 }
 
 func nthChild(myName string, index int64) string {
-	children := find_where("_childPattern_", myName)
+	children := findWhere("_childPattern_", myName)
 	n := int64(0)
 	result := ""
 	for _, uri := range children {
-		seg := uri_segment(uri, 3)
+		seg := uriSegment(uri, 3)
 		if isChildVisible(seg) {
 			if n == index {
 				result = uri

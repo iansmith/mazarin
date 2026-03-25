@@ -7,14 +7,14 @@ func columnWidth() int64 {
 
 	oneChild := hasOneChild("_myName_")
 	if oneChild != "" {
-		seg := uri_segment(oneChild, 3)
+		seg := uriSegment(oneChild, 3)
 		return childWidth(seg)
 	}
 
 	children := findVisibleChildren("_myName_")
 	maxw := int64(0)
 	for _, uri := range children {
-		seg := uri_segment(uri, 3)
+		seg := uriSegment(uri, 3)
 		w := childWidth(seg)
 		if w > maxw {
 			maxw = w

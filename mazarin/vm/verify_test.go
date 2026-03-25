@@ -154,7 +154,7 @@ func TestVerifyBuiltins(t *testing.T) {
 			InstConstI64(20),
 			InstCallBuiltin(BuiltinMin, 2),
 			InstStore(0),
-			// str_concat("hello", " world")
+			// strConcat("hello", " world")
 			{Opcode: OpConstStr, Op1: 0},
 			{Opcode: OpConstStr, Op1: 1},
 			InstCallBuiltin(BuiltinStrConcat, 2),

@@ -37,7 +37,7 @@ var ProgBoundsFromXywh = &vm.Program{
 	NumArgs: 0,
 	ArgTypes: []uint8{},
 	Funcs: []vm.FuncInfo{
-		{Name: "bounds_from_xywh", PC: 0, NumArgs: 0, NumLocals: 4, LocalBase: 0},
+		{Name: "boundsFromXywh", PC: 0, NumArgs: 0, NumLocals: 4, LocalBase: 0},
 	},
 	Entry: 0,
 }

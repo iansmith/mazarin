@@ -23,53 +23,53 @@ var builtinFuncs = map[string]struct {
 	"floor":        {vm.BuiltinFloor, 1},
 	"ceil":         {vm.BuiltinCeil, 1},
 	"round":        {vm.BuiltinRound, 1},
-	"str_len":      {vm.BuiltinStrLen, 1},
-	"str_concat":   {vm.BuiltinStrConcat, 2},
-	"str_contains": {vm.BuiltinStrContains, 2},
-	"str_substr":   {vm.BuiltinStrSubstr, 3},
-	"str_prefix":   {vm.BuiltinStrPrefix, 2},
-	"str_suffix":   {vm.BuiltinStrSuffix, 2},
-	"str_upper":    {vm.BuiltinStrUpper, 1},
-	"str_lower":    {vm.BuiltinStrLower, 1},
-	"coll_len":     {vm.BuiltinCollLen, 1},
-	"coll_get":     {vm.BuiltinCollGet, 2},
-	"coll_take":    {vm.BuiltinCollTake, 2},
-	"coll_drop":    {vm.BuiltinCollDrop, 2},
-	"coll_sort":    {vm.BuiltinCollSort, 1},
-	"coll_concat":  {vm.BuiltinCollConcat, 2},
-	"coll_page":    {vm.BuiltinCollPage, 3},
-	"coll_empty":   {vm.BuiltinCollEmpty, 0},
-	"coll_push":    {vm.BuiltinCollPush, 2},
-	"len":          {vm.BuiltinCollLen, 1}, // Go's len() maps to coll_len
+	"strLen":      {vm.BuiltinStrLen, 1},
+	"strConcat":   {vm.BuiltinStrConcat, 2},
+	"strContains": {vm.BuiltinStrContains, 2},
+	"strSubstr":   {vm.BuiltinStrSubstr, 3},
+	"strPrefix":   {vm.BuiltinStrPrefix, 2},
+	"strSuffix":   {vm.BuiltinStrSuffix, 2},
+	"strUpper":    {vm.BuiltinStrUpper, 1},
+	"strLower":    {vm.BuiltinStrLower, 1},
+	"collLen":     {vm.BuiltinCollLen, 1},
+	"collGet":     {vm.BuiltinCollGet, 2},
+	"collTake":    {vm.BuiltinCollTake, 2},
+	"collDrop":    {vm.BuiltinCollDrop, 2},
+	"collSort":    {vm.BuiltinCollSort, 1},
+	"collConcat":  {vm.BuiltinCollConcat, 2},
+	"collPage":    {vm.BuiltinCollPage, 3},
+	"collEmpty":   {vm.BuiltinCollEmpty, 0},
+	"collPush":    {vm.BuiltinCollPush, 2},
+	"len":         {vm.BuiltinCollLen, 1}, // Go's len() maps to collLen
 
 	// Geometry builtins.
 	"rect":           {vm.BuiltinRect, 4},
-	"rect_union":     {vm.BuiltinRectUnion, 2},
-	"rect_intersect": {vm.BuiltinRectIntersect, 2},
-	"rect_overlaps":  {vm.BuiltinRectOverlaps, 2},
-	"rect_contains":  {vm.BuiltinRectContains, 2},
-	"rect_empty":     {vm.BuiltinRectEmpty, 1},
-	"rect_area":      {vm.BuiltinRectArea, 1},
-	"rect_width":     {vm.BuiltinRectWidth, 1},
-	"rect_height":    {vm.BuiltinRectHeight, 1},
+	"rectUnion":     {vm.BuiltinRectUnion, 2},
+	"rectIntersect": {vm.BuiltinRectIntersect, 2},
+	"rectOverlaps":  {vm.BuiltinRectOverlaps, 2},
+	"rectContains":  {vm.BuiltinRectContains, 2},
+	"rectEmpty":     {vm.BuiltinRectEmpty, 1},
+	"rectArea":      {vm.BuiltinRectArea, 1},
+	"rectWidth":     {vm.BuiltinRectWidth, 1},
+	"rectHeight":    {vm.BuiltinRectHeight, 1},
 	"point2d":        {vm.BuiltinPoint2D, 2},
-	"point2d_x":      {vm.BuiltinPoint2DX, 1},
-	"point2d_y":      {vm.BuiltinPoint2DY, 1},
+	"point2dX":      {vm.BuiltinPoint2DX, 1},
+	"point2dY":      {vm.BuiltinPoint2DY, 1},
 
 	// Service discovery / deref builtins.
 	"find":           {vm.BuiltinFind, 1},
-	"find_where":     {vm.BuiltinFindWhere, 2},
-	"deref_i64":      {vm.BuiltinDerefI64, 1},
-	"deref_str":      {vm.BuiltinDerefStr, 1},
-	"deref_bool":     {vm.BuiltinDerefBool, 1},
-	"deref_f64":      {vm.BuiltinDerefF64, 1},
-	"deref_rect":     {vm.BuiltinDerefRect, 1},
-	"deref_point2d":  {vm.BuiltinDerefPoint2D, 1},
-	"deref_tribool":  {vm.BuiltinDerefTribool, 1},
+	"findWhere":     {vm.BuiltinFindWhere, 2},
+	"derefI64":      {vm.BuiltinDerefI64, 1},
+	"derefStr":      {vm.BuiltinDerefStr, 1},
+	"derefBool":     {vm.BuiltinDerefBool, 1},
+	"derefF64":      {vm.BuiltinDerefF64, 1},
+	"derefRect":     {vm.BuiltinDerefRect, 1},
+	"derefPoint2d":  {vm.BuiltinDerefPoint2D, 1},
+	"derefTribool":  {vm.BuiltinDerefTribool, 1},
 	"exists":         {vm.BuiltinExists, 1},
-	"uri_segment":    {vm.BuiltinURISegment, 2},
-	"is_unknown":         {vm.BuiltinIsUnknown, 1},
-	"increment_atomic":   {vm.BuiltinIncrementAtomic, 1},
+	"uriSegment":       {vm.BuiltinURISegment, 2},
+	"isUnknown":        {vm.BuiltinIsUnknown, 1},
+	"incrementAtomic":  {vm.BuiltinIncrementAtomic, 1},
 }
 
 // compileFn compiles the function body to bytecode.
@@ -276,7 +276,7 @@ func (c *compiler) compileExpr(expr ast.Expr) error {
 		return c.compileCall(e)
 
 	case *ast.IndexExpr:
-		// coll[idx] → push coll, push idx, CALL_BUILTIN coll_get
+		// coll[idx] → push coll, push idx, CALL_BUILTIN collGet
 		if err := c.compileExpr(e.X); err != nil {
 			return err
 		}
@@ -480,7 +480,7 @@ func (c *compiler) compileCall(e *ast.CallExpr) error {
 	}
 
 	inst := vm.InstCallBuiltin(builtin.id, builtin.argc)
-	// coll_empty needs the Typ field set so the runtime knows which
+	// collEmpty needs the Typ field set so the runtime knows which
 	// collection type to create (e.g. TypeCollStr vs TypeCollI64).
 	if builtin.id == vm.BuiltinCollEmpty {
 		inst.Typ = c.exprVMType(e)

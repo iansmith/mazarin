@@ -123,7 +123,7 @@ func (r *sharedResolver) Find(pattern string) ([]string, uint16) {
 }
 
 // FindWhere matches a URI pattern and filters results to those whose
-// dereferenced string value equals value. More efficient than Find + deref_str
+// dereferenced string value equals value. More efficient than Find + derefStr
 // loop when only a subset of matches is needed.
 func (r *sharedResolver) FindWhere(pattern string, value string) ([]string, uint16) {
 	uris, slot := r.Find(pattern)

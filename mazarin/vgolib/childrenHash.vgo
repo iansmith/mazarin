@@ -1,10 +1,10 @@
 import "children"
 
 func childrenBoundsHash(myName string) int64 {
-	children := find_where("_childPattern_", myName)
+	children := findWhere("_childPattern_", myName)
 	combined := int64(0)
 	for _, uri := range children {
-		seg := uri_segment(uri, 3)
+		seg := uriSegment(uri, 3)
 		combined = combined * int64(31) + childBoundsHash(seg)
 	}
 	return combined

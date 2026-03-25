@@ -220,7 +220,7 @@ func TestStrLen(t *testing.T) {
 		t.Fatal(err)
 	}
 	if results[0].AsI64() != 5 {
-		t.Fatalf("str_len(\"hello\"): expected 5, got %d", results[0].AsI64())
+		t.Fatalf("strLen(\"hello\"): expected 5, got %d", results[0].AsI64())
 	}
 }
 

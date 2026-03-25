@@ -415,65 +415,65 @@ func sqrt(x float64) float64 { return 0 }
 func floor(x float64) float64 { return 0 }
 func ceil(x float64) float64 { return 0 }
 func round(x float64) float64 { return 0 }
-func str_len(s string) int64 { return 0 }
-func str_concat(a, b string) string { return "" }
-func str_contains(s, sub string) bool { return false }
-func str_substr(s string, start, length int64) string { return "" }
-func str_prefix(s, prefix string) bool { return false }
-func str_suffix(s, suffix string) bool { return false }
-func str_upper(s string) string { return "" }
-func str_lower(s string) string { return "" }
-func coll_len(c []int64) int64 { return 0 }
-func coll_get(c []int64, i int64) int64 { return 0 }
-func coll_take(c []int64, n int64) []int64 { return nil }
-func coll_drop(c []int64, n int64) []int64 { return nil }
-func coll_sort(c []int64) []int64 { return nil }
-func coll_concat(a, b []int64) []int64 { return nil }
-func coll_page(c []int64, page, size int64) []int64 { return nil }
-func coll_empty() []string { return nil }
-func coll_push(c []string, elem string) []string { return nil }
+func strLen(s string) int64 { return 0 }
+func strConcat(a, b string) string { return "" }
+func strContains(s, sub string) bool { return false }
+func strSubstr(s string, start, length int64) string { return "" }
+func strPrefix(s, prefix string) bool { return false }
+func strSuffix(s, suffix string) bool { return false }
+func strUpper(s string) string { return "" }
+func strLower(s string) string { return "" }
+func collLen(c []int64) int64 { return 0 }
+func collGet(c []int64, i int64) int64 { return 0 }
+func collTake(c []int64, n int64) []int64 { return nil }
+func collDrop(c []int64, n int64) []int64 { return nil }
+func collSort(c []int64) []int64 { return nil }
+func collConcat(a, b []int64) []int64 { return nil }
+func collPage(c []int64, page, size int64) []int64 { return nil }
+func collEmpty() []string { return nil }
+func collPush(c []string, elem string) []string { return nil }
 
 func rect(x0, y0, x1, y1 int64) Rect { return Rect{} }
-func rect_union(a, b Rect) Rect { return Rect{} }
-func rect_intersect(a, b Rect) Rect { return Rect{} }
-func rect_overlaps(a, b Rect) bool { return false }
-func rect_contains(a, b Rect) bool { return false }
-func rect_empty(r Rect) bool { return false }
-func rect_area(r Rect) int64 { return 0 }
-func rect_width(r Rect) int64 { return 0 }
-func rect_height(r Rect) int64 { return 0 }
+func rectUnion(a, b Rect) Rect { return Rect{} }
+func rectIntersect(a, b Rect) Rect { return Rect{} }
+func rectOverlaps(a, b Rect) bool { return false }
+func rectContains(a, b Rect) bool { return false }
+func rectEmpty(r Rect) bool { return false }
+func rectArea(r Rect) int64 { return 0 }
+func rectWidth(r Rect) int64 { return 0 }
+func rectHeight(r Rect) int64 { return 0 }
 func point2d(x, y int64) Point2D { return Point2D{} }
-func point2d_x(p Point2D) int64 { return 0 }
-func point2d_y(p Point2D) int64 { return 0 }
+func point2dX(p Point2D) int64 { return 0 }
+func point2dY(p Point2D) int64 { return 0 }
 
 func find(pattern string) []string { return nil }
-func find_where(pattern, value string) []string { return nil }
-func deref_i64(uri string) int64 { return 0 }
-func deref_str(uri string) string { return "" }
-func deref_bool(uri string) bool { return false }
-func deref_f64(uri string) float64 { return 0 }
-func deref_rect(uri string) Rect { return Rect{} }
-func deref_point2d(uri string) Point2D { return Point2D{} }
-func deref_tribool(uri string) int64 { return 0 }
+func findWhere(pattern, value string) []string { return nil }
+func derefI64(uri string) int64 { return 0 }
+func derefStr(uri string) string { return "" }
+func derefBool(uri string) bool { return false }
+func derefF64(uri string) float64 { return 0 }
+func derefRect(uri string) Rect { return Rect{} }
+func derefPoint2d(uri string) Point2D { return Point2D{} }
+func derefTribool(uri string) int64 { return 0 }
 func exists(uri string) bool { return false }
-func uri_segment(uri string, idx int64) string { return "" }
-func is_unknown(val int64) bool { return false }
-func increment_atomic(uri string) int64 { return 0 }
+func uriSegment(uri string, idx int64) string { return "" }
+func isUnknown(val int64) bool { return false }
+func incrementAtomic(uri string) int64 { return 0 }
 `
 
 // builtinStubNames is the set of function names injected as stubs.
 var builtinStubNames = map[string]struct{}{
 	"clamp": {}, "minf": {}, "maxf": {}, "clampf": {},
 	"sqrt": {}, "floor": {}, "ceil": {}, "round": {},
-	"str_len": {}, "str_concat": {}, "str_contains": {}, "str_substr": {},
-	"str_prefix": {}, "str_suffix": {}, "str_upper": {}, "str_lower": {},
-	"coll_len": {}, "coll_get": {}, "coll_take": {}, "coll_drop": {},
-	"coll_sort": {}, "coll_concat": {}, "coll_page": {}, "coll_empty": {}, "coll_push": {},
-	"rect": {}, "rect_union": {}, "rect_intersect": {}, "rect_overlaps": {},
-	"rect_contains": {}, "rect_empty": {}, "rect_area": {}, "rect_width": {},
-	"rect_height": {}, "point2d": {}, "point2d_x": {}, "point2d_y": {},
-	"find": {}, "find_where": {}, "deref_i64": {}, "deref_str": {}, "deref_bool": {},
-	"deref_f64": {}, "deref_rect": {}, "deref_point2d": {}, "deref_tribool": {},
-	"exists": {}, "uri_segment": {}, "is_unknown": {},
-	"increment_atomic": {},
+	"strLen": {}, "strConcat": {}, "strContains": {}, "strSubstr": {},
+	"strPrefix": {}, "strSuffix": {}, "strUpper": {}, "strLower": {},
+	"collLen": {}, "collGet": {}, "collTake": {}, "collDrop": {},
+	"collSort": {}, "collConcat": {}, "collPage": {}, "collEmpty": {}, "collPush": {},
+	"rect": {}, "rectUnion": {}, "rectIntersect": {}, "rectOverlaps": {},
+	"rectContains": {}, "rectEmpty": {}, "rectArea": {}, "rectWidth": {},
+	"rectHeight": {}, "point2d": {}, "point2dX": {}, "point2dY": {},
+	"find": {}, "findWhere": {}, "derefI64": {}, "derefStr": {}, "derefBool": {},
+	"derefF64": {}, "derefRect": {}, "derefPoint2d": {}, "derefTribool": {},
+	"exists": {}, "uriSegment": {}, "isUnknown": {},
+	"incrementAtomic": {},
 }

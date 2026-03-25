@@ -15,7 +15,7 @@ var ProgIdentityRect = &vm.Program{
 	NumArgs: 0,
 	ArgTypes: []uint8{},
 	Funcs: []vm.FuncInfo{
-		{Name: "identity_rect", PC: 0, NumArgs: 0, NumLocals: 0, LocalBase: 0},
+		{Name: "identityRect", PC: 0, NumArgs: 0, NumLocals: 0, LocalBase: 0},
 	},
 	Entry: 0,
 }

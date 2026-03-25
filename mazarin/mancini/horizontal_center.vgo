@@ -1,6 +1,6 @@
 func horizontalCenter() int64 {
-	cx := deref_i64("_containerX_")
-	cw := deref_i64("_containerWidth_")
-	ew := deref_i64("_elementWidth_")
+	cx := derefI64("_containerX_")
+	cw := derefI64("_containerWidth_")
+	ew := derefI64("_elementWidth_")
 	return cx + (cw - ew) / 2
 }
