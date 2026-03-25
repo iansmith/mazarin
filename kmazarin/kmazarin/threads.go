@@ -1498,10 +1498,10 @@ func KernelIdleLoop() {
 			softIRQConsole.CheckPendingWake()
 		}
 
-		// Tick-based time attribute update. Checks TimerIRQCount and writes
-		// time + modifier attributes when PreemptAfterTicks ticks have elapsed.
-		// This runs on every idle loop iteration — no goroutine needed.
-		ksyscall.TickTimeUpdate()
+		// Time attribute updates are now driven by TopHalfTickTimeUpdate in
+		// ProcessDeadlinesTopHalf (timer ISR, 10Hz). The idle loop no longer
+		// writes time attributes — doing so here would double-fire dirty
+		// propagation and exceed the intended 10Hz cadence.
 
 		// Periodic A/D bit scan. Clears hardware Accessed bits on all mapped
 		// userspace pages and propagates Dirty state into PageDescriptors.
