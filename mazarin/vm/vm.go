@@ -18,11 +18,12 @@ const (
 
 // FuncInfo describes a function within a multi-function program.
 type FuncInfo struct {
-	Name      string  // for diagnostics
-	PC        uint16  // start offset in Code
-	NumArgs   uint16  // parameters consumed from stack
-	NumLocals uint16  // total local slots used (args + body locals)
-	LocalBase uint16  // first local slot for this function
+	Name       string // for diagnostics
+	PC         uint16 // start offset in Code
+	NumArgs    uint16 // parameters consumed from stack
+	NumLocals  uint16 // total local slots used (args + body locals)
+	LocalBase  uint16 // first local slot for this function
+	ReturnType uint8  // VM type tag for the return value (0 = TypeI64 default)
 }
 
 // Program is a verified, ready-to-execute constraint program.

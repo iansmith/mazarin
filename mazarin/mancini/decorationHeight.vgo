@@ -1,6 +1,17 @@
-import "decorator"
+import "children"
 
 func decorationHeight() int64 {
 	margin := deref_i64("_margin_")
-	return simpleDecoratorInsideOut("_findPattern_", "_myName_", "_boolPrefix_", "_visSuffix_", margin, "_int64Prefix_", "_heightSuffix_", int64(30), deref_i64("_maxSize_"))
+	maxSize := deref_i64("_maxSize_")
+	childURI := hasOneChild("_myName_")
+	size := int64(30)
+	if childURI != "" {
+		seg := uri_segment(childURI, 3)
+		size = childHeight(seg)
+	}
+	result := size + margin + margin
+	if result > maxSize {
+		return maxSize
+	}
+	return result
 }

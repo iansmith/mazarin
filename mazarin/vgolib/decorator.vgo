@@ -1,12 +1,11 @@
 import "children"
 
-func simpleDecoratorInsideOut(findPattern string, myName string, boolPrefix string, visSuffix string, margin int64, dimPrefix string, dimSuffix string, defaultSize int64, maxSize int64) int64 {
-	childURI := hasOneChild(findPattern, myName, boolPrefix, visSuffix)
+func simpleDecoratorInsideOut(myName string, margin int64, dimPrefix string, dimSuffix string, defaultSize int64, maxSize int64) int64 {
+	childURI := hasOneChild(myName)
 	size := defaultSize
 	if childURI != "" {
 		seg := uri_segment(childURI, 3)
-		uri := str_concat(str_concat(dimPrefix, seg), dimSuffix)
-		size = deref_i64(uri)
+		size = deref_i64(dimPrefix + seg + dimSuffix)
 	}
 	result := size + margin + margin
 	if result > maxSize {

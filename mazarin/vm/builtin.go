@@ -112,6 +112,9 @@ const (
 	BuiltinURISegment   uint16 = 209 // (Str, I64) → Str
 	BuiltinIsUnknown    uint16 = 210 // (any) → Bool
 
+	BuiltinFindWhere uint16 = 211 // (Str, Str) → CollStr  find(pattern) filtered by deref_str == value
+	BuiltinCollPush  uint16 = 212 // (Coll, elem) → Coll  append element to collection
+
 	// Side-effect builtins.
 	BuiltinIncrementAtomic uint16 = 220 // (Str) → I64  atomically increment int64 attr
 )
@@ -912,6 +915,45 @@ func (m *machine) callBuiltin(id, argc uint16, instTyp uint8) error {
 		uris, querySlot := m.resolver.Find(pattern.str)
 		m.readSet.Add(querySlot)
 		return m.push(CollStr(uris))
+
+	case BuiltinFindWhere:
+		value, err := m.pop()
+		if err != nil {
+			return err
+		}
+		pattern, err := m.pop()
+		if err != nil {
+			return err
+		}
+		if pattern.typ != TypeStr {
+			return m.haltf("find_where requires string pattern, got %s", TypeName(pattern.typ))
+		}
+		if value.typ != TypeStr {
+			return m.haltf("find_where requires string value, got %s", TypeName(value.typ))
+		}
+		if m.resolver == nil {
+			return m.haltf("find_where: no resolver configured")
+		}
+		fwURIs, fwSlot := m.resolver.FindWhere(pattern.str, value.str)
+		m.readSet.Add(fwSlot)
+		return m.push(CollStr(fwURIs))
+
+	case BuiltinCollPush:
+		elem, err := m.pop()
+		if err != nil {
+			return err
+		}
+		coll, err := m.pop()
+		if err != nil {
+			return err
+		}
+		if !isCollType(coll.typ) {
+			return m.haltf("coll_push requires collection, got %s", TypeName(coll.typ))
+		}
+		newColl := make([]Value, len(coll.coll)+1)
+		copy(newColl, coll.coll)
+		newColl[len(coll.coll)] = elem
+		return m.push(Value{typ: coll.typ, coll: newColl})
 
 	case BuiltinDerefI64:
 		return m.builtinDeref(TypeI64)

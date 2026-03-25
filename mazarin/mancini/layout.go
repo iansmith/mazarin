@@ -56,8 +56,8 @@ func LayoutURI(myName string, dt DataType, prop LayoutProp) string {
 	return "attr:///shepherd/" + manciniSID + "/" + string(dt) + "/" + myName + "/layout/" + string(prop)
 }
 
-// FindPattern returns the find pattern for discovering all interactors' Parent attributes.
-func FindPattern() string {
+// ChildPattern returns the URI pattern for discovering children via their Parent attributes.
+func ChildPattern() string {
 	return "attr:///shepherd/" + manciniSID + "/str/*/layout/Parent"
 }
 
@@ -258,18 +258,13 @@ func NewDecoratorLayoutByParentName(myName, parentName string, hMargin, vMargin,
 	maxSizeURI := LayoutURI(myName, DataTypeInt64, LayoutMaxSize)
 	attr.ValueI64(maxSizeURI, maxSize)
 
-	findPattern := FindPattern()
-	prefix := Int64Prefix()
-
-	widthProg := BindStrings(ProgDecorationWidth,
-		"_findPattern_", findPattern, "_myName_", myName, "_margin_", hMarginURI,
-		"_int64Prefix_", prefix, "_boolPrefix_", BoolPrefix(), "_widthSuffix_", LayoutWidth.Suffix(), "_maxSize_", maxSizeURI, "_visSuffix_", VisSuffix)
+	widthProg := BindStringsChildren(ProgDecorationWidth,
+		"_myName_", myName, "_margin_", hMarginURI, "_maxSize_", maxSizeURI)
 	lh.Width = attr.ConstraintI64(
 		LayoutURI(myName, DataTypeInt64, LayoutWidth), widthProg)
 
-	heightProg := BindStrings(ProgDecorationHeight,
-		"_findPattern_", findPattern, "_myName_", myName, "_margin_", vMarginURI,
-		"_int64Prefix_", prefix, "_boolPrefix_", BoolPrefix(), "_heightSuffix_", LayoutHeight.Suffix(), "_maxSize_", maxSizeURI, "_visSuffix_", VisSuffix)
+	heightProg := BindStringsChildren(ProgDecorationHeight,
+		"_myName_", myName, "_margin_", vMarginURI, "_maxSize_", maxSizeURI)
 	lh.Height = attr.ConstraintI64(
 		LayoutURI(myName, DataTypeInt64, LayoutHeight), heightProg)
 

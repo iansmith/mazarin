@@ -1,14 +1,11 @@
-func childrenBoundsHash(findPattern string, myName string, prefix string, hashSuffix string) int64 {
-	children := find(findPattern)
+import "children"
+
+func childrenBoundsHash(myName string) int64 {
+	children := find_where("_childPattern_", myName)
 	combined := int64(0)
 	for _, uri := range children {
-		pname := deref_str(uri)
-		if pname == myName {
-			seg := uri_segment(uri, 3)
-			hashURI := str_concat(str_concat(prefix, seg), hashSuffix)
-			h := deref_i64(hashURI)
-			combined = combined * int64(31) + h
-		}
+		seg := uri_segment(uri, 3)
+		combined = combined * int64(31) + childBoundsHash(seg)
 	}
 	return combined
 }

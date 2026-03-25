@@ -129,11 +129,12 @@ func Compile(src string) (*Result, error) {
 		}
 
 		funcInfos[i] = vm.FuncInfo{
-			Name:      fd.Name.Name,
-			PC:        startPC,
-			NumArgs:   countDeclParams(fd),
-			NumLocals: c.nextLocal - localBases[i],
-			LocalBase: localBases[i],
+			Name:       fd.Name.Name,
+			PC:         startPC,
+			NumArgs:    countDeclParams(fd),
+			NumLocals:  c.nextLocal - localBases[i],
+			LocalBase:  localBases[i],
+			ReturnType: c.returnType(fd),
 		}
 	}
 
@@ -267,6 +268,20 @@ func (c *compiler) paramTypes() []uint8 {
 		}
 	}
 	return types
+}
+
+// returnType returns the VM type tag for a function's return type.
+// Returns TypeI64 (0) if the return type is not recognized or not declared.
+func (c *compiler) returnType(fd *ast.FuncDecl) uint8 {
+	if fd.Type.Results == nil || len(fd.Type.Results.List) == 0 {
+		return vm.TypeI64
+	}
+	// Use the first return type.
+	t, ok := c.resolveTypeExpr(fd.Type.Results.List[0].Type)
+	if !ok {
+		return vm.TypeI64
+	}
+	return t
 }
 
 // countFuncLocals walks a function's AST to count the total number of
@@ -415,7 +430,8 @@ func coll_drop(c []int64, n int64) []int64 { return nil }
 func coll_sort(c []int64) []int64 { return nil }
 func coll_concat(a, b []int64) []int64 { return nil }
 func coll_page(c []int64, page, size int64) []int64 { return nil }
-func coll_empty() []int64 { return nil }
+func coll_empty() []string { return nil }
+func coll_push(c []string, elem string) []string { return nil }
 
 func rect(x0, y0, x1, y1 int64) Rect { return Rect{} }
 func rect_union(a, b Rect) Rect { return Rect{} }
@@ -431,6 +447,7 @@ func point2d_x(p Point2D) int64 { return 0 }
 func point2d_y(p Point2D) int64 { return 0 }
 
 func find(pattern string) []string { return nil }
+func find_where(pattern, value string) []string { return nil }
 func deref_i64(uri string) int64 { return 0 }
 func deref_str(uri string) string { return "" }
 func deref_bool(uri string) bool { return false }
@@ -451,11 +468,11 @@ var builtinStubNames = map[string]struct{}{
 	"str_len": {}, "str_concat": {}, "str_contains": {}, "str_substr": {},
 	"str_prefix": {}, "str_suffix": {}, "str_upper": {}, "str_lower": {},
 	"coll_len": {}, "coll_get": {}, "coll_take": {}, "coll_drop": {},
-	"coll_sort": {}, "coll_concat": {}, "coll_page": {}, "coll_empty": {},
+	"coll_sort": {}, "coll_concat": {}, "coll_page": {}, "coll_empty": {}, "coll_push": {},
 	"rect": {}, "rect_union": {}, "rect_intersect": {}, "rect_overlaps": {},
 	"rect_contains": {}, "rect_empty": {}, "rect_area": {}, "rect_width": {},
 	"rect_height": {}, "point2d": {}, "point2d_x": {}, "point2d_y": {},
-	"find": {}, "deref_i64": {}, "deref_str": {}, "deref_bool": {},
+	"find": {}, "find_where": {}, "deref_i64": {}, "deref_str": {}, "deref_bool": {},
 	"deref_f64": {}, "deref_rect": {}, "deref_point2d": {}, "deref_tribool": {},
 	"exists": {}, "uri_segment": {}, "is_unknown": {},
 	"increment_atomic": {},

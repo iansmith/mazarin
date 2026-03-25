@@ -122,6 +122,24 @@ func (r *sharedResolver) Find(pattern string) ([]string, uint16) {
 	return result, slot
 }
 
+// FindWhere matches a URI pattern and filters results to those whose
+// dereferenced string value equals value. More efficient than Find + deref_str
+// loop when only a subset of matches is needed.
+func (r *sharedResolver) FindWhere(pattern string, value string) ([]string, uint16) {
+	uris, slot := r.Find(pattern)
+	if len(uris) == 0 {
+		return uris, slot
+	}
+	filtered := make([]string, 0, len(uris))
+	for _, uri := range uris {
+		val, _, ok := r.Deref(uri, vm.TypeStr)
+		if ok && val.AsStr() == value {
+			filtered = append(filtered, uri)
+		}
+	}
+	return filtered, slot
+}
+
 // Exists checks if any attributes exist under the URI prefix by walking the
 // shared-page trie and checking ChildCount.
 func (r *sharedResolver) Exists(prefix string) (bool, uint16) {

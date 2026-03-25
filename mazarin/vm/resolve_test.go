@@ -31,6 +31,18 @@ func (r *mockResolver) Find(pattern string) ([]string, uint16) {
 	return results, 9999 // query slot
 }
 
+func (r *mockResolver) FindWhere(pattern string, value string) ([]string, uint16) {
+	uris, slot := r.Find(pattern)
+	var filtered []string
+	for _, uri := range uris {
+		a, ok := r.attrs[uri]
+		if ok && a.value.typ == TypeStr && a.value.str == value {
+			filtered = append(filtered, uri)
+		}
+	}
+	return filtered, slot
+}
+
 func (r *mockResolver) Deref(uri string, expectedType uint8) (Value, uint16, bool) {
 	a, ok := r.attrs[uri]
 	if !ok {

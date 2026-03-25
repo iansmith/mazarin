@@ -39,6 +39,7 @@ var builtinFuncs = map[string]struct {
 	"coll_concat":  {vm.BuiltinCollConcat, 2},
 	"coll_page":    {vm.BuiltinCollPage, 3},
 	"coll_empty":   {vm.BuiltinCollEmpty, 0},
+	"coll_push":    {vm.BuiltinCollPush, 2},
 	"len":          {vm.BuiltinCollLen, 1}, // Go's len() maps to coll_len
 
 	// Geometry builtins.
@@ -57,6 +58,7 @@ var builtinFuncs = map[string]struct {
 
 	// Service discovery / deref builtins.
 	"find":           {vm.BuiltinFind, 1},
+	"find_where":     {vm.BuiltinFindWhere, 2},
 	"deref_i64":      {vm.BuiltinDerefI64, 1},
 	"deref_str":      {vm.BuiltinDerefStr, 1},
 	"deref_bool":     {vm.BuiltinDerefBool, 1},
@@ -477,7 +479,13 @@ func (c *compiler) compileCall(e *ast.CallExpr) error {
 		}
 	}
 
-	c.emit(vm.InstCallBuiltin(builtin.id, builtin.argc))
+	inst := vm.InstCallBuiltin(builtin.id, builtin.argc)
+	// coll_empty needs the Typ field set so the runtime knows which
+	// collection type to create (e.g. TypeCollStr vs TypeCollI64).
+	if builtin.id == vm.BuiltinCollEmpty {
+		inst.Typ = c.exprVMType(e)
+	}
+	c.emit(inst)
 	return nil
 }
 

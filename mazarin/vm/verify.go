@@ -714,8 +714,12 @@ func (v *verifier) verify() error {
 					return err
 				}
 			}
-			// Push one return value (I64 placeholder — we don't track return types yet).
-			if err := v.pushType(TypeI64); err != nil {
+			// Push return type from FuncInfo (defaults to I64 if not set).
+			retType := TypeI64
+			if target.ReturnType != 0 {
+				retType = target.ReturnType
+			}
+			if err := v.pushType(retType); err != nil {
 				return err
 			}
 
@@ -860,6 +864,14 @@ func (v *verifier) verifyBuiltin(id, argc uint16, instTyp uint8) error {
 
 	// Service discovery builtins.
 	case BuiltinFind:
+		return v.pushType(TypeCollStr)
+	case BuiltinFindWhere:
+		return v.pushType(TypeCollStr)
+	case BuiltinCollPush:
+		// Returns same collection type as input.
+		if isCollType(instTyp) {
+			return v.pushType(instTyp)
+		}
 		return v.pushType(TypeCollStr)
 	case BuiltinDerefI64:
 		// Returns I64 or Tribool(unknown) — verifier pushes I64 conservatively.
