@@ -194,8 +194,9 @@ func main() {
 		}
 		return fc.OpenFaceByName(family, style, size)
 	}
-	theme := mancini.NewTheme(pal.Surface, textColor, mfont.DefaultMono, 18, resolver)
-	subtitleTheme := mancini.NewTheme(pal.Surface, subtitleColor, mfont.DefaultMono, 18, resolver)
+	transparent := color.NRGBA{0, 0, 0, 0}
+	theme := mancini.NewTheme(transparent, textColor, mfont.DefaultMono, 18, resolver)
+	subtitleTheme := mancini.NewTheme(transparent, subtitleColor, mfont.DefaultMono, 18, resolver)
 
 	// Title bar: GradientTitle (animated gradient, bold, 22pt).
 	gt := std.NewGradientTitle(pal, fonts, "World Clocks", 22, 8)
@@ -203,8 +204,8 @@ func main() {
 	app.Focused = false // wait for rachel to grant focus
 
 	// Row: parent = "AppWindow" (std.AppWindow's fixed constraint name).
-	row := std.NewRow("main_row", "AppWindow", pal, 0, mancini.AxisMinimum)
-	row.SetSpacing(20)
+	row := std.NewRow("main_row", "AppWindow", pal, 0, mancini.AxisMinimum, 1)
+	row.SetSpacing(25)
 
 	sys.UartWriteString(fmt.Sprintf("[clocks] building columns... (T+%v)\n", time.Since(startTime)))
 	for i, city := range cities {
@@ -234,7 +235,7 @@ func main() {
 		// Children created in display order — sequence numbers give deterministic ordering.
 		_ = std.NewLabelNamedBold(city.id+"_name", colName, theme, city.name, 18)
 
-		circle := std.NewNeuCircleNamed(circleName, colName, pal, mancini.Raised, mancini.ButtonParams)
+		circle := std.NewNeuCircleNamed(circleName, colName, pal, mancini.Raised, mancini.CircleParams)
 		_ = circle
 
 		clockWidget := std.NewClock(city.id+"_clock", circleName, pal, fonts, 34, utcFunc, rotated)

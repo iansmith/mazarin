@@ -31,9 +31,13 @@ func (t *ThemedInteractor) DefaultFont() *mancini.FontConfig { return t.theme.De
 func (t *ThemedInteractor) DefaultSize() int64               { return t.theme.DefaultSize() }
 
 // Draw clears the interactor's background to the theme's BgColor.
+// If the background is fully transparent (alpha == 0), the fill is skipped.
 // Concrete types override Draw and call t.ThemedInteractor.Draw(self, ...)
 // first to get the background clear, then render their own content.
 func (t *ThemedInteractor) Draw(self mancini.Interactor, x, y, w, h int64) {
+	if t.theme.Bg.A == 0 {
+		return
+	}
 	dc := self.DC()
 	dc.SetColor(t.theme.Bg)
 	dc.FillRectangle(float64(x), float64(y), float64(w), float64(h))

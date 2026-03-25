@@ -64,7 +64,6 @@ func (fc *FontCache) OpenFace(path string, bold bool, size int64) font.Face {
 	key := faceKey{path: path, bold: bold, size: size}
 	for i := 0; i < fc.cachedCount; i++ {
 		if fc.cachedFaces[i].key == key {
-			sys.UartWriteString(fmt.Sprintf("[fontcache] cache hit: %s bold=%v size=%d\n", path, bold, size))
 			return fc.cachedFaces[i].face
 		}
 	}
