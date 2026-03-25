@@ -59,6 +59,13 @@ fonts/
 /clocks
 /clocktest
 
+# Userspace priest binaries (built by task)
+/disk
+/fontsvc
+/prefs
+/slicer
+/uitest
+
 # Standalone tool binaries
 /compile-constraints
 /fix-go-elf
