@@ -6,15 +6,15 @@ import "mazzy/mazarin/mancini"
 // Concrete types embed this to get X(), Y(), W(), H(), Visible(), DC().
 type Interactor struct {
 	owner  mancini.Interactor
-	layout *mancini.LayoutHandles
+	layout *mancini.LayoutAttributes
 	dc     mancini.DrawContext
 }
 
 // Init wires the back-pointer and layout. Must be called from the
 // concrete type's constructor: i.Interactor.Init(i, layout).
 // Registers the owner in the global interactor registry keyed by
-// the layout handle's constraint-system name.
-func (i *Interactor) Init(owner mancini.Interactor, layout *mancini.LayoutHandles) {
+// the layout attribute's constraint-system name.
+func (i *Interactor) Init(owner mancini.Interactor, layout *mancini.LayoutAttributes) {
 	i.owner = owner
 	i.layout = layout
 	if layout != nil {
@@ -36,8 +36,8 @@ func (i *Interactor) SetDC(dc mancini.DrawContext) { i.dc = dc }
 // Owner returns the back-pointer to the embedding concrete type.
 func (i *Interactor) Owner() mancini.Interactor { return i.owner }
 
-// Layout returns the underlying LayoutHandles for constraint access.
-func (i *Interactor) Layout() *mancini.LayoutHandles { return i.layout }
+// Layout returns the underlying LayoutAttributes for constraint access.
+func (i *Interactor) Layout() *mancini.LayoutAttributes { return i.layout }
 
 // GetLayout satisfies the mancini.Layouter interface.
-func (i *Interactor) GetLayout() *mancini.LayoutHandles { return i.layout }
+func (i *Interactor) GetLayout() *mancini.LayoutAttributes { return i.layout }

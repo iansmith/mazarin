@@ -38,15 +38,15 @@ func NewRow(myName, parent string, pal mancini.Palette, maxWidth int64, crossAli
 		myName = mancini.DefaultName("row")
 	}
 
-	lh := mancini.NewLayoutHandlesBase(myName, parent)
+	lh := mancini.NewLayoutAttributesBase(myName, parent)
 
 	// Inter-child spacing attribute.
 	spacingURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutSpacing)
-	lh.SpacingHandle = attr.ValueI64(spacingURI, 0)
+	lh.SpacingAttr = attr.ValueI64(spacingURI, 0)
 
 	// Cross-axis alignment.
 	alignURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutCrossAlign)
-	lh.CrossAlignHandle = attr.ValueI64(alignURI, int64(crossAlign))
+	lh.CrossAlignAttr = attr.ValueI64(alignURI, int64(crossAlign))
 
 	// MaxWidth attribute.
 	maxW := maxWidth
@@ -54,7 +54,7 @@ func NewRow(myName, parent string, pal mancini.Palette, maxWidth int64, crossAli
 		maxW = 9999
 	}
 	maxWidthURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutMaxWidth)
-	lh.MaxWidthHandle = attr.ValueI64(maxWidthURI, maxW)
+	lh.MaxWidthAttr = attr.ValueI64(maxWidthURI, maxW)
 
 	// Horizontal margin attribute.
 	hMarginURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutHMargin)
@@ -78,7 +78,7 @@ func NewRow(myName, parent string, pal mancini.Palette, maxWidth int64, crossAli
 		"_maxWidth_", maxWidthURI, "_spacing_", spacingURI, "_hMargin_", hMarginURI,
 		"_myName_", myName)
 	lastChildURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutLastChildDrawn)
-	lh.LastChildDrawnHandle = attr.ConstraintI64(lastChildURI, lastChildProg)
+	lh.LastChildDrawnAttr = attr.ConstraintI64(lastChildURI, lastChildProg)
 
 	lh.InitBounds(myName)
 
@@ -90,8 +90,8 @@ func NewRow(myName, parent string, pal mancini.Palette, maxWidth int64, crossAli
 // SetSpacing sets the inter-child spacing value (in pixels).
 func (r *Row) SetSpacing(v float64) {
 	lh := r.GetLayout()
-	if lh != nil && lh.SpacingHandle != nil {
-		lh.SpacingHandle.Set(int64(v))
+	if lh != nil && lh.SpacingAttr != nil {
+		lh.SpacingAttr.Set(int64(v))
 	}
 }
 
@@ -123,8 +123,8 @@ func (r *Row) Draw(self mancini.Interactor, x, y, w, h int64) {
 
 	// lastChildDrawn: 0-based index among visible children.
 	lastChildDrawn := int64(-1)
-	if lh.LastChildDrawnHandle != nil {
-		lastChildDrawn = lh.LastChildDrawnHandle.Get()
+	if lh.LastChildDrawnAttr != nil {
+		lastChildDrawn = lh.LastChildDrawnAttr.Get()
 	}
 
 	spacing := int64(lh.GetSpacing())

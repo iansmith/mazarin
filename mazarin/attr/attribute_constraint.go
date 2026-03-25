@@ -1,7 +1,7 @@
-// handle_constraint.go — Typed constraint constructors for Handle[T].
+// attribute_constraint.go — Typed constraint constructors for Attribute[T].
 //
 // Each constructor serializes a vm.Program, creates a kernel constraint
-// attribute, registers dependencies, and returns a typed Handle.
+// attribute, registers dependencies, and returns a typed Attribute.
 
 package attr
 
@@ -12,9 +12,9 @@ import (
 )
 
 // ConstraintI64 creates a constraint attribute that evaluates to int64.
-func ConstraintI64(uri string, prog *vm.Program, deps ...HandleAny) *Handle[int64] {
+func ConstraintI64(uri string, prog *vm.Program, deps ...AttributeAny) *Attribute[int64] {
 	slot := createConstraintSlot(uri, flat.TypeI64, prog, deps)
-	h := &Handle[int64]{
+	h := &Attribute[int64]{
 		slot:  slot,
 		uri:   uri,
 		kind:  flat.AttrKindConstraint,
@@ -28,9 +28,9 @@ func ConstraintI64(uri string, prog *vm.Program, deps ...HandleAny) *Handle[int6
 }
 
 // ConstraintF64 creates a constraint attribute that evaluates to float64.
-func ConstraintF64(uri string, prog *vm.Program, deps ...HandleAny) *Handle[float64] {
+func ConstraintF64(uri string, prog *vm.Program, deps ...AttributeAny) *Attribute[float64] {
 	slot := createConstraintSlot(uri, flat.TypeF64, prog, deps)
-	h := &Handle[float64]{
+	h := &Attribute[float64]{
 		slot:  slot,
 		uri:   uri,
 		kind:  flat.AttrKindConstraint,
@@ -44,9 +44,9 @@ func ConstraintF64(uri string, prog *vm.Program, deps ...HandleAny) *Handle[floa
 }
 
 // ConstraintBool creates a constraint attribute that evaluates to bool.
-func ConstraintBool(uri string, prog *vm.Program, deps ...HandleAny) *Handle[bool] {
+func ConstraintBool(uri string, prog *vm.Program, deps ...AttributeAny) *Attribute[bool] {
 	slot := createConstraintSlot(uri, flat.TypeBool, prog, deps)
-	h := &Handle[bool]{
+	h := &Attribute[bool]{
 		slot:  slot,
 		uri:   uri,
 		kind:  flat.AttrKindConstraint,
@@ -60,9 +60,9 @@ func ConstraintBool(uri string, prog *vm.Program, deps ...HandleAny) *Handle[boo
 }
 
 // ConstraintStr creates a constraint attribute that evaluates to string.
-func ConstraintStr(uri string, prog *vm.Program, deps ...HandleAny) *Handle[string] {
+func ConstraintStr(uri string, prog *vm.Program, deps ...AttributeAny) *Attribute[string] {
 	slot := createConstraintSlot(uri, flat.TypeStr, prog, deps)
-	h := &Handle[string]{
+	h := &Attribute[string]{
 		slot:  slot,
 		uri:   uri,
 		kind:  flat.AttrKindConstraint,
@@ -79,9 +79,9 @@ func ConstraintStr(uri string, prog *vm.Program, deps ...HandleAny) *Handle[stri
 }
 
 // ConstraintComposite creates a constraint attribute for a composite type.
-func ConstraintComposite(uri string, flatType uint8, prog *vm.Program, deps ...HandleAny) *Handle[vm.Value] {
+func ConstraintComposite(uri string, flatType uint8, prog *vm.Program, deps ...AttributeAny) *Attribute[vm.Value] {
 	slot := createConstraintSlot(uri, flatType, prog, deps)
-	h := &Handle[vm.Value]{
+	h := &Attribute[vm.Value]{
 		slot: slot,
 		uri:  uri,
 		kind: flat.AttrKindConstraint,
@@ -110,7 +110,7 @@ func ConstraintComposite(uri string, flatType uint8, prog *vm.Program, deps ...H
 
 // --- Internal helpers ---
 
-func createConstraintSlot(uri string, valueType uint8, prog *vm.Program, deps []HandleAny) uint16 {
+func createConstraintSlot(uri string, valueType uint8, prog *vm.Program, deps []AttributeAny) uint16 {
 	// Serialize the program for storage in the bytecode region.
 	bytecode := prog.Marshal()
 

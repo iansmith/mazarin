@@ -6,17 +6,17 @@ import (
 	"mazzy/mazarin/vm/flat"
 )
 
-// DamageHandles holds "last painted" mirror attributes and the computed
+// DamageAttributes holds "last painted" mirror attributes and the computed
 // damage rectangle for an interactor. The damage rectangle is the union
 // of current and last-painted bounds when any tracked property changes.
-type DamageHandles struct {
-	DamageRect    *attr.Handle[vm.Value] // constraint: damaged region (empty if no change)
-	LPBounds      *attr.Handle[vm.Value] // value: last-painted bounds (set after painting)
-	LPVisible     *attr.Handle[bool]     // value: last-painted visibility
-	LPBoundsHash  *attr.Handle[int64]    // value: last-painted bounds hash
-	LPBgColor     *attr.Handle[int64]    // value: last-painted background color
-	LPFgColor     *attr.Handle[int64]    // value: last-painted foreground color
-	LPContentHash *attr.Handle[int64]    // value: last-painted content hash
+type DamageAttributes struct {
+	DamageRect    *attr.Attribute[vm.Value] // constraint: damaged region (empty if no change)
+	LPBounds      *attr.Attribute[vm.Value] // value: last-painted bounds (set after painting)
+	LPVisible     *attr.Attribute[bool]     // value: last-painted visibility
+	LPBoundsHash  *attr.Attribute[int64]    // value: last-painted bounds hash
+	LPBgColor     *attr.Attribute[int64]    // value: last-painted background color
+	LPFgColor     *attr.Attribute[int64]    // value: last-painted foreground color
+	LPContentHash *attr.Attribute[int64]    // value: last-painted content hash
 }
 
 // emptyRect returns a vm.Value for an empty rectangle (0,0,0,0).
@@ -28,9 +28,9 @@ func emptyRect() vm.Value {
 // bgColorURI and fgColorURI point to the interactor's current color attributes.
 // contentHashURI points to a content hash attribute (use "" for non-text interactors;
 // the placeholder will remain unbound and the deref will return 0 — matching the LP default).
-func (lh *LayoutHandles) InitLeafDamage(bgColorURI, fgColorURI, contentHashURI string) {
+func (lh *LayoutAttributes) InitLeafDamage(bgColorURI, fgColorURI, contentHashURI string) {
 	myName := lh.name
-	d := &DamageHandles{}
+	d := &DamageAttributes{}
 
 	// Last-painted mirrors — value attributes set by the draw loop after painting.
 	d.LPBounds = attr.ValueRectangle(LayoutURI(myName, DataTypeRect, LayoutLPBounds), emptyRect())
@@ -62,9 +62,9 @@ func (lh *LayoutHandles) InitLeafDamage(bgColorURI, fgColorURI, contentHashURI s
 
 // InitParentDamage creates damage tracking for a parent interactor.
 // childDamageURI is the URI of the first child's DamageRect attribute.
-func (lh *LayoutHandles) InitParentDamage(bgColorURI, fgColorURI, childDamageURI string) {
+func (lh *LayoutAttributes) InitParentDamage(bgColorURI, fgColorURI, childDamageURI string) {
 	myName := lh.name
-	d := &DamageHandles{}
+	d := &DamageAttributes{}
 
 	d.LPBounds = attr.ValueRectangle(LayoutURI(myName, DataTypeRect, LayoutLPBounds), emptyRect())
 	d.LPVisible = attr.ValueBool(LayoutURI(myName, DataTypeBool, LayoutLPVisible), false)
@@ -92,9 +92,9 @@ func (lh *LayoutHandles) InitParentDamage(bgColorURI, fgColorURI, childDamageURI
 	lh.Damage = d
 }
 
-// SnapshotDamage copies current visual state into last-painted handles.
+// SnapshotDamage copies current visual state into last-painted attributes.
 // Called by the draw loop after painting an interactor.
-func (lh *LayoutHandles) SnapshotDamage() {
+func (lh *LayoutAttributes) SnapshotDamage() {
 	if lh == nil || lh.Damage == nil {
 		return
 	}
@@ -110,9 +110,9 @@ func (lh *LayoutHandles) SnapshotDamage() {
 	}
 }
 
-// SnapshotDamageColors copies current color values into last-painted handles.
+// SnapshotDamageColors copies current color values into last-painted attributes.
 // bgColor and fgColor are the current values to snapshot.
-func (lh *LayoutHandles) SnapshotDamageColors(bgColor, fgColor int64) {
+func (lh *LayoutAttributes) SnapshotDamageColors(bgColor, fgColor int64) {
 	if lh == nil || lh.Damage == nil {
 		return
 	}
@@ -125,8 +125,8 @@ func (lh *LayoutHandles) SnapshotDamageColors(bgColor, fgColor int64) {
 	}
 }
 
-// SnapshotDamageContentHash copies a content hash into the last-painted handle.
-func (lh *LayoutHandles) SnapshotDamageContentHash(hash int64) {
+// SnapshotDamageContentHash copies a content hash into the last-painted attribute.
+func (lh *LayoutAttributes) SnapshotDamageContentHash(hash int64) {
 	if lh == nil || lh.Damage == nil {
 		return
 	}

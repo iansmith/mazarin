@@ -13,22 +13,22 @@ type VMDep struct {
 }
 
 // DepI64 creates a VMDep for an int64 attribute.
-func DepI64(a *Attribute[int64]) VMDep {
+func DepI64(a *LocalAttr[int64]) VMDep {
 	return VMDep{dep: a, extract: func() vm.Value { return vm.I64(a.Get()) }}
 }
 
 // DepF64 creates a VMDep for a float64 attribute.
-func DepF64(a *Attribute[float64]) VMDep {
+func DepF64(a *LocalAttr[float64]) VMDep {
 	return VMDep{dep: a, extract: func() vm.Value { return vm.F64(a.Get()) }}
 }
 
 // DepBool creates a VMDep for a bool attribute.
-func DepBool(a *Attribute[bool]) VMDep {
+func DepBool(a *LocalAttr[bool]) VMDep {
 	return VMDep{dep: a, extract: func() vm.Value { return vm.Bool(a.Get()) }}
 }
 
 // DepStr creates a VMDep for a string attribute.
-func DepStr(a *Attribute[string]) VMDep {
+func DepStr(a *LocalAttr[string]) VMDep {
 	return VMDep{dep: a, extract: func() vm.Value { return vm.Str(a.Get()) }}
 }
 
@@ -62,7 +62,7 @@ func noders(deps []VMDep) []Noder {
 
 // NewVMConstraintI64 creates a constraint backed by a compiled VM program
 // that returns an int64.
-func NewVMConstraintI64(prog *vm.Program, deps ...VMDep) *Attribute[int64] {
+func NewVMConstraintI64(prog *vm.Program, deps ...VMDep) *LocalAttr[int64] {
 	run := newVMCompute(prog, deps)
 	return NewConstraint(func() int64 {
 		return run().AsI64()
@@ -71,7 +71,7 @@ func NewVMConstraintI64(prog *vm.Program, deps ...VMDep) *Attribute[int64] {
 
 // NewVMConstraintF64 creates a constraint backed by a compiled VM program
 // that returns a float64.
-func NewVMConstraintF64(prog *vm.Program, deps ...VMDep) *Attribute[float64] {
+func NewVMConstraintF64(prog *vm.Program, deps ...VMDep) *LocalAttr[float64] {
 	run := newVMCompute(prog, deps)
 	return NewConstraint(func() float64 {
 		return run().AsF64()
@@ -80,7 +80,7 @@ func NewVMConstraintF64(prog *vm.Program, deps ...VMDep) *Attribute[float64] {
 
 // NewVMConstraintBool creates a constraint backed by a compiled VM program
 // that returns a bool.
-func NewVMConstraintBool(prog *vm.Program, deps ...VMDep) *Attribute[bool] {
+func NewVMConstraintBool(prog *vm.Program, deps ...VMDep) *LocalAttr[bool] {
 	run := newVMCompute(prog, deps)
 	return NewConstraint(func() bool {
 		return run().AsBool()
@@ -89,7 +89,7 @@ func NewVMConstraintBool(prog *vm.Program, deps ...VMDep) *Attribute[bool] {
 
 // NewVMConstraintStr creates a constraint backed by a compiled VM program
 // that returns a string.
-func NewVMConstraintStr(prog *vm.Program, deps ...VMDep) *Attribute[string] {
+func NewVMConstraintStr(prog *vm.Program, deps ...VMDep) *LocalAttr[string] {
 	run := newVMCompute(prog, deps)
 	return NewConstraint(func() string {
 		return run().AsStr()

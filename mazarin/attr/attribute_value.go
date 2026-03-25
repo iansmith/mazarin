@@ -1,7 +1,7 @@
-// handle_value.go — Typed value constructors for Handle[T].
+// attribute_value.go — Typed value constructors for Attribute[T].
 //
 // Each constructor creates a kernel-managed value attribute via SysAttrCreate,
-// writes the initial value, and returns a typed Handle.
+// writes the initial value, and returns a typed Attribute.
 
 package attr
 
@@ -13,11 +13,11 @@ import (
 )
 
 // ValueI64 creates a value attribute of type int64.
-func ValueI64(uri string, initial int64) *Handle[int64] {
+func ValueI64(uri string, initial int64) *Attribute[int64] {
 	slot := createValueSlot(uri, flat.TypeI64)
 	fv := flat.NewI64(initial)
 	writeInitialValue(slot, &fv)
-	return &Handle[int64]{
+	return &Attribute[int64]{
 		slot:  slot,
 		uri:   uri,
 		kind:  flat.AttrKindValue,
@@ -28,11 +28,11 @@ func ValueI64(uri string, initial int64) *Handle[int64] {
 }
 
 // ValueF64 creates a value attribute of type float64.
-func ValueF64(uri string, initial float64) *Handle[float64] {
+func ValueF64(uri string, initial float64) *Attribute[float64] {
 	slot := createValueSlot(uri, flat.TypeF64)
 	fv := flat.NewF64(initial)
 	writeInitialValue(slot, &fv)
-	return &Handle[float64]{
+	return &Attribute[float64]{
 		slot:  slot,
 		uri:   uri,
 		kind:  flat.AttrKindValue,
@@ -43,11 +43,11 @@ func ValueF64(uri string, initial float64) *Handle[float64] {
 }
 
 // ValueBool creates a value attribute of type bool.
-func ValueBool(uri string, initial bool) *Handle[bool] {
+func ValueBool(uri string, initial bool) *Attribute[bool] {
 	slot := createValueSlot(uri, flat.TypeBool)
 	fv := flat.NewBool(initial)
 	writeInitialValue(slot, &fv)
-	return &Handle[bool]{
+	return &Attribute[bool]{
 		slot:  slot,
 		uri:   uri,
 		kind:  flat.AttrKindValue,
@@ -60,13 +60,13 @@ func ValueBool(uri string, initial bool) *Handle[bool] {
 // ValueStr creates a value attribute of type string.
 // String writes go through SysAttrWriteString since the shepherd can't construct
 // FlatStrRefs (shared pages are read-only).
-func ValueStr(uri string, initial string) *Handle[string] {
+func ValueStr(uri string, initial string) *Attribute[string] {
 	slot := createValueSlot(uri, flat.TypeStr)
 	// Write initial string via the string syscall.
 	if err := sys.AttrWriteString(slot, initial, false); err != nil {
 		panic("attr: ValueStr initial write failed: " + err.Error())
 	}
-	return &Handle[string]{
+	return &Attribute[string]{
 		slot:  slot,
 		uri:   uri,
 		kind:  flat.AttrKindValue,
@@ -80,11 +80,11 @@ func ValueStr(uri string, initial string) *Handle[string] {
 }
 
 // ValueTribool creates a value attribute of type tribool (stored as int64: 0/1/2).
-func ValueTribool(uri string, initial int64) *Handle[int64] {
+func ValueTribool(uri string, initial int64) *Attribute[int64] {
 	slot := createValueSlot(uri, flat.TypeTribool)
 	fv := flat.NewTribool(initial)
 	writeInitialValue(slot, &fv)
-	return &Handle[int64]{
+	return &Attribute[int64]{
 		slot:  slot,
 		uri:   uri,
 		kind:  flat.AttrKindValue,
@@ -96,14 +96,14 @@ func ValueTribool(uri string, initial int64) *Handle[int64] {
 
 // ValueComposite creates a value attribute for a composite type (Rectangle,
 // Point2D, Timespec, etc.) using vm.Value as the Go representation.
-func ValueComposite(uri string, flatType uint8, initial vm.Value) *Handle[vm.Value] {
+func ValueComposite(uri string, flatType uint8, initial vm.Value) *Attribute[vm.Value] {
 	slot := createValueSlot(uri, flatType)
 	fv, err := flat.ValueToFlat(initial, sharedPR)
 	if err != nil {
 		panic("attr: ValueComposite initial conversion failed: " + err.Error())
 	}
 	writeInitialValue(slot, &fv)
-	return &Handle[vm.Value]{
+	return &Attribute[vm.Value]{
 		slot: slot,
 		uri:  uri,
 		kind: flat.AttrKindValue,
@@ -126,17 +126,17 @@ func ValueComposite(uri string, flatType uint8, initial vm.Value) *Handle[vm.Val
 }
 
 // ValueRectangle creates a Rectangle value attribute.
-func ValueRectangle(uri string, initial vm.Value) *Handle[vm.Value] {
+func ValueRectangle(uri string, initial vm.Value) *Attribute[vm.Value] {
 	return ValueComposite(uri, flat.TypeRectangle, initial)
 }
 
 // ValuePoint2D creates a Point2D value attribute.
-func ValuePoint2D(uri string, initial vm.Value) *Handle[vm.Value] {
+func ValuePoint2D(uri string, initial vm.Value) *Attribute[vm.Value] {
 	return ValueComposite(uri, flat.TypePoint2D, initial)
 }
 
 // ValueTimespec creates a Timespec value attribute.
-func ValueTimespec(uri string, initial vm.Value) *Handle[vm.Value] {
+func ValueTimespec(uri string, initial vm.Value) *Attribute[vm.Value] {
 	return ValueComposite(uri, flat.TypeTimespec, initial)
 }
 

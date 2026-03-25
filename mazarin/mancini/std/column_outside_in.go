@@ -30,7 +30,7 @@ func NewColumnOutsideIn(myName, parent string, bgColor color.NRGBA, minH, maxH i
 		myName = mancini.DefaultName("col_oi")
 	}
 
-	lh := mancini.NewLayoutHandlesBase(myName, parent)
+	lh := mancini.NewLayoutAttributesBase(myName, parent)
 
 	// Min/max height value handles for the constraint program.
 	minHURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutMinHeight)

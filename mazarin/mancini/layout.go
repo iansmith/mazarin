@@ -21,23 +21,23 @@ func Init() {
 	manciniSID = attr.SID()
 }
 
-// LayoutHandles holds constraint system handles for an interactor's layout attributes.
-type LayoutHandles struct {
+// LayoutAttributes holds constraint system attributes for an interactor's layout.
+type LayoutAttributes struct {
 	name                         string               // interactor's constraint-system name
-	X, Y, Width, Height *attr.Handle[int64]
-	Visible             *attr.Handle[bool]
-	Bounds                       *attr.Handle[vm.Value] // Rectangle2D: (x, y, x+w, y+h)
-	BoundsHash                   *attr.Handle[int64]    // hash of X,Y,W,H for fast change detection
-	Parent                       *attr.Handle[string]
-	SpacingHandle        *attr.Handle[int64] // inter-child spacing (containers only)
-	CrossAlignHandle     *attr.Handle[int64] // cross-axis alignment (containers only)
-	MaxWidthHandle       *attr.Handle[int64] // max width for overflow clipping (Row only)
-	LastChildDrawnHandle *attr.Handle[int64] // 0-based index of last child to draw (Row only)
-	Damage               *DamageHandles      // damage rectangle tracking (nil = no damage)
+	X, Y, Width, Height *attr.Attribute[int64]
+	Visible             *attr.Attribute[bool]
+	Bounds                       *attr.Attribute[vm.Value] // Rectangle2D: (x, y, x+w, y+h)
+	BoundsHash                   *attr.Attribute[int64]    // hash of X,Y,W,H for fast change detection
+	Parent                       *attr.Attribute[string]
+	SpacingAttr        *attr.Attribute[int64] // inter-child spacing (containers only)
+	CrossAlignAttr     *attr.Attribute[int64] // cross-axis alignment (containers only)
+	MaxWidthAttr       *attr.Attribute[int64] // max width for overflow clipping (Row only)
+	LastChildDrawnAttr *attr.Attribute[int64] // 0-based index of last child to draw (Row only)
+	Damage               *DamageAttributes      // damage rectangle tracking (nil = no damage)
 }
 
 // Name returns the interactor's constraint-system name.
-func (lh *LayoutHandles) Name() string {
+func (lh *LayoutAttributes) Name() string {
 	if lh == nil {
 		return ""
 	}
@@ -71,9 +71,9 @@ func BoolPrefix() string {
 	return "attr:///shepherd/" + manciniSID + "/bool/"
 }
 
-// NewLayoutHandlesBase creates X, Y, Visible, Parent handles (no Width/Height).
-func NewLayoutHandlesBase(myName, parent string) *LayoutHandles {
-	return &LayoutHandles{
+// NewLayoutAttributesBase creates X, Y, Visible, Parent attributes (no Width/Height).
+func NewLayoutAttributesBase(myName, parent string) *LayoutAttributes {
+	return &LayoutAttributes{
 		name:    myName,
 		X:       attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutX), 0),
 		Y:       attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutY), 0),
@@ -82,10 +82,10 @@ func NewLayoutHandlesBase(myName, parent string) *LayoutHandles {
 	}
 }
 
-// NewLayoutHandles creates all layout handles as Value handles,
+// NewLayoutAttributes creates all layout attributes as Value attributes,
 // plus a Bounds constraint derived from X, Y, Width, Height.
-func NewLayoutHandles(myName, parent string) *LayoutHandles {
-	lh := NewLayoutHandlesBase(myName, parent)
+func NewLayoutAttributes(myName, parent string) *LayoutAttributes {
+	lh := NewLayoutAttributesBase(myName, parent)
 	lh.Width = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutWidth), 0)
 	lh.Height = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutHeight), 0)
 	lh.InitBounds(myName)
@@ -94,7 +94,7 @@ func NewLayoutHandles(myName, parent string) *LayoutHandles {
 
 // InitBounds creates the Bounds constraint: rect(X, Y, X+Width, Y+Height),
 // plus a BoundsHash constraint for fast layout-change detection.
-func (lh *LayoutHandles) InitBounds(myName string) {
+func (lh *LayoutAttributes) InitBounds(myName string) {
 	prog := BindStrings(ProgBoundsFromXywh,
 		"_x_", lh.X.URI(), "_y_", lh.Y.URI(), "_width_", lh.Width.URI(), "_height_", lh.Height.URI())
 	lh.Bounds = attr.ConstraintComposite(
@@ -106,15 +106,15 @@ func (lh *LayoutHandles) InitBounds(myName string) {
 	lh.BoundsHash = attr.ConstraintI64(LayoutURI(myName, DataTypeInt64, LayoutBoundsHash), hashProg)
 }
 
-// setVisibleHandle sets the Visible handle value.
-func setVisibleHandle(lh *LayoutHandles, v bool) {
+// setVisibleAttr sets the Visible attribute value.
+func setVisibleAttr(lh *LayoutAttributes, v bool) {
 	if lh != nil && lh.Visible != nil {
 		lh.Visible.Set(v)
 	}
 }
 
-// isVisibleHandle returns true if the interactor is visible (default true if no handle).
-func isVisibleHandle(lh *LayoutHandles) bool {
+// isVisibleAttr returns true if the interactor is visible (default true if no attribute).
+func isVisibleAttr(lh *LayoutAttributes) bool {
 	if lh == nil || lh.Visible == nil {
 		return true
 	}
@@ -122,7 +122,7 @@ func isVisibleHandle(lh *LayoutHandles) bool {
 }
 
 // boundsHashValue returns the current bounds hash, or 0 if unavailable.
-func (lh *LayoutHandles) boundsHashValue() int64 {
+func (lh *LayoutAttributes) boundsHashValue() int64 {
 	if lh == nil || lh.BoundsHash == nil {
 		return 0
 	}
@@ -130,36 +130,36 @@ func (lh *LayoutHandles) boundsHashValue() int64 {
 }
 
 // GetSpacing returns the current inter-child spacing value, or 0 if unavailable.
-func (lh *LayoutHandles) GetSpacing() float64 {
-	if lh == nil || lh.SpacingHandle == nil {
+func (lh *LayoutAttributes) GetSpacing() float64 {
+	if lh == nil || lh.SpacingAttr == nil {
 		return 0
 	}
-	return float64(lh.SpacingHandle.Get())
+	return float64(lh.SpacingAttr.Get())
 }
 
-// setLayoutSpacing sets the inter-child spacing value on a LayoutHandles.
-func setLayoutSpacing(lh *LayoutHandles, v float64) {
-	if lh != nil && lh.SpacingHandle != nil {
-		lh.SpacingHandle.Set(int64(v))
+// setLayoutSpacing sets the inter-child spacing value on a LayoutAttributes.
+func setLayoutSpacing(lh *LayoutAttributes, v float64) {
+	if lh != nil && lh.SpacingAttr != nil {
+		lh.SpacingAttr.Set(int64(v))
 	}
 }
 
 // GetCrossAlign returns the current cross-axis alignment, or AxisMinimum if unavailable.
-func (lh *LayoutHandles) GetCrossAlign() Alignment {
-	if lh == nil || lh.CrossAlignHandle == nil {
+func (lh *LayoutAttributes) GetCrossAlign() Alignment {
+	if lh == nil || lh.CrossAlignAttr == nil {
 		return AxisMinimum
 	}
-	return Alignment(lh.CrossAlignHandle.Get())
+	return Alignment(lh.CrossAlignAttr.Get())
 }
 
-// setLayoutCrossAlign sets the cross-axis alignment value on a LayoutHandles.
-func setLayoutCrossAlign(lh *LayoutHandles, v Alignment) {
-	if lh != nil && lh.CrossAlignHandle != nil {
-		lh.CrossAlignHandle.Set(int64(v))
+// setLayoutCrossAlign sets the cross-axis alignment value on a LayoutAttributes.
+func setLayoutCrossAlign(lh *LayoutAttributes, v Alignment) {
+	if lh != nil && lh.CrossAlignAttr != nil {
+		lh.CrossAlignAttr.Set(int64(v))
 	}
 }
 
-// childLayoutWidth reads a child's width from its constraint layout handles.
+// childLayoutWidth reads a child's width from its constraint layout attributes.
 // Returns fallback if the child has no layout or its width is 0.
 func childLayoutWidth(d Drawer, fallback float64) float64 {
 	if l, ok := d.(Layouter); ok {
@@ -168,7 +168,7 @@ func childLayoutWidth(d Drawer, fallback float64) float64 {
 	return fallback
 }
 
-// childLayoutHeight reads a child's height from its constraint layout handles.
+// childLayoutHeight reads a child's height from its constraint layout attributes.
 // Returns fallback if the child has no layout or its height is 0.
 func childLayoutHeight(d Drawer, fallback float64) float64 {
 	if l, ok := d.(Layouter); ok {
@@ -177,7 +177,7 @@ func childLayoutHeight(d Drawer, fallback float64) float64 {
 	return fallback
 }
 
-// ChildWidth reads a Layouter's width from its constraint handles.
+// ChildWidth reads a Layouter's width from its constraint attributes.
 // Returns fallback if the layout is nil or width is 0.
 func ChildWidth(l Layouter, fallback float64) float64 {
 	lh := l.GetLayout()
@@ -189,7 +189,7 @@ func ChildWidth(l Layouter, fallback float64) float64 {
 	return fallback
 }
 
-// ChildHeight reads a Layouter's height from its constraint handles.
+// ChildHeight reads a Layouter's height from its constraint attributes.
 // Returns fallback if the layout is nil or height is 0.
 func ChildHeight(l Layouter, fallback float64) float64 {
 	lh := l.GetLayout()
@@ -201,10 +201,10 @@ func ChildHeight(l Layouter, fallback float64) float64 {
 	return fallback
 }
 
-// PublishLayout writes position and size to an interactor's layout handles.
-// Panics if a non-nil handle is a constraint — constraint values are computed
+// PublishLayout writes position and size to an interactor's layout attributes.
+// Panics if a non-nil attribute is a constraint — constraint values are computed
 // by the VM and must not be set imperatively.
-func PublishLayout(l *LayoutHandles, x, y, w, h float64) {
+func PublishLayout(l *LayoutAttributes, x, y, w, h float64) {
 	if l == nil {
 		return
 	}
@@ -223,14 +223,14 @@ func PublishLayout(l *LayoutHandles, x, y, w, h float64) {
 }
 
 
-// NewDecoratorLayout creates layout handles with inside-out constraint sizing
+// NewDecoratorLayout creates layout attributes with inside-out constraint sizing
 // for decorator-style parents. The parent interactor is used to extract the
 // parent's constraint-system name. hMargin and vMargin are the half-margins
 // for width and height respectively: width = child.Width + 2*hMargin,
 // height = child.Height + 2*vMargin (both clamped to maxSize).
 // For symmetric decorators (equal insets), pass the same value for both.
 // If no child is found, defaults from ProgDecorationWidth/Height apply (20/30).
-func NewDecoratorLayout(name string, parent Interactor, hMargin, vMargin, maxSize int64) *LayoutHandles {
+func NewDecoratorLayout(name string, parent Interactor, hMargin, vMargin, maxSize int64) *LayoutAttributes {
 	parentName := ""
 	if parent != nil {
 		if l, ok := parent.(Layouter); ok {
@@ -246,8 +246,8 @@ func NewDecoratorLayout(name string, parent Interactor, hMargin, vMargin, maxSiz
 // NewDecoratorLayoutByParentName is the string-based variant of NewDecoratorLayout.
 // Prefer NewDecoratorLayout which takes an Interactor — this version exists for
 // cases where only the parent's constraint-system name is available.
-func NewDecoratorLayoutByParentName(myName, parentName string, hMargin, vMargin, maxSize int64) *LayoutHandles {
-	lh := NewLayoutHandlesBase(myName, parentName)
+func NewDecoratorLayoutByParentName(myName, parentName string, hMargin, vMargin, maxSize int64) *LayoutAttributes {
+	lh := NewLayoutAttributesBase(myName, parentName)
 
 	hMarginURI := LayoutURI(myName, DataTypeInt64, LayoutHMargin)
 	attr.ValueI64(hMarginURI, hMargin)

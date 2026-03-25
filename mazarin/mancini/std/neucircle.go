@@ -29,7 +29,7 @@ type NeuCircle struct {
 // NewNeuCircle creates a NeuCircle wired to the constraint system.
 // The layout should be created with mancini.NewDecoratorLayout.
 // Margin is computed from NeuParams (max shadow padding).
-func NewNeuCircle(layout *mancini.LayoutHandles, pal mancini.Palette,
+func NewNeuCircle(layout *mancini.LayoutAttributes, pal mancini.Palette,
 	depth mancini.NeuDepth, params mancini.NeuParams) *NeuCircle {
 
 	margin := mancini.NeuMaxPad(params)

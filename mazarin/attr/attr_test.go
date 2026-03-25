@@ -234,7 +234,7 @@ func TestCyclePanics(t *testing.T) {
 	defer func() { PanicOnCycle = old }()
 
 	// A -> B -> C -> A  (cycle)
-	var a, b, c *Attribute[int64]
+	var a, b, c *LocalAttr[int64]
 	a = NewConstraint(func() int64 { return c.Get() + 1 }, /* deps wired below */)
 	b = NewConstraint(func() int64 { return a.Get() + 1 }, a)
 	c = NewConstraint(func() int64 { return b.Get() + 1 }, b)
@@ -273,7 +273,7 @@ func TestCycleNoPanic(t *testing.T) {
 	defer func() { PanicOnCycle = old }()
 
 	// A -> B -> A  (simple 2-node cycle)
-	var a, b *Attribute[int64]
+	var a, b *LocalAttr[int64]
 	computeA, computeB := 0, 0
 	a = NewConstraint(func() int64 {
 		computeA++
@@ -311,7 +311,7 @@ func TestCycleChainShowsAllNodes(t *testing.T) {
 	defer func() { PanicOnCycle = old }()
 
 	// A -> B -> C -> A
-	var a, b, c *Attribute[int64]
+	var a, b, c *LocalAttr[int64]
 	a = NewConstraint(func() int64 { return c.Get() + 1 })
 	b = NewConstraint(func() int64 { return a.Get() + 1 }, a)
 	c = NewConstraint(func() int64 { return b.Get() + 1 }, b)

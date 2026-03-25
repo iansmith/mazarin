@@ -1,4 +1,4 @@
-// handle_init.go — Initialization of the client-side attribute library.
+// attribute_init.go — Initialization of the client-side attribute library.
 //
 // Init() reads the SharedPageHeader from the well-known constraint page VA
 // and creates a read-only PageRegion wrapper for shared-page attribute access.
@@ -30,16 +30,16 @@ var trieBase uintptr
 var trieCap uint16
 
 // initialized tracks whether Init() has been called.
-var handleInitialized bool
+var attrInitialized bool
 
 // sidStr is the string representation of this shepherd's SID, set during Init().
 var sidStr string
 
 // Init sets up the client attribute library by reading the SharedPageHeader
 // from the well-known constraint page VA. Must be called before using any
-// Handle operations. Safe to call multiple times.
+// Attribute operations. Safe to call multiple times.
 func Init() {
-	if handleInitialized {
+	if attrInitialized {
 		return
 	}
 
@@ -51,7 +51,7 @@ func Init() {
 
 	trieBase, trieCap = flat.ReadTrieRegion(sharedBase)
 	sidStr = strconv.Itoa(os.Getpid())
-	handleInitialized = true
+	attrInitialized = true
 }
 
 // SID returns this shepherd's SID as a string, for use in attribute URIs.

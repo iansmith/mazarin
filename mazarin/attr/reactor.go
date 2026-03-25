@@ -84,7 +84,7 @@ func (r *Reactor) Run() {
 // WatchI64 registers a callback for an int64 attribute. The callback fires
 // only when the evaluated output changes. The handle is automatically marked
 // eager.
-func (r *Reactor) WatchI64(h *Handle[int64], fn func(old, new int64)) {
+func (r *Reactor) WatchI64(h *Attribute[int64], fn func(old, new int64)) {
 	h.SetEager(true)
 	last := h.Get()
 	var pending int64
@@ -103,7 +103,7 @@ func (r *Reactor) WatchI64(h *Handle[int64], fn func(old, new int64)) {
 }
 
 // WatchF64 registers a callback for a float64 attribute.
-func (r *Reactor) WatchF64(h *Handle[float64], fn func(old, new float64)) {
+func (r *Reactor) WatchF64(h *Attribute[float64], fn func(old, new float64)) {
 	h.SetEager(true)
 	last := h.Get()
 	var pending float64
@@ -122,7 +122,7 @@ func (r *Reactor) WatchF64(h *Handle[float64], fn func(old, new float64)) {
 }
 
 // WatchBool registers a callback for a bool attribute.
-func (r *Reactor) WatchBool(h *Handle[bool], fn func(old, new bool)) {
+func (r *Reactor) WatchBool(h *Attribute[bool], fn func(old, new bool)) {
 	h.SetEager(true)
 	last := h.Get()
 	var pending bool
@@ -141,7 +141,7 @@ func (r *Reactor) WatchBool(h *Handle[bool], fn func(old, new bool)) {
 }
 
 // WatchStr registers a callback for a string attribute.
-func (r *Reactor) WatchStr(h *Handle[string], fn func(old, new string)) {
+func (r *Reactor) WatchStr(h *Attribute[string], fn func(old, new string)) {
 	h.SetEager(true)
 	last := h.Get()
 	var pending string
@@ -162,7 +162,7 @@ func (r *Reactor) WatchStr(h *Handle[string], fn func(old, new string)) {
 // WatchValue registers a callback for a composite attribute (Rectangle,
 // Point2D, Timespec, etc.) using FlatValue byte comparison for change
 // detection.
-func (r *Reactor) WatchValue(h *Handle[vm.Value], fn func(old, new vm.Value)) {
+func (r *Reactor) WatchValue(h *Attribute[vm.Value], fn func(old, new vm.Value)) {
 	h.SetEager(true)
 	lastFlat := h.seqlockRead()
 	var pendingFlat flat.FlatValue

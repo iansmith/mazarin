@@ -1,5 +1,5 @@
-// handletest exercises the Handle[T] API (mazarin/attr) through actual kernel
-// syscalls. Unlike attrtest (which uses the in-process Attribute[T] API), this
+// handletest exercises the Attribute[T] API (mazarin/attr) through actual kernel
+// syscalls. Unlike attrtest (which uses the in-process LocalAttr[T] API), this
 // shepherd creates attributes via SysAttrCreate, writes via SysAttrWrite, and
 // reads values via seqlock-protected shared page reads.
 package main
@@ -33,7 +33,7 @@ func main() {
 	}
 }
 
-// testValueI64 creates an int64 value handle and verifies Get/Set round-trip.
+// testValueI64 creates an int64 value attribute and verifies Get/Set round-trip.
 func testValueI64() bool {
 	fmt.Println("=== Test 1: ValueI64 round-trip ===")
 	h := attr.ValueI64(attr.ShepherdURI("int64", "foo"), 42)
@@ -57,7 +57,7 @@ func testValueI64() bool {
 	return true
 }
 
-// testValueStr creates a string value handle and verifies Get/Set round-trip.
+// testValueStr creates a string value attribute and verifies Get/Set round-trip.
 func testValueStr() bool {
 	fmt.Println("\n=== Test 2: ValueStr round-trip ===")
 	h := attr.ValueStr(attr.ShepherdURI("str", "name"), "hello")
@@ -81,9 +81,9 @@ func testValueStr() bool {
 	return true
 }
 
-// testMultiType creates bool, float64, and tribool value handles.
+// testMultiType creates bool, float64, and tribool value attributes.
 func testMultiType() bool {
-	fmt.Println("\n=== Test 3: Multi-type value handles ===")
+	fmt.Println("\n=== Test 3: Multi-type value attributes ===")
 
 	bh := attr.ValueBool(attr.ShepherdURI("bool", "flag"), true)
 	if !bh.Get() {
@@ -133,7 +133,7 @@ func testMultiType() bool {
 	return true
 }
 
-// testConstraintAdd creates two value handles and a constraint that adds them.
+// testConstraintAdd creates two value attributes and a constraint that adds them.
 // The constraint is a hand-assembled VM program that uses BuiltinDerefI64 to
 // read the dependency values by URI and then adds them.
 func testConstraintAdd() bool {

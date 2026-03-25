@@ -17,7 +17,7 @@ type ThemedInteractor struct {
 
 // Init wires the back-pointer, layout, and theme. Must be called from
 // the concrete type's constructor.
-func (t *ThemedInteractor) Init(owner mancini.Interactor, layout *mancini.LayoutHandles, theme mancini.Theme) {
+func (t *ThemedInteractor) Init(owner mancini.Interactor, layout *mancini.LayoutAttributes, theme mancini.Theme) {
 	t.Interactor.Init(owner, layout)
 	t.theme = theme
 }

@@ -22,7 +22,7 @@ type NeuBox struct {
 // NewNeuBox creates a NeuBox wired to the constraint system.
 // The layout should be created with mancini.NewDecoratorLayout.
 // Margin is computed from NeuParams (max shadow padding).
-func NewNeuBox(layout *mancini.LayoutHandles, pal mancini.Palette,
+func NewNeuBox(layout *mancini.LayoutAttributes, pal mancini.Palette,
 	depth mancini.NeuDepth, params mancini.NeuParams, radius float64) *NeuBox {
 
 	margin := mancini.NeuMaxPad(params)

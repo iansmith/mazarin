@@ -1,93 +1,228 @@
+// attribute.go — Attribute[T] type for kernel-managed constraint attributes.
+//
+// Attribute[T] wraps a kernel attribute slot with type-safe Get/Set operations.
+// Reads use the seqlock protocol on shared pages (VDSO, no syscall).
+// Writes go through kernel syscalls for dirty propagation.
+
 package attr
 
-import "fmt"
+import (
+	"mazzy/mazarin/sys"
+	"mazzy/mazarin/vm"
+	"mazzy/mazarin/vm/flat"
+	"unsafe"
+)
 
-// Attribute[T] is a type-safe attribute holding a value of type T.
+// AttributeAny is a type-erased interface for Attribute[T] that exposes the slot index.
+// Used for dependency registration where the T type parameter doesn't matter.
+type AttributeAny interface {
+	Slot() uint16
+	URI() string
+}
+
+// Attribute[T] wraps a kernel-managed attribute slot with type-safe access.
 type Attribute[T any] struct {
-	n       node
-	value   T
-	compute func() T // nil for value attributes, non-nil for constraints
+	slot    uint16      // shared page node slot
+	uri     string      // attribute URI
+	kind    uint8       // flat.AttrKindValue or flat.AttrKindConstraint
+	typ     uint8       // flat type tag (flat.TypeI64, etc.)
+	prog    *vm.Program // cached deserialized bytecode (constraints only)
+	lastRS  *vm.ReadSet // last read set from evaluation (constraints only)
+	eager   bool        // local eager flag (no kernel effect until Phase 6)
+	toT     func(flat.FlatValue) T // convert flat value to typed T
+	fromT   func(T) flat.FlatValue // convert typed T to flat value (nil for strings)
+	isStr   bool                   // true if this attribute manages string type
 }
 
-// nodePtr implements Noder.
-func (a *Attribute[T]) nodePtr() *node { return &a.n }
-
-// NewValue creates a value attribute with an initial value.
-func NewValue[T any](initial T) *Attribute[T] {
-	return &Attribute[T]{
-		value: initial,
-		n:     node{createdAt: callerLocation(2)},
-	}
-}
-
-// NewConstraint creates a lazy constraint attribute.
-// fn is a closure that calls Get() on its dependencies and returns the computed value.
-// deps are the attributes this constraint depends on (for dirty propagation tracking).
-func NewConstraint[T any](fn func() T, deps ...Noder) *Attribute[T] {
-	a := &Attribute[T]{
-		compute: fn,
-		n: node{
-			dirty:     true, // start dirty so first Get() computes
-			createdAt: callerLocation(2),
-		},
-	}
-	a.n.recompute = func() { a.Get() }
-	// Register this node as a dependent of each dependency.
-	for _, d := range deps {
-		dn := d.nodePtr()
-		dn.dependents = append(dn.dependents, &a.n)
-		a.n.deps = append(a.n.deps, dn)
-	}
-	return a
-}
-
-// Get returns the current value. For dirty constraints, triggers recomputation.
-func (a *Attribute[T]) Get() T {
-	if a.compute == nil {
-		return a.value
-	}
-	if !a.n.dirty {
-		return a.value
-	}
-	if a.n.evaluating {
-		if PanicOnCycle {
-			panic(formatCycle(&a.n))
+// registerCascade registers a constraint attribute for cascading evaluation.
+// When another constraint derefs this attribute's slot, the resolver will
+// evaluate it first if dirty.
+func registerCascade[T any](h *Attribute[T]) {
+	registerConstraintEvaluator(h.slot, func() {
+		if h.IsDirty() {
+			h.evaluate()
 		}
-		return a.value
-	}
-	a.n.evaluating = true
-	evalStack = append(evalStack, &a.n)
-	a.value = a.compute()
-	evalStack = evalStack[:len(evalStack)-1]
-	a.n.evaluating = false
-	a.n.dirty = false
-	return a.value
+	})
 }
 
-// Set updates the value (value attributes only), marks dependents dirty,
-// and forces recomputation of eager dependents.
-// Panics if called on a constraint attribute.
-func (a *Attribute[T]) Set(v T) {
-	if a.compute != nil {
-		panic(fmt.Sprintf("attr: Set() called on constraint attribute"))
+// Slot returns the shared page slot index.
+func (h *Attribute[T]) Slot() uint16 { return h.slot }
+
+// URI returns the attribute's namespace URI.
+func (h *Attribute[T]) URI() string { return h.uri }
+
+// IsDirty reads the dirty flag from the shared page via seqlock.
+func (h *Attribute[T]) IsDirty() bool {
+	node := sharedPR.Node(int16(h.slot))
+	for {
+		seq := node.SeqCounter
+		if seq&1 != 0 {
+			continue // writer in progress, spin
+		}
+		dirty := node.IsDirty()
+		if node.SeqCounter == seq {
+			return dirty
+		}
 	}
-	a.value = v
-	// Walk all dependents marking them dirty.
-	walkGen++
-	for _, dep := range a.n.dependents {
-		markDirty(dep, walkGen)
-	}
-	// Force recomputation of eager nodes after the full dirty walk.
-	processEager()
 }
 
-// SetEager marks this attribute as eager. When marked dirty, its value
-// will be demanded (recomputed) immediately after the dirty walk completes.
-func (a *Attribute[T]) SetEager(eager bool) {
-	a.n.eager = eager
+// SetEager marks this attribute for eager dirty notification. When enabled, dirty
+// propagation to this attribute enqueues a notification that can be retrieved
+// via WaitDirty(). Sets both the local flag and the shared-page FlagEagerNotify.
+func (h *Attribute[T]) SetEager(eager bool) {
+	h.eager = eager
+	sys.AttrSetEager(h.slot, eager)
 }
 
-// Eager returns whether this attribute is eager.
-func (a *Attribute[T]) Eager() bool {
-	return a.n.eager
+// Get returns the current value. For constraint attributes, evaluates the
+// bytecode if dirty. For value attributes, reads directly from shared page.
+func (h *Attribute[T]) Get() T {
+	if h.kind == flat.AttrKindConstraint && h.IsDirty() {
+		h.evaluate()
+	}
+	fv := h.seqlockRead()
+	return h.toT(fv)
+}
+
+// IsConstraint returns true if this attribute is driven by a constraint program.
+func (h *Attribute[T]) IsConstraint() bool {
+	return h.kind == flat.AttrKindConstraint
+}
+
+// Set writes a new value to a value attribute. Panics on constraint attributes.
+func (h *Attribute[T]) Set(v T) {
+	if h.kind == flat.AttrKindConstraint {
+		panic("attr: cannot Set() on a constraint attribute")
+	}
+	if h.isStr {
+		// String values go through the special string syscall.
+		var s string
+		// Use unsafe to extract string from T (we know T is string for isStr attributes).
+		s = *(*string)(unsafe.Pointer(&v))
+		if err := sys.AttrWriteString(h.slot, s, false); err != nil {
+			panic("attr: AttrWriteString failed: " + err.Error())
+		}
+		return
+	}
+	fv := h.fromT(v)
+	buf := (*[40]byte)(unsafe.Pointer(&fv))
+	if err := sys.AttrWrite(h.slot, buf); err != nil {
+		panic("attr: AttrWrite failed: " + err.Error())
+	}
+}
+
+// seqlockRead performs a seqlock-protected read of the CachedValue from the
+// shared page. Spins until a consistent read is obtained.
+func (h *Attribute[T]) seqlockRead() flat.FlatValue {
+	node := sharedPR.Node(int16(h.slot))
+	for {
+		seq := node.SeqCounter
+		if seq&1 != 0 {
+			continue // writer in progress, spin
+		}
+		val := node.CachedValue
+		if node.SeqCounter == seq {
+			return val
+		}
+	}
+}
+
+// evaluate runs the constraint's bytecode program, writes the result back to
+// the kernel, and updates dependencies if the read set changed.
+func (h *Attribute[T]) evaluate() {
+	if h.prog == nil {
+		// Deserialize bytecode on first evaluation.
+		node := sharedPR.Node(int16(h.slot))
+		bcOff := node.ProgramOffset
+		bcLen := node.ProgramLen
+		if bcLen == 0 {
+			return // no program
+		}
+		// The bytecode region contains the full serialized Program (MZBC blob).
+		// ProgramOffset is byte offset, ProgramLen is total byte length.
+		totalBytes := int(bcLen)
+		data := sharedPR.Bytecode[bcOff : uint32(bcOff)+uint32(totalBytes)]
+		prog, err := vm.UnmarshalProgram(data)
+		if err != nil {
+			// Fallback: raw instruction bytes (legacy format without header).
+			// Build a minimal Program from raw instruction bytes.
+			prog = unmarshalLegacyInstructions(data, int(bcLen))
+		}
+		h.prog = prog
+	}
+
+	// Build resolver backed by shared pages.
+	resolver := &sharedResolver{
+		pr: sharedPR,
+	}
+
+	// Run the VM with the resolver.
+	results, readSet, err := vm.RunWithResolver(h.prog, resolver)
+	if err != nil {
+		panic("attr: constraint VM execution failed: " + err.Error())
+	}
+	if len(results) == 0 {
+		return // no result
+	}
+
+	// Write result back to kernel.
+	// If the result is Tribool(unknown), the constraint could not resolve
+	// its dependencies (e.g., remote attribute not yet published). Skip
+	// the write-back and leave the cached value unchanged. Dependencies
+	// are still updated so re-evaluation triggers when the remote appears.
+	result := results[0]
+	if result.Type() == vm.TypeTribool && result.AsI64() == vm.TriboolUnknown {
+		goto updateDeps
+	}
+	if result.Type() == vm.TypeStr {
+		// String results go through the special string syscall.
+		if err := sys.AttrWriteString(h.slot, result.AsStr(), true); err != nil {
+			panic("attr: AttrWriteString (constraint result) failed: " + err.Error())
+		}
+	} else {
+		// Convert vm.Value to FlatValue and write via syscall.
+		fv, err := flat.ValueToFlat(result, sharedPR)
+		if err != nil {
+			panic("attr: ValueToFlat failed: " + err.Error())
+		}
+		buf := (*[40]byte)(unsafe.Pointer(&fv))
+		if err := sys.AttrWriteResult(h.slot, buf); err != nil {
+			panic("attr: AttrWriteResult failed: " + err.Error())
+		}
+	}
+
+updateDeps:
+	// Update dependencies if the read set changed.
+	if readSet != nil {
+		if h.lastRS == nil || !h.lastRS.Equal(readSet) {
+			slots := make([]uint16, readSet.Count)
+			copy(slots, readSet.Slots[:readSet.Count])
+			if err := sys.AttrUpdateDeps(h.slot, slots); err != nil {
+				panic("attr: AttrUpdateDeps failed: " + err.Error())
+			}
+			h.lastRS = readSet
+		}
+	}
+}
+
+// unmarshalLegacyInstructions builds a minimal Program from raw instruction bytes
+// (the pre-Phase 5 format where ProgramLen is instruction count).
+func unmarshalLegacyInstructions(data []byte, instCount int) *vm.Program {
+	code := make([]vm.Inst, instCount)
+	for i := 0; i < instCount; i++ {
+		off := i * 16
+		if off+16 > len(data) {
+			break
+		}
+		code[i] = vm.Inst{
+			Opcode: data[off],
+			Typ:    data[off+1],
+			Op1:    uint16(data[off+2]) | uint16(data[off+3])<<8,
+			Op2:    uint16(data[off+4]) | uint16(data[off+5])<<8,
+			Flags:  uint16(data[off+6]) | uint16(data[off+7])<<8,
+			Imm:    uint64(data[off+8]) | uint64(data[off+9])<<8 | uint64(data[off+10])<<16 | uint64(data[off+11])<<24 |
+				uint64(data[off+12])<<32 | uint64(data[off+13])<<40 | uint64(data[off+14])<<48 | uint64(data[off+15])<<56,
+		}
+	}
+	return &vm.Program{Code: code}
 }

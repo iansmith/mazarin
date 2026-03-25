@@ -26,7 +26,7 @@ type Label struct {
 }
 
 // NewLabel creates a Label wired to the constraint system and theme.
-func NewLabel(layout *mancini.LayoutHandles, theme mancini.Theme,
+func NewLabel(layout *mancini.LayoutAttributes, theme mancini.Theme,
 	text string, fontSize int64) *Label {
 	l := &Label{
 		Text:     text,
@@ -38,7 +38,7 @@ func NewLabel(layout *mancini.LayoutHandles, theme mancini.Theme,
 }
 
 // NewLabelBold creates a bold Label.
-func NewLabelBold(layout *mancini.LayoutHandles, theme mancini.Theme,
+func NewLabelBold(layout *mancini.LayoutAttributes, theme mancini.Theme,
 	text string, fontSize int64) *Label {
 	l := NewLabel(layout, theme, text, fontSize)
 	l.Bold = true
@@ -46,7 +46,7 @@ func NewLabelBold(layout *mancini.LayoutHandles, theme mancini.Theme,
 }
 
 // NewLabelColor creates a Label with a custom text color.
-func NewLabelColor(layout *mancini.LayoutHandles, theme mancini.Theme,
+func NewLabelColor(layout *mancini.LayoutAttributes, theme mancini.Theme,
 	text string, fontSize int64, col color.NRGBA) *Label {
 	l := NewLabel(layout, theme, text, fontSize)
 	l.Color = col
@@ -61,7 +61,7 @@ func NewLabelNamed(myName, parent string, theme mancini.Theme,
 	if myName == "" {
 		myName = mancini.DefaultName("label")
 	}
-	lh := mancini.NewLayoutHandles(myName, parent)
+	lh := mancini.NewLayoutAttributes(myName, parent)
 	lh.Height.Set(fontSize + 4)
 
 	// Measure width if the theme has a font resolver.
@@ -81,7 +81,7 @@ func NewLabelNamedBold(myName, parent string, theme mancini.Theme,
 	if myName == "" {
 		myName = mancini.DefaultName("label")
 	}
-	lh := mancini.NewLayoutHandles(myName, parent)
+	lh := mancini.NewLayoutAttributes(myName, parent)
 	lh.Height.Set(fontSize + 4)
 
 	fc := theme.Font(mancini.Bold, fontSize)
@@ -100,7 +100,7 @@ func NewLabelNamedColor(myName, parent string, theme mancini.Theme,
 	if myName == "" {
 		myName = mancini.DefaultName("label")
 	}
-	lh := mancini.NewLayoutHandles(myName, parent)
+	lh := mancini.NewLayoutAttributes(myName, parent)
 	lh.Height.Set(fontSize + 4)
 
 	fc := theme.Font(mancini.None, fontSize)

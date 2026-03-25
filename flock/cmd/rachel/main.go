@@ -473,10 +473,10 @@ func mouseMovementLoop() {
 	}
 }
 
-// trackedApp holds rachel's constraint handles for a managed shepherd.
+// trackedApp holds rachel's constraint attributes for a managed shepherd.
 type trackedApp struct {
 	sid      int
-	bounds   *attr.Handle[vm.Value]  // tracks shepherd's AppWindow/layout/Bounds
+	bounds   *attr.Attribute[vm.Value]  // tracks shepherd's AppWindow/layout/Bounds
 	returnRb *ringbuf.RingBuffer     // ring buffer for sending messages back to this shepherd
 }
 

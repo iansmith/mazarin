@@ -25,16 +25,16 @@ type Clock struct {
 	Faces   []mancini.ClockFace          // ordered list for click cycling
 	UTCFunc func() (sec, nanos int64)    // returns current UTC time
 
-	FaceNameHandle *attr.Handle[string]  // constraint attribute for current face name
+	FaceNameAttr *attr.Attribute[string]  // constraint attribute for current face name
 
 	faceIdx     int  // index into Faces of current face
 	prePressIdx int  // saved faceIdx before press
 	interacting bool // true during press-drag-release
 
-	// Layout handles for face name label and spacer visibility toggling.
+	// Layout attributes for face name label and spacer visibility toggling.
 	// Set after construction by the caller (they're sibling interactors).
-	FaceLabelLayout  *mancini.LayoutHandles
-	FaceSpacerLayout *mancini.LayoutHandles
+	FaceLabelLayout  *mancini.LayoutAttributes
+	FaceSpacerLayout *mancini.LayoutAttributes
 }
 
 // NewClock creates a Clock wired to the constraint system.
@@ -57,7 +57,7 @@ func NewClock(myName, parent string, pal mancini.Palette, fonts *mancini.FontCon
 		c.Face = faces[0]
 	}
 
-	lh := mancini.NewLayoutHandles(myName, parent)
+	lh := mancini.NewLayoutAttributes(myName, parent)
 
 	// Publish intrinsic size so parent constraints can bootstrap.
 	if size <= 0 {
@@ -72,7 +72,7 @@ func NewClock(myName, parent string, pal mancini.Palette, fonts *mancini.FontCon
 		faceName = c.Face.FaceName()
 	}
 	faceURI := mancini.LayoutURI(myName, mancini.DataTypeStr, mancini.LayoutFaceName)
-	c.FaceNameHandle = attr.ValueStr(faceURI, faceName)
+	c.FaceNameAttr = attr.ValueStr(faceURI, faceName)
 
 	c.Interactor.Init(c, lh)
 	return c
@@ -143,8 +143,8 @@ func (c *Clock) Feedback(active bool) {
 	c.Face = c.Faces[c.faceIdx]
 
 	// Publish current face name to constraint attribute.
-	if c.FaceNameHandle != nil {
-		c.FaceNameHandle.Set(c.Face.FaceName())
+	if c.FaceNameAttr != nil {
+		c.FaceNameAttr.Set(c.Face.FaceName())
 	}
 
 	// Toggle face name label / spacer visibility.

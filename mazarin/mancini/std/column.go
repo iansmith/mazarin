@@ -33,15 +33,15 @@ func NewColumn(myName, parent string, pal mancini.Palette, crossAlign mancini.Al
 		myName = mancini.DefaultName("column")
 	}
 
-	lh := mancini.NewLayoutHandlesBase(myName, parent)
+	lh := mancini.NewLayoutAttributesBase(myName, parent)
 
 	// Inter-child spacing attribute.
 	spacingURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutSpacing)
-	lh.SpacingHandle = attr.ValueI64(spacingURI, 0)
+	lh.SpacingAttr = attr.ValueI64(spacingURI, 0)
 
 	// Cross-axis alignment.
 	alignURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutCrossAlign)
-	lh.CrossAlignHandle = attr.ValueI64(alignURI, int64(crossAlign))
+	lh.CrossAlignAttr = attr.ValueI64(alignURI, int64(crossAlign))
 
 	// Column HEIGHT constraint: sum of children heights + spacing.
 	heightProg := mancini.BindStringsChildren(ProgColumnHeight,
@@ -65,8 +65,8 @@ func NewColumn(myName, parent string, pal mancini.Palette, crossAlign mancini.Al
 // SetSpacing sets the inter-child spacing value (in pixels).
 func (c *Column) SetSpacing(v float64) {
 	lh := c.GetLayout()
-	if lh != nil && lh.SpacingHandle != nil {
-		lh.SpacingHandle.Set(int64(v))
+	if lh != nil && lh.SpacingAttr != nil {
+		lh.SpacingAttr.Set(int64(v))
 	}
 }
 

@@ -31,8 +31,8 @@ type GradientTitle struct {
 	front *image.RGBA // current completed frame for blitting
 	w, h  int         // buffer dimensions (logical pixels)
 
-	// Writing frameHandle triggers attr.OnDirty() in the event loop.
-	frameHandle *attr.Handle[int64]
+	// Writing frameAttr triggers attr.OnDirty() in the event loop.
+	frameAttr *attr.Attribute[int64]
 	frame       int64
 
 	started bool
@@ -64,7 +64,7 @@ func (g *GradientTitle) Start(w, h int) {
 	g.started = true
 	g.w = w
 	g.h = h
-	g.frameHandle = attr.ValueI64(attr.ShepherdURI("int64", "gradient/frame"), 0)
+	g.frameAttr = attr.ValueI64(attr.ShepherdURI("int64", "gradient/frame"), 0)
 
 	// Render first frame synchronously so there is a buffer before the
 	// first Draw call.
@@ -89,7 +89,7 @@ func (g *GradientTitle) run() {
 
 		// Notify damage — wakes the event loop.
 		g.frame++
-		g.frameHandle.Set(g.frame)
+		g.frameAttr.Set(g.frame)
 
 		// Sleep to maintain frame rate.
 		nextWake := start.Add(time.Duration(g.frame) * frameInterval)

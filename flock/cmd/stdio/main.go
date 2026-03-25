@@ -249,7 +249,7 @@ func main() {
 	sys.UartWriteString(fmt.Sprintf("[stdio] attr + interactor + mancini init done, SID=%s (T+%v)\n", attr.SID(), time.Since(startTime)))
 
 	// Publish Ready=false until setup is complete.
-	readyHandle := attr.ValueBool(wm.ReadyURI(attr.SID()), false)
+	readyAttr := attr.ValueBool(wm.ReadyURI(attr.SID()), false)
 
 	// 2. Wait for rachel (fontsvc) and disk (fs.maz) before creating fontcache.
 	// Without this, OpenFace may fail because fs.maz hasn't registered for
@@ -329,12 +329,12 @@ func main() {
 	// 6. Screen dimensions and draw context.
 	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"_source_", "attr:///kernel/int64/screen/width")
-	screenWHandle := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_w"), screenWProg)
+	screenWAttr := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_w"), screenWProg)
 	screenHProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"_source_", "attr:///kernel/int64/screen/height")
-	screenHHandle := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
-	screenW := int(screenWHandle.Get())
-	screenH := int(screenHHandle.Get())
+	screenHAttr := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
+	screenW := int(screenWAttr.Get())
+	screenH := int(screenHAttr.Get())
 	sys.UartWriteString(fmt.Sprintf("[stdio] screen: %dx%d\n", screenW, screenH))
 
 	drawCtx := mancini.NewFramebufferContext()
@@ -379,20 +379,20 @@ func main() {
 	announceToWM(rachelSID)
 	sys.UartWriteString(fmt.Sprintf("[stdio] WM announced (T+%v)\n", time.Since(startTime)))
 
-	var posXHandle, posYHandle *attr.Handle[int64]
+	var posXAttr, posYAttr *attr.Attribute[int64]
 	rachelSIDStr := strconv.Itoa(rachelSID)
 	vaXURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/x"
 	vaYURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/y"
 
 	// Stdio left-aligns: X = visibleArea.x, Y = visibleArea.y.
 	xProg := mancini.BindStrings(mancini.ProgIdentityI64, "_source_", vaXURI)
-	posXHandle = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/x"), xProg)
+	posXAttr = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/x"), xProg)
 
 	yProg := mancini.BindStrings(mancini.ProgIdentityI64, "_source_", vaYURI)
-	posYHandle = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/y"), yProg)
+	posYAttr = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/y"), yProg)
 
-	winX := float64(posXHandle.Get())
-	winY := float64(posYHandle.Get())
+	winX := float64(posXAttr.Get())
+	winY := float64(posYAttr.Get())
 	sys.UartWriteString(fmt.Sprintf("[stdio] position constraints: x=%.0f y=%.0f (T+%v)\n", winX, winY, time.Since(startTime)))
 
 	// Clear sizing ghost and draw at final position.
@@ -420,7 +420,7 @@ func main() {
 	sys.UartWriteString(fmt.Sprintf("[stdio] initial draw done at (%.0f,%.0f) (T+%v)\n", winX, winY, time.Since(startTime)))
 
 	// 9. Signal readiness.
-	readyHandle.Set(true)
+	readyAttr.Set(true)
 	sys.SetReady(true)
 	sys.UartWriteString(fmt.Sprintf("[stdio] Ready=true (T+%v)\n", time.Since(startTime)))
 
@@ -453,8 +453,8 @@ func main() {
 	redraw := func() {
 		winW = float64(appLH.Width.Get())
 		winH = float64(appLH.Height.Get())
-		winX = float64(posXHandle.Get())
-		winY = float64(posYHandle.Get())
+		winX = float64(posXAttr.Get())
+		winY = float64(posYAttr.Get())
 		appLH.X.Set(int64(winX))
 		appLH.Y.Set(int64(winY))
 		app.Draw(app, int64(winX), int64(winY), int64(winW), int64(winH))

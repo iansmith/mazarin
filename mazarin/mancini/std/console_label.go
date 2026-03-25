@@ -35,7 +35,7 @@ func NewConsoleLabel(myName, parent string, theme mancini.Theme,
 	if myName == "" {
 		myName = mancini.DefaultName("clabel")
 	}
-	lh := mancini.NewLayoutHandles(myName, parent)
+	lh := mancini.NewLayoutAttributes(myName, parent)
 	lh.Height.Set(fontSize)
 
 	// Probe font to compute intrinsic width for constraint programs.

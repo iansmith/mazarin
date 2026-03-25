@@ -244,7 +244,7 @@ func main() {
 
 		faceNameLabel := std.NewLabelNamedColor(city.id+"_facename", colName, subtitleTheme, rotated[0].FaceName(), faceNameFontSize, subtitleColor)
 		faceNameLabel.TextFunc = func() string {
-			return clockWidget.FaceNameHandle.Get()
+			return clockWidget.FaceNameAttr.Get()
 		}
 
 		spacer := std.NewSpacer(city.id+"_facespc", colName, 0, faceNameH)
@@ -264,12 +264,12 @@ func main() {
 	// 6. Read kernel screen dimensions for DrawContext sizing.
 	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"_source_", "attr:///kernel/int64/screen/width")
-	screenWHandle := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_w"), screenWProg)
+	screenWAttr := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_w"), screenWProg)
 	screenHProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"_source_", "attr:///kernel/int64/screen/height")
-	screenHHandle := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
-	screenW = int(screenWHandle.Get())
-	screenH = int(screenHHandle.Get())
+	screenHAttr := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
+	screenW = int(screenWAttr.Get())
+	screenH = int(screenHAttr.Get())
 	sys.UartWriteString(fmt.Sprintf("[clocks] screen: %dx%d\n", screenW, screenH))
 
 	// 7. Create draw context covering the full screen. Clocks positions itself
@@ -306,15 +306,15 @@ func main() {
 	// 9. Force Bounds evaluation so the shared page has a valid rectangle,
 	// then publish Ready. Rachel gates all interaction on Ready.
 	_ = appLH.Bounds.Get()
-	readyHandle := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
-	_ = readyHandle
+	readyAttr := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
+	_ = readyAttr
 	sys.UartWriteString(fmt.Sprintf("[clocks] Ready=true, Bounds published (T+%v)\n", time.Since(startTime)))
 
 	// 10. Rachel already confirmed ready (step 2b). Announce to WM.
 	announceToWM()
 
 	// Use rachel's SID to read her visibleArea attributes.
-	var posXHandle, posYHandle *attr.Handle[int64]
+	var posXAttr, posYAttr *attr.Attribute[int64]
 	if rachelSID >= 0 {
 		rachelSIDStr := strconv.Itoa(rachelSID)
 		vaXURI := "attr:///shepherd/" + rachelSIDStr + "/int64/visibleArea/x"
@@ -324,14 +324,14 @@ func main() {
 		// X = visibleArea.x + visibleArea.w - appWindow.Width (right-align)
 		xProg := mancini.BindStrings(mancini.ProgAddSubDeref,
 			"_a_", vaXURI, "_b_", vaWURI, "_c_", appLH.Width.URI())
-		posXHandle = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/x"), xProg)
+		posXAttr = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/x"), xProg)
 
 		// Y = visibleArea.y (top-align)
 		yProg := mancini.BindStrings(mancini.ProgIdentityI64, "_source_", vaYURI)
-		posYHandle = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/y"), yProg)
+		posYAttr = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/y"), yProg)
 
-		x := posXHandle.Get()
-		y := posYHandle.Get()
+		x := posXAttr.Get()
+		y := posYAttr.Get()
 		sys.UartWriteString(fmt.Sprintf("[clocks] position constraints: x=%d y=%d (from rachel SID %d)\n", x, y, rachelSID))
 	} else {
 		sys.UartWriteString("[clocks] WARNING: rachel not found, using fallback position\n")
@@ -339,9 +339,9 @@ func main() {
 
 	// Compute initial window position.
 	var winX, winY float64
-	if posXHandle != nil {
-		winX = float64(posXHandle.Get())
-		winY = float64(posYHandle.Get())
+	if posXAttr != nil {
+		winX = float64(posXAttr.Get())
+		winY = float64(posYAttr.Get())
 	} else {
 		// Fallback: center on screen.
 		winX = float64(screenW)/2 - winW/2
@@ -377,8 +377,8 @@ func main() {
 	sys.UartWriteString(fmt.Sprintf("[clocks] initial draw done at (%.0f,%.0f) (T+%v)\n", winX, winY, time.Since(startTime)))
 
 	// 11. Instrumentation counters.
-	eagerHandle := attr.ValueI64(attr.ShepherdURI("int64", "stats/eagerUpdates"), 0)
-	eagerSlot := eagerHandle.Slot()
+	eagerAttr := attr.ValueI64(attr.ShepherdURI("int64", "stats/eagerUpdates"), 0)
+	eagerSlot := eagerAttr.Slot()
 	var drawCount atomic.Int64
 
 	// Periodic stats printer (~every 10 seconds).
@@ -386,7 +386,7 @@ func main() {
 		_ = eagerSlot // used for increment in main loop
 		for {
 			time.Sleep(10 * time.Second)
-			eager := eagerHandle.Get()
+			eager := eagerAttr.Get()
 			draws := drawCount.Load()
 			sys.UartWriteString(fmt.Sprintf("[clocks-stats] eagerUpdates=%d draws=%d\n",
 				eager, draws))
@@ -406,9 +406,9 @@ func main() {
 
 		winW = float64(appLH.Width.Get())
 		winH = float64(appLH.Height.Get())
-		if posXHandle != nil {
-			winX = float64(posXHandle.Get())
-			winY = float64(posYHandle.Get())
+		if posXAttr != nil {
+			winX = float64(posXAttr.Get())
+			winY = float64(posYAttr.Get())
 		} else {
 			winX = float64(screenW)/2 - winW/2
 			winY = float64(screenH)/2 - winH/2

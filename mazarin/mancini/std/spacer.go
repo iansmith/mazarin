@@ -6,7 +6,7 @@ import (
 )
 
 // Spacer is a leaf interactor that draws nothing but occupies space.
-// Its Width and Height are set as value handles at construction time.
+// Its Width and Height are set as value attributes at construction time.
 type Spacer struct {
 	impl.Interactor // X(), Y(), W(), H(), Visible(), DC(), GetLayout()
 }
@@ -17,7 +17,7 @@ func NewSpacer(myName, parent string, w, h int64) *Spacer {
 		myName = mancini.DefaultName("spacer")
 	}
 
-	lh := mancini.NewLayoutHandles(myName, parent)
+	lh := mancini.NewLayoutAttributes(myName, parent)
 	lh.Width.Set(w)
 	lh.Height.Set(h)
 

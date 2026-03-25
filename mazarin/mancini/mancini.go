@@ -18,9 +18,9 @@ type NewDrawer interface {
 	Draw(self Interactor, x, y, w, h int64)
 }
 
-// Layouter is implemented by interactors that have layout handles.
+// Layouter is implemented by interactors that have layout attributes.
 type Layouter interface {
-	GetLayout() *LayoutHandles
+	GetLayout() *LayoutAttributes
 }
 
 // FaceDrawer draws content onto the face of a neumorphic box.
