@@ -41,35 +41,6 @@ const (
 	EV_ABS = 3
 )
 
-// VirtIO PCI Common Config Register Offsets (same as GPU)
-const (
-	VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE_SELECT = 0x00
-	VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE        = 0x04
-	VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE_SELECT = 0x08
-	VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE        = 0x0C
-	VIRTIO_PCI_COMMON_CFG_MSIX_CONFIG           = 0x10
-	VIRTIO_PCI_COMMON_CFG_DEVICE_STATUS         = 0x14
-	VIRTIO_PCI_COMMON_CFG_QUEUE_SELECT          = 0x16
-	VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE            = 0x18
-	VIRTIO_PCI_COMMON_CFG_QUEUE_MSIX_VECTOR     = 0x1A
-	VIRTIO_PCI_COMMON_CFG_QUEUE_ENABLE          = 0x1C
-	VIRTIO_PCI_COMMON_CFG_QUEUE_NOTIFY_OFF      = 0x1E
-	VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_LOW        = 0x20
-	VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_HIGH       = 0x24
-	VIRTIO_PCI_COMMON_CFG_QUEUE_AVAIL_LOW       = 0x28
-	VIRTIO_PCI_COMMON_CFG_QUEUE_AVAIL_HIGH      = 0x2C
-	VIRTIO_PCI_COMMON_CFG_QUEUE_USED_LOW        = 0x30
-	VIRTIO_PCI_COMMON_CFG_QUEUE_USED_HIGH       = 0x34
-)
-
-// VirtIO Device Status Bits (per VirtIO spec 1.x)
-const (
-	VIRTIO_STATUS_ACKNOWLEDGE = 1 << 0 // 1
-	VIRTIO_STATUS_DRIVER      = 1 << 1 // 2
-	VIRTIO_STATUS_DRIVER_OK   = 1 << 2 // 4
-	VIRTIO_STATUS_FEATURES_OK = 1 << 3 // 8
-)
-
 // PCI config space offsets for interrupt info
 const (
 	PCI_INTERRUPT_LINE = 0x3C
@@ -130,18 +101,14 @@ type VirtIOInputEvent struct {
 }
 
 // VirtIOInputDevice holds state for one VirtIO Input PCI device.
+// Embeds virtio.PCIDevice for shared PCI transport state (Bus/Slot/Func,
+// capability info, CommonConfigBase, NotifyBase, ISRBase, DeviceConfigBase).
 type VirtIOInputDevice struct {
-	Bus              uint8
-	Slot             uint8
-	Func             uint8
-	DevType          uint32 // hid.DeviceTypeKeyboard or hid.DeviceTypeMouse
-	IRQNum           uint32 // GIC IRQ number
-	CommonConfigBase uintptr
-	NotifyBase       uintptr
-	ISRBase          uintptr
-	DeviceConfigBase uintptr
-	NotifyConfig     pci.VirtIOCapabilityInfo
-	EventQueue       virtio.VirtQueue
+	virtio.PCIDevice // Shared PCI transport (promoted fields: Bus, Slot, Func, etc.)
+
+	DevType             uint32 // hid.DeviceTypeKeyboard or hid.DeviceTypeMouse
+	IRQNum              uint32 // GIC IRQ number
+	EventQueue          virtio.VirtQueue
 	EventQueueNotifyOff uint16
 	// Pre-allocated event buffers that descriptors point to (DMA-allocated)
 	EventBuffers     *[NumEventBuffers]VirtIOInputEvent
@@ -163,104 +130,6 @@ func AllDevices() []*VirtIOInputDevice {
 	return allDevices
 }
 
-
-// readCommonConfig16 reads a 16-bit value from this device's common config.
-//
-//go:nosplit
-func (dev *VirtIOInputDevice) readCommonConfig16(offset uintptr) uint16 {
-	return asm.MmioRead16(dev.CommonConfigBase + offset)
-}
-
-// writeCommonConfig16 writes a 16-bit value to this device's common config.
-//
-//go:nosplit
-func (dev *VirtIOInputDevice) writeCommonConfig16(offset uintptr, value uint16) {
-	asm.MmioWrite16(dev.CommonConfigBase+offset, value)
-	asm.Dsb()
-}
-
-// readCommonConfig32 reads a 32-bit value from this device's common config.
-//
-//go:nosplit
-func (dev *VirtIOInputDevice) readCommonConfig32(offset uintptr) uint32 {
-	return asm.MmioRead(dev.CommonConfigBase + offset)
-}
-
-// writeCommonConfig32 writes a 32-bit value to this device's common config.
-//
-//go:nosplit
-func (dev *VirtIOInputDevice) writeCommonConfig32(offset uintptr, value uint32) {
-	asm.MmioWrite(dev.CommonConfigBase+offset, value)
-	asm.Dsb()
-}
-
-// setDeviceStatus sets the VirtIO device status.
-//
-//go:nosplit
-func (dev *VirtIOInputDevice) setDeviceStatus(status uint8) {
-	dev.writeCommonConfig16(VIRTIO_PCI_COMMON_CFG_DEVICE_STATUS, uint16(status))
-}
-
-// getDeviceStatus reads the VirtIO device status.
-//
-//go:nosplit
-func (dev *VirtIOInputDevice) getDeviceStatus() uint8 {
-	return uint8(dev.readCommonConfig16(VIRTIO_PCI_COMMON_CFG_DEVICE_STATUS))
-}
-
-// setupQueue configures a virtqueue in the PCI device.
-//
-//go:nosplit
-func (dev *VirtIOInputDevice) setupQueue(queueIndex uint16, vq *virtio.VirtQueue) bool {
-	dev.writeCommonConfig16(VIRTIO_PCI_COMMON_CFG_QUEUE_SELECT, queueIndex)
-
-	maxQueueSize := dev.readCommonConfig16(VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE)
-	if vq.QueueSize > maxQueueSize {
-		return false
-	}
-
-	dev.writeCommonConfig16(VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE, vq.QueueSize)
-
-	// PAs were recorded by VirtqueueInit (DMA allocation)
-	descPhys := vq.DescPA
-	availPhys := vq.AvailPA
-	usedPhys := vq.UsedPA
-
-	_ = descPhys
-	_ = availPhys
-	_ = usedPhys
-
-	dev.writeCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_LOW, uint32(descPhys))
-	dev.writeCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_HIGH, uint32(descPhys>>32))
-	dev.writeCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_AVAIL_LOW, uint32(availPhys))
-	dev.writeCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_AVAIL_HIGH, uint32(availPhys>>32))
-	dev.writeCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_USED_LOW, uint32(usedPhys))
-	dev.writeCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_USED_HIGH, uint32(usedPhys>>32))
-
-	// Readback queue addresses to verify device sees them
-	rbDescLo := dev.readCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_LOW)
-	rbDescHi := dev.readCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_HIGH)
-	rbDesc := uint64(rbDescHi)<<32 | uint64(rbDescLo)
-	if rbDesc != descPhys {
-		console.KPrintf("[VirtIO Input] ERROR: desc readback 0x%x != 0x%x\n", rbDesc, descPhys)
-	}
-
-	queueNotifyOff := dev.readCommonConfig16(VIRTIO_PCI_COMMON_CFG_QUEUE_NOTIFY_OFF)
-	if queueIndex == 0 {
-		dev.EventQueueNotifyOff = queueNotifyOff
-	}
-
-	return true
-}
-
-// enableQueue enables a previously configured queue.
-// Call this AFTER populating the Available ring so the device sees buffers immediately.
-//
-//go:nosplit
-func (dev *VirtIOInputDevice) enableQueue(queueIndex uint16) {
-	dev.writeCommonConfig16(VIRTIO_PCI_COMMON_CFG_QUEUE_SELECT, queueIndex)
-	dev.writeCommonConfig16(VIRTIO_PCI_COMMON_CFG_QUEUE_ENABLE, 1)
-}
 
 // populateEventQueue pre-fills the eventq with buffers for the device to write events into.
 func (dev *VirtIOInputDevice) populateEventQueue() {
@@ -290,9 +159,7 @@ func (dev *VirtIOInputDevice) populateEventQueue() {
 //
 //go:nosplit
 func (dev *VirtIOInputDevice) notifyEventQueue() {
-	notifyAddr := dev.NotifyBase +
-		uintptr(dev.EventQueueNotifyOff)*uintptr(dev.NotifyConfig.NotifyOffMultiplier)
-	virtio.VirtqueueNotify(&dev.EventQueue, notifyAddr, 0)
+	dev.Notify(dev.EventQueueNotifyOff, 0)
 }
 
 // DrainEvents reads completed events from the used ring into buf.
@@ -481,66 +348,19 @@ func computeIRQ(slot uint8, pin uint8) uint32 {
 }
 
 // initDevice performs the VirtIO initialization handshake for one input device.
-// Matches the Linux virtio-input driver (virtinput_probe) ordering exactly:
-//   1. Reset
-//   2. ACKNOWLEDGE
-//   3. ACKNOWLEDGE | DRIVER
-//   4. Feature negotiation (accept nothing — Linux feature_table is empty)
-//   5. FEATURES_OK, verify
-//   6. MSI-X config vector (vp_request_msix_vectors → config_vector)
-//   7. Queue setup: addresses + MSI-X vector (setup_vq → vp_active_vq)
-//   8. Queue enable (vp_modern_set_queue_enable)
-//   9. DRIVER_OK (virtio_device_ready) — device is now live
-//  10. Classify device type (read device config)
-//  11. Populate buffers + kick (virtinput_fill_evt)
+// Uses shared PCIDevice methods for handshake, queue enable, and status management.
 func initDevice(dev *VirtIOInputDevice) bool {
-	// Step 1: Reset device (Linux: virtio_reset_device in probe path)
-	dev.setDeviceStatus(0)
-
-	// Step 2-3: ACKNOWLEDGE then DRIVER (Linux: virtio_add_device status progression)
-	dev.setDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE)
-	dev.setDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER)
-
-	// Step 4: Feature negotiation
-	// Linux virtio-input has an EMPTY feature_table[] — it accepts NO features.
-	// Read device features (both pages) but accept none.
-	dev.writeCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE_SELECT, 0)
-	devFeats0 := dev.readCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE)
-	dev.writeCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE_SELECT, 1)
-	devFeats1 := dev.readCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE)
-	_ = devFeats0
-	_ = devFeats1
-
-	// Accept VIRTIO_F_VERSION_1 (bit 32) — required for modern PCI transport.
-	// Page 0: no device-specific features accepted.
-	dev.writeCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE_SELECT, 0)
-	dev.writeCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE, 0)
-	dev.writeCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE_SELECT, 1)
-	dev.writeCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE, 1) // VIRTIO_F_VERSION_1
-
-	// Step 5: FEATURES_OK (Linux: virtio_finalize_features → set_status)
-	dev.setDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK)
-	if (dev.getDeviceStatus() & VIRTIO_STATUS_FEATURES_OK) == 0 {
+	// VirtIO handshake: Reset → ACK → DRIVER → features → FEATURES_OK
+	if !dev.Handshake(0, virtio.FeatureVersion1) {
 		console.KPrintln("[VirtIO Input] ERROR: Device rejected features")
 		return false
 	}
 
-	// Step 6: MSI-X config vector (Linux: vp_request_msix_vectors → config_vector)
-	// Only write MSIX_CONFIG on platforms that use MSI-X (x86_64).
-	// On INTx platforms (ARM64/RISC-V), writing ANY value to MSIX_CONFIG
-	// tells QEMU "I support MSI-X", which suppresses INTx delivery.
-	// The block device proves INTx works by never touching these registers.
+	// MSI-X config vector (skipped on INTx platforms where platformMSIXVector returns MSIXNoVector)
 	msixVec := platformMSIXVector()
-	if msixVec != 0xFFFF {
-		dev.writeCommonConfig16(VIRTIO_PCI_COMMON_CFG_MSIX_CONFIG, msixVec)
-		msixCfgBack := dev.readCommonConfig16(VIRTIO_PCI_COMMON_CFG_MSIX_CONFIG)
-		if msixCfgBack != msixVec {
-			console.KPrintf("[VirtIO Input] WARNING: msix_config readback=%d (expect %d)\n", msixCfgBack, msixVec)
-		}
-	}
+	dev.SetMSIXConfig(msixVec)
 
-	// Step 7: Queue setup using a dedicated DMA page.
-	// Allocate a single physical page mapped with Device-nGnRnE attributes.
+	// Queue setup using a dedicated DMA page.
 	// All virtqueue structures AND event buffers live on this page with known
 	// PA/VA — no Go heap, no page table walks, no cache coherency issues.
 	queueSize := uint16(32) // Match NumEventBuffers
@@ -549,6 +369,7 @@ func initDevice(dev *VirtIOInputDevice) bool {
 		console.KPrintln("[VirtIO Input] ERROR: Failed to alloc DMA page")
 		return false
 	}
+
 	// Place virtqueue structures on the DMA page starting at offset 0
 	endOff := virtio.VirtqueueInitOnDMAPage(&dev.EventQueue, queueSize, dmaPA, dmaVA, 0)
 	if endOff == 0 {
@@ -566,35 +387,25 @@ func initDevice(dev *VirtIOInputDevice) bool {
 	dev.EventBuffers = (*[NumEventBuffers]VirtIOInputEvent)(unsafe.Pointer(dmaVA + eventBufOff))
 	dev.EventBuffersPA = dmaPA + eventBufOff
 
-	if !dev.setupQueue(0, &dev.EventQueue) {
-		console.KPrintln("[VirtIO Input] ERROR: Failed to setup event queue")
+	// Enable queue (writes addresses, reads notifyOff, assigns MSI-X vector, enables)
+	notifyOff, ok := dev.EnableQueue(0, &dev.EventQueue, msixVec)
+	if !ok {
+		console.KPrintln("[VirtIO Input] ERROR: Failed to enable event queue")
 		return false
 	}
-	// Assign MSI-X vector to queue 0 (Linux: vp_active_vq writes queue_msix_vector).
-	// Only write on MSI-X platforms — same reason as MSIX_CONFIG above.
-	if msixVec != 0xFFFF {
-		dev.writeCommonConfig16(VIRTIO_PCI_COMMON_CFG_QUEUE_SELECT, 0)
-		dev.writeCommonConfig16(VIRTIO_PCI_COMMON_CFG_QUEUE_MSIX_VECTOR, msixVec)
-		msixVecBack := dev.readCommonConfig16(VIRTIO_PCI_COMMON_CFG_QUEUE_MSIX_VECTOR)
-		if msixVecBack != msixVec {
-			console.KPrintf("[VirtIO Input] WARNING: queue_msix_vector readback=%d (expect %d)\n", msixVecBack, msixVec)
-		}
-	}
+	dev.EventQueueNotifyOff = notifyOff
 
-	// Step 8: Queue enable (Linux: vp_modern_set_queue_enable after all queues set up)
-	dev.enableQueue(0)
-
-	// Step 9: DRIVER_OK (Linux: virtio_device_ready — device is now live)
-	dev.setDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK)
-	finalStatus := dev.getDeviceStatus()
+	// DRIVER_OK — device is now live
+	dev.SetDriverOK()
+	finalStatus := dev.GetDeviceStatus()
 	if finalStatus != 0x0F {
 		console.KPrintf("[VirtIO Input] WARNING: unexpected status=0x%x (expect 0x0F)\n", finalStatus)
 	}
 
-	// Step 10: Classify device type (Linux reads config between device_ready and fill_evt)
+	// Classify device type
 	dev.DevType = dev.classifyDevice()
 
-	// Step 11: Populate buffers + kick (Linux: virtinput_fill_evt)
+	// Populate buffers + kick
 	dev.populateEventQueue()
 	dev.notifyEventQueue()
 
@@ -766,77 +577,24 @@ func InitVirtIOInput() {
 					continue
 				}
 
-				// Found VirtIO input device
-
-				// Enable device
+				// Found VirtIO input device — clear Interrupt Disable before FindAndMapBARs
 				cmd := pci.ConfigRead32(bus, slot, funcNum, pci.PCI_COMMAND)
 				cmd |= 0x7        // I/O, memory, bus master
 				cmd &^= (1 << 10) // Clear Interrupt Disable
 				pci.ConfigWrite32(bus, slot, funcNum, pci.PCI_COMMAND, cmd)
 
-				// Configure interrupts (platform-specific: MSI-X on ARM64, polling on x86_64)
+				// Configure interrupts (platform-specific: MSI-X on x86_64, INTx on ARM64/RISC-V)
 				irq := platformConfigureDeviceIRQ(bus, slot, funcNum)
 
-				// Find VirtIO capabilities
-				var common, notify, isr, deviceCfg pci.VirtIOCapabilityInfo
-				if !pci.FindVirtIOCapabilities(bus, slot, funcNum, &common, &notify, &isr, &deviceCfg) {
-					console.KPrintln("[VirtIO Input] ERROR: No VirtIO capabilities found")
-					continue
-				}
-
-				// Read and program BAR for common config (handles 64-bit BARs)
-				barBasePA := pci.ReadBAR64(bus, slot, funcNum, common.Bar)
-				if barBasePA == 0 || barBasePA >= 0x100000000 {
-					// Program BAR to PCI MMIO window, offset to avoid GPU/Block conflicts
-					pciAddr := pci.PCI_MMIO_BASE + 0x400000 + uintptr(len(allDevices))*0x10000
-					pci.WriteBAR64(bus, slot, funcNum, common.Bar, pciAddr)
-					barBasePA = pci.ReadBAR64(bus, slot, funcNum, common.Bar)
-				}
-				// Map PCI BAR into TTBR1 kernel space so we don't rely on TTBR0
-				kmem.MapDeviceMMIO(barBasePA, 0x10000) // Map 64KB for the BAR range
-				barBase := barBasePA + constants.KernelMMIOOffset
-
-				// Use platform-configured IRQ (INTx on ARM64/RISC-V, 0 for polling on x86_64)
-				irqNum := irq
-
 				dev := &VirtIOInputDevice{
-					Bus:              bus,
-					Slot:             slot,
-					Func:             funcNum,
-					IRQNum:           irqNum,
-					CommonConfigBase: barBase + uintptr(common.OffsetInBar),
-					NotifyConfig:     notify,
+					IRQNum: irq,
 				}
 
-				// Notify BAR (handles 64-bit BARs)
-				notifyBarPA := pci.ReadBAR64(bus, slot, funcNum, notify.Bar)
-				if notifyBarPA >= 0x100000000 {
-					// Reprogram if above 4GB — but only if different from common BAR
-					// (same BAR would have been reprogrammed already)
-					notifyBarPA = barBasePA // Assume same BAR
-				}
-				if notifyBarPA == barBasePA {
-					// Same BAR, reuse barBase
-					dev.NotifyBase = barBase + uintptr(notify.OffsetInBar)
-				} else {
-					kmem.MapDeviceMMIO(notifyBarPA, 0x10000)
-					dev.NotifyBase = notifyBarPA + constants.KernelMMIOOffset + uintptr(notify.OffsetInBar)
-				}
-
-				// ISR BAR (handles 64-bit BARs)
-				if isr.Offset != 0 {
-					isrBarPA := pci.ReadBAR64(bus, slot, funcNum, isr.Bar)
-					kmem.MapDeviceMMIO(isrBarPA, 0x10000)
-					dev.ISRBase = isrBarPA + constants.KernelMMIOOffset + uintptr(isr.OffsetInBar)
-					console.KPrintf("[VirtIO Input] ISR: bar=%d barPA=0x%x offset=0x%x ISRBase=0x%x commonBar=%d commonBarPA=0x%x\n",
-						isr.Bar, isrBarPA, isr.OffsetInBar, dev.ISRBase, common.Bar, barBasePA)
-				}
-
-				// Device config BAR (handles 64-bit BARs)
-				if deviceCfg.Offset != 0 {
-					devCfgBarPA := pci.ReadBAR64(bus, slot, funcNum, deviceCfg.Bar)
-					kmem.MapDeviceMMIO(devCfgBarPA, 0x10000)
-					dev.DeviceConfigBase = devCfgBarPA + constants.KernelMMIOOffset + uintptr(deviceCfg.OffsetInBar)
+				// Use per-device MMIO base to avoid BAR collisions with GPU/block
+				mmioBase := pci.PCI_MMIO_BASE + 0x400000 + uintptr(len(allDevices))*0x10000
+				if !dev.FindAndMapBARs(bus, slot, funcNum, mmioBase) {
+					console.KPrintln("[VirtIO Input] ERROR: Failed to find/map BARs")
+					continue
 				}
 
 				if !initDevice(dev) {
@@ -852,7 +610,7 @@ func InitVirtIOInput() {
 					typeName = "tablet"
 				}
 				console.KPrintf("[VirtIO Input] %s '%s' at %d:%d.%d IRQ=%d ISR=0x%x\n",
-					typeName, name, bus, slot, funcNum, irqNum, dev.ISRBase)
+					typeName, name, bus, slot, funcNum, irq, dev.ISRBase)
 
 				// Assign to global slots
 				if dev.DevType == hid.DeviceTypeKeyboard && KeyboardDevice == nil {
@@ -866,7 +624,6 @@ func InitVirtIOInput() {
 			}
 		}
 	}
-
 }
 
 // PollAllDevices checks the Used ring of all input devices for pending events.

@@ -22,44 +22,10 @@ const (
 	VIRTIO_RNG_DEVICE_ID_TRANSITIONAL = 0x1005 // Transitional (legacy compatible)
 )
 
-// VirtIO status bits (same as block, redefined to avoid cross-package dep)
-const (
-	statusAcknowledge = 1
-	statusDriver      = 2
-	statusDriverOk    = 4
-	statusFeaturesOk  = 8
-)
-
-// VirtIO PCI common config offsets (same as block)
-const (
-	cfgDeviceFeatureSelect = 0x00
-	cfgDeviceFeature       = 0x04
-	cfgDriverFeatureSelect = 0x08
-	cfgDriverFeature       = 0x0C
-	cfgDeviceStatus        = 0x14
-	cfgQueueSelect         = 0x16
-	cfgQueueSize           = 0x18
-	cfgQueueEnable         = 0x1C
-	cfgQueueNotifyOff      = 0x1E
-	cfgQueueDescLow        = 0x20
-	cfgQueueDescHigh       = 0x24
-	cfgQueueDriverLow      = 0x28
-	cfgQueueDriverHigh     = 0x2C
-	cfgQueueDeviceLow      = 0x30
-	cfgQueueDeviceHigh     = 0x34
-)
-
 // rngDevice holds the state for the VirtIO RNG PCI device.
+// Embeds virtio.PCIDevice for shared PCI transport state.
 type rngDevice struct {
-	Bus, Slot, Func uint8
-
-	CommonConfig pci.VirtIOCapabilityInfo
-	NotifyConfig pci.VirtIOCapabilityInfo
-	ISRConfig    pci.VirtIOCapabilityInfo
-
-	CommonConfigBase uintptr
-	NotifyBase       uintptr
-	ISRBase          uintptr
+	virtio.PCIDevice // Shared PCI transport (promoted: Bus, Slot, Func, etc.)
 
 	Queue          virtio.VirtQueue
 	QueueNotifyOff uint16
@@ -144,13 +110,11 @@ func Get(buf []byte) int {
 	*(*uint16)(unsafe.Pointer(&avail.Idx)) = avail.Idx + 1
 
 	// Notify the device
-	notifyAddr := dev.NotifyBase + uintptr(dev.QueueNotifyOff)*2
-	*(*uint16)(unsafe.Pointer(notifyAddr)) = 0
+	dev.Notify(dev.QueueNotifyOff, 0)
 
 	// Poll the ISR register until the device signals completion
 	for i := 0; i < 1000000; i++ {
-		isr := *(*uint8)(unsafe.Pointer(dev.ISRBase))
-		if isr&1 != 0 {
+		if dev.ReadISRStatus()&1 != 0 {
 			break
 		}
 	}
@@ -185,6 +149,8 @@ func Get(buf []byte) int {
 
 // findDevice scans the PCI bus for a modern VirtIO RNG device.
 func findDevice() bool {
+	const rngMMIOBase = pci.PCI_MMIO_BASE + 0x300000
+
 	for bus := uint8(0); bus < 1; bus++ {
 		for slot := uint8(0); slot < 32; slot++ {
 			fullReg0 := pci.ConfigRead32(bus, slot, 0, pci.PCI_VENDOR_ID)
@@ -215,57 +181,10 @@ func findDevice() bool {
 				}
 
 				if vendorID == pci.VIRTIO_VENDOR_ID && (deviceID == VIRTIO_RNG_DEVICE_ID_MODERN || deviceID == VIRTIO_RNG_DEVICE_ID_TRANSITIONAL) {
-					// Enable device
-					cmd := pci.ConfigRead32(bus, slot, funcNum, pci.PCI_COMMAND)
-					cmd |= 0x7 // I/O + memory + bus master
-					pci.ConfigWrite32(bus, slot, funcNum, pci.PCI_COMMAND, cmd)
-
-					// Find VirtIO capabilities
-					var common, notify, isr, deviceCfg pci.VirtIOCapabilityInfo
-					if !pci.FindVirtIOCapabilities(bus, slot, funcNum, &common, &notify, &isr, &deviceCfg) {
-						console.KPrintln("[VirtIO RNG] ERROR: VirtIO capabilities not found")
+					if !dev.FindAndMapBARs(bus, slot, funcNum, rngMMIOBase) {
+						console.KPrintln("[VirtIO RNG] ERROR: Failed to find/map BARs")
 						return false
 					}
-
-					// Map common config BAR
-					barBase := pci.ReadBAR64(bus, slot, funcNum, common.Bar)
-					const rngMMIOBase = pci.PCI_MMIO_BASE + 0x300000
-					if barBase == 0 || barBase >= 0x100000000 {
-						pci.WriteBAR64(bus, slot, funcNum, common.Bar, rngMMIOBase)
-						barBase = pci.ReadBAR64(bus, slot, funcNum, common.Bar)
-					}
-					kmem.MapDeviceMMIO(barBase, 0x10000)
-
-					dev.Bus = bus
-					dev.Slot = slot
-					dev.Func = funcNum
-					dev.CommonConfig = common
-					dev.NotifyConfig = notify
-					dev.ISRConfig = isr
-					dev.CommonConfigBase = barBase + constants.KernelMMIOOffset + uintptr(common.OffsetInBar)
-
-					// Map ISR BAR
-					if isr.Offset != 0 {
-						isrBarBase := pci.ReadBAR64(bus, slot, funcNum, isr.Bar)
-						if isrBarBase != 0 && isrBarBase < 0x100000000 {
-							if isrBarBase != barBase {
-								kmem.MapDeviceMMIO(isrBarBase, 0x10000)
-							}
-							dev.ISRBase = isrBarBase + constants.KernelMMIOOffset + uintptr(isr.OffsetInBar)
-						}
-					}
-
-					// Map notify BAR
-					notifyBarBase := pci.ReadBAR64(bus, slot, funcNum, notify.Bar)
-					if notifyBarBase == 0 || notifyBarBase >= 0x100000000 {
-						pci.WriteBAR64(bus, slot, funcNum, notify.Bar, rngMMIOBase+0x10000)
-						notifyBarBase = pci.ReadBAR64(bus, slot, funcNum, notify.Bar)
-					}
-					if notifyBarBase != barBase {
-						kmem.MapDeviceMMIO(notifyBarBase, 0x10000)
-					}
-					dev.NotifyBase = notifyBarBase + constants.KernelMMIOOffset + uintptr(notify.OffsetInBar)
-
 					dev.Found = true
 					return true
 				}
@@ -278,29 +197,8 @@ func findDevice() bool {
 
 // handshake performs the VirtIO 1.0 initialization sequence.
 func handshake() bool {
-	base := dev.CommonConfigBase
-
-	// Reset
-	setStatus(0)
-
-	// Acknowledge + Driver
-	setStatus(statusAcknowledge)
-	setStatus(statusAcknowledge | statusDriver)
-
-	// Feature negotiation: accept VIRTIO_F_VERSION_1 only
-	writeCommon32(cfgDeviceFeatureSelect, 0)
-	readCommon32(cfgDeviceFeature)
-	writeCommon32(cfgDeviceFeatureSelect, 1)
-	readCommon32(cfgDeviceFeature)
-
-	writeCommon32(cfgDriverFeatureSelect, 0)
-	writeCommon32(cfgDriverFeature, 0)
-	writeCommon32(cfgDriverFeatureSelect, 1)
-	writeCommon32(cfgDriverFeature, 1) // VIRTIO_F_VERSION_1
-
-	// Features OK
-	setStatus(statusAcknowledge | statusDriver | statusFeaturesOk)
-	if getStatus()&statusFeaturesOk == 0 {
+	// Feature negotiation: Reset → ACK → DRIVER → features → FEATURES_OK
+	if !dev.Handshake(0, virtio.FeatureVersion1) {
 		console.KPrintln("[VirtIO RNG] ERROR: Device rejected features")
 		return false
 	}
@@ -313,59 +211,23 @@ func handshake() bool {
 	}
 	queuePageVA := queuePagePA + constants.KernelMMIOOffset
 
-	// Configure queue 0 — read max size before allocating
-	*(*uint16)(unsafe.Pointer(base + cfgQueueSelect)) = 0
-
-	maxQueueSize := *(*uint16)(unsafe.Pointer(base + cfgQueueSize))
-	if maxQueueSize == 0 {
-		console.KPrintln("[VirtIO RNG] ERROR: Device reports queue size 0")
-		return false
-	}
-
-	// Use device's max or our preferred size, whichever is smaller
+	// Read device's max queue size and use min(16, max)
+	dev.WriteCommonConfig16(virtio.CfgQueueSelect, 0)
+	maxQueueSize := dev.ReadCommonConfig16(virtio.CfgQueueSize)
 	queueSize := uint16(16)
-	if maxQueueSize < queueSize {
+	if maxQueueSize > 0 && maxQueueSize < queueSize {
 		queueSize = maxQueueSize
 	}
 
-	endOff := virtio.VirtqueueInitOnDMAPage(&dev.Queue, queueSize, queuePagePA, queuePageVA, 0)
-	if endOff == 0 {
-		console.KPrintln("[VirtIO RNG] ERROR: Failed to init queue on DMA page")
+	notifyOff, ok := dev.SetupQueue(0, &dev.Queue, queueSize, queuePagePA, queuePageVA, 0, virtio.MSIXNoVector)
+	if !ok {
+		console.KPrintln("[VirtIO RNG] ERROR: Failed to setup queue")
 		return false
 	}
+	dev.QueueNotifyOff = notifyOff
 
-	*(*uint16)(unsafe.Pointer(base + cfgQueueSize)) = queueSize
-
-	vq := &dev.Queue
-	*(*uint32)(unsafe.Pointer(base + cfgQueueDescLow)) = uint32(vq.DescPA)
-	*(*uint32)(unsafe.Pointer(base + cfgQueueDescHigh)) = uint32(vq.DescPA >> 32)
-	*(*uint32)(unsafe.Pointer(base + cfgQueueDriverLow)) = uint32(vq.AvailPA)
-	*(*uint32)(unsafe.Pointer(base + cfgQueueDriverHigh)) = uint32(vq.AvailPA >> 32)
-	*(*uint32)(unsafe.Pointer(base + cfgQueueDeviceLow)) = uint32(vq.UsedPA)
-	*(*uint32)(unsafe.Pointer(base + cfgQueueDeviceHigh)) = uint32(vq.UsedPA >> 32)
-
-	dev.QueueNotifyOff = *(*uint16)(unsafe.Pointer(base + cfgQueueNotifyOff))
-
-	*(*uint16)(unsafe.Pointer(base + cfgQueueEnable)) = 1
-
-	// DRIVER_OK
-	setStatus(statusAcknowledge | statusDriver | statusFeaturesOk | statusDriverOk)
+	// Complete handshake
+	dev.SetDriverOK()
 
 	return true
-}
-
-func setStatus(s uint8) {
-	*(*uint8)(unsafe.Pointer(dev.CommonConfigBase + cfgDeviceStatus)) = s
-}
-
-func getStatus() uint8 {
-	return *(*uint8)(unsafe.Pointer(dev.CommonConfigBase + cfgDeviceStatus))
-}
-
-func writeCommon32(off uintptr, val uint32) {
-	*(*uint32)(unsafe.Pointer(dev.CommonConfigBase + off)) = val
-}
-
-func readCommon32(off uintptr) uint32 {
-	return *(*uint32)(unsafe.Pointer(dev.CommonConfigBase + off))
 }

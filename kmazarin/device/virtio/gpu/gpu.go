@@ -5,9 +5,9 @@ import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device/virtio"
-	"mazzy/kmazarin/serial"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/pci"
+	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"unsafe"
 )
@@ -46,39 +46,6 @@ const (
 	VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM = 1
 	VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM = 2
 	VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM = 67
-)
-
-// VirtIO PCI Common Config Register Offsets
-const (
-	VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE_SELECT = 0x00
-	VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE        = 0x04
-	VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE_SELECT = 0x08
-	VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE        = 0x0C
-	VIRTIO_PCI_COMMON_CFG_MSIX_CONFIG           = 0x10
-	VIRTIO_PCI_COMMON_CFG_NUM_QUEUES            = 0x12
-	VIRTIO_PCI_COMMON_CFG_DEVICE_STATUS         = 0x14
-	VIRTIO_PCI_COMMON_CFG_CONFIG_GENERATION     = 0x15
-	VIRTIO_PCI_COMMON_CFG_QUEUE_SELECT          = 0x16
-	VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE            = 0x18
-	VIRTIO_PCI_COMMON_CFG_QUEUE_MSIX_VECTOR     = 0x1A
-	VIRTIO_PCI_COMMON_CFG_QUEUE_ENABLE          = 0x1C
-	VIRTIO_PCI_COMMON_CFG_QUEUE_NOTIFY_OFF      = 0x1E
-	VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_LOW        = 0x20
-	VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_HIGH       = 0x24
-	VIRTIO_PCI_COMMON_CFG_QUEUE_AVAIL_LOW       = 0x28
-	VIRTIO_PCI_COMMON_CFG_QUEUE_AVAIL_HIGH      = 0x2C
-	VIRTIO_PCI_COMMON_CFG_QUEUE_USED_LOW        = 0x30
-	VIRTIO_PCI_COMMON_CFG_QUEUE_USED_HIGH       = 0x34
-)
-
-// VirtIO Device Status Bits
-const (
-	VIRTIO_STATUS_ACKNOWLEDGE        = 1 << 0
-	VIRTIO_STATUS_DRIVER             = 1 << 1
-	VIRTIO_STATUS_FAILED             = 1 << 2
-	VIRTIO_STATUS_FEATURES_OK        = 1 << 3
-	VIRTIO_STATUS_DRIVER_OK          = 1 << 4
-	VIRTIO_STATUS_DEVICE_NEEDS_RESET = 1 << 6
 )
 
 // VirtIO GPU Command Structures
@@ -166,28 +133,22 @@ type VirtIOGPUUpdateCursor struct {
 	Padding    uint32
 }
 
-// VirtIOGPUDevice holds VirtIO GPU device state
+// VirtIOGPUDevice holds VirtIO GPU device state.
+// Embeds virtio.PCIDevice for shared PCI transport state.
 type VirtIOGPUDevice struct {
-	Bus              uint8
-	Slot             uint8
-	Func             uint8
-	CommonConfig     pci.VirtIOCapabilityInfo // Common Config capability
-	NotifyConfig     pci.VirtIOCapabilityInfo // Notify Config capability
-	ISRConfig        pci.VirtIOCapabilityInfo // ISR Config capability
-	DeviceConfig     pci.VirtIOCapabilityInfo // Device Config capability
-	CommonConfigBase uintptr                  // MMIO base for common config
-	NotifyBase       uintptr                  // MMIO base for notify
+	virtio.PCIDevice // Shared PCI transport (promoted: Bus, Slot, Func, NotifyBase, etc.)
+
 	ControlQueue          virtio.VirtQueue // Control queue for GPU commands
 	ControlQueueNotifyOff uint16           // Notify offset for control queue
 	CursorQueue           virtio.VirtQueue // Cursor queue (queue 1) for cursor updates
 	CursorQueueNotifyOff  uint16           // Notify offset for cursor queue
 	ResourceID            uint32           // Current resource ID
-	Framebuffer      unsafe.Pointer       // Framebuffer memory
-	FramebufferSize  uint32               // Framebuffer size in bytes
-	Width            uint32               // Display width in pixels
-	Height           uint32               // Display height in pixels (visible area)
-	ResourceHeight   uint32               // Total resource height (may be > Height for scrolling)
-	Pitch            uint32               // Bytes per row
+	Framebuffer           unsafe.Pointer   // Framebuffer memory
+	FramebufferSize       uint32           // Framebuffer size in bytes
+	Width                 uint32           // Display width in pixels
+	Height                uint32           // Display height in pixels (visible area)
+	ResourceHeight        uint32           // Total resource height (may be > Height for scrolling)
+	Pitch                 uint32           // Bytes per row
 }
 
 var virtioGPUDevice VirtIOGPUDevice
@@ -200,118 +161,22 @@ const virtioGPUFramebufferSize = constants.FramebufferSize
 // Static buffer for attach backing command (small, avoids kmalloc)
 var virtioGPUAttachCmdBuf [unsafe.Sizeof(VirtIOGPUResourceAttachBacking{}) + unsafe.Sizeof(VirtIOGPUMemEntry{})]byte
 
-// virtioPCIReadCommonConfig reads a 16-bit value from VirtIO PCI common config
-//
-//go:nosplit
-func virtioPCIReadCommonConfig(offset uintptr) uint16 {
-	base := virtioGPUDevice.CommonConfigBase
-	return asm.MmioRead16(base + offset)
-}
-
-// virtioPCIWriteCommonConfig writes a 16-bit value to VirtIO PCI common config
-//
-//go:nosplit
-func virtioPCIWriteCommonConfig(offset uintptr, value uint16) {
-	base := virtioGPUDevice.CommonConfigBase
-	asm.MmioWrite16(base+offset, value)
-	asm.Dsb()
-}
-
-// virtioPCIReadCommonConfig32 reads a 32-bit value from VirtIO PCI common config
-//
-//go:nosplit
-func virtioPCIReadCommonConfig32(offset uintptr) uint32 {
-	base := virtioGPUDevice.CommonConfigBase
-	return asm.MmioRead(base + offset)
-}
-
-// virtioPCIWriteCommonConfig32 writes a 32-bit value to VirtIO PCI common config
-//
-//go:nosplit
-func virtioPCIWriteCommonConfig32(offset uintptr, value uint32) {
-	base := virtioGPUDevice.CommonConfigBase
-	asm.MmioWrite(base+offset, value)
-	asm.Dsb()
-}
-
-// virtioPCISetDeviceStatus sets the device status
-//
-//go:nosplit
-func virtioPCISetDeviceStatus(status uint8) {
-	virtioPCIWriteCommonConfig(VIRTIO_PCI_COMMON_CFG_DEVICE_STATUS, uint16(status))
-}
-
-// virtioPCIGetDeviceStatus gets the device status
-//
-//go:nosplit
-func virtioPCIGetDeviceStatus() uint8 {
-	return uint8(virtioPCIReadCommonConfig(VIRTIO_PCI_COMMON_CFG_DEVICE_STATUS))
-}
-
-// virtioPCISetupQueue sets up a virtqueue
-//
-//go:nosplit
-func virtioPCISetupQueue(queueIndex uint16, vq *virtio.VirtQueue) bool {
-	// Select queue
-	virtioPCIWriteCommonConfig(VIRTIO_PCI_COMMON_CFG_QUEUE_SELECT, queueIndex)
-
-	// Read max queue size from device
-	maxQueueSize := virtioPCIReadCommonConfig(VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE)
-
-	// Fail fast if device max is smaller than requested
-	// We can't safely clamp after VirtqueueInit because NumFree and the free list
-	// are already sized for the original queue size
-	if vq.QueueSize > maxQueueSize {
-		console.KPrintln("[VirtIO GPU] ERROR: Queue size exceeds device max")
-		return false
-	}
-
-	// Set queue size
-	virtioPCIWriteCommonConfig(VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE, vq.QueueSize)
-
-	// Get physical addresses and configure queue
-	descPhys := virtio.VirtqueueGetPhysicalAddr(vq.DescTable)
-	availPhys := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(vq.Available))
-	usedPhys := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(vq.Used))
-	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_LOW, uint32(descPhys))
-	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_HIGH, uint32(descPhys>>32))
-	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_AVAIL_LOW, uint32(availPhys))
-	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_AVAIL_HIGH, uint32(availPhys>>32))
-	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_USED_LOW, uint32(usedPhys))
-	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_QUEUE_USED_HIGH, uint32(usedPhys>>32))
-
-	// Read queue_notify_off for this queue
-	queueNotifyOff := virtioPCIReadCommonConfig(VIRTIO_PCI_COMMON_CFG_QUEUE_NOTIFY_OFF)
-	if queueIndex == 0 {
-		virtioGPUDevice.ControlQueueNotifyOff = queueNotifyOff
-	} else if queueIndex == 1 {
-		virtioGPUDevice.CursorQueueNotifyOff = queueNotifyOff
-	}
-
-	// Enable queue
-	virtioPCIWriteCommonConfig(VIRTIO_PCI_COMMON_CFG_QUEUE_ENABLE, 1)
-
-	return true
-}
-
-// findVirtIOGPU finds the VirtIO GPU PCI device
-// Returns true if found, false otherwise
+// findVirtIOGPU finds the VirtIO GPU PCI device.
+// On success, populates the embedded PCIDevice with BAR mappings.
 //
 //go:nosplit
 func findVirtIOGPU() bool {
-	// PCI bus scan (silent)
+	// GPU uses PCI_MMIO_BASE directly (block uses +0x200000 to avoid collision)
+	const gpuMMIOBase = pci.PCI_MMIO_BASE
 
-	// Scan PCI bus
 	for bus := uint8(0); bus < 1; bus++ {
 		for slot := uint8(0); slot < 32; slot++ {
-			// Read func 0 first to check if device exists and if multi-function
 			fullReg0 := pci.ConfigRead32(bus, slot, 0, pci.PCI_VENDOR_ID)
 			vendorID0 := fullReg0 & 0xFFFF
 			if vendorID0 == 0xFFFF || vendorID0 == 0 {
-				continue // No device at this slot
+				continue
 			}
 
-			// Check multi-function bit in header type register
 			headerType := pci.ConfigRead32(bus, slot, 0, 0x0C)
 			isMultiFunc := (headerType>>16)&0x80 != 0
 			maxFunc := uint8(1)
@@ -322,65 +187,22 @@ func findVirtIOGPU() bool {
 			for funcNum := uint8(0); funcNum < maxFunc; funcNum++ {
 				var fullReg uint32
 				if funcNum == 0 {
-					fullReg = fullReg0 // Already read above
+					fullReg = fullReg0
 				} else {
 					fullReg = pci.ConfigRead32(bus, slot, funcNum, pci.PCI_VENDOR_ID)
 				}
 				vendorID := fullReg & 0xFFFF
 				deviceID := (fullReg >> 16) & 0xFFFF
 
-				// Check if device exists
 				if vendorID == 0xFFFF || vendorID == 0 {
 					continue
 				}
 
-				// Check if this is VirtIO GPU
 				if vendorID == pci.VIRTIO_VENDOR_ID && deviceID == pci.VIRTIO_GPU_DEVICE_ID {
-
-					// Enable device
-					cmd := pci.ConfigRead32(bus, slot, funcNum, pci.PCI_COMMAND)
-					cmd |= 0x7 // Enable I/O, memory, bus master
-					pci.ConfigWrite32(bus, slot, funcNum, pci.PCI_COMMAND, cmd)
-
-					// Find VirtIO capabilities
-					var common, notify, isr, device pci.VirtIOCapabilityInfo
-					if !pci.FindVirtIOCapabilities(bus, slot, funcNum, &common, &notify, &isr, &device) {
-						console.KPrintln("[VirtIO GPU] ERROR: VirtIO capabilities not found")
+					if !virtioGPUDevice.FindAndMapBARs(bus, slot, funcNum, gpuMMIOBase) {
+						console.KPrintln("[VirtIO GPU] ERROR: Failed to find/map BARs")
 						return false
 					}
-					// Read BAR for common config (handles 64-bit BARs)
-					barBase := pci.ReadBAR64(bus, slot, funcNum, common.Bar)
-
-					// If BAR is zero OR above 4GB (can't map via KernelMMIOOffset),
-					// reprogram to the 32-bit PCI MMIO window
-					if barBase == 0 || barBase >= 0x100000000 {
-						pci.WriteBAR64(bus, slot, funcNum, common.Bar, pci.PCI_MMIO_BASE)
-						barBase = pci.ReadBAR64(bus, slot, funcNum, common.Bar)
-					}
-
-					// Map BAR MMIO into kernel high-memory (TTBR1)
-					kmem.MapDeviceMMIO(barBase, 0x10000)
-
-					virtioGPUDevice.Bus = bus
-					virtioGPUDevice.Slot = slot
-					virtioGPUDevice.Func = funcNum
-					virtioGPUDevice.CommonConfig = common
-					virtioGPUDevice.NotifyConfig = notify
-					virtioGPUDevice.ISRConfig = isr
-					virtioGPUDevice.DeviceConfig = device
-					virtioGPUDevice.CommonConfigBase = barBase + constants.KernelMMIOOffset + uintptr(common.OffsetInBar)
-
-					// Calculate notify base (handles 64-bit BARs)
-					notifyBarBase := pci.ReadBAR64(bus, slot, funcNum, notify.Bar)
-					if notifyBarBase == 0 || notifyBarBase >= 0x100000000 {
-						pci.WriteBAR64(bus, slot, funcNum, notify.Bar, pci.PCI_MMIO_BASE+0x10000)
-						notifyBarBase = pci.ReadBAR64(bus, slot, funcNum, notify.Bar)
-					}
-					if notifyBarBase != barBase {
-						kmem.MapDeviceMMIO(notifyBarBase, 0x10000)
-					}
-					virtioGPUDevice.NotifyBase = notifyBarBase + constants.KernelMMIOOffset + uintptr(notify.OffsetInBar)
-
 					return true
 				}
 			}
@@ -390,55 +212,36 @@ func findVirtIOGPU() bool {
 	return false
 }
 
-// virtioGPUInit initializes the VirtIO GPU device
-// Returns true on success, false on failure
+// virtioGPUInit initializes the VirtIO GPU device.
+// Uses shared PCIDevice methods for handshake and queue setup.
+// Returns true on success, false on failure.
 //
 //go:nosplit
 func virtioGPUInit() bool {
-	// Reset device
-	virtioPCISetDeviceStatus(0)
+	dev := &virtioGPUDevice
 
-	// Acknowledge and indicate driver present
-	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE)
-
-	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER)
-
-	// Feature negotiation - read device features
-	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE_SELECT, 0)
-	virtioPCIReadCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE)
-	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE_SELECT, 1)
-	virtioPCIReadCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE)
-
-	// Accept VIRTIO_F_VERSION_1 (bit 32)
-	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE_SELECT, 0)
-	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE, 0)
-	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE_SELECT, 1)
-	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE, 1) // VIRTIO_F_VERSION_1
-
-	// Features OK
-	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK)
-
-	// Verify FEATURES_OK is still set
-	status := virtioPCIGetDeviceStatus()
-	if (status & VIRTIO_STATUS_FEATURES_OK) == 0 {
+	// Feature negotiation: accept VIRTIO_F_VERSION_1 only
+	if !dev.Handshake(0, virtio.FeatureVersion1) {
 		console.KPrintln("[VirtIO GPU] ERROR: Device rejected features")
 		return false
 	}
 
-	// Initialize control queue
+	// Initialize control queue (heap-allocated, uses VirtqueueInit)
 	queueSize := uint16(64)
-	if !virtio.VirtqueueInit(&virtioGPUDevice.ControlQueue, queueSize) {
+	if !virtio.VirtqueueInit(&dev.ControlQueue, queueSize) {
 		console.KPrintln("[VirtIO GPU] ERROR: Failed to init control queue")
 		return false
 	}
 
-	// Setup control queue in device
-	if !virtioPCISetupQueue(0, &virtioGPUDevice.ControlQueue) {
+	// Enable control queue on the device (EnableQueue handles heap PAs)
+	notifyOff, ok := dev.EnableQueue(0, &dev.ControlQueue, virtio.MSIXNoVector)
+	if !ok {
 		console.KPrintln("[VirtIO GPU] ERROR: Failed to setup control queue")
 		return false
 	}
+	dev.ControlQueueNotifyOff = notifyOff
 
-	// Initialize cursor queue (queue index 1) on a DMA page so the top-half
+	// Initialize cursor queue (DMA-page, queue index 1) so the top-half
 	// can submit MOVE_CURSOR commands directly via MMIO without cache issues.
 	cursorQueueSize := uint16(16)
 	cursorDmaPA, cursorDmaVA := kmem.AllocDMAPageMapped()
@@ -446,27 +249,22 @@ func virtioGPUInit() bool {
 		console.KPrintln("[VirtIO GPU] ERROR: Failed to alloc cursor queue DMA page")
 		return false
 	}
-	endOff := virtio.VirtqueueInitOnDMAPage(&virtioGPUDevice.CursorQueue, cursorQueueSize, cursorDmaPA, cursorDmaVA, 0)
-	if endOff == 0 {
-		console.KPrintln("[VirtIO GPU] ERROR: Failed to init cursor queue on DMA page")
-		return false
-	}
-	if !virtioPCISetupQueue(1, &virtioGPUDevice.CursorQueue) {
+	notifyOff, ok = dev.SetupQueue(1, &dev.CursorQueue, cursorQueueSize, cursorDmaPA, cursorDmaVA, 0, virtio.MSIXNoVector)
+	if !ok {
 		console.KPrintln("[VirtIO GPU] ERROR: Failed to setup cursor queue")
 		return false
 	}
+	dev.CursorQueueNotifyOff = notifyOff
 
-	// Driver OK
-	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK)
+	// Complete handshake
+	dev.SetDriverOK()
 
-	// Check if FAILED bit is set
-	finalStatus := virtioPCIGetDeviceStatus()
-	if (finalStatus & VIRTIO_STATUS_FAILED) != 0 {
+	if dev.CheckFailed() {
 		console.KPrintln("[VirtIO GPU] ERROR: Device failed")
 		return false
 	}
 
-	virtioGPUDevice.ResourceID = 1
+	dev.ResourceID = 1
 	return true
 }
 

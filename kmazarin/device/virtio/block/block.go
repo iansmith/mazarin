@@ -1,8 +1,6 @@
 package block
 
 import (
-	"unsafe"
-
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/device/virtio"
@@ -11,65 +9,24 @@ import (
 	"mazzy/shared/constants"
 )
 
-// VirtIO PCI constants
-const (
-	VIRTIO_STATUS_ACKNOWLEDGE = 1
-	VIRTIO_STATUS_DRIVER      = 2
-	VIRTIO_STATUS_DRIVER_OK   = 4
-	VIRTIO_STATUS_FEATURES_OK = 8
-	VIRTIO_STATUS_FAILED      = 128
-)
-
-// VirtIO PCI common config offsets
-const (
-	VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE_SELECT = 0x00
-	VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE        = 0x04
-	VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE_SELECT = 0x08
-	VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE        = 0x0C
-	VIRTIO_PCI_COMMON_CFG_MSIX_CONFIG           = 0x10
-	VIRTIO_PCI_COMMON_CFG_NUM_QUEUES            = 0x12
-	VIRTIO_PCI_COMMON_CFG_DEVICE_STATUS         = 0x14
-	VIRTIO_PCI_COMMON_CFG_CONFIG_GENERATION     = 0x15
-	VIRTIO_PCI_COMMON_CFG_QUEUE_SELECT          = 0x16
-	VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE            = 0x18
-	VIRTIO_PCI_COMMON_CFG_QUEUE_MSIX_VECTOR     = 0x1A
-	VIRTIO_PCI_COMMON_CFG_QUEUE_ENABLE          = 0x1C
-	VIRTIO_PCI_COMMON_CFG_QUEUE_NOTIFY_OFF      = 0x1E
-	VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_LOW        = 0x20
-	VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_HIGH       = 0x24
-	VIRTIO_PCI_COMMON_CFG_QUEUE_DRIVER_LOW      = 0x28
-	VIRTIO_PCI_COMMON_CFG_QUEUE_DRIVER_HIGH     = 0x2C
-	VIRTIO_PCI_COMMON_CFG_QUEUE_DEVICE_LOW      = 0x30
-	VIRTIO_PCI_COMMON_CFG_QUEUE_DEVICE_HIGH     = 0x34
-)
-
 // VirtIO block PCI device IDs
 const (
 	VIRTIO_BLK_DEVICE_ID_LEGACY = 0x1001 // Transitional device
 	VIRTIO_BLK_DEVICE_ID_MODERN = 0x1042 // Non-transitional (VirtIO 1.0+)
 )
 
-// VirtIOBlockDevice represents a VirtIO block device
+// VirtIOBlockDevice represents a VirtIO block device.
+// Embeds virtio.PCIDevice for shared PCI transport state (Bus/Slot/Func,
+// capability info, CommonConfigBase, NotifyBase, ISRBase, DeviceConfigBase).
 type VirtIOBlockDevice struct {
-	// PCI location
-	Bus, Slot, Func uint8
-
-	// VirtIO PCI capability info
-	CommonConfig pci.VirtIOCapabilityInfo
-	NotifyConfig pci.VirtIOCapabilityInfo
-	ISRConfig    pci.VirtIOCapabilityInfo
-	DeviceConfig pci.VirtIOCapabilityInfo
-
-	// Mapped addresses
-	CommonConfigBase uintptr // Common config BAR mapped address
-	NotifyBase       uintptr // Notify BAR mapped address
+	virtio.PCIDevice // Shared PCI transport (promoted fields: Bus, Slot, Func, etc.)
 
 	// VirtQueue for I/O
-	Queue           virtio.VirtQueue
-	QueueNotifyOff  uint16 // Notify offset for I/O queue
+	Queue          virtio.VirtQueue
+	QueueNotifyOff uint16 // Notify offset for I/O queue
 
 	// Device configuration
-	Capacity      uint64 // Total sectors
+	Capacity       uint64 // Total sectors
 	BlockSizeBytes uint32 // Bytes per sector (typically 512)
 
 	// MMIO transport (RISC-V): non-zero means MMIO mode, zero means PCI mode
@@ -84,9 +41,8 @@ type VirtIOBlockDevice struct {
 	DmaPageVA uintptr // Virtual address of the DMA page (PA + KernelMMIOOffset)
 
 	// Interrupt-driven I/O (set by ConfigureInterrupts after SetVBAR)
-	ISRBase    uintptr // ISR register VA (read to acknowledge interrupt)
-	IRQNum     uint32  // Assigned IRQ number (0 = polling mode, no interrupts)
-	IOComplete uint32  // Atomic: set to 1 by IRQ top-half when I/O completes
+	IRQNum     uint32 // Assigned IRQ number (0 = polling mode, no interrupts)
+	IOComplete uint32 // Atomic: set to 1 by IRQ top-half when I/O completes
 }
 
 // Global device instance
@@ -159,21 +115,20 @@ func Init() bool {
 	return true
 }
 
-// findVirtIOBlock scans the PCI bus for a VirtIO block device
+// findVirtIOBlock scans the PCI bus for a VirtIO block device.
+// On success, populates the embedded PCIDevice with BAR mappings.
 func findVirtIOBlock() bool {
-	// PCI bus scan (silent)
+	// Use PCI_MMIO_BASE + 0x200000 to avoid collision with GPU BARs
+	const blockMMIOBase = pci.PCI_MMIO_BASE + 0x200000
 
-	// Scan PCI bus
 	for bus := uint8(0); bus < 1; bus++ {
 		for slot := uint8(0); slot < 32; slot++ {
-			// Read func 0 first to check if device exists and if multi-function
 			fullReg0 := pci.ConfigRead32(bus, slot, 0, pci.PCI_VENDOR_ID)
 			vendorID0 := fullReg0 & 0xFFFF
 			if vendorID0 == 0xFFFF || vendorID0 == 0 {
-				continue // No device at this slot
+				continue
 			}
 
-			// Check multi-function bit in header type register
 			headerType := pci.ConfigRead32(bus, slot, 0, 0x0C)
 			isMultiFunc := (headerType>>16)&0x80 != 0
 			maxFunc := uint8(1)
@@ -184,81 +139,24 @@ func findVirtIOBlock() bool {
 			for funcNum := uint8(0); funcNum < maxFunc; funcNum++ {
 				var fullReg uint32
 				if funcNum == 0 {
-					fullReg = fullReg0 // Already read above
+					fullReg = fullReg0
 				} else {
 					fullReg = pci.ConfigRead32(bus, slot, funcNum, pci.PCI_VENDOR_ID)
 				}
 				vendorID := fullReg & 0xFFFF
 				deviceID := (fullReg >> 16) & 0xFFFF
 
-				// Check if device exists
 				if vendorID == 0xFFFF || vendorID == 0 {
 					continue
 				}
 
-				// Check if this is VirtIO block device
 				if vendorID == pci.VIRTIO_VENDOR_ID &&
 					(deviceID == VIRTIO_BLK_DEVICE_ID_LEGACY || deviceID == VIRTIO_BLK_DEVICE_ID_MODERN) {
-					// Enable device
-					cmd := pci.ConfigRead32(bus, slot, funcNum, pci.PCI_COMMAND)
-					cmd |= 0x7 // Enable I/O, memory, bus master
-					pci.ConfigWrite32(bus, slot, funcNum, pci.PCI_COMMAND, cmd)
 
-					// Find VirtIO capabilities
-					var common, notify, isr, deviceCfg pci.VirtIOCapabilityInfo
-					if !pci.FindVirtIOCapabilities(bus, slot, funcNum, &common, &notify, &isr, &deviceCfg) {
-						console.KPrintln("[VirtIO Block] ERROR: VirtIO capabilities not found")
+					if !virtioBlockDevice.FindAndMapBARs(bus, slot, funcNum, blockMMIOBase) {
+						console.KPrintln("[VirtIO Block] ERROR: Failed to find/map BARs")
 						return false
 					}
-
-					// Read BAR for common config (handles 64-bit BARs)
-					barBase := pci.ReadBAR64(bus, slot, funcNum, common.Bar)
-
-					// If BAR is zero OR above 4GB (can't map via KernelMMIOOffset),
-					// reprogram to the 32-bit PCI MMIO window.
-					// Use PCI_MMIO_BASE + 0x200000 to avoid collision with GPU BARs.
-					const blockMMIOBase = pci.PCI_MMIO_BASE + 0x200000
-					if barBase == 0 || barBase >= 0x100000000 {
-						pci.WriteBAR64(bus, slot, funcNum, common.Bar, blockMMIOBase)
-						barBase = pci.ReadBAR64(bus, slot, funcNum, common.Bar)
-					}
-
-					// Map BAR MMIO into kernel high-memory (TTBR1)
-					kmem.MapDeviceMMIO(barBase, 0x10000)
-
-					virtioBlockDevice.Bus = bus
-					virtioBlockDevice.Slot = slot
-					virtioBlockDevice.Func = funcNum
-					virtioBlockDevice.CommonConfig = common
-					virtioBlockDevice.NotifyConfig = notify
-					virtioBlockDevice.ISRConfig = isr
-					virtioBlockDevice.DeviceConfig = deviceCfg
-					virtioBlockDevice.CommonConfigBase = barBase + constants.KernelMMIOOffset + uintptr(common.OffsetInBar)
-
-					// Map ISR BAR for interrupt acknowledgement
-					if isr.Offset != 0 {
-						isrBarBase := pci.ReadBAR64(bus, slot, funcNum, isr.Bar)
-						if isrBarBase != 0 && isrBarBase < 0x100000000 {
-							if isrBarBase != barBase {
-								kmem.MapDeviceMMIO(isrBarBase, 0x10000)
-							}
-							virtioBlockDevice.ISRBase = isrBarBase + constants.KernelMMIOOffset + uintptr(isr.OffsetInBar)
-							console.KPrintf("[VirtIO Block] ISR: bar=%d barPA=0x%x offset=0x%x ISRBase=0x%x\n",
-								isr.Bar, isrBarBase, isr.OffsetInBar, virtioBlockDevice.ISRBase)
-						}
-					}
-
-					// Calculate notify base (handles 64-bit BARs)
-					notifyBarBase := pci.ReadBAR64(bus, slot, funcNum, notify.Bar)
-					if notifyBarBase == 0 || notifyBarBase >= 0x100000000 {
-						pci.WriteBAR64(bus, slot, funcNum, notify.Bar, blockMMIOBase+0x10000)
-						notifyBarBase = pci.ReadBAR64(bus, slot, funcNum, notify.Bar)
-					}
-					if notifyBarBase != barBase {
-						kmem.MapDeviceMMIO(notifyBarBase, 0x10000)
-					}
-					virtioBlockDevice.NotifyBase = notifyBarBase + constants.KernelMMIOOffset + uintptr(notify.OffsetInBar)
-
 					return true
 				}
 			}
@@ -276,45 +174,19 @@ func findVirtIOBlock() bool {
 //go:nosplit
 func virtioBlockInit() bool {
 	dev := &virtioBlockDevice
-	// Step 1: Reset device
-	virtioPCISetDeviceStatus(0)
 
-	// Step 2-3: Acknowledge and indicate driver present
-	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE)
-	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER)
-
-	// Step 4: Feature negotiation - read device features
-	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE_SELECT, 0)
-	virtioPCIReadCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE)
-	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE_SELECT, 1)
-	virtioPCIReadCommonConfig32(VIRTIO_PCI_COMMON_CFG_DEVICE_FEATURE)
-
-	// Accept VIRTIO_F_VERSION_1 (bit 32)
-	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE_SELECT, 0)
-	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE, 0)
-	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE_SELECT, 1)
-	virtioPCIWriteCommonConfig32(VIRTIO_PCI_COMMON_CFG_DRIVER_FEATURE, 1) // VIRTIO_F_VERSION_1
-
-	// Step 5: Features OK
-	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK)
-
-	// Verify FEATURES_OK is still set
-	status := virtioPCIGetDeviceStatus()
-	if (status & VIRTIO_STATUS_FEATURES_OK) == 0 {
+	// Feature negotiation: accept VIRTIO_F_VERSION_1 only
+	if !dev.Handshake(0, virtio.FeatureVersion1) {
 		console.KPrintln("[VirtIO Block] ERROR: Device rejected features")
 		return false
 	}
 
-	// Step 6: MSI-X config vector (AMD64 only).
-	// On INTx platforms (ARM64/RISC-V), blockMSIXVector() returns 0xFFFF
-	// (VIRTIO_MSI_NO_VECTOR) and we skip these writes — touching MSIX_CONFIG
-	// tells QEMU "I support MSI-X", which would suppress INTx delivery.
+	// MSI-X config vector. On INTx platforms (ARM64/RISC-V), blockMSIXVector()
+	// returns MSIXNoVector and SetMSIXConfig skips the write.
 	msixVec := blockMSIXVector()
-	if msixVec != 0xFFFF {
-		*(*uint16)(unsafe.Pointer(dev.CommonConfigBase + VIRTIO_PCI_COMMON_CFG_MSIX_CONFIG)) = msixVec
-	}
+	dev.SetMSIXConfig(msixVec)
 
-	// Step 7: Allocate DMA page for virtqueue structures
+	// Allocate DMA page for virtqueue structures
 	queuePagePA := kmem.AllocKernelFrame()
 	if queuePagePA == 0 {
 		console.KPrintln("[VirtIO Block] ERROR: Failed to allocate queue DMA page")
@@ -322,55 +194,18 @@ func virtioBlockInit() bool {
 	}
 	queuePageVA := queuePagePA + constants.KernelMMIOOffset
 
-	queueSize := uint16(128) // 128 entries: desc(2048)+avail(262)+used(1030) = 3340 bytes < 4096
-	endOff := virtio.VirtqueueInitOnDMAPage(&dev.Queue, queueSize, queuePagePA, queuePageVA, 0)
-	if endOff == 0 {
-		console.KPrintln("[VirtIO Block] ERROR: Failed to init I/O queue on DMA page")
+	// Set up queue 0: 128 entries, desc(2048)+avail(262)+used(1030) = 3340 bytes < 4096
+	notifyOff, ok := dev.SetupQueue(0, &dev.Queue, 128, queuePagePA, queuePageVA, 0, msixVec)
+	if !ok {
+		console.KPrintln("[VirtIO Block] ERROR: Failed to setup queue")
 		return false
 	}
+	dev.QueueNotifyOff = notifyOff
 
-	// Step 7: Write queue addresses to device and enable
-	base := dev.CommonConfigBase
-	vq := &dev.Queue
+	// Complete handshake
+	dev.SetDriverOK()
 
-	// Select queue 0
-	*(*uint16)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_SELECT)) = 0
-
-	// Read device's max queue size, then write our actual size
-	maxQueueSize := *(*uint16)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE))
-	if maxQueueSize == 0 || maxQueueSize < vq.QueueSize {
-		console.KPrintf("[VirtIO Block] ERROR: Queue 0 size too small (%d < %d)\n",
-			maxQueueSize, vq.QueueSize)
-		return false
-	}
-	*(*uint16)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_SIZE)) = vq.QueueSize
-
-	// Write queue addresses
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_LOW)) = uint32(vq.DescPA)
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_DESC_HIGH)) = uint32(vq.DescPA >> 32)
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_DRIVER_LOW)) = uint32(vq.AvailPA)
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_DRIVER_HIGH)) = uint32(vq.AvailPA >> 32)
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_DEVICE_LOW)) = uint32(vq.UsedPA)
-	*(*uint32)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_DEVICE_HIGH)) = uint32(vq.UsedPA >> 32)
-
-	// Read queue_notify_off for this queue
-	dev.QueueNotifyOff = *(*uint16)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_NOTIFY_OFF))
-
-	// Assign MSI-X vector to queue 0 (AMD64 only).
-	// Must be done after queue select and before queue enable.
-	if msixVec != 0xFFFF {
-		*(*uint16)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_MSIX_VECTOR)) = msixVec
-	}
-
-	// Enable queue
-	*(*uint16)(unsafe.Pointer(base + VIRTIO_PCI_COMMON_CFG_QUEUE_ENABLE)) = 1
-
-	// DRIVER_OK
-	virtioPCISetDeviceStatus(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK)
-
-	// Check if FAILED bit is set
-	finalStatus := virtioPCIGetDeviceStatus()
-	if (finalStatus & VIRTIO_STATUS_FAILED) != 0 {
+	if dev.CheckFailed() {
 		console.KPrintln("[VirtIO Block] ERROR: Device failed")
 		return false
 	}
@@ -378,70 +213,27 @@ func virtioBlockInit() bool {
 	return true
 }
 
-// virtioBlockReadConfig reads the device configuration
+// virtioBlockReadConfig reads the device configuration.
+// DeviceConfigBase was set by FindAndMapBARs during PCI discovery.
 //
 //go:nosplit
 func virtioBlockReadConfig() bool {
-	// Read capacity (8 bytes at offset 0 in device config)
 	dev := &virtioBlockDevice
-	deviceCfgBase := pci.ReadBAR64(dev.Bus, dev.Slot, dev.Func, dev.DeviceConfig.Bar)
-	if deviceCfgBase == 0 || deviceCfgBase >= 0x100000000 {
-		console.KPrintln("[VirtIO Block] ERROR: Invalid device config BAR")
+	if dev.DeviceConfigBase == 0 {
+		console.KPrintln("[VirtIO Block] ERROR: No device config BAR mapped")
 		return false
 	}
 
-	// Map device config BAR if it's different from common config BAR
-	commonCfgBase := pci.ReadBAR64(dev.Bus, dev.Slot, dev.Func, dev.CommonConfig.Bar)
-	if deviceCfgBase != commonCfgBase {
-		kmem.MapDeviceMMIO(deviceCfgBase, 0x10000)
-	}
-
-	deviceCfgAddr := deviceCfgBase + constants.KernelMMIOOffset + uintptr(dev.DeviceConfig.OffsetInBar)
-
-	// Read capacity (64-bit value)
-	capacityLow := *(*uint32)(unsafe.Pointer(deviceCfgAddr + 0))
-	capacityHigh := *(*uint32)(unsafe.Pointer(deviceCfgAddr + 4))
-	dev.Capacity = uint64(capacityLow) | (uint64(capacityHigh) << 32)
+	// Read capacity (64-bit value at offset 0)
+	dev.Capacity = dev.ReadDeviceConfig64(0)
 
 	// Read block size (32-bit value at offset 20)
-	dev.BlockSizeBytes = *(*uint32)(unsafe.Pointer(deviceCfgAddr + 20))
+	dev.BlockSizeBytes = dev.ReadDeviceConfig32(20)
 	if dev.BlockSizeBytes == 0 {
 		dev.BlockSizeBytes = 512 // Default to 512 if not specified
 	}
 
 	return true
-}
-
-// virtioPCISetDeviceStatus sets the device status register
-//
-//go:nosplit
-func virtioPCISetDeviceStatus(status uint8) {
-	addr := virtioBlockDevice.CommonConfigBase + VIRTIO_PCI_COMMON_CFG_DEVICE_STATUS
-	*(*uint8)(unsafe.Pointer(addr)) = status
-}
-
-// virtioPCIGetDeviceStatus reads the device status register
-//
-//go:nosplit
-func virtioPCIGetDeviceStatus() uint8 {
-	addr := virtioBlockDevice.CommonConfigBase + VIRTIO_PCI_COMMON_CFG_DEVICE_STATUS
-	return *(*uint8)(unsafe.Pointer(addr))
-}
-
-// virtioPCIWriteCommonConfig32 writes a 32-bit value to the common config space
-//
-//go:nosplit
-func virtioPCIWriteCommonConfig32(offset uint32, value uint32) {
-	addr := virtioBlockDevice.CommonConfigBase + uintptr(offset)
-	*(*uint32)(unsafe.Pointer(addr)) = value
-}
-
-// virtioPCIReadCommonConfig32 reads a 32-bit value from the common config space
-//
-//go:nosplit
-func virtioPCIReadCommonConfig32(offset uint32) uint32 {
-	addr := virtioBlockDevice.CommonConfigBase + uintptr(offset)
-	return *(*uint32)(unsafe.Pointer(addr))
 }
 
 // Implement BlockDevice interface methods
