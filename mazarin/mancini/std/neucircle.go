@@ -1,12 +1,18 @@
 package std
 
 import (
+	"image"
 	"image/color"
 	"math"
 
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
 )
+
+// neuCircleBevel is the pixel inset between the shadow radius and the face
+// fill radius. This creates a visible ring where the neumorphic shadow
+// gradient shows through, giving the raised/inset 3D effect.
+const neuCircleBevel = 7
 
 // NeuCircle is a single-child decorator that draws neumorphic circular
 // shadows. It embeds impl.Decorator for inside-out sizing.
@@ -46,8 +52,44 @@ func NewNeuCircleNamed(myName, parent string, pal mancini.Palette,
 	return NewNeuCircle(layout, pal, depth, params)
 }
 
+// Draw overrides Decorator.Draw. The child receives bounds inset by the
+// bevel amount so the neumorphic shadow ring between the face edge and
+// the shadow circle remains visible. The full decorator margins are for
+// shadow overflow; the bevel is the visible 3D ring.
+func (n *NeuCircle) Draw(self mancini.Interactor, x, y, w, h int64) {
+	n.Decorator.DecorateIfNeeded(self, x, y, w, h)
+
+	children := n.GetChildren()
+	if len(children) == 0 {
+		return
+	}
+	child := children[0]
+
+	bevel := int64(neuCircleBevel)
+	childX := x + bevel
+	childY := y + bevel
+	childW := w - 2*bevel
+	childH := h - 2*bevel
+
+	if l, ok := child.(mancini.Layouter); ok {
+		lh := l.GetLayout()
+		if lh != nil {
+			lh.X.Set(childX)
+			lh.Y.Set(childY)
+		}
+	}
+	if cs, ok := child.(interface{ SetDC(mancini.DrawContext) }); ok {
+		cs.SetDC(self.DC())
+	}
+	if drawer, ok := child.(mancini.NewDrawer); ok {
+		drawer.Draw(child, childX, childY, childW, childH)
+	}
+}
+
 // Decorate implements mancini.Decoratable — draws neumorphic circular
-// shadows centered in the given bounds.
+// shadows centered in the given bounds. Shadows are drawn at the full
+// decorator radius; the face fill is drawn at radius - bevel so the
+// shadow ring is visible between face edge and shadow fringe.
 func (n *NeuCircle) Decorate(self mancini.Interactor, x, y, w, h int64) {
 	dc := self.DC()
 	if dc == nil {
@@ -58,11 +100,28 @@ func (n *NeuCircle) Decorate(self mancini.Interactor, x, y, w, h int64) {
 
 	cx := fx + fw/2
 	cy := fy + fh/2
-	rad := math.Min(fw, fh) / 2
+	shadowRad := math.Min(fw, fh) / 2
+	faceRad := shadowRad - neuCircleBevel
 
 	face := n.Face
 	if face == (color.NRGBA{}) {
 		face = n.Pal.Surface
 	}
-	NeuCircleWith(n.Pal, dc, n.Depth, cx, cy, rad, face, n.Params, nil)
+
+	switch n.Depth {
+	case mancini.Raised:
+		neuCircleRaisedShadows(n.Pal, dc, cx, cy, shadowRad, n.Params.Raised)
+		dc.SetColor(face)
+		dc.DrawCircle(cx, cy, faceRad)
+		dc.Fill()
+	case mancini.Flush:
+		neuCircleFlush(n.Pal, dc, cx, cy, shadowRad, face, n.Params.Flush)
+	case mancini.Inset:
+		neuCircleInset(n.Pal, dc, cx, cy, shadowRad, face, n.Params.Inset)
+	}
+
+	if face != n.Pal.Surface && n.Depth != mancini.Raised {
+		canvas := dc.Image().(*image.RGBA)
+		applyCircleTintOverlay(n.Pal, canvas, cx, cy, faceRad, face)
+	}
 }

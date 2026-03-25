@@ -372,6 +372,16 @@ func circleMask(w, h int, cx, cy, rad float64) *image.Alpha {
 }
 
 func neuCircleRaised(pal mancini.Palette, dc mancini.DrawContext, cx, cy, rad float64, face color.NRGBA, p mancini.RaisedParams) {
+	neuCircleRaisedShadows(pal, dc, cx, cy, rad, p)
+	dc.SetColor(face)
+	dc.DrawCircle(cx, cy, rad)
+	dc.Fill()
+}
+
+// neuCircleRaisedShadows draws only the dark and light shadow layers for a
+// raised circle. The face fill is NOT drawn — the caller controls face radius
+// separately, allowing a visible bevel ring between face and shadow.
+func neuCircleRaisedShadows(pal mancini.Palette, dc mancini.DrawContext, cx, cy, rad float64, p mancini.RaisedParams) {
 	canvas := dc.Image().(*image.RGBA)
 	x1, y1, x2, y2 := cx-rad, cy-rad, cx+rad, cy+rad
 	maxOff := math.Max(p.DarkOff, p.LightOff)
@@ -389,10 +399,6 @@ func neuCircleRaised(pal mancini.Palette, dc mancini.DrawContext, cx, cy, rad fl
 		lcx-p.LightOff, lcy-p.LightOff, rad,
 		pal.LightSh, p.LightAlpha, p.LightBlur, pal.SwapRB)
 	draw.Draw(canvas, dst, light, image.Point{}, draw.Over)
-
-	dc.SetColor(face)
-	dc.DrawCircle(cx, cy, rad)
-	dc.Fill()
 }
 
 func neuCircleInset(pal mancini.Palette, dc mancini.DrawContext, cx, cy, rad float64, face color.NRGBA, p mancini.InsetParams) {

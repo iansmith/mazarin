@@ -97,7 +97,8 @@ func (w *AppWindow) Focus() { w.Focused = true }
 func (w *AppWindow) Unfocus() { w.Focused = false }
 
 // Draw implements mancini.NewDrawer. Decorates and draws the single child
-// content area inside the decoration insets.
+// content area inside the decoration insets, clipping to prevent overflow
+// from escaping the window decoration.
 func (w *AppWindow) Draw(self mancini.Interactor, x, y, ww, hh int64) {
 	// 1. Decorate: NeuBox shadow + title bar (skipped if bounds unchanged).
 	w.Decorator.DecorateIfNeeded(self, x, y, ww, hh)
@@ -125,9 +126,17 @@ func (w *AppWindow) Draw(self mancini.Interactor, x, y, ww, hh int64) {
 	if cs, ok := child.(interface{ SetDC(mancini.DrawContext) }); ok {
 		cs.SetDC(dc)
 	}
+
+	// 4. Clip child to content area (right edge, then bottom edge).
+	ccR := mancini.WithClip(dc, float64(contentX), float64(contentY),
+		float64(contentW), float64(contentH), 60, mancini.ClipRight)
+	ccB := mancini.WithClip(dc, float64(contentX), float64(contentY),
+		float64(contentW), float64(contentH), 60, mancini.ClipBottom)
 	if d, ok := child.(mancini.NewDrawer); ok {
 		d.Draw(child, contentX, contentY, contentW, contentH)
 	}
+	ccB.Flush()
+	ccR.Flush()
 }
 
 // Decorate implements mancini.Decoratable — draws the NeuBox shadow and
