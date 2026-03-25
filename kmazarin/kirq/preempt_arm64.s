@@ -31,6 +31,9 @@ TEXT ·TimerIRQHandlerAsm(SB), NOSPLIT|NOFRAME, $0
 	// Read current counter: MRS X1, CNTVCT_EL0
 	WORD	$0xD53BE041
 
+	// Save counter value before R1 is clobbered by re-arm calculation
+	MOVD	R1, R3
+
 	// Calculate new compare value
 	ADD	R0, R1, R1
 
@@ -46,6 +49,31 @@ TEXT ·TimerIRQHandlerAsm(SB), NOSPLIT|NOFRAME, $0
 	ADD	$1, R0
 	MOVD	R0, ·TimerIRQCount(SB)
 	DSB	$15  // DSB SY - ensure store completes
+
+	// ========================================================================
+	// Instrumentation: measure interval between consecutive timer fires.
+	// R3 = counter value at entry (saved above).
+	// ========================================================================
+	MOVD	·DbgTimerPrevCounter(SB), R4  // R4 = previous fire counter
+	MOVD	R3, ·DbgTimerPrevCounter(SB)  // store current as new prev
+
+	// Record first fire counter (for average Hz calculation)
+	MOVD	·DbgTimerFirstCounter(SB), R6
+	CBNZ	R6, have_first
+	MOVD	R3, ·DbgTimerFirstCounter(SB)
+have_first:
+	// Store latest counter for Hz calculation
+	MOVD	R3, ·DbgTimerLatestCounter(SB)
+
+	// Compute delta and track max gap
+	CBZ	R4, skip_delta              // first fire, no prev → skip
+	SUB	R4, R3, R4                  // R4 = current - prev = delta
+	// CMP Rn, Rm computes Rm - Rn in Go asm
+	MOVD	·DbgTimerMaxDelta(SB), R6
+	CMP	R6, R4                      // R4 - R6 = delta - maxDelta
+	BLE	skip_delta                  // if delta <= max, skip update
+	MOVD	R4, ·DbgTimerMaxDelta(SB)
+skip_delta:
 
 	// ========================================================================
 	// Step 2: Check if preemption offsets are initialized

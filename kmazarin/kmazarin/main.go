@@ -444,6 +444,14 @@ func testDeviceDiscovery() {
 	// On platforms without an RTC (e.g. AMD64), falls back to uptime mode (base=0).
 	ktime.Init()
 
+	// Calibrate: compare ARM64 generic timer counter against PL031 RTC.
+	// The PL031 returns wall-clock seconds from the host. By measuring how
+	// many counter ticks elapse per RTC second, we discover the actual
+	// counter frequency regardless of what CNTFRQ_EL0 claims.
+	if clock, ok := device.GetClock(); ok {
+		calibrateCounterVsRTC(clock)
+	}
+
 	// Wire up interrupts now that interrupt controller is discovered
 	if err := device.WireInterrupts(); err != nil {
 		console.KWriteString("[DeviceTest] ERROR wiring interrupts: ")
@@ -519,12 +527,92 @@ func initTimerFrequency() {
 	// that assembly uses: ns = (ticks × nsPerTickX256) >> 8.
 	nsPerTickX256 = 256_000_000_000 / kirq.SystemTimerFrequency
 
-	// Single computation path: derive tick counts from frequency and policy constants
-	kirq.InitPreemptThresholds()
+	// Compute tick counts from frequency and default policy values.
+	// These may be reconfigured later by TOML boot config (InitPreemptConfig).
+	kirq.InitPreemptConfig(0, 0)
 
 	console.KPrintf("[Timer] freq=%d Hz, nsPerTickX256=%d, tick=%d ticks (%dms), quantum=%d ticks (%dms)\n",
 		kirq.SystemTimerFrequency, nsPerTickX256, kirq.TimerRearmTicks, kirq.TickIntervalMs,
-		kirq.ThreadPreemptTicks, kirq.ThreadPreemptMs)
+		kirq.ThreadPreemptTicks, kirq.PreemptIntervalMs)
+}
+
+// calibrateCounterVsRTC measures the actual counter tick rate by comparing
+// the ARM64 generic timer (CNTVCT_EL0) against the PL031 RTC wall-clock.
+// PL031 has 1-second resolution, so we wait for two second boundaries
+// and count how many counter ticks elapsed in between.
+//
+// This tells us whether CNTFRQ_EL0 matches reality. On Apple Silicon HVF,
+// the counter should be 24MHz. Under TCG, virtual time may differ.
+func calibrateCounterVsRTC(clock device.Clock) {
+	console.KPrintf("[Calibrate] comparing counter vs RTC (waiting for second boundary)...\n")
+
+	// Read initial RTC second.
+	startSec, _ := clock.Now()
+
+	// Busy-wait for the next second boundary.
+	for {
+		sec, _ := clock.Now()
+		if sec != startSec {
+			startSec = sec
+			break
+		}
+	}
+	// Snapshot counter at the first second boundary.
+	counterAtStart := ktimer.ReadCounter()
+
+	// Now sample both clocks 1000 times while waiting for the next second.
+	// This shows us how the counter progresses within a single RTC second.
+	type sample struct {
+		counter uint64
+		rtcSec  uint64
+	}
+	var samples [10]sample // record 10 evenly-spaced snapshots
+	sampleIdx := 0
+	nextSampleAt := 100 // sample at iteration 100, 200, ..., 1000
+	for i := 1; i <= 1000; i++ {
+		c := ktimer.ReadCounter()
+		s, _ := clock.Now()
+		if i == nextSampleAt && sampleIdx < len(samples) {
+			samples[sampleIdx] = sample{counter: c, rtcSec: s}
+			sampleIdx++
+			nextSampleAt += 100
+		}
+		// If RTC already ticked to next second, record and break
+		if s != startSec {
+			break
+		}
+	}
+
+	// Wait for the RTC to tick to the next second (if the loop above
+	// finished all 1000 iterations before the second boundary).
+	for {
+		sec, _ := clock.Now()
+		if sec != startSec {
+			break
+		}
+	}
+	counterAtEnd := ktimer.ReadCounter()
+
+	// Compute actual ticks per second.
+	ticksPerSec := counterAtEnd - counterAtStart
+	reportedFreq := uint64(ktimer.Frequency())
+
+	console.KPrintf("[Calibrate] RTC elapsed: 1 second\n")
+	console.KPrintf("[Calibrate] counter ticks: %d (reported CNTFRQ: %d)\n", ticksPerSec, reportedFreq)
+
+	if reportedFreq > 0 {
+		// Show ratio: actual/reported. 1.0 means perfect match.
+		// Multiply by 1000 to show 3 decimal places as integer math.
+		ratioX1000 := (ticksPerSec * 1000) / reportedFreq
+		console.KPrintf("[Calibrate] ratio (actual/reported × 1000): %d  (1000 = match)\n", ratioX1000)
+	}
+
+	// Print the 10 intermediate samples (counter delta from start, RTC second).
+	console.KPrintf("[Calibrate] samples (iter, counter_delta, rtc_sec):\n")
+	for i := 0; i < sampleIdx; i++ {
+		delta := samples[i].counter - counterAtStart
+		console.KPrintf("  [%d] +%d ticks, rtc=%d\n", (i+1)*100, delta, samples[i].rtcSec)
+	}
 }
 
 // dtbTimerFreqCallback is the DTB walk callback for timer frequency discovery.
@@ -917,6 +1005,14 @@ func simpleMain() {
 		launchShepherd("/stdio.elf\x00", "stdio")
 	}
 
+	// Reconfigure timer policy from TOML boot config if available.
+	// Must happen before EnableTimerIRQ so the first tick uses correct values.
+	if bootCfg != nil && (bootCfg.KernelTickRate > 0 || bootCfg.PreemptAfterTicks > 0) {
+		kirq.InitPreemptConfig(bootCfg.KernelTickRate, bootCfg.PreemptAfterTicks)
+		console.KPrintf("[Timer] reconfigured: tickRate=%dHz (%dms), preempt=%d ticks (%dms)\n",
+			kirq.KernelTickRate, kirq.TickIntervalMs, kirq.PreemptAfterTicks, kirq.PreemptIntervalMs)
+	}
+
 	// Re-enable IRQs and timer for ongoing scheduling
 	EnableIRQs()
 	EnableTimerIRQ()
@@ -967,11 +1063,8 @@ func simpleMain() {
 	initRunShepherdWorker()
 
 	// Start kernel attribute updaters (time update goroutine).
-	timeHertz := 0
-	if bootCfg != nil {
-		timeHertz = bootCfg.TimeUpdateHertz
-	}
-	ksyscall.StartKernelAttrUpdaters(timeHertz)
+	// Time updates are driven by kirq.TimerIRQCount + kirq.PreemptAfterTicks.
+	ksyscall.StartKernelAttrUpdaters()
 
 	// Enter the kernel idle loop. Thread 0 (m0/g0) stays alive as a normal
 	// scheduled thread. Shepherd threads are already running. The timer IRQ

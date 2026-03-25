@@ -158,8 +158,10 @@ func (p *parser) parseTopLevel(key string) {
 			p.cfg.KernelMemLimitMB = val
 		case "gc_percent_kernel":
 			p.cfg.GCPercentKernel = val
-		case "time_update_hertz":
-			p.cfg.TimeUpdateHertz = val
+		case "kernel_tick_rate":
+			p.cfg.KernelTickRate = val
+		case "preempt_after_ticks":
+			p.cfg.PreemptAfterTicks = val
 		}
 		p.skipLine()
 	}

@@ -65,11 +65,15 @@ type BootConfig struct {
 	// GOMEMLIMIT be the GC governor instead of GOGC.
 	GCPercentKernel int
 
-	// TimeUpdateHertz is the frequency (in Hz) at which the kernel publishes
-	// time attributes (utc_seconds, utc_nanos). 0 or 1 means once per second
-	// (default). Higher values (e.g. 3) reduce visual jitter in clock displays
-	// by providing more frequent dirty notifications.
-	TimeUpdateHertz int
+	// KernelTickRate is the kernel timer tick frequency in Hz.
+	// Default 250 (4ms ticks). Controls deadline processing, signal delivery,
+	// and the base scheduling granularity.
+	KernelTickRate int
+
+	// PreemptAfterTicks is the number of kernel ticks before forcing a
+	// thread preemption. Default 25 (25 × 4ms = 100ms at 250Hz).
+	// Also determines the time attribute update frequency.
+	PreemptAfterTicks int
 
 	Timezone [MaxTimezoneLen]byte
 

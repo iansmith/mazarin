@@ -269,3 +269,23 @@ func forEachThreadForKsyscall(shepherdSID int16, entry *hid.ShepherdInfoEntry) {
 	}
 }
 
+// kernelYieldForKsyscall provides KernelYield to the ksyscall package.
+// Saves thread 0's context, puts it at the back of the ready queue, and
+// switches to the next ready thread. Returns when thread 0 is scheduled back.
+//
+//go:linkname kernelYieldForKsyscall mazzy/kmazarin/ksyscall.KernelYield
+func kernelYieldForKsyscall() {
+	YieldToReadyThread()
+}
+
+// setThread0PendingDeadlineForKsyscall sets thread0PendingDeadline so that the
+// next KernelYield puts thread 0 to sleep with a deadline instead of placing it
+// on the ready queue. The deadline is consumed atomically inside
+// SaveThread0AndYield under the scheduler lock.
+//
+//go:linkname setThread0PendingDeadlineForKsyscall mazzy/kmazarin/ksyscall.setThread0PendingDeadline
+//go:nosplit
+func setThread0PendingDeadlineForKsyscall(deadline uint64) {
+	thread0PendingDeadline = deadline
+}
+

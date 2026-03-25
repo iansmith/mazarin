@@ -73,41 +73,60 @@ var TimerIRQCount uint64
 //
 // DO NOT use hardcoded offsets - struct layout may change!
 
-// Kernel timing policy constants. All timer and preemption intervals are
-// derived from these two values. Assembly handlers read the computed tick
-// variables (TimerRearmTicks, ThreadPreemptTicks) at runtime.
-const (
-	// TickIntervalMs is the kernel timer tick rate in milliseconds.
-	// Matches Linux CONFIG_HZ=250 (4ms). Controls how often deadlines
-	// are processed and pending signals are delivered.
-	TickIntervalMs = 4
+// Kernel timing policy values. Set by InitPreemptConfig() from TOML boot
+// config. Assembly handlers read the computed tick variables
+// (TimerRearmTicks, ThreadPreemptTicks) at runtime.
+var (
+	// KernelTickRate is the timer tick frequency in Hz. Default 250 (4ms ticks).
+	// Set from TOML kernel_tick_rate.
+	KernelTickRate uint64 = 250
 
-	// ThreadPreemptMs is the thread-level preemption quantum in milliseconds.
-	// This is the coarse scheduling interval for switching between shepherds.
+	// PreemptAfterTicks is the number of kernel ticks per preemption quantum.
+	// Default 25 (25 × 4ms = 100ms at 250Hz). Set from TOML preempt_after_ticks.
+	PreemptAfterTicks uint64 = 25
+
+	// TickIntervalMs is the kernel timer tick period in milliseconds.
+	// Computed: 1000 / KernelTickRate. Default 4ms.
+	TickIntervalMs uint64 = 4
+
+	// PreemptIntervalMs is the thread preemption quantum in milliseconds.
+	// Computed: TickIntervalMs * PreemptAfterTicks. Default 100ms.
 	// Fine-grained goroutine preemption within each shepherd is handled by
 	// Go's sysmon sending SIGURG signals at ~10ms intervals.
-	ThreadPreemptMs = 100
+	PreemptIntervalMs uint64 = 100
 )
 
 // TimerRearmTicks is the number of raw timer ticks for one kernel tick
-// (TickIntervalMs). Set by InitPreemptThresholds() from timer frequency.
+// (TickIntervalMs). Set by InitPreemptConfig() from timer frequency.
 // Exported for assembly access (used by preempt_arm64.s, preempt_riscv64.s).
-// Note: These defaults are never used at runtime — InitPreemptThresholds()
-// is called (via InitPreemption) before the timer is enabled (EnableTimerIRQ).
+// Note: These defaults are never used at runtime — InitPreemptConfig()
+// is called before the timer is enabled (EnableTimerIRQ).
 var TimerRearmTicks uint64 = 40000 // Default: 4ms at 10MHz (RISC-V)
 
 // ThreadPreemptTicks is the number of raw timer ticks before forcing a
-// thread preemption (ThreadPreemptMs). Set by InitPreemptThresholds().
+// thread preemption (PreemptIntervalMs). Set by InitPreemptConfig().
 // Exported for assembly access.
 // Note: Default never used at runtime — see TimerRearmTicks comment above.
 var ThreadPreemptTicks uint64 = 6250000 // Default: 100ms at 62.5MHz (ARM64)
 
-// InitPreemptThresholds calculates TimerRearmTicks and ThreadPreemptTicks
-// from SystemTimerFrequency and the policy constants above.
-// Caller must set SystemTimerFrequency before calling.
-func InitPreemptThresholds() {
-	TimerRearmTicks = (SystemTimerFrequency * TickIntervalMs) / 1000
-	ThreadPreemptTicks = (SystemTimerFrequency * ThreadPreemptMs) / 1000
+// InitPreemptConfig sets the timing policy from TOML config values and
+// computes all derived tick counts. Caller must set SystemTimerFrequency
+// before calling. Pass 0 for either parameter to use defaults.
+func InitPreemptConfig(tickRate, preemptTicks int) {
+	if tickRate > 0 {
+		KernelTickRate = uint64(tickRate)
+	}
+	if preemptTicks > 0 {
+		PreemptAfterTicks = uint64(preemptTicks)
+	}
+
+	// Derived millisecond values.
+	TickIntervalMs = 1000 / KernelTickRate
+	PreemptIntervalMs = TickIntervalMs * PreemptAfterTicks
+
+	// Hardware counter ticks per kernel tick and per preemption quantum.
+	TimerRearmTicks = SystemTimerFrequency / KernelTickRate
+	ThreadPreemptTicks = TimerRearmTicks * PreemptAfterTicks
 }
 
 // NeedsThreadPreempt is set by assembly when the current thread has exceeded
@@ -119,6 +138,12 @@ var NeedsThreadPreempt uint32
 var DbgTimerReachedCheck uint64  // timer ticks that reached deadline comparison
 var DbgTimerDeadlineHit uint64   // times current >= deadline (preempt signaled)
 var DbgTimerDeadlineNotHit uint64 // times current < deadline (no preempt)
+
+// Timer interval instrumentation (written by assembly timer handler)
+var DbgTimerPrevCounter uint64    // counter at previous timer fire
+var DbgTimerFirstCounter uint64   // counter at first timer fire
+var DbgTimerLatestCounter uint64  // counter at most recent timer fire
+var DbgTimerMaxDelta uint64       // largest gap between consecutive fires
 
 // Kernel time accounting - measures time spent in kernel mode
 // All values are in timer ticks (use SystemTimerFrequency to convert to seconds)

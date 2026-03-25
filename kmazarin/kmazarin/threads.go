@@ -547,6 +547,13 @@ var blockedQueue ds.StaticQueue[ThreadId]
 
 var sleepingQueue ds.StaticQueue[ThreadId]
 
+// thread0PendingDeadline is set by KernelBlockSleep before calling KernelYield.
+// SaveThread0AndYield checks this under the scheduler lock: if nonzero, thread 0
+// is put to sleep with a deadline instead of being placed on the ready queue.
+// Only accessed by thread 0 (set before yield, consumed during yield), so no
+// cross-thread races.
+var thread0PendingDeadline uint64
+
 // ID allocators - initialized in InitIdAllocators()
 var threadIdAllocator ds.StaticAllocator[ThreadId] // Manages unique thread IDs (0..MaxThreads-1)
 var shepherdIdAllocator ds.StaticAllocator[proc.ShepherdId] // Manages unique shepherd IDs (0..MaxShepherds-1)
@@ -1122,6 +1129,24 @@ func ProcessDeadlinesTopHalf() {
 		serial.RawUARTDecimal(tdh)
 		serial.RawUARTPuts("/")
 		serial.RawUARTDecimal(tdn)
+		// Timer Hz measurement: compute actual rate from counter deltas
+		firstC := atomic.LoadUint64(&kirq.DbgTimerFirstCounter)
+		latestC := atomic.LoadUint64(&kirq.DbgTimerLatestCounter)
+		maxD := atomic.LoadUint64(&kirq.DbgTimerMaxDelta)
+		irqCount := atomic.LoadUint64(&kirq.TimerIRQCount)
+		if firstC != 0 && latestC > firstC && irqCount > 1 {
+			elapsedTicks := latestC - firstC
+			// actualHz = (irqCount-1) * freq / elapsedTicks
+			// To avoid overflow: divide first
+			actualHz := ((irqCount - 1) * kirq.SystemTimerFrequency) / elapsedTicks
+			serial.RawUARTPuts(" Hz=")
+			serial.RawUARTDecimal(actualHz)
+			serial.RawUARTPuts(" maxGap=")
+			// maxDelta in ticks → microseconds: maxD * 1000000 / freq
+			maxUs := (maxD * 1000000) / kirq.SystemTimerFrequency
+			serial.RawUARTDecimal(maxUs)
+			serial.RawUARTPuts("us")
+		}
 		// Exception handler path: el0/el1h/svc/notset
 		serial.RawUARTPuts(" EH=")
 		serial.RawUARTDecimal(atomic.LoadUint64(&dbgTimerEL0))
@@ -1140,6 +1165,19 @@ func ProcessDeadlinesTopHalf() {
 		printADScanCounters()
 		// Input device IRQ counts: kbd/mouse/tablet
 		printInputIRQCounters()
+		// Yield diagnostics: call/switch/noready
+		printYieldCounters()
+		// SaveThread0AndYield paths: mlocks_skip/sleep/yield/noNext
+		serial.RawUARTPuts(" SY=")
+		serial.RawUARTDecimal(atomic.LoadUint64(&dbgYieldMlocksSkip))
+		serial.RawUARTPuts("/")
+		serial.RawUARTDecimal(atomic.LoadUint64(&dbgYieldSleepPath))
+		serial.RawUARTPuts("/")
+		serial.RawUARTDecimal(atomic.LoadUint64(&dbgYieldYieldPath))
+		serial.RawUARTPuts("/")
+		serial.RawUARTDecimal(atomic.LoadUint64(&dbgYieldNoNext))
+		serial.RawUARTPuts("/dw")
+		serial.RawUARTDecimal(atomic.LoadUint64(&dbgDeadlineWokeSleeper))
 		// Per-shepherd GC cycle counts
 		printGCCounters()
 	}
@@ -1299,6 +1337,10 @@ var dbgBadPCCount uint64
 var dbgBoostAttempt uint64        // times boostThread0ForPendingWork was called
 var dbgBoostSuccess uint64        // times boost succeeded (thread 0 was Ready)
 var dbgBoostFailState uint64      // thread 0 state when boost failed (last value)
+var dbgYieldMlocksSkip uint64     // SaveThread0AndYield skipped due to m.locks
+var dbgYieldSleepPath uint64      // SaveThread0AndYield took deadline sleep path
+var dbgYieldYieldPath uint64      // SaveThread0AndYield took normal yield path
+var dbgYieldNoNext uint64         // SaveThread0AndYield found no ready thread
 
 func printThreadStateSummary() {
 	var nReady, nFutex, nSleep, nSoftIRQ, nRunning, nMailbox, nDelegate int
@@ -1419,6 +1461,11 @@ func KernelIdleLoop() {
 			softIRQConsole.CheckPendingWake()
 		}
 
+		// Tick-based time attribute update. Checks TimerIRQCount and writes
+		// time + modifier attributes when PreemptAfterTicks ticks have elapsed.
+		// This runs on every idle loop iteration — no goroutine needed.
+		ksyscall.TickTimeUpdate()
+
 		// Periodic A/D bit scan. Clears hardware Accessed bits on all mapped
 		// userspace pages and propagates Dirty state into PageDescriptors.
 		// This is the "clock" algorithm reference-bit sweep — foundation for
@@ -1451,12 +1498,17 @@ func KernelIdleLoop() {
 		RestoreIRQs(savedDAIF)
 
 		if hasReady {
-			// A thread is ready - yield to it.
-			// YieldToReadyThread saves thread 0's context, enqueues it,
-			// and ERETSs to the next ready thread. Thread 0 resumes here
-			// when it's scheduled back via timer preemption.
+			// A thread is ready — yield to it with a deadline-based sleep.
+			// Instead of putting thread 0 at the back of the ready queue
+			// (which means waiting behind all shepherd threads for up to
+			// N*100ms), we sleep with a deadline set to one preemption
+			// interval in the future. The timer ISR wakes thread 0 when
+			// the deadline fires, giving precise scheduling independent of
+			// how many shepherds are active.
+			thread0PendingDeadline = kirq.ReadCounterValue() + kirq.ThreadPreemptTicks
 			YieldToReadyThread()
-			// Resumed from preemption — loop back to process deadlines
+			// Resumed from deadline — loop back to process deadlines and
+			// update time attributes.
 			continue
 		}
 
@@ -1499,6 +1551,7 @@ func SaveThread0AndYield() uint64 {
 			if mPtr != 0 {
 				locks := *(*int32)(unsafe.Pointer(mPtr + mLocksOff))
 				if locks != 0 {
+					atomic.AddUint64(&dbgYieldMlocksSkip, 1)
 					return 0
 				}
 			}
@@ -1515,12 +1568,26 @@ func SaveThread0AndYield() uint64 {
 		return 0
 	}
 
-	// Thread 0 participates in normal round-robin scheduling.
-	// Its idle loop yields quickly via YieldToReadyThread() when
-	// other threads are ready, so it won't hog the CPU.
-	t0.State = ThreadReady
-	pluckFromAllQueues(t0.TID) // safety: ensure not in queue from prior path
-	GetPerCPU().LocalReadyQueue.PushNoDuplicate(t0.TID)
+	// Check if caller requested a deadline-based sleep (KernelBlockSleep).
+	deadline := thread0PendingDeadline
+	thread0PendingDeadline = 0
+
+	if deadline != 0 {
+		// Sleep mode: add deadline and put thread 0 to sleep.
+		// The timer ISR will wake us when the deadline fires.
+		atomic.AddUint64(&dbgYieldSleepPath, 1)
+		staticDeadlineQueue.Remove(int16(t0.TID))
+		staticDeadlineQueue.Insert(int16(t0.TID), deadline)
+		t0.State = ThreadSleeping
+		pluckFromAllQueues(t0.TID)
+		sleepingQueue.PushNoDuplicate(t0.TID)
+	} else {
+		// Normal yield: thread 0 goes to back of ready queue.
+		atomic.AddUint64(&dbgYieldYieldPath, 1)
+		t0.State = ThreadReady
+		pluckFromAllQueues(t0.TID)
+		GetPerCPU().LocalReadyQueue.PushNoDuplicate(t0.TID)
+	}
 
 	// Update tick accounting for thread 0
 	currentTime := kirq.ReadCounterValue()
@@ -1532,7 +1599,17 @@ func SaveThread0AndYield() uint64 {
 	// Find next ready thread (prefer a shepherd, not kernel)
 	next := findReadyThreadPreferDifferentShepherdSchedLockHeld(t0.PID)
 	if next == nil {
-		// No thread available — continue running thread 0
+		// No thread available — continue running thread 0.
+		// If we were in sleep mode, undo the sleep state: remove from
+		// sleepingQueue and cancel the deadline we just added.
+		atomic.AddUint64(&dbgYieldNoNext, 1)
+		if deadline != 0 {
+			sleepingQueue.Pluck(t0.TID)
+			staticDeadlineQueue.Remove(int16(t0.TID))
+		} else {
+			// Normal yield: remove from ready queue (we just pushed it).
+			GetPerCPU().LocalReadyQueue.Pluck(t0.TID)
+		}
 		t0.State = ThreadRunning
 		t0.TicksStartedRunning = currentTime
 		schedulerLock.Unlock()

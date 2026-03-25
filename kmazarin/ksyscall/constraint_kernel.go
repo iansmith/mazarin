@@ -12,11 +12,11 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/device/virtio/gpu"
+	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/ktime"
 	"mazzy/kmazarin/serial"
 	"mazzy/mazarin/vm/flat"
 	"mazzy/shared/hid"
-	"runtime"
 	"sync/atomic"
 )
 
@@ -294,18 +294,48 @@ func PublishKernelAttributes() {
 	serial.RawUARTPuts("[attr] kernel attributes published (time, screen, darkMode, modifiers, charMetrics)\r\n")
 }
 
-// timeUpdateHertz is the configured time update frequency (Hz).
-// 0 or 1 means once per second (default). Set from boot config.
-var timeUpdateHertz int
-
-// StartKernelAttrUpdaters spawns goroutines that keep kernel attributes current.
-// hertz is the time update frequency from boot config (0 = default 1Hz).
-func StartKernelAttrUpdaters(hertz int) {
+// StartKernelAttrUpdaters initializes the tick-based time update state.
+// Actual updates happen via TickTimeUpdate() called from KernelIdleLoop.
+func StartKernelAttrUpdaters() {
 	if !kernelAttrsPublished {
 		return
 	}
-	timeUpdateHertz = hertz
-	go timeUpdateLoop()
+	timeUpdateLastTick = atomic.LoadUint64(&kirq.TimerIRQCount)
+	timeUpdateThreshold = kirq.PreemptAfterTicks
+}
+
+// timeUpdateLastTick / timeUpdateThreshold track when to write time attributes.
+var timeUpdateLastTick uint64
+var timeUpdateThreshold uint64
+
+// TickTimeUpdate checks if enough timer ticks have elapsed and, if so, writes
+// the time and modifier attributes. Called directly from KernelIdleLoop on
+// every iteration — no goroutine needed.
+//
+// Returns true if an update was performed (dirty notifications sent).
+func TickTimeUpdate() bool {
+	if !kernelAttrsPublished {
+		return false
+	}
+	currentTick := atomic.LoadUint64(&kirq.TimerIRQCount)
+	if currentTick-timeUpdateLastTick < timeUpdateThreshold {
+		return false
+	}
+	timeUpdateLastTick = currentTick
+
+	// Update time attributes. Seconds is change-gated internally;
+	// nanos always differs and propagates dirty notifications.
+	sec, nanos := ktime.GetTime()
+	KernelAttrWriteI64(slotTimeSeconds, int64(sec))
+	KernelAttrWriteI64(slotTimeNanos, int64(nanos))
+
+	// Flush modifier bitmask if changed by top-half IRQ handler.
+	if atomic.CompareAndSwapUint32(&modifierDirty, 1, 0) {
+		mods := atomic.LoadUint64(&modifierState)
+		KernelAttrWriteI64(slotModifiers, int64(mods))
+	}
+
+	return true
 }
 
 // PublishSystemAttributes creates kernel-owned attributes for system info.
@@ -376,45 +406,4 @@ func PublishBootConfigAttributes(tz string, goMemLimitMB, gcPercentage int) {
 	serial.RawUARTPuts("[attr] boot config attributes published\r\n")
 }
 
-// timeUpdateLoop updates the time attributes at the configured frequency and
-// flushes modifier state changes from the nosplit top-half.
-// Runs as a regular goroutine on the kernel's M/P, yielding cooperatively.
-//
-// At 1Hz (default): only writes when the second changes (change-gated).
-// At >1Hz: writes nanos on every tick interval (nanos always changes),
-// giving shepherds more frequent dirty notifications for smoother displays.
-func timeUpdateLoop() {
-	hertz := timeUpdateHertz
-	if hertz <= 1 {
-		hertz = 1
-	}
-
-	// Compute tick interval for the configured Hz using the timer frequency.
-	timerFreq := uint64(ktime.GetFrequency())
-	tickInterval := timerFreq / uint64(hertz)
-	lastUpdateTick := ktime.ReadCounter()
-
-	for {
-		// Flush modifier bitmask if changed by top-half IRQ handler.
-		if atomic.CompareAndSwapUint32(&modifierDirty, 1, 0) {
-			mods := atomic.LoadUint64(&modifierState)
-			KernelAttrWriteI64(slotModifiers, int64(mods))
-		}
-
-		now := ktime.ReadCounter()
-		if now-lastUpdateTick < tickInterval {
-			runtime.Gosched()
-			continue
-		}
-		lastUpdateTick = now
-
-		sec, nanos := ktime.GetTime()
-		// Always write seconds (change-gated internally) and nanos
-		// (always different → always propagates dirty notifications).
-		KernelAttrWriteI64(slotTimeSeconds, int64(sec))
-		KernelAttrWriteI64(slotTimeNanos, int64(nanos))
-
-		runtime.Gosched()
-	}
-}
 
