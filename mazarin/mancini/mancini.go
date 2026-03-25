@@ -127,9 +127,9 @@ var ButtonParams = NeuParams{
 	Inset:  InsetParams{Off: 2, DarkBlur: 5, LightBlur: 3},
 }
 
-// CircleParams are medium shadows tuned for NeuCircle's bevel ring.
+// CircleParams are shadows tuned for NeuCircle's bevel ring.
 var CircleParams = NeuParams{
-	Raised: RaisedParams{LightOff: 3, LightBlur: 5, DarkOff: 8, DarkBlur: 8, DarkAlpha: 150, LightAlpha: 255},
+	Raised: RaisedParams{LightOff: 4, LightBlur: 3, DarkOff: 7, DarkBlur: 5, DarkAlpha: 180, LightAlpha: 255},
 	Flush:  FlushParams{EdgeW: 2, EdgeAlpha: 140},
 	Inset:  InsetParams{Off: 2, DarkBlur: 5, LightBlur: 3},
 }

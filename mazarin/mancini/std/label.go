@@ -3,6 +3,8 @@ package std
 import (
 	"image/color"
 
+	"golang.org/x/image/font"
+
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
 )
@@ -136,9 +138,10 @@ func (l *Label) Draw(self mancini.Interactor, x, y, w, h int64) {
 	if l.Bold {
 		feature = mancini.Bold
 	}
+	var face font.Face
 	fc := l.Font(feature, l.FontSize)
 	if fc != nil && fc.LoadFace != nil {
-		face := fc.LoadFace(l.Bold, l.FontSize)
+		face = fc.LoadFace(l.Bold, l.FontSize)
 		if face != nil {
 			dc.SetFontFace(face)
 		}
@@ -148,5 +151,18 @@ func (l *Label) Draw(self mancini.Interactor, x, y, w, h int64) {
 	text := l.resolveText()
 	fx, fy := float64(x), float64(y)
 	fw, fh := float64(w), float64(h)
-	dc.DrawStringAnchored(text, fx+fw/2, fy+fh/2, 0.5, 0.5)
+
+	// Compute baseline from font metrics so the visual text extent
+	// (ascent above + descent below baseline) is centered in the label.
+	// DrawStringAnchored's ay=0.5 shifts by fontHeight/2 which pushes
+	// the baseline too low, causing descenders to overflow the bottom.
+	if face != nil {
+		m := face.Metrics()
+		asc := float64(m.Ascent) / 64
+		desc := float64(m.Descent) / 64
+		baseline := fy + fh/2 + (asc-desc)/2
+		dc.DrawStringAnchored(text, fx+fw/2, baseline, 0.5, 0)
+	} else {
+		dc.DrawStringAnchored(text, fx+fw/2, fy+fh/2, 0.5, 0.35)
+	}
 }

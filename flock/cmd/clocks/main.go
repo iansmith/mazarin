@@ -238,7 +238,7 @@ func main() {
 		circle := std.NewNeuCircleNamed(circleName, colName, pal, mancini.Raised, mancini.CircleParams)
 		_ = circle
 
-		clockWidget := std.NewClock(city.id+"_clock", circleName, pal, fonts, 34, utcFunc, rotated)
+		clockWidget := std.NewClock(city.id+"_clock", circleName, pal, fonts, 70, utcFunc, rotated)
 
 		_ = std.NewLabelNamedColor(city.id+"_tz", colName, subtitleTheme, city.tzLabel, 18, subtitleColor)
 
