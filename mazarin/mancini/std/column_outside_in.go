@@ -32,9 +32,6 @@ func NewColumnOutsideIn(myName, parent string, bgColor color.NRGBA, minH, maxH i
 
 	lh := mancini.NewLayoutHandlesBase(myName, parent)
 
-	findPattern := mancini.FindPattern()
-	prefix := mancini.Int64Prefix()
-
 	// Min/max height value handles for the constraint program.
 	minHURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutMinHeight)
 	attr.ValueI64(minHURI, minH)
@@ -42,19 +39,14 @@ func NewColumnOutsideIn(myName, parent string, bgColor color.NRGBA, minH, maxH i
 	attr.ValueI64(maxHURI, maxH)
 
 	// Height constraint: sum of children heights + 1px spacing, clamped to [minH, maxH].
-	heightProg := mancini.BindStrings(ProgMinmaxColumnHeight,
-		"_findPattern_", findPattern, "_myName_", myName,
-		"_int64Prefix_", prefix, "_boolPrefix_", mancini.BoolPrefix(), "_heightSuffix_", mancini.LayoutHeight.Suffix(),
-		"_visSuffix_", mancini.VisSuffix,
-		"_minH_", minHURI, "_maxH_", maxHURI)
+	heightProg := mancini.BindStringsChildren(ProgMinmaxColumnHeight,
+		"_myName_", myName, "_minH_", minHURI, "_maxH_", maxHURI)
 	heightURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutHeight)
 	lh.Height = attr.ConstraintI64(heightURI, heightProg)
 
 	// Width constraint: max of children widths.
-	widthProg := mancini.BindStrings(ProgColumnWidth,
-		"_findPattern_", findPattern, "_myName_", myName,
-		"_int64Prefix_", prefix, "_boolPrefix_", mancini.BoolPrefix(), "_widthSuffix_", mancini.LayoutWidth.Suffix(),
-		"_visSuffix_", mancini.VisSuffix)
+	widthProg := mancini.BindStringsChildren(ProgColumnWidth,
+		"_myName_", myName)
 	widthURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutWidth)
 	lh.Width = attr.ConstraintI64(widthURI, widthProg)
 

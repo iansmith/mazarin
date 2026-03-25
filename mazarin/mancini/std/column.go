@@ -43,21 +43,15 @@ func NewColumn(myName, parent string, pal mancini.Palette, crossAlign mancini.Al
 	alignURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutCrossAlign)
 	lh.CrossAlignHandle = attr.ValueI64(alignURI, int64(crossAlign))
 
-	// Build find pattern and URI fragments for constraint binding.
-	findPattern := mancini.FindPattern()
-	prefix := mancini.Int64Prefix()
-
 	// Column HEIGHT constraint: sum of children heights + spacing.
-	heightProg := mancini.BindStrings(ProgColumnHeight,
-		"_findPattern_", findPattern, "_spacing_", spacingURI, "_myName_", myName,
-		"_int64Prefix_", prefix, "_boolPrefix_", mancini.BoolPrefix(), "_heightSuffix_", mancini.LayoutHeight.Suffix(), "_visSuffix_", mancini.VisSuffix)
+	heightProg := mancini.BindStringsChildren(ProgColumnHeight,
+		"_spacing_", spacingURI, "_myName_", myName)
 	heightURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutHeight)
 	lh.Height = attr.ConstraintI64(heightURI, heightProg)
 
 	// Column WIDTH constraint: max of children widths.
-	widthProg := mancini.BindStrings(ProgColumnWidth,
-		"_findPattern_", findPattern, "_myName_", myName,
-		"_int64Prefix_", prefix, "_boolPrefix_", mancini.BoolPrefix(), "_widthSuffix_", mancini.LayoutWidth.Suffix(), "_visSuffix_", mancini.VisSuffix)
+	widthProg := mancini.BindStringsChildren(ProgColumnWidth,
+		"_myName_", myName)
 	widthURI := mancini.LayoutURI(myName, mancini.DataTypeInt64, mancini.LayoutWidth)
 	lh.Width = attr.ConstraintI64(widthURI, widthProg)
 

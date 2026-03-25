@@ -49,7 +49,7 @@ func LookupInteractor(name string) Interactor {
 // returns them sorted by registration sequence number.
 func FindChildren(parentName string) []Interactor {
 	// Find all URIs matching attr:///shepherd/{sid}/str/*/layout/Parent
-	uris := attr.Find(FindPattern())
+	uris := attr.Find(ChildPattern())
 	if len(uris) == 0 {
 		return nil
 	}
