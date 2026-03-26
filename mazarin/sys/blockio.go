@@ -7,6 +7,10 @@ import (
 
 const sysBlockRead = 0x1016
 
+// Deprecated: BlockRead uses synchronous kernel-side FAT32 I/O. Use
+// mem.AllocContiguous + mem.BlockSubmit + TrySoftIRQ for async DMA instead.
+// Will be removed once all callers migrate to the async path.
+//
 // BlockRead reads disk sectors into buf.
 // startLBA is the first sector, numSectors is the count.
 // buf must be at least numSectors * 512 bytes.
