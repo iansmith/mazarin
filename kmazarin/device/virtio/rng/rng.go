@@ -27,8 +27,7 @@ const (
 type rngDevice struct {
 	virtio.PCIDevice // Shared PCI transport (promoted: Bus, Slot, Func, etc.)
 
-	Queue          virtio.VirtQueue
-	QueueNotifyOff uint16
+	Eng virtio.Engine // Owns the PCI virtqueue, submit/complete
 
 	// DMA page layout:
 	//   [0..63]  result buffer (up to 64 bytes of entropy per request)
@@ -85,65 +84,40 @@ func Get(buf []byte) int {
 		resultBuf[i] = 0
 	}
 
-	// Submit a device-writable descriptor: the device fills it with entropy.
-	vq := &dev.Queue
-	descIdx := vq.FreeHead
-	if vq.NumFree == 0 {
+	// Build single-descriptor chain: device writes entropy to DMA page
+	var chain virtio.DescChain
+	chain.Descs[0] = virtio.DescSpec{
+		PA:    uint64(dev.DmaPagePA),
+		Len:   uint32(n),
+		Flags: virtio.VIRTQ_DESC_F_WRITE,
+	}
+	chain.Count = 1
+
+	tag := dev.Eng.Submit(&chain)
+	if tag == virtio.InvalidIOTag {
 		return 0
 	}
 
-	descSize := unsafe.Sizeof(virtio.VirtQDesc{})
-	desc := (*virtio.VirtQDesc)(unsafe.Pointer(uintptr(vq.DescTable) + uintptr(descIdx)*descSize))
-	desc.Addr = uint64(dev.DmaPagePA) // physical address for DMA
-	desc.Len = uint32(n)
-	desc.Flags = virtio.VIRTQ_DESC_F_WRITE // device writes to this buffer
-	desc.Next = 0
+	dev.Eng.Notify()
 
-	vq.FreeHead = desc.Next
-	vq.NumFree--
-
-	// Add to available ring (Ring is [0]uint16 — use unsafe pointer arithmetic)
-	avail := vq.Available
-	ringEntry := (*uint16)(unsafe.Pointer(uintptr(unsafe.Pointer(avail)) + 4 + uintptr(avail.Idx%vq.QueueSize)*2))
-	*ringEntry = descIdx
-	// Memory barrier before updating idx
-	*(*uint16)(unsafe.Pointer(&avail.Idx)) = avail.Idx + 1
-
-	// Notify the device
-	dev.Notify(dev.QueueNotifyOff, 0)
-
-	// Poll the ISR register until the device signals completion
+	// Poll used ring for completion (RNG has no interrupt, boot context only)
 	for i := 0; i < 1000000; i++ {
-		if dev.ReadISRStatus()&1 != 0 {
+		if dev.Eng.HasUsed() {
 			break
 		}
 	}
 
-	// Check used ring for completion
-	used := vq.Used
-	if used.Idx == vq.LastUsedIdx {
-		// Timeout — return descriptor to free list
-		vq.FreeHead = descIdx
-		vq.NumFree++
+	info := dev.Eng.PopUsed()
+	if info.Tag == virtio.InvalidIOTag {
 		return 0
 	}
 
-	usedElemPtr := (*virtio.VirtQUsedElem)(unsafe.Pointer(uintptr(unsafe.Pointer(used)) + 4 + uintptr(vq.LastUsedIdx%vq.QueueSize)*unsafe.Sizeof(virtio.VirtQUsedElem{})))
-	usedElem := *usedElemPtr
-	bytesWritten := int(usedElem.Len)
-	vq.LastUsedIdx++
-
-	// Return descriptor to free list
-	vq.FreeHead = descIdx
-	vq.NumFree++
-
+	bytesWritten := int(info.UsedLen)
 	if bytesWritten > n {
 		bytesWritten = n
 	}
 
-	// Copy from DMA buffer to caller's buffer
 	copy(buf[:bytesWritten], resultBuf[:bytesWritten])
-
 	return bytesWritten
 }
 
@@ -219,12 +193,11 @@ func handshake() bool {
 		queueSize = maxQueueSize
 	}
 
-	notifyOff, ok := dev.SetupQueue(0, &dev.Queue, queueSize, queuePagePA, queuePageVA, 0, virtio.MSIXNoVector)
-	if !ok {
-		console.KPrintln("[VirtIO RNG] ERROR: Failed to setup queue")
+	// Initialize engine: sets up VQ on DMA page, enables queue on device
+	if !dev.Eng.Init(&dev.PCIDevice, 0, queueSize, queuePagePA, queuePageVA, 0, virtio.MSIXNoVector) {
+		console.KPrintln("[VirtIO RNG] ERROR: Failed to init engine")
 		return false
 	}
-	dev.QueueNotifyOff = notifyOff
 
 	// Complete handshake
 	dev.SetDriverOK()
