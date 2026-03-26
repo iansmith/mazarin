@@ -35,10 +35,15 @@ func (d *VirtIOBlockDevice) WriteBlock(lba uint64, buf []byte) error {
 	return d.doBlockIO(VIRTIO_BLK_T_OUT, lba, buf)
 }
 
+// MaxInFlight is the maximum number of concurrent PCI block I/O requests.
+// Each in-flight request uses one sidecar slot (header+status) and one data
+// buffer region in the DMA page. With 512-byte blocks: 8 × 512 = 4096 = 1 page.
+const MaxInFlight = 8
+
 // DMA layout constants.
 //
 // PCI Engine mode: sidecar slots hold header+status (Device-nGnRnE),
-// DMA data page holds the data buffer at offset 0.
+// DMA data page holds per-slot data buffers at offset slotIdx*blockSize.
 // MMIO legacy mode: single DMA page holds header+status+data.
 const (
 	// PCI sidecar slot layout (32 bytes per slot)
@@ -54,12 +59,17 @@ const (
 
 // DoBlockIOSubmit sets up descriptors and submits a block I/O request.
 // Returns the head descriptor index, or 0xFFFF on error.
-// Clears IOComplete before notify so the IRQ handler can set it.
+// Does NOT notify the device — the caller must call Eng.Notify() after
+// submitting one or more requests (allows batching multiple submits with
+// a single notify).
+//
+// slotIdx selects which data buffer region in the DMA page to use (0..MaxInFlight-1).
+// Each slot's data buffer is at DmaPagePA + slotIdx*BlockSizeBytes.
 //
 // PCI mode uses Engine + SidecarPool. MMIO mode uses legacy Queue + DMA page.
 //
 //go:nosplit
-func (d *VirtIOBlockDevice) DoBlockIOSubmit(requestType uint32, lba uint64, buf []byte) (uint16, error) {
+func (d *VirtIOBlockDevice) DoBlockIOSubmit(requestType uint32, lba uint64, buf []byte, slotIdx uint8) (uint16, error) {
 	if d.MMIOBase != 0 {
 		return d.submitLegacy(requestType, lba, buf)
 	}
@@ -72,7 +82,7 @@ func (d *VirtIOBlockDevice) DoBlockIOSubmit(requestType uint32, lba uint64, buf 
 		console.KPrintln("[VirtIO Block] ERROR: No sidecar slots available")
 		return 0xFFFF, ErrNoDescriptors
 	}
-	d.activeSidecar = slot
+	d.inFlightSidecars[slotIdx] = slot
 
 	// Write request header into sidecar slot
 	reqPtr := (*VirtIOBlockReq)(unsafe.Pointer(slot.VA + sidecarReqOffset))
@@ -82,9 +92,13 @@ func (d *VirtIOBlockDevice) DoBlockIOSubmit(requestType uint32, lba uint64, buf 
 	// Initialize status byte to 0xFF (sentinel)
 	*(*VirtIOBlockStatus)(unsafe.Pointer(slot.VA + sidecarStatusOffset)) = 0xFF
 
+	// Data buffer within the DMA page, offset by slot index
+	dataPA := d.DmaPagePA + uintptr(slotIdx)*uintptr(d.BlockSizeBytes)
+	dataVA := d.DmaPageVA + uintptr(slotIdx)*uintptr(d.BlockSizeBytes)
+
 	// For writes, copy caller's data into DMA data buffer before submitting
-	if requestType == VIRTIO_BLK_T_OUT {
-		copyBytes(unsafe.Pointer(d.DmaPageVA), unsafe.Pointer(&buf[0]), uintptr(d.BlockSizeBytes))
+	if requestType == VIRTIO_BLK_T_OUT && len(buf) > 0 {
+		copyBytes(unsafe.Pointer(dataVA), unsafe.Pointer(&buf[0]), uintptr(d.BlockSizeBytes))
 	}
 
 	// Build 3-descriptor chain: req header → data buffer → status byte
@@ -99,7 +113,7 @@ func (d *VirtIOBlockDevice) DoBlockIOSubmit(requestType uint32, lba uint64, buf 
 		bufFlags = virtio.VIRTQ_DESC_F_WRITE // Device writes for read operations
 	}
 	chain.Descs[1] = virtio.DescSpec{
-		PA: uint64(d.DmaPagePA), Len: d.BlockSizeBytes, Flags: bufFlags,
+		PA: uint64(dataPA), Len: d.BlockSizeBytes, Flags: bufFlags,
 	}
 	chain.Descs[2] = virtio.DescSpec{
 		PA: uint64(slot.PA + sidecarStatusOffset), Len: 1, Flags: virtio.VIRTQ_DESC_F_WRITE,
@@ -116,19 +130,19 @@ func (d *VirtIOBlockDevice) DoBlockIOSubmit(requestType uint32, lba uint64, buf 
 		return 0xFFFF, ErrNoDescriptors
 	}
 
-	asm.Dsb()
-	d.Eng.Notify()
-
 	return uint16(tag), nil
 }
 
 // DoBlockIOComplete pops the used ring, checks status, and copies read data.
 // Must be called after IOComplete is set (by IRQ or polling).
 //
+// slotIdx identifies which in-flight slot to complete (matching the slotIdx
+// passed to DoBlockIOSubmit). For reads, copies data from the DMA slot into buf.
+//
 // PCI mode uses Engine + SidecarPool. MMIO mode uses legacy Queue + DMA page.
 //
 //go:nosplit
-func (d *VirtIOBlockDevice) DoBlockIOComplete(requestType uint32, reqDescIdx uint16, buf []byte) error {
+func (d *VirtIOBlockDevice) DoBlockIOComplete(requestType uint32, reqDescIdx uint16, buf []byte, slotIdx uint8) error {
 	if d.MMIOBase != 0 {
 		return d.completeLegacy(requestType, reqDescIdx, buf)
 	}
@@ -143,16 +157,17 @@ func (d *VirtIOBlockDevice) DoBlockIOComplete(requestType uint32, reqDescIdx uin
 		rawUsedIdx := asm.MmioRead16(usedVA + 2)
 		console.KPrintf("[VirtIO Block] ERROR: Unexpected descriptor index (got %d, expected %d) Used.Idx=%d LastUsedIdx=%d avail=%d\n",
 			uint16(info.Tag), reqDescIdx, rawUsedIdx, d.Eng.VQ.LastUsedIdx, d.Eng.VQ.Available.Idx)
-		d.Sidecars.Release(d.activeSidecar)
+		d.Sidecars.Release(d.inFlightSidecars[slotIdx])
 		return ErrDeviceError
 	}
 
 	// Check status from sidecar slot
-	statusPtr := (*VirtIOBlockStatus)(unsafe.Pointer(d.activeSidecar.VA + sidecarStatusOffset))
+	slot := d.inFlightSidecars[slotIdx]
+	statusPtr := (*VirtIOBlockStatus)(unsafe.Pointer(slot.VA + sidecarStatusOffset))
 	status := *statusPtr
 	if status != VIRTIO_BLK_S_OK {
 		console.KPrintf("[VirtIO Block] ERROR: Bad status=%d type=%d\n", status, requestType)
-		d.Sidecars.Release(d.activeSidecar)
+		d.Sidecars.Release(slot)
 		if status == VIRTIO_BLK_S_IOERR {
 			return ErrIOError
 		} else if status == VIRTIO_BLK_S_UNSUPP {
@@ -161,13 +176,63 @@ func (d *VirtIOBlockDevice) DoBlockIOComplete(requestType uint32, reqDescIdx uin
 		return ErrDeviceError
 	}
 
-	// For reads, copy data from DMA buffer into caller's buffer
-	if requestType == VIRTIO_BLK_T_IN {
-		copyBytes(unsafe.Pointer(&buf[0]), unsafe.Pointer(d.DmaPageVA), uintptr(d.BlockSizeBytes))
+	// For reads, copy data from DMA slot into caller's buffer
+	if requestType == VIRTIO_BLK_T_IN && len(buf) > 0 {
+		dataVA := d.DmaPageVA + uintptr(slotIdx)*uintptr(d.BlockSizeBytes)
+		copyBytes(unsafe.Pointer(&buf[0]), unsafe.Pointer(dataVA), uintptr(d.BlockSizeBytes))
 	}
 
-	d.Sidecars.Release(d.activeSidecar)
+	d.Sidecars.Release(slot)
 	return nil
+}
+
+// CompleteReadSlot checks the sidecar status byte and releases the sidecar slot
+// for the given in-flight slot index. Called from the batch path after the caller
+// has already popped the completion from the used ring via Engine.PopUsed().
+// Does NOT copy data — the caller copies directly from DataSlotVA to userspace.
+//
+//go:nosplit
+func (d *VirtIOBlockDevice) CompleteReadSlot(slotIdx uint8) error {
+	slot := d.inFlightSidecars[slotIdx]
+	statusPtr := (*VirtIOBlockStatus)(unsafe.Pointer(slot.VA + sidecarStatusOffset))
+	status := *statusPtr
+	d.Sidecars.Release(slot)
+	if status != VIRTIO_BLK_S_OK {
+		if status == VIRTIO_BLK_S_IOERR {
+			return ErrIOError
+		}
+		if status == VIRTIO_BLK_S_UNSUPP {
+			return ErrUnsupported
+		}
+		return ErrDeviceError
+	}
+	return nil
+}
+
+// DataSlotVA returns the kernel VA of the data buffer for the given slot index.
+// The data at this address is valid after the device completes the I/O request.
+//
+//go:nosplit
+func (d *VirtIOBlockDevice) DataSlotVA(slotIdx uint8) uintptr {
+	return d.DmaPageVA + uintptr(slotIdx)*uintptr(d.BlockSizeBytes)
+}
+
+// MaxBatchSize returns the maximum number of sectors that can be in-flight
+// simultaneously, limited by the DMA data page size and block size.
+//
+//go:nosplit
+func (d *VirtIOBlockDevice) MaxBatchSize() uint8 {
+	if d.BlockSizeBytes == 0 {
+		return 1
+	}
+	n := uint32(4096) / d.BlockSizeBytes
+	if n > MaxInFlight {
+		n = MaxInFlight
+	}
+	if n == 0 {
+		n = 1
+	}
+	return uint8(n)
 }
 
 // doBlockIO performs a block I/O operation using polling (fallback path).
@@ -176,7 +241,7 @@ func (d *VirtIOBlockDevice) DoBlockIOComplete(requestType uint32, reqDescIdx uin
 //
 //go:nosplit
 func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte) error {
-	reqDescIdx, err := d.DoBlockIOSubmit(requestType, lba, buf)
+	reqDescIdx, err := d.DoBlockIOSubmit(requestType, lba, buf, 0)
 	if err != nil {
 		return err
 	}
@@ -208,8 +273,12 @@ func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte
 			return ErrTimeout
 		}
 	} else {
-		// PCI polling (Engine-based). bootYieldForIO reads the ISR register
-		// (forcing a VM exit on HVF/TCG) or does WFI/StiHlt.
+		// PCI polling (Engine-based). Notify device, then poll for completion.
+		// bootYieldForIO reads the ISR register (forcing a VM exit on HVF/TCG)
+		// or does WFI/StiHlt.
+		asm.Dsb()
+		d.Eng.Notify()
+
 		const maxWaits = 1000000
 		for i := 0; i < maxWaits; i++ {
 			if d.Eng.HasUsed() {
@@ -223,7 +292,7 @@ func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte
 		}
 	}
 
-	return d.DoBlockIOComplete(requestType, reqDescIdx, buf)
+	return d.DoBlockIOComplete(requestType, reqDescIdx, buf, 0)
 }
 
 // ============================================================================

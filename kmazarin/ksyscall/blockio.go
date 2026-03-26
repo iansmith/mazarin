@@ -15,6 +15,7 @@ import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
+	"mazzy/kmazarin/device/virtio"
 	"mazzy/kmazarin/device/virtio/block"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
@@ -71,34 +72,27 @@ func SyscallBlockRead(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	dev := block.GetDevice()
 	useInterrupt := dev != nil && dev.IRQNum != 0
 
-	// Read each sector and copy to userspace
+	if useInterrupt {
+		return blockReadBatch(dev, startLBA, numSectors, bufVA, blockSize, l0PA)
+	}
+
+	// Fallback: sector-by-sector polling (boot path, no interrupts)
 	var sectorBuf [512]byte
 	for i := uint64(0); i < numSectors; i++ {
 		lba := startLBA + i
 		buf := sectorBuf[:blockSize]
 
-		var err error
-		if useInterrupt {
-			err = blockReadInterrupt(dev, lba, buf)
-		} else {
-			err = blk.ReadBlock(lba, buf)
-		}
-		if err != nil {
+		if err := blk.ReadBlock(lba, buf); err != nil {
 			serial.RawUARTPuts("[BlockRead] I/O error at LBA ")
 			serial.RawUARTDecimal(lba)
 			serial.RawUARTPuts("\r\n")
 			return -5 // EIO
 		}
 
-		// Copy sector data to userspace via scratch mapping
 		dstVA := bufVA + uintptr(i*blockSize)
 		if !copyToUser(dstVA, buf, l0PA) {
 			serial.RawUARTPuts("[BlockRead] EFAULT at LBA ")
 			serial.RawUARTDecimal(lba)
-			serial.RawUARTPuts(" dstVA=0x")
-			serial.RawUARTHex64(uint64(dstVA))
-			serial.RawUARTPuts(" l0PA=0x")
-			serial.RawUARTHex64(uint64(l0PA))
 			serial.RawUARTPuts("\r\n")
 			return -14 // EFAULT
 		}
@@ -107,63 +101,112 @@ func SyscallBlockRead(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	return 0
 }
 
-// blockReadInterrupt performs a single block read using interrupt-driven I/O.
-// Submits the request, waits for the MSI-X/INTx interrupt to signal completion
-// via IOComplete, then reads the result from the used ring.
+// blockReadBatch reads sectors using batched interrupt-driven I/O.
+// Submits up to MaxBatchSize sectors at once, single notify, then waits
+// for all completions via WFI loop. Copies each completed sector directly
+// from the DMA data slot to userspace (no intermediate kernel buffer).
 //
-// Runs synchronously within the SVC handler using EnableIRQsAndWait
-// (DAIFClr + WFI + DAIFSet) to halt the CPU until the block device interrupt
-// fires. svcDepth=1 prevents timer preemption during the SVC handler, so
-// only device interrupts are processed. Interrupt-driven, not a busy-loop;
-// completes in microseconds.
+// Uses EnableIRQsAndWait (DAIFClr + WFI + DAIFSet) to halt the CPU until
+// the block device interrupt fires. svcDepth=1 prevents timer preemption
+// during the SVC handler, so only device interrupts are processed.
 //
 //go:noinline
-func blockReadInterrupt(dev *block.VirtIOBlockDevice, lba uint64, buf []byte) error {
-	if uint64(len(buf)) < dev.BlockSize() {
-		return block.ErrBufferTooSmall
-	}
+func blockReadBatch(dev *block.VirtIOBlockDevice, startLBA, numSectors uint64,
+	bufVA uintptr, blockSize uint64, l0PA uintptr) int64 {
 
-	reqDescIdx, err := dev.DoBlockIOSubmit(block.VIRTIO_BLK_T_IN, lba, buf)
-	if err != nil {
-		return err
-	}
-
-	// Wait for I/O completion via interrupt. EnableIRQsAndWait enables IRQs,
-	// executes WFI (CPU halts until interrupt), then re-disables IRQs.
-	//
-	// We check VirtqueueHasUsed (the actual used ring) rather than IOComplete
-	// because under HVF, stale MSI-X interrupts from a previous polling-path
-	// I/O can set IOComplete prematurely before the current request completes.
-	// The polling path (doBlockIO, used during early boot) leaves interrupts
-	// pending in the GIC; when we unmask IRQs here, the stale interrupt fires
-	// and sets IOComplete even though Used.Idx hasn't been updated for our
-	// request. VirtqueueHasUsed checks the used ring directly, so stale
-	// interrupts just cause a harmless extra WFI iteration.
-	//
-	// Still interrupt-driven: WFI halts until an interrupt wakes us, we just
-	// verify the used ring rather than trusting a flag.
-	// Timeout: 5 seconds. If the device fails to complete the request
-	// (no IRQ, no used ring update), return EIO rather than hang forever.
+	maxBatch := uint64(dev.MaxBatchSize())
 	freq := uint64(kirq.GetTimerFrequency())
-	deadline := kirq.ReadCounterValue() + freq*5
 
-	for !dev.Eng.HasUsed() {
-		if kirq.ReadCounterValue() > deadline {
-			serial.RawUARTPuts("[BlockRead] TIMEOUT: no completion at LBA ")
-			serial.RawUARTDecimal(lba)
-			serial.RawUARTPuts("\r\n")
-			return block.ErrTimeout
+	for sectorsRead := uint64(0); sectorsRead < numSectors; {
+		// Determine batch size for this iteration
+		batch := numSectors - sectorsRead
+		if batch > maxBatch {
+			batch = maxBatch
 		}
-		enableIRQsAndWait()
+
+		// Submit batch — one request per slot, single notify at end
+		var tags [block.MaxInFlight]uint16
+		for i := uint64(0); i < batch; i++ {
+			lba := startLBA + sectorsRead + i
+			tag, err := dev.DoBlockIOSubmit(block.VIRTIO_BLK_T_IN, lba, nil, uint8(i))
+			if err != nil {
+				serial.RawUARTPuts("[BlockRead] submit error at LBA ")
+				serial.RawUARTDecimal(lba)
+				serial.RawUARTPuts("\r\n")
+				return -5 // EIO
+			}
+			tags[i] = tag
+		}
+
+		asm.Dsb()
+		dev.Eng.Notify()
+
+		// Wait for all completions. Uses WFI (interrupt-driven, not polling).
+		// Timeout: 5 seconds per batch.
+		deadline := kirq.ReadCounterValue() + freq*5
+		completed := uint64(0)
+
+		for completed < batch {
+			// Wait for at least one used ring entry
+			for !dev.Eng.HasUsed() {
+				if kirq.ReadCounterValue() > deadline {
+					serial.RawUARTPuts("[BlockRead] TIMEOUT in batch\r\n")
+					return -5 // EIO
+				}
+				enableIRQsAndWait()
+			}
+
+			asm.DmaRmb()
+
+			// Drain all available completions
+			for dev.Eng.HasUsed() && completed < batch {
+				info := dev.Eng.PopUsed()
+				if info.Tag == virtio.InvalidIOTag {
+					break
+				}
+
+				// Find which batch slot this completion belongs to
+				slotIdx := int(-1)
+				for j := uint64(0); j < batch; j++ {
+					if tags[j] == uint16(info.Tag) {
+						slotIdx = int(j)
+						break
+					}
+				}
+				if slotIdx < 0 {
+					serial.RawUARTPuts("[BlockRead] unexpected tag in batch\r\n")
+					return -5 // EIO
+				}
+
+				// Check sidecar status and release sidecar slot
+				if err := dev.CompleteReadSlot(uint8(slotIdx)); err != nil {
+					serial.RawUARTPuts("[BlockRead] I/O error in batch at LBA ")
+					serial.RawUARTDecimal(startLBA + sectorsRead + uint64(slotIdx))
+					serial.RawUARTPuts("\r\n")
+					return -5 // EIO
+				}
+
+				// Copy data from DMA slot directly to userspace
+				dataVA := dev.DataSlotVA(uint8(slotIdx))
+				srcBuf := unsafe.Slice((*byte)(unsafe.Pointer(dataVA)), int(blockSize))
+				dstVA := bufVA + uintptr((sectorsRead+uint64(slotIdx))*blockSize)
+				if !copyToUser(dstVA, srcBuf, l0PA) {
+					serial.RawUARTPuts("[BlockRead] EFAULT in batch at LBA ")
+					serial.RawUARTDecimal(startLBA + sectorsRead + uint64(slotIdx))
+					serial.RawUARTPuts("\r\n")
+					return -14 // EFAULT
+				}
+
+				// Mark tag as completed to avoid double-match
+				tags[slotIdx] = 0xFFFF
+				completed++
+			}
+		}
+
+		sectorsRead += batch
 	}
 
-	// DMA read barrier: ensure the device's used ring DMA writes are visible
-	// before we read them in DoBlockIOComplete. Under HVF, the VirtIO backend
-	// runs on a separate host thread; this barrier orders their DMA writes
-	// before our reads. (EnableIRQsAndWait also has a DMB, but belt-and-suspenders.)
-	asm.DmaRmb()
-
-	return dev.DoBlockIOComplete(block.VIRTIO_BLK_T_IN, reqDescIdx, buf)
+	return 0
 }
 
 // copyToUser copies data from a kernel buffer to a userspace VA.

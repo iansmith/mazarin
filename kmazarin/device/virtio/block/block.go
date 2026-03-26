@@ -46,8 +46,9 @@ type VirtIOBlockDevice struct {
 	IRQNum     uint32 // Assigned IRQ number (0 = polling mode, no interrupts)
 	IOComplete uint32 // Atomic: MMIO mode only (PCI uses Eng.IOComplete)
 
-	// Phase 1: single in-flight sidecar tracking (PCI only)
-	activeSidecar virtio.SidecarSlot
+	// Phase 2: per-slot in-flight sidecar tracking (PCI only).
+	// Each slot corresponds to a data buffer region at DmaPagePA + slotIdx*BlockSizeBytes.
+	inFlightSidecars [MaxInFlight]virtio.SidecarSlot
 }
 
 // Global device instance
