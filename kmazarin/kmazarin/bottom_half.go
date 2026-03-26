@@ -8,6 +8,7 @@ import (
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/ksyscall"
+	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
 	"sync/atomic"
@@ -134,6 +135,7 @@ type blockAsyncSlot struct {
 	sidecarIdx      uint8   // Sidecar slot index (for release)
 	dataKernelVA    uintptr // Kernel VA of data page (PA + KernelMMIOOffset)
 	dataLen         uint32  // Data buffer size (for cache invalidate)
+	clump           *proc.DMAClump // non-nil if buffer is in a MAZARIN_CONTIGUOUS clump
 }
 
 var blockAsyncSlots [256]blockAsyncSlot // indexed by IOTag (descriptor head index)
@@ -151,15 +153,17 @@ func SetBlockIRQ(irqNum uint32, isrBase uintptr, ioComplete *uint32, enginePtr u
 
 // SetBlockAsyncSlot stores per-tag metadata for async completion.
 // Called from SysBlockSubmit after engine.Submit returns the IOTag.
+// clump may be nil if the buffer is in a legacy DMA pool (not a MAZARIN_CONTIGUOUS clump).
 //
 //go:nosplit
-func SetBlockAsyncSlot(tag uint16, sidecarStatusVA uintptr, sidecarIdx uint8, dataKernelVA uintptr, dataLen uint32) {
+func SetBlockAsyncSlot(tag uint16, sidecarStatusVA uintptr, sidecarIdx uint8, dataKernelVA uintptr, dataLen uint32, clump *proc.DMAClump) {
 	if tag < 256 {
 		blockAsyncSlots[tag] = blockAsyncSlot{
 			sidecarStatusVA: sidecarStatusVA,
 			sidecarIdx:      sidecarIdx,
 			dataKernelVA:    dataKernelVA,
 			dataLen:         dataLen,
+			clump:           clump,
 		}
 	}
 }
@@ -314,6 +318,17 @@ func NonTimerIRQTopHalf() {
 				// Release sidecar slot (bitmap OR — nosplit safe)
 				if blockSidecarFreePtr != nil {
 					*blockSidecarFreePtr |= uint64(1) << uint(meta.sidecarIdx)
+				}
+
+				// Decrement InFlight on DMA clump (if applicable).
+				// If the clump is pending release and InFlight hits 0,
+				// free the contiguous pages. This handles the case where
+				// munmap was called while I/O was in flight.
+				if meta.clump != nil {
+					remaining := atomic.AddInt32(&meta.clump.InFlight, -1)
+					if remaining == 0 && (meta.clump.ShepherdDead || meta.clump.PendingRelease) {
+						kmem.BuddyFreeTyped(meta.clump.StartPA, meta.clump.BuddyOrder, kmem.PageUserDMA)
+					}
 				}
 
 				// Push completion event to ring (must use ringPush which

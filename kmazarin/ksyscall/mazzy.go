@@ -61,9 +61,8 @@ const (
 	SysRegisterCursor       = MazzySyscallBase + 50 // 0x1032 - Register cursor image, get cursor ID
 	SysSetCursor            = MazzySyscallBase + 51 // 0x1033 - Switch active cursor by ID
 	SysGetReady             = MazzySyscallBase + 52 // 0x1034 - Check if named shepherd is ready
-	SysRegisterDMAPool      = MazzySyscallBase + 53 // 0x1035 - Register userspace pages for direct DMA I/O
-	SysUnregisterDMAPool    = MazzySyscallBase + 54 // 0x1036 - Unregister DMA page pool
-	SysBlockSubmit          = MazzySyscallBase + 55 // 0x1037 - Async block I/O submit (returns IOTag)
+	// slots 53-54 (0x1035-0x1036) freed: were RegisterDMAPool/UnregisterDMAPool
+	SysBlockSubmit = MazzySyscallBase + 55 // 0x1037 - Async block I/O submit (returns IOTag)
 )
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
@@ -119,9 +118,8 @@ var mazzySyscallTable = [64]SyscallHandler{
 	50: SyscallRegisterCursor,          // RegisterCursor = 0x1032
 	51: SyscallSetCursor,               // SetCursor = 0x1033
 	52: SyscallGetReady,               // GetReady = 0x1034
-	53: SyscallRegisterDMAPool,        // RegisterDMAPool = 0x1035
-	54: SyscallUnregisterDMAPool,      // UnregisterDMAPool = 0x1036
-	55: SyscallBlockSubmit,            // BlockSubmit = 0x1037
+	// slots 53-54 freed (were RegisterDMAPool/UnregisterDMAPool)
+	55: SyscallBlockSubmit, // BlockSubmit = 0x1037
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.

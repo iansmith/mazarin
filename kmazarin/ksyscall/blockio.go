@@ -135,18 +135,17 @@ func blockReadBatch(dev *block.VirtIOBlockDevice, startLBA, numSectors uint64,
 	maxBatch := uint64(dev.MaxBatchSize())
 	freq := uint64(kirq.GetTimerFrequency())
 
-	// Check for DMA pool zero-copy path.
-	// If the caller has a registered pool and the buffer falls within it,
+	// Check for DMA clump zero-copy path.
+	// If the caller has a MAZARIN_CONTIGUOUS clump covering the buffer,
 	// we submit I/O directly to the userspace pages (no kernel copy).
 	shepherd := proc.CurrentShepherd()
-	var pool *proc.DMAPool
+	var clump *proc.DMAClump
 	zeroCopy := false
 	if shepherd != nil {
-		pool = shepherd.DMAPool
-		if pool != nil {
-			// Verify the entire buffer range falls within the pool
+		clump = shepherd.FindClumpByVA(bufVA)
+		if clump != nil {
 			endVA := bufVA + uintptr(numSectors*blockSize) - 1
-			if pool.LookupPA(bufVA) != 0 && pool.LookupPA(endVA) != 0 {
+			if clump.LookupPA(bufVA) != 0 && clump.LookupPA(endVA) != 0 {
 				zeroCopy = true
 			}
 		}
@@ -166,9 +165,9 @@ func blockReadBatch(dev *block.VirtIOBlockDevice, startLBA, numSectors uint64,
 
 			var extDataPA uintptr
 			if zeroCopy {
-				// Look up the cached PA for this userspace page
+				// Look up the PA from the DMA clump
 				va := bufVA + uintptr((sectorsRead+uint64(i))*blockSize)
-				extDataPA = pool.LookupPA(va)
+				extDataPA = clump.LookupPA(va)
 				if extDataPA == 0 {
 					serial.RawUARTPuts("[BlockRead] DMA pool lookup failed at VA ")
 					serial.RawUARTHex64(uint64(va))
@@ -241,7 +240,7 @@ func blockReadBatch(dev *block.VirtIOBlockDevice, startLBA, numSectors uint64,
 				if zeroCopy {
 					// Invalidate cache so CPU sees device-written data
 					va := bufVA + uintptr((sectorsRead+uint64(slotIdx))*blockSize)
-					pa := pool.LookupPA(va)
+					pa := clump.LookupPA(va)
 					kernelVA := pa + constants.KernelMMIOOffset
 					asm.InvalidateDCacheRange(kernelVA, uintptr(blockSize))
 					asm.DmaRmb()

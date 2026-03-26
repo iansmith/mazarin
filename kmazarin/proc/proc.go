@@ -8,6 +8,7 @@
 // can import proc freely.
 package proc
 
+
 // MaxShepherds is the maximum number of shepherd processes (userspace programs).
 const MaxShepherds = 32
 
@@ -81,42 +82,13 @@ type Shepherd struct {
 	// 0 = not ready, 1 = ready.
 	Ready int32
 
-	// DMAPool tracks userspace pages registered for direct DMA I/O (zero-copy).
-	// Nil until the shepherd calls SysRegisterDMAPool.
-	DMAPool *DMAPool
-}
-
-// DMAPoolMaxPages is the maximum number of pages in a DMA pool.
-const DMAPoolMaxPages = 256
-
-// DMAPoolEntry tracks one page registered in a DMA pool.
-type DMAPoolEntry struct {
-	UserVA uintptr // Userspace virtual address of the page
-	PA     uintptr // Physical address (cached from page table walk at registration)
-}
-
-// DMAPool tracks a set of userspace pages registered for direct DMA I/O.
-// The pool is a contiguous VA range. Each page's PA is cached at registration
-// time for O(1) lookup during I/O submission.
-type DMAPool struct {
-	Entries  [DMAPoolMaxPages]DMAPoolEntry
-	NumPages int
-	BaseVA   uintptr // Start of the contiguous VA range
-}
-
-// LookupPA returns the physical address for a userspace VA within this pool.
-// Returns 0 if the VA is not in the pool.
-func (p *DMAPool) LookupPA(va uintptr) uintptr {
-	if p == nil || va < p.BaseVA {
-		return 0
-	}
-	offset := va - p.BaseVA
-	pageIdx := int(offset >> 12) // / PageSize
-	if pageIdx >= p.NumPages {
-		return 0
-	}
-	pageOffset := va & 0xFFF
-	return p.Entries[pageIdx].PA + pageOffset
+	// DMAClumps tracks physically contiguous page ranges allocated by this
+	// shepherd via mmap(MAZARIN_CONTIGUOUS). Used by BlockSubmit for VA→PA
+	// resolution and by munmap/death for safe deferred page release.
+	// Fixed-size array (not heap-allocated) so registration is nosplit-safe
+	// inside SyscallMmap on the g0 stack.
+	DMAClumps    [MaxDMAClumps]DMAClump
+	NumDMAClumps int32
 }
 
 // Id implements the ds.Ider interface for Shepherd.

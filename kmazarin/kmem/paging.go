@@ -2387,6 +2387,32 @@ func MapPageInProcess(shepherdID int16, va, pa uintptr, elfFlags uint32) bool {
 	return ok
 }
 
+// MapContiguousUserPages maps numPages physically contiguous pages starting at
+// basePA into the shepherd's address space at baseVA. All pages are mapped RW,
+// no-execute. The pfContext is saved/restored so page table pages are attributed
+// to the correct shepherd. Returns true if all pages were mapped successfully.
+//
+//go:nosplit
+func MapContiguousUserPages(shepherdID int16, l0PA, baseVA, basePA uintptr, numPages int) bool {
+	savedPID := pfContextShepherdID
+	savedTID := pfContextThreadID
+	pfContextShepherdID = shepherdID
+	pfContextThreadID = -1
+	elfFlags := uint32(ELF_PF_R | ELF_PF_W)
+	for i := 0; i < numPages; i++ {
+		va := baseVA + uintptr(i)*PageSize
+		pa := basePA + uintptr(i)*PageSize
+		if !mapUserPageWithL0(va, pa, elfFlags, l0PA) {
+			pfContextShepherdID = savedPID
+			pfContextThreadID = savedTID
+			return false
+		}
+	}
+	pfContextShepherdID = savedPID
+	pfContextThreadID = savedTID
+	return true
+}
+
 // GetUserL3PTE returns the raw L3 PTE for a userspace VA.
 // Uses the process-specific page table if one exists.
 // Useful for debugging page table entries.

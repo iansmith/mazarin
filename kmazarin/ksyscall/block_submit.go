@@ -57,13 +57,6 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		return -1 // EPERM
 	}
 
-	// Require DMA pool
-	pool := shepherd.DMAPool
-	if pool == nil {
-		serial.RawUARTPuts("[BlockSubmit] EINVAL: no DMA pool registered\r\n")
-		return -22 // EINVAL
-	}
-
 	// Get block device
 	_, ok := device.GetBlockDevice()
 	if !ok {
@@ -86,17 +79,19 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		return -22 // EINVAL
 	}
 
-	// Validate buffer is in DMA pool
-	pa := pool.LookupPA(bufVA)
-	if pa == 0 {
-		serial.RawUARTPuts("[BlockSubmit] EFAULT: bufVA not in DMA pool\r\n")
+	// Resolve bufVA → PA via DMA clump (MAZARIN_CONTIGUOUS pages).
+	clump := shepherd.FindClumpByVA(bufVA)
+	if clump == nil {
+		serial.RawUARTPuts("[BlockSubmit] EFAULT: bufVA not in any DMA clump\r\n")
 		return -14 // EFAULT
 	}
-	endPA := pool.LookupPA(bufVA + uintptr(totalBytes) - 1)
-	if endPA == 0 {
-		serial.RawUARTPuts("[BlockSubmit] EFAULT: buffer end not in DMA pool\r\n")
+	pa := clump.LookupPA(bufVA)
+	endPA := clump.LookupPA(bufVA + uintptr(totalBytes) - 1)
+	if pa == 0 || endPA == 0 {
+		serial.RawUARTPuts("[BlockSubmit] EFAULT: buffer extends beyond clump\r\n")
 		return -14 // EFAULT
 	}
+	atomic.AddInt32(&clump.InFlight, 1)
 
 	// Enable async mode on first call
 	if atomic.LoadUint32(&blockAsyncEnabled) == 0 {
@@ -126,7 +121,7 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	if requestType == block.VIRTIO_BLK_T_OUT {
 		dataKernelVA = 0 // No cache invalidate needed for writes
 	}
-	setBlockAsyncSlot(tag, sidecarSlot.VA+16, sidecarSlot.Index, dataKernelVA, uint32(totalBytes))
+	setBlockAsyncSlot(tag, sidecarSlot.VA+16, sidecarSlot.Index, dataKernelVA, uint32(totalBytes), clump)
 
 	// Notify device
 	asm.Dsb()

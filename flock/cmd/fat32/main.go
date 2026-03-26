@@ -78,36 +78,33 @@ func init() {
 func MazarinMain() {
 	debugPuts("[fs] FAT32 filesystem maz starting\n")
 
-	// Allocate and register a persistent DMA pool for async block I/O.
-	// The pool stays registered for the lifetime of fs.maz.
+	// Allocate physically contiguous DMA pages via MAZARIN_CONTIGUOUS.
+	// The kernel allocates a contiguous block from the buddy allocator,
+	// pre-maps all PTEs, and registers a DMA clump automatically.
+	// No separate RegisterDMAPool step needed.
 	const numPoolPages = 8
 	poolSize := uintptr(numPoolPages) * 4096
+	const mazarinContiguous = 0x200000 // shared/constants.MAZARIN_CONTIGUOUS
 	poolVA, _, errno := syscall.RawSyscall6(
 		syscall.SYS_MMAP, 0, poolSize,
 		syscall.PROT_READ|syscall.PROT_WRITE,
-		syscall.MAP_PRIVATE|syscall.MAP_ANONYMOUS,
+		syscall.MAP_PRIVATE|syscall.MAP_ANONYMOUS|mazarinContiguous,
 		^uintptr(0), 0)
 
 	var blkDev blockdev.BlockDevice
 	if errno == 0 && int64(poolVA) > 0 {
-		if err := sys.RegisterDMAPool(poolVA, numPoolPages); err != nil {
-			debugPuts("[fs] RegisterDMAPool failed, using sync fallback\n")
-			poolVA = 0
-		}
-	} else {
-		debugPuts("[fs] DMA pool mmap failed, using sync fallback\n")
-		poolVA = 0
-	}
-
-	if poolVA != 0 {
-		debugPuts("[fs] using async DMA block device (BlockSubmit+SoftIRQ)\n")
+		debugPuts("[fs] using async DMA block device (MAZARIN_CONTIGUOUS)\n")
 		blkDev = &asyncBlockDev{poolVA: poolVA}
-	} else if injectedBlockDev != nil {
-		debugPuts("[fs] using injected BlockDevice\n")
-		blkDev = injectedBlockDev
 	} else {
-		debugPuts("[fs] using SysBlockRead fallback\n")
-		blkDev = &userspaceBlockDev{}
+		debugPuts("[fs] DMA mmap failed, using sync fallback\n")
+		poolVA = 0
+		if injectedBlockDev != nil {
+			debugPuts("[fs] using injected BlockDevice\n")
+			blkDev = injectedBlockDev
+		} else {
+			debugPuts("[fs] using SysBlockRead fallback\n")
+			blkDev = &userspaceBlockDev{}
+		}
 	}
 
 	fs, fsErr := fat32.Mount(blkDev)

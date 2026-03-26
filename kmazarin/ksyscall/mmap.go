@@ -2,7 +2,10 @@
 package ksyscall
 
 import (
+	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
+	"mazzy/kmazarin/serial"
+	"mazzy/shared/constants"
 	"sync/atomic"
 	"unsafe"
 )
@@ -73,6 +76,11 @@ func SyscallMmap(addr, length, prot, flags, fd, offset uint64) int64 {
 	// Align length to page size (4KB)
 	pageSize := uint64(4096)
 	alignedLength := (length + pageSize - 1) & ^(pageSize - 1)
+
+	// MAZARIN_CONTIGUOUS: physically contiguous DMA pages, pre-mapped
+	if (flags & constants.MAZARIN_CONTIGUOUS) != 0 {
+		return syscallMmapContiguous(alignedLength)
+	}
 
 	var result uint64
 
@@ -240,6 +248,85 @@ func bumpAllocForShepherd(p *proc.Shepherd, size uint64) uint64 {
 			return currentPtr
 		}
 	}
+}
+
+// ============================================================================
+// MAZARIN_CONTIGUOUS: physically contiguous DMA pages
+// ============================================================================
+
+// syscallMmapContiguous allocates physically contiguous pages from the buddy
+// allocator, pre-maps all PTEs (no demand paging), and registers the pages
+// as a DMA clump for the calling shepherd. Returns the VA, or a negative
+// errno on failure.
+//
+//go:nosplit
+func syscallMmapContiguous(alignedLength uint64) int64 {
+	p := proc.CurrentShepherd()
+	if p == nil {
+		return -1 // EPERM — only userspace can allocate DMA clumps
+	}
+
+	numPages := int(alignedLength / 4096)
+
+	// Compute buddy order = ceil(log2(numPages))
+	order := 0
+	for (1 << uint(order)) < numPages {
+		order++
+	}
+	if order >= kmem.MaxOrder {
+		return -12 // ENOMEM — request too large
+	}
+
+	// The buddy allocator gives us 2^order pages, which may be more
+	// than requested. We track the actual requested numPages but free
+	// the full 2^order block when done.
+	buddyPages := 1 << uint(order)
+
+	// Allocate contiguous physical pages
+	basePA := kmem.BuddyAllocTyped(order, kmem.PageUserDMA, int16(p.PID))
+	if basePA == 0 {
+		serial.RawUARTPuts("[mmap] CONTIGUOUS: buddy alloc failed order=")
+		serial.RawUARTHex64(uint64(order))
+		serial.RawUARTPuts("\r\n")
+		return -12 // ENOMEM
+	}
+
+	// Allocate VA from the shepherd's bump allocator
+	// We allocate the full buddy block size to keep VA alignment simple
+	vaSize := uint64(buddyPages) * 4096
+	baseVA := userBumpAlloc(vaSize)
+	if baseVA == 0 {
+		kmem.BuddyFreeTyped(basePA, order, kmem.PageUserDMA)
+		return -12 // ENOMEM
+	}
+	addSpan(baseVA, vaSize)
+
+	// Pre-map ALL pages (no demand paging for DMA pages)
+	if !kmem.MapContiguousUserPages(int16(p.PID), p.PageTableL0PA,
+		uintptr(baseVA), basePA, buddyPages) {
+		kmem.BuddyFreeTyped(basePA, order, kmem.PageUserDMA)
+		return -12 // ENOMEM — page table allocation failed
+	}
+
+	// Register DMA clump for this shepherd
+	clump := p.AddClump(basePA, uintptr(baseVA), numPages, order)
+	if clump == nil {
+		// Too many clumps — unmap and free
+		kmem.BuddyFreeTyped(basePA, order, kmem.PageUserDMA)
+		return -12 // ENOMEM
+	}
+
+	serial.RawUARTPuts("[mmap] CONTIGUOUS: ")
+	serial.RawUARTHex64(uint64(numPages))
+	serial.RawUARTPuts(" pages (order ")
+	serial.RawUARTHex64(uint64(order))
+	serial.RawUARTPuts(") PA=")
+	serial.RawUARTHex64(uint64(basePA))
+	serial.RawUARTPuts(" VA=")
+	serial.RawUARTHex64(baseVA)
+	serial.RawUARTPuts("\r\n")
+
+	return int64(baseVA)
 }
 
 // ============================================================================
