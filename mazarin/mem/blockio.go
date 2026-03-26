@@ -1,4 +1,4 @@
-package sys
+package mem
 
 import (
 	"mazzy/shared/mazzy"
@@ -7,7 +7,7 @@ import (
 )
 
 // Deprecated: BlockRead uses synchronous kernel-side FAT32 I/O. Use
-// mem.AllocContiguous + mem.BlockSubmit + TrySoftIRQ for async DMA instead.
+// AllocContiguous + BlockSubmit + TrySoftIRQ for async DMA instead.
 // Will be removed once all callers migrate to the async path.
 //
 // BlockRead reads disk sectors into buf.
@@ -16,7 +16,7 @@ import (
 //
 // Only callable by the shepherd that registered for BlockVirtualIRQ.
 func BlockRead(startLBA, numSectors uint64, buf []byte) error {
-	r1, _, errno := RawSyscall(mazzy.SysBlockRead,
+	r1, _, errno := syscall.RawSyscall6(mazzy.SysBlockRead,
 		uintptr(startLBA),
 		uintptr(numSectors),
 		uintptr(unsafe.Pointer(&buf[0])),
@@ -45,7 +45,7 @@ func BlockRead(startLBA, numSectors uint64, buf []byte) error {
 //
 // Only callable by the block device owner shepherd with a registered DMA pool.
 func BlockSubmit(requestType uint32, startLBA uint64, numSectors uint64, buf []byte) (uint16, error) {
-	r1, _, errno := RawSyscall(mazzy.SysBlockSubmit,
+	r1, _, errno := syscall.RawSyscall6(mazzy.SysBlockSubmit,
 		uintptr(requestType),
 		uintptr(startLBA),
 		uintptr(numSectors),

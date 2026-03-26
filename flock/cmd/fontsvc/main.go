@@ -10,6 +10,7 @@ import (
 	"image"
 	"image/color"
 	"mazzy/mazarin/fontcache"
+	"mazzy/mazarin/mem"
 	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/wm"
@@ -289,7 +290,7 @@ func handleOpenFont(senderSID int, msg *wm.OpenFontMsg) {
 	// Allocate cache pages via kernel (properly typed as PageFontCache).
 	rawPuts("[fontsvc] step7: AllocPages for cache\n")
 	cachePages := (fontcache.CacheSizeBytes + 4095) / 4096
-	cache, err2 := sys.AllocPagesSlice(cachePages, sys.PageFontCache)
+	cache, err2 := mem.AllocPagesSlice(cachePages, mem.PageFontCache)
 	if err2 != nil {
 		rawPuts("[fontsvc] AllocPages for cache failed\n")
 		sendOpenFontError(conn, senderSID)
@@ -611,7 +612,7 @@ func handleRequestGlyph(senderSID int, msg *wm.RequestGlyphMsg) {
 	// Ensure scratch buffer exists and is shared.
 	if conn.scratchBuf == nil {
 		var allocErr error
-		conn.scratchBuf, allocErr = sys.AllocPagesSlice(1, sys.PageIPC)
+		conn.scratchBuf, allocErr = mem.AllocPagesSlice(1, mem.PageIPC)
 		if allocErr != nil {
 			rawPuts("[fontsvc] scratch AllocPages failed\n")
 			return

@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"mazzy/mazarin/mazhost"
+	"mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/blockdev"
 	"mazzy/shared/hid"
@@ -123,5 +124,5 @@ func (d *diskBlockDev) ReadBlock(lba uint64, buf []byte) error {
 	if len(buf) < 512 {
 		return fmt.Errorf("buffer too small: %d < 512", len(buf))
 	}
-	return sys.BlockRead(lba, 1, buf)
+	return mem.BlockRead(lba, 1, buf)
 }

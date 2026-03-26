@@ -2,6 +2,7 @@ package ringbuf
 
 import (
 	"errors"
+	"mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
 	"unsafe"
 )
@@ -16,7 +17,7 @@ import (
 // The target shepherd will receive the translated VA via a mailbox notification.
 func New(targetSID int, pageAddr uintptr, slotSize, slotCount uint32) (*RingBuffer, error) {
 	if pageAddr == 0 {
-		ptr, err := sys.AllocPages(1, sys.PageIPC)
+		ptr, err := mem.AllocPages(1, mem.PageIPC)
 		if err != nil {
 			return nil, errors.New("ringbuf: AllocPages failed")
 		}

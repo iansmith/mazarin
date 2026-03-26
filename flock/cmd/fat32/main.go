@@ -7,6 +7,7 @@
 package main
 
 import (
+	"mazzy/mazarin/mem"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/blockdev"
 	"mazzy/shared/constants"
@@ -330,7 +331,7 @@ func verifyAsyncIO(fs *fat32.FileSystem, poolVA uintptr) {
 	for i := 0; i < numTargets; i++ {
 		offset := uintptr(i) * 4096
 		buf := unsafe.Slice((*byte)(unsafe.Pointer(poolVA+offset)), 512)
-		tag, serr := sys.BlockSubmit(0, targets[i].lba, 1, buf)
+		tag, serr := mem.BlockSubmit(0, targets[i].lba, 1, buf)
 		if serr != nil {
 			debugPuts("[fs:verify] BlockSubmit failed at index ")
 			debugPutDec(i)
@@ -459,7 +460,7 @@ func (d *asyncBlockDev) ReadBlock(lba uint64, buf []byte) error {
 	asyncReadCount++
 	// Submit async read targeting the first DMA pool page
 	dmaBuf := unsafe.Slice((*byte)(unsafe.Pointer(d.poolVA)), 512)
-	_, serr := sys.BlockSubmit(0, lba, 1, dmaBuf)
+	_, serr := mem.BlockSubmit(0, lba, 1, dmaBuf)
 	if serr != nil {
 		debugPuts("[async] BlockSubmit failed at read #")
 		debugPutDec(asyncReadCount)
@@ -517,7 +518,7 @@ func (d *userspaceBlockDev) ReadBlock(lba uint64, buf []byte) error {
 	if len(buf) < 512 {
 		return nil // buffer too small
 	}
-	return sys.BlockRead(lba, 1, buf)
+	return mem.BlockRead(lba, 1, buf)
 }
 
 // debugPutDec writes an integer as decimal to the serial console.
