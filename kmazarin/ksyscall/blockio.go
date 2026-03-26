@@ -15,7 +15,6 @@ import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
 	"mazzy/kmazarin/device"
-	"mazzy/kmazarin/device/virtio"
 	"mazzy/kmazarin/device/virtio/block"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
@@ -148,8 +147,7 @@ func blockReadInterrupt(dev *block.VirtIOBlockDevice, lba uint64, buf []byte) er
 	freq := uint64(kirq.GetTimerFrequency())
 	deadline := kirq.ReadCounterValue() + freq*5
 
-	vq := &dev.Queue
-	for !virtio.VirtqueueHasUsed(vq) {
+	for !dev.Eng.HasUsed() {
 		if kirq.ReadCounterValue() > deadline {
 			serial.RawUARTPuts("[BlockRead] TIMEOUT: no completion at LBA ")
 			serial.RawUARTDecimal(lba)

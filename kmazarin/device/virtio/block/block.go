@@ -21,9 +21,13 @@ const (
 type VirtIOBlockDevice struct {
 	virtio.PCIDevice // Shared PCI transport (promoted fields: Bus, Slot, Func, etc.)
 
-	// VirtQueue for I/O
-	Queue          virtio.VirtQueue
-	QueueNotifyOff uint16 // Notify offset for I/O queue
+	// PCI transport: Engine-based I/O (Phase 1)
+	Eng      virtio.Engine      // Owns the PCI virtqueue, submit/complete, IOComplete flag
+	Sidecars virtio.SidecarPool // Device-nGnRnE slots for protocol headers (req + status)
+
+	// MMIO transport: legacy I/O (RISC-V fallback, not Engine-managed)
+	Queue          virtio.VirtQueue // Virtqueue for MMIO mode only
+	QueueNotifyOff uint16           // Notify offset for MMIO mode only
 
 	// Device configuration
 	Capacity       uint64 // Total sectors
@@ -32,17 +36,18 @@ type VirtIOBlockDevice struct {
 	// MMIO transport (RISC-V): non-zero means MMIO mode, zero means PCI mode
 	MMIOBase uintptr
 
-	// DMA-safe I/O buffer: pre-mapped physical memory avoids demand paging issues.
-	// Layout (within one 4KB page):
-	//   [0..15]   VirtIOBlockReq header
-	//   [16..16]  Status byte
-	//   [32..543] 512-byte data buffer (aligned to 32 for safety)
+	// DMA data buffer page.
+	// PCI mode: data buffer only (header/status live in sidecar slots).
+	// MMIO mode: combined header+status+data buffer (legacy layout).
 	DmaPagePA uintptr // Physical address of the DMA page
 	DmaPageVA uintptr // Virtual address of the DMA page (PA + KernelMMIOOffset)
 
-	// Interrupt-driven I/O (set by ConfigureInterrupts after SetVBAR)
+	// Interrupt-driven I/O
 	IRQNum     uint32 // Assigned IRQ number (0 = polling mode, no interrupts)
-	IOComplete uint32 // Atomic: set to 1 by IRQ top-half when I/O completes
+	IOComplete uint32 // Atomic: MMIO mode only (PCI uses Eng.IOComplete)
+
+	// Phase 1: single in-flight sidecar tracking (PCI only)
+	activeSidecar virtio.SidecarSlot
 }
 
 // Global device instance
@@ -169,6 +174,8 @@ func findVirtIOBlock() bool {
 // virtioBlockInit initializes the VirtIO block device via the VirtIO handshake.
 // On AMD64 and ARM64, uses MSI-X (configured by configureBlockInterrupt before
 // this function is called). On RISC-V, uses INTx (PCI legacy interrupts via PLIC).
+// Sets up the Engine for PCI-based submit/complete and the SidecarPool for
+// protocol headers (VirtIOBlockReq + status byte).
 // Returns true on success, false on failure.
 //
 //go:nosplit
@@ -194,13 +201,19 @@ func virtioBlockInit() bool {
 	}
 	queuePageVA := queuePagePA + constants.KernelMMIOOffset
 
-	// Set up queue 0: 128 entries, desc(2048)+avail(262)+used(1030) = 3340 bytes < 4096
-	notifyOff, ok := dev.SetupQueue(0, &dev.Queue, 128, queuePagePA, queuePageVA, 0, msixVec)
-	if !ok {
-		console.KPrintln("[VirtIO Block] ERROR: Failed to setup queue")
+	// Initialize Engine: sets up VQ on DMA page, enables queue on device.
+	// Queue 0, 128 entries: desc(2048)+avail(262)+used(1030) = 3340 bytes < 4096
+	if !dev.Eng.Init(&dev.PCIDevice, 0, 128, queuePagePA, queuePageVA, 0, msixVec) {
+		console.KPrintln("[VirtIO Block] ERROR: Failed to init engine")
 		return false
 	}
-	dev.QueueNotifyOff = notifyOff
+
+	// Initialize sidecar pool for protocol headers (Device-nGnRnE page).
+	// Each 32-byte slot holds: VirtIOBlockReq (16B) + status (1B) + padding.
+	if !dev.Sidecars.Init(sidecarSlotSize) {
+		console.KPrintln("[VirtIO Block] ERROR: Failed to init sidecar pool")
+		return false
+	}
 
 	// Complete handshake
 	dev.SetDriverOK()
@@ -277,8 +290,10 @@ func GetISRBase() uintptr {
 }
 
 // GetIOCompletePtr returns a pointer to the IOComplete atomic flag.
+// PCI mode uses Engine.IOComplete (set by NonTimerIRQTopHalf).
+// MMIO mode uses device-level IOComplete (unused — MMIO has no IRQ).
 func GetIOCompletePtr() *uint32 {
-	return &virtioBlockDevice.IOComplete
+	return &virtioBlockDevice.Eng.IOComplete
 }
 
 // GetDevice returns a pointer to the global block device instance.

@@ -35,8 +35,18 @@ func (d *VirtIOBlockDevice) WriteBlock(lba uint64, buf []byte) error {
 	return d.doBlockIO(VIRTIO_BLK_T_OUT, lba, buf)
 }
 
-// DMA page layout offsets (within a single 4KB page)
+// DMA layout constants.
+//
+// PCI Engine mode: sidecar slots hold header+status (Device-nGnRnE),
+// DMA data page holds the data buffer at offset 0.
+// MMIO legacy mode: single DMA page holds header+status+data.
 const (
+	// PCI sidecar slot layout (32 bytes per slot)
+	sidecarSlotSize     = 32
+	sidecarReqOffset    = 0  // VirtIOBlockReq header: 16 bytes
+	sidecarStatusOffset = 16 // VirtIOBlockStatus: 1 byte
+
+	// MMIO legacy DMA page layout
 	dmaReqOffset    = 0  // VirtIOBlockReq header: 16 bytes
 	dmaStatusOffset = 16 // Status byte: 1 byte
 	dmaBufOffset    = 32 // Data buffer: 512 bytes (aligned to 32)
@@ -46,8 +56,185 @@ const (
 // Returns the head descriptor index, or 0xFFFF on error.
 // Clears IOComplete before notify so the IRQ handler can set it.
 //
+// PCI mode uses Engine + SidecarPool. MMIO mode uses legacy Queue + DMA page.
+//
 //go:nosplit
 func (d *VirtIOBlockDevice) DoBlockIOSubmit(requestType uint32, lba uint64, buf []byte) (uint16, error) {
+	if d.MMIOBase != 0 {
+		return d.submitLegacy(requestType, lba, buf)
+	}
+
+	// --- PCI Engine path ---
+
+	// Allocate sidecar slot for protocol header + status
+	slot, ok := d.Sidecars.Alloc()
+	if !ok {
+		console.KPrintln("[VirtIO Block] ERROR: No sidecar slots available")
+		return 0xFFFF, ErrNoDescriptors
+	}
+	d.activeSidecar = slot
+
+	// Write request header into sidecar slot
+	reqPtr := (*VirtIOBlockReq)(unsafe.Pointer(slot.VA + sidecarReqOffset))
+	reqPtr.Type = requestType
+	reqPtr.Sector = lba
+
+	// Initialize status byte to 0xFF (sentinel)
+	*(*VirtIOBlockStatus)(unsafe.Pointer(slot.VA + sidecarStatusOffset)) = 0xFF
+
+	// For writes, copy caller's data into DMA data buffer before submitting
+	if requestType == VIRTIO_BLK_T_OUT {
+		copyBytes(unsafe.Pointer(d.DmaPageVA), unsafe.Pointer(&buf[0]), uintptr(d.BlockSizeBytes))
+	}
+
+	// Build 3-descriptor chain: req header → data buffer → status byte
+	var chain virtio.DescChain
+	chain.Count = 3
+	chain.Descs[0] = virtio.DescSpec{
+		PA: uint64(slot.PA + sidecarReqOffset), Len: 16, Flags: 0,
+	}
+
+	bufFlags := uint16(0)
+	if requestType == VIRTIO_BLK_T_IN {
+		bufFlags = virtio.VIRTQ_DESC_F_WRITE // Device writes for read operations
+	}
+	chain.Descs[1] = virtio.DescSpec{
+		PA: uint64(d.DmaPagePA), Len: d.BlockSizeBytes, Flags: bufFlags,
+	}
+	chain.Descs[2] = virtio.DescSpec{
+		PA: uint64(slot.PA + sidecarStatusOffset), Len: 1, Flags: virtio.VIRTQ_DESC_F_WRITE,
+	}
+
+	// Clear IOComplete BEFORE making request visible to avoid race:
+	// under HVF the interrupt can fire before we reach the blocking call.
+	atomic.StoreUint32(&d.Eng.IOComplete, 0)
+
+	tag := d.Eng.Submit(&chain)
+	if tag == virtio.InvalidIOTag {
+		console.KPrintln("[VirtIO Block] ERROR: Engine submit failed (no free descriptors)")
+		d.Sidecars.Release(slot)
+		return 0xFFFF, ErrNoDescriptors
+	}
+
+	asm.Dsb()
+	d.Eng.Notify()
+
+	return uint16(tag), nil
+}
+
+// DoBlockIOComplete pops the used ring, checks status, and copies read data.
+// Must be called after IOComplete is set (by IRQ or polling).
+//
+// PCI mode uses Engine + SidecarPool. MMIO mode uses legacy Queue + DMA page.
+//
+//go:nosplit
+func (d *VirtIOBlockDevice) DoBlockIOComplete(requestType uint32, reqDescIdx uint16, buf []byte) error {
+	if d.MMIOBase != 0 {
+		return d.completeLegacy(requestType, reqDescIdx, buf)
+	}
+
+	// --- PCI Engine path ---
+
+	// Pop from used ring
+	info := d.Eng.PopUsed()
+	if info.Tag == virtio.InvalidIOTag || uint16(info.Tag) != reqDescIdx {
+		// Diagnostic: show queue state to help debug HVF memory ordering issues
+		usedVA := virtio.PointerToUintptr(unsafe.Pointer(d.Eng.VQ.Used))
+		rawUsedIdx := asm.MmioRead16(usedVA + 2)
+		console.KPrintf("[VirtIO Block] ERROR: Unexpected descriptor index (got %d, expected %d) Used.Idx=%d LastUsedIdx=%d avail=%d\n",
+			uint16(info.Tag), reqDescIdx, rawUsedIdx, d.Eng.VQ.LastUsedIdx, d.Eng.VQ.Available.Idx)
+		d.Sidecars.Release(d.activeSidecar)
+		return ErrDeviceError
+	}
+
+	// Check status from sidecar slot
+	statusPtr := (*VirtIOBlockStatus)(unsafe.Pointer(d.activeSidecar.VA + sidecarStatusOffset))
+	status := *statusPtr
+	if status != VIRTIO_BLK_S_OK {
+		console.KPrintf("[VirtIO Block] ERROR: Bad status=%d type=%d\n", status, requestType)
+		d.Sidecars.Release(d.activeSidecar)
+		if status == VIRTIO_BLK_S_IOERR {
+			return ErrIOError
+		} else if status == VIRTIO_BLK_S_UNSUPP {
+			return ErrUnsupported
+		}
+		return ErrDeviceError
+	}
+
+	// For reads, copy data from DMA buffer into caller's buffer
+	if requestType == VIRTIO_BLK_T_IN {
+		copyBytes(unsafe.Pointer(&buf[0]), unsafe.Pointer(d.DmaPageVA), uintptr(d.BlockSizeBytes))
+	}
+
+	d.Sidecars.Release(d.activeSidecar)
+	return nil
+}
+
+// doBlockIO performs a block I/O operation using polling (fallback path).
+// Used by ReadBlock/WriteBlock which are called during early boot (before
+// interrupt-driven I/O is available) and by non-syscall kernel code.
+//
+//go:nosplit
+func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte) error {
+	reqDescIdx, err := d.DoBlockIOSubmit(requestType, lba, buf)
+	if err != nil {
+		return err
+	}
+
+	if d.MMIOBase != 0 {
+		// MMIO polling (legacy path)
+		vq := &d.Queue
+		const maxRetries = 500000
+		mmioBase := d.MMIOBase
+		for i := 0; i < maxRetries; i++ {
+			if mmioBase != 0 {
+				isr := asm.MmioRead32(mmioBase + 0x60)
+				if isr&1 != 0 {
+					asm.MmioWrite32(mmioBase+0x64, isr)
+					if virtio.VirtqueueHasUsed(vq) {
+						break
+					}
+				}
+			} else {
+				if virtio.VirtqueueHasUsed(vq) {
+					break
+				}
+				asm.Wfi()
+			}
+		}
+		if !virtio.VirtqueueHasUsed(vq) {
+			console.KPrintf("[VirtIO Block] ERROR: I/O timeout (avail=%d used=%d LBA=%d)\n",
+				vq.Available.Idx, vq.Used.Idx, lba)
+			return ErrTimeout
+		}
+	} else {
+		// PCI polling (Engine-based). bootYieldForIO reads the ISR register
+		// (forcing a VM exit on HVF/TCG) or does WFI/StiHlt.
+		const maxWaits = 1000000
+		for i := 0; i < maxWaits; i++ {
+			if d.Eng.HasUsed() {
+				break
+			}
+			bootYieldForIO()
+		}
+		if !d.Eng.HasUsed() {
+			console.KPrintf("[VirtIO Block] ERROR: I/O timeout (LBA=%d)\n", lba)
+			return ErrTimeout
+		}
+	}
+
+	return d.DoBlockIOComplete(requestType, reqDescIdx, buf)
+}
+
+// ============================================================================
+// MMIO Legacy I/O (RISC-V fallback — not Engine-managed)
+// ============================================================================
+
+// submitLegacy is the legacy MMIO submit path. Uses d.Queue and d.DmaPage
+// with the combined header+status+data layout.
+//
+//go:nosplit
+func (d *VirtIOBlockDevice) submitLegacy(requestType uint32, lba uint64, buf []byte) (uint16, error) {
 	vq := &d.Queue
 	dmaVA := d.DmaPageVA
 	dmaPA := d.DmaPagePA
@@ -122,11 +309,11 @@ func (d *VirtIOBlockDevice) DoBlockIOSubmit(requestType uint32, lba uint64, buf 
 	return reqDescIdx, nil
 }
 
-// DoBlockIOComplete pops the used ring, checks status, and copies read data.
-// Must be called after IOComplete is set (by IRQ or polling).
+// completeLegacy is the legacy MMIO complete path. Uses d.Queue and d.DmaPage
+// with the combined header+status+data layout.
 //
 //go:nosplit
-func (d *VirtIOBlockDevice) DoBlockIOComplete(requestType uint32, reqDescIdx uint16, buf []byte) error {
+func (d *VirtIOBlockDevice) completeLegacy(requestType uint32, reqDescIdx uint16, buf []byte) error {
 	vq := &d.Queue
 
 	// Pop from used ring
@@ -165,79 +352,9 @@ func (d *VirtIOBlockDevice) DoBlockIOComplete(requestType uint32, reqDescIdx uin
 	return nil
 }
 
-// doBlockIO performs a block I/O operation using polling (fallback path).
-// Used by ReadBlock/WriteBlock which are called during early boot (before
-// interrupt-driven I/O is available) and by non-syscall kernel code.
-//
-//go:nosplit
-func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte) error {
-	reqDescIdx, err := d.DoBlockIOSubmit(requestType, lba, buf)
-	if err != nil {
-		return err
-	}
-
-	vq := &d.Queue
-
-	// Wait for I/O completion via polling.
-	// We check VirtqueueHasUsed (the actual used ring) rather than IOComplete
-	// because under HVF, stale MSI-X interrupts from a previous I/O can set
-	// IOComplete=1 before the current request completes. VirtqueueHasUsed
-	// checks Used.Idx directly, so stale interrupts are harmless.
-	if d.IRQNum != 0 {
-		const maxWaits = 1000000
-		for i := 0; i < maxWaits; i++ {
-			if virtio.VirtqueueHasUsed(vq) {
-				break
-			}
-			bootYieldForIO()
-		}
-		if !virtio.VirtqueueHasUsed(vq) {
-			console.KPrintf("[VirtIO Block] ERROR: I/O timeout (avail=%d used=%d LBA=%d)\n",
-				vq.Available.Idx, vq.Used.Idx, lba)
-			return ErrTimeout
-		}
-	} else if d.ISRBase != 0 {
-		const maxWaits = 100000
-		for i := 0; i < maxWaits; i++ {
-			isr := asm.MmioRead8(d.ISRBase)
-			if isr&1 != 0 {
-				break
-			}
-		}
-		if !virtio.VirtqueueHasUsed(vq) {
-			console.KPrintf("[VirtIO Block] ERROR: I/O timeout (avail=%d used=%d LBA=%d)\n",
-				vq.Available.Idx, vq.Used.Idx, lba)
-			return ErrTimeout
-		}
-	} else {
-		// MMIO transport: poll InterruptStatus + check used ring.
-		const maxRetries = 500000
-		mmioBase := d.MMIOBase
-		for i := 0; i < maxRetries; i++ {
-			if mmioBase != 0 {
-				isr := asm.MmioRead32(mmioBase + 0x60)
-				if isr&1 != 0 {
-					asm.MmioWrite32(mmioBase+0x64, isr)
-					if virtio.VirtqueueHasUsed(vq) {
-						break
-					}
-				}
-			} else {
-				if virtio.VirtqueueHasUsed(vq) {
-					break
-				}
-				asm.Wfi()
-			}
-		}
-		if !virtio.VirtqueueHasUsed(vq) {
-			console.KPrintf("[VirtIO Block] ERROR: I/O timeout (avail=%d used=%d LBA=%d)\n",
-				vq.Available.Idx, vq.Used.Idx, lba)
-			return ErrTimeout
-		}
-	}
-
-	return d.DoBlockIOComplete(requestType, reqDescIdx, buf)
-}
+// ============================================================================
+// Shared helpers
+// ============================================================================
 
 // copyBytes copies n bytes from src to dst.
 //
@@ -261,7 +378,8 @@ func copyBytes(dst, src unsafe.Pointer, n uintptr) {
 	}
 }
 
-// virtioBlockNotify notifies the device about new descriptors
+// virtioBlockNotify notifies the device about new descriptors.
+// Used only by the MMIO legacy path. PCI Engine path uses Engine.Notify().
 // queueIndex: index of the queue to notify (typically 0)
 //
 //go:nosplit
