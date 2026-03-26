@@ -4,12 +4,14 @@ package main
 import (
 	"mazzy/kmazarin/asm"
 	"mazzy/kmazarin/console"
+	"mazzy/kmazarin/device/virtio"
 	"mazzy/kmazarin/device/virtio/gpu"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/ksyscall"
 	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
 	"sync/atomic"
+	"unsafe"
 )
 
 // ============================================================================
@@ -99,6 +101,7 @@ var topHalfMouseRing softIRQRing
 var topHalfTabletRing softIRQRing
 var topHalfUartRing softIRQRing
 var topHalfTimerRing softIRQRing
+var topHalfBlockRing softIRQRing
 
 // Debug counters for event flow tracking
 var dbgDrainTotal uint32          // total events drained by userspace
@@ -115,12 +118,56 @@ var blockIRQNum uint32
 var blockISRBase uintptr
 var blockIOComplete *uint32
 
+// Block async completion state (Phase 4).
+// When blockAsyncMode=1, the top-half drains the Engine used ring,
+// pushes completion events to topHalfBlockRing, and wakes the slot.
+// When blockAsyncMode=0 (default), the top-half just sets IOComplete
+// for the synchronous WFI loop in blockReadBatch.
+var blockEnginePtr uintptr // *virtio.Engine stored as uintptr (nosplit-safe)
+var blockAsyncMode uint32  // atomic: 0=sync, 1=async
+var blockSidecarFreePtr *uint64 // pointer to SidecarPool.FreeBits for release
+
+// blockAsyncSlot tracks per-IOTag metadata for async completions.
+// Populated by SysBlockSubmit, consumed by the IRQ top-half.
+type blockAsyncSlot struct {
+	sidecarStatusVA uintptr // VA of status byte in sidecar
+	sidecarIdx      uint8   // Sidecar slot index (for release)
+	dataKernelVA    uintptr // Kernel VA of data page (PA + KernelMMIOOffset)
+	dataLen         uint32  // Data buffer size (for cache invalidate)
+}
+
+var blockAsyncSlots [256]blockAsyncSlot // indexed by IOTag (descriptor head index)
+
 // SetBlockIRQ registers the block device's IRQ number, ISR base address,
-// and IOComplete flag pointer with the top-half dispatcher.
-func SetBlockIRQ(irqNum uint32, isrBase uintptr, ioComplete *uint32) {
+// IOComplete flag pointer, engine pointer, and sidecar pool free bits pointer
+// with the top-half dispatcher.
+func SetBlockIRQ(irqNum uint32, isrBase uintptr, ioComplete *uint32, enginePtr uintptr, sidecarFreePtr *uint64) {
 	blockIRQNum = irqNum
 	blockISRBase = isrBase
 	blockIOComplete = ioComplete
+	blockEnginePtr = enginePtr
+	blockSidecarFreePtr = sidecarFreePtr
+}
+
+// SetBlockAsyncSlot stores per-tag metadata for async completion.
+// Called from SysBlockSubmit after engine.Submit returns the IOTag.
+//
+//go:nosplit
+func SetBlockAsyncSlot(tag uint16, sidecarStatusVA uintptr, sidecarIdx uint8, dataKernelVA uintptr, dataLen uint32) {
+	if tag < 256 {
+		blockAsyncSlots[tag] = blockAsyncSlot{
+			sidecarStatusVA: sidecarStatusVA,
+			sidecarIdx:      sidecarIdx,
+			dataKernelVA:    dataKernelVA,
+			dataLen:         dataLen,
+		}
+	}
+}
+
+// EnableBlockAsyncMode switches the top-half to async completion delivery.
+// Once enabled, SyscallBlockRead's interrupt path must not be used (falls back to polling).
+func EnableBlockAsyncMode() {
+	atomic.StoreUint32(&blockAsyncMode, 1)
 }
 
 // SetTopHalfDev is called during input init to register device pointers
@@ -223,21 +270,66 @@ func NonTimerIRQTopHalf() {
 		return
 	}
 
-	// Block device: acknowledge interrupt, signal IOComplete for WFI loop
+	// Block device: acknowledge interrupt, then either drain async completions
+	// or signal IOComplete for the synchronous WFI loop.
 	if irqNum == blockIRQNum && blockIRQNum != 0 {
 		if blockISRBase != 0 {
 			_ = asm.MmioRead8(blockISRBase) // Acknowledge interrupt (deasserts INTx)
 		}
 		// DMA read barrier: ensure the device's used ring DMA writes are
-		// visible to this CPU before we signal IOComplete. Under HVF the
-		// VirtIO backend runs on a separate host thread; without this
-		// barrier the IOComplete STLR may become visible to the WFI loop
-		// before the used ring data has propagated through the coherency
-		// domain. Combined with the DMB in EnableIRQsAndWait, this gives
-		// the WFI reader a happens-before on the DMA data.
+		// visible to this CPU before we access used ring entries or signal
+		// IOComplete. Under HVF the VirtIO backend runs on a separate host
+		// thread; without this barrier the CPU may see stale used ring data.
 		asm.DmaRmb()
-		if blockIOComplete != nil {
-			atomic.StoreUint32(blockIOComplete, 1) // Signal completion
+
+		if atomic.LoadUint32(&blockAsyncMode) != 0 && blockEnginePtr != 0 {
+			// Async mode: drain engine used ring, push completion events
+			eng := (*virtio.Engine)(unsafe.Pointer(blockEnginePtr))
+			for eng.HasUsed() {
+				info := eng.PopUsed()
+				if info.Tag == virtio.InvalidIOTag {
+					break
+				}
+				tag := uint16(info.Tag)
+				meta := &blockAsyncSlots[tag]
+
+				// Read status from sidecar (Device-nGnRnE, no cache mgmt needed)
+				status := uint16(0)
+				if meta.sidecarStatusVA != 0 {
+					status = uint16(*(*uint8)(unsafe.Pointer(meta.sidecarStatusVA)))
+				}
+
+				// Invalidate cache on data page so userspace sees device-written data
+				if meta.dataKernelVA != 0 && meta.dataLen > 0 {
+					asm.InvalidateDCacheRange(meta.dataKernelVA, uintptr(meta.dataLen))
+				}
+
+				// Release sidecar slot (bitmap OR — nosplit safe)
+				if blockSidecarFreePtr != nil {
+					*blockSidecarFreePtr |= uint64(1) << uint(meta.sidecarIdx)
+				}
+
+				// Push completion event to ring
+				tail := atomic.LoadUint32(&topHalfBlockRing.tail)
+				next := (tail + 1) & (softIRQRingSize - 1)
+				if next != atomic.LoadUint32(&topHalfBlockRing.head) {
+					topHalfBlockRing.events[tail] = hid.HIDEvent{
+						Type:  tag,
+						Code:  status,
+						Value: info.UsedLen,
+					}
+					atomic.StoreUint32(&topHalfBlockRing.tail, next)
+				}
+
+				// Clear metadata slot
+				*meta = blockAsyncSlot{}
+			}
+			WakeSlotForIRQ(hid.BlockVirtualIRQ)
+		} else {
+			// Sync mode: just signal IOComplete for WFI loop
+			if blockIOComplete != nil {
+				atomic.StoreUint32(blockIOComplete, 1)
+			}
 		}
 		return
 	}

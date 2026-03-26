@@ -933,7 +933,7 @@ func simpleMain() {
 	// enable at the interrupt controller so interrupts reach the CPU.
 	console.KPrintln("[Main] wiring block IRQ...")
 	if irq := block.GetIRQNum(); irq != 0 {
-		SetBlockIRQ(irq, block.GetISRBase(), block.GetIOCompletePtr())
+		SetBlockIRQ(irq, block.GetISRBase(), block.GetIOCompletePtr(), block.GetEnginePtr(), block.GetSidecarFreeBitsPtr())
 		enableBlockDeviceIRQ(irq)
 	}
 	console.KPrintln("[Main] block IRQ wired")

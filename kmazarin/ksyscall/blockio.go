@@ -22,6 +22,7 @@ import (
 	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -69,9 +70,13 @@ func SyscallBlockRead(arg0, arg1, arg2, _, _, _ uint64) int64 {
 
 	l0PA := callerShepherd.PageTableL0PA
 
-	// Check if interrupt-driven I/O is available
+	// Check if interrupt-driven I/O is available.
+	// If async mode is enabled (SysBlockSubmit has been used), the top-half
+	// drains the engine used ring — sync WFI path can't use PopUsed safely.
+	// Fall back to polling in that case.
 	dev := block.GetDevice()
-	useInterrupt := dev != nil && dev.IRQNum != 0
+	useInterrupt := dev != nil && dev.IRQNum != 0 &&
+		atomic.LoadUint32(&blockAsyncEnabled) == 0
 
 	if useInterrupt {
 		return blockReadBatch(dev, startLBA, numSectors, bufVA, blockSize, l0PA)

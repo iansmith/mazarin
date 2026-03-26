@@ -7,6 +7,7 @@ import (
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/pci"
 	"mazzy/shared/constants"
+	"unsafe"
 )
 
 // VirtIO block PCI device IDs
@@ -295,6 +296,23 @@ func GetISRBase() uintptr {
 // MMIO mode uses device-level IOComplete (unused — MMIO has no IRQ).
 func GetIOCompletePtr() *uint32 {
 	return &virtioBlockDevice.Eng.IOComplete
+}
+
+// GetEnginePtr returns a uintptr to the Engine (for storing in bottom_half
+// without importing this package in nosplit top-half code).
+func GetEnginePtr() uintptr {
+	return uintptr(unsafe.Pointer(&virtioBlockDevice.Eng))
+}
+
+// GetInFlightSidecar returns the sidecar slot for the given in-flight index.
+func (d *VirtIOBlockDevice) GetInFlightSidecar(slotIdx uint8) virtio.SidecarSlot {
+	return d.inFlightSidecars[slotIdx]
+}
+
+// GetSidecarFreeBitsPtr returns a pointer to the sidecar pool's FreeBits
+// field. The top-half uses this to release sidecar slots after async completion.
+func GetSidecarFreeBitsPtr() *uint64 {
+	return &virtioBlockDevice.Sidecars.FreeBits
 }
 
 // GetDevice returns a pointer to the global block device instance.

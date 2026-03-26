@@ -121,8 +121,8 @@ func RegisterSoftIRQSlotKsyscall(irqNum uint32, slotNum int32, shepherdID int16)
 			devIdx = 0 // dummy
 		} else if irqNum == hid.BlockVirtualIRQ {
 			intKind = hid.DiskInterrupt
-			ring = nil // Block device doesn't use ring buffers — uses SysBlockRead
-			devIdx = 0 // dummy
+			ring = &topHalfBlockRing // Async completions pushed by top-half in async mode
+			devIdx = 0               // dummy
 			blockDeviceOwnerPID = shepherdID
 		} else {
 			console.KPrintf("[SoftIRQSlot] No device found for IRQ %d\n", irqNum)

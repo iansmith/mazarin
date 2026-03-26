@@ -63,6 +63,7 @@ const (
 	SysGetReady             = MazzySyscallBase + 52 // 0x1034 - Check if named shepherd is ready
 	SysRegisterDMAPool      = MazzySyscallBase + 53 // 0x1035 - Register userspace pages for direct DMA I/O
 	SysUnregisterDMAPool    = MazzySyscallBase + 54 // 0x1036 - Unregister DMA page pool
+	SysBlockSubmit          = MazzySyscallBase + 55 // 0x1037 - Async block I/O submit (returns IOTag)
 )
 
 // mazzySyscallTable holds Mazzy-specific syscall handlers.
@@ -120,6 +121,7 @@ var mazzySyscallTable = [64]SyscallHandler{
 	52: SyscallGetReady,               // GetReady = 0x1034
 	53: SyscallRegisterDMAPool,        // RegisterDMAPool = 0x1035
 	54: SyscallUnregisterDMAPool,      // UnregisterDMAPool = 0x1036
+	55: SyscallBlockSubmit,            // BlockSubmit = 0x1037
 }
 
 // SyscallDebugPrint prints debug arguments from userspace.
