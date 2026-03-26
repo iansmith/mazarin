@@ -145,7 +145,7 @@ func WakeDelegateThread(tid int32, returnVal int64) {
 }
 
 // WakeDelegateCallerThread wakes the original caller blocked in ThreadBlockedDelegate.
-// Called from SyscallDelegatedReply when the handler sends the return value.
+// Called from SyscallReply when the handler sends the return value.
 //
 //go:noinline
 func WakeDelegateCallerThread(pid int16, tid int32, returnVal int64) {

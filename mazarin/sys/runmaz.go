@@ -5,6 +5,7 @@ import (
 	"unsafe"
 
 	merror "mazzy/mazarin/error"
+	"mazzy/shared/mazzy"
 )
 
 // RunMaz processes pages in the caller's address space as a .maz ELF binary.
@@ -25,7 +26,7 @@ func RunMaz(startVA uintptr, numPages int, totalBytes int) (*MazLoadResult, *mer
 	result.EntryPoint = ^uint64(0) // force demand paging
 
 	r1, _, _ := syscall.RawSyscall6(
-		sysRunMaz,
+		mazzy.SysRunMaz,
 		startVA,
 		uintptr(numPages),
 		uintptr(totalBytes),

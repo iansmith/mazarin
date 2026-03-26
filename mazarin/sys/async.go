@@ -3,6 +3,7 @@ package sys
 
 import (
 	"errors"
+	"mazzy/shared/mazzy"
 	"runtime"
 	"unsafe"
 )
@@ -42,7 +43,7 @@ func WaitKernelAsync(bundle *KernelAsyncBundle) error {
 	}
 
 	for {
-		r1, _, errno := RawSyscall(sysWaitKernelAsync,
+		r1, _, errno := RawSyscall(mazzy.SysWaitKernelAsync,
 			uintptr(unsafe.Pointer(bundle)), 0, 0, 0, 0, 0)
 
 		if errno != 0 {
@@ -77,7 +78,7 @@ func TryWaitKernelAsync(bundle *KernelAsyncBundle) error {
 		return errors.New("TryWaitKernelAsync: nil bundle pointer")
 	}
 
-	r1, _, errno := RawSyscall(sysWaitKernelAsync,
+	r1, _, errno := RawSyscall(mazzy.SysWaitKernelAsync,
 		uintptr(unsafe.Pointer(bundle)), 0, 0, 0, 0, 0)
 
 	if errno != 0 {

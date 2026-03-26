@@ -2,6 +2,7 @@ package sys
 
 import (
 	"fmt"
+	"mazzy/shared/mazzy"
 	"syscall"
 	"unsafe"
 )
@@ -23,7 +24,7 @@ func GetFramebuffer() (*FramebufferInfo, error) {
 	var fb FramebufferInfo
 
 	_, _, errno := syscall.RawSyscall6(
-		sysGetFramebuffer,
+		mazzy.SysGetFramebuffer,
 		uintptr(unsafe.Pointer(&fb)),
 		0, 0, 0, 0, 0,
 	)
@@ -40,7 +41,7 @@ func GetFramebuffer() (*FramebufferInfo, error) {
 // backing memory are not visible on screen.
 func FlushFramebuffer(x, y, width, height uint32) error {
 	_, _, errno := syscall.RawSyscall6(
-		sysFlushFramebuffer,
+		mazzy.SysFlushFramebuffer,
 		uintptr(x),
 		uintptr(y),
 		uintptr(width),
@@ -59,7 +60,7 @@ func FlushFramebuffer(x, y, width, height uint32) error {
 // yOffset: vertical offset in pixels from the top of the resource
 func SetScanoutOffset(yOffset uint32) error {
 	r1, _, errno := syscall.RawSyscall6(
-		sysSetScanoutOffset,
+		mazzy.SysSetScanoutOffset,
 		uintptr(yOffset),
 		0, 0, 0, 0, 0,
 	)

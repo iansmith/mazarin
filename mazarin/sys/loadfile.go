@@ -5,6 +5,7 @@ import (
 	"unsafe"
 
 	merror "mazzy/mazarin/error"
+	"mazzy/shared/mazzy"
 )
 
 // LoadFileResult is filled in by the kernel when loading a file via fs.maz.
@@ -28,7 +29,7 @@ func LoadFile(path string) (*LoadFileResult, *merror.Error) {
 	result.StartVA = ^uint64(0)
 
 	r1, _, _ := syscall.RawSyscall6(
-		sysLoadFile,
+		mazzy.SysLoadFile,
 		uintptr(unsafe.Pointer(&pathBytes[0])),
 		uintptr(unsafe.Pointer(&result)),
 		0, 0, 0, 0,

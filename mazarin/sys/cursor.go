@@ -4,12 +4,8 @@ package sys
 
 import (
 	"errors"
+	"mazzy/shared/mazzy"
 	"unsafe"
-)
-
-const (
-	sysRegisterCursor = 0x1032
-	sysSetCursor      = 0x1033
 )
 
 // RegisterCursor registers a 64x64 NRGBA cursor image with the kernel GPU driver.
@@ -19,7 +15,7 @@ func RegisterCursor(pixelData []byte, hotX, hotY int) (int, error) {
 	if len(pixelData) < 64*64*4 {
 		return -1, errors.New("RegisterCursor: pixel data too small")
 	}
-	r1, _, errno := RawSyscall(sysRegisterCursor,
+	r1, _, errno := RawSyscall(mazzy.SysRegisterCursor,
 		uintptr(unsafe.Pointer(&pixelData[0])),
 		64, // width
 		64, // height
@@ -34,7 +30,7 @@ func RegisterCursor(pixelData []byte, hotX, hotY int) (int, error) {
 
 // SetCursor switches the active hardware cursor to a previously registered cursor ID.
 func SetCursor(cursorID int) error {
-	r1, _, errno := RawSyscall(sysSetCursor,
+	r1, _, errno := RawSyscall(mazzy.SysSetCursor,
 		uintptr(cursorID),
 		0, 0, 0, 0, 0)
 	if errno != 0 || int64(r1) < 0 {

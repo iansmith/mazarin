@@ -5,6 +5,7 @@ import (
 	"unsafe"
 
 	merror "mazzy/mazarin/error"
+	"mazzy/shared/mazzy"
 )
 
 // ProgramControl contains information about a loaded program.
@@ -34,7 +35,7 @@ func BootstrapRunElf(filename string, shepherdSyscallEntry uintptr, pc *ProgramC
 	filenameBytes := append([]byte(filename), 0)
 
 	result, _, _ := syscall.RawSyscall6(
-		sysBootstrapRunElf,
+		mazzy.SysBootstrapRunElf,
 		uintptr(unsafe.Pointer(&filenameBytes[0])),
 		shepherdSyscallEntry,
 		uintptr(unsafe.Pointer(pc)),

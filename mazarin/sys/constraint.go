@@ -3,22 +3,8 @@
 package sys
 
 import (
+	"mazzy/shared/mazzy"
 	"unsafe"
-)
-
-// Constraint attribute syscall numbers (must match kernel ksyscall/mazzy.go).
-const (
-	sysAttrCreate        = 0x1021
-	sysAttrWrite         = 0x1022
-	sysAttrWriteURI      = 0x1023
-	sysAttrAddDep        = 0x1024
-	sysAttrUpdateDeps    = 0x1025
-	sysAttrRegisterQuery = 0x1026
-	sysAttrWriteResult   = 0x1027
-	sysAttrWriteString   = 0x1028
-	sysAttrSetEager      = 0x1029
-	sysAttrWaitDirty     = 0x102A
-	sysAttrIncrementI64  = 0x102B
 )
 
 // Attribute kinds (must match flat.AttrKindValue / AttrKindConstraint).
@@ -38,7 +24,7 @@ func AttrCreate(uri string, valueType uint8, kind uint8, bytecode []byte) (uint1
 		bcLen = uintptr(len(bytecode))
 	}
 
-	r1, _, errno := RawSyscall(sysAttrCreate,
+	r1, _, errno := RawSyscall(mazzy.SysAttrCreate,
 		uintptr(uriPtr), uintptr(len(uri)),
 		uintptr(valueType), uintptr(kind),
 		uintptr(bcPtr), bcLen)
@@ -50,7 +36,7 @@ func AttrCreate(uri string, valueType uint8, kind uint8, bytecode []byte) (uint1
 
 // AttrWrite writes a FlatValue (40 bytes) to an attribute by slot index.
 func AttrWrite(slot uint16, value *[40]byte) error {
-	_, _, errno := RawSyscall(sysAttrWrite,
+	_, _, errno := RawSyscall(mazzy.SysAttrWrite,
 		uintptr(slot),
 		uintptr(unsafe.Pointer(&value[0])), 40,
 		0, 0, 0)
@@ -63,7 +49,7 @@ func AttrWrite(slot uint16, value *[40]byte) error {
 // AttrWriteURI writes a FlatValue (40 bytes) to an attribute by URI string.
 func AttrWriteURI(uri string, value *[40]byte) error {
 	uriPtr := unsafe.Pointer(unsafe.StringData(uri))
-	_, _, errno := RawSyscall(sysAttrWriteURI,
+	_, _, errno := RawSyscall(mazzy.SysAttrWriteURI,
 		uintptr(uriPtr), uintptr(len(uri)),
 		uintptr(unsafe.Pointer(&value[0])), 40,
 		0, 0)
@@ -75,7 +61,7 @@ func AttrWriteURI(uri string, value *[40]byte) error {
 
 // AttrAddDep adds a dependency edge: fromSlot depends on toSlot.
 func AttrAddDep(fromSlot, toSlot uint16) error {
-	_, _, errno := RawSyscall(sysAttrAddDep,
+	_, _, errno := RawSyscall(mazzy.SysAttrAddDep,
 		uintptr(fromSlot), uintptr(toSlot),
 		0, 0, 0, 0)
 	if errno != 0 {
@@ -90,7 +76,7 @@ func AttrUpdateDeps(constraintSlot uint16, readSet []uint16) error {
 	if len(readSet) > 0 {
 		ptr = unsafe.Pointer(&readSet[0])
 	}
-	_, _, errno := RawSyscall(sysAttrUpdateDeps,
+	_, _, errno := RawSyscall(mazzy.SysAttrUpdateDeps,
 		uintptr(constraintSlot),
 		uintptr(ptr), uintptr(len(readSet)),
 		0, 0, 0)
@@ -103,7 +89,7 @@ func AttrUpdateDeps(constraintSlot uint16, readSet []uint16) error {
 // AttrRegisterQuery registers a find pattern and returns the query result slot.
 func AttrRegisterQuery(pattern string) (uint16, error) {
 	patPtr := unsafe.Pointer(unsafe.StringData(pattern))
-	r1, _, errno := RawSyscall(sysAttrRegisterQuery,
+	r1, _, errno := RawSyscall(mazzy.SysAttrRegisterQuery,
 		uintptr(patPtr), uintptr(len(pattern)),
 		0, 0, 0, 0)
 	if errno != 0 {
@@ -115,7 +101,7 @@ func AttrRegisterQuery(pattern string) (uint16, error) {
 // AttrWriteResult writes a constraint evaluation result (scalar/composite) to a
 // constraint slot. Does not dirty-propagate.
 func AttrWriteResult(slot uint16, value *[40]byte) error {
-	_, _, errno := RawSyscall(sysAttrWriteResult,
+	_, _, errno := RawSyscall(mazzy.SysAttrWriteResult,
 		uintptr(slot),
 		uintptr(unsafe.Pointer(&value[0])), 40,
 		0, 0, 0)
@@ -137,7 +123,7 @@ func AttrWriteString(slot uint16, s string, isConstraintResult bool) error {
 	if isConstraintResult {
 		constraintFlag = 1
 	}
-	_, _, errno := RawSyscall(sysAttrWriteString,
+	_, _, errno := RawSyscall(mazzy.SysAttrWriteString,
 		uintptr(slot),
 		uintptr(sPtr), uintptr(len(s)),
 		constraintFlag, 0, 0)
@@ -155,7 +141,7 @@ func AttrSetEager(slot uint16, eager bool) error {
 	if eager {
 		eagerVal = 1
 	}
-	_, _, errno := RawSyscall(sysAttrSetEager,
+	_, _, errno := RawSyscall(mazzy.SysAttrSetEager,
 		uintptr(slot), eagerVal,
 		0, 0, 0, 0)
 	if errno != 0 {
@@ -172,7 +158,7 @@ func AttrWaitDirty(buf []uint16) int {
 		return 0
 	}
 	runtime_entersyscall()
-	r1, _, _ := RawSyscall(sysAttrWaitDirty,
+	r1, _, _ := RawSyscall(mazzy.SysAttrWaitDirty,
 		uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)),
 		0, 0, 0, 0)
 	runtime_exitsyscall()
@@ -183,7 +169,7 @@ func AttrWaitDirty(buf []uint16) int {
 // Returns the new value on success, or an error.
 // No dirty propagation — intended for side-effect counters.
 func AttrIncrementI64(slot uint16) (int64, error) {
-	r1, _, errno := RawSyscall(sysAttrIncrementI64,
+	r1, _, errno := RawSyscall(mazzy.SysAttrIncrementI64,
 		uintptr(slot), 0, 0, 0, 0, 0)
 	if int64(r1) < 0 {
 		return 0, errno

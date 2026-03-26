@@ -6,6 +6,7 @@ import (
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
+	"mazzy/shared/mazzy"
 	"sync/atomic"
 	_ "unsafe" // for go:linkname
 )
@@ -87,7 +88,7 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 	var result int64
 
 	// Check for Mazzy syscalls first (1000+)
-	if syscallNum >= MazzySyscallBase {
+	if syscallNum >= mazzy.MazzySyscallBase {
 		result = dispatchMazzySyscall(syscallNum, arg0, arg1, arg2, arg3, arg4, arg5)
 	} else {
 		// Translate native Linux syscall number to platform-independent SysID
@@ -165,7 +166,7 @@ func printThreadStateSummary()
 //
 //go:nosplit
 func dispatchMazzySyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
-	idx := syscallNum - MazzySyscallBase
+	idx := syscallNum - mazzy.MazzySyscallBase
 	if idx >= uint64(len(mazzySyscallTable)) {
 		syscallPanic("Invalid Mazzy syscall number", syscallNum)
 		return -1 // unreachable

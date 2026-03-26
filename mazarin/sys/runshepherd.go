@@ -5,6 +5,7 @@ import (
 	"unsafe"
 
 	merror "mazzy/mazarin/error"
+	"mazzy/shared/mazzy"
 )
 
 // RunShepherd creates a new shepherd from ELF data in the caller's pages.
@@ -23,7 +24,7 @@ func RunShepherd(name string, startVA uintptr, numPages int, totalBytes int) *me
 	nameBytes := append([]byte(name), 0)
 
 	r1, _, _ := syscall.RawSyscall6(
-		sysRunShepherd,
+		mazzy.SysRunShepherd,
 		uintptr(unsafe.Pointer(&nameBytes[0])),
 		startVA,
 		uintptr(numPages),

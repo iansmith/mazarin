@@ -26,6 +26,7 @@ package sys
 //	}
 
 import (
+	"mazzy/shared/mazzy"
 	"mazzy/shared/sysid"
 	"runtime"
 	"unsafe"
@@ -87,7 +88,7 @@ func (r *SyscallRequest) PathString() string {
 // For Read: returnVal = number of bytes read (kernel copies that many from DataBuf).
 // For Close: returnVal = 0 on success, negative errno on error.
 func (r *SyscallRequest) Reply(returnVal int64) {
-	RawSyscall(sysDelegatedReply,
+	RawSyscall(mazzy.SysSyscallReply,
 		uintptr(r.CallerPID),
 		uintptr(r.CallerTID),
 		uintptr(uint64(returnVal)),
@@ -98,7 +99,7 @@ func (r *SyscallRequest) Reply(returnVal int64) {
 // For LoadFile: the kernel writes (targetVA, numPages, bytesRead) to the caller's
 // LoadFileResult struct before waking the caller.
 func (r *SyscallRequest) LoadFileReply(returnVal int64, targetVA, numPages, bytesRead uint64) {
-	RawSyscall(sysDelegatedReply,
+	RawSyscall(mazzy.SysSyscallReply,
 		uintptr(r.CallerPID),
 		uintptr(r.CallerTID),
 		uintptr(uint64(returnVal)),
@@ -125,7 +126,7 @@ type delegateRecvResult struct {
 // original caller. Failing to reply will leave the caller permanently blocked.
 func HandleSyscalls(ids ...sysid.ID) (<-chan SyscallRequest, error) {
 	for _, id := range ids {
-		r1, _, errno := RawSyscall(sysRegisterSyscallHandler,
+		r1, _, errno := RawSyscall(mazzy.SysRegisterSyscallHandler,
 			uintptr(id), 0, 0, 0, 0, 0)
 		if errno != 0 {
 			return nil, errno
@@ -155,7 +156,7 @@ func delegateRecvLoop(ch chan<- SyscallRequest, ready chan<- struct{}) {
 	var result delegateRecvResult
 	for {
 		runtime_entersyscall()
-		r1, _, errno := RawSyscall(sysDelegatedRecv,
+		r1, _, errno := RawSyscall(mazzy.SysDelegatedRecv,
 			uintptr(unsafe.Pointer(&result)),
 			0, 0, 0, 0, 0)
 		runtime_exitsyscall()
@@ -192,7 +193,7 @@ func UartWrite(data []byte) int {
 	if len(data) == 0 {
 		return 0
 	}
-	r1, _, _ := RawSyscall(sysUartWrite,
+	r1, _, _ := RawSyscall(mazzy.SysUartWrite,
 		uintptr(unsafe.Pointer(&data[0])),
 		uintptr(len(data)),
 		0, 0, 0, 0)
@@ -206,7 +207,7 @@ func UartWriteDirect(data []byte) int {
 	if len(data) == 0 {
 		return 0
 	}
-	r1, _, _ := RawSyscall(sysUartWriteBlocking,
+	r1, _, _ := RawSyscall(mazzy.SysUartWriteDirect,
 		uintptr(unsafe.Pointer(&data[0])),
 		uintptr(len(data)),
 		0, 0, 0, 0)

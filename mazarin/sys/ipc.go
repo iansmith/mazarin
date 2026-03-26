@@ -2,15 +2,12 @@ package sys
 
 import (
 	"errors"
+	"mazzy/shared/mazzy"
 	"syscall"
 	"unsafe"
 )
 
 const (
-	sysIPCCall  = 0x1013
-	sysIPCRecv  = 0x1014
-	sysIPCReply = 0x1015
-
 	// mapAnonymous is MAP_ANONYMOUS (0x20) — defined here because
 	// syscall.MAP_ANONYMOUS only exists on Linux (macOS uses MAP_ANON).
 	mapAnonymous = 0x20
@@ -30,7 +27,7 @@ type IPCRecvResult struct {
 //
 // Uses Syscall6 so entersyscall/exitsyscall release the P while blocked.
 func IPCCall(targetPID int, requestVA uintptr, requestPages int) (replyVA uintptr, replyPages int, err error) {
-	r1, _, errno := syscall.Syscall6(sysIPCCall,
+	r1, _, errno := syscall.Syscall6(mazzy.SysIPCCall,
 		uintptr(targetPID),
 		requestVA,
 		uintptr(requestPages),
@@ -57,7 +54,7 @@ func IPCCall(targetPID int, requestVA uintptr, requestPages int) (replyVA uintpt
 func IPCRecv() (senderPID int, requestVA uintptr, requestPages int, err error) {
 	var result IPCRecvResult
 
-	r1, _, errno := syscall.Syscall6(sysIPCRecv,
+	r1, _, errno := syscall.Syscall6(mazzy.SysIPCRecv,
 		uintptr(unsafe.Pointer(&result)),
 		0, 0, 0, 0, 0)
 
@@ -74,7 +71,7 @@ func IPCRecv() (senderPID int, requestVA uintptr, requestPages int, err error) {
 // IPCReply sends a reply to a client shepherd blocked in IPCCall.
 // replyVA must be page-aligned.
 func IPCReply(clientPID int, replyVA uintptr, replyPages int) error {
-	r1, _, errno := RawSyscall(sysIPCReply,
+	r1, _, errno := RawSyscall(mazzy.SysIPCReply,
 		uintptr(clientPID),
 		replyVA,
 		uintptr(replyPages),

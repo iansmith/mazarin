@@ -2,13 +2,8 @@ package sys
 
 import (
 	"errors"
+	"mazzy/shared/mazzy"
 	"unsafe"
-)
-
-const (
-	sysMailboxMapPage = 0x102F
-	sysMailboxSend    = 0x1030
-	sysMailboxRecv    = 0x1031
 )
 
 // MailboxNotification is the userspace representation of a received notification.
@@ -22,7 +17,7 @@ type MailboxNotification struct {
 // shepherd's space. The callerVA need not be page-aligned — the offset is
 // preserved. Returns the target's VA on success.
 func MailboxMapPage(targetSID int, callerVA uintptr) (uintptr, error) {
-	r1, _, errno := RawSyscall(sysMailboxMapPage,
+	r1, _, errno := RawSyscall(mazzy.SysMailboxMapPage,
 		uintptr(targetSID),
 		callerVA,
 		0, 0, 0, 0)
@@ -36,7 +31,7 @@ func MailboxMapPage(targetSID int, callerVA uintptr) (uintptr, error) {
 // callerVA is the ring buffer address in the caller's address space —
 // the kernel translates it to the target's VA using the cached mapping.
 func MailboxSend(targetSID int, code int64, callerVA uintptr) error {
-	r1, _, errno := RawSyscall(sysMailboxSend,
+	r1, _, errno := RawSyscall(mazzy.SysMailboxSend,
 		uintptr(targetSID),
 		uintptr(code),
 		callerVA,
@@ -54,7 +49,7 @@ func MailboxRecv() (MailboxNotification, error) {
 	// Touch the struct to ensure the page is demand-faulted before the kernel writes to it.
 	*(*byte)(unsafe.Pointer(&notif)) = 0
 	runtime_entersyscall()
-	r1, _, errno := RawSyscall(sysMailboxRecv,
+	r1, _, errno := RawSyscall(mazzy.SysMailboxRecv,
 		uintptr(unsafe.Pointer(&notif)),
 		0, 0, 0, 0, 0)
 	runtime_exitsyscall()

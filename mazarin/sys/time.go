@@ -2,6 +2,7 @@
 package sys
 
 import (
+	"mazzy/shared/mazzy"
 	"syscall"
 	"unsafe"
 )
@@ -18,7 +19,7 @@ func GetTime() (TimeSpec, error) {
 	var ts TimeSpec
 
 	r1, _, errno := syscall.RawSyscall6(
-		sysGetTime,
+		mazzy.SysGetTime,
 		uintptr(unsafe.Pointer(&ts)),
 		0, 0, 0, 0, 0,
 	)
@@ -35,7 +36,7 @@ func GetTime() (TimeSpec, error) {
 // and wakes the thread blocked on WaitSoftIRQ for that slot.
 // This is non-blocking — the caller should wait via WaitSoftIRQ separately.
 func SetTimerDeadline(slot int, deadlineSec, deadlineNsec uint64) error {
-	r1, _, errno := RawSyscall(sysSetTimerDeadline,
+	r1, _, errno := RawSyscall(mazzy.SysSetTimerDeadline,
 		uintptr(slot), uintptr(deadlineSec), uintptr(deadlineNsec),
 		0, 0, 0)
 	if errno != 0 {

@@ -581,7 +581,7 @@ func SyscallDelegatedRecv(arg0, _, _, _, _, _ uint64) int64 {
 	return 0
 }
 
-// SyscallDelegatedReply replies to a delegated syscall, unblocking the caller.
+// SyscallReply replies to a delegated syscall, unblocking the caller.
 // For Read syscalls, copies data from the handler's data page back to the
 // caller's original buffer before waking.
 //
@@ -592,7 +592,7 @@ func SyscallDelegatedRecv(arg0, _, _, _, _, _ uint64) int64 {
 // Returns: 0 on success, negative errno on error.
 //
 //go:noinline
-func SyscallDelegatedReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
+func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	callerSID := int16(arg0)
 	callerTID := int16(arg1)
 	returnVal := int64(arg2)

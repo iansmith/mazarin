@@ -3,20 +3,15 @@ package sys
 import (
 	"errors"
 	"mazzy/shared/hid"
+	"mazzy/shared/mazzy"
 	"runtime"
 	"unsafe"
-)
-
-const (
-	sysRequestWindowManager = 0x102C
-	sysSetInputFocus        = 0x102D
-	sysWaitInputEvent       = 0x102E
 )
 
 // RequestWindowManager claims the window manager role for the calling shepherd.
 // First-come-first-served; only one WM per system.
 func RequestWindowManager() error {
-	r1, _, errno := RawSyscall(sysRequestWindowManager, 0, 0, 0, 0, 0, 0)
+	r1, _, errno := RawSyscall(mazzy.SysRequestWindowManager, 0, 0, 0, 0, 0, 0)
 	if errno != 0 || int64(r1) < 0 {
 		return errors.New("RequestWindowManager: already claimed")
 	}
@@ -26,7 +21,7 @@ func RequestWindowManager() error {
 // SetInputFocus sets input focus for a device class.
 // targetSID=0 means "self". Only self or the WM can call this.
 func SetInputFocus(targetSID int, class int) error {
-	r1, _, errno := RawSyscall(sysSetInputFocus,
+	r1, _, errno := RawSyscall(mazzy.SysSetInputFocus,
 		uintptr(targetSID),
 		uintptr(class),
 		0, 0, 0, 0)
@@ -41,7 +36,7 @@ func SetInputFocus(targetSID int, class int) error {
 // Uses entersyscall/exitsyscall to release the P while blocking.
 func WaitInputEvent(class int, buf *hid.SoftIRQReturn) (int, error) {
 	runtime_entersyscall()
-	r1, _, errno := RawSyscall(sysWaitInputEvent,
+	r1, _, errno := RawSyscall(mazzy.SysWaitInputEvent,
 		uintptr(class),
 		uintptr(unsafe.Pointer(buf)),
 		0, 0, 0, 0)
@@ -58,7 +53,7 @@ func WaitInputEvent(class int, buf *hid.SoftIRQReturn) (int, error) {
 
 // PollInputEvent is a single non-blocking attempt that returns (0, nil) if no events.
 func PollInputEvent(class int, buf *hid.SoftIRQReturn) (int, error) {
-	r1, _, errno := RawSyscall(sysWaitInputEvent,
+	r1, _, errno := RawSyscall(mazzy.SysWaitInputEvent,
 		uintptr(class),
 		uintptr(unsafe.Pointer(buf)),
 		0, 0, 0, 0)

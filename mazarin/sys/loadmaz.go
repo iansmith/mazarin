@@ -6,6 +6,7 @@ import (
 	"unsafe"
 
 	merror "mazzy/mazarin/error"
+	"mazzy/shared/mazzy"
 )
 
 // runtime_entersyscall releases the Go P before a potentially-blocking syscall.
@@ -47,7 +48,7 @@ func LoadMaz(filename string) (*MazLoadResult, *merror.Error) {
 	result.EntryPoint = ^uint64(0)
 
 	r1, _, _ := syscall.RawSyscall6(
-		sysLoadMaz,
+		mazzy.SysLoadMaz,
 		uintptr(unsafe.Pointer(&filenameBytes[0])),
 		uintptr(unsafe.Pointer(&result)),
 		0, 0, 0, 0,
@@ -76,7 +77,7 @@ func LoadMazFromPages(filename string, dataVA uintptr, dataLen uint64) (*MazLoad
 	result.EntryPoint = ^uint64(0)
 
 	r1, _, _ := syscall.RawSyscall6(
-		sysLoadMaz,
+		mazzy.SysLoadMaz,
 		uintptr(unsafe.Pointer(&filenameBytes[0])),
 		uintptr(unsafe.Pointer(&result)),
 		dataVA,

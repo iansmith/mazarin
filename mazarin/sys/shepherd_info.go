@@ -3,6 +3,7 @@ package sys
 import (
 	"errors"
 	"mazzy/shared/hid"
+	"mazzy/shared/mazzy"
 	"syscall"
 	"unsafe"
 )
@@ -20,7 +21,7 @@ func ShepherdInfo() ([]hid.ShepherdInfoEntry, error) {
 		*p = 0
 	}
 	r1, _, errno := syscall.RawSyscall6(
-		sysShepherdInfo,
+		mazzy.SysShepherdInfo,
 		uintptr(unsafe.Pointer(&buf[0])),
 		uintptr(len(buf)),
 		0, 0, 0, 0,

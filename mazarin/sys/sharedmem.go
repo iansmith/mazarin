@@ -1,14 +1,8 @@
 package sys
 
 import (
+	"mazzy/shared/mazzy"
 	"syscall"
-)
-
-// Shared memory IPC syscall numbers.
-// Must match kernel-side definitions in ksyscall/mazzy.go.
-const (
-	sysTransferPages = 0x1010
-	sysMapSharedPage = 0x1011
 )
 
 // TransferPages transfers ownership of contiguous pages from the calling shepherd
@@ -19,7 +13,7 @@ const (
 // elfFlags controls target mapping permissions (0 = read-write).
 func TransferPages(targetPID int, sourceVA uintptr, numPages int, elfFlags uint32) (uintptr, error) {
 	r1, _, errno := syscall.RawSyscall6(
-		sysTransferPages,
+		mazzy.SysTransferPages,
 		uintptr(targetPID),
 		sourceVA,
 		uintptr(numPages),
@@ -52,7 +46,7 @@ func TransferAndUnmap(targetPID int, sourceVA uintptr, numPages int) (uintptr, e
 // elfFlags controls caller's mapping permissions (0 = read-write).
 func MapSharedPage(ownerPID int, ownerVA uintptr, elfFlags uint32) (uintptr, error) {
 	r1, _, errno := syscall.RawSyscall6(
-		sysMapSharedPage,
+		mazzy.SysMapSharedPage,
 		uintptr(ownerPID),
 		ownerVA,
 		uintptr(elfFlags),

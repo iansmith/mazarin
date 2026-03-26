@@ -3,6 +3,7 @@ package sys
 import (
 	"errors"
 	"mazzy/shared/constants"
+	"mazzy/shared/mazzy"
 	"unsafe"
 )
 
@@ -24,7 +25,7 @@ const (
 //
 // The returned pointer is page-aligned. The backing pages are zeroed.
 func AllocPages(count int, pageType int) (unsafe.Pointer, error) {
-	r1, _, errno := RawSyscall(sysAllocPages,
+	r1, _, errno := RawSyscall(mazzy.SysAllocPages,
 		uintptr(count),
 		uintptr(pageType),
 		0, 0, 0, 0)

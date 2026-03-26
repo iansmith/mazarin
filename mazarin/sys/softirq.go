@@ -3,15 +3,12 @@ package sys
 import (
 	"errors"
 	"mazzy/shared/hid"
+	"mazzy/shared/mazzy"
 	"runtime"
 	"unsafe"
 )
 
 const (
-	sysWaitSoftIRQ       = 0x100A
-	sysRegisterSoftIRQ   = 0x100B
-	sysQueryInputDevices = 0x100C
-
 	// waitSoftIRQNonBlock is the flags value for non-blocking mode.
 	// Passed as arg2 to SyscallWaitSoftIRQ.
 	waitSoftIRQNonBlock = 1
@@ -25,7 +22,7 @@ const (
 // so other goroutines can run on a different M while this one sleeps.
 func WaitSoftIRQ(slot int, buf *hid.SoftIRQReturn) (int, error) {
 	runtime_entersyscall()
-	r1, _, errno := RawSyscall(sysWaitSoftIRQ,
+	r1, _, errno := RawSyscall(mazzy.SysWaitSoftIRQ,
 		uintptr(slot),
 		uintptr(unsafe.Pointer(buf)),
 		0, 0, 0, 0) // flag=0 → blocking mode
@@ -48,7 +45,7 @@ func WaitSoftIRQ(slot int, buf *hid.SoftIRQReturn) (int, error) {
 // to avoid excessive SVC overhead.
 func PollSoftIRQ(slot int, buf *hid.SoftIRQReturn) (int, error) {
 	for {
-		r1, _, errno := RawSyscall(sysWaitSoftIRQ,
+		r1, _, errno := RawSyscall(mazzy.SysWaitSoftIRQ,
 			uintptr(slot),
 			uintptr(unsafe.Pointer(buf)),
 			waitSoftIRQNonBlock, 0, 0, 0)
@@ -70,7 +67,7 @@ func PollSoftIRQ(slot int, buf *hid.SoftIRQReturn) (int, error) {
 
 // TrySoftIRQ is a single non-blocking attempt that returns (0, nil) if no events.
 func TrySoftIRQ(slot int, buf *hid.SoftIRQReturn) (int, error) {
-	r1, _, errno := RawSyscall(sysWaitSoftIRQ,
+	r1, _, errno := RawSyscall(mazzy.SysWaitSoftIRQ,
 		uintptr(slot),
 		uintptr(unsafe.Pointer(buf)),
 		waitSoftIRQNonBlock, 0, 0, 0)
@@ -87,7 +84,7 @@ func TrySoftIRQ(slot int, buf *hid.SoftIRQReturn) (int, error) {
 // RegisterSoftIRQ registers an IRQ number on a soft IRQ slot.
 // The current shepherd becomes the owner of the slot.
 func RegisterSoftIRQ(irqNum uint32, slot int) error {
-	r1, _, errno := RawSyscall(sysRegisterSoftIRQ,
+	r1, _, errno := RawSyscall(mazzy.SysRegisterSoftIRQ,
 		uintptr(irqNum),
 		uintptr(slot),
 		0, 0, 0, 0)
@@ -101,7 +98,7 @@ func RegisterSoftIRQ(irqNum uint32, slot int) error {
 // QueryInputDevices returns information about available input devices.
 func QueryInputDevices() ([]hid.InputDeviceInfo, error) {
 	var infos [8]hid.InputDeviceInfo
-	r1, _, errno := RawSyscall(sysQueryInputDevices,
+	r1, _, errno := RawSyscall(mazzy.SysQueryInputDevices,
 		uintptr(unsafe.Pointer(&infos[0])),
 		0, 0, 0, 0, 0)
 
