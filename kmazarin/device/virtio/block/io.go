@@ -250,8 +250,30 @@ func (d *VirtIOBlockDevice) MaxBatchSize() uint8 {
 //
 //go:nosplit
 func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte) error {
+	// Temporarily disable async mode so the IRQ top-half doesn't drain
+	// the used ring before our polling loop sees the completion.
+	// SetAsyncMode is nil during early boot (before async is configured).
+	var prevAsync uint32
+	if d.SetAsyncMode != nil {
+		prevAsync = d.SetAsyncMode(0)
+	}
+
+	// Drain any stale used ring entries left by failed async I/O.
+	// If SysBlockSubmit was called but completions weren't consumed
+	// (e.g., platform doesn't support async delivery), the used ring
+	// will have entries that don't belong to our request. Drain them
+	// now so our polling loop only sees our own completion.
+	if d.MMIOBase == 0 {
+		for d.Eng.HasUsed() {
+			d.Eng.PopUsed()
+		}
+	}
+
 	reqDescIdx, err := d.DoBlockIOSubmit(requestType, lba, buf, 0, 0)
 	if err != nil {
+		if d.SetAsyncMode != nil {
+			d.SetAsyncMode(prevAsync)
+		}
 		return err
 	}
 
@@ -277,6 +299,9 @@ func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte
 			}
 		}
 		if !virtio.VirtqueueHasUsed(vq) {
+			if d.SetAsyncMode != nil {
+				d.SetAsyncMode(prevAsync)
+			}
 			console.KPrintf("[VirtIO Block] ERROR: I/O timeout (avail=%d used=%d LBA=%d)\n",
 				vq.Available.Idx, vq.Used.Idx, lba)
 			return ErrTimeout
@@ -296,12 +321,19 @@ func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte
 			bootYieldForIO()
 		}
 		if !d.Eng.HasUsed() {
+			if d.SetAsyncMode != nil {
+				d.SetAsyncMode(prevAsync)
+			}
 			console.KPrintf("[VirtIO Block] ERROR: I/O timeout (LBA=%d)\n", lba)
 			return ErrTimeout
 		}
 	}
 
-	return d.DoBlockIOComplete(requestType, reqDescIdx, buf, 0)
+	result := d.DoBlockIOComplete(requestType, reqDescIdx, buf, 0)
+	if d.SetAsyncMode != nil {
+		d.SetAsyncMode(prevAsync)
+	}
+	return result
 }
 
 // ============================================================================

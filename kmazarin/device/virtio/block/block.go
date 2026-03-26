@@ -50,6 +50,13 @@ type VirtIOBlockDevice struct {
 	// Phase 2: per-slot in-flight sidecar tracking (PCI only).
 	// Each slot corresponds to a data buffer region at DmaPagePA + slotIdx*BlockSizeBytes.
 	inFlightSidecars [MaxInFlight]virtio.SidecarSlot
+
+	// SetAsyncMode is a callback to temporarily disable the IRQ top-half's
+	// async completion mode. doBlockIO (kernel polling path) must disable
+	// async mode so the top-half doesn't drain the used ring before the
+	// polling loop sees it. Set by the kernel during init.
+	// Returns the previous mode value.
+	SetAsyncMode func(mode uint32) uint32
 }
 
 // Global device instance

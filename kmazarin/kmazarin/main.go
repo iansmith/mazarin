@@ -935,6 +935,9 @@ func simpleMain() {
 	if irq := block.GetIRQNum(); irq != 0 {
 		SetBlockIRQ(irq, block.GetISRBase(), block.GetIOCompletePtr(), block.GetEnginePtr(), block.GetSidecarFreeBitsPtr())
 		enableBlockDeviceIRQ(irq)
+		// Register async mode callback so doBlockIO (kernel polling path)
+		// can temporarily disable async mode during its polling loop.
+		block.GetDevice().SetAsyncMode = SetBlockAsyncMode
 	}
 	console.KPrintln("[Main] block IRQ wired")
 

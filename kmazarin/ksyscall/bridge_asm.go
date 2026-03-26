@@ -48,3 +48,9 @@ func setBlockAsyncSlot(tag uint16, sidecarStatusVA uintptr, sidecarIdx uint8, da
 //
 //go:linkname enableBlockAsyncMode main.EnableBlockAsyncMode
 func enableBlockAsyncMode()
+
+// setBlockAsyncMode atomically sets the block async mode flag and returns the previous value.
+// Used to temporarily disable async mode when the sync polling path needs the Engine.
+//
+//go:linkname setBlockAsyncMode main.SetBlockAsyncMode
+func setBlockAsyncMode(mode uint32) uint32

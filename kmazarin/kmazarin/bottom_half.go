@@ -170,6 +170,13 @@ func EnableBlockAsyncMode() {
 	atomic.StoreUint32(&blockAsyncMode, 1)
 }
 
+// SetBlockAsyncMode atomically sets the blockAsyncMode flag and returns the previous value.
+// The sync polling path uses this to temporarily disable async mode so the top-half
+// just sets IOComplete instead of draining the used ring.
+func SetBlockAsyncMode(mode uint32) uint32 {
+	return atomic.SwapUint32(&blockAsyncMode, mode)
+}
+
 // SetTopHalfDev is called during input init to register device pointers
 // for the nosplit top-half path.
 // devType: 0=keyboard, 1=mouse, 2=tablet

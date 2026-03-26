@@ -22,7 +22,6 @@ import (
 	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
-	"sync/atomic"
 	"unsafe"
 )
 
@@ -71,24 +70,29 @@ func SyscallBlockRead(arg0, arg1, arg2, _, _, _ uint64) int64 {
 	l0PA := callerShepherd.PageTableL0PA
 
 	// Check if interrupt-driven I/O is available.
-	// If async mode is enabled (SysBlockSubmit has been used), the top-half
-	// drains the engine used ring — sync WFI path can't use PopUsed safely.
-	// Fall back to polling in that case.
 	dev := block.GetDevice()
-	useInterrupt := dev != nil && dev.IRQNum != 0 &&
-		atomic.LoadUint32(&blockAsyncEnabled) == 0
+	useInterrupt := dev != nil && dev.IRQNum != 0
 
 	if useInterrupt {
-		return blockReadBatch(dev, startLBA, numSectors, bufVA, blockSize, l0PA)
+		// Temporarily switch top-half to sync mode so it sets IOComplete
+		// instead of draining the used ring. This is needed because async
+		// mode (from prior BlockSubmit calls) would race on the used ring.
+		prevAsync := setBlockAsyncMode(0)
+		result := blockReadBatch(dev, startLBA, numSectors, bufVA, blockSize, l0PA)
+		setBlockAsyncMode(prevAsync)
+		return result
 	}
 
 	// Fallback: sector-by-sector polling (boot path, no interrupts)
+	// Also temporarily disable async mode for the same reason.
+	prevAsync := setBlockAsyncMode(0)
 	var sectorBuf [512]byte
 	for i := uint64(0); i < numSectors; i++ {
 		lba := startLBA + i
 		buf := sectorBuf[:blockSize]
 
 		if err := blk.ReadBlock(lba, buf); err != nil {
+			setBlockAsyncMode(prevAsync)
 			serial.RawUARTPuts("[BlockRead] I/O error at LBA ")
 			serial.RawUARTDecimal(lba)
 			serial.RawUARTPuts("\r\n")
@@ -97,12 +101,14 @@ func SyscallBlockRead(arg0, arg1, arg2, _, _, _ uint64) int64 {
 
 		dstVA := bufVA + uintptr(i*blockSize)
 		if !copyToUser(dstVA, buf, l0PA) {
+			setBlockAsyncMode(prevAsync)
 			serial.RawUARTPuts("[BlockRead] EFAULT at LBA ")
 			serial.RawUARTDecimal(lba)
 			serial.RawUARTPuts("\r\n")
 			return -14 // EFAULT
 		}
 	}
+	setBlockAsyncMode(prevAsync)
 
 	return 0
 }

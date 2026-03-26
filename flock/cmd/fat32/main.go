@@ -11,6 +11,7 @@ import (
 	"mazzy/shared/blockdev"
 	"mazzy/shared/constants"
 	"mazzy/shared/fs/fat32"
+	"mazzy/shared/hid"
 	"mazzy/shared/sysid"
 	"mazzy/shared/toml"
 	"syscall"
@@ -126,6 +127,11 @@ func MazarinMain() {
 	// runtime.morestack hangs the goroutine forever. By processing requests
 	// inline, we use the host's runWithLargeStack frame (256KB), which is
 	// kept alive for the duration of MazarinMain.
+	// Run async I/O verification test after delegate is ready.
+	// Requests arriving during the test block in the kernel and will
+	// be served as soon as we enter the delegate loop below.
+	verifyAsyncIO(fs)
+
 	debugPuts("[fs] entering delegate receive loop\n")
 	for req := range delegateCh {
 		handleLoadFile(fs, &req)
@@ -147,7 +153,9 @@ func handleLoadFile(fs *fat32.FileSystem, req *sys.SyscallRequest) {
 
 	va, numPages, bytesRead, err := readFileIntoPages(fs, path)
 	if err != nil {
-		debugPuts("[fs] LoadFile: file not found\n")
+		debugPuts("[fs] LoadFile: error=")
+		debugPuts(err.Error())
+		debugPuts("\n")
 		req.Reply(-2) // ENOENT
 		return
 	}
@@ -242,6 +250,151 @@ func readFileIntoPages(fs *fat32.FileSystem, path string) (va uintptr, numPages 
 	debugPutDec(n)
 	debugPuts(" bytes\n")
 	return va, numPages, n, nil
+}
+
+// verifyAsyncIO performs a self-test of the async block I/O path.
+// Registers a DMA pool, reads the root directory to find files, submits
+// concurrent reads via BlockSubmit, waits for completions via soft IRQ,
+// and verifies data against expected magic bytes.
+//
+//go:noinline
+func verifyAsyncIO(fs *fat32.FileSystem) {
+	debugPuts("[fs:verify] async I/O verification starting\n")
+
+	// Allocate 8 pages for DMA pool (32KB)
+	const numPoolPages = 8
+	poolSize := uintptr(numPoolPages) * 4096
+	poolVA, _, errno := syscall.RawSyscall6(
+		syscall.SYS_MMAP, 0, poolSize,
+		syscall.PROT_READ|syscall.PROT_WRITE,
+		syscall.MAP_PRIVATE|syscall.MAP_ANONYMOUS,
+		^uintptr(0), 0)
+	if errno != 0 || int64(poolVA) < 0 {
+		debugPuts("[fs:verify] SKIP: mmap failed\n")
+		return
+	}
+
+	// Register DMA pool
+	if err := sys.RegisterDMAPool(poolVA, numPoolPages); err != nil {
+		debugPuts("[fs:verify] SKIP: RegisterDMAPool failed\n")
+		return
+	}
+	defer sys.UnregisterDMAPool()
+
+	// Read root directory to find ELF files for verification
+	entries, err := fs.ReadDir(fs.RootCluster())
+	if err != nil {
+		debugPuts("[fs:verify] SKIP: ReadDir failed\n")
+		return
+	}
+
+	// Collect test targets: sector 0 (BPB) + up to 7 file start sectors
+	type testTarget struct {
+		lba       uint64
+		expectELF bool // expect 0x7F ELF magic
+	}
+	var targets [8]testTarget
+	targets[0] = testTarget{lba: 0, expectELF: false} // BPB sector
+	numTargets := 1
+
+	for _, e := range entries {
+		if numTargets >= 8 {
+			break
+		}
+		if e.IsDir || e.Size == 0 || e.Cluster < 2 {
+			continue
+		}
+		lba := fs.ClusterToSector(e.Cluster)
+		targets[numTargets] = testTarget{lba: lba, expectELF: true}
+		numTargets++
+	}
+
+	debugPuts("[fs:verify] submitting ")
+	debugPutDec(numTargets)
+	debugPuts(" async reads\n")
+
+	// Submit all reads
+	var tags [8]uint16
+	for i := 0; i < numTargets; i++ {
+		offset := uintptr(i) * 4096
+		buf := unsafe.Slice((*byte)(unsafe.Pointer(poolVA+offset)), 512)
+		tag, serr := sys.BlockSubmit(0, targets[i].lba, 1, buf)
+		if serr != nil {
+			debugPuts("[fs:verify] BlockSubmit failed at index ")
+			debugPutDec(i)
+			debugPuts("\n")
+			return
+		}
+		tags[i] = tag
+	}
+
+	// Poll for completions via TrySoftIRQ (non-blocking, avoids entersyscall issue in .maz)
+	var softBuf hid.SoftIRQReturn
+	completed := 0
+	for attempts := 0; attempts < 2000000 && completed < numTargets; attempts++ {
+		n, _ := sys.TrySoftIRQ(0, &softBuf)
+		if n > 0 {
+			completed += int(softBuf.Length)
+		}
+	}
+
+	if completed < numTargets {
+		debugPuts("[fs:verify] FAIL: timeout waiting for completions (got ")
+		debugPutDec(completed)
+		debugPuts("/")
+		debugPutDec(numTargets)
+		debugPuts(")\n")
+		return
+	}
+
+	// Verify data
+	pass := true
+
+	// Check BPB magic at offset 510-511
+	bpbBuf := unsafe.Slice((*byte)(unsafe.Pointer(poolVA)), 512)
+	if bpbBuf[510] != 0x55 || bpbBuf[511] != 0xAA {
+		debugPuts("[fs:verify] FAIL: BPB magic mismatch\n")
+		pass = false
+	}
+
+	// Check ELF magic for file reads
+	for i := 1; i < numTargets; i++ {
+		if !targets[i].expectELF {
+			continue
+		}
+		offset := uintptr(i) * 4096
+		fileBuf := unsafe.Slice((*byte)(unsafe.Pointer(poolVA+offset)), 512)
+		if fileBuf[0] != 0x7F || fileBuf[1] != 'E' || fileBuf[2] != 'L' || fileBuf[3] != 'F' {
+			debugPuts("[fs:verify] FAIL: file at index ")
+			debugPutDec(i)
+			debugPuts(" LBA ")
+			debugPutDec(int(targets[i].lba))
+			debugPuts(" not ELF (got 0x")
+			debugPutHex(fileBuf[0])
+			debugPutHex(fileBuf[1])
+			debugPutHex(fileBuf[2])
+			debugPutHex(fileBuf[3])
+			debugPuts(")\n")
+			pass = false
+		}
+	}
+
+	_ = tags // tags used for debugging if needed
+
+	if pass {
+		debugPuts("[fs:verify] PASSED: ")
+		debugPutDec(numTargets)
+		debugPuts(" async reads verified\n")
+	} else {
+		debugPuts("[fs:verify] FAILED\n")
+	}
+}
+
+// debugPutHex writes a single byte as two hex digits.
+func debugPutHex(b byte) {
+	const hexDigits = "0123456789abcdef"
+	sys.DebugPutChar(hexDigits[b>>4])
+	sys.DebugPutChar(hexDigits[b&0x0F])
 }
 
 // readBootConfig reads and parses /kmazarin.toml from the FAT32 filesystem.
