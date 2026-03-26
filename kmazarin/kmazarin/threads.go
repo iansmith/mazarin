@@ -2249,6 +2249,10 @@ func releaseShepherdSchedLockHeld(shepherdIdx int16, pid ShepherdId) {
 	// TLBI ASIDE1IS broadcasts to all CPUs in the inner shareable domain.
 	kmem.TlbiASIDE1IS(uint16(pid))
 
+	// Unpin DMA pool pages before freeing — must happen before CleanupShepherdPages
+	// so the page table walk sees correct RefCounts for DMA-pinned pages.
+	ksyscall.CleanupShepherdDMAPool(&proc.ShepherdListData[shepherdIdx])
+
 	// Read l0PA and spans pointer BEFORE zeroing the shepherd struct.
 	// CleanupShepherdPages needs these to walk the page tables.
 	l0PA := proc.ShepherdListData[shepherdIdx].PageTableL0PA

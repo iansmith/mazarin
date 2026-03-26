@@ -21,6 +21,7 @@ import (
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
 	"mazzy/kmazarin/serial"
+	"mazzy/shared/constants"
 	"unsafe"
 )
 
@@ -103,8 +104,14 @@ func SyscallBlockRead(arg0, arg1, arg2, _, _, _ uint64) int64 {
 
 // blockReadBatch reads sectors using batched interrupt-driven I/O.
 // Submits up to MaxBatchSize sectors at once, single notify, then waits
-// for all completions via WFI loop. Copies each completed sector directly
-// from the DMA data slot to userspace (no intermediate kernel buffer).
+// for all completions via WFI loop.
+//
+// Two data paths:
+//   - Zero-copy (DMA pool): if the caller's shepherd has a registered DMA pool
+//     and bufVA falls within it, I/O goes directly to the userspace page.
+//     After completion, InvalidateDCacheRange ensures the CPU sees device data.
+//   - Copy path (default): I/O goes to a kernel DMA page slot, then copyToUser
+//     transfers data to the caller's address space.
 //
 // Uses EnableIRQsAndWait (DAIFClr + WFI + DAIFSet) to halt the CPU until
 // the block device interrupt fires. svcDepth=1 prevents timer preemption
@@ -117,6 +124,23 @@ func blockReadBatch(dev *block.VirtIOBlockDevice, startLBA, numSectors uint64,
 	maxBatch := uint64(dev.MaxBatchSize())
 	freq := uint64(kirq.GetTimerFrequency())
 
+	// Check for DMA pool zero-copy path.
+	// If the caller has a registered pool and the buffer falls within it,
+	// we submit I/O directly to the userspace pages (no kernel copy).
+	shepherd := proc.CurrentShepherd()
+	var pool *proc.DMAPool
+	zeroCopy := false
+	if shepherd != nil {
+		pool = shepherd.DMAPool
+		if pool != nil {
+			// Verify the entire buffer range falls within the pool
+			endVA := bufVA + uintptr(numSectors*blockSize) - 1
+			if pool.LookupPA(bufVA) != 0 && pool.LookupPA(endVA) != 0 {
+				zeroCopy = true
+			}
+		}
+	}
+
 	for sectorsRead := uint64(0); sectorsRead < numSectors; {
 		// Determine batch size for this iteration
 		batch := numSectors - sectorsRead
@@ -128,7 +152,24 @@ func blockReadBatch(dev *block.VirtIOBlockDevice, startLBA, numSectors uint64,
 		var tags [block.MaxInFlight]uint16
 		for i := uint64(0); i < batch; i++ {
 			lba := startLBA + sectorsRead + i
-			tag, err := dev.DoBlockIOSubmit(block.VIRTIO_BLK_T_IN, lba, nil, uint8(i))
+
+			var extDataPA uintptr
+			if zeroCopy {
+				// Look up the cached PA for this userspace page
+				va := bufVA + uintptr((sectorsRead+uint64(i))*blockSize)
+				extDataPA = pool.LookupPA(va)
+				if extDataPA == 0 {
+					serial.RawUARTPuts("[BlockRead] DMA pool lookup failed at VA ")
+					serial.RawUARTHex64(uint64(va))
+					serial.RawUARTPuts("\r\n")
+					return -14 // EFAULT
+				}
+				// Clean cache before device write (device will overwrite this region)
+				kernelVA := extDataPA + constants.KernelMMIOOffset
+				asm.CleanDCacheRange(kernelVA, uintptr(blockSize))
+			}
+
+			tag, err := dev.DoBlockIOSubmit(block.VIRTIO_BLK_T_IN, lba, nil, uint8(i), extDataPA)
 			if err != nil {
 				serial.RawUARTPuts("[BlockRead] submit error at LBA ")
 				serial.RawUARTDecimal(lba)
@@ -186,15 +227,24 @@ func blockReadBatch(dev *block.VirtIOBlockDevice, startLBA, numSectors uint64,
 					return -5 // EIO
 				}
 
-				// Copy data from DMA slot directly to userspace
-				dataVA := dev.DataSlotVA(uint8(slotIdx))
-				srcBuf := unsafe.Slice((*byte)(unsafe.Pointer(dataVA)), int(blockSize))
-				dstVA := bufVA + uintptr((sectorsRead+uint64(slotIdx))*blockSize)
-				if !copyToUser(dstVA, srcBuf, l0PA) {
-					serial.RawUARTPuts("[BlockRead] EFAULT in batch at LBA ")
-					serial.RawUARTDecimal(startLBA + sectorsRead + uint64(slotIdx))
-					serial.RawUARTPuts("\r\n")
-					return -14 // EFAULT
+				if zeroCopy {
+					// Invalidate cache so CPU sees device-written data
+					va := bufVA + uintptr((sectorsRead+uint64(slotIdx))*blockSize)
+					pa := pool.LookupPA(va)
+					kernelVA := pa + constants.KernelMMIOOffset
+					asm.InvalidateDCacheRange(kernelVA, uintptr(blockSize))
+					asm.DmaRmb()
+				} else {
+					// Copy data from DMA slot directly to userspace
+					dataVA := dev.DataSlotVA(uint8(slotIdx))
+					srcBuf := unsafe.Slice((*byte)(unsafe.Pointer(dataVA)), int(blockSize))
+					dstVA := bufVA + uintptr((sectorsRead+uint64(slotIdx))*blockSize)
+					if !copyToUser(dstVA, srcBuf, l0PA) {
+						serial.RawUARTPuts("[BlockRead] EFAULT in batch at LBA ")
+						serial.RawUARTDecimal(startLBA + sectorsRead + uint64(slotIdx))
+						serial.RawUARTPuts("\r\n")
+						return -14 // EFAULT
+					}
 				}
 
 				// Mark tag as completed to avoid double-match

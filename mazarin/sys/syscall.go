@@ -32,6 +32,8 @@ const (
 	sysLoadFile               = 0x101E // Load file via fs.maz delegate
 	sysRunMaz                 = 0x101F // Load .maz ELF from caller's pages
 	sysRunShepherd              = 0x1020 // Create new shepherd from caller's pages
+	sysRegisterDMAPool          = 0x1035 // Register userspace pages for direct DMA I/O
+	sysUnregisterDMAPool        = 0x1036 // Unregister DMA page pool
 )
 
 // DebugPutChar writes a single character to the kernel debug output.

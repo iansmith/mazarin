@@ -49,6 +49,9 @@ const (
 	PageFontCache // Font glyph cache pages (owned by rachel/fontsvc)
 	PageIPCBuffer // IPC ring buffer pages (owned by creating shepherd)
 
+	// DMA I/O pages
+	PageUserDMA // Userspace DMA-pinned pages (owned by shepherd, borrowed by engine)
+
 	// Sentinel
 	PageTypeCount // Must be last
 )
@@ -78,6 +81,7 @@ var pageTypeNames = [PageTypeCount]string{
 	PageConstraintShared: "ConstraintShared",
 	PageFontCache:        "FontCache",
 	PageIPCBuffer:        "IPCBuffer",
+	PageUserDMA:          "UserDMA",
 }
 
 // String returns a human-readable name for the page type.

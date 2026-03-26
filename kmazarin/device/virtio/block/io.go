@@ -66,10 +66,15 @@ const (
 // slotIdx selects which data buffer region in the DMA page to use (0..MaxInFlight-1).
 // Each slot's data buffer is at DmaPagePA + slotIdx*BlockSizeBytes.
 //
+// extDataPA: if non-zero, use this PA as the data buffer instead of the kernel
+// DMA page slot. Used for zero-copy DMA pool I/O where userspace pages are
+// registered with pre-cached PAs. When extDataPA is set, buf is ignored for
+// write operations (caller must have already written data to the userspace page).
+//
 // PCI mode uses Engine + SidecarPool. MMIO mode uses legacy Queue + DMA page.
 //
 //go:nosplit
-func (d *VirtIOBlockDevice) DoBlockIOSubmit(requestType uint32, lba uint64, buf []byte, slotIdx uint8) (uint16, error) {
+func (d *VirtIOBlockDevice) DoBlockIOSubmit(requestType uint32, lba uint64, buf []byte, slotIdx uint8, extDataPA uintptr) (uint16, error) {
 	if d.MMIOBase != 0 {
 		return d.submitLegacy(requestType, lba, buf)
 	}
@@ -92,13 +97,17 @@ func (d *VirtIOBlockDevice) DoBlockIOSubmit(requestType uint32, lba uint64, buf 
 	// Initialize status byte to 0xFF (sentinel)
 	*(*VirtIOBlockStatus)(unsafe.Pointer(slot.VA + sidecarStatusOffset)) = 0xFF
 
-	// Data buffer within the DMA page, offset by slot index
-	dataPA := d.DmaPagePA + uintptr(slotIdx)*uintptr(d.BlockSizeBytes)
-	dataVA := d.DmaPageVA + uintptr(slotIdx)*uintptr(d.BlockSizeBytes)
+	// Determine data buffer PA. If extDataPA is set (DMA pool zero-copy),
+	// use it directly. Otherwise use the kernel DMA page at slotIdx offset.
+	dataPA := extDataPA
+	if dataPA == 0 {
+		dataPA = d.DmaPagePA + uintptr(slotIdx)*uintptr(d.BlockSizeBytes)
+		dataVA := d.DmaPageVA + uintptr(slotIdx)*uintptr(d.BlockSizeBytes)
 
-	// For writes, copy caller's data into DMA data buffer before submitting
-	if requestType == VIRTIO_BLK_T_OUT && len(buf) > 0 {
-		copyBytes(unsafe.Pointer(dataVA), unsafe.Pointer(&buf[0]), uintptr(d.BlockSizeBytes))
+		// For writes, copy caller's data into DMA data buffer before submitting
+		if requestType == VIRTIO_BLK_T_OUT && len(buf) > 0 {
+			copyBytes(unsafe.Pointer(dataVA), unsafe.Pointer(&buf[0]), uintptr(d.BlockSizeBytes))
+		}
 	}
 
 	// Build 3-descriptor chain: req header → data buffer → status byte
@@ -241,7 +250,7 @@ func (d *VirtIOBlockDevice) MaxBatchSize() uint8 {
 //
 //go:nosplit
 func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte) error {
-	reqDescIdx, err := d.DoBlockIOSubmit(requestType, lba, buf, 0)
+	reqDescIdx, err := d.DoBlockIOSubmit(requestType, lba, buf, 0, 0)
 	if err != nil {
 		return err
 	}
