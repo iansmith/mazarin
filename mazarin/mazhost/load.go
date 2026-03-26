@@ -7,6 +7,7 @@ package mazhost
 import (
 	"fmt"
 	"runtime"
+	"syscall"
 	"unsafe"
 
 	merror "mazzy/mazarin/error"
@@ -62,13 +63,31 @@ func runWithLargeStack(fn func()) {
 }
 
 // loadMazInternal is the private implementation shared by LoadMazBootstrap and LaunchMaz.
+// Tries the LoadFile delegate first (fs.maz → async DMA block device → zero-copy
+// page transfer → LoadMazFromPages). Falls back to LoadMaz (kernel direct FAT32 mount)
+// when the delegate is not yet registered (e.g., loading fs.maz itself during bootstrap).
 func loadMazInternal(useKernelToLoad bool, filename string, shepherd interface{}) (func(), uintptr, *merror.Error) {
 	if !useKernelToLoad {
 		return nil, 0, merror.ErrNotImplemented
 	}
 
-	// Step 1: Load the .maz via kernel syscall
-	result, err := sys.LoadMaz(filename)
+	// Step 1: Try delegate path first (fs.maz serves file via async DMA)
+	var result *sys.MazLoadResult
+	var err *merror.Error
+
+	lf, lfErr := sys.LoadFile(filename)
+	if lfErr == nil && lf.StartVA != 0 {
+		fmt.Printf("[mazhost] LoadFile(%s): %d pages (%d bytes) — using async delegate path\n",
+			filename, lf.NumPages, lf.BytesRead)
+		result, err = sys.LoadMazFromPages(filename, uintptr(lf.StartVA), lf.BytesRead)
+		// Free the pre-loaded pages (ELF segments were copied to new pages by kernel)
+		syscall.RawSyscall6(syscall.SYS_MUNMAP, uintptr(lf.StartVA),
+			uintptr(lf.NumPages)*4096, 0, 0, 0, 0)
+	} else {
+		// Fallback: kernel reads from disk directly (bootstrap path)
+		result, err = sys.LoadMaz(filename)
+	}
+
 	if err != nil {
 		return nil, 0, err.Wrap(filename)
 	}

@@ -105,6 +105,8 @@ func ReadFile(diskPID int, path string) ([]byte, error) {
 
 	// Write IPC header + path
 	// Header: Opcode(4) + Flags(4) + PayloadLen(8) + ErrorCode(8) = 24 bytes
+	// nolint: gosec — reqVA is an mmap-returned VA (validated above); casting to
+	// array pointer is the standard way to write structured data into mmap'd memory.
 	hdr := (*[24]byte)(unsafe.Pointer(reqVA))
 	// Opcode = 1 (FS_READ)
 	hdr[0] = 1
@@ -127,6 +129,8 @@ func ReadFile(diskPID int, path string) ([]byte, error) {
 	}
 
 	// Write path after header
+	// nolint: gosec — reqVA+24 is pointer arithmetic within the mmap'd page (4096
+	// bytes); offset 24 is well within bounds. Required to write past the header.
 	pathDst := unsafe.Slice((*byte)(unsafe.Pointer(reqVA+24)), len(path)+1)
 	copy(pathDst, path)
 	pathDst[len(path)] = 0 // null terminator
@@ -142,6 +146,8 @@ func ReadFile(diskPID int, path string) ([]byte, error) {
 	}
 
 	// Parse reply header
+	// nolint: gosec — replyVA is a kernel IPC-returned VA (validated by replyPages > 0
+	// check above); casting to array pointer to read the 24-byte header.
 	replyHdr := (*[24]byte)(unsafe.Pointer(replyVA))
 	errCode := int64(0)
 	for i := 0; i < 8; i++ {
@@ -164,6 +170,8 @@ func ReadFile(diskPID int, path string) ([]byte, error) {
 	}
 
 	data := make([]byte, payloadLen)
+	// nolint: gosec — replyVA+24 is pointer arithmetic within the IPC reply pages;
+	// payloadLen is bounds-checked against totalReplySize-24 above.
 	src := unsafe.Slice((*byte)(unsafe.Pointer(replyVA+24)), payloadLen)
 	copy(data, src)
 

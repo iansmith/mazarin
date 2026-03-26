@@ -51,6 +51,8 @@ func (r *SyscallRequest) Data() []byte {
 	if r.dataVA == 0 || r.dataLen == 0 {
 		return nil
 	}
+	// nolint: gosec — dataVA is a kernel-provided page VA mapped into our address
+	// space by the delegation infrastructure; converting to pointer is required.
 	return unsafe.Slice((*byte)(unsafe.Pointer(r.dataVA)), r.dataLen)
 }
 
@@ -61,6 +63,7 @@ func (r *SyscallRequest) DataBuf() []byte {
 	if r.dataVA == 0 || r.dataLen == 0 {
 		return nil
 	}
+	// nolint: gosec — same as Data(); kernel-provided VA, bounds-checked by dataLen.
 	return unsafe.Slice((*byte)(unsafe.Pointer(r.dataVA)), r.dataLen)
 }
 

@@ -69,23 +69,47 @@ func init() {
 }
 
 // MazarinMain is the entry point called by the disk shepherd when this .maz
-// is loaded. It mounts FAT32 using the injected BlockDevice, reads boot
-// config, launches application shepherds synchronously, then registers as
-// the LoadFile delegate handler and serves requests. Never returns.
+// is loaded. It mounts FAT32 using the async DMA block device (BlockSubmit +
+// TrySoftIRQ), reads boot config, launches application shepherds synchronously,
+// then registers as the LoadFile delegate handler and serves requests.
+// All disk I/O goes through the Phase 3/4 async path. Never returns.
 //
 //go:noinline
 func MazarinMain() {
 	debugPuts("[fs] FAT32 filesystem maz starting\n")
 
-	// Mount FAT32 filesystem using the injected BlockDevice, or fall back to SysBlockRead
+	// Allocate and register a persistent DMA pool for async block I/O.
+	// The pool stays registered for the lifetime of fs.maz.
+	const numPoolPages = 8
+	poolSize := uintptr(numPoolPages) * 4096
+	poolVA, _, errno := syscall.RawSyscall6(
+		syscall.SYS_MMAP, 0, poolSize,
+		syscall.PROT_READ|syscall.PROT_WRITE,
+		syscall.MAP_PRIVATE|syscall.MAP_ANONYMOUS,
+		^uintptr(0), 0)
+
 	var blkDev blockdev.BlockDevice
-	if injectedBlockDev != nil {
+	if errno == 0 && int64(poolVA) > 0 {
+		if err := sys.RegisterDMAPool(poolVA, numPoolPages); err != nil {
+			debugPuts("[fs] RegisterDMAPool failed, using sync fallback\n")
+			poolVA = 0
+		}
+	} else {
+		debugPuts("[fs] DMA pool mmap failed, using sync fallback\n")
+		poolVA = 0
+	}
+
+	if poolVA != 0 {
+		debugPuts("[fs] using async DMA block device (BlockSubmit+SoftIRQ)\n")
+		blkDev = &asyncBlockDev{poolVA: poolVA}
+	} else if injectedBlockDev != nil {
 		debugPuts("[fs] using injected BlockDevice\n")
 		blkDev = injectedBlockDev
 	} else {
-		debugPuts("[fs] no injected BlockDevice, using SysBlockRead fallback\n")
+		debugPuts("[fs] using SysBlockRead fallback\n")
 		blkDev = &userspaceBlockDev{}
 	}
+
 	fs, fsErr := fat32.Mount(blkDev)
 	if fsErr != nil {
 		debugPuts("[fs] FAT32 mount failed\n")
@@ -128,9 +152,10 @@ func MazarinMain() {
 	// inline, we use the host's runWithLargeStack frame (256KB), which is
 	// kept alive for the duration of MazarinMain.
 	// Run async I/O verification test after delegate is ready.
+	// Uses the already-registered DMA pool (if available).
 	// Requests arriving during the test block in the kernel and will
 	// be served as soon as we enter the delegate loop below.
-	verifyAsyncIO(fs)
+	verifyAsyncIO(fs, poolVA)
 
 	debugPuts("[fs] entering delegate receive loop\n")
 	for req := range delegateCh {
@@ -244,42 +269,32 @@ func readFileIntoPages(fs *fat32.FileSystem, path string) (va uintptr, numPages 
 
 	debugPuts("[fs] readFile: reading...\n")
 	buf := unsafe.Slice((*byte)(unsafe.Pointer(va)), totalSize)
-	n, _ := file.Read(buf[:fileSize])
+	n, readErr := file.Read(buf[:fileSize])
 
 	debugPuts("[fs] readFile: read ")
 	debugPutDec(n)
-	debugPuts(" bytes\n")
+	if readErr != nil {
+		debugPuts(" bytes (err: ")
+		debugPuts(readErr.Error())
+		debugPuts(")")
+	} else {
+		debugPuts(" bytes")
+	}
+	debugPuts("\n")
 	return va, numPages, n, nil
 }
 
 // verifyAsyncIO performs a self-test of the async block I/O path.
-// Registers a DMA pool, reads the root directory to find files, submits
-// concurrent reads via BlockSubmit, waits for completions via soft IRQ,
-// and verifies data against expected magic bytes.
+// Uses the already-registered DMA pool to submit concurrent reads via
+// BlockSubmit and verify completions via soft IRQ.
 //
 //go:noinline
-func verifyAsyncIO(fs *fat32.FileSystem) {
+func verifyAsyncIO(fs *fat32.FileSystem, poolVA uintptr) {
+	if poolVA == 0 {
+		debugPuts("[fs:verify] SKIP: no DMA pool registered\n")
+		return
+	}
 	debugPuts("[fs:verify] async I/O verification starting\n")
-
-	// Allocate 8 pages for DMA pool (32KB)
-	const numPoolPages = 8
-	poolSize := uintptr(numPoolPages) * 4096
-	poolVA, _, errno := syscall.RawSyscall6(
-		syscall.SYS_MMAP, 0, poolSize,
-		syscall.PROT_READ|syscall.PROT_WRITE,
-		syscall.MAP_PRIVATE|syscall.MAP_ANONYMOUS,
-		^uintptr(0), 0)
-	if errno != 0 || int64(poolVA) < 0 {
-		debugPuts("[fs:verify] SKIP: mmap failed\n")
-		return
-	}
-
-	// Register DMA pool
-	if err := sys.RegisterDMAPool(poolVA, numPoolPages); err != nil {
-		debugPuts("[fs:verify] SKIP: RegisterDMAPool failed\n")
-		return
-	}
-	defer sys.UnregisterDMAPool()
 
 	// Read root directory to find ELF files for verification
 	entries, err := fs.ReadDir(fs.RootCluster())
@@ -422,8 +437,75 @@ func readBootConfig(fs *fat32.FileSystem) *constants.BootConfig {
 	return cfg
 }
 
+// asyncBlockDev implements blockdev.BlockDevice using async DMA + soft IRQ.
+// All reads go through the Phase 3/4 path: BlockSubmit submits to the VirtIO
+// engine with a DMA pool page as target, the device writes via DMA, the IRQ
+// top-half drains completions into the soft IRQ ring, and TrySoftIRQ returns
+// the completion event. Data is then copied from the DMA page to the caller's
+// buffer.
+type asyncBlockDev struct {
+	poolVA uintptr // base of registered DMA pool
+}
+
+func (d *asyncBlockDev) Name() string      { return "virtio-blk-async" }
+func (d *asyncBlockDev) Close() error      { return nil }
+func (d *asyncBlockDev) BlockSize() uint64 { return 512 }
+func (d *asyncBlockDev) NumBlocks() uint64 { return 0 }
+func (d *asyncBlockDev) WriteBlock(lba uint64, buf []byte) error { return nil }
+
+var asyncReadCount int
+
+func (d *asyncBlockDev) ReadBlock(lba uint64, buf []byte) error {
+	if len(buf) < 512 {
+		return nil
+	}
+	asyncReadCount++
+	// Submit async read targeting the first DMA pool page
+	dmaBuf := unsafe.Slice((*byte)(unsafe.Pointer(d.poolVA)), 512)
+	_, serr := sys.BlockSubmit(0, lba, 1, dmaBuf)
+	if serr != nil {
+		debugPuts("[async] BlockSubmit failed at read #")
+		debugPutDec(asyncReadCount)
+		debugPuts(" LBA=")
+		debugPutDec(int(lba))
+		debugPuts("\n")
+		return serr
+	}
+
+	// Wait for completion via soft IRQ. The device IRQ fires within
+	// microseconds, so this loop completes quickly. We use TrySoftIRQ
+	// (non-blocking) because .maz's entersyscall thin stub may not
+	// correctly release the P for WaitSoftIRQ's blocking path.
+	var softBuf hid.SoftIRQReturn
+	for attempts := 0; ; attempts++ {
+		n, _ := sys.TrySoftIRQ(0, &softBuf)
+		if n > 0 {
+			if softBuf.Length > 0 && softBuf.Events[0].Code != 0 {
+				debugPuts("[async] I/O error at read #")
+				debugPutDec(asyncReadCount)
+				debugPuts(" LBA=")
+				debugPutDec(int(lba))
+				debugPuts(" code=")
+				debugPutDec(int(softBuf.Events[0].Code))
+				debugPuts("\n")
+				return syscall.EIO
+			}
+			copy(buf[:512], dmaBuf)
+			return nil
+		}
+		if attempts > 50000000 {
+			debugPuts("[async] TIMEOUT at read #")
+			debugPutDec(asyncReadCount)
+			debugPuts(" LBA=")
+			debugPutDec(int(lba))
+			debugPuts("\n")
+			return syscall.ETIMEDOUT
+		}
+	}
+}
+
 // userspaceBlockDev implements blockdev.BlockDevice using SysBlockRead.
-// Used as fallback when MazarinShepherd was not called.
+// Used as fallback when DMA pool registration fails.
 type userspaceBlockDev struct{}
 
 func (d *userspaceBlockDev) Name() string      { return "virtio-blk-user" }

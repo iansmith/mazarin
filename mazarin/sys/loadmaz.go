@@ -63,6 +63,37 @@ func LoadMaz(filename string) (*MazLoadResult, *merror.Error) {
 	return &result, nil
 }
 
+// LoadMazFromPages loads a .maz PIE ELF from pre-loaded pages in the caller's
+// address space. The kernel reads the ELF data from these pages instead of
+// mounting FAT32 and reading from disk. This is used when the file was already
+// loaded via the LoadFile delegate (fs.maz → async DMA block device).
+//
+// dataVA is the start of the pre-loaded ELF data in the caller's address space.
+// dataLen is the number of bytes of ELF data.
+func LoadMazFromPages(filename string, dataVA uintptr, dataLen uint64) (*MazLoadResult, *merror.Error) {
+	filenameBytes := append([]byte(filename), 0)
+	var result MazLoadResult
+	result.EntryPoint = ^uint64(0)
+
+	r1, _, _ := syscall.RawSyscall6(
+		sysLoadMaz,
+		uintptr(unsafe.Pointer(&filenameBytes[0])),
+		uintptr(unsafe.Pointer(&result)),
+		dataVA,
+		uintptr(dataLen),
+		0, 0,
+	)
+
+	if r1 != 0 {
+		if e := merror.FromCode(merror.ErrorCode(r1)); e != nil {
+			return nil, e.Wrap(filename)
+		}
+		return nil, merror.ErrInvalidELF.Wrap(filename)
+	}
+
+	return &result, nil
+}
+
 // RegisterMazModule registers the .maz's moduledata with the Go runtime so that
 // findfunc(pc) can resolve .maz PCs to function names, enabling stack traces.
 // Call this after LoadMaz but before calling the .maz's entry point.

@@ -316,17 +316,14 @@ func NonTimerIRQTopHalf() {
 					*blockSidecarFreePtr |= uint64(1) << uint(meta.sidecarIdx)
 				}
 
-				// Push completion event to ring
-				tail := atomic.LoadUint32(&topHalfBlockRing.tail)
-				next := (tail + 1) & (softIRQRingSize - 1)
-				if next != atomic.LoadUint32(&topHalfBlockRing.head) {
-					topHalfBlockRing.events[tail] = hid.HIDEvent{
-						Type:  tag,
-						Code:  status,
-						Value: info.UsedLen,
-					}
-					atomic.StoreUint32(&topHalfBlockRing.tail, next)
-				}
+				// Push completion event to ring (must use ringPush which
+				// uses monotonically-increasing tail — NOT wrapping indices —
+				// to match RingDrain's head convention)
+				ringPush(&topHalfBlockRing, hid.HIDEvent{
+					Type:  tag,
+					Code:  status,
+					Value: info.UsedLen,
+				})
 
 				// Clear metadata slot
 				*meta = blockAsyncSlot{}

@@ -107,11 +107,11 @@ func main() {
 
 	// 2. Wait for rachel (fontsvc) and disk (fs.maz) before creating fontcache.
 	sys.UartWriteString(fmt.Sprintf("[clocks] waiting for rachel + disk ready... (T+%v)\n", time.Since(startTime)))
-	if !sys.WaitForReady("rachel", 10*time.Second) {
-		panic("[clocks] FATAL: rachel not ready after 10s")
+	if err := sys.WaitForShepherdReady("rachel", 10); err != nil {
+		panic(fmt.Sprintf("[clocks] FATAL: rachel: %v", err))
 	}
-	if !sys.WaitForReady("disk", 10*time.Second) {
-		panic("[clocks] FATAL: disk not ready after 10s")
+	if err := sys.WaitForShepherdReady("disk", 10); err != nil {
+		panic(fmt.Sprintf("[clocks] FATAL: disk: %v", err))
 	}
 	sys.UartWriteString(fmt.Sprintf("[clocks] rachel + disk ready (T+%v)\n", time.Since(startTime)))
 

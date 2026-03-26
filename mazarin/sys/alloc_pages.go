@@ -31,6 +31,8 @@ func AllocPages(count int, pageType int) (unsafe.Pointer, error) {
 	if errno != 0 || int64(r1) < 0 {
 		return nil, errors.New("AllocPages failed")
 	}
+	// nolint: gosec — r1 is a kernel-returned VA from the AllocPages syscall;
+	// converting it to unsafe.Pointer is the only way to use it.
 	return unsafe.Pointer(r1), nil
 }
 

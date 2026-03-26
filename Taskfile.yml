@@ -1139,6 +1139,22 @@ tasks:
       - '{{.GO}} tool go-echo "fs.mzr (RISC-V 64-bit) ready at {{.FS_MZR_RISCV64}}"'
 
   # ===========================================================================
+  # Userspace Build (shepherds + .maz modules + test programs)
+  # ===========================================================================
+
+  userspace-build:
+    desc: Build all ARM64 userspace programs (shepherds, .maz modules, test programs)
+    deps: [rachel-arm64, stdio-arm64, diskshepherd-arm64, clocks, sievetest, attrtest, handletest, clocktest, helloworld-maz, prefs-maz, fontsvc-maz, fs-maz]
+
+  userspace-build-x86_64:
+    desc: Build all x86_64 userspace programs (shepherds + test programs)
+    deps: [rachel-x86_64, stdio-x86_64, diskshepherd-x86_64, clocks-x86_64, sievetest-x86_64, attrtest-x86_64, handletest-x86_64, clocktest-x86_64]
+
+  userspace-build-riscv64:
+    desc: Build all RISC-V userspace programs (shepherds, .maz/.mzr modules, test programs)
+    deps: [rachel-riscv64, stdio-riscv64, diskshepherd-riscv64, clocks-riscv64, sievetest-riscv64, attrtest-riscv64, handletest-riscv64, clocktest-riscv64, helloworld-maz-riscv64, prefs-maz-riscv64, fontsvc-maz-riscv64, fs-mzr-riscv64]
+
+  # ===========================================================================
   # Disk Image
   # ===========================================================================
 

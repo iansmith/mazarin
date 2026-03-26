@@ -39,6 +39,8 @@ type LoadMazWorkRequest struct {
 	Shepherd     *proc.Shepherd
 	L0PA       uintptr
 	BlockedTID int32 // Set by BlockForLoadMaz in main package
+	DataVA     uintptr // 0 = read from disk, non-zero = pre-loaded pages
+	DataLen    uint64  // Length of pre-loaded ELF data in bytes
 }
 
 // LoadMazReq is the global request struct shared between the SVC handler
@@ -55,10 +57,12 @@ var LoadMazBusy int32
 //
 // arg0: pointer to null-terminated filename string (in shepherd's memory)
 // arg1: pointer to MazLoadResult struct (in shepherd's writable memory)
+// arg2: dataVA — if non-zero, ELF data is pre-loaded at this VA (delegate path)
+// arg3: dataLen — length of pre-loaded ELF data
 // Returns: 0 on success, ErrorCode on failure
 //
 //go:noinline
-func SyscallLoadMaz(filenamePtr, resultPtr, _, _, _, _ uint64) int64 {
+func SyscallLoadMaz(filenamePtr, resultPtr, dataVA, dataLen, _, _ uint64) int64 {
 	// === Validate arguments (lightweight, safe for g0 stack) ===
 	if err := ValidateFilenamePtr(filenamePtr); err != 0 {
 		return int64(err)
@@ -101,6 +105,8 @@ func SyscallLoadMaz(filenamePtr, resultPtr, _, _, _, _ uint64) int64 {
 		ResultPtr: resultPtr,
 		Shepherd:    shepherd,
 		L0PA:      shepherd.PageTableL0PA,
+		DataVA:    uintptr(dataVA),
+		DataLen:   dataLen,
 	}
 
 	// Block this thread and notify the worker goroutine.
@@ -122,34 +128,55 @@ func SyscallLoadMaz(filenamePtr, resultPtr, _, _, _, _ uint64) int64 {
 
 // DoLoadMazWork performs the heavy .maz loading work. Called by the kernel
 // worker goroutine (in loadmaz_bridge.go) on a normal growable stack.
+//
+// Two data paths:
+//   - Direct (DataVA == 0): mounts FAT32 via kernel block device, reads file from disk.
+//   - Pre-loaded (DataVA != 0): reads ELF data from caller's pages via linear map.
+//     Used when the file was loaded via the LoadFile delegate (fs.maz → async DMA).
 func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 	l0PA := req.L0PA
 	shepherd := req.Shepherd
 
-	// === Read the .maz file from disk ===
-	blk, ok := device.GetBlockDevice()
-	if !ok {
-		console.KWriteString("[LoadMaz] ERROR: no block device\r\n")
-		return int64(errFileNotFound)
-	}
+	var elfData []byte
 
-	fs, err := fat32.Mount(blk)
-	if err != nil {
-		console.KWriteString("[LoadMaz] ERROR: FAT32 mount failed\r\n")
-		return int64(errFileNotFound)
-	}
+	if req.DataVA != 0 && req.DataLen > 0 {
+		// Pre-loaded mode: read ELF from caller's pages via kernel linear map
+		console.KWriteString("[LoadMaz] using pre-loaded data: ")
+		console.KPrintHex64(req.DataLen)
+		console.KWriteString(" bytes at VA ")
+		console.KPrintHex64(uint64(req.DataVA))
+		console.KWriteString("\r\n")
+		elfData = readUserData(req.DataVA, req.DataLen, l0PA)
+		if elfData == nil {
+			console.KWriteString("[LoadMaz] ERROR: failed to read pre-loaded data\r\n")
+			return int64(errFileNotFound)
+		}
+	} else {
+		// Direct mode: mount FAT32, read file from disk
+		blk, ok := device.GetBlockDevice()
+		if !ok {
+			console.KWriteString("[LoadMaz] ERROR: no block device\r\n")
+			return int64(errFileNotFound)
+		}
 
-	file, err := fs.Open(req.Filename)
-	if err != nil {
-		console.KWriteString("[LoadMaz] ERROR: file not found\r\n")
-		return int64(errFileNotFound)
-	}
-	defer file.Close()
+		fs, err := fat32.Mount(blk)
+		if err != nil {
+			console.KWriteString("[LoadMaz] ERROR: FAT32 mount failed\r\n")
+			return int64(errFileNotFound)
+		}
 
-	elfData, err := file.ReadAll()
-	if err != nil {
-		console.KWriteString("[LoadMaz] ERROR: ReadAll failed\r\n")
-		return int64(errFileNotFound)
+		file, err := fs.Open(req.Filename)
+		if err != nil {
+			console.KWriteString("[LoadMaz] ERROR: file not found\r\n")
+			return int64(errFileNotFound)
+		}
+		defer file.Close()
+
+		elfData, err = file.ReadAll()
+		if err != nil {
+			console.KWriteString("[LoadMaz] ERROR: ReadAll failed\r\n")
+			return int64(errFileNotFound)
+		}
 	}
 
 	// === Parse ELF header ===
@@ -331,6 +358,40 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 	console.KWriteString("\r\n")
 
 	return 0
+}
+
+// readUserData reads data from a userspace address range into a kernel buffer.
+// Used by the pre-loaded LoadMaz path to copy ELF data from pages that were
+// transferred to the caller by the LoadFile delegate (fs.maz).
+func readUserData(dataVA uintptr, dataLen uint64, l0PA uintptr) []byte {
+	buf := make([]byte, dataLen)
+	offset := uint64(0)
+	for offset < dataLen {
+		va := dataVA + uintptr(offset)
+		pa := kmem.WalkUserPageTableWithL0(va, l0PA)
+		if pa == 0 {
+			console.KWriteString("[LoadMaz] readUserData: unmapped VA ")
+			console.KPrintHex64(uint64(va))
+			console.KWriteString("\r\n")
+			return nil
+		}
+		// MapPAToKernelScratch converts PA (with byte offset) to kernel VA
+		kernelVA := kmem.MapPAToKernelScratch(pa)
+		if kernelVA == 0 {
+			return nil
+		}
+		// Calculate bytes until next page boundary
+		pageOffset := uintptr(va) & (kmem.PageSize - 1)
+		canCopy := uint64(kmem.PageSize - pageOffset)
+		remaining := dataLen - offset
+		if canCopy > remaining {
+			canCopy = remaining
+		}
+		src := unsafe.Slice((*byte)(unsafe.Pointer(kernelVA)), int(canCopy))
+		copy(buf[offset:offset+canCopy], src)
+		offset += canCopy
+	}
+	return buf
 }
 
 // writeU64ToUser writes a uint64 value to a userspace address via kernel scratch mapping.
