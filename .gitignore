@@ -45,6 +45,9 @@ cardinal/stack/test02_asm_bridge/test02_asm_bridge
 
 # Compiled binaries that might appear in source dirs
 kmazarin/kmazarin/kmazarin
+# Staged embedded files (copied by stage tasks for go:embed)
+kmazarin/kmazarin/fs.elf
+kmazarin/kmazarin/kernel.toml
 kmazarin/ds/ds.test
 /main
 
@@ -55,7 +58,7 @@ fonts/
 /attrtest
 /rachel
 /handletest
-/stdio
+/linux
 /clocks
 /clocktest
 
@@ -70,6 +73,7 @@ fonts/
 /compile-constraints
 /fix-go-elf
 /mkfat32
+/mkext2
 elf2pe
 relocate-kmazarin
 go-start
@@ -77,6 +81,10 @@ gen-ast-stubs
 /gen-overlay
 maz-reloc
 helloworld
+
+# Stray shepherd/tool binaries
+/fs
+/stdio
 
 # Old directories (should be removed)
 src/
