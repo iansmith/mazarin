@@ -356,7 +356,7 @@ func handleUnhandledExceptionInternal(excInfo, faultAddr, faultPC uint64) uint64
 }
 
 // PrintProcessDeathDiag prints diagnostic info when a process is killed by a signal.
-// Output goes to both serial UART and the soft IRQ console ring (stdio display).
+// Output goes to both serial UART and the soft IRQ console ring (linux shepherd display).
 // Uses only nosplit-safe functions.
 //
 //go:nosplit
@@ -380,7 +380,7 @@ func PrintProcessDeathDiag(pid ShepherdId, signum int, faultAddr, faultPC uint64
 func dualPuts(s string) {
 	serial.RawUARTPuts(s)
 	for i := 0; i < len(s); i++ {
-		PushByteToUartRing(2, s[i]) // fd=2 (stderr) for red text in stdio
+		PushByteToUartRing(2, s[i]) // fd=2 (stderr) for red text in linux shepherd
 	}
 }
 

@@ -7,7 +7,7 @@ import (
 )
 
 // Deprecated: BlockRead uses synchronous kernel-side FAT32 I/O. Use
-// AllocContiguous + BlockSubmit + TrySoftIRQ for async DMA instead.
+// AllocContiguous + BlockSubmit + WaitSoftIRQ for async DMA instead.
 // Will be removed once all callers migrate to the async path.
 //
 // BlockRead reads disk sectors into buf.
@@ -37,20 +37,24 @@ func BlockRead(startLBA, numSectors uint64, buf []byte) error {
 //
 // requestType: 0 = read, 1 = write
 // startLBA: first sector to read/write
-// numSectors: number of sectors (must fit in one DMA pool page)
-// buf: buffer in the registered DMA pool (data goes directly to/from this buffer)
+// numSectors: number of sectors (must fit in one page = 4096 bytes)
+// buf: buffer in a MAZARIN_CONTIGUOUS DMA clump (data goes directly to/from this buffer)
+// targetSID: shepherd that owns the DMA clump containing buf.
+//
+//	Pass 0 to use the caller's own clumps.
 //
 // Returns the IOTag (>= 0) on success, or an error.
 // The completion event has: Type=IOTag, Code=status (0=ok), Value=usedLen.
 //
-// Only callable by the block device owner shepherd with a registered DMA pool.
-func BlockSubmit(requestType uint32, startLBA uint64, numSectors uint64, buf []byte) (uint16, error) {
+// Only callable by the block device owner shepherd.
+func BlockSubmit(requestType uint32, startLBA, numSectors uint64, buf []byte, targetSID int) (uint16, error) {
 	r1, _, errno := syscall.RawSyscall6(mazzy.SysBlockSubmit,
 		uintptr(requestType),
 		uintptr(startLBA),
 		uintptr(numSectors),
 		uintptr(unsafe.Pointer(&buf[0])),
-		0, 0)
+		uintptr(targetSID),
+		0)
 
 	if errno != 0 {
 		return 0xFFFF, errno

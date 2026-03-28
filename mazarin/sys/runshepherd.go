@@ -16,9 +16,9 @@ import (
 //
 // Usage:
 //
-//	lf, err := sys.LoadFile("/stdio.elf")
+//	lf, err := sys.LoadFile("/linux.elf")
 //	if err == nil {
-//	    err = sys.RunShepherd("stdio", uintptr(lf.StartVA), int(lf.NumPages), int(lf.BytesRead))
+//	    err = sys.RunShepherd("linux", uintptr(lf.StartVA), int(lf.NumPages), int(lf.BytesRead))
 //	}
 func RunShepherd(name string, startVA uintptr, numPages int, totalBytes int) *merror.Error {
 	nameBytes := append([]byte(name), 0)

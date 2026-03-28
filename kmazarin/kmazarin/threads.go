@@ -1103,7 +1103,7 @@ func ProcessDeadlinesTopHalf() {
 	// Flush any pending console ring data to userspace.
 	// This was in KernelIdleLoop but the idle loop is starved when many
 	// userspace threads are cycling through futex/sleep deadlines.
-	// Moving it here ensures the stdio shepherd gets woken every timer tick.
+	// Moving it here ensures the linux shepherd gets woken every timer tick.
 	if softIRQConsole != nil {
 		softIRQConsole.CheckPendingWake()
 	}

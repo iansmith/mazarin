@@ -279,7 +279,7 @@ func PublishKernelAttributes() {
 	KernelAttrWriteI64(slotModifiers, 0)
 
 	// Font metrics — AtkinsonHyperlegibleMono-Regular.otf at 16pt, 72 DPI, full hinting.
-	// charWidth=10, charHeight=19 (matches stdio's font init output).
+	// charWidth=10, charHeight=19 (matches linux shepherd's font init output).
 	slotCharWidth, ok = KernelAttrCreate("attr:///kernel/int64/screen/charWidth", flat.TypeI64)
 	if !ok {
 		serial.RawUARTPuts("[attr] FAIL: kernel/int64/screen/charWidth\r\n")

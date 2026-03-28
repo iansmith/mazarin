@@ -51,7 +51,7 @@ var kmazarinRAMSize uintptr
 var kmazarinKernelBudgetMB uintptr
 
 // suppressSerial is set to 1 by kmazarin when the SoftIRQ console activates.
-// When set, write1 skips UART output (serial copy is redundant once stdio
+// When set, write1 skips UART output (serial copy is redundant once linux
 // shepherd receives kernel output via the ring buffer).
 var suppressSerial uint32
 

@@ -710,7 +710,7 @@ func main() {
 	go mouseMovementLoop()
 	runtime.Gosched()
 
-	// Stderr test (stdio shepherd disabled for now, but keep for diagnostics).
+	// Stderr test (linux shepherd disabled for now, but keep for diagnostics).
 	go func() {
 		time.Sleep(2 * time.Second)
 		fmt.Fprintln(os.Stderr, "[rachel] stderr test: this should be dark red")

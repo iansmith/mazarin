@@ -126,9 +126,9 @@ func (c *SoftIRQConsole) CheckPendingWake() {
 }
 
 // PushByteToUartRing pushes a byte into the UART soft IRQ ring with fd info.
-// The fd is carried in the HIDEvent.Code field so the consumer (stdio shepherd)
+// The fd is carried in the HIDEvent.Code field so the consumer (linux shepherd)
 // can distinguish stdout (1) from stderr (2). Called by SyscallWrite for
-// non-stdio shepherd output that needs to appear on the stdio display.
+// non-linux shepherd output that needs to appear on the linux shepherd display.
 func PushByteToUartRing(fd byte, b byte) {
 	ev := hid.HIDEvent{Type: 0, Code: uint16(fd), Value: uint32(b)}
 	ringPush(&topHalfUartRing, ev)
@@ -151,7 +151,7 @@ var suppressSerial uint32
 // to the soft IRQ ring. Must be called after SetupUartSoftIRQ and
 // after a userspace shepherd has registered on the UART slot.
 // Suppresses write1 UART output so runtime fmt.Printf goes to the
-// ring (and thus to the stdio shepherd display) rather than UART.
+// ring (and thus to the linux shepherd display) rather than UART.
 func EnableSoftIRQConsole() {
 	c := NewSoftIRQConsole()
 	softIRQConsole = c
