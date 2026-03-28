@@ -737,8 +737,6 @@ func loadSegment(elfData []byte, phdr *elf64Phdr, l0PA uintptr) error {
 	endPage := (endAddr + pageSize - 1) &^ (pageSize - 1)
 	numPages := (endPage - startPage) / pageSize
 
-	isExecutable := (phdr.Flags & PF_X) != 0
-
 	// Track physical addresses for each page so we can remap scratch VA later
 	// AllocAndMapUserPageWithL0 returns (framePA, scratchVA)
 	pagePAs := make([]uintptr, numPages)
@@ -788,23 +786,19 @@ func loadSegment(elfData []byte, phdr *elf64Phdr, l0PA uintptr) error {
 	// BSS (memsz > filesz) is automatically zeroed by AllocAndMapUserPage
 	// No explicit zeroing needed - DC ZVA already cleared the pages
 
-	// DEBUG: Verify copy via linear map (bypass scratch VA entirely)
 	// Clean the data cache for all pages we wrote to.
 	// This ensures the data is visible to userspace when it reads via TTBR0.
 	// Without this, userspace may see stale/garbage data due to cache coherency.
-	// isExecutable was set earlier in the function
+	//
+	// NOTE: Only D-cache clean here, NOT I-cache invalidation by VA.
+	// IC IVAU requires the userVA to be mapped in the current TTBR0, which is
+	// not guaranteed during LoadMaz/RunMaz (kernel worker goroutine may have a
+	// different TTBR0). All callers perform global I-cache invalidation
+	// (InvalidateAllICache + FinalUserspaceSync) after all segments are loaded.
 	for page := uint64(0); page < numPages; page++ {
 		kernelVA := kmem.MapPAToKernelScratch(pagePAs[page])
 		if kernelVA != 0 {
-			if isExecutable {
-				// For executable pages, we need to sync both D-cache and I-cache
-				// to ensure the loaded code is visible to instruction fetch
-				userVA := uintptr(startPage + page*pageSize)
-				kmem.SyncExecutablePage(kernelVA, userVA)
-			} else {
-				// For non-executable pages, just clean the data cache
-				kmem.CleanPageCache(kernelVA)
-			}
+			kmem.CleanPageCache(kernelVA)
 		}
 	}
 

@@ -164,19 +164,24 @@ func (u *unwinder) initAt(pc0, sp0, lr0 uintptr, gp *g, flags unwindFlags) {
 		}
 	}
 
-	// KMAZARIN: If sp0 is 0 or outside the goroutine's stack bounds, bail out.
-	// A kernel-level context switch (kmazarinYield) can leave sched.sp stale
-	// while GC tries to scan the goroutine.
-	if sp0 == 0 {
-		return
-	}
-	if gp.stack.lo != 0 && (sp0 < gp.stack.lo || sp0 >= gp.stack.hi) {
-		oldSuppress := suppressSerial
-		suppressSerial = 0
-		println("KMAZARIN: initAt bad sp0 goid=", gp.goid, "status=", readgstatus(gp), "sp0=", hex(sp0), "pc0=", hex(pc0), "stk=[", hex(gp.stack.lo), ",", hex(gp.stack.hi), ")")
-		println("  sched.sp=", hex(gp.sched.sp), "sched.pc=", hex(gp.sched.pc), "syscallsp=", hex(gp.syscallsp))
-		suppressSerial = oldSuppress
-		return
+	// KMAZARIN: If sp0 is outside the goroutine's stack bounds, fall back to
+	// saved sched context. This happens when a g0 goroutine is captured while
+	// running on SP_EL1 (exception stack) — its SP is above the g0 stack
+	// (SP_EL0). Bailing out entirely can cause GC deadlock, so instead we
+	// use the goroutine's saved scheduling context which has a valid SP.
+	if sp0 == 0 || (gp.stack.lo != 0 && (sp0 < gp.stack.lo || sp0 >= gp.stack.hi)) {
+		if gp.sched.sp != 0 && gp.stack.lo != 0 &&
+			gp.sched.sp >= gp.stack.lo && gp.sched.sp < gp.stack.hi {
+			// Sched context is valid — use it instead
+			pc0 = gp.sched.pc
+			sp0 = gp.sched.sp
+			if usesLR {
+				lr0 = gp.sched.lr
+			}
+		} else {
+			// No valid context available — bail out
+			return
+		}
 	}
 
 	var frame stkframe
@@ -397,7 +402,21 @@ func (u *unwinder) resolveInternal(innermost, isSyscall bool) {
 		if usesLR {
 			if innermost && frame.sp < frame.fp || frame.lr == 0 {
 				lrPtr = frame.sp
-				frame.lr = *(*uintptr)(unsafe.Pointer(lrPtr))
+				// KMAZARIN: Guard against dereferencing sp outside stack bounds (mirrors x86 guard below).
+				// A goroutine in a transitional state (e.g., during CLONE) can have sp=0.
+				if lrPtr == 0 || (gp.stack.lo != 0 && (lrPtr < gp.stack.lo || lrPtr >= gp.stack.hi)) {
+					oldSuppress := suppressSerial
+					suppressSerial = 0
+					println("KMAZARIN: resolveInternal bad sp goid=", gp.goid, "status=", readgstatus(gp), "sp=", hex(frame.sp), "fp=", hex(frame.fp), "pc=", hex(frame.pc), "lr=", hex(frame.lr), "stk=[", hex(gp.stack.lo), ",", hex(gp.stack.hi), ")")
+					println("  fn=", funcname(f), "sched.sp=", hex(gp.sched.sp), "sched.pc=", hex(gp.sched.pc), "syscallsp=", hex(gp.syscallsp))
+					if gp.m != nil {
+						println("  m.id=", gp.m.id)
+					}
+					suppressSerial = oldSuppress
+					frame.lr = 0
+				} else {
+					frame.lr = *(*uintptr)(unsafe.Pointer(lrPtr))
+				}
 			}
 		} else {
 			if frame.lr == 0 {
