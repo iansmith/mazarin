@@ -1770,6 +1770,8 @@ tasks:
     cmds:
       - '{{.GO}} tool go-echo "Cleaning build artifacts..."'
       - '{{.GO}} tool go-rm -r {{.BUILD_DIR}}'
+      - '{{.GO}} tool go-rm -f kmazarin/kmazarin/fs.elf'
+      - '{{.GO}} tool go-rm -f kmazarin/kmazarin/kernel.toml'
       - '{{.GO}} tool go-echo "Cleaned."'
 
   # ===========================================================================
