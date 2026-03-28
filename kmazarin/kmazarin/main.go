@@ -12,7 +12,7 @@ import (
 	"mazzy/shared/constants"
 	"mazzy/shared/hid"
 	"mazzy/shared/fs/fat32"
-	"mazzy/shared/toml"
+	toml "github.com/pelletier/go-toml/v2"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/ksyscall"
@@ -973,45 +973,36 @@ func simpleMain() {
 
 	// DEBUG: ReadMemStats disabled - hangs in bare-metal (triggers STW GC)
 
-	// Parse boot config from /kmazarin.toml and launch shepherds
-	bootCfg := readBootConfig()
+	// Parse embedded kernel config (no disk I/O — compiled into the binary).
+	kernelCfg := parseKernelConfig()
 
 	// Initialize constraint system and publish kernel attributes before
 	// launching shepherds, so they can discover kernel attrs at startup.
 	if kmem.InitConstraintPages() && ksyscall.InitKernelAttrManager() {
 		ksyscall.PublishKernelAttributes()
 		ksyscall.PublishSystemAttributes(GetTotalRAMSize()>>20, GetCPUCount(), GetKernelBudgetMB())
-		if bootCfg != nil {
-			tz := constants.NullTermString(bootCfg.Timezone[:])
-			ksyscall.PublishBootConfigAttributes(tz, bootCfg.GoMemLimitMB, bootCfg.GCPercentage)
-		}
+		ksyscall.PublishBootConfigAttributes(kernelCfg.Timezone, kernelCfg.GoMemLimitMB, kernelCfg.GCPercentage)
 	}
 
-	if bootCfg != nil {
-		tz := constants.NullTermString(bootCfg.Timezone[:])
-		if tz != "" {
-			ksyscall.SetBootTimezone(tz)
-		}
-		ksyscall.SetSuppressSerialStdioCopy(bootCfg.SuppressSerialStdioCopy)
-		if bootCfg.GCPercentage > 0 {
-			ksyscall.SetShepherdGCPercentage(bootCfg.GCPercentage)
-		}
-		if bootCfg.GoMemLimitMB > 0 {
-			ksyscall.SetShepherdMemLimitMB(bootCfg.GoMemLimitMB)
-		}
-		launchShepherdsFromConfig(bootCfg)
-	} else {
-		// Fallback: hardcoded launch sequence
-		console.KPrintln("[boot] no config, using hardcoded sequence")
-		launchShepherd("/disk.elf\x00", "disk")
-		launchShepherd("/rachel.elf\x00", "rachel")
-		launchShepherd("/stdio.elf\x00", "stdio")
+	if kernelCfg.Timezone != "" {
+		ksyscall.SetBootTimezone(kernelCfg.Timezone)
+	}
+	ksyscall.SetSuppressSerialStdioCopy(kernelCfg.SuppressSerialStdioCopy)
+	if kernelCfg.GCPercentage > 0 {
+		ksyscall.SetShepherdGCPercentage(kernelCfg.GCPercentage)
+	}
+	if kernelCfg.GoMemLimitMB > 0 {
+		ksyscall.SetShepherdMemLimitMB(kernelCfg.GoMemLimitMB)
 	}
 
-	// Reconfigure timer policy from TOML boot config if available.
+	// Launch the embedded fs shepherd from memory — no disk I/O needed.
+	// fs reads /startup.toml from disk and launches all [[shepherd]] entries.
+	launchEmbeddedFS()
+
+	// Reconfigure timer policy from kernel config.
 	// Must happen before EnableTimerIRQ so the first tick uses correct values.
-	if bootCfg != nil && (bootCfg.KernelTickRate > 0 || bootCfg.PreemptAfterTicks > 0) {
-		kirq.InitPreemptConfig(bootCfg.KernelTickRate, bootCfg.PreemptAfterTicks)
+	if kernelCfg.KernelTickRate > 0 || kernelCfg.PreemptAfterTicks > 0 {
+		kirq.InitPreemptConfig(kernelCfg.KernelTickRate, kernelCfg.PreemptAfterTicks)
 		console.KPrintf("[Timer] reconfigured: tickRate=%dHz (%dms), preempt=%d ticks (%dms)\n",
 			kirq.KernelTickRate, kirq.TickIntervalMs, kirq.PreemptAfterTicks, kirq.PreemptIntervalMs)
 	}
@@ -1039,23 +1030,18 @@ func simpleMain() {
 	ResetTickAccounting(startingTicksProgram)
 	RestoreIRQs(savedDAIF)
 
-	// Apply kernel memory budget from TOML config (overrides diplomat auxv value).
-	if bootCfg != nil && bootCfg.KernelBudgetMB > 0 {
-		kmem.SetKernelBudgetMB(bootCfg.KernelBudgetMB)
+	// Apply kernel memory budget from config (overrides diplomat auxv value).
+	if kernelCfg.KernelBudgetMB > 0 {
+		kmem.SetKernelBudgetMB(kernelCfg.KernelBudgetMB)
 	}
 
 	// Suppress serial echo of userspace stdout/stderr if configured.
-	// When suppress_serial_stdio_copy = true in kmazarin.toml, only the stdio shepherd
-	// writes to the serial port. Panic/traceback paths temporarily
-	// unsuppress (see runtime-patches/panic.go).
-	if bootCfg != nil && bootCfg.SuppressSerialStdioCopy {
+	if kernelCfg.SuppressSerialStdioCopy {
 		atomic.StoreUint32(&suppressSerial, 1)
 	}
 
 	// Suppress kernel console output (KPrintf, etc.) if configured.
-	// Use together with suppress_serial_stdio_copy to eliminate nearly all UART
-	// traffic for performance testing.
-	if bootCfg != nil && bootCfg.SuppressKernelSerial {
+	if kernelCfg.SuppressKernelSerial {
 		console.SetSuppressed(true)
 	}
 
@@ -1088,67 +1074,30 @@ func main() {
 	simpleMain()
 }
 
-// readBootConfig reads and parses /kmazarin.toml from the FAT32 disk.
-// Returns nil if the file is not found or cannot be parsed.
-func readBootConfig() *constants.BootConfig {
-	console.KPrintln("[boot] getting block device...")
-	blk, ok := device.GetBlockDevice()
-	if !ok {
-		console.KPrintln("[boot] no block device, cannot read config")
-		return nil
-	}
-	console.KPrintln("[boot] mounting FAT32...")
-
-	fs, err := fat32.Mount(blk)
+// parseKernelConfig parses the embedded kernel.toml (compiled into the binary).
+// Always succeeds — returns a zero-value config if parsing fails.
+func parseKernelConfig() constants.KernelConfig {
+	var cfg constants.KernelConfig
+	err := toml.Unmarshal(EmbeddedKernelConfig, &cfg)
 	if err != nil {
-		console.KPrintln("[boot] FAT32 mount failed, cannot read config")
-		return nil
+		console.KPrintf("[boot] kernel.toml parse error: %v\n", err)
+		return cfg
 	}
-
-	file, err := fs.Open("/kmazarin.toml")
-	if err != nil {
-		console.KPrintln("[boot] /kmazarin.toml not found")
-		return nil
-	}
-	defer file.Close()
-
-	data, err := file.ReadAll()
-	if err != nil {
-		console.KPrintln("[boot] failed to read kmazarin.toml")
-		return nil
-	}
-
-	cfg := toml.Parse(data)
-	console.KPrintf("[boot] config: %d bootstrap, %d shepherds, tz=%s\n",
-		cfg.BootstrapShepherdCount, cfg.ShepherdCount,
-		constants.NullTermString(cfg.Timezone[:]))
+	console.KPrintf("[boot] kernel config: tz=%s budget=%dMB tick=%dHz preempt=%d\n",
+		cfg.Timezone, cfg.KernelBudgetMB, cfg.KernelTickRate, cfg.PreemptAfterTicks)
 	return cfg
 }
 
-// launchShepherdsFromConfig launches bootstrap shepherds defined in the boot config.
-// Only [[bootstrap_shepherd]] entries are launched by the kernel. Application
-// [[shepherd]] entries are launched by fs.maz after it reads /kmazarin.toml.
-func launchShepherdsFromConfig(cfg *constants.BootConfig) {
-	for i := 0; i < cfg.BootstrapShepherdCount; i++ {
-		p := &cfg.BootstrapShepherds[i]
-		name := constants.NullTermString(p.Name[:])
-		path := constants.NullTermString(p.Path[:])
-		launchShepherd(path+"\x00", name)
-	}
-
-	if cfg.ShepherdCount > 0 {
-		console.KPrintf("[boot] %d application shepherds deferred to fs.maz\n", cfg.ShepherdCount)
-	}
-}
-
-// launchShepherd launches a single shepherd ELF by path.
-func launchShepherd(path, name string) {
-	pathPtr := uintptr(unsafe.Pointer(&([]byte(path))[0]))
-	result := ksyscall.SyscallLaunch(uint64(pathPtr), 0, 0, 0, 0, 0)
+// launchEmbeddedFS launches the fs shepherd from the go:embed'd ELF data.
+// This eliminates the circular bootstrap dependency — fs no longer needs to
+// be loaded from the filesystem it implements.
+func launchEmbeddedFS() {
+	console.KPrintf("[boot] launching embedded fs (%d bytes)\n", len(EmbeddedFSElf))
+	result := ksyscall.LaunchFromMemory(EmbeddedFSElf, "fs")
 	if result == 0 {
 		kmem.FinalUserspaceSync()
-		console.KPrintf("[boot] %s launched\n", name)
+		console.KPrintln("[boot] embedded fs launched")
 	} else {
-		console.KPrintf("[boot] %s launch failed (error %d)\n", name, result)
+		console.KPrintf("[boot] embedded fs launch FAILED (error %d)\n", result)
 	}
 }

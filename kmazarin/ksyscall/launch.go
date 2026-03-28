@@ -24,10 +24,11 @@ func SetBootTimezone(tz string) {
 }
 
 // suppressSerialStdioCopy is set from the boot config's SuppressSerialStdioCopy field.
-// Passed to shepherds as the SUPPRESS_SERIAL_STDIO_COPY env var.
+// Passed to shepherds as the SUPPRESS_SERIAL_STDIO_COPY env var so the linux
+// shepherd knows whether to echo delegated Write output to serial.
 var suppressSerialStdioCopy bool
 
-// SetSuppressSerialStdioCopy stores the suppress serial stdio copy setting.
+// SetSuppressSerialStdioCopy stores the suppress serial copy setting.
 func SetSuppressSerialStdioCopy(v bool) {
 	suppressSerialStdioCopy = v
 }
@@ -307,6 +308,89 @@ func SyscallLaunch(filenamePtr, shepherdNum, _, _, _, _ uint64) int64 {
 	console.KPrintf("[Launch] main thread TID=%d\n", tid)
 
 	// Return to caller - the new thread will be scheduled later
+	return 0
+}
+
+// LaunchFromMemory loads and launches a shepherd from in-memory ELF data.
+// Used for the embedded fs shepherd — no disk I/O needed.
+func LaunchFromMemory(elfData []byte, name string) int64 {
+	console.KWriteString("[Launch] embedded ")
+	console.KWriteString(name)
+	console.KWriteString("\r\n")
+
+	if len(elfData) < 64 {
+		console.KPrintln("[Launch] ERROR: embedded ELF too small")
+		return -4
+	}
+
+	// Create a FRESH page table for this process.
+	processL0PA := kmem.CreateProcessPageTable()
+	if processL0PA == 0 {
+		return -6
+	}
+
+	// Switch TTBR0 to the new process page table BEFORE loading the ELF.
+	// IC IVAU uses the current TTBR0 translation context.
+	kmem.SwitchTTBR0WithASID(processL0PA, 0)
+
+	// Map the framebuffer into shepherd address space for UI rendering.
+	fbPA := gpu.GetFramebufferPA()
+	fbSize := uintptr(gpu.GetFramebufferSize())
+	if !kmem.MapUserFramebuffer(fbPA, fbSize) {
+		return -7
+	}
+	addSpan(UserFramebufferVA, UserFramebufferSize)
+
+	// Map constraint shared pages read-only into shepherd address space.
+	if !kmem.MapUserConstraintPages() {
+		return -8
+	}
+	addSpan(UserConstraintPagesVA, UserConstraintPagesSize)
+
+	// Initialize kernel attribute manager (once, on first shepherd launch).
+	InitKernelAttrManager()
+
+	// Build symbol table and track highest VA BEFORE loading
+	hdr := parseELFHeader(elfData)
+	shepherdSymTable := buildSymbolTable(elfData, &hdr)
+	shepherdHighestVA := findHighestVA(elfData, &hdr)
+
+	// Parse and load ELF using the fresh process page table
+	filename := "/" + name + ".elf"
+	loadedProc, err := loadELF(elfData, filename, processL0PA, 0)
+	if err != nil {
+		console.KPrintf("[Launch] loadELF FAILED: %v\n", err)
+		return -5
+	}
+
+	// Store process info
+	currentProcess = loadedProc
+
+	// Final I-cache invalidation before userspace
+	kmem.InvalidateAllICache()
+
+	// Enable userspace mmap allocator
+	SetUserspaceActive()
+
+	// Final cache and TLB maintenance
+	kmem.FinalUserspaceSync()
+
+	// Create a new thread for this process
+	tid := CreateUserspaceThread(loadedProc.EntryPoint, loadedProc.StackTop, processL0PA)
+
+	// Cache the symbol table, highest VA, and filename on the shepherd struct.
+	for i := 0; i < proc.MaxShepherds; i++ {
+		if proc.ShepherdListInUse[i] && proc.ShepherdListData[i].PageTableL0PA == processL0PA {
+			proc.ShepherdListData[i].SymbolTable = shepherdSymTable
+			proc.ShepherdListData[i].HighestVA = shepherdHighestVA
+			proc.ShepherdListData[i].Filename = filename
+			console.KPrintf("[Launch] cached %d symbols, highestVA=0x%X for shepherd %d\n",
+				len(shepherdSymTable), shepherdHighestVA, proc.ShepherdListData[i].PID)
+			break
+		}
+	}
+
+	console.KPrintf("[Launch] main thread TID=%d\n", tid)
 	return 0
 }
 

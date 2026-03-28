@@ -1,0 +1,29 @@
+# kernel.arm64.toml — ARM64 kernel configuration (embedded in kmazarin.elf)
+
+timezone = "America/New_York"
+
+# Memory
+kernel_budget_mb = 64
+go_mem_limit = 24
+kernel_mem_limit = 24
+
+# GC tuning — set very high so GOMEMLIMIT is the governor.
+# With a low gc_percentage, GOGC fires at its minimum heap threshold (~4MB)
+# regardless of GOMEMLIMIT, causing thousands of unnecessary GC cycles.
+gc_percentage = 10000
+gc_percent_kernel = 10000
+
+# Scheduling
+# Timer tick rate in Hz (250 = 4ms ticks). Controls deadline processing
+# and signal delivery granularity.
+kernel_tick_rate = 250
+# Thread preemption quantum in ticks (25 x 4ms = 100ms). Also determines
+# the time attribute update frequency (10Hz at these settings).
+preempt_after_ticks = 25
+
+# Serial output
+# When true, userspace stdout/stderr is routed only through the linux shepherd
+# and NOT echoed to the serial port. Improves performance since serial UART
+# output is slow, but means serial logs won't contain shepherd output.
+suppress_serial_stdio_copy = false
+suppress_kernel_serial = false
