@@ -2,15 +2,15 @@ package ksyscall
 
 // uart_write.go — SysUartWrite and SysUartWriteDirect syscalls.
 //
-// These allow userspace shepherds (particularly stdio) to push bytes directly
+// These allow userspace shepherds (particularly linux) to push bytes directly
 // into the UART output path. This decouples screen rendering (fast, handled
-// by stdio via delegated SyscallWrite) from serial output (slow, UART speed).
+// by linux via delegated SyscallWrite) from serial output (slow, UART speed).
 //
 // Two variants:
 //   - SysUartWrite (0x101A): non-blocking, pushes to TX ring buffer (interrupt-driven),
-//     drops bytes if buffer is full. Used by stdio for stdout.
+//     drops bytes if buffer is full. Used by linux for stdout.
 //   - SysUartWriteDirect (0x101B): synchronous PollWrite, guaranteed delivery.
-//     Used by stdio for stderr (panics, tracebacks, errors).
+//     Used by linux for stderr (panics, tracebacks, errors).
 
 import (
 	"mazzy/kmazarin/kmem"
@@ -20,7 +20,7 @@ import (
 // SyscallUartWrite writes bytes from a user buffer to the UART TX ring buffer.
 // Non-blocking: pushes what fits, drops the rest. Interrupt-driven drain.
 //
-// NOTE: This syscall is NOT gated by suppressSerial. The caller (stdio shepherd)
+// NOTE: This syscall is NOT gated by suppressSerial. The caller (linux shepherd)
 // explicitly wants to write to UART — the suppressSerial flag only controls
 // whether SyscallWrite's ring-buffer path auto-echoes to serial.
 //
@@ -72,9 +72,9 @@ func SyscallUartWrite(arg0, arg1, _, _, _, _ uint64) int64 {
 
 // SyscallUartWriteDirect writes all bytes from a user buffer to the UART
 // via synchronous PollWrite. Guaranteed delivery — blocks until all bytes
-// are transmitted. Used by stdio for stderr output (panics, tracebacks).
+// are transmitted. Used by linux for stderr output (panics, tracebacks).
 //
-// NOTE: This syscall is NOT gated by suppressSerial. The caller (stdio shepherd)
+// NOTE: This syscall is NOT gated by suppressSerial. The caller (linux shepherd)
 // explicitly wants to write to UART — the suppressSerial flag only controls
 // whether SyscallWrite's ring-buffer path auto-echoes to serial.
 //

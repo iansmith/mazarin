@@ -40,10 +40,10 @@ func blockForRunMaz() uintptr
 func blockForRunShepherd() uintptr
 
 // setBlockAsyncSlot stores per-tag metadata for async block I/O completions.
-// clump may be nil if the buffer is in a legacy DMA pool.
+// clumpAddr is the VA of *proc.DMAClump stored as uintptr (0 if no clump).
 //
 //go:linkname setBlockAsyncSlot main.SetBlockAsyncSlot
-func setBlockAsyncSlot(tag uint16, sidecarStatusVA uintptr, sidecarIdx uint8, dataKernelVA uintptr, dataLen uint32, clump *proc.DMAClump)
+func setBlockAsyncSlot(tag uint16, sidecarStatusVA uintptr, sidecarIdx uint8, dataKernelVA uintptr, dataLen uint32, clumpAddr uintptr)
 
 // enableBlockAsyncMode switches the block device top-half to async completion delivery.
 //

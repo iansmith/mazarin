@@ -50,6 +50,31 @@ const (
 	RtSigreturn                // rt_sigreturn
 	Getitimer                  // getitimer
 	LoadFile                   // LoadFile (Mazzy delegated file load)
+	ReadFilePages              // ReadFilePages (Mazzy delegated file read into DMA pages)
+
+	// File-related syscalls delegated to the linux shepherd.
+	Lseek      // lseek
+	Fstat      // fstat
+	Fstatat    // fstatat / newfstatat
+	Mkdirat    // mkdirat
+	Unlinkat   // unlinkat
+	Renameat   // renameat / renameat2
+	Ftruncate  // ftruncate
+	Getdents64 // getdents64
+	Readlinkat // readlinkat
+	Faccessat  // faccessat
+	Fchmodat   // fchmodat
+	Utimensat  // utimensat
+	Getcwd     // getcwd
+	Chdir      // chdir
+	Fchdir     // fchdir
+	Ioctl      // ioctl
+	Writev     // writev
+	Readv      // readv
+	Statfs     // statfs
+	Fstatfs    // fstatfs
+	Fsync      // fsync
+	Fdatasync  // fdatasync
 
 	NumIDs // sentinel — array size
 )

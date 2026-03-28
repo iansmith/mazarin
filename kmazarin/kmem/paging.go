@@ -1302,6 +1302,7 @@ func icIALLUAsm()
 // See paging_arm64.go, paging_riscv64.go, paging_amd64.go.
 func dcZVAAsm(addr uintptr)
 func bzero4KAsm(ptr uintptr)
+func bzeroNAsm(ptr uintptr, n uintptr)
 func writeTTBR0Asm(val uint64)
 func atS1E0R(va uintptr) uint64 // Hardware address translation EL0 read
 func tlbiASIDE1ISAsm(asid uint16) // Invalidate TLB by ASID (inner shareable)
@@ -1313,6 +1314,20 @@ func tlbiASIDE1ISAsm(asid uint16) // Invalidate TLB by ASID (inner shareable)
 //go:nosplit
 func Bzero4K(ptr uintptr) {
 	bzero4KAsm(ptr)
+}
+
+// BzeroN zeros n bytes at ptr using architecture-specific fast zeroing.
+// ptr must be 8-byte aligned. n must be a multiple of 8.
+// On ARM64, uses DC ZVA for 64-byte-aligned regions (≥64 bytes).
+// On x86_64, uses REP STOSQ.
+// On RISC-V, uses a ZERO-register store loop.
+//
+//go:nosplit
+func BzeroN(ptr uintptr, n uintptr) {
+	if n == 0 {
+		return
+	}
+	bzeroNAsm(ptr, n)
 }
 
 // TlbiVMALLE1 invalidates all TLB entries for EL1&0 translation regime.

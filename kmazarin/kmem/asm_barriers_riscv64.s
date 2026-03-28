@@ -123,6 +123,22 @@ bzero_loop:
 	BNE	A1, ZERO, bzero_loop
 	RET
 
+// bzeroNAsm - Zero n bytes starting at ptr
+// ptr must be 8-byte aligned, n must be a multiple of 8.
+// Uses ZERO register store loop (RISC-V has no hardware page zeroing).
+TEXT ·bzeroNAsm(SB), NOSPLIT, $0-16
+	MOV	ptr+0(FP), A0
+	MOV	n+8(FP), A1
+	SRL	$3, A1		// n/8 = number of doublewords
+bzeroN_loop:
+	BEQ	A1, ZERO, bzeroN_done
+	MOV	ZERO, 0(A0)
+	ADD	$8, A0
+	ADD	$-1, A1
+	JMP	bzeroN_loop
+bzeroN_done:
+	RET
+
 // writeTTBR0Asm - Write page table base register
 // RISC-V: Write SATP
 TEXT ·writeTTBR0Asm(SB), NOSPLIT, $0-8

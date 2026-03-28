@@ -130,12 +130,20 @@ var blockSidecarFreePtr *uint64 // pointer to SidecarPool.FreeBits for release
 
 // blockAsyncSlot tracks per-IOTag metadata for async completions.
 // Populated by SysBlockSubmit, consumed by the IRQ top-half.
+//
+// IMPORTANT: This struct must NOT contain Go pointer types (*T).
+// It is zeroed in the nosplit IRQ top-half chain. A pointer field would
+// cause the compiler to emit wbZero (write barrier), which exceeds the
+// 792-byte nosplit stack limit. The DMAClump address is stored as uintptr
+// to avoid GC write barriers. This is safe because the DMAClump lives in
+// the shepherd's fixed DMAClumps array and outlives all in-flight I/O
+// (InFlight > 0 prevents deallocation).
 type blockAsyncSlot struct {
 	sidecarStatusVA uintptr // VA of status byte in sidecar
 	sidecarIdx      uint8   // Sidecar slot index (for release)
 	dataKernelVA    uintptr // Kernel VA of data page (PA + KernelMMIOOffset)
 	dataLen         uint32  // Data buffer size (for cache invalidate)
-	clump           *proc.DMAClump // non-nil if buffer is in a MAZARIN_CONTIGUOUS clump
+	clumpAddr       uintptr // VA of *proc.DMAClump, stored as uintptr (no write barrier)
 }
 
 var blockAsyncSlots [256]blockAsyncSlot // indexed by IOTag (descriptor head index)
@@ -153,17 +161,17 @@ func SetBlockIRQ(irqNum uint32, isrBase uintptr, ioComplete *uint32, enginePtr u
 
 // SetBlockAsyncSlot stores per-tag metadata for async completion.
 // Called from SysBlockSubmit after engine.Submit returns the IOTag.
-// clump may be nil if the buffer is in a legacy DMA pool (not a MAZARIN_CONTIGUOUS clump).
+// clumpAddr is the VA of the *proc.DMAClump stored as uintptr (0 if no clump).
 //
 //go:nosplit
-func SetBlockAsyncSlot(tag uint16, sidecarStatusVA uintptr, sidecarIdx uint8, dataKernelVA uintptr, dataLen uint32, clump *proc.DMAClump) {
+func SetBlockAsyncSlot(tag uint16, sidecarStatusVA uintptr, sidecarIdx uint8, dataKernelVA uintptr, dataLen uint32, clumpAddr uintptr) {
 	if tag < 256 {
 		blockAsyncSlots[tag] = blockAsyncSlot{
 			sidecarStatusVA: sidecarStatusVA,
 			sidecarIdx:      sidecarIdx,
 			dataKernelVA:    dataKernelVA,
 			dataLen:         dataLen,
-			clump:           clump,
+			clumpAddr:       clumpAddr,
 		}
 	}
 }
@@ -324,10 +332,11 @@ func NonTimerIRQTopHalf() {
 				// If the clump is pending release and InFlight hits 0,
 				// free the contiguous pages. This handles the case where
 				// munmap was called while I/O was in flight.
-				if meta.clump != nil {
-					remaining := atomic.AddInt32(&meta.clump.InFlight, -1)
-					if remaining == 0 && (meta.clump.ShepherdDead || meta.clump.PendingRelease) {
-						kmem.BuddyFreeTyped(meta.clump.StartPA, meta.clump.BuddyOrder, kmem.PageUserDMA)
+				if meta.clumpAddr != 0 {
+					clump := (*proc.DMAClump)(unsafe.Pointer(meta.clumpAddr))
+					remaining := atomic.AddInt32(&clump.InFlight, -1)
+					if remaining == 0 && (clump.ShepherdDead || clump.PendingRelease) {
+						kmem.BuddyFreeTyped(clump.StartPA, clump.BuddyOrder, kmem.PageUserDMA)
 					}
 				}
 

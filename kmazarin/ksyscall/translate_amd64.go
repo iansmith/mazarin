@@ -43,6 +43,30 @@ var x86ToSysID = [512]SysID{
 	291: SysIDEpollCreate,
 	302: SysIDPrlimit64,
 	318: SysIDGetrandom,
+
+	// File-related syscalls delegated to the linux shepherd.
+	8:   SysIDLseek,
+	5:   SysIDFstat,
+	262: SysIDFstatat, // newfstatat
+	83:  SysIDMkdirat,
+	263: SysIDUnlinkat,
+	316: SysIDRenameat, // renameat2
+	77:  SysIDFtruncate,
+	217: SysIDGetdents64,
+	267: SysIDReadlinkat,
+	269: SysIDFaccessat,
+	268: SysIDFchmodat,
+	280: SysIDUtimensat,
+	79:  SysIDGetcwd,
+	80:  SysIDChdir,
+	81:  SysIDFchdir,
+	16:  SysIDIoctl,
+	20:  SysIDWritev,
+	19:  SysIDReadv,
+	137: SysIDStatfs,
+	138: SysIDFstatfs,
+	74:  SysIDFsync,
+	75:  SysIDFdatasync,
 }
 
 // translateSyscallNum converts an x86_64 Linux syscall number to SysID.

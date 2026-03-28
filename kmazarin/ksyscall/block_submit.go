@@ -19,6 +19,7 @@ import (
 	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"sync/atomic"
+	"unsafe"
 )
 
 // blockAsyncEnabled tracks whether async mode has been activated.
@@ -30,17 +31,21 @@ var blockAsyncEnabled uint32
 // arg0 = requestType  (0 = read, 1 = write)
 // arg1 = startLBA     (first sector)
 // arg2 = numSectors   (number of sectors, must fit in one DMA pool page)
-// arg3 = bufVA        (destination/source buffer in DMA pool)
+// arg3 = bufVA        (destination/source buffer — must be in a DMA clump)
+// arg4 = targetSID    (shepherd whose DMA clump contains bufVA;
+//
+//	0 = caller's own clumps)
 //
 // Returns: IOTag (>= 0) on success, negative errno on error.
 // Does NOT block — returns immediately after submitting to device.
 //
 //go:noinline
-func SyscallBlockSubmit(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
+func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 	requestType := uint32(arg0)
 	startLBA := arg1
 	numSectors := arg2
 	bufVA := uintptr(arg3)
+	targetSID := uint16(arg4)
 
 	// Validate request type
 	if requestType != block.VIRTIO_BLK_T_IN && requestType != block.VIRTIO_BLK_T_OUT {
@@ -79,8 +84,19 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		return -22 // EINVAL
 	}
 
-	// Resolve bufVA → PA via DMA clump (MAZARIN_CONTIGUOUS pages).
-	clump := shepherd.FindClumpByVA(bufVA)
+	// Resolve bufVA → PA via DMA clump. When targetSID != 0, look up
+	// the clump in the target shepherd's DMA clump list (cross-shepherd DMA).
+	var clumpOwner *proc.Shepherd
+	if targetSID != 0 {
+		clumpOwner = proc.FindShepherdBySID(proc.ShepherdId(targetSID))
+		if clumpOwner == nil {
+			serial.RawUARTPuts("[BlockSubmit] ESRCH: target shepherd not found\r\n")
+			return -3 // ESRCH
+		}
+	} else {
+		clumpOwner = shepherd
+	}
+	clump := clumpOwner.FindClumpByVA(bufVA)
 	if clump == nil {
 		serial.RawUARTPuts("[BlockSubmit] EFAULT: bufVA not in any DMA clump\r\n")
 		return -14 // EFAULT
@@ -121,7 +137,7 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	if requestType == block.VIRTIO_BLK_T_OUT {
 		dataKernelVA = 0 // No cache invalidate needed for writes
 	}
-	setBlockAsyncSlot(tag, sidecarSlot.VA+16, sidecarSlot.Index, dataKernelVA, uint32(totalBytes), clump)
+	setBlockAsyncSlot(tag, sidecarSlot.VA+16, sidecarSlot.Index, dataKernelVA, uint32(totalBytes), uintptr(unsafe.Pointer(clump)))
 
 	// Notify device
 	asm.Dsb()

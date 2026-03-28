@@ -134,6 +134,33 @@ bzero_loop:
 	CBNZ	R1, bzero_loop
 	RET
 
+// bzeroNAsm - Zero n bytes starting at ptr using DC ZVA where possible
+// ptr must be 8-byte aligned, n must be a multiple of 8.
+// Uses DC ZVA for 64-byte-aligned chunks, regular stores for remainder.
+TEXT ·bzeroNAsm(SB), NOSPLIT, $0-16
+	MOVD	ptr+0(FP), R0
+	MOVD	n+8(FP), R1
+	// Check if ptr is 64-byte aligned for DC ZVA fast path
+	MOVD	R0, R2
+	AND	$63, R2
+	CBNZ	R2, bzeroN_small
+bzeroN_zva:
+	CMP	$64, R1
+	BLT	bzeroN_small
+	WORD	$0xD50B7420	// DC ZVA, X0
+	ADD	$64, R0
+	SUB	$64, R1
+	B	bzeroN_zva
+bzeroN_small:
+	CMP	$8, R1
+	BLT	bzeroN_done
+	MOVD	ZR, (R0)
+	ADD	$8, R0
+	SUB	$8, R1
+	B	bzeroN_small
+bzeroN_done:
+	RET
+
 // writeTTBR0Asm - Write to TTBR0_EL1 register
 // Used for switching to a new process's page tables
 TEXT ·writeTTBR0Asm(SB), NOSPLIT, $0-8

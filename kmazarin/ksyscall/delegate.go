@@ -208,8 +208,84 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			dataLen = uint32(n)
 		}
 
+	case sysid.ReadFilePages:
+		// ReadFilePages: copy pathname string into data page (path is in arg0).
+		// arg0 = pathname, arg1 = destVA, arg2 = destSize, arg3 = fileOffset, arg4 = readLen
+		// CallerSID is available from DelegateQueueEntry.CallerSID for cross-shepherd DMA.
+		if arg0 != 0 {
+			pa, va, n := allocAndCopyCallerString(handlerSID, handlerShepherd, uintptr(arg0))
+			if pa == 0 {
+				return -12 // ENOMEM
+			}
+			dataPagePA = pa
+			handlerDataVA = va
+			dataLen = uint32(n)
+		}
+
+	// --- File syscalls delegated to the linux shepherd ---
+
+	case sysid.Mkdirat, sysid.Unlinkat, sysid.Fchmodat,
+		sysid.Utimensat, sysid.Faccessat, sysid.Readlinkat,
+		sysid.Statfs, sysid.Chdir:
+		// String argument in arg1 (pathname).
+		if arg1 != 0 {
+			pa, va, n := allocAndCopyCallerString(handlerSID, handlerShepherd, uintptr(arg1))
+			if pa == 0 {
+				return -12 // ENOMEM
+			}
+			dataPagePA = pa
+			handlerDataVA = va
+			dataLen = uint32(n)
+		}
+
+	case sysid.Renameat:
+		// renameat2: arg1 = oldpath, arg3 = newpath. Copy oldpath; newpath
+		// goes through args (handler reads it from a second delegation or
+		// we pack both into one page separated by null).
+		if arg1 != 0 {
+			pa, va, n := allocAndCopyCallerString(handlerSID, handlerShepherd, uintptr(arg1))
+			if pa == 0 {
+				return -12 // ENOMEM
+			}
+			dataPagePA = pa
+			handlerDataVA = va
+			dataLen = uint32(n)
+		}
+
+	case sysid.Fstatat:
+		// fstatat: arg1 = pathname, arg2 = statbuf (output).
+		// Copy pathname string in; reply path copies stat data back.
+		if arg1 != 0 {
+			pa, va, n := allocAndCopyCallerString(handlerSID, handlerShepherd, uintptr(arg1))
+			if pa == 0 {
+				return -12 // ENOMEM
+			}
+			dataPagePA = pa
+			handlerDataVA = va
+			dataLen = uint32(n)
+		}
+
+	case sysid.Fstat, sysid.Getdents64, sysid.Getcwd,
+		sysid.Fstatfs:
+		// Output buffer syscalls: handler fills data page, kernel copies back.
+		// Like Read: allocate empty page for handler to fill.
+		if arg1 != 0 && arg2 > 0 {
+			count := arg2
+			if count > 4096 {
+				count = 4096
+			}
+			pa, va := allocEmptyDataPage(handlerSID, handlerShepherd)
+			if pa == 0 {
+				return -12 // ENOMEM
+			}
+			dataPagePA = pa
+			handlerDataVA = va
+			dataLen = uint32(count)
+		}
+
 	default:
-		// Close, etc: no data page
+		// Lseek, Close, Fchdir, Ioctl, Ftruncate, Fsync, Fdatasync, etc:
+		// no data page, just args and return value.
 	}
 
 	// Enqueue the request
@@ -239,15 +315,39 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 	q.entries[q.tail] = entry
 	q.tail = next
 
-	// Stash call info for the reply path (indexed by caller TID)
+	// Stash call info for the reply path (indexed by caller TID).
+	// CallerBufVA/CallerBufLen identify the output buffer for copy-back syscalls.
+	// Default: arg1=buf, arg2=count (matches read, getdents64, etc.).
+	callerBufVA := uintptr(arg1)
+	callerBufLen := uint32(arg2)
+	switch id {
+	case sysid.Fstat:
+		// fstat(fd, statbuf): arg1=statbuf, no size arg — use struct_stat size.
+		callerBufLen = 128 // sizeof(struct stat) on linux/arm64 and linux/amd64
+	case sysid.Fstatfs:
+		// fstatfs(fd, buf): arg1=buf, no size arg.
+		callerBufLen = 120 // sizeof(struct statfs) on linux
+	case sysid.Fstatat:
+		// fstatat(dirfd, path, statbuf, flags): arg2=statbuf (output).
+		callerBufVA = uintptr(arg2)
+		callerBufLen = 128
+	case sysid.Getcwd:
+		// getcwd(buf, size): arg0=buf, arg1=size.
+		callerBufVA = uintptr(arg0)
+		callerBufLen = uint32(arg1)
+	case sysid.Readlinkat:
+		// readlinkat(dirfd, path, buf, bufsiz): arg2=buf, arg3=bufsiz.
+		callerBufVA = uintptr(arg2)
+		callerBufLen = uint32(arg3)
+	}
 	if int(callerTID) < MaxDelegateThreads {
 		info := &delegateCallInfos[callerTID]
 		info.DataPagePA = dataPagePA
 		info.DataPageVA = handlerDataVA
 		info.HandlerSID = handlerSID
 		info.CallerSID = int16(callerShepherd.PID)
-		info.CallerBufVA = uintptr(arg1)
-		info.CallerBufLen = uint32(arg2)
+		info.CallerBufVA = callerBufVA
+		info.CallerBufLen = callerBufLen
 		info.CallerL0PA = callerShepherd.PageTableL0PA
 		info.SysID = id
 		info.InUse = true
@@ -616,7 +716,7 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 			// Linux semantics: if the copy faults at any point (even after
 			// partial success), read() returns -EFAULT. A partial copy means
 			// the caller's buffer was bogus.
-			if info.SysID == sysid.Read && returnVal > 0 && info.DataPagePA != 0 {
+			if isCopyBackSyscall(info.SysID) && returnVal > 0 && info.DataPagePA != 0 {
 				bytesToCopy := uint32(returnVal)
 				if bytesToCopy > info.CallerBufLen {
 					bytesToCopy = info.CallerBufLen
@@ -669,6 +769,17 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	wakeDelegateCallerThread(callerSID, int32(callerTID), returnVal)
 
 	return 0
+}
+
+// isCopyBackSyscall returns true if the given syscall ID uses the Read pattern:
+// handler fills a data page and the kernel copies the result back to the caller.
+func isCopyBackSyscall(id sysid.ID) bool {
+	switch id {
+	case sysid.Read, sysid.Fstat, sysid.Getdents64, sysid.Getcwd,
+		sysid.Fstatfs, sysid.Fstatat, sysid.Readlinkat, sysid.Readv:
+		return true
+	}
+	return false
 }
 
 // copyDataPageToCaller copies bytes from a data page (by PA) into the caller's

@@ -15,8 +15,8 @@ var (
 	KernelSVCCount    uint64 // SVCs from kernel threads (TID < 10)
 	TotalSVCCount     uint64 // All SVCs from all threads
 	DbgFutexExplicitTimeout uint64 // Deadlines with explicit timeout
-	DbgStdioFutexAddr       uint64 // Last futex address for stdio debug
-	DbgStdioFutexSyscallNum uint64 // Last syscall number from stdio's main
+	DbgLinuxFutexAddr       uint64 // Last futex address for linux shepherd debug
+	DbgLinuxFutexSyscallNum uint64 // Last syscall number from linux's main
 	shepherdSyscallCount      uint64 // Count of shepherd syscalls (for debug logging)
 	GCCountBySID            [16]uint64 // Per-shepherd GC cycle counter (indexed by PID)
 	NanosleepCallCount uint64     // Total nanosleep calls (all threads)

@@ -20,11 +20,11 @@ var suppressSerial uint32
 // For now, we only support stdout/stderr (fd 1 and 2).
 //
 // Routing logic:
-//   - If the caller is the stdio shepherd (UART ring owner), writes are
+//   - If the caller is the linux shepherd (UART ring owner), writes are
 //     silently dropped (it cannot push into its own ring without deadlock).
 //   - If the caller is any other shepherd, bytes are pushed through the
-//     ring buffer so the stdio shepherd can display them. The fd number
-//     is carried through the ring so stdio can color stderr differently.
+//     ring buffer so the linux shepherd can display them. The fd number
+//     is carried through the ring so linux can color stderr differently.
 //   - If no shepherd owns the UART slot yet (early boot), writes are dropped.
 //
 //go:nosplit
@@ -58,8 +58,8 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 		return -14 // EFAULT
 	}
 
-	// Route to ring buffer for display by the stdio shepherd.
-	// The stdio shepherd itself (UART ring owner) cannot use the ring
+	// Route to ring buffer for display by the linux shepherd.
+	// The linux shepherd itself (UART ring owner) cannot use the ring
 	// (it would deadlock consuming its own output).
 	// If no owner registered yet, fall back to direct serial output
 	// so early panic messages are visible.
@@ -72,7 +72,7 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 		if callerSID != ownerSID {
 			useRing = true
 		} else {
-			// stdio shepherd: can't use ring (deadlock), always write direct to serial
+			// linux shepherd: can't use ring (deadlock), always write direct to serial
 			useDirect = true
 		}
 	} else {
@@ -129,7 +129,7 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 				}
 			}
 		} else if useDirect {
-			// stdio shepherd's own writes: fd-based routing.
+			// linux shepherd's own writes: fd-based routing.
 			// stderr: always PollWrite (guaranteed delivery).
 			// stdout: QueueByte (interrupt-driven).
 			if fd == 2 {

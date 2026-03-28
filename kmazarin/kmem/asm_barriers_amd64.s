@@ -111,6 +111,18 @@ TEXT ·bzero4KAsm(SB), NOSPLIT, $0-8
 	STOSQ
 	RET
 
+// bzeroNAsm - Zero n bytes starting at ptr
+// ptr must be 8-byte aligned, n must be a multiple of 8.
+// Uses REP STOSQ for maximum throughput.
+TEXT ·bzeroNAsm(SB), NOSPLIT, $0-16
+	MOVQ	ptr+0(FP), DI
+	MOVQ	n+8(FP), CX
+	SHRQ	$3, CX		// n/8 = number of quadwords
+	XORQ	AX, AX
+	REP
+	STOSQ
+	RET
+
 // writeTTBR0Asm - Write page table base register
 // x86_64: Write CR3. Mask off ASID bits [63:48] which are used by
 // ARM64 TTBR0 but must be zero in x86_64 CR3 (no PCID).

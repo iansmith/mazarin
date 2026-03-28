@@ -42,6 +42,30 @@ var riscv64ToSysID = [512]SysID{
 	233: SysIDMadvise,
 	261: SysIDPrlimit64,
 	278: SysIDGetrandom,
+
+	// File-related syscalls delegated to the linux shepherd.
+	62:  SysIDLseek,
+	80:  SysIDFstat,
+	79:  SysIDFstatat,
+	34:  SysIDMkdirat,
+	35:  SysIDUnlinkat,
+	276: SysIDRenameat,
+	46:  SysIDFtruncate,
+	61:  SysIDGetdents64,
+	78:  SysIDReadlinkat,
+	48:  SysIDFaccessat,
+	53:  SysIDFchmodat,
+	88:  SysIDUtimensat,
+	17:  SysIDGetcwd,
+	49:  SysIDChdir,
+	50:  SysIDFchdir,
+	29:  SysIDIoctl,
+	66:  SysIDWritev,
+	65:  SysIDReadv,
+	43:  SysIDStatfs,
+	44:  SysIDFstatfs,
+	82:  SysIDFsync,
+	83:  SysIDFdatasync,
 }
 
 // translateSyscallNum converts a RISC-V Linux syscall number to SysID.

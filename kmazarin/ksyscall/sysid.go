@@ -49,5 +49,29 @@ const (
 	SysIDRtSigreturn      = sysid.RtSigreturn
 	SysIDGetitimer        = sysid.Getitimer
 
+	// File-related syscalls delegated to the linux shepherd.
+	SysIDLseek      = sysid.Lseek
+	SysIDFstat      = sysid.Fstat
+	SysIDFstatat    = sysid.Fstatat
+	SysIDMkdirat    = sysid.Mkdirat
+	SysIDUnlinkat   = sysid.Unlinkat
+	SysIDRenameat   = sysid.Renameat
+	SysIDFtruncate  = sysid.Ftruncate
+	SysIDGetdents64 = sysid.Getdents64
+	SysIDReadlinkat = sysid.Readlinkat
+	SysIDFaccessat  = sysid.Faccessat
+	SysIDFchmodat   = sysid.Fchmodat
+	SysIDUtimensat  = sysid.Utimensat
+	SysIDGetcwd     = sysid.Getcwd
+	SysIDChdir      = sysid.Chdir
+	SysIDFchdir     = sysid.Fchdir
+	SysIDIoctl      = sysid.Ioctl
+	SysIDWritev     = sysid.Writev
+	SysIDReadv      = sysid.Readv
+	SysIDStatfs     = sysid.Statfs
+	SysIDFstatfs    = sysid.Fstatfs
+	SysIDFsync      = sysid.Fsync
+	SysIDFdatasync  = sysid.Fdatasync
+
 	NumSyscallIDs = sysid.NumIDs
 )

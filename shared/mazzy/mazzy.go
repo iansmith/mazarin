@@ -62,5 +62,6 @@ const (
 	SysSetCursor              = MazzySyscallBase + 51 // 0x1033 - Switch active cursor by ID
 	SysGetReady               = MazzySyscallBase + 52 // 0x1034 - Check if named shepherd is ready
 	// slots 53-54 freed (were RegisterDMAPool/UnregisterDMAPool)
-	SysBlockSubmit = MazzySyscallBase + 55 // 0x1037 - Async block I/O submit (returns IOTag)
+	SysBlockSubmit     = MazzySyscallBase + 55 // 0x1037 - Async block I/O submit (returns IOTag)
+	SysReadFilePages   = MazzySyscallBase + 56 // 0x1038 - Read file data into caller's DMA pages
 )
