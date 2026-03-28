@@ -1,0 +1,123 @@
+version: '3'
+
+tasks:
+  linux-overlay:
+    method: checksum
+    desc: Generate overlay JSON for diplomat runtime patches (Linux->UEFI)
+    deps: [':gen-overlay:build']
+    sources:
+      - 'runtime-patches/diplomat-linux/**/*'
+    generates:
+      - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
+    cmds:
+      - '{{.BUILD_DIR}}/gen-overlay -type diplomat-linux -patches runtime-patches/diplomat-linux -o {{.BUILD_DIR}}/diplomat-linux-overlay.json'
+
+  x86_64:
+    desc: Build diplomat UEFI bootloader for x86_64
+    deps: [':check-env', ':build-dir', ':elf2pe:build', 'linux-overlay']
+    sources:
+      - 'diplomat/**/*.go'
+      - 'diplomat/**/*.s'
+      - 'shared/**/*.go'
+      - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
+      - 'runtime-patches/diplomat-linux/**/*'
+    generates:
+      - '{{.DIPLOMAT_EFI}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building diplomat for x86_64 UEFI (via Linux/amd64)..."'
+      # Step 1: Build as Linux ELF with runtime patches
+      - 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 {{.GO}} build -ldflags="-checklinkname=0" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.BUILD_DIR}}/diplomat.elf ./diplomat/main'
+      # Step 2: Convert ELF to PE format for UEFI
+      - '{{.BUILD_DIR}}/elf2pe {{.BUILD_DIR}}/diplomat.elf {{.DIPLOMAT_EFI}}'
+      - '{{.GO}} tool go-echo "Diplomat EFI ready at {{.DIPLOMAT_EFI}}"'
+
+  arm64:
+    desc: Build diplomat UEFI bootloader for ARM64
+    deps: [':check-env', ':build-dir', ':elf2pe:build', 'linux-overlay']
+    sources:
+      - 'diplomat/**/*.go'
+      - 'diplomat/**/*.s'
+      - 'shared/**/*.go'
+      - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
+      - 'runtime-patches/diplomat-linux/**/*'
+    generates:
+      - '{{.BUILD_DIR}}/diplomat-arm64.efi'
+    cmds:
+      - '{{.GO}} tool go-echo "Building diplomat for ARM64 UEFI (via Linux/arm64)..."'
+      # Step 1: Build as Linux ELF with runtime patches
+      - 'CGO_ENABLED=0 GOOS=linux GOARCH=arm64 {{.GO}} build -ldflags="-checklinkname=0" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.BUILD_DIR}}/diplomat-arm64.elf ./diplomat/main'
+      # Step 2: Convert ELF to PE format for UEFI
+      - '{{.BUILD_DIR}}/elf2pe {{.BUILD_DIR}}/diplomat-arm64.elf {{.BUILD_DIR}}/diplomat-arm64.efi'
+      - '{{.GO}} tool go-echo "Diplomat ARM64 EFI ready at {{.BUILD_DIR}}/diplomat-arm64.efi"'
+
+  riscv64:
+    desc: Build diplomat for RISC-V 64-bit (ELF, loaded via QEMU -kernel)
+    deps: [':check-env', ':build-dir', 'linux-overlay']
+    sources:
+      - 'diplomat/**/*.go'
+      - 'diplomat/**/*.s'
+      - 'shared/**/*.go'
+      - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
+      - 'runtime-patches/diplomat-linux/**/*'
+    generates:
+      - '{{.DIPLOMAT_RISCV64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building diplomat for RISC-V 64-bit (ELF for -kernel loading)..."'
+      # Build as Linux ELF with runtime patches — no elf2pe conversion needed.
+      # UEFI firmware is broken on RISC-V, so we load via QEMU -kernel + OpenSBI.
+      # Link at 0x80200000 (standard RISC-V kernel load address, after OpenSBI)
+      - 'CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 {{.GO}} build -ldflags="-checklinkname=0 -T 0x80200000" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.DIPLOMAT_RISCV64_ELF}} ./diplomat/main'
+      - '{{.GO}} tool go-echo "Patching entry point to _rt0_riscv64_linux..."'
+      - '{{.GO}} tool patch-entry {{.DIPLOMAT_RISCV64_ELF}} _rt0_riscv64_linux'
+      - '{{.GO}} tool go-echo "Fixing ELF for QEMU compatibility..."'
+      - '{{.GO}} tool fix-go-elf {{.DIPLOMAT_RISCV64_ELF}}'
+      - '{{.GO}} tool go-echo "Diplomat RISC-V 64-bit ELF ready at {{.DIPLOMAT_RISCV64_ELF}}"'
+
+  testkernel:
+    desc: Build minimal test kernel for diplomat ELF loader testing
+    deps: [':build-dir', ':mktestkernel:build']
+    cmds:
+      - '{{.BUILD_DIR}}/mktestkernel -o {{.BUILD_DIR}}/testkernel.elf -addr 0xFFFFFFFF00200000 -m "hello, mazarin\r\n"'
+
+  esp-x86_64:
+    desc: Create EFI System Partition image for x86_64 diplomat testing
+    deps: ['x86_64', ':mkesp:build', 'testkernel']
+    sources:
+      - '{{.DIPLOMAT_EFI}}'
+      - '{{.BUILD_DIR}}/testkernel.elf'
+    generates:
+      - '{{.ESP_IMAGE}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Creating ESP image..."'
+      - '{{.BUILD_DIR}}/mkesp -bootloader {{.DIPLOMAT_EFI}} -kernel {{.BUILD_DIR}}/testkernel.elf -o {{.ESP_IMAGE}} -size 260'
+      - '{{.GO}} tool go-echo "ESP created at {{.ESP_IMAGE}}"'
+
+  esp-x86_64-kmazarin:
+    desc: Create EFI System Partition image for x86_64 diplomat with real kmazarin
+    deps: ['x86_64', ':mkesp:build', ':kmazarin:x86_64']
+    method: checksum
+    sources:
+      - '{{.DIPLOMAT_EFI}}'
+      - '{{.KMAZARIN_AMD64_ELF}}'
+      - kmazarin.toml
+    generates:
+      - '{{.BUILD_DIR}}/esp-kmazarin.img'
+    cmds:
+      - '{{.GO}} tool go-echo "Creating x86_64 ESP image with kmazarin..."'
+      - '{{.BUILD_DIR}}/mkesp -bootloader {{.DIPLOMAT_EFI}} -kernel {{.KMAZARIN_AMD64_ELF}} -config kmazarin.toml -o {{.BUILD_DIR}}/esp-kmazarin.img -size 260'
+      - '{{.GO}} tool go-echo "ESP (x86_64 + kmazarin) created at {{.BUILD_DIR}}/esp-kmazarin.img"'
+
+  esp-arm64:
+    desc: Create EFI System Partition image for ARM64 diplomat
+    deps: ['arm64', ':mkesp:build', ':kmazarin:arm64']
+    method: checksum
+    sources:
+      - '{{.DIPLOMAT_ARM64_EFI}}'
+      - '{{.KMAZARIN_ELF}}'
+      - kmazarin.toml
+    generates:
+      - '{{.ESP_ARM64_IMAGE}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Creating ARM64 ESP image..."'
+      - '{{.BUILD_DIR}}/mkesp -arch aa64 -bootloader {{.DIPLOMAT_ARM64_EFI}} -kernel {{.KMAZARIN_ELF}} -config kmazarin.toml -o {{.ESP_ARM64_IMAGE}} -size 260'
+      - '{{.GO}} tool go-echo "ESP (ARM64) created at {{.ESP_ARM64_IMAGE}}"'

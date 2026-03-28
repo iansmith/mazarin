@@ -1,0 +1,53 @@
+version: '3'
+
+tasks:
+  arm64:
+    desc: Build rachel input event handler shepherd (ARM64)
+    deps: [':check-env', ':merged-shepherd-overlay']
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - '{{.MERGED_SHEPHERD_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.SHEPHERD_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.RACHEL_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building rachel for ARM64..."'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.RACHEL_ELF}} ./flock/cmd/rachel'
+      - '{{.GO}} tool go-echo "Rachel ARM64 built at {{.RACHEL_ELF}}"'
+
+  x86_64:
+    desc: Build rachel input event handler shepherd (x86_64)
+    deps: [':check-env', ':merged-shepherd-overlay-amd64']
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - '{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.SHEPHERD_OVERLAY_AMD64_DIR}}/**/*'
+    generates:
+      - '{{.RACHEL_AMD64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building rachel for x86_64..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.RACHEL_AMD64_ELF}} ./flock/cmd/rachel'
+      - '{{.GO}} tool go-echo "Rachel x86_64 built at {{.RACHEL_AMD64_ELF}}"'
+
+  riscv64:
+    desc: Build rachel input event handler shepherd (RISC-V 64-bit)
+    deps: [':check-env', ':merged-shepherd-overlay-riscv64']
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - '{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.SHEPHERD_OVERLAY_RISCV64_DIR}}/**/*'
+    generates:
+      - '{{.RACHEL_RISCV64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building rachel for RISC-V 64-bit..."'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}} {{.GCFLAGS}} -o {{.RACHEL_RISCV64_ELF}} ./flock/cmd/rachel'
+      - '{{.GO}} tool go-echo "Rachel RISC-V 64-bit built at {{.RACHEL_RISCV64_ELF}}"'

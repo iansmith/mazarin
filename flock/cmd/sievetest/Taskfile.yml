@@ -1,0 +1,47 @@
+version: '3'
+
+tasks:
+  arm64:
+    desc: Build sievetest (simple prime sieve for multi-shepherd testing)
+    deps: [':check-env', ':mazarin:userspace-overlay']
+    sources:
+      - 'flock/cmd/sievetest/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.SIEVETEST_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building sievetest..."'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVETEST_ELF}} ./flock/cmd/sievetest'
+      - '{{.GO}} tool go-echo "Sievetest built at {{.SIEVETEST_ELF}}"'
+
+  x86_64:
+    desc: Build sievetest (x86_64)
+    deps: [':check-env', ':mazarin:userspace-overlay']
+    sources:
+      - 'flock/cmd/sievetest/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.SIEVETEST_AMD64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building sievetest for x86_64..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVETEST_AMD64_ELF}} ./flock/cmd/sievetest'
+      - '{{.GO}} tool go-echo "Sievetest x86_64 built at {{.SIEVETEST_AMD64_ELF}}"'
+
+  riscv64:
+    desc: Build sievetest (RISC-V 64-bit)
+    deps: [':check-env', ':mazarin:userspace-overlay']
+    sources:
+      - 'flock/cmd/sievetest/**/*.go'
+      - 'mazarin/**/*.go'
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.SIEVETEST_RISCV64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building sievetest for RISC-V 64-bit..."'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVETEST_RISCV64_ELF}} ./flock/cmd/sievetest'
+      - '{{.GO}} tool go-echo "Sievetest RISC-V 64-bit built at {{.SIEVETEST_RISCV64_ELF}}"'

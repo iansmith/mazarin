@@ -1,0 +1,12 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build the test kernel generator tool
+    deps: [':build-dir']
+    sources:
+      - 'cmd/mktestkernel/**/*.go'
+    generates:
+      - '{{.BUILD_DIR}}/mktestkernel'
+    cmds:
+      - '{{.GO}} build -o {{.BUILD_DIR}}/mktestkernel ./cmd/mktestkernel'

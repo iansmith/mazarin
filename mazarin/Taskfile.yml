@@ -1,0 +1,36 @@
+version: '3'
+
+tasks:
+  userspace-overlay:
+    run: once
+    method: checksum
+    desc: Generate runtime overlay JSON for userspace programs
+    deps: [':build-dir']
+    sources:
+      - '{{.USERSPACE_OVERLAY_DIR}}/syscall_linux.go'
+      - '{{.USERSPACE_OVERLAY_DIR}}/asm_linux_amd64.s'
+      - '{{.USERSPACE_OVERLAY_DIR}}/asm_linux_arm64.s'
+      - '{{.USERSPACE_OVERLAY_DIR}}/asm_linux_riscv64.s'
+      - '{{.USERSPACE_OVERLAY_DIR}}/runtime/cgo_mmap.go'
+      - '{{.USERSPACE_OVERLAY_DIR}}/runtime/lock_spinbit.go'
+      - '{{.USERSPACE_OVERLAY_DIR}}/runtime/maz_moduledata.go'
+      - '{{.USERSPACE_OVERLAY_DIR}}/runtime/sys_linux_arm64.s'
+      - '{{.USERSPACE_OVERLAY_DIR}}/runtime/walltime_mazzy.go'
+      - '{{.USERSPACE_OVERLAY_DIR}}/runtime/timestub2.go'
+    generates:
+      - '{{.USERSPACE_OVERLAY_JSON}}'
+    cmds:
+      - '{{.GO}} tool gen-overlay -type userspace -patches {{.USERSPACE_OVERLAY_DIR}} -o {{.USERSPACE_OVERLAY_JSON}}'
+
+  maz-exit-overlay:
+    run: once
+    method: checksum
+    desc: Generate maz-specific overlay (os.Exit → panic)
+    deps: [':build-dir']
+    sources:
+      - '{{.MAZ_EXIT_OVERLAY_DIR}}/os_proc.go'
+    generates:
+      - '{{.MAZ_EXIT_OVERLAY_JSON}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Generating maz-exit overlay (os.Exit → panic)..."'
+      - '{{.GO}} tool gen-overlay -type maz-exit -patches {{.MAZ_EXIT_OVERLAY_DIR}} -o {{.MAZ_EXIT_OVERLAY_JSON}}'

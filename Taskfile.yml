@@ -25,6 +25,35 @@
 
 version: '3'
 
+includes:
+  # Build tools
+  gen-overlay:  {taskfile: ./cmd/gen-overlay/Taskfile.yml}
+  elf2pe:       {taskfile: ./cmd/elf2pe/Taskfile.yml}
+  mkesp:        {taskfile: ./cmd/mkesp/Taskfile.yml}
+  mktestkernel: {taskfile: ./cmd/mktestkernel/Taskfile.yml}
+  # Shepherds
+  rachel:       {taskfile: ./flock/cmd/rachel/Taskfile.yml}
+  linux:        {taskfile: ./flock/cmd/linux/Taskfile.yml}
+  fs:           {taskfile: ./flock/cmd/fs/Taskfile.yml}
+  # .maz programs
+  helloworld:   {taskfile: ./flock/cmd/helloworld/Taskfile.yml}
+  prefs:        {taskfile: ./flock/cmd/prefs/Taskfile.yml}
+  fontsvc:      {taskfile: ./flock/cmd/fontsvc/Taskfile.yml}
+  # Test programs
+  sievetest:    {taskfile: ./flock/cmd/sievetest/Taskfile.yml}
+  attrtest:     {taskfile: ./flock/cmd/attrtest/Taskfile.yml}
+  handletest:   {taskfile: ./flock/cmd/handletest/Taskfile.yml}
+  clocktest:    {taskfile: ./flock/cmd/clocktest/Taskfile.yml}
+  # Shepherds (clocks)
+  clocks:       {taskfile: ./flock/cmd/clocks/Taskfile.yml}
+  # Kernel
+  kmazarin:     {taskfile: ./kmazarin/Taskfile.yml}
+  # Bootloader
+  diplomat:     {taskfile: ./diplomat/Taskfile.yml}
+  # Libraries
+  mazarin:      {taskfile: ./mazarin/Taskfile.yml}
+  mancini:      {taskfile: ./mazarin/mancini/Taskfile.yml}
+
 vars:
   # Environment variables (shell-free using Go templates)
   GO: '{{env "GO" | default "go"}}'
@@ -188,90 +217,6 @@ tasks:
   # Overlay Generation
   # ===========================================================================
 
-  kmazarin-arm64-overlay:
-    run: once
-    method: checksum
-    desc: Generate runtime overlay JSON for kmazarin (ARM64)
-    deps: [build-dir]
-    sources:
-      - '{{.RUNTIME_PATCHES_DIR}}/cgo_mmap.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/malloc.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/mcache.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/os_linux_arm64.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/preempt.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/sys_linux_arm64.s'
-      - '{{.RUNTIME_PATCHES_DIR}}/tagptr_64bit.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/traceback.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/panic.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/syscall/syscall_linux.go'
-    generates:
-      - '{{.KMAZARIN_OVERLAY_JSON}}'
-    cmds:
-      - '{{.GO}} tool gen-overlay -type kmazarin -patches {{.RUNTIME_PATCHES_DIR}} -o {{.KMAZARIN_OVERLAY_JSON}}'
-
-  kmazarin-x86_64-overlay:
-    run: once
-    method: checksum
-    desc: Generate runtime overlay JSON for kmazarin (x86_64)
-    deps: [build-dir]
-    sources:
-      - '{{.RUNTIME_PATCHES_DIR}}/asm_linux_amd64.s'
-      - '{{.RUNTIME_PATCHES_DIR}}/cgo_mmap.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/fds_unix.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/malloc.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/mcache.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/os_linux_noauxv.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/panic.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/preempt.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/sys_linux_amd64.s'
-      - '{{.RUNTIME_PATCHES_DIR}}/tagptr_64bit.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/traceback.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/syscall/syscall_linux.go'
-    generates:
-      - '{{.KMAZARIN_AMD64_OVERLAY_JSON}}'
-    cmds:
-      - '{{.GO}} tool gen-overlay -type kmazarin-amd64 -patches {{.RUNTIME_PATCHES_DIR}} -o {{.KMAZARIN_AMD64_OVERLAY_JSON}}'
-
-  kmazarin-riscv64-overlay:
-    run: once
-    method: checksum
-    desc: Generate runtime overlay JSON for kmazarin (RISC-V 64-bit)
-    deps: [build-dir]
-    sources:
-      - '{{.RUNTIME_PATCHES_DIR}}/cgo_mmap.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/malloc.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/mcache.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/os_linux_noauxv.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/preempt.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/sys_linux_riscv64.s'
-      - '{{.RUNTIME_PATCHES_DIR}}/tagptr_64bit.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/syscall/syscall_linux.go'
-    generates:
-      - '{{.KMAZARIN_RISCV64_OVERLAY_JSON}}'
-    cmds:
-      - '{{.GO}} tool gen-overlay -type kmazarin-riscv64 -patches {{.RUNTIME_PATCHES_DIR}} -o {{.KMAZARIN_RISCV64_OVERLAY_JSON}}'
-
-  userspace-overlay:
-    run: once
-    method: checksum
-    desc: Generate runtime overlay JSON for userspace programs
-    deps: [build-dir]
-    sources:
-      - '{{.USERSPACE_OVERLAY_DIR}}/syscall_linux.go'
-      - '{{.USERSPACE_OVERLAY_DIR}}/asm_linux_amd64.s'
-      - '{{.USERSPACE_OVERLAY_DIR}}/asm_linux_arm64.s'
-      - '{{.USERSPACE_OVERLAY_DIR}}/asm_linux_riscv64.s'
-      - '{{.USERSPACE_OVERLAY_DIR}}/runtime/cgo_mmap.go'
-      - '{{.USERSPACE_OVERLAY_DIR}}/runtime/lock_spinbit.go'
-      - '{{.USERSPACE_OVERLAY_DIR}}/runtime/maz_moduledata.go'
-      - '{{.USERSPACE_OVERLAY_DIR}}/runtime/sys_linux_arm64.s'
-      - '{{.USERSPACE_OVERLAY_DIR}}/runtime/walltime_mazzy.go'
-      - '{{.USERSPACE_OVERLAY_DIR}}/runtime/timestub2.go'
-    generates:
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-    cmds:
-      - '{{.GO}} tool gen-overlay -type userspace -patches {{.USERSPACE_OVERLAY_DIR}} -o {{.USERSPACE_OVERLAY_JSON}}'
-
   shepherd-overlay:
     run: once
     method: checksum
@@ -315,7 +260,7 @@ tasks:
     run: once
     method: checksum
     desc: Merge shepherd + userspace overlays for ARM64 disk shepherd builds
-    deps: [shepherd-overlay, userspace-overlay]
+    deps: [shepherd-overlay, mazarin:userspace-overlay]
     sources:
       - '{{.SHEPHERD_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_JSON}}'
@@ -329,7 +274,7 @@ tasks:
     run: once
     method: checksum
     desc: Merge shepherd + userspace overlays for x86_64 disk shepherd builds
-    deps: [shepherd-overlay-amd64, userspace-overlay]
+    deps: [shepherd-overlay-amd64, mazarin:userspace-overlay]
     sources:
       - '{{.SHEPHERD_OVERLAY_AMD64_JSON}}'
       - '{{.USERSPACE_OVERLAY_JSON}}'
@@ -343,7 +288,7 @@ tasks:
     run: once
     method: checksum
     desc: Merge shepherd + userspace overlays for RISC-V disk shepherd builds
-    deps: [shepherd-overlay-riscv64, userspace-overlay]
+    deps: [shepherd-overlay-riscv64, mazarin:userspace-overlay]
     sources:
       - '{{.SHEPHERD_OVERLAY_RISCV64_JSON}}'
       - '{{.USERSPACE_OVERLAY_JSON}}'
@@ -374,7 +319,7 @@ tasks:
 
   stage-embedded-fs-arm64:
     desc: Copy fs.elf into kmazarin/kmazarin/ for go:embed
-    deps: [fsshepherd-arm64]
+    deps: [fs:arm64]
     sources:
       - '{{.FS_ELF}}'
     generates:
@@ -384,7 +329,7 @@ tasks:
 
   stage-embedded-fs-x86_64:
     desc: Copy fs-amd64.elf into kmazarin/kmazarin/ for go:embed
-    deps: [fsshepherd-x86_64]
+    deps: [fs:x86_64]
     sources:
       - '{{.FS_AMD64_ELF}}'
     generates:
@@ -394,7 +339,7 @@ tasks:
 
   stage-embedded-fs-riscv64:
     desc: Copy fs-riscv64.elf into kmazarin/kmazarin/ for go:embed
-    deps: [fsshepherd-riscv64]
+    deps: [fs:riscv64]
     sources:
       - '{{.FS_RISCV64_ELF}}'
     generates:
@@ -437,474 +382,9 @@ tasks:
   # Kmazarin Kernel Build
   # ===========================================================================
 
-  kmazarin-arm64:
-    desc: Build kmazarin kernel (ARM64)
-    run: once
-    deps: [check-env, kmazarin-arm64-overlay, stage-embedded-fs-arm64, stage-kernel-config-arm64]
-    sources:
-      - 'kmazarin/**/*.go'
-      - 'kmazarin/**/*.s'
-      - 'shared/**/*.go'
-      - '{{.KMAZARIN_OVERLAY_JSON}}'
-      # Overlay source files — Go's build cache doesn't track overlay content,
-      # so we list them here to ensure Taskfile detects changes.
-      - '{{.RUNTIME_PATCHES_DIR}}/*.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/*.s'
-      - '{{.RUNTIME_PATCHES_DIR}}/syscall/*.go'
-    generates:
-      - '{{.KMAZARIN_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building kmazarin kernel (static Go binary at {{.KMAZARIN_LOAD_ADDR}})..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.KMAZARIN_OVERLAY_JSON}} {{.GCFLAGS}} -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" -o {{.KMAZARIN_ELF}} ./kmazarin/kmazarin'
-      - '{{.GO}} tool go-echo "Fixing kmazarin ELF for QEMU compatibility..."'
-      - '{{.GO}} tool fix-go-elf {{.KMAZARIN_ELF}}'
-      - '{{.GO}} tool go-echo "Relocating kmazarin to high memory (0xFFFFFFFF41800000)..."'
-      - 'cp {{.KMAZARIN_ELF}} {{.KMAZARIN_ELF}}.prereloc'
-      - '{{.GO}} tool relocate-kmazarin {{.KMAZARIN_ELF}} {{.KMAZARIN_ELF}}.tmp'
-      - '{{.GO}} tool go-mv {{.KMAZARIN_ELF}}.tmp {{.KMAZARIN_ELF}}'
-      - '{{.GO}} tool go-echo "Kmazarin kernel built at {{.KMAZARIN_ELF}}"'
-
-  kmazarin-x86_64:
-    desc: Build kmazarin kernel (x86_64)
-    run: once
-    deps: [check-env, kmazarin-x86_64-overlay, stage-embedded-fs-x86_64, stage-kernel-config-x86_64]
-    sources:
-      - 'kmazarin/**/*.go'
-      - 'kmazarin/**/*.s'
-      - 'shared/**/*.go'
-      - '{{.KMAZARIN_AMD64_OVERLAY_JSON}}'
-      # Overlay source files — Go's build cache doesn't track overlay content
-      - '{{.RUNTIME_PATCHES_DIR}}/*.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/*.s'
-      - '{{.RUNTIME_PATCHES_DIR}}/syscall/*.go'
-    generates:
-      - '{{.KMAZARIN_AMD64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building kmazarin kernel for x86_64 (static Go binary at {{.KMAZARIN_LOAD_ADDR}})..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.KMAZARIN_AMD64_OVERLAY_JSON}} {{.GCFLAGS}} -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" -o {{.KMAZARIN_AMD64_ELF}} ./kmazarin/kmazarin'
-      - '{{.GO}} tool go-echo "Fixing kmazarin-amd64 ELF headers..."'
-      - '{{.GO}} tool fix-go-elf {{.KMAZARIN_AMD64_ELF}}'
-      - '{{.GO}} tool go-echo "Kmazarin x86_64 kernel built at {{.KMAZARIN_AMD64_ELF}} (NOTE: not relocated to high memory yet)"'
-
-  kmazarin-riscv64:
-    desc: Build kmazarin kernel (RISC-V 64-bit)
-    run: once
-    deps: [check-env, kmazarin-riscv64-overlay, stage-embedded-fs-riscv64, stage-kernel-config-riscv64]
-    sources:
-      - 'kmazarin/**/*.go'
-      - 'kmazarin/**/*.s'
-      - 'shared/**/*.go'
-      - '{{.KMAZARIN_RISCV64_OVERLAY_JSON}}'
-      # Overlay source files — Go's build cache doesn't track overlay content
-      - '{{.RUNTIME_PATCHES_DIR}}/*.go'
-      - '{{.RUNTIME_PATCHES_DIR}}/*.s'
-      - '{{.RUNTIME_PATCHES_DIR}}/syscall/*.go'
-    generates:
-      - '{{.KMAZARIN_RISCV64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building kmazarin kernel for RISC-V 64-bit (static Go binary at {{.KMAZARIN_LOAD_ADDR}})..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.KMAZARIN_RISCV64_OVERLAY_JSON}} {{.GCFLAGS}} -ldflags="-checklinkname=0 -T {{.KMAZARIN_LOAD_ADDR}}" -o {{.KMAZARIN_RISCV64_ELF}} ./kmazarin/kmazarin'
-      - '{{.GO}} tool go-echo "Kmazarin RISC-V 64-bit kernel built at {{.KMAZARIN_RISCV64_ELF}}"'
-
   # ===========================================================================
   # Flock Userspace Programs
   # ===========================================================================
-
-  rachel-arm64:
-    desc: Build rachel input event handler shepherd (ARM64)
-    deps: [check-env, merged-shepherd-overlay]
-    sources:
-      - 'flock/**/*.go'
-      - 'flock/**/*.s'
-      - 'mazarin/**/*.go'
-      - '{{.MERGED_SHEPHERD_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.SHEPHERD_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.RACHEL_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building rachel for ARM64..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.RACHEL_ELF}} ./flock/cmd/rachel'
-      - '{{.GO}} tool go-echo "Rachel ARM64 built at {{.RACHEL_ELF}}"'
-
-  linux-arm64:
-    desc: Build linux shepherd (ARM64)
-    deps: [check-env, userspace-overlay]
-    sources:
-      - 'flock/**/*.go'
-      - 'flock/**/*.s'
-      - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      # Overlay source files — Go's build cache doesn't track overlay content
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.LINUX_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building linux for ARM64..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.LINUX_ELF}} ./flock/cmd/linux'
-      - '{{.GO}} tool go-echo "Stdio ARM64 built at {{.LINUX_ELF}}"'
-
-  rachel-x86_64:
-    desc: Build rachel input event handler shepherd (x86_64)
-    deps: [check-env, merged-shepherd-overlay-amd64]
-    sources:
-      - 'flock/**/*.go'
-      - 'flock/**/*.s'
-      - 'mazarin/**/*.go'
-      - '{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.SHEPHERD_OVERLAY_AMD64_DIR}}/**/*'
-    generates:
-      - '{{.RACHEL_AMD64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building rachel for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.RACHEL_AMD64_ELF}} ./flock/cmd/rachel'
-      - '{{.GO}} tool go-echo "Rachel x86_64 built at {{.RACHEL_AMD64_ELF}}"'
-
-  linux-x86_64:
-    desc: Build linux shepherd (x86_64)
-    deps: [check-env, userspace-overlay]
-    sources:
-      - 'flock/**/*.go'
-      - 'flock/**/*.s'
-      - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      # Overlay source files — Go's build cache doesn't track overlay content
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.LINUX_AMD64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building linux for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.LINUX_AMD64_ELF}} ./flock/cmd/linux'
-      - '{{.GO}} tool go-echo "Stdio x86_64 built at {{.LINUX_AMD64_ELF}}"'
-
-  rachel-riscv64:
-    desc: Build rachel input event handler shepherd (RISC-V 64-bit)
-    deps: [check-env, merged-shepherd-overlay-riscv64]
-    sources:
-      - 'flock/**/*.go'
-      - 'flock/**/*.s'
-      - 'mazarin/**/*.go'
-      - '{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.SHEPHERD_OVERLAY_RISCV64_DIR}}/**/*'
-    generates:
-      - '{{.RACHEL_RISCV64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building rachel for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}} {{.GCFLAGS}} -o {{.RACHEL_RISCV64_ELF}} ./flock/cmd/rachel'
-      - '{{.GO}} tool go-echo "Rachel RISC-V 64-bit built at {{.RACHEL_RISCV64_ELF}}"'
-
-  linux-riscv64:
-    desc: Build linux shepherd (RISC-V 64-bit)
-    deps: [check-env, userspace-overlay]
-    sources:
-      - 'flock/**/*.go'
-      - 'flock/**/*.s'
-      - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      # Overlay source files — Go's build cache doesn't track overlay content
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.LINUX_RISCV64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building linux for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.LINUX_RISCV64_ELF}} ./flock/cmd/linux'
-      - '{{.GO}} tool go-echo "Stdio RISC-V 64-bit built at {{.LINUX_RISCV64_ELF}}"'
-
-  fsshepherd-arm64:
-    desc: Build fs shepherd (standalone filesystem server, ARM64)
-    deps: [check-env, merged-shepherd-overlay]
-    sources:
-      - 'flock/**/*.go'
-      - 'flock/**/*.s'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
-      - '{{.MERGED_SHEPHERD_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.SHEPHERD_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.FS_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building fs shepherd for ARM64..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.FS_ELF}} ./flock/cmd/fs'
-      - '{{.GO}} tool go-echo "FS shepherd ARM64 built at {{.FS_ELF}}"'
-
-  fsshepherd-x86_64:
-    desc: Build fs shepherd (standalone filesystem server, x86_64)
-    deps: [check-env, merged-shepherd-overlay-amd64]
-    sources:
-      - 'flock/**/*.go'
-      - 'flock/**/*.s'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
-      - '{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.SHEPHERD_OVERLAY_AMD64_DIR}}/**/*'
-    generates:
-      - '{{.FS_AMD64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building fs shepherd for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.FS_AMD64_ELF}} ./flock/cmd/fs'
-      - '{{.GO}} tool go-echo "FS shepherd x86_64 built at {{.FS_AMD64_ELF}}"'
-
-  fsshepherd-riscv64:
-    desc: Build fs shepherd (standalone filesystem server, RISC-V 64-bit)
-    deps: [check-env, merged-shepherd-overlay-riscv64]
-    sources:
-      - 'flock/**/*.go'
-      - 'flock/**/*.s'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
-      - '{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.SHEPHERD_OVERLAY_RISCV64_DIR}}/**/*'
-    generates:
-      - '{{.FS_RISCV64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building fs shepherd for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}} {{.GCFLAGS}} -o {{.FS_RISCV64_ELF}} ./flock/cmd/fs'
-      - '{{.GO}} tool go-echo "FS shepherd RISC-V 64-bit built at {{.FS_RISCV64_ELF}}"'
-
-  sievetest:
-    desc: Build sievetest (simple prime sieve for multi-shepherd testing)
-    deps: [check-env, userspace-overlay]
-    sources:
-      - 'flock/cmd/sievetest/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      # Overlay source files — Go's build cache doesn't track overlay content
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.SIEVETEST_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building sievetest..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVETEST_ELF}} ./flock/cmd/sievetest'
-      - '{{.GO}} tool go-echo "Sievetest built at {{.SIEVETEST_ELF}}"'
-
-  sievetest-x86_64:
-    desc: Build sievetest (x86_64)
-    deps: [check-env, userspace-overlay]
-    sources:
-      - 'flock/cmd/sievetest/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.SIEVETEST_AMD64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building sievetest for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVETEST_AMD64_ELF}} ./flock/cmd/sievetest'
-      - '{{.GO}} tool go-echo "Sievetest x86_64 built at {{.SIEVETEST_AMD64_ELF}}"'
-
-  sievetest-riscv64:
-    desc: Build sievetest (RISC-V 64-bit)
-    deps: [check-env, userspace-overlay]
-    sources:
-      - 'flock/cmd/sievetest/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.SIEVETEST_RISCV64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building sievetest for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.SIEVETEST_RISCV64_ELF}} ./flock/cmd/sievetest'
-      - '{{.GO}} tool go-echo "Sievetest RISC-V 64-bit built at {{.SIEVETEST_RISCV64_ELF}}"'
-
-  attrtest:
-    desc: Build attrtest (Eval/Vite attribute library test shepherd, ARM64)
-    deps: [check-env, userspace-overlay]
-    sources:
-      - 'flock/cmd/attrtest/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.ATTRTEST_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building attrtest..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.ATTRTEST_ELF}} ./flock/cmd/attrtest'
-      - '{{.GO}} tool go-echo "Attrtest built at {{.ATTRTEST_ELF}}"'
-
-  attrtest-x86_64:
-    desc: Build attrtest (x86_64)
-    deps: [check-env, userspace-overlay]
-    sources:
-      - 'flock/cmd/attrtest/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.ATTRTEST_AMD64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building attrtest for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.ATTRTEST_AMD64_ELF}} ./flock/cmd/attrtest'
-      - '{{.GO}} tool go-echo "Attrtest x86_64 built at {{.ATTRTEST_AMD64_ELF}}"'
-
-  attrtest-riscv64:
-    desc: Build attrtest (RISC-V 64-bit)
-    deps: [check-env, userspace-overlay]
-    sources:
-      - 'flock/cmd/attrtest/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.ATTRTEST_RISCV64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building attrtest for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.ATTRTEST_RISCV64_ELF}} ./flock/cmd/attrtest'
-      - '{{.GO}} tool go-echo "Attrtest RISC-V 64-bit built at {{.ATTRTEST_RISCV64_ELF}}"'
-
-  handletest:
-    desc: Build handletest (Handle[T] API integration test shepherd, ARM64)
-    deps: [check-env, userspace-overlay]
-    sources:
-      - 'flock/cmd/handletest/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.HANDLETEST_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building handletest..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.HANDLETEST_ELF}} ./flock/cmd/handletest'
-      - '{{.GO}} tool go-echo "Handletest built at {{.HANDLETEST_ELF}}"'
-
-  handletest-x86_64:
-    desc: Build handletest (x86_64)
-    deps: [check-env, userspace-overlay]
-    sources:
-      - 'flock/cmd/handletest/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.HANDLETEST_AMD64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building handletest for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.HANDLETEST_AMD64_ELF}} ./flock/cmd/handletest'
-      - '{{.GO}} tool go-echo "Handletest x86_64 built at {{.HANDLETEST_AMD64_ELF}}"'
-
-  handletest-riscv64:
-    desc: Build handletest (RISC-V 64-bit)
-    deps: [check-env, userspace-overlay]
-    sources:
-      - 'flock/cmd/handletest/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.HANDLETEST_RISCV64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building handletest for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.HANDLETEST_RISCV64_ELF}} ./flock/cmd/handletest'
-      - '{{.GO}} tool go-echo "Handletest RISC-V 64-bit built at {{.HANDLETEST_RISCV64_ELF}}"'
-
-  clocktest:
-    desc: Build clocktest (kernel time constraint demo, ARM64)
-    deps: [check-env, userspace-overlay]
-    sources:
-      - 'flock/cmd/clocktest/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.CLOCKTEST_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building clocktest..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.CLOCKTEST_ELF}} ./flock/cmd/clocktest'
-      - '{{.GO}} tool go-echo "Clocktest built at {{.CLOCKTEST_ELF}}"'
-
-  clocktest-x86_64:
-    desc: Build clocktest (x86_64)
-    deps: [check-env, userspace-overlay]
-    sources:
-      - 'flock/cmd/clocktest/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.CLOCKTEST_AMD64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building clocktest for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.CLOCKTEST_AMD64_ELF}} ./flock/cmd/clocktest'
-      - '{{.GO}} tool go-echo "Clocktest x86_64 built at {{.CLOCKTEST_AMD64_ELF}}"'
-
-  clocktest-riscv64:
-    desc: Build clocktest (RISC-V 64-bit)
-    deps: [check-env, userspace-overlay]
-    sources:
-      - 'flock/cmd/clocktest/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.CLOCKTEST_RISCV64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building clocktest for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.CLOCKTEST_RISCV64_ELF}} ./flock/cmd/clocktest'
-      - '{{.GO}} tool go-echo "Clocktest RISC-V 64-bit built at {{.CLOCKTEST_RISCV64_ELF}}"'
-
-  compile-constraints:
-    desc: Compile .vgo constraint source files to .vbc.go bytecode
-    sources:
-      - 'mazarin/mancini/*.vgo'
-      - 'mazarin/mancini/std/*.vgo'
-      - 'mazarin/vgolib/*.vgo'
-      - 'cmd/compile-constraints/*.go'
-    generates:
-      - 'mazarin/mancini/*.vbc.go'
-      - 'mazarin/mancini/std/*.vbc.go'
-    cmds:
-      - 'for f in mazarin/mancini/*.vgo; do {{.GO}} tool compile-constraints -pkg mancini -vgolib mazarin/vgolib "$f"; done'
-      - 'for f in $(find mazarin/mancini/std -maxdepth 1 -name "*.vgo" 2>/dev/null); do {{.GO}} tool compile-constraints -pkg std -vgolib mazarin/vgolib "$f"; done'
-
-  clocks:
-    desc: Build clocks (interactor framework demo, ARM64)
-    deps: [check-env, userspace-overlay, compile-constraints]
-    sources:
-      - 'flock/cmd/clocks/**/*'
-      - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.CLOCKS_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building clocks..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.CLOCKS_ELF}} ./flock/cmd/clocks'
-      - '{{.GO}} tool go-echo "Uitest built at {{.CLOCKS_ELF}}"'
-
-  clocks-x86_64:
-    desc: Build clocks (x86_64)
-    deps: [check-env, userspace-overlay, compile-constraints]
-    sources:
-      - 'flock/cmd/clocks/**/*'
-      - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.CLOCKS_AMD64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building clocks for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.CLOCKS_AMD64_ELF}} ./flock/cmd/clocks'
-      - '{{.GO}} tool go-echo "Uitest x86_64 built at {{.CLOCKS_AMD64_ELF}}"'
-
-  clocks-riscv64:
-    desc: Build clocks (RISC-V 64-bit)
-    deps: [check-env, userspace-overlay, compile-constraints]
-    sources:
-      - 'flock/cmd/clocks/**/*'
-      - 'mazarin/**/*.go'
-      - '{{.USERSPACE_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.CLOCKS_RISCV64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building clocks for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.CLOCKS_RISCV64_ELF}} ./flock/cmd/clocks'
-      - '{{.GO}} tool go-echo "Uitest RISC-V 64-bit built at {{.CLOCKS_RISCV64_ELF}}"'
 
   # ===========================================================================
   # .maz Programs (PIE + thin stubs, dynamically linked at load time)
@@ -946,24 +426,11 @@ tasks:
       - '{{.GO}} tool go-echo "Generating thin client overlay for x86_64 (runtime + syscall)..."'
       - 'TARGET_GOARCH=amd64 TARGET_GOOS=linux {{.GO}} tool gen-ast-stubs -go={{.GO}} -runtime-from-go -packages=runtime,syscall -output={{.THIN_OVERLAY_AMD64_DIR}} -overlay={{.THIN_OVERLAY_AMD64_JSON}} -manifest={{.THIN_MANIFEST_AMD64}}'
 
-  maz-exit-overlay:
-    run: once
-    method: checksum
-    desc: Generate maz-specific overlay (os.Exit → panic)
-    deps: [build-dir]
-    sources:
-      - '{{.MAZ_EXIT_OVERLAY_DIR}}/os_proc.go'
-    generates:
-      - '{{.MAZ_EXIT_OVERLAY_JSON}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Generating maz-exit overlay (os.Exit → panic)..."'
-      - '{{.GO}} tool gen-overlay -type maz-exit -patches {{.MAZ_EXIT_OVERLAY_DIR}} -o {{.MAZ_EXIT_OVERLAY_JSON}}'
-
   maz-overlay:
     run: once
     method: checksum
     desc: Generate merged overlay for ARM64 .maz build (thin stubs + userspace syscall routing + maz-exit)
-    deps: [thin-overlay, userspace-overlay, maz-exit-overlay]
+    deps: [thin-overlay, mazarin:userspace-overlay, mazarin:maz-exit-overlay]
     sources:
       - '{{.THIN_OVERLAY_JSON}}'
       - '{{.USERSPACE_OVERLAY_JSON}}'
@@ -979,7 +446,7 @@ tasks:
     run: once
     method: checksum
     desc: Generate merged overlay for x86_64 .maz build (thin stubs + userspace syscall routing + maz-exit)
-    deps: [thin-overlay-amd64, userspace-overlay, maz-exit-overlay]
+    deps: [thin-overlay-amd64, mazarin:userspace-overlay, mazarin:maz-exit-overlay]
     sources:
       - '{{.THIN_OVERLAY_AMD64_JSON}}'
       - '{{.USERSPACE_OVERLAY_JSON}}'
@@ -991,171 +458,21 @@ tasks:
       - '{{.GO}} tool gen-overlay -type merge -base {{.THIN_OVERLAY_AMD64_JSON}} -extra {{.USERSPACE_OVERLAY_JSON}} -o {{.MAZ_OVERLAY_AMD64_JSON}}'
       - '{{.GO}} tool gen-overlay -type merge -base {{.MAZ_OVERLAY_AMD64_JSON}} -extra {{.MAZ_EXIT_OVERLAY_JSON}} -o {{.MAZ_OVERLAY_AMD64_JSON}}'
 
-  helloworld-maz:
-    desc: Build helloworld.maz (PIE + thin stubs, dynamically linked)
-    deps: [check-env, maz-overlay]
-    sources:
-      - 'flock/cmd/helloworld/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.MAZ_OVERLAY_JSON}}'
-    generates:
-      - '{{.HELLOWORLD_MAZ}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building helloworld.maz (PIE + thin stubs)..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -buildmode=pie -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.HELLOWORLD_MAZ}} ./flock/cmd/helloworld'
-      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
-      - '{{.GO}} tool maz-reloc {{.HELLOWORLD_MAZ}} {{.THIN_MANIFEST}}'
-      - '{{.GO}} tool go-echo "helloworld.maz ready at {{.HELLOWORLD_MAZ}}"'
-
-  helloworld-maz-amd64:
-    desc: Build helloworld.maz for x86_64 (PIE + thin stubs, dynamically linked)
-    deps: [check-env, maz-overlay-amd64]
-    sources:
-      - 'flock/cmd/helloworld/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.MAZ_OVERLAY_AMD64_JSON}}'
-    generates:
-      - '{{.HELLOWORLD_MAZ_AMD64}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building helloworld.maz for x86_64 (PIE + thin stubs)..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -buildmode=pie -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.HELLOWORLD_MAZ_AMD64}} ./flock/cmd/helloworld'
-      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
-      - '{{.GO}} tool maz-reloc {{.HELLOWORLD_MAZ_AMD64}} {{.THIN_MANIFEST_AMD64}}'
-      - '{{.GO}} tool go-echo "helloworld.maz (x86_64) ready at {{.HELLOWORLD_MAZ_AMD64}}"'
-
-  helloworld-maz-riscv64:
-    desc: Build helloworld.maz for RISC-V 64-bit (fixed-address slot 1, thin stubs)
-    deps: [check-env, maz-overlay]
-    sources:
-      - 'flock/cmd/helloworld/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.MAZ_OVERLAY_JSON}}'
-    generates:
-      - '{{.HELLOWORLD_MAZ_RISCV64}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building helloworld.maz for RISC-V 64-bit (fixed-address slot 1)..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_JSON}} -ldflags="-T 0x32000000" {{.GCFLAGS}} -o {{.HELLOWORLD_MAZ_RISCV64}} ./flock/cmd/helloworld'
-      - '{{.GO}} tool go-echo "Fixing negative ELF offsets from -T flag..."'
-      - '{{.GO}} tool fix-go-elf -no-bootstrap {{.HELLOWORLD_MAZ_RISCV64}}'
-      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
-      - '{{.GO}} tool maz-reloc {{.HELLOWORLD_MAZ_RISCV64}} {{.THIN_MANIFEST}}'
-      - '{{.GO}} tool go-echo "helloworld.maz (RISC-V 64-bit) ready at {{.HELLOWORLD_MAZ_RISCV64}}"'
-
-  prefs-maz:
-    desc: Build prefs.maz (PIE + thin stubs, dynamically linked)
-    deps: [check-env, maz-overlay]
-    sources:
-      - 'flock/cmd/prefs/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.MAZ_OVERLAY_JSON}}'
-    generates:
-      - '{{.PREFS_MAZ}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building prefs.maz (PIE + thin stubs)..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -buildmode=pie -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.PREFS_MAZ}} ./flock/cmd/prefs'
-      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
-      - '{{.GO}} tool maz-reloc {{.PREFS_MAZ}} {{.THIN_MANIFEST}}'
-      - '{{.GO}} tool go-echo "prefs.maz ready at {{.PREFS_MAZ}}"'
-
-  prefs-maz-amd64:
-    desc: Build prefs.maz for x86_64 (PIE + thin stubs, dynamically linked)
-    deps: [check-env, maz-overlay-amd64]
-    sources:
-      - 'flock/cmd/prefs/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.MAZ_OVERLAY_AMD64_JSON}}'
-    generates:
-      - '{{.PREFS_MAZ_AMD64}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building prefs.maz for x86_64 (PIE + thin stubs)..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -buildmode=pie -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.PREFS_MAZ_AMD64}} ./flock/cmd/prefs'
-      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
-      - '{{.GO}} tool maz-reloc {{.PREFS_MAZ_AMD64}} {{.THIN_MANIFEST_AMD64}}'
-      - '{{.GO}} tool go-echo "prefs.maz (x86_64) ready at {{.PREFS_MAZ_AMD64}}"'
-
-  prefs-maz-riscv64:
-    desc: Build prefs.maz for RISC-V 64-bit (fixed-address slot 2, thin stubs)
-    deps: [check-env, maz-overlay]
-    sources:
-      - 'flock/cmd/prefs/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.MAZ_OVERLAY_JSON}}'
-    generates:
-      - '{{.PREFS_MAZ_RISCV64}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building prefs.maz for RISC-V 64-bit (fixed-address slot 2)..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_JSON}} -ldflags="-T 0x34000000" {{.GCFLAGS}} -o {{.PREFS_MAZ_RISCV64}} ./flock/cmd/prefs'
-      - '{{.GO}} tool go-echo "Fixing negative ELF offsets from -T flag..."'
-      - '{{.GO}} tool fix-go-elf -no-bootstrap {{.PREFS_MAZ_RISCV64}}'
-      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
-      - '{{.GO}} tool maz-reloc {{.PREFS_MAZ_RISCV64}} {{.THIN_MANIFEST}}'
-      - '{{.GO}} tool go-echo "prefs.maz (RISC-V 64-bit) ready at {{.PREFS_MAZ_RISCV64}}"'
-
-  fontsvc-maz:
-    desc: Build fontsvc.maz (PIE + thin stubs, dynamically linked)
-    deps: [check-env, maz-overlay]
-    sources:
-      - 'flock/cmd/fontsvc/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.MAZ_OVERLAY_JSON}}'
-    generates:
-      - '{{.FONTSVC_MAZ}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building fontsvc.maz (PIE + thin stubs)..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -buildmode=pie -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.FONTSVC_MAZ}} ./flock/cmd/fontsvc'
-      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
-      - '{{.GO}} tool maz-reloc {{.FONTSVC_MAZ}} {{.THIN_MANIFEST}}'
-      - '{{.GO}} tool go-echo "fontsvc.maz ready at {{.FONTSVC_MAZ}}"'
-
-  fontsvc-maz-amd64:
-    desc: Build fontsvc.maz for x86_64 (PIE + thin stubs, dynamically linked)
-    deps: [check-env, maz-overlay-amd64]
-    sources:
-      - 'flock/cmd/fontsvc/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.MAZ_OVERLAY_AMD64_JSON}}'
-    generates:
-      - '{{.FONTSVC_MAZ_AMD64}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building fontsvc.maz for x86_64 (PIE + thin stubs)..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -buildmode=pie -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.FONTSVC_MAZ_AMD64}} ./flock/cmd/fontsvc'
-      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
-      - '{{.GO}} tool maz-reloc {{.FONTSVC_MAZ_AMD64}} {{.THIN_MANIFEST_AMD64}}'
-      - '{{.GO}} tool go-echo "fontsvc.maz (x86_64) ready at {{.FONTSVC_MAZ_AMD64}}"'
-
-  fontsvc-maz-riscv64:
-    desc: Build fontsvc.maz for RISC-V 64-bit (fixed-address slot 3, thin stubs)
-    deps: [check-env, maz-overlay]
-    sources:
-      - 'flock/cmd/fontsvc/**/*.go'
-      - 'mazarin/**/*.go'
-      - '{{.MAZ_OVERLAY_JSON}}'
-    generates:
-      - '{{.FONTSVC_MAZ_RISCV64}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building fontsvc.maz for RISC-V 64-bit (fixed-address slot 3)..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_JSON}} -ldflags="-T 0x36000000" {{.GCFLAGS}} -o {{.FONTSVC_MAZ_RISCV64}} ./flock/cmd/fontsvc'
-      - '{{.GO}} tool go-echo "Fixing negative ELF offsets from -T flag..."'
-      - '{{.GO}} tool fix-go-elf -no-bootstrap {{.FONTSVC_MAZ_RISCV64}}'
-      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
-      - '{{.GO}} tool maz-reloc {{.FONTSVC_MAZ_RISCV64}} {{.THIN_MANIFEST}}'
-      - '{{.GO}} tool go-echo "fontsvc.maz (RISC-V 64-bit) ready at {{.FONTSVC_MAZ_RISCV64}}"'
-
   # ===========================================================================
   # Userspace Build (shepherds + .maz modules + test programs)
   # ===========================================================================
 
   userspace-build:
     desc: Build all ARM64 userspace programs (shepherds, .maz modules, test programs)
-    deps: [rachel-arm64, linux-arm64, fsshepherd-arm64, clocks, handletest, clocktest, helloworld-maz, prefs-maz, fontsvc-maz]
+    deps: [rachel:arm64, linux:arm64, fs:arm64, clocks:arm64, handletest:arm64, clocktest:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64]
 
   userspace-build-x86_64:
     desc: Build all x86_64 userspace programs (shepherds + test programs)
-    deps: [rachel-x86_64, linux-x86_64, fsshepherd-x86_64, clocks-x86_64, handletest-x86_64, clocktest-x86_64]
+    deps: [rachel:x86_64, linux:x86_64, fs:x86_64, clocks:x86_64, handletest:x86_64, clocktest:x86_64]
 
   userspace-build-riscv64:
     desc: Build all RISC-V userspace programs (shepherds, .maz/.mzr modules, test programs)
-    deps: [rachel-riscv64, linux-riscv64, fsshepherd-riscv64, clocks-riscv64, handletest-riscv64, clocktest-riscv64, helloworld-maz-riscv64, prefs-maz-riscv64, fontsvc-maz-riscv64]
+    deps: [rachel:riscv64, linux:riscv64, fs:riscv64, clocks:riscv64, handletest:riscv64, clocktest:riscv64, helloworld:riscv64, prefs:riscv64, fontsvc:riscv64]
 
   # ===========================================================================
   # Disk Image
@@ -1182,7 +499,7 @@ tasks:
 
   disk-arm64:
     desc: Create ext2 disk image with ARM64 flock binaries and kmazarin kernel
-    deps: [rachel-arm64, linux-arm64, fsshepherd-arm64, handletest, clocktest, clocks, helloworld-maz, prefs-maz, fontsvc-maz, kmazarin-arm64, convert-boot-image]
+    deps: [rachel:arm64, linux:arm64, fs:arm64, handletest:arm64, clocktest:arm64, clocks:arm64, helloworld:arm64, prefs:arm64, fontsvc:arm64, kmazarin:arm64, convert-boot-image]
     method: checksum
     vars:
       MKEXT2_FONTS:
@@ -1212,7 +529,7 @@ tasks:
 
   disk-x86_64:
     desc: Create ext2 disk image with x86_64 flock binaries and kmazarin kernel
-    deps: [rachel-x86_64, linux-x86_64, fsshepherd-x86_64, handletest-x86_64, clocktest-x86_64, clocks-x86_64, helloworld-maz-amd64, prefs-maz-amd64, fontsvc-maz-amd64, kmazarin-x86_64, convert-boot-image]
+    deps: [rachel:x86_64, linux:x86_64, fs:x86_64, handletest:x86_64, clocktest:x86_64, clocks:x86_64, helloworld:amd64, prefs:amd64, fontsvc:amd64, kmazarin:x86_64, convert-boot-image]
     method: checksum
     vars:
       MKEXT2_FONTS:
@@ -1252,7 +569,7 @@ tasks:
 
   disk-riscv64:
     desc: Create ext2 disk image with RISC-V 64-bit flock binaries and kmazarin kernel
-    deps: [rachel-riscv64, linux-riscv64, fsshepherd-riscv64, handletest-riscv64, clocktest-riscv64, clocks-riscv64, helloworld-maz-riscv64, prefs-maz-riscv64, fontsvc-maz-riscv64, kmazarin-riscv64, convert-boot-image]
+    deps: [rachel:riscv64, linux:riscv64, fs:riscv64, handletest:riscv64, clocktest:riscv64, clocks:riscv64, helloworld:riscv64, prefs:riscv64, fontsvc:riscv64, kmazarin:riscv64, convert-boot-image]
     method: checksum
     vars:
       MKEXT2_FONTS:
@@ -1290,175 +607,6 @@ tasks:
       - '{{.GO}} tool go-echo "RISC-V 64-bit disk image created at {{.DISK_RISCV64_IMAGE}}"'
 
   # ===========================================================================
-  # Diplomat - UEFI Bootloader
-  # ===========================================================================
-
-  gen-overlay:
-    run: once
-    desc: Build the overlay JSON generator tool
-    deps: [build-dir]
-    sources:
-      - 'cmd/gen-overlay/*.go'
-    generates:
-      - '{{.BUILD_DIR}}/gen-overlay'
-    cmds:
-      - '{{.GO}} build -o {{.BUILD_DIR}}/gen-overlay ./cmd/gen-overlay'
-
-  elf2pe:
-    desc: Build the ELF to PE converter
-    deps: [build-dir]
-    sources:
-      - 'cmd/elf2pe/*.go'
-    generates:
-      - '{{.BUILD_DIR}}/elf2pe'
-    cmds:
-      - '{{.GO}} build -o {{.BUILD_DIR}}/elf2pe ./cmd/elf2pe'
-
-  diplomat-linux-overlay:
-    method: checksum
-    desc: Generate overlay JSON for diplomat runtime patches (Linux->UEFI)
-    deps: [gen-overlay]
-    sources:
-      - 'runtime-patches/diplomat-linux/**/*'
-    generates:
-      - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
-    cmds:
-      - '{{.BUILD_DIR}}/gen-overlay -type diplomat-linux -patches runtime-patches/diplomat-linux -o {{.BUILD_DIR}}/diplomat-linux-overlay.json'
-
-  diplomat-x86_64:
-    desc: Build diplomat UEFI bootloader for x86_64
-    deps: [check-env, build-dir, elf2pe, diplomat-linux-overlay]
-    sources:
-      - 'diplomat/**/*.go'
-      - 'diplomat/**/*.s'
-      - 'shared/**/*.go'
-      - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
-      # Overlay source files — Go's build cache doesn't track overlay content
-      - 'runtime-patches/diplomat-linux/**/*'
-    generates:
-      - '{{.DIPLOMAT_EFI}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building diplomat for x86_64 UEFI (via Linux/amd64)..."'
-      # Step 1: Build as Linux ELF with runtime patches
-      - 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 {{.GO}} build -ldflags="-checklinkname=0" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.BUILD_DIR}}/diplomat.elf ./diplomat/main'
-      # Step 2: Convert ELF to PE format for UEFI
-      - '{{.BUILD_DIR}}/elf2pe {{.BUILD_DIR}}/diplomat.elf {{.DIPLOMAT_EFI}}'
-      - '{{.GO}} tool go-echo "Diplomat EFI ready at {{.DIPLOMAT_EFI}}"'
-
-  diplomat-arm64:
-    desc: Build diplomat UEFI bootloader for ARM64
-    deps: [check-env, build-dir, elf2pe, diplomat-linux-overlay]
-    sources:
-      - 'diplomat/**/*.go'
-      - 'diplomat/**/*.s'
-      - 'shared/**/*.go'
-      - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
-      # Overlay source files — Go's build cache doesn't track overlay content
-      - 'runtime-patches/diplomat-linux/**/*'
-    generates:
-      - '{{.BUILD_DIR}}/diplomat-arm64.efi'
-    cmds:
-      - '{{.GO}} tool go-echo "Building diplomat for ARM64 UEFI (via Linux/arm64)..."'
-      # Step 1: Build as Linux ELF with runtime patches
-      - 'CGO_ENABLED=0 GOOS=linux GOARCH=arm64 {{.GO}} build -ldflags="-checklinkname=0" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.BUILD_DIR}}/diplomat-arm64.elf ./diplomat/main'
-      # Step 2: Convert ELF to PE format for UEFI
-      - '{{.BUILD_DIR}}/elf2pe {{.BUILD_DIR}}/diplomat-arm64.elf {{.BUILD_DIR}}/diplomat-arm64.efi'
-      - '{{.GO}} tool go-echo "Diplomat ARM64 EFI ready at {{.BUILD_DIR}}/diplomat-arm64.efi"'
-
-  diplomat-riscv64:
-    desc: Build diplomat for RISC-V 64-bit (ELF, loaded via QEMU -kernel)
-    deps: [check-env, build-dir, diplomat-linux-overlay]
-    sources:
-      - 'diplomat/**/*.go'
-      - 'diplomat/**/*.s'
-      - 'shared/**/*.go'
-      - '{{.BUILD_DIR}}/diplomat-linux-overlay.json'
-      # Overlay source files — Go's build cache doesn't track overlay content
-      - 'runtime-patches/diplomat-linux/**/*'
-    generates:
-      - '{{.DIPLOMAT_RISCV64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building diplomat for RISC-V 64-bit (ELF for -kernel loading)..."'
-      # Build as Linux ELF with runtime patches — no elf2pe conversion needed.
-      # UEFI firmware is broken on RISC-V, so we load via QEMU -kernel + OpenSBI.
-      # Link at 0x80200000 (standard RISC-V kernel load address, after OpenSBI)
-      - 'CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 {{.GO}} build -ldflags="-checklinkname=0 -T 0x80200000" -overlay={{.BUILD_DIR}}/diplomat-linux-overlay.json -o {{.DIPLOMAT_RISCV64_ELF}} ./diplomat/main'
-      - '{{.GO}} tool go-echo "Patching entry point to _rt0_riscv64_linux..."'
-      - '{{.GO}} tool patch-entry {{.DIPLOMAT_RISCV64_ELF}} _rt0_riscv64_linux'
-      - '{{.GO}} tool go-echo "Fixing ELF for QEMU compatibility..."'
-      - '{{.GO}} tool fix-go-elf {{.DIPLOMAT_RISCV64_ELF}}'
-      - '{{.GO}} tool go-echo "Diplomat RISC-V 64-bit ELF ready at {{.DIPLOMAT_RISCV64_ELF}}"'
-
-  mkesp:
-    desc: Build the ESP image creator
-    deps: [build-dir]
-    sources:
-      - 'cmd/mkesp/*.go'
-    generates:
-      - '{{.BUILD_DIR}}/mkesp'
-    cmds:
-      - '{{.GO}} build -o {{.BUILD_DIR}}/mkesp ./cmd/mkesp'
-
-  mktestkernel:
-    desc: Build the test kernel generator tool
-    deps: [build-dir]
-    sources:
-      - 'cmd/mktestkernel/**/*.go'
-    generates:
-      - '{{.BUILD_DIR}}/mktestkernel'
-    cmds:
-      - '{{.GO}} build -o {{.BUILD_DIR}}/mktestkernel ./cmd/mktestkernel'
-
-  testkernel:
-    desc: Build minimal test kernel for diplomat ELF loader testing
-    deps: [build-dir, mktestkernel]
-    cmds:
-      - '{{.BUILD_DIR}}/mktestkernel -o {{.BUILD_DIR}}/testkernel.elf -addr 0xFFFFFFFF00200000 -m "hello, mazarin\r\n"'
-
-  esp-x86_64:
-    desc: Create EFI System Partition image for x86_64 diplomat testing
-    deps: [diplomat-x86_64, mkesp, testkernel]
-    sources:
-      - '{{.DIPLOMAT_EFI}}'
-      - '{{.BUILD_DIR}}/testkernel.elf'
-    generates:
-      - '{{.ESP_IMAGE}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Creating ESP image..."'
-      - '{{.BUILD_DIR}}/mkesp -bootloader {{.DIPLOMAT_EFI}} -kernel {{.BUILD_DIR}}/testkernel.elf -o {{.ESP_IMAGE}} -size 260'
-      - '{{.GO}} tool go-echo "ESP created at {{.ESP_IMAGE}}"'
-
-  esp-x86_64-kmazarin:
-    desc: Create EFI System Partition image for x86_64 diplomat with real kmazarin
-    deps: [diplomat-x86_64, mkesp, kmazarin-x86_64]
-    method: checksum
-    sources:
-      - '{{.DIPLOMAT_EFI}}'
-      - '{{.KMAZARIN_AMD64_ELF}}'
-      - kmazarin.toml
-    generates:
-      - '{{.BUILD_DIR}}/esp-kmazarin.img'
-    cmds:
-      - '{{.GO}} tool go-echo "Creating x86_64 ESP image with kmazarin..."'
-      - '{{.BUILD_DIR}}/mkesp -bootloader {{.DIPLOMAT_EFI}} -kernel {{.KMAZARIN_AMD64_ELF}} -config kmazarin.toml -o {{.BUILD_DIR}}/esp-kmazarin.img -size 260'
-      - '{{.GO}} tool go-echo "ESP (x86_64 + kmazarin) created at {{.BUILD_DIR}}/esp-kmazarin.img"'
-
-  esp-arm64:
-    desc: Create EFI System Partition image for ARM64 diplomat
-    deps: [diplomat-arm64, mkesp, kmazarin-arm64]
-    method: checksum
-    sources:
-      - '{{.DIPLOMAT_ARM64_EFI}}'
-      - '{{.KMAZARIN_ELF}}'
-      - kmazarin.toml
-    generates:
-      - '{{.ESP_ARM64_IMAGE}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Creating ARM64 ESP image..."'
-      - '{{.BUILD_DIR}}/mkesp -arch aa64 -bootloader {{.DIPLOMAT_ARM64_EFI}} -kernel {{.KMAZARIN_ELF}} -config kmazarin.toml -o {{.ESP_ARM64_IMAGE}} -size 260'
-      - '{{.GO}} tool go-echo "ESP (ARM64) created at {{.ESP_ARM64_IMAGE}}"'
-
-  # ===========================================================================
   # Run Tasks
   # ===========================================================================
 
@@ -1471,7 +619,7 @@ tasks:
 
   run-arm64:
     desc: "Run ARM64 diplomat+kmazarin in QEMU (TIMEOUT=N for timeout, default=5s)"
-    deps: [esp-arm64, disk-arm64]
+    deps: [diplomat:esp-arm64, disk-arm64]
     vars:
       TIMEOUT: '{{.TIMEOUT | default "5"}}'
       LOG_FILE: /tmp/diplomat-arm64-serial.log
@@ -1517,7 +665,7 @@ tasks:
   # Not available on Linux or Intel Macs — use run-arm64 (TCG) instead.
   run-arm64-hvf:
     desc: "Run ARM64 diplomat+kmazarin in QEMU with HVF acceleration (macOS Apple Silicon only)"
-    deps: [esp-arm64, disk-arm64]
+    deps: [diplomat:esp-arm64, disk-arm64]
     vars:
       TIMEOUT: '{{.TIMEOUT | default "5"}}'
       LOG_FILE: /tmp/diplomat-arm64-serial.log
@@ -1559,7 +707,7 @@ tasks:
 
   run-x86_64:
     desc: "Run x86_64 diplomat+kmazarin in QEMU (TIMEOUT=N for timeout, default=5s)"
-    deps: [esp-x86_64-kmazarin, disk-x86_64]
+    deps: [diplomat:esp-x86_64-kmazarin, disk-x86_64]
     vars:
       TIMEOUT: '{{.TIMEOUT | default "5"}}'
       LOG_FILE: /tmp/diplomat-serial.log
@@ -1591,7 +739,7 @@ tasks:
 
   run-x86_64-diplomat-only:
     desc: "Run x86_64 diplomat (no kmazarin) in QEMU with OVMF (TIMEOUT=N for timeout, default=5s)"
-    deps: [esp-x86_64]
+    deps: [diplomat:esp-x86_64]
     vars:
       TIMEOUT: '{{.TIMEOUT | default "5"}}'
       LOG_FILE: /tmp/diplomat-serial.log
@@ -1623,7 +771,7 @@ tasks:
 
   run-riscv64:
     desc: "Run RISC-V diplomat+kmazarin in QEMU via OpenSBI -kernel (TIMEOUT=N for timeout, default=5s)"
-    deps: [diplomat-riscv64, disk-riscv64]
+    deps: [diplomat:riscv64, disk-riscv64]
     vars:
       TIMEOUT: '{{.TIMEOUT | default "5"}}'
       LOG_FILE: /tmp/diplomat-riscv64-serial.log
@@ -1665,7 +813,7 @@ tasks:
 
   run-riscv64-direct:
     desc: "Run RISC-V kmazarin directly with OpenSBI (no UEFI, TIMEOUT=N for timeout, default=5s)"
-    deps: [kmazarin-riscv64, disk-arm64]
+    deps: [kmazarin:riscv64, disk-arm64]
     vars:
       TIMEOUT: '{{.TIMEOUT | default "5"}}'
       LOG_FILE: /tmp/kmazarin-riscv64-serial.log
@@ -1780,8 +928,8 @@ tasks:
 
   all:
     desc: Build diplomat + kmazarin for all architectures (x86_64, ARM64, RISC-V)
-    deps: [esp-x86_64-kmazarin, esp-arm64, diplomat-riscv64, disk-riscv64]
+    deps: [diplomat:esp-x86_64-kmazarin, diplomat:esp-arm64, diplomat:riscv64, disk-arm64, disk-x86_64, disk-riscv64]
 
   default:
     desc: Build diplomat + kmazarin for ARM64 (default target)
-    deps: [esp-arm64, disk-arm64]
+    deps: [diplomat:esp-arm64, disk-arm64]

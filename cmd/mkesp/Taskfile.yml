@@ -1,0 +1,12 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build the ESP image creator
+    deps: [':build-dir']
+    sources:
+      - 'cmd/mkesp/*.go'
+    generates:
+      - '{{.BUILD_DIR}}/mkesp'
+    cmds:
+      - '{{.GO}} build -o {{.BUILD_DIR}}/mkesp ./cmd/mkesp'

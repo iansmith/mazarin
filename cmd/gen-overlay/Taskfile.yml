@@ -1,0 +1,13 @@
+version: '3'
+
+tasks:
+  build:
+    run: once
+    desc: Build the overlay JSON generator tool
+    deps: [':build-dir']
+    sources:
+      - 'cmd/gen-overlay/*.go'
+    generates:
+      - '{{.BUILD_DIR}}/gen-overlay'
+    cmds:
+      - '{{.GO}} build -o {{.BUILD_DIR}}/gen-overlay ./cmd/gen-overlay'

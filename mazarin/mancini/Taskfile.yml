@@ -1,0 +1,16 @@
+version: '3'
+
+tasks:
+  compile-constraints:
+    desc: Compile .vgo constraint source files to .vbc.go bytecode
+    sources:
+      - 'mazarin/mancini/*.vgo'
+      - 'mazarin/mancini/std/*.vgo'
+      - 'mazarin/vgolib/*.vgo'
+      - 'cmd/compile-constraints/*.go'
+    generates:
+      - 'mazarin/mancini/*.vbc.go'
+      - 'mazarin/mancini/std/*.vbc.go'
+    cmds:
+      - 'for f in mazarin/mancini/*.vgo; do {{.GO}} tool compile-constraints -pkg mancini -vgolib mazarin/vgolib "$f"; done'
+      - 'for f in $(find mazarin/mancini/std -maxdepth 1 -name "*.vgo" 2>/dev/null); do {{.GO}} tool compile-constraints -pkg std -vgolib mazarin/vgolib "$f"; done'
