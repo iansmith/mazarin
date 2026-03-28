@@ -1,7 +1,8 @@
-// stdio is a userspace shepherd that owns the serial port soft IRQ and
-// renders kernel console output inside a mancini AppWindow with a
-// gradient purple title bar. Lines are displayed as ConsoleLabel
-// interactors inside a ColumnOutsideIn container.
+// linux is a userspace shepherd that handles Linux file syscalls (open, read,
+// write, close, seek, etc.) via delegation, and owns the serial port soft IRQ
+// to render kernel console output inside a mancini AppWindow with a gradient
+// purple title bar. Lines are displayed as ConsoleLabel interactors inside a
+// ColumnOutsideIn container.
 package main
 
 import (
@@ -25,6 +26,7 @@ import (
 	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/serial"
 	"mazzy/mazarin/sys"
+	"mazzy/shared/fs/fsipc"
 	"mazzy/shared/sysid"
 	"mazzy/shared/wm"
 )
@@ -119,47 +121,40 @@ type delegateMsg struct {
 }
 
 // startDelegateHandler runs a goroutine that processes delegated syscalls.
-// It replies immediately (so callers never block on stdio's redraw) and
-// forwards Write data to the returned channel for the main goroutine.
-func startDelegateHandler(delegateCh <-chan sys.SyscallRequest, suppressSerialCopy bool) <-chan delegateMsg {
+// Write to fd 1/2 (stdout/stderr) is handled as console output: echo to UART,
+// reply immediately, and forward text to the main goroutine for display.
+// All other syscalls (including Write to fd 3+) are routed to the syscallHandler.
+func startDelegateHandler(delegateCh <-chan sys.SyscallRequest, handler *syscallHandler, suppressSerialCopy bool) <-chan delegateMsg {
 	dataCh := make(chan delegateMsg, 32)
 	go func() {
 		for req := range delegateCh {
-			switch req.SysID {
-			case sysid.Write:
-				data := req.Data()
-				if data == nil {
-					req.Reply(0)
+			// Write to stdout/stderr → console display path.
+			if req.SysID == sysid.Write {
+				fd := byte(req.Arg0())
+				if fd <= 2 {
+					data := req.Data()
+					if data == nil {
+						req.Reply(0)
+						continue
+					}
+					// Copy before Reply — kernel reclaims the data page on Reply.
+					dataCopy := make([]byte, len(data))
+					copy(dataCopy, data)
+					// Echo to UART ring buffer (non-blocking).
+					if fd == 2 || !suppressSerialCopy {
+						sys.UartWrite(addCRBeforeLF(data))
+					}
+					req.Reply(int64(len(data)))
+					// Forward to main goroutine for console state + redraw.
+					select {
+					case dataCh <- delegateMsg{fd: fd, data: dataCopy}:
+					default:
+					}
 					continue
 				}
-				fd := byte(req.Arg0())
-				// Copy before Reply — kernel reclaims the data page on Reply.
-				dataCopy := make([]byte, len(data))
-				copy(dataCopy, data)
-				// Echo to UART ring buffer (non-blocking).
-				if fd == 2 || !suppressSerialCopy {
-					sys.UartWrite(addCRBeforeLF(data))
-				}
-				req.Reply(int64(len(data)))
-				// Forward to main goroutine for console state + redraw.
-				// Non-blocking: drop display update if main goroutine is behind.
-				// Caller is already unblocked and UART echo is done.
-				select {
-				case dataCh <- delegateMsg{fd: fd, data: dataCopy}:
-				default:
-				}
-
-			case sysid.Openat:
-				path := req.PathString()
-				sys.UartWriteString("[stdio] openat: " + path + "\n")
-				if path == "/dev/random" {
-					panic("[stdio] /dev/random not implemented yet")
-				}
-				req.Reply(-38) // ENOSYS
-
-			default:
-				req.Reply(-38) // ENOSYS
 			}
+			// Everything else → syscallHandler.
+			handler.handle(req)
 		}
 	}()
 	return dataCh
@@ -189,8 +184,9 @@ func addCRBeforeLF(data []byte) []byte {
 	return out
 }
 
-// mailboxRecvLoop receives notifications from rachel (font responses, WM messages).
-func mailboxRecvLoop(fc *fontcache.FontCache) {
+// mailboxRecvLoop receives notifications from rachel (font responses, WM messages)
+// and from the fs shepherd (IPC responses).
+func mailboxRecvLoop(fc *fontcache.FontCache, ipc *fsIPCClient) {
 	for {
 		notif, err := sys.MailboxRecv()
 		if err != nil {
@@ -206,11 +202,15 @@ func mailboxRecvLoop(fc *fontcache.FontCache) {
 				msgType := *(*int64)(unsafe.Pointer(&raw[0]))
 				switch msgType {
 				case wm.MsgYouHaveFocus:
-					sys.UartWriteString("[stdio] received YouHaveFocus\n")
+					sys.UartWriteString("[linux] received YouHaveFocus\n")
 				case wm.MsgYouLostFocus:
-					sys.UartWriteString("[stdio] received YouLostFocus\n")
+					sys.UartWriteString("[linux] received YouLostFocus\n")
 				}
 			}
+		case fsipc.NotifyReady:
+			ipc.handleReady(notif)
+		case fsipc.NotifyResponse:
+			ipc.handleResponse()
 		}
 	}
 }
@@ -222,7 +222,7 @@ func announceToWM(rachelSID int) {
 	}
 	rb, err := ringbuf.New(rachelSID, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
 	if err != nil {
-		sys.UartWriteString("[stdio] ring buffer creation failed: " + err.Error() + "\n")
+		sys.UartWriteString("[linux] ring buffer creation failed: " + err.Error() + "\n")
 		return
 	}
 	var msg wm.AppStartMsg
@@ -230,52 +230,55 @@ func announceToWM(rachelSID int) {
 	msg.SID = int64(os.Getpid())
 	rb.Push(unsafe.Pointer(&msg))
 	if err := sys.MailboxSend(rachelSID, wm.WMNotify, rb.Addr()); err != nil {
-		sys.UartWriteString("[stdio] MailboxSend failed: " + err.Error() + "\n")
+		sys.UartWriteString("[linux] MailboxSend failed: " + err.Error() + "\n")
 		return
 	}
-	sys.UartWriteString("[stdio] sent AppStart to rachel\n")
+	sys.UartWriteString("[linux] sent AppStart to rachel\n")
 }
 
 var startTime time.Time
 
 func main() {
 	startTime = time.Now()
-	sys.UartWriteString("[stdio] main() entered\n")
+	sys.UartWriteString("[linux] main() entered\n")
 
 	// 1. Initialize constraint system.
 	attr.Init()
 	
 	mancini.Init()
-	sys.UartWriteString(fmt.Sprintf("[stdio] attr + interactor + mancini init done, SID=%s (T+%v)\n", attr.SID(), time.Since(startTime)))
+	sys.UartWriteString(fmt.Sprintf("[linux] attr + interactor + mancini init done, SID=%s (T+%v)\n", attr.SID(), time.Since(startTime)))
 
 	// Publish Ready=false until setup is complete.
 	readyAttr := attr.ValueBool(wm.ReadyURI(attr.SID()), false)
 
-	// 2. Wait for rachel (fontsvc) and disk (fs.maz) before creating fontcache.
-	// Without this, OpenFace may fail because fs.maz hasn't registered for
+	// 2. Wait for rachel (fontsvc) and fs before creating fontcache.
+	// Without this, OpenFace may fail because fs hasn't registered for
 	// LoadFile yet. Caching a nil font would then prevent the event loop
-	// from ever loading it, or retrying during redraw would deadlock (stdio
-	// blocked on font reply, fontsvc blocked on Write delegation back to stdio).
-	sys.UartWriteString(fmt.Sprintf("[stdio] waiting for rachel + disk ready... (T+%v)\n", time.Since(startTime)))
+	// from ever loading it, or retrying during redraw would deadlock (linux
+	// blocked on font reply, fontsvc blocked on Write delegation back to linux).
+	sys.UartWriteString(fmt.Sprintf("[linux] waiting for rachel + fs ready... (T+%v)\n", time.Since(startTime)))
 	if err := sys.WaitForShepherdReady("rachel", 10); err != nil {
-		panic(fmt.Sprintf("[stdio] FATAL: rachel: %v", err))
+		panic(fmt.Sprintf("[linux] FATAL: rachel: %v", err))
 	}
-	if err := sys.WaitForShepherdReady("disk", 10); err != nil {
-		panic(fmt.Sprintf("[stdio] FATAL: disk: %v", err))
+	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
+		panic(fmt.Sprintf("[linux] FATAL: fs: %v", err))
 	}
-	sys.UartWriteString(fmt.Sprintf("[stdio] rachel + disk ready (T+%v)\n", time.Since(startTime)))
+	sys.UartWriteString(fmt.Sprintf("[linux] rachel + fs ready (T+%v)\n", time.Since(startTime)))
 
 	rachelSID := sys.MustGetShepherdByName("rachel")
+	fsSID := sys.MustGetShepherdByName("fs")
 	fc := fontcache.New(rachelSID)
-	go mailboxRecvLoop(fc)
-	sys.UartWriteString(fmt.Sprintf("[stdio] fontcache created, rachel SID=%d (T+%v)\n", rachelSID, time.Since(startTime)))
+	ipcClient := newFsIPCClient(fsSID)
+	go mailboxRecvLoop(fc, ipcClient)
+	ipcClient.sendInit()
+	sys.UartWriteString(fmt.Sprintf("[linux] fontcache created, rachel SID=%d, fs SID=%d (T+%v)\n", rachelSID, fsSID, time.Since(startTime)))
 
 	fonts := &mancini.FontConfig{
 		LoadFace: func(bold bool, size int64) font.Face {
 			return fc.OpenFaceByName(mfont.DefaultMono, mfont.Regular, size)
 		},
 	}
-	sys.UartWriteString(fmt.Sprintf("[stdio] FontConfig ready (T+%v)\n", time.Since(startTime)))
+	sys.UartWriteString(fmt.Sprintf("[linux] FontConfig ready (T+%v)\n", time.Since(startTime)))
 
 	pal := mancini.DefaultPalette()
 	pal.SwapRB = true
@@ -285,7 +288,7 @@ func main() {
 		func(family string, feature mancini.Feature, size int64) font.Face {
 			return fc.OpenFaceByName(family, mfont.Regular, size)
 		})
-	sys.UartWriteString(fmt.Sprintf("[stdio] Theme ready (T+%v)\n", time.Since(startTime)))
+	sys.UartWriteString(fmt.Sprintf("[linux] Theme ready (T+%v)\n", time.Since(startTime)))
 
 	// 3. Console state.
 	const maxCols = 120
@@ -324,7 +327,7 @@ func main() {
 	gt := std.NewGradientTitle(pal, fonts, "Serial Console", 18, 8)
 	app := std.NewAppWindow(nil, pal, fonts, "Serial Console", 26, 900, gt.TitleDraw)
 	app.Focused = false // wait for rachel to grant focus
-	sys.UartWriteString(fmt.Sprintf("[stdio] UI tree built (T+%v)\n", time.Since(startTime)))
+	sys.UartWriteString(fmt.Sprintf("[linux] UI tree built (T+%v)\n", time.Since(startTime)))
 
 	// 6. Screen dimensions and draw context.
 	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
@@ -335,19 +338,19 @@ func main() {
 	screenHAttr := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
 	screenW := int(screenWAttr.Get())
 	screenH := int(screenHAttr.Get())
-	sys.UartWriteString(fmt.Sprintf("[stdio] screen: %dx%d\n", screenW, screenH))
+	sys.UartWriteString(fmt.Sprintf("[linux] screen: %dx%d\n", screenW, screenH))
 
 	drawCtx := mancini.NewFramebufferContext()
 	fbImage := drawCtx.Image()
 	ggCtx := gg.NewContextForRGBA(fbImage)
 	ggCtx.SwapRB = true
-	sys.UartWriteString(fmt.Sprintf("[stdio] draw context created (T+%v)\n", time.Since(startTime)))
+	sys.UartWriteString(fmt.Sprintf("[linux] draw context created (T+%v)\n", time.Since(startTime)))
 
 	// 7. Initial sizing draw.
 	appLH := app.GetLayout()
 	initX := float64(screenW)/2 - 400
 	initY := float64(screenH)/2 - 200
-	sys.UartWriteString("[stdio] sizing draw...\n")
+	sys.UartWriteString("[linux] sizing draw...\n")
 	appLH.X.Set(int64(initX))
 	appLH.Y.Set(int64(initY))
 	app.SetDC(ggCtx)
@@ -359,7 +362,7 @@ func main() {
 	contentLH := content.GetLayout()
 	contentW := contentLH.Width.Get()
 	contentH := contentLH.Height.Get()
-	sys.UartWriteString(fmt.Sprintf("[stdio] raw constraint: W=%d H=%d contentW=%d contentH=%d\n", rawW, rawH, contentW, contentH))
+	sys.UartWriteString(fmt.Sprintf("[linux] raw constraint: W=%d H=%d contentW=%d contentH=%d\n", rawW, rawH, contentW, contentH))
 	winW := float64(rawW)
 	winH := float64(rawH)
 	if winW < 100 {
@@ -368,16 +371,16 @@ func main() {
 	if winH < 50 {
 		winH = 400
 	}
-	sys.UartWriteString(fmt.Sprintf("[stdio] constraint size: %.0fx%.0f (T+%v)\n", winW, winH, time.Since(startTime)))
+	sys.UartWriteString(fmt.Sprintf("[linux] constraint size: %.0fx%.0f (T+%v)\n", winW, winH, time.Since(startTime)))
 
 	// Force Bounds evaluation for rachel.
-	sys.UartWriteString(fmt.Sprintf("[stdio] evaluating Bounds... (T+%v)\n", time.Since(startTime)))
+	sys.UartWriteString(fmt.Sprintf("[linux] evaluating Bounds... (T+%v)\n", time.Since(startTime)))
 	_ = appLH.Bounds.Get()
-	sys.UartWriteString(fmt.Sprintf("[stdio] Bounds evaluated (T+%v)\n", time.Since(startTime)))
+	sys.UartWriteString(fmt.Sprintf("[linux] Bounds evaluated (T+%v)\n", time.Since(startTime)))
 
 	// 8. Rachel is already confirmed ready (step 2b). Announce to WM.
 	announceToWM(rachelSID)
-	sys.UartWriteString(fmt.Sprintf("[stdio] WM announced (T+%v)\n", time.Since(startTime)))
+	sys.UartWriteString(fmt.Sprintf("[linux] WM announced (T+%v)\n", time.Since(startTime)))
 
 	var posXAttr, posYAttr *attr.Attribute[int64]
 	rachelSIDStr := strconv.Itoa(rachelSID)
@@ -393,7 +396,7 @@ func main() {
 
 	winX := float64(posXAttr.Get())
 	winY := float64(posYAttr.Get())
-	sys.UartWriteString(fmt.Sprintf("[stdio] position constraints: x=%.0f y=%.0f (T+%v)\n", winX, winY, time.Since(startTime)))
+	sys.UartWriteString(fmt.Sprintf("[linux] position constraints: x=%.0f y=%.0f (T+%v)\n", winX, winY, time.Since(startTime)))
 
 	// Clear sizing ghost and draw at final position.
 	ggCtx.SetColor(pal.Surface)
@@ -417,38 +420,53 @@ func main() {
 	appLH.Y.Set(int64(winY))
 	app.Draw(app, int64(winX), int64(winY), int64(winW), int64(winH))
 	drawCtx.Flush(int32(winX), int32(winY), int32(winX+winW), int32(winY+winH))
-	sys.UartWriteString(fmt.Sprintf("[stdio] initial draw done at (%.0f,%.0f) (T+%v)\n", winX, winY, time.Since(startTime)))
+	sys.UartWriteString(fmt.Sprintf("[linux] initial draw done at (%.0f,%.0f) (T+%v)\n", winX, winY, time.Since(startTime)))
 
 	// 9. Signal readiness.
 	readyAttr.Set(true)
 	sys.SetReady(true)
-	sys.UartWriteString(fmt.Sprintf("[stdio] Ready=true (T+%v)\n", time.Since(startTime)))
+	sys.UartWriteString(fmt.Sprintf("[linux] Ready=true (T+%v)\n", time.Since(startTime)))
 
 	// 10. Serial channel and delegated syscalls.
-	sys.UartWriteString(fmt.Sprintf("[stdio] setting up serial + delegate channels (T+%v)\n", time.Since(startTime)))
+	sys.UartWriteString(fmt.Sprintf("[linux] setting up serial + delegate channels (T+%v)\n", time.Since(startTime)))
 	serialCh, err := serial.Chars()
 	if err != nil {
-		sys.UartWriteString(fmt.Sprintf("[stdio] serial.Chars failed: %v\n", err))
+		sys.UartWriteString(fmt.Sprintf("[linux] serial.Chars failed: %v\n", err))
 		return
 	}
 
-	delegateCh, delegateErr := sys.HandleSyscalls(sysid.Write, sysid.Openat)
+	// Wait for fs IPC handshake before registering as syscall handler.
+	<-ipcClient.readyCh
+	sys.UartWriteString(fmt.Sprintf("[linux] fs IPC ready (T+%v)\n", time.Since(startTime)))
+
+	handler := newSyscallHandler(ipcClient)
+
+	delegateCh, delegateErr := sys.HandleSyscalls(
+		sysid.Write, sysid.Read, sysid.Openat, sysid.Close,
+		sysid.Lseek, sysid.Fstat, sysid.Fstatat,
+		sysid.Mkdirat, sysid.Unlinkat, sysid.Renameat,
+		sysid.Ftruncate, sysid.Getdents64, sysid.Readlinkat,
+		sysid.Faccessat, sysid.Fchmodat, sysid.Utimensat,
+		sysid.Getcwd, sysid.Chdir, sysid.Fchdir,
+		sysid.Ioctl, sysid.Writev, sysid.Readv,
+		sysid.Statfs, sysid.Fstatfs, sysid.Fsync, sysid.Fdatasync,
+	)
 	if delegateErr != nil {
-		sys.UartWriteString(fmt.Sprintf("[stdio] HandleSyscalls failed: %v\n", delegateErr))
+		sys.UartWriteString(fmt.Sprintf("[linux] HandleSyscalls failed: %v\n", delegateErr))
 	} else {
-		sys.UartWriteString("[stdio] Registered as Write+Openat handler\n")
+		sys.UartWriteString("[linux] Registered as file syscall handler\n")
 	}
 
 	// Delegate handler goroutine — replies immediately to unblock callers,
 	// forwards text data to delegateDataCh for the main goroutine.
 	var delegateDataCh <-chan delegateMsg
 	if delegateErr == nil {
-		delegateDataCh = startDelegateHandler(delegateCh, con.suppressSerialCopy)
+		delegateDataCh = startDelegateHandler(delegateCh, handler, con.suppressSerialCopy)
 	}
 
 	// 11. Event loop — main goroutine owns console state + redraw.
 	dirtyCh := attr.OnDirty()
-	sys.UartWriteString("[stdio] Entering event loop\n")
+	sys.UartWriteString("[linux] Entering event loop\n")
 
 	redraw := func() {
 		winW = float64(appLH.Width.Get())
