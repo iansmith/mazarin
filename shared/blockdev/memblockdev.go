@@ -1,0 +1,46 @@
+package blockdev
+
+import "fmt"
+
+// MemBlockDevice is a memory-backed block device for ramdisks.
+// It implements BlockDevice with a simple []byte backing store.
+type MemBlockDevice struct {
+	name      string
+	data      []byte
+	blockSize uint64
+	numBlocks uint64
+}
+
+// NewMemBlockDevice creates a memory-backed block device.
+// The backing store is allocated as blockSize * numBlocks bytes, zeroed.
+func NewMemBlockDevice(name string, blockSize, numBlocks uint64) *MemBlockDevice {
+	return &MemBlockDevice{
+		name:      name,
+		data:      make([]byte, blockSize*numBlocks),
+		blockSize: blockSize,
+		numBlocks: numBlocks,
+	}
+}
+
+func (m *MemBlockDevice) Name() string      { return m.name }
+func (m *MemBlockDevice) Close() error      { return nil }
+func (m *MemBlockDevice) BlockSize() uint64  { return m.blockSize }
+func (m *MemBlockDevice) NumBlocks() uint64  { return m.numBlocks }
+
+func (m *MemBlockDevice) ReadBlock(lba uint64, buf []byte) error {
+	if lba >= m.numBlocks {
+		return fmt.Errorf("memblockdev %s: read lba %d out of range (max %d)", m.name, lba, m.numBlocks-1)
+	}
+	off := lba * m.blockSize
+	copy(buf, m.data[off:off+m.blockSize])
+	return nil
+}
+
+func (m *MemBlockDevice) WriteBlock(lba uint64, buf []byte) error {
+	if lba >= m.numBlocks {
+		return fmt.Errorf("memblockdev %s: write lba %d out of range (max %d)", m.name, lba, m.numBlocks-1)
+	}
+	off := lba * m.blockSize
+	copy(m.data[off:off+m.blockSize], buf[:m.blockSize])
+	return nil
+}

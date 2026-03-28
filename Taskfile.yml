@@ -9,9 +9,9 @@
 #   task kmazarin-arm64           # Build kmazarin kernel (ARM64)
 #   task kmazarin-x86_64          # Build kmazarin kernel (x86_64)
 #   task kmazarin-riscv64         # Build kmazarin kernel (RISC-V)
-#   task disk-arm64               # Create FAT32 disk image (ARM64 userspace)
-#   task disk-x86_64              # Create FAT32 disk image (x86_64 userspace)
-#   task disk-riscv64             # Create FAT32 disk image (RISC-V userspace)
+#   task disk-arm64               # Create ext2 disk image (ARM64 userspace)
+#   task disk-x86_64              # Create ext2 disk image (x86_64 userspace)
+#   task disk-riscv64             # Create ext2 disk image (RISC-V userspace)
 #   task clean                    # Remove build artifacts
 #
 # Environment:
@@ -71,24 +71,22 @@ vars:
   HELLOWORLD_MAZ: '{{.BUILD_DIR}}/helloworld.maz'
   PREFS_MAZ: '{{.BUILD_DIR}}/prefs.maz'
   FONTSVC_MAZ: '{{.BUILD_DIR}}/fontsvc.maz'
-  FS_MAZ: '{{.BUILD_DIR}}/fs.maz'
   THIN_OVERLAY_AMD64_DIR: '{{.BUILD_DIR}}/thin-overlay-amd64'
   THIN_OVERLAY_AMD64_JSON: '{{.BUILD_DIR}}/thin-overlay-amd64.json'
   THIN_MANIFEST_AMD64: '{{.BUILD_DIR}}/thin-stubs-amd64.manifest'
   MAZ_OVERLAY_AMD64_JSON: '{{.BUILD_DIR}}/maz-overlay-amd64.json'
-  FS_MAZ_AMD64: '{{.BUILD_DIR}}/fs-amd64.maz'
   HELLOWORLD_MAZ_AMD64: '{{.BUILD_DIR}}/helloworld-amd64.maz'
   PREFS_MAZ_AMD64: '{{.BUILD_DIR}}/prefs-amd64.maz'
   FONTSVC_MAZ_AMD64: '{{.BUILD_DIR}}/fontsvc-amd64.maz'
   RACHEL_ELF: '{{.BUILD_DIR}}/rachel.elf'
-  STDIO_ELF: '{{.BUILD_DIR}}/stdio.elf'
-  DISKSHEPHERD_ELF: '{{.BUILD_DIR}}/disk.elf'
+  LINUX_ELF: '{{.BUILD_DIR}}/linux.elf'
+  FS_ELF: '{{.BUILD_DIR}}/fs.elf'
   DISK_IMAGE: '{{.BUILD_DIR}}/disk.img'
 
   # x86_64 userspace programs
   RACHEL_AMD64_ELF: '{{.BUILD_DIR}}/rachel-amd64.elf'
-  STDIO_AMD64_ELF: '{{.BUILD_DIR}}/stdio-amd64.elf'
-  DISKSHEPHERD_AMD64_ELF: '{{.BUILD_DIR}}/disk-amd64.elf'
+  LINUX_AMD64_ELF: '{{.BUILD_DIR}}/linux-amd64.elf'
+  FS_AMD64_ELF: '{{.BUILD_DIR}}/fs-amd64.elf'
   SIEVETEST_AMD64_ELF: '{{.BUILD_DIR}}/sievetest-amd64.elf'
   ATTRTEST_AMD64_ELF: '{{.BUILD_DIR}}/attrtest-amd64.elf'
   HANDLETEST_AMD64_ELF: '{{.BUILD_DIR}}/handletest-amd64.elf'
@@ -98,14 +96,13 @@ vars:
 
   # RISC-V 64-bit userspace programs
   RACHEL_RISCV64_ELF: '{{.BUILD_DIR}}/rachel-riscv64.elf'
-  STDIO_RISCV64_ELF: '{{.BUILD_DIR}}/stdio-riscv64.elf'
-  DISKSHEPHERD_RISCV64_ELF: '{{.BUILD_DIR}}/disk-riscv64.elf'
+  LINUX_RISCV64_ELF: '{{.BUILD_DIR}}/linux-riscv64.elf'
+  FS_RISCV64_ELF: '{{.BUILD_DIR}}/fs-riscv64.elf'
   SIEVETEST_RISCV64_ELF: '{{.BUILD_DIR}}/sievetest-riscv64.elf'
   ATTRTEST_RISCV64_ELF: '{{.BUILD_DIR}}/attrtest-riscv64.elf'
   HANDLETEST_RISCV64_ELF: '{{.BUILD_DIR}}/handletest-riscv64.elf'
   CLOCKTEST_RISCV64_ELF: '{{.BUILD_DIR}}/clocktest-riscv64.elf'
   CLOCKS_RISCV64_ELF: '{{.BUILD_DIR}}/clocks-riscv64.elf'
-  FS_MZR_RISCV64: '{{.BUILD_DIR}}/fs-riscv64.mzr'
   HELLOWORLD_MAZ_RISCV64: '{{.BUILD_DIR}}/helloworld-riscv64.maz'
   PREFS_MAZ_RISCV64: '{{.BUILD_DIR}}/prefs-riscv64.maz'
   FONTSVC_MAZ_RISCV64: '{{.BUILD_DIR}}/fontsvc-riscv64.maz'
@@ -372,13 +369,78 @@ tasks:
       - '{{.GO}} tool go-cat -o {{.BUILD_DIR}}/boot-image.bin assets/boot-mazarin.bin'
 
   # ===========================================================================
+  # Stage Embedded fs.elf for go:embed
+  # ===========================================================================
+
+  stage-embedded-fs-arm64:
+    desc: Copy fs.elf into kmazarin/kmazarin/ for go:embed
+    deps: [fsshepherd-arm64]
+    sources:
+      - '{{.FS_ELF}}'
+    generates:
+      - 'kmazarin/kmazarin/fs.elf'
+    cmds:
+      - '{{.GO}} tool go-cp {{.FS_ELF}} kmazarin/kmazarin/fs.elf'
+
+  stage-embedded-fs-x86_64:
+    desc: Copy fs-amd64.elf into kmazarin/kmazarin/ for go:embed
+    deps: [fsshepherd-x86_64]
+    sources:
+      - '{{.FS_AMD64_ELF}}'
+    generates:
+      - 'kmazarin/kmazarin/fs.elf'
+    cmds:
+      - '{{.GO}} tool go-cp {{.FS_AMD64_ELF}} kmazarin/kmazarin/fs.elf'
+
+  stage-embedded-fs-riscv64:
+    desc: Copy fs-riscv64.elf into kmazarin/kmazarin/ for go:embed
+    deps: [fsshepherd-riscv64]
+    sources:
+      - '{{.FS_RISCV64_ELF}}'
+    generates:
+      - 'kmazarin/kmazarin/fs.elf'
+    cmds:
+      - '{{.GO}} tool go-cp {{.FS_RISCV64_ELF}} kmazarin/kmazarin/fs.elf'
+
+  # ===========================================================================
+  # Stage Embedded kernel.toml for go:embed
+  # ===========================================================================
+
+  stage-kernel-config-arm64:
+    desc: Copy kernel.arm64.toml into kmazarin/kmazarin/ for go:embed
+    sources:
+      - 'config/kernel.arm64.toml'
+    generates:
+      - 'kmazarin/kmazarin/kernel.toml'
+    cmds:
+      - '{{.GO}} tool go-cp config/kernel.arm64.toml kmazarin/kmazarin/kernel.toml'
+
+  stage-kernel-config-x86_64:
+    desc: Copy kernel.amd64.toml into kmazarin/kmazarin/ for go:embed
+    sources:
+      - 'config/kernel.amd64.toml'
+    generates:
+      - 'kmazarin/kmazarin/kernel.toml'
+    cmds:
+      - '{{.GO}} tool go-cp config/kernel.amd64.toml kmazarin/kmazarin/kernel.toml'
+
+  stage-kernel-config-riscv64:
+    desc: Copy kernel.riscv64.toml into kmazarin/kmazarin/ for go:embed
+    sources:
+      - 'config/kernel.riscv64.toml'
+    generates:
+      - 'kmazarin/kmazarin/kernel.toml'
+    cmds:
+      - '{{.GO}} tool go-cp config/kernel.riscv64.toml kmazarin/kmazarin/kernel.toml'
+
+  # ===========================================================================
   # Kmazarin Kernel Build
   # ===========================================================================
 
   kmazarin-arm64:
     desc: Build kmazarin kernel (ARM64)
     run: once
-    deps: [check-env, kmazarin-arm64-overlay]
+    deps: [check-env, kmazarin-arm64-overlay, stage-embedded-fs-arm64, stage-kernel-config-arm64]
     sources:
       - 'kmazarin/**/*.go'
       - 'kmazarin/**/*.s'
@@ -405,7 +467,7 @@ tasks:
   kmazarin-x86_64:
     desc: Build kmazarin kernel (x86_64)
     run: once
-    deps: [check-env, kmazarin-x86_64-overlay]
+    deps: [check-env, kmazarin-x86_64-overlay, stage-embedded-fs-x86_64, stage-kernel-config-x86_64]
     sources:
       - 'kmazarin/**/*.go'
       - 'kmazarin/**/*.s'
@@ -427,7 +489,7 @@ tasks:
   kmazarin-riscv64:
     desc: Build kmazarin kernel (RISC-V 64-bit)
     run: once
-    deps: [check-env, kmazarin-riscv64-overlay]
+    deps: [check-env, kmazarin-riscv64-overlay, stage-embedded-fs-riscv64, stage-kernel-config-riscv64]
     sources:
       - 'kmazarin/**/*.go'
       - 'kmazarin/**/*.s'
@@ -465,8 +527,8 @@ tasks:
       - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.RACHEL_ELF}} ./flock/cmd/rachel'
       - '{{.GO}} tool go-echo "Rachel ARM64 built at {{.RACHEL_ELF}}"'
 
-  stdio-arm64:
-    desc: Build stdio console shepherd (ARM64)
+  linux-arm64:
+    desc: Build linux shepherd (ARM64)
     deps: [check-env, userspace-overlay]
     sources:
       - 'flock/**/*.go'
@@ -476,29 +538,11 @@ tasks:
       # Overlay source files — Go's build cache doesn't track overlay content
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:
-      - '{{.STDIO_ELF}}'
+      - '{{.LINUX_ELF}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building stdio for ARM64..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.STDIO_ELF}} ./flock/cmd/stdio'
-      - '{{.GO}} tool go-echo "Stdio ARM64 built at {{.STDIO_ELF}}"'
-
-  diskshepherd-arm64:
-    desc: Build disk shepherd (filesystem server, ARM64)
-    deps: [check-env, merged-shepherd-overlay]
-    sources:
-      - 'flock/**/*.go'
-      - 'flock/**/*.s'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
-      - '{{.MERGED_SHEPHERD_OVERLAY_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.SHEPHERD_OVERLAY_DIR}}/**/*'
-    generates:
-      - '{{.DISKSHEPHERD_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building disk shepherd for ARM64..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.DISKSHEPHERD_ELF}} ./flock/cmd/disk'
-      - '{{.GO}} tool go-echo "Disk shepherd ARM64 built at {{.DISKSHEPHERD_ELF}}"'
+      - '{{.GO}} tool go-echo "Building linux for ARM64..."'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.LINUX_ELF}} ./flock/cmd/linux'
+      - '{{.GO}} tool go-echo "Stdio ARM64 built at {{.LINUX_ELF}}"'
 
   rachel-x86_64:
     desc: Build rachel input event handler shepherd (x86_64)
@@ -517,8 +561,8 @@ tasks:
       - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.RACHEL_AMD64_ELF}} ./flock/cmd/rachel'
       - '{{.GO}} tool go-echo "Rachel x86_64 built at {{.RACHEL_AMD64_ELF}}"'
 
-  stdio-x86_64:
-    desc: Build stdio console shepherd (x86_64)
+  linux-x86_64:
+    desc: Build linux shepherd (x86_64)
     deps: [check-env, userspace-overlay]
     sources:
       - 'flock/**/*.go'
@@ -528,29 +572,11 @@ tasks:
       # Overlay source files — Go's build cache doesn't track overlay content
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:
-      - '{{.STDIO_AMD64_ELF}}'
+      - '{{.LINUX_AMD64_ELF}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building stdio for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.STDIO_AMD64_ELF}} ./flock/cmd/stdio'
-      - '{{.GO}} tool go-echo "Stdio x86_64 built at {{.STDIO_AMD64_ELF}}"'
-
-  diskshepherd-x86_64:
-    desc: Build disk shepherd (filesystem server, x86_64)
-    deps: [check-env, merged-shepherd-overlay-amd64]
-    sources:
-      - 'flock/**/*.go'
-      - 'flock/**/*.s'
-      - 'mazarin/**/*.go'
-      - 'shared/**/*.go'
-      - '{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
-      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
-      - '{{.SHEPHERD_OVERLAY_AMD64_DIR}}/**/*'
-    generates:
-      - '{{.DISKSHEPHERD_AMD64_ELF}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building disk shepherd for x86_64..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.DISKSHEPHERD_AMD64_ELF}} ./flock/cmd/disk'
-      - '{{.GO}} tool go-echo "Disk shepherd x86_64 built at {{.DISKSHEPHERD_AMD64_ELF}}"'
+      - '{{.GO}} tool go-echo "Building linux for x86_64..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.LINUX_AMD64_ELF}} ./flock/cmd/linux'
+      - '{{.GO}} tool go-echo "Stdio x86_64 built at {{.LINUX_AMD64_ELF}}"'
 
   rachel-riscv64:
     desc: Build rachel input event handler shepherd (RISC-V 64-bit)
@@ -569,8 +595,8 @@ tasks:
       - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}} {{.GCFLAGS}} -o {{.RACHEL_RISCV64_ELF}} ./flock/cmd/rachel'
       - '{{.GO}} tool go-echo "Rachel RISC-V 64-bit built at {{.RACHEL_RISCV64_ELF}}"'
 
-  stdio-riscv64:
-    desc: Build stdio console shepherd (RISC-V 64-bit)
+  linux-riscv64:
+    desc: Build linux shepherd (RISC-V 64-bit)
     deps: [check-env, userspace-overlay]
     sources:
       - 'flock/**/*.go'
@@ -580,14 +606,50 @@ tasks:
       # Overlay source files — Go's build cache doesn't track overlay content
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
     generates:
-      - '{{.STDIO_RISCV64_ELF}}'
+      - '{{.LINUX_RISCV64_ELF}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building stdio for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.STDIO_RISCV64_ELF}} ./flock/cmd/stdio'
-      - '{{.GO}} tool go-echo "Stdio RISC-V 64-bit built at {{.STDIO_RISCV64_ELF}}"'
+      - '{{.GO}} tool go-echo "Building linux for RISC-V 64-bit..."'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.USERSPACE_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.LINUX_RISCV64_ELF}} ./flock/cmd/linux'
+      - '{{.GO}} tool go-echo "Stdio RISC-V 64-bit built at {{.LINUX_RISCV64_ELF}}"'
 
-  diskshepherd-riscv64:
-    desc: Build disk shepherd (filesystem server, RISC-V 64-bit)
+  fsshepherd-arm64:
+    desc: Build fs shepherd (standalone filesystem server, ARM64)
+    deps: [check-env, merged-shepherd-overlay]
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - 'shared/**/*.go'
+      - '{{.MERGED_SHEPHERD_OVERLAY_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.SHEPHERD_OVERLAY_DIR}}/**/*'
+    generates:
+      - '{{.FS_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building fs shepherd for ARM64..."'
+      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.FS_ELF}} ./flock/cmd/fs'
+      - '{{.GO}} tool go-echo "FS shepherd ARM64 built at {{.FS_ELF}}"'
+
+  fsshepherd-x86_64:
+    desc: Build fs shepherd (standalone filesystem server, x86_64)
+    deps: [check-env, merged-shepherd-overlay-amd64]
+    sources:
+      - 'flock/**/*.go'
+      - 'flock/**/*.s'
+      - 'mazarin/**/*.go'
+      - 'shared/**/*.go'
+      - '{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}}'
+      - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
+      - '{{.SHEPHERD_OVERLAY_AMD64_DIR}}/**/*'
+    generates:
+      - '{{.FS_AMD64_ELF}}'
+    cmds:
+      - '{{.GO}} tool go-echo "Building fs shepherd for x86_64..."'
+      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.FS_AMD64_ELF}} ./flock/cmd/fs'
+      - '{{.GO}} tool go-echo "FS shepherd x86_64 built at {{.FS_AMD64_ELF}}"'
+
+  fsshepherd-riscv64:
+    desc: Build fs shepherd (standalone filesystem server, RISC-V 64-bit)
     deps: [check-env, merged-shepherd-overlay-riscv64]
     sources:
       - 'flock/**/*.go'
@@ -598,11 +660,11 @@ tasks:
       - '{{.USERSPACE_OVERLAY_DIR}}/**/*'
       - '{{.SHEPHERD_OVERLAY_RISCV64_DIR}}/**/*'
     generates:
-      - '{{.DISKSHEPHERD_RISCV64_ELF}}'
+      - '{{.FS_RISCV64_ELF}}'
     cmds:
-      - '{{.GO}} tool go-echo "Building disk shepherd for RISC-V 64-bit..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}} {{.GCFLAGS}} -o {{.DISKSHEPHERD_RISCV64_ELF}} ./flock/cmd/disk'
-      - '{{.GO}} tool go-echo "Disk shepherd RISC-V 64-bit built at {{.DISKSHEPHERD_RISCV64_ELF}}"'
+      - '{{.GO}} tool go-echo "Building fs shepherd for RISC-V 64-bit..."'
+      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MERGED_SHEPHERD_OVERLAY_RISCV64_JSON}} {{.GCFLAGS}} -o {{.FS_RISCV64_ELF}} ./flock/cmd/fs'
+      - '{{.GO}} tool go-echo "FS shepherd RISC-V 64-bit built at {{.FS_RISCV64_ELF}}"'
 
   sievetest:
     desc: Build sievetest (simple prime sieve for multi-shepherd testing)
@@ -1079,80 +1141,21 @@ tasks:
       - '{{.GO}} tool maz-reloc {{.FONTSVC_MAZ_RISCV64}} {{.THIN_MANIFEST}}'
       - '{{.GO}} tool go-echo "fontsvc.maz (RISC-V 64-bit) ready at {{.FONTSVC_MAZ_RISCV64}}"'
 
-  fs-maz:
-    desc: Build fs.maz — FAT32 filesystem module for ARM64 (PIE + thin stubs)
-    deps: [check-env, maz-overlay]
-    sources:
-      - 'flock/cmd/fat32/**/*.go'
-      - 'mazarin/**/*.go'
-      - 'shared/fs/fat32/**/*.go'
-      - 'shared/ipc/**/*.go'
-      - 'shared/blockdev/**/*.go'
-      - '{{.MAZ_OVERLAY_JSON}}'
-    generates:
-      - '{{.FS_MAZ}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building fs.maz for ARM64 (FAT32 filesystem module)..."'
-      - 'CGO_ENABLED=0 GOARCH={{.TARGET_GOARCH}} GOOS={{.TARGET_GOOS}} {{.GO}} build -buildmode=pie -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_JSON}} {{.GCFLAGS}} -o {{.FS_MAZ}} ./flock/cmd/fat32'
-      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
-      - '{{.GO}} tool maz-reloc {{.FS_MAZ}} {{.THIN_MANIFEST}}'
-      - '{{.GO}} tool go-echo "fs.maz ready at {{.FS_MAZ}}"'
-
-  fs-maz-amd64:
-    desc: Build fs.maz — FAT32 filesystem module for x86_64 (PIE + thin stubs)
-    deps: [check-env, maz-overlay-amd64]
-    sources:
-      - 'flock/cmd/fat32/**/*.go'
-      - 'mazarin/**/*.go'
-      - 'shared/fs/fat32/**/*.go'
-      - 'shared/ipc/**/*.go'
-      - 'shared/blockdev/**/*.go'
-      - '{{.MAZ_OVERLAY_AMD64_JSON}}'
-    generates:
-      - '{{.FS_MAZ_AMD64}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building fs.maz for x86_64 (FAT32 filesystem module)..."'
-      - 'CGO_ENABLED=0 GOARCH=amd64 GOOS=linux {{.GO}} build -buildmode=pie -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_AMD64_JSON}} {{.GCFLAGS}} -o {{.FS_MAZ_AMD64}} ./flock/cmd/fat32'
-      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
-      - '{{.GO}} tool maz-reloc {{.FS_MAZ_AMD64}} {{.THIN_MANIFEST_AMD64}}'
-      - '{{.GO}} tool go-echo "fs.maz (x86_64) ready at {{.FS_MAZ_AMD64}}"'
-
-  fs-mzr-riscv64:
-    desc: Build fs.mzr for RISC-V 64-bit — FAT32 filesystem module (fixed-address slot 0)
-    deps: [check-env, maz-overlay]
-    sources:
-      - 'flock/cmd/fat32/**/*.go'
-      - 'mazarin/**/*.go'
-      - 'shared/fs/fat32/**/*.go'
-      - 'shared/ipc/**/*.go'
-      - 'shared/blockdev/**/*.go'
-      - '{{.MAZ_OVERLAY_JSON}}'
-    generates:
-      - '{{.FS_MZR_RISCV64}}'
-    cmds:
-      - '{{.GO}} tool go-echo "Building fs.mzr for RISC-V 64-bit (fixed-address slot 0)..."'
-      - 'CGO_ENABLED=0 GOARCH=riscv64 GOOS=linux {{.GO}} build -overlay={{.ROOT_DIR}}/{{.MAZ_OVERLAY_JSON}} -ldflags="-T 0x30000000" {{.GCFLAGS}} -o {{.FS_MZR_RISCV64}} ./flock/cmd/fat32'
-      - '{{.GO}} tool go-echo "Fixing negative ELF offsets from -T flag..."'
-      - '{{.GO}} tool fix-go-elf -no-bootstrap {{.FS_MZR_RISCV64}}'
-      - '{{.GO}} tool go-echo "Running maz-reloc to generate .maz_imports..."'
-      - '{{.GO}} tool maz-reloc {{.FS_MZR_RISCV64}} {{.THIN_MANIFEST}}'
-      - '{{.GO}} tool go-echo "fs.mzr (RISC-V 64-bit) ready at {{.FS_MZR_RISCV64}}"'
-
   # ===========================================================================
   # Userspace Build (shepherds + .maz modules + test programs)
   # ===========================================================================
 
   userspace-build:
     desc: Build all ARM64 userspace programs (shepherds, .maz modules, test programs)
-    deps: [rachel-arm64, stdio-arm64, diskshepherd-arm64, clocks, sievetest, attrtest, handletest, clocktest, helloworld-maz, prefs-maz, fontsvc-maz, fs-maz]
+    deps: [rachel-arm64, linux-arm64, fsshepherd-arm64, clocks, handletest, clocktest, helloworld-maz, prefs-maz, fontsvc-maz]
 
   userspace-build-x86_64:
     desc: Build all x86_64 userspace programs (shepherds + test programs)
-    deps: [rachel-x86_64, stdio-x86_64, diskshepherd-x86_64, clocks-x86_64, sievetest-x86_64, attrtest-x86_64, handletest-x86_64, clocktest-x86_64]
+    deps: [rachel-x86_64, linux-x86_64, fsshepherd-x86_64, clocks-x86_64, handletest-x86_64, clocktest-x86_64]
 
   userspace-build-riscv64:
     desc: Build all RISC-V userspace programs (shepherds, .maz/.mzr modules, test programs)
-    deps: [rachel-riscv64, stdio-riscv64, diskshepherd-riscv64, clocks-riscv64, sievetest-riscv64, attrtest-riscv64, handletest-riscv64, clocktest-riscv64, helloworld-maz-riscv64, prefs-maz-riscv64, fontsvc-maz-riscv64, fs-mzr-riscv64]
+    deps: [rachel-riscv64, linux-riscv64, fsshepherd-riscv64, clocks-riscv64, handletest-riscv64, clocktest-riscv64, helloworld-maz-riscv64, prefs-maz-riscv64, fontsvc-maz-riscv64]
 
   # ===========================================================================
   # Disk Image
@@ -1178,124 +1181,112 @@ tasks:
       - '{{.GO}} tool go-echo "Fonts base image created at {{.FONTS_BASE_IMAGE}}"'
 
   disk-arm64:
-    desc: Create FAT32 disk image with ARM64 flock binaries and kmazarin kernel
-    deps: [rachel-arm64, stdio-arm64, diskshepherd-arm64, sievetest, attrtest, handletest, clocktest, clocks, helloworld-maz, prefs-maz, fontsvc-maz, fs-maz, kmazarin-arm64, convert-boot-image]
+    desc: Create ext2 disk image with ARM64 flock binaries and kmazarin kernel
+    deps: [rachel-arm64, linux-arm64, fsshepherd-arm64, handletest, clocktest, clocks, helloworld-maz, prefs-maz, fontsvc-maz, kmazarin-arm64, convert-boot-image]
     method: checksum
     vars:
-      MKFAT32_BASE:
-        sh: test -f {{.FONTS_BASE_IMAGE}} && echo "-base {{.FONTS_BASE_IMAGE}}" || echo ""
+      MKEXT2_FONTS:
+        sh: test -d "{{.FONTS_DIR}}" && echo "-dir /fonts={{.FONTS_DIR}}" || echo ""
     sources:
       - '{{.RACHEL_ELF}}'
-      - '{{.STDIO_ELF}}'
-      - '{{.DISKSHEPHERD_ELF}}'
-      - '{{.SIEVETEST_ELF}}'
-      - '{{.ATTRTEST_ELF}}'
+      - '{{.LINUX_ELF}}'
+      - '{{.FS_ELF}}'
       - '{{.HANDLETEST_ELF}}'
       - '{{.CLOCKTEST_ELF}}'
       - '{{.CLOCKS_ELF}}'
       - '{{.HELLOWORLD_MAZ}}'
       - '{{.PREFS_MAZ}}'
       - '{{.FONTSVC_MAZ}}'
-      - '{{.FS_MAZ}}'
       - '{{.KMAZARIN_ELF}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
-      - 'config/kmazarin-arm64.toml'
+      - 'config/startup.arm64.toml'
     generates:
       - '{{.DISK_IMAGE}}'
     cmds:
-      - '{{.GO}} tool go-echo "Creating FAT32 disk image (ARM64)..."'
+      - '{{.GO}} tool go-echo "Creating ext2 disk image (ARM64)..."'
       - '{{.GO}} tool go-mkdir {{.BUILD_DIR}}/disk-staging-arm64'
-      - '{{.GO}} tool go-cp config/kmazarin-arm64.toml {{.BUILD_DIR}}/disk-staging-arm64/kmazarin.toml'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_IMAGE}} {{.MKFAT32_BASE}} {{.RACHEL_ELF}} {{.STDIO_ELF}} {{.DISKSHEPHERD_ELF}} {{.SIEVETEST_ELF}} {{.ATTRTEST_ELF}} {{.HANDLETEST_ELF}} {{.CLOCKTEST_ELF}} {{.CLOCKS_ELF}} {{.HELLOWORLD_MAZ}} {{.PREFS_MAZ}} {{.FONTSVC_MAZ}} {{.FS_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/kmazarin.toml'
+      - '{{.GO}} tool go-cp config/startup.arm64.toml {{.BUILD_DIR}}/disk-staging-arm64/startup.toml'
+      - '{{.GO}} tool go-cp fonts/fonts.csv {{.FONTS_DIR}}/fonts.csv'
+      - '{{.GO}} tool mkext2 -o {{.DISK_IMAGE}} -size 512 {{.MKEXT2_FONTS}} {{.RACHEL_ELF}} {{.LINUX_ELF}} {{.FS_ELF}} {{.HANDLETEST_ELF}} {{.CLOCKTEST_ELF}} {{.CLOCKS_ELF}} {{.HELLOWORLD_MAZ}} {{.PREFS_MAZ}} {{.FONTSVC_MAZ}} {{.KMAZARIN_ELF}} {{.BUILD_DIR}}/boot-image.bin {{.BUILD_DIR}}/disk-staging-arm64/startup.toml'
       - '{{.GO}} tool go-echo "Disk image created at {{.DISK_IMAGE}}"'
 
   disk-x86_64:
-    desc: Create FAT32 disk image with x86_64 flock binaries and kmazarin kernel
-    deps: [rachel-x86_64, stdio-x86_64, diskshepherd-x86_64, sievetest-x86_64, attrtest-x86_64, handletest-x86_64, clocktest-x86_64, clocks-x86_64, fs-maz-amd64, helloworld-maz-amd64, prefs-maz-amd64, fontsvc-maz-amd64, kmazarin-x86_64, convert-boot-image]
+    desc: Create ext2 disk image with x86_64 flock binaries and kmazarin kernel
+    deps: [rachel-x86_64, linux-x86_64, fsshepherd-x86_64, handletest-x86_64, clocktest-x86_64, clocks-x86_64, helloworld-maz-amd64, prefs-maz-amd64, fontsvc-maz-amd64, kmazarin-x86_64, convert-boot-image]
     method: checksum
     vars:
-      MKFAT32_BASE:
-        sh: test -f {{.FONTS_BASE_IMAGE}} && echo "-base {{.FONTS_BASE_IMAGE}}" || echo ""
+      MKEXT2_FONTS:
+        sh: test -d "{{.FONTS_DIR}}" && echo "-dir /fonts={{.FONTS_DIR}}" || echo ""
     sources:
       - '{{.RACHEL_AMD64_ELF}}'
-      - '{{.STDIO_AMD64_ELF}}'
-      - '{{.DISKSHEPHERD_AMD64_ELF}}'
-      - '{{.SIEVETEST_AMD64_ELF}}'
-      - '{{.ATTRTEST_AMD64_ELF}}'
+      - '{{.LINUX_AMD64_ELF}}'
+      - '{{.FS_AMD64_ELF}}'
       - '{{.HANDLETEST_AMD64_ELF}}'
       - '{{.CLOCKTEST_AMD64_ELF}}'
       - '{{.CLOCKS_AMD64_ELF}}'
-      - '{{.FS_MAZ_AMD64}}'
       - '{{.HELLOWORLD_MAZ_AMD64}}'
       - '{{.PREFS_MAZ_AMD64}}'
       - '{{.FONTSVC_MAZ_AMD64}}'
       - '{{.KMAZARIN_AMD64_ELF}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
-      - 'config/kmazarin-x86_64.toml'
+      - 'config/startup.amd64.toml'
     generates:
       - '{{.DISK_AMD64_IMAGE}}'
     cmds:
-      - '{{.GO}} tool go-echo "Creating FAT32 disk image for x86_64..."'
+      - '{{.GO}} tool go-echo "Creating ext2 disk image for x86_64..."'
       # Stage amd64 ELFs in a subdirectory so we don't overwrite ARM64 build/rachel.elf
       - '{{.GO}} tool go-mkdir {{.BUILD_DIR}}/disk-staging-amd64'
       - '{{.GO}} tool go-cp {{.RACHEL_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/rachel.elf'
-      - '{{.GO}} tool go-cp {{.STDIO_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf'
-      - '{{.GO}} tool go-cp {{.DISKSHEPHERD_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/disk.elf'
-      - '{{.GO}} tool go-cp {{.SIEVETEST_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/sievetest.elf'
-      - '{{.GO}} tool go-cp {{.ATTRTEST_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/attrtest.elf'
+      - '{{.GO}} tool go-cp {{.LINUX_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/linux.elf'
+      - '{{.GO}} tool go-cp {{.FS_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/fs.elf'
       - '{{.GO}} tool go-cp {{.HANDLETEST_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/handletest.elf'
       - '{{.GO}} tool go-cp {{.CLOCKTEST_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/clocktest.elf'
       - '{{.GO}} tool go-cp {{.CLOCKS_AMD64_ELF}} {{.BUILD_DIR}}/disk-staging-amd64/clocks.elf'
-      - '{{.GO}} tool go-cp {{.FS_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/fs.maz'
       - '{{.GO}} tool go-cp {{.HELLOWORLD_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz'
       - '{{.GO}} tool go-cp {{.PREFS_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/prefs.maz'
       - '{{.GO}} tool go-cp {{.FONTSVC_MAZ_AMD64}} {{.BUILD_DIR}}/disk-staging-amd64/fontsvc.maz'
-      - '{{.GO}} tool go-cp config/kmazarin-x86_64.toml {{.BUILD_DIR}}/disk-staging-amd64/kmazarin.toml'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_AMD64_IMAGE}} {{.MKFAT32_BASE}} {{.BUILD_DIR}}/disk-staging-amd64/rachel.elf {{.BUILD_DIR}}/disk-staging-amd64/stdio.elf {{.BUILD_DIR}}/disk-staging-amd64/disk.elf {{.BUILD_DIR}}/disk-staging-amd64/sievetest.elf {{.BUILD_DIR}}/disk-staging-amd64/attrtest.elf {{.BUILD_DIR}}/disk-staging-amd64/handletest.elf {{.BUILD_DIR}}/disk-staging-amd64/clocktest.elf {{.BUILD_DIR}}/disk-staging-amd64/clocks.elf {{.BUILD_DIR}}/disk-staging-amd64/fs.maz {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz {{.BUILD_DIR}}/disk-staging-amd64/prefs.maz {{.BUILD_DIR}}/disk-staging-amd64/kmazarin.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool go-cp config/startup.amd64.toml {{.BUILD_DIR}}/disk-staging-amd64/startup.toml'
+      - '{{.GO}} tool go-cp fonts/fonts.csv {{.FONTS_DIR}}/fonts.csv'
+      - '{{.GO}} tool mkext2 -o {{.DISK_AMD64_IMAGE}} -size 512 {{.MKEXT2_FONTS}} {{.BUILD_DIR}}/disk-staging-amd64/rachel.elf {{.BUILD_DIR}}/disk-staging-amd64/linux.elf {{.BUILD_DIR}}/disk-staging-amd64/fs.elf {{.BUILD_DIR}}/disk-staging-amd64/handletest.elf {{.BUILD_DIR}}/disk-staging-amd64/clocktest.elf {{.BUILD_DIR}}/disk-staging-amd64/clocks.elf {{.BUILD_DIR}}/disk-staging-amd64/helloworld.maz {{.BUILD_DIR}}/disk-staging-amd64/prefs.maz {{.BUILD_DIR}}/disk-staging-amd64/fontsvc.maz {{.BUILD_DIR}}/disk-staging-amd64/startup.toml {{.KMAZARIN_AMD64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "x86_64 disk image created at {{.DISK_AMD64_IMAGE}}"'
 
   disk-riscv64:
-    desc: Create FAT32 disk image with RISC-V 64-bit flock binaries and kmazarin kernel
-    deps: [rachel-riscv64, stdio-riscv64, diskshepherd-riscv64, sievetest-riscv64, attrtest-riscv64, handletest-riscv64, clocktest-riscv64, clocks-riscv64, helloworld-maz-riscv64, prefs-maz-riscv64, fontsvc-maz-riscv64, fs-mzr-riscv64, kmazarin-riscv64, convert-boot-image]
+    desc: Create ext2 disk image with RISC-V 64-bit flock binaries and kmazarin kernel
+    deps: [rachel-riscv64, linux-riscv64, fsshepherd-riscv64, handletest-riscv64, clocktest-riscv64, clocks-riscv64, helloworld-maz-riscv64, prefs-maz-riscv64, fontsvc-maz-riscv64, kmazarin-riscv64, convert-boot-image]
     method: checksum
     vars:
-      MKFAT32_BASE:
-        sh: test -f {{.FONTS_BASE_IMAGE}} && echo "-base {{.FONTS_BASE_IMAGE}}" || echo ""
+      MKEXT2_FONTS:
+        sh: test -d "{{.FONTS_DIR}}" && echo "-dir /fonts={{.FONTS_DIR}}" || echo ""
     sources:
       - '{{.RACHEL_RISCV64_ELF}}'
-      - '{{.STDIO_RISCV64_ELF}}'
-      - '{{.DISKSHEPHERD_RISCV64_ELF}}'
-      - '{{.SIEVETEST_RISCV64_ELF}}'
-      - '{{.ATTRTEST_RISCV64_ELF}}'
+      - '{{.LINUX_RISCV64_ELF}}'
+      - '{{.FS_RISCV64_ELF}}'
       - '{{.HANDLETEST_RISCV64_ELF}}'
       - '{{.CLOCKTEST_RISCV64_ELF}}'
       - '{{.CLOCKS_RISCV64_ELF}}'
       - '{{.HELLOWORLD_MAZ_RISCV64}}'
       - '{{.PREFS_MAZ_RISCV64}}'
       - '{{.FONTSVC_MAZ_RISCV64}}'
-      - '{{.FS_MZR_RISCV64}}'
       - '{{.KMAZARIN_RISCV64_ELF}}'
       - '{{.BUILD_DIR}}/boot-image.bin'
-      - 'config/kmazarin-riscv64.toml'
+      - 'config/startup.riscv64.toml'
     generates:
       - '{{.DISK_RISCV64_IMAGE}}'
     cmds:
-      - '{{.GO}} tool go-echo "Creating FAT32 disk image for RISC-V 64-bit..."'
+      - '{{.GO}} tool go-echo "Creating ext2 disk image for RISC-V 64-bit..."'
       - '{{.GO}} tool go-mkdir {{.BUILD_DIR}}/disk-staging-riscv64'
       - '{{.GO}} tool go-cp {{.RACHEL_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/rachel.elf'
-      - '{{.GO}} tool go-cp {{.STDIO_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/stdio.elf'
-      - '{{.GO}} tool go-cp {{.DISKSHEPHERD_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/disk.elf'
-      - '{{.GO}} tool go-cp {{.SIEVETEST_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/sievetest.elf'
-      - '{{.GO}} tool go-cp {{.ATTRTEST_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/attrtest.elf'
+      - '{{.GO}} tool go-cp {{.LINUX_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/linux.elf'
+      - '{{.GO}} tool go-cp {{.FS_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/fs.elf'
       - '{{.GO}} tool go-cp {{.HANDLETEST_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/handletest.elf'
       - '{{.GO}} tool go-cp {{.CLOCKTEST_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/clocktest.elf'
       - '{{.GO}} tool go-cp {{.CLOCKS_RISCV64_ELF}} {{.BUILD_DIR}}/disk-staging-riscv64/clocks.elf'
       - '{{.GO}} tool go-cp {{.HELLOWORLD_MAZ_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/helloworld.mzr'
       - '{{.GO}} tool go-cp {{.PREFS_MAZ_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/prefs.mzr'
       - '{{.GO}} tool go-cp {{.FONTSVC_MAZ_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/fontsvc.mzr'
-      - '{{.GO}} tool go-cp {{.FS_MZR_RISCV64}} {{.BUILD_DIR}}/disk-staging-riscv64/fs.mzr'
-      - '{{.GO}} tool go-cp config/kmazarin-riscv64.toml {{.BUILD_DIR}}/disk-staging-riscv64/kmazarin.toml'
-      - '{{.GO}} tool mkfat32 -o {{.DISK_RISCV64_IMAGE}} {{.MKFAT32_BASE}} {{.BUILD_DIR}}/disk-staging-riscv64/rachel.elf {{.BUILD_DIR}}/disk-staging-riscv64/stdio.elf {{.BUILD_DIR}}/disk-staging-riscv64/disk.elf {{.BUILD_DIR}}/disk-staging-riscv64/sievetest.elf {{.BUILD_DIR}}/disk-staging-riscv64/attrtest.elf {{.BUILD_DIR}}/disk-staging-riscv64/handletest.elf {{.BUILD_DIR}}/disk-staging-riscv64/clocktest.elf {{.BUILD_DIR}}/disk-staging-riscv64/clocks.elf {{.BUILD_DIR}}/disk-staging-riscv64/helloworld.mzr {{.BUILD_DIR}}/disk-staging-riscv64/prefs.mzr {{.BUILD_DIR}}/disk-staging-riscv64/fs.mzr {{.BUILD_DIR}}/disk-staging-riscv64/kmazarin.toml {{.KMAZARIN_RISCV64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
+      - '{{.GO}} tool go-cp config/startup.riscv64.toml {{.BUILD_DIR}}/disk-staging-riscv64/startup.toml'
+      - '{{.GO}} tool go-cp fonts/fonts.csv {{.FONTS_DIR}}/fonts.csv'
+      - '{{.GO}} tool mkext2 -o {{.DISK_RISCV64_IMAGE}} -size 512 {{.MKEXT2_FONTS}} {{.BUILD_DIR}}/disk-staging-riscv64/rachel.elf {{.BUILD_DIR}}/disk-staging-riscv64/linux.elf {{.BUILD_DIR}}/disk-staging-riscv64/fs.elf {{.BUILD_DIR}}/disk-staging-riscv64/handletest.elf {{.BUILD_DIR}}/disk-staging-riscv64/clocktest.elf {{.BUILD_DIR}}/disk-staging-riscv64/clocks.elf {{.BUILD_DIR}}/disk-staging-riscv64/helloworld.mzr {{.BUILD_DIR}}/disk-staging-riscv64/prefs.mzr {{.BUILD_DIR}}/disk-staging-riscv64/fontsvc.mzr {{.BUILD_DIR}}/disk-staging-riscv64/startup.toml {{.KMAZARIN_RISCV64_ELF}} {{.BUILD_DIR}}/boot-image.bin'
       - '{{.GO}} tool go-echo "RISC-V 64-bit disk image created at {{.DISK_RISCV64_IMAGE}}"'
 
   # ===========================================================================

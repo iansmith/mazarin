@@ -4,6 +4,7 @@ go 1.25.5
 
 require (
 	github.com/fogleman/gg v1.3.0
+	github.com/pelletier/go-toml/v2 v2.3.0
 	golang.org/x/image v0.23.0
 )
 
@@ -128,6 +129,7 @@ tool (
 	mazzy/cmd/imageconvert
 	mazzy/cmd/incbin2goasm
 	mazzy/cmd/maz-reloc
+	mazzy/cmd/mkext2
 	mazzy/cmd/mkfat32
 	mazzy/cmd/patch-entry
 	mazzy/cmd/print-kmazarin-addr
