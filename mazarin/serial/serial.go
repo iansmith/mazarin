@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/hid"
-	"runtime"
 	"sync"
 )
 
@@ -67,7 +66,6 @@ func doInit() {
 }
 
 func serialLoop() {
-	runtime.LockOSThread()
 	var buf hid.SoftIRQReturn
 	for {
 		n, waitErr := sys.WaitSoftIRQ(serialSlot, &buf)

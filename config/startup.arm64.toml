@@ -4,9 +4,9 @@
 name = "rachel"
 path = "/rachel.elf"
 
-#[[shepherd]]
-#name = "linux"
-#path = "/linux.elf"
+[[shepherd]]
+name = "linux"
+path = "/linux.elf"
 
 #[[shepherd]]
 #name = "sievetest"

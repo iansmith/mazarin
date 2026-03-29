@@ -30,7 +30,7 @@ const (
 	// We use L2[0x1FA] = VA 0xFFFFFFFE80000000 for stacks.
 	KernelStacksVirtBase = 0xFFFFFFFE80000000
 	KernelG0StackSize    = 0x8000                      // 32KB
-	KernelExcStackSize   = 0x4000                      // 16KB
+	KernelExcStackSize   = 0x20000                     // 128KB
 	KernelG0StackBottom  = KernelStacksVirtBase
 	KernelG0StackTop     = KernelG0StackBottom + KernelG0StackSize
 	KernelExcStackBottom = KernelG0StackTop

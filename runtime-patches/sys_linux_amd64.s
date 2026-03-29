@@ -39,7 +39,9 @@ TEXT runtime·kmazarinUART(SB),NOSPLIT,$0-1
 	OUTB
 	RET
 
-// exit - print diagnostic then halt loop (no OS to exit to)
+// exit - terminate entire process (all threads of this shepherd)
+// Go runtime calls this for os.Exit() and runtime.throw() — it means
+// "kill the whole process", matching Linux exit_group(2) semantics.
 TEXT runtime·exit(SB),NOSPLIT,$0-4
 	// Write 'E' to COM1
 	MOVW	COM1_PORT, DX
@@ -68,14 +70,23 @@ exit_dig2:
 	ADDL	$'0', AX
 exit_out2:
 	OUTB
+	// Call kernel exit_group to terminate all threads of this shepherd
+	MOVL	code+0(FP), DI		// arg0: exit status
+	MOVL	$SYS_exit_group, AX	// syscall 231 (terminate whole process)
+	INT	$0x80
+	// Should not return — kernel terminates shepherd and switches away
 halt_loop:
 	HLT
 	JMP	halt_loop
 
-// exitThread - store 0 at wait addr, then halt
+// exitThread - signal thread exit to runtime, then call kernel exit syscall
 TEXT runtime·exitThread(SB),NOSPLIT,$0-8
 	MOVQ	wait+0(FP), AX
-	MOVL	$0, (AX)
+	MOVL	$0, (AX)		// Signal to runtime that thread is exiting
+	XORL	DI, DI			// exit status 0
+	MOVL	$SYS_exit, AX		// syscall 60
+	INT	$0x80
+	// Should not return
 exit_thread_loop:
 	HLT
 	JMP	exit_thread_loop

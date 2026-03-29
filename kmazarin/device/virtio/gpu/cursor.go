@@ -295,6 +295,13 @@ func registerCursorGPU(id int, resID, hotX, hotY uint32) bool {
 		return false
 	}
 
+	// Clean cache for the pixel buffer so GPU DMA reads see the data we wrote.
+	// The buffer is 16384 bytes = 4 pages.
+	pixBufVA := uintptr(unsafe.Pointer(&cursorPixelBufs[id][0]))
+	for p := uintptr(0); p < CursorWidth*CursorHeight*4; p += kmem.PageSize {
+		kmem.CleanPageCache(pixBufVA + p)
+	}
+
 	// Step 2: Attach backing store.
 	pixBufPA := virtio.VirtqueueGetPhysicalAddr(unsafe.Pointer(&cursorPixelBufs[id][0]))
 

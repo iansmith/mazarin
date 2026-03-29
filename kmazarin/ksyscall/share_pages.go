@@ -7,8 +7,9 @@ import (
 )
 
 // MaxTransferPages is the maximum number of pages that can be transferred in a single call.
-// PAs are stored in a stack array (2KB), so this keeps the frame size bounded.
-const MaxTransferPages = 256
+// PAs are stored in a stack array (16KB at 2048 entries). This function is not nosplit,
+// so Go will grow the goroutine stack as needed.
+const MaxTransferPages = 2048
 
 // SyscallTransferPages transfers ownership of contiguous pages from the calling
 // shepherd to a target shepherd. The pages are unmapped from the caller's address space,

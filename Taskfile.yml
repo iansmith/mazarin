@@ -317,33 +317,26 @@ tasks:
   # Stage Embedded fs.elf for go:embed
   # ===========================================================================
 
+  # NOTE: All three staging tasks write to the SAME output file
+  # (kmazarin/kmazarin/fs.elf). We deliberately omit `generates` so that
+  # Task always runs the copy when switching architectures. With `generates`,
+  # Task's mtime fingerprinting considers the file up-to-date if a previous
+  # arch's copy is newer — embedding the wrong architecture's binary.
   stage-embedded-fs-arm64:
     desc: Copy fs.elf into kmazarin/kmazarin/ for go:embed
     deps: [fs:arm64]
-    sources:
-      - '{{.FS_ELF}}'
-    generates:
-      - 'kmazarin/kmazarin/fs.elf'
     cmds:
       - '{{.GO}} tool go-cp {{.FS_ELF}} kmazarin/kmazarin/fs.elf'
 
   stage-embedded-fs-x86_64:
     desc: Copy fs-amd64.elf into kmazarin/kmazarin/ for go:embed
     deps: [fs:x86_64]
-    sources:
-      - '{{.FS_AMD64_ELF}}'
-    generates:
-      - 'kmazarin/kmazarin/fs.elf'
     cmds:
       - '{{.GO}} tool go-cp {{.FS_AMD64_ELF}} kmazarin/kmazarin/fs.elf'
 
   stage-embedded-fs-riscv64:
     desc: Copy fs-riscv64.elf into kmazarin/kmazarin/ for go:embed
     deps: [fs:riscv64]
-    sources:
-      - '{{.FS_RISCV64_ELF}}'
-    generates:
-      - 'kmazarin/kmazarin/fs.elf'
     cmds:
       - '{{.GO}} tool go-cp {{.FS_RISCV64_ELF}} kmazarin/kmazarin/fs.elf'
 
@@ -351,30 +344,23 @@ tasks:
   # Stage Embedded kernel.toml for go:embed
   # ===========================================================================
 
+  # NOTE: All three staging tasks write to the SAME output file
+  # (kmazarin/kmazarin/kernel.toml). We deliberately omit `generates` so that
+  # Task always runs the copy when switching architectures. With `generates`,
+  # Task's mtime fingerprinting considers the file up-to-date if a previous
+  # arch's copy is newer — embedding the wrong architecture's config.
   stage-kernel-config-arm64:
     desc: Copy kernel.arm64.toml into kmazarin/kmazarin/ for go:embed
-    sources:
-      - 'config/kernel.arm64.toml'
-    generates:
-      - 'kmazarin/kmazarin/kernel.toml'
     cmds:
       - '{{.GO}} tool go-cp config/kernel.arm64.toml kmazarin/kmazarin/kernel.toml'
 
   stage-kernel-config-x86_64:
     desc: Copy kernel.amd64.toml into kmazarin/kmazarin/ for go:embed
-    sources:
-      - 'config/kernel.amd64.toml'
-    generates:
-      - 'kmazarin/kmazarin/kernel.toml'
     cmds:
       - '{{.GO}} tool go-cp config/kernel.amd64.toml kmazarin/kmazarin/kernel.toml'
 
   stage-kernel-config-riscv64:
     desc: Copy kernel.riscv64.toml into kmazarin/kmazarin/ for go:embed
-    sources:
-      - 'config/kernel.riscv64.toml'
-    generates:
-      - 'kmazarin/kmazarin/kernel.toml'
     cmds:
       - '{{.GO}} tool go-cp config/kernel.riscv64.toml kmazarin/kmazarin/kernel.toml'
 

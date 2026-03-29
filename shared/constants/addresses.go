@@ -58,7 +58,7 @@ const (
 	// Stack sizes - MUST match cardinal/golang/constants/layout.go
 	// These were doubled from 16KB/8KB to debug potential stack overflow issues
 	KernelG0StackSize  = 0x8000 // 32KB - g0 stack for normal kernel execution
-	KernelExcStackSize = 0x4000 // 16KB - exception stack for handlers
+	KernelExcStackSize = 0x20000 // 128KB - exception stack for handlers
 
 	// Page table allocation for TTBR1
 	KernelPageTableSize = 0x00800000 // 8MB (policy)

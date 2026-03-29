@@ -80,11 +80,18 @@ func (c *fsIPCClient) handleReady(notif sys.MailboxNotification) {
 // Called by the mailbox recv goroutine.
 func (c *fsIPCClient) handleResponse() {
 	if c.respRing == nil {
+		sys.UartWriteString("[linux:ipc] handleResponse: respRing nil!\n")
 		return
 	}
 	var resp fsipc.Response
+	popped := 0
 	for c.respRing.Pop(unsafe.Pointer(&resp)) {
+		popped++
+		sys.UartWriteString("[linux:ipc] handleResponse: popped, sending to respCh\n")
 		c.respCh <- resp
+	}
+	if popped == 0 {
+		sys.UartWriteString("[linux:ipc] handleResponse: ring empty!\n")
 	}
 }
 
@@ -104,8 +111,15 @@ func (c *fsIPCClient) call(req *fsipc.Request) fsipc.Response {
 	c.nextID++
 	req.ID = c.nextID
 	c.reqRing.Push(unsafe.Pointer(req))
-	_ = sys.MailboxSend(c.fsSID, fsipc.NotifyRequest, c.reqRing.Addr())
-	return <-c.respCh
+	err := sys.MailboxSend(c.fsSID, fsipc.NotifyRequest, c.reqRing.Addr())
+	if err != nil {
+		sys.UartWriteString("[linux:ipc] MailboxSend FAILED\n")
+	} else {
+		sys.UartWriteString("[linux:ipc] sent, waiting...\n")
+	}
+	resp := <-c.respCh
+	sys.UartWriteString("[linux:ipc] got response\n")
+	return resp
 }
 
 // dataSlice returns the shared data area for reading response data.

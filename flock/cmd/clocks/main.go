@@ -105,15 +105,21 @@ func main() {
 	mancini.Init()
 	sys.UartWriteString(fmt.Sprintf("[clocks] attr + interactor init done, SID=%s (T+%v)\n", attr.SID(), time.Since(startTime)))
 
-	// 2. Wait for rachel (fontsvc) and disk (fs.maz) before creating fontcache.
-	sys.UartWriteString(fmt.Sprintf("[clocks] waiting for rachel + disk ready... (T+%v)\n", time.Since(startTime)))
+	// 2. Wait for fs (file operations), rachel (window manager + fontsvc), and
+	// linux (Write delegate handler). Clocks must not issue any write() syscalls
+	// before linux has entered its event loop, or the delegate channel fills up
+	// and deadlocks the system.
+	sys.UartWriteString(fmt.Sprintf("[clocks] waiting for fs + rachel + linux ready... (T+%v)\n", time.Since(startTime)))
+	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
+		panic(fmt.Sprintf("[clocks] FATAL: fs: %v", err))
+	}
 	if err := sys.WaitForShepherdReady("rachel", 10); err != nil {
 		panic(fmt.Sprintf("[clocks] FATAL: rachel: %v", err))
 	}
-	if err := sys.WaitForShepherdReady("disk", 10); err != nil {
-		panic(fmt.Sprintf("[clocks] FATAL: disk: %v", err))
+	if err := sys.WaitForShepherdReady("linux", 10); err != nil {
+		panic(fmt.Sprintf("[clocks] FATAL: linux: %v", err))
 	}
-	sys.UartWriteString(fmt.Sprintf("[clocks] rachel + disk ready (T+%v)\n", time.Since(startTime)))
+	sys.UartWriteString(fmt.Sprintf("[clocks] fs + rachel + linux ready (T+%v)\n", time.Since(startTime)))
 
 	rachelSID := sys.MustGetShepherdByName("rachel")
 	fc := fontcache.New(rachelSID)

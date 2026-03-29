@@ -654,6 +654,11 @@ func main() {
 	// Register standard and inverse cursors with the GPU.
 	initCursors()
 
+	// Wait for fs shepherd to be ready before loading .maz files.
+	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
+		panic(fmt.Sprintf("[rachel] FATAL: fs: %v", err))
+	}
+
 	// Load fontsvc.maz — it owns the MailboxRecv loop and forwards non-font
 	// notifications to rachel via a Go channel.
 	rachelCh := make(chan sys.MailboxNotification, 32)

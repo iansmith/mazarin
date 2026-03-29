@@ -124,7 +124,7 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 
 	// Submit via engine — use slotIdx=0 (async: one request at a time per submit call)
 	// extDataPA = page-aligned PA from DMA pool
-	tag, err := dev.DoBlockIOSubmit(requestType, startLBA, nil, 0, pa)
+	tag, err := dev.DoBlockIOSubmit(requestType, startLBA, nil, 0, pa, uint32(totalBytes))
 	if err != nil {
 		serial.RawUARTPuts("[BlockSubmit] submit error\r\n")
 		return -5 // EIO
@@ -142,6 +142,8 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 	// Notify device
 	asm.Dsb()
 	dev.Eng.Notify()
+
+	serial.PollWrite('B') // breadcrumb: BlockSubmit OK
 
 	return int64(tag)
 }

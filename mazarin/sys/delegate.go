@@ -28,7 +28,6 @@ package sys
 import (
 	"mazzy/shared/mazzy"
 	"mazzy/shared/sysid"
-	"runtime"
 	"unsafe"
 )
 
@@ -139,7 +138,7 @@ func HandleSyscalls(ids ...sysid.ID) (<-chan SyscallRequest, error) {
 	ch := make(chan SyscallRequest, 4)
 	ready := make(chan struct{})
 	go delegateRecvLoop(ch, ready)
-	<-ready // Wait for goroutine to start and lock its thread
+	<-ready // Wait for goroutine to be ready to call SysDelegatedRecv
 	return ch, nil
 }
 
@@ -151,15 +150,17 @@ func HandleSyscall(id sysid.ID) (<-chan SyscallRequest, error) {
 // delegateRecvLoop runs in a dedicated goroutine, calling SysDelegatedRecv
 // in a loop. The kernel returns whichever SysID has a pending request first.
 func delegateRecvLoop(ch chan<- SyscallRequest, ready chan<- struct{}) {
-	runtime.LockOSThread()
-	close(ready)
+	close(ready) // Signal that we're about to enter the recv loop
 	var result delegateRecvResult
 	for {
-		runtime_entersyscall()
+		// Zero the result struct to force demand-faulting of the stack
+		// page. The kernel writes to this struct via page table walk
+		// (not a normal memory access), so an unmapped page causes
+		// EFAULT and loses the delegate request.
+		result = delegateRecvResult{}
 		r1, _, errno := RawSyscall(mazzy.SysDelegatedRecv,
 			uintptr(unsafe.Pointer(&result)),
 			0, 0, 0, 0, 0)
-		runtime_exitsyscall()
 
 		if errno != 0 || int64(r1) < 0 {
 			continue

@@ -484,6 +484,9 @@ func WakeThreadForSignal(t *Thread) {
 	case ThreadBlockedSoftIRQ:
 		t.State = ThreadReady
 		clearSoftIRQSlotForTID(t.TID)
+		t.Context.RewindToSyscall()
+		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
 		enqueueReadySchedLockHeld(t)
 	case ThreadBlockedLoadMaz:
 		// Defer signal delivery until LoadMaz completes — the worker
@@ -496,16 +499,22 @@ func WakeThreadForSignal(t *Thread) {
 		t.State = ThreadReady
 		enqueueReadySchedLockHeld(t)
 	case ThreadBlockedDirtyNotify:
-		// Wake so signal is delivered; WaitDirty will re-check queue on resume.
 		t.State = ThreadReady
+		t.Context.RewindToSyscall()
+		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
 		enqueueReadySchedLockHeld(t)
 	case ThreadBlockedInputEvent:
-		// Wake so signal is delivered; WaitInputEvent will re-check on resume.
 		t.State = ThreadReady
+		t.Context.RewindToSyscall()
+		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
 		enqueueReadySchedLockHeld(t)
 	case ThreadBlockedMailbox:
-		// Wake so signal is delivered; MailboxRecv will re-check on resume.
 		t.State = ThreadReady
+		t.Context.RewindToSyscall()
+		t.Context.RestoreSyscallArg0(t.SoftIRQSlotArg)
+		t.Context.RestoreSyscallNum(t.SoftIRQSyscallNum)
 		enqueueReadySchedLockHeld(t)
 	}
 	// ThreadRunning / ThreadReady: signal delivered at next context switch
@@ -1371,6 +1380,8 @@ var dbgTimerPreemptNotSet uint64 // reached check but NeedsThreadPreempt was 0
 var dbgBadPS uint64
 var dbgBadTID uint64
 var dbgBadPCCount uint64
+var dbgLastEL1hELR uint64  // ELR when timer skipped due to EL1h
+var dbgLastEL1hSPSR uint64 // SPSR when timer skipped due to EL1h
 var dbgBoostAttempt uint64        // times boostThread0ForPendingWork was called
 var dbgBoostSuccess uint64        // times boost succeeded (thread 0 was Ready)
 var dbgBoostFailState uint64      // thread 0 state when boost failed (last value)
@@ -1442,6 +1453,14 @@ func printThreadStateSummary() {
 		serial.RawUART('s')
 		serial.RawUARTDecimal(uint64(runSID))
 		serial.RawUART(']')
+	}
+	el1hELR := atomic.LoadUint64(&dbgLastEL1hELR)
+	el1hSPSR := atomic.LoadUint64(&dbgLastEL1hSPSR)
+	if el1hELR != 0 {
+		serial.RawUARTPuts(" EL1h:0x")
+		serial.RawUARTHex64(el1hELR)
+		serial.RawUARTPuts(",0x")
+		serial.RawUARTHex64(el1hSPSR)
 	}
 	serial.RawUARTPuts("\n")
 }
@@ -2044,21 +2063,14 @@ func threadExitImpl(sf *SchedulerFunc) uintptr {
 		return 0 // No threads remain
 	}
 
-	// Mark next thread as running
-	currentTick := sf.CurrentTime(0)
-	next.State = ThreadRunning
-	next.StartTick = currentTick
-	next.ThreadPreemptDeadline = currentTick + kirq.ThreadPreemptTicks
-	next.TicksStartedRunning = currentTick
-	// Update both per-CPU and global CurrentThread
-	SetCurrentThreadGlobal(next)
-
-	// Save info for debug output (before unlock)
-	debugCPU := GetCPUID()
-	debugTID := next.TID
-	debugPID := next.PID
-	debugStolenFrom := next.StolenFromCPU
-	next.StolenFromCPU = -1
+	// DO NOT call SetCurrentThreadGlobal(next) here!
+	// CurrentThread still points to the dying thread. This is intentional:
+	// the SVC return path will call DoContextSwitch, which:
+	// 1. Calls SaveContextFromFrame on the dying thread (harmless — slot released)
+	// 2. Calls SetCurrentThreadGlobal(newThread) to complete the transition
+	// If we set CurrentThread here, DoContextSwitch would save the dying thread's
+	// exception frame into the NEW thread's context (corrupting its registers and SPSR).
+	// doContextSwitchImpl handles all scheduling state (State, StartTick, etc.).
 
 	if sf.StateCheck != nil {
 		sf.StateCheck("thread-exit-switch")
@@ -2066,12 +2078,6 @@ func threadExitImpl(sf *SchedulerFunc) uintptr {
 
 	schedulerLock.Unlock()
 	sf.EnableAndRestoreDAIF(savedDAIF)
-
-	// Debug output after lock release
-	if debugStolenFrom >= 0 {
-		smpDebugPrintSteal(debugCPU, debugTID, uint64(debugStolenFrom))
-	}
-	smpDebugPrintRun(debugCPU, debugTID, debugPID)
 
 	return uintptr(unsafe.Pointer(&next.Context))
 }

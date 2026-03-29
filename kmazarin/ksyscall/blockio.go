@@ -179,7 +179,7 @@ func blockReadBatch(dev *block.VirtIOBlockDevice, startLBA, numSectors uint64,
 				asm.CleanDCacheRange(kernelVA, uintptr(blockSize))
 			}
 
-			tag, err := dev.DoBlockIOSubmit(block.VIRTIO_BLK_T_IN, lba, nil, uint8(i), extDataPA)
+			tag, err := dev.DoBlockIOSubmit(block.VIRTIO_BLK_T_IN, lba, nil, uint8(i), extDataPA, 0)
 			if err != nil {
 				serial.RawUARTPuts("[BlockRead] submit error at LBA ")
 				serial.RawUARTDecimal(lba)

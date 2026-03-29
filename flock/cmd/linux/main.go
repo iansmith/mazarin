@@ -251,19 +251,16 @@ func main() {
 	// Publish Ready=false until setup is complete.
 	readyAttr := attr.ValueBool(wm.ReadyURI(attr.SID()), false)
 
-	// 2. Wait for rachel (fontsvc) and fs before creating fontcache.
-	// Without this, OpenFace may fail because fs hasn't registered for
-	// LoadFile yet. Caching a nil font would then prevent the event loop
-	// from ever loading it, or retrying during redraw would deadlock (linux
-	// blocked on font reply, fontsvc blocked on Write delegation back to linux).
-	sys.UartWriteString(fmt.Sprintf("[linux] waiting for rachel + fs ready... (T+%v)\n", time.Since(startTime)))
-	if err := sys.WaitForShepherdReady("rachel", 10); err != nil {
-		panic(fmt.Sprintf("[linux] FATAL: rachel: %v", err))
-	}
+	// 2. Wait for fs first (file operations), then rachel (window manager + fontsvc).
+	// fs is ready earlier since rachel depends on fs for loading .maz files.
+	sys.UartWriteString(fmt.Sprintf("[linux] waiting for fs + rachel ready... (T+%v)\n", time.Since(startTime)))
 	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
 		panic(fmt.Sprintf("[linux] FATAL: fs: %v", err))
 	}
-	sys.UartWriteString(fmt.Sprintf("[linux] rachel + fs ready (T+%v)\n", time.Since(startTime)))
+	if err := sys.WaitForShepherdReady("rachel", 10); err != nil {
+		panic(fmt.Sprintf("[linux] FATAL: rachel: %v", err))
+	}
+	sys.UartWriteString(fmt.Sprintf("[linux] fs + rachel ready (T+%v)\n", time.Since(startTime)))
 
 	rachelSID := sys.MustGetShepherdByName("rachel")
 	fsSID := sys.MustGetShepherdByName("fs")
@@ -422,12 +419,9 @@ func main() {
 	drawCtx.Flush(int32(winX), int32(winY), int32(winX+winW), int32(winY+winH))
 	sys.UartWriteString(fmt.Sprintf("[linux] initial draw done at (%.0f,%.0f) (T+%v)\n", winX, winY, time.Since(startTime)))
 
-	// 9. Signal readiness.
-	readyAttr.Set(true)
-	sys.SetReady(true)
-	sys.UartWriteString(fmt.Sprintf("[linux] Ready=true (T+%v)\n", time.Since(startTime)))
-
-	// 10. Serial channel and delegated syscalls.
+	// 9. Serial channel and delegated syscalls.
+	// Set up delegate handling BEFORE signalling Ready, so that other shepherds
+	// waiting on our Ready don't send us delegates before we're draining them.
 	sys.UartWriteString(fmt.Sprintf("[linux] setting up serial + delegate channels (T+%v)\n", time.Since(startTime)))
 	serialCh, err := serial.Chars()
 	if err != nil {
@@ -440,6 +434,7 @@ func main() {
 	sys.UartWriteString(fmt.Sprintf("[linux] fs IPC ready (T+%v)\n", time.Since(startTime)))
 
 	handler := newSyscallHandler(ipcClient)
+	sys.UartWriteString("[linux] calling HandleSyscalls...\n")
 
 	delegateCh, delegateErr := sys.HandleSyscalls(
 		sysid.Write, sysid.Read, sysid.Openat, sysid.Close,
@@ -457,6 +452,8 @@ func main() {
 		sys.UartWriteString("[linux] Registered as file syscall handler\n")
 	}
 
+	sys.UartWriteString("[linux] starting delegate handler goroutine...\n")
+
 	// Delegate handler goroutine — replies immediately to unblock callers,
 	// forwards text data to delegateDataCh for the main goroutine.
 	var delegateDataCh <-chan delegateMsg
@@ -464,8 +461,17 @@ func main() {
 		delegateDataCh = startDelegateHandler(delegateCh, handler, con.suppressSerialCopy)
 	}
 
-	// 11. Event loop — main goroutine owns console state + redraw.
+	sys.UartWriteString("[linux] calling OnDirty...\n")
+
+	// 10. Event loop — main goroutine owns console state + redraw.
+	// Signal readiness AFTER delegate handler is running, so other shepherds
+	// that wait on our Ready can immediately send us delegates.
 	dirtyCh := attr.OnDirty()
+
+	sys.UartWriteString("[linux] calling SetReady...\n")
+	readyAttr.Set(true)
+	sys.SetReady(true)
+	sys.UartWriteString(fmt.Sprintf("[linux] Ready=true (T+%v)\n", time.Since(startTime)))
 	sys.UartWriteString("[linux] Entering event loop\n")
 
 	redraw := func() {

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"mazzy/shared/hid"
 	"mazzy/shared/mazzy"
-	"runtime"
 	"unsafe"
 )
 
@@ -33,14 +32,12 @@ func SetInputFocus(targetSID int, class int) error {
 
 // WaitInputEvent blocks until input events arrive for the caller's device class queue.
 // Returns the number of events and fills buf with HID event data.
-// Uses entersyscall/exitsyscall to release the P while blocking.
+// The kernel thread blocks inside the SVC; no entersyscall/exitsyscall needed.
 func WaitInputEvent(class int, buf *hid.SoftIRQReturn) (int, error) {
-	runtime_entersyscall()
 	r1, _, errno := RawSyscall(mazzy.SysWaitInputEvent,
 		uintptr(class),
 		uintptr(unsafe.Pointer(buf)),
 		0, 0, 0, 0)
-	runtime_exitsyscall()
 
 	if errno != 0 {
 		return 0, errors.New("WaitInputEvent failed")
@@ -51,19 +48,3 @@ func WaitInputEvent(class int, buf *hid.SoftIRQReturn) (int, error) {
 	return 0, nil
 }
 
-// PollInputEvent is a single non-blocking attempt that returns (0, nil) if no events.
-func PollInputEvent(class int, buf *hid.SoftIRQReturn) (int, error) {
-	r1, _, errno := RawSyscall(mazzy.SysWaitInputEvent,
-		uintptr(class),
-		uintptr(unsafe.Pointer(buf)),
-		0, 0, 0, 0)
-
-	if errno != 0 {
-		return 0, nil // no events
-	}
-	if r1 > 0 {
-		return int(r1), nil
-	}
-	runtime.Gosched()
-	return 0, nil
-}

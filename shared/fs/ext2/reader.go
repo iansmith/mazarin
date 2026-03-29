@@ -16,8 +16,8 @@ type FileSystem struct {
 	groups    []GroupDesc
 	blockSize uint32
 	numGroups uint32
-	// Scratch buffer for single-sector reads (avoids allocation on hot paths)
-	sectorBuf [512]byte
+	// Scratch buffer for partial-block reads (sized to max device block size)
+	sectorBuf [4096]byte
 	// Write support (populated by MountRW)
 	writable     bool
 	blockBitmaps [][]byte // one bitmap per group
@@ -293,6 +293,89 @@ func (fs *FileSystem) inodeBlockNum(inode *Inode, n uint32) (uint32, error) {
 	}
 
 	return 0, ErrCorrupted
+}
+
+// ResolveBlockList returns the physical block numbers for data blocks
+// startBlock..startBlock+count-1 of the given inode. Caches indirect
+// pointer tables internally so that a contiguous range of blocks reads
+// each metadata block at most once (vs. once per pointer via inodeBlockNum).
+func (fs *FileSystem) ResolveBlockList(inode *Inode, startBlock, count uint32) ([]uint32, error) {
+	ptrsPerBlock := fs.blockSize / 4
+	blocks := make([]uint32, 0, count)
+
+	const noBlock = ^uint32(0)
+	// Two-level cache for indirect pointer tables.
+	// cache1: single-indirect table or double-indirect L1 table
+	// cache2: double-indirect L2 table
+	cache1Num, cache2Num := noBlock, noBlock
+	var cache1, cache2 []byte
+
+	readCachedPtr := func(cache *[]byte, cacheNum *uint32, blockNum, idx uint32) (uint32, error) {
+		if *cacheNum != blockNum {
+			if *cache == nil {
+				*cache = make([]byte, fs.blockSize)
+			}
+			if err := fs.readBlock(blockNum, *cache); err != nil {
+				return 0, err
+			}
+			*cacheNum = blockNum
+		}
+		return binary.LittleEndian.Uint32((*cache)[idx*4:]), nil
+	}
+
+	for i := uint32(0); i < count; i++ {
+		n := startBlock + i
+
+		// Direct blocks (0-11)
+		if n < NDirect {
+			blocks = append(blocks, inode.Block[n])
+			continue
+		}
+		adj := n - NDirect
+
+		// Single indirect
+		if adj < ptrsPerBlock {
+			if inode.Block[IndirectBlock] == 0 {
+				blocks = append(blocks, 0)
+				continue
+			}
+			bn, err := readCachedPtr(&cache1, &cache1Num, inode.Block[IndirectBlock], adj)
+			if err != nil {
+				return blocks, err
+			}
+			blocks = append(blocks, bn)
+			continue
+		}
+		adj -= ptrsPerBlock
+
+		// Double indirect
+		if adj < ptrsPerBlock*ptrsPerBlock {
+			if inode.Block[DblIndirectBlock] == 0 {
+				blocks = append(blocks, 0)
+				continue
+			}
+			idx1 := adj / ptrsPerBlock
+			idx2 := adj % ptrsPerBlock
+			indBlock, err := readCachedPtr(&cache1, &cache1Num, inode.Block[DblIndirectBlock], idx1)
+			if err != nil {
+				return blocks, err
+			}
+			if indBlock == 0 {
+				blocks = append(blocks, 0)
+				continue
+			}
+			bn, err := readCachedPtr(&cache2, &cache2Num, indBlock, idx2)
+			if err != nil {
+				return blocks, err
+			}
+			blocks = append(blocks, bn)
+			continue
+		}
+
+		return blocks, ErrCorrupted
+	}
+
+	return blocks, nil
 }
 
 // readBlockPtr reads a uint32 block pointer at index idx from a block of pointers.

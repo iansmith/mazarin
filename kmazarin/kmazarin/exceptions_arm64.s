@@ -239,6 +239,24 @@ sync_exception_handler:
 	// Without this switch, we'd corrupt the interrupted code's stack.
 	MSR	$1, SPSel
 
+	// DEBUG: Check SP_EL1 validity ON ENTRY (before SUB).
+	// Uses TPIDR_EL1 to save/restore R10 without clobbering registers.
+	MSR	R10, TPIDR_EL1               // Save R10 temporarily
+	MOVD	$0xFFFFFFFF43E28001, R10   // ExcStackTop + 1 (128KB stack)
+	CMP	R10, RSP
+	BHS	sync_entry_sp_corrupt        // RSP >= top+1 means above stack
+	MOVD	$0xFFFFFFFF43E08000, R10   // ExcStackBottom
+	CMP	R10, RSP
+	BHS	sync_entry_sp_ok             // RSP >= bottom means in range
+sync_entry_sp_corrupt:
+	// SP_EL1 is corrupt ON ENTRY. Print '@' marker + SP value and halt.
+	MOVD	$UART_BASE, R10
+	MOVD	$'@', R11; MOVB	R11, (R10)
+	B	sp_entry_corrupt_common      // shared print routine (below data_abort_unhandled)
+sync_entry_sp_ok:
+	MRS	TPIDR_EL1, R10               // Restore R10
+	MSR	ZR, TPIDR_EL1                // Clear TPIDR_EL1
+
 	// CRITICAL: Save X0-X7 BEFORE any debug output!
 	// These contain syscall arguments and must not be clobbered.
 	// Allocate frame first
@@ -924,6 +942,81 @@ skip_unwinder_dump:
 data_abort_hang:
 	B	data_abort_hang
 
+// ============================================================================
+// sp_entry_corrupt_common - Shared print routine for SP_EL1 entry corruption
+// ============================================================================
+// Called from sync/irq entry checks when SP_EL1 is outside valid range.
+// The '@' or '#' marker character was already printed by the caller.
+// R10 = UART_BASE (set by caller)
+// Prints: SP1=<hex> S0=<hex> E=<hex>\r\n then halts
+sp_entry_corrupt_common:
+	MOVD	$'S', R11; MOVB	R11, (R10)
+	MOVD	$'P', R11; MOVB	R11, (R10)
+	MOVD	$'1', R11; MOVB	R11, (R10)
+	MOVD	$'=', R11; MOVB	R11, (R10)
+	// Print RSP (= SP_EL1) in hex
+	MOVD	RSP, R12
+	MOVD	$16, R13
+sp_ec_hex1:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	sp_ec_d1
+	ADD	$('A'-10), R11
+	B	sp_ec_e1
+sp_ec_d1:
+	ADD	$'0', R11
+sp_ec_e1:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, sp_ec_hex1
+	// Print SP_EL0
+	MOVD	$' ', R11; MOVB	R11, (R10)
+	MOVD	$'S', R11; MOVB	R11, (R10)
+	MOVD	$'0', R11; MOVB	R11, (R10)
+	MOVD	$'=', R11; MOVB	R11, (R10)
+	MRS	SP_EL0, R12
+	MOVD	$16, R13
+sp_ec_hex2:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	sp_ec_d2
+	ADD	$('A'-10), R11
+	B	sp_ec_e2
+sp_ec_d2:
+	ADD	$'0', R11
+sp_ec_e2:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, sp_ec_hex2
+	// Print ELR
+	MOVD	$' ', R11; MOVB	R11, (R10)
+	MOVD	$'E', R11; MOVB	R11, (R10)
+	MOVD	$'=', R11; MOVB	R11, (R10)
+	MRS	ELR_EL1, R12
+	MOVD	$16, R13
+sp_ec_hex3:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	sp_ec_d3
+	ADD	$('A'-10), R11
+	B	sp_ec_e3
+sp_ec_d3:
+	ADD	$'0', R11
+sp_ec_e3:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, sp_ec_hex3
+	MOVD	$'\r', R11; MOVB	R11, (R10)
+	MOVD	$'\n', R11; MOVB	R11, (R10)
+sp_ec_halt:
+	B	sp_ec_halt
+
 svc_return:
 	// Clear svcDepth — we're leaving the SVC handler (safe to preempt again).
 	// IRQs are masked (DAIF.I set during exception handling), so no race with timer.
@@ -935,7 +1028,7 @@ svc_return:
 sync_return:
 
 	// DEBUG: SP corruption guard — catch SP_EL1 at/above stack top
-	MOVD	$0xFFFFFFFF43E0C000, R12
+	MOVD	$0xFFFFFFFF43E28000, R12
 	CMP	R12, RSP
 	BLO	sync_sp_ok
 	// SP is at/above stack top — no exception frame!
@@ -1034,6 +1127,24 @@ irq_exception_handler:
 	// ARM64 preserves PSTATE.SP=0, meaning RSP still aliases SP_EL0!
 	// Without this switch, we'd corrupt the interrupted code's stack.
 	MSR	$1, SPSel
+
+	// DEBUG: Check SP_EL1 validity ON ENTRY (before SUB).
+	// Uses TPIDR_EL1 to save/restore R10 without clobbering registers.
+	MSR	R10, TPIDR_EL1               // Save R10 temporarily
+	MOVD	$0xFFFFFFFF43E28001, R10   // ExcStackTop + 1 (128KB stack)
+	CMP	R10, RSP
+	BHS	irq_entry_sp_corrupt         // RSP >= top+1 means above stack
+	MOVD	$0xFFFFFFFF43E08000, R10   // ExcStackBottom
+	CMP	R10, RSP
+	BHS	irq_entry_sp_ok              // RSP >= bottom means in range
+irq_entry_sp_corrupt:
+	// SP_EL1 is corrupt ON ENTRY. Print '#' marker and halt.
+	MOVD	$UART_BASE, R10
+	MOVD	$'#', R11; MOVB	R11, (R10)
+	B	sp_entry_corrupt_common      // shared print routine
+irq_entry_sp_ok:
+	MRS	TPIDR_EL1, R10               // Restore R10
+	MSR	ZR, TPIDR_EL1                // Clear TPIDR_EL1
 
 	// CRITICAL: Save X0-X7 BEFORE any debug output!
 	// These may contain important values that must not be clobbered.
@@ -1175,10 +1286,14 @@ timer_is_el0:
 	B	timer_check_preemption
 
 timer_skip_el1h:
-	// Diagnostic: count EL1h skips
+	// Diagnostic: count EL1h skips and capture ELR/SPSR for debugging
 	MOVD	·dbgTimerSkipEL1h(SB), R10
 	ADD	$1, R10
 	MOVD	R10, ·dbgTimerSkipEL1h(SB)
+	// Save the ELR and SPSR of the interrupted code for later diagnosis
+	LDP	(EXC_FRAME_ELR_SPSR)(RSP), (R10, R11)
+	MOVD	R10, ·dbgLastEL1hELR(SB)
+	MOVD	R11, ·dbgLastEL1hSPSR(SB)
 	B	timer_no_thread_preempt
 
 timer_skip_svcdepth:
@@ -1351,7 +1466,7 @@ irq_write_eoir:
 irq_return:
 
 	// DEBUG: SP corruption guard — catch SP_EL1 at/above stack top
-	MOVD	$0xFFFFFFFF43E0C000, R12
+	MOVD	$0xFFFFFFFF43E28000, R12
 	CMP	R12, RSP
 	BLO	irq_sp_ok
 	// SP is at/above stack top — no exception frame!
@@ -1829,7 +1944,7 @@ el0_unhandled_halt:
 	B	el0_unhandled_halt
 el0_return:
 	// DEBUG: SP corruption guard — catch SP_EL1 at/above stack top
-	MOVD	$0xFFFFFFFF43E0C000, R12
+	MOVD	$0xFFFFFFFF43E28000, R12
 	CMP	R12, RSP
 	BLO	el0_sp_ok
 	// SP is at/above stack top — no exception frame!

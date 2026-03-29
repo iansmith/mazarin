@@ -205,6 +205,11 @@ func (f *File) InodeNum() uint32 {
 	return f.inum
 }
 
+// InodeRaw returns a pointer to the file's inode for block list resolution.
+func (f *File) InodeRaw() *Inode {
+	return &f.inode
+}
+
 // Close releases resources.
 func (f *File) Close() error {
 	f.blockBuf = nil

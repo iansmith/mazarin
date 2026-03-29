@@ -23,7 +23,7 @@ const (
 	KernelVAOffset       = 0xFFFFFFFF00000000
 	KernelStacksVirtBase = KernelVAOffset + 0x43E00000 // 0xFFFFFFFF43E00000
 	KernelG0StackSize    = 0x8000                      // 32KB
-	KernelExcStackSize   = 0x4000                      // 16KB
+	KernelExcStackSize   = 0x20000                     // 128KB
 	KernelG0StackBottom  = KernelStacksVirtBase
 	KernelG0StackTop     = KernelG0StackBottom + KernelG0StackSize
 	KernelExcStackBottom = KernelG0StackTop

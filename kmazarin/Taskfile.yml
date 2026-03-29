@@ -71,6 +71,8 @@ tasks:
     sources:
       - 'kmazarin/**/*.go'
       - 'kmazarin/**/*.s'
+      - 'kmazarin/kmazarin/fs.elf'
+      - 'kmazarin/kmazarin/kernel.toml'
       - 'shared/**/*.go'
       - '{{.KMAZARIN_OVERLAY_JSON}}'
       - '{{.RUNTIME_PATCHES_DIR}}/*.go'

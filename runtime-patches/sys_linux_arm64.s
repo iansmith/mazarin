@@ -10,17 +10,27 @@
 #include "textflag.h"
 #include "cgo/abi_arm64.h"
 
-// exit - infinite loop (no OS to exit to)
+// exit - terminate entire process (all threads of this shepherd)
+// Go runtime calls this for os.Exit() and runtime.throw() — it means
+// "kill the whole process", matching Linux exit_group(2) semantics.
 TEXT runtime·exit(SB),NOSPLIT|NOFRAME,$0-4
+	MOVW	code+0(FP), R0		// arg0: exit status
+	MOVD	$94, R8			// SYS_exit_group (terminate all threads)
+	SVC	$0
+	// Should not return — kernel terminates shepherd and switches away
 halt_loop:
 	WFI
 	B	halt_loop
 
-// exitThread - infinite loop
+// exitThread - signal thread exit to runtime, then call kernel exit syscall
 TEXT runtime·exitThread(SB),NOSPLIT|NOFRAME,$0-8
 	MOVD	wait+0(FP), R0
 	MOVW	$0, R1
-	STLRW	R1, (R0)
+	STLRW	R1, (R0)		// Store-release 0 to *wait (signal to runtime)
+	MOVD	$0, R0			// exit status 0
+	MOVD	$93, R8			// SYS_exit
+	SVC	$0
+	// Should not return
 exit_thread_loop:
 	WFI
 	B	exit_thread_loop

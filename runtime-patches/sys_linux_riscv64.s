@@ -12,19 +12,29 @@
 #include "go_tls.h"
 #include "textflag.h"
 
-// exit - infinite loop (no OS to exit to)
+// exit - terminate entire process (all threads of this shepherd)
+// Go runtime calls this for os.Exit() and runtime.throw() — it means
+// "kill the whole process", matching Linux exit_group(2) semantics.
 TEXT runtime·exit(SB),NOSPLIT|NOFRAME,$0-4
+	MOVW	code+0(FP), A0		// arg0: exit status
+	MOV	$94, A7			// SYS_exit_group (terminate all threads)
+	WORD	$0x00100073		// ebreak → trap handler → SyscallDispatch
+	// Should not return — kernel terminates shepherd and switches away
 halt_loop:
-	WORD	$0x10500073	// wfi
+	WORD	$0x10500073		// wfi
 	JMP	halt_loop
 
-// exitThread - infinite loop
+// exitThread - signal thread exit to runtime, then call kernel exit syscall
 TEXT runtime·exitThread(SB),NOSPLIT|NOFRAME,$0-8
 	MOV	wait+0(FP), A0
 	MOV	ZERO, T0
-	WORD	$0x1805352F	// amoswap.w.rl zero, zero, (a0)
+	WORD	$0x1805352F		// amoswap.w.rl zero, zero, (a0) — store-release 0
+	MOV	ZERO, A0		// exit status 0
+	MOV	$93, A7			// SYS_exit
+	WORD	$0x00100073		// ebreak → trap handler → SyscallDispatch
+	// Should not return
 exit_thread_loop:
-	WORD	$0x10500073	// wfi
+	WORD	$0x10500073		// wfi
 	JMP	exit_thread_loop
 
 // open - not supported, return -1

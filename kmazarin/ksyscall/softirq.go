@@ -53,19 +53,26 @@ func SyscallWaitSoftIRQ(slotNum, bufPtr, flags, _, _, _ uint64) int64 {
 	events := &slotEventBufs[slotNum]
 
 	// Non-blocking drain
+	// NOTE: The UART writes here serve a functional purpose under HVF.
+	// They cause VM exits that give QEMU an opportunity to inject pending
+	// block device interrupts. Without these, the vCPU runs the entire SVC
+	// handler at native speed and the block IRQ injection is delayed past
+	// the drain check, causing the second I/O to fail. This needs a proper
+	// fix (e.g. an ISB or explicit yield point) but for now the UART writes
+	// provide the necessary VM exit points.
+	if slot == 0 {
+		serial.PollWrite('S')
+	}
 	n := DrainSoftIRQSlotEvents(slot, events[:], hid.MaxHIDEvents)
 	if n > 0 {
+		if slot == 0 {
+			serial.PollWrite('D')
+		}
 		if slot == 3 {
 			atomic.AddUint64(&DbgSlot3DrainHit, 1)
 		}
 		intKind := GetSlotInterruptKind(slot)
 		if err := writeSoftIRQReturn(bufPtr, events[:n], n, intKind); err != 0 {
-			// Breadcrumb: writeSoftIRQReturn failed
-			if slot == 0 {
-				serial.RawUARTPuts("!k")
-			} else if slot == 1 {
-				serial.RawUARTPuts("!m")
-			}
 			return err
 		}
 		return int64(n)
@@ -80,6 +87,9 @@ func SyscallWaitSoftIRQ(slotNum, bufPtr, flags, _, _, _ uint64) int64 {
 	}
 
 	// Blocking path: block this kernel thread on the slot.
+	if slot == 0 {
+		serial.PollWrite('b')
+	}
 	ctxPtr := BlockOnSlot(slot)
 	if ctxPtr != 0 {
 		// Context switch to another thread. The wake path (PushTimerEventAndWake
@@ -89,10 +99,12 @@ func SyscallWaitSoftIRQ(slotNum, bufPtr, flags, _, _, _ uint64) int64 {
 		return -11 // Value doesn't matter — overwritten by re-executed SVC
 	}
 
-	// No other thread to switch to — WFI loop until events arrive.
-	// The timer ISR pushes events to the ring; we drain after each WFI.
+	// No other thread to switch to — drain-then-WFI loop until events arrive.
+	// Drain BEFORE WFI: when the block IRQ fires during DAIFClr (before WFI
+	// executes), events land in the ring but WFI still halts waiting for the
+	// NEXT interrupt. Draining first catches events that arrived during
+	// BlockOnSlot or in the DAIFClr→WFI window.
 	for {
-		enableIRQsAndWait()
 		n = DrainSoftIRQSlotEvents(slot, events[:], hid.MaxHIDEvents)
 		if n > 0 {
 			intKind := GetSlotInterruptKind(slot)
@@ -101,6 +113,7 @@ func SyscallWaitSoftIRQ(slotNum, bufPtr, flags, _, _, _ uint64) int64 {
 			}
 			return int64(n)
 		}
+		enableIRQsAndWait()
 	}
 }
 

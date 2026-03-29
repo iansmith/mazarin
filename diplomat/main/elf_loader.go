@@ -290,8 +290,8 @@ type SimpleFile struct {
 }
 
 // clusterMap caches the FAT32 cluster chain for a file.
-// Supports files up to 1024 clusters (4MB with 4KB clusters).
-var clusterMap [1024]uint32
+// Supports files up to 4096 clusters (16MB with 4KB clusters).
+var clusterMap [4096]uint32
 
 // buildClusterMap walks the FAT32 cluster chain once and stores all cluster
 // numbers, enabling O(1) random access to any part of the file.

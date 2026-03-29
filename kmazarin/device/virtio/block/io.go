@@ -73,8 +73,17 @@ const (
 //
 // PCI mode uses Engine + SidecarPool. MMIO mode uses legacy Queue + DMA page.
 //
+// dataLen overrides the data descriptor length when non-zero. When 0,
+// defaults to d.BlockSizeBytes (single-sector I/O). Used by SyscallBlockSubmit
+// to issue multi-sector reads (e.g., 8 sectors = 4096 bytes).
+//
 //go:nosplit
-func (d *VirtIOBlockDevice) DoBlockIOSubmit(requestType uint32, lba uint64, buf []byte, slotIdx uint8, extDataPA uintptr) (uint16, error) {
+func (d *VirtIOBlockDevice) DoBlockIOSubmit(requestType uint32, lba uint64, buf []byte, slotIdx uint8, extDataPA uintptr, dataLen uint32) (uint16, error) {
+	// Default dataLen to single-sector size when not specified
+	if dataLen == 0 {
+		dataLen = d.BlockSizeBytes
+	}
+
 	if d.MMIOBase != 0 {
 		return d.submitLegacy(requestType, lba, buf)
 	}
@@ -122,7 +131,7 @@ func (d *VirtIOBlockDevice) DoBlockIOSubmit(requestType uint32, lba uint64, buf 
 		bufFlags = virtio.VIRTQ_DESC_F_WRITE // Device writes for read operations
 	}
 	chain.Descs[1] = virtio.DescSpec{
-		PA: uint64(dataPA), Len: d.BlockSizeBytes, Flags: bufFlags,
+		PA: uint64(dataPA), Len: dataLen, Flags: bufFlags,
 	}
 	chain.Descs[2] = virtio.DescSpec{
 		PA: uint64(slot.PA + sidecarStatusOffset), Len: 1, Flags: virtio.VIRTQ_DESC_F_WRITE,
@@ -269,7 +278,7 @@ func (d *VirtIOBlockDevice) doBlockIO(requestType uint32, lba uint64, buf []byte
 		}
 	}
 
-	reqDescIdx, err := d.DoBlockIOSubmit(requestType, lba, buf, 0, 0)
+	reqDescIdx, err := d.DoBlockIOSubmit(requestType, lba, buf, 0, 0, 0)
 	if err != nil {
 		if d.SetAsyncMode != nil {
 			d.SetAsyncMode(prevAsync)

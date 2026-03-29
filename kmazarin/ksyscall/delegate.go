@@ -365,6 +365,9 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 			// Dequeue and deliver to the handler
 			e := delegateQueuePop(id)
 			if e != nil {
+				// Demand-map the handler's result struct pages.
+				kmem.DemandMapUserPage(resultPtr, handlerShepherd.PageTableL0PA)
+				kmem.DemandMapUserPage(resultPtr+71, handlerShepherd.PageTableL0PA)
 				if !writeDelegateRecvResult(resultPtr, handlerShepherd.PageTableL0PA, e) {
 					serial.RawUARTPuts("[DLG] recv result write fault\r\n")
 				}
@@ -646,7 +649,17 @@ func SyscallDelegatedRecv(arg0, _, _, _, _, _ uint64) int64 {
 		serial.RawUARTPuts(" sysID=")
 		serial.RawUARTDecimal(uint64(e.SysID))
 		serial.RawUARTPuts("\r\n")
+		// Ensure the handler's result pages are mapped before writing.
+		// The delegate recv goroutine allocates the result struct on its
+		// stack, but the page may not be demand-faulted yet. Without
+		// this, writeDelegateRecvResult fails and the request is lost
+		// (already popped from the queue), blocking the caller forever.
+		kmem.DemandMapUserPage(resultPtr, callerShepherd.PageTableL0PA)
+		// Result struct is 72 bytes — demand-map the end too in case
+		// it spans a page boundary.
+		kmem.DemandMapUserPage(resultPtr+71, callerShepherd.PageTableL0PA)
 		if !writeDelegateRecvResult(resultPtr, callerShepherd.PageTableL0PA, e) {
+			serial.RawUARTPuts("[DLG:recv-hit] EFAULT writing result, re-delivering\r\n")
 			return -14 // EFAULT — handler's result buffer is not mapped
 		}
 		return 0
@@ -836,12 +849,12 @@ func writeU16ToUser(addr uintptr, val uint16, l0PA uintptr) bool {
 	if pa == 0 {
 		return false
 	}
-	scratchVA := kmem.MapPAToKernelScratch(pa &^ 0xFFF)
-	if scratchVA == 0 {
+	kernelVA := kmem.MapPAToKernelScratch(pa)
+	if kernelVA == 0 {
 		return false
 	}
-	offset := addr & 0xFFF
-	*(*uint16)(unsafe.Pointer(scratchVA + offset)) = val
+	*(*uint16)(unsafe.Pointer(kernelVA)) = val
+	kmem.CleanCacheLine(kernelVA)
 	return true
 }
 
@@ -863,7 +876,7 @@ func writeU64ToUserChecked(userVA uintptr, val uint64, l0PA uintptr) bool {
 		return false
 	}
 	*(*uint64)(unsafe.Pointer(kernelVA)) = val
-	kmem.CleanPageCache(kernelVA)
+	kmem.CleanCacheLine(kernelVA)
 	return true
 }
 

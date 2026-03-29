@@ -157,11 +157,9 @@ func AttrWaitDirty(buf []uint16) int {
 	if len(buf) == 0 {
 		return 0
 	}
-	runtime_entersyscall()
 	r1, _, _ := RawSyscall(mazzy.SysAttrWaitDirty,
 		uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)),
 		0, 0, 0, 0)
-	runtime_exitsyscall()
 	return int(int64(r1))
 }
 

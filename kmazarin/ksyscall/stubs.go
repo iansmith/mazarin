@@ -5,6 +5,7 @@ import (
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
+	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"sync/atomic"
 
@@ -364,6 +365,9 @@ func SyscallEpollPwait(_, _, _, timeoutMS, _, _ uint64) int64 {
 	}
 
 	// Block thread until deadline fires or eventfd write wakes us
+	if ms < 0 {
+		serial.PollWrite('e') // breadcrumb: epoll infinite block (no deadline)
+	}
 	nextThread := ThreadBlockSleep()
 	if nextThread != 0 {
 		SetSyscallSwitchTarget(nextThread)

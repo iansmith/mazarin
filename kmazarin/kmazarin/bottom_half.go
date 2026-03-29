@@ -303,6 +303,7 @@ func NonTimerIRQTopHalf() {
 
 		if atomic.LoadUint32(&blockAsyncMode) != 0 && blockEnginePtr != 0 {
 			// Async mode: drain engine used ring, push completion events
+			serial.PollWrite('I') // breadcrumb: block IRQ async path
 			eng := (*virtio.Engine)(unsafe.Pointer(blockEnginePtr))
 			for eng.HasUsed() {
 				info := eng.PopUsed()

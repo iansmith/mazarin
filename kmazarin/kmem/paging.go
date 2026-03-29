@@ -1189,6 +1189,16 @@ func dcCIVAC(va uintptr) {
 	dcCIVACAsm(va)
 }
 
+// CleanCacheLine cleans and invalidates the single cache line containing va.
+// Use this after writing a small amount of data (e.g., 8 bytes) to a kernel
+// scratch mapping that will be read via a different VA (userspace TTBR0 mapping).
+//
+//go:nosplit
+func CleanCacheLine(va uintptr) {
+	dcCIVAC(va)
+	dsbSY()
+}
+
 // CleanPageCache cleans and invalidates the data cache for an entire page.
 // This ensures that all writes to the page are visible to other observers
 // (e.g., userspace reading via a different virtual address mapping).
