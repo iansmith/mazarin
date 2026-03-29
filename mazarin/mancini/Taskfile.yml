@@ -1,6 +1,13 @@
 version: '3'
 
 tasks:
+  build:
+    desc: Build the mancini UI library (compile check)
+    sources:
+      - 'mazarin/mancini/**/*.go'
+    cmds:
+      - '{{.GO}} build ./mazarin/mancini/...'
+
   compile-constraints:
     desc: Compile .vgo constraint source files to .vbc.go bytecode
     sources:

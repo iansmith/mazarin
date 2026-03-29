@@ -22,6 +22,7 @@ import (
 	mfont "mazzy/shared/font"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/std"
+	mctheme "mazzy/mazarin/mancini/theme"
 	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/serial"
 	"mazzy/mazarin/sys"
@@ -260,11 +261,10 @@ func main() {
 			return fc.OpenFaceByName(mfont.DefaultMono, mfont.Regular, size)
 		},
 	}
-	pal := mancini.DefaultPalette()
-	pal.SwapRB = true
+	pal := mctheme.NewDefaultPaletteSwapRB()
 
 	// Theme for ConsoleLabel (monospaced font, console colors).
-	theme := mancini.NewTheme(nContent, nText, mfont.DefaultMono, fontSize,
+	theme := mctheme.NewTheme(mctheme.NewDefaultPaletteWithColors(nContent, nText), mctheme.NewDefaultNeumorphicParams(), mfont.DefaultMono, fontSize,
 		func(family string, feature mancini.Feature, size int64) font.Face {
 			return fc.OpenFaceByName(family, mfont.Regular, size)
 		})
@@ -303,7 +303,7 @@ func main() {
 	content := std.NewColumnOutsideIn("console_col", "AppWindow", nContent, minH, maxH)
 
 	gt := std.NewGradientTitle(pal, fonts, "Serial Console", 18, 8)
-	app := std.NewAppWindow(nil, pal, fonts, "Serial Console", 26, 900, gt.TitleDraw)
+	app := std.NewAppWindow(nil, pal, *mctheme.NewDefaultNeumorphicParams().Heavy(), fonts, "Serial Console", 26, 900, gt.TitleDraw)
 	app.Focused = false // wait for rachel to grant focus
 	// 6. Screen dimensions and draw context.
 	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
@@ -362,7 +362,7 @@ func main() {
 	winX := float64(posXAttr.Get())
 	winY := float64(posYAttr.Get())
 	// Clear sizing ghost and draw at final position.
-	ggCtx.SetColor(pal.Surface)
+	ggCtx.SetColor(pal.Surface())
 	clearX0, clearY0 := initX, initY
 	clearX1, clearY1 := initX+winW, initY+winH
 	if winX < clearX0 {

@@ -51,7 +51,7 @@ func NewGradientTitle(pal mancini.Palette, fonts *mancini.FontConfig, title stri
 		title:  title,
 		face:   face,
 		radius: radius,
-		swapRB: pal.SwapRB,
+		swapRB: pal.SwapRB(),
 	}
 }
 
@@ -119,9 +119,9 @@ func (g *GradientTitle) renderFrame(elapsed float64) {
 
 	// Symmetric gradient: Surface → SurfaceTint at peak → Surface.
 	grad := gg.NewLinearGradient(0, fh/2, fw, fh/2)
-	grad.AddColorStop(0, g.pal.Surface)
-	grad.AddColorStop(peak, g.pal.SurfaceTint)
-	grad.AddColorStop(1, g.pal.Surface)
+	grad.AddColorStop(0, g.pal.Surface())
+	grad.AddColorStop(peak, g.pal.SurfaceTint())
+	grad.AddColorStop(1, g.pal.Surface())
 	dc.SetFillStyle(grad)
 	dc.DrawRoundedRectangle(0, 0, fw, fh, g.radius)
 	dc.Fill()
@@ -130,7 +130,7 @@ func (g *GradientTitle) renderFrame(elapsed float64) {
 	if g.face != nil {
 		dc.SetFontFace(g.face)
 	}
-	dc.SetColor(g.pal.Text)
+	dc.SetColor(g.pal.Text())
 	dc.DrawStringAnchored(g.title, fw/2, fh/2, 0.5, 0.5)
 
 	g.mu.Lock()

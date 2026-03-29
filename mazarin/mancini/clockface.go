@@ -59,7 +59,7 @@ func (f *ClassicFace) DrawFace(dc DrawContext, fc *FontConfig, pal Palette, cx, 
 	// Clear the clock face.
 	face := f.FillColor
 	if face == (color.NRGBA{}) {
-		face = pal.Surface
+		face = pal.Surface()
 	}
 	dc.SetColor(face)
 	dc.DrawCircle(cx, cy, radius)

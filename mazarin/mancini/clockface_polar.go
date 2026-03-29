@@ -32,7 +32,7 @@ func (f *PolarFace) DrawFace(dc DrawContext, fc *FontConfig, pal Palette, cx, cy
 	// Fill the clock face.
 	face := f.FillColor
 	if face == (color.NRGBA{}) {
-		face = pal.Surface
+		face = pal.Surface()
 	}
 	dc.SetColor(face)
 	dc.DrawCircle(cx, cy, radius)

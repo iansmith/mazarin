@@ -170,27 +170,29 @@ func roundedRectMask(w, h int, x1, y1, x2, y2, r float64) *image.Alpha {
 // ── Neumorphic box rendering ─────────────────────────────────────────────────
 
 // NeuBoxWith draws a neumorphic rounded rectangle using explicit params.
-func NeuBoxWith(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDepth, x1, y1, x2, y2, r float64, face color.NRGBA, p mancini.NeuParams, content mancini.FaceDrawer) {
-	switch depth {
-	case mancini.Raised:
-		neuRaised(pal, dc, x1, y1, x2, y2, r, face, p.Raised)
-	case mancini.Flush:
-		neuFlush(pal, dc, x1, y1, x2, y2, r, face, p.Flush)
-	case mancini.Inset:
-		neuInset(pal, dc, x1, y1, x2, y2, r, face, p.Inset)
-	}
-	if face != pal.Surface && depth != mancini.Raised {
-		canvas := dc.Image().(*image.RGBA)
-		applyTintOverlay(pal, canvas, x1, y1, x2, y2, r, face)
+// If p is nil, a flat surface-colored rectangle is drawn (no shadows).
+func NeuBoxWith(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDepth, x1, y1, x2, y2, r float64, face color.NRGBA, p *mancini.NeuParams, content mancini.FaceDrawer) {
+	if p != nil {
+		switch depth {
+		case mancini.Raised:
+			neuRaised(pal, dc, x1, y1, x2, y2, r, face, p.Raised)
+		case mancini.Flush:
+			neuFlush(pal, dc, x1, y1, x2, y2, r, face, p.Flush)
+		case mancini.Inset:
+			neuInset(pal, dc, x1, y1, x2, y2, r, face, p.Inset)
+		}
+		if face != pal.Surface() && depth != mancini.Raised {
+			canvas := dc.Image().(*image.RGBA)
+			applyTintOverlay(pal, canvas, x1, y1, x2, y2, r, face)
+		}
+	} else {
+		dc.SetColor(face)
+		dc.DrawRoundedRectangle(x1, y1, x2-x1, y2-y1, r)
+		dc.Fill()
 	}
 	if content != nil {
 		content(dc, x1, y1, x2-x1, y2-y1)
 	}
-}
-
-// DrawNeuBox draws a neumorphic rounded rectangle using NeuBoxParams.
-func DrawNeuBox(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDepth, x1, y1, x2, y2, r float64, face color.NRGBA, content mancini.FaceDrawer) {
-	NeuBoxWith(pal, dc, depth, x1, y1, x2, y2, r, face, mancini.NeuBoxParams, content)
 }
 
 // localRect computes a padded bounding box around (x1,y1)-(x2,y2) for
@@ -228,11 +230,11 @@ func neuRaised(pal mancini.Palette, dc mancini.DrawContext, x1, y1, x2, y2, r fl
 
 	dark := shadowLayer(lw, lh,
 		lx1+p.DarkOff, ly1+p.DarkOff, lx2+p.DarkOff, ly2+p.DarkOff,
-		r, pal.DarkSh, p.DarkAlpha, p.DarkBlur, pal.SwapRB)
+		r, pal.DarkShadow(), p.DarkAlpha, p.DarkBlur, pal.SwapRB())
 	draw.Draw(canvas, dst, dark, image.Point{}, draw.Over)
 	light := shadowLayer(lw, lh,
 		lx1-p.LightOff, ly1-p.LightOff, lx2-p.LightOff, ly2-p.LightOff,
-		r, pal.LightSh, p.LightAlpha, p.LightBlur, pal.SwapRB)
+		r, pal.LightShadow(), p.LightAlpha, p.LightBlur, pal.SwapRB())
 	draw.Draw(canvas, dst, light, image.Point{}, draw.Over)
 
 	dc.SetColor(face)
@@ -261,13 +263,13 @@ func neuInset(pal mancini.Palette, dc mancini.DrawContext, x1, y1, x2, y2, r flo
 		c      color.NRGBA
 	}
 	shadows := []shadowSpec{
-		{-p.Off, -p.Off, 190, p.DarkBlur, pal.DarkSh},
-		{+p.Off, +p.Off, 190, p.LightBlur, pal.LightSh},
+		{-p.Off, -p.Off, 190, p.DarkBlur, pal.DarkShadow()},
+		{+p.Off, +p.Off, 190, p.LightBlur, pal.LightShadow()},
 	}
 	for _, s := range shadows {
 		sh := shadowLayer(lw, lh,
 			lx1+s.ox, ly1+s.oy, lx2+s.ox, ly2+s.oy,
-			r, s.c, s.alpha, s.blur, pal.SwapRB)
+			r, s.c, s.alpha, s.blur, pal.SwapRB())
 		draw.DrawMask(canvas, dst, sh, image.Point{}, mask, image.Point{}, draw.Over)
 	}
 }
@@ -286,8 +288,8 @@ func neuFlush(pal mancini.Palette, dc mancini.DrawContext, x1, y1, x2, y2, r flo
 
 	darkEdge := image.NewRGBA(image.Rect(0, 0, lw, lh))
 	ddc := gg.NewContextForRGBA(darkEdge)
-	ddc.SwapRB = pal.SwapRB
-	darkC := pal.DarkSh
+	ddc.SwapRB = pal.SwapRB()
+	darkC := pal.DarkShadow()
 	ddc.SetColor(color.NRGBA{darkC.R, darkC.G, darkC.B, p.EdgeAlpha})
 	ddc.SetLineWidth(p.EdgeW)
 	ddc.DrawRoundedRectangle(lx1, ly1, lx2-lx1, ly2-ly1, r)
@@ -296,8 +298,8 @@ func neuFlush(pal mancini.Palette, dc mancini.DrawContext, x1, y1, x2, y2, r flo
 
 	lightEdge := image.NewRGBA(image.Rect(0, 0, lw, lh))
 	ldc := gg.NewContextForRGBA(lightEdge)
-	ldc.SwapRB = pal.SwapRB
-	lightC := pal.LightSh
+	ldc.SwapRB = pal.SwapRB()
+	lightC := pal.LightShadow()
 	ldc.SetColor(color.NRGBA{lightC.R, lightC.G, lightC.B, p.EdgeAlpha})
 	ldc.SetLineWidth(p.EdgeW)
 	ldc.DrawRoundedRectangle(lx1+1, ly1+1, lx2-lx1, ly2-ly1, r)
@@ -313,7 +315,7 @@ func applyTintOverlay(pal mancini.Palette, canvas *image.RGBA, x1, y1, x2, y2, r
 
 	overlay := image.NewRGBA(image.Rect(0, 0, lw, lh))
 	dc := gg.NewContextForRGBA(overlay)
-	dc.SwapRB = pal.SwapRB
+	dc.SwapRB = pal.SwapRB()
 	dc.SetColor(color.NRGBA{tint.R, tint.G, tint.B, 100})
 	dc.DrawRoundedRectangle(lx1, ly1, x2-x1, y2-y1, r)
 	dc.Fill()
@@ -324,18 +326,25 @@ func applyTintOverlay(pal mancini.Palette, canvas *image.RGBA, x1, y1, x2, y2, r
 // ── Neumorphic circle rendering ──────────────────────────────────────────────
 
 // NeuCircleWith draws a neumorphic circle using explicit params.
-func NeuCircleWith(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDepth, cx, cy, rad float64, face color.NRGBA, p mancini.NeuParams, content mancini.FaceDrawer) {
-	switch depth {
-	case mancini.Raised:
-		neuCircleRaised(pal, dc, cx, cy, rad, face, p.Raised)
-	case mancini.Flush:
-		neuCircleFlush(pal, dc, cx, cy, rad, face, p.Flush)
-	case mancini.Inset:
-		neuCircleInset(pal, dc, cx, cy, rad, face, p.Inset)
-	}
-	if face != pal.Surface && depth != mancini.Raised {
-		canvas := dc.Image().(*image.RGBA)
-		applyCircleTintOverlay(pal, canvas, cx, cy, rad, face)
+// If p is nil, a flat surface-colored circle is drawn (no shadows).
+func NeuCircleWith(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDepth, cx, cy, rad float64, face color.NRGBA, p *mancini.NeuParams, content mancini.FaceDrawer) {
+	if p != nil {
+		switch depth {
+		case mancini.Raised:
+			neuCircleRaised(pal, dc, cx, cy, rad, face, p.Raised)
+		case mancini.Flush:
+			neuCircleFlush(pal, dc, cx, cy, rad, face, p.Flush)
+		case mancini.Inset:
+			neuCircleInset(pal, dc, cx, cy, rad, face, p.Inset)
+		}
+		if face != pal.Surface() && depth != mancini.Raised {
+			canvas := dc.Image().(*image.RGBA)
+			applyCircleTintOverlay(pal, canvas, cx, cy, rad, face)
+		}
+	} else {
+		dc.SetColor(face)
+		dc.DrawCircle(cx, cy, rad)
+		dc.Fill()
 	}
 	if content != nil {
 		content(dc, cx-rad, cy-rad, 2*rad, 2*rad)
@@ -393,11 +402,11 @@ func neuCircleRaisedShadows(pal mancini.Palette, dc mancini.DrawContext, cx, cy,
 
 	dark := circleShadowLayer(lw, lh,
 		lcx+p.DarkOff, lcy+p.DarkOff, rad,
-		pal.DarkSh, p.DarkAlpha, p.DarkBlur, pal.SwapRB)
+		pal.DarkShadow(), p.DarkAlpha, p.DarkBlur, pal.SwapRB())
 	draw.Draw(canvas, dst, dark, image.Point{}, draw.Over)
 	light := circleShadowLayer(lw, lh,
 		lcx-p.LightOff, lcy-p.LightOff, rad,
-		pal.LightSh, p.LightAlpha, p.LightBlur, pal.SwapRB)
+		pal.LightShadow(), p.LightAlpha, p.LightBlur, pal.SwapRB())
 	draw.Draw(canvas, dst, light, image.Point{}, draw.Over)
 }
 
@@ -423,13 +432,13 @@ func neuCircleInset(pal mancini.Palette, dc mancini.DrawContext, cx, cy, rad flo
 		c      color.NRGBA
 	}
 	shadows := []shadowSpec{
-		{-p.Off, -p.Off, 190, p.DarkBlur, pal.DarkSh},
-		{+p.Off, +p.Off, 190, p.LightBlur, pal.LightSh},
+		{-p.Off, -p.Off, 190, p.DarkBlur, pal.DarkShadow()},
+		{+p.Off, +p.Off, 190, p.LightBlur, pal.LightShadow()},
 	}
 	for _, s := range shadows {
 		sh := circleShadowLayer(lw, lh,
 			lcx+s.ox, lcy+s.oy, rad,
-			s.c, s.alpha, s.blur, pal.SwapRB)
+			s.c, s.alpha, s.blur, pal.SwapRB())
 		draw.DrawMask(canvas, dst, sh, image.Point{}, mask, image.Point{}, draw.Over)
 	}
 }
@@ -449,8 +458,8 @@ func neuCircleFlush(pal mancini.Palette, dc mancini.DrawContext, cx, cy, rad flo
 
 	darkEdge := image.NewRGBA(image.Rect(0, 0, lw, lh))
 	ddc := gg.NewContextForRGBA(darkEdge)
-	ddc.SwapRB = pal.SwapRB
-	darkC := pal.DarkSh
+	ddc.SwapRB = pal.SwapRB()
+	darkC := pal.DarkShadow()
 	ddc.SetColor(color.NRGBA{darkC.R, darkC.G, darkC.B, p.EdgeAlpha})
 	ddc.SetLineWidth(p.EdgeW)
 	ddc.DrawCircle(lcx, lcy, rad)
@@ -459,8 +468,8 @@ func neuCircleFlush(pal mancini.Palette, dc mancini.DrawContext, cx, cy, rad flo
 
 	lightEdge := image.NewRGBA(image.Rect(0, 0, lw, lh))
 	ldc := gg.NewContextForRGBA(lightEdge)
-	ldc.SwapRB = pal.SwapRB
-	lightC := pal.LightSh
+	ldc.SwapRB = pal.SwapRB()
+	lightC := pal.LightShadow()
 	ldc.SetColor(color.NRGBA{lightC.R, lightC.G, lightC.B, p.EdgeAlpha})
 	ldc.SetLineWidth(p.EdgeW)
 	ldc.DrawCircle(lcx+1, lcy+1, rad)
@@ -477,7 +486,7 @@ func applyCircleTintOverlay(pal mancini.Palette, canvas *image.RGBA, cx, cy, rad
 
 	overlay := image.NewRGBA(image.Rect(0, 0, lw, lh))
 	dc := gg.NewContextForRGBA(overlay)
-	dc.SwapRB = pal.SwapRB
+	dc.SwapRB = pal.SwapRB()
 	dc.SetColor(color.NRGBA{tint.R, tint.G, tint.B, 100})
 	dc.DrawCircle(lcx, lcy, rad)
 	dc.Fill()
@@ -489,16 +498,6 @@ func applyCircleTintOverlay(pal mancini.Palette, canvas *image.RGBA, cx, cy, rad
 
 // NeuGroove draws a thin horizontal inset line (groove separator).
 func NeuGroove(pal mancini.Palette, dc mancini.DrawContext, x1, y, x2 float64) {
-	neuInset(pal, dc, x1, y, x2, y+3, 2, pal.Surface, mancini.GrooveParams)
+	neuInset(pal, dc, x1, y, x2, y+3, 2, pal.Surface(), mancini.GrooveParams)
 }
 
-// ── Container ────────────────────────────────────────────────────────────────
-
-// Container draws an optional flush-style border around content.
-func Container(pal mancini.Palette, dc mancini.DrawContext, x1, y1, x2, y2, r float64, border bool, content mancini.FaceDrawer) {
-	if border {
-		NeuBoxWith(pal, dc, mancini.Flush, x1, y1, x2, y2, r, pal.Surface, mancini.NeuBoxParams, content)
-	} else if content != nil {
-		content(dc, x1, y1, x2-x1, y2-y1)
-	}
-}

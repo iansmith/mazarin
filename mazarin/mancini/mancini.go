@@ -71,28 +71,26 @@ func (d NeuDepth) MouseDown() NeuDepth {
 	return d
 }
 
-// Palette holds the colors for a neumorphic theme and the framebuffer
-// color-channel configuration needed to render them correctly.
-type Palette struct {
-	Surface     color.NRGBA
-	SurfaceTint color.NRGBA
-	DarkSh      color.NRGBA
-	LightSh     color.NRGBA
-	Text        color.NRGBA
-	Icon        color.NRGBA
-	SwapRB      bool // true for BGRA GPU framebuffers
+// Palette provides colors for a neumorphic theme.
+type Palette interface {
+	Surface() color.NRGBA
+	SurfaceTint() color.NRGBA
+	DarkShadow() color.NRGBA
+	LightShadow() color.NRGBA
+	Text() color.NRGBA
+	Icon() color.NRGBA
+	Highlight() color.NRGBA
+	HighlightText() color.NRGBA
+	DisabledAlpha() float64
+	SwapRB() bool
 }
 
-// DefaultPalette returns the standard neumorphic purple palette.
-func DefaultPalette() Palette {
-	return Palette{
-		Surface:     color.NRGBA{232, 230, 244, 255},
-		SurfaceTint: color.NRGBA{218, 213, 237, 255},
-		DarkSh:      color.NRGBA{176, 173, 195, 255},
-		LightSh:     color.NRGBA{255, 255, 255, 255},
-		Text:        color.NRGBA{78, 72, 112, 255},
-		Icon:        color.NRGBA{105, 99, 148, 235},
-	}
+// NeumorphicParams provides heavy and light shadow parameter bundles.
+// Either method may return nil to disable neumorphic rendering for
+// that weight class; callers must handle nil gracefully.
+type NeumorphicParams interface {
+	Heavy() *NeuParams
+	Light() *NeuParams
 }
 
 // Neumorphic parameter types.
@@ -118,27 +116,6 @@ type NeuParams struct {
 	Raised RaisedParams
 	Flush  FlushParams
 	Inset  InsetParams
-}
-
-// NeuBoxParams are lighter shadows for NeuBox decorators.
-var NeuBoxParams = NeuParams{
-	Raised: RaisedParams{LightOff: 2, LightBlur: 4, DarkOff: 7, DarkBlur: 7, DarkAlpha: 90, LightAlpha: 250},
-	Flush:  FlushParams{EdgeW: 2, EdgeAlpha: 140},
-	Inset:  InsetParams{Off: 2, DarkBlur: 5, LightBlur: 3},
-}
-
-// NeuCircleParams are shadows tuned for NeuCircle's bevel ring.
-var NeuCircleParams = NeuParams{
-	Raised: RaisedParams{LightOff: 4, LightBlur: 3, DarkOff: 7, DarkBlur: 5, DarkAlpha: 180, LightAlpha: 255},
-	Flush:  FlushParams{EdgeW: 2, EdgeAlpha: 140},
-	Inset:  InsetParams{Off: 2, DarkBlur: 5, LightBlur: 3},
-}
-
-// NeuWindowParams are heavier shadows for window-level containers.
-var NeuWindowParams = NeuParams{
-	Raised: RaisedParams{LightOff: 4, LightBlur: 8, DarkOff: 14, DarkBlur: 14, DarkAlpha: 120, LightAlpha: 255},
-	Flush:  FlushParams{EdgeW: 2, EdgeAlpha: 140},
-	Inset:  InsetParams{Off: 3, DarkBlur: 7, LightBlur: 4},
 }
 
 // GrooveParams are used for thin inset separator lines.

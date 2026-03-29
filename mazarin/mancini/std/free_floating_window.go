@@ -17,6 +17,7 @@ type FreeFloatingWindow struct {
 	impl.Decorator
 
 	Pal     mancini.Palette
+	NeuPrms mancini.NeuParams
 	Title   string
 	Radius  float64
 	Visible bool
@@ -37,12 +38,13 @@ const (
 // NewFreeFloatingWindow creates a FreeFloatingWindow with inside-out sizing.
 // parent is nil for top-level floaters. The window is initially not visible.
 func NewFreeFloatingWindow(name string, parent mancini.Interactor,
-	pal mancini.Palette, fonts *mancini.FontConfig, title string,
+	pal mancini.Palette, neuParams mancini.NeuParams,
+	fonts *mancini.FontConfig, title string,
 	radius float64,
 ) *FreeFloatingWindow {
 	// Content starts below the groove.
 	contentTop := int64(ffwGrooveY + ffwGrooveGap)
-	margin := mancini.NeuMaxPad(mancini.NeuWindowParams)
+	margin := mancini.NeuMaxPad(neuParams)
 
 	top := margin + contentTop
 	side := margin
@@ -60,6 +62,7 @@ func NewFreeFloatingWindow(name string, parent mancini.Interactor,
 
 	w := &FreeFloatingWindow{
 		Pal:       pal,
+		NeuPrms:   neuParams,
 		Title:     title,
 		Radius:    radius,
 		Visible:   false,
@@ -116,13 +119,13 @@ func (w *FreeFloatingWindow) Decorate(self mancini.Interactor, x, y, ww, hh int6
 
 	// NeuBox at Flush depth.
 	NeuBoxWith(w.Pal, dc, mancini.Flush, fx, fy, fx+fww, fy+fhh,
-		w.Radius, w.Pal.Surface, mancini.NeuWindowParams, nil)
+		w.Radius, w.Pal.Surface(), &w.NeuPrms, nil)
 
 	// Title text centered horizontally.
 	if w.titleFace != nil {
 		dc.SetFontFace(w.titleFace)
 	}
-	dc.SetColor(w.Pal.Text)
+	dc.SetColor(w.Pal.Text())
 	dc.DrawStringAnchored(w.Title, fx+fww/2, fy+ffwTitleY, 0.5, 0.5)
 
 	// Groove separator.

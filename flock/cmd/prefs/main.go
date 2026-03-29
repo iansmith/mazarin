@@ -8,7 +8,7 @@ package main
 import (
 	"image/color"
 	"mazzy/mazarin/attr"
-	"mazzy/mazarin/mancini"
+	"mazzy/mazarin/mancini/theme"
 	"mazzy/mazarin/sys"
 )
 
@@ -29,18 +29,18 @@ func MazarinMain() {
 
 	attr.Init()
 	sid := attr.SID()
-	pal := mancini.DefaultPalette()
+	pal := theme.NewDefaultPalette()
 
 	// Publish display density (1.0 = no scaling)
 	attr.ValueF64("attr:///shepherd/"+sid+"/f64/prefs/displayDensity", 1.0)
 
 	// Publish palette colors as packed int64 values (R<<24 | G<<16 | B<<8 | A)
-	publishColor(sid, "Surface", pal.Surface)
-	publishColor(sid, "SurfaceTint", pal.SurfaceTint)
-	publishColor(sid, "DarkSh", pal.DarkSh)
-	publishColor(sid, "LightSh", pal.LightSh)
-	publishColor(sid, "Text", pal.Text)
-	publishColor(sid, "Icon", pal.Icon)
+	publishColor(sid, "Surface", pal.Surface())
+	publishColor(sid, "SurfaceTint", pal.SurfaceTint())
+	publishColor(sid, "DarkSh", pal.DarkShadow())
+	publishColor(sid, "LightSh", pal.LightShadow())
+	publishColor(sid, "Text", pal.Text())
+	publishColor(sid, "Icon", pal.Icon())
 
 	rawPuts("[prefs] attributes published, setting ready\n")
 	sys.SetReady(true)

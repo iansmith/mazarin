@@ -19,10 +19,11 @@ import (
 type AppWindow struct {
 	impl.Decorator
 
-	Pal     mancini.Palette
-	Title   string
-	Focused bool
-	Radius  float64
+	Pal       mancini.Palette
+	NeuPrms   mancini.NeuParams
+	Title     string
+	Focused   bool
+	Radius    float64
 
 	// TitleDraw renders the title bar. It receives the focus state and
 	// the title bar bounds. If nil, plain centered text is drawn.
@@ -42,10 +43,11 @@ const (
 // parent is nil for root windows. tbHeight is the title bar height
 // (typically 26). maxWidth is the max content width (0 = default 740).
 func NewAppWindow(parent mancini.Interactor, pal mancini.Palette,
+	neuParams mancini.NeuParams,
 	fonts *mancini.FontConfig, title string, tbHeight int64, maxWidth int64,
 	titleDraw func(dc mancini.DrawContext, focused bool, x, y, w, h float64),
 ) *AppWindow {
-	sm := mancini.NeuMaxPad(mancini.NeuWindowParams)
+	sm := mancini.NeuMaxPad(neuParams)
 
 	top := sm + appTBMargin + tbHeight + appTBGap
 	side := sm + appTBMargin
@@ -71,6 +73,7 @@ func NewAppWindow(parent mancini.Interactor, pal mancini.Palette,
 
 	w := &AppWindow{
 		Pal:           pal,
+		NeuPrms:       neuParams,
 		Title:         title,
 		Radius:        14,
 		TitleDraw:     titleDraw,
@@ -155,7 +158,7 @@ func (w *AppWindow) Decorate(self mancini.Interactor, x, y, ww, hh int64) {
 
 	// NeuBox shadow.
 	NeuBoxWith(w.Pal, dc, w.Depth(), ix, iy, ix+iw, iy+ih,
-		w.Radius, w.Pal.Surface, mancini.NeuWindowParams, nil)
+		w.Radius, w.Pal.Surface(), &w.NeuPrms, nil)
 
 	// Title bar inside the NeuBox.
 	tbm := float64(appTBMargin)
@@ -173,7 +176,7 @@ func (w *AppWindow) Decorate(self mancini.Interactor, x, y, ww, hh int64) {
 		if w.unfocusedFace != nil {
 			dc.SetFontFace(w.unfocusedFace)
 		}
-		dc.SetColor(w.Pal.Text)
+		dc.SetColor(w.Pal.Text())
 		dc.DrawStringAnchored(w.Title, tbX+tbW/2, tbY+tbH/2, 0.5, 0.5)
 	}
 }

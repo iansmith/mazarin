@@ -30,7 +30,7 @@ func StripedTitle(pal mancini.Palette, fonts *mancini.FontConfig, title string, 
 		gapL := cx - tw/2 - pad
 		gapR := cx + tw/2 + pad
 
-		darkC := pal.DarkSh
+		darkC := pal.DarkShadow()
 		stripe := color.NRGBA{darkC.R, darkC.G, darkC.B, 120}
 		dc.SetColor(stripe)
 		dc.SetLineWidth(1)
@@ -46,7 +46,7 @@ func StripedTitle(pal mancini.Palette, fonts *mancini.FontConfig, title string, 
 		}
 		dc.Stroke()
 
-		dc.SetColor(pal.Text)
+		dc.SetColor(pal.Text())
 		dc.DrawStringAnchored(title, cx, y+h/2, 0.5, 0.5)
 	}
 }

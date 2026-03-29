@@ -105,7 +105,7 @@ func (n *NeuCircle) Decorate(self mancini.Interactor, x, y, w, h int64) {
 
 	face := n.Face
 	if face == (color.NRGBA{}) {
-		face = n.Pal.Surface
+		face = n.Pal.Surface()
 	}
 
 	switch n.Depth {
@@ -120,7 +120,7 @@ func (n *NeuCircle) Decorate(self mancini.Interactor, x, y, w, h int64) {
 		neuCircleInset(n.Pal, dc, cx, cy, shadowRad, face, n.Params.Inset)
 	}
 
-	if face != n.Pal.Surface && n.Depth != mancini.Raised {
+	if face != n.Pal.Surface() && n.Depth != mancini.Raised {
 		canvas := dc.Image().(*image.RGBA)
 		applyCircleTintOverlay(n.Pal, canvas, cx, cy, faceRad, face)
 	}

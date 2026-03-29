@@ -15,6 +15,7 @@ import (
 	"mazzy/mazarin/fontcache"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/std"
+	mctheme "mazzy/mazarin/mancini/theme"
 	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/wm"
@@ -118,8 +119,7 @@ func main() {
 			return fc.OpenFaceByName(mfont.DefaultMono, style, size)
 		},
 	}
-	pal := mancini.DefaultPalette()
-	pal.SwapRB = true // propagated to offscreen gg contexts in draw.go
+	pal := mctheme.NewDefaultPaletteSwapRB()
 
 	// 3. Define cities with their timezones.
 	cities := []cityInfo{
@@ -172,12 +172,12 @@ func main() {
 		return fc.OpenFaceByName(family, style, size)
 	}
 	transparent := color.NRGBA{0, 0, 0, 0}
-	theme := mancini.NewTheme(transparent, textColor, mfont.DefaultMono, 18, resolver)
-	subtitleTheme := mancini.NewTheme(transparent, subtitleColor, mfont.DefaultMono, 18, resolver)
+	theme := mctheme.NewTheme(mctheme.NewDefaultPaletteWithColors(transparent, textColor), mctheme.NewDefaultNeumorphicParams(), mfont.DefaultMono, 18, resolver)
+	subtitleTheme := mctheme.NewTheme(mctheme.NewDefaultPaletteWithColors(transparent, subtitleColor), mctheme.NewDefaultNeumorphicParams(), mfont.DefaultMono, 18, resolver)
 
 	// Title bar: GradientTitle (animated gradient, bold, 22pt).
 	gt := std.NewGradientTitle(pal, fonts, "World Clocks", 22, 8)
-	app := std.NewAppWindow(nil, pal, fonts, "World Clocks", 26, 850, gt.TitleDraw)
+	app := std.NewAppWindow(nil, pal, *mctheme.NewDefaultNeumorphicParams().Heavy(), fonts, "World Clocks", 26, 850, gt.TitleDraw)
 	app.Focused = false // wait for rachel to grant focus
 
 	// Row: parent = "AppWindow" (std.AppWindow's fixed constraint name).
@@ -211,7 +211,7 @@ func main() {
 		// Children created in display order — sequence numbers give deterministic ordering.
 		_ = std.NewLabelNamedBold(city.id+"_name", colName, theme, city.name, 18)
 
-		circle := std.NewNeuCircleNamed(circleName, colName, pal, mancini.Raised, mancini.NeuCircleParams)
+		circle := std.NewNeuCircleNamed(circleName, colName, pal, mancini.Raised, *mctheme.NewDefaultNeumorphicParams().Light())
 		_ = circle
 
 		clockWidget := std.NewClock(city.id+"_clock", circleName, pal, fonts, 70, utcFunc, rotated)
@@ -332,7 +332,7 @@ func main() {
 	if initY+winH > clearY1 {
 		clearY1 = initY + winH
 	}
-	ggCtx.SetColor(pal.Surface)
+	ggCtx.SetColor(pal.Surface())
 	ggCtx.FillRectangle(clearX0, clearY0, clearX1-clearX0, clearY1-clearY0)
 
 	// Draw at the constraint-computed position.
