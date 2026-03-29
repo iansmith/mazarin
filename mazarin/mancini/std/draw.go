@@ -188,9 +188,9 @@ func NeuBoxWith(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDe
 	}
 }
 
-// DrawNeuBox draws a neumorphic rounded rectangle using ButtonParams.
+// DrawNeuBox draws a neumorphic rounded rectangle using NeuBoxParams.
 func DrawNeuBox(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDepth, x1, y1, x2, y2, r float64, face color.NRGBA, content mancini.FaceDrawer) {
-	NeuBoxWith(pal, dc, depth, x1, y1, x2, y2, r, face, mancini.ButtonParams, content)
+	NeuBoxWith(pal, dc, depth, x1, y1, x2, y2, r, face, mancini.NeuBoxParams, content)
 }
 
 // localRect computes a padded bounding box around (x1,y1)-(x2,y2) for
@@ -497,7 +497,7 @@ func NeuGroove(pal mancini.Palette, dc mancini.DrawContext, x1, y, x2 float64) {
 // Container draws an optional flush-style border around content.
 func Container(pal mancini.Palette, dc mancini.DrawContext, x1, y1, x2, y2, r float64, border bool, content mancini.FaceDrawer) {
 	if border {
-		NeuBoxWith(pal, dc, mancini.Flush, x1, y1, x2, y2, r, pal.Surface, mancini.ButtonParams, content)
+		NeuBoxWith(pal, dc, mancini.Flush, x1, y1, x2, y2, r, pal.Surface, mancini.NeuBoxParams, content)
 	} else if content != nil {
 		content(dc, x1, y1, x2-x1, y2-y1)
 	}

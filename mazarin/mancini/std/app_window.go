@@ -45,7 +45,7 @@ func NewAppWindow(parent mancini.Interactor, pal mancini.Palette,
 	fonts *mancini.FontConfig, title string, tbHeight int64, maxWidth int64,
 	titleDraw func(dc mancini.DrawContext, focused bool, x, y, w, h float64),
 ) *AppWindow {
-	sm := mancini.NeuMaxPad(mancini.WindowParams)
+	sm := mancini.NeuMaxPad(mancini.NeuWindowParams)
 
 	top := sm + appTBMargin + tbHeight + appTBGap
 	side := sm + appTBMargin
@@ -155,7 +155,7 @@ func (w *AppWindow) Decorate(self mancini.Interactor, x, y, ww, hh int64) {
 
 	// NeuBox shadow.
 	NeuBoxWith(w.Pal, dc, w.Depth(), ix, iy, ix+iw, iy+ih,
-		w.Radius, w.Pal.Surface, mancini.WindowParams, nil)
+		w.Radius, w.Pal.Surface, mancini.NeuWindowParams, nil)
 
 	// Title bar inside the NeuBox.
 	tbm := float64(appTBMargin)

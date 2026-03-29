@@ -47,6 +47,18 @@ ok:
 	MOVD	ZR, err+40(FP)	// errno
 	RET
 
+// diagBreadcrumb writes a single ASCII character to UART for debugging.
+// TODO: DIAGNOSTIC — remove after exitsyscall investigation.
+// func diagBreadcrumb(ch byte)
+TEXT ·diagBreadcrumb(SB),NOSPLIT,$16-1
+	MOVBU	ch+0(FP), R3		// load byte argument
+	MOVB	R3, 8(RSP)		// store in local area
+	ADD	$8, RSP, R0		// R0 = pointer to byte on stack
+	MOVD	$1, R1			// R1 = count = 1
+	MOVD	$0x101B, R8		// SysUartWriteDirect
+	SVC
+	RET
+
 // func rawSyscallNoError(trap uintptr, a1, a2, a3 uintptr) (r1, r2 uintptr);
 TEXT ·rawSyscallNoError(SB),NOSPLIT,$0-48
 	MOVD	a1+8(FP), R0

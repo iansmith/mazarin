@@ -42,7 +42,7 @@ func NewFreeFloatingWindow(name string, parent mancini.Interactor,
 ) *FreeFloatingWindow {
 	// Content starts below the groove.
 	contentTop := int64(ffwGrooveY + ffwGrooveGap)
-	margin := mancini.NeuMaxPad(mancini.WindowParams)
+	margin := mancini.NeuMaxPad(mancini.NeuWindowParams)
 
 	top := margin + contentTop
 	side := margin
@@ -116,7 +116,7 @@ func (w *FreeFloatingWindow) Decorate(self mancini.Interactor, x, y, ww, hh int6
 
 	// NeuBox at Flush depth.
 	NeuBoxWith(w.Pal, dc, mancini.Flush, fx, fy, fx+fww, fy+fhh,
-		w.Radius, w.Pal.Surface, mancini.WindowParams, nil)
+		w.Radius, w.Pal.Surface, mancini.NeuWindowParams, nil)
 
 	// Title text centered horizontally.
 	if w.titleFace != nil {

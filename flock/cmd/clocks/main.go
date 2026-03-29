@@ -241,7 +241,7 @@ func main() {
 		// Children created in display order — sequence numbers give deterministic ordering.
 		_ = std.NewLabelNamedBold(city.id+"_name", colName, theme, city.name, 18)
 
-		circle := std.NewNeuCircleNamed(circleName, colName, pal, mancini.Raised, mancini.CircleParams)
+		circle := std.NewNeuCircleNamed(circleName, colName, pal, mancini.Raised, mancini.NeuCircleParams)
 		_ = circle
 
 		clockWidget := std.NewClock(city.id+"_clock", circleName, pal, fonts, 70, utcFunc, rotated)

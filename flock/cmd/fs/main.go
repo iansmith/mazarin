@@ -464,20 +464,25 @@ func (d *asyncBlockDev) ReadBlock(lba uint64, buf []byte) error {
 	// Convert 4096-byte block LBA to 512-byte sector LBA
 	sectorLBA := lba * sectorsPerBlock
 
+	sys.UartWriteString("r1")
 	// Submit async read of 8 sectors (one full page) into DMA scratch buffer
 	dmaBuf := unsafe.Slice((*byte)(unsafe.Pointer(d.scratchVA)), asyncBlockSize)
 	_, serr := mem.BlockSubmit(0, sectorLBA, sectorsPerBlock, dmaBuf, 0)
 	if serr != nil {
+		sys.UartWriteString("r!")
 		return serr
 	}
 
+	sys.UartWriteString("r2")
 	// Block until completion arrives via soft IRQ
 	var softBuf hid.SoftIRQReturn
 	_, err := sys.WaitSoftIRQ(0, &softBuf)
 	if err != nil {
+		sys.UartWriteString("r!")
 		return err
 	}
 
+	sys.UartWriteString("r3")
 	// Check status
 	if softBuf.Length > 0 && softBuf.Events[0].Code != 0 {
 		return syscall.EIO

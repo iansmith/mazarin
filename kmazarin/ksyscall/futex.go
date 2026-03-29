@@ -3,6 +3,7 @@ package ksyscall
 import (
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
+	"mazzy/kmazarin/serial"
 	"sync/atomic"
 )
 
@@ -121,6 +122,8 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 		if nextThread != 0 {
 			// Successfully blocked - context switch to next thread
 			atomic.AddUint64(&FutexWaitBlocked, 1)
+			// TODO: DIAGNOSTIC — breadcrumb 'f' = futex WAIT blocked a thread.
+			serial.PollWrite('f')
 			SetSyscallSwitchTarget(nextThread)
 			return 0
 		}
@@ -133,6 +136,10 @@ func syscallFutexInternal(uaddr, op, val, timeout, uaddr2, val3 uint64) int64 {
 		atomic.AddUint64(&FutexWakeCalls, 1)
 		// FUTEX_WAKE: Wake up to 'val' threads waiting on this address
 		woken := ThreadWakeFutex(uaddr, int32(val))
+		// TODO: DIAGNOSTIC — breadcrumb 'w' = futex WAKE woke at least one thread.
+		if woken > 0 {
+			serial.PollWrite('w')
+		}
 		return int64(woken)
 
 	default:

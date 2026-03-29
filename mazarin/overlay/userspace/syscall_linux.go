@@ -22,6 +22,15 @@ import (
 // Implemented in asm_linux_arm64.s
 func defaultSyscallHandler(num, a1, a2, a3, a4, a5, a6 uintptr) int64
 
+// diagBreadcrumb writes a single ASCII character to UART via SVC.
+// TODO: DIAGNOSTIC — remove after exitsyscall investigation.
+// Implemented in asm_linux_arm64.s
+func diagBreadcrumb(ch byte)
+
+// sysWaitSoftIRQ is the syscall number for WaitSoftIRQ (0x100A).
+// Hardcoded here because the syscall package can't import shared/mazzy.
+const sysWaitSoftIRQ = 0x100A
+
 // Mazzy: entersyscall/exitsyscall — matching stock Go contract.
 // Syscall/Syscall6 release the P before the SVC so other goroutines
 // can run while the calling M blocks in the kernel.
@@ -83,9 +92,19 @@ func Syscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err Errno) {
 //go:nosplit
 //go:linkname Syscall6
 func Syscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errno) {
+	// TODO: DIAGNOSTIC breadcrumbs — remove after exitsyscall investigation.
+	// Only post-SVC breadcrumbs: pre-SVC SVCs cause VM exits that change
+	// timing (Heisenbug — IRQ gets injected before WaitSoftIRQ blocks).
+	diag := trap == sysWaitSoftIRQ && a1 == 0
 	runtime_entersyscall()
 	r1, r2, err = RawSyscall6(trap, a1, a2, a3, a4, a5, a6)
+	if diag {
+		diagBreadcrumb('X') // post-SVC, pre-exitsyscall
+	}
 	runtime_exitsyscall()
+	if diag {
+		diagBreadcrumb('x') // post-exitsyscall
+	}
 	return
 }
 

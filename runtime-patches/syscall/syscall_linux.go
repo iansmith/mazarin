@@ -18,14 +18,17 @@ import (
 	"unsafe"
 )
 
-// Kmazarin syscall overlay: RawSyscall6 calls dispatcher directly
+// Kmazarin KERNEL overlay: This file is used when building the kernel itself.
+// The kernel's own Go code cannot SVC to itself, so RawSyscall6 routes
+// through a direct Go function call (ksyscallDispatch) instead.
+// Userspace shepherds use a DIFFERENT overlay that issues real SVC instructions.
+//
+// entersyscall/exitsyscall are intentionally NOT used here because the
+// "syscall" is a Go function call on the same stack — entersyscall would
+// save stale SP/PC and release the P, allowing GC to scan using incorrect
+// stack state and corrupt mspan metadata.
 //go:linkname ksyscallDispatch mazzy/kmazarin/ksyscall.DispatchFromOverlay
 func ksyscallDispatch(num, a1, a2, a3, a4, a5, a6 uintptr) int64
-
-// Kmazarin: entersyscall/exitsyscall intentionally NOT used.
-// In kmazarin, "syscalls" are Go function calls (via ksyscallDispatch).
-// entersyscall would save stale SP/PC and release the P, allowing GC
-// to scan using incorrect stack state and corrupt mspan metadata.
 
 // N.B. For the Syscall functions below:
 //
@@ -56,7 +59,7 @@ func RawSyscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err Errno) {
 //go:norace
 //go:linkname RawSyscall6
 func RawSyscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errno) {
-	// Kmazarin: call dispatcher directly instead of SVC
+	// Kernel: call dispatcher directly (kernel can't SVC to itself)
 	result := ksyscallDispatch(trap, a1, a2, a3, a4, a5, a6)
 
 	// Convert from Linux return convention
@@ -72,10 +75,8 @@ func RawSyscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errn
 //go:nosplit
 //go:linkname Syscall
 func Syscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err Errno) {
-	// Kmazarin: skip entersyscall/exitsyscall — these "syscalls" are actually
-	// Go function calls (via ksyscallDispatch). entersyscall saves stale SP/PC
-	// and releases the P, allowing sysmon to trigger GC that scans using stale
-	// stack state, missing live pointers and causing mspan corruption.
+	// Kernel: skip entersyscall/exitsyscall — these are direct Go function
+	// calls, not real SVCs. entersyscall would corrupt GC stack scanning.
 	return RawSyscall6(trap, a1, a2, a3, 0, 0, 0)
 }
 
@@ -83,7 +84,7 @@ func Syscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err Errno) {
 //go:nosplit
 //go:linkname Syscall6
 func Syscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errno) {
-	// Kmazarin: skip entersyscall/exitsyscall — same reasoning as Syscall above.
+	// Kernel: skip entersyscall/exitsyscall — same reasoning as Syscall above.
 	return RawSyscall6(trap, a1, a2, a3, a4, a5, a6)
 }
 

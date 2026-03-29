@@ -120,22 +120,22 @@ type NeuParams struct {
 	Inset  InsetParams
 }
 
-// ButtonParams are lighter shadows for interactive controls.
-var ButtonParams = NeuParams{
+// NeuBoxParams are lighter shadows for NeuBox decorators.
+var NeuBoxParams = NeuParams{
 	Raised: RaisedParams{LightOff: 2, LightBlur: 4, DarkOff: 7, DarkBlur: 7, DarkAlpha: 90, LightAlpha: 250},
 	Flush:  FlushParams{EdgeW: 2, EdgeAlpha: 140},
 	Inset:  InsetParams{Off: 2, DarkBlur: 5, LightBlur: 3},
 }
 
-// CircleParams are shadows tuned for NeuCircle's bevel ring.
-var CircleParams = NeuParams{
+// NeuCircleParams are shadows tuned for NeuCircle's bevel ring.
+var NeuCircleParams = NeuParams{
 	Raised: RaisedParams{LightOff: 4, LightBlur: 3, DarkOff: 7, DarkBlur: 5, DarkAlpha: 180, LightAlpha: 255},
 	Flush:  FlushParams{EdgeW: 2, EdgeAlpha: 140},
 	Inset:  InsetParams{Off: 2, DarkBlur: 5, LightBlur: 3},
 }
 
-// WindowParams are heavier shadows for window-level containers.
-var WindowParams = NeuParams{
+// NeuWindowParams are heavier shadows for window-level containers.
+var NeuWindowParams = NeuParams{
 	Raised: RaisedParams{LightOff: 4, LightBlur: 8, DarkOff: 14, DarkBlur: 14, DarkAlpha: 120, LightAlpha: 255},
 	Flush:  FlushParams{EdgeW: 2, EdgeAlpha: 140},
 	Inset:  InsetParams{Off: 3, DarkBlur: 7, LightBlur: 4},
