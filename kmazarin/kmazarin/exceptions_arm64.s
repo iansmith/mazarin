@@ -242,10 +242,10 @@ sync_exception_handler:
 	// DEBUG: Check SP_EL1 validity ON ENTRY (before SUB).
 	// Uses TPIDR_EL1 to save/restore R10 without clobbering registers.
 	MSR	R10, TPIDR_EL1               // Save R10 temporarily
-	MOVD	$0xFFFFFFFF43E28001, R10   // ExcStackTop + 1 (128KB stack)
+	MOVD	$0xFFFFFFFF44128001, R10   // ExcStackTop + 1 (128KB stack)
 	CMP	R10, RSP
 	BHS	sync_entry_sp_corrupt        // RSP >= top+1 means above stack
-	MOVD	$0xFFFFFFFF43E08000, R10   // ExcStackBottom
+	MOVD	$0xFFFFFFFF44108000, R10   // ExcStackBottom
 	CMP	R10, RSP
 	BHS	sync_entry_sp_ok             // RSP >= bottom means in range
 sync_entry_sp_corrupt:
@@ -550,6 +550,170 @@ print_fault_pc_char:
 	LSL	$4, R14
 	SUB	$1, R15
 	CBNZ	R15, print_fault_pc_loop
+
+	// Print " LR=0x" followed by link register from exception frame
+	MOVD	$' ', R11; MOVB	R11, (R12)
+	MOVD	$'L', R11; MOVB	R11, (R12)
+	MOVD	$'R', R11; MOVB	R11, (R12)
+	MOVD	$'=', R11; MOVB	R11, (R12)
+	MOVD	$'0', R11; MOVB	R11, (R12)
+	MOVD	$'x', R11; MOVB	R11, (R12)
+
+	MOVD	(EXC_FRAME_X29_X30+8)(RSP), R14  // LR from saved frame
+	MOVD	$16, R15
+print_fault_lr_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_fault_lr_digit
+	ADD	$('A'-10), R11
+	B	print_fault_lr_char
+print_fault_lr_digit:
+	ADD	$'0', R11
+print_fault_lr_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, print_fault_lr_loop
+
+	// Print " SP0=0x" followed by SP_EL0 from exception frame
+	MOVD	$' ', R11; MOVB	R11, (R12)
+	MOVD	$'S', R11; MOVB	R11, (R12)
+	MOVD	$'P', R11; MOVB	R11, (R12)
+	MOVD	$'0', R11; MOVB	R11, (R12)
+	MOVD	$'=', R11; MOVB	R11, (R12)
+	MOVD	$'0', R11; MOVB	R11, (R12)
+	MOVD	$'x', R11; MOVB	R11, (R12)
+
+	MOVD	EXC_FRAME_SP_EL0(RSP), R14
+	MOVD	$16, R15
+print_fault_sp0_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_fault_sp0_digit
+	ADD	$('A'-10), R11
+	B	print_fault_sp0_char
+print_fault_sp0_digit:
+	ADD	$'0', R11
+print_fault_sp0_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, print_fault_sp0_loop
+
+	// Print " g=0x" followed by X28 (g pointer) from frame
+	MOVD	$' ', R11; MOVB	R11, (R12)
+	MOVD	$'g', R11; MOVB	R11, (R12)
+	MOVD	$'=', R11; MOVB	R11, (R12)
+	MOVD	$'0', R11; MOVB	R11, (R12)
+	MOVD	$'x', R11; MOVB	R11, (R12)
+
+	WORD	$0xf94073ee  // ldr x14, [sp, #224] — X28 from frame
+	MOVD	$16, R15
+print_fault_g_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_fault_g_digit
+	ADD	$('A'-10), R11
+	B	print_fault_g_char
+print_fault_g_digit:
+	ADD	$'0', R11
+print_fault_g_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, print_fault_g_loop
+
+	// Print " FP=0x" followed by X29 (frame pointer)
+	MOVD	$' ', R11; MOVB	R11, (R12)
+	MOVD	$'F', R11; MOVB	R11, (R12)
+	MOVD	$'P', R11; MOVB	R11, (R12)
+	MOVD	$'=', R11; MOVB	R11, (R12)
+	MOVD	$'0', R11; MOVB	R11, (R12)
+	MOVD	$'x', R11; MOVB	R11, (R12)
+
+	WORD	$0xf94077ee  // ldr x14, [sp, #232] — X29 from exception frame
+	MOVD	$16, R15
+print_fault_fp_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_fault_fp_digit
+	ADD	$('A'-10), R11
+	B	print_fault_fp_char
+print_fault_fp_digit:
+	ADD	$'0', R11
+print_fault_fp_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, print_fault_fp_loop
+
+	// Print " X8=0x" (syscall/scratch reg)
+	MOVD	$' ', R11; MOVB	R11, (R12)
+	MOVD	$'X', R11; MOVB	R11, (R12)
+	MOVD	$'8', R11; MOVB	R11, (R12)
+	MOVD	$'=', R11; MOVB	R11, (R12)
+	MOVD	$'0', R11; MOVB	R11, (R12)
+	MOVD	$'x', R11; MOVB	R11, (R12)
+
+	LDP	EXC_FRAME_X8(RSP), (R14, R13)  // X8 in R14
+	MOVD	$16, R15
+print_fault_x8_loop:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_fault_x8_digit
+	ADD	$('A'-10), R11
+	B	print_fault_x8_char
+print_fault_x8_digit:
+	ADD	$'0', R11
+print_fault_x8_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, print_fault_x8_loop
+
+	// Print newline, then try to dump stack words from SP_EL0
+	MOVD	$'\r', R11; MOVB	R11, (R12)
+	MOVD	$'\n', R11; MOVB	R11, (R12)
+
+	// Stack dump: read 16 words from SP_EL0 (the Go stack)
+	// Note: this may data abort if the page isn't mapped, which would double-fault.
+	// Print "STK:" header
+	MOVD	$'S', R11; MOVB	R11, (R12)
+	MOVD	$'T', R11; MOVB	R11, (R12)
+	MOVD	$'K', R11; MOVB	R11, (R12)
+	MOVD	$':', R11; MOVB	R11, (R12)
+
+	MOVD	EXC_FRAME_SP_EL0(RSP), R16  // R16 = SP_EL0 value (Go stack pointer)
+	MOVD	$16, R17  // 16 words to print (expanded for call chain diagnosis)
+	MOVD	$0, R9   // offset counter
+
+print_stack_word:
+	MOVD	$' ', R11; MOVB	R11, (R12)
+	ADD	R9, R16, R20
+	MOVD	(R20), R14
+	MOVD	$16, R15
+print_stack_hex:
+	LSR	$60, R14, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	print_stack_hex_digit
+	ADD	$('A'-10), R11
+	B	print_stack_hex_char
+print_stack_hex_digit:
+	ADD	$'0', R11
+print_stack_hex_char:
+	MOVB	R11, (R12)
+	LSL	$4, R14
+	SUB	$1, R15
+	CBNZ	R15, print_stack_hex
+	ADD	$8, R9   // next word
+	SUB	$1, R17
+	CBNZ	R17, print_stack_word
 
 not_pc_align:
 	MOVD	$'\r', R11
@@ -1028,7 +1192,7 @@ svc_return:
 sync_return:
 
 	// DEBUG: SP corruption guard — catch SP_EL1 at/above stack top
-	MOVD	$0xFFFFFFFF43E28000, R12
+	MOVD	$0xFFFFFFFF44128000, R12
 	CMP	R12, RSP
 	BLO	sync_sp_ok
 	// SP is at/above stack top — no exception frame!
@@ -1079,6 +1243,42 @@ sync_sp_ok:
 	// MSR SPSR_EL1, X11 - use WORD to avoid assembler issues
 	WORD	$0xD518400B
 
+	// DEBUG: Check if ELR_EL1 is 0 before ERET (would crash at PC=0)
+	// Done here BEFORE register restore so we don't corrupt any GPRs.
+	// R10/R11 are still scratch at this point.
+	MRS	ELR_EL1, R10
+	CBNZ	R10, sync_elr_nonzero
+	MOVD	$UART_BASE, R10
+	MOVD	$'*', R11; MOVB	R11, (R10)
+	MOVD	$'S', R11; MOVB	R11, (R10)
+	MOVD	$'V', R11; MOVB	R11, (R10)
+	MOVD	$'C', R11; MOVB	R11, (R10)
+	MOVD	$'0', R11; MOVB	R11, (R10)
+	MRS	SPSR_EL1, R12
+	MOVD	$' ', R11; MOVB	R11, (R10)
+	MOVD	$'S', R11; MOVB	R11, (R10)
+	MOVD	$'=', R11; MOVB	R11, (R10)
+	MOVD	$16, R13
+sync_elr0_spsr:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	sync_elr0_spsr_digit
+	ADD	$('A'-10), R11
+	B	sync_elr0_spsr_char
+sync_elr0_spsr_digit:
+	ADD	$'0', R11
+sync_elr0_spsr_char:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, sync_elr0_spsr
+	MOVD	$'\r', R11; MOVB	R11, (R10)
+	MOVD	$'\n', R11; MOVB	R11, (R10)
+sync_elr0_halt:
+	B	sync_elr0_halt
+sync_elr_nonzero:
+
 	// Restore X28-X30 (R28 is g, use raw instruction)
 	// ldr x28, [sp, #224]
 	WORD	$0xf94073fc  // ldr x28, [sp, #224] - NOTE: 73fc not 70fc (Rn=31=sp)
@@ -1108,6 +1308,7 @@ sync_sp_ok:
 	LDP	EXC_FRAME_X0+32(RSP), (R4, R5)
 	LDP	EXC_FRAME_X0+48(RSP), (R6, R7)
 
+
 	// Clean up stack and return
 	ADD	$EXC_FRAME_SIZE, RSP
 	ERET
@@ -1131,10 +1332,10 @@ irq_exception_handler:
 	// DEBUG: Check SP_EL1 validity ON ENTRY (before SUB).
 	// Uses TPIDR_EL1 to save/restore R10 without clobbering registers.
 	MSR	R10, TPIDR_EL1               // Save R10 temporarily
-	MOVD	$0xFFFFFFFF43E28001, R10   // ExcStackTop + 1 (128KB stack)
+	MOVD	$0xFFFFFFFF44128001, R10   // ExcStackTop + 1 (128KB stack)
 	CMP	R10, RSP
 	BHS	irq_entry_sp_corrupt         // RSP >= top+1 means above stack
-	MOVD	$0xFFFFFFFF43E08000, R10   // ExcStackBottom
+	MOVD	$0xFFFFFFFF44108000, R10   // ExcStackBottom
 	CMP	R10, RSP
 	BHS	irq_entry_sp_ok              // RSP >= bottom means in range
 irq_entry_sp_corrupt:
@@ -1466,7 +1667,7 @@ irq_write_eoir:
 irq_return:
 
 	// DEBUG: SP corruption guard — catch SP_EL1 at/above stack top
-	MOVD	$0xFFFFFFFF43E28000, R12
+	MOVD	$0xFFFFFFFF44128000, R12
 	CMP	R12, RSP
 	BLO	irq_sp_ok
 	// SP is at/above stack top — no exception frame!
@@ -1551,6 +1752,61 @@ irq_elr_ok:
 	WORD	$0xD50342DF  // MSR DAIFSet, #2 — disable IRQs
 	MSR	R10, ELR_EL1
 	MSR	R11, SPSR_EL1
+
+	// DEBUG: Check if ELR_EL1 is 0 before ERET (would crash at PC=0)
+	// Done here BEFORE register restore so we don't corrupt any GPRs.
+	// R10/R11 are still scratch at this point.
+	MRS	ELR_EL1, R10
+	CBNZ	R10, irq_elr_nonzero
+	MOVD	$UART_BASE, R10
+	MOVD	$'*', R11; MOVB	R11, (R10)
+	MOVD	$'I', R11; MOVB	R11, (R10)
+	MOVD	$'R', R11; MOVB	R11, (R10)
+	MOVD	$'Q', R11; MOVB	R11, (R10)
+	MOVD	$'0', R11; MOVB	R11, (R10)
+	MRS	SPSR_EL1, R12
+	MOVD	$' ', R11; MOVB	R11, (R10)
+	MOVD	$'S', R11; MOVB	R11, (R10)
+	MOVD	$'=', R11; MOVB	R11, (R10)
+	MOVD	$16, R13
+irq_elr0_spsr:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	irq_elr0_spsr_digit
+	ADD	$('A'-10), R11
+	B	irq_elr0_spsr_char
+irq_elr0_spsr_digit:
+	ADD	$'0', R11
+irq_elr0_spsr_char:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, irq_elr0_spsr
+	MRS	SP_EL0, R12
+	MOVD	$' ', R11; MOVB	R11, (R10)
+	MOVD	$'P', R11; MOVB	R11, (R10)
+	MOVD	$'=', R11; MOVB	R11, (R10)
+	MOVD	$16, R13
+irq_elr0_sp0:
+	LSR	$60, R12, R11
+	AND	$0xF, R11
+	CMP	$10, R11
+	BLT	irq_elr0_sp0_digit
+	ADD	$('A'-10), R11
+	B	irq_elr0_sp0_char
+irq_elr0_sp0_digit:
+	ADD	$'0', R11
+irq_elr0_sp0_char:
+	MOVB	R11, (R10)
+	LSL	$4, R12
+	SUB	$1, R13
+	CBNZ	R13, irq_elr0_sp0
+	MOVD	$'\r', R11; MOVB	R11, (R10)
+	MOVD	$'\n', R11; MOVB	R11, (R10)
+irq_elr0_halt:
+	B	irq_elr0_halt
+irq_elr_nonzero:
 
 	// Restore X28-X30 (R28 is g, use raw instruction)
 	// ldr x28, [sp, #224]
@@ -1944,7 +2200,7 @@ el0_unhandled_halt:
 	B	el0_unhandled_halt
 el0_return:
 	// DEBUG: SP corruption guard — catch SP_EL1 at/above stack top
-	MOVD	$0xFFFFFFFF43E28000, R12
+	MOVD	$0xFFFFFFFF44128000, R12
 	CMP	R12, RSP
 	BLO	el0_sp_ok
 	// SP is at/above stack top — no exception frame!
@@ -1986,6 +2242,114 @@ el0_sp_ok:
 	// Restore ELR and SPSR
 	LDP	EXC_FRAME_ELR_SPSR(RSP), (R10, R11)
 
+	// DIAGNOSTIC: catch ELR=0 before ERET (any EL)
+	CBNZ	R10, el0_elr_nonzero
+	// ELR is 0 — this will crash on ERET. Print diagnostic.
+	MOVD	$UART_BASE, R12
+	MOVD	$'E', R13; MOVB	R13, (R12)
+	MOVD	$'R', R13; MOVB	R13, (R12)
+	MOVD	$'E', R13; MOVB	R13, (R12)
+	MOVD	$'T', R13; MOVB	R13, (R12)
+	MOVD	$'0', R13; MOVB	R13, (R12)
+	MOVD	$' ', R13; MOVB	R13, (R12)
+	// Print "SPSR="
+	MOVD	$'S', R13; MOVB	R13, (R12)
+	MOVD	$'P', R13; MOVB	R13, (R12)
+	MOVD	$'S', R13; MOVB	R13, (R12)
+	MOVD	$'R', R13; MOVB	R13, (R12)
+	MOVD	$'=', R13; MOVB	R13, (R12)
+	// Print SPSR (R11) in hex
+	MOVD	R11, R14
+	MOVD	$60, R15
+el0_eret0_spsr_loop:
+	LSR	R15, R14, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLT	el0_eret0_spsr_digit
+	ADD	$('a'-10), R13
+	B	el0_eret0_spsr_emit
+el0_eret0_spsr_digit:
+	ADD	$'0', R13
+el0_eret0_spsr_emit:
+	MOVB	R13, (R12)
+	CBZ	R15, el0_eret0_spsr_done
+	SUB	$4, R15
+	B	el0_eret0_spsr_loop
+el0_eret0_spsr_done:
+	// Print " SP0="
+	MOVD	$' ', R13; MOVB	R13, (R12)
+	MOVD	$'S', R13; MOVB	R13, (R12)
+	MOVD	$'P', R13; MOVB	R13, (R12)
+	MOVD	$'0', R13; MOVB	R13, (R12)
+	MOVD	$'=', R13; MOVB	R13, (R12)
+	MOVD	EXC_FRAME_SP_EL0(RSP), R14
+	MOVD	$60, R15
+el0_eret0_sp0_loop:
+	LSR	R15, R14, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLT	el0_eret0_sp0_digit
+	ADD	$('a'-10), R13
+	B	el0_eret0_sp0_emit
+el0_eret0_sp0_digit:
+	ADD	$'0', R13
+el0_eret0_sp0_emit:
+	MOVB	R13, (R12)
+	CBZ	R15, el0_eret0_sp0_done
+	SUB	$4, R15
+	B	el0_eret0_sp0_loop
+el0_eret0_sp0_done:
+	// Print " LR="
+	MOVD	$' ', R13; MOVB	R13, (R12)
+	MOVD	$'L', R13; MOVB	R13, (R12)
+	MOVD	$'R', R13; MOVB	R13, (R12)
+	MOVD	$'=', R13; MOVB	R13, (R12)
+	MOVD	(EXC_FRAME_X29_X30+8)(RSP), R14
+	MOVD	$60, R15
+el0_eret0_lr_loop:
+	LSR	R15, R14, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLT	el0_eret0_lr_digit
+	ADD	$('a'-10), R13
+	B	el0_eret0_lr_emit
+el0_eret0_lr_digit:
+	ADD	$'0', R13
+el0_eret0_lr_emit:
+	MOVB	R13, (R12)
+	CBZ	R15, el0_eret0_lr_done
+	SUB	$4, R15
+	B	el0_eret0_lr_loop
+el0_eret0_lr_done:
+	// Print " X0="
+	MOVD	$' ', R13; MOVB	R13, (R12)
+	MOVD	$'X', R13; MOVB	R13, (R12)
+	MOVD	$'0', R13; MOVB	R13, (R12)
+	MOVD	$'=', R13; MOVB	R13, (R12)
+	MOVD	EXC_FRAME_X0(RSP), R14
+	MOVD	$60, R15
+el0_eret0_x0_loop:
+	LSR	R15, R14, R13
+	AND	$0xF, R13
+	CMP	$10, R13
+	BLT	el0_eret0_x0_digit
+	ADD	$('a'-10), R13
+	B	el0_eret0_x0_emit
+el0_eret0_x0_digit:
+	ADD	$'0', R13
+el0_eret0_x0_emit:
+	MOVB	R13, (R12)
+	CBZ	R15, el0_eret0_x0_done
+	SUB	$4, R15
+	B	el0_eret0_x0_loop
+el0_eret0_x0_done:
+	MOVD	$'\r', R13; MOVB	R13, (R12)
+	MOVD	$'\n', R13; MOVB	R13, (R12)
+el0_eret0_halt:
+	WFI
+	B	el0_eret0_halt
+
+el0_elr_nonzero:
 	// DEBUG: if SPSR says EL0 (M[2]=0) but ELR is a kernel address, the
 	// exception frame was corrupted during SVC handling.
 	AND	$0x4, R11, R12		// R12 = SPSR.M[2]

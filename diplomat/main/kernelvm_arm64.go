@@ -17,7 +17,7 @@ import (
 // KernelVM constants matching cardinal/constants/layout.go
 const (
 	KernelVAOffset       = 0xFFFFFFFF00000000
-	KernelStacksVirtBase = KernelVAOffset + 0x43E00000 // 0xFFFFFFFF43E00000
+	KernelStacksVirtBase = KernelVAOffset + 0x44100000 // 0xFFFFFFFF44100000
 	KernelG0StackSize    = 0x8000                      // 32KB
 	KernelExcStackSize   = 0x20000                     // 128KB
 	KernelG0StackBottom  = KernelStacksVirtBase

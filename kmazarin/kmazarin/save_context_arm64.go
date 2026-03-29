@@ -3,8 +3,15 @@
 package main
 
 import (
+	"mazzy/kmazarin/serial"
 	"unsafe"
 )
+
+// Context switch diagnostics — written by doContextSwitchABI0 when ELR=0 detected
+var ctxSwitchDiagTID int32
+var ctxSwitchDiagSP uint64
+var ctxSwitchDiagLR uint64
+var ctxSwitchDiagSPSR uint64
 
 // SaveContextFromFrame saves the current thread's context from an ARM64 exception frame.
 // Frame layout: x0-x27 at [0:27], x28-x30 at [28:30], ELR at [32], SPSR at [33], SP at [36].
@@ -56,11 +63,20 @@ func doContextSwitchABI0(framePtr uint64, targetPtr uint64) uint64 {
 	}
 
 	if targetIdx < 0 {
+		serial.PollWrite('!')
 		return 0
 	}
 
 	// Use NormalSchedulerFunc for production calls from assembly
 	ctx := doContextSwitchImpl(&NormalSchedulerFunc, uintptr(framePtr), targetIdx)
+	if ctx != nil && ctx.ELR == 0 {
+		// ELR=0 detected — store diagnostic info in globals for the crash handler
+		serial.PollWrite('Z')
+		ctxSwitchDiagTID = int32(targetIdx)
+		ctxSwitchDiagSP = ctx.SP
+		ctxSwitchDiagLR = ctx.X[30]
+		ctxSwitchDiagSPSR = ctx.SPSR
+	}
 	return uint64(uintptr(unsafe.Pointer(ctx)))
 }
 

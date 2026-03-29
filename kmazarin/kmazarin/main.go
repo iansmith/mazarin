@@ -11,7 +11,6 @@ import (
 	"mazzy/kmazarin/dtb"
 	"mazzy/shared/constants"
 	"mazzy/shared/hid"
-	"mazzy/shared/fs/fat32"
 	toml "github.com/pelletier/go-toml/v2"
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
@@ -634,46 +633,6 @@ func initVirtIOGPU() {
 		return
 	}
 
-	// Boot image disabled temporarily to evaluate neumorphic shadows
-	if false {
-	blk, ok := device.GetBlockDevice()
-	if !ok {
-		console.KPrintln("[VirtIO GPU] No block device, skipping boot image")
-	} else {
-		fs, err := fat32.Mount(blk)
-		if err != nil {
-			console.KPrintf("[VirtIO GPU] FAT32 mount failed: %v\n", err)
-		} else {
-			file, err := fs.Open("/boot-image.bin")
-			if err != nil {
-				console.KPrintf("[VirtIO GPU] boot-image.bin not found: %v\n", err)
-			} else {
-				fileSize := file.Size()
-
-				// Use buddy allocator for contiguous physical memory (avoids demand paging issues)
-				buf := kmem.AllocBuffer(uint64(fileSize))
-				if buf == nil {
-					console.KPrintln("[VirtIO GPU] Failed to allocate buffer for boot image")
-				} else {
-					data := buf.Bytes()
-					n, err := file.Read(data)
-					file.Close()
-					if err != nil && n == 0 {
-						console.KPrintf("[VirtIO GPU] Failed to read boot-image.bin: %v\n", err)
-						kmem.FreeBuffer(buf)
-					} else {
-						console.KPrintf("[VirtIO GPU] Boot image loaded from disk, %d bytes\n", n)
-						if gpu.RenderBootImage(uintptr(unsafe.Pointer(&data[0])), uint64(n)) {
-							gpu.UpdateDisplay(0, 0, gpu.GetWidth(), gpu.GetHeight())
-							console.KPrintln("[VirtIO GPU] Boot image displayed")
-						}
-						kmem.FreeBuffer(buf)
-					}
-				}
-			}
-		}
-	}
-	} // end if false
 }
 
 // initVirtIOInputDevices discovers VirtIO input devices and wires their

@@ -2,8 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Mazzy overlay: Routes runtime mmap through an interceptable function pointer.
-// This allows syscall interception to work for heap allocation during runtime init.
+// Support for memory sanitizer. See runtime/cgo/mmap.go.
 
 //go:build (linux && (amd64 || arm64 || loong64)) || (freebsd && amd64)
 
@@ -23,21 +22,19 @@ var _cgo_mmap unsafe.Pointer
 //go:linkname _cgo_munmap _cgo_munmap
 var _cgo_munmap unsafe.Pointer
 
-// MazzyMmapHandler is a function pointer for mmap interception.
-// By default it's nil, which means use sysMmap (real SVC).
-// The syscall package sets this to route mmap through ShepherdSyscallEntry.
-// Exported via linkname without package prefix so syscall can set it.
-//
-//go:linkname MazzyMmapHandler MazzyMmapHandler
-var MazzyMmapHandler func(addr uintptr, n uintptr, prot, flags, fd int32, off uint32) (uintptr, int)
-
-// mmap is used to route the mmap system call through an interceptable path,
-// allowing Mazzy's syscall interception to work for heap allocation.
+// mmap is used to route the mmap system call through C code when using cgo, to
+// support sanitizer interceptors. Don't allow stack splits, since this function
+// (used by sysAlloc) is called in a lot of low-level parts of the runtime and
+// callers often assume it won't acquire any locks.
 //
 //go:nosplit
 func mmap(addr unsafe.Pointer, n uintptr, prot, flags, fd int32, off uint32) (unsafe.Pointer, int) {
 	if _cgo_mmap != nil {
-		// CGO path - use the cgo mmap function
+		// Make ret a uintptr so that writing to it in the
+		// function literal does not trigger a write barrier.
+		// A write barrier here could break because of the way
+		// that mmap uses the same value both as a pointer and
+		// an errno value.
 		var ret uintptr
 		systemstack(func() {
 			ret = callCgoMmap(addr, n, prot, flags, fd, off)
@@ -47,20 +44,9 @@ func mmap(addr unsafe.Pointer, n uintptr, prot, flags, fd int32, off uint32) (un
 		}
 		return unsafe.Pointer(ret), 0
 	}
-
-	// Mazzy path: check if there's a custom handler
-	if MazzyMmapHandler != nil {
-		p, err := MazzyMmapHandler(uintptr(addr), n, prot, flags, fd, off)
-		return unsafe.Pointer(p), err
-	}
-
-	// Default: use sysMmap (real SVC via assembly)
 	return sysMmap(addr, n, prot, flags, fd, off)
 }
 
-// munmap routes through syscall package for consistency
-//
-//go:nosplit
 func munmap(addr unsafe.Pointer, n uintptr) {
 	if _cgo_munmap != nil {
 		systemstack(func() { callCgoMunmap(addr, n) })
@@ -82,5 +68,3 @@ func sysMunmap(addr unsafe.Pointer, n uintptr)
 // callCgoMunmap calls the munmap function in the runtime/cgo package
 // using the GCC calling convention. It is implemented in assembly.
 func callCgoMunmap(addr unsafe.Pointer, n uintptr)
-
-// RegisterMazModuledata is in maz_moduledata.go (separate file for broader build tag support).

@@ -32,9 +32,9 @@ func SetInputFocus(targetSID int, class int) error {
 
 // WaitInputEvent blocks until input events arrive for the caller's device class queue.
 // Returns the number of events and fills buf with HID event data.
-// The kernel thread blocks inside the SVC; no entersyscall/exitsyscall needed.
+// Uses Syscall (not RawSyscall) to release the P while blocked.
 func WaitInputEvent(class int, buf *hid.SoftIRQReturn) (int, error) {
-	r1, _, errno := RawSyscall(mazzy.SysWaitInputEvent,
+	r1, _, errno := Syscall(mazzy.SysWaitInputEvent,
 		uintptr(class),
 		uintptr(unsafe.Pointer(buf)),
 		0, 0, 0, 0)

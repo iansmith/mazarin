@@ -380,7 +380,7 @@ tasks:
   # that get patched at load time by the kernel to target the shepherd's real
   # functions. The build pipeline:
   #   1. gen-ast-stubs generates thin overlay (runtime+syscall → for{})
-  #   2. Merge thin overlay with userspace overlay (syscall ShepherdSyscallEntry routing)
+  #   2. Merge thin overlay with userspace overlay (syscall + runtime hooks)
   #   3. Build as PIE with merged overlay
   #   4. maz-reloc scans binary, generates .maz_imports section
 

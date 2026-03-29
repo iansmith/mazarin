@@ -7,6 +7,7 @@ tasks:
     desc: Generate runtime overlay JSON for kmazarin (ARM64)
     deps: [':build-dir']
     sources:
+      - '{{.RUNTIME_PATCHES_DIR}}/asm_arm64.s'
       - '{{.RUNTIME_PATCHES_DIR}}/cgo_mmap.go'
       - '{{.RUNTIME_PATCHES_DIR}}/malloc.go'
       - '{{.RUNTIME_PATCHES_DIR}}/mcache.go'

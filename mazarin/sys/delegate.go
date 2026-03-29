@@ -124,11 +124,8 @@ type delegateRecvResult struct {
 // The caller should process each request and call req.Reply() to unblock the
 // original caller. Failing to reply will leave the caller permanently blocked.
 //
-// NOTE: This immediately starts a background goroutine that blocks in
-// SysDelegatedRecv via RawSyscall. With GOMAXPROCS=1, this holds the P
-// and starves other goroutines. If the caller needs to do significant work
-// (e.g. block I/O) before entering the serve loop, use RegisterSyscallHandlers
-// + StartDelegateRecv instead.
+// The recv goroutine uses Syscall (not RawSyscall), releasing the P while
+// blocked so other goroutines can run.
 func HandleSyscalls(ids ...sysid.ID) (<-chan SyscallRequest, error) {
 	if err := RegisterSyscallHandlers(ids...); err != nil {
 		return nil, err
@@ -154,9 +151,7 @@ func RegisterSyscallHandlers(ids ...sysid.ID) error {
 }
 
 // StartDelegateRecv starts the background goroutine that receives delegated
-// syscall requests. Returns the channel that delivers requests. Call this
-// after completing any work that requires sole use of the P (e.g. block I/O
-// during shepherd launches).
+// syscall requests. Returns the channel that delivers requests.
 func StartDelegateRecv() <-chan SyscallRequest {
 	ch := make(chan SyscallRequest, 4)
 	ready := make(chan struct{})
@@ -181,7 +176,7 @@ func delegateRecvLoop(ch chan<- SyscallRequest, ready chan<- struct{}) {
 		// (not a normal memory access), so an unmapped page causes
 		// EFAULT and loses the delegate request.
 		result = delegateRecvResult{}
-		r1, _, errno := RawSyscall(mazzy.SysDelegatedRecv,
+		r1, _, errno := Syscall(mazzy.SysDelegatedRecv,
 			uintptr(unsafe.Pointer(&result)),
 			0, 0, 0, 0, 0)
 

@@ -9,8 +9,7 @@ const MazzySyscallBase = 0x1000
 
 const (
 	SysGetTime         = MazzySyscallBase + 0  // 0x1000 - Get current time
-	SysLaunch          = MazzySyscallBase + 1  // 0x1001 - Launch a shepherd from ELF file
-	SysBootstrapRunElf = MazzySyscallBase + 2  // 0x1002 - Bootstrap: load ELF from disk
+	// slots 1-2 freed (were SysLaunch, SysBootstrapRunElf)
 	SysAllocPages      = MazzySyscallBase + 3  // 0x1003 - Allocate pages for userspace
 	SysExit            = MazzySyscallBase + 4  // 0x1004 - Exit program
 	SysReap            = MazzySyscallBase + 5  // 0x1005 - Reap terminated program
@@ -30,7 +29,7 @@ const (
 	SysIPCCall           = MazzySyscallBase + 19 // 0x1013 - Send IPC request (blocks for reply)
 	SysIPCRecv           = MazzySyscallBase + 20 // 0x1014 - Receive IPC request (blocks)
 	SysIPCReply          = MazzySyscallBase + 21 // 0x1015 - Reply to IPC request
-	SysBlockRead         = MazzySyscallBase + 22 // 0x1016 - Read disk sectors (deprecated)
+	// slot 22 freed (was SysBlockRead)
 	SysRegisterSyscallHandler = MazzySyscallBase + 23 // 0x1017 - Register shepherd as handler for a SysID
 	SysDelegatedRecv          = MazzySyscallBase + 24 // 0x1018 - Receive a delegated syscall request
 	SysSyscallReply           = MazzySyscallBase + 25 // 0x1019 - Reply to a delegated syscall

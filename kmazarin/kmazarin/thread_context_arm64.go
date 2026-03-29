@@ -2,6 +2,8 @@
 
 package main
 
+import "mazzy/kmazarin/serial"
+
 // ThreadContext holds saved CPU state for a thread (ARM64).
 type ThreadContext struct {
 	// General purpose registers x0-x30
@@ -98,6 +100,9 @@ func (ctx *ThreadContext) SetCloneTLS(tls uint64) {}
 //
 //go:nosplit
 func (ctx *ThreadContext) SetupForUserspace(entryPoint, stackPtr uint64) {
+	if entryPoint == 0 {
+		serial.PollWrite('Q') // Q = SetupForUserspace with entry=0
+	}
 	for i := range ctx.X {
 		ctx.X[i] = 0
 	}

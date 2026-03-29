@@ -43,12 +43,12 @@ func MailboxSend(targetSID int, code int64, callerVA uintptr) error {
 }
 
 // MailboxRecv blocks until a mailbox notification arrives.
-// The kernel thread blocks inside the SVC; no entersyscall/exitsyscall needed.
+// Uses Syscall (not RawSyscall) to release the P while blocked.
 func MailboxRecv() (MailboxNotification, error) {
 	var notif MailboxNotification
 	// Touch the struct to ensure the page is demand-faulted before the kernel writes to it.
 	*(*byte)(unsafe.Pointer(&notif)) = 0
-	r1, _, errno := RawSyscall(mazzy.SysMailboxRecv,
+	r1, _, errno := Syscall(mazzy.SysMailboxRecv,
 		uintptr(unsafe.Pointer(&notif)),
 		0, 0, 0, 0, 0)
 

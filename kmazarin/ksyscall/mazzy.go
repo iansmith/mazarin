@@ -9,8 +9,7 @@ import (
 // Indexed by (syscallNum - mazzy.MazzySyscallBase).
 var mazzySyscallTable = [64]SyscallHandler{
 	0: SyscallGetTime,              // GetTime = 0x1000
-	1: SyscallLaunch,               // Launch = 0x1001
-	2: SyscallBootstrapRunElf,      // BootstrapRunElf = 0x1002
+	// slots 1-2 freed (were SyscallLaunch, SyscallBootstrapRunElf)
 	3: SyscallAllocPages,           // AllocPages = 0x1003
 	4: SyscallMazzyExit,            // Exit = 0x1004
 	5: nil,                         // Reap = 0x1005 (not yet implemented)
@@ -27,7 +26,7 @@ var mazzySyscallTable = [64]SyscallHandler{
 	16: SyscallTransferPages,      // TransferPages = 0x1010
 	17: SyscallMapSharedPage,      // MapSharedPage = 0x1011
 	18: SyscallLoadMaz,            // LoadMaz = 0x1012
-	22: SyscallBlockRead,                // BlockRead = 0x1016
+	// slots 19-22 freed (were IPC, BlockRead)
 	23: SyscallRegisterSyscallHandler,    // RegisterSyscallHandler = 0x1017
 	24: SyscallDelegatedRecv,             // DelegatedRecv = 0x1018
 	25: SyscallReply,                      // SyscallReply = 0x1019

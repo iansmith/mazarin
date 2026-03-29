@@ -18,53 +18,20 @@ import (
 	"unsafe"
 )
 
-// Mazzy userspace syscall overlay: RawSyscall6 calls shepherd via function pointer.
-// ShepherdSyscallEntry is patched by shepherd when loading userspace programs.
-// By default, it points to defaultSyscallHandler which does real SVC.
-// This allows shepherd itself to bootstrap before it can set up interception.
-var ShepherdSyscallEntry func(num, a1, a2, a3, a4, a5, a6 uintptr) int64 = defaultSyscallHandler
-
 // defaultSyscallHandler performs a real SVC syscall to the kernel.
-// This is used by shepherd during bootstrap before it patches userspace programs.
 // Implemented in asm_linux_arm64.s
 func defaultSyscallHandler(num, a1, a2, a3, a4, a5, a6 uintptr) int64
 
-// _SYS_mmap uses the arch-specific SYS_MMAP from zsysnum_linux_*.go.
-const _SYS_mmap = SYS_MMAP
+// Mazzy: entersyscall/exitsyscall — matching stock Go contract.
+// Syscall/Syscall6 release the P before the SVC so other goroutines
+// can run while the calling M blocks in the kernel.
+// RawSyscall/RawSyscall6 skip the scheduler hooks (P held throughout).
 
-// SYS_debugPrint is Mazzy's debug print syscall (0x1006)
-const _SYS_debugPrint = 0x1006
+//go:linkname runtime_entersyscall runtime.entersyscall
+func runtime_entersyscall()
 
-// MazzyMmapHandler is defined in runtime/cgo_mmap.go
-// We use go:linkname to set it from here to route mmap through ShepherdSyscallEntry
-// The runtime exports it as "MazzyMmapHandler" (without package prefix)
-//
-//go:linkname mazzyMmapHandler MazzyMmapHandler
-var mazzyMmapHandler func(addr uintptr, n uintptr, prot, flags, fd int32, off uint32) (uintptr, int)
-
-// mmapViaShepherdSyscallEntry routes mmap through ShepherdSyscallEntry
-//
-//go:nosplit
-func mmapViaShepherdSyscallEntry(addr uintptr, n uintptr, prot, flags, fd int32, off uint32) (uintptr, int) {
-	result := ShepherdSyscallEntry(_SYS_mmap, addr, n, uintptr(prot), uintptr(flags), uintptr(fd), uintptr(off))
-	if int64(result) < 0 {
-		return 0, int(-result)
-	}
-	return uintptr(result), 0
-}
-
-// init sets up the mmap handler to route through ShepherdSyscallEntry.
-// This runs after runtime init, so early heap allocation uses direct SVC,
-// but subsequent allocations go through the interceptable path.
-func init() {
-	mazzyMmapHandler = mmapViaShepherdSyscallEntry
-}
-
-// Mazzy: runtime_entersyscall/runtime_exitsyscall removed.
-// In .maz modules, runtime.entersyscall is a thin stub that gets patched
-// to the shepherd's version, which validates caller PCs against pclntab.
-// Since .maz addresses aren't in pclntab, this causes "unknown caller pc"
-// crashes. Syscall/Syscall6 now call RawSyscall6 directly.
+//go:linkname runtime_exitsyscall runtime.exitsyscall
+func runtime_exitsyscall()
 
 // N.B. For the Syscall functions below:
 //
@@ -95,18 +62,10 @@ func RawSyscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err Errno) {
 //go:norace
 //go:linkname RawSyscall6
 func RawSyscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errno) {
-	// Mazzy userspace: call syscall handler via function pointer.
-	// By default this is defaultSyscallHandler (real SVC).
-	// For userspace programs loaded by shepherd, this gets patched to
-	// point to shepherd's handler function.
-	result := ShepherdSyscallEntry(trap, a1, a2, a3, a4, a5, a6)
-
-	// Convert from Linux return convention
+	result := defaultSyscallHandler(trap, a1, a2, a3, a4, a5, a6)
 	if int64(result) < 0 {
-		// Error: Linux returns negative errno
 		return ^uintptr(0), 0, Errno(-int64(result))
 	}
-	// Success
 	return uintptr(result), 0, 0
 }
 
@@ -114,22 +73,20 @@ func RawSyscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errn
 //go:nosplit
 //go:linkname Syscall
 func Syscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err Errno) {
-	// Mazzy: do NOT call runtime_entersyscall/runtime_exitsyscall.
-	// In .maz modules, runtime.entersyscall is a thin stub patched to the
-	// shepherd's version. The shepherd's entersyscall validates caller PCs
-	// against pclntab, but .maz addresses aren't in pclntab → crash.
-	// All Mazzy shepherd syscall wrappers already use RawSyscall6 (no
-	// entersyscall), and Syscall-path calls (fmt.Println → syscall.write)
-	// are short-lived and non-blocking.
-	return RawSyscall6(trap, a1, a2, a3, 0, 0, 0)
+	runtime_entersyscall()
+	r1, r2, err = RawSyscall6(trap, a1, a2, a3, 0, 0, 0)
+	runtime_exitsyscall()
+	return
 }
 
 //go:uintptrkeepalive
 //go:nosplit
 //go:linkname Syscall6
 func Syscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errno) {
-	// Mazzy: skip entersyscall/exitsyscall (see Syscall comment above).
-	return RawSyscall6(trap, a1, a2, a3, a4, a5, a6)
+	runtime_entersyscall()
+	r1, r2, err = RawSyscall6(trap, a1, a2, a3, a4, a5, a6)
+	runtime_exitsyscall()
+	return
 }
 
 func rawSyscallNoError(trap, a1, a2, a3 uintptr) (r1, r2 uintptr)

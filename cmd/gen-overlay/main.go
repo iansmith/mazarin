@@ -159,6 +159,7 @@ func buildKmazarinOverlay(overlay *Overlay, goroot, patchesDir string) error {
 		"runtime/sys_linux_arm64.s":  "sys_linux_arm64.s",
 		"runtime/tagptr_64bit.go":    "tagptr_64bit.go",
 		"runtime/traceback.go":        "traceback.go",
+		// "runtime/asm_arm64.s":       "asm_arm64.s",
 		// "runtime/panic.go":          "panic.go",
 	}
 
