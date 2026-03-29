@@ -33,12 +33,19 @@ func SyscallWrite(fd, bufPtr, count, _, _, _ uint64) int64 {
 	// When Go's runtime calls write(eventfd, ...) it is trying to wake
 	// a thread sleeping in epoll_wait (our SyscallEpollPwait).
 	// We look up the shepherd's NetpollWaiterTID and wake that thread.
+	//
+	// If no thread is currently in epoll_wait (NetpollWaiterTID==0), set
+	// EventFdPending so the next SyscallEpollPwait returns immediately.
+	// This matches Linux eventfd semantics where writes accumulate in
+	// the counter and cause the next epoll_wait to return.
 	if fd == 11 {
 		p := proc.CurrentShepherd()
 		if p != nil {
 			waiterTID := p.NetpollWaiterTID
 			if waiterTID != 0 {
 				WakeNetpollThread(waiterTID)
+			} else {
+				atomic.StoreUint32(&p.EventFdPending, 1)
 			}
 		}
 		return int64(count) // Success — pretend we wrote the bytes

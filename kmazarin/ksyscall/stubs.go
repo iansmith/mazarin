@@ -348,6 +348,13 @@ func SyscallEpollPwait(_, _, _, timeoutMS, _, _ uint64) int64 {
 	// SyscallWrite(eventfd) reads this to know which thread to wake.
 	p := proc.CurrentShepherd()
 	if p != nil {
+		// Check if a prior eventfd write is pending. On real Linux, eventfd
+		// writes accumulate in a counter; when the fd is in the epoll set,
+		// epoll_wait returns immediately because the fd is readable. We
+		// match this by checking EventFdPending before blocking.
+		if atomic.SwapUint32(&p.EventFdPending, 0) != 0 {
+			return 0 // Event pending — return immediately like Linux epoll_wait
+		}
 		p.NetpollWaiterTID = currentTID
 	}
 
@@ -438,25 +445,13 @@ func SyscallRead(_, _, _, _, _, _ uint64) int64 {
 	return 0 // EOF
 }
 
-// SyscallOpenat opens a file
-// Return -ENOENT for /proc and /sys paths (cgroup, etc.)
-// This prevents the Go runtime from looping forever trying to read cgroup info
+// SyscallOpenat is the fallback when no delegate handler is registered.
+// Returns ENOENT for all paths. When the linux shepherd is registered and
+// ready, DispatchSyscall delegates openat before reaching this stub.
 //
 //go:nosplit
 func SyscallOpenat(dirfd, pathname, flags, mode, _, _ uint64) int64 {
-	// Check first byte of pathname to detect /proc, /sys, /dev paths
-	// These don't exist in our minimal kernel environment
-	if pathname != 0 {
-		firstByte, ok := kmem.ReadUserByte(uintptr(pathname))
-		if ok && firstByte == '/' {
-			secondByte, ok2 := kmem.ReadUserByte(uintptr(pathname + 1))
-			if ok2 && (secondByte == 'p' || secondByte == 's' || secondByte == 'd') {
-				// Likely /proc, /sys, or /dev - return ENOENT
-				return -2 // ENOENT
-			}
-		}
-	}
-	return 5 // Fake fd for other files
+	return -2 // ENOENT
 }
 
 // ============================================================================

@@ -1,12 +1,6 @@
 # startup.riscv64.toml — RISC-V shepherd launch sequence (read by fs from disk)
-
-[[shepherd]]
-name = "rachel"
-path = "/rachel.elf"
-
-[[shepherd]]
-name = "linux"
-path = "/linux.elf"
+# NOTE: linux and rachel are launched explicitly by fs in bootSequence
+# (linux first, then rachel) before this config is read.
 
 #[[shepherd]]
 #name = "sievetest"

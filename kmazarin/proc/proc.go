@@ -77,6 +77,16 @@ type Shepherd struct {
 	// sleeping thread, implementing Go's netpollBreak mechanism.
 	NetpollWaiterTID int32
 
+	// EventFdPending matches Linux eventfd semantics: writes accumulate.
+	// On real Linux, writing to an eventfd increments a counter. If the
+	// eventfd is in an epoll set, the next epoll_wait returns immediately
+	// because the fd is readable. In Mazzy, SyscallWrite(fd=11) sets this
+	// flag when NetpollWaiterTID==0 (nobody in epoll_wait yet). When
+	// SyscallEpollPwait enters, it checks this flag and returns immediately
+	// instead of blocking — matching the Linux behavior where a prior
+	// eventfd write causes the next epoll_wait to return.
+	EventFdPending uint32
+
 	// Ready indicates this shepherd is ready to accept delegated work.
 	// Set by SysSetReady, checked by the kernel before delegating LoadFile.
 	// 0 = not ready, 1 = ready.

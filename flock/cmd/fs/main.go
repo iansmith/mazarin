@@ -130,10 +130,7 @@ func main() {
 
 	mt := &mountTable{root: fsys, tmpFS: tmpFS, blkDev: blkDev}
 
-	// 4. Read and parse startup config
-	cfg := readStartupConfig(fsys)
-
-	// 5. Register as delegate handler for LoadFile and ReadFilePages.
+	// 4. Register as delegate handler for LoadFile and ReadFilePages.
 	delegateCh, err := sys.HandleSyscalls(sysid.LoadFile, sysid.ReadFilePages)
 	if err != nil {
 		fmt.Printf("[fs] HandleSyscalls failed: %v\n", err)
@@ -141,22 +138,22 @@ func main() {
 	}
 	fmt.Println("[fs] registered as LoadFile + ReadFilePages delegate")
 
-	// 5b. Start IPC goroutine.
+	// 4b. Start IPC goroutine.
 	ipc := newFsIPC()
 	go ipc.mailboxLoop()
 
-	// 6. Launch application shepherds from startup config.
-	if cfg != nil {
-		for _, s := range cfg.Shepherds {
-			launchShepherd(fsys, blkDev, s.Name, s.Path)
-		}
-	}
-
-	// 7. Signal readiness.
+	// 5. Signal readiness — delegate handler is running, serve loop
+	// will start momentarily. Shepherds waiting on fs can proceed.
 	sys.SetReady(true)
 	fmt.Println("[fs] SetReady(true)")
 
-	// 8. Serve delegate requests + IPC requests.
+	// 6. Boot sequence goroutine: launch linux → rachel (with ready
+	// waits) → then read startup.toml and launch remaining shepherds.
+	// Runs as a goroutine so the serve loop can process LoadFile
+	// requests during shepherd boot (e.g., rachel loading fontsvc.maz).
+	go bootSequence(fsys, blkDev)
+
+	// 7. Serve delegate requests + IPC requests.
 	// Both are processed in the main goroutine to avoid concurrent
 	// filesystem access (ext2 is not thread-safe).
 	fmt.Println("[fs] entering serve loop")
@@ -402,6 +399,43 @@ func launchShepherd(fsys *ext2.FileSystem, blkDev *asyncBlockDev, name, path str
 		return
 	}
 	fmt.Printf("[fs] shepherd %s launched\n", name)
+}
+
+// bootSequence launches the core shepherds in dependency order, then reads
+// startup.toml and launches any remaining application shepherds. Runs as a
+// goroutine so the main goroutine's serve loop can process LoadFile requests
+// during shepherd boot (e.g., rachel loading fontsvc.maz).
+//
+// Order: rachel first (only needs fs for LoadFile), then linux (needs both
+// fs for IPC and rachel for fonts/WM). TOML shepherds launch last since
+// they may need linux's syscall delegation active.
+func bootSequence(fsys *ext2.FileSystem, blkDev *asyncBlockDev) {
+	// 1. Launch rachel and wait — provides window manager + font service.
+	// Rachel only depends on fs (already ready) for loading fontsvc.maz.
+	launchShepherd(fsys, blkDev, "rachel", "/rachel.elf")
+	if err := sys.WaitForShepherdReady("rachel", 10); err != nil {
+		fmt.Printf("[fs] FATAL: rachel shepherd not ready: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("[fs] rachel shepherd ready")
+
+	// 2. Launch linux and wait — provides syscall delegation (Openat, Read, etc.).
+	// Linux depends on both fs (IPC) and rachel (fonts/WM).
+	launchShepherd(fsys, blkDev, "linux", "/linux.elf")
+	if err := sys.WaitForShepherdReady("linux", 10); err != nil {
+		fmt.Printf("[fs] FATAL: linux shepherd not ready: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("[fs] linux shepherd ready")
+
+	// 3. Read startup config and launch remaining application shepherds.
+	cfg := readStartupConfig(fsys)
+	if cfg != nil {
+		for _, s := range cfg.Shepherds {
+			launchShepherd(fsys, blkDev, s.Name, s.Path)
+		}
+	}
+	fmt.Println("[fs] boot sequence complete")
 }
 
 // asyncBlockDev implements blockdev.BlockDevice using the fs shepherd's own
