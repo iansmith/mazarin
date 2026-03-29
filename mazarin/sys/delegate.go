@@ -123,23 +123,46 @@ type delegateRecvResult struct {
 //
 // The caller should process each request and call req.Reply() to unblock the
 // original caller. Failing to reply will leave the caller permanently blocked.
+//
+// NOTE: This immediately starts a background goroutine that blocks in
+// SysDelegatedRecv via RawSyscall. With GOMAXPROCS=1, this holds the P
+// and starves other goroutines. If the caller needs to do significant work
+// (e.g. block I/O) before entering the serve loop, use RegisterSyscallHandlers
+// + StartDelegateRecv instead.
 func HandleSyscalls(ids ...sysid.ID) (<-chan SyscallRequest, error) {
+	if err := RegisterSyscallHandlers(ids...); err != nil {
+		return nil, err
+	}
+	return StartDelegateRecv(), nil
+}
+
+// RegisterSyscallHandlers registers the calling shepherd as the handler for
+// the given syscalls without starting the recv goroutine. Call StartDelegateRecv
+// separately to begin receiving requests.
+func RegisterSyscallHandlers(ids ...sysid.ID) error {
 	for _, id := range ids {
 		r1, _, errno := RawSyscall(mazzy.SysRegisterSyscallHandler,
 			uintptr(id), 0, 0, 0, 0, 0)
 		if errno != 0 {
-			return nil, errno
+			return errno
 		}
 		if int64(r1) < 0 {
-			return nil, errFromR1(r1)
+			return errFromR1(r1)
 		}
 	}
+	return nil
+}
 
+// StartDelegateRecv starts the background goroutine that receives delegated
+// syscall requests. Returns the channel that delivers requests. Call this
+// after completing any work that requires sole use of the P (e.g. block I/O
+// during shepherd launches).
+func StartDelegateRecv() <-chan SyscallRequest {
 	ch := make(chan SyscallRequest, 4)
 	ready := make(chan struct{})
 	go delegateRecvLoop(ch, ready)
-	<-ready // Wait for goroutine to be ready to call SysDelegatedRecv
-	return ch, nil
+	<-ready
+	return ch
 }
 
 // HandleSyscall is a convenience wrapper for handling a single syscall.

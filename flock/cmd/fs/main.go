@@ -19,6 +19,7 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	toml "github.com/pelletier/go-toml/v2"
@@ -134,35 +135,40 @@ func main() {
 	cfg := readStartupConfig(fsys)
 
 	// 5. Register as delegate handler for LoadFile and ReadFilePages.
-	// Must happen before launching shepherds so requests can be queued,
-	// but SetReady is deferred until after all launches so well-behaved
-	// shepherds block on WaitForShepherdReady before calling LoadFile.
-	delegateCh, delegateErr := sys.HandleSyscalls(sysid.LoadFile, sysid.ReadFilePages)
-	if delegateErr != nil {
-		fmt.Printf("[fs] HandleSyscalls failed: %v\n", delegateErr)
+	// Registration only — don't start the recv goroutine yet. With
+	// GOMAXPROCS=1, background goroutines blocking in RawSyscall hold
+	// the P and starve the main goroutine during shepherd launches.
+	if err := sys.RegisterSyscallHandlers(sysid.LoadFile, sysid.ReadFilePages); err != nil {
+		fmt.Printf("[fs] RegisterSyscallHandlers failed: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Println("[fs] registered as LoadFile + ReadFilePages delegate")
 
-	// 5b. Start IPC mailbox recv goroutine (before launches so linux's
-	// handshake notification can be received immediately).
+	// 5b. Create IPC state (goroutines started after launches).
 	ipc := newFsIPC()
-	go ipc.mailboxLoop()
 
 	// 6. Launch application shepherds from startup config.
-	// Drain any delegate requests between launches — if a request arrives
-	// here, the caller didn't wait for fs readiness.
+	// No background goroutines are running, so the main goroutine has
+	// exclusive use of the P for block I/O during launches.
+	launchStart := time.Now()
 	if cfg != nil {
 		for _, s := range cfg.Shepherds {
+			t0 := time.Now()
 			launchShepherd(fsys, blkDev, s.Name, s.Path)
-			drainDelegateRequests(delegateCh, mt)
+			sys.UartWriteString(fmt.Sprintf("[fs] launch %s took %v\n", s.Name, time.Since(t0)))
 		}
 	}
+	sys.UartWriteString(fmt.Sprintf("[fs] all launches took %v\n", time.Since(launchStart)))
 
-	// 7. Signal readiness — launched shepherds should WaitForShepherdReady
-	// before calling LoadFile, so they will unblock here.
+	// 7. Signal readiness BEFORE starting background goroutines.
+	// With GOMAXPROCS=1, the recv goroutines block in RawSyscall holding
+	// the P — SetReady must happen while the main goroutine still has it.
 	sys.SetReady(true)
 	fmt.Println("[fs] SetReady(true)")
+
+	// 7b. Start background goroutines now that readiness is signaled.
+	delegateCh := sys.StartDelegateRecv()
+	go ipc.mailboxLoop()
 
 	// 8. Serve delegate requests + IPC requests.
 	// Both are processed in the main goroutine to avoid concurrent
