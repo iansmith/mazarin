@@ -6,6 +6,8 @@ author: iansmith
 
 ## [News (last updated Mar 20)](news.md). Constraint-Driven UI, Window Manager, and Centralized Font Service!
 
+## [Mancini API Reference](mancini/index.md)
+
 ## What It Means
 
 mazarin now has a reactive constraint system driving its UI.  Layout is
