@@ -12,12 +12,21 @@ import (
 	"mazzy/mazarin/mancini/impl"
 )
 
-// RadialNOfMChooser is an arc-shaped N-of-M chooser interactor. It draws
-// segments of an annulus (partial ring). Each segment can be independently
-// selected. The center of the arc, angular range, and radii are configurable.
+// RadialNOfMChooser is an arc-shaped N-of-M multi-select interactor. It
+// draws segments of an annulus (partial ring). Each segment can be
+// independently selected. The center of the arc, angular range, and
+// radii are configurable.
 //
-// Selected segments receive a purple tint overlay and inset shadows matching
-// the neumorphic treatment used by NOfMChooser.
+// RadialNOfMChooser embeds [impl.ThemedInteractor] and uses Light-weight
+// [mancini.NeuParams]. Selected segments receive a purple tint overlay
+// and [mancini.Inset] shadows, matching the treatment used by
+// [NOfMChooser]. When [mancini.NeuParams] is nil, only the filled arc
+// and face content are drawn.
+//
+// Each segment can have a [mancini.FaceDrawer] callback whose content is
+// automatically rotated to align with the segment's angular position.
+// See also [NOfMChooser] for a linear strip variant and [RadialMenu]
+// for a full-circle single-select menu.
 type RadialNOfMChooser struct {
 	impl.ThemedInteractor
 

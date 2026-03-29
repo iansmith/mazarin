@@ -9,12 +9,16 @@ import (
 )
 
 // ColumnOutsideIn arranges children vertically with outside-in layout.
-// Height is clamped between minH and maxH via ProgMinMaxColumnHeight;
-// within that range it grows with the sum of children's heights + 1px spacing.
-// During Draw, children that overflow the available height are hidden
-// by setting their Visible handle to 0.
+// Unlike [Column] (pure inside-out sizing), ColumnOutsideIn clamps its
+// height between minH and maxH. Within that range it grows with the sum
+// of children's heights + 1px spacing. Children that overflow the
+// available height are hidden by setting their Visible layout attribute
+// to false.
 //
-// Width is a constraint (ProgColumnWidth) — max of children's published widths.
+// ColumnOutsideIn embeds [impl.Interactor] + [impl.Parent]. Width is
+// constraint-computed as the max of children's published widths.
+//
+// See also [Column] for unclamped inside-out vertical layout.
 type ColumnOutsideIn struct {
 	impl.Interactor // X(), Y(), W(), H(), Visible(), DC(), GetLayout()
 	impl.Parent     // GetChildren() via constraint network

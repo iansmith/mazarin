@@ -6,22 +6,47 @@ import (
 	"mazzy/mazarin/mancini"
 )
 
-// Decorator is a single-child parent interactor that draws decoration
-// around its child. It uses inside-out sizing: the Decorator's Width and
-// Height are determined by the child's size plus the decoration insets
-// (set up via constraint programs in InitLayout, not here).
+// Decorator is a single-child parent interactor that draws visual
+// decoration (shadows, title bars, etc.) around its child. It uses
+// inside-out sizing: the Decorator's Width and Height are determined
+// by the child's size plus the decoration insets (set up via constraint
+// programs, not in Decorator itself).
 //
-// Embedding types override Decorate to customize the visual decoration.
-// The default draws a thick black box. NeuBox draws neumorphic shadows,
-// NeuCircle draws circular neumorphic shadows.
+// # Decoration Customization
 //
-// At init time, Decorator takes top/right/bottom/left insets that reserve
-// space for the decoration. During Draw, it positions the child at
-// (self.X+Left, self.Y+Top). The child's Width and Height are owned by
-// the child itself (inside-out) — the Decorator never sets them.
+// The decoration is drawn by the [mancini.Decoratable.Decorate] method.
+// The default Decorator.Decorate draws a thick black box. Concrete
+// types override it:
 //
-// Decorator embeds Parent for GetChildren but does NOT use
+//   - [std.NeuBox] — rectangular neumorphic shadows via [std.NeuBoxWith]
+//   - [std.NeuCircle] — circular neumorphic shadows via [std.NeuCircleWith]
+//   - [std.AppWindow] — neumorphic shadows plus a title bar
+//   - [std.FreeFloatingWindow] — neumorphic shadows, title, and groove
+//
+// # Inside-Out Sizing
+//
+// The child owns its Width and Height. The Decorator's dimensions come
+// from constraint programs that add the insets:
+// Decorator.Width = child.Width + Left + Right, etc.
+//
+// # Draw Sequence
+//
+// [Decorator.Draw] proceeds in three steps:
+//
+//  1. [DecorateIfNeeded] — calls Decorate via virtual dispatch if the
+//     decorator's or child's BoundsHash has changed since the last frame.
+//  2. Positions the child at (x+Left, y+Top).
+//  3. Propagates [mancini.DrawContext] and calls the child's Draw.
+//
+// Decorator embeds [Parent] for GetChildren but does NOT use
 // DrawChildren — it handles its single child directly in Draw.
+//
+// # Initialization
+//
+// Concrete types call [InitDecorator], which internally calls
+// [Interactor.Init] and [Parent.InitParent]:
+//
+//	n.Decorator.InitDecorator(n, layout, top, right, bottom, left)
 type Decorator struct {
 	Interactor
 	Parent
@@ -31,9 +56,14 @@ type Decorator struct {
 	hasDecorated  bool
 }
 
-// InitDecorator wires the back-pointer, layout, and decoration insets.
+// InitDecorator wires the backpointer, layout, and decoration insets.
+// It calls [Interactor.Init] (registering in the global registry) and
+// [Parent.InitParent] internally. The owner parameter must be the
+// outermost concrete type (the backpointer).
+//
 // Constraint-based sizing (Width = child.Width + Left + Right, etc.)
-// is set up separately in InitLayout on the concrete type.
+// is set up separately by the concrete type's constructor via
+// [mancini.NewDecoratorLayout] or [mancini.NewDecoratorLayoutByParentName].
 func (d *Decorator) InitDecorator(owner any, layout *mancini.LayoutAttributes, top, right, bottom, left int64) {
 	d.Interactor.Init(owner.(mancini.Interactor), layout)
 	d.Parent.InitParent(&d.Interactor)
@@ -123,8 +153,13 @@ func (d *Decorator) Draw(self mancini.Interactor, x, y, w, h int64) {
 	}
 }
 
-// Decorate draws the default thick box decoration.
-// Embedding types (NeuBox, NeuCircle) override this method.
+// Decorate draws the default thick box decoration. Concrete types
+// override this method to customize the visual decoration:
+//
+//   - [std.NeuBox] — rectangular neumorphic shadows
+//   - [std.NeuCircle] — circular neumorphic shadows with bevel ring
+//   - [std.AppWindow] — neumorphic shadows + title bar
+//   - [std.FreeFloatingWindow] — neumorphic shadows + title + groove
 func (d *Decorator) Decorate(self mancini.Interactor, x, y, w, h int64) {
 	dc := self.DC()
 	if dc == nil {

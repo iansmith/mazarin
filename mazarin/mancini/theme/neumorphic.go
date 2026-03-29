@@ -4,8 +4,17 @@ import "mazzy/mazarin/mancini"
 
 var _ mancini.NeumorphicParams = (*DefaultNeumorphicParams)(nil)
 
-// DefaultNeumorphicParams implements mancini.NeumorphicParams with two
-// parameter sets: heavy (window-weight) and light (button-weight).
+// DefaultNeumorphicParams implements [mancini.NeumorphicParams] with two
+// parameter sets:
+//
+//   - Heavy — window-weight shadows with larger offsets and blur radii,
+//     used by [std.AppWindow], [std.FreeFloatingWindow], and [std.RadialMenu].
+//   - Light — control-weight shadows with smaller, tighter parameters,
+//     used by [std.Button], [std.Checkbox], [std.Scrollbar],
+//     [std.NOfMChooser], [std.RadialNOfMChooser], and [std.SingleLineText].
+//
+// Either Heavy() or Light() may be overridden to return nil in a custom
+// implementation, disabling neumorphic rendering for that weight class.
 type DefaultNeumorphicParams struct {
 	heavy mancini.NeuParams
 	light mancini.NeuParams

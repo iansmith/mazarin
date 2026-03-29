@@ -9,14 +9,19 @@ import (
 	"mazzy/mazarin/mancini/impl"
 )
 
-// Label is a single-line text interactor. It embeds ThemedInteractor
-// (which embeds Interactor), so it satisfies both mancini.Interactor
-// and mancini.ThemedInteractor via promotion.
+// Label is a single-line text display interactor (not editable — see
+// [SingleLineText] for an editable text field). It renders centered
+// text using the [mancini.Theme]'s font family.
 //
-// ThemedInteractor.Draw clears the background. Label.Draw calls that
-// as super, then renders centered text using the theme's font family.
+// Label embeds [impl.ThemedInteractor]. Its Draw method calls the
+// super [impl.ThemedInteractor.Draw] to clear the background, then
+// renders the text.
+//
+// Text can be static (set via Text field) or dynamic (set via TextFunc,
+// which takes precedence). Multiple constructor variants handle bold,
+// custom color, and named-layout creation.
 type Label struct {
-	impl.ThemedInteractor // X(), Y(), W(), H(), DC(), BgColor(), FgColor(), Font(), Draw()
+	impl.ThemedInteractor
 
 	Text     string         // static text (used when TextFunc is nil)
 	TextFunc func() string  // dynamic text source (takes precedence)

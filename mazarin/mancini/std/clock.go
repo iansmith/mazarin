@@ -9,12 +9,21 @@ import (
 	"mazzy/mazarin/mancini/impl"
 )
 
-// Clock is a leaf interactor that draws an analog clock face.
-// The ClockFace controls visual appearance and timezone. Clock handles
-// layout, time conversion from UTC, and delegates rendering to the face.
+// Clock is a leaf interactor that draws an analog clock face. The
+// [mancini.ClockFace] controls visual appearance and timezone. Clock
+// handles layout, time conversion from UTC, and delegates rendering
+// to the active face.
+//
+// Clock embeds [impl.Interactor] directly (not [impl.ThemedInteractor])
+// because it receives its [mancini.Palette] and [mancini.FontConfig]
+// explicitly rather than from a [mancini.Theme].
 //
 // If Faces has more than one entry, clicking the clock cycles styles.
-// Clock implements the mouse feedback protocol for this.
+// Clock implements the mouse feedback protocol (Feedback/Complete) for
+// press-drag-release face cycling.
+//
+// Clock is typically wrapped in a [NeuCircle] decorator for neumorphic
+// circular shadows.
 type Clock struct {
 	impl.Interactor // X(), Y(), W(), H(), Visible(), DC(), GetLayout()
 

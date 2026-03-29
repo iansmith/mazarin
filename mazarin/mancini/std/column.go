@@ -6,9 +6,26 @@ import (
 	"mazzy/mazarin/mancini/impl"
 )
 
-// Column arranges children vertically with inside-out sizing.
-// Width and Height are constraints computed from children.
-// Children declare this Column as their parent via the attribute namespace.
+// Column arranges children vertically with inside-out sizing. Width and
+// Height are constraint-computed from children's published dimensions.
+// Children declare this Column as their parent by naming it in their
+// [mancini.LayoutAttributes]' Parent field.
+//
+// Column embeds [impl.Interactor] + [impl.Parent]. It does not embed
+// [impl.ThemedInteractor] because containers do not need theme access
+// for their own rendering. Children are discovered via the constraint
+// network at draw time (see [impl.Parent.GetChildren]).
+//
+// # Layout Behavior
+//
+// Children are arranged top-to-bottom with configurable spacing.
+// Cross-axis (horizontal) alignment is controlled by CrossAlign
+// ([mancini.AxisMinimum], [mancini.AxisMiddle], [mancini.AxisMaximum]).
+// Children that overflow MaxHeight are either clipped (ClipChildOverflow)
+// or skipped entirely.
+//
+// See also [Row] for horizontal layout and [ColumnOutsideIn] for a
+// column with clamped height.
 type Column struct {
 	impl.Interactor // X(), Y(), W(), H(), Visible(), DC(), GetLayout()
 	impl.Parent     // GetChildren() via constraint network

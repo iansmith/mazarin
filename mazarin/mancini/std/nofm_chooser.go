@@ -12,11 +12,19 @@ import (
 	"mazzy/mazarin/mancini/impl"
 )
 
-// NOfMChooser is a strip-based N-of-M chooser interactor. It displays N
-// vertical strips side by side, each with a flat top edge and rounded
-// bottom corners. Any combination of strips can be selected. Selected
-// strips receive a purple tint overlay and inset shadows matching the
-// neumorphic inset treatment.
+// NOfMChooser is a strip-based N-of-M multi-select interactor. It
+// displays N vertical strips side by side, each with a flat top edge
+// and rounded bottom corners. Any combination of strips can be selected.
+// Selected strips receive a purple tint overlay and inset shadows
+// matching the neumorphic [mancini.Inset] treatment.
+//
+// NOfMChooser embeds [impl.ThemedInteractor] and uses Light-weight
+// [mancini.NeuParams]. When nil, only the filled shape and face content
+// are drawn — no flush edge, grooves, or selection effects.
+//
+// Each strip can have a [mancini.FaceDrawer] callback for custom content
+// (icons, text, etc.). See also [RadialNOfMChooser] for an arc-shaped
+// variant and [RadialMenu] for a full-circle single-select menu.
 type NOfMChooser struct {
 	impl.ThemedInteractor
 

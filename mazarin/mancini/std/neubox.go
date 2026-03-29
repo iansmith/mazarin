@@ -6,9 +6,18 @@ import (
 	"mazzy/mazarin/mancini/impl"
 )
 
-// NeuBox is a single-child decorator that draws neumorphic box shadows.
-// It embeds impl.Decorator for inside-out sizing and TRBL insets.
-// Decorate overrides Decorator's thick-box default with neumorphic rendering.
+// NeuBox is a single-child [impl.Decorator] that draws rectangular
+// neumorphic shadows around its child. It overrides
+// [impl.Decorator.Decorate] to render shadows via [NeuBoxWith] instead
+// of the default thick black box.
+//
+// NeuBox computes its margin from [mancini.NeuMaxPad] to ensure
+// shadows have room to render without clipping. The child is positioned
+// inside the margin at (x+Left, y+Top).
+//
+// See also [NeuCircle] for circular neumorphic decoration, and
+// [AppWindow] / [FreeFloatingWindow] for window-level decorators that
+// add title bars.
 type NeuBox struct {
 	impl.Decorator
 

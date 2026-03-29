@@ -170,7 +170,14 @@ func roundedRectMask(w, h int, x1, y1, x2, y2, r float64) *image.Alpha {
 // ── Neumorphic box rendering ─────────────────────────────────────────────────
 
 // NeuBoxWith draws a neumorphic rounded rectangle using explicit params.
-// If p is nil, a flat surface-colored rectangle is drawn (no shadows).
+// It is the central rendering function used by [Button], [Checkbox],
+// [CheckboxWithLabel], [NeuBox], [AppWindow], [FreeFloatingWindow],
+// [SingleLineText], and [NOfMChooser].
+//
+// The depth parameter selects the shadow treatment ([mancini.Raised],
+// [mancini.Flush], or [mancini.Inset]). If p is nil, a flat
+// surface-colored rectangle is drawn (no shadows). If content is
+// non-nil, it is called after the shape and shadows are drawn.
 func NeuBoxWith(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDepth, x1, y1, x2, y2, r float64, face color.NRGBA, p *mancini.NeuParams, content mancini.FaceDrawer) {
 	if p != nil {
 		switch depth {
@@ -325,8 +332,12 @@ func applyTintOverlay(pal mancini.Palette, canvas *image.RGBA, x1, y1, x2, y2, r
 
 // ── Neumorphic circle rendering ──────────────────────────────────────────────
 
-// NeuCircleWith draws a neumorphic circle using explicit params.
+// NeuCircleWith draws a neumorphic circle using explicit params. It is
+// the rendering counterpart of [NeuBoxWith] for circular shapes, used
+// by [NeuCircle].
+//
 // If p is nil, a flat surface-colored circle is drawn (no shadows).
+// If content is non-nil, it receives the circle's bounding box.
 func NeuCircleWith(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDepth, cx, cy, rad float64, face color.NRGBA, p *mancini.NeuParams, content mancini.FaceDrawer) {
 	if p != nil {
 		switch depth {
@@ -496,7 +507,9 @@ func applyCircleTintOverlay(pal mancini.Palette, canvas *image.RGBA, cx, cy, rad
 
 // ── Groove ────────────────────────────────────────────────────────────────────
 
-// NeuGroove draws a thin horizontal inset line (groove separator).
+// NeuGroove draws a thin horizontal inset line (groove separator). Used
+// by [FreeFloatingWindow] for the title/content separator and available
+// for custom interactor implementations.
 func NeuGroove(pal mancini.Palette, dc mancini.DrawContext, x1, y, x2 float64) {
 	neuInset(pal, dc, x1, y, x2, y+3, 2, pal.Surface(), mancini.GrooveParams)
 }

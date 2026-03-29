@@ -17,10 +17,16 @@ const (
 	LabelLeft                    // label to the left of checkbox
 )
 
-// CheckboxWithLabel combines a neumorphic checkbox with a label drawn
-// via a FaceDrawer callback. The checkbox is rendered identically to
-// Checkbox (Inset when unchecked, Raised + checkmark when checked) and
-// the label is positioned on the specified Side with a configurable Gap.
+// CheckboxWithLabel combines a neumorphic [Checkbox] with a label drawn
+// via a [mancini.FaceDrawer] callback. The checkbox is rendered identically
+// to [Checkbox] ([mancini.Inset] when unchecked, [mancini.Raised] +
+// checkmark when checked), and the label is positioned on the specified
+// Side with a configurable Gap.
+//
+// CheckboxWithLabel embeds [impl.ThemedInteractor] and renders both
+// the checkbox and label in a single Draw call. It handles nil
+// [mancini.NeuParams] by falling back to flat rendering for the
+// checkbox portion.
 type CheckboxWithLabel struct {
 	impl.ThemedInteractor
 

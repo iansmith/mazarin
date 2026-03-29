@@ -5,7 +5,12 @@ import (
 )
 
 // FontConfig holds font loading and text measurement functions,
-// independent of palette or rendering configuration.
+// independent of palette or rendering configuration. It is returned
+// by [Theme.Font] and [Theme.DefaultFont].
+//
+// If LoadFace is nil (e.g., when no [FontResolver] was provided to the
+// theme), text measurement falls back to a rough character-width
+// estimate.
 type FontConfig struct {
 	// LoadFace creates a font.Face at the given size.
 	LoadFace func(bold bool, size int64) font.Face

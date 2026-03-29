@@ -14,8 +14,18 @@ import (
 
 // Scrollbar is a neumorphic scrollbar interactor with an inset track,
 // a raised thumb with a grip dot, and optional arrow buttons at each end.
-// ThumbFrac determines thumb size (proportion of visible content).
-// ThumbPos positions the thumb along available travel (0..1).
+//
+// Scrollbar embeds [impl.ThemedInteractor] and uses Light-weight
+// [mancini.NeuParams] for its neumorphic effects. When the theme's
+// [mancini.NeumorphicParams.Light] returns nil, the scrollbar falls back
+// to flat rendering: [mancini.Palette.SurfaceTint] for the track,
+// [mancini.Palette.Surface] for the thumb, and [mancini.Palette.Icon] for
+// arrow triangles.
+//
+// ThumbFrac controls thumb size as a fraction of the track (0..1,
+// representing the proportion of visible content). ThumbPos controls the
+// thumb position along available travel (0 = start, 1 = end). All
+// dimensions scale proportionally to TrackWidth.
 type Scrollbar struct {
 	impl.ThemedInteractor
 

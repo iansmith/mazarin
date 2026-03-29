@@ -5,15 +5,23 @@ import (
 	"mazzy/mazarin/mancini/impl"
 )
 
-// Checkbox is a neumorphic toggle interactor. When unchecked it renders as
-// an inset (depressed) square; when checked it appears raised with a
-// checkmark drawn on the face. It embeds ThemedInteractor for constraint-
-// system wiring and theme support, and delegates rendering to NeuBoxWith.
+// Checkbox is a neumorphic toggle interactor. When unchecked it renders
+// as [mancini.Inset] (a recessed square); when checked it renders as
+// [mancini.Raised] with a checkmark drawn on the face.
+//
+// Checkbox embeds [impl.ThemedInteractor] and delegates rendering to
+// [NeuBoxWith]. When the theme's [mancini.NeumorphicParams.Light]
+// returns nil, the checkbox falls back to flat rendering.
+//
+// Toggling is done externally by setting Checked and redrawing —
+// Checkbox does not handle input events directly.
+//
+// See also [CheckboxWithLabel], which pairs a Checkbox with a text [Label].
 type Checkbox struct {
 	impl.ThemedInteractor
 
-	Checked bool
-	Size    float64 // side length of the square box
+	Checked bool    // true = raised with checkmark, false = inset
+	Size    float64 // side length of the square box in pixels
 }
 
 // NewCheckbox creates a Checkbox wired to the constraint system and theme.
@@ -44,9 +52,9 @@ func NewCheckboxNamed(myName, parent string, theme mancini.Theme,
 	return NewCheckbox(lh, theme, size, checked)
 }
 
-// Draw implements mancini.NewDrawer. It renders a neumorphic square box
-// centered within the given bounds. Unchecked = Inset, Checked = Raised
-// with a checkmark drawn on the face.
+// Draw implements [mancini.NewDrawer]. It renders a neumorphic square box
+// centered within the given bounds. Unchecked = [mancini.Inset],
+// Checked = [mancini.Raised] with a proportional checkmark.
 func (c *Checkbox) Draw(self mancini.Interactor, x, y, w, h int64) {
 	if !self.Visible() {
 		return

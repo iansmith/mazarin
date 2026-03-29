@@ -8,7 +8,12 @@ import (
 
 var _ mancini.Palette = (*DefaultPalette)(nil)
 
-// DefaultPalette implements mancini.Palette with a neumorphic color scheme.
+// DefaultPalette implements [mancini.Palette] with a neumorphic color
+// scheme. The standard palette uses a purple surface tone with
+// complementary dark/light shadow colors.
+//
+// Create with [NewDefaultPalette], [NewDefaultPaletteWithColors] (custom
+// surface and text), or [NewDefaultPaletteSwapRB] (for BGR framebuffers).
 type DefaultPalette struct {
 	surface       color.NRGBA
 	surfaceTint   color.NRGBA

@@ -5,8 +5,13 @@ import (
 	"mazzy/mazarin/mancini/impl"
 )
 
-// Spacer is a leaf interactor that draws nothing but occupies space.
-// Its Width and Height are set as value attributes at construction time.
+// Spacer is a leaf interactor that draws nothing but occupies space in
+// a [Column] or [Row] layout. Its Width and Height are set as value
+// attributes at construction time.
+//
+// Spacer embeds [impl.Interactor] directly. It has no theme or visual
+// rendering — its only purpose is to participate in the constraint
+// network as a fixed-size gap.
 type Spacer struct {
 	impl.Interactor // X(), Y(), W(), H(), Visible(), DC(), GetLayout()
 }

@@ -14,8 +14,21 @@ import (
 
 // RadialMenu is a full-circle annular menu divided into equal segments.
 // One segment can be selected (rendered inset with a tint overlay).
-// The ring is drawn with raised neumorphic shadows, groove separators
-// between all segments, and per-segment face content.
+// The ring is drawn with [mancini.Raised] neumorphic shadows, groove
+// separators between all segments, and per-segment face content.
+//
+// RadialMenu embeds [impl.ThemedInteractor] and uses Heavy-weight
+// [mancini.NeuParams] (the same weight class as [AppWindow]) because
+// the ring shape warrants stronger shadows. When [mancini.NeuParams] is
+// nil, only the flat annulus fill and face content are drawn.
+//
+// Each segment can have a [mancini.FaceDrawer] callback for custom
+// content. Face content is positioned at the segment's midpoint and
+// rotated to align with the segment's angular position, reusing the
+// same rendering code as [RadialNOfMChooser].
+//
+// See also [NOfMChooser] for a linear strip multi-select and
+// [RadialNOfMChooser] for an arc-shaped multi-select.
 type RadialMenu struct {
 	impl.ThemedInteractor
 

@@ -7,15 +7,32 @@ import (
 	"mazzy/mazarin/mancini/impl"
 )
 
-// AppWindow is a neumorphic application window. It is a Decorator whose
-// decoration includes both neumorphic box shadows and a title bar.
-// The single child (content) is positioned below the title bar.
+// AppWindow is the root application window, implemented as an
+// [impl.Decorator] whose decoration includes both neumorphic box
+// shadows (via [NeuBoxWith]) and a title bar. The single child (content)
+// is positioned below the title bar, clipped to the content area using
+// [mancini.WithClip].
 //
 // There is one AppWindow per shepherd — its constraint name is always
 // "AppWindow" so that rachel can locate it at a well-known attribute path.
 //
-// Focus state controls the neumorphic depth: Raised when focused, Flush
-// when unfocused. The TitleDraw callback varies the title bar appearance.
+// # Focus and Depth
+//
+// Focus state controls the neumorphic depth: [mancini.Raised] when
+// focused, [mancini.Flush] when unfocused.
+//
+// # Title Bar
+//
+// The TitleDraw callback customizes the focused title bar appearance.
+// Two standard implementations are provided:
+//
+//   - [GradientTitle] — animated horizontal gradient with oscillating peak
+//   - [StripedTitle] — classic Mac OS horizontal pinstripes
+//
+// When TitleDraw is nil or the window is unfocused, plain centered text
+// is drawn as a fallback.
+//
+// See also [FreeFloatingWindow] for non-root floating panels.
 type AppWindow struct {
 	impl.Decorator
 

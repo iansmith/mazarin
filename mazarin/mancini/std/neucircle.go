@@ -14,9 +14,21 @@ import (
 // gradient shows through, giving the raised/inset 3D effect.
 const neuCircleBevel = 7
 
-// NeuCircle is a single-child decorator that draws neumorphic circular
-// shadows. It embeds impl.Decorator for inside-out sizing.
-// The margin is symmetric on all sides (circle is square).
+// NeuCircle is a single-child [impl.Decorator] that draws circular
+// neumorphic shadows around its child. It overrides both
+// [impl.Decorator.Decorate] (to render circular shadows via
+// [NeuCircleWith]) and [impl.Decorator.Draw] (to inset the child by
+// the bevel amount).
+//
+// The bevel (neuCircleBevel = 7px) creates a visible ring between the
+// shadow circle's edge and the face fill, giving the raised/inset 3D
+// effect its depth. The child receives bounds inset by the bevel, not
+// the full margin.
+//
+// The margin is symmetric on all sides (the circle occupies a square
+// bounding box). It is computed from [mancini.NeuMaxPad].
+//
+// See also [NeuBox] for rectangular neumorphic decoration.
 type NeuCircle struct {
 	impl.Decorator
 

@@ -13,13 +13,17 @@ import (
 	"mazzy/mazarin/mancini"
 )
 
-// GradientTitle renders an animated horizontal gradient title bar into an
-// off-screen buffer. A background goroutine recomputes the buffer at ~15 fps
-// and notifies the attribute system so the event loop redraws.
+// GradientTitle renders an animated horizontal gradient title bar into
+// an off-screen buffer, for use as [AppWindow]'s TitleDraw callback.
+// A background goroutine recomputes the buffer at ~15 fps and notifies
+// the attribute system so the event loop redraws.
 //
-// The gradient has a symmetric peak (SurfaceTint) that oscillates
-// horizontally at 0.05 Hz — one full left→right→left sweep in 20 seconds.
-// On each side of the peak the color fades linearly to Surface at the edge.
+// The gradient has a symmetric peak ([mancini.Palette.SurfaceTint]) that
+// oscillates horizontally at 0.05 Hz — one full left→right→left sweep
+// in 20 seconds. On each side of the peak the color fades linearly to
+// [mancini.Palette.Surface] at the edge.
+//
+// See also [StripedTitle] for a static Mac OS-style pinstripe title bar.
 type GradientTitle struct {
 	pal    mancini.Palette
 	title  string

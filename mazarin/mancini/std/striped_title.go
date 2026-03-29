@@ -8,9 +8,14 @@ import (
 	"mazzy/mazarin/mancini"
 )
 
-// StripedTitle returns a TitleDraw callback that draws horizontal pinstripes
-// interrupted by centered title text — classic Mac OS style.
-// The font face is resolved once at creation time.
+// StripedTitle returns a TitleDraw callback for [AppWindow] that draws
+// horizontal pinstripes interrupted by centered title text — classic
+// Mac OS style. The font face is resolved once at creation time.
+//
+// The returned callback only renders when focused=true. When unfocused,
+// [AppWindow]'s own fallback renders plain centered text.
+//
+// See also [GradientTitle] for an animated gradient title bar.
 func StripedTitle(pal mancini.Palette, fonts *mancini.FontConfig, title string, fontSize int64, bold bool) func(dc mancini.DrawContext, focused bool, x, y, w, h float64) {
 	var face font.Face
 	if fonts != nil && fonts.LoadFace != nil {

@@ -8,9 +8,25 @@ import (
 	"golang.org/x/image/font"
 )
 
-// DrawContext abstracts the drawing surface. *gg.Context satisfies this
-// interface via structural typing. ClippedContext wraps a DrawContext to
-// enforce rectangular clipping by saving/restoring overflow pixels.
+// DrawContext abstracts the drawing surface for all interactor rendering.
+// The [github.com/fogleman/gg.Context] type satisfies this interface via
+// structural typing.
+//
+// DrawContext is propagated from parent to child during the draw pass
+// via SetDC (see [impl.Interactor.SetDC]). All interactors access it
+// through self.DC() in their [NewDrawer.Draw] method.
+//
+// # Limitations
+//
+// DrawContext does not expose ClosePath, DrawArc, SetFillRuleEvenOdd,
+// or Clip. Interactors that need these features (e.g., [std.RadialMenu]
+// for even-odd annulus fills, [std.Scrollbar] for triangle arrows) use
+// temporary [github.com/fogleman/gg.Context] buffers and composite via
+// [image/draw.Draw] or [image/draw.DrawMask].
+//
+// [ClippedContext] wraps a DrawContext to enforce rectangular clipping
+// by saving/restoring overflow pixels — used by [std.Column], [std.Row],
+// and [std.AppWindow] for child overflow.
 type DrawContext interface {
 	// Shape primitives (add to current path).
 	DrawRectangle(x, y, w, h float64)

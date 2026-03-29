@@ -7,14 +7,21 @@ import (
 	"mazzy/mazarin/mancini/impl"
 )
 
-// ConsoleLabel is a left-aligned monospaced text label with a per-instance
-// background color and dynamic text color. Designed for console output lines
-// where stdout and stderr need different colors.
+// ConsoleLabel is a left-aligned monospaced text label with a
+// per-instance background color and dynamic text color. Designed for
+// console output lines where stdout and stderr need different colors.
 //
-// It embeds ThemedInteractor for font resolution but does NOT use the theme's
-// background color — BgColor is set per-instance. Draw does not call super.
+// ConsoleLabel embeds [impl.ThemedInteractor] for font resolution but
+// does NOT use the theme's background color — BgColor is set
+// per-instance. Draw does not call [impl.ThemedInteractor.Draw] (no
+// super call) because the background fill uses BgColor, not the palette.
+//
+// ConsoleLabel includes hash-based caching: if the text and BoundsHash
+// are unchanged from the previous frame, the draw is skipped entirely.
+//
+// Compare with [Label] for a centered, themed text display.
 type ConsoleLabel struct {
-	impl.ThemedInteractor // Font(), GetLayout(), FgColor()
+	impl.ThemedInteractor
 
 	FontSize  int64
 	BgColor   color.NRGBA          // per-instance background

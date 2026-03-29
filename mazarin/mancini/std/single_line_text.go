@@ -13,12 +13,21 @@ import (
 )
 
 // SingleLineText is a single-line text input interactor. It renders an
-// inset neumorphic field with left-aligned text, an auto-scrolling viewport,
-// a cursor indicator when focused, and placeholder text when the content
-// is empty.
+// [mancini.Inset] neumorphic field with left-aligned text, an
+// auto-scrolling viewport, a cursor indicator when focused, and
+// placeholder text when the content is empty.
+//
+// SingleLineText embeds [impl.ThemedInteractor] and uses Light-weight
+// [mancini.NeuParams] for the inset field background (via [NeuBoxWith]).
+// When [mancini.NeuParams] is nil, a flat surface-colored rectangle is
+// drawn instead.
 //
 // CursorPos is in rune offsets (0 = before first character). The viewport
 // scrolls automatically to keep the cursor visible within the field.
+// Text and cursor are rendered into a clipped local buffer so they do
+// not overflow the field's rounded corners.
+//
+// Compare with [Label], which is a non-editable text display interactor.
 type SingleLineText struct {
 	impl.ThemedInteractor
 

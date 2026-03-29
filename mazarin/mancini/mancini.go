@@ -4,42 +4,60 @@ import (
 	"image/color"
 )
 
-// Drawer draws itself into the given bounds using a DrawContext.
+// Drawer draws itself into the given bounds using a [DrawContext].
 // This is the legacy interface — new interactors should implement
-// NewDrawer instead. Remove once all interactors are migrated.
+// [NewDrawer] instead.
 type Drawer interface {
 	Draw(dc DrawContext, x, y, w, h float64)
 }
 
-// NewDrawer draws itself into the given bounds. The parent passes
-// authoritative x, y, w, h — these override any stale layout handle values.
-// self provides access to the DrawContext and identity for virtual dispatch.
+// NewDrawer is the standard draw protocol for all interactors. The parent
+// passes authoritative x, y, w, h — these override any stale layout
+// handle values. The self parameter is the backpointer to the concrete
+// type, enabling virtual dispatch for DC(), Visible(), and other
+// interface methods. See the package documentation for details on the
+// backpointer pattern.
+//
+// All concrete interactors in [mazzy/mazarin/mancini/std] implement this
+// interface.
 type NewDrawer interface {
 	Draw(self Interactor, x, y, w, h int64)
 }
 
-// Layouter is implemented by interactors that have layout attributes.
+// Layouter is implemented by interactors that have [LayoutAttributes].
+// All interactors that embed [impl.Interactor] satisfy this interface
+// via the promoted GetLayout method.
 type Layouter interface {
 	GetLayout() *LayoutAttributes
 }
 
-// FaceDrawer draws content onto the face of a neumorphic box.
-// It satisfies the Drawer interface, so any rendering function can serve
-// as a leaf node in a Drawer tree.
+// FaceDrawer draws content onto the face of a neumorphic shape. It is
+// used as a callback by [std.NeuBoxWith], [std.NeuCircleWith], [std.Button],
+// [std.NOfMChooser], [std.RadialNOfMChooser], and [std.RadialMenu] to
+// render icons, text, or other content on top of the neumorphic surface.
+//
+// The coordinates (x, y, w, h) are the content area within the shape,
+// excluding shadow padding. FaceDrawer also satisfies the [Drawer]
+// interface.
 type FaceDrawer func(dc DrawContext, x, y, w, h float64)
 
-// Draw implements the Drawer interface.
+// Draw implements the [Drawer] interface.
 func (f FaceDrawer) Draw(dc DrawContext, x, y, w, h float64) {
 	f(dc, x, y, w, h)
 }
 
-// NeuDepth represents the neumorphic depth of an interactor relative to the surface.
+// NeuDepth represents the neumorphic depth of an interactor relative
+// to the surface. It controls which shadow treatment is applied by
+// [std.NeuBoxWith] and [std.NeuCircleWith].
+//
+// Interactive controls like [std.Button] use [NeuDepth.MouseDown] to
+// animate between states on press/release.
 type NeuDepth int
 
 const (
-	Raised NeuDepth = iota // Proud of the surface — casts outer shadows
-	Flush                  // Level with the surface — thin edge outline only
-	Inset                  // Recessed into the surface — inner shadows
+	Raised NeuDepth = iota // Proud of the surface — casts outer shadows.
+	Flush                  // Level with the surface — thin edge outline only.
+	Inset                  // Recessed into the surface — inner shadows.
 )
 
 func (d NeuDepth) String() string {
@@ -71,7 +89,10 @@ func (d NeuDepth) MouseDown() NeuDepth {
 	return d
 }
 
-// Palette provides colors for a neumorphic theme.
+// Palette provides the color vocabulary for neumorphic rendering.
+// The default implementation is [theme.DefaultPalette]. All shadow
+// rendering in [mazzy/mazarin/mancini/std] reads colors from the
+// Palette returned by [Theme.Palette].
 type Palette interface {
 	Surface() color.NRGBA
 	SurfaceTint() color.NRGBA
@@ -85,38 +106,63 @@ type Palette interface {
 	SwapRB() bool
 }
 
-// NeumorphicParams provides heavy and light shadow parameter bundles.
-// Either method may return nil to disable neumorphic rendering for
-// that weight class; callers must handle nil gracefully.
+// NeumorphicParams provides two weight classes of shadow parameters,
+// delivered through [Theme.Neumorphic]. The default implementation is
+// [theme.DefaultNeumorphicParams].
+//
+//   - Heavy — window-weight shadows, used by [std.AppWindow] and
+//     [std.FreeFloatingWindow].
+//   - Light — control-weight shadows, used by [std.Button], [std.Checkbox],
+//     [std.Scrollbar], [std.NOfMChooser], and other controls.
+//
+// Either method may return nil to disable neumorphic rendering for that
+// weight class. All interactors in [mazzy/mazarin/mancini/std] handle
+// nil gracefully by falling back to flat rendering.
 type NeumorphicParams interface {
 	Heavy() *NeuParams
 	Light() *NeuParams
 }
 
-// Neumorphic parameter types.
-
+// RaisedParams controls the dark and light outer shadow layers for the
+// [Raised] depth state. DarkOff/LightOff set the shadow offset in pixels;
+// DarkBlur/LightBlur set the Gaussian blur radius; DarkAlpha/LightAlpha
+// set the shadow opacity.
 type RaisedParams struct {
 	LightOff, LightBlur   float64
 	DarkOff, DarkBlur     float64
 	DarkAlpha, LightAlpha uint8
 }
 
+// InsetParams controls the inner shadow layers for the [Inset] depth
+// state. Off is the shadow offset (dark biased upper-left, light biased
+// lower-right). DarkBlur and LightBlur set the Gaussian blur radius for
+// each shadow layer. Inner shadows are masked to the shape boundary.
 type InsetParams struct {
 	Off                 float64
 	DarkBlur, LightBlur float64
 }
 
+// FlushParams controls the thin edge outline for the [Flush] depth
+// state. EdgeW is the stroke width; EdgeAlpha is the opacity of both
+// the dark and light edge strokes.
 type FlushParams struct {
 	EdgeW     float64
 	EdgeAlpha uint8
 }
 
 // NeuParams bundles per-depth drawing parameters for an interactor class.
+// Each [NeuDepth] state has its own parameter sub-struct. Interactors
+// select which sub-struct to use based on their current depth.
+//
+// A nil *NeuParams disables all neumorphic rendering. See
+// [NeumorphicParams] for details on the nil convention.
 type NeuParams struct {
 	Raised RaisedParams
 	Flush  FlushParams
 	Inset  InsetParams
 }
 
-// GrooveParams are used for thin inset separator lines.
+// GrooveParams are the default [InsetParams] used for thin inset separator
+// lines. Used by [std.NeuGroove] and by [std.NOfMChooser] for inter-strip
+// groove separators.
 var GrooveParams = InsetParams{Off: 1, DarkBlur: 3, LightBlur: 2}

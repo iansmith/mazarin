@@ -5,22 +5,38 @@ import (
 	"mazzy/mazarin/mancini/impl"
 )
 
-// Button is a neumorphic push-button interactor. It embeds ThemedInteractor
-// for constraint-system wiring and theme support, and delegates rendering
-// to NeuBoxWith so it participates in the standard shadow pipeline.
+// Button is a neumorphic push-button interactor. It renders a rounded
+// rectangle with shadows controlled by Depth, and optional face content
+// (text, icon, etc.) drawn by the Face callback.
 //
-// Depth controls the visual state (Raised, Flush, Inset). Callers can
-// toggle Depth on mouse-down/up to animate press feedback.
+// Button embeds [impl.ThemedInteractor] for layout wiring, theme access,
+// and the backpointer pattern. Rendering is delegated to [NeuBoxWith],
+// which handles all three depth states ([mancini.Raised], [mancini.Flush],
+// [mancini.Inset]). When the theme's [mancini.NeumorphicParams.Light]
+// returns nil, the button falls back to a flat filled rectangle.
+//
+// # Depth Transitions
+//
+// Callers toggle Depth on mouse-down/up to animate press feedback. Use
+// [mancini.NeuDepth.MouseDown] for the standard transition:
+// Raised→Inset on press, Inset→Flush on release.
+//
+// # Construction
+//
+// Use [NewButton] with a pre-built [mancini.LayoutAttributes], or
+// [NewButtonNamed] for automatic layout creation from name+parent strings.
+// Both pass the Button itself as the backpointer via
+// [impl.ThemedInteractor.Init].
 type Button struct {
 	impl.ThemedInteractor
 
-	Depth  mancini.NeuDepth
-	Radius float64
-	Face   mancini.FaceDrawer // optional content drawing callback
+	Depth  mancini.NeuDepth   // visual state: Raised, Flush, or Inset
+	Radius float64            // corner radius in pixels (default 8.0)
+	Face   mancini.FaceDrawer // optional content drawn on top of the button face
 }
 
 // NewButton creates a Button wired to the constraint system and theme.
-// layout must already be created (e.g. via mancini.NewLayoutAttributes).
+// layout must already be created (e.g., via [mancini.NewLayoutAttributes]).
 func NewButton(layout *mancini.LayoutAttributes, theme mancini.Theme,
 	depth mancini.NeuDepth) *Button {
 
@@ -32,9 +48,10 @@ func NewButton(layout *mancini.LayoutAttributes, theme mancini.Theme,
 	return b
 }
 
-// NewButtonNamed creates a Button with layout built from name + parent strings.
-// Width and height are published as intrinsic dimensions so the constraint
-// system can bootstrap.
+// NewButtonNamed creates a Button with layout built from name + parent
+// strings. Width and height are published as intrinsic dimensions so
+// the constraint system can bootstrap. If myName is empty, a unique
+// name is generated via [mancini.DefaultName].
 func NewButtonNamed(myName, parent string, theme mancini.Theme,
 	depth mancini.NeuDepth, width, height int64) *Button {
 
@@ -47,10 +64,11 @@ func NewButtonNamed(myName, parent string, theme mancini.Theme,
 	return NewButton(lh, theme, depth)
 }
 
-// Draw implements mancini.NewDrawer. It renders a neumorphic rounded
-// rectangle at the given bounds, filled with the theme palette's surface
-// color and decorated with shadows according to Depth. If Face is non-nil
-// it is called to draw content (text, icon, etc.) on top of the box.
+// Draw implements [mancini.NewDrawer]. It renders a neumorphic rounded
+// rectangle via [NeuBoxWith] at the given bounds, filled with the
+// [mancini.Palette]'s Surface color and decorated with shadows according
+// to Depth. If Face is non-nil, it is called to draw content (text,
+// icon, etc.) on top of the box.
 func (b *Button) Draw(self mancini.Interactor, x, y, w, h int64) {
 	if !self.Visible() {
 		return

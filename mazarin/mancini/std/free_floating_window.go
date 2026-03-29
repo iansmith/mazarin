@@ -7,12 +7,15 @@ import (
 	"mazzy/mazarin/mancini/impl"
 )
 
-// FreeFloatingWindow is a neumorphic floating panel drawn as a sibling of
-// AppWindow (not a child). It is always Flush depth when visible.
-// Structurally it is a Decorator: NeuBox shadow → title + groove → content.
+// FreeFloatingWindow is a neumorphic floating panel drawn as a sibling
+// of [AppWindow] (not a child). It is always [mancini.Flush] depth when
+// visible. Structurally it is an [impl.Decorator]: [NeuBoxWith] shadow →
+// title + [NeuGroove] separator → content.
 //
-// Visibility is toggled externally (e.g., by the focus state of an associated
-// AppWindow or by constraint programs).
+// Visibility is toggled externally (e.g., by the focus state of an
+// associated [AppWindow] or by constraint programs).
+//
+// See also [AppWindow] for the root application window.
 type FreeFloatingWindow struct {
 	impl.Decorator
 

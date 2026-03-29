@@ -8,8 +8,13 @@ import (
 
 var _ mancini.Theme = (*DefaultTheme)(nil)
 
-// DefaultTheme implements mancini.Theme, combining a Palette,
-// NeumorphicParams, and font resolution into one value.
+// DefaultTheme implements [mancini.Theme], combining a [mancini.Palette],
+// [mancini.NeumorphicParams], and [mancini.FontResolver] into one value.
+// It is the standard theme used by all interactors in
+// [mazzy/mazarin/mancini/std].
+//
+// Create with [NewDefaultTheme] (standard purple palette) or [NewTheme]
+// (fully customized).
 type DefaultTheme struct {
 	pal     mancini.Palette
 	neu     mancini.NeumorphicParams

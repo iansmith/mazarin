@@ -2,18 +2,52 @@ package impl
 
 import "mazzy/mazarin/mancini"
 
-// Interactor is the base "class" for all UI elements.
-// Concrete types embed this to get X(), Y(), W(), H(), Visible(), DC().
+// Interactor is the root base type for all UI elements in the Mancini
+// toolkit. Concrete interactor types embed this struct (directly or via
+// [ThemedInteractor]) to inherit position, size, visibility, and drawing
+// context accessors.
+//
+// # Promoted Methods
+//
+// Embedding Interactor promotes: X, Y, W, H, Visible, DC, SetDC,
+// Owner, Layout, and GetLayout.
+//
+// # Backpointer
+//
+// Interactor stores a backpointer ("owner") to the outermost concrete
+// type. This enables virtual dispatch in the Draw protocol: when a
+// parent calls child.Draw(child, ...), the child parameter is the
+// concrete type, so self.DC() and self.Visible() resolve correctly.
+// See [Init] for how the backpointer is established.
+//
+// # Embedding Hierarchy
+//
+// Concrete types embed one of:
+//
+//   - Interactor directly — for non-themed leaves ([std.Clock], [std.Spacer])
+//     and containers ([std.Column], [std.Row])
+//   - [ThemedInteractor] — for themed controls ([std.Button], [std.Label],
+//     [std.Checkbox], [std.Scrollbar], etc.)
+//   - [Decorator] — for single-child wrappers ([std.NeuBox], [std.NeuCircle],
+//     [std.AppWindow], [std.FreeFloatingWindow])
 type Interactor struct {
 	owner  mancini.Interactor
 	layout *mancini.LayoutAttributes
 	dc     mancini.DrawContext
 }
 
-// Init wires the back-pointer and layout. Must be called from the
-// concrete type's constructor: i.Interactor.Init(i, layout).
-// Registers the owner in the global interactor registry keyed by
-// the layout attribute's constraint-system name.
+// Init wires the backpointer and layout attributes. Must be called from
+// the concrete type's constructor, passing the concrete type as owner:
+//
+//	b := &Button{...}
+//	b.Interactor.Init(b, layout)   // b is the backpointer
+//
+// Init also registers the interactor in the global registry (see
+// [mancini.RegisterInteractor]) keyed by the layout's constraint-system
+// name, enabling child discovery by [Parent.GetChildren].
+//
+// For themed interactors, call [ThemedInteractor.Init] instead, which
+// calls this method internally.
 func (i *Interactor) Init(owner mancini.Interactor, layout *mancini.LayoutAttributes) {
 	i.owner = owner
 	i.layout = layout
@@ -29,15 +63,22 @@ func (i *Interactor) H() int64       { return i.layout.Height.Get() }
 func (i *Interactor) Visible() bool  { return i.layout.Visible.Get() }
 func (i *Interactor) DC() mancini.DrawContext { return i.dc }
 
-// SetDC sets the DrawContext for this interactor. Called once per draw
-// pass before the tree walk begins.
+// SetDC sets the [mancini.DrawContext] for this interactor. Called by
+// parent interactors during the draw pass to propagate the drawing
+// surface down the tree before calling Draw.
 func (i *Interactor) SetDC(dc mancini.DrawContext) { i.dc = dc }
 
-// Owner returns the back-pointer to the embedding concrete type.
+// Owner returns the backpointer to the outermost concrete type.
+// Used internally by [Decorator.DecorateIfNeeded] to perform virtual
+// dispatch on the [mancini.Decoratable] interface.
 func (i *Interactor) Owner() mancini.Interactor { return i.owner }
 
-// Layout returns the underlying LayoutAttributes for constraint access.
+// Layout returns the underlying [mancini.LayoutAttributes] for direct
+// constraint access. Callers should prefer GetLayout for interface
+// compatibility.
 func (i *Interactor) Layout() *mancini.LayoutAttributes { return i.layout }
 
-// GetLayout satisfies the mancini.Layouter interface.
+// GetLayout satisfies the [mancini.Layouter] interface, returning the
+// [mancini.LayoutAttributes] that publish this interactor's position,
+// size, and visibility in the constraint network.
 func (i *Interactor) GetLayout() *mancini.LayoutAttributes { return i.layout }

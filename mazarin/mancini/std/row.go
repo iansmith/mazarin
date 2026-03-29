@@ -6,9 +6,23 @@ import (
 	"mazzy/mazarin/mancini/impl"
 )
 
-// Row arranges children horizontally with inside-out sizing.
-// Width, Height, and LastChildDrawn are constraints computed from children.
-// Children declare this Row as their parent via the attribute namespace.
+// Row arranges children horizontally with inside-out sizing. Width,
+// Height, and LastChildDrawn are constraint-computed from children's
+// published dimensions. Children declare this Row as their parent by
+// naming it in their [mancini.LayoutAttributes]' Parent field.
+//
+// Row embeds [impl.Interactor] + [impl.Parent]. Children are discovered
+// via the constraint network at draw time (see [impl.Parent.GetChildren]).
+//
+// # Layout Behavior
+//
+// Children are arranged left-to-right with configurable spacing.
+// Cross-axis (vertical) alignment is controlled by CrossAlign
+// ([mancini.AxisMinimum], [mancini.AxisMiddle], [mancini.AxisMaximum]).
+// The last child that partially overflows MaxWidth is clipped using
+// [mancini.WithClip].
+//
+// See also [Column] for vertical layout.
 type Row struct {
 	impl.Interactor // X(), Y(), W(), H(), Visible(), DC(), GetLayout()
 	impl.Parent     // GetChildren() via constraint network
