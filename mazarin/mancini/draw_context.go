@@ -6,6 +6,7 @@ import (
 
 	"github.com/fogleman/gg"
 	"golang.org/x/image/font"
+	"mazzy/mazarin/extern/textshape"
 )
 
 // DrawContext abstracts the drawing surface for all interactor rendering.
@@ -49,6 +50,10 @@ type DrawContext interface {
 	DrawString(s string, x, y float64)
 	DrawStringAnchored(s string, x, y, ax, ay float64)
 	MeasureString(s string) (float64, float64)
+
+	// DrawShapedText composites pre-positioned glyphs onto the canvas.
+	// Each glyph's (X, Y) is relative to (originX, originY).
+	DrawShapedText(run *textshape.TextRun, originX, originY float64)
 
 	// Graphics state.
 	SetColor(c color.Color)

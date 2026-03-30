@@ -15,6 +15,7 @@ import (
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/basicfont"
 	"golang.org/x/image/math/f64"
+	"mazzy/mazarin/extern/textshape"
 )
 
 type LineCap int
@@ -820,6 +821,26 @@ func (dc *Context) DrawStringAnchored(s string, x, y, ax, ay float64) {
 		im := image.NewRGBA(image.Rect(0, 0, dc.width, dc.height))
 		dc.drawString(im, s, x, y)
 		draw.DrawMask(dc.im, dc.im.Bounds(), im, image.ZP, dc.mask, image.ZP, draw.Over)
+	}
+}
+
+// DrawShapedText composites pre-positioned glyph alpha bitmaps onto the
+// canvas using the current color. Each glyph's (X, Y) is relative to
+// (originX, originY).
+func (dc *Context) DrawShapedText(run *textshape.TextRun, originX, originY float64) {
+	src := image.NewUniform(dc.color)
+	for _, g := range run.Glyphs {
+		if len(g.Alpha) == 0 || g.Width == 0 || g.Height == 0 {
+			continue
+		}
+		mask := &image.Alpha{
+			Pix:    g.Alpha,
+			Stride: int(g.Width),
+			Rect:   image.Rect(0, 0, int(g.Width), int(g.Height)),
+		}
+		dp := image.Pt(int(originX)+int(g.X), int(originY)+int(g.Y))
+		dr := image.Rectangle{Min: dp, Max: dp.Add(mask.Rect.Max)}
+		draw.DrawMask(dc.im, dr, src, image.Point{}, mask, image.Point{}, draw.Over)
 	}
 }
 

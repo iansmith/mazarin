@@ -5,6 +5,7 @@ import (
 
 	"golang.org/x/image/font"
 
+	"mazzy/mazarin/extern/textshape"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
 )
@@ -157,10 +158,29 @@ func (l *Label) Draw(self mancini.Interactor, x, y, w, h int64) {
 	fx, fy := float64(x), float64(y)
 	fw, fh := float64(w), float64(h)
 
-	// Compute baseline from font metrics so the visual text extent
-	// (ascent above + descent below baseline) is centered in the label.
-	// DrawStringAnchored's ay=0.5 shifts by fontHeight/2 which pushes
-	// the baseline too low, causing descenders to overflow the bottom.
+	// Shaped text path: use TextLayout for shaping + DrawShapedText.
+	if fc != nil && fc.Layout != nil {
+		run, err := fc.Layout.LayoutText(textshape.ShapingParams{
+			Text:      text,
+			FontID:    fc.ShapedFontID,
+			Direction: textshape.LTR,
+			Script:    textshape.ScriptLatin,
+		})
+		if err == nil && run != nil {
+			tw := float64(run.TotalAdvance) / 64
+			asc := float64(run.Ascent) / 64
+			desc := float64(run.Descent) / 64
+			ox := fx + (fw-tw)/2
+			oy := fy + fh/2 + (asc-desc)/2
+			dc.DrawShapedText(run, ox, oy)
+			return
+		}
+		// fall through to unshaped path on error
+	}
+
+	// Unshaped path: compute baseline from font metrics so the visual
+	// text extent (ascent above + descent below baseline) is centered
+	// in the label.
 	if face != nil {
 		m := face.Metrics()
 		asc := float64(m.Ascent) / 64

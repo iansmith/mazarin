@@ -3,6 +3,7 @@ package std
 import (
 	"image/color"
 
+	"mazzy/mazarin/extern/textshape"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
 )
@@ -121,6 +122,23 @@ func (l *ConsoleLabel) Draw(self mancini.Interactor, x, y, w, h int64) {
 	}
 	dc.SetColor(col)
 
-	// Left-aligned, vertically centered.
+	// Shaped text path.
+	if fc != nil && fc.Layout != nil {
+		run, err := fc.Layout.LayoutText(textshape.ShapingParams{
+			Text:      text,
+			FontID:    fc.ShapedFontID,
+			Direction: textshape.LTR,
+			Script:    textshape.ScriptLatin,
+		})
+		if err == nil && run != nil {
+			asc := float64(run.Ascent) / 64
+			desc := float64(run.Descent) / 64
+			oy := float64(y) + float64(h)/2 + (asc-desc)/2
+			dc.DrawShapedText(run, float64(x)+4, oy)
+			return
+		}
+	}
+
+	// Unshaped path: left-aligned, vertically centered.
 	dc.DrawStringAnchored(text, float64(x)+4, float64(y)+float64(h)/2, 0, 0.5)
 }
