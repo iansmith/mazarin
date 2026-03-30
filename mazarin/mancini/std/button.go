@@ -30,9 +30,9 @@ import (
 type Button struct {
 	impl.ThemedInteractor
 
-	Depth  mancini.NeuDepth   // visual state: Raised, Flush, or Inset
-	Radius float64            // corner radius in pixels (default 8.0)
-	Face   mancini.FaceDrawer // optional content drawn on top of the button face
+	Depth  mancini.NeuDepth // visual state: Raised, Flush, or Inset
+	Radius float64          // corner radius in pixels (default 8.0)
+	Face   mancini.Face     // optional content drawn on top of the button face
 }
 
 // NewButton creates a Button wired to the constraint system and theme.
@@ -44,7 +44,7 @@ func NewButton(layout *mancini.LayoutAttributes, theme mancini.Theme,
 		Depth:  depth,
 		Radius: 8.0,
 	}
-	b.ThemedInteractor.Init(b, layout, theme)
+	b.ThemedInteractor.Initialize(b, layout, theme)
 	return b
 }
 
@@ -86,5 +86,8 @@ func (b *Button) Draw(self mancini.Interactor, x, y, w, h int64) {
 		params = neu.Light()
 	}
 
-	NeuBoxWith(pal, dc, b.Depth, fx, fy, fx+fw, fy+fh, b.Radius, pal.Surface(), params, b.Face)
+	NeuBoxWith(pal, dc, b.Depth, fx, fy, fx+fw, fy+fh, b.Radius, pal.Surface(), params)
+	if b.Face != nil {
+		b.Face.DrawFace(dc, fx, fy, fw, fh)
+	}
 }

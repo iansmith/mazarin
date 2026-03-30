@@ -55,7 +55,7 @@ func NewSingleLineText(layout *mancini.LayoutAttributes, theme mancini.Theme,
 		Radius:    6.0,
 		Padding:   8.0,
 	}
-	t.ThemedInteractor.Init(t, layout, theme)
+	t.ThemedInteractor.Initialize(t, layout, theme)
 	return t
 }
 
@@ -104,7 +104,7 @@ func (t *SingleLineText) Draw(self mancini.Interactor, x, y, w, h int64) {
 
 	// 1. Draw inset field background.
 	NeuBoxWith(pal, dc, mancini.Inset, fx, fy, fx+fw, fy+fh, t.Radius,
-		pal.Surface(), params, nil)
+		pal.Surface(), params)
 
 	canvas := dc.Image().(*image.RGBA)
 

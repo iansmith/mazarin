@@ -176,9 +176,8 @@ func roundedRectMask(w, h int, x1, y1, x2, y2, r float64) *image.Alpha {
 //
 // The depth parameter selects the shadow treatment ([mancini.Raised],
 // [mancini.Flush], or [mancini.Inset]). If p is nil, a flat
-// surface-colored rectangle is drawn (no shadows). If content is
-// non-nil, it is called after the shape and shadows are drawn.
-func NeuBoxWith(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDepth, x1, y1, x2, y2, r float64, face color.NRGBA, p *mancini.NeuParams, content mancini.FaceDrawer) {
+// surface-colored rectangle is drawn (no shadows).
+func NeuBoxWith(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDepth, x1, y1, x2, y2, r float64, face color.NRGBA, p *mancini.NeuParams) {
 	if p != nil {
 		switch depth {
 		case mancini.Raised:
@@ -196,9 +195,6 @@ func NeuBoxWith(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDe
 		dc.SetColor(face)
 		dc.DrawRoundedRectangle(x1, y1, x2-x1, y2-y1, r)
 		dc.Fill()
-	}
-	if content != nil {
-		content(dc, x1, y1, x2-x1, y2-y1)
 	}
 }
 
@@ -337,8 +333,7 @@ func applyTintOverlay(pal mancini.Palette, canvas *image.RGBA, x1, y1, x2, y2, r
 // by [NeuCircle].
 //
 // If p is nil, a flat surface-colored circle is drawn (no shadows).
-// If content is non-nil, it receives the circle's bounding box.
-func NeuCircleWith(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDepth, cx, cy, rad float64, face color.NRGBA, p *mancini.NeuParams, content mancini.FaceDrawer) {
+func NeuCircleWith(pal mancini.Palette, dc mancini.DrawContext, depth mancini.NeuDepth, cx, cy, rad float64, face color.NRGBA, p *mancini.NeuParams) {
 	if p != nil {
 		switch depth {
 		case mancini.Raised:
@@ -356,9 +351,6 @@ func NeuCircleWith(pal mancini.Palette, dc mancini.DrawContext, depth mancini.Ne
 		dc.SetColor(face)
 		dc.DrawCircle(cx, cy, rad)
 		dc.Fill()
-	}
-	if content != nil {
-		content(dc, cx-rad, cy-rad, 2*rad, 2*rad)
 	}
 }
 

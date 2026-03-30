@@ -101,8 +101,8 @@ func NewColumn(myName, parent string, pal mancini.Palette, maxHeight int64, cros
 
 	lh.InitBounds(myName)
 
-	c.Interactor.Init(c, lh)
-	c.Parent.InitParent(&c.Interactor)
+	c.Interactor.Initialize(c, lh)
+	c.Parent.Initialize(true, &c.Interactor)
 	return c
 }
 

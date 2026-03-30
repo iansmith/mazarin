@@ -49,7 +49,7 @@ func NewScrollbar(layout *mancini.LayoutAttributes, theme mancini.Theme,
 		ThumbPos:   thumbPos,
 		ShowArrows: showArrows,
 	}
-	s.ThemedInteractor.Init(s, layout, theme)
+	s.ThemedInteractor.Initialize(s, layout, theme)
 	return s
 }
 

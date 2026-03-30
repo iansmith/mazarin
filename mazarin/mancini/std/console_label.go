@@ -3,7 +3,6 @@ package std
 import (
 	"image/color"
 
-	"mazzy/mazarin/extern/textshape"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
 )
@@ -30,6 +29,7 @@ type ConsoleLabel struct {
 	ColorFunc func() color.NRGBA   // dynamic text color (stdout vs stderr)
 	MaxCols   int                  // max characters per line
 
+	textFace      mancini.LatinTextFace
 	lastDrawnText string
 	lastDrawnHash int64
 }
@@ -63,13 +63,16 @@ func NewConsoleLabel(myName, parent string, theme mancini.Theme,
 		FontSize: fontSize,
 		BgColor:  bgColor,
 		MaxCols:  maxCols,
+		textFace: impl.NewLatinTextFace(fc, false, fontSize,
+			mancini.TextAlignmentParams{HAlign: mancini.HAlignLeft, VAlign: mancini.VAlignCenter}),
 	}
-	l.ThemedInteractor.Init(l, lh, theme)
+	l.ThemedInteractor.Initialize(l, lh, theme)
 	return l
 }
 
 // Draw implements mancini.NewDrawer. Fills BgColor background, then
-// renders left-aligned text using ColorFunc for the text color.
+// renders left-aligned text via LatinTextFace using ColorFunc for the
+// text color.
 func (l *ConsoleLabel) Draw(self mancini.Interactor, x, y, w, h int64) {
 	if !self.Visible() {
 		return
@@ -107,14 +110,6 @@ func (l *ConsoleLabel) Draw(self mancini.Interactor, x, y, w, h int64) {
 		text = text[:l.MaxCols]
 	}
 
-	// Load monospaced font via theme.
-	fc := l.Font(mancini.None, l.FontSize)
-	if fc != nil && fc.LoadFace != nil {
-		if face := fc.LoadFace(false, l.FontSize); face != nil {
-			dc.SetFontFace(face)
-		}
-	}
-
 	// Text color: dynamic ColorFunc or theme foreground.
 	col := l.FgColor()
 	if l.ColorFunc != nil {
@@ -122,23 +117,8 @@ func (l *ConsoleLabel) Draw(self mancini.Interactor, x, y, w, h int64) {
 	}
 	dc.SetColor(col)
 
-	// Shaped text path.
-	if fc != nil && fc.Layout != nil {
-		run, err := fc.Layout.LayoutText(textshape.ShapingParams{
-			Text:      text,
-			FontID:    fc.ShapedFontID,
-			Direction: textshape.LTR,
-			Script:    textshape.ScriptLatin,
-		})
-		if err == nil && run != nil {
-			asc := float64(run.Ascent) / 64
-			desc := float64(run.Descent) / 64
-			oy := float64(y) + float64(h)/2 + (asc-desc)/2
-			dc.DrawShapedText(run, float64(x)+4, oy)
-			return
-		}
+	if l.textFace != nil {
+		l.textFace.SetText(text)
+		l.textFace.DrawFace(dc, float64(x)+4, float64(y), float64(w)-4, float64(h))
 	}
-
-	// Unshaped path: left-aligned, vertically centered.
-	dc.DrawStringAnchored(text, float64(x)+4, float64(y)+float64(h)/2, 0, 0.5)
 }

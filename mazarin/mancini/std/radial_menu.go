@@ -22,25 +22,25 @@ import (
 // the ring shape warrants stronger shadows. When [mancini.NeuParams] is
 // nil, only the flat annulus fill and face content are drawn.
 //
-// Each segment can have a [mancini.FaceDrawer] callback for custom
-// content. Face content is positioned at the segment's midpoint and
-// rotated to align with the segment's angular position, reusing the
-// same rendering code as [RadialNOfMChooser].
+// Each segment can have a [mancini.LatinTextFace] for text content.
+// Face content is positioned at the segment's midpoint and rotated to
+// align with the segment's angular position, reusing the same rendering
+// code as [RadialNOfMChooser].
 //
 // See also [NOfMChooser] for a linear strip multi-select and
 // [RadialNOfMChooser] for an arc-shaped multi-select.
 type RadialMenu struct {
 	impl.ThemedInteractor
 
-	OuterR   float64              // outer radius of the annulus
-	InnerR   float64              // inner radius (center hole)
-	Faces    []mancini.FaceDrawer // content drawer for each segment (nil entries OK)
-	Selected int                  // selected segment index (-1 for none)
+	OuterR   float64                  // outer radius of the annulus
+	InnerR   float64                  // inner radius (center hole)
+	Faces    []mancini.LatinTextFace  // text content for each segment (nil entries OK)
+	Selected int                      // selected segment index (-1 for none)
 }
 
 // NewRadialMenu creates a RadialMenu wired to the constraint system and theme.
 func NewRadialMenu(layout *mancini.LayoutAttributes, theme mancini.Theme,
-	outerR, innerR float64, faces []mancini.FaceDrawer, selected int) *RadialMenu {
+	outerR, innerR float64, faces []mancini.LatinTextFace, selected int) *RadialMenu {
 
 	m := &RadialMenu{
 		OuterR:   outerR,
@@ -48,14 +48,14 @@ func NewRadialMenu(layout *mancini.LayoutAttributes, theme mancini.Theme,
 		Faces:    faces,
 		Selected: selected,
 	}
-	m.ThemedInteractor.Init(m, layout, theme)
+	m.ThemedInteractor.Initialize(m, layout, theme)
 	return m
 }
 
 // NewRadialMenuNamed creates a RadialMenu with layout built from name + parent
 // strings. Width and height are set to contain the full ring with shadow padding.
 func NewRadialMenuNamed(myName, parent string, theme mancini.Theme,
-	outerR, innerR float64, faces []mancini.FaceDrawer, selected int) *RadialMenu {
+	outerR, innerR float64, faces []mancini.LatinTextFace, selected int) *RadialMenu {
 
 	if myName == "" {
 		myName = mancini.DefaultName("radialmenu")
@@ -138,7 +138,7 @@ func (m *RadialMenu) Draw(self mancini.Interactor, x, y, w, h int64) {
 			rIn += insetMargin
 			rOut -= insetMargin
 		}
-		radialDrawFace(dc, canvas, pal, cx, cy, rOut, rIn, tStart, tEnd, face)
+		radialDrawContent(dc, canvas, pal, cx, cy, rOut, rIn, tStart, tEnd, face)
 	}
 }
 

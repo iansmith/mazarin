@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/fogleman/gg"
-	"golang.org/x/image/font"
 
 	"mazzy/mazarin/attr"
 	"mazzy/mazarin/mancini"
+	"mazzy/mazarin/mancini/impl"
 )
 
 // GradientTitle renders an animated horizontal gradient title bar into
@@ -25,11 +25,11 @@ import (
 //
 // See also [StripedTitle] for a static Mac OS-style pinstripe title bar.
 type GradientTitle struct {
-	pal    mancini.Palette
-	title  string
-	face   font.Face
-	radius float64
-	swapRB bool
+	pal      mancini.Palette
+	title    string
+	textFace mancini.LatinTextFace
+	radius   float64
+	swapRB   bool
 
 	mu    sync.Mutex
 	front *image.RGBA // current completed frame for blitting
@@ -46,16 +46,14 @@ type GradientTitle struct {
 // at creation time. Call Start or pass to NewAppWindow — the animation
 // goroutine launches on the first Draw when the title bar dimensions are known.
 func NewGradientTitle(pal mancini.Palette, fonts *mancini.FontConfig, title string, fontSize int64, radius float64) *GradientTitle {
-	var face font.Face
-	if fonts != nil && fonts.LoadFace != nil {
-		face = fonts.LoadFace(true, fontSize)
-	}
+	textFace := impl.NewLatinTextFace(fonts, true, fontSize, mancini.TextAlignmentParams{})
+	textFace.SetText(title)
 	return &GradientTitle{
-		pal:    pal,
-		title:  title,
-		face:   face,
-		radius: radius,
-		swapRB: pal.SwapRB(),
+		pal:      pal,
+		title:    title,
+		textFace: textFace,
+		radius:   radius,
+		swapRB:   pal.SwapRB(),
 	}
 }
 
@@ -131,11 +129,10 @@ func (g *GradientTitle) renderFrame(elapsed float64) {
 	dc.Fill()
 
 	// Title text centered.
-	if g.face != nil {
-		dc.SetFontFace(g.face)
-	}
 	dc.SetColor(g.pal.Text())
-	dc.DrawStringAnchored(g.title, fw/2, fh/2, 0.5, 0.5)
+	if g.textFace != nil {
+		g.textFace.DrawFace(dc, 0, 0, fw, fh)
+	}
 
 	g.mu.Lock()
 	g.front = buf

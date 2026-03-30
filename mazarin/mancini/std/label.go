@@ -3,9 +3,6 @@ package std
 import (
 	"image/color"
 
-	"golang.org/x/image/font"
-
-	"mazzy/mazarin/extern/textshape"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
 )
@@ -29,25 +26,30 @@ type Label struct {
 	FontSize int64
 	Color    color.NRGBA
 	Bold     bool
+	textFace mancini.LatinTextFace
 }
 
 // NewLabel creates a Label wired to the constraint system and theme.
 func NewLabel(layout *mancini.LayoutAttributes, theme mancini.Theme,
 	text string, fontSize int64) *Label {
+	fc := theme.Font(mancini.None, fontSize)
 	l := &Label{
 		Text:     text,
 		FontSize: fontSize,
 		Color:    theme.Palette().Text(),
+		textFace: impl.NewLatinTextFace(fc, false, fontSize, mancini.TextAlignmentParams{}),
 	}
-	l.ThemedInteractor.Init(l, layout, theme)
+	l.ThemedInteractor.Initialize(l, layout, theme)
 	return l
 }
 
 // NewLabelBold creates a bold Label.
 func NewLabelBold(layout *mancini.LayoutAttributes, theme mancini.Theme,
 	text string, fontSize int64) *Label {
+	fc := theme.Font(mancini.Bold, fontSize)
 	l := NewLabel(layout, theme, text, fontSize)
 	l.Bold = true
+	l.textFace = impl.NewLatinTextFace(fc, true, fontSize, mancini.TextAlignmentParams{})
 	return l
 }
 
@@ -128,7 +130,7 @@ func (l *Label) resolveText() string {
 }
 
 // Draw implements mancini.NewDrawer. Clears background via super,
-// then renders centered text.
+// then renders centered text via LatinTextFace.
 func (l *Label) Draw(self mancini.Interactor, x, y, w, h int64) {
 	if !self.Visible() {
 		return
@@ -137,57 +139,12 @@ func (l *Label) Draw(self mancini.Interactor, x, y, w, h int64) {
 	// Super — clear background to theme BgColor.
 	l.ThemedInteractor.Draw(self, x, y, w, h)
 
+	if l.textFace == nil {
+		return
+	}
+
 	dc := self.DC()
-
-	// Load font from the theme using Feature + size.
-	feature := mancini.None
-	if l.Bold {
-		feature = mancini.Bold
-	}
-	var face font.Face
-	fc := l.Font(feature, l.FontSize)
-	if fc != nil && fc.LoadFace != nil {
-		face = fc.LoadFace(l.Bold, l.FontSize)
-		if face != nil {
-			dc.SetFontFace(face)
-		}
-	}
-
 	dc.SetColor(l.Color)
-	text := l.resolveText()
-	fx, fy := float64(x), float64(y)
-	fw, fh := float64(w), float64(h)
-
-	// Shaped text path: use TextLayout for shaping + DrawShapedText.
-	if fc != nil && fc.Layout != nil {
-		run, err := fc.Layout.LayoutText(textshape.ShapingParams{
-			Text:      text,
-			FontID:    fc.ShapedFontID,
-			Direction: textshape.LTR,
-			Script:    textshape.ScriptLatin,
-		})
-		if err == nil && run != nil {
-			tw := float64(run.TotalAdvance) / 64
-			asc := float64(run.Ascent) / 64
-			desc := float64(run.Descent) / 64
-			ox := fx + (fw-tw)/2
-			oy := fy + fh/2 + (asc-desc)/2
-			dc.DrawShapedText(run, ox, oy)
-			return
-		}
-		// fall through to unshaped path on error
-	}
-
-	// Unshaped path: compute baseline from font metrics so the visual
-	// text extent (ascent above + descent below baseline) is centered
-	// in the label.
-	if face != nil {
-		m := face.Metrics()
-		asc := float64(m.Ascent) / 64
-		desc := float64(m.Descent) / 64
-		baseline := fy + fh/2 + (asc-desc)/2
-		dc.DrawStringAnchored(text, fx+fw/2, baseline, 0.5, 0)
-	} else {
-		dc.DrawStringAnchored(text, fx+fw/2, fy+fh/2, 0.5, 0.35)
-	}
+	l.textFace.SetText(l.resolveText())
+	l.textFace.DrawFace(dc, float64(x), float64(y), float64(w), float64(h))
 }

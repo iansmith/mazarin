@@ -18,10 +18,10 @@ const (
 )
 
 // CheckboxWithLabel combines a neumorphic [Checkbox] with a label drawn
-// via a [mancini.FaceDrawer] callback. The checkbox is rendered identically
-// to [Checkbox] ([mancini.Inset] when unchecked, [mancini.Raised] +
-// checkmark when checked), and the label is positioned on the specified
-// Side with a configurable Gap.
+// via a [mancini.Face]. The checkbox is rendered identically to [Checkbox]
+// ([mancini.Inset] when unchecked, [mancini.Raised] + checkmark when
+// checked), and the label is positioned on the specified Side with a
+// configurable Gap.
 //
 // CheckboxWithLabel embeds [impl.ThemedInteractor] and renders both
 // the checkbox and label in a single Draw call. It handles nil
@@ -32,18 +32,18 @@ type CheckboxWithLabel struct {
 
 	Checked   bool
 	Side      LabelSide
-	CheckSize float64            // side length of the checkbox square
-	Gap       float64            // space between checkbox and label
-	Label     mancini.FaceDrawer // draws the label content (may be nil)
-	LabelW    float64            // width of the label area
-	LabelH    float64            // height of the label area
+	CheckSize float64      // side length of the checkbox square
+	Gap       float64      // space between checkbox and label
+	Label     mancini.Face // draws the label content (may be nil)
+	LabelW    float64      // width of the label area
+	LabelH    float64      // height of the label area
 }
 
 // NewCheckboxWithLabel creates a CheckboxWithLabel wired to the constraint
 // system and theme. layout must already be created.
 func NewCheckboxWithLabel(layout *mancini.LayoutAttributes, theme mancini.Theme,
 	checkSize float64, checked bool, side LabelSide,
-	gap float64, label mancini.FaceDrawer, labelW, labelH float64) *CheckboxWithLabel {
+	gap float64, label mancini.Face, labelW, labelH float64) *CheckboxWithLabel {
 
 	c := &CheckboxWithLabel{
 		Checked:   checked,
@@ -54,7 +54,7 @@ func NewCheckboxWithLabel(layout *mancini.LayoutAttributes, theme mancini.Theme,
 		LabelW:    labelW,
 		LabelH:    labelH,
 	}
-	c.ThemedInteractor.Init(c, layout, theme)
+	c.ThemedInteractor.Initialize(c, layout, theme)
 	return c
 }
 
@@ -64,7 +64,7 @@ func NewCheckboxWithLabel(layout *mancini.LayoutAttributes, theme mancini.Theme,
 // constraint system can bootstrap.
 func NewCheckboxWithLabelNamed(myName, parent string, theme mancini.Theme,
 	checkSize float64, checked bool, side LabelSide,
-	gap float64, label mancini.FaceDrawer, labelW, labelH float64) *CheckboxWithLabel {
+	gap float64, label mancini.Face, labelW, labelH float64) *CheckboxWithLabel {
 
 	if myName == "" {
 		myName = mancini.DefaultName("checkboxlabel")
@@ -169,16 +169,14 @@ func (c *CheckboxWithLabel) Draw(self mancini.Interactor, x, y, w, h int64) {
 	const radius = 4.0
 
 	if !c.Checked {
-		NeuBoxWith(pal, dc, mancini.Inset, x1, y1, x2, y2, radius, pal.Surface(), params, nil)
+		NeuBoxWith(pal, dc, mancini.Inset, x1, y1, x2, y2, radius, pal.Surface(), params)
 	} else {
-		checkmarkFace := mancini.FaceDrawer(func(fdc mancini.DrawContext, fx, fy, fw, fh float64) {
-			drawCheckmark(fdc, pal, fx, fy, fw, fh)
-		})
-		NeuBoxWith(pal, dc, mancini.Raised, x1, y1, x2, y2, radius, pal.Surface(), params, checkmarkFace)
+		NeuBoxWith(pal, dc, mancini.Raised, x1, y1, x2, y2, radius, pal.Surface(), params)
+		drawCheckmark(dc, pal, x1, y1, x2-x1, y2-y1)
 	}
 
 	// Draw the label.
 	if c.Label != nil {
-		c.Label(dc, labelX, labelY, labelW, labelH)
+		c.Label.DrawFace(dc, labelX, labelY, labelW, labelH)
 	}
 }
