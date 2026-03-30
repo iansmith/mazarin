@@ -269,6 +269,7 @@ func buildUserspaceOverlay(overlay *Overlay, goroot, patchesDir string) error {
 		"runtime/maz_moduledata.go":     "runtime/maz_moduledata.go",
 
 		"runtime/sys_linux_arm64.s":   "runtime/sys_linux_arm64.s",
+		"runtime/netpoll_epoll.go":    "runtime/netpoll_epoll.go",
 		"runtime/walltime_mazzy.go":   "runtime/walltime_mazzy.go",
 		"runtime/timestub2.go":        "runtime/timestub2.go",
 	}
