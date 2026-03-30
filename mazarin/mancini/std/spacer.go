@@ -22,7 +22,7 @@ func NewSpacer(myName, parent string, w, h int64) *Spacer {
 	lh.Height.Set(h)
 
 	s := &Spacer{}
-	s.Interactor.Initialize(s, lh)
+	s.Interactor.Init(s, lh)
 	return s
 }
 

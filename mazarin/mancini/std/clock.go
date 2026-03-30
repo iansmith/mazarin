@@ -74,7 +74,7 @@ func NewClock(myName, parent string, pal mancini.Palette, fonts *mancini.FontCon
 	faceURI := mancini.LayoutURI(myName, mancini.DataTypeStr, mancini.LayoutFaceName)
 	c.FaceNameAttr = attr.ValueStr(faceURI, faceName)
 
-	c.Interactor.Initialize(c, lh)
+	c.Interactor.Init(c, lh)
 	return c
 }
 

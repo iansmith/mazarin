@@ -65,7 +65,7 @@ func NewFreeFloatingWindow(name string, parent mancini.Interactor,
 		Visible:   false,
 		titleFace: titleFace,
 	}
-	w.Decorator.Initialize(w, layout, top, side, bottom, side)
+	w.Decorator.InitDecorator(w, layout, top, side, bottom, side)
 	return w
 }
 

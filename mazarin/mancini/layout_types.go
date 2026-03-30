@@ -52,6 +52,7 @@ const (
 	LayoutLPBoundsHash   LayoutProp = "LPBoundsHash"
 	LayoutLPBgColor      LayoutProp = "LPBgColor"
 	LayoutLPFgColor      LayoutProp = "LPFgColor"
+	LayoutLPContentHash  LayoutProp = "LPContentHash"
 )
 
 // Suffix returns the "/layout/<prop>" form used in constraint program bindings.

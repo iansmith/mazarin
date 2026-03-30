@@ -32,7 +32,7 @@ func NewNeuBox(layout *mancini.LayoutAttributes, pal mancini.Palette,
 		Params: params,
 		Radius: radius,
 	}
-	n.Decorator.Initialize(n, layout, margin, margin, margin, margin)
+	n.Decorator.InitDecorator(n, layout, margin, margin, margin, margin)
 	return n
 }
 

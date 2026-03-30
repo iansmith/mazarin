@@ -10,25 +10,15 @@ type Interactor struct {
 	dc     mancini.DrawContext
 }
 
-// Initialize wires the back-pointer and layout. Must be called from the
-// concrete type's constructor: i.Interactor.Initialize(i, layout).
+// Init wires the back-pointer and layout. Must be called from the
+// concrete type's constructor: i.Interactor.Init(i, layout).
 // Registers the owner in the global interactor registry keyed by
-// the layout attribute's constraint-system name, then marks the
-// interactor's full bounds as damaged so the first draw paints everything.
-func (i *Interactor) Initialize(owner mancini.Interactor, layout *mancini.LayoutAttributes) {
+// the layout attribute's constraint-system name.
+func (i *Interactor) Init(owner mancini.Interactor, layout *mancini.LayoutAttributes) {
 	i.owner = owner
 	i.layout = layout
 	if layout != nil {
 		mancini.RegisterInteractor(layout.Name(), owner)
-	}
-	i.FullDamage()
-}
-
-// FullDamage sets the damage rectangle to the interactor's full bounds,
-// ensuring the next draw pass repaints this interactor completely.
-func (i *Interactor) FullDamage() {
-	if i.layout != nil {
-		i.layout.FullDamage()
 	}
 }
 

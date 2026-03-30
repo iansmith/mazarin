@@ -8,6 +8,12 @@ func leafDamageRect() Rect {
 		return rectUnion(bounds, lpBounds)
 	}
 
+	contentHash := derefI64("_contentHash_")
+	lpContentHash := derefI64("_lpContentHash_")
+	if contentHash != lpContentHash {
+		return rectUnion(bounds, lpBounds)
+	}
+
 	bgc := derefI64("_bgColor_")
 	lpBgc := derefI64("_lpBgColor_")
 	if bgc != lpBgc {

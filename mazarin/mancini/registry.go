@@ -20,7 +20,7 @@ var registry = make(map[string]registryEntry)
 var registrySeq uint64
 
 // RegisterInteractor adds an interactor to the global registry keyed by its
-// constraint-system name. Called from impl.Interactor.Initialize().
+// constraint-system name. Called from impl.Interactor.Init().
 func RegisterInteractor(name string, i Interactor) {
 	if name == "" {
 		return
