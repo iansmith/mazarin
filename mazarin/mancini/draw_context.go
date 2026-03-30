@@ -6,7 +6,7 @@ import (
 
 	"github.com/fogleman/gg"
 	"golang.org/x/image/font"
-	"mazzy/mazarin/extern/textshape"
+	"mazzy/mazarin/textshape"
 )
 
 // DrawContext abstracts the drawing surface for all interactor rendering.

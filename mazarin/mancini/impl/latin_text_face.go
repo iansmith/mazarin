@@ -1,37 +1,62 @@
 package impl
 
 import (
-	"mazzy/mazarin/extern/textshape"
+	"mazzy/mazarin/textshape"
 	"mazzy/mazarin/mancini"
 
 	"golang.org/x/image/font"
 )
 
 // LatinTextFaceImpl implements [mancini.LatinTextFace] for Latin
-// left-to-right text. It holds a [mancini.FontConfig] and eagerly
-// resolves the font.Face at construction time.
+// left-to-right text. It holds a [textshape.TextLayout] and fontID
+// for shaped rendering, with an optional [font.Face] for the unshaped
+// fallback path.
 type LatinTextFaceImpl struct {
-	fc       *mancini.FontConfig
-	bold     bool
-	fontSize int64
+	layout   *textshape.TextLayout
+	fontID   int32
 	face     font.Face
+	fontSize int64
 	text     string
 	params   mancini.TextAlignmentParams
 }
 
-// NewLatinTextFace creates a LatinTextFaceImpl with the given font
-// configuration and alignment. The font.Face is resolved eagerly via
-// fc.LoadFace so it is not re-resolved on every draw.
+// NewLatinTextFace creates a LatinTextFaceImpl from a [mancini.FontConfig].
+// The font.Face is resolved eagerly via fc.LoadFace; the shaped text
+// layout and fontID are extracted from fc.Layout and fc.ShapedFontID.
 func NewLatinTextFace(fc *mancini.FontConfig, bold bool, fontSize int64, params mancini.TextAlignmentParams) *LatinTextFaceImpl {
 	var face font.Face
-	if fc != nil && fc.LoadFace != nil {
-		face = fc.LoadFace(bold, fontSize)
+	var layout *textshape.TextLayout
+	var fontID int32
+	if fc != nil {
+		if fc.LoadFace != nil {
+			face = fc.LoadFace(bold, fontSize)
+		}
+		layout = fc.Layout
+		fontID = fc.ShapedFontID
 	}
 	return &LatinTextFaceImpl{
-		fc:       fc,
-		bold:     bold,
-		fontSize: fontSize,
+		layout:   layout,
+		fontID:   fontID,
 		face:     face,
+		fontSize: fontSize,
+		params:   params,
+	}
+}
+
+// NewLatinTextFaceFromLayout creates a LatinTextFaceImpl directly from
+// a [textshape.TextLayout] and fontID. The optional [font.Face] provides
+// the unshaped fallback; pass nil if only shaped rendering is needed.
+//
+// This constructor does not require [mancini.FontConfig] or a mancini
+// theme, making it usable from darwin code that imports only textshape.
+func NewLatinTextFaceFromLayout(layout *textshape.TextLayout, fontID int32,
+	face font.Face, fontSize int64, params mancini.TextAlignmentParams,
+) *LatinTextFaceImpl {
+	return &LatinTextFaceImpl{
+		layout:   layout,
+		fontID:   fontID,
+		face:     face,
+		fontSize: fontSize,
 		params:   params,
 	}
 }
@@ -43,9 +68,25 @@ func (f *LatinTextFaceImpl) SetText(text string) {
 
 // MeasureText returns the advance width of text in pixels.
 func (f *LatinTextFaceImpl) MeasureText(text string) float64 {
-	if f.fc != nil {
-		return f.fc.MeasureText(text, f.bold, f.fontSize)
+	// Shaped path.
+	if f.layout != nil {
+		adv, err := f.layout.MeasureText(textshape.ShapingParams{
+			Text:      text,
+			FontID:    f.fontID,
+			Direction: textshape.LTR,
+		})
+		if err == nil {
+			return float64(adv) / 64.0
+		}
 	}
+
+	// Unshaped path.
+	if f.face != nil {
+		advance := font.MeasureString(f.face, text)
+		return float64(advance) / 64.0
+	}
+
+	// Fallback estimate.
 	return float64(len(text)) * float64(f.fontSize) * 0.6
 }
 
@@ -63,10 +104,10 @@ func (f *LatinTextFaceImpl) DrawFace(dc mancini.DrawContext, x, y, w, h float64)
 	}
 
 	// Try shaped text path first.
-	if f.fc != nil && f.fc.Layout != nil {
-		run, err := f.fc.Layout.LayoutText(textshape.ShapingParams{
+	if f.layout != nil {
+		run, err := f.layout.LayoutText(textshape.ShapingParams{
 			Text:      f.text,
-			FontID:    f.fc.ShapedFontID,
+			FontID:    f.fontID,
 			Direction: textshape.LTR,
 			Script:    textshape.ScriptLatin,
 		})
@@ -115,7 +156,7 @@ func (f *LatinTextFaceImpl) hAlignX(x, w, tw float64) float64 {
 	case mancini.HAlignRight:
 		return x + w - tw
 	default: // HAlignCenter
-		return x + (w-tw)/2
+		return x + (w - tw) / 2
 	}
 }
 

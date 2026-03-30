@@ -2,59 +2,66 @@ package textshape
 
 import (
 	goFont "github.com/go-text/typesetting/font"
-	"mazzy/mazarin/extern/font"
 )
 
 // openedFont tracks a font that has been opened via TextLayout.
 type openedFont struct {
-	fontID int32
-	info   font.FontInfo
-	face   *goFont.Face
+	fontID  int32
+	metrics FontMetrics
+	face    *goFont.Face
 }
 
 // TextLayout is the main orchestrator: it combines shaping (HarfBuzz)
-// and rasterization (FontClient) to produce positioned glyph bitmaps.
+// and rasterization ([GlyphProvider]) to produce positioned glyph bitmaps.
+//
+// TextLayout depends on [GlyphProvider] for glyph bitmap retrieval,
+// allowing both in-process rasterization ([DirectGlyphProvider] for
+// darwin) and fontsvc IPC (mazarin's FontClient).
 type TextLayout struct {
-	shaper  *HarfBuzzShaper
-	client  *font.FontClient
-	fontDir string
-	fonts   [maxFonts]*openedFont
+	shaper   *HarfBuzzShaper
+	provider GlyphProvider
+	fonts    [maxFonts]*openedFont
 }
 
-// NewTextLayout creates a TextLayout that loads fonts from fontDir.
+// NewTextLayout creates a TextLayout that loads fonts from fontDir
+// using a [DirectGlyphProvider] for in-process rasterization.
 func NewTextLayout(fontDir string) *TextLayout {
 	return &TextLayout{
-		shaper:  NewHarfBuzzShaper(),
-		client:  font.NewFontClient(fontDir),
-		fontDir: fontDir,
+		shaper:   NewHarfBuzzShaper(),
+		provider: NewDirectGlyphProvider(fontDir),
 	}
 }
 
-// Client returns the underlying FontClient.
-func (tl *TextLayout) Client() *font.FontClient {
-	return tl.client
+// NewTextLayoutWithProvider creates a TextLayout using the given
+// [GlyphProvider]. Use this when you need a custom provider (e.g.,
+// mazarin's FontClient backed by fontsvc IPC).
+func NewTextLayoutWithProvider(provider GlyphProvider) *TextLayout {
+	return &TextLayout{
+		shaper:   NewHarfBuzzShaper(),
+		provider: provider,
+	}
 }
 
 // OpenFont opens a font and registers it with both the shaper and
-// the rasterizer. Returns font-level metrics.
-func (tl *TextLayout) OpenFont(req font.OpenFontRequest) (font.FontInfo, error) {
-	info, err := tl.client.OpenFont(req)
+// the glyph provider. Returns font-level metrics.
+func (tl *TextLayout) OpenFont(req OpenFontRequest) (FontMetrics, error) {
+	metrics, err := tl.provider.OpenFont(req)
 	if err != nil {
-		return font.FontInfo{}, err
+		return FontMetrics{}, err
 	}
 
 	// Register with shaper if not already done.
-	if tl.fonts[info.FontID] == nil {
-		face := tl.client.Face(info.FontID)
-		tl.shaper.RegisterFont(info.FontID, face, req.Size)
-		tl.fonts[info.FontID] = &openedFont{
-			fontID: info.FontID,
-			info:   info,
-			face:   face,
+	if tl.fonts[metrics.FontID] == nil {
+		face := tl.provider.Face(metrics.FontID)
+		tl.shaper.RegisterFont(metrics.FontID, face, req.Size)
+		tl.fonts[metrics.FontID] = &openedFont{
+			fontID:  metrics.FontID,
+			metrics: metrics,
+			face:    face,
 		}
 	}
 
-	return info, nil
+	return metrics, nil
 }
 
 // LayoutText shapes the text and rasterizes each glyph, returning
@@ -74,7 +81,7 @@ func (tl *TextLayout) LayoutText(params ShapingParams) (*TextRun, error) {
 	var penX, penY int32 // fixed.Int26_6 pen position
 
 	for _, sg := range run.Glyphs {
-		gi, alpha, err := tl.client.GlyphByGID(params.FontID, sg.GID)
+		gi, alpha, err := tl.provider.GlyphByGID(params.FontID, sg.GID)
 		if err != nil {
 			return nil, err
 		}
@@ -103,9 +110,9 @@ func (tl *TextLayout) LayoutText(params ShapingParams) (*TextRun, error) {
 	return &TextRun{
 		Glyphs:       glyphs,
 		TotalAdvance: penX,
-		Ascent:       of.info.Ascent,
-		Descent:      of.info.Descent,
-		LineHeight:   of.info.Height,
+		Ascent:       of.metrics.Ascent,
+		Descent:      of.metrics.Descent,
+		LineHeight:   of.metrics.Height,
 		Direction:    params.Direction,
 	}, nil
 }

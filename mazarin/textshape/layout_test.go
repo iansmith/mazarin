@@ -4,8 +4,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
-
-	"mazzy/mazarin/extern/font"
 )
 
 func fontDir(t *testing.T) string {
@@ -14,7 +12,7 @@ func fontDir(t *testing.T) string {
 	if !ok {
 		t.Fatal("cannot determine test file path")
 	}
-	return filepath.Join(filepath.Dir(file), "..", "..", "..", "fonts")
+	return filepath.Join(filepath.Dir(file), "..", "..", "fonts")
 }
 
 const (
@@ -24,7 +22,7 @@ const (
 
 func TestLayoutLatinHello(t *testing.T) {
 	tl := NewTextLayout(fontDir(t))
-	info, err := tl.OpenFont(font.OpenFontRequest{
+	info, err := tl.OpenFont(OpenFontRequest{
 		Path: testFontLatin, Size: 18,
 	})
 	if err != nil {
@@ -72,7 +70,7 @@ func TestLayoutLatinHello(t *testing.T) {
 
 func TestMeasureText(t *testing.T) {
 	tl := NewTextLayout(fontDir(t))
-	info, err := tl.OpenFont(font.OpenFontRequest{
+	info, err := tl.OpenFont(OpenFontRequest{
 		Path: testFontLatin, Size: 18,
 	})
 	if err != nil {
@@ -109,7 +107,7 @@ func TestMeasureText(t *testing.T) {
 
 func TestLayoutCJK(t *testing.T) {
 	tl := NewTextLayout(fontDir(t))
-	info, err := tl.OpenFont(font.OpenFontRequest{
+	info, err := tl.OpenFont(OpenFontRequest{
 		Path: testFontCJK, Size: 24,
 	})
 	if err != nil {
@@ -143,7 +141,7 @@ func TestLayoutCJK(t *testing.T) {
 
 func TestShaperDirect(t *testing.T) {
 	tl := NewTextLayout(fontDir(t))
-	info, err := tl.OpenFont(font.OpenFontRequest{
+	info, err := tl.OpenFont(OpenFontRequest{
 		Path: testFontLatin, Size: 18,
 	})
 	if err != nil {

@@ -1,7 +1,7 @@
 package mancini
 
 import (
-	"mazzy/mazarin/extern/textshape"
+	"mazzy/mazarin/textshape"
 
 	"golang.org/x/image/font"
 )

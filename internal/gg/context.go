@@ -15,7 +15,7 @@ import (
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/basicfont"
 	"golang.org/x/image/math/f64"
-	"mazzy/mazarin/extern/textshape"
+	"mazzy/mazarin/textshape"
 )
 
 type LineCap int
