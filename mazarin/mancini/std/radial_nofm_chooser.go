@@ -23,25 +23,25 @@ import (
 // [NOfMChooser]. When [mancini.NeuParams] is nil, only the filled arc
 // and face content are drawn.
 //
-// Each segment can have a [mancini.FaceDrawer] callback whose content is
+// Each segment can have a [mancini.LatinTextFace] whose content is
 // automatically rotated to align with the segment's angular position.
 // See also [NOfMChooser] for a linear strip variant and [RadialMenu]
 // for a full-circle single-select menu.
 type RadialNOfMChooser struct {
 	impl.ThemedInteractor
 
-	CX, CY          float64              // center of the arc relative to allocated area
-	InnerR, OuterR   float64              // inner and outer radii
-	StartDeg, EndDeg float64              // angular range in degrees (0=right, 90=down)
-	Faces            []mancini.FaceDrawer // content for each segment (nil entries OK)
-	Selected         []bool               // which segments are selected
+	CX, CY          float64                  // center of the arc relative to allocated area
+	InnerR, OuterR   float64                  // inner and outer radii
+	StartDeg, EndDeg float64                  // angular range in degrees (0=right, 90=down)
+	Faces            []mancini.LatinTextFace  // text content for each segment (nil entries OK)
+	Selected         []bool                   // which segments are selected
 }
 
 // NewRadialNOfMChooser creates a RadialNOfMChooser wired to the constraint
 // system and theme. layout must already be created.
 func NewRadialNOfMChooser(layout *mancini.LayoutAttributes, theme mancini.Theme,
 	cx, cy, innerR, outerR, startDeg, endDeg float64,
-	faces []mancini.FaceDrawer, selected []bool) *RadialNOfMChooser {
+	faces []mancini.LatinTextFace, selected []bool) *RadialNOfMChooser {
 
 	c := &RadialNOfMChooser{
 		CX:       cx,
@@ -62,7 +62,7 @@ func NewRadialNOfMChooser(layout *mancini.LayoutAttributes, theme mancini.Theme,
 // bounding box so the constraint system can bootstrap.
 func NewRadialNOfMChooserNamed(myName, parent string, theme mancini.Theme,
 	cx, cy, innerR, outerR, startDeg, endDeg float64,
-	faces []mancini.FaceDrawer, selected []bool) *RadialNOfMChooser {
+	faces []mancini.LatinTextFace, selected []bool) *RadialNOfMChooser {
 
 	if myName == "" {
 		myName = mancini.DefaultName("radialchooser")
@@ -185,7 +185,7 @@ func (c *RadialNOfMChooser) Draw(self mancini.Interactor, x, y, w, h int64) {
 		}
 		segStart := startRad + float64(i)*segAngle
 		segEnd := segStart + segAngle
-		radialDrawFace(dc, canvas, pal, cx, cy, rOuter, rInner, segStart, segEnd, c.Faces[i])
+		radialDrawContent(dc, canvas, pal, cx, cy, rOuter, rInner, segStart, segEnd, c.Faces[i])
 	}
 }
 
@@ -366,12 +366,12 @@ func radialApplySelection(canvas *image.RGBA, pal mancini.Palette,
 
 // ── Face content rendering ──────────────────────────────────────────────────
 
-// radialDrawFace renders a FaceDrawer's content positioned at the midpoint
+// radialDrawContent renders a Face's content positioned at the midpoint
 // of the segment's angular and radial range. The content is drawn into a
 // temporary buffer, rotated to align with the segment's midpoint angle,
 // and composited onto the canvas masked to the segment area.
-func radialDrawFace(dc mancini.DrawContext, canvas *image.RGBA, pal mancini.Palette,
-	cx, cy, rOuter, rInner, startAngle, endAngle float64, face mancini.FaceDrawer) {
+func radialDrawContent(dc mancini.DrawContext, canvas *image.RGBA, pal mancini.Palette,
+	cx, cy, rOuter, rInner, startAngle, endAngle float64, face mancini.Face) {
 
 	midAngle := (startAngle + endAngle) / 2
 	midR := (rInner + rOuter) / 2
@@ -395,7 +395,7 @@ func radialDrawFace(dc mancini.DrawContext, canvas *image.RGBA, pal mancini.Pale
 	faceBuf := image.NewRGBA(image.Rect(0, 0, bufW, bufH))
 	faceCtx := gg.NewContextForRGBA(faceBuf)
 	faceCtx.SwapRB = pal.SwapRB()
-	face(faceCtx, 2, 2, arcLen, radialH)
+	face.DrawFace(faceCtx, 2, 2, arcLen, radialH)
 
 	// Rotate the face buffer to align with the segment angle.
 	faceNRGBA := rgbaToNRGBA(faceBuf)

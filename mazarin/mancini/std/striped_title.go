@@ -3,9 +3,8 @@ package std
 import (
 	"image/color"
 
-	"golang.org/x/image/font"
-
 	"mazzy/mazarin/mancini"
+	"mazzy/mazarin/mancini/impl"
 )
 
 // StripedTitle returns a TitleDraw callback for [AppWindow] that draws
@@ -17,19 +16,15 @@ import (
 //
 // See also [GradientTitle] for an animated gradient title bar.
 func StripedTitle(pal mancini.Palette, fonts *mancini.FontConfig, title string, fontSize int64, bold bool) func(dc mancini.DrawContext, focused bool, x, y, w, h float64) {
-	var face font.Face
-	if fonts != nil && fonts.LoadFace != nil {
-		face = fonts.LoadFace(bold, fontSize)
-	}
+	textFace := impl.NewLatinTextFace(fonts, bold, fontSize, mancini.TextAlignmentParams{})
+	textFace.SetText(title)
+
 	return func(dc mancini.DrawContext, focused bool, x, y, w, h float64) {
 		if !focused {
 			return
 		}
 
-		if face != nil {
-			dc.SetFontFace(face)
-		}
-		tw, _ := dc.MeasureString(title)
+		tw := textFace.MeasureText(title)
 		pad := 8.0
 		cx := x + w/2
 		gapL := cx - tw/2 - pad
@@ -52,6 +47,6 @@ func StripedTitle(pal mancini.Palette, fonts *mancini.FontConfig, title string, 
 		dc.Stroke()
 
 		dc.SetColor(pal.Text())
-		dc.DrawStringAnchored(title, cx, y+h/2, 0.5, 0.5)
+		textFace.DrawFace(dc, x, y, w, h)
 	}
 }

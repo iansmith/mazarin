@@ -83,27 +83,10 @@ func (c *Checkbox) Draw(self mancini.Interactor, x, y, w, h int64) {
 
 	if !c.Checked {
 		// Unchecked: inset (depressed) box, no face content.
-		NeuBoxWith(pal, dc, mancini.Inset, x1, y1, x2, y2, radius, pal.Surface(), params, nil)
+		NeuBoxWith(pal, dc, mancini.Inset, x1, y1, x2, y2, radius, pal.Surface(), params)
 	} else {
 		// Checked: raised box with a checkmark drawn on the face.
-		checkmarkFace := mancini.FaceDrawer(func(fdc mancini.DrawContext, fx, fy, fw, fh float64) {
-			fdc.SetColor(pal.Text())
-			fdc.SetLineWidth(3)
-
-			// Draw a standard checkmark: short leg down-right, long leg up-right.
-			// Proportional to the face rectangle.
-			startX := fx + fw*0.20
-			startY := fy + fh*0.50
-			midX := fx + fw*0.40
-			midY := fy + fh*0.72
-			endX := fx + fw*0.80
-			endY := fy + fh*0.28
-
-			fdc.MoveTo(startX, startY)
-			fdc.LineTo(midX, midY)
-			fdc.LineTo(endX, endY)
-			fdc.Stroke()
-		})
-		NeuBoxWith(pal, dc, mancini.Raised, x1, y1, x2, y2, radius, pal.Surface(), params, checkmarkFace)
+		NeuBoxWith(pal, dc, mancini.Raised, x1, y1, x2, y2, radius, pal.Surface(), params)
+		drawCheckmark(dc, pal, x1, y1, x2-x1, y2-y1)
 	}
 }

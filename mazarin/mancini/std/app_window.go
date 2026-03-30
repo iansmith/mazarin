@@ -1,8 +1,6 @@
 package std
 
 import (
-	"golang.org/x/image/font"
-
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
 )
@@ -46,9 +44,9 @@ type AppWindow struct {
 	// the title bar bounds. If nil, plain centered text is drawn.
 	TitleDraw func(dc mancini.DrawContext, focused bool, x, y, w, h float64)
 
-	shadowMargin  int64
-	tbHeight      int64
-	unfocusedFace font.Face // pre-resolved for unfocused title rendering
+	shadowMargin int64
+	tbHeight     int64
+	textFace     mancini.LatinTextFace // pre-resolved for unfocused title rendering
 }
 
 const (
@@ -82,21 +80,22 @@ func NewAppWindow(parent mancini.Interactor, pal mancini.Palette,
 
 	layout := mancini.NewDecoratorLayout("AppWindow", parent, hMargin, vMargin, maxW)
 
-	// Pre-resolve unfocused title font (regular, 18pt).
-	var unfocusedFace font.Face
-	if fonts != nil && fonts.LoadFace != nil {
-		unfocusedFace = fonts.LoadFace(false, 18)
+	// Pre-resolve unfocused title face (regular, 18pt, centered).
+	var textFace mancini.LatinTextFace
+	if fonts != nil {
+		textFace = impl.NewLatinTextFace(fonts, false, 18, mancini.TextAlignmentParams{})
+		textFace.SetText(title)
 	}
 
 	w := &AppWindow{
-		Pal:           pal,
-		NeuPrms:       neuParams,
-		Title:         title,
-		Radius:        14,
-		TitleDraw:     titleDraw,
-		shadowMargin:  sm,
-		tbHeight:      tbHeight,
-		unfocusedFace: unfocusedFace,
+		Pal:          pal,
+		NeuPrms:      neuParams,
+		Title:        title,
+		Radius:       14,
+		TitleDraw:    titleDraw,
+		shadowMargin: sm,
+		tbHeight:     tbHeight,
+		textFace:     textFace,
 	}
 	w.Decorator.Initialize(w, layout, top, side, bottom, side)
 	return w
@@ -175,7 +174,7 @@ func (w *AppWindow) Decorate(self mancini.Interactor, x, y, ww, hh int64) {
 
 	// NeuBox shadow.
 	NeuBoxWith(w.Pal, dc, w.Depth(), ix, iy, ix+iw, iy+ih,
-		w.Radius, w.Pal.Surface(), &w.NeuPrms, nil)
+		w.Radius, w.Pal.Surface(), &w.NeuPrms)
 
 	// Title bar inside the NeuBox.
 	tbm := float64(appTBMargin)
@@ -190,10 +189,10 @@ func (w *AppWindow) Decorate(self mancini.Interactor, x, y, ww, hh int64) {
 	// Unfocused fallback: plain centered text when TitleDraw is nil
 	// or when unfocused (TitleDraw may choose to skip unfocused rendering).
 	if w.TitleDraw == nil || !w.Focused {
-		if w.unfocusedFace != nil {
-			dc.SetFontFace(w.unfocusedFace)
+		if w.textFace != nil {
+			w.textFace.SetText(w.Title)
+			dc.SetColor(w.Pal.Text())
+			w.textFace.DrawFace(dc, tbX, tbY, tbW, tbH)
 		}
-		dc.SetColor(w.Pal.Text())
-		dc.DrawStringAnchored(w.Title, tbX+tbW/2, tbY+tbH/2, 0.5, 0.5)
 	}
 }

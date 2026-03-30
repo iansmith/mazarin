@@ -22,17 +22,17 @@ import (
 // [mancini.NeuParams]. When nil, only the filled shape and face content
 // are drawn — no flush edge, grooves, or selection effects.
 //
-// Each strip can have a [mancini.FaceDrawer] callback for custom content
-// (icons, text, etc.). See also [RadialNOfMChooser] for an arc-shaped
-// variant and [RadialMenu] for a full-circle single-select menu.
+// Each strip can have a [mancini.LatinTextFace] for text content.
+// See also [RadialNOfMChooser] for an arc-shaped variant and
+// [RadialMenu] for a full-circle single-select menu.
 type NOfMChooser struct {
 	impl.ThemedInteractor
 
-	StripW   float64              // width of each strip
-	StripH   float64              // height of each strip
-	Faces    []mancini.FaceDrawer // content drawing for each strip (nil entries OK)
-	Selected []bool               // which strips are selected
-	CornerR  float64              // corner radius for rounded bottom (default 8.0)
+	StripW   float64                  // width of each strip
+	StripH   float64                  // height of each strip
+	Faces    []mancini.LatinTextFace  // text content for each strip (nil entries OK)
+	Selected []bool                   // which strips are selected
+	CornerR  float64                  // corner radius for rounded bottom (default 8.0)
 }
 
 // selectedBg is the tint color for selected strips.
@@ -43,7 +43,7 @@ var selectedBg = color.NRGBA{200, 100, 255, 255}
 // mancini.NewLayoutAttributes).
 func NewNOfMChooser(layout *mancini.LayoutAttributes, theme mancini.Theme,
 	stripW, stripH float64,
-	faces []mancini.FaceDrawer, selected []bool) *NOfMChooser {
+	faces []mancini.LatinTextFace, selected []bool) *NOfMChooser {
 
 	c := &NOfMChooser{
 		StripW:   stripW,
@@ -61,7 +61,7 @@ func NewNOfMChooser(layout *mancini.LayoutAttributes, theme mancini.Theme,
 // to stripH so the constraint system can bootstrap.
 func NewNOfMChooserNamed(myName, parent string, theme mancini.Theme,
 	stripW, stripH float64,
-	faces []mancini.FaceDrawer, selected []bool) *NOfMChooser {
+	faces []mancini.LatinTextFace, selected []bool) *NOfMChooser {
 
 	if myName == "" {
 		myName = mancini.DefaultName("nofmchooser")
@@ -136,7 +136,7 @@ func (c *NOfMChooser) Draw(self mancini.Interactor, x, y, w, h int64) {
 			continue
 		}
 		sx := startX + float64(i)*c.StripW
-		c.Faces[i](dc, sx, fy, c.StripW, stripH)
+		c.Faces[i].DrawFace(dc, sx, fy, c.StripW, stripH)
 	}
 }
 

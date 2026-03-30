@@ -31,21 +31,6 @@ type Layouter interface {
 	GetLayout() *LayoutAttributes
 }
 
-// FaceDrawer draws content onto the face of a neumorphic shape. It is
-// used as a callback by [std.NeuBoxWith], [std.NeuCircleWith], [std.Button],
-// [std.NOfMChooser], [std.RadialNOfMChooser], and [std.RadialMenu] to
-// render icons, text, or other content on top of the neumorphic surface.
-//
-// The coordinates (x, y, w, h) are the content area within the shape,
-// excluding shadow padding. FaceDrawer also satisfies the [Drawer]
-// interface.
-type FaceDrawer func(dc DrawContext, x, y, w, h float64)
-
-// Draw implements the [Drawer] interface.
-func (f FaceDrawer) Draw(dc DrawContext, x, y, w, h float64) {
-	f(dc, x, y, w, h)
-}
-
 // NeuDepth represents the neumorphic depth of an interactor relative
 // to the surface. It controls which shadow treatment is applied by
 // [std.NeuBoxWith] and [std.NeuCircleWith].

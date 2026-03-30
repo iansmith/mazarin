@@ -1,6 +1,8 @@
 package mancini
 
 import (
+	"mazzy/mazarin/textshape"
+
 	"golang.org/x/image/font"
 )
 
@@ -34,6 +36,11 @@ func (f Feature) String() string {
 // size. It is typically backed by a font cache (e.g., fontcache.FontCache).
 // Passed to [theme.NewDefaultTheme] at application startup.
 type FontResolver func(family string, feature Feature, size int64) font.Face
+
+// ShapedFontResolver resolves a font for shaped text rendering.
+// Returns (fontID, layout) — the caller uses layout.LayoutText with fontID.
+// This parallels [FontResolver] for the shaped text path.
+type ShapedFontResolver func(family string, feature Feature, size int64) (int32, *textshape.TextLayout)
 
 // Theme provides the complete visual styling for all interactors:
 // colors ([Palette]), shadow parameters ([NeumorphicParams]), and font

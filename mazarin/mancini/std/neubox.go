@@ -59,5 +59,5 @@ func (n *NeuBox) Decorate(self mancini.Interactor, x, y, w, h int64) {
 	if face == (color.NRGBA{}) {
 		face = n.Pal.Surface()
 	}
-	NeuBoxWith(n.Pal, dc, n.Depth, fx, fy, fx+fw, fy+fh, n.Radius, face, &n.Params, nil)
+	NeuBoxWith(n.Pal, dc, n.Depth, fx, fy, fx+fw, fy+fh, n.Radius, face, &n.Params)
 }

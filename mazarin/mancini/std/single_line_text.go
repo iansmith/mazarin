@@ -104,7 +104,7 @@ func (t *SingleLineText) Draw(self mancini.Interactor, x, y, w, h int64) {
 
 	// 1. Draw inset field background.
 	NeuBoxWith(pal, dc, mancini.Inset, fx, fy, fx+fw, fy+fh, t.Radius,
-		pal.Surface(), params, nil)
+		pal.Surface(), params)
 
 	canvas := dc.Image().(*image.RGBA)
 

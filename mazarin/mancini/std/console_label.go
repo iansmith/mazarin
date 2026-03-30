@@ -29,6 +29,7 @@ type ConsoleLabel struct {
 	ColorFunc func() color.NRGBA   // dynamic text color (stdout vs stderr)
 	MaxCols   int                  // max characters per line
 
+	textFace      mancini.LatinTextFace
 	lastDrawnText string
 	lastDrawnHash int64
 }
@@ -62,13 +63,16 @@ func NewConsoleLabel(myName, parent string, theme mancini.Theme,
 		FontSize: fontSize,
 		BgColor:  bgColor,
 		MaxCols:  maxCols,
+		textFace: impl.NewLatinTextFace(fc, false, fontSize,
+			mancini.TextAlignmentParams{HAlign: mancini.HAlignLeft, VAlign: mancini.VAlignCenter}),
 	}
 	l.ThemedInteractor.Initialize(l, lh, theme)
 	return l
 }
 
 // Draw implements mancini.NewDrawer. Fills BgColor background, then
-// renders left-aligned text using ColorFunc for the text color.
+// renders left-aligned text via LatinTextFace using ColorFunc for the
+// text color.
 func (l *ConsoleLabel) Draw(self mancini.Interactor, x, y, w, h int64) {
 	if !self.Visible() {
 		return
@@ -106,14 +110,6 @@ func (l *ConsoleLabel) Draw(self mancini.Interactor, x, y, w, h int64) {
 		text = text[:l.MaxCols]
 	}
 
-	// Load monospaced font via theme.
-	fc := l.Font(mancini.None, l.FontSize)
-	if fc != nil && fc.LoadFace != nil {
-		if face := fc.LoadFace(false, l.FontSize); face != nil {
-			dc.SetFontFace(face)
-		}
-	}
-
 	// Text color: dynamic ColorFunc or theme foreground.
 	col := l.FgColor()
 	if l.ColorFunc != nil {
@@ -121,6 +117,8 @@ func (l *ConsoleLabel) Draw(self mancini.Interactor, x, y, w, h int64) {
 	}
 	dc.SetColor(col)
 
-	// Left-aligned, vertically centered.
-	dc.DrawStringAnchored(text, float64(x)+4, float64(y)+float64(h)/2, 0, 0.5)
+	if l.textFace != nil {
+		l.textFace.SetText(text)
+		l.textFace.DrawFace(dc, float64(x)+4, float64(y), float64(w)-4, float64(h))
+	}
 }

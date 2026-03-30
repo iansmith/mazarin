@@ -1,8 +1,6 @@
 package std
 
 import (
-	"golang.org/x/image/font"
-
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mancini/impl"
 )
@@ -25,7 +23,7 @@ type FreeFloatingWindow struct {
 	Radius  float64
 	Visible bool
 
-	titleFace    font.Face
+	textFace     mancini.LatinTextFace
 	grooveMargin float64
 	grooveY      float64 // offset from top of inner area
 	contentY     float64 // offset from top of inner area
@@ -58,18 +56,19 @@ func NewFreeFloatingWindow(name string, parent mancini.Interactor,
 
 	layout := mancini.NewDecoratorLayout(name, parent, hMargin, vMargin, 800)
 
-	var titleFace font.Face
-	if fonts != nil && fonts.LoadFace != nil {
-		titleFace = fonts.LoadFace(true, 10) // bold, 10pt for floater titles
+	var textFace mancini.LatinTextFace
+	if fonts != nil {
+		textFace = impl.NewLatinTextFace(fonts, true, 10, mancini.TextAlignmentParams{})
+		textFace.SetText(title)
 	}
 
 	w := &FreeFloatingWindow{
-		Pal:       pal,
-		NeuPrms:   neuParams,
-		Title:     title,
-		Radius:    radius,
-		Visible:   false,
-		titleFace: titleFace,
+		Pal:      pal,
+		NeuPrms:  neuParams,
+		Title:    title,
+		Radius:   radius,
+		Visible:  false,
+		textFace: textFace,
 	}
 	w.Decorator.Initialize(w, layout, top, side, bottom, side)
 	return w
@@ -122,14 +121,14 @@ func (w *FreeFloatingWindow) Decorate(self mancini.Interactor, x, y, ww, hh int6
 
 	// NeuBox at Flush depth.
 	NeuBoxWith(w.Pal, dc, mancini.Flush, fx, fy, fx+fww, fy+fhh,
-		w.Radius, w.Pal.Surface(), &w.NeuPrms, nil)
+		w.Radius, w.Pal.Surface(), &w.NeuPrms)
 
 	// Title text centered horizontally.
-	if w.titleFace != nil {
-		dc.SetFontFace(w.titleFace)
+	if w.textFace != nil {
+		w.textFace.SetText(w.Title)
+		dc.SetColor(w.Pal.Text())
+		w.textFace.DrawFace(dc, fx, fy, fww, ffwTitleY*2)
 	}
-	dc.SetColor(w.Pal.Text())
-	dc.DrawStringAnchored(w.Title, fx+fww/2, fy+ffwTitleY, 0.5, 0.5)
 
 	// Groove separator.
 	NeuGroove(w.Pal, dc, fx+ffwGrooveInset, fy+ffwGrooveY, fx+fww-ffwGrooveInset)
