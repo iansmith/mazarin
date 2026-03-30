@@ -55,7 +55,7 @@ func NewSingleLineText(layout *mancini.LayoutAttributes, theme mancini.Theme,
 		Radius:    6.0,
 		Padding:   8.0,
 	}
-	t.ThemedInteractor.Init(t, layout, theme)
+	t.ThemedInteractor.Initialize(t, layout, theme)
 	return t
 }
 

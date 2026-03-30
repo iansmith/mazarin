@@ -112,10 +112,10 @@ func (c *compiler) checkStmt(stmt ast.Stmt) error {
 		return c.checkStmtList(s.Body.List)
 
 	case *ast.BranchStmt:
-		if s.Tok == token.BREAK {
+		if s.Tok == token.BREAK || s.Tok == token.CONTINUE {
 			return nil
 		}
-		return c.errAt(s.Pos(), "%s not allowed (only break is permitted)", s.Tok)
+		return c.errAt(s.Pos(), "%s not allowed (only break and continue are permitted)", s.Tok)
 
 	case *ast.ExprStmt:
 		return c.checkExpr(s.X)

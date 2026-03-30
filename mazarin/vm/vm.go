@@ -401,6 +401,9 @@ func (m *machine) execOne(inst Inst) error {
 	case OpBreak:
 		return m.haltf("BREAK outside FOR_RANGE")
 
+	case OpContinue:
+		return m.haltf("CONTINUE outside FOR_RANGE")
+
 	// --- Collection literal ---
 
 	case OpMakeColl:
@@ -504,6 +507,13 @@ func (m *machine) execForBody() (forSignal, error) {
 				return 0, err
 			}
 			return forSignalBreak, nil
+		}
+		if inst.Opcode == OpContinue {
+			m.pc++
+			if err := m.skipToEndFor(); err != nil {
+				return 0, err
+			}
+			return forSignalContinue, nil
 		}
 
 		m.fuel--

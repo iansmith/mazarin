@@ -52,7 +52,7 @@ func NewNOfMChooser(layout *mancini.LayoutAttributes, theme mancini.Theme,
 		Selected: selected,
 		CornerR:  8.0,
 	}
-	c.ThemedInteractor.Init(c, layout, theme)
+	c.ThemedInteractor.Initialize(c, layout, theme)
 	return c
 }
 

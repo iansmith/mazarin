@@ -14,7 +14,7 @@ import "fmt"
 //   - Initialized locals: LOAD never reads an uninitialized slot
 //   - Termination: all paths end with RET
 //   - Bounds: program size, stack depth, local slots, nesting depth
-//   - BREAK only inside FOR_RANGE
+//   - BREAK and CONTINUE only inside FOR_RANGE
 func Verify(prog *Program) error {
 	if len(prog.Code) == 0 {
 		return &VerifyError{PC: 0, Message: "empty program"}
@@ -671,6 +671,13 @@ func (v *verifier) verify() error {
 				return v.errf("BREAK outside FOR_RANGE")
 			}
 			// After break, code until END_FOR is unreachable.
+			returned = true
+
+		case OpContinue:
+			if v.forDepth == 0 {
+				return v.errf("CONTINUE outside FOR_RANGE")
+			}
+			// After continue, code until END_FOR is unreachable.
 			returned = true
 
 		// --- Collection literal ---

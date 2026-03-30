@@ -96,8 +96,8 @@ func NewRow(myName, parent string, pal mancini.Palette, maxWidth int64, crossAli
 
 	lh.InitBounds(myName)
 
-	r.Interactor.Init(r, lh)
-	r.Parent.InitParent(&r.Interactor)
+	r.Interactor.Initialize(r, lh)
+	r.Parent.Initialize(true, &r.Interactor)
 	return r
 }
 

@@ -33,7 +33,7 @@ func NewCheckbox(layout *mancini.LayoutAttributes, theme mancini.Theme,
 		Checked: checked,
 		Size:    size,
 	}
-	c.ThemedInteractor.Init(c, layout, theme)
+	c.ThemedInteractor.Initialize(c, layout, theme)
 	return c
 }
 

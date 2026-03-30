@@ -98,7 +98,7 @@ func NewAppWindow(parent mancini.Interactor, pal mancini.Palette,
 		tbHeight:      tbHeight,
 		unfocusedFace: unfocusedFace,
 	}
-	w.Decorator.InitDecorator(w, layout, top, side, bottom, side)
+	w.Decorator.Initialize(w, layout, top, side, bottom, side)
 	return w
 }
 

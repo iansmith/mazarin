@@ -48,7 +48,7 @@ func NewRadialMenu(layout *mancini.LayoutAttributes, theme mancini.Theme,
 		Faces:    faces,
 		Selected: selected,
 	}
-	m.ThemedInteractor.Init(m, layout, theme)
+	m.ThemedInteractor.Initialize(m, layout, theme)
 	return m
 }
 

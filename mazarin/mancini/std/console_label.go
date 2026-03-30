@@ -63,7 +63,7 @@ func NewConsoleLabel(myName, parent string, theme mancini.Theme,
 		BgColor:  bgColor,
 		MaxCols:  maxCols,
 	}
-	l.ThemedInteractor.Init(l, lh, theme)
+	l.ThemedInteractor.Initialize(l, lh, theme)
 	return l
 }
 

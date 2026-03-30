@@ -363,6 +363,24 @@ func FirstOver(items []int64, threshold int64) int64 {
 	}
 }
 
+func TestCompileForRangeContinue(t *testing.T) {
+	results := compileAndRun(t, `
+func SumEvens(items []int64) int64 {
+	total := int64(0)
+	for _, v := range items {
+		if v % 2 != 0 {
+			continue
+		}
+		total = total + v
+	}
+	return total
+}
+`, vm.CollI64([]int64{1, 2, 3, 4, 5, 6}))
+	if results[0].AsI64() != 12 {
+		t.Fatalf("expected 12, got %d", results[0].AsI64())
+	}
+}
+
 // --- Else-if chains ---
 
 func TestCompileElseIf(t *testing.T) {

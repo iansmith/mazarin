@@ -38,7 +38,7 @@ func NewLabel(layout *mancini.LayoutAttributes, theme mancini.Theme,
 		FontSize: fontSize,
 		Color:    theme.Palette().Text(),
 	}
-	l.ThemedInteractor.Init(l, layout, theme)
+	l.ThemedInteractor.Initialize(l, layout, theme)
 	return l
 }
 

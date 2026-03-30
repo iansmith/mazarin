@@ -46,8 +46,10 @@ type Interactor struct {
 // [mancini.RegisterInteractor]) keyed by the layout's constraint-system
 // name, enabling child discovery by [Parent.GetChildren].
 //
-// Initialize calls [FullDamage] so the first draw paints the entire
-// interactor.
+// Initialize does NOT set up damage tracking. Leaf interactors must call
+// [FullDamage] themselves (e.g. via [ThemedInteractor.Initialize]).
+// Parent interactors get damage from [Parent.Initialize], which installs
+// a constraint that unions children's damage rectangles.
 //
 // For themed interactors, call [ThemedInteractor.Initialize] instead,
 // which calls this method internally.
@@ -57,7 +59,6 @@ func (i *Interactor) Initialize(owner mancini.Interactor, layout *mancini.Layout
 	if layout != nil {
 		mancini.RegisterInteractor(layout.Name(), owner)
 	}
-	i.FullDamage()
 }
 
 // FullDamage marks this interactor as needing a complete repaint.

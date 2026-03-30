@@ -54,6 +54,7 @@ type ThemedInteractor struct {
 func (t *ThemedInteractor) Initialize(owner mancini.Interactor, layout *mancini.LayoutAttributes, theme mancini.Theme) {
 	t.Interactor.Initialize(owner, layout)
 	t.theme = theme
+	t.FullDamage()
 }
 
 func (t *ThemedInteractor) Theme() mancini.Theme   { return t.theme }

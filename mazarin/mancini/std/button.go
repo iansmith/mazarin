@@ -44,7 +44,7 @@ func NewButton(layout *mancini.LayoutAttributes, theme mancini.Theme,
 		Depth:  depth,
 		Radius: 8.0,
 	}
-	b.ThemedInteractor.Init(b, layout, theme)
+	b.ThemedInteractor.Initialize(b, layout, theme)
 	return b
 }
 

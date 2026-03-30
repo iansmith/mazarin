@@ -78,6 +78,7 @@ const (
 	OpForRange uint8 = 0x68
 	OpEndFor   uint8 = 0x69
 	OpBreak    uint8 = 0x6A // exit innermost FOR_RANGE
+	OpContinue uint8 = 0x6B // skip to next iteration of innermost FOR_RANGE
 
 	// Collection literal.
 	// Pop op2 elements from stack, push a collection of type typ.
@@ -149,7 +150,8 @@ func InstForRange(indexSlot, valueSlot uint16) Inst {
 	return Inst{Opcode: OpForRange, Op1: indexSlot, Op2: valueSlot}
 }
 func InstEndFor() Inst { return Inst{Opcode: OpEndFor} }
-func InstBreak() Inst  { return Inst{Opcode: OpBreak} }
+func InstBreak() Inst    { return Inst{Opcode: OpBreak} }
+func InstContinue() Inst { return Inst{Opcode: OpContinue} }
 
 func InstMakeColl(typ uint8, count uint16) Inst {
 	return Inst{Opcode: OpMakeColl, Typ: typ, Op2: count}

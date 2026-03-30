@@ -53,7 +53,7 @@ func NewRadialNOfMChooser(layout *mancini.LayoutAttributes, theme mancini.Theme,
 		Faces:    faces,
 		Selected: selected,
 	}
-	c.ThemedInteractor.Init(c, layout, theme)
+	c.ThemedInteractor.Initialize(c, layout, theme)
 	return c
 }
 

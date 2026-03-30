@@ -155,6 +155,10 @@ func (c *compiler) compileStmt(stmt ast.Stmt) error {
 			c.emit(vm.InstBreak())
 			return nil
 		}
+		if s.Tok == token.CONTINUE {
+			c.emit(vm.InstContinue())
+			return nil
+		}
 		return c.errAt(s.Pos(), "unsupported branch statement: %s", s.Tok)
 
 	case *ast.ExprStmt:
