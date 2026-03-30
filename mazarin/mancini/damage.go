@@ -134,3 +134,58 @@ func (lh *LayoutAttributes) SnapshotDamageContentHash(hash int64) {
 		lh.Damage.LPContentHash.Set(hash)
 	}
 }
+
+// FullDamage sets this interactor's damage rectangle to its full Bounds,
+// forcing a complete repaint on the next draw pass. Creates the
+// DamageAttributes and DamageRect if they don't exist yet.
+//
+// Called by [impl.Interactor.Initialize] to ensure the first draw paints
+// everything. Also available for input handlers that need to force a
+// full repaint (e.g., a clock face on tick).
+func (lh *LayoutAttributes) FullDamage() {
+	if lh == nil {
+		return
+	}
+	if lh.Damage == nil {
+		lh.Damage = &DamageAttributes{}
+	}
+	bounds := emptyRect()
+	if lh.Bounds != nil {
+		bounds = lh.Bounds.Get()
+	}
+	uri := LayoutURI(lh.name, DataTypeRect, LayoutDamageRect)
+	if lh.Damage.DamageRect == nil {
+		lh.Damage.DamageRect = attr.ValueRectangle(uri, bounds)
+	} else {
+		lh.Damage.DamageRect.Set(bounds)
+	}
+}
+
+// InitDefaultParentDamage creates a damage constraint for a parent
+// interactor that unions its visible children's damage rectangles. If
+// the parent's own BoundsHash has changed, it returns the full bounds
+// instead (everything needs repainting when the parent moves or resizes).
+//
+// Called by [impl.Parent.Initialize] when wantDefaultDamageConstraint is true.
+func InitDefaultParentDamage(lh *LayoutAttributes) {
+	if lh == nil {
+		return
+	}
+	myName := lh.name
+	if lh.Damage == nil {
+		lh.Damage = &DamageAttributes{}
+	}
+
+	// LPBoundsHash mirror — tracks whether our own bounds changed.
+	lpBoundsHashURI := LayoutURI(myName, DataTypeInt64, LayoutLPBoundsHash)
+	lh.Damage.LPBoundsHash = attr.ValueI64(lpBoundsHashURI, 0)
+
+	prog := BindStringsChildren(ProgParentDamageDefault,
+		"_boundsHash_", lh.BoundsHash.URI(),
+		"_lpBoundsHash_", lh.Damage.LPBoundsHash.URI(),
+		"_bounds_", lh.Bounds.URI(),
+		"_myName_", myName,
+	)
+	damageURI := LayoutURI(myName, DataTypeRect, LayoutDamageRect)
+	lh.Damage.DamageRect = attr.ConstraintComposite(damageURI, flat.TypeRectangle, prog)
+}

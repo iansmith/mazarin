@@ -51,6 +51,8 @@ func BindStringsChildren(prog *vm.Program, bindings ...string) *vm.Program {
 		"_heightSuffix_", LayoutHeight.Suffix(),
 		"_visSuffix_", VisSuffix,
 		"_boundsHashSuffix_", LayoutBoundsHash.Suffix(),
+		"_rectPrefix_", RectPrefix(),
+		"_damageRectSuffix_", LayoutDamageRect.Suffix(),
 	)
 	return BindStrings(prog, bindings...)
 }

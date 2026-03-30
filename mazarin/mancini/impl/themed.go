@@ -43,16 +43,16 @@ type ThemedInteractor struct {
 	theme      mancini.Theme
 }
 
-// Init wires the backpointer, layout, and theme. Must be called from
+// Initialize wires the backpointer, layout, and theme. Must be called from
 // the concrete type's constructor, passing the concrete type as owner:
 //
 //	b := &Button{...}
-//	b.ThemedInteractor.Init(b, layout, theme)
+//	b.ThemedInteractor.Initialize(b, layout, theme)
 //
-// This calls [Interactor.Init] internally, which registers the
+// This calls [Interactor.Initialize] internally, which registers the
 // interactor in the global registry.
-func (t *ThemedInteractor) Init(owner mancini.Interactor, layout *mancini.LayoutAttributes, theme mancini.Theme) {
-	t.Interactor.Init(owner, layout)
+func (t *ThemedInteractor) Initialize(owner mancini.Interactor, layout *mancini.LayoutAttributes, theme mancini.Theme) {
+	t.Interactor.Initialize(owner, layout)
 	t.theme = theme
 }
 

@@ -1,0 +1,34 @@
+func childVisible(seg string) bool {
+	return derefBool("_boolPrefix_" + seg + "_visSuffix_")
+}
+
+func childDmgRect(seg string) Rect {
+	return derefRect("_rectPrefix_" + seg + "_damageRectSuffix_")
+}
+
+func parentDamageDefault() Rect {
+	boundsHash := derefI64("_boundsHash_")
+	lpBoundsHash := derefI64("_lpBoundsHash_")
+
+	if boundsHash != lpBoundsHash {
+		return derefRect("_bounds_")
+	}
+
+	children := findWhere("_childPattern_", "_myName_")
+	result := rect(0, 0, 0, 0)
+	for _, uri := range children {
+		seg := uriSegment(uri, 3)
+		if !childVisible(seg) {
+			continue
+		}
+		childDmg := childDmgRect(seg)
+		if !rectEmpty(childDmg) {
+			if rectEmpty(result) {
+				result = childDmg
+			} else {
+				result = rectUnion(result, childDmg)
+			}
+		}
+	}
+	return result
+}

@@ -43,10 +43,10 @@ import (
 //
 // # Initialization
 //
-// Concrete types call [InitDecorator], which internally calls
-// [Interactor.Init] and [Parent.InitParent]:
+// Concrete types call [Decorator.Initialize], which internally calls
+// [Interactor.Initialize] and [Parent.Initialize]:
 //
-//	n.Decorator.InitDecorator(n, layout, top, right, bottom, left)
+//	n.Decorator.Initialize(n, layout, top, right, bottom, left)
 type Decorator struct {
 	Interactor
 	Parent
@@ -56,17 +56,17 @@ type Decorator struct {
 	hasDecorated  bool
 }
 
-// InitDecorator wires the backpointer, layout, and decoration insets.
-// It calls [Interactor.Init] (registering in the global registry) and
-// [Parent.InitParent] internally. The owner parameter must be the
+// Initialize wires the backpointer, layout, and decoration insets.
+// It calls [Interactor.Initialize] (registering in the global registry)
+// and [Parent.Initialize] internally. The owner parameter must be the
 // outermost concrete type (the backpointer).
 //
 // Constraint-based sizing (Width = child.Width + Left + Right, etc.)
 // is set up separately by the concrete type's constructor via
 // [mancini.NewDecoratorLayout] or [mancini.NewDecoratorLayoutByParentName].
-func (d *Decorator) InitDecorator(owner any, layout *mancini.LayoutAttributes, top, right, bottom, left int64) {
-	d.Interactor.Init(owner.(mancini.Interactor), layout)
-	d.Parent.InitParent(&d.Interactor)
+func (d *Decorator) Initialize(owner any, layout *mancini.LayoutAttributes, top, right, bottom, left int64) {
+	d.Interactor.Initialize(owner.(mancini.Interactor), layout)
+	d.Parent.Initialize(true, &d.Interactor)
 	d.Top = top
 	d.Right = right
 	d.Bottom = bottom

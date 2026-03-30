@@ -28,14 +28,14 @@
 // to Interactor.DC(), not to an override on the concrete type. Mancini
 // solves this by storing a backpointer to the outermost concrete type.
 //
-// [Interactor.Init] takes an "owner" parameter of type [mancini.Interactor]:
+// [Interactor.Initialize] takes an "owner" parameter of type [mancini.Interactor]:
 //
-//	func (i *Interactor) Init(owner mancini.Interactor, layout *mancini.LayoutAttributes)
+//	func (i *Interactor) Initialize(owner mancini.Interactor, layout *mancini.LayoutAttributes)
 //
 // Every concrete type passes itself as the owner during construction:
 //
 //	b := &Button{Depth: Raised, Radius: 8.0}
-//	b.ThemedInteractor.Init(b, layout, theme)  // b is the owner
+//	b.ThemedInteractor.Initialize(b, layout, theme)  // b is the owner
 //
 // The Draw protocol then passes this backpointer as the "self" parameter:
 //
@@ -51,22 +51,23 @@
 //
 // For [ThemedInteractor] embedders:
 //
-//	t.ThemedInteractor.Init(t, layout, theme)
+//	t.ThemedInteractor.Initialize(t, layout, theme)
 //
-// This calls [Interactor.Init] internally, which registers the interactor
-// in the global registry.
+// This calls [Interactor.Initialize] internally, which registers the
+// interactor in the global registry.
 //
 // For [Interactor] + [Parent] embedders:
 //
-//	c.Interactor.Init(c, layout)
-//	c.Parent.InitParent(&c.Interactor)
+//	c.Interactor.Initialize(c, layout)
+//	c.Parent.Initialize(true, &c.Interactor)
 //
-// [Parent.InitParent] must be called after [Interactor.Init] because it
-// needs the Interactor's layout name for child discovery.
+// [Parent.Initialize] must be called after [Interactor.Initialize]
+// because it needs the Interactor's layout name for child discovery.
 //
 // For [Decorator] embedders:
 //
-//	d.Decorator.InitDecorator(d, layout, top, right, bottom, left)
+//	d.Decorator.Initialize(d, layout, top, right, bottom, left)
 //
-// This calls both [Interactor.Init] and [Parent.InitParent] internally.
+// This calls both [Interactor.Initialize] and [Parent.Initialize]
+// internally.
 package impl

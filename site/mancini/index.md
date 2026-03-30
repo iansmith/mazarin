@@ -9,6 +9,10 @@ author: iansmith
 Mancini is mazarin's UI toolkit — the interactor library that every
 application uses for layout, drawing, theming, and neumorphic rendering.
 
+## Tutorials
+
+- [Constraints](tutorial-constraints.md) — build a small app that demonstrates constraint-driven layout, custom `.vgo` programs, and reactive updates
+
 ## Packages
 
 | Package | Description |

@@ -18,7 +18,7 @@ import "mazzy/mazarin/mancini"
 // type. This enables virtual dispatch in the Draw protocol: when a
 // parent calls child.Draw(child, ...), the child parameter is the
 // concrete type, so self.DC() and self.Visible() resolve correctly.
-// See [Init] for how the backpointer is established.
+// See [Initialize] for how the backpointer is established.
 //
 // # Embedding Hierarchy
 //
@@ -36,24 +36,41 @@ type Interactor struct {
 	dc     mancini.DrawContext
 }
 
-// Init wires the backpointer and layout attributes. Must be called from
-// the concrete type's constructor, passing the concrete type as owner:
+// Initialize wires the backpointer and layout attributes. Must be called
+// from the concrete type's constructor, passing the concrete type as owner:
 //
 //	b := &Button{...}
-//	b.Interactor.Init(b, layout)   // b is the backpointer
+//	b.Interactor.Initialize(b, layout)   // b is the backpointer
 //
-// Init also registers the interactor in the global registry (see
+// Initialize also registers the interactor in the global registry (see
 // [mancini.RegisterInteractor]) keyed by the layout's constraint-system
 // name, enabling child discovery by [Parent.GetChildren].
 //
-// For themed interactors, call [ThemedInteractor.Init] instead, which
-// calls this method internally.
-func (i *Interactor) Init(owner mancini.Interactor, layout *mancini.LayoutAttributes) {
+// Initialize calls [FullDamage] so the first draw paints the entire
+// interactor.
+//
+// For themed interactors, call [ThemedInteractor.Initialize] instead,
+// which calls this method internally.
+func (i *Interactor) Initialize(owner mancini.Interactor, layout *mancini.LayoutAttributes) {
 	i.owner = owner
 	i.layout = layout
 	if layout != nil {
 		mancini.RegisterInteractor(layout.Name(), owner)
 	}
+	i.FullDamage()
+}
+
+// FullDamage marks this interactor as needing a complete repaint.
+// It sets the DamageRect to the interactor's full Bounds. Called
+// automatically by Initialize to ensure the first draw paints
+// everything; also available for input handlers that need to force
+// a full repaint (e.g., a clock face on tick).
+func (i *Interactor) FullDamage() {
+	lh := i.layout
+	if lh == nil {
+		return
+	}
+	lh.FullDamage()
 }
 
 func (i *Interactor) X() int64       { return i.layout.X.Get() }

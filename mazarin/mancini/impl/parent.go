@@ -31,11 +31,11 @@ type dcSetter interface {
 //
 // # Initialization
 //
-// InitParent must be called after [Interactor.Init], because it needs
-// the Interactor's layout name to discover children:
+// Initialize must be called after [Interactor.Initialize], because it
+// needs the Interactor's layout name to discover children:
 //
-//	c.Interactor.Init(c, layout)
-//	c.Parent.InitParent(&c.Interactor)
+//	c.Interactor.Initialize(c, layout)
+//	c.Parent.Initialize(true, &c.Interactor)
 //
 // # Concrete Types That Use Parent
 //
@@ -46,11 +46,17 @@ type Parent struct {
 	interactor *Interactor // back-pointer for layout name access
 }
 
-// InitParent wires the back-pointer to the embedding [Interactor].
-// Must be called after [Interactor.Init] so the layout name is available
-// for child discovery.
-func (p *Parent) InitParent(i *Interactor) {
+// Initialize wires the back-pointer to the embedding [Interactor].
+// Must be called after [Interactor.Initialize] so the layout name is
+// available for child discovery. If wantDefaultDamageConstraint is true,
+// [mancini.InitDefaultParentDamage] is called on the interactor's layout
+// to set up a damage constraint that unions the parent's own damage with
+// the first child's damage rectangle.
+func (p *Parent) Initialize(wantDefaultDamageConstraint bool, i *Interactor) {
 	p.interactor = i
+	if wantDefaultDamageConstraint {
+		mancini.InitDefaultParentDamage(i.layout)
+	}
 }
 
 // GetChildren discovers children via the constraint network. Returns

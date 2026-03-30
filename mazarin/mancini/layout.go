@@ -72,6 +72,11 @@ func BoolPrefix() string {
 	return "attr:///shepherd/" + manciniSID + "/bool/"
 }
 
+// RectPrefix returns the URI prefix for rect attributes in the mancini namespace.
+func RectPrefix() string {
+	return "attr:///shepherd/" + manciniSID + "/rect/"
+}
+
 // NewLayoutAttributesBase creates X, Y, Visible, Parent attributes (no Width/Height).
 func NewLayoutAttributesBase(myName, parent string) *LayoutAttributes {
 	return &LayoutAttributes{
