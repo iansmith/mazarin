@@ -73,13 +73,7 @@ func DispatchSyscall(syscallNum uint64, arg0, arg1, arg2, arg3, arg4, arg5 uint6
 	if tid < 10 {
 		atomic.AddUint64(&KernelSVCCount, 1)
 	} else {
-		// Log first N shepherd syscalls for debugging AMD64 shepherd init
-		n := atomic.AddUint64(&shepherdSyscallCount, 1)
-		if n <= 10 {
-			serial.RawUARTPuts("[ps:")
-			serial.RawUARTHexCompact(syscallNum)
-			serial.RawUART(']')
-		}
+		atomic.AddUint64(&shepherdSyscallCount, 1)
 	}
 
 	// Record entry time for kernel time accounting

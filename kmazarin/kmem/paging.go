@@ -62,16 +62,6 @@ func currentShepherdSpanContains(addr uint64) bool {
 	return p.Spans.Contains(addr)
 }
 
-// hexDigit returns the hex character for a 4-bit nibble (0-15).
-//
-//go:nosplit
-func hexDigit(v uint8) byte {
-	if v < 10 {
-		return '0' + v
-	}
-	return 'A' + v - 10
-}
-
 // debugPrint conditionally outputs a character if debugging is enabled.
 //
 //go:nosplit
@@ -671,13 +661,7 @@ var userPFCount uint64
 //
 //go:nosplit
 func HandleUserPageFault(faultAddr uintptr, isPermFault uint64) bool {
-	// Diagnostic: print breadcrumb every 256 user page faults
 	userPFCount++
-	if userPFCount&0xFF == 1 {
-		serial.RawUART('P')
-		serial.RawUART(hexDigit(uint8(userPFCount >> 8)))
-		serial.RawUART(' ')
-	}
 
 	// Cache shepherd/thread IDs for allocPTPage (avoids adding calls to nosplit chain)
 	pfContextShepherdID = currentShepherdID()

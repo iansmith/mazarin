@@ -194,13 +194,10 @@ func mailboxSendKernel(senderSID, targetSID int16, code int64, senderVA uintptr)
 	}
 
 	// Wake if blocked
-	var wokeTID ThreadId = -1
-	tid := mailboxBlockedTID[targetSID]
-	if tid >= 0 {
+	if mailboxBlockedTID[targetSID] >= 0 {
 		t := (*Thread)(unsafe.Pointer(mailboxBlockedPtr[targetSID]))
 		if t != nil && t.State == ThreadBlockedMailbox {
 			t.State = ThreadReady
-			wokeTID = t.TID
 			mailboxBlockedTID[targetSID] = -1
 			mailboxBlockedPtr[targetSID] = 0
 			t.Context.RewindToSyscall()
@@ -213,25 +210,6 @@ func mailboxSendKernel(senderSID, targetSID int16, code int64, senderVA uintptr)
 
 	schedulerLock.Unlock()
 	RestoreIRQs(savedDAIF)
-
-	// Diagnostic: print wake status after releasing lock
-	if code == 3 { // FontNotify
-		serial.RawUARTPuts("[MBS] tgt=")
-		serial.RawUARTDecimal(uint64(targetSID))
-		serial.RawUARTPuts(" blkTID=")
-		if tid >= 0 {
-			serial.RawUARTDecimal(uint64(tid))
-		} else {
-			serial.RawUARTPuts("-1")
-		}
-		serial.RawUARTPuts(" woke=")
-		if wokeTID >= 0 {
-			serial.RawUARTDecimal(uint64(wokeTID))
-		} else {
-			serial.RawUARTPuts("none")
-		}
-		serial.RawUARTPuts("\r\n")
-	}
 
 	return 0
 }

@@ -57,7 +57,6 @@ func MazarinShepherd(injected interface{}) error {
 		return nil
 	}
 	rachelCh = inj.GetRachelChannel()
-	rawPuts("[fontsvc] MazarinShepherd: channel received\n")
 	return nil
 }
 
@@ -164,20 +163,12 @@ func MazarinMain() {
 			continue
 		}
 
-		rawPuts("[fontsvc] recv: code=")
-		rawPutsInt(int(notif.Code))
-		rawPuts(" from SID=")
-		rawPutsInt(int(notif.SenderSID))
-		rawPuts("\n")
-
 		switch notif.Code {
 		case wm.FontNotify:
 			handleFontNotify(notif)
-			rawPuts("[fontsvc] handleFontNotify returned\n")
 		default:
 			// Forward to rachel's WM code.
 			rachelCh <- notif
-			rawPuts("[fontsvc] forwarded to rachelCh\n")
 		}
 	}
 }
@@ -204,16 +195,8 @@ func handleFontNotify(notif sys.MailboxNotification) {
 
 func handleOpenFont(senderSID int, msg *wm.OpenFontMsg) {
 	path := cstring(msg.Path[:])
-	rawPuts("[fontsvc] OpenFont: " + path + " size=")
-	rawPutsInt(int(msg.Size))
-	rawPuts(" variant=")
-	rawPutsInt(int(msg.Variant))
-	rawPuts(" from SID=")
-	rawPutsInt(senderSID)
-	rawPuts("\n")
 
 	// Ensure we have a return channel to this shepherd.
-	rawPuts("[fontsvc] step1: getOrCreateConn\n")
 	conn, connIdx := getOrCreateConn(senderSID)
 	if conn == nil {
 		rawPuts("[fontsvc] failed to create conn for shepherd\n")
@@ -221,48 +204,33 @@ func handleOpenFont(senderSID int, msg *wm.OpenFontMsg) {
 	}
 
 	// Check cache.
-	rawPuts("[fontsvc] step2: findCachedFont\n")
 	fontID := findCachedFont(path, msg.Variant, msg.Size)
 	if fontID >= 0 {
-		rawPuts("[fontsvc] cache hit, fontID=")
-		rawPutsInt(int(fontID))
-		rawPuts("\n")
 		shareCacheAndReply(conn, connIdx, senderSID, fontID)
 		return
 	}
 
 	// Cache miss — load and render.
-	rawPuts("[fontsvc] step3: cache miss, allocFontID\n")
 	fontID = allocFontID()
 	if fontID < 0 {
 		rawPuts("[fontsvc] no free font slots\n")
 		sendOpenFontError(conn, senderSID)
 		return
 	}
-	rawPuts("[fontsvc] step3: fontID=")
-	rawPutsInt(int(fontID))
-	rawPuts("\n")
 
 	// Try reusing an already-parsed font (same file, different size).
 	otFont := findParsedFont(path, msg.Variant)
-	if otFont != nil {
-		rawPuts("[fontsvc] step4: reusing parsed font (skip LoadFile+Parse)\n")
-	} else {
+	if otFont == nil {
 		// Load font file from FAT32.
-		rawPuts("[fontsvc] step4: LoadFile\n")
 		result, loadErr := sys.LoadFile(path)
 		if loadErr != nil {
 			rawPuts("[fontsvc] LoadFile failed: " + path + "\n")
 			sendOpenFontError(conn, senderSID)
 			return
 		}
-		rawPuts("[fontsvc] step4: LoadFile done, bytes=")
-		rawPutsInt(int(result.BytesRead))
-		rawPuts("\n")
 		fontData := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(result.StartVA))), result.BytesRead)
 
 		// Parse font.
-		rawPuts("[fontsvc] step5: opentype.Parse\n")
 		var err error
 		otFont, err = opentype.Parse(fontData)
 		if err != nil {
@@ -270,11 +238,9 @@ func handleOpenFont(senderSID int, msg *wm.OpenFontMsg) {
 			sendOpenFontError(conn, senderSID)
 			return
 		}
-		rawPuts("[fontsvc] step5: Parse done\n")
 	}
 
 	// Create face at requested size.
-	rawPuts("[fontsvc] step6: NewFace\n")
 	face, err := opentype.NewFace(otFont, &opentype.FaceOptions{
 		Size:    float64(msg.Size),
 		DPI:     72,
@@ -285,10 +251,8 @@ func handleOpenFont(senderSID int, msg *wm.OpenFontMsg) {
 		sendOpenFontError(conn, senderSID)
 		return
 	}
-	rawPuts("[fontsvc] step6: NewFace done\n")
 
 	// Allocate cache pages via kernel (properly typed as PageFontCache).
-	rawPuts("[fontsvc] step7: AllocPages for cache\n")
 	cachePages := (fontcache.CacheSizeBytes + 4095) / 4096
 	cache, err2 := mem.AllocPagesSlice(cachePages, mem.PageFontCache)
 	if err2 != nil {
@@ -296,17 +260,9 @@ func handleOpenFont(senderSID int, msg *wm.OpenFontMsg) {
 		sendOpenFontError(conn, senderSID)
 		return
 	}
-	rawPuts("[fontsvc] step7: AllocPages done, pages=")
-	rawPutsInt(cachePages)
-	rawPuts("\n")
 	metrics := face.Metrics()
-
-	rawPuts("[fontsvc] step8: buildGlyphCache\n")
 	numGlyphs := buildGlyphCache(cache, face, metrics, uint32(fontID), msg.Size)
-
-	rawPuts("[fontsvc] step8: rendered ")
-	rawPutsInt(int(numGlyphs))
-	rawPuts(" glyphs for " + path + "\n")
+	_ = numGlyphs
 
 	// Store font slot.
 	fonts[fontID] = fontSlot{
@@ -319,7 +275,6 @@ func handleOpenFont(senderSID int, msg *wm.OpenFontMsg) {
 		face:    face,
 	}
 
-	rawPuts("[fontsvc] step9: shareCacheAndReply\n")
 	shareCacheAndReply(conn, connIdx, senderSID, fontID)
 }
 
@@ -327,10 +282,6 @@ func handleOpenFont(senderSID int, msg *wm.OpenFontMsg) {
 // Returns the number of glyphs rendered.
 func buildGlyphCache(cache []byte, face font.Face, metrics font.Metrics,
 	fontID uint32, pointSize int32) uint32 {
-
-	rawPuts("[fontsvc] buildGlyphCache: enter fontID=")
-	rawPutsInt(int(fontID))
-	rawPuts("\n")
 
 	// Phase 1: Enumerate all codepoints the font supports.
 	type cpEntry struct {
@@ -340,21 +291,15 @@ func buildGlyphCache(cache []byte, face font.Face, metrics font.Metrics,
 	var supported []cpEntry
 
 	// Scan BMP (U+0020 to U+FFFF).
-	rawPuts("[fontsvc] buildGlyphCache: phase1 scanning BMP\n")
 	for cp := rune(0x0020); cp <= 0xFFFF; cp++ {
 		adv, ok := face.GlyphAdvance(cp)
 		if ok && adv > 0 {
 			supported = append(supported, cpEntry{cp: cp, advance: adv})
 		}
 	}
-	rawPuts("[fontsvc] buildGlyphCache: phase1 done, supported=")
-	rawPutsInt(len(supported))
-	rawPuts("\n")
-
 	sort.Slice(supported, func(i, j int) bool {
 		return supported[i].cp < supported[j].cp
 	})
-	rawPuts("[fontsvc] buildGlyphCache: sorted\n")
 
 	// Phase 2: Calculate layout.
 	// Header(64) + MapEntries(8 each) + GlyphData.
@@ -367,7 +312,6 @@ func buildGlyphCache(cache []byte, face font.Face, metrics font.Metrics,
 	dataOffset := mapOffset + maxGlyphs*mapEntrySize
 
 	// Phase 3: Render glyphs, packing into cache.
-	rawPuts("[fontsvc] buildGlyphCache: phase3 rendering\n")
 	dataPos := dataOffset
 	var rendered uint32
 
@@ -415,10 +359,6 @@ func buildGlyphCache(cache []byte, face font.Face, metrics font.Metrics,
 		rendered++
 	}
 
-	rawPuts("[fontsvc] buildGlyphCache: phase3 done, rendered=")
-	rawPutsInt(int(rendered))
-	rawPuts("\n")
-
 	// Now we know the actual glyph count. Recompute layout if map is smaller.
 	actualMapSize := uint32(len(mapBuf)) * mapEntrySize
 	if actualMapSize < maxGlyphs*mapEntrySize {
@@ -460,9 +400,6 @@ func buildGlyphCache(cache []byte, face font.Face, metrics font.Metrics,
 	hdr.DataOffset = dataOffset
 	hdr.TotalUsed = dataPos
 
-	rawPuts("[fontsvc] buildGlyphCache: exit, totalUsed=")
-	rawPutsInt(int(dataPos))
-	rawPuts("\n")
 	return rendered
 }
 
@@ -504,12 +441,6 @@ type perFontSharedVAs struct {
 var sharedVAs [32]perFontSharedVAs // indexed by shepherdConns slot
 
 func shareCacheAndReply(conn *shepherdConn, connIdx int, senderSID int, fontID int32) {
-	rawPuts("[fontsvc] share: enter fontID=")
-	rawPutsInt(int(fontID))
-	rawPuts(" senderSID=")
-	rawPutsInt(senderSID)
-	rawPuts("\n")
-
 	slot := &fonts[fontID]
 	cache := slot.cache
 	hdr := (*fontcache.CacheHeader)(unsafe.Pointer(&cache[0]))
@@ -524,12 +455,8 @@ func shareCacheAndReply(conn *shepherdConn, connIdx int, senderSID int, fontID i
 	if connIdx >= 0 && connIdx < 32 && sharedVAs[connIdx].valid[fontID] {
 		// Already shared — reuse previous VA.
 		firstVA = sharedVAs[connIdx].vas[fontID].firstVA
-		rawPuts("[fontsvc] share: reusing cached VA\n")
 	} else {
 		// First time sharing — map cache pages.
-		rawPuts("[fontsvc] share: mapping ")
-		rawPutsInt(int(numPages))
-		rawPuts(" pages\n")
 		cacheBase := uintptr(unsafe.Pointer(&cache[0]))
 		for i := int32(0); i < numPages; i++ {
 			pageVA := cacheBase + uintptr(i)*4096
@@ -545,7 +472,6 @@ func shareCacheAndReply(conn *shepherdConn, connIdx int, senderSID int, fontID i
 				firstVA = targetVA
 			}
 		}
-		rawPuts("[fontsvc] share: all pages mapped\n")
 		// Cache the mapping.
 		if connIdx >= 0 && connIdx < 32 {
 			sharedVAs[connIdx].vas[fontID] = sharedMapping{firstVA: firstVA, numPages: numPages}
@@ -554,7 +480,6 @@ func shareCacheAndReply(conn *shepherdConn, connIdx int, senderSID int, fontID i
 	}
 
 	// Send reply.
-	rawPuts("[fontsvc] share: sending reply\n")
 	var reply wm.OpenFontReplyMsg
 	reply.Type = wm.MsgOpenFontReply
 	reply.FontID = fontID
@@ -566,16 +491,9 @@ func shareCacheAndReply(conn *shepherdConn, connIdx int, senderSID int, fontID i
 	reply.Descent = int32(hdr.Descent)
 
 	conn.returnRb.Push(unsafe.Pointer(&reply))
-	rawPuts("[fontsvc] share: pushed to returnRb, calling MailboxSend\n")
 	if err := sys.MailboxSend(senderSID, wm.FontResponse, conn.returnRb.Addr()); err != nil {
 		rawPuts("[fontsvc] MailboxSend reply failed\n")
 	}
-
-	rawPuts("[fontsvc] share: done fontID=")
-	rawPutsInt(int(fontID))
-	rawPuts(" pages=")
-	rawPutsInt(int(numPages))
-	rawPuts("\n")
 }
 
 func handleRequestGlyph(senderSID int, msg *wm.RequestGlyphMsg) {

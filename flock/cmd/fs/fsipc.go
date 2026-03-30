@@ -59,15 +59,8 @@ func (s *fsIPC) mailboxLoop() {
 				continue
 			}
 			var req fsipc.Request
-			popped := 0
 			for s.reqRing.Pop(unsafe.Pointer(&req)) {
-				popped++
-				sys.UartWriteString("[fs:ipc] popped req, pushing to requestCh\n")
 				s.requestCh <- req
-				sys.UartWriteString("[fs:ipc] pushed req\n")
-			}
-			if popped == 0 {
-				sys.UartWriteString("[fs:ipc] NotifyRequest but ring was empty!\n")
 			}
 		}
 	}
@@ -133,7 +126,6 @@ func (s *fsIPC) handleInit(notif sys.MailboxNotification) {
 
 // respond pushes a response and notifies linux.
 func (s *fsIPC) respond(resp *fsipc.Response) {
-	sys.UartWriteString("[fs:ipc] respond\n")
 	s.respRing.Push(unsafe.Pointer(resp))
 	err := sys.MailboxSend(s.linuxSID, fsipc.NotifyResponse, s.respAddr)
 	if err != nil {
@@ -171,7 +163,6 @@ func (s *fsIPC) freeHandle(handle uint32) {
 // --- Request dispatch ---
 
 func (s *fsIPC) processRequest(req *fsipc.Request, mt *mountTable) {
-	sys.UartWriteString("[fs:ipc] processRequest path=" + fsipc.PathString(req.Path[:]) + "\n")
 	var resp fsipc.Response
 	resp.ID = req.ID
 

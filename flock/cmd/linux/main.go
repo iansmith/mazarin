@@ -11,7 +11,6 @@ import (
 	"os"
 	"runtime"
 	"strconv"
-	"time"
 	"unsafe"
 
 	"golang.org/x/image/font"
@@ -200,12 +199,7 @@ func mailboxRecvLoop(fc *fontcache.FontCache, ipc *fsIPCClient) {
 			var raw [wm.SizeWMMessage]byte
 			for rb.Pop(unsafe.Pointer(&raw[0])) {
 				msgType := *(*int64)(unsafe.Pointer(&raw[0]))
-				switch msgType {
-				case wm.MsgYouHaveFocus:
-					sys.UartWriteString("[linux] received YouHaveFocus\n")
-				case wm.MsgYouLostFocus:
-					sys.UartWriteString("[linux] received YouLostFocus\n")
-				}
+				_ = msgType
 			}
 		case fsipc.NotifyReady:
 			ipc.handleReady(notif)
@@ -236,47 +230,36 @@ func announceToWM(rachelSID int) {
 	sys.UartWriteString("[linux] sent AppStart to rachel\n")
 }
 
-var startTime time.Time
-
 func main() {
-	startTime = time.Now()
 	sys.UartWriteString("[linux] main() entered\n")
 
 	// 1. Initialize constraint system.
 	attr.Init()
 	
 	mancini.Init()
-	sys.UartWriteString(fmt.Sprintf("[linux] attr + interactor + mancini init done, SID=%s (T+%v)\n", attr.SID(), time.Since(startTime)))
 
 	// Publish Ready=false until setup is complete.
 	readyAttr := attr.ValueBool(wm.ReadyURI(attr.SID()), false)
 
 	// 2. Wait for fs first (file operations), then rachel (window manager + fontsvc).
 	// fs is ready earlier since rachel depends on fs for loading .maz files.
-	sys.UartWriteString(fmt.Sprintf("[linux] waiting for fs + rachel ready... (T+%v)\n", time.Since(startTime)))
 	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
 		panic(fmt.Sprintf("[linux] FATAL: fs: %v", err))
 	}
 	if err := sys.WaitForShepherdReady("rachel", 10); err != nil {
 		panic(fmt.Sprintf("[linux] FATAL: rachel: %v", err))
 	}
-	sys.UartWriteString(fmt.Sprintf("[linux] fs + rachel ready (T+%v)\n", time.Since(startTime)))
-
 	rachelSID := sys.MustGetShepherdByName("rachel")
 	fsSID := sys.MustGetShepherdByName("fs")
 	fc := fontcache.New(rachelSID)
 	ipcClient := newFsIPCClient(fsSID)
 	go mailboxRecvLoop(fc, ipcClient)
 	ipcClient.sendInit()
-	sys.UartWriteString(fmt.Sprintf("[linux] fontcache created, rachel SID=%d, fs SID=%d (T+%v)\n", rachelSID, fsSID, time.Since(startTime)))
-
 	fonts := &mancini.FontConfig{
 		LoadFace: func(bold bool, size int64) font.Face {
 			return fc.OpenFaceByName(mfont.DefaultMono, mfont.Regular, size)
 		},
 	}
-	sys.UartWriteString(fmt.Sprintf("[linux] FontConfig ready (T+%v)\n", time.Since(startTime)))
-
 	pal := mancini.DefaultPalette()
 	pal.SwapRB = true
 
@@ -285,8 +268,6 @@ func main() {
 		func(family string, feature mancini.Feature, size int64) font.Face {
 			return fc.OpenFaceByName(family, mfont.Regular, size)
 		})
-	sys.UartWriteString(fmt.Sprintf("[linux] Theme ready (T+%v)\n", time.Since(startTime)))
-
 	// 3. Console state.
 	const maxCols = 120
 	con := &console{
@@ -324,8 +305,6 @@ func main() {
 	gt := std.NewGradientTitle(pal, fonts, "Serial Console", 18, 8)
 	app := std.NewAppWindow(nil, pal, fonts, "Serial Console", 26, 900, gt.TitleDraw)
 	app.Focused = false // wait for rachel to grant focus
-	sys.UartWriteString(fmt.Sprintf("[linux] UI tree built (T+%v)\n", time.Since(startTime)))
-
 	// 6. Screen dimensions and draw context.
 	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"_source_", "attr:///kernel/int64/screen/width")
@@ -335,19 +314,14 @@ func main() {
 	screenHAttr := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
 	screenW := int(screenWAttr.Get())
 	screenH := int(screenHAttr.Get())
-	sys.UartWriteString(fmt.Sprintf("[linux] screen: %dx%d\n", screenW, screenH))
-
 	drawCtx := mancini.NewFramebufferContext()
 	fbImage := drawCtx.Image()
 	ggCtx := gg.NewContextForRGBA(fbImage)
 	ggCtx.SwapRB = true
-	sys.UartWriteString(fmt.Sprintf("[linux] draw context created (T+%v)\n", time.Since(startTime)))
-
 	// 7. Initial sizing draw.
 	appLH := app.GetLayout()
 	initX := float64(screenW)/2 - 400
 	initY := float64(screenH)/2 - 200
-	sys.UartWriteString("[linux] sizing draw...\n")
 	appLH.X.Set(int64(initX))
 	appLH.Y.Set(int64(initY))
 	app.SetDC(ggCtx)
@@ -357,9 +331,8 @@ func main() {
 	rawW := appLH.Width.Get()
 	rawH := appLH.Height.Get()
 	contentLH := content.GetLayout()
-	contentW := contentLH.Width.Get()
-	contentH := contentLH.Height.Get()
-	sys.UartWriteString(fmt.Sprintf("[linux] raw constraint: W=%d H=%d contentW=%d contentH=%d\n", rawW, rawH, contentW, contentH))
+	_ = contentLH.Width.Get()
+	_ = contentLH.Height.Get()
 	winW := float64(rawW)
 	winH := float64(rawH)
 	if winW < 100 {
@@ -368,16 +341,11 @@ func main() {
 	if winH < 50 {
 		winH = 400
 	}
-	sys.UartWriteString(fmt.Sprintf("[linux] constraint size: %.0fx%.0f (T+%v)\n", winW, winH, time.Since(startTime)))
-
 	// Force Bounds evaluation for rachel.
-	sys.UartWriteString(fmt.Sprintf("[linux] evaluating Bounds... (T+%v)\n", time.Since(startTime)))
 	_ = appLH.Bounds.Get()
-	sys.UartWriteString(fmt.Sprintf("[linux] Bounds evaluated (T+%v)\n", time.Since(startTime)))
 
 	// 8. Rachel is already confirmed ready (step 2b). Announce to WM.
 	announceToWM(rachelSID)
-	sys.UartWriteString(fmt.Sprintf("[linux] WM announced (T+%v)\n", time.Since(startTime)))
 
 	var posXAttr, posYAttr *attr.Attribute[int64]
 	rachelSIDStr := strconv.Itoa(rachelSID)
@@ -393,8 +361,6 @@ func main() {
 
 	winX := float64(posXAttr.Get())
 	winY := float64(posYAttr.Get())
-	sys.UartWriteString(fmt.Sprintf("[linux] position constraints: x=%.0f y=%.0f (T+%v)\n", winX, winY, time.Since(startTime)))
-
 	// Clear sizing ghost and draw at final position.
 	ggCtx.SetColor(pal.Surface)
 	clearX0, clearY0 := initX, initY
@@ -417,12 +383,9 @@ func main() {
 	appLH.Y.Set(int64(winY))
 	app.Draw(app, int64(winX), int64(winY), int64(winW), int64(winH))
 	drawCtx.Flush(int32(winX), int32(winY), int32(winX+winW), int32(winY+winH))
-	sys.UartWriteString(fmt.Sprintf("[linux] initial draw done at (%.0f,%.0f) (T+%v)\n", winX, winY, time.Since(startTime)))
-
 	// 9. Serial channel and delegated syscalls.
 	// Set up delegate handling BEFORE signalling Ready, so that other shepherds
 	// waiting on our Ready don't send us delegates before we're draining them.
-	sys.UartWriteString(fmt.Sprintf("[linux] setting up serial + delegate channels (T+%v)\n", time.Since(startTime)))
 	serialCh, err := serial.Chars()
 	if err != nil {
 		sys.UartWriteString(fmt.Sprintf("[linux] serial.Chars failed: %v\n", err))
@@ -431,10 +394,8 @@ func main() {
 
 	// Wait for fs IPC handshake before registering as syscall handler.
 	<-ipcClient.readyCh
-	sys.UartWriteString(fmt.Sprintf("[linux] fs IPC ready (T+%v)\n", time.Since(startTime)))
 
 	handler := newSyscallHandler(ipcClient)
-	sys.UartWriteString("[linux] calling HandleSyscalls...\n")
 
 	delegateCh, delegateErr := sys.HandleSyscalls(
 		sysid.Write, sysid.Read, sysid.Openat, sysid.Close,
@@ -448,11 +409,7 @@ func main() {
 	)
 	if delegateErr != nil {
 		sys.UartWriteString(fmt.Sprintf("[linux] HandleSyscalls failed: %v\n", delegateErr))
-	} else {
-		sys.UartWriteString("[linux] Registered as file syscall handler\n")
 	}
-
-	sys.UartWriteString("[linux] starting delegate handler goroutine...\n")
 
 	// Delegate handler goroutine — replies immediately to unblock callers,
 	// forwards text data to delegateDataCh for the main goroutine.
@@ -461,17 +418,14 @@ func main() {
 		delegateDataCh = startDelegateHandler(delegateCh, handler, con.suppressSerialCopy)
 	}
 
-	sys.UartWriteString("[linux] calling OnDirty...\n")
-
 	// 10. Event loop — main goroutine owns console state + redraw.
 	// Signal readiness AFTER delegate handler is running, so other shepherds
 	// that wait on our Ready can immediately send us delegates.
 	dirtyCh := attr.OnDirty()
 
-	sys.UartWriteString("[linux] calling SetReady...\n")
 	readyAttr.Set(true)
 	sys.SetReady(true)
-	sys.UartWriteString(fmt.Sprintf("[linux] Ready=true (T+%v)\n", time.Since(startTime)))
+	sys.UartWriteString("[linux] Ready=true\n")
 	sys.UartWriteString("[linux] Entering event loop\n")
 
 	redraw := func() {

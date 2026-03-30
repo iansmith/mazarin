@@ -2,7 +2,6 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"sync/atomic"
 )
 
@@ -25,12 +24,5 @@ func SyscallSetReady(arg0, _, _, _, _, _ uint64) int64 {
 		val = 1
 	}
 	atomic.StoreInt32(&shepherd.Ready, val)
-
-	serial.RawUARTPuts("[SetReady] P")
-	serial.RawUARTDecimal(uint64(shepherd.PID))
-	serial.RawUARTPuts(" ready=")
-	serial.RawUARTDecimal(arg0)
-	serial.RawUARTPuts("\r\n")
-
 	return 0
 }

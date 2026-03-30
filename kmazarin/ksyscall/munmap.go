@@ -4,7 +4,6 @@ package ksyscall
 import (
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"sync/atomic"
 )
 
@@ -90,18 +89,10 @@ func munmapClump(p *proc.Shepherd, idx int32) {
 	inflight := atomic.LoadInt32(&c.InFlight)
 	if inflight == 0 {
 		// Safe to free immediately
-		serial.RawUARTPuts("[munmap] freeing clump VA=")
-		serial.RawUARTHex64(uint64(c.StartVA))
-		serial.RawUARTPuts(" order=")
-		serial.RawUARTHex64(uint64(c.BuddyOrder))
-		serial.RawUARTPuts("\r\n")
 		kmem.BuddyFreeTyped(c.StartPA, c.BuddyOrder, kmem.PageUserDMA)
 		p.RemoveClump(idx)
 	} else {
 		// I/O in flight — defer release to completion handler
-		serial.RawUARTPuts("[munmap] deferring clump release (inflight=")
-		serial.RawUARTHex64(uint64(inflight))
-		serial.RawUARTPuts(")\r\n")
 		c.PendingRelease = true
 	}
 }

@@ -1,7 +1,6 @@
 package fontcache
 
 import (
-	"fmt"
 	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
 	"mazzy/shared/wm"
@@ -68,8 +67,6 @@ func (fc *FontCache) OpenFace(path string, bold bool, size int64) font.Face {
 		}
 	}
 
-	sys.UartWriteString(fmt.Sprintf("[fontcache] cache miss: %s bold=%v size=%d, pushing to rb\n", path, bold, size))
-
 	var msg wm.OpenFontMsg
 	msg.Type = wm.MsgOpenFont
 	if bold {
@@ -79,16 +76,13 @@ func (fc *FontCache) OpenFace(path string, bold bool, size int64) font.Face {
 	copy(msg.Path[:], path)
 
 	fc.requestRb.Push(unsafe.Pointer(&msg))
-	sys.UartWriteString("[fontcache] pushed, calling MailboxSend\n")
 	if err := sys.MailboxSend(fc.rachelSID, wm.FontNotify, fc.requestRb.Addr()); err != nil {
 		sys.UartWriteString("[fontcache] MailboxSend failed: " + err.Error() + "\n")
 		return nil
 	}
-	sys.UartWriteString("[fontcache] MailboxSend OK, waiting on replyCh\n")
 
 	// Block until fontsvc responds
 	raw := <-fc.replyCh
-	sys.UartWriteString("[fontcache] got reply from replyCh\n")
 	msgType := *(*int64)(unsafe.Pointer(&raw[0]))
 	if msgType != wm.MsgOpenFontReply {
 		sys.UartWriteString("[fontcache] unexpected reply type\n")
@@ -157,11 +151,9 @@ func (fc *FontCache) HandleNotification(notif sys.MailboxNotification) {
 	count := 0
 	for rb.Pop(unsafe.Pointer(&raw[0])) {
 		count++
-		sys.UartWriteString(fmt.Sprintf("[fontcache] HandleNotification: pushing msg %d to replyCh (len=%d cap=%d)\n", count, len(fc.replyCh), cap(fc.replyCh)))
 		fc.replyCh <- raw
-		sys.UartWriteString(fmt.Sprintf("[fontcache] HandleNotification: pushed msg %d\n", count))
 	}
-	sys.UartWriteString(fmt.Sprintf("[fontcache] HandleNotification: done, %d msgs\n", count))
+	_ = count
 }
 
 // requestGlyph sends a tier-2 glyph request and blocks until fontsvc renders it.

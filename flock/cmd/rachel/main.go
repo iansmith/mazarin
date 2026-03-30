@@ -79,7 +79,6 @@ const (
 )
 
 var lastInputType int
-var kbdDbgCount int
 
 // switchInput prints a newline if the input type changed, then records
 // the new type. Call before printing any event output.
@@ -111,7 +110,6 @@ func buttonName(code uint16) string {
 }
 
 func keyboardLoop() {
-	fmt.Println("[rachel] keyboard goroutine started (WM)")
 	var buf hid.SoftIRQReturn
 	var km input.Keymap
 	// Track per-key held state to suppress repeats. QEMU on macOS sends
@@ -129,11 +127,6 @@ func keyboardLoop() {
 				continue
 			}
 			code := ev.Code
-			// DEBUG: dump first 10 keyboard events to serial
-			if kbdDbgCount < 10 {
-				kbdDbgCount++
-				fmt.Fprintf(os.Stderr, "[kbd t=%d c=%d v=%d]", ev.Type, ev.Code, ev.Value)
-			}
 			if ev.Value == 1 { // press
 				if code < 256 && keyHeld[code] {
 					continue // suppress repeat (already held)
@@ -156,10 +149,6 @@ func keyboardLoop() {
 			}
 			ch, action := km.Feed(ke)
 			if ch != 0 {
-				// DEBUG: confirm character generated (to serial via stderr)
-				if kbdDbgCount < 20 {
-					fmt.Fprintf(os.Stderr, "[ch=%c]", ch)
-				}
 				switchInput(inputKeyboard)
 				fmt.Print(string(ch))
 			} else if action == "enter" {
@@ -177,12 +166,10 @@ func keyboardLoop() {
 }
 
 func mouseClickLoop() {
-	fmt.Println("[rachel] mouse-click goroutine started (WM)")
 	var buf hid.SoftIRQReturn
 	for {
 		n, err := sys.WaitInputEvent(hid.InputClassMouseClick, &buf)
 		if err != nil {
-			fmt.Printf("[rachel:click] WaitInputEvent error: %v\n", err)
 			continue
 		}
 		for i := 0; i < n; i++ {
@@ -190,16 +177,13 @@ func mouseClickLoop() {
 			if ev.Type != EV_KEY {
 				continue
 			}
-			switchInput(inputButton)
 			x, y := mouseX, mouseY
 
 			if ev.Value == 1 { // press
 				mouseButtonHeld = int32(ev.Code)
-				fmt.Printf("[rachel:mouse] %s pressed at (%d,%d)\n", buttonName(ev.Code), x, y)
 				forwardMouseEvent(wm.MsgMousePress, x, y, int32(ev.Code))
 			} else if ev.Value == 0 { // release
 				mouseButtonHeld = 0
-				fmt.Printf("[rachel:mouse] %s released at (%d,%d)\n", buttonName(ev.Code), x, y)
 				forwardMouseEvent(wm.MsgMouseRelease, x, y, int32(ev.Code))
 			}
 		}
@@ -356,7 +340,6 @@ func initCursors() {
 		return
 	}
 	standardCursorID = id
-	fmt.Printf("[rachel] registered standard cursor ID=%d\n", id)
 
 	invImg := generateInverseCursor()
 	id, err = sys.RegisterCursor(invImg, 0, 0)
@@ -365,7 +348,6 @@ func initCursors() {
 		return
 	}
 	inverseCursorID = id
-	fmt.Printf("[rachel] registered inverse cursor ID=%d\n", id)
 
 	// Set the standard cursor as the active cursor at startup.
 	if err = sys.SetCursor(standardCursorID); err != nil {
@@ -389,23 +371,16 @@ func pointInAnyAppBounds(x, y int64) bool {
 }
 
 func mouseMovementLoop() {
-	fmt.Println("[rachel] mouse-move goroutine started (WM)")
 	var buf hid.SoftIRQReturn
-	batches := 0
 	for {
 		n, err := sys.WaitInputEvent(hid.InputClassMouseMove, &buf)
 		if err != nil {
-			fmt.Printf("[rachel:move] WaitInputEvent error: %v\n", err)
 			continue
 		}
-		batches++
 		for i := 0; i < n; i++ {
 			ev := buf.Events[i]
 			switch ev.Type {
 			case EV_REL:
-				if batches <= 3 {
-					fmt.Fprintf(os.Stderr, "[rel c=%d v=%d]", ev.Code, int32(ev.Value))
-				}
 				switch ev.Code {
 				case REL_X:
 					mouseX += int32(ev.Value)
@@ -425,7 +400,6 @@ func mouseMovementLoop() {
 					}
 				case REL_WHEEL:
 					switchInput(inputWheel)
-					fmt.Printf("[rachel:mouse] wheel %+d\n", int32(ev.Value))
 				}
 			case EV_ABS:
 				// Tablet absolute coordinates (0-32767) → screen coordinates.
@@ -446,27 +420,13 @@ func mouseMovementLoop() {
 		// After processing all events in this batch, check cursor state.
 		if standardCursorID >= 0 && inverseCursorID >= 0 {
 			inApp := pointInAnyAppBounds(int64(mouseX), int64(mouseY))
-			// Log every 50th batch so we can see position + state even without transitions.
-			if batches%50 == 0 {
-				cur := "std"
-				if cursorIsInverse {
-					cur = "inv"
-				}
-				in := "out"
-				if inApp {
-					in = "IN"
-				}
-				fmt.Fprintf(os.Stderr, "[rachel:pos] (%d,%d) %s %s batch=%d\n", mouseX, mouseY, cur, in, batches)
-			}
 			if inApp && !cursorIsInverse {
 				if err := sys.SetCursor(inverseCursorID); err == nil {
 					cursorIsInverse = true
-					fmt.Fprintf(os.Stderr, "[rachel:cursor] → inverse at (%d,%d)\n", mouseX, mouseY)
 				}
 			} else if !inApp && cursorIsInverse {
 				if err := sys.SetCursor(standardCursorID); err == nil {
 					cursorIsInverse = false
-					fmt.Fprintf(os.Stderr, "[rachel:cursor] → standard at (%d,%d)\n", mouseX, mouseY)
 				}
 			}
 		}
@@ -497,14 +457,12 @@ func trackAppBounds(sid int) *trackedApp {
 	// we read any of its constraint attributes.
 	readyURI := wm.ReadyURI(sidStr)
 	if !attr.Exists(readyURI) {
-		fmt.Printf("[rachel:wm] SID %d has no Ready attribute — ignoring\n", sid)
 		return nil
 	}
 
 	// Check that the shepherd's AppWindow Bounds attribute exists.
 	boundsURI := wm.AppWindowBoundsURI(sidStr)
 	if !attr.Exists(boundsURI) {
-		fmt.Printf("[rachel:wm] SID %d Ready but no AppWindow Bounds — ignoring\n", sid)
 		return nil
 	}
 
@@ -516,11 +474,8 @@ func trackAppBounds(sid int) *trackedApp {
 	// Force initial evaluation to wire dependency edges.
 	v := bounds.Get()
 	if v.Type() == vm.TypeTribool {
-		fmt.Printf("[rachel:wm] SID %d Bounds deref returned unknown — ignoring\n", sid)
 		return nil
 	}
-	x0, y0, x1, y1 := v.AsRectangle()
-	fmt.Printf("[rachel:wm] tracking SID %d Bounds: (%d,%d)-(%d,%d)\n", sid, x0, y0, x1, y1)
 
 	ta := &trackedApp{sid: sid, bounds: bounds}
 	trackedApps[sid] = ta
@@ -545,7 +500,6 @@ func forceFontSvcItab(v interface{}) {
 // fontsvc owns the MailboxRecv loop and forwards non-font notifications
 // (WMNotify, ShepherdNotify, etc.) to this channel.
 func mailboxLoop(ch <-chan sys.MailboxNotification) {
-	fmt.Println("[rachel] mailbox goroutine started (channel-based)")
 	for notif := range ch {
 		switch notif.Code {
 		case wm.WMNotify:
@@ -558,13 +512,9 @@ func mailboxLoop(ch <-chan sys.MailboxNotification) {
 				case wm.MsgAppStart:
 					msg := (*wm.AppStartMsg)(unsafe.Pointer(&raw[0]))
 					senderSID := int(msg.SID)
-					fmt.Printf("[rachel:mailbox] AppStart from SID %d\n", senderSID)
 
 					// Track the shepherd's AppWindow Bounds in rachel's constraint space.
-					// If the Bounds attribute doesn't exist, the shepherd crashed or
-					// didn't publish constraints — ignore the AppStart.
 					if trackAppBounds(senderSID) == nil {
-						fmt.Printf("[rachel:mailbox] SID %d has no trackable Bounds, skipping\n", senderSID)
 						continue
 					}
 
@@ -578,43 +528,30 @@ func mailboxLoop(ch <-chan sys.MailboxNotification) {
 
 					// Grant focus to this shepherd.
 					focusedSID = senderSID
-					fmt.Printf("[rachel:mailbox] set focus → SID %d\n", senderSID)
 
 					// Send YouHaveFocus
 					var focusMsg wm.YouHaveFocusMsg
 					focusMsg.Type = wm.MsgYouHaveFocus
 					returnRb.Push(unsafe.Pointer(&focusMsg))
-					if err := sys.MailboxSend(senderSID, wm.ShepherdNotify, returnRb.Addr()); err != nil {
-						fmt.Printf("[rachel:mailbox] send YouHaveFocus failed: %v\n", err)
-					} else {
-						fmt.Printf("[rachel:mailbox] sent YouHaveFocus → SID %d\n", senderSID)
-					}
-
-				default:
-					fmt.Printf("[rachel:mailbox] unknown msg type %d from SID %d\n", msgType, notif.SenderSID)
+					_ = sys.MailboxSend(senderSID, wm.ShepherdNotify, returnRb.Addr())
 				}
 			}
 
 		default:
-			fmt.Printf("[rachel:mailbox] unknown notify code %d from SID %d\n", notif.Code, notif.SenderSID)
 		}
 	}
 }
 
 func main() {
-	startTime := time.Now()
-	fmt.Println("[rachel] Starting window manager")
+	sys.UartWriteString("[rachel] Starting window manager\n")
 
 	// Claim window manager role — rachel gets ALL input events automatically
 	if err := sys.RequestWindowManager(); err != nil {
 		fmt.Printf("[rachel] failed to become window manager: %v\n", err)
 		return
 	}
-	fmt.Printf("[rachel] became window manager (T+%v)\n", time.Since(startTime))
-
 	// Initialize constraint system early — mailbox handler creates constraints.
 	attr.Init()
-	fmt.Printf("[rachel] attr init done (SID=%s, T+%v)\n", attr.SID(), time.Since(startTime))
 
 	// Read kernel screen dimensions via constraints.
 	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
@@ -627,8 +564,6 @@ func main() {
 
 	w := int32(screenW.Get())
 	h := int32(screenH.Get())
-	fmt.Printf("[rachel] kernel screen: %dx%d (T+%v)\n", w, h, time.Since(startTime))
-
 	// Set display dimensions for mouse clamping and initial cursor position.
 	displayWidth = w
 	displayHeight = h
@@ -649,8 +584,6 @@ func main() {
 	vaW := attr.ValueI64(attr.ShepherdURI("int64", "visibleArea/w"), int64(w))
 	vaH := attr.ValueI64(attr.ShepherdURI("int64", "visibleArea/h"), int64(h))
 	_, _, _, _ = vaX, vaY, vaW, vaH
-	fmt.Printf("[rachel] visibleArea published: rect(0,0,%d,%d) (T+%v)\n", w, h, time.Since(startTime))
-
 	// Register standard and inverse cursors with the GPU.
 	initCursors()
 
@@ -668,7 +601,6 @@ func main() {
 	forceFontSvcItab(initData)
 
 	fontSvcPath := sys.LoadMazByName("/fontsvc")
-	fmt.Printf("[rachel] loading fontsvc from %s (T+%v)...\n", fontSvcPath, time.Since(startTime))
 	fontSvcMain, fontSvcInitAddr, fontSvcErr := mazhost.LoadMazBootstrap(fontSvcPath, nil)
 	if fontSvcErr != nil {
 		fmt.Printf("[rachel] LoadMazBootstrap(fontsvc) failed: %v\n", fontSvcErr)
@@ -690,20 +622,16 @@ func main() {
 			shepherdInit := *(*func(interface{}) error)(unsafe.Pointer(&fv))
 			if err := shepherdInit(initData); err != nil {
 				fmt.Printf("[rachel] fontsvc MazarinShepherd failed: %v\n", err)
-			} else {
-				fmt.Println("[rachel] fontsvc MazarinShepherd injected successfully")
 			}
 		}
 		// Start fontsvc's MailboxRecv loop (which forwards non-font messages to rachelCh).
 		go mazhost.RunMaz(fontSvcMain)
-		fmt.Printf("[rachel] fontsvc goroutine launched (T+%v)\n", time.Since(startTime))
 	}
 	runtime.Gosched()
 
 	// Start mailbox receiver — reads from channel populated by fontsvc.
 	go mailboxLoop(rachelCh)
 	runtime.Gosched()
-	fmt.Printf("[rachel] mailbox + event loops starting (T+%v)\n", time.Since(startTime))
 
 	// Launch event loops for all three device classes.
 	// As WM, rachel receives all events and can handle global shortcuts,
@@ -727,7 +655,7 @@ func main() {
 	// Publish ready status to constraint network using the well-known URI.
 	ready := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
 	_ = ready
-	fmt.Printf("[rachel] Ready=true published (SID=%s, T+%v)\n", attr.SID(), time.Since(startTime))
+	sys.UartWriteString("[rachel] Ready=true\n")
 
 	// Block main goroutine forever
 	select {}

@@ -7,7 +7,6 @@ package main
 
 import (
 	"mazzy/kmazarin/ksyscall"
-	"mazzy/kmazarin/serial"
 	"sync/atomic"
 	"unsafe"
 )
@@ -51,11 +50,8 @@ func DispatchRunMazWork() bool {
 		ksyscall.RunMazReq.BlockedTID = -1
 		atomic.StoreInt32(&ksyscall.RunMazBusy, 0)
 
-		serial.RawUARTPuts("[RM:work]")
 		result := ksyscall.DoRunMazWork(&req)
-
 		wakeLoadMazThread(req.BlockedTID, result)
-		serial.RawUARTPuts("[RM:done]")
 		dispatched = true
 	}
 }

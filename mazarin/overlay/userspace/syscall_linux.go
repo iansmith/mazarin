@@ -22,15 +22,6 @@ import (
 // Implemented in asm_linux_arm64.s
 func defaultSyscallHandler(num, a1, a2, a3, a4, a5, a6 uintptr) int64
 
-// diagBreadcrumb writes a single ASCII character to UART via SVC.
-// TODO: DIAGNOSTIC — remove after exitsyscall investigation.
-// Implemented in asm_linux_arm64.s
-func diagBreadcrumb(ch byte)
-
-// sysWaitSoftIRQ is the syscall number for WaitSoftIRQ (0x100A).
-// Hardcoded here because the syscall package can't import shared/mazzy.
-const sysWaitSoftIRQ = 0x100A
-
 // Mazzy: entersyscall/exitsyscall — matching stock Go contract.
 // Syscall/Syscall6 release the P before the SVC so other goroutines
 // can run while the calling M blocks in the kernel.
@@ -41,25 +32,6 @@ func runtime_entersyscall()
 
 //go:linkname runtime_exitsyscall runtime.exitsyscall
 func runtime_exitsyscall()
-
-// TODO: DIAGNOSTIC — scheduler state accessors from runtime/sched_diag_mazzy.go
-//go:linkname runtime_diagSchedPStatus runtime.diagSchedPStatus
-func runtime_diagSchedPStatus() uint32
-
-//go:linkname runtime_diagSchedRunqSize runtime.diagSchedRunqSize
-func runtime_diagSchedRunqSize() int32
-
-//go:linkname runtime_diagSchedNpidle runtime.diagSchedNpidle
-func runtime_diagSchedNpidle() int32
-
-//go:linkname runtime_diagSchedLastPoll runtime.diagSchedLastPoll
-func runtime_diagSchedLastPoll() int32
-
-//go:linkname runtime_diagSchedMHasP runtime.diagSchedMHasP
-func runtime_diagSchedMHasP() int32
-
-//go:linkname runtime_diagNetpollWaiters runtime.diagNetpollWaiters
-func runtime_diagNetpollWaiters() int32
 
 // N.B. For the Syscall functions below:
 //
@@ -111,39 +83,9 @@ func Syscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err Errno) {
 //go:nosplit
 //go:linkname Syscall6
 func Syscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errno) {
-	// TODO: DIAGNOSTIC breadcrumbs — remove after exitsyscall investigation.
-	// Only post-SVC breadcrumbs: pre-SVC SVCs cause VM exits that change
-	// timing (Heisenbug — IRQ gets injected before WaitSoftIRQ blocks).
-	diag := trap == sysWaitSoftIRQ && a1 == 0
 	runtime_entersyscall()
 	r1, r2, err = RawSyscall6(trap, a1, a2, a3, a4, a5, a6)
-	if diag {
-		diagBreadcrumb('X') // post-SVC, pre-exitsyscall
-		// P0 status: '0'=idle, '1'=running, '2'=syscall, '3'=gcstop
-		diagBreadcrumb(byte('0' + runtime_diagSchedPStatus()))
-		// Global run queue size (single hex digit)
-		qs := runtime_diagSchedRunqSize()
-		if qs > 9 {
-			qs = 9
-		}
-		diagBreadcrumb(byte('0' + qs))
-		// Idle P count
-		diagBreadcrumb(byte('0' + runtime_diagSchedNpidle()))
-		// netpoll initialized? '0'=no, '1'=yes
-		diagBreadcrumb(byte('0' + runtime_diagSchedLastPoll()))
-		// netpollWaiters count (single hex digit)
-		nw := runtime_diagNetpollWaiters()
-		if nw > 9 {
-			nw = 9
-		}
-		diagBreadcrumb(byte('0' + nw))
-	}
 	runtime_exitsyscall()
-	if diag {
-		diagBreadcrumb('x') // post-exitsyscall
-		// After exitsyscall: does this M have a P? '1'=yes, '0'=no
-		diagBreadcrumb(byte('0' + runtime_diagSchedMHasP()))
-	}
 	return
 }
 

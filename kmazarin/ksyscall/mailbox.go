@@ -88,12 +88,6 @@ func SyscallMailboxMapPage(arg0, arg1, _, _, _, _ uint64) int64 {
 	// Cache the translation
 	addVACacheEntry(callerSID, targetSID, callerPageVA, targetPageVA)
 
-	serial.RawUARTPuts("[Mailbox] mapped: caller=")
-	serial.RawUARTHexCompact(uint64(callerPageVA))
-	serial.RawUARTPuts(" target=")
-	serial.RawUARTHexCompact(uint64(targetPageVA))
-	serial.RawUARTPuts("\r\n")
-
 	return int64(targetPageVA + pageOffset)
 }
 
@@ -142,9 +136,6 @@ func SyscallMailboxRecv(arg0, _, _, _, _, _ uint64) int64 {
 	}
 
 	// No other thread — WFI loop (should rarely be reached with thread 0 fallback)
-	serial.RawUARTPuts("[MBR:WFI] sid=")
-	serial.RawUARTDecimal(uint64(shepherdIdx))
-	serial.RawUARTPuts("\r\n")
 	for {
 		enableIRQsAndWait()
 		notif, ok = drainMailboxQueue(shepherdIdx)

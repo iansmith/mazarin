@@ -303,7 +303,6 @@ func NonTimerIRQTopHalf() {
 
 		if atomic.LoadUint32(&blockAsyncMode) != 0 && blockEnginePtr != 0 {
 			// Async mode: drain engine used ring, push completion events
-			serial.PollWrite('I') // breadcrumb: block IRQ async path
 			eng := (*virtio.Engine)(unsafe.Pointer(blockEnginePtr))
 			for eng.HasUsed() {
 				info := eng.PopUsed()
@@ -380,13 +379,6 @@ func NonTimerIRQTopHalf() {
 	}
 
 	dev.dbgIRQCount++
-
-	// DEBUG: breadcrumb for kbd/mouse IRQ
-	if dev == &topHalfMouse {
-		serial.PollWrite('M')
-	} else {
-		serial.PollWrite('K')
-	}
 
 	// Read ISR to acknowledge interrupt at device level (deasserts PCI INTx).
 	if dev.isrBase != 0 {
@@ -586,12 +578,6 @@ func topHalfTabletHandler() {
 		// Map tablet coordinates (0-32767) to screen coordinates
 		screenX := (lastAbsX * gpu.DisplayWidth) / (hid.AbsMax + 1)
 		screenY := (lastAbsY * gpu.DisplayHeight) / (hid.AbsMax + 1)
-		// DEBUG: breadcrumb for tablet cursor move
-		serial.PollWrite('T')
-		serial.RawUARTDecimal(uint64(screenX))
-		serial.PollWrite(',')
-		serial.RawUARTDecimal(uint64(screenY))
-		serial.PollWrite(' ')
 		gpu.TopHalfMoveCursor(screenX, screenY)
 	}
 

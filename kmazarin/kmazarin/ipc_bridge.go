@@ -178,9 +178,6 @@ func WakeDelegateCallerThread(pid int16, tid int32, returnVal int64) {
 		t.State = ThreadReady
 		enqueueReadySchedLockHeld(t)
 		asm.Dsb()
-		serial.RawUARTPuts("[WDCT] woke tid=")
-		serial.RawUARTDecimal(uint64(tid))
-		serial.RawUARTPuts("\r\n")
 	}
 
 	schedulerLock.Unlock()

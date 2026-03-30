@@ -31,12 +31,12 @@ type Decorator struct {
 	hasDecorated  bool
 }
 
-// InitDecorator wires the back-pointer, layout, and decoration insets.
+// Initialize wires the back-pointer, layout, and decoration insets.
 // Constraint-based sizing (Width = child.Width + Left + Right, etc.)
-// is set up separately in InitLayout on the concrete type.
-func (d *Decorator) InitDecorator(owner any, layout *mancini.LayoutAttributes, top, right, bottom, left int64) {
-	d.Interactor.Init(owner.(mancini.Interactor), layout)
-	d.Parent.InitParent(&d.Interactor)
+// is set up separately in the layout constructor on the concrete type.
+func (d *Decorator) Initialize(owner any, layout *mancini.LayoutAttributes, top, right, bottom, left int64) {
+	d.Interactor.Initialize(owner.(mancini.Interactor), layout)
+	d.Parent.Initialize(true, &d.Interactor)
 	d.Top = top
 	d.Right = right
 	d.Bottom = bottom

@@ -42,8 +42,6 @@ func announceToWM() {
 	rachelSID := sys.MustGetShepherdByName("rachel")
 
 	myPID := os.Getpid()
-	sys.UartWriteString(fmt.Sprintf("[clocks] found rachel SID=%d, my SID=%d (T+%v)\n", rachelSID, myPID, time.Since(startTime)))
-
 	rb, err := ringbuf.New(rachelSID, 0, wm.SizeWMMessage, wm.DefaultSlotCount)
 	if err != nil {
 		sys.UartWriteString("[clocks] ring buffer creation failed: " + err.Error() + "\n")
@@ -59,7 +57,7 @@ func announceToWM() {
 		sys.UartWriteString("[clocks] MailboxSend failed: " + err.Error() + "\n")
 		return
 	}
-	sys.UartWriteString(fmt.Sprintf("[clocks] sent AppStart to rachel (T+%v)\n", time.Since(startTime)))
+	sys.UartWriteString("[clocks] sent AppStart to rachel\n")
 }
 
 // mailboxRecvLoop receives notifications from rachel (e.g., YouHaveFocus, FontResponse).
@@ -70,46 +68,31 @@ func mailboxRecvLoop(fc *fontcache.FontCache) {
 			sys.UartWriteString("[clocks:mailbox] recv error\n")
 			continue
 		}
-		sys.UartWriteString(fmt.Sprintf("[clocks:mailbox] notif code=%d from SID=%d\n", notif.Code, notif.SenderSID))
 		switch notif.Code {
 		case wm.FontResponse:
-			sys.UartWriteString("[clocks:mailbox] FontResponse, calling HandleNotification\n")
 			fc.HandleNotification(notif)
 		case wm.ShepherdNotify:
 			rb := ringbuf.Open(uintptr(notif.RingAddr))
 			var raw [wm.SizeWMMessage]byte
 			for rb.Pop(unsafe.Pointer(&raw[0])) {
-				msgType := *(*int64)(unsafe.Pointer(&raw[0]))
-				switch msgType {
-				case wm.MsgYouHaveFocus:
-					sys.UartWriteString(fmt.Sprintf("[clocks:mailbox] received YouHaveFocus! (T+%v)\n", time.Since(startTime)))
-				case wm.MsgYouLostFocus:
-					sys.UartWriteString("[clocks:mailbox] received YouLostFocus\n")
-				default:
-					sys.UartWriteString(fmt.Sprintf("[clocks:mailbox] unknown msg type %d\n", msgType))
-				}
+				_ = *(*int64)(unsafe.Pointer(&raw[0]))
 			}
 		}
 	}
 }
 
-var startTime time.Time
-
 func main() {
-	startTime = time.Now()
 	sys.UartWriteString("[clocks] main() entered\n")
 
 	// 1. Initialize constraint system.
 	attr.Init()
-	
+
 	mancini.Init()
-	sys.UartWriteString(fmt.Sprintf("[clocks] attr + interactor init done, SID=%s (T+%v)\n", attr.SID(), time.Since(startTime)))
 
 	// 2. Wait for fs (file operations), rachel (window manager + fontsvc), and
 	// linux (Write delegate handler). Clocks must not issue any write() syscalls
 	// before linux has entered its event loop, or the delegate channel fills up
 	// and deadlocks the system.
-	sys.UartWriteString(fmt.Sprintf("[clocks] waiting for fs + rachel + linux ready... (T+%v)\n", time.Since(startTime)))
 	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
 		panic(fmt.Sprintf("[clocks] FATAL: fs: %v", err))
 	}
@@ -119,11 +102,8 @@ func main() {
 	if err := sys.WaitForShepherdReady("linux", 10); err != nil {
 		panic(fmt.Sprintf("[clocks] FATAL: linux: %v", err))
 	}
-	sys.UartWriteString(fmt.Sprintf("[clocks] fs + rachel + linux ready (T+%v)\n", time.Since(startTime)))
-
 	rachelSID := sys.MustGetShepherdByName("rachel")
 	fc := fontcache.New(rachelSID)
-	sys.UartWriteString(fmt.Sprintf("[clocks] fontcache created, rachel SID=%d (T+%v)\n", rachelSID, time.Since(startTime)))
 
 	// Start mailbox receiver early so FontResponse notifications are processed
 	// while OpenFace blocks waiting for replies.
@@ -138,8 +118,6 @@ func main() {
 			return fc.OpenFaceByName(mfont.DefaultMono, style, size)
 		},
 	}
-	sys.UartWriteString(fmt.Sprintf("[clocks] fonts configured via fontcache (T+%v)\n", time.Since(startTime)))
-
 	pal := mancini.DefaultPalette()
 	pal.SwapRB = true // propagated to offscreen gg contexts in draw.go
 
@@ -160,23 +138,16 @@ func main() {
 		}
 		cities[i].loc = loc
 	}
-	sys.UartWriteString(fmt.Sprintf("[clocks] %d cities configured (T+%v)\n", len(cities), time.Since(startTime)))
-
 	// 4. Time tracking via constraint system — needed by Clock widgets.
-	sys.UartWriteString(fmt.Sprintf("[clocks] setting up time constraints... (T+%v)\n", time.Since(startTime)))
 	timeProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"_source_", "attr:///kernel/int64/time/utc_seconds")
 	timeSec := attr.ConstraintI64(attr.ShepherdURI("int64", "time_sec"), timeProg)
 	timeSec.Get()
-	sys.UartWriteString(fmt.Sprintf("[clocks] timeSec constraint ready (T+%v)\n", time.Since(startTime)))
-
 	nanosProg := mancini.BindStrings(mancini.ProgIdentityI64,
 		"_source_", "attr:///kernel/int64/time/utc_nanos")
 	timeNanos := attr.ConstraintI64(attr.ShepherdURI("int64", "time_nanos"), nanosProg)
 	timeNanos.SetEager(true)
 	_ = timeNanos.Get()
-	sys.UartWriteString(fmt.Sprintf("[clocks] timeNanos constraint ready (T+%v)\n", time.Since(startTime)))
-
 	// 5. Build interactor tree: AppWindow → Row → 6 Columns → [Label, NeuCircle→Clock, Label].
 	// All new-system types. Children discover parents via constraint network.
 	textColor := color.NRGBA{0, 0, 0, 255}
@@ -213,7 +184,6 @@ func main() {
 	row := std.NewRow("main_row", "AppWindow", pal, 0, mancini.AxisMinimum, 1)
 	row.SetSpacing(25)
 
-	sys.UartWriteString(fmt.Sprintf("[clocks] building columns... (T+%v)\n", time.Since(startTime)))
 	for i, city := range cities {
 		colName := city.id + "_col"
 		circleName := city.id + "_circle"
@@ -262,10 +232,8 @@ func main() {
 		// Steady state: face name label visible, spacer hidden.
 		spacer.GetLayout().Visible.Set(false)
 
-		sys.UartWriteString(fmt.Sprintf("[clocks] column %d (%s) built (T+%v)\n", i, city.id, time.Since(startTime)))
+		_ = i
 	}
-
-	sys.UartWriteString(fmt.Sprintf("[clocks] UI tree built: %d cities (T+%v)\n", len(cities), time.Since(startTime)))
 
 	// 6. Read kernel screen dimensions for DrawContext sizing.
 	screenWProg := mancini.BindStrings(mancini.ProgIdentityI64,
@@ -276,8 +244,6 @@ func main() {
 	screenHAttr := attr.ConstraintI64(attr.ShepherdURI("int64", "screen_h"), screenHProg)
 	screenW = int(screenWAttr.Get())
 	screenH = int(screenHAttr.Get())
-	sys.UartWriteString(fmt.Sprintf("[clocks] screen: %dx%d\n", screenW, screenH))
-
 	// 7. Create draw context covering the full screen. Clocks positions itself
 	// within rachel's visibleArea via constraints, so it needs full-screen access.
 	drawCtx := mancini.NewFramebufferContext()
@@ -286,13 +252,10 @@ func main() {
 	// Single gg context for the entire draw pass — threaded through the tree.
 	ggCtx := gg.NewContextForRGBA(fbImage)
 	ggCtx.SwapRB = true
-	sys.UartWriteString("[clocks] draw context created\n")
-
 	// 8. Initial sizing draw to publish children's dimensions.
 	appLH := app.GetLayout()
 	initX := float64(screenW)/2 - 400
 	initY := float64(screenH)/2 - 125
-	sys.UartWriteString("[clocks] sizing draw...\n")
 	appLH.X.Set(int64(initX))
 	appLH.Y.Set(int64(initY))
 	app.SetDC(ggCtx)
@@ -307,14 +270,12 @@ func main() {
 	if winH < 50 {
 		winH = 250
 	}
-	sys.UartWriteString(fmt.Sprintf("[clocks] constraint size: %.0fx%.0f\n", winW, winH))
-
 	// 9. Force Bounds evaluation so the shared page has a valid rectangle,
 	// then publish Ready. Rachel gates all interaction on Ready.
 	_ = appLH.Bounds.Get()
 	readyAttr := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
 	_ = readyAttr
-	sys.UartWriteString(fmt.Sprintf("[clocks] Ready=true, Bounds published (T+%v)\n", time.Since(startTime)))
+	sys.UartWriteString("[clocks] Ready=true\n")
 
 	// 10. Rachel already confirmed ready (step 2b). Announce to WM.
 	announceToWM()
@@ -336,9 +297,8 @@ func main() {
 		yProg := mancini.BindStrings(mancini.ProgIdentityI64, "_source_", vaYURI)
 		posYAttr = attr.ConstraintI64(attr.ShepherdURI("int64", "pos/y"), yProg)
 
-		x := posXAttr.Get()
-		y := posYAttr.Get()
-		sys.UartWriteString(fmt.Sprintf("[clocks] position constraints: x=%d y=%d (from rachel SID %d)\n", x, y, rachelSID))
+		_ = posXAttr.Get()
+		_ = posYAttr.Get()
 	} else {
 		sys.UartWriteString("[clocks] WARNING: rachel not found, using fallback position\n")
 	}
@@ -380,32 +340,16 @@ func main() {
 	appLH.Y.Set(int64(winY))
 	app.Draw(app, int64(winX), int64(winY), int64(winW), int64(winH))
 	drawCtx.Flush(int32(winX), int32(winY), int32(winX+winW), int32(winY+winH))
-	sys.UartWriteString(fmt.Sprintf("[clocks] initial draw done at (%.0f,%.0f) (T+%v)\n", winX, winY, time.Since(startTime)))
-
 	// 11. Instrumentation counters.
 	eagerAttr := attr.ValueI64(attr.ShepherdURI("int64", "stats/eagerUpdates"), 0)
 	eagerSlot := eagerAttr.Slot()
 	var drawCount atomic.Int64
 
-	// Periodic stats printer (~every 10 seconds).
-	go func() {
-		_ = eagerSlot // used for increment in main loop
-		for {
-			time.Sleep(10 * time.Second)
-			eager := eagerAttr.Get()
-			draws := drawCount.Load()
-			sys.UartWriteString(fmt.Sprintf("[clocks-stats] eagerUpdates=%d draws=%d\n",
-				eager, draws))
-		}
-	}()
-
 	// 12. Main loop: wake on dirty, redraw when second changes.
 	// Position comes from constraints against rachel's visibleArea.
-	loopCount := 0
 	for {
 		attr.WaitDirty()
 		sys.AttrIncrementI64(eagerSlot)
-		loopCount++
 
 		_ = timeSec.Get()
 		_ = timeNanos.Get()
@@ -422,19 +366,9 @@ func main() {
 
 		appLH.X.Set(int64(winX))
 		appLH.Y.Set(int64(winY))
-		t0 := time.Now()
 		app.Draw(app, int64(winX), int64(winY), int64(winW), int64(winH))
-		drawDur := time.Since(t0)
 		drawCount.Add(1)
-
-		t1 := time.Now()
 		drawCtx.Flush(int32(winX), int32(winY), int32(winX+winW), int32(winY+winH))
-		flushDur := time.Since(t1)
-
-		if loopCount <= 10 || loopCount%10 == 0 {
-			sys.UartWriteString(fmt.Sprintf("[clocks] loop=%d draw=%v flush=%v pos=(%.0f,%.0f) sz=(%.0f,%.0f)\n",
-				loopCount, drawDur, flushDur, winX, winY, winW, winH))
-		}
 	}
 }
 

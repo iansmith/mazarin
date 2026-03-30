@@ -1,0 +1,33 @@
+import "children"
+
+func childDmgRect(seg string) Rect {
+	return derefRect("_rectPrefix_" + seg + "_damageRectSuffix_")
+}
+
+func parentDamageDefault() Rect {
+	boundsHash := derefI64("_boundsHash_")
+	lpBoundsHash := derefI64("_lpBoundsHash_")
+	if boundsHash != lpBoundsHash {
+		return derefRect("_bounds_")
+	}
+
+	if hasNoVisibleChildren("_myName_") {
+		return derefRect("_bounds_")
+	}
+	children := findWhere("_childPattern_", "_myName_")
+	result := rect(0, 0, 0, 0)
+	for _, uri := range children {
+		seg := uriSegment(uri, 3)
+		if isChildVisible(seg) {
+			childDmg := childDmgRect(seg)
+			if !rectEmpty(childDmg) {
+				if rectEmpty(result) {
+					result = childDmg
+				} else {
+					result = rectUnion(result, childDmg)
+				}
+			}
+		}
+	}
+	return result
+}

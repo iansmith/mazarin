@@ -3355,14 +3355,7 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 		return 0
 	}
 
-	n := atomic.AddUint64(&dbgPreemptSwitchCount, 1)
-	if n <= 5 {
-		serial.RawUARTPuts("[P:")
-		serial.RawUARTDecimal(uint64(uint16(oldThread.TID)))
-		serial.RawUART('>')
-		serial.RawUARTDecimal(uint64(uint16(next.TID)))
-		serial.RawUART(']')
-	}
+	atomic.AddUint64(&dbgPreemptSwitchCount, 1)
 	// Shepherd-level tick accounting
 	// Stop old shepherd's clock
 	if oldThread.ShepherdIdx >= 0 {

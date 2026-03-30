@@ -8,8 +8,6 @@ import (
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/ktime"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
-	"unsafe"
 )
 
 // bootTimezone is the IANA timezone string from the boot config (e.g. "America/New_York").
@@ -32,7 +30,7 @@ func SetSuppressSerialStdioCopy(v bool) {
 }
 
 // shepherdGCPercentage is the GOGC value for shepherd processes.
-// 0 means use the default (5).
+// 0 means use the default (100 = Go standard).
 var shepherdGCPercentage int
 
 // SetShepherdGCPercentage stores the GC percentage from the boot config.
@@ -685,7 +683,7 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 	penv.SetEnv("GODEBUG", "gctrace=1")
 	gcVal := shepherdGCPercentage
 	if gcVal <= 0 {
-		gcVal = 5 // default
+		gcVal = 100 // Go standard default
 	}
 	// Convert gcVal to string (max 6 digits)
 	var gcBuf [6]byte
@@ -767,23 +765,6 @@ func setupUserStack(stackBase, stackSize uint64, filename string, l0PA uintptr, 
 	kmem.CleanPageCache(kernelVA)
 
 	// DEBUG: Read back what was written to verify stack contents
-	{
-		pageSize := uint64(4096)
-		topPageVA := (stackTop - 1) &^ (pageSize - 1)
-		offset := sp - topPageVA
-		basePtr := kernelVA + uintptr(offset)
-		// Read back argc and first argv pointer
-		argc := *(*uint64)(unsafe.Pointer(basePtr))
-		argv0 := *(*uint64)(unsafe.Pointer(basePtr + 8))
-		serial.RawUARTPuts("[stk] sp=0x")
-		serial.RawUARTHex64(sp)
-		serial.RawUARTPuts(" argc=")
-		serial.RawUARTDecimal(argc)
-		serial.RawUARTPuts(" argv0ptr=0x")
-		serial.RawUARTHex64(argv0)
-		serial.RawUARTPuts("\r\n")
-	}
-
 	return sp, nil
 }
 

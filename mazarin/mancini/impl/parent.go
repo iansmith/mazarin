@@ -15,16 +15,21 @@ type dcSetter interface {
 // to return them in construction order.
 //
 // The owning interactor must embed both Interactor and Parent, and
-// call Init on Interactor first (which registers it in the registry
+// call Initialize on Interactor first (which registers it in the registry
 // and stores the layout handles).
 type Parent struct {
 	interactor *Interactor // back-pointer for layout name access
 }
 
-// InitParent wires the back-pointer to the embedding Interactor.
-// Must be called after Interactor.Init.
-func (p *Parent) InitParent(i *Interactor) {
+// Initialize wires the back-pointer to the embedding Interactor.
+// When wantDefaultDamageConstraint is true, installs a default parent
+// damage constraint that unions children's damage rects (or returns full
+// bounds when BoundsHash changes). Must be called after Interactor.Initialize.
+func (p *Parent) Initialize(wantDefaultDamageConstraint bool, i *Interactor) {
 	p.interactor = i
+	if wantDefaultDamageConstraint && i != nil {
+		mancini.InitDefaultParentDamage(i.layout)
+	}
 }
 
 // GetChildren discovers children via the constraint network.

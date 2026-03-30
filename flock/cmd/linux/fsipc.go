@@ -84,14 +84,8 @@ func (c *fsIPCClient) handleResponse() {
 		return
 	}
 	var resp fsipc.Response
-	popped := 0
 	for c.respRing.Pop(unsafe.Pointer(&resp)) {
-		popped++
-		sys.UartWriteString("[linux:ipc] handleResponse: popped, sending to respCh\n")
 		c.respCh <- resp
-	}
-	if popped == 0 {
-		sys.UartWriteString("[linux:ipc] handleResponse: ring empty!\n")
 	}
 }
 
@@ -114,12 +108,8 @@ func (c *fsIPCClient) call(req *fsipc.Request) fsipc.Response {
 	err := sys.MailboxSend(c.fsSID, fsipc.NotifyRequest, c.reqRing.Addr())
 	if err != nil {
 		sys.UartWriteString("[linux:ipc] MailboxSend FAILED\n")
-	} else {
-		sys.UartWriteString("[linux:ipc] sent, waiting...\n")
 	}
-	resp := <-c.respCh
-	sys.UartWriteString("[linux:ipc] got response\n")
-	return resp
+	return <-c.respCh
 }
 
 // dataSlice returns the shared data area for reading response data.

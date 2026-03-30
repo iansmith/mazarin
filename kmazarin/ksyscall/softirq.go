@@ -2,7 +2,6 @@ package ksyscall
 
 import (
 	"mazzy/kmazarin/kmem"
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/hid"
 	"sync/atomic"
 	"unsafe"
@@ -53,21 +52,23 @@ func SyscallWaitSoftIRQ(slotNum, bufPtr, flags, _, _, _ uint64) int64 {
 	events := &slotEventBufs[slotNum]
 
 	// Non-blocking drain
-	// NOTE: The UART writes here serve a functional purpose under HVF.
-	// They cause VM exits that give QEMU an opportunity to inject pending
-	// block device interrupts. Without these, the vCPU runs the entire SVC
-	// handler at native speed and the block IRQ injection is delayed past
-	// the drain check, causing the second I/O to fail. This needs a proper
-	// fix (e.g. an ISB or explicit yield point) but for now the UART writes
-	// provide the necessary VM exit points.
-	if slot == 0 {
-		serial.PollWrite('S')
-	}
+	//
+	// CLAIM(hvf-vm-exit): The UART writes on slot 0 below allegedly serve a
+	// functional purpose under HVF. The theory is that they cause VM exits
+	// that give QEMU an opportunity to inject pending block device interrupts.
+	// Without them, the vCPU supposedly runs the entire SVC handler at native
+	// speed and block IRQ injection is delayed past the drain check. This
+	// claim has NOT been rigorously verified. If block I/O works reliably
+	// without these writes, they should be removed. An ISB or explicit yield
+	// point would be a cleaner alternative if a VM exit is truly needed.
+	// if slot == 0 {
+	// 	serial.PollWrite('S') // CLAIM(hvf-vm-exit): forces VM exit for IRQ injection
+	// }
 	n := DrainSoftIRQSlotEvents(slot, events[:], hid.MaxHIDEvents)
 	if n > 0 {
-		if slot == 0 {
-			serial.PollWrite('D')
-		}
+		// if slot == 0 {
+		// 	serial.PollWrite('D') // CLAIM(hvf-vm-exit): forces VM exit for IRQ injection
+		// }
 		if slot == 3 {
 			atomic.AddUint64(&DbgSlot3DrainHit, 1)
 		}
@@ -87,9 +88,9 @@ func SyscallWaitSoftIRQ(slotNum, bufPtr, flags, _, _, _ uint64) int64 {
 	}
 
 	// Blocking path: block this kernel thread on the slot.
-	if slot == 0 {
-		serial.PollWrite('b')
-	}
+	// if slot == 0 {
+	// 	serial.PollWrite('b') // CLAIM(hvf-vm-exit): forces VM exit for IRQ injection
+	// }
 	ctxPtr := BlockOnSlot(slot)
 	if ctxPtr != 0 {
 		// Context switch to another thread. The wake path (PushTimerEventAndWake

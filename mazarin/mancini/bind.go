@@ -45,12 +45,14 @@ func BindStringsChildren(prog *vm.Program, bindings ...string) *vm.Program {
 		"_childPattern_", ChildPattern(),
 		"_boolPrefix_", BoolPrefix(),
 		"_int64Prefix_", Int64Prefix(),
+		"_rectPrefix_", RectPrefix(),
 		"_xSuffix_", LayoutX.Suffix(),
 		"_ySuffix_", LayoutY.Suffix(),
 		"_widthSuffix_", LayoutWidth.Suffix(),
 		"_heightSuffix_", LayoutHeight.Suffix(),
 		"_visSuffix_", VisSuffix,
 		"_boundsHashSuffix_", LayoutBoundsHash.Suffix(),
+		"_damageRectSuffix_", LayoutDamageRect.Suffix(),
 	)
 	return BindStrings(prog, bindings...)
 }

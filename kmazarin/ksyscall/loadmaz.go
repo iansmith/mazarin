@@ -14,7 +14,6 @@ import (
 	"mazzy/kmazarin/device"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"mazzy/shared/constants"
 	"mazzy/shared/fs/fat32"
 	"sync/atomic"
 	"unsafe"
@@ -141,11 +140,6 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 
 	if req.DataVA != 0 && req.DataLen > 0 {
 		// Pre-loaded mode: read ELF from caller's pages via kernel linear map
-		console.KWriteString("[LoadMaz] using pre-loaded data: ")
-		console.KPrintHex64(req.DataLen)
-		console.KWriteString(" bytes at VA ")
-		console.KPrintHex64(uint64(req.DataVA))
-		console.KWriteString("\r\n")
 		elfData = readUserData(req.DataVA, req.DataLen, l0PA)
 		if elfData == nil {
 			console.KWriteString("[LoadMaz] ERROR: failed to read pre-loaded data\r\n")
@@ -230,14 +224,6 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 		// ET_EXEC: binary runs at its linked addresses, no relocation
 		loadBase = mazLowest
 		loadOffset = 0
-		slot := constants.MzrSlotFromAddr(loadBase)
-		console.KWriteString("[LoadMaz] loading .mzr (ET_EXEC) at slot ")
-		if slot >= 0 {
-			console.KPrintHex64(uint64(slot))
-		} else {
-			console.KWriteString("unknown")
-		}
-		console.KWriteString(" base=")
 	} else {
 		// ET_DYN (PIE): relocate above shepherd's current highest VA
 		loadBase = shepherd.HighestVA
@@ -246,12 +232,7 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 		}
 		loadBase = (loadBase + 0x100000 + 4095) &^ 4095 // 1MB gap, page-aligned
 		loadOffset = loadBase - mazLowest
-		console.KWriteString("[LoadMaz] ET_DYN base=")
 	}
-	console.KPrintHex64(loadBase)
-	console.KWriteString(" offset=")
-	console.KPrintHex64(loadOffset)
-	console.KWriteString("\r\n")
 
 	// === Load segments into shepherd's page table ===
 	for i := uint16(0); i < hdr.Phnum; i++ {
@@ -283,11 +264,8 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 	// === Resolve .maz_imports (works for both ET_EXEC and ET_DYN) ===
 	importCount := resolveMazImports(elfData, &hdr, loadOffset, l0PA, shepherd.SymbolTable)
 
-	console.KWriteString("[LoadMaz] relocs=")
-	console.KPrintHex64(uint64(reloCount))
-	console.KWriteString(" imports=")
-	console.KPrintHex64(uint64(importCount))
-	console.KWriteString("\r\n")
+	_ = reloCount
+	_ = importCount
 
 	// === Find entry point ===
 	entrySymAddr := findSymbolAddress(elfData, &hdr, "main.MazarinMain")
@@ -305,11 +283,6 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 	var moduledataVA uint64
 	if moduledataSymAddr != 0 {
 		moduledataVA = moduledataSymAddr + loadOffset
-		console.KWriteString("[LoadMaz] moduledata=")
-		console.KPrintHex64(moduledataVA)
-		console.KWriteString("\r\n")
-	} else {
-		console.KWriteString("[LoadMaz] no runtime.firstmoduledata found\r\n")
 	}
 
 	// === Find main.MazarinShepherd for interface injection ===
@@ -317,9 +290,6 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 	var shepherdInitVA uint64
 	if shepherdInitSymAddr != 0 {
 		shepherdInitVA = shepherdInitSymAddr + loadOffset
-		console.KWriteString("[LoadMaz] MazarinShepherd=")
-		console.KPrintHex64(shepherdInitVA)
-		console.KWriteString("\r\n")
 	}
 
 	// === Update shepherd's highest VA ===
@@ -336,26 +306,11 @@ func DoLoadMazWork(req *LoadMazWorkRequest) int64 {
 	// === Write result back to shepherd ===
 	loadSize := mazHighest - mazLowest
 
-	console.KWriteString("[LoadMaz] writing result to ")
-	console.KPrintHex64(req.ResultPtr)
-	console.KWriteString(" l0PA=")
-	console.KPrintHex64(uint64(l0PA))
-
-	// Debug: check if the page is mapped
-	pa0 := kmem.WalkUserPageTableWithL0(uintptr(req.ResultPtr), l0PA)
-	console.KWriteString(" PA=")
-	console.KPrintHex64(uint64(pa0))
-	console.KWriteString("\r\n")
-
 	writeU64ToUser(uintptr(req.ResultPtr), entryPoint, l0PA)
 	writeU64ToUser(uintptr(req.ResultPtr+8), loadBase, l0PA)
 	writeU64ToUser(uintptr(req.ResultPtr+16), loadSize, l0PA)
 	writeU64ToUser(uintptr(req.ResultPtr+24), moduledataVA, l0PA)
 	writeU64ToUser(uintptr(req.ResultPtr+32), shepherdInitVA, l0PA)
-
-	console.KWriteString("[LoadMaz] OK entry=")
-	console.KPrintHex64(entryPoint)
-	console.KWriteString("\r\n")
 
 	return 0
 }

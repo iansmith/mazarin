@@ -371,30 +371,14 @@ func DelegateSyscall(id sysid.ID, arg0, arg1, arg2, arg3, arg4, arg5 uint64) int
 				if !writeDelegateRecvResult(resultPtr, handlerShepherd.PageTableL0PA, e) {
 					serial.RawUARTPuts("[DLG] recv result write fault\r\n")
 				}
-				serial.RawUARTPuts("[DLG:deliver] recvTID=")
-				serial.RawUARTDecimal(uint64(recvTID))
-				serial.RawUARTPuts(" sysID=")
-				serial.RawUARTDecimal(uint64(id))
-				serial.RawUARTPuts("\r\n")
 				wakeDelegateThread(int32(recvTID), 0)
 			}
-		} else {
-			serial.RawUARTPuts("[DLG:queued] handlerSID=")
-			serial.RawUARTDecimal(uint64(handlerSID))
-			serial.RawUARTPuts(" sysID=")
-			serial.RawUARTDecimal(uint64(id))
-			serial.RawUARTPuts(" recvTID=-1\r\n")
 		}
 	}
 
 	restoreIRQs(savedDAIF)
 
 	// Block the caller
-	serial.RawUARTPuts("[DLG:block] callerTID=")
-	serial.RawUARTDecimal(uint64(callerTID))
-	serial.RawUARTPuts(" sysID=")
-	serial.RawUARTDecimal(uint64(id))
-	serial.RawUARTPuts("\r\n")
 	ctx := blockForDelegatedSyscall()
 	if ctx == 0 {
 		serial.RawUARTPuts("[DLG:block] NO NEXT THREAD, EAGAIN\r\n")
@@ -590,12 +574,6 @@ func SyscallRegisterSyscallHandler(arg0, _, _, _, _, _ uint64) int64 {
 		return -16 // EBUSY — already registered
 	}
 
-	serial.RawUARTPuts("[DLG] P")
-	serial.RawUARTDecimal(uint64(callerShepherd.PID))
-	serial.RawUARTPuts(" handles SysID ")
-	serial.RawUARTDecimal(uint64(id))
-	serial.RawUARTPuts("\r\n")
-
 	return 0
 }
 
@@ -644,11 +622,6 @@ func SyscallDelegatedRecv(arg0, _, _, _, _, _ uint64) int64 {
 	e := delegateQueuePopAnyForShepherd(mySID)
 	if e != nil {
 		restoreIRQs(savedDAIF)
-		serial.RawUARTPuts("[DLG:recv-hit] SID=")
-		serial.RawUARTDecimal(uint64(mySID))
-		serial.RawUARTPuts(" sysID=")
-		serial.RawUARTDecimal(uint64(e.SysID))
-		serial.RawUARTPuts("\r\n")
 		// Ensure the handler's result pages are mapped before writing.
 		// The delegate recv goroutine allocates the result struct on its
 		// stack, but the page may not be demand-faulted yet. Without
@@ -674,12 +647,6 @@ func SyscallDelegatedRecv(arg0, _, _, _, _, _ uint64) int64 {
 	}
 
 	restoreIRQs(savedDAIF)
-
-	serial.RawUARTPuts("[DLG:recv-block] SID=")
-	serial.RawUARTDecimal(uint64(mySID))
-	serial.RawUARTPuts(" TID=")
-	serial.RawUARTDecimal(uint64(callerTID))
-	serial.RawUARTPuts("\r\n")
 
 	ctx := blockForDelegatedRecv()
 	if ctx == 0 {
@@ -772,13 +739,6 @@ func SyscallReply(arg0, arg1, arg2, arg3, arg4, arg5 uint64) int64 {
 	}
 
 	// Wake the blocked caller thread with the return value
-	serial.RawUARTPuts("[DLG:reply] callerSID=")
-	serial.RawUARTDecimal(uint64(callerSID))
-	serial.RawUARTPuts(" callerTID=")
-	serial.RawUARTDecimal(uint64(callerTID))
-	serial.RawUARTPuts(" ret=")
-	serial.RawUARTHexCompact(uint64(returnVal))
-	serial.RawUARTPuts("\r\n")
 	wakeDelegateCallerThread(callerSID, int32(callerTID), returnVal)
 
 	return 0

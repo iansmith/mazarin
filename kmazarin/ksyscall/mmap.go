@@ -316,16 +316,6 @@ func syscallMmapContiguous(alignedLength uint64) int64 {
 		return -12 // ENOMEM
 	}
 
-	serial.RawUARTPuts("[mmap] CONTIGUOUS: ")
-	serial.RawUARTHex64(uint64(numPages))
-	serial.RawUARTPuts(" pages (order ")
-	serial.RawUARTHex64(uint64(order))
-	serial.RawUARTPuts(") PA=")
-	serial.RawUARTHex64(uint64(basePA))
-	serial.RawUARTPuts(" VA=")
-	serial.RawUARTHex64(baseVA)
-	serial.RawUARTPuts("\r\n")
-
 	return int64(baseVA)
 }
 

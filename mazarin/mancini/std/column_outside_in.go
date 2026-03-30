@@ -53,8 +53,8 @@ func NewColumnOutsideIn(myName, parent string, bgColor color.NRGBA, minH, maxH i
 	lh.InitBounds(myName)
 
 	c := &ColumnOutsideIn{BgColor: bgColor}
-	c.Interactor.Init(c, lh)
-	c.Parent.InitParent(&c.Interactor)
+	c.Interactor.Initialize(c, lh)
+	c.Parent.Initialize(true, &c.Interactor)
 	return c
 }
 

@@ -38,7 +38,7 @@ func NewNeuCircle(layout *mancini.LayoutAttributes, pal mancini.Palette,
 		Depth:  depth,
 		Params: params,
 	}
-	n.Decorator.InitDecorator(n, layout, margin, margin, margin, margin)
+	n.Decorator.Initialize(n, layout, margin, margin, margin, margin)
 	return n
 }
 

@@ -143,7 +143,5 @@ func SyscallBlockSubmit(arg0, arg1, arg2, arg3, arg4, _ uint64) int64 {
 	asm.Dsb()
 	dev.Eng.Notify()
 
-	serial.PollWrite('B') // breadcrumb: BlockSubmit OK
-
 	return int64(tag)
 }

@@ -10,13 +10,12 @@ import (
 // damage rectangle for an interactor. The damage rectangle is the union
 // of current and last-painted bounds when any tracked property changes.
 type DamageAttributes struct {
-	DamageRect    *attr.Attribute[vm.Value] // constraint: damaged region (empty if no change)
-	LPBounds      *attr.Attribute[vm.Value] // value: last-painted bounds (set after painting)
-	LPVisible     *attr.Attribute[bool]     // value: last-painted visibility
-	LPBoundsHash  *attr.Attribute[int64]    // value: last-painted bounds hash
-	LPBgColor     *attr.Attribute[int64]    // value: last-painted background color
-	LPFgColor     *attr.Attribute[int64]    // value: last-painted foreground color
-	LPContentHash *attr.Attribute[int64]    // value: last-painted content hash
+	DamageRect   *attr.Attribute[vm.Value] // constraint: damaged region (empty if no change)
+	LPBounds     *attr.Attribute[vm.Value] // value: last-painted bounds (set after painting)
+	LPVisible    *attr.Attribute[bool]     // value: last-painted visibility
+	LPBoundsHash *attr.Attribute[int64]    // value: last-painted bounds hash
+	LPBgColor    *attr.Attribute[int64]    // value: last-painted background color
+	LPFgColor    *attr.Attribute[int64]    // value: last-painted foreground color
 }
 
 // emptyRect returns a vm.Value for an empty rectangle (0,0,0,0).
@@ -26,9 +25,7 @@ func emptyRect() vm.Value {
 
 // InitLeafDamage creates damage tracking for a leaf interactor (no children).
 // bgColorURI and fgColorURI point to the interactor's current color attributes.
-// contentHashURI points to a content hash attribute (use "" for non-text interactors;
-// the placeholder will remain unbound and the deref will return 0 — matching the LP default).
-func (lh *LayoutAttributes) InitLeafDamage(bgColorURI, fgColorURI, contentHashURI string) {
+func (lh *LayoutAttributes) InitLeafDamage(bgColorURI, fgColorURI string) {
 	myName := lh.name
 	d := &DamageAttributes{}
 
@@ -38,15 +35,12 @@ func (lh *LayoutAttributes) InitLeafDamage(bgColorURI, fgColorURI, contentHashUR
 	d.LPBoundsHash = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutLPBoundsHash), 0)
 	d.LPBgColor = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutLPBgColor), 0)
 	d.LPFgColor = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutLPFgColor), 0)
-	d.LPContentHash = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutLPContentHash), 0)
 
 	prog := BindStrings(ProgLeafDamageRect,
 		"_bounds_", lh.Bounds.URI(),
 		"_lpBounds_", d.LPBounds.URI(),
 		"_visible_", lh.Visible.URI(),
 		"_lpVisible_", d.LPVisible.URI(),
-		"_contentHash_", contentHashURI,
-		"_lpContentHash_", d.LPContentHash.URI(),
 		"_bgColor_", bgColorURI,
 		"_lpBgColor_", d.LPBgColor.URI(),
 		"_fgColor_", fgColorURI,
@@ -71,7 +65,6 @@ func (lh *LayoutAttributes) InitParentDamage(bgColorURI, fgColorURI, childDamage
 	d.LPBoundsHash = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutLPBoundsHash), 0)
 	d.LPBgColor = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutLPBgColor), 0)
 	d.LPFgColor = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutLPFgColor), 0)
-	d.LPContentHash = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutLPContentHash), 0)
 
 	prog := BindStrings(ProgParentDamageRect,
 		"_bounds_", lh.Bounds.URI(),
@@ -125,12 +118,61 @@ func (lh *LayoutAttributes) SnapshotDamageColors(bgColor, fgColor int64) {
 	}
 }
 
-// SnapshotDamageContentHash copies a content hash into the last-painted attribute.
-func (lh *LayoutAttributes) SnapshotDamageContentHash(hash int64) {
-	if lh == nil || lh.Damage == nil {
+// FullDamage sets the damage rectangle to the interactor's full bounds,
+// ensuring the next draw pass repaints this interactor completely.
+// Safe to call before Damage or Bounds are initialized — creates a
+// minimal DamageRect value attribute if needed.
+func (lh *LayoutAttributes) FullDamage() {
+	if lh == nil {
 		return
 	}
-	if lh.Damage.LPContentHash != nil {
-		lh.Damage.LPContentHash.Set(hash)
+	if lh.Damage == nil {
+		lh.Damage = &DamageAttributes{}
 	}
+	bounds := emptyRect()
+	if lh.Bounds != nil {
+		bounds = lh.Bounds.Get()
+	}
+	uri := LayoutURI(lh.name, DataTypeRect, LayoutDamageRect)
+	if lh.Damage.DamageRect == nil {
+		lh.Damage.DamageRect = attr.ValueRectangle(uri, bounds)
+	} else {
+		lh.Damage.DamageRect.Set(bounds)
+	}
+}
+
+// InitDefaultParentDamage installs a default parent damage constraint
+// that checks BoundsHash change (→ full bounds) or unions visible
+// children's DamageRects. This replaces any value-attribute DamageRect
+// (from FullDamage) with a constraint-attribute DamageRect.
+func InitDefaultParentDamage(lh *LayoutAttributes) {
+	if lh == nil {
+		return
+	}
+	myName := lh.name
+
+	// LPBoundsHash mirror for detecting parent bounds changes.
+	if lh.Damage == nil {
+		lh.Damage = &DamageAttributes{}
+	}
+	d := lh.Damage
+	if d.LPBoundsHash == nil {
+		d.LPBoundsHash = attr.ValueI64(LayoutURI(myName, DataTypeInt64, LayoutLPBoundsHash), 0)
+	}
+
+	// Skip constraint DamageRect if a value DamageRect already exists at this URI
+	// (created by FullDamage). No AttrDelete API yet, so we can't replace it.
+	// The value attr will serve as a placeholder until the constraint rework lands.
+	if d.DamageRect != nil {
+		return
+	}
+
+	prog := BindStringsChildren(ProgParentDamageDefault,
+		"_boundsHash_", lh.BoundsHash.URI(),
+		"_lpBoundsHash_", d.LPBoundsHash.URI(),
+		"_bounds_", lh.Bounds.URI(),
+		"_myName_", myName,
+	)
+	d.DamageRect = attr.ConstraintComposite(
+		LayoutURI(myName, DataTypeRect, LayoutDamageRect), flat.TypeRectangle, prog)
 }

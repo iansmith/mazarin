@@ -86,7 +86,6 @@ func main() {
 				os.Exit(1)
 			}
 			blockSlot = 0
-			fmt.Printf("[fs] registered block device IRQ %d on slot %d\n", dev.IRQNum, blockSlot)
 			break
 		}
 	}
@@ -102,8 +101,6 @@ func main() {
 		fmt.Printf("[fs] AllocContiguous for scratch failed: %v\n", scratchErr)
 		os.Exit(1)
 	}
-	fmt.Printf("[fs] scratch DMA buffer at 0x%x (%d pages)\n", scratch.Addr, scratchPages)
-
 	// 3. Mount ext2 on VirtIO block device (read-only)
 	blkDev := &asyncBlockDev{scratchVA: scratch.Addr}
 	fsys, mountErr := ext2.Mount(blkDev)
@@ -125,9 +122,6 @@ func main() {
 		fmt.Printf("[fs] FATAL: mount ramdisk: %v\n", tmpErr)
 		os.Exit(1)
 	}
-	fmt.Printf("[fs] /tmp ramdisk mounted (128MB ext2, %d free blocks)\n",
-		tmpFS.Superblock().FreeBlocksCount)
-
 	mt := &mountTable{root: fsys, tmpFS: tmpFS, blkDev: blkDev}
 
 	// 4. Register as delegate handler for LoadFile and ReadFilePages.
@@ -177,8 +171,6 @@ func main() {
 // Routes through the mount table to select the correct filesystem.
 func handleLoadFile(mt *mountTable, req *sys.SyscallRequest) {
 	path := req.PathString()
-	fmt.Printf("[fs] LoadFile %q\n", path)
-
 	kind, relPath := mt.resolve(path)
 	fsys := mt.getFS(kind)
 
@@ -187,15 +179,12 @@ func handleLoadFile(mt *mountTable, req *sys.SyscallRequest) {
 	if kind == mountRoot {
 		blk = mt.blkDev
 	}
-	sys.UartWriteString(fmt.Sprintf("[fs] LoadFile %q: reading (transferable)...\n", path))
 	va, numPages, bytesRead, err := readFileIntoPages(fsys, blk, relPath, true)
 	if err != nil {
 		fmt.Printf("[fs] LoadFile %q: error=%v\n", path, err)
 		req.Reply(-2) // ENOENT
 		return
 	}
-	sys.UartWriteString(fmt.Sprintf("[fs] LoadFile %q: read done (%d pages, %d bytes), transferring...\n", path, numPages, bytesRead))
-
 	targetVA, terr := sys.TransferAndUnmap(int(req.CallerPID), va, numPages)
 	if terr != nil {
 		fmt.Printf("[fs] LoadFile %q: TransferAndUnmap failed (%d pages, va=0x%x, targetPID=%d): %v\n",
@@ -204,7 +193,6 @@ func handleLoadFile(mt *mountTable, req *sys.SyscallRequest) {
 		return
 	}
 
-	fmt.Printf("[fs] LoadFile %q: transferred %d pages\n", path, numPages)
 	req.LoadFileReply(0, uint64(targetVA), uint64(numPages), uint64(bytesRead))
 }
 
@@ -264,13 +252,10 @@ func readFileIntoPages(fsys *ext2.FileSystem, blkDev *asyncBlockDev, path string
 	// Resolve all block numbers upfront. ResolveBlockList caches
 	// indirect pointer tables internally, so this reads each metadata
 	// block at most once regardless of file size.
-	sys.UartWriteString(fmt.Sprintf("[fs] resolving %d blocks for %s\n", totalBlocks, path))
 	allBlocks, rerr := fsys.ResolveBlockList(inode, 0, totalBlocks)
 	if rerr != nil {
 		return 0, 0, 0, rerr
 	}
-	sys.UartWriteString(fmt.Sprintf("[fs] resolved %d blocks, starting batched DMA for %s\n", len(allBlocks), path))
-
 	for blockIdx := uint32(0); blockIdx < totalBlocks; {
 		batch := totalBlocks - blockIdx
 		if batch > scratchPages {
@@ -280,9 +265,6 @@ func readFileIntoPages(fsys *ext2.FileSystem, blkDev *asyncBlockDev, path string
 		batchBlocks := allBlocks[blockIdx : blockIdx+batch]
 
 		// Submit all reads in this batch concurrently.
-		if blockIdx%64 == 0 || blockIdx+batch >= totalBlocks {
-			sys.UartWriteString(fmt.Sprintf("[fs] batch %d/%d (%d blocks)\n", blockIdx, totalBlocks, batch))
-		}
 		submitted := 0
 		for i, bn := range batchBlocks {
 			if bn == 0 {
@@ -331,8 +313,6 @@ func readFileIntoPages(fsys *ext2.FileSystem, blkDev *asyncBlockDev, path string
 // handleReadFilePages returns ENOSYS — ext2 does not support direct DMA
 // sector-run reads. Callers should use LoadFile instead.
 func handleReadFilePages(req *sys.SyscallRequest) {
-	path := req.PathString()
-	fmt.Printf("[fs] ReadFilePages %q: not supported on ext2, use LoadFile\n", path)
 	req.Reply(-38) // ENOSYS
 }
 
@@ -343,7 +323,6 @@ func drainDelegateRequests(delegateCh <-chan sys.SyscallRequest, mt *mountTable)
 	for {
 		select {
 		case req := <-delegateCh:
-			fmt.Printf("[fs] ERROR: loading file %q but the caller should have waited for fs to become ready\n", req.PathString())
 			switch req.SysID {
 			case sysid.LoadFile:
 				handleLoadFile(mt, &req)
@@ -376,21 +355,16 @@ func readStartupConfig(fsys *ext2.FileSystem) *constants.StartupConfig {
 		fmt.Printf("[fs] startup.toml parse error: %v\n", err)
 		return nil
 	}
-	fmt.Printf("[fs] startup config: %d shepherds\n", len(cfg.Shepherds))
 	return &cfg
 }
 
 // launchShepherd reads an ELF from ext2 and launches it as a new shepherd.
 func launchShepherd(fsys *ext2.FileSystem, blkDev *asyncBlockDev, name, path string) {
-	fmt.Printf("[fs] launching shepherd %s from %s\n", name, path)
-
 	va, numPages, bytesRead, err := readFileIntoPages(fsys, blkDev, path, false)
 	if err != nil {
 		fmt.Printf("[fs] failed to read %s: %v\n", path, err)
 		return
 	}
-	fmt.Printf("[fs] read %s: %d pages, %d bytes\n", name, numPages, bytesRead)
-
 	rpErr := sys.RunShepherd(name, va, numPages, bytesRead)
 	// Free temporary pages (RunShepherd copies them to the new shepherd).
 	syscall.RawSyscall6(syscall.SYS_MUNMAP, va, uintptr(numPages)*4096, 0, 0, 0, 0)
@@ -398,7 +372,6 @@ func launchShepherd(fsys *ext2.FileSystem, blkDev *asyncBlockDev, name, path str
 		fmt.Printf("[fs] RunShepherd failed for %s: %v\n", name, rpErr)
 		return
 	}
-	fmt.Printf("[fs] shepherd %s launched\n", name)
 }
 
 // bootSequence launches the core shepherds in dependency order, then reads
@@ -417,8 +390,6 @@ func bootSequence(fsys *ext2.FileSystem, blkDev *asyncBlockDev) {
 		fmt.Printf("[fs] FATAL: rachel shepherd not ready: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("[fs] rachel shepherd ready")
-
 	// 2. Launch linux and wait — provides syscall delegation (Openat, Read, etc.).
 	// Linux depends on both fs (IPC) and rachel (fonts/WM).
 	launchShepherd(fsys, blkDev, "linux", "/linux.elf")
@@ -426,8 +397,6 @@ func bootSequence(fsys *ext2.FileSystem, blkDev *asyncBlockDev) {
 		fmt.Printf("[fs] FATAL: linux shepherd not ready: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("[fs] linux shepherd ready")
-
 	// 3. Read startup config and launch remaining application shepherds.
 	cfg := readStartupConfig(fsys)
 	if cfg != nil {
@@ -498,25 +467,20 @@ func (d *asyncBlockDev) ReadBlock(lba uint64, buf []byte) error {
 	// Convert 4096-byte block LBA to 512-byte sector LBA
 	sectorLBA := lba * sectorsPerBlock
 
-	sys.UartWriteString("r1")
 	// Submit async read of 8 sectors (one full page) into DMA scratch buffer
 	dmaBuf := unsafe.Slice((*byte)(unsafe.Pointer(d.scratchVA)), asyncBlockSize)
 	_, serr := mem.BlockSubmit(0, sectorLBA, sectorsPerBlock, dmaBuf, 0)
 	if serr != nil {
-		sys.UartWriteString("r!")
 		return serr
 	}
 
-	sys.UartWriteString("r2")
 	// Block until completion arrives via soft IRQ
 	var softBuf hid.SoftIRQReturn
 	_, err := sys.WaitSoftIRQ(0, &softBuf)
 	if err != nil {
-		sys.UartWriteString("r!")
 		return err
 	}
 
-	sys.UartWriteString("r3")
 	// Check status
 	if softBuf.Length > 0 && softBuf.Events[0].Code != 0 {
 		return syscall.EIO

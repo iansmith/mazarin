@@ -207,9 +207,6 @@ func WakeSlotForIRQ(irqNum uint32) {
 	t.State = ThreadReady
 	slot.blockedTID = -1
 	slot.blockedThreadPtr = 0
-	if irqNum == hid.BlockVirtualIRQ {
-		serial.PollWrite('W') // breadcrumb: block IRQ woke thread
-	}
 	// Rewind the thread's saved PC so it re-executes the SVC instruction
 	// when scheduled. SyscallWaitSoftIRQ will run fresh and drain the events
 	// from the ring, returning success instead of EAGAIN.

@@ -73,23 +73,15 @@ func DispatchLoadMazWork() bool {
 		// between request completions.
 		atomic.StoreUint32(&loadMazDispatching, 1)
 
-		if atomicFired {
-			serial.RawUARTPuts("[LM:atomic]")
-		} else {
-			serial.RawUARTPuts("[LM:tid]")
-		}
-
 		// Snapshot the request and clear the TID to prevent re-dispatch.
 		req := ksyscall.LoadMazReq
 		ksyscall.LoadMazReq.BlockedTID = -1
 		atomic.StoreInt32(&ksyscall.LoadMazBusy, 0)
 
-		serial.RawUARTPuts("[LM:work]")
 		result := ksyscall.DoLoadMazWork(&req)
 
 		// Wake the blocked thread with the result.
 		wakeLoadMazThread(req.BlockedTID, result)
-		serial.RawUARTPuts("[LM:done]")
 		dispatched = true
 		// Loop back to check for more pending requests.
 	}
@@ -148,7 +140,6 @@ func BlockForLoadMaz() uintptr {
 	// Set the pending flag AFTER releasing the scheduler lock.
 	// KernelIdleLoop will see this and call DispatchLoadMazWork.
 	atomic.StoreUint32(&loadMazPending, 1)
-	serial.RawUARTPuts("[LM:pend]")
 
 	return uintptr(unsafe.Pointer(&next.Context))
 }
@@ -161,9 +152,6 @@ func wakeLoadMazThread(tid int32, result int64) {
 
 	t := threadLookupByTID(tid)
 	if t != nil && t.State == ThreadBlockedLoadMaz {
-		serial.RawUARTPuts("[LM:wake TID=")
-		serial.RawUARTHex64(uint64(tid))
-		serial.RawUARTPuts("]\r\n")
 		t.Context.SetReturnValue(uint64(result))
 		// Give the woken thread a fresh preemption quantum so it
 		// isn't immediately preempted due to stale elapsed time.
