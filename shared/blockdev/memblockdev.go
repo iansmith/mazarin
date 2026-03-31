@@ -22,6 +22,21 @@ func NewMemBlockDevice(name string, blockSize, numBlocks uint64) *MemBlockDevice
 	}
 }
 
+// NewMemBlockDeviceFromBacking creates a memory-backed block device using
+// a caller-provided backing slice. The slice must be at least
+// blockSize * numBlocks bytes. This allows the backing store to live
+// outside the Go heap (e.g., kernel-allocated pages via AllocPagesSlice),
+// avoiding GC pressure from large ramdisks.
+func NewMemBlockDeviceFromBacking(name string, blockSize uint64, backing []byte) *MemBlockDevice {
+	numBlocks := uint64(len(backing)) / blockSize
+	return &MemBlockDevice{
+		name:      name,
+		data:      backing,
+		blockSize: blockSize,
+		numBlocks: numBlocks,
+	}
+}
+
 func (m *MemBlockDevice) Name() string      { return m.name }
 func (m *MemBlockDevice) Close() error      { return nil }
 func (m *MemBlockDevice) BlockSize() uint64  { return m.blockSize }

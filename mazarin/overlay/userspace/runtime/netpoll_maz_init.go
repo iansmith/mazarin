@@ -17,7 +17,13 @@
 //   - sysmon calls netpoll(0) every 10ms as a backstop
 //   - netpollBreak via write(eventfd) wakes blocked epoll_wait early
 //
-// No netpollWaiters manipulation needed — pollUntil from timers is sufficient.
+// Note: netpollWaiters is NOT set here. On real Linux, netpollWaiters is
+// incremented by poll.runtime_pollOpen when pollable fds are registered.
+// Mazzy shepherds have no pollable fds, so netpollWaiters stays 0. This is
+// fine: findRunnable's blocking netpoll path is gated by
+// (netpollAnyWaiters() || pollUntil != 0), and pollUntil is non-zero when
+// timers are pending (which is almost always true). The stopm() fallback
+// also works correctly — futex_wake from startm reliably wakes parked Ms.
 
 //go:build linux
 

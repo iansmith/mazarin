@@ -80,6 +80,10 @@ func SyscallRunShepherd(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 		return -16 // EBUSY
 	}
 
+	console.KWriteString("[RunShepherd] CAS ok, name=")
+	console.KWriteString(name)
+	console.KWriteString("\r\n")
+
 	// Store request for the worker goroutine
 	RunShepherdReq = RunShepherdWorkRequest{
 		Name:         name,
@@ -93,6 +97,7 @@ func SyscallRunShepherd(arg0, arg1, arg2, arg3, _, _ uint64) int64 {
 	// Block and dispatch to worker goroutine (needs growable stack)
 	ctxPtr := blockForRunShepherd()
 	if ctxPtr != 0 {
+		console.KWriteString("[RunShepherd] blocked, switching\r\n")
 		SetSyscallSwitchTarget(ctxPtr)
 	} else {
 		console.KWriteString("[RunShepherd] ERROR: no thread to switch to\r\n")

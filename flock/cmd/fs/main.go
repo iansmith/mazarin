@@ -67,6 +67,14 @@ func (mt *mountTable) getFS(kind mountKind) *ext2.FileSystem {
 	return mt.root
 }
 
+// writeRawString writes a string to stderr using RawSyscall (no entersyscall/exitsyscall).
+// This avoids P-reacquisition hangs that can occur with fmt.Printf → Syscall.
+func writeRawString(s string) {
+	for i := 0; i < len(s); i++ {
+		sys.RawWrite(2, s[i])
+	}
+}
+
 func main() {
 	fmt.Println("[fs] starting filesystem shepherd")
 
@@ -102,7 +110,7 @@ func main() {
 		os.Exit(1)
 	}
 	// 3. Mount ext2 on VirtIO block device (read-only)
-	blkDev := &asyncBlockDev{scratchVA: scratch.Addr}
+	blkDev := newAsyncBlockDev(scratch.Addr)
 	fsys, mountErr := ext2.Mount(blkDev)
 	if mountErr != nil {
 		fmt.Printf("[fs] ext2 mount failed: %v\n", mountErr)
@@ -111,8 +119,17 @@ func main() {
 	fmt.Println("[fs] ext2 root mounted successfully (read-only)")
 
 	// 3b. Create 128MB ext2 ramdisk at /tmp.
+	// Backing store is off-heap (kernel-allocated PageRamdisk pages) to avoid
+	// GC pressure — 128MB on the Go heap causes multi-second GC pauses at GOGC=5%.
 	// 512-byte device blocks to match ext2 reader's sectorBuf.
-	memDev := blockdev.NewMemBlockDevice("ramdisk", 512, ramdiskSectors)
+	ramdiskBytes := 512 * ramdiskSectors
+	ramdiskPages := (ramdiskBytes + 4095) / 4096
+	ramdiskBacking, ramdiskErr := mem.AllocPagesSlice(ramdiskPages, mem.PageRamdisk)
+	if ramdiskErr != nil {
+		fmt.Printf("[fs] FATAL: AllocPagesSlice for ramdisk failed: %v\n", ramdiskErr)
+		os.Exit(1)
+	}
+	memDev := blockdev.NewMemBlockDeviceFromBacking("ramdisk", 512, ramdiskBacking)
 	if err := ext2.Format(memDev, "ramdisk"); err != nil {
 		fmt.Printf("[fs] FATAL: format ramdisk: %v\n", err)
 		os.Exit(1)
@@ -245,7 +262,7 @@ func readFileIntoPages(fsys *ext2.FileSystem, blkDev *asyncBlockDev, path string
 		return va, numPages, n, nil
 	}
 
-	// Batched DMA path: submit up to scratchPages reads concurrently.
+	// Batched DMA path via the DMA worker goroutine.
 	inode := file.InodeRaw()
 	totalBlocks := uint32((fileSize + int(fsys.BlockSizeBytes()) - 1) / int(fsys.BlockSizeBytes()))
 
@@ -256,55 +273,11 @@ func readFileIntoPages(fsys *ext2.FileSystem, blkDev *asyncBlockDev, path string
 	if rerr != nil {
 		return 0, 0, 0, rerr
 	}
-	for blockIdx := uint32(0); blockIdx < totalBlocks; {
-		batch := totalBlocks - blockIdx
-		if batch > scratchPages {
-			batch = scratchPages
-		}
 
-		batchBlocks := allBlocks[blockIdx : blockIdx+batch]
-
-		// Submit all reads in this batch concurrently.
-		submitted := 0
-		for i, bn := range batchBlocks {
-			if bn == 0 {
-				// Sparse block — zero the scratch slot.
-				off := uintptr(i) * asyncBlockSize
-				scratch := unsafe.Slice((*byte)(unsafe.Pointer(blkDev.scratchVA+off)), asyncBlockSize)
-				for k := range scratch {
-					scratch[k] = 0
-				}
-				continue
-			}
-			if serr := blkDev.submitRead(bn, i); serr != nil {
-				return 0, 0, 0, serr
-			}
-			submitted++
-		}
-
-		// Wait for all submitted reads to complete.
-		if submitted > 0 {
-			if werr := blkDev.waitReads(submitted); werr != nil {
-				return 0, 0, 0, werr
-			}
-		}
-
-		// Copy from scratch buffer to destination pages.
-		for i := range batchBlocks {
-			srcOff := uintptr(i) * asyncBlockSize
-			dstOff := int(blockIdx+uint32(i)) * asyncBlockSize
-			remaining := fileSize - dstOff
-			copyLen := asyncBlockSize
-			if remaining < copyLen {
-				copyLen = remaining
-			}
-			if copyLen > 0 {
-				src := unsafe.Slice((*byte)(unsafe.Pointer(blkDev.scratchVA+srcOff)), copyLen)
-				copy(dst[dstOff:dstOff+copyLen], src)
-			}
-		}
-
-		blockIdx += batch
+	// Send the entire read to the DMA worker as a single batched request.
+	// The worker handles batching internally (scratchPages at a time).
+	if berr := blkDev.readBatch(allBlocks, dst[:fileSize]); berr != nil {
+		return 0, 0, 0, berr
 	}
 
 	return va, numPages, fileSize, nil
@@ -360,18 +333,21 @@ func readStartupConfig(fsys *ext2.FileSystem) *constants.StartupConfig {
 
 // launchShepherd reads an ELF from ext2 and launches it as a new shepherd.
 func launchShepherd(fsys *ext2.FileSystem, blkDev *asyncBlockDev, name, path string) {
+	writeRawString("[fs] reading " + path + "...\n")
 	va, numPages, bytesRead, err := readFileIntoPages(fsys, blkDev, path, false)
 	if err != nil {
-		fmt.Printf("[fs] failed to read %s: %v\n", path, err)
+		writeRawString("[fs] failed to read " + path + "\n")
 		return
 	}
+	writeRawString("[fs] read " + path + ", calling RunShepherd\n")
 	rpErr := sys.RunShepherd(name, va, numPages, bytesRead)
 	// Free temporary pages (RunShepherd copies them to the new shepherd).
 	syscall.RawSyscall6(syscall.SYS_MUNMAP, va, uintptr(numPages)*4096, 0, 0, 0, 0)
 	if rpErr != nil {
-		fmt.Printf("[fs] RunShepherd failed for %s: %v\n", name, rpErr)
+		writeRawString("[fs] RunShepherd FAILED for " + name + "\n")
 		return
 	}
+	writeRawString("[fs] " + name + " launched\n")
 }
 
 // bootSequence launches the core shepherds in dependency order, then reads
@@ -387,38 +363,180 @@ func bootSequence(fsys *ext2.FileSystem, blkDev *asyncBlockDev) {
 	// Rachel only depends on fs (already ready) for loading fontsvc.maz.
 	launchShepherd(fsys, blkDev, "rachel", "/rachel.elf")
 	if err := sys.WaitForShepherdReady("rachel", 10); err != nil {
-		fmt.Printf("[fs] FATAL: rachel shepherd not ready: %v\n", err)
-		os.Exit(1)
+		writeRawString("[fs] FATAL: rachel not ready\n")
+		return
 	}
 	// 2. Launch linux and wait — provides syscall delegation (Openat, Read, etc.).
 	// Linux depends on both fs (IPC) and rachel (fonts/WM).
 	launchShepherd(fsys, blkDev, "linux", "/linux.elf")
 	if err := sys.WaitForShepherdReady("linux", 10); err != nil {
-		fmt.Printf("[fs] FATAL: linux shepherd not ready: %v\n", err)
-		os.Exit(1)
+		writeRawString("[fs] FATAL: linux not ready\n")
+		return
 	}
 	// 3. Read startup config and launch remaining application shepherds.
+	writeRawString("[fs] reading startup.toml...\n")
 	cfg := readStartupConfig(fsys)
 	if cfg != nil {
 		for _, s := range cfg.Shepherds {
+			writeRawString("[fs] launching " + s.Name + " from " + s.Path + "\n")
 			launchShepherd(fsys, blkDev, s.Name, s.Path)
 		}
+	} else {
+		writeRawString("[fs] no startup.toml\n")
 	}
-	fmt.Println("[fs] boot sequence complete")
+	writeRawString("[fs] boot sequence complete\n")
 }
 
-// asyncBlockDev implements blockdev.BlockDevice using the fs shepherd's own
-// DMA scratch buffer + WaitSoftIRQ for completion. Reports a 4096-byte block
-// size so ext2 (which also uses 4096-byte blocks) reads a full page per call,
-// submitting 8 sectors per DMA roundtrip instead of 1.
+// asyncBlockDev implements blockdev.BlockDevice backed by a DMA worker
+// goroutine. All DMA operations (BlockSubmit + WaitSoftIRQ) run on a single
+// dedicated goroutine, which is the sole owner of the SoftIRQ slot and
+// scratch buffer. Other goroutines send requests via channel and block on
+// a per-request response channel. This makes the single-waiter-per-slot
+// invariant structural — no mutex needed, no stolen completion events.
 type asyncBlockDev struct {
+	reqCh     chan dmaRequest
 	scratchVA uintptr // base of MAZARIN_CONTIGUOUS scratch pages
 }
 
+// dmaRequest is sent to the DMA worker goroutine.
+type dmaRequest struct {
+	kind    dmaRequestKind
+	replyCh chan dmaReply
+
+	// For single-block reads (dmaReadBlock):
+	lba uint64
+	buf []byte
+
+	// For batched reads (dmaReadBatch):
+	blocks []uint32 // ext2 block numbers
+	dst    []byte   // destination buffer (len >= len(blocks)*asyncBlockSize)
+}
+
+type dmaRequestKind int
+
 const (
-	asyncBlockSize    = 4096
-	sectorsPerBlock   = asyncBlockSize / 512
+	dmaReadBlock dmaRequestKind = iota // single 4KB block read
+	dmaReadBatch                       // batched multi-block read
 )
+
+type dmaReply struct {
+	err error
+}
+
+const (
+	asyncBlockSize  = 4096
+	sectorsPerBlock = asyncBlockSize / 512
+)
+
+// newAsyncBlockDev creates the block device and starts the DMA worker.
+func newAsyncBlockDev(scratchVA uintptr) *asyncBlockDev {
+	d := &asyncBlockDev{
+		reqCh:     make(chan dmaRequest, 4),
+		scratchVA: scratchVA,
+	}
+	go d.dmaWorker()
+	return d
+}
+
+// dmaWorker is the sole goroutine that touches the SoftIRQ slot and scratch
+// buffer. It processes requests sequentially from reqCh.
+func (d *asyncBlockDev) dmaWorker() {
+	for req := range d.reqCh {
+		var err error
+		switch req.kind {
+		case dmaReadBlock:
+			err = d.doReadBlock(req.lba, req.buf)
+		case dmaReadBatch:
+			err = d.doReadBatch(req.blocks, req.dst)
+		}
+		req.replyCh <- dmaReply{err: err}
+	}
+}
+
+// doReadBlock reads a single 4KB block via DMA. Only called from dmaWorker.
+func (d *asyncBlockDev) doReadBlock(lba uint64, buf []byte) error {
+	sectorLBA := lba * sectorsPerBlock
+	dmaBuf := unsafe.Slice((*byte)(unsafe.Pointer(d.scratchVA)), asyncBlockSize)
+	_, serr := mem.BlockSubmit(0, sectorLBA, sectorsPerBlock, dmaBuf, 0)
+	if serr != nil {
+		return serr
+	}
+	var softBuf hid.SoftIRQReturn
+	_, err := sys.WaitSoftIRQ(0, &softBuf)
+	if err != nil {
+		return err
+	}
+	if softBuf.Length > 0 && softBuf.Events[0].Code != 0 {
+		return syscall.EIO
+	}
+	copy(buf[:asyncBlockSize], dmaBuf)
+	return nil
+}
+
+// doReadBatch reads multiple 4KB blocks in batches of scratchPages.
+// Only called from dmaWorker.
+func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
+	total := uint32(len(blocks))
+	for blockIdx := uint32(0); blockIdx < total; {
+		batch := total - blockIdx
+		if batch > scratchPages {
+			batch = scratchPages
+		}
+		batchBlocks := blocks[blockIdx : blockIdx+batch]
+
+		submitted := 0
+		for i, bn := range batchBlocks {
+			if bn == 0 {
+				off := uintptr(i) * asyncBlockSize
+				scratch := unsafe.Slice((*byte)(unsafe.Pointer(d.scratchVA+off)), asyncBlockSize)
+				for k := range scratch {
+					scratch[k] = 0
+				}
+				continue
+			}
+			sectorLBA := uint64(bn) * sectorsPerBlock
+			off := uintptr(i) * asyncBlockSize
+			dmaBuf := unsafe.Slice((*byte)(unsafe.Pointer(d.scratchVA+off)), asyncBlockSize)
+			_, serr := mem.BlockSubmit(0, sectorLBA, sectorsPerBlock, dmaBuf, 0)
+			if serr != nil {
+				return serr
+			}
+			submitted++
+		}
+
+		if submitted > 0 {
+			remaining := submitted
+			for remaining > 0 {
+				var softBuf hid.SoftIRQReturn
+				n, err := sys.WaitSoftIRQ(0, &softBuf)
+				if err != nil {
+					return err
+				}
+				for i := 0; i < n && remaining > 0; i++ {
+					if softBuf.Events[i].Code != 0 {
+						return syscall.EIO
+					}
+					remaining--
+				}
+			}
+		}
+
+		for i := range batchBlocks {
+			srcOff := uintptr(i) * asyncBlockSize
+			dstOff := int(blockIdx+uint32(i)) * asyncBlockSize
+			dstEnd := dstOff + asyncBlockSize
+			if dstEnd > len(dst) {
+				dstEnd = len(dst)
+			}
+			if dstOff < len(dst) {
+				src := unsafe.Slice((*byte)(unsafe.Pointer(d.scratchVA+srcOff)), dstEnd-dstOff)
+				copy(dst[dstOff:dstEnd], src)
+			}
+		}
+		blockIdx += batch
+	}
+	return nil
+}
 
 func (d *asyncBlockDev) Name() string      { return "virtio-blk-async" }
 func (d *asyncBlockDev) Close() error      { return nil }
@@ -428,64 +546,34 @@ func (d *asyncBlockDev) WriteBlock(lba uint64, buf []byte) error {
 	return fmt.Errorf("write not supported")
 }
 
-// submitRead issues a BlockSubmit for one 4096-byte page without waiting.
-// scratchSlot selects which 4096-byte region of the scratch buffer to use
-// (0..scratchPages-1). The block number is an ext2 block number.
-func (d *asyncBlockDev) submitRead(blockNum uint32, scratchSlot int) error {
-	sectorLBA := uint64(blockNum) * sectorsPerBlock
-	off := uintptr(scratchSlot) * asyncBlockSize
-	dmaBuf := unsafe.Slice((*byte)(unsafe.Pointer(d.scratchVA+off)), asyncBlockSize)
-	_, serr := mem.BlockSubmit(0, sectorLBA, sectorsPerBlock, dmaBuf, 0)
-	return serr
-}
-
-// waitReads waits for exactly `expected` block I/O completions via WaitSoftIRQ.
-// Returns an error if any completion reports a non-zero status.
-func (d *asyncBlockDev) waitReads(expected int) error {
-	remaining := expected
-	for remaining > 0 {
-		var softBuf hid.SoftIRQReturn
-		n, err := sys.WaitSoftIRQ(0, &softBuf)
-		if err != nil {
-			return err
-		}
-		for i := 0; i < n && remaining > 0; i++ {
-			if softBuf.Events[i].Code != 0 {
-				return syscall.EIO
-			}
-			remaining--
-		}
-	}
-	return nil
-}
-
+// ReadBlock sends a single-block read request to the DMA worker and waits
+// for the result. Safe to call from any goroutine.
 func (d *asyncBlockDev) ReadBlock(lba uint64, buf []byte) error {
 	if len(buf) < asyncBlockSize {
 		return fmt.Errorf("buffer too small")
 	}
-
-	// Convert 4096-byte block LBA to 512-byte sector LBA
-	sectorLBA := lba * sectorsPerBlock
-
-	// Submit async read of 8 sectors (one full page) into DMA scratch buffer
-	dmaBuf := unsafe.Slice((*byte)(unsafe.Pointer(d.scratchVA)), asyncBlockSize)
-	_, serr := mem.BlockSubmit(0, sectorLBA, sectorsPerBlock, dmaBuf, 0)
-	if serr != nil {
-		return serr
+	replyCh := make(chan dmaReply, 1)
+	d.reqCh <- dmaRequest{
+		kind:    dmaReadBlock,
+		replyCh: replyCh,
+		lba:     lba,
+		buf:     buf,
 	}
+	reply := <-replyCh
+	return reply.err
+}
 
-	// Block until completion arrives via soft IRQ
-	var softBuf hid.SoftIRQReturn
-	_, err := sys.WaitSoftIRQ(0, &softBuf)
-	if err != nil {
-		return err
+// readBatch sends a batched multi-block read request to the DMA worker.
+// blocks contains ext2 block numbers; dst receives the data.
+// Safe to call from any goroutine.
+func (d *asyncBlockDev) readBatch(blocks []uint32, dst []byte) error {
+	replyCh := make(chan dmaReply, 1)
+	d.reqCh <- dmaRequest{
+		kind:    dmaReadBatch,
+		replyCh: replyCh,
+		blocks:  blocks,
+		dst:     dst,
 	}
-
-	// Check status
-	if softBuf.Length > 0 && softBuf.Events[0].Code != 0 {
-		return syscall.EIO
-	}
-
-	copy(buf[:asyncBlockSize], dmaBuf)
-	return nil
+	reply := <-replyCh
+	return reply.err
 }

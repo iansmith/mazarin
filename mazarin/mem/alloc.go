@@ -18,6 +18,7 @@ const (
 	PageIPC       = constants.UserPageIPC
 	PageFontCache = constants.UserPageFontCache
 	PageShared    = constants.UserPageShared
+	PageRamdisk   = constants.UserPageRamdisk
 )
 
 // AllocPages allocates kernel-tracked pages that are properly typed and

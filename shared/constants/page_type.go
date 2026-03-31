@@ -10,4 +10,6 @@ const (
 	UserPageFontCache = 2
 	// UserPageShared is for general-purpose shared memory.
 	UserPageShared = 3
+	// UserPageRamdisk is for ramdisk backing store (off-heap, shepherd-owned).
+	UserPageRamdisk = 4
 )

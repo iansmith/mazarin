@@ -186,6 +186,16 @@ func SyscallEpollPwait(epfd, eventsPtr, maxEvents, timeoutMS, _, _ uint64) int64
 
 	ms := int32(timeoutMS)
 
+	// Clamp indefinite timeouts to 10ms. Without this, findRunnable's
+	// netpoll(-1) would block the thread forever (no eventfd write to wake
+	// it). The 10ms cap gives findRunnable a retry loop to check all run
+	// queues, preventing goroutines stranded on the global queue from
+	// being missed. This matches the behavior of the futex-based netpoll
+	// overlay (commit 998677c).
+	if ms < 0 {
+		ms = 10
+	}
+
 	// Non-blocking poll (ms==0): check if an event is pending, return immediately.
 	if ms == 0 {
 		if p != nil && atomic.SwapUint32(&p.EventFdPending, 0) != 0 {

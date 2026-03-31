@@ -52,6 +52,9 @@ const (
 	// DMA I/O pages
 	PageUserDMA // Userspace DMA-pinned pages (owned by shepherd, borrowed by engine)
 
+	// Ramdisk backing store (off-heap, shepherd-owned, reclaimed on death)
+	PageRamdisk
+
 	// Sentinel
 	PageTypeCount // Must be last
 )
@@ -82,6 +85,7 @@ var pageTypeNames = [PageTypeCount]string{
 	PageFontCache:        "FontCache",
 	PageIPCBuffer:        "IPCBuffer",
 	PageUserDMA:          "UserDMA",
+	PageRamdisk:          "Ramdisk",
 }
 
 // String returns a human-readable name for the page type.

@@ -8,8 +8,8 @@ import (
 )
 
 // MaxAllocPages is the maximum number of pages a single SysAllocPages call can allocate.
-// 1024 pages = 4MB — enough for two font caches with room to spare.
-const MaxAllocPages = 1024
+// 32768 pages = 128MB — large enough for ramdisk backing store.
+const MaxAllocPages = 32768
 
 // SyscallAllocPages allocates kernel-tracked pages and maps them contiguously
 // into the calling shepherd's address space. Pages are zeroed before return.
@@ -104,6 +104,8 @@ func mapUserPageType(userType int) kmem.PageType {
 		return kmem.PageFontCache
 	case constants.UserPageShared:
 		return kmem.PageSharedIPC
+	case constants.UserPageRamdisk:
+		return kmem.PageRamdisk
 	default:
 		return kmem.PageTypeCount // sentinel = invalid
 	}

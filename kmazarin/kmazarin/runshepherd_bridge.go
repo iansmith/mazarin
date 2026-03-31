@@ -22,12 +22,24 @@ func initRunShepherdWorker() {
 	ksyscall.RunShepherdReq.BlockedTID = -1
 }
 
+// runShepherdCheckCount tracks how many times DispatchRunShepherdWork sees pending work.
+var runShepherdCheckCount uint32
+
 // DispatchRunShepherdWork is called from KernelIdleLoop to perform RunShepherd work.
 func DispatchRunShepherdWork() bool {
 	dispatched := false
 	for {
+		pendingVal := atomic.LoadUint32(&runShepherdPending)
 		atomicFired := atomic.SwapUint32(&runShepherdPending, 0) == 1
 		hasPending := ksyscall.RunShepherdReq.BlockedTID >= 0
+
+		if atomicFired || hasPending {
+			runShepherdCheckCount++
+			Printf("[DRS] check#%d fired=%v pending=%v tid=%d busy=%d\r\n",
+				runShepherdCheckCount, atomicFired, hasPending,
+				ksyscall.RunShepherdReq.BlockedTID, atomic.LoadInt32(&ksyscall.RunShepherdBusy))
+		}
+		_ = pendingVal
 
 		if !atomicFired && !hasPending {
 			if dispatched {
@@ -50,7 +62,12 @@ func DispatchRunShepherdWork() bool {
 		ksyscall.RunShepherdReq.BlockedTID = -1
 		atomic.StoreInt32(&ksyscall.RunShepherdBusy, 0)
 
+		Printf("[DispatchRunShepherd] dispatching for TID=%d name=%s\r\n", req.BlockedTID, req.Name)
+
 		result := ksyscall.DoRunShepherdWork(&req)
+
+		Printf("[DispatchRunShepherd] done, result=%d\r\n", result)
+
 		wakeLoadMazThread(req.BlockedTID, result)
 		dispatched = true
 	}
