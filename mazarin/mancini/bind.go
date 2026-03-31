@@ -57,6 +57,40 @@ func BindStringsChildren(prog *vm.Program, bindings ...string) *vm.Program {
 	return BindStrings(prog, bindings...)
 }
 
+// BindStringsParent is BindStrings plus automatic binding of the placeholders
+// required by the "parent" vgo library. The caller must supply the parent
+// interactor's constraint-system name as parentSeg.
+func BindStringsParent(prog *vm.Program, parentSeg string, bindings ...string) *vm.Program {
+	bindings = append(bindings,
+		"_int64Prefix_", Int64Prefix(),
+		"_parentSeg_", parentSeg,
+		"_xSuffix_", LayoutX.Suffix(),
+		"_ySuffix_", LayoutY.Suffix(),
+		"_widthSuffix_", LayoutWidth.Suffix(),
+		"_heightSuffix_", LayoutHeight.Suffix(),
+	)
+	return BindStrings(prog, bindings...)
+}
+
+// BindStringsSibling is BindStrings plus automatic binding of the placeholders
+// required by the "sibling" vgo library. The caller must supply the parent
+// interactor's constraint-system name as parentName (the value stored in each
+// child's Parent layout attribute).
+func BindStringsSibling(prog *vm.Program, parentName string, bindings ...string) *vm.Program {
+	bindings = append(bindings,
+		"_childPattern_", ChildPattern(),
+		"_parentName_", parentName,
+		"_int64Prefix_", Int64Prefix(),
+		"_boolPrefix_", BoolPrefix(),
+		"_xSuffix_", LayoutX.Suffix(),
+		"_ySuffix_", LayoutY.Suffix(),
+		"_widthSuffix_", LayoutWidth.Suffix(),
+		"_heightSuffix_", LayoutHeight.Suffix(),
+		"_visSuffix_", VisSuffix,
+	)
+	return BindStrings(prog, bindings...)
+}
+
 // isPlaceholder returns true if s matches _name_ where name is one or more
 // non-underscore characters bracketed by underscores (e.g. "_maxWidth_",
 // "_childPattern_").

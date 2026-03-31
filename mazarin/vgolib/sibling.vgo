@@ -1,0 +1,111 @@
+// sibling.vgo — navigation helpers for an interactor relative to its siblings.
+//
+// These functions are used from a CHILD's perspective: given that I am a child
+// of some parent, find or access my adjacent siblings.
+//
+// Required placeholders (bound at constraint-creation time via BindStringsSibling):
+//   _childPattern_   — URI pattern for findWhere to discover siblings (same as children.vgo)
+//   _parentName_     — the parent interactor's constraint-system name (the findWhere match value)
+//   _int64Prefix_    — URI prefix for int64 layout attributes
+//   _boolPrefix_     — URI prefix for bool attributes
+//   _xSuffix_        — URI suffix for x attribute
+//   _ySuffix_        — URI suffix for y attribute
+//   _widthSuffix_    — URI suffix for width attribute
+//   _heightSuffix_   — URI suffix for height attribute
+//   _visSuffix_      — URI suffix for visibility attribute
+
+// prevSibling returns the URI of the nearest preceding sibling (visible or not),
+// or "" if mySeg is the first child.
+func prevSibling(mySeg string) string {
+	siblings := findWhere("_childPattern_", "_parentName_")
+	prev := ""
+	result := ""
+	for _, uri := range siblings {
+		seg := uriSegment(uri, 3)
+		if seg == mySeg {
+			result = prev
+		}
+		prev = uri
+	}
+	return result
+}
+
+// nextSibling returns the URI of the nearest following sibling (visible or not),
+// or "" if mySeg is the last child.
+func nextSibling(mySeg string) string {
+	siblings := findWhere("_childPattern_", "_parentName_")
+	foundSelf := false
+	result := ""
+	for _, uri := range siblings {
+		seg := uriSegment(uri, 3)
+		if foundSelf {
+			if result == "" {
+				result = uri
+			}
+		}
+		if seg == mySeg {
+			foundSelf = true
+		}
+	}
+	return result
+}
+
+// prevVisibleSibling returns the URI of the nearest preceding VISIBLE sibling,
+// or "" if none exists before mySeg.
+func prevVisibleSibling(mySeg string) string {
+	siblings := findWhere("_childPattern_", "_parentName_")
+	prev := ""
+	result := ""
+	for _, uri := range siblings {
+		seg := uriSegment(uri, 3)
+		if seg == mySeg {
+			result = prev
+		}
+		if derefBool("_boolPrefix_" + seg + "_visSuffix_") {
+			prev = uri
+		}
+	}
+	return result
+}
+
+// nextVisibleSibling returns the URI of the nearest following VISIBLE sibling,
+// or "" if none exists after mySeg.
+func nextVisibleSibling(mySeg string) string {
+	siblings := findWhere("_childPattern_", "_parentName_")
+	foundSelf := false
+	result := ""
+	for _, uri := range siblings {
+		seg := uriSegment(uri, 3)
+		if foundSelf {
+			if result == "" {
+				if derefBool("_boolPrefix_" + seg + "_visSuffix_") {
+					result = uri
+				}
+			}
+		}
+		if seg == mySeg {
+			foundSelf = true
+		}
+	}
+	return result
+}
+
+// siblingX returns the x layout attribute of a sibling identified by seg.
+func siblingX(sibSeg string) int64 {
+	return derefI64("_int64Prefix_" + sibSeg + "_xSuffix_")
+}
+
+// siblingY returns the y layout attribute of a sibling identified by seg.
+func siblingY(sibSeg string) int64 {
+	return derefI64("_int64Prefix_" + sibSeg + "_ySuffix_")
+}
+
+// siblingWidth returns the width layout attribute of a sibling identified by seg.
+func siblingWidth(sibSeg string) int64 {
+	return derefI64("_int64Prefix_" + sibSeg + "_widthSuffix_")
+}
+
+// siblingHeight returns the height layout attribute of a sibling identified by seg.
+func siblingHeight(sibSeg string) int64 {
+	return derefI64("_int64Prefix_" + sibSeg + "_heightSuffix_")
+}

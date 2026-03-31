@@ -1,0 +1,32 @@
+// parent.vgo — layout attribute accessors for the parent of the current interactor.
+//
+// These functions are used from a CHILD's perspective: given that I am a child,
+// read layout attributes of my parent without knowing its name at compile time.
+//
+// Required placeholders (bound at constraint-creation time via BindStringsParent):
+//   _int64Prefix_  — URI prefix for int64 layout attributes
+//   _parentSeg_    — the parent interactor's constraint-system name segment
+//   _xSuffix_      — URI suffix for x attribute
+//   _ySuffix_      — URI suffix for y attribute
+//   _widthSuffix_  — URI suffix for width attribute
+//   _heightSuffix_ — URI suffix for height attribute
+
+// parentX returns the x layout attribute of the parent interactor.
+func parentX() int64 {
+	return derefI64("_int64Prefix_" + "_parentSeg_" + "_xSuffix_")
+}
+
+// parentY returns the y layout attribute of the parent interactor.
+func parentY() int64 {
+	return derefI64("_int64Prefix_" + "_parentSeg_" + "_ySuffix_")
+}
+
+// parentWidth returns the width layout attribute of the parent interactor.
+func parentWidth() int64 {
+	return derefI64("_int64Prefix_" + "_parentSeg_" + "_widthSuffix_")
+}
+
+// parentHeight returns the height layout attribute of the parent interactor.
+func parentHeight() int64 {
+	return derefI64("_int64Prefix_" + "_parentSeg_" + "_heightSuffix_")
+}
