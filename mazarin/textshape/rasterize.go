@@ -146,8 +146,11 @@ func (p *DirectGlyphProvider) OpenFont(req OpenFontRequest) (FontMetrics, error)
 		return FontMetrics{}, errors.New("no free font slots (max 32)")
 	}
 
-	// Resolve file path.
-	resolved := filepath.Join(p.fontDir, req.Path)
+	// Resolve file path: use absolute paths directly, relative ones relative to fontDir.
+	resolved := req.Path
+	if !filepath.IsAbs(req.Path) {
+		resolved = filepath.Join(p.fontDir, req.Path)
+	}
 
 	// Reuse an already-parsed face if same file was loaded at different size.
 	face := p.findParsedFace(req.Path, req.Variant)

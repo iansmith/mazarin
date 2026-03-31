@@ -1,7 +1,7 @@
 package mancini
 
 import (
-	"mazzy/mazarin/textshape"
+	"mazarin/textshape"
 
 	"golang.org/x/image/font"
 )
@@ -32,7 +32,7 @@ type FontConfig struct {
 	// Layout is the text shaping+layout engine. When non-nil,
 	// MeasureText uses shaped measurement and interactors use the
 	// shaped rendering path via DrawShapedText.
-	Layout *textshape.TextLayout
+	Layout textshape.TextLayout
 
 	// ShapedFontID is the fontID registered with Layout for this config.
 	// Only valid when Layout is non-nil.

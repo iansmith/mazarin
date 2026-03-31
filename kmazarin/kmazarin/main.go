@@ -1009,6 +1009,7 @@ func simpleMain() {
 	initLoadMazWorker()
 	initRunMazWorker()
 	initRunShepherdWorker()
+	initEpollWorker()
 
 	// Start kernel attribute updaters (time update goroutine).
 	// Time updates are driven by kirq.TimerIRQCount + kirq.PreemptAfterTicks.

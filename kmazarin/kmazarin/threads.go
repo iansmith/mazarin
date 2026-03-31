@@ -187,6 +187,7 @@ const (
 	ThreadBlockedDirtyNotify  ThreadState = 12 // Blocked waiting for constraint dirty notification
 	ThreadBlockedInputEvent   ThreadState = 13 // Blocked waiting for input focus event
 	ThreadBlockedMailbox      ThreadState = 14 // Blocked waiting for mailbox notification
+	ThreadBlockedEpoll        ThreadState = 15 // Blocked waiting for epoll_ctl goroutine dispatch
 )
 
 // MaxShepherds is the maximum number of shepherd processes (userspace programs).
@@ -492,6 +493,9 @@ func WakeThreadForSignal(t *Thread) {
 		// Defer signal delivery until LoadMaz completes — the worker
 		// goroutine will wake this thread with the result. Waking
 		// prematurely would return a half-filled MazLoadResult.
+	case ThreadBlockedEpoll:
+		// Defer signal delivery until epoll_ctl dispatch completes —
+		// the worker goroutine will wake this thread with the result.
 	case ThreadBlockedDelegate:
 		// Defer signal delivery until delegated syscall reply arrives.
 	case ThreadBlockedDelegateRecv:
@@ -1479,6 +1483,7 @@ func KernelIdleLoop() {
 		DispatchLoadMazWork()
 		DispatchRunMazWork()
 		DispatchRunShepherdWork()
+		DispatchEpollWork()
 
 		// NOTE: runtime.Gosched() was removed here. When Gosched runs Go's
 		// internal goroutine scheduler, goroutines doing SVC sched_yield cause
@@ -3268,7 +3273,8 @@ func checkThreadPreemptionImpl(sf *SchedulerFunc, framePtr uint64) uint64 {
 	// being dispatched.
 	if oldThread.TID == 0 && (atomic.LoadUint32(&loadMazDispatching) != 0 ||
 		atomic.LoadUint32(&runMazDispatching) != 0 ||
-		atomic.LoadUint32(&runShepherdDispatching) != 0) {
+		atomic.LoadUint32(&runShepherdDispatching) != 0 ||
+		atomic.LoadUint32(&epollDispatching) != 0) {
 		return 0
 	}
 
@@ -3780,6 +3786,8 @@ func PrintTickDistribution() {
 				stateStr = "INP"
 			case ThreadBlockedMailbox:
 				stateStr = "MBX"
+			case ThreadBlockedEpoll:
+				stateStr = "EPL"
 			}
 
 			console.KPrintf("  T%02d P%02d [%s] ticks=%d (%d%%)\n",

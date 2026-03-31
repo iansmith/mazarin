@@ -2,75 +2,30 @@ package mancini
 
 import (
 	"image"
-	"image/color"
 
-	"github.com/fogleman/gg"
-	"golang.org/x/image/font"
-	"mazzy/mazarin/textshape"
+	"mazarin/textshape"
 )
 
-// DrawContext abstracts the drawing surface for all interactor rendering.
-// The [github.com/fogleman/gg.Context] type satisfies this interface via
-// structural typing.
+// DrawContext is the unified drawing surface for all interactor rendering.
+// It is a type alias for [textshape.DrawContext], the canonical definition
+// shared between louis14 and the mazarin UI toolkit.
 //
 // DrawContext is propagated from parent to child during the draw pass
 // via SetDC (see [impl.Interactor.SetDC]). All interactors access it
 // through self.DC() in their [NewDrawer.Draw] method.
 //
-// # Limitations
-//
-// DrawContext does not expose ClosePath, DrawArc, SetFillRuleEvenOdd,
-// or Clip. Interactors that need these features (e.g., [std.RadialMenu]
-// for even-odd annulus fills, [std.Scrollbar] for triangle arrows) use
-// temporary [github.com/fogleman/gg.Context] buffers and composite via
-// [image/draw.Draw] or [image/draw.DrawMask].
-//
 // [ClippedContext] wraps a DrawContext to enforce rectangular clipping
 // by saving/restoring overflow pixels — used by [std.Column], [std.Row],
 // and [std.AppWindow] for child overflow.
-type DrawContext interface {
-	// Shape primitives (add to current path).
-	DrawRectangle(x, y, w, h float64)
-	DrawRoundedRectangle(x, y, w, h, r float64)
-	DrawCircle(x, y, r float64)
-	DrawLine(x1, y1, x2, y2 float64)
+type DrawContext = textshape.DrawContext
 
-	// Path building.
-	MoveTo(x, y float64)
-	LineTo(x, y float64)
-
-	// Path rendering.
-	Fill()
-	Stroke()
-
-	// Fast-path rectangle fill using current color (bypasses rasterizer).
-	FillRectangle(x, y, w, h float64)
-
-	// Text.
-	DrawString(s string, x, y float64)
-	DrawStringAnchored(s string, x, y, ax, ay float64)
-	MeasureString(s string) (float64, float64)
-
-	// DrawShapedText composites pre-positioned glyphs onto the canvas.
-	// Each glyph's (X, Y) is relative to (originX, originY).
-	DrawShapedText(run *textshape.TextRun, originX, originY float64)
-
-	// Graphics state.
-	SetColor(c color.Color)
-	SetFillStyle(pattern gg.Pattern)
-	SetLineWidth(lineWidth float64)
-	SetLineCap(lineCap gg.LineCap)
-	SetFontFace(fontFace font.Face)
-	LoadFontFace(path string, points int64) error
-
-	// Transform stack and clipping.
-	Push()
-	Pop()
-	Rotate(angle float64)
-	RotateAbout(angle, x, y float64)
-
-	// Canvas access.
-	Image() image.Image
+// NewDrawContextForImage creates a DrawContext that renders onto an existing
+// RGBA image using the given GlyphProvider for text rendering. On mazarin,
+// the provider is backed by fontsvc IPC; on the host OS, it can be a
+// DirectGlyphProvider. Application code receives the DrawContext interface
+// and never interacts with the provider directly.
+func NewDrawContextForImage(target *image.RGBA, provider textshape.GlyphProvider) DrawContext {
+	return textshape.NewDrawContextForImage(target, provider)
 }
 
 // ClipEdge indicates which edge of the clip rect has overflow.

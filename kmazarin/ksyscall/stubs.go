@@ -5,7 +5,6 @@ import (
 	"mazzy/kmazarin/kirq"
 	"mazzy/kmazarin/kmem"
 	"mazzy/kmazarin/proc"
-	"mazzy/kmazarin/serial"
 	"mazzy/shared/constants"
 	"sync/atomic"
 
@@ -297,96 +296,8 @@ func SyscallIoSetup(_, _, _, _, _, _ uint64) int64 {
 	return -38 // -ENOSYS
 }
 
-// SyscallEventfd creates an event file descriptor
-// Return fake eventfd (11)
-//
-//go:nosplit
-func SyscallEventfd(_, _, _, _, _, _ uint64) int64 {
-	return 11 // Fake eventfd
-}
-
-// SyscallEpollCreate creates an epoll file descriptor
-// Return fake epoll fd (10)
-//
-//go:nosplit
-func SyscallEpollCreate(_, _, _, _, _, _ uint64) int64 {
-	return 10 // Fake epoll fd
-}
-
-// SyscallEpollCtl controls an epoll file descriptor
-// Return success
-//
-//go:nosplit
-func SyscallEpollCtl(_, _, _, _, _, _ uint64) int64 {
-	return 0 // Success
-}
-
-// SyscallEpollPwait waits for events on an epoll fd.
-// Go's runtime calls this from netpoll(delay) to sleep until the next timer
-// deadline or until an event arrives (e.g., netpollBreak writes to eventfd).
-//
-// On real Linux, epoll_wait blocks and wakes on I/O events or timeout.
-// We emulate this: the thread sleeps with a deadline, and write(eventfd)
-// wakes it early via WakeNetpollThread (implementing netpollBreak).
-//
-// Timeout semantics match Linux epoll_wait:
-//
-//	-1 = block indefinitely  → no deadline; woken by write(eventfd) → WakeNetpollThread
-//	 0 = non-blocking poll   → return immediately
-//	>0 = wait up to N ms     → block for that duration
-//
-//go:nosplit
-func SyscallEpollPwait(_, _, _, timeoutMS, _, _ uint64) int64 {
-	ms := int32(timeoutMS)
-	if ms == 0 {
-		return 0 // Non-blocking poll
-	}
-
-	currentTID := int32(GetCurrentThreadTID())
-
-	// Register this thread as the netpoll waiter for the current shepherd.
-	// SyscallWrite(eventfd) reads this to know which thread to wake.
-	p := proc.CurrentShepherd()
-	if p != nil {
-		// Check if a prior eventfd write is pending. On real Linux, eventfd
-		// writes accumulate in a counter; when the fd is in the epoll set,
-		// epoll_wait returns immediately because the fd is readable. We
-		// match this by checking EventFdPending before blocking.
-		if atomic.SwapUint32(&p.EventFdPending, 0) != 0 {
-			return 0 // Event pending — return immediately like Linux epoll_wait
-		}
-		p.NetpollWaiterTID = currentTID
-	}
-
-	// Add deadline only for explicit timeouts (ms > 0).
-	// Indefinite blocking (ms < 0) relies on write(eventfd) → WakeNetpollThread.
-	if ms > 0 {
-		frequency := uint64(kirq.GetTimerFrequency())
-		ticks := (uint64(ms) * frequency) / 1000
-		if ticks == 0 {
-			ticks = 1
-		}
-		currentTick := kirq.ReadCounterValue()
-		deadline := currentTick + ticks
-		AddDeadlineStatic(deadline, currentTID)
-	}
-
-	// Block thread until deadline fires or eventfd write wakes us
-	if ms < 0 {
-		serial.PollWrite('e') // breadcrumb: epoll infinite block (no deadline)
-	}
-	nextThread := ThreadBlockSleep()
-	if nextThread != 0 {
-		SetSyscallSwitchTarget(nextThread)
-	}
-
-	// Clear the waiter registration on return (we've been woken)
-	if p != nil {
-		p.NetpollWaiterTID = 0
-	}
-
-	return 0 // No events (timeout expired or eventfd woke us)
-}
+// Epoll syscall handlers (SyscallEpollCreate, SyscallEventfd, SyscallEpollCtl,
+// SyscallEpollPwait, IsMagicFdSyscall) have moved to epoll.go.
 
 // SyscallFcntl performs file control operations
 // Go runtime calls fcntl(fd, F_GETFD) and fcntl(fd, F_GETFL) during

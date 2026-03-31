@@ -71,6 +71,21 @@ type Shepherd struct {
 	// Used by SysLoadMaz to determine where to place .maz segments.
 	HighestVA uint64
 
+	// EpollFd is the magic fd for the epoll instance (0x7ef when created, 0 = uninitialized).
+	// Set by SyscallEpollCreate, cleared by SyscallClose.
+	EpollFd int32
+
+	// EventFd is the magic fd for the eventfd (0x7ee when created, 0 = uninitialized).
+	// Set by SyscallEventfd, cleared by SyscallClose.
+	EventFd int32
+
+	// EventDataPtr is the ev.Data value from epoll_ctl(EPOLL_CTL_ADD, eventfd, &ev).
+	// Stock netpoll_epoll.go stores &netpollEventFd in ev.Data when registering the
+	// eventfd with epoll. SyscallEpollCtl captures this so SyscallEpollPwait can
+	// return a synthetic EPOLLIN event with the correct Data — which causes the
+	// runtime's netpoll() to call read(eventfd) and reset netpollWakeSig back to 0.
+	EventDataPtr uint64
+
 	// Netpoll waiter — TID of thread blocked in SyscallEpollPwait (0 = none).
 	// Set by SyscallEpollPwait before blocking, cleared on wake.
 	// Read by SyscallWrite when fd matches the eventfd — the write wakes the

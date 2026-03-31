@@ -39,6 +39,11 @@ func blockForRunMaz() uintptr
 //go:linkname blockForRunShepherd main.BlockForRunShepherd
 func blockForRunShepherd() uintptr
 
+// blockForEpoll blocks the calling thread for an epoll_ctl request.
+//
+//go:linkname blockForEpoll main.BlockForEpoll
+func blockForEpoll() uintptr
+
 // setBlockAsyncSlot stores per-tag metadata for async block I/O completions.
 // clumpAddr is the VA of *proc.DMAClump stored as uintptr (0 if no clump).
 //

@@ -655,6 +655,7 @@ func main() {
 	// Publish ready status to constraint network using the well-known URI.
 	ready := attr.ValueBool(wm.ReadyURI(attr.SID()), true)
 	_ = ready
+	sys.SetReady(true)
 	sys.UartWriteString("[rachel] Ready=true\n")
 
 	// Block main goroutine forever
