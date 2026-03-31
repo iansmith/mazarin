@@ -5,8 +5,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
+	"mazzy/shared/blockdev"
 	"mazzy/shared/fs/ext2"
 )
 
@@ -27,6 +29,16 @@ func (d *fileBlockDev) WriteBlock(lba uint64, buf []byte) error { return nil } /
 func (d *fileBlockDev) ReadBlock(lba uint64, buf []byte) error {
 	_, err := d.f.ReadAt(buf[:512], int64(lba)*512)
 	return err
+}
+
+func (d *fileBlockDev) ReadBlocks(lbas []uint64, dst []byte) error {
+	for i, lba := range lbas {
+		off := i * 512
+		if _, err := d.f.ReadAt(dst[off:off+512], int64(lba)*512); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func openBlockDev(t *testing.T, path string) *fileBlockDev {
@@ -441,5 +453,144 @@ func TestNestedDirRead(t *testing.T) {
 	}
 	if !bytes.Equal(data, deepData) {
 		t.Errorf("got %q, want %q", data, deepData)
+	}
+}
+
+// countingBlockDev wraps a BlockDevice, counting ReadBlock and ReadBlocks calls.
+type countingBlockDev struct {
+	inner           blockdev.BlockDevice
+	readBlockCount  atomic.Int64
+	readBlocksCount atomic.Int64
+}
+
+func (c *countingBlockDev) Name() string      { return c.inner.Name() }
+func (c *countingBlockDev) Close() error      { return c.inner.Close() }
+func (c *countingBlockDev) BlockSize() uint64  { return c.inner.BlockSize() }
+func (c *countingBlockDev) NumBlocks() uint64  { return c.inner.NumBlocks() }
+func (c *countingBlockDev) WriteBlock(lba uint64, buf []byte) error {
+	return c.inner.WriteBlock(lba, buf)
+}
+
+func (c *countingBlockDev) ReadBlock(lba uint64, buf []byte) error {
+	c.readBlockCount.Add(1)
+	return c.inner.ReadBlock(lba, buf)
+}
+
+func (c *countingBlockDev) ReadBlocks(lbas []uint64, dst []byte) error {
+	c.readBlocksCount.Add(1)
+	return c.inner.(blockdev.BatchBlockDevice).ReadBlocks(lbas, dst)
+}
+
+func TestReadAllUsesBatchPath(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a file large enough to span multiple blocks (200KB > 48KB direct limit).
+	bigData := make([]byte, 200*1024)
+	for i := range bigData {
+		bigData[i] = byte(i % 251)
+	}
+	hostFile := filepath.Join(dir, "big.dat")
+	os.WriteFile(hostFile, bigData, 0644)
+
+	img := buildImage(t, dir, 4, "batchtest", hostFile)
+
+	rawDev := openBlockDev(t, img)
+	defer rawDev.Close()
+
+	cdev := &countingBlockDev{inner: rawDev}
+
+	fs, err := ext2.Mount(cdev)
+	if err != nil {
+		t.Fatalf("Mount: %v", err)
+	}
+
+	// Reset counters after mount (mount reads superblock + group descriptors).
+	cdev.readBlockCount.Store(0)
+	cdev.readBlocksCount.Store(0)
+
+	f, err := fs.Open("/big.dat")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+
+	data, err := f.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Equal(data, bigData) {
+		t.Fatal("data mismatch")
+	}
+
+	batchCalls := cdev.readBlocksCount.Load()
+	singleCalls := cdev.readBlockCount.Load()
+
+	t.Logf("ReadBlocks calls: %d, ReadBlock calls: %d", batchCalls, singleCalls)
+
+	if batchCalls == 0 {
+		t.Error("expected ReadBlocks to be called, but it was not")
+	}
+}
+
+func TestReadDirUsesBatchPath(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create enough files to span multiple directory blocks.
+	// Each dir entry is ~8+namelen bytes with 4-byte alignment.
+	// A 4KB block fits ~100 short-named entries.
+	subdir := filepath.Join(dir, "many")
+	os.Mkdir(subdir, 0755)
+	for i := 0; i < 200; i++ {
+		name := filepath.Join(subdir, "file_"+itoa(i)+".txt")
+		os.WriteFile(name, []byte("x"), 0644)
+	}
+
+	img := buildImage(t, dir, 4, "dirbatch", "-dir", "/many="+subdir)
+
+	rawDev := openBlockDev(t, img)
+	defer rawDev.Close()
+
+	cdev := &countingBlockDev{inner: rawDev}
+
+	fs, err := ext2.Mount(cdev)
+	if err != nil {
+		t.Fatalf("Mount: %v", err)
+	}
+
+	// Find the "many" directory inode.
+	rootEntries, err := fs.ReadDir(ext2.InodeRoot)
+	if err != nil {
+		t.Fatalf("ReadDir root: %v", err)
+	}
+	var manyInum uint32
+	for _, e := range rootEntries {
+		if e.Name == "many" {
+			manyInum = e.Inode
+		}
+	}
+	if manyInum == 0 {
+		t.Fatal("directory 'many' not found")
+	}
+
+	// Reset counters, then read the large directory.
+	cdev.readBlockCount.Store(0)
+	cdev.readBlocksCount.Store(0)
+
+	entries, err := fs.ReadDir(manyInum)
+	if err != nil {
+		t.Fatalf("ReadDir many: %v", err)
+	}
+
+	batchCalls := cdev.readBlocksCount.Load()
+	singleCalls := cdev.readBlockCount.Load()
+
+	t.Logf("entries: %d, ReadBlocks calls: %d, ReadBlock calls: %d", len(entries), batchCalls, singleCalls)
+
+	if batchCalls == 0 {
+		t.Error("expected ReadBlocks to be called for multi-block directory, but it was not")
+	}
+	// Should have 200 files + . + ..
+	if len(entries) < 200 {
+		t.Errorf("expected at least 200 entries, got %d", len(entries))
 	}
 }

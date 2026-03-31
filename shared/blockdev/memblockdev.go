@@ -51,6 +51,22 @@ func (m *MemBlockDevice) ReadBlock(lba uint64, buf []byte) error {
 	return nil
 }
 
+// ReadBlocks reads multiple blocks in a single operation.
+// For MemBlockDevice this is a simple loop, but satisfying the
+// BatchBlockDevice interface allows ext2 to use the batch path.
+func (m *MemBlockDevice) ReadBlocks(lbas []uint64, dst []byte) error {
+	bs := m.blockSize
+	for i, lba := range lbas {
+		if lba >= m.numBlocks {
+			return fmt.Errorf("memblockdev %s: read lba %d out of range (max %d)", m.name, lba, m.numBlocks-1)
+		}
+		srcOff := lba * bs
+		dstOff := uint64(i) * bs
+		copy(dst[dstOff:dstOff+bs], m.data[srcOff:srcOff+bs])
+	}
+	return nil
+}
+
 func (m *MemBlockDevice) WriteBlock(lba uint64, buf []byte) error {
 	if lba >= m.numBlocks {
 		return fmt.Errorf("memblockdev %s: write lba %d out of range (max %d)", m.name, lba, m.numBlocks-1)

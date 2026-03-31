@@ -1228,6 +1228,8 @@ func ProcessDeadlinesTopHalf() {
 		serial.RawUARTDecimal(atomic.LoadUint64(&dbgYieldNoNext))
 		serial.RawUARTPuts("/dw")
 		serial.RawUARTDecimal(atomic.LoadUint64(&dbgDeadlineWokeSleeper))
+		// Block IRQ + WakeSlot + BlockOnSlot instrumentation
+		printBlockIRQCounters()
 		// Per-shepherd GC cycle counts
 		printGCCounters()
 	}
@@ -1246,6 +1248,47 @@ func printYieldCounters() {
 	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.YieldSwitchCount))
 	serial.RawUART('/')
 	serial.RawUARTDecimal(atomic.LoadUint64(&ksyscall.YieldNoReadyCount))
+}
+
+// printBlockIRQCounters prints block IRQ, WakeSlot, and BlockOnSlot counters.
+// NOT nosplit — breaks the nosplit chain (same pattern as printGCCounters).
+func printBlockIRQCounters() {
+	// Block IRQ instrumentation: total/sync/async/events
+	bic := atomic.LoadUint32(&dbgBlockIRQCount)
+	if bic > 0 {
+		serial.RawUARTPuts("\n BLK=")
+		serial.RawUARTDecimal(uint64(bic))
+		serial.RawUARTPuts("/s")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgBlockIRQSync)))
+		serial.RawUARTPuts("/a")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgBlockIRQAsync)))
+		serial.RawUARTPuts("/ev")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgBlockAsyncEvents)))
+	}
+	// WakeSlot instrumentation: calls/noSlot/noThread/woke/stale
+	wsc := atomic.LoadUint32(&dbgWakeSlotCalls)
+	if wsc > 0 {
+		serial.RawUARTPuts(" WK=")
+		serial.RawUARTDecimal(uint64(wsc))
+		serial.RawUARTPuts("/ns")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgWakeSlotNoSlot)))
+		serial.RawUARTPuts("/nt")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgWakeSlotNoThread)))
+		serial.RawUARTPuts("/ok")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgWakeSlotWoke)))
+		serial.RawUARTPuts("/st")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgWakeSlotStale)))
+	}
+	// BlockOnSlot instrumentation: calls/blocked/noNext
+	bos := atomic.LoadUint32(&dbgBlockOnSlotCalls)
+	if bos > 0 {
+		serial.RawUARTPuts(" BO=")
+		serial.RawUARTDecimal(uint64(bos))
+		serial.RawUARTPuts("/blk")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgBlockOnSlotBlocked)))
+		serial.RawUARTPuts("/nn")
+		serial.RawUARTDecimal(uint64(atomic.LoadUint32(&dbgBlockOnSlotNoNext)))
+	}
 }
 
 // printADScanCounters prints A/D scan delta counters for the [E] event dump.

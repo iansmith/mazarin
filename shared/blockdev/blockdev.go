@@ -37,6 +37,21 @@ type BlockDevice interface {
 	NumBlocks() uint64
 }
 
+// BatchBlockDevice extends BlockDevice with multi-block read support.
+// Implementations that can read multiple blocks more efficiently than
+// N individual ReadBlock calls (e.g., DMA batching) should implement
+// this interface. The ext2 filesystem detects this interface and uses
+// it for directory reads, file reads, and bitmap loading.
+type BatchBlockDevice interface {
+	BlockDevice
+
+	// ReadBlocks reads multiple blocks in a single operation.
+	// lbas contains the LBA for each block to read (may be non-contiguous).
+	// dst receives the data: block i is written at dst[i*BlockSize():(i+1)*BlockSize()].
+	// dst must be at least len(lbas)*BlockSize() bytes.
+	ReadBlocks(lbas []uint64, dst []byte) error
+}
+
 // BlockDeviceRaw extends BlockDevice with allocation-free raw methods.
 // These methods return error codes instead of error interfaces, allowing
 // early boot code (before heap initialization) to perform I/O without allocation.

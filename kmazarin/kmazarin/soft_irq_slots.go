@@ -16,6 +16,16 @@ import (
 var dbgPreemptSwitchCount uint64
 var dbgPreemptNoNextCount uint64
 
+// Debug counters for WakeSlotForIRQ / BlockOnSlot instrumentation
+var dbgWakeSlotCalls uint32       // total WakeSlotForIRQ calls
+var dbgWakeSlotNoSlot uint32      // IRQ had no registered slot
+var dbgWakeSlotNoThread uint32    // slot had no blocked thread (blockedTID < 0)
+var dbgWakeSlotWoke uint32        // successfully woke a blocked thread
+var dbgWakeSlotStale uint32       // thread found but state wasn't BlockedSoftIRQ
+var dbgBlockOnSlotCalls uint32    // total BlockOnSlot calls
+var dbgBlockOnSlotBlocked uint32  // thread actually blocked (next thread found)
+var dbgBlockOnSlotNoNext uint32   // no next thread found, fell through to WFI loop
+
 // Debug counters for deadline/signal wake tracking
 var dbgDeadlineWokeSleeper uint64
 var dbgSignalWokeFutex uint64
@@ -167,16 +177,19 @@ func RegisterSoftIRQSlotKsyscall(irqNum uint32, slotNum int32, shepherdID int16)
 //go:nosplit
 //go:noinline
 func WakeSlotForIRQ(irqNum uint32) {
+	atomic.AddUint32(&dbgWakeSlotCalls, 1)
 	if irqNum >= 256 {
 		return
 	}
 	slotIdx := atomic.LoadInt32(&irqToSlot[irqNum])
 	if slotIdx < 0 || slotIdx >= maxSoftIRQSlots {
+		atomic.AddUint32(&dbgWakeSlotNoSlot, 1)
 		return
 	}
 	slot := &softIRQSlotData[slotIdx]
 	tid := slot.blockedTID
 	if tid < 0 {
+		atomic.AddUint32(&dbgWakeSlotNoThread, 1)
 		return // no blocked thread, events stay in ring
 	}
 
@@ -197,6 +210,7 @@ func WakeSlotForIRQ(irqNum uint32) {
 
 	t := (*Thread)(unsafe.Pointer(slot.blockedThreadPtr))
 	if t == nil || t.State != ThreadBlockedSoftIRQ {
+		atomic.AddUint32(&dbgWakeSlotStale, 1)
 		slot.blockedTID = -1
 		slot.blockedThreadPtr = 0
 		schedulerLock.Unlock()
@@ -204,6 +218,7 @@ func WakeSlotForIRQ(irqNum uint32) {
 		return
 	}
 
+	atomic.AddUint32(&dbgWakeSlotWoke, 1)
 	t.State = ThreadReady
 	slot.blockedTID = -1
 	slot.blockedThreadPtr = 0
@@ -231,6 +246,7 @@ func WakeSlotForIRQ(irqNum uint32) {
 //go:nosplit
 //go:noinline
 func BlockOnSlot(slotNum int32) uintptr {
+	atomic.AddUint32(&dbgBlockOnSlotCalls, 1)
 	savedDAIF := NormalSchedulerFunc.DisableAndSaveDAIF()
 	schedulerLock.Lock()
 
@@ -277,10 +293,12 @@ func BlockOnSlot(slotNum int32) uintptr {
 		next = findReadyThreadSchedLockHeld()
 	}
 	if next == nil {
+		atomic.AddUint32(&dbgBlockOnSlotNoNext, 1)
 		schedulerLock.Unlock()
 		NormalSchedulerFunc.EnableAndRestoreDAIF(savedDAIF)
 		return 0
 	}
+	atomic.AddUint32(&dbgBlockOnSlotBlocked, 1)
 
 	// If another thread was previously blocked on this slot (orphaned by
 	// Go runtime M migration), unblock it so its thread slot is reclaimed.

@@ -77,15 +77,90 @@ func (f *File) ReadAll() ([]byte, error) {
 	if f.inode.IsDir() {
 		return nil, ErrNotFile
 	}
-	f.pos = 0
-	f.blockIdx = -1
-
-	result := make([]byte, f.inode.Size)
-	n, err := f.Read(result)
-	if err != nil && err != ErrEndOfFile {
+	fileSize := int(f.inode.Size)
+	if fileSize == 0 {
+		return nil, nil
+	}
+	result := make([]byte, fileSize)
+	n, err := f.ReadInto(result)
+	if err != nil {
 		return nil, err
 	}
 	return result[:n], nil
+}
+
+// ReadInto reads the entire file into the provided buffer using batched I/O.
+// dst must be at least file.Size() bytes. Returns the number of bytes read.
+func (f *File) ReadInto(dst []byte) (int, error) {
+	if f.inode.IsDir() {
+		return 0, ErrNotFile
+	}
+	fileSize := int(f.inode.Size)
+	if fileSize == 0 {
+		return 0, nil
+	}
+	if len(dst) < fileSize {
+		return 0, ErrReadFailed
+	}
+
+	blockSize := int(f.fs.blockSize)
+	totalBlocks := uint32((fileSize + blockSize - 1) / blockSize)
+
+	// Resolve all block numbers upfront.
+	blockNums, err := f.fs.ResolveBlockList(&f.inode, 0, totalBlocks)
+	if err != nil {
+		return 0, err
+	}
+
+	// Separate zero (sparse) blocks from real blocks.
+	// Build a list of non-zero blocks and track their positions.
+	type blockPos struct {
+		dstIndex int    // index in blockNums (position in output)
+		blockNum uint32 // fs block number
+	}
+	nonZero := make([]blockPos, 0, len(blockNums))
+	for i, bn := range blockNums {
+		if bn == 0 {
+			// Sparse block — zero-fill the region.
+			off := i * blockSize
+			end := off + blockSize
+			if end > fileSize {
+				end = fileSize
+			}
+			for j := off; j < end; j++ {
+				dst[j] = 0
+			}
+		} else {
+			nonZero = append(nonZero, blockPos{i, bn})
+		}
+	}
+
+	if len(nonZero) == 0 {
+		return fileSize, nil
+	}
+
+	// Batch-read all non-zero blocks into a temporary buffer.
+	batchLBAs := make([]uint32, len(nonZero))
+	for i, bp := range nonZero {
+		batchLBAs[i] = bp.blockNum
+	}
+	batchBuf := make([]byte, len(nonZero)*blockSize)
+	if err := f.fs.readBlocks(batchLBAs, batchBuf); err != nil {
+		return 0, err
+	}
+
+	// Copy from batch buffer into the correct positions in dst.
+	for i, bp := range nonZero {
+		srcOff := i * blockSize
+		dstOff := bp.dstIndex * blockSize
+		end := dstOff + blockSize
+		if end > fileSize {
+			end = fileSize
+		}
+		copy(dst[dstOff:end], batchBuf[srcOff:srcOff+(end-dstOff)])
+	}
+
+	return fileSize, nil
 }
 
 // Write writes data at the current position, extending the file if needed.

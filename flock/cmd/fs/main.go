@@ -19,6 +19,7 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	toml "github.com/pelletier/go-toml/v2"
@@ -43,7 +44,6 @@ const (
 type mountTable struct {
 	root   *ext2.FileSystem // / — ext2 on VirtIO block device (read-only)
 	tmpFS  *ext2.FileSystem // /tmp — ext2 on MemBlockDevice ramdisk (read-write)
-	blkDev *asyncBlockDev   // DMA block device (for batched reads on root)
 }
 
 // resolve finds the best mount for a path, returning the kind and the
@@ -139,7 +139,7 @@ func main() {
 		fmt.Printf("[fs] FATAL: mount ramdisk: %v\n", tmpErr)
 		os.Exit(1)
 	}
-	mt := &mountTable{root: fsys, tmpFS: tmpFS, blkDev: blkDev}
+	mt := &mountTable{root: fsys, tmpFS: tmpFS}
 
 	// 4. Register as delegate handler for LoadFile and ReadFilePages.
 	delegateCh, err := sys.HandleSyscalls(sysid.LoadFile, sysid.ReadFilePages)
@@ -162,7 +162,7 @@ func main() {
 	// waits) → then read startup.toml and launch remaining shepherds.
 	// Runs as a goroutine so the serve loop can process LoadFile
 	// requests during shepherd boot (e.g., rachel loading fontsvc.maz).
-	go bootSequence(fsys, blkDev)
+	go bootSequence(fsys)
 
 	// 7. Serve delegate requests + IPC requests.
 	// Both are processed in the main goroutine to avoid concurrent
@@ -191,12 +191,7 @@ func handleLoadFile(mt *mountTable, req *sys.SyscallRequest) {
 	kind, relPath := mt.resolve(path)
 	fsys := mt.getFS(kind)
 
-	// Use batched DMA for root mount, fall back to sequential for ramdisk.
-	var blk *asyncBlockDev
-	if kind == mountRoot {
-		blk = mt.blkDev
-	}
-	va, numPages, bytesRead, err := readFileIntoPages(fsys, blk, relPath, true)
+	va, numPages, bytesRead, err := readFileIntoPages(fsys, relPath, true)
 	if err != nil {
 		fmt.Printf("[fs] LoadFile %q: error=%v\n", path, err)
 		req.Reply(-2) // ENOENT
@@ -217,15 +212,17 @@ func handleLoadFile(mt *mountTable, req *sys.SyscallRequest) {
 // When transferable is true, uses kernel-tracked pages (AllocPages) that
 // can be passed to TransferAndUnmap. When false, uses anonymous mmap
 // for temporary use (caller must munmap).
-// When blkDev is non-nil, uses batched DMA (submits up to scratchPages
-// concurrent BlockSubmits). When nil (ramdisk), falls back to sequential
-// file.Read.
-func readFileIntoPages(fsys *ext2.FileSystem, blkDev *asyncBlockDev, path string, transferable bool) (va uintptr, numPages int, bytesRead int, err error) {
+// The ext2 ReadInto method handles batched I/O internally — if the
+// underlying BlockDevice implements BatchBlockDevice, all data blocks
+// are read in a single batch operation.
+func readFileIntoPages(fsys *ext2.FileSystem, path string, transferable bool) (va uintptr, numPages int, bytesRead int, err error) {
+	t0 := time.Now()
 	file, ferr := fsys.Open(path)
 	if ferr != nil {
 		return 0, 0, 0, ferr
 	}
 	defer file.Close()
+	tOpen := time.Since(t0)
 
 	fileSize := int(file.Size())
 	numPages = (fileSize + 4095) / 4096
@@ -234,6 +231,8 @@ func readFileIntoPages(fsys *ext2.FileSystem, blkDev *asyncBlockDev, path string
 	}
 
 	totalSize := uintptr(numPages) * 4096
+
+	tAllocStart := time.Now()
 	if transferable {
 		// Kernel-tracked pages so TransferAndUnmap can validate ownership.
 		ptr, allocErr := mem.AllocPages(numPages, mem.PageShared)
@@ -253,34 +252,23 @@ func readFileIntoPages(fsys *ext2.FileSystem, blkDev *asyncBlockDev, path string
 			return 0, 0, 0, errno
 		}
 	}
+	tAlloc := time.Since(tAllocStart)
 
 	dst := unsafe.Slice((*byte)(unsafe.Pointer(va)), totalSize)
 
-	// Ramdisk fallback: sequential reads (no DMA).
-	if blkDev == nil {
-		n, _ := file.Read(dst[:fileSize])
-		return va, numPages, n, nil
-	}
+	tReadStart := time.Now()
+	n, rerr := file.ReadInto(dst[:fileSize])
+	tRead := time.Since(tReadStart)
 
-	// Batched DMA path via the DMA worker goroutine.
-	inode := file.InodeRaw()
-	totalBlocks := uint32((fileSize + int(fsys.BlockSizeBytes()) - 1) / int(fsys.BlockSizeBytes()))
+	writeRawString(fmt.Sprintf("[fs] PERF %s: size=%d open=%dms alloc=%dms read=%dms total=%dms\n",
+		path, fileSize, tOpen.Milliseconds(), tAlloc.Milliseconds(),
+		tRead.Milliseconds(), time.Since(t0).Milliseconds()))
 
-	// Resolve all block numbers upfront. ResolveBlockList caches
-	// indirect pointer tables internally, so this reads each metadata
-	// block at most once regardless of file size.
-	allBlocks, rerr := fsys.ResolveBlockList(inode, 0, totalBlocks)
 	if rerr != nil {
 		return 0, 0, 0, rerr
 	}
 
-	// Send the entire read to the DMA worker as a single batched request.
-	// The worker handles batching internally (scratchPages at a time).
-	if berr := blkDev.readBatch(allBlocks, dst[:fileSize]); berr != nil {
-		return 0, 0, 0, berr
-	}
-
-	return va, numPages, fileSize, nil
+	return va, numPages, n, nil
 }
 
 // handleReadFilePages returns ENOSYS — ext2 does not support direct DMA
@@ -332,9 +320,9 @@ func readStartupConfig(fsys *ext2.FileSystem) *constants.StartupConfig {
 }
 
 // launchShepherd reads an ELF from ext2 and launches it as a new shepherd.
-func launchShepherd(fsys *ext2.FileSystem, blkDev *asyncBlockDev, name, path string) {
+func launchShepherd(fsys *ext2.FileSystem, name, path string) {
 	writeRawString("[fs] reading " + path + "...\n")
-	va, numPages, bytesRead, err := readFileIntoPages(fsys, blkDev, path, false)
+	va, numPages, bytesRead, err := readFileIntoPages(fsys, path, false)
 	if err != nil {
 		writeRawString("[fs] failed to read " + path + "\n")
 		return
@@ -358,17 +346,17 @@ func launchShepherd(fsys *ext2.FileSystem, blkDev *asyncBlockDev, name, path str
 // Order: rachel first (only needs fs for LoadFile), then linux (needs both
 // fs for IPC and rachel for fonts/WM). TOML shepherds launch last since
 // they may need linux's syscall delegation active.
-func bootSequence(fsys *ext2.FileSystem, blkDev *asyncBlockDev) {
+func bootSequence(fsys *ext2.FileSystem) {
 	// 1. Launch rachel and wait — provides window manager + font service.
 	// Rachel only depends on fs (already ready) for loading fontsvc.maz.
-	launchShepherd(fsys, blkDev, "rachel", "/rachel.elf")
+	launchShepherd(fsys, "rachel", "/rachel.elf")
 	if err := sys.WaitForShepherdReady("rachel", 10); err != nil {
 		writeRawString("[fs] FATAL: rachel not ready\n")
 		return
 	}
 	// 2. Launch linux and wait — provides syscall delegation (Openat, Read, etc.).
 	// Linux depends on both fs (IPC) and rachel (fonts/WM).
-	launchShepherd(fsys, blkDev, "linux", "/linux.elf")
+	launchShepherd(fsys, "linux", "/linux.elf")
 	if err := sys.WaitForShepherdReady("linux", 10); err != nil {
 		writeRawString("[fs] FATAL: linux not ready\n")
 		return
@@ -379,7 +367,7 @@ func bootSequence(fsys *ext2.FileSystem, blkDev *asyncBlockDev) {
 	if cfg != nil {
 		for _, s := range cfg.Shepherds {
 			writeRawString("[fs] launching " + s.Name + " from " + s.Path + "\n")
-			launchShepherd(fsys, blkDev, s.Name, s.Path)
+			launchShepherd(fsys, s.Name, s.Path)
 		}
 	} else {
 		writeRawString("[fs] no startup.toml\n")
@@ -453,8 +441,21 @@ func (d *asyncBlockDev) dmaWorker() {
 	}
 }
 
+var singleReadCount int
+var singleReadTotal time.Duration
+
 // doReadBlock reads a single 4KB block via DMA. Only called from dmaWorker.
 func (d *asyncBlockDev) doReadBlock(lba uint64, buf []byte) error {
+	t0 := time.Now()
+	defer func() {
+		singleReadCount++
+		singleReadTotal += time.Since(t0)
+		if singleReadCount%100 == 0 {
+			writeRawString(fmt.Sprintf("[dma] single: %d reads, avg=%dms total=%dms\n",
+				singleReadCount, singleReadTotal.Milliseconds()/int64(singleReadCount),
+				singleReadTotal.Milliseconds()))
+		}
+	}()
 	sectorLBA := lba * sectorsPerBlock
 	dmaBuf := unsafe.Slice((*byte)(unsafe.Pointer(d.scratchVA)), asyncBlockSize)
 	_, serr := mem.BlockSubmit(0, sectorLBA, sectorsPerBlock, dmaBuf, 0)
@@ -477,6 +478,10 @@ func (d *asyncBlockDev) doReadBlock(lba uint64, buf []byte) error {
 // Only called from dmaWorker.
 func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 	total := uint32(len(blocks))
+	batchCount := 0
+	var totalSubmit, totalWait, totalCopy time.Duration
+	t0 := time.Now()
+
 	for blockIdx := uint32(0); blockIdx < total; {
 		batch := total - blockIdx
 		if batch > scratchPages {
@@ -484,6 +489,7 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 		}
 		batchBlocks := blocks[blockIdx : blockIdx+batch]
 
+		tSubmit := time.Now()
 		submitted := 0
 		for i, bn := range batchBlocks {
 			if bn == 0 {
@@ -503,7 +509,9 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 			}
 			submitted++
 		}
+		totalSubmit += time.Since(tSubmit)
 
+		tWait := time.Now()
 		if submitted > 0 {
 			remaining := submitted
 			for remaining > 0 {
@@ -520,7 +528,9 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 				}
 			}
 		}
+		totalWait += time.Since(tWait)
 
+		tCopy := time.Now()
 		for i := range batchBlocks {
 			srcOff := uintptr(i) * asyncBlockSize
 			dstOff := int(blockIdx+uint32(i)) * asyncBlockSize
@@ -533,8 +543,15 @@ func (d *asyncBlockDev) doReadBatch(blocks []uint32, dst []byte) error {
 				copy(dst[dstOff:dstEnd], src)
 			}
 		}
+		totalCopy += time.Since(tCopy)
+
 		blockIdx += batch
+		batchCount++
 	}
+
+	writeRawString(fmt.Sprintf("[dma] batch: %d blocks, %d batches, submit=%dms wait=%dms copy=%dms total=%dms\n",
+		total, batchCount, totalSubmit.Milliseconds(), totalWait.Milliseconds(),
+		totalCopy.Milliseconds(), time.Since(t0).Milliseconds()))
 	return nil
 }
 
@@ -563,10 +580,15 @@ func (d *asyncBlockDev) ReadBlock(lba uint64, buf []byte) error {
 	return reply.err
 }
 
-// readBatch sends a batched multi-block read request to the DMA worker.
-// blocks contains ext2 block numbers; dst receives the data.
+// ReadBlocks implements blockdev.BatchBlockDevice. Sends a batched multi-block
+// read request to the DMA worker. lbas are in device block units (4KB each).
 // Safe to call from any goroutine.
-func (d *asyncBlockDev) readBatch(blocks []uint32, dst []byte) error {
+func (d *asyncBlockDev) ReadBlocks(lbas []uint64, dst []byte) error {
+	// Convert uint64 LBAs to uint32 block numbers for doReadBatch.
+	blocks := make([]uint32, len(lbas))
+	for i, lba := range lbas {
+		blocks[i] = uint32(lba)
+	}
 	replyCh := make(chan dmaReply, 1)
 	d.reqCh <- dmaRequest{
 		kind:    dmaReadBatch,

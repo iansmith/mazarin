@@ -51,17 +51,29 @@ func MountRW(device blockdev.BlockDevice) (*FileSystem, error) {
 func (fs *FileSystem) loadBitmaps() error {
 	fs.blockBitmaps = make([][]byte, fs.numGroups)
 	fs.inodeBitmaps = make([][]byte, fs.numGroups)
-	for g := uint32(0); g < fs.numGroups; g++ {
-		bm := make([]byte, fs.blockSize)
-		if err := fs.readBlock(fs.groups[g].BlockBitmap, bm); err != nil {
-			return err
-		}
-		fs.blockBitmaps[g] = bm
 
-		im := make([]byte, fs.blockSize)
-		if err := fs.readBlock(fs.groups[g].InodeBitmap, im); err != nil {
-			return err
-		}
+	// Collect all bitmap block numbers and batch-read them.
+	allBlocks := make([]uint32, 0, 2*fs.numGroups)
+	for g := uint32(0); g < fs.numGroups; g++ {
+		allBlocks = append(allBlocks, fs.groups[g].BlockBitmap)
+		allBlocks = append(allBlocks, fs.groups[g].InodeBitmap)
+	}
+
+	buf := make([]byte, len(allBlocks)*int(fs.blockSize))
+	if err := fs.readBlocks(allBlocks, buf); err != nil {
+		return err
+	}
+
+	// Slice the contiguous buffer into per-group bitmaps.
+	bs := int(fs.blockSize)
+	for g := uint32(0); g < fs.numGroups; g++ {
+		bmOff := int(2*g) * bs
+		imOff := int(2*g+1) * bs
+		bm := make([]byte, bs)
+		im := make([]byte, bs)
+		copy(bm, buf[bmOff:bmOff+bs])
+		copy(im, buf[imOff:imOff+bs])
+		fs.blockBitmaps[g] = bm
 		fs.inodeBitmaps[g] = im
 	}
 	return nil
@@ -142,6 +154,43 @@ func (fs *FileSystem) readBlock(blockNum uint32, buf []byte) error {
 	return fs.readBytes(int64(blockNum)*int64(fs.blockSize), buf[:fs.blockSize])
 }
 
+// readBlocks reads multiple filesystem blocks in a single batch operation.
+// blockNums contains fs block numbers; dst receives the data contiguously
+// (block i at dst[i*blockSize:(i+1)*blockSize]).
+// If the device implements BatchBlockDevice, uses a single ReadBlocks call.
+// Otherwise falls back to individual readBlock calls.
+func (fs *FileSystem) readBlocks(blockNums []uint32, dst []byte) error {
+	if len(blockNums) == 0 {
+		return nil
+	}
+
+	devBlockSize := fs.device.BlockSize()
+	sectorsPerFSBlock := uint64(fs.blockSize) / devBlockSize
+
+	// Try batch path.
+	if bdev, ok := fs.device.(blockdev.BatchBlockDevice); ok {
+		// Build LBA list — one device LBA per device sector.
+		// Each fs block may span multiple device sectors.
+		lbas := make([]uint64, 0, len(blockNums)*int(sectorsPerFSBlock))
+		for _, bn := range blockNums {
+			baseLBA := uint64(bn) * sectorsPerFSBlock
+			for s := uint64(0); s < sectorsPerFSBlock; s++ {
+				lbas = append(lbas, baseLBA+s)
+			}
+		}
+		return bdev.ReadBlocks(lbas, dst)
+	}
+
+	// Fallback: individual reads.
+	for i, bn := range blockNums {
+		off := int(i) * int(fs.blockSize)
+		if err := fs.readBlock(bn, dst[off:off+int(fs.blockSize)]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // writeBytes writes len(buf) bytes to the block device at the given byte offset.
 func (fs *FileSystem) writeBytes(offset int64, buf []byte) error {
 	devBlockSize := int64(fs.device.BlockSize())
@@ -206,25 +255,37 @@ func (fs *FileSystem) ReadDir(inum uint32) ([]DirEntry, error) {
 		return nil, ErrNotDir
 	}
 
-	var entries []DirEntry
-	buf := make([]byte, fs.blockSize)
 	blocksUsed := inode.Size / fs.blockSize
+	if blocksUsed == 0 {
+		return nil, nil
+	}
 
-	for i := uint32(0); i < blocksUsed; i++ {
-		blockNum, err := fs.inodeBlockNum(inode, i)
-		if err != nil {
-			return nil, err
-		}
-		if blockNum == 0 {
-			break
-		}
-		if err := fs.readBlock(blockNum, buf); err != nil {
-			return nil, err
-		}
+	// Resolve all block numbers, then batch-read.
+	blockNums, err := fs.ResolveBlockList(inode, 0, blocksUsed)
+	if err != nil {
+		return nil, err
+	}
 
+	// Filter out zero (sparse) blocks and build the read list.
+	// Directories shouldn't have sparse blocks, but handle it.
+	nonZero := make([]uint32, 0, len(blockNums))
+	for _, bn := range blockNums {
+		if bn != 0 {
+			nonZero = append(nonZero, bn)
+		}
+	}
+
+	buf := make([]byte, len(nonZero)*int(fs.blockSize))
+	if err := fs.readBlocks(nonZero, buf); err != nil {
+		return nil, err
+	}
+
+	var entries []DirEntry
+	for i := range nonZero {
+		blockData := buf[i*int(fs.blockSize) : (i+1)*int(fs.blockSize)]
 		offset := 0
 		for offset < int(fs.blockSize) {
-			de, consumed, err := UnmarshalDirEntry(buf[offset:])
+			de, consumed, err := UnmarshalDirEntry(blockData[offset:])
 			if err != nil {
 				return nil, err
 			}

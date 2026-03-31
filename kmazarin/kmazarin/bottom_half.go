@@ -119,6 +119,12 @@ var blockIRQNum uint32
 var blockISRBase uintptr
 var blockIOComplete *uint32
 
+// Debug counters for block IRQ instrumentation
+var dbgBlockIRQCount uint32       // total block IRQs received
+var dbgBlockIRQSync uint32        // handled in sync mode (IOComplete)
+var dbgBlockIRQAsync uint32       // handled in async mode (ring push + wake)
+var dbgBlockAsyncEvents uint32    // total async completion events pushed to ring
+
 // Block async completion state (Phase 4).
 // When blockAsyncMode=1, the top-half drains the Engine used ring,
 // pushes completion events to topHalfBlockRing, and wakes the slot.
@@ -292,6 +298,7 @@ func NonTimerIRQTopHalf() {
 	// Block device: acknowledge interrupt, then either drain async completions
 	// or signal IOComplete for the synchronous WFI loop.
 	if irqNum == blockIRQNum && blockIRQNum != 0 {
+		atomic.AddUint32(&dbgBlockIRQCount, 1)
 		if blockISRBase != 0 {
 			_ = asm.MmioRead8(blockISRBase) // Acknowledge interrupt (deasserts INTx)
 		}
@@ -340,6 +347,7 @@ func NonTimerIRQTopHalf() {
 					}
 				}
 
+				atomic.AddUint32(&dbgBlockAsyncEvents, 1)
 				// Push completion event to ring (must use ringPush which
 				// uses monotonically-increasing tail — NOT wrapping indices —
 				// to match RingDrain's head convention)
@@ -352,9 +360,11 @@ func NonTimerIRQTopHalf() {
 				// Clear metadata slot
 				*meta = blockAsyncSlot{}
 			}
+			atomic.AddUint32(&dbgBlockIRQAsync, 1)
 			WakeSlotForIRQ(hid.BlockVirtualIRQ)
 		} else {
 			// Sync mode: just signal IOComplete for WFI loop
+			atomic.AddUint32(&dbgBlockIRQSync, 1)
 			if blockIOComplete != nil {
 				atomic.StoreUint32(blockIOComplete, 1)
 			}
