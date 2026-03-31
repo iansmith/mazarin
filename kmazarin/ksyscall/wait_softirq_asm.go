@@ -62,3 +62,9 @@ func enableIRQsAndWait()
 //go:linkname RegisterBlockCompletionRing main.RegisterBlockCompletionRing
 func RegisterBlockCompletionRing(ringVA uintptr, shepherdID int16) int64
 
+// RegisterInputCompletionRing pins a userspace page and sets it up as the
+// shared completion ring for HID input events (window manager).
+//
+//go:linkname RegisterInputCompletionRing main.RegisterInputCompletionRing
+func RegisterInputCompletionRing(ringVA uintptr, shepherdID int16) int64
+

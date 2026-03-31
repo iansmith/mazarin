@@ -56,6 +56,8 @@ func init() {
 
 // routeInputEvent pushes an HID event to the WM's queue and the focused
 // shepherd's queue (if different). Called from the nosplit top-half.
+// If the WM has a shared completion ring registered, events go there instead
+// of the legacy per-class kernel queue.
 //
 //go:nosplit
 //go:noinline
@@ -63,11 +65,17 @@ func routeInputEvent(ev hid.HIDEvent, class int) {
 	wmSID := atomic.LoadInt32(&windowManagerSID)
 	focusSID := atomic.LoadInt32(&inputFocusSID[class])
 
+	// WM path: shared completion ring if registered, else legacy queue
 	if wmSID >= 0 && wmSID < int32(proc.MaxShepherds) {
-		ringPush(&inputQueues[wmSID][class], ev)
+		kva := wmInputRingKVA
+		if kva != 0 {
+			completionRingPush(kva, ev)
+		} else {
+			ringPush(&inputQueues[wmSID][class], ev)
+		}
 	}
 
-	// Push to focused shepherd only if different from WM
+	// Focused shepherd: always legacy queue (unchanged)
 	if focusSID >= 0 && focusSID < int32(proc.MaxShepherds) && focusSID != wmSID {
 		ringPush(&inputQueues[focusSID][class], ev)
 	}
@@ -75,6 +83,8 @@ func routeInputEvent(ev hid.HIDEvent, class int) {
 
 // wakeInputConsumers wakes threads blocked on WaitInputEvent for both WM
 // and focused shepherd. Called from the nosplit top-half after pushing events.
+// When the WM has a shared completion ring, the WM wake is skipped here —
+// the caller must invoke wakeWMViaMailbox() once after all events are pushed.
 //
 //go:nosplit
 //go:noinline
@@ -82,11 +92,27 @@ func wakeInputConsumers(class int) {
 	wmSID := atomic.LoadInt32(&windowManagerSID)
 	focusSID := atomic.LoadInt32(&inputFocusSID[class])
 
-	if wmSID >= 0 && wmSID < int32(proc.MaxShepherds) {
+	// WM: skip if ring registered (caller sends mailbox notification once)
+	if wmSID >= 0 && wmSID < int32(proc.MaxShepherds) && wmInputRingKVA == 0 {
 		wakeInputBlockedThread(int(wmSID), class)
 	}
+
+	// Focused shepherd: always legacy wake
 	if focusSID >= 0 && focusSID < int32(proc.MaxShepherds) && focusSID != wmSID {
 		wakeInputBlockedThread(int(focusSID), class)
+	}
+}
+
+// wakeWMViaMailbox sends a single InputEventCode mailbox notification to the
+// WM shepherd. Called from the top-half AFTER all events have been pushed to
+// the shared ring and after wakeInputConsumers calls. Kept separate from
+// wakeInputConsumers to avoid deepening the nosplit stack chain.
+//
+//go:nosplit
+//go:noinline
+func wakeWMViaMailbox() {
+	if wmInputRingKVA != 0 {
+		mailboxSendFromIRQ(wmInputRingOwnerSID, hid.InputEventCode)
 	}
 }
 

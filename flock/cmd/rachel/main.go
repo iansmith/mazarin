@@ -13,6 +13,7 @@ import (
 	"mazzy/mazarin/input"
 	"mazzy/mazarin/mancini"
 	"mazzy/mazarin/mazhost"
+	"mazzy/mazarin/mem"
 	"mazzy/mazarin/ringbuf"
 	"mazzy/mazarin/sys"
 	"mazzy/mazarin/vm"
@@ -22,6 +23,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
@@ -80,6 +82,10 @@ const (
 
 var lastInputType int
 
+// Input ring diagnostics
+var inputEventsProcessed int
+var inputWakeups int
+
 // switchInput prints a newline if the input type changed, then records
 // the new type. Call before printing any event output.
 func switchInput(newType int) {
@@ -109,27 +115,19 @@ func buttonName(code uint16) string {
 	}
 }
 
-func keyboardLoop() {
-	var buf hid.SoftIRQReturn
-	var km input.Keymap
-	// Track per-key held state to suppress repeats. QEMU on macOS sends
-	// repeated EV_KEY value=1 (press) events for auto-repeat, not value=2.
-	var keyHeld [256]bool
-	for {
-		n, err := sys.WaitInputEvent(hid.InputClassKeyboard, &buf)
-		if err != nil {
-			fmt.Printf("[rachel:kbd] WaitInputEvent error: %v\n", err)
-			continue
-		}
-		for i := 0; i < n; i++ {
-			ev := buf.Events[i]
-			if ev.Type != EV_KEY {
-				continue
-			}
+// processInputEvent handles a single HID event from the shared completion ring.
+// Classifies the event (keyboard, mouse button, mouse movement) and processes
+// it in userspace, replacing the former keyboardLoop/mouseClickLoop/mouseMovementLoop
+// goroutines.
+func processInputEvent(ev hid.HIDEvent, km *input.Keymap, keyHeld *[256]bool) {
+	switch ev.Type {
+	case EV_KEY:
+		if ev.Code < BTN_LEFT {
+			// Keyboard event
 			code := ev.Code
 			if ev.Value == 1 { // press
 				if code < 256 && keyHeld[code] {
-					continue // suppress repeat (already held)
+					return // suppress repeat (already held)
 				}
 				if code < 256 {
 					keyHeld[code] = true
@@ -138,9 +136,9 @@ func keyboardLoop() {
 				if code < 256 {
 					keyHeld[code] = false
 				}
-				continue // don't generate output for releases
+				return
 			} else {
-				continue // skip value=2 (explicit repeat) and other values
+				return // skip value=2 (explicit repeat)
 			}
 			ke := input.KeyEvent{
 				Code:    code,
@@ -161,24 +159,9 @@ func keyboardLoop() {
 				switchInput(inputKeyboard)
 				fmt.Print("\t")
 			}
-		}
-	}
-}
-
-func mouseClickLoop() {
-	var buf hid.SoftIRQReturn
-	for {
-		n, err := sys.WaitInputEvent(hid.InputClassMouseClick, &buf)
-		if err != nil {
-			continue
-		}
-		for i := 0; i < n; i++ {
-			ev := buf.Events[i]
-			if ev.Type != EV_KEY {
-				continue
-			}
+		} else {
+			// Mouse button event
 			x, y := mouseX, mouseY
-
 			if ev.Value == 1 { // press
 				mouseButtonHeld = int32(ev.Code)
 				forwardMouseEvent(wm.MsgMousePress, x, y, int32(ev.Code))
@@ -186,6 +169,36 @@ func mouseClickLoop() {
 				mouseButtonHeld = 0
 				forwardMouseEvent(wm.MsgMouseRelease, x, y, int32(ev.Code))
 			}
+		}
+
+	case EV_REL:
+		switch ev.Code {
+		case REL_X:
+			mouseX += int32(ev.Value)
+			if mouseX < 0 {
+				mouseX = 0
+			}
+			if mouseX >= displayWidth {
+				mouseX = displayWidth - 1
+			}
+		case REL_Y:
+			mouseY += int32(ev.Value)
+			if mouseY < 0 {
+				mouseY = 0
+			}
+			if mouseY >= displayHeight {
+				mouseY = displayHeight - 1
+			}
+		case REL_WHEEL:
+			switchInput(inputWheel)
+		}
+
+	case EV_ABS:
+		switch ev.Code {
+		case hid.AbsX:
+			mouseX = int32((uint32(ev.Value) * uint32(displayWidth)) / (hid.AbsMax + 1))
+		case hid.AbsY:
+			mouseY = int32((uint32(ev.Value) * uint32(displayHeight)) / (hid.AbsMax + 1))
 		}
 	}
 }
@@ -370,64 +383,24 @@ func pointInAnyAppBounds(x, y int64) bool {
 	return false
 }
 
-func mouseMovementLoop() {
-	var buf hid.SoftIRQReturn
-	for {
-		n, err := sys.WaitInputEvent(hid.InputClassMouseMove, &buf)
-		if err != nil {
-			continue
-		}
-		for i := 0; i < n; i++ {
-			ev := buf.Events[i]
-			switch ev.Type {
-			case EV_REL:
-				switch ev.Code {
-				case REL_X:
-					mouseX += int32(ev.Value)
-					if mouseX < 0 {
-						mouseX = 0
-					}
-					if mouseX >= displayWidth {
-						mouseX = displayWidth - 1
-					}
-				case REL_Y:
-					mouseY += int32(ev.Value)
-					if mouseY < 0 {
-						mouseY = 0
-					}
-					if mouseY >= displayHeight {
-						mouseY = displayHeight - 1
-					}
-				case REL_WHEEL:
-					switchInput(inputWheel)
-				}
-			case EV_ABS:
-				// Tablet absolute coordinates (0-32767) → screen coordinates.
-				switch ev.Code {
-				case hid.AbsX:
-					mouseX = int32((uint32(ev.Value) * uint32(displayWidth)) / (hid.AbsMax + 1))
-				case hid.AbsY:
-					mouseY = int32((uint32(ev.Value) * uint32(displayHeight)) / (hid.AbsMax + 1))
-				}
+// postBatchInputUpdate runs after draining a full batch of input events from
+// the shared ring. Handles mouse move forwarding and cursor state.
+func postBatchInputUpdate() {
+	// Forward move to focused shepherd while a button is held.
+	if mouseButtonHeld != 0 {
+		forwardMouseEvent(wm.MsgMouseMove, mouseX, mouseY, 0)
+	}
+
+	// Check cursor state (inverse when over app bounds).
+	if standardCursorID >= 0 && inverseCursorID >= 0 {
+		inApp := pointInAnyAppBounds(int64(mouseX), int64(mouseY))
+		if inApp && !cursorIsInverse {
+			if err := sys.SetCursor(inverseCursorID); err == nil {
+				cursorIsInverse = true
 			}
-		}
-
-		// Forward move to focused shepherd while a button is held.
-		if mouseButtonHeld != 0 {
-			forwardMouseEvent(wm.MsgMouseMove, mouseX, mouseY, 0)
-		}
-
-		// After processing all events in this batch, check cursor state.
-		if standardCursorID >= 0 && inverseCursorID >= 0 {
-			inApp := pointInAnyAppBounds(int64(mouseX), int64(mouseY))
-			if inApp && !cursorIsInverse {
-				if err := sys.SetCursor(inverseCursorID); err == nil {
-					cursorIsInverse = true
-				}
-			} else if !inApp && cursorIsInverse {
-				if err := sys.SetCursor(standardCursorID); err == nil {
-					cursorIsInverse = false
-				}
+		} else if !inApp && cursorIsInverse {
+			if err := sys.SetCursor(standardCursorID); err == nil {
+				cursorIsInverse = false
 			}
 		}
 	}
@@ -498,8 +471,14 @@ func forceFontSvcItab(v interface{}) {
 
 // mailboxLoop receives mailbox notifications forwarded by fontsvc.maz.
 // fontsvc owns the MailboxRecv loop and forwards non-font notifications
-// (WMNotify, ShepherdNotify, etc.) to this channel.
-func mailboxLoop(ch <-chan sys.MailboxNotification) {
+// (WMNotify, ShepherdNotify, InputEventCode, etc.) to this channel.
+// When an InputEventCode notification arrives, it drains the shared
+// completion ring and classifies events in userspace.
+func mailboxLoop(ch <-chan sys.MailboxNotification, inputRing *hid.CompletionRing) {
+	var events [64]hid.HIDEvent
+	var km input.Keymap
+	var keyHeld [256]bool
+
 	for notif := range ch {
 		switch notif.Code {
 		case wm.WMNotify:
@@ -536,6 +515,28 @@ func mailboxLoop(ch <-chan sys.MailboxNotification) {
 					_ = sys.MailboxSend(senderSID, wm.ShepherdNotify, returnRb.Addr())
 				}
 			}
+
+		case hid.InputEventCode:
+			// Drain shared completion ring and process all events
+			batchTotal := 0
+			for {
+				n := sys.PollCompletionRing(inputRing, events[:], len(events))
+				if n == 0 {
+					break
+				}
+				batchTotal += n
+				for i := 0; i < n; i++ {
+					processInputEvent(events[i], &km, &keyHeld)
+				}
+			}
+			inputEventsProcessed += batchTotal
+			inputWakeups++
+			if inputWakeups%100 == 0 {
+				dropped := atomic.LoadUint32(&inputRing.Flags)
+				sys.UartWriteString(fmt.Sprintf("[rachel:input] wakeups=%d events=%d dropped=%d\n",
+					inputWakeups, inputEventsProcessed, dropped))
+			}
+			postBatchInputUpdate()
 
 		default:
 		}
@@ -587,6 +588,18 @@ func main() {
 	// Register standard and inverse cursors with the GPU.
 	initCursors()
 
+	// Allocate and register a shared completion ring for HID input events.
+	// The kernel IRQ top-half writes events directly to this page;
+	// rachel drains it when woken via mailbox notification.
+	inputRingPage, err := mem.AllocPages(1, mem.PageShared)
+	if err != nil {
+		panic(fmt.Sprintf("[rachel] FATAL: AllocPages for input ring: %v", err))
+	}
+	inputRing := (*hid.CompletionRing)(inputRingPage)
+	if err := sys.RegisterCompletionRing(uintptr(inputRingPage), 1); err != nil {
+		panic(fmt.Sprintf("[rachel] FATAL: RegisterCompletionRing(input): %v", err))
+	}
+
 	// Wait for fs shepherd to be ready before loading .maz files.
 	if err := sys.WaitForShepherdReady("fs", 10); err != nil {
 		panic(fmt.Sprintf("[rachel] FATAL: fs: %v", err))
@@ -630,17 +643,8 @@ func main() {
 	runtime.Gosched()
 
 	// Start mailbox receiver — reads from channel populated by fontsvc.
-	go mailboxLoop(rachelCh)
-	runtime.Gosched()
-
-	// Launch event loops for all three device classes.
-	// As WM, rachel receives all events and can handle global shortcuts,
-	// log clicks, etc. For now, processes keyboard and logs mouse clicks.
-	go keyboardLoop()
-	runtime.Gosched()
-	go mouseClickLoop()
-	runtime.Gosched()
-	go mouseMovementLoop()
+	// Also handles InputEventCode notifications by draining the shared ring.
+	go mailboxLoop(rachelCh, inputRing)
 	runtime.Gosched()
 
 	// Stderr test (linux shepherd disabled for now, but keep for diagnostics).

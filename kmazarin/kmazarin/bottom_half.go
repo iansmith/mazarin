@@ -258,28 +258,25 @@ func completionRingPush(kva uintptr, ev hid.HIDEvent) bool {
 		atomic.StoreUint32(&ring.Lock, 0)
 		return false
 	}
-	ring.Events[tail&(hid.CompletionRingSize-1)] = ev
+	ring.Events[tail%ring.Capacity] = ev
 	asm.Dsb() // ensure event data visible before tail update
 	atomic.StoreUint32(&ring.Tail, tail+1)
 	atomic.StoreUint32(&ring.Lock, 0)
 	return true
 }
 
-// BlockIOCompleteCode is the mailbox notification code for block I/O completions.
-const BlockIOCompleteCode int64 = 0x4200 // "B\0" — block I/O complete
-
-// mailboxSendFromIRQ sends a block I/O completion notification to a shepherd's
+// mailboxSendFromIRQ sends a completion notification to a shepherd's
 // mailbox from the IRQ top-half. Wakes the shepherd if it's blocked on MailboxRecv.
 //
 //go:nosplit
 //go:noinline
-func mailboxSendFromIRQ(targetSID int16) {
+func mailboxSendFromIRQ(targetSID int16, code int64) {
 	idx := int(targetSID)
 	if idx < 0 || idx >= len(mailboxQueues) {
 		return
 	}
 
-	notif := MailboxNotification{Code: BlockIOCompleteCode, SenderSID: 0}
+	notif := MailboxNotification{Code: code, SenderSID: 0}
 	savedDAIF := SaveAndDisableIRQs()
 	schedulerLock.Lock()
 
@@ -431,7 +428,7 @@ func NonTimerIRQTopHalf() {
 			atomic.AddUint32(&dbgBlockIRQAsync, 1)
 			// Wake via mailbox if shared ring registered, else legacy slot wake
 			if blockCompletionRingKVA != 0 {
-				mailboxSendFromIRQ(blockCompletionRingOwnerSID)
+				mailboxSendFromIRQ(blockCompletionRingOwnerSID, hid.BlockIOCompleteCode)
 			} else {
 				WakeSlotForIRQ(hid.BlockVirtualIRQ)
 			}
@@ -561,6 +558,8 @@ func NonTimerIRQTopHalf() {
 			wakeInputConsumers(hid.InputClassMouseClick)
 			wakeInputConsumers(hid.InputClassMouseMove)
 		}
+		// Send single mailbox notification to WM (if shared ring registered).
+		wakeWMViaMailbox()
 	}
 }
 
@@ -670,6 +669,8 @@ func topHalfTabletHandler() {
 		// Tablet generates mouse-class events (clicks and movement)
 		wakeInputConsumers(hid.InputClassMouseClick)
 		wakeInputConsumers(hid.InputClassMouseMove)
+		// Send single mailbox notification to WM (if shared ring registered).
+		wakeWMViaMailbox()
 	}
 }
 

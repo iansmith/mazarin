@@ -2153,6 +2153,7 @@ func TerminateShepherd(pid ShepherdId, status int64) uintptr {
 	// protected by IRQ disabling (we're in SVC handler context).
 	terminateShepherdDelegateCleanup(int16(pid))
 	CleanupBlockCompletionRing(int16(pid))
+	CleanupInputCompletionRing(int16(pid))
 	CleanupSoftIRQSlotsForShepherd(int16(pid))
 	CleanupInputFocusForShepherd(int16(pid))
 	CleanupMailboxForShepherd(int16(pid))

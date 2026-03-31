@@ -68,7 +68,7 @@ func PollCompletionRing(ring *hid.CompletionRing, events []hid.HIDEvent, max int
 		if head == tail {
 			break
 		}
-		events[n] = ring.Events[head&(hid.CompletionRingSize-1)]
+		events[n] = ring.Events[head%ring.Capacity]
 		atomic.StoreUint32(&ring.Head, head+1)
 		n++
 	}

@@ -78,7 +78,8 @@ type SoftIRQReturn struct {
 }
 
 // CompletionRingSize is the number of event slots in a CompletionRing.
-const CompletionRingSize = 256
+// (4096 - 32 header) / 8 bytes per HIDEvent = 508. Fills one 4KB page exactly.
+const CompletionRingSize = 508
 
 // CompletionRing is a shared-memory MPSC ring buffer for IRQ completion
 // delivery. The kernel IRQ top-half writes events directly to this page;
@@ -90,7 +91,7 @@ const CompletionRingSize = 256
 // The page is allocated by userspace and pinned by the kernel via
 // SysRegisterCompletionRing. It must not contain Go pointers.
 //
-// Total size: 32 + 256*8 = 2080 bytes (fits in a 4KB page).
+// Total size: 32 + 508*8 = 4096 bytes (exactly one 4KB page).
 type CompletionRing struct {
 	Head     uint32                        // atomic: consumer index (userspace)
 	Tail     uint32                        // atomic: producer index (kernel top-half)
@@ -131,6 +132,14 @@ const (
 
 // AbsMax is the maximum absolute axis value reported by virtio-tablet (0-32767).
 const AbsMax = 32767
+
+// InputEventCode is the mailbox notification code for HID input events.
+// Sent by the kernel IRQ top-half when events are written to the WM's
+// shared completion ring.
+const InputEventCode int64 = 0x4201
+
+// BlockIOCompleteCode is the mailbox notification code for block I/O completions.
+const BlockIOCompleteCode int64 = 0x4200
 
 // BlockVirtualIRQ is the virtual IRQ number for the kernel block device.
 // Used by the disk shepherd to register for block device ownership via RegisterSoftIRQ.
