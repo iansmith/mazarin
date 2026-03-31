@@ -100,8 +100,16 @@ func main() {
 	morestackImports := findMorestackSymbols(f)
 	imports = append(imports, morestackImports...)
 
-	fmt.Printf("maz-reloc: found %d call sites + %d data pointers + %d morestack trampolines = %d total imports\n",
-		len(textImports), len(dataImports), len(morestackImports), len(imports))
+	// Find stubs that had NO call-site or data-pointer imports and emit
+	// body-trampoline imports for them. These stubs may only be reached
+	// via indirect dispatch (interface calls, function values, //go:linkname
+	// aliases) — scanText and scanDataSections can't find those references,
+	// but the stub body still needs patching or it will panic at runtime.
+	unreachedImports := findUnreachedStubs(f, stubAddrs, imports)
+	imports = append(imports, unreachedImports...)
+
+	fmt.Printf("maz-reloc: found %d call sites + %d data pointers + %d morestack + %d unreached stubs = %d total imports\n",
+		len(textImports), len(dataImports), len(morestackImports), len(unreachedImports), len(imports))
 
 	if len(imports) == 0 {
 		fmt.Printf("maz-reloc: no imports found, binary unchanged\n")
@@ -231,6 +239,7 @@ func findStubAddresses(f *elf.File, stubNames map[string]bool) map[string]uint64
 		textAddr = text.Addr
 	}
 
+	// Pass 1: Check manifest-listed symbols (these use the gen-ast-stubs names).
 	skipped := 0
 	for _, sym := range syms {
 		if sym.Value == 0 || sym.Size == 0 {
@@ -239,10 +248,6 @@ func findStubAddresses(f *elf.File, stubNames map[string]bool) map[string]uint64
 		if !stubNames[sym.Name] {
 			continue
 		}
-		// Verify this is actually a thin stub by checking the function body.
-		// The userspace overlay replaces some thin stubs with real functions
-		// (e.g., syscall.RawSyscall6, syscall.Syscall6). We must not create
-		// import entries for those — they have working implementations.
 		isStub := textData != nil && isThinStub(f.Machine, textData, textAddr, sym.Value, panicHelperAddrs)
 		if strings.Contains(sym.Name, "typeAssert") || strings.Contains(sym.Name, "interfaceSwitch") {
 			fmt.Printf("maz-reloc: DEBUG %s addr=0x%X size=%d isStub=%v\n", sym.Name, sym.Value, sym.Size, isStub)
@@ -250,15 +255,43 @@ func findStubAddresses(f *elf.File, stubNames map[string]bool) map[string]uint64
 		if isStub {
 			result[sym.Name] = sym.Value
 		} else if textData == nil {
-			// Can't verify, include anyway
 			result[sym.Name] = sym.Value
 		} else {
 			skipped++
 		}
 	}
 
+	// Pass 2: Scan ALL text symbols for the thin stub body pattern.
+	// Go's //go:linkname creates ELF symbols whose names differ from the
+	// gen-ast-stubs manifest (e.g., manifest has "runtime.sync_runtime_procPin"
+	// but ELF has "sync.runtime_procPin"). These stubs are missed by the
+	// manifest check above. We catch them by body-pattern detection.
+	extraStubs := 0
+	for _, sym := range syms {
+		if sym.Value == 0 || sym.Size == 0 {
+			continue
+		}
+		if _, already := result[sym.Name]; already {
+			continue
+		}
+		// Only check .text functions (type STT_FUNC or in the text range)
+		if textData == nil {
+			continue
+		}
+		if sym.Value < textAddr || sym.Value >= textAddr+uint64(len(textData)) {
+			continue
+		}
+		if isThinStub(f.Machine, textData, textAddr, sym.Value, panicHelperAddrs) {
+			result[sym.Name] = sym.Value
+			extraStubs++
+		}
+	}
+
 	if skipped > 0 {
 		fmt.Printf("maz-reloc: skipped %d manifest symbols (overlay-provided, not thin stubs)\n", skipped)
+	}
+	if extraStubs > 0 {
+		fmt.Printf("maz-reloc: found %d additional stubs by body-pattern scan (linkname aliases)\n", extraStubs)
 	}
 
 	return result
@@ -447,6 +480,51 @@ func findMorestackSymbols(f *elf.File) []importRef {
 			name:      sym.Name,
 			relocType: relocType,
 		})
+	}
+
+	return imports
+}
+
+// findUnreachedStubs finds stubs that received NO imports from scanText or
+// scanDataSections and emits body-trampoline imports for them. A stub may
+// only be called indirectly (via interface dispatch, function values, or
+// //go:linkname aliases), which the BL/pointer scanners cannot detect.
+// Without a body-trampoline import, the kernel never patches the stub and
+// it panics at runtime.
+func findUnreachedStubs(f *elf.File, stubAddrs map[string]uint64, existingImports []importRef) []importRef {
+	// Build set of stub names that already have at least one import
+	covered := make(map[string]bool)
+	for _, imp := range existingImports {
+		covered[imp.name] = true
+	}
+
+	// Determine the architecture-specific body reloc type
+	var relocType uint8
+	switch f.Machine {
+	case elf.EM_AARCH64:
+		relocType = RelocB_ARM64
+	case elf.EM_X86_64:
+		relocType = RelocJMP_X86
+	case elf.EM_RISCV:
+		relocType = RelocJ_RISCV
+	default:
+		return nil
+	}
+
+	var imports []importRef
+	for name, addr := range stubAddrs {
+		if covered[name] {
+			continue
+		}
+		imports = append(imports, importRef{
+			segOffset: uint32(addr),
+			name:      name,
+			relocType: relocType,
+		})
+	}
+
+	if len(imports) > 0 {
+		fmt.Printf("maz-reloc: %d stubs with no direct call sites — emitting body trampolines\n", len(imports))
 	}
 
 	return imports

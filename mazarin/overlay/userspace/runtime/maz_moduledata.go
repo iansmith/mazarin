@@ -33,6 +33,11 @@ func RegisterMazModuledata(mdPtr uintptr) {
 	// Keep typelinks and itablinks intact — they are needed for cross-module type
 	// deduplication (typelinksinit) and interface dispatch (itabsinit). Without them,
 	// type assertions across module boundaries fail.
+	//
+	// inittasks must be nil — some init functions touch runtime internals (e.g.,
+	// sync.Pool, hash tables sized by GOMAXPROCS) that cause panics in the .maz
+	// context. Package-level vars that need initialization (e.g., go-text font
+	// format tags) must be handled by the .maz code itself before use.
 	md.hasmain = 0
 	md.bad = false
 	md.inittasks = nil
