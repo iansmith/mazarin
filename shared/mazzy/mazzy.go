@@ -52,8 +52,7 @@ const (
 	SysAttrWaitDirty          = MazzySyscallBase + 42 // 0x102A - Wait for dirty notifications
 	SysAttrIncrementI64       = MazzySyscallBase + 43 // 0x102B - Atomically increment int64 attribute
 	SysRequestWindowManager   = MazzySyscallBase + 44 // 0x102C - Claim window manager role
-	SysSetInputFocus          = MazzySyscallBase + 45 // 0x102D - Set input focus for device class
-	SysWaitInputEvent         = MazzySyscallBase + 46 // 0x102E - Wait for input events
+	// slots 45-46 freed (were SetInputFocus/WaitInputEvent — rachel uses completion ring now)
 	SysMailboxMapPage         = MazzySyscallBase + 47 // 0x102F - Map caller's page into target shepherd's space
 	SysMailboxSend            = MazzySyscallBase + 48 // 0x1030 - Send mailbox notification
 	SysMailboxRecv            = MazzySyscallBase + 49 // 0x1031 - Wait for mailbox notification

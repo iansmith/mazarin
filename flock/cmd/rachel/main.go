@@ -132,10 +132,12 @@ func processInputEvent(ev hid.HIDEvent, km *input.Keymap, keyHeld *[256]bool) {
 				if code < 256 {
 					keyHeld[code] = true
 				}
+				forwardKeyboardEvent(code, true)
 			} else if ev.Value == 0 { // release
 				if code < 256 {
 					keyHeld[code] = false
 				}
+				forwardKeyboardEvent(code, false)
 				return
 			} else {
 				return // skip value=2 (explicit repeat)
@@ -200,6 +202,32 @@ func processInputEvent(ev hid.HIDEvent, km *input.Keymap, keyHeld *[256]bool) {
 		case hid.AbsY:
 			mouseY = int32((uint32(ev.Value) * uint32(displayHeight)) / (hid.AbsMax + 1))
 		}
+	}
+}
+
+// forwardKeyboardEvent sends a key press or release to the focused shepherd.
+func forwardKeyboardEvent(code uint16, pressed bool) {
+	sid := focusedSID
+	if sid < 0 {
+		return
+	}
+	ta, ok := trackedApps[sid]
+	if !ok || ta.returnRb == nil {
+		return
+	}
+	if pressed {
+		var msg wm.KeyPressMsg
+		msg.Type = wm.MsgKeyPress
+		msg.Code = code
+		ta.returnRb.Push(unsafe.Pointer(&msg))
+	} else {
+		var msg wm.KeyReleaseMsg
+		msg.Type = wm.MsgKeyRelease
+		msg.Code = code
+		ta.returnRb.Push(unsafe.Pointer(&msg))
+	}
+	if err := sys.MailboxSend(sid, wm.ShepherdNotify, ta.returnRb.Addr()); err != nil {
+		fmt.Fprintf(os.Stderr, "[rachel:kbd] MailboxSend to SID %d failed: %v\n", sid, err)
 	}
 }
 

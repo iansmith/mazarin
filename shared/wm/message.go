@@ -38,6 +38,10 @@ const (
 	MsgMouseRelease int64 = 5
 	// MsgMouseMove: WM→shepherd. "Mouse moved to (X, Y) while button held."
 	MsgMouseMove int64 = 6
+	// MsgKeyPress: WM→shepherd. "Key pressed."
+	MsgKeyPress int64 = 7
+	// MsgKeyRelease: WM→shepherd. "Key released."
+	MsgKeyRelease int64 = 8
 )
 
 // AppStartMsg is sent by a shepherd to the WM when it starts up.
@@ -87,6 +91,22 @@ type MouseMoveMsg struct {
 	X    int32 // screen X coordinate
 	Y    int32 // screen Y coordinate
 	_    [112]byte
+}
+
+// KeyPressMsg is sent by the WM to a shepherd when a key is pressed.
+// Layout: 8 + 2 + 2 + 116 = 128 bytes.
+type KeyPressMsg struct {
+	Type int64  // MsgKeyPress
+	Code uint16 // evdev keycode
+	_    [118]byte
+}
+
+// KeyReleaseMsg is sent by the WM to a shepherd when a key is released.
+// Layout: 8 + 2 + 118 = 128 bytes.
+type KeyReleaseMsg struct {
+	Type int64  // MsgKeyRelease
+	Code uint16 // evdev keycode
+	_    [118]byte
 }
 
 // Well-known attribute URIs.

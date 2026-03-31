@@ -49,8 +49,7 @@ var mazzySyscallTable = [64]SyscallHandler{
 	42: SyscallAttrWaitDirty,             // AttrWaitDirty = 0x102A
 	43: SyscallAttrIncrementI64,          // AttrIncrementI64 = 0x102B
 	44: SyscallRequestWindowManager,     // RequestWindowManager = 0x102C
-	45: SyscallSetInputFocus,            // SetInputFocus = 0x102D
-	46: SyscallWaitInputEvent,           // WaitInputEvent = 0x102E
+	// slots 45-46 freed (were SetInputFocus/WaitInputEvent — rachel uses completion ring now)
 	47: SyscallMailboxMapPage,           // MailboxMapPage = 0x102F
 	48: SyscallMailboxSend,              // MailboxSend = 0x1030
 	49: SyscallMailboxRecv,              // MailboxRecv = 0x1031

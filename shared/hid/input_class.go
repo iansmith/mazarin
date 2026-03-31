@@ -1,12 +1,10 @@
 package hid
 
-// InputClass constants for focus-based input routing.
-// Each device class has independent focus tracking.
+// InputClass constants for classifying HID events.
 const (
 	InputClassKeyboard   = 0
 	InputClassMouseClick = 1
 	InputClassMouseMove  = 2
-	InputClassCount      = 3
 )
 
 // BtnMouse is the Linux evdev code boundary between keyboard keys and mouse buttons.

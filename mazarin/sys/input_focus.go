@@ -2,9 +2,7 @@ package sys
 
 import (
 	"errors"
-	"mazzy/shared/hid"
 	"mazzy/shared/mazzy"
-	"unsafe"
 )
 
 // RequestWindowManager claims the window manager role for the calling shepherd.
@@ -16,35 +14,3 @@ func RequestWindowManager() error {
 	}
 	return nil
 }
-
-// SetInputFocus sets input focus for a device class.
-// targetSID=0 means "self". Only self or the WM can call this.
-func SetInputFocus(targetSID int, class int) error {
-	r1, _, errno := RawSyscall(mazzy.SysSetInputFocus,
-		uintptr(targetSID),
-		uintptr(class),
-		0, 0, 0, 0)
-	if errno != 0 || int64(r1) < 0 {
-		return errors.New("SetInputFocus failed")
-	}
-	return nil
-}
-
-// WaitInputEvent blocks until input events arrive for the caller's device class queue.
-// Returns the number of events and fills buf with HID event data.
-// Uses Syscall (not RawSyscall) to release the P while blocked.
-func WaitInputEvent(class int, buf *hid.SoftIRQReturn) (int, error) {
-	r1, _, errno := Syscall(mazzy.SysWaitInputEvent,
-		uintptr(class),
-		uintptr(unsafe.Pointer(buf)),
-		0, 0, 0, 0)
-
-	if errno != 0 {
-		return 0, errors.New("WaitInputEvent failed")
-	}
-	if r1 > 0 {
-		return int(r1), nil
-	}
-	return 0, nil
-}
-
